@@ -1,0 +1,15 @@
+flowchart LR
+    subgraph BR["Bridge 进程(单行道:一件事卡住,全部排队)"]
+      EL["事件循环<br/>(那条单行道本身)"]
+      GP["GatePoller<br/>每 3 秒巡逻一次"]
+      PS["周期任务群<br/>约每 60 秒一批"]
+    end
+    DB[("teamlead.db 1.77GB<br/>94% 是 8 月初风暴残留")]
+    CQ[("提问信箱 comm.db<br/>46 个孤儿提问天天重扫")]
+    HL["/health 探针<br/>发作时排队 10-26 秒"]
+    GP -->|"每 3 秒重扫+写日志"| CQ
+    PS -->|"同步读(强候选烧核面)"| DB
+    EL --- HL
+    FA["Fix A 黑匣子"] -.->|"盯着"| EL
+    FB["Fix B 终态"] -.->|"收口"| CQ
+    FC["Fix C 手术"] -.->|"拆掉(证据先行)"| DB

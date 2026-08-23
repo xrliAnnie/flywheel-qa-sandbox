@@ -17,6 +17,7 @@ import { runZombieGateHygiene } from "../zombie-gate-hygiene.js";
 
 const DEAD_RUNNER = "11111111-2222-3333-4444-555555555555";
 const OTHER_RUNNER = "99999999-8888-7777-6666-555555555555";
+const SESSIONLESS_ACTOR = "voice-honeylemon-fly1911";
 
 function sqliteUtcAgo(ms: number): string {
 	return new Date(Date.now() - ms).toISOString().replace("T", " ").slice(0, 19);
@@ -72,6 +73,7 @@ function harness(opts: {
 			getEventsByType: vi.fn((t: string) => byType(t) as never),
 		},
 		projectName: "flywheel",
+		leadId: "product-lead",
 		pendingGateQuestions: opts.candidates,
 		db: {
 			getSession: vi.fn().mockReturnValue(opts.commRow),
@@ -110,6 +112,7 @@ describe("FLY-1328 A2 ask sweep", () => {
 			resolvedVia: "owner_closed_sweep",
 			outcome: "resolved",
 		});
+		expect(h.events[1].payload).not.toHaveProperty("lead");
 	});
 
 	it("M2: retires when the StateStore session exists but is irreversibly terminal", async () => {
@@ -133,7 +136,11 @@ describe("FLY-1328 A2 ask sweep", () => {
 		// post-terminal ask is evidence someone IS waiting — retiring it would
 		// swallow exactly the kind of question this ticket exists to protect.
 		const h = harness({
-			candidates: [ask({ created_at: sqliteUtcAgo(40 * 60_000) })],
+			candidates: [
+				ask({
+					created_at: new Date(Date.now() - 40 * 60_000).toISOString(),
+				}),
+			],
 			session: {
 				status: "blocked",
 				issue_id: "FLY-1328",
@@ -193,12 +200,24 @@ describe("FLY-1328 A2 ask sweep", () => {
 		expect(typesOf(h)).toEqual([]);
 	});
 
-	it("M5: spares non-UUID senders (fail-closed identity guard)", async () => {
+	it("M5: spares unsupported non-UUID senders even after 24 hours", async () => {
 		const h = harness({
 			candidates: [
-				ask({ id: "q-1", from_agent: "runner" }),
-				ask({ id: "q-2", from_agent: "qa-fly1239-78754" }),
-				ask({ id: "q-3", from_agent: "lead" }),
+				ask({
+					id: "q-1",
+					from_agent: "runner",
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
+				ask({
+					id: "q-2",
+					from_agent: "bridge",
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
+				ask({
+					id: "q-3",
+					from_agent: "lead",
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
 			],
 		});
 		const result = await runZombieGateHygiene(h.deps);
@@ -206,11 +225,147 @@ describe("FLY-1328 A2 ask sweep", () => {
 		expect(h.retire).not.toHaveBeenCalled();
 	});
 
+	it("FLY-1995: retires a sessionless non-runner ask only after 24 hours", async () => {
+		const h = harness({
+			candidates: [
+				ask({
+					id: "q-voice-old",
+					from_agent: SESSIONLESS_ACTOR,
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
+			],
+		});
+
+		expect((await runZombieGateHygiene(h.deps)).retiredAsks).toEqual([
+			"q-voice-old",
+		]);
+		expect(h.retire).toHaveBeenCalledWith("q-voice-old", {
+			expectedFromAgent: SESSIONLESS_ACTOR,
+			requireUnanswered: true,
+			resolvedVia: "fly1995_sessionless_ask",
+			retention: "ask_forensic",
+		});
+		expect(typesOf(h)).toEqual([
+			"orphan_question_dispose_intent",
+			"orphan_question_disposed",
+		]);
+		expect(h.events).toContainEqual({
+			event_type: "orphan_question_disposed",
+			payload: expect.objectContaining({
+				questionId: "q-voice-old",
+				fromAgent: SESSIONLESS_ACTOR,
+				lead: "product-lead",
+			}),
+		});
+	});
+
+	it("FLY-1995: retires the production ISO-Z sessionless cohort after 24 hours", async () => {
+		const h = harness({
+			candidates: [
+				ask({
+					id: "q-voice-production-clock",
+					from_agent: SESSIONLESS_ACTOR,
+					created_at: new Date(Date.now() - 25 * 60 * 60_000).toISOString(),
+				}),
+			],
+		});
+
+		expect((await runZombieGateHygiene(h.deps)).retiredAsks).toEqual([
+			"q-voice-production-clock",
+		]);
+		expect(h.retire).toHaveBeenCalledWith("q-voice-production-clock", {
+			expectedFromAgent: SESSIONLESS_ACTOR,
+			requireUnanswered: true,
+			resolvedVia: "fly1995_sessionless_ask",
+			retention: "ask_forensic",
+		});
+	});
+
+	it("FLY-1995: reconciles a sessionless disposal intent left by a crash", async () => {
+		const h = harness({ candidates: [], stillPending: false });
+		h.events.push({
+			event_type: "orphan_question_dispose_intent",
+			payload: { questionId: "q-voice-crashed" },
+		});
+		(
+			h.deps.store.getEventsByType as ReturnType<typeof vi.fn>
+		).mockImplementation((t: string) =>
+			h.events
+				.filter((e) => e.event_type === t)
+				.map((e) => ({
+					...e,
+					event_id: `${t}-${String(e.payload.questionId)}`,
+					execution_id: SESSIONLESS_ACTOR,
+					issue_id: "unknown",
+					project_name: "flywheel",
+				})),
+		);
+
+		await runZombieGateHygiene(h.deps);
+
+		expect(h.events).toContainEqual({
+			event_type: "orphan_question_disposed",
+			payload: expect.objectContaining({
+				questionId: "q-voice-crashed",
+				reconciled: true,
+			}),
+		});
+	});
+
+	it("FLY-1995: keeps young, registered, StateStore-backed, and gate-shaped non-runner questions", async () => {
+		const young = harness({
+			candidates: [
+				ask({
+					id: "q-young-voice",
+					from_agent: SESSIONLESS_ACTOR,
+					created_at: sqliteUtcAgo(23 * 60 * 60_000),
+				}),
+			],
+		});
+		const registered = harness({
+			candidates: [
+				ask({
+					id: "q-registered-voice",
+					from_agent: SESSIONLESS_ACTOR,
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
+			],
+			commRow: { execution_id: SESSIONLESS_ACTOR },
+		});
+		const stateBacked = harness({
+			candidates: [
+				ask({
+					id: "q-state-voice",
+					from_agent: SESSIONLESS_ACTOR,
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
+			],
+			session: { status: "running", issue_id: "FLY-1995" },
+		});
+		const gate = harness({
+			candidates: [
+				ask({
+					id: "q-gate-voice",
+					from_agent: SESSIONLESS_ACTOR,
+					checkpoint: "brainstorm",
+					created_at: sqliteUtcAgo(25 * 60 * 60_000),
+				}),
+			],
+		});
+
+		for (const candidate of [young, registered, stateBacked, gate]) {
+			expect((await runZombieGateHygiene(candidate.deps)).retiredAsks).toEqual(
+				[],
+			);
+			expect(candidate.retire).not.toHaveBeenCalled();
+		}
+	});
+
 	it("M6: spares asks under 30 minutes old, and any ask with an unreadable clock", async () => {
 		const h = harness({
 			candidates: [
 				ask({ id: "q-young", created_at: sqliteUtcAgo(29 * 60_000) }),
-				ask({ id: "q-iso", created_at: "2026-07-17T01:02:03.000Z" }),
+				ask({ id: "q-offset", created_at: "2026-07-17T01:02:03+00:00" }),
 				ask({ id: "q-null", created_at: null }),
 				ask({ id: "q-junk", created_at: "not a date" }),
 			],

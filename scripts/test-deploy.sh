@@ -748,6 +748,7 @@ GENERALIZED_ENV_UNSET_ARGS=()
 COMPLETE_MARKER_DIR="${SLOT_DIR}/state/complete-failed"
 LEAD_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMPLETE_MARKER_DIR=${COMPLETE_MARKER_DIR}")
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${SLOT_DIR}/state/loop-diagnostics")
 # FLY-1726: a failed canonical-identity assertion must stay inside the QA
 # slot, never write a diagnostic into the resident fleet's state directory.
 LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")

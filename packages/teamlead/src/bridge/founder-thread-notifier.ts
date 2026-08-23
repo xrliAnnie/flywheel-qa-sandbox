@@ -784,12 +784,69 @@ export interface IssueThreadInfraNotifyDeps extends FounderThreadNotifyDeps {
 	sleepFn?: (ms: number) => Promise<void>;
 }
 
+const SKIPPED_AUDIT_WINDOW_MS = 10 * 60_000;
+const SKIPPED_AUDIT_TTL_MS = 30 * 60_000;
+const SKIPPED_AUDIT_MAX_KEYS = 1_000;
+// suppressed_count is best-effort: restart or a window with no later emission
+// can discard the in-memory tally. It is diagnostic sampling, not an audit sum.
+const skippedAuditBuckets = new WeakMap<
+	StateStore,
+	Map<string, { lastEmitMs: number; lastSeenMs: number; suppressed: number }>
+>();
+
+function rateLimitSkippedAudit(
+	store: StateStore,
+	opts: IssueThreadInfraNotifyOpts,
+	payload: Record<string, unknown>,
+): Record<string, unknown> | null {
+	const now = Date.now();
+	let buckets = skippedAuditBuckets.get(store);
+	if (!buckets) {
+		buckets = new Map();
+		skippedAuditBuckets.set(store, buckets);
+	}
+	for (const [key, bucket] of buckets) {
+		if (now - bucket.lastSeenMs > SKIPPED_AUDIT_TTL_MS) buckets.delete(key);
+	}
+	const key = [
+		opts.projectName,
+		opts.executionId,
+		opts.issueId,
+		opts.kind,
+		String(payload.reason ?? "unknown"),
+	].join("\0");
+	const bucket = buckets.get(key);
+	if (bucket && now - bucket.lastEmitMs < SKIPPED_AUDIT_WINDOW_MS) {
+		bucket.lastSeenMs = now;
+		bucket.suppressed += 1;
+		buckets.delete(key);
+		buckets.set(key, bucket);
+		return null;
+	}
+	const suppressed = bucket?.suppressed ?? 0;
+	buckets.delete(key);
+	while (buckets.size >= SKIPPED_AUDIT_MAX_KEYS) {
+		const oldest = buckets.keys().next().value;
+		if (!oldest) break;
+		buckets.delete(oldest);
+	}
+	buckets.set(key, { lastEmitMs: now, lastSeenMs: now, suppressed: 0 });
+	return suppressed > 0
+		? { ...payload, suppressed_count: suppressed }
+		: payload;
+}
+
 function auditInfra(
 	store: StateStore,
 	opts: IssueThreadInfraNotifyOpts,
 	eventType: string,
 	payload: Record<string, unknown>,
 ): void {
+	const auditedPayload =
+		eventType === "issue_thread_infra_notify_skipped"
+			? rateLimitSkippedAudit(store, opts, payload)
+			: payload;
+	if (!auditedPayload) return;
 	store.insertEvent({
 		event_id: `${eventType}-${randomUUID()}`,
 		execution_id: opts.executionId,
@@ -797,7 +854,7 @@ function auditInfra(
 		project_name: opts.projectName,
 		event_type: eventType,
 		source: "bridge.founder-thread-notifier",
-		payload: { kind: opts.kind, ...payload },
+		payload: { kind: opts.kind, ...auditedPayload },
 	});
 }
 

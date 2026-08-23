@@ -234,6 +234,10 @@ import {
 	shouldReportDeadLetteredDrain,
 } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
+import {
+	EventLoopAttribution,
+	type EventLoopHealthSnapshot,
+} from "./event-loop-attribution.js";
 import { createEventRouter } from "./event-route.js";
 import {
 	checkPrMergeViaGh,
@@ -1220,6 +1224,11 @@ export class SseBroadcaster {
 
 /** GEO-294 + FLY-91 Round 3: Options object for new Bridge dependencies. */
 export interface BridgeAppOptions {
+	/** FLY-1995: additive health summary plus master-only profiler diagnostics. */
+	eventLoopAttribution?: {
+		healthSnapshot(): EventLoopHealthSnapshot;
+		snapshot(): unknown;
+	};
 	vercelToken?: string;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
@@ -1797,6 +1806,18 @@ export function createBridgeApp(
 		// (standalone createBridgeApp) ⇒ false.
 		const shuttingDown = opts?.shutdownStateHolder?.shuttingDown === true;
 		let liveness: unknown;
+		let eventLoop: EventLoopHealthSnapshot | undefined;
+		if (opts?.eventLoopAttribution) {
+			try {
+				eventLoop = opts.eventLoopAttribution.healthSnapshot();
+			} catch (error) {
+				console.warn(
+					"[health] event-loop diagnostics unavailable:",
+					error instanceof Error ? error.message : String(error),
+				);
+				eventLoop = { p99_ms: null, max_ms: null, episodes: 0 };
+			}
+		}
 		if (opts?.livenessHealthProvider?.current) {
 			try {
 				liveness = opts.livenessHealthProvider.current();
@@ -1829,8 +1850,43 @@ export function createBridgeApp(
 				remainingSeconds: admissionPause?.remainingSeconds ?? 0,
 			},
 			...(liveness === undefined ? {} : { liveness }),
+			...(eventLoop === undefined ? {} : { event_loop: eventLoop }),
 		});
 	});
+
+	app.get(
+		"/api/diagnostics/event-loop",
+		((req, res, next) => {
+			if (!config.apiToken) {
+				res.status(503).json({ error: "TEAMLEAD_API_TOKEN is not configured" });
+				return;
+			}
+			const bearer = req.headers.authorization ?? "";
+			if (safeCompare(bearer, `Bearer ${config.apiToken}`)) {
+				next();
+				return;
+			}
+			if (
+				config.geminiAgentToken &&
+				safeCompare(bearer, `Bearer ${config.geminiAgentToken}`)
+			) {
+				res.status(403).json({ error: "forbidden for scoped token" });
+				return;
+			}
+			res.status(401).json({ error: "unauthorized" });
+		}) as express.RequestHandler,
+		(_req, res) => {
+			if (!opts?.eventLoopAttribution) {
+				res.status(503).json({ error: "event-loop diagnostics unavailable" });
+				return;
+			}
+			try {
+				res.json(opts.eventLoopAttribution.snapshot());
+			} catch {
+				res.status(503).json({ error: "event-loop diagnostics unavailable" });
+			}
+		},
+	);
 
 	// Dashboard / Fleet console — no auth (loopback only). FLY-247 inc2a: when the
 	// console is wired, `GET /` renders the Fleet console (run-status板块 cut per
@@ -4396,6 +4452,19 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	const eventLoopAttribution = new EventLoopAttribution({
+		diagnosticsDir: resolve(
+			process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR?.trim() ||
+				join(
+					process.env.FLYWHEEL_STATE_DIR?.trim() ||
+						process.env.FLYWHEEL_HOME?.trim() ||
+						join(homedir(), ".flywheel"),
+					"diagnostics",
+				),
+		),
+		profilerEnabled: process.env.FLYWHEEL_LOOP_PROFILER !== "0",
+	});
+	await eventLoopAttribution.start();
 	const flagStore = initializeFlagStore(store, process.env);
 	// FLY-1066 Layer 1: migrate each existing project CommDB at boot, then mirror
 	// only StateStore-authoritative failed/blocked outcomes asynchronously. All
@@ -6335,6 +6404,7 @@ export async function startBridge(
 		{
 			vercelToken,
 			flagStore,
+			eventLoopAttribution,
 			admissionCrossingBarrier,
 			residueHarvester,
 			terminalCommDbSync,
@@ -6948,6 +7018,8 @@ export async function startBridge(
 			}
 		},
 		livenessTrackers.liveness,
+		(name, startMs, endMs) =>
+			eventLoopAttribution.recordSpan(name, startMs, endMs),
 	);
 	livenessWiring.liveness = true;
 
@@ -8390,6 +8462,8 @@ export async function startBridge(
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
+		recordSpan: (name, startMs, endMs) =>
+			eventLoopAttribution.recordSpan(name, startMs, endMs),
 		projects,
 		store,
 		runtimeRegistry: registry,
@@ -11033,6 +11107,7 @@ export async function startBridge(
 		heartbeatService?.stop();
 		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();
+		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap
 		// every detached Claude reviewer child — a clean restart must not leave
 		// orphaned reviewers racing the new Bridge's boot redrive.

@@ -492,6 +492,8 @@ export class HeartbeatService implements ReconnectController {
 		private onMaintenanceTick?: (tick: number) => Promise<void>,
 		/** Operational health spans only the liveness owner, never skipped ticks. */
 		private livenessPassTracker?: LivenessPassTracker,
+		/** FLY-1995: wall-clock correlation only; profiler data owns CPU attribution. */
+		private recordSpan?: (name: string, startMs: number, endMs: number) => void,
 	) {}
 
 	private maintenanceInFlight = false;
@@ -533,6 +535,7 @@ export class HeartbeatService implements ReconnectController {
 	}
 
 	async check(): Promise<void> {
+		const spanStart = Date.now();
 		// FLY-639: the whole cycle is wrapped so a StateStore sql.js error
 		// (getOrphanSessions / getActiveSessions / …) can NEVER
 		// crash the Bridge via this heartbeat loop. Contract: check() itself never
@@ -660,6 +663,11 @@ export class HeartbeatService implements ReconnectController {
 			// fleet-level outage. It remains detached, so neither failure path can
 			// affect the other and even a failed core cycle still schedules maintenance.
 			this.dispatchMaintenanceTick();
+			try {
+				this.recordSpan?.("heartbeat.check", spanStart, Date.now());
+			} catch {
+				// Diagnostics must never alter heartbeat control flow.
+			}
 		}
 	}
 

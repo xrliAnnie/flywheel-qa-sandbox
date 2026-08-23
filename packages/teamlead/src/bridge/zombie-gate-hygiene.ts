@@ -37,29 +37,31 @@ import { isReviewGateCheckpoint } from "./review-gate-checkpoints.js";
  * we have less certainty about when it stopped, so we buy more margin.
  */
 const ASK_SWEEP_MIN_AGE_MS = 30 * 60_000;
+const SESSIONLESS_ASK_SWEEP_MIN_AGE_MS = 24 * 60 * 60_000;
+const SESSIONLESS_ASK_SENDER = "voice-honeylemon-fly1911";
 
 /** FLY-1328: fail-closed identity guard — runner execution ids are UUIDs. */
 const RUNNER_UUID =
 	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function sqliteUtcToMs(value: string): number {
-	return Date.parse(`${value.replace(" ", "T")}Z`);
-}
-
 const SQLITE_UTC_TIMESTAMP =
 	/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01]) (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+const ISO_UTC_TIMESTAMP =
+	/^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z$/;
 
-function isCanonicalSqliteUtc(
-	value: string | null | undefined,
-): value is string {
-	return typeof value === "string" && SQLITE_UTC_TIMESTAMP.test(value);
+function utcTimestampToMs(value: string | null | undefined): number {
+	if (typeof value !== "string") return Number.NaN;
+	if (SQLITE_UTC_TIMESTAMP.test(value)) {
+		return Date.parse(`${value.replace(" ", "T")}Z`);
+	}
+	return ISO_UTC_TIMESTAMP.test(value) ? Date.parse(value) : Number.NaN;
 }
 
 export interface ZombieCandidateQuestion {
 	id: string;
 	from_agent: string;
 	checkpoint: string | null;
-	/** CommDB SQLite UTC creation time. Nullable: the schema predates NOT NULL. */
+	/** CommDB UTC creation time. Nullable: the schema predates NOT NULL. */
 	created_at?: string | null;
 	/** FLY-1041 'report' vs a plain ask — recorded in the FLY-1328 audit only. */
 	kind?: string | null;
@@ -93,6 +95,7 @@ export type ZombieCommDb = Pick<
 export interface ZombieGateHygieneDeps {
 	store: ZombieHygieneStore;
 	projectName: string;
+	leadId?: string;
 	/** Pending gate questions (checkpoint != null) for one lead. */
 	pendingGateQuestions: ZombieCandidateQuestion[];
 	/** One writable CommDB for this project (caller owns lifecycle). */
@@ -130,9 +133,10 @@ async function sweepOwnerlessAsk(
 	deps: ZombieGateHygieneDeps,
 	result: ZombieHygieneResult,
 ): Promise<void> {
-	// Identity: fail closed. A non-UUID from_agent is not a runner we can reason
-	// about (production carries e.g. a stray `qa-fly1239-*` row) — never touch it.
-	if (!RUNNER_UUID.test(q.from_agent)) return;
+	if (!RUNNER_UUID.test(q.from_agent)) {
+		await sweepSessionlessAsk(q, deps, result);
+		return;
+	}
 
 	// Teardown evidence. The registration row surviving means the runner may be
 	// completed-but-alive or parked and can still answer (FLY-161) — not a
@@ -149,10 +153,9 @@ async function sweepOwnerlessAsk(
 	// because an untorn-down death gives us no teardown timestamp to trust. A
 	// missing or malformed clock fails OPEN (never retire on a clock we cannot
 	// read) — the FLY-1257 discipline.
-	if (typeof q.created_at !== "string" || !isCanonicalSqliteUtc(q.created_at)) {
-		return;
-	}
-	const ageMs = Date.now() - sqliteUtcToMs(q.created_at);
+	const createdAtMs = utcTimestampToMs(q.created_at);
+	if (!Number.isFinite(createdAtMs)) return;
+	const ageMs = Date.now() - createdAtMs;
 	if (!Number.isFinite(ageMs) || ageMs < ASK_SWEEP_MIN_AGE_MS) return;
 
 	// StateStore cross-check. A LIVE session whose CommDB row vanished is the Z2
@@ -169,8 +172,8 @@ async function sweepOwnerlessAsk(
 	// is evidence the runner was reopened under the same execution identity and is
 	// genuinely waiting — `ask` needs no session row, so "terminal status + no
 	// CommDB row" does NOT by itself imply nobody will read the answer. Both
-	// clocks are immutable SQLite UTC seconds, so canonical strings compare
-	// directly.
+	// clocks are immutable UTC values, but CommDB and StateStore use different
+	// encodings, so compare their parsed instants rather than their strings.
 	//
 	// Deliberately NARROWER than the gate branch's version, which spares whenever
 	// the clock is missing. Measured on production: of 184 sweep candidates, 83
@@ -179,13 +182,9 @@ async function sweepOwnerlessAsk(
 	// to clear, to defend a shape that does not currently occur. A missing clock
 	// is not evidence of reopening; it is no evidence either way, and the other
 	// four predicates still have to hold. So chronology only speaks when it can:
-	// present + canonical + post-terminal → spare.
-	if (
-		session &&
-		isCanonicalSqliteUtc(session.terminal_at) &&
-		isCanonicalSqliteUtc(q.created_at) &&
-		q.created_at >= session.terminal_at
-	) {
+	// present + readable UTC + post-terminal → spare.
+	const terminalAtMs = utcTimestampToMs(session?.terminal_at);
+	if (session && Number.isFinite(terminalAtMs) && createdAtMs >= terminalAtMs) {
 		return;
 	}
 
@@ -259,6 +258,80 @@ async function sweepOwnerlessAsk(
 	});
 	if (outcome === "resolved" || outcome === "already_retired") {
 		result.retiredAsks.push(q.id);
+	}
+}
+
+/** FLY-1995: dispose only old, checkpoint-less asks with no owner in either DB. */
+async function sweepSessionlessAsk(
+	q: ZombieCandidateQuestion,
+	deps: ZombieGateHygieneDeps,
+	result: ZombieHygieneResult,
+): Promise<void> {
+	if (q.from_agent !== SESSIONLESS_ASK_SENDER) return;
+	const createdAtMs = utcTimestampToMs(q.created_at);
+	if (!Number.isFinite(createdAtMs)) return;
+	const ageMs = Date.now() - createdAtMs;
+	if (!Number.isFinite(ageMs) || ageMs <= SESSIONLESS_ASK_SWEEP_MIN_AGE_MS) {
+		return;
+	}
+	if (deps.store.getSession(q.from_agent)) return;
+	try {
+		if (deps.db.getSession(q.from_agent)) return;
+	} catch {
+		return;
+	}
+	deps.store.insertEvent({
+		event_id: `orphan_question_dispose_intent_${q.id}`,
+		execution_id: q.from_agent,
+		issue_id: "unknown",
+		project_name: deps.projectName,
+		event_type: "orphan_question_dispose_intent",
+		source: "bridge.ask-hygiene",
+		payload: {
+			questionId: q.id,
+			fromAgent: q.from_agent,
+			lead: deps.leadId ?? null,
+			kind: q.kind ?? null,
+			ageHours: Number((ageMs / 3_600_000).toFixed(2)),
+		},
+	});
+
+	let mutated = false;
+	try {
+		mutated = deps.db.retireQuestionGuarded(q.id, {
+			expectedFromAgent: q.from_agent,
+			requireUnanswered: true,
+			resolvedVia: "fly1995_sessionless_ask",
+			retention: "ask_forensic",
+		});
+	} catch {
+		return;
+	}
+	const outcome = classifyRetireOutcome(q.id, mutated, deps);
+	if (!outcome) return;
+
+	deps.store.insertEvent({
+		event_id: `orphan_question_disposed_${q.id}`,
+		execution_id: q.from_agent,
+		issue_id: "unknown",
+		project_name: deps.projectName,
+		event_type: "orphan_question_disposed",
+		source: "bridge.ask-hygiene",
+		payload: {
+			questionId: q.id,
+			fromAgent: q.from_agent,
+			lead: deps.leadId ?? null,
+			kind: q.kind ?? null,
+			ageHours: Number((ageMs / 3_600_000).toFixed(2)),
+			resolvedVia: "fly1995_sessionless_ask",
+			outcome,
+		},
+	});
+	if (outcome === "resolved" || outcome === "already_retired") {
+		result.retiredAsks.push(q.id);
+		console.warn(
+			`[ask-hygiene] disposed sessionless orphan qid=${q.id} from_agent=${q.from_agent} age_hours=${(ageMs / 3_600_000).toFixed(2)}`,
+		);
 	}
 }
 
@@ -341,14 +414,16 @@ export async function runZombieGateHygiene(
 		// FLY-1257: an existing terminal session needs chronology proof before Z1
 		// may retire its gate. A post-terminal gate is evidence that the blocked
 		// runner was intentionally reopened for review. Both clocks are immutable
-		// SQLite UTC seconds, so canonical strings compare directly; missing,
+		// UTC values; missing,
 		// malformed, and same-second values fail open permanently. Missing sessions
 		// retain the pre-existing Z1 behavior because no chronology can be recovered.
 		if (session) {
+			const createdAtMs = utcTimestampToMs(q.created_at);
+			const terminalAtMs = utcTimestampToMs(session.terminal_at);
 			if (
-				!isCanonicalSqliteUtc(q.created_at) ||
-				!isCanonicalSqliteUtc(session.terminal_at) ||
-				q.created_at >= session.terminal_at
+				!Number.isFinite(createdAtMs) ||
+				!Number.isFinite(terminalAtMs) ||
+				createdAtMs >= terminalAtMs
 			) {
 				continue;
 			}
@@ -435,6 +510,13 @@ export async function runZombieGateHygiene(
 			`[ask-hygiene] dangling-intent reconcile error (${deps.projectName}): ${(err as Error).message}`,
 		);
 	}
+	try {
+		reconcileDanglingIntents(deps, SESSIONLESS_ASK_INTENT_FAMILY);
+	} catch (err) {
+		console.warn(
+			`[ask-hygiene] sessionless dangling-intent reconcile error (${deps.projectName}): ${(err as Error).message}`,
+		);
+	}
 	return result;
 }
 
@@ -457,6 +539,13 @@ const ASK_INTENT_FAMILY: IntentFamily = {
 	intentType: "ask_hygiene_retire_intent",
 	outcomeType: "ask_hygiene_retired",
 	outcomeIdPrefix: "ask_hygiene_retired_",
+	source: "bridge.ask-hygiene",
+};
+
+const SESSIONLESS_ASK_INTENT_FAMILY: IntentFamily = {
+	intentType: "orphan_question_dispose_intent",
+	outcomeType: "orphan_question_disposed",
+	outcomeIdPrefix: "orphan_question_disposed_",
 	source: "bridge.ask-hygiene",
 };
 

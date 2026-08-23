@@ -118,6 +118,8 @@ import {
 } from "./zombie-gate-hygiene.js";
 
 export interface GatePollerConfig {
+	/** FLY-1995: wall-clock correlation only; never treated as CPU attribution. */
+	recordSpan?: (name: string, startMs: number, endMs: number) => void;
 	pollIntervalMs: number;
 	projects: ProjectEntry[];
 	store: StateStore;
@@ -569,6 +571,7 @@ export class GatePoller {
 	private async poll(): Promise<void> {
 		if (this.polling) return;
 		this.polling = true;
+		const spanStart = Date.now();
 		try {
 			// FLY-208 A2: patrol cadence — piggybacks on this existing tick
 			// (zero new periodic timers, FLY-169/172 discipline). Misrouted
@@ -646,7 +649,11 @@ export class GatePoller {
 			// exactly like the other patrol callbacks.
 			if (this.config.onIssueGateSupersedeTick) {
 				void Promise.resolve()
-					.then(() => this.config.onIssueGateSupersedeTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.issue-gate-supersede", () =>
+							this.config.onIssueGateSupersedeTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-1314 issue-gate supersede error (non-fatal): ${(err as Error).message}`,
@@ -656,7 +663,11 @@ export class GatePoller {
 
 			if (this.config.onWorkflowGateMaterializeTick) {
 				void Promise.resolve()
-					.then(() => this.config.onWorkflowGateMaterializeTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.workflow-gate-materialize", () =>
+							this.config.onWorkflowGateMaterializeTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-1375 workflow-gate materialization error (non-fatal): ${(err as Error).message}`,
@@ -666,7 +677,11 @@ export class GatePoller {
 
 			if (this.config.onLandOperationTick) {
 				void Promise.resolve()
-					.then(() => this.config.onLandOperationTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.land-operation", () =>
+							this.config.onLandOperationTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-1375 land-operation sweep error (non-fatal): ${(err as Error).message}`,
@@ -687,7 +702,11 @@ export class GatePoller {
 				(this.tickCount - 1) % this.healthCheckEveryNTicks() === 0
 			) {
 				void Promise.resolve()
-					.then(() => this.config.onHealthTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.health", () =>
+							this.config.onHealthTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-513 codex-health probe error (non-fatal): ${(err as Error).message}`,
@@ -700,7 +719,11 @@ export class GatePoller {
 				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
 			) {
 				void Promise.resolve()
-					.then(() => this.config.onLeadPatrolTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.lead-patrol", () =>
+							this.config.onLeadPatrolTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] lead patrol tick error (non-fatal): ${(err as Error).message}`,
@@ -713,7 +736,11 @@ export class GatePoller {
 				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
 			) {
 				void Promise.resolve()
-					.then(() => this.config.onCmuxWatcherPatrolTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.cmux-watcher-patrol", () =>
+							this.config.onCmuxWatcherPatrolTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] cmux watcher patrol error (non-fatal): ${(err as Error).message}`,
@@ -729,7 +756,11 @@ export class GatePoller {
 				(this.tickCount - 1) % 20 === 0
 			) {
 				void Promise.resolve()
-					.then(() => this.config.onDispositionReceiptTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.disposition-receipt", () =>
+							this.config.onDispositionReceiptTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-1282 disposition receipt error (non-fatal): ${(err as Error).message}`,
@@ -748,7 +779,11 @@ export class GatePoller {
 					(this.tickCount - 1) % displayCadence === 0
 				) {
 					void Promise.resolve()
-						.then(() => this.config.onDisplayReconcileTick?.())
+						.then(() =>
+							this.withSpan("gate-poller.display-reconcile", () =>
+								this.config.onDisplayReconcileTick?.(),
+							),
+						)
 						.catch((err) =>
 							console.warn(
 								`[GatePoller] FLY-907 display-reconcile sweep error (non-fatal): ${(err as Error).message}`,
@@ -763,7 +798,11 @@ export class GatePoller {
 				(this.tickCount - 1) % this.qaReconcileEveryNTicks() === 0
 			) {
 				void Promise.resolve()
-					.then(() => this.config.onQaReconcileTick?.())
+					.then(() =>
+						this.withSpan("gate-poller.qa-reconcile", () =>
+							this.config.onQaReconcileTick?.(),
+						),
+					)
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] FLY-1279 auto-QA reconcile error (non-fatal): ${(err as Error).message}`,
@@ -810,16 +849,31 @@ export class GatePoller {
 									continue;
 								}
 							}
+							const orphan = this.orphanQuestions.get(question.id);
+							if (
+								question.checkpoint == null &&
+								orphan &&
+								(this.tickCount - orphan.firstSeenTick) % 20 !== 0
+							) {
+								continue;
+							}
 							const session = this.config.store.getSession(question.from_agent);
 							if (!session) {
 								// Orphan question — from_agent references no known session.
 								// Skip rather than throw; Lead can still pick it up manually
 								// via `flywheel-comm pending`. (Codex R1 Issue 1.)
-								console.warn(
-									`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
-								);
+								if (!orphan) {
+									this.rememberOrphanQuestion(question.id);
+									console.warn(
+										`[GatePoller] orphan question — no session for from_agent=${question.from_agent} (qid=${question.id}, lead=${lead.agentId})`,
+									);
+								} else {
+									this.orphanQuestions.delete(question.id);
+									this.orphanQuestions.set(question.id, orphan);
+								}
 								continue;
 							}
+							this.orphanQuestions.delete(question.id);
 							const gateOwnership =
 								typeof this.config.store.workflowGatePresentationDisposition ===
 								"function"
@@ -877,7 +931,9 @@ export class GatePoller {
 										project.projectName,
 									)
 								) {
-									await this.relayToLead(lead, session, question, dbPath);
+									await this.withSpan("gate-poller.question-relay", () =>
+										this.relayToLead(lead, session, question, dbPath),
+									);
 								}
 							} catch (relayErr) {
 								relayFailed = true;
@@ -940,7 +996,9 @@ export class GatePoller {
 				// terminal milestone the founder was never told about.
 				if (this.tickCount % this.milestonePatrolEveryNTicks() === 1) {
 					try {
-						await this.maybeEmitMilestoneReports(project);
+						await this.withSpan("gate-poller.milestone-report", () =>
+							this.maybeEmitMilestoneReports(project),
+						);
 					} catch (err) {
 						console.warn(
 							`[GatePoller] milestone patrol error for ${project.projectName}:`,
@@ -958,7 +1016,9 @@ export class GatePoller {
 			// isolated — its errors never abort the poll loop.
 			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
-					await this.founderReplyDeliverPass();
+					await this.withSpan("gate-poller.founder-reply-deliver", () =>
+						this.founderReplyDeliverPass(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder-reply deliver pass error:",
@@ -979,7 +1039,9 @@ export class GatePoller {
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
-					await this.deferredRebindPass();
+					await this.withSpan("gate-poller.deferred-rebind", () =>
+						this.deferredRebindPass(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] deferred-approval rebind pass error:",
@@ -994,7 +1056,9 @@ export class GatePoller {
 			// independently from founder-reply ingestion.
 			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
-					await this.founderActionDrainPass();
+					await this.withSpan("gate-poller.founder-action-drain", () =>
+						this.founderActionDrainPass(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder action-ledger drain error:",
@@ -1003,7 +1067,9 @@ export class GatePoller {
 					this.maybeRecoverStore(err);
 				}
 				try {
-					await this.config.onFounderDecisionConvergenceTick?.();
+					await this.withSpan("gate-poller.founder-decision-convergence", () =>
+						this.config.onFounderDecisionConvergenceTick?.(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder-decision convergence pass error:",
@@ -1013,7 +1079,9 @@ export class GatePoller {
 				}
 				// FLY-1099 §7.2: retained unreachable-runner detector tick.
 				try {
-					await this.founderReplyUnreachable.tick();
+					await this.withSpan("gate-poller.founder-reply-unreachable", () =>
+						this.founderReplyUnreachable.tick(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder-reply reconcile tick error:",
@@ -1028,7 +1096,9 @@ export class GatePoller {
 			// (live session, missing CommDB row) feeds the unreachable detector.
 			if (this.tickCount % this.patrolEveryNTicks() === 1) {
 				try {
-					await this.zombieGateHygienePass();
+					await this.withSpan("gate-poller.zombie-hygiene", () =>
+						this.zombieGateHygienePass(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] zombie gate hygiene error:",
@@ -1045,7 +1115,9 @@ export class GatePoller {
 				this.tickCount % this.founderReplyDeliverEveryNTicks() === 1
 			) {
 				try {
-					await this.founderReactionApprovalPass();
+					await this.withSpan("gate-poller.founder-reaction-approval", () =>
+						this.founderReactionApprovalPass(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] founder-reaction approval pass error:",
@@ -1059,7 +1131,9 @@ export class GatePoller {
 			// missed self-ship wake). Default-ON kill-switch; same sub-cadence.
 			if (this.tickCount % this.founderReplyDeliverEveryNTicks() === 1) {
 				try {
-					await this.staleApprovedShipReconcilePass();
+					await this.withSpan("gate-poller.stale-approved-ship", () =>
+						this.staleApprovedShipReconcilePass(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] stale approved_to_ship reconcile error:",
@@ -1078,7 +1152,9 @@ export class GatePoller {
 				this.tickCount % this.patrolEveryNTicks() === 1
 			) {
 				try {
-					await this.config.externalMergeReconcile();
+					await this.withSpan("gate-poller.external-merge-reconcile", () =>
+						this.config.externalMergeReconcile?.(),
+					);
 				} catch (err) {
 					console.warn(
 						"[GatePoller] external-merge reconcile error:",
@@ -1089,6 +1165,11 @@ export class GatePoller {
 			}
 		} finally {
 			this.polling = false;
+			try {
+				this.config.recordSpan?.("gate-poller.tick", spanStart, Date.now());
+			} catch {
+				// Diagnostics must never disable the poller it observes.
+			}
 		}
 	}
 
@@ -1103,10 +1184,38 @@ export class GatePoller {
 	private readonly migratedCommDbPaths = new Set<string>();
 	private readonly commDbMigrationRetryAt = new Map<string, number>();
 	private readonly commDbMigrationAlerted = new Set<string>();
+	private readonly orphanQuestions = new Map<
+		string,
+		{ firstSeenTick: number }
+	>();
 
 	// FLY-307 B: per-lead circuit breaker keyed `projectName::agentId`.
 	private readonly circuitFailures = new Map<string, number>();
 	private readonly circuitCooldownUntil = new Map<string, number>();
+
+	private rememberOrphanQuestion(questionId: string): void {
+		if (this.orphanQuestions.size >= 500) {
+			const oldest = this.orphanQuestions.keys().next().value;
+			if (oldest) this.orphanQuestions.delete(oldest);
+		}
+		this.orphanQuestions.set(questionId, { firstSeenTick: this.tickCount });
+	}
+
+	private async withSpan<T>(
+		name: string,
+		run: () => T | Promise<T>,
+	): Promise<T> {
+		const startedAt = Date.now();
+		try {
+			return await run();
+		} finally {
+			try {
+				this.config.recordSpan?.(name, startedAt, Date.now());
+			} catch {
+				// Diagnostics must never alter rider control flow.
+			}
+		}
+	}
 
 	private patrolEveryNTicks(): number {
 		return this.config.patrolEveryNTicks ?? DEFAULT_PATROL_EVERY_N_TICKS;
@@ -1127,7 +1236,11 @@ export class GatePoller {
 	private runReconcilePatrolPass(): Promise<void> {
 		if (this.reconcilePatrolPass) return this.reconcilePatrolPass;
 		const pass = Promise.resolve()
-			.then(() => this.config.onReconcilePatrolTick?.())
+			.then(() =>
+				this.withSpan("gate-poller.reconcile-patrol", () =>
+					this.config.onReconcilePatrolTick?.(),
+				),
+			)
 			.then(() => undefined);
 		const guarded = pass.finally(() => {
 			if (this.reconcilePatrolPass === guarded) {
@@ -1170,7 +1283,11 @@ export class GatePoller {
 	private runLeadReconcilePass(): Promise<void> {
 		if (this.leadReconcilePass) return this.leadReconcilePass;
 		const pass = Promise.resolve()
-			.then(() => this.config.onLeadReconcileTick?.())
+			.then(() =>
+				this.withSpan("gate-poller.lead-reconcile", () =>
+					this.config.onLeadReconcileTick?.(),
+				),
+			)
 			.then(() => undefined);
 		const guarded = pass.finally(() => {
 			if (this.leadReconcilePass === guarded) {
@@ -1192,7 +1309,11 @@ export class GatePoller {
 	private runRunnerQuotaScanPass(): Promise<void> {
 		if (this.runnerQuotaScanPass) return this.runnerQuotaScanPass;
 		const pass = Promise.resolve()
-			.then(() => this.config.onRunnerQuotaScanTick?.())
+			.then(() =>
+				this.withSpan("gate-poller.runner-quota-scan", () =>
+					this.config.onRunnerQuotaScanTick?.(),
+				),
+			)
 			.then(() => undefined);
 		const guarded = pass.finally(() => {
 			if (this.runnerQuotaScanPass === guarded) {
@@ -1210,7 +1331,11 @@ export class GatePoller {
 	private runFlagScanPass(): Promise<void> {
 		if (this.flagScanPass) return this.flagScanPass;
 		const pass = Promise.resolve()
-			.then(() => this.config.onFlagScanTick?.())
+			.then(() =>
+				this.withSpan("gate-poller.flag-scan", () =>
+					this.config.onFlagScanTick?.(),
+				),
+			)
 			.then(() => undefined);
 		const guarded = pass.finally(() => {
 			if (this.flagScanPass === guarded) this.flagScanPass = null;
@@ -2955,6 +3080,7 @@ export class GatePoller {
 					await runZombieGateHygiene({
 						store: this.config.store,
 						projectName: project.projectName,
+						leadId: lead.agentId,
 						pendingGateQuestions: pending.map((q) => ({
 							id: q.id,
 							from_agent: q.from_agent,

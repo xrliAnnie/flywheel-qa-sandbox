@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1995 设计:Bridge 卡顿黑匣子 + 孤儿提问收口</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:24px 16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:24px; color:#1a365d; margin-bottom:6px; }
+  h2 { font-size:18px; color:#1a365d; margin:0 0 10px; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:18px; }
+  .chip { display:inline-block; font-size:12px; padding:2px 10px; border-radius:10px; margin-right:6px; background:#e8e8ed; color:#1d1d1f; }
+  .chip.blue { background:#e5f0ff; color:#007aff; }
+  .chip.green { background:#e6f9ec; color:#248a3d; }
+  .chip.amber { background:#fff3e0; color:#c46a00; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:18px 20px; margin-bottom:14px; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.gray { border-left:4px solid #86868b; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:10px; margin:12px 0; }
+  .stat { background:#f5f5f7; border-radius:10px; padding:12px 14px; }
+  .stat .n { font-size:22px; font-weight:700; color:#1a365d; font-family:'SF Mono',monospace; }
+  .stat .l { font-size:12px; color:#86868b; margin-top:2px; }
+  .stat.bad .n { color:#ff3b30; }
+  .stat.warn .n { color:#c46a00; }
+  p { margin:8px 0; font-size:14px; }
+  ul { margin:8px 0 8px 20px; font-size:14px; }
+  li { margin:4px 0; }
+  .term { color:#007aff; font-weight:600; }
+  .diagram { overflow-x:auto; margin:12px 0; background:#fff; border:1px solid #e8e8ed; border-radius:10px; padding:8px; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  table { width:100%; border-collapse:collapse; font-size:13px; margin:10px 0; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid #e8e8ed; vertical-align:top; }
+  th { color:#86868b; font-weight:600; font-size:12px; }
+  code { font-family:'SF Mono',monospace; font-size:12px; background:#f5f5f7; padding:1px 5px; border-radius:4px; }
+  .cbox { margin-top:14px; border-top:1px dashed #e0e0e3; padding-top:10px; }
+  .cbox label { font-size:12px; color:#86868b; display:block; margin-bottom:5px; }
+  .cbox textarea { width:100%; min-height:52px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-size:13px; font-family:inherit; resize:vertical; background:#fbfbfd; color:#1d1d1f; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; }
+  .savemark { font-size:11px; color:#34c759; margin-left:6px; visibility:hidden; }
+  #agg-list { font-size:13px; white-space:pre-wrap; overflow-wrap:anywhere; word-break:break-word; background:#f5f5f7; border-radius:8px; padding:10px 12px; margin:8px 0; min-height:30px; font-family:'SF Mono',monospace; }
+  .btn { background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 16px; font-size:13px; cursor:pointer; font-family:inherit; margin:4px 6px 4px 0; }
+  .btn:hover { background:#0062cc; }
+  #copy-status { font-size:12px; margin-left:4px; color:#86868b; }
+  .foot { text-align:center; color:#86868b; font-size:12px; margin-top:18px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-1995 · 给 Bridge 装「卡顿黑匣子」</h1>
+  <div class="sub">
+    <span class="chip blue">设计方案</span><span class="chip green">design review 已过(3 轮)</span><span class="chip amber">症状单 · 不预设根因</span><span class="chip">2026-08-22</span>
+  </div>
+
+  <div class="card blue" id="sec-summary">
+    <h2>1. 一句话总结</h2>
+    <p>Bridge(咱们的总调度服务)在机器不忙的时候也会一阵一阵地「失去响应」—— 这个方案给它装一个<span class="term">黑匣子</span>(像飞机上的那种:出事时自动留下现场记录),让下一次发作自动留下「到底是哪段代码在烧 CPU」的铁证;同时顺手收口两个审计中发现的确定性烂账:46 个被无限重扫的孤儿提问,和数据库里 263.8 万行历史垃圾。</p>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="1. 一句话总结" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" id="sec-evidence">
+    <h2>2. 症状与本次审计新证据</h2>
+    <p><b>症状</b>(上游 FLY-1986 实测,三台仪器交叉确认):机器负载不高时,约 <b>62.3%</b> 的时间里 Bridge 的健康探针要等 1 秒以上才有回音,最长 26.3 秒;发作时 Bridge 进程 CPU 几乎打满。</p>
+    <div class="stats">
+      <div class="stat bad"><div class="n">26.3s</div><div class="l">健康探针单次最长等待</div></div>
+      <div class="stat bad"><div class="n">1.77GB</div><div class="l">主数据库体积(新发现)</div></div>
+      <div class="stat warn"><div class="n">263.8万</div><div class="l">单一类型垃圾事件行数<br>= 全库 94%(8/1-8/5 风暴残留)</div></div>
+      <div class="stat warn"><div class="n">30.8万</div><div class="l">孤儿提问重复日志行数<br>(46 个提问,每 3 秒扫一遍)</div></div>
+    </div>
+    <ul>
+      <li>健康探针本身的代码很便宜 —— 等待长是因为 Bridge 是<span class="term">单行道</span>(所有工作排一条队,一件事卡住全部排队),有什么东西一次占道 10-26 秒。</li>
+      <li>最强嫌疑(未定罪):一些周期任务会同步读那 1.77GB 数据库;实测裸扫那 263.8 万行残留约 3.7 秒,加上程序侧逐行解析,10-26 秒量级完全对得上。<b>但「嫌疑最大」≠「已定罪」—— 定罪靠黑匣子。</b></li>
+      <li>写这份方案时活抓一例:给 Bridge 上报状态的命令连续两次「假失败」(2 秒等不到回执),事后查账写入其实都成功 —— 症状已在干扰日常运转。</li>
+    </ul>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="2. 症状与证据" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" id="sec-flow">
+    <h2>3. 黑匣子怎么工作(核心流程)</h2>
+    <p>常驻一个低开销的采样器,每 30 秒一个观察窗:窗里没发作就把采样扔掉(零成本);一旦发作(卡顿超 1 秒)就把这窗的 <span class="term">CPU profile</span>(发作瞬间「代码栈上是谁在跑」的快照)存下来,最多留 20 份、自动清旧。</p>
+    <div class="diagram"><svg id="fly-1995-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 491.875px; background-color: white;" viewBox="0 0 491.875 1038" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly-1995-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly-1995-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly-1995-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly-1995-d1 .error-icon{fill:#552222;}#fly-1995-d1 .error-text{fill:#552222;stroke:#552222;}#fly-1995-d1 .edge-thickness-normal{stroke-width:1px;}#fly-1995-d1 .edge-thickness-thick{stroke-width:3.5px;}#fly-1995-d1 .edge-pattern-solid{stroke-dasharray:0;}#fly-1995-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly-1995-d1 .edge-pattern-dashed{stroke-dasharray:3;}#fly-1995-d1 .edge-pattern-dotted{stroke-dasharray:2;}#fly-1995-d1 .marker{fill:#333333;stroke:#333333;}#fly-1995-d1 .marker.cross{stroke:#333333;}#fly-1995-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly-1995-d1 p{margin:0;}#fly-1995-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly-1995-d1 .cluster-label text{fill:#333;}#fly-1995-d1 .cluster-label span{color:#333;}#fly-1995-d1 .cluster-label span p{background-color:transparent;}#fly-1995-d1 .label text,#fly-1995-d1 span{fill:#333;color:#333;}#fly-1995-d1 .node rect,#fly-1995-d1 .node circle,#fly-1995-d1 .node ellipse,#fly-1995-d1 .node polygon,#fly-1995-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly-1995-d1 .rough-node .label text,#fly-1995-d1 .node .label text,#fly-1995-d1 .image-shape .label,#fly-1995-d1 .icon-shape .label{text-anchor:middle;}#fly-1995-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly-1995-d1 .rough-node .label,#fly-1995-d1 .node .label,#fly-1995-d1 .image-shape .label,#fly-1995-d1 .icon-shape .label{text-align:center;}#fly-1995-d1 .node.clickable{cursor:pointer;}#fly-1995-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly-1995-d1 .arrowheadPath{fill:#333333;}#fly-1995-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly-1995-d1 .flowchart-link{stroke:#333333;fill:none;}#fly-1995-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1995-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly-1995-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1995-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly-1995-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly-1995-d1 .cluster text{fill:#333;}#fly-1995-d1 .cluster span{color:#333;}#fly-1995-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly-1995-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly-1995-d1 rect.text{fill:none;stroke-width:0;}#fly-1995-d1 .icon-shape,#fly-1995-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1995-d1 .icon-shape p,#fly-1995-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly-1995-d1 .icon-shape rect,#fly-1995-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1995-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly-1995-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly-1995-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly-1995-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M223.938,86L223.938,90.167C223.938,94.333,223.938,102.667,223.938,110.333C223.938,118,223.938,125,223.938,128.5L223.938,132" id="L_A_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A_B_0" data-points="W3sieCI6MjIzLjkzNzUsInkiOjg2fSx7IngiOjIyMy45Mzc1LCJ5IjoxMTF9LHsieCI6MjIzLjkzNzUsInkiOjEzNn1d" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M282.09,214L288.303,218.167C294.516,222.333,306.941,230.667,313.154,238.333C319.367,246,319.367,253,319.367,256.5L319.367,260" id="L_B_C_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_C_0" data-points="W3sieCI6MjgyLjA4OTk2NTgyMDMxMjUsInkiOjIxNH0seyJ4IjozMTkuMzY3MTg3NSwieSI6MjM5fSx7IngiOjMxOS4zNjcxODc1LCJ5IjoyNjR9XQ==" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M269.787,420.42L256.394,434.85C243.001,449.28,216.215,478.14,195.601,498.321C174.986,518.503,160.543,530.005,153.321,535.757L146.099,541.508" id="L_C_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_C_D_0" data-points="W3sieCI6MjY5Ljc4Njk2MDU5NTYyNCwieSI6NDIwLjQxOTc3MzA5NTYyNH0seyJ4IjoxODkuNDI5Njg3NSwieSI6NTA3fSx7IngiOjE0Mi45NzA0OTc1MzI4OTQ3NCwieSI6NTQ0fV0=" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M339.735,449.632L342.091,459.194C344.448,468.755,349.162,487.877,351.518,502.939C353.875,518,353.875,529,353.875,534.5L353.875,540" id="L_C_E_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_C_E_0" data-points="W3sieCI6MzM5LjczNDc4Mzg2NDc3NTksInkiOjQ0OS42MzI0MDM2MzUyMjQxfSx7IngiOjM1My44NzUsInkiOjUwN30seyJ4IjozNTMuODc1LCJ5Ijo1NDR9XQ==" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M353.875,622L353.875,626.167C353.875,630.333,353.875,638.667,353.875,646.333C353.875,654,353.875,661,353.875,664.5L353.875,668" id="L_E_F_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_F_0" data-points="W3sieCI6MzUzLjg3NSwieSI6NjIyfSx7IngiOjM1My44NzUsInkiOjY0N30seyJ4IjozNTMuODc1LCJ5Ijo2NzJ9XQ==" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M353.875,774L353.875,778.167C353.875,782.333,353.875,790.667,353.875,798.333C353.875,806,353.875,813,353.875,816.5L353.875,820" id="L_F_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_F_G_0" data-points="W3sieCI6MzUzLjg3NSwieSI6Nzc0fSx7IngiOjM1My44NzUsInkiOjc5OX0seyJ4IjozNTMuODc1LCJ5Ijo4MjR9XQ==" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M353.875,902L353.875,906.167C353.875,910.333,353.875,918.667,353.875,926.333C353.875,934,353.875,941,353.875,944.5L353.875,948" id="L_G_H_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_G_H_0" data-points="W3sieCI6MzUzLjg3NSwieSI6OTAyfSx7IngiOjM1My44NzUsInkiOjkyN30seyJ4IjozNTMuODc1LCJ5Ijo5NTJ9XQ==" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/><path d="M84.763,544L83.303,537.833C81.842,531.667,78.921,519.333,77.461,489.833C76,460.333,76,413.667,76,369C76,324.333,76,281.667,85.019,256.431C94.039,231.196,112.078,223.392,121.097,219.49L130.117,215.588" id="L_D_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_B_0" data-points="W3sieCI6ODQuNzYzMTU3ODk0NzM2ODUsInkiOjU0NH0seyJ4Ijo3NiwieSI6NTA3fSx7IngiOjc2LCJ5IjozNjd9LHsieCI6NzYsInkiOjIzOX0seyJ4IjoxMzMuNzg4MDg1OTM3NSwieSI6MjE0fV0=" marker-end="url(#fly-1995-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_A_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_B_C_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(209.40673, 485.47591)"><g class="label" data-id="L_C_D_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>没有</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(353.875, 507)"><g class="label" data-id="L_C_E_0" transform="translate(-33.015625, -12)"><foreignObject width="66.03125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>有 = 发作</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_E_F_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_F_G_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_G_H_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-A-0" transform="translate(223.9375, 47)"><rect class="basic label-container" style="" x="-115.875" y="-39" width="231.75" height="78"/><g class="label" style="" transform="translate(-85.875, -24)"><rect/><foreignObject width="171.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Bridge 主进程<br />(所有工作排一条单行道)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B-1" transform="translate(223.9375, 175)"><rect class="basic label-container" style="" x="-107.2109375" y="-39" width="214.421875" height="78"/><g class="label" style="" transform="translate(-77.2109375, -24)"><rect/><foreignObject width="154.421875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>延迟检测器<br />每 30 秒记一个观察窗</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-C-3" transform="translate(319.3671875, 367)"><polygon points="103,0 206,-103 103,-206 0,-103" class="label-container" transform="translate(-102.5, 103)"/><g class="label" style="" transform="translate(-64, -24)"><rect/><foreignObject width="128" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>这一窗里最长卡顿<br />有没有超过 1 秒?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-D-5" transform="translate(94, 583)"><rect class="basic label-container" style="" x="-86" y="-39" width="172" height="78"/><g class="label" style="" transform="translate(-56, -24)"><rect/><foreignObject width="112" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>丢弃这窗的采样<br />不占磁盘</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-E-7" transform="translate(353.875, 583)"><rect class="basic label-container" style="" x="-123.875" y="-39" width="247.75" height="78"/><g class="label" style="" transform="translate(-93.875, -24)"><rect/><foreignObject width="187.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>保留这窗的 CPU profile<br />(发作时正在烧核的代码栈)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-F-9" transform="translate(353.875, 723)"><rect class="basic label-container" style="" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>附上同窗计时账<br />(哪些周期任务当时在跑、跑了多久)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-11" transform="translate(353.875, 863)"><rect class="basic label-container" style="" x="-115.2109375" y="-39" width="230.421875" height="78"/><g class="label" style="" transform="translate(-85.2109375, -24)"><rect/><foreignObject width="170.421875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>落盘 diagnostics 目录<br />最多留 20 份、自动清旧</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-H-13" transform="translate(353.875, 991)"><rect class="basic label-container" style="" x="-129.34375" y="-39" width="258.6875" height="78"/><g class="label" style="" transform="translate(-99.34375, -24)"><rect/><foreignObject width="198.6875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>归因报告 → FLY-1995<br />同一仪表喂给 FLY-1986 压测</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <ul>
+      <li>已知盲区(诚实声明):若一次卡顿连续超过 60 秒,现有的「自杀重启保险丝」会先杀掉进程,黑匣子来不及落盘 —— 但目前观测到的发作最长 26.3 秒,该级别可完整抓到。</li>
+      <li>同一套仪表输出「事件循环占用率」指标,正是 FLY-1986 压测方案需要的自变量测量面 —— 一份仪表两单受益。</li>
+    </ul>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="3. 黑匣子流程" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" id="sec-structure">
+    <h2>4. 系统结构与三个修复落点</h2>
+    <div class="diagram"><svg id="fly-1995-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 888.875px; background-color: white;" viewBox="0 0 888.875 632.095703125" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly-1995-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly-1995-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly-1995-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly-1995-d2 .error-icon{fill:#552222;}#fly-1995-d2 .error-text{fill:#552222;stroke:#552222;}#fly-1995-d2 .edge-thickness-normal{stroke-width:1px;}#fly-1995-d2 .edge-thickness-thick{stroke-width:3.5px;}#fly-1995-d2 .edge-pattern-solid{stroke-dasharray:0;}#fly-1995-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly-1995-d2 .edge-pattern-dashed{stroke-dasharray:3;}#fly-1995-d2 .edge-pattern-dotted{stroke-dasharray:2;}#fly-1995-d2 .marker{fill:#333333;stroke:#333333;}#fly-1995-d2 .marker.cross{stroke:#333333;}#fly-1995-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly-1995-d2 p{margin:0;}#fly-1995-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly-1995-d2 .cluster-label text{fill:#333;}#fly-1995-d2 .cluster-label span{color:#333;}#fly-1995-d2 .cluster-label span p{background-color:transparent;}#fly-1995-d2 .label text,#fly-1995-d2 span{fill:#333;color:#333;}#fly-1995-d2 .node rect,#fly-1995-d2 .node circle,#fly-1995-d2 .node ellipse,#fly-1995-d2 .node polygon,#fly-1995-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly-1995-d2 .rough-node .label text,#fly-1995-d2 .node .label text,#fly-1995-d2 .image-shape .label,#fly-1995-d2 .icon-shape .label{text-anchor:middle;}#fly-1995-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly-1995-d2 .rough-node .label,#fly-1995-d2 .node .label,#fly-1995-d2 .image-shape .label,#fly-1995-d2 .icon-shape .label{text-align:center;}#fly-1995-d2 .node.clickable{cursor:pointer;}#fly-1995-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly-1995-d2 .arrowheadPath{fill:#333333;}#fly-1995-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly-1995-d2 .flowchart-link{stroke:#333333;fill:none;}#fly-1995-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1995-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly-1995-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1995-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly-1995-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly-1995-d2 .cluster text{fill:#333;}#fly-1995-d2 .cluster span{color:#333;}#fly-1995-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly-1995-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly-1995-d2 rect.text{fill:none;stroke-width:0;}#fly-1995-d2 .icon-shape,#fly-1995-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly-1995-d2 .icon-shape p,#fly-1995-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly-1995-d2 .icon-shape rect,#fly-1995-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly-1995-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly-1995-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly-1995-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly-1995-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly-1995-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster" id="BR" data-look="classic"><rect style="" x="236.296875" y="8" width="233.75" height="418.65668869018555"/><g class="cluster-label" transform="translate(253.171875, 8)"><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>Bridge 进程(单行道:一件事卡住,全部排队)</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M440.188,224.657L445.164,224.657C450.141,224.657,460.094,224.657,482.216,224.657C504.339,224.657,538.63,224.657,574.298,226.64C609.966,228.624,647.01,232.592,665.532,234.575L684.054,236.559" id="L_GP_CQ_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_GP_CQ_0" data-points="W3sieCI6NDQwLjE4NzUsInkiOjIyNC42NTY2ODg2OTAxODU1NX0seyJ4Ijo0NzAuMDQ2ODc1LCJ5IjoyMjQuNjU2Njg4NjkwMTg1NTV9LHsieCI6NTcyLjkyMTg3NSwieSI6MjI0LjY1NjY4ODY5MDE4NTU1fSx7IngiOjY4OC4wMzEyNSwieSI6MjM2Ljk4NDk4ODk5ODI1MjMzfV0=" marker-end="url(#fly-1995-d2_flowchart-v2-pointEnd)"/><path d="M436.383,352.657L441.993,352.657C447.604,352.657,458.826,352.657,481.582,365.657C504.339,378.657,538.63,404.657,576.409,433.011C614.188,461.365,655.453,492.073,676.086,507.427L696.719,522.782" id="L_PS_DB_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_PS_DB_0" data-points="W3sieCI6NDM2LjM4MjgxMjUsInkiOjM1Mi42NTY2ODg2OTAxODU1NX0seyJ4Ijo0NzAuMDQ2ODc1LCJ5IjozNTIuNjU2Njg4NjkwMTg1NTV9LHsieCI6NTcyLjkyMTg3NSwieSI6NDMwLjY1NjY4ODY5MDE4NTU1fSx7IngiOjY5OS45Mjc4OTAyMjY4ODM1LCJ5Ijo1MjUuMTY5NTM1NzEwNjgzOX1d" marker-end="url(#fly-1995-d2_flowchart-v2-pointEnd)"/><path d="M445.047,82L449.214,82C453.38,82,461.714,82,483.026,82C504.339,82,538.63,82,572.922,82C607.214,82,641.505,82,658.651,82L675.797,82" id="L_EL_HL_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_EL_HL_0" data-points="W3sieCI6NDQ1LjA0Njg3NSwieSI6ODJ9LHsieCI6NDcwLjA0Njg3NSwieSI6ODJ9LHsieCI6NTcyLjkyMTg3NSwieSI6ODJ9LHsieCI6Njc1Ljc5Njg3NSwieSI6ODJ9XQ=="/><path d="M154.297,82L161.13,82C167.964,82,181.63,82,195.297,82C208.964,82,222.63,82,232.964,82C243.297,82,250.297,82,253.797,82L257.297,82" id="L_FA_EL_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_FA_EL_0" data-points="W3sieCI6MTU0LjI5Njg3NSwieSI6ODJ9LHsieCI6MTk1LjI5Njg3NSwieSI6ODJ9LHsieCI6MjM2LjI5Njg3NSwieSI6ODJ9LHsieCI6MjYxLjI5Njg3NSwieSI6ODJ9XQ==" marker-end="url(#fly-1995-d2_flowchart-v2-pointEnd)"/><path d="M419.008,488.657L427.514,488.657C436.021,488.657,453.034,488.657,478.686,471.657C504.339,454.657,538.63,420.657,576.355,388.407C614.08,356.157,655.237,325.658,675.816,310.408L696.395,295.158" id="L_FB_CQ_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_FB_CQ_0" data-points="W3sieCI6NDE5LjAwNzgxMjUsInkiOjQ4OC42NTY2ODg2OTAxODU1NX0seyJ4Ijo0NzAuMDQ2ODc1LCJ5Ijo0ODguNjU2Njg4NjkwMTg1NTV9LHsieCI6NTcyLjkyMTg3NSwieSI6Mzg2LjY1NjY4ODY5MDE4NTU1fSx7IngiOjY5OS42MDg1MjAzMjc1MDg1LCJ5IjoyOTIuNzc2Mzg5NzE3NDM2Mn1d" marker-end="url(#fly-1995-d2_flowchart-v2-pointEnd)"/><path d="M419.266,592.657L427.729,592.657C436.193,592.657,453.12,592.657,478.729,592.657C504.339,592.657,538.63,592.657,574.663,590.634C610.695,588.611,648.468,584.566,667.355,582.543L686.241,580.52" id="L_FC_DB_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_FC_DB_0" data-points="W3sieCI6NDE5LjI2NTYyNSwieSI6NTkyLjY1NjY4ODY5MDE4NTV9LHsieCI6NDcwLjA0Njg3NSwieSI6NTkyLjY1NjY4ODY5MDE4NTV9LHsieCI6NTcyLjkyMTg3NSwieSI6NTkyLjY1NjY4ODY5MDE4NTV9LHsieCI6NjkwLjIxODc1LCJ5Ijo1ODAuMDk0MTA1NDkzMTM2OX1d" marker-end="url(#fly-1995-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel" transform="translate(572.921875, 224.65668869018555)"><g class="label" data-id="L_GP_CQ_0" transform="translate(-69.2109375, -12)"><foreignObject width="138.421875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>每 3 秒重扫+写日志</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(571.148, 429.31174)"><g class="label" data-id="L_PS_DB_0" transform="translate(-77.875, -12)"><foreignObject width="155.75" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>同步读(强候选烧核面)</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_EL_HL_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(195.296875, 82)"><g class="label" data-id="L_FA_EL_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>盯着</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(559.34836, 400.11475)"><g class="label" data-id="L_FB_CQ_0" transform="translate(-16, -12)"><foreignObject width="32" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>收口</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(572.921875, 592.6566886901855)"><g class="label" data-id="L_FC_DB_0" transform="translate(-53.875, -12)"><foreignObject width="107.75" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>拆掉(证据先行)</p></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-EL-0" transform="translate(353.171875, 82)"><rect class="basic label-container" style="" x="-91.875" y="-39" width="183.75" height="78"/><g class="label" style="" transform="translate(-61.875, -24)"><rect/><foreignObject width="123.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>事件循环<br />(那条单行道本身)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-GP-1" transform="translate(353.171875, 224.65668869018555)"><rect class="basic label-container" style="" x="-87.015625" y="-39" width="174.03125" height="78"/><g class="label" style="" transform="translate(-57.015625, -24)"><rect/><foreignObject width="114.03125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>GatePoller<br />每 3 秒巡逻一次</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-PS-2" transform="translate(353.171875, 352.65668869018555)"><rect class="basic label-container" style="" x="-83.2109375" y="-39" width="166.421875" height="78"/><g class="label" style="" transform="translate(-53.2109375, -24)"><rect/><foreignObject width="106.421875" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>周期任务群<br />约每 60 秒一批</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DB-3" transform="translate(778.3359375, 570.6566886901855)"><path d="M0,14.62601794698895 a88.1171875,14.62601794698895 0,0,0 176.234375,0 a88.1171875,14.62601794698895 0,0,0 -176.234375,0 l0,77.62601794698895 a88.1171875,14.62601794698895 0,0,0 176.234375,0 l0,-77.62601794698895" class="basic label-container" style="" transform="translate(-88.1171875, -53.43902692048343)"/><g class="label" style="" transform="translate(-80.6171875, -14)"><rect/><foreignObject width="161.234375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>teamlead.db 1.77GB<br />94% 是 8 月初风暴残留</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-CQ-4" transform="translate(778.3359375, 246.65668869018555)"><path d="M0,14.77452835012015 a90.3046875,14.77452835012015 0,0,0 180.609375,0 a90.3046875,14.77452835012015 0,0,0 -180.609375,0 l0,77.77452835012015 a90.3046875,14.77452835012015 0,0,0 180.609375,0 l0,-77.77452835012015" class="basic label-container" style="" transform="translate(-90.3046875, -53.661792525180225)"/><g class="label" style="" transform="translate(-82.8046875, -14)"><rect/><foreignObject width="165.609375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>提问信箱 comm.db<br />46 个孤儿提问天天重扫</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-HL-5" transform="translate(778.3359375, 82)"><rect class="basic label-container" style="" x="-102.5390625" y="-39" width="205.078125" height="78"/><g class="label" style="" transform="translate(-72.5390625, -24)"><rect/><foreignObject width="145.078125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>/health 探针<br />发作时排队 10-26 秒</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-FA-12" transform="translate(81.1484375, 82)"><rect class="basic label-container" style="" x="-73.1484375" y="-27" width="146.296875" height="54"/><g class="label" style="" transform="translate(-43.1484375, -12)"><rect/><foreignObject width="86.296875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Fix A 黑匣子</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-FB-14" transform="translate(353.171875, 488.65668869018555)"><rect class="basic label-container" style="" x="-65.8359375" y="-27" width="131.671875" height="54"/><g class="label" style="" transform="translate(-35.8359375, -12)"><rect/><foreignObject width="71.671875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Fix B 终态</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-FC-16" transform="translate(353.171875, 592.6566886901855)"><rect class="basic label-container" style="" x="-66.09375" y="-27" width="132.1875" height="54"/><g class="label" style="" transform="translate(-36.09375, -12)"><rect/><foreignObject width="72.1875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Fix C 手术</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <table>
+      <tr><th>修复</th><th>做什么</th><th>一句话理由</th></tr>
+      <tr><td><b>Fix A 黑匣子</b></td><td>装仪表,发作自动留证</td><td>验收第一条:发作可归因</td></tr>
+      <tr><td><b>Fix B 孤儿终态</b></td><td>46 个没人认领的提问,确认 24 小时无主后走既有的「退休」通道;日志从每 3 秒一行变成终身最多 3 行</td><td>积压只增不减,即使不是烧核者也该收口</td></tr>
+      <tr><td><b>Fix C 残留手术</b></td><td>交付一把「手术刀」脚本:默认只读点账,真动刀要 Tadashi/founder 在停机窗亲手执行,先备份、账目对不上就自动罢手</td><td>263.8 万行垃圾是最强嫌疑面,拆掉它读放大立即消失</td></tr>
+    </table>
+    <p><b>顺序红线:</b>手术(Fix C 动刀)必须等黑匣子先抓到至少一次发作现场之后 —— 否则嫌疑人被提前处决,案子永远破不了,验收第一条就落空。</p>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="4. 结构与修复落点" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" id="sec-tradeoffs">
+    <h2>5. 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>决策点</th><th>选了</th><th>否掉了 · 为什么</th></tr>
+      <tr><td>怎么抓发作现场</td><td>进程内采样器,常驻低开销,发作才落盘</td><td>× 启动参数式抓取(只在进程善终时写文件,常驻服务拿不到)<br>× 人工蹲守(要人守着,不满足「自动抓到」)<br>× macOS 系统采样(已实测抓不出有效栈)</td></tr>
+      <tr><td>孤儿提问怎么退休</td><td>走既有的「守卫式退休」通道,新开一条明确的车道</td><td>× 自建一套并行删除逻辑(绕开现有防线,可能误杀合法提问)<br>× 恢复按过期时间过滤(会动共享查询,影响面太大)</td></tr>
+      <tr><td>垃圾残留怎么处理</td><td>operator 手术刀:默认只读、备份先行、账不平不动刀、停机窗执行</td><td>× 程序自动清理(1.77GB 库上删 263.8 万行的锁风险不该自动化)<br>× 顺手做全库瘦身(长时间独占锁,另找停机窗)</td></tr>
+      <tr><td>要不要顺手修数据库访问层</td><td>不修,只拆它撞上的垃圾 + 用黑匣子指认谁在撞</td><td>× 改「全量物化」语义(牵动 67 个调用点的既有契约,是独立大手术)</td></tr>
+      <tr><td>参数可调性</td><td>只加 1 个总开关,其余阈值写死</td><td>× 每个阈值配一个开关(每个阈值都有明确锚点,可调性没有当前需求,配置面越少越好)</td></tr>
+    </table>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="5. 取舍与否决" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card gray" id="sec-boundary">
+    <h2>6. 诚实边界:这个方案做什么、不做什么</h2>
+    <ul>
+      <li><b>做:</b>装黑匣子(发作可归因)/ 孤儿提问收口 / 交付手术刀脚本 + 防复发限流。</li>
+      <li><b>不做:</b>不改 FLY-1971 的准入阈值(等黑匣子结论)/ 不动 FLY-1986 压测方案本身 / 不做全库数据治理 / 不修数据库访问层的全量物化语义 / 不承诺抓到超 60 秒级的卡顿(见第 3 节盲区)。</li>
+      <li><b>成色声明:</b>「烧核者是谁」目前只有强嫌疑没有定罪 —— 本方案的核心价值恰恰是把「猜」变成「铁证」;就算最后真凶另有其人,黑匣子照样会把它指出来,Fix B/C 的价值独立成立。</li>
+      <li><b>部署后闭环:</b>发作归因报告由独立 QA/运维出(不由实现者自证);孤儿收口效果部署 24 小时后可用一条命令验证。</li>
+    </ul>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="6. 诚实边界" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card blue" id="sec-review">
+    <h2>7. 评审链(如实记录)</h2>
+    <p>Codex 第 1 轮(最高档,11 项修改意见,全部采纳 —— 含把孤儿退休改走既有防线、快照防撕裂、鉴权收紧、手术收据绑定等)。之后 Codex 全机撞额度上限(5 个账号同一恢复时间,8/26 前不可用),Gemini CLI 也已停服;经 Tadashi 批准,第 2、3 轮由 <b>Antigravity 替补</b>完成(第 2 轮抓 1 项已折入,第 3 轮 APPROVED)。替补轮已明确标注、不冒充 Codex 轮次;8/26 后若本单未发布,机会性补跑一轮真 Codex 留档。</p>
+    <div class="cbox"><label>对这一节的意见(自动保存)<span class="savemark">已保存</span></label><textarea data-sec="7. 评审链" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" id="sec-agg">
+    <h2>意见汇总</h2>
+    <p style="font-size:13px;color:#86868b;">下面自动汇总你在各节写的意见(存在你自己的浏览器里,刷新不丢)。写完后点「复制全部意见」,把内容发回给我们即可。</p>
+    <div id="agg-list">(还没有意见)</div>
+    <div id="copy-area"><button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span></div>
+  </div>
+
+  <div class="foot">FLY-1995 · design 节点 · engineering/doc/FLY-1995-bridge-health-stall/ · 2026-08-22</div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-1995";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly1995-cmt:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly1995-cmt:unknown:"; }
+
+  function lsGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function lsSet(key, val) { try { localStorage.setItem(key, val); } catch (e) { /* storage unavailable */ } }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".cbox textarea"));
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (ta) {
+      var v = (ta.value || "").trim();
+      if (v) { parts.push("〔" + ta.getAttribute("data-sec") + "〕\n" + v); }
+    });
+    return parts;
+  }
+
+  function renderAgg() {
+    var el = document.getElementById("agg-list");
+    var parts = collect();
+    el.textContent = parts.length ? parts.join("\n\n") : "(还没有意见)";
+  }
+
+  boxes.forEach(function (ta) {
+    var key = prefix + ta.getAttribute("data-sec");
+    var saved = lsGet(key);
+    if (saved) { ta.value = saved; }
+    var mark = ta.parentElement.querySelector(".savemark");
+    var t = null;
+    ta.addEventListener("input", function () {
+      lsSet(key, ta.value);
+      renderAgg();
+      if (mark) {
+        mark.style.visibility = "visible";
+        if (t) { clearTimeout(t); }
+        t = setTimeout(function () { mark.style.visibility = "hidden"; }, 1200);
+      }
+    });
+  });
+
+  function buildChunks() {
+    var parts = collect();
+    if (!parts.length) { return []; }
+    var full = MARKER + "\n" + parts.join("\n\n");
+    if (full.length <= CHUNK_LIMIT) { return [full]; }
+    var chunks = [];
+    var cur = "";
+    parts.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > CHUNK_LIMIT) { chunks.push(cur); cur = ""; }
+      cur = cur ? cur + "\n\n" + p : p;
+    });
+    if (cur) { chunks.push(cur); }
+    var n = chunks.length;
+    return chunks.map(function (c, i) {
+      return MARKER + "(" + (i + 1) + "/" + n + ")\n" + c;
+    });
+  }
+
+  function setStatus(msg, ok) {
+    var s = document.getElementById("copy-status");
+    s.textContent = msg;
+    s.style.color = ok ? "#34c759" : "#ff3b30";
+  }
+
+  function execCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text, label) {
+    function fallback() {
+      if (execCopy(text)) { setStatus(label + "已复制 ✓", true); }
+      else { setStatus("复制失败 —— 请手动全选上方汇总内容复制", false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { setStatus(label + "已复制 ✓", true); },
+        function () { fallback(); }
+      );
+    } else { fallback(); }
+  }
+
+  function rebuildCopyButtons() {
+    var area = document.getElementById("copy-area");
+    Array.prototype.slice.call(area.querySelectorAll(".chunk-btn")).forEach(function (b) { b.remove(); });
+    var chunks = buildChunks();
+    var mainBtn = document.getElementById("copy-all");
+    if (chunks.length <= 1) { mainBtn.textContent = "复制全部意见"; return; }
+    mainBtn.textContent = "内容较长,请分段复制 →";
+    chunks.forEach(function (c, i) {
+      var b = document.createElement("button");
+      b.className = "btn chunk-btn";
+      b.textContent = "复制第 " + (i + 1) + "/" + chunks.length + " 段";
+      b.addEventListener("click", function () { copyText(c, "第 " + (i + 1) + " 段"); });
+      var status = document.getElementById("copy-status");
+      area.insertBefore(b, status);
+    });
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var chunks = buildChunks();
+    if (!chunks.length) { setStatus("还没有写任何意见", false); return; }
+    if (chunks.length === 1) { copyText(chunks[0], ""); }
+    else { rebuildCopyButtons(); setStatus("共 " + chunks.length + " 段,请逐段复制发送", true); }
+  });
+
+  boxes.forEach(function (ta) {
+    ta.addEventListener("input", function () { rebuildCopyButtons(); });
+  });
+
+  renderAgg();
+  rebuildCopyButtons();
+})();
+</script>
+</body>
+</html>

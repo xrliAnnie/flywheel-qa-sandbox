@@ -125,6 +125,7 @@ describe("GatePoller (FLY-161)", () => {
 		ensureShipRelevantDiff?: (
 			session: import("../StateStore.js").Session,
 		) => Promise<void>;
+		recordSpan?: (name: string, startMs: number, endMs: number) => void;
 	}): GatePoller {
 		return new GatePoller({
 			pollIntervalMs: 60_000, // not auto-started in tests
@@ -136,6 +137,7 @@ describe("GatePoller (FLY-161)", () => {
 			circuitCooldownTicks: opts?.circuitCooldownTicks,
 			evictionRetryTicks: opts?.evictionRetryTicks,
 			ensureShipRelevantDiff: opts?.ensureShipRelevantDiff,
+			recordSpan: opts?.recordSpan,
 		});
 	}
 
@@ -380,6 +382,82 @@ describe("GatePoller (FLY-161)", () => {
 			JSON.stringify(args).includes("orphan question"),
 		);
 		expect(warnedOrphan).toBe(true);
+	});
+
+	it("FLY-1995: rechecks an orphan only every 20 ticks and resumes relay when its session appears", async () => {
+		insertQuestion({
+			execId: "late-session",
+			leadId: "product-lead",
+			content: "session registration is late",
+		});
+		const getSessionSpy = vi.spyOn(store, "getSession");
+		const poller = makePoller();
+
+		await runPoll(poller);
+		expect(getSessionSpy).toHaveBeenCalledTimes(1);
+		expect(
+			warnSpy.mock.calls.filter((args) =>
+				JSON.stringify(args).includes("orphan question"),
+			),
+		).toHaveLength(1);
+
+		for (let tick = 0; tick < 19; tick += 1) await runPoll(poller);
+		expect(getSessionSpy).toHaveBeenCalledTimes(1);
+		expect(
+			warnSpy.mock.calls.filter((args) =>
+				JSON.stringify(args).includes("orphan question"),
+			),
+		).toHaveLength(1);
+
+		insertSession("late-session", { status: "running", labels: ["product"] });
+		await runPoll(poller);
+		// Tick 21 also runs an independent founder-reply rider, which may perform
+		// another lookup after the orphan cache's scheduled recheck.
+		expect(getSessionSpy.mock.calls.length).toBeGreaterThanOrEqual(2);
+		expect(runtime.captured).toHaveLength(1);
+	});
+
+	it("FLY-1995: rechecks a founder-facing gate every tick so late session registration relays immediately", async () => {
+		insertQuestion({
+			execId: "late-gate-session",
+			leadId: "product-lead",
+			content: "session registration is late",
+			checkpoint: "brainstorm",
+		});
+		const poller = makePoller();
+
+		await runPoll(poller);
+		insertSession("late-gate-session", {
+			status: "running",
+			labels: ["product"],
+		});
+		await runPoll(poller);
+
+		expect(runtime.captured).toHaveLength(1);
+	});
+
+	it("FLY-1995: a throwing diagnostics hook never wedges the poller", async () => {
+		const recordSpan = vi.fn(() => {
+			throw new Error("diagnostics unavailable");
+		});
+		const poller = makePoller({ recordSpan });
+
+		await expect(runPoll(poller)).resolves.toBeUndefined();
+		await expect(runPoll(poller)).resolves.toBeUndefined();
+		expect((poller as unknown as { tickCount: number }).tickCount).toBe(2);
+	});
+
+	it("FLY-1995: bounds the orphan working set at 500 entries", () => {
+		const poller = makePoller() as unknown as {
+			rememberOrphanQuestion(questionId: string): void;
+			orphanQuestions: Map<string, unknown>;
+		};
+		for (let index = 0; index < 501; index += 1) {
+			poller.rememberOrphanQuestion(`bounded-orphan-${index}`);
+		}
+		expect(poller.orphanQuestions.size).toBe(500);
+		expect(poller.orphanQuestions.has("bounded-orphan-0")).toBe(false);
+		expect(poller.orphanQuestions.has("bounded-orphan-500")).toBe(true);
 	});
 
 	it("Case 8 (FLY-307 A): EVICTS gate_question when source session is terminal", async () => {

@@ -630,6 +630,97 @@ function okJson(status = 200): Response {
 }
 
 describe("FLY-927 emitIssueThreadInfraNotification", () => {
+	it("FLY-1995: rate-limits only repeated skipped audits and reports the best-effort suppressed count", async () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(new Date("2026-08-22T20:00:00.000Z"));
+		try {
+			const { store, events } = makeStore();
+			const opts = infraOpts({
+				executionId: "fly1995-rate-limit",
+				thread: undefined,
+			});
+			for (let index = 0; index < 5; index += 1) {
+				await emitIssueThreadInfraNotification(
+					opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+					{ store },
+				);
+			}
+			expect(
+				events.filter(
+					(event) => event.event_type === "issue_thread_infra_notify_skipped",
+				),
+			).toHaveLength(1);
+
+			vi.advanceTimersByTime(10 * 60_000);
+			await emitIssueThreadInfraNotification(
+				opts as Parameters<typeof emitIssueThreadInfraNotification>[0],
+				{ store },
+			);
+			const skipped = events.filter(
+				(event) => event.event_type === "issue_thread_infra_notify_skipped",
+			);
+			expect(skipped).toHaveLength(2);
+			expect(skipped[1]?.payload).toMatchObject({ suppressed_count: 4 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("FLY-1995: skipped-audit keys are independent by reason", async () => {
+		const { store, events } = makeStore();
+		const base = {
+			executionId: `fly1995-reasons-${Date.now()}`,
+			thread: undefined,
+		};
+		await emitIssueThreadInfraNotification(
+			infraOpts(base) as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store },
+		);
+		await emitIssueThreadInfraNotification(
+			infraOpts({
+				...base,
+				thread: {
+					thread_id: "T9",
+					channel_id: "C9",
+					lead_id: null,
+					archived_at: null,
+				},
+				botToken: undefined,
+			}) as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store },
+		);
+		expect(
+			events.filter(
+				(event) => event.event_type === "issue_thread_infra_notify_skipped",
+			),
+		).toHaveLength(2);
+	});
+
+	it("FLY-1995: bounds skipped-audit key memory with LRU eviction", async () => {
+		const { store, events } = makeStore();
+		for (let index = 0; index < 1_001; index += 1) {
+			await emitIssueThreadInfraNotification(
+				infraOpts({
+					executionId: `fly1995-lru-${index}`,
+					thread: undefined,
+				}) as Parameters<typeof emitIssueThreadInfraNotification>[0],
+				{ store },
+			);
+		}
+		await emitIssueThreadInfraNotification(
+			infraOpts({
+				executionId: "fly1995-lru-0",
+				thread: undefined,
+			}) as Parameters<typeof emitIssueThreadInfraNotification>[0],
+			{ store },
+		);
+		expect(
+			events.filter(
+				(event) => event.event_type === "issue_thread_infra_notify_skipped",
+			),
+		).toHaveLength(1_002);
+	});
+
 	it("2xx → posted + audit, mentions fully suppressed when no mentionUserId", async () => {
 		const { store, events } = makeStore();
 		const fetchImpl = vi.fn(async () => okJson());

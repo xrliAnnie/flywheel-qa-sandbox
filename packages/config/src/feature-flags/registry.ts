@@ -205,6 +205,26 @@ function flagStoreSite(
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	{
+		name: "loop_profiler",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_LOOP_PROFILER",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-1995: capture bounded Node CPU profiles for Bridge event-loop delay episodes",
+		readSites: [
+			envSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"object_construction",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
 		name: "flag_store",
 		category: "kill_switch",
 		source: "env",

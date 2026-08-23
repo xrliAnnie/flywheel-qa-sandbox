@@ -424,6 +424,8 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
     grep -q "^FLYWHEEL_HOOKS_DIR=${E_SLOT_DIR}/hooks$" "$BE" || { E_OK=0; fail "E/P1-a: FLYWHEEL_HOOKS_DIR not slot-local in Bridge env"; }
     grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${E_SLOT_DIR}/state/complete-failed$" "$BE" \
       || { E_OK=0; fail "E/FLY-1608: complete marker dir not slot-local in Bridge env"; }
+    grep -q "^FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${E_SLOT_DIR}/state/loop-diagnostics$" "$BE" \
+      || { E_OK=0; fail "E/FLY-1995: loop diagnostics dir not slot-local in Bridge env"; }
     grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${E_SLOT_DIR}/state/delivery-secret$" "$BE" \
       || { E_OK=0; fail "E/FLY-1663: Bridge delivery secret path not slot-local"; }
     grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$BE" \
@@ -468,6 +470,8 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     || { I_OK=0; fail "I: isolated config did not enable guarded fork-check skip"; }
   grep -q "^FLYWHEEL_COMPLETE_MARKER_DIR=${I_SLOT_DIR}/state/complete-failed$" "$I_SLOT_DIR/bridge-env.txt" \
     || { I_OK=0; fail "I: reply-by-issue Bridge lost complete-marker isolation"; }
+  grep -q "^FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${I_SLOT_DIR}/state/loop-diagnostics$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I: reply-by-issue Bridge lost loop-diagnostics isolation"; }
   grep -q "^TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true$" "$I_SLOT_DIR/bridge-env.txt" \
     || { I_OK=0; fail "I: fixture did not exercise reply-by-issue Bridge branch"; }
   grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$I_SLOT_DIR/bridge-env.txt" \

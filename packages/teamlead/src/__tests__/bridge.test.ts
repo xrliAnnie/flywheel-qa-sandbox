@@ -1,3 +1,5 @@
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
@@ -50,6 +52,90 @@ describe("Bridge scaffold", () => {
 		expect(body.buildMode).toBe("unknown");
 		expect(body.buildSha).toBeNull();
 
+		store.close();
+	});
+
+	it("FLY-1995 exposes stable event-loop health and fail-closed diagnostics auth", async () => {
+		const diagnostics = {
+			healthSnapshot: () => ({ p99_ms: null, max_ms: null, episodes: 0 }),
+			snapshot: () => ({
+				state: "disabled",
+				profiles: ["loop-profile-safe.cpuprofile"],
+			}),
+		};
+
+		const tokenlessStore = await StateStore.create(":memory:");
+		const tokenlessApp = createBridgeApp(
+			tokenlessStore,
+			[],
+			makeConfig(),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ eventLoopAttribution: diagnostics },
+		);
+		const tokenlessBase = await startAndGetUrl(
+			tokenlessApp,
+			"/api/diagnostics/event-loop",
+		);
+		expect((await fetch(tokenlessBase)).status).toBe(503);
+		const tokenlessHealth = await (
+			await fetch(new URL("/health", tokenlessBase))
+		).json();
+		expect(tokenlessHealth.event_loop).toEqual({
+			p99_ms: null,
+			max_ms: null,
+			episodes: 0,
+		});
+		tokenlessStore.close();
+
+		const store = await StateStore.create(":memory:");
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig({
+				apiToken: "master-token",
+				geminiAgentToken: "scoped-token",
+			}),
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ eventLoopAttribution: diagnostics },
+		);
+		const base = await startAndGetUrl(app, "/api/diagnostics/event-loop");
+		expect((await fetch(base)).status).toBe(401);
+		expect(
+			(
+				await fetch(base, {
+					headers: { Authorization: "Bearer scoped-token" },
+				})
+			).status,
+		).toBe(403);
+		const authorized = await fetch(base, {
+			headers: { Authorization: "Bearer master-token" },
+		});
+		expect(authorized.status).toBe(200);
+		expect(await authorized.json()).toEqual(diagnostics.snapshot());
 		store.close();
 	});
 
@@ -609,6 +695,11 @@ describe("Bridge scaffold", () => {
 
 		expect(result.app).toBeDefined();
 		expect(result.store).toBeDefined();
+		expect(
+			existsSync(
+				join(process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR!, "loop-profiles"),
+			),
+		).toBe(true);
 
 		await result.close();
 		closeFn = undefined;

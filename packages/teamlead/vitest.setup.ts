@@ -30,6 +30,10 @@ import { beforeEach } from "vitest";
 beforeEach(() => {
 	const isolatedRoot = mkdtempSync(join(tmpdir(), "flywheel-tl-test-comm-"));
 	process.env.FLYWHEEL_COMM_DIR = isolatedRoot;
+	process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR = join(
+		isolatedRoot,
+		"loop-diagnostics",
+	);
 	// FLY-1309: old Bridge tests send Lead-shaped gate responses without a
 	// synthetic identity lease. Keep their byte-compat path explicit and ensure
 	// they cannot create audit rows in the live ~/.flywheel/lead-lease.db. The
