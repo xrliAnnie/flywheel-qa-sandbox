@@ -63,7 +63,7 @@ export interface GateMarker {
 	message?: string;
 }
 
-/** questionId must be a CommDB uuid — also our path-traversal guard. */
+/** Marker filenames use this strict domain — also our path-traversal guard. */
 const SAFE_QUESTION_ID = /^[a-zA-Z0-9_-]{1,128}$/;
 
 export function defaultGateMarkerDir(
@@ -74,11 +74,17 @@ export function defaultGateMarkerDir(
 	return join(homedir(), ".flywheel", "state", "codex-gates");
 }
 
+function markerPathIfSafe(dir: string, questionId: string): string | undefined {
+	if (!SAFE_QUESTION_ID.test(questionId)) return undefined;
+	return join(dir, `${questionId}.json`);
+}
+
 function markerPath(dir: string, questionId: string): string {
-	if (!SAFE_QUESTION_ID.test(questionId)) {
+	const path = markerPathIfSafe(dir, questionId);
+	if (!path) {
 		throw new Error(`gate-marker: invalid questionId "${questionId}"`);
 	}
-	return join(dir, `${questionId}.json`);
+	return path;
 }
 
 export function writeGateMarker(
@@ -108,8 +114,8 @@ export function readGateMarker(
 	dir: string,
 	questionId: string,
 ): GateMarker | undefined {
-	const p = markerPath(dir, questionId);
-	if (!existsSync(p)) return undefined;
+	const p = markerPathIfSafe(dir, questionId);
+	if (!p || !existsSync(p)) return undefined;
 	try {
 		const raw = JSON.parse(readFileSync(p, "utf-8")) as GateMarker;
 		if (raw.questionId !== questionId) return undefined; // corrupted / mismatched
@@ -226,8 +232,8 @@ export function readAskMarker(
 	dir: string,
 	questionId: string,
 ): AskMarker | undefined {
-	const p = markerPath(askMarkerDir(dir), questionId);
-	if (!existsSync(p)) return undefined;
+	const p = markerPathIfSafe(askMarkerDir(dir), questionId);
+	if (!p || !existsSync(p)) return undefined;
 	try {
 		const raw = JSON.parse(readFileSync(p, "utf-8")) as AskMarker;
 		if (raw.questionId !== questionId) return undefined; // corrupted / mismatched

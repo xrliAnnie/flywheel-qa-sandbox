@@ -11,8 +11,10 @@ import {
 	listGateMarkersForExecution,
 	markGateMarkerAnswered,
 	markGateMarkerAnsweredForExecution,
+	readAskMarker,
 	readGateMarker,
 	removeGateMarker,
+	writeAskMarker,
 	writeGateMarker,
 } from "../gate-marker.js";
 
@@ -55,6 +57,27 @@ describe("gate-marker (FLY-123)", () => {
 		expect(readGateMarker(dir, "nope")).toBeUndefined();
 	});
 
+	it("keeps safe marker reads working and treats out-of-domain ids as missing", () => {
+		const gateId = "11111111-1111-4111-8111-111111111111";
+		writeGateMarker(dir, { ...base, questionId: gateId });
+		expect(readGateMarker(dir, gateId)?.executionId).toBe("exec-1");
+		markGateMarkerAnswered(dir, gateId);
+		expect(readGateMarker(dir, gateId)?.answeredAt).toBeTruthy();
+
+		const askId = "22222222-2222-4222-8222-222222222222";
+		writeAskMarker(dir, {
+			questionId: askId,
+			executionId: "exec-1",
+			vendor: "codex",
+		});
+		expect(readAskMarker(dir, askId)?.executionId).toBe("exec-1");
+
+		for (const questionId of ["turn-wait:waiter:holder:1", "../evil", "a/b"]) {
+			expect(readGateMarker(dir, questionId)).toBeUndefined();
+			expect(readAskMarker(dir, questionId)).toBeUndefined();
+		}
+	});
+
 	it("rejects path-traversal question ids", () => {
 		expect(() =>
 			writeGateMarker(dir, { ...base, questionId: "../evil" }),
@@ -62,6 +85,19 @@ describe("gate-marker (FLY-123)", () => {
 		expect(() => writeGateMarker(dir, { ...base, questionId: "a/b" })).toThrow(
 			/invalid questionId/,
 		);
+		expect(() =>
+			writeGateMarker(dir, {
+				...base,
+				questionId: "turn-wait:waiter:holder:1",
+			}),
+		).toThrow(/invalid questionId/);
+		expect(() =>
+			writeAskMarker(dir, {
+				questionId: "turn-wait:waiter:holder:1",
+				executionId: "exec-1",
+				vendor: "codex",
+			}),
+		).toThrow(/invalid questionId/);
 	});
 
 	it("markGateMarkerAnswered sets answeredAt", () => {

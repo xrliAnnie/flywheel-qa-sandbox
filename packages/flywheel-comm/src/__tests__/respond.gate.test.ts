@@ -17,10 +17,13 @@ function respond(args: RespondArgs): Promise<void> {
 	return rawRespond({ ...args, env: { ...leadEnv, ...args.env } });
 }
 
-function seed(checkpoint?: string): string {
+function seed(checkpoint?: string, id?: string): string {
 	const db = new CommDB(dbPath, true);
 	db.registerSession("exec-1", "runner", "Proj", "issue-1", "lead-x");
-	const qid = db.insertQuestion("exec-1", "lead-x", "ship?", { checkpoint });
+	const qid = db.insertQuestion("exec-1", "lead-x", "ship?", {
+		checkpoint,
+		id,
+	});
 	db.close();
 	return qid;
 }
@@ -130,6 +133,35 @@ describe("respond() fail-closed gate (§11.2)", () => {
 			"/api/founder-consent/runner-gate-response",
 		);
 		// CLI must NOT write — the wrapper owns the write on allow.
+		expect(hasResponse(qid)).toBe(false);
+	});
+
+	it("workflow-gate id completes markerless retirement after a successful bridge route", async () => {
+		const qid = seed("approve_to_ship", "workflow-gate:submission-digest");
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			json: async () => ({ success: true }),
+		})) as unknown as typeof fetch;
+
+		await expect(
+			respond({
+				questionId: qid,
+				fromAgent: "lead-x",
+				answer: "changes requested",
+				dbPath,
+				projectName: "Proj",
+				bridgeUrl: "http://localhost:9999",
+				env: {
+					FLYWHEEL_GATE_MARKER_DIR: join(dir, "markers"),
+					TEAMLEAD_API_TOKEN: "tok",
+				},
+				fetchImpl,
+			}),
+		).resolves.toBeUndefined();
+
+		const init = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0]?.[1];
+		expect(JSON.parse(String(init?.body))).toMatchObject({ questionId: qid });
 		expect(hasResponse(qid)).toBe(false);
 	});
 

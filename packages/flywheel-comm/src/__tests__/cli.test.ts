@@ -520,6 +520,34 @@ globalThis.fetch = async () => {
 			]);
 			expect(result).toContain("Responded to");
 		});
+
+		it("answers a deterministic turn-wait question with exit 0 and a readable response", () => {
+			bindDefaultRunner();
+			const questionId = "turn-wait:runner:holder:3";
+			const db = new CommDB(dbPath);
+			db.insertQuestion("runner", "product-lead", "TURN handoff overdue", {
+				id: questionId,
+			});
+			db.close();
+
+			const result = runCliSafe(
+				[
+					"respond",
+					"--lead",
+					"product-lead",
+					"--db",
+					dbPath,
+					questionId,
+					"Belt inspected; keep waiting.",
+				],
+				{ FLYWHEEL_GATE_MARKER_DIR: join(tmpDir, "markers") },
+			);
+			const answer = runCli(["check", "--db", dbPath, questionId]);
+
+			expect(result.exitCode).toBe(0);
+			expect(result.stdout).toContain(`Responded to ${questionId}`);
+			expect(answer).toBe("Belt inspected; keep waiting.");
+		});
 	});
 
 	describe("DB path resolution", () => {
