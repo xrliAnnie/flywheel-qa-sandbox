@@ -1,0 +1,5 @@
+{"t":"2026-08-20T03:04:57.269Z","dir":"GATEWAY","obj":{"bot":"product-lead-test#9998"}}
+{"t":"2026-08-20T03:04:57.661Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T03:05:00.894Z","dir":"ASKED","obj":{"tMs":4329}}
+{"t":"2026-08-20T03:05:04.836Z","dir":"ASK-DONE","obj":{"tMs":8271}}
+{"t":"2026-08-20T03:06:37.664Z","dir":"RESULT","obj":{"ok":false,"opusPacketsHeard":0,"decoded":null,"firstHeardAfterAskMs":null}}

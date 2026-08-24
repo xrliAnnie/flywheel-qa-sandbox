@@ -1,0 +1,12 @@
+{"t":"2026-08-20T15:40:27.939Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T15:40:28.973Z","dir":"MCP","obj":{"threadId":"01a01fd4-b3c3-7b93-94c8-999e6a429509","name":"lead_actions","status":"failed","error":"MCP client for `lead_actions` failed to start: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response","failureReason":null}}
+{"t":"2026-08-20T15:40:30.389Z","dir":"CODEX","obj":{"state":"realtime started","version":"v3"}}
+{"t":"2026-08-20T15:40:30.390Z","dir":"SDP","obj":{"chars":1500}}
+{"t":"2026-08-20T15:40:31.070Z","dir":"PC","obj":{"state":"connected"}}
+{"t":"2026-08-20T15:40:31.816Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T15:40:32.099Z","dir":"READY","obj":{"msg":"房里可以说话了","通道":"v3","重采样":"没有","runMinutes":4}}
+{"t":"2026-08-20T15:40:32.099Z","dir":"NOTE","obj":{"msg":"v3 是音频驱动的:没有文字触发口,所以不会自己先打招呼 —— 直接对它说话就行"}}
+{"t":"2026-08-20T15:41:03.435Z","dir":"CODEX","obj":{"state":"realtime closed","reason":"error"}}
+{"t":"2026-08-20T15:41:06.256Z","dir":"SPEAKING","obj":{"userId":"1493072948683341976"}}
+{"t":"2026-08-20T15:41:14.016Z","dir":"STREAM-END","obj":{"userId":"1493072948683341976"}}
+{"t":"2026-08-20T15:44:32.105Z","dir":"RESULT","obj":{"issue":"FLY-1911","probe":"任务3 v3 焊进 Discord","startedAt":"2026-08-20T15:40:27.940Z","codexResolved":"/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex","codexSha256":"b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50","probeSha256":"ee37ec7bb05984bb2f345dad4a583df92b4e056bcc45fffb980f5ed935bb6e90","version":"v3","resampling":"无(48k 立体声全程)","gotAnswer":true,"pcState":"connected","开关":{"pacer":true,"jitter":true,"depth":true},"播放缓冲":{"播放缓冲写入帧":12037,"缓冲见底次数":634},"播放器自己的账":{"状态":"playing","播放器漏掉的帧":0,"已播放毫秒":240000},"节拍器":{"上行帧每秒":48.95,"下行帧每秒":48.99,"应为":50,"说明":"低于 50 就说明音频在按慢于真实时间的速度送,会同时造成听错和卡顿"},"ok":true,"roomOpusIn":355,"rtpOut":12000,"rtpIn":1406,"silenceOut":11645,"pcmOutBytes":5399040,"userTranscripts":[],"assistantTranscripts":[],"plans":[],"runs":[],"answers":[],"handoffs":[],"approvals":0,"codexErrors":[],"dcEventKinds":["session.started"]}}

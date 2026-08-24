@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>提示音选一个</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--tx:#1d1d1f;--dim:#86868b;--ac:#007aff}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#000;--card:#1c1c1e;--tx:#f5f5f7;--dim:#98989d}}
+:root[data-theme="dark"]{--bg:#000;--card:#1c1c1e;--tx:#f5f5f7;--dim:#98989d}
+body{background:var(--bg);color:var(--tx);font:16px/1.65 -apple-system,system-ui,sans-serif;margin:0;padding:28px 18px 60px}
+.wrap{max-width:720px;margin:0 auto}
+h1{font-size:26px;margin:0 0 6px}.sub{color:var(--dim);margin:0 0 26px}
+.card{background:var(--card);border-radius:12px;padding:16px 18px;margin:0 0 14px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.hd{display:flex;align-items:center;gap:14px}
+.nm{font-weight:600;font-size:17px;min-width:88px}
+.pl{font:inherit;font-size:15px;padding:8px 18px;border-radius:999px;border:0;background:var(--ac);color:#fff;cursor:pointer}
+.pl:active{opacity:.6}.pl.on{background:#34c759}
+.ds{margin:10px 0 0;color:var(--dim);font-size:14.5px}
+b{color:var(--tx)}
+.note{background:var(--card);border-left:4px solid var(--ac);border-radius:12px;padding:14px 18px;margin:26px 0 0;font-size:14.5px}
+</style></head><body>
+<div class="wrap">
+<h1>提示音,挑一个</h1>
+<p class="sub">上一版你点不响 —— 那一版是把音频塞进网页里,有些浏览器不放。<b>这一版是点一下当场合成的,不用加载任何文件。</b>第一个是现在正在用的那个。</p>
+<div class="card">
+  <div class="hd"><span class="nm">现在这个</span><button class="pl" data-k="cur">▶ 听一下</button></div>
+  <p class="ds">0.20 秒 · 纯正弦、从头到尾一样响。<b>96% 的时间停在满响度上</b> —— 这就是它听起来像「仪器」的原因。放这儿当对照。</p></div>
+<div class="card">
+  <div class="hd"><span class="nm">两声上行</span><button class="pl" data-k="up">▶ 听一下</button></div>
+  <p class="ds">0.51 秒 · 低音接高音,敲一下就衰减,像木琴。性格<b>轻快</b>,读作「我开始了」。</p></div>
+<div class="card">
+  <div class="hd"><span class="nm">两声下行</span><button class="pl" data-k="down">▶ 听一下</button></div>
+  <p class="ds">0.55 秒 · 高音接低音。性格<b>沉稳</b>,读作「收到了」。下行在通知音里最常见,因为不催人。</p></div>
+<div class="card">
+  <div class="hd"><span class="nm">一声软槌</span><button class="pl" data-k="one">▶ 听一下</button></div>
+  <p class="ds">0.42 秒 · 只敲一下,慢慢衰减。<b>存在感最低</b>,嫌打扰就先听这个。</p></div>
+<div class="card">
+  <div class="hd"><span class="nm">五度和音</span><button class="pl" data-k="fifth">▶ 听一下</button></div>
+  <p class="ds">0.52 秒 · 两个音同时响。<b>最像乐器、最不像提示音</b>,也最长。</p></div>
+<div class="card">
+  <div class="hd"><span class="nm">两声轻叩</span><button class="pl" data-k="tap">▶ 听一下</button></div>
+  <p class="ds">0.33 秒 · 极短两下,像用指节敲桌子。<b>几乎不占空间</b>,但也最容易被忽略。</p></div>
+<div class="note"><b>都不到 1 秒。</b>提示音只在它真要去查东西的时候响一次;随口聊两句、它张口就答的那种不会响。<br><br>
+<b>响在哪:</b>你问完之后大约 4 秒。它想事情通常要 20 到 40 秒,以前那段时间是完全安静的。<br><br>
+告诉 Honey Lemon 你要哪个,或者都不要。<b>要是这一版还是不响,也请告诉她 —— 那说明问题不在音频本身。</b><br><br><span id="diag" style="font-size:13px;opacity:.75">还没点过</span></div>
+</div>
+<script>
+const SR=48000;
+function mallet(ctx,buf,off,f,ms,decay,amp){
+  const n=Math.round(SR*ms/1000), d=buf.getChannelData(0);
+  for(let i=0;i<n && off+i<d.length;i++){
+    const t=i/SR, env=Math.exp(-decay*t);
+    d[off+i]+=(Math.sin(2*Math.PI*f*t)+0.28*Math.sin(2*Math.PI*4*f*t)*Math.exp(-decay*2.2*t))*env*amp;
+  }
+  return off+n;
+}
+const RECIPES={
+  cur:(ctx,b)=>{const n=Math.round(SR*0.2),d=b.getChannelData(0),fd=Math.round(SR*0.015);
+    for(let i=0;i<n;i++){let g=1;if(i<fd)g=i/fd;else if(i>n-fd)g=(n-i)/fd;d[i]=Math.sin(2*Math.PI*880*i/SR)*0.18*g;}},
+  up:(ctx,b)=>{let o=mallet(ctx,b,0,659.25,130,18,0.32);mallet(ctx,b,o,987.77,380,18,0.32);},
+  down:(ctx,b)=>{let o=mallet(ctx,b,0,783.99,130,18,0.32);mallet(ctx,b,o,523.25,420,18,0.32);},
+  one:(ctx,b)=>{mallet(ctx,b,0,880,420,16,0.28);},
+  fifth:(ctx,b)=>{mallet(ctx,b,0,523.25,520,11,0.20);mallet(ctx,b,0,783.99,520,11,0.14);},
+  tap:(ctx,b)=>{let o=mallet(ctx,b,0,1046.5,55,55,0.22);o+=Math.round(SR*0.045);mallet(ctx,b,o,1046.5,180,55,0.22);}
+};
+const LEN={cur:0.20,up:0.51,down:0.55,one:0.42,fifth:0.52,tap:0.33};
+let ctx=null;
+document.querySelectorAll(".pl").forEach(btn=>btn.addEventListener("click",()=>{
+  try{
+    ctx=ctx||new (window.AudioContext||window.webkitAudioContext)();
+    if(ctx.state==="suspended") ctx.resume();
+    const k=btn.dataset.k, b=ctx.createBuffer(1,Math.ceil(SR*(LEN[k]+0.02)),SR);
+    RECIPES[k](ctx,b);
+    const s=ctx.createBufferSource(); s.buffer=b; s.connect(ctx.destination); s.start();
+    // 状态留着不撤:① 她能看出自己听过哪几个 ② 出问题时那行字还在,能直接念给我们
+    btn.classList.add("on"); btn.textContent="♪ 再听一次";
+    document.getElementById("diag").textContent="音频引擎:"+ctx.state+" · 采样率 "+ctx.sampleRate;
+  }catch(e){ btn.textContent="✕ 放不出"; btn.style.background="#ff3b30";
+    document.getElementById("diag").textContent="出错了,请把这行念给 Honey Lemon:"+(e&&e.name||"")+" "+(e&&e.message||e); }
+}));
+</script>
+</body></html>

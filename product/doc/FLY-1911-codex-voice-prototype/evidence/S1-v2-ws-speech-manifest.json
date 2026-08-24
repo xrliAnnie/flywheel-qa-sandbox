@@ -1,0 +1,52 @@
+{
+  "issue": "FLY-1911",
+  "probe": "speak — does it actually produce audio?",
+  "startedAt": "2026-08-19T18:58:16.282Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "eb25964d06370a113106f083a80a99cf8987090bed66e53a17bd93427353f856",
+  "params": {
+    "version": "v2",
+    "voice": "marin",
+    "outputModality": "audio",
+    "transport": "websocket",
+    "mode": "appendSpeech"
+  },
+  "sayText": "你好 Annie，我是 Codex。现在你听到的这句话，是我真的说出来的。",
+  "cliUserAgent": "fly1911-speak/0.148.0 (Mac OS 26.6.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1911-speak; 0.0.1)",
+  "threadId": "01a01b63-7033-7f80-9f95-a5c35eabad48",
+  "startOutcome": {
+    "outcome": "started",
+    "waitedMs": 2474,
+    "message": null,
+    "version": "v2"
+  },
+  "result": {
+    "admitted": true
+  },
+  "audio": {
+    "chunks": 10,
+    "path": "S1-v2-ws-speech.wav",
+    "bytes": 189600,
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "durationSec": 3.95,
+    "firstAudioLatencyMs": 610
+  },
+  "transcripts": [
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "你好呀！很高兴和你聊天。有什么需要帮忙的吗？",
+      "tMs": 4317
+    }
+  ],
+  "transcriptDeltaCount": 16,
+  "finishedAt": "2026-08-19T18:58:25.388Z"
+}

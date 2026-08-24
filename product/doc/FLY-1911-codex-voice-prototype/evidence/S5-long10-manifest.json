@@ -1,0 +1,91 @@
+{
+  "issue": "FLY-1911",
+  "probe": "barge-in + long session",
+  "startedAt": "2026-08-19T19:07:38.328Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "49193745ba6681ffcb429182d410098726cae9a44d8ac3ff5db063701ce535f9",
+  "params": {
+    "version": "v2",
+    "voice": "marin",
+    "holdMinutes": 10
+  },
+  "threadId": "01a01b6c-050f-76d0-936c-e6c9fc9c6cb9",
+  "startOutcome": {
+    "outcome": "started",
+    "version": "v2",
+    "waitedMs": 3371
+  },
+  "bargein": {
+    "sawAudio": true,
+    "firstAudioMs": 4498,
+    "chunksBefore": 27,
+    "chunksAtBarge": 31,
+    "lastOutputAudioAfterBargeMs": 217
+  },
+  "longSession": {
+    "heldMinutes": 10.4,
+    "pings": [
+      {
+        "ping": 1,
+        "atMinute": 2.1,
+        "replied": true,
+        "firstAudioLatencyMs": 649
+      },
+      {
+        "ping": 2,
+        "atMinute": 4.2,
+        "replied": true,
+        "firstAudioLatencyMs": 621
+      },
+      {
+        "ping": 3,
+        "atMinute": 6.3,
+        "replied": true,
+        "firstAudioLatencyMs": 678
+      },
+      {
+        "ping": 4,
+        "atMinute": 8.4,
+        "replied": true,
+        "firstAudioLatencyMs": 774
+      }
+    ],
+    "closedEvent": null,
+    "errorEvents": [],
+    "totalAudioChunks": 51
+  },
+  "transcriptDone": [
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "当然可以，我会尽量慢慢说，让你充分了解我的能力。我是一位多功能的智能助手，能够帮助你处理各种日常和工作任务，比如管理和编辑你的文档、表格",
+      "tMs": 7271
+    },
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "在的，放心。",
+      "tMs": 128784
+    },
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "还在呢，有什么需要帮忙的尽管说。",
+      "tMs": 253846
+    },
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "我在的，请继续。",
+      "tMs": 378623
+    },
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "一直在，放心吧。",
+      "tMs": 503069
+    }
+  ],
+  "finishedAt": "2026-08-19T19:18:08.265Z"
+}

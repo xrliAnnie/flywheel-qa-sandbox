@@ -1,0 +1,180 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Codex 语音·最终结论</title>
+<style>
+:root{--bg:#f5f5f7;--c:#fff;--ink:#1d1d1f;--dim:#86868b;--b:#007aff;--g:#34c759;--r:#ff3b30;--a:#ff9500;--p:#af52de}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 -apple-system,system-ui,sans-serif}
+.w{max-width:880px;margin:0 auto;padding:26px 18px 90px}
+h1{font-size:27px;margin:0 0 6px;line-height:1.3}
+.sub{color:var(--dim);font-size:14px;margin-bottom:14px}
+.card{background:var(--c);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:17px 20px;margin:13px 0;border-left:4px solid var(--b)}
+.card h2{font-size:18px;margin:0 0 9px;line-height:1.4}
+.g{border-left-color:var(--g)}.r{border-left-color:var(--r)}.a{border-left-color:var(--a)}.p{border-left-color:var(--p)}
+p{margin:7px 0}ul{margin:7px 0;padding-left:21px}li{margin:4px 0}
+.dim{color:var(--dim);font-size:14px}.bad{color:var(--r)}.good{color:#1a7f37}.warnt{color:#8a5a00}
+.ask{background:#f0f6ff;border-radius:8px;padding:10px 12px;margin-top:11px}
+.hot{background:#fff5f5;border-radius:8px;padding:10px 12px;margin-top:11px}
+table{border-collapse:collapse;width:100%;margin:8px 0;font-size:14.5px}
+th,td{border:1px solid #e8e8ed;padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#fafafa;color:var(--dim);font-size:13.5px;font-weight:600}
+.cmt{margin-top:13px;border-top:1px solid #f0f0f2;padding-top:9px}.cmt label{font-size:13px;color:var(--dim)}
+textarea{width:100%;font:inherit;font-size:15px;padding:8px;border:1px solid #e0e0e5;border-radius:8px;resize:vertical;margin-top:4px}
+.sum{background:var(--c);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin-top:20px;border-left:4px solid var(--g)}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:11px 18px;background:var(--b);color:#fff;cursor:pointer}
+pre{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px;white-space:pre-wrap;font:13px/1.6 'SF Mono',monospace;max-height:230px;overflow:auto}
+code{background:#f3f3f5;border-radius:4px;padding:1px 5px;font:13.5px 'SF Mono',monospace}
+.tl{border-left-color:var(--a);background:#fffdf7}
+</style></head><body><div class="w">
+
+<h1>Codex 语音:它真的会说、会听、会干活 —— 但有两件事得你先知道</h1>
+<div class="sub">FLY-1911 可行性验证 · 最终结论 · 2026-08-20</div>
+
+<div class="card tl">
+<p style="margin:0 0 6px"><b>这单只回答一个问题:你说要换 Codex,理由是「它已经具备说话的能力了」——那句理由到底成不成立?</b></p>
+<p style="margin:0" class="dim">不是要翻你的决定。是不让「它已经会说话」在没人核过的情况下,变成后面所有文档里没人敢质疑的前提。</p>
+<p style="margin:8px 0 0"><b>答案:成立。而且你自己在 Discord 房里跟它聊过 13 轮,它真的去干了活。</b></p>
+</div>
+
+<section class="card g"><h2>1. 六件事,一件一件验过了</h2>
+<table>
+<tr><th style="width:30%">要验的</th><th style="width:14%">结果</th><th>实际看到的</th></tr>
+<tr><td>它真的出声</td><td class="good"><b>过</b></td><td>录到 31.7 秒真实语音,不是静音文件</td></tr>
+<tr><td>它真的听懂</td><td class="warnt"><b>大部分过</b></td><td>机器合成音它逐字听对;<b>你本人真说话时,13 句里有 4 句转写出来不成话</b></td></tr>
+<tr><td>你插话它停口</td><td class="good"><b>过</b></td><td>150 / 217 毫秒停口,两次独立测</td></tr>
+<tr><td>能聊久一点不掉线</td><td class="good"><b>过</b></td><td>连聊 10 分钟零故障;另外单独测了 <b>30 分钟一句话不说</b>,也没断</td></tr>
+<tr><td>一整圈走通</td><td class="good"><b>过</b></td><td>你说一句 → 它去 GitHub 真查 → 用中文念答案回来,<b>数字我独立核过,是对的</b></td></tr>
+<tr><td>收音那半归谁</td><td class="good"><b>Codex 自己能扛</b></td><td>嘴和耳都不用找别家,你关掉的那个分叉是对的</td></tr>
+</table>
+<p class="ask"><b>判定:这条路做得成。</b>下一步是交给 Tadashi 做成真产品。<b>本单不写生产代码</b>,做的都是一次性的验证脚本。</p>
+<div class="cmt"><label>这一段你的意见(没有就空着):</label><textarea data-k="s1" data-t="六件事验过了" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card a"><h2>2. 你自己那一场,暴露的三件事</h2>
+<p class="dim">2026-08-20 凌晨你进 Discord 房聊了 13 轮,全程有逐字记录。</p>
+<ul>
+<li><b>那 60 秒的沉默你受不了 —— 这是你的体验说的,不是我们推的。</b><br>
+你说「好呀」让它去查,<b>它整整 101 秒一句话没说</b>,是你自己忍不住问「你很慢,怎么没说呢呀?」它才开口。<br>
+<span class="bad">要说准一点:我们其实<b>不知道</b>它自己会不会开口</span> —— 那句是被你的抱怨触发的。<b>101 秒是你的忍耐上限,不是它的反应速度。</b></li>
+<li><b>你说它「声音有点卡顿」</b> —— 大概率是<b>我这边</b>的音频管线,不是 Codex。后来查出一个真缺陷(音频一直按真实速度的 80% 在送,已修)。<br>
+<span class="warnt">但老实说:修完之后<b>还卡不卡,只有你能听</b>。我听不见,不替你判。</span></li>
+<li><b>它真的干活了。</b>你问「你知道我在哪个项目里吗」,它自己去查,答:「你现在在做 FLY-1911 的 Codex 语音端到端原型…」</li>
+</ul>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="s2" data-t="你自己那一场" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card g"><h2>3. 那段死寂,后来解掉了一半</h2>
+<p>换到另一条通道之后,它会<b>先应你一声</b>再去干活:</p>
+<table>
+<tr><th>你问完之后</th><th>发生了什么</th></tr>
+<tr><td><b>1.76 秒</b></td><td>它开口了(先应一声,说「我看一下,稍等」这类)</td></tr>
+<tr><td>约 9 秒</td><td>这句应声说完</td></tr>
+<tr><td class="bad"><b>接下来 34 秒</b></td><td class="bad"><b>还是完全没声音</b> —— 它在后台真干活</td></tr>
+<tr><td>45 秒</td><td>正式答案念出来</td></tr>
+</table>
+<p class="hot"><b>所以:开头那段死寂解掉了,中间干活那段的沉默还在。</b>别把「1.76 秒」读成「它 1.76 秒就答你」。</p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="s3" data-t="死寂解掉了一半" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card p"><h2>4. 一个好消息:你要的「让我知道你在干活」,不用做,本来就有</h2>
+<p>你干等的那一分钟里,<b>它其实一直在往外报进度,是我们自己把这些信号扔掉了。</b>从你问完那一刻起算:</p>
+<table>
+<tr><th style="width:22%">距你问完</th><th>它在报什么</th></tr>
+<tr><td>4.0 秒</td><td>决定要去干活了,并带着<b>它听到的原话</b></td></tr>
+<tr><td><b>7.8 秒</b></td><td><b>用中文写下它打算干什么</b>:「我去 GitHub 实时查 Flywheel 仓库当前还开着的 PR,按『尚未合并』口径给你准确数量。」</td></tr>
+<tr><td>12.3 秒</td><td>命令开始跑了</td></tr>
+<tr><td>57.9 秒</td><td>它才开口说话</td></tr>
+</table>
+<p class="ask">⭐ 那句 7.8 秒的中文<b>本身就是一句现成的、内容准确的应声</b> —— 比「我看一下,稍等」有信息量得多。<br>
+<span class="dim">(这只是记下来的一条可能性,本单没做。)</span></p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="s4" data-t="进度信号本来就有" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card r"><h2>5. 🔴 两件产品硬前提 —— 不是优化项,是不做就出事</h2>
+<p><b>第一件:麦克风不能停。</b></p>
+<ul>
+<li>实测:<b>一停止送音频,大约 25 秒后会话就被服务端关掉了</b>;持续送静音帧,会话活了 170 秒,另一次活了 <b>30 分钟</b>。</li>
+<li>意思是:<b>「安静」必须实现成「一直送静音」,不能实现成「不送」。</b></li>
+<li>为什么这条对你重要:<b>人不会一直说话。</b>你开车、想事情、等它干活,都是安静的。这条做错了,你每次安静超过半分钟,它就自己断了 —— 而你那边看到的只是「它突然不理我了」。</li>
+</ul>
+<p style="margin-top:14px"><b>第二件:它会先说一句「搞定了」,然后数字是错的。</b></p>
+<table>
+<tr><th style="width:18%">时刻</th><th>发生了什么</th></tr>
+<tr><td>07:36:32</td><td>它说:<b>「搞定了,刚查了 GitHub,Flywheel 仓库现在有 4 个还没合并的 PR。」</b></td></tr>
+<tr><td>07:36:46</td><td class="dim">← 它这时候<b>还在跑</b>查询命令</td></tr>
+<tr><td>07:37:14</td><td>后台真正的答案才回来:<b>42 个</b></td></tr>
+<tr><td>07:37:28</td><td>它才改口说 42 个</td></tr>
+</table>
+<p class="hot">⚠️ <b>这正好踩在你划的那条线上</b> —— 你说「听错词可以接受,搞错单号不行」。<br>
+<b>一个说得很确定的错数字,比一个听错的词危险得多,因为你没有任何办法知道那是临时的。</b><br>
+<span class="dim">而且这两件是同一个能力的两面:那个能填掉开头死寂的本事,同时也给了它替后台先编一个答案的空间。<b>收益和这个代价必须一起摆。</b></span></p>
+<p class="dim">频率我<b>刻意没测</b> —— 你那条线是绝对的不是概率的,存在一次就够定性了。频率决定的是「多急」,不是「算不算问题」。</p>
+<div class="cmt"><label>这一段你的意见(尤其:这条风险你打算怎么兜?):</label><textarea data-k="s5" data-t="两件产品硬前提" rows="3" placeholder="写在这里"></textarea></div></section>
+
+<section class="card a"><h2>6. 「装上就能用」吗?—— 得拆成两句说</h2>
+<p class="dim">你说过:「我不希望我们写着说可以用这个东西,最后大家去用发现都用不了。」这一条我专门去验了。</p>
+<table>
+<tr><th style="width:34%">对谁</th><th>能不能用</th></tr>
+<tr><td><b>对我们</b>(愿意自己写一层接线)</td><td class="good"><b>能</b> —— 今晚跑通的就是用命令行版本,不是 App;而且我上报的客户端名字是<b>我自己随便编的</b>,服务端照样放行 ⇒ 没有「只有 App 能用」这回事</td></tr>
+<tr><td><b>对「装上就想用」的人</b></td><td class="bad"><b>不能</b> —— 帮助文档里根本没有语音相关的命令,开关标着「开发中、默认关闭」,还得自己写一套音频客户端</td></tr>
+</table>
+<p class="ask">⇒ 所以 PRD 里<b>不能只写「用 Codex 的原生语音能力」</b>就完事,必须写明:<b>这条路要我们自己维护一个客户端,而且挂在两个实验性开关上,协议随时可能变。</b></p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="s6" data-t="装上就能用吗" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card"><h2>7. 仍然挂着的四件(没有一件是「验不了」)</h2>
+<table>
+<tr><th style="width:30%">挂着的</th><th>为什么挂着</th></tr>
+<tr><td><b>「像不像人」</b></td><td><b>这一栏永远是你的,我听不见。</b>你听完那 14 秒说「V3 感觉效果也不是很真,真正 Codex 聊天的效果会更好」——<b>我先前那条『App 走的就是这条路』是我推的,已经被你这句否掉了。</b>你说要录一段 App 的真实对话给我,那是目前唯一能把这件事从猜变成测的路子。</td></tr>
+<tr><td><b>录音默认不录</b></td><td>这是产品决定不只是当晚的处置:<b>凡是「房里多一个会记录的东西」,默认必须是关的,开是你开。</b>代价是我永远没法核对你真实语音的听错率 —— <b>这个代价是对的,别当缺陷去修。</b></td></tr>
+<tr><td><b>你还欠我半句话</b></td><td>你说「字听错可以接受」——收到了。但那一问是两半的:<b>这个「可以接受」,包不包括「它拿听错的名字,去动了错的东西」?</b><br>在你答之前,<b>任何文档里都不会写成「错单风险她已接受」。</b></td></tr>
+<tr><td><b>是不是所有 Lead 都换 Codex</b></td><td><b>没验。</b>本单只验了语音这一条,没碰这个问题。</td></tr>
+</table>
+<div class="cmt"><label>这一段你的意见(特别是那半句):</label><textarea data-k="s7" data-t="仍然挂着的四件" rows="3" placeholder="写在这里"></textarea></div></section>
+
+<section class="card"><h2>8. 要你拍的</h2>
+<p class="ask"><b>这条路做得成 —— 你同意把它交给 Tadashi 做成真产品吗?</b><br>
+<span class="dim">如果哪里让你觉得还不行,写在下面;我不替你倾向。</span></p>
+<div class="cmt"><label>你的答复:</label><textarea data-k="s8" data-t="要你拍的:交 Tadashi 产品化?" rows="3" placeholder="写在这里"></textarea></div></section>
+
+<div class="sum"><h2 style="font-size:18px;margin:0 0 8px">写完之后怎么办</h2>
+<p style="margin:0 0 8px"><b>如果你没有意见、就是通过</b> —— <b>不用点下面的按钮</b>,直接在 Discord 那张卡片下面回一句 <code>approve</code>,或者给卡片点一个 ✅ 就行。</p>
+<p class="dim" style="margin:0 0 10px">如果你在上面写了字:页面上的字<b>不会自动传回来</b>,得点下面这个按钮复制,再粘回 issue 里我才收得到。</p>
+<button id="cp">一键汇总复制</button> <span id="st" class="dim"></span><pre id="pv">(还没写)</pre></div>
+
+</div><script nonce="__CSP_NONCE__">
+var MARK='【页面意见汇总】FLY-1911';
+var LIM=1800;
+var T=[].slice.call(document.querySelectorAll('textarea'));
+var chunks=[],idx=0;
+T.forEach(function(x){var k='fly1911v:'+x.dataset.k;
+  try{var v=localStorage.getItem(k);if(v)x.value=v}catch(e){}
+  x.addEventListener('input',function(){try{localStorage.setItem(k,x.value)}catch(e){}build()})});
+function blocks(){var o=[];T.forEach(function(x){if(x.value.trim())o.push('【'+x.dataset.t+'】\n'+x.value.trim())});return o}
+function build(){
+  var b=blocks(),out=[],cur='';
+  for(var i=0;i<b.length;i++){
+    var piece=b[i];
+    var cand=cur?cur+'\n\n'+piece:MARK+'\n'+piece;
+    if(cur&&cand.length>LIM){out.push(cur);cur=MARK+'\n'+piece;}
+    else{cur=cand;}
+  }
+  if(cur)out.push(cur);
+  chunks=out;if(idx>=chunks.length)idx=0;
+  var pv=document.getElementById('pv'),cp=document.getElementById('cp');
+  if(!chunks.length){pv.textContent='(还没写)';cp.textContent='一键汇总复制';return}
+  pv.textContent=chunks[idx];
+  cp.textContent=chunks.length>1?('复制第 '+(idx+1)+'/'+chunks.length+' 段'):'一键汇总复制';
+}
+document.getElementById('cp').addEventListener('click',function(){
+  var st=document.getElementById('st');
+  if(!chunks.length){st.textContent='还没写东西';return}
+  var s=chunks[idx];
+  function done(ok){
+    if(!ok){st.textContent='复制没成功 — 请手动选中下面框里的字复制';return}
+    if(chunks.length>1){
+      var n=idx+1;
+      if(n<chunks.length){st.textContent='第 '+(idx+1)+' 段复制好了 — 粘回 issue 后再点一次复制下一段';idx=n;}
+      else{st.textContent='最后一段复制好了 — 粘回 issue 就行';idx=0;}
+      build();
+    }else{st.textContent='复制好了，粘回 issue 就行';}
+  }
+  function fb(){try{var a=document.createElement('textarea');a.value=s;document.body.appendChild(a);a.select();
+    var ok=document.execCommand('copy');document.body.removeChild(a);done(ok)}catch(e){done(false)}}
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(function(){done(true)},fb)}else fb();
+});
+build();
+</script></body></html>

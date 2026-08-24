@@ -1,0 +1,12 @@
+{"t":"2026-08-19T23:18:29.067Z","dir":">>","obj":{"i":1,"me":"initialize","pa":{"clientInfo":{"name":"fly1911-v3","title":"v3 probe","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}}
+{"t":"2026-08-19T23:18:29.372Z","dir":">>","obj":{"i":2,"me":"thread/start","pa":{}}}
+{"t":"2026-08-19T23:18:29.764Z","dir":">>","obj":{"i":3,"me":"thread/realtime/start","pa":{"threadId":"01a01c51-aafe-7681-a602-087400e451fc","transport":{"type":"webrtc","sdp":"<redacted>"},"outputModality":"audio","voice":"cove","version":"v3","delegationAckFiller":true,"codexResponseHandoffMode":"thinking","realtimeStartInstructions":"你必须始终使用中文回答,无论用户用什么语言提问。回答简短口语化。"}}}
+{"t":"2026-08-19T23:18:30.446Z","dir":"<<","obj":{"method":"thread/realtime/started","p":"v3","sinceAskMs":null}}
+{"t":"2026-08-19T23:18:30.464Z","dir":"START","obj":{"outcome":"started","version":"v3"}}
+{"t":"2026-08-19T23:18:30.967Z","dir":">>","obj":{"i":4,"me":"thread/realtime/appendText","pa":{"threadId":"01a01c51-aafe-7681-a602-087400e451fc","text":"今天 Flywheel 有几个 PR 还没合并?","role":"user"}}}
+{"t":"2026-08-19T23:19:02.607Z","dir":"ERR","obj":"2026-08-19T23:19:02.607592Z ERROR codex_api::endpoint::realtime_websocket::methods: realtime websocket receive failed: WebSocket protocol error: Connection reset without closing handshake"}
+{"t":"2026-08-19T23:19:02.608Z","dir":"ERR","obj":"2026-08-19T23:19:02.607758Z ERROR codex_api::endpoint::realtime_websocket::methods: realtime websocket read failed: WebSocket protocol error: Connection reset without closing handshake\n2026-08-19T23:19:02.607792Z ERROR codex_core::realtime_conversation: realtime stream closed: stream disconnected be"}
+{"t":"2026-08-19T23:19:02.608Z","dir":"<<","obj":{"method":"thread/realtime/error","p":"stream disconnected before completion: failed to read websocket message: WebSocket protocol error: Connection reset without closing handshake","sinceAskMs":31641}}
+{"t":"2026-08-19T23:19:02.608Z","dir":"<<","obj":{"method":"thread/realtime/closed","p":null,"sinceAskMs":31641}}
+{"t":"2026-08-19T23:21:01.115Z","dir":">>","obj":{"i":5,"me":"thread/realtime/stop","pa":{"threadId":"01a01c51-aafe-7681-a602-087400e451fc"}}}
+{"t":"2026-08-19T23:21:01.117Z","dir":"<<","obj":{"method":"thread/realtime/closed","p":null,"sinceAskMs":150150}}

@@ -1,0 +1,26 @@
+{
+ "issue": "FLY-1911",
+ "probe": "任务3 v3 焊进 Discord",
+ "startedAt": "2026-08-24T01:48:22.504Z",
+ "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+ "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+ "probeSha256": "26069cc521508676e1ddae70af21730770ec3bcab11acd61e0946cb893035734",
+ "version": "v2",
+ "播放缓冲": {
+  "播放缓冲写入帧": 6080,
+  "缓冲见底次数": 320
+ },
+ "播放器自己的账": {
+  "状态": "playing",
+  "播放器漏掉的帧": 0,
+  "已播放毫秒": 121200
+ },
+ "节拍器": {
+  "上行帧每秒": 0,
+  "下行帧每秒": 48.97,
+  "达标线": 47.5,
+  "说明": "逐字听对的臂全部≥47.9,听错的臂≤43.7;真边界未量,线贴好的一侧。低于47.5会造成听错(卡顿另判)"
+ },
+ "ok": true,
+ "结论": null
+}

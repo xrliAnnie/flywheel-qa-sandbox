@@ -1,0 +1,11 @@
+{"t":"2026-08-19T19:05:14.805Z","dir":">>","obj":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"fly1911-bargein","title":"FLY-1911 barge-in probe","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}}
+{"t":"2026-08-19T19:05:15.137Z","dir":">>","obj":{"id":2,"method":"thread/start","params":{}}}
+{"t":"2026-08-19T19:05:15.431Z","dir":">>","obj":{"id":3,"method":"thread/realtime/start","params":{"threadId":"01a01b69-d28a-7de0-87fe-6df318f71c6e","transport":{"type":"websocket"},"outputModality":"audio","voice":"marin","version":"v2"}}}
+{"t":"2026-08-19T19:05:17.511Z","dir":"<<","obj":{"method":"thread/realtime/started","params":{"threadId":"01a01b69-d28a-7de0-87fe-6df318f71c6e","realtimeSessionId":"01a01b69-d28a-7de0-87fe-6df318f71c6e","version":"v2"},"emittedAtMs":1787166317510}}
+{"t":"2026-08-19T19:05:17.925Z","dir":">>","obj":{"id":4,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b69-d28a-7de0-87fe-6df318f71c6e","text":"请你用一整段话,慢慢地、详细地介绍一下你自己能帮我做什么,至少说三十秒,不要停。"}}}
+{"t":"2026-08-19T19:05:21.393Z","dir":"BARGE-IN","obj":{"at":5962,"audioChunksSoFar":33}}
+{"t":"2026-08-19T19:05:21.615Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"好的，让我慢慢来介绍一下我能帮你做什么。我是一个多功能的智能助理，可以陪你聊天、解答问题、帮你安排日程、提醒重要事项，还能协助处理各种文档、表格和演示文稿，从编辑到","tMs":6184}}
+{"t":"2026-08-19T19:05:22.305Z","dir":"BARGE-RESULT","obj":{"sawAudio":true,"firstAudioMs":3417,"chunksBefore":33,"chunksAtBarge":36,"lastOutputAudioAfterBargeMs":150}}
+{"t":"2026-08-19T19:06:22.307Z","dir":">>","obj":{"id":14,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b69-d28a-7de0-87fe-6df318f71c6e","text":"第 1 次确认,你还在吗?简短回一句。"}}}
+{"t":"2026-08-19T19:06:23.024Z","dir":"PING","obj":{"ping":1,"atMinute":1.1,"replied":true,"firstAudioLatencyMs":696}}
+{"t":"2026-08-19T19:06:23.419Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"在的，我还在呢—随时准备继续帮忙！","tMs":67988}}

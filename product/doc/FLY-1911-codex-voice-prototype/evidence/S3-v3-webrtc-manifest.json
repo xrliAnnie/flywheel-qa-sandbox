@@ -1,0 +1,44 @@
+{
+  "issue": "FLY-1911",
+  "probe": "speak — does it actually produce audio?",
+  "startedAt": "2026-08-19T19:03:43.047Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "eb25964d06370a113106f083a80a99cf8987090bed66e53a17bd93427353f856",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "outputModality": "audio",
+    "transport": "webrtc",
+    "mode": "appendSpeech"
+  },
+  "sayText": "报一下现在的状态。",
+  "cliUserAgent": "fly1911-speak/0.148.0 (Mac OS 26.6.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1911-speak; 0.0.1)",
+  "threadId": "01a01b68-6d52-7842-8c7f-b659d53a0055",
+  "sdpOffer": {
+    "chars": 911,
+    "sha256": "cb3bc23fa1ed87635a9892f46fa7c7abd4413423a45b7a47aab8ad19228c35ef"
+  },
+  "startOutcome": {
+    "outcome": "started",
+    "waitedMs": 3790,
+    "message": null,
+    "version": "v3"
+  },
+  "result": {
+    "admitted": true
+  },
+  "audio": {
+    "chunks": 0,
+    "firstAudioLatencyMs": null
+  },
+  "transcripts": [],
+  "transcriptDeltaCount": 0,
+  "finishedAt": "2026-08-19T19:04:05.270Z"
+}

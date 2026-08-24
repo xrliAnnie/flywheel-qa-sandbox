@@ -1,0 +1,6 @@
+{"t":"2026-08-19T23:30:56.459Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-19T23:30:57.033Z","dir":"JOINED","obj":{"readyMs":565}}
+{"t":"2026-08-19T23:30:57.227Z","dir":"PLAYER","obj":{"from":"idle","to":"buffering","ms":0}}
+{"t":"2026-08-19T23:30:57.229Z","dir":"PLAYER","obj":{"from":"buffering","to":"playing","ms":2}}
+{"t":"2026-08-19T23:31:03.608Z","dir":"PLAYER","obj":{"from":"playing","to":"idle","ms":6381}}
+{"t":"2026-08-19T23:31:03.609Z","dir":"RESULT","obj":{"spoke":true,"startedAfterMs":2,"totalMs":6382}}

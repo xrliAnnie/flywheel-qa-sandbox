@@ -1,0 +1,10 @@
+#!/bin/zsh
+# FLY-1911 实验 A:分身的 merge 闸。⛔ merge 进 main 是 founder 门,不许它自己按。
+# 其余 gh 子命令原样放行(别把「不能 merge」做成「gh 全废」)。
+REAL="/opt/homebrew/bin/gh"
+if [[ "$1" == "pr" && ( "$2" == "merge" || "$2" == "ready" ) ]]; then
+  print -u2 "⛔ 被拦下:merge 进 main 是 founder 的门,你不能自己按(FLY-1911 实验 A 的硬闸)。"
+  print -u2 "   要合并请【请求】Honey Lemon 本人执行:说清是哪个 PR、为什么该合。"
+  exit 77
+fi
+exec "$REAL" "$@"

@@ -1,0 +1,12 @@
+{"t":"2026-08-20T03:37:10.512Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T03:37:13.777Z","dir":"CODEX","obj":{"state":"realtime started","version":"v2"}}
+{"t":"2026-08-20T03:37:14.826Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T03:37:14.963Z","dir":"PLAYER","obj":{"from":"idle","to":"buffering"}}
+{"t":"2026-08-20T03:37:14.963Z","dir":"READY","obj":{"msg":"房里可以说话了","runMinutes":30}}
+{"t":"2026-08-20T03:37:14.968Z","dir":"PLAYER","obj":{"from":"buffering","to":"playing"}}
+{"t":"2026-08-20T03:37:18.063Z","dir":"TX","obj":{"role":"assistant","text":"欢迎上线！有啥想聊的，或者需要我帮忙的，尽管说哦。"}}
+{"t":"2026-08-20T03:52:25.431Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T03:52:29.623Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306","heardChunks":156}}
+{"t":"2026-08-20T03:52:30.525Z","dir":"TX","obj":{"role":"user","text":"有人在吗?"}}
+{"t":"2026-08-20T03:52:32.031Z","dir":"TX","obj":{"role":"assistant","text":"在呢！有什么需要帮忙的吗？"}}
+{"t":"2026-08-20T04:07:16.229Z","dir":"RESULT","obj":{"ok":true,"heardChunks":156,"heardBytes":149760,"spokeChunks":35,"spokeBytes":645600,"userTranscripts":["有人在吗?"],"assistantTranscripts":["欢迎上线！有啥想聊的，或者需要我帮忙的，尽管说哦。","在呢！有什么需要帮忙的吗？"],"approvals":0,"codexErrors":[]}}

@@ -1,0 +1,77 @@
+{
+  "issue": "FLY-1911",
+  "probe": "v3 full webrtc handshake",
+  "startedAt": "2026-08-20T02:24:58.073Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "161b77f425d3b2caf752087e80e3e5317b44db73ad1aa3bfbca8c2f8b9cf5eb2",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "delegationAckFiller": true,
+    "codexResponseHandoffMode": "thinking"
+  },
+  "ask": "今天 Flywheel 有几个 PR 还没合并?",
+  "threadId": "01a01cfc-675a-7053-bb44-bd1fffa4e167",
+  "startOutcome": {
+    "outcome": "started",
+    "version": "v3"
+  },
+  "gotAnswer": true,
+  "pcState": "connected",
+  "dcState": "open",
+  "v3Audio": {
+    "path": "X3-v3-complete-v3.wav",
+    "bytes": 32616960,
+    "durationSec": 169.88,
+    "sampleRate": 48000,
+    "channels": 2
+  },
+  "transcripts": [
+    {
+      "src": "jsonrpc",
+      "role": "user",
+      "text": "今天 Flywheel 有几个 PR 还没合并",
+      "sinceAskMs": 6119
+    },
+    {
+      "src": "jsonrpc",
+      "role": "assistant",
+      "text": "我看一下,稍等。",
+      "sinceAskMs": 9576
+    },
+    {
+      "src": "jsonrpc",
+      "role": "assistant",
+      "text": "我先帮你查一下 Flywheel 仓库今天还处于 open 状态的 PR,按洛杉矶时间算,稍等我核对一下。",
+      "sinceAskMs": 21778
+    },
+    {
+      "src": "jsonrpc",
+      "role": "assistant",
+      "text": "好了,我会把截至今天仍未合并的,也就是目前还是 open 的 PR 作为未合并总数,同时单独列出今天新开的,这样口径更清楚。",
+      "sinceAskMs": 38455
+    },
+    {
+      "src": "jsonrpc",
+      "role": "assistant",
+      "text": "我刚查了,Flywheel 现在一共有 42 个还没合并的 PR;其中今天新开的有 10 个。",
+      "sinceAskMs": 69814
+    }
+  ],
+  "approvals": [],
+  "rtpPackets": 8511,
+  "firstRtpSinceAskMs": 1016,
+  "dcEventKinds": [
+    "session.started",
+    "session.context.appended",
+    "input_transcript.added",
+    "turn.created",
+    "turn.delta",
+    "delegation.created",
+    "output_transcript.added",
+    "turn.done",
+    "delegation.context.appended",
+    "session.usage.updated"
+  ]
+}

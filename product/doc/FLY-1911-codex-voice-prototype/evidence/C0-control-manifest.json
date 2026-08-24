@@ -1,0 +1,20 @@
+{
+  "issue": "FLY-1911",
+  "probe": "语音会话进行中还能不能干别的活",
+  "withVoice": false,
+  "startedAt": "2026-08-20T00:28:17.319Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "fc08b76713d863d32252b1b1b444a1f2536b91cb36e540ffc9692f55f2a0d2d0",
+  "task": {
+    "requestedAt": 1787185699683,
+    "turnStartedAfterMs": 32,
+    "firstItemAfterMs": 3494,
+    "completedAfterMs": 4355,
+    "status": "failed",
+    "timedOut": false
+  },
+  "workThreadId": "01a01c91-99e9-7622-8493-6ddd24098b9e",
+  "voiceAudioAfterTask": 0,
+  "voiceStillStreaming": null
+}

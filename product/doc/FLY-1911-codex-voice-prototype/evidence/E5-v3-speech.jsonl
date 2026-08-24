@@ -1,0 +1,16 @@
+{"t":"2026-08-19T23:24:45.667Z","dir":">>","obj":{"i":1,"me":"initialize","pa":{"clientInfo":{"name":"fly1911-v3full","title":"v3 full","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}}
+{"t":"2026-08-19T23:24:46.101Z","dir":">>","obj":{"i":2,"me":"thread/start","pa":{}}}
+{"t":"2026-08-19T23:24:47.120Z","dir":">>","obj":{"i":3,"me":"thread/realtime/start","pa":{"threadId":"01a01c57-6a9f-7570-b5c9-b4f737aa80e2","transport":{"type":"webrtc","sdp":"<redacted>"},"outputModality":"audio","voice":"cove","version":"v3","delegationAckFiller":true,"codexResponseHandoffMode":"thinking","realtimeStartInstructions":"你必须始终使用中文回答,无论用户用什么语言提问。回答简短、口语化。"}}}
+{"t":"2026-08-19T23:24:47.622Z","dir":"ERR","obj":"2026-08-19T23:24:47.620965Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses"}
+{"t":"2026-08-19T23:24:48.113Z","dir":"<<","obj":{"method":"thread/realtime/started","p":"v3","sinceAskMs":null}}
+{"t":"2026-08-19T23:24:48.120Z","dir":"<<SDP","obj":{"chars":1504,"sha256":"8ce2bf2d9dc01643aeae788f6c8cac57fb095e039c8ba054ce87b186662f9995","codec":["m=audio 9 UDP/TLS/RTP/SAVPF 96 0","a=rtpmap:96 OPUS/48000/2","a=rtpmap:0 PCMU/8000"]}}
+{"t":"2026-08-19T23:24:48.137Z","dir":"START","obj":{"outcome":"started","version":"v3"}}
+{"t":"2026-08-19T23:24:48.148Z","dir":"HANDSHAKE","obj":{"setRemoteDescription":"ok"}}
+{"t":"2026-08-19T23:24:48.795Z","dir":"PC","obj":{"state":"connected","dc":"connecting"}}
+{"t":"2026-08-19T23:24:48.806Z","dir":"DC","obj":{"state":"open"}}
+{"t":"2026-08-19T23:24:48.835Z","dir":"ERR","obj":"2026-08-19T23:24:48.832427Z ERROR codex_api::endpoint::responses_websocket: failed to connect to websocket: HTTP error: 401 Unauthorized, url: wss://chatgpt.com/backend-api/codex/responses"}
+{"t":"2026-08-19T23:24:49.119Z","dir":"ERR","obj":"2026-08-19T23:24:49.106330Z ERROR codex_login::auth::manager: Failed to refresh token: 401 Unauthorized: {\n  \"error\": {\n    \"message\": \"Your refresh token has already been used to generate a new access token. Please try signing in again.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": null,\n    "}
+{"t":"2026-08-19T23:24:50.298Z","dir":">>","obj":{"i":4,"me":"thread/realtime/appendSpeech","pa":{"threadId":"01a01c57-6a9f-7570-b5c9-b4f737aa80e2","text":"今天 Flywheel 有几个 PR 还没合并?"}}}
+{"t":"2026-08-19T23:26:50.540Z","dir":">>","obj":{"i":5,"me":"thread/realtime/stop","pa":{"threadId":"01a01c57-6a9f-7570-b5c9-b4f737aa80e2"}}}
+{"t":"2026-08-19T23:26:50.543Z","dir":"<<","obj":{"method":"thread/realtime/closed","p":null,"sinceAskMs":120245}}
+{"t":"2026-08-19T23:26:51.145Z","dir":"DC","obj":{"state":"closed"}}

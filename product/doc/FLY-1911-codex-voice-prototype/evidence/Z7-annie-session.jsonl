@@ -1,0 +1,27 @@
+{"t":"2026-08-20T21:49:33.587Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T21:49:35.267Z","dir":"MCP","obj":{"threadId":"01a02126-a162-72d1-a957-01765928533c","name":"lead_actions","status":"failed","error":"MCP client for `lead_actions` failed to start: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response","failureReason":null}}
+{"t":"2026-08-20T21:49:36.273Z","dir":"CODEX","obj":{"state":"realtime started","version":"v3"}}
+{"t":"2026-08-20T21:49:36.274Z","dir":"SDP","obj":{"chars":1500}}
+{"t":"2026-08-20T21:49:37.142Z","dir":"PC","obj":{"state":"connected"}}
+{"t":"2026-08-20T21:49:37.641Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T21:49:37.753Z","dir":"READY","obj":{"msg":"房里可以说话了","通道":"v3","重采样":"没有","runMinutes":30}}
+{"t":"2026-08-20T21:49:37.754Z","dir":"NOTE","obj":{"msg":"v3 是音频驱动的:没有文字触发口,所以不会自己先打招呼 —— 直接对它说话就行"}}
+{"t":"2026-08-20T21:50:09.288Z","dir":"CODEX","obj":{"state":"realtime closed","reason":"error"}}
+{"t":"2026-08-20T21:52:52.565Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:00.281Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:02.642Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:04.482Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:04.700Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:05.752Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:14.495Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:16.141Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:34.821Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:39.034Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:40.821Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:42.011Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:44.439Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:46.218Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:46.994Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:48.020Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:49.501Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:53:50.618Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}

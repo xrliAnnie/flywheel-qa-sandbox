@@ -1,0 +1,79 @@
+{
+  "issue": "FLY-1911",
+  "probe": "listen — does it hear real speech?",
+  "startedAt": "2026-08-19T23:00:38.086Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "d99dc78d5160416ac956d7a4a4255e79c7372177621acf374d15803009b12d27",
+  "params": {
+    "version": "v2",
+    "voice": "marin",
+    "transport": "websocket",
+    "chunkMs": 100,
+    "realtimePace": true
+  },
+  "input": {
+    "path": "probe-in.wav",
+    "sha256": "0a7e27dbcace402c6947a9f27b8c5542b07fc346aa0cecb271959e6e74e1db51",
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "durationSec": 3.8,
+    "expectedText": "今天 Flywheel 有几个 PR 还没合并？"
+  },
+  "threadId": "01a01c41-54c2-74a0-8080-95ea43d00292",
+  "startOutcome": {
+    "outcome": "started",
+    "message": null,
+    "version": "v2",
+    "waitedMs": 1088
+  },
+  "result": {
+    "admitted": true
+  },
+  "heard": [
+    "今天,李威尔有几个T、R还没合并。"
+  ],
+  "said": [
+    "Got it—there are 42 open PRs in the repo today, 10 of which were opened just today. Need anything else on those?"
+  ],
+  "allDoneTranscripts": [
+    {
+      "kind": "done",
+      "role": "user",
+      "text": "今天,李威尔有几个T、R还没合并。",
+      "tMs": 7259
+    },
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "Got it—there are 42 open PRs in the repo today, 10 of which were opened just today. Need anything else on those?",
+      "tMs": 27532
+    }
+  ],
+  "latency": {
+    "inputDoneToFirstUserTranscriptMs": -432,
+    "inputDoneToFirstReplyAudioMs": 19171
+  },
+  "replyAudio": {
+    "path": "E2-endtoend-reply.wav",
+    "bytes": 300000,
+    "sampleRate": 24000,
+    "durationSec": 6.25,
+    "chunks": 16
+  },
+  "approvals": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "reason": "允许我连接 GitHub，查询 flywheel 仓库当前尚未合并的 PR 数量吗？",
+      "itemId": "exec-8d4077aa-1f54-4282-8fba-69e0fa0c1700",
+      "tMs": 20426
+    }
+  ],
+  "finishedAt": "2026-08-19T23:01:11.122Z"
+}

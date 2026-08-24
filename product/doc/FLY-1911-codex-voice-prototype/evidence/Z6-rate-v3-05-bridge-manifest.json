@@ -1,0 +1,86 @@
+{
+  "issue": "FLY-1911",
+  "probe": "任务3 v3 焊进 Discord",
+  "startedAt": "2026-08-20T21:14:54.234Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "a437679d943f74c88bae996247d619f6bdf5633adebf77d2b9240ec2d11ce9ff",
+  "version": "v3",
+  "resampling": "无(48k 立体声全程)",
+  "openaiApiKeyPresent": true,
+  "concurrentTasks": {
+    "count": 2,
+    "pids": [
+      "11291",
+      "76203"
+    ],
+    "armedSleepers": [
+      {
+        "pid": "11291",
+        "elapsed": "11:24"
+      }
+    ],
+    "说明": "count/pids = 此刻在跑的同类执行体;armedSleepers = 还在 sleep 里武装、稍后会醒的(第 12 场正是被这种害的)"
+  },
+  "network": {
+    "egressIp": "24.24.178.135",
+    "defaultGateway": "192.168.68.1",
+    "defaultIface": "en0",
+    "defaultIfaceMtu": "1500"
+  },
+  "account": {
+    "authFile": "/Users/xiaorongli/.codex/auth.json",
+    "auth_mode": "chatgpt",
+    "last_refresh": "2026-08-20T14:29:15.006749Z"
+  },
+  "sdpAnswered": true,
+  "pcState": "connected",
+  "开关": {
+    "pacer": true,
+    "jitter": true,
+    "depth": true
+  },
+  "播放缓冲": {
+    "播放缓冲写入帧": 12027,
+    "缓冲见底次数": 633
+  },
+  "播放器自己的账": {
+    "状态": "playing",
+    "播放器漏掉的帧": 0,
+    "已播放毫秒": 240000
+  },
+  "节拍器": {
+    "上行帧每秒": 48.97,
+    "下行帧每秒": 48.98,
+    "达标线": 47.5,
+    "说明": "逐字听对的臂全部≥47.9,听错的臂≤43.7;真边界未量,线贴好的一侧。低于47.5会造成听错(卡顿另判)"
+  },
+  "ok": false,
+  "gotAnswer": false,
+  "通不通": {
+    "听见她": false,
+    "它说了话": false,
+    "说明": "ok 现在表示链路真的通了;sdpAnswered 才是 WebRTC 握手那件事"
+  },
+  "roomOpusIn": 334,
+  "rtpOut": 12000,
+  "rtpIn": 1483,
+  "silenceOut": 11666,
+  "pcmOutBytes": 5694720,
+  "userTranscripts": [],
+  "assistantTranscripts": [],
+  "plans": [],
+  "runs": [],
+  "answers": [],
+  "handoffs": [],
+  "approvals": 0,
+  "codexErrors": [],
+  "dcEventKinds": [
+    "session.started"
+  ],
+  "realtimeStartedAt": "2026-08-20T21:14:56.836Z",
+  "realtimeClosedAt": "2026-08-20T21:15:31.962Z",
+  "durationMs": 35126,
+  "closeReason": "error",
+  "outcome": "died"
+}

@@ -1,0 +1,22 @@
+{"t":"2026-08-20T21:56:39.522Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T21:56:40.977Z","dir":"MCP","obj":{"threadId":"01a0212d-2050-7673-81b7-a358d38abf75","name":"lead_actions","status":"failed","error":"MCP client for `lead_actions` failed to start: MCP startup failed: handshaking with MCP server failed: connection closed: initialize response","failureReason":null}}
+{"t":"2026-08-20T21:56:41.750Z","dir":"CODEX","obj":{"state":"realtime started","version":"v3"}}
+{"t":"2026-08-20T21:56:41.750Z","dir":"SDP","obj":{"chars":1504}}
+{"t":"2026-08-20T21:56:42.845Z","dir":"PC","obj":{"state":"connected"}}
+{"t":"2026-08-20T21:56:43.349Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T21:56:43.437Z","dir":"READY","obj":{"msg":"房里可以说话了","通道":"v3","重采样":"没有","runMinutes":30}}
+{"t":"2026-08-20T21:56:43.437Z","dir":"NOTE","obj":{"msg":"v3 是音频驱动的:没有文字触发口,所以不会自己先打招呼 —— 直接对它说话就行"}}
+{"t":"2026-08-20T21:56:59.123Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:01.682Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:02.416Z","dir":"TX","obj":{"role":"user","text":"Hola"}}
+{"t":"2026-08-20T21:57:07.124Z","dir":"TX","obj":{"role":"assistant","text":" 嗨!在呢。今天想从哪件事开始?"}}
+{"t":"2026-08-20T21:57:10.416Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:13.976Z","dir":"TX","obj":{"role":"user","text":"你现在,啊,换了一个男"}}
+{"t":"2026-08-20T21:57:16.696Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:16.720Z","dir":"CODEX","obj":{"state":"realtime closed","reason":"error"}}
+{"t":"2026-08-20T21:57:22.166Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:23.384Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:39.022Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:57:41.874Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:58:16.676Z","dir":"SPEAKING","obj":{"userId":"1138241636057481306"}}
+{"t":"2026-08-20T21:58:17.801Z","dir":"STREAM-END","obj":{"userId":"1138241636057481306"}}

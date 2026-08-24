@@ -1,0 +1,7 @@
+{"t":"2026-08-20T05:36:05.714Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T05:36:06.884Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T05:36:07.131Z","dir":"PLAYER","obj":{"from":"idle","to":"buffering"}}
+{"t":"2026-08-20T05:36:07.132Z","dir":"READY","obj":{"msg":"房里可以说话了","runMinutes":30}}
+{"t":"2026-08-20T05:36:07.134Z","dir":"PLAYER","obj":{"from":"buffering","to":"playing"}}
+{"t":"2026-08-20T05:36:08.517Z","dir":"CODEX","obj":{"state":"realtime started","version":"v2"}}
+{"t":"2026-08-20T05:36:10.189Z","dir":"TX","obj":{"role":"assistant","text":"太好了，我在呢！有什么想聊的或者需要帮忙的吗？"}}

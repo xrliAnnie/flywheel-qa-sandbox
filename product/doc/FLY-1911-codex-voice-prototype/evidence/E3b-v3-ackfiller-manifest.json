@@ -1,0 +1,26 @@
+{
+  "issue": "FLY-1911",
+  "probe": "v3 ack-filler + 中文",
+  "startedAt": "2026-08-19T23:18:28.833Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "bd2f7eed39254ae2b6d648bafab472f60a688eef14731e931f60121274b7c202",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "delegationAckFiller": true,
+    "codexResponseHandoffMode": "thinking"
+  },
+  "ask": "今天 Flywheel 有几个 PR 还没合并?",
+  "threadId": "01a01c51-aafe-7681-a602-087400e451fc",
+  "startOutcome": {
+    "outcome": "started",
+    "version": "v3"
+  },
+  "transcripts": [],
+  "approvals": [],
+  "audioChunks": 0,
+  "firstAssistantMs": null,
+  "lastAssistantMs": null,
+  "firstAudioSinceAskMs": null
+}

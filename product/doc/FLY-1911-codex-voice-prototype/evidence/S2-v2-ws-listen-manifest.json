@@ -1,0 +1,72 @@
+{
+  "issue": "FLY-1911",
+  "probe": "listen — does it hear real speech?",
+  "startedAt": "2026-08-19T18:59:55.826Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "f23919c5bf8513443401dfc01c68d1238e0e1992eee9031849d9567c80fa38e4",
+  "params": {
+    "version": "v2",
+    "voice": "marin",
+    "transport": "websocket",
+    "chunkMs": 100,
+    "realtimePace": true
+  },
+  "input": {
+    "path": "probe-in.wav",
+    "sha256": "0a7e27dbcace402c6947a9f27b8c5542b07fc346aa0cecb271959e6e74e1db51",
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "durationSec": 3.8,
+    "expectedText": "今天 Flywheel 有几个 PR 还没合并？"
+  },
+  "threadId": "01a01b64-f54f-7e32-aedd-081bd80fab53",
+  "startOutcome": {
+    "outcome": "started",
+    "message": null,
+    "version": "v2",
+    "waitedMs": 2067
+  },
+  "result": {
+    "admitted": true
+  },
+  "heard": [
+    "今天,李维尔有几个T、R还没合并。"
+  ],
+  "said": [],
+  "allDoneTranscripts": [
+    {
+      "kind": "done",
+      "role": "user",
+      "text": "今天,李维尔有几个T、R还没合并。",
+      "tMs": 7537
+    }
+  ],
+  "latency": {
+    "inputDoneToFirstUserTranscriptMs": -738,
+    "inputDoneToFirstReplyAudioMs": null
+  },
+  "replyAudio": null,
+  "finishedAt": "2026-08-19T19:00:35.629Z",
+  "heardAllVersions": {
+    "note": "FLY-1911 修正:原 heard 字段只收了 transcript/done(流式版),漏了交办用的修正版。本字段从同一份 S2-v2-ws-listen.jsonl 重新派生,未重跑实验。",
+    "expectedText": "今天 Flywheel 有几个 PR 还没合并？",
+    "streamingTranscriptDone": [
+      "今天,李维尔有几个T、R还没合并。"
+    ],
+    "handoffInputTranscript": [
+      "今天，flywheel 有几个 PR 还没合并？"
+    ],
+    "verdict": "听得见;流式版把专有名词听错(flywheel->李维尔, PR->T、R),交办版正确。两版并存于同一次实验。",
+    "unresolved": [
+      "不知道交办版为什么更好(后端带上下文重转? 交办层规整?) — 未验",
+      "输入是 macOS say TTS 合成音,不是真人 — 真人口音/语速/噪音下未验"
+    ]
+  }
+}

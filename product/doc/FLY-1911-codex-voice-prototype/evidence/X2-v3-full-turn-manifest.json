@@ -1,0 +1,58 @@
+{
+  "issue": "FLY-1911",
+  "probe": "v3 full webrtc handshake",
+  "startedAt": "2026-08-20T02:23:44.320Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "83e059a055949b9a3c26ec0a75f3f0bbad5bca2e6d9c5e02ba27217f0e289760",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "delegationAckFiller": true,
+    "codexResponseHandoffMode": "thinking"
+  },
+  "ask": "今天 Flywheel 有几个 PR 还没合并?",
+  "threadId": "01a01cfb-46ce-7ae1-af42-6ece2f230c08",
+  "startOutcome": {
+    "outcome": "started",
+    "version": "v3"
+  },
+  "gotAnswer": true,
+  "pcState": "connected",
+  "dcState": "open",
+  "v3Audio": {
+    "path": "X2-v3-full-turn-v3.wav",
+    "bytes": 1420800,
+    "durationSec": 7.4,
+    "sampleRate": 48000,
+    "channels": 2
+  },
+  "transcripts": [
+    {
+      "src": "jsonrpc",
+      "role": "user",
+      "text": "今天 Flywheel 有几个 PR 还没合并",
+      "sinceAskMs": 6327
+    },
+    {
+      "src": "jsonrpc",
+      "role": "assistant",
+      "text": "我来看看,稍等。",
+      "sinceAskMs": 8607
+    }
+  ],
+  "approvals": [],
+  "rtpPackets": 370,
+  "firstRtpSinceAskMs": 1372,
+  "dcEventKinds": [
+    "session.started",
+    "session.context.appended",
+    "input_transcript.added",
+    "turn.created",
+    "turn.delta",
+    "delegation.created",
+    "output_transcript.added",
+    "turn.done",
+    "delegation.context.appended"
+  ]
+}

@@ -1,0 +1,11 @@
+{"t":"2026-08-19T23:30:07.256Z","dir":"GATEWAY","obj":{"readyMs":1047,"botTag":"flywheel-test-1#0230","botId":"1493068669444427927"}}
+{"t":"2026-08-19T23:30:07.261Z","dir":"CHANNEL","obj":{"guild":"claude's server","channel":"General","type":2,"bitrate":64000}}
+{"t":"2026-08-19T23:30:07.262Z","dir":"PERMS","obj":{"CONNECT":true,"SPEAK":true,"VIEW":true}}
+{"t":"2026-08-19T23:30:07.638Z","dir":"STATE","obj":{"from":"signalling","to":"connecting","ms":376}}
+{"t":"2026-08-19T23:30:07.830Z","dir":"STATE","obj":{"from":"connecting","to":"connecting","ms":568}}
+{"t":"2026-08-19T23:30:07.863Z","dir":"STATE","obj":{"from":"connecting","to":"connecting","ms":601}}
+{"t":"2026-08-19T23:30:07.899Z","dir":"STATE","obj":{"from":"connecting","to":"connecting","ms":636}}
+{"t":"2026-08-19T23:30:07.961Z","dir":"STATE","obj":{"from":"connecting","to":"ready","ms":699}}
+{"t":"2026-08-19T23:30:07.963Z","dir":"RESULT","obj":{"joined":true,"readyMs":701,"ping":{}}}
+{"t":"2026-08-19T23:30:13.965Z","dir":"HELD","obj":{"stillReady":true,"heldMs":6000,"ping":{}}}
+{"t":"2026-08-19T23:30:13.967Z","dir":"STATE","obj":{"from":"ready","to":"destroyed","ms":6705}}

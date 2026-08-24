@@ -1,0 +1,168 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>那七分钟为什么是静音的</title>
+<style>
+:root{--bg:#f5f5f7;--c:#fff;--ink:#1d1d1f;--dim:#86868b;--b:#007aff;--g:#34c759;--r:#ff3b30;--a:#ff9500;--p:#af52de}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.7 -apple-system,system-ui,sans-serif}
+.w{max-width:880px;margin:0 auto;padding:26px 18px 90px}
+h1{font-size:26px;margin:0 0 6px;line-height:1.35}
+.sub{color:var(--dim);font-size:14px;margin-bottom:14px}
+.card{background:var(--c);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:17px 20px;margin:13px 0;border-left:4px solid var(--b)}
+.card h2{font-size:18px;margin:0 0 9px;line-height:1.4}
+.g{border-left-color:var(--g)}.r{border-left-color:var(--r)}.a{border-left-color:var(--a)}.p{border-left-color:var(--p)}
+p{margin:7px 0}ul{margin:7px 0;padding-left:21px}li{margin:5px 0}
+.dim{color:var(--dim);font-size:14px}.bad{color:var(--r)}.good{color:#1a7f37}.warnt{color:#8a5a00}
+.ask{background:#f0f6ff;border-radius:8px;padding:10px 12px;margin-top:11px}
+.hot{background:#fff5f5;border-radius:8px;padding:10px 12px;margin-top:11px}
+table{border-collapse:collapse;width:100%;margin:8px 0;font-size:14.5px}
+th,td{border:1px solid #e8e8ed;padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#fafafa;color:var(--dim);font-size:13.5px;font-weight:600}
+.cmt{margin-top:13px;border-top:1px solid #f0f0f2;padding-top:9px}.cmt label{font-size:13px;color:var(--dim)}
+textarea{width:100%;font:inherit;font-size:15px;padding:8px;border:1px solid #e0e0e5;border-radius:8px;resize:vertical;margin-top:4px}
+.sum{background:var(--c);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin-top:20px;border-left:4px solid var(--g)}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:11px 18px;background:var(--b);color:#fff;cursor:pointer}
+pre{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px;white-space:pre-wrap;font:13px/1.6 'SF Mono',monospace;max-height:230px;overflow:auto}
+code{background:#f3f3f5;border-radius:4px;padding:1px 5px;font:13.5px 'SF Mono',monospace}
+.tl{border-left-color:var(--a);background:#fffdf7}
+.wave{border:1px solid #e8e8ed;border-radius:8px;overflow:hidden;margin:6px 0 2px}
+.wlab{font-size:13px;color:var(--dim);margin-top:2px}
+.qt{background:#f7f7f9;border-left:3px solid #d8d8dd;padding:6px 12px;margin:8px 0;font-size:15px}
+</style></head><body><div class="w">
+
+<h1>你刚才在房里那七分钟:它一直在说话 —— 是那些话没到你耳朵</h1>
+<div class="sub">FLY-1911 Codex 语音原型 · 2026-08-24 01:20–01:27(UTC)那一场的现场诊断</div>
+
+<div class="card tl">
+<p style="margin:0 0 6px"><b>你说的那句:</b></p>
+<div class="qt">「我什么声音也听不到啊。」</div>
+<p style="margin:6px 0 0"><b>我量出来的:那七分钟里,它给出了 43 秒的话。</b>你说的每一句它也都逐字听懂了
+(比如「好了,你跟我说话吗?」)。<b>所以坏掉的不是它会不会说,是那些声音有没有走到你那儿。</b></p>
+<p class="dim" style="margin:6px 0 0">我在你离开之后,用同一座桥、同一段代码、中间没重启,把这件事拆成了两半来量。</p>
+<div class="cmt"><label>这一段你的意见(没有就空着):</label><textarea data-k="a0" data-t="开头:那七分钟" rows="2" placeholder="写在这里"></textarea></div>
+</div>
+
+<section class="card g"><h2>1. 我让另一个耳朵进房去听,结果是这样</h2>
+<p class="dim">同一间房、同一座桥。上面那条是「没人说话的时候」,下面那条是「它回答的时候」。
+每一根竖线是那一秒的最大音量。</p>
+
+<div class="wave">{{NEG_SVG}}</div>
+<div class="wlab"><b>没人说话</b> · {{NEG_SEC}} 秒 · 最大音量 <b>{{NEG_PEAK}}</b> · 有声音的样本 {{NEG_NZ}}%
+ —— <span class="good">一根都没有,一片纯静音</span></div>
+
+<div class="wave" style="margin-top:14px">{{POS_SVG}}</div>
+<div class="wlab"><b>它回答的时候</b> · {{POS_SEC}} 秒 · 最大音量 <b>{{POS_PEAK}}</b>(约满量程一半)·
+其中 <b>{{POS_HEARD_SEC}} 秒</b>是真的有声音 —— <span class="good">它的回答确确实实从房里放出来了</span></div>
+
+<p class="ask" style="margin-top:14px"><b>上面那条空白的很重要 —— 它证明我这把尺子不会自己冒出声音来。</b>
+如果连没人说话的时候都能量出波形,那下面那条就什么也不能说明。</p>
+
+<p><b>还有一个能对上的账:</b>这一次 Codex 交给桥 <b>10.95 秒</b>的语音,房里量到 <b>{{POS_HEARD_SEC}} 秒</b>
+—— 差 2% 以内。<b>也就是说,它交出来多少,房里就响多少,中间没有被吃掉。</b>
+按同一个换算,你那七分钟里它交出来的是 <b>43.1 秒</b>。</p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="a1" data-t="1 两条波形" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card r"><h2>2. 但有一半我证不了 —— 先说清楚</h2>
+<p><b>我量的是你走之后的那几分钟,不是你在的那七分钟。</b>你在房里的时候,房里没有第二只耳朵
+—— 所以「那七分钟到底有没有声音出去」,<b class="bad">严格讲是没测过的。</b></p>
+<p>我能说的只有:同一个进程、同一份代码、中间没有重启、没有任何报错,十分钟后测出来是通的。
+<span class="dim">这比猜强,但它不等于「你那七分钟一定有声音」。我不把它写成那样。</span></p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="a2" data-t="2 我证不了的那半" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card"><h2>3. 已经被我排掉的几种可能</h2>
+<table>
+<tr><th style="width:34%">可能是这个吗</th><th style="width:12%">结论</th><th>怎么排掉的</th></tr>
+<tr><td>Codex 根本没出声</td><td class="good"><b>不是</b></td><td>它送出来的语音数据一条条都在,你那七分钟共 43.1 秒</td></tr>
+<tr><td>它没听懂你,所以没答</td><td class="good"><b>不是</b></td><td>你说的话逐字转成了文字,而且它每句都回了</td></tr>
+<tr><td>桥跟 Discord 之间断了</td><td class="good"><b>不是</b></td><td>就算一片静音,数据包也一直在稳定地传(60 秒 2997 个)</td></tr>
+<tr><td>因为你比它先进房,所以听不到它</td><td class="good"><b>不是</b></td><td>我专门试了这个顺序:先在房里的那个,照样听得见后进来的</td></tr>
+<tr><td>昨晚那个「会话根本起不来」</td><td class="good"><b>这一场没有</b></td><td>这一场会话正常建起来了</td></tr>
+</table>
+<p class="dim">最后一行加一句实话:那个「起不来」的毛病<b>这一场没复现</b>,但<b>为什么昨晚会那样,还是没查出来</b>。</p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="a3" data-t="3 已排掉的" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card a"><h2>4. 剩下最像的那一条 —— 但只有你能验</h2>
+<p><b>Discord 有一个「单独调某个人的音量」的设置,它记在你自己电脑上,而且会一直记着。</b></p>
+<p class="hot"><b>请你在语音房里,右键点一下那个机器人(名字是 flywheel-test-1),看两件事:</b>
+<br>· 那个 <b>User Volume(用户音量)</b>滑块,是不是被拉到 0 了
+<br>· 有没有被你静音(Mute)</p>
+<p><b>为什么怀疑这个:</b>8 月 21 日你说过那个等待音「吵得我都不知道该说什么了」——
+<b>那种时候顺手右键把它拉到 0,是非常自然的动作。</b></p>
+<p class="dim"><b>⚠️ 这是猜,不是结论。</b>那个滑块存在你自己的电脑里,我从这边<b>永远看不到</b>
+—— 所以这条只能你来证实或者推翻。次一个可能是你的耳机/输出设备换了。</p>
+<div class="cmt"><label><b>你看到的是什么?(这条最关键)</b></label><textarea data-k="a4" data-t="4 你右键看到的音量滑块" rows="3" placeholder="例如:滑块是 100 / 滑块是 0 / 找不到这个菜单"></textarea></div></section>
+
+<section class="card p"><h2>5. 要你拍两件事</h2>
+<p><b>第一件:</b>上面那个滑块你看一眼,把看到的写在上面那个框里。
+如果就是它,这件事当场就结了;如果不是,我们就知道要往别处查。</p>
+<p><b>第二件:下一次你进房的时候,要不要我在房里放一只「只数音量、不留录音」的耳朵?</b></p>
+<ul>
+<li><b>好处:</b>如果你再一次听不到,我当场就能分辨是「房里根本没声音」还是「声音有、只是没到你那」
+—— 就不会再有今天这种「事后才发现没法判」的情况。</li>
+<li><b>代价:</b>房里多了一个在听的东西。<b>它只统计每秒的音量大小,音频本身随手丢掉、不落盘</b>
+—— 我特意做成这样,因为你定过的规矩是「房里多一个会记录的东西,默认必须是关的」。</li>
+<li><b class="bad">默认是不放的。你说放,我才放。</b></li>
+</ul>
+<div class="cmt"><label><b>第二件你的答复(放 / 不放 / 要留完整录音也行):</b></label><textarea data-k="a5" data-t="5 下一场放不放那只耳朵" rows="3" placeholder="写在这里"></textarea></div></section>
+
+<section class="card"><h2>6. 顺带:昨晚那条「语音会话起不来」</h2>
+<p>这一场<b>没有复现</b> —— 01:20:03 会话正常建立。
+昨晚有个猜测是「机器上同时开了 7 个 Codex,realtime 可能有单独的并发上限」,
+而这一场机器上<b>只有 1 个</b>。</p>
+<p class="dim"><b>形状对得上,但这一场不是对照实验 —— 不够格说它就是原因。</b>只能说:还没被推翻。</p>
+<div class="cmt"><label>这一段你的意见:</label><textarea data-k="a6" data-t="6 会话起不来那条" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<section class="card"><h2>7. 想听一下那 {{CLIP_SEC}} 秒吗</h2>
+<p>我把房里录到的那段真实回答剪出来了(<b>{{CLIP_SEC}} 秒</b>)。
+<b>这个页面放不了音频</b>(页面的安全策略只允许放图,不允许放声音),
+所以你要是想听,<b>在 Discord 里跟我说一声,我让人把音频文件直接发给你。</b></p>
+<div class="cmt"><label>要不要那段音频:</label><textarea data-k="a7" data-t="7 要不要那段音频" rows="2" placeholder="写在这里"></textarea></div></section>
+
+<div class="sum"><h2 style="font-size:18px;margin:0 0 8px">写完之后怎么办</h2>
+<p style="margin:0 0 8px"><b>如果你没有意见、就是通过</b> —— <b>不用点下面的按钮</b>,直接在 Discord 那张卡片下面回一句
+<code>approve</code>,或者给卡片点一个 ✅ 就行。</p>
+<p class="dim" style="margin:0 0 10px">如果你在上面写了字:<b>页面上的字不会自动传回来</b>,得点下面这个按钮复制,
+再粘回 issue 里我才收得到。</p>
+<button id="cp">一键汇总复制</button> <span id="st" class="dim"></span><pre id="pv">(还没写)</pre></div>
+
+</div><script nonce="__CSP_NONCE__">
+var MARK='【页面意见汇总】FLY-1911';
+var LIM=1800;
+var T=[].slice.call(document.querySelectorAll('textarea'));
+var chunks=[],idx=0;
+T.forEach(function(x){var k='fly1911sil:'+x.dataset.k;
+  try{var v=localStorage.getItem(k);if(v)x.value=v}catch(e){}
+  x.addEventListener('input',function(){try{localStorage.setItem(k,x.value)}catch(e){}build()})});
+function blocks(){var o=[];T.forEach(function(x){if(x.value.trim())o.push('【'+x.dataset.t+'】\n'+x.value.trim())});return o}
+function build(){
+  var b=blocks(),out=[],cur='';
+  for(var i=0;i<b.length;i++){
+    var piece=b[i];
+    var cand=cur?cur+'\n\n'+piece:MARK+'\n'+piece;
+    if(cur&&cand.length>LIM){out.push(cur);cur=MARK+'\n'+piece;}
+    else{cur=cand;}
+  }
+  if(cur)out.push(cur);
+  chunks=out;if(idx>=chunks.length)idx=0;
+  var pv=document.getElementById('pv'),cp=document.getElementById('cp');
+  if(!chunks.length){pv.textContent='(还没写)';cp.textContent='一键汇总复制';return}
+  pv.textContent=chunks[idx];
+  cp.textContent=chunks.length>1?('复制第 '+(idx+1)+'/'+chunks.length+' 段'):'一键汇总复制';
+}
+document.getElementById('cp').addEventListener('click',function(){
+  var st=document.getElementById('st');
+  if(!chunks.length){st.textContent='还没写东西';return}
+  var s=chunks[idx];
+  function done(ok){
+    if(!ok){st.textContent='复制没成功 — 请手动选中下面框里的字复制';return}
+    if(chunks.length>1){
+      var n=idx+1;
+      if(n<chunks.length){st.textContent='第 '+(idx+1)+' 段复制好了 — 粘回 issue 后再点一次复制下一段';idx=n;}
+      else{st.textContent='最后一段复制好了 — 粘回 issue 就行';idx=0;}
+      build();
+    }else{st.textContent='复制好了，粘回 issue 就行';}
+  }
+  function fb(){try{var a=document.createElement('textarea');a.value=s;document.body.appendChild(a);a.select();
+    var ok=document.execCommand('copy');document.body.removeChild(a);done(ok)}catch(e){done(false)}}
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(function(){done(true)},fb)}else fb();
+});
+build();
+</script></body></html>

@@ -1,0 +1,8 @@
+{"t":"2026-08-20T03:04:45.438Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T03:04:46.587Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T03:04:46.741Z","dir":"READY","obj":{"msg":"房里可以说话了","runMinutes":2}}
+{"t":"2026-08-20T03:04:47.754Z","dir":"CODEX","obj":{"state":"realtime started","version":"v2"}}
+{"t":"2026-08-20T03:04:49.312Z","dir":"TX","obj":{"role":"assistant","text":"太好了，我在呢！我们随时都可以聊。你想聊点什么呢？"}}
+{"t":"2026-08-20T03:05:01.002Z","dir":"SPEAKING","obj":{"userId":"1493072948683341976"}}
+{"t":"2026-08-20T03:05:05.565Z","dir":"STREAM-END","obj":{"userId":"1493072948683341976","heardChunks":193}}
+{"t":"2026-08-20T03:06:47.946Z","dir":"RESULT","obj":{"ok":true,"heardChunks":193,"heardBytes":185280,"spokeChunks":10,"spokeBytes":189600,"userTranscripts":[],"assistantTranscripts":["太好了，我在呢！我们随时都可以聊。你想聊点什么呢？"],"approvals":0,"codexErrors":[]}}

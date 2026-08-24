@@ -1,0 +1,34 @@
+{
+  "issue": "FLY-1911",
+  "probe": "v3 full webrtc handshake",
+  "startedAt": "2026-08-19T23:22:21.228Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "b35d36ccb28fbf67a38df31f82c46c18a13b117ef6f5523756f1d70c03e7199a",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "delegationAckFiller": true,
+    "codexResponseHandoffMode": "thinking"
+  },
+  "ask": "今天 Flywheel 有几个 PR 还没合并?",
+  "threadId": "01a01c55-36c9-7983-af7a-a9c82a11cbbf",
+  "startOutcome": {
+    "outcome": "started",
+    "version": "v3"
+  },
+  "gotAnswer": true,
+  "pcState": "connected",
+  "dcState": "connecting",
+  "transcripts": [],
+  "approvals": [],
+  "rtpPackets": 0,
+  "firstRtpSinceAskMs": null,
+  "dcEventKinds": [
+    "session.started",
+    "session.context.appended",
+    "session.usage.updated",
+    "session.context_window.approaching",
+    "session.context_window.rolled_over"
+  ]
+}

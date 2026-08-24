@@ -1,0 +1,52 @@
+{
+  "issue": "FLY-1911",
+  "probe": "speak — does it actually produce audio?",
+  "startedAt": "2026-08-19T22:51:26.827Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "eb25964d06370a113106f083a80a99cf8987090bed66e53a17bd93427353f856",
+  "params": {
+    "version": "v2",
+    "voice": "sage",
+    "outputModality": "audio",
+    "transport": "websocket",
+    "mode": "appendSpeech"
+  },
+  "sayText": "用一句话跟 Annie 说:今天 Flywheel 有三个 PR 在等她拍板。",
+  "cliUserAgent": "fly1911-speak/0.148.0 (Mac OS 26.6.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1911-speak; 0.0.1)",
+  "threadId": "01a01c38-ebab-7380-bd08-346fb79efaf9",
+  "startOutcome": {
+    "outcome": "started",
+    "waitedMs": 1222,
+    "message": null,
+    "version": "v2"
+  },
+  "result": {
+    "admitted": true
+  },
+  "audio": {
+    "chunks": 6,
+    "path": "V-sage.wav",
+    "bytes": 103200,
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "durationSec": 2.15,
+    "firstAudioLatencyMs": 725
+  },
+  "transcripts": [
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "好的，马上帮你转达给 Annie。",
+      "tMs": 2827
+    }
+  ],
+  "transcriptDeltaCount": 10,
+  "finishedAt": "2026-08-19T22:51:34.696Z"
+}

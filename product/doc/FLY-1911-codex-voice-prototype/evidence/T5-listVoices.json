@@ -1,0 +1,36 @@
+{
+ "voices": {
+  "voices": {
+   "v1": [
+    "juniper",
+    "maple",
+    "spruce",
+    "ember",
+    "vale",
+    "breeze",
+    "arbor",
+    "sol",
+    "cove"
+   ],
+   "v2": [
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "sage",
+    "shimmer",
+    "verse",
+    "marin",
+    "cedar"
+   ],
+   "defaultV1": "cove",
+   "defaultV2": "marin"
+  }
+ },
+ "configRealtimeish": [
+  "\"model\":null",
+  "\"realtime_conversation\":true",
+  "\"realtime\":null"
+ ]
+}

@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>跟 Codex 说句话 — FLY-1911 原型</title>
+<style>
+  :root { --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --green:#34c759; --red:#ff3b30; --amber:#ff9500; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:16px/1.6 -apple-system, system-ui, sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; padding:24px 18px 60px; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--dim); font-size:14px; margin-bottom:20px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:16px 18px; margin-bottom:14px; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  button { font:inherit; font-weight:600; border:0; border-radius:10px; padding:11px 18px; cursor:pointer; }
+  #go { background:var(--blue); color:#fff; }
+  #go.live { background:var(--red); }
+  #say { background:#e8e8ed; color:var(--ink); }
+  button:disabled { opacity:.45; cursor:default; }
+  .stat { color:var(--dim); font-size:13px; }
+  .stat b { color:var(--ink); font-variant-numeric:tabular-nums; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:700px){ .cols{ grid-template-columns:1fr; } }
+  .col h3 { margin:0 0 8px; font-size:14px; color:var(--dim); font-weight:600; }
+  .log { min-height:180px; max-height:320px; overflow-y:auto; font-size:15px; }
+  .line { padding:6px 0; border-bottom:1px solid #f0f0f2; }
+  .line.pending { color:var(--dim); }
+  .meter { height:6px; background:#e8e8ed; border-radius:3px; overflow:hidden; margin-top:10px; }
+  .meter i { display:block; height:100%; width:0; background:var(--green); transition:width .06s linear; }
+  .ev { font:12px/1.5 'SF Mono', monospace; color:var(--dim); max-height:150px; overflow-y:auto; white-space:pre-wrap; }
+  .err { color:var(--red); font-weight:600; }
+  .warn { border-left:4px solid var(--amber); }
+  .dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#c7c7cc; margin-right:6px; }
+  .dot.on { background:var(--green); }
+  .hint { font-size:13px; color:var(--dim); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>跟 Codex 说句话</h1>
+  <div class="sub">FLY-1911 可行性验证原型 · 不是产品 · 只为回答「这声音行不行」</div>
+
+  <div class="card">
+    <div class="bar">
+      <button id="go">开始通话</button>
+      <button id="say" disabled>让它先说一句</button>
+      <span class="stat"><span class="dot" id="dot"></span><span id="state">还没开始</span></span>
+      <span class="stat">已通话 <b id="dur">0:00</b></span>
+      <span class="stat">它开口用了 <b id="lat">—</b></span>
+    </div>
+    <div class="meter"><i id="mm"></i></div>
+    <div class="hint" style="margin-top:10px">点「开始通话」→ 浏览器会问要不要用麦克风,允许 → 直接开口说话。<br>
+      想试打断:等它说到一半,你直接插话,它应该当场停口。</div>
+  </div>
+
+  <div class="cols">
+    <div class="card col">
+      <h3>它把你听成了什么</h3>
+      <div class="log" id="user"></div>
+    </div>
+    <div class="card col">
+      <h3>它说了什么</h3>
+      <div class="log" id="asst"></div>
+    </div>
+  </div>
+
+  <div class="card warn">
+    <h3 style="margin:0 0 6px;font-size:14px;color:#86868b;font-weight:600">底下这块是原话,没美化过</h3>
+    <div class="ev" id="ev">(还没有事件)</div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let live = false, micCtx = null, spkCtx = null, micStream = null, node = null, src = null;
+let startedAt = 0, playHead = 0, queued = [], lastSpeakSentAt = 0, gotFirstAudio = false;
+let userLine = null, asstLine = null;
+
+function log(el, role, text, final) {
+  const box = $(el);
+  let cur = role === 'user' ? userLine : asstLine;
+  if (!cur || cur.dataset.final === '1') {
+    cur = document.createElement('div');
+    cur.className = 'line pending';
+    box.appendChild(cur);
+    if (role === 'user') userLine = cur; else asstLine = cur;
+  }
+  if (final) { cur.textContent = text; cur.dataset.final = '1'; cur.classList.remove('pending'); }
+  else { cur.textContent = (cur.textContent || '') + text; }
+  box.scrollTop = box.scrollHeight;
+}
+function ev(s, cls) {
+  const box = $('ev');
+  if (box.textContent === '(还没有事件)') box.textContent = '';
+  const d = document.createElement('div');
+  if (cls) d.className = cls;
+  d.textContent = new Date().toLocaleTimeString() + '  ' + s;
+  box.appendChild(d); box.scrollTop = box.scrollHeight;
+}
+
+/* ---- 播放:把服务端送来的 PCM 排队接着放 ---- */
+function play(b64, sampleRate) {
+  if (!spkCtx) return;
+  const bin = atob(b64), n = bin.length / 2;
+  const buf = spkCtx.createBuffer(1, n, sampleRate || 24000);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) {
+    const lo = bin.charCodeAt(i * 2), hi = bin.charCodeAt(i * 2 + 1);
+    let v = (hi << 8) | lo; if (v >= 32768) v -= 65536;
+    ch[i] = v / 32768;
+  }
+  const s = spkCtx.createBufferSource();
+  s.buffer = buf; s.connect(spkCtx.destination);
+  const now = spkCtx.currentTime;
+  if (playHead < now) playHead = now + 0.02;
+  s.start(playHead); playHead += buf.duration;
+  queued.push(s);
+  s.onended = () => { queued = queued.filter(x => x !== s); };
+}
+/* ---- 打断:她一开口就把还没放完的全掐掉 ---- */
+function hush() {
+  for (const s of queued) { try { s.stop(); } catch {} }
+  queued = []; playHead = 0;
+}
+
+function connect() {
+  const es = new EventSource('/events');
+  es.onmessage = (m) => {
+    const e = JSON.parse(m.data);
+    if (e.type === 'audio') {
+      if (!gotFirstAudio && lastSpeakSentAt) { $('lat').textContent = (Date.now() - lastSpeakSentAt) + ' ms'; gotFirstAudio = true; }
+      play(e.data, e.sampleRate);
+    }
+    else if (e.type === 'tx') log(e.role === 'user' ? 'user' : 'asst', e.role === 'user' ? 'user' : 'asst', e.text, e.final);
+    else if (e.type === 'status') {
+      if (e.state === 'started') { $('state').textContent = '通话中 (' + e.version + ')'; $('dot').classList.add('on'); startedAt = Date.now(); }
+      if (e.state === 'closed' || e.state === 'exited') { $('state').textContent = '已断开'; $('dot').classList.remove('on'); }
+      ev('会话 ' + e.state + (e.reason ? ' (' + e.reason + ')' : ''));
+    }
+    else if (e.type === 'handoff') ev('它把这句交办出去了:' + (e.heard ?? ''));
+    else if (e.type === 'turn') ev('Codex 那边 turn ' + e.state + (e.error ? ' — ' + e.error : ''), e.error ? 'err' : '');
+    else if (e.type === 'error') ev('【' + e.where + '】' + e.message, 'err');
+  };
+}
+
+async function start() {
+  const r = await (await fetch('/start', { method: 'POST' })).json();
+  if (!r.ok) { ev('开不起来:' + (r.error || '?'), 'err'); return false; }
+
+  spkCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+  await spkCtx.resume();
+  micCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 24000 });
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  src = micCtx.createMediaStreamSource(micStream);
+  node = micCtx.createScriptProcessor(2048, 1, 1);
+  let loudFor = 0;
+  node.onaudioprocess = (e) => {
+    const f = e.inputBuffer.getChannelData(0);
+    let sum = 0; for (let i = 0; i < f.length; i++) sum += f[i] * f[i];
+    const rms = Math.sqrt(sum / f.length);
+    $('mm').style.width = Math.min(100, rms * 600) + '%';
+
+    // 本地打断:连续两帧有明显人声就掐掉正在放的
+    if (rms > 0.035) { loudFor++; if (loudFor >= 2 && queued.length) { hush(); ev('打断:你开口了,把它掐了'); } }
+    else loudFor = 0;
+
+    const pcm = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) { let v = Math.max(-1, Math.min(1, f[i])); pcm[i] = v < 0 ? v * 32768 : v * 32767; }
+    let bin = ''; const b = new Uint8Array(pcm.buffer);
+    for (let i = 0; i < b.length; i++) bin += String.fromCharCode(b[i]);
+    fetch('/in', { method: 'POST', body: JSON.stringify({ data: btoa(bin), sampleRate: 24000, numChannels: 1, samplesPerChannel: pcm.length }) }).catch(() => {});
+  };
+  src.connect(node); node.connect(micCtx.destination);
+  return true;
+}
+async function stop() {
+  try { node?.disconnect(); src?.disconnect(); micStream?.getTracks().forEach(t => t.stop()); } catch {}
+  hush(); try { await micCtx?.close(); await spkCtx?.close(); } catch {}
+  micCtx = spkCtx = null;
+  await fetch('/stop', { method: 'POST' });
+}
+
+$('go').onclick = async () => {
+  $('go').disabled = true;
+  if (!live) { if (await start()) { live = true; $('go').textContent = '挂断'; $('go').classList.add('live'); $('say').disabled = false; } }
+  else { await stop(); live = false; $('go').textContent = '开始通话'; $('go').classList.remove('live'); $('say').disabled = true; $('dot').classList.remove('on'); $('state').textContent = '已挂断'; }
+  $('go').disabled = false;
+};
+$('say').onclick = async () => {
+  gotFirstAudio = false; lastSpeakSentAt = Date.now();
+  await fetch('/say', { method: 'POST', body: JSON.stringify({ text: '用一句话跟 Annie 打个招呼,说说你现在能帮她做什么。' }) });
+};
+setInterval(() => {
+  if (!live || !startedAt) return;
+  const s = Math.round((Date.now() - startedAt) / 1000);
+  $('dur').textContent = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+}, 500);
+connect();
+</script>
+</body>
+</html>

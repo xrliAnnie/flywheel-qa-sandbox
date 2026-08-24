@@ -1,0 +1,104 @@
+{
+  "issue": "FLY-1911",
+  "probe": "语音流式播放期间进程还理不理别的请求(RTT)",
+  "withVoice": false,
+  "startedAt": "2026-08-20T00:31:40.096Z",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "9438193122fab1962b6d1f6ef112359e3c1cfc19fd6e2d218e5bcadd6047928c",
+  "boundary": "量的是进程/传输层是否仍即时应答;不等于能完成一次真正的 agent turn",
+  "probes": [
+    {
+      "i": 0,
+      "rttMs": 509,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 1,
+      "rttMs": 605,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 2,
+      "rttMs": 622,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 3,
+      "rttMs": 592,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 4,
+      "rttMs": 1011,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 5,
+      "rttMs": 580,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 6,
+      "rttMs": 684,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 7,
+      "rttMs": 867,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 8,
+      "rttMs": 659,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 9,
+      "rttMs": 1053,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 10,
+      "rttMs": 652,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    },
+    {
+      "i": 11,
+      "rttMs": 560,
+      "timedOut": false,
+      "audioChunksSoFar": 0,
+      "voiceStreamingRightNow": null
+    }
+  ],
+  "audioDuringProbes": 0,
+  "rttSummary": {
+    "n": 12,
+    "timedOut": 0,
+    "minMs": 509,
+    "medianMs": 652,
+    "maxMs": 1053
+  },
+  "windowSec": 14.4
+}

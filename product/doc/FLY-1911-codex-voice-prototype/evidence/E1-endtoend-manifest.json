@@ -1,0 +1,57 @@
+{
+  "issue": "FLY-1911",
+  "probe": "listen — does it hear real speech?",
+  "startedAt": "2026-08-19T22:57:34.100Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "f23919c5bf8513443401dfc01c68d1238e0e1992eee9031849d9567c80fa38e4",
+  "params": {
+    "version": "v2",
+    "voice": "marin",
+    "transport": "websocket",
+    "chunkMs": 100,
+    "realtimePace": true
+  },
+  "input": {
+    "path": "probe-in.wav",
+    "sha256": "0a7e27dbcace402c6947a9f27b8c5542b07fc346aa0cecb271959e6e74e1db51",
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "durationSec": 3.8,
+    "expectedText": "今天 Flywheel 有几个 PR 还没合并？"
+  },
+  "threadId": "01a01c3e-8714-7a81-9f1b-6a26d615481b",
+  "startOutcome": {
+    "outcome": "started",
+    "message": null,
+    "version": "v2",
+    "waitedMs": 806
+  },
+  "result": {
+    "admitted": true
+  },
+  "heard": [
+    "今天,刘威有几个,T、R还没合并。"
+  ],
+  "said": [],
+  "allDoneTranscripts": [
+    {
+      "kind": "done",
+      "role": "user",
+      "text": "今天,刘威有几个,T、R还没合并。",
+      "tMs": 6426
+    }
+  ],
+  "latency": {
+    "inputDoneToFirstUserTranscriptMs": -724,
+    "inputDoneToFirstReplyAudioMs": null
+  },
+  "replyAudio": null,
+  "finishedAt": "2026-08-19T22:59:43.492Z"
+}

@@ -1,0 +1,23 @@
+{"t":"2026-08-19T19:07:38.617Z","dir":">>","obj":{"id":1,"method":"initialize","params":{"clientInfo":{"name":"fly1911-bargein","title":"FLY-1911 barge-in probe","version":"0.0.1"},"capabilities":{"experimentalApi":true}}}}
+{"t":"2026-08-19T19:07:39.146Z","dir":">>","obj":{"id":2,"method":"thread/start","params":{}}}
+{"t":"2026-08-19T19:07:40.477Z","dir":">>","obj":{"id":3,"method":"thread/realtime/start","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","transport":{"type":"websocket"},"outputModality":"audio","voice":"marin","version":"v2"}}}
+{"t":"2026-08-19T19:07:43.801Z","dir":"<<","obj":{"method":"thread/realtime/started","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","realtimeSessionId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","version":"v2"},"emittedAtMs":1787166463801}}
+{"t":"2026-08-19T19:07:44.250Z","dir":">>","obj":{"id":4,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","text":"请你用一整段话,慢慢地、详细地介绍一下你自己能帮我做什么,至少说三十秒,不要停。"}}}
+{"t":"2026-08-19T19:07:47.524Z","dir":"BARGE-IN","obj":{"at":7047,"audioChunksSoFar":27}}
+{"t":"2026-08-19T19:07:47.748Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"当然可以，我会尽量慢慢说，让你充分了解我的能力。我是一位多功能的智能助手，能够帮助你处理各种日常和工作任务，比如管理和编辑你的文档、表格","tMs":7271}}
+{"t":"2026-08-19T19:07:48.536Z","dir":"BARGE-RESULT","obj":{"sawAudio":true,"firstAudioMs":4498,"chunksBefore":27,"chunksAtBarge":31,"lastOutputAudioAfterBargeMs":217}}
+{"t":"2026-08-19T19:09:48.539Z","dir":">>","obj":{"id":15,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","text":"第 1 次确认,你还在吗?简短回一句。"}}}
+{"t":"2026-08-19T19:09:49.209Z","dir":"PING","obj":{"ping":1,"atMinute":2.1,"replied":true,"firstAudioLatencyMs":649}}
+{"t":"2026-08-19T19:09:49.261Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"在的，放心。","tMs":128784}}
+{"t":"2026-08-19T19:11:53.212Z","dir":">>","obj":{"id":16,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","text":"第 2 次确认,你还在吗?简短回一句。"}}}
+{"t":"2026-08-19T19:11:53.877Z","dir":"PING","obj":{"ping":2,"atMinute":4.2,"replied":true,"firstAudioLatencyMs":621}}
+{"t":"2026-08-19T19:11:54.323Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"还在呢，有什么需要帮忙的尽管说。","tMs":253846}}
+{"t":"2026-08-19T19:13:57.880Z","dir":">>","obj":{"id":17,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","text":"第 3 次确认,你还在吗?简短回一句。"}}}
+{"t":"2026-08-19T19:13:58.593Z","dir":"PING","obj":{"ping":3,"atMinute":6.3,"replied":true,"firstAudioLatencyMs":678}}
+{"t":"2026-08-19T19:13:59.100Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"我在的，请继续。","tMs":378623}}
+{"t":"2026-08-19T19:16:02.580Z","dir":">>","obj":{"id":18,"method":"thread/realtime/appendSpeech","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","text":"第 4 次确认,你还在吗?简短回一句。"}}}
+{"t":"2026-08-19T19:16:03.400Z","dir":"PING","obj":{"ping":4,"atMinute":8.4,"replied":true,"firstAudioLatencyMs":774}}
+{"t":"2026-08-19T19:16:03.546Z","dir":"<<TX-DONE","obj":{"role":"assistant","text":"一直在，放心吧。","tMs":503069}}
+{"t":"2026-08-19T19:18:07.404Z","dir":">>","obj":{"id":19,"method":"thread/realtime/stop","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9"}}}
+{"t":"2026-08-19T19:18:07.466Z","dir":"<<","obj":{"method":"thread/realtime/closed","params":{"threadId":"01a01b6c-050f-76d0-936c-e6c9fc9c6cb9","reason":"requested"},"emittedAtMs":1787167087460}}
+{"t":"2026-08-19T19:18:08.284Z","dir":"EXIT","obj":{"code":0,"sig":null}}

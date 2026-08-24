@@ -1,0 +1,49 @@
+{
+  "issue": "FLY-1911",
+  "probe": "任务3 v3 焊进 Discord",
+  "startedAt": "2026-08-20T15:45:42.185Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "ee37ec7bb05984bb2f345dad4a583df92b4e056bcc45fffb980f5ed935bb6e90",
+  "version": "v3",
+  "resampling": "无(48k 立体声全程)",
+  "gotAnswer": true,
+  "pcState": "connected",
+  "开关": {
+    "pacer": true,
+    "jitter": true,
+    "depth": true
+  },
+  "播放缓冲": {
+    "播放缓冲写入帧": 12026,
+    "缓冲见底次数": 633
+  },
+  "播放器自己的账": {
+    "状态": "playing",
+    "播放器漏掉的帧": 0,
+    "已播放毫秒": 240000
+  },
+  "节拍器": {
+    "上行帧每秒": 49.14,
+    "下行帧每秒": 49.15,
+    "应为": 50,
+    "说明": "低于 50 就说明音频在按慢于真实时间的速度送,会同时造成听错和卡顿"
+  },
+  "ok": true,
+  "roomOpusIn": 354,
+  "rtpOut": 12000,
+  "rtpIn": 1514,
+  "silenceOut": 11646,
+  "pcmOutBytes": 5813760,
+  "userTranscripts": [],
+  "assistantTranscripts": [],
+  "plans": [],
+  "runs": [],
+  "answers": [],
+  "handoffs": [],
+  "approvals": 0,
+  "codexErrors": [],
+  "dcEventKinds": [
+    "session.started"
+  ]
+}

@@ -1,0 +1,5 @@
+{"t":"2026-08-19T23:31:46.606Z","dir":"GATEWAY","obj":{"bot":"product-lead-test#9998"}}
+{"t":"2026-08-19T23:31:47.185Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-19T23:31:53.160Z","dir":"SPEAKING","obj":{"userId":"1493068669444427927"}}
+{"t":"2026-08-19T23:32:00.877Z","dir":"STREAM-END","obj":{"userId":"1493068669444427927","packets":316,"bytes":48711}}
+{"t":"2026-08-19T23:32:09.189Z","dir":"RESULT","obj":{"heard":true,"opusPackets":316,"opusBytes":48711,"decodedWav":{"path":"D4-ears-heard.wav","bytes":1213440,"durationSec":6.32},"speakers":["1493068669444427927"]}}

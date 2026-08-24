@@ -1,0 +1,13 @@
+{"t":"2026-08-20T15:51:08.792Z","dir":"EV","obj":{"phase":"启动","method":"thread/realtime/started","p":"v3","at":"2026-08-20T15:51:08.792Z"}}
+{"t":"2026-08-20T15:51:09.524Z","dir":"ASK","obj":{"phase":"静默前","frames":95}}
+{"t":"2026-08-20T15:51:43.728Z","dir":"STDERR","obj":"2026-08-20T15:51:43.728380Z ERROR codex_api::endpoint::realtime_websocket::methods: realtime websocket receive failed: WebSocket protocol error: Connection reset without closing handshake"}
+{"t":"2026-08-20T15:51:43.728Z","dir":"STDERR","obj":"2026-08-20T15:51:43.728497Z ERROR codex_api::endpoint::realtime_websocket::methods: realtime websocket read failed: WebSocket protocol error: Connection reset without closing handshake\n2026-08-20T15:5"}
+{"t":"2026-08-20T15:51:43.729Z","dir":"EV","obj":{"phase":"静默前","method":"thread/realtime/error","p":"stream disconnected before completion: failed to read websocket message: WebSocket protocol error: Connection reset without closing handshake","at":"2026-08-20T15:51:43.729Z"}}
+{"t":"2026-08-20T15:51:43.729Z","dir":"EV","obj":{"phase":"静默前","method":"thread/realtime/closed","p":"error","at":"2026-08-20T15:51:43.729Z"}}
+{"t":"2026-08-20T15:53:39.756Z","dir":"ASK-RESULT","obj":{"phase":"静默前","它听成":[],"它答了":[],"多久开口ms":null,"回话了":false}}
+{"t":"2026-08-20T15:53:39.757Z","dir":"SILENCE-START","obj":{"分钟":1}}
+{"t":"2026-08-20T15:54:39.759Z","dir":"MARK","obj":{"分钟":1,"pcState":"connected","dcState":"open","rtpOut":10513,"rtpIn":1531,"会话事件数":3}}
+{"t":"2026-08-20T15:54:39.760Z","dir":"SILENCE-END","obj":{"pcState":"connected","dcState":"open","rtpOut":10513,"rtpIn":1531}}
+{"t":"2026-08-20T15:54:39.808Z","dir":"ASK","obj":{"phase":"静默后","frames":95}}
+{"t":"2026-08-20T15:57:10.020Z","dir":"ASK-RESULT","obj":{"phase":"静默后","它听成":[],"它答了":[],"多久开口ms":null,"回话了":false}}
+{"t":"2026-08-20T15:57:10.022Z","dir":"EV","obj":{"phase":"静默后","method":"thread/realtime/closed","p":"requested","at":"2026-08-20T15:57:10.022Z"}}

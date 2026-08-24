@@ -1,0 +1,5 @@
+{"t":"2026-08-24T01:39:22.546Z","dir":"GATEWAY","obj":{"bot":"product-lead-test#9998","selfId":"1493072948683341976"}}
+{"t":"2026-08-24T01:39:22.877Z","dir":"JOINED","obj":{"tMs":1073}}
+{"t":"2026-08-24T01:39:22.882Z","dir":"SPEAKER-SEEN","obj":{"userId":"1493068669444427927","tMs":1078}}
+{"t":"2026-08-24T01:39:38.087Z","dir":"SPEAKER-SEEN","obj":{"userId":"1493075160025272452","tMs":16283}}
+{"t":"2026-08-24T01:40:12.904Z","dir":"RESULT","obj":{"ok":true,"keptAudio":true,"speakers":[{"userId":"1493068669444427927","opusPkts":2495,"firstPacketMs":1078,"recordedSec":49.9,"peak":17217,"nonSilentSec":3.97},{"userId":"1493075160025272452","opusPkts":224,"firstPacketMs":16283,"recordedSec":4.48,"peak":9455,"nonSilentSec":2.06}]}}

@@ -1,0 +1,48 @@
+{
+  "what": "FLY-1911 最终 founder 卡 codex-voice-verdict.html 的交互核验(不是读源码,是真开浏览器跑)",
+  "when_utc": "2026-08-20T14:2x",
+  "how": {
+    "server": "python3 -m http.server 8791 --bind 127.0.0.1(本地 origin,托管页零写入)",
+    "browser": "chrome-headless-shell (ms-playwright chromium_headless_shell-1234) 经 CDP 驱动",
+    "driver": "scratchpad/cdp.mjs(测量+失败路径) 与 scratchpad/cdp2.mjs(分段序列)",
+    "why_not_playwright_mcp": "playwright MCP 起不来:Socket directory path is too long (109 chars) —— TMPDIR 撞 sun_path 上限,已知坑,改用 CDP 直驱"
+  },
+  "run1_measure_and_failure_path": {
+    "height@880": 5032,
+    "hscroll@880": false,
+    "height@1200": 5032,
+    "hscroll@1200": false,
+    "height@390": 7333,
+    "hscroll@390": false,
+    "textareas": 8,
+    "previewFirstLine": "【页面意见汇总】FLY-1911",
+    "lsPersisted": "测试意见一",
+    "chunkBtnLabel": "复制第 1/2 段",
+    "chunk1FirstLine": "【页面意见汇总】FLY-1911",
+    "chunk1Len": 1686,
+    "failPathStatus": "复制没成功 — 请手动选中下面框里的字复制",
+    "failPathStillOnChunk1": "复制第 1/2 段"
+  },
+  "run2_chunk_sequence": {
+    "afterClick1_status": "第 1 段复制好了 — 粘回 issue 后再点一次复制下一段",
+    "afterClick1_btn": "复制第 2/2 段",
+    "chunk2FirstLine": "【页面意见汇总】FLY-1911",
+    "afterClick2_status": "最后一段复制好了 — 粘回 issue 就行",
+    "copiedCount": 2,
+    "copiedAllStartWithMarker": true,
+    "copiedLens": [1686, 1698],
+    "copiedCoversAll8": 8
+  },
+  "verdict": {
+    "height_gate_6000px": "PASS(桌面宽度 5032px)",
+    "marker_first_line_verbatim": "PASS(每一段都是,不是只有第一段)",
+    "chunking_under_1800": "PASS(1686 / 1698)",
+    "no_content_lost": "PASS(8 段意见 8/8 都在复制出来的内容里)",
+    "copy_failure_honest": "PASS(如实报失败,而且不推进段号 —— 失败时那一段不会被吞掉)"
+  },
+  "honest_boundaries": [
+    "@390px 手机窄屏高度 7333px,超 6000。Discord 预览截桌面宽度所以不挡交付,但她要是在手机上看这页是长的 —— 记下来,不假装没有。",
+    "run2 的成功路径是把 navigator.clipboard.writeText 打了桩才走通的 —— 无头浏览器没有真剪贴板。所以证的是「分段/标记/不丢内容/状态文案」这套逻辑,不是「真剪贴板一定能写进去」。",
+    "run1 的失败路径是真把两个 clipboard API 都拆掉之后点的,不是模拟出来的返回值。"
+  ]
+}

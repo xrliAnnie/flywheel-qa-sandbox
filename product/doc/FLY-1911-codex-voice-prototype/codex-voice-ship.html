@@ -1,0 +1,99 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>1911 可以 ship 了吗</title>
+<style>
+:root{--bg:#f5f5f7;--c:#fff;--ink:#1d1d1f;--dim:#86868b;--b:#007aff;--g:#34c759;--a:#ff9500}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.75 -apple-system,system-ui,sans-serif}
+.w{max-width:720px;margin:0 auto;padding:28px 18px 80px}
+h1{font-size:25px;margin:0 0 6px;line-height:1.35}
+.sub{color:var(--dim);font-size:14px;margin-bottom:16px}
+.card{background:var(--c);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:18px 20px;margin:13px 0;border-left:4px solid var(--b)}
+.g{border-left-color:var(--g)}.a{border-left-color:var(--a)}
+.card h2{font-size:17px;margin:0 0 8px}
+p{margin:7px 0}ul{margin:7px 0;padding-left:20px}li{margin:4px 0}
+.dim{color:var(--dim);font-size:14px}
+.big{background:#f0f6ff;border-radius:8px;padding:12px 14px;margin-top:12px;font-size:17px}
+.cmt{margin-top:13px;border-top:1px solid #f0f0f2;padding-top:9px}.cmt label{font-size:13px;color:var(--dim)}
+textarea{width:100%;font:inherit;font-size:15px;padding:8px;border:1px solid #e0e0e5;border-radius:8px;resize:vertical;margin-top:4px}
+.sum{background:var(--c);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:16px 20px;margin-top:18px;border-left:4px solid var(--g)}
+button{font:inherit;font-weight:600;border:0;border-radius:10px;padding:11px 18px;background:var(--b);color:#fff;cursor:pointer}
+pre{background:#fafafa;border:1px solid #eee;border-radius:8px;padding:10px;white-space:pre-wrap;font:13px/1.6 'SF Mono',monospace;max-height:180px;overflow:auto}
+code{background:#f3f3f5;border-radius:4px;padding:1px 5px;font:13.5px 'SF Mono',monospace}
+</style></head><body><div class="w">
+
+<h1>FLY-1911 存档已就绪 —— 可以 ship 了吗?</h1>
+<div class="sub">这张卡只问这一个问题。不用读文档。</div>
+
+<div class="card a">
+<h2>先说清楚为什么又给你一张卡</h2>
+<p>你已经说过可以 ship 了,<b>我们没有在拖</b>。是系统要求:放行之前必须有一张<b>内容对得上</b>的卡被你通过。</p>
+<p>之前那张(讲「你听不到声音」的)<b>内容已经作废</b>——那个问题你自己解决了。而且我后来改过那份文件,
+系统一比对就发现<b>卡和文件对不上</b>,所以<b>就算你在那张上点 ✅ 也放行不了</b>。</p>
+<p class="dim">⇒ 这一张是内容对得上的那张。<b>点一下就完事。</b></p>
+</div>
+
+<section class="card g"><h2>要 ship 的是什么</h2>
+<p><b>Codex 语音 PoC 的全部存档</b> —— 你说的「先保留下来,以后真正做的时候可以参考」那份。</p>
+<ul>
+<li>能跑的桥和探针代码</li>
+<li>每一场量出来的账(哪些成了、哪些没成、数字出处)</li>
+<li><b>走过的弯路和为什么走不通</b> —— 这部分对以后建这个功能的人最有用</li>
+<li>一个入口页,说清「这是什么、当时结论是什么、从哪读起」</li>
+</ul>
+<p><b>结论没变</b>:v2 这条路端到端跑通了(你本人在房里跟它说过话、它真去干了活);v3 被上游堵死,Tadashi 已定位。</p>
+<p class="dim"><b>这是存档,不是产品,也不是规格</b> —— 真正要建的规格在你今晚定稿的那两份 PRD 里。</p>
+</section>
+
+<section class="card"><h2>要你做的</h2>
+<p class="big"><b>同意就在 Discord 那张卡片上点一个 ✅</b><br>
+<span class="dim">或者回一句 <code>approve</code> —— 这两种系统才认得。<b>回别的话不算数,ship 会一直卡着。</b></span></p>
+<div class="cmt"><label>有话要说就写这里(没有就空着,直接去点 ✅):</label>
+<textarea data-k="q" data-t="1911 ship" rows="2" placeholder="写在这里"></textarea></div>
+</section>
+
+<div class="sum"><p style="margin:0 0 8px"><b>没意见就不用碰下面这个按钮</b> —— 直接点 ✅ 就行。</p>
+<p class="dim" style="margin:0 0 10px">写了字的话:页面上的字<b>不会自动传回来</b>,得点这个复制,再粘回 issue 里我才收得到。</p>
+<button id="cp">一键汇总复制</button> <span id="st" class="dim"></span><pre id="pv">(还没写)</pre></div>
+
+</div><script nonce="__CSP_NONCE__">
+var MARK='【页面意见汇总】FLY-1911';
+var LIM=1800;
+var T=[].slice.call(document.querySelectorAll('textarea'));
+var chunks=[],idx=0;
+T.forEach(function(x){var k='fly1911ship:'+x.dataset.k;
+  try{var v=localStorage.getItem(k);if(v)x.value=v}catch(e){}
+  x.addEventListener('input',function(){try{localStorage.setItem(k,x.value)}catch(e){}build()})});
+function blocks(){var o=[];T.forEach(function(x){if(x.value.trim())o.push('【'+x.dataset.t+'】\n'+x.value.trim())});return o}
+function build(){
+  var b=blocks(),out=[],cur='';
+  for(var i=0;i<b.length;i++){
+    var piece=b[i];
+    var cand=cur?cur+'\n\n'+piece:MARK+'\n'+piece;
+    if(cur&&cand.length>LIM){out.push(cur);cur=MARK+'\n'+piece;}
+    else{cur=cand;}
+  }
+  if(cur)out.push(cur);
+  chunks=out;if(idx>=chunks.length)idx=0;
+  var pv=document.getElementById('pv'),cp=document.getElementById('cp');
+  if(!chunks.length){pv.textContent='(还没写)';cp.textContent='一键汇总复制';return}
+  pv.textContent=chunks[idx];
+  cp.textContent=chunks.length>1?('复制第 '+(idx+1)+'/'+chunks.length+' 段'):'一键汇总复制';
+}
+document.getElementById('cp').addEventListener('click',function(){
+  var st=document.getElementById('st');
+  if(!chunks.length){st.textContent='还没写东西';return}
+  var s=chunks[idx];
+  function done(ok){
+    if(!ok){st.textContent='复制没成功 — 请手动选中下面框里的字复制';return}
+    if(chunks.length>1){
+      var n=idx+1;
+      if(n<chunks.length){st.textContent='第 '+(idx+1)+' 段复制好了 — 粘回 issue 后再点一次复制下一段';idx=n;}
+      else{st.textContent='最后一段复制好了 — 粘回 issue 就行';idx=0;}
+      build();
+    }else{st.textContent='复制好了，粘回 issue 就行';}
+  }
+  function fb(){try{var a=document.createElement('textarea');a.value=s;document.body.appendChild(a);a.select();
+    var ok=document.execCommand('copy');document.body.removeChild(a);done(ok)}catch(e){done(false)}}
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(s).then(function(){done(true)},fb)}else fb();
+});
+build();
+</script></body></html>

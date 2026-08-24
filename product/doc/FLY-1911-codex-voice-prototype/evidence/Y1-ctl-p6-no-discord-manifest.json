@@ -1,0 +1,77 @@
+{
+  "issue": "FLY-1911",
+  "probe": "任务4 P-6 静默 1 分钟",
+  "startedAt": "2026-08-20T15:51:07.328Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "ce76f504a1ef12c39eea2996e75b968be269ab06b13909f5f30e57909199ee15",
+  "silenceMinutes": 1,
+  "threadId": "01a01fde-7537-7430-bb69-6374ec3f3f08",
+  "pcStateAtStart": "connected",
+  "第一次": {
+    "phase": "静默前",
+    "它听成": [],
+    "它答了": [],
+    "多久开口ms": null,
+    "回话了": false
+  },
+  "静默期观测": [
+    {
+      "分钟": 1,
+      "pcState": "connected",
+      "dcState": "open",
+      "rtpOut": 10513,
+      "rtpIn": 1531,
+      "会话事件数": 3
+    }
+  ],
+  "静默结束时": {
+    "pcState": "connected",
+    "dcState": "open",
+    "rtpOut": 10513,
+    "rtpIn": 1531
+  },
+  "第二次": {
+    "phase": "静默后",
+    "它听成": [],
+    "它答了": [],
+    "多久开口ms": null,
+    "回话了": false
+  },
+  "dcEventKinds": [
+    "session.started"
+  ],
+  "总时长分钟": 6,
+  "结论": {
+    "静默前能对话": false,
+    "静默后还能对话": false,
+    "连接是否一直在": true
+  },
+  "transcripts": [],
+  "events": [
+    {
+      "phase": "启动",
+      "method": "thread/realtime/started",
+      "p": "v3",
+      "at": "2026-08-20T15:51:08.792Z"
+    },
+    {
+      "phase": "静默前",
+      "method": "thread/realtime/error",
+      "p": "stream disconnected before completion: failed to read websocket message: WebSocket protocol error: Connection reset without closing handshake",
+      "at": "2026-08-20T15:51:43.729Z"
+    },
+    {
+      "phase": "静默前",
+      "method": "thread/realtime/closed",
+      "p": "error",
+      "at": "2026-08-20T15:51:43.729Z"
+    },
+    {
+      "phase": "静默后",
+      "method": "thread/realtime/closed",
+      "p": "requested",
+      "at": "2026-08-20T15:57:10.022Z"
+    }
+  ]
+}

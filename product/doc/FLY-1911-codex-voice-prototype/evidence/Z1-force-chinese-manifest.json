@@ -1,0 +1,85 @@
+{
+  "issue": "FLY-1911",
+  "probe": "listen — does it hear real speech?",
+  "startedAt": "2026-08-19T23:46:33.783Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "codexArgv": [
+    "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+    "--enable",
+    "realtime_conversation",
+    "app-server"
+  ],
+  "probeSha256": "ef1ed3fd55bd3f49ed75d9ce062f2c0d3b019f2d9a2190ef6df26909d5781c7f",
+  "params": {
+    "version": "v2",
+    "voice": "marin",
+    "transport": "websocket",
+    "chunkMs": 100,
+    "realtimePace": true
+  },
+  "input": {
+    "path": "probe-in.wav",
+    "sha256": "0a7e27dbcace402c6947a9f27b8c5542b07fc346aa0cecb271959e6e74e1db51",
+    "sampleRate": 24000,
+    "numChannels": 1,
+    "durationSec": 3.8,
+    "expectedText": null
+  },
+  "threadId": "01a01c6b-614e-7510-8e62-54ee31bbf978",
+  "startOutcome": {
+    "outcome": "started",
+    "message": null,
+    "version": "v2",
+    "waitedMs": 1615
+  },
+  "result": {
+    "admitted": true
+  },
+  "heard": [
+    "今天,利维尔有几个T、R还没合并。"
+  ],
+  "said": [
+    "搞定啦！今天有 42 个还没合并的 PR，其中 10 个是今天新开的。"
+  ],
+  "allDoneTranscripts": [
+    {
+      "kind": "done",
+      "role": "user",
+      "text": "今天,利维尔有几个T、R还没合并。",
+      "tMs": 7168
+    },
+    {
+      "kind": "done",
+      "role": "assistant",
+      "text": "搞定啦！今天有 42 个还没合并的 PR，其中 10 个是今天新开的。",
+      "tMs": 32893
+    }
+  ],
+  "latency": {
+    "inputDoneToFirstUserTranscriptMs": -716,
+    "inputDoneToFirstReplyAudioMs": 24165
+  },
+  "replyAudio": {
+    "path": "Z1-force-chinese-reply.wav",
+    "bytes": 271200,
+    "sampleRate": 24000,
+    "durationSec": 5.65,
+    "chunks": 15
+  },
+  "approvals": [
+    {
+      "method": "item/commandExecution/requestApproval",
+      "reason": "要不要允许我联网读取这个 GitHub 仓库当前尚未合并的 PR 数量？",
+      "itemId": "exec-a8648443-c77c-49c4-8ae1-4e28e73ddb87",
+      "tMs": 18918
+    },
+    {
+      "method": "item/commandExecution/requestApproval",
+      "reason": "要不要允许我联网复核这个 GitHub 仓库当前 open PR 的准确总数？",
+      "itemId": "exec-d698ebe1-0203-4c34-b6b4-c3fae9784291",
+      "tMs": 26618
+    }
+  ],
+  "finishedAt": "2026-08-19T23:47:11.701Z"
+}

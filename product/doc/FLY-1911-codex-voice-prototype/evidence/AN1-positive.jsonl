@@ -1,0 +1,7 @@
+{"t":"2026-08-24T01:32:50.627Z","dir":"GATEWAY","obj":{"bot":"product-lead-test#9998"}}
+{"t":"2026-08-24T01:32:50.974Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-24T01:32:50.974Z","dir":"HEARD-SPEAKER","obj":{"userId":"1493068669444427927","why":"进房时就在房里"}}
+{"t":"2026-08-24T01:32:50.975Z","dir":"REC-START","obj":{}}
+{"t":"2026-08-24T01:32:57.084Z","dir":"ASKED","obj":{}}
+{"t":"2026-08-24T01:33:01.626Z","dir":"ASK-DONE","obj":{"问话时长ms":4542}}
+{"t":"2026-08-24T01:33:45.984Z","dir":"RESULT","obj":{"ok":true,"wav":{"path":"ear2-room.wav","durationSec":54.88,"bytesPerSec":192000},"askedAt":1787535177084,"askDoneAt":1787535181626,"recStartAt":1787535170975}}

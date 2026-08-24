@@ -1,0 +1,20 @@
+{
+  "issue": "FLY-1911",
+  "probe": "v3 full webrtc handshake",
+  "startedAt": "2026-08-20T00:22:39.246Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "83e059a055949b9a3c26ec0a75f3f0bbad5bca2e6d9c5e02ba27217f0e289760",
+  "params": {
+    "version": "v3",
+    "voice": "cove",
+    "delegationAckFiller": true,
+    "codexResponseHandoffMode": "thinking"
+  },
+  "ask": "今天 Flywheel 有几个 PR 还没合并?",
+  "threadId": "01a01c8c-7016-76f3-a4e2-0658c9a59448",
+  "startOutcome": {
+    "outcome": "error",
+    "message": "unexpected status 401 Unauthorized: Provided authentication token is expired., url: https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas, cf-ray: a2dd3ec85fc5dba2-LAX, auth error: 401, auth error code: token_expired"
+  }
+}

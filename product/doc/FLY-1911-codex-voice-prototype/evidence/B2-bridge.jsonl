@@ -1,0 +1,13 @@
+{"t":"2026-08-20T03:07:58.168Z","dir":"GATEWAY","obj":{"bot":"flywheel-test-1#0230"}}
+{"t":"2026-08-20T03:07:59.402Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-20T03:07:59.519Z","dir":"PLAYER","obj":{"from":"idle","to":"buffering"}}
+{"t":"2026-08-20T03:07:59.519Z","dir":"READY","obj":{"msg":"房里可以说话了","runMinutes":3}}
+{"t":"2026-08-20T03:07:59.523Z","dir":"PLAYER","obj":{"from":"buffering","to":"playing"}}
+{"t":"2026-08-20T03:07:59.962Z","dir":"CODEX","obj":{"state":"realtime started","version":"v2"}}
+{"t":"2026-08-20T03:08:02.267Z","dir":"TX","obj":{"role":"assistant","text":"太好了，咱们开始聊吧！你想谈什么或者需要我帮什么忙吗？"}}
+{"t":"2026-08-20T03:08:14.880Z","dir":"SPEAKING","obj":{"userId":"1493072948683341976"}}
+{"t":"2026-08-20T03:08:19.460Z","dir":"STREAM-END","obj":{"userId":"1493072948683341976","heardChunks":194}}
+{"t":"2026-08-20T03:08:20.368Z","dir":"TX","obj":{"role":"user","text":"今天李维尔有几个PR还没合并。"}}
+{"t":"2026-08-20T03:09:19.793Z","dir":"TX","obj":{"role":"assistant","text":"现在 Flywheel 有 41 个未合并的 PR，其中今天新开的有 9 个，还有一个是 Draft。链接在这儿： https://github.com/xrliAnnie/flywheel/pulls 。有其他问题或者想了解某个具体 PR 吗？"}}
+{"t":"2026-08-20T03:11:00.761Z","dir":"RESULT","obj":{"ok":true,"heardChunks":194,"heardBytes":186240,"spokeChunks":52,"spokeBytes":972000,"userTranscripts":["今天李维尔有几个PR还没合并。"],"assistantTranscripts":["太好了，咱们开始聊吧！你想谈什么或者需要我帮什么忙吗？","现在 Flywheel 有 41 个未合并的 PR，其中今天新开的有 9 个，还有一个是 Draft。链接在这儿： https://github.com/xrliAnnie/flywheel/pulls 。有其他问题或者想了解某个具体 PR 吗？"],"approvals":0,"codexErrors":[]}}
+{"t":"2026-08-20T03:11:00.780Z","dir":"PLAYER","obj":{"from":"playing","to":"autopaused"}}

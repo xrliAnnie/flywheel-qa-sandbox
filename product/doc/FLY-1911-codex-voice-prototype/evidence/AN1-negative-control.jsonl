@@ -1,0 +1,4 @@
+{"t":"2026-08-24T01:30:47.426Z","dir":"GATEWAY","obj":{"bot":"product-lead-test#9998"}}
+{"t":"2026-08-24T01:30:47.838Z","dir":"JOINED","obj":{}}
+{"t":"2026-08-24T01:30:47.845Z","dir":"HEARD-SPEAKER","obj":{"userId":"1493068669444427927","tMs":1402}}
+{"t":"2026-08-24T01:31:47.846Z","dir":"RESULT","obj":{"ok":true,"opusPacketsHeard":2997,"decoded":{"path":"ear1-heard-in-room.wav","durationSec":59.94},"firstHeardAfterAskMs":null}}

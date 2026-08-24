@@ -1,0 +1,227 @@
+{
+  "issue": "FLY-1911",
+  "probe": "任务2 全事件 firehose",
+  "startedAt": "2026-08-20T07:03:22.617Z",
+  "codexResolved": "/Users/xiaorongli/.codex-mufasa/packages/standalone/releases/0.148.0-aarch64-apple-darwin/bin/codex",
+  "codexSha256": "b0308517b20543012fa2171aa3d46ce455a7456c4eb2a552ab9468ba4eeb1e50",
+  "probeSha256": "8a8e62fad579e31a08c070397ae1685db8bd402e4249a833427bd321b7e4b40c",
+  "transport": "websocket",
+  "version": "v2",
+  "ask": "今天 Flywheel 这个仓库有几个 PR 还没合并?去真的查一下再告诉我。",
+  "threadId": "01a01dfb-52a4-7221-87e2-382ea628e668",
+  "startRejected": null,
+  "heldSec": 90.1,
+  "audio": {
+    "chunks": 20,
+    "base64Chars": 505600
+  },
+  "eventKinds": [
+    {
+      "method": "item/agentMessage/delta",
+      "count": 96,
+      "firstSinceAskMs": 6569,
+      "paramKeys": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "delta"
+      ],
+      "sample": "{\"method\":\"item/agentMessage/delta\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turnId\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"itemId\":\"msg_033465f9b85eff68016a86a6c80aac87d090ef9c1a9bec189e\",\"delta\":\"我\"},\"emittedAtMs\":1787209415977}"
+    },
+    {
+      "method": "thread/realtime/transcript/delta",
+      "count": 33,
+      "firstSinceAskMs": 56089,
+      "paramKeys": [
+        "threadId",
+        "role",
+        "delta"
+      ],
+      "sample": "{\"method\":\"thread/realtime/transcript/delta\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"role\":\"assistant\",\"delta\":\"查\"},\"emittedAtMs\":1787209465498}"
+    },
+    {
+      "method": "thread/realtime/outputAudio/delta",
+      "count": 20,
+      "firstSinceAskMs": 56351,
+      "paramKeys": [
+        "threadId",
+        "audio"
+      ],
+      "sample": "{\"method\":\"thread/realtime/outputAudio/delta\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"audio\":{\"data\":\"BQAHAAYABQAGAAkABwAGAAgACAAJAAgACQAKAAkACgAJAAsACQAIAAsACQAJAAsACgAKAAoACwAMAAgACQALAAkACgALAAoACwAKAAoACgALAAsACAAKAAoACQAJAAsACgAKAAsACwALAAoACgAJAAwACwANAAwACwAMAA0ADQANAAwADQANAAwADAAMAA4ADAANAAwADAALAA4ACgALAAsADAAKAAsACwAJAAoACwAKAAsACgAIAAoACgAKAAoACAAMAAgACAAJAAkACAAKAAkACQAJAAkACAAJAAoACgAKAAoACgAIAAkACgAKAAgACQAKAAoACgAKAAkACwANAAoADAAMAA0ADQALAA0ADQAOAAwADQAQAA0ADwAQAA8ADgAPAA8AEAAPABAAEAARABEAEQASABAAEgARABMAEQASABMAEgARABMAEwAUABQAEwAUABUAEwASABMAFAAUABMAFAATA…(截断)"
+    },
+    {
+      "method": "item/started",
+      "count": 13,
+      "firstSinceAskMs": 4396,
+      "paramKeys": [
+        "item",
+        "threadId",
+        "turnId",
+        "startedAtMs"
+      ],
+      "sample": "{\"method\":\"item/started\",\"params\":{\"item\":{\"type\":\"userMessage\",\"id\":\"01a01dfb-74ac-7da3-9f93-83cb837640e0\",\"clientId\":null,\"content\":[{\"type\":\"text\",\"text\":\"<realtime_delegation>\\n  <input>今天 Flywheel 这个仓库有几个 PR 还没合并?去真的查一下再告诉我。</input>\\n  <transcript_delta>user: 今天 Flywheel 这个仓库有几个 PR 还没合并?去真的查一下再告诉我。</transcript_delta>\\n</realtime_delegation>\",\"text_elements\":[]}]},\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turnId\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"startedAtMs\":1787209413804},\"emittedAtMs\":1787209413804}"
+    },
+    {
+      "method": "item/completed",
+      "count": 13,
+      "firstSinceAskMs": 4396,
+      "paramKeys": [
+        "item",
+        "threadId",
+        "turnId",
+        "completedAtMs"
+      ],
+      "sample": "{\"method\":\"item/completed\",\"params\":{\"item\":{\"type\":\"userMessage\",\"id\":\"01a01dfb-74ac-7da3-9f93-83cb837640e0\",\"clientId\":null,\"content\":[{\"type\":\"text\",\"text\":\"<realtime_delegation>\\n  <input>今天 Flywheel 这个仓库有几个 PR 还没合并?去真的查一下再告诉我。</input>\\n  <transcript_delta>user: 今天 Flywheel 这个仓库有几个 PR 还没合并?去真的查一下再告诉我。</transcript_delta>\\n</realtime_delegation>\",\"text_elements\":[]}]},\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turnId\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"completedAtMs\":1787209413804},\"emittedAtMs\":1787209413804}"
+    },
+    {
+      "method": "item/commandExecution/outputDelta",
+      "count": 12,
+      "firstSinceAskMs": 12273,
+      "paramKeys": [
+        "threadId",
+        "turnId",
+        "itemId",
+        "delta"
+      ],
+      "sample": "{\"method\":\"item/commandExecution/outputDelta\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turnId\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"itemId\":\"exec-34c64a54-91fc-4dc6-83ae-d9ebe62fddad\",\"delta\":\"---\\nname: using-superpowers\\ndescription: Use when starting any conversation - establishes how to find and use skills, requiring Skill tool invocation before ANY response including clarifying questions\\n---\\n\\n<SUBAGENT-STOP>\\nIf you were dispatched as a subagent to execute a specific task, skip this skill.\\n</SUBAGENT-STOP>\\n\\n<EXTREMELY-IMPORTANT>\\nIf you think there is even a 1…(截断)"
+    },
+    {
+      "method": "thread/realtime/itemAdded",
+      "count": 7,
+      "firstSinceAskMs": 3105,
+      "paramKeys": [
+        "threadId",
+        "item"
+      ],
+      "sample": "{\"method\":\"thread/realtime/itemAdded\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"item\":{\"id\":\"item_EEr6C8zeDWAtF3PQfgCAO\",\"type\":\"message\",\"status\":\"completed\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"[BACKEND] 今天 Flywheel 这个仓库有几个 PR 还没合并?去真的查一下再告诉我。\"}]}},\"emittedAtMs\":1787209412513}"
+    },
+    {
+      "method": "thread/tokenUsage/updated",
+      "count": 6,
+      "firstSinceAskMs": 12357,
+      "paramKeys": [
+        "threadId",
+        "turnId",
+        "tokenUsage"
+      ],
+      "sample": "{\"method\":\"thread/tokenUsage/updated\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turnId\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"tokenUsage\":{\"total\":{\"totalTokens\":18872,\"inputTokens\":18626,\"cachedInputTokens\":11008,\"cacheWriteInputTokens\":0,\"outputTokens\":246,\"reasoningOutputTokens\":17},\"last\":{\"totalTokens\":18872,\"inputTokens\":18626,\"cachedInputTokens\":11008,\"cacheWriteInputTokens\":0,\"outputTokens\":246,\"reasoningOutputTokens\":17},\"modelContextWindow\":258400}},\"emittedAtMs\":1787209421765}"
+    },
+    {
+      "method": "account/rateLimits/updated",
+      "count": 6,
+      "firstSinceAskMs": 12357,
+      "paramKeys": [
+        "rateLimits"
+      ],
+      "sample": "{\"method\":\"account/rateLimits/updated\",\"params\":{\"rateLimits\":{\"limitId\":\"codex\",\"limitName\":null,\"primary\":{\"usedPercent\":0,\"windowDurationMins\":10080,\"resetsAt\":1787811976},\"secondary\":null,\"credits\":{\"hasCredits\":false,\"unlimited\":false,\"balance\":\"0\"},\"individualLimit\":null,\"spendControlReached\":null,\"planType\":\"pro\",\"rateLimitReachedType\":null}},\"emittedAtMs\":1787209421765}"
+    },
+    {
+      "method": "(rpc-response)",
+      "count": 4,
+      "firstSinceAskMs": 316,
+      "paramKeys": [
+        "userAgent",
+        "codexHome",
+        "platformFamily",
+        "platformOs"
+      ],
+      "sample": "{\"id\":1,\"result\":{\"userAgent\":\"fly1911-dump/0.148.0 (Mac OS 26.6.2; arm64) ghostty/1.3.0-HEAD_80d3fa0 (fly1911-dump; 0.0.1)\",\"codexHome\":\"/Users/xiaorongli/.codex-mufasa\",\"platformFamily\":\"unix\",\"platformOs\":\"macos\"}}"
+    },
+    {
+      "method": "mcpServer/startupStatus/updated",
+      "count": 4,
+      "firstSinceAskMs": null,
+      "paramKeys": [
+        "threadId",
+        "name",
+        "status",
+        "error",
+        "failureReason"
+      ],
+      "sample": "{\"method\":\"mcpServer/startupStatus/updated\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"name\":\"lead_actions\",\"status\":\"starting\",\"error\":null,\"failureReason\":null},\"emittedAtMs\":1787209406715}"
+    },
+    {
+      "method": "thread/status/changed",
+      "count": 2,
+      "firstSinceAskMs": 3978,
+      "paramKeys": [
+        "threadId",
+        "status"
+      ],
+      "sample": "{\"method\":\"thread/status/changed\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"status\":{\"type\":\"active\",\"activeFlags\":[]}},\"emittedAtMs\":1787209413387}"
+    },
+    {
+      "method": "remoteControl/status/changed",
+      "count": 1,
+      "firstSinceAskMs": null,
+      "paramKeys": [
+        "status",
+        "serverName",
+        "installationId",
+        "environmentId"
+      ],
+      "sample": "{\"method\":\"remoteControl/status/changed\",\"params\":{\"status\":\"disabled\",\"serverName\":\"MacBook-Pro.local\",\"installationId\":\"60ab5ad3-6835-4522-b582-f3f2fd4c3d34\",\"environmentId\":null},\"emittedAtMs\":1787209404620}"
+    },
+    {
+      "method": "thread/started",
+      "count": 1,
+      "firstSinceAskMs": null,
+      "paramKeys": [
+        "thread"
+      ],
+      "sample": "{\"method\":\"thread/started\",\"params\":{\"thread\":{\"id\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"extra\":null,\"sessionId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"forkedFromId\":null,\"parentThreadId\":null,\"preview\":\"\",\"ephemeral\":false,\"section\":null,\"sectionEnteredAt\":null,\"historyMode\":\"legacy\",\"modelProvider\":\"openai\",\"createdAt\":1787209406,\"updatedAt\":1787209406,\"recencyAt\":1787209406,\"status\":{\"type\":\"idle\"},\"path\":\"/Users/xiaorongli/.codex-mufasa/sessions/2026/08/20/rollout-2026-08-20T00-03-25-01a01dfb-52a4-7221-87e2-382ea628e668.jsonl\",\"cwd\":\"/private/tmp/claude-501/-Users-xiaorongli-Dev-flywhe…(截断)"
+    },
+    {
+      "method": "warning",
+      "count": 1,
+      "firstSinceAskMs": null,
+      "paramKeys": [
+        "threadId",
+        "message"
+      ],
+      "sample": "{\"method\":\"warning\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"message\":\"Under-development features enabled: realtime_conversation. Under-development features are incomplete and may behave unpredictably. To suppress this warning, set `suppress_unstable_features_warning = true` in /Users/xiaorongli/.codex-mufasa/config.toml.\"},\"emittedAtMs\":1787209406715}"
+    },
+    {
+      "method": "thread/realtime/started",
+      "count": 1,
+      "firstSinceAskMs": 2916,
+      "paramKeys": [
+        "threadId",
+        "realtimeSessionId",
+        "version"
+      ],
+      "sample": "{\"method\":\"thread/realtime/started\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"realtimeSessionId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"version\":\"v2\"},\"emittedAtMs\":1787209412325}"
+    },
+    {
+      "method": "turn/started",
+      "count": 1,
+      "firstSinceAskMs": 3979,
+      "paramKeys": [
+        "threadId",
+        "turn"
+      ],
+      "sample": "{\"method\":\"turn/started\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turn\":{\"id\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"items\":[],\"itemsView\":\"notLoaded\",\"status\":\"inProgress\",\"error\":null,\"startedAt\":1787209413,\"completedAt\":null,\"durationMs\":null}},\"emittedAtMs\":1787209413387}"
+    },
+    {
+      "method": "turn/completed",
+      "count": 1,
+      "firstSinceAskMs": 55797,
+      "paramKeys": [
+        "threadId",
+        "turn"
+      ],
+      "sample": "{\"method\":\"turn/completed\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"turn\":{\"id\":\"01a01dfb-72b5-73b2-8d3f-96eefcc61829\",\"items\":[{\"type\":\"agentMessage\",\"id\":\"msg_033465f9b85eff68016a86a6f75b0087d090d7382a0ece1ed9\",\"text\":\"刚刚实时查了 GitHub：Flywheel 仓库目前有 **42 个尚未合并的 PR**，其中 **1 个是 Draft**。\\n\\n[查看全部未合并 PR](https://github.com/xrliAnnie/flywheel/pulls)\",\"phase\":\"final_answer\",\"memoryCitation\":null}],\"itemsView\":\"summary\",\"status\":\"completed\",\"error\":null,\"startedAt\":1787209413,\"completedAt\":1787209465,\"durationMs\":51826}},\"emittedAtMs\":1787209465204}"
+    },
+    {
+      "method": "thread/realtime/transcript/done",
+      "count": 1,
+      "firstSinceAskMs": 57917,
+      "paramKeys": [
+        "threadId",
+        "role",
+        "text"
+      ],
+      "sample": "{\"method\":\"thread/realtime/transcript/done\",\"params\":{\"threadId\":\"01a01dfb-52a4-7221-87e2-382ea628e668\",\"role\":\"assistant\",\"text\":\"查到了，目前有 42 个未合并的 PR，其中 1 个是 Draft。如果你想查看全部，可以点击我这儿的链接。\"},\"emittedAtMs\":1787209467322}"
+    }
+  ]
+}
