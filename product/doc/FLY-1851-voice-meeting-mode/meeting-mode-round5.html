@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>会议模式 · 第 5 轮 —— 原型要做到什么程度</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:22.5px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.3px;margin-bottom:13px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14.2px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:15px 16px;margin:0 0 13px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  .quote{border-left:3px solid #d8d8de;padding:3px 0 3px 11px;margin:8px 0;
+    color:#3a3a3c;font-size:13.4px}
+  table{border-collapse:collapse;width:100%;font-size:13.1px;margin:8px 0}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px}
+  td.gap{background:#fff5f5;font-weight:600;color:#a4262c}
+  td.have{color:#1a7f37}
+  .p{font-size:13.9px;margin:8px 0}
+  .lbl{font-size:12.3px;color:var(--dim);margin:10px 0 4px}
+  textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.3px;resize:vertical;
+    background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;
+    align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;
+    padding:10px 17px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.8px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  #dump{display:none;margin-top:10px;min-height:150px}
+  .note{font-size:12.6px;color:var(--dim);margin-top:8px}
+  .flag{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px}
+  .f-ask{background:#fff4e3;color:#8a5200}
+  .f-gap{background:#ffe9e9;color:#a4262c}
+  .f-have{background:#e6f7ec;color:#1a7f37}
+  ul{margin:6px 0 6px 0;padding-left:20px;font-size:13.6px}
+  li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>会议模式 · 第 5 轮</h1>
+<div class="sub">你问的「原型要做到什么程度」—— 我给了判据 · 2026-08-19</div>
+
+<div class="hero">
+<b>你上一轮问的那个问题，我认为是这一整轮里最值钱的一个。</b><br>
+第 ① 节是我的答案。第 ② 节是日历那件事 —— <b>你把问题问对了，我上一轮漏了一层</b>。<br>
+其余几节是「已经定了」的确认，扫一眼就行。
+</div>
+
+<section class="hot">
+<h2>① 原型要做到什么程度 <span class="flag f-ask">要你拍</span></h2>
+<div class="p">你说不需要做到 production level。我同意，而且我想给一条更硬的判据：</div>
+<div class="p" style="font-size:15px"><b>原型只验那些「如果不成立，方案就得改」的东西。其余一律不验。</b></div>
+<div class="p">按这条推下去，<b>必须验的只有四件</b> —— 它们全都是「不成立就要回来改方案」的：</div>
+<table>
+<tr><th style="width:44%">要验的</th><th>不成立的话，方案哪里要改</th></tr>
+<tr><td><b>1. 能进语音房，并且能一来一回</b></td><td>整个形态不成立，推倒重来</td></tr>
+<tr><td class="pick"><b>2. Codex 自己能不能听懂</b></td><td><b>你选的「全套 Codex」要退回另一条路</b>（Codex 说话 + 现有的耳朵收音）。<b>这是方案里唯一一条你做了选择、而且可能被实测推翻的</b></td></tr>
+<tr><td><b>3. 一场能撑到半小时</b>（今天只测到 6.3 分钟）</td><td>「一场半小时」要改，「没聊完约下一次」的分量变重</td></tr>
+<tr><td><b>4. 真人说话时，打断和延迟还成不成立</b>（今天喂的是合成音，不是真人）</td><td>「Codex 原生已经够好」这个前提没了，那几条要从「验证」改回「要建」</td></tr>
+</table>
+<div class="p"><b>明确不验的</b>（说清楚，免得原型越做越大）：<br>
+notes 写得好不好 · HTML 怎么生成 · 开关 issue · 归档 · 日历提醒 · 会末总结怎么措辞<br>
+⇒ 因为<b>这些是工程活，不是「做不做得出来」的问题</b>。做得不好可以改，<b>改了也不会推翻方案里任何一条</b>。
+把它们放进原型，只会让原型一路长到 production level —— 而你说了没必要。</div>
+<div class="p"><b>⇒ 所以「做到什么程度」的具体答案是：</b><br>
+<b>一次真机 —— 你（真人）和一个 Codex Lead 在语音房里聊满半小时，能听清、能打断、能一来一回。</b><br>
+不需要产出 notes、不需要开 issue、不需要生成 HTML、不需要归档。<br>
+<b>这一次跑通，方案就可以定稿交给 Tadashi；跑不通，就回来改上面那四条对应的部分。</b></div>
+<div class="p"><span class="flag f-gap">一个提醒</span>
+四条里<b>第 2 条最可能翻车</b>（收音那半从来没验过），而它一翻车就要动你已经做过的选择。
+<b>所以第 2 条应该最先验，别放到最后。</b></div>
+<div class="lbl">🔴 这个标准可以吗?要不要加/减?</div>
+<textarea data-k="proto" placeholder="例:可以，就这样 / 第 3 条半小时太长了，20 分钟就够 / 我还想验……"></textarea>
+</section>
+
+<section class="warn">
+<h2>② 日历 —— 你把问题问对了，我上一轮漏了一层 <span class="flag f-ask">要你拍</span></h2>
+<div class="p">你问：<b>「那 leader 他从哪里去读这个信息？我有 access 到我的 Google 日历，leader 有吗？」</b><br>
+我上一轮只验证了「能不能读你的日历」，<b>没问过「Lead 拿什么身份读」</b>。这层是你补上的。</div>
+<div class="p"><b>我去查了，有个事实跟你的直觉不太一样：</b><br>
+你的 option 1（给所有 Lead 加 access）—— <b>技术上根本不需要「加」</b>。
+因为读日历那个工具的登录信息就存在这台电脑上，<b>而所有 Lead 跟你是同一台电脑、同一个账户</b>，
+它们现在就能读你的日历。<br>
+<b>⇒ 所以你说「这个可能不是最好的」是对的，但理由跟你想的不同：问题不是权限拿不到，是范围太大</b> ——
+那样 Lead 看到的是你<b>整个</b>日历，不只是会议。</div>
+<div class="p">你的 option 3（给 agent 用的日历）我也查了：<b>2026 确实有这类产品在冒出来</b>，
+但没有值得采纳的标准，<b>而且引入它 = 多一个外部服务 + 多一份登录信息</b>。
+它要解的问题，option 2 用零依赖就解掉了。<b>⇒ 我建议不做。</b></div>
+<div class="p"><b>我的方案（就是你的 option 2）：</b></div>
+<table>
+<tr><th style="width:22%">谁</th><th>记在哪</th><th>负责什么</th></tr>
+<tr><td><b>你</b></td><td>照常记进你自己的 Google 日历</td><td><b>在你手机上响</b> —— 这件事只有它能做</td></tr>
+<tr><td><b>我们</b></td><td>本地一个「会议表」文件，<b>只记：几点 / 哪个 Lead / 开什么会</b></td><td>让 Lead 知道该进房。<b>不碰你别的日程</b></td></tr>
+</table>
+<div class="p"><b>两份不算重复</b>，因为职责不同 —— <b>没有任何一份能同时干这两件事</b>。</div>
+<div class="p"><span class="flag f-gap">诚实说一个缺点</span>
+两边可能不同步（你改了日历但没改文件）。便宜的补法：<b>约会的时候，由要跟你开会的那个 Lead 同时写两边</b>
+（它本来就负责提醒你）。<b>这条我没实际验过，是推出来的，先标着。</b></div>
+<div class="lbl">🔴 就按这个来吗?</div>
+<textarea data-k="cal" placeholder="例:可以 / 我不想记两个地方 / 只要本地文件就行，日历我自己管"></textarea>
+</section>
+
+<section class="ok">
+<h2>③ 你上一轮定的，我都收进方案了</h2>
+<table>
+<tr><th style="width:34%">这一条</th><th>已写成</th></tr>
+<tr><td><b>会里谁记 notes</b></td><td><b>C</b> —— 会里 Lead 先记流水，<b>会后</b>才开 runner 整理成 HTML</td></tr>
+<tr><td><b>会上要看 HTML 怎么办</b></td><td>发在<b>这场会那条 issue 自己的 thread</b> 里 —— 你手机上点开就能看，<b>零新增机制</b></td></tr>
+<tr><td><b>没产出待办怎么收</b></td><td>HTML 上<b>只出 meeting notes</b>，你还是可以看，<b>然后就可以归档</b>。不为这种情况另设一套流程</td></tr>
+</table>
+<div class="lbl">(可留空)</div>
+<textarea data-k="confirmed" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>④ 那个「挂错单」的洞 —— 你给的出口比我三个都好</h2>
+<div class="p">我给了三个出口，<b>你一个都没选，而是指出了第四个</b>：</div>
+<div class="p"><b>「反正最后都是要给我出一个 meeting notes 和 action item 的 list，我还是要去 review 的嘛，
+那我看的时候不就能看出来哪里有问题了嘛？」</b></div>
+<div class="p"><b>你说得对，而且更省</b> —— 这个检查点<b>本来就在流程里</b>，不用新增任何东西。已按这个写。</div>
+<div class="p"><span class="flag f-have">一处我特意写死的</span>
+我在方案里明确写了：<b>不许因为这句话，就把「你不审 notes」改写成「你要审 notes」。</b><br>
+区别是：<b>流程不会等你</b>（这条没变），但<b>你自己会看</b>。
+—— 把你主动会做的事写成一道流程门，正好是你不要的那种东西。</div>
+<div class="lbl">(可留空)</div>
+<textarea data-k="gapfix" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>⑤ 又一次转写错，正好还是那个例子</h2>
+<div class="p">你上一轮那条语音里，「<b>issue</b>」被转写成「esc」、「它自己的 <b>thread</b>」变成「它自己的算的」、「Tadashi」变成「塔达西」。
+<b>我都能还原</b>，因为读起来不通。</div>
+<div class="p"><b>这已经是连着第三轮出现同类的错了</b> —— 也正好又一次说明那件事：
+<b>这种错看得出来；但要是「1833」被听成另一个单号，看不出来</b>，因为那句话读起来完全正常。
+所以复述只挡得住前一种，后一种得靠你 review action items 时挡（就是上面第 ④ 节）。</div>
+<div class="p"><span class="note">另外有一处我标了「不确定」没敢猜：你说的「我就说一月」我没还原，也没拿它下任何结论。</span></div>
+<div class="lbl">(可留空)</div>
+<textarea data-k="asr" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>⑥ 接下来</h2>
+<div class="p">上面①②定了之后，我这边就没有还需要你拿主意的事了。<br>
+然后按你定的顺序：<b>先做原型（按第 ① 节那个标准）→ 拿结果回来改一遍方案 → 确认没问题 → 才交 Tadashi。</b></div>
+<div class="lbl">还有别的要讨论的吗?(可留空)</div>
+<textarea data-k="next" placeholder=""></textarea>
+</section>
+
+<div class="hero">
+<b>怎么回我:</b><br>
+· <b>有意见</b> → 在上面框里写完,点下面「一键汇总复制」,把复制到的内容贴回这条 issue 的 thread。<br>
+· <b>要通过</b> → <b>不用那个按钮</b>,直接点 ✅ 或回一句「都可以了」。<br>
+<span class="note">页面上的批注只存在你自己的浏览器里,不会自动传给我 —— 一定要贴回来我才看得到。</span>
+</div>
+
+<textarea id="dump" readonly></textarea>
+
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1851-meeting-mode-round5-v1';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.innerText.trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    try{
+      var raw=localStorage.getItem(KEY); if(!raw) return;
+      var d=JSON.parse(raw);
+      boxes.forEach(function(b){ if(d[b.dataset.k]) b.value=d[b.dataset.k]; });
+    }catch(e){}
+  }
+  function save(){
+    try{
+      var d={}; boxes.forEach(function(b){ if(b.value.trim()) d[b.dataset.k]=b.value; });
+      localStorage.setItem(KEY,JSON.stringify(d));
+    }catch(e){}
+  }
+  function build(){
+    var out=['【会议模式 第 5 轮 —— 我的意见】',''];
+    var n=0;
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      n++; out.push('■ '+title(b)); out.push(v); out.push('');
+    });
+    if(!n) return null;
+    return out.join('\n').trim();
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+
+  boxes.forEach(function(b){ b.addEventListener('input',save); });
+  load();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('还没有写任何意见','bad'); return; }
+    flag('复制中…','');
+    (async function(){
+      try{
+        if(!navigator.clipboard || !navigator.clipboard.writeText){
+          throw new Error('no clipboard api');
+        }
+        await navigator.clipboard.writeText(text);
+        flag('✅ 已复制 —— 请贴回 issue thread','good');
+      }catch(err){
+        dump.style.display='block';
+        dump.value=text;
+        dump.focus(); dump.select();
+        flag('❌ 复制失败 —— 请手动全选下面这个框复制','bad');
+      }
+    })();
+  });
+
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; });
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    dump.style.display='none';
+    flag('已清空','');
+  });
+})();
+</script>
+</body>
+</html>

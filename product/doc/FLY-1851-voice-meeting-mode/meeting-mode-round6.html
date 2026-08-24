@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>会议模式 · 第 6 轮 —— 麦克风那件事</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:22.5px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.3px;margin-bottom:13px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14.2px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:15px 16px;margin:0 0 13px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  .quote{border-left:3px solid #d8d8de;padding:3px 0 3px 11px;margin:8px 0;
+    color:#3a3a3c;font-size:13.4px}
+  table{border-collapse:collapse;width:100%;font-size:13.1px;margin:8px 0}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px}
+  td.gap{background:#fff5f5;font-weight:600;color:#a4262c}
+  td.have{color:#1a7f37}
+  .p{font-size:13.9px;margin:8px 0}
+  .lbl{font-size:12.3px;color:var(--dim);margin:10px 0 4px}
+  textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.3px;resize:vertical;
+    background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;
+    align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;
+    padding:10px 17px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.8px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  #dump{display:none;margin-top:10px;min-height:150px}
+  .note{font-size:12.6px;color:var(--dim);margin-top:8px}
+  .flag{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px}
+  .f-ask{background:#fff4e3;color:#8a5200}
+  .f-gap{background:#ffe9e9;color:#a4262c}
+  .f-have{background:#e6f7ec;color:#1a7f37}
+  ul{margin:6px 0 6px 0;padding-left:20px;font-size:13.6px}
+  li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>会议模式 · 第 6 轮</h1>
+<div class="sub">一件要你拿主意的，两件告诉你一声 · 2026-08-19</div>
+
+<div class="hero">
+<b>这一轮只有一个真问题（第 ① 节，关于麦克风）。</b><br>
+第 ②③ 节是「你之前定的东西有变化，你该知道」，不用回。<br>
+<span class="note">上一轮那两个「可以」我都收进方案了，不再问。</span>
+</div>
+
+<section class="hot">
+<h2>① 麦克风什么时候是开着的 <span class="flag f-ask">要你拿主意</span></h2>
+<div class="p">这条 PRD 里从来没讨论过，是我在查别的东西时撞出来的。</div>
+<div class="p"><b>先说结论性的事实</b>：我们要用的这套语音，<b>是靠一直听着来判断你说完没有的</b>。
+也就是说，<b>开会期间麦克风是一直开着的</b> —— 不是「你按一下才听」。</div>
+<div class="p">而你定的两个场景，恰好都不是安静的地方：</div>
+<table>
+<tr><th style="width:26%">场景</th><th>麦会听到</th></tr>
+<tr><td><b>开车</b></td><td>后座的人说话 · 导航 · 电台 · 路噪</td></tr>
+<tr><td><b>做家务</b></td><td>电视 · 家人说话 · 水声</td></tr>
+</table>
+<div class="p"><b>我想问的不是「识别会不会出错」</b> —— 那个你已经说过靠上下文能救。<b>我想问的是：</b></div>
+<div class="p" style="font-size:15px"><b>麦克风开着的时候，你要怎么知道它开着？什么时候它该自己闭嘴？</b></div>
+
+<div class="p"><span class="flag f-gap">⚠️ 一件我必须先告诉你的，不然你会在错的前提下回答</span><br>
+<b>「让它闭麦」这件事，今天我们做不到</b> —— 但原因跟你可能想的不一样：</div>
+<table>
+<tr><td style="width:30%"><b>服务端</b></td><td>✅ <b>有</b>一个「暂停接收」的动作</td></tr>
+<tr><td><b>我们用的这套 CLI</b></td><td>🔴 <b>没有实现它</b> —— 里面根本搜不到</td></tr>
+<tr><td><b>真按下去会怎样</b></td><td>❓ <b>没人验过</b>（会不会被当成掉线，不知道）</td></tr>
+<tr><td><b>今天要用</b></td><td>得<b>我们自己写</b></td></tr>
+</table>
+<div class="p"><b>所以不是「必须一直开着、你没得选」，而是「我们这条路上今天关不了，要关就得自己建」。</b>
+这两件事对你的意思不一样，所以我把话说到这个程度，<b>而不是含糊地说「我们会想办法」。</b></div>
+<div class="p">你可以按「假设我们愿意为它花时间建」来回答 —— 我要知道的是<b>你需要什么</b>，
+建不建、多久建，是我和 Tadashi 的事。</div>
+
+<div class="lbl">🔴 麦开着的时候你要怎么知道?什么时候它该闭嘴?</div>
+<textarea data-k="mic" placeholder="例:开会时我知道就行，平时绝对不能开 / 我要能随时说一句让它别听 / 上车前后各提醒我一次 / 我不在意，这个别花时间"></textarea>
+</section>
+
+<section class="warn">
+<h2>② 你定的「你来带节奏」，可能不在我们手上了 <span class="flag f-gap">告诉你一声</span></h2>
+<div class="p">你之前说：<b>「我觉得你可以主动带节奏。」</b>我写进方案了。</div>
+<div class="p"><b>但实测下来，这套语音是它自己决定什么时候接话的</b> ——
+不是「你说完 → 轮到我 → 我说」，而是它一直听着、自己判断你说完没有、要不要开口。</div>
+<div class="p">⇒ 所以<b>「带节奏」有多少能由我们控制，现在是个真问题</b>，不是一句设计选择。
+这条我先标出来，<b>等原型真跑起来才知道能控制到什么程度</b>。</div>
+<div class="p"><span class="flag f-have">一个好消息</span>
+同一件事的另一面是：<b>你说「我插话你要立刻停」——这个它原生就会</b>，不用我们造。</div>
+<div class="lbl">(可留空)</div>
+<textarea data-k="rhythm" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>③ 复述那件事，按你说的改轻了 <span class="flag f-gap">告诉你一声</span></h2>
+<div class="p">你说：<b>「你能通过上下文知道我说的那个话……那 Codex 也可以啊，所以你不用这么担心啊。」</b>
+你说得对，我们确实做重了。现在改成：</div>
+<table>
+<tr><td style="width:30%"><b>一般说话</b></td><td><b>完全不复述</b> —— 整类去掉，靠上下文</td></tr>
+<tr><td><b>只剩一种情况</b></td><td>它<b>要去动某张单、某个人、某个仓库之前</b>，把那个号或名字念一遍。其余一律不念</td></tr>
+</table>
+<div class="p"><b>为什么单单留这一种</b>：像「flywheel」被听成别的词，你一听就知道不对；
+但「1833」被听成「1838」——<b>两个都是真实存在的单号，念出来完全正常，你听不出来</b>，
+而它下一步就要去动那张单了。<b>这一种是你救不了、而机器还有机会停下来的地方。</b></div>
+<div class="lbl">(可留空)</div>
+<textarea data-k="readback" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>④ 记下、这版不做</h2>
+<div class="p"><b>多人开会</b>还是按你说的，先把单个 AI 跑通再谈。
+新发现一条要记着：<b>如果每个 AI 都自己判断什么时候插话，那"一次只让一个人说"可能得我们额外造一层东西来管</b> ——
+那就不是「接上就能用」了。<b>这会影响第二期怎么做，先记着。</b></div>
+<div class="lbl">(可留空)</div>
+<textarea data-k="later" placeholder=""></textarea>
+</section>
+
+<div class="hero">
+<b>怎么回我:</b><br>
+· <b>有意见</b> → 在上面框里写完,点下面「一键汇总复制」,把复制到的内容贴回这条 issue 的 thread。<br>
+· <b>要通过</b> → <b>不用那个按钮</b>,直接点 ✅ 或回一句「都可以了」。<br>
+<span class="note">页面上的批注只存在你自己的浏览器里,不会自动传给我 —— 一定要贴回来我才看得到。</span>
+</div>
+
+<textarea id="dump" readonly></textarea>
+
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1851-meeting-mode-round6-v1';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.innerText.trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    try{
+      var raw=localStorage.getItem(KEY); if(!raw) return;
+      var d=JSON.parse(raw);
+      boxes.forEach(function(b){ if(d[b.dataset.k]) b.value=d[b.dataset.k]; });
+    }catch(e){}
+  }
+  function save(){
+    try{
+      var d={}; boxes.forEach(function(b){ if(b.value.trim()) d[b.dataset.k]=b.value; });
+      localStorage.setItem(KEY,JSON.stringify(d));
+    }catch(e){}
+  }
+  function build(){
+    var out=['【会议模式 第 6 轮 —— 我的意见】',''];
+    var n=0;
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      n++; out.push('■ '+title(b)); out.push(v); out.push('');
+    });
+    if(!n) return null;
+    return out.join('\n').trim();
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+
+  boxes.forEach(function(b){ b.addEventListener('input',save); });
+  load();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('还没有写任何意见','bad'); return; }
+    flag('复制中…','');
+    (async function(){
+      try{
+        if(!navigator.clipboard || !navigator.clipboard.writeText){
+          throw new Error('no clipboard api');
+        }
+        await navigator.clipboard.writeText(text);
+        flag('✅ 已复制 —— 请贴回 issue thread','good');
+      }catch(err){
+        dump.style.display='block';
+        dump.value=text;
+        dump.focus(); dump.select();
+        flag('❌ 复制失败 —— 请手动全选下面这个框复制','bad');
+      }
+    })();
+  });
+
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; });
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    dump.style.display='none';
+    flag('已清空','');
+  });
+})();
+</script>
+</body>
+</html>

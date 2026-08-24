@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>会议模式 · 第 2 轮 —— 拆细了,请你逐项批</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:22.5px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.3px;margin-bottom:13px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14.2px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:15px 16px;margin:0 0 13px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  .quote{border-left:3px solid #d8d8de;padding:3px 0 3px 11px;margin:8px 0;
+    color:#3a3a3c;font-size:13.4px}
+  table{border-collapse:collapse;width:100%;font-size:13.1px;margin:8px 0}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px}
+  td.gap{background:#fff5f5;font-weight:600;color:#a4262c}
+  td.have{color:#1a7f37}
+  .p{font-size:13.9px;margin:8px 0}
+  .lbl{font-size:12.3px;color:var(--dim);margin:10px 0 4px}
+  textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.3px;resize:vertical;
+    background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;
+    align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;
+    padding:10px 17px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.8px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  #dump{display:none;margin-top:10px;min-height:150px}
+  .note{font-size:12.6px;color:var(--dim);margin-top:8px}
+  .flag{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px}
+  .f-ask{background:#fff4e3;color:#8a5200}
+  .f-gap{background:#ffe9e9;color:#a4262c}
+  .f-have{background:#e6f7ec;color:#1a7f37}
+  ul{margin:6px 0 6px 0;padding-left:20px;font-size:13.6px}
+  li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>会议模式 · 第 2 轮</h1>
+<div class="sub">按你说的拆细了 —— 每一块下面都列成了具体的一条条,你逐项批就行 · 2026-08-19</div>
+
+<div class="hero">
+<b>怎么用这一页:</b>下面七块,每块底下都有一个留言框。<b>不用一次批完,想到哪批哪。</b><br>
+条目都编了号(比如 <b>②-3</b>),你写「②-3:我要……」我就对得上。<br>
+<span class="note">上一轮的东西我全改了 —— 第 ⓪ 节先讲我错在哪、你已经答掉了哪些。</span>
+</div>
+
+<section class="hot">
+<h2>⓪ 上一轮我错在哪(短,看完就往下走)</h2>
+<div class="p">你说「你现在所有的这些假设都完全是错的」。我认,而且我知道是哪一步错的：</div>
+<div class="p"><b>我把你描述现状的话，当成了你在指认病灶。</b>
+你说「我发一大段 text 给你、你再发一大段给我」，我读成了「大段文字就是痛点」；
+你说「聊清楚之后 PRD 也就定下来了」，我把「也就」两个字当成判据，据此推了一整套「凡是多做一件事都算走反」的规矩。
+<b>那套规矩是我自己造的，你从来没说过。</b></div>
+<div class="p"><b>你说的痛点其实是：</b>
+「我必须坐在电脑前，对着你讲这个讲那个，还得等你。很多时候我可能在开车。」
+—— <b>问题是「聊清楚这件事把你钉在电脑前」，不是文字本身。</b>
+你也明说了：目前的流程不是大问题。</div>
+<div class="p">所以这一版我换了判据：<b>这东西要让「一段本来必须坐在电脑前完成的讨论」，在你开车、不看屏幕的时候也能完成。</b></div>
+<div class="lbl">这条判据对吗?(可留空)</div>
+<textarea data-k="premise0" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>① 你上一轮已经答掉的 —— 我当成定了,记错了请圈出来</h2>
+<table>
+<tr><th style="width:38%">这一条</th><th>我记的答案</th></tr>
+<tr><td>聊完的产物是什么</td><td class="have"><b>meeting notes,不是 PRD</b>。notes 之后再分岔:开几个 issue 去做 PRD,或者已经够清楚就直接出 PRD。<b>这是个灵活的过程</b></td></tr>
+<tr><td>第一版几个 AI</td><td class="have"><b>只有一个 AI 进来聊</b>,像正常人说话,不用点名。多人开会等单 AI 跑通了再谈</td></tr>
+<tr><td>会后发不发长 PRD</td><td class="have"><b>发,你批,完全没问题</b></td></tr>
+<tr><td>会前要不要准备</td><td class="have"><b>可以准备</b>(议程、约时间),不比现在累</td></tr>
+<tr><td>七月那套旧代码</td><td class="have"><b>完全重新来写</b>(当时用的是 Gemini,现在换 Codex)</td></tr>
+</table>
+<div class="p"><span class="flag f-ask">你问我的那个问题,我正面答一下</span><br>
+你问「你们难道没法智能判断现在是谁在跟我聊天吗?」——
+<b>老实说:没人试过。</b> 我们试过的是另一件事 ——
+七月真机量过「把你的话<u>同时</u>喂给所有 AI」,结果是<b>十轮里八轮有没被叫到的 AI 抢答</b>,靠提示词压不住。
+<b>但那不等于「判断该谁答」做不到</b> —— 那件事当时没人做过。而且那个数字是在别家模型上量的,<b>换成 Codex 之后没重测过</b>。<br>
+⇒ <b>你给的那条路(先做单 AI)刚好整个绕开了这个问题</b>,所以第一版不用先解决它。</div>
+<div class="lbl">有哪条我记错了?(可留空)</div>
+<textarea data-k="confirm" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>② 什么时候用它</h2>
+<div class="p"><b>②-1</b> 你给了一个场景:开车。<b>还有别的吗?</b>(走路 / 做家务 / 躺着 / 出门在外……)</div>
+<div class="p"><b>②-2</b> <b>什么时候你宁可打字,也不想开会?</b>(比如要看代码、要对着一张表、事情很小)</div>
+<div class="p"><b>②-3</b> 一场大概多久算正常?十分钟?半小时?<b>会不会有那种一小时的?</b></div>
+<div class="p"><b>②-4</b> 一天大概会开几场?还是很偶尔?</div>
+<div class="lbl">②(可只答其中几条)</div>
+<textarea data-k="when" placeholder="例:②-1 走路的时候也要 / ②-2 要看图的时候就别开会了 / ②-3 二十分钟差不多"></textarea>
+</section>
+
+<section class="warn">
+<h2>③ 一场会怎么开始</h2>
+<div class="p"><b>③-1</b> <b>谁发起?</b> 你说「12 点跟 Tadashi 聊语音总管」这种 —— 是你提前安排,还是你想聊了随时喊一声?</div>
+<div class="p"><b>③-2</b> 如果要约时间:<b>到点了谁提醒谁?</b> 我们该不该主动叫你?(还是你怕被打扰)</div>
+<div class="p"><b>③-3</b> <b>会前准备,准备什么?</b> 你说准备不比现在累 —— 那是 ① 我先把要聊的列个提纲给你看,还是 ② 你甩一句「聊 X」我自己去准备?</div>
+<div class="p"><b>③-4</b> 那份准备,<b>你要不要在开会前先看一眼?</b>(开车的话你看不了,是不是该念给你听)</div>
+<div class="p"><b>③-5</b> <b>你怎么进这场会?</b> 手机上点 Discord 进语音房?(说明一下:我们没办法像打电话一样直接拨响你,<b>你必然要自己点一下</b>—— 这是 Discord 本身的限制,修不了)</div>
+<div class="lbl">③(可只答其中几条)</div>
+<textarea data-k="start" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>④ 会里怎么聊</h2>
+<div class="p"><b>④-1</b> <b>我该主动带节奏,还是等你说?</b> 你开车没法看提纲 —— 要不要我按提纲一条条问你、问完一条再下一条?</div>
+<div class="p"><b>④-2</b> 你中途插话打断我,我该<b>立刻停</b>,还是把这句说完?</div>
+<div class="p"><b>④-3</b> <b>我听错了怎么办?</b>(比如把 issue 号听成别的)—— 要不要我把关键的地方复述一遍确认?还是那样太啰嗦?<br>
+<span class="note">这条上一轮我没问，是我自己替你假设的，这次单独拎出来。</span></div>
+<div class="p"><b>④-4</b> 我要思考几秒的时候,<b>要不要出个声</b>说「我想一下」?还是安静就行?</div>
+<div class="p"><b>④-5</b> 会里你能不能<b>让我当场去查个东西</b>(翻代码 / 看 issue),还是查东西一律会后?</div>
+<div class="lbl">④(可只答其中几条)</div>
+<textarea data-k="during" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>⑤ 怎么算结束</h2>
+<div class="p"><b>⑤-1</b> 你说一句「就这样吧」就结束?还是你直接挂断 / 退出语音房?</div>
+<div class="p"><b>⑤-2</b> <b>没聊完怎么办?</b>(比如你到目的地了)—— 下次能接着上次聊吗,还是重开一场?</div>
+<div class="p"><b>⑤-3</b> 结束的时候要不要我口头总结一遍「我们今天定了 A、B、C」让你确认?</div>
+<div class="lbl">⑤(可只答其中几条)</div>
+<textarea data-k="end" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>⑥ 产物 = meeting notes(你已经定了产物是什么,这里往下拆一层)</h2>
+<div class="p"><b>⑥-1</b> <b>notes 要多细?</b> ① 逐字记录 ② 要点摘要 ③ 只记「定了什么 + 下一步」<br>
+(也可以两份都留,比如摘要在上面、逐字折叠在下面)</div>
+<div class="p"><b>⑥-2</b> <b>notes 落在哪?</b> 落在那件事对应的 issue 里?还是每场会自己开一条 issue?</div>
+<div class="p"><b>⑥-3</b> <b>你要不要审 notes?</b> 还是我写完就算数、你有意见再来说?</div>
+<div class="p"><b>⑥-4</b> 如果要审 —— <b>什么时候审?</b> 会一结束就发给你,还是攒到你回到电脑前?</div>
+<div class="p"><b>⑥-5</b> notes 里要不要留<b>你的原话</b>?(你之前说过过程文档很重要,原话不丢的话以后接得回来)</div>
+<div class="lbl">⑥(可只答其中几条)</div>
+<textarea data-k="notes" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>⑦ notes 之后怎么分岔</h2>
+<div class="p">你说的是:notes 出来之后,<b>可能是开几个 issue 去做 PRD,也可能已经够清楚、PRD 直接出来</b> —— 是个灵活的过程。
+这里唯一还没定的是<b>「灵活」由谁来拿捏</b>:</div>
+<div class="p"><b>⑦-1</b> <b>谁判该走哪条路?</b> ① 我判,判完告诉你 ② 我给建议,你点头 ③ 你直接说</div>
+<div class="p"><b>⑦-2</b> 如果是我判 —— <b>凭什么算「聊得够清楚了」?</b> 你希望我用什么标准?(还是这个说不清,就先我判、判错你骂我)</div>
+<div class="p"><b>⑦-3</b> 判错了怎么办?比如我以为够清楚直接写了 PRD,你一看根本没聊到点上</div>
+<div class="p"><b>⑦-4</b> 会后那份长 PRD,你说发给你批没问题 —— <b>你希望什么时候看到?</b>(当天?你回电脑前?)</div>
+<div class="lbl">⑦(可只答其中几条)</div>
+<textarea data-k="fork" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>⑧ 先记下、这一版不做的</h2>
+<div class="p"><b>多人开会</b>(你 + 我 + Tadashi 三个人)—— 按你说的,<b>先把单 AI 跑通再谈</b>。
+我把它记在这儿不让它丢,这一轮不展开。</div>
+<div class="lbl">还有什么你想先记下、但这版不做的?(可留空)</div>
+<textarea data-k="later" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>⑨ 这个结构本身对不对</h2>
+<div class="p">上面这七块的<b>分法和顺序是我重排的,不是你指定的</b> ——
+因为你答掉产物那一格之后,原来的结构就不对了。<b>你觉得该加一块、删一块、或者换个顺序,直接说。</b></div>
+<div class="lbl">结构有什么问题?(可留空)</div>
+<textarea data-k="structure" placeholder=""></textarea>
+</section>
+
+<div class="hero">
+<b>怎么回我:</b><br>
+· <b>有意见</b> → 在上面框里写完,点下面「一键汇总复制」,把复制到的内容贴回这条 issue 的 thread。<br>
+· <b>要通过</b> → <b>不用那个按钮</b>,直接点 ✅ 或回一句「都可以了」。<br>
+<span class="note">页面上的批注只存在你自己的浏览器里,不会自动传给我 —— 一定要贴回来我才看得到。</span>
+</div>
+
+<textarea id="dump" readonly></textarea>
+
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1851-meeting-mode-round2-v1';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.innerText.trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    try{
+      var raw=localStorage.getItem(KEY); if(!raw) return;
+      var d=JSON.parse(raw);
+      boxes.forEach(function(b){ if(d[b.dataset.k]) b.value=d[b.dataset.k]; });
+    }catch(e){}
+  }
+  function save(){
+    try{
+      var d={}; boxes.forEach(function(b){ if(b.value.trim()) d[b.dataset.k]=b.value; });
+      localStorage.setItem(KEY,JSON.stringify(d));
+    }catch(e){}
+  }
+  function build(){
+    var out=['【会议模式 第 2 轮 —— 我的意见】',''];
+    var n=0;
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      n++; out.push('■ '+title(b)); out.push(v); out.push('');
+    });
+    if(!n) return null;
+    return out.join('\n').trim();
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+
+  boxes.forEach(function(b){ b.addEventListener('input',save); });
+  load();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('还没有写任何意见','bad'); return; }
+    flag('复制中…','');
+    (async function(){
+      try{
+        if(!navigator.clipboard || !navigator.clipboard.writeText){
+          throw new Error('no clipboard api');
+        }
+        await navigator.clipboard.writeText(text);
+        flag('✅ 已复制 —— 请贴回 issue thread','good');
+      }catch(err){
+        dump.style.display='block';
+        dump.value=text;
+        dump.focus(); dump.select();
+        flag('❌ 复制失败 —— 请手动全选下面这个框复制','bad');
+      }
+    })();
+  });
+
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; });
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    dump.style.display='none';
+    flag('已清空','');
+  });
+})();
+</script>
+</body>
+</html>
