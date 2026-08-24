@@ -63,12 +63,48 @@ allowed_suffixes = (
     b".webp",
     b".avif",
     b".pdf",
+    b".txt",
+    b".csv",
+    b".log",
+    b".out",
+    b".jsonl",
+    b".wav",
+    b".mp3",
+    b".m4a",
+    b".ogg",
+    b".mp4",
+    b".webm",
+    b".vtt",
+    b".srt",
+)
+# FLY-2001: exact doc paths consumed by no_code-gated CI tests. Keep this
+# bounded list in sync with the always-on structure guard; do not widen it to
+# directory prefixes, which would send verified-inert files back to full CI.
+known_ci_consumed_doc_paths = (
+    b"doc/engineer/implementation/FLY-222-a0-a10-runbook.md",
+    b"doc/qa/framework/529-room-playbook.md",
+    b"engineering/doc/FLY-1775-529-generalized-dag-room/plan.md",
+    b"engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md",
+    b"engineering/doc/FLY-1648-hot-loop-closeout/runbook.md",
+    b"doc/engineer/implementation/flag-authoring-runbook.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/exploration.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/research.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/plan.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/progress.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/fixtures/README.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round1.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round2.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round3.md",
+    b"engineering/doc/FLY-1135-layer1-dag-templates/exploration.md",
+    b"engineering/doc/FLY-1135-layer1-dag-templates/research.md",
+    b"engineering/doc/FLY-1135-layer1-dag-templates/plan.md",
 )
 for index in range(0, len(tokens), 2):
     header = tokens[index]
     path = tokens[index + 1]
     if (
         not header.startswith(b":")
+        or path in known_ci_consumed_doc_paths
         or not path.startswith(allowed_prefixes)
         or not path.endswith(allowed_suffixes)
     ):

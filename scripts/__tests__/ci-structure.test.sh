@@ -4,6 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 WORKFLOW="$REPO_ROOT/.github/workflows/ci.yml"
+CLASSIFIER="$REPO_ROOT/scripts/ci-classify.sh"
+SUFFIX_LEDGER="$REPO_ROOT/engineering/doc/FLY-1987-actions-cost-audit/data/derive-lib.mjs"
+REVIEW_GOVERNANCE_DOCS="$REPO_ROOT/packages/teamlead/src/bridge/__tests__/review-governance-docs.test.ts"
+FLY1135_DOC_SENTINEL="$REPO_ROOT/packages/teamlead/src/__tests__/fly1135-doc-sentinel.test.ts"
 DISCORD_E2E="$REPO_ROOT/scripts/__tests__/fly1364-discord-e2e.test.sh"
 REAL_TMUX_E2E="$REPO_ROOT/scripts/__tests__/tmux-server-rescue-real-tmux.test.sh"
 CMUX_TEST="$REPO_ROOT/scripts/test-cmux-sync.sh"
@@ -15,10 +19,12 @@ if grep -Fq -- ' -- --shard' "$WORKFLOW"; then
   exit 1
 fi
 
-WORKFLOW="$WORKFLOW" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" python3 <<'PY'
+WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" python3 <<'PY'
+import ast
 import os
 import re
 import shlex
+import subprocess
 import sys
 
 import yaml
@@ -46,7 +52,257 @@ def normalize_expression(value: object) -> str:
     return re.sub(r"\s+", "", text)
 
 
+def read_utf8(path: str, label: str) -> str:
+    try:
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+    except OSError as error:
+        fail(f"could not read {label}: {error}")
+
+
+def extract_classifier_python(shell_source: str) -> str:
+    matches = re.findall(r"<<'PY'[^\n]*\n(.*?)\nPY\n", shell_source, re.DOTALL)
+    if len(matches) != 1:
+        fail(
+            "could not extract classifier embedded Python: "
+            f"expected one <<'PY' heredoc, found {len(matches)}"
+        )
+    return matches[0]
+
+
+def extract_literal_tuple(python_source: str, name: str) -> tuple[bytes, ...]:
+    try:
+        tree = ast.parse(python_source)
+    except SyntaxError as error:
+        fail(f"could not extract {name}: classifier embedded Python does not parse: {error}")
+    assignments = []
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if any(isinstance(target, ast.Name) and target.id == name for target in node.targets):
+            assignments.append(node)
+    if len(assignments) != 1:
+        fail(f"could not extract {name}: expected one assignment, found {len(assignments)}")
+    try:
+        value = ast.literal_eval(assignments[0].value)
+    except (ValueError, TypeError, SyntaxError) as error:
+        fail(f"could not extract {name}: assignment is not a literal tuple: {error}")
+    if not isinstance(value, tuple) or not all(isinstance(item, bytes) for item in value):
+        fail(f"could not extract {name}: expected tuple[bytes, ...], got {value!r}")
+    return value
+
+
+def tuple_delta(
+    actual: tuple[bytes, ...], expected: tuple[bytes, ...]
+) -> tuple[list[bytes], list[bytes]]:
+    return (
+        [item for item in expected if item not in actual],
+        [item for item in actual if item not in expected],
+    )
+
+
+def require_exact_tuple(
+    actual: tuple[bytes, ...], expected: tuple[bytes, ...], label: str
+) -> None:
+    missing, unexpected = tuple_delta(actual, expected)
+    require(
+        actual == expected,
+        f"{label} must match exactly: missing={missing!r}, "
+        f"unexpected={unexpected!r}, actual={actual!r}",
+    )
+
+
+CONSUMER_SHAPE_REMEDIATION = (
+    "consumer list shape changed — re-derive FLY-1278/FLY-1135 fence entries "
+    "and update known_ci_consumed_doc_paths"
+)
+
+
+def extract_typescript_string_array(
+    source: str,
+    pattern: str,
+    label: str,
+    remediation: str = CONSUMER_SHAPE_REMEDIATION,
+) -> tuple[str, ...]:
+    matches = re.findall(pattern, source, re.DOTALL)
+    if len(matches) != 1:
+        fail(
+            f"could not extract {label}: expected one static string array, "
+            f"found {len(matches)}; {remediation}"
+        )
+    try:
+        value = ast.literal_eval(matches[0])
+    except (ValueError, TypeError, SyntaxError) as error:
+        fail(f"could not extract {label}: {error}; {remediation}")
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        fail(
+            f"could not extract {label}: expected list[str], got {value!r}; "
+            f"{remediation}"
+        )
+    return tuple(value)
+
+
 workflow_path = os.environ["WORKFLOW"]
+repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
+classifier_source = read_utf8(os.environ["CLASSIFIER"], "ci-classify.sh")
+classifier_python = extract_classifier_python(classifier_source)
+
+expected_allowed_prefixes = (
+    b"doc/",
+    b"product/doc/",
+    b"engineering/doc/",
+    b"content/doc/",
+)
+expected_allowed_suffixes = (
+    b".md",
+    b".markdown",
+    b".mmd",
+    b".html",
+    b".htm",
+    b".svg",
+    b".png",
+    b".jpg",
+    b".jpeg",
+    b".gif",
+    b".webp",
+    b".avif",
+    b".pdf",
+    b".txt",
+    b".csv",
+    b".log",
+    b".out",
+    b".jsonl",
+    b".wav",
+    b".mp3",
+    b".m4a",
+    b".ogg",
+    b".mp4",
+    b".webm",
+    b".vtt",
+    b".srt",
+)
+expected_known_ci_consumed_doc_paths = (
+    b"doc/engineer/implementation/FLY-222-a0-a10-runbook.md",
+    b"doc/qa/framework/529-room-playbook.md",
+    b"engineering/doc/FLY-1775-529-generalized-dag-room/plan.md",
+    b"engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md",
+    b"engineering/doc/FLY-1648-hot-loop-closeout/runbook.md",
+    b"doc/engineer/implementation/flag-authoring-runbook.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/exploration.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/research.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/plan.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/progress.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/fixtures/README.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round1.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round2.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round3.md",
+    b"engineering/doc/FLY-1135-layer1-dag-templates/exploration.md",
+    b"engineering/doc/FLY-1135-layer1-dag-templates/research.md",
+    b"engineering/doc/FLY-1135-layer1-dag-templates/plan.md",
+)
+
+suffix_ledger_source = read_utf8(os.environ["SUFFIX_LEDGER"], "FLY-1987 suffix ledger")
+ledger_new_suffixes = extract_typescript_string_array(
+    suffix_ledger_source,
+    r"export\s+const\s+SUFFIX_P0_ADDS\s*=\s*(\[.*?\])\s*;",
+    "FLY-1987 SUFFIX_P0_ADDS",
+    "the FLY-1987 ledger shape changed — re-derive the FLY-2001 suffix contract",
+)
+require_exact_tuple(
+    tuple(suffix.encode("utf-8") for suffix in ledger_new_suffixes),
+    expected_allowed_suffixes[13:],
+    "FLY-1987 SUFFIX_P0_ADDS",
+)
+
+actual_allowed_prefixes = extract_literal_tuple(classifier_python, "allowed_prefixes")
+actual_allowed_suffixes = extract_literal_tuple(classifier_python, "allowed_suffixes")
+actual_known_paths = extract_literal_tuple(
+    classifier_python, "known_ci_consumed_doc_paths"
+)
+require_exact_tuple(
+    actual_allowed_prefixes, expected_allowed_prefixes, "classifier allowed_prefixes"
+)
+require_exact_tuple(
+    actual_allowed_suffixes, expected_allowed_suffixes, "classifier allowed_suffixes"
+)
+require_exact_tuple(
+    actual_known_paths,
+    expected_known_ci_consumed_doc_paths,
+    "classifier known_ci_consumed_doc_paths",
+)
+
+for path_bytes in expected_known_ci_consumed_doc_paths:
+    path = path_bytes.decode("utf-8")
+    tracked = subprocess.run(
+        ["git", "ls-files", "--error-unmatch", "--", path],
+        cwd=repo_root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    require(tracked.returncode == 0, f"known CI-consumed doc path must remain tracked: {path}")
+
+review_governance_source = read_utf8(
+    os.environ["REVIEW_GOVERNANCE_DOCS"], "review-governance-docs.test.ts"
+)
+fly1278_relative_paths = extract_typescript_string_array(
+    review_governance_source,
+    r"const\s+artifactPaths\s*=\s*(\[.*?\])\s*;",
+    "FLY-1278 artifactPaths",
+)
+fly1278_prefix = "engineering/doc/FLY-1278-review-gate-convergence/"
+fly1278_composed = tuple(
+    f"{fly1278_prefix}{path}".encode("utf-8")
+    for path in fly1278_relative_paths
+    if path.endswith(tuple(item.decode("utf-8") for item in expected_allowed_suffixes))
+)
+expected_fly1278 = tuple(
+    path for path in expected_known_ci_consumed_doc_paths if path.startswith(fly1278_prefix.encode())
+)
+require_exact_tuple(fly1278_composed, expected_fly1278, "FLY-1278 consumer/fence parity")
+
+fly1135_source = read_utf8(
+    os.environ["FLY1135_DOC_SENTINEL"], "fly1135-doc-sentinel.test.ts"
+)
+fly1135_relative_paths = extract_typescript_string_array(
+    fly1135_source,
+    r"for\s*\(\s*const\s+doc\s+of\s*(\[.*?\])\s*\)",
+    "FLY-1135 inline for-of doc list",
+)
+fly1135_prefix = "engineering/doc/FLY-1135-layer1-dag-templates/"
+fly1135_composed = tuple(
+    f"{fly1135_prefix}{path}".encode("utf-8") for path in fly1135_relative_paths
+)
+expected_fly1135 = tuple(
+    path for path in expected_known_ci_consumed_doc_paths if path.startswith(fly1135_prefix.encode())
+)
+require_exact_tuple(fly1135_composed, expected_fly1135, "FLY-1135 consumer/fence parity")
+
+suffix_mutant = classifier_source.replace('    b".srt",\n', "", 1)
+require(suffix_mutant != classifier_source, "positive control must remove classifier .srt")
+mutant_suffixes = extract_literal_tuple(
+    extract_classifier_python(suffix_mutant), "allowed_suffixes"
+)
+missing, unexpected = tuple_delta(mutant_suffixes, expected_allowed_suffixes)
+require(
+    missing == [b".srt"] and unexpected == [],
+    f"positive control must report exact suffix delta, got missing={missing!r} unexpected={unexpected!r}",
+)
+
+fence_path = expected_known_ci_consumed_doc_paths[0].decode("utf-8")
+fence_mutant_path = f"{fence_path}.mutated"
+fence_mutant = classifier_source.replace(f'b"{fence_path}"', f'b"{fence_mutant_path}"', 1)
+require(fence_mutant != classifier_source, "positive control must mutate one fence path")
+mutant_paths = extract_literal_tuple(
+    extract_classifier_python(fence_mutant), "known_ci_consumed_doc_paths"
+)
+missing, unexpected = tuple_delta(mutant_paths, expected_known_ci_consumed_doc_paths)
+require(
+    missing == [fence_path.encode("utf-8")]
+    and unexpected == [fence_mutant_path.encode("utf-8")],
+    f"positive control must report exact fence delta, got missing={missing!r} unexpected={unexpected!r}",
+)
+
 with open(workflow_path, encoding="utf-8") as handle:
     workflow = mapping(yaml.safe_load(handle), "workflow")
 

@@ -78,7 +78,9 @@ if [[ ! -f "$SUBJECT" ]]; then
   fail "ci-classify.sh exists"
 else
   allowed_prefixes=(doc product/doc engineering/doc content/doc)
-  allowed_suffixes=(md markdown mmd html htm svg png jpg jpeg gif webp avif pdf)
+  existing_allowed_suffixes=(md markdown mmd html htm svg png jpg jpeg gif webp avif pdf)
+  new_allowed_suffixes=(txt csv log out jsonl wav mp3 m4a ogg mp4 webm vtt srt)
+  allowed_suffixes=("${existing_allowed_suffixes[@]}" "${new_allowed_suffixes[@]}")
   DOC_HEAD=""
   for index in "${!allowed_suffixes[@]}"; do
     prefix="${allowed_prefixes[$((index % ${#allowed_prefixes[@]}))]}"
@@ -89,6 +91,90 @@ else
     run_classifier "$head" "$BASE"
     assert_result "allowlisted docs path passes: $prefix/*.$suffix" true
   done
+
+  for index in "${!new_allowed_suffixes[@]}"; do
+    suffix="${new_allowed_suffixes[$index]}"
+    head="$(commit_file_from "outside-new-suffix-$index" "$BASE" "evidence/fixture-$index.$suffix")"
+    preview_checkout "$head" "$BASE"
+    run_classifier "$head" "$BASE"
+    assert_result "new suffix outside doc prefixes runs the full suite: *.$suffix" false
+    assert_reason "new suffix outside doc prefixes supplies a reason: *.$suffix" diff_not_inert
+  done
+
+  excluded_doc_suffixes=(json tsv yaml)
+  for index in "${!excluded_doc_suffixes[@]}"; do
+    suffix="${excluded_doc_suffixes[$index]}"
+    head="$(commit_file_from "excluded-doc-suffix-$index" "$BASE" "engineering/doc/excluded-$index.$suffix")"
+    preview_checkout "$head" "$BASE"
+    run_classifier "$head" "$BASE"
+    assert_result "excluded suffix inside doc prefixes runs the full suite: *.$suffix" false
+    assert_reason "excluded suffix inside doc prefixes supplies a reason: *.$suffix" diff_not_inert
+  done
+
+  known_ci_consumed_doc_paths=(
+    doc/engineer/implementation/FLY-222-a0-a10-runbook.md
+    doc/qa/framework/529-room-playbook.md
+    engineering/doc/FLY-1775-529-generalized-dag-room/plan.md
+    engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md
+    engineering/doc/FLY-1648-hot-loop-closeout/runbook.md
+    doc/engineer/implementation/flag-authoring-runbook.md
+    engineering/doc/FLY-1278-review-gate-convergence/exploration.md
+    engineering/doc/FLY-1278-review-gate-convergence/research.md
+    engineering/doc/FLY-1278-review-gate-convergence/plan.md
+    engineering/doc/FLY-1278-review-gate-convergence/progress.md
+    engineering/doc/FLY-1278-review-gate-convergence/fixtures/README.md
+    engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round1.md
+    engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round2.md
+    engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round3.md
+    engineering/doc/FLY-1135-layer1-dag-templates/exploration.md
+    engineering/doc/FLY-1135-layer1-dag-templates/research.md
+    engineering/doc/FLY-1135-layer1-dag-templates/plan.md
+  )
+  for index in "${!known_ci_consumed_doc_paths[@]}"; do
+    path="${known_ci_consumed_doc_paths[$index]}"
+    head="$(commit_file_from "known-ci-consumer-$index" "$BASE" "$path")"
+    preview_checkout "$head" "$BASE"
+    run_classifier "$head" "$BASE"
+    assert_result "known CI-consumed doc runs the full suite: $path" false
+  done
+
+  git -C "$REPO" checkout -q -B known-ci-consumer-mixed "$BASE"
+  mkdir -p \
+    "$REPO/doc/engineer/implementation" \
+    "$REPO/engineering/doc/FLY-2001-fixture"
+  printf 'guard input changed\n' >"$REPO/doc/engineer/implementation/FLY-222-a0-a10-runbook.md"
+  printf 'inert evidence\n' >"$REPO/engineering/doc/FLY-2001-fixture/evidence.txt"
+  git -C "$REPO" add \
+    doc/engineer/implementation/FLY-222-a0-a10-runbook.md \
+    engineering/doc/FLY-2001-fixture/evidence.txt
+  git -C "$REPO" commit -qm known-ci-consumer-mixed
+  KNOWN_CONSUMER_MIXED_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  preview_checkout "$KNOWN_CONSUMER_MIXED_HEAD" "$BASE"
+  run_classifier "$KNOWN_CONSUMER_MIXED_HEAD" "$BASE"
+  assert_result "known CI-consumed doc plus newly allowlisted suffix runs the full suite" false
+
+  pr874_paths=(
+    product/doc/FLY-1846-global-chief-of-staff/assets/raya-avatar-square.png
+    product/doc/FLY-1846-global-chief-of-staff/assets/raya-avatar.SOURCE.txt
+    product/doc/FLY-1846-global-chief-of-staff/assets/raya-avatar.png
+    product/doc/FLY-1846-global-chief-of-staff/exploration.md
+    product/doc/FLY-1846-global-chief-of-staff/plan.md
+    product/doc/FLY-1846-global-chief-of-staff/prd-review.html
+    product/doc/FLY-1846-global-chief-of-staff/prd.md
+    product/doc/FLY-1846-global-chief-of-staff/progress.md
+    product/doc/FLY-1846-global-chief-of-staff/research.md
+  )
+  git -C "$REPO" checkout -q -B pr874-replay "$BASE"
+  for path in "${pr874_paths[@]}"; do
+    mkdir -p "$REPO/$(dirname "$path")"
+    printf 'PR #874 path replay\n' >"$REPO/$path"
+  done
+  git -C "$REPO" add product/doc/FLY-1846-global-chief-of-staff
+  git -C "$REPO" commit -qm pr874-replay
+  PR874_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  preview_checkout "$PR874_HEAD" "$BASE"
+  run_classifier "$PR874_HEAD" "$BASE"
+  assert_result "PR #874 nine-path replay is docs-only" true
 
   git -C "$REPO" checkout -q --detach "$BASE"
   run_classifier "$BASE" "$BASE"
