@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>随身语音 · 第 6 轮 —— 骨架(内容待填,尚未发出)</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:22.5px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.3px;margin-bottom:13px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14.2px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:15px 16px;margin:0 0 13px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  .item{border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin:10px 0}
+  .item .t{font-weight:600;font-size:14.1px;color:var(--navy);margin-bottom:5px}
+  .row{font-size:13.3px;margin:5px 0}
+  .quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;margin:6px 0;
+    color:#3a3a3c;font-size:13.2px}
+  table{border-collapse:collapse;width:100%;font-size:13.1px;margin:7px 0}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px}
+  textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.3px;resize:vertical;
+    background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  textarea#dump{display:none;min-height:150px;margin-top:14px}
+  .lbl{font-size:12.3px;color:var(--dim);margin:9px 0 4px}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;
+    align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;
+    padding:10px 17px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.8px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  .note{font-size:12.6px;color:var(--dim);margin-top:7px}
+  .opt{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px;background:#eef1f5;color:#4a5568}
+  .must{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px;background:#fff4e3;color:#8a5200}
+  b.hl{background:#fffbe6;padding:0 3px;border-radius:3px}
+  /* 三态标记 —— FLY-1850 R6 起 */
+  .st{display:inline-block;font-size:11.5px;font-weight:800;padding:2px 9px;
+    border-radius:6px;margin-right:8px;vertical-align:2px;letter-spacing:.02em}
+  .st-new{background:#e8f7ec;color:#1a7f37}
+  .st-done{background:#eef1f5;color:#4a5568}
+  .st-open{background:#fff4e3;color:#8a5200}
+  section.done{border-left-color:#c9cdd4;background:#fcfcfd}
+  section.done h2{color:#5a6472}
+  details.said{margin:6px 0;border:1px solid var(--line);border-radius:9px;
+    padding:8px 11px;background:#fafbfc}
+  details.said summary{cursor:pointer;font-size:13px;color:var(--dim);font-weight:600}
+  details.said .full{margin-top:8px;font-size:13.1px;color:#3a3a3c;white-space:pre-wrap}
+  .said-1line{font-size:13.1px;color:#3a3a3c;background:#fafbfc;border:1px solid var(--line);
+    border-radius:9px;padding:8px 11px;margin:6px 0;white-space:pre-wrap}
+  .legend{font-size:12.4px;color:var(--dim);margin:10px 0 4px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>随身语音 · 第 6 轮</h1>
+<div class="sub">骨架 · 内容待填 —— <b>这一版还没发给她</b></div>
+
+<div class="hero">
+<b>每一格开头都有一个标记,你不用回想上一轮答过什么:</b><br><br>
+<span class="st st-new">🆕 新的</span>这一格你还没见过<br>
+<span class="st st-done">✅ 已答</span>你答过了 —— 你原话就在下面,可以核对我们有没有记错<br>
+<span class="st st-open">⬜ 要你回</span>这一格在等你<br><br>
+<span style="color:var(--dim)">没有标记的段落 = 随便看看,可留空。</span>
+</div>
+
+<section class="done">
+<h2><span class="st st-done">✅ 已答</span>它什么时候出声</h2>
+<details class="said"><summary>你当时是这么说的(点开看全文)</summary>
+<div class="full">什么叫做"他在我没有问的时候主动开口"?我理想中的中间人(Agent)就是这个样子的。
+
+比如我现在进入了语音模式,戴上了耳机。如果 Lead(团队负责人)在 Discord 的某个 Feed 频道里发了消息,或者他有问题要问我,因为我没有在看 Discord,我根本就不会注意到这些 message。
+
+这时候需要做的事情是:只要我一进入语音模式,系统就会自动把 Lead 要问我的所有问题、要汇报的所有内容,都直接发给"主管"(AI 助理)一份。然后"主管"通过语音模式告诉我:"OK,现在是什么情况,有哪些事情需要你做决定。"
+
+大概就是这个样子。所以他肯定是要主动来跟我说话的,不可能一直被动地等我开口。
+
+因为大概率很多时候,只要对方不说话,我也不想主动去问。就像现在用 Discord 一样,我只有在收到新消息、得知事情进展到哪一步、有哪些东西需要我做决定时,我才会去处理。
+
+"主管"在这里扮演的角色也是一样的:他会主动来跟我说现在项目到哪一步了、我需要做什么决定。所以,他是一定要主动开口的。</div>
+</details>
+</section>
+
+<section class="done">
+<h2><span class="st st-done">✅ 已答</span>它念多少</h2>
+<div class="said-1line">读法二</div>
+<details class="said"><summary>以及你后来补的那段(点开看全文)</summary>
+<div class="full">对,当然就是我不知道他应该怎么样去筛啊,就是,我我不希望他筛到,就是最后我该需要知道的也没有告诉我。可能一开始不需要特别去筛吧,之后慢慢的慢慢的就是,如果有一些我觉得我不需要知道的,然后跟他讲一声,他可能慢慢就知道,OK,那这些我不需要跟他讲,然后之后再慢慢的筛。
+
+我希望起码一开始吧,他会把所有的信息都给我。那如果我在测试的过程中发现,哎,这样给我的信息太多了,我耳机里也听不全。或者是说,就真的没有必要给我这么多信息的话,我们可以慢慢的减少。</div>
+</details>
+</section>
+
+<section class="done">
+<h2><span class="st st-done">✅ 已答</span>转达错了怎么办</h2>
+<div class="said-1line">我觉得我们暂时不用考虑这么细节,我们先跑一阵。如果真的发现有很多次转达错了、有问题的话,我们再在这个基础上去修。</div>
+</section>
+
+<section class="done">
+<h2><span class="st st-done">✅ 已答</span>你说完之后多久有回应</h2>
+<div class="said-1line">我希望马上就会收到回应吧。
+
+不过我跟你说,这个东西我不知道是不是需要你去做。我更加 expect 是那个 Codex,它本来就已经把这个 handle 了,所以你都不需要再去担心这个东西这样子。</div>
+</section>
+
+<section class="done">
+<h2><span class="st st-done">✅ 已答</span>用嘴批 ship 还算不算数</h2>
+<div class="said-1line">yes</div>
+</section>
+
+<!-- ═══════════ 以下为待填骨架,发出前必须替换 ═══════════ -->
+
+<section class="key">
+<h2><span class="st st-new">🆕 新的</span>【待填:她要的那件事到哪了】</h2>
+<div class="row" style="color:var(--red)"><b>⬛ 占位 —— 发出前必须换成 Discord 那条腿的真实结果。</b>
+她给的验收线逐字:「起码我们能够在 Discord 里面去聊天,看它真的能做事情」。</div>
+<div class="lbl">这一段有什么想说的 <span class="opt">可留空</span></div>
+<textarea data-k="a1" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2><span class="st st-open">⬜ 要你回</span>【待填:这一轮唯一要她回的那一问】</h2>
+<div class="row" style="color:var(--red)"><b>⬛ 占位 —— 一节一问,单独一个框。没有真问题就整节删掉,不要凑。</b></div>
+<div class="lbl">回这里 <span class="must">这一格希望你回</span></div>
+<textarea data-k="b1" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>还在等的(<span style="color:var(--dim)">这些都不用你现在回</span>)</h2>
+<div class="row">• <b>你插一次话,看它让不让</b> —— 得你真机试过才知道</div>
+<div class="row">• <b>它多久没声音你会开始担心</b> —— 你说过一小时,跑起来再调</div>
+<div class="row">• <b>9.6 秒算不算"马上"</b> —— 你说"马上"的时候手上没有这个数,等你听过再说</div>
+<div class="row">• <b>它一边跟你聊、一边管自己的 runner,半小时撑不撑得住</b> —— 工程还在量</div>
+<div class="lbl">这里面有你想提前说的就写 <span class="opt">可留空</span></div>
+<textarea data-k="c1" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>其它任何想说的</h2>
+<div class="lbl"><span class="opt">可留空</span></div>
+<textarea data-k="z1" placeholder=""></textarea>
+</section>
+
+<div class="hero" style="border-left-color:var(--amber)">
+<b>⚠️ 写完请点下面的「一键汇总复制」,再贴回这条 issue 的 thread。</b><br>
+你在这个页面上写的字<b>不会自动传回来</b> —— 不贴回去我就收不到。
+</div>
+
+<textarea id="dump" readonly></textarea>
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1850-round6-v1';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var it=el.closest('.item');
+    if(it){var t=it.querySelector('.t'); if(t) return t.innerText.trim();}
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.innerText.trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    try{
+      var raw=localStorage.getItem(KEY); if(!raw) return;
+      var d=JSON.parse(raw);
+      boxes.forEach(function(b){ if(d[b.dataset.k]) b.value=d[b.dataset.k]; });
+    }catch(e){}
+  }
+  function save(){
+    try{
+      var d={}; boxes.forEach(function(b){ if(b.value.trim()) d[b.dataset.k]=b.value; });
+      localStorage.setItem(KEY,JSON.stringify(d));
+    }catch(e){}
+  }
+  function build(){
+    var out=['【随身语音 · 第 6 轮 —— 我的意见】',''];
+    var n=0;
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      n++; out.push('■ '+title(b)); out.push(v); out.push('');
+    });
+    if(!n) return null;
+    return out.join('\n').trim();
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+
+  boxes.forEach(function(b){ b.addEventListener('input',save); });
+  load();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('还没有写任何意见','bad'); return; }
+    flag('复制中…','');
+    (async function(){
+      try{
+        if(!navigator.clipboard || !navigator.clipboard.writeText){
+          throw new Error('no clipboard api');
+        }
+        await navigator.clipboard.writeText(text);
+        flag('✅ 已复制 —— 请贴回 issue thread','good');
+      }catch(err){
+        dump.style.display='block';
+        dump.value=text;
+        dump.focus(); dump.select();
+        flag('❌ 复制失败 —— 请手动全选下面这个框复制','bad');
+      }
+    })();
+  });
+
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; });
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    dump.style.display='none';
+    flag('已清空','');
+  });
+})();
+</script>
+</body>
+</html>

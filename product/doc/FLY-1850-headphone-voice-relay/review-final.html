@@ -1,0 +1,2059 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>随身语音 PRD v1.0 — 终审</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.55;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:18px 15px 118px}
+  h1{font-size:22px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  h3{font-size:14.2px;margin:14px 0 5px;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:12px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:13px 15px;margin:6px 0 15px;font-size:13.9px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:14px 15px;margin:0 0 12px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  section.dim{border-left-color:#c9cdd4;background:#fcfcfd}
+  .row{font-size:13.2px;margin:5px 0}
+  table{border-collapse:collapse;width:100%;font-size:12.9px;margin:7px 0}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.3px}
+  td b{color:var(--navy)}
+  .q{border-left:3px solid var(--line);padding:2px 0 2px 10px;margin:6px 0;
+    color:#3a3a3c;font-size:13px}
+  textarea{width:100%;min-height:50px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.2px;resize:vertical;
+    background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  textarea#dump{display:none;min-height:170px;margin-top:12px}
+  .lbl{font-size:12.2px;color:var(--dim);margin:9px 0 4px}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:9px 15px;display:flex;gap:10px;
+    align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;
+    padding:9px 16px;font-size:13.6px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.6px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  .tag{display:inline-block;font-size:11.2px;font-weight:800;padding:2px 8px;
+    border-radius:6px;margin-right:7px;vertical-align:2px}
+  .t-ok{background:#e8f7ec;color:#1a7f37}
+  .t-m{background:#eaf1fb;color:#1a4f8f}
+  .t-no{background:#fdeaea;color:#a5231b}
+  .t-un{background:#fff4e3;color:#8a5200}
+  .note{font-size:12.5px;color:var(--dim);margin-top:6px}
+  .warnbox{background:#fff8ee;border:1px solid #ffe2bd;border-radius:9px;padding:9px 11px;
+    font-size:12.9px;margin:8px 0}
+  details{border:1px solid var(--line);border-radius:9px;margin:6px 0;background:#fcfcfd}
+  details summary{cursor:pointer;padding:9px 11px;font-size:13.3px;font-weight:600;color:var(--navy)}
+  details[open] summary{border-bottom:1px solid var(--line)}
+  .mdbody{padding:2px 11px 10px;font-size:12.8px;overflow-x:auto}
+  .mdbody h3,.mdbody h4,.mdbody h5,.mdbody h6{font-size:13px;margin:11px 0 4px;color:var(--navy)}
+  .mdbody p{margin:6px 0}
+  .mdbody blockquote{border-left:3px solid #d8dde5;margin:6px 0;padding:2px 0 2px 9px;color:#3a3a3c}
+  .mdbody pre{background:#f2f3f5;border-radius:7px;padding:8px 10px;overflow-x:auto;font-size:11.8px}
+  .mdbody table{font-size:12.2px}
+  .mdbody ul{padding-left:20px;margin:6px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>随身语音(耳机模式)· PRD v1.0 — 请你终审</h1>
+<div class="sub">FLY-1850 &nbsp;·&nbsp; 定稿版,内容一个字没改 &nbsp;·&nbsp; 这一页是给你看的呈现,不是新版本</div>
+
+<div class="hero">
+<b>你要判的只有一件:还有没有哪里需要 update。</b><br>
+每一节下面有个框,想到什么就写。写完点最下面「一键汇总复制」，<b>再贴回 issue thread</b> ——
+<b>这个页面不会自动把你写的字传回来。</b>
+</div>
+
+<div class="warnbox">
+⚠️ <b>这一页呈现的是「你能判的部分」</b>:决定、需求、还开着的格、边界、以及每条结论有多硬。<br>
+<b>完整正文在仓库里</b>(<code>product/doc/FLY-1850-headphone-voice-relay/prd.md</code>),里面还有大量写给我们自己看的规矩和留档 —— 那些不需要你审。
+</div>
+
+<section class="hot">
+<h2>✅ 待你裁 —— <b>本轮 0 格</b></h2>
+<div class="row"><b>你上一版看到的那 1 格,你已经答了。</b>你的原话就一个词:<b>「可以」</b>。<br>
+⇒ <b>它已经收掉了,这一页不再问你。</b>我们怎么落的写在下面那个折叠块里 —— <b>⛔ 那是给你核对的,不是要你答的。</b></div>
+
+<details><summary>📎 那一格我们最后是怎么落的(点开核对,⛔ 不用答)</summary>
+<div class="row">
+<b>落法:</b>那条要求 <b>继续成立</b>(它需要让你知道在发生什么、谁在推进);<b>现在这个形态(等待音)算满足</b> ⇒ 这一格结掉。<br>
+⛔ <b>不是「这条要求被取消了」。</b><br><br>
+⚠️ <b>成色必须说清楚,不许含糊</b>:你那句「可以」<b>有两种相反的读法</b> ——「可以降下来」和「可以把这格结掉」。<br>
+上面那个落法是 <b>Honey Lemon 定的方向</b>,依据是你<b>同一轮</b>说过的那句「<b>对,他需要知道在发生什么,知道有谁在推进</b>」。<br>
+⇒ <b>⛔ 我们没有把它写成「你明确说了要求继续成立」</b> —— 你没那么说过,<b>把推断写成你的原话就是伪造你的决定</b>。<br><br>
+📌 <b>你要是觉得读反了,说一声我们就改</b>,并且会把改之前那句原样留着、标出来被推翻了 —— ⛔ 不会悄悄改对当没发生过。
+</div>
+</details>
+
+<h3>✅ 你这一轮裁掉的(记录,不用再看)</h3>
+<table>
+<tr><td><b>agent 音色分配</b></td><td>✅ 你 8-21 就给过表 —— <b>是我们没记进文档</b>,现在补上了(见下面「音色表」)</td></tr>
+<tr><td><b>换男声</b></td><td>✅ <b>做</b> —— ⚠️ 而且这是<b>一条规则不是一格待选</b>:<b>男性 Lead 就用男声</b>(你 8-24 当面纠正的;上一版我们误读成「要你挑一个男声」,已改)</td></tr>
+<tr><td><b>控制你的电脑 / 权限跨会话保持</b></td><td>✅ <b>做</b></td></tr>
+<tr><td><b>打断</b></td><td>🔧 <b>交给工程实施时判定</b> —— 能做就做,很难就算了</td></tr>
+<tr><td><b>放你自己的音乐</b></td><td>暂时不做</td></tr>
+<tr><td><b>1911 那段音频实验</b></td><td>不跑</td></tr>
+</table>
+
+<h3>⚠️ 开着、但不等你的</h3>
+<table>
+<tr><td>⚠️ 未验</td><td><b>持续等待音会不会干扰它「听」你说话</b> —— 测过的只有另一半</td></tr>
+<tr><td>⚠️ 未验</td><td><b>一边跟你说话一边管 runner</b> —— ⛔ 不是做不了,是<b>没做</b></td></tr>
+<tr><td>⚠️ 未验</td><td><b>换个好嗓子来念那句话</b> —— <b>从来没测过</b>,不是被否掉</td></tr>
+<tr><td>🔄 改形状</td><td><b>你进房时房里要已经有人</b> · <b>出去再进来不能失忆</b> —— <b>是改设计,不是修 bug</b></td></tr>
+<tr><td>⏳ 等你用</td><td>等一轮那条税你忍不忍得了 · 它多久没声音你会开始担心 · 长会话里你怎么知道哪些已处理过</td></tr>
+</table>
+<div class="lbl">这一段有什么要说的,想到就写</div>
+<textarea data-k="s0" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>🎚️ 你 8-21 给过的音色表 —— <b>我们当时没记进文档,现在补上</b></h2>
+<div class="row">你这轮问「你是搞丢了吗」—— <b>你是对的</b>。两份 PRD 搜 alloy / marin / verse 都是 0 命中。下面是<b>你的原话,一个字没改</b>。</div>
+<table>
+<tr><th>音色</th><th>你的描述</th><th>分给谁</th></tr>
+<tr><td><b>alloy</b></td><td>低沉冷静的女声</td><td><b>Honey Lemon</b></td></tr>
+<tr><td><b>ash</b></td><td>憨厚的男声</td><td>未选</td></tr>
+<tr><td><b>ballad</b></td><td>听起来有点奸诈和油腻的男声</td><td>未选</td></tr>
+<tr><td><b>cedar</b></td><td>听起来很 beta 的男声</td><td>未选</td></tr>
+<tr><td><b>coral</b></td><td>乡土气息、发音不标准的女声,淳朴中年人感</td><td>未选</td></tr>
+<tr><td><b>echo</b></td><td>像戴眼镜的 gay 的男声,低沉,淡淡憋着的感觉</td><td>未选</td></tr>
+<tr><td><b>marin</b></td><td>听起来靠谱的中年女声</td><td><b>主管 Lead</b></td></tr>
+<tr><td><b>sage</b></td><td>有点像神婆的中老年女声</td><td>未选</td></tr>
+<tr><td><b>shimmer</b></td><td>非常冷静、靠谱、不好接近的女声</td><td>未选</td></tr>
+<tr><td><b>verse</b></td><td>有活力的中年男声</td><td><b>Tadashi</b></td></tr>
+</table>
+<div class="note">⚠️ 「未选」= <b>你还没选</b>,不是「不合适」;marin 那格的「主管 Lead」是<b>你自己写的角色</b>,我们没有替你填人名。</div>
+<div class="row">📌 <b>配法是一条规则</b>(你 8-24 说的):<b>音色跟 Lead 本人的性别 / 人设对上</b> —— alloy→Honey Lemon · verse→Tadashi · marin→主管 Lead 都已配上;<b>男性 Lead 就用男声</b>,音色集里本来就有。</div>
+<div class="row">⭐ <b>这十条描述的是性格,不是音质</b> ⇒ 以后给新 agent 配音色,拿这张表对着人设挑就行,<b>不用重听</b>。</div>
+<div class="lbl">这张表记对了吗?</div>
+<textarea data-k="sv" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>① 每条结论有多硬 —— 读任何一条之前先看它在哪一档</h2>
+<div class="row"><b>⛔ 定稿 ≠ 全部答完。</b>下面 ⬜ 那些是<b>刻意留空</b>,不是漏写。</div>
+
+<h3><span class="tag t-ok">最硬</span>你本人在真实使用中验过的</h3>
+<table>
+<tr><td><b>载体 = v2</b></td><td>你拍的</td></tr>
+<tr><td><b>听觉通道 = 刚需</b></td><td>「我当然是希望我完全不需要看文字就知道在发生什么」</td></tr>
+<tr><td><b>连续等待音成立</b></td><td>音色 <b>B「更疏更慢-最安静」</b>;状态行不带段名标签<br>⭐ 立住它那场是 <b>46 秒</b>,比你自己假设的 30 秒还长</td></tr>
+<tr><td><b>状态行要跟着对话流往下走</b></td><td>🔄 推翻了你 7 月同意的「原地改一条消息、不刷屏」</td></tr>
+<tr><td><b>打断 = 打不断,但会排队</b></td><td>内容不丢,<b>丢的是节奏</b>;代价:你必须等它说完一轮才开口</td></tr>
+<tr><td><b>podcast 和 Discord 可以同时出声</b></td><td>没有任何自动切换</td></tr>
+<tr><td>⭐ <b>你第一次真的听到它说话</b></td><td>2026-08-22 01:26 —— 那天之前从未有过</td></tr>
+<tr><td><b>等待音-only 这个形态可交付</b></td><td>「现在的这个可以,你可以先记录一下」<br>⚠️ 只是<b>这个形态验收</b> —— 不等于「知道在发生什么」那条要求被永久降低(你没表态)</td></tr>
+</table>
+
+<h3><span class="tag t-m">量出来的</span>我们实际测过的</h3>
+<table>
+<tr><td><b>它不会先应你一声</b></td><td>8 场全静,中位 <b>21.8 秒</b>才出声</td></tr>
+<tr><td><b>但它开口只要 2 秒</b>(开场白)</td><td>⇒ 那 20 秒<b>不是它慢,是它在忙</b></td></tr>
+<tr><td><b>等待音不会盖住它说话</b></td><td>测了两次,都不会</td></tr>
+<tr><td><b>半小时没人说话,它还在</b></td><td>⚠️ 只试过一次,而且就试到半小时为止</td></tr>
+<tr><td><b>它其实早就有话可说</b></td><td>第 <b>7.8 秒</b>它已经用中文写出打算干什么;你 <b>21.8 秒</b>才听到第一个音</td></tr>
+<tr><td><b>它听得懂你</b></td><td>你说的每一句,它记下来的都对</td></tr>
+<tr><td><b>memory 真的读到了</b></td><td>它真去读磁盘上的记忆文件并逐字复述;<br>⭐ <b>找不到时明说找不到</b>,不拿相近的顶替</td></tr>
+<tr><td>⚠️ <b>身份</b></td><td>隔离测过一次(关掉注入仍答对合同和你的名字)——<b>只验过一次,稳不稳不知道</b></td></tr>
+</table>
+
+<h3><span class="tag t-no">你决定不做的</span>⛔ 这一档里没有一条是「行不通」</h3>
+<div class="row">短提示音(你无条件否决)· 放你自己的音乐(<b>一次都没被评估过</b>)· podcast 那三个问题(你明确说不测)· 我们自己做掉线重连 · 给 Codex 提 issue · 把它写好的那句念出来(你试的是 macOS 那个嗓子;<b>换个嗓子的念法从来没测过</b>)</div>
+
+<h3><span class="tag t-un">没被测到的</span>⚠️ 最容易被当成已经解决的一档</h3>
+<table>
+<tr><td><b>等待音会不会干扰它「听」你说话</b></td><td>测过的只有「不会盖住它说话」那一半<br>🔴 念出来那一档被砍之后,这条<b>没有退路了</b></td></tr>
+<tr><td><b>换个好嗓子来念</b></td><td>从来没测过</td></tr>
+<tr><td><b>一边跟你说话一边管 runner</b></td><td>⛔ 不是做不了,是<b>没做</b></td></tr>
+<tr><td><b>podcast 场景</b></td><td>你明确选择不测</td></tr>
+</table>
+<div class="note">📌 <b>工程细节(协议、字段、超时、内部机制)不在这一页的正文里</b> —— 它们在下面「全文」那一层,以及直接交给 Tadashi。<b>这一页只放你能判的。</b></div>
+<div class="note">🔑 这一档单列的理由:<b>一个成立的结论,会自动给它的前提发一张通行证</b> —— 结论对了,就没人回头问「那前提验过吗」。</div>
+
+<div class="lbl">这一节有什么要改的?</div>
+<textarea data-k="s1" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>② 这两天新加的需求</h2>
+<h3>你 8-22 01:27 提的</h3>
+<div class="q">「我们现在一定要记住,我们这一个语音它也要知道我们的——就是有你的每个 lead 的身份和 memory,这样子。」</div>
+<table>
+<tr><th>需求</th><th>已有的证据(<b>只是证明不是空想,不限定怎么做</b>)</th></tr>
+<tr><td><b>语音要能用 Lead Memory</b></td><td>✅ 已实测:真去读磁盘上的记忆文件并逐字复述;找不到时明说找不到</td></tr>
+<tr><td><b>语音要能用 Agent File</b>(每个 lead 自己的身份)</td><td>✅ 已实测(隔离轮);⚠️ 只验过一次</td></tr>
+</table>
+
+<h3>今晚暴露的两条 —— 这是<b>形状</b>,不是 bug</h3>
+<table>
+<tr><td><b>你进房时,房里要已经有人</b></td><td>你的原话「这个也不是我要的效果呀」<br>现在的原型是<b>等真人进房它才进</b> ⇒ 你必然先看到一个空房</td></tr>
+<tr><td><b>出去再进来不能失忆</b></td><td>二次进房那一格原型没做</td></tr>
+</table>
+<div class="note">📎 标成「形状」不标「bug」是有原因的:bug 是它没按设计工作,<b>这两条是原型的设计本来就这样</b> ⇒ 修它们是<b>改设计</b>,不是修复。记成 bug,排期时会被当成小活。</div>
+<div class="lbl">这几条对不对?有没有漏的?</div>
+<textarea data-k="s3" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>③ 明确<b>不做</b>的(边界)</h2>
+<div class="row">· 多人语音会议 —— 归 <b>1851</b></div>
+<div class="row">· <b>会议 Topic 理解 —— 归 1851(会议模式);本单是随身语音,不要搬回来</b> <span class="note">(你今晚亲自纠的那条)</span></div>
+<div class="row">· 重新设计它怎么判断优先级 —— 归 1846,已定稿</div>
+<div class="row">· 多用户 / 权限分层</div>
+<div class="row">· 为语音单独造一套防错机制 —— 你说过这不是语音特有的问题</div>
+<div class="lbl">边界画得对吗?</div>
+<textarea data-k="s4" placeholder=""></textarea>
+</section>
+
+<section class="dim">
+<h2>④ 已经定下来的行为(供你核对,没变)</h2>
+<table>
+<tr><td><b>它什么时候出声</b></td><td>不用你唤起 —— 有事它主动说</td></tr>
+<tr><td><b>它念什么、念多少</b></td><td>一开始全给,你说「这个不用告诉我」它再慢慢学着筛</td></tr>
+<tr><td><b>筛的标准</b></td><td>我们<b>给机制,不给标准</b> —— 标准由你用出来</td></tr>
+<tr><td><b>沉默必须被主动打破</b></td><td>出声不只是传信息,<b>还是「我还活着」的证据</b></td></tr>
+<tr><td><b>你的话怎么落地</b></td><td>和文字通道一致 —— <b>不为语音单独造一套</b>;它要自己做判断,不是每次回来问你</td></tr>
+<tr><td><b>动手前念专名和编号</b></td><td>复述兜的是「它听错」;⚠️ 兜不住「它编」</td></tr>
+<tr><td><b>用嘴批 ship</b></td><td>✅ 你确认过:算数</td></tr>
+<tr><td><b>Discord 原有行为完全不变</b></td><td>语音是<b>叠加</b>,不是替代</td></tr>
+</table>
+<div class="lbl">有哪条和你现在的想法不一样了吗?</div>
+<textarea data-k="s5" placeholder=""></textarea>
+</section>
+
+<section class="dim">
+<h2>⑤ 一条我们特意没做的事:没有定任何「达到多少才算合格」</h2>
+<div class="row">整份 PRD <b>一个合格线都没定</b>,这是故意的。</div>
+<div class="row">理由:那些数字是在<b>我们打算改掉的条件下</b>量出来的 —— 而<b>一条合格线会比它当初的条件活得久</b>。<br>
+它们是用来<b>判方向</b>的,不是用来定合格线的。</div>
+<div class="note">⚠️ 所以如果有人来问「多少算合格」,答案是:<b>现在还没有,而且不该现在编一个</b>。</div>
+<div class="lbl">你同意这个做法吗?</div>
+<textarea data-k="s6" placeholder=""></textarea>
+</section>
+
+<section class="dim">
+<h2>⑥ 交付形态</h2>
+<div class="row"><b>交出去的是 Epic + 这份 PRD</b>,拆活归工程 —— 按你 7-09 定的规矩。</div>
+<div class="row">⛔ 我们<b>没有</b>预拆子单(上一次那样做,四张子单后来全被 Canceled)。</div>
+<div class="row">📎 另有一条跨单指针:<b>语音测试房</b>(QA 去那里测,不占用你或 runner 正在用的房)—— 正文归 1851。</div>
+<div class="lbl">交付形态这样可以吗?</div>
+<textarea data-k="s7" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>⑦ 其它任何想说的</h2>
+<div class="lbl">包括「这一页少了什么我想看的」</div>
+<textarea data-k="s8" placeholder=""></textarea>
+</section>
+
+<section class="dim">
+<h2>⑧ 全文(默认收起,点开看)</h2>
+<div class="row">上面是<b>可审的部分</b>;这里是<b>PRD 全文,一个字没删</b>。按章节收起,点标题展开。</div>
+<div class="fulltext">
+<details><summary>(抬头)</summary><div class="mdbody"><p># FLY-1850 随身语音(耳机模式)— PRD <strong>v1.0(可交付定稿)</strong></p>
+<p>Issue: FLY-1850 (https://linear.app/geoforge3d/issue/FLY-1850/voiceprd-共创-b-随身语音-不看屏幕时它念给我听我说话它转达回去)<br>日期: 2026-08-19（<strong>v1.0 收口: 2026-08-24</strong>,逐格见 §13）<br>基于: exploration.md, research.md, plan.md</p>
+<hr></div></details>
+<details><summary>📊 成色总表 —— <strong>读任何一条之前先看它在哪一档</strong></summary><div class="mdbody"><blockquote><h4><strong>⛔ 定稿 ≠ 全部答完。</strong> <strong>§6 里的 ⬜ 是【刻意留空】,不是漏写</strong>(读法见 §0.1)。</h4>
+<h4><strong>这张表存在的唯一理由</strong>:<strong>让「这句话有多硬」在第一屏就撞见,而不是翻到条款旁边才看到。</strong></h4></blockquote>
+<h4>✅ 她本人在真实使用中验过的(<strong>最硬</strong>)</h4>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>载体 = v2</strong></td><td>她拍的</td></tr>
+<tr><td><strong>听觉通道 = 刚需</strong></td><td>「<strong>我当然是希望我完全不需要看文字就知道在发生什么</strong>」</td></tr>
+<tr><td><strong>连续等待音成立</strong></td><td>音色 <strong>B「更疏更慢-最安静」</strong>;⛔ 状态行不带段名标签<br>⭐ 立住它那场是 <strong>46 秒</strong>,比她自己假设的 30 秒还长</td></tr>
+<tr><td><strong>状态行必须跟着对话流往下走</strong></td><td>🔄 <strong>推翻了她 7 月同意的「原地改一条消息、不刷屏」</strong></td></tr>
+<tr><td><strong>打断 = 不可打断但【排队】</strong></td><td>内容不丢,<strong>丢的是节奏</strong>;代价:<strong>她必须等一轮说完才开口</strong></td></tr>
+<tr><td><strong>podcast 与 Discord 可同时出声</strong></td><td><strong>无任何自动切换</strong></td></tr>
+<tr><td>⭐ <strong>她第一次真的听到它说话</strong></td><td><strong>2026-08-22 01:26,她亲耳听到</strong> —— <strong>今晚之前从未有过</strong></td></tr>
+<tr><td><strong>等待音-only 这个形态可交付</strong></td><td>「<strong>现在的这个可以,你可以先记录一下</strong>」<br>✅ <strong>2026-08-24 这一格已结</strong>:要求<strong>继续成立</strong>,本形态<strong>算满足</strong><br>⚠️ 🔶 <strong>结法是 Lead 定向的读法</strong>（她原话只有「可以」一个词）—— ⛔ <strong>不是她逐字说的</strong>（§6.4）</td></tr>
+</table>
+<h4>📏 量出来的(<strong>仪器 + 阳性对照</strong>)</h4>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>v2 没有先应一声</strong></td><td><strong>8/8 全静</strong>,中位 <strong>21.8 秒</strong>(阳性对照:开场白 8/8 探到,READY+2.0~2.7)</td></tr>
+<tr><td><strong>它开口只要 2 秒</strong>(开场白)</td><td>⇒ <strong>那 20 秒不是它慢,是它在忙</strong></td></tr>
+<tr><td><strong>持续等待音不会盖住【它说话】</strong></td><td>两场独立 + <strong>同一份录音里的阳性对照</strong>(地板 182 / 说话 0.00)</td></tr>
+<tr><td><strong>v3 那批 8-19/8-20 的观测:约 35.2 秒被切</strong></td><td>八场 <strong>8 死 0 活</strong>,全距 0.338 秒;<strong>v2 八场 8 活 0 死</strong>,唯一变量是版本<br>⚠️ <strong>这是【当时的观测】,不是 v3 的固有属性</strong> —— <strong>成因仍未定案</strong>,而且<strong>现在暂时查不了</strong>(§6.5【2】)</td></tr>
+<tr><td><strong>v2 撑过【一次】30 分钟静默</strong></td><td>⚠️ <strong>n=1</strong>,窗口就是 30 分钟 —— <strong>一次通过不是一个通过率</strong></td></tr>
+<tr><td><strong>事件流里早就有话可念</strong></td><td><strong>7.8 秒</strong>它已用中文写出打算干什么;她 <strong>21.8 秒</strong>才听到第一个音</td></tr>
+<tr><td><strong>它听得懂她</strong></td><td><strong>transcript/delta 200 条,逐字对</strong></td></tr>
+<tr><td><strong>memory 真的读到了</strong></td><td><strong>它真去读磁盘上的记忆文件并【逐字复述】</strong>;<br>⭐ <strong>找不到时【明说找不到】,⛔ 不拿相近的顶替</strong></td></tr>
+<tr><td>⚠️ <strong>身份</strong></td><td><strong>隔离轮验过</strong>(关掉注入,仍答对合同 + 她的名字)—— <strong>但只验过【一次】</strong><br>⇒ <strong>成色 = 验过一次,【稳定性未知】</strong>;理由:<strong>身份若经那 5,300 摘要进去,可能每场不同</strong></td></tr>
+</table>
+<h4>⛔ 她【决定】不做的 —— <strong>不是「已评估不可行」</strong></h4>
+<p><strong>短提示音</strong>(无条件否决)· <strong>放她自己的音乐</strong>（⚠️ <strong>从未被评估过</strong>;她 8-24 记录为「<strong>暂时</strong>不做」）· <strong>podcast 三个产品问题</strong>(她明确选择不测)·<br><strong>我们自己做掉线重连</strong> · <strong>给 Codex 提 issue</strong> ·<br><strong>把它写好的那句念出来</strong>(⚠️ <strong>她试的是 macOS 合成音那个嗓子;换个嗓子的念法从来没被测过 ⇒ 未追求,不是已否决</strong>)</p>
+<blockquote><h4>⛔ <strong>这一档里没有一条是「行不通」。</strong> <strong>⛔ 不许写成「已评估」/「不可行」/「已排除」。</strong></h4></blockquote>
+<h4>⬜ <strong>未被测到的</strong> —— ⚠️ <strong>最容易被当成已解决的一档</strong></h4>
+<table>
+<tr><td></td><td>为什么它没被测到</td></tr>
+<tr><td><strong>「没有声音必须送静音」这条前提</strong>(§3.1d)</td><td><strong>P-6c 是在【两个方向都在送静音】的前提下跑的</strong> ⇒ <strong>前提本身没被碰到</strong><br>⇒ 要测它<strong>得另开一场并先改桥</strong></td></tr>
+<tr><td><strong>持续等待音会不会干扰【它听她说话】</strong></td><td>已量的只有「不会盖住<strong>它说话</strong>」那一半<br>🔴 <strong>2026-08-20 17:48 后这条变重了</strong>:第 1 档被她砍掉 ⇒ <strong>它不成立时没有退路了</strong></td></tr>
+<tr><td><strong>换一个【好嗓子】来念那句话</strong></td><td><strong>从来没被测过</strong> —— 她砍的是<strong>这个嗓子的效果</strong>,不是这条路</td></tr>
+<tr><td><strong>并发:半小时量级 + 真实编排</strong></td><td>⛔ <strong>不是被阻塞,是没做</strong></td></tr>
+<tr><td><strong>podcast 场景</strong></td><td><strong>她明确选择不测</strong>(见上一档)</td></tr>
+</table>
+<blockquote><h4>🔑 <strong>这一档为什么单列</strong>:</h4>
+<h4><strong>一个成立的结论,会自动给它的前提发一张通行证</strong> ——</h4>
+<h4><strong>结论对了,没人会回头问「那前提验过吗」。</strong></h4></blockquote>
+<hr></div></details>
+<details><summary>0. 🔴 这份 PRD 的读法(<strong>先读这一节,否则会读错</strong>)</summary><div class="mdbody"><h4>0.1 <strong>它不是定稿,是「带空格的初版」</strong> —— 这是 Annie 批准的形态</h4>
+<p>她 2026-08-19 问:「我们现在是应该停在这就做 PRD 呢?还是说停在这,然后准备把那个<br>Prototype 跑通之后,再看接下来要做什么?」</p>
+<p><strong>HL 拍板 = 两者叠着做</strong>,并<strong>已把代价原样告诉她</strong>:</p>
+<blockquote><p><strong>第一版不是定稿,是带空格的;她要一次拿完整的,我们就改成串行。</strong></p></blockquote>
+<p>⇒ <strong>所以本文里凡是标 ⬜ 的段落,是【刻意留空】,不是【还没写】。</strong></p>
+<blockquote><h4>📌 <strong>2026-08-24 收口 —— 上面这段【保留】,但它描述的状态已经结束</strong></h4>
+<p><strong>「带空格的初版」是当初的形态约定,记在这儿不删。</strong><br>⇒ <strong>她这一轮把最后一格裁完之后,本文进入 v1.0（可交付定稿）:内容不再等她。</strong></p>
+<p>⚠️ <strong>但「不再等她」⛔ 不等于「没有 ⬜ 了」</strong> —— 剩下的 ⬜ 换了性质,逐格见 §10:</p>
+<pre>等她用起来        q1 q2 q7    ← 冷着答不出来,现在问会得到不确信的答案
+工程实测          q5 q15      ← ⛔ 不是被阻塞,是没做
+工程实施时判定    q3（打断）  ← 她明确把这一格交给了工程
+要重开归她        q20         ← ⛔ 不是已否决,是【未追求】
+改形状,不是 bug   q22 q23
+Tadashi / 等上游  q10         ← ② 那半握手已被拒,现象复现不了</pre>
+<p>🔴 <strong>只有一格还剩她的一半:q6「founder 优先通道要不要做」= 工程 + 她。</strong><br>⇒ ⛔ <strong>不许写成「所有问题都已裁完」。</strong></p></blockquote>
+<h4>0.2 三种成色,<strong>读的时候必须分清</strong></h4>
+<table>
+<tr><td>标记</td><td>含义</td></tr>
+<tr><td>【她的自由表述】</td><td><strong>她自己说的</strong>,逐字在 <code>exploration.md</code></td></tr>
+<tr><td>【她圈选】</td><td>她从我们给的候选里挑的 —— ⚠️ <strong>选项集是我们划的</strong></td></tr>
+<tr><td>【HL / Runner 的判断】</td><td><strong>我们推的</strong>,她可否</td></tr>
+<tr><td>⬜</td><td><strong>刻意留空,等 prototype 或等她</strong></td></tr>
+<tr><td>🔶</td><td><strong>不是硬结论</strong> —— 推出来的 / Lead 定向的读法;⛔ <strong>她一纠正就作废</strong>（按规矩 19 留痕）</td></tr>
+</table>
+<h4>0.2b 🔴 什么该进这份 PRD —— <strong>按【角色】判,不按【类别】判</strong>【HL 2026-08-20 二版】</h4>
+<blockquote><p><strong>问题不是「这是不是实现细节」,是「它在这里干什么」。</strong><br><strong>同一个技术名词,在一处是噪音,在另一处是唯一支撑工期判断的证据。</strong></p></blockquote>
+<table>
+<tr><td>它在这里的角色</td><td>例</td><td>处置</td></tr>
+<tr><td><strong>指定实现</strong></td><td>「必须用某个编解码器」</td><td>⛔ <strong>不进</strong> —— 换掉不影响承诺</td></tr>
+<tr><td><strong>支撑范围判断</strong></td><td>「要自己写 WebRTC + Opus + RTP 客户端」⇒ 所以这是<strong>自己接线</strong>不是<strong>接根线</strong></td><td>✅ <strong>留,但必须标角色</strong></td></tr>
+<tr><td><strong>就是承诺本身</strong></td><td>「复述取转写原文」</td><td>✅ <strong>留,写在承诺旁边</strong></td></tr>
+</table>
+<h5>为什么「留 + 标角色」是唯一正确的选项,删和不标都是错的</h5>
+<ul><li><strong>删掉</strong>:§3.1「接入一条还没铺好的线」是<strong>整份 PRD 里唯一会直接变成工期的一句</strong>;</li></ul>
+<p>  <strong>支撑它的证据被删掉之后,下一个人会觉得那句是拍脑袋的。</strong></p>
+<ul><li><strong>不标</strong>:它会<strong>读成我们在指定技术栈</strong>,拆单的人会照着建。</li></ul>
+<p>📎 <strong>一版判据的留档</strong>(HL 的第一版,按类别分):「换掉不影响承诺 → 工程细节 → 不写」。<br><strong>按那一版,§3.1c 的协议名该删。</strong> 本文当时没删、而是标了角色 ——<br><strong>HL 复核后判那一版不够用,改成了现在这版。</strong> 留着一版是因为<strong>「按类别判」是更自然的直觉,下一个人很可能先想到它。</strong></p>
+<h5>📌 本文按现行判据的自审结论</h5>
+<p><strong>§3.1c 里的协议名 = 第二种角色(支撑范围判断),已标。</strong><br><strong>换协议栈不影响承诺;要不要自己维护一个客户端,影响。</strong></p>
+<h4>0.2c 🔴 她的一句话里常常同时有【决定】和【理由】—— <strong>只有决定能进文档</strong>【2026-08-20 定】</h4>
+<p><strong>判据</strong>:</p>
+<table>
+<tr><td></td><td>处置</td></tr>
+<tr><td><strong>决定</strong>(她要我们做什么 / 不做什么)</td><td>✅ <strong>入库</strong>,记成 founder 决定,<strong>带原话与时刻</strong></td></tr>
+<tr><td><strong>理由</strong>(她为什么这么判)</td><td>⛔ <strong>不许写成结论、不许写成「已排除」、不许当 PRD 前提</strong></td></tr>
+</table>
+<blockquote><h4><strong>为什么</strong>:她的理由是<strong>判断</strong>,不是<strong>测量</strong>。</h4>
+<h4><strong>一旦写成 finding,它就变成一条没人能再挑战的前提</strong> ——</h4>
+<h4><strong>以后任何人想重开那个方向,都得先去推翻一句写在文档里的「已排除」。</strong></h4></blockquote>
+<p>⇒ <strong>正确的写法永远是那一对</strong>:<strong>证据不变,投入停止。</strong> ⛔ <strong>两件事不许合成一句。</strong></p>
+<p>📎 <strong>第一个实例</strong>:§6.5【2】的账号那条线(2026-08-20 17:12:02Z)。</p>
+<h4>0.2d 🔴 一个会让她失望的取舍,<strong>必须记在两栏</strong>,只记一栏就是漏了【2026-08-20 定】</h4>
+<table>
+<tr><td>栏</td><td>记什么</td><td>给谁看</td></tr>
+<tr><td><strong>技术限制</strong></td><td>「v2 是回合制 ⇒ 打断不成立」</td><td><strong>给我们看的</strong> —— 解释为什么</td></tr>
+<tr><td><strong>她会怎么撞上</strong></td><td>「她夸过的那个能力,选定的载体给不了」</td><td>⭐ <strong>产品要解的是这一栏</strong></td></tr>
+</table>
+<blockquote><h4>⛔ <strong>只记第一栏,读起来完全正确,而且很专业</strong> ——</h4>
+<h4><strong>但它把一个【她会亲身撞上的失望】变成了一条【我们内部的技术说明】。</strong></h4></blockquote>
+<p>📎 <strong>第一个实例</strong>:§6.5「一」的打断 —— <strong>同一件事同时挂在两处</strong>:<br><strong>不构成重选载体的理由(技术栏),但构成【她会亲身碰上的那件不顺】(产品栏)。</strong></p>
+<h4>0.2e 🔴 <strong>她的同意也会被【场景形状】污染</strong> —— 读每一格「她已同意」之前先看这条【2026-08-20 定】</h4>
+<blockquote><h4><strong>任何在【退化场景】里定下来的东西,都可能只是【在那个形状里】成立</strong> ——</h4>
+<h4><strong>规格、验收截图、以及【她本人的同意】。</strong></h4></blockquote>
+<blockquote><h4>🔴 <strong>最狠的一点,也是最容易被跳过的</strong>:</h4>
+<h4><strong>连 founder 的同意都会被场景形状污染。</strong></h4>
+<p><strong>她看着那张截图点头是真心的 —— 而那张截图【没有展示冲突】。</strong></p></blockquote>
+<p>⇒ ⛔ <strong>不能拿「她当时同意过」当结案依据,要看她是在【什么形状里】同意的。</strong></p>
+<h5>📎 本单当晚的两个实例(<strong>同病,不同表现</strong>)</h5>
+<table>
+<tr><td>#</td><td>在退化场景里定的</td><td>真实使用中发生了什么</td></tr>
+<tr><td><strong>1</strong></td><td><strong>提示音规格</strong> —— 定它的合成测试<strong>一场只有一问一答</strong>,所以<strong>永远只响一次</strong></td><td>她原话:「<strong>说实话还蛮奇怪的,就响一下然后就不响了</strong>」「<strong>能不能做得正常一点</strong>」</td></tr>
+<tr><td><strong>2</strong></td><td><strong>状态行「原地改一条消息、不刷屏」</strong> —— 照她 <strong>7 月那张截图</strong>做的,<strong>她当时同意</strong></td><td>那张截图是<strong>一问一答</strong>,状态行本来就在最下面;<strong>真实连续对话里转写往下长,它被留在最上面</strong> ⇒ 她原话:「<strong>他会把 message 放在最 top,我有时候并没有看到</strong>」</td></tr>
+</table>
+<table>
+<tr><td><strong>3</strong></td><td><strong>提示音的【类别】</strong> —— <strong>只等 2 秒的时候,「事件」和「状态」看起来完全是同一个东西</strong></td><td>真实使用里她要等 20 秒 ⇒ 她原话:「<strong>起码得持续地响</strong>…有点类似于给客服打电话…电梯音乐那种感觉」</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>两条需求在退化场景里看起来相容,真实使用中才打架。</strong></h4></blockquote>
+<blockquote><h4>🔴 <strong>第 3 例比前两例更狠,值得单独点出来</strong>:</h4>
+<pre>①②  错在【参数 / 位置】  —— 规格是对的,值调错了
+③    错在【类别】        —— 我们做对了规格,做错了【它属于哪一类】</pre>
+<h4><strong>退化场景把「事件」和「状态」压成了同一个东西</strong> ——</h4>
+<h4><strong>只等 2 秒时,响一声和持续响【无法区分】;要等 20 秒,它们是两种不同的产品。</strong></h4></blockquote>
+<h5>⇒ 这根轴有【另一端】,所以要记的不是「有没有污染」,是<strong>它落在轴的哪一头</strong></h5>
+<blockquote><h4><strong>记录一个结论时,一并记下它是在【比预期更宽松】还是【比预期更严苛】的场景里通过的</strong> ——</h4>
+<h4><strong>那决定了它以后能被推广多远。</strong></h4></blockquote>
+<table>
+<tr><td>落在哪一头</td><td>后果</td></tr>
+<tr><td><strong>比预期宽松</strong>(退化场景)</td><td>⚠️ <strong>结论只在那个形状里成立</strong> —— 上面三例全在这一头</td></tr>
+<tr><td><strong>比预期严苛</strong></td><td>⭐ <strong>结论比它自己声称的更硬</strong> —— <strong>可以往外推</strong></td></tr>
+</table>
+<p>📎 <strong>本单唯一落在严苛那一头的实例</strong>:<br><strong>立住连续等待音的那一场是【46 秒】,而她自己假设的是 30 秒</strong>(§6.5「三」)。</p>
+<blockquote><h4>⇒ <strong>它不是在一个刚好够用的场景里通过的,是在一个【超出她预期】的场景里通过的。</strong></h4>
+<h4><strong>所以这一条比上面那三条硬得多。</strong></h4></blockquote>
+<p>📎 <strong>它和 §0.2 那张成色表接得上</strong>:<br><strong>那里已经写了【她圈选】的选项集是我们划的</strong> ——</p>
+<blockquote><h4><strong>这一条再加一层:【场景形状】也是我们划的,而且它比选项集更隐形。</strong></h4>
+<p><strong>选项集至少摆在她眼前;场景形状是她【看不见】的那个前提。</strong></p></blockquote>
+<h6>📌 三层排齐 —— <strong>越往下越隐形,而越隐形的越不会被质疑</strong></h6>
+<pre>① 她答的话              ← 最显眼,人人都会去核
+② 我们给的选项集         ← 已写(§0.2 成色表)
+③ 我们没说出口的场景形状  ← 最隐形,没有人会想到要核它</pre>
+<h6>🔴 <strong>为什么「期待」比「同意」更逃得掉 —— 机制</strong></h6>
+<table>
+<tr><td></td><td>有没有条目</td><td>后果</td></tr>
+<tr><td><strong>同意</strong></td><td><strong>有时刻、有对象、有【决定的形状】</strong></td><td>⇒ <strong>会被登记 ⇒ 会被复查</strong></td></tr>
+<tr><td><strong>期待</strong></td><td><strong>弥散在她的语气和前提里,【没有条目】</strong></td><td>⇒ <strong>不会被登记 ⇒ 没有东西可复查</strong></td></tr>
+</table>
+<blockquote><h4>⇒ <strong>一条从来没被写成条目的东西,不会有人去核它</strong> ——</h4>
+<h4><strong>它只会安静地当背景假设用一辈子。</strong></h4></blockquote>
+<p>📎 <strong>同族</strong>:<strong>没人当成主张说出口的前提,永远拿不到成色评级。</strong></p>
+<h4>0.2f 🔴 <strong>PRD 写「要达到什么效果」,⛔ 不写「因此工程只能怎么做」</strong>【她定,2026-08-23】</h4>
+<p><strong>她的原话</strong>:</p>
+<blockquote><p>「PRD 我建议你不要加这些东西了。PRD 应该更多地侧重于<strong>我们要实现什么样的效果</strong>,<br>你<strong>不要给工程那边加一些限制</strong>。如果本来工程那边发现可以做到的事情,被你写了一堆限制,<br><strong>他们反而不做了</strong>……有的时候<strong>你以为的不一定是真的</strong>。」</p>
+<p>「你不要加太多限制,<strong>你觉得不能做的事情,不一定是真的不能做</strong>。」</p></blockquote>
+<blockquote><h4>✅ <strong>判据(每写一句限制之前问一次)</strong>:</h4>
+<h4><strong>这是【产品要的效果】,还是【我对可行性的猜测】?</strong></h4>
+<h4>⇒ <strong>后者一律不进 PRD 正文。</strong></h4></blockquote>
+<p>📎 <strong>为什么这条特别难自觉</strong>:</p>
+<blockquote><h4><strong>我看到的限制,常常只是【我还没看到那条路】</strong> —— <strong>而把它写进 PRD,会让别人也看不到它。</strong></h4></blockquote>
+<h4>0.3 什么会过期</h4>
+<ul><li><strong>不会过期</strong>:§1–§4 她的原话与已定前提</li><li><strong>会过期</strong>:§7 的实测数字(以 <code>research.md</code> §0 的 as-of 表为准)</li><li><strong>⬜ 会被填掉</strong>:§6 各格</li><li>🔴 <strong>也会过期,而且最容易被漏掉:【核实过的「不存在」】</strong>(2026-08-20 补)</li></ul>
+<p>  <strong>「没有人问过 X」「那个分支不存在」是关于【某一刻】的事实,不是长期属性。</strong><br>  ⇒ ⛔ <strong>它过期时不会报错,只会安静地继续被引用。</strong><br>  📎 本单实例:「从来没有任何一格在问『提示音会不会盖住人声』」——<br>  <strong>当时核过、当时为真</strong>,她把「一声」改判成「持续」之后就假了(§6.4.2)。<br>  ⇒ <strong>标这类句子时,同时写下它会因为什么而失效;写不出来就不该当长期事实用。</strong></p>
+<hr></div></details>
+<details><summary>1. 问题</summary><div class="mdbody"><p>她的原话(2026-08-17):</p>
+<blockquote><p>「我一直希望有一个所谓的<strong>耳机模式</strong>…我可能比如说在做一些加入啊什么时候,我也希望我可以继续去<br>monitor 现在在发生的事情…那这个时候我大概率是<strong>不会去看着我的电脑屏幕</strong>的…<br>但我希望的是,<strong>他原来的 behavior 还是这样去做</strong>…<strong>但是与此同时,还加了一个语音模式</strong>。」</p></blockquote>
+<p><strong>2026-08-19 她把场景说具体了</strong>:</p>
+<blockquote><p>「真正的问题在于,很多时候我需要跟你把事情聊清楚,但我现在<strong>必须坐在电脑前</strong>…<br><strong>还得等你</strong>。很多时候我可能<strong>在开车</strong>,需要用语音的形式把这段沟通完成。」</p></blockquote>
+<p>⇒ <strong>真问题</strong>:她手上有别的事时,和整个系统之间<strong>只剩耳朵和嘴</strong>这一条带宽,<br>而这条带宽上要跑完一整圈:</p>
+<pre>它知道现在怎么了 → 念给她听 → 她说一句 → 转成对某个 Lead 的准确指令 → 事情真的动了 → 结果回到她耳朵</pre>
+<p><strong>难的不是「会说话」,是这一圈的每一环都不能断,而且断了她得知道。</strong></p>
+<p>📎 <strong>「还得等你」是问题的一部分,不只是姿势</strong> ——<br><strong>一个把她从桌子前解放出来、但她照样得等的设计,只解了一半。</strong></p>
+<hr></div></details>
+<details><summary>2. 用户</summary><div class="mdbody"><p><strong>唯一使用者 = Annie。</strong> 不做多用户设计,不做权限分层。</p>
+<hr></div></details>
+<details><summary>3. 硬约束(<strong>PRD 级,不是注脚</strong>)</summary><div class="mdbody"><table>
+<tr><td>#</td><td>约束</td><td>成色</td></tr>
+<tr><td>1</td><td><strong>Discord 原有行为完全不变</strong> —— 该发的照发,语音是<strong>叠加</strong>不是替代</td><td>【她的自由表述】</td></tr>
+<tr><td>2</td><td><strong>总管兼任</strong> —— 平常做 prioritization,语音模式时临时上线当秘书。<strong>同一个脑子</strong></td><td>【她的自由表述】</td></tr>
+<tr><td>3</td><td><strong>载体 = Codex,耳朵和嘴巴都归它</strong></td><td>【她的自由表述】</td></tr>
+<tr><td>4</td><td><strong>假设使用者没有 flywheel 这个仓库</strong></td><td>A-PRD §8.5</td></tr>
+<tr><td>5</td><td><strong>一开始简单一点,让产品在使用中长出来</strong></td><td>A-PRD §2.5【她的自由表述】</td></tr>
+<tr><td>6</td><td><strong>merge / ship 仍 founder-gated</strong></td><td>FLY-1850 issue</td></tr>
+</table>
+<h4>3.1 ⭐ 贯穿全文的基调:<strong>接入,不是建造</strong>【她的自由表述】</h4>
+<blockquote><p>「<strong>应该很多都被 Codex 实现了,我们真的只是要把它接入我们的系统而已</strong>」</p></blockquote>
+<p>⇒ <strong>任何「我们来造一个 X」的方案,先回答「Codex 是不是已经有了」。</strong></p>
+<h5>⚠️ 但这个基调<strong>经 §3.1c 那道门检验后要加限定</strong></h5>
+<p><strong>检验结果:基调仍然成立,但不是「接线」那个量级。</strong></p>
+<pre>不是   从零建造
+也不是 接一根已经铺好的线
+是     【接入一条还没铺好的线】—— 客户端要自己写、自己维护,挂在两个实验性开关上</pre>
+<p>🔴 <strong>这个限定必须留在这里</strong> —— 否则<strong>拆单排期时会按「接线」的工作量估</strong>,而那会低估。</p>
+<h4>3.1b ⭐ 一条判断依据:<strong>「还没答」和「现在答不了」是两种待办</strong></h4>
+<blockquote><p><strong>前者该去问;后者去问反而有害</strong> —— <strong>分错类的代价是:把一个不确信的答案固化成规格。</strong></p></blockquote>
+<p>⚠️ <strong>这不是我们的方法论洁癖,是她本来就在这么做事</strong> —— 三个实例:</p>
+<table>
+<tr><td>#</td><td>实例</td></tr>
+<tr><td>1</td><td>§6.2 存活信号间隔 —— 「跑起来再调」</td></tr>
+<tr><td>2</td><td>§7.5 她怎么知道哪些已处理过 —— 冷着答不出来</td></tr>
+<tr><td>3</td><td><strong>她自己把一格从「现在答」改判成「用过再答」</strong>(§6.3 逐字)</td></tr>
+</table>
+<p>⇒ <strong>写规格时:一格如果只能靠她想象来答,那它现在不该被写死。</strong><br>📎 与 §3.1「接入不是建造」、§5 那条「先能改再谈改成多少」同源。</p>
+<h4>3.1c 🔴 硬验收门:<strong>能力必须在【我们实际使用的那个界面】上验过</strong>【她的自由表述】</h4>
+<p><strong>她的原话</strong>(2026-08-20):</p>
+<blockquote><p>「我们也需要去验证:<strong>它在 Codex CLI 里面到底能不能用,还是说只能在 Codex App 里面用?</strong><br>这个就是我们需要在 Prototype 里面去验证的。<br><strong>我不希望我们写着说可以用这个东西,最后大家去用发现都用不了。</strong>」</p></blockquote>
+<p><strong>她在防的是:PRD 写了一个只存在于我们不用的那个界面上的能力。</strong></p>
+<h5>✅ 这一问 1911 已用实测答了 —— <strong>答案分两半,两半都要写</strong></h5>
+<p><strong>① 能力是真的、CLI 可达、不限 App</strong>(实测,不是推断):</p>
+<table>
+<tr><td>证据</td><td></td></tr>
+<tr><td>跑通用的就是 <strong>codex 这个 CLI 二进制</strong>(sha256 <code>b0308517…</code>,参数 <code>--enable realtime_conversation app-server</code>)</td><td>1911 X3</td></tr>
+<tr><td>🔑 <strong>最硬的一条</strong>:它上报的客户端名是<strong>自己编的</strong>(<code>fly1911-v3full</code>),不是 App、不是任何官方客户端名,<strong>服务端照样放行</strong></td><td>⇒ <strong>不存在「只有 App 能用」的客户端白名单</strong></td></tr>
+</table>
+<p><strong>② 但「能用」对不同的人不是同一件事</strong>:</p>
+<pre>对我们(愿意自己写客户端)    能    1911 今晚那个客户端就是证明
+对大家(装了 codex 就想用)   不能   今天【没有任何面向用户的入口】</pre>
+<p><strong>②的证据</strong>(本单 E-2 亲测 + 1911 补充):</p>
+<ul><li><code>codex features list</code> → <code>realtime_conversation</code> = <strong>under development / false</strong></li><li><code>codex --help</code> → <strong>无 voice / realtime 子命令</strong></li><li>app-server 自标 <strong>[experimental]</strong></li><li><strong>必须自己写 WebRTC + Opus + RTP 客户端</strong></li></ul>
+<p>⇒ <strong>①②不矛盾:能力在,入口没开。</strong></p>
+<blockquote><h4>🔴 写进 PRD 的口径(<strong>不许简写</strong>):</h4>
+<p><strong>能力是真的、CLI 可达、不限 App;但它今天是一条【要自己接线的路】,不是装上就能用的路。</strong></p>
+<p>⛔ <strong>不许只写「用 Codex 的原生语音能力」</strong> —— 必须同时写明:<br><strong>我们要自己维护一个客户端,它挂在【两个实验性开关】上,协议随时可能变。</strong></p></blockquote>
+<h4>3.1d 🔴 硬前提:<strong>链路每一段都必须是常开流 —— 没有声音要「送静音」,不能「不送」</strong></h4>
+<p>【来源:1911 实测(B1 失败那次)。<strong>这不是 v3 的特性,是语音链路的通则,v2 上也成立。</strong>】</p>
+<p><strong>现象很有迷惑性,这才是它值得单独写的原因</strong>:</p>
+<pre>桥收到房里 193 块音频、Codex 也吐了 10 块   ← 两边看起来都在动
+但 userTranscripts 空、房里收到 0 个包       ← 整条链是断的
+⇒ 每一段都「有活动」,链却不通</pre>
+<p><strong>同一条定律,同时出现在两个方向</strong>:</p>
+<table>
+<tr><td>方向</td><td>断在哪</td></tr>
+<tr><td><strong>下行</strong> Codex → 房</td><td>播放流一空,player 进 idle <strong>不再消费</strong> ⇒ 之后写多少都进不了房</td></tr>
+<tr><td><strong>上行</strong> 房 → Codex</td><td>Discord <strong>只在有人说话时才有包</strong>,中间是断的 ⇒ 服务端 VAD <strong>判不出「说完了」</strong></td></tr>
+</table>
+<blockquote><h4>⇒ <strong>语音链路的每一段都必须是常开流。</strong></h4>
+<h4><strong>没有声音必须实现成【送静音】,不能实现成【不送】。</strong></h4></blockquote>
+<h5>为什么它是<strong>产品前提</strong>不是工程细节(按 §0.2b 的角色判据)</h5>
+<p><strong>她在车里、等它干活、想事情的时候 —— 都是安静的。</strong><br>如果安静被实现成「不送」,<strong>她每次沉默超过一会儿,链路就自己断了</strong> ——<br><strong>而她那一侧看到的只是「它突然不理我了」。</strong></p>
+<blockquote><p><strong>承诺压在这条上</strong>:我们说「<strong>你可以戴着耳机跟它说话</strong>」。<br><strong>这条不成立,那个承诺就不成立。</strong> ⇒ 属于第三种角色(<strong>就是承诺本身</strong>),写在承诺旁边。</p></blockquote>
+<h5>🔴 <strong>P-6c 分支表 —— ⛔ 在结果回来【之前】写好,回来直接执行,不再讨论</strong>【2026-08-20】</h5>
+<p><strong>P-6c 在跑什么(判据已冻结)</strong>:</p>
+<pre>做法   v2 + Discord,会话建立后【整整 30 分钟什么都不做】—— 不探活、不发心跳
+       到点放一个提问 bot 进去问一句
+判据   ① 出现一条 user 转写且内容对得上
+       ② 其后出现 assistant 转写
+       ③ 房里录音在那之后【真有声音】(音量包络)
+       ⇒ 三条缺一不可</pre>
+<blockquote><h4>🔴 <strong>先点出一件【决定这次通过意味着什么】的差别 —— 它不在判据里</strong>:</h4>
+<pre>P-6 (v3)   麦克风【全程开着送静音】  ⇒ 它证的是「一直送静音,能撑半小时」
+P-6c(v2)   【整整 30 分钟什么都不做】 ⇒ 它问的是「什么都不送,能不能撑半小时」</pre>
+<h4>⇒ <strong>两场问的不是同一个问题。</strong> ⛔ <strong>不许把 P-6c 通过读成「P-6 那条结论在 v2 上复现了」。</strong></h4>
+<p>⚠️ <strong>一处我判不了、必须结果回来时确认</strong>:「什么都不做」指的是<strong>测试端不动</strong>,<br><strong>还是【桥那一侧也真的没有帧在流】</strong> —— <strong>两者对本节这条前提的意义完全相反。</strong></p></blockquote>
+<table>
+<tr><td>P-6c 结果</td><td>§3.1d(送静音那条前提)</td><td>§6.2(存活信号间隔)</td></tr>
+<tr><td><strong>✅ 三条全过</strong></td><td>🔴 <strong>本条在 v2 上的【必要性】被削弱</strong> —— <strong>不送也撑住了</strong><br>⇒ ⛔ <strong>但不许直接删</strong>:先确认上面那个「桥侧到底有没有在送帧」;<br><strong>若桥侧确实没送 ⇒ 本条降级为【v3 的特性】,不再是 v2 的产品前提</strong></td><td>✅ <strong>技术下限【确认没有】</strong> —— 现在只有源码读到的「v2 永不空闲」,<br>那时会有<strong>直接证据</strong> ⇒ 「多久出一次声」<strong>纯由她定</strong>这一条坐实</td></tr>
+<tr><td><strong>❌ 任一条不过</strong></td><td>✅ <strong>本条在 v2 上【坐实】,而且是产品前提</strong> —— <strong>她戴耳机想事情时会静很久</strong>,<br>⇒ <strong>保活必须做</strong>,不是可选项</td><td>🔴 <strong>技术下限【回来了】</strong> ⇒ 「多久出一次声」<strong>不再纯由她定</strong>,<br><strong>上面那段「技术下限没有了」要按 v2 的实测改写</strong></td></tr>
+<tr><td>⚠️ <strong>①② 过但 ③ 不过</strong></td><td>(不牵动本条)</td><td>(不牵动本节)<br>🔴 <strong>但它是另一种失败</strong>:<strong>会话活着、声音出不来</strong> ⇒ <strong>下行播放路径</strong>问题,<br>⇒ <strong>归 §6.4 那一族</strong>(她听不到),⛔ <strong>不许记成「耐久失败」</strong></td></tr>
+</table>
+<blockquote><h4>📌 <strong>这张表为什么在结果之前写</strong>:</h4>
+<p><strong>不是防文档里的既成事实(那两格现在压的是 v3 旧证据,标着「成色低、待换」,没有地位)</strong>——</p>
+<h4><strong>是防【分支由看过结果的人来写】。</strong> <strong>那一条和结果无关,永远成立。</strong></h4></blockquote>
+<h5>✅ <strong>P-6c 结果(2026-08-20 06:29)—— 三条判据全中,但【它没有测到本节这条前提】</strong></h5>
+<pre>05:58:58  会话锚 ⋯ 30 分钟静默,日志零事件,不探活不发心跳 ⋯
+06:29:17  提问(距会话锚 30 分 19 秒)
+06:29:20  user 转写出现,内容对得上                    ← ① ✅
+06:29:54  assistant 转写出现                          ← ② ✅
+房间录音   问完后 35.7 秒起、持续 10.1 秒、峰值 15482   ← ③ ✅</pre>
+<blockquote><h4>⛔ <strong>「活满」不是用存活检查判的</strong> —— <strong>连接状态和 RTP 一次都没参与这个判断。</strong></h4>
+<p><strong>判的是【她那一端听得到】,不是【链路看起来还在】。</strong></p></blockquote>
+<h6>⚠️ <strong>成色必须跟着结论走,⛔ 不许读成「稳了」</strong></h6>
+<pre>✅ 证明     v2 + Discord 撑过【一次】30 分钟静默,并在她耳朵那一端确认
+⚠️ 没证明   它【总是】撑得过 —— n=1
+⚠️ 没证明   30 分钟【以上】会怎样 —— 窗口就是 30 分钟</pre>
+<blockquote><h4>📌 <strong>一次通过是一次通过,不是一个通过率。</strong></h4>
+<p>⛔ <strong>没有加跑场次 —— 加场次 = 在【看到通过之后】改门槛。</strong><br><strong>「它是不是可靠」是一个【新问题】,要问就另开、判据另写。</strong></p></blockquote>
+<h6>🔴 <strong>而分支表里那支「全过」的【前提】被证伪了 —— 所以本节这条前提【未被测到】</strong></h6>
+<p><strong>我写分支时假设 P-6c 是「零帧」。1911 逐行核了桥的代码,答案相反</strong>:</p>
+<pre>prototype/bridge2.mjs
+ :429  注释「---- 上行常开流 ----」
+ :456  F24 = 24000*2*0.02 全零缓冲          ← 一帧静音
+ :458  schedule(20, ...)                    ← 每 20 毫秒一拍
+ :460  else f = F24                         ← 队列空就拿静音帧
+ :461  appendAudio(...) 无条件送出,外面没有 if ← 上行
+ :374  else frame = Buffer.from(F48)        ← 下行同理
+ :16   文件头注释:两个方向都必须常开流,没声音要送静音,不能不送</pre>
+<p><strong>成色</strong>:⚠️ <strong>读代码得出的,不是量出来的</strong>(桥没有为静音帧留计数器)—— <strong>但逐行可核。</strong></p>
+<pre>两场都        桥在【不停送静音帧】(上行 + 下行)
+唯一的差别    P-6c 里【测试端】那 30 分钟没有播任何音频
+⇒ 「什么都不做」= 测试端不动,≠ 桥那侧零帧</pre>
+<blockquote><h4>⇒ <strong>本节这条前提(没有声音必须送静音)——</strong></h4>
+<h4><strong>既没被坐实,也没被削弱。它【根本没被测到】。</strong></h4>
+<h4>⛔ <strong>不许写成「被削弱」,也不许写成「被坐实」。</strong></h4></blockquote>
+<p>📌 <strong>要真的测它</strong>(把上行静音也停掉,看 v2 还活不活):<strong>需要另开一场,而且要先改桥。判据另写。</strong><br>⛔ <strong>不能拿 P-6c 的结果去替它回答。</strong></p>
+<h6>🔑 <strong>这一处说明「先写分支」的价值到底在哪 —— 不是分支写对了</strong></h6>
+<blockquote><h4><strong>我那支「全过」的【内容】,基于一个后来被证伪的假设。</strong></h4>
+<h4><strong>但因为它被【提前写出来】了,那个假设才有机会在结果回来之前被人指出来、并去核。</strong></h4>
+<h4>⇒ <strong>提前写分支不会让分支正确,它让分支的【前提】早到能被检查。</strong></h4></blockquote>
+<p>⚠️ <strong>如果等结果回来再写</strong>:那个假设会<strong>直接变成结论的一部分</strong>,<strong>而且没有任何人会去查它。</strong></p>
+<h6>📌 一条更一般的,它正好管本节这一格</h6>
+<blockquote><h4><strong>「前提死了 ≠ 结论死了」;反过来同样成立 ——</strong></h4>
+<h4><strong>「结论成立 ≠ 它的那条前提被验证了」。</strong></h4></blockquote>
+<p><strong>一个成立的结论,会自动给它的前提发一张通行证</strong> ——<br><strong>结论对了,没人会回头问「那前提验过吗」。</strong><br>⇒ ⭐ <strong>本节这一格正是这种前提</strong>:P-6c 过了,而它依赖的「一直在送静音」<strong>从来没有被测过</strong>。</p>
+<h5>🟢 2026-08-20 实测:<strong>半小时静默没断 —— 而它通过的条件,正好就是这条前提</strong></h5>
+<p><strong>1911 P-6</strong>:<strong>30.6 分钟</strong>,每分钟打一次点。</p>
+<pre>30/30   连接在
+30/30   数据通道开着
+2       整场只有两个 session 事件:开头 started、我停它时 closed(requested)
+0       掉线 / 重连 / 报错
+RTP     出 90905 / 入 90233 ⇒ 对端全程在送,不是我对着死管子说话</pre>
+<p><strong>静默前后各问了一次,都答上了</strong>(开口 17.8 秒 / 12.1 秒),<strong>两次都逐字转写对了。</strong></p>
+<blockquote><h4>🔴 <strong>条件比结论重要:那半小时里,麦克风从没停过。</strong></h4>
+<h4>⇒ 它证明的是「<strong>只要一直送静音,会话能静半小时不断</strong>」——</h4>
+<h4><strong>不是</strong>「停了也撑得住」。<strong>先前的实测正是反面:停送 = 判掉线。</strong></h4>
+<h4>⇒ <strong>本条产品前提原样不变</strong>:「没有声音」必须实现成「<strong>送静音</strong>」,永远不能实现成「<strong>不送</strong>」。</h4></blockquote>
+<p>📎 <strong>这次通过的形状值得单记一笔</strong>:<strong>它是一次【条件通过】,而那个条件恰好就是本条前提本身。</strong><br>⇒ <strong>所以它不能被引用成「静默没问题」</strong> —— 引用它必须连条件一起引。</p>
+<p>⚠️ <strong>三条边界,不许把它四舍五入</strong>:<br>① 真正静的是 <strong>约 29 分钟</strong>,不是 30(第一分钟它还在答上一题);<br>② <strong>这一场没走 Discord</strong> —— 量的是 Codex 会话的耐力,<strong>Discord 那一段在这个时长上仍然未量</strong>;<br>③ <strong>n=1</strong>。</p>
+<p>📎 <strong>一条计划外的观察</strong>(不是这次要测的东西,单次,⛔ 别当结论):<br>静默之后它说「<strong>我再</strong>去确认一下」——「再」字说明<strong>半小时后它可能还带着之前那轮的上下文</strong>。</p>
+<p>⚠️ <strong>它没有动的那一格</strong>:<strong>pause 之后会不会被判掉线,这一场没测</strong>(P-6 从头到尾没 pause)<br>⇒ <strong>下面那个「她要闭麦」的待解冲突,原样开着。</strong></p>
+<p>📎 <strong>它替换了先前那版</strong>(「v3 麦克风常开,停送约 25 秒被判掉线」)——<br>那只是本条的一个实例,<strong>而且只覆盖了上行</strong>。<strong>留着旧版是因为它更容易被当成 v3 的特殊问题而放过。</strong></p>
+<h5>⚠️ 它和「她要闭麦」直接相撞 ——【Runner 的判断】</h5>
+<p><strong>她开车时会想闭麦</strong>(旁边有人说话、接电话、不想被听见)。<br><strong>而闭麦 = 不送 = 正好是这条前提禁止的那个实现。</strong></p>
+<p><strong>C 线刚测出的相关结果</strong>(强度按原文,<strong>不许升格</strong>):</p>
+<pre>动作存在   服务端九动作清单里有 pause / resume
+但         二进制字符串里搜 pause 命中 0(只出现在服务端返回的清单里)
+且         pause 之后会不会被判掉线,没验
+⇒ 结论    「能不能闭麦」= 动作存在,行为未验</pre>
+<p>⇒ 🔶 <strong>B 侧的开放格 —— 注意它是【待解冲突】,不是【待答问题】</strong>【HL 2026-08-20 归类】</p>
+<pre>待答问题   等【她】答
+待解冲突   等一个【技术事实】,而那个事实可能让冲突【整个消失】</pre>
+<p><strong>它等的是</strong>:pause 的语义。<strong>真机跑一次 pause 再 resume,看会不会被判掉线。</strong><br>📌 <strong>1911 已在查</strong>(排在起桥之后,不为它单独跑一轮)。</p>
+<p>⛔ <strong>在 ② 有结果之前不要去问她「你想不想闭麦」</strong> ——<br><strong>如果 ② 成立,这一格根本不存在,问了就是浪费她一轮。</strong>【HL 明确】</p>
+<h5>📌 这一格是怎么被发现的 —— <strong>一条可复用的维护动作</strong></h5>
+<p><strong>两条都是我们刚写进去的,而且各自都对。</strong><br>⚠️ <strong>这种冲突最难被发现,因为审查时人是一条一条看的,每一条都通过。</strong></p>
+<blockquote><h4>⇒ <strong>新增一条硬前提之后,要拿它去扫一遍已有的使用场景。</strong></h4>
+<p><strong>前提是【全局约束】,场景是【局部描述】—— 局部各自成立,不代表和全局相容。</strong></p></blockquote>
+<p>⚠️ <strong>什么会让我这条判断变假</strong>(按「自己推的要主动找证伪」):<br>① 如果她根本不想闭麦(我没问过她,这是我替她设想的场景)⇒ 这一格降级;<br>② 如果 pause 在协议层就是「继续送静音、只是标记为静音」⇒ 它和本条前提不冲突,这一格消失。<br><strong>两条都没查过。</strong></p>
+<h4>3.1e 🔴 它描述自己能力时<strong>说大了</strong> —— 这是一条独立风险,和延迟无关</h4>
+<p><strong>实测</strong>(2026-08-20 05:22:09,她本人那场):它主动说</p>
+<blockquote><p>「<strong>我能看到你当前正在使用的项目</strong>」</p></blockquote>
+<p><strong>这次它答对了</strong>(准确说出她在做 FLY-1911 语音原型)——<br>⚠️ <strong>但它的可见范围其实是它自己那个 worktree,不是「她电脑上正在做什么」。</strong><br><strong>这次答对,很可能只是因为它恰好就在 FLY-1911 里。</strong></p>
+<blockquote><h4>⇒ <strong>这是【能力边界表述】问题:它对用户描述自己能力时说大了。</strong></h4>
+<p>⛔ <strong>不许当成已解决</strong> —— <strong>答对一次不等于边界说对了。</strong></p></blockquote>
+<h5>为什么它在耳机里比在文字里更严重 ——【Runner 的判断】</h5>
+<p>📎 <strong>它和 §5.6.4 那条(「已转告」的证据不能由它自己书写)是同一族</strong>:<br><strong>两条都是「它对自己的描述,她无法当场核实」。</strong></p>
+<pre>文字里   她可以去翻、去点开、去对一眼
+耳机里   她只有它说的那一句</pre>
+<p>⇒ <strong>一个把自己能力说大了的系统,在耳机里没有任何东西会来纠正它。</strong></p>
+<p>⚠️ <strong>什么会让这条判断变假</strong>:<br>① 若它每次都把「我看的是哪里」一起说出来(而不是笼统说「你的项目」)⇒ 这一条降级成措辞要求;<br>② 我看不见的那类:<strong>她可能根本预期它就是看自己那摊</strong> —— 我没问过她,而这次她没纠正它,<br><strong>但「她没纠正」不等于「她认可」,也可能是她当时正忙着等答案。</strong></p>
+<h5>3.1e.1 🔴 同族但<strong>不同物</strong>:它会在后台查完之前,<strong>先报一个错数字</strong>【1911 实测 2026-08-20】</h5>
+<p><strong>逐字四个时刻</strong>(1911 T3d,<strong>原样搬过来,不许压成一句结论</strong>):</p>
+<pre>07:36:32  它说:「搞定了,刚查了 GitHub,Flywheel 仓库现在有 4 个还没合并的 PR。」
+07:36:46  ← 它这时候还在跑 gh pr list
+07:36:59  ← 还在跑 gh api --paginate
+07:37:14  后台真正的答案才回来:42 个(41 正式 + 1 Draft)
+07:37:28  它才改口说 42 个</pre>
+<blockquote><h4>⇒ <strong>它用「搞定了」的口吻,报了一个后台还没查出来的数字。</strong></h4></blockquote>
+<p><strong>和 §3.1e 的关系 —— 同族,但别合并</strong>:</p>
+<pre>§3.1e   它把【自己的能力】说大了        ← 描述的对象是它自己
+本条    它把【还没有的结果】先说出来了  ← 描述的对象是这次任务
+共同点  她【当场无法核实】,而耳机里没有任何东西会来纠正它</pre>
+<p><strong>它正好踩在她自己划的那条线上</strong>(她的原话):</p>
+<blockquote><p><strong>「听错词可以接受,搞错单号不行。」</strong></p></blockquote>
+<p>⚠️ <strong>一个说得很确定的错数字,比一个听错的词危险得多 —— 她没有任何办法知道那是临时的。</strong></p>
+<p>📎 <strong>这也是 §5.6 复述兜底为什么只收窄到「专名和编号」的直接依据,但要读准</strong>:<br><strong>复述兜的是【它听错】,兜不住【它编】</strong> —— <strong>它把那个编出来的数字复述一遍,一样通顺。</strong><br>⇒ <strong>⛔ 不许拿「有复述兜底」当这条风险的处置。</strong></p>
+<h6>频率:<strong>刻意不测</strong>,不是「还没测」</h6>
+<pre>已观测   1 次(2 次有效的 v3 跑中;另一次没发生)
+频率     【刻意不测】</pre>
+<blockquote><p><strong>理由(1911 侧的判断,原样记下来)</strong>:<strong>她那条线是绝对的,不是概率的。</strong><br>「搞错单号不行」⇒ <strong>一次就够定性。频率决定的是「多急」,不是「算不算问题」。</strong></p></blockquote>
+<p>📎 <strong>写「刻意不测」而不是「未测」是有意的</strong> —— 和 §6 那些 ⬜「刻意留空」同一个用法:<br><strong>前者告诉下一个人【不要去补】,后者会派他去补。</strong><br>⇒ <strong>这两个词在本文里不是同义词,是两条相反的指令。</strong></p>
+<h4>3.1f 🔴 她现在<strong>打断不了它</strong> —— 而这在 B 的场景里比在会议里更糟</h4>
+<p><strong>她的原话</strong>(2026-08-20):</p>
+<blockquote><p>「<strong>我发现我好像没有办法打断他。</strong>」</p></blockquote>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>成因</strong></td><td>现在跑的 v2 是<strong>回合制</strong>:<strong>它说话时不听</strong>。⚠️ <strong>这是真限制,不是 bug</strong></td></tr>
+<tr><td><strong>为什么 B 更糟</strong></td><td><strong>开车的人没法「等它说完」</strong> —— 她需要能<strong>中途叫停</strong></td></tr>
+<tr><td><strong>归档</strong></td><td>与「闭麦 / pause 语义」(§3.1d)<strong>同族</strong> —— 都是「<strong>能不能在它说话时插进去</strong>」</td></tr>
+</table>
+<p>📎 <strong>它和 §6.4 的关系</strong>:§6.4 是<strong>它不出声时她难受</strong>;本条是<strong>它出声时她停不下来</strong>。<br><strong>两条合起来才是「轮次」这件事的全貌</strong>,别只解一半。</p>
+<h5>3.1f.1 🔴 「打断」不算 v3 的收益 —— <strong>成色更正</strong>(2026-08-20)</h5>
+<pre>v2 上打不断        ✅ 已实测 —— Annie 本人撞到,回合制固有限制,不是 bug
+v3 上是否打得断    ⬜ 未验</pre>
+<blockquote><h4>⛔ <strong>两句都不许写</strong>:</h4>
+<p>⛔ <strong>不许写「上 v3 就好了」</strong> ⛔ <strong>不许写「打断做不到」</strong>(那是 v2 的结论,<strong>不能当载体的结论</strong>)</p></blockquote>
+<p>📎 <strong>这条更正的成因值得记</strong>:先前那句「打不断要解就得上 v3,和先应一声是一笔投入不是两笔」<br><strong>是从「v3 是音频驱动」这个【规格描述】推出来的,不是量出来的</strong>。<br>⇒ <strong>正是 §3.1c 那道门要防的:「原生规格说有」不能当实测。</strong><br>⚠️ <strong>而它是在那道门立起来之后犯的</strong> —— <strong>一条门刚立就被绕过,说明立门不等于会用门。</strong></p>
+<p><strong>⇒ 「要不要投 v3」现在的收益栏(三条成色各不相同)</strong>:</p>
+<table>
+<tr><td>收益项</td><td>成色</td></tr>
+<tr><td>先应一声</td><td>✅ <strong>实测听到过</strong> —— ⚠️ <strong>有两个数(9.6 秒 / 1.76 秒),量的不是同一场,见 §6.4 的「分清」段。⛔ 这一格不许只写一个数。</strong></td></tr>
+<tr><td>卡顿</td><td>⬜ <strong>推测可解</strong>(48k 立体声或许免去重采样)—— <strong>未验</strong>,1911 在做</td></tr>
+<tr><td><strong>打断</strong></td><td>⬜ <strong>未验</strong> ← <strong>刚从「收益」降下来</strong></td></tr>
+</table>
+<p>⚠️ <strong>这张表只有【收益】栏 —— 而它现在缺了一条代价</strong>(2026-08-20 补):<br><strong>第一行那条「先应一声」的收益,和 §3.1e.1 那条抢答风险,是同一个能力。</strong><br>⇒ <strong>只看这张表,v3 会被读成「三条收益、零代价」。</strong></p>
+<p>📎 <strong>它不是漏写,是表的结构里就没有代价栏</strong> ——<br><strong>结构决定读者看到什么:一张只设了收益栏的表,每一格填得再诚实,读出来仍然是偏的。</strong><br>⇒ <strong>摆选择的表,先看它有没有给反面留位置。</strong></p>
+<h4>3.2 ⭐ 默认值往哪边偏:<strong>宁可多说,不可漏掉她该知道的</strong></h4>
+<blockquote><p>「我不希望他筛到,<strong>最后我该需要知道的也没有告诉我</strong>」</p></blockquote>
+<p>⚠️ <strong>她怕的是筛过头,不是吵。</strong><br>📎 <strong>别读成「越多越好」</strong> —— 她同段也说过「什么东西都跟我讲…也没必要」。<br><strong>这是不确定时往哪边倒,不是目标状态。</strong></p>
+<hr></div></details>
+<details><summary>4. 边界</summary><div class="mdbody"><table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>管</strong></td><td>她不看屏幕时,系统状态怎么到她耳朵、她的话怎么回到系统</td></tr>
+<tr><td><strong>不管</strong></td><td>它怎么判断优先级(<strong>那是 A/Raya,已定稿</strong>)· 多人语音会议(<strong>那是 C / FLY-1851</strong>)</td></tr>
+</table>
+<hr></div></details>
+<details><summary>5. 已定的行为(<strong>可以直接拆单实现</strong>)</summary><div class="mdbody"><h4>5.1 它什么时候出声 —— ✅ 已定【她的自由表述】</h4>
+<blockquote><p>「只要我一进入语音模式,系统就会自动把 Lead 要问我的<strong>所有问题</strong>、要汇报的<strong>所有内容</strong>,<br>都直接发给&quot;主管&quot;一份。然后&quot;主管&quot;通过语音模式告诉我:&#x27;OK,现在是什么情况,<br><strong>有哪些事情需要你做决定</strong>。&#x27;…<strong>他是一定要主动开口的</strong>,不可能一直被动地等我开口。」</p></blockquote>
+<table>
+<tr><td>项</td><td>定的是</td></tr>
+<tr><td><strong>主动性</strong></td><td><strong>它一定主动开口</strong>,不是被动等她问</td></tr>
+<tr><td><strong>触发点</strong></td><td><strong>她进入语音模式那一刻</strong> —— 一进去就把积压的一次性给她</td></tr>
+<tr><td><strong>搬什么</strong></td><td>Lead 要问她的所有问题 + 要汇报的所有内容,<strong>自动转一份给主管</strong></td></tr>
+<tr><td><strong>播报形式</strong></td><td>「现在是什么情况」+「<strong>哪些事情需要你做决定</strong>」</td></tr>
+<tr><td><strong>她给的心智模型</strong></td><td>「<strong>就像现在用 Discord 一样</strong>」—— 有新消息才处理,没消息不主动问</td></tr>
+</table>
+<h4>5.2 它念什么、念多少 —— ✅ 已定【她的自由表述】</h4>
+<blockquote><p>「我希望<strong>起码一开始吧,他会把所有的信息都给我</strong>。那如果我在测试的过程中发现…<br>给我的信息太多了,我耳机里也听不全…<strong>我们可以慢慢的减少</strong>。」</p></blockquote>
+<p><strong>两层必须分开写,合成一句就读错</strong>:</p>
+<pre>进来的那一层 = 全部       Lead 要问的、要汇报的,一条不落送到主管那儿
+出声的那一层 = 筛过的     它替她过一遍,只念该念的</pre>
+<p>⚠️ <strong>合成一句就变成「全都念给她听」—— 那不是她的意思。</strong></p>
+<p><strong>⇒ 耳机里的规矩和文字那边【不一样】</strong>:文字那边「只报走偏的」(A-PRD §10),<br><strong>耳机里一开始全给</strong>。</p>
+<h4>5.3 筛的标准怎么长出来 —— ✅ 已定:<strong>给机制,不给标准</strong>【她的自由表述】</h4>
+<blockquote><p>「<strong>我不知道他应该怎么样去筛</strong>啊…<strong>可能一开始不需要特别去筛吧</strong>…如果有一些我觉得我不需要知道的,<br><strong>然后跟他讲一声</strong>,他可能慢慢就知道…<strong>然后之后再慢慢的筛</strong>。」</p></blockquote>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>起点</strong></td><td><strong>不筛</strong>(全给)</td></tr>
+<tr><td><strong>收敛机制</strong></td><td><strong>她随口说一句「这个不用告诉我」</strong> → 它记住 → 下次少一点</td></tr>
+<tr><td><strong>终点</strong></td><td>重要进展 + 需要她决定的</td></tr>
+</table>
+<p>⇒ <strong>实现要求:那个「说一声」的动作必须便宜</strong> —— 她在开车,不能要她做复杂操作。</p>
+<h4>5.4 🔴 沉默必须被主动打破 —— ✅ 已定,而且它是<strong>通用设计定理</strong></h4>
+<p><strong>她的原话</strong>:</p>
+<blockquote><p>「我是坐在电脑前面的话,<strong>我可以随时去看 Cmux</strong>…但如果听着耳机的话,<br><strong>我大概率只有耳机这一条线了</strong>…<strong>它如果一小时都不跟我讲话的话,我就会很担心说它是不是就坏了</strong>…<br>这样起码<strong>我知道它还在 work</strong>。」</p></blockquote>
+<pre>通道无法自查时,沉默必须被主动打破 —— 否则「静」和「死」同形</pre>
+<p><strong>跨领域旁证</strong>(<strong>独立观察</strong>,Tadashi 2026-08-19):<br>舰队侧<strong>三个 runner 静默停摆没人知道</strong>,同一成因(FLY-1909)。</p>
+<p>⚠️ <strong>成色三层,不许合并</strong>【HL 主动标的】:</p>
+<pre>观察 A(语音)   她说的         ← 独立
+观察 B(舰队)   Tadashi 说的   ← 独立
+「同一条定理」   HL 说的        ← 【HL 的推论】</pre>
+<p><strong>证伪口</strong>:<strong>若找到「通道无法自查、但沉默无害」的场景,这条定理要收窄。</strong></p>
+<table>
+<tr><td>定的是</td><td></td></tr>
+<tr><td><strong>必须有存活信号</strong></td><td>出声不只是传信息,<strong>还是「我还活着」的证据</strong></td></tr>
+<tr><td><strong>量级锚点</strong></td><td>「<strong>一小时</strong>不说话她就会担心」⚠️ <strong>待观察</strong>:那是<strong>体感阈值</strong>,不是配置值(见 §6.2)</td></tr>
+<tr><td><strong>A 那份 PRD 的 §6.3 不用改</strong><br>(<code>product/doc/FLY-1846-global-chief-of-staff/prd.md</code> §6.3,已核)</td><td>「到点没东西说可以跳过」在<strong>文字那边仍成立</strong> —— 要加限制的是<strong>耳机侧</strong><br>⚠️ <strong>本文自己也有一个 §6.3(B4 兜底),两者无关</strong> —— 原文只写「A §6.3」会撞号</td></tr>
+</table>
+<p>📎 <strong>一条跨线依赖,单写一行防它被静默污染</strong>【<strong>Runner 的推论</strong>,2026-08-20】</p>
+<p><strong>A 那份 PRD 的 §6.3</strong> 里还带着一条建议:<strong>跳过时仍留一句「我看了,没有」,而不是完全静默</strong><br>(<code>product/doc/FLY-1846-global-chief-of-staff/prd.md</code> §6.3;在 A 那边标着【她未表态】)。</p>
+<blockquote><h4>⇒ <strong>只点明依赖关系,不评价那条在 A 该不该留</strong>:</h4>
+<h4><strong>B 侧「到点没东西说也要出声」的要求,来自本文 §5.4,不来自 A。</strong></h4>
+<h4>⇒ <strong>A 那一格若被关掉,B 这边的要求【不随之失效】。</strong></h4></blockquote>
+<blockquote><p>⛔ <strong>这一行的范围钉死,三条都不许</strong>:<br>⛔ 不许写成 A 那边的建议 ⛔ 不许替她决定 A 那一格<br>⛔ 不许把它升级成 B 的新需求 —— <strong>它已经在 §5.4 里了,这里只是点明它不依赖 A</strong></p></blockquote>
+<p>📎 <strong>为什么值得单写一行</strong>:<strong>这类耦合不会报错</strong> ——<br><strong>它只会让后来的人以为「已经有人想过了」,然后跟着 A 的决定一起把 B 这边也关掉。</strong></p>
+<h4>5.5 她的话怎么落地 —— ✅ <strong>形状已定</strong>:和文字通道一致【她的自由表述】</h4>
+<blockquote><p>「现在这个东西<strong>如果是在 text channel 也会存在类似的问题</strong>啊…我会说啊,这个你就这么做吧,<br><strong>有可能就含糊不清</strong>。就说实话,<strong>你可能也得做一个判断呀</strong>。」</p></blockquote>
+<table>
+<tr><td>定的是</td><td></td></tr>
+<tr><td><strong>不是语音特有的问题</strong></td><td>文字通道同样含糊 ⇒ <strong>不为语音单独造一套机制</strong></td></tr>
+<tr><td><strong>它要自己做判断</strong></td><td>不是每次都回来问她</td></tr>
+</table>
+<h4>5.6 🔴 复述兜底 —— <strong>范围收窄到一格:动手前念专名和编号</strong></h4>
+<h5>5.6.1 她的校准(<strong>是她主动来改轻的</strong>)【她的自由表述】</h5>
+<blockquote><p>「你能通过上下文知道我说的那个话(就是语音转换的错误),然后你也能意识到它正确的含义到底是什么。<br><strong>那 Codex 也可以啊,所以你不用这么担心啊</strong>」</p></blockquote>
+<p><strong>她说得对,我们确实往重了做。</strong></p>
+<p>⚠️ ⛔ <strong>不许把这句写成「她认为转写风险不大」</strong> ——<br><strong>她说的是「上下文能救大部分」,不是「没有救不了的」。这两句差很远。</strong></p>
+<h5>5.6.1b 🔴 一处被实测推翻的旧说法 —— <strong>连成因一起记,否则会被重犯</strong></h5>
+<p><strong>旧说法</strong>(流传于两条线):<strong>「它只在专名上出错」。</strong><br><strong>实测推翻</strong>(1911,2026-08-20,<strong>真人语音</strong>):它会<strong>整句听错</strong> —— 例:What that / Entra / E bo。</p>
+<blockquote><h4>🔑 <strong>成因必须一起写:那个错误结论是因为【只用 TTS 合成音验过】。</strong></h4>
+<p><strong>合成音吐字均匀、无口音、无环境声 ⇒ 只有专名会错。</strong><br>⇒ <strong>下一个人如果再用合成音验一遍,会再次得到同一个错结论。</strong></p></blockquote>
+<p>📎 <strong>本单没有写过「只在专名上出错」这个断言</strong>(2026-08-20 grep 确认,零命中)——<br><strong>但收窄那条决定的隐含前提受它影响,所以照记。</strong></p>
+<p>⚠️ <strong>它动摇本节的收窄决定了吗 ——【Runner 的判断,需要真人语音再验】</strong>:<br><strong>大概率没有。</strong> What that / Entra / E bo 这类<strong>读起来就是胡话</strong>,属于「一读就不对」那一类,<br><strong>正是上下文能救的那种。</strong> ⇒ 收窄仍然成立。<br><strong>但这是我的判断,而支撑它的样本只有三个词。</strong><br><strong>什么算验过</strong>:<strong>真人语音下出现一次「读起来完全正常、却指向另一件事」的整句错。</strong><br>那种情况一旦出现,<strong>收窄就要重新讨论。</strong></p>
+<h5>5.6.2 ✅ 新口径:<strong>只留一格,其余全部去掉</strong></h5>
+<pre>一般语句      不做任何复述兜底     ← 靠上下文,她说得对,这一大类全部去掉
+专名和编号    动手前念一遍          ← 单号 / 人名 / 仓库名,只有这一格</pre>
+<blockquote><h4><strong>触发点(写死)</strong>:</h4>
+<h4><strong>它要去动某张单、某个人、某个仓库之前,把那个号或名字念一遍。其余一律不念。</strong></h4></blockquote>
+<p>⇒ <strong>代价接近零,不会让每句话都拖一个复述</strong> —— <strong>那正是她嫌重的地方。</strong></p>
+<h5>5.6.3 ⚠️ 为什么偏偏留这一格 —— <strong>理由必须一起写,不能只写规则</strong></h5>
+<pre>能被上下文救回来的   那些【一读就不对】的错      ← 例:「床灯换好干净的布草」,它是胡话所以能还原
+救不回来的           那些【读起来完全正常、但指向另一件事】的错
+                     例:「1833」听成「1838」—— 两个都是合法单号、两句都通顺</pre>
+<blockquote><h4><strong>这一格保留不是因为错得多,是因为这一类错</strong></h4>
+<h4><strong>① 不会读起来奇怪 ② 不可自查 ③ 错了就是动错东西。</strong></h4>
+<p><strong>频率低,但三者叠加,才值得留一道门。</strong></p></blockquote>
+<p>📎 <strong>C 线给的一句总结,比本节原来的写法更准,采用</strong>【来源:C 线 / FLY-1851】:</p>
+<blockquote><p><strong>一般语句复述救的是【她自己就能救的】;<br>动手前念单号是【唯一一处她救不了、而机器还有机会停下来的地方】。</strong></p></blockquote>
+<p>⇒ <strong>配上 §5.6.4(那一处还必须取原文才算数),这一格的设计理由才完整</strong> ——<br><strong>为什么只留这一格 + 这一格怎样才不是摆设。</strong></p>
+<h5>5.6.4 🔴 复述必须念<strong>她说的原词</strong>,不是它改写后的版本【Runner 的判断,有实测支撑】</h5>
+<blockquote><h4>⚠️ <strong>这一条为什么在收窄之后才变得致命</strong> —— 【HL 抽出的通则,本单是它的实例】</h4>
+<pre>多道门时    其中一道是假的,还有别的门兜着
+只剩一道时  那道门是假的 = 完全没有门</pre>
+<h4><strong>每次把多重防御砍成单点,必须同时提高对留下那一点的验证标准</strong> ——</h4>
+<h4><strong>否则「简化」会悄悄变成「取消」。</strong></h4></blockquote>
+<p><strong>1911 的同族实测</strong>:她说 <strong>flywheel</strong>,交办时<strong>被改写成 repo</strong>,<br>而<strong>念回来的是改写后的版本</strong>。</p>
+<blockquote><h4>⇒ <strong>一个念自己改写结果的复述,是在表演,不是在核对。</strong></h4>
+<p><strong>它永远会「对」,因为它念的正是它自己认定的东西。</strong></p></blockquote>
+<p>📎 <strong>这不是孤例,是一个反复出现的失效族:【检测器满足了自己的判据】</strong><br>——<strong>写在这里是为了让实现的人知道它不是一条古怪的额外要求。</strong></p>
+<table>
+<tr><td>同族实例</td><td>检测器怎么满足了自己</td></tr>
+<tr><td><strong>本条</strong></td><td>复述念的是它自己改写后的值 ⇒ 永远对得上</td></tr>
+<tr><td>文档自查</td><td>搜禁用词,命中的是<strong>禁令自己在引用那个词</strong> ⇒ 看起来像违规</td></tr>
+<tr><td>进程存活监视</td><td>用管道搜进程名判存活,<strong>匹配到了它自己的搜索进程</strong> ⇒ 永远报&quot;活着&quot;(HL 2026-08-20)</td></tr>
+<tr><td>🔴 <strong>投递审计</strong></td><td>「已签收 / 已投递」这些字段,<strong>由被审计的那套传输本身书写</strong> ⇒ <strong>传输可以把从未投递的行标成已签收</strong>(今晚真实发生多次,HL 据此判错两次)</td></tr>
+</table>
+<pre>前三个   【程序】自证
+第四个   【数据】自证   ← 更难看出来,因为字段看起来是中立的记录,不像一个&quot;在运行的东西&quot;</pre>
+<blockquote><h4><strong>判据(扩到证据一级)</strong>:</h4>
+<h4><strong>一个检测器不能把自己算成被检测对象;一份证据不能由被检验的那一方书写。</strong></h4></blockquote>
+<p>📎 <strong>今晚唯一逃出这一族的证人</strong>:<strong>远端自己写的完成回执</strong> ——<br><strong>它不在被审计的那条通路上,所以它说的话才算数。</strong></p>
+<h5>⇒ 这一族在本产品里的直接后果 ——【<strong>Runner 的判断</strong>】</h5>
+<p><strong>它会跟她说「我已经转告了」。</strong> 而按上面这条:</p>
+<blockquote><h4><strong>「已转告」的证据,不能由它自己的发送路径书写。</strong></h4>
+<p>否则「我已经转告了」= 「我认为我发出去了」,<strong>而她在耳机里无法分辨这两句。</strong></p></blockquote>
+<p>📎 <strong>它和 §5.4 是同一个病的两端</strong>:§5.4 是<strong>沉默</strong>不可自查;这里是<strong>肯定的回报</strong>不可自查。<br>⚠️ <strong>后者更危险</strong> —— 沉默至少会让她起疑,<strong>一句「已转告」会让她放心。</strong></p>
+<p>⚠️ <strong>什么会让我这条判断变假</strong>:<br>① 若「转告」的落点本身就在她能看见的地方(Discord 消息),<strong>那条消息自己就是外部证据</strong> ⇒ 这一条降级成&quot;取证据时别取发送侧的状态字段&quot;。<strong>⚠️ 而硬约束 1 正好说 Discord 照发</strong> ⇒ <strong>这一条很可能就是①</strong>,但我没有验证过取证路径实际取的是哪个,<strong>所以先留着</strong>。<br>② 我看不见的那一类:<strong>她可能根本不在意「已转告」是不是真的</strong> —— 我没问过她。</p>
+<p>⇒ <strong>实现要求:复述那一步取的必须是【转写原文】,不能取【它归一化/改写后的值】。</strong></p>
+<h5>5.6.5 📎 这一格挡不住什么(<strong>原判仍然成立</strong>)</h5>
+<p><strong>复述验的是【转写】,不验【解析】</strong>:</p>
+<pre>转写错   她说 flywheel → 听成别的字               复述【能】抓到
+解析错   她说 1833 → 听对了,却挂到另一张单上      复述【抓不到】——它念出来的那句是【对的】</pre>
+<p>⚠️ <strong>「她说听错名字可以接受」只覆盖转写错,不覆盖挂错单。</strong><br>⛔ <strong>不许写成「错单风险她已接受」。</strong><br>📎 解析错那一半的处置见 <strong>§6.3</strong>(她定的:先跑一阵,有很多次再修)。</p>
+<h4>5.7 用嘴批 ship —— ✅ <strong>已定,她明确确认了</strong>【她的自由表述】</h4>
+<p><strong>2026-08-20 02:28 PT,问的是「用嘴批 ship,到 Raya 这里继续算数吗?」她答</strong>:</p>
+<blockquote><p><strong>yes</strong></p></blockquote>
+<p>⇒ <strong>默认值终于变成了决定。</strong> 📎 过程记录:这一格在卡上被问过五轮她都没答,<br><strong>根因不是她不想答,是问在一个看不出「这格需要你」的界面上</strong>(见 <code>plan.md</code> 三态那节)——<br><strong>送到聊天里之后她一句话就答了。</strong></p>
+<p>&lt;details&gt;&lt;summary&gt;原来的写法(留档)&lt;/summary&gt;</p>
+<p>系统里已有一条语音批准通道,<strong>默认开着</strong>,代码注释记着 <code>default ON per Annie</code>;<br>阶梯为:<strong>先落书面回执 → 校验绑定 → 校验 founder 身份 → 才写;沉默不算同意</strong>。</p>
+<p>⚠️ ~~她五轮都没提。卡上给的默认是「留空 = 还算数」,按默认走 ——<br>但这不是她的同意,是我们给的默认值没被反对。~~ <strong>已被上面那句 yes 取代。</strong></p>
+<p>&lt;/details&gt;</p>
+<hr></div></details>
+<details><summary>6. ⬜ 刻意留空的段落(<strong>等 prototype 或等她</strong>)</summary><div class="mdbody"><blockquote><p><strong>这一节是本 PRD 的「空格清单」。</strong> 每一格写明:<strong>在等什么、什么算等到了。</strong></p></blockquote>
+<h5>📌 空格 ↔ 原型任务对照(2026-08-20)——<strong>结果一到就知道该填哪一格</strong></h5>
+<p><strong>她拍了「继续把原型推完,再 finalize」。1911 手上四件</strong>:</p>
+<table>
+<tr><td>#</td><td>原型任务</td><td>它的结果落进本 PRD 哪一格</td></tr>
+<tr><td>1</td><td>桥的日志挂进 cmux 窗口(她要「看见它在干活」)</td><td>📎 <strong>旁证</strong> —— 与 §6.4.0b 同一诉求的<strong>屏幕侧</strong>版本,<strong>不改 B 的听觉硬约束</strong></td></tr>
+<tr><td>2</td><td>dump 干活时的全部事件 → 决定文字框能显示到多细</td><td>⇒ <strong>「能显示到多细」从未知变已知</strong> ⇒ 喂 §6.4.0 的指示器设计</td></tr>
+<tr><td>3</td><td><strong>把 v3 焊进 Discord 桥</strong></td><td>✅ <strong>已回</strong>(2026-08-20):首声 1.76 秒实测;<strong>「必须能听见 ≠ 必须我们自己造提示音」已被证实</strong> —— 见 §6.4.0b。⚠️ 但<strong>中段沉默 34.4 秒仍在</strong>、<strong>卡顿未定论</strong>、<strong>打断仍未验</strong>(§3.1f.1)</td></tr>
+<tr><td>4</td><td><strong>半小时静默测试</strong></td><td>✅ <strong>已回</strong>(2026-08-20)—— ⚠️ <strong>但它没有落进这张表预先指的那一格</strong>,见下</td></tr>
+</table>
+<blockquote><h4>⛔ <strong>在结果回来之前,不许替这四格提前选一个答案。</strong></h4>
+<p><strong>让它们等在那儿等填</strong> —— 这正是 §6.4.0b 那条写法的推广(<strong>写成阻止收敛的约束,不写成待选方案</strong>)。</p></blockquote>
+<h5>🔴 第 4 件回来了 —— <strong>它没有落进这张表预先指的那一格</strong>(2026-08-20)</h5>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>预先指的</strong></td><td>§7.3「<strong>并发</strong>」那格(「今天只有 14 秒」)</td></tr>
+<tr><td><strong>实际落进的</strong></td><td><strong>§3.1d</strong>(常开流前提的硬证据)+ <strong>§6.2</strong>(存活信号间隔)</td></tr>
+</table>
+<blockquote><h4><strong>成因:那半小时是【静的】,不是【忙的】。</strong></h4>
+<h4>§7.3 问的是「<strong>一边跟她说话、一边编排 runner,撑不撑得住</strong>」——</h4>
+<h4><strong>一场没人说话、也没有 runner 在跑的半小时,答不了这个问题。</strong></h4></blockquote>
+<p>⇒ <strong>§7.3 的「半小时量级」那一条 ⬜ 原样留着,没有被这次结果关掉。</strong></p>
+<p>📎 <strong>这张对照表本身要记一笔</strong>:<strong>预先把结果指进某一格是有用的,但它同时会诱导人把结果塞进去。</strong><br><strong>「时长对上了」不等于「量的是同一件事」。</strong><br>⇒ <strong>结果回来的时候,先核它到底量了什么,再看它该进哪一格 —— 不要先看它该进哪一格。</strong></p>
+<p>⚠️ <strong>如果第 3 件做不成</strong>(WebRTC 焊不进去):<br><strong>PRD 按「v3 未验」定稿,把它标成工程侧的风险项交出去 —— 不拖着等它。</strong><br>📌 <strong>这条已由 HL 先跟她讲过</strong>,所以到时候不需要重新解释。</p>
+<h4>6.1 🔄 打断 —— <strong>这一格的问题变了</strong>:载体定为 v2 之后,<strong>大概率没有可体验的东西</strong></h4>
+<blockquote><h4>🔴 <strong>2026-08-20 晚变形(规矩 19:原文留在下面,不删)</strong></h4>
+<p><strong>v2 是回合制 —— 它说话的时候不听</strong>(§3.1f 已实测)。<br>⇒ <strong>「她插话它让不让」在 v2 上大概率是【不让】,而且不是等一次体感能改的。</strong></p>
+<h4>⇒ <strong>这一格不再等她的体感,改等一个产品答案</strong>:</h4>
+<h4><strong>说人话就是</strong>:<strong>v2 大概率没有打断能力 ⇒ 她想打断、它不停 ⇒ 那一刻给她什么。</strong></h4>
+<h4>🔄 <strong>2026-08-24 降级</strong>:<strong>她已裁「打断交给工程实施时判定」</strong> ——</h4>
+<h4>⇒ <strong>能做,就没有这个问题;做不了,再回来问她。</strong></h4></blockquote>
+<p>⚠️ <strong>下面那两个毫秒数是【v3 的】,随 v3 一起退役</strong> ——<br><strong>留着是因为它们记录了当时那个量法的缺陷(量的是服务端,不是她耳朵),⛔ 不许当成 v2 的数。</strong></p>
+<h5>📌 原文留档(变形前)</h5>
+<p><strong>已有的</strong>:服务端停止发送 <strong>150 ms / 217 ms</strong>(两次独立)。<br>🔴 <strong>但它量的是服务端多久停,不是喇叭多久真的安静</strong> —— <strong>她耳朵里还有已送达的缓冲。</strong><br>⇒ <strong>「她插话它让不让」这一半没被回答。</strong></p>
+<p><strong>什么算等到了</strong>:<strong>她自己插一次话,并说体感可不可以。</strong></p>
+<blockquote><h4>✅ <strong>2026-08-20 晚:这个触发条件【已经满足了】</strong> —— 她自己插了一次话,并说了体感。</h4>
+<p><strong>⇒ 结果见本节上面那块(排队不是丢弃 + 她的原话)。</strong></p></blockquote>
+<h5>⬜ <strong>那么这一格【剩下的】是什么 —— 按规矩 23 重新写清</strong></h5>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>在等什么</strong></td><td><strong>「必须等它说完一轮才开口」这条税,她忍不忍得了</strong></td></tr>
+<tr><td><strong>挂在谁身上</strong></td><td><strong>她</strong> —— ⛔ <strong>不挂技术</strong>(机制已经清楚了:回合制 + 排队)</td></tr>
+<tr><td><strong>什么算等到了</strong></td><td><strong>她连续用几次之后自己说</strong> —— 归「<strong>等她用起来</strong>」队(同 §6.2 / §7.5)</td></tr>
+</table>
+<p>⛔ <strong>现在不要问她「等一轮你能接受吗」</strong> —— <strong>她刚撞了一次,还没有连续用过</strong>,<br><strong>现在问会得到一个她自己也不确信的答案</strong>(§3.1b 那条判据)。</p>
+<h4>6.2 ⬜ 存活信号的间隔 —— 等她用过再定 【与 §7.5 同类:<strong>等她用起来</strong>,不是等她答】</h4>
+<p><strong>已有的</strong>:她说「一小时不说话就会担心」。<br>⚠️ <strong>那是体感阈值,不是配置值</strong> —— 可以用来<strong>推出</strong>间隔,不是间隔本身。<br>📎 <strong>也不许拿它当「她开始给数了」的证据</strong>(§3.5 决策风格仍未被推翻,标<strong>待观察</strong>)。</p>
+<p><strong>什么算等到了</strong>:跑起来之后由她调(符合 §3.2 的「先能改」)。</p>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>挂在谁身上</strong></td><td><strong>她的体感</strong> —— ⛔ <strong>不挂技术</strong>(技术下限已经没了,见本格下面那段更正)</td></tr>
+</table>
+<h5>🟢 2026-08-20:<strong>技术下限没有了 —— 这一格现在是纯体感题</strong></h5>
+<p><strong>先前这里隐含着一个可能的技术约束</strong>:如果会话会因为长时间没人说话而自己断,<br>那「<strong>多久出一次声</strong>」就不只是她舒不舒服,<strong>还有一条链路逼出来的下限。</strong></p>
+<p><strong>P-6 把那条下限拆掉了</strong>(§3.1d):<strong>只要一直送静音,会话静 29 分钟不断。</strong></p>
+<blockquote><h4>⇒ <strong>「多久出一次声」现在只剩一个决定因素:她。</strong></h4>
+<h4>⛔ <strong>不许再用「不出声会掉线」去论证这个间隔</strong> —— 那个理由已经不成立了。</h4></blockquote>
+<p>⚠️ <strong>没有变的</strong>:<strong>Discord 那一段在半小时量级上仍然未量</strong>(§3.1d 边界 ②)<br>⇒ <strong>「链路撑得住」目前只对 Codex 会话那一段成立,不对整条链成立。</strong></p>
+<h6>🔴 <strong>2026-08-20 晚更正:上面那个结论压在【v3】的实测上,而 v3 已经出局</strong></h6>
+<blockquote><h4><strong>P-6 那半小时是 v3 跑的</strong>(原件 <code>thread/realtime/started</code> 带 <code>&quot;p&quot;:&quot;v3&quot;</code>)。</h4>
+<h4><strong>载体定为 v2 之后,那个 29 分钟【不能直接搬过来】。</strong></h4></blockquote>
+<p><strong>所以这一格的证据整个换了一套,而且成色更低</strong>:</p>
+<table>
+<tr><td></td><td>支撑它的是什么</td><td>成色</td></tr>
+<tr><td><strong>先前(v3)</strong></td><td>P-6 实跑 30.6 分钟,静默约 29 分钟不断</td><td>✅ <strong>实测</strong></td></tr>
+<tr><td><strong>现在(v2)</strong></td><td><strong>v2 是一条 WebSocket 同时带音频和控制,音频帧含静音一直在流 ⇒ 结构上【永不空闲】</strong></td><td>⚠️ <strong>源码读到,不是量到</strong>(§6.5【2】第二档)</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>结论的方向可能更强了</strong>(结构上免疫比「跑了 29 分钟没断」更根本)——</h4>
+<h4><strong>但支撑它的证据从【实测】降成了【读到】。</strong></h4>
+<h4>⛔ <strong>不许写成「v2 静默半小时不断」</strong> —— <strong>那个数【在 v2 上一次都没量过】。</strong></h4></blockquote>
+<p>📎 <strong>这一处是【结论没变、证据换人】的又一个实例</strong>,和 §6.5【2】那条「闲置超时」同族<br>⇒ <strong>再次印证:结论对不对,量不出支撑它的证据还在不在。</strong></p>
+<h4>6.3 ✅ B4 的兜底 —— <strong>她答了:现在不设计,先跑起来</strong>【她的自由表述】</h4>
+<p><strong>她的原话</strong>(2026-08-20 02:22 PT):</p>
+<blockquote><p>「<strong>我觉得我们暂时不用考虑这么细节,我们先跑一阵。如果真的发现有很多次转达错了、<br>有问题的话,我们再在这个基础上去修。</strong>」</p></blockquote>
+<p>⇒ <strong>这一格从 ⬜ 结掉了,但结法要写准</strong>:</p>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>她答的不是「怎么兜」</strong></td><td>她答的是 <strong>「现在不要定它」</strong></td></tr>
+<tr><td><strong>触发条件她给了</strong></td><td>「<strong>如果真的发现有很多次转达错了</strong>」⇒ 重看的信号是 <strong>发生频次</strong>,不是单次出错</td></tr>
+<tr><td><strong>归队</strong></td><td><strong>「等她用起来」</strong> —— 和 §6.2 / §7.5 同队</td></tr>
+</table>
+<p>⚠️ <strong>不许把它读成「她认为不会出错」或「错了不用管」</strong> ——<br>她说的是<strong>顺序</strong>(先跑再修),不是<strong>风险评估</strong>。</p>
+<p>📎 <strong>问题形状仍然有效,留着给重看时用</strong>:兜底没有消失,是<strong>延迟生效</strong> ——<br>她转达的内容仍落在 Discord 里(硬约束 1),但她回到屏幕前才会看到,<br><strong>而在那之前拿到错指令的人可能已经照着做了。</strong></p>
+<p>⇒ ⬜ <strong>剩下的</strong>:<strong>「很多次」是多少</strong> —— 那要跑起来才知道(不现在问)。</p>
+<h4>6.4 🔄 <strong>这一格的问题本身变了</strong> —— 不是「多快算够快」,是「怎么让她知道它在干活」</h4>
+<h5>6.4.0 🔴 需求变形(2026-08-20,她本人逐字)</h5>
+<blockquote><p>「就是<strong>它慢的话,我可以理解</strong>说它要查一些东西,这些我都是可以理解的。<br>那我唯一希望的是<strong>它可以给我一些 indicator,就是让我知道说它还有在干活</strong>,只是说可能需要花一些时间。」</p></blockquote>
+<blockquote><h4>⇒ <strong>她要的不是「快」,是「可感知」。</strong></h4>
+<p><strong>她明确说慢是可以接受的 —— 前提是她知道它在干活。</strong></p></blockquote>
+<p>⚠️ <strong>这和我们此前一整轮的框法不同</strong>:我们在优化<strong>延迟</strong>,<strong>她要的是状态可见</strong>。</p>
+<pre>旧问法   多快算够快                    ← 目标是【延迟】
+新问法   怎么让她知道它在干活           ← 目标是【状态可见】
+⇒ 延迟仍然重要,但它从【目标】降成【在没有指示器时才暴露的症状】</pre>
+<p>📎 <strong>它怎么解释 101 秒那次 —— 口径要收准</strong></p>
+<p><strong>她那句原话是完整的一句</strong>:「<strong>你很慢,怎么没说呢呀?</strong>」</p>
+<blockquote><h4><strong>她两样都说了</strong>:「你很慢」= <strong>耗时</strong>;「怎么没说呢」= <strong>缺信号</strong>。</h4></blockquote>
+<p><strong>后来她自己澄清了两者的优先级</strong>:「它慢的话,<strong>我可以理解</strong>…我唯一希望的是它可以给我一些 indicator」。</p>
+<pre>⇒ 耗时     她真实感受到的,但【可被信号补偿】
+⇒ 缺信号   【不可接受】</pre>
+<blockquote><h4>⛔ <strong>这不是「她不在乎慢」,是「给了信号之后她愿意忍慢」。</strong></h4>
+<p><strong>差别在于:如果指示器做了、但仍然要等两分钟,<br>我们不能拿这条口径去论证她会满意 —— 那是她没说过的话。</strong></p></blockquote>
+<p>⚠️ <strong>本文早先把它写成「她抱怨的是没有信号,不是耗时」——那是读窄了,已改。</strong><br><strong>我们之前【只】读成延迟证据是一种读窄;翻到另一头、把「你很慢」说成她没提过,是另一种。</strong><br>📎 <strong>留着这处更正,是因为下一个人最可能重犯的正是后一种</strong> ——<br><strong>当我们只想解决两个抱怨中的一个时,最容易犯的错不是忽略另一个,是把另一个说成她没提过。</strong><br>⇒ <strong>引用她的话之前先回到逐字原文,不要引用我们对她的总结。</strong></p>
+<h5>6.4.0b 🔴 硬约束:<strong>B 线的「还在干活」指示必须走听觉通道</strong></h5>
+<p><strong>她倾向的解法是把对话和状态显示在语音房的文字框里。</strong></p>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>会议模式(C 线)</strong></td><td>✅ 成立 —— 她可能有屏幕</td></tr>
+<tr><td><strong>本单(B)</strong></td><td>⛔ <strong>不成立</strong> —— <strong>B 的前提就是「不看屏幕」</strong>:她在开车、在做家务、戴着耳机</td></tr>
+</table>
+<blockquote><h4><strong>一个写在文字框里的指示器,对一个不看屏幕的人等于不存在。</strong></h4>
+<p>⇒ <strong>B 线的指示器必须是能听见的。</strong></p></blockquote>
+<h5>🟢 2026-08-20 实测:<strong>指示器不用造 —— 它一直在流,是我们自己扔掉的</strong></h5>
+<p><strong>1911 采了一次真干活的全事件流(226 行原件在 evidence)。从她问完那刻起算</strong>:</p>
+<pre> 3.1s  登记请求
+ 4.0s  交办,带它听到的原话
+ 7.8s  它用中文写出它打算干什么
+       ←「我去 GitHub 实时查 Flywheel 仓库当前还开着的 PR」
+12.3s  命令在跑,带输出
+57.9s  它才开口</pre>
+<blockquote><h4>🔴 <strong>她干等那一分钟里,信号从第 3 秒就有了 —— 是上一版的桥把它们 continue 掉了。</strong></h4>
+<h4>⇒ <strong>「怎么让她知道它在干活」的答案不是「造一个提示」,是「别再扔」。</strong></h4></blockquote>
+<p>📎 <strong>记一条事实,它和 §3.1d 同族</strong>:<br><strong>这个 indicator 是被我们自己的代码丢弃的,不是产品不具备。</strong><br>⇒ <strong>不是「做不到」,是「我们把它做没了」。</strong><br>⚠️ <strong>两者的处置完全不同</strong>:前者要立项去建,后者只要<strong>停止丢弃</strong>。</p>
+<h6>⇒ 解法空间<strong>扩大</strong>(两条并列,<strong>都别定死,等她试</strong>)</h6>
+<table>
+<tr><td>解法</td><td>首声</td><td>代价 / 特点</td></tr>
+<tr><td><strong>v3 原生先应一声</strong></td><td><strong>1.76 秒</strong>(实测,波形量的)</td><td>快,<strong>但内容通用</strong>(「我看一下」)—— ⚠️ <strong>而且「通用」这个描述本身是漏的,见下</strong></td></tr>
+<tr><td><strong>念事件流的 commentary</strong></td><td><strong>7.8 秒</strong>(实测)</td><td>慢一点,<strong>但说得具体</strong> —— 她知道它在查什么</td></tr>
+</table>
+<blockquote><p><strong>两者不互斥。</strong> ⛔ <strong>不许替她选。</strong></p></blockquote>
+<h6>🔴 <strong>代价栏漏了一项 —— 而且漏掉的那项,和收益是同一个能力</strong>【1911 2026-08-20】</h6>
+<blockquote><h4><strong>那个填掉开头死寂的能力,同时给了它替后台先编一个答案的空间。</strong></h4>
+<h4>⇒ <strong>「先应一声」和「抢答」是同一个能力的两面</strong>(硬证据见 §3.1e.1)。</h4></blockquote>
+<p>⇒ <strong>上表 v3 那一行的代价原先只写了「内容通用」—— 那是把它读成了措辞问题。</strong><br><strong>真正的代价是:它有时不会说「我看一下」,它会说「搞定了,4 个」。</strong></p>
+<blockquote><h4>⛔ <strong>把载体选择摆给她的时候,这条收益和这条代价必须一起摆,不许只摆收益。</strong></h4></blockquote>
+<p>📎 <strong>这条代价对第二行不成立,而这一点比首声差的那 6 秒更该拿去做选择</strong>:<br><strong>念事件流的 commentary 念的是【已经发生的事】</strong>(「我去 GitHub 实时查…」是它已经发出的动作)——<br><strong>它没有替后台预测结果的空间。</strong> ⇒ <strong>两条路的风险不对称。</strong></p>
+<p>⚠️ <strong>但 ⛔ 不许据此判「所以选第二条」</strong>:<br><strong>7.8 秒 vs 1.76 秒的体感差她还没听过。</strong> §6.4.0 定的是「<strong>耗时可被信号补偿</strong>」——<br><strong>那条成立的前提是信号来得够快,而「够快」是多快,她没给过数,我们也不许替她填。</strong></p>
+<p>📎 <strong>那句 7.8 秒的中文是现成的、内容准确的、可以直接念的</strong> ——<br><strong>不需要设计提示音、不需要写文案、不需要改 Codex。它自己已经用中文说清楚了要干嘛,我们只是没念出来。</strong></p>
+<p>⇒ <strong>§6.4.0b 那条硬约束(必须走听觉通道)不变,依然对</strong> ——<br><strong>变的是满足它的成本,刚塌了一个数量级。</strong></p>
+<hr>
+<p>⚠️ <strong>但「必须能听见」不等于「必须由我们造一个提示音」—— 解法空间先别收死。</strong><br><strong>一条未验的线索</strong>(1911 去验):v2 是 24k 单声道、进 Discord 要粗糙重采样(<strong>疑似卡顿来源</strong>);<br><strong>v3 本身就是 48k 立体声,可能不需要那次重采样。</strong><br>⇒ <strong>若成立,v3 一次解决「没有指示器」和「卡顿」两件事。</strong><br>⛔ <strong>推测,未验</strong> —— 写在这里是为了<strong>不让方案提前收敛到「我们自己造一个提示音」那一条路</strong>。</p>
+<blockquote><p><strong>这不是偏好,是本单场景逼出来的</strong>(§1 她的原话:「我大概率是不会去看着我的电脑屏幕的」)。</p></blockquote>
+<p>⚠️ <strong>这条不撞她那条禁令,两件事要分清</strong>:</p>
+<pre>她禁的     去改 Codex CLI 本身
+不撞的     声音是【我们的桥】送进 Discord 的
+           ⇒ 桥完全可以在它干活期间自己发出可听提示,不需要动 Codex 一行代码</pre>
+<p><strong>混为一谈会误判成「她不让做」。</strong></p>
+<hr>
+<h4>6.4.1 ✅ 她先前答的那一问(留档)—— <strong>她说完之后多久有回应</strong>【她的自由表述】</h4>
+<p><strong>她的原话</strong>(2026-08-20 02:22:05 PT):</p>
+<blockquote><p>「<strong>我希望马上就会收到回应吧。</strong><br>不过我跟你说,这个东西我不知道是不是需要你去做。<strong>我更加 expect 是那个 Codex,<br>它本来就已经把这个 handle 了</strong>,所以你都不需要再去担心这个东西这样子。」</p></blockquote>
+<p><strong>两层都要记,别只记第一层</strong>:</p>
+<table>
+<tr><td>层</td><td>她说的</td></tr>
+<tr><td><strong>① 她要什么</strong></td><td><strong>马上就要有回应</strong> —— 不是等「他真的开始做了」才说</td></tr>
+<tr><td><strong>② 她指来源</strong></td><td>她 <strong>expect 这是 Codex 原生的</strong>,不需要我们建</td></tr>
+</table>
+<blockquote><h4>🔴 <strong>按 §0.2e 回扫,这一格是【场景形状污染】的一个活实例</strong>(2026-08-20 晚补):</h4>
+<p><strong>她说这句话是 2026-08-20 02:22 —— 那时【v3 还在桌上】,而 v3 确实会先应一声。</strong><br>⇒ <strong>她的期待是在【那个形状】里形成的。</strong></p>
+<h4><strong>载体换成 v2 之后,「Codex 原生已 handle」这件事【不再成立】</strong>(§6.4.2,8/8 实测)。</h4>
+<p>⛔ <strong>所以这一格不许再被引用成「她说过这件事不用我们建」</strong> ——<br><strong>她说的是「在我以为的那个 Codex 上不用建」,而那个 Codex 我们没在用。</strong></p></blockquote>
+<p>📎 <strong>这一处是 §0.2e 那条规矩【在本文自己身上】找到的第二个实例</strong> ——<br><strong>前两个是提示音和状态行(她的【同意】被污染);这一个是她的【期待】被污染。</strong></p>
+<blockquote><h4>⇒ <strong>污染的对象不止是「她点过头的方案」,还包括「她据此形成的预期」。</strong></h4>
+<p><strong>后者更危险,因为它不长得像一个决定,没有人会去复查它。</strong></p></blockquote>
+<h5>6.4.2 ✅ 第二层已实测成立 —— <strong>但范围要划死</strong></h5>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>应声这件事,Codex 真的做了</strong></td><td>v3 上 <strong>9.6 秒先应一声</strong>;对比 v2 是 <strong>19.2 秒全程沉默</strong></td></tr>
+<tr><td>🔴 <strong>但那 9.6 秒的成因【没拆】</strong></td><td><strong>多少是 v3 固有的、多少是我们原型接线方式造成的,不知道,也没量过</strong>【HL 2026-08-20 补】</td></tr>
+<tr><td>⛔ <strong>但不许顺带扩大</strong></td><td>她听完 v3 说「<strong>效果也不是很真</strong>」⇒ <strong>v3 解决的是【响应节奏】,不是【像不像人】</strong></td></tr>
+</table>
+<blockquote><h4>⇒ 「预期由 Codex 原生满足」<strong>只适用于「会不会先应一声」这一件事。</strong></h4>
+<p>⛔ <strong>不许把「音色 / 语气也归 Codex 解决」写进去 —— 那条她已经否掉了。</strong></p></blockquote>
+<h6>🔴🔴 <strong>2026-08-20 晚:这一层【在选定的载体上大概率不成立】—— 她第二件【想要而得不到】的</strong></h6>
+<p><strong>载体定为 v2 之后,「先应一声」的处境和「打断」变成了同一种</strong>(§6.5「一」):</p>
+<table>
+<tr><td>证据</td><td>成色</td></tr>
+<tr><td><code>delegationAckFiller</code> 等开关<strong>只在 v3 生效</strong></td><td>⚠️ <strong>读到</strong>(读的是开关名,不是行为)</td></tr>
+<tr><td><strong>v2 那一场 19.2 秒全程沉默</strong>(上表)</td><td>✅ <strong>实测,但 n=1</strong></td></tr>
+<tr><td>⇒ ~~合起来:v2 上大概率没有先应一声~~</td><td>~~🔶 不是硬结论~~ <strong>← 已被下面的直接测取代</strong></td></tr>
+</table>
+<h6>✅ <strong>2026-08-20 晚:直接测回来了 —— 确认,v2 没有先应一声</strong></h6>
+<pre>8 / 8   全静
+静默    19.3 – 26.4 秒,中位 21.8 秒</pre>
+<p><strong>成色够硬的两个原因,⛔ 不许省</strong>:<br>1. <strong>零重跑</strong> —— v2 音频走 JSON-RPC,<strong>时间戳和字节数早就在 raw 日志里</strong>(不是为了这次结论重新跑一遍);<br>2. ⭐ <strong>做了阳性对照</strong> —— <strong>同一个探测器去找开场白,8/8 都探到</strong>(READY + 2.0~2.7 秒)<br>   ⇒ <strong>尺子不瞎,所以那个「零命中」可信。</strong></p>
+<blockquote><h4>📎 <strong>第 2 条才是这次成色的关键</strong>:<strong>零命中本身不说明任何事</strong> ——</h4>
+<h4><strong>它既可能是「真的没有」,也可能是「探测器坏了」。</strong> <strong>阳性对照把这两种分开了。</strong></h4></blockquote>
+<h6>🔑 <strong>而阳性对照顺手量到一条 —— 它比结论本身更该进 PRD</strong></h6>
+<blockquote><h4><strong>它开口只要 2 秒。</strong></h4></blockquote>
+<p>⇒ <strong>所以那 20 秒不是【固有延迟】,是【它真在跑工具】。</strong></p>
+<blockquote><h4>🔴 <strong>这一句决定这条需求值不值得做</strong>:</h4>
+<h4><strong>能快的时候它很快 ⇒ 那段沉默不是「这东西就这么慢」,是「它在忙,而它没告诉她」。</strong></h4>
+<h4><strong>前者无解;后者可解。</strong></h4></blockquote>
+<p>⚠️ <strong>范围划死,别把这 2 秒读大</strong>:<br><strong>那 2 秒是【开场白】,不是【回答一个要干活的问题】。</strong><br>⇒ <strong>它证明的是「出声这条路本身不慢」,⛔ 不是「它能 2 秒回答问题」。</strong></p>
+<blockquote><h4>📎 <strong>而这正好是它有用的地方</strong>:</h4>
+<h4><strong>慢的不是嘴,是嘴在等的那件事。</strong></h4></blockquote>
+<blockquote><h4>🔴 <strong>按 §0.2d,这件事必须记在两栏,只记技术栏就是漏了</strong>:</h4>
+<table>
+<tr><td>栏</td><td>内容</td></tr>
+<tr><td><strong>技术限制</strong></td><td>v2 没有原生 ack filler(读到 + 单场实测)</td></tr>
+<tr><td>⭐ <strong>她会怎么撞上</strong></td><td><strong>她说过「我希望马上就会收到回应」,而且她 expect 这是 Codex 原生就 handle 好的</strong>(§6.4.1)<br>⇒ <strong>选定的载体给不了她这个,而她的期待是有原话的</strong></td></tr>
+</table></blockquote>
+<blockquote><h4>⇒ <strong>她最喜欢的两样,在选定的载体上【一样已确认没有,一样大概率没有】。</strong></h4>
+<table>
+<tr><td></td><td>状态</td><td>凭什么</td></tr>
+<tr><td><strong>先应一声</strong></td><td>✅ <strong>已确认没有</strong></td><td><strong>直接测 8/8 全静 + 阳性对照</strong></td></tr>
+<tr><td><strong>打断</strong></td><td>✅ <strong>已确认没有</strong>(2026-08-20 晚升级)</td><td><strong>她本人实测</strong>,并且<strong>机制被她纠正</strong>:是【排队】不是【丢弃】(§6.5「一」)</td></tr>
+</table>
+<p>📌 <strong>本行按规矩 22 重读过两次,留档</strong>:<br><strong>第一版</strong>「打断=推的、先应一声=读到+n=1」→ <strong>第二版</strong>「先应一声升到最硬、打断仍是推的」<br>→ <strong>现版</strong>:<strong>两条都已确认,成色齐平。</strong></p>
+<h4>⇒ <strong>这句比较从「两条成色不同」变成了「两条都确认」</strong> ——</h4>
+<h4>⛔ <strong>而它每一次都【读起来毫无异常】,三次都是被回扫抓到的,不是被读出来的。</strong></h4>
+<p>⛔ <strong>但仍然不许合并成一句「v2 什么都没有」</strong> —— <strong>两条的【代价形状】不同</strong>:<br><strong>先应一声缺的是【开口】(那 21.8 秒里没有东西);打断缺的是【节奏】(内容不丢,她要等)。</strong></p></blockquote>
+<p>📎 <strong>这一处更正值得留</strong>:<strong>成色不是贴上去就不变的标签,它会随证据移动</strong> ——<br><strong>而移动之后,先前那句「两条成色不同」如果不重读,会被当成还指着原来那两条。</strong></p>
+<blockquote><h4>🔑 <strong>这把 §6.4 的状态显示从【锦上添花】推到了【唯一补口的东西】</strong>:</h4>
+<p><strong>原生不会先应一声 + 想事情要静默约 20 秒(§6.5「二」)</strong></p>
+<h4>⇒ <strong>在她耳朵里,那 20 秒里【什么都没有】,除非我们放点什么进去。</strong></h4></blockquote>
+<h6>🔴 <strong>再接一步,两件事在这里咬合 —— 必须写在一起,分开写就漏了</strong></h6>
+<p><strong>文字频道那套【解不了这一格】</strong> —— 因为 <strong>B 的前提就是不看屏幕</strong>(§6.4.0b)。</p>
+<blockquote><h4>⇒ <strong>§6.4.0b 那条「指示必须走听觉通道」,在 v2 上从【并存的一条约束】变成【刚需】。</strong></h4>
+<pre>先前     两条通道并存,各服务一个场景(§6.5「三」)
+现在     v2 没有先应一声 ⇒ 那 20 秒只剩听觉通道能补
+         而文字频道对不看屏幕的她等于不存在
+⇒ 听觉那条不再是「也要有」,是【唯一的一条】</pre></blockquote>
+<h6>🟢 <strong>抬头先写死,因为它决定后面所有人怎么估这件事的代价</strong></h6>
+<blockquote><h4><strong>问题不是「没有东西可说」,是「有东西没送出去」。</strong></h4></blockquote>
+<pre>旧读法   我们需要做一个提示音 / 状态提示  ⇒ 立项、设计、写文案
+新读法   材料已经有了,而且是在【选定载体】上实测到的  ⇒ 有东西没送出去</pre>
+<h6>🟢 <strong>而补它的材料,在【v2 上】已经实测存在 —— 这一格不缺技术,缺的是别再扔</strong></h6>
+<p><strong>§6.4.0b 那次 226 行全事件流的采集,就是【v2、无 ack filler】那一场</strong><br>(两处独立佐证:§6.4「9.6 秒 vs 57.9 秒」那条、以及 §11 那张表里「57.9 秒干等 | v2、无 ack filler」)。</p>
+<p><strong>同一场里</strong>:</p>
+<pre> 7.8s   它已经用中文写出它打算干什么(「我去 GitHub 实时查…」)← 现成的、可以直接念
+57.9s   她才听到第一个音</pre>
+<blockquote><h4>🔑 <strong>也就是说:她干等的那 50 秒里,第 7.8 秒就已经有一句能念的话了 —— 我们没念。</strong></h4></blockquote>
+<h6>📊 <strong>把它和直接测那批并排 —— 缺口现在有数字了</strong></h6>
+<pre>第 7.8 秒     已经有一句能念的中文
+约 21.8 秒    她才听到第一个音(直接测 8 场的中位数)
+─────────────────────────────────────────
+中间约 14 秒  我们手上有料,却没送</pre>
+<blockquote><h4>🔑 <strong>「我们丢了东西」是【判断】;「7.8 对 21.8」是【证据】。</strong></h4>
+<h4><strong>有了这两个数,后面没人能把它读成小事。</strong></h4></blockquote>
+<p>⚠️ <strong>⛔ 两个「她才听到第一个音」的数,并排不覆盖</strong>(§6.4 那条同名指标规矩):</p>
+<table>
+<tr><td>数</td><td>出处</td><td>用哪个</td></tr>
+<tr><td><strong>57.9 秒</strong></td><td>226 行事件流那<strong>单独一场</strong>(要干活的问题)</td><td>记录那一场</td></tr>
+<tr><td><strong>21.8 秒</strong>(19.3–26.4,n=8)</td><td><strong>直接测那批</strong></td><td>⭐ <strong>要引用就引这个</strong> —— 样本更大、有区间</td></tr>
+</table>
+<p>📎 <strong>两者不矛盾</strong>:<strong>57.9 那场问的是更重的活。</strong><br>⛔ <strong>但不许拿 57.9 去代表典型情况,也不许拿 21.8 去覆盖那一场的记录。</strong></p>
+<blockquote><h4>⇒ <strong>这一格不需要立项造提示音,需要的是【停止丢弃】</strong>(§6.4.0b 已定的那句)。</h4></blockquote>
+<h6>🔑 <strong>再接一格:这同时解掉了「文字 vs 听觉」那个二选一</strong></h6>
+<p><strong>第 7.8 秒那个东西【是文字】。</strong></p>
+<table>
+<tr><td>出口</td><td>服务的场景</td><td>对应哪条已定</td></tr>
+<tr><td><strong>发到语音房聊天里</strong></td><td>她<strong>看得见屏幕</strong>的时候</td><td>她刚定的那套(§6.5「三」)</td></tr>
+<tr><td><strong>念出来</strong></td><td>她<strong>不看屏幕</strong>的时候</td><td>§6.4.0b 那条刚需</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>同一份材料,两个出口。</strong></h4>
+<h4><strong>那两条通道不是两件工作,是【同一个东西的两个终点】。</strong></h4></blockquote>
+<p>📎 <strong>写法上的后果(不是措辞,是拆单)</strong>:<br><strong>§6.4 和 §6.4.0b 要写成【共用一个来源】,不是各立一条。</strong><br>⇒ <strong>省一半</strong>,而且 ⭐ <strong>不会出现两边内容不一致</strong> —— <strong>两条各自维护的显示,迟早会说不同的话。</strong></p>
+<p>⚠️ <strong>⛔ 但不许把它写成「所以已经解决了」</strong>:<br><strong>「材料存在」和「她耳朵里听得到」中间还隔着一段工程</strong>,而那段没做过。<br><strong>这里确定的只是:它不是一个能力问题。</strong></p>
+<blockquote><h4>⛔ <strong>再加一层成色闸</strong>【HL 2026-08-20】:</h4>
+<p><strong>「不是能力问题」是今晚能下的【最强】结论;</strong><br><strong>「所以很容易」是一句【没人量过】的话。</strong><br>⇒ ⛔ <strong>不许出现「只要接一下就行」这类措辞,直到有人量过。</strong></p></blockquote>
+<h6>📋 <strong>三档方案 —— ⛔ 按【可靠性】排,不按难易</strong>【2026-08-20 定】</h6>
+<table>
+<tr><td>档</td><td>方案</td><td>可靠性</td><td>备注</td></tr>
+<tr><td><strong>1</strong></td><td>~~念它已经写好的那句~~ ⛔ <strong>她决定不做</strong>(2026-08-20 17:48,见下)</td><td>~~最高~~</td><td><strong>⛔ 不做</strong> —— <strong>听觉那一端改由【等待音】满足</strong></td></tr>
+<tr><td><strong>2</strong></td><td><strong>写 agent file / prompt 逼它中间开口</strong>(<strong>她提的</strong>)</td><td>⚠️ <strong>低</strong> —— <strong>那是请求模型配合,不是机制</strong>:可能照做、可能不照做、每场可能不一样</td><td>⚠️ 未验风险:<strong>v2 是回合制,它中途开口会不会把那一轮用掉,不知道</strong><br>⇒ <strong>值得试(成本只是一句 prompt),⛔ 但不能当解法</strong></td></tr>
+<tr><td><strong>3</strong></td><td>~~提示音(响一下)~~ 🔄 <strong>改判:她要的是【持续的等待音】</strong></td><td>✅ 确定、便宜</td><td>⛔ <strong>它答不了她那句「知道在【发生什么】」</strong> —— 列出来只是因为便宜且确定<br>🔄 <strong>2026-08-20 晚两次变形</strong>:①「能不能做」已被事实回答(做出来了、她试用过)②<strong>类别错了</strong>,见下</td></tr>
+</table>
+<h6>🔴 <strong>她否掉的不是【音色】,是【整个类别】</strong>(2026-08-20 晚)</h6>
+<p><strong>她的原话(逐字)</strong>:</p>
+<blockquote><p>「提示音也不是响一下就行,<strong>起码得持续地响</strong>…长时间连贯的声音,比较接近那种等待的声音。<br>有点类似于给客服打电话,客服查东西时会先放一段电梯音乐那种感觉…<br>得找那种<strong>有连续性、听起来又不是特别 annoying</strong> 的。」</p></blockquote>
+<pre>我们做的   响一下      = 【事件】标记 —— 「它开始了」
+她要的     持续的声音  = 【状态】指示 —— 「它还在忙」</pre>
+<blockquote><h4>⇒ <strong>6 段候选全是 one-shot ⇒ 【全部作废】,而不是「她还没挑」。</strong></h4>
+<h4>⛔ <strong>两者的处置完全不同</strong>:没挑 ⇒ 再给她几段;类别错 ⇒ <strong>那批东西一段都不能用。</strong></h4></blockquote>
+<p>⚠️ <strong>她授权过的那件事,内容要改写(⛔ 但不许写成她改主意)</strong>:</p>
+<pre>她当时授权的     「加一个提示音」
+我们做成的       一声(one-shot)
+她现在说清的     持续的等待音
+⇒ 旧的那版是【我们的误读】,不是【她改主意】</pre>
+<p>⚠️ 📌 <strong>「提示音」这个词从此指向【一类错的东西】,读全文时注意分辨</strong>:</p>
+<table>
+<tr><td>出现处</td><td>它指的是</td><td>还成不成立</td></tr>
+<tr><td>§6.4.0b「不需要立项造提示音,需要的是停止丢弃」</td><td><strong>第 1 档那条路(念已有文本)</strong></td><td>✅ <strong>仍然成立</strong></td></tr>
+<tr><td>本表第 3 档、§6.5「三」、§11 各表</td><td><strong>她要的那个声音</strong></td><td>🔄 <strong>已改判为「持续的等待音」</strong></td></tr>
+</table>
+<h6>⚠️ <strong>一条未验风险,⛔ 不许写成已解决</strong></h6>
+<blockquote><h4><strong>那个声音和【它说话】走同一条音频通道。</strong></h4>
+<h4><strong>持续放会不会盖住它开口 / 干扰它听她说话 —— 不知道。</strong></h4></blockquote>
+<h6>✅ <strong>2026-08-20 晚:量出来了 —— 但只答了【一半】,另一半仍开着</strong></h6>
+<table>
+<tr><td>那半</td><td>结果</td></tr>
+<tr><td><strong>会不会盖住【它说话】</strong></td><td>✅ <strong>不会。</strong> 两场独立 + <strong>阳性对照在同一份录音里</strong>(等待音响时地板 182,它说话时 0.00 ⇒ <strong>尺子看得见等待音</strong>)</td></tr>
+<tr><td><strong>会不会干扰【它听她说话】</strong></td><td>⬜ <strong>仍未量</strong> —— ⛔ <strong>不许因为前半答了就当整条已解决</strong></td></tr>
+</table>
+<blockquote><h4>🔑 <strong>阳性对照那一句是这次成色的关键</strong>:</h4>
+<p><strong>地板 182 证明【尺子看得见等待音】</strong> ⇒ <strong>「它说话时 0.00」才是【真没盖住】,不是【探测器瞎了】。</strong></p></blockquote>
+<h6>🔴 <strong>风险:这个未知【能推翻一格已收的】—— 所以先把回收路径写好</strong></h6>
+<blockquote><h4>⛔ <strong>不许只把它当一个开放问题列着</strong> ——</h4>
+<h4><strong>一个能推翻已收格子的未知,要写成「【若成立】则回收【哪一格】」。</strong></h4></blockquote>
+<table>
+<tr><td>若「干扰它听她说话」<strong>成立</strong></td><td>要回收的</td></tr>
+<tr><td>🔄 <strong>回收 §6.5「三」那格「连续等待音成立」</strong></td><td>⚠️ <strong>理由要写准</strong>:她验的是<strong>她听着行不行</strong>,<strong>不是【它还听不听得见她】</strong> ——<br><strong>那一格【从来没有在这个维度上被验过】</strong></td></tr>
+<tr><td>✅ <strong>不回收 §6.4.0b「听觉通道是刚需」</strong></td><td><strong>她要的仍然是听觉指示</strong> —— <strong>变的是【用持续音去满足它】这个做法,不是那条要求</strong></td></tr>
+<tr><td>⚠️ ~~不回收三档表第 1 档~~ 🔄 <strong>已失效(2026-08-20 17:48)</strong></td><td><strong>第 1 档【她砍了】</strong> ⇒ <strong>它不再是一条退路</strong><br>🔴 ⇒ <strong>这条风险的后果因此【变重了】</strong>:若持续音真会干扰它听她说话,<br><strong>解法退回三档表时,桌上【只剩提示音那一档】,而她已经否决过它</strong></td></tr>
+</table>
+<blockquote><h4>⛔ <strong>但【现在不要】为它设计新退路</strong>【HL 2026-08-20 明确】</h4>
+<p><strong>理由</strong>:<strong>等待音不挡【她说话】那一半是量过的</strong>(两场 + 同一份录音里的正对照)<br>⇒ <strong>现在补退路,等于【给一个已测量为不发生的事做预案】。</strong></p>
+<h4>⇒ <strong>记着「风险变重了」就够了。要不要补退路是【她的取舍】,不是我们的补救。</strong></h4></blockquote>
+<blockquote><h4>📌 <strong>写这张表的意义</strong>:<strong>回收路径先写好,回收就是执行;没写,回收就要重新讨论一次</strong> ——</h4>
+<p><strong>而那时候「等待音已经定了」会作为既成事实参加讨论。</strong></p></blockquote>
+<p>📎 <strong>留一笔</strong>:我先前担心过「提示音在耳机里会不会盖住人声」,当时被确认<strong>没有任何一格在问它</strong>。<br>⇒ <strong>现在它成了一个真问题</strong> —— <strong>不是因为我当时对,是因为【一声】变成了【持续】,问题的形状变了。</strong></p>
+<blockquote><h4>🔑 <strong>主线口径(⛔ 不许改写)</strong>:</h4>
+<h4><strong>不是「逼它说话」,是「把它【已经说了】的话送到你耳朵里」。</strong></h4></blockquote>
+<h6>⛔ <strong>2026-08-20 17:48:31 —— 她试过之后决定【不做】这一档</strong>【她的自由表述】</h6>
+<p><strong>她的原话(逐字,⛔ 入库用这个,别转述)</strong>:</p>
+<blockquote><p>「OK,我刚才试了一下,感觉是这样子的:<strong>我不是很喜欢现在这个系统合成音的效果,那我们不用做这个了。</strong><br>还是像上一个版本一样,<strong>就直接用那个等待的音乐在中间,让我知道有在推进就可以了</strong>」</p></blockquote>
+<p><strong>背景(她这次听到的就是它)</strong>:那句话由 <strong>macOS 自带合成音</strong>(<code>say</code>,音色 <strong>Flo</strong>)念出来,<strong>14.5 秒</strong>。</p>
+<blockquote><h4>🔴 <strong>写法比内容重要,钉死在这里</strong>:</h4>
+<pre>决定 = 不做              ← 入库
+理由 = 她不喜欢【这个嗓子】</pre>
+<h4>⭐ <strong>她的理由指向【嗓子】,她的决定砍掉的是【功能】—— 范围不同,⛔ 别对齐成一个。</strong></h4>
+<h4>✅ 只许写:<strong>不做</strong></h4>
+<h4>⛔ 不许写:<strong>行不通 / 已排除 / 已验证失败 / 已评估</strong></h4></blockquote>
+<p>⇒ <strong>「换一个好嗓子来念」这条路【从来没被测过】</strong> ⇒ 它是 ⬜ <strong>未追求</strong>,⛔ <strong>不是【已否决】</strong>。<br>⚠️ <strong>否则以后翻到的人会读成「试过了,失败了」—— 那是假的,而且没人会去查。</strong></p>
+<h6>✅🔶 <strong>听觉那条刚需 —— 两层分开写,⛔ 不许压成一层</strong>【2026-08-20 18:22 她答 ① · 2026-08-24 她裁 ②】</h6>
+<p><strong>§6.4.0b「B 线的指示必须走听觉通道」这条【条款本身保留】,不动。</strong></p>
+<table>
+<tr><td>层</td><td>状态</td><td>依据</td></tr>
+<tr><td><strong>① 本形态下的验收</strong></td><td>✅ <strong>已获她验收</strong> —— <strong>等待音-only,可交付</strong></td><td><strong>她的原话(18:22:00)</strong>:「<strong>现在的这个可以,你可以先记录一下。</strong>」</td></tr>
+<tr><td><strong>② 那条要求是否【永久】下调</strong></td><td>🔶 <strong>要求【继续成立】,本形态【算满足】⇒ 这一格结掉</strong> —— ⚠️ <strong>成色 = Lead 定向的读法,不是她逐字说的</strong></td><td><strong>她 2026-08-24 的原话就一个词:「可以」</strong> ⇒ 两种读法相反;Lead 依据她【同一轮】那句「对,他需要知道在发生什么,知道有谁在推进」定向,<strong>并已把定向结果回给她确认、她未反对</strong></td></tr>
+</table>
+<blockquote><h4>🔴 <strong>⛔ 不许写成「那条要求已永久改成:知道有在推进」</strong> ——</h4>
+<h4><strong>「这个我接受」和「我不再要求那个了」【不是同一句话】。</strong></h4>
+<p><strong>她说的是「</strong>现在的这个<strong>可以」+「</strong>先<strong>记录」——「先」本身就带着临时性。</strong></p></blockquote>
+<blockquote><h4>✅ <strong>这样写的好处很实在</strong>:</h4>
+<h4><strong>以后真需要【知道它在干什么】的时候,那条要求【还在】,不用重新争取。</strong></h4></blockquote>
+<h6>🔶 <strong>2026-08-24 她裁了这一格 —— 但成色必须写准确</strong>【Lead 定向】</h6>
+<p><strong>她的原话是一个词:「可以」。</strong><br>⚠️ <strong>而那一个词有两种相反的读法</strong> ——「可以下调」和「可以结掉这一格」。</p>
+<pre>✅ 要求【继续成立】     —— 它需要知道在发生什么、谁在推进
+✅ 现在的形态(等待音)【算满足】⇒ 这一格结掉
+⛔ 不是「要求被取消」</pre>
+<blockquote><h4>🔴 <strong>成色钉在这里,⛔ 不许升格</strong>:</h4>
+<p><strong>定向的依据</strong> = 她【同一轮】说过的那句「对,他需要知道在发生什么,知道有谁在推进」;<br><strong>定向的人</strong> = Lead;<strong>定向结果已回给她确认,她未反对。</strong></p>
+<h4>⛔ <strong>不许写成「她明确说了要求继续成立」。</strong></h4>
+<h4><strong>把推断写成她的原话 = 伪造决定</strong> —— 这正是本单反复在治的那一类错。</h4></blockquote>
+<p>📌 <strong>她若回来纠正 ⇒ 按规矩 19 留痕(原句不删 + 显式标出被推翻),⛔ 不许静静改对。</strong></p>
+<p>⚠️ <strong>上面那条 ⛔ 不许写成「那条要求已永久改成:知道有在推进」仍然成立且变强了</strong> ——<br><strong>因为这次的定向恰恰是「要求没变」,只是【当前形态算满足】。</strong></p>
+<p>📎 <strong>判据(和今天那条同源)</strong>:</p>
+<pre>从「已满足」降到「未决」   ⇒ 不需要她授权
+把「接受」升格成「要求已改」⇒ 需要她授权,而她没给</pre>
+<p>⛔ <strong>这一格结了,别再去追问她。</strong> <strong>以后真撞上「等待音不够」的场景再问。</strong></p>
+<h6>📌 那一问原样留档(她答之前它是什么样)</h6>
+<blockquote><p><strong>刚需的标准有没有从【知道在发生什么】降到【知道有在推进】?</strong></p></blockquote>
+<pre>她原来那句   「我当然是希望我完全不需要看文字就知道在【发生什么】」  ← 内容级
+她这次那半句 「让我知道【有在推进】就可以了」                        ← 存活/进度级
+⇒ 后者【推不出】前者被满足,⛔ 也推不出她把标准降了 —— 两个都要她说</pre>
+<p>⚠️ <strong>和 §6.4.2 三档表第 3 档【不打架】,两条本来就能同时成立</strong>:</p>
+<pre>「等待音答不了【在发生什么】」  ← 能力事实,没被推翻,保留
+「她的标准可能变了」            ← 未决,待她裁</pre>
+<h6>🔴 <strong>一处自我推翻,按规矩 19 显式标出(⛔ 原句不删)</strong></h6>
+<p><strong>我 2026-08-20 在这里写过</strong>:「<strong>该刚需现在由等待音满足(她原话:让我知道有在推进就可以了)</strong>」。</p>
+<blockquote><h4>⇒ <strong>撤回。那句话无依据</strong> —— <strong>我把她的一个【决定】读成了【标准下调】,而那是我的推断。</strong></h4>
+<p>⚠️ <strong>而它当时通过了 Lead 的审阅</strong> —— 详见 <code>plan.md</code> §6.11 那个反面例子。</p></blockquote>
+<p>📎 <strong>「同一份材料两个出口」现在只剩一个出口</strong>:<br><strong>第 7.8 秒那句文字 → 【聊天框】保留;→【念出来】她砍了。</strong></p>
+<h6>📎 一个附带结论:<strong>被减法解决,不是被修好</strong></h6>
+<p><strong>凡是【只因为要把预告念出来】才存在的问题,随这个决定一起消失了。</strong></p>
+<blockquote><h4>⇒ <strong>记成【被减法解决】,⛔ 不是【被修好】。</strong> <strong>两者以后重开的条件完全不同。</strong></h4></blockquote>
+<p>⚠️ <strong>本 PRD 里没有单独记过那一族问题</strong>(「预告听起来像答案」是 C 线记的,本文零命中)——<br><strong>这里只记这条规则本身,⛔ 不把 C 线的条目搬过来。</strong></p>
+<p>⚠️ <strong>⛔ 未经确认的部分,写死在这里</strong>:<br><strong>「v2 到底有没有 ack filler」我没有直接实测证据,只有开关名(读到)和一场 19.2 秒(n=1)。</strong></p>
+<p>📌 <strong>1911 已在量</strong>(HL 2026-08-20 晚派的),<strong>判据写死如下 —— 它正好点中我成色不硬的原因</strong>:</p>
+<blockquote><h4><strong>量的是「提问结束到第一个音频输出之间【有没有任何声音】」,</strong></h4>
+<h4>⛔ <strong>不是「日志里有没有 filler 事件」。</strong></h4>
+<p><strong>后者是代理,前者才是她耳朵里的东西。</strong></p></blockquote>
+<pre>有声音出来          ⇒ 上面这一整段【重写】
+只有最终答案、中间全静 ⇒ 【确认没有】</pre>
+<blockquote><h4>⛔ <strong>结果回来之前,这一格保持 🔶,不许升级到任何一边。</strong></h4></blockquote>
+<p>⚠️ <strong>⛔ 上面那条 57.9 秒的干等【不能顶替】这次直接测</strong>:</p>
+<pre>57.9 秒干等        = 旁证(它说明【那一场】她没听到东西)
+有没有声音出来      = 直接测(它回答【v2 会不会自己出声】)</pre>
+<p>📎 <strong>这正是 1911 今天立的同一条规矩</strong>(合成触发不能顶替真机触发)——</p>
+<blockquote><h4><strong>同一条规矩,两个单子:旁证不能顶替直接测。</strong></h4></blockquote>
+<h5>6.4.3 ⚠️ 一处【她说的和实测差得远】,我点名,不替它圆场【<strong>Runner 的观察</strong>】</h5>
+<pre>她说的      「马上」
+实测最好的   9.6 秒才出第一声        ← ⚠️ 而且这 9.6 秒【成因未拆】</pre>
+<h5>🔴🔴 她本人撞上了 —— <strong>今晚唯一的真体感数据</strong>(2026-08-20 05:22–05:24)</h5>
+<p><strong>不是实验,是她自己在 Discord 房里聊天时发生的</strong>(v2,无 ack filler):</p>
+<pre>05:22:09  它主动提议「要不要我现在看看你当前的项目目录和状态」
+05:22:21  她说「好呀」                                  ← 干活请求开始
+  ......  全程无声
+05:24:02  【她自己打破沉默】「你很慢,怎么没说呢呀?」    ← 101 秒
+05:24:03  它才出声「我在呢,刚刚帮你做了项目状态检查,稍等」
+05:24:10  给出答案 —— 内容是对的</pre>
+<blockquote><h4>✅ <strong>「她能不能忍那段沉默」有答案了 —— 不能。</strong></h4>
+<p><strong>101 秒她就主动抱怨了。这不是我们推的,是她没被提示、自发说出口的。</strong></p></blockquote>
+<p>⇒ <strong>§6.4 那个缺口现在有真人锚点</strong>:<br><strong>101 秒 = 明确不可接受;9.6 秒未验,但方向已定 —— 先应一声不是锦上添花,是必需品。</strong></p>
+<h6>⛔ 但不许把 101 秒写成「首声延迟」</h6>
+<p><strong>它从来没有自发开口过。</strong> 05:24:03 那句是<strong>被她的抱怨触发的</strong>,不是它自己决定说的。</p>
+<blockquote><h4><strong>准确写法:「≥101 秒仍未自发开口,真值未知 —— 因为被用户打断了。」</strong></h4>
+<p>⇒ 「它自己会在第几秒开口」这个数<strong>至今未知</strong>。<br>⇒ <strong>也因此,它和下面那个 57.9 秒不能混用</strong> —— 那是<strong>另一个更简单的问题</strong>测出来的。</p></blockquote>
+<h6>⇒ 可写进 PRD 的三句(口径照抄)</h6>
+<p>1. <strong>无 ack filler 的干活等待,已观测到用户在 101 秒时主动抱怨(founder 本人,自发)</strong><br>2. <strong>该场景下系统首次自发发声的时间未测得(被打断截断)</strong><br>3. <strong>因此「填补沉默」的机制列为必需,不列为优化项</strong></p>
+<h5>🔴 2026-08-20:v3 已焊进 Discord 并在房里出声 —— <strong>但只解了两段沉默里的一段</strong></h5>
+<table>
+<tr><td></td><td>数</td><td>成色</td></tr>
+<tr><td><strong>首声</strong></td><td><strong>1.76 秒</strong></td><td>✅ <strong>实测(波形量的)</strong> —— 对照上一场 <strong>≥101 秒</strong></td></tr>
+<tr><td><strong>出声后仍无声</strong></td><td><strong>34.4 秒</strong></td><td>⚠️ <strong>中段沉默仍在</strong></td></tr>
+<tr><td>最终答案到达</td><td>她说完 <strong>45.4 秒</strong></td><td></td></tr>
+</table>
+<blockquote><h4>⛔ <strong>不许写成「延迟解决了」。</strong></h4>
+<h4><strong>先应一声解的是【开头那段死寂】,不是【干活那段】。这两段必须分开写。</strong></h4></blockquote>
+<h6>🔴 <strong>两个「先应一声」的数,必须当场分清 —— 9.6 秒 和 1.76 秒</strong>【2026-08-20 补】</h6>
+<p><strong>本文里这两个数都标着「实测」,而且都在说「先应一声」:</strong></p>
+<table>
+<tr><td>数</td><td>哪一场</td><td>量的是</td></tr>
+<tr><td><strong>9.6 秒</strong></td><td>早一场 v3(见本节后面那段)</td><td>先应一声,<strong>成因未拆</strong>(模型固有 / 我们的实现)</td></tr>
+<tr><td><strong>1.76 秒</strong></td><td><strong>v3 焊进 Discord 之后</strong>(上表)</td><td>先应一声,<strong>波形量的</strong></td></tr>
+</table>
+<blockquote><h4>⛔ <strong>不许把它们当成同一个数的两次测量,也不许拿新的直接盖掉旧的。</strong></h4></blockquote>
+<p><strong>它们差的那 7.8 秒,刚好落在一道已经开着的题上</strong> ——<br>本节后面那格 ⬜ 问的正是「<strong>那 9.6 秒里我们自己占了多少</strong>」。</p>
+<blockquote><h4>⚠️ <strong>但 ⛔ 不许直接相减当答案</strong>:</h4>
+<p><strong>两场不是控制变量对照</strong>(接线不同、问的不是同一个问题、路径不同)。<br>⇒ <strong>它是一条【值得去拆的线索】,不是【已经拆开的结论】。</strong></p></blockquote>
+<p>📎 <strong>为什么要为这件事单写一段</strong>:本文<strong>已经</strong>因为「两个 60 秒」撞号补过一次一模一样的更正。</p>
+<blockquote><h4><strong>同一个缺陷第二次出现,就不是笔误,是这份文档的结构性风险。</strong></h4></blockquote>
+<p><strong>风险的形状是</strong>:<strong>同一个名字(「先应一声」)在不同场次量出不同的数,而每一处单看都是诚实的。</strong><br>⇒ <strong>以后凡是同名指标冒出第二个数:先并排,再谈哪个对。⛔ 不许先挑一个写进表里。</strong></p>
+<p>📎 <strong>卡顿仍未定论,不许写成「已修」</strong>:找到一个真机制(<strong>送帧只有 40fps 而非 50fps,音频按真实时间 80% 在送</strong>),<br><strong>但 1911 明说同一轮改了两样东西、归因没做干净</strong>;而且「<strong>听着还卡不卡</strong>」那一栏<strong>永远是 Annie 的</strong>。</p>
+<p>📎 <strong>音色</strong>:<code>listVoices</code> <strong>不带性别、也不带任何元数据</strong> ⇒ <strong>音色配哪个 Lead,仍需她自己听。</strong>(⇒ 已单立成 §6.6)</p>
+<h5>📌 更完整的一组数(2026-08-20,1911 拆开了先前那个含糊的「60 秒」)</h5>
+<blockquote><p>⚠️ <strong>定义必须和数字一起搬,不许只抄数字。</strong></p></blockquote>
+<table>
+<tr><td>量的是什么</td><td>数</td></tr>
+<tr><td>① <strong>问完 → 第一个音</strong> = <strong>她干等多久</strong></td><td><strong>57.9 秒</strong></td></tr>
+<tr><td>② 第一个音 → 答完 = <strong>答案本身多长</strong></td><td>15.1 秒</td></tr>
+<tr><td>③ 答完之后的静默 = <strong>录音尾巴</strong></td><td>68.4 秒 ⛔ <strong>不代表任何体感,别当成等待</strong></td></tr>
+</table>
+<p><strong>量法</strong>:房里 bot 录的 149.5 秒音频,按该文件自身峰值往下 25dB 定阈值(−31.1 dB),最短静默 0.4 秒。</p>
+<blockquote><h4>🔴 <strong>这三个数不是她的体感,必须连这条一起写</strong>【HL 补,1911 原文没有】</h4>
+<p><strong>它们量的是【bot 扮演者那一轮】,不是 Annie 本人那一轮。</strong><br><strong>她本人在房里那次是【约 2 秒】就答了</strong> —— 因为她问的是「有人在吗」,<strong>不需要它去干活</strong>。</p>
+<p>⇒ <strong>57.9 秒是【要干活的那一类问题】的等待,不是「她的体感」。</strong><br>⇒ <strong>她到现在只体验过 2 秒那条快路,那段长等待她还没亲身撞过。</strong><br>⛔ <strong>任何「她能不能忍」的结论现在都还没有依据。</strong></p></blockquote>
+<p>📎 <strong>与本节 9.6 秒的关系</strong>:9.6 秒是 v3 的<strong>先应一声</strong>;57.9 秒是 v2 那轮<strong>要干活时的干等</strong>。<br><strong>两者量的不是同一件事,不能并排比。</strong></p>
+<blockquote><h4>⛔ <strong>不许写成「v3 的应声延迟是 9.6 秒」。</strong></h4>
+<h4>✅ 要写:<strong>「本次实测 9.6 秒,成因未拆(模型固有 / 我们的实现,两者未分离)」</strong></h4>
+<p><strong>理由</strong>:<strong>一个把实现开销算进产品能力的数字,会让后面的人放弃一条其实能优化的路。</strong></p></blockquote>
+<p><strong>9.6 秒是不是「马上」,我不知道 —— 但它明显不是那种「你说完它立刻嗯一声」的马上。</strong></p>
+<p>⇒ ⬜ <strong>剩下两格</strong>:<br>1. <strong>9.6 秒够不够快</strong> —— <strong>她真机用过一次之后自己说</strong>,归「等她用起来」队<br>2. <strong>那 9.6 秒里我们自己占了多少</strong> —— 归「等工程实测」队</p>
+<p>⚠️ <strong>什么时候跟她提这件事</strong>:<strong>不是现在。</strong>【HL 与本单一致】<br>她刚判了 v3「效果也不是很真」⇒ <strong>9.6 秒改变不了她当前那个决定</strong>,现在追问只是多一个问题。<br><strong>等 Discord 那条腿通了、她真在房里说过话之后再带上</strong> —— 那时她有体感,一句话就能答;<br><strong>现在她只能凭空猜。</strong> 📎 这正是 §3.1b 那条判据的又一个实例。</p>
+<p>⚠️ <strong>不许现在替她判断 9.6 秒可接受</strong> —— 她说「马上」时,手上没有这个数。</p>
+<p>📎 与 §6.2 的分工仍然成立:§6.2 是她<strong>没说话</strong>时它多久没动静;本节是她<strong>说完之后</strong>多久有反应。</p>
+<hr>
+<h4>6.5 ✅ 载体:<strong>定了,用 v2</strong> —— 她本人拍的【2026-08-20 结格】</h4>
+<blockquote><h4><strong>这一格已经关了。</strong> 下面【1】【2】那些过程留档,<strong>读的时候当历史,不当待决。</strong></h4></blockquote>
+<h5>结论与证据(来源:<code>product/doc/FLY-1911-codex-voice-prototype/HANDOFF.md</code>)</h5>
+<table>
+<tr><td></td><td>结论</td><td>成色</td></tr>
+<tr><td><strong>v3 那批观测里有一个约 35.2 秒的切断</strong>(8-19/8-20)</td><td><strong>从会话建立起算</strong>,<strong>和有没有人说话无关</strong><br>⚠️ <strong>【当时的观测】,⛔ 不是 v3 的固有属性</strong></td><td>✅ 八场早提问 <strong>8 死 0 活</strong>,全距 <strong>0.338 秒</strong></td></tr>
+<tr><td><strong>音频救不了它</strong></td><td>音频在 +8~9.4 秒到达、<strong>被听见、有来有回</strong> —— 照样死</td><td>✅ 同批</td></tr>
+<tr><td><strong>它在对话进行中也会走</strong></td><td>她第二场 <strong>+17.4 秒有问有答仍死</strong>;early 批她<strong>亲耳听到一场答到一半掉线</strong></td><td>✅ 实测</td></tr>
+<tr><td><strong>v2 没有这个毛病</strong></td><td>八场 <strong>8 活 0 死</strong>(有效 7,一场<strong>因她本人出声污染作废</strong>)</td><td>✅ 实测</td></tr>
+<tr><td><strong>两批是同条件对照</strong></td><td>同网络、同账号、同合成音、<strong>提问时刻同一分布</strong> ⇒ <strong>唯一变量是版本</strong></td><td>✅ 对照</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>她拍了:用 v2。</strong></h4></blockquote>
+<p>📎 <strong>⛔ 不要重新论证这一条</strong>,也不要再去查 v3 那个硬切的成因 —— <strong>载体已定,那条线不影响本 PRD 的任何一格。</strong></p>
+<h6>📌 先前那格的原文留档(规矩 19:自我推翻要显式,不许悄悄改口)</h6>
+<p><strong>她 2026-08-20 早些时候说过</strong>:「<strong>先等一等,看看 V3 能不能起来</strong>」——<br><strong>当时这一格标的是【她主动挂起,不许替她填】。</strong><br>⇒ <strong>现在被她本人当天晚些时候的决定取代。</strong> <strong>原句留在这里,不删。</strong></p>
+<p>⚠️ <strong>随之作废的还有 §3.1f.1 那张「要不要投 v3」的收益表</strong> ——<br><strong>那张表不删</strong>(它记录了当时的成色),<strong>但它已经不是一个待决问题了。</strong></p>
+<h5>🔴 选 v2 的三条后果 —— <strong>每一条都容易在收敛时被写漏</strong></h5>
+<h6>一、⛔ <strong>打断在 v2 上很可能【根本不存在】</strong> —— 这是选 v2 的已知代价,不许含糊</h6>
+<p><strong>成因</strong>:<strong>v2 是回合制</strong> —— <strong>它说话的时候不听</strong>(§3.1f 已实测,她本人撞到过)。</p>
+<p><strong>而她亲口说过 v3 上能打断「确实蛮方便」。</strong></p>
+<h5>✅ <strong>2026-08-20 晚:她本人实测了 —— 事实确认,但【机制我们猜错了】</strong></h5>
+<p><strong>她的原话(逐字,⛔ 不许转述)</strong>:</p>
+<blockquote><p>「比如我先说一句『你好吗』,他可能就会回答一大段话。<strong>如果在这中间我打断他问下一个问题,<br>并不会真正打断他,但他会把我问的内容记录下来;等回答完第一个问题之后,他接着回答第二个问题。</strong><br>所以它是不能被打断的,说话还是比较不像真人。<strong>technically 我需要一直等他说完一轮之后再说话,<br>体验会比较好。</strong>」</p></blockquote>
+<pre>我们原来的读法   打断不了 ⇒ 她那句被【丢掉】
+她实测           打断不了,但【排队】:记下来,答完第一个接着答第二个</pre>
+<blockquote><h4>⇒ <strong>不是「她被忽略」,是「她要等」。内容不丢,丢的是节奏。</strong></h4>
+<h4>🔑 <strong>这对我们是个更好的位置:排队是【延迟】问题,丢失是【数据】问题。</strong></h4></blockquote>
+<p><strong>成色</strong>:✅ <strong>她本人实测</strong>,⛔ 不再是「从回合制推的」。</p>
+<h6>⭐ <strong>最该入库的是她最后那句,不是「不能打断」这个事实</strong> —— 两行分开写</h6>
+<table>
+<tr><td>#</td><td></td></tr>
+<tr><td><strong>① 事实</strong></td><td><strong>v2 回合制,不可打断,输入【排队】</strong>(她实测)</td></tr>
+<tr><td><strong>② 代价</strong></td><td><strong>她必须等一轮说完才开口</strong> —— ⭐ <strong>这是产品向她收的税</strong></td></tr>
+</table>
+<blockquote><h4>🔴 <strong>② 才是产品问题</strong>:<strong>产品在教她改用法。</strong></h4>
+<p><strong>她的原话是「technically 我需要一直等他说完一轮之后再说话」</strong> ——<br><strong>那是一句【她已经在改自己的行为】的话。</strong></p></blockquote>
+<p>📎 <strong>和先前那次同族</strong>:她中途停下来问「你还在吗」——</p>
+<blockquote><h4><strong>不可靠 / 不自然会改写她的行为,而【被观察到的行为】比任何访谈里说出来的都硬。</strong></h4></blockquote>
+<h6>🔴 她同一段里那个推断 —— <strong>另记一行,⛔ 不许当依据</strong></h6>
+<p><strong>她写</strong>:「我感觉 ChatGPT App 用的应该是 V3 吧,因为它明显是可以打断的」。</p>
+<blockquote><h4>⛔ <strong>未验,而且是【两环】都没验</strong>:</h4>
+<pre>① App = v3 ?     查过 —— App 走的很可能是【第三套】(GPT-Live),既不是 v2 也不是 v3
+② v3 能打断 ?    🔴 一次都没量过 —— v3 每场约 35 秒就死,
+                 【从来没有一段长到够她打断的回答】</pre>
+<p>⚠️ <strong>v3 自己嘴上说过它可以打断 —— 那是【它的说法】,不是测量</strong>(§3.1e 同族)。</p></blockquote>
+<p>⇒ <strong>⛔ 不许拿它当「v3 可打断」的依据。她定的还是 v2。</strong></p>
+<hr>
+<blockquote><h4>⇒ <strong>写死</strong>:<strong>我们选的这条载体,【确认】没有她夸过的那个能力。</strong></h4>
+<p>⛔ <strong>不许写成「打断待定」</strong> —— 那会让人以为它还在路上。<br>⛔ <strong>也不许写成「打断做不到」</strong> —— 那是把载体的限制说成产品的限制。</p>
+<h4>✅ <strong>要写的是</strong>:<strong>这是一次【拿打断换连接稳定性】的交换,而交换的两头都已经知道。</strong></h4></blockquote>
+<p>📎 <strong>它和 §6.5【3】那条「退路是取舍不是降级」是同一件事,现在从【假设】变成【已发生】</strong> ——<br><strong>当时是「若落到 v2,会丢掉这两样」;现在是「已经落到 v2 了,这两样丢了一样」。</strong></p>
+<p>⚠️ <strong>另一样(先应一声)的状态和打断【不一样】,⛔ 不许一起写</strong>:<br><strong>先应一声那两个开关(<code>delegationAckFiller</code> 等)只在 v3 生效 —— 这是【读到】的</strong>(§6.5【3】);<br><strong>而打断在 v2 上不成立,是从【回合制这个已实测的行为】推的。</strong> <strong>两条的成色不同。</strong></p>
+<h6>二、🔴 <strong>v2 想事情的时候会长时间没声音 —— 所以状态显示不是锦上添花</strong></h6>
+<p><strong>实测(单场)</strong>:提问 <strong>+45.2 秒</strong> → 答话 <strong>+65.2 秒</strong> ⇒ <strong>中间约 20 秒完全没声音。</strong></p>
+<blockquote><h4>✅ <strong>2026-08-20 晚,直接测那批给了更硬的数</strong>:</h4>
+<h4><strong>8 场全静,19.3 – 26.4 秒,中位 21.8 秒</strong>(§6.4.2)</h4>
+<p>⇒ ⭐ <strong>要引用就引 21.8 那个</strong> —— 有样本、有区间;<strong>上面这一场留着当记录,⛔ 不覆盖。</strong></p></blockquote>
+<blockquote><h4>⇒ <strong>§5.4(沉默必须被主动打破)和 §6.4(她要知道它在干活)在选定的载体上【立刻生效】,不是将来的事。</strong></h4></blockquote>
+<p>📎 <strong>和先前那些数的关系,别混</strong>:</p>
+<pre>101 秒   v2 早期那次,她本人撞到并抱怨      ← 她的体感证据
+34.4 秒  v3 焊进 Discord 之后的中段沉默     ← 已作废(v3 不用了)
+约 20 秒 v2 单场实测的想事情静默
+21.8 秒 v2 直接测 8 场的中位(19.3–26.4)   ← ⭐ 这才是【选定载体上】要解的那个数</pre>
+<h6>三、⚠️ <strong>她定的产品形态:状态显示在【文字频道】</strong> —— 而这和本文一条硬约束有张力,我不悄悄合并</h6>
+<p><strong>她定的</strong>(1911 HANDOFF,她给了 <strong>2026-07-17 的截图</strong>为证):<br><strong>断线 / 状态显示在【文字频道】</strong> —— <code>listening</code> / 双方转写 / 断线一行。</p>
+<blockquote><h4>📌 <strong>成色要点</strong>:<strong>这是【回归】,不是新需求</strong> —— 那套东西她 7-17 就见过。</h4></blockquote>
+<h6>🔴 <strong>2026-08-20 晚:她真机试过了 —— 形态没错,但【位置】和【音色】都不对</strong>(规矩 19:上面那句不删)</h6>
+<p><strong>她的原话(两条,都不是节奏问题)</strong>:</p>
+<table>
+<tr><td>对象</td><td>她说的</td></tr>
+<tr><td><strong>提示音</strong></td><td>「<strong>说实话还蛮奇怪的,就响一下然后就不响了</strong>」「<strong>能不能做得正常一点</strong>」</td></tr>
+<tr><td><strong>状态行</strong></td><td>「<strong>他会把 message 放在最 top,我有时候并没有看到</strong>」</td></tr>
+</table>
+<blockquote><h4>🔴 <strong>成因两条都不是参数没调好,是【定它的时候用的场景是退化的】</strong>(判据见 §0.2c 之后的 §0.2e):</h4>
+<p><strong>提示音</strong>:定它的合成测试一场只有一问一答 ⇒ <strong>规格本身就决定了它永远只响一次。</strong><br><strong>状态行</strong>:「原地改一条消息、不刷屏」是照她 7 月那张截图做的、<strong>她当时同意</strong> ——<br><strong>而那张截图是一问一答,状态行本来就在最下面;真实连续对话里转写往下长,它就被留在了最上面。</strong></p></blockquote>
+<p>⚠️ <strong>一处措辞必须写准,⛔ 不许含糊</strong>:<br><strong>「40 秒响三声」这件事她一个字没提。</strong></p>
+<pre>✅ 可以写   未被她视为问题 —— 由她本人试用后未提出
+⛔ 不许写   她确认没问题</pre>
+<blockquote><p><strong>她【没有被问到】密度,她只是【没提】。这两者不一样。</strong></p></blockquote>
+<p>⇒ ⬜ <strong>由此新开的两格(⛔ 本单不替她定)—— 按规矩 23,各写清在等什么、挂在谁身上</strong>:</p>
+<table>
+<tr><td>#</td><td>在等什么</td><td>挂在谁身上</td><td>什么算等到了</td></tr>
+<tr><td><strong>①</strong></td><td>🔄 <strong>改判</strong>:<strong>「持续、又不 annoying」的等待音是什么形态</strong><br>(⛔ 不再是「提示音怎么做得正常一点」—— <strong>类别变了</strong>,见 §6.4.2)<br>📎 <strong>她已给参照</strong>:客服 hold 音 / 电梯音乐</td><td><strong>她</strong>(⛔ 不是设计自己定 —— 「annoying」是她的判断)</td><td><strong>她听过一版之后自己说行</strong><br>⚠️ <strong>且需先排除</strong>:持续放会不会盖住它开口(1911 在量)</td></tr>
+<tr><td><strong>②</strong></td><td><strong>状态行放在哪儿她才看得见</strong></td><td><strong>设计 + 她</strong></td><td><strong>她在【真实连续对话】里看得到</strong> —— ⛔ <strong>一问一答的验收场景不算</strong>(§0.2e 就是这么栽的)</td></tr>
+</table>
+<h6>✅ <strong>2026-08-20 晚【收账】:上面两格【都被答了】—— 触发条件各自满足</strong></h6>
+<table>
+<tr><td>格</td><td>她给的答案</td><td>成色</td></tr>
+<tr><td><strong>①</strong></td><td><strong>连续等待音成立</strong>,音色定 <strong>B「更疏更慢-最安静」</strong>(音乐盒族)<br>她原话:「<strong>我觉得很不错…整个等待音的效果也不错</strong>」<br>⛔ <strong>状态行不带段名标签</strong>(她要求)</td><td>✅ <strong>她本人真实使用中验的</strong></td></tr>
+<tr><td><strong>②</strong></td><td><strong>状态行必须【跟着对话流往下走】</strong> —— <strong>原地改一条消息 ⇒ 位置最老、内容最新,她看不到</strong></td><td>✅ <strong>她本人验的</strong></td></tr>
+</table>
+<blockquote><h4>⭐ <strong>立住 ① 的那一场是【46 秒】等待 —— 比她自己假设的 30 秒还长。</strong></h4>
+<p><strong>⇒ 它不是在一个刚好够用的场景里通过的,是在一个【超出她预期】的场景里通过的。</strong><br>📎 <strong>这正好是 §0.2e 要的反面</strong>:<strong>前几次栽在退化场景,这一次是在【更严苛】的场景里立住的。</strong></p></blockquote>
+<blockquote><h4>🔴 <strong>② 同时【推翻】了本文记着的一件事,按规矩 19 显式标出</strong>:</h4>
+<p><strong>§0.2e 实例② 和 §6.5「三」记的「原地改一条消息、不刷屏」是【她 7 月同意过的形态】</strong> ——</p>
+<h4><strong>她现在把它推翻了:不刷屏正是她看不到的原因。</strong></h4>
+<p>⇒ ⛔ <strong>那两处的原文【不删】</strong>(它们记录的是「她当时怎么同意的」),<br><strong>但从现在起,「不刷屏」不再是一条要满足的要求 —— 它是被否掉的那个做法。</strong></p></blockquote>
+<p>⇒ ⬜ <strong>①② 收掉之后,这一族【剩下的】只有一格</strong>:<br><strong>不同 agent 分不同声音的【音色分配】</strong> —— <strong>归她</strong>,v2 音色清单正在做,做好她挑。</p>
+<h6>⛔ <strong>她【决定】不做的三件 —— 不是「已评估不可行」,⛔ 不许写成被否掉</strong>(判据 §0.2c)</h6>
+<table>
+<tr><td>她说的</td><td>正确记法</td><td>⛔ 不许写成</td></tr>
+<tr><td><strong>短提示音</strong></td><td><strong>她无条件否决</strong>,原话「<strong>只是提示一下还不如不放</strong>」</td><td>~~技术上做不好~~</td></tr>
+<tr><td><strong>放她自己的音乐</strong></td><td>她提出后 <strong>15 秒自行收回</strong>,<strong>未见我方意见</strong> ⇒ <strong>一次都没被评估过</strong></td><td>~~被否掉了~~ / ~~评估过不可行~~</td></tr>
+<tr><td><strong>podcast 场景</strong></td><td>她说「<strong>就不搞了</strong>」⚠️ <strong>但她回答的是「有没有自动切换」(没有)</strong></td><td>~~podcast 场景已排除~~</td></tr>
+</table>
+<blockquote><h4>🔴 <strong>第三行必须写准,它是本单最容易被读错的一格</strong>:</h4>
+<p><strong>真正难的产品问题【一条都没被测过】</strong> ——<br><strong>B 叠在 podcast 上碍不碍事 · 它开口她注不注意得到 · 她的注意力跟不跟得过来。</strong><br>⇒ <strong>她关掉的是【一个技术问题】,不是【那三个产品问题】。</strong></p></blockquote>
+<p>📎 <strong>已验的相关事实(她自己验的)</strong>:<strong>podcast 与 Discord 可以同时出声,且没有任何自动切换。</strong></p>
+<p>⚠️ <strong>一条未验推测,连作者一起记</strong>【HL 2026-08-20,他自己标的】:<br><strong>「持续音在 podcast 上会变成第三层杂音」</strong> —— <strong>无任何证据支持或反对,⛔ 标未验。</strong></p>
+<blockquote><h4>🔴 <strong>一条模式,写在这里防第三次</strong>:</h4>
+<h4><strong>这条产品线上,「她不要」和「它不行」已经被区分了【两次】</strong> ——</h4>
+<p><strong>① 放她自己的音乐(她收回,从未被评估)· ② podcast 三问(她明确选择不测)</strong></p>
+<h4>⇒ <strong>两次都是【决定不做】,两次都【没有被评估过】。⛔ 不要在第三次上把它们合并。</strong></h4></blockquote>
+<h6>✅ <strong>「念出来」那一档:她答了 —— 而她答的是【试试看】,不是【立项做】</strong></h6>
+<p><strong>她的原话(逐字,⛔ 措辞就是内容)</strong>:</p>
+<blockquote><p>「<strong>we could try that in the prototype</strong>」</p></blockquote>
+<blockquote><h4>⛔ <strong>不许写成「已授权做这一档」。</strong></h4>
+<h4><strong>她授权的是【在原型里试一版】,不是【把它排进工程】。</strong></h4></blockquote>
+<p>📌 <strong>落地形态</strong>:1911 <strong>排在音色清单之后</strong>,做一个<strong>能听的版本</strong>给她试;<strong>不好就扔。</strong><br>⇒ ⭐ <strong>这正是最便宜的那条验证路径</strong> —— <strong>和 §11.2「不许承诺工期」不冲突,因为它不承诺工期,它只承诺一版能听的东西。</strong></p>
+<blockquote><h4>🔴 <strong>但 §6.4.0b 立着一条硬约束</strong>:</h4>
+<h4><strong>B 线的「还在干活」指示【必须走听觉通道】</strong> ——</h4>
+<h4>理由是 <strong>B 的前提就是不看屏幕</strong>(开车、做家务、戴着耳机),</h4>
+<h4><strong>一个写在文字框里的指示器,对一个不看屏幕的人等于不存在。</strong></h4></blockquote>
+<p><strong>⇒ 读法 ——【有她原话支撑】,不再只是 Runner 的判断</strong>:</p>
+<blockquote><p><strong>她的原话</strong>:「如果我注意到它不回话了,<strong>我一眼看过去</strong>,它在发生什么就一目了然。」</p></blockquote>
+<blockquote><h4>🔑 <strong>「一眼看过去」这四个字,预设了她看得见屏幕。</strong></h4>
+<p>⇒ <strong>所以她定的确实是【看得见的时候,状态长什么样】,不是【不看屏幕时靠什么知道】。</strong></p></blockquote>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>两者不互斥</strong></td><td>文字频道那套是<strong>回归的既有能力</strong>,服务的是<strong>她看得见屏幕的时候</strong>(以及 C 线)</td></tr>
+<tr><td><strong>B 场景仍然缺</strong></td><td><strong>她不看屏幕的时候靠什么知道它在干活</strong> —— <strong>她这次说的不是这个问题</strong></td></tr>
+</table>
+<blockquote><h4>⛔ <strong>所以不许拿她这条决定去关掉 §6.4.0b 那条硬约束。</strong></h4>
+<p><strong>她这次定的是「断线和状态显示做成什么样」,不是「B 在不看屏幕时靠什么知道」。</strong><br><strong>⇒ 两个问题,一个被答了,一个没有。</strong></p></blockquote>
+<p>⚠️ <strong>证伪口仍然留着,不因为有了原话就撤</strong>:<br><strong>「一眼看过去」也可能只是她随口说的一句</strong>,不一定是在划场景边界。<br>⇒ <strong>如果她心里 B 的状态显示本来就是文字频道那套</strong>(比如她预期自己随时能瞄一眼手机),<br><strong>那 §6.4.0b 那条硬约束需要收窄,而不是并存。</strong><br><strong>这一条只有她能答,我没问过她。</strong></p>
+<h5>✅ <strong>2026-08-20 晚:她答了 —— 证伪口【关闭】,§6.4.0b 定成【刚需】</strong></h5>
+<p><strong>她的原话</strong>:</p>
+<blockquote><p>「<strong>我当然是希望我完全不需要看文字就知道在发生什么。</strong>」</p></blockquote>
+<blockquote><h4>⇒ <strong>文字那套不够。听觉那条留着,并且从【并存】正式定成【刚需】。</strong></h4></blockquote>
+<blockquote><h4>📌 <strong>关闭方式要记清楚,它比结论重要</strong>:</h4>
+<h4><strong>这个证伪口是被【她的原话】关的,不是被我们的推理关的。</strong></h4>
+<p>⚠️ <strong>过程也留档</strong>:她第一次答的其实是<strong>文字那套</strong>(「这个我们已经有解决方案了吧,<br>就是 Voice Channel 也会实时显示现在 Codex CLI 是什么状态」)——<br><strong>正好命中这个证伪口</strong> ⇒ <strong>HL 没有据此关掉它,而是回去补问了一句,才拿到上面这句。</strong></p>
+<h4>🔑 <strong>⇒ 一个证伪口被命中的时候,正确动作是【再问一句】,不是【直接判它成立】。</strong></h4></blockquote>
+<p>📎 <strong>HL 那次补问的措辞值得单记</strong>(它是这条能问出来的原因):<br><strong>他没有问「你确定吗」,而是问「实际用起来时,手边是不是总有个屏幕能瞄一眼(手机也算)」,</strong><br><strong>并且把「是」那一支明写成【砍掉一条要求】。</strong></p>
+<blockquote><h4><strong>当你要她确认一件她刚说过已经解决的事,把「她是对的」那一支写成【能减少工作】的那一支</strong> ——</h4>
+<p><strong>否则她只能在「承认漏了」和「坚持没漏」之间选,而那两个都不是关于产品的。</strong></p></blockquote>
+<h5>📌 她在真实使用中<strong>自发伸手要</strong>的四件 —— 记成事实,⛔ 不替她决定做不做</h5>
+<table>
+<tr><td>她要的</td><td>备注</td></tr>
+<tr><td><strong>换男声</strong></td><td>她自己说的用途:<strong>为了模拟多人</strong></td></tr>
+<tr><td><strong>打断</strong></td><td>⚠️ <strong>正好是选定载体上大概率没有的那一件</strong>(见上「一」)</td></tr>
+<tr><td><strong>控制她的电脑</strong></td><td></td></tr>
+<tr><td><strong>权限跨会话保持</strong></td><td></td></tr>
+</table>
+<blockquote><h4>📌 <strong>来源要标清楚</strong>:<strong>四件全部是她【在实际使用中自己想到并开口要的】,不是访谈里问出来的,也不是我们提的。</strong></h4>
+<p><strong>这个来源比内容更值钱</strong> —— <strong>访谈里说想要的东西,和用着用着自己伸手去够的东西,不是一个强度。</strong></p></blockquote>
+<p>⚠️ <strong>第二件那个撞车必须写出来,不许分开放</strong>:<br><strong>她自发要的四件里,有一件正好是我们刚选定的载体大概率给不了的。</strong><br>⇒ ⛔ <strong>这不构成「所以该重选载体」</strong>(载体是她拍的,证据在上面那张表);<br><strong>但它构成一件【她会亲身碰上的不顺】,而那是产品问题,不是工程问题。</strong></p>
+<h6>✅ <strong>2026-08-24:她逐条裁了</strong>【她的自由表述,⛔ 原话不许改写】</h6>
+<table>
+<tr><td>她要的</td><td>她的裁决</td><td>她的原话</td></tr>
+<tr><td><strong>换男声</strong></td><td>✅ <strong>做</strong></td><td>「就是换男生,他的音色里面本来就有男生,所以这个东西很好换」</td></tr>
+<tr><td><strong>打断</strong></td><td>🔧 <strong>交工程实施时判定</strong>,⛔ 产品不预先定死</td><td>「交给塔达去做的时候去决定:<strong>如果打断可以做,我们就做;如果做起来很困难,就算了</strong>」</td></tr>
+<tr><td><strong>控制她的电脑</strong></td><td>✅ <strong>做</strong></td><td>「这是需要的。我相信 Codex CLI 是可以做的,到时候只要开特定的权限就可以了」</td></tr>
+<tr><td><strong>权限跨会话保持</strong></td><td>✅ <strong>做</strong></td><td>「对,这个也是需要做的。那就到时候让谁去看一下,然后研究怎么样去做」</td></tr>
+</table>
+<p><strong>同一轮她还裁了三件</strong> —— ⚠️ <strong>这三件在记录里是【短语】,⛔ 不是逐字原话</strong>(上面那张四行表才是逐字):</p>
+<pre>放她自己的音乐    暂时不做
+知道在发生什么 / 有谁在推进   需要
+1911 那段音频实验  不跑</pre>
+<h6>✅ <strong>「换男声」是一条【规则】,不是一格待选</strong>【她 2026-08-24 当面纠正】</h6>
+<p><strong>她的原话</strong>:</p>
+<blockquote><p>「我说的 Honey Lemon 角色,我并没有说 Honey Lemon 需要换男生。我的意思是:<br><strong>如果那个 Lead 他本来是男生的话,我们需要换男生</strong>。比如说,我给 Tadashi 选的声音是男生的声音,对吧?」</p></blockquote>
+<blockquote><h4>⇒ <strong>规则:音色跟【Lead 本人的性别 / 人设】对上。</strong></h4></blockquote>
+<pre>alloy(低沉冷静女声) → Honey Lemon   ✅ 已配
+verse(有活力中年男声)→ Tadashi       ✅ 已配
+marin(靠谱中年女声) → 主管 Lead      ✅ 已配
+⇒「换男生」= 男性 Lead 就用男声;很好换,因为音色集里本来就有男声
+⇒ 其余七个:性格描述已备,配新 agent 时对着人设挑,⛔ 不用重听</pre>
+<h6>📎 <strong>一处已撤回的写法,按规矩 19 留档(⛔ 不许静静改对)</strong></h6>
+<p><strong>本格上一版曾写成</strong>:「<strong>换男声换成哪一个 ⬜ 待她指定</strong>」,并把四个未选男声摆出来请她挑。</p>
+<blockquote><h4>⇒ <strong>撤回。成因是【Lead 误读了她的话】,⛔ 不是她改主意。</strong></h4>
+<p><strong>误读的形状</strong>:拿「Honey Lemon = alloy = 女声」去跟「换男生」对撞,<br><strong>得出一个根本不存在的冲突,还反过来要她挑。</strong></p></blockquote>
+<p>⚠️ <strong>留这一笔的理由</strong>:<strong>静静改对的话,以后读的人会以为【她犹豫过】</strong> —— 她没有。</p>
+<h5>【1】✅ <strong>v2 端到端今天是活的</strong> —— 阳性实测,不是推理</h5>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td>16:10:39 起</td><td><strong>跑满 5 分钟</strong>,没有 34 秒暴毙</td></tr>
+<tr><td>16:10:41</td><td><strong>它主动打招呼</strong></td></tr>
+<tr><td>16:11:24</td><td>转写</td></tr>
+<tr><td>16:11:40</td><td>答「<strong>flywheel 仓库有 41 个 PR 仍未合并</strong>」—— <strong>我们自己 <code>gh</code> 数出来就是 41</strong></td></tr>
+</table>
+<blockquote><h4>🔑 <strong>这一场成色高,高在对照做干净了</strong>:</h4>
+<p>与 v3 失败各场<strong>同账号 · 同房间 · 同二进制 · 同参数 · 脚本逐字相同</strong>,<br><strong>唯一差别是 <code>RT_VERSION</code> v3→v2。</strong></p></blockquote>
+<p>📎 证据:1911 <code>evidence/Y3-v2-alive*</code>。</p>
+<p>⚠️ <strong>它证到哪儿为止</strong>(⛔ 不许外推):<br>① <strong>5 分钟不是半小时</strong> —— v2 那条腿的长时耐久<strong>没量</strong>(P-6 那半小时量的是 <strong>v3</strong>,见下);<br>② 证的是<strong>语音腿今天活着</strong>,<strong>不是</strong>「v2 够交付 B」—— 够不够是 §6.5【3】那条风险在问的。</p>
+<p>📎 <strong>它给的那个 41 是对的,但 ⛔ 不许拿它当频率证据</strong>:<br>§3.1e.1 那条抢答风险的频率是<strong>刻意不测</strong>的。<strong>「这次它答对了」不进那一格。</strong></p>
+<h5>【2】⬜ <strong>v3 七次全死在 33.0 / 35.1 / 34.9 / 34.9 / 35.0 / 34.9 / 34.99 秒</strong> —— 成因<strong>仍未定案</strong></h5>
+<p>⚠️ <strong>成色分清</strong>:前五个取自 manifest;<strong>第 6 个(34.91 秒)和第 7 个(34.99 秒)是 HL 自己从事件流算出来的</strong>,不是文件里现成的字段。<br><strong>七次同形。</strong></p>
+<p><strong>已实测排除的</strong>:</p>
+<ul><li>我们的桥 / 重采样 / 依赖(<strong>把 Discord 整个拿掉照样死</strong>)</li><li>走错 codex 配置目录</li><li>闲置超时(⚠️ <strong>这一条的证据见下面那段撞车 —— 本文里有比它更强的</strong>)</li><li>账号整体没权益(<strong>v3 失败与 v2 成功用的是同一份凭据</strong>)</li><li>我们脚本写坏(<strong>同一份脚本换个开关 v2 就好使</strong>)</li></ul>
+<blockquote><h4>⛔ <strong>三条都不许写</strong>:</h4>
+<p>⛔ <strong>不许写「v3 权益不足」</strong> ⛔ <strong>不许写「Codex 掐了我们」</strong><br>⛔ <strong>不许写「FLY-2021 解释了这 35 秒」</strong>(2026-08-24 新增,理由见下)<br><strong>前两条都没被证实</strong>(HL 先前对她说过头过一次,已当面收回);<strong>第三条见下面那张两格表。</strong></p></blockquote>
+<h6>🔴 <strong>2026-08-24:必须拆成【两格】,⛔ 不许合并</strong></h6>
+<p><strong>Tadashi 查透了 v3 现在起不来的根因。⚠️ 但它【不解释】上面那 35 秒。两者的失败形状根本不同:</strong></p>
+<table>
+<tr><td></td><td>【现在】v3 起不来</td><td>【当时】33–35 秒被切</td></tr>
+<tr><td><strong>失败形状</strong></td><td><strong>握手第一步就死</strong> · <strong>SDP 永不回</strong> · <strong>转写 0</strong></td><td><strong>握手成功</strong> · <strong>有 SDP</strong> · <strong>有音频来回</strong> · <strong>跑到 33–35 秒才被切</strong></td></tr>
+<tr><td><strong>成因</strong></td><td>✅ <strong>已定案</strong>:<strong>上游拒了 codex 发的 <code>session.model</code> 字段</strong>(WebRTC/AVAS 路)</td><td>⬜ <strong>仍未定案</strong></td></tr>
+<tr><td><strong>性质</strong></td><td><strong>会变的【外部状态】</strong>,锚 <strong>FLY-2021</strong>(Tadashi 盯上游,修好主动切)</td><td>——</td></tr>
+</table>
+<blockquote><h4>⛔ <strong>把 FLY-2021 挂到 35 秒那一格上,就是【把一个不相干的成因安到一个现象上】。</strong></h4></blockquote>
+<h6>⚠️ <strong>而 35 秒那一格现在【暂时查不了】,不是【还没查】</strong></h6>
+<blockquote><h4><strong>握手已经被拒 ⇒ 那个现象【复现不了】。</strong></h4></blockquote>
+<pre>还没查    ⇒ 会有人去查
+暂时查不了 ⇒ 要【等上游修好】才有机会</pre>
+<blockquote><h4>⚠️ <strong>这两种在文档里长得一模一样,但它们派给下一个人的动作完全相反。</strong></h4></blockquote>
+<p>📎 <strong>这一处的一般形状值得记</strong>:</p>
+<blockquote><h4><strong>一个正确答案到手时,最大的风险不是它错,是【它被安到不属于它的那一格上】</strong> ——</h4>
+<h4><strong>因为它看起来终于解释了什么。</strong></h4></blockquote>
+<h6>🔴 <strong>一条结构性发现:v2 和 v3 用的根本不是同一条传输</strong>【2026-08-20,成色分三档,⛔ 不许越档】</h6>
+<p><strong>起因是 Annie 提的问题</strong>;HL 拿<strong>我们自己的实验数据</strong>验了,<strong>她是对的。</strong></p>
+<h6>✅ 第一档 —— <strong>量到的</strong>(数了每一场跑的 WebRTC 握手事件)</h6>
+<table>
+<tr><td>跑</td><td>结果</td><td>SDP</td><td>PC</td></tr>
+<tr><td>Y3 <strong>v2</strong></td><td>成功</td><td><strong>0 次</strong></td><td><strong>0 次</strong></td></tr>
+<tr><td>T3c <strong>v3</strong></td><td>成功(早)</td><td>1 次</td><td>1 次</td></tr>
+<tr><td>Y2 <strong>v3</strong></td><td>失败</td><td>1 次</td><td>1 次</td></tr>
+<tr><td>#7 <strong>v3</strong></td><td>失败(刚)</td><td>1 次</td><td>1 次</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>v2 完全不走 WebRTC,v3 每场都走。</strong></h4>
+<h4><strong>我们只动了版本开关 —— 换传输是 Codex 自己换的。</strong></h4></blockquote>
+<h6>✅ 第二档 —— <strong>源码读到的</strong>(钉在 <code>rust-v0.148.0</code>)</h6>
+<pre>v2   一条 WebSocket 把【声音和控制】全带走
+     ⇒ 音频帧(含静音)一直在流  ⇒ 【永不空闲】
+
+v3   声音搬到 WebRTC
+     ⇒ 剩下那条 WS 降级成【只送控制事件的 sideband】⇒ 大部分时间安静
+     ⇒ websocket_config() = WebSocketConfig::default()  ⇒ 【没有任何保活】
+     ⇒ 源码注释写明:重试只覆盖「加入」,【连上后中途断了一次都不重连】</pre>
+<h6>⚠️ 第三档 —— ⛔ <strong>未验证,不许写成结论</strong></h6>
+<p><strong>「安静 + 无心跳 ⇒ 被空闲超时掐掉」听着严丝合缝,但有两个现成的反例</strong>:</p>
+<pre>反例①  P-6(08:00:01.704Z)v3 静默 30 分钟还活着
+反例②  今早三场 v3 成功 —— 架构和现在一模一样</pre>
+<blockquote><h4>⇒ <strong>只能写到这一句,而且必须整句引用</strong>:</h4>
+<h4><strong>v3 有一个长期存在的脆弱点(安静 + 无心跳);</strong></h4>
+<h4><strong>今天路上多了点什么开始掐空闲连接;</strong></h4>
+<h4><strong>v2 不受影响,是因为它从不空闲。</strong></h4>
+<h4>⛔ <strong>中间那句没有证据</strong> —— <strong>引用这条时必须把这个标注一起带上。</strong></h4></blockquote>
+<p>📎 <strong>和 §3.1d 的关系 —— 同形,但不是同一条腿,⛔ 不许当成已被覆盖</strong>:<br><strong>§3.1d 那条「没有声音要送静音」是【音频腿】上的,已实测。</strong><br><strong>这条讲的是【控制腿】</strong> —— 同一个形状(安静 = 危险),<br><strong>但「控制腿真的因此被掐」未验</strong>(P-6 正是反例:音频腿忙着,控制腿一样安静,活了 30 分钟)。</p>
+<h6>📎 <strong>两条假线索已被对照毙掉 —— 记在这里,免得它们再混进来</strong>【HL 2026-08-20】</h6>
+<table>
+<tr><td>假线索</td><td>毙它的对照</td></tr>
+<tr><td><strong>「是说话触发了断开」</strong></td><td><strong>三次失败都死在【开口之前】</strong>;而且<strong>不经 Discord 那场没人说话,照样死</strong></td></tr>
+<tr><td><strong>事件流里的 <code>lead_actions</code> MCP 报错</strong></td><td><strong>11 个带 MCP 行的证据文件全都有</strong> —— <strong>包括两场 v3 成功和一场 v2 成功</strong> ⇒ <strong>背景噪音</strong></td></tr>
+</table>
+<p>📎 <strong>它们值得留档而不是删掉</strong>:<strong>两条都是「看起来很像成因」的东西</strong> ——<br><strong>下一个人翻同一批事件流时,最先撞见的就是它们。</strong></p>
+<blockquote><h4>✅ 现在唯一站得住的说法:<strong>指向 v3 那一项</strong> ——</h4>
+<h4><strong>分不开「没开 v3 权益」和「v3 那侧在出事故」。</strong></h4></blockquote>
+<h6>🔴 <strong>它和本文已经记着的一条事实撞车 —— 而且这不只是撞车,是一次真正的对照</strong>【2026-08-20】</h6>
+<p><strong>两场的 manifest 逐字段核过</strong>(HL 独立 <code>git show</code> 复核,不是读摘要):</p>
+<table>
+<tr><td></td><td>P-6</td><td>Y1-ctl-p6-no-discord</td></tr>
+<tr><td><code>startedAt</code></td><td><strong>08:00:01.704Z</strong></td><td><strong>15:51:07.328Z</strong></td></tr>
+<tr><td>启动事件</td><td><code>thread/realtime/started</code> 带 <code>&quot;p&quot;:&quot;v3&quot;</code></td><td>同,<code>&quot;p&quot;:&quot;v3&quot;</code></td></tr>
+<tr><td><code>probeSha256</code></td><td><code>ce76f504…ee15</code></td><td><strong><code>ce76f504…ee15</code> —— 同</strong></td></tr>
+<tr><td><code>codexSha256</code></td><td><code>b0308517…1e50</code></td><td><strong><code>b0308517…1e50</code> —— 同</strong></td></tr>
+<tr><td>走 Discord</td><td><strong>否</strong></td><td><strong>否</strong></td></tr>
+<tr><td>结果</td><td>✅ <strong>活 30.6 分钟</strong>,静默约 29 分钟,静默前后各答一次</td><td>❌ <strong>一次都没答上</strong>(<code>回话了: false</code>),<code>stream disconnected before completion</code></td></tr>
+</table>
+<blockquote><h4>🔑 <strong>变量控住了,而且控得比&quot;同一台机同一个二进制&quot;更死</strong> ——</h4>
+<h4><strong>探针脚本的字节都是同一份(<code>probeSha256</code> 相同)。</strong></h4>
+<h4>⇒ <strong>变的那样东西不在我们这一侧。</strong></h4></blockquote>
+<p><strong>两场相隔 7 小时 51 分</strong>(08:00:01Z → 15:51:07Z,<strong>同一天</strong>)。</p>
+<blockquote><h4>⇒ <strong>一个【长期就没开 v3 权益】的账号,做不出 08:00 那半小时。</strong></h4>
+<h4><strong>所以【静态没权益】这一读法站不住。</strong></h4>
+<h4>⛔ <strong>但这不等于排除了权益</strong>:「<strong>今天某个时点之后被改了 / 额度用尽</strong>」<strong>没有被排除。</strong></h4></blockquote>
+<h6>🔴 <strong>这条论证有一个出处缺口,必须和结论一起读</strong>【HL 核出,2026-08-20】</h6>
+<p><strong>早上那几份 manifest 里【没有任何字段记录当时用的是哪个账号】</strong> ——<br>T3c / T3d / T4-p6 三份都翻过了,只有 <code>codexSha256</code> / <code>probeSha256</code>。</p>
+<pre>时间窗        ✅ 量到的(manifest 里的 startedAt)
+脚本/二进制   ✅ 量到的(两个 sha256 逐字相同)
+账号身份      ⚠️ 转述的 —— 唯一的证人是 Tadashi 自己的切号时间线,不是证据文件</pre>
+<blockquote><h4>⛔ <strong>不许写成「证据显示 P-6 跑在某某账号上」。</strong></h4></blockquote>
+<h6>🔴 <strong>它承重到什么程度:那一格的取值会让结论【反向】</strong>【HL 2026-08-20 往前推的一格】</h6>
+<p><strong>不是「证据强度差一点」,是这对数据到底指向哪一边,完全由那一格决定:</strong></p>
+<table>
+<tr><td>那一格若是</td><td>这对数据就指向</td></tr>
+<tr><td><strong>两场同账号</strong></td><td><strong>变的在远端</strong>(v3 那一侧出事 / 额度被改)</td></tr>
+<tr><td><strong>两场不同账号</strong></td><td><strong>变的就是账号</strong> —— 整个「远端出事」的读法消失</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>一个没被记录的变量,再干净的对照也仲裁不了它。</strong></h4>
+<p><strong><code>probeSha256</code> 和 <code>codexSha256</code> 逐字相同,把【我们这一侧】控住了;</strong><br><strong>它控不住【是谁在跑】。</strong></p></blockquote>
+<h6>⚠️ 而且 <code>codexResolved</code> 逐字相同<strong>推不出</strong>同一个账号 ——【C 线核出的机制】</h6>
+<blockquote><h4><strong>manifest 记的是 codex 的【家目录路径】,不是【家目录里那个账号】。</strong></h4>
+<p><strong>换号可以发生在同一个家目录里,文件一个字节都不变。</strong></p></blockquote>
+<p>⇒ ⛔ <strong>不许拿「路径 / 二进制 hash 都一样」去补账号那一格。</strong> <strong>它们在这件事上是哑的。</strong></p>
+<p>📌 <strong>已下的改进</strong>(HL 同时下给 1911):<strong>往后每次跑,把账号身份盖进 manifest。</strong></p>
+<h6>🔴 <strong>2026-08-20 17:12:02Z —— founder 把账号这条线关掉了</strong>【她的自由表述】</h6>
+<p><strong>她的原话(逐字)</strong>:</p>
+<blockquote><p>「我希望你不要再纠结账号的问题了,<strong>这百分之百跟我用的是哪个账号没有关系</strong>」</p></blockquote>
+<blockquote><h4>⛔ <strong>这句话里有【决定】也有【理由】,只有决定进文档</strong>(判据见 §0.2c):</h4>
+<pre>决定  =  不再在账号方向上投入        ← ✅ 入库,记成 founder 决定
+理由  =  「百分之百跟账号没关系」      ← ⛔ 不许写成结论 / 不许写成「已排除」/ 不许当前提</pre></blockquote>
+<p><strong>⇒ 所以本节各格的正确取值,逐条写死:</strong></p>
+<table>
+<tr><td></td><td>取值</td></tr>
+<tr><td><strong>账号方向</strong></td><td><strong>founder 判定不再追,未继续</strong> —— ⛔ <strong>不是「已排除」</strong></td></tr>
+<tr><td><strong>上面那些切号时刻、相关性、出处缺口</strong></td><td>✅ <strong>原样保留,一个字不删</strong></td></tr>
+<tr><td><strong>v3 成因</strong></td><td>⬜ <strong>仍然未定案</strong> —— ⚠️ <strong>2026-08-24 消歧</strong>:指的是<strong>【当时】33–35 秒那一格</strong>;<br><strong>【现在】v3 起不来那一格已定案(上游拒 <code>session.model</code>),⛔ 但它不解释这一格</strong></td></tr>
+</table>
+<blockquote><h4>🔑 <strong>一句话</strong>:<strong>证据不变,投入停止。</strong> ⛔ <strong>两件事不许合成一句。</strong></h4></blockquote>
+<p>⚠️ <strong>两个相邻的说法,作用域完全不同,⛔ 不许互相顶替</strong>:</p>
+<pre>「这个账号【整体】是死的」      ✅ 已排除 —— 同一份凭据上 v2 跑满 5 分钟
+「这个账号【缺 v3 这一项】」    ⚠️ 既没被证实,也没被排除
+                               ⇒ 当前状态 = 【没有结论,且不再追】
+                               ⛔ 不许升级成任何一边</pre>
+<p>📎 <strong>上面那张「同账号 / 不同账号 ⇒ 结论反向」的表仍然成立</strong> ——<br><strong>变的不是它对不对,是【那一格不会有人再去填了】。</strong><br>⇒ <strong>所以那对数据仲裁不了方向,这一点从【暂时】变成了【当前状态】</strong>,<br><strong>除非将来有人重开这条线</strong> —— ⛔ <strong>而重开的门没有被文档焊死</strong>(这正是不写「已排除」的理由)。</p>
+<p>⚠️ <strong>我能说到哪儿为止,写死在这里</strong>:<br><strong>我把两条已有记录并排摆出来,指出其中一种读法和它们不相容。</strong><br>⛔ <strong>我没有、也不许给成因下结论</strong> —— 那是 Tadashi 的活(见本节末)。</p>
+<h6>📎 关于上面那条「闲置超时」排除项:<strong>换成 P-6 是【升级】,不是【纠错】</strong></h6>
+<p>⚠️ <strong>我先前给的理由是错的,原样留在这里,因为下一个人很可能重犯同一个推断:</strong></p>
+<blockquote><p>📎 <strong>我当时推的</strong>:「那 37 秒的成功场大概是 v2 ⇒ 拿健康组排除病人身上的成因」。<br><strong>HL 去核了原件,证伪了它</strong> —— T3c(<code>07:25:20.864Z</code>)和 T3d(<code>07:35:19.460Z</code>)<strong>两场都是 <code>version = v3</code>,<code>ok = True</code></strong>。<br>⇒ <strong>那条排除项并没有拿健康组去排病人。我的前提是假的。</strong></p></blockquote>
+<p><strong>但结论没跟着倒,是因为它换到了一个新理由上</strong> ——<br><strong>T3c / T3d 是【焊进 Discord】跑的</strong>(manifest 的 <code>probe</code> 字段写着「任务3 v3 焊进 Discord」),<br><strong>而 P-6 不经 Discord</strong> ⇒ <strong>P-6 少一个混杂变量,是更干净的证人。</strong></p>
+<blockquote><h4>📌 <strong>通则本身照旧成立,但要标清楚它这次没咬到</strong>:</h4>
+<h4><strong>排除项的证据必须取自【正在坏的那一侧】</strong> —— 拿健康组的对照去排除病人身上的成因,读起来一样通顺。</h4>
+<p>⚠️ <strong>这次它没咬到</strong>(证据本来就取自 v3)。⛔ <strong>所以这一次【不是】它的例子,不许拿它去举例。</strong></p></blockquote>
+<h6>📌 由这次提出来的通则:<strong>规则和它的例子,要分开判生死</strong>【HL 2026-08-20 定】</h6>
+<pre>例子被证伪   →  删例子、留规则、注明「这次它没咬到」
+⛔ 不许       把一个假例子留在规则旁边当装饰</pre>
+<p><strong>⇒ 但要把两样东西分清,否则这条通则自己会被误用</strong>(⚠️ 我上一版正是把它们写混了):</p>
+<table>
+<tr><td>留不留</td><td>它在这儿干什么</td></tr>
+<tr><td>⛔ <strong>假例子</strong></td><td>被拿来<strong>证明规则</strong> ⇒ <strong>必须删</strong> —— 留着,下一个人会以为规则已经被验证过</td></tr>
+<tr><td>✅ <strong>被证伪的推断</strong></td><td>被拿来<strong>警告下一个人别重犯</strong> ⇒ <strong>可以留,但必须标假,且明写它不是例子</strong></td></tr>
+</table>
+<p>📎 <strong>上面那段留档属于第二种</strong>:留的是「我推错的那一步」,<strong>不是</strong>「这条规则的例子」。<br><strong>这条规则目前【一个例子都没有】</strong> —— 就这么写着,不许拿手边最像的那个去填。</p>
+<h5>【3】🔴 产品后果:<strong>一条带命名退路的风险</strong> —— 成色分三层,⛔ 不许合并</h5>
+<p><strong>她最喜欢的两样(先应一声 / 能打断),对应的开关只在 v3 生效</strong>:<br><code>delegationAckFiller</code> · <code>codexResponseHandoffMode</code></p>
+<blockquote><h4>⚠️ <strong>但「开关只在 v3 生效」这句话的成色是【读到】,不是【量到】。</strong></h4></blockquote>
+<p><strong>三层分开,一层都不许升格</strong>:</p>
+<table>
+<tr><td>说的是什么</td><td>成色</td></tr>
+<tr><td>那两个开关<strong>名字上</strong>只在 v3 生效</td><td><strong>读到</strong>(读的是开关,不是行为)</td></tr>
+<tr><td><strong>先应一声在 v3 上确实发生过</strong></td><td>✅ <strong>量到过</strong> —— 1.76 秒(波形)/ 9.6 秒(早一场),两个数见 §6.4 的「分清」段</td></tr>
+<tr><td><strong>打断在 v3 上行不行</strong></td><td>⬜ <strong>未验</strong>(§3.1f.1)</td></tr>
+</table>
+<blockquote><h4>⇒ <strong>风险 + 退路(合起来才是完整的一句)</strong>:</h4>
+<h4><strong>v3 若长期起不来,B 仍可落在 v2 上交付</strong> —— 语音腿今天实测是活的(【1】)——</h4>
+<h4><strong>但很可能是「能用」,而不是「一样好」。</strong></h4></blockquote>
+<h6>🔴 <strong>2026-08-20 更正:退路不是单纯降级,是【取舍】</strong> —— 请照这个写</h6>
+<p><strong>上面那条结构性发现改变了退路的性质,不只是给它补一个事实:</strong></p>
+<pre>落到 v2  丢的是    先应一声 / 能打断        （那两个开关只在 v3 生效）
+落到 v2  换回来的是 连接稳定性
+         ⇒ v2 的连接【从不空闲】,所以【结构上免疫】这类掐断</pre>
+<blockquote><h4>⇒ <strong>v2 在这一点上反而更结实。</strong></h4>
+<h4>⛔ <strong>不许把它写成单纯的降级</strong> —— <strong>它是一个取舍,不是一个损失。</strong></h4></blockquote>
+<p>⚠️ <strong>但⛔ 也不许倒过来写成「所以该选 v2」</strong>:<br><strong>她最喜欢的两样正是 v3 独有的那两样</strong>,而<strong>她还没在这个取舍上表过态</strong>(§6.5 开头那格仍挂着)。</p>
+<blockquote><h4>⛔ <strong>两句都不许写</strong>:</h4>
+<p>⛔ <strong>不许写「上 v3 就好了」</strong>(从规格描述推的,HL 已收回)<br>⛔ <strong>不许写「v2 与 v3 等价」</strong></p></blockquote>
+<p>📎 <strong>为什么退路要【命名】而不是含糊地说「还有别的办法」</strong>:<br><strong>一条没有名字的退路,在排期时等于不存在</strong> —— 没人知道它要多少工。<br><strong>这条退路有名字:v2,而且今天跑通过。</strong></p>
+<h5>📌 本节的边界:<strong>成因调查不在本单</strong></h5>
+<p><strong>v3 为什么起不来,归 Tadashi</strong>(她点名让他上网搜 + 读 Codex 源码)。</p>
+<blockquote><h4>⛔ <strong>本单不碰。</strong> <strong>理由不是分工洁癖</strong> ——</h4>
+<p><strong>两边读的是同一份材料,各自出一份结论,会被当成两个独立结论。</strong></p></blockquote>
+<hr>
+<h4>6.6 ⬜ 音色 —— <strong>她判为【不急】,等 v3 起来再一起看</strong>【她的自由表述,2026-08-20】</h4>
+<p><strong>她今天的原话(两句要一起读,少一句就会读偏)</strong>:</p>
+<blockquote><p>「<strong>说实话不是特别急</strong>」 + 「<strong>先等一等,看看 V3 能不能起来</strong>」</p></blockquote>
+<blockquote><h4>⇒ <strong>状态写死为:【她判为不急,等 v3 起来再一起看】。</strong></h4>
+<h4>⛔ <strong>不是「待开发」</strong>(那会让人去排工期)</h4>
+<h4>⛔ <strong>也不是「已决」</strong>(她没说要哪个音色,她说的是<strong>先别管</strong>)</h4></blockquote>
+<p>📎 <strong>这条归类和 §6.2 / §7.5 同一族</strong>:<strong>「她还没答」和「她现在不想答」都不是「该去问」。</strong><br><strong>分错的代价是</strong>:标成待开发 ⇒ 有人去排工期;标成已决 ⇒ 有人以为音色定了。</p>
+<p><strong>已有的技术事实(不变)</strong>:<code>listVoices</code> <strong>不带性别、不带任何元数据</strong><br>⇒ <strong>哪个音色配哪个 Lead,机器判不了,只能她听。</strong></p>
+<blockquote><h4><strong>什么算等到了</strong>:<strong>v3 有定案之后,连着载体一起给她听一遍。</strong></h4>
+<p>⛔ <strong>在那之前不要单独为音色去问她一轮</strong> —— 她已经说了不急。</p></blockquote>
+<p>⚠️ <strong>它挂在 v3 上,不是挂在时间上</strong>:<br><strong>若最后落在 v2(§6.5【3】的退路),音色这一格要重新问一次</strong> ——<br><strong>因为她说的是「等 V3 能不能起来」,那句话的前提是 v3 还在桌上。</strong></p>
+<h5>🔴 <strong>2026-08-20 晚:上面那个条件【已经触发了】</strong></h5>
+<p><strong>v3 出局,载体定为 v2</strong>(§6.5)⇒ <strong>她那句话的前提没了。</strong></p>
+<blockquote><h4>⇒ <strong>触发条件改写(⛔ 旧的那句已经无法满足,留着会让这一格永远等下去)</strong>:</h4>
+<h4><strong>原来</strong>:「等 v3 有定案」 → <strong>现在</strong>:<strong>连 v2 一起给她听一遍。</strong></h4></blockquote>
+<p>📎 <strong>这一格自己写过的那句话救了它</strong>:「<strong>它挂在 v3 上,不是挂在时间上</strong>」——</p>
+<blockquote><h4>⇒ <strong>一个把【触发条件】写清楚的空格,在前提变化时会自己报警;</strong></h4>
+<h4><strong>只写「等等再说」的空格不会,它会安静地等一个永远不来的东西。</strong></h4></blockquote>
+<h5>🔴 <strong>她 2026-08-21 就给过一张表,而它从来没进过这份 PRD</strong></h5>
+<p><strong>她 2026-08-24 的原话</strong>:「<strong>不同 agent 的音色分配我之前已经发给你过一次了呀,你是搞丢了吗?</strong>」<br>⇒ <strong>她是对的。</strong> 两份 PRD 搜 <code>alloy</code> / <code>marin</code> / <code>verse</code> 都是 <strong>0 命中</strong> ——<br><strong>当时那条记的是「要写进文档」,排在别的事后面,然后没有人回来收。</strong></p>
+<h6>📋 她 2026-08-21 的原话逐字(⛔ 一个字不许改写、不许润色)</h6>
+<table>
+<tr><td>音色</td><td>她的描述</td><td>分给谁</td></tr>
+<tr><td><strong>alloy</strong></td><td>低沉冷静的女声</td><td><strong>Honey Lemon</strong></td></tr>
+<tr><td><strong>ash</strong></td><td>憨厚的男声</td><td>未选</td></tr>
+<tr><td><strong>ballad</strong></td><td>听起来有点奸诈和油腻的男声</td><td>未选</td></tr>
+<tr><td><strong>cedar</strong></td><td>听起来很 beta 的男声</td><td>未选</td></tr>
+<tr><td><strong>coral</strong></td><td>乡土气息、发音不标准的女声,淳朴中年人感</td><td>未选</td></tr>
+<tr><td><strong>echo</strong></td><td>像戴眼镜的 gay 的男声,低沉,淡淡憋着的感觉</td><td>未选</td></tr>
+<tr><td><strong>marin</strong></td><td>听起来靠谱的中年女声</td><td><strong>主管 Lead</strong></td></tr>
+<tr><td><strong>sage</strong></td><td>有点像神婆的中老年女声</td><td>未选</td></tr>
+<tr><td><strong>shimmer</strong></td><td>非常冷静、靠谱、不好接近的女声</td><td>未选</td></tr>
+<tr><td><strong>verse</strong></td><td>有活力的中年男声</td><td><strong>Tadashi</strong></td></tr>
+</table>
+<p>⚠️ <strong>两条成色必须一起写</strong>:</p>
+<pre>「未选」        = 她【还没选】 ⛔ 不许写成「不合适」或「已否」
+marin →「主管 Lead」= 【她自己补的角色】 ⛔ 不许猜一个人名填进去</pre>
+<blockquote><h4>⭐ <strong>这十条描述的是【性格】,不是【音质】。</strong></h4>
+<h4>⇒ <strong>以后给新 agent 配音色,拿这张表对着人设挑就行,不用重听。</strong></h4>
+<p><strong>一次听力劳动产出了一张【可复用的性格表】—— 这才是这批样本的真产出。</strong></p></blockquote>
+<p>⚠️ <strong>⛔ 一处未确认,不许当前提</strong>:<br><code>listVoices</code> 那 19 个音色<strong>是不是 v2 这条路的选法</strong>,我没有直接证据<br>(那条事实是在 v3 还在桌上的时候记的)。<br>⇒ <strong>需要确认一次;在确认之前,⛔ 不许写成「v2 上有 19 个音色可选」。</strong></p>
+<hr>
+<h4>6.7 ✅ <strong>需求:Lead Memory · Agent File</strong>【她的自由表述】</h4>
+<p><strong>她 2026-08-22 01:27</strong>:</p>
+<blockquote><p>「我们现在一定要记住,我们这一个语音它也要<strong>知道我们的——就是有你的每个 lead 的身份和 memory</strong>,这样子。」</p></blockquote>
+<p><strong>她 2026-08-24 01:36(点名了是哪三件)</strong>:</p>
+<blockquote><p>「新的东西是指说它能够用有 <strong>Lead Memory</strong> 和 <strong>Agent File</strong>,然后还有那个<strong>对会议的 Topic 理解进入会议</strong>」</p></blockquote>
+<h5>✅ 两条需求 —— <strong>写满,⛔ 不打折</strong></h5>
+<table>
+<tr><td></td><td>需求</td><td><strong>已有证据</strong>(⛔ 作用是让工程知道这不是空想,<strong>不是用来限定他们怎么做</strong>)</td></tr>
+<tr><td><strong>R</strong></td><td><strong>语音要能用【Lead Memory】</strong></td><td>✅ <strong>已实测</strong>:它真去读磁盘上的记忆文件并<strong>逐字复述</strong>;<strong>找不到时明说找不到</strong>,⛔ 不拿相近的顶替</td></tr>
+<tr><td><strong>R</strong></td><td><strong>语音要能用【Agent File】</strong>(即每个 lead 自己的身份)</td><td>✅ <strong>已实测(隔离轮)</strong>;⚠️ <strong>只验过一次</strong></td></tr>
+</table>
+<blockquote><h4>⛔ <strong>本格【不加限制】,四条都不许写</strong>:</h4>
+<p>⛔ 不加「但预算只有 X」这类限定<br>⛔ 不加「所以只能装当前主讲」这类推论<br>⛔ 不预先替工程谈取舍(谁走逐字 / 谁进摘要 / 降级顺序)<br>⛔ 不把这两条写成「我们测过它能做」—— <strong>她要的是【产品会做这两件事】</strong></p></blockquote>
+<h4>6.8 ⬜ <strong>两条今晚暴露的真需求 —— 是【形状】,不是 bug</strong></h4>
+<blockquote><h4>⚠️ <strong>产品化时【要改形状】,⛔ 不能照抄原型。</strong></h4></blockquote>
+<table>
+<tr><td>#</td><td>她撞到的</td><td>现状为什么会这样</td></tr>
+<tr><td><strong>①</strong></td><td><strong>她进房时,房里要【已经有人】</strong> —— 她的原话:「<strong>这个也不是我要的效果呀</strong>」</td><td>原型是 <strong>WAIT-HUMAN 版</strong>:<strong>等真人进房才 join</strong> ⇒ <strong>她必然先看到一个空房</strong></td></tr>
+<tr><td><strong>②</strong></td><td><strong>出去再进来【不能失忆】</strong></td><td><strong>二次进房议题会复发</strong> —— <strong>那一格原型没实现</strong></td></tr>
+</table>
+<p>📎 <strong>为什么标成「形状」而不是「bug」</strong>:<br><strong>bug 是「它没按设计工作」;这两条是【原型的设计本来就这样】</strong> ——</p>
+<blockquote><h4>⇒ <strong>修它们不是修复,是【改设计】。</strong> <strong>⛔ 把它们记成 bug,排期时会被当成小活。</strong></h4></blockquote>
+<hr></div></details>
+<details><summary>7. 🔴 一边跟她开会,一边还要管自己的 runner(<strong>她自己提的</strong>)</summary><div class="mdbody"><p><strong>她的原话</strong>(2026-08-19):</p>
+<blockquote><p>「我跟你开半小时的会,同时你还要 orchestrate 你自己的 runner ——<br><strong>你能同时做吗?还是需要更特别的设定?</strong>」</p></blockquote>
+<h4>7.1 为什么它是产品问题,不是工程问题</h4>
+<p><strong>两条硬证据</strong>(不是推理):</p>
+<table>
+<tr><td>#</td><td>证据</td></tr>
+<tr><td>1</td><td><strong>2026-08-17,HL 自己的入站信箱堵了约 50 分钟,他完全没发现</strong> —— 因为他只在看出站</td></tr>
+<tr><td>2</td><td><strong>系统里 founder 没有优先通道</strong> —— 所有 Discord 聊天硬编码同一个优先级,<strong>和 runner 事件挤同一个队</strong></td></tr>
+</table>
+<blockquote><h4>🔑 <strong>文字上堵 50 分钟她看不出来;语音上堵 50 分钟,就是电话里没声音。</strong></h4></blockquote>
+<p>⇒ <strong>并发从工程问题变成了她的体验问题</strong> —— 这才是它进 PRD 的理由。</p>
+<p>📎 <strong>与 §5.4 同族但成因不同,别合并</strong>:§5.4 是<strong>它没话说</strong>;本节是<strong>它被别的事占住了</strong>。</p>
+<h4>7.2 实测:<strong>只量到一半</strong></h4>
+<table>
+<tr><td></td><td>对照组(无语音)</td><td>实验组(语音正在说话)</td></tr>
+<tr><td>往返中位数</td><td>652 ms</td><td><strong>687 ms</strong></td></tr>
+<tr><td>超时</td><td>0 / 12</td><td>0 / 12</td></tr>
+<tr><td>期间音频包</td><td>0</td><td><strong>166</strong>(内部对照:证明往返确实发生在语音在流时)</td></tr>
+<tr><td>观测窗</td><td>14.4 秒</td><td>13.8 秒</td></tr>
+</table>
+<p>🔴 <strong>三条边界,必须和数字一起读</strong>:<br>1. 量的是<strong>进程/传输层仍即时应答</strong>,<strong>不等于</strong>它能完成一次真正的 agent turn —— <strong>那条路今天 401,没量成</strong><br>   ⚠️ <strong>2026-08-20 晚补</strong>:<strong>那个 401 是 v3 的准入失败,和 v2 无关</strong>(见 §7.3 第一条更正)<br>2. <strong>窗口 14 秒,不是半小时。她问的是半小时,不外推。</strong><br>3. 单机单进程,<strong>不涉及真实 runner 编排</strong></p>
+<blockquote><h4>⇒ 口径(逐字,<strong>不许改写</strong>):</h4>
+<h4><strong>「最糟的失败模式(整段被占住)已排除;真正那条仍未量。」</strong></h4>
+<p>⛔ <strong>不许写成「可以同时做」。</strong></p></blockquote>
+<h4>7.3 ⬜ 还要量什么</h4>
+<ul><li>真实 agent turn 在语音在流时能否完成</li></ul>
+<p>  🔴 <strong>2026-08-20 晚更正:先前写的理由是「今天 401,未量」,而那个 401 是【v3 的】准入失败</strong> ——<br>  <strong>v2 当时是好的。</strong> ⇒ <strong>载体定为 v2 之后,这一条不再被那个 401 挡住。</strong><br>  ⇒ <strong>它现在的状态不是【被阻塞】,是【单纯没做】</strong> —— ⛔ <strong>两者不许混</strong>:<br>  <strong>写成「被阻塞」会让人以为要先解一个障碍;写成「没做」才会有人去排它。</strong></p>
+<ul><li><strong>半小时</strong>量级(今天只有 14 秒)</li></ul>
+<p>  ⚠️ <strong>2026-08-20 更新:P-6 那场半小时【不算】</strong> —— 它是<strong>静的</strong>,本节问的是<strong>忙的</strong>(见 §6 的对照表更正)</p>
+<ul><li><strong>真实 runner 编排在跑</strong>时的表现</li><li><strong>founder 优先通道</strong>要不要做 —— ⚠️ 这是设计题,<strong>归工程和她</strong>,本 PRD 只记录它是缺的</li></ul>
+<h5>📌 本节按规矩 23 补的两行(先前只列了「还要量什么」,没写等到了算什么)</h5>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>挂在谁身上</strong></td><td><strong>工程实测</strong> —— ⛔ <strong>不挂她</strong>(她问的是能不能,不是要她来定)</td></tr>
+<tr><td><strong>什么算等到了</strong></td><td><strong>一次【真实 runner 编排在跑】+【语音在流】的半小时量级观测</strong> —— <br>⛔ <strong>三个条件缺一不可</strong>:静的半小时不算(§6 对照表更正)· 14 秒不算 · 单机不涉及编排不算</td></tr>
+</table>
+<hr></div></details>
+<details><summary>7.5 ⬜ 长会话里,她怎么知道「哪些已经处理过了」——【<strong>Runner 的判断,待她确认</strong>】</summary><div class="mdbody"><p><strong>起因是一条卡片反馈,但它在产品里同形</strong>:</p>
+<blockquote><p>她 2026-08-19 原话:「<strong>你要告诉我是哪两个问题需要我回答,或者 highlight 出来,<br>因为我不知道,我以为我之前都回答了。</strong>」</p></blockquote>
+<p><strong>在卡上</strong>,这是排版问题(见 <code>plan.md</code>,已定:🆕 / ✅ / ⬜ 三态可视区分)。<br><strong>但同一个缺陷在耳机里更狠</strong> ——</p>
+<pre>卡上   她至少能【往回翻】,自己找出答过什么
+耳机里 声音过去就没了,【翻不回去】⇒ 她只能靠记忆</pre>
+<p>⚠️ 而 §5.2 已定「<strong>一开始全给</strong>」,长会话里条目会很多。<br>⇒ <strong>「她答过哪些」这件事,在耳机里没有任何视觉锚点。</strong></p>
+<p><strong>这一格 ⬜ 的内容</strong>:</p>
+<ul><li>它要不要在念之前说一句「这条你上次说过先放着」?</li><li>她说过的处置,下一轮播报里要不要<strong>自动跳过</strong>(还是仍然念、只是带上「你已经处理过」)?</li></ul>
+<p>⚠️ <strong>成色:这是 Runner 从卡的缺陷推到产品上的,她没说过。</strong></p>
+<h4>🔴 但这两问<strong>归「等她用起来」,不归「等她答」</strong>【HL 2026-08-19 纠正的归类】</h4>
+<blockquote><p><strong>她冷着答不出来。</strong> 现在问,只会得到一个<strong>她自己也不确信的答案</strong> ——<br><strong>而那个答案会被当成决定写进去。</strong></p></blockquote>
+<p>⇒ <strong>和 §6.2(存活信号间隔)同一类</strong>:<strong>她戴上耳机跑几次真会话之后,才知道自己想要哪种。</strong></p>
+<p><strong>什么算等到了</strong>:<strong>她真用过几次之后自己说</strong>,或者用出来之后我们带着具体场景再问。<br>⛔ <strong>现在不要把它塞进卡里问她。</strong></p>
+<p>📎 <strong>这条归类的意义大于这一格</strong>:<strong>「她还没答」和「她现在答不了」是两种待办</strong> ——<br>前者该去问,后者去问反而有害。<strong>分错类的代价是:把一个不确信的答案固化成规格。</strong></p>
+<p>📎 与 §5.3 的关系:§5.3 是<strong>她主动说「这个不用告诉我」</strong>(改的是<strong>类别</strong>);<br>本节是<strong>同一条东西她已经处理过了</strong>(改的是<strong>这一条</strong>)。<strong>别合并。</strong></p>
+<hr></div></details>
+<details><summary>8. 成功指标(<strong>骨架,不编数字</strong>)</summary><div class="mdbody"><blockquote><p>⚠️ <strong>本节刻意不给数字</strong> —— 数字要等她用过(§3.2「先能改,再谈改成多少」)。</p></blockquote>
+<table>
+<tr><td>要衡量的</td><td>为什么是它</td></tr>
+<tr><td><strong>她在不看屏幕的时段里,还能不能推进事情</strong></td><td>这是 FLY-546 就写下的验收标准:「<strong>Annie 戴耳机离屏、一段真实工作流全程语音推进</strong>」</td></tr>
+<tr><td><strong>她有没有因为「没听到」而漏掉本该她拍的事</strong></td><td>对应 §3.2 她怕的那一边</td></tr>
+<tr><td><strong>她能不能分辨「真没事」和「它挂了」</strong></td><td>对应 §5.4</td></tr>
+<tr><td><strong>她说完一句之后要等多久</strong></td><td>对应「还得等你」;⬜ 阈值待定</td></tr>
+<tr><td><strong>转错人 / 转错单的发生率与发现时延</strong></td><td>对应 §5.5 / §6.3</td></tr>
+</table>
+<hr>
+<h4>8.1 🔴 能用什么量、不能用什么量</h4>
+<p><strong>⛔ 不许用「开始说话」这类事件日志来量首声延迟。</strong><br><strong>理由</strong>:§3.1d 要求下行常开流(一直送静音)⇒ <strong>在服务端眼里它一直在说话</strong>,<br><strong>那个事件不再指示真正的声音何时出现。</strong><br><strong>✅ 只能量录下来的音频波形</strong>(量法见 §6.4:按文件自身峰值往下 25dB 定阈值)。</p>
+<blockquote><h4>🔑 <strong>更一般的一条,必须留着</strong>:</h4>
+<p><strong>那条让产品成立的常开流前提,同时把一个现成的测量手段废掉了。</strong><br>⇒ <strong>本 PRD 里任何「靠事件日志量」的验收口径,都要先确认那个事件在常开流下还有没有意义。</strong></p></blockquote>
+<h4>8.2 🔴 为什么本节一个阈值都不写 —— <strong>一条原则,不是三条借口</strong></h4>
+<p>📎 <strong>来源:C 线(FLY-1851),逐字</strong>:</p>
+<blockquote><p><strong>凡是「我们打算改掉的条件」下量出来的数,都不能拿去定阈值 —— 阈值会比条件活得久。</strong></p></blockquote>
+<p><strong>本单三处都是它的实例</strong>:</p>
+<table>
+<tr><td>数</td><td>它是在什么条件下量的</td><td>而我们打算改掉那个条件</td></tr>
+<tr><td><strong>9.6 秒</strong> 先应一声</td><td>成因未拆(模型固有 / 我们的实现)</td><td>要拆开、要优化实现</td></tr>
+<tr><td><strong>57.9 秒</strong> 干等</td><td><strong>v2、无 ack filler</strong></td><td>正在焊 v3</td></tr>
+<tr><td><strong>≥101 秒</strong> 未自发开口</td><td>同上,且<strong>被她打断截断</strong></td><td>同上</td></tr>
+</table>
+<p>⇒ <strong>三条收成一句:这些数是用来判方向的,不是用来定验收线的。</strong><br>⚠️ <strong>阈值一旦写进去,会在条件被改掉之后继续被人当标准引用。</strong></p>
+<h5>🔴 <strong>2026-08-20 晚更正:上表第三栏【全部失效】,而结论只有部分跟着变</strong></h5>
+<blockquote><h4><strong>失效原因</strong>:第三栏三格里有两格写的是「<strong>正在焊 v3 / 同上</strong>」——</h4>
+<h4><strong>而 v3 已经出局</strong>(§6.5)。<strong>那个「我们打算改掉的条件」不会发生了。</strong></h4></blockquote>
+<p><strong>逐行重判(⛔ 旧表不删,按规矩 19 留在上面)</strong>:</p>
+<table>
+<tr><td>数</td><td>新的处置</td><td>为什么</td></tr>
+<tr><td><strong>9.6 秒</strong> 先应一声</td><td>⛔ <strong>退役,不再是候选阈值</strong></td><td><strong>它是 v3 的数</strong>,而 v3 不用了 —— <strong>不是「不能定阈值」,是【它已经不描述我们要交付的东西】</strong></td></tr>
+<tr><td><strong>57.9 秒</strong> 干等</td><td>⚠️ <strong>仍然不能定阈值,但【理由换了】</strong></td><td>旧理由「正在焊 v3」已失效;<strong>新理由</strong>:我们打算<strong>把那条 7.8 秒的 commentary 送出去</strong>(§6.4.0b)⇒ <strong>它量的仍然是一个我们打算改掉的条件</strong></td></tr>
+<tr><td><strong>≥101 秒</strong> 未自发开口</td><td>⚠️ <strong>同上,理由同换</strong></td><td>且它<strong>被她打断截断</strong>这条限制不变</td></tr>
+</table>
+<blockquote><h4>🔑 <strong>这是本文第三次出现同一个形状,它已经够格当一条检查项了</strong>:</h4>
+<h4><strong>前提一变,先查【结论】的人会漏掉【理由】</strong> ——</h4>
+<h4><strong>而理由失效之后,结论会以一个【已经不存在的根据】继续站着。</strong></h4>
+<p><strong>本文的三个实例</strong>:§6.5【2】闲置超时 · §6.2 那半小时 · 本表第三栏。<br>⇒ <strong>动作</strong>:<strong>回扫的时候不要只问「这条结论还对吗」,要问「撑着它的那句话还在吗」。</strong></p></blockquote>
+<h5>⚠️ 但这条原则有适用边界 —— <strong>不带它会退化成「永远别定阈值」的懒惰借口</strong></h5>
+<p>📎 <strong>来源:C 线(FLY-1851)</strong></p>
+<pre>它管的      「条件将被改变」的数       ⇒ 别定阈值
+它不管的    「条件不会变、但样本不够」的数 ⇒ 【该继续采样】,不是拒绝定阈值</pre>
+<p>⇒ <strong>两者的处置完全相反</strong>:前者是<strong>等条件稳定</strong>,后者是<strong>多量几次</strong>。<br><strong>把后者也拿这条挡掉,就是拿一条正确的原则偷懒。</strong></p>
+<hr></div></details>
+<details><summary>9. Non-goals</summary><div class="mdbody"><ul><li>多人语音会议(<strong>归 C / FLY-1851</strong>)</li><li><strong>会议 Topic 理解</strong> —— 那属于 <strong>1851(会议模式)</strong>;<strong>本单是随身语音</strong>,⛔ <strong>不要搬回本单</strong></li><li>重新设计它怎么判断优先级(<strong>归 A / FLY-1846,已定稿</strong>)</li><li>多用户 / 权限分层</li><li><strong>为语音单独造一套防错机制</strong>(§5.5:她明确说不是语音特有的问题)</li></ul>
+<h4>9.1 🔴 2026-08-20 她当天否掉的两条 —— <strong>记决定,不记理由</strong>(判据 §0.2c)</h4>
+<table>
+<tr><td>她否掉的</td><td>状态</td></tr>
+<tr><td><strong>我们自己做掉线重连</strong></td><td>⛔ <strong>不许写成待办,也不许写成候选方案</strong></td></tr>
+<tr><td><strong>给 Codex 提 issue</strong></td><td>⛔ <strong>不许写成待办</strong></td></tr>
+</table>
+<blockquote><h4>⚠️ <strong>两条都是 founder 决定,不是「暂缓」。</strong></h4>
+<p>⛔ <strong>不许在 §6.5 那条 v3 风险旁边把重连重新提出来</strong> —— <strong>那正是它最可能被复活的位置。</strong></p></blockquote>
+<p>📎 <strong>按 §0.2c,她给这两条的理由不入库。</strong><br><strong>这不是嫌理由不好,是因为把她的理由写成 finding,会让它变成一条没人能再挑战的前提。</strong></p>
+<hr></div></details>
+<details><summary>10. Open questions</summary><div class="mdbody"><table>
+<tr><td>#</td><td>问题</td><td>在谁那儿</td></tr>
+<tr><td>1</td><td>~~B4 兜底怎么发现~~ ✅ <strong>她答了:先跑一阵,有问题再修</strong>(§6.3)。剩下「很多次是多少」</td><td><strong>等她用起来</strong></td></tr>
+<tr><td>2</td><td>~~时延:说完之后多久有回应~~ ✅ <strong>她答:马上,而且她 expect Codex 原生已 handle</strong>(§6.4)。剩下「9.6 秒够不够快」</td><td><strong>等她用起来</strong></td></tr>
+<tr><td>3</td><td>~~打断体感~~ 🔄 <strong>2026-08-24 她裁了</strong>:<strong>打断交给工程实施时判定</strong>(能做就做,很难就算了)<br>⇒ <strong>能做就没有这个问题;做不了再回来问她</strong></td><td><strong>工程实施时判定</strong></td></tr>
+<tr><td>4</td><td>~~用嘴批 ship 到 Raya 这儿还算不算数~~ ✅ <strong>她答:yes</strong>(§5.7)</td><td>(已结)</td></tr>
+<tr><td>8</td><td>~~Codex 语音能力在 CLI 上能不能用~~ ✅ <strong>1911 实测答了:能力可达、不限 App,但今天没有面向用户的入口</strong>(§3.1c)</td><td>(已结)</td></tr>
+<tr><td>5</td><td>并发:半小时量级 + 真实编排(§7.3)</td><td><strong>工程实测</strong></td></tr>
+<tr><td>7</td><td>长会话里她怎么知道哪些已处理过(§7.5)</td><td><strong>等她用起来</strong> —— 冷着答不出来,现在问会得到不确信的答案</td></tr>
+<tr><td>6</td><td>founder 优先通道要不要做(§7.3)</td><td><strong>工程 + 她</strong></td></tr>
+<tr><td>9</td><td>~~载体:要不要投 v3~~ ✅ <strong>她拍了:用 v2</strong>(§6.5,同条件对照 8死0活 vs 8活0死)</td><td>(已结)</td></tr>
+<tr><td>10</td><td>🔄 <strong>拆成两格</strong>(2026-08-24):①<strong>【现在】v3 起不来</strong> = 上游拒 <code>session.model</code> ✅ 已定案,锚 <strong>FLY-2021</strong> ②<strong>【当时】33–35 秒被切</strong> = ⬜ <strong>仍未定案</strong>,且<strong>暂时查不了</strong>(握手已被拒,现象复现不了)<br>⛔ <strong>FLY-2021 不解释 ②</strong></td><td>① <strong>Tadashi</strong>;② <strong>等上游修好才有机会</strong></td></tr>
+<tr><td>11</td><td>✅ <strong>音色三半都定了</strong>:①<strong>等待音音色 = B</strong>(她验的)②<strong>agent 音色分配</strong>:她 8-21 已给表(alloy→Honey Lemon · marin→主管 Lead · verse→Tadashi;其余 7 个<strong>未选</strong>)③<strong>「换男生」= 规则</strong>(男性 Lead 用男声),⛔ 不是待选</td><td>(已结)</td></tr>
+<tr><td>12</td><td>~~问她「不看屏幕时靠什么让你知道」~~ ✅ <strong>她答了</strong>:「<strong>我当然是希望我完全不需要看文字就知道在发生什么</strong>」⇒ §6.4.0b 定成刚需</td><td>(已结)</td></tr>
+<tr><td>15</td><td>🔴 <strong>持续等待音会不会【干扰它听她说话】</strong> —— ⚠️ 已量的那半是「不会盖住<strong>它说话</strong>」,<strong>这半没量</strong></td><td><strong>1911 / 工程实测</strong></td></tr>
+<tr><td>16</td><td>~~状态显示现在做还是等 PRD 定稿~~ ✅ <strong>她答:两件都做</strong> —— <strong>PRD 里正常写;原型那个小改动 1911 直接做</strong></td><td>(已结)</td></tr>
+<tr><td>17</td><td>🔴 <strong>podcast 场景下的三个产品问题</strong> ✅ <strong>她答了:nope,不测</strong> ⇒ <strong>带着这个洞定稿</strong><br>✅ 必须写成:<strong>本单依赖的那个场景(她同时在听别的东西)【未被测试 —— 她明确选择不测】</strong><br>❌ ⛔ <strong>不许写成</strong>「已评估」/「不可行」/「已排除」</td><td>(她决定,⛔ 非评估)</td></tr>
+<tr><td>18</td><td><strong>放她自己的音乐</strong> ✅ <strong>2026-08-24 她裁了:记录为「暂时不做」</strong><br>⚠️ <strong>「暂时」这个词要留住</strong> —— 它带着可重开;⚠️ <strong>而且它仍然【一次都没被评估过】</strong>(她提出后 15 秒自行收回,未见我方意见)<br>⇒ ⛔ <strong>不许把「暂时不做」读成「评估过之后不做」</strong></td><td>(已结,<strong>她的决定</strong>⛔ 非评估)</td></tr>
+<tr><td>13</td><td>✅ <strong>她 8-24 逐条裁了</strong>:换男声 <strong>做</strong> —— ⚠️ <strong>它是一条规则</strong>(男性 Lead 用男声),<strong>不是一格待选</strong>(§6.5)· 打断 <strong>交工程实施时判定</strong> · 控制她的电脑 <strong>做</strong> · 权限跨会话保持 <strong>做</strong></td><td>(已结)</td></tr>
+<tr><td>14</td><td>~~1911 那个「音频是不是触发它」的实验跑不跑~~ ✅ <strong>2026-08-24 她裁了:不跑</strong><br>📌 <strong>规格已写死,留在原处</strong> —— 以后要重开,不用重新设计</td><td>(已结,<strong>她定</strong>)</td></tr>
+<tr><td>19</td><td>~~把它写好的那句念出来~~ ⛔ <strong>她试过后决定不做</strong>(2026-08-20 17:48)—— <strong>听觉那端改由等待音满足</strong></td><td>(已结,<strong>她的决定</strong>⛔ 非评估)</td></tr>
+<tr><td>20</td><td>⬜ <strong>换一个【好嗓子】来念那句话</strong> —— <strong>她砍的是 macOS 合成音那个嗓子的效果,不是这条路</strong></td><td><strong>未追求</strong> —— ⛔ <strong>不是已否决</strong>;要重开归她</td></tr>
+<tr><td>21</td><td>✅ <strong>Lead Memory · Agent File</strong> —— <strong>两条需求已定并写满</strong>(§6.7),各带一行已有证据</td><td>(已结)</td></tr>
+<tr><td>22</td><td>⬜ <strong>她进房时房里要已经有人</strong>(§6.8)—— 原型是等真人进房才 join</td><td><strong>改形状,⛔ 不是 bug</strong></td></tr>
+<tr><td>23</td><td>⬜ <strong>出去再进来不能失忆</strong>(§6.8)—— 二次进房那一格原型没实现</td><td><strong>改形状,⛔ 不是 bug</strong></td></tr>
+</table>
+<hr></div></details>
+<details><summary>11. Build issues</summary><div class="mdbody"><p>⚠️ <strong>本 PRD 不预拆 build 子单</strong> —— 按 Annie 2026-07-09 的规矩:<br><strong>交付 = Epic + 清楚的 PRD,拆活归工程。</strong><br>(A 那单早前建的四张子单后来全部 Canceled,B 不重犯。)</p>
+<p>📌 <strong>PM 验收 = 未来 FLY-830,本单不做。</strong></p>
+<h4>11.1 🔴 <strong>2026-08-20 晚:一处待解冲突 —— 我没有自己选边</strong></h4>
+<p><strong>HL 2026-08-20 晚</strong>:「<strong>build issues 可以开始拆,但只拆已定的</strong>」,并给了判据和两个 ⛔ 格。<br><strong>而本节上面记着的是</strong>:<strong>Annie 2026-07-09 的规矩 —— 交付 = Epic + 清楚的 PRD,拆活归工程</strong>,<br><strong>且 A 那单早前建的四张子单后来全部 Canceled。</strong></p>
+<blockquote><h4>⇒ <strong>两条指向不同,而其中一条是 founder 规矩。⛔ 我不替谁选,已上报 HL。</strong></h4></blockquote>
+<h5>✅ <strong>已裁决(2026-08-20 晚):不拆。Epic + PRD 交出去。</strong></h5>
+<p><strong>HL 撤回了「可以开始拆」那句,原话留档(规矩 19:自我推翻要显式)</strong>:</p>
+<blockquote><p>「<strong>我撤回『可以开始拆』那句…我没有权力用一句『可以拆』去改她的规矩,<br>而且我根本没意识到我在改它。</strong>」</p></blockquote>
+<blockquote><h4>📌 <strong>这一格要留档,因为它是一个会重犯的形态</strong>:</h4>
+<h4><strong>Lead 的一句顺口指令,和 founder 立过的规矩冲突时,【规矩优先】——</strong></h4>
+<h4><strong>而 Lead 通常不会记得自己在跟规矩打架,因为他只是在回答一个眼前的问题。</strong></h4>
+<p>⇒ <strong>所以顶回来问一句是对的,⛔ 不算过度 gatekeep。</strong></p></blockquote>
+<p>⚠️ <strong>我倾向不拆,理由不是保守,是这条冲突有【非对称代价】</strong>:</p>
+<pre>问错了  ⇒ 多花一轮
+拆错了  ⇒ 重演一次已经发生过的失败(四张子单全部 Canceled)</pre>
+<h5>✅ <strong>但下面这些是【记录】不是【拆单】,和冲突无关,先落地</strong></h5>
+<h6>📌 HL 给的拆单判据(不管最后谁拆,这条都成立)</h6>
+<blockquote><h4><strong>一张 build issue 里如果需要填一个【我们还没有的答案】,那张就不拆。</strong></h4>
+<p><strong>拆了它会内嵌一个猜测,而拆完之后【没人会回头质疑它】。</strong></p></blockquote>
+<p>⇒ 配套(plan 红线 8 的老规矩):<strong>每张都要能独立验收,⛔ 不要拆出「做一半」的卡。</strong></p>
+<h6>⛔ 两格明确【不许拆】,标出来留着</h6>
+<table>
+<tr><td>不许拆的</td><td>为什么</td></tr>
+<tr><td><strong>状态显示【现在做还是等 PRD】</strong></td><td><strong>她没答</strong> —— 这是时机问题,不是内容问题</td></tr>
+<tr><td>~~<strong>提示音能不能做</strong>~~ 🔄 <strong>两次变形</strong></td><td>① 原写「1911 在核」—— <strong>其实已做出来、她也试用过</strong> ⇒ 不再是「能不能」<br>② <strong>2026-08-20 晚再变</strong>:<strong>她否的是【类别】不是音色</strong> ⇒ 现在是「<strong>持续的等待音</strong>是什么形态」,归她<br>⚠️ <strong>仍然【不许拆】</strong>,而且<strong>多了一个未验前提</strong>:持续放会不会盖住它开口(1911 在量)</td></tr>
+</table>
+<h6>📌 那一格的完整出处(2026-08-20 晚补,<strong>先前只有我的推断,现在有原话</strong>)</h6>
+<pre>她问        「提示音你确定可以做到吗 如果确定的话我们可以直接在 prototype 上面加试试」
+1911 答     「能,而且很便宜」—— 并【主动标成色】:这是读出来的,不是量出来的
+她说        「你先去加提示音吧」
+1911 做了    并用房里 bot 的录音验过(本底 0.0 → 峰值 4226)
+她试用后     「说实话还蛮奇怪的,就响一下然后就不响了」</pre>
+<blockquote><h4>⇒ <strong>那一格问的确实是「能不能」,现在已被事实回答:能。</strong></h4></blockquote>
+<p>⚠️ <strong>我先前担心的那个分支【不存在】</strong>:<br><strong>⛔ 从来没有任何一格在问「提示音在耳机里会不会盖住人声」</strong> —— 那件事没被提出过。</p>
+<blockquote><h4>🔄 <strong>2026-08-20 晚【收账】:这句话现在过期了。</strong></h4>
+<p><strong>她把「一声」改判成「持续的等待音」之后,那个问题【成了真问题】,1911 已在量</strong>(§6.4.2)。<br>⇒ ⛔ <strong>但不许把它读成「我当时是对的」</strong> —— <strong>我当时确实没有依据,而它现在成立是因为【问题的形状变了】,不是因为我预见到了。</strong></p></blockquote>
+<blockquote><h4>📌 <strong>但那处成色标记不因为我这次猜对了就作废</strong> ——</h4>
+<h4><strong>我当时手上确实没有这个出处。</strong></h4>
+<h4><strong>成色标得对不对,看的是【当时有没有依据】,不看【结论对不对】。</strong></h4></blockquote>
+<h6>📎 已定、可交付的部分(⚠️ 这是<strong>内容清单</strong>,不是子单)</h6>
+<table>
+<tr><td>已定</td><td>出处</td></tr>
+<tr><td><strong>载体 = v2</strong></td><td>§6.5</td></tr>
+<tr><td><strong>v2 上没有先应一声</strong>(8/8 实测 + 阳性对照)</td><td>§6.4.2</td></tr>
+<tr><td><strong>打断在 v2 上大概率不存在</strong>(从回合制推)</td><td>§6.5「一」</td></tr>
+<tr><td><strong>听觉通道 = 刚需</strong>(她原话为据)</td><td>§6.5「三」/ §6.4.0b</td></tr>
+<tr><td><strong>状态显示的【形态】</strong>:文字频道 listening / 双方转写 / 断线一行(回归,非新需求)</td><td>§6.5「三」</td></tr>
+<tr><td><strong>第 7.8 秒那句文字 → 聊天框</strong>(⛔ <strong>「念出来」那个出口她已砍</strong>,2026-08-20 17:48)</td><td>§6.4.0b / §6.4.2</td></tr>
+<tr><td><strong>主线口径</strong>:不是「逼它说话」,是「把它已经说了的话送到你耳朵里」</td><td>§6.4.2</td></tr>
+<tr><td><strong>三档方案按可靠性排</strong></td><td>§6.4.2</td></tr>
+<tr><td><strong>复述兜底</strong>:动手前念专名和编号</td><td>§5.6</td></tr>
+</table>
+<p>⛔ ~~「念出来」那条的代价 HL 正在量~~ 🔄 <strong>已作废:她 2026-08-20 17:48 决定不做这一档</strong>(§6.4.2)。</p>
+<h4>11.2 ✅ <strong>Epic 级交付声明</strong> —— 工程接手时<strong>先读这一段</strong></h4>
+<blockquote><h4><strong>B 是什么</strong>:她不看屏幕的时候(开车、做家务、戴着耳机),</h4>
+<h4><strong>它把该她知道的事念给她听;她说话,它转达给对的 lead。</strong></h4>
+<h4><strong>Discord 原有行为完全不变 —— 语音是【叠加】,不是替代。</strong></h4></blockquote>
+<h5>🔑 交出去的时候,这四条最容易被读丢</h5>
+<table>
+<tr><td>#</td><td>必须一起交的</td></tr>
+<tr><td><strong>1</strong></td><td><strong>载体是 v2,而且它【已知】少两样她喜欢的</strong>:先应一声(✅ 8/8 实测没有)· 打断(🔶 从回合制推)<br>⇒ <strong>这是一次拿它们换连接稳定性的交换,⛔ 不是降级也不是&quot;以后补上&quot;</strong></td></tr>
+<tr><td><strong>2</strong></td><td><strong>听觉通道是【刚需】不是可选</strong>(她原话为据)—— <strong>文字频道那套不能顶替它</strong></td></tr>
+<tr><td><strong>3</strong></td><td><strong>补口的材料【已经在 v2 上实测存在】</strong>:第 7.8 秒有一句现成中文,她 21.8 秒才听到第一个音<br>⇒ <strong>不是能力问题</strong>;⛔ <strong>但「所以很容易」没人量过</strong></td></tr>
+<tr><td><strong>4</strong></td><td><strong>⛔ 一个阈值都没有,这是【故意的】</strong>(§8.2)—— <strong>不许有人来问&quot;验收线是多少&quot;就随手填一个</strong></td></tr>
+</table>
+<h5>⬜ 交出去时<strong>仍然开着</strong>的(⛔ 不许当成漏写)</h5>
+<table>
+<tr><td>开着的</td><td>在谁那儿</td></tr>
+<tr><td>~~提示音 / 等待音形态~~ ✅ <strong>已收</strong>:连续等待音成立,音色 B「更疏更慢-最安静」,状态行不带段名标签</td><td>(已结,她验的)</td></tr>
+<tr><td>~~状态行放哪她才看得见~~ ✅ <strong>已收</strong>:<strong>必须跟着对话流往下走</strong>(⛔ 推翻了「原地改一条消息、不刷屏」)</td><td>(已结,她验的)</td></tr>
+<tr><td>~~状态显示现在做还是等定稿~~ ✅ <strong>她答:两件都做</strong>(PRD 正常写 + 原型小改动 1911 直接做)</td><td>(已结)</td></tr>
+<tr><td>🔴 <strong>持续等待音会不会【干扰它听她说话】</strong></td><td><strong>1911 / 工程</strong> —— ⚠️ 已量的只有「不会盖住它说话」那半</td></tr>
+<tr><td>~~「换男声」换成哪个~~ ✅ <strong>不是待选,是规则</strong>:男性 Lead 用男声(§6.5)—— agent 音色分配她 8-21 已给表(§6.6)</td><td>(已结)</td></tr>
+<tr><td>~~「念出来」那条的代价~~ ✅ <strong>已作废</strong> —— <strong>她决定不做这一档</strong>(⛔ 不是「行不通」)</td><td>(已结)</td></tr>
+<tr><td><strong>并发:半小时量级 + 真实编排</strong></td><td><strong>没做</strong>(⛔ 不是被阻塞,见 §7.3)</td></tr>
+<tr><td>~~她自发要的四件做不做~~ ✅ <strong>她 8-24 逐条裁了</strong>(§6.5)</td><td>(已结)</td></tr>
+<tr><td>🔴 <strong>podcast 场景未被测试</strong> —— <strong>她明确选择不测</strong>(⛔ 不是「已评估」/「不可行」/「已排除」)</td><td>(她决定)—— ⚠️ <strong>带着这个洞定稿,交接时必须一起交</strong></td></tr>
+<tr><td><strong>放她自己的音乐</strong></td><td><strong>从未被评估过</strong> —— ⛔ <strong>不是被否掉的</strong></td></tr>
+<tr><td><strong>Lead Memory · Agent File</strong></td><td>✅ <strong>两条需求已定、写满</strong>(§6.7)—— ⛔ <strong>本 PRD 不规定实现方式</strong></td></tr>
+<tr><td><strong>她进房时房里要已经有人 · 出去再进来不能失忆</strong></td><td><strong>改形状,⛔ 不是 bug</strong>(§6.8)</td></tr>
+<tr><td><strong>长会话里她怎么知道哪些已处理过 · 存活信号间隔 · 等一轮那条税她忍不忍得了</strong></td><td><strong>等她用起来</strong></td></tr>
+</table>
+<h4>11.3 📎 <strong>跨单指针:语音测试房</strong> —— ⛔ <strong>正文不在本单</strong></h4>
+<blockquote><h4><strong>正文归 C 线</strong>:<code>product/doc/FLY-1851-.../prd.md</code> 的 <strong>R-48 / R-49</strong>。</h4>
+<p><strong>本单只留指针,⛔ 不设计实现(几个 channel、怎么起桥,都不在这里定)。</strong></p></blockquote>
+<h5>它为什么和本单有关</h5>
+<blockquote><h4><strong>B 的测试也要有一个【不干扰】的房。</strong></h4></blockquote>
+<p><strong>她戴耳机跟它说话这件事要被 QA 测,而测的时候不能占用她或 runner 正在用的房。</strong></p>
+<h5>已定的四点(⛔ 逐字,别改措辞)</h5>
+<table>
+<tr><td></td><td></td></tr>
+<tr><td><strong>要有专门的语音测试房</strong></td><td>类比 529 那个 text 测试房,<strong>QA 去那里测</strong></td></tr>
+<tr><td><strong>数量:她给的起步值是 3</strong></td><td>⛔ <strong>3 不是需求</strong></td></tr>
+<tr><td><strong>真正的判据</strong></td><td><strong>房间数 = 我们【愿意支持】的并发测试人数</strong>;<strong>超过就排队,而排队可接受、要写出来</strong></td></tr>
+<tr><td><strong>主 voice channel</strong></td><td><strong>归我们自用,⛔ 不是测试用</strong> —— <strong>她明说的,这是【保护】不是【新增】</strong></td></tr>
+</table>
+<h6>⚠️ 排队那条的措辞,<strong>她当场纠过一次</strong></h6>
+<pre>主会议房的串行   是【内在的】—— 同一时间本就只开一个会 ⇒ 那里【没有争用】
+测试房的争用     是【真的】</pre>
+<blockquote><h4>⛔ <strong>不许写成「多开房就不用排队」</strong> —— <strong>那句是 Lead 说错的,已从 C 线那份里拿掉。</strong></h4></blockquote>
+<p>📌 <strong>出处</strong>:<strong>2026-08-21 她提出</strong>,起因是<strong>当晚一次真实撞车</strong> ——<br><strong>Lead 把同一个房、同一分钟,许给了 runner 和她。</strong></p>
+<hr>
+<blockquote><h4>📌 <strong>读这份 PRD 的人先读 §0</strong> —— **它写了三种成色怎么分、什么该进这份文档、</h4>
+<h4>以及她的【决定】和她的【理由】为什么只有前者能当前提。**</h4></blockquote>
+<hr></div></details>
+<details><summary>12. 📎 附录:观察(<strong>背景信息,⛔ 不是约束</strong>)</summary><div class="mdbody"><blockquote><h4>⛔ <strong>本附录里的内容【不构成对实现方式的约束】。</strong></h4>
+<p><strong>放这里是因为数据本身是真的、工程可能用得上;</strong><br><strong>⛔ 它不该决定需求的大小</strong>(判据见 §0.2f)。</p></blockquote>
+<h4>12.1 语音侧启动上下文的一组数字</h4>
+<p><strong>产品侧 2026-08-23 读 <code>openai/codex</code> tag <code>rust-v0.148.0</code> 的 <code>realtime_conversation.rs</code> 得到的观察</strong>:</p>
+<pre>往 thread 里塞          73,354 字符
+语音侧 startup context  params.prompt + build_realtime_startup_context,预算 5,300 tokens
+                        └ Current Thread 1,200 / Recent Work 2,200 / Workspace 1,600
+逐字通道                realtime_start_instructions,上限 8,192,超了直接报错</pre>
+<blockquote><h4>⚠️ <strong>成色,⛔ 不许省</strong>:</h4>
+<h4><strong>这是【产品侧读源码】得到的观察,【未经工程复核】。</strong></h4>
+<p><strong>它是背景信息,不是对实现方式的约束。</strong></p></blockquote>
+<hr></div></details>
+<details><summary>13. 📌 版本记录</summary><div class="mdbody"><h4>v1.0（可交付定稿）— 2026-08-24 收口</h4>
+<blockquote><h4><strong>收口的含义</strong>:<strong>内容不再等她裁。</strong> ⛔ <strong>不等于「没有未决项」</strong>（读法见 §0.1 收口那一格）。</h4></blockquote>
+<p><strong>这一轮（2026-08-24）动了哪几格 —— 逐格列,⛔ 不写「全面更新」</strong>:</p>
+<table>
+<tr><td>#</td><td>哪一格</td><td>从什么 → 变成什么</td><td>成色</td></tr>
+<tr><td>1</td><td>§6.4「知道在发生什么」<strong>是否永久下调</strong></td><td>⬜ 她未表态 → <strong>要求继续成立 + 本形态算满足 ⇒ 结掉</strong></td><td>🔶 <strong>Lead 定向的读法</strong>（她原话只有「可以」一个词;定向依据是她同轮那句「对,他需要知道在发生什么,知道有谁在推进」;定向结果已回给她、她未反对）⛔ <strong>不是她逐字说的</strong></td></tr>
+<tr><td>2</td><td>📊 成色总表「等待音-only 可交付」那行</td><td>⛔ 不等于要求被永久下调（她未表态）→ <strong>这一格已结</strong>,并把 🔶 成色标在同一行</td><td>跟 #1 同</td></tr>
+<tr><td>3</td><td>§0.2 成色图例</td><td>新增 🔶 一行 —— <strong>不是硬结论 / Lead 定向的读法,她一纠正就作废</strong></td><td>体例</td></tr>
+<tr><td>4</td><td>§10 q14「1911 音频实验跑不跑」</td><td>⬜ 她定（Lead 倾向不跑）→ ✅ <strong>她裁了:不跑</strong>;规格留在原处</td><td>她裁的;记录是<strong>短语</strong>非逐字</td></tr>
+<tr><td>5</td><td>§10 q18「放她自己的音乐」</td><td>⛔ 不是被否掉的（归她）→ 加上 <strong>她 8-24 记录为「暂时不做」</strong>,同时<strong>保住「一次都没被评估过」</strong></td><td>同上;⛔ 「暂时」不许丢</td></tr>
+<tr><td>6</td><td>📊 成色总表「她决定不做」那一档</td><td>「放她自己的音乐（从未被评估过）」→ 补「<strong>暂时</strong>不做」</td><td>同上</td></tr>
+<tr><td>7</td><td>§0.1</td><td>加 <strong>2026-08-24 收口</strong> 一格:原段保留,声明「带空格的初版」这个状态已结束 + <strong>剩下的 ⬜ 分五类</strong> + 🔴 <strong>只有 q6 还剩她的一半</strong></td><td>体例</td></tr>
+<tr><td>8</td><td>上一轮已入库、本轮未再动</td><td>音色规则（男性 Lead 用男声）· 她 8-24 四件逐条裁决 · FLY-2021 拆两格 · 工程细节撤出 founder 面向层</td><td>（前一版）</td></tr>
+</table>
+<p><strong>逐处判过、判完【故意没改】的</strong>（⛔ 记下来,否则下次会被当成漏掉）:</p>
+<table>
+<tr><td>位置</td><td>为什么不改</td></tr>
+<tr><td>§6.4 那条 ⛔ <strong>不许写成「要求已永久改成:知道有在推进」</strong></td><td><strong>它不但仍成立,而且这次变强了</strong> —— 本轮定向的结论恰恰是「要求没变」</td></tr>
+<tr><td>另外 3 处「放她自己的音乐」（§6 两处 + §12 那张表）</td><td>那三处讲的是<strong>评估状态</strong>（「从未被评估过 / ⛔ 不是被否掉的」），<strong>她的「暂时不做」不改变这一点</strong></td></tr>
+<tr><td>§6.4「那一问原样留档」整块</td><td><strong>规矩 19:原句不删。</strong> 它记的是她答之前那个问题长什么样</td></tr>
+</table>
+<blockquote><h4>⚠️ <strong>一处必须交代的落差 —— ⛔ 不许省</strong>:</h4>
+<h4><strong>已经投给她的那一页 HTML 是【上一版】。</strong></h4>
+<p><strong>线上实测（2026-08-24 curl 那个托管 URL）</strong>:「她未表态」<strong>3 处</strong>、「永久下调」<strong>1 处</strong>;新裁决那两句（要求继续成立 / 这一格已结）<strong>0 处</strong>。<br><strong>页面是 2026-08-24 她裁决【之前】发布的;本轮改的是 <code>prd.md</code>,⛔ 我没有回头改那一页。</strong><br>⇒ <strong>⛔ 不许原地改一个已经交出去的页面</strong> —— 她可能正在上面写批注,改了会把批注孤立掉,<br><strong>而且改没改只有发页的人看得见。</strong><br>⇒ <strong>要不要重出一页、什么时候重出,是 Lead 的判断,不是我的。</strong></p></blockquote></div></details>
+</div>
+<div class="lbl">全文里有什么要改的?</div>
+<textarea data-k="s9" placeholder=""></textarea>
+</section>
+
+<div class="hero" style="border-left-color:var(--amber)">
+<b>⚠️ 写完请点下面的「一键汇总复制」,再贴回这条 issue 的 thread。</b><br>
+你在这个页面上写的字<b>不会自动传回来</b> —— 不贴回去我就收不到。
+</div>
+
+<textarea id="dump" readonly></textarea>
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1850-final-review-v1';
+  var MARK='\u3010\u9875\u9762\u610f\u89c1\u6c47\u603b\u3011FLY-1850';
+  var LIMIT=1800;
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.innerText.trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    try{
+      var raw=localStorage.getItem(KEY); if(!raw) return;
+      var d=JSON.parse(raw);
+      boxes.forEach(function(b){ if(d[b.dataset.k]) b.value=d[b.dataset.k]; });
+    }catch(e){}
+  }
+  function save(){
+    try{
+      var d={}; boxes.forEach(function(b){ if(b.value.trim()) d[b.dataset.k]=b.value; });
+      localStorage.setItem(KEY,JSON.stringify(d));
+    }catch(e){}
+  }
+  function build(){
+    var items=[];
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      items.push('\u25a0 '+title(b)+'\n'+v);
+    });
+    if(!items.length) return null;
+    var chunks=[], cur=MARK;
+    items.forEach(function(it){
+      var add='\n\n'+it;
+      if(cur.length+add.length>LIMIT && cur!==MARK){ chunks.push(cur); cur=MARK+add; }
+      else { cur+=add; }
+    });
+    chunks.push(cur);
+    if(chunks.length===1) return chunks[0];
+    return chunks.map(function(c,i){
+      return c.replace(MARK, MARK+'  ('+(i+1)+'/'+chunks.length+')');
+    }).join('\n\n\u2014\u2014\u2014\u2014 \u5206\u5757\uff0c\u8bf7\u5206\u522b\u590d\u5236 \u2014\u2014\u2014\u2014\n\n');
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+  function fallback(text,why){
+    dump.style.display='block'; dump.value=text;
+    try{ dump.focus(); dump.select(); }catch(e){}
+    flag('\u274c \u590d\u5236\u5931\u8d25('+why+')\u2014\u2014 \u8bf7\u624b\u52a8\u5168\u9009\u4e0b\u9762\u90a3\u4e2a\u6846\u590d\u5236','bad');
+  }
+
+  boxes.forEach(function(b){ b.addEventListener('input',save); });
+  load();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('\u8fd8\u6ca1\u6709\u5199\u4efb\u4f55\u610f\u89c1','bad'); return; }
+    if(!navigator.clipboard || !navigator.clipboard.writeText){
+      fallback(text,'\u6d4f\u89c8\u5668\u6ca1\u6709\u526a\u8d34\u677f\u6743\u9650'); return;
+    }
+    flag('\u590d\u5236\u4e2d\u2026','');
+    navigator.clipboard.writeText(text).then(function(){
+      flag('\u2705 \u5df2\u590d\u5236 \u2014\u2014 \u8bf7\u8d34\u56de issue thread','good');
+    }).catch(function(err){
+      fallback(text,(err&&err.name)?err.name:'\u88ab\u6d4f\u89c8\u5668\u62d2\u7edd');
+    });
+  });
+
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; });
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    dump.style.display='none';
+    flag('\u5df2\u6e05\u7a7a','');
+  });
+})();
+</script>
+</body>
+</html>

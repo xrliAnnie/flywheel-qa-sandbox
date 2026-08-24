@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>随身语音(耳机模式)· 第 1 轮 —— 先聊,还没写 PRD</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;
+    --line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:900px;margin:0 auto;padding:20px 16px 120px}
+  h1{font-size:22.5px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:16.5px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.3px;margin-bottom:13px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14.2px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:15px 16px;margin:0 0 13px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  .item{border:1px solid var(--line);border-radius:10px;padding:11px 12px;margin:10px 0}
+  .item .t{font-weight:600;font-size:14.1px;color:var(--navy);margin-bottom:5px}
+  .row{font-size:13.3px;margin:5px 0}
+  .quote{border-left:3px solid var(--line);padding:2px 0 2px 10px;margin:6px 0;
+    color:#3a3a3c;font-size:13.2px}
+  table{border-collapse:collapse;width:100%;font-size:13.1px;margin:7px 0}
+  th,td{border-bottom:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.5px}
+  textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.3px;resize:vertical;
+    background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  textarea#dump{display:none;min-height:150px;margin-top:14px}
+  .lbl{font-size:12.3px;color:var(--dim);margin:9px 0 4px}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;
+    align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;
+    padding:10px 17px;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.8px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  .note{font-size:12.6px;color:var(--dim);margin-top:7px}
+  .opt{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px;background:#eef1f5;color:#4a5568}
+  .must{display:inline-block;font-size:11.2px;font-weight:700;padding:2px 7px;
+    border-radius:5px;margin-right:6px;vertical-align:1px;background:#fff4e3;color:#8a5200}
+  b.hl{background:#fffbe6;padding:0 3px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>随身语音(耳机模式)· 第 1 轮</h1>
+<div class="sub">2026-08-19 · 这一轮<b>一个字 PRD 都还没写</b></div>
+
+<div class="hero">
+<b>按你说的顺序来:先聊清楚,再说文档。</b><br>
+所以这张页面上没有 PRD 正文,只有三样东西 ——
+<b>我理解你要的是什么</b> · <b>我查现状查到了什么</b> · <b>我想先聊哪一格</b>。<br><br>
+<b class="hl">整页只有一个地方真的需要你回:最后那一问。</b>
+中间每一段都标了「可留空」——<b>看着顺就跳过去</b>,不用逐段回。
+</div>
+
+<section class="key">
+<h2>① 我理解你要的是什么</h2>
+<div class="row">你的原话(8-17):</div>
+<div class="quote">
+「我一直希望有一个所谓的<b>耳机模式</b>…我可能比如说在做一些加入啊什么时候,我也希望我可以继续去
+monitor 现在在发生的事情,然后如果有一些问题来问我的话,我就可以回答。那这个时候我大概率是
+<b>不会去看着我的电脑屏幕</b>的…但我希望的是,<b>他原来的 behavior 还是这样去做</b>…
+但是与此同时,<b>还加了一个语音模式</b>。」
+</div>
+<div class="row">我把它读成:你手上有别的事的时候,你和整个系统之间<b>只剩耳朵和嘴</b>这一条路。
+这条路上要跑完一整圈 ——</div>
+<div class="row" style="text-align:center;background:#f7f9fc;border-radius:8px;padding:9px">
+它知道现在怎么了 → <b>念给你听</b> → 你说一句 → <b>转成对某个人的准确指令</b> → 事情真的动了 → 结果回到你耳朵
+</div>
+<div class="row"><b>所以难的不是「会说话」,是这一圈的每一环都不能断 —— 断了你还得知道。</b></div>
+<div class="lbl">我理解错的话写这里 <span class="opt">可留空</span></div>
+<textarea data-k="a1" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>② 我查现状查到四件事 —— 有两件会改变这东西该长什么样</h2>
+
+<div class="item">
+<div class="t">1. 「耳机模式」其实已经建了一大半了</div>
+<div class="row">七月建过一次(那时叫 FLY-546),<b>整套「怎么念、怎么让你插话、怎么把你的话发出去」的规矩都在</b>:</div>
+<div class="row">先念标题 · 正文太长就只念前两句再问你「要听全文吗」 · <b>你一开口它就停嘴</b> ·
+你说完它<b>先复述一遍「我转告:某某某,发吗?」你点头才真发</b> ·
+批 ship 要先留一条书面回执、<b>你不吭声不算同意</b> · 断线给 60 秒,回来接着刚才那条。</div>
+<div class="row"><b>也就是说:这些细节不用从零想,已经有一版摆在那儿了。</b></div>
+</div>
+
+<div class="item">
+<div class="t">2. 但缺的那一半,恰好是「你说话」</div>
+<div class="row">今天那套东西里,「你说的话」<b>只能是你在 Discord 里打字</b> —— 它其实没长耳朵。</div>
+<div class="row"><b class="hl">不过:能听的部件在隔壁是现成的、而且真的在跑</b>
+(一个收你电脑麦克风的、一个收 Discord 语音房的),<b>只是从来没接到这套上来过。</b></div>
+<div class="row"><b>⇒ 所以这件事的形状是「把两个现成的半边接起来」,不是「从头造一个」。</b>
+我第一版写成了「从头造」,被 Honey Lemon 当场纠正 —— 这两种说法的代价差得很远,所以特意跟你讲清楚。</div>
+<div class="row"><span class="opt">但我没量过</span>接起来到底要多少工。<b>所以我不会跟你说「很容易」。</b></div>
+</div>
+
+<div class="item">
+<div class="t">3. 这些东西今天<b>一个都没在跑</b></div>
+<div class="row">代码在仓库里,但没有任何一个进程活着,配置里也一处都没开。<b>「建过」和「今天能用」是两回事。</b></div>
+</div>
+
+<div class="item">
+<div class="t">4. 一件我觉得你应该知道的事(<b>不是反对你的决定</b>)</div>
+<div class="row">你定用 Codex 的时候,给的理由是:<b>「因为这样它就已经具备可以说话的能力了」</b>。</div>
+<div class="row">我查了那条能力今天验到哪一步:<b>只验到「电话能拨通」</b> —— 线路接上了、对面真的应答了。
+<b class="hl">但它至今没说过一句话</b>:音质、快不快、你插话它会不会让、讲久了断不断,<b>一条都还没试过</b>。</div>
+<div class="row">反过来,<b>今天唯一被你真人点过头的语音管线是另一家的</b>(七月那个 <code>/gemini</code>,你当时说「一来一回正常」)。</div>
+<div class="row"><b>我不是建议换。</b> 我只是不想让「它已经会说话」这句话在没人核的情况下,
+悄悄变成后面所有文档里默认成立的前提 —— 那样以后就没人敢质疑它了。</div>
+</div>
+
+<div class="lbl">这一段有什么想说的 <span class="opt">可留空</span></div>
+<textarea data-k="b1" placeholder=""></textarea>
+</section>
+
+<section class="hot">
+<h2>③ 我还发现「总管」那份定稿里有一处自相矛盾</h2>
+<div class="row">同一份文档里,两处写反了:</div>
+<table>
+<tr><th>写在哪</th><th>写的是</th><th>有没有来龙去脉</th></tr>
+<tr><td>第 6 节</td><td><b>会</b>主动开口(你当时圈的 c:有事就说 + 兜底节奏)</td><td>✅ 选项、你的回答、前后交叉引用<b>都在</b></td></tr>
+<tr><td>第 8.7 节</td><td><b>永不打断</b></td><td>❌ <b>只有孤零零一行</b>,当时问了什么、给了哪几个选项,<b>整份文档里都找不到</b></td></tr>
+</table>
+<div class="row">Honey Lemon 独立复查后判:<b>按第 6 节走</b>(那条有完整出处,不该被一条没出处的推翻)。</div>
+<div class="row"><b class="hl">但这件事可能影响的不只是语音 —— 是「总管」本身怎么做。</b>所以照原样告诉你,不替你定。</div>
+<div class="lbl">这一段有什么想说的 <span class="opt">可留空</span></div>
+<textarea data-k="c1" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>④ 我打算跟你聊的六格,和每格现在的状态</h2>
+<table>
+<tr><th>要聊的</th><th>已经有答案的部分</th><th>真正还没答的</th></tr>
+<tr><td><b>1 它什么时候出声</b></td><td>「总管」那边已经定了:有事就说 + 兜底节奏</td>
+<td><b>耳朵里的「有事」要不要更严</b> —— 文字躺在那儿等你看,声音是直接推进你耳朵的</td></tr>
+<tr><td><b>2 它说什么、多细</b></td><td>「总管」定的是「一起想」不是「念现状」</td>
+<td>你举的例子是「现在 1836 到哪了」= <b>逐单进度</b>,和「只报走偏了的」是两种东西。<b>这格得你拍</b></td></tr>
+<tr><td><b>3 你插话怎么办</b></td><td>(没有)</td><td>整格。已有那版是「你一开口就停嘴」,但那不是你拍的</td></tr>
+<tr><td><b>4 你的话怎么落地</b></td><td>送到谁那儿已经有路了</td>
+<td><b>认错人 / 认错单的后果谁兜</b> —— 你自己点名的,也是最贵的一格</td></tr>
+<tr><td><b>5 哪些不能用嘴拍</b></td><td>见下面第 ⑤ 节 —— 比我原以为的窄很多</td><td>一句确认就够</td></tr>
+<tr><td><b>6 出错了你怎么知道</b></td><td>(没有)</td><td>整格。重点是<b>你怎么知道</b>,不是系统怎么自己恢复</td></tr>
+</table>
+<div class="lbl">顺序或者内容想调的话写这里 <span class="opt">可留空</span></div>
+<textarea data-k="d1" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>⑤ 第 5 格我先查过了,可能一句话就能过</h2>
+<div class="row">我本来以为「能不能用嘴批 ship」是个大问题,查完发现<b>比我想的窄</b>:</div>
+<div class="row">系统里<b>早就有一条语音批准的路,而且默认是开着的</b> ——
+代码注释里写着这个默认<b>是你自己拍的</b>。</div>
+<div class="row">而且那条路<b>没有绕过你</b>:得先留下一条书面回执 → 核对这条消息真的对应某个 ship → 核对说话的是不是你本人 → 才算数;
+<b>你不吭声就是不算同意</b>。</div>
+<div class="row"><b>⇒ 所以它和「ship 仍然要你点头」并不打架 —— 它就是「你点头」的另一个入口。</b></div>
+<div class="row"><b class="hl">要问你的只有一句:这条路已经存在、默认开着、而且记在你名下 —— 到了 Raya 这儿还算不算数?</b></div>
+<div class="lbl">回一句就行 <span class="opt">可留空,留空我就当还算数,下一轮再确认</span></div>
+<textarea data-k="e1" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>⑥ 我不确定的地方(摊开讲)</h2>
+<div class="row">• <b>我现在没有一个我自己满意的答案</b>,关于「它到底该复用七月那套、还是让 Raya 自己长一张嘴」。
+两条路各有各的代价,我列得出代价,但<b>列不出哪条更值</b> —— 因为接线成本我没量过。</div>
+<div class="row">• 所以我<b>不打算专门开一轮问你选哪条</b>。它会在第 1 格或第 4 格自然撞出来,到时候我连代价一起摆给你。</div>
+<div class="row">• 七月那套东西「建了」是真的,但<b>四条能力里只有一条你真机点过头</b>,开会那条你真机试过两次都没成。
+所以我把它当<b>素材</b>,不当<b>资产</b>。</div>
+<div class="lbl">这段有什么想说的 <span class="opt">可留空</span></div>
+<textarea data-k="f1" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>⑦ <span class="must">唯一要你回的</span> 我想先聊第 1 格 —— 但这里有我的私心,先说明</h2>
+<div class="row"><b>我想先聊「它什么时候出声」。</b> 理由是:第 2、3 格都建在它上面,它不定,后面两格没地基。</div>
+<div class="row"><b class="hl">但我得跟你说明白:这个顺序对我更省事。</b>
+你要是觉得先聊第 4 格(你说一句话怎么变成对的人手上的对的活)更要紧,<b>那完全合理</b> ——
+那格才是这件事真正难的地方,先啃它也说得通。<b>顺序你定。</b></div>
+<div class="row" style="margin-top:10px;background:#f7f9fc;border-radius:8px;padding:11px">
+<b>要问你的那一句:</b><br><br>
+<b>「它到底会不会在你没问的时候主动开口?」</b><br>
+—— 以及,<b>这一格你有定见,还是我来发挥?</b>
+</div>
+<div class="note">📌 <b>这一问你可能已经在 thread 里看到过了</b> —— Honey Lemon 先用聊天发给过你。
+这里不是重问一遍,是<b>把背景补全</b>(上面 ②③ 那些你还没在一个地方看全过),
+并且把它和第 ③ 节那处矛盾放在一起给你。<b>问题本身没变。</b></div>
+<div class="lbl">回这里 <span class="must">这一格希望你回</span></div>
+<textarea data-k="g1" placeholder="先聊哪一格 / 这格你有定见还是我来发挥"></textarea>
+</section>
+
+<section>
+<h2>⑧ 其它任何想说的</h2>
+<div class="lbl"><span class="opt">可留空</span></div>
+<textarea data-k="z1" placeholder=""></textarea>
+</section>
+
+<div class="hero" style="border-left-color:var(--amber)">
+<b>⚠️ 写完请点下面的「一键汇总复制」,再<b>贴回这条 issue 的 thread</b>。</b><br>
+你在这个页面上写的字<b>不会自动传回来</b> —— 不贴回去我就收不到。
+</div>
+
+<textarea id="dump" readonly></textarea>
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY='fly1850-round1-v1';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var it=el.closest('.item');
+    if(it){var t=it.querySelector('.t'); if(t) return t.innerText.trim();}
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.innerText.trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    try{
+      var raw=localStorage.getItem(KEY); if(!raw) return;
+      var d=JSON.parse(raw);
+      boxes.forEach(function(b){ if(d[b.dataset.k]) b.value=d[b.dataset.k]; });
+    }catch(e){}
+  }
+  function save(){
+    try{
+      var d={}; boxes.forEach(function(b){ if(b.value.trim()) d[b.dataset.k]=b.value; });
+      localStorage.setItem(KEY,JSON.stringify(d));
+    }catch(e){}
+  }
+  function build(){
+    var out=['【随身语音(耳机模式)· 第 1 轮 —— 我的意见】',''];
+    var n=0;
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      n++; out.push('■ '+title(b)); out.push(v); out.push('');
+    });
+    if(!n) return null;
+    return out.join('\n').trim();
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+
+  boxes.forEach(function(b){ b.addEventListener('input',save); });
+  load();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('还没有写任何意见','bad'); return; }
+    flag('复制中…','');
+    (async function(){
+      try{
+        if(!navigator.clipboard || !navigator.clipboard.writeText){
+          throw new Error('no clipboard api');
+        }
+        await navigator.clipboard.writeText(text);
+        flag('✅ 已复制 —— 请贴回 issue thread','good');
+      }catch(err){
+        dump.style.display='block';
+        dump.value=text;
+        dump.focus(); dump.select();
+        flag('❌ 复制失败 —— 请手动全选下面这个框复制','bad');
+      }
+    })();
+  });
+
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; });
+    try{ localStorage.removeItem(KEY); }catch(e){}
+    dump.style.display='none';
+    flag('已清空','');
+  });
+})();
+</script>
+</body>
+</html>
