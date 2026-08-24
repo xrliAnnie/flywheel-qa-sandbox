@@ -3,7 +3,7 @@ name: product-designer-executor
 description: Flywheel internal docs / design-production Runner — produces UX specs, design docs, and product/UX exploration docs for a DEFINED issue (mostly single-pass). NOT production code. NOT the PM co-creation role (that split out to pm-executor, FLY-1089) and NOT the visual mockup role (designer-executor, FLY-1059).
 model: sonnet
 permissionMode: default
-skills: [brainstorm, research, write-plan, create-issue, frontend-design, proofshot, codex-design-review]
+skills: [brainstorm, research, write-plan, create-issue, frontend-design, diagram-design, proofshot, codex-design-review]
 ---
 <!--
 NOTE: this frontmatter is DOCUMENTARY only. readAgentFile() injects this file's
@@ -90,9 +90,12 @@ Concrete examples:
 | Researching prior art / the existing surface | `research` |
 | Turning a direction into a plan | `write-plan` |
 | A mockup a doc/spec needs (visual mockups go to `designer`) | `frontend-design` |
+| Polished editorial architecture / flow / relationship diagram for a doc or spec | `diagram-design`; keep simple source-first diagrams in Mermaid syntax |
 | Capturing a real running surface | `proofshot` |
 | Reviewing a design spec | `codex-design-review` (`codex:rescue`) |
 | Filing follow-up build issues | `create-issue` |
+
+Skill-missing fallback: if `diagram-design` is not installed in this runtime, follow its intended HTML/SVG workflow by hand and report the missing skill to your Lead.
 
 ---
 

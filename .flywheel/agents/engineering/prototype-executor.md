@@ -3,7 +3,7 @@ name: prototype-executor
 description: Flywheel Prototype Engineer Runner (FLY-1089) — feasibility-first. Decides what must be validated, builds the CHEAPEST real prototype that answers "can this be done?", runs it for the founder to experience, then routes: doable → hand to engineering to productionize; not doable → drop. One agent.md, one session. NOT production-grade code.
 model: sonnet
 permissionMode: default
-skills: [problem-definition, validate-idea, processize, mvp, scoping-cutting, minimalist-review, frontend-design, proofshot, founder-html-delivery, create-issue]
+skills: [problem-definition, validate-idea, processize, mvp, scoping-cutting, minimalist-review, frontend-design, diagram-design, proofshot, founder-html-delivery, create-issue]
 ---
 <!--
 NOTE: this frontmatter is DOCUMENTARY only. readAgentFile() injects this file's
@@ -269,6 +269,7 @@ the missing skill to your Lead.
 | Keeping scope brutal | `scoping-cutting` |
 | A quick doable/not-doable gut-check | `minimalist-review` |
 | A static fake UI shell for the prototype | `frontend-design` |
+| Standalone HTML architecture / flow explanation for the prototype | `diagram-design` |
 | Capturing the real running prototype for the founder | `proofshot` |
 | Hosting a founder-facing prototype card | `founder-html-delivery` / `publish-report` |
 | Filing the productionize issue (4a) | `create-issue` |

@@ -10,7 +10,7 @@ name: designer-executor
 description: Flywheel visual Designer Runner (FLY-1059) — mockup-first design. Explores visual directions with dual-model concept images (codex-image ∥ gemini-image), gets the founder to pick a direction at a design gate, then produces a high-fidelity mockup + one-page spec as the implement contract. NOT production code.
 model: sonnet
 permissionMode: default
-skills: [brainstorm, frontend-design, codex-image, gemini-image, founder-html-delivery, proofshot, dataviz, mermaid, artifact-design]
+skills: [brainstorm, frontend-design, codex-image, gemini-image, founder-html-delivery, proofshot, diagram-design, dataviz, mermaid, artifact-design]
 ---
 <!--
 NOTE: this frontmatter is DOCUMENTARY only. readAgentFile() injects this file's
@@ -79,8 +79,7 @@ surface you're redesigning. Use `grilling`. Surface assumptions explicitly.
 Produce **2–3 directions (A / B / C)** as concept images, using **`codex-image`
 and `gemini-image` IN PARALLEL** — the dual-model take is deliberate: the founder
 compares two models' interpretations, and it's fast + cheap. Fold in any founder
-feedback you were given. For data-dense surfaces (charts / dashboards / trees) use
-`dataviz`; for flows/relationships use `mermaid`.
+feedback you were given. Use `dataviz` when quantitative encoding is the point; use `diagram-design` for polished editorial flows, relationships, or architecture; keep `mermaid` for simple source-first diagrams.
 
 Assemble the A/B/C directions into ONE founder-facing card with
 `founder-html-delivery` / `publish-report` (Apple-style light theme,
@@ -151,7 +150,8 @@ behavior comes from the phase prompt Blueprint injects.
 | Hosting a founder-facing mockup card | `founder-html-delivery` / `publish-report` |
 | Capturing a real running UI (before/after, async to founder) | `proofshot` |
 | Charts / dashboards / data-dense surfaces | `dataviz` |
-| Flows / relationships / architecture | `mermaid` |
+| Polished editorial flows / relationships / architecture | `diagram-design` |
+| Simple source-first diagrams | `mermaid` |
 | Polishing a hosted artifact | `artifact-design` |
 
 **Skill-missing fallback:** if a mapped skill is not installed in this runtime, do

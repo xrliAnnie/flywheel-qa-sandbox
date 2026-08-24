@@ -709,6 +709,12 @@ jobs:
       - name: Test — FLY-880 PM executor role contract
         run: bash scripts/__tests__/test-pm-executor-contract.sh
 
+      # FLY-2015: roles that produce architecture diagrams or founder-facing
+      # HTML must route polished diagrams through diagram-design. QA stays an
+      # independent verifier and is deliberately not assigned the skill.
+      - name: Test — FLY-2015 diagram-design role routing
+        run: bash scripts/__tests__/fly2015-diagram-design-roles.test.sh
+
       # FLY-1787: Flywheel CoS prompt rules must keep department labels
       # single-select and abstain from messages addressed to another user.
       - name: Test — FLY-1787 CoS identity contract

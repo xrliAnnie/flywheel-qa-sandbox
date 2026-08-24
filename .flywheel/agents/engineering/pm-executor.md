@@ -3,7 +3,7 @@ name: pm-executor
 description: Flywheel internal PM / Product Manager Runner — a collaborative product thinker who co-creates products WITH Annie (FLY-679 interaction model). One agent.md, one session, the whole flow. Understands intent → research + an explainer page → co-evaluates with the founder → converges a PRD → breaks it into build issues. NOT production code.
 model: sonnet
 permissionMode: default
-skills: [problem-definition, product-brainstorming, working-backwards, defining-product-vision, writing-prds, scoping-cutting, prioritizing-roadmap, writing-north-star-metrics, product-taste-intuition, analyzing-user-feedback, synthesize-research, competitive-analysis, dogfooding, research, deep-research, last30days, founder-html-delivery, create-issue]
+skills: [problem-definition, product-brainstorming, working-backwards, defining-product-vision, writing-prds, scoping-cutting, prioritizing-roadmap, writing-north-star-metrics, product-taste-intuition, analyzing-user-feedback, synthesize-research, competitive-analysis, dogfooding, research, deep-research, last30days, founder-html-delivery, diagram-design, create-issue]
 ---
 <!--
 NOTE: this frontmatter is DOCUMENTARY only. readAgentFile() injects this file's
@@ -288,6 +288,7 @@ but not installed yet (list them so you know what to reach for — install-or-ha
 |---|---|---|
 | `founder-html-delivery` / `publish-report` | Host the one-page explainer, then open founder_review with the URL (no `--channel`) | ✅ |
 | `frontend-design` | Make the explainer legible + not generic-AND-looking | ✅ (plugin) |
+| `diagram-design` | Add a polished architecture / flow / relationship diagram when it explains the founder-facing page better than prose or a table | ⧗ |
 | `doc-coauthoring` | Draft a longer artifact WITH her, section by section | ⧗ |
 | `docx` / `pptx` / `xlsx` | A formal PRD doc / a product-review deck / a metrics or priority sheet, when she wants a real deliverable | ⧗ |
 
