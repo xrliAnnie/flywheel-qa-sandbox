@@ -37,6 +37,7 @@ function runtimeStoreStub(
 		listDeadLetterAlertCursors: () => [],
 		createDeadLetterAlertIntent: vi.fn(),
 		listDueDeadLetterAlerts: () => [],
+		listUndeliveredWorkflowReplacementLeadEvents: () => [],
 	};
 }
 
@@ -55,6 +56,68 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("FLY-2018: admit redrives a committed replacement event and duplicate scans stay quiet", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2018-redrive-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const payload = {
+			event_type: "workflow_replacement_eligibility",
+			execution_id: "exec-1",
+			issue_id: "FLY-2018",
+			project_name: "project-a",
+			workflow_event_id: "workflow-replacement-eligibility:run:node:1:exec-1:1",
+			next_check_at: "2026-08-24T00:14:00.000Z",
+			next_check_disposition: "replacement_candidate",
+			blind_replacements: 0,
+			max_blind_replacements: 3,
+		};
+		store.appendLeadEvent(
+			"lead-a",
+			payload.workflow_event_id,
+			payload.event_type,
+			JSON.stringify(payload),
+			"wf:run",
+		);
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, {
+			type: "commdb",
+			renderEnvelope: (envelope) => JSON.stringify(envelope.event),
+			deliver: async () => ({ delivered: false }),
+			sendBootstrap: async () => {},
+			health: () => ({ healthy: true }),
+			shutdown: async () => {},
+		});
+		let ticks = 0;
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry,
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2018",
+			runLegacyCutover: () => {},
+			afterTickStartedForLead: async () => {
+				ticks += 1;
+			},
+			adapterForLead: () => ({
+				async deliverBatch() {
+					throw new LeadDeliveryUnavailableError("lead", "offline");
+				},
+			}),
+		});
+		runtimes.push(runtime);
+		runtime.start();
+		const deliveryId = `lead_event:lead-a:${payload.workflow_event_id}`;
+		await vi.waitFor(() =>
+			expect(
+				runtime.getLeadEventSettlement("project-a", deliveryId).kind,
+			).not.toBe("missing"),
+		);
+		await new Promise<void>((resolve) => setTimeout(resolve, 100));
+		expect(ticks).toBeLessThan(6);
+		expect(store.getLeadEventBySeq(1)?.delivered_at).toBeUndefined();
+		store.close();
+	});
+
 	it("keeps post-boot Lead mail live when the current roster recognizes the recipient", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1773-current-roster-"));
 		const dbPath = join(root, "project-a.db");

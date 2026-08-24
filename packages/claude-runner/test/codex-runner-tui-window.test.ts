@@ -39,6 +39,8 @@ describe("ensureSessionWithRetry", () => {
 				return {
 					status: attempts === 3 ? 0 : 4,
 					stdout: attempts === 3 ? "" : `hold ${attempts}`,
+					signal: null,
+					terminated: null,
 				};
 			},
 			sleep: (ms) => {
@@ -65,7 +67,12 @@ describe("ensureSessionWithRetry", () => {
 		const result = ensureSessionWithRetry({
 			spawn: (_cmd, _args, options) => {
 				timeouts.push(options.timeout);
-				return { status: 4, stdout: "held" };
+				return {
+					status: 4,
+					stdout: "held",
+					signal: null,
+					terminated: null,
+				};
 			},
 			sleep: (ms) => {
 				now += ms;
@@ -80,6 +87,32 @@ describe("ensureSessionWithRetry", () => {
 		});
 		expect(result).toBe(false);
 		expect(timeouts).toEqual([2_000, 1_500, 500]);
+	});
+
+	it("FLY-2018: sync helper success with anomalous exit requires bounded re-verification", () => {
+		const reverifyTimeouts: number[] = [];
+		const result = ensureSessionWithRetry({
+			spawn: () => ({
+				status: null,
+				stdout: '{"action":"verified","reachablePid":6234}',
+				signal: "SIGTERM",
+				terminated: null,
+			}),
+			reverifySession: ({ timeoutMs }) => {
+				reverifyTimeouts.push(timeoutMs);
+				return true;
+			},
+			sleep: () => {},
+			now: () => 0,
+			deadlineMs: 8_000,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+		});
+
+		expect(result).toBe(true);
+		expect(reverifyTimeouts).toEqual([5_000]);
 	});
 });
 
@@ -102,6 +135,8 @@ describe("ensureSessionWithRetryAsync", () => {
 				return {
 					status: attempts === 3 ? 0 : 5,
 					stdout: attempts === 3 ? "" : `hold ${attempts}`,
+					signal: null,
+					terminated: null,
 				};
 			},
 			sleep: async (ms) => {
@@ -131,7 +166,12 @@ describe("ensureSessionWithRetryAsync", () => {
 		const result = await ensureSessionWithRetryAsync({
 			spawn: async (_cmd, _args, options) => {
 				timeouts.push(options.timeout);
-				return { status: 4, stdout: "held" };
+				return {
+					status: 4,
+					stdout: "held",
+					signal: null,
+					terminated: null,
+				};
 			},
 			sleep: async (ms) => {
 				now += ms;
@@ -147,9 +187,116 @@ describe("ensureSessionWithRetryAsync", () => {
 		expect(result).toBe(false);
 		expect(timeouts).toEqual([2_000, 1_500, 500]);
 	});
+
+	it("accepts a signalled helper success only after the session is re-verified", async () => {
+		let now = 0;
+		const reverifyTimeouts: number[] = [];
+		const result = await ensureSessionWithRetryAsync({
+			spawn: async () => ({
+				status: null,
+				stdout: '{"action":"verified","reachablePid":6234}',
+				signal: "SIGTERM",
+				terminated: null,
+			}),
+			reverifySession: async ({ timeoutMs }) => {
+				reverifyTimeouts.push(timeoutMs);
+				return true;
+			},
+			sleep: async (ms) => {
+				now += ms;
+			},
+			now: () => now,
+			deadlineMs: 5_000,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+		});
+
+		expect(result).toBe(true);
+		expect(reverifyTimeouts).toEqual([5_000]);
+	});
+
+	it("logs a run-ended helper abort as cancellation instead of a rescue hold", async () => {
+		const controller = new AbortController();
+		const logs: string[] = [];
+		const result = await ensureSessionWithRetryAsync({
+			spawn: async () => {
+				controller.abort("run-ended");
+				return {
+					status: null,
+					stdout: '{"action":"verified","reachablePid":6234}',
+					signal: "SIGTERM",
+					terminated: "abort",
+				};
+			},
+			sleep: async () => {},
+			now: () => 0,
+			log: (message) => logs.push(message),
+			deadlineMs: 5_000,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+			signal: controller.signal,
+		});
+
+		expect(result).toBe(false);
+		expect(logs.join(" ")).toContain(
+			"cancelled (run-ended) after helper output verified",
+		);
+		expect(logs.join(" ")).not.toContain(" held ");
+	});
+
+	it("FLY-2018: abort during re-verification wins over a successful probe", async () => {
+		const controller = new AbortController();
+		const result = await ensureSessionWithRetryAsync({
+			spawn: async () => ({
+				status: null,
+				stdout: '{"action":"verified","reachablePid":6234}',
+				signal: "SIGTERM",
+				terminated: null,
+			}),
+			reverifySession: async () => {
+				controller.abort("run-ended");
+				return true;
+			},
+			sleep: async () => {},
+			now: () => 0,
+			deadlineMs: 5_000,
+			attemptCapMs: 2_000,
+			cliPath: "/tmp/tmux-server-rescue",
+			socket: "/tmp/tmux/default",
+			session: "flywheel",
+			signal: controller.signal,
+		});
+
+		expect(result).toBe(false);
+	});
 });
 
 describe("spawnCommandAsync", () => {
+	it("reports an externally signalled child without calling it an internal termination", async () => {
+		const result = await spawnCommandAsync(
+			process.execPath,
+			[
+				"-e",
+				'setTimeout(() => process.kill(process.pid, "SIGTERM"), 20); setInterval(() => {}, 1000)',
+			],
+			{
+				stdio: ["ignore", "pipe", "ignore"],
+				encoding: "utf8",
+				timeout: 5_000,
+			},
+		);
+
+		expect(result).toMatchObject({
+			status: null,
+			signal: "SIGTERM",
+			terminated: null,
+		});
+	});
+
 	it("preserves complete stdout for callers that parse multi-line command output", async () => {
 		const result = await spawnCommandAsync(
 			process.execPath,
@@ -181,6 +328,7 @@ describe("spawnCommandAsync", () => {
 				},
 			);
 			expect(result.status).toBeNull();
+			expect(result.terminated).toBe("timeout");
 			// Promise settlement must happen after the child actually closes, not merely
 			// after SIGTERM is sent, or adapter late-cleanup can race a late tmux commit.
 			expect(existsSync(proof)).toBe(true);
@@ -202,7 +350,10 @@ describe("spawnCommandAsync", () => {
 			},
 		);
 		controller.abort();
-		await expect(pending).resolves.toMatchObject({ status: null });
+		await expect(pending).resolves.toMatchObject({
+			status: null,
+			terminated: "abort",
+		});
 
 		await expect(
 			spawnCommandAsync("flywheel-command-that-does-not-exist", [], {
@@ -894,7 +1045,11 @@ describe("fail-open logging + kill result", () => {
 		const msgs: string[] = [];
 		killRunnerTuiWindow(
 			{ tmuxSession: "flywheel", windowName: "FLY-1188" },
-			{ exec: () => ({ ok: false }), log: (m) => msgs.push(m) },
+			{
+				exec: () => ({ ok: false }),
+				execOut: () => undefined,
+				log: (m) => msgs.push(m),
+			},
 		);
 		expect(msgs.join(" ")).toContain("non-ok");
 		expect(msgs.join(" ")).not.toContain("killed (");
@@ -902,6 +1057,26 @@ describe("fail-open logging + kill result", () => {
 });
 
 describe("killRunnerTuiWindow", () => {
+	it("downgrades a non-ok kill to already-gone only when a re-list proves absence", () => {
+		const logs: string[] = [];
+		killRunnerTuiWindow(
+			{
+				tmuxSession: "flywheel",
+				windowName: "FLY-1188",
+				windowId: "@7",
+			},
+			{
+				exec: () => ({ ok: false }),
+				execOut: () => "@3 zsh",
+				log: (message) => logs.push(message),
+			},
+		);
+
+		expect(logs).toEqual([
+			"runner-tui-window: kill skipped — window already gone (FLY-1188)",
+		]);
+	});
+
 	it("kills the identity-scoped window", () => {
 		const r = recorder();
 		killRunnerTuiWindow(

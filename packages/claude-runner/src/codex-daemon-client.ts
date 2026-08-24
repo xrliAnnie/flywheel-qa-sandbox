@@ -107,6 +107,12 @@ export interface GoalRunResult {
 	turns: number;
 	/** True only for a clean `complete`. */
 	succeeded: boolean;
+	/** Terminal error from the latest owned turn, when independently attributable. */
+	lastTurnError?: {
+		turnId: string;
+		message: string;
+		code?: string;
+	};
 }
 
 export interface GoalPhaseHold {
@@ -511,14 +517,14 @@ export class CodexDaemonClient {
 		text: string,
 		timeoutMs?: number,
 		clientUserMessageId?: string,
-	): Promise<void> {
+	): Promise<string | undefined> {
 		if (
 			clientUserMessageId !== undefined &&
 			clientUserMessageId.trim().length === 0
 		) {
 			throw new TypeError("clientUserMessageId must not be empty");
 		}
-		await this.request(
+		const response = await this.request(
 			"turn/start",
 			{
 				threadId,
@@ -527,6 +533,7 @@ export class CodexDaemonClient {
 			},
 			timeoutMs,
 		);
+		return extractTurnId(response.result);
 	}
 
 	close(): void {
@@ -696,6 +703,80 @@ export async function runGoalToTerminal(
 	}
 
 	const turnIds = new Set<string>();
+	const ownedTurnIds = new Set<string>();
+	let lastTurnError: GoalRunResult["lastTurnError"];
+	let pendingTurnDispatch:
+		| { notifications: Array<{ method: string; params: unknown }> }
+		| undefined;
+	const applyOwnedTurnCompletion = (params: unknown): void => {
+		const completion = extractTurnCompletion(params);
+		if (!completion || !ownedTurnIds.has(completion.turnId)) return;
+		if (completion.status === "completed" && !completion.error) {
+			lastTurnError = undefined;
+			return;
+		}
+		if (completion.error) {
+			lastTurnError = {
+				turnId: completion.turnId,
+				message: completion.error.message,
+				...(completion.error.code ? { code: completion.error.code } : {}),
+			};
+		}
+	};
+	const observeTurnNotification = (method: string, params: unknown): void => {
+		if (
+			(method !== "turn/started" && method !== "turn/completed") ||
+			notificationThreadId(params) !== input.threadId
+		) {
+			return;
+		}
+		if (pendingTurnDispatch) {
+			if (pendingTurnDispatch.notifications.length >= 64) {
+				pendingTurnDispatch.notifications.shift();
+				client.logDiagnostic(
+					"turn dispatch notification buffer reached 64 entries; oldest diagnostic dropped",
+				);
+			}
+			pendingTurnDispatch.notifications.push({ method, params });
+			return;
+		}
+		if (method === "turn/completed") applyOwnedTurnCompletion(params);
+	};
+	const beginTurnDispatch = (): void => {
+		pendingTurnDispatch = { notifications: [] };
+	};
+	const abortTurnDispatch = (): void => {
+		pendingTurnDispatch = undefined;
+	};
+	const claimTurnDispatch = (responseTurnId: string | undefined): void => {
+		const pending = pendingTurnDispatch;
+		pendingTurnDispatch = undefined;
+		if (!pending) return;
+		const startedTurnId = pending.notifications
+			.filter((event) => event.method === "turn/started")
+			.map((event) => extractTurnId(event.params))
+			.find((turnId): turnId is string => typeof turnId === "string");
+		const claimedTurnId = responseTurnId ?? startedTurnId;
+		if (!claimedTurnId) {
+			client.logDiagnostic(
+				"turn/start supplied no independently attributable turn id; error capture disabled for this dispatch",
+			);
+			return;
+		}
+		ownedTurnIds.add(claimedTurnId);
+		for (const event of pending.notifications) {
+			const eventTurnId = extractTurnId(event.params);
+			if (eventTurnId !== claimedTurnId) {
+				client.logDiagnostic(
+					`ignored unclaimed ${event.method} for turn ${eventTurnId ?? "unknown"}`,
+				);
+				continue;
+			}
+			if (event.method === "turn/completed") {
+				applyOwnedTurnCompletion(event.params);
+			}
+		}
+	};
 	let latestTokens = 0;
 	let terminalSeen: GoalStatus | null = null;
 	let gateHoldActive = false;
@@ -721,6 +802,7 @@ export async function runGoalToTerminal(
 	client.setEvents({
 		onNotification: (method, params) => {
 			events?.onNotification?.(method, params);
+			observeTurnNotification(method, params);
 			// R19 HIGH-1: only count turns for OUR thread (a daemon can host
 			// multiple threads; a stray notification must not inflate the count).
 			// R24 MEDIUM: and only AFTER our goal is armed — a prior goal's turn
@@ -872,11 +954,13 @@ export async function runGoalToTerminal(
 		if (!phase || !phaseHold) return false;
 		phase.markWakeStarted(message.id);
 		try {
-			await client.startTurn(
+			beginTurnDispatch();
+			const turnId = await client.startTurn(
 				input.threadId,
 				`[phase-wake ${message.id}] ${message.content}`,
 				phaseControlRpcTimeoutMs,
 			);
+			claimTurnDispatch(turnId);
 			// Clear a complete emitted by the paused wake turn BEFORE active; a
 			// notification emitted by the active transition remains authoritative.
 			terminalSeen = null;
@@ -893,6 +977,7 @@ export async function runGoalToTerminal(
 				/* budget carry callback must not break activation */
 			}
 		} catch (error) {
+			abortTurnDispatch();
 			if (client.isClosed()) {
 				failClose(
 					`daemon transport closed reactivating phase wake ${message.id}: ${error instanceof Error ? error.message : error}`,
@@ -1030,15 +1115,24 @@ export async function runGoalToTerminal(
 	};
 	const startInitialTurn = async (): Promise<void> => {
 		if (remainingBudget() <= 0) timedOut("before startTurn");
-		await client.startTurn(
-			input.threadId,
-			input.kickText ?? "Begin working toward the goal now.",
-			remainingBudget(),
-		);
+		beginTurnDispatch();
+		try {
+			const turnId = await client.startTurn(
+				input.threadId,
+				input.kickText ?? "Begin working toward the goal now.",
+				remainingBudget(),
+			);
+			claimTurnDispatch(turnId);
+		} catch (error) {
+			abortTurnDispatch();
+			throw error;
+		}
 	};
 	const resumeHeldGoal = async (): Promise<void> => {
 		// Native goal/set(active) resumes a paused goal. A concurrent turn/start
 		// races that automatic continuation and can duplicate a turn.
+		// It has no turn/start response, so no turn error can be attributed safely.
+		lastTurnError = undefined;
 		await activateGoal();
 		writeGateHold(false);
 	};
@@ -1330,6 +1424,7 @@ export async function runGoalToTerminal(
 			tokensUsed: latestTokens,
 			turns: turnIds.size,
 			succeeded: finalStatus === "complete",
+			...(finalStatus !== "complete" && lastTurnError ? { lastTurnError } : {}),
 		};
 	} finally {
 		// R21 MEDIUM: detach this run's listeners so late notifications can no
@@ -1357,6 +1452,59 @@ function extractTurnId(params: unknown): string | undefined {
 	if (typeof p.turnId === "string") return p.turnId;
 	if (p.turn && typeof p.turn.id === "string") return p.turn.id;
 	return undefined;
+}
+
+function extractTurnCompletion(params: unknown):
+	| {
+			turnId: string;
+			status?: string;
+			error?: { message: string; code?: string };
+	  }
+	| undefined {
+	if (typeof params !== "object" || params === null) return undefined;
+	const turn = (params as { turn?: unknown }).turn;
+	if (typeof turn !== "object" || turn === null) return undefined;
+	const record = turn as {
+		id?: unknown;
+		status?: unknown;
+		error?: unknown;
+	};
+	if (typeof record.id !== "string") return undefined;
+	const base = {
+		turnId: record.id,
+		...(typeof record.status === "string" ? { status: record.status } : {}),
+	};
+	if (record.error === null || record.error === undefined) return base;
+	if (typeof record.error !== "object") return undefined;
+	const error = record.error as {
+		message?: unknown;
+		codexErrorInfo?: unknown;
+		codex_error_info?: unknown;
+	};
+	if (typeof error.message !== "string") return undefined;
+	if (
+		(Object.hasOwn(error, "codexErrorInfo") &&
+			error.codexErrorInfo !== undefined &&
+			typeof error.codexErrorInfo !== "string") ||
+		(Object.hasOwn(error, "codex_error_info") &&
+			error.codex_error_info !== undefined &&
+			typeof error.codex_error_info !== "string")
+	) {
+		return undefined;
+	}
+	const code =
+		typeof error.codexErrorInfo === "string"
+			? error.codexErrorInfo
+			: typeof error.codex_error_info === "string"
+				? error.codex_error_info
+				: undefined;
+	return {
+		...base,
+		error: {
+			message: error.message,
+			...(code ? { code } : {}),
+		},
+	};
 }
 
 /** Pull a thread id out of the various result shapes the daemon returns. */

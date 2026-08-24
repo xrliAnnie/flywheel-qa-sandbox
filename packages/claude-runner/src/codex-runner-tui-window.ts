@@ -25,6 +25,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { withSyncOpMarker } from "./sync-op-marker.js";
 import { buildRunnerPaneEnvironmentPrefix } from "./TmuxAdapter.js";
+import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { buildTmuxServerBirthEnvironment } from "./tmux-server-environment.js";
 
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
@@ -196,6 +197,8 @@ function tmuxSocketPath(): string {
 type EnsureSessionSpawnResult = {
 	status: number | null;
 	stdout?: string | Buffer;
+	signal: string | null;
+	terminated: "timeout" | "abort" | null;
 };
 
 export interface EnsureSessionWithRetryOptions {
@@ -216,10 +219,18 @@ export interface EnsureSessionWithRetryOptions {
 	cliPath: string;
 	socket: string;
 	session: string;
+	reverifySession?: (input: {
+		socket: string;
+		session: string;
+		timeoutMs: number;
+	}) => boolean;
 }
 
 export interface EnsureSessionWithRetryAsyncOptions
-	extends Omit<EnsureSessionWithRetryOptions, "spawn" | "sleep"> {
+	extends Omit<
+		EnsureSessionWithRetryOptions,
+		"spawn" | "sleep" | "reverifySession"
+	> {
 	spawn: (
 		cmd: string,
 		args: string[],
@@ -232,6 +243,12 @@ export interface EnsureSessionWithRetryAsyncOptions
 	) => Promise<EnsureSessionSpawnResult>;
 	sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
 	signal?: AbortSignal;
+	reverifySession?: (input: {
+		socket: string;
+		session: string;
+		timeoutMs: number;
+		signal?: AbortSignal;
+	}) => Promise<boolean>;
 }
 
 /**
@@ -274,11 +291,30 @@ export function ensureSessionWithRetry(
 				timeout: Math.min(options.attemptCapMs, remaining),
 			});
 			if (result.status === 0) return true;
+			const helperSuccess = parseTmuxEnsureSuccess(result.stdout);
+			if (helperSuccess && options.reverifySession) {
+				const reverifyRemaining =
+					options.deadlineMs - (options.now() - startedAt);
+				if (
+					reverifyRemaining > 0 &&
+					options.reverifySession({
+						socket: options.socket,
+						session: options.session,
+						timeoutMs: Math.min(5_000, reverifyRemaining),
+					})
+				) {
+					safeLog(
+						options.log,
+						`runner-tui-window: guarded session ensure attempt ${attempt} succeeded despite exit anomaly (signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"}) — helper reported ${helperSuccess.action}, re-verified`,
+					);
+					return true;
+				}
+			}
 			const stdout = result.stdout?.toString().trim() ?? "";
 			const tail = stdout.length > 500 ? stdout.slice(-500) : stdout;
 			safeLog(
 				options.log,
-				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"})${tail ? `: ${tail}` : ""}`,
+				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"}, signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"})${tail ? `: ${tail}` : ""}`,
 			);
 		} catch (error) {
 			safeLog(
@@ -332,11 +368,43 @@ export async function ensureSessionWithRetryAsync(
 				...(options.signal ? { signal: options.signal } : {}),
 			});
 			if (result.status === 0) return true;
+			const helperSuccess = parseTmuxEnsureSuccess(result.stdout);
+			if (result.terminated === "abort" || options.signal?.aborted) {
+				safeLog(
+					options.log,
+					`runner-tui-window: guarded session ensure attempt ${attempt} cancelled (${abortCause(options.signal)}) after helper output ${helperSuccess?.action ?? "none"}`,
+				);
+				return false;
+			}
+			if (helperSuccess && options.reverifySession) {
+				const reverifyRemaining =
+					options.deadlineMs - (options.now() - startedAt);
+				if (reverifyRemaining > 0) {
+					let reverified = false;
+					try {
+						reverified = await options.reverifySession({
+							socket: options.socket,
+							session: options.session,
+							timeoutMs: Math.min(5_000, reverifyRemaining),
+							...(options.signal ? { signal: options.signal } : {}),
+						});
+					} catch {
+						// A failed diagnostic re-verification preserves the held path.
+					}
+					if (reverified && !options.signal?.aborted) {
+						safeLog(
+							options.log,
+							`runner-tui-window: guarded session ensure attempt ${attempt} succeeded despite exit anomaly (signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"}) — helper reported ${helperSuccess.action}, re-verified`,
+						);
+						return true;
+					}
+				}
+			}
 			const stdout = result.stdout?.toString().trim() ?? "";
 			const tail = stdout.length > 500 ? stdout.slice(-500) : stdout;
 			safeLog(
 				options.log,
-				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"})${tail ? `: ${tail}` : ""}`,
+				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"}, signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"})${tail ? `: ${tail}` : ""}`,
 			);
 		} catch (error) {
 			if (options.signal?.aborted) return false;
@@ -377,11 +445,17 @@ export function spawnCommandAsync(
 ): Promise<EnsureSessionSpawnResult> {
 	return new Promise((resolvePromise, rejectPromise) => {
 		if (options.signal?.aborted) {
-			resolvePromise({ status: null, stdout: "" });
+			resolvePromise({
+				status: null,
+				stdout: "",
+				signal: null,
+				terminated: "abort",
+			});
 			return;
 		}
 		let settled = false;
 		let terminationRequested = false;
+		let terminationKind: "timeout" | "abort" | null = null;
 		let stdout = "";
 		let child: ReturnType<typeof spawn>;
 		let forceKillTimer: NodeJS.Timeout | undefined;
@@ -400,9 +474,10 @@ export function spawnCommandAsync(
 			if (kind === "resolve") resolvePromise(value as EnsureSessionSpawnResult);
 			else rejectPromise(value);
 		};
-		const terminate = (): void => {
+		const terminate = (kind: "timeout" | "abort"): void => {
 			if (terminationRequested) return;
 			terminationRequested = true;
+			terminationKind = kind;
 			try {
 				child.kill("SIGTERM");
 			} catch {
@@ -417,8 +492,8 @@ export function spawnCommandAsync(
 			}, 1_000);
 			(forceKillTimer as { unref?: () => void }).unref?.();
 		};
-		const onAbort = (): void => terminate();
-		const timer = setTimeout(terminate, options.timeout);
+		const onAbort = (): void => terminate("abort");
+		const timer = setTimeout(() => terminate("timeout"), options.timeout);
 		(timer as { unref?: () => void }).unref?.();
 		try {
 			child = spawn(cmd, args, {
@@ -439,10 +514,12 @@ export function spawnCommandAsync(
 			// happen before termination is requested and are safe to reject directly.
 			if (!terminationRequested) settle("reject", error);
 		});
-		child.once("close", (status) =>
+		child.once("close", (status, signal) =>
 			settle("resolve", {
 				status: terminationRequested ? null : status,
 				stdout,
+				signal: signal ?? null,
+				terminated: terminationKind,
 			}),
 		);
 		options.signal?.addEventListener("abort", onAbort, { once: true });
@@ -471,6 +548,19 @@ function defaultEnsureSessionAsync(
 	const cli = join(homedir(), ".flywheel", "bin", "tmux-server-rescue");
 	return ensureSessionWithRetryAsync({
 		spawn: spawnCommandAsync,
+		reverifySession: async ({ socket, session, timeoutMs, signal }) => {
+			const result = await spawnCommandAsync(
+				"tmux",
+				["-S", socket, "has-session", "-t", `=${session}`],
+				{
+					stdio: ["ignore", "pipe", "ignore"],
+					encoding: "utf8",
+					timeout: timeoutMs,
+					...(signal ? { signal } : {}),
+				},
+			);
+			return result.status === 0 && !signal?.aborted;
+		},
 		sleep: defaultSleepAsync,
 		now: Date.now,
 		log,
@@ -976,6 +1066,34 @@ export function killRunnerTuiWindow(
 			? `=${spec.tmuxSession}:${spec.windowId}`
 			: `=${spec.tmuxSession}:=${spec.windowName}`;
 		const r = exec("tmux", ["kill-window", "-t", target]);
+		if (!r.ok) {
+			const execOut = deps.execOut ?? defaultExecOut;
+			let windows: Array<{ id: string; name: string }> | undefined;
+			try {
+				const out = execOut("tmux", [
+					"list-windows",
+					"-t",
+					`=${spec.tmuxSession}`,
+					"-F",
+					"#{window_id} #{window_name}",
+				]);
+				windows = out === undefined ? undefined : parseWindowList(out);
+			} catch {
+				windows = undefined;
+			}
+			const stillPresent = windows?.some((window) =>
+				spec.windowId
+					? window.id === spec.windowId
+					: window.name === spec.windowName,
+			);
+			if (windows && !stillPresent) {
+				safeLog(
+					deps.log,
+					`runner-tui-window: kill skipped — window already gone (${spec.windowName})`,
+				);
+				return;
+			}
+		}
 		safeLog(
 			deps.log,
 			r.ok

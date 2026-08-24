@@ -15,7 +15,6 @@ import {
 	type SkillFrameworkVia,
 	verifyRepositoryBaselineSet,
 } from "flywheel-config";
-import type { TerminalFailureInfo } from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -34,6 +33,7 @@ import {
 	type StateStore,
 	type WorkflowCompletionActivationContext,
 } from "../StateStore.js";
+import { normalizeTerminalFailureInfo } from "../terminal-failure-info.js";
 import { nodeRequiresFounderReview } from "../workflow-run-snapshot.js";
 import { handleArtifactEvent } from "./artifact-event.js";
 import type { ChatThreadCreator } from "./ChatThreadCreator.js";
@@ -97,6 +97,10 @@ import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
+import {
+	enqueueWorkflowReplacementLeadEvent,
+	resolveWorkflowReplacementLeadIntent,
+} from "./workflow-replacement-lead-event.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 // Re-export so existing callers (if any) keep working.
@@ -203,21 +207,6 @@ function asWorkflowCompletionActivation(
 		attempt: attempt!,
 		turnEpoch: turnEpoch!,
 	};
-}
-
-function asTerminalFailureInfo(v: unknown): TerminalFailureInfo | undefined {
-	if (!v || typeof v !== "object") return undefined;
-	const failure = v as Record<string, unknown>;
-	const failureKind = asString(failure.failureKind);
-	const failureReason = asString(failure.failureReason);
-	if (
-		(failureKind !== "goal_blocked" &&
-			failureKind !== "worktree_takeover_failed") ||
-		!failureReason
-	) {
-		return undefined;
-	}
-	return { failureKind, failureReason };
 }
 
 function formatNotification(session: Session, eventType: string): string {
@@ -1099,18 +1088,26 @@ export function createEventRouter(
 				event.execution_id,
 			);
 			if (generalized) {
-				const failure = asTerminalFailureInfo(event.payload?.failure);
+				const failure = normalizeTerminalFailureInfo(event.payload?.failure);
+				const leadIntent = resolveWorkflowReplacementLeadIntent({
+					projects,
+					run: generalized.run,
+					labels: store.getSessionLabels(event.execution_id),
+				});
 				const recorded = store.recordEnrolledTerminalSignal({
 					executionId: event.execution_id,
 					sourceEventId: event.event_id,
 					signal: "failed",
 					failureKind: failure?.failureKind,
+					failureClass: failure?.failureClass,
+					failureCode: failure?.failureCode,
 					lastError:
 						failure?.failureKind === "goal_blocked"
 							? failure.failureReason
 							: asString(event.payload?.error),
 					source:
 						typeof event.source === "string" ? event.source : "orchestrator",
+					...(leadIntent ? { leadIntent } : {}),
 				});
 				if (!recorded.ok) {
 					res.status(409).json({
@@ -1125,6 +1122,19 @@ export function createEventRouter(
 						await turnBeltReconciler?.current?.alertWorktreeTakeoverFailure(
 							failedSession,
 							failure.failureReason,
+						);
+					}
+				}
+				if (registry && recorded.leadEventSeq !== undefined) {
+					try {
+						enqueueWorkflowReplacementLeadEvent({
+							store,
+							registry,
+							seq: recorded.leadEventSeq,
+						});
+					} catch (error) {
+						console.warn(
+							`[event-route] replacement-eligibility enqueue failed for ${event.execution_id}: ${(error as Error).message}`,
 						);
 					}
 				}
@@ -2303,7 +2313,7 @@ export function createEventRouter(
 					}
 				}
 			} else if (event.event_type === "session_failed") {
-				const failure = asTerminalFailureInfo(payload.failure);
+				const failure = normalizeTerminalFailureInfo(payload.failure);
 				const goalBlocked = failure?.failureKind === "goal_blocked";
 				const terminalStatus = goalBlocked ? "blocked" : "failed";
 				const terminalError = goalBlocked
@@ -2851,7 +2861,7 @@ export function createEventRouter(
 		const session = store.getSession(event.execution_id);
 		const terminalFailure =
 			event.event_type === "session_failed"
-				? asTerminalFailureInfo(payload.failure)
+				? normalizeTerminalFailureInfo(payload.failure)
 				: undefined;
 		if (
 			terminalFailure?.failureKind === "worktree_takeover_failed" &&

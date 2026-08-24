@@ -97,6 +97,86 @@ function seedSession(store: StateStore, executionId: string, status: string) {
 }
 
 describe("FLY-1427 enrolled terminal signal immunity", () => {
+	it("FLY-2018: terminal failure metadata participates in replay equality", async () => {
+		const store = await StateStore.create(":memory:");
+		const { executionId } = createGeneralizedRun(store);
+		seedSession(store, executionId, "running");
+		const base = {
+			executionId,
+			sourceEventId: "teardown-fly2018",
+			signal: "failed" as const,
+			failureKind: "goal_blocked",
+			lastError: "refresh token revoked",
+			failureClass: "environment" as const,
+			failureCode: "codex:unauthorized",
+			source: "direct-event-sink",
+		};
+
+		expect(store.recordEnrolledTerminalSignal(base)).toMatchObject({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(
+			store.recordEnrolledTerminalSignal({
+				...base,
+				failureClass: undefined,
+				failureCode: undefined,
+			}),
+		).toEqual({ ok: false, reason: "terminal_signal_conflict" });
+		expect(store.getEventPayloadById(base.sourceEventId)).toEqual({
+			failureKind: "goal_blocked",
+			lastError: "refresh token revoked",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+		store.close();
+	});
+
+	it.each([
+		["classified-first", true],
+		["absent-first", false],
+	] as const)(
+		"FLY-2018: %s canonical classification never drifts on a later source event",
+		async (_label, classifiedFirst) => {
+			const store = await StateStore.create(":memory:");
+			const { executionId } = createGeneralizedRun(store);
+			seedSession(store, executionId, "running");
+			const loud = vi.spyOn(console, "error").mockImplementation(() => {});
+			const classified = {
+				failureClass: "environment" as const,
+				failureCode: "codex:unauthorized",
+			};
+			for (const [index, hasClassification] of [
+				classifiedFirst,
+				!classifiedFirst,
+			].entries()) {
+				expect(
+					store.recordEnrolledTerminalSignal({
+						executionId,
+						sourceEventId: `canonical-${index}`,
+						signal: "failed",
+						failureKind: "goal_blocked",
+						lastError: "blocked",
+						...(hasClassification ? classified : {}),
+						source: "direct-event-sink",
+					}),
+				).toMatchObject({ ok: true });
+			}
+
+			expect(
+				store.getWorkflowExecutionTerminalFailureCanonical(executionId),
+			).toEqual({
+				failureClass: classifiedFirst ? "environment" : null,
+				failureCode: classifiedFirst ? "codex:unauthorized" : null,
+				lastError: "blocked",
+			});
+			expect(loud).toHaveBeenCalledWith(
+				expect.stringContaining("canonical preserved"),
+			);
+			store.close();
+		},
+	);
+
 	it.each(["terminated", "shelved", "approved"])(
 		"preserves %s while recording the teardown fact and replay metadata",
 		async (terminalStatus) => {

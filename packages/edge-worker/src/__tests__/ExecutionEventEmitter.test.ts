@@ -218,6 +218,25 @@ describe("TeamLeadClient", () => {
 		});
 	});
 
+	it("FLY-2018: emitFailed preserves environment failure metadata on the wire", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitFailed(makeEnvelope(), "blocked", undefined, {
+			failureKind: "goal_blocked",
+			failureReason: "refresh token revoked",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.failure).toEqual({
+			failureKind: "goal_blocked",
+			failureReason: "refresh token revoked",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+	});
+
 	it("emitStarted silently catches HTTP errors (fire-and-forget)", async () => {
 		const client = new TeamLeadClient("http://127.0.0.1:1"); // invalid port
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});

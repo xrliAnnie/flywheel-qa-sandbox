@@ -1885,6 +1885,34 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		db.close();
 	});
 
+	it("FLY-2018: an owned unauthorized turn preserves the environment failure classification", async () => {
+		runtime = new FakeRuntime(async () => ({
+			threadId: THREAD_ID,
+			result: {
+				status: "blocked",
+				tokensUsed: 9,
+				turns: 1,
+				succeeded: false,
+				lastTurnError: {
+					turnId: "turn-owned",
+					message: "refresh token revoked",
+					code: "unauthorized",
+				},
+			},
+			restarts: 0,
+		}));
+
+		const res = await makeAdapter().execute(ctx());
+
+		expect(res.failure).toEqual({
+			failureKind: "goal_blocked",
+			failureReason:
+				"goal ended non-complete: blocked — last turn error: refresh token revoked [unauthorized]",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+	});
+
 	it("a GoalRunError timeout → timedOut result, teardown still runs", async () => {
 		runtime = new FakeRuntime(async () => {
 			throw new GoalRunError("active budget exceeded", "timeout");

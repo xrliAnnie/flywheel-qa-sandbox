@@ -1219,6 +1219,8 @@ export class CodexTmuxAdapter implements IAdapter {
 			result.failure = {
 				failureKind: "goal_blocked",
 				failureReason: cls.failureReason ?? "goal ended non-complete: blocked",
+				...(cls.failureClass && { failureClass: cls.failureClass }),
+				...(cls.failureCode && { failureCode: cls.failureCode }),
 			};
 		}
 		if (!success) {

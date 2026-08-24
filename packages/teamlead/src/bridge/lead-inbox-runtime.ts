@@ -45,6 +45,7 @@ import {
 } from "./lead-recipient-liveness.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
+import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
 import { resolveMailboxQueueConfig } from "./mailbox-queue-config.js";
 import { ProtocolIngress } from "./protocol-ingress.js";
 import { QuestionAdmission } from "./question-admission.js";
@@ -327,6 +328,22 @@ export class LeadInboxRuntime {
 							: undefined,
 					admit: async () => {
 						await this.ensureCutover();
+						const runtime = opts.registry.getRawForLead(lead.agentId);
+						if (runtime) {
+							for (const row of opts.store.listUndeliveredWorkflowReplacementLeadEvents(
+								{
+									leadId: lead.agentId,
+									projectName: project.projectName,
+								},
+							)) {
+								const envelope = leadEventEnvelopeFromJournalRow(row, 2);
+								this.enqueueLeadEvent(
+									envelope,
+									runtime.renderEnvelope?.(envelope) ??
+										JSON.stringify(envelope.event),
+								);
+							}
+						}
 						if (leadIndex === 0) {
 							await runnerLane.tick();
 							const queueConfig = resolveMailboxQueueConfig();
@@ -458,7 +475,9 @@ export class LeadInboxRuntime {
 		if (!queue)
 			throw new Error(`queue closed for project: ${project.projectName}`);
 		const result = enqueueEvent({ queue, envelope, content });
-		this.nudge(envelope.leadId, project.projectName);
+		if (result.outcome === "inserted") {
+			this.nudge(envelope.leadId, project.projectName);
+		}
 		return result;
 	}
 

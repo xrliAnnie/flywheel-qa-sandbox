@@ -83,6 +83,10 @@ import {
 	ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES,
 } from "./workflow-ledger-states.js";
 import {
+	type WorkflowReplacementNextCheckDisposition,
+	WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS,
+} from "./workflow-replacement-policy.js";
+import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
 	parseWorkflowRunSnapshot,
@@ -12271,6 +12275,30 @@ export class StateStore {
 				)
 				.all(limit) as Record<string, unknown>[]
 		).map(mapLeadEventRow);
+	}
+
+	listUndeliveredWorkflowReplacementLeadEvents(input: {
+		leadId: string;
+		projectName: string;
+		limit?: number;
+	}): LeadEventRow[] {
+		const rows = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				  WHERE delivered_at IS NULL
+				    AND lead_id = ?
+				    AND event_type = 'workflow_replacement_eligibility'
+				  ORDER BY seq ASC LIMIT ?`,
+			)
+			.all(input.leadId, input.limit ?? 1_000) as Record<string, unknown>[];
+		return rows.map(mapLeadEventRow).filter((row) => {
+			try {
+				const payload = JSON.parse(row.payload) as { project_name?: unknown };
+				return payload.project_name === input.projectName;
+			} catch {
+				return false;
+			}
+		});
 	}
 
 	/**
@@ -29147,6 +29175,139 @@ export class StateStore {
 			);
 	}
 
+	private appendWorkflowReplacementLeadIntentTx(input: {
+		context: NonNullable<
+			ReturnType<StateStore["generalizedExecutionContext"]>
+		>;
+		executionId: string;
+		now: string;
+		leadIntent: WorkflowReplacementLeadIntent;
+	}): number | undefined {
+		const { context } = input;
+		if (context.run.status !== "active") return undefined;
+		if (input.leadIntent.projectName !== context.run.project_name) {
+			console.error(
+				`[StateStore] refused workflow replacement lead intent for ${context.binding.run_id}: project ${input.leadIntent.projectName} does not match ${context.run.project_name}`,
+			);
+			return undefined;
+		}
+		const current = this.getWorkflowRunNode(
+			context.binding.run_id,
+			context.binding.node_id,
+			context.binding.attempt,
+		);
+		if (
+			!current ||
+			(current.state !== "running" && current.state !== "admitted") ||
+			current.execution_id !== input.executionId ||
+			this.getWorkflowNodeCompletion(
+				context.binding.run_id,
+				context.binding.node_id,
+				context.binding.attempt,
+			)
+		) {
+			return undefined;
+		}
+		const launches = this.workflowSelectAll(
+			`SELECT launch_ordinal, execution_id, created_at
+			   FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			  ORDER BY launch_ordinal ASC`,
+			[
+				context.binding.run_id,
+				context.binding.node_id,
+				context.binding.attempt,
+			],
+		);
+		const latest = launches.at(-1);
+		if (!latest || latest.execution_id !== input.executionId) return undefined;
+		const launchOrdinal = Number(latest.launch_ordinal);
+		if (!Number.isSafeInteger(launchOrdinal) || launchOrdinal < 1) {
+			return undefined;
+		}
+		const alreadyEscalated = this.listWorkflowRunEvents(
+			context.binding.run_id,
+		).some((event) => {
+			if (
+				event.node_id !== context.binding.node_id ||
+				(event.kind !== "retry_limit_escalated" &&
+					event.kind !== "environment_failure_escalated")
+			) {
+				return false;
+			}
+			try {
+				const payload = JSON.parse(String(event.payload)) as {
+					attempt?: unknown;
+				};
+				return payload.attempt === context.binding.attempt;
+			} catch {
+				return false;
+			}
+		});
+		if (alreadyEscalated) return undefined;
+		let nextCheckDisposition: WorkflowReplacementNextCheckDisposition =
+			"replacement_candidate";
+		if (launches.length >= MAX_BLIND_REPLACEMENTS + 1) {
+			nextCheckDisposition = "retry_limit_hold_candidate";
+		} else if (
+			this.workflowEnvironmentEscalationCandidate({
+				runId: context.binding.run_id,
+				nodeId: context.binding.node_id,
+				attempt: context.binding.attempt,
+				deadExecutionId: input.executionId,
+			})
+		) {
+			nextCheckDisposition = "environment_hold_candidate";
+		}
+		const delay =
+			WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[
+				Math.min(
+					launches.length - 1,
+					WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS.length - 1,
+				)
+			]!;
+		const sqliteCreatedAt = String(latest.created_at ?? "");
+		const normalizedCreatedAt = sqliteCreatedAt.includes("T")
+			? sqliteCreatedAt
+			: `${sqliteCreatedAt.replace(" ", "T")}Z`;
+		const parsedCreatedAt = Date.parse(normalizedCreatedAt);
+		const fallbackAt = Date.parse(input.now);
+		const nextCheckAt = new Date(
+			(Number.isFinite(parsedCreatedAt) ? parsedCreatedAt : fallbackAt) + delay,
+		).toISOString();
+		const eventId = `workflow-replacement-eligibility:${context.binding.run_id}:${context.binding.node_id}:${context.binding.attempt}:${input.executionId}:${launchOrdinal}`;
+		const existing = this.workflowSelectAll(
+			"SELECT seq FROM lead_events WHERE event_id = ? ORDER BY seq ASC LIMIT 1",
+			[eventId],
+		)[0];
+		if (existing && Number.isSafeInteger(Number(existing.seq))) {
+			return Number(existing.seq);
+		}
+		const payload: HookPayload = {
+			event_type: "workflow_replacement_eligibility",
+			execution_id: input.executionId,
+			issue_id: context.run.issue_id,
+			project_name: context.run.project_name,
+			generated_at: input.now,
+			workflow_event_id: eventId,
+			workflow_run_id: context.binding.run_id,
+			workflow_node_id: context.binding.node_id,
+			workflow_attempt: context.binding.attempt,
+			launch_ordinal: launchOrdinal,
+			blind_replacements: Math.max(0, launches.length - 1),
+			max_blind_replacements: MAX_BLIND_REPLACEMENTS,
+			next_check_at: nextCheckAt,
+			next_check_disposition: nextCheckDisposition,
+		};
+		return this.appendLeadEvent(
+			input.leadIntent.leadId,
+			eventId,
+			"workflow_replacement_eligibility",
+			JSON.stringify(payload),
+			`wf:${context.binding.run_id}`,
+		);
+	}
+
 	/**
 	 * Persist the terminal signal for an enrolled execution without invoking
 	 * any legacy completion hooks. The lifecycle event, fixed terminal session
@@ -29157,9 +29318,12 @@ export class StateStore {
 		sourceEventId: string;
 		signal: "completed" | "failed";
 		failureKind?: string;
+		failureClass?: "environment";
+		failureCode?: string;
 		lastError?: string;
 		source: string;
 		now?: string;
+		leadIntent?: WorkflowReplacementLeadIntent;
 	}):
 		| {
 				ok: true;
@@ -29170,6 +29334,7 @@ export class StateStore {
 				statusPreserved: boolean;
 				runId: string;
 				nodeId: string;
+				leadEventSeq?: number;
 		  }
 		| { ok: false; reason: string } {
 		const now = input.now ?? new Date().toISOString();
@@ -29191,10 +29356,19 @@ export class StateStore {
 					: "failed";
 		const eventType =
 			input.signal === "completed" ? "session_completed" : "session_failed";
+		const failureClassification =
+			input.failureClass === "environment" &&
+			input.failureCode === "codex:unauthorized"
+				? {
+						failureClass: input.failureClass,
+						failureCode: input.failureCode,
+					}
+				: undefined;
 		let idempotentReplay = false;
 		let refusal: string | undefined;
 		let effectiveStatus: string = status;
 		let statusPreserved = false;
+		let leadEventSeq: number | undefined;
 		this.db.transaction(() => {
 			const priorEvent = this.workflowSelectAll(
 				"SELECT * FROM session_events WHERE event_id = ?",
@@ -29215,7 +29389,11 @@ export class StateStore {
 					priorEvent.source !== input.source ||
 					!priorPayload ||
 					(priorPayload.failureKind ?? null) !== (input.failureKind ?? null) ||
-					(priorPayload.lastError ?? null) !== (input.lastError ?? null)
+					(priorPayload.lastError ?? null) !== (input.lastError ?? null) ||
+					(priorPayload.failureClass ?? null) !==
+						(failureClassification?.failureClass ?? null) ||
+					(priorPayload.failureCode ?? null) !==
+						(failureClassification?.failureCode ?? null)
 				) {
 					refusal = "terminal_signal_conflict";
 					return;
@@ -29227,6 +29405,19 @@ export class StateStore {
 					isNoOutEdgeTerminalStatus(currentStatus) && currentStatus !== status;
 				return;
 			} else {
+				const canonical =
+					this.getWorkflowExecutionTerminalFailureCanonical(input.executionId);
+				if (
+					canonical &&
+					(canonical.failureClass !==
+						(failureClassification?.failureClass ?? null) ||
+						canonical.failureCode !==
+							(failureClassification?.failureCode ?? null))
+				) {
+					console.error(
+						`[StateStore] terminal failure classification drift for ${input.executionId}: canonical=${canonical.failureClass ?? "absent"}/${canonical.failureCode ?? "absent"}, later=${failureClassification?.failureClass ?? "absent"}/${failureClassification?.failureCode ?? "absent"}; canonical preserved`,
+					);
+				}
 				this.db.run(
 					`INSERT INTO session_events
 					   (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
@@ -29240,6 +29431,7 @@ export class StateStore {
 						JSON.stringify({
 							failureKind: input.failureKind ?? null,
 							lastError: input.lastError ?? null,
+							...(failureClassification ?? {}),
 						}),
 						input.source,
 					],
@@ -29296,9 +29488,18 @@ export class StateStore {
 					effectiveStatus,
 					statusPreserved,
 					failureKind: input.failureKind ?? null,
+					...(failureClassification ?? {}),
 					at: now,
 				},
 			});
+			if (input.signal === "failed" && input.leadIntent) {
+				leadEventSeq = this.appendWorkflowReplacementLeadIntentTx({
+					context,
+					executionId: input.executionId,
+					now,
+					leadIntent: input.leadIntent,
+				});
+			}
 		});
 		if (refusal) return { ok: false, reason: refusal };
 		this.save();
@@ -29311,6 +29512,7 @@ export class StateStore {
 			statusPreserved,
 			runId: context.binding.run_id,
 			nodeId: context.binding.node_id,
+			...(leadEventSeq !== undefined ? { leadEventSeq } : {}),
 		};
 	}
 
@@ -31728,6 +31930,10 @@ export class StateStore {
 		outputExistsForAttempt: boolean;
 		identity: WorkflowEngineAlertIdentity;
 	}): WorkflowEngineAlertPayload {
+		const lastError = this.getSession(input.executionId)?.last_error;
+		const lastErrorSuffix = lastError
+			? `最后死因: ${Array.from(lastError).slice(0, 300).join("")}。`
+			: "";
 		return {
 			leadId: input.identity.leadId,
 			projectName: input.identity.projectName,
@@ -31736,7 +31942,7 @@ export class StateStore {
 			severity: "severe",
 			sessionKey: `wf:${input.runId}`,
 			title: `【需人工】${input.issueId} 节点 ${input.nodeId} 盲换 ${MAX_BLIND_REPLACEMENTS} 次仍起不来`,
-			body: `${input.issueId} 的 ${input.nodeId} 节点换了 ${MAX_BLIND_REPLACEMENTS} 次仍起不来,引擎已停手,run 已挂起(held),需要你判断下一步处理。`,
+			body: `${input.issueId} 的 ${input.nodeId} 节点换了 ${MAX_BLIND_REPLACEMENTS} 次仍起不来,引擎已停手,run 已挂起(held),需要你判断下一步处理。${lastErrorSuffix}`,
 			metadata: {
 				workflowEngine: {
 					runId: input.runId,
@@ -31747,6 +31953,50 @@ export class StateStore {
 					launchCount: input.launchCount,
 					maxBlindReplacements: MAX_BLIND_REPLACEMENTS,
 					outputExistsForAttempt: input.outputExistsForAttempt,
+					management: {
+						terminate: `POST /api/runs/${input.runId}/terminate`,
+					},
+					leadResolution: input.identity.leadResolution,
+				},
+			},
+		};
+	}
+
+	private workflowEnvironmentFailureAlertPayload(input: {
+		escalationUid: string;
+		runId: string;
+		issueId: string;
+		nodeId: string;
+		executionId: string;
+		priorDeadExecutionId: string;
+		failureCode: string;
+		lastError: string | null;
+		launchCount: number;
+		identity: WorkflowEngineAlertIdentity;
+	}): WorkflowEngineAlertPayload {
+		const lastError = input.lastError
+			? Array.from(input.lastError).slice(0, 300).join("")
+			: "未知(terminal failure 未携带 last_error)";
+		return {
+			leadId: input.identity.leadId,
+			projectName: input.identity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_escalation",
+			severity: "severe",
+			sessionKey: `wf:${input.runId}`,
+			title: `【需人工】${input.issueId} 节点 ${input.nodeId} 环境类失败(${input.failureCode}),盲换无法治愈`,
+			body: `${input.issueId} 的 ${input.nodeId} 节点连续两具执行体以同一环境类失败退出(${input.failureCode}),引擎已停手,run 已挂起(held)。最后死因: ${lastError}。当前恢复入口仅为 terminate 收口;凭据修复后请由外部流程另起 run/attempt。`,
+			metadata: {
+				workflowEngine: {
+					runId: input.runId,
+					issueId: input.issueId,
+					nodeId: input.nodeId,
+					executionId: input.executionId,
+					disposition: "held",
+					failureClass: "environment",
+					failureCode: input.failureCode,
+					priorDeadExecutionId: input.priorDeadExecutionId,
+					launchCount: input.launchCount,
 					management: {
 						terminate: `POST /api/runs/${input.runId}/terminate`,
 					},
@@ -32627,6 +32877,97 @@ export class StateStore {
 	 * launch history. The node attempt stays the same; only its execution owner
 	 * and the appended launch ordinal advance.
 	 */
+	getWorkflowExecutionTerminalFailureCanonical(executionId: string):
+		| {
+				failureClass: "environment" | null;
+				failureCode: string | null;
+				lastError: string | null;
+		  }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT payload FROM session_events
+			  WHERE execution_id = ? AND event_type = 'session_failed'
+			  ORDER BY id ASC LIMIT 1`,
+			[executionId],
+		)[0];
+		if (!row) return undefined;
+		let payload: Record<string, unknown>;
+		try {
+			payload = JSON.parse(String(row.payload ?? "null")) as Record<
+				string,
+				unknown
+			>;
+		} catch {
+			return { failureClass: null, failureCode: null, lastError: null };
+		}
+		const classified =
+			payload.failureClass === "environment" &&
+			payload.failureCode === "codex:unauthorized";
+		return {
+			failureClass: classified ? "environment" : null,
+			failureCode: classified ? "codex:unauthorized" : null,
+			lastError:
+				typeof payload.lastError === "string" ? payload.lastError : null,
+		};
+	}
+
+	private workflowEnvironmentEscalationCandidate(input: {
+		runId: string;
+		nodeId: string;
+		attempt: number;
+		deadExecutionId: string;
+	}):
+		| {
+				escalationUid: string;
+				failureCode: string;
+				priorDeadExecutionId: string;
+				lastError: string | null;
+				launchCount: number;
+		  }
+		| undefined {
+		const current = this.getWorkflowExecutionTerminalFailureCanonical(
+			input.deadExecutionId,
+		);
+		if (
+			current?.failureClass !== "environment" ||
+			!current.failureCode
+		) {
+			return undefined;
+		}
+		const launches = this.workflowSelectAll(
+			`SELECT execution_id, launch_ordinal
+			   FROM workflow_side_effect_ledger
+			  WHERE run_id = ? AND node_id = ? AND attempt = ? AND kind = 'dispatch'
+			  ORDER BY launch_ordinal ASC`,
+			[input.runId, input.nodeId, input.attempt],
+		);
+		const latest = launches.at(-1);
+		const prior = launches.at(-2);
+		if (
+			!latest ||
+			!prior ||
+			latest.execution_id !== input.deadExecutionId
+		) {
+			return undefined;
+		}
+		const priorCanonical = this.getWorkflowExecutionTerminalFailureCanonical(
+			String(prior.execution_id),
+		);
+		if (
+			priorCanonical?.failureClass !== "environment" ||
+			priorCanonical.failureCode !== current.failureCode
+		) {
+			return undefined;
+		}
+		return {
+			escalationUid: `env_failure:${input.runId}:${input.nodeId}:${input.attempt}:${current.failureCode}`,
+			failureCode: current.failureCode,
+			priorDeadExecutionId: String(prior.execution_id),
+			lastError: current.lastError,
+			launchCount: launches.length,
+		};
+	}
+
 	rollbackDeadWorkflowNodeExecution(input: {
 		runId: string;
 		nodeId: string;
@@ -32640,7 +32981,7 @@ export class StateStore {
 		now?: string;
 	}):
 		| { ok: true; idempotentReplay: boolean; launchOrdinal: number }
-		| { ok: false; reason: string } {
+		| { ok: false; reason: string; idempotentReplay?: boolean } {
 		const now = input.now ?? new Date().toISOString();
 		if (
 			!input.runId ||
@@ -32659,7 +33000,7 @@ export class StateStore {
 
 		let result:
 			| { ok: true; idempotentReplay: boolean; launchOrdinal: number }
-			| { ok: false; reason: string } = {
+			| { ok: false; reason: string; idempotentReplay?: boolean } = {
 			ok: false,
 			reason: "rollback_not_committed",
 		};
@@ -32699,6 +33040,48 @@ export class StateStore {
 					launchOrdinal: Number(payload.launchOrdinal),
 				};
 				return;
+			}
+			const environmentCandidate =
+				this.workflowEnvironmentEscalationCandidate(input);
+			if (environmentCandidate) {
+				const priorEnvironmentEscalation = this.workflowSelectAll(
+					"SELECT kind, payload FROM workflow_run_event WHERE event_uid = ?",
+					[environmentCandidate.escalationUid],
+				)[0];
+				if (priorEnvironmentEscalation) {
+					let payload: Record<string, unknown> | undefined;
+					try {
+						payload = JSON.parse(
+							String(priorEnvironmentEscalation.payload ?? "null"),
+						) as Record<string, unknown>;
+					} catch {
+						payload = undefined;
+					}
+					if (
+						priorEnvironmentEscalation.kind !==
+							"environment_failure_escalated" ||
+						!payload ||
+						payload.failureClass !== "environment" ||
+						payload.failureCode !== environmentCandidate.failureCode ||
+						payload.deadExecutionId !== input.deadExecutionId ||
+						payload.priorDeadExecutionId !==
+							environmentCandidate.priorDeadExecutionId ||
+						payload.lastError !== environmentCandidate.lastError ||
+						payload.launchCount !== environmentCandidate.launchCount
+					) {
+						result = {
+							ok: false,
+							reason: "environment_failure_receipt_conflict",
+						};
+						return;
+					}
+					result = {
+						ok: false,
+						reason: "environment_failure_escalated",
+						idempotentReplay: true,
+					};
+					return;
+				}
 			}
 			const run = this.getWorkflowRun(input.runId);
 			if (!run || run.engine_owned !== 1 || run.status !== "active") {
@@ -32802,6 +33185,59 @@ export class StateStore {
 					outputExistsForAttempt,
 				);
 				result = { ok: false, reason: "retry_limit_exceeded" };
+				return;
+			}
+			if (environmentCandidate) {
+				this.db.run(
+					"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
+					[input.runId],
+				);
+				this.appendWorkflowRunEventCheckedTx({
+					runId: input.runId,
+					eventUid: environmentCandidate.escalationUid,
+					kind: "environment_failure_escalated",
+					nodeId: input.nodeId,
+					executionId: input.deadExecutionId,
+					payload: {
+						attempt: input.attempt,
+						failureClass: "environment",
+						failureCode: environmentCandidate.failureCode,
+						deadExecutionId: input.deadExecutionId,
+						priorDeadExecutionId:
+							environmentCandidate.priorDeadExecutionId,
+						lastError: environmentCandidate.lastError,
+						launchCount: environmentCandidate.launchCount,
+					},
+				});
+				if (input.alertIdentity) {
+					this.enqueueWorkflowEngineAlertTx({
+						escalationUid: environmentCandidate.escalationUid,
+						runId: input.runId,
+						now,
+						payload: this.workflowEnvironmentFailureAlertPayload({
+							escalationUid: environmentCandidate.escalationUid,
+							runId: input.runId,
+							issueId: run.issue_id,
+							nodeId: input.nodeId,
+							executionId: input.deadExecutionId,
+							priorDeadExecutionId:
+								environmentCandidate.priorDeadExecutionId,
+							failureCode: environmentCandidate.failureCode,
+							lastError: environmentCandidate.lastError,
+							launchCount: environmentCandidate.launchCount,
+							identity: input.alertIdentity,
+						}),
+					});
+				} else {
+					console.error(
+						`[StateStore] environment failure held ${input.runId}/${input.nodeId} without alert identity; escalation=${environmentCandidate.escalationUid}`,
+					);
+				}
+				result = {
+					ok: false,
+					reason: "environment_failure_escalated",
+					idempotentReplay: false,
+				};
 				return;
 			}
 			const priorDeadReplacementCount = Number(
@@ -52941,6 +53377,12 @@ export interface WorkflowEngineAlertIdentity {
 	leadResolution: "resolved" | "fallback";
 }
 
+export interface WorkflowReplacementLeadIntent {
+	leadId: string;
+	projectName: string;
+	leadResolution: "resolved" | "fallback";
+}
+
 export function buildFounderInputDeadletterAlertPayload(input: {
 	escalationUid: string;
 	projectName: string;
@@ -53131,6 +53573,9 @@ export interface WorkflowEngineAlertPayload {
 			launchCount?: number;
 			maxBlindReplacements?: number;
 			outputExistsForAttempt?: boolean;
+			failureClass?: "environment";
+			failureCode?: string;
+			priorDeadExecutionId?: string;
 			attempts?: number;
 			epochKey?: string;
 			operationId?: string;

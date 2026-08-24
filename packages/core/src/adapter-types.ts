@@ -416,6 +416,8 @@ export type TerminalFailureKind = "goal_blocked" | "worktree_takeover_failed";
 export interface TerminalFailureInfo {
 	failureKind: TerminalFailureKind;
 	failureReason: string;
+	failureClass?: "environment";
+	failureCode?: string;
 }
 
 /** FLY-1638: machine-readable failure before the workflow launch fence commits. */

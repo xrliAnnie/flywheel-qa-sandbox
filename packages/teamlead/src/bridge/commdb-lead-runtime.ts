@@ -21,6 +21,7 @@ import {
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
+	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
 import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
 import type {
@@ -94,6 +95,9 @@ export class CommDBLeadRuntime implements LeadRuntime {
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
+		if (e.event_type === "workflow_replacement_eligibility") {
+			return formatWorkflowReplacementEligibility(env);
+		}
 
 		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt
 		// shape from gate_question: no checkpoint tag, framing emphasises

@@ -141,6 +141,45 @@ describe("MailboxLeadRuntime", () => {
 		});
 
 		it.each([
+			["replacement_candidate", "铸替换体"],
+			["environment_hold_candidate", "环境类收口"],
+			["retry_limit_hold_candidate", "配额收口"],
+		] as const)(
+			"FLY-2018: renders stable replacement eligibility for %s",
+			async (nextCheckDisposition, expectedAction) => {
+				const transport = makeMockTransport();
+				const runtime = new MailboxLeadRuntime({
+					leadId: "cos-lead",
+					transport,
+				});
+				const stableId =
+					"workflow-replacement-eligibility:run-1:implement:1:exec-1:2";
+				await runtime.deliver(
+					makeEnvelope({
+						eventId: stableId,
+						event: {
+							event_type: "workflow_replacement_eligibility",
+							execution_id: "exec-1",
+							issue_id: "FLY-2018",
+							workflow_event_id: stableId,
+							next_check_at: "2026-08-24T00:14:00.000Z",
+							next_check_disposition: nextCheckDisposition,
+							blind_replacements: 1,
+							max_blind_replacements: 3,
+						},
+					}),
+				);
+
+				const content = (transport.write as ReturnType<typeof vi.fn>).mock
+					.calls[0][0].payload.content as string;
+				expect(content).toContain(`Stable Event: ${stableId}`);
+				expect(content).toContain("盲换 1/3");
+				expect(content).toContain(expectedAction);
+				expect(content).not.toContain("已断路");
+			},
+		);
+
+		it.each([
 			{
 				event_type: "session_started",
 				session_role: "main",

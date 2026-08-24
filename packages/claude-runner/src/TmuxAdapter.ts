@@ -31,6 +31,7 @@ import type {
 	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
+import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { pretrustClaudeWorkspace } from "./workspace-trust.js";
 
 /**
@@ -1782,13 +1783,6 @@ function tmuxDefaultSocketPath(): string {
 	return join(root, `tmux-${uid}`, "default");
 }
 
-const TMUX_ENSURE_SUCCESS_ACTIONS = new Set([
-	"verified",
-	"created",
-	"rescued_then_verified",
-	"rescued_then_created",
-]);
-
 function parseHold(error: unknown): TmuxSessionHoldError {
 	const candidate = error as {
 		code?: string | number;
@@ -1960,17 +1954,8 @@ export async function ensureRunnerSession(
 				}),
 				attemptTimeoutMs,
 			);
-			const parsed = JSON.parse(result.stdout) as {
-				action?: string;
-				createStdout?: string;
-				reachablePid?: number;
-			};
-			if (
-				!parsed.action ||
-				!TMUX_ENSURE_SUCCESS_ACTIONS.has(parsed.action) ||
-				!Number.isSafeInteger(parsed.reachablePid) ||
-				(parsed.reachablePid ?? 0) <= 0
-			) {
+			const parsed = parseTmuxEnsureSuccess(result.stdout);
+			if (!parsed) {
 				throw new TmuxSessionHoldError("unknown", {
 					reason: "invalid_helper_output",
 				});

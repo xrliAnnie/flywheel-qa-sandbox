@@ -61,9 +61,14 @@ import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import type { TerminalCommDbSync } from "./bridge/terminal-commdb-sync.js";
 import type { TurnBeltReconciler } from "./bridge/turn-belt-reconcile.js";
 import type { BridgeConfig } from "./bridge/types.js";
+import {
+	enqueueWorkflowReplacementLeadEvent,
+	resolveWorkflowReplacementLeadIntent,
+} from "./bridge/workflow-replacement-lead-event.js";
 import type { WorktreeCleanupFn } from "./bridge/worktree-cleanup.js";
 import { type ProjectEntry, resolveLeadForIssue } from "./ProjectConfig.js";
 import type { StateStore } from "./StateStore.js";
+import { normalizeTerminalFailureInfo } from "./terminal-failure-info.js";
 
 function sqliteDatetime(): string {
 	return new Date().toISOString().replace("T", " ").replace("Z", "");
@@ -1193,23 +1198,32 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		failure?: TerminalFailureInfo,
 	): Promise<void> {
 		const now = sqliteDatetime();
-		const goalBlocked = failure?.failureKind === "goal_blocked";
+		const normalizedFailure = normalizeTerminalFailureInfo(failure);
+		const goalBlocked = normalizedFailure?.failureKind === "goal_blocked";
 		const terminalStatus = goalBlocked ? "blocked" : "failed";
-		const terminalError = goalBlocked ? failure.failureReason : error;
+		const terminalError = goalBlocked ? normalizedFailure.failureReason : error;
 		const workflowNodeId = this.store.resolveWorkflowNodeIdForExecution(
 			env.executionId,
 		);
 		const generalizedExecution =
 			this.store.getGeneralizedWorkflowNodeForExecution(env.executionId);
 		if (generalizedExecution) {
+			const leadIntent = resolveWorkflowReplacementLeadIntent({
+				projects: this.projects,
+				run: generalizedExecution.run,
+				labels: this.store.getSessionLabels(env.executionId),
+			});
 			const recorded = this.store.recordEnrolledTerminalSignal({
 				executionId: env.executionId,
 				sourceEventId: randomUUID(),
 				signal: "failed",
-				failureKind: failure?.failureKind,
+				failureKind: normalizedFailure?.failureKind,
+				failureClass: normalizedFailure?.failureClass,
+				failureCode: normalizedFailure?.failureCode,
 				lastError: terminalError,
 				source: "direct-event-sink",
 				now,
+				...(leadIntent ? { leadIntent } : {}),
 			});
 			if (!recorded.ok) {
 				console.error(
@@ -1217,7 +1231,23 @@ export class DirectEventSink implements ExecutionEventEmitter {
 				);
 				return;
 			}
-			await this.alertWorktreeTakeoverFailure(env.executionId, failure);
+			await this.alertWorktreeTakeoverFailure(
+				env.executionId,
+				normalizedFailure,
+			);
+			if (this.registry && recorded.leadEventSeq !== undefined) {
+				try {
+					enqueueWorkflowReplacementLeadEvent({
+						store: this.store,
+						registry: this.registry,
+						seq: recorded.leadEventSeq,
+					});
+				} catch (err) {
+					console.warn(
+						`[DirectEventSink] replacement-eligibility enqueue failed for ${env.executionId}: ${(err as Error).message}`,
+					);
+				}
+			}
 			if (recorded.statusPreserved) {
 				console.warn(
 					`[DirectEventSink] FLY-1427 terminal-immune: ignored generalized failure overwrite for ${env.executionId}; effective status remains ${recorded.effectiveStatus}`,

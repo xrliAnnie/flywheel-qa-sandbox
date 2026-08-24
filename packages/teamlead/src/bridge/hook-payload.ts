@@ -28,6 +28,19 @@ export interface HookPayload {
 	/** FLY-1925: issue-scoped loop ledger projection; absent on legacy replays. */
 	loops?: PatrolLoopEntry[];
 	generated_at?: string;
+	/** FLY-2018: stable informational outbox identity and retry projection. */
+	workflow_event_id?: string;
+	workflow_run_id?: string;
+	workflow_node_id?: string;
+	workflow_attempt?: number;
+	launch_ordinal?: number;
+	blind_replacements?: number;
+	max_blind_replacements?: number;
+	next_check_at?: string;
+	next_check_disposition?:
+		| "replacement_candidate"
+		| "environment_hold_candidate"
+		| "retry_limit_hold_candidate";
 	/** FLY-1771: patrol_tick's scheduled per-Lead wall-clock phase. Drift is
 	 * `generated_at - scheduled_at`; journal-only, never rendered to the Lead. */
 	scheduled_at?: string;
@@ -230,6 +243,25 @@ export interface StuckEscalationEnvelopeLike {
 	event: HookPayload;
 	sessionKey: string;
 	timestamp: string;
+}
+
+export function formatWorkflowReplacementEligibility(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const event = env.event;
+	const disposition =
+		event.next_check_disposition === "environment_hold_candidate"
+			? "环境类收口"
+			: event.next_check_disposition === "retry_limit_hold_candidate"
+				? "配额收口"
+				: "铸替换体";
+	return [
+		`[Event #${env.seq}] workflow_replacement_eligibility`,
+		`Stable Event: ${event.workflow_event_id ?? "---"}`,
+		`ID: ${event.execution_id || "---"} | Issue: ${event.issue_identifier || event.issue_id || "---"}`,
+		`引擎最早于 ~${event.next_check_at ?? "未知"} 重新检查(盲换 ${event.blind_replacements ?? 0}/${event.max_blind_replacements ?? 3});若死亡确认与 current-execution fencing 成立,将执行 ${disposition}。`,
+		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
+	].join("\n");
 }
 
 const PATROL_TOKEN_GRAMMAR = /^[A-Za-z0-9._-]{1,64}$/;

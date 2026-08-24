@@ -21,6 +21,7 @@ import {
 	type WorkflowSideEffectRow,
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
+import { WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS } from "../workflow-replacement-policy.js";
 import {
 	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
@@ -1925,9 +1926,11 @@ export class WorkflowEngineDispatcher {
 						undefined,
 					);
 					if (!latest || latest.execution_id !== node.execution_id) continue;
-					const retryDelaysMs = [60_000, 5 * 60_000, 15 * 60_000];
 					if (launches.length <= MAX_BLIND_REPLACEMENTS) {
-						const delay = retryDelaysMs[Math.max(0, launches.length - 1)]!;
+						const delay =
+							WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS[
+								Math.max(0, launches.length - 1)
+							]!;
 						const launchedAt = parseSqliteUtcMs(latest.created_at);
 						if (
 							launchedAt !== null &&

@@ -19,6 +19,7 @@ export interface DurableQueueReceipt {
 	queued: true;
 	deliveryId: string;
 	seq: number;
+	outcome?: "inserted" | "active" | "archived";
 }
 
 export interface LeadEventDispatchResult extends DeliveryResult {

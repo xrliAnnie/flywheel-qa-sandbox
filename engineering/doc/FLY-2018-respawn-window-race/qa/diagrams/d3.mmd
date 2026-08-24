@@ -1,0 +1,13 @@
+flowchart LR
+  S["真 Codex daemon<br/>turn/completed.error<br/>codexErrorInfo=unauthorized"] --> T["归属校验<br/>只认 turn/start 回来的 turn id"]
+  T --> U["净化文本<br/>单行 / 截断 / 去 mention"]
+  U --> V["failureClass=environment<br/>failureCode=codex:unauthorized"]
+  V --> W["两条 ingest<br/>HTTP + DirectEventSink<br/>成对校验, 未知组合整对丢弃"]
+  W --> X["StateStore<br/>首条 teardown 冻结为 canonical"]
+  X --> Y{"紧邻前一具<br/>同一 code?"}
+  Y -->|"否"| Z1["照常盲换 (最多 3 次)"]
+  Y -->|"是"| Z2["run 转 held<br/>不再铸体"]
+  Z2 --> D1["Discord 告警带真因<br/>最后死因: access token could not be refreshed"]
+  Z1 --> D2["Lead 收件箱通知<br/>引擎最早于 ~T 重新检查 (盲换 N/3)"]
+  classDef good fill:#e6f7ea,stroke:#34c759,color:#1d1d1f
+  class D1,D2,Z2 good

@@ -2572,3 +2572,182 @@ describe("runGoalToTerminal — R24 poll ownership + turn arming", () => {
 		expect(res.turns).toBe(1); // only REAL-TURN; the pre-arm turn was dropped
 	});
 });
+
+describe("runGoalToTerminal — FLY-2018 owned turn failures", () => {
+	it("replays a pre-response unauthorized completion only after turn/start claims its turn id", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("thread/goal/get", () => ({ goal: null }));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "turn/started",
+				params: {
+					threadId: "t",
+					turn: { id: "owned-turn", status: "inProgress" },
+				},
+			});
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					turnId: "owned-turn",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "owned-turn",
+						status: "failed",
+						error: {
+							message: "Refresh token revoked",
+							codexErrorInfo: "unauthorized",
+						},
+					},
+				},
+			});
+			return { turn: { id: "owned-turn" } };
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			sleep: () => Promise.resolve(),
+			now: () => 0,
+		});
+
+		expect(result).toMatchObject({
+			status: "blocked",
+			lastTurnError: {
+				turnId: "owned-turn",
+				message: "Refresh token revoked",
+				code: "unauthorized",
+			},
+		});
+	});
+
+	it("ignores a buffered completion whose turn id is not claimed by the RPC response", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("thread/goal/get", () => ({ goal: null }));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "foreign-turn",
+						status: "failed",
+						error: {
+							message: "must not leak",
+							codexErrorInfo: "unauthorized",
+						},
+					},
+				},
+			});
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					turnId: "owned-turn",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "owned-turn" } };
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			sleep: () => Promise.resolve(),
+			now: () => 0,
+		});
+
+		expect(result.status).toBe("blocked");
+		expect(result.lastTurnError).toBeUndefined();
+	});
+
+	it("clears an owned failed turn when the same owned turn later completes successfully", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("thread/goal/get", () => ({ goal: null }));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			for (const turn of [
+				{
+					id: "owned-turn",
+					status: "failed",
+					error: {
+						message: "transient",
+						codexErrorInfo: "unauthorized",
+					},
+				},
+				{ id: "owned-turn", status: "completed", error: null },
+			]) {
+				push({
+					method: "turn/completed",
+					params: { threadId: "t", turn },
+				});
+			}
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					turnId: "owned-turn",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "owned-turn" } };
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			sleep: () => Promise.resolve(),
+			now: () => 0,
+		});
+
+		expect(result.lastTurnError).toBeUndefined();
+	});
+
+	it("drops the whole malformed error payload when codexErrorInfo is non-string", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("thread/goal/get", () => ({ goal: null }));
+		d.responders.set("turn/start", (_params, _id, push) => {
+			push({
+				method: "turn/completed",
+				params: {
+					threadId: "t",
+					turn: {
+						id: "owned-turn",
+						status: "failed",
+						error: {
+							message: "malformed",
+							codexErrorInfo: { unexpected: true },
+						},
+					},
+				},
+			});
+			push({
+				method: "thread/goal/updated",
+				params: {
+					threadId: "t",
+					turnId: "owned-turn",
+					goal: { status: "blocked", objective: "OURS" },
+				},
+			});
+			return { turn: { id: "owned-turn" } };
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "OURS",
+			sleep: () => Promise.resolve(),
+			now: () => 0,
+		});
+
+		expect(result.lastTurnError).toBeUndefined();
+	});
+});

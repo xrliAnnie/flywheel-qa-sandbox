@@ -1385,6 +1385,71 @@ describe("Event route", () => {
 		);
 	});
 
+	it("FLY-2018: HTTP generalized failure persists the normalized environment pair", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "unauthorized-terminal-http",
+					event_type: "session_failed",
+					payload: {
+						error: "legacy error",
+						failure: {
+							failureKind: "goal_blocked",
+							failureReason: "refresh token revoked",
+							failureClass: "environment",
+							failureCode: "codex:unauthorized",
+						},
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(store.getEventPayloadById("unauthorized-terminal-http")).toEqual({
+			failureKind: "goal_blocked",
+			lastError: "refresh token revoked",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+	});
+
+	it("FLY-2018: HTTP generalized failure drops an unknown classification pair atomically", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "unknown-terminal-http",
+					event_type: "session_failed",
+					payload: {
+						failure: {
+							failureKind: "goal_blocked",
+							failureReason: "unknown environment failure",
+							failureClass: "environment",
+							failureCode: "codex:future_code",
+						},
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(store.getEventPayloadById("unknown-terminal-http")).toEqual({
+			failureKind: "goal_blocked",
+			lastError: "unknown environment failure",
+		});
+	});
+
 	// FLY-728: the loopback /events session_started handler persists the resolved
 	// runner model as runner_model (mirrors the DirectEventSink production path).
 	it("POST /events session_started persists payload.runnerModel as runner_model", async () => {

@@ -19,7 +19,20 @@ export function enqueueLeadEvent(args: {
 }): DurableQueueReceipt {
 	const { envelope } = args;
 	const deliveryId = canonicalLeadEventDeliveryId(envelope);
-	args.queue.enqueue({
+	const materialized = args.queue.getById(deliveryId);
+	if (!materialized) {
+		const settlement = args.queue.inspectDeliveryState(deliveryId);
+		if (settlement.kind === "archived_terminal") {
+			return {
+				queued: true,
+				deliveryId,
+				seq: envelope.seq,
+				outcome: "archived",
+			};
+		}
+	}
+	const materializedContent = materialized?.content ?? args.content;
+	const result = args.queue.enqueue({
 		id: deliveryId,
 		fromAgent: "bridge",
 		toAgent: envelope.leadId,
@@ -29,9 +42,14 @@ export function enqueueLeadEvent(args: {
 		type: envelope.event.event_type,
 		msgClass: "model",
 		priority: envelope.priority ?? 2,
-		content: args.content,
+		content: materializedContent,
 		createdAt: envelope.timestamp,
 		senderRef: encodeSenderRef(),
 	});
-	return { queued: true, deliveryId, seq: envelope.seq };
+	return {
+		queued: true,
+		deliveryId,
+		seq: envelope.seq,
+		outcome: result.outcome === "active" ? "active" : result.outcome,
+	};
 }

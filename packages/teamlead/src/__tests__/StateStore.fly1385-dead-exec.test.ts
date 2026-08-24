@@ -688,6 +688,245 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		store.close();
 	});
 
+	it("FLY-2018: holds after two consecutive unauthorized deaths without minting a third launch", async () => {
+		const store = await engineRunWithImplement();
+		expect(
+			store.recordEnrolledTerminalSignal({
+				executionId: "implement-dead",
+				sourceEventId: "unauthorized-original",
+				signal: "failed",
+				failureKind: "goal_blocked",
+				failureClass: "environment",
+				failureCode: "codex:unauthorized",
+				lastError:
+					"goal ended non-complete: blocked — last turn error: refresh revoked [unauthorized]",
+				source: "direct-event-sink",
+				now: "2026-07-20T00:09:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-1",
+				nodeId: "implement",
+				attempt: 1,
+				deadExecutionId: "implement-dead",
+				newExecutionId: "implement-retry-1",
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-20T00:10:00.000Z",
+				},
+				now: "2026-07-20T00:10:00.000Z",
+			}),
+		).toMatchObject({ ok: true, launchOrdinal: 2 });
+		startAndFailReservedImplement(
+			store,
+			"implement-retry-1",
+			"2026-07-20T00:11:00.000Z",
+		);
+		expect(
+			store.recordEnrolledTerminalSignal({
+				executionId: "implement-retry-1",
+				sourceEventId: "unauthorized-retry",
+				signal: "failed",
+				failureKind: "goal_blocked",
+				failureClass: "environment",
+				failureCode: "codex:unauthorized",
+				lastError:
+					"goal ended non-complete: blocked — last turn error: refresh revoked [unauthorized]",
+				source: "direct-event-sink",
+				now: "2026-07-20T00:12:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+
+		const holdRequest = {
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+			deadExecutionId: "implement-retry-1",
+			newExecutionId: "must-not-launch",
+			reason: "terminal_session_and_dead_probe",
+			alertIdentity: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+			livenessEvidence: {
+				liveness: "dead",
+				observedAt: "2026-07-20T00:13:00.000Z",
+			},
+			now: "2026-07-20T00:13:00.000Z",
+		};
+		const held = store.rollbackDeadWorkflowNodeExecution(holdRequest);
+		expect(held).toEqual({
+			ok: false,
+			reason: "environment_failure_escalated",
+			idempotentReplay: false,
+		});
+		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+		expect(store.listWorkflowSideEffects("run-1")).toHaveLength(2);
+		const escalation = store
+			.listWorkflowRunEvents("run-1")
+			.find((event) => event.kind === "environment_failure_escalated");
+		expect(escalation).toMatchObject({
+			event_uid: "env_failure:run-1:implement:1:codex:unauthorized",
+			execution_id: "implement-retry-1",
+			payload: {
+				failureClass: "environment",
+				failureCode: "codex:unauthorized",
+				deadExecutionId: "implement-retry-1",
+				priorDeadExecutionId: "implement-dead",
+				lastError:
+					"goal ended non-complete: blocked — last turn error: refresh revoked [unauthorized]",
+				launchCount: 2,
+			},
+		});
+		const alert = store.getWorkflowAlertOutbox(
+			"env_failure:run-1:implement:1:codex:unauthorized",
+		);
+		expect(alert?.payload.title).toContain(
+			"环境类失败(codex:unauthorized),盲换无法治愈",
+		);
+		expect(alert?.payload.body).toContain("refresh revoked");
+		expect(alert?.payload.body).toContain("terminate");
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.some(
+					(event) =>
+						event.kind === "execution_dead_rolled_back" &&
+						event.execution_id === "implement-retry-1",
+				),
+		).toBe(false);
+		expect(store.rollbackDeadWorkflowNodeExecution(holdRequest)).toEqual({
+			ok: false,
+			reason: "environment_failure_escalated",
+			idempotentReplay: true,
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "environment_failure_escalated"),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("FLY-2018: terminal fact and replacement-eligibility Lead intent commit atomically", async () => {
+		const store = await engineRunWithImplement("running");
+		const result = store.recordEnrolledTerminalSignal({
+			executionId: "implement-dead",
+			sourceEventId: "eligibility-terminal",
+			signal: "failed",
+			failureKind: "goal_blocked",
+			lastError: "blocked",
+			source: "direct-event-sink",
+			now: "2026-07-20T00:09:00.000Z",
+			leadIntent: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			leadEventSeq: expect.any(Number),
+		});
+		const rows = store
+			.listUndeliveredLeadEvents()
+			.filter((row) => row.event_type === "workflow_replacement_eligibility");
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toMatchObject({
+			lead_id: "flywheel-eng-lead",
+			event_id:
+				"workflow-replacement-eligibility:run-1:implement:1:implement-dead:1",
+			session_key: "wf:run-1",
+		});
+		expect(JSON.parse(rows[0]!.payload)).toMatchObject({
+			event_type: "workflow_replacement_eligibility",
+			execution_id: "implement-dead",
+			issue_id: "FLY-1335",
+			project_name: "flywheel",
+			workflow_event_id:
+				"workflow-replacement-eligibility:run-1:implement:1:implement-dead:1",
+			workflow_run_id: "run-1",
+			workflow_node_id: "implement",
+			workflow_attempt: 1,
+			launch_ordinal: 1,
+			blind_replacements: 0,
+			max_blind_replacements: 3,
+			next_check_disposition: "replacement_candidate",
+			next_check_at: expect.any(String),
+		});
+		store.close();
+	});
+
+	it("FLY-2018: rejects a replacement Lead intent for a different project", async () => {
+		const store = await engineRunWithImplement("running");
+		const result = store.recordEnrolledTerminalSignal({
+			executionId: "implement-dead",
+			sourceEventId: "mismatched-project-terminal",
+			signal: "failed",
+			source: "direct-event-sink",
+			now: "2026-07-20T00:09:00.000Z",
+			leadIntent: {
+				leadId: "foreign-lead",
+				projectName: "foreign-project",
+				leadResolution: "resolved",
+			},
+		});
+
+		expect(result).toMatchObject({ ok: true });
+		expect(result).not.toHaveProperty("leadEventSeq");
+		expect(
+			store
+				.listUndeliveredLeadEvents()
+				.filter((row) => row.event_type === "workflow_replacement_eligibility"),
+		).toHaveLength(0);
+		store.close();
+	});
+
+	it("FLY-2018: an older-attempt escalation does not suppress the current replacement notice", async () => {
+		const store = await engineRunWithImplement("running");
+		const internals = store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		};
+		internals.db.run(
+			`INSERT INTO workflow_run_event
+			   (event_uid, run_id, seq, kind, node_id, execution_id, payload, at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			[
+				"retry_limit:run-1:implement:0:4",
+				"run-1",
+				999,
+				"retry_limit_escalated",
+				"implement",
+				"implement-attempt-0",
+				JSON.stringify({ attempt: 0 }),
+				"2026-07-19T23:59:00.000Z",
+			],
+		);
+
+		const result = store.recordEnrolledTerminalSignal({
+			executionId: "implement-dead",
+			sourceEventId: "current-attempt-terminal",
+			signal: "failed",
+			source: "direct-event-sink",
+			now: "2026-07-20T00:09:00.000Z",
+			leadIntent: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			},
+		});
+
+		expect(result).toMatchObject({
+			ok: true,
+			leadEventSeq: expect.any(Number),
+		});
+		store.close();
+	});
+
 	it("recovers a missing session row when a durable teardown fact and dead probe agree", async () => {
 		const store = await engineRunWithImplement("running");
 		expect(

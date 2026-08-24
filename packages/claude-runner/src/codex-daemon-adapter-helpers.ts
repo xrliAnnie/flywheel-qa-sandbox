@@ -119,7 +119,39 @@ export interface GoalClassification {
 	success: boolean;
 	timedOut: boolean;
 	failureReason?: string;
+	failureClass?: "environment";
+	failureCode?: string;
 	resultText?: string;
+}
+
+export function sanitizeCodexTurnError(input: {
+	message: unknown;
+	code?: unknown;
+}): { message: string; code?: string } | undefined {
+	if (typeof input.message !== "string") return undefined;
+	if (input.code !== undefined && typeof input.code !== "string") {
+		return undefined;
+	}
+	const controlStripped = Array.from(input.message, (character) => {
+		const codePoint = character.codePointAt(0) ?? 0;
+		return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f)
+			? " "
+			: character;
+	}).join("");
+	let message = controlStripped
+		.replace(/\s+/gu, " ")
+		.replace(/@(everyone|here)/giu, "@\u200b$1")
+		.replace(/<@(?=[!&]?\d)/gu, "<@\u200b")
+		.replace(/`/gu, "'")
+		.trim();
+	message = Array.from(message).slice(0, 500).join("");
+	if (!message) return undefined;
+	const code =
+		typeof input.code === "string" &&
+		/^[a-z][a-z0-9_-]{0,63}$/u.test(input.code)
+			? input.code
+			: undefined;
+	return { message, ...(code ? { code } : {}) };
 }
 
 /**
@@ -161,11 +193,21 @@ export function classifyGoalOutcome(input: {
 			failureReason: "goal run produced no outcome",
 		};
 	}
-	const { status, succeeded } = outcome.result;
+	const { status, succeeded, lastTurnError } = outcome.result;
 	const success = status === "complete" && succeeded;
 	const classification: GoalClassification = { success, timedOut: false };
 	if (!success) {
 		classification.failureReason = `goal ended non-complete: ${status}`;
+		if (lastTurnError) {
+			const sanitized = sanitizeCodexTurnError(lastTurnError);
+			if (sanitized) {
+				classification.failureReason += ` — last turn error: ${sanitized.message}${sanitized.code ? ` [${sanitized.code}]` : ""}`;
+				if (sanitized.code === "unauthorized") {
+					classification.failureClass = "environment";
+					classification.failureCode = "codex:unauthorized";
+				}
+			}
+		}
 	}
 	if (lastMessage !== undefined) classification.resultText = lastMessage;
 	return classification;

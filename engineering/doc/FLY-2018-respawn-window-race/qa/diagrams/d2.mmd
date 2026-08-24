@@ -1,0 +1,13 @@
+flowchart LR
+  A["脚本 stdout: action=verified"] --> B{"退出码正常?"}
+  B -->|"是"| OK["直接放行"]
+  B -->|"否 (信号/超时)"| C{"是不是我们自己取消的?"}
+  C -->|"是 abort"| CAN["记 cancelled 而不是 held<br/>取消永远胜出"]
+  C -->|"不是"| D["在共享 deadline 内<br/>最多 5 秒补问一次真 tmux<br/>has-session"]
+  D --> E{"tmux 说会话在吗?"}
+  E -->|"在"| OK2["放行<br/>日志: succeeded despite exit anomaly<br/>signal / termination 全记录"]
+  E -->|"不在 / 问不出来 / 预算不够"| HOLD["仍然 held<br/>修前行为原样保留"]
+  classDef good fill:#e6f7ea,stroke:#34c759,color:#1d1d1f
+  classDef warn fill:#fff4e0,stroke:#ff9500,color:#1d1d1f
+  class OK,OK2 good
+  class HOLD,CAN warn

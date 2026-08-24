@@ -192,4 +192,26 @@ describe("FLY-1427 DirectEventSink DAG closeout guard", () => {
 		expect(enqueue).not.toHaveBeenCalled();
 		store.close();
 	});
+
+	it("FLY-2018: direct generalized failure persists the normalized environment pair", async () => {
+		const { store, sink, envelope } = await harness("exec-fly2018-direct");
+
+		await sink.emitFailed(envelope, "legacy", undefined, {
+			failureKind: "goal_blocked",
+			failureReason: "refresh token revoked",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+
+		const event = store
+			.getEventsByExecution(envelope.executionId)
+			.find((candidate) => candidate.event_type === "session_failed");
+		expect(event?.payload).toEqual({
+			failureKind: "goal_blocked",
+			lastError: "refresh token revoked",
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+		store.close();
+	});
 });

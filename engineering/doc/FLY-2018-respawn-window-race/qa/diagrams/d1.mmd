@@ -1,0 +1,12 @@
+flowchart LR
+  A["引擎判定旧执行体已死<br/>writer_replacement 铸新体"] --> B["守护脚本 ensure<br/>去确认 tmux 会话在不在"]
+  B --> C["脚本 stdout 已回报成功<br/>action=verified, pid=6234"]
+  C --> D["脚本进程随后被外部信号杀掉<br/>退出码 = null"]
+  D --> E{"外层只看退出码"}
+  E -->|"null 一律当失败"| F["判 held<br/>hold_lock_unavailable"]
+  F --> G["新生体 4 秒内夭折<br/>连续两具同一签名"]
+  G --> H["重试停手<br/>节点挂 running + 死 exec<br/>静默停摆 31 分钟"]
+  classDef bad fill:#ffe5e3,stroke:#ff3b30,color:#1d1d1f
+  classDef ok fill:#e6f7ea,stroke:#34c759,color:#1d1d1f
+  class D,E,F,G,H bad
+  class C ok

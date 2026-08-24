@@ -139,12 +139,21 @@ describe("enforceObjectiveLimit (FLY-1236: fail-loud degrade, never truncate the
 });
 
 describe("classifyGoalOutcome", () => {
-	const result = (status: string, succeeded: boolean) => ({
+	const result = (
+		status: string,
+		succeeded: boolean,
+		lastTurnError?: {
+			turnId: string;
+			message: string;
+			code?: string;
+		},
+	) => ({
 		result: {
 			status: status as never,
 			tokensUsed: 1,
 			turns: 1,
 			succeeded,
+			...(lastTurnError ? { lastTurnError } : {}),
 		},
 	});
 
@@ -161,6 +170,46 @@ describe("classifyGoalOutcome", () => {
 			expect(c.timedOut).toBe(false);
 			expect(c.failureReason).toContain(s);
 		}
+	});
+
+	it("maps an owned unauthorized turn to a sanitized environment failure", () => {
+		const classification = classifyGoalOutcome({
+			outcome: result("blocked", false, {
+				turnId: "turn-1",
+				message: "refresh\n@everyone <@123> ```\u0000revoked",
+				code: "unauthorized",
+			}),
+		});
+
+		expect(classification).toMatchObject({
+			failureClass: "environment",
+			failureCode: "codex:unauthorized",
+		});
+		expect(classification.failureReason).toContain("last turn error:");
+		expect(classification.failureReason).toContain("[unauthorized]");
+		expect(classification.failureReason).not.toContain("\n");
+		expect(classification.failureReason).not.toContain("\r");
+		expect(classification.failureReason).not.toContain("\u0000");
+		expect(classification.failureReason).not.toContain("@everyone");
+		expect(classification.failureReason).not.toContain("<@123>");
+		expect(classification.failureReason).not.toContain("```");
+	});
+
+	it("bounds error text by Unicode code point and does not classify unknown codes", () => {
+		const classification = classifyGoalOutcome({
+			outcome: result("blocked", false, {
+				turnId: "turn-1",
+				message: "😀".repeat(600),
+				code: "future_code",
+			}),
+		});
+
+		expect(classification.failureClass).toBeUndefined();
+		expect(classification.failureCode).toBeUndefined();
+		const rendered =
+			classification.failureReason!.split("last turn error: ")[1]!;
+		expect(Array.from(rendered.split(" [future_code]")[0]!)).toHaveLength(500);
+		expect(rendered).toContain("[future_code]");
 	});
 
 	it("complete but NOT succeeded → non-success (defensive)", () => {
