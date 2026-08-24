@@ -1,0 +1,18 @@
+flowchart TD
+    subgraph W["写入侧:全绿那一刻记下的事实"]
+        direction LR
+        W1["哪次运行<br/>(run 编号+第几次尝试)"] ~~~ W2["测的哪个提交<br/>(PR head)"] ~~~ W3["当时 main 停在哪<br/>(被测合并的父指针)"] ~~~ W4["当时的<br/>CI 配置指纹"]
+    end
+    W --> M["持久标记(随 CI 运行存档的小文件)"]
+    M --> R1["① 标记必须真属于那次运行(GitHub 维护的归属,伪造不了)"]
+    R1 --> R2["② 那次运行必须是 CI 本尊(workflow 身份绑定)"]
+    R2 --> R3["③ 向 GitHub 重查那次运行:11 个任务全成功、零跳过"]
+    R3 --> R4["④ 旧提交是新提交的祖先 + main 没动 + CI 配置没变"]
+    R4 --> R5["⑤ 从那以后的每个改动逐个文件核:只有文档"]
+    R5 -->|"五关全过"| OK["✅ 才允许走快车道"]
+    R1 -.->|"任何一关对不上"| FULL["跑全量(默认安全侧)"]
+    R3 -.-> FULL
+    R5 -.-> FULL
+    style M fill:#eef3fd,stroke:#007aff,stroke-width:2px
+    style OK fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+    style FULL fill:#fdeeee,stroke:#ff3b30,stroke-width:2px

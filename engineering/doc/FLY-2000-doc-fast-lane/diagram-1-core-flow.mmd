@@ -1,0 +1,11 @@
+flowchart TD
+    A["工程师往 PR 推一笔提交"] --> B{"分类器判断:<br/>这次要跑多少检查?"}
+    B -->|"整条 PR 从头到尾只动过文档"| F["✅ 快车道<br/>只跑快速检查(构建 + 代码规范 + 安全守卫)<br/>约 3 分钟"]
+    B -->|"PR 里含代码"| C{"这条 PR 曾经<br/>真·全绿过一次,<br/>而且那之后只多了文档?"}
+    C -->|"11 项核验全部通过"| F
+    C -->|"否 / 任何一项拿不准"| D["全量测试套件<br/>约 30–60 计费分钟"]
+    D -->|"全部真·通过"| E["CI 在全绿那一刻<br/>写下一个持久标记<br/>(=这次全绿的存证)"]
+    E -.->|"下一笔文档提交来时被读取"| C
+    style F fill:#e8f7ee,stroke:#34c759,stroke-width:2px
+    style D fill:#fdeeee,stroke:#ff3b30,stroke-width:2px
+    style E fill:#eef3fd,stroke:#007aff,stroke-width:2px

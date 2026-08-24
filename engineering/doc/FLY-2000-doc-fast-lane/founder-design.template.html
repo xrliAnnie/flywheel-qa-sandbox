@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2000 文档快车道 — 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 28px 16px 60px; }
+  h1 { font-size: 26px; margin-bottom: 6px; }
+  .sub { color: #86868b; font-size: 14px; margin-bottom: 18px; }
+  .chip { display: inline-block; font-size: 12px; padding: 2px 10px; border-radius: 10px; margin-right: 6px; font-weight: 600; }
+  .chip.green { background: #e8f7ee; color: #1e7e3e; }
+  .chip.blue { background: #eef3fd; color: #0a58ca; }
+  .chip.amber { background: #fff4e5; color: #b25e00; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 10px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.purple { border-left-color: #af52de; }
+  .card h2 { font-size: 18px; margin-bottom: 10px; color: #1a365d; }
+  .card p, .card li { font-size: 14.5px; }
+  .card ul, .card ol { padding-left: 20px; margin: 8px 0; }
+  .card li { margin-bottom: 5px; }
+  .big { font-size: 16px; }
+  .term { color: #86868b; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5ea; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; }
+  .diagram { overflow-x: auto; margin: 12px 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .money { font-family: 'SF Mono', monospace; font-weight: 700; }
+  .ok { color: #1e7e3e; font-weight: 600; }
+  .no { color: #c0392b; font-weight: 600; }
+  .cbox { margin-top: 14px; padding-top: 12px; border-top: 1px dashed #e5e5ea; }
+  .cbox label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 5px; }
+  .cbox textarea { width: 100%; min-height: 52px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-family: inherit; font-size: 13.5px; resize: vertical; background: #fafafa; }
+  .cbox textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  #summary-card { border-left-color: #1a365d; }
+  #summary-body { white-space: pre-wrap; font-size: 13px; background: #f5f5f7; border-radius: 8px; padding: 12px; min-height: 40px; font-family: 'SF Mono', monospace; }
+  .btn { display: inline-block; margin-top: 10px; padding: 8px 18px; border: none; border-radius: 8px; background: #007aff; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:active { opacity: 0.8; }
+  #copy-status { margin-left: 10px; font-size: 13px; }
+  .note { font-size: 12.5px; color: #86868b; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2000 文档快车道 — 设计方案</h1>
+  <div class="sub">
+    <span class="chip green">设计已过 4 轮外部评审</span>
+    <span class="chip blue">实施前有一道实弹硬门</span>
+    <span class="chip amber">净省上限 ≤ $116/月(不是承诺)</span>
+  </div>
+
+  <div class="card green" data-sec="一句话">
+    <h2>1. 一句话</h2>
+    <p class="big">一条 PR 的代码已经<strong>完整测过一次全绿</strong>之后,再推的<strong>纯文档提交</strong>(进度账本、报告、归档)不再重跑整套测试,只跑几分钟的快速检查 —— 每次省约 30–60 计费分钟。</p>
+    <p style="margin-top:8px;">这是你 8/22 在省钱方案页圈的「方案二·文档快车道」。钱的口径:<span class="money">≤ $116/月</span>,这是<strong>上限</strong>不是承诺 —— 真实能省多少,上线一周后拿真数据对账(方案里已排好这一步)。</p>
+    <div class="cbox"><label>对这一节的意见(自动保存在你本机)</label><textarea data-key="s1" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="现状与变化">
+    <h2>2. 现在亏在哪,改完后什么样</h2>
+    <table>
+      <tr><th>场景</th><th>现在</th><th>改完后</th></tr>
+      <tr><td>整条 PR 只有文档</td><td class="ok">已走快车道(现有机制,不动)</td><td class="ok">不变</td></tr>
+      <tr><td>代码 PR 全绿后,再推文档(进度账本、QA 报告、归档)</td><td class="no">每笔都重跑全量(30–60 分钟)</td><td class="ok">走快车道(约 3 分钟)</td></tr>
+      <tr><td>任何含代码的提交、任何拿不准的情况</td><td class="ok">跑全量</td><td class="ok">跑全量(一步都不松)</td></tr>
+    </table>
+    <p class="term">「快车道」也不是零检查:构建、代码规范、全部治理守卫照跑;跳过的只有重型测试矩阵。</p>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s2" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="核心流程">
+    <h2>3. 核心流程</h2>
+    <div class="diagram">%%DIAGRAM1%%</div>
+    <p class="term">「真·全绿」= 那一次运行里 11 个检查任务全部真实跑完且全部成功,一个都没被跳过 —— 快车道自己的绿不算数,防止两笔文档提交互相作保。</p>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s3" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="标记与核验">
+    <h2>4. 凭什么信「曾经全绿」—— 标记与核验模型</h2>
+    <p>难点:CI 平台的历史记录里,「当时是在哪个版本上测的」这个信息<strong>事后拿不回来</strong>(平台字段会被悄悄改成当前值 —— 上一单 FLY-1987 实测证明过)。所以唯一可靠的做法是:<strong>全绿那一刻,自己写下一个存证</strong>。</p>
+    <div class="diagram">%%DIAGRAM2%%</div>
+    <p class="term">关键原则:标记只是一张「指路条」。它说自己全绿<strong>不算数</strong> —— 读取时逐项向 GitHub 官方接口重新核实;11 项核验任何一项对不上,一律退回全量。</p>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s4" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="取舍与否掉的方案">
+    <h2>5. 关键取舍,和被否掉的路</h2>
+    <table>
+      <tr><th>决定</th><th>为什么</th></tr>
+      <tr><td>存证放在 CI 运行的附件里(artifact,平台自带的文件存档)</td><td>平台自己维护「这文件属于哪次运行」,伪造不了归属;不用给 CI 开任何新权限。否掉的:写数据库/外部存储(新增基础设施)、写评论或状态(要扩权限)。</td></tr>
+      <tr><td>main 前进了就不走快车道</td><td>你的代码 + 别人刚合的新代码 = 一个没测过的组合,宁可重测。这会压低命中率 —— 如实接受,一周对账见真章。</td></tr>
+      <tr><td>不加任何开关</td><td>沿用你定的「不加新 flag」铁律;要回滚就整个 revert,残留的存证没人读、到期自动清。</td></tr>
+      <tr><td>先修 FLY-1996 再上线本单</td><td>已发现 CI 有一条守卫读取文档目录里的文件(那个已立单的安全洞)——快车道扩面会放大它,所以那单不落地,本单不合入。</td></tr>
+    </table>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s5" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="诚实边界">
+    <h2>6. 诚实边界</h2>
+    <ul>
+      <li><strong>红线与防线</strong>:「动了代码却没测」绝不允许。防线不是一层:标记自述不算数、逐项向官方接口重验、增量逐文件核、任何拿不准一律全跑;合入前必须现场演示一次「掺了代码 → 全量照跑」的反面对照,演示不出来就不许合。</li>
+      <li><strong>救不了的</strong>:PR 第一次推送、全绿之前的提交、全绿之后 main 已经前进的文档提交 —— 这些照旧全跑,是安全边界不是缺陷。</li>
+      <li><strong>$116/月是上限</strong>:建模时有两个收窄条件没法预先验证,真实值必然更低,多低只有对账知道。</li>
+      <li><strong>这机制被删过一次</strong>:第一版(FLY-1861)靠「查最新一次运行」当基线,易碎、还信了会漂移的平台字段,你 8/18 下令简化后被整套删掉。这次的三处不同:存证是持久的(不怕运行被打断顶掉)、只记写入那一刻的本地事实(不信活指针)、读取时全部重验。纯文档 PR 的现有简单规则一个字不动。</li>
+      <li><strong>还有一道实弹硬门(N0)</strong>:纸面可行已证,但「存证在咱们仓库真的写得进、读得回」只能实弹验。实施第一步就是这个试验,试不过 = 整案放弃、原样撤回 —— 这是方案里明写的合法出口,不是失败。</li>
+    </ul>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s6" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="下一步">
+    <h2>7. 下一步</h2>
+    <ol>
+      <li><strong>N0 实弹试验</strong>:只上「写存证」这一半,真实全绿写一次、跨运行读一次、量一次成本 —— 过不了就放弃整案。</li>
+      <li><strong>N1 实现读取侧</strong>(须等 FLY-1996 那个安全洞先修掉)。</li>
+      <li><strong>N2 合入门</strong>:现场演示正、反两个对照(纯文档走快车道 / 掺代码必全跑)。</li>
+      <li><strong>上线 7 天后对账</strong>:命中率、实际省下的分钟数,按 FLY-1987 同一把尺子记进台账。</li>
+    </ol>
+    <p class="term">设计已过 4 轮外部评审(Codex,最严档),共修 13 处 —— 包括 3 个真能造成「假绿」的反例,都已在判据里堵死并配了专门测试。</p>
+    <div class="cbox"><label>对这一节的意见</label><textarea data-key="s7" placeholder="留空 = 没意见"></textarea></div>
+  </div>
+
+  <div class="card" id="summary-card" data-sec="页面意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="note">下面自动汇总你在各节留的意见。<strong>如果整页都没意见,不用碰这里</strong> —— 直接在 Discord 里回一句「通过」就行;复制出来的内容只用于提修改意见,不当通过信号。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunks"></div>
+    <button class="btn" id="copy-btn" type="button">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var MARKER = '【页面意见汇总】FLY-2000';
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = 'fly2000-comments:' + location.pathname + ':'; }
+  catch (e) { prefix = 'fly2000-comments:unknown:'; }
+
+  function lsGet(key) {
+    try { return window.localStorage.getItem(prefix + key) || ''; } catch (e) { return ''; }
+  }
+  function lsSet(key, val) {
+    try { window.localStorage.setItem(prefix + key, val); } catch (e) { /* 隐私模式等场景下静默降级 */ }
+  }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function sectionTitle(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-sec')) || '未命名段落';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('■ ' + sectionTitle(area) + ':\n' + v);
+    });
+    return parts;
+  }
+
+  function buildChunks() {
+    var parts = collect();
+    if (!parts.length) return [];
+    var chunks = [];
+    var current = MARKER + '\n';
+    parts.forEach(function (p) {
+      var piece = p + '\n\n';
+      if (current.length + piece.length > CHUNK_LIMIT && current.length > MARKER.length + 1) {
+        chunks.push(current.trimEnd());
+        current = MARKER + '(续)\n' + piece;
+      } else {
+        current += piece;
+      }
+    });
+    chunks.push(current.trimEnd());
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  function renderSummary() {
+    var chunks = buildChunks();
+    if (!chunks.length) {
+      summaryBody.textContent = '(还没有意见)';
+    } else {
+      summaryBody.textContent = chunks.join('\n\n———— 分段 ————\n\n');
+    }
+  }
+
+  areas.forEach(function (area) {
+    area.value = lsGet(area.getAttribute('data-key'));
+    area.addEventListener('input', function () {
+      lsSet(area.getAttribute('data-key'), area.value);
+      renderSummary();
+    });
+  });
+  renderSummary();
+
+  var status = document.getElementById('copy-status');
+  function showStatus(ok, msg) {
+    status.textContent = msg;
+    status.style.color = ok ? '#1e7e3e' : '#c0392b';
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  document.getElementById('copy-btn').addEventListener('click', function () {
+    var chunks = buildChunks();
+    if (!chunks.length) {
+      showStatus(false, '还没有意见可复制;如果整页都没意见,直接在 Discord 回复即可。');
+      return;
+    }
+    var text = chunks.join('\n\n———— 分段,请分开粘贴 ————\n\n');
+    var finish = function (ok) {
+      if (ok) showStatus(true, '已复制 ' + chunks.length + ' 段,粘贴到 Discord 即可。');
+      else showStatus(false, '复制失败 —— 请手动全选上方汇总框内容复制。');
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { finish(true); }, function () { finish(legacyCopy(text)); });
+    } else {
+      finish(legacyCopy(text));
+    }
+  });
+})();
+</script>
+</body>
+</html>
