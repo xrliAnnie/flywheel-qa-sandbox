@@ -140,10 +140,14 @@ export {
 	syncOpMarkerPath,
 	withSyncOpMarker,
 } from "./sync-op-marker.js";
-export { TmuxAdapter } from "./TmuxAdapter.js";
+export {
+	RUNNER_PANE_BASE_ALLOWLIST,
+	TmuxAdapter,
+} from "./TmuxAdapter.js";
 export type { ExecFileFn } from "./TmuxRunner.js";
 export { TmuxRunner } from "./TmuxRunner.js";
 export { TrustPromptHandler } from "./TrustPromptHandler.js";
+export { buildTmuxServerBirthEnvironment } from "./tmux-server-environment.js";
 export type {
 	APIAssistantMessage,
 	APIUserMessage,

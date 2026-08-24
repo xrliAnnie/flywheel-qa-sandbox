@@ -98,6 +98,41 @@ function makeEnsure(overrides: {
 }
 
 describe("ensureTuiWindow", () => {
+	it("creates the tmux server with only canonical coordinates, never inherited identity or secrets", () => {
+		let birthEnv: NodeJS.ProcessEnv | undefined;
+		ensureTuiWindow(SPEC, {
+			exec: (_cmd, args, options) => {
+				if (args[0] === "new-session") birthEnv = options?.env;
+				return { ok: true };
+			},
+			log: () => {},
+		});
+
+		expect(birthEnv).toBeDefined();
+		expect(Object.keys(birthEnv ?? {}).sort()).toEqual(
+			Object.keys(birthEnv ?? {})
+				.filter((name) =>
+					[
+						"HOME",
+						"SHELL",
+						"USER",
+						"LOGNAME",
+						"LANG",
+						"TERM",
+						"TMPDIR",
+						"PATH",
+					].includes(name),
+				)
+				.sort(),
+		);
+		expect(birthEnv?.PATH).toBe(
+			`${birthEnv?.HOME}/.local/bin:${birthEnv?.HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+		);
+		expect(birthEnv).not.toHaveProperty("CODEX_HOME");
+		expect(birthEnv).not.toHaveProperty("FLYWHEEL_CODEX_BIN");
+		expect(birthEnv).not.toHaveProperty("OPENAI_API_KEY");
+	});
+
 	it("probe → session ensure → UNCONDITIONAL stale-kill → window create with the TUI command", () => {
 		const { result, calls } = makeEnsure({});
 		expect(result).toBe(true);

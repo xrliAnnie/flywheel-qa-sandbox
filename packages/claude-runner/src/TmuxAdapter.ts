@@ -61,25 +61,67 @@ export type AsyncExecFileFn = (
 	opts?: ExecFileOpts,
 ) => Promise<{ stdout: string; stderr: string }>;
 
-/**
- * FLY-1715: values a runner must never inherit from the long-lived tmux server.
- * The allow-by-default boundary is intentionally narrow: these are the six
- * identity/credential names implicated in the incident. Registry-derived
- * runner identity continues under the explicit FLYWHEEL_* names.
- */
-export const AMBIENT_IDENTITY_DENYLIST = [
-	"LEAD_ID", // legacy Lead identity reader
-	"DISCORD_STATE_DIR", // Discord plugin credential-directory selector
-	"DISCORD_BOT_TOKEN", // Discord gateway credential
-	"TEAMLEAD_API_TOKEN", // Bridge master credential
-	"BRIDGE_URL", // legacy Bridge endpoint
-	"PROJECT_NAME", // legacy project identity; conditionally restored from ctx
+/** FLY-1999: OS/tmux coordinates a runner pane may inherit. Every launch adds
+ * only its own explicit `new-window -e` names to this positive set. */
+export const RUNNER_PANE_BASE_ALLOWLIST = [
+	"PATH",
+	"HOME",
+	"SHELL",
+	"USER",
+	"LOGNAME",
+	"LANG",
+	"LANGUAGE",
+	"TERM",
+	"TZ",
+	"TMPDIR",
+	"TMP",
+	"TEMP",
+	"PWD",
+	"COLUMNS",
+	"LINES",
+	"EDITOR",
+	"VISUAL",
+	"PAGER",
+	"XDG_RUNTIME_DIR",
+	"XDG_CACHE_HOME",
+	"XDG_CONFIG_HOME",
+	"XDG_DATA_HOME",
+	"LC_ALL",
+	"LC_CTYPE",
+	"LC_COLLATE",
+	"LC_MESSAGES",
+	"LC_MONETARY",
+	"LC_NUMERIC",
+	"LC_TIME",
+	"TMUX",
+	"TMUX_PANE",
 ] as const;
+
+const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** Values stay in the pane environment; only validated names enter shell source. */
+export function buildRunnerPaneEnvironmentPrefix(
+	allowedEnvNames: Iterable<string> = [],
+): string {
+	const names = [
+		...new Set([...RUNNER_PANE_BASE_ALLOWLIST, ...allowedEnvNames]),
+	].sort();
+	for (const name of names) {
+		if (!ENVIRONMENT_NAME.test(name)) {
+			throw new Error(
+				`invalid environment variable name: ${JSON.stringify(name)}`,
+			);
+		}
+	}
+	return `/usr/bin/env -i ${names
+		.map((name) => `\${${name}+"${name}=$${name}"}`)
+		.join(" ")}`;
+}
 
 export interface AmbientSafeWindowCommandOptions {
 	binaryName: string;
 	binaryArgs: string[];
-	projectName?: string;
+	allowedEnvNames?: Iterable<string>;
 	gateFile?: string;
 	launchToken?: string;
 	cleanup?: "keep" | "unlink";
@@ -166,27 +208,28 @@ export function assertLaunchCommandBudgets(
 
 /**
  * Build the final pane command. Both direct adapters and the generation-gated
- * Claude path cross the same `env -u` boundary. PROJECT_NAME is first removed,
- * then restored only when the registry-derived context supplied it.
+ * Claude path reconstruct the child environment from the same positive set.
+ * Binary names, arguments, and values remain positional data, never shell source.
  */
 export function buildAmbientSafeWindowCommand(
 	opts: AmbientSafeWindowCommandOptions,
 ): string[] {
-	const safeRunnerCommand = [
-		"env",
-		...AMBIENT_IDENTITY_DENYLIST.flatMap((name) => ["-u", name]),
-		...(opts.projectName !== undefined
-			? [`PROJECT_NAME=${opts.projectName}`]
-			: []),
-		opts.binaryName,
-		...opts.binaryArgs,
-	];
+	const envPrefix = buildRunnerPaneEnvironmentPrefix(opts.allowedEnvNames);
 
 	const hasGate = opts.gateFile !== undefined || opts.launchToken !== undefined;
 	if (opts.promptFile && !hasGate) {
 		throw new Error("ambient-safe prompt file requires a gated launch");
 	}
-	if (!hasGate) return safeRunnerCommand;
+	if (!hasGate) {
+		return [
+			"sh",
+			"-c",
+			`exec ${envPrefix} "$@"`,
+			"flywheel-runner-env",
+			opts.binaryName,
+			...opts.binaryArgs,
+		];
+	}
 	if (!opts.gateFile || !opts.launchToken) {
 		throw new Error(
 			"ambient-safe gated launch requires gateFile and launchToken",
@@ -198,14 +241,15 @@ export function buildAmbientSafeWindowCommand(
 		"-c",
 		// $0 = commit file; $1 = this launch token; $2 = cleanup policy;
 		// $3 = optional prompt file;
-		// after shift, "$@" is the complete ambient-safe argv. Neither project
-		// identity nor the binary name is interpolated into shell source.
-		'cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift 3; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; exec "$@" "$p"; else exec "$@"; fi',
+		// after shift, "$@" is binary + args. Only validated environment names
+		// enter this source; their values are expanded by the pane shell.
+		`cf="$0"; tok="$1"; cleanup="$2"; pf="$3"; shift 3; n=0; while ! grep -qF "$tok" "$cf" 2>/dev/null; do [ "$n" -ge 1500 ] && exit 1; sleep 0.02; n=$((n+1)); done; [ "$cleanup" = "unlink" ] && rm -f -- "$cf"; if [ -n "$pf" ]; then p="$(cat -- "$pf")" || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; [ -n "$p" ] || { printf "FLYWHEEL_PROMPT_FILE_UNREADABLE %s\\n" "$pf" >&2; exit 78; }; set -- "$@" "$p"; fi; exec ${envPrefix} "$@"`,
 		opts.gateFile,
 		opts.launchToken,
 		opts.cleanup ?? "keep",
 		opts.promptFile ?? "",
-		...safeRunnerCommand,
+		opts.binaryName,
+		...opts.binaryArgs,
 	];
 }
 
@@ -448,19 +492,6 @@ export class TmuxAdapter implements IAdapter {
 		// Ensure session exists (idempotent)
 		await this.ensureSession();
 
-		if (this.hookServer) {
-			// v0.2 mode: no marker dir needed
-		} else {
-			// v0.1.1 mode: inject FLYWHEEL_MARKER_DIR into tmux session environment
-			this.execFileFn("tmux", [
-				"set-environment",
-				"-t",
-				`=${this.sessionName}`,
-				"FLYWHEEL_MARKER_DIR",
-				FLYWHEEL_MARKER_DIR,
-			]);
-		}
-
 		// Unset CLAUDECODE to prevent nested Claude hang/refuse
 		this.execFileFn("tmux", [
 			"set-environment",
@@ -507,26 +538,34 @@ export class TmuxAdapter implements IAdapter {
 			claudeArgs.unshift(...transportSpawnConfig.args);
 		}
 
-		// Build per-window env args for v0.2 HTTP callback
-		const envArgs =
-			this.hookServer && callbackToken
-				? [
-						"-e",
-						`FLYWHEEL_CALLBACK_PORT=${this.hookServer.getPort()}`,
-						"-e",
-						`FLYWHEEL_CALLBACK_TOKEN=${callbackToken}`,
-						"-e",
-						`FLYWHEEL_ISSUE_ID=${ctx.issueId ?? "unknown"}`,
-					]
-				: [];
+		// FLY-1999: one source of truth for both tmux `-e` injection and the
+		// positive child-environment name set. Values never enter shell source.
+		const envArgs: string[] = [];
+		const allowedEnvNames = new Set<string>();
+		const appendPaneEnv = (name: string, value: string): void => {
+			envArgs.push("-e", `${name}=${value}`);
+			allowedEnvNames.add(name);
+		};
+		if (this.hookServer && callbackToken) {
+			appendPaneEnv(
+				"FLYWHEEL_CALLBACK_PORT",
+				String(this.hookServer.getPort()),
+			);
+			appendPaneEnv("FLYWHEEL_CALLBACK_TOKEN", callbackToken);
+			appendPaneEnv("FLYWHEEL_ISSUE_ID", ctx.issueId ?? "unknown");
+		} else {
+			// v0.1.1 compatibility must be per-window: a session-level value would
+			// be discarded by the positive environment boundary.
+			appendPaneEnv("FLYWHEEL_MARKER_DIR", FLYWHEEL_MARKER_DIR);
+		}
 
 		// GEO-206: Inject comm DB path for flywheel-comm CLI
 		if (ctx.commDbPath) {
-			envArgs.push("-e", `FLYWHEEL_COMM_DB=${ctx.commDbPath}`);
+			appendPaneEnv("FLYWHEEL_COMM_DB", ctx.commDbPath);
 		}
 
 		// GEO-266: Inject execution ID for inbox PostToolUse hook
-		envArgs.push("-e", `FLYWHEEL_EXEC_ID=${ctx.executionId}`);
+		appendPaneEnv("FLYWHEEL_EXEC_ID", ctx.executionId);
 
 		// FLY-142 PR 1.4: Mailbox sentinel — when present, ~/.flywheel/hooks/inbox-check.sh
 		// short-circuits to a no-op. Lead → Runner delivery uses claude-code's
@@ -572,7 +611,7 @@ export class TmuxAdapter implements IAdapter {
 					),
 					"utf-8",
 				);
-				envArgs.push("-e", `FLYWHEEL_RUNNER_STATE_DIR=${sentinelDir}`);
+				appendPaneEnv("FLYWHEEL_RUNNER_STATE_DIR", sentinelDir);
 			} catch (err) {
 				// Non-fatal: hook will fall back to old behavior (and thus the wake
 				// bug). Log loudly so this gets caught in QA.
@@ -583,7 +622,7 @@ export class TmuxAdapter implements IAdapter {
 		} else {
 			// Rollback: defense-in-depth — even if a stale sentinel exists from a
 			// previous mailbox-mode spawn, force the hook to ignore it via env.
-			envArgs.push("-e", "FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1");
+			appendPaneEnv("FLYWHEEL_DISABLE_MAILBOX_SENTINEL", "1");
 			console.warn(
 				`[TmuxAdapter] FLY-142 PR 1.4 — FLYWHEEL_COMM_BACKEND=commdb (rollback): skipping mailbox sentinel for ${ctx.executionId} + forcing FLYWHEEL_DISABLE_MAILBOX_SENTINEL=1 in Runner env. Hook will run legacy CommDB polling path.`,
 			);
@@ -621,7 +660,7 @@ export class TmuxAdapter implements IAdapter {
 					{ mode: 0o600 },
 				);
 				chmodSync(markerPath, 0o600);
-				envArgs.push("-e", `TMPDIR=${browserTmp}`);
+				appendPaneEnv("TMPDIR", browserTmp);
 			} catch (err) {
 				console.warn(
 					`[TmuxAdapter] FLY-766 browser-tmp/owner-marker setup FAILED for ${ctx.executionId}: ${(err as Error).message}. Runner falls back to system TMPDIR; its agent-browser Chrome will be unattributed (reaper log-only).`,
@@ -631,70 +670,72 @@ export class TmuxAdapter implements IAdapter {
 
 		// GEO-292: Bridge connection for stage reporting
 		if (ctx.bridgeUrl) {
-			envArgs.push("-e", `FLYWHEEL_BRIDGE_URL=${ctx.bridgeUrl}`);
+			appendPaneEnv("FLYWHEEL_BRIDGE_URL", ctx.bridgeUrl);
 		}
 		if (ctx.bridgeIngestToken) {
-			envArgs.push("-e", `FLYWHEEL_INGEST_TOKEN=${ctx.bridgeIngestToken}`);
+			appendPaneEnv("FLYWHEEL_INGEST_TOKEN", ctx.bridgeIngestToken);
 		}
 		if (ctx.workflowSubmissionCredential) {
-			envArgs.push(
-				"-e",
-				`FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL=${ctx.workflowSubmissionCredential}`,
+			appendPaneEnv(
+				"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
+				ctx.workflowSubmissionCredential,
 			);
 		}
 		if (ctx.workflowSubmissionExpected) {
-			envArgs.push("-e", "FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED=1");
+			appendPaneEnv("FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED", "1");
 		}
 		if (ctx.workflowOutputCredential) {
-			envArgs.push(
-				"-e",
-				`FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL=${ctx.workflowOutputCredential}`,
+			appendPaneEnv(
+				"FLYWHEEL_WORKFLOW_OUTPUT_CREDENTIAL",
+				ctx.workflowOutputCredential,
 			);
 		}
 		if (ctx.founderReviewRequired) {
-			envArgs.push("-e", "FLYWHEEL_FOUNDER_REVIEW_REQUIRED=1");
+			appendPaneEnv("FLYWHEEL_FOUNDER_REVIEW_REQUIRED", "1");
 		}
 		// FLY-191 Phase 2: verify-approval must read the SAME StateStore the
 		// Bridge writes (QA-caught: custom TEAMLEAD_DB_PATH deployments left
 		// the Runner on the default-path DB → fail-closed forever).
 		if (ctx.stateDbPath) {
-			envArgs.push("-e", `FLYWHEEL_STATE_DB_PATH=${ctx.stateDbPath}`);
+			appendPaneEnv("FLYWHEEL_STATE_DB_PATH", ctx.stateDbPath);
 		}
 		// FLY-1608: the runner is the complete-failed marker writer. A tmux
 		// window does not inherit the slot Bridge's live env, so pass the isolated
 		// directory explicitly; unset keeps the legacy HOME default.
 		const completeMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR?.trim();
 		if (completeMarkerDir) {
-			envArgs.push("-e", `FLYWHEEL_COMPLETE_MARKER_DIR=${completeMarkerDir}`);
+			appendPaneEnv("FLYWHEEL_COMPLETE_MARKER_DIR", completeMarkerDir);
 		}
 		// FLY-795: where a resumed runner writes its progress cursor back.
 		if (ctx.progressPath) {
-			envArgs.push("-e", `FLYWHEEL_PROGRESS_PATH=${ctx.progressPath}`);
+			appendPaneEnv("FLYWHEEL_PROGRESS_PATH", ctx.progressPath);
 		}
 		if (ctx.projectName) {
-			envArgs.push("-e", `FLYWHEEL_PROJECT_NAME=${ctx.projectName}`);
+			appendPaneEnv("FLYWHEEL_PROJECT_NAME", ctx.projectName);
 		}
 		// FLY-1726: tmux inherits its server-global environment unless each key is
 		// explicitly replaced. A Runner owns a Lead lane (FLYWHEEL_LEAD_ID) but is
 		// not the Lead Discord identity itself, so clear the bare Lead/Discord
 		// coordinates and project only the canonical runner project name.
-		envArgs.push("-e", `PROJECT_NAME=${ctx.projectName ?? ""}`);
-		envArgs.push("-e", "LEAD_ID=");
-		envArgs.push("-e", "DISCORD_STATE_DIR=");
-		envArgs.push("-e", "DISCORD_IDENTITY_MODE=");
-		envArgs.push("-e", "DISCORD_BOT_TOKEN=");
+		if (ctx.projectName !== undefined) {
+			appendPaneEnv("PROJECT_NAME", ctx.projectName);
+		}
+		appendPaneEnv("LEAD_ID", "");
+		appendPaneEnv("DISCORD_STATE_DIR", "");
+		appendPaneEnv("DISCORD_IDENTITY_MODE", "");
+		appendPaneEnv("DISCORD_BOT_TOKEN", "");
 
 		// FLY-80: Inject Lead ID + comm CLI path so Runner's /spin approve gate works.
 		// Without these, the gate's `if [ -n "$FLYWHEEL_COMM_CLI" ]` check fails
 		// and the Runner completes without waiting for Annie's approval.
 		if (ctx.leadId) {
-			envArgs.push("-e", `FLYWHEEL_LEAD_ID=${ctx.leadId}`);
+			appendPaneEnv("FLYWHEEL_LEAD_ID", ctx.leadId);
 		}
 		if (ctx.commDbPath) {
 			try {
 				const req = createRequire(import.meta.url);
 				const commCliPath = req.resolve("flywheel-comm");
-				envArgs.push("-e", `FLYWHEEL_COMM_CLI=${commCliPath}`);
+				appendPaneEnv("FLYWHEEL_COMM_CLI", commCliPath);
 			} catch {
 				// flywheel-comm not resolvable — gate will fall back to manual mode
 			}
@@ -708,7 +749,7 @@ export class TmuxAdapter implements IAdapter {
 		// (codex-approved §12.3 of the FLY-60 plan). Other code paths that
 		// don't pass `sentinelPath` are unaffected (env var simply absent).
 		if (ctx.sentinelPath) {
-			envArgs.push("-e", `FLYWHEEL_LAND_STATUS_PATH=${ctx.sentinelPath}`);
+			appendPaneEnv("FLYWHEEL_LAND_STATUS_PATH", ctx.sentinelPath);
 		}
 
 		// FLY-102 / FLY-159: Override Claude Code's Bash tool max timeout.
@@ -716,13 +757,13 @@ export class TmuxAdapter implements IAdapter {
 		// human decisions. Set to 49h = 48h gate timeout + 1h buffer so the
 		// gate CLI can fire its own fail-close path and emit gate_timed_out
 		// before the Bash tool kills it.
-		envArgs.push("-e", "BASH_MAX_TIMEOUT_MS=176400000");
+		appendPaneEnv("BASH_MAX_TIMEOUT_MS", "176400000");
 
 		// FLY-142 PR 1.2: merge transport-supplied env vars into envArgs.
 		// (`transportSpawnConfig` was computed earlier — reused here.)
 		if (transportSpawnConfig) {
 			for (const [key, value] of Object.entries(transportSpawnConfig.env)) {
-				envArgs.push("-e", `${key}=${value}`);
+				appendPaneEnv(key, value);
 			}
 		}
 
@@ -731,7 +772,7 @@ export class TmuxAdapter implements IAdapter {
 		// NODE_OPTIONS=--dns-result-order=ipv4first so each kimi model call in the
 		// pane skips kimi 0.18.0's IPv6-resolution startup stall (~6s, FLY-494 F0).
 		for (const [key, value] of Object.entries(this.extraPaneEnv())) {
-			envArgs.push("-e", `${key}=${value}`);
+			appendPaneEnv(key, value);
 		}
 
 		// FLY-245 / FLY-1628: every claude-tmux launch is two-phase gated. The
@@ -760,7 +801,7 @@ export class TmuxAdapter implements IAdapter {
 		const windowCommand = buildAmbientSafeWindowCommand({
 			binaryName: this.binaryName,
 			binaryArgs: claudeArgs,
-			projectName: ctx.projectName,
+			allowedEnvNames,
 			...(windowPromptFile ? { promptFile: windowPromptFile } : {}),
 			...(gateFile && launchToken
 				? {

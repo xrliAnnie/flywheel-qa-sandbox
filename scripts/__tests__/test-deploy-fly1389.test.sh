@@ -428,6 +428,12 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
       || { E_OK=0; fail "E/FLY-1995: loop diagnostics dir not slot-local in Bridge env"; }
     grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${E_SLOT_DIR}/state/delivery-secret$" "$BE" \
       || { E_OK=0; fail "E/FLY-1663: Bridge delivery secret path not slot-local"; }
+    grep -q "^TMUX_TMPDIR=${E_SLOT_DIR}$" "$BE" \
+      || { E_OK=0; fail "E/FLY-1999: Bridge tmux socket root not slot-local"; }
+    ! grep -q '^TMUX=' "$BE" \
+      || { E_OK=0; fail "E/FLY-1999: Bridge inherited a caller tmux coordinate"; }
+    ! grep -q '^FLYWHEEL_TMUX_SOCKET_OVERRIDE=' "$BE" \
+      || { E_OK=0; fail "E/FLY-1999: QA Bridge retained the split-routing socket override"; }
     grep -q '^TEAMLEAD_DEFAULT_LEAD_AGENT=flywheel-test-31$' "$BE" \
       || { E_OK=0; fail "E/FLY-1726: default Bridge branch lacks canonical default Lead"; }
     grep -q "^FLYWHEEL_PROJECTS_FILE=${E_SLOT_DIR}/flywheel-projects.json$" "$BE" \

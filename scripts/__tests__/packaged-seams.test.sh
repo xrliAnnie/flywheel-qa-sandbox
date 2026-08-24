@@ -128,14 +128,15 @@ run_bridge_wrapper() { # <tree> <home>
 
 T="$SANDBOX/s1-tree"; H="$SANDBOX/s1-home"
 mk_tree "$T"; mk_home "$H"
-stub "$H" node 'exit 0'; stub "$H" npx 'exit 0'
+stub "$H" node 'printf "%s\n" "${FLYWHEEL_TMUX_SOCKET_OVERRIDE-}" > "$HOME/bridge-socket"' 'exit 0'; stub "$H" npx 'exit 0'
 mkdir -p "$T/dist"; echo "// compiled" > "$T/dist/run-bridge.js"
 run_bridge_wrapper "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^node dist/run-bridge.js$" <(calls "$H") \
-   && ! grep -q "^npx " <(calls "$H"); then
-  pass "S1 bridge-wrapper packaged: exec node dist/run-bridge.js (npx untouched)"
+   && ! grep -q "^npx " <(calls "$H") \
+   && [ -z "$(cat "$H/bridge-socket")" ]; then
+  pass "S1 bridge-wrapper packaged: leaves tmux socket ownership proof to Bridge (npx untouched)"
 else
-  fail "S1 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S1 rc=$rc socket=[$(cat "$H/bridge-socket" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 T="$SANDBOX/s2-tree"; H="$SANDBOX/s2-home"

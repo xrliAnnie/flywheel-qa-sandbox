@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph IN["进(白名单,两段)"]
+        BASE["静态 OS 基底段(~31 名)<br/>PATH · HOME · SHELL · TERM<br/>语言/时区 · 临时目录 · 终端尺寸<br/>+ TMUX 窗口身份 2 名"]
+        PROTO["动态协议段(本次启动显式给的)<br/>FLYWHEEL_EXEC_ID · 通信数据库路径<br/>Bridge 地址/令牌 · 进度账本路径 等<br/>≈20 名,逐名登记,来源单一"]
+    end
+    subgraph OUT["不在名单 = 不存在(全部拦下)"]
+        DROP1["CODEX_HOME(别人的号)"]
+        DROP2["FLYWHEEL_CODEX_BIN(别人的安装)"]
+        DROP3["OPENAI_API_KEY 等全部秘密"]
+        DROP4["~30 个别的 Lead 的身份残留"]
+        DROP5["SSH_AUTH_SOCK 等可代持凭据的把手"]
+    end
+    BASE --> PANE["runner 窗口环境<br/>(精确 = 白名单,逐名可验)"]
+    PROTO --> PANE
+    style IN fill:#e8f5e9,stroke:#34c759
+    style OUT fill:#ffe8e6,stroke:#ff3b30
+    style PANE fill:#e6f0ff,stroke:#007aff,stroke-width:2px

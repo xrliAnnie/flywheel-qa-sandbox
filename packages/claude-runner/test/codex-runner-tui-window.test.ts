@@ -217,6 +217,14 @@ describe("spawnCommandAsync", () => {
 });
 
 describe("buildRunnerTuiCommand", () => {
+	it("rebuilds the pane environment before applying the runner's explicit CODEX_HOME", () => {
+		const cmd = buildRunnerTuiCommand(spec);
+		expect(cmd).toMatch(/^exec \/usr\/bin\/env -i /);
+		expect(cmd).toContain(`\${PATH+"PATH=$PATH"}`);
+		expect(cmd).not.toContain(`\${CODEX_HOME+"CODEX_HOME=$CODEX_HOME"}`);
+		expect(cmd.indexOf("env -i")).toBeLessThan(cmd.indexOf("CODEX_HOME="));
+	});
+
 	it("resumes the daemon's SHORT socket with workspace-write + no-approval, on the given thread", () => {
 		const cmd = buildRunnerTuiCommand(spec);
 		expect(cmd).toContain('CODEX_HOME="/home/x/.flywheel/codex-homes/exec-1"');
@@ -470,8 +478,12 @@ describe("ensureRunnerTuiWindow", () => {
 
 	it("probes tmux, ensures the session, purges + re-ensures + verifies, then creates the window", async () => {
 		const t = fakeTmux({ initial: [{ id: "@0", name: "zsh" }] }); // clean session, no stale FLY-1188
+		const birthEnvironments: Array<NodeJS.ProcessEnv | undefined> = [];
 		const outcome = await ensureRunnerTuiWindow(spec, {
-			exec: t.exec,
+			exec: (cmd, args, options) => {
+				if (args[0] === "new-session") birthEnvironments.push(options?.env);
+				return t.exec(cmd, args);
+			},
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
@@ -491,6 +503,15 @@ describe("ensureRunnerTuiWindow", () => {
 		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
 		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
+		expect(birthEnvironments).toHaveLength(2);
+		for (const env of birthEnvironments) {
+			expect(env?.PATH).toBe(
+				`${env?.HOME}/.local/bin:${env?.HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+			);
+			expect(env).not.toHaveProperty("CODEX_HOME");
+			expect(env).not.toHaveProperty("FLYWHEEL_CODEX_BIN");
+			expect(env).not.toHaveProperty("OPENAI_API_KEY");
+		}
 		expect(t.pileUp).toBe(false);
 	});
 

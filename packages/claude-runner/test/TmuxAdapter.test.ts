@@ -13,19 +13,22 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
-import type { AdapterExecutionContext } from "flywheel-core";
+import {
+	type AdapterExecutionContext,
+	FLYWHEEL_MARKER_DIR,
+} from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // We'll test TmuxAdapter by injecting a mock execFileFn
 import type { AsyncExecFileFn, ExecFileFn } from "../src/TmuxAdapter.js";
 import {
-	AMBIENT_IDENTITY_DENYLIST,
 	assertLaunchCommandBudgets,
 	buildAmbientSafeWindowCommand,
 	ensureRunnerSession,
 	LaunchCommandOversizeError,
 	LaunchPrecommitError,
 	pruneScaffoldWindow,
+	RUNNER_PANE_BASE_ALLOWLIST,
 	TMUX_COMMAND_BUDGET_BYTES,
 	TmuxAdapter,
 	TmuxSessionHoldError,
@@ -62,73 +65,120 @@ function promptFileFromTmuxArgs(args: string[]): string {
 	return promptFile;
 }
 
-describe("FLY-1715 ambient identity boundary", () => {
-	it("executes direct and gated commands with six ambient names stripped and registry project identity restored", () => {
-		const probeKeys = [
-			...AMBIENT_IDENTITY_DENYLIST,
-			"FLYWHEEL_LEAD_ID",
-			"FLYWHEEL_INGEST_TOKEN",
-			"SOME_UNLISTED_SECRET",
-		];
-		const probe = `const keys=${JSON.stringify(probeKeys)}; console.log(JSON.stringify(Object.fromEntries(keys.map((key) => [key, { present: Object.hasOwn(process.env, key), value: process.env[key] ?? null }]))));`;
-		const poisonedEnv = {
-			...process.env,
-			LEAD_ID: "ambient-lead",
-			DISCORD_STATE_DIR: "/ambient/discord",
-			DISCORD_BOT_TOKEN: "ambient-discord-token",
-			TEAMLEAD_API_TOKEN: "ambient-master-token",
-			BRIDGE_URL: "http://ambient.invalid",
-			PROJECT_NAME: "ambient-project",
-			FLYWHEEL_LEAD_ID: "registry-lead",
-			FLYWHEEL_INGEST_TOKEN: "registry-ingest",
-			SOME_UNLISTED_SECRET: "boundary-canary",
-		};
-		const tmp = mkdtempSync(join(tmpdir(), "fly1715-identity-"));
-		try {
-			for (const gated of [false, true]) {
-				for (const projectName of [undefined, "registry project; $(ignored)"]) {
-					const token = "launch-token";
-					const gateFile = join(
-						tmp,
-						`${gated}-${projectName ? "set" : "unset"}`,
-					);
-					if (gated) writeFileSync(gateFile, token);
-					const command = buildAmbientSafeWindowCommand({
-						binaryName: process.execPath,
-						binaryArgs: ["-e", probe],
-						projectName,
-						...(gated
-							? { gateFile, launchToken: token, cleanup: "keep" as const }
-							: {}),
-					});
-					const result = spawnSync(command[0] as string, command.slice(1), {
-						env: poisonedEnv,
-						encoding: "utf8",
-					});
-					expect(result.status, result.stderr).toBe(0);
-					const observed = JSON.parse(result.stdout.trim()) as Record<
-						string,
-						{ present: boolean; value: string | null }
-					>;
-					for (const key of AMBIENT_IDENTITY_DENYLIST) {
-						if (key === "PROJECT_NAME" && projectName !== undefined) {
-							expect(observed[key]).toEqual({
-								present: true,
-								value: projectName,
-							});
-						} else {
-							expect(observed[key]).toEqual({ present: false, value: null });
-						}
-					}
-					expect(observed.FLYWHEEL_LEAD_ID?.value).toBe("registry-lead");
-					expect(observed.FLYWHEEL_INGEST_TOKEN?.value).toBe("registry-ingest");
-					expect(observed.SOME_UNLISTED_SECRET?.value).toBe("boundary-canary");
-				}
+function paneEnvValues(args: string[]): string[] {
+	return args.filter((_arg, index) => args[index - 1] === "-e");
+}
+
+describe("FLY-1999 runner pane environment boundary", () => {
+	it.each([
+		{ shape: "direct", gated: false, prompt: undefined },
+		{ shape: "gated-no-prompt", gated: true, prompt: undefined },
+		{ shape: "gated-prompt", gated: true, prompt: "task prompt" },
+	] as const)(
+		"executes the $shape command with an exact positive allowlist",
+		({ gated, prompt }) => {
+			const probe =
+				"process.stdout.write(JSON.stringify({ env: process.env, prompt: process.argv[1] ?? null }))";
+			const poisonedEnv = {
+				PATH: process.env.PATH ?? "/usr/bin:/bin",
+				HOME: "/tmp/fly1999-home",
+				SHELL: "/bin/fly1999-shell",
+				LANG: "en_US.UTF-8",
+				TERM: "xterm-256color",
+				FLYWHEEL_EXEC_ID: "runner-exec",
+				EMPTY_PROTOCOL: "",
+				COMPLEX_PROTOCOL: "space ' quote \" and\nnewline",
+				CODEX_HOME: "/tmp/infra-bot",
+				FLYWHEEL_CODEX_BIN: "/tmp/infra-bot/codex",
+				OPENAI_API_KEY: "must-not-cross",
+				SOME_UNLISTED_SECRET: "must-not-cross-either",
+			};
+			const allowedEnvNames = [
+				"FLYWHEEL_EXEC_ID",
+				"EMPTY_PROTOCOL",
+				"COMPLEX_PROTOCOL",
+			];
+			const tmp = mkdtempSync(join(tmpdir(), "fly1999-env-boundary-"));
+			try {
+				const token = "launch-token";
+				const gateFile = join(tmp, "gate");
+				const promptFile = join(tmp, "prompt.md");
+				if (gated) writeFileSync(gateFile, token);
+				if (prompt !== undefined) writeFileSync(promptFile, prompt);
+				const command = buildAmbientSafeWindowCommand({
+					binaryName: process.execPath,
+					binaryArgs: ["-e", probe],
+					allowedEnvNames,
+					...(gated
+						? {
+								gateFile,
+								launchToken: token,
+								cleanup: "keep" as const,
+								...(prompt !== undefined ? { promptFile } : {}),
+							}
+						: {}),
+				});
+				const realTmp = realpathSync(tmp);
+				const result = spawnSync(command[0] as string, command.slice(1), {
+					env: poisonedEnv,
+					cwd: realTmp,
+					encoding: "utf8",
+				});
+				expect(result.status, result.stderr).toBe(0);
+				const observed = JSON.parse(result.stdout) as {
+					env: Record<string, string>;
+					prompt: string | null;
+				};
+				// macOS CoreFoundation adds this inside a Node process after exec; it
+				// is not inherited from the pane and is outside the shell boundary.
+				delete observed.env.__CF_USER_TEXT_ENCODING;
+				expect(observed.env).toEqual({
+					PATH: poisonedEnv.PATH,
+					HOME: poisonedEnv.HOME,
+					SHELL: poisonedEnv.SHELL,
+					LANG: poisonedEnv.LANG,
+					TERM: poisonedEnv.TERM,
+					PWD: realTmp,
+					FLYWHEEL_EXEC_ID: poisonedEnv.FLYWHEEL_EXEC_ID,
+					EMPTY_PROTOCOL: "",
+					COMPLEX_PROTOCOL: poisonedEnv.COMPLEX_PROTOCOL,
+				});
+				expect(observed.prompt).toBe(prompt ?? null);
+			} finally {
+				rmSync(tmp, { recursive: true, force: true });
 			}
-		} finally {
-			rmSync(tmp, { recursive: true, force: true });
-		}
+		},
+	);
+
+	it("keeps unset names unset, deduplicates names, and emits a stable sorted shell source", () => {
+		const command = buildAmbientSafeWindowCommand({
+			binaryName: "env",
+			binaryArgs: [],
+			allowedEnvNames: ["Z_PROTOCOL", "A_PROTOCOL", "Z_PROTOCOL"],
+		});
+		const source = command[2] ?? "";
+		expect(source).toContain(
+			`exec /usr/bin/env -i \${A_PROTOCOL+"A_PROTOCOL=$A_PROTOCOL"}`,
+		);
+		expect(source.match(/\$\{Z_PROTOCOL\+/g)).toHaveLength(1);
+		expect(source.indexOf("A_PROTOCOL")).toBeLessThan(
+			source.indexOf("Z_PROTOCOL"),
+		);
+		expect(RUNNER_PANE_BASE_ALLOWLIST).toContain("TMUX_PANE");
 	});
+
+	it.each(["", "BAD-NAME", "BAD=NAME", "ünicode"])(
+		"rejects an unsafe allowlist variable name %j",
+		(name) => {
+			expect(() =>
+				buildAmbientSafeWindowCommand({
+					binaryName: "env",
+					binaryArgs: [],
+					allowedEnvNames: [name],
+				}),
+			).toThrow(/invalid environment variable name/i);
+		},
+	);
 
 	it("delivers a file-backed prompt as the final gated process argument", () => {
 		const tmp = mkdtempSync(join(tmpdir(), "fly1869-prompt-gate-"));
@@ -160,6 +210,17 @@ describe("FLY-1715 ambient identity boundary", () => {
 		} finally {
 			rmSync(tmp, { recursive: true, force: true });
 		}
+	});
+
+	it("emits the positive environment prefix once in a gated command", () => {
+		const command = buildAmbientSafeWindowCommand({
+			binaryName: "claude",
+			binaryArgs: [],
+			allowedEnvNames: ["FLYWHEEL_EXEC_ID"],
+			gateFile: "/tmp/gate",
+			launchToken: "token",
+		});
+		expect(command[2]?.match(/\/usr\/bin\/env -i/g)).toHaveLength(1);
 	});
 
 	it("fails closed with exit 78 when a configured prompt file is missing or empty", () => {
@@ -210,6 +271,66 @@ describe("FLY-1715 ambient identity boundary", () => {
 });
 
 describe("FLY-1869 launch command budget", () => {
+	it("keeps the complete production allowlist below budget in direct and gated shapes", () => {
+		const names = [
+			"BASH_MAX_TIMEOUT_MS",
+			"DISCORD_BOT_TOKEN",
+			"DISCORD_IDENTITY_MODE",
+			"DISCORD_STATE_DIR",
+			"FLYWHEEL_AGENT_NAME",
+			"FLYWHEEL_AGENT_TEAM_NAME",
+			"FLYWHEEL_BRIDGE_URL",
+			"FLYWHEEL_CALLBACK_PORT",
+			"FLYWHEEL_CALLBACK_TOKEN",
+			"FLYWHEEL_COMM_CLI",
+			"FLYWHEEL_COMM_DB",
+			"FLYWHEEL_COMPLETE_MARKER_DIR",
+			"FLYWHEEL_EXEC_ID",
+			"FLYWHEEL_GATE_MARKER_DIR",
+			"FLYWHEEL_INGEST_TOKEN",
+			"FLYWHEEL_ISSUE_ID",
+			"FLYWHEEL_LAND_STATUS_PATH",
+			"FLYWHEEL_LEAD_ID",
+			"FLYWHEEL_MARKER_DIR",
+			"FLYWHEEL_PROGRESS_PATH",
+			"FLYWHEEL_PROJECT_NAME",
+			"FLYWHEEL_RUNNER_STATE_DIR",
+			"FLYWHEEL_STATE_DB_PATH",
+			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
+			"NODE_OPTIONS",
+			"PROJECT_NAME",
+			"TMPDIR",
+		];
+		const longPath = `/${"x/".repeat(225)}file`;
+		const envArgs = names.flatMap((name) => [
+			"-e",
+			`${name}=${name === "NODE_OPTIONS" ? "x".repeat(512) : "x".repeat(32)}`,
+		]);
+		for (const gated of [false, true]) {
+			const command = buildAmbientSafeWindowCommand({
+				binaryName: "/usr/local/bin/claude",
+				binaryArgs: ["--model", "claude-opus-4-6"],
+				allowedEnvNames: names,
+				...(gated
+					? {
+							gateFile: longPath,
+							launchToken: "12345678-1234-1234-1234-123456789abc",
+							promptFile: longPath,
+						}
+					: {}),
+			});
+			expect(() =>
+				assertLaunchCommandBudgets([
+					"new-window",
+					...envArgs,
+					"-c",
+					longPath,
+					...command,
+				]),
+			).not.toThrow();
+		}
+	});
+
 	it("allows the exact byte budget and rejects one byte over with flag attribution", () => {
 		const exact = "x".repeat(TMUX_COMMAND_BUDGET_BYTES - 6);
 		expect(() => assertLaunchCommandBudgets([exact])).not.toThrow();
@@ -521,7 +642,9 @@ describe("TmuxAdapter", () => {
 			// gated shell: `sh -c '<grep -qF $tok>; exec claude "$@"' <commitFile> <token> ...`
 			expect(newWindow?.args).toContain("sh");
 			expect(newWindow?.args.some((a) => a.includes("grep -qF"))).toBe(true);
-			expect(newWindow?.args.some((a) => a.includes('exec "$@"'))).toBe(true);
+			expect(
+				newWindow?.args.some((a) => a.includes("exec /usr/bin/env -i")),
+			).toBe(true);
 			expect(newWindow?.args).toContain("claude");
 			expect(newWindow?.args).toContain(commitFile);
 			// the file holds THIS launch's token (a uuid) — the per-launch gate.
@@ -615,7 +738,9 @@ describe("TmuxAdapter", () => {
 			const newWindow = calls.find(
 				(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 			);
-			expect(newWindow?.args.some((a) => a.includes('exec "$@"'))).toBe(true);
+			expect(
+				newWindow?.args.some((a) => a.includes("exec /usr/bin/env -i")),
+			).toBe(true);
 			expect(newWindow?.args).toContain("claude");
 			expect(existsSync(commitFile)).toBe(false); // no commit → replay re-drives
 			expect(
@@ -635,7 +760,9 @@ describe("TmuxAdapter", () => {
 			(c) => c.cmd === "tmux" && c.args[0] === "new-window",
 		);
 		expect(newWindow?.args).toContain("sh");
-		expect(newWindow?.args.some((arg) => arg.includes('exec "$@"'))).toBe(true);
+		expect(
+			newWindow?.args.some((arg) => arg.includes("exec /usr/bin/env -i")),
+		).toBe(true);
 		expect(newWindow?.args).toContain("claude");
 		expect(newWindow?.args.some((arg) => arg.includes("rm -f"))).toBe(true);
 		expect(opened).toHaveBeenCalledWith({
@@ -989,9 +1116,7 @@ describe("TmuxAdapter", () => {
 		expect(readFileSync(promptFileFromTmuxArgs(newWindow!.args), "utf8")).toBe(
 			"Fix the browser bug",
 		);
-		expect(newWindow!.args.some((arg) => arg.includes('exec "$@" "$p"'))).toBe(
-			true,
-		);
+		expect(newWindow!.args.some((arg) => arg.includes('"$@" "$p"'))).toBe(true);
 	});
 
 	it("FLY-751: slim flags survive the gateway launch path", async () => {
@@ -1218,7 +1343,7 @@ describe("TmuxAdapter", () => {
 		// Critical: argv must NOT contain the 14KB blob anywhere.
 		const totalArgv = args.join(" ");
 		expect(totalArgv).not.toContain("x".repeat(14_000));
-		expect(totalArgv.length).toBeLessThan(2_000);
+		expect(totalArgv.length).toBeLessThan(6_000);
 
 		// File path is what the Runner consumes.
 		const fileFlagIdx = args.indexOf("--append-system-prompt-file");
@@ -1532,19 +1657,21 @@ describe("TmuxAdapter", () => {
 
 	// ─── remain-on-exit ─────────────────────────────
 
-	it("injects FLYWHEEL_MARKER_DIR into tmux session environment", async () => {
+	it("injects FLYWHEEL_MARKER_DIR into the exact legacy runner window", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const adapter = new TmuxAdapter("flywheel", fn, 10);
 
 		await adapter.execute(makeCtx());
 
+		const newWindow = calls.find((c) => c.args[0] === "new-window");
+		expect(newWindow?.args).toContain(
+			`FLYWHEEL_MARKER_DIR=${FLYWHEEL_MARKER_DIR}`,
+		);
 		const setEnvCalls = calls.filter((c) => c.args[0] === "set-environment");
 		const markerDirCall = setEnvCalls.find(
 			(c) => c.args.includes("FLYWHEEL_MARKER_DIR") && !c.args.includes("-u"),
 		);
-		expect(markerDirCall).toBeDefined();
-		expect(markerDirCall!.args).toContain("-t");
-		expect(markerDirCall!.args).toContain("=flywheel");
+		expect(markerDirCall).toBeUndefined();
 	});
 
 	it("unsets CLAUDECODE env var to prevent nested Claude hang", async () => {
@@ -1813,7 +1940,7 @@ describe("TmuxAdapter", () => {
 		expect(readFileSync(promptFileFromTmuxArgs(args), "utf8")).toBe(
 			"Fix the bug",
 		);
-		expect(args.some((arg) => arg.includes('exec "$@" "$p"'))).toBe(true);
+		expect(args.some((arg) => arg.includes('"$@" "$p"'))).toBe(true);
 		const permIdx = claudeArgs.indexOf("--permission-mode");
 		expect(permIdx).toBeGreaterThan(-1);
 	});
@@ -2055,6 +2182,17 @@ describe("TmuxAdapter", () => {
 					"DISCORD_BOT_TOKEN=",
 				]),
 			);
+		});
+
+		it("keeps PROJECT_NAME absent when no project identity was supplied", async () => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(
+				makeCtx({ projectName: undefined }),
+			);
+
+			const newWindow = calls.find((call) => call.args[0] === "new-window");
+			expect(newWindow?.args).not.toContain("PROJECT_NAME=");
+			expect(newWindow?.args.join(" ")).not.toContain("${PROJECT_NAME+");
 		});
 
 		// FLY-102 / FLY-159: BASH_MAX_TIMEOUT_MS env injection (49h to accommodate 48h gate timeout + 1h buffer)
@@ -2363,7 +2501,7 @@ describe("TmuxAdapter", () => {
 			expect(readFileSync(promptFileFromTmuxArgs(args), "utf8")).toBe(
 				"do work",
 			);
-			expect(args.some((arg) => arg.includes('exec "$@" "$p"'))).toBe(true);
+			expect(args.some((arg) => arg.includes('"$@" "$p"'))).toBe(true);
 		});
 
 		it("transport throw is non-fatal — falls back to no-transport spawn", async () => {
@@ -2556,11 +2694,12 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx({ executionId: "fly766-mbx" }));
 
-			const joined = calls
-				.find((c) => c.args[0] === "new-window")!
-				.args.join(" ");
-			expect(joined).toContain("TMPDIR=");
-			expect(joined).toContain("/browser-tmp");
+			const envValues = paneEnvValues(
+				calls.find((c) => c.args[0] === "new-window")!.args,
+			);
+			expect(
+				envValues.some((value) => /^TMPDIR=.*\/browser-tmp$/.test(value)),
+			).toBe(true);
 			const marker = JSON.parse(readFileSync(markerFor("fly766-mbx"), "utf-8"));
 			expect(marker.execId).toBe("fly766-mbx");
 			expect(marker.stateDbPath).toBe(OWNER_DB);
@@ -2581,13 +2720,18 @@ describe("TmuxAdapter", () => {
 
 			await adapter.execute(makeCtx({ executionId: "fly766-rb" }));
 
-			const joined = calls
-				.find((c) => c.args[0] === "new-window")!
-				.args.join(" ");
-			expect(joined).toContain("TMPDIR=");
-			expect(joined).toContain("/browser-tmp");
+			const envValues = paneEnvValues(
+				calls.find((c) => c.args[0] === "new-window")!.args,
+			);
+			expect(
+				envValues.some((value) => /^TMPDIR=.*\/browser-tmp$/.test(value)),
+			).toBe(true);
 			// Rollback still skips the mailbox sentinel dir.
-			expect(joined).not.toContain("FLYWHEEL_RUNNER_STATE_DIR=");
+			expect(
+				envValues.some((value) =>
+					value.startsWith("FLYWHEEL_RUNNER_STATE_DIR="),
+				),
+			).toBe(false);
 		});
 
 		it("owner marker stateDbPath is null when no ownerStateDbPath is threaded", async () => {
@@ -2624,10 +2768,12 @@ describe("TmuxAdapter", () => {
 				OWNER_DB,
 			);
 			await adapter.execute(makeCtx({ executionId: "fly766-kimi" }));
-			const joined = calls
-				.find((c) => c.args[0] === "new-window")!
-				.args.join(" ");
-			expect(joined).not.toContain("TMPDIR=");
+			const envValues = paneEnvValues(
+				calls.find((c) => c.args[0] === "new-window")!.args,
+			);
+			expect(envValues.some((value) => value.startsWith("TMPDIR="))).toBe(
+				false,
+			);
 			expect(existsSync(markerFor("fly766-kimi"))).toBe(false);
 		});
 	});

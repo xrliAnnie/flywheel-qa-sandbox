@@ -42,6 +42,11 @@ cat > "$BIN_DIR/tmux" <<'TMUX'
 set -u
 state="$TEST_TMUX_STATE"
 mutations="$TEST_TMUX_MUTATIONS"
+socket=""
+if [[ "${1:-}" == "-S" ]]; then
+  socket="${2:-}"
+  shift 2
+fi
 field_for() {
   local name="$1" field="$2"
   awk -F'|' -v n="$name" -v f="$field" '$1 == n { print $f; exit }' "$state" 2>/dev/null
@@ -95,7 +100,7 @@ case "${1:-}" in
     name=$(exact_target "${1:-}")
     owner=$(cat "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner" 2>/dev/null || true)
     mode=$(printf '%s\n' "$owner" | cut -d'|' -f3)
-    printf 'kill|%s|lease=%s\n' "$name" "$mode" >> "$mutations"
+    printf 'kill|%s|socket=%s|lease=%s\n' "$name" "$socket" "$mode" >> "$mutations"
     tmp="${state}.tmp"
     awk -F'|' -v n="$name" '$1 != n { print }' "$state" > "$tmp" 2>/dev/null || true
     mv "$tmp" "$state"
@@ -172,7 +177,10 @@ killed=$(awk -F'|' '$1 == "kill" { print $2 }' "$MUTATIONS" | sort)
 expected=$(printf '%s\n' \
   "cmux-own-grouped" "cmux-own-linked" "fwkeeper-own" "fwstage-owned" \
   "fwstage-wal" "runner-test-slot-${SLOT}" | sort)
+runner_socket=$(awk -F'|' -v n="runner-test-slot-${SLOT}" \
+  '$1 == "kill" && $2 == n { sub(/^socket=/, "", $3); print $3 }' "$MUTATIONS")
 if [[ "$rc" -eq 0 && "$killed" == "$expected" ]] \
+    && [[ "$runner_socket" == "/tmp/flywheel-test-slot-${SLOT}/tmux-$(id -u)/default" ]] \
     && ! grep -v 'lease=qa_teardown$' "$MUTATIONS" >/dev/null \
     && [[ ! -d "$LEASE" ]]; then
   pass "source identity/WAL authority reaps this slot and preserves live, dead, and unowned foreign sessions"

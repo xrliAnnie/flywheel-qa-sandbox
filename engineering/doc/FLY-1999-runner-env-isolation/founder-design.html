@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-1999 runner 环境污染根治设计</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  .hero { background: #fff; border-radius: 12px; padding: 28px 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #1a365d; margin-bottom: 20px; }
+  .hero h1 { font-size: 24px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; }
+  .meta .id { font-family: 'SF Mono', monospace; color: #1a365d; font-weight: 600; }
+  .badge { display: inline-block; padding: 2px 10px; border-radius: 10px; font-size: 12px; font-weight: 600; margin-left: 8px; vertical-align: middle; }
+  .badge.ok { background: #e8f5e9; color: #1e7e34; }
+  .section { background: #fff; border-radius: 12px; padding: 24px 32px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px; }
+  .section h2 { font-size: 19px; color: #1a365d; margin-bottom: 14px; }
+  .section h2 .dot { margin-right: 6px; }
+  .section h3 { font-size: 15px; color: #1d1d1f; margin: 16px 0 8px; }
+  .section p { margin-bottom: 10px; font-size: 15px; }
+  .term { color: #86868b; font-size: 13.5px; }
+  .diagram { overflow-x: auto; margin: 14px 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .dg-d1 svg { max-height: 780px; width: auto; }
+  ul.plain { margin: 8px 0 10px 22px; font-size: 14.5px; }
+  ul.plain li { margin-bottom: 6px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 10px 0; }
+  th { text-align: left; color: #86868b; font-weight: 600; padding: 8px 10px; border-bottom: 2px solid #e5e5ea; }
+  td { padding: 8px 10px; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .callout { border-left: 4px solid #ff9500; background: #fff8ef; border-radius: 8px; padding: 12px 16px; margin: 12px 0; font-size: 14.5px; }
+  .callout.red { border-color: #ff3b30; background: #fff5f4; }
+  .callout.green { border-color: #34c759; background: #f2fbf4; }
+  .comment-box { margin-top: 18px; border-top: 1px dashed #e5e5ea; padding-top: 12px; }
+  .comment-box label { font-size: 13px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-box textarea { width: 100%; min-height: 54px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 9px 12px; font-family: inherit; font-size: 14px; resize: vertical; background: #fafafa; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  .saved-tip { font-size: 11.5px; color: #34c759; margin-top: 3px; visibility: hidden; }
+  #summary-card { border-left: 4px solid #007aff; }
+  #summary-body { font-size: 14px; }
+  #summary-body .empty { color: #86868b; }
+  .chunk { background: #f5f5f7; border-radius: 8px; padding: 10px 12px; margin: 8px 0; white-space: pre-wrap; font-size: 13px; font-family: 'SF Mono', monospace; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; margin: 8px 8px 0 0; }
+  .btn:hover { background: #0066d6; }
+  .btn.small { padding: 5px 12px; font-size: 12.5px; }
+  #copy-status { font-size: 13px; margin-left: 4px; }
+  .footer { text-align: center; color: #86868b; font-size: 12px; margin: 24px 0 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <h1>runner 环境污染根治设计 <span class="badge ok">设计已过独立评审(Codex,2 轮)</span></h1>
+    <div class="meta"><span class="id">FLY-1999</span> · 设计阶段交付 · 2026-08-23 · 工程 Runner(Tadashi 麾下)</div>
+  </div>
+
+  <div class="section" data-sec="s1" data-title="① 一句话总结">
+    <h2><span class="dot" style="color:#ff3b30;">●</span>① 一句话总结</h2>
+    <p><b>每个 AI 员工(runner)开工时拿到的"工作环境"不是按它自己的身份配的,而是碰巧继承了"谁先启动了共享终端服务器"谁的全套环境</b>——8/22 晚它们继承的是 infra-bot 的:于是所有 runner 都在用 infra-bot 的 Codex 账号(跨号烧量)、还整包带着 30 多个机器人令牌和 API 密钥(其中一个被完整打进了工作记录,已报你建议轮换)。本设计把它改为:<b>开工环境从零按白名单构造——不在名单上的东西一律不存在</b>。</p>
+    <p class="term">术语:runner = 干活的 AI 员工进程;infra-bot = 基础设施自愈机器人(另一个 AI 员工);Codex = OpenAI 的编程 AI,按账号计费/限流。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机):</label><textarea data-key="s1" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" data-sec="s2" data-title="② 病根:发生了什么">
+    <h2><span class="dot" style="color:#ff9500;">●</span>② 病根:发生了什么</h2>
+    <p>tmux(所有 AI 员工共用的终端服务器,你在 cmux 里看到的那些窗口就跑在它上面)有个规则:<b>服务器重启后,谁第一个碰它,它就把谁的全套环境变量拍成快照,之后每个新窗口都默认继承这份快照</b>。8/20 宿主机重启后,第一个碰它的是 infra-bot Lead 的启动脚本——它带着 infra-bot 的 Codex 账号路径,还把密钥文件(.env,175 行)整个灌进了自己的环境。从那天起,每个新开的 runner 都继承了这一整套。</p>
+    <div class="diagram dg-d1"><svg id="FLY-1999-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 872.844px; background-color: white;" viewBox="0 0 872.84375 1064" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1999-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1999-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1999-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1999-d1 .error-icon{fill:#552222;}#FLY-1999-d1 .error-text{fill:#552222;stroke:#552222;}#FLY-1999-d1 .edge-thickness-normal{stroke-width:1px;}#FLY-1999-d1 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1999-d1 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1999-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1999-d1 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1999-d1 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1999-d1 .marker{fill:#333333;stroke:#333333;}#FLY-1999-d1 .marker.cross{stroke:#333333;}#FLY-1999-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1999-d1 p{margin:0;}#FLY-1999-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1999-d1 .cluster-label text{fill:#333;}#FLY-1999-d1 .cluster-label span{color:#333;}#FLY-1999-d1 .cluster-label span p{background-color:transparent;}#FLY-1999-d1 .label text,#FLY-1999-d1 span{fill:#333;color:#333;}#FLY-1999-d1 .node rect,#FLY-1999-d1 .node circle,#FLY-1999-d1 .node ellipse,#FLY-1999-d1 .node polygon,#FLY-1999-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1999-d1 .rough-node .label text,#FLY-1999-d1 .node .label text,#FLY-1999-d1 .image-shape .label,#FLY-1999-d1 .icon-shape .label{text-anchor:middle;}#FLY-1999-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1999-d1 .rough-node .label,#FLY-1999-d1 .node .label,#FLY-1999-d1 .image-shape .label,#FLY-1999-d1 .icon-shape .label{text-align:center;}#FLY-1999-d1 .node.clickable{cursor:pointer;}#FLY-1999-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1999-d1 .arrowheadPath{fill:#333333;}#FLY-1999-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1999-d1 .flowchart-link{stroke:#333333;fill:none;}#FLY-1999-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1999-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1999-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1999-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1999-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1999-d1 .cluster text{fill:#333;}#FLY-1999-d1 .cluster span{color:#333;}#FLY-1999-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1999-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1999-d1 rect.text{fill:none;stroke-width:0;}#FLY-1999-d1 .icon-shape,#FLY-1999-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1999-d1 .icon-shape p,#FLY-1999-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1999-d1 .icon-shape rect,#FLY-1999-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1999-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1999-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1999-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1999-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster" id="SRC" data-look="classic"><rect style="fill:#fff4e6 !important;stroke:#ff9500 !important" x="230.703125" y="8" width="339.140625" height="448"/><g class="cluster-label" transform="translate(338.3984375, 8)"><foreignObject width="123.75" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>污染源(两条支流)</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M400.273,171L400.273,181.167C400.273,191.333,400.273,211.667,400.273,229.333C400.273,247,400.273,262,400.273,269.5L400.273,277" id="L_ENV_LEAD_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_ENV_LEAD_0" data-points="W3sieCI6NDAwLjI3MzQzNzUsInkiOjE3MX0seyJ4Ijo0MDAuMjczNDM3NSwieSI6MjMyfSx7IngiOjQwMC4yNzM0Mzc1LCJ5IjoyODF9XQ==" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/><path d="M400.273,431L400.273,435.167C400.273,439.333,400.273,447.667,400.273,462C400.273,476.333,400.273,496.667,400.273,516.333C400.273,536,400.273,555,400.273,564.5L400.273,574" id="L_LEAD_SERVER_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_LEAD_SERVER_0" data-points="W3sieCI6NDAwLjI3MzQzNzUsInkiOjQzMX0seyJ4Ijo0MDAuMjczNDM3NSwieSI6NDU2fSx7IngiOjQwMC4yNzM0Mzc1LCJ5Ijo1MTd9LHsieCI6NDAwLjI3MzQzNzUsInkiOjU3OH1d" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/><path d="M400.273,728L400.273,736.167C400.273,744.333,400.273,760.667,400.273,776.333C400.273,792,400.273,807,400.273,814.5L400.273,822" id="L_SERVER_PANE_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SERVER_PANE_0" data-points="W3sieCI6NDAwLjI3MzQzNzUsInkiOjcyOH0seyJ4Ijo0MDAuMjczNDM3NSwieSI6Nzc3fSx7IngiOjQwMC4yNzM0Mzc1LCJ5Ijo4MjZ9XQ==" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/><path d="M309.758,870.029L278.777,875.858C247.797,881.686,185.836,893.343,154.855,904.672C123.875,916,123.875,927,123.875,932.5L123.875,938" id="L_PANE_S1_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_PANE_S1_0" data-points="W3sieCI6MzA5Ljc1NzgxMjUsInkiOjg3MC4wMjkwODUwNTA0NTM3fSx7IngiOjEyMy44NzUsInkiOjkwNX0seyJ4IjoxMjMuODc1LCJ5Ijo5NDJ9XQ==" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/><path d="M400.273,880L400.273,884.167C400.273,888.333,400.273,896.667,400.273,906.333C400.273,916,400.273,927,400.273,932.5L400.273,938" id="L_PANE_S2_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_PANE_S2_0" data-points="W3sieCI6NDAwLjI3MzQzNzUsInkiOjg4MH0seyJ4Ijo0MDAuMjczNDM3NSwieSI6OTA1fSx7IngiOjQwMC4yNzM0Mzc1LCJ5Ijo5NDJ9XQ==" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/><path d="M490.789,869.905L522.107,875.754C553.424,881.604,616.06,893.302,647.378,902.651C678.695,912,678.695,919,678.695,922.5L678.695,926" id="L_PANE_S4_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_PANE_S4_0" data-points="W3sieCI6NDkwLjc4OTA2MjUsInkiOjg2OS45MDUzMjU3NzU4NTcyfSx7IngiOjY3OC42OTUzMTI1LCJ5Ijo5MDV9LHsieCI6Njc4LjY5NTMxMjUsInkiOjkzMH1d" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/><path d="M734.844,183L734.844,191.167C734.844,199.333,734.844,215.667,734.844,235.333C734.844,255,734.844,278,734.844,289.5L734.844,301" id="L_DISK_S3_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_DISK_S3_0" data-points="W3sieCI6NzM0Ljg0Mzc1LCJ5IjoxODN9LHsieCI6NzM0Ljg0Mzc1LCJ5IjoyMzJ9LHsieCI6NzM0Ljg0Mzc1LCJ5IjozMDV9XQ==" marker-end="url(#FLY-1999-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel" transform="translate(400.2734375, 232)"><g class="label" data-id="L_ENV_LEAD_0" transform="translate(-77.875, -24)"><foreignObject width="155.75" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>set -a source<br />(整文件灌入进程环境)</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(400.2734375, 517)"><g class="label" data-id="L_LEAD_SERVER_0" transform="translate(-73.53125, -36)"><foreignObject width="147.0625" height="72"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>8/20 宿主重启后<br />它第一个碰 tmux<br />= 赢得 server 出生权</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(400.2734375, 777)"><g class="label" data-id="L_SERVER_PANE_0" transform="translate(-90.921875, -24)"><foreignObject width="181.84375" height="48"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>tmux 规则:每个新窗口<br />默认继承 server 全局环境</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_PANE_S1_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_PANE_S2_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_PANE_S4_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_DISK_S3_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-ENV-0" transform="translate(400.2734375, 108)"><rect class="basic label-container" style="" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>.flywheel/.env<br />175 行:30+ 个机器人令牌、<br />OPENAI_API_KEY 等云服务密钥</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-LEAD-1" transform="translate(400.2734375, 356)"><rect class="basic label-container" style="" x="-134.5703125" y="-75" width="269.140625" height="150"/><g class="label" style="" transform="translate(-104.5703125, -60)"><rect/><foreignObject width="209.140625" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>infra-bot Lead 启动脚本<br />写死 CODEX_HOME=infra-bot<br />+ FLYWHEEL_CODEX_BIN=infra-bot</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-SERVER-5" transform="translate(400.2734375, 653)"><rect class="basic label-container" style="fill:#ffe8e6 !important;stroke:#ff3b30 !important;stroke-width:2px !important" x="-130" y="-75" width="260" height="150"/><g class="label" style="" transform="translate(-100, -60)"><rect/><foreignObject width="200" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>default tmux server (pid 6234)<br />全局环境 = infra-bot Lead 的<br />全套环境快照,永久固化</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-PANE-7" transform="translate(400.2734375, 853)"><rect class="basic label-container" style="fill:#ffe8e6 !important;stroke:#ff3b30 !important" x="-90.515625" y="-27" width="181.03125" height="54"/><g class="label" style="" transform="translate(-60.515625, -12)"><rect/><foreignObject width="121.03125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>每个 runner 窗口</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-S1-9" transform="translate(123.875, 993)"><rect class="basic label-container" style="fill:#ffe8e6 !important;stroke:#ff3b30 !important" x="-115.875" y="-51" width="231.75" height="102"/><g class="label" style="" transform="translate(-85.875, -36)"><rect/><foreignObject width="171.75" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>症状①<br />codex 用 infra-bot 的号<br />(切号器写的文件没人读)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-S2-11" transform="translate(400.2734375, 993)"><rect class="basic label-container" style="fill:#ffe8e6 !important;stroke:#ff3b30 !important" x="-110.5234375" y="-51" width="221.046875" height="102"/><g class="label" style="" transform="translate(-80.5234375, -36)"><rect/><foreignObject width="161.046875" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>症状②<br />FLYWHEEL_CODEX_BIN<br />指向他人安装</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-S4-13" transform="translate(678.6953125, 993)"><rect class="basic label-container" style="fill:#ffe8e6 !important;stroke:#ff3b30 !important" x="-117.8984375" y="-63" width="235.796875" height="126"/><g class="label" style="" transform="translate(-87.8984375, -48)"><rect/><foreignObject width="175.796875" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>症状④<br />OPENAI_API_KEY 等秘密<br />全量出现在 runner 环境<br />→ 一次明文进 transcript</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DISK-14" transform="translate(734.84375, 108)"><rect class="basic label-container" style="fill:#f2e8ff !important;stroke:#af52de !important" x="-130" y="-75" width="260" height="150"/><g class="label" style="" transform="translate(-100, -60)"><rect/><foreignObject width="200" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>磁盘面(独立支流):<br />~/.local/bin/codex 符号链接<br />被 Mufasa 的自动更新器改写</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-S3-15" transform="translate(734.84375, 356)"><rect class="basic label-container" style="fill:#f2e8ff !important;stroke:#af52de !important" x="-97.296875" y="-51" width="194.59375" height="102"/><g class="label" style="" transform="translate(-67.296875, -36)"><rect/><foreignObject width="134.59375" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>症状③<br />PATH 解析的 codex<br />= mufasa 的安装</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <h3>当晚的代价链(全部可归因到这个病)</h3>
+    <ul class="plain">
+      <li><b>误诊</b>:「五个 Codex 账号同一时刻恢复额度 ⇒ 一定是机器级限流」——其实是同一个 infra-bot 账号被测了五遍(坏仪器给出的一致性假象),污染了当晚两条线的推理和给你的汇报;</li>
+      <li><b>两具"一启动就死"的 Codex 尸体</b>:用的都是 infra-bot 的已限流账号,你切到 personal 号对它们无效;</li>
+      <li><b>跨号烧量</b>:我们项目 runner 的 Codex 消耗一直记在 infra-bot 账上,费用和限流归属全错位;</li>
+      <li><b>一次明文泄露</b>:runner 自查环境时把 OPENAI_API_KEY 完整值打进了工作记录。</li>
+    </ul>
+    <p class="term">补充:「PATH 上的 codex 指向 mufasa 的安装」是第四个症状,但它是磁盘上的一个符号链接被 Codex 自动更新器改写所致(FLY-1955 已防再犯),和环境继承是两条支流——见图中紫色分支;复位那个链接是一条运维动作,不在本单代码里。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s2" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" data-sec="s3" data-title="③ 修法:三层收口">
+    <h2><span class="dot" style="color:#34c759;">●</span>③ 修法:三层收口</h2>
+    <p>核心思想只有一句:<b>从"继承全部、再删几个已知的坏名字"翻转为"从零开始、只给名单上的"</b>。旧做法(FLY-1715)删 6 个名字,这次证明坏名字的清单永远追不上;新做法是白名单——哪怕明天出现新的污染,它也进不了 runner 的环境。三层各管一段:</p>
+    <div class="diagram"><svg id="FLY-1999-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1206px; background-color: white;" viewBox="0 0 1206 214" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1999-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1999-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1999-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1999-d2 .error-icon{fill:#552222;}#FLY-1999-d2 .error-text{fill:#552222;stroke:#552222;}#FLY-1999-d2 .edge-thickness-normal{stroke-width:1px;}#FLY-1999-d2 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1999-d2 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1999-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1999-d2 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1999-d2 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1999-d2 .marker{fill:#333333;stroke:#333333;}#FLY-1999-d2 .marker.cross{stroke:#333333;}#FLY-1999-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1999-d2 p{margin:0;}#FLY-1999-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1999-d2 .cluster-label text{fill:#333;}#FLY-1999-d2 .cluster-label span{color:#333;}#FLY-1999-d2 .cluster-label span p{background-color:transparent;}#FLY-1999-d2 .label text,#FLY-1999-d2 span{fill:#333;color:#333;}#FLY-1999-d2 .node rect,#FLY-1999-d2 .node circle,#FLY-1999-d2 .node ellipse,#FLY-1999-d2 .node polygon,#FLY-1999-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1999-d2 .rough-node .label text,#FLY-1999-d2 .node .label text,#FLY-1999-d2 .image-shape .label,#FLY-1999-d2 .icon-shape .label{text-anchor:middle;}#FLY-1999-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1999-d2 .rough-node .label,#FLY-1999-d2 .node .label,#FLY-1999-d2 .image-shape .label,#FLY-1999-d2 .icon-shape .label{text-align:center;}#FLY-1999-d2 .node.clickable{cursor:pointer;}#FLY-1999-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1999-d2 .arrowheadPath{fill:#333333;}#FLY-1999-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1999-d2 .flowchart-link{stroke:#333333;fill:none;}#FLY-1999-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1999-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1999-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1999-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1999-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1999-d2 .cluster text{fill:#333;}#FLY-1999-d2 .cluster span{color:#333;}#FLY-1999-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1999-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1999-d2 rect.text{fill:none;stroke-width:0;}#FLY-1999-d2 .icon-shape,#FLY-1999-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1999-d2 .icon-shape p,#FLY-1999-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1999-d2 .icon-shape rect,#FLY-1999-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1999-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1999-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1999-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1999-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M268,107L272.167,107C276.333,107,284.667,107,292.333,107C300,107,307,107,310.5,107L314,107" id="L_SCRUB_BIRTH_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_SCRUB_BIRTH_0" data-points="W3sieCI6MjY4LCJ5IjoxMDd9LHsieCI6MjkzLCJ5IjoxMDd9LHsieCI6MzE4LCJ5IjoxMDd9XQ==" marker-end="url(#FLY-1999-d2_flowchart-v2-pointEnd)"/><path d="M578,107L582.167,107C586.333,107,594.667,107,602.333,107C610,107,617,107,620.5,107L624,107" id="L_BIRTH_WASH_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_BIRTH_WASH_0" data-points="W3sieCI6NTc4LCJ5IjoxMDd9LHsieCI6NjAzLCJ5IjoxMDd9LHsieCI6NjI4LCJ5IjoxMDd9XQ==" marker-end="url(#FLY-1999-d2_flowchart-v2-pointEnd)"/><path d="M888,107L892.167,107C896.333,107,904.667,107,912.333,107C920,107,927,107,930.5,107L934,107" id="L_WASH_R_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_WASH_R_0" data-points="W3sieCI6ODg4LCJ5IjoxMDd9LHsieCI6OTEzLCJ5IjoxMDd9LHsieCI6OTM4LCJ5IjoxMDd9XQ==" marker-end="url(#FLY-1999-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_SCRUB_BIRTH_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_BIRTH_WASH_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_WASH_R_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-SCRUB-0" transform="translate(138, 107)"><rect class="basic label-container" style="fill:#fff4e6 !important;stroke:#ff9500 !important" x="-130" y="-87" width="260" height="174"/><g class="label" style="" transform="translate(-100, -72)"><rect/><foreignObject width="200" height="144"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>第三层 · Bridge 开机清扫<br />(治存量)<br />每次启动把 tmux server 里<br />已固化的秘密名/身份名逐个删除<br />(只按名字删,值永不读取)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-BIRTH-1" transform="translate(448, 107)"><rect class="basic label-container" style="fill:#e6f0ff !important;stroke:#007aff !important" x="-130" y="-99" width="260" height="198"/><g class="label" style="" transform="translate(-100, -84)"><rect/><foreignObject width="200" height="168"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>第二层 · server 出生卫生<br />(防再犯)<br />三个可能'第一个碰 tmux'的位点<br />统一用最小规范环境起 server<br />→ 重启竞赛谁赢都不再带病</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-WASH-2" transform="translate(758, 107)"><rect class="basic label-container" style="fill:#e8f5e9 !important;stroke:#34c759 !important;stroke-width:2px !important" x="-130" y="-99" width="260" height="198"/><g class="label" style="" transform="translate(-100, -84)"><rect/><foreignObject width="200" height="168"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>第一层 · 窗口白名单重建<br />(核心修)<br />runner 窗口启动前从零重建环境:<br />OS 基底 ∪ 本次显式注入的协议名<br />不在名单 = 不存在</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-R-7" transform="translate(1068, 107)"><rect class="basic label-container" style="fill:#e8f5e9 !important;stroke:#34c759 !important;stroke-width:2px !important" x="-130" y="-99" width="260" height="198"/><g class="label" style="" transform="translate(-100, -84)"><rect/><foreignObject width="200" height="168"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>新 runner 环境<br />· CODEX_HOME 不存在<br />→ codex 读 ~/.codex → 切号器重新生效<br />· 秘密零下发<br />· 环境集合 = 白名单精确相等,可测试</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <ul class="plain">
+      <li><b>第一层(核心)</b>:每个 runner 窗口启动前,环境从零重建。这层是结构性的:不管共享服务器脏不脏,runner 拿到的永远是精确的白名单集合;</li>
+      <li><b>第二层(防再犯)</b>:代码里三个可能"第一个碰 tmux"的位置,都改成用最小规范环境去启动服务器——以后重启竞赛谁赢都不再把自己的全套环境固化进去;</li>
+      <li><b>第三层(治存量)</b>:现在的服务器已经脏了,又不能重启它(会杀掉你的 cmux 视图和所有活着的 runner)——所以 Bridge 每次开机时按名字逐个删掉服务器里的秘密名和身份名(只按名字删,值永远不读不打印)。</li>
+    </ul>
+    <p class="term">直接效果:CODEX_HOME(告诉 codex 用哪个账号目录的变量)从 runner 环境里消失 → codex 回到默认目录 ~/.codex → 你的切号器(codex-profile)写的账号文件重新被读到——这正是自动切号(1756 族)的前置条件。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s3" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" data-sec="s4" data-title="④ 结构模型:白名单怎么组成">
+    <h2><span class="dot" style="color:#007aff;">●</span>④ 结构模型:白名单怎么组成</h2>
+    <p>白名单只有两段,都有单一权威来源,没有第三个口子:</p>
+    <div class="diagram"><svg id="FLY-1999-d3" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1898.61px; background-color: white;" viewBox="0 0 1898.609375 696" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#FLY-1999-d3{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#FLY-1999-d3 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#FLY-1999-d3 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#FLY-1999-d3 .error-icon{fill:#552222;}#FLY-1999-d3 .error-text{fill:#552222;stroke:#552222;}#FLY-1999-d3 .edge-thickness-normal{stroke-width:1px;}#FLY-1999-d3 .edge-thickness-thick{stroke-width:3.5px;}#FLY-1999-d3 .edge-pattern-solid{stroke-dasharray:0;}#FLY-1999-d3 .edge-thickness-invisible{stroke-width:0;fill:none;}#FLY-1999-d3 .edge-pattern-dashed{stroke-dasharray:3;}#FLY-1999-d3 .edge-pattern-dotted{stroke-dasharray:2;}#FLY-1999-d3 .marker{fill:#333333;stroke:#333333;}#FLY-1999-d3 .marker.cross{stroke:#333333;}#FLY-1999-d3 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#FLY-1999-d3 p{margin:0;}#FLY-1999-d3 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#FLY-1999-d3 .cluster-label text{fill:#333;}#FLY-1999-d3 .cluster-label span{color:#333;}#FLY-1999-d3 .cluster-label span p{background-color:transparent;}#FLY-1999-d3 .label text,#FLY-1999-d3 span{fill:#333;color:#333;}#FLY-1999-d3 .node rect,#FLY-1999-d3 .node circle,#FLY-1999-d3 .node ellipse,#FLY-1999-d3 .node polygon,#FLY-1999-d3 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#FLY-1999-d3 .rough-node .label text,#FLY-1999-d3 .node .label text,#FLY-1999-d3 .image-shape .label,#FLY-1999-d3 .icon-shape .label{text-anchor:middle;}#FLY-1999-d3 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#FLY-1999-d3 .rough-node .label,#FLY-1999-d3 .node .label,#FLY-1999-d3 .image-shape .label,#FLY-1999-d3 .icon-shape .label{text-align:center;}#FLY-1999-d3 .node.clickable{cursor:pointer;}#FLY-1999-d3 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#FLY-1999-d3 .arrowheadPath{fill:#333333;}#FLY-1999-d3 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#FLY-1999-d3 .flowchart-link{stroke:#333333;fill:none;}#FLY-1999-d3 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1999-d3 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#FLY-1999-d3 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1999-d3 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#FLY-1999-d3 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#FLY-1999-d3 .cluster text{fill:#333;}#FLY-1999-d3 .cluster span{color:#333;}#FLY-1999-d3 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#FLY-1999-d3 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#FLY-1999-d3 rect.text{fill:none;stroke-width:0;}#FLY-1999-d3 .icon-shape,#FLY-1999-d3 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#FLY-1999-d3 .icon-shape p,#FLY-1999-d3 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#FLY-1999-d3 .icon-shape rect,#FLY-1999-d3 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#FLY-1999-d3 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#FLY-1999-d3 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#FLY-1999-d3 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="FLY-1999-d3_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d3_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d3_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d3_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d3_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="FLY-1999-d3_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster" id="IN" data-look="classic"><rect style="fill:#e8f5e9 !important;stroke:#34c759 !important" x="8" y="196" width="1592.953125" height="492"/><g class="cluster-label" transform="translate(747.6640625, 196)"><foreignObject width="113.625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>进(白名单,两段)</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M934.477,318L1045.556,318C1156.635,318,1378.794,318,1494.04,318C1609.286,318,1617.62,318,1637.43,330.746C1657.24,343.491,1688.527,368.982,1704.17,381.728L1719.813,394.473" id="L_BASE_PANE_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_BASE_PANE_0" data-points="W3sieCI6OTM0LjQ3NjU2MjUsInkiOjMxOH0seyJ4IjoxNjAwLjk1MzEyNSwieSI6MzE4fSx7IngiOjE2MjUuOTUzMTI1LCJ5IjozMTh9LHsieCI6MTcyMi45MTQzMjczMzA1MDg1LCJ5IjozOTd9XQ==" marker-end="url(#FLY-1999-d3_flowchart-v2-pointEnd)"/><path d="M934.477,554L1045.556,554C1156.635,554,1378.794,554,1494.04,554C1609.286,554,1617.62,554,1637.43,541.254C1657.24,528.509,1688.527,503.018,1704.17,490.272L1719.813,477.527" id="L_PROTO_PANE_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_PROTO_PANE_0" data-points="W3sieCI6OTM0LjQ3NjU2MjUsInkiOjU1NH0seyJ4IjoxNjAwLjk1MzEyNSwieSI6NTU0fSx7IngiOjE2MjUuOTUzMTI1LCJ5Ijo1NTR9LHsieCI6MTcyMi45MTQzMjczMzA1MDg1LCJ5Ijo0NzV9XQ==" marker-end="url(#FLY-1999-d3_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_BASE_PANE_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_PROTO_PANE_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="root" transform="translate(25, 0)"><g class="clusters"><g class="cluster" id="OUT" data-look="classic"><rect style="fill:#ffe8e6 !important;stroke:#ff3b30 !important" x="8" y="8" width="1542.953125" height="153"/><g class="cluster-label" transform="translate(679.4765625, 8)"><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>不在名单 = 不存在(全部拦下)</p></span></div></foreignObject></g></g></g><g class="edgePaths"/><g class="edgeLabels"/><g class="nodes"><g class="node default" id="flowchart-DROP1-2" transform="translate(159.4765625, 84.5)"><rect class="basic label-container" style="" x="-116.4765625" y="-27" width="232.953125" height="54"/><g class="label" style="" transform="translate(-86.4765625, -12)"><rect/><foreignObject width="172.953125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>CODEX_HOME(别人的号)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DROP2-3" transform="translate(455.953125, 84.5)"><rect class="basic label-container" style="" x="-130" y="-39" width="260" height="78"/><g class="label" style="" transform="translate(-100, -24)"><rect/><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>FLYWHEEL_CODEX_BIN(别人的安装)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DROP3-4" transform="translate(765.953125, 84.5)"><rect class="basic label-container" style="" x="-130" y="-39" width="260" height="78"/><g class="label" style="" transform="translate(-100, -24)"><rect/><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>OPENAI_API_KEY 等全部秘密</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DROP4-5" transform="translate(1075.953125, 84.5)"><rect class="basic label-container" style="" x="-130" y="-39" width="260" height="78"/><g class="label" style="" transform="translate(-100, -24)"><rect/><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>~30 个别的 Lead 的身份残留</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-DROP5-6" transform="translate(1385.953125, 84.5)"><rect class="basic label-container" style="" x="-130" y="-39" width="260" height="78"/><g class="label" style="" transform="translate(-100, -24)"><rect/><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>SSH_AUTH_SOCK 等可代持凭据的把手</p></span></div></foreignObject></g></g></g></g><g class="node default" id="flowchart-BASE-0" transform="translate(804.4765625, 318)"><rect class="basic label-container" style="" x="-130" y="-87" width="260" height="174"/><g class="label" style="" transform="translate(-100, -72)"><rect/><foreignObject width="200" height="144"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>静态 OS 基底段(~31 名)<br />PATH · HOME · SHELL · TERM<br />语言/时区 · 临时目录 · 终端尺寸<br />+ TMUX 窗口身份 2 名</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-PROTO-1" transform="translate(804.4765625, 554)"><rect class="basic label-container" style="" x="-130" y="-99" width="260" height="198"/><g class="label" style="" transform="translate(-100, -84)"><rect/><foreignObject width="200" height="168"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>动态协议段(本次启动显式给的)<br />FLYWHEEL_EXEC_ID · 通信数据库路径<br />Bridge 地址/令牌 · 进度账本路径 等<br />≈20 名,逐名登记,来源单一</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-PANE-8" transform="translate(1770.78125, 436)"><rect class="basic label-container" style="fill:#e6f0ff !important;stroke:#007aff !important;stroke-width:2px !important" x="-119.828125" y="-39" width="239.65625" height="78"/><g class="label" style="" transform="translate(-89.828125, -24)"><rect/><foreignObject width="179.65625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>runner 窗口环境<br />(精确 = 白名单,逐名可验)</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <ul class="plain">
+      <li><b>静态段(约 31 个名字)</b>:操作系统正常干活必需的——路径、家目录、语言、时区、终端类型等。与 Codex 后端已在用的同一份安全基底对齐(那边一年来运转正常,是现成的对照组);</li>
+      <li><b>动态段(约 20 个名字)</b>:这一次启动时系统<b>显式</b>发给这个 runner 的协议变量(它的任务编号、通信数据库路径、进度账本路径等)。关键:名单直接来自"发放动作本身"——发了什么名字,名单里就是什么名字,不靠人工维护第二份清单;</li>
+      <li><b>其余一切不存在</b>:包括别人的账号路径、全部 API 密钥、30 个其他 AI 员工的身份残留。验收测试断言的是"环境集合<b>精确等于</b>白名单"(逐名相等),不是"没看到坏名字"。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s4" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" data-sec="s5" data-title="⑤ 关键取舍与被否方案">
+    <h2><span class="dot" style="color:#af52de;">●</span>⑤ 关键取舍与被否方案</h2>
+    <table>
+      <tr><th style="width:32%">被否的方案</th><th>为什么否</th></tr>
+      <tr><td>继续扩充"坏名字删除清单"(在 6 个名字上加)</td><td>这次事故里 stale 变量有 30+ 个,下次会是另一批——删除清单结构性地慢一步,永远在追</td></tr>
+      <tr><td>重启共享终端服务器,一次洗净</td><td>会杀掉你的 cmux 视图和所有活着的 runner,代价不成比例;所以选了"按名字逐个删 + 等自然换代"</td></tr>
+      <tr><td>给 Claude runner 也做每任务独立的 Codex 账号目录</td><td>会改变现有"全体共享 ~/.codex、跟着你的切号器走"的语义,那是 FLY-1893 的领域,不混入本单</td></tr>
+      <tr><td>顺手修掉 PATH 上指向 mufasa 的符号链接</td><td>那是磁盘态、属运维动作(FLY-513/1955 已有防再犯和告警);本单只留一行运维手册,不写代码</td></tr>
+      <tr><td>给洗法加个开关(feature flag)</td><td>你定过铁律:不加新 flag;且这类安全修无条件生效才有意义(与 FLY-1715 同姿态)</td></tr>
+    </table>
+    <h3>独立评审(Codex)抓出并已折入设计的 5 个问题</h3>
+    <ul class="plain">
+      <li>3 个阻塞级:shell 变量展开位置写错(会让洗法"形似而实哑")、遗漏一个既有协议变量(会断老式任务的完成通知)、服务器救援工具的控制环境不能整体洗(会破坏它自己的契约);</li>
+      <li>2 个高/中级:开机清扫漏了 runner 会话层的存量、命令字节预算估计偏低(实测 955 字节)。5 项全部采纳,第 2 轮评审通过。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s5" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" data-sec="s6" data-title="⑥ 诚实边界">
+    <h2><span class="dot" style="color:#86868b;">●</span>⑥ 诚实边界:这个设计做什么、不做什么</h2>
+    <div class="callout green"><b>做</b>:身份确定性(runner 里的工具解析到的账号 = 它该用的账号,不再看运气)+ 事故卫生(环境自查/日志不再天然携带全量秘密)+ 可验证的最小默认视图。</div>
+    <div class="callout red"><b>不做(必须说清)</b>:这<b>不是</b>防恶意的安全围栏。runner 和 Lead 同一个 macOS 用户、没有沙箱——它想主动读密钥文件随时读得到。本设计防的是"顺手用错/顺手泄露",不是"故意作恶";后者要靠别的机制(如 Codex 侧的 read-deny 围栏)。</div>
+    <ul class="plain">
+      <li><b>存量带病的 runner</b>:已经开着的窗口,环境改不了(操作系统没有这个能力)——它们带病到自然换代为止;新开的全部干净;</li>
+      <li><b>你手动开的新窗口</b>:以后默认拿到的是最小干净环境(不再默认带 infra-bot 身份)——如果你需要密钥,手动 source 一下 .env 即可,这是行为变化,提前告知;</li>
+      <li><b>第三层清扫生效时点</b>:随下一班定时部署(00:00/12:00)的 Bridge 重启后首跑——不为本单单独投重启票(FLY-1959 纪律);第一层不需要重启,合并后新开的 runner 即生效。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s6" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" data-sec="s7" data-title="⑦ 验收与下一步">
+    <h2><span class="dot" style="color:#1a365d;">●</span>⑦ 验收与下一步</h2>
+    <ul class="plain">
+      <li><b>验收 1</b>:新 spawn 的 runner 里 codex 实际读到的账号 = 预期账号(解码认证文件断言邮箱),配阳性对照(故意绕过洗法必须读到污染身份——证明尺子能变红);</li>
+      <li><b>验收 2</b>:runner 环境集合精确等于白名单(逐名相等),OPENAI_API_KEY 等秘密逐名断言不存在;</li>
+      <li><b>验收 3</b>:你 codex-profile 切号后,新 spawn 的 runner 真的跟着切;</li>
+      <li><b>验收 4</b>:污染源头书面结论(本设计的调研文档已交付:出生者、时刻、传播链全部实证)。</li>
+    </ul>
+    <p>下一步:本设计进入实现节点(TDD,9 步,含真 tmux 端到端);合并后由独立 QA 在生产新 spawn 一个 runner 复跑验收 1/2/3。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s7" placeholder="写下你的意见…"></textarea><div class="saved-tip">已保存 ✓</div></div>
+  </div>
+
+  <div class="section" id="summary-card">
+    <h2><span class="dot" style="color:#007aff;">●</span>页面意见汇总</h2>
+    <p class="term">你的每条意见都自动实时汇总到这里;点下方按钮一键复制后发给 Tadashi 即可。</p>
+    <div id="summary-body"><span class="empty">(还没有意见)</span></div>
+    <div id="chunks"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+
+  <div class="footer">FLY-1999 · 设计阶段 · 由工程 Runner 生成 · 评审记录与实施计划见仓内 engineering/doc/FLY-1999-runner-env-isolation/</div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-1999";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "FLY1999:" + location.pathname + ":"; } catch (e) { prefix = "FLY1999:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); return true; } catch (e) { return false; } }
+
+  var sections = [];
+  var secNodes = document.querySelectorAll(".section[data-sec]");
+  for (var i = 0; i < secNodes.length; i++) {
+    var node = secNodes[i];
+    var ta = node.querySelector("textarea[data-key]");
+    if (!ta) continue;
+    sections.push({ key: ta.getAttribute("data-key"), title: node.getAttribute("data-title"), ta: ta, tip: node.querySelector(".saved-tip") });
+  }
+
+  function collect() {
+    var parts = [];
+    for (var i = 0; i < sections.length; i++) {
+      var v = sections[i].ta.value.trim();
+      if (v) parts.push({ title: sections[i].title, text: v });
+    }
+    return parts;
+  }
+
+  function buildFullText(parts) {
+    var lines = [MARKER];
+    for (var i = 0; i < parts.length; i++) {
+      lines.push("");
+      lines.push("■ " + parts[i].title);
+      lines.push(parts[i].text);
+    }
+    return lines.join("\n");
+  }
+
+  function chunkText(full) {
+    if (full.length <= CHUNK_LIMIT) return [full];
+    var body = full.slice(MARKER.length).replace(/^\n+/, "");
+    var blocks = body.split("\n\n");
+    var chunks = [];
+    var cur = "";
+    for (var i = 0; i < blocks.length; i++) {
+      var candidate = cur ? cur + "\n\n" + blocks[i] : blocks[i];
+      if ((MARKER.length + 20 + candidate.length) > CHUNK_LIMIT && cur) {
+        chunks.push(cur); cur = blocks[i];
+      } else { cur = candidate; }
+    }
+    if (cur) chunks.push(cur);
+    var out = [];
+    for (var j = 0; j < chunks.length; j++) {
+      out.push(MARKER + "(" + (j + 1) + "/" + chunks.length + ")\n\n" + chunks[j]);
+    }
+    return out;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksBox = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function renderSummary() {
+    while (summaryBody.firstChild) summaryBody.removeChild(summaryBody.firstChild);
+    while (chunksBox.firstChild) chunksBox.removeChild(chunksBox.firstChild);
+    var parts = collect();
+    if (!parts.length) {
+      var empty = document.createElement("span");
+      empty.className = "empty";
+      empty.textContent = "(还没有意见)";
+      summaryBody.appendChild(empty);
+      return;
+    }
+    var full = buildFullText(parts);
+    var chunks = chunkText(full);
+    if (chunks.length === 1) {
+      var pre = document.createElement("div");
+      pre.className = "chunk";
+      pre.textContent = full;
+      summaryBody.appendChild(pre);
+    } else {
+      var note = document.createElement("p");
+      note.className = "term";
+      note.textContent = "内容较长,已拆成 " + chunks.length + " 段,每段单独复制发送:";
+      summaryBody.appendChild(note);
+      for (var i = 0; i < chunks.length; i++) {
+        (function (txt, idx) {
+          var pre = document.createElement("div");
+          pre.className = "chunk";
+          pre.textContent = txt;
+          chunksBox.appendChild(pre);
+          var btn = document.createElement("button");
+          btn.className = "btn small";
+          btn.textContent = "复制第 " + (idx + 1) + " 段";
+          btn.addEventListener("click", function () { copyText(txt, btn); });
+          chunksBox.appendChild(btn);
+        })(chunks[i], i);
+      }
+    }
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function showCopyResult(ok, btnLabelEl) {
+    if (ok) {
+      copyStatus.textContent = "已复制 ✓";
+      copyStatus.style.color = "#34c759";
+    } else {
+      copyStatus.textContent = "复制失败——请手动全选上方文本复制";
+      copyStatus.style.color = "#ff3b30";
+    }
+    setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+  }
+
+  function copyText(text, btnEl) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showCopyResult(true, btnEl); },
+        function () { showCopyResult(legacyCopy(text), btnEl); }
+      );
+    } else {
+      showCopyResult(legacyCopy(text), btnEl);
+    }
+  }
+
+  for (var i = 0; i < sections.length; i++) {
+    (function (sec) {
+      sec.ta.value = lsGet(sec.key);
+      sec.ta.addEventListener("input", function () {
+        var ok = lsSet(sec.key, sec.ta.value);
+        if (sec.tip) {
+          sec.tip.textContent = ok ? "已保存 ✓" : "本机存储不可用——离开页面前请先复制";
+          sec.tip.style.color = ok ? "#34c759" : "#ff3b30";
+          sec.tip.style.visibility = "visible";
+        }
+        renderSummary();
+      });
+    })(sections[i]);
+  }
+
+  var copyAll = document.getElementById("copy-all");
+  copyAll.addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) {
+      copyStatus.textContent = "还没有意见可复制";
+      copyStatus.style.color = "#86868b";
+      setTimeout(function () { copyStatus.textContent = ""; }, 3000);
+      return;
+    }
+    var full = buildFullText(parts);
+    var chunks = chunkText(full);
+    if (chunks.length === 1) { copyText(full, copyAll); }
+    else {
+      copyStatus.textContent = "内容较长——请用下方分段按钮逐段复制";
+      copyStatus.style.color = "#ff9500";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

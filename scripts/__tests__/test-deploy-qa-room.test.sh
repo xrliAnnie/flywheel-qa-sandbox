@@ -167,11 +167,21 @@ if grep -qF "$DELIVERY_LINE" "$TD_SRC"; then
 else
   fail "delivery secret isolation missing" "$DELIVERY_LINE"
 fi
+TMUX_ROOT_LINE='BRIDGE_EXTRA_ENV+=("TMUX_TMPDIR=${SLOT_DIR}")'
+if grep -qF "$TMUX_ROOT_LINE" "$TD_SRC" \
+  && grep -qF -- '-u TMUX' "$TD_SRC" \
+  && grep -qF -- '-u FLYWHEEL_TMUX_SOCKET_OVERRIDE' "$TD_SRC"; then
+  pass "tmux socket: every slot Bridge tmux call resolves through its private native socket root"
+else
+  fail "tmux socket isolation missing" "$TMUX_ROOT_LINE plus inherited TMUX/override scrubs"
+fi
 TEARDOWN_SRC="${SCRIPT_DIR}/../test-teardown.sh"
-if grep -qF 'qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"' "$TEARDOWN_SRC"; then
+if grep -qF 'qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"' "$TEARDOWN_SRC" \
+  && grep -qF 'local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"' "$TEARDOWN_SRC" \
+  && grep -qF 'tmux -S "$SLOT_TMUX_SOCKET" kill-server' "$TEARDOWN_SRC"; then
   pass "launchd teardown: registry bootout precedes PID/socket cleanup"
 else
-  fail "launchd teardown authority missing" "test-teardown must bootout the slot registry"
+  fail "launchd teardown authority missing" "test-teardown must bootout the slot registry and retire only the slot tmux socket"
 fi
 
 # FLY-1961: real 529 and legacy inject must both pretrust both vendors before

@@ -1,0 +1,10 @@
+flowchart LR
+    SCRUB["第三层 · Bridge 开机清扫<br/>(治存量)<br/>每次启动把 tmux server 里<br/>已固化的秘密名/身份名逐个删除<br/>(只按名字删,值永不读取)"]
+    BIRTH["第二层 · server 出生卫生<br/>(防再犯)<br/>三个可能'第一个碰 tmux'的位点<br/>统一用最小规范环境起 server<br/>→ 重启竞赛谁赢都不再带病"]
+    WASH["第一层 · 窗口白名单重建<br/>(核心修)<br/>runner 窗口启动前从零重建环境:<br/>OS 基底 ∪ 本次显式注入的协议名<br/>不在名单 = 不存在"]
+    SCRUB --> BIRTH --> WASH
+    WASH --> R["新 runner 环境<br/>· CODEX_HOME 不存在<br/>→ codex 读 ~/.codex → 切号器重新生效<br/>· 秘密零下发<br/>· 环境集合 = 白名单精确相等,可测试"]
+    style WASH fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+    style BIRTH fill:#e6f0ff,stroke:#007aff
+    style SCRUB fill:#fff4e6,stroke:#ff9500
+    style R fill:#e8f5e9,stroke:#34c759,stroke-width:2px

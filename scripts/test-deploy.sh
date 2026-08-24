@@ -754,6 +754,10 @@ BRIDGE_EXTRA_ENV+=("FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${SLOT_DIR}/state/loop-diagnos
 LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
+# FLY-1999: native tmux routing keeps every unqualified Bridge/adapter/reaper
+# call on the slot server. The launch boundary below also removes inherited
+# TMUX and the explicit override so no call can resolve back to another server.
+BRIDGE_EXTRA_ENV+=("TMUX_TMPDIR=${SLOT_DIR}")
 # FLY-1981: consent policy is permanently audit-only, so every QA Bridge opens
 # an audit store. Keep synthetic slot decisions out of the resident calibration
 # ledger even when alerts/roundtable mode is disabled.
@@ -1716,6 +1720,8 @@ if [[ "$GENERALIZED" == "1" ]]; then
     GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
   fi
   env ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
+    -u TMUX \
+    -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
@@ -1745,6 +1751,8 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # to slot-local dirs — without them every slot Bridge boot rewrote the
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
   env \
+    -u TMUX \
+    -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -1776,6 +1784,8 @@ else
   # FLY-1389 P1-a: same slot-local FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR
   # isolation on the default (reply-by-issue OFF) branch.
   env -u TEAMLEAD_API_TOKEN \
+    -u TMUX \
+    -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \

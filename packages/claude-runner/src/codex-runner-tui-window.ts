@@ -24,6 +24,8 @@ import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { withSyncOpMarker } from "./sync-op-marker.js";
+import { buildRunnerPaneEnvironmentPrefix } from "./TmuxAdapter.js";
+import { buildTmuxServerBirthEnvironment } from "./tmux-server-environment.js";
 
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
 const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
@@ -116,6 +118,7 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_PATH);
 	const bin = spec.codexBin ?? "codex";
 	return [
+		`exec ${buildRunnerPaneEnvironmentPrefix()}`,
 		`CODEX_HOME="${spec.codexHome}"`,
 		...(spec.executionId ? [`FLYWHEEL_EXEC_ID="${spec.executionId}"`] : []),
 		...(spec.stateDbPath
@@ -132,7 +135,11 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 }
 
 export interface RunnerTuiWindowDeps {
-	exec?: (cmd: string, args: string[]) => { ok: boolean };
+	exec?: (
+		cmd: string,
+		args: string[],
+		options?: { env?: NodeJS.ProcessEnv },
+	) => { ok: boolean };
 	execOut?: (cmd: string, args: string[]) => string | undefined;
 	/** Guarded shared-session ensure. Production uses tmux-server-rescue. */
 	ensureSession?: (tmuxSession: string) => boolean;
@@ -151,7 +158,11 @@ export interface RunnerTuiWindowDeps {
 	execAsync?: (
 		cmd: string,
 		args: string[],
-		options?: { timeoutMs?: number; signal?: AbortSignal },
+		options?: {
+			timeoutMs?: number;
+			signal?: AbortSignal;
+			env?: NodeJS.ProcessEnv;
+		},
 	) => Promise<{ ok: boolean; stdout?: string }>;
 	execOutAsync?: (
 		cmd: string,
@@ -352,6 +363,7 @@ type AsyncSpawnOptions = {
 	encoding: "utf8";
 	timeout: number;
 	signal?: AbortSignal;
+	env?: NodeJS.ProcessEnv;
 };
 
 /** Promise-based child wrapper used by the Bridge path. `error` and `close`
@@ -411,6 +423,7 @@ export function spawnCommandAsync(
 		try {
 			child = spawn(cmd, args, {
 				stdio: options.stdio,
+				...(options.env ? { env: options.env } : {}),
 			});
 		} catch (error) {
 			settle("reject", error);
@@ -479,7 +492,11 @@ function defaultEnsureSessionAsync(
 async function defaultExecAsync(
 	cmd: string,
 	args: string[],
-	options: { timeoutMs?: number; signal?: AbortSignal } = {},
+	options: {
+		timeoutMs?: number;
+		signal?: AbortSignal;
+		env?: NodeJS.ProcessEnv;
+	} = {},
 ): Promise<{ ok: boolean; stdout?: string }> {
 	try {
 		const effectiveArgs =
@@ -491,6 +508,7 @@ async function defaultExecAsync(
 			encoding: "utf8",
 			timeout: options.timeoutMs ?? 10_000,
 			...(options.signal ? { signal: options.signal } : {}),
+			...(options.env ? { env: options.env } : {}),
 		});
 		return {
 			ok: result.status === 0,
@@ -589,7 +607,11 @@ type AsyncWindowExecDeps = {
 	exec: (
 		cmd: string,
 		args: string[],
-		options?: { timeoutMs?: number; signal?: AbortSignal },
+		options?: {
+			timeoutMs?: number;
+			signal?: AbortSignal;
+			env?: NodeJS.ProcessEnv;
+		},
 	) => Promise<{ ok: boolean; stdout?: string }>;
 	execOut: (
 		cmd: string,
@@ -732,7 +754,8 @@ async function ensureRunnerTuiWindowAsync(
 	const exec: AsyncWindowExecDeps["exec"] =
 		deps.execAsync ??
 		(deps.exec
-			? async (cmd: string, args: string[]) => deps.exec!(cmd, args)
+			? async (cmd: string, args: string[], options) =>
+					deps.exec!(cmd, args, options)
 			: defaultExecAsync);
 	const execOut =
 		deps.execOutAsync ??
@@ -748,6 +771,7 @@ async function ensureRunnerTuiWindowAsync(
 						(
 							await exec("tmux", ["new-session", "-Ad", "-s", session], {
 								timeoutMs: 10_000,
+								env: buildTmuxServerBirthEnvironment(),
 								...(signal ? { signal } : {}),
 							})
 						).ok

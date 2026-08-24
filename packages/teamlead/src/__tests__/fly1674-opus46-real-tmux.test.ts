@@ -24,7 +24,6 @@ const ENV_KEYS = [
 	"PATH",
 	"TMUX_TMPDIR",
 	"FLYWHEEL_MODELS_CONFIG",
-	"FLY1674_ARGV_PATH",
 ] as const;
 
 type SavedEnv = Record<(typeof ENV_KEYS)[number], string | undefined>;
@@ -80,8 +79,7 @@ if [ "\${1-}" = "--version" ]; then
   printf '%s\\n' 'claude fake 0.0.0'
   exit 0
 fi
-: "\${FLY1674_ARGV_PATH:?}"
-printf '%s\\n' "$@" > "$FLY1674_ARGV_PATH"
+printf '%s\\n' "$@" > ${JSON.stringify(argvPath)}
 `,
 		);
 		chmodSync(fakeClaude, 0o755);
@@ -93,7 +91,6 @@ printf '%s\\n' "$@" > "$FLY1674_ARGV_PATH"
 		process.env.PATH = `${fakeBin}:${savedEnv.PATH ?? ""}`;
 		process.env.TMUX_TMPDIR = tmuxTmp;
 		process.env.FLYWHEEL_MODELS_CONFIG = modelsPath;
-		process.env.FLY1674_ARGV_PATH = argvPath;
 	});
 
 	afterEach(() => {

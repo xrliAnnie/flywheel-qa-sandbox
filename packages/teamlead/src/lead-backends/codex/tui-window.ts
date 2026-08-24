@@ -23,6 +23,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { buildTmuxServerBirthEnvironment } from "flywheel-claude-runner";
 
 export const TUI_TMUX_SESSION = "flywheel";
 
@@ -98,13 +99,25 @@ export function buildTuiCommand(spec: TuiWindowSpec): string {
 }
 
 export interface EnsureTuiWindowDeps {
-	exec?: (cmd: string, args: string[]) => { ok: boolean };
+	exec?: (
+		cmd: string,
+		args: string[],
+		options?: { env?: NodeJS.ProcessEnv },
+	) => { ok: boolean };
 	log?: (m: string) => void;
 }
 
-function defaultExec(cmd: string, args: string[]): { ok: boolean } {
+function defaultExec(
+	cmd: string,
+	args: string[],
+	options: { env?: NodeJS.ProcessEnv } = {},
+): { ok: boolean } {
 	try {
-		const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
+		const r = spawnSync(cmd, args, {
+			stdio: "ignore",
+			timeout: 10_000,
+			...(options.env ? { env: options.env } : {}),
+		});
 		return { ok: r.status === 0 };
 	} catch {
 		return { ok: false };
@@ -133,7 +146,9 @@ export function ensureTuiWindow(
 			log(`tui-window: tmux unavailable — skipping (${windowName})`);
 			return false;
 		}
-		exec("tmux", ["new-session", "-Ad", "-s", TUI_TMUX_SESSION]);
+		exec("tmux", ["new-session", "-Ad", "-s", TUI_TMUX_SESSION], {
+			env: buildTmuxServerBirthEnvironment(),
+		});
 		exec("tmux", ["kill-window", "-t", `=${TUI_TMUX_SESSION}:=${windowName}`]);
 		const created = exec("tmux", [
 			"new-window",

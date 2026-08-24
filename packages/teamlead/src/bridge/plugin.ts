@@ -554,6 +554,7 @@ import {
 	runTargetedArchiveCheck,
 } from "./terminal-thread-archive.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
+import { scrubManagedTmuxEnvironments } from "./tmux-environment-scrub.js";
 import {
 	canonicalDefaultTmuxSocketPath,
 	createTmuxHoldObservationRouter,
@@ -4262,6 +4263,9 @@ export async function startBridge(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
 		);
 	}
+	scrubManagedTmuxEnvironments(projects, {
+		log: (line) => console.warn(line),
+	});
 	const bridgeBootTs = Date.now();
 	let turnPointerAuditSeq = 0;
 	const livenessTrackers = {

@@ -661,6 +661,7 @@ teardown_slot() {
     return 1
   fi
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
+  local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
   local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
 
   # FLY-1189: a BORROWED lock belongs to another slot's multi-Lead campaign —
@@ -732,9 +733,9 @@ teardown_slot() {
   #   (b) RUNNER_TMUX already dead when teardown starts   → crash recovery
   #   (c) two live slots colliding on the same window     → no false-kill
   local RUNNER_TMUX="runner-test-slot-${SLOT}"
-  if tmux has-session -t "$RUNNER_TMUX" 2>/dev/null; then
+  if tmux -S "$SLOT_TMUX_SOCKET" has-session -t "$RUNNER_TMUX" 2>/dev/null; then
     log "Killing Runner tmux session: ${RUNNER_TMUX}"
-    tmux kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
+    tmux -S "$SLOT_TMUX_SOCKET" kill-session -t "$RUNNER_TMUX" 2>/dev/null || true
   fi
 
   # Unified display-session sweep. New isolated views and keepers persist the
@@ -907,6 +908,14 @@ teardown_slot() {
         kill -9 "$BRIDGE_PID" 2>/dev/null || true
       fi
     fi
+  fi
+
+  # FLY-1999: test-deploy binds its Bridge and runners to this native per-slot
+  # default socket. Retire that server after the Bridge is down; never sweep by
+  # name on the resident default server.
+  if tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
+    log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
+    tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
   fi
 
   # ── Step 5c (FLY-115 fix / Defect #3b): Port-based straggler kill ──

@@ -120,13 +120,11 @@ function launchCommand(calls: ExecCall[]): string[] {
 	return nw.args.slice(cIdx + 2);
 }
 
-/** Resolve the binary after the FLY-1715 ambient-identity env boundary. */
+/** Resolve the positional binary after the FLY-1999 shell env boundary. */
 function launchedBinary(calls: ExecCall[]): string | undefined {
 	const command = launchCommand(calls);
-	let index = command[0] === "env" ? 1 : 0;
-	while (command[index] === "-u") index += 2;
-	if (command[index]?.startsWith("PROJECT_NAME=")) index += 1;
-	return command[index];
+	if (command[0] !== "sh" || command[1] !== "-c") return command[0];
+	return command[command[2]?.includes('cf="$0"') ? 7 : 4];
 }
 
 describe("KimiTmuxAdapter", () => {

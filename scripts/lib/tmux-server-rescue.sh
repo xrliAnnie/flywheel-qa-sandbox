@@ -522,6 +522,27 @@ _tmux_rescue_validate_argv() {
   [ "$saw_socket" = true ]
 }
 
+_tmux_rescue_clean_create() {
+  # Keep rescue controls in this shell, but never let them (or caller secrets)
+  # become the environment snapshot of a newly born tmux server.
+  local timeout="$1" binary canonical_path
+  shift
+  case "${HOME:-}" in /*) ;; *) return 64 ;; esac
+  binary="$(command -v "$1" 2>/dev/null)" || return 127
+  case "$binary" in /*) ;; *) return 127 ;; esac
+  shift
+  canonical_path="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  local -a clean_env=(/usr/bin/env -i "PATH=$canonical_path")
+  [ "${HOME+x}" = x ] && clean_env+=("HOME=$HOME")
+  [ "${SHELL+x}" = x ] && clean_env+=("SHELL=$SHELL")
+  [ "${USER+x}" = x ] && clean_env+=("USER=$USER")
+  [ "${LOGNAME+x}" = x ] && clean_env+=("LOGNAME=$LOGNAME")
+  [ "${LANG+x}" = x ] && clean_env+=("LANG=$LANG")
+  [ "${TERM+x}" = x ] && clean_env+=("TERM=$TERM")
+  [ "${TMPDIR+x}" = x ] && clean_env+=("TMPDIR=$TMPDIR")
+  _tmux_rescue_bounded_exec "$timeout" "${clean_env[@]}" "$binary" "$@"
+}
+
 _tmux_rescue_policy_alert() {
   local socket_path="$1" reason="$2" lock_hash
   lock_hash="$(_tmux_rescue_lock_hash "$socket_path" 2>/dev/null || printf unknown)"
@@ -711,7 +732,7 @@ _tmux_socket_ensure_locked() {
 			return 4
 		fi
     guarded_create=("${create_argv[0]}" -N "${create_argv[@]:1}")
-    create_stdout="$(_tmux_rescue_bounded_exec "$command_timeout" \
+    create_stdout="$(_tmux_rescue_clean_create "$command_timeout" \
       "${guarded_create[@]}" 2>/dev/null)"
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -746,7 +767,7 @@ _tmux_socket_ensure_locked() {
 			printf '{"action":"hold_unknown","evidence":{"reason":"dry_run_create_suppressed"}}\n'
 			return 4
 		fi
-    create_stdout="$(_tmux_rescue_bounded_exec "$command_timeout" \
+    create_stdout="$(_tmux_rescue_clean_create "$command_timeout" \
       "${create_argv[@]}" 2>/dev/null)"
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then
@@ -791,7 +812,7 @@ _tmux_socket_ensure_locked() {
 			return 4
 		fi
     guarded_create=("${create_argv[0]}" -N "${create_argv[@]:1}")
-    create_stdout="$(_tmux_rescue_bounded_exec "$command_timeout" \
+    create_stdout="$(_tmux_rescue_clean_create "$command_timeout" \
       "${guarded_create[@]}" 2>/dev/null)"
     command_rc=$?
     if [ "$command_rc" -eq 124 ] || [ "$command_rc" -eq 125 ]; then

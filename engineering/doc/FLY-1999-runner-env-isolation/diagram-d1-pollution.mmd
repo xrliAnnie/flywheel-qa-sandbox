@@ -1,0 +1,20 @@
+flowchart TB
+    subgraph SRC["污染源(两条支流)"]
+        ENV[".flywheel/.env<br/>175 行:30+ 个机器人令牌、<br/>OPENAI_API_KEY 等云服务密钥"]
+        LEAD["infra-bot Lead 启动脚本<br/>写死 CODEX_HOME=infra-bot<br/>+ FLYWHEEL_CODEX_BIN=infra-bot"]
+    end
+    ENV -->|"set -a source<br/>(整文件灌入进程环境)"| LEAD
+    LEAD -->|"8/20 宿主重启后<br/>它第一个碰 tmux<br/>= 赢得 server 出生权"| SERVER["default tmux server (pid 6234)<br/>全局环境 = infra-bot Lead 的<br/>全套环境快照,永久固化"]
+    SERVER -->|"tmux 规则:每个新窗口<br/>默认继承 server 全局环境"| PANE["每个 runner 窗口"]
+    PANE --> S1["症状①<br/>codex 用 infra-bot 的号<br/>(切号器写的文件没人读)"]
+    PANE --> S2["症状②<br/>FLYWHEEL_CODEX_BIN<br/>指向他人安装"]
+    PANE --> S4["症状④<br/>OPENAI_API_KEY 等秘密<br/>全量出现在 runner 环境<br/>→ 一次明文进 transcript"]
+    DISK["磁盘面(独立支流):<br/>~/.local/bin/codex 符号链接<br/>被 Mufasa 的自动更新器改写"] --> S3["症状③<br/>PATH 解析的 codex<br/>= mufasa 的安装"]
+    style SRC fill:#fff4e6,stroke:#ff9500
+    style SERVER fill:#ffe8e6,stroke:#ff3b30,stroke-width:2px
+    style PANE fill:#ffe8e6,stroke:#ff3b30
+    style DISK fill:#f2e8ff,stroke:#af52de
+    style S1 fill:#ffe8e6,stroke:#ff3b30
+    style S2 fill:#ffe8e6,stroke:#ff3b30
+    style S3 fill:#f2e8ff,stroke:#af52de
+    style S4 fill:#ffe8e6,stroke:#ff3b30

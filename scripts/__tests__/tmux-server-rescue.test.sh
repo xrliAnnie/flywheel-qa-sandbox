@@ -16,7 +16,8 @@ fail() { FAILED=$((FAILED + 1)); echo "  ✗ $*" >&2; }
 
 cat > "$BIN_DIR/tmux" <<'SH'
 #!/bin/bash
-printf '%s\n' "$*" >> "${TMUX_CALL_LOG}"
+FIXTURE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+printf '%s\n' "$*" >> "${TMUX_CALL_LOG:-$FIXTURE_ROOT/tmux-calls.log}"
 if [ "$1" = "-S" ] && [ "$3" = "display-message" ]; then
   [ -n "${FAKE_DISPLAY_SLEEP:-}" ] && sleep "$FAKE_DISPLAY_SLEEP"
   reachable="${FAKE_REACHABLE_PID:-}"
@@ -58,10 +59,20 @@ case " $* " in
     exit "${FAKE_VERIFY_RC:-1}"
     ;;
   *" new-session "*)
+		compgen -e | /usr/bin/sort > "${CREATE_ENV_NAMES_LOG:-$FIXTURE_ROOT/create-env-names.log}"
+		printf '%s' "$PATH" > "${CREATE_ENV_PATH_LOG:-$FIXTURE_ROOT/create-env-path.log}"
     if [ -n "${FAKE_CREATE_SETS_PID:-}" ] && [ -n "${FAKE_STATE_FILE:-}" ]; then
       printf '%s' "$FAKE_CREATE_SETS_PID" > "$FAKE_STATE_FILE"
+		elif [ -f "$FIXTURE_ROOT/server-generation" ]; then
+			printf '7272' > "$FIXTURE_ROOT/server-generation"
     fi
-    printf '%s' "${FAKE_CREATE_STDOUT:-}"
+		if [ -n "${FAKE_CREATE_STDOUT:-}" ]; then
+			printf '%s' "$FAKE_CREATE_STDOUT"
+		elif [ -f "$FIXTURE_ROOT/server-generation" ]; then
+			printf '@10'
+		else
+			printf '@9'
+		fi
     exit "${FAKE_CREATE_RC:-0}"
     ;;
 esac
@@ -1071,6 +1082,11 @@ fi
 echo "[TEST] only a proven dead server permits a server-starting create"
 rm -f "$REQUEST_SOCKET"
 : > "$TMUX_CALL_LOG"
+CREATE_ENV_NAMES_LOG="$TMP_DIR/create-env-names.log"
+CREATE_ENV_PATH_LOG="$TMP_DIR/create-env-path.log"
+export CODEX_HOME="$TMP_DIR/infra-bot"
+export FLYWHEEL_CODEX_BIN="$TMP_DIR/infra-bot/codex"
+export OPENAI_API_KEY="dummy-must-not-cross"
 export FAKE_STATE_FILE="$TMP_DIR/server-generation"
 : > "$FAKE_STATE_FILE"
 export FAKE_REACHABLE_PID=""
@@ -1084,15 +1100,21 @@ OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
   --create tmux -S "$TEST_SOCKET" new-session -d -P -F '#{window_id}' -s flywheel)"
 ENSURE_RC=$?
 CREATE_LINE="$(grep 'new-session' "$TMUX_CALL_LOG" | tail -1)"
+EXPECTED_CREATE_PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 if [ "$ENSURE_RC" -eq 0 ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "created" ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.reachablePid')" = "7272" ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.createStdout')" = "@10" ] \
-  && ! printf '%s' "$CREATE_LINE" | grep -Eq '(^| )-N( |$)'; then
-  pass "dead proof is the sole path allowed to start a new tmux server"
+  && ! printf '%s' "$CREATE_LINE" | grep -Eq '(^| )-N( |$)' \
+  && [ "$(cat "$CREATE_ENV_PATH_LOG")" = "$EXPECTED_CREATE_PATH" ] \
+  && grep -qx HOME "$CREATE_ENV_NAMES_LOG" \
+  && grep -qx PATH "$CREATE_ENV_NAMES_LOG" \
+  && ! grep -Eq '^(CODEX_HOME|FLYWHEEL_CODEX_BIN|OPENAI_API_KEY|FLYWHEEL_TMUX_RESCUE_LOAD_FACTOR|_TMUX_RESCUE_TOKEN)$' "$CREATE_ENV_NAMES_LOG"; then
+	pass "dead proof creates the server with only the canonical birth environment"
 else
-  fail "dead create was not generation-verified: out=$OUT create=$CREATE_LINE"
+	fail "dead create env was not canonical: out=$OUT create=$CREATE_LINE names=$(tr '\n' ',' < "$CREATE_ENV_NAMES_LOG" 2>/dev/null)"
 fi
+unset CODEX_HOME FLYWHEEL_CODEX_BIN OPENAI_API_KEY
 
 echo "[TEST] dry-run suppresses every server-starting create"
 : > "$TMUX_CALL_LOG"
