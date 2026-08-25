@@ -117,6 +117,8 @@ export interface VisualCaptureArgs {
 	findPort?: (preferredPort: number) => number | null;
 	/** Inject a notify caller (test seam). */
 	runNotify?: (manifestPath: string) => void;
+	/** Cleanup warning sink. Defaults to stderr. */
+	warn?: (message: string) => void;
 	/** Inject a clock for tests. */
 	now?: () => number;
 }
@@ -164,6 +166,7 @@ export async function visualCapture(
 		: baseRunProofShot;
 	const findPort = args.findPort ?? defaultFindPort;
 	const runNotify = args.runNotify ?? defaultRunNotify;
+	const warn = args.warn ?? ((message: string) => console.error(message));
 	const preferredPort = args.preferredPort ?? DEFAULT_PORT_RANGE_START;
 
 	const outputDir = expandTilde(args.output);
@@ -171,6 +174,8 @@ export async function visualCapture(
 
 	let lock: AcquiredLock | undefined;
 	let modelServer: LocalModelServerHandle | undefined;
+	let proofShotStarted = false;
+	let proofShotStopAttempted = false;
 	try {
 		lock = await acquireProofShotLockWithRetry();
 
@@ -199,6 +204,7 @@ export async function visualCapture(
 		});
 
 		runProofShot(proofShotArgs);
+		proofShotStarted = true;
 
 		// Capture step. Two commands matter (verified against ProofShot v1.3.1
 		// README / source — Codex R2 HIGH#1):
@@ -235,6 +241,8 @@ export async function visualCapture(
 			runProofShot(["exec", "screenshot", "step-ui.png"]);
 		}
 
+		// Mark before invoking so a normal stop failure is not retried in finally.
+		proofShotStopAttempted = true;
 		runProofShot(["stop"]);
 
 		const files: ArtifactFile[] = discoverArtifacts(
@@ -271,6 +279,16 @@ export async function visualCapture(
 			modelServerPort: modelServer?.port,
 		};
 	} finally {
+		if (proofShotStarted && !proofShotStopAttempted) {
+			proofShotStopAttempted = true;
+			try {
+				runProofShot(["stop"]);
+			} catch (error) {
+				warn(
+					`visual-capture: proofshot stop failed during cleanup: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
 		if (modelServer) {
 			try {
 				await modelServer.close();

@@ -237,12 +237,13 @@ jobs:
           bash scripts/__tests__/test-reap-worktree-lib.test.sh
           bash scripts/__tests__/test-worktree-removal-contract.test.sh
 
-      # FLY-1867: these hermetic suites guard the read-only orphan census and
-      # the exact-manifest quarantine/delete safety gates. The quarantine suite
-      # uses the real lsof installed above against only its private temp tree.
-      - name: Test — FLY-1867 Playwright MCP lifecycle tools
+      # FLY-1867/2026: these hermetic suites guard both read-only browser
+      # censuses and the exact-manifest quarantine/delete safety gates. The
+      # quarantine suite uses real lsof against only its private temp tree.
+      - name: Test — FLY-1867/2026 Playwright lifecycle tools
         run: |
           bash scripts/__tests__/fly-1867-playwright-orphan-census.test.sh
+          bash scripts/__tests__/fly-2026-browser-idle-census.test.sh
           bash scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh
 
       - name: Test — FLY-1572 mailbox migration CLI

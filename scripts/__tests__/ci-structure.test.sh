@@ -606,7 +606,7 @@ expected_shard_tests = {
         "Test — FLY-1393 flag truth CLI",
         "Test — FLY-1436 work-kind cutover CLI",
         "Test — FLY-1759 reap-first worktree teardown",
-        "Test — FLY-1867 Playwright MCP lifecycle tools",
+        "Test — FLY-1867/2026 Playwright lifecycle tools",
         "Test — FLY-1572 mailbox migration CLI",
         "Test — FLY-1764 legacy swap broadcast retirement",
         "Test — FLY-1327 cycle-time report",

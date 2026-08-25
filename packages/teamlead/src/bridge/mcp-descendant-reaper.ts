@@ -69,7 +69,7 @@ function execPs(args: string[], timeoutMs: number): Promise<string> {
 	});
 }
 
-function splitPsCommand(command: string): string[] {
+export function splitMcpPsCommand(command: string): string[] {
 	// ps command output does not expose a portable NUL-delimited argv on macOS.
 	// The supported Playwright shapes have whitespace-free executable/package
 	// paths; refuse to infer quoting and classify all other shapes as no-match.
@@ -123,7 +123,7 @@ export function parseMcpPsProcessRow(line: string): ProcessRow | null {
 	const elapsedSeconds = parseEtimeSeconds(match[3] ?? "");
 	const lstart = (match[4] ?? "").trim();
 	const command = (match[5] ?? "").trim();
-	const argv = splitPsCommand(command);
+	const argv = splitMcpPsCommand(command);
 	if (
 		!Number.isInteger(pid) ||
 		!Number.isInteger(ppid) ||

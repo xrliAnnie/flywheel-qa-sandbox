@@ -90,14 +90,19 @@ function sensorError(label: string, error: string): string {
 	return `${label}:${error}`;
 }
 
-function extractUserDataDir(command: string): string | undefined {
+export function extractPlaywrightUserDataDir(
+	command: string,
+): string | undefined {
 	const match = command.match(
 		/(?:^|\s)--user-data-dir=(?:"([^"]+)"|'([^']+)'|(\S+))(?=\s|$)/,
 	);
 	return match?.[1] ?? match?.[2] ?? match?.[3];
 }
 
-function profileToken(path: string, profileRoot: string): string | undefined {
+export function exactPlaywrightMcpProfileToken(
+	path: string,
+	profileRoot: string,
+): string | undefined {
 	if (!isAbsolute(path)) return undefined;
 	const root = resolve(profileRoot);
 	const candidate = resolve(path);
@@ -164,8 +169,11 @@ async function inspectCensus(
 			if (isChromeFamilyComm(comm)) relevant.add(pid);
 		}
 		for (const [pid, { command }] of input.sample.command.rows) {
-			const userDataDir = extractUserDataDir(command);
-			if (userDataDir && profileToken(userDataDir, deps.profileRoot)) {
+			const userDataDir = extractPlaywrightUserDataDir(command);
+			if (
+				userDataDir &&
+				exactPlaywrightMcpProfileToken(userDataDir, deps.profileRoot)
+			) {
 				relevant.add(pid);
 			}
 		}
@@ -193,9 +201,9 @@ async function inspectCensus(
 			const ageRow = input.sample.age.rows.get(pid);
 			if (!commandRow || !ageRow || commandRow.ppid !== 1) continue;
 			if (/(?:^|\s)--type=/.test(commandRow.command)) continue;
-			const userDataDir = extractUserDataDir(commandRow.command);
+			const userDataDir = extractPlaywrightUserDataDir(commandRow.command);
 			const token = userDataDir
-				? profileToken(userDataDir, deps.profileRoot)
+				? exactPlaywrightMcpProfileToken(userDataDir, deps.profileRoot)
 				: undefined;
 			if (!token) continue;
 			const ageMinutes = Math.floor(ageRow.ageMs / 60_000);

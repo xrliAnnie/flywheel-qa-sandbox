@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type VisualCaptureArgs,
 	visualCapture,
@@ -150,6 +150,96 @@ describe("visualCapture (GEO-151 A4)", () => {
 			// Lock dir should be cleaned up.
 			const lock = acquireProofShotLock();
 			lock.release();
+		});
+
+		it("stops ProofShot after start succeeds and screenshot fails", async () => {
+			const output = join(tmpRoot, "session-shot-fails");
+			const calls: string[][] = [];
+			const args = baseArgs({
+				output,
+				runProofShot: (call) => {
+					calls.push(call);
+					if (call[0] === "exec" && call[1] === "screenshot") {
+						throw new Error("screenshot failed after start");
+					}
+				},
+			});
+
+			await expect(visualCapture(args)).rejects.toThrow(
+				"screenshot failed after start",
+			);
+			expect(calls.filter((call) => call[0] === "stop")).toHaveLength(1);
+			// The visual lock must still be released after the cleanup attempt.
+			const lock = acquireProofShotLock();
+			lock.release();
+		});
+
+		it("warns when cleanup stop also fails without masking the screenshot error", async () => {
+			const output = join(tmpRoot, "session-shot-and-stop-fail");
+			const calls: string[][] = [];
+			const warnings: string[] = [];
+			const overrides: Partial<VisualCaptureArgs> & {
+				warn: (message: string) => void;
+			} = {
+				output,
+				runProofShot: (call) => {
+					calls.push(call);
+					if (call[0] === "exec" && call[1] === "screenshot") {
+						throw new Error("primary screenshot failure");
+					}
+					if (call[0] === "stop") {
+						throw new Error("cleanup stop failure");
+					}
+				},
+				warn: (message) => warnings.push(message),
+			};
+
+			await expect(visualCapture(baseArgs(overrides))).rejects.toThrow(
+				"primary screenshot failure",
+			);
+			expect(calls.filter((call) => call[0] === "stop")).toHaveLength(1);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain("cleanup stop failure");
+		});
+
+		it("uses stderr as the default cleanup warning sink", async () => {
+			const output = join(tmpRoot, "session-default-warning");
+			const stderr = vi.spyOn(console, "error").mockImplementation(() => {});
+			const args = baseArgs({
+				output,
+				runProofShot: (call) => {
+					if (call[0] === "exec" && call[1] === "screenshot") {
+						throw new Error("primary failure for default warning");
+					}
+					if (call[0] === "stop") {
+						throw new Error("default cleanup stop failure");
+					}
+				},
+			});
+
+			await expect(visualCapture(args)).rejects.toThrow(
+				"primary failure for default warning",
+			);
+			expect(stderr).toHaveBeenCalledOnce();
+			expect(String(stderr.mock.calls[0]?.[0])).toContain(
+				"default cleanup stop failure",
+			);
+			stderr.mockRestore();
+		});
+
+		it("does not retry a stop that fails on the normal success path", async () => {
+			const output = join(tmpRoot, "session-normal-stop-fails");
+			const calls: string[][] = [];
+			const args = baseArgs({
+				output,
+				runProofShot: (call) => {
+					calls.push(call);
+					if (call[0] === "stop") throw new Error("normal stop failure");
+				},
+			});
+
+			await expect(visualCapture(args)).rejects.toThrow("normal stop failure");
+			expect(calls.filter((call) => call[0] === "stop")).toHaveLength(1);
 		});
 
 		it("does NOT kill the port occupant — wrapper trusts findPort to skip occupied", async () => {
