@@ -1868,6 +1868,160 @@ describe("ReviewRequestCoordinator — boot redrive", () => {
 		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
 		expect(h.comm.getResponse("q1")).toBeDefined();
 	});
+
+	it("redrives distinct executions concurrently while preserving same-execution serialization", async () => {
+		const rounds = new Map<
+			string,
+			ReturnType<typeof deferred<ClaudeReviewOutcome>>
+		>();
+		const approved = {
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		} satisfies ClaudeReviewOutcome;
+		let started = 0;
+		const h = await makeHarness({
+			reviewRound: async ({ sessionId }) => {
+				started += 1;
+				const round = deferred<ClaudeReviewOutcome>();
+				rounds.set(sessionId, round);
+				return round.promise;
+			},
+		});
+		for (const executionId of ["e1", "e2", "e3"]) {
+			registerSession(h.store, executionId);
+		}
+		for (const [requestId, executionId, questionId] of [
+			["r1", "e1", "q1"],
+			["r2", "e1", "q2"],
+			["r3", "e2", "q3"],
+			["r4", "e3", "q4"],
+		] as const) {
+			openGate(h.comm, questionId, executionId, "review_design");
+			h.store.insertCodexReviewJob({
+				requestId,
+				executionId,
+				issueId: "FLY-1188",
+				projectName: "proj",
+				reviewType: "design",
+				questionId,
+				authorFamily: "codex",
+			});
+		}
+
+		expect(h.coordinator.redriveOnBoot()).toBe(4);
+		await settle();
+		const initiallyStarted = started;
+		expect(h.store.getCodexReviewJob("r2")?.status).toBe("pending");
+
+		const r1Session = h.store.getCodexReviewJob("r1")?.reviewer_session_uuid;
+		expect(r1Session).toBeDefined();
+		rounds.get(r1Session!)!.resolve(approved);
+		await settle();
+		const afterFirstExecutionAdvanced = started;
+		for (const round of rounds.values()) {
+			round.resolve(approved);
+		}
+		await settle();
+
+		expect(initiallyStarted).toBe(3);
+		expect(afterFirstExecutionAdvanced).toBe(4);
+		for (const requestId of ["r1", "r2", "r3", "r4"]) {
+			expect(h.store.getCodexReviewJob(requestId)?.status).toBe("done");
+		}
+	});
+});
+
+describe("ReviewRequestCoordinator — scheduling", () => {
+	it("starts ten distinct executions without a coordinator-wide concurrency ceiling", async () => {
+		const rounds = Array.from({ length: 10 }, () =>
+			deferred<ClaudeReviewOutcome>(),
+		);
+		let started = 0;
+		const h = await makeHarness({
+			reviewRound: async () => rounds[started++]!.promise,
+		});
+		for (let index = 0; index < rounds.length; index += 1) {
+			const executionId = `e${index}`;
+			const questionId = `q${index}`;
+			registerSession(h.store, executionId);
+			openGate(h.comm, questionId, executionId, "review_design");
+			await h.coordinator.accept({
+				executionId,
+				requestId: `r${index}`,
+				reviewType: "design",
+				questionId,
+			});
+		}
+
+		await settle();
+		const initiallyStarted = started;
+		for (const round of rounds) {
+			round.resolve({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			});
+		}
+		await settle();
+
+		expect(initiallyStarted).toBe(10);
+		for (let index = 0; index < rounds.length; index += 1) {
+			expect(h.store.getCodexReviewJob(`r${index}`)?.status).toBe("done");
+		}
+	});
+
+	it("keeps two requests from the same execution serial", async () => {
+		const firstRound = deferred<ClaudeReviewOutcome>();
+		let started = 0;
+		const h = await makeHarness({
+			reviewRound: async () => {
+				started += 1;
+				if (started === 1) return firstRound.promise;
+				return {
+					kind: "verdict",
+					verdict: "APPROVED",
+					findings: [],
+					reviewedHeadSha: null,
+					raw: "",
+				};
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		openGate(h.comm, "q2", "e1", "review_design");
+		for (const [requestId, questionId] of [
+			["r1", "q1"],
+			["r2", "q2"],
+		] as const) {
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId,
+				reviewType: "design",
+				questionId,
+			});
+		}
+
+		await settle();
+		expect(started).toBe(1);
+		expect(h.store.getCodexReviewJob("r2")?.status).toBe("pending");
+		firstRound.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+		await settle();
+
+		expect(started).toBe(2);
+		expect(h.store.getCodexReviewJob("r1")?.status).toBe("done");
+		expect(h.store.getCodexReviewJob("r2")?.status).toBe("done");
+	});
 });
 
 // ── R12 findings — regression coverage ──────────────────────────────────
@@ -2304,12 +2458,11 @@ describe("R13 — terminal-state and delivery invariants", () => {
 		expect(h.comm.getResponse("q1")?.content).toBe("CANCELLED BY LEAD");
 	});
 
-	it("HIGH-3: stop() drains slot waiters — queued jobs never start a reviewer after shutdown", async () => {
+	it("HIGH-3: stop() prevents queued same-execution jobs from starting after shutdown", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
-		registerSession(h.store, "e2");
 		openGate(h.comm, "q1", "e1", "review_design");
-		openGate(h.comm, "q2", "e2", "review_design");
+		openGate(h.comm, "q2", "e1", "review_design");
 		let releaseFirst: (() => void) | undefined;
 		const firstRunning = new Promise<void>((r) => {
 			releaseFirst = r;
@@ -2319,7 +2472,6 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			store: h.store,
 			commDbPathFor: () => "/fake/proj/comm.db",
 			openCommDb: () => h.comm,
-			maxConcurrent: 1,
 			reviewRound: async () => {
 				started += 1;
 				await firstRunning;
@@ -2341,17 +2493,17 @@ describe("R13 — terminal-state and delivery invariants", () => {
 			questionId: "q1",
 		});
 		await coordinator.accept({
-			executionId: "e2",
+			executionId: "e1",
 			requestId: "r2",
 			reviewType: "design",
 			questionId: "q2",
 		});
 		await new Promise((r) => setImmediate(r));
-		expect(started).toBe(1); // second waits on the single slot
-		coordinator.stop(); // shutdown while r2 queues
+		expect(started).toBe(1); // second waits on the same execution's chain
+		coordinator.stop(); // shutdown while r2 is queued behind r1
 		releaseFirst?.();
 		await settle();
-		expect(started).toBe(1); // the drained waiter never started a reviewer
+		expect(started).toBe(1); // the queued chain link never started a reviewer
 	});
 
 	it("MEDIUM-3 via outbox: crash-recovered skipped CODE job re-asserts the head-bound record", async () => {

@@ -16,8 +16,9 @@
  * codex-skip governance path). There is no "send a summary and call it done"
  * degradation.
  *
- * Scheduling: serial per execution, global concurrency 2 (§7.1). Boot
- * redrive: pending/running jobs re-enqueue (`redriveOnBoot`).
+ * Scheduling: serial per execution, with no coordinator-wide concurrency
+ * ceiling (§7.1 / FLY-2037). Boot redrive: pending/running jobs re-enqueue
+ * (`redriveOnBoot`).
  */
 
 import { execFile } from "node:child_process";
@@ -158,7 +159,6 @@ export interface ReviewCoordinatorDeps {
 	/** Lead-facing alert for fail-close job failures (wired by plugin). */
 	alertLead?: (message: string) => void;
 	logger?: (msg: string) => void;
-	maxConcurrent?: number;
 	reviewerBinary?: string;
 	reviewerModel?: string;
 	/**
@@ -391,12 +391,8 @@ export class ReviewRequestCoordinator {
 	private readonly store: StateStore;
 	private readonly deps: ReviewCoordinatorDeps;
 	private readonly log: (msg: string) => void;
-	private readonly maxConcurrent: number;
 	/** Per-execution serialization chains. */
 	private readonly execChains = new Map<string, Promise<void>>();
-	/** Global slots in use. */
-	private active = 0;
-	private readonly waiters: Array<() => void> = [];
 	private stopped = false;
 
 	constructor(deps: ReviewCoordinatorDeps) {
@@ -404,17 +400,10 @@ export class ReviewRequestCoordinator {
 		this.deps = deps;
 		this.log =
 			deps.logger ?? ((m: string) => console.log(`[review-coordinator] ${m}`));
-		this.maxConcurrent = deps.maxConcurrent ?? 2;
 	}
 
 	stop(): void {
 		this.stopped = true;
-		// R13 HIGH-3: drain queued slot waiters — each wakes, hits the
-		// post-acquire stopped check, and releases without starting a reviewer.
-		while (this.waiters.length > 0) {
-			const next = this.waiters.shift();
-			next?.();
-		}
 	}
 
 	/**
@@ -944,13 +933,10 @@ export class ReviewRequestCoordinator {
 	private enqueue(requestId: string, executionId: string): void {
 		const chain = this.execChains.get(executionId) ?? Promise.resolve();
 		const next = chain.then(async () => {
+			// R13 HIGH-3: this link starts only after its execution predecessor.
+			// A stop while that predecessor runs prevents this reviewer from starting.
 			if (this.stopped) return;
-			await this.acquireSlot();
 			try {
-				// R13 HIGH-3: re-check AFTER the slot wait — a waiter woken
-				// during/after shutdown must not start a reviewer the one-shot
-				// killAllClaudeReviewChildren() sweep can no longer reap.
-				if (this.stopped) return;
 				await this.runJob(requestId);
 			} catch (err) {
 				this.log(
@@ -961,8 +947,6 @@ export class ReviewRequestCoordinator {
 				} catch {
 					/* store unavailable — job stays running, boot redrive recovers */
 				}
-			} finally {
-				this.releaseSlot();
 			}
 		});
 		this.execChains.set(executionId, next);
@@ -971,25 +955,6 @@ export class ReviewRequestCoordinator {
 				this.execChains.delete(executionId);
 			}
 		});
-	}
-
-	private acquireSlot(): Promise<void> {
-		if (this.active < this.maxConcurrent) {
-			this.active += 1;
-			return Promise.resolve();
-		}
-		return new Promise((resolve) => {
-			this.waiters.push(() => {
-				this.active += 1;
-				resolve();
-			});
-		});
-	}
-
-	private releaseSlot(): void {
-		this.active -= 1;
-		const next = this.waiters.shift();
-		if (next) next();
 	}
 
 	// ── job execution ──────────────────────────────────────────────────────

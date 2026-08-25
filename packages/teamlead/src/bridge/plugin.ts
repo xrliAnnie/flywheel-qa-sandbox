@@ -9210,10 +9210,12 @@ export async function startBridge(
 		);
 	}
 
-	// FLY-1188 §7.1 / FLY-1278: build the codex-author review coordinator and
-	// redrive jobs plus unsent governance audit posts. Both runner routes read the
-	// holder at request time (503 until filled). Review governance events use the
-	// late-bound routed sink, so the eventual AlertChannelHub owns dedup/tickets.
+	// FLY-1188 §7.1 / FLY-1278 / FLY-2037: build the codex-author review
+	// coordinator and redrive jobs plus unsent governance audit posts. Jobs stay
+	// serial per execution, without a coordinator-wide concurrency ceiling. Both
+	// runner routes read the holder at request time (503 until filled). Review
+	// governance events use the late-bound routed sink, so the eventual
+	// AlertChannelHub owns dedup/tickets.
 	{
 		const commRoot =
 			process.env.FLYWHEEL_COMM_ROOT?.trim() ||
