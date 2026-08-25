@@ -69,6 +69,13 @@ jobs:
       - name: Enforce FLY-1773 ACK-only delivery semantics
         run: bash scripts/__tests__/fly1773-delivery-semantics.test.sh
 
+      # FLY-2045: the milestone ledger must stay out of CLAUDE.md. This has to live in the
+      # always-on lane: every regression it catches is a Markdown-only change, and Markdown
+      # under engineering/doc/ classifies inert, so the heavy jobs would skip exactly the
+      # PRs it is meant to catch. Pure bash, so it runs before `pnpm install`.
+      - name: Enforce FLY-2045 milestone layout
+        run: bash scripts/__tests__/fly2045-milestone-layout.test.sh
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4

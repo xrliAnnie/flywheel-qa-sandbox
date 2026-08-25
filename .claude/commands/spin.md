@@ -339,8 +339,9 @@ If all 3 attempts fail, report to Lead/Annie with the last failure details.
 **Step 3: Post-merge bookkeeping** (after PR is merged):
 
 > ⚠️ **FLY-270 — branch by repo FIRST (before any main-checkout pull / tracked bookkeeping).**
-> The **flywheel** repo is single-writer post-merge: its tracked bookkeeping (CLAUDE.md milestone
-> + `git mv` doc archive) ships **inside the PR** (the PR's last commit), and the main checkout must
+> The **flywheel** repo is single-writer post-merge: its tracked bookkeeping (a NEW
+> `engineering/doc/milestones/<ID>.md` — **never** a CLAUDE.md edit, FLY-2045 — plus the `git mv` doc
+> archive) ships **inside the PR** (the PR's last commit), and the main checkout must
 > stay clean so the scheduled updater's `git pull --ff-only` + rollback work. So for flywheel, **do NOT**
 > run the generic `git checkout main && git pull` / CLAUDE.md edit / docs-commit steps below — go
 > straight to repo-external bookkeeping (MEMORY/Linear) + Step 3.4 (cleanup only).
@@ -366,7 +367,8 @@ cd "$MAIN_REPO" && git checkout main && git pull origin main
    > separately authorized founder emergency may create a ticket with
    > `scripts/request-restart.sh`. Post-merge work is cleanup and reporting only:
    >
-   > - **Bookkeeping is in the PR, not post-merge**: the CLAUDE.md milestone +
+   > - **Bookkeeping is in the PR, not post-merge**: the new
+   >   `engineering/doc/milestones/<ID>.md` (FLY-2045 — **not** a CLAUDE.md edit) +
    >   `git mv` doc archive were the PR's last commit (`feedback_archive_docs_in_main_pr`),
    >   so the main checkout stays clean. Post-merge writes NO tracked files to main.
    > - MEMORY.md (repo-external local) + Linear (API) bookkeeping are fine (generic 2/3).

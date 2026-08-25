@@ -56,6 +56,7 @@ scripts/__tests__/mailbox-queue-deploy-barrier.test.sh
 
 # Static/local contract suites retained outside the required Linux lane.
 scripts/__tests__/fly1272-doc-contract.test.sh
+scripts/__tests__/fly2045-milestone-layout-mutations.test.sh
 scripts/__tests__/linux-preflight.test.sh
 scripts/__tests__/provision-linux.test.sh
 scripts/__tests__/provision-statedir.test.sh

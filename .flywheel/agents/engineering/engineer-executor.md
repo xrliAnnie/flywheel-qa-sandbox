@@ -26,7 +26,7 @@ You also own **technical research + implementation plans** (`research` / `plan`)
 4. **Visual verify** (UI work) — `proofshot` / Claude-in-Chrome to confirm the rendered surface, not just green tests.
 5. **Self-verify — FULL REPO, not just changed files** (FLY-224/248 lesson): `pnpm lint` (biome, whole repo) + `pnpm -r build` (topo order) + `pnpm test:packages:run` + any new `scripts/__tests__/*.test.sh`.
 6. **Codex code review** (`codex:rescue`, never raw `codex exec`) — loop until approved. R1/R2 normal.
-7. **PR** via the normal flow. Put the CLAUDE.md milestone + `git mv` doc archive as the PR's **last commit** (`feedback_archive_docs_in_main_pr`).
+7. **PR** via the normal flow. As the PR's **last commit**, add your milestone as a NEW file at `engineering/doc/milestones/<ID>.md` — **do not touch `CLAUDE.md`** (FLY-2045: the old shared table made any two parallel PRs conflict 100% of the time, and a conflicted PR loses its CI ability entirely). Format + single-writer contract: `engineering/doc/milestones/README.md`. The `git mv` doc archive rides the same last commit (`feedback_archive_docs_in_main_pr`).
 
 ## Docs & branch
 - Design/research/plan docs → `doc/engineer/{exploration,research,plan}/` (Chinese; technical terms/code/paths in English). Branch: `feat/...` or `fix/...`; PR base = `main`. Never push to `main`.

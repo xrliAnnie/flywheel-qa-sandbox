@@ -578,8 +578,58 @@ require(
     "continue-on-error" not in retention_consumer_steps[0],
     "FLY-2006 retention consumer gate must fail closed",
 )
+
 script_steps_2 = script_tests_2.get("steps")
 require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
+
+# FLY-2045: the milestone-layout guard is the reason a milestone-only regression cannot
+# reach main. Every such regression is a Markdown-only change, and Markdown under
+# engineering/doc/ classifies inert, so the heavy jobs skip exactly those PRs -- the guard
+# only works if it stays in the always-on lane, unconditional, and ahead of the install
+# step (it is pure bash and must not depend on node_modules).
+fly2045_steps = [
+    step for step in quick_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Enforce FLY-2045 milestone layout"
+]
+require(
+    len(fly2045_steps) == 1,
+    "quick-gate must contain exactly one FLY-2045 milestone layout step",
+)
+require(
+    str(fly2045_steps[0].get("run", "")).strip()
+    == "bash scripts/__tests__/fly2045-milestone-layout.test.sh",
+    "FLY-2045 milestone layout command drifted",
+)
+require(
+    "if" not in fly2045_steps[0],
+    "FLY-2045 milestone layout step must not be conditional",
+)
+require(
+    "continue-on-error" not in fly2045_steps[0],
+    "FLY-2045 milestone layout step must fail closed",
+)
+fly2045_in_shards = sum(
+    1
+    for job_steps in (script_steps, script_steps_2)
+    for step in job_steps
+    if isinstance(step, dict)
+    and "fly2045-milestone-layout.test.sh" in str(step.get("run", ""))
+)
+require(
+    fly2045_in_shards == 0,
+    "FLY-2045 milestone layout must run only in the always-on quick gate, not in a shard",
+)
+quick_names = [
+    str(step.get("name") or step.get("uses") or "")
+    for step in quick_steps
+    if isinstance(step, dict)
+]
+require(
+    quick_names.index("Enforce FLY-2045 milestone layout")
+    < quick_names.index("Install dependencies"),
+    "FLY-2045 milestone layout must run before dependencies are installed",
+)
 
 
 def step_identity(step: object) -> str:

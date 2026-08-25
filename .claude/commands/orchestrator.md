@@ -331,6 +331,40 @@ For each PR the user approves to ship:
    ```bash
    cd {worktree_path}
    ISSUE_ID="FLY-{XX}"  # or GEO-{XX}
+
+   # FLY-2045-REPO-PREDICATE / branch fence — FIRST, before anything writes or stages.
+   #
+   # A0 commits onto whatever HEAD points at, but the ship step pushes {branch}. If those are
+   # not the same ref the bookkeeping lands on an unreachable commit while the pushed branch
+   # has none, and CI and merge both continue against the older head — silently.
+   #
+   # EXPECTED_BRANCH must come from the SAME {branch} value the push uses; an unset variable
+   # must fail, never disable the comparison. And these checks run before the archive loop,
+   # so a refusal does not leave a half-staged worktree for a later command to consume.
+   MAIN_REPO=$(git worktree list --porcelain | head -1 | sed 's/^worktree //')
+   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
+     EXPECTED_BRANCH="{branch}"
+     # Detect an unrendered template WITHOUT writing the token literally a second time.
+     # A sentinel spelled "{branch}" is self-defeating: under the ordinary rule "replace
+     # every {branch}", the sentinel is replaced too and a CORRECT branch false-refuses.
+     # Matching the shape {...} instead is rendering-agnostic. (A branch literally named
+     # "{branch}" is valid to Git and would be refused here; that trade is deliberate.)
+     case "$EXPECTED_BRANCH" in
+       "" | "{"*"}")
+         echo "[orchestrator] FATAL: the branch token was not substituted (got '$EXPECTED_BRANCH');" >&2
+         echo "[orchestrator]        refusing to guess where A0's commit belongs" >&2
+         exit 1 ;;
+     esac
+     current_branch=$(git symbolic-ref --quiet --short HEAD || true)
+     if [[ -z "$current_branch" ]]; then
+       echo "[orchestrator] FATAL: detached HEAD; A0's commit would not be on the branch being pushed" >&2
+       exit 1
+     fi
+     if [[ "$current_branch" != "$EXPECTED_BRANCH" ]]; then
+       echo "[orchestrator] FATAL: on '$current_branch' but the ship step pushes '$EXPECTED_BRANCH'" >&2
+       exit 1
+     fi
+   fi
    for dir_pair in \
        "doc/engineer/plan/inprogress:doc/engineer/plan/archive" \
        "doc/engineer/research/new:doc/engineer/research/archive" \
@@ -340,12 +374,50 @@ For each PR the user approves to ship:
        git mv "$f" "$dst/"
      done
    done
+   # FLY-2045 — Flywheel milestone file. The ledger is one file per issue under
+   # engineering/doc/milestones/, NOT a row in CLAUDE.md: the old shared table made any two
+   # parallel PRs conflict 100% of the time, and a conflicted PR has no merge commit, so its
+   # pull_request workflow never queues and the branch loses CI entirely.
+   #
+   # FLY-2045-REPO-PREDICATE: decide by the REPO, not by the issue prefix. Flywheel's own
+   # history lives partly under GEO-, so a `FLY-` test would route those down the generic path.
+   if [[ "$(basename "$MAIN_REPO")" == "flywheel" ]]; then
+     milestone_path="engineering/doc/milestones/${ISSUE_ID}.md"
+     # The owner of this path is THIS issue's ship PR. The executor is the primary creator
+     # (engineer-executor step 7); A0 is a non-overwriting last-mile ensure.
+     git fetch --quiet origin main || { echo "[orchestrator] FATAL: cannot fetch origin/main" >&2; exit 1; }
+     if git cat-file -e "origin/main:${milestone_path}" 2>/dev/null; then
+       # FLY-2045-A0-BASE-FENCE: already on main => the canonical id is taken. Fail closed.
+       echo "[orchestrator] FATAL: ${milestone_path} already exists on origin/main (canonical id taken)" >&2
+       exit 1
+     elif [[ -e "$milestone_path" ]]; then
+       # FLY-2045-A0-HANDOFF: this branch's own new file. Verify, hand off, NEVER overwrite.
+       git ls-files --error-unmatch "$milestone_path" >/dev/null 2>&1 \
+         || { echo "[orchestrator] FATAL: $milestone_path exists but is untracked" >&2; exit 1; }
+       echo "[orchestrator] milestone already created by the executor: $milestone_path"
+     else
+       # FLY-2045-A0-ADD: neither base nor branch has it — create and stage it.
+       # A template is a placeholder, not a milestone. Write it, stage it so the PR is not
+       # silently missing the file, and then STOP: committing "<short title>" and "#NNN" into
+       # the permanent ledger is worse than failing here, and only the executor knows what
+       # the entry should say.
+       printf '# %s — <short title>\n\n**Status**: ⏳ Pending ship\n**PR**: #%s\n**Date**: %s\n\n<summary>\n' \
+         "$ISSUE_ID" "${PR_NUMBER:-NNN}" "$(date +%F)" > "$milestone_path"
+       git add -- "$milestone_path"
+       echo "[orchestrator] FATAL: the executor did not create $milestone_path." >&2
+       echo "[orchestrator]        A template has been staged — fill it in and re-run; do not ship a placeholder." >&2
+       exit 1
+     fi
+   fi
+
    if ! git diff --cached --quiet; then
      git commit -m "docs: archive ${ISSUE_ID} docs (final commit before ship)"
    fi
    ```
 
    If no docs to move, skip silently. Matches `spin.md` Stage: Ship Step 1.
+   Note the commit gate above is `git diff --cached`, so anything the milestone step writes
+   MUST be `git add`-ed or it would stay untracked and never reach the PR.
 
    **A. Ship via :cool: flow (MANDATORY — do not skip)**
 
@@ -449,8 +521,16 @@ For each PR the user approves to ship:
    - Mark issue as ✅ Done in Next Steps table
    - Add one-line summary with PR number, key changes, review rounds
 
-   **F. Update CLAUDE.md + VERSION**
-   - Add milestone to the milestone table
+   **F. Update the milestone ledger + VERSION** (non-Flywheel repos)
+   - <a id="FLY-2045-F-SKIP"></a>**FLY-2045-F-SKIP — Flywheel: skip the milestone here.** It already
+     landed inside the PR at `engineering/doc/milestones/<ID>.md` (step A0), because Flywheel's main
+     checkout must stay clean for the scheduled updater. Writing it post-merge would put a tracked
+     file on main.
+     > TODO (pre-existing, not FLY-2045): the `doc/VERSION` bump below is ALSO a post-merge tracked
+     > write, which contradicts `spin.md`'s "Flywheel post-merge writes NO tracked files to main".
+     > Out of scope here — it is VERSION bookkeeping, not milestone bookkeeping, and measurement
+     > shows it is dormant for flywheel (0 of the last 12 merges touched `doc/VERSION`).
+   - Non-Flywheel repos: add milestone to the milestone table
    - Bump `doc/VERSION` to `SPRINT_VERSION` if not already bumped (first ship of the sprint writes the new version; subsequent ships in the same sprint skip this step since VERSION is already correct):
      ```bash
      bash -c 'source .claude/orchestrator/config.sh && current=$(get_current_version) && if [ "$current" != "{SPRINT_VERSION}" ]; then bump_feature_version minor; fi'

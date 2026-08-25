@@ -38,9 +38,14 @@ allowed_hits=(
   'scripts/__tests__/lead-patrol-snapshot.test.sh|three_stage_turn'
   'packages/teamlead/src/__tests__/patrol-tick-loop.integration.test.ts|three_stage_turn'
   'packages/teamlead/src/bridge/hook-payload.ts|three_stage_turn'
-  'CLAUDE.md|no-three-stage'
-  'CLAUDE.md|three-stage-policy'
-  'CLAUDE.md|three_stage'
+  # FLY-2045 removed these three. The keywords only ever appeared inside the milestone
+  # table (lines 45 and 146 of the old CLAUDE.md), which now lives in
+  # engineering/doc/milestones/ARCHIVE-pre-FLY-2045.md, so they are zero-hit in CLAUDE.md
+  # and the liveness loop below would fail them as dead exemptions.
+  # They are DELETED rather than re-pointed at the archive: the active scan already
+  # excludes engineering/doc/**, so an archive-pointed entry would be a zombie -- kept
+  # alive by the liveness check while scanning nothing. That is exactly the ledger
+  # pollution FLY-1455 exists to prevent.
   '.flywheel/config.yaml|no-three-stage'
   'packages/teamlead/src/StateStore.ts|no-three-stage'
   'packages/teamlead/src/__tests__/StateStore.workflow-route-decision.test.ts|no-three-stage'
