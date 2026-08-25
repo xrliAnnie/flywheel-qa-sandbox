@@ -1,0 +1,8 @@
+flowchart LR
+  A["仓里的名册文件<br/>cross-dept-channel-rules.md"] --> B["lead-rules-bundle.sh<br/>按角色拼装"]
+  B --> C["每个 Lead 自己的 prompt<br/>~/.flywheel/lead-rules-bundles/"]
+  C --> D["真 Lead 在 Discord 回答"]
+  D --> E["Lead 1 与 Lead 2 都答<br/>Belle = life dept Lead<br/>只剩 Mufasa 是 companion"]
+  F["并发会话的 Lead 3/4<br/>跑的是没这改动的版本"] -.对照.-> G["仍答 Belle = companion"]
+  style E fill:#e8f7ec,stroke:#34c759,stroke-width:2px
+  style G fill:#f2f2f7,stroke:#86868b,stroke-width:2px

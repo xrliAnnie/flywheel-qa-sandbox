@@ -421,7 +421,7 @@ jobs:
     # serial lane into two independent shards; this fleet/setup/packaging shard
     # measured ~10.4min (52%) as of 2026-08-17. Rebalance only whole named steps
     # and keep ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
-    # Step seconds: 519=2, 1356=0, 1609=1, 648=12, 1023=19, 1189=2+2+21,
+    # Step seconds: 519=2, 2034=1, 1356=0, 1609=1, 648=12, 1023=19, 1189=2+2+21,
     # 1775=9, 1389=48, npm-seams=13, 1501=104, 1634=10, 1671=2,
     # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1330=6, 1018=0,
     # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
@@ -479,6 +479,12 @@ jobs:
           bash scripts/__tests__/fleet-capture.test.sh
           bash scripts/__tests__/provision-fleet-host.test.sh
           bash -c 'source scripts/lib/fleet-sanitize.sh; scan_for_secrets fleet/'
+
+      # FLY-2034: Belle's cutover runbook carries a credential gate that must
+      # inspect the Git index (including binary blobs), never a divergent
+      # working-tree copy. Hermetic temporary repo; no external credentials.
+      - name: Test — FLY-2034 Belle staged credential gate
+        run: bash scripts/__tests__/fly2034-onboarding-credential-gate.test.sh
 
       # FLY-1356: skill-framework arm definitions are FROZEN artifacts — the
       # matt-skills vendor structure + B/C prompt-variant contracts (bare arm

@@ -63,6 +63,22 @@ function names(lines: string[]): string[] {
 }
 
 describe("lead-rules-bundle.sh — behavioral", () => {
+	it("advertises Belle as a runner-owning life department Lead", () => {
+		const crossDepartmentRules = readFileSync(
+			join(BASE_RULES_DIR, "cross-dept-channel-rules.md"),
+			"utf8",
+		);
+		expect(crossDepartmentRules).toContain(
+			"**Belle** | Life Assistant (life dept Lead)",
+		);
+		expect(crossDepartmentRules).toContain(
+			"**Mufasa** (FLY-231) is a **companion** Lead",
+		);
+		expect(crossDepartmentRules).not.toContain(
+			"**Mufasa** and **Belle** (FLY-231) are **companion** Leads",
+		);
+	});
+
 	it("does not advertise the retired per-dispatch design backend", () => {
 		const modelRules = readFileSync(
 			join(BASE_RULES_DIR, "model-routing.md"),

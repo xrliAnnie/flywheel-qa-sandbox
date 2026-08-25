@@ -61,14 +61,14 @@ version of the discipline above, applied to core rooms.
 | **Triton** | Chief of Staff (cos) | tidal-echo | `1517034404080390234` | `<@1517034404080390234>` |
 | **Ariel** | Content Lead | tidal-echo | `1517038828089774111` | `<@1517038828089774111>` |
 | **Mufasa** | Growth Companion (non-eng) | growth | `1499895683287748679` | `<@1499895683287748679>` |
-| **Belle** | Life Assistant (non-eng companion) | personal-assistant | `1509701064935477318` | `<@1509701064935477318>` |
+| **Belle** | Life Assistant (life dept Lead) | personal-assistant | `1509701064935477318` | `<@1509701064935477318>` |
 
 Annie = `<@1138241636057481306>`.
 
-> **Mufasa** and **Belle** (FLY-231) are **companion** Leads — warm personal agents,
-> not engineering Leads. They participate here like the others (addressed by name /
-> `@`-mention, mention-gated) but own no Runners and no code. Address them by name
-> only when you actually need them.
+> **Mufasa** (FLY-231) is a **companion** Lead — a warm personal agent, not an
+> engineering Lead. Mufasa participates here like the others (addressed by name /
+> `@`-mention, mention-gated) but owns no Runners and no code. Address Mufasa by
+> name only when you actually need him.
 
 ## When YOU reply (strict — only when addressed)
 

@@ -675,6 +675,7 @@ expected_shard_tests = {
     "script-tests-2": [
         "Test — FLY-1905 CI apt-install helper",
         "Test — FLY-519 fleet provisioning + zero-secret gate",
+        "Test — FLY-2034 Belle staged credential gate",
         "Test — FLY-1356 skill-framework vendor + variant contracts",
         "Test — FLY-1609 four-arm analysis contract",
         "Test — FLY-648 one-command setup wizard",

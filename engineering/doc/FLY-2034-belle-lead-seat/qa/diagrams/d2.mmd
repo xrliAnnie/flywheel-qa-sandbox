@@ -1,0 +1,17 @@
+flowchart LR
+  subgraph P1["本 PR 交付(已验)"]
+    A1["belle-workspace 私有仓<br/>skills / archive / weekly 台账"]
+    A2["接入清单 11 节<br/>逐字命令 + 对称回滚"]
+    A3["名册改口径<br/>Belle = life dept Lead"]
+    A4["两个 fail-closed 验证器"]
+  end
+  subgraph P2["Founder 维护窗(尚未发生)"]
+    B1["连接目录 + 逐路径归档"]
+    B2["identity 加派工职责"]
+    B3["projects.json 原子翻转"]
+    B4["重启 Bridge 与 Belle"]
+  end
+  P1 --> P2 --> C1["Belle 可以派工<br/>产出自动进仓 + 上台账"]
+  style P1 fill:#e8f7ec,stroke:#34c759,stroke-width:2px
+  style P2 fill:#fff4e5,stroke:#ff9500,stroke-width:2px
+  style C1 fill:#e7f0ff,stroke:#007aff,stroke-width:2px
