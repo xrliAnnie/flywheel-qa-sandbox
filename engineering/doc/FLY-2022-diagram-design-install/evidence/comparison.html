@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2022 · diagram-design 真图对比</title>
+<style>
+  :root { --paper:#f5f5f5; --ink:#2d3142; --muted:#697386; --accent:#eb6c36; --line:#d9dce3; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--paper); color:var(--ink); font-family:"PingFang SC","Hiragino Sans GB","Noto Sans CJK SC","Microsoft YaHei",sans-serif; }
+  main { width:min(2200px,100%); margin:0 auto; padding:52px; }
+  header { display:flex; align-items:end; justify-content:space-between; gap:24px; margin-bottom:28px; }
+  .eyebrow { margin:0 0 10px; color:var(--accent); font:600 12px ui-monospace,monospace; letter-spacing:.16em; }
+  h1 { margin:0; font-size:34px; line-height:1.2; }
+  .verdict { margin:0; color:var(--muted); font-size:15px; }
+  .grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:22px; }
+  figure { margin:0; padding:16px; background:#fff; border:1px solid var(--line); border-radius:14px; }
+  img { display:block; width:100%; aspect-ratio:1; object-fit:contain; background:#f5f5f5; }
+  figcaption { display:flex; justify-content:space-between; gap:12px; align-items:baseline; padding:14px 4px 2px; }
+  strong { font-size:17px; }
+  span { color:var(--muted); font-size:13px; }
+  @media (max-width:1000px) { .grid { grid-template-columns:1fr; } header { align-items:start; flex-direction:column; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <p class="eyebrow">FLY-2022 · SAME SUBJECT · SIDE BY SIDE</p>
+      <h1>项目安装后的第一张真图，对比 FLY-2004 认可锚点</h1>
+    </div>
+    <p class="verdict">显式调用与不点名自然触发均成功；中文可读，信息层级与完成度不掉档。</p>
+  </header>
+  <section class="grid" aria-label="三张同题架构图比较">
+    <figure>
+      <img src="reference-fly2004-arm-b.png" alt="FLY-2004 Annie 认可的手画 B 臂">
+      <figcaption><strong>FLY-2004 认可锚点</strong><span>手画 · 1680²</span></figcaption>
+    </figure>
+    <figure>
+      <img src="explicit-generated.png" alt="显式调用已安装 diagram-design 生成的架构图">
+      <figcaption><strong>权威显式调用</strong><span>Skill event · 2160²</span></figcaption>
+    </figure>
+    <figure>
+      <img src="natural-generated.png" alt="不点名自然请求自动触发已安装技能生成的架构图">
+      <figcaption><strong>不点名自然触发</strong><span>auto-discovery · 2160²</span></figcaption>
+    </figure>
+  </section>
+</main>
+</body>
+</html>

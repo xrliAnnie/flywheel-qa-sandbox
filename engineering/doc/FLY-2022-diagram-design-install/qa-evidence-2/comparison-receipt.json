@@ -1,0 +1,22 @@
+{
+  "output": {
+    "path": "/Users/xiaorongli/Dev/flywheel-FLY-2022/engineering/doc/FLY-2022-diagram-design-install/qa-evidence-2/comparison-vs-fly2004.png",
+    "sha256": "880db47f2a3307ad9921ca4dd44c84698d2e31453060f8cd07a359e4540250cc",
+    "bytes": 431220,
+    "width": 1596,
+    "height": 2345
+  },
+  "inputs": [
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2022/engineering/doc/FLY-2022-diagram-design-install/evidence/reference-fly2004-arm-b.png",
+      "sha256": "e3da05048a6af3cefc611b154416af4114223adfda4ae825e27e5839d3b6b715",
+      "bytes": 154376
+    },
+    {
+      "path": "/Users/xiaorongli/Dev/flywheel-FLY-2022/engineering/doc/FLY-2022-diagram-design-install/qa-evidence-2/generated-natural.png",
+      "sha256": "5a1a3f3c7e41b06e11e69ae591b2ae2b6b12a594e872928774e32442a3fe066f",
+      "bytes": 354458
+    }
+  ],
+  "fit": "common width, native aspect ratio, no crop"
+}

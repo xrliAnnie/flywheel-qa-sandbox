@@ -1,0 +1,118 @@
+{
+  "mode": "natural",
+  "startedAt": "2026-08-24T18:44:57.600Z",
+  "finishedAt": "2026-08-24T18:59:04.817Z",
+  "claudeVersion": "2.1.241",
+  "command": [
+    "claude",
+    "-p",
+    "--no-session-persistence",
+    "--no-chrome",
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--permission-mode",
+    "acceptEdits",
+    "--allowedTools",
+    "Skill,Read,Write,Edit,Glob,Grep,Bash(python3 .claude/skills/diagram-design/scripts/self_check.py:*)",
+    "--disallowedTools",
+    "WebFetch,WebSearch"
+  ],
+  "promptTransport": "stdin",
+  "request": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/natural-request.md",
+    "sha256": "d43e9b112fef0ec86aaa6b4f4a6065286adb843e58e7beaba6759337de55d5a2"
+  },
+  "exit": {
+    "code": 0,
+    "signal": null,
+    "timedOut": false
+  },
+  "transcript": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/natural-transcript.jsonl",
+    "sha256": "48f2f8a48506c1d6e1e59faa1d48bfd61cda775266898c646237bed6f3727e9c",
+    "jsonEvents": 480,
+    "parseErrors": []
+  },
+  "skillEvents": [
+    {
+      "line": 17,
+      "skill": "diagram-design"
+    }
+  ],
+  "invokedDiagramDesign": true,
+  "brandingQuestions": [],
+  "output": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/natural-generated.html",
+    "exists": true,
+    "bytes": 14066,
+    "sha256": "38ed89cc165b68bbecd764bd602bb7f5081ba6297d9bd98220f6b46708032789"
+  },
+  "guard": {
+    "projectSkillUnchanged": true,
+    "projectConfigUnchanged": true,
+    "changedUserPaths": [],
+    "before": {
+      "projectSkill": {
+        "exists": true,
+        "files": 208,
+        "sha256": "03e68b4066817668ec72b75c28cb1c5f2c6c1c46c05ef9556a3a45ccc24aa67a"
+      },
+      "projectConfig": {
+        "exists": true,
+        "files": 1,
+        "sha256": "47e63850e1e67e9a686fe7be910c26a0d6af3f373506c9e62c078f764917a815"
+      },
+      "userPaths": {
+        "agentLock": {
+          "exists": true,
+          "files": 1,
+          "sha256": "213eee7ecbb24bfb212128bbba4a6b90ddde49ca14a0e258b0a7bbd488443559"
+        },
+        "agentSkill": {
+          "exists": false
+        },
+        "claudeSkill": {
+          "exists": false
+        },
+        "codexSkill": {
+          "exists": false
+        },
+        "defaultProfile": {
+          "exists": false
+        }
+      }
+    },
+    "after": {
+      "projectSkill": {
+        "exists": true,
+        "files": 208,
+        "sha256": "03e68b4066817668ec72b75c28cb1c5f2c6c1c46c05ef9556a3a45ccc24aa67a"
+      },
+      "projectConfig": {
+        "exists": true,
+        "files": 1,
+        "sha256": "47e63850e1e67e9a686fe7be910c26a0d6af3f373506c9e62c078f764917a815"
+      },
+      "userPaths": {
+        "agentLock": {
+          "exists": true,
+          "files": 1,
+          "sha256": "213eee7ecbb24bfb212128bbba4a6b90ddde49ca14a0e258b0a7bbd488443559"
+        },
+        "agentSkill": {
+          "exists": false
+        },
+        "claudeSkill": {
+          "exists": false
+        },
+        "codexSkill": {
+          "exists": false
+        },
+        "defaultProfile": {
+          "exists": false
+        }
+      }
+    }
+  }
+}

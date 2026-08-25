@@ -651,6 +651,7 @@ expected_shard_tests = {
         "Test — FLY-1018 gemini-agent guard",
         "Test — FLY-880 PM executor role contract",
         "Test — FLY-2015 diagram-design role routing",
+        "Test — FLY-2022 diagram-design project install",
         "Test — FLY-1787 CoS identity contract",
         "Test — FLY-1461 QA executor 529 N-to-N contract",
         "Test — FLY-1463 QA executor ship-report contract",

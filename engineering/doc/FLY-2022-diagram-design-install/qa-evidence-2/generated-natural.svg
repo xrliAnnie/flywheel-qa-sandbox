@@ -1,0 +1,182 @@
+<svg width="2240" height="832" viewBox="0 0 1120 416" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="fly2022-longdesc-title fly2022-longdesc-desc">
+      <title id="fly2022-longdesc-title">超长 Issue 说明送入 tmux Runner：修复前后对比</title>
+      <desc id="fly2022-longdesc-desc">对比图：修复前把 Linear issue 的约 40KB 说明全文直接拼进 tmux 启动命令，超过约 16KB 上限即报 command too long，runner 根本起不来；修复后先把全文写进仅本机可读（0600）的临时文件，启动命令只带文件路径，新窗口里的 bootstrap 脚本按路径读回全文，Claude 最终收到与修复前逐字一致的任务原文。</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ======== zones (drawn first) ======== -->
+      <rect x="40" y="24" width="1040" height="120" rx="8"
+            fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="56" y="28" width="152" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="132" y="37" fill="rgba(45,49,66,0.45)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.1em">修复前 · 全文内联进启动命令</text>
+
+      <rect x="40" y="192" width="1040" height="160" rx="8"
+            fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <rect x="56" y="196" width="144" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="128" y="205" fill="rgba(45,49,66,0.45)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.1em">修复后 · 临时文件只传路径</text>
+
+      <!-- ======== arrows (before boxes) ======== -->
+      <!-- 修复前：Issue → 启动命令 -->
+      <line x1="208" y1="92" x2="440" y2="92" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="294" y="72" width="60" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="324" y="81" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">全文拼进命令</text>
+
+      <!-- 修复前：启动命令 → 失败 -->
+      <line x1="680" y1="92" x2="856" y2="92" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="728" y="72" width="80" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="768" y="81" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">超过 ~16KB 上限</text>
+
+      <!-- 修复后：Issue → 临时文件 -->
+      <line x1="208" y1="260" x2="276" y2="260" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="220" y="240" width="44" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="242" y="249" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">全文写入</text>
+
+      <!-- 修复后：临时文件 → 启动命令 -->
+      <line x1="420" y1="260" x2="488" y2="260" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="432" y="240" width="44" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="454" y="249" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">只放路径</text>
+
+      <!-- 修复后：启动命令 → bootstrap -->
+      <line x1="632" y1="260" x2="700" y2="260" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="644" y="240" width="44" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="666" y="249" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">起新窗口</text>
+
+      <!-- 修复后：bootstrap → Claude Runner -->
+      <line x1="844" y1="260" x2="912" y2="260" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+      <rect x="856" y="240" width="44" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="878" y="249" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">注入原文</text>
+
+      <!-- 修复后：bootstrap 按路径读回临时文件（虚线返回，正交圆角） -->
+      <path d="M 772,296 V 328 Q 772,336 764,336 H 356 Q 348,336 348,328 V 296"
+            fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3" marker-end="url(#arrow)"/>
+      <rect x="526" y="316" width="68" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="560" y="325" fill="#7a8399" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle" letter-spacing="0.04em">按路径读回全文</text>
+
+      <!-- ======== nodes ======== -->
+      <!-- A1: Linear Issue（修复前） -->
+      <rect x="64" y="56" width="144" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="64" y="56" width="144" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="72" y="62" width="28" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.4)" stroke-width="0.8"/>
+      <text x="86" y="71" fill="rgba(122,131,153,0.9)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SRC</text>
+      <text x="136" y="94" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">Linear Issue</text>
+      <text x="136" y="110" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">description ≈ 40KB</text>
+
+      <!-- B1: tmux 启动命令（内联全文） -->
+      <rect x="440" y="56" width="240" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="440" y="56" width="240" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="448" y="62" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="462" y="71" fill="rgba(45,49,66,0.8)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CMD</text>
+      <text x="560" y="94" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">tmux 启动命令</text>
+      <text x="560" y="110" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">前缀 + 40KB 全文直接拼入</text>
+
+      <!-- C1: 失败终点 command too long（accent 之二） -->
+      <rect x="856" y="56" width="200" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="856" y="56" width="200" height="72" rx="6" fill="rgba(235,108,54,0.05)" stroke="rgba(235,108,54,0.5)" stroke-width="1" stroke-dasharray="4,4"/>
+      <rect x="864" y="62" width="28" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.5)" stroke-width="0.8"/>
+      <text x="878" y="71" fill="rgba(235,108,54,0.9)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">ERR</text>
+      <text x="956" y="94" fill="#eb6c36" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">✗ command too long</text>
+      <text x="956" y="110" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">runner 根本起不来</text>
+
+      <!-- A2: Linear Issue（修复后，同一输入） -->
+      <rect x="64" y="224" width="144" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="64" y="224" width="144" height="72" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <rect x="72" y="230" width="28" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.4)" stroke-width="0.8"/>
+      <text x="86" y="239" fill="rgba(122,131,153,0.9)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SRC</text>
+      <text x="136" y="262" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">Linear Issue</text>
+      <text x="136" y="278" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">description ≈ 40KB</text>
+
+      <!-- D: 临时文件（焦点，accent 之一） -->
+      <rect x="276" y="224" width="144" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="276" y="224" width="144" height="72" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <rect x="284" y="230" width="32" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.5)" stroke-width="0.8"/>
+      <text x="300" y="239" fill="rgba(235,108,54,0.9)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">FILE</text>
+      <text x="348" y="262" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">临时文件</text>
+      <text x="348" y="278" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">0600 · 仅本机可读</text>
+
+      <!-- E: tmux 启动命令（只含路径） -->
+      <rect x="488" y="224" width="144" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="488" y="224" width="144" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="496" y="230" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="510" y="239" fill="rgba(45,49,66,0.8)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">CMD</text>
+      <text x="560" y="262" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">tmux 启动命令</text>
+      <text x="560" y="278" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">只带文件路径 · 恒短</text>
+
+      <!-- F: bootstrap 脚本 -->
+      <rect x="700" y="224" width="144" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="700" y="224" width="144" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="708" y="230" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="720" y="239" fill="rgba(45,49,66,0.8)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">SH</text>
+      <text x="772" y="262" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">bootstrap 脚本</text>
+      <text x="772" y="278" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">新窗口内的小脚本</text>
+
+      <!-- G: Claude Runner -->
+      <rect x="912" y="224" width="144" height="72" rx="6" fill="#f5f5f5"/>
+      <rect x="912" y="224" width="144" height="72" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <rect x="920" y="230" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+      <text x="934" y="239" fill="rgba(45,49,66,0.8)" font-size="7"
+            font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.08em">RUN</text>
+      <text x="984" y="262" fill="#2d3142" font-size="12" font-weight="600"
+            font-family="'Geist', -apple-system, 'PingFang SC', sans-serif" text-anchor="middle">Claude Runner</text>
+      <text x="984" y="278" fill="#4f5d75" font-size="9"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" text-anchor="middle">收到逐字一致原文 ✓</text>
+
+      <!-- ======== legend ======== -->
+      <line x1="40" y1="376" x2="1080" y2="376" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+      <text x="40" y="392" fill="#4f5d75" font-size="8"
+            font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+
+      <rect x="152" y="384" width="12" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+      <text x="172" y="392" fill="#4f5d75" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" letter-spacing="0.04em">输入源</text>
+
+      <rect x="272" y="384" width="12" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="292" y="392" fill="#4f5d75" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" letter-spacing="0.04em">处理步骤</text>
+
+      <rect x="400" y="384" width="12" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="420" y="392" fill="#4f5d75" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" letter-spacing="0.04em">焦点 · 修复核心</text>
+
+      <rect x="584" y="384" width="12" height="12" rx="2" fill="rgba(235,108,54,0.05)" stroke="rgba(235,108,54,0.5)" stroke-width="1" stroke-dasharray="3,2"/>
+      <text x="604" y="392" fill="#4f5d75" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" letter-spacing="0.04em">失败终点</text>
+
+      <line x1="712" y1="390" x2="744" y2="390" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+      <text x="752" y="392" fill="#4f5d75" font-size="8"
+            font-family="'Geist Mono', ui-monospace, 'PingFang SC', monospace" letter-spacing="0.04em">虚线 · 按路径读回</text>
+    </svg>

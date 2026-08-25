@@ -1,0 +1,28 @@
+{
+  "tool": "engineering/doc/FLY-2022-diagram-design-install/evidence/compose-comparison.mjs",
+  "renderer": "sharp 0.34.5 / libvips 8.17.3",
+  "inputs": [
+    {
+      "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/reference-fly2004-arm-b.png",
+      "label": "FLY-2004 认可锚点",
+      "sha256": "e3da05048a6af3cefc611b154416af4114223adfda4ae825e27e5839d3b6b715"
+    },
+    {
+      "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/explicit-generated.png",
+      "label": "权威显式调用",
+      "sha256": "78c79193f461dea32bd29c1f9c3924894208aef14b1e8742924c8745b49a3b11"
+    },
+    {
+      "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/natural-generated.png",
+      "label": "不点名自然触发",
+      "sha256": "41a2a660d2934dbb3f9f9ee7db2bb45b74fe72a3b969ff2f0e3a355ce5b0bd91"
+    }
+  ],
+  "output": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/comparison.png",
+    "width": 2168,
+    "height": 856,
+    "bytes": 313779,
+    "sha256": "0c0c9184801a5add22665d65f79af2bcc764a501e60a05d26d1f00f496164c6c"
+  }
+}

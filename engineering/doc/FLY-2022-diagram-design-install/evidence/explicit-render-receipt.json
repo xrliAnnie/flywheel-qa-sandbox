@@ -1,0 +1,61 @@
+{
+  "tool": "engineering/doc/FLY-2022-diagram-design-install/evidence/render-diagram.mjs",
+  "renderer": {
+    "name": "sharp/librsvg",
+    "sharp": "0.34.5",
+    "vips": "8.17.3",
+    "density": 144,
+    "degradation": {
+      "reason": "Runner process sandbox aborts Google Chrome headless (exit 134) and rejects qlmanage sandbox initialization (exit 255). The same Chrome 151 CDP procedure was independently verified during design review R3; this run uses the repo-pinned local SVG rasterizer instead of installing Playwright or a system package.",
+      "browserGeometryAvailable": false
+    }
+  },
+  "input": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/explicit-generated.html",
+    "bytes": 15166,
+    "sha256": "8dc9d201467ab85dd346be447ba605077a9d0864b85615260edb07d59366aea1"
+  },
+  "extractedSvg": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/explicit-generated.svg",
+    "bytes": 14924,
+    "sha256": "b2b0ebba4d23e344e0efe266036f05cff99681905917218dc898c2095e9c6e03",
+    "viewBox": "0 0 1080 1080",
+    "cjkTextNodes": 24
+  },
+  "output": {
+    "path": "engineering/doc/FLY-2022-diagram-design-install/evidence/explicit-generated.png",
+    "bytes": 297146,
+    "sha256": "78c79193f461dea32bd29c1f9c3924894208aef14b1e8742924c8745b49a3b11",
+    "width": 2160,
+    "height": 2160,
+    "channels": 4,
+    "space": "srgb",
+    "renderInfo": {
+      "format": "png",
+      "width": 2160,
+      "height": 2160,
+      "channels": 4,
+      "premultiplied": false,
+      "size": 297146
+    }
+  },
+  "fontObservation": {
+    "declaredStack": "PingFang SC,Hiragino Sans GB,Noto Sans CJK SC,Microsoft YaHei,sans-serif",
+    "fontconfigCandidates": [
+      "Hiragino Sans GB,冬青黑體簡體中文,ヒラギノ角ゴ 簡体中文,冬青黑体简体中文,Hiragino Sans GB W3,冬青黑體簡體中文 W3,ヒラギノ角ゴ 簡体中文 W3,冬青黑体简体中文 W3|HiraginoSansGB-W3|/System/Library/Fonts/Hiragino Sans GB.ttc",
+      "Verdana|Verdana|/System/Library/Fonts/Supplemental/Verdana.ttf",
+      "Arial|ArialMT|/System/Library/Fonts/Supplemental/Arial.ttf",
+      "Helvetica|Helvetica|/System/Library/Fonts/Helvetica.ttc",
+      "Helvetica|Helvetica-Light|/System/Library/Fonts/Helvetica.ttc",
+      "Tahoma|Tahoma|/System/Library/Fonts/Supplemental/Tahoma.ttf",
+      "Hiragino Sans,ヒラギノ角ゴシック,Hiragino Sans W4,ヒラギノ角ゴシック W4|HiraginoSans-W4|/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+      "Apple SD Gothic Neo,Apple SD 산돌고딕 Neo|AppleSDGothicNeo-Regular|/System/Library/Fonts/AppleSDGothicNeo.ttc",
+      "Arial Unicode MS|ArialUnicodeMS|/Library/Fonts/Arial Unicode.ttf",
+      "Kokonor|Kokonor|/System/Library/Fonts/Supplemental/Kokonor.ttf",
+      "Euphemia UCAS|EuphemiaUCAS|/System/Library/Fonts/Supplemental/EuphemiaCAS.ttc",
+      "Microsoft Sans Serif|MicrosoftSansSerif|/System/Library/Fonts/Supplemental/Microsoft Sans Serif.ttf"
+    ],
+    "firstCjkCapableCandidate": "Hiragino Sans GB,冬青黑體簡體中文,ヒラギノ角ゴ 簡体中文,冬青黑体简体中文,Hiragino Sans GB W3,冬青黑體簡體中文 W3,ヒラギノ角ゴ 簡体中文 W3,冬青黑体简体中文 W3|HiraginoSansGB-W3|/System/Library/Fonts/Hiragino Sans GB.ttc",
+    "claimBoundary": "Fontconfig candidate order plus the produced raster is recorded; without CDP CSS.getPlatformFontsForNode in this runner sandbox, this receipt does not label the candidate as the browser's physical glyph face."
+  }
+}

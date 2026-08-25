@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2022 · 超长任务说明如何安全进入 tmux Runner</title>
+<style>
+  :root {
+    --paper: #f5f5f5;
+    --ink: #2d3142;
+    --muted: #4f5d75;
+    --soft: #7a8399;
+    --accent: #eb6c36;
+    --accent-tint: rgba(235, 108, 54, 0.08);
+    --sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+    --mono: "SF Mono", Menlo, Consolas, "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", monospace;
+    --serif-cjk: "Songti SC", "Noto Serif CJK SC", "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    display: grid;
+    place-items: center;
+    min-height: 100vh;
+    font-family: var(--sans);
+  }
+  .board { width: 1080px; max-width: 100%; }
+  .board svg { display: block; width: 100%; height: auto; }
+
+  .t-eyebrow  { font: 500 12px var(--mono); letter-spacing: 0.18em; fill: var(--soft); }
+  .t-title    { font: 400 40px var(--serif-cjk); fill: var(--ink); }
+  .t-subtitle { font: 400 16px var(--sans); fill: var(--muted); }
+  .t-name     { font: 600 16px var(--sans); fill: var(--ink); }
+  .t-name-dim { font: 600 16px var(--sans); fill: var(--muted); }
+  .t-sub      { font: 400 12px var(--mono); fill: var(--muted); }
+  .t-sub-dim  { font: 400 12px var(--mono); fill: var(--soft); }
+  .t-tag      { font: 500 8px var(--mono); letter-spacing: 0.08em; }
+  .t-arrow    { font: 400 12px var(--mono); letter-spacing: 0.06em; }
+  .t-zone     { font: 500 12px var(--mono); letter-spacing: 0.14em; fill: rgba(45, 49, 66, 0.44); }
+  .t-aside    { font: italic 400 16px var(--serif-cjk); fill: var(--soft); }
+  .t-legend   { font: 400 12px var(--sans); fill: var(--muted); }
+</style>
+</head>
+<body>
+<div class="board">
+<svg viewBox="0 0 1080 1080" role="img" aria-labelledby="natgen-title natgen-desc" xmlns="http://www.w3.org/2000/svg">
+  <title id="natgen-title">超长任务说明进入 tmux Runner 的两条路径</title>
+  <desc id="natgen-desc">架构对比图：旧路径把超长 Linear issue 描述全文直接内嵌进 tmux 启动命令，在约 16 KiB 的命令长度上限处触发 command too long，任务未进入 Runner；新路径先把原文写入仅本机可读（chmod 0600）的临时文件，启动命令只携带 3 到 5 KiB 的文件路径与窗口脚本，tmux 窗口内的脚本再按路径读回原文，Claude 最终收到与原文逐字一致的任务说明。</desc>
+  <defs>
+    <marker id="natgen-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+    </marker>
+    <marker id="natgen-arrow-ink" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2d3142"/>
+    </marker>
+    <marker id="natgen-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
+    </marker>
+    <marker id="natgen-arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/>
+    </marker>
+  </defs>
+
+  <!-- ===== 背景 ===== -->
+  <rect width="1080" height="1080" fill="#f5f5f5"/>
+
+  <!-- ===== 页眉 ===== -->
+  <text x="540" y="76" text-anchor="middle" class="t-eyebrow">FLY-2022 · TMUX RUNNER · 任务投递链路</text>
+  <text x="540" y="124" text-anchor="middle" class="t-title">超长任务说明如何安全进入 tmux Runner</text>
+  <text x="540" y="160" text-anchor="middle" class="t-subtitle">同一份 Linear issue description：旧路径内嵌命令行即失败，新路径经临时文件逐字送达</text>
+
+  <!-- ===== 区域（先画）：tmux Runner 窗口 ===== -->
+  <rect x="560" y="648" width="416" height="280" rx="8"
+        fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+  <rect x="576" y="652" width="160" height="16" rx="2" fill="#f5f5f5"/>
+  <text x="656" y="664" text-anchor="middle" class="t-zone">TMUX RUNNER 窗口</text>
+
+  <!-- ===== 边界线：命令长度上限 ===== -->
+  <line x1="72" y1="600" x2="1000" y2="600"
+        stroke="rgba(45,49,66,0.35)" stroke-width="1" stroke-dasharray="4,4"/>
+
+  <!-- ===== 连接线（在节点之前画） ===== -->
+  <!-- 分叉 · 左：Linear issue → 旧启动命令（muted） -->
+  <path d="M 476,280 V 308 Q 476,316 468,316 H 268 Q 260,316 260,324 V 344"
+        fill="none" stroke="#4f5d75" stroke-width="1" marker-end="url(#natgen-arrow)"/>
+  <!-- 分叉 · 右：Linear issue → 临时文件（ink 主线） -->
+  <path d="M 604,280 V 308 Q 604,316 612,316 H 760 Q 768,316 768,324 V 344"
+        fill="none" stroke="#2d3142" stroke-width="1.2" marker-end="url(#natgen-arrow-ink)"/>
+  <!-- 旧路：启动命令 → 上限处受阻（无箭头，止于 ✕） -->
+  <line x1="260" y1="424" x2="260" y2="588" stroke="#4f5d75" stroke-width="1"/>
+  <!-- 旧路：受阻后果（虚线） -->
+  <line x1="260" y1="612" x2="260" y2="648" stroke="#4f5d75" stroke-width="1"
+        stroke-dasharray="4,3" marker-end="url(#natgen-arrow)"/>
+  <!-- 新路：临时文件 → 精简启动命令 -->
+  <line x1="768" y1="424" x2="768" y2="472" stroke="#2d3142" stroke-width="1.2"
+        marker-end="url(#natgen-arrow-ink)"/>
+  <!-- 新路：启动命令 → 窗口脚本（穿过上限线，低于上限） -->
+  <line x1="768" y1="552" x2="768" y2="696" stroke="#2d3142" stroke-width="1.2"
+        marker-end="url(#natgen-arrow-ink)"/>
+  <!-- 新路：窗口脚本 → Claude Runner -->
+  <line x1="768" y1="776" x2="768" y2="824" stroke="#2d3142" stroke-width="1.2"
+        marker-end="url(#natgen-arrow-ink)"/>
+  <!-- 数据读回：临时文件 → 窗口脚本（虚线，绕右侧） -->
+  <path d="M 952,384 H 1008 Q 1016,384 1016,392 V 712 Q 1016,720 1008,720 H 928"
+        fill="none" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"
+        marker-end="url(#natgen-arrow)"/>
+
+  <!-- ===== 受阻符号 ✕（旧路 · 止于上限） ===== -->
+  <circle cx="260" cy="600" r="12" fill="#ffffff" stroke="#4f5d75" stroke-width="1.2"/>
+  <line x1="252" y1="592" x2="268" y2="608" stroke="#4f5d75" stroke-width="1.2"/>
+  <line x1="268" y1="592" x2="252" y2="608" stroke="#4f5d75" stroke-width="1.2"/>
+
+  <!-- ===== 连线标注（带遮罩） ===== -->
+  <!-- 分叉标注：旧路径 / 新路径 -->
+  <rect x="340" y="292" width="56" height="16" rx="2" fill="#f5f5f5"/>
+  <text x="368" y="304" text-anchor="middle" class="t-arrow" fill="#7a8399">旧路径</text>
+  <rect x="660" y="292" width="56" height="16" rx="2" fill="#f5f5f5"/>
+  <text x="688" y="304" text-anchor="middle" class="t-arrow" fill="#2d3142">新路径</text>
+  <!-- 读回标注 -->
+  <rect x="956" y="360" width="64" height="16" rx="2" fill="#f5f5f5"/>
+  <text x="988" y="372" text-anchor="middle" class="t-arrow" fill="#4f5d75">读回原文</text>
+
+  <!-- ===== 上限线上的三块牌 ===== -->
+  <!-- 旧路：command too long -->
+  <rect x="284" y="584" width="160" height="32" rx="4" fill="#f5f5f5"
+        stroke="rgba(79,93,117,0.45)" stroke-width="1"/>
+  <text x="364" y="604" text-anchor="middle" class="t-arrow" fill="#4f5d75">command too long</text>
+  <!-- 边界线自身标注 -->
+  <rect x="472" y="588" width="160" height="24" rx="2" fill="#f5f5f5"/>
+  <text x="552" y="604" text-anchor="middle" class="t-arrow" fill="#7a8399">命令长度上限 ≈16 KiB</text>
+  <!-- 新路：低于上限，通过 -->
+  <rect x="784" y="584" width="176" height="32" rx="4" fill="#ffffff"
+        stroke="#2d3142" stroke-width="1"/>
+  <text x="872" y="604" text-anchor="middle" class="t-arrow" fill="#2d3142">3–5 KiB · 低于上限 ✓</text>
+
+  <!-- ===== 节点 ===== -->
+  <!-- 源：Linear issue -->
+  <rect x="348" y="200" width="384" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="348" y="200" width="384" height="80" rx="6"
+        fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+  <rect x="360" y="212" width="48" height="16" rx="2" fill="transparent"
+        stroke="rgba(122,131,153,0.40)" stroke-width="0.8"/>
+  <text x="384" y="224" text-anchor="middle" class="t-tag" fill="#7a8399">LINEAR</text>
+  <text x="540" y="248" text-anchor="middle" class="t-name">Linear issue · 超长任务说明</text>
+  <text x="540" y="268" text-anchor="middle" class="t-sub">description ≥ 16 KiB</text>
+
+  <!-- 旧路 O1：启动命令 · 内嵌全文 -->
+  <rect x="100" y="344" width="320" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="100" y="344" width="320" height="80" rx="6"
+        fill="rgba(45,49,66,0.03)" stroke="rgba(45,49,66,0.30)" stroke-width="1"/>
+  <rect x="112" y="356" width="48" height="16" rx="2" fill="transparent"
+        stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+  <text x="136" y="368" text-anchor="middle" class="t-tag" fill="#7a8399">SHELL</text>
+  <text x="260" y="392" text-anchor="middle" class="t-name-dim">启动命令 · 内嵌全文</text>
+  <text x="260" y="412" text-anchor="middle" class="t-sub-dim">argv 携带正文 ≥16 KiB</text>
+
+  <!-- 旧路 O2：任务未进入 Runner（失败终点） -->
+  <rect x="100" y="648" width="320" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="100" y="648" width="320" height="80" rx="6"
+        fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.20)" stroke-width="1"
+        stroke-dasharray="4,3"/>
+  <rect x="112" y="660" width="48" height="16" rx="2" fill="transparent"
+        stroke="rgba(79,93,117,0.40)" stroke-width="0.8"/>
+  <text x="136" y="672" text-anchor="middle" class="t-tag" fill="#7a8399">ERROR</text>
+  <text x="260" y="696" text-anchor="middle" class="t-name-dim">任务未进入 Runner</text>
+  <text x="260" y="716" text-anchor="middle" class="t-sub-dim">启动失败 · 说明未送达</text>
+
+  <!-- 新路 N1：原文写入临时文件（焦点 1） -->
+  <rect x="584" y="344" width="368" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="584" y="344" width="368" height="80" rx="6"
+        fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+  <rect x="596" y="356" width="40" height="16" rx="2" fill="transparent"
+        stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+  <text x="616" y="368" text-anchor="middle" class="t-tag" fill="#eb6c36">FILE</text>
+  <text x="768" y="392" text-anchor="middle" class="t-name">原文写入本机临时文件</text>
+  <text x="768" y="412" text-anchor="middle" class="t-sub">chmod 0600 · 仅本机可读</text>
+
+  <!-- 新路 N2：启动命令 · 只带路径 -->
+  <rect x="584" y="472" width="368" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="584" y="472" width="368" height="80" rx="6"
+        fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <rect x="596" y="484" width="48" height="16" rx="2" fill="transparent"
+        stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+  <text x="620" y="496" text-anchor="middle" class="t-tag" fill="#4f5d75">SHELL</text>
+  <text x="768" y="520" text-anchor="middle" class="t-name">启动命令 · 只带路径</text>
+  <text x="768" y="540" text-anchor="middle" class="t-sub">tmux new-window + 窗口脚本</text>
+
+  <!-- 新路 N3：窗口脚本读回原文 -->
+  <rect x="608" y="696" width="320" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="608" y="696" width="320" height="80" rx="6"
+        fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+  <rect x="620" y="708" width="48" height="16" rx="2" fill="transparent"
+        stroke="rgba(45,49,66,0.40)" stroke-width="0.8"/>
+  <text x="644" y="720" text-anchor="middle" class="t-tag" fill="#4f5d75">SCRIPT</text>
+  <text x="768" y="744" text-anchor="middle" class="t-name">窗口脚本读回原文</text>
+  <text x="768" y="764" text-anchor="middle" class="t-sub">按路径读取 · 无 argv 上限</text>
+
+  <!-- 新路 N4：Claude 收到完整说明（焦点 2） -->
+  <rect x="608" y="824" width="320" height="80" rx="6" fill="#f5f5f5"/>
+  <rect x="608" y="824" width="320" height="80" rx="6"
+        fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+  <rect x="620" y="836" width="48" height="16" rx="2" fill="transparent"
+        stroke="rgba(235,108,54,0.40)" stroke-width="0.8"/>
+  <text x="644" y="848" text-anchor="middle" class="t-tag" fill="#eb6c36">CLAUDE</text>
+  <text x="768" y="872" text-anchor="middle" class="t-name">Claude 收到完整任务说明</text>
+  <text x="768" y="892" text-anchor="middle" class="t-sub">与 Linear 原文逐字一致</text>
+
+  <!-- ===== 编辑旁注 ===== -->
+  <text x="260" y="792" text-anchor="middle" class="t-aside">同一份说明，两种命运：</text>
+  <text x="260" y="820" text-anchor="middle" class="t-aside">差别只在命令行里带的是正文还是路径。</text>
+
+  <!-- ===== 图例 ===== -->
+  <line x1="40" y1="984" x2="1040" y2="984" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+  <text x="40" y="1012" class="t-eyebrow">图例</text>
+  <line x1="160" y1="1008" x2="192" y2="1008" stroke="#2d3142" stroke-width="1.2"/>
+  <text x="200" y="1012" class="t-legend">新路径 · 主线</text>
+  <line x1="340" y1="1008" x2="372" y2="1008" stroke="#4f5d75" stroke-width="1"/>
+  <text x="380" y="1012" class="t-legend">旧路径</text>
+  <line x1="520" y1="1008" x2="552" y2="1008" stroke="#4f5d75" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="560" y="1012" class="t-legend">文件读取</text>
+  <rect x="700" y="1000" width="24" height="16" rx="2"
+        fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+  <text x="732" y="1012" class="t-legend">关键机制</text>
+  <circle cx="888" cy="1008" r="8" fill="#ffffff" stroke="#4f5d75" stroke-width="1"/>
+  <line x1="884" y1="1004" x2="892" y2="1012" stroke="#4f5d75" stroke-width="1"/>
+  <line x1="892" y1="1004" x2="884" y2="1012" stroke="#4f5d75" stroke-width="1"/>
+  <text x="904" y="1012" class="t-legend">超限受阻</text>
+</svg>
+</div>
+</body>
+</html>

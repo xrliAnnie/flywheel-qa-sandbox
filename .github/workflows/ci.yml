@@ -715,6 +715,12 @@ jobs:
       - name: Test — FLY-2015 diagram-design role routing
         run: bash scripts/__tests__/fly2015-diagram-design-roles.test.sh
 
+      # FLY-2022: the v2.6.5 vendor copy is project-scoped, byte-pinned, and
+      # carries a default marker so unattended first generation never asks for
+      # brand colors. Pure local hash/census checks; no installer or network.
+      - name: Test — FLY-2022 diagram-design project install
+        run: bash scripts/__tests__/fly2022-diagram-design-install.test.sh
+
       # FLY-1787: Flywheel CoS prompt rules must keep department labels
       # single-select and abstain from messages addressed to another user.
       - name: Test — FLY-1787 CoS identity contract

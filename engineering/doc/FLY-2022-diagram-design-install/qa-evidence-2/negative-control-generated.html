@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>超长 issue 描述如何安全送进 tmux runner</title>
+<style>
+  :root {
+    --paper: #f5f5f5;
+    --ink: #2d3142;
+    --muted: #4f5d75;
+    --soft: #7a8399;
+    --rule: rgba(45,49,66,0.12);
+    --accent: #eb6c36;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "Geist", -apple-system, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+    padding: 48px 24px 32px;
+  }
+  .wrap { max-width: 1072px; margin: 0 auto; }
+  .eyebrow {
+    font-family: "Geist Mono", "SF Mono", Menlo, "PingFang SC", monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    color: var(--soft);
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  h1 {
+    font-family: "Instrument Serif", Georgia, "Songti SC", "STSong", serif;
+    font-size: 1.75rem;
+    font-weight: 400;
+    line-height: 1.3;
+    margin-bottom: 8px;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: var(--muted);
+    line-height: 1.6;
+    margin-bottom: 32px;
+    max-width: 720px;
+  }
+  svg { display: block; width: 100%; height: auto; }
+  .colophon {
+    margin-top: 24px;
+    padding-top: 12px;
+    border-top: 1px solid var(--rule);
+    font-family: "Geist Mono", "SF Mono", Menlo, "PingFang SC", monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+    color: var(--soft);
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <p class="eyebrow">FLYWHEEL · LINEAR → TMUX RUNNER</p>
+  <h1>超长 issue 描述如何安全送进 tmux runner</h1>
+  <p class="subtitle">修复前:任务说明全文直接拼进 tmux 启动命令,整条命令超过约 16KB 就报 command too long,runner 根本起不来。修复后:全文先写进仅本机可读的临时文件,命令里只放文件路径,新窗口内的小脚本再把原文读回来——Claude 收到的任务原文与修复前逐字一致。</p>
+
+  <svg viewBox="0 0 1072 496" role="img" aria-labelledby="tmux-prompt-fix-title tmux-prompt-fix-desc" xmlns="http://www.w3.org/2000/svg">
+    <title id="tmux-prompt-fix-title">超长 issue 描述送入 tmux runner:修复前后对比</title>
+    <desc id="tmux-prompt-fix-desc">对比图:修复前把任务说明全文直接拼进 tmux 启动命令,命令超过约 16KB 触发 command too long,runner 窗口没有创建;修复后先把全文写入仅本机当前用户可读的临时文件,启动命令只携带文件路径,新窗口内的启动脚本读回全文并交给 Claude,任务原文与修复前逐字一致。</desc>
+    <defs>
+      <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/>
+      </marker>
+      <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/>
+      </marker>
+      <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+        <polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/>
+      </marker>
+    </defs>
+
+    <!-- 背景 -->
+    <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+    <!-- ═══ 区域:修复前 ═══ -->
+    <rect x="24" y="16" width="1024" height="152" rx="8"
+          fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="40" y="20" width="224" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="48" y="32" fill="rgba(45,49,66,0.55)" font-size="9"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace" letter-spacing="0.12em">修复前 · 全文直接拼进启动命令 · 失败 ✗</text>
+
+    <!-- ═══ 区域:修复后 ═══ -->
+    <rect x="24" y="208" width="1024" height="200" rx="8"
+          fill="rgba(45,49,66,0.02)" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <rect x="40" y="212" width="264" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="48" y="224" fill="rgba(45,49,66,0.55)" font-size="9"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace" letter-spacing="0.12em">修复后 · 原文走临时文件,命令只带路径 · 成功 ✓</text>
+
+    <!-- ─── 连线(先画线,后画框)─── -->
+    <!-- 修复前:全文 → 启动命令 -->
+    <line x1="232" y1="104" x2="576" y2="104" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <!-- 修复前:启动命令 → 失败 -->
+    <line x1="760" y1="104" x2="840" y2="104" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <!-- 修复后:全文 → 临时文件 -->
+    <line x1="232" y1="296" x2="312" y2="296" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <!-- 修复后:临时文件 → 启动命令 -->
+    <line x1="496" y1="296" x2="576" y2="296" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <!-- 修复后:启动命令 → 新窗口 -->
+    <line x1="760" y1="296" x2="840" y2="296" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <!-- 修复后:临时文件 → 新窗口(读回全文,绕行下方)-->
+    <path d="M 404,336 V 376 Q 404,384 412,384 H 924 Q 932,384 932,376 V 336"
+          fill="none" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+
+    <!-- ─── 连线标签(带遮罩)─── -->
+    <rect x="360" y="80" width="88" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="404" y="92" fill="#7a8399" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">全文直接拼进命令</text>
+
+    <rect x="248" y="272" width="48" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="272" y="284" fill="#7a8399" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">全文写入</text>
+
+    <rect x="512" y="272" width="48" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="536" y="284" fill="#7a8399" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">只传路径</text>
+
+    <rect x="772" y="272" width="56" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="800" y="284" fill="#7a8399" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">创建新窗口</text>
+
+    <rect x="612" y="360" width="112" height="16" rx="2" fill="#f1f1f1"/>
+    <text x="668" y="372" fill="#eb6c36" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">启动脚本读回原文全文</text>
+
+    <!-- ─── 节点:修复前 ─── -->
+    <!-- N1 issue 描述全文(输入)-->
+    <rect x="48" y="64" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="48" y="64" width="184" height="80" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+    <rect x="56" y="72" width="36" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.5)" stroke-width="0.8"/>
+    <text x="74" y="81" fill="rgba(79,93,117,0.9)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">LINEAR</text>
+    <text x="140" y="108" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">issue 描述全文</text>
+    <text x="140" y="126" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">任务说明 · 动辄数十 KB</text>
+
+    <!-- N2 tmux 启动命令(修复前)-->
+    <rect x="576" y="64" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="576" y="64" width="184" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="584" y="72" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+    <text x="596" y="81" fill="rgba(45,49,66,0.8)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">CMD</text>
+    <text x="668" y="102" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">tmux 启动命令</text>
+    <text x="668" y="119" fill="#4f5d75" font-size="9" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">new-window "claude … &lt;描述全文&gt;"</text>
+    <text x="668" y="134" fill="#2d3142" font-size="10" font-weight="500" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">整条命令 &gt;16KB</text>
+
+    <!-- F 失败终点 -->
+    <rect x="840" y="64" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="840" y="64" width="184" height="80" rx="6" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1.2"/>
+    <rect x="848" y="72" width="24" height="12" rx="2" fill="transparent" stroke="rgba(79,93,117,0.5)" stroke-width="0.8"/>
+    <text x="860" y="81" fill="rgba(79,93,117,0.9)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">ERR</text>
+    <text x="932" y="102" fill="#2d3142" font-size="11" font-weight="600" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">✗ command too long</text>
+    <text x="932" y="119" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">命令超过 ≈16KB 上限</text>
+    <text x="932" y="134" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">runner 窗口根本没起来</text>
+
+    <!-- ─── 节点:修复后 ─── -->
+    <!-- N4 issue 描述全文(输入,同上)-->
+    <rect x="48" y="256" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="48" y="256" width="184" height="80" rx="6" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+    <rect x="56" y="264" width="36" height="12" rx="2" fill="transparent" stroke="rgba(122,131,153,0.5)" stroke-width="0.8"/>
+    <text x="74" y="273" fill="rgba(79,93,117,0.9)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">LINEAR</text>
+    <text x="140" y="300" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">issue 描述全文</text>
+    <text x="140" y="318" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">同一份任务说明,一字不改</text>
+
+    <!-- N5 本机临时文件(焦点)-->
+    <rect x="312" y="256" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="312" y="256" width="184" height="80" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+    <rect x="320" y="264" width="28" height="12" rx="2" fill="transparent" stroke="rgba(235,108,54,0.5)" stroke-width="0.8"/>
+    <text x="334" y="273" fill="rgba(235,108,54,0.95)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">FILE</text>
+    <text x="404" y="294" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">本机临时文件</text>
+    <text x="404" y="311" fill="#4f5d75" font-size="9" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">prompt-xxxxxx.txt · chmod 600</text>
+    <text x="404" y="326" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">仅本机当前用户可读</text>
+
+    <!-- N6 tmux 启动命令(修复后)-->
+    <rect x="576" y="256" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="576" y="256" width="184" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="584" y="264" width="24" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+    <text x="596" y="273" fill="rgba(45,49,66,0.8)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">CMD</text>
+    <text x="668" y="294" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">tmux 启动命令</text>
+    <text x="668" y="311" fill="#4f5d75" font-size="9" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">new-window "claude … &lt;文件路径&gt;"</text>
+    <text x="668" y="326" fill="#2d3142" font-size="10" font-weight="500" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">整条命令仅几百字节</text>
+
+    <!-- N7 新窗口 · Claude runner -->
+    <rect x="840" y="256" width="184" height="80" rx="6" fill="#f1f1f1"/>
+    <rect x="840" y="256" width="184" height="80" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <rect x="848" y="264" width="28" height="12" rx="2" fill="transparent" stroke="rgba(45,49,66,0.4)" stroke-width="0.8"/>
+    <text x="862" y="273" fill="rgba(45,49,66,0.8)" font-size="7" text-anchor="middle" letter-spacing="0.08em"
+          font-family="'Geist Mono','SF Mono',Menlo,monospace">TMUX</text>
+    <text x="932" y="294" fill="#2d3142" font-size="12" font-weight="600" text-anchor="middle"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">新窗口 · Claude runner</text>
+    <text x="932" y="311" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">小脚本读回原文,交给 Claude</text>
+    <text x="932" y="326" fill="#4f5d75" font-size="10" text-anchor="middle"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">任务原文与修复前逐字一致</text>
+
+    <!-- ─── 图例 ─── -->
+    <line x1="24" y1="440" x2="1048" y2="440" stroke="rgba(45,49,66,0.10)" stroke-width="0.8"/>
+    <text x="24" y="464" fill="#4f5d75" font-size="9" letter-spacing="0.14em"
+          font-family="'Geist Mono','SF Mono',Menlo,'PingFang SC',monospace">图例</text>
+
+    <rect x="96" y="452" width="20" height="12" rx="2" fill="rgba(79,93,117,0.10)" stroke="#7a8399" stroke-width="1"/>
+    <text x="124" y="462" fill="#4f5d75" font-size="10"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">来源</text>
+
+    <rect x="240" y="452" width="20" height="12" rx="2" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+    <text x="268" y="462" fill="#4f5d75" font-size="10"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">处理节点</text>
+
+    <rect x="384" y="452" width="20" height="12" rx="2" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1.2"/>
+    <text x="412" y="462" fill="#4f5d75" font-size="10"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">修复核心</text>
+
+    <rect x="528" y="452" width="20" height="12" rx="2" fill="rgba(45,49,66,0.05)" stroke="#4f5d75" stroke-width="1.2"/>
+    <text x="556" y="462" fill="#4f5d75" font-size="10"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">失败终点</text>
+
+    <line x1="672" y1="458" x2="700" y2="458" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#arrow)"/>
+    <text x="712" y="462" fill="#4f5d75" font-size="10"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">控制流</text>
+
+    <line x1="816" y1="458" x2="844" y2="458" stroke="#eb6c36" stroke-width="1.2" marker-end="url(#arrow-accent)"/>
+    <text x="856" y="462" fill="#4f5d75" font-size="10"
+          font-family="'Geist',-apple-system,'PingFang SC',sans-serif">任务原文通路</text>
+  </svg>
+
+  <p class="colophon">FLY-2022 · TMUX RUNNER PROMPT 通路 · 修复前后对比 · 静态自包含</p>
+</div>
+</body>
+</html>

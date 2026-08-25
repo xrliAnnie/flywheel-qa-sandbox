@@ -1,0 +1,31 @@
+{
+  "mode": "qa-attempt2-negative-control-no-marker",
+  "markerPresent": false,
+  "exitCode": 0,
+  "detectorSelfTest": {
+    "firesOnGateText": true,
+    "silentOnBenignText": true,
+    "pos": 1,
+    "neg": 0
+  },
+  "invokedDiagramDesign": true,
+  "skillEvents": [
+    {
+      "line": 18,
+      "skill": "diagram-design"
+    }
+  ],
+  "assistantGateHits": [],
+  "rawGateHitLines": [
+    22,
+    51
+  ],
+  "finalResult": {
+    "subtype": "success",
+    "is_error": false,
+    "api_error_status": null,
+    "terminal_reason": "completed",
+    "result": "完成了。图已存到 `out/generated-natural.html`,是一个纯静态、零外链、零脚本的自包含 HTML(只有 SVG 命名空间声明和内部锚点引用,无任何网络请求)。\n\n**图的结构**:上下两个分区放在同一张图里对比,四列纵向对齐(来源 → 传输介质 → 启动命令 → 结果),方便逐列比较:\n\n- **修复前**:issue 描述全文(动辄数十 KB)→ 直接拼进 `tmux new-window \"claude … <描述全文>\"`,整条命令 >16KB → 终点是「✗ command too long」失败框,注明 runner 窗口根本没起来;\n- **修复后**:全文先写入本机临时文件(`chmod 600`,仅本机当前用户可读)→ 启动命令只带文件路径、整条仅几百字节 → 顺利创建新窗口;橙色高亮的「任务原文通路」从临时文件绕行下方直达新窗口,标注「启动脚本读"
+  },
+  "outputExists": true
+}

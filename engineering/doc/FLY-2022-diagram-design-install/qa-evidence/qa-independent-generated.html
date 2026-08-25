@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Flywheel：从 Linear issue 到合入 main</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper:  #f5f5f5;
+      --color-ink:    #2d3142;
+      --color-muted:  #4f5d75;
+      --color-accent: #eb6c36;
+    }
+    body {
+      font-family: 'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', 'Noto Sans SC', sans-serif;
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .frame { max-width: 1080px; width: 100%; }
+    svg { width: 100%; display: block; }
+  </style>
+</head>
+<body>
+  <div class="frame">
+    <svg viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg" role="img"
+         aria-labelledby="fly-issue-to-merge-title fly-issue-to-merge-desc">
+      <title id="fly-issue-to-merge-title">Flywheel：从 Linear issue 到合入 main 的流程图</title>
+      <desc id="fly-issue-to-merge-desc">流程图：Linear issue 建单后经 CoS 分诊打部门标签、部门 Lead 接单并起 tmux Runner；Runner 依次完成 onboard、设计、实现并接受独立 QA，QA 判 FAIL 打回实现重做，判 PASS 后开 PR，Founder 在 Discord 批准后合入 main。</desc>
+      <defs>
+        <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#eb6c36"/></marker>
+        <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#2e5aa8"/></marker>
+      </defs>
+
+      <!-- ======== background ======== -->
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+
+      <!-- ======== header ======== -->
+      <text x="80" y="88" fill="#4f5d75" font-size="12" font-weight="500"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace"
+            letter-spacing="0.18em">FLOWCHART · FLYWHEEL PIPELINE · FLY-2022</text>
+      <text x="80" y="140" fill="#2d3142" font-size="40" font-weight="400"
+            font-family="'Instrument Serif', 'Songti SC', 'Noto Serif SC', Georgia, serif"
+            letter-spacing="-0.01em">从 Linear issue 到合入 main</text>
+      <text x="80" y="176" fill="#4f5d75" font-size="16"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">CoS 分诊、部门 Lead 派工、Runner 四步交付、Founder 批准合库</text>
+
+      <!-- ======== zone: tmux Runner ======== -->
+      <rect x="40" y="360" width="1000" height="352" rx="8" fill="#ececec" stroke="rgba(45,49,66,0.18)" stroke-width="1"/>
+      <text x="64" y="388" fill="#7a8399" font-size="12" font-weight="500"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, 'PingFang SC', monospace"
+            letter-spacing="0.14em">TMUX RUNNER · CLAUDE CODE 会话</text>
+
+      <!-- ======== arrows (drawn before nodes) ======== -->
+      <!-- row 1: 建单 → 分诊 → Lead -->
+      <path d="M 360 256 H 400" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <path d="M 680 256 H 720" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <!-- Lead → onboard（起 Runner，落入 tmux 分区） -->
+      <path d="M 860 288 V 408" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <rect x="872" y="316" width="80" height="24" rx="2" fill="#f5f5f5"/>
+      <text x="880" y="332" fill="#7a8399" font-size="12"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, 'PingFang SC', monospace">起 Runner</text>
+      <!-- row 2（右→左）: onboard → 设计 → 实现 -->
+      <path d="M 740 440 H 660" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <path d="M 420 440 H 340" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <!-- 实现 → 独立 QA -->
+      <path d="M 220 472 V 532" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <!-- QA FAIL → 实现（返工线，焦点之一） -->
+      <path d="M 112 596 H 72 Q 64 596 64 588 V 448 Q 64 440 72 440 H 100"
+            stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" fill="none" marker-end="url(#arrow-accent)"/>
+      <rect x="72" y="500" width="80" height="24" rx="2" fill="#ececec"/>
+      <text x="76" y="516" fill="#eb6c36" font-size="12"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, 'PingFang SC', monospace">FAIL 打回</text>
+      <!-- QA PASS → 开 PR -->
+      <path d="M 220 660 V 752" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <rect x="232" y="680" width="48" height="24" rx="2" fill="#ececec"/>
+      <text x="236" y="696" fill="#7a8399" font-size="12"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace">PASS</text>
+      <!-- row 4: 开 PR → Founder 批准 → 合入 main -->
+      <path d="M 360 784 H 400" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+      <path d="M 680 784 H 720" stroke="#4f5d75" stroke-width="1.2" fill="none" marker-end="url(#arrow)"/>
+
+      <!-- ======== nodes ======== -->
+      <!-- N1 起点：Linear issue 建单（胶囊） -->
+      <rect x="80" y="224" width="280" height="64" rx="32" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="220" y="260" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">Linear issue 建单</text>
+
+      <!-- N2 CoS 分诊 -->
+      <rect x="400" y="224" width="280" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="540" y="252" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">CoS 分诊</text>
+      <text x="540" y="276" fill="#4f5d75" font-size="12" text-anchor="middle"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, 'PingFang SC', monospace">打部门标签</text>
+
+      <!-- N3 部门 Lead 接单 -->
+      <rect x="720" y="224" width="280" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="860" y="260" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">部门 Lead 接单</text>
+
+      <!-- Runner 四步（右→左）: onboard / 设计 / 实现 -->
+      <rect x="740" y="408" width="240" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="860" y="444" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">Onboard</text>
+
+      <rect x="420" y="408" width="240" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="540" y="444" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">设计</text>
+
+      <rect x="100" y="408" width="240" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="220" y="444" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">实现</text>
+
+      <!-- 独立 QA（决策菱形） -->
+      <polygon points="220,532 328,596 220,660 112,596" fill="#ffffff" stroke="#2d3142" stroke-width="1" stroke-linejoin="round"/>
+      <text x="220" y="600" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">独立 QA</text>
+
+      <!-- 开 PR -->
+      <rect x="80" y="752" width="280" height="64" rx="6" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="220" y="788" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">开 PR</text>
+
+      <!-- Founder 批准（焦点之二） -->
+      <rect x="400" y="752" width="280" height="64" rx="6" fill="#f5f5f5"/>
+      <rect x="400" y="752" width="280" height="64" rx="6" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="540" y="780" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">Founder 批准</text>
+      <text x="540" y="804" fill="#4f5d75" font-size="12" text-anchor="middle"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, 'PingFang SC', monospace">Discord ✅</text>
+
+      <!-- 终点：合入 main（胶囊） -->
+      <rect x="720" y="752" width="280" height="64" rx="32" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="860" y="780" fill="#2d3142" font-size="16" font-weight="600" text-anchor="middle"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">合入 main</text>
+      <text x="860" y="804" fill="#4f5d75" font-size="12" text-anchor="middle"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace">PR merged</text>
+
+      <!-- ======== editorial aside ======== -->
+      <text x="540" y="896" fill="#4f5d75" font-size="20" font-style="italic" text-anchor="middle"
+            font-family="'Instrument Serif', 'Songti SC', 'Noto Serif SC', Georgia, serif">独立 QA 是唯一的回头路：判 FAIL 就打回『实现』重做，判 PASS 才走向 PR 与合库。</text>
+
+      <!-- ======== legend ======== -->
+      <line x1="80" y1="968" x2="1000" y2="968" stroke="rgba(45,49,66,0.12)" stroke-width="0.8"/>
+      <text x="80" y="1000" fill="#4f5d75" font-size="12" font-weight="500"
+            font-family="'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace"
+            letter-spacing="0.14em">LEGEND</text>
+
+      <rect x="192" y="984" width="32" height="16" rx="4" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="232" y="1000" fill="#4f5d75" font-size="12"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">流程步骤</text>
+
+      <polygon points="368,984 384,992 368,1000 352,992" fill="#ffffff" stroke="#2d3142" stroke-width="1" stroke-linejoin="round"/>
+      <text x="392" y="1000" fill="#4f5d75" font-size="12"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">QA 判定</text>
+
+      <rect x="512" y="984" width="32" height="16" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="552" y="1000" fill="#4f5d75" font-size="12"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">起点 / 终点</text>
+
+      <rect x="688" y="984" width="32" height="16" rx="4" fill="rgba(235,108,54,0.08)" stroke="#eb6c36" stroke-width="1"/>
+      <text x="728" y="1000" fill="#4f5d75" font-size="12"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">焦点节点</text>
+
+      <line x1="864" y1="992" x2="896" y2="992" stroke="#eb6c36" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#arrow-accent)"/>
+      <text x="904" y="1000" fill="#4f5d75" font-size="12"
+            font-family="'Geist', -apple-system, 'PingFang SC', 'Hiragino Sans GB', sans-serif">QA 返工线</text>
+    </svg>
+  </div>
+</body>
+</html>
