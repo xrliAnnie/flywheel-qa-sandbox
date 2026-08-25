@@ -265,14 +265,25 @@ Question ID: <qid>
 CommDB: <path>
 ```
 
+### Trusted runner-stop exception (FLY-2017)
+
+A lifecycle declaration is an ACK-only report, not a question, only when the
+event carries all three complete values: `question_kind=report`, Question ID
+`rstop-<32 lowercase hex>`, and content beginning
+`RUNNER-STOPPED kind=runner_stopped `. Bridge renders this trusted triple with
+`[REPORT]`. Relay its status once to the issue thread, then ACK the enclosing
+mailbox batch/event. There is no operator answer to collect: **never run `flywheel-comm respond`**
+for this report, because responding wakes a parked
+Runner. Near-matches remain ordinary `[ASK] runner_question` events.
+
 Required behavior:
 
 1. **Immediately** post a chat-thread message addressed to the operator:
    > `💬 <ISSUE-ID> Runner 在问：<question text，必要时摘要>（Runner 继续干活中）`
    (Use the chat thread for the issue. If a `Chat-Thread:` line is present, route there.)
 2. Priority is the same as `gate_question` — surface ASAP — but the framing must convey "non-blocking, Runner is still working". Do not phrase it like a hard checkpoint.
-3. When the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`.
-4. **One `runner_question` event → one chat notification.** Do NOT batch multiple `runner_question` items into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it.
+3. For an **`[ASK] runner_question`**, when the operator answers, run `flywheel-comm respond --db <CommDB path from the event> --lead <your_id> <qid> "<reply>"` to send the answer back to the Runner. The Runner picks it up via `flywheel-comm check`. The trusted `[REPORT]` exception above is ACK-only.
+4. **One `[ASK] runner_question` event → one chat notification.** Do NOT batch multiple asks into a single message and do NOT silently drop one because the Runner "might figure it out". The Runner explicitly asked the operator — surface it. Relay a trusted `[REPORT]` once as lifecycle status, without asking for an answer.
 
 ### Difference from `gate_question`
 
@@ -283,7 +294,8 @@ Required behavior:
 | Annie framing | "Runner is waiting for you" | "Runner is asking (continues working)" |
 | Survive Runner completion | Skipped after session leaves active | Stays pending until answered or TTL |
 
-Both reply the same way (`flywheel-comm respond`).
+Only `gate_question` and `[ASK] runner_question` reply with `flywheel-comm respond`.
+The trusted `[REPORT]` runner-stop exception is ACK-only and never receives a response.
 
 ---
 

@@ -30,6 +30,7 @@
 		"./text-truncate": "./dist/text-truncate.js",
 		"./inbox-write-normalize": "./dist/inbox-write-normalize.js",
 		"./mailbox-queue": "./dist/mailbox-queue.js",
+		"./runner-stop-report": "./dist/runner-stop-report.js",
 		"./dead-letter-format": "./dist/dead-letter-format.js",
 		"./mailbox-migration": "./dist/mailbox-migration.js",
 		"./sender-ref": "./dist/sender-ref.js",

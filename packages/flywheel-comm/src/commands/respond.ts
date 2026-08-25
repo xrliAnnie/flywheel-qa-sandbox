@@ -14,6 +14,7 @@ import {
 	type LeadWriteAuthorizationDeps,
 	postCarrierClaim,
 } from "../lead-lease.js";
+import { isRunnerStopReport } from "../runner-stop-report.js";
 
 export const GATED_CHECKPOINTS = new Set(["approve_to_ship"]);
 
@@ -40,6 +41,11 @@ export async function respond(args: RespondArgs): Promise<void> {
 	try {
 		const question = db.getMessageById(args.questionId);
 		if (!question) throw new Error(`Question not found: ${args.questionId}`);
+		if (isRunnerStopReport(question)) {
+			throw new Error(
+				"flywheel-comm: runner-stop report does not accept responses; ACK its enclosing mailbox batch/event instead.",
+			);
+		}
 		if (isFounderReviewCheckpoint(question.checkpoint)) {
 			throw new Error(
 				"flywheel-comm: founder_review is founder-bound; only the trusted founder writer may answer or request revisions.",

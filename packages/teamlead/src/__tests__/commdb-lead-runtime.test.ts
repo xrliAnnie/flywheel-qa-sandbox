@@ -179,6 +179,24 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).not.toContain("[REVIEW]");
 		});
 
+		it("formats a trusted runner-stop declaration as an ACK-only report", async () => {
+			const envelope = makeEnvelope({
+				event_type: "runner_question",
+				question_id: `rstop-${"b".repeat(32)}`,
+				question_kind: "report",
+				summary:
+					"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-r route=- detail=parked",
+				comm_db_path: "/tmp/comm.db",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[REPORT] Runner lifecycle declaration");
+			expect(content).toContain("Do not respond");
+			expect(content).toContain("ACK");
+			expect(content).not.toContain("flywheel-comm respond");
+		});
+
 		it("formats gate_question with special format", async () => {
 			const envelope = makeEnvelope({
 				event_type: "gate_question",

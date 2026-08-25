@@ -568,11 +568,15 @@ describe("Bootstrap Generator — FLY-161 pendingRunnerQuestions", () => {
 		to: string;
 		content: string;
 		checkpoint?: string;
+		id?: string;
+		kind?: "report";
 	}): string {
 		const db = new CommDB(dbPath);
 		try {
 			return db.insertQuestion(opts.from, opts.to, opts.content, {
 				checkpoint: opts.checkpoint,
+				id: opts.id,
+				kind: opts.kind,
 			});
 		} finally {
 			db.close();
@@ -656,6 +660,44 @@ describe("Bootstrap Generator — FLY-161 pendingRunnerQuestions", () => {
 		expect(bootstrap.pendingRunnerQuestions?.length).toBe(1);
 		expect(bootstrap.pendingRunnerQuestions?.[0]!.chatThreadId).toBe(
 			"thread-product-CCC",
+		);
+	});
+
+	it("excludes only trusted runner-stop reports from bootstrap asks", async () => {
+		store.upsertSession({
+			execution_id: "exec-rstop",
+			issue_id: "issue-rstop",
+			issue_identifier: "FLY-2017",
+			project_name: "geoforge3d",
+			status: "completed",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		const content =
+			"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-rstop route=- detail=parked";
+		insertQuestion({
+			from: "exec-rstop",
+			to: "product-lead",
+			content,
+			id: `rstop-${"d".repeat(32)}`,
+			kind: "report",
+		});
+		insertQuestion({
+			from: "exec-rstop",
+			to: "product-lead",
+			content,
+			id: "rstop-near-match",
+			kind: "report",
+		});
+
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+		);
+
+		expect(bootstrap.pendingRunnerQuestions).toHaveLength(1);
+		expect(bootstrap.pendingRunnerQuestions?.[0]?.questionId).toBe(
+			"rstop-near-match",
 		);
 	});
 

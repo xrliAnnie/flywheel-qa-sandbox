@@ -31,6 +31,7 @@ import {
 	formatGateQuestion,
 	formatMisroutedReport,
 	formatPatrolTick,
+	formatRunnerQuestion,
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
@@ -229,24 +230,7 @@ export class MailboxLeadRuntime implements LeadRuntime {
 		// must NOT prefix with a checkpoint tag (no `[BRAINSTORM]`/`[REVIEW]`)
 		// and must lead with "non-blocking" framing.
 		if (e.event_type === "runner_question") {
-			const issueRef = e.issue_identifier || e.issue_id;
-			const roleLabel =
-				e.session_role && e.session_role !== "main"
-					? `[${e.session_role.toUpperCase()}] `
-					: "";
-			const lines = [
-				`[Event #${env.seq}] ${roleLabel}runner_question`,
-				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
-				"[ASK] Runner is asking (non-blocking — Runner continues working):",
-				"---",
-				e.summary ?? "(no content)",
-				"---",
-				`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
-				`Question ID: ${e.question_id}`,
-				`CommDB: ${e.comm_db_path}`,
-			];
-			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
-			return lines.join("\n");
+			return formatRunnerQuestion(env);
 		}
 
 		if (e.event_type === "gate_question") {

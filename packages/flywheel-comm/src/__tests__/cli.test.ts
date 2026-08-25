@@ -496,6 +496,32 @@ globalThis.fetch = async () => {
 			expect(result).toHaveLength(1);
 			expect(result[0].content).toBe("Q?");
 		});
+
+		it("excludes trusted runner-stop reports but keeps ordinary and near-match questions", () => {
+			const db = new CommDB(dbPath);
+			db.insertQuestion("runner", "product-lead", "ordinary question");
+			db.insertQuestion(
+				"runner",
+				"product-lead",
+				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=runner route=- detail=parked",
+				{ id: `rstop-${"a".repeat(32)}`, kind: "report" },
+			);
+			db.insertQuestion(
+				"runner",
+				"product-lead",
+				"RUNNER-STOPPED kind=runner_stopped near match",
+				{ id: "ordinary-report", kind: "report" },
+			);
+			db.close();
+
+			const result = JSON.parse(
+				runCli(["pending", "--lead", "product-lead", "--db", dbPath, "--json"]),
+			) as Array<{ id: string; content: string }>;
+			expect(result.map(({ content }) => content)).toEqual([
+				"ordinary question",
+				"RUNNER-STOPPED kind=runner_stopped near match",
+			]);
+		});
 	});
 
 	describe("respond", () => {

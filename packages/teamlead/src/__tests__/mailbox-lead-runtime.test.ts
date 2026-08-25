@@ -312,6 +312,36 @@ describe("MailboxLeadRuntime", () => {
 			expect(content).not.toContain("[BRAINSTORM]");
 		});
 
+		it("formats a trusted runner-stop declaration as an ACK-only report", async () => {
+			const transport = makeMockTransport();
+			const runtime = new MailboxLeadRuntime({
+				leadId: "product-lead",
+				transport,
+			});
+			await runtime.deliver(
+				makeEnvelope({
+					event: {
+						event_type: "runner_question",
+						execution_id: "exec-r",
+						issue_id: "issue-r",
+						issue_identifier: "FLY-2017",
+						question_id: `rstop-${"a".repeat(32)}`,
+						question_kind: "report",
+						summary:
+							"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-r route=- detail=parked",
+						comm_db_path: "/tmp/comm.db",
+					},
+				}),
+			);
+
+			const content = (transport.write as ReturnType<typeof vi.fn>).mock
+				.calls[0][0].payload.content as string;
+			expect(content).toContain("[REPORT] Runner lifecycle declaration");
+			expect(content).toContain("Do not respond");
+			expect(content).toContain("ACK");
+			expect(content).not.toContain("flywheel-comm respond");
+		});
+
 		it("formats gate_question event with special structure", async () => {
 			const transport = makeMockTransport();
 			const runtime = new MailboxLeadRuntime({

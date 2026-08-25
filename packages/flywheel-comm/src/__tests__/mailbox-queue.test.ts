@@ -286,6 +286,67 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
+	it.each(["ackBatch", "ackBatchByRecipient"] as const)(
+		"retires a trusted runner-stop report when the Lead consumes it via %s",
+		(method) => {
+			const queue = new MailboxQueue(":memory:");
+			try {
+				const questionId = `rstop-${"a".repeat(32)}`;
+				queue.enqueue({
+					id: questionId,
+					fromAgent: "runner-a",
+					toAgent: "lead-a",
+					recipientKind: "lead",
+					type: "question",
+					kind: "report",
+					content:
+						"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=runner-a route=- detail=parked",
+					createdAt: NOW,
+					senderRef: SENDER_REF,
+				});
+				queue.acquireOrRenewOwner({
+					ownerEpoch: "epoch-1",
+					now: NOW,
+					leaseTtlMs: 10_000,
+				});
+				queue.claimLeadBatch({
+					toAgent: "lead-a",
+					msgClass: "model",
+					ownerEpoch: "epoch-1",
+					batchId: "batch-rstop",
+					now: NOW,
+					claimTtlMs: 30_000,
+				});
+
+				if (method === "ackBatch") {
+					expect(
+						queue.ackBatch({
+							batchId: "batch-rstop",
+							ownerEpoch: "epoch-1",
+							memberIds: [questionId],
+							now: "2026-08-05T12:00:05.000Z",
+						}),
+					).toBe(true);
+				} else {
+					expect(
+						queue.ackBatchByRecipient({
+							batchId: "batch-rstop",
+							fromAgent: "lead-a",
+							now: "2026-08-05T12:00:05.000Z",
+						}),
+					).toBe("applied");
+				}
+				expect(queue.getById(questionId)).toMatchObject({
+					state: "ACKED",
+					relay_state: "terminal_disposed",
+					resolved_via: "report_ack",
+				});
+			} finally {
+				queue.close();
+			}
+		},
+	);
+
 	it("tolerates an out-of-band ACK inside an accepted Lead batch", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {

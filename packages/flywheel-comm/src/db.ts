@@ -116,6 +116,14 @@ CREATE TABLE IF NOT EXISTS runner_declared_states (
   expires_at    INTEGER,
   updated_at    INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runner_stop_declarations (
+  execution_id  TEXT PRIMARY KEY,
+  content_hash  TEXT NOT NULL,
+  content       TEXT NOT NULL,
+  question_id   TEXT NOT NULL,
+  derived_at_ms INTEGER NOT NULL,
+  updated_at    TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS three_stage_turn (
   issue_id        TEXT PRIMARY KEY,
   holder_exec_id  TEXT NOT NULL,
@@ -1377,6 +1385,134 @@ export class CommDB {
 			senderRef: encodeSenderRef(),
 		});
 		return id;
+	}
+
+	recordRunnerStopDeclaration(input: {
+		executionId: string;
+		leadId: string;
+		content: string;
+		questionId: string;
+		derivedAtMs: number;
+	}): {
+		status: "sent" | "duplicate" | "stale";
+		questionId: string;
+		contentMatched: boolean;
+	} {
+		if (!Number.isSafeInteger(input.derivedAtMs) || input.derivedAtMs < 0) {
+			throw new Error("runner stop derivedAtMs must be a non-negative integer");
+		}
+		const digest = createHash("sha256").update(input.content).digest("hex");
+		return this.db
+			.transaction(() => {
+				const persistCurrent = (): void => {
+					this.db
+						.prepare(
+							`INSERT INTO runner_stop_declarations
+							   (execution_id, content_hash, content, question_id, derived_at_ms, updated_at)
+							 VALUES (?, ?, ?, ?, ?, ?)
+							 ON CONFLICT(execution_id) DO UPDATE SET
+							   content_hash = excluded.content_hash,
+							   content = excluded.content,
+							   question_id = excluded.question_id,
+							   derived_at_ms = excluded.derived_at_ms,
+							   updated_at = excluded.updated_at`,
+						)
+						.run(
+							input.executionId,
+							digest,
+							input.content,
+							input.questionId,
+							input.derivedAtMs,
+							new Date().toISOString(),
+						);
+				};
+				const current = this.db
+					.prepare(
+						`SELECT content_hash, content, question_id, derived_at_ms
+						   FROM runner_stop_declarations WHERE execution_id = ?`,
+					)
+					.get(input.executionId) as
+					| {
+							content_hash: string;
+							content: string;
+							question_id: string;
+							derived_at_ms: number;
+					  }
+					| undefined;
+				if (
+					current &&
+					current.content_hash === digest &&
+					current.content === input.content
+				) {
+					if (input.derivedAtMs > current.derived_at_ms) {
+						this.db
+							.prepare(
+								`UPDATE runner_stop_declarations
+								    SET derived_at_ms = ?, updated_at = ?
+								  WHERE execution_id = ?`,
+							)
+							.run(
+								input.derivedAtMs,
+								new Date().toISOString(),
+								input.executionId,
+							);
+					}
+					return {
+						status: "duplicate" as const,
+						questionId: current.question_id,
+						contentMatched: true,
+					};
+				}
+				if (current && input.derivedAtMs < current.derived_at_ms) {
+					return {
+						status: "stale" as const,
+						questionId: current.question_id,
+						contentMatched: false,
+					};
+				}
+
+				const existing = this.getMessageById(input.questionId);
+				this.insertQuestion(input.executionId, input.leadId, input.content, {
+					id: input.questionId,
+					kind: "report",
+				});
+				if (existing) {
+					if (!current) persistCurrent();
+					return {
+						status: "duplicate" as const,
+						questionId: input.questionId,
+						contentMatched: true,
+					};
+				}
+				if (current) {
+					const previous = this.db
+						.prepare(
+							`SELECT state, delivered_at
+							   FROM mailbox WHERE id = ? AND type = 'question'`,
+						)
+						.get(current.question_id) as
+						| { state: string; delivered_at: string | null }
+						| undefined;
+					if (
+						previous &&
+						(previous.state === "ACKED" || previous.delivered_at !== null)
+					) {
+						this.retireQuestionGuarded(current.question_id, {
+							expectedFromAgent: input.executionId,
+							requireUnanswered: true,
+							resolvedVia: "superseded_runner_stop",
+							supersededBy: input.questionId,
+						});
+					}
+				}
+				persistCurrent();
+				return {
+					status: "sent" as const,
+					questionId: input.questionId,
+					contentMatched: true,
+				};
+			})
+			.immediate();
 	}
 
 	/**
@@ -6230,6 +6366,9 @@ export class CommDB {
 			this.db
 				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
 				.run(targetExecutionId);
+			this.db
+				.prepare("DELETE FROM runner_stop_declarations WHERE execution_id = ?")
+				.run(targetExecutionId);
 			const deleted = this.db
 				.prepare("DELETE FROM sessions WHERE execution_id = ?")
 				.run(targetExecutionId).changes;
@@ -6338,6 +6477,9 @@ export class CommDB {
 			this.pruneTerminalRunnerReceiptWakes(executionId);
 			this.db
 				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
+				.run(executionId);
+			this.db
+				.prepare("DELETE FROM runner_stop_declarations WHERE execution_id = ?")
 				.run(executionId);
 			return this.db
 				.prepare("DELETE FROM sessions WHERE execution_id = ?")

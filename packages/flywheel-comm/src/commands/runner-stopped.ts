@@ -49,11 +49,12 @@ export interface RunnerStoppedArgs {
 	stateDir?: string;
 	env?: NodeJS.ProcessEnv;
 	nowMs?: number;
+	derivedAtMs?: number;
 	retryDelayMs?: number;
 }
 
 export interface RunnerStoppedResult {
-	status: "sent" | "duplicate";
+	status: "sent" | "duplicate" | "stale";
 	questionId: string;
 	reason?: RunnerStopReason;
 	detail?: string;
@@ -457,15 +458,6 @@ export async function runnerStopped(
 		const stateDir =
 			args.stateDir ??
 			resolveRunnerStateDir(args.execId, args.env ?? process.env);
-		try {
-			const sentPath = join(markerParentSafe(stateDir, "sent"), turnHash);
-			if (existsSync(sentPath)) return { status: "duplicate", questionId };
-		} catch (error) {
-			console.error(
-				`[runner-stopped] sent cache unavailable: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-
 		const breadcrumb = readCompletion(stateDir, args.execId, identity.issueId);
 		let usedCompletionBreadcrumb = false;
 		let reasonDetail:
@@ -552,11 +544,18 @@ export async function runnerStopped(
 
 		let contentMatched = true;
 		let status: RunnerStoppedResult["status"] = "sent";
+		let resultQuestionId = questionId;
 		try {
-			db.insertQuestion(args.execId, identity.leadId, content, {
-				id: questionId,
-				kind: "report",
+			const declaration = db.recordRunnerStopDeclaration({
+				executionId: args.execId,
+				leadId: identity.leadId,
+				content,
+				questionId,
+				derivedAtMs: args.derivedAtMs ?? Date.now(),
 			});
+			status = declaration.status;
+			resultQuestionId = declaration.questionId;
+			contentMatched = declaration.contentMatched;
 		} catch (error) {
 			const existing = db.getMessageById(questionId);
 			const expectedConflict =
@@ -581,7 +580,7 @@ export async function runnerStopped(
 		}
 		return {
 			status,
-			questionId,
+			questionId: resultQuestionId,
 			reason: reasonDetail.reason,
 			detail,
 			...(route ? { route } : {}),

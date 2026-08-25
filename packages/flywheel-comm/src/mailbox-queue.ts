@@ -15,6 +15,7 @@ import {
 	MAILBOX_MESSAGE_PROJECTION_VERSION,
 	MAILBOX_SCHEMA,
 } from "./mailbox-schema.js";
+import { isRunnerStopReport } from "./runner-stop-report.js";
 import { decodeSenderRef, encodeSenderRef } from "./sender-ref.js";
 import { isValidRefPath } from "./utils/content-ref.js";
 
@@ -1570,9 +1571,11 @@ export class MailboxQueue {
 				}
 				const leased = rows.filter(({ state }) => state === "LEASED").length;
 				if (leased === 0) {
-					return rows.every(({ state }) => state === "ACKED")
-						? "duplicate"
-						: "ack_late_noop";
+					if (rows.every(({ state }) => state === "ACKED")) {
+						this.retireAckedRunnerStopReports(input.batchId, input.now);
+						return "duplicate";
+					}
+					return "ack_late_noop";
 				}
 				const updated = this.db
 					.prepare(
@@ -1582,9 +1585,35 @@ export class MailboxQueue {
 						 WHERE batch_id = ? AND state = 'LEASED'`,
 					)
 					.run(input.now, input.now, input.batchId);
-				return updated.changes === leased ? "applied" : "ack_late_noop";
+				if (updated.changes !== leased) return "ack_late_noop";
+				this.retireAckedRunnerStopReports(input.batchId, input.now);
+				return "applied";
 			})
 			.immediate();
+	}
+
+	private retireAckedRunnerStopReports(batchId: string, now: string): void {
+		const rows = this.db
+			.prepare(
+				`SELECT id, kind, content FROM mailbox
+				 WHERE batch_id = ? AND state = 'ACKED' AND type = 'question'`,
+			)
+			.all(batchId) as Array<{
+			id: string;
+			kind: string | null;
+			content: string;
+		}>;
+		const reportIds = rows.filter(isRunnerStopReport).map(({ id }) => id);
+		if (reportIds.length === 0) return;
+		this.db
+			.prepare(
+				`UPDATE mailbox SET
+				   relay_state = 'terminal_disposed',
+				   resolved_at = COALESCE(resolved_at, ?),
+				   resolved_via = COALESCE(resolved_via, 'report_ack')
+				 WHERE id IN (${placeholders(reportIds.length)}) AND state = 'ACKED'`,
+			)
+			.run(now, ...reportIds);
 	}
 
 	adoptInflightForRecipient(input: {
@@ -2534,7 +2563,9 @@ export class MailboxQueue {
 					   AND state = 'LEASED' AND claimed_by = ?`,
 					)
 					.run(input.now, input.batchId, ...input.memberIds, input.ownerEpoch);
-				return result.changes === leasedCount;
+				if (result.changes !== leasedCount) return false;
+				this.retireAckedRunnerStopReports(input.batchId, input.now);
+				return true;
 			})
 			.immediate();
 	}

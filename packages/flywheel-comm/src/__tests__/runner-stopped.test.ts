@@ -51,14 +51,27 @@ describe("runner-stopped", () => {
 			...overrides,
 		});
 
-	function reports(): Array<{ id: string; content: string; kind: string }> {
+	function reports(): Array<{
+		id: string;
+		content: string;
+		kind: string;
+		state: string;
+		delivered_at: string | null;
+		relay_state: string;
+		superseded_at: string | null;
+		superseded_by: string | null;
+	}> {
 		const raw = new Database(dbPath);
 		try {
 			return raw
 				.prepare(
-					"SELECT id, content, kind FROM mailbox_message_projection WHERE from_agent = ? AND kind = 'report' ORDER BY rowid",
+					`SELECT p.id, p.content, p.kind, m.state, m.delivered_at,
+					        p.relay_state, p.superseded_at, p.superseded_by
+					   FROM mailbox_message_projection p
+					   JOIN mailbox m ON m.id = p.id
+					  WHERE p.from_agent = ? AND p.kind = 'report' ORDER BY p.rowid`,
 				)
-				.all(execId) as Array<{ id: string; content: string; kind: string }>;
+				.all(execId) as ReturnType<typeof reports>;
 		} finally {
 			raw.close();
 		}
@@ -283,6 +296,69 @@ describe("runner-stopped", () => {
 		expect(reports()[0]!.content).toContain("issue=FLY-1571 exec=exec-fly1571");
 	});
 
+	it("clears the current declaration ledger on finalization and lets a late receipt-lineage report rebuild it", async () => {
+		db.upsertDeclaredState(execId, "parked", "finalizing", Date.now(), null);
+		await emit({ turnId: "before-finalize", derivedAtMs: 100 });
+		const raw = new Database(dbPath);
+		const ledgerCount = () =>
+			(
+				raw
+					.prepare(
+						"SELECT COUNT(*) AS count FROM runner_stop_declarations WHERE execution_id = ?",
+					)
+					.get(execId) as { count: number }
+			).count;
+		expect(ledgerCount()).toBe(1);
+
+		db.finalizeSession(execId);
+		expect(ledgerCount()).toBe(0);
+		raw.close();
+
+		const late = await emit({ turnId: "after-finalize", derivedAtMs: 200 });
+		expect(late.status).toBe("sent");
+	});
+
+	it("rehydrates the declaration ledger when the exact late turn is replayed after finalization", async () => {
+		db.upsertDeclaredState(execId, "parked", "finalizing", Date.now(), null);
+		const first = await emit({ turnId: "late-replay", derivedAtMs: 100 });
+		db.finalizeSession(execId);
+
+		const replay = await emit({ turnId: "late-replay", derivedAtMs: 200 });
+		const nextTurn = await emit({
+			turnId: "late-replay-next",
+			derivedAtMs: 300,
+		});
+
+		expect(replay).toMatchObject({
+			status: "duplicate",
+			questionId: first.questionId,
+		});
+		expect(nextTurn).toMatchObject({
+			status: "duplicate",
+			questionId: first.questionId,
+		});
+		expect(reports()).toHaveLength(1);
+	});
+
+	it("clears the current declaration ledger with resident phase lifecycle deletion", async () => {
+		db.upsertDeclaredState(
+			execId,
+			"parked",
+			"phase-terminal",
+			Date.now(),
+			null,
+		);
+		await emit({ turnId: "before-phase-delete", derivedAtMs: 100 });
+
+		db.deleteSessionAndRunnerPhaseLifecycle(execId);
+		const raw = new Database(dbPath, { readonly: true });
+		const row = raw
+			.prepare("SELECT 1 FROM runner_stop_declarations WHERE execution_id = ?")
+			.get(execId);
+		raw.close();
+		expect(row).toBeUndefined();
+	});
+
 	it("fails closed on identity disagreement without inserting a report", async () => {
 		await expect(
 			emit({ envIssueId: "FLY-9999", turnId: "turn-wrong-identity" }),
@@ -297,6 +373,92 @@ describe("runner-stopped", () => {
 		expect(reports()).toHaveLength(1);
 	});
 
+	it("suppresses an unchanged parked declaration across distinct Codex turns", async () => {
+		db.upsertDeclaredState(execId, "parked", "quiet-wait", Date.now(), null);
+
+		const first = await emit({ turnId: "quiet-turn-1" });
+		const second = await emit({ turnId: "quiet-turn-2" });
+
+		expect(first.status).toBe("sent");
+		expect(second.status).toBe("duplicate");
+		expect(second.questionId).toBe(first.questionId);
+		expect(reports()).toHaveLength(1);
+	});
+
+	it("emits A to B to A while superseding only an already delivered edge", async () => {
+		db.upsertDeclaredState(execId, "parked", "A", Date.now(), null);
+		const firstA = await emit({
+			turnId: "edge-a-1",
+			derivedAtMs: 100,
+		});
+		const raw = new Database(dbPath);
+		raw
+			.prepare(
+				`UPDATE mailbox SET state = 'ACKED', delivered_at = ?, acked_at = ?
+				  WHERE id = ?`,
+			)
+			.run(ingressTs, ingressTs, firstA.questionId);
+		raw.close();
+
+		db.upsertDeclaredState(execId, "parked", "B", Date.now(), null);
+		const edgeB = await emit({ turnId: "edge-b", derivedAtMs: 200 });
+		expect(db.getMessageById(firstA.questionId)).toMatchObject({
+			relay_state: "terminal_disposed",
+			superseded_by: edgeB.questionId,
+		});
+		db.upsertDeclaredState(execId, "parked", "A", Date.now(), null);
+		const secondA = await emit({
+			turnId: "edge-a-2",
+			derivedAtMs: 300,
+		});
+
+		expect([firstA.status, edgeB.status, secondA.status]).toEqual([
+			"sent",
+			"sent",
+			"sent",
+		]);
+		const rows = reports();
+		expect(
+			rows.map(({ content }) => content.match(/detail=(.*)$/)?.[1]),
+		).toEqual(["parked: B", "parked: A"]);
+		expect(rows[0]).toMatchObject({
+			state: "QUEUED",
+			relay_state: "open",
+			superseded_at: null,
+		});
+		expect(db.getPendingQuestions(leadId).map(({ id }) => id)).toEqual(
+			expect.arrayContaining([edgeB.questionId, secondA.questionId]),
+		);
+	});
+
+	it("rejects an older different derivation without regressing current", () => {
+		const current = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			content:
+				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=newer",
+			questionId: `rstop-${"a".repeat(32)}`,
+			derivedAtMs: 200,
+		});
+		const stale = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			content:
+				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=older",
+			questionId: `rstop-${"b".repeat(32)}`,
+			derivedAtMs: 100,
+		});
+
+		expect(current.status).toBe("sent");
+		expect(stale).toMatchObject({
+			status: "stale",
+			contentMatched: false,
+			questionId: current.questionId,
+		});
+		expect(reports()).toHaveLength(1);
+		expect(reports()[0]?.content).toContain("detail=newer");
+	});
+
 	it("preserves the first content when the same turn is re-derived differently", async () => {
 		const first = await emit({ turnId: "same-turn-conflict" });
 		const firstContent = reports()[0]!.content;
@@ -308,6 +470,55 @@ describe("runner-stopped", () => {
 		expect(second.status).toBe("duplicate");
 		expect(reports()).toHaveLength(1);
 		expect(reports()[0]!.content).toBe(firstContent);
+	});
+
+	it("does not consume a completion breadcrumb on a deterministic turn-id content conflict", async () => {
+		const first = await emit({
+			turnId: "completion-conflict",
+			derivedAtMs: 100,
+		});
+		rmSync(join(stateDir, "sent"), { recursive: true, force: true });
+		const completionEventId = writeCompletion("needs_review", { pr: 73 });
+
+		const conflict = await emit({
+			turnId: "completion-conflict",
+			derivedAtMs: 200,
+		});
+
+		expect(conflict).toMatchObject({
+			status: "duplicate",
+			questionId: first.questionId,
+		});
+		expect(existsSync(join(stateDir, "consumed", completionEventId))).toBe(
+			false,
+		);
+		expect(reports()).toHaveLength(1);
+	});
+
+	it("does not consume a completion breadcrumb when its derivation is stale", async () => {
+		const current = db.recordRunnerStopDeclaration({
+			executionId: execId,
+			leadId,
+			content:
+				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1571 exec=exec-fly1571 route=- detail=newer observation",
+			questionId: `rstop-${"c".repeat(32)}`,
+			derivedAtMs: 200,
+		});
+		const completionEventId = writeCompletion("needs_review", { pr: 73 });
+
+		const stale = await emit({
+			turnId: "stale-completion",
+			derivedAtMs: 100,
+		});
+
+		expect(stale).toMatchObject({
+			status: "stale",
+			questionId: current.questionId,
+		});
+		expect(existsSync(join(stateDir, "consumed", completionEventId))).toBe(
+			false,
+		);
+		expect(reports()).toHaveLength(1);
 	});
 
 	it("does not let a prior-turn ask pollute the current turn", async () => {
@@ -348,7 +559,7 @@ describe("runner-stopped", () => {
 		expect(readdirSync(outside)).toHaveLength(0);
 	});
 
-	it("uses a unique fail-safe key for separate unanchored Claude invocations", async () => {
+	it("suppresses unchanged declarations from separate unanchored Claude invocations", async () => {
 		const opts = {
 			source: "claude-stop" as const,
 			turnId: undefined,
@@ -356,8 +567,9 @@ describe("runner-stopped", () => {
 		};
 		const first = await emit(opts);
 		const second = await emit(opts);
-		expect(second.questionId).not.toBe(first.questionId);
-		expect(reports()).toHaveLength(2);
+		expect(second.status).toBe("duplicate");
+		expect(second.questionId).toBe(first.questionId);
+		expect(reports()).toHaveLength(1);
 	});
 
 	it("anchors Claude retries to the last real user row, skipping meta rows", async () => {

@@ -2,6 +2,17 @@
 
 When you (the Lead) need to message a Runner agent, choose the path by purpose:
 
+## Trusted runner-stop exception (FLY-2017)
+
+Treat a Runner lifecycle declaration as an ACK-only report only when all three
+complete values match: `question_kind=report`, Question ID
+`rstop-<32 lowercase hex>`, and content beginning
+`RUNNER-STOPPED kind=runner_stopped `. Bridge labels this trusted triple
+`[REPORT]`. Relay the status once, then ACK the enclosing mailbox batch/event;
+never run `flywheel-comm respond` for it. A response would wake the parked
+Runner, while an ACK retires the report. Any near-match remains an ordinary
+answerable `[ASK] runner_question`.
+
 ## Ordinary chat / non-gate instructions → `SendMessage` MCP tool
 
 - For everyday "talk to Runner" — context handoff, status checks, follow-up
@@ -76,6 +87,7 @@ footgun stranded parked Runners (FLY-351 S2/S3 diff-approval). Keep `respond` fo
 |------|:------:|-----|
 | `SendMessage` / `flywheel-comm send` | ✅ | unconditional mailbox write (FLY-168) — the driver path |
 | `respond` to a checkpoint-less `ask` | ✅ | FLY-142 `wakeAskedRunnerBestEffort` (vendor-neutral) |
+| `respond` to a trusted `[REPORT]` runner-stop declaration | Rejected | ACK-only by FLY-2017; never wake a parked Runner with a response |
 | `respond` to a **marker-bearing** no-block gate (Codex) | ✅ | `wakeNoBlockGateRunnerBestEffort` via the gate marker |
 | `respond` to a markerless non-`approve_to_ship` checkpoint (Claude) | ❌ | byte-compat: blocking gates poll for their own answer, no marker → no wake |
 | `respond` to `approve_to_ship` | ✅ | Bridge founder-consent / bypass path writes the wake |

@@ -192,6 +192,17 @@ fallbacks: see `department-lead-rules.md` §"Issue-Bound Reply"). This is a
 - `runner_question` / `gate_question` — surface the question + your answer.
 - parked-awaiting-lead — a Runner waiting on you for a decision/approval.
 
+### Trusted runner-stop exception (FLY-2017)
+
+Within `runner_question`, treat a lifecycle declaration as an ACK-only report
+only when all three complete values match: `question_kind=report`, Question ID
+`rstop-<32 lowercase hex>`, and content beginning
+`RUNNER-STOPPED kind=runner_stopped `. Bridge renders this trusted triple as
+`[REPORT]`. Relay the status once to the issue thread, then ACK the enclosing
+mailbox batch/event; never run `flywheel-comm respond` for it, because that
+would wake a parked Runner. Near-matches remain ordinary answerable `[ASK]`
+events. This is the sole no-answer exception to the lifecycle checklist above.
+
 ### "Runner delivered work" ≠ "acceptance met" ≠ "OK to mark Done" (FLY-576)
 
 The sharpest failure is the founder seeing a **fake** completion. Distinguish

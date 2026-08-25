@@ -167,6 +167,7 @@ export class QuestionAdmission {
 			status: isGate ? "gate_pending" : "runner_question",
 			summary: fullContent,
 			question_id: question.id,
+			question_kind: question.kind ?? undefined,
 			from_agent: question.from_agent,
 			comm_db_path: this.opts.dbPath,
 			session_role: session.session_role ?? "main",

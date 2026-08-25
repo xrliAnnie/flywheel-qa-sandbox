@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isRunnerStopReport } from "flywheel-comm/runner-stop-report";
 import {
 	truncateCodePoints,
 	truncateCodePointsFromEnd,
@@ -113,6 +114,7 @@ export interface HookPayload {
 	// and the presence/absence of `checkpoint`.
 	checkpoint?: string;
 	question_id?: string;
+	question_kind?: string;
 	from_agent?: string;
 	comm_db_path?: string;
 	/** FLY-1392: opaque Discord id for a raw founder→Lead conveyor event. */
@@ -230,6 +232,47 @@ export function formatDurationMs(ms: number | undefined | null): string {
 	const hours = Math.floor(totalMin / 60);
 	const min = totalMin % 60;
 	return min === 0 ? `${hours}h` : `${hours}h ${min}m`;
+}
+
+export function formatRunnerQuestion(env: StuckEscalationEnvelopeLike): string {
+	const e = env.event;
+	const issueRef = e.issue_identifier || e.issue_id;
+	const roleLabel =
+		e.session_role && e.session_role !== "main"
+			? `[${e.session_role.toUpperCase()}] `
+			: "";
+	const runnerStopReport = isRunnerStopReport({
+		id: e.question_id,
+		kind: e.question_kind,
+		content: e.summary,
+	});
+	const lines = [
+		`[Event #${env.seq}] ${roleLabel}runner_question`,
+		`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+	];
+	if (runnerStopReport) {
+		lines.push(
+			"[REPORT] Runner lifecycle declaration (one-way status — ACK the enclosing mailbox batch/event only):",
+			"---",
+			e.summary ?? "(no content)",
+			"---",
+			"Do not respond to this report; a response would wake the parked Runner.",
+			`Question ID: ${e.question_id}`,
+			`CommDB: ${e.comm_db_path}`,
+		);
+	} else {
+		lines.push(
+			"[ASK] Runner is asking (non-blocking — Runner continues working):",
+			"---",
+			e.summary ?? "(no content)",
+			"---",
+			`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
+			`Question ID: ${e.question_id}`,
+			`CommDB: ${e.comm_db_path}`,
+		);
+	}
+	if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+	return lines.join("\n");
 }
 
 // ── FLY-195 hotfix: shared runner_stuck_escalation renderer ──

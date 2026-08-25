@@ -170,11 +170,15 @@ describe("GatePoller (FLY-161)", () => {
 		leadId: string;
 		content: string;
 		checkpoint?: string;
+		id?: string;
+		kind?: "report";
 	}): string {
 		const db = new CommDB(dbPath);
 		try {
 			return db.insertQuestion(opts.execId, opts.leadId, opts.content, {
 				checkpoint: opts.checkpoint,
+				id: opts.id,
+				kind: opts.kind,
 			});
 		} finally {
 			db.close();
@@ -231,6 +235,29 @@ describe("GatePoller (FLY-161)", () => {
 		expect(env.event.checkpoint).toBeUndefined();
 		expect(env.event.question_id).toBe(qid);
 		expect(env.event.summary).toBe("Should we use UTC or local time?");
+	});
+
+	it("preserves report kind on the legacy runner_question path", async () => {
+		insertSession("exec-report", {
+			status: "running",
+			labels: ["product"],
+		});
+		const qid = insertQuestion({
+			execId: "exec-report",
+			leadId: "product-lead",
+			content:
+				"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-2017 exec=exec-report route=- detail=parked",
+			id: `rstop-${"e".repeat(32)}`,
+			kind: "report",
+		});
+
+		await runPoll(makePoller());
+
+		expect(runtime.captured[0]?.envelope.event).toMatchObject({
+			event_type: "runner_question",
+			question_id: qid,
+			question_kind: "report",
+		});
 	});
 
 	it("Case 3: partitions mixed pending questions by checkpoint presence", async () => {

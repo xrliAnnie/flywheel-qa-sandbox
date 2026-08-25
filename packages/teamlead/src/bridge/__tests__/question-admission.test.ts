@@ -145,6 +145,27 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(h.store.appendLeadEvent).toHaveBeenCalledTimes(1);
 	});
 
+	it("preserves report kind in the materialized runner event", async () => {
+		const h = harness();
+		const id = h.db.insertQuestion(
+			"exec-1",
+			"lead-a",
+			"RUNNER-STOPPED kind=runner_stopped reason=done issue=FLY-1 exec=exec-1 route=- detail=parked",
+			{ id: `rstop-${"c".repeat(32)}`, kind: "report" },
+		);
+		expect(await h.admission.revalidate(claim(h.queue))).toEqual({
+			deliver: true,
+		});
+		const payload = JSON.parse(
+			h.store.appendLeadEvent.mock.calls[0]![3] as string,
+		);
+		expect(payload).toMatchObject({
+			event_type: "runner_question",
+			question_id: id,
+			question_kind: "report",
+		});
+	});
+
 	it("permanently rejects a Lead-scope mismatch", async () => {
 		const h = harness(["Operations"]);
 		h.db.insertQuestion("exec-1", "lead-a", "misrouted", {
