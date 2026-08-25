@@ -380,7 +380,19 @@ export interface PostShipDeps {
 		projectName: string;
 		/** R4#3: the post-ship DAG already holds the canonical issue mutex. */
 		alreadyLocked?: boolean;
-	}) => Promise<{ outcome: string } | undefined | undefined>;
+	}) => Promise<
+		| {
+				outcome:
+					| "complete"
+					| "completed"
+					| "partial"
+					| "needs_operator"
+					| "blocked"
+					| "conflict";
+				cause?: LandCloseoutCause;
+		  }
+		| undefined
+	>;
 	/**
 	 * Codex R2#8: disposition PRE-arbitration — runs BEFORE the first
 	 * destructive step (tmux close). An active founder-park tombstone or a
@@ -426,6 +438,8 @@ export interface PostShipDeps {
 		 * finalizer's inner closeRunner must skip the (non-re-entrant) lifecycle
 		 * close guard or it self-deadlocks against the outer hold. */
 		alreadyLocked?: boolean,
+		/** FLY-2027: exact land-run authority for workflow-bound main actors. */
+		runId?: string,
 	) => Promise<void>;
 	/**
 	 * FLY-907 (Step 4.1c / plan §2.5 form (a)): the unified issue-display
@@ -488,8 +502,9 @@ export function makeFinalizeWorkflowPhaseRoles(
 	issueId: string,
 	projectName: string,
 	alreadyLocked?: boolean,
+	runId?: string,
 ) => Promise<void> {
-	return async (issueId, projectName, alreadyLocked) => {
+	return async (issueId, projectName, alreadyLocked, runId) => {
 		const phases = store.getPhaseSessionsForIssue(issueId).filter(
 			(s) =>
 				(s.chat_thread_role === "design" ||
@@ -499,7 +514,24 @@ export function makeFinalizeWorkflowPhaseRoles(
 					s.chat_thread_role === "qa") &&
 				RECLAIMABLE_PHASE_STATUSES.has(s.status),
 		);
-		for (const p of phases) {
+		const workflowManagedMain = runId
+			? store
+					.getWorkflowManagedSessionsForIssue(issueId)
+					.filter(
+						(session) =>
+							session.chat_thread_role === "main" &&
+							Boolean(session.workflow_node_id) &&
+							RECLAIMABLE_PHASE_STATUSES.has(session.status) &&
+							store
+								.listWorkflowActivationsForActor(session.execution_id)
+								.some(
+									(activation) =>
+										activation.run_id === runId &&
+										activation.node_id === session.workflow_node_id,
+								),
+					)
+			: [];
+		for (const p of [...phases, ...workflowManagedMain]) {
 			try {
 				const res = await closeRunner(
 					{
@@ -507,7 +539,7 @@ export function makeFinalizeWorkflowPhaseRoles(
 						issueId: p.issue_id,
 						projectName: p.project_name ?? projectName,
 						reason: "DAG workflow ship finalization",
-						executorType: "phase",
+						executorType: p.chat_thread_role === "main" ? "workflow" : "phase",
 						finalizeDone: true,
 						transitionOpts,
 						// R5#3: when the post-ship DAG already holds the issue mutex,
@@ -907,8 +939,20 @@ async function runPostShipFinalizationInner(
 		// the mutex — non-locked callers keep the original 2-arg call (byte-compat
 		// with the existing fly887 test seam contract).
 		const finalizeCall = dagLocked
-			? deps.finalizeWorkflowPhaseRoles(opts.issueId, opts.projectName, true)
-			: deps.finalizeWorkflowPhaseRoles(opts.issueId, opts.projectName);
+			? deps.finalizeWorkflowPhaseRoles(
+					opts.issueId,
+					opts.projectName,
+					true,
+					opts.runId,
+				)
+			: opts.runId
+				? deps.finalizeWorkflowPhaseRoles(
+						opts.issueId,
+						opts.projectName,
+						undefined,
+						opts.runId,
+					)
+				: deps.finalizeWorkflowPhaseRoles(opts.issueId, opts.projectName);
 		await finalizeCall.catch((err) => {
 			console.error(
 				`[post-ship] finalizeWorkflowPhaseRoles failed:`,
@@ -1012,8 +1056,14 @@ async function runPostShipFinalizationInner(
 					`[post-ship] issue closeout failed:`,
 					(err as Error).message,
 				);
-				return { outcome: "blocked" as const };
+				return { outcome: "blocked" as const, cause: undefined };
 			});
+		if (
+			closeoutRes?.outcome !== "complete" &&
+			closeoutRes?.outcome !== "completed"
+		) {
+			closeoutCause ??= closeoutRes?.cause;
+		}
 		if (
 			closeoutRes &&
 			(closeoutRes.outcome === "blocked" || closeoutRes.outcome === "conflict")
@@ -1022,6 +1072,14 @@ async function runPostShipFinalizationInner(
 			closeoutCause ??= "lifecycle_conflict";
 			console.warn(
 				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId} — thread archive + Linear Done deferred to the next pass`,
+			);
+		} else if (
+			closeoutRes &&
+			(closeoutRes.outcome === "partial" ||
+				closeoutRes.outcome === "needs_operator")
+		) {
+			console.warn(
+				`[post-ship] issue closeout ${closeoutRes.outcome} for ${opts.issueIdentifier ?? opts.issueId}${closeoutRes.cause ? ` (${closeoutRes.cause})` : ""} — diagnostic retained; terminal closeout remains eligible`,
 			);
 		}
 	}
@@ -1207,7 +1265,10 @@ async function runPostShipFinalizationInner(
 							issueIdentifier: opts.issueIdentifier,
 							projectName: opts.projectName,
 							kind: "land_archive_waiver",
-							content: `ℹ️ 本 thread 未自动归档:${archive.reason === "founder_reopened" ? "founder 已重新打开" : "仍有活跃使用者"};原因解除后会由清理流程重试。`,
+							content:
+								archive.reason === "founder_reopened"
+									? "ℹ️ 本 thread 未自动归档:founder 已重新打开；系统会保持 thread 开放且不会自动重试归档，请 Lead 确认后手动归档。"
+									: "ℹ️ 本 thread 未自动归档:仍有活跃使用者；原因解除后会由清理流程重试。",
 							thread,
 							botToken,
 							onUndeliverable: (reason) =>

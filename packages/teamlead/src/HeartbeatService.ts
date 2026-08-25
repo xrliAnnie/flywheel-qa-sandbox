@@ -1605,7 +1605,10 @@ export class HeartbeatService implements ReconnectController {
 		if (now - this.lastParkedCheckAt < this.staleCheckIntervalMs) return;
 		this.parkedSweepRunning = true;
 		try {
-			const candidates = this.store.getParkedPhaseCandidates();
+			const candidates = [
+				...this.store.getParkedPhaseCandidates(),
+				...this.store.getWorkflowManagedParkedCandidates(),
+			];
 			const total = candidates.length;
 			if (total === 0) return;
 
@@ -1770,7 +1773,12 @@ export class HeartbeatService implements ReconnectController {
 		projectName: string,
 	): Promise<"has_working" | "in_flight" | "defer" | "clean"> {
 		const rows = this.pickLatestNPerRole(
-			this.store.getPhaseSessionsForIssue(issueId),
+			[
+				...this.store.getPhaseSessionsForIssue(issueId),
+				...this.store
+					.getWorkflowManagedSessionsForIssue(issueId)
+					.filter((session) => session.chat_thread_role === "main"),
+			],
 			GHOST_PROBE_MAX_ROWS,
 		);
 		for (const p of rows) {
@@ -1917,7 +1925,9 @@ export class HeartbeatService implements ReconnectController {
 		const perRole = new Map<string, number>();
 		const out: Session[] = [];
 		for (const r of rows) {
-			const role = r.chat_thread_role ?? "";
+			const role = r.workflow_node_id
+				? `workflow:${r.workflow_node_id}`
+				: (r.chat_thread_role ?? "");
 			const seen = perRole.get(role) ?? 0;
 			if (seen >= n) continue;
 			perRole.set(role, seen + 1);

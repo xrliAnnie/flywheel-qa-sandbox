@@ -17,7 +17,7 @@ import {
 	DEFAULT_ACK_TIMEOUT_MS,
 	DEFAULT_CONTROLLER_LEASE_MAX_AGE_MS,
 	isFreshControllerHeartbeat,
-	isWorkflowPhaseSession,
+	isWorkflowManagedSession,
 	type RunnerShutdownDb,
 } from "./runner-shutdown-evidence.js";
 import {
@@ -81,7 +81,7 @@ export type CodexPhaseShutdownDecision =
 
 export function isResidentCodexPhase(session: Session | undefined): boolean {
 	return (
-		session?.adapter_type === "codex-tmux" && isWorkflowPhaseSession(session)
+		session?.adapter_type === "codex-tmux" && isWorkflowManagedSession(session)
 	);
 }
 

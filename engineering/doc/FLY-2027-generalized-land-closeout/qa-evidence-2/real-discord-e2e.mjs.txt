@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+// QA · FLY-2027 attempt-2 — module-driven REAL-Discord E2E in the 529 QA Room (slot 2).
+// Drives the REAL compiled production post-ship finalizer (dist) against a REAL
+// Discord thread with a REAL test bot token. Zero Discord mocks.
+import { mkdtempSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO = "/Users/xiaorongli/Dev/flywheel-FLY-2027";
+const DIST = join(REPO, "packages", "teamlead", "dist");
+
+const BOT_TOKEN = process.env.TEST_BOT_TOKEN_2;
+const CHANNEL_ID = "1493080993173737583"; // slot-2 #product-lead-test
+if (!BOT_TOKEN) {
+	console.error("Missing TEST_BOT_TOKEN_2");
+	process.exit(1);
+}
+const API = "https://discord.com/api/v10";
+
+const results = [];
+function check(name, cond, detail) {
+	results.push({ name, pass: !!cond, detail });
+	console.log(`${cond ? "✅ PASS" : "❌ FAIL"} — ${name}${detail ? ` (${detail})` : ""}`);
+}
+
+async function createThread(name) {
+	const res = await fetch(`${API}/channels/${CHANNEL_ID}/threads`, {
+		method: "POST",
+		headers: { Authorization: `Bot ${BOT_TOKEN}`, "Content-Type": "application/json" },
+		body: JSON.stringify({ name, type: 11, auto_archive_duration: 60 }),
+	});
+	if (!res.ok) throw new Error(`create thread ${res.status}: ${await res.text()}`);
+	return res.json();
+}
+async function getMessages(threadId) {
+	const res = await fetch(`${API}/channels/${threadId}/messages?limit=50`, {
+		headers: { Authorization: `Bot ${BOT_TOKEN}` },
+	});
+	if (!res.ok) throw new Error(`get messages ${res.status}: ${await res.text()}`);
+	return res.json();
+}
+async function archiveLock(threadId) {
+	await fetch(`${API}/channels/${threadId}`, {
+		method: "PATCH",
+		headers: { Authorization: `Bot ${BOT_TOKEN}`, "Content-Type": "application/json" },
+		body: JSON.stringify({ archived: true, locked: true }),
+	});
+}
+
+const { StateStore } = await import(`file://${DIST}/StateStore.js`);
+const { runResumablePostShipFinalization } = await import(
+	`file://${DIST}/bridge/post-ship-finalization.js`
+);
+
+const PROJECT = "qa2027b-isolated"; // NOT a real project — keeps prod comm.db untouched
+const ISSUE = "FLY-2027";
+
+function projects(channelId) {
+	return [
+		{
+			projectName: PROJECT,
+			projectRoot: mkdtempSync(join(process.env.TMPDIR ?? "/tmp", "qa2027b-")),
+			leads: [
+				{ agentId: "lead-a", chatChannel: channelId, botToken: BOT_TOKEN, match: { labels: [] } },
+			],
+		},
+	];
+}
+
+function seedLandClaim(store) {
+	const base = Date.now();
+	const op = store.ensureLandOperation({
+		issueId: ISSUE,
+		projectName: PROJECT,
+		prNumber: 941,
+		approvedHead: "a".repeat(40),
+		now: new Date(base - 1000).toISOString(),
+	});
+	const claim = store.claimLandOperation({
+		operationId: op.operation_id,
+		ownerId: "qa-land-worker",
+		now: new Date(base).toISOString(),
+		leaseExpiresAt: new Date(base + 3600_000).toISOString(),
+	});
+	return { operationId: op.operation_id, ownerId: claim.ownerId, generation: claim.generation };
+}
+
+async function scenario(label, archiveReason) {
+	const thread = await createThread(`qa2027b ${label} ${new Date().toISOString()}`);
+	const store = await StateStore.create(":memory:");
+	const execId = `qa2027b-${label}`;
+	store.upsertSession({
+		execution_id: execId,
+		issue_id: ISSUE,
+		project_name: PROJECT,
+		status: "completed",
+	});
+	store.upsertChatThread(thread.id, CHANNEL_ID, ISSUE);
+	const landOperation = seedLandClaim(store);
+	const res = await runResumablePostShipFinalization(
+		{
+			executionId: execId,
+			issueId: ISSUE,
+			issueIdentifier: ISSUE,
+			projectName: PROJECT,
+			sessionStatus: "completed",
+			landOperation,
+		},
+		{
+			store,
+			projects: projects(CHANNEL_ID),
+			removeCleanWorktree: async () => ({ removed: true, bindingVerified: true }),
+			markIssueDone: async () => ({ done: true }),
+			recordLinearDoneDisposition: () => ({ ok: true, idempotentReplay: false }),
+			archiveFn: async () => ({ archived: false, attempts: 0, reason: archiveReason }),
+			fetchImpl: globalThis.fetch, // ← REAL Discord
+		},
+	);
+	const msgs = await getMessages(thread.id);
+	const bodies = msgs.map((m) => m.content);
+	store.close();
+	return { thread, res, bodies };
+}
+
+// ── Scenario A: founder_reopened (the changed copy) ─────────────────────────
+const a = await scenario("founder-reopened", "founder_reopened");
+console.log(`thread A: https://discord.com/channels/1485787271192907816/${a.thread.id}`);
+const waiverA = a.bodies.find((b) => b.includes("本 thread 未自动归档"));
+check("A1 post-ship completed with the archive waived", a.res?.complete === true, JSON.stringify(a.res?.outcome));
+check("A2 exactly one waiver message rendered in real Discord",
+	a.bodies.filter((b) => b.includes("本 thread 未自动归档")).length === 1);
+check("A3 waiver names founder_reopened", !!waiverA && waiverA.includes("founder 已重新打开"));
+check("A4 waiver promises NO automatic retry", !!waiverA && waiverA.includes("不会自动重试归档"));
+check("A5 waiver asks the Lead to archive by hand", !!waiverA && waiverA.includes("Lead 确认后手动归档"));
+check("A6 the OLD misleading retry promise is gone", !!waiverA && !waiverA.includes("原因解除后会由清理流程重试"));
+check("A7 no mojibake / truncation in the rendered CJK", !!waiverA && !waiverA.includes("�") && waiverA.endsWith("手动归档。"));
+console.log(`   rendered A: ${waiverA}`);
+
+// ── Scenario B: in_active_use (control — copy must NOT change) ──────────────
+const b = await scenario("in-active-use", "in_active_use");
+console.log(`thread B: https://discord.com/channels/1485787271192907816/${b.thread.id}`);
+const waiverB = b.bodies.find((x) => x.includes("本 thread 未自动归档"));
+check("B1 post-ship completed with the archive waived", b.res?.complete === true, JSON.stringify(b.res?.outcome));
+check("B2 control copy still promises a retry", !!waiverB && waiverB.includes("原因解除后会由清理流程重试"));
+check("B3 control copy does NOT carry the founder wording", !!waiverB && !waiverB.includes("founder 已重新打开"));
+console.log(`   rendered B: ${waiverB}`);
+
+await archiveLock(a.thread.id);
+await archiveLock(b.thread.id);
+
+const failed = results.filter((r) => !r.pass);
+console.log(`\n${results.length - failed.length}/${results.length} PASS`);
+process.exit(failed.length === 0 ? 0 : 1);

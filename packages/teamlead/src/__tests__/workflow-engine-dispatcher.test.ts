@@ -353,6 +353,119 @@ async function storeWithLandIntent() {
 	return store;
 }
 
+async function storeWithGenericLandIntent() {
+	const store = await StateStore.create(":memory:");
+	const menu = loadWorkflowMenuLibrary().find(
+		(candidate) => candidate.shape === "generic",
+	)!;
+	const seed = compileWorkflowMenuSeed(menu);
+	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+	store.bindWorkflowCategory({
+		project: "flywheel",
+		taskCategory: "generic",
+		templateId: seed.templateId,
+		updatedBy: "lead",
+	});
+	store.materializeWorkflowRun({
+		runId: "run-generic-land",
+		issueId: "FLY-2027",
+		projectName: "flywheel",
+		taskCategory: "generic",
+		templateId: seed.templateId,
+		claimsReadEnrolled: true,
+		actor: "lead",
+		canonicalRoot: REPO_ROOT,
+		env: WORKFLOW_ON,
+		entryKind: "workflow_v2",
+		startReservation: {
+			idempotencyKey: "generic-land-start",
+			selectionDigest: "generic-land-selection",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "generic-land-1",
+			createdAt: "2026-08-24T00:00:00.000Z",
+		},
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-generic-land",
+		nodeId: "execute",
+		attempt: 1,
+		state: "running",
+		executionId: "generic-land-1",
+	});
+	expect(
+		store.admitGeneralizedWorkflowExecution({
+			runId: "run-generic-land",
+			nodeId: "execute",
+			executionId: "generic-land-1",
+			attempt: 1,
+			expiresAt: "2026-08-24T02:00:00.000Z",
+			absoluteDeadlineAt: "2026-08-25T00:00:00.000Z",
+			now: "2026-08-24T00:01:00.000Z",
+			env: WORKFLOW_ON,
+		}),
+	).toMatchObject({ ok: true });
+	store.upsertSession({
+		execution_id: "generic-land-1",
+		issue_id: "FLY-2027",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "execute",
+	});
+	expect(
+		store.commitEnrolledCompletion({
+			executionId: "generic-land-1",
+			route: "needs_review",
+			sourceEventId: "generic-land-complete",
+			completionSubmission: { decision: { route: "needs_review" } },
+			subjectDigest: HEAD,
+			prBinding: {
+				prNumber: 2027,
+				headSha: HEAD,
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "geoforge3d/flywheel",
+				targetRepoPath: "/tmp/flywheel",
+				worktreeBindingGeneration: "generation-1",
+			},
+			now: "2026-08-24T00:02:00.000Z",
+		}),
+	).toMatchObject({ ok: true, completionDisposition: "engine_gate_handoff" });
+	const db = (
+		store as unknown as {
+			db: { run(sql: string, params?: unknown[]): void };
+		}
+	).db;
+	const holder = store.getCurrentWorkflowGateHolder(
+		"run-generic-land",
+		"founder_gate",
+	);
+	if (!holder) throw new Error("generic land gate holder missing");
+	db.run(
+		"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = ?",
+		[holder.question_id],
+	);
+	db.run(
+		"UPDATE workflow_side_effect_ledger SET state = 'started' WHERE run_id = 'run-generic-land' AND node_id = 'founder_gate'",
+	);
+	db.run(
+		"UPDATE workflow_run SET current_node_id = 'land' WHERE run_id = 'run-generic-land'",
+	);
+	store.upsertWorkflowRunNode({
+		runId: "run-generic-land",
+		nodeId: "land",
+		attempt: 1,
+		state: "pending",
+		executionId: "generic-land-exec",
+	});
+	db.run(
+		`INSERT INTO workflow_side_effect_ledger
+		   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
+		 VALUES ('run-generic-land', 'land', 1, 'dispatch', 1,
+		         'generic-land-exec', 'intent_recorded')`,
+	);
+	return store;
+}
+
 function failRunningDesign(store: StateStore, lastError?: string): void {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
@@ -1330,6 +1443,75 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(store.getWorkflowRun("run-land")?.status).toBe("completed");
 		expect(store.getWorkflowRunNode("run-land", "land", 1)?.state).toBe("done");
 		expect(store.listWorkflowSideEffects("run-land")[0]?.state).toBe("started");
+		store.close();
+	});
+
+	it("terminalizes a parked generic producer when engine land consumes its durable finalization", async () => {
+		const store = await storeWithGenericLandIntent();
+		const open = store.getCurrentWorkflowEngineParkEvidence("generic-land-1")!;
+		expect(store.getSession("generic-land-1")?.status).toBe("ship_parked");
+		const landExecutor = vi.fn(async (operationId: string) => {
+			const claim = store.claimLandOperation({
+				operationId,
+				ownerId: "generic-land-worker",
+				now: "2026-08-24T00:04:00.000Z",
+				leaseExpiresAt: "2026-08-24T00:05:00.000Z",
+			});
+			if (!claim) throw new Error("generic land operation was not claimable");
+			const disposition = store.recordLandLinearDoneDisposition({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				disposition: "done",
+				reason: "already_completed",
+				executionId: "generic-land-exec",
+				now: "2026-08-24T00:04:00.500Z",
+			});
+			if (!disposition.ok) throw new Error(disposition.reason);
+			const completed = store.recordLandOperationStep({
+				operationId,
+				ownerId: claim.ownerId,
+				generation: claim.generation,
+				step: "finalization_completed",
+				receipt: {
+					worktreeRemoved: true,
+					threadArchived: true,
+					linearDoneDisposition: "done",
+				},
+				now: "2026-08-24T00:04:01.000Z",
+			});
+			if (!completed.ok) throw new Error(completed.reason);
+			return { status: "completed" as const };
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-24T00:04:02.000Z"),
+			landExecutor,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 2, held: 0 });
+		expect(store.getWorkflowRun("run-generic-land")?.status).toBe("completed");
+		expect(store.getSession("generic-land-1")).toMatchObject({
+			status: "completed",
+			terminal_at: expect.any(String),
+		});
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("generic-land-1"),
+		).toBeUndefined();
+		expect(
+			store
+				.listWorkflowEngineParkEventsAfter("flywheel", 0)
+				.find(
+					(event) =>
+						event.event_id ===
+						`engine-park-settle:generic-land-1:${open.generation}`,
+				),
+		).toMatchObject({
+			event: "park_cleared",
+			reason: "rework_reachable_wait",
+		});
 		store.close();
 	});
 

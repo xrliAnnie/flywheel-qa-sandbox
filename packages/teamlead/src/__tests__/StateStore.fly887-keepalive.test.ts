@@ -21,6 +21,7 @@ function seedSession(
 		status?: string;
 		session_role?: string;
 		chat_thread_role?: string;
+		workflow_node_id?: string;
 	},
 ): void {
 	store.upsertSession({
@@ -30,8 +31,47 @@ function seedSession(
 		status: over.status ?? "running",
 		session_role: over.session_role,
 		chat_thread_role: over.chat_thread_role,
+		workflow_node_id: over.workflow_node_id,
 	});
 }
+
+describe("getWorkflowManagedSessionsForIssue (FLY-2027)", () => {
+	it("adds workflow-bound main actors without changing the phase query", async () => {
+		const store = await freshStore();
+		seedSession(store, {
+			execution_id: "phase",
+			issue_id: "FLY-1",
+			chat_thread_role: "implement",
+		});
+		seedSession(store, {
+			execution_id: "generic",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+			workflow_node_id: "execute",
+		});
+		seedSession(store, {
+			execution_id: "review",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+			workflow_node_id: "review",
+		});
+		seedSession(store, {
+			execution_id: "ordinary-main",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+		});
+
+		expect(
+			store
+				.getWorkflowManagedSessionsForIssue("FLY-1")
+				.map((row) => row.execution_id)
+				.sort(),
+		).toEqual(["generic", "phase", "review"]);
+		expect(
+			store.getPhaseSessionsForIssue("FLY-1").map((row) => row.execution_id),
+		).toEqual(["phase"]);
+	});
+});
 
 describe("getPhaseSessionsForIssue (FLY-887)", () => {
 	it("returns design/implement/qa phase sessions for the issue", async () => {
@@ -189,6 +229,35 @@ describe("getParkedPhaseCandidates (FLY-1204)", () => {
 			chat_thread_role: "qa",
 			status: "terminated",
 		});
+		expect(store.getParkedPhaseCandidates()).toEqual([]);
+	});
+
+	it("exposes only workflow-bound main actors on the additive managed patrol query", async () => {
+		const store = await freshStore();
+		seedSession(store, {
+			execution_id: "generic-parked",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+			workflow_node_id: "execute",
+			status: "ship_parked",
+		});
+		seedSession(store, {
+			execution_id: "generic-failed",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+			workflow_node_id: "execute",
+			status: "failed",
+		});
+		seedSession(store, {
+			execution_id: "ordinary-main",
+			issue_id: "FLY-1",
+			chat_thread_role: "main",
+			status: "ship_parked",
+		});
+
+		expect(
+			store.getWorkflowManagedParkedCandidates().map((row) => row.execution_id),
+		).toEqual(["generic-parked"]);
 		expect(store.getParkedPhaseCandidates()).toEqual([]);
 	});
 });

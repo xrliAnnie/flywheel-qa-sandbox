@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
 	describeLandCloseoutCause,
 	inferLandCloseoutCause,
+	inferLandCloseoutCauseFromClosureReport,
 	landCloseoutCauseFromReason,
 	landCloseoutReason,
+	landIssueCloseoutResultFromClosureReport,
 	renderLandThreadNotification,
 } from "../land-closeout-cause.js";
 
@@ -30,6 +32,56 @@ describe("land closeout cause", () => {
 			"窗口",
 		);
 		expect(describeLandCloseoutCause("husk_lease_stale")).toContain("Runner");
+		expect(
+			inferLandCloseoutCause([
+				"phase-shutdown: phase_shutdown_ack_timeout_live_controller",
+			]),
+		).toBe("phase_shutdown_unacked");
+		expect(describeLandCloseoutCause("phase_shutdown_unacked")).toContain(
+			"确认",
+		);
+	});
+
+	it("derives one typed closure-report cause by enum precedence, not node order", () => {
+		const report = {
+			nodes: [
+				{
+					transition: {
+						state: "failed" as const,
+						error: "node_process_residual:pid=42",
+					},
+					teardown: {
+						state: "failed" as const,
+						error: "phase_shutdown_ack_timeout_live_controller",
+					},
+				},
+			],
+		};
+		expect(inferLandCloseoutCauseFromClosureReport(report)).toBe(
+			"phase_shutdown_unacked",
+		);
+		expect(
+			landIssueCloseoutResultFromClosureReport({
+				...report,
+				outcome: "blocked",
+			}),
+		).toEqual({ outcome: "blocked", cause: "phase_shutdown_unacked" });
+		expect(
+			landIssueCloseoutResultFromClosureReport({
+				...report,
+				outcome: "complete",
+			}),
+		).toEqual({ outcome: "complete" });
+		expect(
+			inferLandCloseoutCauseFromClosureReport({
+				nodes: [
+					{
+						transition: { state: "done" as const },
+						teardown: { state: "done" as const },
+					},
+				],
+			}),
+		).toBeUndefined();
 	});
 
 	it("renders partial and held thread truth without raw JSON", () => {

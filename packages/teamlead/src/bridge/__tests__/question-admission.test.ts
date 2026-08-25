@@ -532,7 +532,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(h.queue.getById(row.id)?.state).toBe("LEASED");
 	});
 
-	it("delivers a generic land gate after needs_review keeps its source completed", async () => {
+	it("delivers a generic land gate while its source remains durably parked", async () => {
 		const dbPath = join(
 			mkdtempSync(join(tmpdir(), "fly1731-land-admission-")),
 			"comm.db",
@@ -653,10 +653,11 @@ describe("QuestionAdmission mailbox claim service", () => {
 			ok: true,
 			completionDisposition: "engine_gate_handoff",
 		});
-		expect(store.getSession("exec-1")?.status).toBe("completed");
-		expect(
-			store.getCurrentWorkflowEngineParkEvidence("exec-1"),
-		).toBeUndefined();
+		expect(store.getSession("exec-1")?.status).toBe("ship_parked");
+		expect(store.getCurrentWorkflowEngineParkEvidence("exec-1")).toMatchObject({
+			event: "park_opened",
+			reason: "rework_reachable_wait",
+		});
 		const holder = store.getCurrentWorkflowGateHolder(
 			"run-fly1731",
 			"founder_gate",

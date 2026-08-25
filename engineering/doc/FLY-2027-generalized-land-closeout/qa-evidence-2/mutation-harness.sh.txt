@@ -1,0 +1,27 @@
+#!/bin/bash
+# usage: mut.sh <label> <relfile> <old> <new> <testfile...>
+set -uo pipefail
+ROOT=/Users/xiaorongli/Dev/flywheel-FLY-2027
+LABEL="$1"; REL="$2"; OLD="$3"; NEW="$4"; shift 4
+F="$ROOT/$REL"
+cp "$F" "$F.qabak"
+python3 - "$F" "$OLD" "$NEW" <<'PY'
+import sys
+p,old,new=sys.argv[1],sys.argv[2],sys.argv[3]
+s=open(p,encoding='utf-8').read()
+n=s.count(old)
+if n!=1:
+    print(f"MUT_APPLY_ERROR occurrences={n}", file=sys.stderr); sys.exit(9)
+open(p,'w',encoding='utf-8').write(s.replace(old,new))
+PY
+rc=$?
+if [ $rc -ne 0 ]; then mv "$F.qabak" "$F"; echo "$LABEL | APPLY_FAILED"; exit 9; fi
+cd "$ROOT/packages/teamlead"
+out=$(npx vitest run --reporter=dot "$@" 2>&1)
+trc=$?
+mv "$F.qabak" "$F"
+if [ $trc -ne 0 ]; then
+  echo "$LABEL | KILLED   ($(echo "$out" | grep -E '^\s+Tests' | tail -1 | tr -s ' '))"
+else
+  echo "$LABEL | SURVIVED ($(echo "$out" | grep -E '^\s+Tests' | tail -1 | tr -s ' '))"
+fi

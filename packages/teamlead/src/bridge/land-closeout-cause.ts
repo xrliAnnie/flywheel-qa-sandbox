@@ -1,5 +1,6 @@
 export const LAND_CLOSEOUT_CAUSES = [
 	"husk_lease_stale",
+	"phase_shutdown_unacked",
 	"node_process_residual",
 	"node_process_unverifiable",
 	"window_identity_mismatch",
@@ -27,25 +28,64 @@ export function landCloseoutCauseFromReason(reason: string): LandCloseoutCause {
 
 export function inferLandCloseoutCause(errors: string[]): LandCloseoutCause {
 	const joined = errors.join("\n");
-	if (joined.includes("controller_lease_stale")) return "husk_lease_stale";
-	if (joined.includes("node_process_residual")) return "node_process_residual";
-	if (joined.includes("node_process_unverifiable")) {
-		return "node_process_unverifiable";
-	}
-	if (joined.includes("window_identity_mismatch")) {
-		return "window_identity_mismatch";
-	}
-	if (joined.includes("commdb finalize")) return "commdb_finalize_failed";
-	if (joined.includes("branch") || joined.includes("worktree")) {
-		return "worktree_branch_mismatch";
+	const matchers: Partial<Record<LandCloseoutCause, readonly string[]>> = {
+		husk_lease_stale: ["controller_lease_stale"],
+		phase_shutdown_unacked: [
+			"phase_shutdown_ack_",
+			"phase_shutdown_timeout_",
+			"phase_shutdown_request_disappeared",
+			"phase_shutdown_failed",
+		],
+		node_process_residual: ["node_process_residual"],
+		node_process_unverifiable: ["node_process_unverifiable"],
+		window_identity_mismatch: ["window_identity_mismatch"],
+		window_cleanup_failed: ["window_cleanup_failed"],
+		commdb_finalize_failed: ["commdb finalize", "commdb_finalize_failed"],
+		worktree_branch_mismatch: ["branch", "worktree"],
+		lifecycle_conflict: ["authority_lost", "disposition_conflict"],
+		archive_failed: ["archive_failed"],
+		source_session_unavailable: ["source_session_unavailable"],
+	};
+	for (const cause of LAND_CLOSEOUT_CAUSES) {
+		if (matchers[cause]?.some((token) => joined.includes(token))) return cause;
 	}
 	return "unknown";
+}
+
+type CloseoutCauseReportShape = {
+	nodes: Array<{
+		transition: { state: string; error?: string };
+		teardown: { state: string; error?: string };
+	}>;
+};
+
+export function inferLandCloseoutCauseFromClosureReport(
+	report: CloseoutCauseReportShape,
+): LandCloseoutCause | undefined {
+	const errors = report.nodes.flatMap((node) =>
+		[node.transition, node.teardown].flatMap((outcome) =>
+			outcome.state === "failed" && outcome.error ? [outcome.error] : [],
+		),
+	);
+	return errors.length > 0 ? inferLandCloseoutCause(errors) : undefined;
+}
+
+export function landIssueCloseoutResultFromClosureReport<
+	TOutcome extends string,
+>(
+	report: CloseoutCauseReportShape & { outcome: TOutcome },
+): { outcome: TOutcome; cause?: LandCloseoutCause } {
+	if (report.outcome === "complete") return { outcome: report.outcome };
+	const cause = inferLandCloseoutCauseFromClosureReport(report);
+	return { outcome: report.outcome, ...(cause ? { cause } : {}) };
 }
 
 export function describeLandCloseoutCause(cause: LandCloseoutCause): string {
 	switch (cause) {
 		case "husk_lease_stale":
 			return "Runner 窗口仍在，但控制器心跳已停止";
+		case "phase_shutdown_unacked":
+			return "Runner 收尾请求尚未确认，窗口或进程可能仍在运行";
 		case "node_process_residual":
 			return "Runner 节点进程未能完全退出";
 		case "node_process_unverifiable":

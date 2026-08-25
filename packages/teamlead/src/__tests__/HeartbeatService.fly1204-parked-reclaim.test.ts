@@ -75,6 +75,7 @@ function seed(
 		issue_id: string;
 		status: string;
 		chat_thread_role: string;
+		workflow_node_id?: string;
 		last_activity_at?: string;
 	},
 ): void {
@@ -85,6 +86,7 @@ function seed(
 		status: o.status,
 		session_role: o.chat_thread_role,
 		chat_thread_role: o.chat_thread_role,
+		workflow_node_id: o.workflow_node_id,
 		last_activity_at: o.last_activity_at ?? OLD_TS,
 	});
 }
@@ -153,6 +155,91 @@ function closedIds(spy: ReturnType<typeof vi.fn>): string[] {
 }
 
 describe("FLY-1204 parked-phase reclaim — safety boundaries", () => {
+	it("ship-claim path auto-reclaims a workflow-bound generic main actor", async () => {
+		const store = await makeStore();
+		seed(store, {
+			execution_id: "generic",
+			issue_id: "FLY-G1",
+			status: "ship_parked",
+			chat_thread_role: "main",
+			workflow_node_id: "execute",
+		});
+		declareParked("generic");
+		store.insertEvent({
+			event_id: "claim-FLY-G1",
+			execution_id: "generic",
+			issue_id: "FLY-G1",
+			project_name: PROJECT,
+			event_type: "post_ship_finalization_claim",
+			source: "test",
+		});
+		tmuxState.set("generic", "alive");
+		const { cfg, closeParked } = makeConfig();
+		await makeService(store, cfg).checkStaleParkedPhases();
+		expect(closedIds(closeParked)).toEqual(["generic"]);
+	});
+
+	it("alerts but does not close a no-claim workflow-bound generic main actor", async () => {
+		const store = await makeStore();
+		seed(store, {
+			execution_id: "generic",
+			issue_id: "FLY-G2",
+			status: "ship_parked",
+			chat_thread_role: "main",
+			workflow_node_id: "execute",
+		});
+		declareParked("generic");
+		const { cfg, closeParked, alertOrphan } = makeConfig();
+		await makeService(store, cfg).checkStaleParkedPhases();
+		expect(closeParked).not.toHaveBeenCalled();
+		expect(alertOrphan).toHaveBeenCalledWith(
+			"FLY-G2",
+			expect.arrayContaining([
+				expect.objectContaining({ execution_id: "generic" }),
+			]),
+		);
+	});
+
+	it("an active workflow-bound generic main actor blocks reclaim for its issue", async () => {
+		const store = await makeStore();
+		seed(store, {
+			execution_id: "parked",
+			issue_id: "FLY-G3",
+			status: "ship_parked",
+			chat_thread_role: "main",
+			workflow_node_id: "execute",
+		});
+		seed(store, {
+			execution_id: "working",
+			issue_id: "FLY-G3",
+			status: "running",
+			chat_thread_role: "main",
+			workflow_node_id: "review",
+		});
+		declareParked("parked");
+		tmuxState.set("working", "alive");
+		const { cfg, closeParked, alertOrphan } = makeConfig();
+		await makeService(store, cfg).checkStaleParkedPhases();
+		expect(closeParked).not.toHaveBeenCalled();
+		expect(alertOrphan).not.toHaveBeenCalled();
+	});
+
+	it("never patrols an ordinary non-workflow main session", async () => {
+		const store = await makeStore();
+		seed(store, {
+			execution_id: "ordinary",
+			issue_id: "FLY-G4",
+			status: "ship_parked",
+			chat_thread_role: "main",
+		});
+		declareParked("ordinary");
+		tmuxState.set("ordinary", "alive");
+		const { cfg, closeParked, alertOrphan } = makeConfig();
+		await makeService(store, cfg).checkStaleParkedPhases();
+		expect(closeParked).not.toHaveBeenCalled();
+		expect(alertOrphan).not.toHaveBeenCalled();
+	});
+
 	it("has_working guard: an alive non-parked phase keeps the WHOLE issue (parked design not killed)", async () => {
 		const store = await makeStore();
 		seed(store, {

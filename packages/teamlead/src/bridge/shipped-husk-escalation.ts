@@ -19,7 +19,7 @@ import {
 } from "./post-merge.js";
 import {
 	DEFAULT_ACK_TIMEOUT_MS,
-	isWorkflowPhaseSession,
+	isWorkflowManagedSession,
 	type RunnerShutdownDb,
 } from "./runner-shutdown-evidence.js";
 import {
@@ -57,8 +57,11 @@ export function evaluateShippedHuskEvidence(
 	input: ShippedHuskEvidenceInput,
 ): ShippedHuskEvidenceDecision {
 	const session = input.session;
-	if (!isWorkflowPhaseSession(session) || session?.issue_id !== input.issueId) {
-		return { eligible: false, reason: "not_issue_workflow_phase" };
+	if (
+		!isWorkflowManagedSession(session) ||
+		session?.issue_id !== input.issueId
+	) {
+		return { eligible: false, reason: "not_issue_workflow_managed" };
 	}
 	if (input.pane.kind !== "alive") {
 		return { eligible: false, reason: `pane_${input.pane.kind}` };
@@ -307,8 +310,10 @@ export async function forceShippedHusks(
 			receipt: { intentId, tmuxWindow },
 			now: new Date(now()).toISOString(),
 		});
-	for (const listedSession of store.getPhaseSessionsForIssue(input.issueId)) {
-		if (!isWorkflowPhaseSession(listedSession)) continue;
+	for (const listedSession of store.getWorkflowManagedSessionsForIssue(
+		input.issueId,
+	)) {
+		if (!isWorkflowManagedSession(listedSession)) continue;
 		const initial = await gather(listedSession.execution_id);
 		const session = initial.session;
 		if (!session) continue;

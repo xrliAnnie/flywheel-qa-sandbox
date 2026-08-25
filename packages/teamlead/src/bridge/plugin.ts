@@ -337,6 +337,7 @@ import { validateKindContracts } from "./kind-contract.js";
 import { requestLandCleanupOpportunities } from "./land-cleanup-opportunity.js";
 import {
 	landCloseoutReason,
+	landIssueCloseoutResultFromClosureReport,
 	renderLandThreadNotification,
 } from "./land-closeout-cause.js";
 import {
@@ -5577,7 +5578,7 @@ export async function startBridge(
 				// R4#3: the ship DAG already holds the canonical issue mutex.
 				input.alreadyLocked ? { alreadyLocked: true } : undefined,
 			);
-			return { outcome: report.outcome };
+			return landIssueCloseoutResultFromClosureReport(report);
 		},
 		postShipSweep: runProjectSweep,
 		// R4#3 (plan.md:145): ONE canonical issue-mutex hold for the ENTIRE

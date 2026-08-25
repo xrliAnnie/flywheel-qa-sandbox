@@ -824,6 +824,19 @@ export interface WorkflowEngineParkOutboxRow {
 	created_at: string;
 }
 
+type WorkflowEngineParkSettlementReason =
+	| "rework_reachable_wait"
+	| "runner_ship_gate_wait";
+
+const REWORK_REPLACEMENT_PARK_SETTLEMENT_REASONS = [
+	"rework_reachable_wait",
+] as const satisfies readonly WorkflowEngineParkSettlementReason[];
+
+const TERMINAL_PARK_SETTLEMENT_REASONS = [
+	"rework_reachable_wait",
+	"runner_ship_gate_wait",
+] as const satisfies readonly WorkflowEngineParkSettlementReason[];
+
 /** FLY-1282 Part D: prepare-time receipt facts (the route builds the FINAL
  * sanitized content here — delivery never reconstructs semantics). */
 export interface DispositionReceiptPrepareInput {
@@ -7605,6 +7618,33 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-2027: additive issue-terminal candidate set. Legacy phase roles keep
+	 * their existing inclusion semantics; any future executable workflow node is
+	 * included through its immutable `workflow_node_id` binding. Ordinary main
+	 * sessions remain excluded.
+	 */
+	getWorkflowManagedSessionsForIssue(issueId: string): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE issue_id = ?
+			   AND (
+			     chat_thread_role IN ('design', 'implement', 'qa')
+			     OR (workflow_node_id IS NOT NULL AND workflow_node_id != '')
+			   )
+			 ORDER BY last_activity_at DESC, rowid DESC`,
+		);
+		stmt.bind([issueId]);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/**
 	 * FLY-1204: candidate PRE-SCREEN for the periodic parked-phase reclaim patrol
 	 * (a status/role coarse filter only, NOT the reclaim decision). It returns
 	 * DAG workflow rows (chat_thread_role IN design/implement/qa) whose status
@@ -7625,6 +7665,27 @@ export class StateStore {
 		const stmt = this.db.prepare(
 			`SELECT * FROM sessions
 			 WHERE chat_thread_role IN ('design', 'implement', 'qa')
+			   AND status IN ('design_done', 'completed', 'awaiting_review',
+			                  'approved_to_ship', 'ship_parked', 'running')
+			 ORDER BY last_activity_at DESC, rowid DESC`,
+		);
+		const rows: Session[] = [];
+		while (stmt.step()) {
+			rows.push(
+				this.rowToSession(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return rows;
+	}
+
+	/** FLY-2027: additive FLY-1204 patrol candidates for workflow-bound main actors. */
+	getWorkflowManagedParkedCandidates(): Session[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM sessions
+			 WHERE chat_thread_role = 'main'
+			   AND workflow_node_id IS NOT NULL
+			   AND workflow_node_id != ''
 			   AND status IN ('design_done', 'completed', 'awaiting_review',
 			                  'approved_to_ship', 'ship_parked', 'running')
 			 ORDER BY last_activity_at DESC, rowid DESC`,
@@ -13783,9 +13844,9 @@ export class StateStore {
 				clear.node_id !== input.open.node_id ||
 				clear.attempt !== input.open.attempt ||
 				clear.activation_id !== input.open.activation_id ||
-				clear.generation <= input.open.generation ||
+				clear.generation !== input.open.generation + 1 ||
 				clear.event !== "park_cleared" ||
-				clear.reason !== "rework_reachable_wait"
+				clear.reason !== input.open.reason
 			) {
 				throw new Error("workflow_engine_park_settlement_conflict");
 			}
@@ -13800,23 +13861,71 @@ export class StateStore {
 			attempt: input.open.attempt,
 			activationId: input.open.activation_id,
 			event: "park_cleared",
-			reason: "rework_reachable_wait",
+			reason: input.open.reason,
 			createdAt: input.createdAt,
 		});
 	}
 
+	private appendWorkflowEngineParkSettlementSkippedTx(input: {
+		open: WorkflowEngineParkOutboxRow;
+		reason:
+			| "activation_missing"
+			| "run_mismatch"
+			| "project_mismatch"
+			| "node_mismatch"
+			| "attempt_mismatch"
+			| "activation_mismatch"
+			| "execution_mismatch"
+			| "actor_not_latest"
+			| "target_execution_mismatch"
+			| "session_not_settleable";
+	}): void {
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.open.run_id,
+			eventUid: `workflow_engine_park_settlement_skipped:${input.open.run_id}:${input.open.execution_id}:${input.open.generation}:${input.reason}`,
+			kind: "workflow_engine_park_settlement_skipped",
+			nodeId: input.open.node_id,
+			executionId: input.open.execution_id,
+			payload: {
+				activationId: input.open.activation_id,
+				openGeneration: input.open.generation,
+				parkReason: input.open.reason,
+				reason: input.reason,
+			},
+		});
+	}
+
 	/**
-	 * Settle only exact-current parks opened by generalized land completions.
+	 * Settle only exact-current parks whose reason is explicitly allowed by the
+	 * caller. Active rework replacement may clear only its own rework park;
+	 * terminal run closeout also consumes a runner-ship gate wait.
 	 * Existing post-ship finalization may have already made the session terminal;
 	 * that legitimate ordering still needs a ledger-only clear.
 	 */
-	private settleReworkParksForRunTx(runId: string, settledAt: string): void {
+	private settleWorkflowEngineParksForRunTx(
+		runId: string,
+		settledAt: string,
+		allowedReasons: readonly WorkflowEngineParkSettlementReason[],
+	): void {
+		if (allowedReasons.length === 0) {
+			throw new Error("workflow_engine_park_settlement_reasons_required");
+		}
+		const reasons = [...new Set(allowedReasons)];
+		if (
+			reasons.some(
+				(reason) =>
+					reason !== "rework_reachable_wait" &&
+					reason !== "runner_ship_gate_wait",
+			)
+		) {
+			throw new Error("workflow_engine_park_settlement_reason_invalid");
+		}
 		const opens = this.workflowSelectAll(
 			`SELECT park.*
 			   FROM workflow_engine_park_outbox park
 			  WHERE park.run_id = ?
 			    AND park.event = 'park_opened'
-			    AND park.reason = 'rework_reachable_wait'
+			    AND park.reason IN (${reasons.map(() => "?").join(", ")})
 			    AND (
 			      park.generation = (
 			        SELECT MAX(latest.generation)
@@ -13830,7 +13939,7 @@ export class StateStore {
 			      )
 			    )
 			  ORDER BY park.row_id`,
-			[runId],
+			[runId, ...reasons],
 		).map((row) => this.workflowEngineParkOutboxFromRow(row));
 		for (const open of opens) {
 			const activation = this.generalizedExecutionContextForActivation(
@@ -13859,17 +13968,30 @@ export class StateStore {
 					latestTarget?.execution_id === open.execution_id &&
 					(latestTarget.state === "pending" ||
 						latestTarget.state === "admitted"));
-			if (
-				!activation ||
-				activation.run.run_id !== open.run_id ||
-				activation.run.project_name !== open.project_name ||
-				activation.binding.node_id !== open.node_id ||
-				activation.binding.attempt !== open.attempt ||
-				activation.binding.activation_id !== open.activation_id ||
-				activation.binding.execution_id !== open.execution_id ||
-				!actorStillOwnsLatestAttempt ||
-				target?.execution_id !== open.execution_id
-			) {
+			const skipReason = !activation
+				? "activation_missing"
+				: activation.run.run_id !== open.run_id
+					? "run_mismatch"
+					: activation.run.project_name !== open.project_name
+						? "project_mismatch"
+						: activation.binding.node_id !== open.node_id
+							? "node_mismatch"
+							: activation.binding.attempt !== open.attempt
+								? "attempt_mismatch"
+								: activation.binding.activation_id !== open.activation_id
+									? "activation_mismatch"
+									: activation.binding.execution_id !== open.execution_id
+										? "execution_mismatch"
+										: !actorStillOwnsLatestAttempt
+											? "actor_not_latest"
+											: target?.execution_id !== open.execution_id
+												? "target_execution_mismatch"
+												: undefined;
+			if (skipReason) {
+				this.appendWorkflowEngineParkSettlementSkippedTx({
+					open,
+					reason: skipReason,
+				});
 				continue;
 			}
 			const session = this.getSession(open.execution_id);
@@ -13890,6 +14012,10 @@ export class StateStore {
 				);
 				this.bumpLifecycleRevision(open.execution_id);
 			} else if (!isStateStoreIrreversibleTerminalForZombie(session?.status)) {
+				this.appendWorkflowEngineParkSettlementSkippedTx({
+					open,
+					reason: "session_not_settleable",
+				});
 				continue;
 			}
 			this.appendWorkflowEngineParkSettlementClearTx({
@@ -26575,7 +26701,11 @@ export class StateStore {
 			// Superseding the old exact actor also settles any rework-reachable
 			// completion park in this transaction. A crash cannot commit the new
 			// route while leaving stale wake/park evidence for the replaced actor.
-			this.settleReworkParksForRunTx(request.run_id, input.observedAt);
+			this.settleWorkflowEngineParksForRunTx(
+				request.run_id,
+				input.observedAt,
+				REWORK_REPLACEMENT_PARK_SETTLEMENT_REASONS,
+			);
 			if (heldPaneLossRecovery) {
 				this.db.run(
 					"UPDATE workflow_run SET status = 'active' WHERE run_id = ? AND status = 'held'",
@@ -29985,7 +30115,11 @@ export class StateStore {
 				refuse("run_status_changed");
 				return;
 			}
-			this.settleReworkParksForRunTx(runId, input.now);
+			this.settleWorkflowEngineParksForRunTx(
+				runId,
+				input.now,
+				TERMINAL_PARK_SETTLEMENT_REASONS,
+			);
 			this.cancelOpenWorkflowCarrierDeliveriesTx({
 				runId,
 				now: input.now,
@@ -30727,7 +30861,11 @@ export class StateStore {
 				return;
 			}
 			if (input.target === "terminated") {
-				this.settleReworkParksForRunTx(input.runId, input.now);
+				this.settleWorkflowEngineParksForRunTx(
+					input.runId,
+					input.now,
+					TERMINAL_PARK_SETTLEMENT_REASONS,
+				);
 				this.cancelOpenWorkflowCarrierDeliveriesTx({
 					runId: input.runId,
 					now: input.now,
@@ -33729,7 +33867,7 @@ export class StateStore {
 			run.engine_owned === 1 &&
 			run.gate_carrier_epoch === 1 &&
 			gateAuthority?.mode === "land" &&
-			node?.type === "implement" &&
+			node?.capabilities.keepalive_park === true &&
 			node?.capabilities.creates_pr === true;
 		const previousStatus = this.getSession(binding.execution_id)?.status;
 		const projectedStatus =
@@ -36482,7 +36620,11 @@ export class StateStore {
 							transitionRefusal = "no_code_run_state_conflict";
 							throw new Error("engine_completion_transition_refused");
 						}
-						this.settleReworkParksForRunTx(context.binding.run_id, now);
+						this.settleWorkflowEngineParksForRunTx(
+							context.binding.run_id,
+							now,
+							TERMINAL_PARK_SETTLEMENT_REASONS,
+						);
 						this.db.run(
 							`UPDATE workflow_output_credential
 							    SET revoked = 1, revoked_reason = 'completed_no_artifact'
@@ -40395,7 +40537,11 @@ export class StateStore {
 								"founder approval source terminal completion raced",
 							);
 						}
-						this.settleReworkParksForRunTx(runId, terminalAt);
+						this.settleWorkflowEngineParksForRunTx(
+							runId,
+							terminalAt,
+							TERMINAL_PARK_SETTLEMENT_REASONS,
+						);
 						this.appendWorkflowRunEventTx({
 							runId,
 							eventUid: `source_terminal:${input.project}:${input.sourceEventId}`,
@@ -40506,7 +40652,11 @@ export class StateStore {
 							[runId, workflowApprovalGate(snapshot.manifest).node],
 						);
 						if (this.db.getRowsModified() === 1) {
-							this.settleReworkParksForRunTx(runId, terminalAt);
+							this.settleWorkflowEngineParksForRunTx(
+								runId,
+								terminalAt,
+								TERMINAL_PARK_SETTLEMENT_REASONS,
+							);
 							this.appendWorkflowRunEventTx({
 								runId,
 								eventUid: `source_terminal:${input.project}:${input.sourceEventId}`,
@@ -42929,7 +43079,11 @@ export class StateStore {
 							"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
 							[runId],
 						);
-						this.settleReworkParksForRunTx(runId, new Date().toISOString());
+						this.settleWorkflowEngineParksForRunTx(
+							runId,
+							new Date().toISOString(),
+							TERMINAL_PARK_SETTLEMENT_REASONS,
+						);
 						break;
 					}
 					case "side_effect": {
@@ -51507,7 +51661,11 @@ export class StateStore {
 				[input.operationId],
 			)[0];
 			if (run?.status === "completed" && node?.state === "done") {
-				this.settleReworkParksForRunTx(input.runId, input.now);
+				this.settleWorkflowEngineParksForRunTx(
+					input.runId,
+					input.now,
+					TERMINAL_PARK_SETTLEMENT_REASONS,
+				);
 				result = { ok: true, idempotentReplay: true };
 				return;
 			}
@@ -51538,7 +51696,11 @@ export class StateStore {
 				"UPDATE workflow_run SET status = 'completed' WHERE run_id = ? AND status = 'active'",
 				[input.runId],
 			);
-			this.settleReworkParksForRunTx(input.runId, input.now);
+			this.settleWorkflowEngineParksForRunTx(
+				input.runId,
+				input.now,
+				TERMINAL_PARK_SETTLEMENT_REASONS,
+			);
 			this.appendWorkflowRunEventTx({
 				runId: input.runId,
 				eventUid: `land_completed:${input.operationId}`,

@@ -1,0 +1,19 @@
+flowchart TB
+    A["👤 Annie 批准<br/>(founder gate 卡片)"] --> B["引擎自动合入 PR<br/>(land 节点)"]
+    B --> C["收尾链自动启动<br/>(与老 🆒 路径同一份代码)"]
+    C --> D["① 收停驻的 Runner 窗口"]
+    D --> E["② 清理工作区与分支"]
+    E --> F["③ thread 里发『已合入』回执"]
+    F --> G["④ 自动归档 issue thread"]
+    G --> H["⑤ Linear 状态置 Done"]
+
+    D -.-> I["implement 节点的体:<br/>四层收网(优雅关闭→强收→<br/>批量收编→兜底)✅ 已验证"]
+    D -.-> J["generic 节点的体:<br/>只有两层(直杀+兜底)<br/>⚠️ 本单补齐到四层"]
+
+    style A fill:#e8f4fd,stroke:#007aff,stroke-width:2px
+    style B fill:#e8f4fd,stroke:#007aff
+    style C fill:#f5f5f7,stroke:#86868b
+    style G fill:#e9f9ef,stroke:#34c759
+    style H fill:#e9f9ef,stroke:#34c759
+    style I fill:#e9f9ef,stroke:#34c759
+    style J fill:#fff4e5,stroke:#ff9500,stroke-width:2px

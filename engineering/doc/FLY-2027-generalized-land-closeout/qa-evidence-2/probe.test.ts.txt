@@ -1,0 +1,328 @@
+// QA FLY-2027 attempt-2 independent probe — NOT part of the PR. Deleted after the run.
+import { fileURLToPath } from "node:url";
+import { describe, expect, it, vi } from "vitest";
+import { forceShippedHusks } from "../bridge/shipped-husk-escalation.js";
+import { StateStore } from "../StateStore.js";
+import {
+	compileWorkflowMenuSeed,
+	loadWorkflowMenuLibrary,
+} from "../workflow-menu.js";
+
+const HEAD = "a".repeat(40);
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+const WORKFLOW_ON = {
+	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
+	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
+	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
+};
+const NOW = Date.parse("2026-08-22T18:00:00.000Z");
+
+function rawDb(store: StateStore) {
+	return (store as unknown as { db: { run(s: string, p?: unknown[]): void } })
+		.db;
+}
+
+// ─── P4: husk force must SEE a workflow-bound generic `main` husk ────────────
+describe("QA probe P4 — shipped-husk discovery candidate set", () => {
+	async function fixture(subjects: Array<{ id: string; role: string; node?: string }>) {
+		const store = await StateStore.create(":memory:");
+		for (const s of subjects) {
+			store.upsertSession({
+				execution_id: s.id,
+				issue_id: "issue-1",
+				project_name: "flywheel",
+				status: "awaiting_review",
+				chat_thread_role: s.role,
+				session_role: s.role,
+				workflow_node_id: s.node,
+			});
+			store.patchSessionMetadata(s.id, {
+				adapter_type: "codex-tmux",
+				chat_thread_role: s.role,
+				heartbeat_at: "2026-08-22 17:50:00",
+			});
+		}
+		const operation = store.ensureLandOperation({
+			issueId: "issue-1",
+			projectName: "flywheel",
+			prNumber: 2027,
+			approvedHead: HEAD,
+			now: "2026-08-22T17:40:00.000Z",
+		});
+		const first = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "first-pass",
+			now: "2026-08-22T17:40:01.000Z",
+			leaseExpiresAt: "2026-08-22T17:50:01.000Z",
+		})!;
+		for (const step of ["merge_confirmed", "cleanup_requested"]) {
+			store.recordLandOperationStep({
+				operationId: operation.operation_id,
+				ownerId: first.ownerId,
+				generation: first.generation,
+				step,
+				receipt: { step },
+				now: "2026-08-22T17:40:02.000Z",
+			});
+		}
+		store.releaseLandOperationWithRetryAccounting({
+			operationId: operation.operation_id,
+			ownerId: first.ownerId,
+			generation: first.generation,
+			class: "retryable",
+			reason: "issue_closeout_incomplete",
+			now: "2026-08-22T17:40:03.000Z",
+		});
+		store.makeLandOperationRetryRunnable(operation.operation_id);
+		const claim = store.claimLandOperation({
+			operationId: operation.operation_id,
+			ownerId: "second-pass",
+			now: "2026-08-22T17:59:00.000Z",
+			leaseExpiresAt: "2026-08-22T18:10:00.000Z",
+		})!;
+		return { store, operationId: operation.operation_id, claim };
+	}
+
+	function deps(cleanupTarget: ReturnType<typeof vi.fn>) {
+		return {
+			now: () => NOW,
+			resolveCommDbPath: () => "/tmp/comm.db",
+			openCommDb: () => ({
+				getRunnerShutdown: (executionId: string) => ({
+					execution_id: executionId,
+					request_id: `older-land:${executionId}`,
+					state: "requested" as const,
+					requested_at: NOW - 60_000,
+					finished_at: null,
+					error: null,
+				}),
+				close: vi.fn(),
+			}),
+			lookupTarget: () => ({
+				kind: "found" as const,
+				target: { tmuxWindow: "flywheel:@1", sessionName: "flywheel" },
+			}),
+			probe: async () => "alive" as const,
+			runIsLandTerminal: () => true,
+			sessionBelongsToRun: () => true,
+			cleanupTarget,
+		};
+	}
+
+	it("clears the legacy implement husk (harness health control)", async () => {
+		const { store, operationId, claim } = await fixture([
+			{ id: "implement-1", role: "implement" },
+		]);
+		const cleanupTarget = vi.fn(async () => ({
+			tmuxClosed: true,
+			physicalGone: true,
+			errors: [],
+		}));
+		const res = await forceShippedHusks(
+			{ issueId: "issue-1", projectName: "flywheel", operationId, claim },
+			store,
+			deps(cleanupTarget) as never,
+		);
+		expect(res.cleared).toEqual(["implement-1"]);
+		store.close();
+	});
+
+	it("clears a workflow-bound generic `main` husk", async () => {
+		const { store, operationId, claim } = await fixture([
+			{ id: "generic-1", role: "main", node: "execute" },
+		]);
+		const cleanupTarget = vi.fn(async () => ({
+			tmuxClosed: true,
+			physicalGone: true,
+			errors: [],
+		}));
+		const res = await forceShippedHusks(
+			{ issueId: "issue-1", projectName: "flywheel", operationId, claim },
+			store,
+			deps(cleanupTarget) as never,
+		);
+		expect(res.cleared).toEqual(["generic-1"]);
+		store.close();
+	});
+
+	it("leaves an ordinary non-workflow `main` husk alone (negative control)", async () => {
+		const { store, operationId, claim } = await fixture([
+			{ id: "ordinary-main", role: "main" },
+		]);
+		const cleanupTarget = vi.fn(async () => ({
+			tmuxClosed: true,
+			physicalGone: true,
+			errors: [],
+		}));
+		const res = await forceShippedHusks(
+			{ issueId: "issue-1", projectName: "flywheel", operationId, claim },
+			store,
+			deps(cleanupTarget) as never,
+		);
+		expect(res.cleared).toEqual([]);
+		expect(cleanupTarget).not.toHaveBeenCalled();
+		store.close();
+	});
+});
+
+// ─── P2: terminal settlement of a `runner_ship_gate_wait` park is replay-safe ─
+describe("QA probe P2 — ship-gate park settlement", () => {
+	async function genericLandStore() {
+		const store = await StateStore.create(":memory:");
+		const menu = loadWorkflowMenuLibrary().find((c) => c.shape === "generic")!;
+		const seed = compileWorkflowMenuSeed(menu);
+		store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "generic",
+			templateId: seed.templateId,
+			updatedBy: "lead",
+		});
+		store.materializeWorkflowRun({
+			runId: "run-1",
+			issueId: "FLY-2027",
+			projectName: "flywheel",
+			taskCategory: "generic",
+			templateId: seed.templateId,
+			claimsReadEnrolled: true,
+			actor: "lead",
+			canonicalRoot: REPO_ROOT,
+			env: WORKFLOW_ON,
+			entryKind: "workflow_v2",
+			startReservation: {
+				idempotencyKey: "k",
+				selectionDigest: "d",
+				nodeId: "execute",
+				attempt: 1,
+				executionId: "generic-1",
+				createdAt: "2026-08-24T00:00:00.000Z",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "execute",
+			attempt: 1,
+			state: "running",
+			executionId: "generic-1",
+		});
+		store.admitGeneralizedWorkflowExecution({
+			runId: "run-1",
+			nodeId: "execute",
+			executionId: "generic-1",
+			attempt: 1,
+			expiresAt: "2026-08-24T02:00:00.000Z",
+			absoluteDeadlineAt: "2026-08-25T00:00:00.000Z",
+			now: "2026-08-24T00:01:00.000Z",
+			env: WORKFLOW_ON,
+		});
+		store.upsertSession({
+			execution_id: "generic-1",
+			issue_id: "FLY-2027",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "execute",
+		});
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "generic-1",
+				route: "needs_review",
+				sourceEventId: "c1",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: HEAD,
+				prBinding: {
+					prNumber: 2027,
+					headSha: HEAD,
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "geoforge3d/flywheel",
+					targetRepoPath: "/tmp/flywheel",
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-08-24T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true });
+		expect(store.getSession("generic-1")?.status).toBe("ship_parked");
+		return store;
+	}
+
+	async function landReady(store: StateStore) {
+		const db = rawDb(store);
+		const holder = store.getCurrentWorkflowGateHolder("run-1", "founder_gate")!;
+		db.run(
+			"UPDATE workflow_gate_holder SET state = 'approved' WHERE question_id = ?",
+			[holder.question_id],
+		);
+		db.run(
+			"UPDATE workflow_run SET current_node_id = 'land', status = 'completed' WHERE run_id = 'run-1'",
+		);
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "land",
+			attempt: 1,
+			state: "done",
+			executionId: "land-exec",
+		});
+		const op = store.ensureLandOperation({
+			issueId: "FLY-2027",
+			projectName: "flywheel",
+			prNumber: 2027,
+			approvedHead: HEAD,
+			now: "2026-08-24T00:03:00.000Z",
+		});
+		return op.operation_id;
+	}
+
+	it.each(["rework_reachable_wait", "runner_ship_gate_wait"] as const)(
+		"settles a %s park and stays replay-safe on a second terminal pass",
+		async (reason) => {
+			const store = await genericLandStore();
+			rawDb(store).run(
+				"UPDATE workflow_engine_park_outbox SET reason = ? WHERE execution_id = 'generic-1' AND event = 'park_opened'",
+				[reason],
+			);
+			const open = store.getCurrentWorkflowEngineParkEvidence("generic-1")!;
+			expect(open).toMatchObject({ event: "park_opened", reason });
+			const operationId = await landReady(store);
+
+			const first = store.completeWorkflowLandNode({
+				runId: "run-1",
+				nodeId: "land",
+				attempt: 1,
+				executionId: "land-exec",
+				operationId,
+				now: "2026-08-24T00:04:00.000Z",
+			});
+			expect(first).toMatchObject({ ok: true });
+			expect(
+				store.getCurrentWorkflowEngineParkEvidence("generic-1"),
+			).toBeUndefined();
+			const clear = store
+				.listWorkflowEngineParkEventsAfter("flywheel", 0)
+				.find(
+					(e) => e.event_id === `engine-park-settle:generic-1:${open.generation}`,
+				)!;
+			expect(clear).toMatchObject({
+				event: "park_cleared",
+				reason,
+				generation: open.generation + 1,
+			});
+
+			// replay: the same terminal settlement must not throw
+			const second = store.completeWorkflowLandNode({
+				runId: "run-1",
+				nodeId: "land",
+				attempt: 1,
+				executionId: "land-exec",
+				operationId,
+				now: "2026-08-24T00:05:00.000Z",
+			});
+			expect(second).toMatchObject({ ok: true, idempotentReplay: true });
+			expect(
+				store
+					.listWorkflowEngineParkEventsAfter("flywheel", 0)
+					.filter((e) => e.event_id.startsWith("engine-park-settle:")),
+			).toHaveLength(1);
+			store.close();
+		},
+	);
+});

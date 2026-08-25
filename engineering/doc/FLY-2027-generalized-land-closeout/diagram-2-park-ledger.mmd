@@ -1,0 +1,31 @@
+flowchart LR
+    subgraph W["Runner 交付 PR 后"]
+        P["体进入『停驻』状态<br/>(ship_parked:等 Annie 批准,<br/>打回时可返工)"]
+    end
+
+    subgraph L["两本平行的账"]
+        S["状态账<br/>(session 当前状态)"]
+        K["停驻账<br/>(park 台账,只增不删)"]
+    end
+
+    P --> S
+    P --> K
+
+    subgraph T["合入完成后的结算"]
+        R["结算器:翻状态 + 清停驻账"]
+    end
+
+    S --> R
+    K --> R
+
+    R --> X1["硬化①:另一种停驻理由<br/>(runner_ship_gate_wait)<br/>过去永远没人清 → 本单补上"]
+    R --> X2["硬化②:9 个调用方逐个限定<br/>『允许清哪种理由』,防误清"]
+    R --> X3["硬化③:静默跳过改为留痕<br/>(跳过原因写进审计账)"]
+
+    style P fill:#e8f4fd,stroke:#007aff,stroke-width:2px
+    style S fill:#f5f5f7,stroke:#86868b
+    style K fill:#f5f5f7,stroke:#86868b
+    style R fill:#f0eafa,stroke:#af52de,stroke-width:2px
+    style X1 fill:#fff4e5,stroke:#ff9500
+    style X2 fill:#fff4e5,stroke:#ff9500
+    style X3 fill:#fff4e5,stroke:#ff9500

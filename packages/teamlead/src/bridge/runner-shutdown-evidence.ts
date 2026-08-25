@@ -20,6 +20,17 @@ export function isWorkflowPhaseSession(session: Session | undefined): boolean {
 	return WORKFLOW_PHASE_ROLES.has(session?.chat_thread_role ?? "");
 }
 
+/**
+ * FLY-2027: every session durably bound to a workflow node receives the same
+ * issue-terminal shutdown depth as the three legacy phase roles. The additive
+ * node binding keeps ordinary `main` sessions byte-compatible.
+ */
+export function isWorkflowManagedSession(
+	session: Session | undefined,
+): boolean {
+	return isWorkflowPhaseSession(session) || Boolean(session?.workflow_node_id);
+}
+
 export function parseControllerHeartbeatMs(
 	value: string | undefined,
 ): number | undefined {

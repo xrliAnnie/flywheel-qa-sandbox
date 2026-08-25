@@ -114,6 +114,21 @@ describe("shipped husk evidence", () => {
 		).toMatchObject({ eligible: true });
 	});
 
+	it.each(["execute", "review"])(
+		"applies the same evidence gates to workflow-bound main node %s",
+		(workflowNodeId) => {
+			expect(
+				evaluateShippedHuskEvidence({
+					...eligibleInput(),
+					session: session({
+						chat_thread_role: "main",
+						workflow_node_id: workflowNodeId,
+					}),
+				}),
+			).toMatchObject({ eligible: true });
+		},
+	);
+
 	it("does not mistake a Bridge-refreshed heartbeat for runner activity", () => {
 		expect(
 			evaluateShippedHuskEvidence({
@@ -290,6 +305,40 @@ describe("forceShippedHusks", () => {
 				expect.objectContaining({ event_type: "shipped_husk_force_reaped" }),
 			]),
 		);
+		store.close();
+	});
+
+	it("discovers and force-reaps a workflow-bound generic main husk", async () => {
+		const { store, operationId, claim } = await persistedFixture();
+		store.upsertSession(
+			session({ chat_thread_role: "main", workflow_node_id: "execute" }),
+		);
+		const cleanupTarget = vi.fn(async () => ({
+			tmuxClosed: true,
+			physicalGone: true,
+			errors: [],
+		}));
+
+		const result = await forceShippedHusks(
+			{ issueId: "issue-1", projectName: "flywheel", operationId, claim },
+			store,
+			{
+				now: () => NOW,
+				resolveCommDbPath: () => "/tmp/comm.db",
+				openCommDb: shutdownDb,
+				lookupTarget: () => ({
+					kind: "found",
+					target: { tmuxWindow: "flywheel:@1", sessionName: "flywheel" },
+				}),
+				probe: async () => "alive",
+				runIsLandTerminal: () => true,
+				sessionBelongsToRun: () => true,
+				cleanupTarget,
+			},
+		);
+
+		expect(result.cleared).toEqual(["implement-1"]);
+		expect(cleanupTarget).toHaveBeenCalledOnce();
 		store.close();
 	});
 

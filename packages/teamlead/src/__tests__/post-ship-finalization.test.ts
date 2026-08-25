@@ -905,6 +905,79 @@ describe("runPostShipFinalization", () => {
 		]);
 	});
 
+	it.each(["partial", "needs_operator"] as const)(
+		"keeps a typed %s lifecycle diagnostic non-blocking",
+		async (outcome) => {
+			const removeCleanWorktree = vi.fn().mockResolvedValue({
+				removed: true,
+				bindingVerified: true,
+			});
+			const markIssueDone = vi.fn().mockResolvedValue({ done: true });
+			const result = await runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{
+					store,
+					projects: PROJECTS,
+					issueCloseout: vi.fn().mockResolvedValue({
+						outcome,
+						cause: "phase_shutdown_unacked",
+					}),
+					removeCleanWorktree,
+					markIssueDone,
+					recordLinearDoneDisposition: vi.fn().mockReturnValue({
+						ok: true,
+						idempotentReplay: false,
+					}),
+				},
+			);
+
+			expect(result).toMatchObject({ complete: true, outcome: "completed" });
+			expect(removeCleanWorktree).toHaveBeenCalledOnce();
+			expect(markIssueDone).toHaveBeenCalledOnce();
+		},
+	);
+
+	it.each(["blocked", "conflict"] as const)(
+		"prefers the typed %s lifecycle cause over a generic conflict",
+		async (outcome) => {
+			const removeCleanWorktree = vi.fn();
+			const markIssueDone = vi.fn();
+			const result = await runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{
+					store,
+					projects: PROJECTS,
+					issueCloseout: vi.fn().mockResolvedValue({
+						outcome,
+						cause: "phase_shutdown_unacked",
+					}),
+					removeCleanWorktree,
+					markIssueDone,
+				},
+			);
+
+			expect(result).toMatchObject({
+				complete: false,
+				outcome: "partial",
+				reason: "issue_closeout_incomplete:cause=phase_shutdown_unacked",
+				cause: { token: "phase_shutdown_unacked" },
+			});
+			expect(removeCleanWorktree).not.toHaveBeenCalled();
+			expect(markIssueDone).not.toHaveBeenCalled();
+		},
+	);
+
 	it("runs shipped-husk escalation before cleanup and preserves its bounded cause", async () => {
 		const landOperation = seedLandOperationClaim(store);
 		const forceHusks = vi.fn(async () => {
@@ -1193,6 +1266,8 @@ describe("runPostShipFinalization", () => {
 		expect(
 			postedBodies.filter((body) => body.includes("本 thread 未自动归档")),
 		).toHaveLength(1);
+		expect(postedBodies.join("\n")).toContain("不会自动重试归档");
+		expect(postedBodies.join("\n")).toContain("Lead 确认后手动归档");
 		expect(
 			store
 				.listLandOperationSteps(landOperation.operationId)

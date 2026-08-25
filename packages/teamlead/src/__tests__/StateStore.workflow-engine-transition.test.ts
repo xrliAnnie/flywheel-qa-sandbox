@@ -128,6 +128,62 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 	return store;
 }
 
+async function compiledGenericEngineRun(): Promise<StateStore> {
+	const store = await StateStore.create(":memory:");
+	importWorkflowMenuSeeds(store, menuEngineFlags);
+	store.bindWorkflowCategory({
+		project: "flywheel",
+		taskCategory: "generic",
+		templateId: "tpl_generic_menu",
+		updatedBy: "lead",
+	});
+	store.materializeWorkflowRun({
+		runId: "run-1",
+		issueId: "FLY-2027",
+		projectName: "flywheel",
+		taskCategory: "generic",
+		claimsReadEnrolled: true,
+		actor: "lead",
+		canonicalRoot: REPO_ROOT,
+		env: menuEngineFlags,
+		startReservation: {
+			idempotencyKey: "start-generic",
+			selectionDigest: "selection-generic",
+			nodeId: "execute",
+			attempt: 1,
+			executionId: "generic-1",
+			createdAt: "2026-08-24T00:00:00.000Z",
+		},
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-1",
+		nodeId: "execute",
+		attempt: 1,
+		state: "running",
+		executionId: "generic-1",
+	});
+	const admission = store.admitGeneralizedWorkflowExecution({
+		runId: "run-1",
+		nodeId: "execute",
+		executionId: "generic-1",
+		attempt: 1,
+		expiresAt: "2026-08-24T02:00:00.000Z",
+		absoluteDeadlineAt: "2026-08-25T00:00:00.000Z",
+		now: "2026-08-24T00:01:00.000Z",
+		env: menuEngineFlags,
+	});
+	if (!admission.ok)
+		throw new Error(`generic admission failed: ${admission.reason}`);
+	store.upsertSession({
+		execution_id: "generic-1",
+		issue_id: "FLY-2027",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "execute",
+	});
+	return store;
+}
+
 function completeCompiledCodeImplement(store: StateStore) {
 	advance(store, {
 		nodeId: "design",
@@ -173,6 +229,58 @@ function completeCompiledCodeImplement(store: StateStore) {
 		now: "2026-08-14T01:10:00.000Z",
 	});
 	return { beforeCompletion, completion };
+}
+
+function prepareCompiledReworkReplacement(store: StateStore) {
+	const open = store.getCurrentWorkflowEngineParkEvidence("implement-1")!;
+	store.upsertWorkflowRunNode({
+		runId: "run-1",
+		nodeId: "qa",
+		attempt: 1,
+		state: "running",
+		executionId: "qa-1",
+	});
+	const failed = store.commitWorkflowTransitionTx({
+		runId: "run-1",
+		nodeId: "qa",
+		attempt: 1,
+		executionId: "qa-1",
+		outcome: "qa_fail",
+		subjectDigest: "a".repeat(40),
+		now: "2026-08-14T01:31:00.000Z",
+	});
+	if (!failed.ok || !failed.reworkRequestId) {
+		throw new Error("QA fail did not create rework");
+	}
+	const claim = store.claimWorkflowReworkDelivery({
+		requestId: failed.reworkRequestId,
+		ownerId: "coordinator",
+		now: "2026-08-14T01:32:00.000Z",
+		leaseExpiresAt: "2026-08-14T01:33:00.000Z",
+	});
+	if (!claim.ok) throw new Error(claim.reason);
+	expect(
+		store.advanceWorkflowReworkDelivery({
+			requestId: failed.reworkRequestId,
+			ownerId: "coordinator",
+			generation: claim.generation,
+			from: "pending",
+			to: "replacement_pending",
+			now: "2026-08-14T01:32:10.000Z",
+			error: "persisted_target_dead",
+			releaseOwner: true,
+		}),
+	).toEqual({ ok: true });
+	return {
+		open,
+		replacement: {
+			requestId: failed.reworkRequestId,
+			deadExecutionId: "implement-1",
+			newExecutionId: "implement-2",
+			reason: "persisted_target_dead",
+			observedAt: "2026-08-14T01:33:00.000Z",
+		},
+	};
 }
 
 function advance(
@@ -989,6 +1097,87 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
+	it("parks a capable generic producer for durable rework reachability", async () => {
+		const store = await compiledGenericEngineRun();
+		const run = store.getWorkflowRun("run-1")!;
+		const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+		expect(resolveWorkflowGateAuthority(snapshot)).toEqual({
+			mode: "land",
+			subjectKind: "git_head",
+		});
+		expect(
+			snapshot.resolved.nodes.find((node) => node.id === "execute"),
+		).toMatchObject({
+			type: "generic",
+			capabilities: { creates_pr: true, keepalive_park: true },
+		});
+
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "generic-1",
+				route: "needs_review",
+				sourceEventId: "complete-generic-1",
+				completionSubmission: { decision: { route: "needs_review" } },
+				subjectDigest: "a".repeat(40),
+				prBinding: {
+					prNumber: 2027,
+					headSha: "a".repeat(40),
+					targetRepoIdentity: "__main__",
+					probeRepoSlug: "xrliAnnie/flywheel",
+					targetRepoPath: "/tmp/flywheel-FLY-2027",
+					worktreeBindingGeneration: "generation-1",
+				},
+				now: "2026-08-24T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, completionDisposition: "engine_gate_handoff" });
+		expect(store.getSession("generic-1")).toMatchObject({
+			status: "ship_parked",
+			terminal_at: undefined,
+		});
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("generic-1"),
+		).toMatchObject({
+			event: "park_opened",
+			reason: "rework_reachable_wait",
+			run_id: "run-1",
+			node_id: "execute",
+		});
+		store.close();
+	});
+
+	it("keeps no_code terminal for a capable generic producer without opening a park", async () => {
+		const store = await compiledGenericEngineRun();
+		const baselineJson = '{"repositories":[],"version":1}';
+		const baselineDigest = canonicalSubmissionDigest(JSON.parse(baselineJson));
+		store.bindWorktreeOnce("generic-1", {
+			path: "/tmp/flywheel-FLY-2027",
+			branch: "flywheel-FLY-2027",
+			generation: "generation-1",
+			repoBaselineSetJson: baselineJson,
+			repoBaselineSetDigest: baselineDigest,
+		});
+
+		expect(
+			store.commitEnrolledCompletion({
+				executionId: "generic-1",
+				route: "no_code",
+				sourceEventId: "complete-generic-no-code",
+				completionSubmission: { decision: { route: "no_code" } },
+				noCodeAttestation: {
+					worktreeBindingGeneration: "generation-1",
+					baselineDigest,
+					currentDigest: baselineDigest,
+				},
+				now: "2026-08-24T00:02:00.000Z",
+			}),
+		).toMatchObject({ ok: true, completionDisposition: "terminal_no_gate" });
+		expect(store.getSession("generic-1")?.status).toBe("completed");
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("generic-1"),
+		).toBeUndefined();
+		store.close();
+	});
+
 	it("keeps a rework-reachable implement outside land gate holder authority", async () => {
 		const store = await compiledCodeEngineRun();
 		completeCompiledCodeImplement(store);
@@ -1213,6 +1402,56 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
+	it("settles a runner-ship park on terminal run closeout and preserves its reason", async () => {
+		const store = await compiledCodeEngineRun();
+		completeCompiledCodeImplement(store);
+		const reworkOpen =
+			store.getCurrentWorkflowEngineParkEvidence("implement-1")!;
+		store.appendWorkflowEngineParkEvent({
+			eventId: "runner-ship-open",
+			projectName: "flywheel",
+			executionId: "implement-1",
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+			activationId: reworkOpen.activation_id,
+			event: "park_opened",
+			reason: "runner_ship_gate_wait",
+			createdAt: "2026-08-14T01:29:00.000Z",
+		});
+		const runnerShipOpen =
+			store.getCurrentWorkflowEngineParkEvidence("implement-1")!;
+
+		expect(
+			store.terminateWorkflowRunByOperator({
+				runId: "run-1",
+				reason: "operator cancelled the run",
+				clientRequestId: "terminate-runner-ship",
+				principal: "founder",
+				evidence: [],
+				now: "2026-08-14T01:30:00.000Z",
+			}),
+		).toEqual({ ok: true, status: "terminated", idempotentReplay: false });
+		expect(store.getSession("implement-1")?.status).toBe("completed");
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
+		).toBeUndefined();
+		expect(
+			store
+				.listWorkflowEngineParkEventsAfter("flywheel", 0)
+				.find(
+					(event) =>
+						event.event_id ===
+						`engine-park-settle:implement-1:${runnerShipOpen.generation}`,
+				),
+		).toMatchObject({
+			event: "park_cleared",
+			reason: "runner_ship_gate_wait",
+			generation: runnerShipOpen.generation + 1,
+		});
+		store.close();
+	});
+
 	it("fails closed when a canonical park-settlement id carries a different tuple", async () => {
 		const store = await compiledCodeEngineRun();
 		completeCompiledCodeImplement(store);
@@ -1248,53 +1487,7 @@ describe("engine-owned snapshot transition transaction", () => {
 	it("settles the old actor park in the same transaction that materializes its replacement", async () => {
 		const store = await compiledCodeEngineRun();
 		completeCompiledCodeImplement(store);
-		const open = store.getCurrentWorkflowEngineParkEvidence("implement-1")!;
-		store.upsertWorkflowRunNode({
-			runId: "run-1",
-			nodeId: "qa",
-			attempt: 1,
-			state: "running",
-			executionId: "qa-1",
-		});
-		const failed = store.commitWorkflowTransitionTx({
-			runId: "run-1",
-			nodeId: "qa",
-			attempt: 1,
-			executionId: "qa-1",
-			outcome: "qa_fail",
-			subjectDigest: "a".repeat(40),
-			now: "2026-08-14T01:31:00.000Z",
-		});
-		if (!failed.ok || !failed.reworkRequestId) {
-			throw new Error("QA fail did not create rework");
-		}
-		const claim = store.claimWorkflowReworkDelivery({
-			requestId: failed.reworkRequestId,
-			ownerId: "coordinator",
-			now: "2026-08-14T01:32:00.000Z",
-			leaseExpiresAt: "2026-08-14T01:33:00.000Z",
-		});
-		if (!claim.ok) throw new Error(claim.reason);
-		expect(
-			store.advanceWorkflowReworkDelivery({
-				requestId: failed.reworkRequestId,
-				ownerId: "coordinator",
-				generation: claim.generation,
-				from: "pending",
-				to: "replacement_pending",
-				now: "2026-08-14T01:32:10.000Z",
-				error: "persisted_target_dead",
-				releaseOwner: true,
-			}),
-		).toEqual({ ok: true });
-
-		const replacement = {
-			requestId: failed.reworkRequestId,
-			deadExecutionId: "implement-1",
-			newExecutionId: "implement-2",
-			reason: "persisted_target_dead",
-			observedAt: "2026-08-14T01:33:00.000Z",
-		};
+		const { open, replacement } = prepareCompiledReworkReplacement(store);
 		expect(
 			store.materializeWorkflowReworkReplacement(replacement),
 		).toMatchObject({
@@ -1340,7 +1533,44 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
-	it("settles a legacy-ledger run finalization without touching unrelated park reasons", async () => {
+	it("does not consume a runner-ship park while materializing an active rework replacement", async () => {
+		const store = await compiledCodeEngineRun();
+		completeCompiledCodeImplement(store);
+		const { open, replacement } = prepareCompiledReworkReplacement(store);
+		store.appendWorkflowEngineParkEvent({
+			eventId: "runner-ship-during-rework",
+			projectName: "flywheel",
+			executionId: "implement-1",
+			runId: "run-1",
+			nodeId: "implement",
+			attempt: 1,
+			activationId: open.activation_id,
+			event: "park_opened",
+			reason: "runner_ship_gate_wait",
+			createdAt: "2026-08-14T01:32:30.000Z",
+		});
+
+		expect(
+			store.materializeWorkflowReworkReplacement(replacement),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		expect(store.getSession("implement-1")?.status).toBe("ship_parked");
+		expect(
+			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
+		).toBeUndefined();
+		expect(
+			store
+				.listWorkflowEngineParkEventsAfter("flywheel", 0)
+				.find((event) => event.event_id === "runner-ship-during-rework"),
+		).toMatchObject({ reason: "runner_ship_gate_wait", event: "park_opened" });
+		expect(
+			store
+				.listWorkflowEngineParkEventsAfter("flywheel", 0)
+				.some((event) => event.event_id.startsWith("engine-park-settle:")),
+		).toBe(false);
+		store.close();
+	});
+
+	it("audits an invalid terminal park settlement during legacy-ledger finalization", async () => {
 		const store = await compiledCodeEngineRun();
 		completeCompiledCodeImplement(store);
 		store.appendWorkflowEngineParkEvent({
@@ -1380,6 +1610,22 @@ describe("engine-owned snapshot transition transaction", () => {
 				event_id: "runner-ship-control-open",
 				event: "park_opened",
 				reason: "runner_ship_gate_wait",
+			}),
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter(
+					(event) => event.kind === "workflow_engine_park_settlement_skipped",
+				),
+		).toEqual([
+			expect.objectContaining({
+				event_uid:
+					"workflow_engine_park_settlement_skipped:run-1:runner-ship-control:1:activation_missing",
+				payload: expect.objectContaining({
+					reason: "activation_missing",
+					parkReason: "runner_ship_gate_wait",
+				}),
 			}),
 		]);
 		store.close();

@@ -123,6 +123,17 @@ describe("prepareCodexPhaseShutdown", () => {
 		},
 	);
 
+	it("applies the resident shutdown protocol to a workflow-bound generic main actor", async () => {
+		const h = harness({
+			session: phaseSession({
+				chat_thread_role: "main",
+				workflow_node_id: "execute",
+			}),
+			probe: "absent",
+		});
+		expect(await h.run()).toEqual({ kind: "direct", reason: "absent" });
+	});
+
 	// FLY-1269 regression: these previously asserted `direct/controller_lease_stale`
 	// — i.e. they GREEN-LIT culling a window whose pane had just probed ALIVE. A
 	// missing/stale lease proves only that we cannot read the controller's beat,
