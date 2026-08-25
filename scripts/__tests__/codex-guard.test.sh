@@ -438,7 +438,7 @@ else
 fi
 rm -f "$ROOT/bin/timeout"
 
-echo "== ordinary rate limit rotates and succeeds =="
+echo "== ordinary rate limit fails on the current account without rotation =="
 rm -f "$ROOT/rate-limit-calls" "$ROOT/profile-actions"
 cat > "$ROOT/bin/codex" <<EOF
 #!/usr/bin/env bash
@@ -463,15 +463,49 @@ env -i \
   FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
   /bin/bash "$WRAPPER" exec --json - \
   >"$ROOT/rate-limit.stdout" 2>"$ROOT/rate-limit.stderr" || rc=$?
-if [[ "$rc" == "0" && "$(cat "$ROOT/rate-limit-calls" 2>/dev/null)" == "2" ]] \
-  && grep -q '^next$' "$ROOT/profile-actions"; then
-  pass "rate limit is distinct from timeout and rotates once"
+if [[ "$rc" == "7" && "$(cat "$ROOT/rate-limit-calls" 2>/dev/null)" == "1" ]] \
+  && [[ ! -e "$ROOT/profile-actions" ]] \
+  && grep -q 'codex-profile status' "$ROOT/rate-limit.stderr" \
+  && grep -q 'Founder may manually.*use' "$ROOT/rate-limit.stderr"; then
+  pass "rate limit stays on the current account and gives a manual recovery hint"
 else
-  fail "rate limit is distinct from timeout and rotates once" \
+  fail "rate limit stays on the current account and gives a manual recovery hint" \
     "rc=$rc calls=$(cat "$ROOT/rate-limit-calls" 2>/dev/null || echo missing) actions=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
 fi
 
-echo "== total budget spans every profile attempt =="
+echo "== auth expiry fails on the current account without rotation =="
+rm -f "$ROOT/auth-expired-calls" "$ROOT/profile-actions"
+cat > "$ROOT/bin/codex" <<EOF
+#!/usr/bin/env bash
+count=0
+[[ ! -f "$ROOT/auth-expired-calls" ]] || count=\$(cat "$ROOT/auth-expired-calls")
+count=\$((count + 1))
+printf '%s\n' "\$count" > "$ROOT/auth-expired-calls"
+printf 'refresh_token_reused\n' >&2
+exit 9
+EOF
+chmod +x "$ROOT/bin/codex"
+rc=0
+env -i \
+  HOME="$ROOT/home" \
+  PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_CODEX_TOTAL_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_ATTEMPT_TIMEOUT_SECONDS=10 \
+  FLYWHEEL_CODEX_GUARD_STATE_DIR="$ROOT/state" \
+  FLYWHEEL_CODEX_PS_BIN="$ROOT/bin/ps" \
+  /bin/bash "$WRAPPER" exec --json - \
+  >"$ROOT/auth-expired.stdout" 2>"$ROOT/auth-expired.stderr" || rc=$?
+if [[ "$rc" == "9" && "$(cat "$ROOT/auth-expired-calls" 2>/dev/null)" == "1" ]] \
+  && [[ ! -e "$ROOT/profile-actions" ]] \
+  && grep -q 'codex-profile status' "$ROOT/auth-expired.stderr" \
+  && grep -q 'Founder may manually.*use' "$ROOT/auth-expired.stderr"; then
+  pass "auth expiry stays on the current account and gives a manual recovery hint"
+else
+  fail "auth expiry stays on the current account and gives a manual recovery hint" \
+    "rc=$rc calls=$(cat "$ROOT/auth-expired-calls" 2>/dev/null || echo missing) actions=$(cat "$ROOT/profile-actions" 2>/dev/null || echo none)"
+fi
+
+echo "== rate-limit handling does not multiply the total budget across profiles =="
 mkdir -p "$ROOT/home/.codex/profiles/third"
 rm -f "$ROOT/total-budget-calls" "$ROOT/profile-actions"
 cat > "$ROOT/bin/codex" <<EOF
@@ -497,11 +531,12 @@ env -i \
   /bin/bash "$WRAPPER" exec --json - \
   >"$ROOT/total-budget.stdout" 2>"$ROOT/total-budget.stderr" || rc=$?
 elapsed=$(( $(date +%s) - start ))
-if [[ "$rc" == "124" && "$elapsed" -lt 7 ]] \
-  && grep -q '^\[codex-guard\] TIMEOUT ' "$ROOT/total-budget.stderr"; then
-  pass "profile retries share one total budget (${elapsed}s)"
+if [[ "$rc" == "7" && "$elapsed" -lt 7 \
+  && "$(cat "$ROOT/total-budget-calls" 2>/dev/null)" == "1" \
+  && ! -e "$ROOT/profile-actions" ]]; then
+  pass "rate-limit failure consumes one guarded attempt (${elapsed}s)"
 else
-  fail "profile retries share one total budget" \
+  fail "rate-limit failure consumes one guarded attempt" \
     "rc=$rc elapsed=${elapsed}s calls=$(cat "$ROOT/total-budget-calls" 2>/dev/null || echo missing)"
 fi
 
@@ -533,7 +568,8 @@ env -i \
   /bin/bash "$WRAPPER" exec --json -m gpt-5.6 \
   >"$ROOT/model-fallback.stdout" 2>"$ROOT/model-fallback.stderr" || rc=$?
 if [[ "$rc" == "124" && "$(cat "$ROOT/model-fallback-calls" 2>/dev/null)" == "2" ]] \
-  && tail -1 "$ROOT/model-fallback-args" | grep -q -- '-m gpt-5.5'; then
+  && tail -1 "$ROOT/model-fallback-args" | grep -q -- '-m gpt-5.5' \
+  && [[ ! -e "$ROOT/profile-actions" ]]; then
   pass "gpt-5.5 fallback cannot escape the total timeout"
 else
   fail "gpt-5.5 fallback cannot escape the total timeout" \
@@ -623,31 +659,120 @@ fi
 echo "== installer publishes a stable, idempotent release =="
 INSTALLER="$REPO_ROOT/scripts/install-codex-guard.sh"
 INSTALL_HOME="$ROOT/install-home"
-mkdir -p "$INSTALL_HOME/.local/bin"
+NODE_REAL="$(command -v node)"
+make_codex_auth() {
+  local destination="$1" email="$2" account_id="$3" plan="${4:-pro}"
+  mkdir -p "$(dirname "$destination")"
+  "$NODE_REAL" - "$destination" "$email" "$account_id" "$plan" <<'NODE'
+const fs = require("node:fs");
+const [destination, email, accountId, plan] = process.argv.slice(2);
+const token = [
+  Buffer.from(JSON.stringify({ alg: "none" })).toString("base64url"),
+  Buffer.from(JSON.stringify({
+    email,
+    "https://api.openai.com/auth": {
+      chatgpt_account_id: accountId,
+      chatgpt_plan_type: plan,
+    },
+  })).toString("base64url"),
+  "signature",
+].join(".");
+fs.writeFileSync(destination, JSON.stringify({
+  tokens: {
+    id_token: token,
+    access_token: `access-canary-${accountId}`,
+    refresh_token: `refresh-canary-${accountId}`,
+  },
+}), { mode: 0o600 });
+NODE
+}
+mkdir -p "$INSTALL_HOME/.local/bin" "$INSTALL_HOME/.codex/profiles/school"
 printf 'legacy-wrapper\n' > "$INSTALL_HOME/.local/bin/codex-with-fallback"
+printf 'legacy-profile\n' > "$INSTALL_HOME/.local/bin/codex-profile"
+make_codex_auth "$INSTALL_HOME/.codex/auth.json" "xrliannie@gmail.com" "acct-personal"
+make_codex_auth "$INSTALL_HOME/.codex/profiles/school/auth.json" \
+  "xiaorongli2011@u.northwestern.edu" "acct-school"
 install_rc=0
 HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install.stdout" 2>"$ROOT/install.stderr" || install_rc=$?
 current="$INSTALL_HOME/.flywheel/libexec/codex-guard/current"
 if [[ "$install_rc" == "0" && -L "$current" \
   && -x "$current/codex-with-fallback.sh" && -r "$current/codex-guard.sh" \
-  && -x "$INSTALL_HOME/.local/bin/codex-with-fallback" ]]; then
-  pass "installer publishes the stable release and global shim"
+  && -r "$current/flywheel-codex-profile.mjs" \
+  && -r "$current/codex-account-core.mjs" \
+  && -r "$current/codex-account-core.d.mts" \
+  && -r "$current/codex-account-registry.json" \
+  && -x "$INSTALL_HOME/.local/bin/codex-with-fallback" \
+  && -x "$INSTALL_HOME/.local/bin/codex-profile" ]]; then
+  pass "installer publishes the six-file release and both global shims"
 else
-  fail "installer publishes the stable release and global shim" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
+  fail "installer publishes the six-file release and both global shims" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
 fi
 if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null)" == "legacy-wrapper" ]]; then
   pass "installer preserves the original wrapper once"
 else
   fail "installer preserves the original wrapper once" "backup=$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null || echo missing)"
 fi
+if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-profile.bak" 2>/dev/null)" == "legacy-profile" ]]; then
+  pass "installer preserves the original profile command once"
+else
+  fail "installer preserves the original profile command once" "backup=$(cat "$INSTALL_HOME/.local/bin/codex-profile.bak" 2>/dev/null || echo missing)"
+fi
+
+POISON_HOME="$ROOT/poison-codex-home"
+POISON_POOL="$ROOT/poison-pool"
+POISON_STATE="$ROOT/poison-state"
+mkdir -p "$POISON_HOME" "$POISON_POOL" "$POISON_STATE"
+make_codex_auth "$POISON_HOME/auth.json" \
+  "xrliannie.b@gmail.com" "acct-poison-business" "prolite"
+printf 'poison-auth-canary\n' > "$ROOT/poison-before"
+cp "$POISON_HOME/auth.json" "$ROOT/poison-before"
+profile_rc=0
+env -i HOME="$INSTALL_HOME" PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_NODE_BIN="$NODE_REAL" \
+  CODEX_HOME="$POISON_HOME" \
+  FLYWHEEL_CODEX_PROFILES_DIR="$POISON_POOL" \
+  FLYWHEEL_STATE_DIR="$POISON_STATE" \
+  "$INSTALL_HOME/.local/bin/codex-profile" status --json \
+  >"$ROOT/profile-status.stdout" 2>"$ROOT/profile-status.stderr" || profile_rc=$?
+if [[ "$profile_rc" == "0" ]] \
+  && grep -q '"profile": "personal"' "$ROOT/profile-status.stdout" \
+  && [[ -f "$INSTALL_HOME/.flywheel/codex-account-ledger/personal.json" ]] \
+  && [[ ! -e "$POISON_STATE/codex-account-ledger" ]] \
+  && cmp -s "$POISON_HOME/auth.json" "$ROOT/poison-before"; then
+  pass "global profile status pins home, pool, ledger and registry against ambient runner roots"
+else
+  fail "global profile status pins home, pool, ledger and registry against ambient runner roots" \
+    "rc=$profile_rc stdout=$(cat "$ROOT/profile-status.stdout" 2>/dev/null) stderr=$(cat "$ROOT/profile-status.stderr" 2>/dev/null)"
+fi
+
+profile_use_rc=0
+env -i HOME="$INSTALL_HOME" PATH="$ROOT/bin:/usr/bin:/bin" \
+  FLYWHEEL_NODE_BIN="$NODE_REAL" CODEX_HOME="$POISON_HOME" \
+  FLYWHEEL_CODEX_PROFILES_DIR="$POISON_POOL" FLYWHEEL_STATE_DIR="$POISON_STATE" \
+  "$INSTALL_HOME/.local/bin/codex-profile" use school \
+  >"$ROOT/profile-use.stdout" 2>"$ROOT/profile-use.stderr" || profile_use_rc=$?
+if [[ "$profile_use_rc" == "0" ]] \
+  && env -i HOME="$INSTALL_HOME" PATH="$ROOT/bin:/usr/bin:/bin" \
+    FLYWHEEL_NODE_BIN="$NODE_REAL" "$INSTALL_HOME/.local/bin/codex-profile" status --json \
+    | grep -q '"profile": "school"' \
+  && cmp -s "$POISON_HOME/auth.json" "$ROOT/poison-before"; then
+  pass "global profile use changes only the pinned global home"
+else
+  fail "global profile use changes only the pinned global home" \
+    "rc=$profile_use_rc stderr=$(cat "$ROOT/profile-use.stderr" 2>/dev/null)"
+fi
+make_codex_auth "$INSTALL_HOME/.codex/auth.json" "xrliannie@gmail.com" "acct-personal"
 
 first_target="$(readlink "$current" 2>/dev/null || true)"
 first_backup_hash="$(shasum -a 256 "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null | awk '{print $1}')"
+first_profile_backup_hash="$(shasum -a 256 "$INSTALL_HOME/.local/bin/codex-profile.bak" 2>/dev/null | awk '{print $1}')"
 HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install2.stdout" 2>"$ROOT/install2.stderr"
 second_target="$(readlink "$current" 2>/dev/null || true)"
 second_backup_hash="$(shasum -a 256 "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null | awk '{print $1}')"
+second_profile_backup_hash="$(shasum -a 256 "$INSTALL_HOME/.local/bin/codex-profile.bak" 2>/dev/null | awk '{print $1}')"
 if [[ -n "$first_target" && "$first_target" == "$second_target" \
-  && "$first_backup_hash" == "$second_backup_hash" ]]; then
+  && "$first_backup_hash" == "$second_backup_hash" \
+  && "$first_profile_backup_hash" == "$second_profile_backup_hash" ]]; then
   pass "installer rerun is idempotent and never overwrites backup"
 else
   fail "installer rerun is idempotent and never overwrites backup" "targets=$first_target/$second_target backups=$first_backup_hash/$second_backup_hash"
@@ -656,10 +781,18 @@ fi
 echo "== installer advances current when the vendored bytes change =="
 UPGRADE_REPO="$ROOT/upgrade-repo"
 UPGRADE_HOME="$ROOT/upgrade-home"
-mkdir -p "$UPGRADE_REPO/scripts/lib" "$UPGRADE_HOME"
+mkdir -p "$UPGRADE_REPO/scripts/lib" \
+  "$UPGRADE_REPO/packages/claude-runner/bin" \
+  "$UPGRADE_REPO/packages/claude-runner/agents" "$UPGRADE_HOME"
 cp "$INSTALLER" "$UPGRADE_REPO/scripts/install-codex-guard.sh"
 cp "$REPO_ROOT/scripts/codex-with-fallback.sh" "$UPGRADE_REPO/scripts/codex-with-fallback.sh"
 cp "$REPO_ROOT/scripts/lib/codex-guard.sh" "$UPGRADE_REPO/scripts/lib/codex-guard.sh"
+cp "$REPO_ROOT/packages/claude-runner/bin/flywheel-codex-profile.mjs" \
+  "$REPO_ROOT/packages/claude-runner/bin/codex-account-core.mjs" \
+  "$REPO_ROOT/packages/claude-runner/bin/codex-account-core.d.mts" \
+  "$UPGRADE_REPO/packages/claude-runner/bin/"
+cp "$REPO_ROOT/packages/claude-runner/agents/codex-account-registry.json" \
+  "$UPGRADE_REPO/packages/claude-runner/agents/"
 HOME="$UPGRADE_HOME" /bin/bash "$UPGRADE_REPO/scripts/install-codex-guard.sh" \
   >"$ROOT/upgrade-v1.stdout" 2>"$ROOT/upgrade-v1.stderr"
 upgrade_current="$UPGRADE_HOME/.flywheel/libexec/codex-guard/current"
@@ -713,16 +846,19 @@ fi
 
 disable_sentinel="$INSTALL_HOME/.flywheel/libexec/codex-guard/DISABLED"
 touch "$disable_sentinel"
+rm -f "$INSTALL_HOME/.local/bin/codex-profile"
 HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install-disabled.stdout" 2>"$ROOT/install-disabled.stderr"
 HOME="$INSTALL_HOME" FLYWHEEL_DIR="$REPO_ROOT" /bin/bash -c '
   source "$FLYWHEEL_DIR/scripts/lib/converge-nonlead-daemons.sh"
   converge_nonlead_daemons
 ' >"$ROOT/converge-disabled.stdout" 2>"$ROOT/converge-disabled.stderr"
 if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback" 2>/dev/null)" == "legacy-wrapper" \
-  && -e "$disable_sentinel" ]]; then
-  pass "persistent disable sentinel restores backup and survives unconditional convergence"
+  && -e "$disable_sentinel" ]] \
+  && grep -q '^# FLYWHEEL_CODEX_PROFILE_MANAGED_SHIM=1$' \
+    "$INSTALL_HOME/.local/bin/codex-profile"; then
+  pass "disable sentinel restores only guard and still converges truthful profile"
 else
-  fail "persistent disable sentinel restores backup and survives unconditional convergence" \
+  fail "disable sentinel restores only guard and still converges truthful profile" \
     "shim=$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback" 2>/dev/null || echo missing)"
 fi
 rm -f "$disable_sentinel"
@@ -858,6 +994,40 @@ if grep -q 'FLY-1887 DO-NOT-TIMEOUT' "$DAEMON_WRAPPER" \
   pass "daemon path remains explicitly outside the one-shot timeout"
 else
   fail "daemon path remains explicitly outside the one-shot timeout" "sentinel or adapter boundary missing"
+fi
+
+rm -f "$ROOT/daemon-profile-actions"
+cat > "$ROOT/bin/codex-profile" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$ROOT/daemon-profile-actions"
+exit 0
+EOF
+cat > "$ROOT/bin/codex" <<'EOF'
+#!/usr/bin/env bash
+printf 'daemon-stdout\n'
+printf 'daemon-stderr\n' >&2
+exit 23
+EOF
+chmod +x "$ROOT/bin/codex-profile" "$ROOT/bin/codex"
+daemon_rc=0
+env -i HOME="$ROOT/home" PATH="$ROOT/bin:/usr/bin:/bin" \
+  /bin/bash "$DAEMON_WRAPPER" app-server --remote-control \
+  >"$ROOT/daemon.stdout" 2>"$ROOT/daemon.stderr" || daemon_rc=$?
+if [[ "$daemon_rc" == "23" \
+  && "$(cat "$ROOT/daemon.stdout" 2>/dev/null)" == "daemon-stdout" \
+  && "$(cat "$ROOT/daemon.stderr" 2>/dev/null)" == "daemon-stderr" \
+  && ! -e "$ROOT/daemon-profile-actions" ]]; then
+  pass "daemon wrapper is a direct stream/exit-code passthrough with no profile caller"
+else
+  fail "daemon wrapper is a direct stream/exit-code passthrough with no profile caller" \
+    "rc=$daemon_rc stdout=$(cat "$ROOT/daemon.stdout" 2>/dev/null) stderr=$(cat "$ROOT/daemon.stderr" 2>/dev/null) profile=$(cat "$ROOT/daemon-profile-actions" 2>/dev/null || echo none)"
+fi
+
+if ! grep -Eq 'codex-profile[[:space:]]+(next|use)|account-rotation-notify' \
+  "$WRAPPER" "$DAEMON_WRAPPER"; then
+  pass "Codex fallback sources contain no automatic profile or rotation notifier caller"
+else
+  fail "Codex fallback sources contain no automatic profile or rotation notifier caller" "caller remains"
 fi
 
 printf '\n[codex-guard] passed=%s failed=%s\n' "$PASSED" "$FAILED"

@@ -1,111 +1,29 @@
 #!/usr/bin/env bash
-# FLY-123 WS-B (P1 = 4-C): repo-owned, CODEX_HOME-aware fork of Annie's global
-# `codex-profile`. Selected ONLY for Flywheel Codex runners (via
-# FLYWHEEL_CODEX_BIN → flywheel-codex-with-fallback → this sibling). Annie's
-# global ~/.local/bin/codex-profile is NEVER touched.
-#
-# The one behavioral change vs the global wrapper: every path that was pinned
-# to the single global ~/.codex is now per-runner:
-#   - CODEX_DIR   = ${CODEX_HOME:-$HOME/.codex}   (per-runner home)
-#   - ACTIVE_FILE = $CODEX_DIR/.active            (per-HOME active pointer,
-#                   NOT the shared pool's .active — no cross-runner write)
-#   - AUTH_FILE   = $CODEX_DIR/auth.json          (per-runner auth)
-# while the account SEED POOL stays a single shared read-only point:
-#   - PROFILES_DIR = ${FLYWHEEL_CODEX_PROFILES_DIR:-$HOME/.codex/profiles}
-#
-# Net effect: each runner rotates its OWN auth.json + .active, seeding from the
-# shared pool. N runners never write each other's account state → the global
-# auth.json race that pinned concurrency to 1 is gone.
+# Runner-private launcher: CODEX_HOME is intentional here. The separately
+# installed global shim pins all roots and does not inherit ambient runner env.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+NODE_BIN="${FLYWHEEL_NODE_BIN:-node}"
+
+if [[ "$NODE_BIN" == */* ]]; then
+  if [[ ! -x "$NODE_BIN" ]]; then
+    echo "Error: FLYWHEEL_NODE_BIN is not executable: $NODE_BIN" >&2
+    exit 127
+  fi
+elif ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+  echo "Error: Node executable '$NODE_BIN' was not found" >&2
+  exit 127
+fi
 
 CODEX_DIR="${CODEX_HOME:-$HOME/.codex}"
 PROFILES_DIR="${FLYWHEEL_CODEX_PROFILES_DIR:-$HOME/.codex/profiles}"
-ACTIVE_FILE="$CODEX_DIR/.active"
-AUTH_FILE="$CODEX_DIR/auth.json"
+LEDGER_ROOT="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/codex-account-ledger"
+REGISTRY_PATH="$SCRIPT_DIR/../agents/codex-account-registry.json"
 
-usage() {
-  cat <<EOF
-Usage: flywheel-codex-profile <command> [args]
-
-Per-runner (CODEX_HOME-aware) Codex account rotation. Reads the shared seed
-pool (FLYWHEEL_CODEX_PROFILES_DIR), writes only this runner's CODEX_HOME.
-
-Commands:
-  list          Show pool profiles, mark this home's active with *
-  use <name>    Copy pool/<name>/auth.json -> \$CODEX_HOME/auth.json
-  next          Round-robin switch this home to the next pool profile
-  status        Show this home's active profile
-EOF
-  exit 1
-}
-
-get_active() {
-  [[ -f "$ACTIVE_FILE" ]] && cat "$ACTIVE_FILE" || echo ""
-}
-
-list_profiles() {
-  local active found=0 name
-  active=$(get_active)
-  for dir in "$PROFILES_DIR"/*/; do
-    [[ -d "$dir" ]] || continue
-    name=$(basename "$dir")
-    found=1
-    [[ "$name" == "$active" ]] && echo "* $name" || echo "  $name"
-  done
-  [[ $found -eq 0 ]] && echo "No profiles in pool $PROFILES_DIR."
-  return 0
-}
-
-use_profile() {
-  local name="$1"
-  local profile_auth="$PROFILES_DIR/$name/auth.json"
-  if [[ ! -f "$profile_auth" ]]; then
-    echo "Error: pool profile '$name' not found ($profile_auth)." >&2
-    exit 1
-  fi
-  mkdir -p "$CODEX_DIR"
-  cp "$profile_auth" "$AUTH_FILE"
-  chmod 600 "$AUTH_FILE"
-  echo "$name" > "$ACTIVE_FILE"
-  echo "Switched this runner home to profile '$name'"
-}
-
-next_profile() {
-  local active profiles=()
-  active=$(get_active)
-  for dir in "$PROFILES_DIR"/*/; do
-    [[ -d "$dir" ]] || continue
-    profiles+=("$(basename "$dir")")
-  done
-  if [[ ${#profiles[@]} -eq 0 ]]; then
-    echo "Error: no profiles in pool $PROFILES_DIR." >&2
-    exit 1
-  fi
-  if [[ ${#profiles[@]} -eq 1 ]]; then
-    echo "Only one profile in pool: ${profiles[0]}" >&2
-    exit 1
-  fi
-  IFS=$'\n' profiles=($(sort <<<"${profiles[*]}")); unset IFS
-  local idx=0 i
-  for i in "${!profiles[@]}"; do
-    [[ "${profiles[$i]}" == "$active" ]] && { idx=$i; break; }
-  done
-  local next_idx=$(( (idx + 1) % ${#profiles[@]} ))
-  use_profile "${profiles[$next_idx]}"
-}
-
-show_status() {
-  local active
-  active=$(get_active)
-  [[ -z "$active" ]] && echo "No active profile set for this home." || echo "Active profile: $active"
-}
-
-mkdir -p "$CODEX_DIR"
-
-case "${1:-}" in
-  list)   list_profiles ;;
-  use)    [[ -n "${2:-}" ]] || usage; use_profile "$2" ;;
-  next)   next_profile ;;
-  status) show_status ;;
-  *)      usage ;;
-esac
+exec "$NODE_BIN" "$SCRIPT_DIR/flywheel-codex-profile.mjs" \
+  --home "$CODEX_DIR" \
+  --profiles "$PROFILES_DIR" \
+  --ledger-root "$LEDGER_ROOT" \
+  --registry "$REGISTRY_PATH" \
+  "$@"

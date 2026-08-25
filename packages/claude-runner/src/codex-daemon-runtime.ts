@@ -472,13 +472,11 @@ export interface SpawnCodexDaemonOptions {
 	 * QA · FLY-1188 HIGH-2 — signal an entire PROCESS GROUP (default
 	 * `process.kill(-pgid, sig)`).
 	 *
-	 * `opts.codexBin` is the rotation shim, a shell script: the real
-	 * `codex app-server` is its CHILD, so killing the pid we spawned killed only
-	 * the shim and left a ~178MB app-server holding this socket, reparented to
-	 * PID 1. We therefore spawn the daemon DETACHED — it leads its own process
-	 * group — and signal the GROUP, which reaches the shim and the app-server
-	 * alike. The group is one we created, so nothing but our own descendants can
-	 * be in it: killing it cannot touch a production process.
+	 * A configured launcher may be a shell that forks before exec. Killing only
+	 * its pid can leave a ~178MB app-server holding this socket, reparented to
+	 * PID 1. We therefore spawn DETACHED and signal the created process GROUP,
+	 * which reaches the launcher and daemon alike. The group contains only our
+	 * descendants, so it cannot touch an unrelated production process.
 	 *
 	 * Only used when the daemon was spawned through the REAL spawn seam (or when
 	 * a test injects this) — with a fake `spawnFn`, a fake pid must never reach a
@@ -767,12 +765,8 @@ export async function spawnCodexDaemon(
 		/**
 		 * QA · FLY-1188 HIGH-2 — signal the daemon's whole process TREE.
 		 *
-		 * `opts.codexBin` is the rotation shim (a shell script that must fork
-		 * `codex` rather than exec it, so it can read the exit code and rotate the
-		 * account on a 429). So the process we spawned is the shim, and the real
-		 * `codex app-server` — the thing holding the socket and ~178MB — is its
-		 * CHILD. `child.kill()` reaped the shim and left the app-server behind,
-		 * reparented to PID 1, on every single run.
+		 * A launcher override may fork `codex app-server`; `child.kill()` would then
+		 * reap only the launcher and leave the socket-owning daemon behind.
 		 *
 		 * We spawn detached, so the child leads its own process group and the
 		 * group holds exactly our own descendants. Signalling the group reaches
@@ -937,8 +931,8 @@ function defaultSpawnFn(
 		env: opts.env,
 		stdio: ["ignore", "ignore", "ignore"],
 		// QA · FLY-1188 HIGH-2: `detached: true` puts the daemon in its OWN process
-		// group, led by the pid we get back. That group contains the rotation shim
-		// AND the `codex app-server` it forks — and NOTHING else on this machine —
+		// group, led by the pid we get back. That group contains the configured
+		// launcher and every daemon descendant — and NOTHING else on this machine —
 		// so teardown can signal the group and take the whole tree down at once.
 		// (`detached: false` never protected anything here: on Unix it does not kill
 		// the child when the parent dies either. It only cost us the group.)

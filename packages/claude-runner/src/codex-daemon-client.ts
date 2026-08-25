@@ -423,7 +423,7 @@ export class CodexDaemonClient {
 		return id;
 	}
 
-	/** thread/resume — the daemon-restart / account-rotation recovery path. */
+	/** thread/resume — the same-account daemon-restart recovery path. */
 	async resumeThread(threadId: string): Promise<string> {
 		const res = await this.request("thread/resume", { threadId });
 		return extractThreadId(res.result) ?? threadId;
@@ -611,7 +611,7 @@ export async function runGoalToTerminal(
 		/**
 		 * FLY-1188 MED-7 R2 (Codex full-PR review): the RUN's absolute start instant,
 		 * so the ceilings are anchored to the run — not to THIS call. The daemon
-		 * runtime restarts (account rotation) by calling this function again; without
+		 * runtime restarts the daemon by calling this function again; without
 		 * this, each restart re-armed a full fresh budget and N restarts multiplied
 		 * the cap. Absent → `now()` (byte-compatible single-call behavior).
 		 */
@@ -663,7 +663,7 @@ export async function runGoalToTerminal(
 	// counts against the ceiling. FLY-1188 MED-7: the ceiling is DYNAMIC — the
 	// active cap normally, extended to the waiting cap ONLY while a gate is open.
 	// MED-7 R2: anchor the ceilings to the RUN's start, not this call's — the
-	// runtime passes the same `startedAt` across account-rotation restarts, so a
+	// runtime passes the same `startedAt` across daemon restarts, so a
 	// restart cannot re-arm a fresh budget (N restarts multiplied the cap).
 	const startedAt = input.startedAt ?? now();
 	const activeCapMs = overallTimeoutMs;

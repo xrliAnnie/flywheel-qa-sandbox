@@ -7,7 +7,7 @@
  *     → CodexDaemonGoalRuntime.runGoal(objective)         [M4c-2]
  *         spawn daemon → connect → set the `/goal` → drive it across turns
  *         to a terminal ThreadGoalStatus, transparently restarting+resuming
- *         the SAME thread across a daemon death (429/usage-limit rotation);
+ *         the SAME thread and account across a daemon transport death;
  *     → founder cmux window (`codex resume --remote`) opened on the first
  *         threadId in the goal stream so Annie can WATCH it run live [M4c-3];
  *     → terminal reclaim: kill the window, stop the daemon, CONFIRM exit.
@@ -81,6 +81,7 @@ import {
 	resolveDaemonSocketPath,
 } from "./codex-daemon-runtime.js";
 import {
+	assertCodexSourceIdentity,
 	flywheelCodexBin,
 	provisionCodexHome,
 	rawCodexBin,
@@ -176,6 +177,10 @@ export interface CodexDaemonGoalRuntimeLike {
 
 /** Injected collaborators for daemon-mode execute() (default to the real ones). */
 export interface CodexDaemonAdapterDeps {
+	/** FLY-2003 test/deployment seam for canonical account identity. */
+	codexAccountRegistryPath?: string;
+	/** FLY-2003 test/slot seam for identity-ledger snapshots. */
+	codexAccountLedgerRoot?: string;
 	/** Build the resident-/goal runtime for one execution. */
 	runtimeFactory?: (
 		opts: CodexDaemonGoalRuntimeOptions,
@@ -247,6 +252,8 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly scrubCredential: NonNullable<
 		CodexDaemonAdapterDeps["scrubCredential"]
 	>;
+	private readonly codexAccountRegistryPath?: string;
+	private readonly codexAccountLedgerRoot?: string;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -303,6 +310,8 @@ export class CodexTmuxAdapter implements IAdapter {
 				return () => clearInterval(timer);
 			});
 		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
+		this.codexAccountRegistryPath = deps.codexAccountRegistryPath;
+		this.codexAccountLedgerRoot = deps.codexAccountLedgerRoot;
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -318,15 +327,15 @@ export class CodexTmuxAdapter implements IAdapter {
 			const codex = withSyncOpMarker("codex-adapter:health-codex", () =>
 				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
 			).stdout.trim();
-			// FLY-123 WS-B (R1 LOW #6): runners use the repo-owned, CODEX_HOME-
-			// aware rotation shim (via FLYWHEEL_CODEX_BIN), NOT Annie's global
-			// codex-with-fallback. Health-check the actual shim is executable —
+			// FLY-2003: runners use the repo-owned, CODEX_HOME-aware direct daemon
+			// launcher (via FLYWHEEL_CODEX_BIN), not the global one-shot guard.
+			// Health-check the actual launcher is executable —
 			// a clean host without the global wrapper must still be healthy.
 			const shim = flywheelCodexBin();
 			accessSync(shim, fsConstants.X_OK);
 			return {
 				healthy: true,
-				message: "tmux, codex CLI and repo rotation shim available",
+				message: "tmux, codex CLI and repo daemon launcher available",
 				details: { tmux, codex, shim },
 			};
 		} catch (err) {
@@ -431,6 +440,11 @@ export class CodexTmuxAdapter implements IAdapter {
 		const gateMarkerDir = defaultGateMarkerDir();
 		const daemonEnv = this.buildDaemonEnv(ctx, gateMarkerDir);
 		this.assertWorkflowCapabilities(ctx, daemonEnv);
+		// FLY-2003: reject unknown/zombie/malformed source auth before `gh auth`
+		// or worktree git config can create any credential-bearing residue.
+		assertCodexSourceIdentity({
+			registryPath: this.codexAccountRegistryPath,
+		});
 
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
 		const ghToken = this.provisionGitHubCredential(ctx);
@@ -442,6 +456,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		const codexHome = provisionCodexHome({
 			executionId: ctx.executionId,
 			ghToken,
+			registryPath: this.codexAccountRegistryPath,
+			ledgerRoot: this.codexAccountLedgerRoot,
 			...(ctx.pretrustWorkspace === true && {
 				trustedProjectPath: sandboxCwd,
 			}),
@@ -601,12 +617,9 @@ export class CodexTmuxAdapter implements IAdapter {
 							stateDbPath: ctx.stateDbPath,
 						}
 					: {}),
-				// QA · FLY-1188: the TUI gets the RAW codex binary, NOT the
-				// rotation shim. The shim pipes stdout through `tee` to sniff
-				// 429s, and `codex resume --remote` refuses to render without a
-				// TTY ("stdout is not a terminal", exit 1) — which is why the
-				// founder's cmux tab came up empty. The daemon above keeps the
-				// shim: `app-server` needs no TTY and does want the rotation.
+				// QA · FLY-1188: keep the founder TUI on the explicitly resolved raw
+				// binary. This preserves the proven TTY boundary independently of the
+				// repository-owned daemon launcher (now a same-account passthrough).
 				codexBin: rawCodexBin(),
 			});
 

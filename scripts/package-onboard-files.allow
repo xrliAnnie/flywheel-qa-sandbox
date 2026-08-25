@@ -107,6 +107,7 @@ node_modules/flywheel-claude-runner/dist/*
 # dist — the codex runner contract (materialized into $CODEX_HOME/AGENTS.md)
 # and the CODEX_HOME-aware rotation shim (FLYWHEEL_CODEX_BIN default).
 node_modules/flywheel-claude-runner/agents/codex-runner-contract.md
+node_modules/flywheel-claude-runner/agents/codex-account-registry.json
 node_modules/flywheel-claude-runner/bin/*
 node_modules/flywheel-dag-resolver/package.json
 node_modules/flywheel-dag-resolver/dist/*

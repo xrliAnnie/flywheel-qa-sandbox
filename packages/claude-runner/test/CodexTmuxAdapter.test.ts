@@ -53,6 +53,7 @@ class FakeExec {
 	gitRevParseOut = "";
 	gitRevParseThrows = false;
 	gitConfigCalls: string[][] = [];
+	ghCalls: string[][] = [];
 	tmuxCalls: string[][] = [];
 	displayMessageOut = `${WINDOW_ID}\n`;
 
@@ -66,6 +67,7 @@ class FakeExec {
 		}
 		if (cmd === "codex") return { stdout: "codex-cli 0.144.1" };
 		if (cmd === "gh") {
+			this.ghCalls.push(args);
 			if (this.ghAuthThrows) throw new Error("gh: not logged in");
 			return { stdout: `${this.ghToken}\n` };
 		}
@@ -117,6 +119,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	let markerDir: string;
 	let dbPath: string;
 	let homesRoot: string;
+	let registryPath: string;
+	let ledgerRoot: string;
 	let fake: FakeExec;
 	let execId: string;
 
@@ -141,6 +145,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 	function makeDeps(): CodexDaemonAdapterDeps {
 		return {
+			codexAccountRegistryPath: registryPath,
+			codexAccountLedgerRoot: ledgerRoot,
 			runtimeFactory: (opts) => {
 				capturedOpts = opts;
 				return runtime;
@@ -178,11 +184,40 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		markerDir = join(dir, "codex-gates");
 		dbPath = join(dir, "comm.db");
 		homesRoot = join(dir, "codex-homes");
+		registryPath = join(dir, "codex-account-registry.json");
+		ledgerRoot = join(dir, "codex-account-ledger");
 		process.env.FLYWHEEL_GATE_MARKER_DIR = markerDir;
 		process.env.FLYWHEEL_COMPLETE_MARKER_DIR = join(dir, "complete-failed");
 		const srcCodex = join(dir, "dotcodex");
 		mkdirSync(join(srcCodex, "profiles", "personal"), { recursive: true });
-		writeFileSync(join(srcCodex, "auth.json"), '{"tokens":{"a":1}}');
+		writeFileSync(
+			registryPath,
+			JSON.stringify({
+				version: 1,
+				primary: "personal",
+				profiles: [
+					{
+						name: "school",
+						email: "school@example.test",
+						role: "manual_backup",
+					},
+					{
+						name: "personal",
+						email: "personal@example.test",
+						role: "primary",
+					},
+					{
+						name: "business",
+						email: "business@example.test",
+						role: "manual_backup",
+					},
+				],
+			}),
+		);
+		writeFileSync(
+			join(srcCodex, "auth.json"),
+			codexAuth("personal@example.test", "acct-personal"),
+		);
 		writeFileSync(
 			join(srcCodex, "config.toml"),
 			'model = "gpt-5-codex"\nsandbox_mode = "danger-full-access"\n',
@@ -249,6 +284,44 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			...overrides,
 		};
 	}
+
+	function codexAuth(email: string, accountId: string): string {
+		const idToken = [
+			Buffer.from('{"alg":"none"}').toString("base64url"),
+			Buffer.from(
+				JSON.stringify({
+					email,
+					"https://api.openai.com/auth": {
+						chatgpt_account_id: accountId,
+						chatgpt_plan_type: "pro",
+					},
+				}),
+			).toString("base64url"),
+			"signature",
+		].join(".");
+		return JSON.stringify({
+			tokens: {
+				id_token: idToken,
+				access_token: "adapter-access-canary",
+				refresh_token: "adapter-refresh-canary",
+			},
+		});
+	}
+
+	it("rejects an unknown Codex identity before GH/git credential or home writes", async () => {
+		writeFileSync(
+			join(dir, "dotcodex", "auth.json"),
+			codexAuth("zombie@example.test", "acct-zombie"),
+		);
+
+		await expect(makeAdapter().execute(ctx())).rejects.toThrow(
+			/unknown Codex/i,
+		);
+		expect(fake.ghCalls).toEqual([]);
+		expect(fake.gitConfigCalls).toEqual([]);
+		expect(existsSync(join(homesRoot, execId))).toBe(false);
+		expect(existsSync(ledgerRoot)).toBe(false);
+	});
 
 	it("FLY-1961 trusts the real cwd in this execution's CODEX_HOME", async () => {
 		await makeAdapter().execute(ctx({ pretrustWorkspace: true }));
@@ -673,14 +746,11 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	});
 
 	// ── QA · FLY-1188 (real-machine E2E, 2026-07-13) ────────────────────────
-	// The founder TUI never rendered on a real machine: the pane died instantly
-	// with `Error: stdout is not a terminal` (exit 1). The adapter hands the TUI
-	// `flywheelCodexBin()` — the fallback shim — which redirects codex's stdout
-	// to sniff 429s for account rotation. Redirected stdout is not a TTY, and the
-	// `codex resume --remote` TUI refuses to run without one.
+	// The founder TUI once died with `Error: stdout is not a terminal` because a
+	// historical launcher captured stdout. Keep the raw-binary TUI boundary even
+	// though the current daemon launcher is a direct same-account passthrough.
 	//
-	// The DAEMON may keep the shim (`app-server` needs no TTY, and it wants the
-	// rotation); the founder-facing TUI must get a TTY-capable binary — exactly
+	// The founder-facing TUI must keep a TTY-capable binary — exactly
 	// what the working lead-side precedent does (lead-backends/codex/tui-window.ts
 	// defaults to raw `codex`). Evidence: qa/tui-failure-diagnosis.txt.
 	it("QA FLY-1188: does NOT launch the founder TUI through the stdout-piping fallback shim", async () => {

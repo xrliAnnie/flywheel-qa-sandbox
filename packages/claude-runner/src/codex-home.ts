@@ -3,7 +3,7 @@
  *
  * THE root-cause fix for "Codex runner concurrency = 1": multiple Codex
  * runners sharing the single global `~/.codex` corrupt each other's
- * `auth.json` on account rotation / token refresh (concurrent writes to one
+ * `auth.json` on manual selection / token refresh (concurrent writes to one
  * file). Giving each runner its own `CODEX_HOME` with an isolated
  * `auth.json` + `config.toml` kills that local file race — accounts can then
  * be shared safely across concurrent runners (same posture as Claude Code
@@ -23,11 +23,14 @@
 import {
 	accessSync,
 	chmodSync,
-	copyFileSync,
+	closeSync,
 	cpSync,
 	existsSync,
 	constants as fsConstants,
+	fstatSync,
+	lstatSync,
 	mkdirSync,
+	openSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
@@ -38,6 +41,16 @@ import { isAbsolute, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
+import {
+	type CodexAuthIdentity,
+	DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+	identifyCodexAuth,
+	loadCodexAccountRegistry,
+} from "./codex-account-identity.js";
+import {
+	recordCodexAccountObservation,
+	resolveCodexAccountLedgerRoot,
+} from "./codex-account-ledger.js";
 
 /** gh tokens are `[A-Za-z0-9_]`; `-` tolerated. Same charset the adapter and
  * codex-resume validate, so a token that passes here rides a TOML
@@ -267,9 +280,8 @@ export function sourceCodexDir(env: NodeJS.ProcessEnv = process.env): string {
 	return env.FLYWHEEL_CODEX_SOURCE_HOME?.trim() || join(homedir(), ".codex");
 }
 
-/** Shared account seed pool dir (read-only seed; the shim rotates within each
- * home). Configurable so the pool stays a single shared point, never copied
- * per home. */
+/** Shared canonical manual-backup seed pool. Configurable so the pool stays a
+ * single shared point, never copied wholesale into each execution home. */
 export function codexProfilesDir(env: NodeJS.ProcessEnv = process.env): string {
 	return (
 		env.FLYWHEEL_CODEX_PROFILES_DIR?.trim() ||
@@ -278,25 +290,77 @@ export function codexProfilesDir(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * Discover the account pool by listing profile directories — a FUNCTION, not
- * a constant (WS-E seam + AC6). Adding/removing a profile dir changes the pool
- * size with zero code change. Returns sorted account names ([] if none).
+ * Discover canonical profiles that physically exist in the manual seed pool.
+ * Unknown/zombie directories are intentionally excluded.
  */
 export function discoverAccountPool(
 	env: NodeJS.ProcessEnv = process.env,
+	registryPath: string = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
 ): string[] {
 	const dir = codexProfilesDir(env);
 	if (!existsSync(dir)) return [];
+	const canonical = new Set<string>(
+		loadCodexAccountRegistry(registryPath).profiles.map(
+			(profile) => profile.name,
+		),
+	);
 	return readdirSync(dir, { withFileTypes: true })
-		.filter((d) => d.isDirectory())
+		.filter((d) => d.isDirectory() && canonical.has(d.name))
 		.map((d) => d.name)
 		.sort();
 }
 
+export function assertCodexSourceIdentity({
+	env = process.env,
+	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+}: {
+	env?: NodeJS.ProcessEnv;
+	registryPath?: string;
+} = {}): CodexAuthIdentity {
+	return readCodexSourceAuth({ env, registryPath }).identity;
+}
+
+function readCodexSourceAuth({
+	env,
+	registryPath = DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+}: {
+	env: NodeJS.ProcessEnv;
+	registryPath?: string;
+}): { raw: string; identity: CodexAuthIdentity } {
+	const authPath = join(sourceCodexDir(env), "auth.json");
+	let pathStat: ReturnType<typeof lstatSync>;
+	try {
+		pathStat = lstatSync(authPath);
+	} catch (error) {
+		throw new Error(
+			`Codex source auth is unavailable at ${authPath}: ${error instanceof Error ? error.message : String(error)}`,
+		);
+	}
+	if (pathStat.isSymbolicLink() || !pathStat.isFile()) {
+		throw new Error(
+			`Codex source auth must be a regular file, not a symlink: ${authPath}`,
+		);
+	}
+	let fd: number | undefined;
+	try {
+		fd = openSync(authPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+		if (!fstatSync(fd).isFile()) {
+			throw new Error(`Codex source auth must be a regular file: ${authPath}`);
+		}
+		const raw = readFileSync(fd, "utf8");
+		return {
+			raw,
+			identity: identifyCodexAuth(raw, loadCodexAccountRegistry(registryPath)),
+		};
+	} finally {
+		if (fd !== undefined) closeSync(fd);
+	}
+}
+
 /**
- * Absolute path to the repo-owned, CODEX_HOME-aware rotation shim (WS-B, P1 =
- * 4-C). This is what runners use via FLYWHEEL_CODEX_BIN — Annie's global
- * `codex-with-fallback` is never selected for runner traffic. An explicit
+ * Absolute path to the repo-owned, CODEX_HOME-aware daemon launcher. It is a
+ * same-account direct passthrough; automatic profile switching is retired.
+ * This is what runners use via FLYWHEEL_CODEX_BIN. An explicit
  * `FLYWHEEL_CODEX_BIN` env wins (tests / ops override). The bundled shim lives
  * at `<package>/bin/`, one level up from this module whether it runs from
  * `src/` (vitest) or `dist/` (built).
@@ -310,19 +374,10 @@ export function flywheelCodexBin(env: NodeJS.ProcessEnv = process.env): string {
 }
 
 /**
- * QA · FLY-1188 — the RAW codex binary, for anything that must RENDER a TUI.
- *
- * The rotation shim above redirects codex's stdout to a capture file (it has
- * to read the output to sniff a 429 and rotate accounts), so a process launched
- * through it never gets a TTY on stdout. `codex app-server` does not care — it
- * speaks JSON-RPC over a socket, so the DAEMON keeps the shim (and its
- * rotation).
- * `codex resume --remote` is a full-screen TUI: with a piped stdout it prints
- * `Error: stdout is not a terminal` and exits 1. That is exactly why the
- * founder's cmux tab was empty — real-machine QA capture in the FLY-1188 doc
- * folder, `qa/tui-failure-diagnosis.txt`.
- *
- * So: the TUI gets the real binary. `FLYWHEEL_CODEX_TUI_BIN` overrides (ops /
+ * QA · FLY-1188 — explicitly resolve the RAW codex binary for the TUI. The
+ * historical launcher once captured stdout and broke `codex resume --remote`;
+ * keeping this boundary explicit prevents a future daemon-launcher change from
+ * regressing the founder window. `FLYWHEEL_CODEX_TUI_BIN` overrides (ops /
  * tests). Otherwise resolve an absolute path off OUR PATH — the tmux server the
  * window is created in may not share it — falling back to the bare name, which
  * is the verified lead-side behavior (lead-backends/codex/tui-window.ts).
@@ -347,7 +402,7 @@ export function rawCodexBin(env: NodeJS.ProcessEnv = process.env): string {
  * FLY-1188: the flywheel-shipped codex runner behavior contract (single
  * source). Package-bundled at `<package>/agents/` — one level up from this
  * module whether it runs from `src/` (vitest) or `dist/` (built), the same
- * resolution shape as the rotation shim above. Materialized into every
+ * resolution shape as the daemon launcher above. Materialized into every
  * per-runner `$CODEX_HOME/AGENTS.md` by provisionCodexHome; the CODEX_HOME
  * redirection means codex reads THIS instead of the host's global
  * ~/.codex/AGENTS.md (which carries runner-irrelevant injections).
@@ -867,6 +922,10 @@ export interface ProvisionCodexHomeOptions {
 	notifyProgramPath?: string;
 	/** Canonical worktree written into this execution-scoped config.toml. */
 	trustedProjectPath?: string;
+	/** Canonical Codex account registry override (tests / vendored deployment). */
+	registryPath?: string;
+	/** Account-ledger root override (tests / slot isolation). */
+	ledgerRoot?: string;
 }
 
 /**
@@ -882,6 +941,14 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 			"provisionCodexHome: ghToken must match ^[A-Za-z0-9_-]{1,255}$",
 		);
 	}
+	// FLY-2003: live JWT identity is the authority. Validate it before creating
+	// or changing an execution home; direct callers get the same fail-closed
+	// boundary as the adapter preflight.
+	const sourceAuth = readCodexSourceAuth({
+		env,
+		registryPath: opts.registryPath,
+	});
+	const sourceIdentity = sourceAuth.identity;
 	// FLY-1188 (Codex M2 review MEDIUM-1): read + validate the contract BEFORE
 	// any home/credential write — a missing contract must abort with ZERO
 	// residue, never leave a half-provisioned home holding a live GH_TOKEN.
@@ -925,14 +992,16 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 	// (re-provision / crash-recovered home), so force 0700.
 	chmodSync(home, 0o700);
 
-	// Seed auth.json (account state) — per-runner copy kills the shared-file
-	// write race. 0600 explicit (copyFileSync does not guarantee mode).
-	const srcAuth = join(src, "auth.json");
-	if (existsSync(srcAuth)) {
-		const destAuth = join(home, "auth.json");
-		copyFileSync(srcAuth, destAuth);
-		chmodSync(destAuth, 0o600);
-	}
+	// Seed the exact auth bytes validated from one O_NOFOLLOW file descriptor.
+	// This closes the validate→copy path race while keeping per-runner isolation.
+	const destAuth = join(home, "auth.json");
+	writeFileSync(destAuth, sourceAuth.raw, { encoding: "utf8", mode: 0o600 });
+	chmodSync(destAuth, 0o600);
+	writeFileSync(join(home, ".active"), `${sourceIdentity.profile}\n`, {
+		encoding: "utf8",
+		mode: 0o600,
+	});
+	chmodSync(join(home, ".active"), 0o600);
 
 	// config.toml = seeded global + GH_TOKEN block (0600). chmod AFTER write —
 	// writeFileSync mode only applies on CREATE, not to a pre-existing wider
@@ -1000,6 +1069,24 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 			{ encoding: "utf-8", mode: 0o600 },
 		);
 		chmodSync(agentsPath, 0o600); // repair mode if the file pre-existed
+		try {
+			recordCodexAccountObservation({
+				identity: sourceIdentity,
+				home,
+				source: "provision",
+				ledgerRoot: opts.ledgerRoot ?? resolveCodexAccountLedgerRoot(env),
+				registryPath: opts.registryPath ?? DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+			});
+		} catch (error) {
+			console.warn(
+				`[codex-home] account ledger observation failed for ${sourceIdentity.profile}; runner provisioning will continue: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		if (sourceIdentity.mode === "manual_backup") {
+			console.log(
+				`[codex-home] manual_backup_active profile=${sourceIdentity.profile}`,
+			);
+		}
 		return home;
 	} catch (err) {
 		scrubCodexHomeCredential(opts.executionId, env);

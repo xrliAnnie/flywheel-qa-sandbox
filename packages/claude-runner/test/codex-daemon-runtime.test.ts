@@ -889,10 +889,9 @@ describe("spawnCodexDaemon", () => {
 
 // ── QA · FLY-1188 HIGH-2 (found by the real-machine E2E, invisible to mocks) ──
 //
-// Every codex runner leaked a ~178MB `codex app-server`, still holding its socket
-// 5 minutes after teardown. `opts.codexBin` is the rotation shim — a shell script
-// that must FORK codex (it reads the exit code to rotate the account on a 429), so
-// the app-server is the shim's CHILD. `child.kill()` reaped the shim and left the
+// Every codex runner once leaked a ~178MB `codex app-server`, still holding its
+// socket after teardown. A historical launcher forked codex, so the app-server
+// was the launcher's CHILD. `child.kill()` reaped the launcher and left the
 // app-server behind, reparented to PID 1. Worse, the pid we persisted was the
 // SHIM's, so `process.kill(pid, 0)` cheerfully reported the daemon "dead" while it
 // was very much alive — the pid probe LIES here, which is why nothing caught this.

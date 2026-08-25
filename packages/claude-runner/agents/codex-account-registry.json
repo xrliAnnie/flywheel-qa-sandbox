@@ -1,0 +1,21 @@
+{
+	"version": 1,
+	"primary": "personal",
+	"profiles": [
+		{
+			"name": "school",
+			"email": "xiaorongli2011@u.northwestern.edu",
+			"role": "manual_backup"
+		},
+		{
+			"name": "personal",
+			"email": "xrliannie@gmail.com",
+			"role": "primary"
+		},
+		{
+			"name": "business",
+			"email": "xrliannie.b@gmail.com",
+			"role": "manual_backup"
+		}
+	]
+}

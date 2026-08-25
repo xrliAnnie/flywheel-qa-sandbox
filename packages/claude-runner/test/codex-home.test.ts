@@ -11,18 +11,20 @@ import {
 	readFileSync,
 	rmSync,
 	statSync,
+	symlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseToml } from "smol-toml";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	assertCodexSourceIdentity,
 	codexHomeDir,
 	codexHomesRoot,
-	discoverAccountPool,
-	provisionCodexHome,
+	discoverAccountPool as discoverAccountPoolProduction,
+	provisionCodexHome as provisionCodexHomeProduction,
 	rawCodexBin,
 	removeCodexHome,
 	renderCodexHomeConfig,
@@ -44,16 +46,84 @@ const TOKEN = "gho_AbC123_def-456";
 
 let tmp: string;
 let env: NodeJS.ProcessEnv;
+let registryPath: string;
+let ledgerRoot: string;
+
+function jwt(email: string, accountId: string, plan = "pro"): string {
+	return [
+		Buffer.from('{"alg":"none"}').toString("base64url"),
+		Buffer.from(
+			JSON.stringify({
+				email,
+				"https://api.openai.com/auth": {
+					chatgpt_account_id: accountId,
+					chatgpt_plan_type: plan,
+				},
+			}),
+		).toString("base64url"),
+		"signature",
+	].join(".");
+}
+
+function testAuth(
+	email = "personal@example.test",
+	accountId = "acct-personal",
+) {
+	return JSON.stringify({
+		tokens: {
+			id_token: jwt(email, accountId),
+			access_token: "test-access-canary",
+			refresh_token: "test-refresh-canary",
+		},
+	});
+}
+
+function provisionCodexHome(
+	opts: Parameters<typeof provisionCodexHomeProduction>[0],
+): string {
+	return provisionCodexHomeProduction({
+		...opts,
+		registryPath,
+		ledgerRoot,
+	});
+}
+
+function discoverAccountPool(envArg: NodeJS.ProcessEnv = env): string[] {
+	return discoverAccountPoolProduction(envArg, registryPath);
+}
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "fly123-home-"));
 	const src = join(tmp, "dotcodex");
 	mkdirSync(join(src, "profiles", "personal"), { recursive: true });
 	mkdirSync(join(src, "profiles", "business"), { recursive: true });
+	registryPath = join(tmp, "codex-account-registry.json");
+	ledgerRoot = join(tmp, "codex-account-ledger");
 	writeFileSync(
-		join(src, "auth.json"),
-		'{"OPENAI_API_KEY":null,"tokens":{"x":1}}',
+		registryPath,
+		JSON.stringify({
+			version: 1,
+			primary: "personal",
+			profiles: [
+				{
+					name: "school",
+					email: "school@example.test",
+					role: "manual_backup",
+				},
+				{
+					name: "personal",
+					email: "personal@example.test",
+					role: "primary",
+				},
+				{
+					name: "business",
+					email: "business@example.test",
+					role: "manual_backup",
+				},
+			],
+		}),
 	);
+	writeFileSync(join(src, "auth.json"), testAuth());
 	writeFileSync(join(src, "config.toml"), GLOBAL_CONFIG);
 	env = {
 		FLYWHEEL_CODEX_HOMES_ROOT: join(tmp, "homes"),
@@ -84,7 +154,7 @@ describe("path resolution (WS-E seam)", () => {
 });
 
 describe("discoverAccountPool (dynamic, AC6)", () => {
-	it("lists profile dirs sorted, no hardcoded count", () => {
+	it("lists only existing canonical profile dirs sorted", () => {
 		expect(discoverAccountPool(env)).toEqual(["business", "personal"]);
 	});
 
@@ -101,6 +171,12 @@ describe("discoverAccountPool (dynamic, AC6)", () => {
 		expect(
 			discoverAccountPool({ FLYWHEEL_CODEX_PROFILES_DIR: join(tmp, "nope") }),
 		).toEqual([]);
+	});
+
+	it("excludes zombie and unknown profile directories", () => {
+		mkdirSync(join(tmp, "dotcodex", "profiles", "personal1"));
+		mkdirSync(join(tmp, "dotcodex", "profiles", "mystery"));
+		expect(discoverAccountPool(env)).toEqual(["business", "personal"]);
 	});
 });
 
@@ -668,6 +744,104 @@ describe("provisionCodexHome (WS-A)", () => {
 		return source;
 	}
 
+	it("identifies the live source credential before provisioning", () => {
+		expect(assertCodexSourceIdentity({ env, registryPath })).toEqual({
+			profile: "personal",
+			email: "personal@example.test",
+			accountId: "acct-personal",
+			plan: "pro",
+			mode: "primary",
+		});
+	});
+
+	it.each([
+		["personal", "personal@example.test", "acct-personal", "primary"],
+		["school", "school@example.test", "acct-school", "manual_backup"],
+		["business", "business@example.test", "acct-business", "manual_backup"],
+	] as const)(
+		"provisions canonical %s, writes the truthful sidecar and ledger",
+		(profile, email, accountId, mode) => {
+			writeFileSync(
+				join(sourceCodexDir(env), "auth.json"),
+				testAuth(email, accountId),
+			);
+
+			const home = provisionCodexHome({ executionId: `exec-${profile}`, env });
+
+			expect(readFileSync(join(home, "auth.json"), "utf8")).toBe(
+				testAuth(email, accountId),
+			);
+			expect(readFileSync(join(home, ".active"), "utf8")).toBe(`${profile}\n`);
+			expect(
+				JSON.parse(readFileSync(join(ledgerRoot, `${profile}.json`), "utf8")),
+			).toMatchObject({ profile, mode, lastSource: "provision" });
+		},
+	);
+
+	it("keeps a fully provisioned runner home when only the ledger is unavailable", () => {
+		writeFileSync(ledgerRoot, "ledger-root-is-not-a-directory");
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		try {
+			const home = provisionCodexHome({
+				executionId: "exec-ledger-unavailable",
+				ghToken: TOKEN,
+				env,
+			});
+
+			expect(readFileSync(join(home, "auth.json"), "utf8")).toBe(testAuth());
+			expect(readFileSync(join(home, ".active"), "utf8")).toBe("personal\n");
+			expect(readFileSync(join(home, "config.toml"), "utf8")).toContain(TOKEN);
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining(
+					"account ledger observation failed for personal; runner provisioning will continue",
+				),
+			);
+		} finally {
+			warning.mockRestore();
+		}
+	});
+
+	it.each([
+		["unknown", testAuth("zombie@example.test", "acct-zombie")],
+		["malformed", '{"tokens":{"id_token":"not-a-jwt"}}'],
+	] as const)(
+		"rejects a %s source identity before changing a pre-existing execution home",
+		(_label, sourceAuth) => {
+			const home = codexHomeDir("exec-reject", env);
+			mkdirSync(home, { recursive: true });
+			writeFileSync(join(home, "auth.json"), "auth-canary");
+			writeFileSync(join(home, "config.toml"), "config-canary");
+			writeFileSync(join(sourceCodexDir(env), "auth.json"), sourceAuth);
+
+			expect(() =>
+				provisionCodexHome({
+					executionId: "exec-reject",
+					ghToken: TOKEN,
+					env,
+				}),
+			).toThrow(/Codex|identity|JWT/);
+			expect(readFileSync(join(home, "auth.json"), "utf8")).toBe("auth-canary");
+			expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(
+				"config-canary",
+			);
+			expect(existsSync(ledgerRoot)).toBe(false);
+		},
+	);
+
+	it("rejects a symlinked source auth before creating an execution home", () => {
+		const srcAuth = join(sourceCodexDir(env), "auth.json");
+		const realAuth = join(tmp, "real-auth.json");
+		writeFileSync(realAuth, testAuth());
+		rmSync(srcAuth);
+		symlinkSync(realAuth, srcAuth);
+
+		expect(() =>
+			provisionCodexHome({ executionId: "exec-symlink", env }),
+		).toThrow(/symlink/);
+		expect(existsSync(codexHomeDir("exec-symlink", env))).toBe(false);
+	});
+
 	it("FLY-1571 provisions the managed Runner stop notify program", () => {
 		const notifyProgramPath = join(tmp, "hooks", "runner-stop-notify.sh");
 		const home = provisionCodexHome({
@@ -1174,7 +1348,7 @@ describe("FLY-1188 full-PR HIGH-4: stripInheritedSecretEnv (daemon env leak)", (
 // prints "Error: stdout is not a terminal" and exits 1. That is why the founder's
 // cmux tab was empty. The daemon keeps the shim (app-server needs no TTY). ──
 describe("rawCodexBin (the TTY-capable binary for the founder TUI)", () => {
-	it("is NEVER the stdout-piping rotation shim", () => {
+	it("resolves the raw TUI binary independently of the daemon launcher", () => {
 		expect(rawCodexBin({ PATH: "/usr/bin" })).not.toContain(
 			"flywheel-codex-with-fallback",
 		);

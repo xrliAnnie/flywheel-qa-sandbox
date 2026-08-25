@@ -26,6 +26,24 @@ export {
 	TUI_OPEN_RETRY_GAP_MS, // FLY-1239
 } from "./CodexTmuxAdapter.js";
 export {
+	type CodexAccountProfile,
+	type CodexAccountRegistry,
+	type CodexAuthIdentity,
+	DEFAULT_CODEX_ACCOUNT_REGISTRY_PATH,
+	identifyCodexAuth,
+	loadCodexAccountRegistry,
+	readCodexAuthIdentity,
+	redactCodexEmail,
+} from "./codex-account-identity.js";
+export {
+	type CodexAccountObservationSource,
+	type CodexAccountSnapshot,
+	fingerprintCodexHome,
+	readCodexAccountSnapshot,
+	recordCodexAccountObservation,
+	resolveCodexAccountLedgerRoot,
+} from "./codex-account-ledger.js";
+export {
 	buildDaemonSandboxWritableRoots,
 	buildGoalKickText, // FLY-1236
 	buildGoalObjective,
@@ -87,8 +105,9 @@ export {
 	type WsLike,
 } from "./codex-daemon-transport.js"; // FLY-1188 M4b
 // FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
-// lifecycle + repo-owned rotation shim resolver
+// lifecycle + repo-owned same-account daemon launcher resolver
 export {
+	assertCodexSourceIdentity,
 	codexHomeDir,
 	codexHomesRoot,
 	discoverAccountPool,

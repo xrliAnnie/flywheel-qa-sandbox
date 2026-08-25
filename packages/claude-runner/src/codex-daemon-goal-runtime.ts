@@ -2,8 +2,8 @@
  * FLY-1188 M4c-2 — the runner-side resident-/goal runtime: composes the daemon
  * spawn primitive (M4c-1), the ws transport (M4b), and the daemon client + goal
  * loop (M4a) into one "drive a goal to terminal on a resident daemon" call, and
- * survives a daemon death mid-run by restarting the daemon (optionally on the
- * NEXT account, for 429/usage-limit rotation) and RESUMING the same thread —
+ * survives a daemon death mid-run by restarting the daemon on the same
+ * explicitly selected account and RESUMING the same thread —
  * the goal state is persisted with the thread (V2-verified), so a restart
  * continues where it left off rather than starting over.
  *
@@ -61,9 +61,8 @@ export interface CodexDaemonGoalRuntimeOptions {
 	executionId: string;
 	codexBin: string;
 	/**
-	 * Account rotation pool of CODEX_HOMEs. The first is used initially; a
-	 * daemon death restarts on the NEXT (429/usage-limit rotation). At least one
-	 * is required.
+	 * Exactly one manually selected CODEX_HOME. Automatic account switching is
+	 * retired; daemon recovery restarts on this same home.
 	 */
 	codexHomes: string[];
 	/** Worktree the daemon's thread runs in. */
@@ -74,7 +73,7 @@ export interface CodexDaemonGoalRuntimeOptions {
 	/**
 	 * FLY-1224: reasoning effort delivered as a DAEMON-level config override
 	 * (`-c model_reasoning_effort="<effort>"` on the app-server spawn — the
-	 * thread/start API has no effort field). Replayed on every rotation restart.
+	 * thread/start API has no effort field). Replayed on every daemon restart.
 	 * Absent → the CODEX_HOME config default.
 	 */
 	effort?: string;
@@ -167,7 +166,7 @@ export interface RunGoalInput {
 export interface RunGoalOutcome {
 	threadId: string;
 	result: GoalRunResult;
-	/** How many daemon restarts (account rotations) the run survived. */
+	/** How many same-account daemon restarts the run survived. */
 	restarts: number;
 }
 
@@ -202,7 +201,6 @@ export class CodexDaemonGoalRuntime {
 	private readonly runGoalFn: typeof runGoalToTerminal;
 	private readonly sleep: (ms: number) => Promise<void>;
 	private readonly exitWaitMs: number;
-	private accountCursor = 0;
 	private session: DaemonSession | null = null;
 	private stopped = false;
 	private running = false;
@@ -217,6 +215,11 @@ export class CodexDaemonGoalRuntime {
 	constructor(opts: CodexDaemonGoalRuntimeOptions) {
 		if (opts.codexHomes.length === 0) {
 			throw new Error("CodexDaemonGoalRuntime requires at least one codexHome");
+		}
+		if (opts.codexHomes.length !== 1) {
+			throw new Error(
+				"CodexDaemonGoalRuntime requires exactly one codexHome; automatic account switching is retired",
+			);
 		}
 		this.opts = opts;
 		this.log = opts.logger ?? (() => {});
@@ -238,11 +241,9 @@ export class CodexDaemonGoalRuntime {
 		this.exitWaitMs = opts.exitWaitMs ?? 5_000;
 	}
 
-	/** The account (CODEX_HOME) the NEXT daemon start will use, then advance. */
-	private nextCodexHome(): string {
-		const homes = this.opts.codexHomes;
-		const home = homes[this.accountCursor % homes.length];
-		this.accountCursor += 1;
+	/** The manually selected account used by every daemon start/restart. */
+	private selectedCodexHome(): string {
+		const home = this.opts.codexHomes[0];
 		if (home === undefined) {
 			throw new Error("codexHomes unexpectedly empty"); // guarded in ctor
 		}
@@ -264,7 +265,7 @@ export class CodexDaemonGoalRuntime {
 	}
 
 	/**
-	 * Spawn a daemon on the next account, connect, initialize; store the session.
+	 * Spawn a daemon on the selected account, connect, initialize; store session.
 	 * Every partial-failure path closes the resources it created AND drains the
 	 * daemon to exit before throwing — so a subsequent restart never races a
 	 * still-dying daemon on the same socket, and a stop() that raced startup
@@ -274,7 +275,7 @@ export class CodexDaemonGoalRuntime {
 		reapOrphanPid?: number,
 		onSpawnIdentity?: (pgid: number) => void,
 	): Promise<DaemonSession> {
-		const codexHome = this.nextCodexHome();
+		const codexHome = this.selectedCodexHome();
 		const handle = await this.spawnDaemon({
 			codexBin: this.opts.codexBin,
 			codexHome,
@@ -397,10 +398,9 @@ export class CodexDaemonGoalRuntime {
 			}
 		}
 		// QA · FLY-1188 HIGH-2: the promise above tracks the process we SPAWNED —
-		// the rotation shim. The `codex app-server` the shim forked is a different
-		// process and outlives it happily, still holding the socket (that is the
-		// ~178MB orphan the real-machine QA found alive 5 minutes after teardown).
-		// So "the shim exited" is NOT "the daemon is dead". Ask the socket.
+		// A launcher may still fork before exec in an operator override. Therefore
+		// "the spawned process exited" is not sufficient proof that the socket-owning
+		// daemon is dead. Ask the socket as the authoritative teardown check.
 		if (!(await ensureDaemonDead(dying.handle))) {
 			throw new Error(
 				`codex daemon still listening on ${dying.handle.socketPath} after teardown — refusing to leave an unmonitored orphan`,
@@ -412,7 +412,7 @@ export class CodexDaemonGoalRuntime {
 	 * Drive a goal to a terminal status on the resident daemon. A daemon death
 	 * mid-run — the goal loop's transport_closed OR a raw client "closed" from a
 	 * setup RPC (both inside the recovery boundary) — tears the dead session
-	 * down, waits for it to exit, restarts on the NEXT account and RESUMES the
+	 * down, waits for it to exit, restarts on the same account and RESUMES the
 	 * same thread; up to maxRestarts. A terminal status (incl.
 	 * blocked/usageLimited/budgetLimited) resolves for the caller to act on. A
 	 * timeout / setup_failed / goal_replaced propagates. Not re-entrant.
@@ -444,7 +444,7 @@ export class CodexDaemonGoalRuntime {
 			let reapPid = input.reapOrphanPid;
 			// MED-7 R2 (Codex full-PR review): arm the RUN's start ONCE. Every
 			// restart's runGoalToTerminal gets this SAME anchor, so the active +
-			// waiting ceilings are absolute for the run — an account-rotation
+			// waiting ceilings are absolute for the run — a daemon
 			// restart can no longer re-arm a full fresh budget (which let N
 			// restarts multiply the cap).
 			const runStartedAt = Date.now();

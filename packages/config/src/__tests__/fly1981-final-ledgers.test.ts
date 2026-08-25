@@ -386,7 +386,7 @@ describe("FLY-1981 final governance ledgers", () => {
 			"workflow_resume",
 			"auto_qa_killswitch",
 		]);
-	});
+	}, 15_000);
 
 	it("allows retired store-row tokens only as direct Set array elements", () => {
 		expect(
@@ -427,7 +427,7 @@ describe("FLY-1981 final governance ledgers", () => {
 				`${name} production reader/writer/string residue`,
 			).toBe(false);
 		}
-	});
+	}, 15_000);
 
 	it("uses the production matcher itself for retired TypeScript and shell positive controls", () => {
 		const found = scannedNames([

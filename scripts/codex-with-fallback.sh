@@ -30,11 +30,6 @@ fi
 codex_guard_sweep
 
 started_at="$(date +%s)"
-num_profiles="$(find "$HOME/.codex/profiles" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-[[ "$num_profiles" -gt 0 ]] || num_profiles=1
-start_profile="$(codex-profile status 2>/dev/null | head -1 | sed 's/Active profile: //')"
-attempts=0
-max_attempts="$num_profiles"
 
 cleanup_files=()
 ACTIVE_STDOUT_FILE=""
@@ -108,53 +103,30 @@ run_codex_attempt() {
   return "$status"
 }
 
-while (( attempts < max_attempts )); do
-  CODEX_ATTEMPT_OUTPUT=""
-  run_codex_attempt "profile-$((attempts + 1))" "$@"
-  exit_code=$?
-  [[ "$exit_code" -eq 0 ]] && exit 0
-  [[ "$exit_code" -eq 124 ]] && exit 124
+CODEX_ATTEMPT_OUTPUT=""
+run_codex_attempt "selected-account" "$@"
+exit_code=$?
+[[ "$exit_code" -eq 0 ]] && exit 0
+[[ "$exit_code" -eq 124 ]] && exit 124
 
-  if printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'not supported when using Codex'; then
-    attempts=$((attempts + 1))
-    if (( attempts < max_attempts )); then
-      printf '\n[codex-with-fallback] Model not supported (attempt %s/%s). Switching profile...\n' "$attempts" "$max_attempts" >&2
-      codex-profile next >&2
-    else
-      printf '\n[codex-with-fallback] Model not supported on every profile. Falling back to gpt-5.5...\n' >&2
-      codex-profile use "$start_profile" >&2
-      new_args=()
-      skip_next=false
-      for arg in "$@"; do
-        if $skip_next; then skip_next=false; continue; fi
-        if [[ "$arg" == "-m" || "$arg" == "--model" ]]; then skip_next=true; continue; fi
-        [[ "$arg" == -m=* || "$arg" == --model=* ]] && continue
-        new_args+=("$arg")
-      done
-      run_codex_attempt "model-fallback" -m gpt-5.5 "${new_args[@]}"
-      exit $?
-    fi
-  elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'refresh_token_reused|token_expired|Please try signing in again|Please log out and sign in again'; then
-    attempts=$((attempts + 1))
-    if (( attempts < max_attempts )); then
-      printf '\n[codex-with-fallback] Auth token expired (attempt %s/%s). Switching profile...\n' "$attempts" "$max_attempts" >&2
-      codex-profile next >&2
-    else
-      printf '\n[codex-with-fallback] AUTH_EXPIRED: all profiles have expired tokens.\n' >&2
-      codex-profile use "$start_profile" >&2
-      exit "$exit_code"
-    fi
-  elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE '429|rate.?limit|too many requests|capacity|usage.?limit'; then
-    attempts=$((attempts + 1))
-    if (( attempts < max_attempts )); then
-      printf '\n[codex-with-fallback] Rate limit (attempt %s/%s). Switching profile...\n' "$attempts" "$max_attempts" >&2
-      codex-profile next >&2
-    else
-      exit "$exit_code"
-    fi
-  else
-    exit "$exit_code"
-  fi
-done
+if printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'not supported when using Codex'; then
+  printf '\n[codex-with-fallback] Model unsupported on the selected account; retrying once on the same account with gpt-5.5.\n' >&2
+  new_args=()
+  skip_next=false
+  for arg in "$@"; do
+    if $skip_next; then skip_next=false; continue; fi
+    if [[ "$arg" == "-m" || "$arg" == "--model" ]]; then skip_next=true; continue; fi
+    [[ "$arg" == -m=* || "$arg" == --model=* ]] && continue
+    new_args+=("$arg")
+  done
+  run_codex_attempt "model-fallback" -m gpt-5.5 "${new_args[@]}"
+  exit $?
+elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE 'refresh_token_reused|token_expired|Please try signing in again|Please log out and sign in again'; then
+  printf '\n[codex-with-fallback] AUTH_EXPIRED on the selected account. Run codex-profile status; the Founder may manually select school/personal/business with the profile tool use command.\n' >&2
+  exit "$exit_code"
+elif printf '%s\n' "$CODEX_ATTEMPT_OUTPUT" | grep -qiE '429|rate.?limit|too many requests|capacity|usage.?limit'; then
+  printf '\n[codex-with-fallback] RATE_LIMIT on the selected account. Run codex-profile status; the Founder may manually select school/personal/business with the profile tool use command.\n' >&2
+  exit "$exit_code"
+fi
 
-exit "${exit_code:-1}"
+exit "$exit_code"

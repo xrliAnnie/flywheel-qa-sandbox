@@ -1115,7 +1115,7 @@ describe("killRunnerTuiWindow", () => {
 //     TUI EXITED WITH CODE=1
 //
 // Root cause: the TUI was launched through `flywheel-codex-with-fallback`, which
-// redirects codex's stdout to sniff 429s for account rotation. That removes the
+// historically redirected codex stdout. That removes the
 // TTY, and a TUI refuses to render without one. The daemon may keep using the
 // shim (`app-server` needs no TTY); the TUI may not.
 describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawned", () => {
