@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2060 告警频道值守机制 — PRD 第一版</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 16px 80px;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.7;-webkit-text-size-adjust:100%}
+.wrap{max-width:960px;margin:0 auto}
+header{margin-bottom:28px}
+h1{font-size:28px;line-height:1.3;margin:0 0 8px}
+.sub{color:var(--dim);font-size:14px}
+.meta{font-family:'SF Mono',ui-monospace,monospace;font-size:12px;color:var(--dim);margin-top:6px;word-break:break-all}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin:0 0 18px;border-left:4px solid var(--blue)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.gray{border-left-color:#c7c7cc}
+h2{font-size:19px;margin:0 0 4px;color:var(--navy)}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;background:#eee;color:#555;margin-left:8px;vertical-align:middle;font-weight:600}
+.tag.ok{background:#e3f9e9;color:#1a7f37}
+.tag.new{background:#e6f0ff;color:#0057d9}
+.tag.ask{background:#fff2e0;color:#a35b00}
+p{margin:10px 0}
+ul,ol{margin:10px 0;padding-left:22px}
+li{margin:6px 0}
+.big{font-size:15px}
+.quote{border-left:3px solid #d2d2d7;padding:4px 0 4px 14px;color:#444;margin:12px 0;font-style:normal}
+.kpi{display:flex;flex-wrap:wrap;gap:12px;margin:14px 0}
+.kpi div{flex:1 1 150px;background:#fafafa;border-radius:10px;padding:12px 14px}
+.kpi b{display:block;font-size:26px;line-height:1.2;color:var(--navy)}
+.kpi span{font-size:12px;color:var(--dim)}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #ececf0;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;white-space:nowrap}
+code{font-family:'SF Mono',ui-monospace,monospace;font-size:12.5px;background:#f0f0f3;padding:1px 5px;border-radius:4px}
+.warn{background:#fff8ec;border-radius:8px;padding:12px 14px;margin:12px 0;font-size:14px}
+.danger{background:#fff0ef;border-radius:8px;padding:12px 14px;margin:12px 0;font-size:14px}
+label.cm{display:block;margin-top:16px;font-size:12px;color:var(--dim);font-weight:600}
+textarea.cm{width:100%;min-height:62px;margin-top:6px;padding:10px 12px;border:1px solid #d9d9de;border-radius:8px;font:inherit;font-size:14px;background:#fcfcfd;resize:vertical}
+textarea.cm:focus{outline:2px solid var(--blue);outline-offset:1px;background:#fff}
+#sumbox{position:sticky;bottom:0;background:var(--card);border-radius:12px;box-shadow:0 -2px 14px rgba(0,0,0,.10);padding:18px 20px;margin-top:28px;border-left:4px solid var(--green)}
+#sumlist{font-size:13px;color:#333;max-height:180px;overflow-y:auto;margin:10px 0;white-space:pre-wrap;font-family:'SF Mono',ui-monospace,monospace}
+button{font:inherit;font-size:14px;font-weight:600;padding:10px 16px;border-radius:10px;border:0;background:var(--blue);color:#fff;cursor:pointer;margin:4px 6px 4px 0}
+button:disabled{background:#c7c7cc;cursor:default}
+#status{font-size:13px;color:var(--dim);margin-left:4px}
+#status.fail{color:var(--red)}
+#fallback{display:none;width:100%;min-height:120px;margin-top:10px;padding:10px;border:1px solid #d9d9de;border-radius:8px;font-family:'SF Mono',ui-monospace,monospace;font-size:12px}
+footer{color:var(--dim);font-size:12px;margin-top:24px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>告警频道值守机制 — PRD 第一版</h1>
+  <div class="sub">FLY-2060 · 2026-08-25 · Honey Lemon 出品,给你评</div>
+  <div class="meta">每一段下面都有一个意见框,写完到最下面点「一键汇总复制」,贴回 issue 里我才收得到 —— 页面不会自动同步。</div>
+</header>
+
+<div class="card red" data-sec="① 真正的缺口">
+  <h2>① 真正的缺口是什么<span class="tag new">先看这个</span></h2>
+  <p class="big">告警频道<b>已经</b>是一条像模像样的工单队列 —— 有格式、有「该谁修」这一栏、有「新建 / 已认领 / 修复中 / 已解决」的流转。缺的不是这些。</p>
+  <p class="big"><b>缺的是:没有任何一个角色对「这条队列今天有没有被清空」负责。</b></p>
+  <div class="quote">现在的模式是<b>逐条点名</b>:被点到名 → 有人管。<br>
+  没被点名的、点了名但那个 bot 没起来的、以及根本没成功发出去的 —— 这三类<b>全部落地为零</b>,而且没有任何人在看这条队列本身。</div>
+  <p>你当天的三件事(切号器喊了一天没人应 / FLY-1969 的卡被埋掉 / 提了一嘴没人管),指向的是<b>同一个洞</b>,不是三个 bug。</p>
+  <p><b>所以本 PRD 只补一件事:在「逐条点名」上面,加一个「整条队列有人负责」。</b>现有的东西不推翻、不重建。</p>
+  <label class="cm" for="c1">你对这一段的意见</label><textarea class="cm" id="c1" placeholder="……"></textarea>
+</div>
+
+<div class="card amber" data-sec="② 我实测到的量">
+  <h2>② 我去数了一下,数字比想象的难看<span class="tag ask">影响验收口径</span></h2>
+  <p>测量时间 <b>2026-08-25 下午</b>,数据来自本机的告警记账库和「发不出去」的存档目录。<br>
+  <span style="color:var(--dim);font-size:13px">口径提醒:我数的是「系统认为发生了一件该报的事」的条数,<b>不是</b>频道里贴出来的消息条数 —— 我没有读频道历史的通路。这个差别下面很关键。</span></p>
+  <div class="kpi">
+    <div><b>55%</b><span>近 7 天的告警里,超过一半只是同一个东西(工作区清理)在反复喊</span></div>
+    <div><b>77%</b><span>再加上第二名(信箱投递失败),两个来源吃掉了近八成</span></div>
+    <div><b>77%</b><span>近 7 天的告警<b>压根没发进频道</b>——416 条卡在「发不出去」,只有 126 条真的到了</span></div>
+  </div>
+  <div class="danger"><b>第三个数字是这次最要命的发现。</b><br>
+  有一整类问题是「系统想告诉你,但你根本没收到」。抽样看原因写着<b>发送身份取不到钥匙</b>,全部集中在那个刷屏最凶的来源上。<br>
+  ⇒ 如果「签收率」的分母用「频道里贴出来的条数」来算,<b>这 77% 会从分母里凭空消失,签收率反而更好看</b>。这一整类问题会被指标结构性地藏起来。</div>
+  <p>还有一个数要记住:近 14 天的<b>每日量在 22 到 1735 条之间</b>,差一个数量级还多。所以任何「日均多少条」的验收都不靠谱,必须拿同样长度的前后两段做对照。</p>
+  <label class="cm" for="c2">你对这一段的意见</label><textarea class="cm" id="c2" placeholder="……"></textarea>
+</div>
+
+<div class="card" data-sec="③ 值守席位">
+  <h2>③ 谁来值守,以及「这次为什么不会重演」<span class="tag ok">你已认可候选</span></h2>
+  <p>席位 = <b>claude-infra-bot</b>。三条理由是实测的:24 小时在线(挂了会被自动拉起)、已经有自己动手修的权限、本职活少。</p>
+  <p>但我要把上次的成因写清楚:<b>Cass 做不灵,不是因为她不行,是因为处境</b> —— 她同时是分派、协调、汇报口,值守对她永远是第 N 优先级。而值守的本质是「<b>优先级低、但必须 100% 覆盖</b>」,这两个属性天生打架。</p>
+  <table>
+    <tr><th>Cass 当时的处境</th><th>值守席位必须换成的处境</th></tr>
+    <tr><td>值守排第 N,主职是分派协调</td><td>值守是<b>排第一的日常职责</b>,写进它的角色文件</td></tr>
+    <tr><td>主职有人催,值守没人催</td><td><b>每日结算</b>是硬动作,悬案数直接进指标</td></tr>
+    <tr><td>只有一条条帖子,没有「整条队列」的概念</td><td>明确对<b>整条队列</b>负责,清零是它的验收</td></tr>
+  </table>
+  <div class="warn"><b>我必须诚实说一句:换个 bot 本身不是解法。</b>我没法证明 infra-bot 不会重蹈覆辙。真正起作用的是上面这三条<b>处境</b>的改动 —— 任何一条被砍掉,风险就回到原点。</div>
+  <div class="danger"><b>顺带发现一个洞:</b>「值守自己挂了」这条告警,现在的负责人写的就是<b>值守自己</b>。它挂的时候,它是自己的负责人 —— 这条永远不会有人签收。需要你拍板交给谁(见 ⑫ Q1)。</div>
+  <label class="cm" for="c3">你对这一段的意见</label><textarea class="cm" id="c3" placeholder="……"></textarea>
+</div>
+
+<div class="card green" data-sec="④ 值守合同三档">
+  <h2>④ 值守合同:只有三种反应,没有第四种<span class="tag ok">你已认可</span></h2>
+  <table>
+    <tr><th>档</th><th>什么时候</th><th>做什么</th><th>禁止</th></tr>
+    <tr><td><b>A 自愈</b></td><td>职权内、会修</td><td>直接修,修完安静收工,不打扰你</td><td>—</td></tr>
+    <tr><td><b>B 转办</b></td><td>不归它管 / <b>不会修</b></td><td>按 ⑥ 的表转给对应的人,两处都发(⑦),<b>每天追到闭环</b></td><td><b>禁止装懂</b></td></tr>
+    <tr><td><b>C 宁转勿吞</b></td><td>判不清是哪一类</td><td>按默认转办,<b>并写下「我判不清的是哪一点」</b></td><td>禁止「看不懂就放着」</td></tr>
+  </table>
+  <p><b>「禁止装懂」具体是什么意思:</b>对一条没有现成处置手册的告警,它<b>可以看、可以查</b>(读日志、看状态),但<b>不许动手改系统状态去试</b>。因为装懂的修复会把一个还能诊断的问题,变成一个被搅乱的现场。</p>
+  <label class="cm" for="c4">你对这一段的意见</label><textarea class="cm" id="c4" placeholder="……"></textarea>
+</div>
+
+<div class="card purple" data-sec="⑤ 签收的定义(反盖章)">
+  <h2>⑤「签收」到底算什么 —— 这是我本版加的<span class="tag new">要你评</span></h2>
+  <p class="big"><b>签收率 100% 是一个极其容易被盖章刷满的指标。</b>如果不把「签收」定义死,一周后我们会拿到一个漂亮的 100%,和一条一模一样烂的队列。</p>
+  <p><b>算签收的:</b>落到下面四种之一<b>并留下记录</b> ——</p>
+  <ul>
+    <li><b>我来修</b> + 修了什么</li>
+    <li><b>转给 X</b> + 转到哪儿</li>
+    <li><b>判不清,默认转 X</b> + 我判不清的是哪一点</li>
+    <li><b>这条不是真问题</b> + <b>掐源头的动作</b>(改阈值 / 降级成通知 / 关掉发射点 / 提一张单)</li>
+  </ul>
+  <p><b>明令不算签收的:</b></p>
+  <ul>
+    <li>只回一个表情 / 「收到」/「已看」</li>
+    <li>把状态点成「已认领」但后面什么都没有</li>
+    <li>对一堆同类的批量甩同一句话,没有一条真的落到上面四种</li>
+  </ul>
+  <p><b>特别注意第四种</b>:判成噪音<b>不是免费的</b> —— 必须同时给出掐源头的动作,否则不算签收,算悬案。不然「判噪音」会变成新的盖章方式。</p>
+  <label class="cm" for="c5">你对这一段的意见</label><textarea class="cm" id="c5" placeholder="……"></textarea>
+</div>
+
+<div class="card" data-sec="⑥ 该谁修(路由表)">
+  <h2>⑥「该谁修」的表<span class="tag new">首版,要 Tadashi 校</span></h2>
+  <p>每一类告警都必须在表上有主人。<b>「表上没有」这件事本身要能被发现</b> —— 新加一类告警,上线前必须先落表。</p>
+  <table>
+    <tr><th>域</th><th>主人</th><th>大致是哪些</th></tr>
+    <tr><td><b>基建自愈</b></td><td><b>值守自己</b></td><td>工作区/会话/窗口清理、卡死、账号额度与登录过期、重启风暴、Bridge 异常退出(「谁都不救自己」的交叉规则不变)</td></tr>
+    <tr><td><b>引擎 · 通信</b></td><td><b>Tadashi</b></td><td>工作流引擎、三阶段卡住、自动 QA 卡住、发布失败、信箱/投递失败、部署降级</td></tr>
+    <tr><td><b>产品 · 交付</b></td><td><b>对应项目 Lead</b>(默认 Honey Lemon)</td><td>给你的卡没送到、里程碑没送达、Runner 等 Lead 没人接</td></tr>
+    <tr><td><b>人的决定</b></td><td><b>你</b></td><td>权限类(这条是既有判例,不改)</td></tr>
+    <tr><td><b>判不清</b></td><td><b>默认 → Tadashi</b></td><td>必须附判据(见 ⑧),否则不算签收</td></tr>
+  </table>
+  <div class="warn"><b>代价点名:</b>默认边指向 Tadashi,等于把「判不清」的成本压在工程侧。⑧ 那条规矩就是这条默认边的对冲 —— 没有 ⑧,一周后这条默认边一定退化成「看不懂就丢过去」。</div>
+  <label class="cm" for="c6">你对这一段的意见</label><textarea class="cm" id="c6" placeholder="……"></textarea>
+</div>
+
+<div class="card" data-sec="⑦ 转办双投递">
+  <h2>⑦ 转办 = 两处都要发<span class="tag ok">你已认可</span></h2>
+  <p>一次转办必须同时发生两件事:<b>①</b> 在告警频道原帖上 @ 对方 + 一行去向(留痕,队列自己能读);<b>②</b> 正文进对方自己的场子(那张 issue 的讨论串,或对方的部门频道),带完整上下文。</p>
+  <p><b>为什么两条都要:</b>只留痕 → 对方在频道里看不见(⑨ 之后更看不见);只发正文 → 队列上这条永远显示没人认领,悬案账算不清。</p>
+  <label class="cm" for="c7">你对这一段的意见</label><textarea class="cm" id="c7" placeholder="……"></textarea>
+</div>
+
+<div class="card green" data-sec="⑧ 判不清必须留判据">
+  <h2>⑧「判不清」必须留下判据<span class="tag ok">你的补充②</span></h2>
+  <p>转办时必须写下<b>「我判不清的是哪一点」</b>,而且要能被指认、能被反驳:</p>
+  <ul>
+    <li>✅「我分不清这是 Runner 自己卡住,还是唤醒根本没投过去 —— 我看得到它不动,看不到投递记录」</li>
+    <li>✅「这类告警我没有处置手册,历史上也没见过」</li>
+    <li>❌「情况比较复杂」「不太确定」「需要工程判断」—— 套话,不算</li>
+  </ul>
+  <p><b>两个用途:</b>① 让「判不清」有成本,不能变成甩锅;② <b>Tadashi 追加的</b> —— 这些「说不清的点」攒起来,三个月后就是值守手册的「怎么判」那一章。它是资产,不只是防御。</p>
+  <p><b>要求:</b>判据要归集到<b>一处能读的清单</b>,不能散在各个帖子里。每周结算时产出「本周说不清的点」。</p>
+  <label class="cm" for="c8">你对这一段的意见</label><textarea class="cm" id="c8" placeholder="……"></textarea>
+</div>
+
+<div class="card" data-sec="⑨ 全 Lead 进来但不被淹">
+  <h2>⑨ 所有 Lead 都进告警频道,但不被 @ 就收不到<span class="tag ok">你的原话要求</span></h2>
+  <p>照搬核心房那套(FLY-898)、并且是<b>服务器层强制</b>,不靠嘴上自律:</p>
+  <ul>
+    <li><b>不被 @ → 根本收不到</b>(不是「收到了请忽略」)</li>
+    <li><b>被 @ → 必达必看</b></li>
+    <li>光打名字不算,必须真 @(核心房已有的收口,防止一堆人误触)</li>
+  </ul>
+  <p><b>值守是这个频道的「大管家位」</b> —— 它收得到所有消息,包括没 @ 任何人的。这正是「整条队列有人负责」在投递层的前提。</p>
+  <label class="cm" for="c9">你对这一段的意见</label><textarea class="cm" id="c9" placeholder="……"></textarea>
+</div>
+
+<div class="card amber" data-sec="⑩ 降噪账">
+  <h2>⑩ 降噪 = 掐源头 + 留账<span class="tag ok">你已认可</span></h2>
+  <p>噪音不是靠值守忍,是<b>掐掉发射源</b>。每掐一次记一笔账:掐的是哪一类 / 掐前多少条 / 怎么处置 / <b>为什么这不是真问题(一句能被反驳的人话)</b> / 什么时候生效。</p>
+  <p><b>这本账不是形式主义</b> —— ⑪ 的分母守卫直接依赖它:告警总量的每一次下降,都要在账上找得到对应条目。<b>账上解释不了的下降 = 指标造假信号。</b></p>
+  <p><b>已经看得见的头两笔候选</b>(判定权在域主人,不在我):</p>
+  <ul>
+    <li><b>工作区清理拒绝</b>(7 天 416 条,55%):这是日常状态,还是真要人管的问题?</li>
+    <li><b>信箱投递失败</b>(7 天 169 条,22%):是真在失败,还是判定过宽?</li>
+  </ul>
+  <label class="cm" for="c10">你对这一段的意见</label><textarea class="cm" id="c10" placeholder="……"></textarea>
+</div>
+
+<div class="card red" data-sec="⑪ 怎么算成功 + 分母守卫">
+  <h2>⑪ 怎么算成功(含你的补充①)<span class="tag new">口径是本版重点</span></h2>
+  <p><b>基线两个数(你认可的口径):</b>试运行一周 —— <b>签收率 100%</b>、<b>悬案清零</b>(每天 24:00 结算)。转办中且当天有追办动作不算悬案;转办后连续 2 天没人动 = 悬案,必须升级。</p>
+  <div class="danger"><b>分母守卫(你的补充①,我把它做实了):</b><br>
+  「签收率 100% + 悬案清零」是结果指标,<b>可以靠少发告警刷出来</b>。所以第三个数必须一起看:<br>
+  <b>③ 告警发射总量</b> —— 试运行期总量<b>相对基线不下降</b>;若下降,下降部分必须 <b>100% 能被降噪账逐条解释</b>。</div>
+  <p><b>分母怎么取(本页最重要的一条):</b></p>
+  <ul>
+    <li>分母 = <b>去重后的发射事件数,包含发不出去的那些</b>。</li>
+    <li><b>绝不能</b>用「频道里贴出来的条数」当分母 —— 理由是 ② 里实测的 77%:那一整类「系统想说但你没收到」会从分母消失,分数反而更漂亮。</li>
+    <li>推论:<b>发不出去的那些也必须被签收</b>。「没送到」本身就是一条要人判理的告警。</li>
+  </ul>
+  <p><b>基线怎么取:</b>用试运行开始<b>前同样长度</b>的窗口做同期对照。因为日量波动超过一个数量级,<b>不许用日均阈值</b>;还要逐类分解 —— 总量持平但结构性地丢了某一类,同样是失效。</p>
+  <p><b>再加四条防盖章的验收:</b></p>
+  <table>
+    <tr><th>指标</th><th>目标</th></tr>
+    <tr><td>判据完整率(转办条目里判据非空、非套话)</td><td>100%(抽查)</td></tr>
+    <tr><td>转办闭环率(转出去的最终有结果)</td><td>100%</td></tr>
+    <tr><td>值守自身噪音(它自己在频道里的发言量)</td><td>不构成新的刷屏</td></tr>
+    <tr><td><b>难例覆盖</b>:一周内至少真出现过一次「判不清」并留下判据</td><td>≥ 1;一次都没有,必须显式记「找过,没出现」</td></tr>
+  </table>
+  <div class="warn"><b>最后一条为什么必要:</b>只验「它做了没有」,一个系统性回避难题的实现照样全绿通过。一周内一条「判不清」都没有,更可能说明这一档形同虚设,而不是值守全知全能。</div>
+  <label class="cm" for="c11">你对这一段的意见</label><textarea class="cm" id="c11" placeholder="……"></textarea>
+</div>
+
+<div class="card purple" data-sec="⑫ 要你拍板的 6 件事">
+  <h2>⑫ 需要你拍板的 6 件事<span class="tag ask">我不自己填</span></h2>
+  <table>
+    <tr><th>#</th><th>问题</th><th>我的倾向</th></tr>
+    <tr><td>Q1</td><td><b>值守自己挂了谁签收?</b>现在这条告警的负责人就是它自己</td><td>交给 Codex 那边的 bot(和「谁都不救自己」同构)</td></tr>
+    <tr><td>Q2</td><td>「发不出去」的根因(7 天 416 条)算不算本期范围?</td><td><b>算前置</b>:分母看不见,验收就没法做</td></tr>
+    <tr><td>Q3</td><td>Cass 现在还是自动修复的执行身份,移交后她和值守的边界?</td><td>Cass 完全退出值守,只留分派协调</td></tr>
+    <tr><td>Q4</td><td>全 Lead 进频道的配置成本,一次全接还是分批?</td><td>分批:先值守 + Tadashi + 我</td></tr>
+    <tr><td>Q5</td><td>一周试运行的<b>起止时刻</b>,和<b>谁来结算</b>?</td><td>值守日结、Tadashi 周结、你验收</td></tr>
+    <tr><td>Q6</td><td>域主人收到转办后,多久算超时?</td><td>1 个工作日;连续 2 天没动作就升级</td></tr>
+  </table>
+  <label class="cm" for="c12">你对这 6 个问题的答复(可以只答其中几个)</label><textarea class="cm" id="c12" placeholder="Q1: … / Q2: … "></textarea>
+</div>
+
+<div class="card gray" data-sec="⑬ 我不确定的地方">
+  <h2>⑬ 我不确定的地方(摊开说)</h2>
+  <ol>
+    <li><b>换席位本身不是解法</b>。我不能证明 infra-bot 不会重蹈 Cass 的覆辙,我只能改处境。</li>
+    <li><b>⑥ 那张表是我按语义划的</b>,没跟每个域主人核过。要 Tadashi 过一遍。</li>
+    <li><b>② 的数字是记账库的数,不是频道消息数</b>。我没有读频道历史的通路,这个口径差异我已经写在 PRD 里。</li>
+    <li><b>那个刷屏最凶的「工作区清理拒绝」,我判不清它是不是噪音。</b>它 55% 的占比很扎眼,但它的意思是「它保住了一个没登记的工作区」—— 那可能<b>恰恰是它在正常起作用</b>。按 ⑧ 的规矩,我判不清的点就是:<b>我分不清「它频繁触发」是坏事,还是它正在干正确的事</b>。</li>
+    <li><b>一周可能采到一个安静周</b>(日量 22 到 1735 之间)。那样「悬案清零」的说明力会很弱。同期对照是为这个,但可能仍不够。</li>
+  </ol>
+  <label class="cm" for="c13">你对这一段的意见</label><textarea class="cm" id="c13" placeholder="……"></textarea>
+</div>
+
+<div class="card" data-sec="⑭ 拆出来的活">
+  <h2>⑭ 拆出来的活(交工程)</h2>
+  <table>
+    <tr><th>#</th><th>做什么</th><th>优先级</th></tr>
+    <tr><td>B1</td><td>值守席位上岗 + 每日结算,对整条队列负责</td><td>P0</td></tr>
+    <tr><td>B2</td><td>让「发不出去」的那些也进队列、也要被签收(分母可见)</td><td>P0</td></tr>
+    <tr><td>B3</td><td>「签收」= 四选一表态并落账(反盖章)</td><td>P0</td></tr>
+    <tr><td>B4</td><td>「该谁修」落表 + 新类型上线前必须先落表</td><td>P0</td></tr>
+    <tr><td>B5</td><td>转办双投递</td><td>P1</td></tr>
+    <tr><td>B6</td><td>全 Lead 进频道 + 不被 @ 不投递(服务器强制)</td><td>P1</td></tr>
+    <tr><td>B7</td><td>判据字段 + 归集成周清单(手册原料)</td><td>P1</td></tr>
+    <tr><td>B8</td><td>降噪账,能和总量下降逐条对上</td><td>P1</td></tr>
+    <tr><td>B9</td><td>三数看板 + 日结/周结</td><td>P1</td></tr>
+    <tr><td>B10</td><td>值守自盲区:它自己挂了的负责人换人</td><td>P1</td></tr>
+    <tr><td>B11</td><td>头两笔降噪候选的处置</td><td>P2</td></tr>
+  </table>
+  <p style="color:var(--dim);font-size:13px">PM 验收 = 未来 FLY-830,现在不做。本 PRD 不带任何全局 QA 门 / CI 证据门(按你 8-25 的直令)。</p>
+  <label class="cm" for="c14">你对拆单的意见</label><textarea class="cm" id="c14" placeholder="……"></textarea>
+</div>
+
+<div id="sumbox">
+  <h2 style="margin-bottom:2px">意见汇总</h2>
+  <div style="font-size:13px;color:var(--dim)">写完点下面的按钮复制,<b>贴回 issue 讨论串</b>我才收得到 —— 页面不会自动同步。</div>
+  <div id="sumlist">(还没有填写任何意见)</div>
+  <div id="btns"></div>
+  <span id="status"></span>
+  <textarea id="fallback" readonly></textarea>
+</div>
+
+<footer>FLY-2060 · PRD v1 · 生成于 2026-08-25</footer>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(()=>{
+  var MARK = "【页面意见汇总】FLY-2060";
+  var LIMIT = 1800;
+  var PREFIX = "fly2060-review:" + location.pathname + ":";
+  var cards = [].slice.call(document.querySelectorAll(".card[data-sec]"));
+  var items = [];
+  cards.forEach(function(card){
+    var ta = card.querySelector("textarea.cm");
+    if(!ta) return;
+    var sec = card.getAttribute("data-sec") || "";
+    var key = PREFIX + ta.id;
+    try { var saved = localStorage.getItem(key); if(saved !== null) ta.value = saved; } catch(e){}
+    ta.addEventListener("input", function(){
+      try { localStorage.setItem(key, ta.value); } catch(e){}
+      render();
+    });
+    items.push({ sec: sec, ta: ta });
+  });
+
+  var sumlist = document.getElementById("sumlist");
+  var btns = document.getElementById("btns");
+  var status = document.getElementById("status");
+  var fallback = document.getElementById("fallback");
+  var chunks = [];
+
+  function buildBlocks(){
+    var out = [];
+    items.forEach(function(it){
+      var v = (it.ta.value || "").trim();
+      if(!v) return;
+      out.push("## " + it.sec + "\n" + v);
+    });
+    return out;
+  }
+
+  function buildChunks(blocks){
+    if(blocks.length === 0) return [];
+    var res = [], cur = "";
+    for(var i=0;i<blocks.length;i++){
+      var b = blocks[i];
+      var candidate = cur ? (cur + "\n\n" + b) : (MARK + "\n\n" + b);
+      if(cur && candidate.length > LIMIT){
+        res.push(cur);
+        cur = MARK + "\n\n" + b;
+      } else {
+        cur = candidate;
+      }
+    }
+    if(cur) res.push(cur);
+    return res;
+  }
+
+  function render(){
+    var blocks = buildBlocks();
+    chunks = buildChunks(blocks);
+    if(blocks.length === 0){
+      sumlist.textContent = "(还没有填写任何意见)";
+    } else {
+      sumlist.textContent = blocks.join("\n\n");
+    }
+    while(btns.firstChild) btns.removeChild(btns.firstChild);
+    if(chunks.length === 0){
+      var b0 = document.createElement("button");
+      b0.textContent = "一键汇总复制";
+      b0.disabled = true;
+      btns.appendChild(b0);
+      return;
+    }
+    if(chunks.length === 1){
+      addBtn("一键汇总复制", 0);
+    } else {
+      for(var i=0;i<chunks.length;i++){
+        addBtn("复制第 " + (i+1) + " / " + chunks.length + " 段", i);
+      }
+      var hint = document.createElement("div");
+      hint.style.fontSize = "12px";
+      hint.style.color = "#86868b";
+      hint.style.marginTop = "4px";
+      hint.textContent = "意见较长,分成 " + chunks.length + " 段,请逐段复制粘贴(每段开头都有同一个标记行)。";
+      btns.appendChild(hint);
+    }
+  }
+
+  function addBtn(label, idx){
+    var b = document.createElement("button");
+    b.textContent = label;
+    b.addEventListener("click", function(){ doCopy(chunks[idx], label); });
+    btns.appendChild(b);
+  }
+
+  function doCopy(text, label){
+    var done = false;
+    function finish(ok){
+      if(ok){
+        fallback.style.display = "none";
+        status.className = "";
+        status.textContent = "已复制(" + label + "),请贴回 issue 讨论串";
+      } else {
+        fallback.value = text;
+        fallback.style.display = "block";
+        fallback.focus();
+        fallback.select();
+        status.className = "fail";
+        status.textContent = "浏览器不允许自动复制;下方文本已选中,请按 ⌘C";
+      }
+    }
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){ finish(true); }, function(){ tryExec(); });
+        return;
+      }
+    } catch(e){}
+    tryExec();
+    function tryExec(){
+      fallback.value = text;
+      fallback.style.display = "block";
+      fallback.focus();
+      fallback.select();
+      try { done = document.execCommand("copy"); } catch(e){ done = false; }
+      finish(done);
+    }
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>

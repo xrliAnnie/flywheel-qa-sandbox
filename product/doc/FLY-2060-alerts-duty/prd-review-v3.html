@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2060 告警值守机制 — PRD v3</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--navy:#1a365d;--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;}
+*{box-sizing:border-box}
+body{margin:0;padding:24px 16px 80px;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.75;-webkit-text-size-adjust:100%}
+.wrap{max-width:960px;margin:0 auto}
+header{margin-bottom:26px}
+h1{font-size:28px;line-height:1.3;margin:0 0 8px}
+.sub{color:var(--dim);font-size:14px}
+.meta{font-size:13px;color:var(--dim);margin-top:8px;background:#fff;border-radius:10px;padding:10px 14px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin:0 0 18px;border-left:4px solid var(--blue)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card.gray{border-left-color:#c7c7cc}
+h2{font-size:19px;margin:0 0 6px;color:var(--navy)}
+.tag{display:inline-block;font-size:11px;padding:2px 8px;border-radius:20px;background:#eee;color:#555;margin-left:8px;vertical-align:middle;font-weight:600}
+.tag.key{background:#ffe9e7;color:#c0271c}
+.tag.ask{background:#fff2e0;color:#a35b00}
+.tag.ok{background:#e3f9e9;color:#1a7f37}
+p{margin:10px 0}
+ul,ol{margin:10px 0;padding-left:22px}
+li{margin:7px 0}
+.big{font-size:15.5px}
+.quote{border-left:3px solid #d2d2d7;padding:4px 0 4px 14px;color:#444;margin:12px 0}
+.kpi{display:flex;flex-wrap:wrap;gap:12px;margin:14px 0}
+.kpi div{flex:1 1 140px;background:#fafafa;border-radius:10px;padding:12px 14px}
+.kpi b{display:block;font-size:28px;line-height:1.2;color:var(--navy)}
+.kpi span{font-size:12px;color:var(--dim)}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid #ececf0;vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px;white-space:nowrap}
+.warn{background:#fff8ec;border-radius:8px;padding:12px 14px;margin:12px 0;font-size:14px}
+.danger{background:#fff0ef;border-radius:8px;padding:12px 14px;margin:12px 0;font-size:14px}
+.good{background:#eefaf1;border-radius:8px;padding:12px 14px;margin:12px 0;font-size:14px}
+.flow{margin:16px 0}
+.step{background:#fafafa;border-radius:10px;padding:12px 16px;margin:0 0 6px;border-left:3px solid var(--blue)}
+.step b{color:var(--navy)}
+.branch{margin:6px 0 6px 22px;padding:10px 14px;background:#fff;border:1px solid #ececf0;border-radius:9px;font-size:14.5px}
+.branch.yes{border-left:3px solid var(--green)}
+.branch.no{border-left:3px solid var(--amber)}
+.branch.no2{border-left:3px solid var(--red)}
+.deposit{background:#f4f0fb;border-radius:8px;padding:8px 12px;margin-top:8px;font-size:13.5px;color:#4a2f7a}
+.arrow{color:var(--dim);text-align:center;font-size:15px;margin:2px 0}
+label.cm{display:block;margin-top:16px;font-size:12px;color:var(--dim);font-weight:600}
+textarea.cm{width:100%;min-height:62px;margin-top:6px;padding:10px 12px;border:1px solid #d9d9de;border-radius:8px;font:inherit;font-size:14px;background:#fcfcfd;resize:vertical}
+textarea.cm:focus{outline:2px solid var(--blue);outline-offset:1px;background:#fff}
+#sumbox{position:sticky;bottom:0;background:var(--card);border-radius:12px;box-shadow:0 -2px 14px rgba(0,0,0,.10);padding:18px 20px;margin-top:28px;border-left:4px solid var(--green)}
+#sumlist{font-size:13px;color:#333;max-height:170px;overflow-y:auto;margin:10px 0;white-space:pre-wrap;font-family:'SF Mono',ui-monospace,monospace}
+button{font:inherit;font-size:14px;font-weight:600;padding:10px 16px;border-radius:10px;border:0;background:var(--blue);color:#fff;cursor:pointer;margin:4px 6px 4px 0}
+button:disabled{background:#c7c7cc;cursor:default}
+#status{font-size:13px;color:var(--dim);margin-left:4px}
+#status.fail{color:var(--red)}
+#fallback{display:none;width:100%;min-height:120px;margin-top:10px;padding:10px;border:1px solid #d9d9de;border-radius:8px;font-family:'SF Mono',ui-monospace,monospace;font-size:12px}
+footer{color:var(--dim);font-size:12px;margin-top:24px;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>告警值守机制 — PRD 第三版</h1>
+  <div class="sub">FLY-2060 · 2026-08-25 · Honey Lemon</div>
+  <div class="meta">✅ 这一版按你在页面上留的 <b>⑤</b> 和 <b>⑩</b> 两条改了 —— 改了哪儿都在下面标了「<b>按你的留言改的</b>」。<br>
+  每段下面有意见框,写完到最下面点「一键汇总复制」,<b>贴回 issue 讨论串</b>我才收得到 —— 页面不会自动同步。<br>
+  <span style="color:#1a7f37">复制出来的文字<b>自带小节号和小节标题</b>,所以你只要写内容,不用自己标是哪一段。</span></div>
+</header>
+
+<div class="card green" data-sec="⓪ 这一版改了什么">
+  <h2>这一版改了什么(就三条)</h2>
+  <ol style="font-size:15.5px">
+    <li><b>拆活那节整节删了</b> → 换成 <b>⑩ Epic 范围</b>。按你说的:我到 Epic 为止,建单是 Tadashi 的事。</li>
+    <li><b>runbook + contact book 放 Flywheel 仓库</b>,流水不进仓库,不开新 repo。(在 ⑤)</li>
+    <li><b>新增:runbook 的读者是 Infra bot,不是人</b> —— 判据因此变成「bot 照着能不能真解决」,而不是「人读得懂不懂」。(在 ⑤)</li>
+  </ol>
+  <p style="color:var(--dim);font-size:13.5px">其余各节跟你上次看的一样,不用重读。</p>
+</div>
+
+<div class="card red" data-sec="① 现在缺什么">
+  <h2>① 现在缺的是什么</h2>
+  <p class="big">告警频道<b>已经</b>有一套像样的机制 —— 有格式、有「这条该谁修」这一栏、有「新建 → 认领 → 修复中 → 解决 / 升级」的流转。</p>
+  <p class="big"><b>缺的是那个「站上去的人」。</b>现在是逐条点名:被点到名才有人管。没被点名的、点了名但那个 bot 没起来的,就没有任何人在看。</p>
+  <p>你当天说的三件事(切号器喊了一天没人应 / FLY-1969 的卡被埋掉 / 提了一嘴没人管),是<b>同一个洞</b>。</p>
+  <label class="cm" for="c1">意见</label><textarea class="cm" id="c1" placeholder="……"></textarea>
+</div>
+
+<div class="card red" data-sec="② 账本上量到的:一次都没有">
+  <h2>② 我去翻了账本:「有人认领」这一步,两个月一次都没发生过<span class="tag key">最硬的一条</span></h2>
+  <p>系统其实<b>已经在记账</b>了 —— 每条告警的流转都写在一张表里。我把它整个拉出来数(测于今天):</p>
+  <div class="kpi">
+    <div><b>497</b><span>两个月里开出的告警工单(6-23 到 8-21)</span></div>
+    <div><b>0</b><span>其中「有人认领」过的</span></div>
+    <div><b>425</b><span>直接走到「升级」——按现有规则,那正是「没人认领、超时了」的产物</span></div>
+    <div><b>4</b><span>最终标成「已解决」的</span></div>
+  </div>
+  <div class="danger"><b>0 / 497。</b>不是样本太小,是两个月里<b>一次都没有</b>。</div>
+  <div class="good"><b>我特意排掉了一个可能:会不会是这一栏根本没接线?</b><br>
+  不是。写这一栏的代码就在<b>现在正在跑的那个版本</b>里,而且同一段代码在其中 429 条上成功写了别的栏位。<br>
+  ⇒ <b>「认领」是唯一一个从未发生过的状态。</b></div>
+  <p><b>两条我没查到的,先说清楚:</b>① 我只查了这一张表,不能排除「认领」被记在别的地方;② <b>这本账自己也停了</b> —— 8-21 之后就不再有新记录,<b>为什么停我没查</b>(列在待拍板里)。</p>
+  <div class="warn"><b>这条改变了这件事的定性:</b>值守不是从零建一套东西 —— 是在一套<b>已经建好、但从来没有人站上去</b>的机制上,补上那个站上去的人。</div>
+  <label class="cm" for="c2">意见</label><textarea class="cm" id="c2" placeholder="……"></textarea>
+</div>
+
+<div class="card amber" data-sec="③ 被挡在门外的是什么">
+  <h2>③ 被挡在门外的,不只是废话<span class="tag key">纠正一个很自然的推论</span></h2>
+  <p>有一批告警<b>没能真正进到频道</b>(规模我还在跟工程侧对账,列在 Q2)。但<b>它挡下了什么,是数得清的</b> —— 把近一周落在「发不出去」目录里的 462 个文件逐个打开数,Tadashi 那边和我各数一次,结果<b>逐字相同</b>:</p>
+  <table>
+    <tr><th>是什么</th><th>条数</th><th>严重度</th></tr>
+    <tr><td>工作区清理拒绝(同一个清理工重复喊)</td><td><b>414</b>(90%)</td><td>warning</td></tr>
+    <tr><td><b>Bridge 异常退出</b></td><td><b>31</b></td><td><b>severe</b></td></tr>
+    <tr><td>信箱投递失败</td><td>10</td><td>warning</td></tr>
+    <tr><td>工作流引擎告警</td><td>3</td><td>warning</td></tr>
+    <tr><td><b>工作流引擎升级</b></td><td>3</td><td><b>severe</b></td></tr>
+    <tr><td>tmux 救援挂起</td><td>1</td><td>warning</td></tr>
+  </table>
+  <div class="danger"><b>同一个投递故障,把 414 条重复的清理告警,和 31 条「Bridge 挂了」一起挡在了门外。</b><br>
+  按严重度数:被挡下的里面有 <b>34 条 severe</b>。</div>
+  <div class="warn"><b>所以有一个推论要小心:</b>「东西没送到,而我也没觉得少了什么 ⇒ 那些大概都是噪音」。<br>
+  事实是 —— <b>真事你也没看见</b>。「我没感觉」在这里不能当证据,因为<b>没送达本身就是感觉不到的</b>。</div>
+  <p style="color:var(--dim);font-size:13.5px">⛔ 这一版<b>到此为止</b>:哪些该报、哪些不该报是下一层的事,这里只陈述「被挡下的是什么」。</p>
+  <label class="cm" for="c10">意见</label><textarea class="cm" id="c10" placeholder="……"></textarea>
+</div>
+
+<div class="card" data-sec="④ 流程主线">
+  <h2>④ 这套流程长什么样(按你讲的写)<span class="tag ok">你的口径</span></h2>
+  <div class="flow">
+    <div class="step"><b>告警照常发</b> —— 转发的那个东西不是 AI,只负责转发,这次不动它</div>
+    <div class="arrow">↓</div>
+    <div class="step"><b>Claw 先看一眼:这是什么?我会不会解决?</b></div>
+    <div class="branch yes"><b>会解决 →</b> 直接处理
+      <div class="deposit">📘 解决之后<b>写进 on-call runbook</b> —— 下次同类它自己搞定,不用再打扰人</div>
+    </div>
+    <div class="branch no"><b>解决不了 →</b> 查 <b>contact book</b>:这类该找谁?
+      <div class="branch yes" style="margin-left:0"><b>查得到 →</b> @ 那个负责人</div>
+      <div class="branch no2" style="margin-left:0"><b>查不到 →</b> 兜底 @ Tadashi(他最懂整个 infra)
+        <div class="deposit">📗 Tadashi 查明后若发现该找 X → <b>把这条加进 contact book</b>,下次直接找 X</div>
+      </div>
+    </div>
+    <div class="arrow">↓</div>
+    <div class="step"><b>被 @ 的 Lead</b>:进 thread 看上下文 → 接手 → 之后这条 thread 的更新它都收得到,<b>并且必须主动在 thread 里同步进展</b>(不是等人问)</div>
+    <div class="arrow">↓</div>
+    <div class="step"><b>每件事最后必须有明确结论:解决了没有</b>
+      <div class="branch yes" style="margin-left:0"><b>解决了 →</b> thread 可以 archive</div>
+      <div class="branch no" style="margin-left:0"><b>没解决 →</b> thread 继续挂着,<b>不许静默关掉</b>;你不定期翻一下,判断要不要你介入</div>
+    </div>
+  </div>
+  <p><b>另一条线:为什么会发生。</b>主线管「这次怎么收场」,这条管「下次别再来」—— 例如今天 bridge 为什么断?是不是代码没写好?是的话开单去修。</p>
+  <p><b>Lead 接入:</b>平时<b>不被 @ 就不用关注</b>告警频道;一旦在某条 thread 被 @ 就进去接手。</p>
+  <label class="cm" for="c3">意见</label><textarea class="cm" id="c3" placeholder="……"></textarea>
+</div>
+
+<div class="card purple" data-sec="⑤ 两个沉淀(重点)">
+  <h2>⑤ 整件事的重点:两个沉淀<span class="tag key">核心</span></h2>
+  <table>
+    <tr><th>册子</th><th>沉淀什么</th><th>谁写</th><th>下次省掉什么</th></tr>
+    <tr><td><b>📘 on-call runbook</b></td><td>这类问题<b>怎么解决</b></td><td>值守,解决之后立刻写</td><td>省掉「再想一遍怎么修」</td></tr>
+    <tr><td><b>📗 contact book</b></td><td>这类问题<b>该找谁</b></td><td>值守用;<b>Tadashi 兜底查明后必须回填</b></td><td>省掉「到处问该找谁」</td></tr>
+  </table>
+  <p class="big"><b>目的只有一个:下一次少拉一个人进来。</b>(你的原话:省得把一堆人拉进来找来找去)</p>
+  <div class="warn"><b>所以有一条要写死:</b>每次找对了人、或解决了问题,<b>都必须留下一条记录</b> —— 否则下次原样重来,这两本册子等于没有。</div>
+
+  <h2 style="font-size:17px;margin-top:22px">两本册子住哪儿<span class="tag ok">按你的留言改的</span></h2>
+  <table>
+    <tr><th>东西</th><th>放哪儿</th></tr>
+    <tr><td><b>runbook</b>(怎么解决)</td><td><b>Flywheel 仓库</b></td></tr>
+    <tr><td><b>contact book</b>(该找谁)</td><td><b>Flywheel 仓库</b></td></tr>
+    <tr><td>处理流水(每次的过程记录)</td><td><b>不进仓库</b>(你说的「流水不需要进来」)</td></tr>
+    <tr><td>另开一个 alert 专用 repo</td><td><b>不开</b></td></tr>
+  </table>
+  <div class="good"><b>你顺手纠正了我们一个想岔了的地方,我记下来免得以后又绕回去。</b><br>
+  原本的切法是「给我们几个看 → 跟代码住 / 给以后的用户看 → 单独开 repo」。你选的是<b>「给以后用 Flywheel 的人看的」</b>,却<b>放 Flywheel 仓库</b> —— 看起来矛盾,其实是<b>那个二分法本身错了</b>:它默认「以后的用户」是别的项目的用户。<br>
+  <b>但 Flywheel 就是那个产品。</b>别人用 Flywheel,他们的系统<b>就是这个仓库</b> —— 所以给未来用户的 runbook,天然就该<b>跟着 Flywheel 一起发货</b>。<br>
+  ⇒ 判据不是「给谁看」,是<b>它跟谁一起变</b>。</div>
+
+  <h2 style="font-size:17px;margin-top:22px">⚠️ 你这句话把 runbook 的性质改了<span class="tag key">本版最重要</span></h2>
+  <div class="quote">「假设我们做了这个产品之后给我老公用,在他电脑上跑,很有可能 Bridge 跑着跑着负载过大就挂了。我不希望他的东西一挂,他就不知道 GG 了该怎么办……如果我们的产品能有个 Infra bot 帮他解决这些问题,我觉得会非常需要。」<br>
+  「不同的人遇到这个问题,最后解决的方法其实都一样。这样的话,这套 runbook 拿去 share 是完全没问题的。」</div>
+  <p class="big"><b>⇒ 那 runbook 就不是给我们几个人查的文档,是 Infra bot 的知识库。读者是机器,不是人。</b></p>
+  <p>这带来两个后果,都得落到写法上:</p>
+  <table>
+    <tr><th></th><th>变成什么</th></tr>
+    <tr><td><b>① 判据变了</b></td><td>一条 runbook 写得好不好 = <b>Infra bot 照着它能不能真把问题解决掉</b>,不是「人读得懂不懂」。人读着通顺但 bot 执行不了,算没写好。</td></tr>
+    <tr><td><b>② 必须写通用处置</b></td><td>它要能<b>拿去给别人用</b>,所以<b>不能写死我们这台机器的路径、账号、主机名</b>;本机特有的东西要写成「从哪儿取」,而不是把值抄进去。</td></tr>
+  </table>
+  <div class="warn"><b>⛔ 但 Infra bot 本身我这一版不设计。</b>那是你刚抛出来的一个新东西,我在 PRD 里只标一句「后续独立议题」就停住了 —— 没有替你把它展开。</div>
+
+  <h2 style="font-size:17px;margin-top:22px">contact book:我照你说的,不把它设计复杂</h2>
+  <div class="quote">「现在 alert 的内容也都是 Flywheel 这个系统怎么样,我猜就算我们列了一堆 contact book,最后能解决问题的人可能也就只有他」</div>
+  <p>⇒ 如实写进去了:<b>现阶段近乎单点</b>。它现在的价值不在「分流给很多人」,而在<b>把「该找谁」从每次重新判断变成查一次表</b> —— 哪怕表上大部分行都指向同一个人。复杂度跟着实际负责人数量长,不一开始就按多人设计。</p>
+  <label class="cm" for="c4">意见</label><textarea class="cm" id="c4" placeholder="……"></textarea>
+</div>
+
+<div class="card amber" data-sec="⑥ 为什么这次不会重演">
+  <h2>⑥「这次为什么不会重演上次那样没人管」—— 我的答案是「一半成立」<span class="tag ask">请重点看</span></h2>
+  <p>值守席位 = <b>Claw</b>(24 小时在线、已经有自己动手修的权限、本职活少)。但光说「换个 bot」不算回答。上次 Cass 做不灵的成因是<b>主职太杂、值守被淹没</b>;而值守本身会让活变多 —— 那正是淹掉她的机制。所以我认真推了一遍:</p>
+
+  <p><b>第一步,先把「被淹」拆成两种不一样的失败:</b></p>
+  <table>
+    <tr><th></th><th>怎么发生的</th><th>看起来是什么样</th></tr>
+    <tr><td><b>A 被淹没</b></td><td>事情多 <b>+ 跟别的主职抢同一份注意力</b></td><td>「它在忙别的,告警没人看」</td></tr>
+    <tr><td><b>B 被压垮</b></td><td>事情多,<b>但没有别的事在抢</b>,就是做不完</td><td>「它什么别的都没干,还是处理不完」</td></tr>
+  </table>
+  <p><b>Cass 死于 A,不是 B。</b>换到 Claw,A 的成因<b>结构性地不在了</b>——值守是它的主职,没有别的活跟它抢。</p>
+  <div class="warn"><b>⇒ 所以「会不会重演 Cass」的答案是:不会。但这只是把风险从 A 换成了 B。</b></div>
+
+  <p><b>第二步,活会不会自己变少?分两条线,答案不一样:</b></p>
+  <div class="good"><b>✅「该找谁」这条线:会。而且理由挺硬。</b><br>
+  contact book 的条目上限是<b>问题的种类数</b>,不是问题的<b>次数</b> —— 这是量级差:种类几十,次数几百上千。查明一条永久受益,以后就是「查表 → @」。兜底位的负担是先高后低。<br>
+  <span style="color:var(--dim)">(实测:全部记录里一共 63 个不同种类,而近一周就有几百次。)</span></div>
+  <div class="danger"><b>❌「怎么解决」这条线:不会。我不掩饰这一点。</b><br>
+  runbook 让<b>每一次</b>处理更便宜,但<b>次数一点没变</b>。实测有一个种类一周 416 次 —— 哪怕单次从 5 分钟压到 30 秒,还是每天几十次。<br>
+  <b>真正让活变少的是「掐掉源头」或「让机器自己做」,不是写手册。</b>而这两件事都不在这一版里。</div>
+
+  <p><b>第三步,还有一个我没法回避的:</b>写册子本身就是活。所以自己变少是<b>先增后减</b>的曲线 —— 而 Cass 恰恰倒在「增」那一段。</p>
+
+  <div class="danger"><b>我的诚实结论:</b><br>
+  · 会不会重演 Cass 那种被淹没?<b>不会</b> —— 成因不在了<br>
+  · 活会不会自己变少?<b>「找谁」会,「解决」不会</b><br>
+  · 那 Claw 会不会被压垮?<b>有可能,尤其在头一段。这条我不能证明它不会。</b></div>
+  <p><b>四个不能砍的前提</b>(砍掉任何一条,上面的话立刻不成立):① 值守是主职,不跟别的抢;② 沉淀是必经步骤,不是「有空再写」;③ 册子必须真的被查,而且查表要比重新想更省事;④ 新种类上线前必须先在册子里。</p>
+  <p><b>外加一条行为要求(不是考核):</b>值守<b>处理不过来的时候必须主动说</b>,而不是默默堆积 —— 因为 B 那种失败只有它自己看得见。</p>
+  <label class="cm" for="c5">意见(尤其:你接不接受「一半成立」这个答法)</label><textarea class="cm" id="c5" placeholder="……"></textarea>
+</div>
+
+<div class="card gray" data-sec="⑦ 明确不做的">
+  <h2>⑦ 这一版明确<b>不</b>做的</h2>
+  <ul>
+    <li>⛔ <b>不设任何主指标 / 考核指标</b>(上一版那套整条删了)</li>
+    <li>⛔ <b>不设任何 hard limit</b>(比如一天最多发几条)</li>
+    <li>⛔ <b>不设计「噪音怎么判定」那一层</b> —— 先把这一层做好</li>
+    <li>⛔ 不动转发那个组件</li>
+    <li>⛔ 不带回全局 QA 门 / CI 证据门</li>
+    <li>⛔ 不写工程怎么实现 —— 只写要什么、流程长什么样</li>
+    <li>⛔ 不重建告警管道;给你的通知仍然走 issue thread,不进告警频道</li>
+  </ul>
+  <label class="cm" for="c6">意见</label><textarea class="cm" id="c6" placeholder="……"></textarea>
+</div>
+
+<div class="card purple" data-sec="⑧ 要你拍板的">
+  <h2>⑧ 还要你拍板的<span class="tag ask">我不自己填</span></h2>
+  <p style="font-size:13.5px;color:#1a7f37">✅ 原来的 Q4(册子放哪儿)你已经答了,已从这里拿掉,写进 ⑤ 了。</p>
+  <table>
+    <tr><th>#</th><th>问题</th><th>我的倾向</th></tr>
+    <tr><td>Q1</td><td><b>值守自己挂了谁管?</b>现在「infra bot 挂了」这条告警的负责人写的就是它自己</td><td>交给 Codex 那边的 bot(和「谁都不救自己」同构)</td></tr>
+    <tr><td>Q2</td><td>有迹象显示<b>某个来源的告警没能真正进到频道</b>(实测一周 416 条同一类同一原因)。数字口径我还在跟 Tadashi 那边对账</td><td>这一版不设计解法;核准后单开一张单</td></tr>
+    <tr><td>Q3</td><td>Cass 现在还是自动修复的执行身份,移交后她和值守的边界?</td><td>Cass 完全退出值守</td></tr>
+    <tr><td>Q5</td><td>「没解决」的 thread 要不要定期给你汇总一份现成清单?</td><td>要,你自己判断要不要介入</td></tr>
+    <tr><td>Q6</td><td>被 @ 的 Lead 多久没动静算失联?</td><td>不设硬性时限;值守再 @ 一次并写在 thread 里</td></tr>
+    <tr><td>Q7</td><td><b>那本账 8-21 之后为什么停了?</b></td><td>没查,建议开单查明</td></tr>
+  </table>
+  <label class="cm" for="c7">你的答复(可以只答其中几个)</label><textarea class="cm" id="c7" placeholder="Q1: … / Q2: … "></textarea>
+</div>
+
+<div class="card gray" data-sec="⑨ 我不确定的地方">
+  <h2>⑨ 我不确定的地方(摊开说)</h2>
+  <ol>
+    <li><b>「怎么解决」那条线我论证不成立</b>,没绕过去写成好听的话。</li>
+    <li><b>头一段是净增负担</b>,而那正是上次倒下的那一段。我没有解法,只有「处理不过来要主动说」这个补救。</li>
+    <li><b>contact book 第一版的粗细我没定死</b>。太粗老是兜底,太细没人维护。建议先照现有的对照表改写起步,跑一段再调。</li>
+    <li><b>②里的 0/497,我查到「写入的代码在跑着的版本里」这一层,但只查了那一张表</b> —— 正确读法是「在这本账上一次都没发生过」,不是「全世界没人认领过」。</li>
+    <li><b>那个一周 416 次的种类,我判不清它是不是该报。</b>它的意思是「它保住了一个没登记的工作区」——那可能<b>恰恰是它在正常起作用</b>。所以我判不清的点是:我分不清「它频繁触发」是坏事,还是它正在干正确的事。</li>
+  </ol>
+  <label class="cm" for="c8">意见</label><textarea class="cm" id="c8" placeholder="……"></textarea>
+</div>
+
+<div class="card green" data-sec="⑩ Epic 范围(原来那节拆活已删)">
+  <h2>⑩ 我不拆单了,只划范围<span class="tag ok">按你的留言改的</span></h2>
+  <div class="quote">「你需要拆出来这么多活吗?……你直接做一个 PRD,把这个 PRD 写好之后给 tadashi,让他自己去拆吧,你不要自己给他拆一堆活出来……出个 Epic,然后 Tadashi 自己往那个 Epic 下面去建单就可以了」</div>
+  <p><b>原来那节 11 条「拆出来的活」整节删了</b>,换成下面这个范围。而且我把它当<b>常设规矩</b>记下来了:以后我的产出<b>到 Epic 为止</b>,建单是 Tadashi 的事。</p>
+
+  <h2 style="font-size:17px;margin-top:20px">这个 Epic 要解决哪些问题</h2>
+  <ol>
+    <li>告警队列<b>没有人对整体负责</b> —— 没被点名的、点了名但没人起来的,全部落地为零</li>
+    <li><b>「有人认领」这一步从来没发生过</b>(账本上 0 / 497)</li>
+    <li>「该找谁」每次重新判断,<b>判明的结果没有沉淀</b></li>
+    <li>「怎么解决」每次重新想,<b>解法没有沉淀</b>,而且将来要能<b>被 Infra bot 直接使用</b></li>
+    <li>被 @ 的人<b>接手之后没有可见的进展同步</b></li>
+    <li>事情<b>没有明确终点</b> —— 既没有「解决了」也没有「没解决但挂着可见」</li>
+    <li>只收场、<b>不问为什么发生</b>,同一件事会再来</li>
+    <li>Lead <b>要么全看要么看不到</b>,没有「不被 @ 不用管、被 @ 必看」这一档</li>
+  </ol>
+
+  <h2 style="font-size:17px;margin-top:20px">这个 Epic 不覆盖</h2>
+  <ul>
+    <li>⛔ 噪音怎么判定(下一层)</li>
+    <li>⛔ <b>Infra bot 本身的设计</b>(你刚提的新方向,独立议题)</li>
+    <li>⛔ 告警转发那个组件 —— 不动</li>
+    <li>⛔ 任何指标 / 考核 / hard limit / 全局 QA 门</li>
+    <li>⛔ 工程怎么实现 —— Tadashi 建单时定</li>
+    <li>🔶 那批「没能进频道」的告警(Q2):规模待核准,归不归这个 Epic 由 Tadashi 判</li>
+    <li>🔶 那本账为什么停(Q7):没诊断;它决定这个 Epic 落在哪本账上,建议先查明</li>
+  </ul>
+
+  <h2 style="font-size:17px;margin-top:20px">什么算做完</h2>
+  <ol>
+    <li>有<b>一个明确的值守席位</b>,对<b>整条队列</b>负责,不只对点名到它的那些</li>
+    <li>每条告警都<b>落到一个明确去向</b>,没有无人过问的</li>
+    <li><b>两本册子真实存在于 Flywheel 仓库里,并且在长</b>:解决过的写进 runbook,查明过的路由写进 contact book;兜底一次回填一次</li>
+    <li>runbook 的条目是<b>通用处置</b>,不写死本机路径账号 —— 即「拿去 share 没问题」</li>
+    <li>被 @ 的人接手后,<b>thread 里看得到进展</b></li>
+    <li>每件事都有<b>明确结论</b>:解决了(可 archive)/ 没解决(挂着可见)</li>
+    <li>Lead <b>不被 @ 收不到、被 @ 必达</b></li>
+    <li>判定为代码问题的,<b>有单去修</b></li>
+  </ol>
+  <label class="cm" for="c9">意见</label><textarea class="cm" id="c9" placeholder="……"></textarea>
+</div>
+
+<div id="sumbox">
+  <h2 style="margin-bottom:2px">意见汇总</h2>
+  <div style="font-size:13px;color:var(--dim)">写完点下面的按钮复制,<b>贴回 issue 讨论串</b>我才收得到 —— 页面不会自动同步。</div>
+  <div id="sumlist">(还没有填写任何意见)</div>
+  <div id="btns"></div>
+  <span id="status"></span>
+  <textarea id="fallback" readonly></textarea>
+</div>
+
+<footer>FLY-2060 · PRD v3 · 2026-08-26</footer>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(()=>{
+  var MARK = "【页面意见汇总】FLY-2060";
+  var LIMIT = 1800;
+  var PREFIX = "fly2060-review:" + location.pathname + ":";
+  var cards = [].slice.call(document.querySelectorAll(".card[data-sec]"));
+  var items = [];
+  cards.forEach(function(card){
+    var ta = card.querySelector("textarea.cm");
+    if(!ta) return;
+    var sec = card.getAttribute("data-sec") || "";
+    var key = PREFIX + ta.id;
+    try { var saved = localStorage.getItem(key); if(saved !== null) ta.value = saved; } catch(e){}
+    ta.addEventListener("input", function(){
+      try { localStorage.setItem(key, ta.value); } catch(e){}
+      render();
+    });
+    items.push({ sec: sec, ta: ta });
+  });
+
+  var sumlist = document.getElementById("sumlist");
+  var btns = document.getElementById("btns");
+  var status = document.getElementById("status");
+  var fallback = document.getElementById("fallback");
+  var chunks = [];
+
+  function buildBlocks(){
+    var out = [];
+    items.forEach(function(it){
+      var v = (it.ta.value || "").trim();
+      if(!v) return;
+      out.push("## " + it.sec + "\n" + v);
+    });
+    return out;
+  }
+
+  function buildChunks(blocks){
+    if(blocks.length === 0) return [];
+    var res = [], cur = "";
+    for(var i=0;i<blocks.length;i++){
+      var b = blocks[i];
+      var candidate = cur ? (cur + "\n\n" + b) : (MARK + "\n\n" + b);
+      if(cur && candidate.length > LIMIT){
+        res.push(cur);
+        cur = MARK + "\n\n" + b;
+      } else {
+        cur = candidate;
+      }
+    }
+    if(cur) res.push(cur);
+    return res;
+  }
+
+  function render(){
+    var blocks = buildBlocks();
+    chunks = buildChunks(blocks);
+    sumlist.textContent = blocks.length === 0 ? "(还没有填写任何意见)" : blocks.join("\n\n");
+    while(btns.firstChild) btns.removeChild(btns.firstChild);
+    if(chunks.length === 0){
+      var b0 = document.createElement("button");
+      b0.textContent = "一键汇总复制";
+      b0.disabled = true;
+      btns.appendChild(b0);
+      return;
+    }
+    if(chunks.length === 1){
+      addBtn("一键汇总复制", 0);
+    } else {
+      for(var i=0;i<chunks.length;i++){
+        addBtn("复制第 " + (i+1) + " / " + chunks.length + " 段", i);
+      }
+      var hint = document.createElement("div");
+      hint.style.fontSize = "12px";
+      hint.style.color = "#86868b";
+      hint.style.marginTop = "4px";
+      hint.textContent = "意见较长,分成 " + chunks.length + " 段,请逐段复制粘贴(每段开头都有同一个标记行)。";
+      btns.appendChild(hint);
+    }
+  }
+
+  function addBtn(label, idx){
+    var b = document.createElement("button");
+    b.textContent = label;
+    b.addEventListener("click", function(){ doCopy(chunks[idx], label); });
+    btns.appendChild(b);
+  }
+
+  function doCopy(text, label){
+    function finish(ok){
+      if(ok){
+        fallback.style.display = "none";
+        status.className = "";
+        status.textContent = "已复制(" + label + "),请贴回 issue 讨论串";
+      } else {
+        fallback.value = text;
+        fallback.style.display = "block";
+        fallback.focus();
+        fallback.select();
+        status.className = "fail";
+        status.textContent = "浏览器不允许自动复制;下方文本已选中,请按 ⌘C";
+      }
+    }
+    function tryExec(){
+      fallback.value = text;
+      fallback.style.display = "block";
+      fallback.focus();
+      fallback.select();
+      var done = false;
+      try { done = document.execCommand("copy"); } catch(e){ done = false; }
+      finish(done);
+    }
+    try {
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        navigator.clipboard.writeText(text).then(function(){ finish(true); }, tryExec);
+        return;
+      }
+    } catch(e){}
+    tryExec();
+  }
+
+  render();
+})();
+</script>
+</body>
+</html>
