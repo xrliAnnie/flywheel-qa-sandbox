@@ -2446,16 +2446,16 @@ test_fly1364_non_directory_lease_node_fails_closed() {
 }
 
 test_once_detects_watcher() {
-  # Research §3.3 Option b: --once must short-circuit when --watch is running.
+  # FLY-2048: --once must fail loud and name the lease-handover cleanup path
+  # when --watch is running; a successful no-op is not an operator action.
   echo "Test: once_detects_watcher"
   reset_mocks
   MOCK_PGREP_HIT="1"
   local stderr_file="$TMPDIR_ROOT/once.stderr"
-  # sync_once contains `exit 0` on the detect branch → run in subshell.
   ( sync_once ) >/dev/null 2>"$stderr_file"
   local rc=$?
-  if [[ $rc -eq 0 ]] && grep -q -- "--refresh" "$stderr_file"; then
-    pass "subshell exit 0 + stderr suggests --refresh"
+  if [[ $rc -ne 0 ]] && grep -q -- "--converge-runners --handover" "$stderr_file"; then
+    pass "watcher collision fails loud and suggests the handover convergence path"
   else
     fail "rc=$rc stderr=$(cat "$stderr_file")"
   fi
@@ -4624,6 +4624,81 @@ _fly293_fixture() {
   printf 'committed|cmux-test-generation|workspace:36|FLY-637-runner-codex-G-FLY-626-follow-up\n' > "$VIEW_LEDGER"
 }
 
+_fly2048_prepared_fixture() {
+  reset_mocks
+  MOCK_TMUX_SESSIONS='flywheel'
+  MOCK_TMUX_WINDOWS='flywheel|@0|zsh'
+  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[
+    {"ref":"workspace:2048","id":"00000000-0000-4000-8000-000000002048","title":"FLY-2048-runner-codex-G-zombie"}
+  ]}'
+  test_ensure_mutator_lease || return 1
+  printf 'prepared|cmux-test-generation|workspace:2048|FLY-2048-runner-codex-G-zombie|00000000-0000-4000-8000-000000002048\n' > "$VIEW_LEDGER"
+}
+
+test_fly2048_prepared_uuid_orphan_is_exactly_reaped() {
+  echo "Test: FLY-2048 exact five-field prepared orphan enters the shared close path"
+  _fly2048_prepared_fixture
+  local refs rc=0
+  refs=$(orphan_pin_refs) || rc=$?
+  if [[ "$rc" == 0 && "$refs" == $'workspace:2048\tFLY-2048-runner-codex-G-zombie' ]]; then
+    pass "exact prepared orphan enumerated"
+  else
+    fail "exact prepared orphan missing rc=$rc refs=[$refs]"
+  fi
+  reap_orphan_pins_oneshot >/dev/null
+  if echo "$MOCK_CMUX_OPS" | grep -q '^close-workspace --workspace workspace:2048$' \
+      && ! grep -q 'workspace:2048' "$VIEW_LEDGER" 2>/dev/null; then
+    pass "exact prepared orphan closed and receipt removed"
+  else
+    fail "prepared orphan did not converge ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)]"
+  fi
+}
+
+test_fly2048_prepared_legacy_or_uuid_drift_stays_fail_closed() {
+  echo "Test: FLY-2048 legacy prepared and UUID drift never authorize close"
+  _fly2048_prepared_fixture
+  printf 'prepared|cmux-test-generation|workspace:2048|FLY-2048-runner-codex-G-zombie\n' > "$VIEW_LEDGER"
+  local legacy_refs drift_refs
+  legacy_refs=$(orphan_pin_refs)
+  _fly2048_prepared_fixture
+  printf 'prepared|cmux-test-generation|workspace:2048|FLY-2048-runner-codex-G-zombie|00000000-0000-4000-8000-000000009999\n' > "$VIEW_LEDGER"
+  drift_refs=$(orphan_pin_refs)
+  if [[ -z "$legacy_refs" && -z "$drift_refs" && -z "$MOCK_CMUX_OPS" ]]; then
+    pass "legacy prepared and UUID drift preserved"
+  else
+    fail "prepared fail-closed boundary drifted legacy=[$legacy_refs] uuid=[$drift_refs] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
+test_fly2048_prepared_close_request_keeps_tristate_contract() {
+  echo "Test: FLY-2048 prepared close-request uses exact close and preserves rc=1/rc=2 semantics"
+  _fly2048_prepared_fixture
+  printf 'FLY-2048-runner-codex-G-zombie\n' > "$CLOSE_REQUEST_FILE"
+  process_close_requests
+  local exact_closed=0
+  echo "$MOCK_CMUX_OPS" | grep -q '^close-workspace --workspace workspace:2048$' && exact_closed=1
+
+  _fly2048_prepared_fixture
+  printf 'FLY-2048-runner-codex-G-zombie\n' > "$CLOSE_REQUEST_FILE"
+  MOCK_TMUX_WINDOWS=$'flywheel|@0|zsh\nrunner-flywheel|@2048|FLY-2048-runner-codex-G-zombie'
+  MOCK_TMUX_SESSIONS=$'flywheel\nrunner-flywheel'
+  process_close_requests
+  local live_requeued=0
+  [[ -f "$CLOSE_REQUEST_FILE" ]] && live_requeued=1
+
+  _fly2048_prepared_fixture
+  printf 'FLY-2048-runner-codex-G-zombie\n' > "$CLOSE_REQUEST_FILE"
+  MOCK_CMUX_CLOSE_FAIL=1
+  process_close_requests
+  if [[ "$exact_closed" == 1 && "$live_requeued" == 0 \
+      && -f "$CLOSE_REQUEST_FILE" \
+      && "$(cat "$CLOSE_REQUEST_FILE")" == 'FLY-2048-runner-codex-G-zombie' ]]; then
+    pass "prepared marker closes exact orphan, drops live predicate skip, and requeues close uncertainty"
+  else
+    fail "prepared close-request tristate drifted closed=$exact_closed live_requeued=$live_requeued retry=[$(cat "$CLOSE_REQUEST_FILE" 2>/dev/null)]"
+  fi
+}
+
 test_fly293_managed_title_gate() {
   echo "Test: is_managed_runner_title — source-accurate (legacy, model, and phase labels)"
   reset_mocks
@@ -5039,6 +5114,9 @@ test_fly685_close_request_requeues_on_close_mutation_failure() {
 
 echo ""
 echo "═══ FLY-293: orphan cmux workspace-pin reaper ═══"
+test_fly2048_prepared_uuid_orphan_is_exactly_reaped
+test_fly2048_prepared_legacy_or_uuid_drift_stays_fail_closed
+test_fly2048_prepared_close_request_keeps_tristate_contract
 test_fly293_managed_title_gate
 test_fly293_orphan_pin_refs_identifies_only_orphan
 test_fly293_orphan_pin_refs_json_fail_rc2
@@ -5704,7 +5782,7 @@ test_fly1272_skip_rc_never_kills_watcher() {
     set -euo pipefail
     get_tmux_agent_windows() { printf '%s\n' 'runner-flywheel|@42|FLY-1272-implement'; }
     reconcile_existing_workspaces() { return 0; }
-    refresh_linked_sessions() { return 1; }
+    prepare_linked_view_state() { return 1; }
     create_workspace_for_window() { : > "$unsafe_after_skip"; }
     self_heal_sweep_all() { : > "$unsafe_after_skip"; }
     sync_additive_bootstrap
@@ -5717,7 +5795,7 @@ test_fly1272_skip_rc_never_kills_watcher() {
     register_hooks_on_new_sessions() { return 0; }
     get_tmux_agent_windows() { printf '%s\n' 'runner-flywheel|@42|FLY-1272-implement'; }
     reconcile_existing_workspaces() { return 0; }
-    refresh_linked_sessions() { return 1; }
+    prepare_linked_view_state() { return 1; }
     create_workspace_for_window() { : > "$unsafe_after_skip"; }
     cleanup_stale_conservative() { : > "$unsafe_after_skip"; }
     sync_additive
@@ -8498,7 +8576,10 @@ test_fly1482_authority_latch_stops_inner_batch_loops() {
       get_tmux_agent_windows() {
         printf "runner-flywheel|@1|FLY-1482-one\nrunner-flywheel|@2|FLY-1482-two\n"
       }
-      refresh_linked_sessions() { return 0; }
+      prepare_linked_view_state() { return 0; }
+      refresh_linked_sessions_tail() { return 0; }
+      advance_attach_reap_state() { :; }
+      discover_orphan_attach_helpers() { :; }
       reconcile_existing_workspaces() { :; }
       reconcile_workspace_titles() { :; }
       workspace_exists_for() { return 1; }
@@ -8510,7 +8591,7 @@ test_fly1482_authority_latch_stops_inner_batch_loops() {
       cleanup_stale_conservative() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       reap_ghost_workspaces() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
       reap_unledgered_stock_workspaces() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
-      reap_orphan_workspace_pins() { printf "tail-mutation\n" >> "$TRACE_FILE"; }
+      reap_orphan_workspace_pins() { :; }
       sync_additive
     ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1
   local additive_creates tail_mutations
@@ -9865,6 +9946,22 @@ test_fly1364_stock_adoption_two_pass_exact_close() {
   fi
 }
 
+test_fly2048_operator_adopts_legacy_prepared_stock() {
+  echo "Test: FLY-2048 operator convergence adopts an exact legacy prepared orphan"
+  _fly1364_stock_fixture fly-1385-closed-stock.json
+  local workspace_ref workspace_title
+  IFS='|' read -r workspace_ref workspace_title <<< "$(_fly1364_fixture_workspace_row fly-1385-closed-stock.json)"
+  test_ledger_upsert prepared generation-stock "$workspace_ref" "$workspace_title"
+  FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED=1 reap_unledgered_stock_workspaces
+  FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED=1 reap_unledgered_stock_workspaces
+  if [[ "$(grep -c "^close-workspace --workspace $workspace_ref$" <<< "$MOCK_CMUX_OPS" || true)" == 1 \
+      && ! -s "$VIEW_LEDGER" && ! -s "$ADOPTION_STATE" ]]; then
+    pass "two exact stock observations promote and close legacy prepared authority"
+  else
+    fail "legacy prepared stock stayed visible ops=[$MOCK_CMUX_OPS] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] adoption=[$(cat "$ADOPTION_STATE" 2>/dev/null)]"
+  fi
+}
+
 test_fly1364_stock_adoption_malformed_duplicate_is_not_candidate() {
   echo "Test: FLY-1364 R6 stock adoption — malformed same-title duplicates block every candidate"
   _fly1364_stock_fixture fly-1385-closed-stock.json
@@ -10581,6 +10678,7 @@ test_fly1364_complete_stock_fixtures_drive_terminal_state
 test_fly1364_raw_attach_normalization_is_exact
 test_fly1364_raw_attach_blocks_unledgered_view_teardown
 test_fly1364_stock_adoption_two_pass_exact_close
+test_fly2048_operator_adopts_legacy_prepared_stock
 test_fly1364_stock_adoption_malformed_duplicate_is_not_candidate
 test_fly1364_once_heals_quiet_strict_sole_holder
 test_fly1364_raw_attach_stock_adoption
@@ -11273,7 +11371,10 @@ test_fly1605_title_reconcile_mounts_after_refresh_before_create() {
         reconcile_roster_read_phase() { printf "roster\n" >> "$TRACE_FILE"; }
         register_hooks_on_new_sessions() { :; }
         get_tmux_agent_windows() { printf "runner-flywheel|@1605|FLY-1605-design-claude\n"; }
-        refresh_linked_sessions() { printf "refresh\n" >> "$TRACE_FILE"; return "$REFRESH_RC"; }
+        prepare_linked_view_state() { printf "refresh\n" >> "$TRACE_FILE"; return "$REFRESH_RC"; }
+        refresh_linked_sessions_tail() { :; }
+        advance_attach_reap_state() { :; }
+        discover_orphan_attach_helpers() { :; }
         reconcile_existing_workspaces() { printf "existing\n" >> "$TRACE_FILE"; }
         reconcile_workspace_titles() { printf "titles:%s\n" "$1" >> "$TRACE_FILE"; }
         workspace_exists_for() { printf "exists\n" >> "$TRACE_FILE"; return 1; }
@@ -11307,7 +11408,10 @@ test_fly1605_title_reconcile_mounts_after_refresh_before_create() {
         reconcile_roster_read_phase() { :; }
         register_hooks_on_new_sessions() { :; }
         get_tmux_agent_windows() { printf "runner-flywheel|@1605|FLY-1605-design-claude\n"; }
-        refresh_linked_sessions() { printf "refresh\n" >> "$TRACE_FILE"; return "$REFRESH_RC"; }
+        prepare_linked_view_state() { printf "refresh\n" >> "$TRACE_FILE"; return "$REFRESH_RC"; }
+        refresh_linked_sessions_tail() { :; }
+        advance_attach_reap_state() { :; }
+        discover_orphan_attach_helpers() { :; }
         reconcile_existing_workspaces() { printf "existing\n" >> "$TRACE_FILE"; }
         reconcile_workspace_titles() { printf "titles\n" >> "$TRACE_FILE"; }
         workspace_exists_for() { printf "exists\n" >> "$TRACE_FILE"; return 1; }
@@ -11331,6 +11435,67 @@ test_fly1605_title_reconcile_mounts_after_refresh_before_create() {
     fi
   done
   [[ "$ok" == "1" ]] && pass "all three passes reuse the captured roster only after conclusive refresh and before create"
+}
+
+test_fly2048_cleanup_mounts_between_wal_pre_and_refresh_tail() {
+  echo "Test: FLY-2048 — Lead/hooks stay first; cleanup runs after WAL pre and before refresh tail"
+  reset_mocks
+  local mode trace verdict ok=1
+  for mode in bootstrap additive; do
+    trace="$TMPDIR_ROOT/fly2048-order-$mode.trace"
+    : > "$trace"
+    TRACE_FILE="$trace" PASS_MODE="$mode" \
+      FLYWHEEL_CMUX_MAINTENANCE_MARKER="$TMPDIR_ROOT/no-maintenance" \
+      /bin/bash -c '
+        source "$1"
+        reconcile_roster_read_phase() { printf "roster\n" >> "$TRACE_FILE"; }
+        cmux_attach_birth_cache_prime() { printf "birth\n" >> "$TRACE_FILE"; }
+        reconcile_v2_lead_workspaces() { printf "lead\n" >> "$TRACE_FILE"; }
+        register_hooks_on_new_sessions() { printf "hooks\n" >> "$TRACE_FILE"; }
+        prepare_linked_view_state() { printf "pre:%s\n" "$1" >> "$TRACE_FILE"; }
+        advance_attach_reap_state() { printf "advance\n" >> "$TRACE_FILE"; }
+        discover_orphan_attach_helpers() { printf "discover\n" >> "$TRACE_FILE"; }
+        reap_orphan_workspace_pins() { printf "pins\n" >> "$TRACE_FILE"; }
+        refresh_linked_sessions_tail() {
+          printf "tail:bootstrap=%s\n" "${RESTORED_BOOTSTRAP_PASS:-0}" >> "$TRACE_FILE"
+          return 1
+        }
+        refresh_linked_sessions() { printf "legacy-refresh\n" >> "$TRACE_FILE"; return 1; }
+        get_tmux_agent_windows() { printf "runner-flywheel|@2048|FLY-2048-implement\n"; }
+        reconcile_existing_workspaces() { printf "existing\n" >> "$TRACE_FILE"; }
+        reconcile_workspace_titles() { printf "titles\n" >> "$TRACE_FILE"; }
+        workspace_exists_for() { printf "exists\n" >> "$TRACE_FILE"; return 1; }
+        create_workspace_for_window() { printf "create\n" >> "$TRACE_FILE"; }
+        self_heal_sweep_all() { :; }
+        cleanup_stale_conservative() { :; }
+        reap_ghost_workspaces() { :; }
+        reap_unledgered_stock_workspaces() { :; }
+        case "$PASS_MODE" in
+          bootstrap) sync_additive_bootstrap ;;
+          additive) sync_additive ;;
+        esac
+      ' _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" >/dev/null 2>&1 || ok=0
+    verdict=$(awk -v mode="$mode" '
+      $0=="lead" {lead=NR}
+      $0=="hooks" {hooks=NR}
+      $0=="pre:pre" {pre=NR}
+      $0=="advance" {advance=NR}
+      $0=="discover" {discover=NR}
+      $0=="pins" {pins=NR}
+      /^tail:bootstrap=/ {tail=NR; flag=$0}
+      END {
+        prefix=(lead>0 && pre>lead && (mode!="additive" || hooks>lead && pre>hooks))
+        cleanup=(advance>pre && discover>advance && pins>discover && tail>pins)
+        expected=(mode=="bootstrap" ? "tail:bootstrap=1" : "tail:bootstrap=0")
+        print (prefix && cleanup && flag==expected) ? "yes" : "no"
+      }
+    ' "$trace")
+    if [[ "$verdict" != yes ]] || grep -Eq '^(legacy-refresh|existing|titles|exists|create)$' "$trace"; then
+      fail "$mode split ordering drifted trace=[$(tr '\n' ';' < "$trace")]"
+      ok=0
+    fi
+  done
+  [[ "$ok" == 1 ]] && pass "cleanup is reachable before heavy refresh failure without moving Lead/hooks or bootstrap budget"
 }
 
 test_fly1605_ambiguous_legacy_tmux_generation_preserves_wal() {
@@ -11388,6 +11553,7 @@ test_fly1605_generation_flip_blocks_stock_rename
 test_fly1605_report_only_preserves_raw_extra_and_alerts
 test_fly1605_winner_order_ignores_stale_receipt_and_prefers_pin
 test_fly1605_title_reconcile_mounts_after_refresh_before_create
+test_fly2048_cleanup_mounts_between_wal_pre_and_refresh_tail
 test_fly1605_ambiguous_legacy_tmux_generation_preserves_wal
 
 echo ""

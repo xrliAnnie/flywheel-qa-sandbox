@@ -535,6 +535,7 @@ tmux new-session -d -t "runner-test-fly293" -s "cmux-FLY-100-claude-alive" 2>/de
 FLY293_OPS_FILE="$TMPDIR_ROOT/fly293-ops"
 : > "$FLY293_OPS_FILE"
 export FLY293_OPS_FILE
+export FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS=1
 cmux() {
   [[ "${1:-}" == "--socket" ]] && shift 2
   [[ "${1:-}" == "--json" ]] && shift
@@ -590,6 +591,7 @@ if [[ $d293_fc_rc -eq 2 && -z "$d293_fc_out" ]]; then
 else
   fail "Scenario E: expected rc=2 on tmux-down, got rc=$d293_fc_rc out=[$d293_fc_out]"
 fi
+unset FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS
 unset -f cmux cmux_socket_identity 2>/dev/null || true
 
 # ── Summary ───────────────────────────────────────────────────────────

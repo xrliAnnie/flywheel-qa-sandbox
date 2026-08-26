@@ -191,7 +191,7 @@ cmux_mutator_command_matches() {
     *) return 1 ;;
   esac
   case "$verb" in
-    ""|--watch|--once|--refresh|--reap-orphan-pins|--qa-teardown|--rebuild-views) return 0 ;;
+    ""|--watch|--once|--refresh|--reap-orphan-pins|--qa-teardown|--rebuild-views|--converge-runners) return 0 ;;
     *) return 1 ;;
   esac
 }

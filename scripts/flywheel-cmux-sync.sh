@@ -262,7 +262,7 @@ _alert_cmux_cleanup() {
   fi
   CMUX_CLEANUP_ALERT_LATCH+="${CMUX_CLEANUP_ALERT_LATCH:+$'\n'}${key}"
   CMUX_CLEANUP_ALERT_LATCH_COUNT=$((CMUX_CLEANUP_ALERT_LATCH_COUNT + 1))
-  flywheel_alert cmux_cleanup warning "$title" "$body" "$signature"
+  flywheel_alert cmux_cleanup warning "$title" "$body" "$signature" || true
   return 0
 }
 
@@ -2239,8 +2239,13 @@ _stock_final_close_guard() {
     "$_GUARD_STOCK_NORMALIZED" "$_GUARD_STOCK_EVIDENCE" "$_GUARD_STOCK_FINGERPRINT"
 }
 
+CMUX_STOCK_SWEEP_CONCLUSIVE=0
 reap_unledgered_stock_workspaces() {
-  [[ "${FLYWHEEL_CMUX_STOCK_ADOPTION:-1}" == "0" ]] && return 0
+  CMUX_STOCK_SWEEP_CONCLUSIVE=0
+  if [[ "${FLYWHEEL_CMUX_STOCK_ADOPTION:-1}" == "0" ]]; then
+    CMUX_STOCK_SWEEP_CONCLUSIVE=1
+    return 0
+  fi
   assert_or_reuse_owned_lease || return 0
 
   local generation records rc=0 grace now dir tmp keep=""
@@ -2298,6 +2303,18 @@ reap_unledgered_stock_workspaces() {
       else
         continue
       fi
+    elif [[ "${FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED:-0}" == 1 \
+        && "$(ledger_exact_receipt_state "$generation" "$ref" "$raw_title" 2>/dev/null || true)" == prepared \
+        && "$(ledger_exact_receipt_uuid "$generation" "$ref" "$raw_title" 2>/dev/null || true)" == __LEGACY__ ]]; then
+      if [[ -z "$first" ]]; then
+        keep+="$key|$now|$generation|$ref|$encoded|$normalized|$fingerprint"$'\n'
+        continue
+      elif (( now - 10#$first >= grace )); then
+        ready=1
+      else
+        keep+="$key|$first|$generation|$ref|$encoded|$normalized|$fingerprint"$'\n'
+        continue
+      fi
     elif [[ -f "$VIEW_LEDGER" ]] && awk -F'|' -v r="$ref" '$3 == r { found=1 } END { exit(found ? 0 : 1) }' "$VIEW_LEDGER"; then
       _stock_refusal_alert "$generation" "existing-ledger-authority" "$ref" "$normalized" "$evidence"
       continue
@@ -2346,6 +2363,7 @@ reap_unledgered_stock_workspaces() {
     rm -f "$tmp" 2>/dev/null || true
     return 0
   fi
+  CMUX_STOCK_SWEEP_CONCLUSIVE=1
   return 0
 }
 
@@ -2401,21 +2419,44 @@ for w in d.get("workspaces", []):
         continue
     if "\t" in title or "\n" in title:
         continue
-    sys.stdout.write(ref + "\t" + title + "\n")
+    workspace_uuid = w.get("id")
+    if not isinstance(workspace_uuid, str) or not workspace_uuid:
+        workspace_uuid = "-"
+    sys.stdout.write(ref + "\t" + workspace_uuid + "\t" + title + "\n")
 ') || return 2
-  local ref title
-  while IFS=$'\t' read -r ref title; do
+  local ref workspace_uuid title receipt_state receipt_uuid
+  while IFS=$'\t' read -r ref workspace_uuid title; do
     [[ -z "$ref" || -z "$title" ]] && continue
     [[ "$title" == "~" ]] && continue
     is_managed_runner_title "$title" || continue
-    if [[ -n "$ledger_generation" ]] \
-       && ! ledger_committed_ref "$ledger_generation" "$ref" "$title"; then
-      continue
-    fi
+    receipt_state=$(ledger_exact_receipt_state \
+      "$ledger_generation" "$ref" "$title") || continue
+    receipt_uuid=$(ledger_exact_receipt_uuid \
+      "$ledger_generation" "$ref" "$title") || continue
+    case "$receipt_state" in
+      committed)
+        [[ "$receipt_uuid" == __LEGACY__ || "$receipt_uuid" == "$workspace_uuid" ]] || continue
+        ;;
+      prepared)
+        [[ "$receipt_uuid" != __LEGACY__ && "$receipt_uuid" == "$workspace_uuid" ]] || continue
+        ;;
+      *) continue ;;
+    esac
     if printf '%s\n' "$agent_names" | grep -qxF "$title"; then continue; fi
     if printf '%s\n' "$sessions" | grep -qxF "cmux-${title}"; then continue; fi
     printf '%s\t%s\n' "$ref" "$title"
   done < <(printf '%s\n' "$pairs")
+  return 0
+}
+
+_GUARD_ORPHAN_TITLE=""
+_orphan_pin_close_guard() {
+  local sessions agent_names
+  is_managed_runner_title "$_GUARD_ORPHAN_TITLE" || return 1
+  sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 1
+  agent_names=$(collect_agent_window_names_strict "$sessions") || return 1
+  printf '%s\n' "$agent_names" | grep -qxF "$_GUARD_ORPHAN_TITLE" && return 1
+  printf '%s\n' "$sessions" | grep -qxF "cmux-${_GUARD_ORPHAN_TITLE}" && return 1
   return 0
 }
 
@@ -2441,14 +2482,23 @@ close_orphan_workspace_pin_if_still_orphan() {
     log "WARN: orphan-pin skip malformed ref: $ref"
     return 1
   fi
-  local raw sessions agent_names cur_title ledger_generation=""
+  local raw sessions agent_names cur_row cur_title cur_uuid receipt_state receipt_uuid ledger_generation=""
   ledger_generation=$(cmux_socket_identity)
   [[ -n "$ledger_generation" ]] || return 2
-  ledger_committed_ref "$ledger_generation" "$ref" "$want_title" || return 1
+  receipt_state=$(ledger_exact_receipt_state \
+    "$ledger_generation" "$ref" "$want_title") || return 1
+  receipt_uuid=$(ledger_exact_receipt_uuid \
+    "$ledger_generation" "$ref" "$want_title") || return 1
+  case "$receipt_state:$receipt_uuid" in
+    committed:*) ;;
+    prepared:__LEGACY__) return 1 ;;
+    prepared:*) ;;
+    *) return 1 ;;
+  esac
   raw=$(get_cmux_workspaces_json) || return 2                        # FLY-685: uncertain
   sessions=$(tmux list-sessions -F '#{session_name}' 2>/dev/null) || return 2  # FLY-685: uncertain
   agent_names=$(collect_agent_window_names_strict "$sessions") || return 2     # FLY-685: uncertain
-  cur_title=$(printf '%s' "$raw" | python3 -c '
+  cur_row=$(printf '%s' "$raw" | python3 -c '
 import sys, json
 ref = sys.argv[1]
 try:
@@ -2459,16 +2509,23 @@ for w in d.get("workspaces", []):
     if w.get("ref") == ref:
         t = w.get("title")
         if t is not None:
-            sys.stdout.write(t)
+            u = w.get("id")
+            if not isinstance(u, str) or not u:
+                u = "-"
+            sys.stdout.write(u + "\t" + t + "\n")
         break
 ' "$ref") || return 2                                                # FLY-685: parse uncertain
+  IFS=$'\t' read -r cur_uuid cur_title < <(printf '%s\n' "$cur_row") || return 2
   [[ -z "$cur_title" ]] && return 1                # ref gone from cmux
   [[ "$cur_title" != "$want_title" ]] && return 1  # title drifted → not the pin we vetted
+  [[ "$receipt_uuid" == __LEGACY__ || "$receipt_uuid" == "$cur_uuid" ]] || return 1
   is_managed_runner_title "$cur_title" || return 1
   if printf '%s\n' "$agent_names" | grep -qxF "$cur_title"; then return 1; fi
   if printf '%s\n' "$sessions" | grep -qxF "cmux-${cur_title}"; then return 1; fi
   if [[ -n "$ledger_generation" ]]; then
-    close_ledger_workspace_ref "$ledger_generation" "$ref" "$cur_title" "orphan-pin-${cur_title}" || return 2
+    _GUARD_ORPHAN_TITLE="$cur_title"
+    close_ledger_workspace_ref "$ledger_generation" "$ref" "$cur_title" \
+      "orphan-pin-${cur_title}" _orphan_pin_close_guard "$receipt_state" || return 2
     LAST_WORKSPACE_CLOSE_RC=0
   else
     close_workspace_by_ref "$ref" "orphan-pin-${cur_title}"
@@ -2598,8 +2655,8 @@ list_orphan_pins() {
 # reap_orphan_pins_oneshot — operator one-shot immediate cleanup
 # (--reap-orphan-pins). Re-derives the orphan set NOW, closes each through the
 # revalidating chokepoint (NO grace — explicit operator action, same immediacy as
-# --once). It now takes the shared mutator lease; a live watcher therefore
-# makes this one-shot skip instead of racing the watcher's ref reconciliation.
+# --once). It takes the shared mutator lease; a live watcher therefore makes
+# the strict operator entry fail and point to the handover convergence path.
 reap_orphan_pins_oneshot() {
   local refs
   if ! refs=$(orphan_pin_refs); then
@@ -2610,17 +2667,21 @@ reap_orphan_pins_oneshot() {
     echo "No orphan cmux runner pins to reap."
     return 0
   fi
-  local closed_any=0 ref title
+  local closed_any=0 uncertain=0 close_rc ref title
   while IFS=$'\t' read -r ref title; do
     [[ -z "$ref" ]] && continue
     if close_orphan_workspace_pin_if_still_orphan "$ref" "$title"; then
       closed_any=1
       echo "reaped orphan pin: $ref ($title)"
+    else
+      close_rc=$?
+      [[ "$close_rc" == 2 ]] && uncertain=1
     fi
   done < <(printf '%s\n' "$refs")
   if [[ "$closed_any" == "1" ]]; then
     cmux_call refresh-surfaces || true
   fi
+  [[ "$uncertain" == 0 ]] || return 2
   return 0
 }
 
@@ -4256,6 +4317,8 @@ for raw in open(sys.argv[1],encoding="utf-8"):
     if kind not in {"view","lead"}: raise SystemExit(1)
     if token!="-" and not re.fullmatch(r"fwtok1-[0-9a-f]{32}",token): raise SystemExit(1)
     if not pid.isdigit() or len(pid)>12 or not re.fullmatch(r"[0-9]+-[0-9]+",round_id): raise SystemExit(1)
+    round_epoch,round_sequence=round_id.split("-")
+    if len(round_epoch)>12 or len(round_sequence)>6: raise SystemExit(1)
     try:
         decoded=base64.b64decode(target,validate=True).decode()
         born=base64.b64decode(start,validate=True).decode()
@@ -4341,19 +4404,23 @@ _attach_workspace_claim_count() {
   } | awk 'NF && !seen[$0]++ {n++} END {print n+0}'
 }
 
+CMUX_HELPER_DISCOVERY_CONCLUSIVE=0
 discover_orphan_attach_helpers() {
+  CMUX_HELPER_DISCOVERY_CONCLUSIVE=0
   _attach_reap_state_valid || { log "WARN: attach reap state invalid; orphan mint frozen"; return 2; }
   _attach_orphan_state_valid || { log "WARN: attach orphan state invalid; orphan mint frozen"; return 2; }
   assert_or_reuse_owned_lease || return 0
-  local snapshot helpers births raw old="" keep="" round budget minted=0
+  local snapshot helpers births raw old="" keep="" round round_epoch budget minted=0
   local pid _ppid start kind target_b64 token target presence_rc workspace_count fingerprint prior
+  local prior_epoch limits max _deliveries payload payload_rc tree row now
   snapshot=$(cmux_process_snapshot_records) || return 2
   helpers=$(cmux_attach_helper_records_from_snapshot "$snapshot") || return 2
   births=$(cmux_attach_birth_records) || return 2
   raw=$(get_cmux_workspaces_json) || return 2
   [[ -f "$ATTACH_ORPHAN_STATE" ]] && old=$(cat "$ATTACH_ORPHAN_STATE") || true
   round="${CMUX_ADDITIVE_ROUND_ID:-}"
-  [[ "$round" =~ ^[0-9]+-[0-9]+$ ]] || return 2
+  _additive_round_id_valid "$round" || return 2
+  round_epoch="${round%%-*}"
   budget="${FLYWHEEL_CMUX_ATTACH_REAP_BUDGET:-4}"
   case "$budget" in ''|*[!0-9]*) budget=4 ;; esac
   (( ${#budget} <= 2 && 10#$budget >= 1 && 10#$budget <= 32 )) || budget=4
@@ -4371,18 +4438,44 @@ discover_orphan_attach_helpers() {
     [[ "$workspace_count" == 0 ]] || continue
     fingerprint=$(_cmux_alert_hash "$pid|$start|$kind|$target_b64|$token")
     prior=$(printf '%s\n' "$old" | awk -F'|' -v f="$fingerprint" '$1=="orphanv1" && $2==f {print $8; exit}')
-    if [[ -z "$prior" || "$prior" == "$round" || 10#$minted -ge 10#$budget ]]; then
+    if [[ -z "$prior" ]]; then
       keep+="${keep:+$'\n'}orphanv1|$fingerprint|$kind|$target_b64|$token|$pid|$start|$round"
       continue
     fi
-    _alert_cmux_cleanup "cmux helper orphan observed (report-only)" \
-      "An exact attach helper remained after two target-absent and workspace-unclaimed rounds. Automatic TERM/KILL is disabled without positive activity and birth corroboration: pid=$pid kind=$kind target=$target." \
-      "cmux_cleanup|attach-orphan-report-only|pid=$pid|start=$start|kind=$kind|target=$target_b64"
-    keep+="${keep:+$'\n'}orphanv1|$fingerprint|$kind|$target_b64|$token|$pid|$start|$round"
-    minted=$((minted + 1))
+    prior_epoch="${prior%%-*}"
+    # Distinct rounds can occur in the same second. Preserve the first proof
+    # until the promised 60-second observation separation has elapsed.
+    if [[ "$prior" == "$round" ]] \
+        || (( 10#$round_epoch - 10#$prior_epoch < 60 )) \
+        || (( 10#$minted >= 10#$budget )); then
+      keep+="${keep:+$'\n'}orphanv1|$fingerprint|$kind|$target_b64|$token|$pid|$start|$prior"
+      continue
+    fi
+    limits=$(attach_reap_limits) || return 2
+    IFS='|' read -r max _deliveries < <(printf '%s\n' "$limits")
+    payload_rc=0
+    payload=$(_attach_reap_tree_payload "$snapshot" "$pid" "$max") || payload_rc=$?
+    if [[ "$payload_rc" != 0 ]]; then
+      _alert_cmux_cleanup "cmux helper orphan reap deferred" \
+        "An exact orphan attach helper could not enter the bounded reap state machine: pid=$pid kind=$kind target=$target tree_rc=$payload_rc." \
+        "cmux_cleanup|attach-orphan-reap-deferred|pid=$pid|start=$start|kind=$kind|target=$target_b64|rc=$payload_rc"
+      keep+="${keep:+$'\n'}orphanv1|$fingerprint|$kind|$target_b64|$token|$pid|$start|$prior"
+      continue
+    fi
+    now=$(date +%s) || return 2
+    tree=$(_cmux_alert_hash "$fingerprint|$pid|$payload")
+    row=$(_attach_reap_row "$tree" "$kind" "$target_b64" "$token" term-issued \
+      "$now" "$now" 0 0 - - "$pid" "$payload")
+    if _attach_reap_state_upsert "$tree" "$row"; then
+      minted=$((minted + 1))
+    else
+      return 2
+    fi
   done < <(printf '%s\n' "$helpers")
   [[ -z "$keep" ]] || keep+=$'\n'
-  _attach_orphan_state_replace "$keep"
+  _attach_orphan_state_replace "$keep" || return 2
+  CMUX_HELPER_DISCOVERY_CONCLUSIVE=1
+  return 0
 }
 
 _v2_lead_roster_row_current() {
@@ -7031,12 +7124,15 @@ _GUARD_LEDGER_GENERATION=""
 _GUARD_LEDGER_REF=""
 _GUARD_LEDGER_TITLE=""
 _GUARD_LEDGER_UUID=""
+_GUARD_LEDGER_STATE="committed"
 _GUARD_LEDGER_EXTRA_GUARD=""
 _ledger_close_guard() {
-  local current receipt_uuid raw matches
+  local current receipt_state receipt_uuid raw matches
   current=$(cmux_socket_identity)
   [[ -n "$current" && "$current" == "$_GUARD_LEDGER_GENERATION" ]] || return 1
-  ledger_committed_ref "$current" "$_GUARD_LEDGER_REF" "$_GUARD_LEDGER_TITLE" || return 1
+  receipt_state=$(ledger_exact_receipt_state \
+    "$current" "$_GUARD_LEDGER_REF" "$_GUARD_LEDGER_TITLE") || return 1
+  [[ "$receipt_state" == "$_GUARD_LEDGER_STATE" ]] || return 1
   receipt_uuid=$(ledger_exact_receipt_uuid \
     "$current" "$_GUARD_LEDGER_REF" "$_GUARD_LEDGER_TITLE") || return 1
   if [[ -n "$_GUARD_LEDGER_UUID" ]]; then
@@ -7073,7 +7169,9 @@ print(sum(1 for w in json.load(sys.stdin).get("workspaces", [])
 }
 
 close_ledger_workspace_ref() {
-  local generation="$1" ref="$2" title="$3" reason="$4" extra_guard="${5:-}" rc=0 restored_rc=0 receipt_uuid
+  local generation="$1" ref="$2" title="$3" reason="$4" extra_guard="${5:-}" \
+    expected_state="${6:-committed}" rc=0 restored_rc=0 receipt_uuid
+  case "$expected_state" in prepared|committed) ;; *) return 1 ;; esac
   if cmux_wal_title_blocked "$title"; then
     _restored_recovery_cap_clear
     log "WARN: workspace close blocked by preserved construction collision: title=$title ref=$ref"
@@ -7100,6 +7198,7 @@ close_ledger_workspace_ref() {
   _GUARD_LEDGER_GENERATION="$generation"
   _GUARD_LEDGER_REF="$ref"
   _GUARD_LEDGER_TITLE="$title"
+  _GUARD_LEDGER_STATE="$expected_state"
   receipt_uuid=$(ledger_exact_receipt_uuid "$generation" "$ref" "$title") || return 1
   _GUARD_LEDGER_UUID=""
   [[ "$receipt_uuid" == "__LEGACY__" ]] || _GUARD_LEDGER_UUID="$receipt_uuid"
@@ -9713,6 +9812,10 @@ refresh_linked_sessions() {
     log "WARN: linked-view durable state reconciliation failed; refresh skipped"
     return 1
   }
+  refresh_linked_sessions_tail
+}
+
+refresh_linked_sessions_tail() {
   recover_restored_transactions || {
     log "WARN: restored transaction recovery failed; refresh skipped"
     return 1
@@ -10193,9 +10296,8 @@ cleanup_stale_conservative() {
 }
 
 sync_additive_bootstrap() {
-  # Run once at `--watch` startup. Additive-only: never performs aggressive
-  # cleanup. This prevents a watcher restart from killing healthy Runner
-  # workspaces while the event file is empty.
+  # Run once at `--watch` startup. Cleanup remains proof-bound and preserves
+  # healthy Runner workspaces while also converging historical orphan state.
   maintenance_requested && return 0
   CMUX_ADDITIVE_ROUND_ID=""
   CMUX_ADOPTION_COUNT=0
@@ -10213,12 +10315,26 @@ sync_additive_bootstrap() {
   # Durable WAL/ledger recovery precedes every mutation, including the
   # conclusive-empty branch.
   RESTORED_BOOTSTRAP_PASS=1
-  if ! refresh_linked_sessions; then
+  if ! prepare_linked_view_state pre; then
     RESTORED_BOOTSTRAP_PASS=0
     # A transient durable-state/topology read failure means this pass is
     # inconclusive. Defer the whole pass before create/heal, but keep the
     # long-running watcher alive under `set -e`.
     log "WARN: bootstrap linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
+  watcher_mutation_latch_clear || { RESTORED_BOOTSTRAP_PASS=0; return 0; }
+  advance_attach_reap_state \
+    || log "WARN: helper reap advancement deferred; signal authority preserved"
+  watcher_mutation_latch_clear || { RESTORED_BOOTSTRAP_PASS=0; return 0; }
+  discover_orphan_attach_helpers \
+    || log "WARN: orphan attach-helper census inconclusive; no reap tree minted"
+  watcher_mutation_latch_clear || { RESTORED_BOOTSTRAP_PASS=0; return 0; }
+  reap_orphan_workspace_pins
+  watcher_mutation_latch_clear || { RESTORED_BOOTSTRAP_PASS=0; return 0; }
+  if ! refresh_linked_sessions_tail; then
+    RESTORED_BOOTSTRAP_PASS=0
+    log "WARN: bootstrap linked-view refresh tail inconclusive; pass deferred"
     return 0
   fi
   RESTORED_BOOTSTRAP_PASS=0
@@ -10290,15 +10406,25 @@ sync_additive() {
   watcher_mutation_latch_clear || return 0
   register_hooks_on_new_sessions
   watcher_mutation_latch_clear || return 0
-  discover_orphan_attach_helpers \
-    || log "WARN: orphan attach-helper census inconclusive; no reap tree minted"
-  watcher_mutation_latch_clear || return 0
 
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
   RESTORED_BOOTSTRAP_PASS=0
-  if ! refresh_linked_sessions; then
+  if ! prepare_linked_view_state pre; then
     log "WARN: periodic linked-view refresh inconclusive; pass deferred"
+    return 0
+  fi
+  watcher_mutation_latch_clear || return 0
+  advance_attach_reap_state \
+    || log "WARN: helper reap advancement deferred; signal authority preserved"
+  watcher_mutation_latch_clear || return 0
+  discover_orphan_attach_helpers \
+    || log "WARN: orphan attach-helper census inconclusive; no reap tree minted"
+  watcher_mutation_latch_clear || return 0
+  reap_orphan_workspace_pins
+  watcher_mutation_latch_clear || return 0
+  if ! refresh_linked_sessions_tail; then
+    log "WARN: periodic linked-view refresh tail inconclusive; pass deferred"
     return 0
   fi
   watcher_mutation_latch_clear || return 0
@@ -10324,9 +10450,6 @@ sync_additive() {
     # where already-closed runner tabs most commonly remain visible.
     reap_unledgered_stock_workspaces
     watcher_mutation_latch_clear || return 0
-    # FLY-293: the "all runners closed" quiet state is EXACTLY when orphan pins
-    # linger — reap them here too, not only in the has-windows branch.
-    reap_orphan_workspace_pins
     return 0
   fi
 
@@ -10366,15 +10489,8 @@ sync_additive() {
   # JSON-unavailable — they no-op rather than mis-acting on stale state.
   reap_ghost_workspaces
   watcher_mutation_latch_clear || return 0
-  watcher_mutation_latch_clear || return 0
   reap_unledgered_stock_workspaces
   watcher_mutation_latch_clear || return 0
-  # FLY-293: anchor-independent orphan-pin reaper (closes fully-orphaned managed
-  # runner pins whose linked session AND source window are both gone). Env-gated,
-  # fail-closed, ref-keyed grace — see reap_orphan_workspace_pins.
-  reap_orphan_workspace_pins
-  watcher_mutation_latch_clear || return 0
-
 cleanup_stale_conservative
 }
 
@@ -11218,6 +11334,92 @@ run_rebuild_views() {
   return "$rc"
 }
 
+parse_converge_runners_args() {
+  [[ "$#" == 1 && "$1" == --handover ]]
+}
+
+run_converge_runners() {
+  parse_converge_runners_args "$@" || {
+    log "ERROR: --converge-runners requires exactly one --handover argument"
+    return 2
+  }
+  if [[ "${FLYWHEEL_CMUX_DRY_RUN:-0}" == 1 ]]; then
+    log "DRY RUN: runner convergence skipped before handover; no claim, lease, state, signal, or cmux mutation performed"
+    return 0
+  fi
+
+  publish_ops_rebuild_claim || {
+    log "ERROR: unable to publish runner-convergence handover claim"
+    return 1
+  }
+  trap 'release_mutator_lease; release_ops_rebuild_claim' EXIT
+  trap 'release_mutator_lease; release_ops_rebuild_claim; exit 130' INT
+  trap 'release_mutator_lease; release_ops_rebuild_claim; exit 143' TERM
+
+  local wait_limit waited=0 lease_rc=0 rc=0 observation round
+  wait_limit=$(validated_int_env FLYWHEEL_CMUX_CONVERGE_HANDOVER_SECONDS \
+    "${FLYWHEEL_CMUX_CONVERGE_HANDOVER_SECONDS:-600}" 600 900)
+  while true; do
+    lease_rc=0
+    acquire_mutator_lease ops_rebuild || lease_rc=$?
+    [[ "$lease_rc" == 0 ]] && break
+    if [[ "$lease_rc" == 2 || "$waited" -ge "$wait_limit" ]]; then
+      log "ERROR: runner convergence could not acquire mutator lease rc=$lease_rc waited=${waited}s; inspect watcher heartbeat and lease owner, then retry"
+      release_ops_rebuild_claim
+      trap - EXIT INT TERM
+      return 1
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  if ! maintenance_entry_allowed ops_rebuild; then
+    log "ERROR: runner convergence maintenance authority refused; inspect maintenance marker and QA/ops claims"
+    rc=1
+  fi
+  observation=$(validated_int_env FLYWHEEL_CMUX_CONVERGE_OBSERVATION_SECONDS \
+    "${FLYWHEEL_CMUX_CONVERGE_OBSERVATION_SECONDS:-60}" 60 300)
+  (( observation < 60 )) && observation=60
+  if [[ "$rc" == 0 ]]; then
+    advance_attach_reap_state || rc=$?
+  fi
+  for round in 1 2; do
+    [[ "$rc" == 0 ]] || break
+    CMUX_ADDITIVE_ROUND_ID=""
+    CMUX_ADOPTION_COUNT=0
+    begin_cmux_additive_round || { rc=2; break; }
+    cmux_attach_birth_cache_prime || { rc=2; break; }
+    prepare_linked_view_state pre || { rc=2; break; }
+    reap_orphan_pins_oneshot || { rc=$?; break; }
+    CMUX_HELPER_DISCOVERY_CONCLUSIVE=0
+    discover_orphan_attach_helpers || { rc=$?; break; }
+    if [[ "$CMUX_HELPER_DISCOVERY_CONCLUSIVE" != 1 ]]; then
+      log "ERROR: runner convergence helper discovery returned without a conclusive receipt"
+      rc=2
+      break
+    fi
+    CMUX_STOCK_SWEEP_CONCLUSIVE=0
+    FLYWHEEL_CMUX_ADOPTION_GRACE="$observation" \
+      FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED=1 \
+      reap_unledgered_stock_workspaces || { rc=$?; break; }
+    if [[ "$CMUX_STOCK_SWEEP_CONCLUSIVE" != 1 ]]; then
+      log "ERROR: runner convergence stock sweep returned without a conclusive receipt"
+      rc=2
+      break
+    fi
+    if [[ "$round" != 2 ]]; then
+      for (( waited=0; waited<observation; waited++ )); do sleep 1; done
+    fi
+  done
+  if [[ "$rc" == 0 ]]; then
+    advance_attach_reap_state || rc=$?
+  fi
+  release_mutator_lease
+  release_ops_rebuild_claim
+  trap - EXIT INT TERM
+  return "$rc"
+}
+
 run_verify_sidebar() {
   local rc=0 status reason caveat authority_mode=global
   VERIFY_SIDEBAR_REPORT=""
@@ -11496,13 +11698,12 @@ watch_main() {
 sync_once() {
   # FLY-129 Phase 1 (research §3.3 Option b): if a --watch process is already
   # running, --once's aggressive cleanup_stale_workspaces would race with the
-  # watcher's additive create + conservative cleanup. Detect and exit 0 with
-  # a guidance line telling the operator to use --refresh instead (tmux-only,
-  # cmux-socket-free, race-free).
+  # watcher's additive create + conservative cleanup. Fail loud and direct the
+  # operator to the lease-handover convergence path.
   if pgrep -f "flywheel-cmux-sync(\.sh)? +--watch" >/dev/null 2>&1; then
     echo "flywheel-cmux-sync: --watch is already running" >&2
-    echo "  → use 'flywheel-cmux-sync --refresh' for tmux-side repair (safe)" >&2
-    exit 0
+    echo "  → use 'flywheel-cmux-sync --converge-runners --handover' for full cleanup" >&2
+    return 1
   fi
 
   CMUX_ADDITIVE_ROUND_ID=""
@@ -11511,6 +11712,11 @@ sync_once() {
     || log "WARN: additive round state unavailable; prepared stall counters frozen"
 
   node_presence_enabled && reconcile_roster_read_phase
+
+  if ! prepare_linked_view_state pre; then
+    log "WARN: once linked-view durable state reconciliation inconclusive; pass deferred"
+    return 2
+  fi
 
   local tmux_windows
   tmux_windows=$(get_tmux_agent_windows)
@@ -11534,9 +11740,9 @@ sync_once() {
   # 2. Refresh linked sessions — fix stale current-window pointers (FLY-98).
   # Durable-state/topology uncertainty authorizes neither title migration nor
   # missing-workspace creation during this pass.
-  if ! refresh_linked_sessions; then
+  if ! refresh_linked_sessions_tail; then
     log "WARN: once linked-view refresh inconclusive; pass deferred"
-    return 0
+    return 2
   fi
   reconcile_workspace_titles "$tmux_windows"
 
@@ -11621,6 +11827,7 @@ WATCHER_AUTHORITY_LOST=0
 WATCHER_AUTHORITY_FAILURE_STREAK=0
 WATCHER_PASS_ACTIVE=0
 WATCHER_RESYNC_REQUIRED=0
+WATCHER_MAINTENANCE_STOP=0
 QA_CLAIM_DEAD_SIGNATURE=""
 QA_CLAIM_DEAD_OBSERVATIONS=0
 OPS_CLAIM_DEAD_SIGNATURE=""
@@ -12293,7 +12500,15 @@ mark_watcher_authority_lost() {
 }
 
 watcher_mutation_latch_clear() {
-  [[ "${WATCHER_AUTHORITY_LOST:-0}" != "1" ]]
+  [[ "${WATCHER_AUTHORITY_LOST:-0}" != "1" ]] || return 1
+  if [[ "$MUTATOR_LEASE_MODE" == "watch" && "$WATCHER_PASS_ACTIVE" == "1" ]] \
+      && maintenance_requested; then
+    WATCHER_AUTHORITY_LOST=1
+    WATCHER_MAINTENANCE_STOP=1
+    log "maintenance requested during watcher pass; aborting remaining mutation at safe boundary"
+    return 1
+  fi
+  return 0
 }
 
 assert_or_reuse_owned_lease() {
@@ -12313,6 +12528,7 @@ release_mutator_lease() {
 watcher_begin_pass() {
   WATCHER_PASS_ACTIVE=1
   WATCHER_AUTHORITY_LOST=0
+  WATCHER_MAINTENANCE_STOP=0
   if mutator_lease_owned_by_self; then
     return 0
   fi
@@ -12322,6 +12538,10 @@ watcher_begin_pass() {
 
 watcher_finish_pass() {
   WATCHER_PASS_ACTIVE=0
+  if [[ "$WATCHER_MAINTENANCE_STOP" == 1 ]]; then
+    WATCHER_MAINTENANCE_STOP=0
+    mutator_lease_owned_by_self && WATCHER_AUTHORITY_LOST=0
+  fi
   if [[ "$WATCHER_AUTHORITY_LOST" == "1" ]]; then
     WATCHER_AUTHORITY_FAILURE_STREAK=$((WATCHER_AUTHORITY_FAILURE_STREAK + 1))
     log "ERROR: watcher lease verification failed for pass (${WATCHER_AUTHORITY_FAILURE_STREAK}/3)"
@@ -12336,6 +12556,10 @@ watcher_finish_pass() {
     fi
   else
     WATCHER_AUTHORITY_FAILURE_STREAK=0
+  fi
+  if [[ "$MUTATOR_LEASE_MODE" == "watch" ]] && maintenance_requested; then
+    watcher_maintenance_checkpoint
+    return $?
   fi
 }
 
@@ -12457,7 +12681,7 @@ watcher_maintenance_checkpoint() {
 }
 
 run_mutator_once() {
-  local mode="$1" fn="$2" rc=0 lease_rc=0 owner_pid owner_mode
+  local mode="$1" fn="$2" strict="${3:-best-effort}" rc=0 lease_rc=0 owner_pid owner_mode
   acquire_mutator_lease "$mode" || lease_rc=$?
   if [[ "$lease_rc" -ne 0 ]]; then
     owner_pid="${MUTATOR_OWNER_PID:-unknown}"
@@ -12468,6 +12692,10 @@ run_mutator_once() {
       log "$mode mutator lease MALFORMED at $WATCHER_LOCK_DIR; manual inspection required; skipping"
       _alert_malformed_mutator_lease
     fi
+    if [[ "$strict" == strict ]]; then
+      log "ERROR: no cleanup ran; use 'flywheel-cmux-sync --converge-runners --handover' for full cleanup"
+      return "$lease_rc"
+    fi
     return 0
   fi
   trap release_mutator_lease EXIT
@@ -12476,6 +12704,10 @@ run_mutator_once() {
   if ! maintenance_entry_allowed "$mode"; then
     release_mutator_lease
     trap - EXIT INT TERM
+    if [[ "$strict" == strict ]]; then
+      log "ERROR: no cleanup ran; use 'flywheel-cmux-sync --converge-runners --handover' for full cleanup"
+      return 1
+    fi
     return 0
   fi
   "$fn" || rc=$?
@@ -12642,7 +12874,7 @@ case "${1:-}" in
     wait_for_watcher_exit
     ;;
   --once|"")
-    run_mutator_once once sync_once
+    run_mutator_once once sync_once strict
     ;;
   --list-lead-refs)
     # FLY-129 Phase 8 Path A: print cmux workspace refs for Lead windows.
@@ -12660,7 +12892,11 @@ case "${1:-}" in
     # FLY-293: operator one-shot immediate cleanup — re-derive the orphan set and
     # close each through the revalidating chokepoint (NO grace). Safe alongside a
     # live --watch (narrow + idempotent + per-ref final revalidation).
-    run_mutator_once reaper reap_orphan_pins_oneshot
+    run_mutator_once reaper reap_orphan_pins_oneshot strict
+    ;;
+  --converge-runners)
+    shift
+    run_converge_runners "$@"
     ;;
   --rebuild-views)
     shift
@@ -12677,15 +12913,16 @@ case "${1:-}" in
     probe_mutator_lease
     ;;
   *)
-    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--rebuild-views|--verify-sidebar]"
-    echo "  --once              Full sync with aggressive cleanup (cmux + tmux). Manual use from inside cmux."
+    echo "Usage: flywheel-cmux-sync [--once|--watch|--refresh|--probe-lease|--wait-for-watcher-exit|--list-lead-refs|--list-orphan-pins|--reap-orphan-pins|--converge-runners|--rebuild-views|--verify-sidebar]"
+    echo "  --once              Full sync with aggressive cleanup; fails if another mutator is active."
     echo "  --watch             Event-signaled polling (hooks + 15s drain + 60s additive). From inside cmux."
     echo "  --refresh           tmux-only linked session repair. Safe from anywhere."
     echo "  --probe-lease       Read-only maintenance gate for the shared mutator lease."
     echo "  --wait-for-watcher-exit  FLY-825: poll+kill any lingering --watch process (install-script helper)."
     echo "  --list-lead-refs    Print Lead cmux workspace refs (Phase 8 Path A)."
     echo "  --list-orphan-pins  FLY-293: print orphan runner cmux pins (read-only preview)."
-    echo "  --reap-orphan-pins  FLY-293: close orphan runner cmux pins now (one-shot, revalidated)."
+    echo "  --reap-orphan-pins  FLY-293: close orphan pins; fails if another mutator is active."
+    echo "  --converge-runners  FLY-2048: full runner cleanup; requires --handover."
     echo "  --rebuild-views     FLY-1596: audited rebuild; requires --all-leads or repeated --target T[=workspace:N]."
     echo "                      Add --execute to mutate; add --handover to make the resident watcher yield."
     echo "  --verify-sidebar    FLY-1596: read-only terminal-state judge; accepts repeated --target T and --json."

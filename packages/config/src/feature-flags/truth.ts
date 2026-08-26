@@ -291,6 +291,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_GATE_MARKER_DIR: "plumbing: gate marker dir",
 	FLYWHEEL_CMUX_CLOSE_REQUEST_FILE:
 		"plumbing: cmux close-request marker file path (FLY-685)",
+	FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED:
+		"one-invocation internal authority marker set only by explicit runner convergence, not a persistent rollout gate (FLY-2048)",
 	FLYWHEEL_CMUX_MAINTENANCE_MARKER:
 		"plumbing: cmux watcher maintenance marker path override for isolated recovery QA (FLY-1944)",
 	FLYWHEEL_CMUX_TIMEOUT_KILL_GRACE:

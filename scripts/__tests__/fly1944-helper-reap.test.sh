@@ -290,9 +290,10 @@ else
   bad "tmux target verdict mismatch present=$present_rc absent=$absent_rc ambiguous=$ambiguous_rc"
 fi
 
-# Orphan discovery is always report-only: current workspace inventory must
-# suppress birthless false positives, and two distinct absent rounds may alert
-# but can never mint TERM/KILL authority.
+# Orphan discovery suppresses birthless false positives while a workspace still
+# claims the target. Two absent observations at least 60 seconds apart must mint
+# the exact helper tree into the existing bounded reap state machine; discovery
+# itself emits no signal.
 rm -f "$ATTACH_REAP_STATE" "$ATTACH_ORPHAN_STATE"
 TEST_SNAPSHOT="201|1|$start_root|$cmd_a"
 cmux_attach_birth_records() { return 0; }
@@ -313,21 +314,125 @@ CMUX_ADDITIVE_ROUND_ID=2-1
 discover_orphan_attach_helpers
 first_orphan=$(cat "$ATTACH_ORPHAN_STATE" 2>/dev/null || true)
 first_reap=$(cat "$ATTACH_REAP_STATE" 2>/dev/null || true)
-CMUX_ADDITIVE_ROUND_ID=2-2
+CMUX_ADDITIVE_ROUND_ID=3-1
 discover_orphan_attach_helpers
 second_orphan=$(cat "$ATTACH_ORPHAN_STATE" 2>/dev/null || true)
 second_reap=$(cat "$ATTACH_REAP_STATE" 2>/dev/null || true)
-CMUX_ADDITIVE_ROUND_ID=2-3
+CMUX_ADDITIVE_ROUND_ID=62-1
 discover_orphan_attach_helpers
 third_reap=$(cat "$ATTACH_REAP_STATE" 2>/dev/null || true)
+CMUX_ADDITIVE_ROUND_ID=62-2
+discover_orphan_attach_helpers
+fourth_reap=$(cat "$ATTACH_REAP_STATE" 2>/dev/null || true)
 alert_count=$(wc -l < "$alerts" | tr -d ' ')
 if [[ -z "$claimed_orphan" && -z "$claimed_reap" \
     && "$first_orphan" == orphanv1'|'* && -z "$first_reap" \
-    && "$second_orphan" == orphanv1'|'* && -z "$second_reap" \
-    && -z "$third_reap" && "$alert_count" -ge 1 ]]; then
-  ok "birthless claimants suppress orphan episodes and proven absence stays report-only"
+    && "$second_orphan" == "$first_orphan" && -z "$second_reap" \
+    && "$third_reap" == reapv1'|'*'|term-issued|'*'|-|-|201|'* \
+    && "$fourth_reap" == "$third_reap" && "$alert_count" == 0 ]]; then
+  ok "birthless claimants suppress orphan episodes and observations 60s apart mint bounded reap authority"
 else
-  bad "orphan report-only mismatch claimed=[$claimed_orphan][$claimed_reap] first=[$first_orphan][$first_reap] second=[$second_orphan][$second_reap] third=[$third_reap] alerts=[$(cat "$alerts")]"
+  bad "orphan mint mismatch claimed=[$claimed_orphan][$claimed_reap] first=[$first_orphan][$first_reap] second=[$second_orphan][$second_reap] third=[$third_reap] fourth=[$fourth_reap] alerts=[$(cat "$alerts")]"
+fi
+
+# Exercise the production signal function against an isolated real process
+# tree. Both target processes ignore TERM, so only the KILL phase can clear the
+# exact persisted tuples; an unrelated sibling process is the negative control.
+real_case="$TMP/real-process"
+mkdir -p "$real_case"
+real_child="$real_case/reap-child.sh"
+printf '%s\n' \
+  '#!/bin/bash' \
+  "trap '' TERM" \
+  'printf '\''%s\n'\'' "$$" > "$CHILD_PID_FILE"' \
+  'while :; do :; done' > "$real_child"
+chmod +x "$real_child"
+real_helper="$real_case/flywheel-view-attach.sh"
+printf '%s\n' \
+  '#!/bin/bash' \
+  "trap '' TERM" \
+  '"$REAL_CHILD" &' \
+  'wait "$!"' > "$real_helper"
+chmod +x "$real_helper"
+real_result="$real_case/result"
+/usr/bin/env ROOT="$ROOT" REAL_CASE="$real_case" REAL_CHILD="$real_child" \
+  REAL_HELPER="$real_helper" CHILD_PID_FILE="$real_case/child.pid" \
+  /bin/bash -s <<'BASH' >"$real_case/subprocess.log" 2>&1
+  export FLYWHEEL_CMUX_VIEW_HELPER_BIN="$REAL_HELPER"
+  export ATTACH_REAP_STATE="$REAL_CASE/reap.state"
+  export FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$REAL_CASE/watcher.lock"
+  source "$ROOT/scripts/flywheel-cmux-sync.sh"
+  set +e
+  assert_or_reuse_owned_lease() { return 0; }
+  root= child= decoy=
+  cleanup() {
+    [[ -z "$root" ]] || kill -KILL "$root" 2>/dev/null || true
+    [[ -z "$child" ]] || kill -KILL "$child" 2>/dev/null || true
+    [[ -z "$decoy" ]] || kill -KILL "$decoy" 2>/dev/null || true
+  }
+  trap cleanup EXIT
+  "$REAL_HELPER" cmux-FLY-2048-real-reap fwtok1-0123456789abcdef0123456789abcdef \
+    >"$REAL_CASE/helper.log" 2>&1 &
+  root=$!
+  for _ in 1 2 3 4 5; do
+    child=$(cat "$CHILD_PID_FILE" 2>/dev/null)
+    [[ -n "$child" ]] && kill -0 "$child" 2>/dev/null && break
+    sleep 1
+  done
+  [[ -n "$child" ]] || exit 11
+  /bin/sleep 300 & decoy=$!
+  root_start=$(printf %s real-root-start | base64 | tr -d "\\n")
+  child_start=$(printf %s real-child-start | base64 | tr -d "\\n")
+  command=$(printf %s real-process-command | base64 | tr -d "\\n")
+  snapshot="$root|1|$root_start|$command
+$child|$root|$child_start|$command"
+  start="$root_start"
+  tuples=$(_attach_reap_tree_payload "$snapshot" "$root" 4) || exit 14
+  cmux_process_tuple_current() {
+    case "$1|$2" in
+      "$root|$root_start"|"$child|$child_start") kill -0 "$1" 2>/dev/null ;;
+      *) return 1 ;;
+    esac
+  }
+  target=$(printf %s cmux-FLY-2048-real-reap | base64 | tr -d "\\n")
+  tree=$(printf "b%.0s" {1..64})
+  now=$(date +%s)
+  _attach_reap_row "$tree" view "$target" fwtok1-0123456789abcdef0123456789abcdef \
+    term-issued "$now" "$now" 0 0 - - "$root" "$tuples" > "$ATTACH_REAP_STATE"
+  advance_attach_reap_state || exit 15
+  kill -0 "$root" 2>/dev/null && kill -0 "$child" 2>/dev/null || exit 16
+  python3 - "$ATTACH_REAP_STATE" <<"PY"
+import sys
+p=open(sys.argv[1]).read().rstrip("\n").split("|")
+p[7]="0"
+open(sys.argv[1],"w").write("|".join(p)+"\n")
+PY
+  advance_attach_reap_state || exit 17
+  root_stopped=0
+  for _ in 1 2 3 4 5; do
+    if ! jobs -pr | grep -qx "$root"; then
+      root_stopped=1
+      break
+    fi
+    sleep 1
+  done
+  [[ "$root_stopped" == 1 ]] || exit 19
+  wait "$root" 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    kill -0 "$root" 2>/dev/null || root_dead=1
+    kill -0 "$child" 2>/dev/null || child_dead=1
+    [[ "${root_dead:-0}" == 1 && "${child_dead:-0}" == 1 ]] && break
+    sleep 1
+  done
+  kill -0 "$decoy" 2>/dev/null || exit 18
+  [[ "${root_dead:-0}" == 1 && "${child_dead:-0}" == 1 ]] || exit 20
+  printf "pass\n" > "$REAL_CASE/result"
+BASH
+real_rc=$?
+if [[ "$real_rc" == 0 && "$(cat "$real_result" 2>/dev/null)" == pass ]]; then
+  ok "real TERM/KILL removes the exact helper tree while an unrelated decoy survives"
+else
+  bad "real process reap control failed rc=$real_rc log=[$(cat "$real_case/subprocess.log" 2>/dev/null)] helper=[$(cat "$real_case/helper.log" 2>/dev/null)]"
 fi
 
 printf '\nFLY-1944 helper reap: %s passed, %s failed\n' "$pass" "$fail"
