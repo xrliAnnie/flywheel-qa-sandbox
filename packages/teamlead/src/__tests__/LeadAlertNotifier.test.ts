@@ -136,6 +136,33 @@ describe("LeadAlertNotifier", () => {
 		});
 	});
 
+	it("FLY-2051: direct non-switch payloads cannot opt out of alert framing", async () => {
+		const fetchFn = vi.fn();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+		});
+		const payload = buildPayload({
+			eventType: "quota_no_target",
+			deliveryStyle: "plain",
+		});
+
+		const result = await notifier.alert(payload);
+
+		expect(result).toMatchObject({ deadLettered: true });
+		expect(fetchFn).not.toHaveBeenCalled();
+		const deadLetter = JSON.parse(
+			readFileSync(
+				join(deadLetterDir, readdirSync(deadLetterDir)[0]!),
+				"utf-8",
+			),
+		);
+		expect(deadLetter.reason).toBe("invalid-delivery-style");
+	});
+
 	it("returns skipped=duplicate and does not POST on second call with same eventId", async () => {
 		const fetchFn = vi.fn().mockResolvedValue({
 			ok: true,
@@ -1447,6 +1474,132 @@ describe("LeadAlertNotifier — FLY-927 Codex R1 fixes", () => {
 		expect(
 			(result.delivered[0]!.payload as Record<string, unknown>).queueReason,
 		).toBeUndefined();
+	});
+
+	it("FLY-2051: unified drain replays a queued switch alert to its validated delivery channel", async () => {
+		const routedChannel = "7".repeat(18);
+		writeFileSync(
+			join(queueDir, "20260825T120000Z-system-account_switched-route.json"),
+			JSON.stringify({
+				leadId: "system",
+				projectName: "flywheel",
+				eventId: "route-account-switched",
+				eventType: "account_switched",
+				title: "Claude account switched",
+				body: "shopping->school; from5h=91; from7d=74; to5h=12; to7d=8",
+				severity: "info",
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+				deliveryChannelId: routedChannel,
+				deliveryStyle: "plain",
+			}),
+		);
+		const fetchOk = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+			json: async () => ({ id: "routed-root-1" }),
+		});
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn: fetchOk,
+			queueDir,
+			unifiedAlert: unified,
+		});
+
+		const result = await notifier.drainQueue();
+
+		expect(result.sent).toBe(1);
+		expect(fetchOk).toHaveBeenCalledTimes(1);
+		expect(fetchOk.mock.calls[0]![0]).toBe(
+			`https://discord.com/api/v10/channels/${routedChannel}/messages`,
+		);
+		const posted = JSON.parse(
+			(fetchOk.mock.calls[0]![1] as RequestInit).body as string,
+		);
+		expect(posted.content).toBe(
+			"🤖[自动] shopping->school; from5h=91; from7d=74; to5h=12; to7d=8",
+		);
+		expect(posted.content).not.toContain("Claude account switched");
+		// An ordinary notification must never be handed to AlertChannelHub, which
+		// would attach the alert-box/thread lifecycle after a queued replay.
+		expect(result.delivered).toEqual([]);
+	});
+
+	it("FLY-2051: unified drain dead-letters an invalid delivery style without POSTing", async () => {
+		const dlDir = mkdtempSync(join(tmpdir(), "fly2051-invalid-style-"));
+		writeFileSync(
+			join(queueDir, "20260825T120000Z-system-account_switched-bad-style.json"),
+			JSON.stringify({
+				leadId: "system",
+				projectName: "flywheel",
+				eventId: "bad-style-account-switched",
+				eventType: "account_switched",
+				title: "Claude account switched",
+				body: "shopping->school",
+				severity: "info",
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+				deliveryChannelId: "7".repeat(18),
+				deliveryStyle: "alert-box",
+			}),
+		);
+		const fetchFn = vi.fn();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+		});
+
+		const result = await notifier.drainQueue();
+
+		expect(result.sent).toBe(0);
+		expect(result.deadLettered).toBe(1);
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(dlDir)[0]).toMatch(/^invalid-delivery-style-/);
+		rmSync(dlDir, { recursive: true, force: true });
+	});
+
+	it("FLY-2051: unified drain dead-letters an invalid delivery channel without POSTing", async () => {
+		const dlDir = mkdtempSync(join(tmpdir(), "fly2051-invalid-route-"));
+		writeFileSync(
+			join(queueDir, "20260825T120000Z-system-account_switched-bad-route.json"),
+			JSON.stringify({
+				leadId: "system",
+				projectName: "flywheel",
+				eventId: "bad-route-account-switched",
+				eventType: "account_switched",
+				title: "Claude account switched",
+				body: "shopping->school",
+				severity: "info",
+				queuedAt: new Date().toISOString(),
+				queueReason: "discord-503",
+				deliveryChannelId: "not-a-snowflake",
+			}),
+		);
+		const fetchFn = vi.fn();
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir: dlDir,
+			unifiedAlert: unified,
+		});
+
+		const result = await notifier.drainQueue();
+
+		expect(result.sent).toBe(0);
+		expect(result.deadLettered).toBe(1);
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(queueDir)).toEqual([]);
+		expect(readdirSync(dlDir)[0]).toMatch(/^invalid-delivery-channel-/);
+		rmSync(dlDir, { recursive: true, force: true });
 	});
 
 	it("HIGH fix: legacy (non-unified) drain returns an empty delivered list", async () => {

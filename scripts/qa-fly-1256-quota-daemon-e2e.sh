@@ -27,7 +27,8 @@ else
   PANE_MATCH='Claude usage limit reached'
 fi
 RECOVERED_FIXTURE="$TEAMLEAD_DIR/src/__tests__/fixtures/lead-panes/idle-product-lead.txt"
-ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1256-${QA_MODE}-e2e.XXXXXX")"
+TMP_BASE="${TMPDIR:-/tmp}"
+ROOT="$(mktemp -d "${TMP_BASE%/}/fly1256-${QA_MODE}-e2e.XXXXXX")"
 TMUX_SOCKET="fly1256-${QA_MODE}-e2e-$$"
 SERVER_PID="" DAEMON_PID=""
 
@@ -78,6 +79,7 @@ KEYCHAIN_STATE="$ROOT/keychain-state.json"
 make_credential() { # profile access refresh canonical-email
   local profile="$1" access="$2" refresh="$3" email="$4"
   mkdir -p "$POOL/$profile"
+  chmod 700 "$POOL" "$POOL/$profile"
   jq -cn --arg access "$access" --arg refresh "$refresh" \
     '{claudeAiOauth:{accessToken:$access,refreshToken:$refresh,expiresAt:4102444800000}}' \
     > "$POOL/$profile/.credentials.json"
@@ -107,10 +109,24 @@ jq -n '{
   }
 }' > "$POOL/identity-map.json"
 chmod 600 "$POOL/identity-map.json"
-printf 'shopping\n' > "$POOL/.active"
+printf '%s' shopping > "$POOL/.active"
+chmod 600 "$POOL/.active"
 printf '%s' "$(cat "$POOL/shopping/.credentials.json")" > "$KEYCHAIN_STATE"
 chmod 600 "$KEYCHAIN_STATE"
-jq -n '{generation:0,activeAccount:"shopping",accounts:["shopping","school","backup"]|map({name:.,quotaExhaustedUntil:null,weeklyResetAt:null})}' > "$STORE"
+jq -n '{
+  generation:0,
+  activeAccount:"shopping",
+  accounts:[
+    {name:"shopping",email:"xrliannie.shopping@gmail.com"},
+    {name:"school",email:"xiaorongli2011@u.northwestern.edu"},
+    {name:"backup",email:"backup@example.test"}
+  ] | map({
+    name: .name,
+    quotaExhaustedUntil:null,
+    weeklyResetAt:null,
+    identity:{email:.email,setAt:"2026-07-16T00:00:00.000Z"}
+  })
+}' > "$STORE"
 chmod 600 "$STORE"
 jq -n '{
   trigger5hPct:90,
@@ -165,7 +181,7 @@ CLAUDE
 cat > "$ROOT/bin/lead-alert" <<'ALERT'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' "$*" >> "$FAKE_ALERT_LOG"
+printf 'channel=%s|%s\n' "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" "$*" >> "$FAKE_ALERT_LOG"
 printf 'sent\n'
 ALERT
 chmod +x "$ROOT/bin/security" "$ROOT/bin/claude" "$ROOT/bin/lead-alert"
@@ -186,9 +202,16 @@ const json = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(raw) });
   res.end(raw);
 };
+const future = (hours) => new Date(Date.now() + hours * 60 * 60_000).toISOString();
 const usage = (account) => ({
-  five_hour: { utilization: account === "shopping" ? (mode.includes("model") ? 20 : 92) : account === "school" ? 3 : 4, resets_at: "2099-01-01T00:00:00.000Z" },
-  seven_day: { utilization: account === "shopping" ? 20 : 10, resets_at: "2099-01-07T00:00:00.000Z" },
+  five_hour: { utilization: account === "shopping" ? (mode.includes("model") ? 20 : 92) : account === "school" ? 3 : 4, resets_at: future(2) },
+  seven_day: { utilization: account === "shopping" ? 20 : 10, resets_at: future(72) },
+  limits: [{
+    kind: "weekly_scoped",
+    percent: account === "shopping" ? 84 : account === "school" ? 11 : 12,
+    resets_at: future(96),
+    scope: { model: { id: null, display_name: "Fable" }, surface: null },
+  }],
 });
 const server = createServer((req, res) => {
   if (req.method === "GET" && req.url === "/v1/oauth/profile") {
@@ -304,6 +327,8 @@ export FLYWHEEL_PROFILE_IDENTITY_MAP="$POOL/identity-map.json"
 export FLYWHEEL_CLAUDE_JSON="$ROOT/home/.claude.json"
 export FLYWHEEL_CLAUDE_JSON_LOCK="$ROOT/home/.claude.json.lock"
 export FLYWHEEL_LEAD_ALERT_BIN="$ROOT/bin/lead-alert"
+export FLYWHEEL_NOTIFY_CHANNEL="$(printf '7%.0s' {1..18})"
+export FLYWHEEL_FOUNDER_TZ="America/Los_Angeles"
 export FAKE_SECURITY_STATE="$KEYCHAIN_STATE"
 export FAKE_SECURITY_ARGV_LOG="$ROOT/security-argv.log"
 export FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE="$ROOT/corrupt-next-security-write"
@@ -336,12 +361,17 @@ if [[ "$QA_MODE" == "model" ]]; then
   fi
   [[ ! -e "$FAKE_SECURITY_CORRUPT_NEXT_WRITE_FILE" ]] \
     || fail "rollback injection was not consumed; profile failed before the Keychain write"
-  cmp -s "$KEYCHAIN_STATE" "$ROOT/keychain-before-rollback.json" \
-    || fail "verify-before-commit did not restore the prior scratch credential"
+  [[ "$(jq -r '.corrupted // false' "$KEYCHAIN_STATE")" == "true" ]] \
+    || fail "concurrent Keychain mutation was overwritten after verification failed"
   [[ "$(cat "$POOL/.active")" == "shopping" ]] \
     || fail "failed profile verification changed .active"
-  grep -q 'rolled back and verified the previous Keychain state' "$ROOT/rollback.log" \
-    || fail "profile failure did not report a successful rollback"
+  grep -q 'FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT' "$ROOT/rollback.log" \
+    || fail "profile failure did not report the fail-closed preimage conflict"
+  # Reset only the scratch fixture after proving the production command refused
+  # to overwrite a concurrent mutation; the daemon scenario starts from the
+  # original shopping credential.
+  cp "$ROOT/keychain-before-rollback.json" "$KEYCHAIN_STATE"
+  chmod 600 "$KEYCHAIN_STATE"
 fi
 
 log "starting real daemon with Claude absent"
@@ -402,7 +432,8 @@ for _ in $(seq 1 300); do
   [[ "$(cat "$POOL/.active" 2>/dev/null || true)" == "school" ]] \
     && [[ "$(cat "$ROOT/pane-response" 2>/dev/null || true)" == "continue" ]] \
     && grep -q -- "--kind $SWITCH_KIND" "$ROOT/alerts.log" 2>/dev/null \
-    && [[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE" 2>/dev/null || true)" == "1" ]] \
+    && [[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE" 2>/dev/null || true)" -ge 1 ]] \
+    && [[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE" 2>/dev/null || true)" -le 3 ]] \
     && break
   sleep 0.1
 done
@@ -413,8 +444,32 @@ done
 [[ "$(cat "$ROOT/pane-response")" == "continue" ]] || fail "quota-stuck pane was not revived with literal continue+Enter"
 grep -q -- "--kind $SWITCH_KIND" "$ROOT/alerts.log" || fail "isolated alert sink missed $SWITCH_KIND"
 grep -q -- '--strict-delivery' "$ROOT/alerts.log" || fail "alert did not use strict delivery"
+if [[ "$QA_MODE" != "model" ]]; then
+  grep -q -- "channel=$FLYWHEEL_NOTIFY_CHANNEL|.*--kind account_switched" "$ROOT/alerts.log" \
+    || fail "account_switched did not inherit the notification-channel override"
+  grep -q -- '--plain-message' "$ROOT/alerts.log" \
+    || fail "account_switched did not request ordinary-message rendering"
+  grep -q -- 'Claude 已自动切号：\*\*shopping → school\*\*' "$ROOT/alerts.log" \
+    || fail "account_switched omitted the founder-selected summary"
+  grep -q -- 'xrliannie.shopping@gmail.com' "$ROOT/alerts.log" \
+    || fail "account_switched omitted the source email"
+  grep -q -- 'xiaorongli2011@u.northwestern.edu' "$ROOT/alerts.log" \
+    || fail "account_switched omitted the target email"
+  grep -Eq -- '5h[[:space:]]+92%[[:space:]]+8%' "$ROOT/alerts.log" \
+    || fail "account_switched omitted the source five-hour usage/remaining row"
+  grep -Eq -- 'Fable[[:space:]]+84%[[:space:]]+16%' "$ROOT/alerts.log" \
+    || fail "account_switched omitted the source Fable quota"
+  if grep -Eq -- '切号时|继续指令|仍在等待|已恢复' "$ROOT/alerts.log"; then
+    fail "account_switched leaked founder-rejected pane revive status"
+  fi
+  if grep -Eq -- 'from5h=|to5h=|revived=|pending=' "$ROOT/alerts.log"; then
+    fail "account_switched leaked the superseded machine-field copy"
+  fi
+fi
 [[ "$(jq -r '.five_hour.utilization' "$CACHE")" == "3" ]] || fail "statusline cache was not refreshed from new account"
-[[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max' "$STATE")" == "1" ]] || fail "revive attempt was not durably recorded"
+revive_attempts="$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE")"
+[[ "$revive_attempts" -ge 1 && "$revive_attempts" -le 3 ]] \
+  || fail "revive attempts were not durably bounded to 1..3 (got $revive_attempts)"
 [[ "$(jq -r '.claudeAiOauth.accessToken | startswith("school-rotated-")' "$KEYCHAIN_STATE")" == "true" ]] \
   || fail "scratch Keychain was not switched to refreshed school credential"
 
@@ -466,6 +521,10 @@ if [[ "$QA_MODE" == "model" ]]; then
   done
   grep -q -- '--kind quota_switch_confirmation' "$ROOT/alerts.log" \
     || fail "restart did not deliver the delayed confirmation alert"
+  grep -q -- "channel=$FLYWHEEL_NOTIFY_CHANNEL|.*--kind quota_switch_confirmation" "$ROOT/alerts.log" \
+    || fail "quota_switch_confirmation did not inherit the notification-channel override"
+  grep -q -- 'Claude 切号后的恢复检查已完成' "$ROOT/alerts.log" \
+    || fail "quota_switch_confirmation did not render human recovery copy"
   evidence_file="$(find "$FLYWHEEL_QUOTA_CONFIRMATION_DIR" -type f -name '*.json' -print -quit 2>/dev/null || true)"
   [[ -n "$evidence_file" ]] || fail "restart did not write confirmation evidence"
   [[ "$(jq -r '[.recovered,.total,.panes[0].status] | @tsv' "$evidence_file")" == $'1\t1\trecovered' ]] \

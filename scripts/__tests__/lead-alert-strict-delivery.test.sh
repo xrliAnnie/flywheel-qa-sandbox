@@ -88,6 +88,27 @@ run_alert() {
     --severity severe --title T --body B "$@"
 }
 
+run_routed_alert() {
+  # $1 = http code, $2 = kind, $3 = signature, $4 = queue dir, $5 = channel,
+  # $6 = optional 1 for the ordinary-message delivery style.
+  local http="$1" kind="$2" signature="$3" queue_dir="$4" channel="$5" plain="${6:-0}"
+  local style_args=()
+  if [ "$plain" = "1" ]; then style_args=(--plain-message); fi
+  PATH="$TMP/bin:$PATH" \
+  CURL_CALLS="$TMP/curl.calls" \
+  CURL_HTTP_CODE="$http" \
+  FLYWHEEL_CLAIMS_DB="$TMP/claims.db" \
+  FLYWHEEL_ALERT_QUEUE_DIR="$queue_dir" \
+  FLYWHEEL_ALERT_DEADLETTER_DIR="$TMP/deadletter" \
+  FLYWHEEL_STATE_DIR="$TMP/state" \
+  FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="$channel" \
+  FLYWHEEL_ALERT_SENDER_TOKEN_ENV="FLY913_ALERT_TOKEN" \
+  FLY913_ALERT_TOKEN="CANARY-TOKEN" \
+  bash "$LEAD_ALERT" --project flywheel --lead flywheel-eng-lead \
+    --kind "$kind" --severity severe --title T --body B \
+    --signature "$signature" --strict-delivery "${style_args[@]}"
+}
+
 # ── 1. sent ──────────────────────────────────────────────────────────────────
 OUT=$(run_alert 200 --lead flywheel-eng-lead --signature sig-sent --strict-delivery 2>/dev/null); RC=$?
 if [ "$RC" = "0" ] && [ "$OUT" = "sent" ]; then ok "strict: HTTP 200 → sent (exit 0)"; else bad "sent: rc=$RC out='$OUT'"; fi
@@ -139,6 +160,28 @@ NTMP=$(find "$TMP/queue" -maxdepth 1 -name '*.tmp.*' | wc -l | tr -d ' ')
 if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] && [ "$NQUEUE" = "1" ] && [ "$QMODE" = "600" ] && [ "$NTMP" = "0" ]; then
   ok "strict: HTTP 500 → durably queued (0600 temp+fsync+rename)"
 else bad "queued_transient: rc=$RC out='$OUT' nqueue=$NQUEUE"; fi
+
+# FLY-2051: transient replays must preserve the switch-family destination,
+# while non-switch queue records remain byte-compatible (no route override).
+ROUTE_CHANNEL="$(printf '7%.0s' {1..18})"
+SWITCH_QUEUE="$TMP/switch-route-queue"
+OUT=$(run_routed_alert 500 account_switched sig-switch-route "$SWITCH_QUEUE" "$ROUTE_CHANNEL" 1 2>/dev/null); RC=$?
+SWITCH_RECORD=$(find "$SWITCH_QUEUE" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)
+SWITCH_DESTINATION=$(jq -r '.deliveryChannelId // ""' "$SWITCH_RECORD" 2>/dev/null)
+SWITCH_STYLE=$(jq -r '.deliveryStyle // ""' "$SWITCH_RECORD" 2>/dev/null)
+if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] \
+    && [ "$SWITCH_DESTINATION" = "$ROUTE_CHANNEL" ] && [ "$SWITCH_STYLE" = "plain" ]; then
+  ok "strict: queued account_switched preserves channel + ordinary-message style"
+else bad "switch queue route: rc=$RC out='$OUT' channel='$SWITCH_DESTINATION' style='$SWITCH_STYLE'"; fi
+
+CONTROL_QUEUE="$TMP/control-route-queue"
+OUT=$(run_routed_alert 500 quota_no_target sig-control-route "$CONTROL_QUEUE" "$ROUTE_CHANNEL" 2>/dev/null); RC=$?
+CONTROL_RECORD=$(find "$CONTROL_QUEUE" -maxdepth 1 -name '*.json' -print -quit 2>/dev/null)
+if [ "$RC" = "2" ] && [ "$OUT" = "queued_transient" ] \
+    && jq -e '((has("deliveryChannelId") | not) and (has("deliveryStyle") | not))' "$CONTROL_RECORD" >/dev/null 2>&1; then
+  ok "strict: queued quota_no_target keeps the legacy record shape"
+else bad "control queue route: rc=$RC out='$OUT' record='$CONTROL_RECORD'"; fi
+
 CALLS_BEFORE=$(wc -l < "$TMP/curl.calls" | tr -d ' ')
 OUT=$(run_alert 500 --lead flywheel-eng-lead --signature sig-q --strict-delivery 2>/dev/null); RC=$?
 CALLS_AFTER=$(wc -l < "$TMP/curl.calls" | tr -d ' ')

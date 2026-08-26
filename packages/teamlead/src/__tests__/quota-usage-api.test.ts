@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fetchAccountUsage } from "../account-heal/quota-usage-api.js";
+import {
+	fetchAccountUsage,
+	findModelScopedQuota,
+} from "../account-heal/quota-usage-api.js";
 
 const TOKEN = "sk-ant-oat01-super-secret";
 const ORIGINAL_QUOTA_API_BASE = process.env.FLYWHEEL_QUOTA_API_BASE;
@@ -12,7 +15,15 @@ const VALID_USAGE = {
 		utilization: 22,
 		resets_at: "2026-07-21T14:00:00.420Z",
 	},
-	limits: [{ kind: "session", percent: 91.5 }],
+	limits: [
+		{ kind: "session", percent: 91.5 },
+		{
+			kind: "weekly_scoped",
+			percent: 63.5,
+			resets_at: "2026-07-19T15:00:00.000Z",
+			scope: { model: { id: null, display_name: "Fable" }, surface: null },
+		},
+	],
 };
 
 /**
@@ -49,6 +60,54 @@ afterEach(() => {
 });
 
 describe("fetchAccountUsage", () => {
+	it("reads the self-describing Fable quota from limits[] without guessing opaque top-level keys", () => {
+		expect(findModelScopedQuota(VALID_USAGE, "Fable")).toEqual({
+			displayName: "Fable",
+			pct: 63.5,
+			resetsAt: "2026-07-19T15:00:00.000Z",
+		});
+		expect(findModelScopedQuota(VALID_USAGE, "fable")).toEqual({
+			displayName: "Fable",
+			pct: 63.5,
+			resetsAt: "2026-07-19T15:00:00.000Z",
+		});
+		expect(
+			findModelScopedQuota(
+				{
+					...VALID_USAGE,
+					limits: [{ ...VALID_USAGE.limits[1], kind: "future_model_scope" }],
+				},
+				"Fable",
+			),
+		).toEqual({
+			displayName: "Fable",
+			pct: 63.5,
+			resetsAt: "2026-07-19T15:00:00.000Z",
+		});
+	});
+
+	it("fails soft when a named model-scoped quota is absent or malformed", () => {
+		expect(findModelScopedQuota({ ...VALID_USAGE, limits: [] }, "Fable")).toBe(
+			null,
+		);
+		expect(
+			findModelScopedQuota(
+				{
+					...VALID_USAGE,
+					limits: [
+						{
+							kind: "weekly_scoped",
+							percent: "63",
+							resets_at: "not-a-date",
+							scope: { model: { display_name: "Fable" } },
+						},
+					],
+				},
+				"Fable",
+			),
+		).toBe(null);
+	});
+
 	it("requests the OAuth usage endpoint with the beta contract and returns validated raw usage", async () => {
 		const fetchFn = vi.fn(async (_url: string | URL, init?: RequestInit) => {
 			expect(new Headers(init?.headers).get("authorization")).toBe(

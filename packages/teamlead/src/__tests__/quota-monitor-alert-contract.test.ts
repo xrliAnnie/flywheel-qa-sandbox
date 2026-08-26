@@ -22,7 +22,16 @@ describe("FLY-1256 shell alert rendering", () => {
 		root = undefined;
 	});
 
-	function send(kind: string, signature: string): string {
+	function send(
+		kind: string,
+		signature: string,
+		opts: {
+			plain?: boolean;
+			body?: string;
+			title?: string;
+			mentionUser?: string;
+		} = {},
+	): string {
 		root ??= mkdtempSync(join(tmpdir(), "fly1256-alert-"));
 		const bin = join(root, "bin");
 		const capture = join(root, `body-${signature}.json`);
@@ -38,44 +47,68 @@ describe("FLY-1256 shell alert rendering", () => {
 			{ mode: 0o755 },
 		);
 
-		const result = spawnSync(
-			"bash",
-			[
-				script,
-				"--lead",
-				"quota-monitor",
-				"--project",
-				"flywheel",
-				"--kind",
-				kind,
-				"--severity",
-				"info",
-				"--title",
-				"quota event",
-				"--body",
-				"details",
-				"--signature",
-				signature,
-			],
-			{
-				env: {
-					...process.env,
-					PATH: `${bin}:${process.env.PATH ?? ""}`,
-					HOME: root,
-					CAPTURE: capture,
-					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "quota-channel",
-					FLYWHEEL_ALERT_SENDER_TOKEN_ENV: "QUOTA_TEST_TOKEN",
-					QUOTA_TEST_TOKEN: "not-a-real-token",
-					FLYWHEEL_CLAIMS_DB: join(root, "claims.db"),
-					FLYWHEEL_ALERT_QUEUE_DIR: join(root, "queue"),
-					FLYWHEEL_ALERT_DEADLETTER_DIR: join(root, "deadletter"),
-				},
-				encoding: "utf-8",
+		const args = [
+			script,
+			"--lead",
+			"quota-monitor",
+			"--project",
+			"flywheel",
+			"--kind",
+			kind,
+			"--severity",
+			"info",
+			"--title",
+			opts.title ?? "quota event",
+			"--body",
+			opts.body ?? "details",
+			"--signature",
+			signature,
+		];
+		if (opts.plain) args.push("--plain-message");
+		if (opts.mentionUser) args.push("--mention-user", opts.mentionUser);
+		const result = spawnSync("bash", args, {
+			env: {
+				...process.env,
+				PATH: `${bin}:${process.env.PATH ?? ""}`,
+				HOME: root,
+				CAPTURE: capture,
+				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "quota-channel",
+				FLYWHEEL_ALERT_SENDER_TOKEN_ENV: "QUOTA_TEST_TOKEN",
+				QUOTA_TEST_TOKEN: "not-a-real-token",
+				FLYWHEEL_CLAIMS_DB: join(root, "claims.db"),
+				FLYWHEEL_ALERT_QUEUE_DIR: join(root, "queue"),
+				FLYWHEEL_ALERT_DEADLETTER_DIR: join(root, "deadletter"),
 			},
-		);
+			encoding: "utf-8",
+		});
 		expect(result.status, result.stderr).toBe(0);
 		return JSON.parse(readFileSync(capture, "utf-8")).content as string;
 	}
+
+	it("renders a switch-family notification as the exact ordinary message body", () => {
+		const founder = "1".repeat(18);
+		const body = [
+			"Claude 已自动切号：**shopping → school**",
+			"",
+			"原账号 **shopping**",
+			"shopping@example.com",
+		].join("\n");
+		const content = send("account_switched", "plain-switch", {
+			plain: true,
+			body,
+			title: "must never render",
+			mentionUser: founder,
+		});
+
+		expect(content).toBe(`<@${founder}> ${body}`);
+		expect(content).not.toMatch(/ℹ️|🚨|quota-monitor|account_switched/);
+	});
+
+	it("refuses the plain-message override for a non-switch alert kind", () => {
+		expect(() =>
+			send("quota_no_target", "plain-non-switch", { plain: true }),
+		).toThrow();
+	});
 
 	it.each([
 		"account_switched",

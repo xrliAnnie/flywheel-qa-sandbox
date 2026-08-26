@@ -23,6 +23,7 @@ mkdir -p "$ROOT/home/.flywheel" "$ROOT/bin" "$ROOT/state"
 cat > "$ROOT/home/.flywheel/.env" <<'EOF'
 FLYWHEEL_QUOTA_MONITOR_CONFIG=from-dot-env
 FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE=from-dot-env-service
+FLYWHEEL_NOTIFY_CHANNEL=from-dot-env-notification
 EOF
 cat > "$ROOT/bin/fake-monitor" <<'EOF'
 #!/usr/bin/env bash
@@ -54,6 +55,23 @@ if env "${COMMON_ENV[@]}" FLYWHEEL_QUOTA_MONITOR_CONFIG=from-process \
   pass "process FLYWHEEL_QUOTA_* wins while missing FLYWHEEL_CLAUDE_* loads from .env"
 else
   fail "environment precedence" "got=$(cat "$ROOT/monitor.log" 2>/dev/null || echo missing)"
+fi
+
+cat > "$ROOT/missing-notify.env" <<'EOF'
+FLYWHEEL_QUOTA_MONITOR_CONFIG=from-missing-notify-env
+FLYWHEEL_CLAUDE_KEYCHAIN_SERVICE=from-missing-notify-env-service
+EOF
+rm -f "$ROOT/monitor.log" "$ROOT/alerts.log"
+if env "${COMMON_ENV[@]}" FLYWHEEL_NOTIFY_CHANNEL="" \
+    FLYWHEEL_QUOTA_ENV_FILE="$ROOT/missing-notify.env" \
+    bash "$WRAPPER" >/dev/null 2>&1; then
+  fail "missing notification route fails before exec" "wrapper exited zero"
+elif grep -q -- '--kind quota_monitor_down' "$ROOT/alerts.log" 2>/dev/null \
+  && grep -q -- '--strict-delivery' "$ROOT/alerts.log" 2>/dev/null \
+  && [[ ! -f "$ROOT/monitor.log" ]]; then
+  pass "missing notification route emits strict quota_monitor_down before failing"
+else
+  fail "missing notification route fail-loud" "alert=$(cat "$ROOT/alerts.log" 2>/dev/null || echo missing) monitor=$(cat "$ROOT/monitor.log" 2>/dev/null || echo absent)"
 fi
 
 rm -f "$ROOT/alerts.log"

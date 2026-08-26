@@ -195,10 +195,18 @@ describe("quota switch confirmation", () => {
 				eventId: "model-cap-g7-deadbeef:confirm",
 				alert: expect.objectContaining({
 					kind: "quota_switch_confirmation",
-					body: expect.stringContaining("1/1 recovered"),
+					body: expect.stringContaining(
+						"受影响的 1 个会话里，1 个已确认恢复。",
+					),
 				}),
 			}),
 		]);
+		expect(finalized.alertOutbox[0]?.alert.body).toContain(
+			"Claude 切号后的恢复检查已完成：**shopping → school**",
+		);
+		expect(finalized.alertOutbox[0]?.alert.body).not.toMatch(
+			/generation=|models=|recovered after/,
+		);
 		expect(statSync(evidencePath).mode & 0o777).toBe(0o600);
 	});
 
@@ -240,7 +248,9 @@ describe("quota switch confirmation", () => {
 		});
 
 		expect(alert.alert.body.length).toBeLessThanOrEqual(1_700);
-		expect(alert.alert.body).toContain("40/40 recovered");
+		expect(alert.alert.body).toContain(
+			"受影响的 40 个会话里，40 个已确认恢复。",
+		);
 		expect(alert.alert.body).toContain(`full_evidence=${evidencePath}`);
 		expect(alert.alert.kind).toBe("quota_switch_confirmation");
 		expect(alert.alert.signature).toBe("quota-switch-confirmation-g8");

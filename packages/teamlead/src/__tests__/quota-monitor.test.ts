@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ProfileIdentityResult } from "../account-heal/account-identity.js";
+import type {
+	ProfileIdentity,
+	ProfileIdentityResult,
+} from "../account-heal/account-identity.js";
 import {
 	type AccountQuotaObservation,
 	type AccountStore,
 	selectNextAccount,
 } from "../account-heal/account-store.js";
 import {
+	formatAccountSwitchNotification,
 	formatModelBenchRetryNote,
 	pollOnce,
 	type QuotaMonitorAlert,
@@ -34,13 +38,32 @@ function usage(
 	sevenPct: number,
 	// `null` is a meaningful value (an unopened window), so default only on
 	// `undefined` — `??` would silently swap an explicit null back to a timestamp.
-	resets: { five?: string | null; seven?: string | null } = {},
+	resets: {
+		five?: string | null;
+		seven?: string | null;
+		fable?: { pct: number; reset: string | null };
+	} = {},
 ): Extract<AccountUsageResult, { ok: unknown }> {
 	const five = resets.five === undefined ? FIVE_RESET : resets.five;
 	const seven = resets.seven === undefined ? WEEK_RESET : resets.seven;
 	const raw = {
 		five_hour: { utilization: fivePct, resets_at: five },
 		seven_day: { utilization: sevenPct, resets_at: seven },
+		...(resets.fable
+			? {
+					limits: [
+						{
+							kind: "weekly_scoped",
+							percent: resets.fable.pct,
+							resets_at: resets.fable.reset,
+							scope: {
+								model: { id: null, display_name: "Fable" },
+								surface: null,
+							},
+						},
+					],
+				}
+			: {}),
 	};
 	return {
 		ok: {
@@ -150,6 +173,17 @@ function harness() {
 		async (identity: Exclude<ProfileIdentityResult, { error: string }>) =>
 			identity.email.split("@")[0] ?? null,
 	);
+	const poolIdentities: Record<string, ProfileIdentity> = {
+		shopping: {
+			email: "real-shopping@identity.test",
+			uuid: "uuid-shopping",
+		},
+		school: { email: "real-school@identity.test", uuid: "uuid-school" },
+		business: { email: "real-business@identity.test", uuid: "uuid-business" },
+	};
+	const readPoolIdentity = vi.fn(
+		async (name: string) => poolIdentities[name] ?? null,
+	);
 	const verifyCandidate = vi.fn(async (name: string) => {
 		expect(lockDepth).toBe(1);
 		events.push(`verify:${name}`);
@@ -247,6 +281,7 @@ function harness() {
 		fetchUsage,
 		fetchIdentity,
 		resolveIdentityName,
+		readPoolIdentity,
 		recordObservation,
 		writeStatuslineCache: async (raw) => {
 			expect(lockDepth).toBe(1);
@@ -282,6 +317,7 @@ function harness() {
 		fetchUsage,
 		fetchIdentity,
 		resolveIdentityName,
+		readPoolIdentity,
 		readSnapshot,
 		verifyCandidate,
 		recordObservation,
@@ -312,6 +348,124 @@ beforeEach(() => {
 });
 
 describe("pollOnce", () => {
+	it("renders the founder-approved copy with emails, every reset, and Fable quota", () => {
+		const body = formatAccountSwitchNotification({
+			from: {
+				name: "shopping",
+				email: "shopping@example.com",
+				usage: usage(91, 74, {
+					five: "2026-07-14T23:00:00.000Z",
+					seven: "2026-07-21T14:00:00.000Z",
+					fable: { pct: 92, reset: "2026-07-17T07:00:00.000Z" },
+				}).ok,
+			},
+			to: {
+				name: "school",
+				email: "school@example.com",
+				usage: usage(12, 8, {
+					five: "2026-07-15T02:00:00.000Z",
+					seven: "2026-07-19T15:00:00.000Z",
+					fable: { pct: 12, reset: "2026-07-20T15:00:00.000Z" },
+				}).ok,
+			},
+			revive: { revived: 2, pending: 0, loginExpired: 0 },
+			degraded: false,
+			nowMs: NOW,
+			timezone: "America/Los_Angeles",
+		});
+
+		expect(body).toBe(
+			[
+				"Claude 已自动切号：**shopping → school**",
+				"",
+				"原账号 **shopping**",
+				"shopping@example.com",
+				"```text",
+				"window  used   left   reset (PT)",
+				"5h      91%    9%     07-14 Tue 16:00",
+				"7d      74%    26%    07-21 Tue 07:00",
+				"Fable   92%    8%     07-17 Fri 00:00",
+				"```",
+				"",
+				"新账号 **school**",
+				"school@example.com",
+				"```text",
+				"window  used   left   reset (PT)",
+				"5h      12%    88%    07-14 Tue 19:00",
+				"7d      8%     92%    07-19 Sun 08:00",
+				"Fable   12%    88%    07-20 Mon 08:00",
+				"```",
+			].join("\n"),
+		);
+		const table = body.split("```text\n")[1]?.split("\n```")[0]?.split("\n");
+		expect(table?.every((line) => /^[\x20-\x7e]+$/.test(line))).toBe(true);
+		expect([
+			table?.[0]?.indexOf("used"),
+			table?.[1]?.indexOf("91%"),
+			table?.[2]?.indexOf("74%"),
+			table?.[3]?.indexOf("92%"),
+		]).toEqual([8, 8, 8, 8]);
+		expect([
+			table?.[0]?.indexOf("left"),
+			table?.[1]?.indexOf("9%"),
+			table?.[2]?.indexOf("26%"),
+			table?.[3]?.indexOf("8%"),
+		]).toEqual([15, 15, 15, 15]);
+		expect([
+			table?.[0]?.indexOf("reset"),
+			table?.[1]?.indexOf("07-"),
+			table?.[2]?.indexOf("07-"),
+			table?.[3]?.indexOf("07-"),
+		]).toEqual([22, 22, 22, 22]);
+		const asciiWcwidth = (value: string) =>
+			Array.from(value).reduce((width, character) => {
+				const code = character.codePointAt(0) ?? 0;
+				return width + (code >= 0x20 && code <= 0x7e ? 1 : 2);
+			}, 0);
+		const columnMarkers = [
+			["used", "left", "reset"],
+			["91%", "9%", "07-"],
+			["74%", "26%", "07-"],
+			["92%", "8%", "07-"],
+		];
+		expect(
+			table?.map((line, row) =>
+				columnMarkers[row]!.map((marker) =>
+					asciiWcwidth(line.slice(0, line.indexOf(marker))),
+				),
+			),
+		).toEqual([
+			[8, 15, 22],
+			[8, 15, 22],
+			[8, 15, 22],
+			[8, 15, 22],
+		]);
+		expect(body).not.toMatch(
+			/from5h|to5h|revived=|pending=|unknown|切号时|继续指令|仍在等待|已恢复/,
+		);
+	});
+
+	it("keeps missing quota facts explicit without pane-revive status", () => {
+		const body = formatAccountSwitchNotification({
+			from: { name: "shopping", email: null, usage: usage(100, 90).ok },
+			to: {
+				name: "school",
+				email: "school@example.com",
+				usage: usage(0, 0, { five: null, seven: null }).ok,
+			},
+			revive: { revived: 2, pending: 1, loginExpired: 1 },
+			degraded: true,
+			nowMs: NOW,
+			timezone: "America/Los_Angeles",
+		});
+
+		expect(body).toContain("配额读数不完整，已按备用顺序完成切换。");
+		expect(body).toContain("邮箱暂时未读到");
+		expect(body).toContain("Fable   n/a    n/a    n/a");
+		expect(body).toContain("not started");
+		expect(body).not.toMatch(/切号时|继续指令|仍在等待|已恢复/);
+	});
+
 	it("describes model bench expiry as a retry boundary, never a quota recovery promise", () => {
 		const accountStore = store();
 		accountStore.accounts = accountStore.accounts.map((account) =>
@@ -1530,7 +1684,16 @@ describe("pollOnce", () => {
 		expect(firstSwitchPersist).toBeLessThan(revive);
 		expect(revive).toBeLessThan(alert);
 		expect(alert).toBeLessThan(newPoll);
-		expect(h.alerts.at(-1)?.body).toContain("revived=1");
+		expect(h.alerts.at(-1)?.body).not.toMatch(
+			/切号时|继续指令|仍在等待|已恢复/,
+		);
+		expect(h.readPoolIdentity.mock.calls.map(([name]) => name)).toEqual([
+			"shopping",
+			"school",
+		]);
+		expect(h.alerts.at(-1)?.body).toContain("real-shopping@identity.test");
+		expect(h.alerts.at(-1)?.body).toContain("real-school@identity.test");
+		expect(h.alerts.at(-1)?.body).not.toContain("revived=");
 	});
 
 	it("maps typed switch exhaustion and environment failures to account_switch_failed", async () => {

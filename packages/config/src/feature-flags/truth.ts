@@ -490,7 +490,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID:
 		"config value: Claude infra bot Discord user id",
 	FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN: "secret: alert dispatch bot token",
-	FLYWHEEL_NOTIFY_CHANNEL: "config value: restart notification channel id",
+	FLYWHEEL_NOTIFY_CHANNEL:
+		"config value: restart and Claude quota-switch notification channel id (FLY-2051)",
 	FLYWHEEL_ROUNDTABLE_GUILD_ID: "config value: roundtable Discord guild id",
 	FLYWHEEL_ROUNDTABLE_CHANNEL_ID: "config value: roundtable Discord channel id",
 	FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS:

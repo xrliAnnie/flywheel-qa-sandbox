@@ -31,6 +31,12 @@ export type AccountUsageResult =
 			retryAfterMs?: number;
 	  };
 
+export interface ModelScopedQuota {
+	displayName: string;
+	pct: number;
+	resetsAt: string | null;
+}
+
 export interface FetchAccountUsageOptions {
 	baseUrl?: string;
 	timeoutMs?: number;
@@ -57,6 +63,53 @@ function isQuotaWindow(value: unknown): value is QuotaWindow {
 		typeof value.resets_at === "string" &&
 		!Number.isNaN(Date.parse(value.resets_at))
 	);
+}
+
+/**
+ * Read a named model quota from the API's self-describing `limits[]` surface.
+ * Opaque top-level keys are deliberately ignored because their meaning is not
+ * part of this contract.
+ */
+export function findModelScopedQuota(
+	payload: unknown,
+	displayName: string,
+): ModelScopedQuota | null {
+	if (!isRecord(payload) || !Array.isArray(payload.limits)) return null;
+	const wanted = displayName.trim().toLocaleLowerCase("en-US");
+	if (!wanted) return null;
+	for (const candidate of payload.limits.slice(0, 200)) {
+		if (!isRecord(candidate)) continue;
+		if (!isRecord(candidate.scope) || !isRecord(candidate.scope.model))
+			continue;
+		const actualName = candidate.scope.model.display_name;
+		if (
+			typeof actualName !== "string" ||
+			actualName.trim().toLocaleLowerCase("en-US") !== wanted
+		) {
+			continue;
+		}
+		if (
+			typeof candidate.percent !== "number" ||
+			!Number.isFinite(candidate.percent) ||
+			candidate.percent < 0 ||
+			candidate.percent > 100
+		) {
+			return null;
+		}
+		const reset = candidate.resets_at;
+		if (
+			reset !== null &&
+			(typeof reset !== "string" || Number.isNaN(Date.parse(reset)))
+		) {
+			return null;
+		}
+		return {
+			displayName: actualName.trim(),
+			pct: candidate.percent,
+			resetsAt: reset,
+		};
+	}
+	return null;
 }
 
 function validatePayload(value: unknown): ValidatedUsagePayload | null {

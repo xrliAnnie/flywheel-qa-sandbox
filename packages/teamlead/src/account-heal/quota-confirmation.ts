@@ -162,12 +162,19 @@ function confirmationBody(
 	result: ConfirmationResult,
 	evidencePath: string,
 ): string {
-	const header = `${result.recovered}/${result.total} recovered after Claude account switch; generation=${result.intent.generation}; models=${result.intent.models.join(",")}`;
+	const statusCopy: Record<ConfirmationStatus, string> = {
+		recovered: "已确认恢复",
+		still_capped_or_choice: "仍受额度限制或在等待账号选择",
+		unknown_in_flight: "仍在运行，暂时无法确认",
+		capture_failed: "检查失败，暂时无法确认",
+		pane_disappeared: "会话已不存在，无法确认",
+	};
+	const header = `Claude 切号后的恢复检查已完成：**${result.intent.sourceAccount} → ${result.intent.targetAccount}**`;
+	const summary = `受影响的 ${result.total} 个会话里，${result.recovered} 个已确认恢复。`;
 	const details = result.panes.map(
-		(entry) =>
-			`${entry.instanceKey} (${entry.pane.sessionName}/${entry.pane.windowName}): ${entry.status}`,
+		(entry) => `${entry.pane.windowName}：${statusCopy[entry.status]}`,
 	);
-	const full = [header, ...details].join("\n");
+	const full = [header, "", summary, ...details].join("\n");
 	if (full.length <= MAX_CONFIRMATION_BODY_CHARS) return full;
 	const suffix = `\n… truncated; full_evidence=${evidencePath}`;
 	const available = Math.max(0, MAX_CONFIRMATION_BODY_CHARS - suffix.length);

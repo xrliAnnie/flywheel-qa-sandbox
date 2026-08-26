@@ -62,6 +62,17 @@ if [[ ! "$CRASH_WINDOW" =~ ^[1-9][0-9]*$ ]] || [[ ! "$CRASH_THRESHOLD" =~ ^[1-9]
   exit 1
 fi
 
+# FLY-2051: the switch-family sender overrides the alert channel at delivery
+# time. Refuse to boot without that route so a successful account switch can
+# never be silently acknowledged while its founder notification is dropped.
+NOTIFY_CHANNEL="${FLYWHEEL_NOTIFY_CHANNEL:-}"
+if [[ -z "${NOTIFY_CHANNEL//[[:space:]]/}" ]]; then
+  fail_loud "missing_notify_channel" "Claude quota monitor notification route missing" \
+    "FLYWHEEL_NOTIFY_CHANNEL is empty; refusing to start the quota monitor" \
+    "quota-monitor-notify-channel-missing-$(date -u +%Y%m%d)"
+  exit 1
+fi
+
 if [[ ! -f "$MONITOR_DIST" || ! -x "$MONITOR_BIN" ]]; then
   fail_loud "dist_missing" "Claude quota monitor cannot start" \
     "daemon artifact missing (dist=$MONITOR_DIST, bin=$MONITOR_BIN)" \

@@ -42,18 +42,38 @@ export interface QuotaMonitorAlertOptions {
 	project?: string;
 }
 
-type RoutingPolicy = { mention: boolean; severe: boolean };
+type RoutingPolicy = {
+	mention: boolean;
+	severe: boolean;
+	primaryChannel?: "notify";
+	primaryStyle?: "plain";
+};
 
 const ROUTING = {
-	account_switched: { mention: true, severe: false },
-	account_switch_degraded: { mention: true, severe: true },
+	account_switched: {
+		mention: true,
+		severe: false,
+		primaryChannel: "notify",
+		primaryStyle: "plain",
+	},
+	account_switch_degraded: {
+		mention: true,
+		severe: true,
+		primaryChannel: "notify",
+		primaryStyle: "plain",
+	},
 	machine_account_conflict: { mention: true, severe: true },
 	model_cap_switched: { mention: true, severe: false },
 	model_cap_unknown: { mention: false, severe: false },
 	model_cap_persistent_unknown: { mention: true, severe: true },
 	model_bench_malformed: { mention: true, severe: true },
 	quota_choice: { mention: true, severe: true },
-	quota_switch_confirmation: { mention: false, severe: false },
+	quota_switch_confirmation: {
+		mention: false,
+		severe: false,
+		primaryChannel: "notify",
+		primaryStyle: "plain",
+	},
 	quota_no_target: { mention: true, severe: true },
 	account_identity_mismatch: { mention: true, severe: true },
 	quota_blocked_recovered: { mention: false, severe: false },
@@ -133,6 +153,7 @@ function alertArgs(
 	project: string,
 	mentionUser?: string,
 	signature = alert.signature,
+	plainMessage = false,
 ): string[] {
 	const args = [
 		"--lead",
@@ -151,6 +172,7 @@ function alertArgs(
 		signature,
 		"--strict-delivery",
 	];
+	if (plainMessage) args.push("--plain-message");
 	if (mentionUser) args.push("--mention-user", mentionUser);
 	return args;
 }
@@ -173,15 +195,40 @@ export async function sendQuotaMonitorAlert(
 					severe: true,
 				});
 	const mentionUser = policy.mention ? resolveMentionUser() : undefined;
+	const notifyChannel =
+		policy.primaryChannel === "notify"
+			? process.env.FLYWHEEL_NOTIFY_CHANNEL?.trim()
+			: undefined;
+	if (policy.primaryChannel === "notify" && !notifyChannel) {
+		return { primary: "config_error" };
+	}
+	const primaryEnv = notifyChannel
+		? {
+				...process.env,
+				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: notifyChannel,
+			}
+		: undefined;
 	const primary = await attemptDelivery(
 		exec,
 		binPath,
-		alertArgs(alert, project, mentionUser),
+		alertArgs(
+			alert,
+			project,
+			mentionUser,
+			alert.signature,
+			policy.primaryStyle === "plain",
+		),
+		primaryEnv,
 	);
 
 	const severeChannel = process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
 	const unifiedChannel = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
-	if (!policy.severe || !severeChannel || severeChannel === unifiedChannel) {
+	if (
+		!policy.severe ||
+		!severeChannel ||
+		severeChannel === unifiedChannel ||
+		severeChannel === notifyChannel
+	) {
 		return { primary };
 	}
 

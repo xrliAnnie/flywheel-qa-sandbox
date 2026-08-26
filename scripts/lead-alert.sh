@@ -22,7 +22,8 @@
 #     --kind <rate_limit|usage_limit|login_expired|permission_blocked|crash_loop|pane_hash_stuck|companion_config_error|external_config_error|rules_bundle_legacy|tui_window_lost|restart_guard_bypass|quota_guard_bypassed|bin_integrity_drift|notify_digest_failed|deploy_failed|deploy_degraded> \
 #     --severity <info|warning|severe> \
 #     --title <string> --body <string> \
-#     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>]
+#     [--signature <string>] [--strict-delivery] [--mention-user <snowflake>] \
+#     [--plain-message]
 #
 # Exit codes:
 #   0 — posted or already claimed (both are success: no double-alert)
@@ -114,6 +115,7 @@ BODY=""
 SIGNATURE=""
 STRICT_DELIVERY=0
 MENTION_USER=""
+PLAIN_MESSAGE=0
 
 # FLY-1256 mirror of LeadAlertNotifier.INFORMATIONAL_KINDS. These kinds still
 # post a root message, but never render the unified ticket header.
@@ -121,6 +123,13 @@ INFORMATIONAL_KINDS="account_switched model_cap_switched model_cap_unknown quota
 is_informational_kind() {
   case " ${INFORMATIONAL_KINDS} " in
     *" $1 "*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_quota_switch_kind() {
+  case "$1" in
+    account_switched|account_switch_degraded|quota_switch_confirmation) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -144,6 +153,7 @@ while [ $# -gt 0 ]; do
     --signature) SIGNATURE="${2:?--signature requires a value}"; shift 2 ;;
     --strict-delivery) STRICT_DELIVERY=1; shift ;;
     --mention-user) MENTION_USER="${2:?--mention-user requires a value}"; shift 2 ;;
+    --plain-message) PLAIN_MESSAGE=1; shift ;;
     -h|--help)   usage ;;
     *)
       log "ERROR: unknown flag '$1'"
@@ -203,6 +213,14 @@ case "$SEVERITY" in
     exit 1
     ;;
 esac
+
+# FLY-2051: ordinary-message rendering is a narrow capability, not a generic
+# way for alert producers to bypass ticket/alert framing.
+if [ "$PLAIN_MESSAGE" = "1" ] && ! is_quota_switch_kind "$KIND"; then
+  log "ERROR: --plain-message is allowed only for the quota switch family"
+  emit_result "config_error"
+  exit 1
+fi
 
 # FLY-1081: opt-in explicit @-mention (deploy_failed → founder). A malformed id
 # degrades to no-ping (alert still delivers) rather than failing the alert or
@@ -565,11 +583,15 @@ case "$SEVERITY" in
   info|*)  EMOJI="ℹ️" ;;
 esac
 
-CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
+if [ "$PLAIN_MESSAGE" = "1" ]; then
+  CONTENT="$BODY"
+else
+  CONTENT=$(printf '%s **%s** (%s / %s)\n%s' "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$BODY")
+fi
 # FLY-927 (Task 1.7): 🎫 ticket header, SAME shape as the TS formatContent —
 # in unified-channel mode. Shell side always renders
 # `owner — · 状态 NEW` (owner @ is the Bridge's job; drain does not rewrite).
-if [ -n "$UNIFIED_CHANNEL" ] && ! is_informational_kind "$KIND"; then
+if [ "$PLAIN_MESSAGE" != "1" ] && [ -n "$UNIFIED_CHANNEL" ] && ! is_informational_kind "$KIND"; then
   CONTENT=$(printf '%s **%s** (%s / %s)\n🎫 %s · 首见 %s · owner — · 状态 NEW\n%s' \
     "$EMOJI" "$TITLE" "$LEAD_ID" "$KIND" "$PROJECT_NAME" "$(founder_ticket_clock)" "$BODY")
 fi
@@ -596,10 +618,20 @@ write_record() {
   # FLY-1081: mentionUserId is OPTIONAL — the key is omitted entirely when no
   # (valid) --mention-user was passed, so pre-existing record shape is
   # byte-compatible. Drain re-posts carry the real ping (LeadAlertNotifier).
-  local mention_args=() mention_expr=""
+  # FLY-2051: the switch family carries its resolved primary channel through a
+  # transient queue. Every other kind omits the key to retain its legacy shape.
+  local mention_args=() mention_expr="" route_args=() route_expr="" style_args=() style_expr=""
   if [ -n "$MENTION_USER" ]; then
     mention_args=(--arg mentionUserId "$MENTION_USER")
     mention_expr=', mentionUserId: $mentionUserId'
+  fi
+  if is_quota_switch_kind "$KIND"; then
+    route_args=(--arg deliveryChannelId "$CHANNEL_ID")
+    route_expr=', deliveryChannelId: $deliveryChannelId'
+  fi
+  if [ "$PLAIN_MESSAGE" = "1" ]; then
+    style_args=(--arg deliveryStyle "plain")
+    style_expr=', deliveryStyle: $deliveryStyle'
   fi
   jq -n \
     --arg leadId "$LEAD_ID" \
@@ -612,9 +644,11 @@ write_record() {
     --arg queuedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg queueReason "$2" \
     ${mention_args[@]+"${mention_args[@]}"} \
+    ${route_args[@]+"${route_args[@]}"} \
+    ${style_args[@]+"${style_args[@]}"} \
     "{leadId: \$leadId, projectName: \$projectName, eventId: \$eventId,
       eventType: \$eventType, title: \$title, body: \$body,
-      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}}" \
+      severity: \$severity, queuedAt: \$queuedAt, queueReason: \$queueReason${mention_expr}${route_expr}${style_expr}}" \
     > "$1"
 }
 

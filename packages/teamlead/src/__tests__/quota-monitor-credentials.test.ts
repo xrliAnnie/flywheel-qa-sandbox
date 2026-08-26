@@ -13,6 +13,7 @@ import {
 	readActiveProfileName,
 	readKeychainMonitorCredential,
 	readPoolMonitorCredential,
+	readPoolProfileIdentity,
 	resolvePoolProfileIdentity,
 } from "../account-heal/quota-monitor-credentials.js";
 
@@ -154,6 +155,10 @@ describe("quota monitor credential readers", () => {
 				uuid: "uuid-school",
 			}),
 		).toBe("school");
+		expect(readPoolProfileIdentity(poolDir, "school")).toEqual({
+			email: "school@example.com",
+			uuid: "uuid-school",
+		});
 	});
 
 	it("returns null for duplicate, malformed, or symlinked identity anchors", () => {
@@ -213,5 +218,18 @@ describe("quota monitor credential readers", () => {
 				uuid: "uuid-school",
 			}),
 		).toBeNull();
+
+		writeFileSync(
+			join(poolDir, "school", "identity-anchor.json"),
+			JSON.stringify({
+				accountUuid: "uuid-school",
+				email: "   ",
+				anchoredAt: "2026-08-21T00:00:00.000Z",
+				anchoredBy: "test",
+				confirmedBy: "test",
+			}),
+			{ mode: 0o600 },
+		);
+		expect(readPoolProfileIdentity(poolDir, "school")).toBeNull();
 	});
 });

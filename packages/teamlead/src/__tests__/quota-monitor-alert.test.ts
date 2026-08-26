@@ -18,15 +18,177 @@ beforeEach(() => {
 	delete process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER;
 	delete process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
 	delete process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
+	delete process.env.FLYWHEEL_NOTIFY_CHANNEL;
+	delete process.env.FLYWHEEL_FOUNDER_USER_ID;
 });
 
 afterEach(() => {
 	delete process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER;
 	delete process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
 	delete process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
+	delete process.env.FLYWHEEL_NOTIFY_CHANNEL;
+	delete process.env.FLYWHEEL_FOUNDER_USER_ID;
 });
 
 describe("sendQuotaMonitorAlert", () => {
+	it("routes a complete account switch notice to notification with the founder mention", async () => {
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
+		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-channel";
+		const founderUserId = "1".repeat(18);
+		process.env.FLYWHEEL_FOUNDER_USER_ID = founderUserId;
+		const body =
+			"shopping->school; scope=5h; degraded=false; from5h=91; from7d=74; to5h=12; to7d=8; revived=2; pending=0; login_expired=0";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await expect(
+			sendQuotaMonitorAlert(
+				{
+					kind: "account_switched",
+					severity: "info",
+					title: "Claude account switched before quota exhaustion",
+					body,
+					signature: "account-switched-shopping-school-7",
+				},
+				{ execFile },
+			),
+		).resolves.toEqual({ primary: "sent" });
+
+		expect(execFile).toHaveBeenCalledTimes(1);
+		const call = execFile.mock.calls[0];
+		expect(call?.[1]).toEqual(
+			expect.arrayContaining([
+				"--mention-user",
+				founderUserId,
+				"--plain-message",
+			]),
+		);
+		const bodyIndex = call?.[1].indexOf("--body") ?? -1;
+		expect(call?.[1][bodyIndex + 1]).toBe(body);
+		expect(call?.[2]).toEqual(
+			expect.objectContaining({
+				env: expect.objectContaining({
+					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "notification-channel",
+				}),
+			}),
+		);
+	});
+
+	it.each([
+		["account_switch_degraded", "severe"],
+		["quota_switch_confirmation", "info"],
+	] as const)("routes %s to notification", async (kind, severity) => {
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
+		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-channel";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await sendQuotaMonitorAlert(
+			{
+				kind,
+				severity,
+				title: `Title for ${kind}`,
+				body: `Body for ${kind}`,
+				signature: `signature-${kind}`,
+			},
+			{ execFile },
+		);
+
+		expect(execFile).toHaveBeenCalledTimes(1);
+		expect(execFile.mock.calls[0]?.[2]).toEqual(
+			expect.objectContaining({
+				env: expect.objectContaining({
+					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "notification-channel",
+				}),
+			}),
+		);
+		expect(execFile.mock.calls[0]?.[1]).toContain("--plain-message");
+	});
+
+	it("keeps the degraded severe secondary as an alert while its notification primary is plain", async () => {
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
+		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-channel";
+		process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "severe-channel";
+		const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+		await sendQuotaMonitorAlert(
+			{
+				kind: "account_switch_degraded",
+				severity: "severe",
+				title: "Degraded switch",
+				body: "human body",
+				signature: "degraded-switch-style",
+			},
+			{ execFile },
+		);
+
+		expect(execFile).toHaveBeenCalledTimes(2);
+		expect(execFile.mock.calls[0]?.[1]).toContain("--plain-message");
+		expect(execFile.mock.calls[1]?.[1]).not.toContain("--plain-message");
+		expect(execFile.mock.calls[0]?.[2].env).toEqual(
+			expect.objectContaining({
+				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "notification-channel",
+			}),
+		);
+		expect(execFile.mock.calls[1]?.[2].env).toEqual(
+			expect.objectContaining({
+				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "severe-channel",
+			}),
+		);
+	});
+
+	it("keeps quota_no_target on the unified alerts channel when notify is configured", async () => {
+		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
+		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-channel";
+		const observedChannels: Array<string | undefined> = [];
+		const execFile = vi.fn(async (_file, _args, options) => {
+			observedChannels.push(
+				options.env?.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID ??
+					process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID,
+			);
+			return { stdout: "sent\n", stderr: "" };
+		});
+
+		await sendQuotaMonitorAlert(
+			{
+				kind: "quota_no_target",
+				severity: "severe",
+				title: "No target",
+				body: "scope=5h",
+				signature: "quota-no-target-negative-control",
+			},
+			{ execFile },
+		);
+
+		expect(observedChannels).toEqual(["alerts-channel"]);
+		expect(execFile.mock.calls[0]?.[2].env).toBeUndefined();
+		expect(execFile.mock.calls[0]?.[1]).not.toContain("--plain-message");
+	});
+
+	it.each([
+		["account_switched", "info"],
+		["account_switch_degraded", "severe"],
+		["quota_switch_confirmation", "info"],
+	] as const)(
+		"fails closed instead of falling back to alerts when %s has no notify channel",
+		async (kind, severity) => {
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "alerts-channel";
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+			await expect(
+				sendQuotaMonitorAlert(
+					{
+						kind,
+						severity,
+						title: `Title for ${kind}`,
+						body: `Body for ${kind}`,
+						signature: `missing-notify-${kind}`,
+					},
+					{ execFile },
+				),
+			).resolves.toEqual({ primary: "config_error" });
+			expect(execFile).not.toHaveBeenCalled();
+		},
+	);
+
 	it.each([
 		["sent", { primary: "sent" }],
 		["queued_transient", { primary: "queued_transient" }],
@@ -153,6 +315,7 @@ describe("sendQuotaMonitorAlert", () => {
 	it("mentions and dual-routes severe kinds while preserving asymmetric results", async () => {
 		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER = "123456789";
 		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";
+		process.env.FLYWHEEL_NOTIFY_CHANNEL = "333";
 		process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = "222";
 		const execFile = vi
 			.fn()
@@ -180,6 +343,13 @@ describe("sendQuotaMonitorAlert", () => {
 		expect(execFile.mock.calls[1]?.[1]).toEqual(
 			expect.arrayContaining(["--signature", "degraded-1-core"]),
 		);
+		expect(execFile.mock.calls[0]?.[2]).toEqual(
+			expect.objectContaining({
+				env: expect.objectContaining({
+					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "333",
+				}),
+			}),
+		);
 		expect(execFile.mock.calls[1]?.[2]).toEqual(
 			expect.objectContaining({
 				env: expect.objectContaining({
@@ -188,6 +358,37 @@ describe("sendQuotaMonitorAlert", () => {
 			}),
 		);
 	});
+
+	it.each([
+		["notification primary", "222", "222"],
+		["global unified alerts", "333", "111"],
+	] as const)(
+		"does not send a degraded switch secondary to the %s channel",
+		async (_label, notifyChannel, severeChannel) => {
+			process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";
+			process.env.FLYWHEEL_NOTIFY_CHANNEL = notifyChannel;
+			process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID = severeChannel;
+			const execFile = vi.fn(async () => ({ stdout: "sent\n", stderr: "" }));
+
+			await sendQuotaMonitorAlert(
+				{
+					kind: "account_switch_degraded",
+					severity: "severe",
+					title: "Degraded switch",
+					body: "shopping->school",
+					signature: `degraded-no-secondary-${notifyChannel}-${severeChannel}`,
+				},
+				{ execFile },
+			);
+
+			expect(execFile).toHaveBeenCalledTimes(1);
+			expect(execFile.mock.calls[0]?.[2].env).toEqual(
+				expect.objectContaining({
+					FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: notifyChannel,
+				}),
+			);
+		},
+	);
 
 	it("deduplicates severe routing when the severe and unified channels match", async () => {
 		process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID = "111";

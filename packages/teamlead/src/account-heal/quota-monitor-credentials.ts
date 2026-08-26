@@ -147,56 +147,70 @@ export function listPoolAccounts(poolDir: string): string[] {
 	}
 }
 
+/** Read the trusted, immutable identity anchor for one concrete pool profile. */
+export function readPoolProfileIdentity(
+	poolDir: string,
+	name: string,
+): ProfileIdentity | null {
+	if (!PROFILE_NAME.test(name)) return null;
+	try {
+		const profileStat = lstatSync(join(poolDir, name));
+		if (!profileStat.isDirectory() || profileStat.isSymbolicLink()) return null;
+		const path = join(poolDir, name, "identity-anchor.json");
+		const stat = lstatSync(path);
+		if (
+			!stat.isFile() ||
+			stat.isSymbolicLink() ||
+			![0o400, 0o600].includes(stat.mode & 0o777) ||
+			(process.getuid !== undefined && stat.uid !== process.getuid())
+		) {
+			return null;
+		}
+		const value = JSON.parse(readFileSync(path, "utf8")) as Record<
+			string,
+			unknown
+		>;
+		const keys = Object.keys(value).sort();
+		const expected = [
+			"accountUuid",
+			"anchoredAt",
+			"anchoredBy",
+			"confirmedBy",
+			"email",
+		].sort();
+		if (
+			keys.length !== expected.length ||
+			keys.some((key, index) => key !== expected[index]) ||
+			Object.values(value).some(
+				(item) =>
+					typeof item !== "string" ||
+					item.length === 0 ||
+					Array.from(item).some((character) => {
+						const code = character.charCodeAt(0);
+						return code < 32 || code === 127;
+					}),
+			)
+		) {
+			return null;
+		}
+		const uuid = String(value.accountUuid).trim().toLowerCase();
+		const email = String(value.email).trim().toLowerCase();
+		if (!uuid || !email) return null;
+		return { uuid, email };
+	} catch {
+		return null;
+	}
+}
+
 export function resolvePoolProfileIdentity(
 	poolDir: string,
 	identity: ProfileIdentity,
 ): string | null {
 	const matches = listPoolAccounts(poolDir).filter((name) => {
-		const path = join(poolDir, name, "identity-anchor.json");
-		try {
-			const stat = lstatSync(path);
-			if (
-				!stat.isFile() ||
-				stat.isSymbolicLink() ||
-				![0o400, 0o600].includes(stat.mode & 0o777) ||
-				(process.getuid !== undefined && stat.uid !== process.getuid())
-			) {
-				return false;
-			}
-			const value = JSON.parse(readFileSync(path, "utf8")) as Record<
-				string,
-				unknown
-			>;
-			const keys = Object.keys(value).sort();
-			const expected = [
-				"accountUuid",
-				"anchoredAt",
-				"anchoredBy",
-				"confirmedBy",
-				"email",
-			].sort();
-			if (
-				keys.length !== expected.length ||
-				keys.some((key, index) => key !== expected[index]) ||
-				Object.values(value).some(
-					(item) =>
-						typeof item !== "string" ||
-						item.length === 0 ||
-						Array.from(item).some((character) => {
-							const code = character.charCodeAt(0);
-							return code < 32 || code === 127;
-						}),
-				)
-			) {
-				return false;
-			}
-			return (
-				String(value.accountUuid).trim().toLowerCase() === identity.uuid &&
-				String(value.email).trim().toLowerCase() === identity.email
-			);
-		} catch {
-			return false;
-		}
+		const anchored = readPoolProfileIdentity(poolDir, name);
+		return (
+			anchored?.uuid === identity.uuid && anchored.email === identity.email
+		);
 	});
 	return matches.length === 1 ? matches[0]! : null;
 }

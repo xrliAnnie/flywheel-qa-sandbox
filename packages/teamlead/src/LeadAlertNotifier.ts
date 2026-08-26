@@ -368,6 +368,22 @@ export function isInformationalKind(kind: AlertEventType): boolean {
 	return INFORMATIONAL_KINDS.has(kind);
 }
 
+const PLAIN_DELIVERY_KINDS: ReadonlySet<AlertEventType> = new Set([
+	"account_switched",
+	"account_switch_degraded",
+	"quota_switch_confirmation",
+]);
+
+function hasValidDeliveryStyle(
+	payload: Pick<AlertPayload, "eventType"> & { deliveryStyle?: unknown },
+): boolean {
+	return (
+		payload.deliveryStyle === undefined ||
+		(payload.deliveryStyle === "plain" &&
+			PLAIN_DELIVERY_KINDS.has(payload.eventType))
+	);
+}
+
 export type AlertSeverity = "info" | "warning" | "severe";
 
 /**
@@ -558,6 +574,8 @@ export interface AlertPayload {
 	 * a malformed id degrades to plain text).
 	 */
 	mentionUserId?: string;
+	/** FLY-2051: ordinary notification copy, restricted to quota-switch kinds. */
+	deliveryStyle?: "plain";
 	/**
 	 * Durable recurring-fault identity (FLY-1309) and, for swap alerts, the
 	 * episode key used by delayed replay freshness checks.
@@ -876,6 +894,14 @@ export class LeadAlertNotifier {
 		payload: AlertPayload,
 		attempt: AlertAttemptOptions = {},
 	): Promise<AlertResult> {
+		if (!hasValidDeliveryStyle(payload)) {
+			await this.deadLetter(payload, "invalid-delivery-style");
+			return this.withDeliveryReceipt(
+				payload,
+				{ deadLettered: true },
+				"deadlettered_durable",
+			);
+		}
 		const resolved = this.resolveLead(payload.leadId, payload.projectName);
 		// FLY-1082 (Task 1.4): a deliverable fleet payload proceeds WITHOUT a
 		// projects.json lead (unified channel + send chain need none); `lead` and
@@ -1216,7 +1242,11 @@ export class LeadAlertNotifier {
 
 		for (const file of entries) {
 			const path = join(this.queueDir, file);
-			let parsed: AlertPayload & { queueReason?: string; queuedAt?: string };
+			let parsed: AlertPayload & {
+				queueReason?: string;
+				queuedAt?: string;
+				deliveryChannelId?: unknown;
+			};
 			try {
 				parsed = JSON.parse(readFileSync(path, "utf-8"));
 			} catch (err) {
@@ -1291,7 +1321,24 @@ export class LeadAlertNotifier {
 			// re-posted — exactly the deploy-failure alerts that most need recovery
 			// delivery. Only the legacy branch keeps the resolveLead gates.
 			if (this.unifiedAlert) {
-				const channel = this.unifiedAlert.channelId;
+				if (!hasValidDeliveryStyle(parsed)) {
+					this.moveQueueFileToDeadLetter(file, "invalid-delivery-style");
+					deadLettered++;
+					continue;
+				}
+				let deliveryChannel: string | undefined;
+				if (parsed.deliveryChannelId !== undefined) {
+					if (
+						typeof parsed.deliveryChannelId !== "string" ||
+						!/^\d{17,20}$/.test(parsed.deliveryChannelId)
+					) {
+						this.moveQueueFileToDeadLetter(file, "invalid-delivery-channel");
+						deadLettered++;
+						continue;
+					}
+					deliveryChannel = parsed.deliveryChannelId;
+				}
+				const channel = deliveryChannel ?? this.unifiedAlert.channelId;
 				// FLY-927 (T1): each drained root message consumes a token. Refused →
 				// STOP this drain round immediately; queue files stay untouched (no
 				// rewrite, no re-enqueue) and the next round resumes oldest-first.
@@ -1305,8 +1352,13 @@ export class LeadAlertNotifier {
 					sent++;
 					// FLY-927 (Codex R1 HIGH): hand the delivered root to the Hub so a
 					// drained alert still gets its thread + ticket lifecycle.
-					if (sentResult.messageId) {
-						const { queueReason: _qr, queuedAt: _qa, ...payload } = parsed;
+					if (sentResult.messageId && parsed.deliveryStyle !== "plain") {
+						const {
+							queueReason: _qr,
+							queuedAt: _qa,
+							deliveryChannelId: _dc,
+							...payload
+						} = parsed;
 						delivered.push({
 							payload: payload as AlertPayload,
 							channelId: channel,
@@ -1875,6 +1927,7 @@ function formatContent(
 	// echo immunity.
 	const mention = validMentionUserId(payload);
 	const prefix = mention ? `<@${mention}> ` : "";
+	if (payload.deliveryStyle === "plain") return `${prefix}${payload.body}`;
 	const firstLine = `${prefix}${sev} **${payload.title}** (${payload.leadId} / ${payload.eventType})`;
 	if (!opts?.ticketHeader) {
 		return `${firstLine}\n${payload.body}`;

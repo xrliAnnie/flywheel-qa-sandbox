@@ -1,3 +1,4 @@
+import { resolveFounderTimezone } from "flywheel-config";
 import type {
 	ProfileIdentity,
 	ProfileIdentityResult,
@@ -30,9 +31,10 @@ import type {
 	QuotaMonitorState,
 } from "./quota-monitor-state.js";
 import type { QuotaPaneSnapshot } from "./quota-revive-scan.js";
-import type {
-	AccountUsageResult,
-	ValidatedUsagePayload,
+import {
+	type AccountUsageResult,
+	findModelScopedQuota,
+	type ValidatedUsagePayload,
 } from "./quota-usage-api.js";
 import type { SwitchInput, SwitchResult } from "./switch-executor.js";
 
@@ -104,6 +106,8 @@ export interface ReconcileActiveResult {
 
 export interface QuotaMonitorDeps {
 	now: () => number;
+	/** Founder-local rendering seam; production defaults to flywheel-config. */
+	founderTimezone?: () => string;
 	config: LoadedQuotaMonitorConfig;
 	state: QuotaMonitorState;
 	/** Acquires the account lock internally and reconciles marker -> store. */
@@ -125,6 +129,8 @@ export interface QuotaMonitorDeps {
 	fetchIdentity: (accessToken: string) => Promise<ProfileIdentityResult>;
 	/** Resolve a probed OAuth identity through the pool's immutable anchors. */
 	resolveIdentityName: (identity: ProfileIdentity) => Promise<string | null>;
+	/** Read the trusted immutable identity anchor for notification rendering. */
+	readPoolIdentity?: (name: string) => Promise<ProfileIdentity | null>;
 	recordObservation: (
 		name: string,
 		observation: AccountQuotaObservation,
@@ -173,6 +179,145 @@ export interface PollOnceResult {
 }
 
 type SuccessfulUsage = Extract<AccountUsageResult, { ok: unknown }>["ok"];
+
+export interface AccountSwitchNotificationInput {
+	from: { name: string; email: string | null; usage?: SuccessfulUsage | null };
+	to: { name: string; email: string | null; usage?: SuccessfulUsage | null };
+	revive: ReviveScanSummary;
+	degraded: boolean;
+	nowMs: number;
+	timezone: string;
+}
+
+interface LocalDateTime {
+	year: number;
+	month: number;
+	day: number;
+	hour: number;
+	minute: number;
+}
+
+function localDateTime(ms: number, timezone: string): LocalDateTime | null {
+	if (!Number.isFinite(ms)) return null;
+	try {
+		const parts = new Intl.DateTimeFormat("en-US", {
+			timeZone: timezone,
+			year: "numeric",
+			month: "2-digit",
+			day: "2-digit",
+			hour: "2-digit",
+			minute: "2-digit",
+			hourCycle: "h23",
+		}).formatToParts(new Date(ms));
+		const read = (type: "year" | "month" | "day" | "hour" | "minute"): number =>
+			Number(parts.find((part) => part.type === type)?.value);
+		const value = {
+			year: read("year"),
+			month: read("month"),
+			day: read("day"),
+			hour: read("hour"),
+			minute: read("minute"),
+		};
+		return Object.values(value).every((part) => Number.isFinite(part))
+			? value
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+const ASCII_WEEKDAYS = [
+	"Sun",
+	"Mon",
+	"Tue",
+	"Wed",
+	"Thu",
+	"Fri",
+	"Sat",
+] as const;
+
+function resetTimestamp(resetAt: string | null, timezone: string): string {
+	if (resetAt === null) return "not started";
+	const reset = localDateTime(Date.parse(resetAt), timezone);
+	if (!reset) return "n/a";
+	const weekday =
+		ASCII_WEEKDAYS[
+			new Date(Date.UTC(reset.year, reset.month - 1, reset.day)).getUTCDay()
+		]!;
+	return `${String(reset.month).padStart(2, "0")}-${String(reset.day).padStart(2, "0")} ${weekday} ${String(reset.hour).padStart(2, "0")}:${String(reset.minute).padStart(2, "0")}`;
+}
+
+function formatPct(value: number): string {
+	return Number.isInteger(value)
+		? String(value)
+		: value.toFixed(1).replace(/\.0$/, "");
+}
+
+function quotaTable(
+	usage: SuccessfulUsage | null | undefined,
+	timezone: string,
+): string[] {
+	const fable = usage ? findModelScopedQuota(usage.raw, "Fable") : null;
+	const cells = (
+		pct: number | null,
+		resetsAt: string | null,
+	): [string, string, string] => {
+		if (pct === null) return ["n/a", "n/a", "n/a"];
+		return [
+			`${formatPct(pct)}%`,
+			`${formatPct(Math.max(0, 100 - pct))}%`,
+			resetTimestamp(resetsAt, timezone),
+		];
+	};
+	const rows: Array<[string, string, string, string]> = [
+		["5h", ...cells(usage?.fiveH.pct ?? null, usage?.fiveH.resetsAt ?? null)],
+		["7d", ...cells(usage?.sevenD.pct ?? null, usage?.sevenD.resetsAt ?? null)],
+		["Fable", ...cells(fable?.pct ?? null, fable?.resetsAt ?? null)],
+	];
+	const line = ([window, used, remaining, reset]: [
+		string,
+		string,
+		string,
+		string,
+	]) => `${window.padEnd(7)} ${used.padEnd(6)} ${remaining.padEnd(6)} ${reset}`;
+	return [
+		"```text",
+		line([
+			"window",
+			"used",
+			"left",
+			timezone === "America/Los_Angeles" ? "reset (PT)" : "reset (local)",
+		]),
+		...rows.map(line),
+		"```",
+	];
+}
+
+function accountUsageLines(
+	account: AccountSwitchNotificationInput["from"],
+	timezone: string,
+): string[] {
+	return [
+		account.email ?? "邮箱暂时未读到",
+		...quotaTable(account.usage, timezone),
+	];
+}
+
+/** Founder-selected, glanceable account-switch notification copy. */
+export function formatAccountSwitchNotification(
+	input: AccountSwitchNotificationInput,
+): string {
+	return [
+		`Claude 已自动切号：**${input.from.name} → ${input.to.name}**`,
+		...(input.degraded ? ["", "配额读数不完整，已按备用顺序完成切换。"] : []),
+		"",
+		`原账号 **${input.from.name}**`,
+		...accountUsageLines(input.from, input.timezone),
+		"",
+		`新账号 **${input.to.name}**`,
+		...accountUsageLines(input.to, input.timezone),
+	].join("\n");
+}
 
 function toObservation(
 	usage: SuccessfulUsage,
@@ -1749,13 +1894,38 @@ export async function pollOnce(
 	const revived = await processLocalSnapshot();
 
 	const targetUsage = candidates.usageByName.get(switched.to);
+	const fromEntry = snapshot.store.accounts.find(
+		(account) => account.name === switched.from,
+	);
+	const toEntry = snapshot.store.accounts.find(
+		(account) => account.name === switched.to,
+	);
+	const [fromIdentity, toIdentity] = await Promise.all([
+		deps.readPoolIdentity?.(switched.from) ?? null,
+		deps.readPoolIdentity?.(switched.to) ?? null,
+	]);
 	await deps.alert({
 		kind: degraded ? "account_switch_degraded" : "account_switched",
 		severity: degraded ? "severe" : "info",
 		title: degraded
 			? "Claude account switched in degraded verification mode"
 			: "Claude account switched before quota exhaustion",
-		body: `${switched.from}->${switched.to}; scope=${scope}; degraded=${degraded}; from5h=${currentUsage.ok.fiveH.pct}; from7d=${currentUsage.ok.sevenD.pct}; to5h=${targetUsage?.fiveH.pct ?? "unknown"}; to7d=${targetUsage?.sevenD.pct ?? "unknown"}; revived=${revived.revived}; pending=${revived.pending}; login_expired=${revived.loginExpired}`,
+		body: formatAccountSwitchNotification({
+			from: {
+				name: switched.from,
+				email: fromIdentity?.email ?? fromEntry?.identity?.email ?? null,
+				usage: currentUsage.ok,
+			},
+			to: {
+				name: switched.to,
+				email: toIdentity?.email ?? toEntry?.identity?.email ?? null,
+				usage: targetUsage,
+			},
+			revive: revived,
+			degraded,
+			nowMs: now,
+			timezone: deps.founderTimezone?.() ?? resolveFounderTimezone(),
+		}),
 		signature: `account-switched-${switched.from}-${switched.to}-${switched.generation}`,
 	});
 	await openBlockedRecovery(

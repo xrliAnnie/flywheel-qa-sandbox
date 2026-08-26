@@ -62,6 +62,7 @@ import {
 	readKeychainMonitorCredential,
 	readPoolMonitorCredential,
 	readPoolMonitorCredentialSnapshot,
+	readPoolProfileIdentity,
 	resolvePoolProfileIdentity,
 } from "./quota-monitor-credentials.js";
 import {
@@ -515,6 +516,8 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				fetchIdentity,
 				resolveIdentityName: async (identity) =>
 					resolvePoolProfileIdentity(paths.poolDir, identity),
+				readPoolIdentity: async (name) =>
+					readPoolProfileIdentity(paths.poolDir, name),
 				recordObservation,
 				writeStatuslineCache: async (raw) =>
 					writeStatuslineCache(raw, paths.cachePath),
