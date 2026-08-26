@@ -87,24 +87,30 @@ const MANAGEMENT_CONSOLE_HEAD = `<!DOCTYPE html>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Flywheel 管理台</title>
 <style>
-:root{--ink:#1d1d1f;--muted:#6e6e73;--line:#dedee3;--paper:#fff;--wash:#f5f5f7;--blue:#1267d6;--blue-wash:#eaf3ff;--green:#248a3d;--amber:#b35c00;--red:#c62828;--nav:#15233d}
-*{box-sizing:border-box}html,body{height:100%;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);background:var(--wash);overflow:hidden}
-button,input,select{font:inherit}.app{display:grid;grid-template-columns:210px minmax(0,1fr);height:100vh}.side{background:var(--nav);color:#fff;padding:24px 14px;display:flex;flex-direction:column;gap:8px}.brand{font-size:20px;font-weight:750;padding:0 10px 20px}.nav-button{border:0;background:transparent;color:#b8c2d3;text-align:left;padding:11px 12px;border-radius:9px;cursor:pointer}.nav-button.active{background:#fff;color:var(--nav);font-weight:700}.source-health{margin-top:auto;color:#aebbd0;font-size:12px;line-height:1.5;padding:10px}
-.workspace{min-width:0;display:grid;grid-template-rows:minmax(0,1fr);overflow:hidden}.page{height:100%;display:none}.page.active{display:grid}.page:not(.active){display:none}.instances{grid-template-columns:280px minmax(0,1fr)}.project-rail{background:#fff;border-right:1px solid var(--line);padding:18px;overflow:auto}.search{width:100%;border:1px solid var(--line);border-radius:9px;padding:9px 11px;background:var(--wash);margin-bottom:16px}.group-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:15px 7px 6px}.project-button{width:100%;border:0;background:transparent;text-align:left;padding:10px;border-radius:9px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}.project-button.active{background:var(--blue-wash);color:#064d9f}.project-name{overflow:hidden;text-overflow:ellipsis}.badge{display:inline-block;padding:2px 7px;border-radius:20px;background:#ececf1;color:#555;font-size:11px;white-space:nowrap}
-.detail,.flags-page{min-width:0;overflow:auto;display:flex;flex-direction:column}.detail-inner,.flags-inner{padding:24px 28px 110px}.topline{display:flex;align-items:flex-start;justify-content:space-between;gap:14px}.topline h1{font-size:24px;margin:0}.subtitle,.reason,.help,.empty{color:var(--muted);font-size:13px;line-height:1.5}.tabs{display:flex;gap:6px;border-bottom:1px solid var(--line);margin:22px 0 18px;overflow:auto}.tab{border:0;background:transparent;padding:10px 13px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap}.tab.active{border-color:var(--blue);color:#064d9f;font-weight:700}.panel{display:none}.panel.active{display:block}.section-title{font-size:15px;margin:22px 0 10px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}.card{background:var(--paper);border:1px solid #e5e5ea;border-radius:12px;padding:15px;box-shadow:0 1px 2px rgba(0,0,0,.035)}.card h3{font-size:15px;margin:0 0 5px}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.status{width:8px;height:8px;border-radius:50%;margin-top:6px;background:#8e8e93}.status.online{background:#34c759}.status.degraded{background:#ff9500}.status.offline{background:#ff3b30}.field{margin-top:11px}.field label{display:block;color:var(--muted);font-size:11px;margin-bottom:4px}.field select,.field input{width:100%;border:1px solid #d1d1d6;border-radius:8px;background:#fff;padding:7px 8px}.field select:disabled,.field input:disabled{opacity:.55}.three{display:grid;grid-template-columns:1fr 1.4fr 1fr;gap:7px}.role-link{color:var(--blue);text-decoration:none}.role-error{color:var(--red);font-size:12px}.dag-row{border-top:1px solid #ececf0;padding-top:11px;margin-top:11px}.day-row,.time-row,.inline{display:flex;align-items:center;gap:7px;flex-wrap:wrap}.day{border:1px solid #d1d1d6;background:#fff;border-radius:7px;padding:5px 8px;cursor:pointer}.day.on{background:var(--blue);border-color:var(--blue);color:#fff}.time-row{margin-top:7px}.time-row input{width:68px}.mini-button{border:1px solid #d1d1d6;background:#fff;border-radius:7px;padding:5px 8px;cursor:pointer}.toggle{border:1px solid #c8c8cc;background:#eee;border-radius:20px;padding:4px 10px;cursor:pointer}.toggle.on{background:#dcf4e3;color:#176f30;border-color:#a8d9b5}.toggle:disabled,.mini-button:disabled{opacity:.5;cursor:default}.warning{color:var(--amber);font-size:12px;margin-top:7px}.error{background:#ffebea;color:#9f1717;padding:9px 11px;border-radius:8px;margin:10px 0;font-size:13px;display:none}.error.show{display:block}
-.flag-group{margin-top:20px}.flag-row,.extension-row{display:grid;grid-template-columns:minmax(180px,1.4fr) minmax(160px,1fr);gap:16px;align-items:center;background:#fff;border:1px solid #e5e5ea;border-radius:11px;padding:13px;margin-top:8px}.flag-name{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere}.override{border-top:1px solid #eee;margin-top:8px;padding-top:8px}.order-list{display:flex;flex-direction:column;gap:5px}.order-item{display:flex;align-items:center;justify-content:space-between;border:1px solid #ddd;border-radius:7px;padding:6px 8px}
-.pending{position:sticky;bottom:0;z-index:20;margin-top:auto;background:#172c4e;color:#fff;padding:12px 20px;display:flex;align-items:center;gap:10px;box-shadow:0 -6px 20px rgba(0,0,0,.16)}.pending.hidden{display:none}.pending .summary{margin-right:auto}.primary,.secondary{border:0;border-radius:8px;padding:8px 13px;cursor:pointer;font-weight:650}.primary{background:#fff;color:#172c4e}.secondary{background:transparent;color:#c8d6eb}.primary:disabled{opacity:.5;cursor:default}
+:root{--ink:#202124;--muted:#777982;--line:#e4e6ec;--paper:#fff;--wash:#f7f8fb;--bg:#eef0f4;--blue:#5646d6;--blue-wash:#ecebfb;--green:#248a3d;--amber:#b35c00;--red:#c62828;--nav:#f7f8fb}
+*{box-sizing:border-box}html,body{height:100vh;margin:0}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--ink);background:var(--bg);overflow:hidden;padding:18px;font-size:13px}
+button,input,select{font:inherit}.window-frame{height:calc(100vh - 36px);min-height:0;background:var(--paper);border:1px solid var(--line);border-radius:14px;box-shadow:0 18px 48px rgba(38,43,61,.14),0 2px 8px rgba(38,43,61,.06);overflow:hidden;display:grid;grid-template-rows:34px minmax(0,1fr)}.window-chrome{background:#f6f6f8;border-bottom:1px solid var(--line);display:grid;grid-template-columns:1fr auto 1fr;align-items:center;padding:0 11px;color:var(--muted);font-size:11px}.traffic-lights{display:flex;gap:7px}.traffic-dot{width:11px;height:11px;border-radius:50%;display:block}.traffic-dot.red{background:#ff5f57}.traffic-dot.amber{background:#febc2e}.traffic-dot.green{background:#28c840}.chrome-title{font-weight:650;color:#565860}.source-health{justify-self:end;background:#fff;border:1px solid #e2e3e8;border-radius:999px;padding:3px 8px;white-space:nowrap}.app{display:grid;grid-template-columns:158px minmax(0,1fr);height:100%;min-height:0}.side{background:#f7f8fb;color:var(--ink);padding:16px 10px;display:flex;flex-direction:column;gap:4px;border-right:1px solid var(--line)}.brand{font-size:16px;font-weight:760;padding:2px 10px 15px;letter-spacing:-.01em}.brand small{display:block;color:var(--muted);font-size:10px;font-weight:550;margin-top:2px}.nav-button{position:relative;border:0;background:transparent;color:#62646d;text-align:left;padding:9px 10px 9px 14px;border-radius:8px;cursor:pointer;font-size:12px}.nav-button.active{background:#ecebfb;color:#5646d6;font-weight:700}.nav-button.active:before{content:"";position:absolute;left:5px;top:8px;bottom:8px;width:2px;border-radius:2px;background:var(--blue)}
+.workspace{min-width:0;display:grid;grid-template-rows:minmax(0,1fr);overflow:hidden}.page{height:100%;display:none}.page.active{display:grid}.page:not(.active){display:none}.instances{grid-template-columns:210px minmax(0,1fr)}.project-rail{background:#fcfcfd;border-right:1px solid var(--line);padding:13px 11px;overflow:auto}.search{width:100%;border:1px solid #dfe1e7;border-radius:7px;padding:7px 9px;background:#fff;margin-bottom:10px;font-size:12px;outline:none}.search:focus{border-color:#9f96e8;box-shadow:0 0 0 2px rgba(86,70,214,.1)}.group-title{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:#92949d;margin:13px 7px 5px}.project-button{width:100%;border:0;background:transparent;text-align:left;padding:8px 8px;border-radius:7px;cursor:pointer;display:flex;align-items:center;justify-content:space-between;gap:7px;color:#45474f;font-size:12px}.project-button:hover{background:#f2f2f6}.project-button.active{background:var(--blue-wash);color:var(--blue);font-weight:650}.project-name{overflow:hidden;text-overflow:ellipsis}.badge{display:inline-block;padding:2px 6px;border-radius:20px;background:#eeeef2;color:#666872;font-size:10px;white-space:nowrap;font-weight:550}
+.detail,.flags-page{min-width:0;overflow:auto;display:flex;flex-direction:column;background:#fff}.detail-inner,.flags-inner{padding:16px 19px 92px}.topline{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}.topline h1{font-size:21px;line-height:1.2;letter-spacing:-.025em;margin:0 0 4px}.subtitle,.reason,.help,.empty{color:var(--muted);font-size:12px;line-height:1.45}.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);margin:15px 0 14px;overflow:auto}.tab{border:0;background:transparent;padding:8px 10px;border-bottom:2px solid transparent;cursor:pointer;white-space:nowrap;color:#656771;font-size:12px}.tab.active{border-color:var(--blue);color:var(--blue);font-weight:700}.panel{display:none}.panel.active{display:block}.section-title{font-size:12px;text-transform:uppercase;letter-spacing:.055em;color:#70727b;margin:17px 0 8px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:9px}.cron-grid{display:grid;grid-template-columns:minmax(0,1fr);gap:9px}.card{background:var(--paper);border:1px solid #e5e6eb;border-radius:9px;padding:11px 12px;box-shadow:0 1px 2px rgba(30,34,48,.025)}.card h3{font-size:13px;margin:0 0 3px}.card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}.lead-list{border:1px solid #e5e6eb;border-radius:9px;overflow:hidden;background:#fff}.lead-row{display:grid;grid-template-columns:minmax(145px,.55fr) minmax(420px,1.45fr);gap:14px;align-items:center;padding:10px 12px;border-top:1px solid #ececf0}.lead-row:first-child{border-top:0}.lead-meta h3{font-size:13px;margin:0 0 2px}.lead-meta .inline{justify-content:space-between}.status{width:7px;height:7px;border-radius:50%;background:#8e8e93;flex:0 0 auto}.status.online{background:#34c759}.status.degraded{background:#ff9500}.status.offline{background:#ff3b30}.field{margin-top:9px}.lead-row .field{margin-top:0}.field label{display:block;color:var(--muted);font-size:10px;margin-bottom:4px}.field select,.field input{width:100%;min-width:0;border:1px solid #d7d8de;border-radius:7px;background-color:#fff;padding:6px 7px;color:#32343a}.field select{appearance:none;background-image:linear-gradient(45deg,transparent 50%,#858791 50%),linear-gradient(135deg,#858791 50%,transparent 50%);background-position:calc(100% - 12px) 50%,calc(100% - 8px) 50%;background-repeat:no-repeat;background-size:4px 4px;padding-right:28px}.field select:disabled,.field input:disabled{opacity:.58}.three{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr) minmax(0,.65fr);gap:7px}.lead-row .three{grid-template-columns:minmax(132px,.9fr) minmax(170px,1.2fr) minmax(96px,.65fr)}.grid .card .three{grid-template-columns:minmax(0,.9fr) minmax(0,1.2fr)}.grid .card .model-effort{grid-column:1/-1}.model-provider,.model-model,.model-effort{min-width:0}.role-link{color:var(--blue);text-decoration:none}.role-error{color:var(--red);font-size:11px;line-height:1.45}.dag-card{margin-top:8px}.dag-flow{display:flex;align-items:center;gap:5px;flex-wrap:wrap;margin:10px 0 4px}.dag-step{border:1px solid #dcdee5;border-radius:7px;background:#fff;padding:4px 8px;font-size:11px;font-weight:650}.dag-arrow{color:#a2a4ad}.dag-loop{color:var(--amber);font-size:10px;font-weight:650;margin:2px 0 5px}.dag-row{display:grid;grid-template-columns:minmax(88px,.2fr) minmax(0,1fr);gap:12px;align-items:center;border-top:1px dashed #e2e3e8;padding:6px 0}.dag-row strong{font-size:12px}.dag-row .field{min-width:0;margin:0}.dag-row .field>label{display:none}.day-row,.time-row,.inline{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.cron-card .day-row{gap:4px;flex-wrap:nowrap}.day{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;border:1px solid #d7d8de;background:#fff;border-radius:6px;padding:0;cursor:pointer;font-size:11px;font-weight:650}.day.on{background:var(--blue);border-color:var(--blue);color:#fff}.time-row{margin-top:6px}.time-row input{width:62px}.mini-button{border:1px solid #d7d8de;background:#fff;border-radius:6px;padding:4px 7px;cursor:pointer;font-size:11px}.toggle{border:1px solid #cbccd2;background:#f0f0f3;border-radius:20px;padding:4px 9px;cursor:pointer;font-size:11px}.toggle.on{background:#e4f6e8;color:#176f30;border-color:#b8ddc0}.toggle:disabled,.mini-button:disabled{opacity:.5;cursor:default}.warning{color:var(--amber);font-size:11px;margin-top:6px}.error{background:#ffebea;color:#9f1717;padding:8px 10px;border-radius:7px;margin:8px 0;font-size:12px;display:none}.error.show{display:block}.group-note{background:#f7f6ff;border:1px solid #e2def9;color:#625b8d;border-radius:8px;padding:9px 11px;margin:10px 0 12px;font-size:12px}
+.flag-columns,.flag-row{display:grid;grid-template-columns:minmax(240px,.82fr) minmax(0,1.55fr) 74px;gap:12px;align-items:center}.flag-columns{padding:0 10px 5px;color:#92949d;font-size:10px;text-transform:uppercase;letter-spacing:.055em}.flag-columns span:last-child{text-align:right}.flag-group{margin-top:10px;border:1px solid #e5e6eb;border-radius:9px;overflow:hidden;background:#fff}.flag-group-title{display:flex;align-items:center;gap:7px;margin:0;padding:8px 10px;background:#f8f8fa;border-bottom:1px solid #e5e6eb;font-size:12px;font-weight:700}.flag-count{border:1px solid #e1e2e7;border-radius:999px;background:#fff;color:var(--muted);padding:1px 6px;font-size:10px;font-variant-numeric:tabular-nums}.flag-row{min-height:55px;padding:7px 10px;border-top:1px solid #ececf0}.flag-group-title+.flag-row{border-top:0}.flag-row:hover{background:#fafafd}.flag-name{font-family:"SFMono-Regular",Consolas,monospace;font-size:11px;font-weight:620;overflow-wrap:anywhere}.flag-copy{min-width:0}.flag-global{justify-self:end;display:flex;align-items:center}.flag-overrides{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:3px}.flag-override{display:inline-flex;align-items:center;gap:5px;color:#8a5a00;font-size:10px}.flag-project{font-family:"SFMono-Regular",Consolas,monospace}.flag-switch{position:relative;width:36px;height:21px;display:inline-block;flex:none;border:0;border-radius:999px;background:#cfd1d7;padding:0;cursor:pointer;transition:background .15s}.flag-switch.on{background:#34c759}.flag-switch:after{content:"";position:absolute;top:2px;left:2px;width:17px;height:17px;border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.24);transition:transform .15s}.flag-switch.on:after{transform:translateX(15px)}.flag-switch:disabled{opacity:.55;cursor:default}.extension-row{display:grid;grid-template-columns:minmax(180px,1.4fr) minmax(160px,1fr);gap:14px;align-items:center;background:#fff;border:1px solid #e5e6eb;border-radius:9px;padding:11px 12px;margin-top:7px}.order-list{display:flex;flex-direction:column;gap:5px}.order-item{display:flex;align-items:center;justify-content:space-between;border:1px solid #ddd;border-radius:7px;padding:6px 8px}
+.pending{position:sticky;bottom:0;z-index:20;margin-top:auto;background:#34304f;color:#fff;padding:10px 18px;display:flex;align-items:center;gap:9px;box-shadow:0 -6px 20px rgba(0,0,0,.12)}.pending.hidden{display:none}.pending .summary{margin-right:auto}.primary,.secondary{border:0;border-radius:7px;padding:7px 11px;cursor:pointer;font-weight:650}.primary{background:#fff;color:#34304f}.secondary{background:transparent;color:#dedbef}.primary:disabled{opacity:.5;cursor:default}
 .overlay{position:fixed;inset:0;z-index:40;background:rgba(0,0,0,.38);display:none;align-items:center;justify-content:center;padding:20px}.overlay.open{display:flex}.modal{background:#fff;border-radius:14px;width:min(700px,100%);max-height:85vh;overflow:auto;padding:22px}.modal h2{font-size:19px;margin:0}.change{background:var(--wash);border-radius:9px;padding:10px;margin-top:8px}.change-values{display:grid;grid-template-columns:1fr auto 1fr;gap:8px;align-items:start;margin-top:6px}.value{font-family:"SFMono-Regular",Consolas,monospace;font-size:12px;overflow-wrap:anywhere}.old{text-decoration:line-through;color:var(--muted)}.consequence{color:var(--amber);font-size:12px;margin-top:6px}.modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}.modal-actions .primary{background:var(--blue);color:#fff}.ack{background:#fff6e8;color:#6f4200;padding:10px;border-radius:8px;margin-top:12px}.progress-item{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;border-top:1px solid #eee;padding:9px 0}.terminal-ok{color:var(--green)}.terminal-partial{color:var(--amber)}.terminal-failed{color:var(--red)}
-@media(max-width:780px){body{overflow:auto}.app{grid-template-columns:1fr;height:auto;min-height:100vh}.side{position:sticky;top:0;z-index:30;flex-direction:row;padding:10px}.brand{padding:8px;margin-right:auto}.source-health{display:none}.instances{grid-template-columns:1fr}.project-rail{border-right:0;border-bottom:1px solid var(--line);max-height:250px}.page,.detail,.flags-page{height:auto;overflow:visible}.pending{position:sticky}.three{grid-template-columns:1fr}.flag-row,.extension-row{grid-template-columns:1fr}}
+@media(max-width:1050px){.lead-row{grid-template-columns:1fr}.three,.lead-row .three{grid-template-columns:1fr}.grid .card .model-effort{grid-column:auto}}
+@media(max-width:780px){body{overflow:auto;padding:0}.window-frame{height:auto;min-height:100vh;border:0;border-radius:0}.window-chrome{position:sticky;top:0;z-index:40}.app{grid-template-columns:1fr;height:auto;min-height:calc(100vh - 34px)}.side{position:sticky;top:34px;z-index:30;flex-direction:row;padding:8px}.brand{padding:7px;margin-right:auto}.brand small{display:none}.instances{grid-template-columns:1fr}.project-rail{border-right:0;border-bottom:1px solid var(--line);max-height:250px}.page,.detail,.flags-page{height:auto;overflow:visible}.pending{position:sticky}.dag-row,.flag-row,.extension-row{grid-template-columns:1fr}.dag-row .three,.cron-grid .three{grid-template-columns:1fr}.flag-columns{display:none}.cron-card .day-row{flex-wrap:wrap}}
 </style>
 </head>
 <body>
+<div class="window-frame">
+<header class="window-chrome">
+  <div class="traffic-lights" aria-hidden="true"><span class="traffic-dot red"></span><span class="traffic-dot amber"></span><span class="traffic-dot green"></span></div>
+  <div class="chrome-title">Flywheel 管理台</div>
+  <div class="source-health" id="sourceHealth">正在读取真实状态…</div>
+</header>
 <div class="app">
   <aside class="side">
-    <div class="brand">Flywheel</div>
+    <div class="brand">Flywheel<small>MANAGEMENT</small></div>
     <button class="nav-button active" data-nav="instances">实例</button>
     <button class="nav-button" data-nav="flags">Feature Flags</button>
-    <div class="source-health" id="sourceHealth">正在读取真实状态…</div>
   </aside>
   <main class="workspace">
     <section class="page instances active" id="instancesPage">
@@ -131,6 +137,7 @@ button,input,select{font:inherit}.app{display:grid;grid-template-columns:210px m
     </section>
   </main>
 </div>
+</div>
 <div class="overlay" id="overlay"><div class="modal" id="modal"></div></div>
 <script>
 `;
@@ -142,6 +149,7 @@ const MANAGEMENT_CONSOLE_APP = `
   var drafts={};
   var targetIndex={};
   var selectedProjectId="";
+  var selectedGroupId="";
   var activeTab="model";
   var staged=null;
   var progressStream=null;
@@ -175,6 +183,21 @@ const MANAGEMENT_CONSOLE_APP = `
   function allProjects(){return snapshot?snapshot.projects:[];}
   function projectById(id){for(var i=0;i<allProjects().length;i++){if(allProjects()[i].id===id){return allProjects()[i];}}return null;}
   function selectedProject(){return projectById(selectedProjectId);}
+  function presentationGroupById(id){
+    if(!snapshot){return null;}for(var i=0;i<snapshot.presentationGroups.length;i++){if(snapshot.presentationGroups[i].id===id){return snapshot.presentationGroups[i];}}return null;
+  }
+  function selectedPresentationGroup(){return presentationGroupById(selectedGroupId);}
+  function derivedLeadIdMap(){
+    var ids={};if(!snapshot){return ids;}snapshot.presentationGroups.forEach(function(group){if(group.derived){group.leadIds.forEach(function(id){ids[id]=true;});}});return ids;
+  }
+  function visibleProjectLeads(project){var derived=derivedLeadIdMap();return project.leads.filter(function(lead){return !derived[lead.id];});}
+  function derivedGroupLabels(project){
+    if(!snapshot){return [];}return snapshot.presentationGroups.filter(function(group){return group.derived&&group.projectIds.indexOf(project.id)>=0;}).map(function(group){return group.label;});
+  }
+  function groupLeads(group){
+    var leads={};allProjects().forEach(function(project){project.leads.forEach(function(lead){leads[lead.id]=lead;});});
+    return group.leadIds.map(function(id){return leads[id];}).filter(Boolean);
+  }
   function firstProjectId(){return allProjects().length?allProjects()[0].id:(snapshot&&snapshot.unassignedCrons.length?"__unassigned__":"");}
 
   function requestJson(path,options){
@@ -184,7 +207,8 @@ const MANAGEMENT_CONSOLE_APP = `
     return requestJson("/api/fleet/snapshot").then(function(next){
       snapshot=next;
       rebuildIndex();
-      if(!projectById(selectedProjectId)&&selectedProjectId!=="__unassigned__"&&selectedProjectId!=="__extensions__"){selectedProjectId=firstProjectId();}
+      if(selectedGroupId&&!presentationGroupById(selectedGroupId)){selectedGroupId="";}
+      if(!selectedGroupId&&!projectById(selectedProjectId)&&selectedProjectId!=="__unassigned__"&&selectedProjectId!=="__extensions__"){selectedProjectId=firstProjectId();}
       renderAll();
     }).catch(showGlobalError);
   }
@@ -204,20 +228,25 @@ const MANAGEMENT_CONSOLE_APP = `
     var projectsById={};
     snapshot.projects.forEach(function(project){projectsById[project.id]=project;});
     var html="";
-    snapshot.presentationGroups.forEach(function(group){
+    snapshot.presentationGroups.filter(function(group){return !group.derived;}).forEach(function(group){
       var visible=group.projectIds.map(function(id){return projectsById[id];}).filter(function(project){return project&&project.name.toLowerCase().indexOf(query)>=0;});
       if(!visible.length){return;}
-      html+='<div class="group-title">'+esc(group.label)+(group.derived?' <span class="badge">自动</span>':'')+'</div>';
+      html+='<div class="group-title">'+esc(group.label)+'</div>';
       visible.forEach(function(project){
-        html+='<button class="project-button '+(project.id===selectedProjectId?'active':'')+'" data-project="'+esc(project.id)+'"><span class="project-name">'+esc(project.name)+'</span><span class="badge">'+project.leads.length+' Lead</span></button>';
+        html+='<button class="project-button '+(!selectedGroupId&&project.id===selectedProjectId?'active':'')+'" data-project="'+esc(project.id)+'"><span class="project-name">'+esc(project.name)+'</span><span class="badge">'+visibleProjectLeads(project).length+' Lead</span></button>';
       });
     });
+    var visibleGroups=snapshot.presentationGroups.filter(function(group){return group.derived&&group.label.toLowerCase().indexOf(query)>=0;});
+    if(visibleGroups.length){
+      html+='<div class="group-title">分组</div>';
+      visibleGroups.forEach(function(group){html+='<button class="project-button '+(group.id===selectedGroupId?'active':'')+'" data-group="'+esc(group.id)+'"><span class="project-name">'+esc(group.label)+'</span><span class="badge">'+group.leadIds.length+' Lead</span></button>';});
+    }
     var grouped={};
-    snapshot.presentationGroups.forEach(function(group){group.projectIds.forEach(function(id){grouped[id]=true;});});
+    snapshot.presentationGroups.filter(function(group){return !group.derived;}).forEach(function(group){group.projectIds.forEach(function(id){grouped[id]=true;});});
     var other=snapshot.projects.filter(function(project){return !grouped[project.id]&&project.name.toLowerCase().indexOf(query)>=0;});
     if(other.length){
       html+='<div class="group-title">其他</div>';
-      other.forEach(function(project){html+='<button class="project-button '+(project.id===selectedProjectId?'active':'')+'" data-project="'+esc(project.id)+'"><span class="project-name">'+esc(project.name)+'</span></button>';});
+      other.forEach(function(project){html+='<button class="project-button '+(!selectedGroupId&&project.id===selectedProjectId?'active':'')+'" data-project="'+esc(project.id)+'"><span class="project-name">'+esc(project.name)+'</span><span class="badge">'+visibleProjectLeads(project).length+' Lead</span></button>';});
     }
     if(snapshot.unassignedCrons.length&&"未归属 Cron".toLowerCase().indexOf(query)>=0){html+='<div class="group-title">基础设施</div><button class="project-button '+(selectedProjectId==="__unassigned__"?'active':'')+'" data-project="__unassigned__"><span class="project-name">未归属 Cron</span><span class="badge">'+snapshot.unassignedCrons.length+'</span></button>';}
     if(snapshot.extensions.length&&"全局运行参数".toLowerCase().indexOf(query)>=0){html+='<div class="group-title">全局</div><button class="project-button '+(selectedProjectId==="__extensions__"?'active':'')+'" data-project="__extensions__"><span class="project-name">全局运行参数</span><span class="badge">'+snapshot.extensions.length+' tab</span></button>';}
@@ -254,7 +283,7 @@ const MANAGEMENT_CONSOLE_APP = `
     var providerDisabled=providerLocked||!writableTarget?' disabled':'';
     var modelDisabled=!writableTarget||!provider?' disabled':'';
     var effortDisabled=!writableTarget||!model?' disabled':'';
-    return '<div class="field" data-model-target="'+esc(managed.targetId)+'" data-model-nullable="'+(selectionNullable?'true':'false')+'"><label>'+esc(label)+'</label><div class="three"><select data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+capability(managed)+'</div>';
+    return '<div class="field" data-model-target="'+esc(managed.targetId)+'" data-model-nullable="'+(selectionNullable?'true':'false')+'"><label>'+esc(label)+'</label><div class="three"><select class="model-provider" data-model-part="provider" data-surface="'+esc(surface)+'"'+providerDisabled+'>'+providers+'</select><select class="model-model" data-model-part="model" data-surface="'+esc(surface)+'"'+modelDisabled+'>'+models+'</select><select class="model-effort" data-model-part="effort" data-surface="'+esc(surface)+'"'+effortDisabled+'>'+efforts+'</select></div>'+capability(managed)+'</div>';
   }
   function renderRoles(project){
     if(!project.roles.length){return '<div class="empty">未发现角色卡</div>';}
@@ -265,10 +294,15 @@ const MANAGEMENT_CONSOLE_APP = `
       return '<article class="card"><div class="card-head"><div><h3>'+esc(role.name)+'</h3><div class="subtitle">'+esc(role.department||role.agentFile)+'</div></div>'+link+'</div>'+diagnostic+'</article>';
     }).join("")+'</div>';
   }
+  function renderLeadRows(leads,emptyMessage){
+    if(!leads.length){return '<div class="empty">'+esc(emptyMessage||"未发现 Lead")+'</div>';}
+    return '<div class="lead-list">'+leads.map(function(lead){return '<article class="lead-row"><div class="lead-meta"><div class="inline"><h3>'+esc(lead.displayName)+'</h3><span class="status '+esc(lead.online)+'"></span></div><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+'</article>';}).join("")+'</div>';
+  }
   function renderModelPanel(project){
-    var html='<div class="panel '+(activeTab==="model"?'active':'')+'" data-panel="model"><h2 class="section-title">Lead 模型</h2><div class="grid">';
-    html+=project.leads.map(function(lead){return '<article class="card"><div class="card-head"><div><h3>'+esc(lead.displayName)+'</h3><div class="subtitle">'+esc(lead.department||lead.backend)+'</div></div><span class="status '+esc(lead.online)+'"></span></div>'+modelControl(lead.dispatch,"lead","公司 → 型号 → effort",true,true)+'</article>';}).join("");
-    html+='</div><h2 class="section-title">Runner 默认</h2>';
+    var leads=visibleProjectLeads(project);var labels=derivedGroupLabels(project);var groupedCount=project.leads.length-leads.length;
+    var groupNote=labels.length?'<div class="group-note">该项目的 Lead 统一展示在 '+esc(labels.join(" / "))+'（'+groupedCount+' 个）</div>':"";
+    var emptyMessage=labels.length?"项目没有未分组 Lead":"项目没有声明 Lead";
+    var html='<div class="panel '+(activeTab==="model"?'active':'')+'" data-panel="model"><h2 class="section-title">Lead 模型</h2>'+groupNote+renderLeadRows(leads,emptyMessage)+'<h2 class="section-title">Runner 默认</h2>';
     html+=project.runnerDefault?'<div class="grid"><article class="card"><h3>'+esc(project.name)+'</h3>'+modelControl(project.runnerDefault.dispatch,"runner","公司 → 型号 → effort",false,true)+'</article></div>':'<div class="empty">项目没有声明 Runner 默认模型</div>';
     html+='</div>';return html;
   }
@@ -276,8 +310,12 @@ const MANAGEMENT_CONSOLE_APP = `
     var html='<div class="panel '+(activeTab==="dag"?'active':'')+'" data-panel="dag"><h2 class="section-title">角色卡</h2>'+renderRoles(project)+'<h2 class="section-title">DAG 模板</h2>';
     if(!project.dags.length){html+='<div class="empty">未发现 DAG 模板</div>';}
     project.dags.forEach(function(dag){
-      html+='<article class="card"><div class="card-head"><div><h3>'+esc(dag.title)+'</h3><div class="subtitle">'+esc(dag.templateId)+' · revision '+esc(dag.revision)+'</div></div></div>';
+      html+='<article class="card dag-card"><div class="card-head"><div><h3>'+esc(dag.title)+'</h3><div class="subtitle">'+esc(dag.templateId)+' · revision '+esc(dag.revision)+'</div></div></div>';
       if(dag.error){html+='<div class="role-error">'+esc(dag.error)+'</div>';}
+      if(dag.nodes.length){
+        html+='<div class="dag-flow">'+dag.nodes.map(function(node,index){return (index?'<span class="dag-arrow">→</span>':'')+'<span class="dag-step">'+esc(node.name)+'</span>';}).join("")+'</div>';
+        if(dag.nodes.some(function(node){return node.name==="qa";})&&dag.nodes.some(function(node){return node.name==="implement";})){html+='<div class="dag-loop">↩ loop: qa 失败 → 回 implement</div>';}
+      }
       dag.nodes.forEach(function(node){html+='<div class="dag-row"><strong>'+esc(node.name)+'</strong>'+modelControl(node.dispatch,"workflow","stage 模型",false,false)+'</div>';});
       html+='</article>';
     });
@@ -287,13 +325,13 @@ const MANAGEMENT_CONSOLE_APP = `
   function scheduleEditor(managed){
     var schedule=effective(managed);if(!schedule){return '<div class="field"><label>星期与时间</label><div class="reason">launchd 真源无法解析为受管 weekly schedule</div>'+capability(managed)+'</div>';}
     var disabled=writable(managed)?"":" disabled";
-    var days='<div class="day-row">'+weekNames.map(function(name,index){var day=index+1;return '<button class="day '+(schedule.days.indexOf(day)>=0?'on':'')+'" data-schedule-action="day" data-day="'+day+'" data-target="'+esc(managed.targetId)+'"'+disabled+'>周'+name+'</button>';}).join("")+'<span class="badge">'+esc(scheduleLabel(schedule.days))+'</span></div>';
+    var days='<div class="day-row">'+weekNames.map(function(name,index){var day=index+1;return '<button class="day '+(schedule.days.indexOf(day)>=0?'on':'')+'" title="周'+name+'" aria-label="周'+name+'" data-schedule-action="day" data-day="'+day+'" data-target="'+esc(managed.targetId)+'"'+disabled+'>'+name+'</button>';}).join("")+'<span class="badge">'+esc(scheduleLabel(schedule.days))+'</span></div>';
     var removeDisabled=!writable(managed)||(schedule.times||[]).length<=1?' disabled':'';
     var times='<div>'+(schedule.times||[]).map(function(time,index){return '<div class="time-row"><input type="number" min="0" max="23" value="'+esc(timePad(time.hour))+'" data-schedule-action="hour" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'><span>:</span><input type="number" min="0" max="59" value="'+esc(timePad(time.minute))+'" data-schedule-action="minute" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+disabled+'><button class="mini-button" data-schedule-action="remove" data-index="'+index+'" data-target="'+esc(managed.targetId)+'"'+removeDisabled+'>移除</button></div>';}).join("")+'</div>';
     return '<div class="field"><label>星期与时间</label>'+days+times+'<button class="mini-button" data-schedule-action="add" data-target="'+esc(managed.targetId)+'"'+disabled+'>增加时间</button>'+capability(managed)+'</div>';
   }
   function cronCard(cron){
-    var enabled=effective(cron.enabled);var enabledLabel=enabled===null?'状态未知':enabled?'已启用':'已停用';var html='<article class="card"><div class="card-head"><div><h3>'+esc(cron.label)+'</h3><div class="subtitle">'+esc(cron.sourceHint)+'</div></div><button class="toggle '+(enabled===true?'on':'')+'" data-toggle-target="'+esc(cron.enabled.targetId)+'"'+(writable(cron.enabled)?'':' disabled')+'>'+enabledLabel+'</button></div>';
+    var enabled=effective(cron.enabled);var enabledLabel=enabled===null?'状态未知':enabled?'已启用':'已停用';var html='<article class="card cron-card"><div class="card-head"><div><h3>'+esc(cron.label)+'</h3><div class="subtitle">'+esc(cron.sourceHint)+'</div></div><button class="toggle '+(enabled===true?'on':'')+'" data-toggle-target="'+esc(cron.enabled.targetId)+'"'+(writable(cron.enabled)?'':' disabled')+'>'+enabledLabel+'</button></div>';
     html+='<div class="subtitle">launchd loaded：'+esc(cron.loaded===null?'未知':cron.loaded?'是':'否')+'</div>'+scheduleEditor(cron.schedule);
     if(cron.model){html+=modelControl(cron.model,"cron","任务模型",false,false);}
     cron.warnings.forEach(function(warning){html+='<div class="warning">'+esc(warning)+'</div>';});
@@ -301,7 +339,7 @@ const MANAGEMENT_CONSOLE_APP = `
     return html+'</article>';
   }
   function renderCronPanel(project){
-    var crons=project?project.crons:snapshot.unassignedCrons;var html='<div class="panel '+(activeTab==="cron"?'active':'')+'" data-panel="cron"><div class="grid">';
+    var crons=project?project.crons:snapshot.unassignedCrons;var html='<div class="panel '+(activeTab==="cron"?'active':'')+'" data-panel="cron"><div class="cron-grid">';
     html+=crons.map(cronCard).join("");return html+(crons.length?'':'<div class="empty">未发现 Cron</div>')+'</div></div>';
   }
   function fieldControl(field){
@@ -330,33 +368,39 @@ const MANAGEMENT_CONSOLE_APP = `
     snapshot.extensions.forEach(function(section){html+='<button class="tab '+(activeTab==="extension-"+section.id?'active':'')+'" data-tab="extension-'+esc(section.id)+'">'+esc(section.label)+'</button>';});
     html+='</div>';snapshot.extensions.forEach(function(section){html+=renderExtensionPanel(section);});return html;
   }
+  function renderGroupDetail(group){
+    var leads=groupLeads(group);var html='<div class="topline"><div><h1>'+esc(group.label)+'</h1><div class="subtitle">'+leads.length+' 个 Lead · 按 dept 归组</div></div></div>';
+    html+='<div class="group-note">这些仍是原 project 的 Lead；这里只是按 dept 归组，不是独立项目。</div><h2 class="section-title">Lead 模型</h2>';
+    return html+renderLeadRows(leads,"该分组没有可显示的 Lead");
+  }
   function renderDetail(){
-    if(!snapshot){return;}var project=selectedProject();
+    if(!snapshot){return;}var group=selectedPresentationGroup();var project=selectedProject();
+    if(group){byId("detail").innerHTML=renderGroupDetail(group);return;}
     if(selectedProjectId==="__unassigned__"){activeTab="cron";byId("detail").innerHTML=renderUnassigned();return;}
     if(selectedProjectId==="__extensions__"){byId("detail").innerHTML=renderGlobalExtensions();return;}
     if(!project){byId("detail").innerHTML='<div class="empty">没有可显示的项目</div>';return;}
     var allowed=["model","dag","cron"];
     if(allowed.indexOf(activeTab)<0){activeTab="model";}
-    var html='<div class="topline"><div><h1>'+esc(project.name)+'</h1><div class="subtitle">'+esc(project.presentationGroup)+' · 真源 revision '+esc(project.sourceRevision)+'</div></div></div>';
+    var html='<div class="topline"><div><h1>'+esc(project.name)+'</h1><div class="subtitle">'+visibleProjectLeads(project).length+' 个可见 Lead · '+project.dags.length+' 个 DAG · '+project.crons.length+' 个 Cron</div></div></div>';
     if(project.error){html+='<div class="error show">'+esc(project.error)+'</div>';}
     html+='<div class="tabs"><button class="tab '+(activeTab==="model"?'active':'')+'" data-tab="model">模型</button><button class="tab '+(activeTab==="dag"?'active':'')+'" data-tab="dag">DAG 模板</button><button class="tab '+(activeTab==="cron"?'active':'')+'" data-tab="cron">Cron</button>';
     html+='</div>'+renderModelPanel(project)+renderDagPanel(project)+renderCronPanel(project);
     byId("detail").innerHTML=html;
   }
   function renderFlagValue(managed){
-    var value=effective(managed);if(typeof value==="boolean"){return '<button class="toggle '+(value?'on':'')+'" data-toggle-target="'+esc(managed.targetId)+'"'+(writable(managed)?'':' disabled')+'>'+(value?'开启':'关闭')+'</button>'+capability(managed);}
+    var value=effective(managed);if(typeof value==="boolean"){return '<button type="button" class="flag-switch '+(value?'on':'')+'" aria-label="'+(value?'开启':'关闭')+'" aria-pressed="'+(value?'true':'false')+'" data-toggle-target="'+esc(managed.targetId)+'"'+(writable(managed)?'':' disabled')+'></button>'+capability(managed);}
     return '<span class="badge">'+esc(textValue(value))+'</span>'+capability(managed);
   }
   function renderFlags(){
 	if(!snapshot){return;}var groups={};
 	snapshot.flags.forEach(function(flag){(groups[flag.category]||(groups[flag.category]=[])).push(flag);});
-	var html='<div class="topline"><div><h1>Feature Flags</h1><div class="subtitle">全部集中展示；全局值与 per-project override 使用同一提交流</div></div></div>';
+	var html='<div class="topline"><div><h1>Feature Flags</h1><div class="subtitle">全部集中展示；global 与 per-project override 使用同一提交流</div></div></div><div class="flag-columns" aria-hidden="true"><span>Flag</span><span>说明 / 项目覆盖</span><span>全局值</span></div>';
     Object.keys(groups).sort().forEach(function(category){
-      html+='<section class="flag-group"><h2 class="section-title">'+esc(category)+'</h2>';
+      html+='<section class="flag-group"><h2 class="flag-group-title"><span>'+esc(category)+'</span><span class="flag-count">'+groups[category].length+'</span></h2>';
       groups[category].forEach(function(flag){
-        html+='<article class="flag-row"><div><div class="flag-name">'+esc(flag.name)+'</div><div class="help">'+esc(flag.description)+'</div>';
-        flag.projectOverrides.forEach(function(item){html+='<div class="override"><strong>'+esc(item.projectName)+'</strong><div class="help">项目覆盖</div>'+renderFlagValue(item.value)+'</div>';});
-        html+='</div><div><div class="help">全局值</div>'+renderFlagValue(flag.global)+'</div></article>';
+        html+='<article class="flag-row"><div class="flag-name">'+esc(flag.name)+'</div><div class="flag-copy"><div class="help">'+esc(flag.description)+'</div>';
+        if(flag.projectOverrides.length){html+='<div class="flag-overrides">'+flag.projectOverrides.map(function(item){return '<span class="flag-override"><span class="flag-project">'+esc(item.projectName)+'</span>'+renderFlagValue(item.value)+'</span>';}).join("")+'</div>';}
+        html+='</div><div class="flag-global">'+renderFlagValue(flag.global)+'</div></article>';
       });html+='</section>';
     });
     byId("flags").innerHTML=html+(snapshot.flags.length?'':'<div class="empty">flag registry 当前为空</div>');
@@ -460,7 +504,10 @@ const MANAGEMENT_CONSOLE_APP = `
 
   document.querySelectorAll(".nav-button").forEach(function(button){button.addEventListener("click",function(){document.querySelectorAll(".nav-button").forEach(function(item){item.classList.toggle("active",item===button);});byId("instancesPage").classList.toggle("active",button.dataset.nav==="instances");byId("flagsPage").classList.toggle("active",button.dataset.nav==="flags");});});
   byId("projectSearch").addEventListener("input",renderProjectList);
-  byId("projectList").addEventListener("click",function(event){var button=event.target.closest("[data-project]");if(button){selectedProjectId=button.dataset.project;activeTab=selectedProjectId==="__unassigned__"?"cron":selectedProjectId==="__extensions__"?"":"model";renderAll();}});
+  byId("projectList").addEventListener("click",function(event){
+    var groupButton=event.target.closest("[data-group]");if(groupButton){selectedGroupId=groupButton.dataset.group;selectedProjectId="";activeTab="model";renderAll();return;}
+    var projectButton=event.target.closest("[data-project]");if(projectButton){selectedGroupId="";selectedProjectId=projectButton.dataset.project;activeTab=selectedProjectId==="__unassigned__"?"cron":selectedProjectId==="__extensions__"?"":"model";renderAll();}
+  });
   byId("detail").addEventListener("click",function(event){var tab=event.target.closest("[data-tab]");if(tab){activeTab=tab.dataset.tab;renderDetail();return;}delegate(event);});
   byId("detail").addEventListener("change",delegate);byId("flags").addEventListener("click",delegate);byId("flags").addEventListener("change",delegate);
   byId("stage").addEventListener("click",stageChanges);byId("flagStage").addEventListener("click",stageChanges);byId("discard").addEventListener("click",discard);byId("flagDiscard").addEventListener("click",discard);

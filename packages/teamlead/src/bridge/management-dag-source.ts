@@ -90,7 +90,7 @@ function projectDag(
 			revision.manifest_digest,
 		);
 		const nodes: ManagementDagView["nodes"] = manifest.nodes
-			.filter((node) => node.type !== "gate")
+			.filter((node) => node.type !== "gate" && node.execution !== "engine")
 			.map((node) => {
 				if (!node.vendor || !node.model) {
 					throw new Error(`workflow node ${node.id} has no model binding`);

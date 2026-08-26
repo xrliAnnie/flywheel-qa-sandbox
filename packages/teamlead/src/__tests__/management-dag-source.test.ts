@@ -4,18 +4,19 @@ import {
 	readManagementDags,
 } from "../bridge/management-dag-source.js";
 import { StateStore } from "../StateStore.js";
+import { validateWorkflowManifest } from "../workflow-template.js";
 import {
 	importLegacyWorkflowSeeds,
 	legacyWorkflowSeeds,
 } from "./fixtures/legacy-workflow-manifests.js";
 
-async function catalog() {
+async function catalog(templateId = "tpl_eng_heavy") {
 	const store = await StateStore.create(":memory:");
 	importLegacyWorkflowSeeds(store);
 	store.bindWorkflowCategory({
 		project: "flywheel",
 		taskCategory: "*",
-		templateId: "tpl_eng_heavy",
+		templateId,
 		updatedBy: "test",
 	});
 	return store;
@@ -87,6 +88,65 @@ describe("management DAG source", () => {
 		expect(second.nodes[0]!.dispatch.source.revision).not.toBe(
 			first.nodes[0]!.dispatch.source.revision,
 		);
+		store.close();
+	});
+
+	it("omits engine-owned land nodes without hiding agent model bindings", async () => {
+		const store = await catalog("tpl_eng_heavy_land_v1");
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+
+		expect(dag.error).toBeUndefined();
+		expect(dag.nodes.map((node) => node.name)).toEqual([
+			"design",
+			"implement",
+			"qa",
+		]);
+		expect(dag.nodes.some((node) => node.name === "land")).toBe(false);
+		expect(
+			dag.nodes.every((node) => node.dispatch.writeCapability.writable),
+		).toBe(true);
+		store.close();
+	});
+
+	it("still reports an agent node that truly has no model binding", async () => {
+		const store = await catalog();
+		const seed = legacyWorkflowSeeds().find(
+			(item) => item.templateId === "tpl_eng_heavy",
+		)!;
+		const missingBindingManifest = structuredClone(seed.manifest) as {
+			nodes: Array<Record<string, unknown>>;
+		};
+		const design = missingBindingManifest.nodes.find(
+			(node) => node.id === "design",
+		)!;
+		delete design.vendor;
+		delete design.model;
+		expect(() =>
+			validateWorkflowManifest(missingBindingManifest, {
+				allowUnsupportedModels: true,
+			}),
+		).not.toThrow();
+
+		const revision = store.createWorkflowTemplateRevision({
+			templateId: seed.templateId,
+			manifest: missingBindingManifest,
+			schemaVersion: 1,
+			createdBy: "test",
+		});
+		store.publishWorkflowTemplate({
+			templateId: seed.templateId,
+			revision,
+			expectedRevision: 1,
+			publishedBy: "test",
+		});
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		expect(dag.error).toMatch(/workflow node design has no model binding/);
 		store.close();
 	});
 

@@ -34,7 +34,7 @@ function catalog(surface: string) {
 					},
 					{
 						id: "claude-opus-4-8",
-						label: "Opus 4.8",
+						label: "Opus 5 (1M)",
 						runtimeVendor: "claude",
 						efforts,
 					},
@@ -52,10 +52,17 @@ function snapshot() {
 		sources: [],
 		presentationGroups: [
 			{
-				id: "group",
-				label: "Projects",
+				id: "flywheel",
+				label: "flywheel",
 				projectIds: ["project-1"],
-				leadIds: [],
+				leadIds: ["lead-1"],
+				derived: false,
+			},
+			{
+				id: "infra",
+				label: "Infra",
+				projectIds: ["project-1", "project-2"],
+				leadIds: ["lead-infra", "lead-beta-infra"],
 				derived: true,
 			},
 		],
@@ -68,16 +75,33 @@ function snapshot() {
 		projects: [
 			{
 				id: "project-1",
-				name: "alpha",
-				presentationGroup: "Projects",
+				name: "flywheel",
+				presentationGroup: "flywheel",
 				sourceRevision: "project:1",
 				leads: [
 					{
 						id: "lead-1",
-						displayName: "Alpha Lead",
+						displayName: "Product Lead",
+						department: "product",
 						backend: "claude-code",
 						online: "online",
 						dispatch: managed("lead-target", null, "restart-lead"),
+					},
+					{
+						id: "lead-infra",
+						displayName: "Flywheel Infra Lead",
+						department: "infra",
+						backend: "claude-code",
+						online: "online",
+						dispatch: managed(
+							"lead-infra-target",
+							{
+								provider: "anthropic",
+								model: "claude-opus-4-8",
+								effort: "high",
+							},
+							"restart-lead",
+						),
 					},
 				],
 				roles: [],
@@ -130,6 +154,36 @@ function snapshot() {
 					},
 				],
 				runnerDefault: { dispatch: managed("runner-target", null) },
+			},
+			{
+				id: "project-2",
+				name: "beta",
+				presentationGroup: "beta",
+				sourceRevision: "file:0123456789abcdef",
+				leads: [
+					{
+						id: "lead-beta-infra",
+						displayName: "Beta Infra Lead",
+						department: "infra",
+						backend: "claude-code",
+						online: "degraded",
+						dispatch: managed("lead-beta-infra-target", null, "restart-lead"),
+					},
+				],
+				roles: [],
+				dags: [
+					{
+						id: "dag-2",
+						templateId: "beta-default",
+						title: "Beta workflow",
+						revision: 1,
+						nodes: [],
+					},
+				],
+				crons: [],
+				runnerDefault: {
+					dispatch: managed("runner-beta-target", null),
+				},
 			},
 		],
 		unassignedCrons: [],
@@ -190,6 +244,68 @@ describe("management console browser interactions", () => {
 	afterEach(() => {
 		vi.unstubAllGlobals();
 		document.documentElement.innerHTML = "";
+	});
+
+	it("renders the ordinary project and derived Infra group once with distinct detail", () => {
+		expect(
+			document.querySelectorAll('[data-project="project-1"]'),
+		).toHaveLength(1);
+		expect(document.querySelectorAll('[data-group="infra"]')).toHaveLength(1);
+		expect(document.querySelector('[data-project="project-2"]')).not.toBeNull();
+
+		const detail = document.getElementById("detail")!;
+		expect(detail.textContent).toContain("Product Lead");
+		expect(detail.textContent).not.toContain("Flywheel Infra Lead");
+		expect(detail.querySelector(".topline .subtitle")?.textContent).toBe(
+			"1 个可见 Lead · 1 个 DAG · 1 个 Cron",
+		);
+		expect(detail.textContent).toContain("该项目的 Lead 统一展示在 Infra");
+		expect(detail.textContent).toContain("1 个");
+		expect(detail.textContent).not.toContain("真源 revision");
+
+		(
+			document.querySelector('[data-group="infra"]') as HTMLButtonElement
+		).click();
+		expect(detail.querySelector("h1")?.textContent).toBe("Infra");
+		expect(detail.textContent).toContain("Flywheel Infra Lead");
+		expect(detail.textContent).toContain("Beta Infra Lead");
+		expect(detail.textContent).not.toContain("Product Lead");
+		expect(detail.querySelector("[data-tab]")).toBeNull();
+		expect(detail.textContent).toContain("按 dept 归组，不是独立项目");
+
+		(
+			document.querySelector('[data-project="project-1"]') as HTMLButtonElement
+		).click();
+		expect(detail.querySelectorAll("[data-tab]")).toHaveLength(3);
+		expect(detail.textContent).toContain("Product Lead");
+		expect(detail.textContent).not.toContain("Flywheel Infra Lead");
+	});
+
+	it("searches the derived group by its own label instead of member projects", () => {
+		const search = document.getElementById("projectSearch") as HTMLInputElement;
+		search.value = "Infra";
+		search.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(document.querySelector('[data-group="infra"]')).not.toBeNull();
+		expect(document.querySelector('[data-project="project-1"]')).toBeNull();
+
+		search.value = "flywheel";
+		search.dispatchEvent(new Event("input", { bubbles: true }));
+		expect(document.querySelector('[data-project="project-1"]')).not.toBeNull();
+		expect(document.querySelector('[data-group="infra"]')).toBeNull();
+	});
+
+	it("keeps an all-derived project reachable with an explicit model empty state", () => {
+		(
+			document.querySelector('[data-project="project-2"]') as HTMLButtonElement
+		).click();
+		const detail = document.getElementById("detail")!;
+		expect(detail.querySelector("h1")?.textContent).toBe("beta");
+		expect(detail.querySelectorAll("[data-tab]")).toHaveLength(3);
+		expect(detail.textContent).toContain(
+			"0 个可见 Lead · 1 个 DAG · 0 个 Cron",
+		);
+		expect(detail.textContent).toContain("该项目的 Lead 统一展示在 Infra");
+		expect(detail.textContent).not.toContain("Beta Infra Lead");
 	});
 
 	it("keeps focus when a cron hour input is clicked and handles its change once", async () => {
