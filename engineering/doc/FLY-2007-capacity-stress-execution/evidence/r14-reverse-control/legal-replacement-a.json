@@ -1,0 +1,7 @@
+{
+  "fixture": "legal-replacement-a",
+  "authoritative_outcome": "A",
+  "authoritative_reason": "lower bound exceeds the SLO",
+  "inference_eligible": true,
+  "ineligibility_reasons": []
+}

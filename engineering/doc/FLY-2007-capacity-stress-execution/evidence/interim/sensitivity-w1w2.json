@@ -1,0 +1,442 @@
+{
+  "schema": "fly2007-phase0-sensitivity/1",
+  "freeze_commit": null,
+  "note": "Sensitivity analysis on a fitted simulator, NOT coverage validation: the true data-generating process is unknown, so this bounds the cost of assumption A1 failing WITHIN the frozen DGP family only.",
+  "seed": 20260823,
+  "K": 16,
+  "alpha_param": 0.025,
+  "alpha_MC": 0.025,
+  "per_point_level": 0.0015625,
+  "M": {
+    "b_lb_A": 20000,
+    "range_lb_N": 5000
+  },
+  "controls": {
+    "positive": {
+      "covered": 11210,
+      "m": 20000,
+      "trueB": 0.214,
+      "empirical": 0.5605,
+      "ucb": 0.5708763844712845,
+      "pass": true
+    },
+    "oracle": {
+      "covered": 20000,
+      "m": 20000,
+      "trueB": 0.03,
+      "empirical": 1,
+      "lcb": 0.9996769787738089,
+      "pass": true
+    },
+    "seed_stability": {
+      "runs": [
+        0.9904,
+        0.9884,
+        0.9888,
+        0.9844
+      ],
+      "mean": 0.988,
+      "spread": 0.005999999999999894,
+      "se": 0.0021777052142105927,
+      "tolerance": 0.013066231285263557,
+      "pass": true
+    }
+  },
+  "configurations": {
+    "b_lb_A": {
+      "name": "b_lb @ A",
+      "per_point_level": 0.0015625,
+      "points": [
+        {
+          "dgp": "g01/L1",
+          "endpoint": "L1",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.15041666666666667,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g01/L2",
+          "endpoint": "L2",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.15041666666666667,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g02/L1",
+          "endpoint": "L1",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.214,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g02/L2",
+          "endpoint": "L2",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.214,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g03/L1",
+          "endpoint": "L1",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.17875,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g03/L2",
+          "endpoint": "L2",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.17875,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g04/L1",
+          "endpoint": "L1",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.15,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g04/L2",
+          "endpoint": "L2",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.15,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g05/L1",
+          "endpoint": "L1",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.4951,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g05/L2",
+          "endpoint": "L2",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.4951,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g06/L1",
+          "endpoint": "L1",
+          "covered": 19999,
+          "m": 20000,
+          "trueB": 0.029523809523806507,
+          "empirical": 0.99995,
+          "lcb": 0.9995632121388593,
+          "pass": true
+        },
+        {
+          "dgp": "g06/L2",
+          "endpoint": "L2",
+          "covered": 19992,
+          "m": 20000,
+          "trueB": 0.029523809523806507,
+          "empirical": 0.9996,
+          "lcb": 0.9989773668126978,
+          "pass": true
+        },
+        {
+          "dgp": "g07/L1",
+          "endpoint": "L1",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.10400000000000009,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g07/L2",
+          "endpoint": "L2",
+          "covered": 20000,
+          "m": 20000,
+          "trueB": 0.10400000000000009,
+          "empirical": 1,
+          "lcb": 0.9996769787738089,
+          "pass": true
+        },
+        {
+          "dgp": "g08/L1",
+          "endpoint": "L1",
+          "covered": 19771,
+          "m": 20000,
+          "trueB": 0.08645454545453674,
+          "empirical": 0.98855,
+          "lcb": 0.9861466701395056,
+          "pass": true
+        },
+        {
+          "dgp": "g08/L2",
+          "endpoint": "L2",
+          "covered": 19524,
+          "m": 20000,
+          "trueB": 0.08645454545453674,
+          "empirical": 0.9762,
+          "lcb": 0.9728402935209821,
+          "pass": true
+        }
+      ],
+      "pass": true
+    },
+    "range_lb_N": {
+      "name": "range_lb @ N",
+      "per_point_level": 0.0015625,
+      "points": [
+        {
+          "dgp": "g01/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g01/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g02/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g02/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g03/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g03/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g04/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g04/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g05/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g05/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g06/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g06/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g07/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g07/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g08/L1",
+          "endpoint": "L1",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        },
+        {
+          "dgp": "g08/L2",
+          "endpoint": "L2",
+          "covered": 5000,
+          "m": 5000,
+          "trueB": 0,
+          "empirical": 1,
+          "lcb": 0.9987085410161527,
+          "pass": true
+        }
+      ],
+      "pass": true
+    }
+  },
+  "summary": "controls ok; b_lb@A pass; range_lb@N pass",
+  "parameter_set_gate": {
+    "name": "parameter-set / pilot coverage",
+    "pilot_block_rates": [
+      0.6444,
+      0.2889,
+      1
+    ],
+    "grid_rate_range": [
+      0,
+      1
+    ],
+    "outside": [],
+    "pass": true,
+    "has_rejection_region": false,
+    "strength": "NON-DISCRIMINATING for the frozen pilot values: the grid envelope is [0,1] and every legal block rate lies inside it, so no pilot value can fail. Reported for completeness; it is NOT fit evidence. A real distributional gate needs the pilot per-tick series, which FLY-1986 never committed and which cannot be reconstructed after the fact.",
+    "alpha_param_note": "ALPHA_PARAM is printed in the sensitivity output but is NOT consumed by this gate — there is no test here for it to size."
+  },
+  "applicability_gate": {
+    "name": "applicability domain",
+    "grid": {
+      "rate_min": 0,
+      "rate_max": 1,
+      "acf_min": -0.5818632244605255,
+      "acf_max": 0.9306119931055306,
+      "var_min": 0,
+      "var_max": 0.2524426053639846,
+      "degenerate_windows": 357,
+      "total_windows": 6400,
+      "m_per_point": 400
+    },
+    "observed": [
+      {
+        "label": "attempt-001/L1",
+        "meanRate": 0.12822222222222224,
+        "varRate": 0.02364040868454663,
+        "acf": 0.8654734661448705
+      },
+      {
+        "label": "attempt-001/L2",
+        "meanRate": 0.004333333333333333,
+        "varRate": 0.00013574712643678154,
+        "acf": 0.07736381597516231
+      },
+      {
+        "label": "attempt-002/L1",
+        "meanRate": 0.04466666666666666,
+        "varRate": 0.00041425287356321866,
+        "acf": 0.07439881613022557
+      },
+      {
+        "label": "attempt-002/L2",
+        "meanRate": 0.0030000000000000005,
+        "varRate": 0.00004931034482758622,
+        "acf": 0.049650349650349646
+      }
+    ],
+    "problems": [],
+    "pass": true,
+    "note": "Statistics are the block-rate mean and variance, both always defined. The lag-1 autocorrelation is checked when defined; when it is not, the grid must itself produce degenerate windows."
+  }
+}

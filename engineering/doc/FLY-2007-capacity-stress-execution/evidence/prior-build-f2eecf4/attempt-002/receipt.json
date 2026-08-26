@@ -1,0 +1,17 @@
+{
+  "attempt_id": 2,
+  "window": 2,
+  "freeze_commit": "5ce14e9dee5eaa404fca7f3d7cdf250c08e5d3e1",
+  "preflight": {
+    "build_sha": "f2eecf495085589677a36deb93b84ded8bcccf08",
+    "bridge_started_at": "2026-08-23T21:58:44.075Z",
+    "bridge_worker_pid": "64676",
+    "bridge_identity": "Sun Aug 23 14:58:41 2026 /opt/homebrew/Cellar/node/25.6.1/bin/node --require /Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/preflight.cjs --import file:///Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/loader.mjs scripts/run-bridge.ts",
+    "health_ok": "true",
+    "shutting_down": "false",
+    "pressure_hold": "0",
+    "load1": "7.91",
+    "shuttle_hours": "0 12 ",
+    "read_at": "2026-08-24T02:47:56Z"
+  }
+}

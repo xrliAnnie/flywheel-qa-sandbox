@@ -437,6 +437,10 @@ jobs:
         run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
 
       - uses: actions/checkout@v4
+        with:
+          # FLY-2007 analyser contract test resolves a historical freeze commit;
+          # shallow clone cannot see it (deterministic CI-only failure).
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -891,6 +895,9 @@ jobs:
       # measured 11m36s. Rebalancing whole named steps is the sanctioned lever.
       - name: Test — FLY-1986 load probe contract
         run: bash scripts/__tests__/qa-fly-1986-load-probe.test.sh
+
+      - name: Test — FLY-2007 phase-0 analyser contract
+        run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
 
       - name: Test — FLY-1870 job elapsed tripwire contract
         run: bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh

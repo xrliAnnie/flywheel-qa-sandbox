@@ -1,0 +1,12 @@
+{
+  "fixture": "non-numeric-conservative",
+  "authoritative_outcome": "U",
+  "ineligibility_reasons": [
+    "the sensitivity analysis ran at a reduced replicate count (400); a verdict requires the frozen M",
+    "sensitivity: configuration 'b_lb_A' does not hold its level at every frozen grid point",
+    "sensitivity: configuration 'range_lb_N' does not hold its level at every frozen grid point",
+    "attempt-001: integrity: b1|L1: summary conservative='not-a-number' is not a number",
+    "attempt-001: integrity: b1|L2: summary conservative='not-a-number' is not a number",
+    "attempt-001: integrity: b2|L1: summary conservative='not-a-number' is not a number"
+  ]
+}

@@ -1,0 +1,10 @@
+url=http://localhost:9876
+blocks=30 block_seconds=300 endpoints=L1,L2
+clock=perl (shared monotonic, one fork per reading)
+clock_overhead=2 readings/tick; measured p50 per reading: perl 20.3ms, python3 47.3ms
+bridge_worker_pid=28451
+bridge_identity=Mon Aug 24 15:46:58 2026 /opt/homebrew/Cellar/node/25.6.1/bin/node --require /Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/preflight.cjs --import file:///Users/xiaorongli/Dev/flywheel/node_modules/.pnpm/tsx@4.20.6/node_modules/tsx/dist/loader.mjs scripts/run-bridge.ts
+build_sha=399edd8e8d2060025bae8102948ff588cda66381
+started_at=2026-08-24T22:54:56Z
+note: the conservative bound counts timer_late as a violation
+covariates: NOT sampled here — comparison data comes from the Bridge's own instrumentation (FLY-1995) and the machine-watermark sensor; see plan.md §Methodology

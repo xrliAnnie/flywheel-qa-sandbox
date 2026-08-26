@@ -1,0 +1,5 @@
+block_id,endpoint,n,met,missed,error,timer_late,violation_upper_conservative,violation_best_case,block_valid
+b1,L1,150,95,55,0,0,0.3667,0.3667,true
+b1,L2,100,100,0,0,0,0.0000,0.0000,true
+b2,L1,150,98,52,0,0,0.3467,0.3467,true
+b2,L2,100,94,6,0,0,0.0600,0.0600,true

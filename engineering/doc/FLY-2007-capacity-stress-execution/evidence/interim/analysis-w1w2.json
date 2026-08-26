@@ -1,0 +1,135 @@
+{
+  "schema": "fly2007-phase0-analysis/1",
+  "analysis_freeze": "3f1670de3507ebaae10b4a4222e6c06d32b2ff2e",
+  "alpha_allocation": {
+    "SLO": 0.05,
+    "DELTA": 0.025,
+    "G": 5,
+    "components": 6,
+    "alpha_B": 0.05,
+    "alpha_A": 0.025,
+    "alpha_N": 0.025,
+    "per_cp": {
+      "B_performance": 0.01,
+      "B_equivalence": 0.0016666666666666668,
+      "A_adverse": 0.0008333333333333334,
+      "N_range": 0.0004166666666666667
+    },
+    "note": "B is an intersection-union test: no correction between components or between the performance and equivalence gates. A unions 6 components x G thresholds. N unions 2 endpoints then 3 windows x 2 tails x G. alpha_A + alpha_N = 0.05."
+  },
+  "assumption": "A1: the 30 units within a window are iid. The two moment inequalities are unconditional; the Clopper-Pearson step - and therefore the word \"exact\" - holds UNDER A1. A1 is not asserted to be true; its failure cost is quantified by the frozen simulator.",
+  "inference_eligible": false,
+  "ineligibility_reasons": [
+    "expected 3 windows, got 2",
+    "ledger: the analysed bundles cover windows {1,2}, the frozen design needs {1,2,3}"
+  ],
+  "authoritative_outcome": "U",
+  "authoritative_outcome_set_this_round": [
+    "A",
+    "U"
+  ],
+  "n_reachability": {
+    "units": 30,
+    "per_cp_level": 0.0004166666666666667,
+    "max_possible_window_lower": 0.15429657560173085,
+    "min_possible_window_upper": 0.22851712199157242,
+    "max_possible_range_lower": 0,
+    "delta": 0.025,
+    "reachable": false,
+    "note": "An empty rejection region, not low power. Lead ruling 2026-08-23: the authoritative outcome set this round is {A, U}; a non-equivalence signal is a descriptive flag on U. Recorded here rather than by editing the frozen spec, because the spec blob must match between collection and analysis."
+  },
+  "upstream_literal_outcome": "A",
+  "exposure_required": {
+    "schema": "fly2007-phase0-exposure/1",
+    "block_seconds": 300,
+    "B_performance_gate": {
+      "alpha_per_cp": 0.01,
+      "target": 0.05,
+      "units": 90,
+      "hours_per_window": 7.5
+    },
+    "B_equivalence_gate": {
+      "alpha_per_cp": 0.0016666666666666668,
+      "target": 0.025,
+      "units": 253,
+      "hours_per_window": 21.083333333333332
+    },
+    "full_B": {
+      "units": 253,
+      "binding_gate": "equivalence",
+      "hours_per_window": 21.083333333333332,
+      "hours_three_windows": 63.25
+    },
+    "this_round_budget": {
+      "units_per_window": 30,
+      "hours_per_window": 2.5,
+      "shortfall_factor_full_B": 8.433333333333334
+    },
+    "delta_cost_table": [
+      {
+        "delta": 0.01,
+        "units_equiv_gate": 637,
+        "units_full_B": 637,
+        "hours_per_window": 53.083333333333336,
+        "hours_three_windows": 159.25
+      },
+      {
+        "delta": 0.02,
+        "units_equiv_gate": 317,
+        "units_full_B": 317,
+        "hours_per_window": 26.416666666666668,
+        "hours_three_windows": 79.25
+      },
+      {
+        "delta": 0.025,
+        "units_equiv_gate": 253,
+        "units_full_B": 253,
+        "hours_per_window": 21.083333333333332,
+        "hours_three_windows": 63.25
+      },
+      {
+        "delta": 0.05,
+        "units_equiv_gate": 125,
+        "units_full_B": 125,
+        "hours_per_window": 10.416666666666666,
+        "hours_three_windows": 31.25
+      },
+      {
+        "delta": 0.1,
+        "units_equiv_gate": 61,
+        "units_full_B": 90,
+        "hours_per_window": 7.5,
+        "hours_three_windows": 22.5
+      },
+      {
+        "delta": 0.15,
+        "units_equiv_gate": 40,
+        "units_full_B": 90,
+        "hours_per_window": 7.5,
+        "hours_three_windows": 22.5
+      },
+      {
+        "delta": 0.2,
+        "units_equiv_gate": 29,
+        "units_full_B": 90,
+        "hours_per_window": 7.5,
+        "hours_three_windows": 22.5
+      }
+    ],
+    "note": "Hoeffding would need 600 units for the same performance target; that number is descriptive only and is NOT this judge's requirement."
+  },
+  "bundles": [
+    {
+      "dir": "attempt-001",
+      "sha256": "8ab7778213e41dd50959881526b3014c3947684b3cfc6bc535523ffe2d4a5f1b",
+      "build_sha": "f2eecf495085589677a36deb93b84ded8bcccf08",
+      "collection_freeze": "5ce14e9dee5eaa404fca7f3d7cdf250c08e5d3e1"
+    },
+    {
+      "dir": "attempt-002",
+      "sha256": "0aaf7439e0280d0b10d7e2be59095dc0290a4d432005b0f9e9d105bd272fd723",
+      "build_sha": "f2eecf495085589677a36deb93b84ded8bcccf08",
+      "collection_freeze": "5ce14e9dee5eaa404fca7f3d7cdf250c08e5d3e1"
+    }
+  ]
+}

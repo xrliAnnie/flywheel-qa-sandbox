@@ -1,0 +1,9 @@
+block_id,endpoint,n,met,missed,error,timer_late,violation_upper_conservative,violation_best_case,block_valid
+b1,L1,150,4,50,0,96,0.9733,0.9259,false
+b1,L2,100,10,52,0,38,0.9000,0.8387,false
+b2,L1,150,5,94,0,51,0.9667,0.9495,false
+b2,L2,100,15,74,0,11,0.8500,0.8315,false
+b3,L1,150,1,36,0,113,0.9933,0.9730,false
+b3,L2,100,12,46,0,42,0.8800,0.7931,false
+b4,L1,150,1,95,0,54,NA,NA,incomplete_expected=-1
+b4,L2,100,3,87,0,10,NA,NA,incomplete_expected=-1

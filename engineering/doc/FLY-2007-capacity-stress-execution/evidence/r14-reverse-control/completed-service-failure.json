@@ -1,0 +1,12 @@
+{
+  "fixture": "completed-service-failure",
+  "authoritative_outcome": "U",
+  "ineligibility_reasons": [
+    "the sensitivity analysis ran at a reduced replicate count (400); a verdict requires the frozen M",
+    "sensitivity: configuration 'b_lb_A' does not hold its level at every frozen grid point",
+    "sensitivity: configuration 'range_lb_N' does not hold its level at every frozen grid point",
+    "ledger: attempt 1 says disposition='completed' but reason='health_unreachable' \u2014 a terminal record that contradicts itself is not evidence of anything",
+    "ledger: attempt 1 says disposition='completed' but exit_code=1",
+    "ledger: attempt 1 records the service/host failure 'health_unreachable' while claiming to have completed \u2014 this window cannot be certified"
+  ]
+}
