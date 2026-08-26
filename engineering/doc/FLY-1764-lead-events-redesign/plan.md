@@ -4,6 +4,8 @@ Issue: FLY-1764 (https://linear.app/geoforge3d/issue/FLY-1764/机制-大喇叭le
 日期: 2026-08-14
 基于: research.md
 
+> **2026-08-26 FLY-2075 现行守卫(优先级最高)**:founder 改裁「不双发,只发 Discord」。Flow 2 的 mailbox 最后一公里与 `FLYWHEEL_ALERT_COPY_TO_CHANNEL` 已拆除;下文保留为历史决策与实现审计上下文,不再代表现行路由。
+>
 > 本文档最初是设计提案(讨论稿),经互动图解 HTML 批注后,founder 于 2026-08-14 直令裁定方向并要求**本单直接做实现,不拆单**。本版已把裁定折入,升级为 implement-ready 实施计划(讨论稿原文见 git 历史 `e332d2754` 及之前)。
 >
 > **Attempt 2 终裁增补(2026-08-14,优先级最高)**:founder 随后把告警最后一公里改为 **Flow 2** —— actionable 告警作为**一行 mailbox 信**只投 `claude-infra-bot-lead`(claw),复用 Lead inbox 的即时机械(单条 identity、立即写、立即 nudge);**默认不发 Discord 副本**。路由表保留 `FLYWHEEL_ALERT_COPY_TO_CHANNEL=1` 观察性抄送开关,默认 OFF。下文凡写「统一告警频道是唯一主通道」「告警不进 mailbox」或依赖 Discord ticket lifecycle 的地方,均被本增补取代;原段落保留为首轮设计/已实现工作的审计上下文。

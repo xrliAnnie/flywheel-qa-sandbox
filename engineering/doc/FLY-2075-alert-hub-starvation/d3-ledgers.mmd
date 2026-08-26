@@ -1,0 +1,23 @@
+flowchart LR
+    subgraph TL["teamlead.db(Bridge 的账)"]
+        AT["alert_threads<br/>一 episode 一行<br/>写入方:AlertChannelHub<br/>裁定后:重新每天有新行,状态 NEW"]
+        AR["alert_delivery_receipts<br/>Bridge 通知器每次发送的回执<br/>裁定后:ticket 类回执回来"]
+        DL["dead_letter_alerts<br/>mailbox 投递死信(源)<br/>→ 铸成 mailbox_dead_letter 告警(不动)"]
+    end
+    subgraph CM["comm.db(邮局的账)"]
+        MB["mailbox(source_kind = infra_alert)<br/>Flow 2 主落点,08-15 起 1,441 行<br/>裁定后:Router 不再写;<br/>只剩 flag-scan / workflow-source 定向行"]
+    end
+    subgraph FS["alert-deadletter/(文件)"]
+        F1["2026-… 前缀:Bridge 写(带 reason)"]
+        F2["20260826T… 前缀:shell 写<br/>cmux_cleanup no-token = FLY-2062"]
+    end
+    HUB["AlertChannelHub"] --> AT
+    NOT["LeadAlertNotifier"] --> AR
+    NOT --> F1
+    RT["D1 Router(ticket 分支)"] -.->|"拆除"| MB
+    RT --> HUB
+    DL --> NOT
+    SH["scripts/lead-alert.sh"] --> F2
+    style AT fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style MB fill:#f2f2f7,stroke:#86868b,stroke-dasharray: 5 5
+    style F2 fill:#f2f2f7,stroke:#86868b

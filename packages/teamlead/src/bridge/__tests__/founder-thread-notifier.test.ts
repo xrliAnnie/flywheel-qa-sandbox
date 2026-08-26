@@ -1,9 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { StateStore } from "../../StateStore.js";
 import {
-	emitFounderStuckNotification,
 	emitFounderThreadNotification,
-	type FounderStuckNotifyOpts,
 	type FounderThreadNotifyOpts,
 	scanFounderThreadForGateCard,
 } from "../founder-thread-notifier.js";
@@ -357,93 +355,6 @@ describe("FLY-605 emitFounderThreadNotification (Part A)", () => {
 		expect(captured[2]).toContain("thread 里的自由发言不会写入 verdict");
 		expect(captured[2]).not.toContain("直接回复这条卡片 = 打回");
 		expect(captured[2]).not.toContain("不会自动同步给 runner");
-	});
-});
-
-function stuckOpts(
-	over: Partial<FounderStuckNotifyOpts> = {},
-): FounderStuckNotifyOpts {
-	return {
-		executionId: "exec1",
-		issueId: "uuid-FLY-818",
-		issueIdentifier: "FLY-818",
-		projectName: "flywheel",
-		leadAgentId: "tadashi-eng-lead",
-		stuckMinutes: 47,
-		thread: {
-			thread_id: "T1",
-			channel_id: "C1",
-			lead_id: null,
-			archived_at: null,
-		},
-		botToken: "bot-token",
-		ownerUserId: OWNER,
-		...over,
-	};
-}
-
-describe("FLY-818 M3 emitFounderStuckNotification (issue-thread page)", () => {
-	it("2xx → posts an @founder-pinged stuck page to the ISSUE thread, returns posted", async () => {
-		const { store, events } = makeStore();
-		const fetchImpl = vi.fn(async () => res(200));
-		const r = await emitFounderStuckNotification(stuckOpts(), {
-			store,
-			fetchImpl: fetchImpl as unknown as typeof fetch,
-		});
-		expect(r.kind).toBe("posted");
-		const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
-		expect(url).toContain("/channels/T1/messages");
-		expect((init.headers as Record<string, string>).Authorization).toBe(
-			"Bot bot-token",
-		);
-		const body = JSON.parse(init.body as string);
-		expect(body.content).toContain(`<@${OWNER}>`);
-		expect(body.content).toContain("FLY-818"); // the stuck issue
-		// Founder-only ping — @everyone/roles inert.
-		expect(body.allowed_mentions).toEqual({ users: [OWNER] });
-		expect(events.some((e) => e.event_type === "founder_stuck_notified")).toBe(
-			true,
-		);
-	});
-
-	it("no chat thread (transient) / no owner / bad owner id ⇒ skipped without a POST", async () => {
-		for (const over of [
-			{ thread: undefined },
-			{ ownerUserId: undefined },
-			{ ownerUserId: "not-a-snowflake" },
-		] as Partial<FounderStuckNotifyOpts>[]) {
-			const { store } = makeStore();
-			const fetchImpl = vi.fn(async () => res(200));
-			const r = await emitFounderStuckNotification(stuckOpts(over), {
-				store,
-				fetchImpl: fetchImpl as unknown as typeof fetch,
-			});
-			expect(r.kind).toBe("skipped");
-			expect(fetchImpl).not.toHaveBeenCalled();
-		}
-	});
-
-	it("429 → transient_failed with retryAfterMs (caller retries)", async () => {
-		const { store } = makeStore();
-		const fetchImpl = vi.fn(async () =>
-			res(429, { headers: { "retry-after": "2" } }),
-		);
-		const r = await emitFounderStuckNotification(stuckOpts(), {
-			store,
-			fetchImpl: fetchImpl as unknown as typeof fetch,
-		});
-		expect(r.kind).toBe("transient_failed");
-		expect(r.retryAfterMs).toBe(2000);
-	});
-
-	it("4xx → permanent_failed", async () => {
-		const { store } = makeStore();
-		const fetchImpl = vi.fn(async () => res(403));
-		const r = await emitFounderStuckNotification(stuckOpts(), {
-			store,
-			fetchImpl: fetchImpl as unknown as typeof fetch,
-		});
-		expect(r.kind).toBe("permanent_failed");
 	});
 });
 

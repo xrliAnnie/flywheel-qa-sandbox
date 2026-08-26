@@ -153,7 +153,7 @@ export const RETENTION_TARGET_POLICIES = Object.freeze([
 		"teamlead",
 		"alert_threads",
 		"correlation_key",
-		"julianday(t.resolved_at)<julianday(?) AND t.repair_status!='pending'",
+		"julianday(t.resolved_at)<julianday(?) AND (t.repair_status IS NULL OR t.repair_status!='pending')",
 	),
 	staticPolicy(
 		"chatThreads",
@@ -175,14 +175,6 @@ export const RETENTION_TARGET_POLICIES = Object.freeze([
 		"detection_escalations",
 		"__rowid",
 		"t.status='RESOLVED' AND julianday(t.created_at)<julianday(?)",
-	),
-	staticPolicy(
-		"founderPageLedger",
-		"teamlead",
-		"founder_page_ledger",
-		"event_id",
-		"0",
-		() => [],
 	),
 	staticPolicy(
 		"leadEventDeliveryAttempts",
@@ -265,14 +257,6 @@ export const RETENTION_TARGET_POLICIES = Object.freeze([
 		primaryKey: "id",
 		special: true,
 	}),
-	staticPolicy(
-		"ticketEscalations",
-		"teamlead",
-		"ticket_escalations",
-		"id",
-		"0",
-		() => [],
-	),
 	staticPolicy(
 		"tmuxHold",
 		"teamlead",

@@ -593,8 +593,6 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: P2 Lead-inbox receipt deadline in minutes (FLY-1426)",
 	FLYWHEEL_RECEIPT_WINDOW_P3_MIN:
 		"tuning knob: P3 Lead-inbox receipt deadline in minutes (FLY-1426)",
-	FLYWHEEL_ALERT_COPY_TO_CHANNEL:
-		"internal ops lever: optional Discord observation copy for owner-mailbox infra alerts, default-off (FLY-1764)",
 	FLYWHEEL_ALERT_SENDER_TOKEN_ENV:
 		"config value: single alert-sender token env NAME (D2), default-unset = own-bot chain (FLY-927)",
 };
@@ -622,6 +620,7 @@ export const RETIRED_CONFIG_PATHS = [
 ] as const;
 
 export const RETIRED_FLAGS = [
+	{ envVar: "FLYWHEEL_ALERT_COPY_TO_CHANNEL", retiredBy: "FLY-2075" },
 	{ envVar: "FLYWHEEL_AUTO_QA", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_CODEX_HARD_GATE", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG", retiredBy: "FLY-1560" },

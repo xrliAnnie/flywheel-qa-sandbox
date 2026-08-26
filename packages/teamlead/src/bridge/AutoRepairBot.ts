@@ -23,8 +23,7 @@ import type { AlertPayload } from "../LeadAlertNotifier.js";
  * The authoritative "✅ 已恢复" comes later from the Hub's resolve path (driven by
  * the reconcile pass / onRecovery), NOT from the bot. "needs_human" = no safe
  * action was taken. "no_action" = the observed state is already safe or the
- * episode has ended; it is monitored without consuming an attempt or paging a
- * human.
+ * episode has ended; it is monitored without consuming an attempt.
  */
 export type RepairOutcome = "attempted" | "needs_human" | "no_action";
 
@@ -35,9 +34,9 @@ export interface RepairResult {
 	/**
 	 * The line the Hub posts into the per-error thread.
 	 *  - `attempted`: the full Cass-voiced "🔧 已 …" line, posted verbatim.
-	 *  - `needs_human`: the REASON only (FLY-368 v1.58.0) — the Hub prepends the
-	 *    "🙋 @Annie …" framing + the real founder @-ping, so the escalation mention
-	 *    lives in exactly one place and never duplicates.
+	 *  - `needs_human`: the reason only; enqueue leaves the ticket NEW and silent
+	 *    (except an explicit cap-owner handoff), while a rejected reconcile retry
+	 *    posts the reason without a mention.
 	 *  - `no_action`: a neutral monitoring line, posted without any mention.
 	 */
 	detail: string;
@@ -69,9 +68,7 @@ export interface AutoRepairBotDeps {
 	};
 }
 
-/** Account/billing/login/permission kinds the bot must NEVER touch — human-only.
- * Exported (FLY-1082 Task 1.5) so the Hub's contract-driven by-design escalate
- * path sources the SAME reason strings instead of duplicating them. */
+/** Account/billing/login/permission kinds the bot must NEVER touch — human-only. */
 export const HUMAN_ONLY_REASON: Partial<
 	Record<AlertPayload["eventType"], string>
 > = {
@@ -85,8 +82,8 @@ export const HUMAN_ONLY_REASON: Partial<
 		"waiting on a permission prompt — NEVER auto-confirmed (a human must approve/deny).",
 	crash_loop: "crash-looping — needs investigation; not auto-fixable.",
 	// FLY-637-ext: the Lead has ignored a runner's blocking question for several
-	// backoff rounds. The runner is fine — do NOT nudge it; a human (the founder)
-	// should poke the Lead.
+	// backoff rounds. The runner is fine — do NOT nudge it; the ticket remains
+	// available for explicit duty handling.
 	runner_lead_pending_unhandled:
 		"a runner is blocked waiting on the Lead to answer its question, and the Lead has not responded after several reminders — the Lead needs a human poke (the runner is fine; nothing to auto-repair).",
 };
@@ -97,7 +94,7 @@ export class AutoRepairBot {
 	/**
 	 * FLY-368 v1.58.0: does Cass actually attempt a repair for this alert? The Hub
 	 * uses it to word the ack honestly (only kinds that get tried say
-	 * "正在尝试自动修复…"; everything else is escalated to Annie). Shares its logic
+	 * "正在尝试自动修复…"; everything else remains NEW for duty handling). Shares its logic
 	 * with `attempt()` so the two can never drift.
 	 *
 	 * FLY-696: now payload-aware (Codex R2/R5) — `usage_limit` is attemptable only
@@ -171,7 +168,7 @@ export class AutoRepairBot {
 				}
 				// Codex R2 HIGH: an INCOMPLETE migration must never read as
 				// attempted — the recovery probe would quietly resolve the ticket
-				// while the failed sessions loop silently with no T2 escalation.
+				// while failed sessions loop silently after the retry budget is spent.
 				if (m.migrated < m.casualties) {
 					return {
 						outcome: "needs_human",
@@ -222,8 +219,8 @@ export class AutoRepairBot {
 				const reason =
 					HUMAN_ONLY_REASON[payload.eventType] ??
 					"no safe auto-repair for this alert kind.";
-				// FLY-368 v1.58.0: reason-ONLY. The Hub owns the "🙋 @Annie …" framing
-				// + the real ping (so the @ is scoped to needs_human and not duplicated).
+				// Reason-only: the Hub decides whether this is an enqueue-time silent
+				// NEW ticket or a reconcile-time no-mention rejection post.
 				return { outcome: "needs_human", action: "none", detail: reason };
 			}
 		}

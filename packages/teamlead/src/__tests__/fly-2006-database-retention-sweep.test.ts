@@ -63,6 +63,16 @@ const FOUNDER_DISCORD_AUDIT = {
 	responseDigest: "a".repeat(64),
 } as const;
 
+const TEAMLEAD_PRODUCTION_TABLES = JSON.parse(
+	readFileSync(
+		new URL(
+			"../../../../scripts/__tests__/fixtures/fly-2006-teamlead-production-tables.json",
+			import.meta.url,
+		),
+		"utf8",
+	),
+) as string[];
+
 describe("FLY-2006 retention registry", () => {
 	it("labels copy-only rehearsal authority without impersonating a Discord message", () => {
 		expect(buildIsolatedRehearsalAudit()).toEqual({
@@ -165,12 +175,22 @@ describe("FLY-2006 retention registry", () => {
 		});
 	});
 
-	it("classifies the complete production schema with no overlap", () => {
-		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(18);
+	it("classifies the production schema and its optional-retired subset", () => {
+		const retiredNames = [
+			"founder_page_ledger",
+			"runbook_issues",
+			"ticket_escalations",
+		];
+
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(16);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(36);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(103);
+		).toHaveLength(102);
+		expect(
+			(TEAMLEAD_TABLE_CLASSIFICATION as Record<string, readonly string[]>)
+				.retiredOptional,
+		).toEqual(retiredNames);
 		expect(COMM_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(7);
 		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toHaveLength(
 			18,
@@ -179,10 +199,21 @@ describe("FLY-2006 retention registry", () => {
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
 		expect(new Set(teamleadNames).size).toBe(157);
+		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(25);
-		expect(assertClassifiedSchema("teamlead", teamleadNames)).toMatchObject({
+		expect(
+			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
+		).toMatchObject({
 			total: 157,
 		});
+		expect(
+			assertClassifiedSchema(
+				"teamlead",
+				TEAMLEAD_PRODUCTION_TABLES.filter(
+					(name) => !retiredNames.includes(name),
+				),
+			),
+		).toMatchObject({ total: 154 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 25,
 		});
@@ -669,6 +700,43 @@ describe("FLY-2006 multi-target inventory", () => {
 						.all(...(candidate?.params ?? [])),
 				).toEqual([{ thread_id: "confirmed-missing" }]);
 			}
+		} finally {
+			db.close();
+		}
+	});
+
+	it("inventories resolved alert threads with NULL repair status", () => {
+		const db = new Database(":memory:");
+		try {
+			db.exec(`CREATE TABLE alert_threads(
+				correlation_key TEXT PRIMARY KEY,
+				resolved_at TEXT,
+				repair_status TEXT
+			)`);
+			const insert = db.prepare(
+				"INSERT INTO alert_threads VALUES (?, '2000-01-01T00:00:00.000Z', ?)",
+			);
+			insert.run("null-status", null);
+			insert.run("attempted", "attempted");
+			insert.run("pending", "pending");
+			const policy = RETENTION_TARGET_POLICIES.find(
+				(candidate) => candidate.key === "alertThreads",
+			);
+			const candidate = policy?.candidate({
+				cutoff14: "2026-08-01T00:00:00.000Z",
+			});
+
+			expect(
+				db
+					.prepare(
+						`SELECT t.correlation_key FROM alert_threads t WHERE ${candidate?.sql}
+						 ORDER BY t.correlation_key`,
+					)
+					.all(...(candidate?.params ?? [])),
+			).toEqual([
+				{ correlation_key: "attempted" },
+				{ correlation_key: "null-status" },
+			]);
 		} finally {
 			db.close();
 		}

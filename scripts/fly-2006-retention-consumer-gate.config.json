@@ -6,7 +6,6 @@
 		"chat_threads",
 		"deployment_events",
 		"detection_escalations",
-		"founder_page_ledger",
 		"lead_event_delivery_attempts",
 		"lead_events",
 		"legacy_cutover_quarantine",
@@ -16,7 +15,6 @@
 		"quiet_wake_notified",
 		"roundtable_topic_threads",
 		"session_events",
-		"ticket_escalations",
 		"tmux_hold",
 		"workflow_run_event",
 		"content_ref_gc_outbox",
@@ -170,13 +168,6 @@
 		},
 		{
 			"file": "packages/teamlead/src/StateStore.ts",
-			"relation": "founder_page_ledger",
-			"baseTable": "founder_page_ledger",
-			"usage": "read",
-			"disposition": "candidate_guarded"
-		},
-		{
-			"file": "packages/teamlead/src/StateStore.ts",
 			"relation": "lead_event_delivery_attempts",
 			"baseTable": "lead_event_delivery_attempts",
 			"usage": "read",
@@ -263,13 +254,6 @@
 			"file": "packages/teamlead/src/StateStore.ts",
 			"relation": "session_events",
 			"baseTable": "session_events",
-			"usage": "read",
-			"disposition": "candidate_guarded"
-		},
-		{
-			"file": "packages/teamlead/src/StateStore.ts",
-			"relation": "ticket_escalations",
-			"baseTable": "ticket_escalations",
 			"usage": "read",
 			"disposition": "candidate_guarded"
 		},

@@ -114,7 +114,7 @@
 				{
 					"repo": "main",
 					"path": "scripts/lib/fly-2006-retention-registry.mjs",
-					"linePattern": "^receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents runbook_issues$"
+					"linePattern": "^receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents$"
 				},
 				{
 					"repo": "main",

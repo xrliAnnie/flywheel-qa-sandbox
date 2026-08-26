@@ -10,6 +10,7 @@ import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { loadConfig } from "../config.js";
+import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
 import { StateStore } from "../StateStore.js";
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -43,6 +44,7 @@ describe("Bridge scaffold", () => {
 				closeFn = undefined;
 			}
 		} finally {
+			vi.restoreAllMocks();
 			vi.unstubAllEnvs();
 		}
 	});
@@ -485,6 +487,79 @@ describe("Bridge scaffold", () => {
 		// but auth middleware isn't applied yet either (will be in Task 3).
 		// For now, just verify startBridge works.
 		expect(store).toBeDefined();
+	});
+
+	it("keeps Discord delivery failures on the independent alert_unreachable_config reason", async () => {
+		vi.stubEnv("FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID", "");
+		const notify = vi
+			.spyOn(MetaAlertNotifier.prototype, "notify")
+			.mockResolvedValue({ debounced: false, desktop: false, file: true });
+		vi.spyOn(
+			MetaAlertNotifier.prototype,
+			"probeDesktopCapability",
+		).mockResolvedValue(false);
+
+		const { close } = await startBridge(makeConfig(), [
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "product-lead",
+						forumChannel: "test-channel",
+						chatChannel: "test-chat",
+						match: { labels: ["Product"] },
+					},
+				],
+			},
+		]);
+		closeFn = close;
+
+		const reasons = notify.mock.calls.map(([input]) => input.reason);
+		expect(reasons).toContain("alert_unreachable_config");
+		expect(reasons).not.toContain("ticket_route_unreachable");
+	});
+
+	it("fails loud when the Hub has no valid founder escalation id", async () => {
+		vi.stubEnv("FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID", "test-alert-channel");
+		vi.stubEnv("FLYWHEEL_ALERT_SENDER_TOKEN_ENV", "TEST_ALERT_TOKEN");
+		vi.stubEnv("TEST_ALERT_TOKEN", "test-token");
+		const notify = vi
+			.spyOn(MetaAlertNotifier.prototype, "notify")
+			.mockResolvedValue({ debounced: false, desktop: false, file: true });
+		vi.spyOn(
+			MetaAlertNotifier.prototype,
+			"probeDesktopCapability",
+		).mockResolvedValue(false);
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		const { close } = await startBridge(
+			makeConfig({ discordOwnerUserId: "not-a-snowflake" }),
+			[
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							forumChannel: "test-channel",
+							chatChannel: "test-chat",
+							match: { labels: ["Product"] },
+						},
+					],
+				},
+			],
+		);
+		closeFn = close;
+
+		expect(error).toHaveBeenCalledWith(
+			expect.stringContaining("founder escalation route unreachable"),
+		);
+		expect(notify).toHaveBeenCalledWith({
+			reason: "alert_unreachable_config",
+			title: "Founder escalation route unreachable",
+			body: expect.stringContaining("Claw mailbox"),
+		});
 	});
 
 	it("loadConfig() rejects host=0.0.0.0", () => {

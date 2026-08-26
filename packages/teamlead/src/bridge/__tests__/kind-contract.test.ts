@@ -19,7 +19,6 @@ import {
 import { QUOTA_MONITOR_MANUAL_TICKET_KINDS } from "../AlertChannelHub.js";
 import { bodyFor, titleFor } from "../alert-kind-copy.js";
 import {
-	escalatesAtEnqueue,
 	KIND_CONTRACTS,
 	type KindContract,
 	validateKindContracts,
@@ -270,26 +269,6 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 			},
 		};
 		expect(() => validateKindContracts(doctored)).toThrow(/pane_hash_stuck/);
-	});
-
-	it("escalatesAtEnqueue: exactly the none_escalate kinds", () => {
-		// Legacy: runner_lead_pending_unhandled landed directly ESCALATED before
-		// this contract existed (infra-alert-wiring special case) — the contract
-		// must reproduce that, and add ONLY zombie_session_backlog.
-		const expected = new Set([
-			"runner_lead_pending_unhandled",
-			"zombie_session_backlog",
-			"delivery_dead_letter",
-			"inbox_loop_stalled",
-			"mailbox_dead_letter",
-			// FLY-1586: a quarantined legacy row withholds a real notification;
-			// it escalates at enqueue for the same reason inbox_loop_stalled does.
-			"legacy_row_quarantined",
-			"stale_approved_ship_dead",
-		]);
-		for (const kind of ALERT_EVENT_TYPES) {
-			expect(escalatesAtEnqueue(kind), kind).toBe(expected.has(kind));
-		}
 	});
 
 	it("contract owner agrees with resolveTicketOwner for EVERY kind (no table↔route drift)", () => {

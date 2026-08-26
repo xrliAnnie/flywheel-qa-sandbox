@@ -28,7 +28,6 @@ function payload(over: Partial<AlertPayload> = {}): AlertPayload {
 		ticket: {
 			ownerUserId: "111111111111111111",
 			ownerLabel: "claude bot",
-			status: "NEW",
 			firstSeenMs: Date.UTC(2026, 6, 7, 9, 5),
 			ownerRef: "infra_bot:claude",
 		},
@@ -133,8 +132,12 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 		expect(edited).toContain("(tadashi / pane_hash_stuck)"); // first line intact
 	});
 
-	it("needs_human → ESCALATED + root edited", async () => {
+	it("needs_human stays NEW with no repair status, post, or root edit", async () => {
 		const discord = makeDiscord();
+		const posts: Array<{ content: string; mention?: string }> = [];
+		discord.postToThread = async (_threadId, content, opts) => {
+			posts.push({ content, mention: opts?.mentionUserId });
+		};
 		const hub = new AlertChannelHub({
 			store,
 			notifier: { alert: async () => ({ ...SENT }) },
@@ -142,8 +145,12 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 			autoRepairBot: stubBot("needs_human"),
 		});
 		await hub.handle(payload());
-		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("ESCALATED");
-		expect(discord.edits[0]![2]).toContain("· 状态 ESCALATED");
+		const row = store.getActiveAlertThread(CK);
+		expect(row?.ticket_status).toBe("NEW");
+		expect(row?.repair_status).toBeNull();
+		expect(posts).toHaveLength(1); // ack only
+		expect(posts[0]?.mention).toBeUndefined();
+		expect(discord.edits).toHaveLength(0);
 	});
 
 	it("no_action → MONITORING without founder mention or attempt consumption", async () => {
@@ -232,9 +239,9 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// FLY-927 (Task 2.4): reconcile-driven T2 escalation — two landing spots.
+// FLY-2075: reconcile keeps exhausted tickets visible and retries safely.
 // ─────────────────────────────────────────────────────────────────────────
-describe("FLY-927 Hub T2 escalation (reconcile pass)", () => {
+describe("FLY-2075 Hub bounded retry (reconcile pass)", () => {
 	let store: StateStore;
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
@@ -257,20 +264,16 @@ describe("FLY-927 Hub T2 escalation (reconcile pass)", () => {
 		});
 	}
 
-	function makeHub(
-		discord: DiscordOps,
-		escalate?: (row: unknown) => Promise<boolean>,
-	) {
+	function makeHub(discord: DiscordOps) {
 		return new AlertChannelHub({
 			store,
 			notifier: { alert: async () => ({ ...SENT }) },
 			discord,
 			// capturePane absent → lead recovery pass skipped → ticket pass runs
-			escalateToIssueThread: escalate as never,
 		});
 	}
 
-	it("expired REPAIRING ticket without an issue binding → needs_human @founder in the alert thread + ESCALATED", async () => {
+	it("expired REPAIRING ticket stays visible without posts or root edits", async () => {
 		const discord = makeDiscord();
 		const posts: string[] = [];
 		discord.postToThread = async (_t: string, content: string) => {
@@ -279,27 +282,82 @@ describe("FLY-927 Hub T2 escalation (reconcile pass)", () => {
 		const hub = makeHub(discord);
 		openAgedTicket();
 		await hub.reconcile();
-		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("ESCALATED");
-		expect(posts.some((p) => p.includes("修不掉(T2"))).toBe(true);
-		expect(
-			discord.edits.some(([, , c]) => c.includes("· 状态 ESCALATED")),
-		).toBe(true);
+		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("REPAIRING");
+		expect(posts).toHaveLength(0);
+		expect(discord.edits).toHaveLength(0);
 	});
 
-	it("issue-BOUND expired ticket → escalates via the issue-thread leg (no @founder in the alert thread)", async () => {
+	it("issue binding does not create an automatic escalation side effect", async () => {
 		const discord = makeDiscord();
 		const posts: string[] = [];
 		discord.postToThread = async (_t: string, content: string) => {
 			posts.push(content);
 		};
-		const escalate = vi.fn(async () => true);
-		const hub = makeHub(discord, escalate);
+		const hub = makeHub(discord);
 		openAgedTicket({ sessionKey: "exec-9" });
 		await hub.reconcile();
-		expect(escalate).toHaveBeenCalledTimes(1);
-		expect(posts.some((p) => p.includes("已升级 founder"))).toBe(true);
-		expect(posts.some((p) => p.includes("🙋"))).toBe(false);
-		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("ESCALATED");
+		expect(posts).toHaveLength(0);
+		expect(store.getActiveAlertThread(CK)?.ticket_status).toBe("REPAIRING");
+	});
+
+	it("one production-shaped safety-gate rejection consumes the remaining retry budget", async () => {
+		const discord = makeDiscord();
+		const posts: string[] = [];
+		discord.postToThread = async (_threadId, content) => {
+			posts.push(content);
+		};
+		const bot = stubBot("needs_human");
+		const recent = new Date(Date.now() - 30_000)
+			.toISOString()
+			.replace("T", " ")
+			.slice(0, 19);
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+			autoRepairBot: bot,
+		});
+		openAgedTicket({ firstSeenAt: recent });
+		store.bumpTicketAttempt(CK); // enqueue-time attempted repair already ran
+
+		await hub.reconcile();
+		await hub.reconcile();
+		await hub.reconcile();
+
+		const row = store.getActiveAlertThread(CK);
+		expect(row?.attempt_count).toBe(2);
+		expect(row?.ticket_status).toBe("REPAIRING");
+		expect(row?.repair_status).toBe("n/a");
+		expect(posts.filter((post) => post.includes("安全闸拒绝"))).toHaveLength(1);
+		expect(posts.every((post) => !post.includes("<@"))).toBe(true);
+	});
+
+	it("a refused retry clears stale Cass credit before later recovery", async () => {
+		const discord = makeDiscord();
+		const posts: string[] = [];
+		discord.postToThread = async (_threadId, content) => {
+			posts.push(content);
+		};
+		const recent = new Date(Date.now() - 30_000)
+			.toISOString()
+			.replace("T", " ")
+			.slice(0, 19);
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+			autoRepairBot: stubBot("needs_human"),
+		});
+		openAgedTicket({ firstSeenAt: recent });
+		store.setAlertRepairStatus(CK, "attempted");
+		store.bumpTicketAttempt(CK);
+
+		await hub.reconcile();
+		await hub.resolve(CK);
+
+		const resolved = posts.find((post) => post.includes("已恢复"));
+		expect(resolved).toContain("自行恢复");
+		expect(resolved).not.toContain("Cass 自动修复");
 	});
 
 	it("REPAIRING under budget → one MORE gated attempt (bump), no escalation", async () => {

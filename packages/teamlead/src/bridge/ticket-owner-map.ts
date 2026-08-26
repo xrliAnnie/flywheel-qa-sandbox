@@ -11,8 +11,7 @@
  *    the CLAUDE bot (the resident workhorse, CMP-2).
  *
  * Owner env ids unset ⇒ `userId: null` ⇒ the caller renders the label without
- * a ping and does NOT arm the T2 unclaimed fallback — today's Cass behavior,
- * zero regression until FLY-928 deploys the bots (pure config flip).
+ * a ping. The ticket remains NEW for explicit duty handling.
  */
 
 import type { AlertEventType } from "../LeadAlertNotifier.js";
@@ -69,8 +68,8 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// needs_human, never bot-owned.
 	"permission_blocked",
 	// FLY-637-ext ladder output: the owner-first response ALREADY happened (K
-	// nudge rounds); re-@'ing the Lead would fight the approved thresholds.
-	// Callers set the ticket status straight to ESCALATED for this kind.
+	// nudge rounds); re-@'ing the Lead would fight the approved thresholds. The
+	// Hub still records a NEW ticket without an automatic mention or escalation.
 	"runner_lead_pending_unhandled",
 	// FLY-1279: the canonical founder issue-thread page already landed before
 	// this best-effort mirror fires; no infra bot should re-own the occurrence.

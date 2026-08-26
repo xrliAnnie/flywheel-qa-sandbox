@@ -1,8 +1,7 @@
 /**
  * FLY-1082 (Tasks 1.3/1.4/1.5): fleet-kind ticket enrichment through the
- * routed sink — owner cross from metadata.infraBotDown, contract-driven
- * ESCALATED seed for (b)-type kinds, and fleet payloads (projectName
- * "machine", no session) enriching without a projects.json match.
+ * routed sink — owner cross from metadata.infraBotDown and fleet payloads
+ * (projectName "machine", no session) enriching without a projects.json match.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AlertPayload, AlertResult } from "../../LeadAlertNotifier.js";
@@ -40,11 +39,11 @@ function fleetPayload(over: Partial<AlertPayload> = {}): AlertPayload {
 
 describe("FLY-1082 fleet ticket enrichment (routed sink)", () => {
 	let store: StateStore;
-	let rawSink: { alert: ReturnType<typeof vi.fn> };
+	let ticketSink: { alert: ReturnType<typeof vi.fn> };
 
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
-		rawSink = {
+		ticketSink = {
 			alert: vi.fn(async (): Promise<AlertResult> => ({ sent: true })),
 		};
 		process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "111111111111111111";
@@ -60,7 +59,8 @@ describe("FLY-1082 fleet ticket enrichment (routed sink)", () => {
 		return buildInfraAlertRouting({
 			store,
 			projects,
-			rawSink,
+			rawSink: { alert: vi.fn() },
+			ticketSink,
 			routingEnabled: () => true,
 			ticketsEnabled: () => true,
 			logger: () => {},
@@ -68,7 +68,7 @@ describe("FLY-1082 fleet ticket enrichment (routed sink)", () => {
 	}
 
 	function enriched(): AlertPayload {
-		return rawSink.alert.mock.calls.at(-1)![0] as AlertPayload;
+		return ticketSink.alert.mock.calls.at(-1)![0] as AlertPayload;
 	}
 
 	it("infra_bot_down: dead CLAUDE bot → CODEX bot owns (explicit metadata field)", async () => {
@@ -116,15 +116,15 @@ describe("FLY-1082 fleet ticket enrichment (routed sink)", () => {
 		});
 	});
 
-	it("zombie_session_backlog seeds directly ESCALATED (contract-driven (b)-type)", async () => {
+	it("zombie_session_backlog carries an owner but no input status", async () => {
 		await makeSink().alert(
 			fleetPayload({ eventType: "zombie_session_backlog" }),
 		);
-		expect(enriched().ticket?.status).toBe("ESCALATED");
 		expect(enriched().ticket?.ownerRef).toBe("infra_bot:claude");
+		expect(enriched().ticket).not.toHaveProperty("status");
 	});
 
-	it("the other fleet kinds seed NEW with the claude owner (no session, no project match)", async () => {
+	it("the other fleet kinds carry the claude owner without an input status", async () => {
 		for (const eventType of [
 			"swap_pressure_high",
 			"tmux_server_lost",
@@ -132,9 +132,9 @@ describe("FLY-1082 fleet ticket enrichment (routed sink)", () => {
 		] as const) {
 			await makeSink().alert(fleetPayload({ eventType }));
 			expect(enriched().ticket, eventType).toMatchObject({
-				status: "NEW",
 				ownerRef: "infra_bot:claude",
 			});
+			expect(enriched().ticket, eventType).not.toHaveProperty("status");
 		}
 	});
 });

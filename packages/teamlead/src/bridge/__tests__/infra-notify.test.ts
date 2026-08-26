@@ -128,11 +128,10 @@ describe("resolveAccountCapOwnerId (A5 predicate)", () => {
 });
 
 describe("format helpers", () => {
-	it("owner assignment carries the mention + ARC/T2 handoff + reason", () => {
+	it("owner assignment carries the mention + claim handoff + reason", () => {
 		const s = formatAccountCapOwnerAssignment("111", "所有账号都已用尽。");
 		expect(s).toContain("<@111>");
 		expect(s).toContain("请认领");
-		expect(s).toContain("T2");
 		expect(s).toContain("所有账号都已用尽。");
 	});
 

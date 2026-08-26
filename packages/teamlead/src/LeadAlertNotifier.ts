@@ -289,8 +289,7 @@ export const ALERT_EVENT_TYPES = [
 	// Cross-Lead zombie session backlog (CommDB↔StateStore reconcile drift,
 	// the FLY-1066 three shapes) reached the threshold. NO ARC by design —
 	// reaping is FLY-1066's job (kind-contract remediationRef) — so the ticket
-	// lands directly ESCALATED with the sample list; never enters the ARC
-	// retry loop.
+	// enters NEW with the sample list and never enters the ARC retry loop.
 	"zombie_session_backlog",
 	// Legacy display-only kinds retained so persisted alerts can still drain.
 	"detection_fleet_aggregate",
@@ -545,8 +544,6 @@ export interface AlertTicketContext {
 	ownerUserId: string | null;
 	/** Human-readable owner label when no mention is possible (e.g. "claude bot"). */
 	ownerLabel: string;
-	/** Ticket lifecycle status (NEW/ACK/REPAIRING/MONITORING/RESOLVED/ESCALATED). */
-	status: string;
 	/** First-seen instant (ms epoch) — claims/episode first time. */
 	firstSeenMs: number;
 	/** Persisted owner ref (`infra_bot:claude|codex` / `lead:<id>`); not rendered. */
@@ -1938,9 +1935,8 @@ function formatContent(
 		ownerId && /^\d{17,20}$/.test(ownerId)
 			? `<@${ownerId}>`
 			: t?.ownerLabel?.trim() || "—";
-	const status = t?.status?.trim() || "NEW";
 	const firstSeen = ticketHHMM(t?.firstSeenMs ?? Date.now());
-	return `${firstLine}\n🎫 ${payload.projectName} · 首见 ${firstSeen} · owner ${owner} · 状态 ${status}\n${payload.body}`;
+	return `${firstLine}\n🎫 ${payload.projectName} · 首见 ${firstSeen} · owner ${owner} · 状态 NEW\n${payload.body}`;
 }
 
 async function safeText(

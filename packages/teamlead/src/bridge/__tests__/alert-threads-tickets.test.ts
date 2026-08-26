@@ -84,27 +84,6 @@ describe("FLY-927 alert_threads ticket lifecycle", () => {
 		).toBe(2);
 	});
 
-	it("getUnackedTicketsOlderThan: old NEW tickets match; ACKed / legacy rows never do", () => {
-		openTicket(); // first_seen 2020 → definitely older than 5min
-		store.openAlertThread({
-			correlationKey: "legacy",
-			eventId: "e2",
-			threadId: "t2",
-			channelId: "c",
-			leadId: "lead-b",
-			projectName: "fw",
-			eventType: "crash_loop",
-		});
-		let stale = store.getUnackedTicketsOlderThan(5 * 60_000);
-		expect(stale.map((r) => r.correlation_key)).toEqual([
-			"fw|lead-a|rate_limit|",
-		]);
-
-		store.setTicketStatus("fw|lead-a|rate_limit|", "ACK");
-		stale = store.getUnackedTicketsOlderThan(5 * 60_000);
-		expect(stale).toEqual([]);
-	});
-
 	it("getActiveAlertThreadByEventId matches ONLY the active episode's event id", () => {
 		openTicket();
 		expect(store.getActiveAlertThreadByEventId("evt-1")?.thread_id).toBe("t-1");

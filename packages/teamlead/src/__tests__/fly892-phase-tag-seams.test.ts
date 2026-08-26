@@ -6,10 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AUTOMATED_MESSAGE_PREFIX } from "../bridge/automated-message.js";
-import {
-	emitFounderStuckNotification,
-	emitFounderThreadNotification,
-} from "../bridge/founder-thread-notifier.js";
+import { emitFounderThreadNotification } from "../bridge/founder-thread-notifier.js";
 import { ReviewThreadEffect } from "../bridge/review-thread-effect.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
@@ -86,26 +83,6 @@ describe("FLY-892 Step 3: founder-thread-notifier phase prefix", () => {
 			{ store, fetchImpl },
 		);
 		expect(posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}🧠`)).toBe(true);
-	});
-
-	it("stuck notification: phase session tags the header", async () => {
-		await emitFounderStuckNotification(
-			{
-				executionId: "e-impl",
-				issueId: "FLY-892",
-				projectName: "flywheel",
-				leadAgentId: "flywheel-eng-lead",
-				stuckMinutes: 30,
-				thread,
-				botToken: "bot",
-				ownerUserId: OWNER,
-				phasePrefix: "[实现·Opus] ",
-			},
-			{ store, fetchImpl },
-		);
-		expect(
-			posted[0]?.startsWith(`${AUTOMATED_MESSAGE_PREFIX}[实现·Opus] 🚨`),
-		).toBe(true);
 	});
 });
 

@@ -49,8 +49,8 @@ export function infraSenderTokenOr(
 
 /**
  * FLY-929 A5 predicate — route a Claude account-cap needs_human to the OWNER
- * BOT (Codex Infra Bot assignment mention) instead of the immediate founder
- * escalation. BOTH must hold, else undefined = legacy founder routing:
+ * BOT (Codex Infra Bot assignment mention). BOTH must hold; otherwise the Hub
+ * leaves the ticket NEW without a mention:
  *   - P-identity (the FLY-929 migration surface is live),
  *   - `FLYWHEEL_INFRA_BOT_USER_ID` is a valid snowflake (malformed degrades to
  *     no-mention rather than a rejected allowed_mentions body).
@@ -69,15 +69,13 @@ export function resolveAccountCapOwnerId(
 /**
  * The owner-bot ASSIGNMENT post for an account-cap failure (no_account /
  * failed / not-attemptable). Mirrors the FLY-871 R2/W6 assignment wording so
- * the FLY-267 mention-gate wakes the bot to claim the incident (ARC). The T2
- * "can't fix" judgement (2 retries or 5 minutes) belongs to the bot playbook /
- * FLY-927 — this post only carries the handoff.
+ * the FLY-267 mention-gate wakes the bot to claim the incident (ARC).
  */
 export function formatAccountCapOwnerAssignment(
 	ownerId: string,
 	reason: string,
 ): string {
-	return `<@${ownerId}> 请认领（ARC；修不掉判定 = 重试 2 次或 5 分钟，T2）：${reason}`;
+	return `<@${ownerId}> 请认领：${reason}`;
 }
 
 /** Structured success payload for the W6 switch digest (see RepairDisposition.notifySuccess). */

@@ -381,7 +381,7 @@ export class FleetSensors {
 								outcome: "attempted",
 								action: "pressure_hold",
 								detail:
-									"⚠️ pressure-hold 置位仍失败（StateStore 未恢复）— 派发未暂停，按 T2 预算再试;再失败升级人工。",
+									"⚠️ pressure-hold 置位仍失败（StateStore 未恢复）— 派发未暂停，按 T2 预算再试；预算耗尽后工单留在频道等值守处理。",
 							}
 						: {
 								outcome: "attempted",
@@ -399,7 +399,7 @@ export class FleetSensors {
 
 			// unknown / malformed prefix → fail-closed, the ONLY contract (R6-2):
 			// an unrecognized identity is an internal contract violation we cannot
-			// prove safe → escalate to a human, never a silent no-op.
+			// prove safe → return needs_human, never a silent no-op.
 			if (!eventId.startsWith("swap-pressure:")) {
 				return {
 					outcome: "needs_human",
@@ -578,7 +578,7 @@ export class FleetSensors {
 					eventId: `infra-bot-down:${probe.provider}:${detectedAt}`,
 					eventType: "infra_bot_down",
 					title: `${probe.provider} infra bot 掉线`,
-					body: `探测到 ${probe.provider} infra bot 不在岗（${probe.probeSource}）。自动动作：launchctl kickstart -k ${probe.jobLabel}；两次失败升级 Annie。按「谁都不救自己」由对侧 bot 认领。`,
+					body: `探测到 ${probe.provider} infra bot 不在岗（${probe.probeSource}）。自动动作：launchctl kickstart -k ${probe.jobLabel}；失败时按 T2 预算再试。按「谁都不救自己」由对侧 bot 认领。`,
 					severity: "severe",
 					metadata: {
 						infraBotDown: {
@@ -640,14 +640,14 @@ export class FleetSensors {
 			};
 		}
 		// Codex R1 MEDIUM-2: a FAILED job-restart is still an ATTEMPT — the
-		// contract is "2 次失败 → @Annie", so the first failure must stay in the
-		// T2 retry loop (REPAIRING + attempt_count) and get its second try on
-		// reconcile; the attempts budget (2) then escalates. Only the BLIND case
+		// first failure must stay in the T2 retry loop (REPAIRING + attempt_count)
+		// and get its second try on reconcile. The exhausted ticket remains visible
+		// in the channel. Only the BLIND case
 		// (no jobLabel, above) short-circuits to needs_human.
 		return {
 			outcome: "attempted",
 			action: "launchctl_kickstart",
-			detail: `⚠️ 对 ${jobLabel} 的 launchd 原地重启失败（${res.error ?? "unknown"}）。将按 T2 预算自动再试一次;再失败升级 Annie。`,
+			detail: `⚠️ 对 ${jobLabel} 的 launchd 原地重启失败（${res.error ?? "unknown"}）。将按 T2 预算自动再试一次；预算耗尽后工单留在频道等值守处理。`,
 		};
 	}
 
@@ -691,7 +691,7 @@ export class FleetSensors {
 			eventId: `zombie-backlog:${signature}:${this.now()}`,
 			eventType: "zombie_session_backlog",
 			title: `跨 Lead 僵尸 session 积压（${findings.length} 个）`,
-			body: `CommDB↔StateStore 对账发现 ${findings.length} 个僵尸 session（阈值 ${min}）：\n${formatZombieSamples(findings)}\n\n设计上不自动收割（收割机制 = FLY-1066）——直接升级请你拍板是否人工清理。`,
+			body: `CommDB↔StateStore 对账发现 ${findings.length} 个僵尸 session（阈值 ${min}）：\n${formatZombieSamples(findings)}\n\n设计上不自动收割（收割机制 = FLY-1066）——工单挂在频道等值守初审，需要人拍板是否人工清理。`,
 			severity: "warning",
 		});
 	}

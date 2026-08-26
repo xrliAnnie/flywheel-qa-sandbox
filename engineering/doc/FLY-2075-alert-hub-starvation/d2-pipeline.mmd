@@ -1,0 +1,20 @@
+flowchart LR
+    subgraph NEXT["本方案(单车道,裁定后)"]
+        direction LR
+        P2["各产源"] --> R2["D1 Router<br/>classify → ticket"]
+        R2 -->|"唯一一条路"| H2["AlertChannelHub<br/>频道根消息(🎫 @claw)<br/>→ thread → alert_threads 新行<br/>工单 = NEW,等值守初审"]
+        H2 -.->|"删除"| X2["当场 @founder<br/>+ ESCALATED"]
+        H2 -->|"仅 5 类有自动修复"| T2["REPAIRING → 自愈 RESOLVED"]
+        R2 -.->|"拆除"| M2["claw mailbox 车道"]
+    end
+    subgraph NOW["现在(Flow 2)"]
+        direction LR
+        P1["各产源<br/>(fleet-sensors / workflow / lease scan…)"] --> R1["D1 Router<br/>classify → ticket"]
+        R1 -->|"必走"| M1["claw mailbox 一行<br/>+ 即时 nudge"]
+        R1 -.->|"开关 OFF,不走"| H1["AlertChannelHub<br/>频道根消息 → thread<br/>→ alert_threads"]
+    end
+    style H1 fill:#f2f2f7,stroke:#86868b,stroke-dasharray: 5 5
+    style H2 fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style M1 fill:#e8f8ee,stroke:#34c759
+    style M2 fill:#ffecec,stroke:#ff3b30,stroke-dasharray: 5 5
+    style X2 fill:#ffecec,stroke:#ff3b30,stroke-dasharray: 5 5

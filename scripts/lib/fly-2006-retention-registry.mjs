@@ -7,10 +7,13 @@ function words(value) {
 export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 	deleteTarget: words(`
 		alert_repair_attempts alert_threads chat_threads deployment_events
-		detection_escalations founder_page_ledger lead_event_delivery_attempts lead_events
+		detection_escalations lead_event_delivery_attempts lead_events
 		legacy_cutover_quarantine legacy_render_fallback legacy_stock_suppressed
 		phase_chat_threads quiet_wake_notified roundtable_topic_threads session_events
-		ticket_escalations tmux_hold workflow_run_event
+		tmux_hold workflow_run_event
+	`),
+	retiredOptional: words(`
+		founder_page_ledger runbook_issues ticket_escalations
 	`),
 	protectedAuthority: words(`
 		codex_review_job codex_review_record delivery_secret_state design_review_manifest
@@ -38,7 +41,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		lifecycle_apply_claims lifecycle_launch_claims linear_state_observations
 		loop_heartbeat loop_owner merged_gate_guard_failure messages
 		receipt_activation_episodes receipt_alert_outbox receipt_exemption_audit
-		receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents runbook_issues
+		receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents
 		runner_declared_states runner_phase_wakes runner_shutdown_controls
 		runner_wake_failure_episode runner_workflow_activation server_loss_episode sessions
 		ship_relevant_diff_snapshot state_store_migration three_stage_turn
@@ -98,7 +101,10 @@ export function assertClassifiedSchema(database, actualNames) {
 	const unknown = [...actual].filter((name) => !unique.has(name)).sort();
 	if (unknown.length > 0)
 		throw new Error(`schema_unclassified:${database}:${unknown.join(",")}`);
-	const missing = names.filter((name) => !actual.has(name)).sort();
+	const retiredOptional = new Set(registry.retiredOptional ?? []);
+	const missing = names
+		.filter((name) => !retiredOptional.has(name) && !actual.has(name))
+		.sort();
 	if (missing.length > 0)
 		throw new Error(`schema_missing:${database}:${missing.join(",")}`);
 	return {

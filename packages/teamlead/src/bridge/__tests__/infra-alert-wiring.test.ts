@@ -5,20 +5,20 @@
  * Sweeps the WHOLE AlertEventType union so a future kind cannot silently
  * bypass the funnel.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	ALERT_EVENT_TYPES,
 	type AlertEventType,
 	type AlertPayload,
 	type AlertResult,
+	FLEET_ALERT_PROJECT,
 } from "../../LeadAlertNotifier.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
+import { AlertChannelHub, correlationKeyFor } from "../AlertChannelHub.js";
+import { AutoRepairBot } from "../AutoRepairBot.js";
 import { buildInfraAlertRouting } from "../infra-alert-wiring.js";
-import {
-	classifyInfraEvent,
-	ISSUE_PROGRESS_KINDS,
-} from "../infra-event-router.js";
+import { ISSUE_PROGRESS_KINDS } from "../infra-event-router.js";
 
 const projects = [
 	{
@@ -28,6 +28,7 @@ const projects = [
 			{
 				agentId: "flywheel-eng-lead",
 				chatChannel: "chan-eng",
+				alertChannel: "alert-eng",
 				match: { labels: ["Flywheel"] },
 				botToken: "eng-bot-token",
 			},
@@ -83,23 +84,23 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		}));
 	});
 
-	function makeSink(routing = true, copyTicketToChannel = false) {
+	function makeSink(routing = true) {
 		return buildInfraAlertRouting({
 			store,
 			projects,
 			globalBotToken: "global-token",
 			rawSink,
 			ticketSink,
+			founderUserId: "123456789012345678",
 			routingEnabled: () => routing,
 			ticketsEnabled: () => false,
-			copyTicketToChannel: () => copyTicketToChannel,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
 			sleepFn: async () => {},
 			logger: () => {},
 		});
 	}
 
-	it("FULL-UNION SWEEP (routing ON): progress goes to its thread, tickets to the owner mailbox, notify-only to raw", async () => {
+	it("FULL-UNION SWEEP: progress uses its issue thread, escalation uses Hub, everything else uses Claw mailbox", async () => {
 		const sink = makeSink(true);
 		for (const kind of ALERT_EVENT_TYPES) {
 			rawSink.alert.mockClear();
@@ -117,39 +118,35 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 				expect(rawSink.alert).not.toHaveBeenCalled();
 				expect(ticketSink.alert).not.toHaveBeenCalled();
 				expect(result).toEqual({ sent: true });
-			} else if (
-				classifyInfraEvent({ eventType: kind, boundIssueThread: null }) ===
-				"ticket"
-			) {
+			} else if (kind === "workflow_engine_escalation") {
+				expect(
+					rawSink.alert,
+					`${kind} should hit the escalation Hub sink`,
+				).toHaveBeenCalledTimes(1);
+				expect(ticketSink.alert).not.toHaveBeenCalled();
+				expect(fetchImpl).not.toHaveBeenCalled();
+				expect(result).toEqual({ sent: true });
+				expect(rawSink.alert).toHaveBeenCalledWith({
+					...payload(kind),
+					mentionUserId: "123456789012345678",
+				});
+			} else {
 				expect(
 					ticketSink.alert,
-					`${kind} should hit the owner mailbox sink`,
+					`${kind} should hit the Claw mailbox sink`,
 				).toHaveBeenCalledTimes(1);
 				expect(rawSink.alert).not.toHaveBeenCalled();
 				expect(fetchImpl).not.toHaveBeenCalled();
 				expect(result).toEqual({ queued: true });
-			} else {
-				expect(
-					rawSink.alert,
-					`${kind} should hit the raw notify sink`,
-				).toHaveBeenCalledTimes(1);
-				expect(ticketSink.alert).not.toHaveBeenCalled();
-				expect(fetchImpl).not.toHaveBeenCalled();
 			}
 		}
 	});
 
-	it("does not emit a Discord copy for owner-mailbox tickets unless the switch is enabled", async () => {
+	it("routes an ordinary ticket only to the Claw mailbox", async () => {
 		const alert = payload("swap_pressure_high");
 		await makeSink(true).alert(alert);
 		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
 		expect(rawSink.alert).not.toHaveBeenCalled();
-
-		rawSink.alert.mockClear();
-		ticketSink.alert.mockClear();
-		await makeSink(true, true).alert(alert);
-		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
-		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
 	});
 
 	it("SENTINEL (routing OFF): every kind passes straight through to the raw sink", async () => {
@@ -164,11 +161,11 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		}
 	});
 
-	it("progress kind WITHOUT a bound thread fail-safes to the owner mailbox", async () => {
+	it("progress kind WITHOUT a bound thread fail-safes to the Claw mailbox", async () => {
 		const sink = makeSink(true);
 		const p = { ...payload("three_stage_stuck"), sessionKey: "no-such-exec" };
 		await sink.alert(p);
-		expect(ticketSink.alert).toHaveBeenCalledTimes(1);
+		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
 		expect(rawSink.alert).not.toHaveBeenCalled();
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
@@ -220,7 +217,7 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		expect(ticketSink.alert).not.toHaveBeenCalled();
 	});
 
-	it("issue-thread delivery failure routes the ORIGINAL alert to the owner mailbox", async () => {
+	it("issue-thread delivery failure routes the ORIGINAL alert to the Claw mailbox", async () => {
 		fetchImpl.mockImplementation(async () => ({
 			ok: false,
 			status: 403,
@@ -244,6 +241,30 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		expect((init.headers as Record<string, string>).Authorization).toBe(
 			"Bot eng-bot-token",
 		);
+	});
+
+	it("ordinary fleet and Lead alerts do not require a Hub", async () => {
+		const sink = buildInfraAlertRouting({
+			store,
+			projects,
+			rawSink,
+			ticketSink,
+			routingEnabled: () => true,
+			ticketsEnabled: () => false,
+			logger: () => {},
+		});
+		await expect(
+			sink.alert({
+				...payload("zombie_session_backlog"),
+				leadId: "zombie-detector",
+				projectName: FLEET_ALERT_PROJECT,
+			}),
+		).resolves.toEqual({ queued: true });
+		await expect(sink.alert(payload("rate_limit"))).resolves.toEqual({
+			queued: true,
+		});
+		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).toHaveBeenCalledTimes(2);
 	});
 });
 
@@ -278,6 +299,7 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 			store,
 			projects,
 			rawSink,
+			ticketSink: rawSink,
 			routingEnabled: () => true,
 			ticketsEnabled: () => tickets,
 			logger: () => {},
@@ -293,10 +315,10 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 		expect(enriched.ticket).toMatchObject({
 			ownerUserId: "222222222222222222",
 			ownerLabel: "codex bot",
-			status: "NEW",
 			ownerRef: "infra_bot:codex",
 			firstSeenMs: Date.UTC(2026, 6, 7, 9, 5),
 		});
+		expect(enriched.ticket).not.toHaveProperty("status");
 	});
 
 	it("provider-agnostic kind → claude bot owner", async () => {
@@ -307,15 +329,13 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 		expect(enriched.ticket?.ownerUserId).toBe("111111111111111111");
 	});
 
-	it("runner_lead_pending_unhandled lands directly ESCALATED with no owner", async () => {
+	it("unbound progress kinds remain un-enriched", async () => {
 		const sink = makeSink();
 		await sink.alert({
 			...payload("runner_lead_pending_unhandled"),
 			sessionKey: undefined,
 		});
 		const enriched = rawSink.alert.mock.calls[0]![0] as AlertPayload;
-		// unbound progress kind fail-safes to the ticket queue AND carries the
-		// direct-ESCALATED status… wait: progress kinds are never enriched.
 		expect(enriched.ticket).toBeUndefined();
 	});
 
@@ -336,5 +356,84 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 		expect(
 			(rawSink.alert.mock.calls[0]![0] as AlertPayload).ticket,
 		).toBeUndefined();
+	});
+
+	it("keeps ordinary alerts in Claw mailbox and sends only a real escalation through the Hub", async () => {
+		const threadPosts: Array<{ content: string; mentionUserId?: string }> = [];
+		const rootPayloads: AlertPayload[] = [];
+		const ticketSink = {
+			alert: vi.fn(async (): Promise<AlertResult> => ({ queued: true })),
+		};
+		let root = 0;
+		const hub = new AlertChannelHub({
+			store,
+			notifier: {
+				alert: async (p) => {
+					rootPayloads.push(p);
+					return {
+						sent: true,
+						channelId: "alert-channel",
+						messageId: `root-${++root}`,
+					};
+				},
+			},
+			autoRepairBot: new AutoRepairBot({}),
+			discord: {
+				async createThreadFromMessage(_channelId, messageId) {
+					return `thread-${messageId}`;
+				},
+				async postToThread(_threadId, content, opts) {
+					threadPosts.push({ content, mentionUserId: opts?.mentionUserId });
+				},
+				async archiveThread() {},
+			},
+		});
+		const sink = buildInfraAlertRouting({
+			store,
+			projects,
+			rawSink: { alert: (p) => hub.handle(p) },
+			ticketSink,
+			founderUserId: "999999999999999999",
+			routingEnabled: () => true,
+			ticketsEnabled: () => true,
+			logger: () => {},
+			now: () => Date.UTC(2026, 7, 26, 12),
+		});
+
+		for (const eventType of [
+			"review_advisory_pass",
+			"zombie_session_backlog",
+			"bridge_abnormal_exit",
+		] as const) {
+			const p = { ...payload(eventType), sessionKey: undefined };
+			expect(await sink.alert(p)).toEqual({ queued: true });
+			expect(store.getActiveAlertThread(correlationKeyFor(p))).toBeUndefined();
+		}
+		expect(ticketSink.alert).toHaveBeenCalledTimes(3);
+		expect(rootPayloads).toEqual([]);
+
+		const escalation = {
+			...payload("workflow_engine_escalation"),
+			eventId: "e-founder-escalation",
+			sessionKey: undefined,
+		};
+		expect(await sink.alert(escalation)).toMatchObject({ sent: true });
+		expect(rootPayloads).toEqual([
+			expect.objectContaining({
+				eventId: "e-founder-escalation",
+				mentionUserId: "999999999999999999",
+			}),
+		]);
+		expect(
+			store.getActiveAlertThread(correlationKeyFor(escalation))?.ticket_status,
+		).toBe("NEW");
+		expect(
+			threadPosts.every(
+				(post) =>
+					post.mentionUserId !== "999999999999999999" &&
+					!post.content.includes("<@999999999999999999>") &&
+					!post.content.includes("ESCALATED"),
+			),
+		).toBe(true);
 	});
 });

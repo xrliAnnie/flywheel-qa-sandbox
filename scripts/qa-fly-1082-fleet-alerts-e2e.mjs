@@ -1,7 +1,7 @@
 // QA·FLY-1082 — real-machine E2E for the fleet-failure alert + ARC-repair chain.
 //
-// Runs the ACTUAL built teamlead dist (packages/teamlead/dist) wired EXACTLY the
-// way plugin.ts wires it (routedAlertSink → AlertChannelHub → AutoRepairBot →
+// Runs the ACTUAL built teamlead dist (packages/teamlead/dist) with the legacy
+// FLY-1082 Hub/ARC component chain (routedAlertSink → AlertChannelHub → AutoRepairBot →
 // FleetSensors/ServerLossCoordinator holders), injects a REAL fault for each of
 // the 5 fleet kinds via the same seams the plan documents, and drives the full
 // lifecycle to a REAL isolated 529-Room Discord channel via the production
@@ -34,8 +34,8 @@
 //  ④ infra_bot_down      — probe reports the codex bot dead → cross-owner = claude
 //     bot → ticket → AutoRepairBot runs the real infraBotKickstartRepair (kickstart
 //     seam records the job) → probe flips alive → resolve.
-//  ⑤ zombie_session_backlog — 3 zombie findings → contract-driven ESCALATED at
-//     enqueue (by design, no ARC; remediation = FLY-1066) with the sample list.
+//  ⑤ zombie_session_backlog — 3 zombie findings → NEW without automatic
+//     founder escalation (no ARC; remediation = FLY-1066) with the sample list.
 //  ⑥ fail-loud kind-contract — a deleted contract entry makes validateKindContracts
 //     THROW (Bridge refuses to start); the real table validates clean.
 //
@@ -67,9 +67,11 @@ process.env.FLYWHEEL_ALERT_DEADLETTER_DIR = join(tmp, "dl");
 process.env.FLYWHEEL_CLAIMS_DB = join(tmp, "claims.db");
 // Ticket enrichment is welded on; configure only the sender identity here.
 process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV = TOKEN_ENV;
+process.env.FLYWHEEL_MEM_PAGE_DEBOUNCE_SEC = "0";
 // fake owner snowflakes (cross-assignment target; never a real ping in the test ch):
 process.env.FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID = "100000000000000001";
 process.env.FLYWHEEL_CODEX_INFRA_BOT_USER_ID = "100000000000000002";
+process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "100000000000000003";
 process.env.FLYWHEEL_CLAUDE_INFRA_BOT_JOB =
 	"gui/501/com.flywheel.qa.claude-infra";
 process.env.FLYWHEEL_CODEX_INFRA_BOT_JOB =
@@ -92,7 +94,6 @@ const { validateKindContracts, KIND_CONTRACTS } = await tl(
 );
 const { createClaimsReader, createClaimsClaimer, resolveAlertDirsFromEnv } =
 	await tl("bridge/lead-alert-helpers.js");
-const { noteTicketEscalated } = await tl("bridge/runbook-gap.js");
 
 const results = { pass: [], fail: [] };
 const ok = (name, cond, detail = "") =>
@@ -136,7 +137,23 @@ const notifier = new LeadAlertNotifier({
 	unifiedAlert: { channelId: CHANNEL, repairBotTokenEnv: TOKEN_ENV },
 	...resolveAlertDirsFromEnv(process.env),
 });
-const discordOps = createDiscordOps(() => [TOKEN]);
+const productionDiscordOps = createDiscordOps(() => [TOKEN]);
+const createdThreadIds = [];
+const observedThreadPosts = [];
+const discordOps = {
+	...productionDiscordOps,
+	async createThreadFromMessage(...args) {
+		const threadId = await productionDiscordOps.createThreadFromMessage(
+			...args,
+		);
+		if (threadId) createdThreadIds.push(threadId);
+		return threadId;
+	},
+	async postToThread(threadId, content, opts) {
+		observedThreadPosts.push({ threadId, content, opts });
+		return productionDiscordOps.postToThread(threadId, content, opts);
+	},
+};
 
 // late-bound holders (identical to plugin.ts's ordering-cycle break)
 const fleetHolder = { current: null };
@@ -177,7 +194,6 @@ const vmStatOut = (freePct, swapouts) => {
 	].join("\n");
 };
 
-const runbookCreated = [];
 const hub = new AlertChannelHub({
 	store,
 	notifier,
@@ -206,16 +222,6 @@ const hub = new AlertChannelHub({
 	// fleet-kind recovery probe (watermark cleared / bot back / boot reconcile done)
 	fleetRecovery: async (row) =>
 		(await fleetHolder.current?.recoveryProbe(row)) ?? null,
-	onTicketEscalated: async (row) => {
-		await noteTicketEscalated(row.event_type, {
-			store,
-			createIssue: async (input) => {
-				runbookCreated.push(input);
-				return { id: `qa-${runbookCreated.length}`, identifier: "FLY-QA" };
-			},
-			isIssueOpen: async () => true,
-		});
-	},
 });
 
 const alertSink = { alert: (p) => hub.handle(p) };
@@ -224,6 +230,10 @@ const routedAlertSink = buildInfraAlertRouting({
 	projects,
 	globalBotToken: TOKEN,
 	rawSink: alertSink,
+	// FLY-2075 production keeps ordinary alerts in Claw's mailbox. This legacy
+	// component harness deliberately drives the Hub; qa-fly-2075-alert-route-e2e
+	// owns the production route contract.
+	ticketSink: alertSink,
 });
 
 const notifyLead = async (leadId, content, dedupeId) => {
@@ -654,7 +664,7 @@ console.log(`temp: ${tmp}`);
 	);
 }
 
-// ── ⑤ zombie_session_backlog — by-design ESCALATED at enqueue (no ARC) ──
+// ── ⑤ zombie_session_backlog — NEW at enqueue, no automatic founder page ──
 {
 	seams.zombies = [
 		{
@@ -687,9 +697,9 @@ console.log(`temp: ${tmp}`);
 		`status=${row?.ticket_status}`,
 	);
 	ok(
-		"⑤ (b)-type: lands directly ESCALATED at enqueue (by design, no ARC retry loop)",
-		row?.ticket_status === "ESCALATED",
-		`status=${row?.ticket_status}`,
+		"⑤ no-ARC kind stays NEW with no repair status",
+		row?.ticket_status === "NEW" && row?.repair_status == null,
+		`status=${row?.ticket_status} repair=${row?.repair_status}`,
 	);
 	const c = KIND_CONTRACTS.zombie_session_backlog;
 	ok(
@@ -700,7 +710,7 @@ console.log(`temp: ${tmp}`);
 }
 
 // ── Discord API re-fetch: confirm the real alerts landed in the isolated channel ──
-async function discordFetch() {
+async function discordFetch(channelId = CHANNEL) {
 	try {
 		const raw = execFileSync(
 			"curl",
@@ -710,7 +720,7 @@ async function discordFetch() {
 				`Authorization: Bot ${TOKEN}`,
 				"-H",
 				"User-Agent: FlywheelQA (https://flywheel, 1.0)",
-				`https://discord.com/api/v10/channels/${CHANNEL}/messages?limit=30`,
+				`https://discord.com/api/v10/channels/${channelId}/messages?limit=30`,
 			],
 			{ encoding: "utf-8" },
 		);
@@ -724,10 +734,42 @@ async function discordFetch() {
 await new Promise((r) => setTimeout(r, 2500));
 const msgs = await discordFetch();
 const mine = msgs.filter((m) => JSON.stringify(m).includes(MARK));
+const threadMsgs = (
+	await Promise.all(
+		[...new Set(createdThreadIds)].map((id) => discordFetch(id)),
+	)
+).flat();
 ok(
 	`Discord: real fleet alerts landed in the isolated test channel`,
 	mine.length >= 3,
 	`found=${mine.length} with ${MARK}`,
+);
+const founderId = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
+ok(
+	"Discord: Hub emitted zero founder mentions in observed thread posts",
+	observedThreadPosts.every(
+		(post) =>
+			post.opts?.mentionUserId !== founderId &&
+			!post.content.includes(`<@${founderId}>`),
+	),
+	`posts=${observedThreadPosts.length}`,
+);
+ok(
+	"Discord: re-fetched thread messages contain zero founder mentions",
+	threadMsgs.every(
+		(message) =>
+			!String(message.content ?? "").includes(`<@${founderId}>`) &&
+			!(message.mentions ?? []).some((mention) => mention.id === founderId),
+	),
+	`threads=${new Set(createdThreadIds).size} messages=${threadMsgs.length}`,
+);
+const zombieRoot = mine.find((message) =>
+	String(message.content ?? "").includes("僵尸"),
+);
+ok(
+	"Discord: zombie root ticket renders 状态 NEW",
+	String(zombieRoot?.content ?? "").includes("状态 NEW"),
+	`root=${zombieRoot?.id ?? "missing"}`,
 );
 const landedKinds = new Set();
 for (const m of msgs) {

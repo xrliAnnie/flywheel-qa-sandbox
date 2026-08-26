@@ -229,7 +229,7 @@ describe("policyForKind (Task 2.2 per-kind escalation)", () => {
 		}
 	});
 
-	it("swap: unset/invalid → 30 min; legal override (including 1 min) drives MONITORING timeout", () => {
+	it("swap: unset/invalid → 30 min; timeout never auto-escalates", () => {
 		const p = policyForKind("swap_pressure_high", {} as NodeJS.ProcessEnv);
 		expect(p.timeoutMs).toBe(30 * 60_000);
 		expect(p.retryOnReconcile).toBe(false);
@@ -257,10 +257,9 @@ describe("policyForKind (Task 2.2 per-kind escalation)", () => {
 					acked_at: null,
 				},
 				Date.parse("2026-07-09T21:01:01Z"),
-				true,
 				oneMinute,
 			),
-		).toBe("escalate");
+		).toBe("none");
 	});
 
 	it("tmux_server_lost / bridge_abnormal_exit: single-shot remediation — no reconcile retry", () => {
@@ -280,16 +279,14 @@ describe("policyForKind (Task 2.2 per-kind escalation)", () => {
 		};
 		const t0 = Date.parse("2026-07-09T21:01:00Z");
 		// Legacy default: retry.
-		expect(decideTicketEscalation(row, t0, true)).toBe("retry");
-		// Swap policy: none — attempts stay at 1, only the 30-min window escalates.
+		expect(decideTicketEscalation(row, t0)).toBe("retry");
+		// Swap policy: none — attempts stay at 1, including after the timeout.
 		const swapPolicy = policyForKind(
 			"swap_pressure_high",
 			{} as NodeJS.ProcessEnv,
 		);
-		expect(decideTicketEscalation(row, t0, true, swapPolicy)).toBe("none");
+		expect(decideTicketEscalation(row, t0, swapPolicy)).toBe("none");
 		const past = Date.parse("2026-07-09T21:31:00Z");
-		expect(decideTicketEscalation(row, past, true, swapPolicy)).toBe(
-			"escalate",
-		);
+		expect(decideTicketEscalation(row, past, swapPolicy)).toBe("none");
 	});
 });

@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2075 告警主管道断流 — 设计</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, "PingFang SC", sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.75; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 20px; }
+  .meta code, code { font-family: "SF Mono", Menlo, monospace; font-size: 12.5px; background: #f2f2f7; border-radius: 4px; padding: 0 4px; }
+  .card { background: #fff; border-radius: 12px; padding: 20px 22px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 18px; border-left: 4px solid #007aff; }
+  .card.hero { border-left-color: #1a365d; } .card.red { border-left-color: #ff3b30; } .card.green { border-left-color: #34c759; } .card.amber { border-left-color: #ff9500; } .card.purple { border-left-color: #af52de; } .card.gray { border-left-color: #86868b; }
+  .section-title { font-size: 18px; font-weight: 700; color: #1a365d; margin-bottom: 10px; }
+  .section-title .num { color: #86868b; font-weight: 600; margin-right: 6px; }
+  p { margin-bottom: 10px; }
+  .hero-line { font-size: 17px; font-weight: 600; }
+  .quote { background: #f7f7fa; border-left: 3px solid #86868b; border-radius: 6px; padding: 10px 14px; margin: 10px 0; color: #48484a; font-size: 14px; }
+  .gloss { color: #6e6e73; font-size: 13px; }
+  table { border-collapse: collapse; width: 100%; margin: 12px 0; font-size: 14px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7fa; color: #1a365d; }
+  .tbl-wrap { overflow-x: auto; }
+  .diagram-box { overflow-x: auto; margin: 14px 0; background: #fff; border: 1px solid #e5e5ea; border-radius: 8px; padding: 8px; }
+  .diagram-box svg { height: auto; display: block; margin: 0 auto; max-width: 100%; }
+  .diagram-box.wide svg { max-width: none; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 4px; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 600; border-radius: 6px; padding: 1px 8px; margin-right: 6px; vertical-align: middle; }
+  .badge.keep { background: #e8f7ee; color: #1d7a3e; } .badge.cut { background: #ffe9e7; color: #c22e24; } .badge.ask { background: #f3e8fb; color: #7d3bab; } .badge.fact { background: #e9f2ff; color: #0a5dc2; } .badge.warn { background: #fff1dc; color: #9a5b00; }
+  .comment-block { margin-top: 16px; border-top: 1px solid #f0f0f2; padding-top: 12px; }
+  .comment-block label { display: block; font-size: 13px; color: #86868b; margin-bottom: 6px; }
+  .comment-block textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 10px; font: inherit; font-size: 14px; resize: vertical; background: #fbfbfd; }
+  .comment-block textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #summary-list { font-size: 14px; }
+  .chunk { white-space: pre-wrap; background: #f7f7fa; border-radius: 8px; padding: 12px; margin-bottom: 10px; font-family: "SF Mono", Menlo, monospace; font-size: 13px; }
+  .chunk-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 10px; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn.secondary { background: #e5e5ea; color: #1d1d1f; }
+  .btn:active { opacity: .8; }
+  .status { font-size: 13px; color: #34c759; }
+  ul, ol { margin: 8px 0 10px 22px; } li { margin-bottom: 5px; }
+  .small { font-size: 13px; color: #6e6e73; }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 640px) { .kv { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2075 告警主管道断流:不是坏了,是被改了道 —— 以及按你的裁定怎么改回来</h1>
+  <div class="meta">Issue: <code>FLY-2075</code> · Epic <code>FLY-2073</code> 的地基 · 设计节点交付 v3 · 2026-08-26 · 数据全部取自本机生产库(测于 2026-08-26 06:xx Z)· 详细证据:<code>engineering/doc/FLY-2075-alert-hub-starvation/{exploration,research,plan}.md</code></div>
+
+  <div class="card hero" data-section="0 一句话结论">
+    <div class="section-title"><span class="num">0</span>一句话结论</div>
+    <p class="hero-line">告警没有丢:2026-08-14 起,按你在 FLY-1764 的裁定,ticket 类告警<b>只投 claw 的信箱</b>、不发 Discord 副本 —— 信箱那一腿活得很好(1,441 条,平均半分钟签收);被断掉的只是「频道 → thread → <code>alert_threads</code> 账本」这一腿。而 8-25 你定的 PRD(FLY-2060)整条值守流程都建在频道和这本账上。<b>这是两条裁定打架,不是代码 bug。</b></p>
+    <p>今天 07:12Z 你给了新裁定(Tadashi 转述,待他复述确认):<b>「不双发,只发 Discord」</b>。本页按这条写:频道变成<b>唯一一条路</b>,claw 的信箱车道拆掉;同时把 Hub 里「每条新告警当场 @ 你 + 标 ESCALATED」的自动升级<b>整个删掉</b>——以后只有值守席位(Claw,FLY-2076)或人判断过「需要你」才会 @ 你。不留旋钮。</p>
+    <p class="gloss">术语先解释一次:<b>ticket 类告警</b> = 系统健康类、需要有人动手处理的告警(比如 Bridge 异常退出、僵尸 session 积压、runner 登录过期);<b>claw</b> = <code>claude-infra-bot-lead</code>,Claude 侧的基础设施机器人;<b>alert_threads</b> = 告警工单账本,一条告警一行,记录它开了哪个 Discord thread、谁认领、什么状态;<b>Hub</b> = <code>AlertChannelHub</code>,Bridge 里把一条告警变成「频道根消息 + thread + 账本一行」的那段代码。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s0" placeholder="写批注…自动保存在你的浏览器里"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="1 因果链">
+    <div class="section-title"><span class="num">1</span>从「账本停了」到「为什么停」:因果链</div>
+    <p>issue 开单时的判断是「Hub 饿死」。查下来 Hub 本身没坏:每次 Bridge 启动都打「AlertChannelHub ON」,门控、频道 id、机器人 token 都在。它只是<b>再也没人给它送事件</b>。</p>
+    <div class="diagram-box"><!--D1--></div>
+    <div class="diagram-caption">图 1 · 因果链(绿 = 活着的那腿,红 = 断掉的那腿)</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>时间(UTC)</th><th>发生了什么</th><th>证据</th></tr>
+      <tr><td>08-14 21:58</td><td>最后一条经 Hub 开了 thread 的 ticket 告警</td><td>回执账 <code>alert_delivery_receipts</code> 与 <code>alert_threads</code> 按 event_id 对账</td></tr>
+      <tr><td>08-14 22:19</td><td>FLY-1764 的 PR #836 合入(当时「合入即自动部署」,08-21 才解耦)</td><td>git log</td></tr>
+      <tr><td>08-14 22:28</td><td>新 Bridge 起来,claw 信箱出现第一条 <code>infra_alert</code>(8 分钟后签收)</td><td><code>comm.db</code> mailbox 表</td></tr>
+      <tr><td>08-15 ~ 08-21</td><td>账本每天只剩 1~3 行 —— 是「发送队列回放」顺手开的 thread,不是新路</td><td>bridge log 里仅有的两次 <code>LeadAlert drain sent</code> 时间对上最后两行</td></tr>
+      <tr><td>08-21 06:42</td><td>最后一行;之后回放队列清空(现在 0 个文件)→ 绝对零</td><td><code>~/.flywheel/alert-queue/</code></td></tr>
+    </table></div>
+    <p><span class="badge fact">对账</span>频道那一腿的「发出去且开了 thread」:08-11~14 每天 20~26 条;<b>08-15 起每天 0 条</b>。同一时段 claw 信箱每天 40~300 条、几乎全部签收。事件没少,只是换了账本。</p>
+    <p><span class="badge cut">已排除</span>watchdog 08-14 死亡(那是 FLY-1560 当天有意拆掉的,和这条路无关)· thread 创建失败(日志 0 次)· Discord 发不出去(能发)· flag 退役误伤(git 只命中 #836 自己)· shell 那边取不到 token 的死信(那是 FLY-2062,不在 Bridge 进程里)。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s1" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="2 管道对比">
+    <div class="section-title"><span class="num">2</span>管道长什么样:现在 vs 单车道</div>
+    <p>所有 ticket 类告警先经过 <b>D1 Router</b><span class="gloss">(路由器:按告警种类决定送到哪里的那段代码,FLY-927 建、FLY-1764 改)</span>。现在它把告警<b>必投</b>claw 信箱,频道那条边被关着的开关挡住。裁定后:信箱这条边<b>拆掉</b>,频道那条边成为唯一一条路,开关也不留;Hub 开完 thread 就停手(工单状态 NEW),不再自己 @ 你。</p>
+    <div class="diagram-box"><!--D2--></div>
+    <div class="diagram-caption">图 2 · 上:现状(虚线 = 关着的边);下:裁定后(红虚线 = 拆掉/删掉的东西,绿 = 唯一的路)</div>
+    <div class="kv">
+      <div><span class="badge keep">留下</span>D1 Router 分类 · Hub 开 thread / 写账本 · 根消息里对 owner(claw)的 🎫 @ · 5 类真有自动修复的告警照旧修 · Discord 发送/限速/队列 · claw 信箱给另外三种<b>定向</b>消息(flag 扫描、workflow 兜底)的用途</div>
+      <div><span class="badge cut">拆掉</span>Router → claw 信箱的 ticket 车道 · 旋钮 <code>FLYWHEEL_ALERT_COPY_TO_CHANNEL</code>(进退役墓碑) · Hub 的「当场 @ 你 + ESCALATED」 · 超时/无人认领/重试耗尽后的 T2 @ 你 · issue thread 里的 founder page · 「同类升级 3 次自动建单」(没有自动 ESCALATED 它永远不触发)</div>
+    </div>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s2" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="3 账本模型">
+    <div class="section-title"><span class="num">3</span>账本模型:五本账各记什么(为什么容易看错)</div>
+    <p>PRD §1.3 数「0/497 从未 ACK」用的是 <code>alert_threads</code>;而 claw 实际上在<b>另一本账</b>(信箱)里每天签收几十到几百条。两本账记的是不同的事:信箱的 ACK = 「收到了」,工单账的 ACK = 「我认领来处理」。值守机制要的是后者,所以 Epic 必须落在 <code>alert_threads</code> —— 裁定后它重新每天有新行,而信箱那本账的 ticket 部分停止增长。</p>
+    <div class="diagram-box"><!--D3--></div>
+    <div class="diagram-caption">图 3 · 谁往哪本账写(虚线 = 裁定后拆掉的那条写入)</div>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s3" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="4 拆掉之后立刻发生什么">
+    <div class="section-title"><span class="num">4</span>拆掉之后立刻发生什么(反面不藏)</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>后果</th><th>说明</th></tr>
+      <tr><td>C1</td><td>claw 的信箱工单账<b>停止增长</b></td><td>今天 claw 半分钟签收那本账(08-15 起 1,441 行)不再有 Router 来的新行;claw 改为在频道被 🎫 @。<b>claw 的运行时会不会因为频道 @ 醒来、去看整条队列,是 FLY-2076 的事。</b></td></tr>
+      <tr><td>C2</td><td><b>没有自动读者的窗口</b></td><td>在 2076 上线前:频道里的工单既没有信箱唤醒、也没有 @ 你,只有根消息里对 claw 的 @。<b>Tadashi 的默认建议:本单的切换不早于 2076 值守上线那一班部署</b>——除非你明确接受这个窗口。另核过:仓库、脚本、agent/skill、插件缓存里没有任何<b>机器</b>读取 claw 信箱里这类行的代码,唯一读者是 claw 自己(一个 LLM),它改读频道是 2076 的事。</td></tr>
+      <tr><td>C3</td><td>你不再被 Hub 自动 @</td><td>改道前 8-05~8-14 每天 19~34 次(几乎全是「需要人」)的 thread 内 @ 你<b>不会回来</b>;以后只有值守/人判断过才 @ 你。</td></tr>
+      <tr><td>C4</td><td><code>ESCALATED</code> 不再自动出现</td><td>PRD §1.3 的「425 条 ESCALATED」模式终止;超时、重试耗尽的工单停在 NEW / REPAIRING / MONITORING,<b>挂着可见</b>(R6),没人推它——直到值守接手。</td></tr>
+      <tr><td>C5</td><td>「同类升级 3 次自动建单」停止</td><td>它靠 ESCALATED 触发,随之成为死代码,一并删除。</td></tr>
+      <tr><td>C6</td><td>频道日量</td><td>≈ 改道前水平 + 新类别(<code>cmux_watcher_stalled</code> 8-24/25 各 101/171 条):每天几十到三百条根消息;20/分钟限速,溢出排队回放。</td></tr>
+      <tr><td>C7</td><td>issue 绑定的工单不再在 issue thread 里 page 你</td><td>那是 T2 升级的一种形态,随 T2 一起删。</td></tr>
+      <tr><td>C8</td><td>配置出错时的失败形状</td><td>只在「统一告警频道 / 机器人 token」缺失时出现:频道是唯一车道,fleet 类工单会逐条进死信并弹本机提醒(这是 1764 之前就有的 fail-loud 合同,不会静默丢);启动日志会打红灯行。生产配置是完整的。</td></tr>
+    </table></div>
+    <p><span class="badge cut">被否的两条路</span><b>A「打开频道副本开关」</b>(我 v1/v2 的推荐):双发 + 留旋钮,两条都撞你的红线(不双发;flag = 最严档写死 + 删旋钮),且开关一开每条新告警会当场 @ 你——Codex 评审抓出我第一版把这条写轻了。<b>C「管道不动,Epic 换账本落在信箱」</b>:信箱的 ACK 只是「收到」,R2 三种去向、R6 终态、thread 归档都没处写 → 要新造一层,踩「不新增告警层」。</p>
+    <p><span class="badge fact">时序约束</span>频道车道只能与「删自动 @ 你」<b>同一个 PR、同一次部署</b>上线,永不单独——否则就是把 8-14 之前每天几十次 @ 你的局面原样搬回来。本方案单 PR 满足。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s4" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="5 需要你拍的四个点">
+    <div class="section-title"><span class="num">5</span>需要你拍板的四个点</div>
+    <ol>
+      <li><span class="badge ask">拍板 1</span><b>确认裁定原文</b>「不双发,只发 Discord」= claw 的信箱 ticket 车道<b>拆除</b>(不是保留、不是改成副本)。这条现在是「暂定、待 Tadashi 复述确认」。</li>
+      <li><span class="badge ask">拍板 2</span><b>C2 的窗口</b>:默认按 Tadashi 的建议——<b>本单的切换等 2076 值守上线那一班一起部署</b>;如果你愿意接受中间没有自动读者的窗口、要它先上,请在这里明说。</li>
+      <li><span class="badge ask">拍板 3</span><b>「Hub 永不自动 @ 你、永不自动 ESCALATED」是长期合同</b>,不是过渡——以后要 @ 你,必须是值守或人做的判断。</li>
+      <li><span class="badge ask">拍板 4</span><b>死代码一并删</b>:自动建单(runbook-gap)、T2 文案、issue-thread founder page 接线、旋钮及其墓碑。留任何一样请点名。</li>
+    </ol>
+    <p class="small">上线还有一道门:merge 之后、部署班车之前,要么拿到 2076 值守已上线的证据(它被频道 @ 一次并真的醒来/签收),要么你对<b>这一次部署</b>的无读者窗口逐字明确接受——缺任一就不部署。</p>
+    <p class="small">按设计节点合同,这份交付不等你回复就会进入实现(写测试、写代码、开 PR);但 <b>PR 合入需要你对这四点的明确接受</b>(批注、Discord 原话、issue comment 都算,Tadashi 转达并在批准里引用)——沉默不算同意,PR 会一直停在 draft。你若否决,当时持棒的人会写 <code>design-correction.md</code> 并停下,不回滚分支。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s5" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="6 验收">
+    <div class="section-title"><span class="num">6</span>怎么算修好:一条真实告警走完全链,并且没人被自动 @</div>
+    <p>不注入假告警(生产 Bridge 没有注入口,也不该为验收加一个)。触发点 = 部署后<b>工单账本里的第一条新行</b>(只有 ticket 类才会开工单;基线每天 83~307 条,但不拿「一小时内必有」当断言——6 小时没新行就记「暂无结论」继续等,不算失败)。取证三件套:同一事件 id 在工单账本有新行且<b>不是 ESCALATED</b>(SQL)+ 在信箱里 <b>0 行</b>(证明车道真拆了)+ 频道截图(根消息带 🎫 @claw,thread 里<b>没有</b> @ 你的帖)。</p>
+    <div class="diagram-box wide"><!--D4--></div>
+    <div class="diagram-caption">图 4 · 部署后一条真实告警的旅程与取证点(可横向滚动)</div>
+    <p class="small">部署时点 = PR 合入后的下一班本地 00:00 / 12:00 班车;runner 不投重启票(FLY-1959)。回滚:没有旋钮(这是设计),revert PR 等下一班 → 逐字回到 FLY-1764 的 Flow 2(信箱车道<b>和</b>自动 @ 你一起回来)——不存在「只回滚一半」;<b style="color:#ff3b30">回滚会把每天几十次自动 @ 你带回来,要和上线同等级的授权,runner 不能自己 revert。</b></p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s6" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="7 诚实边界">
+    <div class="section-title"><span class="num">7</span>诚实边界:这个设计做什么、不做什么</div>
+    <p><span class="badge keep">做</span>ticket 类告警回到频道、开 thread、写账本;拆信箱车道与旋钮;删 Hub 全部自动 @ 你 / 自动 ESCALATED 的路径;把路由状态打进启动日志。</p>
+    <ul>
+      <li><span class="badge cut">不做</span><b>值守初审、认领、claw 醒来读频道</b>——那是 FLY-2076。本单只保证告警在频道里、工单在账本上、没人被误 @。</li>
+      <li><span class="badge cut">不做</span>人或值守 bot 显式把工单标 ESCALATED / @ 你的规则——值守流程的一部分(2076 / Epic)。</li>
+      <li><span class="badge cut">不做</span><b>信箱投递失败(<code>mailbox_dead_letter</code>)那类告警</b>:它走另一条直连路,只发根消息不开 thread(1764 定的「现状即可」);记为 Epic 的已知缺口(PRD §1.4 里它占 22%)。</li>
+      <li><span class="badge cut">不做</span>shell 那边取不到 token 的死信(<code>cmux_cleanup</code> 等)= FLY-2062。</li>
+      <li><span class="badge cut">不做</span>噪音判定、频道日量控制、限速调参。</li>
+      <li><span class="badge keep">不动</span>claw 信箱给 flag 扫描告警、workflow 兜底这三种<b>定向</b>消息的用途——它们不是 ticket 车道。</li>
+    </ul>
+    <p class="small">一句自我修正:issue 标题「Hub 饿死」是症状词,机制是「上游按裁定改道」;我 v1/v2 的修法(开副本开关)也被你的两条红线否掉了——这一版是按裁定拆,不是修。</p>
+    <div class="comment-block"><label>✏️ 这一节的批注</label><textarea data-key="s7" placeholder="写批注…"></textarea></div>
+  </div>
+
+  <div class="card hero" data-section="批注汇总">
+    <div class="section-title">📋 你的全部批注(实时汇总)</div>
+    <p class="small">每段都以 <code>【页面意见汇总】FLY-2075</code> 开头;超过约 1800 字会自动分成几段,每段可单独复制。这是修改意见,不是通过信号。</p>
+    <div id="summary-list"></div>
+    <div class="chunk-bar"><button class="btn" id="copy-btn" type="button">复制全部批注</button><span class="status" id="copy-status"></span></div>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2075";
+  var CHUNK_LIMIT = 1800;
+  var PREFIX;
+  try { PREFIX = "fly2075-comments:v1:" + (location.pathname || "/") + ":"; } catch (e) { PREFIX = "fly2075-comments:v1:unknown:"; }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  function load(key) { try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; } }
+  function save(key, val) { try { localStorage.setItem(PREFIX + key, val); } catch (e) { /* storage unavailable */ } }
+  function sectionTitleFor(el) { var card = el.closest("[data-section]"); return card ? card.getAttribute("data-section") : "未知小节"; }
+  function buildParts() {
+    var parts = [];
+    areas.forEach(function (ta) { var v = ta.value.trim(); if (v) parts.push("【" + sectionTitleFor(ta) + "】\n" + v); });
+    return parts;
+  }
+  function buildChunks() {
+    var parts = buildParts();
+    if (!parts.length) return [];
+    var whole = MARKER + "\n" + parts.join("\n\n");
+    if (whole.length <= CHUNK_LIMIT) return [whole];
+    var chunks = [], cur = [];
+    var curLen = 0;
+    parts.forEach(function (p) {
+      if (cur.length && curLen + p.length + 2 > CHUNK_LIMIT - 40) { chunks.push(cur); cur = []; curLen = 0; }
+      cur.push(p); curLen += p.length + 2;
+    });
+    if (cur.length) chunks.push(cur);
+    var n = chunks.length;
+    return chunks.map(function (c, i) { return MARKER + " (" + (i + 1) + "/" + n + ")\n" + c.join("\n\n"); });
+  }
+  function fallbackCopy(text) {
+    var tmp = document.createElement("textarea");
+    tmp.value = text; tmp.setAttribute("readonly", "");
+    tmp.style.position = "absolute"; tmp.style.left = "-9999px";
+    document.body.appendChild(tmp); tmp.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(tmp);
+    return ok;
+  }
+  function copyText(text, statusEl) {
+    function done(ok) { statusEl.textContent = ok ? "✓ 已复制" : "复制失败,请手动全选"; setTimeout(function () { statusEl.textContent = ""; }, 2500); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else { done(fallbackCopy(text)); }
+  }
+  function refreshSummary() {
+    var box = document.getElementById("summary-list");
+    while (box.firstChild) box.removeChild(box.firstChild);
+    var chunks = buildChunks();
+    if (!chunks.length) { var empty = document.createElement("div"); empty.className = "chunk"; empty.textContent = "(还没有批注)"; box.appendChild(empty); return; }
+    chunks.forEach(function (text, i) {
+      var pre = document.createElement("div"); pre.className = "chunk"; pre.textContent = text; box.appendChild(pre);
+      if (chunks.length > 1) {
+        var bar = document.createElement("div"); bar.className = "chunk-bar";
+        var btn = document.createElement("button"); btn.type = "button"; btn.className = "btn secondary"; btn.textContent = "复制第 " + (i + 1) + "/" + chunks.length + " 段";
+        var st = document.createElement("span"); st.className = "status";
+        btn.addEventListener("click", function () { copyText(text, st); });
+        bar.appendChild(btn); bar.appendChild(st); box.appendChild(bar);
+      }
+    });
+  }
+  areas.forEach(function (ta) {
+    ta.value = load(ta.getAttribute("data-key"));
+    ta.addEventListener("input", function () { save(ta.getAttribute("data-key"), ta.value); refreshSummary(); });
+  });
+  refreshSummary();
+  document.getElementById("copy-btn").addEventListener("click", function () {
+    var chunks = buildChunks();
+    var text = chunks.length ? chunks.join("\n\n") : MARKER + "\n(还没有批注)";
+    copyText(text, document.getElementById("copy-status"));
+  });
+})();
+</script>
+</body>
+</html>

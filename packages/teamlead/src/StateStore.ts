@@ -3703,30 +3703,6 @@ export class StateStore {
 			)
 		`);
 
-		// FLY-1082 (Task 3.2): escalation-event ledger — alert_threads UPSERTs one
-		// row per correlation key, so repeated episodes overwrite their history;
-		// the runbook-gap counter ("same kind ESCALATED ≥N in 7 days ⇒ auto-file
-		// the eng issue") needs an append-only record. Plus the per-kind open
-		// runbook-issue dedup (at most ONE open issue per kind).
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS ticket_escalations (
-				id INTEGER PRIMARY KEY AUTOINCREMENT,
-				kind TEXT NOT NULL,
-				escalated_at TEXT NOT NULL DEFAULT (datetime('now'))
-			)
-		`);
-		this.db.run(
-			"CREATE INDEX IF NOT EXISTS idx_ticket_escalations_kind ON ticket_escalations(kind, escalated_at)",
-		);
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS runbook_issues (
-				kind TEXT PRIMARY KEY,
-				issue_id TEXT NOT NULL,
-				issue_identifier TEXT,
-				created_at TEXT NOT NULL DEFAULT (datetime('now'))
-			)
-		`);
-
 		// FLY-1082 (Task 2.3, Codex R3/R4/R5): the server-loss episode LEDGER —
 		// a single durable row holding the active episode's signature + full
 		// side-effect state (shape, claimed exec ids, per-Lead notification
@@ -3765,23 +3741,6 @@ export class StateStore {
 		this.db.run(`
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_tmux_hold_one_active_socket
 			ON tmux_hold(normalized_socket_path) WHERE resolved_at IS NULL
-		`);
-
-		// FLY-818 M3: durable per-eventId founder-page ledger. Records whether a
-		// GENUINE founder page (an @founder message in the stuck runner's [FLY-XX]
-		// issue thread — Annie's issue-thread design) actually succeeded for a
-		// runner_stuck_unhandled escalation, keyed by its escalation eventId. The
-		// stuck detector retries the SAME eventId when alertUnhandled returns false;
-		// claims.db dedups that retry (skipped=duplicate) so the retry can never
-		// re-POST — this ledger lets the duplicate/queued early-return paths learn
-		// the REAL delivery outcome instead of resolving on a dedup alone (Codex
-		// R2#2). Monotonic: once a page truly lands, `paged` stays 1 (converge — Q3).
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS founder_page_ledger (
-				event_id TEXT PRIMARY KEY,
-				paged INTEGER NOT NULL,
-				ts TEXT NOT NULL DEFAULT (datetime('now'))
-			)
 		`);
 
 		// FLY-368: durable, fail-closed audit for auto-repair-bot terminal writes
@@ -11073,9 +11032,8 @@ export class StateStore {
 
 	/**
 	 * FLY-927 (Task 2.2): set the ticket lifecycle status on the ACTIVE row.
-	 * Statuses: NEW|ACK|REPAIRING|MONITORING|ESCALATED|RESOLVED.
-	 * ACK additionally stamps acked_at ONCE (first claim wins — the T2 unclaimed
-	 * fallback keys on its absence).
+	 * Statuses: NEW|ACK|REPAIRING|MONITORING|ESCALATED|RESOLVED. The Hub no longer
+	 * writes ESCALATED automatically. ACK stamps acked_at once (first claim wins).
 	 */
 	setTicketStatus(correlationKey: string, status: string): void {
 		this.db.run(
@@ -11088,7 +11046,7 @@ export class StateStore {
 		this.save();
 	}
 
-	/** FLY-927 (Task 2.2): consume one ARC attempt toward the T2 (2-try) budget. */
+	/** FLY-927 (Task 2.2): consume one bounded ARC attempt. */
 	bumpTicketAttempt(correlationKey: string): void {
 		this.db.run(
 			"UPDATE alert_threads SET attempt_count = attempt_count + 1 WHERE correlation_key = ? AND resolved_at IS NULL",
@@ -11306,71 +11264,6 @@ export class StateStore {
 		const changed = this.db.getRowsModified() === 1;
 		if (changed) this.save();
 		return changed;
-	}
-
-	// ── FLY-1082 (Task 3.2): runbook-gap ledger ──
-
-	/** Append one escalation event for the kind (the 7-day window counter). */
-	recordTicketEscalation(kind: string): void {
-		this.db.run("INSERT INTO ticket_escalations (kind) VALUES (?)", [kind]);
-		this.save();
-	}
-
-	/** Escalation events for the kind within the last `days` days. */
-	countTicketEscalations(kind: string, days: number): number {
-		const stmt = this.db.prepare(
-			"SELECT COUNT(*) AS n FROM ticket_escalations WHERE kind = ? AND escalated_at >= datetime('now', ?)",
-		);
-		stmt.bind([kind, `-${days} days`]);
-		let n = 0;
-		if (stmt.step()) {
-			n = Number((stmt.getAsObject() as Record<string, unknown>).n ?? 0);
-		}
-		stmt.free();
-		return n;
-	}
-
-	/** Clear the kind's escalation window (the runbook issue was closed —
-	 * counting starts over). */
-	clearTicketEscalations(kind: string): void {
-		this.db.run("DELETE FROM ticket_escalations WHERE kind = ?", [kind]);
-		this.save();
-	}
-
-	/** The kind's open runbook issue (dedup: at most one per kind). */
-	getRunbookIssue(
-		kind: string,
-	): { issue_id: string; issue_identifier: string | null } | undefined {
-		const stmt = this.db.prepare(
-			"SELECT issue_id, issue_identifier FROM runbook_issues WHERE kind = ?",
-		);
-		stmt.bind([kind]);
-		let out: { issue_id: string; issue_identifier: string | null } | undefined;
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			out = {
-				issue_id: row.issue_id as string,
-				issue_identifier: (row.issue_identifier as string) ?? null,
-			};
-		}
-		stmt.free();
-		return out;
-	}
-
-	setRunbookIssue(kind: string, issueId: string, identifier?: string): void {
-		this.db.run(
-			`INSERT INTO runbook_issues (kind, issue_id, issue_identifier) VALUES (?, ?, ?)
-			 ON CONFLICT(kind) DO UPDATE SET issue_id = excluded.issue_id,
-				issue_identifier = excluded.issue_identifier,
-				created_at = datetime('now')`,
-			[kind, issueId, identifier ?? null],
-		);
-		this.save();
-	}
-
-	clearRunbookIssue(kind: string): void {
-		this.db.run("DELETE FROM runbook_issues WHERE kind = ?", [kind]);
-		this.save();
 	}
 
 	// ── FLY-1082 (Task 2.3, Codex R3/R4/R5): server-loss episode ledger ──
@@ -11708,27 +11601,6 @@ export class StateStore {
 	}
 
 	/**
-	 * FLY-927 (Task 2.2): active tickets still at NEW whose first-seen is older
-	 * than `ms` — the T2 unclaimed-fallback work list. Legacy rows (NULL
-	 * ticket_status) never match.
-	 */
-	getUnackedTicketsOlderThan(ms: number): AlertThreadRow[] {
-		const stmt = this.db.prepare(
-			`SELECT * FROM alert_threads
-			 WHERE resolved_at IS NULL AND ticket_status = 'NEW'
-			   AND first_seen_at IS NOT NULL
-			   AND first_seen_at <= datetime('now', ?)`,
-		);
-		stmt.bind([`-${Math.max(0, Math.floor(ms / 1000))} seconds`]);
-		const out: AlertThreadRow[] = [];
-		while (stmt.step()) {
-			out.push(rowToAlertThread(stmt.getAsObject() as Record<string, unknown>));
-		}
-		stmt.free();
-		return out;
-	}
-
-	/**
 	 * FLY-927 (Task 2.3 ACK correlation): the ACTIVE row for an exact event id.
 	 * A stale episode's event id never matches the active row (episode replace
 	 * overwrites event_id), so an action callback can never ACK the wrong episode.
@@ -11774,44 +11646,6 @@ export class StateStore {
 			[correlationKey],
 		);
 		this.save();
-	}
-
-	/**
-	 * FLY-818 M3: record whether a genuine founder page landed for a stuck
-	 * escalation eventId. MONOTONIC (Codex R2#2 / Lead Q3): once a real page
-	 * succeeds (`paged=true`), it stays true so a later confirmed-duplicate
-	 * resolves the detector (converge — at-least-once + eventually stop). A `false`
-	 * (page failed / not yet delivered) never downgrades a prior `true`.
-	 */
-	recordFounderPaged(eventId: string, paged: boolean): void {
-		this.db.run(
-			`INSERT INTO founder_page_ledger (event_id, paged, ts)
-			 VALUES (?, ?, datetime('now'))
-			 ON CONFLICT(event_id) DO UPDATE SET
-			   paged = MAX(founder_page_ledger.paged, excluded.paged),
-			   ts = excluded.ts`,
-			[eventId, paged ? 1 : 0],
-		);
-		this.save();
-	}
-
-	/**
-	 * FLY-818 M3: the recorded founder-page outcome for a stuck escalation eventId,
-	 * or undefined if none recorded yet. Consulted on the duplicate/queued
-	 * early-return paths so `alertUnhandled` gates on the REAL delivery, not a
-	 * claims.db dedup.
-	 */
-	getFounderPaged(eventId: string): boolean | undefined {
-		const stmt = this.db.prepare(
-			"SELECT paged FROM founder_page_ledger WHERE event_id = ?",
-		);
-		stmt.bind([eventId]);
-		let out: boolean | undefined;
-		if (stmt.step()) {
-			out = Number((stmt.getAsObject() as { paged: number }).paged) === 1;
-		}
-		stmt.free();
-		return out;
 	}
 
 	/**
@@ -54313,7 +54147,7 @@ export interface AlertThreadRow {
 	ticket_status: string | null;
 	/** FLY-927 owner ref (`infra_bot:claude` / `infra_bot:codex` / `lead:<id>`). */
 	owner_ref: string | null;
-	/** FLY-927 ARC attempts consumed toward the T2 (2-try) budget. */
+	/** FLY-927 bounded ARC attempts consumed. */
 	attempt_count: number;
 	first_seen_at: string | null;
 	acked_at: string | null;

@@ -17,7 +17,6 @@ import {
 	createInfraAlertSink,
 	ISSUE_PROGRESS_KINDS,
 } from "./infra-event-router.js";
-import { escalatesAtEnqueue } from "./kind-contract.js";
 import {
 	deriveTicketProvider,
 	ownerRegistryFromEnv,
@@ -42,12 +41,12 @@ export interface InfraAlertRoutingDeps {
 	projects: ProjectEntry[];
 	/** config.discordBotToken — fallback when the owning lead has no botToken. */
 	globalBotToken?: string;
-	/** The raw sink (Hub or notifier) — today's behavior + the fail-safe target. */
+	/** The unified-channel Hub, or the fail-loud raw notifier when no Hub exists. */
 	rawSink: AlertSinkLike;
-	/** FLY-1764 Flow 2: primary owner-mailbox last mile for ticket routes. */
-	ticketSink?: AlertSinkLike;
-	/** Optional Discord observation copy; default off. */
-	copyTicketToChannel?: () => boolean;
+	/** One durable alert letter to Claw; the default route for ordinary alerts. */
+	ticketSink: AlertSinkLike;
+	/** Canonical founder id for workflow_engine_escalation. */
+	founderUserId?: string;
 	/** Test seams. */
 	routingEnabled?: () => boolean;
 	/** Test seam; production ticket enrichment is welded on by default. */
@@ -124,7 +123,7 @@ export function buildInfraAlertRouting(
 					parseLabels(session.issue_labels),
 				).lead
 			: configuredLead(payload);
-		if (!lead) return (deps.ticketSink ?? deps.rawSink).alert(payload);
+		if (!lead) return deps.ticketSink.alert(payload);
 		const sev =
 			payload.severity === "severe"
 				? "🚨"
@@ -150,7 +149,7 @@ export function buildInfraAlertRouting(
 				},
 				botToken: lead.botToken ?? deps.globalBotToken,
 				onUndeliverable: async () => {
-					fallback = await (deps.ticketSink ?? deps.rawSink).alert(payload);
+					fallback = await deps.ticketSink.alert(payload);
 				},
 			},
 			{
@@ -166,7 +165,7 @@ export function buildInfraAlertRouting(
 	const routedSink = createInfraAlertSink({
 		rawSink: deps.rawSink,
 		ticketSink: deps.ticketSink,
-		copyTicketToChannel: deps.copyTicketToChannel,
+		founderUserId: deps.founderUserId,
 		routingEnabled: deps.routingEnabled,
 		resolveBoundIssueThread,
 		deliverToIssueThread,
@@ -175,7 +174,7 @@ export function buildInfraAlertRouting(
 
 	// FLY-927 (Task 2.3): owner @-target enrichment. The root POST is the ONLY
 	// moment the mention can ride atomically (the Hub sees the messageId after
-	// the fact), so the ticket context — owner, status, first-seen — is computed
+	// the fact), so the ticket context — owner and first-seen — is computed
 	// HERE, before the sink. Ticket-queue kinds only; issue-progress kinds never
 	// render a 🎫 header. Enrichment failure degrades to the un-enriched payload
 	// (owner —), never blocks the alert.
@@ -205,14 +204,6 @@ export function buildInfraAlertRouting(
 						});
 			const owner = resolveTicketOwner(payload.eventType, provider, reg);
 			const face = ownerTicketFace(owner);
-			// FLY-1082 (Task 1.5): (b)-type kinds land directly ESCALATED at
-			// enqueue, contract-driven — the generalization of the old hardcoded
-			// runner_lead_pending_unhandled special case (which, being an
-			// issue-progress kind, never even reached this enrichment; the contract
-			// keeps its semantics on the Hub path instead).
-			const status = escalatesAtEnqueue(payload.eventType)
-				? "ESCALATED"
-				: "NEW";
 			// first-seen: a re-fire of the SAME episode keeps the original stamp.
 			const active = deps.store.getActiveAlertThread(
 				correlationKeyFor(payload),
@@ -232,7 +223,6 @@ export function buildInfraAlertRouting(
 				ticket: {
 					ownerUserId: face.ownerUserId,
 					ownerLabel: face.ownerLabel,
-					status,
 					firstSeenMs,
 					ownerRef,
 				},

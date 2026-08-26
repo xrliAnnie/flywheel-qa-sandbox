@@ -50,7 +50,6 @@ import {
 import {
 	type CommBackend,
 	FEATURE_FLAGS,
-	phaseMessageTag,
 	readEnvFileSource,
 	resolveAllFlags,
 	resolveCommBackend as resolveCommBackendShared,
@@ -302,10 +301,9 @@ import {
 	recordFounderDecisionAck,
 	runFounderDecisionConvergencePass,
 } from "./founder-decision-convergence.js";
+import { isDiscordSnowflake } from "./founder-notify-utils.js";
 import { createFounderRoutingResponseRouter } from "./founder-routing-response-route.js";
-// FLY-927 (Task 2.4): T2 escalation page reuses the FLY-818 stuck notification.
 import {
-	emitFounderStuckNotification,
 	emitFounderThreadNotification,
 	emitIssueThreadInfraNotification,
 	scanFounderThreadForGateCard,
@@ -318,10 +316,7 @@ import {
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
-import {
-	INFRA_ALERT_LAST_MILE_ROUTE,
-	shouldCopyInfraAlertToChannel,
-} from "./infra-alert-mailbox.js";
+import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
 	formatRotationDigest,
@@ -494,7 +489,6 @@ import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
 import { setupRunInfrastructure } from "./run-infra.js";
-import { noteTicketEscalated } from "./runbook-gap.js";
 import {
 	defaultResolveLeadId,
 	makeRunnerAuthScan,
@@ -9894,24 +9888,6 @@ export async function startBridge(
 		});
 	}
 
-	// FLY-368 rework (Codex R1 HIGH-1): threading needs a RESOLVABLE repair CHAIN
-	// (any fleet bot), NOT one fixed token. Fail LOUD + disable threading ONLY when
-	// the entire repair chain is empty.
-	// FLY-1243: threading is固化 default-on, so a unified channel WITHOUT a
-	// resolvable repair chain is a genuine misconfig (fail loud). A Bridge with no
-	// unified channel at all simply doesn't use unified alerts — not an error.
-	if (unifiedAlertChannelId && !repairChainResolves) {
-		console.error(
-			"[Bridge] FLY-368: unified alert channel set but no resolvable repair chain " +
-				"(need at least one resolvable fleet bot token) — threading DISABLED.",
-		);
-		void metaAlertNotifier.notify({
-			reason: "alert_unreachable_config",
-			title: "FLY-368 alert threading misconfigured",
-			body: "Unified alert channel set but no resolvable repair-chain bot — per-error threads will NOT be created.",
-		});
-	}
-
 	// FLY-696: shared Discord operations remain for Alerts, rotation notices,
 	// and login rescue. The account-switch construction seam remains below for
 	// compatibility, but FLY-1456's fixed mode never attaches it to Bridge.
@@ -10150,61 +10126,6 @@ export async function startBridge(
 		};
 	}
 
-	// FLY-1082 (Task 3.2): runbook-gap Linear wiring — FLY team / Flywheel
-	// project / Flywheel label, resolved lazily per call (the auto-filed issue
-	// is rare; no caching complexity). No LINEAR_API_KEY ⇒ creation degrades to
-	// null and the escalation itself is untouched.
-	const runbookCreateIssue = async (input: {
-		title: string;
-		description: string;
-	}): Promise<{ id: string; identifier?: string } | null> => {
-		const apiKey = config.linearApiKey;
-		if (!apiKey) return null;
-		try {
-			const { LinearClient } = await import("@linear/sdk");
-			const client = new LinearClient({ apiKey });
-			const teams = await client.teams({ filter: { key: { eq: "FLY" } } });
-			const team = teams.nodes[0];
-			if (!team) return null;
-			const projects = await client.projects({
-				filter: { name: { eq: "Flywheel" } },
-			});
-			const labels = await team.labels({
-				filter: { name: { eq: "Flywheel" } },
-			});
-			const payload = await client.createIssue({
-				teamId: team.id,
-				title: input.title,
-				description: input.description,
-				...(projects.nodes[0]?.id && { projectId: projects.nodes[0].id }),
-				...(labels.nodes[0]?.id && { labelIds: [labels.nodes[0].id] }),
-			});
-			const created = await payload.issue;
-			return created?.id
-				? { id: created.id, identifier: created.identifier }
-				: null;
-		} catch (err) {
-			console.warn(
-				`[runbook-gap] Linear issue creation failed: ${(err as Error).message}`,
-			);
-			return null;
-		}
-	};
-	const runbookIsIssueOpen = async (
-		issueId: string,
-	): Promise<boolean | null> => {
-		const apiKey = config.linearApiKey;
-		if (!apiKey) return null;
-		try {
-			const { LinearClient } = await import("@linear/sdk");
-			const issue = await new LinearClient({ apiKey }).issue(issueId);
-			const state = await issue.state;
-			return state ? !["completed", "canceled"].includes(state.type) : null;
-		} catch {
-			return null; // cannot tell — keep the dedup (never double-file)
-		}
-	};
-
 	// FLY-368 rework: Hub on when unified channel + threading + a resolvable repair
 	// chain; else producers route straight to the notifier (legacy / root-only).
 	const alertHub =
@@ -10265,72 +10186,28 @@ export async function startBridge(
 						);
 						return isCaptureError(c) ? null : c.output;
 					},
-					// FLY-927 (Task 2.4): T2 escalation for an ISSUE-BOUND ticket pages
-					// the founder in the issue's own [FLY-XX] thread — the FLY-818 page
-					// + founder_page_ledger dedup (never re-pages the same event id).
-					escalateToIssueThread: async (row) => {
-						if (!row.session_key || !config.discordOwnerUserId) return false;
-						if (store.getFounderPaged(row.event_id) === true) return true;
-						const session = store.getSession(row.session_key);
-						if (!session) return false;
-						const { lead } = resolveLeadForIssue(
-							projects,
-							session.project_name,
-							parseJsonStringArray(session.issue_labels),
-						);
-						const thread = store.getChatThreadByIssue(
-							session.issue_id,
-							lead.chatChannel,
-						);
-						const firstSeenMs = row.first_seen_at
-							? Date.parse(`${row.first_seen_at.replace(" ", "T")}Z`)
-							: Number.NaN;
-						const outcome = await emitFounderStuckNotification(
-							{
-								executionId: row.session_key,
-								issueId: session.issue_id,
-								issueIdentifier: session.issue_identifier ?? undefined,
-								projectName: session.project_name,
-								leadAgentId: lead.agentId,
-								stuckMinutes: Number.isNaN(firstSeenMs)
-									? 0
-									: Math.max(
-											0,
-											Math.round((Date.now() - firstSeenMs) / 60_000),
-										),
-								thread,
-								botToken: lead.botToken ?? config.discordBotToken,
-								ownerUserId: config.discordOwnerUserId,
-								phasePrefix: phaseMessageTag(
-									session.chat_thread_role,
-									session.runner_model,
-									session.design_backend,
-								),
-							},
-							{ store },
-						);
-						const paged = outcome.kind === "posted";
-						store.recordFounderPaged(row.event_id, paged);
-						return paged;
-					},
 					// FLY-1082: fleet-kind recovery probe (watermark cleared / bot back
 					// alive / boot reconcile done) — holder-backed; null = cannot tell.
 					fleetRecovery: async (row) =>
 						(await fleetSensorsHolder.current?.recoveryProbe(row)) ?? null,
-					// FLY-1082 (Task 3.2): repeated-escalation runbook-gap counter —
-					// same kind ESCALATED ≥3 times in 7 days auto-files the eng issue.
-					onTicketEscalated: async (row) => {
-						await noteTicketEscalated(row.event_type, {
-							store,
-							createIssue: runbookCreateIssue,
-							isIssueOpen: runbookIsIssueOpen,
-						});
-					},
 				})
 			: undefined;
+	const founderEscalationConfigured = isDiscordSnowflake(
+		config.discordOwnerUserId,
+	);
+	if (alertHub && !founderEscalationConfigured) {
+		console.error(
+			"[Bridge] founder escalation route unreachable: DISCORD_OWNER_USER_ID is missing or invalid; workflow escalations will remain in Claw mailbox",
+		);
+		void metaAlertNotifier.notify({
+			reason: "alert_unreachable_config",
+			title: "Founder escalation route unreachable",
+			body: "DISCORD_OWNER_USER_ID is missing or invalid; workflow escalations will remain in Claw mailbox instead of entering Discord.",
+		});
+	}
 	if (alertHub) {
 		console.log(
-			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, auto-repair=ON)`,
+			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, ordinary-route=claw-mailbox, escalation-route=channel, founder-auto-mention=workflow_engine_escalation-only, founder-id=${founderEscalationConfigured ? "resolved" : "UNRESOLVED"})`,
 		);
 	}
 
@@ -10342,7 +10219,7 @@ export async function startBridge(
 	// FLY-927 (W1): wrap the raw sink with the welded-on D1 Router. An
 	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
 	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
-	// to the raw sink (ticket queue) — never silent, never recursive.
+	// to the raw channel sink — never silent, never recursive.
 	const routedAlertSinkCore = buildInfraAlertRouting({
 		store,
 		projects,
@@ -10350,14 +10227,14 @@ export async function startBridge(
 		rawSink: alertSink,
 		ticketSink: {
 			alert: async (payload) => {
-				leadInboxRuntime.enqueueInfraAlert(
-					INFRA_ALERT_LAST_MILE_ROUTE.ownerLeadId,
+				const receipt = leadInboxRuntime.enqueueInfraAlert(
+					INFRA_ALERT_OWNER_LEAD_ID,
 					payload,
 				);
-				return { queued: true };
+				return { queued: receipt.queued };
 			},
 		},
-		copyTicketToChannel: shouldCopyInfraAlertToChannel,
+		founderUserId: config.discordOwnerUserId,
 	});
 	const routedAlertSink: {
 		alert: (p: AlertPayload) => Promise<AlertResult>;

@@ -1,0 +1,22 @@
+sequenceDiagram
+    autonumber
+    participant S as 产源(真实告警)
+    participant R as D1 Router
+    participant H as AlertChannelHub
+    participant D as Discord #flywheel-alerts
+    participant T as alert_threads
+    participant M as claw mailbox
+    participant Q as QA(取证)
+    S->>R: ticket 类告警 payload
+    R->>H: handle(payload)(唯一一条路)
+    H->>D: 根消息(🎫 owner @claw)
+    D-->>H: messageId
+    H->>D: createThreadFromMessage
+    D-->>H: threadId
+    H->>T: openAlertThread → 新行,状态 NEW
+    Note over H,D: 不再有「当场 @founder + ESCALATED」
+    Note over R,M: Router 不再写 mailbox(车道已拆)
+    Q->>T: SQL:event_id = E → 有行、非 ESCALATED
+    Q->>M: SQL:source_ref = E → 0 行
+    Q->>D: 截图:根消息 + thread,无 @founder 帖
+    Note over Q: 三件套齐 = 本单验收

@@ -1044,7 +1044,6 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 				ticket: {
 					ownerUserId: "123456789012345678",
 					ownerLabel: "claude bot",
-					status: "NEW",
 					firstSeenMs: new Date(2026, 6, 7, 9, 5).getTime(),
 				},
 			}),
@@ -1068,13 +1067,13 @@ describe("LeadAlertNotifier — FLY-927 Task 1.2: 🎫 ticket schema header", ()
 					ownerLabel: "codex bot",
 					status: "ACK",
 					firstSeenMs: new Date(2026, 6, 7, 9, 5).getTime(),
-				},
+				} as any,
 			}),
 		);
 		const body = JSON.parse(
 			(fetchFn.mock.calls[0] as [string, RequestInit])[1].body as string,
 		);
-		expect(body.content).toContain("owner codex bot · 状态 ACK");
+		expect(body.content).toContain("owner codex bot · 状态 NEW");
 		expect(body.allowed_mentions).toEqual({ parse: [] });
 	});
 });
@@ -1740,7 +1739,6 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 				ticket: {
 					ownerUserId: "123456789012345678",
 					ownerLabel: "claude bot",
-					status: "NEW",
 					firstSeenMs: Date.now(),
 				},
 			}),
@@ -1771,7 +1769,6 @@ describe("LeadAlertNotifier — FLY-1081: deploy kinds + mentionUserId + drain u
 				ticket: {
 					ownerUserId: "123456789012345678",
 					ownerLabel: "claude bot",
-					status: "NEW",
 					firstSeenMs: Date.now(),
 				},
 			}),

@@ -1,11 +1,10 @@
 /**
- * FLY-927 (Task 2.4): T2 decision matrix (pure) + owner-configured predicate.
+ * FLY-927 (Task 2.4): bounded repair retry decision matrix (pure).
  */
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_TICKET_ESCALATION_POLICY,
 	decideTicketEscalation,
-	ticketOwnerConfigured,
 } from "../ticket-escalation.js";
 
 const NOW = Date.UTC(2026, 6, 7, 12, 0, 0);
@@ -22,10 +21,10 @@ function row(over: Partial<Parameters<typeof decideTicketEscalation>[0]> = {}) {
 	};
 }
 
-describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
+describe("decideTicketEscalation (no automatic escalation)", () => {
 	it("legacy (NULL) and terminal states never escalate", () => {
 		for (const s of [null, "RESOLVED", "ESCALATED"]) {
-			expect(decideTicketEscalation(row({ ticket_status: s }), NOW, true)).toBe(
+			expect(decideTicketEscalation(row({ ticket_status: s }), NOW)).toBe(
 				"none",
 			);
 		}
@@ -36,22 +35,20 @@ describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
 			decideTicketEscalation(
 				row({ ticket_status: "REPAIRING", attempt_count: 1 }),
 				NOW,
-				true,
 			),
 		).toBe("retry");
 	});
 
-	it("REPAIRING with the attempt budget burned → escalate", () => {
+	it("REPAIRING with the attempt budget burned → none", () => {
 		expect(
 			decideTicketEscalation(
 				row({ ticket_status: "REPAIRING", attempt_count: 2 }),
 				NOW,
-				true,
 			),
-		).toBe("escalate");
+		).toBe("none");
 	});
 
-	it("REPAIRING/ACK past the 5-minute window → escalate regardless of attempts", () => {
+	it("REPAIRING/ACK past the timeout → none", () => {
 		for (const s of ["REPAIRING", "ACK"]) {
 			expect(
 				decideTicketEscalation(
@@ -61,16 +58,15 @@ describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
 						first_seen_at: AGE(6 * 60_000),
 					}),
 					NOW,
-					true,
 				),
-			).toBe("escalate");
+			).toBe("none");
 		}
 	});
 
 	it("ACK within the window → none (the owner bot is working)", () => {
-		expect(
-			decideTicketEscalation(row({ ticket_status: "ACK" }), NOW, true),
-		).toBe("none");
+		expect(decideTicketEscalation(row({ ticket_status: "ACK" }), NOW)).toBe(
+			"none",
+		);
 	});
 
 	it("MONITORING ignores unclaimed fallback and waits for the kind timeout", () => {
@@ -82,7 +78,6 @@ describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
 			decideTicketEscalation(
 				row({ ticket_status: "MONITORING", first_seen_at: AGE(10 * 60_000) }),
 				NOW,
-				true,
 				policy,
 			),
 		).toBe("none");
@@ -90,56 +85,32 @@ describe("decideTicketEscalation (T2 locked: 2 tries / 5 min)", () => {
 			decideTicketEscalation(
 				row({ ticket_status: "MONITORING", first_seen_at: AGE(31 * 60_000) }),
 				NOW,
-				true,
 				policy,
 			),
-		).toBe("escalate");
-	});
-
-	it("NEW unclaimed > 5 min WITH a configured owner → escalate", () => {
-		expect(
-			decideTicketEscalation(
-				row({ first_seen_at: AGE(6 * 60_000) }),
-				NOW,
-				true,
-			),
-		).toBe("escalate");
-	});
-
-	it("NEW unclaimed but owner NOT configured → none (Cass status quo, FLY-928 flip)", () => {
-		expect(
-			decideTicketEscalation(
-				row({ first_seen_at: AGE(60 * 60_000) }),
-				NOW,
-				false,
-			),
 		).toBe("none");
 	});
 
-	it("missing first_seen_at is treated as age 0 (no premature escalation)", () => {
+	it("NEW remains visible without an automatic fallback", () => {
 		expect(
-			decideTicketEscalation(row({ first_seen_at: null }), NOW, true),
+			decideTicketEscalation(row({ first_seen_at: AGE(6 * 60_000) }), NOW),
 		).toBe("none");
+	});
+
+	it("missing or invalid first_seen_at fails closed before retry", () => {
+		for (const first_seen_at of [null, "garbage"]) {
+			expect(
+				decideTicketEscalation(
+					row({ ticket_status: "REPAIRING", first_seen_at }),
+					NOW,
+				),
+			).toBe("none");
+		}
 	});
 
 	it("locked defaults: 2 attempts / 300s", () => {
 		expect(DEFAULT_TICKET_ESCALATION_POLICY).toEqual({
 			maxAttempts: 2,
 			timeoutMs: 300_000,
-			unclaimedMs: 300_000,
 		});
-	});
-});
-
-describe("ticketOwnerConfigured", () => {
-	const REG = { claudeBotUserId: "111111111111111111", codexBotUserId: null };
-	it("matches the owner side's env id presence", () => {
-		expect(ticketOwnerConfigured("infra_bot:claude", REG)).toBe(true);
-		expect(ticketOwnerConfigured("infra_bot:codex", REG)).toBe(false);
-	});
-	it("lead / empty / null owner refs never arm the fallback", () => {
-		expect(ticketOwnerConfigured("lead:tadashi", REG)).toBe(false);
-		expect(ticketOwnerConfigured("", REG)).toBe(false);
-		expect(ticketOwnerConfigured(null, REG)).toBe(false);
 	});
 });

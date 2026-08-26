@@ -308,7 +308,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(ack).not.toContain("正在尝试");
 	});
 
-	it("needs_human REALLY @-pings the founder when the env id is set", async () => {
+	it("needs_human never @-pings the founder even when the env id is set", async () => {
 		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "1138241636057481306";
 		try {
@@ -321,10 +321,13 @@ describe("AlertChannelHub (FLY-368)", () => {
 				autoRepairBot: repairBot("needs_human", false),
 			});
 			await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
-			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
-			expect(nh).toBeDefined();
-			expect(nh![1]).toContain("<@1138241636057481306>");
-			expect(nh![2]).toEqual({ mentionUserId: "1138241636057481306" });
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			expect(
+				discord.posts.every(([, c]) => !c.includes("<@1138241636057481306>")),
+			).toBe(true);
+			expect(
+				discord.posts.every(([, , opts]) => opts?.mentionUserId === undefined),
+			).toBe(true);
 		} finally {
 			if (prev === undefined)
 				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
@@ -332,7 +335,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		}
 	});
 
-	it("needs_human degrades to plain text (no ping) when founder id is unset/invalid", async () => {
+	it("needs_human stays silent when founder id is unset or invalid", async () => {
 		const prev = process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
 		process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID = "not-a-snowflake";
 		try {
@@ -345,11 +348,8 @@ describe("AlertChannelHub (FLY-368)", () => {
 				autoRepairBot: repairBot("needs_human", false),
 			});
 			await hub.handle(payload({ eventType: "rate_limit", eventId: "rl" }));
-			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
-			expect(nh).toBeDefined();
-			expect(nh![1]).toContain("Annie");
-			expect(nh![1]).not.toContain("<@");
-			expect(nh![2]).toBeUndefined();
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
+			expect(discord.posts.every(([, c]) => !c.includes("<@"))).toBe(true);
 		} finally {
 			if (prev === undefined)
 				delete process.env.FLYWHEEL_FOUNDER_DISCORD_USER_ID;
@@ -540,7 +540,7 @@ describe("AlertChannelHub (FLY-368)", () => {
 		expect(discord.posts).toHaveLength(0);
 	});
 
-	it("ticketed legacy runner-stuck rows use only the generic T2 lifecycle", async () => {
+	it("ticketed legacy runner-stuck rows stay NEW without automatic escalation", async () => {
 		const discord = makeDiscord();
 		const notifier = { alert: vi.fn(async () => ({ ...SENT })) };
 		const captureRunner = vi.fn(async () => "runner moved");
@@ -576,20 +576,17 @@ describe("AlertChannelHub (FLY-368)", () => {
 			}
 		}
 
-		expect(store.getActiveAlertThread(ck)?.ticket_status).toBe("ESCALATED");
+		expect(store.getActiveAlertThread(ck)?.ticket_status).toBe("NEW");
 		expect(captureRunner).not.toHaveBeenCalled();
-		expect(discord.posts.some(([, content]) => content.includes("T2"))).toBe(
-			true,
-		);
+		expect(discord.posts).toHaveLength(0);
 	});
 
 	// ── FLY-929 A5: Claude account-cap needs_human → owner-bot assignment ──
 	//
 	// When self-heal + P-identity + the infra bot id are ALL present, a
 	// usage_limit alert carrying CLAUDE accountLimit metadata routes its
-	// needs_human post to the OWNER BOT (assignment mention) instead of the
-	// immediate founder escalation. Any env missing / any other kind ⇒ the
-	// legacy founder escalation byte-for-byte.
+	// needs_human may post a pure assignment to the OWNER BOT. Any env missing
+	// or any other kind stays NEW without an automatic founder escalation.
 	describe("FLY-929 A5 account-cap owner routing", () => {
 		const A5_ENV = {
 			FLYWHEEL_ACCOUNT_SELF_HEAL: "1",
@@ -658,67 +655,63 @@ describe("AlertChannelHub (FLY-368)", () => {
 			expect(assignment![1]).toContain(
 				`<@${A5_ENV.FLYWHEEL_INFRA_BOT_USER_ID}>`,
 			);
-			expect(assignment![1]).toContain("T2");
+			expect(assignment![1]).not.toContain("T2");
 			expect(assignment![2]).toEqual({
 				mentionUserId: A5_ENV.FLYWHEEL_INFRA_BOT_USER_ID,
 			});
 			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
-		it("P-identity incomplete (no notify channel) → legacy founder escalation", async () => {
+		it("P-identity incomplete (no notify channel) → no automatic post", async () => {
 			setEnv(["FLYWHEEL_NOTIFY_CHANNEL"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			const nh = discord.posts.find(([, c]) => c.includes("修不了"));
-			expect(nh).toBeDefined();
-			expect(nh![2]).toEqual({
-				mentionUserId: A5_ENV.FLYWHEEL_FOUNDER_DISCORD_USER_ID,
-			});
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
 		// FLY-1243: FLYWHEEL_ACCOUNT_SELF_HEAL no longer gates A5 owner routing
 		// (resolveAccountCapOwnerId drops that conjunct). Rewritten to cover the
 		// other half of P-identity absence not exercised below ("no notify
 		// channel" already covers a missing channel) — a missing infra bot
-		// token → still legacy founder escalation.
-		it("P-identity incomplete (no infra bot token) → legacy founder escalation", async () => {
+		// token → no owner assignment and no automatic founder post.
+		it("P-identity incomplete (no infra bot token) → no automatic post", async () => {
 			setEnv(["CLAUDE_INFRA_BOT_TOKEN"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
-		it("missing infra bot user id → legacy founder escalation", async () => {
+		it("missing infra bot user id → no automatic post", async () => {
 			setEnv(["FLYWHEEL_INFRA_BOT_USER_ID"]);
 			const discord = await run(capPayload("claude"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
-		it("usage_limit WITHOUT accountLimit metadata → founder escalation even with all envs", async () => {
+		it("usage_limit without accountLimit metadata → no automatic post", async () => {
 			setEnv();
 			const discord = await run(
 				payload({ eventType: "usage_limit", eventId: "no-meta" }),
 			);
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
-		it("codex-provider accountLimit → founder escalation (Claude caps only)", async () => {
+		it("codex-provider accountLimit → no automatic post (Claude caps only)", async () => {
 			setEnv();
 			const discord = await run(capPayload("codex"));
 			expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+			expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 		});
 
-		it("other needs_human kinds (rate_limit / login_expired / generic) stay founder-routed", async () => {
+		it("other needs_human kinds stay NEW without an automatic post", async () => {
 			setEnv();
 			for (const eventType of ["rate_limit", "login_expired"] as const) {
 				const discord = await run(
 					payload({ eventType, eventId: `neg-${eventType}` }),
 				);
 				expect(discord.posts.some(([, c]) => c.includes("请认领"))).toBe(false);
-				expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(true);
+				expect(discord.posts.some(([, c]) => c.includes("修不了"))).toBe(false);
 			}
 		});
 	});

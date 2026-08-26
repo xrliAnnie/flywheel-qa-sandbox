@@ -863,6 +863,7 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 			provider: "claude",
 			jobLabel: "com.flywheel.claw-infra",
 		});
+		expect(alerts[0]!.body).not.toContain("升级");
 	});
 
 	it("dead→alive edge clears the latch + quiet-resolves; a NEW death re-fires", async () => {
@@ -903,8 +904,8 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		expect((await okSensors.infraBotKickstartRepair(payload)).outcome).toBe(
 			"attempted",
 		);
-		// A FAILED restart is still an attempt — stays in the T2 loop so the
-		// contract's "2 次失败 → @Annie" gets its second try on reconcile.
+		// A FAILED restart is still an attempt, so the bounded two-attempt
+		// contract gets its second try on reconcile.
 		const failSensors = makeSensors(async () => ({
 			ok: false,
 			error: "nope",
@@ -912,6 +913,7 @@ describe("FleetSensors — infra bot (Task 2.5)", () => {
 		const failed = await failSensors.infraBotKickstartRepair(payload);
 		expect(failed.outcome).toBe("attempted");
 		expect(failed.detail).toContain("失败");
+		expect(failed.detail).not.toContain("升级");
 		const blind = await okSensors.infraBotKickstartRepair({
 			...payload,
 			metadata: {},
@@ -1060,6 +1062,8 @@ describe("FleetSensors — zombie scan (Task 2.6)", () => {
 		expect(alerts[0]!.eventType).toBe("zombie_session_backlog");
 		expect(alerts[0]!.body).toContain("z-1");
 		expect(alerts[0]!.body).toContain("FLY-1066");
+		expect(alerts[0]!.body).toContain("工单挂在频道等值守初审");
+		expect(alerts[0]!.body).not.toContain("直接升级");
 	});
 
 	it("scan is throttled (~15 min): consecutive ticks do not rescan", async () => {

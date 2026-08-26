@@ -20,16 +20,9 @@
  *  (b) `arc: "none_escalate" | "human_by_design"` — explicitly no ARC, with
  *      the owner still named.
  *
- * `none_escalate` vs `human_by_design` (the distinction is load-bearing):
- *  - `none_escalate`: the owner-first / auto response is ALREADY spent or is
- *    deliberately out of scope — the ticket lands directly ESCALATED at
- *    enqueue and never enters the ARC retry loop. Legacy precedent:
- *    `runner_lead_pending_unhandled` (the FLY-637-ext ladder already nudged
- *    the Lead K times); new: `zombie_session_backlog` (reaping = FLY-1066).
- *  - `human_by_design`: a human decision by design (permissions, billing,
- *    re-login, investigation). The ticket opens NEW; the AutoRepairBot's
- *    dispatch returns `needs_human` with the kind-specific reason and the Hub
- *    escalates with that copy — the pre-FLY-1082 behavior, byte-compatible.
+ * FLY-2075: `arc` describes remediation posture only. It no longer drives an
+ * enqueue-time or reconcile-time automatic founder escalation; every ticket
+ * enters the Hub ledger as NEW unless a real ARC attempt advances it.
  */
 
 import {
@@ -82,8 +75,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	// ── Human-decision kinds — no bot owner by design.
 	permission_blocked: { owner: "founder_direct", arc: "human_by_design" },
 	// FLY-637-ext ladder output: the owner-first response already happened (K
-	// nudge rounds) — lands directly ESCALATED (legacy special case, now
-	// contract-driven).
+	// nudge rounds). The arc posture remains descriptive; the Hub records NEW.
 	runner_lead_pending_unhandled: {
 		owner: "founder_direct",
 		arc: "none_escalate",
@@ -100,9 +92,8 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	inbox_loop_stalled: { owner: "founder_direct", arc: "none_escalate" },
 	mailbox_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	// FLY-1586: a real notification was held back by the cutover. It needs a
-	// human decision (replay or discard), so it escalates rather than
-	// auto-repairing — nothing here can know whether the held-back message
-	// still matters.
+	// human decision (replay or discard), so it is not auto-repaired — nothing
+	// here can know whether the held-back message still matters.
 	legacy_row_quarantined: { owner: "founder_direct", arc: "none_escalate" },
 	rules_bundle_legacy: { owner: "claude", arc: "human_by_design" },
 	workflow_route_input_rejected: {
@@ -216,8 +207,8 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	quota_guard_bypassed: { owner: "claude", arc: "human_by_design" },
 
 	// ── FLY-1082 fleet kinds — every one has a named owner + executable ARC
-	// (or an explicit (b) posture). Fleet-level failures never fall through to
-	// the founder unowned again.
+	// (or an explicit (b) posture). The Hub does not infer a founder page from
+	// either posture.
 	swap_pressure_high: {
 		owner: "claude",
 		arc: "auto",
@@ -321,58 +312,6 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 		remediationRef: "FLY-1929",
-	},
-};
-
-/**
- * Does this kind land directly ESCALATED at enqueue (bypassing the ARC retry
- * loop)? Drives the infra-alert-wiring ticket seed + the Hub's by-design
- * escalate path — the generalization of the old hardcoded
- * `runner_lead_pending_unhandled` special case.
- */
-export function escalatesAtEnqueue(kind: AlertEventType): boolean {
-	return KIND_CONTRACTS[kind]?.arc === "none_escalate";
-}
-
-/**
- * FLY-1082 (Task 3.1): founder-facing copy for the fleet kinds' T2
- * escalation — the four-element template (kind · ARC 试了什么 · 为什么失败 ·
- * Annie 只需拍的那一个决定) renders from this table. 人话 only, never a PRD
- * number (founder-facing copy rule). Kinds absent here keep the legacy
- * escalate line byte-for-byte (存量 kind 文案不回归重写).
- */
-export const FLEET_ESCALATION_COPY: Partial<
-	Record<AlertEventType, { label: string; decision: string }>
-> = {
-	swap_pressure_high: {
-		label: "机器内存吃紧（OOM 预警）",
-		decision:
-			"水位一直没退：要不要人工收掉一批 runner（还是同意继续 hold 等它回落）？",
-	},
-	tmux_server_lost: {
-		label: "承载 runner 的 tmux server 丢了",
-		decision:
-			"有 Lead 没收到阵亡通知或没动手：要不要点名让它复活自己的 runner？",
-	},
-	tmux_hold: {
-		label: "tmux 安全证据不足，runner 已暂停处置",
-		decision: "要不要按 runbook 人工确认 tmux server 世代并解除 hold？",
-	},
-	tmux_split_brain: {
-		label: "tmux 出现多个冲突世代",
-		decision: "请确认哪一个 tmux server 世代应保留；系统不会自动选。",
-	},
-	bridge_abnormal_exit: {
-		label: "Bridge 非正常退出",
-		decision: "复活后对账一直没走完：要不要人工看一眼 Bridge 日志？",
-	},
-	infra_bot_down: {
-		label: "infra bot 掉线",
-		decision: "自动重启没救活：要不要人工重启这个 bot（或先停用它）？",
-	},
-	zombie_session_backlog: {
-		label: "跨 Lead 僵尸 session 积压",
-		decision: "要不要人工清理这批僵尸 session？",
 	},
 };
 

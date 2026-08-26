@@ -1,37 +1,33 @@
 /**
- * FLY-927 (W1): infra-event Router — the three-way split that turns the alert
- * channel into a bot ticket queue.
+ * FLY-927 (W1): infra-event Router — the two-way split for durable Claw alerts.
  *
  * D1 (brainstorm gate, Tadashi 2026-07-07): classify by RESPONDER —
- *  - "ticket":       infra process-health kinds a bot can act on → the unified
- *                    alert channel's ticket queue (even when the event is bound
- *                    to an issue — the responder is the infra bot, not the
- *                    issue's Lead/founder).
+ *  - "ticket":       ordinary alerts → durable Claw mailbox (even when the
+ *                    event is bound to an issue — the responder is the infra
+ *                    bot, not the issue's Lead/founder).
  *  - "issue_thread": issue-PROGRESS kinds (a session stuck / a founder
  *                    notification undelivered) → the issue's own [FLY-XX]
  *                    Discord thread, where the responsible party has context.
  *                    ONLY when a thread is actually bound; otherwise fail-safe
  *                    to "ticket" (never silently drop).
- *  - "notify":       root-only informational notices; these bypass ticket and
- *                    issue-thread lifecycle.
  *
  * The classification is a PURE function; the routed sink wrapper
  * (`createInfraAlertSink`) is what plugin.ts installs in front of the raw
  * notifier/Hub. FLY-1831 welded this shipped routing path on.
  */
 
-import {
-	type AlertEventType,
-	type AlertPayload,
-	type AlertResult,
-	isInformationalKind,
+import type {
+	AlertEventType,
+	AlertPayload,
+	AlertResult,
 } from "../LeadAlertNotifier.js";
+import { isDiscordSnowflake } from "./founder-notify-utils.js";
 
-export type AlertRouteClass = "ticket" | "issue_thread" | "notify";
+export type AlertRouteClass = "ticket" | "issue_thread";
 
 /**
- * Infra process-health kinds — a bot can act on these, so they queue as
- * tickets @ the owner bot, EVEN when bound to an issue (D1: responder-based).
+ * Infra process-health kinds — a bot can act on these, so they queue as durable
+ * Claw mailbox tickets, EVEN when bound to an issue (D1: responder-based).
  */
 export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 	new Set<AlertEventType>([
@@ -116,13 +112,12 @@ export interface RouteInput {
 }
 
 export function classifyInfraEvent(input: RouteInput): AlertRouteClass {
-	if (isInformationalKind(input.eventType)) return "notify";
 	if (TICKET_KINDS.has(input.eventType)) return "ticket";
 	if (ISSUE_PROGRESS_KINDS.has(input.eventType) && input.boundIssueThread) {
 		return "issue_thread";
 	}
 	// Fail-safe: an unbound progress kind — and any future kind added to the
-	// union without a routing decision — degrades to the ticket queue rather
+	// union without a routing decision — degrades to the durable mailbox rather
 	// than being dropped.
 	return "ticket";
 }
@@ -133,12 +128,12 @@ export interface AlertSinkLike {
 }
 
 export interface InfraAlertSinkDeps {
-	/** Today's behavior: the raw notifier, or the Hub in unified+threading mode. */
+	/** The unified-channel Hub, reserved for explicit founder escalations. */
 	rawSink: AlertSinkLike;
-	/** FLY-1764 Flow 2 primary: one owner mailbox row. Defaults to raw for compatibility. */
-	ticketSink?: AlertSinkLike;
-	/** Optional observation copy. Default-off; the primary mailbox result wins. */
-	copyTicketToChannel?: () => boolean;
+	/** FLY-1764 Flow 2 primary: one durable alert letter to Claw. */
+	ticketSink: AlertSinkLike;
+	/** Canonical founder id added to workflow_engine_escalation payloads. */
+	founderUserId?: string;
 	/** Test seam; production routing is welded on by default. */
 	routingEnabled?: () => boolean;
 	/**
@@ -148,7 +143,7 @@ export interface InfraAlertSinkDeps {
 	resolveBoundIssueThread: (payload: AlertPayload) => BoundIssueThread | null;
 	/** The issue-thread delivery leg (founder-thread-notifier). Never expected
 	 * to throw — it classifies + escalates internally; a throw here is a bug
-	 * and fail-safes back to the raw sink. */
+	 * and fail-safes back to the Claw mailbox. */
 	deliverToIssueThread: (
 		payload: AlertPayload,
 		thread: BoundIssueThread,
@@ -158,46 +153,43 @@ export interface InfraAlertSinkDeps {
 
 /**
  * Wrap the raw alert sink with D1 routing. Every failure path inside routing
- * falls back to the raw sink — an alert is NEVER lost to a routing bug.
+ * falls back to the durable mailbox — an alert is NEVER lost to a routing bug.
  */
 export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 	const routingEnabled = deps.routingEnabled ?? (() => true);
 	const logger =
 		deps.logger ?? ((m) => console.log(`[infra-alert-router] ${m}`));
-	const ticketSink = deps.ticketSink ?? deps.rawSink;
-	const copyTicketToChannel = deps.copyTicketToChannel ?? (() => false);
-	const deliverTicket = async (payload: AlertPayload): Promise<AlertResult> => {
-		const primary = await ticketSink.alert(payload);
-		if (copyTicketToChannel() && ticketSink !== deps.rawSink) {
-			try {
-				await deps.rawSink.alert(payload);
-			} catch (err) {
-				logger(
-					`optional channel copy failed for ${payload.eventType}/${payload.eventId}: ${(err as Error).message}`,
-				);
-			}
-		}
-		return primary;
-	};
 	return {
 		async alert(payload: AlertPayload): Promise<AlertResult> {
 			if (!routingEnabled()) return deps.rawSink.alert(payload);
-			// Ticket/notify kinds short-circuit without a thread lookup.
+			const explicitMention = isDiscordSnowflake(payload.mentionUserId)
+				? payload.mentionUserId
+				: undefined;
+			if (payload.eventType === "workflow_engine_escalation") {
+				const mentionUserId =
+					explicitMention ??
+					(isDiscordSnowflake(deps.founderUserId)
+						? deps.founderUserId
+						: undefined);
+				if (mentionUserId) {
+					return deps.rawSink.alert({ ...payload, mentionUserId });
+				}
+				logger(
+					`workflow escalation ${payload.eventId} has no valid founder id — fail-safe to Claw mailbox`,
+				);
+				return deps.ticketSink.alert(payload);
+			}
+			if (explicitMention) return deps.rawSink.alert(payload);
+			// Ordinary alert kinds short-circuit to Claw's mailbox.
 			if (!ISSUE_PROGRESS_KINDS.has(payload.eventType)) {
-				const route = classifyInfraEvent({
-					eventType: payload.eventType,
-					boundIssueThread: null,
-				});
-				return route === "ticket"
-					? deliverTicket(payload)
-					: deps.rawSink.alert(payload);
+				return deps.ticketSink.alert(payload);
 			}
 			let thread: BoundIssueThread | null = null;
 			try {
 				thread = deps.resolveBoundIssueThread(payload);
 			} catch (err) {
 				logger(
-					`thread resolution failed for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to ticket queue`,
+					`thread resolution failed for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to Claw mailbox`,
 				);
 			}
 			const route = classifyInfraEvent({
@@ -209,12 +201,12 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 					return await deps.deliverToIssueThread(payload, thread);
 				} catch (err) {
 					logger(
-						`issue-thread delivery threw for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to ticket queue`,
+						`issue-thread delivery threw for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to Claw mailbox`,
 					);
-					return deliverTicket(payload);
+					return deps.ticketSink.alert(payload);
 				}
 			}
-			return deliverTicket(payload);
+			return deps.ticketSink.alert(payload);
 		},
 	};
 }

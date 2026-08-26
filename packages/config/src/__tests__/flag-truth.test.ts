@@ -98,6 +98,14 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("FLY-2075 tombstones the removed alert channel copy control", () => {
+		expect(RETIRED_FLAGS).toContainEqual({
+			envVar: "FLYWHEEL_ALERT_COPY_TO_CHANNEL",
+			retiredBy: "FLY-2075",
+		});
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_ALERT_COPY_TO_CHANNEL).toBeUndefined();
+	});
+
 	it("FLY-1981 tombstones auto-QA and leaves deleted tuning envs out of every ledger", () => {
 		expect(
 			RETIRED_FLAGS.filter((entry) => entry.retiredBy === "FLY-1981"),

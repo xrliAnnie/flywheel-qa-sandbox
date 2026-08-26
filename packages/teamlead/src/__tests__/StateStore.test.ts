@@ -38,6 +38,17 @@ describe("StateStore", () => {
 		store2.close();
 	});
 
+	it("does not create retired alert ledger tables in a fresh DB", () => {
+		const stmt = store.db.prepare(
+			"SELECT name FROM sqlite_master WHERE type='table' AND name IN ('founder_page_ledger', 'ticket_escalations', 'runbook_issues') ORDER BY name",
+		);
+		const names: string[] = [];
+		while (stmt.step()) names.push(stmt.getAsObject().name as string);
+		stmt.free();
+
+		expect(names).toEqual([]);
+	});
+
 	it("insertEvent stores and retrieves event", () => {
 		const event = makeEvent();
 		const ok = store.insertEvent(event);
