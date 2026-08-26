@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2024 小红书工具浏览器泄漏 — 修复设计</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; }
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.7; padding:24px 16px 60px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:26px; color:var(--navy); margin-bottom:6px; }
+  .sub { color:var(--gray); font-size:14px; margin-bottom:24px; }
+  .sub code { font-family:'SF Mono',monospace; font-size:13px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:22px 24px; margin-bottom:14px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); }
+  .card.green { border-left-color:var(--green); }
+  .card.amber { border-left-color:var(--amber); }
+  .card.purple { border-left-color:var(--purple); }
+  .card.gray { border-left-color:var(--gray); }
+  h2 { font-size:19px; color:var(--navy); margin-bottom:12px; }
+  h3 { font-size:15.5px; color:var(--navy); margin:16px 0 8px; }
+  p, li { font-size:15px; margin-bottom:8px; }
+  ul, ol { padding-left:22px; margin-bottom:8px; }
+  .term { color:var(--gray); font-size:13.5px; }
+  code { font-family:'SF Mono',monospace; font-size:13px; background:#f0f0f2; padding:1px 5px; border-radius:4px; }
+  .diagram { overflow-x:auto; margin:14px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:14px; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:var(--navy); }
+  .badge { display:inline-block; font-size:12px; font-weight:600; padding:2px 8px; border-radius:6px; margin-right:6px; vertical-align:middle; }
+  .badge.red { background:#ffe5e3; color:var(--red); }
+  .badge.green { background:#e6f9ed; color:#1d804b; }
+  .badge.amber { background:#fff4e5; color:#b36b00; }
+  .badge.blue { background:#e8f0fe; color:var(--blue); }
+  .kv { color:var(--gray); font-size:13.5px; }
+  .comment-box { margin-top:16px; border-top:1px dashed #e5e5ea; padding-top:12px; }
+  .comment-box label { font-size:13px; color:var(--gray); display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:10px; font-family:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .comment-box textarea:focus { outline:none; border-color:var(--blue); }
+  #summary-card { border-left-color:var(--navy); }
+  #summary-list { background:#fafafa; border-radius:8px; padding:14px; font-size:14px; white-space:pre-wrap; font-family:'SF Mono',monospace; min-height:40px; margin:10px 0; }
+  .btn { display:inline-block; background:var(--blue); color:#fff; border:none; border-radius:8px; padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer; font-family:inherit; }
+  .btn:active { opacity:.8; }
+  .copy-status { margin-left:10px; font-size:13px; color:var(--green); }
+  .chunk-btns button { margin:4px 6px 0 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>小红书工具的浏览器泄漏 — 修复设计</h1>
+  <div class="sub">FLY-2024 · 设计文档(实现前评审版)· 2026-08-25 · 已通过 5 轮 Codex 设计评审<br>
+  仓库文档:<code>engineering/doc/FLY-2024-xhs-mcp-chromium-leak/</code></div>
+
+  <!-- 1. 一句话总结 -->
+  <div class="card blue" data-sec="s1" data-title="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p><strong>你 Dock 上排满的那些 Chromium 图标,是小红书搜索工具每次「搜卡住了」就永久遗留一个浏览器造成的;这份设计从源头修好它(卡住最多 90 秒就自动收拾干净),再加一道 30 分钟的自动清扫兜底——两天内你自己发现两次的这个问题,以后不用你再发现。</strong></p>
+    <p class="term">Chromium:Chrome 浏览器的开源版,这个工具用它去打开小红书网页。Dock:Mac 屏幕下方的程序栏,每个带界面的程序占一个图标。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机):</label><textarea data-key="s1" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 2. 现象与证据 -->
+  <div class="card red" data-sec="s2" data-title="现象与证据">
+    <h2>② 发生了什么(证据已从「推测」升级为「日志实锤」)</h2>
+    <ul>
+      <li><strong>08-24 上午</strong>:你的 Dock 排着 <strong>10 个</strong> Chromium 图标,已挂了 10–12 小时。</li>
+      <li><strong>08-25 上午</strong>(本次调研新发现):又有 <strong>3 个</strong>卡死,中午才被清理——<strong>不到 24 小时就复发了</strong>。</li>
+      <li>服务日志里,你清理那 10 个浏览器的那一秒(08-24 10:12:59),<strong>恰好 10 条搜索调用同时「报错解卡」</strong>——10 个图标和 10 次卡死的搜索一一对应,机制坐实。</li>
+      <li>卡死全部来自同一行代码:搜索页在风控或加载异常时,一个「等页面数据出现」的等待永远等不到。</li>
+      <li>那批调用是 08-23 晚上的一次批量食谱搜索(19 次调用,10 次卡死)——调用方是谁不重要,<strong>任何人调用都会踩中</strong>。</li>
+    </ul>
+    <p class="term">风控:网站识别出「这可能是机器人」后故意不给正常内容的防御机制。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s2" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 3. 泄漏机制图 -->
+  <div class="card amber" data-sec="s3" data-title="泄漏机制">
+    <h2>③ 为什么会漏:一个超时被下一行代码丢掉了</h2>
+    <p>工具作者本来写了「搜索最多等 60 秒」,但紧接着的一行代码把这个 60 秒限制<strong>整个替换掉了</strong>(替换成一个没有任何期限的新设置)。于是搜索一卡住,就没有任何东西能叫停它;负责「结束后关浏览器」的清理代码永远轮不到执行。</p>
+    <div class="diagram">{{SVG_LEAK}}</div>
+    <p class="term">defer 清理:Go 语言里「函数结束时自动执行」的收尾动作——但前提是函数得能结束;函数永久卡住,收尾就永远不发生。ctx / Context:Go 里传递「这件事最多做多久、要不要中途取消」的信物;替换它 = 换掉了期限设定。</p>
+    <p>一个重要发现:这个工具的代码仓库<strong>就是我们自己的 fork</strong>(Annie 名下的副本仓库,以前也自己改过它)——所以可以直接改源头,不用求上游作者。</p>
+    <p class="term">fork:在 GitHub 上复制别人的项目到自己名下,可以自由修改的副本。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s3" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 4. 修复设计 -->
+  <div class="card green" data-sec="s4" data-title="修复设计(双层防线)">
+    <h2>④ 怎么修:两层防线,单层失守也不怕</h2>
+    <div class="diagram">{{SVG_DEFENSE}}</div>
+    <h3>第一层 · 源头根治(改 fork 里的 Go 代码)</h3>
+    <ul>
+      <li>给<strong>每一种操作</strong>的入口装上硬预算:搜索类 90 秒、收藏夹类 5 分钟、发视频 15 分钟(按各操作的正常耗时放了余量)——预算一到,卡死的操作被强制解卡,清理代码就够得着了;</li>
+      <li>把 8 个文件里「超时被替换丢弃」的写法逐一修正(仓库里本来就有 3 处正确写法当范本);</li>
+      <li>两处<strong>特意保留</strong>的例外(大收藏夹翻页、扫码等待)原样不动并注明理由——它们的现状是对的,机械统一反而会弄坏刚修好的功能;</li>
+      <li>扫码登录路径有个更隐蔽的坑(清理动作注册得太晚 + 后台收尾崩溃会拖垮整个服务),评审第 3、4 轮抓出来的,已单独设计了交接与自保护方案。</li>
+    </ul>
+    <h3>第二层 · 自动清扫兜底(Flywheel 主仓,Bridge 巡逻)</h3>
+    <ul>
+      <li>Bridge 本来就有一个每 60 秒巡逻一次的「浏览器收尸队」(此前两次同类事故 FLY-766 / FLY-1828 建的),但它<strong>不认识</strong>这次这种浏览器——教会它认(判据严格到不会误杀你自己的 Chrome、也不会误杀正在干活的浏览器);</li>
+      <li>存活超过 <strong>30 分钟</strong>(最长合法操作的两倍)才动手,动手前二次核验身份,完事记一条可审计的回执;</li>
+      <li>这层<strong>不挑产生者</strong>:哪怕将来工具更新又引入同类 bug,或别的工具也用同款浏览器引擎,都兜得住——正面回应了你 issue 里说的「别再一个产生者修一次」。</li>
+    </ul>
+    <p class="term">Bridge:Flywheel 的常驻调度服务。rod:这个小红书工具用来遥控 Chromium 的 Go 语言库;它起的浏览器有统一的可识别特征,清扫队按这个特征认人。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s4" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 5. 部署链 -->
+  <div class="card purple" data-sec="s5" data-title="部署链">
+    <h2>⑤ 修完怎么真正生效(这一步漏了 = 白修)</h2>
+    <p>这个服务是开机常驻的,由系统的 LaunchAgent(macOS 的开机自启配置)<strong>直接运行编译好的程序文件</strong>——它不会自己去拿新代码。所以源码修好后必须显式地:重新编译 → 备份旧程序 → 替换 → 重启服务 → 验证登录还在。你的小红书登录凭证保存在独立文件里,<strong>重启不需要重新扫码</strong>(上次止血时已实测)。</p>
+    <div class="diagram">{{SVG_DEPLOY}}</div>
+    <p>部署完成后观察 48 小时,判据:没有存活超过 30 分钟的残留浏览器、清扫队回执为 0(= 源头根治独立生效)、你的 Dock 不再积累图标。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s5" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 6. 取舍 -->
+  <div class="card gray" data-sec="s6" data-title="关键取舍与被否方案">
+    <h2>⑥ 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>选项</th><th>决定</th><th>为什么</th></tr>
+      <tr><td>把浏览器改成「无界面模式」<br>(headless,不占 Dock 图标)</td><td><span class="badge amber">不做</span></td><td>这个工具专门带了反检测组件,说明作者在对抗小红书的机器人识别;无界面模式更容易被识别 → 可能导致你的登录失效、要重新扫码。泄漏修好后,图标只在操作进行的几十秒内出现,属于「正在干活」的指示。若你仍嫌它闪,可以另立一单专门实验。</td></tr>
+      <tr><td>只靠调用侧(客户端)收尾</td><td><span class="badge red">否</span></td><td>日志实证:客户端放弃调用<strong>根本不会</strong>让服务端停手——卡死的调用挂了 10 小时,期间客户端早就走了。必须服务端自带期限。</td></tr>
+      <tr><td>只修源头、不加清扫兜底</td><td><span class="badge red">否</span></td><td>FLY-1828 修了上一个产生者,这次换了个产生者原样复发——教训就是「修产生者」覆盖不了未来。已顺带盘点全机:会新起浏览器进程的产生者共 4 类,本单补上后杀伤型兜底全覆盖。</td></tr>
+      <tr><td>主动去杀浏览器的「守护进程」</td><td><span class="badge amber">撤回</span></td><td>我最初这么设计,评审读了守护进程源码后证伪:浏览器一死它会自然退出,不用杀、杀了反而有误伤风险。只精确处理浏览器本体。</td></tr>
+      <tr><td>给上游项目提修复 PR</td><td><span class="badge blue">可选后续</span></td><td>我们的 fork 自给自足,不依赖上游接受;回馈上游是好事但不作为本单验收。</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s6" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 7. 诚实边界 -->
+  <div class="card amber" data-sec="s7" data-title="诚实边界">
+    <h2>⑦ 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>卡死的搜索从「永久泄漏一个浏览器」变成「最多 90 秒自动收拾干净并明确报错」;</li>
+      <li>全部 15 类操作(不只搜索)都装上预算;两类特殊语义显式保留;</li>
+      <li>兜底清扫覆盖这一类浏览器的<strong>所有</strong>产生者,含未来回归。</li>
+    </ul>
+    <h3>不做 / 不承诺</h3>
+    <ul>
+      <li><strong>不让搜索「变好」</strong>:风控导致的搜索失败依旧失败,只是失败得干净、快、不留尸体。你可能会看到更多「搜索超时」的报错——这是修复在正常工作,不是新故障;</li>
+      <li>不改 Dock 图标短暂出现的现象(见取舍表第一行);</li>
+      <li>极小概率下浏览器关闭动作本身卡住 → 该实例最长存活 30 分钟(由第二层收走),不是零;</li>
+      <li>发评论的两个操作沿用它们自带的期限(60 秒 / 5 分钟),本来就有界、不是泄漏源,本单不动它们的行为。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s7" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 8. 评审记录 -->
+  <div class="card blue" data-sec="s8" data-title="评审与下一步">
+    <h2>⑧ 评审记录与下一步</h2>
+    <p>设计经 <strong>5 轮 Codex 评审</strong>(最高强度),前 4 轮共抓出 21 项问题——包括 4 个会导致「修了等于没修」的高危缺口(例:扫码路径的清理交接、后台崩溃拖垮整个服务、测试假绿)——全部吸收后第 5 轮通过。全部往返记录已存档在仓库里。</p>
+    <p><strong>下一步</strong>:进入实现(两个仓库各一个 PR,可并行)→ 部署(时机报 Tadashi 确认)→ 48 小时观察收口。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s8" placeholder="写点什么…"></textarea></div>
+  </div>
+
+  <!-- 汇总卡 -->
+  <div class="card" id="summary-card">
+    <h2>📋 页面意见汇总</h2>
+    <p class="kv">下面自动汇总你在各节写的意见(存在你本机浏览器里,刷新不丢)。点「复制全部」后直接粘给我们即可。</p>
+    <div id="summary-list">(还没有意见)</div>
+    <button class="btn" id="copy-all">复制全部意见</button><span class="copy-status" id="copy-status"></span>
+    <div class="chunk-btns" id="chunk-btns"></div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2024';
+  var PREFIX = 'fly2024-comment:' + location.pathname + ':';
+  var cards = Array.prototype.slice.call(document.querySelectorAll('.card[data-sec]'));
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  function collect() {
+    var items = [];
+    cards.forEach(function (card) {
+      var key = card.getAttribute('data-sec');
+      var title = card.getAttribute('data-title') || key;
+      var v = lsGet(PREFIX + key);
+      if (v && v.trim()) items.push('◆ ' + title + ':\n' + v.trim());
+    });
+    return items;
+  }
+
+  function fullText() {
+    var items = collect();
+    return MARKER + '\n' + (items.length ? items.join('\n\n') : '(无意见)');
+  }
+
+  function renderSummary() {
+    var items = collect();
+    var box = document.getElementById('summary-list');
+    box.textContent = items.length ? items.join('\n\n') : '(还没有意见)';
+    renderChunks();
+  }
+
+  function chunkify(text) {
+    var LIMIT = 1800;
+    if (text.length <= LIMIT) return [text];
+    var body = text.slice(MARKER.length).replace(/^\n/, '');
+    var parts = body.split('\n\n');
+    var chunks = [], cur = '';
+    parts.forEach(function (p) {
+      var candidate = cur ? cur + '\n\n' + p : p;
+      if ((MARKER.length + 20 + candidate.length) > LIMIT && cur) { chunks.push(cur); cur = p; }
+      else { cur = candidate; }
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(第 ' + (i + 1) + '/' + chunks.length + ' 段)\n' + c;
+    });
+  }
+
+  function doCopy(text, statusEl) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        statusEl.textContent = ok ? '已复制 ✓' : '复制失败,请手动全选上方文本';
+      } catch (e) { statusEl.textContent = '复制失败,请手动全选上方文本'; }
+      setTimeout(function () { statusEl.textContent = ''; }, 3000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        statusEl.textContent = '已复制 ✓';
+        setTimeout(function () { statusEl.textContent = ''; }, 3000);
+      }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderChunks() {
+    var wrap = document.getElementById('chunk-btns');
+    while (wrap.firstChild) wrap.removeChild(wrap.firstChild);
+    var chunks = chunkify(fullText());
+    if (chunks.length <= 1) return;
+    chunks.forEach(function (c, i) {
+      var b = document.createElement('button');
+      b.className = 'btn';
+      b.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+      b.addEventListener('click', function () {
+        doCopy(c, document.getElementById('copy-status'));
+      });
+      wrap.appendChild(b);
+    });
+  }
+
+  cards.forEach(function (card) {
+    var key = card.getAttribute('data-sec');
+    var ta = card.querySelector('textarea[data-key]');
+    if (!ta) return;
+    var saved = lsGet(PREFIX + key);
+    if (saved) ta.value = saved;
+    ta.addEventListener('input', function () {
+      lsSet(PREFIX + key, ta.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var chunks = chunkify(fullText());
+    if (chunks.length === 1) doCopy(chunks[0], document.getElementById('copy-status'));
+    else doCopy(chunks[0], document.getElementById('copy-status'));
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

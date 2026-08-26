@@ -7222,11 +7222,12 @@ export async function startBridge(
 					r.killedAttributedOrphan > 0 ||
 					r.killedUnattributedIdle > 0 ||
 					r.killedHeadlessShot > 0 ||
+					r.killedRodBrowser > 0 ||
 					r.wouldKillUnattributed > 0 ||
 					r.errors.length > 0
 				) {
 					console.log(
-						`[chrome-reaper:${mode}] scanned=${r.scanned} killTerminal=${r.killedAttributedTerminal} killOrphan=${r.killedAttributedOrphan} killUnattr=${r.killedUnattributedIdle} killHeadlessShot=${r.killedHeadlessShot} wouldKillUnattr=${r.wouldKillUnattributed} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} skippedHeadlessShotFresh=${r.skippedHeadlessShotFresh} raced=${r.racedSkipped} errors=${r.errors.length}`,
+						`[chrome-reaper:${mode}] scanned=${r.scanned} killTerminal=${r.killedAttributedTerminal} killOrphan=${r.killedAttributedOrphan} killUnattr=${r.killedUnattributedIdle} killHeadlessShot=${r.killedHeadlessShot} killRodBrowser=${r.killedRodBrowser} wouldKillUnattr=${r.wouldKillUnattributed} skippedActive=${r.skippedActive} skippedForeign=${r.skippedForeign} skippedHeadlessShotFresh=${r.skippedHeadlessShotFresh} skippedRodFresh=${r.skippedRodFresh} raced=${r.racedSkipped} errors=${r.errors.length}`,
 					);
 				}
 			} catch (e) {

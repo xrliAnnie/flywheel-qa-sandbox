@@ -45,6 +45,7 @@ const RUNNER_STATE_SEG = `${sep}runner-state${sep}`;
 const BROWSER_TMP_SEG = `${sep}browser-tmp${sep}`;
 const OWNER_MARKER_FILE = ".flywheel-owner.json";
 export const HEADLESS_SHOT_MAX_AGE_MS = 5 * 60_000;
+export const ROD_BROWSER_MAX_AGE_MS = 30 * 60_000;
 export const CHROME_FAMILY_COMMS = [
 	"Google Chrome",
 	"Google Chrome for Testing",
@@ -56,6 +57,7 @@ const HEADLESS_TERM_POLLS = 6;
 const HEADLESS_KILL_POLLS = 4;
 const HEADLESS_POLL_MS = 500;
 const HEADLESS_SHOT_CONCURRENCY = 4;
+const ROD_BROWSER_CONCURRENCY = 4;
 
 /**
  * Outcome states whose owning session's Chrome is safe to reap.
@@ -91,16 +93,26 @@ export interface HeadlessShotSnapshot {
 	lstart: string;
 }
 
+export interface RodBrowserSnapshot {
+	pid: number;
+	comm: string;
+	command: string;
+	ageMs: number;
+	lstart: string;
+}
+
 export interface ChromeReapResult {
 	scanned: number;
 	killedAttributedTerminal: number;
 	killedAttributedOrphan: number;
 	killedUnattributedIdle: number;
 	killedHeadlessShot: number;
+	killedRodBrowser: number;
 	skippedActive: number;
 	skippedForeign: number;
 	skippedUnattributedFresh: number;
 	skippedHeadlessShotFresh: number;
+	skippedRodFresh: number;
 	wouldKillUnattributed: number;
 	racedSkipped: number;
 	errors: string[];
@@ -149,6 +161,10 @@ export interface ReapChromeDeps {
 	readHeadlessShotProc?: (
 		pid: number,
 	) => Promise<HeadlessShotSnapshot | null | undefined>;
+	/** null = confirmed gone; undefined = row present but unparseable. */
+	readRodBrowserProc?: (
+		pid: number,
+	) => Promise<RodBrowserSnapshot | null | undefined>;
 	signalProc?: (pid: number, signal: NodeJS.Signals) => void;
 	sleep?: (ms: number) => Promise<void>;
 	log?: (m: string) => void;
@@ -395,6 +411,12 @@ async function defaultReadHeadlessShotProc(
 	return { pid, comm: comm.trim(), command: command.trim(), ...age };
 }
 
+async function defaultReadRodBrowserProc(
+	pid: number,
+): Promise<RodBrowserSnapshot | null | undefined> {
+	return defaultReadHeadlessShotProc(pid);
+}
+
 function processExists(pid: number): boolean {
 	try {
 		process.kill(pid, 0);
@@ -452,6 +474,27 @@ export function parseHeadlessShotProc(
 	if (!/(^|\s)--screenshot(=|\s|$)/.test(command)) return null;
 	if (/(^|\s)--type=/.test(command)) return null;
 	return { pid };
+}
+
+/**
+ * Narrow selector for rod-owned browser MAIN processes. The executable must be
+ * Chrome-family by OS identity, helper processes are excluded, and rod
+ * ownership must be visible either in its temp profile or managed executable.
+ */
+export function parseRodBrowserProc(
+	pid: number,
+	comm: string,
+	command: string,
+): { pid: number } | null {
+	if (!isChromeFamilyComm(comm)) return null;
+	if (/(^|\s)--type=/.test(command)) return null;
+	const userDataDir = extractUserDataDir(command);
+	const hasRodProfile = userDataDir?.includes(`${sep}rod${sep}user-data${sep}`);
+	const executable = command.trimStart().split(/\s/, 1)[0] ?? "";
+	const hasRodExecutable =
+		comm.includes(`${sep}.cache${sep}rod${sep}browser${sep}`) ||
+		executable.includes(`${sep}.cache${sep}rod${sep}browser${sep}`);
+	return hasRodProfile || hasRodExecutable ? { pid } : null;
 }
 
 function extractUserDataDir(command: string): string | null {
@@ -520,10 +563,13 @@ export async function reapChromeSessions(
 	const killProc = deps.killProc ?? defaultKillProc;
 	const readHeadlessShotProc =
 		deps.readHeadlessShotProc ?? defaultReadHeadlessShotProc;
+	const readRodBrowserProc =
+		deps.readRodBrowserProc ?? defaultReadRodBrowserProc;
 	const signalProc = deps.signalProc ?? defaultSignalProc;
 	const sleep = deps.sleep ?? defaultSleep;
 	const graceMs = deps.unattributedIdleGraceMinutes * 60_000;
 	const staleHeadlessShots: HeadlessShotSnapshot[] = [];
+	const staleRodBrowsers: RodBrowserSnapshot[] = [];
 
 	const result: ChromeReapResult = {
 		scanned: 0,
@@ -531,10 +577,12 @@ export async function reapChromeSessions(
 		killedAttributedOrphan: 0,
 		killedUnattributedIdle: 0,
 		killedHeadlessShot: 0,
+		killedRodBrowser: 0,
 		skippedActive: 0,
 		skippedForeign: 0,
 		skippedUnattributedFresh: 0,
 		skippedHeadlessShotFresh: 0,
+		skippedRodFresh: 0,
 		wouldKillUnattributed: 0,
 		racedSkipped: 0,
 		errors: [],
@@ -561,7 +609,9 @@ export async function reapChromeSessions(
 	const ageByPid =
 		sweepSample.age.status === "ok" ? sweepSample.age.rows : null;
 	if (sweepSample.age.status === "unknown") {
-		result.errors.push(`headless-shot age sensor: ${sweepSample.age.error}`);
+		result.errors.push(
+			`headless-shot age sensor (shared with rod-browser): ${sweepSample.age.error}`,
+		);
 	}
 
 	for (const [pid, { ppid, command }] of cmdByPid) {
@@ -579,6 +629,27 @@ export async function reapChromeSessions(
 				continue;
 			}
 			staleHeadlessShots.push({
+				pid,
+				comm,
+				command,
+				ageMs: age.ageMs,
+				lstart: age.lstart,
+			});
+			continue;
+		}
+		if (parseRodBrowserProc(pid, comm, command)) {
+			result.scanned++;
+			if (ageByPid === null) continue;
+			const age = ageByPid.get(pid);
+			if (!age) {
+				result.errors.push(`rod-browser pid ${pid}: age sensor missing row`);
+				continue;
+			}
+			if (age.ageMs <= ROD_BROWSER_MAX_AGE_MS) {
+				result.skippedRodFresh++;
+				continue;
+			}
+			staleRodBrowsers.push({
 				pid,
 				comm,
 				command,
@@ -639,7 +710,121 @@ export async function reapChromeSessions(
 		);
 	}
 
+	for (
+		let index = 0;
+		index < staleRodBrowsers.length;
+		index += ROD_BROWSER_CONCURRENCY
+	) {
+		await Promise.all(
+			staleRodBrowsers
+				.slice(index, index + ROD_BROWSER_CONCURRENCY)
+				.map(async (browser) => {
+					try {
+						await handleRodBrowser(browser, deps, result, {
+							readRodBrowserProc,
+							signalProc,
+							sleep,
+						});
+					} catch (error) {
+						result.errors.push(
+							`rod-browser pid ${browser.pid}: ${(error as Error).message}`,
+						);
+					}
+				}),
+		);
+	}
+
 	return result;
+}
+
+interface RodBrowserHandlers {
+	readRodBrowserProc: (
+		pid: number,
+	) => Promise<RodBrowserSnapshot | null | undefined>;
+	signalProc: (pid: number, signal: NodeJS.Signals) => void;
+	sleep: (ms: number) => Promise<void>;
+}
+
+async function handleRodBrowser(
+	initial: RodBrowserSnapshot,
+	deps: ReapChromeDeps,
+	result: ChromeReapResult,
+	h: RodBrowserHandlers,
+): Promise<void> {
+	const fresh = await h.readRodBrowserProc(initial.pid);
+	if (fresh === undefined) throw new Error("unparseable exact-process ps row");
+	if (!sameRodBrowser(initial, fresh)) {
+		result.racedSkipped++;
+		return;
+	}
+
+	try {
+		h.signalProc(initial.pid, "SIGTERM");
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === "ESRCH") {
+			result.racedSkipped++;
+			return;
+		}
+		throw error;
+	}
+
+	let disposition = await pollRodBrowser(initial, HEADLESS_TERM_POLLS, h);
+	if (disposition === "raced") {
+		result.racedSkipped++;
+		return;
+	}
+	if (disposition === "alive") {
+		try {
+			h.signalProc(initial.pid, "SIGKILL");
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+			disposition = "gone";
+		}
+		if (disposition !== "gone") {
+			disposition = await pollRodBrowser(initial, HEADLESS_KILL_POLLS, h);
+		}
+	}
+	if (disposition === "raced") {
+		result.racedSkipped++;
+		return;
+	}
+	if (disposition === "alive") {
+		result.errors.push(`rod-browser pid ${initial.pid} survived SIGKILL`);
+		return;
+	}
+
+	result.killedRodBrowser++;
+	insertRodBrowserReapEvent(deps.store, initial, deps.mode);
+}
+
+async function pollRodBrowser(
+	initial: RodBrowserSnapshot,
+	polls: number,
+	h: RodBrowserHandlers,
+): Promise<"gone" | "alive" | "raced"> {
+	for (let attempt = 0; attempt < polls; attempt++) {
+		await h.sleep(HEADLESS_POLL_MS);
+		const current = await h.readRodBrowserProc(initial.pid);
+		if (current === undefined)
+			throw new Error("unparseable exact-process ps row");
+		if (!current || current.lstart !== initial.lstart) return "gone";
+		if (!sameRodBrowser(initial, current)) return "raced";
+	}
+	return "alive";
+}
+
+function sameRodBrowser(
+	initial: RodBrowserSnapshot,
+	current: RodBrowserSnapshot | null,
+): current is RodBrowserSnapshot {
+	return Boolean(
+		current &&
+			current.lstart === initial.lstart &&
+			current.comm === initial.comm &&
+			current.command === initial.command &&
+			current.ageMs > ROD_BROWSER_MAX_AGE_MS &&
+			parseRodBrowserProc(current.pid, current.comm, current.command),
+	);
 }
 
 interface HeadlessShotHandlers {
@@ -937,6 +1122,29 @@ function insertHeadlessShotReapEvent(
 			mode,
 			urlOrigin,
 			urlPathHash,
+		},
+	});
+}
+
+function insertRodBrowserReapEvent(
+	store: StateStore,
+	browser: RodBrowserSnapshot,
+	mode: ReapChromeDeps["mode"],
+): void {
+	store.insertEvent({
+		event_id: `chrome-rod-browser-reaper-${browser.pid}-${Date.now()}`,
+		execution_id: `chrome-rod-browser:${browser.pid}`,
+		issue_id: "unknown",
+		project_name: "unknown",
+		event_type: "chrome_session_reaped",
+		source: "bridge.chrome-session-reaper",
+		payload: {
+			pid: browser.pid,
+			commBasename: basename(browser.comm),
+			ageMs: browser.ageMs,
+			lstart: browser.lstart,
+			mode,
+			reason: "stale_rod_browser",
 		},
 	});
 }

@@ -1,0 +1,24 @@
+flowchart TB
+    subgraph L1["　第一层 · 产生侧根治　"]
+        direction TB
+        A1["每个操作入口装上<br/>硬预算(如搜索 90 秒)"] --> A2["卡死时预算到期<br/>→ 操作被强制解卡"]
+        A2 --> A3["defer 清理这次够得着了<br/>→ 浏览器进程被关闭 ✓"]
+        A4["同时修好 8 个文件里<br/>超时被替换丢弃的写法"] --> A2
+    end
+
+    subgraph L2["　第二层 · 基础设施兜底　"]
+        direction TB
+        B1["每 60 秒扫一遍全部进程"] --> B2["认出 rod 家族浏览器<br/>(此前巡逻不认识这一类)"]
+        B2 --> B3["存活超过 30 分钟<br/>(远超最长合法操作)"]
+        B3 --> B4["确认身份后温和终止<br/>并记一条可审计回执 ✓"]
+    end
+
+    S["修复后的世界"] --> L1
+    S --> L2
+    L1 -->|"哪怕将来更新代码又写错"| L2
+    L2 --> Z["🟢 Dock 不再积累图标<br/>泄漏最长存活 30 分钟"]
+
+    style S fill:#e8f0fe,stroke:#007aff
+    style A3 fill:#e6f9ed,stroke:#34c759
+    style B4 fill:#e6f9ed,stroke:#34c759
+    style Z fill:#d9f2e3,stroke:#34c759,stroke-width:2px

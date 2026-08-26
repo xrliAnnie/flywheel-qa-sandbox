@@ -1,0 +1,17 @@
+flowchart TB
+    A["Agent 批量调用 search_feeds<br/>(08-23 晚 19 次,一秒内最多 5 个并发)"] --> B["xhs-mcp 服务:每次调用<br/>新起一个 Chromium 浏览器<br/>(headed 模式 → Dock 占一个图标)"]
+    B --> C["搜索页加载"]
+    C -->|"页面正常"| D["返回结果<br/>defer 清理执行 → 浏览器关闭 ✓"]
+    C -->|"风控 / 慢页面<br/>__INITIAL_STATE__ 永不出现"| E["MustWait 无限等待"]
+    E --> F["❌ 60 秒超时本应触发<br/>但被下一行 Context(ctx) 整个替换丢弃"]
+    F --> G["❌ 换上的 ctx 没有任何期限<br/>(MCP 客户端放弃调用也不会取消它)"]
+    G --> H["goroutine 永久卡死<br/>defer 清理永远执行不到"]
+    H --> I["🔴 Chromium 常驻 Dock<br/>10 次卡死 = 10 个图标<br/>直到有人手动杀进程"]
+
+    style A fill:#e8f0fe,stroke:#007aff
+    style D fill:#e6f9ed,stroke:#34c759
+    style E fill:#fff4e5,stroke:#ff9500
+    style F fill:#ffe5e3,stroke:#ff3b30
+    style G fill:#ffe5e3,stroke:#ff3b30
+    style H fill:#ffe5e3,stroke:#ff3b30
+    style I fill:#ffd8d6,stroke:#ff3b30,stroke-width:2px

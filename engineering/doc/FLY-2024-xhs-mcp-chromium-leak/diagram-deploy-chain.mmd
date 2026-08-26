@@ -1,0 +1,12 @@
+flowchart LR
+    A["fork 源码修好<br/>(~/Dev/xiaohongshu-mcp)"] --> B["go build 重新编译"]
+    B --> C["先备份旧程序<br/>再原子替换新程序"]
+    C --> D["launchctl 重启常驻服务"]
+    D --> E["验证:新进程 + 登录状态正常<br/>(cookie 独立保存,不受影响)"]
+    E --> F["48 小时观察:<br/>无 30 分钟以上的残留浏览器<br/>Dock 不再积累图标"]
+
+    W["⚠️ 关键:常驻服务由 LaunchAgent<br/>直接运行编译好的程序,<br/>改了源码不做这一步 = 白修"] -.-> B
+
+    style A fill:#e8f0fe,stroke:#007aff
+    style W fill:#fff4e5,stroke:#ff9500
+    style F fill:#e6f9ed,stroke:#34c759

@@ -18,7 +18,10 @@ import {
 	parseChromeProc,
 	parseEtimeToMs,
 	parseHeadlessShotProc,
+	parseRodBrowserProc,
 	type ReapChromeDeps,
+	ROD_BROWSER_MAX_AGE_MS,
+	type RodBrowserSnapshot,
 	reapChromeSessions,
 } from "../bridge/chrome-session-reaper.js";
 import { StateStore } from "../StateStore.js";
@@ -96,6 +99,7 @@ function makeDeps(
 			}),
 		killProc: over.killProc ?? ((pid) => kills.push(pid)),
 		readHeadlessShotProc: over.readHeadlessShotProc,
+		readRodBrowserProc: over.readRodBrowserProc,
 		signalProc:
 			over.signalProc ??
 			((pid, signal) => {
@@ -894,8 +898,237 @@ describe("reapChromeSessions — stale headless screenshot backstop", () => {
 	});
 });
 
+const ROD_CHROMIUM_COMM =
+	"/Users/x/.cache/rod/browser/chromium-1321438/chrome-mac/Chromium.app/Contents/MacOS/Chromium";
+const ROD_USER_DATA_DIR = "/var/folders/zz/T/rod/user-data/abcd1234";
+
+function rodCommand(
+	pid: number,
+	overrides: {
+		comm?: string;
+		command?: string;
+		ageMs?: number;
+		lstart?: string;
+	} = {},
+): RodBrowserSnapshot {
+	const comm = overrides.comm ?? ROD_CHROMIUM_COMM;
+	return {
+		pid,
+		comm,
+		command:
+			overrides.command ??
+			`${comm} --user-data-dir=${ROD_USER_DATA_DIR} --remote-debugging-port=0 --no-sandbox`,
+		ageMs: overrides.ageMs ?? 31 * 60_000,
+		lstart: overrides.lstart ?? "Tue Aug 25 09:11:30 2026",
+	};
+}
+
+describe("parseRodBrowserProc — narrow rod main selector", () => {
+	it("matches a Chrome-family main by rod profile or rod-managed executable", () => {
+		expect(
+			parseRodBrowserProc(100, ROD_CHROMIUM_COMM, rodCommand(100).command),
+		).toEqual({ pid: 100 });
+		expect(
+			parseRodBrowserProc(
+				101,
+				SYSTEM_CHROME_COMM,
+				`${SYSTEM_CHROME_COMM} --user-data-dir=${ROD_USER_DATA_DIR} --remote-debugging-port=0`,
+			),
+		).toEqual({ pid: 101 });
+		expect(
+			parseRodBrowserProc(
+				102,
+				"Chromium",
+				`${ROD_CHROMIUM_COMM} --user-data-dir=/tmp/custom-profile`,
+			),
+		).toEqual({ pid: 102 });
+	});
+
+	it("rejects helpers, leakless, argv lookalikes, and unrelated browser families", () => {
+		const lookalikes = [
+			{
+				comm: ROD_CHROMIUM_COMM,
+				command: `${rodCommand(1).command} --type=renderer`,
+			},
+			{
+				comm: "/var/folders/zz/T/leakless-arm64/leakless",
+				command: `/var/folders/zz/T/leakless-arm64/leakless ${rodCommand(2).command}`,
+			},
+			{
+				comm: "/opt/homebrew/bin/node",
+				command: `/opt/homebrew/bin/node reviewer.js ${rodCommand(3).command}`,
+			},
+			{
+				comm: CFT_COMM,
+				command: `${CFT_COMM} --user-data-dir=${udd("e1")} --remote-debugging-port=0`,
+			},
+			{
+				comm: SYSTEM_CHROME_COMM,
+				command: `${SYSTEM_CHROME_COMM} --user-data-dir=/Users/x/Library/Application Support/Google/Chrome`,
+			},
+			{
+				comm: CFT_COMM,
+				command: `/Users/x/Library/Caches/ms-playwright/chromium/chrome --user-data-dir=/tmp/playwright-profile`,
+			},
+		];
+
+		for (const [index, process] of lookalikes.entries()) {
+			expect(
+				parseRodBrowserProc(200 + index, process.comm, process.command),
+			).toBeNull();
+		}
+	});
+});
+
+describe("reapChromeSessions — stale rod browser backstop", () => {
+	let store: StateStore;
+	beforeEach(async () => {
+		store = await makeStore();
+	});
+	afterEach(() => {
+		for (const d of tempDirs.splice(0))
+			rmSync(d, { recursive: true, force: true });
+	});
+
+	it("reaps a 31-minute rod main and writes one redacted receipt after confirmed exit", async () => {
+		const rod = rodCommand(100);
+		let alive = true;
+		const { deps, signals } = makeDeps(store, {
+			procs: [{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command }],
+			listAgeByPid: async () =>
+				new Map([[rod.pid, { ageMs: rod.ageMs, lstart: rod.lstart }]]),
+			readRodBrowserProc: async () => (alive ? rod : null),
+			signalProc: (pid, signal) => {
+				signals.push({ pid, signal });
+				alive = false;
+			},
+		});
+
+		const result = await reapChromeSessions(deps);
+		expect(result.killedRodBrowser).toBe(1);
+		expect(signals).toEqual([{ pid: rod.pid, signal: "SIGTERM" }]);
+
+		const events = store.getEventsByExecution(`chrome-rod-browser:${rod.pid}`);
+		expect(events).toHaveLength(1);
+		const payload = JSON.stringify(events[0].payload);
+		expect(payload).toContain("stale_rod_browser");
+		expect(payload).not.toContain(ROD_USER_DATA_DIR);
+		expect(payload).not.toContain(rod.command);
+	});
+
+	it("keeps a rod main at the exact 30-minute boundary and writes no receipt", async () => {
+		const rod = rodCommand(100, { ageMs: ROD_BROWSER_MAX_AGE_MS });
+		const { deps, signals } = makeDeps(store, {
+			procs: [{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command }],
+			listAgeByPid: async () =>
+				new Map([[rod.pid, { ageMs: rod.ageMs, lstart: rod.lstart }]]),
+		});
+
+		const result = await reapChromeSessions(deps);
+		expect(result.skippedRodFresh).toBe(1);
+		expect(result.killedRodBrowser).toBe(0);
+		expect(signals).toEqual([]);
+		expect(store.getEventsByExecution(`chrome-rod-browser:${rod.pid}`)).toEqual(
+			[],
+		);
+	});
+
+	it("fails closed when the exact row is no longer older than the threshold", async () => {
+		const rod = rodCommand(100);
+		const nowFresh = rodCommand(100, { ageMs: ROD_BROWSER_MAX_AGE_MS });
+		const { deps, signals } = makeDeps(store, {
+			procs: [{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command }],
+			listAgeByPid: async () =>
+				new Map([[rod.pid, { ageMs: rod.ageMs, lstart: rod.lstart }]]),
+			readRodBrowserProc: async () => nowFresh,
+		});
+
+		const result = await reapChromeSessions(deps);
+		expect(result.racedSkipped).toBe(1);
+		expect(result.killedRodBrowser).toBe(0);
+		expect(signals).toEqual([]);
+		expect(store.getEventsByExecution(`chrome-rod-browser:${rod.pid}`)).toEqual(
+			[],
+		);
+	});
+
+	it.each([
+		["lstart", { lstart: "Tue Aug 25 10:11:30 2026" }],
+		["comm", { comm: "/another/rod/browser/Chromium" }],
+		["command", { command: `${rodCommand(100).command} --extra-flag` }],
+	] as const)(
+		"fails closed when exact %s identity drifts before signaling",
+		async (_field, drift) => {
+			const rod = rodCommand(100);
+			const reused = rodCommand(100, drift);
+			const { deps, signals } = makeDeps(store, {
+				procs: [
+					{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command },
+				],
+				listAgeByPid: async () =>
+					new Map([[rod.pid, { ageMs: rod.ageMs, lstart: rod.lstart }]]),
+				readRodBrowserProc: async () => reused,
+			});
+
+			const result = await reapChromeSessions(deps);
+			expect(result.racedSkipped).toBe(1);
+			expect(signals).toEqual([]);
+			expect(
+				store.getEventsByExecution(`chrome-rod-browser:${rod.pid}`),
+			).toEqual([]);
+		},
+	);
+
+	it("does not claim a kill or receipt when rod survives SIGKILL", async () => {
+		const rod = rodCommand(100);
+		const { deps, signals } = makeDeps(store, {
+			procs: [{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command }],
+			listAgeByPid: async () =>
+				new Map([[rod.pid, { ageMs: rod.ageMs, lstart: rod.lstart }]]),
+			readRodBrowserProc: async () => rod,
+		});
+
+		const result = await reapChromeSessions(deps);
+		expect(signals).toEqual([
+			{ pid: rod.pid, signal: "SIGTERM" },
+			{ pid: rod.pid, signal: "SIGKILL" },
+		]);
+		expect(result.killedRodBrowser).toBe(0);
+		expect(result.errors.join(" ")).toContain("survived SIGKILL");
+		expect(store.getEventsByExecution(`chrome-rod-browser:${rod.pid}`)).toEqual(
+			[],
+		);
+	});
+
+	it("fails closed when exact-process or age sensors are unknown", async () => {
+		const rod = rodCommand(100);
+		const exactUnknown = makeDeps(store, {
+			procs: [{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command }],
+			listAgeByPid: async () =>
+				new Map([[rod.pid, { ageMs: rod.ageMs, lstart: rod.lstart }]]),
+			readRodBrowserProc: async () => undefined,
+		});
+		const exactResult = await reapChromeSessions(exactUnknown.deps);
+		expect(exactResult.killedRodBrowser).toBe(0);
+		expect(exactUnknown.signals).toEqual([]);
+
+		const ageUnknown = makeDeps(store, {
+			procs: [{ pid: rod.pid, ppid: 99, comm: rod.comm, command: rod.command }],
+			listAgeByPid: async () => {
+				throw new Error("age ps unavailable");
+			},
+		});
+		const ageResult = await reapChromeSessions(ageUnknown.deps);
+		expect(ageResult.killedRodBrowser).toBe(0);
+		expect(ageUnknown.signals).toEqual([]);
+		expect(store.getEventsByExecution(`chrome-rod-browser:${rod.pid}`)).toEqual(
+			[],
+		);
+	});
+});
+
 describe("chrome reaper plugin wiring", () => {
-	it("logs the headless-shot killed and fresh counters", () => {
+	it("logs the headless-shot and rod killed/fresh counters", () => {
 		const pluginPath = fileURLToPath(
 			new URL("../bridge/plugin.ts", import.meta.url),
 		);
@@ -905,5 +1138,8 @@ describe("chrome reaper plugin wiring", () => {
 		expect(source).toContain(
 			"skippedHeadlessShotFresh=$" + "{r.skippedHeadlessShotFresh}",
 		);
+		expect(source).toContain("r.killedRodBrowser > 0");
+		expect(source).toContain("killRodBrowser=$" + "{r.killedRodBrowser}");
+		expect(source).toContain("skippedRodFresh=$" + "{r.skippedRodFresh}");
 	});
 });
