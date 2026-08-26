@@ -123,31 +123,64 @@ run_bridge_wrapper() { # <tree> <home>
   rm -f "$tree/scripts/lib/bridge-port.sh"
   env -i HOME="$h" PATH="/usr/bin:/bin" FLYWHEEL_DIR="$tree" \
     FLYWHEEL_STATE_DIR="$h/.flywheel" \
+    FLYWHEEL_BRIDGE_LOG_PATH="$h/bridge-main.log" \
     bash "$tree/scripts/flywheel-bridge-wrapper.sh" >"$h/out.log" 2>&1
 }
 
 T="$SANDBOX/s1-tree"; H="$SANDBOX/s1-home"
 mk_tree "$T"; mk_home "$H"
-stub "$H" node 'printf "%s\n" "${FLYWHEEL_TMUX_SOCKET_OVERRIDE-}" > "$HOME/bridge-socket"' 'exit 0'; stub "$H" npx 'exit 0'
+printf 'stale-wrapper-capture\n' > "$H/.flywheel/state/bridge-startup.log"
+stub "$H" node \
+  'printf "%s\n" "${FLYWHEEL_TMUX_SOCKET_OVERRIDE-}" > "$HOME/bridge-socket"' \
+  'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/bridge-log-env"' \
+  'printf "packaged-wrapper-startup\n"' \
+  'exit 0'
+stub "$H" npx 'exit 0'
 mkdir -p "$T/dist"; echo "// compiled" > "$T/dist/run-bridge.js"
 run_bridge_wrapper "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^node dist/run-bridge.js$" <(calls "$H") \
    && ! grep -q "^npx " <(calls "$H") \
-   && [ -z "$(cat "$H/bridge-socket")" ]; then
-  pass "S1 bridge-wrapper packaged: leaves tmux socket ownership proof to Bridge (npx untouched)"
+   && [ -z "$(cat "$H/bridge-socket")" ] \
+   && [ "$(cat "$H/bridge-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
+   && grep -q '^packaged-wrapper-startup$' "$H/.flywheel/state/bridge-startup.log" \
+   && ! grep -q 'stale-wrapper-capture' "$H/.flywheel/state/bridge-startup.log"; then
+  pass "S1 bridge-wrapper packaged: command unchanged, rotation env isolated, startup capture truncated"
 else
-  fail "S1 rc=$rc socket=[$(cat "$H/bridge-socket" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S1 rc=$rc socket=[$(cat "$H/bridge-socket" 2>/dev/null || true)] env=[$(cat "$H/bridge-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 T="$SANDBOX/s2-tree"; H="$SANDBOX/s2-home"
 mk_tree "$T"; mk_home "$H"
-stub "$H" node 'exit 0'; stub "$H" npx 'exit 0'
+printf 'stale-wrapper-capture\n' > "$H/.flywheel/state/bridge-startup.log"
+stub "$H" node 'exit 0'
+stub "$H" npx \
+  'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/bridge-log-env"' \
+  'printf "monorepo-wrapper-startup\n"' \
+  'exit 0'
 run_bridge_wrapper "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^npx tsx scripts/run-bridge.ts$" <(calls "$H") \
-   && ! grep -q "^node " <(calls "$H"); then
-  pass "S2 bridge-wrapper monorepo sentinel: exec npx tsx verbatim (node untouched)"
+   && ! grep -q "^node " <(calls "$H") \
+   && [ "$(cat "$H/bridge-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
+   && grep -q '^monorepo-wrapper-startup$' "$H/.flywheel/state/bridge-startup.log" \
+   && ! grep -q 'stale-wrapper-capture' "$H/.flywheel/state/bridge-startup.log"; then
+  pass "S2 bridge-wrapper monorepo sentinel: command unchanged, rotation env isolated, startup capture truncated"
 else
-  fail "S2 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S2 rc=$rc env=[$(cat "$H/bridge-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+fi
+
+T="$SANDBOX/s2b-tree"; H="$SANDBOX/s2b-home"
+mk_tree "$T"; mk_home "$H"
+printf 'must-not-be-truncated\n' > "$H/startup-target"
+ln -s "$H/startup-target" "$H/.flywheel/state/bridge-startup.log"
+stub "$H" node 'exit 0'; stub "$H" npx 'exit 0'
+run_bridge_wrapper "$T" "$H"; rc=$?
+if [ "$rc" -eq 0 ] \
+   && [ "$(cat "$H/startup-target")" = "must-not-be-truncated" ] \
+   && grep -q '^npx tsx scripts/run-bridge.ts$' <(calls "$H") \
+   && grep -qi 'unsafe Bridge raw startup log.*continuing via /dev/null' "$H/out.log"; then
+  pass "S2b bridge-wrapper bypasses an unsafe raw capture and still starts"
+else
+  fail "S2b rc=$rc target=[$(cat "$H/startup-target")] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -160,6 +193,8 @@ run_standup() { # <tree> <home>
   local tree="$1" h="$2"
   env -i HOME="$h" PATH="$h/.local/bin:/usr/bin:/bin" \
     STANDUP_MARKER="$h/bridge-up" \
+    FLYWHEEL_STATE_DIR="$h/.flywheel" \
+    FLYWHEEL_BRIDGE_LOG_PATH="$h/bridge-main.log" \
     bash "$tree/scripts/daily-standup.sh" >"$h/out.log" 2>&1
 }
 mk_standup_stubs() { # <home>
@@ -169,33 +204,63 @@ mk_standup_stubs() { # <home>
     '  [ -f "${STANDUP_MARKER:?}" ] && exit 0 || exit 22 ;;' \
     'esac; done' \
     'echo "{}"; exit 0'
-  stub "$h" node 'touch "${STANDUP_MARKER:?}"; sleep 3'
-  stub "$h" npx  'touch "${STANDUP_MARKER:?}"; sleep 3'
+  stub "$h" node \
+    'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/standup-log-env"' \
+    'printf "daily-node-startup\n"' \
+    'touch "${STANDUP_MARKER:?}"; sleep 3'
+  stub "$h" npx \
+    'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$HOME/standup-log-env"' \
+    'printf "daily-npx-startup\n"' \
+    'touch "${STANDUP_MARKER:?}"; sleep 3'
 }
 
 T="$SANDBOX/s3-tree"; H="$SANDBOX/s3-home"
 mk_tree "$T"; mk_home "$H"; mk_standup_stubs "$H"
+printf 'stale-daily-capture\n' > "$H/.flywheel/state/bridge-startup-daily.log"
 mkdir -p "$T/dist" "$T/packages/teamlead/dist/bridge"
 echo "// compiled" > "$T/dist/run-bridge.js"
 echo "// plugin"   > "$T/packages/teamlead/dist/bridge/plugin.js"
 run_standup "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^node $T/dist/run-bridge.js$" <(calls "$H") \
-   && ! grep -q "^npx " <(calls "$H"); then
-  pass "S3 daily-standup packaged: self-start via node dist/run-bridge.js"
+   && ! grep -q "^npx " <(calls "$H") \
+   && [ "$(cat "$H/standup-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup-daily.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
+   && grep -q '^daily-node-startup$' "$H/.flywheel/state/bridge-startup-daily.log" \
+   && ! grep -q 'stale-daily-capture' "$H/.flywheel/state/bridge-startup-daily.log"; then
+  pass "S3 daily-standup packaged: command unchanged, distinct startup capture truncated"
 else
-  fail "S3 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S3 rc=$rc env=[$(cat "$H/standup-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup-daily.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 T="$SANDBOX/s4-tree"; H="$SANDBOX/s4-home"
 mk_tree "$T"; mk_home "$H"; mk_standup_stubs "$H"
+printf 'stale-daily-capture\n' > "$H/.flywheel/state/bridge-startup-daily.log"
 mkdir -p "$T/packages/teamlead/dist/bridge"
 echo "// plugin" > "$T/packages/teamlead/dist/bridge/plugin.js"
 run_standup "$T" "$H"; rc=$?
 if [ "$rc" -eq 0 ] && grep -q "^npx tsx $T/scripts/run-bridge.ts$" <(calls "$H") \
-   && ! grep -q "^node " <(calls "$H"); then
-  pass "S4 daily-standup monorepo sentinel: self-start via npx tsx verbatim"
+   && ! grep -q "^node " <(calls "$H") \
+   && [ "$(cat "$H/standup-log-env")" = "$H/bridge-main.log|$H/.flywheel/state/bridge-startup-daily.log|$H/.flywheel/state/bridge-log-rotation-error.json" ] \
+   && grep -q '^daily-npx-startup$' "$H/.flywheel/state/bridge-startup-daily.log" \
+   && ! grep -q 'stale-daily-capture' "$H/.flywheel/state/bridge-startup-daily.log"; then
+  pass "S4 daily-standup monorepo sentinel: command unchanged, distinct startup capture truncated"
 else
-  fail "S4 rc=$rc calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+  fail "S4 rc=$rc env=[$(cat "$H/standup-log-env" 2>/dev/null || true)] startup=[$(cat "$H/.flywheel/state/bridge-startup-daily.log" 2>/dev/null || true)] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
+fi
+
+T="$SANDBOX/s4b-tree"; H="$SANDBOX/s4b-home"
+mk_tree "$T"; mk_home "$H"; mk_standup_stubs "$H"
+mkdir -p "$T/packages/teamlead/dist/bridge"
+echo "// plugin" > "$T/packages/teamlead/dist/bridge/plugin.js"
+printf 'must-not-be-truncated\n' > "$H/daily-startup-target"
+ln -s "$H/daily-startup-target" "$H/.flywheel/state/bridge-startup-daily.log"
+run_standup "$T" "$H"; rc=$?
+if [ "$rc" -eq 0 ] \
+   && [ "$(cat "$H/daily-startup-target")" = "must-not-be-truncated" ] \
+   && grep -q "^npx tsx $T/scripts/run-bridge.ts$" <(calls "$H") \
+   && grep -qi 'unsafe Bridge raw startup log.*continuing via /dev/null' "$H/out.log"; then
+  pass "S4b daily fallback bypasses an unsafe raw capture and still starts"
+else
+  fail "S4b rc=$rc target=[$(cat "$H/daily-startup-target")] calls=[$(calls "$H")] out=[$(cat "$H/out.log")]"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -214,16 +214,24 @@ fi
 # records a transaction that was rolled back.
 # ---------------------------------------------------------------------------
 BRIDGE_LOG="/tmp/flywheel-bridge.log"
-if [ ! -f "$BRIDGE_LOG" ]; then
+BRIDGE_LOGS=()
+for bridge_log_candidate in \
+	"$BRIDGE_LOG.3" "$BRIDGE_LOG.2" "$BRIDGE_LOG.1" "$BRIDGE_LOG"; do
+	[[ -f "$bridge_log_candidate" && ! -L "$bridge_log_candidate" ]] \
+		&& BRIDGE_LOGS+=("$bridge_log_candidate")
+done
+if [ "${#BRIDGE_LOGS[@]}" -eq 0 ]; then
 	absent "$BRIDGE_LOG" "rollback count (evidence 4) unavailable — the log is the only place it appears"
 else
 	{
-		echo "log: $BRIDGE_LOG"
-		echo "size_bytes: $(wc -c < "$BRIDGE_LOG" | tr -d ' ')"
-		echo "reused-with-different-content count: $(grep -c 'was reused with different content' "$BRIDGE_LOG" 2>/dev/null || echo 0)"
+		echo "logs_oldest_to_active: ${BRIDGE_LOGS[*]}"
+		for bridge_log_candidate in "${BRIDGE_LOGS[@]}"; do
+			echo "size_bytes[$bridge_log_candidate]: $(wc -c < "$bridge_log_candidate" | tr -d ' ')"
+		done
+		echo "reused-with-different-content count: $(grep -h 'was reused with different content' "${BRIDGE_LOGS[@]}" 2>/dev/null | awk 'END { print NR + 0 }')"
 		echo
 		echo "--- last 40 matching lines ---"
-		grep 'was reused with different content' "$BRIDGE_LOG" 2>/dev/null | tail -40
+		grep -h 'was reused with different content' "${BRIDGE_LOGS[@]}" 2>/dev/null | tail -40
 	} > "$OUT_DIR/05-rollback-log.txt" 2>&1
 	note "evidence 4 -> 05-rollback-log.txt"
 fi

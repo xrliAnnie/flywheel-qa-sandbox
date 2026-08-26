@@ -19,4 +19,12 @@ describe("alert kind copy", () => {
 		expect(body).toContain("DAG recovery and redispatch");
 		expect(body).not.toMatch(/spawn|auto-QA|QA Runner/i);
 	});
+
+	it("points Bridge deploy failures at rotating, startup, and marker evidence", () => {
+		const body = bodyFor("deploy_failed", "ignored");
+		expect(body).toContain("/tmp/flywheel-bridge.log");
+		expect(body).toContain("bridge-startup.log");
+		expect(body).toContain("bridge-log-rotation-error.json");
+		expect(body).toContain("deployed-sha");
+	});
 });

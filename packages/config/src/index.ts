@@ -86,7 +86,11 @@ export {
 	founderOffsetMinutes,
 	resolveFounderTimezone,
 } from "./founder-timezone.js";
-export type { RotateLogOptions } from "./log-rotate.js";
+export type {
+	AppendRotatedLogOptions,
+	AppendRotatedLogResult,
+	RotateLogOptions,
+} from "./log-rotate.js";
 export {
 	appendRotatedLogSync,
 	DEFAULT_LOG_MAX_BYTES,
@@ -267,6 +271,19 @@ export {
 	crossFamilyReviewSatisfied,
 	manifestReviewFamilyOk,
 } from "./review-family.js";
+export type {
+	RotatingStdioEnvOptions,
+	RotatingStdioOptions,
+	RotatingWritable,
+	RotatingWrite,
+	RotatingWriteCallback,
+} from "./rotating-stdio.js";
+export {
+	clearRotationErrorMarker,
+	installRotatingStdio,
+	installRotatingStdioFromEnv,
+	writeBoundedRotationErrorMarker,
+} from "./rotating-stdio.js";
 // FLY-709 P4.3/P4.4: per-project runner-default / cron-model config writer.
 export type {
 	ApplyResult,

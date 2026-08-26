@@ -270,6 +270,16 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_FOUNDER_USER_ID: "context: founder discord id",
 	FLYWHEEL_FOUNDER_DISCORD_USER_ID: "context: founder discord id (alt)",
 	// plumbing / paths
+	FLYWHEEL_BRIDGE_LOG_ERROR_MARKER:
+		"plumbing: bounded Bridge rotation failure marker path (FLY-2049), not an on/off gate",
+	FLYWHEEL_BRIDGE_LOG_MAX_BYTES:
+		"numeric tuning: Bridge rotating-log byte threshold (FLY-2049), not an on/off gate",
+	FLYWHEEL_BRIDGE_LOG_PATH:
+		"plumbing: Bridge rotating main-log path (FLY-2049), not an on/off gate",
+	FLYWHEEL_BRIDGE_LOG_RETENTION:
+		"numeric tuning: Bridge rotating-log generation count (FLY-2049), not an on/off gate",
+	FLYWHEEL_BRIDGE_RAW_STARTUP_LOG:
+		"plumbing: Bridge pre-bootstrap raw capture path (FLY-2049), not an on/off gate",
 	FLYWHEEL_BRIDGE_URL: "plumbing: bridge base URL",
 	FLYWHEEL_BRIDGE_SOURCE_MODE:
 		"plumbing: source-run build identity marker, not a rollout gate",

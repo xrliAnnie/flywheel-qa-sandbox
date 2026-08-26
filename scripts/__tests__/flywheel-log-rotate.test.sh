@@ -5,7 +5,15 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LIB="$REPO_ROOT/scripts/lib/flywheel-log.sh"
 ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1887-log-rotate.XXXXXX")"
-trap 'rm -rf "$ROOT"' EXIT
+PRODUCER_PID=""
+cleanup() {
+  if [[ -n "$PRODUCER_PID" ]]; then
+    kill "$PRODUCER_PID" 2>/dev/null || true
+    wait "$PRODUCER_PID" 2>/dev/null || true
+  fi
+  rm -rf "$ROOT"
+}
+trap cleanup EXIT
 
 PASSED=0
 FAILED=0
@@ -192,6 +200,171 @@ if [[ -z "$missing_wiring" ]]; then
   pass "all scoped shell, Python, and TypeScript writers use bounded rotation"
 else
   fail "all scoped shell, Python, and TypeScript writers use bounded rotation" "missing:$missing_wiring"
+fi
+
+echo "== live Node stdio rotates while the producer stays online =="
+LIVE_LOG="$ROOT/live-bridge.log"
+LIVE_EXPECTED="$ROOT/live-expected.log"
+LIVE_READY="$ROOT/live-ready"
+LIVE_STOP="$ROOT/live-stop"
+LIVE_RAW="$ROOT/live-raw-startup.log"
+FLYWHEEL_2049_CONFIG_URL="file://${REPO_ROOT}/packages/config/dist/index.js" \
+FLYWHEEL_2049_LIVE_LOG="$LIVE_LOG" \
+FLYWHEEL_2049_EXPECTED="$LIVE_EXPECTED" \
+FLYWHEEL_2049_READY="$LIVE_READY" \
+FLYWHEEL_2049_STOP="$LIVE_STOP" \
+node --input-type=module -e '
+  import { existsSync, writeFileSync } from "node:fs";
+  const logging = await import(process.env.FLYWHEEL_2049_CONFIG_URL);
+  const lines = Array.from({ length: 10 }, (_, index) => {
+    const sequence = String(index + 1).padStart(2, "0");
+    const suffix = index === 9 ? "post-rotation-sentinel" : "payload";
+    return `seq-${sequence}:${suffix}:${"x".repeat(72)}\n`;
+  });
+  writeFileSync(process.env.FLYWHEEL_2049_EXPECTED, lines.join(""));
+  logging.installRotatingStdio({
+    logPath: process.env.FLYWHEEL_2049_LIVE_LOG,
+    maxBytes: 512,
+    keep: 3,
+  });
+  let index = 0;
+  const writer = setInterval(() => {
+    const stream = index % 2 === 0 ? process.stdout : process.stderr;
+    stream.write(lines[index]);
+    index += 1;
+    if (index === lines.length) {
+      clearInterval(writer);
+      writeFileSync(process.env.FLYWHEEL_2049_READY, "ready\n");
+      const stopper = setInterval(() => {
+        if (existsSync(process.env.FLYWHEEL_2049_STOP)) {
+          clearInterval(stopper);
+          process.exit(0);
+        }
+      }, 20);
+    }
+  }, 20);
+' >"$LIVE_RAW" 2>&1 &
+PRODUCER_PID=$!
+for _ in $(seq 1 100); do
+  [[ -f "$LIVE_READY" && -f "$LIVE_LOG.1" ]] && break
+  kill -0 "$PRODUCER_PID" 2>/dev/null || break
+  sleep 0.05
+done
+live_holders="$(lsof -t -- "$LIVE_LOG" "$LIVE_LOG.1" 2>/dev/null || true)"
+live_active_bytes="$(wc -c < "$LIVE_LOG" 2>/dev/null | tr -d ' ' || printf '0')"
+live_archive_bytes="$(wc -c < "$LIVE_LOG.1" 2>/dev/null | tr -d ' ' || printf '0')"
+live_active_inode="$(stat -c '%i' "$LIVE_LOG" 2>/dev/null || stat -f '%i' "$LIVE_LOG" 2>/dev/null || printf 'unknown')"
+live_archive_inode="$(stat -c '%i' "$LIVE_LOG.1" 2>/dev/null || stat -f '%i' "$LIVE_LOG.1" 2>/dev/null || printf 'unknown')"
+if [[ -f "$LIVE_READY" && -f "$LIVE_LOG.1" ]] \
+  && kill -0 "$PRODUCER_PID" 2>/dev/null \
+  && ! grep -qx "$PRODUCER_PID" <<< "$live_holders" \
+  && [[ "$live_active_bytes" -lt "$live_archive_bytes" ]] \
+  && grep -q 'post-rotation-sentinel' "$LIVE_LOG"; then
+  pass "threshold crossing creates .1 and shrinks active while the same Node PID remains online with no held log FD"
+  printf '[PROOF FLY-2049] pid=%s online=true active_inode=%s active_bytes=%s archive_inode=%s archive_bytes=%s holders=none sentinel=active\n' \
+    "$PRODUCER_PID" "$live_active_inode" "$live_active_bytes" "$live_archive_inode" "$live_archive_bytes"
+else
+  fail "threshold crossing creates .1 and shrinks active while the same Node PID remains online with no held log FD" \
+    "pid=$PRODUCER_PID active=$live_active_bytes archive=$live_archive_bytes holders=[$live_holders] files=[$(find "$ROOT" -maxdepth 1 -name 'live-*' -print | sort | tr '\n' ' ')]"
+fi
+touch "$LIVE_STOP"
+wait "$PRODUCER_PID" || true
+PRODUCER_PID=""
+LIVE_REASSEMBLED="$ROOT/live-reassembled.log"
+: > "$LIVE_REASSEMBLED"
+for generation in 3 2 1; do
+  [[ -f "$LIVE_LOG.$generation" ]] && sed -n '1,$p' "$LIVE_LOG.$generation" >> "$LIVE_REASSEMBLED"
+done
+sed -n '1,$p' "$LIVE_LOG" >> "$LIVE_REASSEMBLED"
+if cmp -s "$LIVE_EXPECTED" "$LIVE_REASSEMBLED" && [[ ! -s "$LIVE_RAW" ]]; then
+  pass "oldest-to-active generations exactly reassemble every stdout/stderr byte and normal raw startup stays empty"
+  printf '[PROOF FLY-2049] generation_cmp=identical expected_bytes=%s actual_bytes=%s raw_startup_bytes=0\n' \
+    "$(wc -c < "$LIVE_EXPECTED")" "$(wc -c < "$LIVE_REASSEMBLED")"
+else
+  fail "oldest-to-active generations exactly reassemble every stdout/stderr byte and normal raw startup stays empty" \
+    "expected=$(wc -c < "$LIVE_EXPECTED") actual=$(wc -c < "$LIVE_REASSEMBLED") raw=$(wc -c < "$LIVE_RAW")"
+fi
+
+echo "== uncaught and pre-bootstrap failures retain separate evidence =="
+UNCAUGHT_LOG="$ROOT/uncaught-bridge.log"
+UNCAUGHT_RAW="$ROOT/uncaught-raw-startup.log"
+rc=0
+FLYWHEEL_2049_CONFIG_URL="file://${REPO_ROOT}/packages/config/dist/index.js" \
+FLYWHEEL_2049_UNCAUGHT_LOG="$UNCAUGHT_LOG" \
+node --input-type=module -e '
+  const logging = await import(process.env.FLYWHEEL_2049_CONFIG_URL);
+  logging.installRotatingStdio({
+    logPath: process.env.FLYWHEEL_2049_UNCAUGHT_LOG,
+    maxBytes: 512,
+    keep: 3,
+  });
+  process.on("uncaughtExceptionMonitor", (error, origin) => {
+    process.stderr.write(`[uncaught-monitor:${origin}] ${error.stack}\n`);
+  });
+  throw new Error("fly2049-uncaught-sentinel");
+' >"$UNCAUGHT_RAW" 2>&1 || rc=$?
+if [[ "$rc" -ne 0 ]] \
+  && grep -q 'fly2049-uncaught-sentinel' "$UNCAUGHT_LOG" \
+  && grep -q 'fly2049-uncaught-sentinel' "$UNCAUGHT_RAW"; then
+  pass "uncaughtExceptionMonitor preserves a bounded main-log stack while Node keeps its raw fatal stack"
+  printf '[PROOF FLY-2049] uncaught_exit=%s main_stack_bytes=%s raw_stack_bytes=%s\n' \
+    "$rc" "$(wc -c < "$UNCAUGHT_LOG")" "$(wc -c < "$UNCAUGHT_RAW")"
+else
+  fail "uncaughtExceptionMonitor preserves a bounded main-log stack while Node keeps its raw fatal stack" \
+    "rc=$rc main=$(wc -c < "$UNCAUGHT_LOG" 2>/dev/null || echo 0) raw=$(wc -c < "$UNCAUGHT_RAW" 2>/dev/null || echo 0)"
+fi
+PREBOOT_RAW="$ROOT/prebootstrap-raw-startup.log"
+rc=0
+node --input-type=module -e 'await import("fly2049-deliberately-missing-module")' \
+  >"$PREBOOT_RAW" 2>&1 || rc=$?
+if [[ "$rc" -ne 0 && -s "$PREBOOT_RAW" ]]; then
+  pass "a failure before logging bootstrap remains visible in truncate-on-start raw capture"
+else
+  fail "a failure before logging bootstrap remains visible in truncate-on-start raw capture" "rc=$rc raw=$(wc -c < "$PREBOOT_RAW" 2>/dev/null || echo 0)"
+fi
+
+echo "== Bridge launch surfaces install rotation before runtime output =="
+RUN_BRIDGE="$REPO_ROOT/scripts/run-bridge.ts"
+WRAPPER="$REPO_ROOT/scripts/flywheel-bridge-wrapper.sh"
+DAILY="$REPO_ROOT/scripts/daily-standup.sh"
+R4_WINDOW="$REPO_ROOT/scripts/r4/r4-window.sh"
+install_line="$(grep -n 'installRotatingStdioFromEnv({' "$RUN_BRIDGE" | head -1 | cut -d: -f1)"
+first_console_line="$(grep -n 'console\.' "$RUN_BRIDGE" | head -1 | cut -d: -f1)"
+unexpected_static_imports="$(awk '
+  /^async function main/ { exit }
+  /from "\.\.\/packages\// && $0 !~ /packages\/config\/dist\/index\.js/ { print }
+' "$RUN_BRIDGE")"
+wiring_errors=""
+[[ "$install_line" =~ ^[0-9]+$ && "$first_console_line" =~ ^[0-9]+$ \
+  && "$install_line" -lt "$first_console_line" ]] \
+  || wiring_errors="$wiring_errors run-bridge-bootstrap-order"
+[[ -z "$unexpected_static_imports" ]] \
+  || wiring_errors="$wiring_errors run-bridge-static-runtime-import"
+grep -q 'uncaughtExceptionMonitor' "$RUN_BRIDGE" \
+  || wiring_errors="$wiring_errors run-bridge-uncaught-monitor"
+if grep -qF 'process.nextTick(() => process.exit(1))' "$RUN_BRIDGE" \
+  || grep -q 'clearRotationErrorMarker' "$RUN_BRIDGE"; then
+  wiring_errors="$wiring_errors run-bridge-log-error-kills-or-clears-evidence"
+fi
+grep -q 'FLYWHEEL_BRIDGE_LOG_PATH' "$WRAPPER" \
+  && grep -q 'FLYWHEEL_BRIDGE_RAW_STARTUP_LOG' "$WRAPPER" \
+  && grep -q 'FLYWHEEL_BRIDGE_LOG_ERROR_MARKER' "$WRAPPER" \
+  && grep -q '^exec > "\$BRIDGE_RAW_STARTUP_REDIRECT" 2>&1$' "$WRAPPER" \
+  || wiring_errors="$wiring_errors wrapper-env-or-truncate"
+[[ "$(grep -c 'FLYWHEEL_BRIDGE_LOG_PATH=' "$DAILY")" -ge 2 \
+  && "$(grep -c '> "\$BRIDGE_RAW_STARTUP_REDIRECT" 2>&1 &' "$DAILY")" -eq 2 ]] \
+  || wiring_errors="$wiring_errors daily-both-launchers"
+if grep -q 'R4_BRIDGE_LOG_START_LINES\|>> /tmp/flywheel-bridge.log' "$R4_WINDOW"; then
+  wiring_errors="$wiring_errors r4-production-log-coupling"
+fi
+grep -q 'R4_TRIAL_LOG' "$R4_WINDOW" \
+  && grep -q 'R4_TRIAL_RAW_STARTUP_LOG' "$R4_WINDOW" \
+  || wiring_errors="$wiring_errors r4-isolated-logs"
+if [[ -z "$wiring_errors" ]]; then
+  pass "run-bridge, canonical wrapper, daily fallback, and R4 trial obey bootstrap and FD placement contracts"
+else
+  fail "run-bridge, canonical wrapper, daily fallback, and R4 trial obey bootstrap and FD placement contracts" \
+    "missing:$wiring_errors unexpected_static=[$unexpected_static_imports]"
 fi
 
 printf '\n[flywheel-log-rotate] passed=%s failed=%s\n' "$PASSED" "$FAILED"

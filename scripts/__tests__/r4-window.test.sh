@@ -141,6 +141,106 @@ assert_not_contains "$events" "M:reset"
 
 echo "r4-window: eight lifecycle/failure cases PASS"
 
+# FLY-2049: the one-off R4 trial must never append into the production Bridge
+# log. It receives a fully isolated rotating main log, a distinct raw startup
+# capture, and a bounded error marker; the raw capture is truncated per trial.
+R4_LOG_FIXTURE="$TMP_ROOT/r4-log-fixture"
+R4_LOG_REPO="$R4_LOG_FIXTURE/repo"
+R4_LOG_ROOT="$R4_LOG_FIXTURE/state"
+R4_LOG_BIN="$R4_LOG_FIXTURE/bin"
+R4_LOG_ENV="$R4_LOG_FIXTURE/launch-env"
+mkdir -p "$R4_LOG_REPO/scripts" "$R4_LOG_ROOT" "$R4_LOG_BIN"
+printf 'stale-main\n' > "$R4_LOG_ROOT/bridge-trial.log"
+printf 'stale-archive\n' > "$R4_LOG_ROOT/bridge-trial.log.1"
+printf 'stale-raw\n' > "$R4_LOG_ROOT/bridge-trial-startup.log"
+printf 'stale-marker\n' > "$R4_LOG_ROOT/bridge-trial-rotation-error.json"
+printf '%s\n' \
+	'#!/usr/bin/env bash' \
+	'printf "%s|%s|%s\n" "$FLYWHEEL_BRIDGE_LOG_PATH" "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER" > "$R4_LOG_ENV"' \
+	'printf "fresh-r4-startup\n"' \
+	'exit 0' > "$R4_LOG_BIN/npx"
+chmod +x "$R4_LOG_BIN/npx"
+if ! (
+	PATH="$R4_LOG_BIN:/usr/bin:/bin"
+	export R4_LOG_ENV
+	R4_REPO="$R4_LOG_REPO"
+	R4_ROOT="$R4_LOG_ROOT"
+	R4_TRIAL_LOG="$R4_LOG_ROOT/bridge-trial.log"
+	R4_TRIAL_RAW_STARTUP_LOG="$R4_LOG_ROOT/bridge-trial-startup.log"
+	R4_TRIAL_ERROR_MARKER="$R4_LOG_ROOT/bridge-trial-rotation-error.json"
+	r4_log() { :; }
+	r4_start_trial
+	wait "$R4_TRIAL_PID"
+	[[ "$(cat "$R4_LOG_ENV")" == "$R4_TRIAL_LOG|$R4_TRIAL_RAW_STARTUP_LOG|$R4_TRIAL_ERROR_MARKER" ]]
+	[[ ! -e "$R4_TRIAL_LOG" && ! -e "$R4_TRIAL_LOG.1" ]]
+	grep -qx 'fresh-r4-startup' "$R4_TRIAL_RAW_STARTUP_LOG"
+	! grep -q 'stale-raw' "$R4_TRIAL_RAW_STARTUP_LOG"
+	[[ ! -e "$R4_TRIAL_ERROR_MARKER" ]]
+); then
+	echo "FAIL: R4 trial did not isolate/truncate its three logging surfaces" >&2
+	exit 1
+fi
+echo "r4-window: isolated trial logging PASS"
+
+# Stormwatch must search all retained trial generations oldest→active plus the
+# raw startup capture. A Fatal that rotated out of active is still blocking.
+R4_STORM_LOG="$TMP_ROOT/r4-stormwatch/bridge-trial.log"
+mkdir -p "$(dirname "$R4_STORM_LOG")"
+printf 'healthy-oldest\n' > "$R4_STORM_LOG.3"
+printf 'Fatal: rotated-generation-sentinel\n' > "$R4_STORM_LOG.2"
+printf 'healthy-newer\n' > "$R4_STORM_LOG.1"
+printf 'healthy-active\n' > "$R4_STORM_LOG"
+printf 'healthy-startup\n' > "$TMP_ROOT/r4-stormwatch/startup.log"
+if (
+	R4_TRIAL_LOG="$R4_STORM_LOG"
+	R4_TRIAL_RAW_STARTUP_LOG="$TMP_ROOT/r4-stormwatch/startup.log"
+	R4_STORMWATCH_SAMPLES=1
+	R4_SHARDS=(fixture)
+	sleep() { :; }
+	r4_health_ok() { :; }
+	r4_assert_trial_authority() { :; }
+	sqlite3() { printf '0\n'; }
+	r4_log() { :; }
+	r4_stormwatch
+) >/dev/null 2>&1; then
+	echo "FAIL: R4 stormwatch ignored Fatal in a retained trial generation" >&2
+	exit 1
+fi
+printf 'healthy-middle\n' > "$R4_STORM_LOG.2"
+printf 'Fatal: raw-startup-sentinel\n' > "$TMP_ROOT/r4-stormwatch/startup.log"
+if (
+	R4_TRIAL_LOG="$R4_STORM_LOG"
+	R4_TRIAL_RAW_STARTUP_LOG="$TMP_ROOT/r4-stormwatch/startup.log"
+	R4_STORMWATCH_SAMPLES=1
+	R4_SHARDS=(fixture)
+	sleep() { :; }
+	r4_health_ok() { :; }
+	r4_assert_trial_authority() { :; }
+	sqlite3() { printf '0\n'; }
+	r4_log() { :; }
+	r4_stormwatch
+) >/dev/null 2>&1; then
+	echo "FAIL: R4 stormwatch ignored Fatal in raw startup capture" >&2
+	exit 1
+fi
+printf 'healthy-startup\n' > "$TMP_ROOT/r4-stormwatch/startup.log"
+if ! (
+	R4_TRIAL_LOG="$R4_STORM_LOG"
+	R4_TRIAL_RAW_STARTUP_LOG="$TMP_ROOT/r4-stormwatch/startup.log"
+	R4_STORMWATCH_SAMPLES=1
+	R4_SHARDS=(fixture)
+	sleep() { :; }
+	r4_health_ok() { :; }
+	r4_assert_trial_authority() { :; }
+	sqlite3() { printf '0\n'; }
+	r4_log() { :; }
+	r4_stormwatch
+) >/dev/null 2>&1; then
+	echo "FAIL: R4 stormwatch rejected clean retained generations" >&2
+	exit 1
+fi
+echo "r4-window: rotated generation and raw-startup stormwatch PASS"
+
 # Bash disables errexit throughout a function invoked from an `if`/`||`
 # condition. Every destructive phase therefore has to propagate each safety
 # failure explicitly rather than depend on the script-level `set -e`.

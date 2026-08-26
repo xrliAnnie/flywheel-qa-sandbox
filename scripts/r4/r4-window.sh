@@ -15,6 +15,9 @@ R4_SNAPSHOT_SCRIPT="${R4_SNAPSHOT_SCRIPT:-$R4_ROOT/snapshot-r4.sh}"
 R4_SNAPSHOT_DIR="${R4_SNAPSHOT_DIR:-$R4_ROOT/db-snapshot}"
 R4_PROGRESS_LOG="${R4_PROGRESS_LOG:-$R4_ROOT/progress.log}"
 R4_STATE_FILE="${R4_STATE_FILE:-$R4_ROOT/state}"
+R4_TRIAL_LOG="${R4_TRIAL_LOG:-$R4_ROOT/bridge-trial.log}"
+R4_TRIAL_RAW_STARTUP_LOG="${R4_TRIAL_RAW_STARTUP_LOG:-$R4_ROOT/bridge-trial-startup.log}"
+R4_TRIAL_ERROR_MARKER="${R4_TRIAL_ERROR_MARKER:-$R4_ROOT/bridge-trial-rotation-error.json}"
 R4_STORMWATCH_SAMPLES="${R4_STORMWATCH_SAMPLES:-5}"
 R4_STORMWATCH_INTERVAL_SECS="${R4_STORMWATCH_INTERVAL_SECS:-60}"
 R4_TRIAL_HEALTH_TRIES="${R4_TRIAL_HEALTH_TRIES:-60}"
@@ -26,7 +29,6 @@ R4_PHASE="init"
 R4_MUTATED=0
 R4_COMMITTED=0
 R4_TRIAL_PID=""
-R4_BRIDGE_LOG_START_LINES=0
 R4_BRIDGE_ORIGINAL_STATE=""
 R4_QUIESCE_STARTED=0
 R4_LEAD_LABELS_FILE="${R4_LEAD_LABELS_FILE:-$R4_ROOT/lead-labels.txt}"
@@ -431,8 +433,23 @@ r4_preflight() {
 
 r4_start_trial() {
     cd "$R4_REPO" || return 1
-    R4_BRIDGE_LOG_START_LINES="$(wc -l < /tmp/flywheel-bridge.log 2>/dev/null || printf '0')"
-    nohup npx tsx scripts/run-bridge.ts >> /tmp/flywheel-bridge.log 2>&1 < /dev/null &
+    mkdir -p "$R4_ROOT" || return 1
+    [[ -d "$R4_ROOT" && ! -L "$R4_ROOT" ]] || return 1
+    local path
+    for path in \
+        "$R4_TRIAL_LOG" "$R4_TRIAL_LOG.1" "$R4_TRIAL_LOG.2" "$R4_TRIAL_LOG.3" \
+        "$R4_TRIAL_RAW_STARTUP_LOG" "$R4_TRIAL_ERROR_MARKER"; do
+        if [[ -e "$path" || -L "$path" ]]; then
+            [[ -f "$path" && ! -L "$path" ]] || return 1
+        fi
+    done
+    rm -f \
+        "$R4_TRIAL_LOG" "$R4_TRIAL_LOG.1" "$R4_TRIAL_LOG.2" "$R4_TRIAL_LOG.3" \
+        "$R4_TRIAL_ERROR_MARKER" || return 1
+    FLYWHEEL_BRIDGE_LOG_PATH="$R4_TRIAL_LOG" \
+    FLYWHEEL_BRIDGE_RAW_STARTUP_LOG="$R4_TRIAL_RAW_STARTUP_LOG" \
+    FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="$R4_TRIAL_ERROR_MARKER" \
+    nohup npx tsx scripts/run-bridge.ts > "$R4_TRIAL_RAW_STARTUP_LOG" 2>&1 < /dev/null &
     R4_TRIAL_PID=$!
     [[ "$R4_TRIAL_PID" =~ ^[1-9][0-9]*$ ]] || return 1
     r4_log "Bridge-only trial root PID=$R4_TRIAL_PID" || return 1
@@ -473,7 +490,7 @@ r4_wait_trial_health() {
 }
 
 r4_stormwatch() {
-    local sample shard pending total new_logs
+    local sample shard pending total new_logs path
     for (( sample=1; sample<=R4_STORMWATCH_SAMPLES; sample++ )); do
         sleep "$R4_STORMWATCH_INTERVAL_SECS" || return 1
         r4_health_ok || return 1
@@ -485,8 +502,13 @@ r4_stormwatch() {
             [[ "$pending" =~ ^[0-9]+$ ]] || return 1
             total=$((total + pending))
         done
-        new_logs="$(tail -n "+$((R4_BRIDGE_LOG_START_LINES + 1))" /tmp/flywheel-bridge.log 2>/dev/null)" || return 1
-        if grep -q 'Fatal' <<< "$new_logs"; then
+        new_logs="$({
+            for path in "$R4_TRIAL_LOG.3" "$R4_TRIAL_LOG.2" "$R4_TRIAL_LOG.1" "$R4_TRIAL_LOG"; do
+                [[ -f "$path" && ! -L "$path" ]] && sed -n '1,$p' "$path"
+            done
+        })" || return 1
+        if grep -q 'Fatal' <<< "$new_logs" \
+            || grep -q 'Fatal' "$R4_TRIAL_RAW_STARTUP_LOG" 2>/dev/null; then
             return 1
         fi
         r4_log "stormwatch sample $sample/$R4_STORMWATCH_SAMPLES fleet-pending=$total" || return 1

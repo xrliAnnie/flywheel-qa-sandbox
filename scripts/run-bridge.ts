@@ -18,14 +18,69 @@
  *   - TEAMLEAD_MAX_CONCURRENT_RUNNERS (default 3)
  */
 
-import { createMemoryService } from "../packages/edge-worker/dist/memory/index.js";
-import { runBoundedShutdown } from "../packages/teamlead/dist/bridge/bounded-shutdown.js";
-import { startBridge } from "../packages/teamlead/dist/bridge/plugin.js";
-import { loadConfig } from "../packages/teamlead/dist/config.js";
-import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
-import { StateStore } from "../packages/teamlead/dist/StateStore.js";
+import {
+	installRotatingStdioFromEnv,
+	writeBoundedRotationErrorMarker,
+} from "../packages/config/dist/index.js";
+
+const rotationErrorMarker =
+	process.env.FLYWHEEL_BRIDGE_LOG_ERROR_MARKER?.trim();
+function preserveRotationError(error: unknown): void {
+	try {
+		if (rotationErrorMarker) {
+			writeBoundedRotationErrorMarker(rotationErrorMarker, error);
+		}
+	} catch {
+		// Raw stderr below is the final fail-open evidence path.
+	}
+}
+
+let rotatingStdio: (() => void) | undefined;
+try {
+	rotatingStdio = installRotatingStdioFromEnv({
+		onWriteError(error) {
+			preserveRotationError(error);
+		},
+	});
+} catch (error) {
+	preserveRotationError(error);
+	try {
+		process.stderr.write(
+			`[run-bridge] rotating stdio disabled: ${
+				error instanceof Error ? error.message : String(error)
+			}\n`,
+		);
+	} catch {
+		// Logging setup is advisory; Bridge startup remains authoritative.
+	}
+}
+
+if (rotatingStdio) {
+	process.on("uncaughtExceptionMonitor", (error, origin) => {
+		const detail =
+			error instanceof Error ? (error.stack ?? error.message) : String(error);
+		process.stderr.write(
+			`[run-bridge] uncaughtExceptionMonitor (${origin}): ${detail}\n`,
+		);
+	});
+}
 
 async function main() {
+	const [
+		{ createMemoryService },
+		{ runBoundedShutdown },
+		{ startBridge },
+		{ loadConfig },
+		{ loadProjects },
+		{ StateStore },
+	] = await Promise.all([
+		import("../packages/edge-worker/dist/memory/index.js"),
+		import("../packages/teamlead/dist/bridge/bounded-shutdown.js"),
+		import("../packages/teamlead/dist/bridge/plugin.js"),
+		import("../packages/teamlead/dist/config.js"),
+		import("../packages/teamlead/dist/ProjectConfig.js"),
+		import("../packages/teamlead/dist/StateStore.js"),
+	]);
 	const config = loadConfig();
 	const projects = loadProjects();
 	if (projects.length === 0) {

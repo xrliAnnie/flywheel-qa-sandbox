@@ -4,9 +4,12 @@ import {
 	lstatSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	symlinkSync,
+	unlinkSync,
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
@@ -78,6 +81,19 @@ describe("rotated log helpers", () => {
 
 		expect(rotateLogIfNeeded(log, { maxBytes: 1, keep: 3 })).toBe(true);
 		expect(readFileSync(`${log}.1`, "utf8")).toBe("stale-lock-evidence\n");
+		expect(existsSync(lock)).toBe(false);
+	});
+
+	it("recovers a stale regular-file lock before rotating", () => {
+		const log = join(tempRoot(), "audit.log");
+		const lock = `${log}.rotate.lock`;
+		writeFileSync(log, "stale-file-lock-evidence\n");
+		writeFileSync(lock, "crash residue\n");
+		const old = new Date(Date.now() - 10 * 60 * 1000);
+		utimesSync(lock, old, old);
+
+		expect(rotateLogIfNeeded(log, { maxBytes: 1, keep: 3 })).toBe(true);
+		expect(readFileSync(`${log}.1`, "utf8")).toBe("stale-file-lock-evidence\n");
 		expect(existsSync(lock)).toBe(false);
 	});
 
@@ -195,5 +211,128 @@ describe("rotated log helpers", () => {
 		appendFileSync(log, "short\n");
 		expect(rotateLogIfNeeded(log, { maxBytes: 1024, keep: 3 })).toBe(false);
 		expect(readFileSync(log, "utf8")).toBe("short\n");
+	});
+
+	it("strict append refuses a symlinked active path without touching its target", () => {
+		const root = tempRoot();
+		const target = join(root, "outside-target");
+		const log = join(root, "bridge.log");
+		writeFileSync(target, "must-survive\n");
+		symlinkSync(target, log);
+
+		expect(() =>
+			appendRotatedLogSync(log, "forbidden\n", {
+				maxBytes: 1,
+				keep: 3,
+				strict: true,
+			}),
+		).toThrow(/active_log_unsafe/);
+		expect(readFileSync(target, "utf8")).toBe("must-survive\n");
+	});
+
+	it("strict append quarantines an unsafe generation and continues rotation", () => {
+		const root = tempRoot();
+		const target = join(root, "generation-target");
+		const log = join(root, "bridge.log");
+		writeFileSync(target, "generation-must-survive\n");
+		writeFileSync(log, "active-must-survive\n");
+		symlinkSync(target, `${log}.1`);
+
+		expect(
+			appendRotatedLogSync(log, "continued\n", {
+				maxBytes: 1,
+				keep: 3,
+				strict: true,
+			}),
+		).toMatchObject({ rotated: true, rotationStalled: false });
+		expect(readFileSync(`${log}.1`, "utf8")).toBe("active-must-survive\n");
+		expect(readFileSync(log, "utf8")).toBe("continued\n");
+		expect(readFileSync(target, "utf8")).toBe("generation-must-survive\n");
+		const quarantined = readdirSync(root).filter((name) =>
+			name.startsWith(`bridge.log.1.corrupt.${process.pid}.`),
+		);
+		expect(quarantined).toHaveLength(1);
+		expect(
+			lstatSync(join(root, quarantined[0] ?? "missing")).isSymbolicLink(),
+		).toBe(true);
+	});
+
+	it("strict append tolerates contention and reports a persistent 2x stall fail-open", () => {
+		const root = tempRoot();
+		const log = join(root, "bridge.log");
+		const lock = `${log}.rotate.lock`;
+		writeFileSync(log, "1234");
+		mkdirSync(lock);
+
+		const transient = appendRotatedLogSync(log, "5", {
+			maxBytes: 3,
+			keep: 3,
+			strict: true,
+		});
+		expect(transient).toMatchObject({
+			rotationDue: true,
+			rotated: false,
+			sizeBefore: 4,
+		});
+		expect(readFileSync(log, "utf8")).toBe("12345");
+
+		appendFileSync(log, "6");
+		expect(
+			appendRotatedLogSync(log, "7", {
+				maxBytes: 3,
+				keep: 3,
+				strict: true,
+			}),
+		).toMatchObject({
+			rotationDue: true,
+			rotated: false,
+			rotationStalled: true,
+		});
+		expect(readFileSync(log, "utf8")).toBe("1234567");
+	});
+
+	it("strict no-follow open rejects an active path swapped to a symlink", async () => {
+		const root = tempRoot();
+		const target = join(root, "race-target");
+		const log = join(root, "bridge.log");
+		writeFileSync(target, "race-target-survives\n");
+		writeFileSync(log, "safe-active\n");
+		let injected = false;
+
+		vi.resetModules();
+		vi.doMock("node:fs", async (importOriginal) => {
+			const actual = await importOriginal<typeof import("node:fs")>();
+			return {
+				...actual,
+				openSync(
+					path: Parameters<typeof actual.openSync>[0],
+					flags: Parameters<typeof actual.openSync>[1],
+					mode?: Parameters<typeof actual.openSync>[2],
+				) {
+					if (path === log && !injected) {
+						injected = true;
+						unlinkSync(log);
+						symlinkSync(target, log);
+					}
+					return mode === undefined
+						? actual.openSync(path, flags)
+						: actual.openSync(path, flags, mode);
+				},
+			};
+		});
+		try {
+			const raced = await import("../log-rotate.js");
+			expect(() =>
+				raced.appendRotatedLogSync(log, "forbidden\n", {
+					maxBytes: 1024,
+					keep: 3,
+					strict: true,
+				}),
+			).toThrow();
+			expect(readFileSync(target, "utf8")).toBe("race-target-survives\n");
+		} finally {
+			vi.doUnmock("node:fs");
+			vi.resetModules();
+		}
 	});
 });

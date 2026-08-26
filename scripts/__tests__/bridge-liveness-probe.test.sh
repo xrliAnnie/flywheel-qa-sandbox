@@ -13,11 +13,13 @@ pass() { echo "[TEST] ✓ $1"; PASSED=$((PASSED+1)); }
 fail() { echo "[TEST] ✗ $1"; FAILED=$((FAILED+1)); }
 
 export FLYWHEEL_PROBE_STATE_FILE="$TMP/probe-state.json"
+export FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="$TMP/bridge-log-rotation-error.json"
 export FLYWHEEL_BRIDGE_DOWN_ESCALATE_MIN=3
 export FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN=0
 export FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN=999
 export FLYWHEEL_LIVENESS_STALLED_ESCALATE_MIN=1
 export FLYWHEEL_LIVENESS_DISABLED_REMINDER_MIN=1440
+export FLYWHEEL_LOG_ROTATION_REMINDER_MIN=60
 export FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="chan-1"
 export FLYWHEEL_FOUNDER_DISCORD_USER_ID="123456789012345678"
 export INFRA_BOT_TOKEN="fake-token"
@@ -44,8 +46,12 @@ NOW=1120; probe_once >/dev/null
 
 # T3: 3rd consecutive down minute → exactly ONE @Annie page.
 NOW=1180; probe_once >/dev/null
-if [[ "$(posts)" == "1" ]] && grep -q "连续 down" "$POSTS" && grep -q "123456789012345678" "$POSTS"; then
-  pass "T3 3rd down minute → ONE page with founder mention"
+if [[ "$(posts)" == "1" ]] \
+  && grep -q "连续 down" "$POSTS" \
+  && grep -q "123456789012345678" "$POSTS" \
+  && grep -q "bridge-startup.log" "$POSTS" \
+  && grep -q "bridge-log-rotation-error.json" "$POSTS"; then
+  pass "T3 3rd down minute → ONE page with founder mention and all Bridge log surfaces"
 else
   fail "T3 posts=$(posts) content=$(cat "$POSTS")"
 fi
@@ -188,7 +194,7 @@ if [[ "$probe_output" == *"disabled=w1_process_liveness"* ]] \
   && [[ "$(posts)" == "2" ]] \
   && grep -q 'liveness lanes disabled: w1_process_liveness' "$POSTS" \
   && grep -q 'Lead inbox loop stalled: A' "$POSTS" \
-  && jq -e '.schemaVersion == 3 and .disabled.members == ["w1_process_liveness"] and .disabled.lastNotifiedAt == 3200 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+  && jq -e '.schemaVersion == 4 and .disabled.members == ["w1_process_liveness"] and .disabled.lastNotifiedAt == 3200 and .stalled.escalated == true' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
   pass "T9 disabled lanes warn durably without masking W-2 stalled"
 else
   fail "T9 disabled-state reporting masked stalled: output=$probe_output posts=$(cat "$POSTS")"
@@ -368,6 +374,25 @@ if [[ "$(posts)" == "0" ]] && jq -e '.degraded.count == 0' "$FLYWHEEL_PROBE_STAT
 	pass "T12 legacy v1 manifest is not judged on absent W-1 freshness"
 else
 	fail "T12 v1 manifest false-paged: posts=$(cat "$POSTS") state=$(cat "$FLYWHEEL_PROBE_STATE_FILE")"
+fi
+
+# FLY-2049 attempt 2: a rotation stall is fail-open for Bridge availability,
+# but it must remain a durable, repeating operator alert until cleared.
+rm -f "$FLYWHEEL_PROBE_STATE_FILE"; : > "$POSTS"
+HEALTH=up; HEALTH_JSON="$(healthy_manifest '[]')"; NOW=300000
+printf '{"version":1,"message":"rotation_stalled"}\n' > "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER"
+probe_once >/dev/null
+NOW=300060; probe_once >/dev/null
+NOW=303600; probe_once >/dev/null
+rm -f "$FLYWHEEL_BRIDGE_LOG_ERROR_MARKER"
+NOW=303660; probe_once >/dev/null
+if [[ "$(posts)" == "3" ]] \
+	&& [[ "$(grep -c 'rotation_stalled' "$POSTS")" == "2" ]] \
+	&& tail -1 "$POSTS" | grep -q '日志轮转.*恢复' \
+	&& jq -e '.rotation.signature == "" and .rotation.lastNotifiedAt == 0' "$FLYWHEEL_PROBE_STATE_FILE" >/dev/null; then
+	pass "T13 rotation marker repeats hourly while Bridge stays up, then all-clears"
+else
+	fail "T13 rotation marker alert contract: posts=$(cat "$POSTS") state=$(cat "$FLYWHEEL_PROBE_STATE_FILE")"
 fi
 
 # W-1 fresh — the only healthy state — stays quiet.

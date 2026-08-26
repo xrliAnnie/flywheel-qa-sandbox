@@ -224,7 +224,7 @@ if type bp_check_dirty_marker >/dev/null 2>&1 \
       DIRTY_BODY="上一个 Bridge (PID ${PREV_PID}, boot ${PREV_BOOT_TS}) 没有走 clean shutdown 就死了。本次启动即复活;复活后的 Bridge 会开生命周期工单对账（episode ${EPISODE_SIG}）。"
     else
       DIRTY_TITLE="Bridge crash-loop（10 分钟内 ≥3 次非正常退出）"
-      DIRTY_BODY="Bridge 反复非正常退出后被 launchd 复活（最近一枚 dirty marker: PID ${PREV_PID}, boot ${PREV_BOOT_TS}, episode ${EPISODE_SIG}）。需要人看 /tmp/flywheel-bridge.log + 机器内存水位。"
+      DIRTY_BODY="Bridge 反复非正常退出后被 launchd 复活（最近一枚 dirty marker: PID ${PREV_PID}, boot ${PREV_BOOT_TS}, episode ${EPISODE_SIG}）。需要人看 /tmp/flywheel-bridge.log、${FLYWHEEL_STATE_DIR}/state/bridge-startup.log、${FLYWHEEL_STATE_DIR}/state/bridge-log-rotation-error.json + 机器内存水位。"
     fi
     # The page id is the WRAPPER leg's own dedup identity — deliberately
     # distinct from the boot ticket id (shared episode signature correlates
@@ -239,6 +239,39 @@ if type bp_check_dirty_marker >/dev/null 2>&1 \
 fi
 
 cd "$FLYWHEEL_DIR"
+
+# FLY-2049: launchd's StandardOutPath is inherited as a long-lived FD. A
+# rename-only rotator cannot reclaim that FD: later writes keep landing in .1.
+# Release it before exec and let run-bridge install strict short-FD appends.
+# The separate raw capture preserves tsx/module-loader/V8 failures that happen
+# before the TypeScript entry can install the adapter; single `>` bounds it to
+# the latest launch attempt.
+BRIDGE_RUNTIME_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state"
+export FLYWHEEL_BRIDGE_LOG_PATH="${FLYWHEEL_BRIDGE_LOG_PATH:-/tmp/flywheel-bridge.log}"
+export FLYWHEEL_BRIDGE_RAW_STARTUP_LOG="${FLYWHEEL_BRIDGE_RAW_STARTUP_LOG:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-startup.log}"
+export FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="${FLYWHEEL_BRIDGE_LOG_ERROR_MARKER:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-log-rotation-error.json}"
+
+BRIDGE_RAW_STARTUP_REDIRECT=/dev/null
+if ! mkdir -p "$BRIDGE_RUNTIME_STATE_DIR"; then
+  log "WARNING: cannot create Bridge runtime state directory $BRIDGE_RUNTIME_STATE_DIR; continuing via /dev/null"
+elif [[ ! -d "$BRIDGE_RUNTIME_STATE_DIR" || -L "$BRIDGE_RUNTIME_STATE_DIR" ]]; then
+  log "WARNING: unsafe Bridge runtime state directory $BRIDGE_RUNTIME_STATE_DIR; continuing via /dev/null"
+elif [[ "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" != /* ]]; then
+  log "WARNING: Bridge raw startup log is not absolute ($FLYWHEEL_BRIDGE_RAW_STARTUP_LOG); continuing via /dev/null"
+else
+  BRIDGE_RAW_STARTUP_PARENT="$(dirname "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG")"
+  if ! mkdir -p "$BRIDGE_RAW_STARTUP_PARENT"; then
+    log "WARNING: cannot create Bridge raw startup parent $BRIDGE_RAW_STARTUP_PARENT; continuing via /dev/null"
+  elif [[ ! -d "$BRIDGE_RAW_STARTUP_PARENT" || -L "$BRIDGE_RAW_STARTUP_PARENT" ]]; then
+    log "WARNING: unsafe Bridge raw startup parent $BRIDGE_RAW_STARTUP_PARENT; continuing via /dev/null"
+  elif [[ -e "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" || -L "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" ]] \
+     && [[ ! -f "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" || -L "$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG" ]]; then
+    log "WARNING: unsafe Bridge raw startup log $FLYWHEEL_BRIDGE_RAW_STARTUP_LOG; continuing via /dev/null"
+  else
+    BRIDGE_RAW_STARTUP_REDIRECT="$FLYWHEEL_BRIDGE_RAW_STARTUP_LOG"
+  fi
+fi
+exec > "$BRIDGE_RAW_STARTUP_REDIRECT" 2>&1
 log "Starting Bridge (TEAMLEAD_CHAT_THREADS_ENABLED=${TEAMLEAD_CHAT_THREADS_ENABLED:-unset})"
 
 # exec replaces this wrapper process so launchd directly manages the

@@ -43,6 +43,10 @@ STATE_FILE="${FLYWHEEL_PROBE_STATE_FILE:-${HOME}/.flywheel/state/bridge-liveness
 TOKEN_ENV="${FLYWHEEL_PROBE_BOT_TOKEN_ENV:-CODEX_INFRA_BOT_TOKEN}"
 CHANNEL_ID="${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}"
 FOUNDER_ID="${FLYWHEEL_FOUNDER_DISCORD_USER_ID:-}"
+BRIDGE_LOG_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state"
+BRIDGE_MAIN_LOG="${FLYWHEEL_BRIDGE_LOG_PATH:-/tmp/flywheel-bridge.log}"
+BRIDGE_STARTUP_LOG="${FLYWHEEL_BRIDGE_RAW_STARTUP_LOG:-${BRIDGE_LOG_STATE_DIR}/bridge-startup.log}"
+BRIDGE_ROTATION_ERROR_MARKER="${FLYWHEEL_BRIDGE_LOG_ERROR_MARKER:-${BRIDGE_LOG_STATE_DIR}/bridge-log-rotation-error.json}"
 
 mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null || true
 
@@ -62,10 +66,10 @@ _probe_post() {
     --max-time 10 >/dev/null 2>&1
 }
 
-# ── State v3: independent down / degraded / stalled / disabled episodes ─────
+# ── State v4: independent down/degraded/stalled/disabled/rotation episodes ──
 read_state() {
   if [[ -f "$STATE_FILE" ]] && command -v jq >/dev/null 2>&1; then
-    # Flat v1 and structured v2 keys are accepted and rewritten as v3.
+    # Flat v1 and structured v2/v3 keys are accepted and rewritten as v4.
     DOWN_COUNT="$(jq -r '.down.count // .downCount // 0' "$STATE_FILE" 2>/dev/null || echo 0)"
     DOWN_SINCE="$(jq -r '.down.since // .downSince // 0' "$STATE_FILE" 2>/dev/null || echo 0)"
     DOWN_ESCALATED="$(jq -r '.down.escalated // .escalated // false' "$STATE_FILE" 2>/dev/null || echo false)"
@@ -78,11 +82,14 @@ read_state() {
     STALLED_MEMBERS="$(jq -c '.stalled.members // []' "$STATE_FILE" 2>/dev/null || echo '[]')"
     DISABLED_MEMBERS="$(jq -c '.disabled.members // []' "$STATE_FILE" 2>/dev/null || echo '[]')"
     DISABLED_LAST_NOTIFIED_AT="$(jq -r '.disabled.lastNotifiedAt // 0' "$STATE_FILE" 2>/dev/null || echo 0)"
+    ROTATION_SIGNATURE="$(jq -r '.rotation.signature // ""' "$STATE_FILE" 2>/dev/null || echo '')"
+    ROTATION_LAST_NOTIFIED_AT="$(jq -r '.rotation.lastNotifiedAt // 0' "$STATE_FILE" 2>/dev/null || echo 0)"
   else
     DOWN_COUNT=0; DOWN_SINCE=0; DOWN_ESCALATED=false; LAST_OK_TS=0
     DEGRADED_COUNT=0; DEGRADED_SINCE=0; DEGRADED_ESCALATED=false
     STALLED_COUNT=0; STALLED_ESCALATED=false; STALLED_MEMBERS='[]'
     DISABLED_MEMBERS='[]'; DISABLED_LAST_NOTIFIED_AT=0
+    ROTATION_SIGNATURE=''; ROTATION_LAST_NOTIFIED_AT=0
   fi
   [[ "$DOWN_COUNT" =~ ^[0-9]+$ ]] || DOWN_COUNT=0
   [[ "$DOWN_SINCE" =~ ^[0-9]+$ ]] || DOWN_SINCE=0
@@ -93,6 +100,7 @@ read_state() {
   jq -e 'type == "array"' <<<"$STALLED_MEMBERS" >/dev/null 2>&1 || STALLED_MEMBERS='[]'
   jq -e 'type == "array" and all(.[]; type == "string")' <<<"$DISABLED_MEMBERS" >/dev/null 2>&1 || DISABLED_MEMBERS='[]'
   [[ "$DISABLED_LAST_NOTIFIED_AT" =~ ^[0-9]+$ ]] || DISABLED_LAST_NOTIFIED_AT=0
+  [[ "$ROTATION_LAST_NOTIFIED_AT" =~ ^[0-9]+$ ]] || ROTATION_LAST_NOTIFIED_AT=0
 }
 
 write_state() {
@@ -105,7 +113,8 @@ write_state() {
     --argjson stalledCount "$STALLED_COUNT" --argjson stalledEscalated "$STALLED_ESCALATED" \
     --argjson stalledMembers "$STALLED_MEMBERS" \
     --argjson disabledMembers "$DISABLED_MEMBERS" --argjson disabledLastNotifiedAt "$DISABLED_LAST_NOTIFIED_AT" \
-    '{schemaVersion:3,down:{count:$downCount,since:$downSince,escalated:$downEscalated,lastOkTs:$lastOkTs},degraded:{count:$degradedCount,since:$degradedSince,escalated:$degradedEscalated},stalled:{count:$stalledCount,escalated:$stalledEscalated,members:$stalledMembers},disabled:{members:$disabledMembers,lastNotifiedAt:$disabledLastNotifiedAt}}' \
+    --arg rotationSignature "$ROTATION_SIGNATURE" --argjson rotationLastNotifiedAt "$ROTATION_LAST_NOTIFIED_AT" \
+    '{schemaVersion:4,down:{count:$downCount,since:$downSince,escalated:$downEscalated,lastOkTs:$lastOkTs},degraded:{count:$degradedCount,since:$degradedSince,escalated:$degradedEscalated},stalled:{count:$stalledCount,escalated:$stalledEscalated,members:$stalledMembers},disabled:{members:$disabledMembers,lastNotifiedAt:$disabledLastNotifiedAt},rotation:{signature:$rotationSignature,lastNotifiedAt:$rotationLastNotifiedAt}}' \
     > "$tmp" 2>/dev/null; then
     mv "$tmp" "$STATE_FILE"
   else
@@ -210,7 +219,7 @@ probe_once() {
       (( LAST_OK_TS > 0 )) && last_ok="$(date -r "$LAST_OK_TS" '+%H:%M:%S' 2>/dev/null || echo "$LAST_OK_TS")"
       local mention="Annie"
       [[ -n "$FOUNDER_ID" ]] && mention="<@${FOUNDER_ID}>"
-      if _probe_post "🚨 ${mention} Bridge 连续 down ≥ ${ESCALATE_MIN} 分钟且没有活过来(外部心跳探针)。最后一次健康响应:${last_ok}。建议:bash ~/Dev/flywheel/scripts/restart-services.sh;若起不来看 /tmp/flywheel-bridge.log + lsof -ti:9876。"; then
+      if _probe_post "🚨 ${mention} Bridge 连续 down ≥ ${ESCALATE_MIN} 分钟且没有活过来(外部心跳探针)。最后一次健康响应:${last_ok}。建议:bash ~/Dev/flywheel/scripts/restart-services.sh;若起不来看 ${BRIDGE_MAIN_LOG}、${BRIDGE_STARTUP_LOG}、${BRIDGE_ROTATION_ERROR_MARKER} + lsof -ti:9876。"; then
         DOWN_ESCALATED=true
       fi
     fi
@@ -225,6 +234,32 @@ probe_once() {
     _probe_post "✅ Bridge 恢复了 — 之前连续 down 约 ${mins} 分钟(外部心跳探针,FLY-1082)。" || true
   fi
   DOWN_COUNT=0; DOWN_SINCE=0; DOWN_ESCALATED=false; LAST_OK_TS="$now"
+
+  # FLY-2049: log rotation is availability-advisory. A stalled/failed adapter
+  # leaves Bridge online and a bounded marker behind; this independent probe
+  # turns that durable marker into an immediate page plus hourly reminders.
+  local rotation_reminder_min="${FLYWHEEL_LOG_ROTATION_REMINDER_MIN:-60}"
+  [[ "$rotation_reminder_min" =~ ^[0-9]+$ ]] || rotation_reminder_min=60
+  local observed_rotation_signature=""
+  if [[ -e "$BRIDGE_ROTATION_ERROR_MARKER" || -L "$BRIDGE_ROTATION_ERROR_MARKER" ]]; then
+    if [[ -f "$BRIDGE_ROTATION_ERROR_MARKER" && ! -L "$BRIDGE_ROTATION_ERROR_MARKER" ]]; then
+      observed_rotation_signature="$(jq -r '(.message // "unknown_rotation_error") | tostring | gsub("[\\r\\n]"; " ")' "$BRIDGE_ROTATION_ERROR_MARKER" 2>/dev/null || echo invalid_rotation_marker)"
+    else
+      observed_rotation_signature="unsafe_rotation_marker_path"
+    fi
+    if [[ "$observed_rotation_signature" != "$ROTATION_SIGNATURE" ]] \
+      || (( ROTATION_LAST_NOTIFIED_AT == 0 || now - ROTATION_LAST_NOTIFIED_AT >= rotation_reminder_min * 60 )); then
+      if _probe_post "⚠️ Bridge 在线,但日志轮转已停用:${observed_rotation_signature}。主日志仍以 short-FD 续写;请检查 ${BRIDGE_ROTATION_ERROR_MARKER} 与 ${BRIDGE_MAIN_LOG}(每 ${rotation_reminder_min}m 重醒)。"; then
+        ROTATION_SIGNATURE="$observed_rotation_signature"
+        ROTATION_LAST_NOTIFIED_AT="$now"
+      fi
+    fi
+  elif [[ -n "$ROTATION_SIGNATURE" ]]; then
+    if _probe_post "✅ Bridge 日志轮转告警已恢复;marker 已清除(FLY-2049)。"; then
+      ROTATION_SIGNATURE=''
+      ROTATION_LAST_NOTIFIED_AT=0
+    fi
+  fi
 
   local grace_min="${FLYWHEEL_LIVENESS_MANIFEST_GRACE_MIN:-5}"
   local degraded_min="${FLYWHEEL_LIVENESS_MANIFEST_DEGRADED_MIN:-3}"

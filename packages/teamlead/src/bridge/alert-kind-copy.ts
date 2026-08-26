@@ -409,7 +409,7 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-1081: never routed through this table (restart-services.sh /
 		// update-flywheel.sh build their own bodies via lead-alert.sh).
 		case "deploy_failed":
-			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log and ~/.flywheel/deployed-sha.";
+			return "A Flywheel deploy failed (restart / rollback / self-update). Shell-only kind via lead-alert.sh — see the shell alert body for specifics; check /tmp/flywheel-bridge.log, ~/.flywheel/state/bridge-startup.log, ~/.flywheel/state/bridge-log-rotation-error.json, and ~/.flywheel/deployed-sha.";
 		case "deploy_degraded":
 			return "A Flywheel deploy completed degraded (skipped/failed leads, plugin update problem, or idle-wait timeout). Shell-only kind via lead-alert.sh — see the shell alert body for specifics.";
 		// FLY-1256: never routed through this table. The external daemon supplies

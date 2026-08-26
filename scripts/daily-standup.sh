@@ -25,6 +25,10 @@ fi
 BRIDGE_URL="${BRIDGE_URL:-http://localhost:9876}"
 BRIDGE_STARTUP_TIMEOUT=60  # seconds to wait for Bridge health
 RESTART_LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
+BRIDGE_RUNTIME_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}/state"
+BRIDGE_LOG_PATH="${FLYWHEEL_BRIDGE_LOG_PATH:-/tmp/flywheel-bridge.log}"
+BRIDGE_RAW_STARTUP_LOG="${FLYWHEEL_BRIDGE_RAW_STARTUP_LOG:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-startup-daily.log}"
+BRIDGE_LOG_ERROR_MARKER="${FLYWHEEL_BRIDGE_LOG_ERROR_MARKER:-${BRIDGE_RUNTIME_STATE_DIR}/bridge-log-rotation-error.json}"
 
 # ── Bridge liveness check ──────────────────────────────────────
 
@@ -69,14 +73,44 @@ if ! bridge_healthy; then
   # cd to repo root — npx tsx resolves the local tsx dependency from node_modules
   cd "$FLYWHEEL_DIR"
 
+  # FLY-2049: do not give the long-lived Bridge a descriptor to the rotating
+  # main log. This distinct truncate-on-start capture retains only the latest
+  # daily fallback's pre-bootstrap diagnostics.
+  BRIDGE_RAW_STARTUP_REDIRECT=/dev/null
+  if ! mkdir -p "$BRIDGE_RUNTIME_STATE_DIR"; then
+    log_err "Cannot create Bridge runtime state directory $BRIDGE_RUNTIME_STATE_DIR; continuing via /dev/null"
+  elif [[ ! -d "$BRIDGE_RUNTIME_STATE_DIR" || -L "$BRIDGE_RUNTIME_STATE_DIR" ]]; then
+    log_err "Unsafe Bridge runtime state directory $BRIDGE_RUNTIME_STATE_DIR; continuing via /dev/null"
+  elif [[ "$BRIDGE_RAW_STARTUP_LOG" != /* ]]; then
+    log_err "Bridge raw startup log is not absolute ($BRIDGE_RAW_STARTUP_LOG); continuing via /dev/null"
+  else
+    BRIDGE_RAW_STARTUP_PARENT="$(dirname "$BRIDGE_RAW_STARTUP_LOG")"
+    if ! mkdir -p "$BRIDGE_RAW_STARTUP_PARENT"; then
+      log_err "Cannot create Bridge raw startup parent $BRIDGE_RAW_STARTUP_PARENT; continuing via /dev/null"
+    elif [[ ! -d "$BRIDGE_RAW_STARTUP_PARENT" || -L "$BRIDGE_RAW_STARTUP_PARENT" ]]; then
+      log_err "Unsafe Bridge raw startup parent $BRIDGE_RAW_STARTUP_PARENT; continuing via /dev/null"
+    elif [[ -e "$BRIDGE_RAW_STARTUP_LOG" || -L "$BRIDGE_RAW_STARTUP_LOG" ]] \
+       && [[ ! -f "$BRIDGE_RAW_STARTUP_LOG" || -L "$BRIDGE_RAW_STARTUP_LOG" ]]; then
+      log_err "Unsafe Bridge raw startup log $BRIDGE_RAW_STARTUP_LOG; continuing via /dev/null"
+    else
+      BRIDGE_RAW_STARTUP_REDIRECT="$BRIDGE_RAW_STARTUP_LOG"
+    fi
+  fi
+
   # Start Bridge in background (inherits our env, including sourced .env)
   # FLY-1062: packaged installs ship a compiled dist/run-bridge.js (no tsx on
   # customer machines); monorepo checkouts keep the tsx line verbatim
   # (reverse-compat sentinel: packaged-seams.test.sh).
   if [ -f "$FLYWHEEL_DIR/dist/run-bridge.js" ]; then
-    nohup node "$FLYWHEEL_DIR/dist/run-bridge.js" >> /tmp/flywheel-bridge.log 2>&1 &
+    FLYWHEEL_BRIDGE_LOG_PATH="$BRIDGE_LOG_PATH" \
+    FLYWHEEL_BRIDGE_RAW_STARTUP_LOG="$BRIDGE_RAW_STARTUP_LOG" \
+    FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="$BRIDGE_LOG_ERROR_MARKER" \
+    nohup node "$FLYWHEEL_DIR/dist/run-bridge.js" > "$BRIDGE_RAW_STARTUP_REDIRECT" 2>&1 &
   else
-    nohup npx tsx "$FLYWHEEL_DIR/scripts/run-bridge.ts" >> /tmp/flywheel-bridge.log 2>&1 &
+    FLYWHEEL_BRIDGE_LOG_PATH="$BRIDGE_LOG_PATH" \
+    FLYWHEEL_BRIDGE_RAW_STARTUP_LOG="$BRIDGE_RAW_STARTUP_LOG" \
+    FLYWHEEL_BRIDGE_LOG_ERROR_MARKER="$BRIDGE_LOG_ERROR_MARKER" \
+    nohup npx tsx "$FLYWHEEL_DIR/scripts/run-bridge.ts" > "$BRIDGE_RAW_STARTUP_REDIRECT" 2>&1 &
   fi
   BRIDGE_PID=$!
   log "Bridge starting (PID $BRIDGE_PID)..."
@@ -91,7 +125,7 @@ if ! bridge_healthy; then
     fi
     # Check process is still alive
     if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
-      log_err "Bridge process (PID $BRIDGE_PID) exited before becoming healthy. Check /tmp/flywheel-bridge.log"
+      log_err "Bridge process (PID $BRIDGE_PID) exited before becoming healthy. Check $BRIDGE_LOG_PATH, $BRIDGE_RAW_STARTUP_LOG, and $BRIDGE_LOG_ERROR_MARKER"
       exit 1
     fi
     sleep 2
@@ -99,7 +133,7 @@ if ! bridge_healthy; then
   done
 
   if ! bridge_healthy; then
-    log_err "Bridge failed to start within ${BRIDGE_STARTUP_TIMEOUT}s. Check /tmp/flywheel-bridge.log"
+    log_err "Bridge failed to start within ${BRIDGE_STARTUP_TIMEOUT}s. Check $BRIDGE_LOG_PATH, $BRIDGE_RAW_STARTUP_LOG, and $BRIDGE_LOG_ERROR_MARKER"
     exit 1
   fi
 fi
