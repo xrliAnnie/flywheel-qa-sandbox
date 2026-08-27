@@ -1,0 +1,7 @@
+{"at":"2026-08-27T07:29:35.743Z","kind":"gateway_ready","label":"speaker","userId":"1493068669444427927"}
+{"at":"2026-08-27T07:29:36.417Z","kind":"gateway_ready","label":"ear","userId":"1493072948683341976"}
+{"at":"2026-08-27T07:29:37.381Z","kind":"ear_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:29:37.656Z","kind":"text_trigger","content":"进入语音模式","messageId":"1542435908631138316"}
+{"at":"2026-08-27T07:29:58.103Z","kind":"failure","message":"Raya text reply timed out after 20000ms"}
+{"at":"2026-08-27T07:29:58.331Z","kind":"text_trigger","content":"退出语音模式","messageId":"1542435995415216199"}
+{"at":"2026-08-27T07:30:05.576Z","kind":"raya_text","replies":[{"id":"1542436023382839416","createdAt":"2026-08-27T07:30:05.050Z","content":"🎙️ 正在进入语音模式"},{"id":"1542436024968421447","createdAt":"2026-08-27T07:30:05.428Z","content":"正在退出语音模式"}]}

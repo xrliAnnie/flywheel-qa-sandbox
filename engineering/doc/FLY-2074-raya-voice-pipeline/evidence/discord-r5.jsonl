@@ -1,0 +1,17 @@
+{"at":"2026-08-27T07:38:56.151Z","kind":"gateway_ready","label":"speaker","userId":"1493068669444427927"}
+{"at":"2026-08-27T07:38:56.173Z","kind":"gateway_ready","label":"ear","userId":"1493072948683341976"}
+{"at":"2026-08-27T07:38:57.149Z","kind":"ear_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:38:57.390Z","kind":"text_trigger","content":"进入语音模式","messageId":"1542438256434749462"}
+{"at":"2026-08-27T07:38:58.438Z","kind":"raya_text","replies":[{"id":"1542438257529327636","createdAt":"2026-08-27T07:38:57.712Z","content":"🎙️ 正在进入语音模式"}]}
+{"at":"2026-08-27T07:38:58.438Z","kind":"raya_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:38:59.295Z","kind":"raya_speaking","stream":1}
+{"at":"2026-08-27T07:39:02.239Z","kind":"speaker_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:39:03.241Z","kind":"raya_realtime_ready","threadId":"01a04228-7049-72f2-aee7-2e68576a7ee0","lastLiveAt":"2026-08-27T07:39:02.951Z"}
+{"at":"2026-08-27T07:39:10.438Z","kind":"qa_audio_sent","source":"T3-question.ogg"}
+{"at":"2026-08-27T07:39:18.453Z","kind":"qa_audio_received","rayaStreams":1,"opusPackets":959,"opusBytes":34492,"nonSilentPackets":129,"nonSilentDelta":129,"maxPcmPeak":2107}
+{"at":"2026-08-27T07:39:18.732Z","kind":"raya_text_since_start","messages":[{"id":"1542438257529327636","createdAt":"2026-08-27T07:38:57.712Z","content":"🎙️ 正在进入语音模式"},{"id":"1542438280962768966","createdAt":"2026-08-27T07:39:03.299Z","content":"✅ 已回来(记得:否)"}]}
+{"at":"2026-08-27T07:39:18.972Z","kind":"text_trigger","content":"退出语音模式","messageId":"1542438347052683304"}
+{"at":"2026-08-27T07:39:19.319Z","kind":"raya_text","replies":[{"id":"1542438348076089435","createdAt":"2026-08-27T07:39:19.300Z","content":"我下线了"}]}
+{"at":"2026-08-27T07:39:19.821Z","kind":"raya_left","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:39:20.065Z","kind":"raya_text_since_stop","messages":[{"id":"1542438348076089435","createdAt":"2026-08-27T07:39:19.300Z","content":"我下线了"},{"id":"1542438348709167124","createdAt":"2026-08-27T07:39:19.451Z","content":"正在退出语音模式"}]}
+{"at":"2026-08-27T07:39:20.065Z","kind":"result","passed":true,"realDiscordUplink":true,"realDiscordDownlink":true,"opusPackets":1008,"opusBytes":46644,"nonSilentPackets":178,"maxPcmPeak":2107}

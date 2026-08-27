@@ -1,0 +1,11 @@
+{"at":"2026-08-27T07:36:33.846Z","kind":"gateway_ready","label":"ear","userId":"1493072948683341976"}
+{"at":"2026-08-27T07:36:34.077Z","kind":"gateway_ready","label":"speaker","userId":"1493068669444427927"}
+{"at":"2026-08-27T07:36:34.946Z","kind":"ear_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:36:35.146Z","kind":"text_trigger","content":"进入语音模式","messageId":"1542437659538886657"}
+{"at":"2026-08-27T07:36:36.187Z","kind":"raya_text","replies":[{"id":"1542437661480849458","createdAt":"2026-08-27T07:36:35.603Z","content":"🎙️ 正在进入语音模式"}]}
+{"at":"2026-08-27T07:36:36.187Z","kind":"raya_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:36:37.127Z","kind":"raya_speaking","stream":1}
+{"at":"2026-08-27T07:36:39.189Z","kind":"speaker_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:38:39.500Z","kind":"failure","message":"Raya realtime ready timed out after 120000ms"}
+{"at":"2026-08-27T07:38:39.974Z","kind":"text_trigger","content":"退出语音模式","messageId":"1542438182589829172"}
+{"at":"2026-08-27T07:38:40.269Z","kind":"raya_text","replies":[{"id":"1542438183709577336","createdAt":"2026-08-27T07:38:40.112Z","content":"我下线了"},{"id":"1542438183919427594","createdAt":"2026-08-27T07:38:40.162Z","content":"正在退出语音模式"}]}

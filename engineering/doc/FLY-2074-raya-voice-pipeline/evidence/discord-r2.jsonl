@@ -1,0 +1,16 @@
+{"at":"2026-08-27T07:30:32.613Z","kind":"gateway_ready","label":"ear","userId":"1493072948683341976"}
+{"at":"2026-08-27T07:30:32.724Z","kind":"gateway_ready","label":"speaker","userId":"1493068669444427927"}
+{"at":"2026-08-27T07:30:33.747Z","kind":"ear_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:30:34.236Z","kind":"text_trigger","content":"进入语音模式","messageId":"1542436145286090793"}
+{"at":"2026-08-27T07:31:05.824Z","kind":"raya_text","replies":[{"id":"1542436278174228501","createdAt":"2026-08-27T07:31:05.797Z","content":"🎙️ 正在进入语音模式"}]}
+{"at":"2026-08-27T07:31:06.324Z","kind":"raya_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:31:06.325Z","kind":"speaker_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:31:07.153Z","kind":"raya_speaking","stream":1}
+{"at":"2026-08-27T07:31:15.673Z","kind":"qa_audio_sent","source":"T3-question.ogg"}
+{"at":"2026-08-27T07:31:17.673Z","kind":"qa_audio_received","rayaStreams":1,"opusPackets":526,"opusBytes":1578}
+{"at":"2026-08-27T07:31:17.998Z","kind":"raya_text_since_start","messages":[{"id":"1542436278174228501","createdAt":"2026-08-27T07:31:05.797Z","content":"🎙️ 正在进入语音模式"}]}
+{"at":"2026-08-27T07:31:18.297Z","kind":"text_trigger","content":"退出语音模式","messageId":"1542436330875781170"}
+{"at":"2026-08-27T07:31:19.242Z","kind":"raya_text","replies":[{"id":"1542436331844673538","createdAt":"2026-08-27T07:31:18.593Z","content":"我下线了"},{"id":"1542436332289138749","createdAt":"2026-08-27T07:31:18.699Z","content":"正在退出语音模式"}]}
+{"at":"2026-08-27T07:31:19.243Z","kind":"raya_left","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:31:19.567Z","kind":"raya_text_since_stop","messages":[{"id":"1542436331844673538","createdAt":"2026-08-27T07:31:18.593Z","content":"我下线了"},{"id":"1542436332289138749","createdAt":"2026-08-27T07:31:18.699Z","content":"正在退出语音模式"}]}
+{"at":"2026-08-27T07:31:19.567Z","kind":"result","passed":true,"realDiscordUplink":true,"realDiscordDownlink":true,"opusPackets":572,"opusBytes":1716}

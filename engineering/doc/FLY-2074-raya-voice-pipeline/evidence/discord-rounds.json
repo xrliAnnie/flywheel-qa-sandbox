@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "window": {
+    "startedAt": "2026-08-27T07:29:37Z",
+    "endedAt": "2026-08-27T07:42:06Z",
+    "durationMinutes": 13,
+    "sameVoiceRuntime": {
+      "commit": "67bd68c",
+      "startedAt": "2026-08-27T07:19:33Z",
+      "note": "All six triggers occurred after this runtime started; e202933 and 9487b19 changed installer/tests only."
+    }
+  },
+  "summary": {
+    "attempts": 6,
+    "harnessPassed": 3,
+    "userVisibleSuccesses": 1,
+    "hardTimeouts": 3
+  },
+  "rounds": [
+    {
+      "id": "r1",
+      "triggeredAt": "2026-08-27T07:29:37Z",
+      "harnessStatus": "failed",
+      "userVisibleOutcome": "text_reply_timeout",
+      "hardTimeout": true,
+      "ackLatencyMs": 27600,
+      "detail": "Raya text reply timed out after 20000ms",
+      "evidenceFile": "discord-r1.jsonl",
+      "evidenceSha256": "18423f03a1387efc35fe24f42517e1add1e5c156f62c8d34ebd0fa10b62f9833"
+    },
+    {
+      "id": "r2",
+      "triggeredAt": "2026-08-27T07:30:34Z",
+      "harnessStatus": "passed",
+      "userVisibleOutcome": "pure_opus_silence_no_answer",
+      "hardTimeout": false,
+      "ackLatencyMs": 31600,
+      "opusPackets": 572,
+      "opusBytes": 1716,
+      "bytesPerPacket": 3,
+      "assistantTranscript": false,
+      "detail": "Three bytes per Opus packet is pure Opus silence; no transcript or answer arrived.",
+      "evidenceFile": "discord-r2.jsonl",
+      "evidenceSha256": "600bb844e35f11bad681f79051a6c1fc187140f364f0d8062608344c25397386"
+    },
+    {
+      "id": "r3",
+      "triggeredAt": "2026-08-27T07:33:14Z",
+      "harnessStatus": "failed",
+      "userVisibleOutcome": "realtime_ready_timeout",
+      "hardTimeout": true,
+      "timeoutMs": 120000,
+      "detail": "Raya realtime ready timed out after 120000ms",
+      "evidenceFile": "discord-r3.jsonl",
+      "evidenceSha256": "fd2180e7d99c210821acccb35a8d9d86f1f5b6af4a1abbe702102ccc8e461642"
+    },
+    {
+      "id": "r4",
+      "triggeredAt": "2026-08-27T07:36:35Z",
+      "harnessStatus": "failed",
+      "userVisibleOutcome": "realtime_ready_timeout",
+      "hardTimeout": true,
+      "timeoutMs": 120000,
+      "detail": "Raya realtime ready timed out after 120000ms",
+      "evidenceFile": "discord-r4.jsonl",
+      "evidenceSha256": "13eab42576db2844cf5341c2293214084ce40fe7ed5a79bbfd3ea6c22f017643"
+    },
+    {
+      "id": "r5",
+      "triggeredAt": "2026-08-27T07:38:57Z",
+      "harnessStatus": "passed",
+      "userVisibleOutcome": "bed_audio_no_answer",
+      "hardTimeout": false,
+      "opusPacketsAtMeasurement": 959,
+      "nonSilentPacketsAtMeasurement": 129,
+      "pcmPeak": 2107,
+      "assistantTranscript": false,
+      "detail": "About 6% of measured packets were non-silent; only bed/wait audio was heard and no answer arrived.",
+      "evidenceFile": "discord-r5.jsonl",
+      "evidenceSha256": "7f8113dde6182aabf035d98c59ad43f6a8cae774e39203ae9c56a58fd1e8ee94"
+    },
+    {
+      "id": "r6",
+      "triggeredAt": "2026-08-27T07:41:29Z",
+      "completedAt": "2026-08-27T07:42:06Z",
+      "harnessStatus": "passed",
+      "userVisibleOutcome": "question_answered",
+      "hardTimeout": false,
+      "opusPackets": 5325,
+      "nonSilentPackets": 2425,
+      "pcmPeak": 32768,
+      "assistantTranscript": true,
+      "detail": "The only round in which one question produced one audible answer.",
+      "evidenceFile": "discord-r6.jsonl",
+      "evidenceSha256": "3fab70a47603e0d21bb03688e8c6ee5fc5aac19f99a338f4cde4ea2dea89f088"
+    }
+  ],
+  "launchAttribution": {
+    "observed": "Lead verbally reported launchd runs=4 at 07:27; six triggers followed; final launchd runs=8, so two triggers did not create a new launch.",
+    "confirmedMechanism": "Code and launchctl documentation confirm that kickstart without -k can exit zero without creating a new launch.",
+    "inferenceBoundary": "Attributing the two missing launches specifically to r3/r4 is an inference, not a direct measurement."
+  },
+  "crashRelaunchAttestation": "Lead 2026-08-27 00:01 PT hand-verified crash-relaunch (57192->13352, runs 2->3); logs since truncated by restart, not re-derivable; a fresh in-General re-run is deferred to a founder-approved window, NOT run to avoid surprising her.",
+  "discordSilenceSoak": {
+    "durationMinutes": 30,
+    "executed": false,
+    "dataPoints": 0
+  }
+}

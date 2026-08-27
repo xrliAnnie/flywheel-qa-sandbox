@@ -83,6 +83,11 @@ jobs:
           node-version-file: .node-version
           cache: pnpm
 
+      # FLY-2074 is a docs-only PR, so this contract must run in the always-on
+      # lane rather than a package or heavy test shard.
+      - name: Enforce FLY-2074 founder disclosure contract
+        run: node scripts/fly2074-founder-disclosure-guard.mjs
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 

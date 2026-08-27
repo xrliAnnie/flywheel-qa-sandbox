@@ -1,0 +1,23 @@
+sequenceDiagram
+  participant Her as 她
+  participant Text as #raya 文字频道
+  participant RV as raya-voice 按需会话
+  participant ST as 会话记录(落盘)
+  participant LD as launchd(voice RunAtLoad=false)
+  participant CX as codex 子进程
+  Note over RV: voice-mode.requested 仍在,在线中某条腿断了
+  RV->>Text: ⚠️ 语音断线:<哪条腿>,正在重启(带投递回执,失败有界重试)
+  RV->>ST: 原子写入重启史 + 待发通知「计划重启」
+  RV->>ST: 清 activeRun;保留 desired-state marker
+  RV-->>LD: 非 0 退出
+  LD->>RV: KeepAlive SuccessfulExit=false → fresh 进程
+  RV->>ST: 启动最先核对 marker,再写 activeRun
+  RV->>Text: (房里没人时)语音进程已重启,待授权人进房后恢复
+  Her->>RV: 进入现有 Voice Channel
+  RV->>CX: 起 codex → fresh thread/start → realtime/start
+  CX-->>RV: realtime started
+  RV->>ST: threadId 落盘
+  RV->>Text: ✅ 已回来(记得:否)
+  RV->>ST: 拿到投递回执后清掉待发通知
+  Note over RV,CX: 若 fresh start 失败:绝不发「已回来」,再次断线退出;连续 ≥N 次 → 挂起等人工
+  Note over Her,LD: 正常 stop/最后授权人离房会先清 marker 再 exit0,launchd 不重拉

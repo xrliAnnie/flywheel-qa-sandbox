@@ -1,0 +1,35 @@
+flowchart LR
+  subgraph DC["Discord"]
+    Her["她(戴耳机)"]
+    Room["现有 Voice Channel"]
+    Text["#raya 文字频道<br/>启动 / 停止 / 状态行"]
+  end
+  subgraph Brain["常驻 brain 进程"]
+    GW["最小 Gateway<br/>精确短语 + allowlist"]
+    Marker["voice-mode.requested<br/>原子 desired-state marker"]
+    LC["launchd<br/>voice RunAtLoad=false<br/>异常退出才重拉"]
+  end
+  subgraph RV["raya-voice 按需会话进程"]
+    VR["Discord 腿<br/>进房 · 收音 · 播放"]
+    UP["上行流<br/>解码 → 24k 单声道<br/>→ 每 20ms 一帧(没声音送静音)"]
+    DN["下行流<br/>24k → 48k 立体声<br/>→ 叠等待音 → 保持缓冲深度"]
+    CO["协调器<br/>状态机 + 三腿健康 + 世代号"]
+    ST["会话记录(落盘)<br/>threadId / 重启史 / 待发通知"]
+    SP["状态行发送器<br/>新消息 + 投递回执"]
+    EV["证据与指标<br/>events.jsonl / context-usage.jsonl"]
+    CX["Codex 腿<br/>app-server 子进程 + realtime v2"]
+  end
+  subgraph OA["OpenAI 侧"]
+    RT["realtime 会话 v2<br/>(听 · 想 · 说)"]
+  end
+  Text -- "进入语音模式" --> GW --> Marker --> LC --> RV
+  Her -- "说话(Opus)" --> Room --> VR --> UP --> CX -- "appendAudio 24k" --> RT
+  RT -- "outputAudio 24k" --> CX --> DN --> VR --> Room --> Her
+  CX -- "它在忙 / 转写 / 用量 / 断开" --> CO
+  VR -- "连接状态 / 漏帧 / 谁在房里" --> CO
+  CO <--> ST
+  CO --> SP --> Text
+  CO --> EV
+  Text -- "退出语音模式" --> GW
+  GW -. "先清 marker,再 SIGTERM" .-> RV
+  RV -. "最后授权人离房:清 marker + exit0" .-> LC

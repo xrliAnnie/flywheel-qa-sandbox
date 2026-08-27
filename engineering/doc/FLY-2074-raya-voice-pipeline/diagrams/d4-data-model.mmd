@@ -1,0 +1,42 @@
+classDiagram
+  class 会话记录_SessionStore {
+    schemaVersion
+    codexHome - 绑定家目录
+    threadId - 证据锚,不是跨进程记忆钥匙
+    activeRun - bootId 与 startedAt
+    lastCleanExit
+    pendingRecoveryNotice - 待发的「已回来」
+    restartHistory - 判崩溃循环
+    hold - reason,只由 operator clear marker 清除
+    原子写 - 临时文件 → fsync → rename
+  }
+  class 证据_events_jsonl {
+    每 30s 一条播放账 - player 状态 / 漏帧 max / Idle 次数
+    上下行 tick 账 - sent 或 dropped 带原因
+    会话锚 - started / closed / durationMs
+    每条状态行的投递回执 - attempted / sent / failed
+    禁止 ok 与 outcome 这类自证字段
+  }
+  class 指标_context_usage_与_resource_usage {
+    totalTokens + modelContextWindow - 实测
+    backend turn 缺 usage - 记 unavailable evidence,不估算
+    峰值 - 由大脑的 metrics summary 派生
+    resource-usage.jsonl - pid + command identity
+  }
+  class 配置_RAYA_env {
+    RAYA_BOT_TOKEN / RAYA_OPENAI_API_KEY - secret 边界
+    RAYA_DISCORD_GUILD_ID / RAYA_DISCORD_VOICE_CHANNEL_ID
+    RAYA_DISCORD_TEXT_CHANNEL_ID / RAYA_FOUNDER_DISCORD_USER_ID
+    RAYA_CODEX_BIN / RAYA_CODEX_HOME / RAYA_CODEX_CWD
+    RAYA_VOICE_OPTIONS_JSON - 可选运行参数
+    RAYA_METRICS_DIR / RAYA_STATE_DIR
+    14 个必填 + 3 个可选,缺必填项 → 进程不起
+  }
+  class FLY2029_骨架 {
+    建仓 / 身份 / raya 频道
+    launchd 守护 - 重启 + 节流
+    三指标记录器 - 读 context-usage.jsonl 与 run/voice.pid
+  }
+  配置_RAYA_env --> FLY2029_骨架 : 由 2029 提供
+  指标_context_usage_与_resource_usage --> FLY2029_骨架 : 被 2029 读取
+  会话记录_SessionStore --> 证据_events_jsonl : 每次 commit 记一条

@@ -1,0 +1,16 @@
+stateDiagram-v2
+  [*] --> 平常停止
+  平常停止 --> 启动中: #raya 发「进入语音模式」→ 写 voice-mode.requested → launchd kickstart
+  启动中 --> 在房待命: 加入现有 Voice Channel(下行静音流已起)
+  启动中 --> 挂起: 记录里有 hold(凭据错误 / 连续崩溃)
+  在房待命 --> 预热: 有授权真人在房 → 起 codex + fresh thread/start
+  预热 --> 在线: realtime/start 成功(threadId 只作证据锚)
+  预热 --> 故障收尾: 建不起来
+  在线 --> 在线: 听 ⇄ 忙(等待音)⇄ 说
+  在线 --> 正常收尾: 最后授权人离房,或 #raya 发「退出语音模式」
+  在房待命 --> 正常收尾: #raya 发「退出语音模式」
+  正常收尾 --> 平常停止: 清 marker → 发「我下线了」→ exit0(不重拉)
+  在线 --> 故障收尾: 任一条腿断了
+  在房待命 --> 故障收尾: 任一条腿断了
+  故障收尾 --> 启动中: 保留 marker → 断线一行 → exit1 → launchd fresh 拉起(记得:否)
+  挂起 --> 在房待命: 人工 clear-hold 标记

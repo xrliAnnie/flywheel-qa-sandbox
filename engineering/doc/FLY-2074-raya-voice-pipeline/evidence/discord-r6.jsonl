@@ -1,0 +1,28 @@
+{"at":"2026-08-27T07:41:28.203Z","kind":"gateway_ready","label":"ear","userId":"1493072948683341976"}
+{"at":"2026-08-27T07:41:28.207Z","kind":"gateway_ready","label":"speaker","userId":"1493068669444427927"}
+{"at":"2026-08-27T07:41:29.233Z","kind":"ear_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:41:29.479Z","kind":"text_trigger","content":"进入语音模式","messageId":"1542438894472138852"}
+{"at":"2026-08-27T07:41:29.861Z","kind":"raya_text","replies":[{"id":"1542438895587958844","createdAt":"2026-08-27T07:41:29.837Z","content":"🎙️ 正在进入语音模式"}]}
+{"at":"2026-08-27T07:41:30.864Z","kind":"raya_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:41:31.434Z","kind":"raya_speaking","stream":1}
+{"at":"2026-08-27T07:41:34.710Z","kind":"speaker_joined","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:41:34.710Z","kind":"raya_realtime_ready","threadId":"01a04228-7049-72f2-aee7-2e68576a7ee0","lastLiveAt":"2026-08-27T07:39:02.951Z"}
+{"at":"2026-08-27T07:41:41.938Z","kind":"qa_audio_sent","source":"T3-question.ogg"}
+{"at":"2026-08-27T07:41:42.211Z","kind":"raya_speaking","stream":2}
+{"at":"2026-08-27T07:41:43.310Z","kind":"raya_speaking","stream":3}
+{"at":"2026-08-27T07:41:45.387Z","kind":"raya_speaking","stream":4}
+{"at":"2026-08-27T07:41:53.574Z","kind":"raya_speaking","stream":5}
+{"at":"2026-08-27T07:41:58.588Z","kind":"raya_speaking","stream":6}
+{"at":"2026-08-27T07:42:02.498Z","kind":"qa_audio_received","rayaStreams":6,"opusPackets":5055,"opusBytes":608141,"nonSilentPackets":2161,"nonSilentDelta":2161,"maxPcmPeak":32768,"assistantTranscript":"查到了，还没合并的有两个 PR：一个是“Realtime voice pipeline”，另一个是“Raya V1 foundation”。需要更多信息随时告诉我！"}
+{"at":"2026-08-27T07:42:02.823Z","kind":"raya_text_since_start","messages":[{"id":"1542438895587958844","createdAt":"2026-08-27T07:41:29.837Z","content":"🎙️ 正在进入语音模式"},{"id":"1542438902722334770","createdAt":"2026-08-27T07:41:31.538Z","content":"✅ 已进入语音模式，已连接现有 Voice Channel"}]}
+{"at":"2026-08-27T07:42:03.105Z","kind":"text_trigger","content":"退出语音模式","messageId":"1542439035451211776"}
+{"at":"2026-08-27T07:42:04.624Z","kind":"raya_text","replies":[{"id":"1542439036306595851","createdAt":"2026-08-27T07:42:03.387Z","content":"我下线了"},{"id":"1542439037065756814","createdAt":"2026-08-27T07:42:03.568Z","content":"正在退出语音模式"}]}
+{"at":"2026-08-27T07:42:04.624Z","kind":"raya_left","channelId":"1485787273193853170"}
+{"at":"2026-08-27T07:42:04.883Z","kind":"raya_stream_end","stream":6,"packets":5325,"bytes":675527}
+{"at":"2026-08-27T07:42:04.883Z","kind":"raya_stream_end","stream":6,"packets":5325,"bytes":675527}
+{"at":"2026-08-27T07:42:04.883Z","kind":"raya_stream_end","stream":6,"packets":5325,"bytes":675527}
+{"at":"2026-08-27T07:42:04.883Z","kind":"raya_stream_end","stream":6,"packets":5325,"bytes":675527}
+{"at":"2026-08-27T07:42:04.883Z","kind":"raya_stream_end","stream":6,"packets":5325,"bytes":675527}
+{"at":"2026-08-27T07:42:04.883Z","kind":"raya_stream_end","stream":6,"packets":5325,"bytes":675527}
+{"at":"2026-08-27T07:42:05.080Z","kind":"raya_text_since_stop","messages":[{"id":"1542439036306595851","createdAt":"2026-08-27T07:42:03.387Z","content":"我下线了"},{"id":"1542439037065756814","createdAt":"2026-08-27T07:42:03.568Z","content":"正在退出语音模式"}]}
+{"at":"2026-08-27T07:42:06.082Z","kind":"result","passed":true,"realDiscordUplink":true,"realDiscordDownlink":true,"opusPackets":5325,"opusBytes":675527,"nonSilentPackets":2425,"maxPcmPeak":32768,"assistantTranscript":"查到了，还没合并的有两个 PR：一个是“Realtime voice pipeline”，另一个是“Raya V1 foundation”。需要更多信息随时告诉我！","pipelineCounters":{"silence":1394,"sent":1423,"voice":258,"dropped:closed":1,"player-idle-recovered":1}}

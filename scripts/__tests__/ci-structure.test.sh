@@ -582,6 +582,43 @@ require(
 script_steps_2 = script_tests_2.get("steps")
 require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
 
+# FLY-2074: founder-facing acceptance must disclose all measured rounds and keep
+# its machine-readable facts aligned with the rendered page. This is docs-only,
+# so the guard must stay in the always-on lane and run without node_modules.
+fly2074_steps = [
+    step for step in quick_steps
+    if isinstance(step, dict)
+    and step.get("name") == "Enforce FLY-2074 founder disclosure contract"
+]
+require(
+    len(fly2074_steps) == 1,
+    "quick-gate must contain exactly one FLY-2074 founder disclosure step",
+)
+require(
+    str(fly2074_steps[0].get("run", "")).strip()
+    == "node scripts/fly2074-founder-disclosure-guard.mjs",
+    "FLY-2074 founder disclosure command drifted",
+)
+require(
+    "if" not in fly2074_steps[0],
+    "FLY-2074 founder disclosure step must not be conditional",
+)
+require(
+    "continue-on-error" not in fly2074_steps[0],
+    "FLY-2074 founder disclosure step must fail closed",
+)
+fly2074_in_shards = sum(
+    1
+    for job_steps in (script_steps, script_steps_2)
+    for step in job_steps
+    if isinstance(step, dict)
+    and "fly2074-founder-disclosure-guard.mjs" in str(step.get("run", ""))
+)
+require(
+    fly2074_in_shards == 0,
+    "FLY-2074 founder disclosure must run only in the always-on quick gate",
+)
+
 # FLY-2045: the milestone-layout guard is the reason a milestone-only regression cannot
 # reach main. Every such regression is a Markdown-only change, and Markdown under
 # engineering/doc/ classifies inert, so the heavy jobs skip exactly those PRs -- the guard
@@ -629,6 +666,11 @@ require(
     quick_names.index("Enforce FLY-2045 milestone layout")
     < quick_names.index("Install dependencies"),
     "FLY-2045 milestone layout must run before dependencies are installed",
+)
+require(
+    quick_names.index("Enforce FLY-2074 founder disclosure contract")
+    < quick_names.index("Install dependencies"),
+    "FLY-2074 founder disclosure must run before dependencies are installed",
 )
 
 

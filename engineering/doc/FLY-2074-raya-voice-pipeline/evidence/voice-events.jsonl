@@ -1,0 +1,19 @@
+{"ts":"2026-08-27T07:10:14.728Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:10:14.731Z","kind":"audio_counters","counts":{"silence":25229,"clock:stall":2,"player-idle-recovered":1}}
+{"ts":"2026-08-27T07:30:07.059Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:30:07.064Z","kind":"audio_counters","counts":{"silence":81,"player-idle-recovered":1}}
+{"ts":"2026-08-27T07:31:18.633Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:31:18.638Z","kind":"audio_counters","counts":{"silence":626,"player-idle-recovered":1}}
+{"ts":"2026-08-27T07:35:16.025Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:35:16.031Z","kind":"audio_counters","counts":{"silence":6060,"player-idle-recovered":1}}
+{"ts":"2026-08-27T07:38:40.046Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:38:40.049Z","kind":"audio_counters","counts":{"silence":6201,"player-idle-recovered":1}}
+{"ts":"2026-08-27T07:39:11.718Z","kind":"realtime_transcript","role":"user","text":"今天李维尤这个仓库有几个,提、二还没合并,去真的查一下再告诉我。","generation":1}
+{"ts":"2026-08-27T07:39:19.435Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:39:19.438Z","kind":"audio_counters","counts":{"silence":1061,"sent":823,"dropped:closed":1,"player-idle-recovered":1}}
+{"ts":"2026-08-27T07:41:43.343Z","kind":"realtime_transcript","role":"user","text":"今天另外有这个仓库有几个,T2还没合并,去真的查一下再告诉我。","generation":1}
+{"ts":"2026-08-27T07:41:51.882Z","kind":"context_window_mismatch","requested":1050000,"actual":828400,"threadId":"01a0422a-c3a8-7712-9536-15dccb713b7a","turnId":"01a0422a-e8a5-7c21-ab29-e6eae2e95078"}
+{"ts":"2026-08-27T07:41:57.612Z","kind":"context_window_mismatch","requested":1050000,"actual":828400,"threadId":"01a0422a-c3a8-7712-9536-15dccb713b7a","turnId":"01a0422a-e8a5-7c21-ab29-e6eae2e95078"}
+{"ts":"2026-08-27T07:42:00.055Z","kind":"realtime_transcript","role":"assistant","text":"查到了，还没合并的有两个 PR：一个是“Realtime voice pipeline”，另一个是“Raya V1 foundation”。需要更多信息随时告诉我！","generation":1}
+{"ts":"2026-08-27T07:42:03.379Z","kind":"voice_exit","code":0,"reason":"sigterm"}
+{"ts":"2026-08-27T07:42:03.381Z","kind":"audio_counters","counts":{"silence":1394,"sent":1423,"voice":258,"dropped:closed":1,"player-idle-recovered":1}}

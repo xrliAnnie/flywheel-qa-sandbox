@@ -1,0 +1,36 @@
+<svg id="FLY-2074-d3" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1320 790" role="img" aria-labelledby="d3-title d3-desc">
+  <title id="d3-title">Raya 语音异常重拉时序</title>
+  <desc id="d3-desc">运行中的语音腿断开后记录证据、exit1，由 RunAtLoad false 的 launchd job 在 requested marker 仍在时 fresh 拉起，并明确记得否。</desc>
+  <defs>
+    <marker id="d3-arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+    <style>.actor{fill:#f8fafc;stroke:#94a3b8;stroke-width:2}.life{stroke:#cbd5e1;stroke-width:2;stroke-dasharray:7 6}.msg{stroke:#475569;stroke-width:2;marker-end:url(#d3-arrow)}.reply{stroke-dasharray:7 5}.note{fill:#fff7ed;stroke:#fb923c;stroke-width:1.5}.good{fill:#ecfdf5;stroke:#10b981}.t{font:17px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#172033}.h{font:700 22px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#172033}.s{font:14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#475569}</style>
+  </defs>
+  <rect width="1320" height="790" rx="24" fill="#fff"/>
+  <text x="40" y="45" class="h">异常退出：fresh 回来，但不假装记得</text>
+  <g>
+    <rect x="35" y="72" width="165" height="56" rx="12" class="actor"/><text x="118" y="106" text-anchor="middle" class="t">#raya 文字频道</text>
+    <rect x="255" y="72" width="165" height="56" rx="12" class="actor"/><text x="338" y="106" text-anchor="middle" class="t">raya-voice</text>
+    <rect x="475" y="72" width="165" height="56" rx="12" class="actor"/><text x="558" y="106" text-anchor="middle" class="t">会话记录</text>
+    <rect x="695" y="72" width="165" height="56" rx="12" class="actor"/><text x="778" y="106" text-anchor="middle" class="t">launchd</text>
+    <rect x="915" y="72" width="165" height="56" rx="12" class="actor"/><text x="998" y="106" text-anchor="middle" class="t">Codex 子进程</text>
+    <rect x="1135" y="72" width="150" height="56" rx="12" class="actor"/><text x="1210" y="106" text-anchor="middle" class="t">她</text>
+    <path d="M118 128 V750 M338 128 V750 M558 128 V750 M778 128 V750 M998 128 V750 M1210 128 V750" class="life"/>
+  </g>
+  <rect x="245" y="150" width="625" height="50" rx="10" class="note"/>
+  <text x="558" y="181" text-anchor="middle" class="t">voice-mode.requested 仍在；Discord / codex / realtime 任一条腿断了</text>
+  <path d="M338 230 H118" class="msg"/><text x="228" y="220" text-anchor="middle" class="s">⚠️ 语音断线:&lt;哪条腿&gt;,正在重启</text>
+  <path d="M338 280 H558" class="msg"/><text x="448" y="270" text-anchor="middle" class="s">原子写重启史 + 待发通知</text>
+  <path d="M338 330 H558" class="msg"/><text x="448" y="320" text-anchor="middle" class="s">清 activeRun；保留 marker</text>
+  <path d="M338 380 H778" class="msg"/><text x="558" y="370" text-anchor="middle" class="s">非 0 退出</text>
+  <path d="M778 430 H338" class="msg"/><text x="558" y="420" text-anchor="middle" class="s">KeepAlive SuccessfulExit=false → fresh 进程</text>
+  <text x="778" y="452" text-anchor="middle" class="s">voice RunAtLoad=false</text>
+  <path d="M338 480 H558" class="msg"/><text x="448" y="470" text-anchor="middle" class="s">核对 marker → 写 activeRun</text>
+  <path d="M1210 530 H338" class="msg"/><text x="774" y="520" text-anchor="middle" class="s">进入现有 Voice Channel</text>
+  <path d="M338 580 H998" class="msg"/><text x="668" y="570" text-anchor="middle" class="s">起 codex → fresh thread/start → realtime/start</text>
+  <path d="M998 620 H338" class="msg reply"/><text x="668" y="610" text-anchor="middle" class="s">realtime started</text>
+  <path d="M338 665 H558" class="msg"/><text x="448" y="655" text-anchor="middle" class="s">threadId 落盘</text>
+  <path d="M338 710 H118" class="msg"/><text x="228" y="700" text-anchor="middle" class="s">✅ 已回来(记得:否)</text>
+  <rect x="745" y="680" width="510" height="60" rx="10" class="note good"/>
+  <text x="1000" y="704" text-anchor="middle" class="s">正常 stop / 最后授权人离房：</text>
+  <text x="1000" y="726" text-anchor="middle" class="s">先清 marker → “我下线了” → exit0，launchd 不重拉</text>
+</svg>
