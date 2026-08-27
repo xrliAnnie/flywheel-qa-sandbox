@@ -2574,21 +2574,6 @@ elif [ "$IS_COS_ROLE" = false ]; then
     log "Appending base runner-reengage rules: ${BASE_REENGAGE_RULES}"
   fi
 
-  # ── FLY-369: Runner status relay + proactive patrol (dept leads that manage
-  # Runners). RC-1 (relay every lifecycle event to the [FLY-XX] thread +
-  # runner-done≠accepted), RC-2 (drive a parked Runner via a waking channel,
-  # never `respond` for non-gate), RC-3 (proactively sweep your Runners via
-  # runner_terminal_list), RC-6 (continuation Runner reads the committed plan
-  # first). These are backend-INDEPENDENT, so — unlike runner-messaging-rules —
-  # this loads on BOTH the mailbox and the commdb rollback path (its RC-2 section
-  # is self-contained for commdb). Discipline only; the automation engine belongs
-  # to FLY-271 / FLY-368. Optional — missing base file is a no-op (backward compat).
-  BASE_PATROL_RULES="${BASE_RULES_DIR}/runner-patrol-rules.md"
-  if [ -f "$BASE_PATROL_RULES" ] && [ -r "$BASE_PATROL_RULES" ]; then
-    rules_bundle_add "$BASE_PATROL_RULES" base
-    log "Appending base runner-patrol rules: ${BASE_PATROL_RULES}"
-  fi
-
   # ── FLY-205: Doc-Flow tier judgment + founder notification (non-cos dept
   # leads only). Judging the doc tier and passing `docTier` at spawn is
   # spawn-only behavior — cos-lead (canSpawnRunners: false) must not load it
@@ -2637,6 +2622,16 @@ else
     rules_bundle_add "$BASE_COS_RULES" base
     log "Appending base cos-lead rules: ${BASE_COS_RULES}"
   fi
+fi
+
+# ── FLY-369/FLY-2080: status relay + patrol action ledger (dept Leads) ──
+# Keep the existing dispatch-capable department-Lead boundary. CoS Leads have
+# canSpawnRunners=false and patrol-tick does not target them; loading this whole
+# file would expose unrelated Runner-management and raw-ledger actions.
+BASE_PATROL_RULES="${BASE_RULES_DIR}/runner-patrol-rules.md"
+if [ "$IS_COS_ROLE" != true ] && [ "$IS_COMPANION_ROLE" != true ] && [ "$IS_EXTERNAL_ROLE" != true ] && [ -f "$BASE_PATROL_RULES" ] && [ -r "$BASE_PATROL_RULES" ]; then
+  rules_bundle_add "$BASE_PATROL_RULES" base
+  log "Appending base runner-patrol rules: ${BASE_PATROL_RULES}"
 fi
 
 # ── FLY-1319: founder-local time (universal companion + cos + dept) ──

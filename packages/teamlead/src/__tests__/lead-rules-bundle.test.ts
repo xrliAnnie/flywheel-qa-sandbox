@@ -136,9 +136,9 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"model-routing.md",
 			"stuck-runner-remanage.md",
 			"runner-reengage-rules.md",
-			"runner-patrol-rules.md",
 			"doc-flow-rules.md",
 			"xiaohongshu-memory-rules.md",
+			"runner-patrol-rules.md",
 			"founder-local-time.md",
 			"founder-only-authority.md",
 			"founder-html-delivery.md",
@@ -157,7 +157,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(names(lines)[1]).toBe("executor-routing.md");
 	});
 
-	it("cos → cos rules + universal governance (no dept/runner rules)", () => {
+	it("cos → cos + universal governance only (no runner patrol surface)", () => {
 		const { lines, status } = runBundle("cos", BASE_RULES_DIR, "mailbox", "1");
 		expect(status).toBe(0);
 		expect(names(lines)).toEqual([

@@ -178,6 +178,221 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(result.stdout.trim()).toBe("false");
 	});
 
+	it("FLY-2080: patrol goal is aggressive Ship-card progress, with founder wording pinned", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"巡检的 goal",
+			"把 orchestrator 一直推到每个 issue 最后到达 Ship card",
+			"有真正的问题必须要我来回答",
+			"我把事情派给你之后,我就可以去休息了",
+			"这个东西已经推进到我可以 review 的状态",
+			"自己去 identify 发现了什么问题,把漏的账补上,让 Bridge 继续操作",
+			"让所有的巡检都带上这两个步骤",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		expect(section0).toMatch(/步骤 A.*发现即补账推进/s);
+		expect(section0).toMatch(/步骤 B.*记录进病根 Epic/s);
+	});
+
+	it("FLY-2080: guard classification, truth boundaries, and both executable recipes are complete", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"错误码",
+			"WHERE",
+			"防篡改",
+			"防漏账",
+			"digest",
+			"head fingerprint",
+			"approval",
+			"claim",
+			"workflow_rework_delivery",
+			"workflow_run_node",
+			"workflow_rework_verification_path",
+			"workflow_rework_route_revision",
+			"workflow_carrier_delivery",
+			"delivery_awaiting_receipt",
+			"wake_delivered",
+			"hold_count",
+			"rework_delivery_wake_delivered",
+			"workflow_side_effect_ledger",
+			"rework_replacement:",
+			"replacement_pending",
+			"edge_traversed",
+			"loop_iteration",
+			"loop_limit_escalated",
+			"resolveWorkflowHeadAuthority",
+			"engine_predecessor_unavailable",
+			"targetNodeId",
+			"sourceAttempt",
+			"loopIteration",
+			"BEGIN IMMEDIATE",
+			"PRAGMA foreign_keys=ON",
+			"PRAGMA busy_timeout=5000",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		expect(section0).toMatch(/held.*wake_delivered.*held.*active/s);
+		expect(section0).toMatch(/pane|workflow_run_event/);
+		expect(section0).toMatch(/引擎.*接力|Bridge.*接力/);
+		// A repair-authored event proves only that sqlite committed, never that
+		// Bridge reconciled the run. Handoff evidence must exclude those rows.
+		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:FLY-2080:%'");
+	});
+
+	it("FLY-2080: every Bridge finding has a verified FLY-2072 marker receipt", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const stepB = section0.slice(
+			section0.indexOf("步骤 B — 记录进病根 Epic"),
+			section0.indexOf("每个 distinct finding 最后追加一行"),
+		);
+		for (const anchor of [
+			"FLY-2072",
+			"形状",
+			"根因",
+			"处置",
+			"是否重复",
+			"patrol-finding:",
+			"epic_marker",
+			"UNAVAILABLE_CAUSE",
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		expect(stepB).toContain("/api/linear/comments?issueId=FLY-2072&limit=100");
+		expect(stepB).toContain("mcp__linear-api__list_issues");
+		expect(stepB).toContain("mcp__linear-api__save_issue");
+		expect(stepB).toContain("mcp__linear-api__save_comment");
+		expect(stepB).toContain("class_key:<ROOT_KEY>");
+		expect(stepB).toContain("occurrences: 1");
+		expect(stepB).toContain("二十余条旧 comment");
+		expect(stepB).toContain("/api/linear/issue");
+		expect(stepB).toContain('--data-urlencode "query=$CHILD_IDENTIFIER"');
+		expect(stepB).toContain("CHILD_UUID");
+		expect(stepB).toContain('.matchType == "identifier"');
+		expect(stepB).toContain(".issue.id");
+		expect(stepB).not.toContain('get_issue({id:"FLY-2072"');
+		expect(stepB).not.toContain("POST /api/linear/comment");
+		expect(stepB).not.toContain(
+			"/api/linear/comments?issueId=FLY-2072&projectName=",
+		);
+	});
+
+	it("FLY-2080: root-class dedupe re-reads full child descriptions before matching", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const stepB = section0.slice(
+			section0.indexOf("步骤 B — 记录进病根 Epic"),
+			section0.indexOf("每个 distinct finding 最后追加一行"),
+		);
+
+		// list_issues truncates long descriptions in production. Pagination finds
+		// candidate ids; only a get_issue read is authoritative for class_key.
+		expect(stepB).toMatch(
+			/list_issues[\s\S]*hasNextPage=false[\s\S]*get_issue\(\{id:"<candidate child identifier>"\}\)[\s\S]*完整 description[\s\S]*class_key:<ROOT_KEY>/,
+		);
+		expect(stepB).toContain(
+			'description: "class_key:<ROOT_KEY>\\n形状: <错误码/卡点/结构形状>',
+		);
+		expect(stepB).toContain("team=`Flywheel`");
+		expect(stepB).not.toContain("team=`FLY`");
+
+		const rootKey = "a".repeat(64);
+		const fullDescription = `${"x".repeat(532)}\nclass_key:${rootKey}`;
+		const listIssue = {
+			id: "FLY-2081",
+			description: `${fullDescription.slice(0, 475)}(truncated, use get_issue…)`,
+		};
+		const getIssue = { ...listIssue, description: fullDescription };
+		expect(listIssue.description.length).toBeGreaterThanOrEqual(500);
+		expect(listIssue.description).not.toContain(`class_key:${rootKey}`);
+		expect(getIssue.description).toContain(`class_key:${rootKey}`);
+	});
+
+	it("FLY-2080: the documented FINDING gate requires UUID receipts for both issue and comment records", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const program = section0.match(
+			/# FLY-2080-FINDING-GATE-BEGIN\nawk '\n([\s\S]*?)\n' "\$REPORT_PATH"\n# FLY-2080-FINDING-GATE-END/,
+		)?.[1];
+		expect(program).toBeDefined();
+		// Keep the embedded awk portable: gawk/mawk reject a parameter whose
+		// name collides with another user-defined function.
+		expect(program).not.toMatch(/function (?:uuid|hex64)\(value(?:,|\))/);
+
+		const marker = "a".repeat(64);
+		const childUuid = "5914cef5-05bf-45a3-be14-edbc858147a2";
+		const commentUuid = "123e4567-e89b-12d3-a456-426614174000";
+		const run = (lines: string[]) =>
+			spawnSync("awk", [program ?? ""], {
+				input: `${lines.join("\n")}\n`,
+				encoding: "utf8",
+			});
+		const valid = [
+			"STEP 1: FINDING",
+			`FINDING step=1 bridge_problem=yes result=fixed evidence=event:101 owner=n/a next=n/a epic=FLY-2072#${childUuid} epic_marker=${marker}`,
+			"STEP 2: FINDING",
+			"PANE_EVIDENCE pane=p1 result=clear",
+			"FINDING step=2 bridge_problem=no result=advanced evidence=pane:changed owner=n/a next=n/a epic=n/a epic_marker=n/a",
+			"STEP 3: FINDING",
+			`FINDING step=3 bridge_problem=yes result=escalated-with-plan evidence=guard:digest owner=founder next=authorize:run-123 epic=FLY-2072#${commentUuid} epic_marker=${marker}`,
+		];
+		expect(run(valid).status).toBe(0);
+
+		expect(
+			run(
+				valid.map((line) =>
+					line.replace("result=advanced", "result=known-waiting"),
+				),
+			).status,
+		).not.toBe(0);
+		expect(
+			run(
+				valid.map((line) =>
+					line.replace(`epic_marker=${marker}`, "epic_marker=n/a"),
+				),
+			).status,
+		).not.toBe(0);
+		expect(run(["STEP 4: FINDING"]).status).not.toBe(0);
+		expect(
+			run(
+				valid.map((line) =>
+					line.replace(`epic=FLY-2072#${childUuid}`, "epic=FLY-2072#FLY-2081"),
+				),
+			).status,
+		).not.toBe(0);
+		expect(
+			run(
+				valid.map((line) =>
+					line.replace(
+						"owner=founder next=authorize:run-123",
+						"owner=tbd next=tbd",
+					),
+				),
+			).status,
+		).not.toBe(0);
+
+		const unavailable = [
+			"STEP 1: FINDING",
+			"STEP 6: UNAVAILABLE(transient: linear_epic_unavailable)",
+			"UNAVAILABLE_CAUSE step=6 class=transient token=linear_epic_unavailable",
+			"FINDING step=1 bridge_problem=yes result=escalated-with-plan evidence=linear:down owner=agent:flywheel-eng-lead next=retry:linear-comment epic=unavailable epic_marker=n/a",
+		];
+		expect(run(unavailable).status).toBe(0);
+	});
+
 	it("RC-1: every lifecycle event MUST relay to the [FLY-XX] thread via /api/chat-threads/send", () => {
 		expect(patrol).toContain("/api/chat-threads/send");
 		for (const ev of [
@@ -238,16 +453,20 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(msg).toMatch(/marker/i);
 	});
 
-	it("claude-lead.sh loads runner-patrol for dept leads (non-cos), in monotonic order after reengage", () => {
+	it("claude-lead.sh keeps runner-patrol on dispatch-capable department Leads", () => {
 		expect(sh).toContain("runner-patrol-rules.md");
 		const patrolIdx = sh.indexOf("BASE_PATROL_RULES");
-		const reengageIdx = sh.indexOf("BASE_REENGAGE_RULES");
 		const cosIdx = sh.indexOf("BASE_COS_RULES");
+		const founderTimeIdx = sh.indexOf("BASE_FOUNDER_LOCAL_TIME_RULES");
 		expect(patrolIdx).toBeGreaterThan(0);
-		// dept-only: appears before the cos base-rules block
-		expect(patrolIdx).toBeLessThan(cosIdx);
-		// loaded after reengage (matches the resolver's pinned order)
-		expect(patrolIdx).toBeGreaterThan(reengageIdx);
+		// The block lives after role-specific rules but must retain the CoS
+		// exclusion: CoS has canSpawnRunners=false and receives no patrol_tick.
+		expect(patrolIdx).toBeGreaterThan(cosIdx);
+		expect(patrolIdx).toBeLessThan(founderTimeIdx);
+		const patrolBlock = sh.slice(patrolIdx, founderTimeIdx);
+		expect(patrolBlock).toContain('IS_COS_ROLE" != true');
+		expect(patrolBlock).toContain('IS_COMPANION_ROLE" != true');
+		expect(patrolBlock).toContain('IS_EXTERNAL_ROLE" != true');
 	});
 
 	it("README base-rules table lists runner-patrol-rules.md (anti-drift)", () => {
