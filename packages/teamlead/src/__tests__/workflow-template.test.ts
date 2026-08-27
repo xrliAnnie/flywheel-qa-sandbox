@@ -187,7 +187,7 @@ describe("workflow template manifest v1", () => {
 		).toThrow(/mixed|unknown key|land_v1/i);
 	});
 
-	it("allows only founder feedback loops to omit their iteration limit pair", () => {
+	it("allows any v1 loop to omit its iteration limit pair", () => {
 		const manifest = structuredClone(
 			legacyWorkflowSeeds().find(
 				(seed) => seed.templateId === "tpl_eng_heavy_land_v1",
@@ -205,6 +205,18 @@ describe("workflow template manifest v1", () => {
 		)!;
 		expect(parsedFounderLoop).not.toHaveProperty("max_iterations");
 		expect(parsedFounderLoop).not.toHaveProperty("on_limit");
+
+		const unboundedQa = structuredClone(manifest);
+		const qaLoop = unboundedQa.loops.find(
+			(loop) => loop.loop_when === "qa_fail",
+		)! as unknown as Record<string, unknown>;
+		delete qaLoop.max_iterations;
+		delete qaLoop.on_limit;
+		const parsedQaLoop = validateWorkflowManifest(unboundedQa).loops.find(
+			(loop) => loop.loop_when === "qa_fail",
+		)!;
+		expect(parsedQaLoop).not.toHaveProperty("max_iterations");
+		expect(parsedQaLoop).not.toHaveProperty("on_limit");
 
 		for (const missing of ["max_iterations", "on_limit"] as const) {
 			const invalid = structuredClone(manifest);
@@ -359,6 +371,21 @@ describe("workflow template manifest v1", () => {
 });
 
 describe("workflow template manifest v2", () => {
+	it("allows a v2 review loop to be unbounded while rejecting half a limit pair", () => {
+		const unbounded = generalizedManifest();
+		delete (unbounded.loops[0] as Record<string, unknown>).max_iterations;
+		delete (unbounded.loops[0] as Record<string, unknown>).on_limit;
+		const parsedLoop = validateWorkflowManifest(unbounded).loops[0]!;
+		expect(parsedLoop).not.toHaveProperty("max_iterations");
+		expect(parsedLoop).not.toHaveProperty("on_limit");
+
+		const halfBounded = generalizedManifest();
+		delete (halfBounded.loops[0] as Record<string, unknown>).on_limit;
+		expect(() => validateWorkflowManifest(halfBounded)).toThrow(
+			/max_iterations.*on_limit|on_limit.*max_iterations/i,
+		);
+	});
+
 	it("accepts an engine-owned terminal land node without relying on node ids", () => {
 		const manifest = validateWorkflowManifest({
 			schema_version: 2,

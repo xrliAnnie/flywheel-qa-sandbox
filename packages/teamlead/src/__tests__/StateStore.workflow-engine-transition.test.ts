@@ -4456,6 +4456,79 @@ describe("engine-owned snapshot transition transaction", () => {
 		store.close();
 	});
 
+	it("keeps the default Code QA loop active beyond five failures without a max payload", async () => {
+		const store = await compiledCodeEngineRun();
+		const settleOpenRework = () => {
+			const db = (
+				store as unknown as {
+					db: { run(sql: string): void };
+				}
+			).db;
+			db.run(
+				"UPDATE workflow_rework_delivery SET state = 'completed' WHERE state IN ('pending','turn_granted','wake_delivered','replacement_pending')",
+			);
+			db.run(
+				"UPDATE workflow_rework_verification_path SET state = 'completed' WHERE state IN ('pending','active')",
+			);
+		};
+		advance(store, {
+			nodeId: "design",
+			attempt: 1,
+			executionId: "design-1",
+			outcome: "design_done",
+			successorExecutionId: "implement-1",
+		});
+
+		for (let attempt = 1; attempt <= 5; attempt += 1) {
+			advance(store, {
+				nodeId: "implement",
+				attempt,
+				executionId: "implement-1",
+				outcome: "implement_done",
+				successorExecutionId: "qa-1",
+			});
+			const failure = advance(store, {
+				nodeId: "qa",
+				attempt,
+				executionId: "qa-1",
+				outcome: "qa_fail",
+			});
+			expect(failure).toMatchObject({
+				ok: true,
+				loopIteration: attempt,
+				targetNodeId: "implement",
+				targetAttempt: attempt + 1,
+			});
+			expect(failure.ok && failure.escalated).toBeUndefined();
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			if (attempt < 5) settleOpenRework();
+		}
+
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "loop_iteration")
+				.map((event) => event.payload),
+		).toEqual([
+			{ iteration: 1 },
+			{ iteration: 2 },
+			{ iteration: 3 },
+			{ iteration: 4 },
+			{ iteration: 5 },
+		]);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "loop_limit_escalated"),
+		).toHaveLength(0);
+		expect(
+			store
+				.listWorkflowRunNodes("run-1", "implement")
+				.map((node) => node.attempt),
+		).toEqual([1, 2, 3, 4, 5, 6]);
+		store.close();
+	});
+
 	it("reopens a loop-limit hold only with its current receipt and keeps iteration history continuous", async () => {
 		const store = await engineRun();
 		const settleOpenRework = () => {

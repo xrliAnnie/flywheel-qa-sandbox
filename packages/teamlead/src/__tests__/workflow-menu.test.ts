@@ -102,8 +102,6 @@ describe("founder-approved workflow menu source", () => {
 				to: "implement",
 				loopWhen: "qa_fail",
 				exitWhen: "qa_pass",
-				maxIterations: 10,
-				onLimit: "escalate",
 			},
 			{
 				id: "founder_rework",
@@ -139,31 +137,98 @@ describe("founder-approved workflow menu source", () => {
 				expect.objectContaining({ type: "land", execution: "engine" }),
 			]),
 		);
+		const qaLoop = seed.manifest.loops.find(
+			(loop) => loop.loop_when === "qa_fail",
+		)!;
+		expect(qaLoop).not.toHaveProperty("max_iterations");
+		expect(qaLoop).not.toHaveProperty("on_limit");
 	});
 
-	it.each([
-		["a QA role", "    role: qa", "    role: implement"],
-		["the max-10 QA loop", "    maxIterations: 10", "    maxIterations: 2"],
-	] as const)("rejects simple_code without %s", (_case, before, after) => {
+	it("rejects simple_code without a QA role", () => {
 		const shapes = mkdtempSync(join(tmpdir(), "fly1859-invalid-simple-code-"));
 		try {
 			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
 			const filename = join(shapes, "simple_code.yaml");
 			writeFileSync(
 				filename,
-				readFileSync(filename, "utf8").replace(before, after),
+				readFileSync(filename, "utf8").replace(
+					"    role: qa",
+					"    role: implement",
+				),
 			);
 			expect(() =>
 				loadWorkflowMenuLibrary({ shapesDirectory: shapes }),
 			).toThrow(
-				/simple_code must have implement and QA executable nodes.*max-10 QA loop/i,
+				/simple_code must have implement and QA executable nodes.*QA retry loop/i,
 			);
 		} finally {
 			rmSync(shapes, { recursive: true, force: true });
 		}
 	});
 
-	it("pins the Code DAG, retry loop, exact models, defaults, and nested efforts", () => {
+	it.each([
+		["code", 7],
+		["simple_code", 12],
+	] as const)("accepts a declared positive QA cap for %s", (shape, cap) => {
+		const shapes = mkdtempSync(join(tmpdir(), "fly2094-declared-cap-"));
+		try {
+			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
+			const filename = join(shapes, `${shape}.yaml`);
+			const withoutQaCap = readFileSync(filename, "utf8").replace(
+				/ {4}maxIterations: \d+\n {4}onLimit: escalate\n/,
+				"",
+			);
+			writeFileSync(
+				filename,
+				withoutQaCap.replace(
+					"    exitWhen: qa_pass\n",
+					`    exitWhen: qa_pass\n    maxIterations: ${cap}\n    onLimit: escalate\n`,
+				),
+			);
+
+			const menu = loadWorkflowMenuLibrary({ shapesDirectory: shapes }).find(
+				(candidate) => candidate.shape === shape,
+			)!;
+			expect(
+				menu.loops.find((loop) => loop.loopWhen === "qa_fail"),
+			).toMatchObject({
+				maxIterations: cap,
+				onLimit: "escalate",
+			});
+			expect(
+				compileWorkflowMenuSeed(menu).manifest.loops.find(
+					(loop) => loop.loop_when === "qa_fail",
+				),
+			).toMatchObject({ max_iterations: cap, on_limit: "escalate" });
+		} finally {
+			rmSync(shapes, { recursive: true, force: true });
+		}
+	});
+
+	it.each(["code", "simple_code"] as const)(
+		"rejects %s without its QA retry loop",
+		(shape) => {
+			const shapes = mkdtempSync(join(tmpdir(), "fly2094-missing-qa-loop-"));
+			try {
+				cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
+				const filename = join(shapes, `${shape}.yaml`);
+				writeFileSync(
+					filename,
+					readFileSync(filename, "utf8").replace(
+						"    loopWhen: qa_fail",
+						"    loopWhen: founder_feedback_kickback",
+					),
+				);
+				expect(() =>
+					loadWorkflowMenuLibrary({ shapesDirectory: shapes }),
+				).toThrow(new RegExp(`${shape}.*QA retry loop`, "i"));
+			} finally {
+				rmSync(shapes, { recursive: true, force: true });
+			}
+		},
+	);
+
+	it("pins the Code DAG, unbounded retry loop, exact models, defaults, and nested efforts", () => {
 		const code = loadWorkflowMenuLibrary().find(
 			(menu) => menu.shape === "code",
 		)!;
@@ -202,8 +267,6 @@ describe("founder-approved workflow menu source", () => {
 				to: "implement",
 				loopWhen: "qa_fail",
 				exitWhen: "qa_pass",
-				maxIterations: 3,
-				onLimit: "escalate",
 			},
 			{
 				id: "founder_rework",
@@ -230,43 +293,21 @@ describe("founder-approved workflow menu source", () => {
 				);
 			}
 		}
+		const qaLoop = compileWorkflowMenuSeed(code).manifest.loops.find(
+			(loop) => loop.loop_when === "qa_fail",
+		)!;
+		expect(qaLoop).not.toHaveProperty("max_iterations");
+		expect(qaLoop).not.toHaveProperty("on_limit");
 	});
 
-	it("accepts an unbounded founder loop while keeping the QA loop bounded", () => {
-		const shapes = mkdtempSync(join(tmpdir(), "fly1772-unbounded-menu-"));
-		try {
-			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
-			const codePath = join(shapes, "code.yaml");
-			const code = readFileSync(codePath, "utf8").replace(
-				/ {4}maxIterations: 3\n {4}onLimit: escalate\n$/,
-				"",
-			);
-			writeFileSync(codePath, code);
-
-			const menu = loadWorkflowMenuLibrary({ shapesDirectory: shapes }).find(
-				(candidate) => candidate.shape === "code",
-			)!;
-			expect(menu.loops).toEqual([
-				expect.objectContaining({
-					loopWhen: "qa_fail",
-					maxIterations: 3,
-					onLimit: "escalate",
-				}),
-				{
-					id: "founder_rework",
-					from: "founder_gate",
-					to: "implement",
-					loopWhen: "founder_feedback_kickback",
-					exitWhen: "founder_approved",
-				},
-			]);
-			const founderLoop = compileWorkflowMenuSeed(menu).manifest.loops.find(
-				(loop) => loop.loop_when === "founder_feedback_kickback",
-			)!;
-			expect(founderLoop).not.toHaveProperty("max_iterations");
-			expect(founderLoop).not.toHaveProperty("on_limit");
-		} finally {
-			rmSync(shapes, { recursive: true, force: true });
+	it("compiles both default Code rework loops without limit pairs", () => {
+		const menu = loadWorkflowMenuLibrary().find(
+			(candidate) => candidate.shape === "code",
+		)!;
+		const loops = compileWorkflowMenuSeed(menu).manifest.loops;
+		for (const loop of loops) {
+			expect(loop).not.toHaveProperty("max_iterations");
+			expect(loop).not.toHaveProperty("on_limit");
 		}
 	});
 

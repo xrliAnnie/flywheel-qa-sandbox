@@ -276,11 +276,6 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 				`${path}.maxIterations and ${path}.onLimit must be provided together`,
 			);
 		}
-		if (loopWhen !== "founder_feedback_kickback" && !hasMaxIterations) {
-			throw new Error(
-				`${path}.maxIterations and ${path}.onLimit are required for ${loopWhen}`,
-			);
-		}
 		const maxIterations = hasMaxIterations
 			? Number(loop.maxIterations)
 			: undefined;
@@ -325,12 +320,13 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 		if (
 			executableCount !== 3 ||
 			loops.length !== 2 ||
-			qaLoop?.maxIterations !== 3 ||
+			!qaLoop ||
+			!founderLoop ||
 			founderLoop?.maxIterations !== undefined ||
 			founderLoop?.onLimit !== undefined
 		) {
 			throw new Error(
-				`${source} code must have three executable nodes plus a max-3 QA loop and an unbounded founder-rework loop`,
+				`${source} code must have three executable nodes plus a QA retry loop and an unbounded founder-rework loop`,
 			);
 		}
 	} else if (shape === "simple_code") {
@@ -356,13 +352,13 @@ function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
 			!implement ||
 			!qa ||
 			loops.length !== 2 ||
-			qaLoop?.maxIterations !== 10 ||
-			qaLoop?.onLimit !== "escalate" ||
+			!qaLoop ||
+			!founderLoop ||
 			founderLoop?.maxIterations !== undefined ||
 			founderLoop?.onLimit !== undefined
 		) {
 			throw new Error(
-				`${source} simple_code must have implement and QA executable nodes plus a max-10 QA loop and an unbounded founder-rework loop`,
+				`${source} simple_code must have implement and QA executable nodes plus a QA retry loop and an unbounded founder-rework loop`,
 			);
 		}
 	} else if (executableCount !== 1 || loops.length !== 0) {

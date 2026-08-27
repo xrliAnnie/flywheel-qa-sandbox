@@ -679,7 +679,8 @@ replacement-context dispatch 不走本分支。只有 generic replacement 后确
 
 从上述唯一 probe 固定 `RUN_ID SOURCE_NODE_ID SOURCE_EXECUTION_ID SOURCE_ATTEMPT
 EDGE_ID TARGET_NODE_ID TARGET_ATTEMPT SUCCESSOR_EXECUTION_ID REQUEST_ID
-MAX_ITERATIONS`。`loopIteration` 必须按 authoritative counter
+MAX_ITERATIONS_OR_NULL`。有界 loop 用 snapshot 中的正整数；无上限 loop 必须用 SQL
+`NULL`，不能猜一个额度。`loopIteration` 必须按 authoritative counter
 `COUNT(kind IN ('loop_iteration','loop_limit_escalated') AND edge_id=EDGE_ID)+1`，不能
 从报告猜。完整 payload 字段名固定为 `targetNodeId`、`targetAttempt`、
 `sourceAttempt`、`outcome`、`successorExecutionId`、`reworkRequestId`、
@@ -696,7 +697,7 @@ SELECT '<RUN_ID>' run_id,'<SOURCE_NODE_ID>' source_node_id,
        '<SOURCE_EXECUTION_ID>' source_execution_id,<SOURCE_ATTEMPT> source_attempt,
        '<EDGE_ID>' edge_id,'<TARGET_NODE_ID>' target_node_id,<TARGET_ATTEMPT> target_attempt,
        '<SUCCESSOR_EXECUTION_ID>' successor_execution_id,'<REQUEST_ID>' request_id,
-       <MAX_ITERATIONS> max_iterations,
+       <MAX_ITERATIONS_OR_NULL> max_iterations,
        1+(SELECT COUNT(*) FROM workflow_run_event e WHERE e.run_id='<RUN_ID>'
            AND e.edge_id='<EDGE_ID>' AND e.kind IN ('loop_iteration','loop_limit_escalated')) loop_iteration;
 CREATE TEMP TABLE patrol_assert_edge_absent(v INTEGER CHECK(v=1));
@@ -718,7 +719,10 @@ INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,edge_id,executi
 SELECT run_id,(SELECT COALESCE(MAX(seq),0)+1 FROM workflow_run_event WHERE run_id=c.run_id),
        'patrol:FLY-2080:loop:'||request_id||':'||successor_execution_id,
        'loop_iteration',source_node_id,edge_id,source_execution_id,
-       json_object('iteration',loop_iteration,'maxIterations',max_iterations),datetime('now')
+       CASE WHEN max_iterations IS NULL
+         THEN json_object('iteration',loop_iteration)
+         ELSE json_object('iteration',loop_iteration,'maxIterations',max_iterations) END,
+       datetime('now')
   FROM patrol_edge_ctx c;
 CREATE TEMP TABLE patrol_assert_loop(v INTEGER CHECK(v=1));
 INSERT INTO patrol_assert_loop VALUES(changes());

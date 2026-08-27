@@ -246,6 +246,19 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:FLY-2080:%'");
 	});
 
+	it("FLY-2094: predecessor repair omits maxIterations for an unbounded loop", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		expect(section0).toContain("MAX_ITERATIONS_OR_NULL");
+		expect(section0).toContain("<MAX_ITERATIONS_OR_NULL> max_iterations");
+		expect(section0).toMatch(
+			/CASE WHEN max_iterations IS NULL\s+THEN json_object\('iteration',loop_iteration\)\s+ELSE json_object\('iteration',loop_iteration,'maxIterations',max_iterations\) END/s,
+		);
+		expect(section0).not.toContain("<MAX_ITERATIONS> max_iterations");
+	});
+
 	it("FLY-2080: every Bridge finding has a verified FLY-2072 marker receipt", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),

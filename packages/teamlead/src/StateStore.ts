@@ -37725,15 +37725,9 @@ export class StateStore {
 			if (
 				loop &&
 				reworkAuthority !== "founder" &&
-				(loop.max_iterations === undefined || loop.on_limit === undefined)
-			) {
-				result = { ok: false, reason: "loop_limit_missing" };
-				return;
-			}
-			if (
-				loop &&
-				reworkAuthority !== "founder" &&
-				loopIteration! > loop.max_iterations!
+				loop.max_iterations !== undefined &&
+				loop.on_limit !== undefined &&
+				loopIteration! > loop.max_iterations
 			) {
 				this.upsertWorkflowRunNodeTx({
 					runId: input.runId,

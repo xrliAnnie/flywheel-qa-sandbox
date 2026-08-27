@@ -614,11 +614,6 @@ function validateWorkflowManifestV1(
 				`loop ${id}.max_iterations and on_limit must be provided together`,
 			);
 		}
-		if (loopWhen !== "founder_feedback_kickback" && !hasMaxIterations) {
-			throw new Error(
-				`loop ${id}.max_iterations and on_limit are required for ${loopWhen}`,
-			);
-		}
 		const maxIterations = hasMaxIterations
 			? Number(loop.max_iterations)
 			: undefined;
@@ -1219,11 +1214,6 @@ function validateWorkflowManifestV2(
 		if (hasMaxIterations !== hasOnLimit) {
 			throw new Error(
 				`loop ${id}.max_iterations and on_limit must be provided together`,
-			);
-		}
-		if (loopWhen !== "founder_feedback_kickback" && !hasMaxIterations) {
-			throw new Error(
-				`loop ${id}.max_iterations and on_limit are required for ${loopWhen}`,
 			);
 		}
 		const maxIterations = hasMaxIterations
