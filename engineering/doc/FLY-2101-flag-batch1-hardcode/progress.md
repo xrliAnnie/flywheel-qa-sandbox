@@ -1,13 +1,13 @@
 ---
 issue: FLY-2101
 phase: implement
-phaseCursor: 3/6
-updated: 2026-08-28T05:54:40.624Z
-nextStep: repair compile/test fixtures and residue guards
+phaseCursor: 4/6
+updated: 2026-08-28T06:29:25.189Z
+nextStep: run full-repo gates and affected shell suites
 chunks: []
 pointers: {}
 ---
 
 # FLY-2101 progress
-**phase**: implement (3/6)
-**next**: repair compile/test fixtures and residue guards
+**phase**: implement (4/6)
+**next**: run full-repo gates and affected shell suites
