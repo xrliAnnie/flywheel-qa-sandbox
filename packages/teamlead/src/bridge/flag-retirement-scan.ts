@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
 	computeFlagScan,
 	type FeatureFlagSpec,
+	type FlagScanScopeState,
 	type FlagView,
 	type ProposedFlagScan,
 	type ResolvedFlagKeepBinding,
@@ -368,20 +369,36 @@ export function renderFlagScanLinearBody(input: {
 export function renderFlagScanReport(input: {
 	runToken: string;
 	items: ReturnType<StateStore["getFlagScanRunItems"]>;
+	scopeState: FlagScanScopeState[];
 }): string {
 	const candidates = input.items.filter(
 		(item) => item.bucket === "candidate" || item.bucket === "orphan_candidate",
 	);
 	const cards = candidates
-		.map(
-			(item) => `
+		.map((item) => {
+			const projectStability = input.scopeState
+				.filter((row) => row.flagName === item.flagName && row.scope !== "*")
+				.sort((left, right) => left.scope.localeCompare(right.scope))
+				.map((row) => {
+					const stableForMs =
+						row.streakStartedAt === null
+							? null
+							: Math.max(0, row.lastSampledAt - row.streakStartedAt);
+					return `${row.scope}: ${
+						stableForMs === null
+							? "无稳定样本"
+							: displayStableDuration(stableForMs)
+					}`;
+				})
+				.join(" · ");
+			return `
 			<section class="card" data-flag="${escapeHtml(item.flagName)}" data-digest="${escapeHtml(item.canonical ? canonicalDigest(item.canonical) : "无")}">
 				<div class="row"><div><h2>${escapeHtml(item.flagName)}</h2><p>${escapeHtml(item.askPhrase)}</p></div><span class="pill">已问 ${item.askCount} 次</span></div>
-				<dl><dt>人话说明</dt><dd>${escapeHtml(item.description ?? "无")}</dd><dt>当前值</dt><dd><code>${escapeHtml(item.currentValue ?? "无")}</code></dd><dt>稳定时长</dt><dd>${escapeHtml(item.stableForMs === null ? "无" : displayStableDuration(item.stableForMs))}</dd><dt>当前样本摘要</dt><dd><code>${escapeHtml(item.canonical ? canonicalDigest(item.canonical) : "无")}</code></dd><dt>来源</dt><dd>${escapeHtml(provenanceSummary(item))}</dd></dl>
+				<dl><dt>人话说明</dt><dd>${escapeHtml(item.description ?? "无")}</dd><dt>当前值</dt><dd><code>${escapeHtml(item.currentValue ?? "无")}</code></dd><dt>稳定时长</dt><dd>${escapeHtml(item.stableForMs === null ? "无" : displayStableDuration(item.stableForMs))}</dd>${projectStability ? `<dt>逐项目稳定</dt><dd>${escapeHtml(projectStability)}</dd>` : ""}<dt>当前样本摘要</dt><dd><code>${escapeHtml(item.canonical ? canonicalDigest(item.canonical) : "无")}</code></dd><dt>来源</dt><dd>${escapeHtml(provenanceSummary(item))}</dd></dl>
 				<label>裁决<select class="verdict"><option value="">请选择</option><option value="留">留</option><option value="清">清</option></select></label>
 				<label>一句理由 / 备注<textarea class="reason" rows="2" placeholder="留：为什么还需要；清：可补充拆单注意事项"></textarea></label>
-			</section>`,
-		)
+			</section>`;
+		})
 		.join("\n");
 	return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>每周 flag 留/清裁决</title>
@@ -585,6 +602,7 @@ export function createFlagRetirementScanner(
 				rows: sources.rows,
 				expectedProjectNames: sources.expectedProjectNames,
 				prevState: deps.store.getFlagScanState(),
+				prevScopeState: deps.store.getFlagScanScopeState(),
 				anchors: deps.store.getFlagKeepAnchors(),
 				keepBindings,
 				now: deps.now(),
@@ -623,7 +641,11 @@ export function createFlagRetirementScanner(
 						? renderFlagScanLinearBody({ runToken, items: previewItems })
 						: null,
 					html: hasCandidates
-						? renderFlagScanReport({ runToken, items: previewItems })
+						? renderFlagScanReport({
+								runToken,
+								items: previewItems,
+								scopeState: proposed.nextScopeState,
+							})
 						: null,
 				};
 			}
@@ -775,7 +797,11 @@ export function createFlagRetirementScanner(
 				const result = await deps.effects.publishReport({
 					runToken: run.runToken,
 					title: `flag 周扫描 · ${run.candidateCount} 个候选`,
-					html: renderFlagScanReport({ runToken: run.runToken, items }),
+					html: renderFlagScanReport({
+						runToken: run.runToken,
+						items,
+						scopeState: deps.store.getFlagScanScopeState(),
+					}),
 				});
 				if (result.status === "done") {
 					deps.store.completeFlagScanLeg({

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
 	APPLY_COMMAND_JS,
+	buildFlagCommand,
 	buildLeadApplyCommands,
 	buildRunnerApplyCommand,
 } from "../bridge/fleet-apply-command.js";
@@ -11,6 +12,35 @@ import {
 
 const SCRIPT = "/repo/scripts/flywheel-fleet.sh";
 const COMM = "/repo/packages/flywheel-comm/dist/index.js";
+
+describe("buildFlagCommand", () => {
+	it("quotes star scope so the pasted command cannot expand a shell glob", () => {
+		expect(
+			buildFlagCommand({
+				op: "set",
+				name: "doc_flow",
+				to: "off",
+				scope: "*",
+				reason: "phone-report",
+			}),
+		).toBe(
+			"flywheel-comm feature-flags set --name 'doc_flow' --to 'off' --project '*' --reason 'phone-report'",
+		);
+	});
+
+	it("renders clear without a target and quotes embedded apostrophes", () => {
+		expect(
+			buildFlagCommand({
+				op: "clear",
+				name: "doc'flow",
+				scope: "founder's-project",
+				reason: "phone's report",
+			}),
+		).toBe(
+			"flywheel-comm feature-flags clear --name 'doc'\\''flow' --project 'founder'\\''s-project' --reason 'phone'\\''s report'",
+		);
+	});
+});
 
 describe("buildLeadApplyCommands", () => {
 	it("renders a model-only change as one quoted fleet apply line", () => {
@@ -140,11 +170,41 @@ describe("buildRunnerApplyCommand", () => {
 // TS builders (it is the version the console + hosted page actually run).
 describe("APPLY_COMMAND_JS parity", () => {
 	function jsBuilders(): {
+		flagCommand: (input: unknown) => string;
 		leadCommands: (p: string, c: unknown[]) => string;
 		runnerCommand: (p: string, n: string, c: unknown, cron?: string) => string;
 	} {
 		return new Function(`${APPLY_COMMAND_JS}; return FleetCmd;`)();
 	}
+
+	it("flagCommand matches buildFlagCommand for set, clear, glob, and quote tokens", () => {
+		const js = jsBuilders();
+		const cases = [
+			{
+				op: "set",
+				name: "doc_flow",
+				to: "off",
+				scope: "*",
+				reason: "phone-report",
+			},
+			{
+				op: "set",
+				name: "proofshot",
+				to: "on",
+				scope: "flywheel",
+				reason: "phone-report",
+			},
+			{
+				op: "clear",
+				name: "doc'flow",
+				scope: "founder's-project",
+				reason: "phone's report",
+			},
+		] as const;
+		for (const input of cases) {
+			expect(js.flagCommand(input)).toBe(buildFlagCommand(input));
+		}
+	});
 
 	it("leadCommands matches buildLeadApplyCommands on every case shape", () => {
 		const js = jsBuilders();

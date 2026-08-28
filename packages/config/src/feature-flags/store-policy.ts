@@ -69,6 +69,20 @@ export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 ] as const);
 
 /**
+ * FLY-2100: project-config flags whose explicit values may be stored per
+ * project. Wildcard/array config families, governance gates, dormant flags,
+ * and readonly escape hatches stay out because one boolean per project cannot
+ * preserve their contracts.
+ */
+export const PROJECT_STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
+	"doc_flow",
+	"pipeline_dag",
+	"pipeline_work_kind",
+	"proofshot",
+	"xiaohongshu_learning",
+] as const);
+
+/**
  * Former store-managed identities whose current-value row is removed on
  * upgrade. Their append-only changelog rows remain durable audit history.
  */
@@ -128,6 +142,10 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	if (name === "workflow_turn_divergence_alerts") {
 		return optInCodec;
 	}
+	if (PROJECT_STORE_MANAGED_FLAGS.has(name)) {
+		const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+		return spec?.polarity === "default_on" ? defaultOnCodec : optInCodec;
+	}
 	return undefined;
 }
 
@@ -157,6 +175,7 @@ export interface FlagAuthoringPolicyInput {
 	flags?: readonly FeatureFlagSpec[];
 	exemptions?: readonly FlagExemption[];
 	storeManagedFlags?: ReadonlySet<string>;
+	projectStoreManagedFlags?: ReadonlySet<string>;
 	codecForName?: (name: string) => FlagStoreCodec | undefined;
 }
 
@@ -178,6 +197,8 @@ export function validateFlagAuthoringPolicy(
 	const flags = input.flags ?? FEATURE_FLAGS;
 	const exemptions = input.exemptions ?? FLAG_EXEMPTIONS;
 	const managedFlags = input.storeManagedFlags ?? STORE_MANAGED_FLAGS;
+	const projectManagedFlags =
+		input.projectStoreManagedFlags ?? PROJECT_STORE_MANAGED_FLAGS;
 	const codecForName = input.codecForName ?? getFlagStoreCodec;
 	const issues: string[] = [];
 	const registryNames = new Set(flags.map((spec) => spec.name));
@@ -201,11 +222,25 @@ export function validateFlagAuthoringPolicy(
 			);
 		}
 	}
+	for (const name of projectManagedFlags) {
+		if (!registryNames.has(name)) {
+			issues.push(
+				authoringIssue(
+					`${name}: PROJECT_STORE_MANAGED_FLAGS has no registry spec`,
+				),
+			);
+		}
+		if (managedFlags.has(name)) {
+			issues.push(authoringIssue(`${name}: assigned to both managed branches`));
+		}
+	}
 
 	for (const spec of flags) {
 		const managed = managedFlags.has(spec.name);
-		const legacyUnmanaged = LEGACY_UNMANAGED_NAMES.has(spec.name);
-		if (!managed) {
+		const projectManaged = projectManagedFlags.has(spec.name);
+		const legacyUnmanaged =
+			LEGACY_UNMANAGED_NAMES.has(spec.name) && !managed && !projectManaged;
+		if (!managed && !projectManaged) {
 			if (!legacyUnmanaged) {
 				issues.push(
 					authoringIssue(
@@ -215,7 +250,58 @@ export function validateFlagAuthoringPolicy(
 				if (spec.source === "project_config") {
 					issues.push(
 						authoringIssue(
-							`${spec.name}: new project_config specs are forbidden until project-scoped store authority exists`,
+							`${spec.name}: new project_config specs must join PROJECT_STORE_MANAGED_FLAGS`,
+						),
+					);
+				}
+			}
+			continue;
+		}
+		if (managed && projectManaged) continue;
+
+		if (projectManaged) {
+			if (
+				spec.source !== "project_config" ||
+				spec.scope !== "project" ||
+				spec.valueKind !== "bool" ||
+				spec.category === "governance_gate" ||
+				spec.dormant === true ||
+				spec.toggleable === "readonly" ||
+				!spec.configKey ||
+				spec.configKey.includes("[]") ||
+				spec.configKey.includes("*")
+			) {
+				issues.push(
+					authoringIssue(
+						`${spec.name}: project-store specs must be non-governance, active, writable project_config booleans with one exact configKey`,
+					),
+				);
+			}
+			const codec = codecForName(spec.name);
+			if (!codec) {
+				issues.push(
+					authoringIssue(`${spec.name}: missing project-store codec`),
+				);
+			} else {
+				try {
+					const rawZero = codec.parse({ hasOverride: true, raw: "0" });
+					const rawOne = codec.parse({ hasOverride: true, raw: "1" });
+					if (
+						rawZero !== false ||
+						rawOne !== true ||
+						codec.canonicalEffective(false) !== "false" ||
+						codec.canonicalEffective(true) !== "true"
+					) {
+						issues.push(
+							authoringIssue(
+								`${spec.name}: project-store boolean codec must preserve canonical 0/1 and both effective states`,
+							),
+						);
+					}
+				} catch (error) {
+					issues.push(
+						authoringIssue(
+							`${spec.name}: project-store codec contract threw ${error instanceof Error ? error.message : String(error)}`,
 						),
 					);
 				}

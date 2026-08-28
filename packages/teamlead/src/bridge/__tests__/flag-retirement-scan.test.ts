@@ -122,6 +122,7 @@ describe("FlagRetirementScanner", () => {
 			flagView?: FlagView;
 			effectSet?: ReturnType<typeof effects>;
 			loadProvenance?: () => Promise<FlagProvenanceInput[]>;
+			projectNames?: string[];
 			alertFailure?: (message: string) => Promise<void>;
 			recoverFailureAlerts?: () => void;
 			tokenPrefix?: string;
@@ -137,7 +138,7 @@ describe("FlagRetirementScanner", () => {
 				store,
 				loadSources: async () => ({
 					rows: [{ spec: flag, view: input.flagView ?? view(flag) }],
-					expectedProjectNames: [],
+					expectedProjectNames: input.projectNames ?? [],
 				}),
 				loadProvenance:
 					input.loadProvenance ?? (async () => [provenance(flag.name)]),
@@ -340,6 +341,52 @@ describe("FlagRetirementScanner", () => {
 		expect(run.effectSet.value.createLinearBatch).not.toHaveBeenCalled();
 		expect(run.effectSet.value.publishReport).not.toHaveBeenCalled();
 		expect(run.effectSet.value.postDiscord).not.toHaveBeenCalled();
+	});
+
+	it("previews and publishes independent per-project stability without advancing it during dry-run", async () => {
+		const flag = spec({
+			name: "doc_flow",
+			source: "project_config",
+			scope: "project",
+			configKey: "doc_flow.enabled",
+		});
+		const projectNames = ["alpha", "beta"];
+		const run = scanner({
+			flag,
+			projectNames,
+			flagView: view(flag, {
+				effectiveByProject: [
+					{ projectName: "alpha", value: true, via: "project_store" },
+					{ projectName: "beta", value: false, via: "star_store" },
+				],
+			}),
+		});
+		await run.value.scanIfDue();
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ flagName: "doc_flow", scope: "alpha", streakSamples: 1 },
+			{ flagName: "doc_flow", scope: "beta", streakSamples: 1 },
+		]);
+
+		now += FLAG_SCAN_INTERVAL_MS;
+		const preview = await run.value.dryRun();
+		if (preview.status !== "dry_run")
+			throw new Error("expected dry-run preview");
+		expect(preview.html).toContain(
+			"<dt>逐项目稳定</dt><dd>alpha: 7 天 · beta: 7 天</dd>",
+		);
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ scope: "alpha", streakSamples: 1 },
+			{ scope: "beta", streakSamples: 1 },
+		]);
+
+		await run.value.scanIfDue();
+		expect(run.effectSet.reports[1]).toContain(
+			"<dt>逐项目稳定</dt><dd>alpha: 7 天 · beta: 7 天</dd>",
+		);
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ scope: "alpha", streakSamples: 2 },
+			{ scope: "beta", streakSamples: 2 },
+		]);
 	});
 
 	it("dry-run failure remains zero-write and does not emit an external alert", async () => {

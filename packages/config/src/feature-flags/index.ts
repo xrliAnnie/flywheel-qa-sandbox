@@ -16,9 +16,14 @@ export { FEATURE_FLAGS, validateKeepFieldContract } from "./registry.js";
 export type {
 	FlagEffectiveByProject,
 	FlagResolveCtx,
+	FlagScopedStoreView,
 	FlagView,
 } from "./resolve.js";
-export { resolveAllFlags, resolveFlag } from "./resolve.js";
+export {
+	resolveAllFlags,
+	resolveFlag,
+	resolveScopedEffective,
+} from "./resolve.js";
 export type {
 	ComputeFlagScanInput,
 	FlagDeparture,
@@ -29,6 +34,7 @@ export type {
 	FlagScanClaimed,
 	FlagScanKeepUnbound,
 	FlagScanNoClock,
+	FlagScanScopeState,
 	FlagScanState,
 	ProposedFlagScan,
 	ResolvedFlagKeepBinding,
@@ -48,6 +54,7 @@ export {
 	getFlagStoreCodec,
 	getStoreEligibility,
 	LEGACY_UNMANAGED_BASELINE,
+	PROJECT_STORE_MANAGED_FLAGS,
 	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,

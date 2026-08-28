@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { FeatureFlagSpec } from "../feature-flags/registry.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
-import { resolveAllFlags, resolveFlag } from "../feature-flags/resolve.js";
+import {
+	resolveAllFlags,
+	resolveFlag,
+	resolveScopedEffective,
+} from "../feature-flags/resolve.js";
+import { getFlagStoreCodec } from "../feature-flags/store-policy.js";
 import type { FlywheelConfig } from "../types.js";
 
 function spec(name: string) {
@@ -306,6 +311,96 @@ describe("resolveFlag — project scope", () => {
 		expect(view.dormant).toBe(true);
 		expect(view.effective).toBeUndefined();
 		expect(view.effectiveByProject).toBeUndefined();
+	});
+});
+
+describe("resolveScopedEffective — project store precedence", () => {
+	const flag = spec("doc_flow");
+	const codec = getFlagStoreCodec(flag.name);
+	if (!codec) throw new Error("doc_flow must have a store codec");
+
+	it("prefers the project row over the star row", () => {
+		expect(
+			resolveScopedEffective({
+				spec: flag,
+				projectName: "flywheel",
+				rows: [
+					{ scope: "*", raw: "0" },
+					{ scope: "flywheel", raw: "1" },
+				],
+				configRow: {
+					projectName: "flywheel",
+					value: false,
+					isDefault: true,
+				},
+				codec,
+			}),
+		).toEqual({
+			projectName: "flywheel",
+			value: true,
+			isDefault: false,
+			via: "project_row",
+		});
+	});
+
+	it("uses the star row when the project row is absent", () => {
+		expect(
+			resolveScopedEffective({
+				spec: flag,
+				projectName: "flywheel",
+				rows: [{ scope: "*", raw: "1" }],
+				configRow: {
+					projectName: "flywheel",
+					value: false,
+					isDefault: true,
+				},
+				codec,
+			}),
+		).toEqual({
+			projectName: "flywheel",
+			value: true,
+			isDefault: false,
+			via: "star_row",
+		});
+	});
+
+	it("falls back byte-compatibly to config and then the registry default", () => {
+		expect(
+			resolveScopedEffective({
+				spec: flag,
+				projectName: "configured",
+				rows: [],
+				configRow: {
+					projectName: "configured",
+					value: true,
+					isDefault: false,
+				},
+				codec,
+			}),
+		).toEqual({
+			projectName: "configured",
+			value: true,
+			isDefault: false,
+			via: "config",
+		});
+		expect(
+			resolveScopedEffective({
+				spec: flag,
+				projectName: "defaulted",
+				rows: [],
+				configRow: {
+					projectName: "defaulted",
+					value: false,
+					isDefault: true,
+				},
+				codec,
+			}),
+		).toEqual({
+			projectName: "defaulted",
+			value: false,
+			isDefault: true,
+			via: "default",
+		});
 	});
 });
 

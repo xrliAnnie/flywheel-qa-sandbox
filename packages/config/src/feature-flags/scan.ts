@@ -29,6 +29,16 @@ export interface FlagScanState {
 	lastAskedRunId: number | null;
 }
 
+/** Independent stability clock for one resolved flag scope. */
+export interface FlagScanScopeState {
+	flagName: string;
+	scope: string;
+	canonical: string | null;
+	streakStartedAt: number | null;
+	streakSamples: number;
+	lastSampledAt: number;
+}
+
 export interface FlagKeepAnchor {
 	flagName: string;
 	anchorCanonical: string;
@@ -75,6 +85,7 @@ export interface FlagDeparture {
 
 export interface ProposedFlagScan {
 	nextState: FlagScanState[];
+	nextScopeState: FlagScanScopeState[];
 	nextAnchors: FlagKeepAnchor[];
 	candidates: FlagScanCandidate[];
 	claimed: FlagScanClaimed[];
@@ -87,6 +98,7 @@ export interface ComputeFlagScanInput {
 	rows: Array<{ spec: FeatureFlagSpec; view: FlagView }>;
 	expectedProjectNames: string[];
 	prevState: FlagScanState[];
+	prevScopeState: FlagScanScopeState[];
 	anchors: FlagKeepAnchor[];
 	keepBindings: Map<string, ResolvedFlagKeepBinding | "unbound">;
 	now: number;
@@ -172,6 +184,12 @@ export function canonicalizeFlagSample(
 		);
 	}
 	for (const row of rows) {
+		if (row.runtimeConfigError !== undefined) {
+			return indeterminate(
+				"read_unavailable",
+				`${row.projectName}: ${row.runtimeConfigError}`,
+			);
+		}
 		if (row.error) {
 			return indeterminate(
 				"read_unavailable",
@@ -206,6 +224,38 @@ function emptyState(flagName: string): FlagScanState {
 		lastRetiringIssue: null,
 		askCount: 0,
 		lastAskedRunId: null,
+	};
+}
+
+function emptyScopeState(flagName: string, scope: string): FlagScanScopeState {
+	return {
+		flagName,
+		scope,
+		canonical: null,
+		streakStartedAt: null,
+		streakSamples: 0,
+		lastSampledAt: 0,
+	};
+}
+
+function advanceScopeState(
+	previous: FlagScanScopeState,
+	canonical: string,
+	now: number,
+): FlagScanScopeState {
+	if (canonical === previous.canonical) {
+		return {
+			...previous,
+			streakSamples: previous.streakSamples + 1,
+			lastSampledAt: now,
+		};
+	}
+	return {
+		...previous,
+		canonical,
+		streakStartedAt: now,
+		streakSamples: 1,
+		lastSampledAt: now,
 	};
 }
 
@@ -287,6 +337,12 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 	const previousByName = new Map(
 		input.prevState.map((row) => [row.flagName, row]),
 	);
+	const previousScopeByKey = new Map(
+		input.prevScopeState.map((row) => [
+			`${row.flagName}\u0000${row.scope}`,
+			row,
+		]),
+	);
 	const anchorByName = new Map(
 		input.anchors
 			.filter((anchor) => currentNames.has(anchor.flagName))
@@ -302,6 +358,7 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 				: ("feature_removed" as const),
 		}));
 	const nextState: FlagScanState[] = [];
+	const nextScopeState: FlagScanScopeState[] = [];
 	const candidates: FlagScanCandidate[] = [];
 	const claimed: FlagScanClaimed[] = [];
 	const noClock: FlagScanNoClock[] = [];
@@ -316,6 +373,39 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 		);
 		const advanced = advanceState(previous, sample, input.now, spec.retiring);
 		nextState.push(advanced);
+
+		let scopes =
+			spec.scope === "bridge_global" ? ["*"] : input.expectedProjectNames;
+		if (spec.scope === "project" && scopes.length === 0) {
+			scopes = input.prevScopeState
+				.filter((row) => row.flagName === spec.name)
+				.map((row) => row.scope);
+		}
+		scopes = [...new Set(scopes)];
+		const projectRows = new Map(
+			(view.effectiveByProject ?? []).map((row) => [row.projectName, row]),
+		);
+		for (const scope of scopes) {
+			const key = `${spec.name}\u0000${scope}`;
+			const previousScope =
+				previousScopeByKey.get(key) ?? emptyScopeState(spec.name, scope);
+			if (sample.kind === "indeterminate") {
+				nextScopeState.push(previousScope);
+				continue;
+			}
+			let canonical = sample.canonical;
+			if (spec.scope === "project" && !spec.dormant && !view.dormant) {
+				const value = projectRows.get(scope)?.value;
+				if (value === undefined) {
+					nextScopeState.push(previousScope);
+					continue;
+				}
+				canonical = JSON.stringify({ k: spec.valueKind, v: value });
+			}
+			nextScopeState.push(
+				advanceScopeState(previousScope, canonical, input.now),
+			);
+		}
 
 		if (spec.retiring) {
 			claimed.push({ flagName: spec.name, retiringIssue: spec.retiring });
@@ -378,6 +468,11 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 
 	return {
 		nextState,
+		nextScopeState: nextScopeState.sort(
+			(left, right) =>
+				left.flagName.localeCompare(right.flagName) ||
+				left.scope.localeCompare(right.scope),
+		),
 		nextAnchors: [...anchorByName.values()].sort((left, right) =>
 			left.flagName.localeCompare(right.flagName),
 		),

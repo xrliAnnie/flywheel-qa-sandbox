@@ -15,6 +15,7 @@ import {
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
 	type FlagKeepAnchor,
+	type FlagScanScopeState,
 	type FlagScanState,
 	FEATURE_FLAGS,
 	getFlagStoreCodec,
@@ -24,6 +25,7 @@ import {
 	isSkillFrameworkVia,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
+	PROJECT_STORE_MANAGED_FLAGS,
 	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	RETIRED_FLAGS,
@@ -1585,6 +1587,7 @@ export type CommitFlagScanResult =
 
 export interface FlagValueRow {
 	flagName: string;
+	scope: string;
 	hasOverride: boolean;
 	raw: string | null;
 	lastEffective: string;
@@ -1597,6 +1600,7 @@ export interface FlagValueRow {
 export interface FlagValueChangeRow {
 	id: number;
 	flagName: string;
+	scope: string;
 	action: "seed" | "set" | "clear" | "default_shift" | "bypass_recovery";
 	fromPresent: boolean | null;
 	fromRaw: string | null;
@@ -1620,6 +1624,25 @@ export type ApplyFlagValueChangeResult =
 				| "missing_row"
 				| "stale_revision";
 			currentRevision?: number;
+		  };
+
+export type ApplyScopedFlagValueChangeResult =
+	| {
+			ok: true;
+			deleted: false;
+			row: FlagValueRow;
+			changeSeq: number;
+	  }
+	| { ok: true; deleted: true; changeSeq: number }
+	| {
+			ok: false;
+			reason:
+				| "not_project_store_managed"
+				| "invalid_scope"
+				| "invalid_raw"
+				| "missing_row"
+				| "stale_change_seq";
+			currentChangeSeq?: number;
 	  };
 
 export class StateStore {
@@ -4542,26 +4565,84 @@ export class StateStore {
 		this.migrateFly1427TerminalStatusCorrections();
 	}
 
-	/** FLY-1778: one current-value row plus an append-only operator audit. */
+	/** FLY-1778/2100: scoped current-value rows plus append-only operator audit. */
 	private migrateFlagValueStore(): void {
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS flag_values (
-				flag_name TEXT PRIMARY KEY,
-				has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
-				raw_value TEXT,
-				last_effective TEXT NOT NULL,
-				value_last_changed INTEGER,
-				revision INTEGER NOT NULL CHECK (revision > 0),
-				updated_at INTEGER NOT NULL,
-				updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
-				CHECK (
-					(has_override = 1 AND raw_value IS NOT NULL) OR
-					(has_override = 0 AND raw_value IS NULL)
+		const flagValuesExists = Boolean(
+			this.db.raw
+				.prepare(
+					"SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'flag_values'",
 				)
-			);
+				.get(),
+		);
+		if (!flagValuesExists) {
+			this.db.run(`
+				CREATE TABLE flag_values (
+					flag_name TEXT NOT NULL,
+					scope TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0),
+					has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
+					raw_value TEXT,
+					last_effective TEXT NOT NULL,
+					value_last_changed INTEGER,
+					revision INTEGER NOT NULL CHECK (revision > 0),
+					updated_at INTEGER NOT NULL,
+					updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
+					CHECK (
+						(has_override = 1 AND raw_value IS NOT NULL) OR
+						(has_override = 0 AND raw_value IS NULL)
+					),
+					PRIMARY KEY (flag_name, scope)
+				)
+			`);
+		} else if (!this.workflowTableColumns("flag_values").has("scope")) {
+			if (this.dbPath !== ":memory:") {
+				const backupPath = `${this.dbPath}.pre-fly2100.bak`;
+				if (existsSync(backupPath)) {
+					console.info(
+						`[StateStore] FLY-2100: reusing existing migration backup ${backupPath}`,
+					);
+				} else {
+					this.db.raw.pragma("wal_checkpoint(FULL)");
+					const escaped = backupPath.replaceAll("'", "''");
+					this.db.raw.exec(`VACUUM INTO '${escaped}'`);
+				}
+			}
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS flag_values_fly2100;
+					CREATE TABLE flag_values_fly2100 (
+						flag_name TEXT NOT NULL,
+						scope TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0),
+						has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
+						raw_value TEXT,
+						last_effective TEXT NOT NULL,
+						value_last_changed INTEGER,
+						revision INTEGER NOT NULL CHECK (revision > 0),
+						updated_at INTEGER NOT NULL,
+						updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
+						CHECK (
+							(has_override = 1 AND raw_value IS NOT NULL) OR
+							(has_override = 0 AND raw_value IS NULL)
+						),
+						PRIMARY KEY (flag_name, scope)
+					);
+					INSERT INTO flag_values_fly2100 (
+						flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					)
+					SELECT flag_name, '*', has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					FROM flag_values;
+					DROP TABLE flag_values;
+					ALTER TABLE flag_values_fly2100 RENAME TO flag_values;
+				`);
+			})();
+		}
+
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS flag_value_changelog (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0),
 				action TEXT NOT NULL CHECK (
 					action IN ('seed','set','clear','default_shift','bypass_recovery')
 				),
@@ -4587,6 +4668,15 @@ export class StateStore {
 				updated_at INTEGER NOT NULL
 			);
 		`);
+		this.addColumnIfMissing(
+			"flag_value_changelog",
+			"scope",
+			"TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0)",
+		);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_flag_value_changelog_flag_scope
+				ON flag_value_changelog(flag_name, scope, id)
+		`);
 
 		// FLY-1981: retire only explicitly ledgered current-value rows from prior
 		// releases. The append-only changelog intentionally remains untouched.
@@ -4598,16 +4688,17 @@ export class StateStore {
 		}
 	}
 
-	getFlagValueRow(name: string): FlagValueRow | undefined {
+	getFlagValueRow(name: string, scope: string = "*"): FlagValueRow | undefined {
 		const row = this.db.raw
 			.prepare(
-				`SELECT flag_name, has_override, raw_value, last_effective,
+				`SELECT flag_name, scope, has_override, raw_value, last_effective,
 					value_last_changed, revision, updated_at, updated_by
-				 FROM flag_values WHERE flag_name = ?`,
+				 FROM flag_values WHERE flag_name = ? AND scope = ?`,
 			)
-			.get(name) as
+			.get(name, scope) as
 			| {
 					flag_name: string;
+					scope: string;
 					has_override: number;
 					raw_value: string | null;
 					last_effective: string;
@@ -4620,6 +4711,7 @@ export class StateStore {
 		return row
 			? {
 					flagName: row.flag_name,
+					scope: row.scope,
 					hasOverride: row.has_override === 1,
 					raw: row.raw_value,
 					lastEffective: row.last_effective,
@@ -4631,18 +4723,63 @@ export class StateStore {
 			: undefined;
 	}
 
-	listFlagValueChanges(name: string): FlagValueChangeRow[] {
+	listScopedFlagValueRows(): FlagValueRow[] {
+		if (PROJECT_STORE_MANAGED_FLAGS.size === 0) return [];
+		const names = [...PROJECT_STORE_MANAGED_FLAGS];
+		const placeholders = names.map(() => "?").join(", ");
 		return (
 			this.db.raw
 				.prepare(
-					`SELECT id, flag_name, action, from_present, from_raw, to_present,
-						to_raw, from_effective, to_effective, changed_by, changed_at, reason
-					 FROM flag_value_changelog WHERE flag_name = ? ORDER BY id`,
+					`SELECT flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					 FROM flag_values WHERE flag_name IN (${placeholders})
+					 ORDER BY flag_name, scope`,
 				)
-				.all(name) as Array<Record<string, unknown>>
+				.all(...names) as Array<Record<string, unknown>>
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			scope: String(row.scope),
+			hasOverride: Number(row.has_override) === 1,
+			raw: (row.raw_value as string | null) ?? null,
+			lastEffective: String(row.last_effective),
+			valueLastChanged:
+				row.value_last_changed === null ? null : Number(row.value_last_changed),
+			revision: Number(row.revision),
+			updatedAt: Number(row.updated_at),
+			updatedBy: String(row.updated_by),
+		}));
+	}
+
+	getFlagValueChangeSeq(name: string, scope: string = "*"): number {
+		return Number(
+			(
+				this.db.raw
+					.prepare(
+						`SELECT COALESCE(MAX(id), 0) AS seq
+						 FROM flag_value_changelog WHERE flag_name = ? AND scope = ?`,
+					)
+					.get(name, scope) as { seq: number }
+			).seq,
+		);
+	}
+
+	listFlagValueChanges(
+		name: string,
+		scope: string = "*",
+	): FlagValueChangeRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT id, flag_name, scope, action, from_present, from_raw, to_present,
+						to_raw, from_effective, to_effective, changed_by, changed_at, reason
+					 FROM flag_value_changelog
+					 WHERE flag_name = ? AND scope = ? ORDER BY id`,
+				)
+				.all(name, scope) as Array<Record<string, unknown>>
 		).map((row) => ({
 			id: Number(row.id),
 			flagName: String(row.flag_name),
+			scope: String(row.scope),
 			action: row.action as FlagValueChangeRow["action"],
 			fromPresent:
 				row.from_present === null ? null : Number(row.from_present) === 1,
@@ -4684,11 +4821,16 @@ export class StateStore {
 		const now = args.now ?? Date.now();
 		this.db.raw.transaction(() => {
 			const recovering = this.isFlagStoreBypassSeen();
-			for (const { flag_name } of this.db.raw
-				.prepare("SELECT flag_name FROM flag_values")
-				.all() as Array<{ flag_name: string }>) {
-				if (!STORE_MANAGED_FLAGS.has(flag_name)) {
-					throw new Error(`invalid flag_values identity: ${flag_name}`);
+			for (const { flag_name, scope } of this.db.raw
+				.prepare("SELECT flag_name, scope FROM flag_values")
+				.all() as Array<{ flag_name: string; scope: string }>) {
+				const valid =
+					PROJECT_STORE_MANAGED_FLAGS.has(flag_name) ||
+					(scope === "*" && STORE_MANAGED_FLAGS.has(flag_name));
+				if (!valid) {
+					throw new Error(
+						`invalid flag_values identity: ${flag_name} scope=${scope}`,
+					);
 				}
 			}
 
@@ -4717,16 +4859,16 @@ export class StateStore {
 									`UPDATE flag_values SET last_effective = ?,
 										value_last_changed = ?, revision = revision + 1,
 										updated_at = ?, updated_by = 'flag-store-recovery'
-									 WHERE flag_name = ?`,
+									 WHERE flag_name = ? AND scope = '*'`,
 								)
 								.run(effective, now, now, name);
 						}
 						this.db.raw
 							.prepare(
 								`INSERT INTO flag_value_changelog (
-									flag_name, action, from_present, from_raw, to_present, to_raw,
+									flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 									from_effective, to_effective, changed_by, changed_at, reason
-								) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
+								) VALUES (?, '*', 'bypass_recovery', ?, ?, ?, ?, ?, ?,
 									'flag-store-recovery', ?, ?)`,
 							)
 							.run(
@@ -4755,25 +4897,25 @@ export class StateStore {
 								`UPDATE flag_values SET has_override = ?, raw_value = ?,
 									last_effective = ?, value_last_changed = ?, revision = revision + 1,
 									updated_at = ?, updated_by = 'flag-store-recovery'
-								 WHERE flag_name = ?`,
+								 WHERE flag_name = ? AND scope = '*'`,
 							)
 							.run(hasOverride ? 1 : 0, raw, effective, now, now, name);
 					} else {
 						this.db.raw
 							.prepare(
 								`INSERT INTO flag_values (
-									flag_name, has_override, raw_value, last_effective,
+									flag_name, scope, has_override, raw_value, last_effective,
 									value_last_changed, revision, updated_at, updated_by
-								) VALUES (?, ?, ?, ?, ?, 1, ?, 'flag-store-recovery')`,
+								) VALUES (?, '*', ?, ?, ?, ?, 1, ?, 'flag-store-recovery')`,
 							)
 							.run(name, hasOverride ? 1 : 0, raw, effective, now, now);
 					}
 					this.db.raw
-						.prepare(
-							`INSERT INTO flag_value_changelog (
-								flag_name, action, from_present, from_raw, to_present, to_raw,
-								from_effective, to_effective, changed_by, changed_at, reason
-							) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
+					.prepare(
+						`INSERT INTO flag_value_changelog (
+							flag_name, scope, action, from_present, from_raw, to_present, to_raw,
+							from_effective, to_effective, changed_by, changed_at, reason
+						) VALUES (?, '*', 'bypass_recovery', ?, ?, ?, ?, ?, ?,
 								'flag-store-recovery', ?, 'restore authority after boot bypass')`,
 						)
 						.run(
@@ -4797,17 +4939,17 @@ export class StateStore {
 					this.db.raw
 						.prepare(
 							`INSERT INTO flag_values (
-								flag_name, has_override, raw_value, last_effective,
+								flag_name, scope, has_override, raw_value, last_effective,
 								value_last_changed, revision, updated_at, updated_by
-							) VALUES (?, ?, ?, ?, NULL, 1, ?, 'flag-store-bootstrap')`,
+							) VALUES (?, '*', ?, ?, ?, NULL, 1, ?, 'flag-store-bootstrap')`,
 						)
 						.run(name, hasOverride ? 1 : 0, raw, effective, now);
 					this.db.raw
 						.prepare(
 							`INSERT INTO flag_value_changelog (
-								flag_name, action, from_present, from_raw, to_present, to_raw,
+								flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 								from_effective, to_effective, changed_by, changed_at, reason
-							) VALUES (?, 'seed', NULL, NULL, ?, ?, NULL, ?,
+							) VALUES (?, '*', 'seed', NULL, NULL, ?, ?, NULL, ?,
 								'flag-store-bootstrap', ?, 'initial registry seed')`,
 						)
 						.run(name, hasOverride ? 1 : 0, raw, effective, now);
@@ -4825,15 +4967,15 @@ export class StateStore {
 					.prepare(
 						`UPDATE flag_values SET last_effective = ?, value_last_changed = ?,
 							revision = revision + 1, updated_at = ?, updated_by = 'flag-store-bootstrap'
-						 WHERE flag_name = ?`,
+						 WHERE flag_name = ? AND scope = '*'`,
 					)
 					.run(effective, now, now, name);
 				this.db.raw
 					.prepare(
 						`INSERT INTO flag_value_changelog (
-							flag_name, action, from_present, from_raw, to_present, to_raw,
+							flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 							from_effective, to_effective, changed_by, changed_at, reason
-						) VALUES (?, 'default_shift', ?, ?, ?, ?, ?, ?,
+						) VALUES (?, '*', 'default_shift', ?, ?, ?, ?, ?, ?,
 							'flag-store-bootstrap', ?, 'effective default or codec changed')`,
 					)
 					.run(
@@ -4910,7 +5052,8 @@ export class StateStore {
 				.prepare(
 					`UPDATE flag_values SET has_override = ?, raw_value = ?,
 						last_effective = ?, value_last_changed = ?, revision = revision + 1,
-						updated_at = ?, updated_by = ? WHERE flag_name = ?`,
+						updated_at = ?, updated_by = ?
+					 WHERE flag_name = ? AND scope = '*'`,
 				)
 				.run(
 					hasOverride ? 1 : 0,
@@ -4924,9 +5067,9 @@ export class StateStore {
 			this.db.raw
 				.prepare(
 					`INSERT INTO flag_value_changelog (
-						flag_name, action, from_present, from_raw, to_present, to_raw,
+						flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 						from_effective, to_effective, changed_by, changed_at, reason
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					) VALUES (?, '*', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					args.name,
@@ -4948,6 +5091,151 @@ export class StateStore {
 		return result;
 	}
 
+	applyScopedFlagValueChange(args: {
+		name: string;
+		scope: string;
+		op: "set" | "clear";
+		rawTo: string | null;
+		expectedChangeSeq: number;
+		actor: string;
+		reason: string;
+		now?: number;
+	}): ApplyScopedFlagValueChangeResult {
+		if (!PROJECT_STORE_MANAGED_FLAGS.has(args.name)) {
+			return { ok: false, reason: "not_project_store_managed" };
+		}
+		if (!args.scope.trim()) return { ok: false, reason: "invalid_scope" };
+		if (
+			(args.op === "set" && args.rawTo !== "0" && args.rawTo !== "1") ||
+			(args.op === "clear" && args.rawTo !== null)
+		) {
+			return { ok: false, reason: "invalid_raw" };
+		}
+		if (!args.actor.trim() || !args.reason.trim()) {
+			throw new Error("flag value changes require actor and reason");
+		}
+
+		let result: ApplyScopedFlagValueChangeResult = {
+			ok: false,
+			reason: "missing_row",
+		};
+		this.db.raw.transaction(() => {
+			const currentChangeSeq = this.getFlagValueChangeSeq(
+				args.name,
+				args.scope,
+			);
+			if (currentChangeSeq !== args.expectedChangeSeq) {
+				result = {
+					ok: false,
+					reason: "stale_change_seq",
+					currentChangeSeq,
+				};
+				return;
+			}
+			const current = this.getFlagValueRow(args.name, args.scope);
+			if (args.op === "clear" && !current) return;
+
+			const now = args.now ?? Date.now();
+			if (args.op === "clear") {
+				this.db.raw
+					.prepare("DELETE FROM flag_values WHERE flag_name = ? AND scope = ?")
+					.run(args.name, args.scope);
+				this.db.raw
+					.prepare(
+						`INSERT INTO flag_value_changelog (
+							flag_name, scope, action, from_present, from_raw,
+							to_present, to_raw, from_effective, to_effective,
+							changed_by, changed_at, reason
+						) VALUES (?, ?, 'clear', 1, ?, 0, NULL, ?, 'inherit', ?, ?, ?)`,
+					)
+					.run(
+						args.name,
+						args.scope,
+						current?.raw ?? null,
+						current?.lastEffective ?? null,
+						args.actor,
+						now,
+						args.reason,
+					);
+				result = {
+					ok: true,
+					deleted: true,
+					changeSeq: this.getFlagValueChangeSeq(args.name, args.scope),
+				};
+				return;
+			}
+
+			const codec = getFlagStoreCodec(args.name);
+			if (!codec) throw new Error(`missing flag store codec: ${args.name}`);
+			const effective = codec.canonicalEffective(
+				codec.parse({ hasOverride: true, raw: args.rawTo }),
+			);
+			const revision = (current?.revision ?? 0) + 1;
+			const valueLastChanged =
+				current && current.lastEffective !== effective
+					? now
+					: (current?.valueLastChanged ?? null);
+			this.db.raw
+				.prepare(
+					`INSERT INTO flag_values (
+						flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(flag_name, scope) DO UPDATE SET
+						has_override = 1,
+						raw_value = excluded.raw_value,
+						last_effective = excluded.last_effective,
+						value_last_changed = excluded.value_last_changed,
+						revision = excluded.revision,
+						updated_at = excluded.updated_at,
+						updated_by = excluded.updated_by`,
+				)
+				.run(
+					args.name,
+					args.scope,
+					args.rawTo,
+					effective,
+					valueLastChanged,
+					revision,
+					now,
+					args.actor,
+				);
+			this.db.raw
+				.prepare(
+					`INSERT INTO flag_value_changelog (
+						flag_name, scope, action, from_present, from_raw,
+						to_present, to_raw, from_effective, to_effective,
+						changed_by, changed_at, reason
+					) VALUES (?, ?, 'set', ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					args.name,
+					args.scope,
+					current ? 1 : null,
+					current?.raw ?? null,
+					args.rawTo,
+					current?.lastEffective ?? null,
+					effective,
+					args.actor,
+					now,
+					args.reason,
+				);
+			const row = this.getFlagValueRow(args.name, args.scope);
+			if (!row) {
+				throw new Error(
+					`scoped flag value disappeared: ${args.name}/${args.scope}`,
+				);
+			}
+			result = {
+				ok: true,
+				deleted: false,
+				row,
+				changeSeq: this.getFlagValueChangeSeq(args.name, args.scope),
+			};
+		})();
+		return result;
+	}
+
 	/** FLY-1781: durable weekly flag-retirement scan + side-effect outbox. */
 	private migrateFlagRetirementScan(): void {
 		this.db.run(`
@@ -4965,6 +5253,17 @@ export class StateStore {
 				last_retiring_issue TEXT,
 				ask_count INTEGER NOT NULL DEFAULT 0,
 				last_asked_run_id INTEGER
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_scope_state (
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				canonical TEXT,
+				streak_started_at INTEGER,
+				streak_samples INTEGER NOT NULL DEFAULT 0,
+				last_sampled_at INTEGER NOT NULL,
+				PRIMARY KEY (flag_name, scope)
 			)
 		`);
 		this.db.run(`
@@ -5125,6 +5424,21 @@ export class StateStore {
 			askCount: Number(row.ask_count),
 			lastAskedRunId:
 				row.last_asked_run_id == null ? null : Number(row.last_asked_run_id),
+		}));
+	}
+
+	getFlagScanScopeState(): FlagScanScopeState[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_scope_state ORDER BY flag_name, scope",
+			[],
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			scope: String(row.scope),
+			canonical: row.canonical == null ? null : String(row.canonical),
+			streakStartedAt:
+				row.streak_started_at == null ? null : Number(row.streak_started_at),
+			streakSamples: Number(row.streak_samples),
+			lastSampledAt: Number(row.last_sampled_at),
 		}));
 	}
 
@@ -5477,6 +5791,46 @@ export class StateStore {
 						state.askCount,
 						state.lastAskedRunId,
 					],
+				);
+			}
+
+			const scopeKeys = new Set<string>();
+			for (const state of input.proposed.nextScopeState) {
+				if (!state.flagName.trim() || !state.scope.trim()) {
+					throw new Error("flag scan scope state requires flag and scope");
+				}
+				const key = `${state.flagName}\u0000${state.scope}`;
+				if (scopeKeys.has(key)) {
+					throw new Error(
+						`duplicate flag scan scope state: ${state.flagName}/${state.scope}`,
+					);
+				}
+				scopeKeys.add(key);
+				this.db.run(
+					`INSERT INTO flag_scan_scope_state
+					 (flag_name, scope, canonical, streak_started_at, streak_samples,
+					  last_sampled_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(flag_name, scope) DO UPDATE SET
+					  canonical = excluded.canonical,
+					  streak_started_at = excluded.streak_started_at,
+					  streak_samples = excluded.streak_samples,
+					  last_sampled_at = excluded.last_sampled_at`,
+					[
+						state.flagName,
+						state.scope,
+						state.canonical,
+						state.streakStartedAt,
+						state.streakSamples,
+						state.lastSampledAt,
+					],
+				);
+			}
+			for (const existing of this.getFlagScanScopeState()) {
+				if (scopeKeys.has(`${existing.flagName}\u0000${existing.scope}`)) continue;
+				this.db.run(
+					"DELETE FROM flag_scan_scope_state WHERE flag_name = ? AND scope = ?",
+					[existing.flagName, existing.scope],
 				);
 			}
 

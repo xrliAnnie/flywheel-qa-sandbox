@@ -8,6 +8,34 @@ import {
 import { renderFlagReport } from "../bridge/feature-flag-report-html.js";
 
 const FLAGS = resolveAllFlags({ env: {} });
+const PROJECT_FLAG = {
+	...FLAGS.find((flag) => flag.name === "doc_flow")!,
+	storeManaged: false,
+	projectStoreManaged: true,
+	clockReadiness: "ready" as const,
+	scopedStore: {
+		rows: [
+			{ scope: "*", raw: "0", value: false },
+			{ scope: "flywheel", raw: "1", value: true },
+		],
+	},
+	effectiveByProject: [
+		{
+			projectName: "flywheel",
+			value: true,
+			isDefault: false,
+			via: "project_row" as const,
+		},
+		{
+			projectName: "geoforge3d",
+			value: false,
+			isDefault: true,
+			via: "star_row" as const,
+			runtimeConfigValue: true,
+			runtimeDivergence: "config_pending_cutover" as const,
+		},
+	],
+};
 
 describe("feature-flag renderer (Apple cards, read-only)", () => {
 	it("renders every flag as cards, grouped by category", () => {
@@ -41,6 +69,40 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
 		expect(html).toContain("data-ff-toggle");
 		expect(html).toContain('type="checkbox"');
+	});
+
+	it("renders project/store provenance, transition divergence, and row-presence controls", () => {
+		const html = renderFlagCard(PROJECT_FLAG, "phone");
+		expect(html).toContain("项目行");
+		expect(html).toContain("* 行");
+		expect(html).toContain("runtime 仍按 config");
+		expect(html).toContain("C 单切换");
+		expect(html).toContain("data-ffp-scope");
+		expect(html).toContain("data-ffp-value");
+		expect(html).toContain('data-ffp-name="doc_flow"');
+		expect(html).toContain(
+			'data-ffp-state="{&quot;*&quot;:{&quot;p&quot;:1,&quot;v&quot;:&quot;off&quot;},&quot;flywheel&quot;:{&quot;p&quot;:1,&quot;v&quot;:&quot;on&quot;},&quot;geoforge3d&quot;:{&quot;p&quot;:0}}"',
+		);
+		expect(html).toContain(
+			'<option value="off" selected>OFF（显式行）</option>',
+		);
+		expect(html).toContain('<option value="clear">清除（回落继承）</option>');
+	});
+
+	it("keeps an absent star row in an explicit inherit baseline", () => {
+		const html = renderFlagCard(
+			{
+				...PROJECT_FLAG,
+				scopedStore: {
+					rows: [{ scope: "flywheel", raw: "0", value: false }],
+				},
+			},
+			"phone",
+		);
+		expect(html).toContain(
+			'<option value="inherit" selected>继承（未设行）</option>',
+		);
+		expect(html).not.toContain('value="clear"');
 	});
 
 	it("suppresses controls for a store-managed flag on console and phone", () => {
@@ -212,8 +274,8 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 	it("uses a nonce'd script and builds the apply command locally", () => {
 		expect(html).toContain('<script nonce="__CSP_NONCE__">');
 		expect(html).toContain("data-ff-toggle");
-		expect(html).toContain("flywheel-comm feature-flags apply --name ");
-		expect(html).toContain("--reason phone-report");
+		expect(html).toContain("FleetCmd.flagCommand");
+		expect(html).toContain('reason:"phone-report"');
 	});
 
 	it("makes NO network callback (CSP default-src none blocks it anyway)", () => {
