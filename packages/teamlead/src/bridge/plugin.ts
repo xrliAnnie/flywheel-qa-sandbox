@@ -1214,6 +1214,8 @@ export interface BridgeAppOptions {
 	vercelToken?: string;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
+	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
+	flagProjectNames?: () => readonly string[];
 	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
 	workKindCutoverTokens?: ConfirmTokenStore;
 	/** FLY-1436: injectable deployment evidence reader for route-level tests. */
@@ -2282,6 +2284,9 @@ export function createBridgeApp(
 			tokens: fleetConsole.tokens,
 			audit: fleetConsole.audit,
 			flagStore,
+			projectNames:
+				opts?.flagProjectNames ??
+				(() => projects.map((project) => project.projectName)),
 		};
 		app.post("/api/fleet/flag/stage", (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -4641,6 +4646,7 @@ export async function startBridge(
 	// (FLYWHEEL_PROJECTS) deployments can't run the engine (split-brain guard), so
 	// the console is disabled there too.
 	let fleetConsole: FleetConsole | undefined;
+	let flagProjectNames = () => projects.map((project) => project.projectName);
 	// Hoisted so close() can clear it (Codex R3 MEDIUM-1: a block-local timer +
 	// an un-closed console keep recovering batches / hold the audit handle after
 	// shutdown).
@@ -4681,6 +4687,8 @@ export async function startBridge(
 			});
 			await managementProjectSource.initialize();
 			let managementProjects = managementProjectSource.projects();
+			flagProjectNames = () =>
+				managementProjects.map((project) => project.projectName);
 			let managementProjectsRevision = managementProjectSource.revision();
 			const managementEnvPath = join(homedir(), ".flywheel", ".env");
 			const managementEnvSource = () =>
@@ -6352,6 +6360,7 @@ export async function startBridge(
 		{
 			vercelToken,
 			flagStore,
+			flagProjectNames,
 			eventLoopAttribution,
 			admissionCrossingBarrier,
 			residueHarvester,

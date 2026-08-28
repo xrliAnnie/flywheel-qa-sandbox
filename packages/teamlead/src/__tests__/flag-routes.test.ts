@@ -44,6 +44,7 @@ function makeDeps(over: Partial<FlagRouteDeps> = {}): FlagRouteDeps & {
 		writeFile: vi.fn(),
 		env: {},
 		lock: (fn: () => unknown) => fn(), // pass-through; real lock tested in flag-toggle
+		projectNames: () => ["flywheel", "geoforge3d"],
 		tokens: new ConfirmTokenStore(),
 		audit: new FleetAdminAudit(dbPath),
 		...over,
@@ -58,6 +59,64 @@ async function makeManagedDeps(over: Partial<FlagRouteDeps> = {}) {
 }
 
 describe("handleFlagStage", () => {
+	it("rejects a bridge-global project row before toggleability checks", async () => {
+		const { deps } = await makeManagedDeps();
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "mailbox_queue",
+				to: true,
+				project: "flywheel",
+				reason: "must not create a project row",
+			},
+			"o",
+		);
+		expect(result.code).toBe(400);
+		expect(result.body).toMatchObject({
+			error: expect.stringMatching(/bridge_global.*project/i),
+		});
+	});
+
+	it("validates project-store scope against the configured roster", async () => {
+		const { deps } = await makeManagedDeps();
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "not-on-roster",
+				reason: "must fail",
+			},
+			"o",
+		);
+		expect(result.code).toBe(400);
+		expect(result.body).toMatchObject({
+			error: "unknown project scope: not-on-roster",
+			allowed: ["*", "flywheel", "geoforge3d"],
+		});
+	});
+
+	it.each(["checkpoint_enabled", "ponytail", "xiaohongshu_auto_create"])(
+		"does not expose the DB writer for unsafe project flag %s",
+		async (name) => {
+			const { deps } = await makeManagedDeps();
+			const result = handleFlagStage(
+				deps,
+				{
+					name,
+					to: true,
+					project: "flywheel",
+					reason: "must stay in its existing owner",
+				},
+				"o",
+			);
+			expect(result.code).toBe(400);
+			expect(result.body).toMatchObject({
+				error: `${name} is not project-store-managed`,
+			});
+		},
+	);
+
 	it("stages a direct flag: canonical + confirmToken + audit staged", () => {
 		const deps = makeDeps();
 		const r = handleFlagStage(
@@ -171,6 +230,187 @@ describe("handleFlagStage", () => {
 });
 
 describe("handleFlagApply", () => {
+	it("sets project and star rows through one scoped stage/apply path", async () => {
+		const { deps, store } = await makeManagedDeps();
+		for (const [project, to] of [
+			["*", false],
+			["flywheel", true],
+		] as const) {
+			const staged = handleFlagStage(
+				deps,
+				{
+					name: "doc_flow",
+					to,
+					project,
+					op: "set",
+					reason: `doc_flow ${project}`,
+				},
+				"o",
+			);
+			expect(staged.code).toBe(200);
+			const body = staged.body as {
+				canonical: FlagStoreCanonical;
+				confirmToken: string;
+			};
+			expect(body.canonical).toMatchObject({
+				kind: "flag_store",
+				name: "doc_flow",
+				scope: project,
+				op: "set",
+				rawTo: to ? "1" : "0",
+				expectedChangeSeq: 0,
+				effectiveTo: to,
+			});
+			expect(
+				handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+			).toBe(200);
+		}
+		expect(store.getFlagValueRow("doc_flow", "*")).toMatchObject({
+			raw: "0",
+			lastEffective: "false",
+		});
+		expect(store.getFlagValueRow("doc_flow", "flywheel")).toMatchObject({
+			raw: "1",
+			lastEffective: "true",
+		});
+	});
+
+	it("clears a project row to inheritance and keeps the scoped audit", async () => {
+		const { deps, store } = await makeManagedDeps();
+		const seeded = store.applyScopedFlagValueChange({
+			name: "doc_flow",
+			scope: "flywheel",
+			op: "set",
+			rawTo: "1",
+			expectedChangeSeq: 0,
+			actor: "fixture",
+			reason: "fixture",
+		});
+		expect(seeded).toMatchObject({ ok: true });
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				project: "flywheel",
+				op: "clear",
+				reason: "inherit from star",
+			} as never,
+			"o",
+		).body as { canonical: FlagStoreCanonical; confirmToken: string };
+		expect(staged.canonical).toMatchObject({
+			scope: "flywheel",
+			op: "clear",
+			rawTo: null,
+			effectiveTo: "inherit",
+		});
+		expect(
+			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o").code,
+		).toBe(200);
+		expect(store.getFlagValueRow("doc_flow", "flywheel")).toBeUndefined();
+		expect(
+			store.listFlagValueChanges("doc_flow", "flywheel").at(-1),
+		).toMatchObject({
+			action: "clear",
+			toEffective: "inherit",
+		});
+	});
+
+	it("clears a global store override without deleting its star row", async () => {
+		const { deps, store } = await makeManagedDeps();
+		store.applyFlagValueChange({
+			name: "workflow_turn_divergence_alerts",
+			rawTo: "1",
+			expectedRevision: 1,
+			actor: "fixture",
+			reason: "fixture",
+		});
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "workflow_turn_divergence_alerts",
+				project: "*",
+				op: "clear",
+				reason: "return to default",
+			} as never,
+			"o",
+		).body as { canonical: FlagStoreCanonical; confirmToken: string };
+		expect(
+			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o").code,
+		).toBe(200);
+		expect(
+			store.getFlagValueRow("workflow_turn_divergence_alerts"),
+		).toMatchObject({
+			hasOverride: false,
+			raw: null,
+			revision: 3,
+		});
+	});
+
+	it("rejects clear for a non-store global flag", () => {
+		const result = handleFlagStage(
+			makeDeps(),
+			{
+				name: "founder_review_orphan_monitor",
+				project: "*",
+				op: "clear",
+				reason: "unsupported",
+			} as never,
+			"o",
+		);
+		expect(result.code).toBe(400);
+		expect(result.body).toMatchObject({
+			error: expect.stringMatching(/clear.*store-managed/i),
+		});
+	});
+
+	it("rejects a scoped apply after a third-party write advances the audit fence", async () => {
+		const { deps, store } = await makeManagedDeps();
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "flywheel",
+				reason: "reviewed value",
+			},
+			"o",
+		).body as { canonical: FlagStoreCanonical; confirmToken: string };
+		store.applyScopedFlagValueChange({
+			name: "doc_flow",
+			scope: "flywheel",
+			op: "set",
+			rawTo: "0",
+			expectedChangeSeq: 0,
+			actor: "other",
+			reason: "race",
+		});
+		expect(
+			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o").code,
+		).toBe(409);
+	});
+
+	it("revalidates the project roster when a staged write is applied", async () => {
+		let projects = ["flywheel"];
+		const { deps, store } = await makeManagedDeps({
+			projectNames: () => projects,
+		});
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "flywheel",
+				reason: "roster race proof",
+			},
+			"o",
+		).body as { canonical: FlagStoreCanonical; confirmToken: string };
+		projects = [];
+		expect(
+			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o"),
+		).toMatchObject({ code: 400 });
+		expect(store.getFlagValueRow("doc_flow", "flywheel")).toBeUndefined();
+	});
+
 	it("applies with a valid token → mutates env, audits apply-result", () => {
 		const deps = makeDeps();
 		const staged = handleFlagStage(
@@ -540,10 +780,24 @@ describe("handleFlagApply", () => {
 				"o",
 			).code,
 		).toBe(409);
+		expect(
+			handleFlagStage(
+				deps,
+				{
+					name: "doc_flow",
+					to: true,
+					project: "flywheel",
+					reason: "must wait",
+				},
+				"o",
+			).code,
+		).toBe(409);
 		const canonical: FlagStoreCanonical = {
 			kind: "flag_store",
 			batchId: "bypass-apply",
 			name: "workflow_turn_divergence_alerts",
+			scope: "*",
+			op: "set",
 			rawFrom: null,
 			rawTo: "1",
 			revision: 1,
