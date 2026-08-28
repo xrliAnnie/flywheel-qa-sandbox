@@ -1,13 +1,13 @@
 ---
 issue: FLY-2031
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-28T00:24:39.374Z
-nextStep: write exploration.md from PRD B §3/§5/§6 + raya main code audit
+phaseCursor: 2/6
+updated: 2026-08-28T00:33:02.148Z
+nextStep: "research.md: handoff/outbox/Discord adapter/receipt facts"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: design (1/6)
-**next**: write exploration.md from PRD B §3/§5/§6 + raya main code audit
+**phase**: design (2/6)
+**next**: research.md: handoff/outbox/Discord adapter/receipt facts
