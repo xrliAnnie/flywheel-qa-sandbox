@@ -152,7 +152,7 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 | `approval: {baseUrl, token} \| null` | env 两个 key | 都有才启用;只有其一 ⇒ 配置错误拒起。`baseUrl` 规则(Codex R1-7):必须以 `/api/voice` 结尾;禁 URL 内嵌凭据/query/fragment;远端只许 `https:`,唯一例外 loopback(`127.0.0.1`/`::1`/`localhost`)允许 `http:` |
 | `leadsFile` | 固定 `RAYA_STATE_DIR/voice-leads.json` | 运营者提供;JSON `[{name, aliases[], discordChannelId}]`,snowflake 校验;缺失 ⇒ relay 不可用。⭐ **在状态目录不在 workspace**:它是路由权威,模型改得了它就能改她的话的去向(Codex R1-3 同族) |
 | `filterFile` | 固定 `RAYA_STATE_DIR/voice-filter.json` | **权威规则在模型够不着的一侧**(Codex R1-3);允许不存在(首次由 voice 创建);她/运营者可直接查看编辑此路径 |
-| options 数字项 | `numberOption` | `livenessIntervalMs`(0=关,默认 🔶 900_000)· `briefingChunkChars`(🔶 1_400)· `briefingChunkGapMs`(🔶 15_000)· `inboxPollMs` / `outboxPollMs`(🔶 1_000)· `readbackGraceMs`(🔶 2_500)· `readbackTimeoutMs`(🔶 60_000)· `gateArmWindowMs`(🔶 180_000)· `httpTimeoutMs`(🔶 10_000)· `audibleTailPadMs`(🔶 500) |
+| options 数字项 | `numberOption` | `livenessIntervalMs`(0=关,默认 🔶 900_000)· `briefingChunkChars`(🔶 1_400)· `briefingChunkGapMs`(🔶 15_000)· `speechConfirmTimeoutMs`(🔶 45_000,Codex R3-3)· `inboxPollMs` / `outboxPollMs`(🔶 1_000)· `readbackGraceMs`(🔶 2_500)· `readbackTimeoutMs`(🔶 60_000)· `gateArmWindowMs`(🔶 180_000)· `httpTimeoutMs`(🔶 10_000)· `audibleTailPadMs`(🔶 500) |
 
 ### 2.3 `speech/TranscriptLog.ts`(新)—— 转写 + 说话人归属
 
@@ -172,6 +172,8 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 - 每次注入记录 `{batchId, injectedAtCursor: 当时 assistant 最新 final 的 id}`;所有「它念了没有」的判定**只接受该游标之后**的 assistant final。
 - 统一前缀(🔶 文案,P1 验):`【Raya 系统播报|非 Annie 发言】` + 意图行。串行队列;busy 或它正在说时排队;`phase !== Live` 丢弃并记 evidence;**Draining 使全部队列 token 失效**,late resolve/final 不再触发任何 ack/arm/send。
 - 分批:每条 ≤ `briefingChunkChars`;下一批要等上一批游标后的 assistant final + `briefingChunkGapMs`;**自动接着念**,溢出话术 =「还有 N 条,我接着念」(Codex R1-8:⛔ 不再承诺「说『继续』」—— 本单没有 continue 门;若她真要手动门,那是她用出来的需求,到时带 founder-attributed 判定再做)。
+- **attempt 生命周期(Codex R3-3:队列必须会前进)**:每次注入是一次 attempt,带 `speechConfirmTimeoutMs`(配置,🔶)确认窗;确认(内容相关的 post-cursor final)/超时/插话判不明/不匹配,任一发生 ⇒ 结束本 attempt、释放队列 token、继续下一条。未确认的内容不 ack,由**pending key**(item id / actionId)防止同一内容在 attempt 进行中被 poll 重复入队;attempt 结束后才允许重新入队(稍后或下一场)。
+- **条内分块的确认粒度**:超长条目拆成多个 chunk 时,每个 chunk 各有游标与 confirmed 位;**全部 chunk 确认后才写该条目的 `spoken` ack**,任一块不明 ⇒ 整条不 ack(⛔ 不存在「首尾块确认吞掉中间块」的路径)。
 - 失败:`appendSpeech` reject → evidence `speech_inject_failed`,不杀会话,条目不 ack(下轮重试)。
 
 ### 2.5 `inbox/InboxReader.ts`(新)
@@ -199,17 +201,18 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 
 ### 2.8 `actions/` —— OutboxWatcher · ReadbackGate · ApprovalClient
 
-**`OutboxWatcher`**:定时扫 `outboxDir/*.action.json` → `renameSync` 认领(`.taken`,原子防重)→ `parseVoiceAction` → envelope 校验(actionId 无终态回执 / sessionKey === 当前 boot / utterances 在本 boot TranscriptLog 逐条解析为 founder-attributed final)→ 分发。**回执只进 `RAYA_STATE_DIR/voice-actions/receipts.jsonl` + 回执播报**,outbox 里不写任何东西。
+**`OutboxWatcher`**:定时扫 `outboxDir/*.action.json` → `renameSync` 认领(`.taken`,原子防重)→ `parseVoiceAction` → envelope 校验(actionId 无终态回执 **且不在 in-flight 集合** / sessionKey === 当前 boot / utterances 在本 boot TranscriptLog 逐条解析为 founder-attributed final)→ 分发。**回执只进 `RAYA_STATE_DIR/voice-actions/receipts.jsonl` + 回执播报**,outbox 里只有 rename 认领这一个写动作。
+- **同 boot 重复(Codex R3-2)**:`inFlightActionIds` 内存集合 —— claim 后、dispatch 前原子占位;terminal 回执或 Draining 时释放;占位期间同 actionId 的第二个提案直接 `rejected{duplicate}`(终态回执继续负责跨 boot dedupe)。
+- **`.taken` 不是可信凭据(Codex R3-1)**:它躺在模型可写目录里,模型自己也能造;rename 后、校验前也可能崩。⇒ **跨 boot 残留的 `.taken` 一律零副作用**:所有 kind 统一终态 `expired{unknown-outcome}`,⛔ 不重放 filter/pref 写入(目标文件已含效果就保留原样,但绝不凭 `.taken` 新增)。恢复合同里没有任何路径能绕过「sessionKey + founder utterance 校验」。
 
-**崩溃窗口表(Codex R1-5,R2-3 修正:分类只许由**磁盘可观察状态**推出 —— 「认领后没生效」和「发出后没回执」在盘上一模一样,⛔ 不装作分得清)**:
+**崩溃窗口表(Codex R1-5,R2-3,R3-1:分类只由**磁盘可观察状态**推出,且 `.taken` 因为躺在模型可写目录、可能未经校验,恢复时**不具有任何授权力**)**:
 
 | 下一场看到(磁盘状态) | 处置 |
 |---|---|
-| `.action.json`(未认领) | 正常处理;该 actionId 已有**终态**回执 ⇒ 拒重复(非终态的 readback_required 播报不算 dedupe 依据) |
-| `.taken` 且 receipts 无终态,kind 非幂等(relay) | 统一回执 `expired{reason:"unknown-outcome"}` —— 可能发过也可能没发;⛔ 不自动重发(防重复转达);已发出的消息正文带 actionId,人眼可识别重复 |
-| `.taken` 且 kind 幂等(remember_filter / set_pref) | 以目标文件内容收敛:规则/偏好已在文件里 ⇒ 回执 `saved`;不在 ⇒ 重放写入(同一结果写多次无害) |
+| `.action.json`(未认领) | 正常处理(⚠️ 旧 boot 的提案会因 sessionKey stale 被拒 —— 这正是想要的);该 actionId 已有**终态**回执 ⇒ 拒重复 |
+| `.taken` 且 receipts 无终态 —— **无论 kind** | 统一终态 `expired{reason:"unknown-outcome"}`,**零副作用**:relay 不重发,filter/pref 也**不重放写入**(它可能是伪造的、也可能从未通过校验;旧 boot 的 TranscriptLog 已不在,founder utterance 校验无法补做) |
 
-(不引入 pre-effect journal —— enforce simplicity:若将来产品真需要区分「没发」和「不确定」,再按 R2-3 的 `effect_started` journal 方案另立,当前按最保守读法统一 unknown-outcome。)
+(不引入 pre-effect journal —— enforce simplicity:若将来真需要恢复「已验证但未写」的 filter/pref,得先把 validated claim 落进模型不可写的状态目录,那是另一张单的事;本单选「不恢复」。)
 
 **`ReadbackGate`(relay_to_lead 的门)**:
 
@@ -297,8 +300,11 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 | B31 | envelope 违规:sessionKey ≠ 当前 boot(含「两个 boot 各自 gen=1,boot A 提案到 boot B」)/ 重复 actionId(已有终态回执)/ utterances 解析不到 founder final / scope 全空 | 一律 rejected + evidence | contracts+单测 |
 | B32 | **receipt 频道/卡片不匹配**:context.issueId ≠ binding.issueId / fetchMessage 在 source.channelId 取不到 gateMessageId | S0b 拒,不念不武装;evidence `ship_gate_channel_mismatch` | 假 fetch+假 adapter |
 | B33 | **无关 final 介入**:注入后她先插了话,才出现 assistant final(纯散文条目) | 无插话规则不满足 ⇒ 不 ack,条目稍后重注 | 单测 |
-| B34 | **逐条确认**:3 条注入,第 2 条的 final 没等到 | 1/3 ack,2 不 ack(下场重播),3 正常;⛔ 不存在「整批一个布尔」路径 | 集成 |
+| B34 | **逐条确认且队列前进**(fake clock):3 条注入,第 2 条确认窗超时无 final | attempt 超时后队列继续第 3 条;最终 1/3 ack、2 无 ack(pending key 防重复入队,attempt 结束后可重注),3 正常 | 集成(fake timers) |
 | B35 | **后台可构造性**:用 handoff 形状的 input_transcript 文本构造 envelope | utterances 逐字解析成功 ⇒ 动作走通(阳性对照,防合同「合法动作永远造不出来」) | 单测(+P2 真机) |
+| B36 | **条内分块**:超长条目 3 个 chunk,中间 chunk 无 final | 整条不 ack(全部 chunk 确认才 ack);首尾确认不能吞中间 | 集成(fake timers) |
+| B37 | **同 boot 重复 actionId**:第一条停在 readback_required,第二个同 actionId 提案到达 | in-flight 占位 ⇒ 第二条 `rejected{duplicate}`;第一条 terminal 后释放 | 并发集成 |
+| B38 | **伪造/未校验 `.taken`**:模型直接造 `.taken` remember_filter;或 rename 后 parse 前崩溃 | 下一场统一 `expired{unknown-outcome}`,filter/pref 文件**不变** | 重启 watcher 集成 |
 
 静音语义 S1–S9(FLY-2074 plan §3)原样有效,本单不改也不豁免;B 系列不得引入任何绕过 20ms 常开流的路径(播报走 appendSpeech,不碰音频帧)。
 
@@ -340,9 +346,9 @@ P0/P1/P3 都动真环境(房间/额度/gate)——**排期、账号与「谁出�
 | C2 | config | §2.2 全部新项 + 边界校验 | B18/B21 |
 | **P1** | **实施门** | §4;Lead 安排真环境 | 过才继续 C3+ |
 | C3 | TranscriptLog(含归属 epoch)+ Speaker | §2.3/2.4;transport 加 `appendSpeech(text, gen)` | B22/B25/B29/B30 |
-| C4 | InboxReader + FilterRules | §2.5/2.6 | B1–B6/B27 |
+| C4 | InboxReader + FilterRules | §2.5/2.6 | B1–B6/B27/B33/B34/B36 |
 | C5 | Liveness | §2.7 | B7/B8 |
-| C6 | Outbox + ReadbackGate + RoomText.send | §2.8 前半 | B9–B13/B19/B26/B28 |
+| C6 | Outbox + ReadbackGate + RoomText.send | §2.8 前半 | B9–B13/B19/B26/B28/B37/B38 |
 | C7 | ApprovalClient + ship 流 + inbox fixture 写入器 | §2.8 后半;`scripts/voice-inbox-fixture.mjs` | B14–B17/B23/B24 |
 | C8 | runtime 接线 + cli/startInstructions 组装 | §2.9/2.10 | 集成全跑 + 既有 183 tests 不回归 |
 | C9 | 真机探针 P0/P2/P3 + 验收(§7) | voice-test-2 | evidence 归档进 issue 文件夹 |
@@ -414,3 +420,4 @@ P0/P1/P3 都动真环境(房间/额度/gate)——**排期、账号与「谁出�
 |---|---|---|
 | R1(2026-08-27,thread `01a04602-705a-7c12-8dd1-31d9d65b46b5`) | CHANGES REQUESTED,8 条(3 BLOCKER / 4 HIGH / 1 MEDIUM) | **8 条全接受**,无一拒绝:①ship 念/写目标绑定(S0 先查、armedBinding 快照、S4 全等、B23/B24);②说话人归属 epoch + unattributed fail-closed(B25);③权威 filter/leads/回执挪到 `RAYA_STATE_DIR`,outbox 单向化 + 回执播报(B26);④动作信封 + token 边界(B30/B31);⑤终态 ack + 崩溃窗口表 + at-least-once(B27/B28);⑥appendSpeech 带 gen + 注入游标 + Draining 失效 + 尾音屏障(B29/B22/B19);⑦HTTP 合同(Bearer/HTTPS/超时/严格 schema/token 不落 evidence,B17);⑧P1 前置为实施门 + 批间话术改自动续 |
 | R2(2026-08-27,同线程) | CHANGES REQUESTED,4 条(2 BLOCKER / 2 HIGH) | **4 条全接受**:①信封改 `sessionKey`(bootId 派生,openThread 写进 ACTIONS 块)+ `utterances` 带她原话全文由 voice 在内存日志解析(B31/B35,跨 boot 撞号反例);②armedBinding 只用 gate-binding 真实字段,issueIdentifier 走 `GET /context` 交叉核对,回执频道/卡片用只读 fetchMessage 核验(需 bot 加 ReadMessageHistory,列为部署变更;B32);③崩溃窗口按磁盘可观察状态统一 unknown-outcome,放弃不可判定的 crash-before-effect 分类,不加 journal(B28 改为纯磁盘状态测试);④spoken ack 改逐条注入 + 内容/无插话相关性判据(B33/B34) |
+| R3(2026-08-27,同线程) | CHANGES REQUESTED,3 条(1 BLOCKER / 2 HIGH) | **3 条全接受**:①`.taken` 无授权力 —— 跨 boot 残留一律零副作用统一 `expired{unknown-outcome}`,filter/pref 不重放(B38 含模型伪造 `.taken` 反例);②同 boot in-flight actionId 集合,claim→terminal 占位(B37);③attempt 生命周期:`speechConfirmTimeoutMs` 确认窗 + pending key + 逐 chunk confirmed 位、全块确认才 ack(B34 改 fake-clock 前进测试,新增 B36)。3 轮安全阀:清单已非阻塞报 Lead,继续收敛,不自批 |
