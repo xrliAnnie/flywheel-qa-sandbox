@@ -12,6 +12,8 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 | ③ | **A2(总管自己去各仓读)与 §8.8(各 Lead 写 summary PR 进总管仓)在 PRD 里并存**;后者牵动 11 个部门 Lead(Tadashi 第一版「只动 Raya 侧」口径已被他自己更正) | bacc4ffb/74ed0fc3 |
 | ④ | **§8.8 并进 2030,一张单全包,不拆单不留缺口**;形状 = 两个可独立验收的里程碑,**一(summary 回流)先于二(吸收+追问)**,但各自可验,不做成一个大黑盒 | founder 拍板 + Tadashi 形状(3f707089) |
 | ⑤ | 两个旋钮**不自己定**,列成待她拍的选项:summary 频率 · summary 粒度(§3) | 3f707089 |
+| ⑥ | **Mufasa = producer**(summary 义务名单含他),fixture 钉 **11**——founder 亲拍(她在 thread 原话一个字:「A」);plan M1-c' 的 pending 标记(ask eb24a018)就此关闭 | founder 2026-08-28(Tadashi 转,答 2a520a84)|
+| ⑦ | **变体 B 的 Growth 聚合作者 = mufasa-lead(⚠️ provisional)**——Tadashi 裁 C(理由:founder 刚裁他 producer,他是 growth 第一负责人,rafiki/reflection 在他名下);变体 B 眼下**未被 founder 选中**,她将来真选 B 时此条随粒度选择一起再呈她过目;fixture 按 C 填、真跑恰一作者不变量;plan 的 ask 2a520a84 标记就此关闭 | Tadashi 2026-08-28(答 2a520a84)|
 
 ## 1. 里程碑一 · summary 回流跑通
 
