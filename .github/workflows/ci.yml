@@ -76,6 +76,13 @@ jobs:
       - name: Enforce FLY-2045 milestone layout
         run: bash scripts/__tests__/fly2045-milestone-layout.test.sh
 
+      # FLY-2030: these hermetic contracts guard the cross-repository prefix
+      # fence and ensure activation fails before any running service is stopped.
+      - name: Enforce FLY-2030 summary inflow gates
+        run: |
+          bash scripts/__tests__/fly2030-summary-prefix-pair.test.sh
+          bash scripts/__tests__/fly2030-summary-registry-activation.test.sh
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4

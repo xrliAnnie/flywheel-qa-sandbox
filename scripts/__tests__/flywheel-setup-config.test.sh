@@ -107,6 +107,9 @@ B3_OK=1
 [ "$(jq -r '.[0].leads[0].agentId' "$PJ" 2>/dev/null)" = "cos-lead" ] || B3_OK=0
 [ "$(jq -r '.[0].leads[1].agentId' "$PJ" 2>/dev/null)" = "tad-eng-lead" ] || B3_OK=0
 [ "$(jq -r '.[0].leads[0].canSpawnRunners' "$PJ" 2>/dev/null)" = "false" ] || B3_OK=0
+[ "$(jq -r '.[0].summaryAggregatorLeadId' "$PJ" 2>/dev/null)" = "cos-lead" ] || B3_OK=0
+[ "$(jq -r '.[0].leads[0].summaryRole' "$PJ" 2>/dev/null)" = "aggregator" ] || B3_OK=0
+[ "$(jq -r '.[0].leads[1].summaryRole' "$PJ" 2>/dev/null)" = "producer" ] || B3_OK=0
 [ "$(jq -r '.[0].leads[0].match.labels[0]' "$PJ" 2>/dev/null)" = "Triage" ] || B3_OK=0
 [ "$(jq -r '.[0].leads[1].department' "$PJ" 2>/dev/null)" = "engineering" ] || B3_OK=0
 [ "$(jq -r '.[0].projectRoot' "$PJ" 2>/dev/null)" = "$H/Dev/husband-ecom" ] || B3_OK=0
