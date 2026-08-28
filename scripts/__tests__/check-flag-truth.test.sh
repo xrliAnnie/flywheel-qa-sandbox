@@ -12,10 +12,10 @@ FAILED=0
 pass() { echo "[TEST] ✓ $1"; PASSED=$((PASSED + 1)); }
 fail() { echo "[TEST] ✗ $1"; FAILED=$((FAILED + 1)); }
 
-printf '%s\n' 'FLYWHEEL_LEAD_LEASE_BYPASS=1' > "$TMP/valid.env"
+printf '%s\n' 'FLYWHEEL_HOME=/tmp/flywheel-test' > "$TMP/valid.env"
 if "$REPO_ROOT/scripts/check-flag-truth.ts" --env-file "$TMP/valid.env" > "$TMP/valid.out" 2>&1 \
   && grep -q 'flag truth OK' "$TMP/valid.out"; then
-  pass "valid registered env passes via executable shebang"
+  pass "valid classified env passes via executable shebang"
 else
   fail "valid env failed: $(cat "$TMP/valid.out")"
 fi

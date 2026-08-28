@@ -263,14 +263,13 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			],
 		});
 		expect(
-			views.find(({ name }) => name === "voice_qa_presence_override"),
+			views.find(({ name }) => name === "checkpoint_enabled"),
 		).toMatchObject({
 			storeManaged: false,
 			clockReadiness: "no_clock:unmanaged",
 		});
 		expect(
-			views.find(({ name }) => name === "founder_review_orphan_monitor")
-				?.valueClocks,
+			views.find(({ name }) => name === "checkpoint_enabled")?.valueClocks,
 		).toBeUndefined();
 	});
 

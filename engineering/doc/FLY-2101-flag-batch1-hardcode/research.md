@@ -25,7 +25,7 @@ Issue: FLY-2101 (https://linear.app/geoforge3d/issue/FLY-2101/flagb1固化-13-�
   读共享 .env)整删;唯一调用 `index.ts:216` 传 `{queueEnabled}` 给
   `processPendingDeliveries`。
 - `packages/inbox-mcp/src/delivery.ts:52` — `if (options.queueEnabled) return …` 之后的函数体
-  **就是** FLY-1572 旧 push 投递路。queue 恒 on ⇒ 函数恒空转 ⇒ 函数 + 调用点 + 
+  **就是** FLY-1572 旧 push 投递路。queue 恒 on ⇒ 函数恒空转 ⇒ 函数 + 调用点 +
   `legacy-push-delivery.test.ts` 整删;`ack-semantics.test.ts` 里涉及处同步。
   连带候选死代码:`CommDB.getPendingPushInstructions` / `tryClaimInstructionForPush`
   (删后 rg 复核还有没有别的调用方,零引用才删)。
