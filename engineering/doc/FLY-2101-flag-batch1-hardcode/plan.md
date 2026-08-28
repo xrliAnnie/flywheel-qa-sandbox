@@ -80,16 +80,37 @@ Issue: FLY-2101 (https://linear.app/geoforge3d/issue/FLY-2101/flagb1固化-13-�
      `ci-shell-suite-manual-only.txt` 同步。
    - 编译期兜底:以上删完后 `pnpm -r build` 即是漏网编译期消费者的守卫;任何新暴露的
      引用按「零引用才删/同步改造」处置并列进 PR body。
-7. inbox-mcp 运行时/提示词残面(Codex R1 #4):`index.ts` 启动日志与注释里的
-   retry-window/redelivery 语义随旧 push 路一起改写;`delivery.ts` 文件头 legacy-push
-   说明文字删;`RETRY_WINDOW_SEC` 与 `FLYWHEEL_INBOX_RETRY_WINDOW_SEC` 在
-   `processPendingDeliveries` 删除后按零引用处置——若死亡则连 `truth.ts`
-   `NON_FLAG_ALLOWLIST` 对应行一起删(只减 ✓)。
+7. inbox-mcp 运行时/提示词残面(Codex R1 #4 + R2 #2:单条 push/ACK 整条旧路):
+   - **删单条 ACK 工具与处理器**:`index.ts` 的 `flywheel_inbox_ack` tool 注册
+     (:104-127)、`delivery.ts` 的 `handleAck`(:97-),及只服务该路的 CommDB helpers
+     (`getPendingPushInstructions` / `tryClaimInstructionForPush` /
+     `markInstructionDelivered` / `ackInstructionRead`——逐个零引用复核后删,列 PR body)。
+     **保留** `flywheel_inbox_ack_batch` / `flywheel_inbox_ack_event` 与 queue 侧
+     历史 claim handoff(queue 路信封只指示 batch ACK,已核 lead-inbox-loop.ts:468)。
+   - **提示词/规则面改写为 batch/event ACK 语义**:`packages/teamlead/scripts/
+     inbox-ack-rule.md`(按 message_id 调单条工具的要求)、`claude-lead.sh` 注入段、
+     `lead-rules-base/runner-patrol-rules.md` 旧 transport ACK 描述、
+     `packages/qa-framework/suites/fly-60-hard-gate.md` 提及处。
+   - `index.ts` 启动日志与注释里的 retry-window/redelivery 语义随旧 push 路一起改写;
+     `delivery.ts` 文件头 legacy-push 说明文字删;`RETRY_WINDOW_SEC` 与
+     `FLYWHEEL_INBOX_RETRY_WINDOW_SEC` 按零引用处置——若死亡则连 `truth.ts`
+     `NON_FLAG_ALLOWLIST` 对应行一起删(只减 ✓)。
 
 ### Step 4 — 名册与守卫同步(GREEN,续)
 1. `registry.ts`:删 13 条 spec(`envSite` helper 保留,存活 flag 在用)。
 2. `store-policy.ts`:`LEGACY_UNMANAGED_BASELINE` 31→18;按 D2 删
    `PROTECTED_LEGACY_FLAG_NAMES` + `protected_legacy` 分支 + 相关测试。
+   **D2 完整删除清单(Codex R2 #1 补全,全部纯删/收缩)**:
+   - 两级 re-export:`packages/config/src/feature-flags/index.ts:51`、
+     `packages/config/src/index.ts:67`。
+   - `packages/teamlead/src/StateStore.ts`:import(:27)、`applyFlagValueChange` 的
+     `protected_legacy` 检查与返回(:4876-4877)、`ApplyFlagValueChangeResult` reason
+     联合类型成员(:1617)。
+   - 测试:`StateStore.flag-value-store.test.ts` 的 mailbox protected verdict 用例;
+     三处 31 项 baseline/字面清单 fixture 同步到 18 —— `feature-flags-registry.test.ts`、
+     `fly1981-final-ledgers.test.ts`、`feature-flags-store-policy.test.ts`。
+   - 顺序:先删消费者再删集合,避免中间态编译错;build 只是兜底,不能替代此清单
+     (`protected_legacy` 字符串类型残面不会编译失败)。
 3. `resolve.ts`:删 liveness sanitizer 特判(:273-285)。
 4. `truth.ts`:按 D1 **不加** tombstone;现有内容不动。
 5. drift fixture 两处点名(research §2):MERGE_APPROVAL_GATE 断言换
