@@ -84,6 +84,7 @@ const testProjects: ProjectEntry[] = [
 		leads: [
 			{
 				agentId: "product-lead",
+				summaryRole: "producer",
 				forumChannel: "test-forum",
 				chatChannel: "test-chat",
 				match: { labels: ["Product"] },

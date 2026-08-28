@@ -14,7 +14,9 @@ mkdir -p "$PROJECT_DIR/.lead/claude-infra-bot-lead" "$PROJECT_DIR/.lead/flywheel
 printf '%s\n' '---' 'name: claude-infra-bot-lead' '---' 'Claw' > "$PROJECT_DIR/.lead/claude-infra-bot-lead/identity.md"
 printf '%s\n' '---' 'name: flywheel-eng-lead' '---' 'Tadashi' > "$PROJECT_DIR/.lead/flywheel-eng-lead/identity.md"
 
-PROJECTS="$(printf '[{"projectName":"flywheel","projectRoot":"%s","leads":[{"agentId":"claude-infra-bot-lead","chatChannel":"claw","alertChannel":"alerts","botUserId":"10000000000000001","match":{"labels":["infra"]}},{"agentId":"flywheel-eng-lead","chatChannel":"eng","alertChannel":"alerts","botUserId":"10000000000000002","match":{"labels":["eng"]}}]}]' "$PROJECT_DIR")"
+mkdir -p "$HOME_DIR/.flywheel"
+printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$HOME_DIR/.flywheel/summary-config.json"
+PROJECTS="$(printf '[{"projectName":"flywheel","projectRoot":"%s","leads":[{"agentId":"claude-infra-bot-lead","summaryRole":"exempt","chatChannel":"claw","alertChannel":"alerts","botUserId":"10000000000000001","match":{"labels":["infra"]}},{"agentId":"flywheel-eng-lead","summaryRole":"producer","chatChannel":"eng","alertChannel":"alerts","botUserId":"10000000000000002","match":{"labels":["eng"]}}]}]' "$PROJECT_DIR")"
 CANARY="DUTY_CANARY_$$"
 
 run_plan() {

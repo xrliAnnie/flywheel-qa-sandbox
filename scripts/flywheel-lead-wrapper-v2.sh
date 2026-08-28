@@ -68,6 +68,14 @@ FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
 ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${FLYWHEEL_STATE_DIR}/.env}"
 PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR}/projects.json}"
+V2_SUMMARY_CONFIG_HOME="${FLYWHEEL_SUMMARY_CONFIG_HOME:-${HOME}}"
+readonly V2_SUMMARY_CONFIG_HOME
+case "$V2_SUMMARY_CONFIG_HOME" in
+  /*) ;;
+  *) fatal "FLYWHEEL_SUMMARY_CONFIG_HOME must be an absolute path" ;;
+esac
+[[ "$V2_SUMMARY_CONFIG_HOME" != *$'\n'* && "$V2_SUMMARY_CONFIG_HOME" != *$'\r'* ]] \
+  || fatal "FLYWHEEL_SUMMARY_CONFIG_HOME contains a control character"
 # launchd's default PATH omits Homebrew and user-local binaries. Expand the
 # wrapper's own environment before resolving tmux, then pass that same proven
 # search path through the env -i carrier boundary.
@@ -127,7 +135,8 @@ LEGACY_MANIFEST_BACKEND="$(jq -er '
   || fatal "identity_manifest_field_invalid: leadBackend"
 FORBIDDEN_MANIFEST_FIELDS="$(jq -r '
   ["botUserId", "discordStateDir", "identityDigest",
-   "projectsDigest", "leadKey", "role", "backend"]
+   "projectsDigest", "leadKey", "role", "backend", "summaryRole",
+   "summaryGranularity", "hasSummaryDuty", "summaryAssignmentDigest"]
   | map(select(. as $key | $ARGS.named.manifest | has($key)))
   | join(",")' --argjson manifest "$(jq -c . "$MANIFEST")" <<< '{}')"
 [ -z "$FORBIDDEN_MANIFEST_FIELDS" ] \
@@ -159,6 +168,7 @@ IDENTITY_JSON="$(node "$IDENTITY_CLI" lead-identity resolve \
   --projects-file "$PROJECTS_FILE" \
   --project "$SELECTOR_PROJECT_NAME" \
   --lead "$SELECTOR_LEAD_ID" \
+  --summary-config-home "$V2_SUMMARY_CONFIG_HOME" \
   --format json)" \
   || fatal "identity_source_error: canonical Lead identity resolution failed"
 jq -e 'type == "object" and .schemaVersion == 1' <<<"$IDENTITY_JSON" >/dev/null \
@@ -168,6 +178,14 @@ LEAD_ID="$(jq -er '.leadId' <<<"$IDENTITY_JSON")"
 PROJECT_NAME="$(jq -er '.projectName' <<<"$IDENTITY_JSON")"
 LEAD_KEY="$(jq -er '.leadKey' <<<"$IDENTITY_JSON")"
 LEAD_ROLE="$(jq -er '.role' <<<"$IDENTITY_JSON")"
+SUMMARY_ROLE="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$IDENTITY_JSON")" \
+  || fatal "identity_summary_role_invalid: canonical summaryRole is invalid"
+SUMMARY_GRANULARITY="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$IDENTITY_JSON")" \
+  || fatal "identity_summary_granularity_invalid: canonical summaryGranularity is invalid"
+HAS_SUMMARY_DUTY="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("hasSummaryDuty must be boolean") end' <<<"$IDENTITY_JSON")" \
+  || fatal "identity_summary_duty_invalid: canonical hasSummaryDuty is invalid"
+SUMMARY_ASSIGNMENT_DIGEST="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$IDENTITY_JSON")" \
+  || fatal "identity_summary_assignment_digest_invalid: canonical summaryAssignmentDigest is invalid"
 BACKEND="$(jq -er '.backend' <<<"$IDENTITY_JSON")"
 BOT_TOKEN_ENV="$(jq -er '.botTokenEnv | select(type == "string" and length > 0)' <<<"$IDENTITY_JSON")" \
   || fatal "identity_bot_token_env_missing: ${PROJECT_NAME}/${LEAD_ID} has no token selector"
@@ -286,13 +304,17 @@ while IFS= read -r name; do
     FLYWHEEL_PROJECT_NAME|PROJECT_NAME) expected="$PROJECT_NAME" ;;
     FLYWHEEL_LEAD_KEY) expected="$LEAD_KEY" ;;
     FLYWHEEL_LEAD_ROLE) expected="$LEAD_ROLE" ;;
+    FLYWHEEL_LEAD_SUMMARY_ROLE) expected="$SUMMARY_ROLE" ;;
+    FLYWHEEL_LEAD_HAS_SUMMARY_DUTY) expected="$HAS_SUMMARY_DUTY" ;;
+    FLYWHEEL_SUMMARY_GRANULARITY) expected="$SUMMARY_GRANULARITY" ;;
+    FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST) expected="$SUMMARY_ASSIGNMENT_DIGEST" ;;
     FLYWHEEL_LEAD_BACKEND) expected="$BACKEND" ;;
     DISCORD_STATE_DIR) expected="$CANONICAL_DISCORD_STATE_DIR" ;;
     DISCORD_EXPECTED_BOT_USER_ID) expected="$BOT_USER_ID" ;;
     FLYWHEEL_LEAD_IDENTITY_DIGEST) expected="$IDENTITY_DIGEST" ;;
     FLYWHEEL_LEAD_PROJECTS_DIGEST) expected="$PROJECTS_DIGEST" ;;
     FLYWHEEL_PROJECTS_FILE) expected="$PROJECTS_FILE" ;;
-    FLYWHEEL_PROJECTS|DISCORD_BOT_TOKEN)
+    FLYWHEEL_PROJECTS|FLYWHEEL_SUMMARY_CONFIG_HOME|DISCORD_BOT_TOKEN)
       identity_fatal identity_launch_env_conflict "$name may not be supplied by the manifest"
       ;;
     *) is_identity=false ;;
@@ -342,12 +364,17 @@ SERVER_ENV+=(
   "FLYWHEEL_DIR=$FLYWHEEL_DIR"
   "FLYWHEEL_STATE_DIR=$FLYWHEEL_STATE_DIR"
   "FLYWHEEL_PROJECTS_FILE=$PROJECTS_FILE"
+  "FLYWHEEL_SUMMARY_CONFIG_HOME=$V2_SUMMARY_CONFIG_HOME"
   "FLYWHEEL_LEAD_ID=$LEAD_ID"
   "LEAD_ID=$LEAD_ID"
   "FLYWHEEL_PROJECT_NAME=$PROJECT_NAME"
   "PROJECT_NAME=$PROJECT_NAME"
   "FLYWHEEL_LEAD_KEY=$LEAD_KEY"
   "FLYWHEEL_LEAD_ROLE=$LEAD_ROLE"
+  "FLYWHEEL_LEAD_SUMMARY_ROLE=$SUMMARY_ROLE"
+  "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=$HAS_SUMMARY_DUTY"
+  "FLYWHEEL_SUMMARY_GRANULARITY=$SUMMARY_GRANULARITY"
+  "FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=$SUMMARY_ASSIGNMENT_DIGEST"
   "FLYWHEEL_LEAD_BACKEND=$BACKEND"
   "DISCORD_STATE_DIR=$CANONICAL_DISCORD_STATE_DIR"
   "DISCORD_EXPECTED_BOT_USER_ID=$BOT_USER_ID"

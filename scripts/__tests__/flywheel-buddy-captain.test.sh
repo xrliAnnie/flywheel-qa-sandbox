@@ -78,14 +78,19 @@ make_fixture() {
   printf -- '---\nname: tad-eng-lead\n---\nTad\n' > "$h/Dev/qa-captain/.lead/tad-eng-lead/identity.md"
   jq -n --arg root "$h/Dev/qa-captain" '[
     { projectName:"qa-captain", projectRoot:$root, generalChannel:"C-gen",
+      summaryAggregatorLeadId:"cos-lead",
       memoryAllowedUsers:["100000000000000009"],
       linear:{team:"QAC", project:"qa-captain", label:"Qa-captain"},
       leads:[
         {agentId:"cos-lead", chatChannel:"C-cos", match:{labels:["Triage"]},
-         botTokenEnv:"CASS_BOT_TOKEN", botUserId:"11111111111111111", canSpawnRunners:false},
+         botTokenEnv:"CASS_BOT_TOKEN", botUserId:"11111111111111111",
+         summaryRole:"aggregator", canSpawnRunners:false},
         {agentId:"tad-eng-lead", chatChannel:"C-eng", match:{labels:["Qa-captain"]},
-         department:"engineering", botTokenEnv:"TAD_BOT_TOKEN", botUserId:"22222222222222222"}
+         department:"engineering", botTokenEnv:"TAD_BOT_TOKEN", botUserId:"22222222222222222",
+         summaryRole:"producer"}
       ] }]' > "$h/.flywheel/projects.json"
+  printf '{"granularity":"per-lead","setBy":"founder","setAt":"2026-08-27T00:00:00Z"}\n' \
+    > "$h/.flywheel/summary-config.json"
   printf 'CASS_BOT_TOKEN=fixture-cos-value\nTAD_BOT_TOKEN=fixture-eng-value\nDISCORD_GUILD_ID=G1\nDISCORD_OWNER_USER_ID=100000000000000009\n' > "$h/.flywheel/.env"
   chmod 600 "$h/.flywheel/.env"
   cat > "$h/.flywheel/setup-state.json" <<EOF

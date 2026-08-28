@@ -44,9 +44,12 @@ printf '%s\n' '---' 'name: eng-lead' '---' 'Engineering Lead' \
   > "$PROJECT_DIR/.lead/eng-lead/identity.md"
 printf '%s\n' 'session-fly1697' \
   > "$HOME_DIR/.flywheel/claude-sessions/demo-eng-lead.session-id"
+cat > "$HOME_DIR/.flywheel/summary-config.json" <<'JSON'
+{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}
+JSON
 
 cat > "$PROJECTS_FILE" <<JSON
-[{"projectName":"demo","projectRoot":"$PROJECT_DIR","leads":[{"agentId":"eng-lead","backend":"claude-code","carrier":"v2","botTokenEnv":"ENG_TOKEN","botUserId":"22345678901234567","chatChannel":"123456789012345678","match":{"labels":["Engineering"]}}]}]
+[{"projectName":"demo","projectRoot":"$PROJECT_DIR","leads":[{"agentId":"eng-lead","summaryRole":"producer","backend":"claude-code","carrier":"v2","botTokenEnv":"ENG_TOKEN","botUserId":"22345678901234567","chatChannel":"123456789012345678","match":{"labels":["Engineering"]}}]}]
 JSON
 cat > "$HOME_DIR/.flywheel/test.env" <<'ENV'
 ENG_TOKEN=fixture-discord-token
@@ -103,6 +106,10 @@ IDENTITY_JSON="$(HOME="$HOME_DIR" node "$COMM_CLI" lead-identity resolve \
 IDENTITY_DIGEST="$(jq -r '.identityDigest' <<<"$IDENTITY_JSON")"
 PROJECTS_DIGEST="$(jq -r '.projectsDigest' <<<"$IDENTITY_JSON")"
 DISCORD_STATE="$(jq -r '.discordStateDir' <<<"$IDENTITY_JSON")"
+SUMMARY_ROLE="$(jq -r '.summaryRole' <<<"$IDENTITY_JSON")"
+SUMMARY_GRANULARITY="$(jq -r '.summaryGranularity' <<<"$IDENTITY_JSON")"
+HAS_SUMMARY_DUTY="$(jq -r 'if .hasSummaryDuty then "1" else "0" end' <<<"$IDENTITY_JSON")"
+SUMMARY_ASSIGNMENT_DIGEST="$(jq -r '.summaryAssignmentDigest' <<<"$IDENTITY_JSON")"
 
 BODY_ENV=(
   env -i
@@ -119,6 +126,11 @@ BODY_ENV=(
   "PROJECT_NAME=demo"
   "FLYWHEEL_LEAD_KEY=demo-eng-lead"
   "FLYWHEEL_LEAD_ROLE=dept"
+  "FLYWHEEL_LEAD_SUMMARY_ROLE=$SUMMARY_ROLE"
+  "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=$HAS_SUMMARY_DUTY"
+  "FLYWHEEL_SUMMARY_GRANULARITY=$SUMMARY_GRANULARITY"
+  "FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=$SUMMARY_ASSIGNMENT_DIGEST"
+  "FLYWHEEL_SUMMARY_CONFIG_HOME=$HOME_DIR"
   "FLYWHEEL_LEAD_BACKEND=claude-code"
   "DISCORD_STATE_DIR=$DISCORD_STATE"
   "DISCORD_EXPECTED_BOT_USER_ID=22345678901234567"
@@ -184,8 +196,12 @@ if start_body; then
     cat "$TMP/body.log" >&2 2>/dev/null || true
   fi
   if grep -q '^FLYWHEEL_LEAD_LEASE_KEY=demo-eng-lead$' "$HOME_DIR/fly1697-child.env" \
-    && grep -q '^FLYWHEEL_LEAD_GENERATION=2$' "$HOME_DIR/fly1697-child.env"; then
-    ok "Claude child receives the bound lease key and generation"
+    && grep -q '^FLYWHEEL_LEAD_GENERATION=2$' "$HOME_DIR/fly1697-child.env" \
+    && grep -q '^FLYWHEEL_LEAD_SUMMARY_ROLE=producer$' "$HOME_DIR/fly1697-child.env" \
+    && grep -q '^FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1$' "$HOME_DIR/fly1697-child.env" \
+    && grep -q '^FLYWHEEL_SUMMARY_GRANULARITY=per-lead$' "$HOME_DIR/fly1697-child.env" \
+    && grep -Eq '^FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=[a-f0-9]{64}$' "$HOME_DIR/fly1697-child.env"; then
+    ok "Claude child receives the bound lease and canonical summary projections"
   else
     bad "Claude child did not receive the bound generation claim"
   fi
@@ -203,6 +219,7 @@ SCRATCH="$TMP/scratch"
 mkdir -p "$SCRATCH/packages/teamlead"
 cp -R "$ROOT/packages/teamlead/scripts" "$SCRATCH/packages/teamlead/scripts"
 ln -s "$ROOT/packages/teamlead/dist" "$SCRATCH/packages/teamlead/dist"
+ln -s "$ROOT/packages/teamlead/lead-rules-base" "$SCRATCH/packages/teamlead/lead-rules-base"
 ln -s "$ROOT/scripts" "$SCRATCH/scripts"
 sed -i.bak 's/^[[:space:]]*lead_identity_v2_acquire_bind \\/    true \\/' \
   "$SCRATCH/packages/teamlead/scripts/claude-lead.sh"

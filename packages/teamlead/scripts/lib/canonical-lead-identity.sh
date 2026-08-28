@@ -51,6 +51,8 @@ canonical_lead_identity_resolve() {
   local canonical_lead canonical_project canonical_key canonical_team
   local canonical_bot_id canonical_token_env canonical_state_dir
   local canonical_backend canonical_role projects_digest identity_digest
+  local canonical_summary_role canonical_summary_granularity
+  local canonical_has_summary_duty summary_assignment_digest
   local token_value
 
   _FLYWHEEL_CANONICAL_PROJECTS_FILE="$projects_file"
@@ -93,6 +95,10 @@ canonical_lead_identity_resolve() {
   canonical_state_dir="$(jq -er '.discordStateDir | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_backend="$(jq -er '.backend | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_role="$(jq -er '.role | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
+  canonical_summary_role="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$identity_json")" || return 1
+  canonical_summary_granularity="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$identity_json")" || return 1
+  canonical_has_summary_duty="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("hasSummaryDuty must be boolean") end' <<<"$identity_json")" || return 1
+  summary_assignment_digest="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
   projects_digest="$(jq -er '.projectsDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
   identity_digest="$(jq -er '.identityDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
 
@@ -124,6 +130,10 @@ canonical_lead_identity_resolve() {
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_KEY "$canonical_key" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_BACKEND "$canonical_backend" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_ROLE "$canonical_role" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_SUMMARY_ROLE "$canonical_summary_role" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_HAS_SUMMARY_DUTY "$canonical_has_summary_duty" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_SUMMARY_GRANULARITY "$canonical_summary_granularity" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST "$summary_assignment_digest" || return 1
   canonical_lead_identity_assert_existing DISCORD_STATE_DIR "$canonical_state_dir" || return 1
   canonical_lead_identity_assert_existing DISCORD_EXPECTED_BOT_USER_ID "$canonical_bot_id" || return 1
   canonical_lead_identity_assert_existing DISCORD_IDENTITY_MODE managed || return 1
@@ -149,6 +159,10 @@ canonical_lead_identity_resolve() {
   export PROJECT_NAME="$canonical_project"
   export FLYWHEEL_LEAD_KEY="$canonical_key"
   export FLYWHEEL_LEAD_ROLE="$canonical_role"
+  export FLYWHEEL_LEAD_SUMMARY_ROLE="$canonical_summary_role"
+  export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$canonical_has_summary_duty"
+  export FLYWHEEL_SUMMARY_GRANULARITY="$canonical_summary_granularity"
+  export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest"
   export FLYWHEEL_LEAD_BACKEND="$canonical_backend"
   export DISCORD_STATE_DIR="$canonical_state_dir"
   export DISCORD_EXPECTED_BOT_USER_ID="$canonical_bot_id"

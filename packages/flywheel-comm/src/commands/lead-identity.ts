@@ -38,10 +38,20 @@ export function runLeadIdentityCommand(
 				format: { type: "string", default: "json" },
 				"roster-file": { type: "string" },
 				"backup-file": { type: "string" },
+				"summary-config-home": { type: "string" },
 			},
 			allowPositionals: false,
 		});
 		projectsPath = required(values["projects-file"], "--projects-file");
+		const summaryConfigHome = values["summary-config-home"];
+		if (summaryConfigHome !== undefined) {
+			if (args[0] !== "resolve") {
+				throw new Error("--summary-config-home is only valid for resolve");
+			}
+			if (!isAbsolute(summaryConfigHome)) {
+				throw new Error("--summary-config-home must be an absolute path");
+			}
+		}
 		if (args[0] === "migrate-bot-user-ids") {
 			const rosterPath = required(values["roster-file"], "--roster-file");
 			const backupPath = required(values["backup-file"], "--backup-file");
@@ -98,7 +108,7 @@ export function runLeadIdentityCommand(
 			projectsPath,
 			projectName,
 			leadId,
-			homeDir: deps.homeDir,
+			homeDir: summaryConfigHome ?? deps.homeDir,
 		});
 		if (values.format === "json") {
 			stdout(JSON.stringify(identity));
@@ -110,7 +120,10 @@ export function runLeadIdentityCommand(
 		const code =
 			error instanceof LeadIdentityError
 				? error.code
-				: "identity_command_invalid";
+				: error instanceof SummaryAssignmentError ||
+						error instanceof SummaryConfigError
+					? error.code
+					: "identity_command_invalid";
 		const message = error instanceof Error ? error.message : String(error);
 		if (projectsPath && projectName && leadId) {
 			try {
@@ -164,6 +177,10 @@ export function identityEnvProjection(
 		`FLYWHEEL_LEAD_KEY=${identity.leadKey}`,
 		`FLYWHEEL_LEAD_ROLE=${identity.role}`,
 		`FLYWHEEL_LEAD_BACKEND=${identity.backend}`,
+		`FLYWHEEL_LEAD_SUMMARY_ROLE=${identity.summaryRole}`,
+		`FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${identity.hasSummaryDuty ? "1" : "0"}`,
+		`FLYWHEEL_SUMMARY_GRANULARITY=${identity.summaryGranularity ?? ""}`,
+		`FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${identity.summaryAssignmentDigest ?? ""}`,
 		`DISCORD_STATE_DIR=${identity.discordStateDir}`,
 		`DISCORD_EXPECTED_BOT_USER_ID=${identity.botUserId ?? ""}`,
 		"DISCORD_IDENTITY_MODE=managed",
@@ -172,6 +189,7 @@ export function identityEnvProjection(
 	];
 }
 
+import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import {
 	type CanonicalLeadIdentity,
@@ -183,3 +201,5 @@ import {
 	LeadIdentityMigrationError,
 	migrateLeadBotUserIds,
 } from "../lead-identity-migration.js";
+import { SummaryAssignmentError } from "../summary-assignment-core.js";
+import { SummaryConfigError } from "../summary-config.js";

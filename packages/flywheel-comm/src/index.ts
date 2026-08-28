@@ -57,6 +57,8 @@ import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
+import { runSummaryCommand } from "./commands/summary.js";
+import { runSummaryRegistryCommand } from "./commands/summary-registry.js";
 import { runTokenReport } from "./commands/token-report.js";
 import {
 	formatTurnStatus,
@@ -109,6 +111,9 @@ Commands:
   chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
   lead-identity  Resolve one immutable Lead identity from an explicit registry selector
+  summary-registry  Migrate or verify the FLY-2030 summary assignment registry fence
+  summary   Validate and deliver one Lead-authored summary PR; summary verify-pr
+            validates a Raya PR's complete current-head diff and prints its verified SHA
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
@@ -250,6 +255,12 @@ async function main(): Promise<void> {
 			break;
 		case "lead-identity":
 			process.exitCode = await runLeadIdentityCommand(commandArgs);
+			break;
+		case "summary-registry":
+			process.exitCode = runSummaryRegistryCommand(commandArgs);
+			break;
+		case "summary":
+			process.exitCode = await runSummaryCommand(commandArgs);
 			break;
 		case "lead-lease":
 			process.exitCode = await runLeadLeaseCommand(commandArgs);

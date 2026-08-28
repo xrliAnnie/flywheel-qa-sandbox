@@ -28,9 +28,18 @@ describe("FLY-1309 canonical Lead resolver", () => {
 		write([
 			{
 				projectName: "flywheel",
-				leads: [{ agentId: "eng-lead", backend: "claude-code" }],
+				leads: [
+					{
+						agentId: "eng-lead",
+						summaryRole: "producer",
+						backend: "claude-code",
+					},
+				],
 			},
-			{ projectName: "sub", leads: [{ agentId: "sub-lead" }] },
+			{
+				projectName: "sub",
+				leads: [{ agentId: "sub-lead", summaryRole: "producer" }],
+			},
 		]);
 
 		expect(
@@ -46,7 +55,12 @@ describe("FLY-1309 canonical Lead resolver", () => {
 
 	it("accepts the legacy wrapped {projects: []} document shape", () => {
 		write({
-			projects: [{ projectName: "flywheel", leads: [{ agentId: "eng-lead" }] }],
+			projects: [
+				{
+					projectName: "flywheel",
+					leads: [{ agentId: "eng-lead", summaryRole: "producer" }],
+				},
+			],
 		});
 		expect(
 			resolveCanonicalLead({ leadId: "eng-lead", projectsPath }),
@@ -57,7 +71,12 @@ describe("FLY-1309 canonical Lead resolver", () => {
 	});
 
 	it("returns valid_but_lead_absent for a readable valid source", () => {
-		write([{ projectName: "flywheel", leads: [{ agentId: "other-lead" }] }]);
+		write([
+			{
+				projectName: "flywheel",
+				leads: [{ agentId: "other-lead", summaryRole: "producer" }],
+			},
+		]);
 		expect(
 			resolveCanonicalLead({ leadId: "eng-lead", projectsPath }),
 		).toMatchObject({
@@ -68,8 +87,14 @@ describe("FLY-1309 canonical Lead resolver", () => {
 
 	it("treats a cross-project bare leadId collision as a broken source", () => {
 		write([
-			{ projectName: "flywheel", leads: [{ agentId: "eng-lead" }] },
-			{ projectName: "sub", leads: [{ agentId: "eng-lead" }] },
+			{
+				projectName: "flywheel",
+				leads: [{ agentId: "eng-lead", summaryRole: "producer" }],
+			},
+			{
+				projectName: "sub",
+				leads: [{ agentId: "eng-lead", summaryRole: "producer" }],
+			},
 		]);
 		expect(
 			resolveCanonicalLead({
@@ -122,7 +147,12 @@ describe("FLY-1309 canonical Lead resolver", () => {
 			status: "source_error",
 		});
 
-		write([{ projectName: "flywheel", leads: [{ agentId: "eng-lead" }] }]);
+		write([
+			{
+				projectName: "flywheel",
+				leads: [{ agentId: "eng-lead", summaryRole: "producer" }],
+			},
+		]);
 		expect(
 			resolveCanonicalLead({ leadId: "eng-lead", projectsPath }),
 		).toMatchObject({

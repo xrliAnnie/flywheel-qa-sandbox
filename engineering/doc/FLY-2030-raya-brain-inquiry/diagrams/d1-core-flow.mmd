@@ -1,0 +1,28 @@
+flowchart LR
+  classDef annie fill:#fde8e8,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef lead fill:#fff4e5,stroke:#ff9500,stroke-width:1.5px,color:#1d1d1f
+  classDef raya fill:#f3e8fd,stroke:#af52de,stroke-width:2px,color:#1d1d1f
+  classDef store fill:#e9f9ef,stroke:#34c759,stroke-width:1.5px,color:#1d1d1f
+  classDef fw fill:#e8f0fe,stroke:#007aff,stroke-width:1.5px,color:#1d1d1f
+
+  subgraph M1 ["里程碑一:summary 回流(先跑通)"]
+    direction LR
+    L["11 个部门 Lead<br/>(周期性写 summary:事实+判断)"]:::lead
+    C["共享命令(新建,写一遍 11 处生效)<br/>校验后开 PR"]:::fw
+    S[("Raya 仓 summaries/<br/>open PR = 未读<br/>她 merge = 已阅")]:::store
+    L --> C --> S
+  end
+
+  subgraph M2 ["里程碑二:大脑吸收 + 追问"]
+    direction LR
+    R["Raya = 一个正式的 Lead<br/>(骑现有 Lead 系统,cmux 有窗口)<br/>gpt-5.6-sol · 最深思考 · 1M"]:::raya
+  end
+
+  S -->|"读 + merge 已阅"| R
+  T["到点巡视<br/>(默认 6h,DB 里一行可改)"]:::fw --> R
+  G["六仓 git 状态<br/>(她自己 shell 读,静了多久=信号)"]:::fw --> R
+  A["Annie 在 #raya"]:::annie <-->|"真实对话"| R
+  R -->|"分岔时:一句她当场可否掉的话"| A
+  R <-->|"追问 @对应 Lead"| RT["#leads-roundtable<br/>(她全程可见)"]:::lead
+  R -.->|"阶段性提炼,自己 commit"| MEM[("raya-memory<br/>MEMORY.md")]:::store
+  R -.-> MET[("三指标<br/>内存/swap/实际 1M 用量")]:::store

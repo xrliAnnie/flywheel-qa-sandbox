@@ -17,6 +17,7 @@ describe("LeadConfig type", () => {
 	it("LeadConfig has agentId, chatChannel, and match.labels", () => {
 		const lead: LeadConfig = {
 			agentId: "product-lead",
+			summaryRole: "producer",
 			chatChannel: "789",
 			match: { labels: ["Product"] },
 		};
@@ -32,6 +33,7 @@ describe("LeadConfig type", () => {
 			leads: [
 				{
 					agentId: "eng-lead",
+					summaryRole: "producer",
 					chatChannel: "012",
 					match: { labels: ["Engineering"] },
 				},
@@ -43,6 +45,7 @@ describe("LeadConfig type", () => {
 	it("LeadConfig exposes registry-owned Discord identity fields", () => {
 		const lead: LeadConfig = {
 			agentId: "eng-lead",
+			summaryRole: "producer",
 			chatChannel: "012",
 			match: { labels: ["Engineering"] },
 			botTokenEnv: "ENG_BOT_TOKEN",
@@ -56,6 +59,7 @@ describe("LeadConfig type", () => {
 	it("LeadConfig exposes an identity-bound Playwright MCP opt-in", () => {
 		const lead: LeadConfig = {
 			agentId: "eng-lead",
+			summaryRole: "producer",
 			chatChannel: "012",
 			match: { labels: ["Engineering"] },
 			playwrightMcp: true,
@@ -67,6 +71,7 @@ describe("LeadConfig type", () => {
 describe("FLY-1726 identity schema boundary", () => {
 	const lead = (agentId: string, overrides: Record<string, unknown> = {}) => ({
 		agentId,
+		summaryRole: "producer",
 		chatChannel: `${agentId}-channel`,
 		match: { labels: ["Engineering"] },
 		...overrides,
@@ -132,6 +137,34 @@ describe("FLY-1726 identity schema boundary", () => {
 			"/tmp/fly1726-not-yet-provisioned/eng",
 		);
 	});
+
+	it.each([undefined, "Producer", "writer", 1])(
+		"rejects invalid summaryRole %j at the TeamLead schema boundary",
+		(summaryRole) => {
+			expect(() =>
+				parseAndValidateProjects([
+					{
+						projectName: "flywheel",
+						projectRoot: "/tmp/flywheel",
+						leads: [lead("eng-lead", { summaryRole })],
+					},
+				]),
+			).toThrow(/identity_summary_role_invalid/);
+		},
+	);
+
+	it("preserves the project-level summary aggregator assignment", () => {
+		const projects = parseAndValidateProjects([
+			{
+				projectName: "growth",
+				projectRoot: "/tmp/growth",
+				summaryAggregatorLeadId: "growth-lead",
+				leads: [lead("growth-lead", { summaryRole: "aggregator" })],
+			},
+		]);
+
+		expect(projects[0]!.summaryAggregatorLeadId).toBe("growth-lead");
+	});
 });
 
 describe("FLY-1726 loadProjects registry source", () => {
@@ -163,6 +196,7 @@ describe("FLY-1726 loadProjects registry source", () => {
 					leads: [
 						{
 							agentId: "qa-lead",
+							summaryRole: "producer",
 							chatChannel: "qa-channel",
 							match: { labels: ["QA"] },
 						},
@@ -346,6 +380,7 @@ describe("loadProjects validation", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 					},
@@ -379,6 +414,7 @@ describe("loadProjects validation", () => {
 	const baseLeads = [
 		{
 			agentId: "cos-lead",
+			summaryRole: "aggregator",
 			chatChannel: "ch-core",
 			match: { labels: ["PM"] },
 			canSpawnRunners: false,
@@ -441,6 +477,7 @@ describe("loadProjects companion validation", () => {
 
 	const companionLead = (companion: unknown) => ({
 		agentId: "mufasa-lead",
+		summaryRole: "producer",
 		chatChannel: "ch-growth",
 		match: { labels: ["growth"] },
 		canSpawnRunners: false,
@@ -501,6 +538,7 @@ describe("loadProjects companion validation", () => {
 				leads: [
 					{
 						agentId: "cos-lead",
+						summaryRole: "aggregator",
 						chatChannel: "ch",
 						match: { labels: ["PM"] },
 						canSpawnRunners: false,
@@ -526,6 +564,7 @@ describe("loadProjects external validation", () => {
 	// NOT PM/Triage, to avoid the PM/Triage validator) + department "external".
 	const externalLead = (overrides: Record<string, unknown> = {}) => ({
 		agentId: "anna-interviewer-lead",
+		summaryRole: "exempt",
 		chatChannel: "ch-customer",
 		match: { labels: ["external-interviews"] },
 		department: "external",
@@ -552,6 +591,7 @@ describe("loadProjects external validation", () => {
 		// objects keep their exact shape. Consumers check `=== true`.
 		const lead = loadWith({
 			agentId: "product-lead",
+			summaryRole: "producer",
 			chatChannel: "ch",
 			match: { labels: ["Product"] },
 		})[0]!.leads[0]!;
@@ -561,6 +601,7 @@ describe("loadProjects external validation", () => {
 	it("preserves explicit external: false", () => {
 		const lead = loadWith({
 			agentId: "product-lead",
+			summaryRole: "producer",
 			chatChannel: "ch",
 			match: { labels: ["Product"] },
 			external: false,
@@ -579,6 +620,7 @@ describe("loadProjects external validation", () => {
 		// after normalization an absent field becomes `true`, which must be rejected.
 		const lead = {
 			agentId: "anna-interviewer-lead",
+			summaryRole: "exempt",
 			chatChannel: "ch-customer",
 			match: { labels: ["external-interviews"] },
 			department: "external",
@@ -608,6 +650,7 @@ describe("loadProjects external validation", () => {
 	it("is orthogonal to companion — a companion lead keeps external undefined", () => {
 		const lead = loadWith({
 			agentId: "mufasa-lead",
+			summaryRole: "producer",
 			chatChannel: "ch",
 			match: { labels: ["growth"] },
 			canSpawnRunners: false,
@@ -643,6 +686,7 @@ describe("FLY-163: deprecated field handling", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						forumChannel: "deprecated-id",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
@@ -667,6 +711,7 @@ describe("FLY-163: deprecated field handling", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 						statusTagMap: { running: ["tag-1"] },
@@ -709,6 +754,7 @@ describe("FLY-163: PM/Triage canSpawnRunners validator", () => {
 				leads: [
 					{
 						agentId: "lead-x",
+						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["PM"] },
 						...overrides,
@@ -742,6 +788,7 @@ describe("FLY-163: PM/Triage canSpawnRunners validator", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						chatChannel: "456",
 						match: { labels: ["Product"] },
 					},
@@ -832,11 +879,13 @@ describe("resolveLeadForIssue", () => {
 			leads: [
 				{
 					agentId: "product-lead",
+					summaryRole: "producer",
 					chatChannel: "111-chat",
 					match: { labels: ["Product"] },
 				},
 				{
 					agentId: "eng-lead",
+					summaryRole: "producer",
 					chatChannel: "333-chat",
 					match: { labels: ["Engineering", "Backend"] },
 				},
@@ -849,6 +898,7 @@ describe("resolveLeadForIssue", () => {
 			leads: [
 				{
 					agentId: "marketing-lead",
+					summaryRole: "producer",
 					chatChannel: "222-chat",
 					match: { labels: ["Marketing"] },
 				},
@@ -931,6 +981,7 @@ describe("memoryAllowedUsers validation", () => {
 
 	const validLead = {
 		agentId: "product-lead",
+		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 	};
@@ -1010,6 +1061,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 
 	const baseLead = {
 		agentId: "product-lead",
+		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 		botUserId: "12345678901234567",
@@ -1043,6 +1095,7 @@ describe("botTokenEnv resolution (GEO-252)", () => {
 					{ ...baseLead, botTokenEnv: "TEST_PETER_TOKEN" },
 					{
 						agentId: "eng-lead",
+						summaryRole: "producer",
 						chatChannel: "789",
 						match: { labels: ["Engineering"] },
 						botTokenEnv: "FLY1726_FOREIGN_LEAD_TOKEN",
@@ -1322,6 +1375,7 @@ describe("FLY-83 alert fields", () => {
 	function validLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 		return {
 			agentId: "product-lead",
+			summaryRole: "producer",
 			chatChannel: "222",
 			match: { labels: ["Product"] },
 			...overrides,
@@ -1421,6 +1475,7 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 	function fleetLead(overrides: Partial<LeadConfig> = {}): LeadConfig {
 		return {
 			agentId: "product-lead",
+			summaryRole: "producer",
 			chatChannel: "222",
 			match: { labels: ["Product"] },
 			...overrides,
@@ -1653,6 +1708,7 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 				leads: [
 					{
 						agentId,
+						summaryRole: "producer",
 						chatChannel: "1",
 						match: { labels: ["P"] },
 					},
@@ -1724,6 +1780,7 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						chatChannel: "222",
 						match: { labels: ["Product"] },
 						botUserId: "12345678901234567",
@@ -1798,6 +1855,7 @@ describe("parseAndValidateProjects (FLY-247 inc2a R2#5 — pure validator)", () 
 describe("FLY-371: ProjectEntry.linear binding validation", () => {
 	const validLead = {
 		agentId: "product-lead",
+		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Product"] },
 	};
@@ -1889,18 +1947,39 @@ describe("FLY-371: resolveProjectLinearBinding", () => {
 		{
 			projectName: "flywheel",
 			projectRoot: "/tmp/flywheel",
-			leads: [{ agentId: "eng", chatChannel: "c", match: { labels: ["Eng"] } }],
+			leads: [
+				{
+					agentId: "eng",
+					summaryRole: "producer",
+					chatChannel: "c",
+					match: { labels: ["Eng"] },
+				},
+			],
 			linear: { team: "FLY", project: "Flywheel", label: "Flywheel" },
 		},
 		{
 			projectName: "no-binding",
 			projectRoot: "/tmp/nb",
-			leads: [{ agentId: "x", chatChannel: "c", match: { labels: ["X"] } }],
+			leads: [
+				{
+					agentId: "x",
+					summaryRole: "producer",
+					chatChannel: "c",
+					match: { labels: ["X"] },
+				},
+			],
 		},
 		{
 			projectName: "null-binding",
 			projectRoot: "/tmp/null",
-			leads: [{ agentId: "y", chatChannel: "c", match: { labels: ["Y"] } }],
+			leads: [
+				{
+					agentId: "y",
+					summaryRole: "producer",
+					chatChannel: "c",
+					match: { labels: ["Y"] },
+				},
+			],
 			linear: null,
 		},
 	];
@@ -1997,6 +2076,7 @@ describe("leads[].voice per-agent voice config (FLY-546 A3)", () => {
 
 	const baseLead = {
 		agentId: "eng-lead",
+		summaryRole: "producer",
 		chatChannel: "456",
 		match: { labels: ["Engineering"] },
 	};

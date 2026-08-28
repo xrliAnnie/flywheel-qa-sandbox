@@ -44,6 +44,7 @@ This matches `class Project extends Base` semantics: subclass declarations sit o
 | File | Audience | Purpose |
 |------|----------|---------|
 | [`department-lead-rules.md`](department-lead-rules.md) | Department Leads (non-cos roles) | FLY-127 Action Gate, Multi-Lead Mentions handling, Bridge rejection diagnostic templates; FLY-152 Shared Channel Reply Discipline |
+| [`summary-inflow.md`](summary-inflow.md) | Leads whose canonical identity projection has `FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1` | FLY-2030 summary obligation and shared-command discipline; audience is registry data, never inferred from Lead role |
 | [`cos-lead-rules.md`](cos-lead-rules.md) | Cos-lead role only | FLY-127 Department Routing Discipline (one Lead per backend spawn directive); FLY-152 Shared Channel Reply Discipline |
 | [`founder-only-authority.md`](founder-only-authority.md) | **Every** Lead role (cos AND dept) | FLY-175 Track 1 — merge-to-main and stop-runner are founder-only authorized actions; Lead self-judgment is not consent |
 | `founder-html-delivery.md` | universal (cos + dept) | FLY-203: any HTML artifact the founder asks to see is delivered via `flywheel-comm publish-report` (one message: title + full-page image + link); local file paths are never posted as delivery |

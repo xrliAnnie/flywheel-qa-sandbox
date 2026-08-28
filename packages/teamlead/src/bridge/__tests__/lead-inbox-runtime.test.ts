@@ -48,6 +48,7 @@ const projects: ProjectEntry[] = [
 		leads: [
 			{
 				agentId: "lead-a",
+				summaryRole: "producer",
 				chatChannel: "chat-a",
 				match: { labels: ["Engineering"] },
 			},

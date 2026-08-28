@@ -47,7 +47,9 @@ CANARY_TL="CANARYTLtok_$$"
 make_home() {
   local h; h=$(mktemp -d "/tmp/fly879-test.XXXXXX")
   mkdir -p "$h/proj-fly/.lead/anna-interviewer-lead" \
-           "$h/proj-fly/.lead/product-lead"
+           "$h/proj-fly/.lead/product-lead" \
+           "$h/.flywheel"
+  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: anna-interviewer-lead\n---\nAnna\n' > "$h/proj-fly/.lead/anna-interviewer-lead/agent.md"
   printf -- '---\nname: product-lead\n---\nPeter\n'         > "$h/proj-fly/.lead/product-lead/identity.md"
   echo "$h"
@@ -59,8 +61,8 @@ fixture_projects() {
   cat <<JSON
 [
  {"projectName":"flywheel","projectRoot":"${h}/proj-fly","leads":[
-   {"agentId":"anna-interviewer-lead","chatChannel":"111","alertChannel":"999","match":{"labels":["external-interviews"]},"department":"external","botTokenEnv":"ANNA_BOT_TOKEN","alertBotTokenEnv":"ANNA_BOT_TOKEN","canSpawnRunners":false,"external":${external}},
-   {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","canSpawnRunners":true}]}
+   {"agentId":"anna-interviewer-lead","summaryRole":"exempt","chatChannel":"111","alertChannel":"999","match":{"labels":["external-interviews"]},"department":"external","botTokenEnv":"ANNA_BOT_TOKEN","botUserId":"10000000000000001","alertBotTokenEnv":"ANNA_BOT_TOKEN","canSpawnRunners":false,"external":${external}},
+   {"agentId":"product-lead","summaryRole":"producer","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","botUserId":"10000000000000002","canSpawnRunners":true}]}
 ]
 JSON
 }

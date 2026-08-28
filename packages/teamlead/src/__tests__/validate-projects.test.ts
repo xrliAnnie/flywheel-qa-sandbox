@@ -6,6 +6,7 @@ import {
 
 const validLead = {
 	agentId: "product-lead",
+	summaryRole: "producer",
 	chatChannel: "1",
 	match: { labels: ["Product"] },
 };

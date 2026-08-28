@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2030 Raya 大脑:状态吸收 + 追问 — 设计方案(founder 审阅版)</title>
+<style>
+  :root { --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 80px; }
+  h1 { font-size:26px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:19px; margin:0 0 10px; color:var(--navy); }
+  h3 { font-size:15px; margin:14px 0 6px; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  .meta code, .mono { font-family:"SF Mono", Menlo, monospace; font-size:12.5px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:0 0 18px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); } .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); } .card.gray { border-left-color:var(--dim); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#eef; color:var(--blue); margin-right:6px; vertical-align:middle; }
+  .badge.red { background:#ffe5e3; color:var(--red);} .badge.amber { background:#fff1dc; color:#b36b00;} .badge.green { background:#e3f8e9; color:#1f7a3a;} .badge.purple { background:#f3e6fb; color:var(--purple);} .badge.gray { background:#eee; color:#555;}
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 6px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #eee; border-radius:10px; padding:10px; margin:10px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .note { font-size:13px; color:#444; background:#fafafa; border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .note.warn { background:#fff7e6; } .note.ok { background:#eefbf1; } .note.ask { background:#f4ecff; }
+  .q { font-weight:600; color:var(--purple); }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:var(--navy); color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#e8e8ed; color:var(--text); }
+  .chunk { margin-top:10px; }
+  .status { font-size:12.5px; color:var(--dim); margin-left:6px; }
+  ul { padding-left:20px; margin:6px 0; } li { margin:3px 0; }
+  @media (max-width:640px) { h1 { font-size:22px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Raya 大脑:summary 回流 + 吸收追问(终版设计)</h1>
+  <div class="meta">
+    <span class="badge purple">FLY-2030</span><span class="badge green">设计已过 7 轮工程评审 · v2 终版</span><span class="badge gray">2026-08-28</span><br>
+    Issue:<a href="https://linear.app/geoforge3d/issue/FLY-2030" target="_blank" rel="noopener">FLY-2030</a> · 你打回 v1 后按「Raya 就是一个 Lead」重做 · §8.8 summary 回流已并入本单(你拍的)<br>
+    这一页是给你看的终版设计:每一节下面有意见框,写完到页底一键汇总。<b>汇总是修改意见,不代表通过。</b>
+  </div>
+
+  <!-- ===== 1 一句话 ===== -->
+  <section class="card green" data-section="1 一句话">
+    <h2>1 · 一句话</h2>
+    <p><b>Raya 就是一个正式的 Lead</b>(像 Peter 一样用现有系统,但保有自己的独立仓)。这一单分两个各自可验的里程碑:<b>一、summary 回流跑通</b>——11 个部门 Lead 周期性把「事实+判断」写成 PR 投进她的仓,open = 未读,她 merge = 已阅;<b>二、大脑吸收+追问</b>——她读 summary + 自己看六仓,发现「在做的」和「你说要紧的」对不上时,开口问一句<b>你当场可以否掉</b>的话,拿不准先去 roundtable 问对应 Lead。</p>
+    <p style="font-size:13.5px;color:#555">上一版被你打回的「自建收发层」已全部废弃(没写过代码);这一版新建的东西压到了最少:一条共享命令、几处小接线、一条 Lead 注册。其余全是现成机制。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s1" placeholder="写在这里,页底会自动汇总…"></textarea></div>
+  </section>
+
+  <!-- ===== 2 核心流程 ===== -->
+  <section class="card blue" data-section="2 核心流程">
+    <h2>2 · 核心流程(两个里程碑一张图)</h2>
+    <div class="diagram"><!--SVG:d1--></div>
+    <p style="font-size:13.5px">顺序是定死的:<b>先跑通回流,再上大脑</b>——没有 summary 就没有可吸收的东西。两个里程碑各自可验收,不做成一个大黑盒。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s2"></textarea></div>
+  </section>
+
+  <!-- ===== 3 一次追问的旅程 ===== -->
+  <section class="card purple" data-section="3 一次追问的旅程">
+    <h2>3 · 一次追问的旅程(样例)</h2>
+    <p style="font-size:13.5px">这就是本单要真实发生一次的事:一句<b>你当场可以否掉</b>的追问,依据可查(summary 原文 + 六仓状态 + 你的原话)。图里项目名是示例。</p>
+    <div class="diagram"><!--SVG:d2--></div>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s3"></textarea></div>
+  </section>
+
+  <!-- ===== 4 开口纪律 ===== -->
+  <section class="card amber" data-section="4 开口纪律">
+    <h2>4 · 开口纪律(不变,全是你定过的格子)</h2>
+    <p style="font-size:13.5px">信息不足默认不说话;到点没东西可以跳过;信息够但和你意见不同必须说;形式是「一起想」不是汇报;不排序、不填表、不指挥到 issue 级。</p>
+    <div class="diagram"><!--SVG:d4--></div>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s4"></textarea></div>
+  </section>
+
+  <!-- ===== 5 数据与两个旋钮 ===== -->
+  <section class="card green" data-section="5 数据与两个旋钮">
+    <h2>5 · 数据放哪 · 两个还等你拍的旋钮</h2>
+    <div class="diagram"><!--SVG:d3--></div>
+    <table>
+      <tr><th>旋钮</th><th>选项(都已预先做好,拍哪个切哪个)</th><th>对你的直接影响:每天要 merge 几个「已阅」</th></tr>
+      <tr><td>① summary 频率</td><td>A 定时(如每 6h / 每日) · B 各 Lead 收工时写</td><td>A 每 6h:约 44/天;A 每日:约 11/天;B:跟着真实节奏走,静默项目≈0</td></tr>
+      <tr><td>② summary 粒度</td><td>A 一 Lead 一条 · B 按项目聚合一条 · C 一周期全合一条</td><td>按 6h 折算:A≈44/天 · B≈24/天 · C≈4/天</td></tr>
+    </table>
+    <div class="note">已替你把两件事定好(可否):<b>Mufasa 算写 summary 的人</b>(你拍的 A,共 11 人);若将来选粒度 B,growth 项目的执笔人暂定 Mufasa(Tadashi 定的,<b>临时性的</b>——你真选 B 时会连同粒度一起再给你过目)。</div>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s5"></textarea></div>
+  </section>
+
+  <!-- ===== 6 验收 ===== -->
+  <section class="card blue" data-section="6 验收(怎么算做完)">
+    <h2>6 · 验收(怎么算做完)</h2>
+    <table>
+      <tr><th>里程碑</th><th>验收(全是真实使用,不是测试全绿)</th></tr>
+      <tr><td>一 · 回流</td><td>六个项目<b>各由真实 Lead</b> 产出至少一条 summary PR(不许代笔冒充);Raya 能列出未读;merge 之后不再出现</td></tr>
+      <tr><td>二 · 大脑</td><td>你在 #raya 真实对话;她对一个<b>真实分岔</b>说出那句话,你能当场否掉;三指标(内存/swap/实际 1M 用量)持续在记</td></tr>
+    </table>
+    <div class="note ok">她 merge 自己仓里 summary PR 的那条「已阅」权限:措辞已逐字审定(只限她自己两个仓、只限机器可核的 summary 文件、merge 前对当下版本再核一遍防偷塞),<b>随实现一起生效,不提前</b>。</div>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s6"></textarea></div>
+  </section>
+
+  <!-- ===== 7 取舍与被否 ===== -->
+  <section class="card purple" data-section="7 关键取舍与被否掉的">
+    <h2>7 · 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>选了</th><th>没选(为什么)</th></tr>
+      <tr><td>Raya 骑现有 Lead 系统(cmux 里有她的窗口)</td><td>自建运行时——你打回的 v1,已废弃,零代码沉没</td></tr>
+      <tr><td>独立仓保留(summary、记忆都住她仓里)</td><td>并进 flywheel 仓——她是独立产品,这条你 8-18 就定了</td></tr>
+      <tr><td>一条共享命令给 11 个 Lead 用</td><td>每个 Lead 各写一遍——必然漂移</td></tr>
+      <tr><td>没写 summary = 沉默信号,原样呈现</td><td>装催交器——被催出来的 summary 分不出「有话说」和「被催了」,信号变噪声</td></tr>
+      <tr><td>巡视间隔 = 数据库一行,默认 6h(你 8-18 圈的),改一行下轮生效</td><td>写死 6h 或做成开关——你说要「很容易改」,这个落法不用重启也不留 if</td></tr>
+      <tr><td>判断必须 Lead 亲笔</td><td>机器代写判断——「光有 issue 一二三,他毫无概念」是你的原话</td></tr>
+    </table>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s7"></textarea></div>
+  </section>
+
+  <!-- ===== 8 诚实边界 ===== -->
+  <section class="card red" data-section="8 诚实边界">
+    <h2>8 · 诚实边界(不做什么 · 哪些是过渡态)</h2>
+    <ul>
+      <li>实时知道各仓正在发生什么——不做(你的 PRD 明确不做);一个仓昨晚的事,最快下一次巡视/下一份 summary 才知道</li>
+      <li>Lead 互信名单生效要等各 Lead 的正常重启班车——过渡期她的追问会在 #raya 里标「待转达」,通了自动改走 @</li>
+      <li>三指标里「实际 1M 用量」在新形态下若一时接不上,会<b>如实标「暂缺」</b>,绝不拿语音那边的数字冒充</li>
+      <li>她每轮用最深思考档,回复可能要几分钟;等太久她会自己打断并说「我想太久了」</li>
+      <li>每日可互动 Report、给所有 Lead 开 1M——另单,不在这里</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s8"></textarea></div>
+  </section>
+
+  <!-- ===== 意见汇总 ===== -->
+  <section class="card summary" data-section="意见汇总" id="summary-card" style="border-left-color:#1a365d">
+    <h2>📋 意见汇总(一键复制)</h2>
+    <p style="font-size:13px;color:#555">自动汇集你在每一节写的意见,前面带节名;复制出来的第一行固定是「【页面意见汇总】FLY-2030」。<b>这是修改意见,不是通过信号</b>;没写意见的节不会出现。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button><span class="status" id="copy-status"></span>
+    <div class="comment"><label>总体意见(可选)</label><textarea data-key="s11" placeholder="整体上…"></textarea></div>
+  </section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2030';
+  var MARKER = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2030-comment:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function safeGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function safeSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(el) {
+    var sec = el.closest('section[data-section]');
+    return sec ? sec.getAttribute('data-section') : '未命名';
+  }
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || '').trim();
+      if (!v) return;
+      lines.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return lines;
+  }
+  function chunkText(lines) {
+    var chunks = [];
+    var cur = MARKER + '\n';
+    lines.forEach(function (line) {
+      var add = line + '\n';
+      if ((cur + add).length > LIMIT && cur.length > MARKER.length + 1) {
+        chunks.push(cur.trimEnd());
+        cur = MARKER + '(续)\n' + add;
+      } else {
+        cur += add;
+      }
+    });
+    chunks.push(cur.trimEnd());
+    return chunks;
+  }
+  var chunksEl = document.getElementById('summary-chunks');
+  var statusEl = document.getElementById('copy-status');
+  function render() {
+    var lines = collect();
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    if (!lines.length) {
+      var p = document.createElement('p');
+      p.className = 'status';
+      p.textContent = '(还没有意见)';
+      chunksEl.appendChild(p);
+      return;
+    }
+    var chunks = chunkText(lines);
+    chunks.forEach(function (text, i) {
+      var box = document.createElement('div');
+      box.className = 'chunk';
+      var pre = document.createElement('pre');
+      pre.textContent = text;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn secondary';
+        b.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        b.addEventListener('click', function () { copyText(text, b); });
+        box.appendChild(b);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+  function execCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function setStatus(msg) { statusEl.textContent = msg; setTimeout(function () { statusEl.textContent = ''; }, 2500); }
+  function copyText(text, btn) {
+    var done = function (ok) { setStatus(ok ? '已复制' : '复制失败,请手动选中上面的文字复制'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(execCopy(text)); });
+    } else {
+      done(execCopy(text));
+    }
+  }
+  areas.forEach(function (ta) {
+    ta.value = safeGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      safeSet(ta.getAttribute('data-key'), ta.value);
+      render();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var lines = collect();
+    if (!lines.length) { setStatus('还没有意见'); return; }
+    copyText(chunkText(lines).join('\n\n'), null);
+  });
+  render();
+})();
+</script>
+</body>
+</html>

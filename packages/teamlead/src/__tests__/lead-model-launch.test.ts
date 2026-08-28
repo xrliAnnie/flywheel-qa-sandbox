@@ -14,6 +14,7 @@ function withProjects(lead: Record<string, unknown>, run: () => void): void {
 			leads: [
 				{
 					agentId: "eng-lead",
+					summaryRole: "producer",
 					chatChannel: "1",
 					match: { labels: ["eng"] },
 					...lead,

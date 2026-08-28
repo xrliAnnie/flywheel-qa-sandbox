@@ -320,6 +320,8 @@ fs_generate_fleet_artifact() {
   #    cos-lead; Triage ⇒ explicit canSpawnRunners:false (loader-enforced);
   #    eng lead carries an EXPLICIT department (else resolveLeadDepartment
   #    falls back to labels[0] and doc-flow/dispatch key off the project name).
+  #    FLY-2030 summary roles are explicit and the project-level aggregator is
+  #    data, never inferred from the roster.
   jq -n \
     --arg pname "$FS_PROJECT" \
     --arg proot "$FS_PROJECT_ROOT" \
@@ -341,6 +343,7 @@ fs_generate_fleet_artifact() {
         projectName: $pname,
         projectRoot: $proot,
         generalChannel: $general,
+        summaryAggregatorLeadId: "cos-lead",
         memoryAllowedUsers: [$founder],
         # full ProjectLinearBinding: the runtime only auto-associates the
         # Linear project + appends the scope label when the binding carries
@@ -355,6 +358,7 @@ fs_generate_fleet_artifact() {
             match: { labels: ["Triage"] },
             botTokenEnv: $cosEnv,
             botUserId: $cosBotUserId,
+            summaryRole: "aggregator",
             canSpawnRunners: false
           },
           {
@@ -363,7 +367,8 @@ fs_generate_fleet_artifact() {
             match: { labels: [$plabel] },
             department: $dept,
             botTokenEnv: $engEnv,
-            botUserId: $engBotUserId
+            botUserId: $engBotUserId,
+            summaryRole: "producer"
           }
         ]
       }

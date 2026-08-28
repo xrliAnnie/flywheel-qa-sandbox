@@ -17,6 +17,7 @@ function minimalProject(extra: Record<string, unknown> = {}) {
 		leads: [
 			{
 				agentId: "eng-lead",
+				summaryRole: "producer",
 				chatChannel: "123",
 				match: { labels: ["engineer"] },
 			},

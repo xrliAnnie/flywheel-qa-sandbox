@@ -18,6 +18,7 @@ const projects: ProjectEntry[] = [
 		leads: [
 			{
 				agentId: "claude-infra-bot-lead",
+				summaryRole: "exempt",
 				chatChannel: "alerts-test",
 				alertChannel: "alerts-test",
 				botToken: "test-token",
@@ -25,6 +26,7 @@ const projects: ProjectEntry[] = [
 			},
 			{
 				agentId: "flywheel-eng-lead",
+				summaryRole: "producer",
 				chatChannel: "alerts-test",
 				alertChannel: "alerts-test",
 				botToken: "test-token",

@@ -20,8 +20,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "${SCRIPT_DIR}/lib/qa-room.sh"
 
 # FLY-1189: multi-Lead (single Bridge, ≥2 real test Leads) additive extension.
-# All flags default OFF → byte-identical behavior (guarded by
-# scripts/__tests__/test-deploy-multilead.test.sh A1-A3).
+# The canonical no-extra-lead registry baseline is guarded by
+# scripts/__tests__/test-deploy-multilead.test.sh A1-A3.
 # shellcheck source=lib/qa-multilead.sh
 source "${SCRIPT_DIR}/lib/qa-multilead.sh"
 
@@ -710,6 +710,16 @@ fi
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 mkdir -p "${SLOT_DIR}/discord-state"
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
+# FLY-2030: canonical identity compilation requires the founder-selected
+# summary granularity. QA uses a slot-local selection and summary-exempt Leads,
+# so the 529 harness neither depends on nor mutates the operator's real HOME.
+QA_SUMMARY_CONFIG_HOME="${SLOT_DIR}/identity-home"
+mkdir -p "${QA_SUMMARY_CONFIG_HOME}/.flywheel"
+chmod 700 "$QA_SUMMARY_CONFIG_HOME" "${QA_SUMMARY_CONFIG_HOME}/.flywheel"
+printf '%s\n' \
+  "{\"granularity\":\"per-lead\",\"setBy\":\"test-deploy\",\"setAt\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}" \
+  > "${QA_SUMMARY_CONFIG_HOME}/.flywheel/summary-config.json"
+chmod 600 "${QA_SUMMARY_CONFIG_HOME}/.flywheel/summary-config.json"
 GENERALIZED_READINESS_PENDING=0
 GENERALIZED_CHILD_TMPDIR="${TMPDIR:-/tmp}"
 GENERALIZED_API_TOKEN_PATH=""
@@ -1398,7 +1408,7 @@ qa_slot_start_lead() {
   chmod 600 "$manifest"
   FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_plist \
     "$plist" "$label" "$wrapper" "$manifest" "$HOME" "$state" \
-    "$projects" "$env_file" "$lead_log" || return 1
+    "$projects" "$env_file" "$lead_log" "$QA_SUMMARY_CONFIG_HOME" || return 1
   qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "$manifest" || return 1
   launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
   topology=$(qa_launchd_lead_verify "$label" "$manifest") \
@@ -1735,6 +1745,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
@@ -1762,6 +1773,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
@@ -1798,6 +1810,7 @@ else
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \

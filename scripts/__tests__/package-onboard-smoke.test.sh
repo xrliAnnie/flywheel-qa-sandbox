@@ -152,7 +152,7 @@ env -i HOME="$SMOKE_HOME" PATH="$PATH" \
   TEAMLEAD_DEFAULT_LEAD_AGENT="smoke-lead" SMOKE_BOT_TOKEN="stub-bot-token" \
   DISCORD_OWNER_USER_ID="98765432109876543" \
   LINEAR_API_KEY="stub" \
-  FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":false}]}]" \
+  FLYWHEEL_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$SMOKE_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"summaryRole\":\"exempt\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":false}]}]" \
   node "$PKG_ROOT/dist/run-bridge.js" > "$SANDBOX/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 listen=0
@@ -171,8 +171,10 @@ kill "$BRIDGE_PID" 2>/dev/null; wait "$BRIDGE_PID" 2>/dev/null; BRIDGE_PID=""
 # ── ④d Lead launcher dry-run through the mirror path ────────────────────────
 LEAD_HOME="$SANDBOX/lead-home"
 mkdir -p "$LEAD_HOME/proj/.lead/smoke-lead"
+mkdir -p "$LEAD_HOME/.flywheel"
 printf -- '---\nname: smoke-lead\n---\nSmoke\n' > "$LEAD_HOME/proj/.lead/smoke-lead/identity.md"
-LEAD_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$LEAD_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":true}]}]"
+printf '%s\n' '{"granularity":"per-lead","setBy":"packaged-smoke","setAt":"2026-08-28T00:00:00.000Z"}' > "$LEAD_HOME/.flywheel/summary-config.json"
+LEAD_PROJECTS="[{\"projectName\":\"smoke\",\"projectRoot\":\"$LEAD_HOME/proj\",\"leads\":[{\"agentId\":\"smoke-lead\",\"summaryRole\":\"exempt\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"x\"]},\"botTokenEnv\":\"SMOKE_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":true}]}]"
 out="$(env -i HOME="$LEAD_HOME" PATH="$PATH" \
   FLYWHEEL_LEAD_DRY_RUN=1 FLYWHEEL_PROJECTS="$LEAD_PROJECTS" \
   SMOKE_BOT_TOKEN="stub" TEAMLEAD_API_TOKEN="stub" \
@@ -182,6 +184,28 @@ if grep -q "LAUNCH_PLAN_BEGIN" <<<"$out" && grep -q "LAUNCH_PLAN_END" <<<"$out" 
   pass "④d Lead launcher dry-run emits its launch plan from the installed tree"
 else
   fail "④d Lead launcher dry-run broken: $(tail -12 <<<"$out")"
+fi
+
+# ── ④e internal summary transport stays dormant for packaged customers ─────
+# The release allowlist deliberately registers Raya's repository names because
+# flywheel-comm is shipped as one compiled package. Customer setup assigns this
+# fixture an explicit exempt role: even with otherwise plausible selectors, the
+# command must fail before consulting `gh`.
+SUMMARY_BIN="$SANDBOX/summary-bin"; mkdir -p "$SUMMARY_BIN"
+printf '#!/bin/bash\nprintf "called\\n" >> "$SUMMARY_GH_LOG"\nexit 97\n' > "$SUMMARY_BIN/gh"
+chmod +x "$SUMMARY_BIN/gh"
+printf '# packaged smoke\n' > "$SANDBOX/summary.md"
+summary_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
+  SUMMARY_GH_LOG="$SANDBOX/summary-gh.log" \
+  FLYWHEEL_PROJECT_NAME=smoke FLYWHEEL_LEAD_ID=smoke-lead \
+  FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=0 \
+  node "$PKG_ROOT/node_modules/flywheel-comm/dist/index.js" summary \
+    --file "$SANDBOX/summary.md" --project smoke --period 2026-W35 2>&1)"
+if grep -q "summary_duty_required" <<<"$summary_out" \
+   && [ ! -e "$SANDBOX/summary-gh.log" ]; then
+  pass "④e packaged exempt Lead cannot reach internal Raya summary transport"
+else
+  fail "④e packaged summary boundary failed: $summary_out"
 fi
 
 echo ""

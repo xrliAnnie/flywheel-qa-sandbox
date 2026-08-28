@@ -12,6 +12,7 @@ import { parseAndValidateProjects } from "../ProjectConfig.js";
 function lead(over: Record<string, unknown> = {}) {
 	return {
 		agentId: "flywheel-eng-lead",
+		summaryRole: "producer",
 		chatChannel: "chan-1",
 		match: { labels: ["Flywheel"] },
 		...over,

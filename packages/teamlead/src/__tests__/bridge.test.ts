@@ -473,6 +473,7 @@ describe("Bridge scaffold", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
@@ -506,6 +507,7 @@ describe("Bridge scaffold", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },
@@ -542,6 +544,7 @@ describe("Bridge scaffold", () => {
 					leads: [
 						{
 							agentId: "product-lead",
+							summaryRole: "producer",
 							forumChannel: "test-channel",
 							chatChannel: "test-chat",
 							match: { labels: ["Product"] },
@@ -823,6 +826,7 @@ describe("Bridge scaffold", () => {
 				leads: [
 					{
 						agentId: "product-lead",
+						summaryRole: "producer",
 						forumChannel: "test-channel",
 						chatChannel: "test-chat",
 						match: { labels: ["Product"] },

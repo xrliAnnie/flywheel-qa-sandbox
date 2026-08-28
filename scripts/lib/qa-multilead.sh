@@ -5,10 +5,10 @@
 # as scripts/lib/qa-room.sh: no IO of its own beyond the paths passed in, so
 # every function is unit-testable with temp fixtures.
 #
-# BYTE-COMPAT CONTRACT: with no multi-lead flags set, qa_multilead_build_projects
-# and qa_multilead_config_yaml must produce BYTE-IDENTICAL output to the
-# pre-FLY-1189 inline code they replace. Guarded by
-# scripts/__tests__/test-deploy-multilead.test.sh (A1-A3).
+# CANONICAL QA CONTRACT: every synthetic Lead must satisfy the current closed
+# registry schema. QA Leads are summary-exempt, so a 529 room can exercise its
+# target behavior without creating Raya summary PRs. Guarded by
+# scripts/__tests__/test-deploy-multilead.test.sh (A1-A3 + FLY-2030 B1).
 
 # ── FLYWHEEL_PROJECTS builder ──────────────────────────────────────────────
 # Args: projectName projectRoot projectRepo agentId chatChannel botTokenEnv
@@ -42,6 +42,7 @@ qa_multilead_build_projects() {
       leads: ([
         ({
           agentId: $agentId,
+          summaryRole: "exempt",
           chatChannel: $chatChannel,
           botTokenEnv: $botTokenEnv,
           match: { labels: $mainLabels }
@@ -52,6 +53,7 @@ qa_multilead_build_projects() {
       ] + ($extraLeads | map(. as $lead |
         ({
           agentId: $lead.agentId,
+          summaryRole: "exempt",
           chatChannel: $lead.chatChannel,
           botTokenEnv: $lead.tokenEnvVar,
           match: { labels: $lead.labels }
