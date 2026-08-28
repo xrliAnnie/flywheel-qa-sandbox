@@ -41,6 +41,7 @@ export function createLeadIdentityFixture(input: {
 	return {
 		identityDigest: identity.identityDigest,
 		env: {
+			HOME: input.root,
 			FLYWHEEL_PROJECTS_FILE: projectsPath,
 			FLYWHEEL_STATE_DIR: join(input.root, ".flywheel"),
 			FLYWHEEL_LEAD_LEASE_MODE: "off",

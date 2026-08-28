@@ -72,6 +72,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 		mkdirSync(projectDir, { recursive: true });
 		commDbPath = join(projectDir, "comm.db");
 		env = {
+			HOME: dir,
 			FLYWHEEL_STATE_DIR: stateRoot,
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "lead-lease.db"),
