@@ -2,22 +2,17 @@ flowchart TB
   classDef repo fill:#e8f0fe,stroke:#007aff,stroke-width:2px,color:#1d1d1f
   classDef file fill:#f5f5f7,stroke:#86868b,stroke-width:1.2px,color:#1d1d1f
   classDef mem fill:#e9f9ef,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef knob fill:#f3e8fd,stroke:#af52de,stroke-width:1.5px,color:#1d1d1f
 
-  subgraph TH ["记忆(两层,她拍过的形态)"]
-    direction TB
-    THREAD["对话历史 = Codex 会话自己的记录<br/>重启后 resume 接上;满了自动压缩"]:::repo
-    MEMF["MEMORY.md = 阶段性提炼<br/>她交代要执行的事 + 沉淀的事实<br/>Raya 自己改、自己 commit"]:::mem
+  subgraph RY ["Raya 自己的两个仓"]
+    S1["summaries/&lt;项目&gt;/&lt;日期&gt;--&lt;Lead&gt;.md<br/>事实 + 判断(判断是必填)<br/>open PR = 未读 · merge = 已阅"]:::repo
+    MEM["raya-memory/MEMORY.md<br/>阶段性提炼,她自己 commit"]:::mem
   end
-
-  subgraph ST ["运行状态(Raya 写不到)"]
-    S1["brain-state.json<br/>会话游标 · 最后读到哪条消息"]:::file
-    S2["cadence.json<br/>巡视间隔(运行期可改)"]:::file
-    S3["asks.jsonl<br/>问了哪个 Lead · 回了没有"]:::file
-    S4["ticks/时间.json<br/>每次巡视的六仓快照(证据)"]:::file
+  subgraph CFG ["两个可调旋钮位"]
+    K1["summary 粒度/频率<br/>= 你还没拍的两格<br/>(两套都预先测好,拍哪个切哪个)"]:::knob
+    K2["巡视间隔<br/>= 数据库里一行,默认 6h<br/>改一行下轮生效,不用重启"]:::knob
   end
-
-  subgraph ME ["度量(metrics 目录)"]
-    M1["resource-usage.jsonl<br/>指标① 内存 ② swap(已在跑)"]:::file
-    M2["context-usage.jsonl<br/>指标③ 实际用到的窗口"]:::file
-    M3["interruptions.jsonl<br/>反指标:打断了几次 · 哪几次她觉得值"]:::file
+  subgraph ME ["自动记录"]
+    M1F["三指标:内存 · swap · 实际 1M 用量"]:::file
+    M2F["merge 历史 = 她读过什么的天然审计"]:::file
   end

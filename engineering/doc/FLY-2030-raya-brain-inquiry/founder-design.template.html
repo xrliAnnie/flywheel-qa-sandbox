@@ -41,135 +41,96 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Raya 大脑:状态吸收 + 追问</h1>
+  <h1>Raya 大脑:summary 回流 + 吸收追问(终版设计)</h1>
   <div class="meta">
-    <span class="badge purple">FLY-2030</span><span class="badge green">设计方案(尚未实现)</span><span class="badge gray">2026-08-27</span><br>
-    Issue:<a href="https://linear.app/geoforge3d/issue/FLY-2030" target="_blank" rel="noopener">FLY-2030</a> · 依据 FLY-1846 PRD v1.7 §4–§10 · 代码落 raya 仓(FLY-2029 + FLY-2074 已合入的那个仓)<br>
-    这一页是给你审的:每一节下面都有意见框,写完到页底一键汇总复制。<b>汇总只是修改意见,不代表通过。</b>
+    <span class="badge purple">FLY-2030</span><span class="badge green">设计已过 7 轮工程评审 · v2 终版</span><span class="badge gray">2026-08-28</span><br>
+    Issue:<a href="https://linear.app/geoforge3d/issue/FLY-2030" target="_blank" rel="noopener">FLY-2030</a> · 你打回 v1 后按「Raya 就是一个 Lead」重做 · §8.8 summary 回流已并入本单(你拍的)<br>
+    这一页是给你看的终版设计:每一节下面有意见框,写完到页底一键汇总。<b>汇总是修改意见,不代表通过。</b>
   </div>
 
   <!-- ===== 1 一句话 ===== -->
   <section class="card green" data-section="1 一句话">
     <h2>1 · 一句话</h2>
-    <p>给已经常驻的 Raya 装上脑子:<b>你在 <span class="mono">#raya</span> 说话,她真的回</b>;她每隔几小时自己看一遍六个项目「各自静了多久」,对照你说过什么要紧,<b>对不上时开口问一句你当场可以否掉的话</b>;拿不准就自己去问对应 Lead,不用你当中间人。</p>
-    <p style="font-size:13.5px;color:#555">首要验收是你 2026-08-27 拍的:<b>「验收以 founder 真实使用为准,不以 unit test 为准。」</b>所以这一单交付的判据是你真的在 #raya 用起来,而不是测试全绿。</p>
+    <p><b>Raya 就是一个正式的 Lead</b>(像 Peter 一样用现有系统,但保有自己的独立仓)。这一单分两个各自可验的里程碑:<b>一、summary 回流跑通</b>——11 个部门 Lead 周期性把「事实+判断」写成 PR 投进她的仓,open = 未读,她 merge = 已阅;<b>二、大脑吸收+追问</b>——她读 summary + 自己看六仓,发现「在做的」和「你说要紧的」对不上时,开口问一句<b>你当场可以否掉</b>的话,拿不准先去 roundtable 问对应 Lead。</p>
+    <p style="font-size:13.5px;color:#555">上一版被你打回的「自建收发层」已全部废弃(没写过代码);这一版新建的东西压到了最少:一条共享命令、几处小接线、一条 Lead 注册。其余全是现成机制。</p>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s1" placeholder="写在这里,页底会自动汇总…"></textarea></div>
   </section>
 
-  <!-- ===== 2 交付后你会看到什么 ===== -->
-  <section class="card blue" data-section="2 交付后你会看到什么">
-    <h2>2 · 交付后你会看到什么(按出现顺序)</h2>
-    <table>
-      <tr><th>场景</th><th>她的行为</th></tr>
-      <tr><td>你在 #raya 打字</td><td>出现「正在输入…」;稍等(她用最深的思考档,可能要几分钟)后真实回复;长回复自动分段。你离开后再回来接着聊,她记得上文</td></tr>
-      <tr><td>每 6 小时(可改)</td><td>她自己看一遍六仓快照。没什么可说 → 只留一句「我看了,没有」(这句可以关);有分岔 → 问一句你当场可否掉的话,并说明依据(你哪天说过什么 + 哪个仓静了多久)</td></tr>
-      <tr><td>她拿不准时</td><td>去 #leads-roundtable(所有 Lead 和你都在的协调频道)@对应 Lead 追问;你看得见全过程;拿到答案后带结论回 #raya;问不到就如实说「这里没问清楚」,不猜。互信配置生效前的过渡期:她会在 #raya 说「我想问 X(通路未通,待转达)」,配置一生效自动改走 @(Tadashi 定的降级规则)</td></tr>
-      <tr><td>你想让她现在看一眼</td><td>在 #raya 直接说,或跑一条命令 <span class="mono">raya tick now</span></td></tr>
-      <tr><td>你觉得她这次开口值/不值</td><td>在她那条消息上点 👍 或 👎,自动进账本;不用回话、不用填表</td></tr>
-      <tr><td>机器重启 / 进程重启</td><td>正常情况接上原对话;万一接不上,她会说一句「上下文重置了,长期记忆还在」——不装记得</td></tr>
-    </table>
+  <!-- ===== 2 核心流程 ===== -->
+  <section class="card blue" data-section="2 核心流程">
+    <h2>2 · 核心流程(两个里程碑一张图)</h2>
+    <div class="diagram"><!--SVG:d1--></div>
+    <p style="font-size:13.5px">顺序是定死的:<b>先跑通回流,再上大脑</b>——没有 summary 就没有可吸收的东西。两个里程碑各自可验收,不做成一个大黑盒。</p>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s2"></textarea></div>
   </section>
 
-  <!-- ===== 3 核心流程 ===== -->
-  <section class="card blue" data-section="3 核心流程">
-    <h2>3 · 核心流程</h2>
-    <p style="font-size:13.5px">脑子 = 一条持久的 <b>Codex 会话</b>(她的工作记忆:你们聊过的话都在里面,用的是你定的 gpt-5.6-sol、最深思考档、1M 上下文)。brain 常驻进程只做「收发与记账」,<b>判断全部在会话里</b>——不加任何排序规则、不建任何表格。</p>
-    <div class="diagram"><!--SVG:d1--></div>
+  <!-- ===== 3 一次追问的旅程 ===== -->
+  <section class="card purple" data-section="3 一次追问的旅程">
+    <h2>3 · 一次追问的旅程(样例)</h2>
+    <p style="font-size:13.5px">这就是本单要真实发生一次的事:一句<b>你当场可以否掉</b>的追问,依据可查(summary 原文 + 六仓状态 + 你的原话)。图里项目名是示例。</p>
+    <div class="diagram"><!--SVG:d2--></div>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s3"></textarea></div>
   </section>
 
-  <!-- ===== 4 一次追问的旅程 ===== -->
-  <section class="card purple" data-section="4 一次追问的旅程">
-    <h2>4 · 一次追问的旅程(样例)</h2>
-    <p style="font-size:13.5px">这就是本单验收要真实发生一次的事:一句<b>你当场可以否掉</b>的追问,且它的依据可以查(引用你的原话 + 当时的六仓快照)。图里的项目名只是示例。</p>
-    <div class="diagram"><!--SVG:d2--></div>
+  <!-- ===== 4 开口纪律 ===== -->
+  <section class="card amber" data-section="4 开口纪律">
+    <h2>4 · 开口纪律(不变,全是你定过的格子)</h2>
+    <p style="font-size:13.5px">信息不足默认不说话;到点没东西可以跳过;信息够但和你意见不同必须说;形式是「一起想」不是汇报;不排序、不填表、不指挥到 issue 级。</p>
+    <div class="diagram"><!--SVG:d4--></div>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s4"></textarea></div>
   </section>
 
-  <!-- ===== 5 开口纪律 ===== -->
-  <section class="card amber" data-section="5 开口纪律">
-    <h2>5 · 开口纪律(什么时候说、什么时候闭嘴)</h2>
-    <p style="font-size:13.5px">全部来自 PRD 里你定过的格子:信息不足默认不说话(§3);到点没东西可以跳过(§6.3);信息够但和你意见不同必须说(§8.1);形式是「一起想」不是汇报(§6.4)。</p>
-    <div class="diagram"><!--SVG:d4--></div>
-    <div class="note">「我看了,没有」这句回执是 HL 的建议(把「真没事」和「她没看」分开),你没表态,按 PRD 记的「保留」默认打开——<b>一个开关可关</b>,你说一个字就关。</div>
+  <!-- ===== 5 数据与两个旋钮 ===== -->
+  <section class="card green" data-section="5 数据与两个旋钮">
+    <h2>5 · 数据放哪 · 两个还等你拍的旋钮</h2>
+    <div class="diagram"><!--SVG:d3--></div>
+    <table>
+      <tr><th>旋钮</th><th>选项(都已预先做好,拍哪个切哪个)</th><th>对你的直接影响:每天要 merge 几个「已阅」</th></tr>
+      <tr><td>① summary 频率</td><td>A 定时(如每 6h / 每日) · B 各 Lead 收工时写</td><td>A 每 6h:约 44/天;A 每日:约 11/天;B:跟着真实节奏走,静默项目≈0</td></tr>
+      <tr><td>② summary 粒度</td><td>A 一 Lead 一条 · B 按项目聚合一条 · C 一周期全合一条</td><td>按 6h 折算:A≈44/天 · B≈24/天 · C≈4/天</td></tr>
+    </table>
+    <div class="note">已替你把两件事定好(可否):<b>Mufasa 算写 summary 的人</b>(你拍的 A,共 11 人);若将来选粒度 B,growth 项目的执笔人暂定 Mufasa(Tadashi 定的,<b>临时性的</b>——你真选 B 时会连同粒度一起再给你过目)。</div>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s5"></textarea></div>
   </section>
 
-  <!-- ===== 6 数据与记忆 ===== -->
-  <section class="card green" data-section="6 数据与记忆">
-    <h2>6 · 数据与记忆(存什么、不存什么)</h2>
-    <p style="font-size:13.5px">按你 8-18 划的界:<b>不全量存对话</b>。对话历史留在 Codex 会话自己的记录里(相当于日志,满了自动压缩);值得留的东西她阶段性提炼进自己记忆仓的 <span class="mono">MEMORY.md</span>(你交代要执行的事 + 沉淀的事实),自己 commit,带日期出处。</p>
-    <div class="diagram"><!--SVG:d3--></div>
+  <!-- ===== 6 验收 ===== -->
+  <section class="card blue" data-section="6 验收(怎么算做完)">
+    <h2>6 · 验收(怎么算做完)</h2>
+    <table>
+      <tr><th>里程碑</th><th>验收(全是真实使用,不是测试全绿)</th></tr>
+      <tr><td>一 · 回流</td><td>六个项目<b>各由真实 Lead</b> 产出至少一条 summary PR(不许代笔冒充);Raya 能列出未读;merge 之后不再出现</td></tr>
+      <tr><td>二 · 大脑</td><td>你在 #raya 真实对话;她对一个<b>真实分岔</b>说出那句话,你能当场否掉;三指标(内存/swap/实际 1M 用量)持续在记</td></tr>
+    </table>
+    <div class="note ok">她 merge 自己仓里 summary PR 的那条「已阅」权限:措辞已逐字审定(只限她自己两个仓、只限机器可核的 summary 文件、merge 前对当下版本再核一遍防偷塞),<b>随实现一起生效,不提前</b>。</div>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s6"></textarea></div>
   </section>
 
-  <!-- ===== 7 三指标与账本 ===== -->
-  <section class="card blue" data-section="7 三指标与账本">
-    <h2>7 · 三指标与账本(验收怎么查)</h2>
+  <!-- ===== 7 取舍与被否 ===== -->
+  <section class="card purple" data-section="7 关键取舍与被否掉的">
+    <h2>7 · 关键取舍与被否掉的方案</h2>
     <table>
-      <tr><th>要记的</th><th>现状</th><th>本单之后</th></tr>
-      <tr><td>① 进程内存 ② swap 变化</td><td>已在跑(每分钟一条)</td><td>不变;新脑子进程自动算进同一棵进程树</td></tr>
-      <tr><td>③ 实际用到的 1M 窗口峰值</td><td>几乎没有数据(只有语音侧几条)</td><td>每轮对话/巡视都会写真实 token 数 → <span class="mono">metrics summary</span> 直接可查</td></tr>
-      <tr><td>反指标:打断你几次 · 其中几次你觉得值</td><td>没有</td><td>每次主动开口记一行(带理由和证据指针);你的 👍/👎 追加进账;<b>只记录,不设目标数</b></td></tr>
+      <tr><th>选了</th><th>没选(为什么)</th></tr>
+      <tr><td>Raya 骑现有 Lead 系统(cmux 里有她的窗口)</td><td>自建运行时——你打回的 v1,已废弃,零代码沉没</td></tr>
+      <tr><td>独立仓保留(summary、记忆都住她仓里)</td><td>并进 flywheel 仓——她是独立产品,这条你 8-18 就定了</td></tr>
+      <tr><td>一条共享命令给 11 个 Lead 用</td><td>每个 Lead 各写一遍——必然漂移</td></tr>
+      <tr><td>没写 summary = 沉默信号,原样呈现</td><td>装催交器——被催出来的 summary 分不出「有话说」和「被催了」,信号变噪声</td></tr>
+      <tr><td>巡视间隔 = 数据库一行,默认 6h(你 8-18 圈的),改一行下轮生效</td><td>写死 6h 或做成开关——你说要「很容易改」,这个落法不用重启也不留 if</td></tr>
+      <tr><td>判断必须 Lead 亲笔</td><td>机器代写判断——「光有 issue 一二三,他毫无概念」是你的原话</td></tr>
     </table>
-    <div class="note">「值不值」的分母靠你打 👍/👎 才会有数——你不打,账上就只有次数没有比例,这是如实的边界。</div>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s7"></textarea></div>
   </section>
 
-  <!-- ===== 8 关键取舍 ===== -->
-  <section class="card purple" data-section="8 关键取舍与被否的方案">
-    <h2>8 · 关键取舍与被否掉的方案</h2>
-    <table>
-      <tr><th>选了</th><th>没选(为什么)</th></tr>
-      <tr><td>一条持久 Codex 会话,重启后接上</td><td>每条消息开个一次性进程——没有对话历史,违背「从对话推断重点」</td></tr>
-      <tr><td>她的输出走固定结构(说什么/问谁/理由),坏了会<b>响亮</b>报错</td><td>在文字里埋暗号让程序抓——暗号打歪会「说了去问却没问」,坏得无声</td></tr>
-      <tr><td>brain 生成可复现的六仓快照当证据</td><td>全靠她每次自己跑命令——证据不可复现,账本「理由可溯」落空</td></tr>
-      <tr><td>追问走 #leads-roundtable(你看得见)</td><td>走内部信箱——你看不见,而且依赖 flywheel 源码,违背「独立产品」判据(§8.5)</td></tr>
-      <tr><td>👍/👎 当反馈</td><td>问你「这次值吗」或让你填表——那是你已经否掉的形态</td></tr>
-      <tr><td>巡视时才看仓库状态</td><td>实时盯所有仓——PRD 明确不做「实时知道所有事」,也会多一堆部件</td></tr>
-      <tr><td>她能改的文件夹 = <b>她自己的两个仓</b>(Tadashi 裁定:她的动作面是跟 Lead 说话,不是直接改你的项目代码)</td><td>连你六个项目仓也全部可写——设计评审(Codex)主张这才是 §8.4 的「第一批全给」,认为「先只给自己的仓」是你否过两次的「先不给」句式。<b>两个读法都有 PRD 依据,这格你一个字就能翻</b>(翻 = 改一个部署配置,不改代码):写「给全」= 六仓可写,不表态 = 按 Tadashi 的维持</td></tr>
-      <tr><td>不用 Codex 自带的「goal 字段」</td><td>存一个「当前目标」字段——会长成填表系统,你在 §10.4 否过</td></tr>
-    </table>
-    <div class="note ask">两个你可能想否的默认:①「我看了,没有」默认开(每 6 小时最多一行);②<b>改巡视间隔是一条命令</b>(<span class="mono">raya cadence set 12</span>),暂时不是「跟她说一句就改」——因为改配置的通道刻意不在她自己手里。都能改,你说话就行。</div>
-    <div class="comment"><label>这一节的意见</label><textarea data-key="s8"></textarea></div>
-  </section>
-
-  <!-- ===== 9 需要配合的事 ===== -->
-  <section class="card amber" data-section="9 需要配合的三件小事">
-    <h2>9 · 需要配合的三件小事(实现前)</h2>
-    <table>
-      <tr><th>#</th><th>事</th><th>谁</th></tr>
-      <tr><td>1</td><td>Raya bot 重新授权两项 Discord 权限:<b>读历史消息</b>(重启后补读你说过的话)、<b>在讨论串里发言</b>(追问 Lead 用);并让她能看到 #leads-roundtable</td><td>你(一个授权链接,Tadashi 会发你)</td></tr>
-      <tr><td>2</td><td>把 Raya 登记进 Lead 互信名单(否则 Lead 会自动忽略陌生 bot 的 @)。生效要等各 Lead 的正常重启班车——期间 Raya 的追问自动走「#raya 待转达」降级,不影响其他功能上线</td><td>Tadashi(flywheel 侧一次性配置)</td></tr>
-      <tr><td>3</td><td>merge 后从稳定目录重装并重启 brain(FLY-2074 同款收尾清单),并更新运行配置:注册表路径、roundtable 频道、她的可写范围扩到六个项目仓</td><td>Tadashi</td></tr>
-    </table>
-    <div class="comment"><label>这一节的意见</label><textarea data-key="s9"></textarea></div>
-  </section>
-
-  <!-- ===== 10 诚实边界 ===== -->
-  <section class="card red" data-section="10 诚实边界">
-    <h2>10 · 诚实边界(这单不做什么 · 哪些还没证)</h2>
-    <h3>不做(各有归属,不是忘了)</h3>
+  <!-- ===== 8 诚实边界 ===== -->
+  <section class="card red" data-section="8 诚实边界">
+    <h2>8 · 诚实边界(不做什么 · 哪些是过渡态)</h2>
     <ul>
-      <li>实时知道各仓正在发生什么——PRD 明确不做;一个仓昨晚的事,她最快下一次巡视才知道</li>
-      <li>Lead 定期把 summary 以 PR 写进她仓、「merge = 已阅」那套机制——另单</li>
-      <li>每日可互动 Report——另单</li>
-      <li>看外部数据(自媒体/产品数据)定方向——goal 阶段二,本单只留了接口位</li>
-      <li>语音侧任何行为改动</li>
-      <li>她能说「X 静了很久」,<b>说不了「X 里面现在怎么样」</b>——静着的仓要等真的重启才有内容可读</li>
+      <li>实时知道各仓正在发生什么——不做(你的 PRD 明确不做);一个仓昨晚的事,最快下一次巡视/下一份 summary 才知道</li>
+      <li>Lead 互信名单生效要等各 Lead 的正常重启班车——过渡期她的追问会在 #raya 里标「待转达」,通了自动改走 @</li>
+      <li>三指标里「实际 1M 用量」在新形态下若一时接不上,会<b>如实标「暂缺」</b>,绝不拿语音那边的数字冒充</li>
+      <li>她每轮用最深思考档,回复可能要几分钟;等太久她会自己打断并说「我想太久了」</li>
+      <li>每日可互动 Report、给所有 Lead 开 1M——另单,不在这里</li>
     </ul>
-    <h3>五件还没证的事(实现前先用小探针证;两件有退路,两件证不过就停)</h3>
-    <table>
-      <tr><th>要证什么</th><th>证不过怎么办</th></tr>
-      <tr><td>重启后能接上原会话(语音那条已证明<b>不能</b>,文字这条机制不同,但没实测)</td><td>退路:每次重启新会话 + 明说「记得:否」,长期记忆只靠 MEMORY.md</td></tr>
-      <tr><td>固定结构输出在 gpt-5.6-sol 上生效,且不把回复变生硬</td><td><b>硬门</b>:证不过就先停下修方案,不边写边即兴</td></tr>
-      <tr><td>她的沙箱里能读六个项目仓</td><td><b>硬门</b>:读不了 = 状态吸收的主干断了,停下修环境,不降级</td></tr>
-      <tr><td>她能真的开出一个 sub-agent(你 8-18 拍过「要给」)</td><td>证不过就停下交 Tadashi 裁(继续但如实披露,还是先修),不静默继续、不写成「已给」</td></tr>
-      <tr><td>Lead 真的会回她的 @(互信名单配好后)</td><td>互信生效前走「#raya 待转达」降级(Tadashi 定的规则);生效后这条真实回路仍必须走通一次</td></tr>
-    </table>
-    <div class="note warn">另一条如实写:她每轮都用最深思考档,回复可能要几分钟——「正在输入…」会一直亮着;超过半小时会自己打断并说「我想太久了」。快不快,等你真用一周再调,不预设。</div>
-    <div class="comment"><label>这一节的意见</label><textarea data-key="s10a"></textarea></div>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="s8"></textarea></div>
   </section>
 
   <!-- ===== 意见汇总 ===== -->

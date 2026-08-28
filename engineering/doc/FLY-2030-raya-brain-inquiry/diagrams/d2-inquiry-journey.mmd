@@ -1,17 +1,12 @@
 sequenceDiagram
   autonumber
   participant A as Annie(#35;raya)
-  participant B as brain(收发)
-  participant C as Raya 的脑子(Codex 会话)
+  participant R as Raya(Lead 形态)
   participant T as Tadashi(roundtable)
-  Note over B: 到点巡视,brain 把六仓快照交给 Raya
-  B->>C: 快照:tidal-echo 已静 54 天,flywheel 每天在动
-  C->>C: 对照她说过的话:「tidal-echo 这季度要紧」
-  C-->>B: 想先问 Lead 确认一下
-  B->>T: @Tadashi tidal-echo 那边是卡住了吗?
-  T-->>B: 回复(在自动开的讨论串里)
-  B->>C: 把 Lead 的回复交给 Raya
-  C-->>B: 结论(她当场可否掉的一句话)
-  B->>A: 「你说过 tidal-echo 这季度要紧,它 7/5 之后没动过,这六周都在 flywheel。是它不重要了,还是卡住了?」
-  A->>B: 当场可否掉:「现在就该全力 flywheel」
-  B->>B: 记账:这次开口 + 她的回应(值/不值)
+  Note over R: 到点巡视:读 summaries 未读队列 + 六仓 git 状态
+  R->>R: summary 说 tidal-echo 六周没动,而她说过「这季度要紧」
+  R->>T: @Tadashi tidal-echo 那边是卡住了吗?
+  T-->>R: 回复(在自动开的讨论串里,她全程可见)
+  R->>A: 「你说过 tidal-echo 这季度要紧,它 7/5 之后没动过,这六周都在 flywheel。是它不重要了,还是卡住了?」
+  A->>R: 当场可否掉:「现在就该全力 flywheel」
+  R->>R: 记下她的判断、merge 已读的 summary(已阅回执)
