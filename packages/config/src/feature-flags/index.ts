@@ -34,6 +34,7 @@ export type {
 	FlagScanClaimed,
 	FlagScanKeepUnbound,
 	FlagScanNoClock,
+	FlagScanScopeState,
 	FlagScanState,
 	ProposedFlagScan,
 	ResolvedFlagKeepBinding,

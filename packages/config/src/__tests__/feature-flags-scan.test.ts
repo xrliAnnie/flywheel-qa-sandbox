@@ -6,6 +6,7 @@ import {
 	computeFlagScan,
 	FLAG_SCAN_INTERVAL_MS,
 	type FlagKeepAnchor,
+	type FlagScanScopeState,
 	type FlagScanState,
 } from "../feature-flags/scan.js";
 
@@ -84,6 +85,7 @@ function scan(input: {
 	specs: FeatureFlagSpec[];
 	views?: FlagView[];
 	prevState?: FlagScanState[];
+	prevScopeState?: FlagScanScopeState[];
 	anchors?: FlagKeepAnchor[];
 	keepBindings?: Map<
 		string,
@@ -99,6 +101,7 @@ function scan(input: {
 		})),
 		expectedProjectNames: input.expectedProjectNames ?? [],
 		prevState: input.prevState ?? [],
+		prevScopeState: input.prevScopeState ?? [],
 		anchors: input.anchors ?? [],
 		keepBindings: input.keepBindings ?? new Map(),
 		now: input.now ?? 10 * DAY,
@@ -204,11 +207,137 @@ describe("computeFlagScan", () => {
 				],
 				expectedProjectNames: [],
 				prevState: [],
+				prevScopeState: [],
 				anchors: [],
 				keepBindings: new Map(),
 				now: 0,
 			}),
 		).toThrow(/duplicate/i);
+	});
+
+	it("tracks a bridge-global flag under the star scope", () => {
+		const global = flagSpec("global", { default: true });
+		const result = scan({ specs: [global], now: DAY });
+		expect(result.nextScopeState).toEqual([
+			{
+				flagName: "global",
+				scope: "*",
+				canonical: '{"k":"bool","v":true}',
+				streakStartedAt: DAY,
+				streakSamples: 1,
+				lastSampledAt: DAY,
+			},
+		]);
+	});
+
+	it("advances project scopes independently while the flag-level vector keeps its existing reset semantics", () => {
+		const project = flagSpec("project", {
+			source: "project_config",
+			scope: "project",
+			envVar: undefined,
+			configKey: "doc_flow.enabled",
+		});
+		const first = scan({
+			specs: [project],
+			views: [
+				flagView(project, {
+					effective: undefined,
+					displayEffective: undefined,
+					effectiveByProject: [
+						{ projectName: "alpha", value: false },
+						{ projectName: "beta", value: false },
+					],
+				}),
+			],
+			expectedProjectNames: ["alpha", "beta"],
+			now: DAY,
+		});
+		const second = scan({
+			specs: [project],
+			views: [
+				flagView(project, {
+					effective: undefined,
+					displayEffective: undefined,
+					effectiveByProject: [
+						{ projectName: "alpha", value: true },
+						{ projectName: "beta", value: false },
+					],
+				}),
+			],
+			expectedProjectNames: ["alpha", "beta"],
+			prevState: first.nextState,
+			prevScopeState: first.nextScopeState,
+			now: DAY + FLAG_SCAN_INTERVAL_MS,
+		});
+		expect(second.nextState[0]).toMatchObject({
+			streakSamples: 1,
+			streakStartedAt: DAY + FLAG_SCAN_INTERVAL_MS,
+		});
+		expect(second.nextScopeState).toMatchObject([
+			{
+				flagName: "project",
+				scope: "alpha",
+				canonical: '{"k":"bool","v":true}',
+				streakSamples: 1,
+				streakStartedAt: DAY + FLAG_SCAN_INTERVAL_MS,
+			},
+			{
+				flagName: "project",
+				scope: "beta",
+				canonical: '{"k":"bool","v":false}',
+				streakSamples: 2,
+				streakStartedAt: DAY,
+			},
+		]);
+	});
+
+	it("adds and prunes scope rows with the authoritative roster", () => {
+		const project = flagSpec("project", {
+			source: "project_config",
+			scope: "project",
+			envVar: undefined,
+			configKey: "doc_flow.enabled",
+		});
+		const prevScopeState: FlagScanScopeState[] = [
+			{
+				flagName: "project",
+				scope: "alpha",
+				canonical: '{"k":"bool","v":false}',
+				streakStartedAt: DAY,
+				streakSamples: 2,
+				lastSampledAt: DAY,
+			},
+			{
+				flagName: "project",
+				scope: "beta",
+				canonical: '{"k":"bool","v":false}',
+				streakStartedAt: DAY,
+				streakSamples: 2,
+				lastSampledAt: DAY,
+			},
+		];
+		const result = scan({
+			specs: [project],
+			views: [
+				flagView(project, {
+					effective: undefined,
+					displayEffective: undefined,
+					effectiveByProject: [
+						{ projectName: "beta", value: false },
+						{ projectName: "gamma", value: true },
+					],
+				}),
+			],
+			expectedProjectNames: ["beta", "gamma"],
+			prevScopeState,
+			now: 10 * DAY,
+		});
+		expect(result.nextScopeState.map(({ scope }) => scope)).toEqual([
+			"beta",
+			"gamma",
+		]);
+		expect(result.nextScopeState[0]).toMatchObject({ streakSamples: 3 });
+		expect(result.nextScopeState[1]).toMatchObject({ streakSamples: 1 });
 	});
 
 	it("does not nominate a new flag until two equal samples span at least seven days", () => {

@@ -1,5 +1,6 @@
 import type {
 	FlagKeepAnchor,
+	FlagScanScopeState,
 	FlagScanState,
 	ProposedFlagScan,
 } from "flywheel-config";
@@ -28,6 +29,7 @@ function state(
 function proposed(
 	input: {
 		states?: FlagScanState[];
+		scopeStates?: FlagScanScopeState[];
 		anchors?: FlagKeepAnchor[];
 		candidates?: ProposedFlagScan["candidates"];
 		claimed?: ProposedFlagScan["claimed"];
@@ -38,12 +40,29 @@ function proposed(
 ): ProposedFlagScan {
 	return {
 		nextState: input.states ?? [],
+		nextScopeState: input.scopeStates ?? [],
 		nextAnchors: input.anchors ?? [],
 		candidates: input.candidates ?? [],
 		claimed: input.claimed ?? [],
 		noClock: input.noClock ?? [],
 		keepUnbound: input.keepUnbound ?? [],
 		departures: input.departures ?? [],
+	};
+}
+
+function scopeState(
+	flagName: string,
+	scope: string,
+	overrides: Partial<FlagScanScopeState> = {},
+): FlagScanScopeState {
+	return {
+		flagName,
+		scope,
+		canonical: `{"k":"bool","v":false}`,
+		streakStartedAt: 1,
+		streakSamples: 2,
+		lastSampledAt: 10,
+		...overrides,
 	};
 }
 
@@ -82,6 +101,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 		const tables = new Set(rows.map(({ name }) => name));
 		for (const table of [
 			"flag_scan_state",
+			"flag_scan_scope_state",
 			"flag_scan_runs",
 			"flag_scan_run_legs",
 			"flag_scan_run_items",
@@ -92,6 +112,58 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 		]) {
 			expect(tables.has(table), table).toBe(true);
 		}
+	});
+
+	it("persists per-scope clocks across commits and prunes scopes outside the next registry/roster set", () => {
+		const first = store.commitFlagScan({
+			expectedLatestCommittedAt: null,
+			runToken: "scope-first",
+			now: 100,
+			proposed: proposed({
+				states: [state("project")],
+				scopeStates: [
+					scopeState("project", "alpha"),
+					scopeState("project", "beta"),
+				],
+			}),
+			items: [],
+			provenance: [],
+			requiredLegs: [],
+		});
+		if (!first.committed) throw new Error("scope seed failed");
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ flagName: "project", scope: "alpha", streakSamples: 2 },
+			{ flagName: "project", scope: "beta", streakSamples: 2 },
+		]);
+
+		const second = store.commitFlagScan({
+			expectedLatestCommittedAt: first.run.committedAt,
+			runToken: "scope-second",
+			now: 200,
+			proposed: proposed({
+				states: [state("project")],
+				scopeStates: [
+					scopeState("project", "beta", {
+						streakSamples: 3,
+						lastSampledAt: 200,
+					}),
+					scopeState("project", "gamma", {
+						canonical: `{"k":"bool","v":true}`,
+						streakStartedAt: 200,
+						streakSamples: 1,
+						lastSampledAt: 200,
+					}),
+				],
+			}),
+			items: [],
+			provenance: [],
+			requiredLegs: [],
+		});
+		expect(second).toMatchObject({ committed: true });
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ flagName: "project", scope: "beta", streakSamples: 3 },
+			{ flagName: "project", scope: "gamma", streakSamples: 1 },
+		]);
 	});
 
 	it("freezes the exact owed legs for candidate, lead-only, and healthy-empty runs", async () => {
@@ -208,6 +280,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 			now: 100,
 			proposed: proposed({
 				states: [state("candidate")],
+				scopeStates: [scopeState("candidate", "*")],
 				candidates: [candidate("candidate")],
 			}),
 			items: [],
@@ -219,13 +292,29 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 			expectedLatestCommittedAt: null,
 			runToken: "run-two",
 			now: 101,
-			proposed: proposed({ states: [state("candidate")] }),
+			proposed: proposed({
+				states: [state("candidate")],
+				scopeStates: [
+					scopeState("candidate", "*", {
+						canonical: `{"k":"bool","v":true}`,
+						streakSamples: 1,
+					}),
+				],
+			}),
 			items: [],
 			provenance: [],
 			requiredLegs: ["linear"],
 		});
 		expect(second).toEqual({ committed: false, reason: "pending_exists" });
 		expect(store.listFlagScanRuns()).toHaveLength(1);
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{
+				flagName: "candidate",
+				scope: "*",
+				canonical: `{"k":"bool","v":false}`,
+				streakSamples: 2,
+			},
+		]);
 	});
 
 	it("deduplicates failure alert milestones and ignores legacy alert receipts", () => {

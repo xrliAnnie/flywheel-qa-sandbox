@@ -15,6 +15,7 @@ import {
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
 	type FlagKeepAnchor,
+	type FlagScanScopeState,
 	type FlagScanState,
 	FEATURE_FLAGS,
 	getFlagStoreCodec,
@@ -5255,6 +5256,17 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_scope_state (
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				canonical TEXT,
+				streak_started_at INTEGER,
+				streak_samples INTEGER NOT NULL DEFAULT 0,
+				last_sampled_at INTEGER NOT NULL,
+				PRIMARY KEY (flag_name, scope)
+			)
+		`);
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS flag_scan_runs (
 				run_id INTEGER PRIMARY KEY AUTOINCREMENT,
 				run_token TEXT NOT NULL UNIQUE,
@@ -5412,6 +5424,21 @@ export class StateStore {
 			askCount: Number(row.ask_count),
 			lastAskedRunId:
 				row.last_asked_run_id == null ? null : Number(row.last_asked_run_id),
+		}));
+	}
+
+	getFlagScanScopeState(): FlagScanScopeState[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_scope_state ORDER BY flag_name, scope",
+			[],
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			scope: String(row.scope),
+			canonical: row.canonical == null ? null : String(row.canonical),
+			streakStartedAt:
+				row.streak_started_at == null ? null : Number(row.streak_started_at),
+			streakSamples: Number(row.streak_samples),
+			lastSampledAt: Number(row.last_sampled_at),
 		}));
 	}
 
@@ -5764,6 +5791,46 @@ export class StateStore {
 						state.askCount,
 						state.lastAskedRunId,
 					],
+				);
+			}
+
+			const scopeKeys = new Set<string>();
+			for (const state of input.proposed.nextScopeState) {
+				if (!state.flagName.trim() || !state.scope.trim()) {
+					throw new Error("flag scan scope state requires flag and scope");
+				}
+				const key = `${state.flagName}\u0000${state.scope}`;
+				if (scopeKeys.has(key)) {
+					throw new Error(
+						`duplicate flag scan scope state: ${state.flagName}/${state.scope}`,
+					);
+				}
+				scopeKeys.add(key);
+				this.db.run(
+					`INSERT INTO flag_scan_scope_state
+					 (flag_name, scope, canonical, streak_started_at, streak_samples,
+					  last_sampled_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(flag_name, scope) DO UPDATE SET
+					  canonical = excluded.canonical,
+					  streak_started_at = excluded.streak_started_at,
+					  streak_samples = excluded.streak_samples,
+					  last_sampled_at = excluded.last_sampled_at`,
+					[
+						state.flagName,
+						state.scope,
+						state.canonical,
+						state.streakStartedAt,
+						state.streakSamples,
+						state.lastSampledAt,
+					],
+				);
+			}
+			for (const existing of this.getFlagScanScopeState()) {
+				if (scopeKeys.has(`${existing.flagName}\u0000${existing.scope}`)) continue;
+				this.db.run(
+					"DELETE FROM flag_scan_scope_state WHERE flag_name = ? AND scope = ?",
+					[existing.flagName, existing.scope],
 				);
 			}
 

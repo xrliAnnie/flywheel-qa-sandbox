@@ -40,6 +40,7 @@ export type {
 	FlagScanClaimed,
 	FlagScanKeepUnbound,
 	FlagScanNoClock,
+	FlagScanScopeState,
 	FlagScanState,
 	FlagScope,
 	FlagScopedStoreView,
