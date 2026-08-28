@@ -1,13 +1,13 @@
 ---
 issue: FLY-2102
 phase: implement
-phaseCursor: 5/6
-updated: 2026-08-28T02:56:19.059Z
-nextStep: Commit implementation, push, and request code review
+phaseCursor: 6/6
+updated: 2026-08-28T03:23:41.095Z
+nextStep: Commit milestone as the PR final commit, push, and complete needs_review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2102 progress
-**phase**: implement (5/6)
-**next**: Commit implementation, push, and request code review
+**phase**: implement (6/6)
+**next**: Commit milestone as the PR final commit, push, and complete needs_review
