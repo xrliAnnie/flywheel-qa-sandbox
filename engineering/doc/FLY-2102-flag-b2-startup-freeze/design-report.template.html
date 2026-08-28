@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2102 · 九个启动期开关的固化删除 — 设计方案</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background: #f5f5f7; color: #1d1d1f; line-height: 1.65;
+    padding: 32px 16px 64px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; }
+  .meta code { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 22px 24px; margin-bottom: 22px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); border-left: 4px solid #007aff;
+  }
+  .card.summary { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.navy { border-left-color: #1a365d; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; font-size: 14.5px; }
+  ul, ol { margin: 0 0 10px 22px; font-size: 14.5px; }
+  li { margin-bottom: 5px; }
+  .term { color: #86868b; font-size: 13px; }
+  code {
+    font-family: 'SF Mono', Menlo, monospace; font-size: 12.5px;
+    background: #f5f5f7; border-radius: 4px; padding: 1px 5px;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; margin: 10px 0; }
+  .tablewrap { overflow-x: auto; }
+  th { text-align: left; background: #f5f5f7; color: #1a365d; }
+  th, td { border: 1px solid #e5e5ea; padding: 7px 10px; vertical-align: top; }
+  td code { white-space: nowrap; }
+  .badge {
+    display: inline-block; border-radius: 5px; padding: 1px 8px; font-size: 12px;
+    font-weight: 600; color: #fff; white-space: nowrap;
+  }
+  .badge.keep { background: #34c759; }
+  .badge.del { background: #ff3b30; }
+  .badge.move { background: #af52de; }
+  .diagram { overflow-x: auto; margin: 14px 0; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .callout {
+    background: #fff8e6; border: 1px solid #ffd60a55; border-radius: 8px;
+    padding: 10px 14px; font-size: 13.5px; margin: 10px 0;
+  }
+  .comment-block { margin-top: 16px; border-top: 1px dashed #e5e5ea; padding-top: 12px; }
+  .comment-block label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-block textarea {
+    width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px;
+    padding: 8px 10px; font: inherit; font-size: 13.5px; resize: vertical; background: #fafafa;
+  }
+  .comment-block textarea:focus { outline: 2px solid #007aff55; background: #fff; }
+  #summary-out {
+    white-space: pre-wrap; font-family: 'SF Mono', Menlo, monospace; font-size: 12px;
+    background: #f5f5f7; border-radius: 8px; padding: 12px; max-height: 320px; overflow-y: auto;
+  }
+  .btn {
+    display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer; margin: 8px 8px 0 0;
+  }
+  .btn:active { opacity: .7; }
+  .copy-hint { font-size: 12.5px; color: #86868b; margin-top: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2102 · 九个启动期开关的固化删除</h1>
+  <div class="meta">
+    Issue: <code>FLY-2102</code> · 日期: 2026-08-27 · 设计文档:
+    <code>engineering/doc/FLY-2102-flag-b2-startup-freeze/</code>(exploration / research / plan)
+  </div>
+
+  <!-- ═══ S1 一句话总结 ═══ -->
+  <div class="card summary" data-section="一句话总结">
+    <h2>一句话总结</h2>
+    <p><b>按你 8-27 的裁定,把 9 个只在启动时读一次的 env 开关连根删掉:6 个把默认值写死进代码、2 个整段删除(publish broker 连代码带 CI 一起删)、1 个语音测试用的挪进豁免账;实测生产环境这 9 个开关全都没设置过,所以这次改动对线上行为是零变化 —— 删掉的只是「未来想拧」的旋钮,而这正是裁定要的效果。</b></p>
+    <p class="term">env flag = 写在环境变量文件(.env)里的功能开关。「启动时读一次」意味着改了值也要重启进程才生效 —— 这类开关既不能实时拧,又常年没人拧,就成了纯负债。</p>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机浏览器)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S2 核心流程 ═══ -->
+  <div class="card" data-section="核心流程:三种处置">
+    <h2>核心流程:9 个开关的三种去向</h2>
+    <div class="diagram"><!--SVG_D1--></div>
+    <p>三条路的共同点:<b>registry(登记册)里这 9 个名字全部注销</b>,今后 .env 里再出现旧名字,校验器会直接报「已退役,删这行」,不会静默生效。</p>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S3 逐个处置表 ═══ -->
+  <div class="card navy" data-section="九个开关逐个处置">
+    <h2>九个开关逐个处置</h2>
+    <div class="tablewrap"><table>
+      <tr><th>开关</th><th>它管什么</th><th>处置</th><th>固化后</th></tr>
+      <tr><td><code>flag_store</code></td><td>SQLite flag store(把可实时拧的开关存进数据库的机制)的总开关;=0 时整个机制停用,退回读 .env</td><td><span class="badge del">删旋钮+旁路</span></td><td>store 常开、唯一权威;旁路/栅栏/恢复重播三层机器全删(见下节图)</td></tr>
+      <tr><td><code>ghost_guard_wait_ms</code></td><td>发起一个 runner(执行任务的 AI 会话)后,等它注册成功的超时时长</td><td><span class="badge keep">写死 90 秒</span></td><td>与今天默认一致</td></tr>
+      <tr><td><code>publish_broker</code></td><td>对外 npm 发布的「代理执行点」原型(FLY-1062);生产从未启用</td><td><span class="badge del">整段删</span></td><td>目录、挂载、结构测试、CI 步骤、socket 客户端全删;真发布走 GitHub Actions,不受影响</td></tr>
+      <tr><td><code>converge_cmux_symlink</code></td><td>cmux(终端窗口管理面)辅助脚本被部署成普通副本时,自动收敛回受信 symlink(软链接)形态</td><td><span class="badge keep">写死开</span></td><td>收敛行为成为常态,无暂停开关</td></tr>
+      <tr><td><code>cmux_view_helper</code></td><td>runner 镜像窗口断线后用驻留 helper 自动重连;=0 退回旧的一次性连接命令</td><td><span class="badge keep">写死开</span></td><td>=0 旧行为路整段删除</td></tr>
+      <tr><td><code>cmux_node_presence</code></td><td>把无窗口的执行体也渲染成 cmux 里可见的 node 面板(你要求的可见性契约)</td><td><span class="badge keep">写死开</span></td><td>12 处「关了就跳过」的守卫展开为无条件执行</td></tr>
+      <tr><td><code>issue_display_sweep_ticks</code></td><td>issue 显示自愈扫描的周期(默认 60 tick ≈ 3 分钟);0=关</td><td><span class="badge keep">写死 60</span></td><td>0=关 的路一并删除</td></tr>
+      <tr><td><code>voice_qa_presence_override</code></td><td>语音测试治具:无人在语音频道时把「创始人在场」判定强制为真;带 loopback(仅本机回环地址)白名单,连错地址直接拒启</td><td><span class="badge move">挪进豁免账</span></td><td>FLY-1353 治具还活着、还在用 ⇒ 读点保留;从 flag 登记册挪到 exemptions(有账豁免)——只许单次注入,写进持久 .env 会报错</td></tr>
+      <tr><td><code>lead_lease_bypass</code></td><td>紧急绕过 Lead 身份租约写授权的治理阀(你 8-22 裁定:不应有全局 Hard Gate 阀)</td><td><span class="badge del">删阀</span></td><td>绕过分支删除,租约写授权无旁路;历史「用过旁路」的审计记录仍可正常显示</td></tr>
+    </table></div>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S4 flag store 旁路 ═══ -->
+  <div class="card red" data-section="flag store 旁路机器删除">
+    <h2>删得最深的一处:flag store 的 env 逃生旁路</h2>
+    <p>这是 9 个里唯一牵动数据库逻辑的:<code>FLYWHEEL_FLAG_STORE=0</code> 不只是个开关,它背后有一台三层「逃生+恢复」机器。裁定 store 常开后,这台机器整体失去存在理由:</p>
+    <div class="diagram"><!--SVG_D2--></div>
+    <ul>
+      <li><b>删</b>:旁路入口、双模式运行时、管理接口的「旁路中禁改」分支、数据库里的栅栏标记读写、下次启动的恢复重播逻辑。</li>
+      <li><b>留</b>:数据库表结构本身(留着无害,删表反而要迁移);历史变更日志(append-only 史料,不许动)。</li>
+      <li><b>安全性核验</b>:生产 .env 从未设过这个变量 ⇒ 旁路在生产从未走过,不存在「删掉恢复逻辑把谁卡在半路」的窗口。</li>
+    </ul>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S5 治理账本 ═══ -->
+  <div class="card amber" data-section="治理账本变化">
+    <h2>数据/结构模型:四本账怎么动</h2>
+    <p class="term">Flywheel 的 flag 治理有四本账:登记册(registry,所有 flag 的唯一出生地)、墓碑账(tombstone,退役名字的黑名单)、豁免账(exemptions,「不算 flag 但允许存在」的名单)、以及两本「只许减不许增」的冻结上限账本。</p>
+    <div class="diagram"><!--SVG_D3--></div>
+    <p><b>需要你知道的一处账本修订</b>:豁免账的上限账本(<code>LEGACY_FLAG_EXEMPTION_BASELINE</code>)设计上是冻结的 —— 新名字进不去。voice 这条要进豁免账,就必须给上限账本 +1。这不是开后门:是把一个<b>已登记</b>的名字从登记册挪到豁免账(总治理面 −9 +1),授权来源就是本单裁定,PR 里会显式声明。</p>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S6 取舍 ═══ -->
+  <div class="card purple" data-section="关键取舍与被拒方案">
+    <h2>三个关键取舍(以及被拒掉的方案)</h2>
+    <h3>① broker 的 token 擦除随 broker 一起删</h3>
+    <p>publish broker 挂载时有个与开关无关的副作用:无条件从 Bridge 进程环境里删掉两个发布 token(防止子进程继承)。broker 删了,这个擦除也就没了。<b>被拒方案</b>:留 5 行「孤儿擦除」代码 —— 拒因:它保护的注入路径(为 broker 往 Bridge 环境放 token)随 broker 一起消失了,而且违背「只删不加」;token 的正身一直在 GitHub Actions secrets 和校验服务端,实测 Bridge 机器环境里也从来没有。代价与守卫写在诚实边界 ③。</p>
+    <h3>② lead_lease_bypass 只删「生产者」,不删「史料读者」</h3>
+    <p>旁路被用过会在耐久数据库里留审计行。删除范围只到「不再可能产生新的旁路」;把历史审计行渲染成告警的那条链保留 —— append-only(只追加不改写)的史料不能因为生产者死了就变不可读。<b>被拒方案</b>:连告警种类一起删 —— 拒因:历史行会变成没人认识的孤儿数据。</p>
+    <h3>③ voice 开关不删读点,走豁免</h3>
+    <p>它本来就不是运行时功能开关,是测试治具的接缝(QA seam):FLY-1353 无头语音端到端测试还在每次运行时置位它。<b>被拒方案</b>:连读点删掉 —— 拒因:治具还活着,删了测试就瞎了;裁定原文也写明「治具仍在用 → 进豁免账」。守卫不降级:带 loopback 白名单(连生产 Bridge 直接拒启)+ 持久 .env 出现即报错。</p>
+    <h3>④(顺带)验收判据的一个词面冲突,先量了再裁</h3>
+    <p>验收写「rg 九个 env 名零命中」,但墓碑账和豁免账<b>机制上必须保留名字</b>才能拦住旧配置回流。字面零命中 vs 退役机制是词面冲突不是实质冲突 —— 处理:零命中判据精确化为「排除墓碑账、豁免账、voice 治具、断言测试自身、历史文档后全仓零命中」,并做成带逐条自检的常驻守卫测试,不是跑一次就完的人肉检查。</p>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S7 验收 ═══ -->
+  <div class="card" data-section="验收与守卫">
+    <h2>验收与守卫</h2>
+    <ul>
+      <li><b>反旋钮断言</b>(每条删除路一条):全部是「把旧值真实设回去,断言行为不再变」—— 例:设 <code>FLYWHEEL_LEAD_LEASE_BYPASS=1</code> 仍拒绝写入;设 <code>FLYWHEEL_CMUX_VIEW_HELPER=0</code> 仍产出 helper 命令。不是「grep 不到字符串」这种弱检查。</li>
+      <li><b>常驻残留守卫</b>:新增 fly2102 残留测试(沿用 fly1674 模式):9 个名字全仓扫描 + 精确豁免清单 + 每条豁免的存活自检(防死豁免悄悄放宽)。</li>
+      <li><b>发布路径无损</b>:payload-activation 的 preflight 本地 dry-run 一次;CI 删的只有 broker 结构测试那一步。</li>
+      <li><b>启动日志</b>:隔离环境起一次 Bridge,确认无 <code>[publish-broker]</code>、无 flag-store 旁路输出。</li>
+      <li><b>全仓门</b>:lint + 全包构建 + 全部包测试 + 触及的 shell 测试。</li>
+    </ul>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ S8 诚实边界 ═══ -->
+  <div class="card red" data-section="诚实边界">
+    <h2>诚实边界:这个设计不做什么、代价是什么</h2>
+    <ol>
+      <li><b>不碰另外 13 个运行时读的 flag</b>(B1 批)、不碰 config.yaml(C 批)、不新增任何旋钮。</li>
+      <li><b>「未来想关」从此要改代码走 PR</b>。这 9 个开关删了就没有 env 级后悔药 —— 这正是裁定的本意,但值得写明:万一哪天想暂停 cmux 收敛/node 面板,路径是改代码,不是改配置。</li>
+      <li><b>token 擦除消失后的残余风险</b>:如果将来有人违规把 FW 发布 token 放进 Bridge 机器环境,不再有兜底擦除,子进程可能继承。守卫 = runbook 退役横幅写死红线「FW token 永不进 Bridge env」+ 实测当前环境本来就没有。这是一个「守卫从代码降级为文字」的点,如实标出。</li>
+      <li><b>最大实现期不确定性</b>:cmux 的 1.1 万行测试套件全局跑在「node 层关闭」态,写死开以后受影响的节数只有跑起来才知道。计划把它排为第一步,若重工量超预算(约 15 节)先报量再继续,不静默扩 scope。</li>
+      <li><b>老库残留</b>:生产主库已实测确认没有 bypass 栅栏标记(2026-08-27 只读核验),PR 验收会再查一次作为部署前置;非生产的隔离测试库不逐一保证 —— 对它们的行为定义是「数据库里的 store 行原样即权威」,不迁移、不清理。</li>
+      <li><b>本页只是设计</b>:代码一行未改;实现、QA、ship 都在后续节点。</li>
+    </ol>
+    <div class="comment-block"><label>对这一节的意见</label><textarea data-ckey="s8" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ═══ 意见汇总 ═══ -->
+  <div class="card navy" data-section="意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="term">下面实时聚合你在各节写的意见(存在本机浏览器,不上传)。点按钮复制全部,发给 Tadashi 或贴回 Discord 即可。</p>
+    <div id="summary-out">(还没有意见)</div>
+    <div id="chunk-btns"></div>
+    <button class="btn" id="copy-all">复制全部意见</button>
+    <div class="copy-hint" id="copy-hint"></div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2102";
+  var PREFIX = "fly2102-comments:" + location.pathname + ":";
+  var CHUNK_LIMIT = 1800;
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-ckey]"));
+
+  function sectionTitle(ta) {
+    var card = ta.closest ? ta.closest(".card") : null;
+    return (card && card.getAttribute("data-section")) || ta.getAttribute("data-ckey") || "未命名节";
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push("【" + sectionTitle(ta) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function buildChunks() {
+    var parts = collect();
+    if (!parts.length) return [];
+    var chunks = [], cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var out = document.getElementById("summary-out");
+  var chunkBtns = document.getElementById("chunk-btns");
+  var hint = document.getElementById("copy-hint");
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.left = "-9999px";
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function render() {
+    var chunks = buildChunks();
+    while (chunkBtns.firstChild) chunkBtns.removeChild(chunkBtns.firstChild);
+    if (!chunks.length) {
+      out.textContent = "(还没有意见)";
+      return;
+    }
+    out.textContent = chunks.join("\n\n———— 分段 ————\n\n");
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + "/" + chunks.length + " 段";
+        b.addEventListener("click", function () {
+          copyText(c, function (ok) {
+            hint.textContent = ok ? "第 " + (i + 1) + " 段已复制" : "复制失败,请手动全选上方文本";
+          });
+        });
+        chunkBtns.appendChild(b);
+      });
+    }
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-ckey");
+    ta.value = lsGet(key);
+    ta.addEventListener("input", function () {
+      lsSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var chunks = buildChunks();
+    if (!chunks.length) { hint.textContent = "还没有意见可复制"; return; }
+    copyText(chunks.join("\n\n"), function (ok) {
+      hint.textContent = ok ? "已复制 " + chunks.length + " 段(每段均以标记行开头)" : "复制失败,请手动全选上方文本";
+    });
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
