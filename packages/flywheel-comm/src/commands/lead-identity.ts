@@ -38,10 +38,20 @@ export function runLeadIdentityCommand(
 				format: { type: "string", default: "json" },
 				"roster-file": { type: "string" },
 				"backup-file": { type: "string" },
+				"summary-config-home": { type: "string" },
 			},
 			allowPositionals: false,
 		});
 		projectsPath = required(values["projects-file"], "--projects-file");
+		const summaryConfigHome = values["summary-config-home"];
+		if (summaryConfigHome !== undefined) {
+			if (args[0] !== "resolve") {
+				throw new Error("--summary-config-home is only valid for resolve");
+			}
+			if (!isAbsolute(summaryConfigHome)) {
+				throw new Error("--summary-config-home must be an absolute path");
+			}
+		}
 		if (args[0] === "migrate-bot-user-ids") {
 			const rosterPath = required(values["roster-file"], "--roster-file");
 			const backupPath = required(values["backup-file"], "--backup-file");
@@ -98,7 +108,7 @@ export function runLeadIdentityCommand(
 			projectsPath,
 			projectName,
 			leadId,
-			homeDir: deps.homeDir,
+			homeDir: summaryConfigHome ?? deps.homeDir,
 		});
 		if (values.format === "json") {
 			stdout(JSON.stringify(identity));
@@ -179,6 +189,7 @@ export function identityEnvProjection(
 	];
 }
 
+import { isAbsolute } from "node:path";
 import { parseArgs } from "node:util";
 import {
 	type CanonicalLeadIdentity,

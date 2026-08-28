@@ -69,6 +69,46 @@ else
   printf '%s\n' "$out"
 fi
 
+# 529 QA keeps its synthetic summary selection outside the operator's HOME.
+# The override belongs to the trusted launchd environment and must be consumed
+# before canonical identity resolution.
+mkdir -p "$TMP/summary-home/.flywheel"
+mv "$TMP/home/.flywheel/summary-config.json" "$TMP/home/.flywheel/summary-config.saved"
+cat > "$TMP/summary-home/.flywheel/summary-config.json" <<'JSON'
+{"granularity":"per-lead","setBy":"test-deploy","setAt":"2026-08-28T00:00:00.000Z"}
+JSON
+summary_home_out="$(
+  HOME="$TMP/home" \
+  FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/summary-home" \
+  FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+  FLYWHEEL_DIR="$ROOT" \
+  FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+  bash "$WRAPPER" "$TMP/manifest.json" 2>&1
+)" || true
+mv "$TMP/home/.flywheel/summary-config.saved" "$TMP/home/.flywheel/summary-config.json"
+if grep -q '^V2_SOCKET=' <<<"$summary_home_out"; then
+  pass "wrapper resolves canonical identity from the trusted summary config home"
+else
+  fail "wrapper summary config home override"
+  printf '%s\n' "$summary_home_out"
+fi
+
+jq '.launchEnvironment.FLYWHEEL_SUMMARY_CONFIG_HOME = "/tmp/manifest-controlled"' \
+  "$TMP/manifest.json" > "$TMP/manifest-summary-home.json"
+if HOME="$TMP/home" \
+    FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+    FLYWHEEL_DIR="$ROOT" \
+    FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+    bash "$WRAPPER" "$TMP/manifest-summary-home.json" \
+      >"$TMP/manifest-summary-home.out" 2>&1; then
+  fail "manifest must not control the summary config home"
+elif grep -qF 'identity_launch_env_conflict' "$TMP/manifest-summary-home.out"; then
+  pass "wrapper rejects a manifest-controlled summary config home"
+else
+  fail "wrapper summary config home authority diagnostic"
+  cat "$TMP/manifest-summary-home.out" 2>/dev/null || true
+fi
+
 conf="$(sed -n 's/^V2_CONF=//p' <<<"$out" | tail -1)"
 default_shell_line="$(grep -nF 'set -g default-shell /bin/bash' "$conf" 2>/dev/null | cut -d: -f1 || true)"
 if [ -f "$conf" ] \

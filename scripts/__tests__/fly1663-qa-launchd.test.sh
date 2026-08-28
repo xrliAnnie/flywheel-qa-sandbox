@@ -32,6 +32,7 @@ env_file="$TMP/runtime/.env"
 log_file="$TMP/runtime/lead.log"
 plist="$TMP/runtime/lead.plist"
 registry="$TMP/runtime/launchd-leads.json"
+summary_home="$TMP/runtime/identity-home"
 printf '%s\n' '{"leadId":"qa-lead","projectDir":"/tmp/project","projectName":"test-slot-7"}' > "$manifest"
 printf '%s\n' '[]' > "$projects"
 : > "$env_file"
@@ -46,10 +47,12 @@ else
 fi
 
 if qa_launchd_render_plist "$plist" "$label" "$ROOT/scripts/flywheel-lead-wrapper-v2.sh" \
-    "$manifest" "$HOME" "$FLYWHEEL_STATE_DIR" "$projects" "$env_file" "$log_file" \
+    "$manifest" "$HOME" "$FLYWHEEL_STATE_DIR" "$projects" "$env_file" "$log_file" "$summary_home" \
     && grep -qF '<key>KeepAlive</key><true/>' "$plist" \
     && grep -qF '<key>FLYWHEEL_STATE_DIR</key>' "$plist" \
     && grep -qF "$FLYWHEEL_STATE_DIR" "$plist" \
+    && grep -qF '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key>' "$plist" \
+    && grep -qF "$summary_home" "$plist" \
     && ! grep -qF "$HOME/.flywheel" "$plist"; then
   pass "ephemeral plist owns one v2 wrapper with slot-local state"
 else

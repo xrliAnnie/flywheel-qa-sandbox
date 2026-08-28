@@ -36,10 +36,11 @@ qa_launchd_require_absolute() {
   esac
 }
 
-# Args: plist label wrapper manifest home state projects env log
+# Args: plist label wrapper manifest home state projects env log [summaryConfigHome]
 qa_launchd_render_plist() {
   local plist="$1" label="$2" wrapper="$3" manifest="$4" home="$5"
   local state="$6" projects="$7" env_file="$8" log_file="$9"
+  local summary_config_home="${10:-}"
   local value tmp
   [[ "$label" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
     || { qa_launchd_err "invalid label: $label"; return 1; }
@@ -49,10 +50,15 @@ qa_launchd_render_plist() {
     [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] \
       || { qa_launchd_err "control character in path"; return 1; }
   done
+  if [ -n "$summary_config_home" ]; then
+    qa_launchd_require_absolute "$summary_config_home" || return 1
+    [[ "$summary_config_home" != *$'\n'* && "$summary_config_home" != *$'\r'* ]] \
+      || { qa_launchd_err "control character in path"; return 1; }
+  fi
   [ -x "$wrapper" ] || { qa_launchd_err "wrapper is not executable: $wrapper"; return 1; }
   [ -f "$manifest" ] || { qa_launchd_err "manifest missing: $manifest"; return 1; }
 
-  local x_label x_wrapper x_manifest x_home x_state x_projects x_env x_log x_path
+  local x_label x_wrapper x_manifest x_home x_state x_projects x_env x_log x_path x_summary_config_home
   x_label=$(printf '%s' "$label" | qa_launchd_xml_escape)
   x_wrapper=$(printf '%s' "$wrapper" | qa_launchd_xml_escape)
   x_manifest=$(printf '%s' "$manifest" | qa_launchd_xml_escape)
@@ -61,6 +67,7 @@ qa_launchd_render_plist() {
   x_projects=$(printf '%s' "$projects" | qa_launchd_xml_escape)
   x_env=$(printf '%s' "$env_file" | qa_launchd_xml_escape)
   x_log=$(printf '%s' "$log_file" | qa_launchd_xml_escape)
+  x_summary_config_home=$(printf '%s' "$summary_config_home" | qa_launchd_xml_escape)
   x_path=$(printf '%s' "${FLYWHEEL_QA_LAUNCHD_PATH:-${home}/.local/bin:${home}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}" \
     | qa_launchd_xml_escape)
   tmp="${plist}.tmp.$$"
@@ -79,6 +86,9 @@ qa_launchd_render_plist() {
     printf '<key>FLYWHEEL_STATE_DIR</key><string>%s</string>\n' "$x_state"
     printf '<key>FLYWHEEL_PROJECTS_FILE</key><string>%s</string>\n' "$x_projects"
     printf '<key>FLYWHEEL_WRAPPER_ENV_FILE</key><string>%s</string>\n' "$x_env"
+    if [ -n "$x_summary_config_home" ]; then
+      printf '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>%s</string>\n' "$x_summary_config_home"
+    fi
     printf '%s\n' '</dict>'
     printf '%s\n' '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>'
     printf '%s\n' '<key>ThrottleInterval</key><integer>3</integer>'

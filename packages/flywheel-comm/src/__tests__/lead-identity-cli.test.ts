@@ -81,6 +81,40 @@ describe("flywheel-comm lead-identity resolve", () => {
 		});
 	});
 
+	it("accepts an explicit summary config home for an isolated launcher", () => {
+		const summaryHome = join(dir, "qa-summary-home");
+		mkdirSync(join(summaryHome, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(summaryHome, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test-deploy",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
+		const stdout: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"eng-lead",
+				"--summary-config-home",
+				summaryHome,
+			],
+			{ stdout: (line) => stdout.push(line) },
+		);
+
+		expect(rc).toBe(0);
+		expect(JSON.parse(stdout[0]!)).toMatchObject({
+			summaryGranularity: "per-lead",
+			hasSummaryDuty: true,
+		});
+	});
+
 	it("emits a non-secret env projection", () => {
 		const stdout: string[] = [];
 		const rc = runLeadIdentityCommand(

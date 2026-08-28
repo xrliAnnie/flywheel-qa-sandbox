@@ -68,6 +68,14 @@ FLYWHEEL_DIR="${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}"
 FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
 ENV_FILE="${FLYWHEEL_WRAPPER_ENV_FILE:-${FLYWHEEL_STATE_DIR}/.env}"
 PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR}/projects.json}"
+V2_SUMMARY_CONFIG_HOME="${FLYWHEEL_SUMMARY_CONFIG_HOME:-${HOME}}"
+readonly V2_SUMMARY_CONFIG_HOME
+case "$V2_SUMMARY_CONFIG_HOME" in
+  /*) ;;
+  *) fatal "FLYWHEEL_SUMMARY_CONFIG_HOME must be an absolute path" ;;
+esac
+[[ "$V2_SUMMARY_CONFIG_HOME" != *$'\n'* && "$V2_SUMMARY_CONFIG_HOME" != *$'\r'* ]] \
+  || fatal "FLYWHEEL_SUMMARY_CONFIG_HOME contains a control character"
 # launchd's default PATH omits Homebrew and user-local binaries. Expand the
 # wrapper's own environment before resolving tmux, then pass that same proven
 # search path through the env -i carrier boundary.
@@ -160,6 +168,7 @@ IDENTITY_JSON="$(node "$IDENTITY_CLI" lead-identity resolve \
   --projects-file "$PROJECTS_FILE" \
   --project "$SELECTOR_PROJECT_NAME" \
   --lead "$SELECTOR_LEAD_ID" \
+  --summary-config-home "$V2_SUMMARY_CONFIG_HOME" \
   --format json)" \
   || fatal "identity_source_error: canonical Lead identity resolution failed"
 jq -e 'type == "object" and .schemaVersion == 1' <<<"$IDENTITY_JSON" >/dev/null \
@@ -305,7 +314,7 @@ while IFS= read -r name; do
     FLYWHEEL_LEAD_IDENTITY_DIGEST) expected="$IDENTITY_DIGEST" ;;
     FLYWHEEL_LEAD_PROJECTS_DIGEST) expected="$PROJECTS_DIGEST" ;;
     FLYWHEEL_PROJECTS_FILE) expected="$PROJECTS_FILE" ;;
-    FLYWHEEL_PROJECTS|DISCORD_BOT_TOKEN)
+    FLYWHEEL_PROJECTS|FLYWHEEL_SUMMARY_CONFIG_HOME|DISCORD_BOT_TOKEN)
       identity_fatal identity_launch_env_conflict "$name may not be supplied by the manifest"
       ;;
     *) is_identity=false ;;
