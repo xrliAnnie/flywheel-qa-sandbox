@@ -3,8 +3,8 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 日期: 2026-08-28
 基于: scope-final.md §1 1.3 + Tadashi 指令(6afa31aa 答复 ①:此件单独逐字审,不许顺手加)
 
-> 状态:**提案,未落任何文件**。scope-final 1.3 的规则改动部分已标暂停,以本件送审为准;Tadashi 判后再定是否上 founder。
-> 修订史:R1(2026-08-28)Tadashi 逐字审 = 实质通过,唯一必改:**What 判据由「summary 类(自证)」改为两条机器可核条件的合取**(自证判据与「声称我读完了」是同一个洞,PRD §12.3.4);其余逐字保留。本版 = 改后版。⛔ 在他说「可以落」之前不碰 rules 文件;落文件由他执行。
+> 状态:🟢 **措辞终稿 —— Tadashi 已逐字审过(2026-08-28),⛔ 不提前落地:随 M1 实现 PR 一起落进 `founder-only-authority.md`**。他的时机裁定:「权限跟着它要保护的机制一起进,不提前」——先落权限而机制未建 = 系统里躺一条没人用过、没人验过的松绑,后来人会以为它被验过。他将向 founder 报备「已定稿且不提前落地」。
+> 修订史:R1 逐字审 = 实质通过,必改一处:What 由自证判据改**两条机器可核条件合取**(自证与「声称我读完了」同洞,PRD §12.3.4)。R2 收口两处:①去掉 `e.g.`,前缀落地时逐字填 §1.1 定死的那一个(红线文件不写举例);②列举加兜底:**任何可执行或影响构建/运行行为的文件都不算 summary**(列举非穷举)。本版 = 终稿。
 
 ## 一、要加什么(逐字稿,英文与目标文件一致;插入位置 = R1「Reserved actions」列表之后、「Recognising a founder authorization」小节之前)
 
@@ -22,11 +22,13 @@ scope confirmed in §12.3.4 option a):
 - **What**: a PR qualifies ONLY when BOTH of the following machine-checkable
   conditions hold — this is a **check**, not a claim (a self-asserted "this is
   a summary" would be the same hole as "I read it", PRD §12.3.4):
-  1. **every** file changed by the PR lies under the fixed summary path
-     prefix defined by the FLY-2030 summary contract (§1.1, e.g.
-     `summaries/…`); AND
+  1. **every** file changed by the PR lies under **the single fixed prefix
+     defined by the FLY-2030 summary contract §1.1**
+     (⚠️ 落地时把 §1.1 定死的确切前缀**逐字填进此处**——红线文件里不许写举例); AND
   2. the PR changes **no executable file or configuration** — no code, no
-     scripts, no workflows, no dependency manifests.
+     scripts, no workflows, no dependency manifests; this list is
+     **illustrative, not exhaustive**: **any file that is executable or that
+     affects build or runtime behavior does not count as a summary**.
   If either condition fails, this exemption does not apply and the normal R1
   prohibition stands. For a qualifying PR, **merge = the "已阅" read receipt**
   (PRD §8.8: open PR = unread, merge = read).
