@@ -25,6 +25,7 @@ import {
 	type FlagValueKind,
 	type ReadTiming,
 } from "./registry.js";
+import type { FlagStoreCodec } from "./store-policy.js";
 
 export interface FlagResolveCtx {
 	/** Defaults to process.env — the Bridge-global env for env flags. */
@@ -43,6 +44,8 @@ export interface FlagEffectiveByProject {
 	/** Present when the project config failed to load (surfaced, not defaulted). */
 	error?: string;
 	isDefault?: boolean;
+	/** FLY-2100: which layer supplied the displayed project value. */
+	via?: "project_row" | "star_row" | "config" | "default";
 }
 
 /** Secret-free DTO handed to the console / snapshot / report renderers. */
@@ -238,6 +241,37 @@ function resolveConfigValue(
 		return { error: `mixed values for ${spec.configKey}` };
 	}
 	return { value };
+}
+
+/**
+ * Overlay project-scoped SQLite rows without changing the legacy config
+ * resolver. No row means byte-compatible config/default fallback for the
+ * FLY-2100 transition; an explicit project row wins over the `*` row.
+ */
+export function resolveScopedEffective(input: {
+	spec: FeatureFlagSpec;
+	projectName: string;
+	rows: ReadonlyArray<{ scope: string; raw: string | null }>;
+	configRow: FlagEffectiveByProject;
+	codec: FlagStoreCodec;
+}): FlagEffectiveByProject {
+	const row =
+		input.rows.find((candidate) => candidate.scope === input.projectName) ??
+		input.rows.find((candidate) => candidate.scope === "*");
+	if (row) {
+		const value = input.codec.parse({ hasOverride: true, raw: row.raw });
+		return {
+			projectName: input.projectName,
+			value,
+			isDefault: value === input.spec.default,
+			via: row.scope === "*" ? "star_row" : "project_row",
+		};
+	}
+	return {
+		...input.configRow,
+		projectName: input.projectName,
+		via: input.configRow.isDefault ? "default" : "config",
+	};
 }
 
 export function resolveFlag(

@@ -5,16 +5,16 @@
 
 ## 创建 flag 的唯一路径
 
-`registry → STORE_MANAGED_FLAGS + codec → seed row → named store wrapper → management route test → guard green`
+`registry → managed set + codec → store row policy → management route test → guard green`
 
 新的产品 flag 必须按照这条路径一次完成，不得先登记为 legacy 直读，再留给后续迁移。
 
-1. 在 `packages/config/src/feature-flags/registry.ts` 登记 spec。当前只接受 `scope: bridge_global`、`source: env`、完整 `envVar` 且 `toggleable: direct` 的新 flag；必须明确 `default`、`polarity`、`valueKind` 和 live-read proof。在建立 project-scoped store 权威之前，禁止新增 `project_config` flag。
-2. 将名称加入 `STORE_MANAGED_FLAGS`，并在 `getFlagStoreCodec` 提供 codec。codec 的无 override 结果必须等于 registry default，布尔解析必须与 polarity 一致；enum 必须完整限定可用值。
-3. 确认 `StateStore.ensureFlagValueRows` 的通用循环为新名称建立 row，并且产生唯一 `seed` changelog。测试必须遍历全部 managed names，不得只枚举当前四个名称。
-4. 在 `packages/teamlead/src/bridge/flag-store-runtime.ts` 添加命名明确的 store wrapper。registry `readSites` 必须以 `delegated` + `call_time` 指向该模块和精确 symbol；AST guard 必须看到真实 import 和 call，只在文本里写 symbol 无效。
-5. 用 `flag-routes` 的 stage/apply 路径证明管理面覆盖：reason 必填，actor 固定为 `bridge-local-operator`，revision/effective 前后值正确，修改写入 SQLite 而不写 `.env`。`management-existing-writers` 必须继续拒绝 managed flag，防止第二个 writer。
-6. 运行 registry/store/drift/route 守卫，只有 guard green 才可合并。新 spec 如果缺 codec、seed、真实 wrapper 或 management route，CI 必须直接变红。
+1. 在 `packages/config/src/feature-flags/registry.ts` 登记 spec，并明确 `default`、`polarity`、`valueKind` 与真实 read site。
+2. Bridge-global env flag 加入 `STORE_MANAGED_FLAGS`：必须有 `envVar`、`toggleable: direct`、codec、启动 seed row，以及 `flag-store-runtime.ts` 的命名 wrapper。registry `readSites` 必须以 `delegated` + `call_time` 指向精确 symbol。
+3. 简单逐项目布尔 flag 加入 `PROJECT_STORE_MANAGED_FLAGS`：必须是 `scope: project` + `source: project_config`，不可是 governance、dormant、readonly，也不可使用 `[]` / `*` config key。project row 写时创建、clear 时删除；不启动 seed。
+4. project-store codec 必须把显式 `0/1` 解析为 false/true。读取优先级是项目行 → `*` 行 → config.yaml → registry default；FLY-2100 期间运行时仍读 config.yaml，管理面必须显示这段过渡分歧，待后续 C 单切换消费点。
+5. 用 `flag-routes` 的 stage/apply 路径证明管理面覆盖：reason 必填，scope 必须是 `*` 或 `projects.json` 名册里的 projectName，Bridge-global flag 必须拒绝项目行。修改只写 SQLite，不写 `.env` / config.yaml。
+6. 运行 registry/store/drift/route 守卫，只有 guard green 才可合并。新 spec 如果缺对应 managed membership、codec、存储合同或管理 route，CI 必须直接变红。
 
 ## 豁免不是新通道
 

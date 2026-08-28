@@ -10,6 +10,7 @@ import {
 	type FlagStoreCodec,
 	getFlagStoreCodec,
 	getStoreEligibility,
+	PROJECT_STORE_MANAGED_FLAGS,
 	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,
@@ -22,6 +23,14 @@ const MANAGED = [
 	"workflow_rework_reentry",
 	"skill_framework_mode",
 	"workflow_turn_divergence_alerts",
+] as const;
+
+const PROJECT_MANAGED = [
+	"doc_flow",
+	"pipeline_dag",
+	"pipeline_work_kind",
+	"proofshot",
+	"xiaohongshu_learning",
 ] as const;
 
 const PROTECTED = ["mailbox_queue", "merge_approval_gate_killswitch"] as const;
@@ -112,6 +121,7 @@ type ValidateFlagAuthoringPolicy = (input?: {
 	flags?: readonly FeatureFlagSpec[];
 	exemptions?: readonly FlagExemption[];
 	storeManagedFlags?: ReadonlySet<string>;
+	projectStoreManagedFlags?: ReadonlySet<string>;
 	codecForName?: (name: string) => FlagStoreCodec | undefined;
 }) => string[];
 
@@ -167,9 +177,39 @@ function withFutureManaged(): Set<string> {
 	return new Set([...STORE_MANAGED_FLAGS, "future_dynamic_flag"]);
 }
 
+function futureProjectSpec(
+	over: Partial<FeatureFlagSpec> = {},
+): FeatureFlagSpec {
+	return futureSpec({
+		source: "project_config",
+		scope: "project",
+		envVar: undefined,
+		configKey: "future.enabled",
+		polarity: "opt_in",
+		default: false,
+		readSites: [
+			{
+				file: "packages/example/src/config.ts",
+				symbol: "future project flag",
+				pattern: "config",
+				timing: "call_time",
+				configAccess: "future.enabled",
+			},
+		],
+		toggleable: "conversational",
+		directToggleProof: undefined,
+		...over,
+	});
+}
+
+function withFutureProjectManaged(): Set<string> {
+	return new Set([...PROJECT_STORE_MANAGED_FLAGS, "future_dynamic_flag"]);
+}
+
 describe("FLY-1778 flag store policy", () => {
 	it("freezes the M0-approved managed and protected sets", () => {
 		expect([...STORE_MANAGED_FLAGS]).toEqual(expect.arrayContaining(MANAGED));
+		expect([...PROJECT_STORE_MANAGED_FLAGS]).toEqual(PROJECT_MANAGED);
 		expect([...PROTECTED_LEGACY_FLAG_NAMES]).toEqual(PROTECTED);
 		expect([...RETIRED_FLAG_STORE_ROWS]).toEqual([
 			"workflow_resume",
@@ -197,7 +237,9 @@ describe("FLY-1778 flag store policy", () => {
 		expect(Object.isFrozen(exemptionBaseline)).toBe(true);
 
 		const unmanaged = FEATURE_FLAGS.filter(
-			(spec) => !STORE_MANAGED_FLAGS.has(spec.name),
+			(spec) =>
+				!STORE_MANAGED_FLAGS.has(spec.name) &&
+				!PROJECT_STORE_MANAGED_FLAGS.has(spec.name),
 		).map((spec) => spec.name);
 		for (const name of unmanaged) {
 			expect(unmanagedBaseline, name).toContain(name);
@@ -212,6 +254,71 @@ describe("FLY-1778 flag store policy", () => {
 
 	it("accepts the current registry without freezing managed growth at four", () => {
 		expect(validateFlagAuthoringPolicy()).toEqual([]);
+	});
+
+	it("assigns every current registry spec to exactly one active authoring branch", () => {
+		for (const spec of FEATURE_FLAGS) {
+			const memberships = [
+				STORE_MANAGED_FLAGS.has(spec.name),
+				PROJECT_STORE_MANAGED_FLAGS.has(spec.name),
+				LEGACY_UNMANAGED.includes(
+					spec.name as (typeof LEGACY_UNMANAGED)[number],
+				) &&
+					!STORE_MANAGED_FLAGS.has(spec.name) &&
+					!PROJECT_STORE_MANAGED_FLAGS.has(spec.name),
+			].filter(Boolean);
+			expect(memberships, spec.name).toHaveLength(1);
+		}
+	});
+
+	it("permits compliant project-scoped store growth", () => {
+		expect(
+			validateFlagAuthoringPolicy({
+				flags: [...FEATURE_FLAGS, futureProjectSpec()],
+				projectStoreManagedFlags: withFutureProjectManaged(),
+				codecForName: (name) =>
+					name === "future_dynamic_flag"
+						? {
+								parse: ({ hasOverride, raw }) => hasOverride && raw === "1",
+								canonicalEffective: String,
+							}
+						: getFlagStoreCodec(name),
+			}),
+		).toEqual([]);
+	});
+
+	it.each([
+		["governance", { category: "governance_gate" }],
+		["dormant", { dormant: true }],
+		["readonly", { toggleable: "readonly" }],
+		["array key", { configKey: "future.items[].enabled" }],
+		["wildcard key", { configKey: "future.*.enabled" }],
+	] as const)("rejects an unsafe project-store member: %s", (_label, over) => {
+		const issues = validateFlagAuthoringPolicy({
+			flags: [
+				...FEATURE_FLAGS,
+				futureProjectSpec(over as Partial<FeatureFlagSpec>),
+			],
+			projectStoreManagedFlags: withFutureProjectManaged(),
+			codecForName: (name) =>
+				name === "future_dynamic_flag"
+					? {
+							parse: ({ hasOverride, raw }) => hasOverride && raw === "1",
+							canonicalEffective: String,
+						}
+					: getFlagStoreCodec(name),
+		});
+		expect(issues.join("\n")).toMatch(/future_dynamic_flag.*project-store/i);
+	});
+
+	it("rejects a name assigned to both managed branches", () => {
+		const issues = validateFlagAuthoringPolicy({
+			projectStoreManagedFlags: new Set([
+				...PROJECT_STORE_MANAGED_FLAGS,
+				"loop_profiler",
+			]),
+		});
+		expect(issues.join("\n")).toMatch(/loop_profiler.*both managed branches/i);
 	});
 
 	it("rejects a new env spec until every store-management contract is present", () => {

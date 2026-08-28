@@ -497,7 +497,8 @@ describe("FLY-1981 final governance ledgers", () => {
 		if (!existsSync(RUNBOOK)) return;
 		const runbook = readFileSync(RUNBOOK, "utf8");
 		for (const contract of [
-			"registry → STORE_MANAGED_FLAGS + codec → seed row → named store wrapper → management route test → guard green",
+			"registry → managed set + codec → store row policy → management route test → guard green",
+			"PROJECT_STORE_MANAGED_FLAGS",
 			"豁免名单只许缩小",
 			"非产品 ledger",
 			"已合并 / 已 staged ≠ 已部署",

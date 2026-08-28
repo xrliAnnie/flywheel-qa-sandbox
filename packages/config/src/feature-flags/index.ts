@@ -18,7 +18,11 @@ export type {
 	FlagResolveCtx,
 	FlagView,
 } from "./resolve.js";
-export { resolveAllFlags, resolveFlag } from "./resolve.js";
+export {
+	resolveAllFlags,
+	resolveFlag,
+	resolveScopedEffective,
+} from "./resolve.js";
 export type {
 	ComputeFlagScanInput,
 	FlagDeparture,
@@ -48,6 +52,7 @@ export {
 	getFlagStoreCodec,
 	getStoreEligibility,
 	LEGACY_UNMANAGED_BASELINE,
+	PROJECT_STORE_MANAGED_FLAGS,
 	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,
