@@ -1,14 +1,14 @@
 ---
 issue: FLY-2101
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-28T05:34:58.640Z
-nextStep: audit all 13 flag read points and write RED regressions for mailbox,
-  merge gate, and supersede
+phaseCursor: 2/6
+updated: 2026-08-28T05:37:37.125Z
+nextStep: make the three RED regressions green, then hardcode the remaining ten
+  runtime values and shrink ledgers
 chunks: []
 pointers: {}
 ---
 
 # FLY-2101 progress
-**phase**: implement (1/6)
-**next**: audit all 13 flag read points and write RED regressions for mailbox, merge gate, and supersede
+**phase**: implement (2/6)
+**next**: make the three RED regressions green, then hardcode the remaining ten runtime values and shrink ledgers
