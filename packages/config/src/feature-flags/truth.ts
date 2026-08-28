@@ -348,6 +348,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: event-loop diagnostics dir override for isolated slot runtimes (FLY-1995)",
 	FLYWHEEL_PROJECTS_FILE:
 		"plumbing: canonical Lead identity registry path selector (FLY-1726), not a rollout gate",
+	FLYWHEEL_SUMMARY_CONFIG_HOME:
+		"plumbing: absolute home root for canonical summary config in isolated QA runtimes (FLY-2030), not a rollout gate",
 	FLYWHEEL_REPORTS_DIR: "plumbing: reports dir",
 	FLYWHEEL_COMPLETE_MARKER_DIR:
 		"plumbing: complete-failed marker dir override for isolated slot runtimes (FLY-1608)",
