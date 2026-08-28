@@ -294,7 +294,7 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 | B25 | **owner race**:A 说完话 final 迟到,期间 B 开始说 | 该 final unattributed;不能当确认词/不能被 utterances 解析引用 | 归属单测(end-before-final、换人、final-before-end、stale gen) |
 | B26 | **伪造回执**:模型往 outbox 写 `*.receipt.json` | voice 从不读 outbox 回执;权威 receipts.jsonl 在状态目录,模型写不到(路径断言) | 单测 |
 | B27 | **append accepted 后崩溃**:注入成功、assistant final 没来,进程亡 | 无 spoken ack ⇒ 下一场同条目重播(at-least-once) | 重启 reader 集成 |
-| B28 | **`.taken` 遗留**:仅凭磁盘状态分类 | relay ⇒ expired{unknown-outcome} 不重发;filter/pref ⇒ 按目标文件内容幂等收敛;测试只准备磁盘状态,⛔ 不注入「崩在哪一行」的隐藏知识 | 重启 watcher 集成 |
+| B28 | **`.taken` 遗留**(跨 boot,仅凭磁盘状态) | **无论 kind** 统一终态 expired{unknown-outcome} 且**零动作副作用**:relay 不重发,filter/pref 文件不变(与 §2.8 崩溃表、B38 同一合同);测试只准备磁盘状态,⛔ 不注入「崩在哪一行」的隐藏知识 | 重启 watcher 集成 |
 | B29 | **旧 final 冒充念回**:注入前已有含同字符串的 assistant final | 游标之前的 final 不算;G4 不过 | 单测 |
 | B30 | **token 边界**:转写有 FLY-18338,提案 quotes=["FLY-1833"] | containsIdentifier 不命中 ⇒ rejected | 单测 |
 | B31 | envelope 违规:sessionKey ≠ 当前 boot(含「两个 boot 各自 gen=1,boot A 提案到 boot B」)/ 重复 actionId(已有终态回执)/ utterances 解析不到 founder final / scope 全空 | 一律 rejected + evidence | contracts+单测 |
