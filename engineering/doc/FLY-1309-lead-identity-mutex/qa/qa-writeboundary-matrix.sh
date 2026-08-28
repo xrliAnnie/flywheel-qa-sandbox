@@ -102,16 +102,14 @@ OUT=$(env FLYWHEEL_LEAD_ID=eng-lead FLYWHEEL_LEAD_LEASE_KEY="$LEASE_KEY" FLYWHEE
 AFTER=$(msgcount)
 [ "$RC" -ne 0 ] && [ "$AFTER" -eq "$BEFORE" ] && ok "post-wipe send REJECTED + zero write" || bad "DB WIPE = BYPASS! rc=$RC ${BEFORE}->${AFTER} :: $OUT"
 
-# --- S5: BYPASS=1 => allowed + LOUD ---
-echo "--- S5: enforce + BYPASS=1 => allow + 响亮 ---"
+# --- S5: fabricated generation remains rejected; no global bypass exists ---
+echo "--- S5: enforce + fabricated generation => must reject ---"
 BEFORE=$(msgcount)
-OUT=$(env FLYWHEEL_LEAD_LEASE_BYPASS=1 FLYWHEEL_LEAD_ID=eng-lead FLYWHEEL_LEAD_LEASE_KEY="$LEASE_KEY" FLYWHEEL_LEAD_GENERATION=99 \
-  $CLI send --from eng-lead --to runner-x --db "$COMMDB" "founder firefight" 2>&1); RC=$?
+OUT=$(env FLYWHEEL_LEAD_ID=eng-lead FLYWHEEL_LEAD_LEASE_KEY="$LEASE_KEY" FLYWHEEL_LEAD_GENERATION=99 \
+  $CLI send --from eng-lead --to runner-x --db "$COMMDB" "fabricated generation" 2>&1); RC=$?
 AFTER=$(msgcount)
-[ "$RC" -eq 0 ] && [ "$AFTER" -gt "$BEFORE" ] && ok "BYPASS allowed (${BEFORE}->${AFTER})" || bad "BYPASS failed rc=$RC ${BEFORE}->${AFTER} :: $OUT"
-echo "$OUT" | grep -qi "WARNING.*BYPASS" && ok "BYPASS loud on stderr" || bad "BYPASS silent: $OUT"
-ALERTS=$(ls "$FLYWHEEL_ALERT_QUEUE_DIR" 2>/dev/null | wc -l | tr -d ' ')
-[ "$ALERTS" -gt 0 ] && ok "BYPASS raised alert-queue entry ($ALERTS)" || bad "BYPASS raised NO alert (queue empty)"
+[ "$RC" -ne 0 ] && [ "$AFTER" -eq "$BEFORE" ] && ok "fabricated generation REJECTED + zero write" || bad "fabricated generation got through rc=$RC ${BEFORE}->${AFTER} :: $OUT"
+echo "$OUT" | grep -qi "denied\|lease" && ok "fabricated-generation rejection is loud" || bad "fabricated-generation rejection not loud: $OUT"
 
 # --- S6: audit_only (merge default) => stale ALLOWED but recorded ---
 echo "--- S6: audit_only (合入默认) => stale 放行但记账 ---"

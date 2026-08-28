@@ -67,9 +67,11 @@ const AUXILIARY_RUNTIME_SEAMS = [
 ] as const;
 
 /**
- * FLY-1981: immutable maximum ledger for registry-external flag exemptions.
+ * FLY-1981: maximum ledger for registry-external flag exemptions, revised only
+ * by an explicit founder ruling that reclassifies an already-accounted name.
  * This list is deliberately literal rather than derived from FLAG_EXEMPTIONS:
- * existing entries may be deleted, but a new `kind:name` must fail governance.
+ * existing entries may be deleted; any unruled new `kind:name` fails governance.
+ * FLY-2102 is the first such revision: one registry flag became a bounded QA seam.
  */
 export const LEGACY_FLAG_EXEMPTION_BASELINE = Object.freeze([
 	"env:FLYWHEEL_LEAD_DRY_RUN",

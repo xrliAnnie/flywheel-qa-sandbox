@@ -37,10 +37,7 @@ import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
 
-import {
-	createRunsRouter,
-	GHOST_GUARD_SESSION_WAIT_MS,
-} from "../runs-route.js";
+import { createRunsRouter } from "../runs-route.js";
 
 // ── Linear pre-flight mock (route does a dynamic import) ──
 const linearMock = {
@@ -685,10 +682,12 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
-	it("uses the fixed ghost-guard deadline", () => {
+	it("ignores the retired env knob when the module loads", async () => {
 		const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
 		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
 		try {
+			vi.resetModules();
+			const { GHOST_GUARD_SESSION_WAIT_MS } = await import("../runs-route.js");
 			expect(GHOST_GUARD_SESSION_WAIT_MS).toBe(90_000);
 		} finally {
 			if (previous === undefined) {
@@ -696,6 +695,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 			} else {
 				process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = previous;
 			}
+			vi.resetModules();
 		}
 	});
 

@@ -90,6 +90,12 @@ raw_hits="$TMP/raw-hits"
     -g '!dist/**' \
     -g '!**/dist/**' \
     -g '!scripts/__tests__/fly2102-flag-freeze.test.sh'
+
+  # Historical prose is evidence, but executable artifacts under doc roots can
+  # still be run. Keep those in the residue boundary instead of hiding the
+  # entire documentation tree.
+  rg -n -o --pcre2 "$pattern" engineering/doc doc product/doc \
+    -g '*.sh' -g '*.bash' -g '*.ts' -g '*.mjs' -g '*.js' -g '*.cjs'
 ) > "$raw_hits" 2>&1
 scan_rc=$?
 if [[ "$scan_rc" -gt 1 ]]; then

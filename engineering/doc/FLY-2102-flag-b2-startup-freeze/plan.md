@@ -10,7 +10,7 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 ⇒ 全部改动对生产是零行为变化,删掉的只是「未来关掉」的旋钮语义。吸收 FLY-1977。
 
 三个显式设计裁定(exploration §3,评审重点):
-1. **token scrub 随 broker 删**,不留孤儿 scrub;「FW token 永不进 Bridge env」写入 runbook 退役横幅。
+1. **broker 整段删，但独立保留启动前 token scrub**（Code Review R1 后 Lead 覆盖初始设计）;Bridge 在任何校验/启动工作前无条件删除两个旧 credential 名，runbook 禁止再注入。
 2. **exemptions baseline 修订 +1**(voice 从 registry 账迁到 exemptions 账,授权来源 = FLY-2102 issue 正文;治理总面 -9+1)。
 3. **lead_lease_bypass 只删生产者**;`lead_lease_bypass_used` 告警 kind 的历史渲染链保留(耐久 fault DB 可能有历史行)。
 
@@ -82,7 +82,8 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
    honest boundary。
 3. `flag-routes.ts`:删 :177 / :284 bypass 409 分支。
 4. `plugin.ts`:删 broker import(:448)/挂载块(:4299-4319)/close(:10871);
-   删 :8754-8763 sweep-ticks env 读(直接不传 → GatePoller 默认 60)。
+   删 :8754-8763 sweep-ticks env 读(直接不传 → GatePoller 默认 60)；`startBridge` 第一段保留
+   与 broker 解耦的两枚旧 publish credential 无条件 scrub，并从失败启动 seam 验证其先于项目校验执行。
 5. `gate-poller.ts`:`displayReconcileEveryNTicks` 保留为注入参数(测试 seam),但**入口
    sanitize**:非有限数或 ≤0 一律回默认 60(Codex R1:只删 `> 0` 守卫会留下 `(tick-1) % 0`
    = NaN 的静默永不触发路,等于 0=关 换了个写法活着)。sanitize 后 :731 守卫自然消失,
