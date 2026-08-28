@@ -43,6 +43,7 @@ export function createTestLeadIdentityEnvs(
 			return [
 				leadId,
 				{
+					HOME: root,
 					FLYWHEEL_LEAD_LEASE_MODE: "off",
 					FLYWHEEL_PROJECTS_FILE: projectsPath,
 					FLYWHEEL_PROJECT_NAME: identity.projectName,

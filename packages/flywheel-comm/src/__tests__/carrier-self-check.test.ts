@@ -47,6 +47,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 			}),
 		);
 		env = {
+			HOME: dir,
 			FLYWHEEL_STATE_DIR: join(dir, ".flywheel"),
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
 			FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE: join(dir, "carrier-evidence.json"),

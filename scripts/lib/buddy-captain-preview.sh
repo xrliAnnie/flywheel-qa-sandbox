@@ -87,6 +87,40 @@ _bcp_resolve() {
   return 0
 }
 
+# FLY-2030: this preview still enters the legacy Claude launcher directly, so
+# it does not pass through flywheel-lead-wrapper-v2's identity projection.
+# Resolve the summary assignment through the same canonical CLI before any
+# launcher side effect; never infer duty from the role in this shell path.
+_bcp_resolve_summary_projection() {
+  local state_dir="$1"
+  local identity_cli="${FLYWHEEL_COMM_CLI:-$_BCP_REPO_ROOT/packages/flywheel-comm/dist/index.js}"
+  local identity_json summary_role summary_granularity has_summary_duty summary_digest
+  if [ ! -f "$identity_cli" ]; then
+    _bcp_log "cannot start the Captain yet: canonical Lead identity resolver is missing"
+    return 1
+  fi
+  identity_json="$(node "$identity_cli" lead-identity resolve \
+    --projects-file "$state_dir/projects.json" \
+    --project "$BCP_PROJECT_NAME" \
+    --lead "$BCP_LEAD_ID" \
+    --format json 2>/dev/null)" || {
+      _bcp_log "cannot start the Captain yet: canonical summary assignment is not ready"
+      return 1
+    }
+  summary_role="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$identity_json")" \
+    || return 1
+  summary_granularity="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$identity_json")" \
+    || return 1
+  has_summary_duty="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("invalid") end' <<<"$identity_json")" \
+    || return 1
+  summary_digest="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" \
+    || return 1
+  export FLYWHEEL_LEAD_SUMMARY_ROLE="$summary_role"
+  export FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity"
+  export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty"
+  export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_digest"
+}
+
 buddy_captain_preview_start() {
   local state_dir="$1"; shift
   # identity flags → project name (only --project matters here; journal falls back)
@@ -115,6 +149,7 @@ buddy_captain_preview_start() {
     return 1
   fi
   _bcp_resolve "$state_dir" "$project" || return 1
+  _bcp_resolve_summary_projection "$state_dir" || return 1
   _bcp_converge_bin "$HOME/.flywheel/bin"
 
   # secrets: load the live .env into THIS process env only (never echoed),

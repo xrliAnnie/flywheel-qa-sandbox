@@ -63,6 +63,9 @@ describe("GitHub summary delivery adapter", () => {
 			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
 				return "main\n";
 			}
+			if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+				return "[]";
+			}
 			if (command === "gh" && args[0] === "repo" && args[1] === "clone") {
 				const repoDir = args[3]!;
 				mkdirSync(join(repoDir, "summaries", "flywheel"), { recursive: true });
@@ -82,7 +85,7 @@ describe("GitHub summary delivery adapter", () => {
 					cwd!,
 					"summaries",
 					"flywheel",
-					"2026-08-28--eng-lead--02.md",
+					"2026-08-28--eng-lead--01.md",
 				);
 				expect(statSync(target).mode & 0o777).toBe(0o644);
 				return "";
@@ -97,7 +100,7 @@ describe("GitHub summary delivery adapter", () => {
 		await expect(delivery.create(input())).resolves.toEqual({
 			prNumber: 9,
 			url: "https://github.com/xrliAnnie/raya/pull/9",
-			path: "summaries/flywheel/2026-08-28--eng-lead--02.md",
+			path: "summaries/flywheel/2026-08-28--eng-lead--01.md",
 		});
 		const push = calls.find(
 			(call) => call.command === "git" && call.args[0] === "push",
@@ -106,6 +109,51 @@ describe("GitHub summary delivery adapter", () => {
 		expect(push?.args[2]).toMatch(
 			/^HEAD:refs\/heads\/summary\/flywheel\/eng-lead\//,
 		);
+	});
+
+	it("allocates after same-author unread PR paths that are absent from main", async () => {
+		const period = "2026-08-28T06:00:00Z/2026-08-28T12:00:00Z";
+		const run = vi.fn((command: string, args: string[]) => {
+			if (command === "gh" && args[0] === "repo" && args[1] === "view") {
+				return "main\n";
+			}
+			if (command === "gh" && args[0] === "pr" && args[1] === "list") {
+				return JSON.stringify([
+					{
+						number: 8,
+						state: "OPEN",
+						mergedAt: null,
+						headRefName: "summary/flywheel/eng-lead/prior",
+						url: "https://github.com/xrliAnnie/raya/pull/8",
+						files: [
+							{
+								path: "summaries/flywheel/2026-08-28--eng-lead--01.md",
+							},
+						],
+					},
+				]);
+			}
+			if (command === "gh" && args[0] === "repo" && args[1] === "clone") {
+				mkdirSync(args[3]!, { recursive: true });
+				return "";
+			}
+			if (command === "gh" && args[0] === "pr" && args[1] === "create") {
+				return "https://github.com/xrliAnnie/raya/pull/9\n";
+			}
+			return "";
+		});
+		const delivery = createGitHubSummaryDelivery({ run });
+
+		await expect(
+			delivery.create(
+				input({
+					period,
+					content: content.replace("2026-08-21/2026-08-28", period),
+				}),
+			),
+		).resolves.toMatchObject({
+			path: "summaries/flywheel/2026-08-28--eng-lead--02.md",
+		});
 	});
 
 	it("fails closed if an open summary branch contains a symlink", async () => {

@@ -75,7 +75,7 @@ CREATE TABLE IF NOT EXISTS store_meta (
 `;
 
 function canonicalIdentityHomeDir(env: NodeJS.ProcessEnv): string | undefined {
-	return env.FLYWHEEL_STATE_DIR ? dirname(env.FLYWHEEL_STATE_DIR) : undefined;
+	return env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
 }
 
 export class LeaseStoreError extends Error {

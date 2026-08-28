@@ -41,6 +41,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				pid === process.pid && start === writerStart,
 		};
 		env = {
+			HOME: dir,
 			FLYWHEEL_STATE_DIR: join(dir, ".flywheel"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "lease.db"),
 			FLYWHEEL_LEAD_EPISODE_DB: join(dir, "lease-episodes.db"),
@@ -184,6 +185,24 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			expect(instructions()).toEqual([]);
 		},
 	);
+
+	it("uses HOME for canonical identity when FLYWHEEL_STATE_DIR is an isolated slot", async () => {
+		env.HOME = dir;
+		env.FLYWHEEL_STATE_DIR = join(dir, "qa", "slot-1");
+		writeProjects("claude-code");
+		setMode("off");
+
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "isolated state root",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+
+		expect(instructions()).toHaveLength(1);
+	});
 
 	it("requires a bound lease even for a canonically configured v2 Claude carrier", async () => {
 		writeProjects("claude-code", "v2");

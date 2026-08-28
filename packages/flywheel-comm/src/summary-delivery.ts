@@ -36,6 +36,7 @@ interface ListedPullRequest {
 	mergedAt: string | null;
 	headRefName: string;
 	url: string;
+	files?: Array<{ path: string }>;
 }
 
 const defaultRunner: CommandRunner = {
@@ -100,7 +101,49 @@ function walkFiles(root: string): string[] {
 	return files;
 }
 
-function nextSequence(repoDir: string, input: SummaryDeliveryInput): number {
+function listOpenSummaryPaths(commands: CommandRunner, repo: string): string[] {
+	const raw = commands.run("gh", [
+		"pr",
+		"list",
+		"--repo",
+		repo,
+		"--state",
+		"open",
+		"--limit",
+		"1000",
+		"--json",
+		"number,state,mergedAt,headRefName,url,files",
+	]);
+	const pulls = parseJson<ListedPullRequest[]>(raw, "gh pr list");
+	const paths: string[] = [];
+	for (const pull of pulls) {
+		if (!pull.headRefName.startsWith("summary/")) continue;
+		if (!Array.isArray(pull.files)) {
+			throw new Error(
+				`summary_github_invalid: open PR #${pull.number} omitted files`,
+			);
+		}
+		for (const file of pull.files) {
+			if (!file || typeof file.path !== "string") {
+				throw new Error(
+					`summary_github_invalid: open PR #${pull.number} has malformed files`,
+				);
+			}
+			paths.push(file.path);
+		}
+	}
+	return paths;
+}
+
+function escapeRegExp(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function nextSequence(
+	repoDir: string,
+	input: SummaryDeliveryInput,
+	openPaths: string[],
+): number {
 	const synthetic = buildSummaryPath({
 		project: input.project,
 		lead: input.author,
@@ -109,11 +152,25 @@ function nextSequence(repoDir: string, input: SummaryDeliveryInput): number {
 		sequence: 1,
 	});
 	const endDate = basename(synthetic).slice(0, 10);
+	const projectPrefix = `summaries/${input.project}/`;
+	const namePattern =
+		input.granularity === "per-lead"
+			? new RegExp(`^${endDate}--${escapeRegExp(input.author)}--(\\d{2})\\.md$`)
+			: new RegExp(`^${endDate}--(\\d{2})\\.md$`);
 	let maximum = 0;
-	for (const file of walkFiles(join(repoDir, "summaries", input.project))) {
-		const name = basename(file);
-		if (!name.startsWith(`${endDate}--`) || !name.endsWith(".md")) continue;
-		const match = /--(\d{2})\.md$/.exec(name);
+	const committedPaths = walkFiles(
+		join(repoDir, "summaries", input.project),
+	).map((file) =>
+		file
+			.slice(repoDir.length + 1)
+			.split("\\")
+			.join("/"),
+	);
+	for (const path of [...committedPaths, ...openPaths]) {
+		if (!path.startsWith(projectPrefix)) continue;
+		const name = path.slice(projectPrefix.length);
+		if (name.includes("/")) continue;
+		const match = namePattern.exec(name);
 		if (match) maximum = Math.max(maximum, Number(match[1]));
 	}
 	if (maximum >= 99) {
@@ -224,6 +281,7 @@ class GitHubSummaryDelivery implements SummaryDelivery {
 			if (!/^[A-Za-z0-9._/-]+$/.test(defaultBranch)) {
 				throw new Error("summary_github_invalid: default branch is malformed");
 			}
+			const openPaths = listOpenSummaryPaths(this.commands, input.repo);
 			this.commands.run("gh", [
 				"repo",
 				"clone",
@@ -243,7 +301,7 @@ class GitHubSummaryDelivery implements SummaryDelivery {
 				lead: input.author,
 				period: input.period,
 				granularity: input.granularity,
-				sequence: nextSequence(repoDir, input),
+				sequence: nextSequence(repoDir, input, openPaths),
 			});
 			validateSummaryArtifact({
 				path,
