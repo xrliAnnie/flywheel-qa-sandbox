@@ -13,9 +13,9 @@ FLY-2080 在 `runner-patrol-rules.md` 的 receipt/replacement 止血配方中加
 
 FLY-2080 的目的不变：Lead 修复漏账后不能只以 SQL 成功为结论，必须留下可审计证据，证明 Bridge/dispatcher 已真正继续推进。新合同需要同时满足：
 
-1. 优先使用 StateStore 已有的 `workflow_run_event` 单调 `seq` 与 `kind` 作为接力证据，并排除配方自己写入的 `patrol:FLY-2080:%` receipt。
+1. 优先使用 StateStore 已有的 `workflow_run_event` 单调 `seq` 与 `kind` 作为事务后接力证据，并排除所有 `patrol:%` repair receipt。
 2. 没有新 engine event 时不得靠 repair event 假绿，也不得自动把“暂时没事件”解释成失败。
-3. 确需 pane 佐证时，只读取判断当前生命周期状态所需的有界可见片段，记录稳定状态标记；不抓全 scrollback、不为另一个 agent 的完整输出建立指纹、不做前后哈希比较。
+3. pane 在 FLY-2080 repair appendix 中只保留两个窄用途：事务前可参与证明 actor 已完成 rework 的反伪造 precondition；无新 event 时用于事务后诊断。两者都只读取所需的有界可见片段并记录稳定状态标记；不抓全 scrollback、不建立输出指纹、不做前后哈希比较。
 4. `fixed|advanced` 仍要求真实接力；只有数据库行变化不得过门。
 
 ## 最小改动边界

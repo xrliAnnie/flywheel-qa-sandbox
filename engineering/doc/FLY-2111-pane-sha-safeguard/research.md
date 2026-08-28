@@ -22,14 +22,14 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 - `listWorkflowRunEvents()` 按 `seq` 排序返回；
 - receipt 正常路径写 `rework_delivery_wake_delivered`；replacement 正常路径写 `execution_dead_rolled_back`、`rework_replacement_materialized` 及后续 resume/dispatch 事件；workflow transition 还写 `edge_traversed`、`loop_iteration` 等。
 
-因此“baseline 后出现由引擎写入的新 `seq:kind`”直接证明引擎消费了修复后的状态，比完整 pane 文本变化更接近要验证的属性。规则已有正确的反假绿条件：排除 `event_uid LIKE 'patrol:FLY-2080:%'`，因为那类 event 是修复事务自己写入，只证明 transaction commit。
+因此“baseline 后出现由引擎写入的新 `seq:kind`”直接证明引擎消费了修复后的状态，比完整 pane 文本变化更接近要验证的属性。反假绿条件应排除 `event_uid LIKE 'patrol:%'`，因为所有 patrol-authored event 都只证明修复 transaction commit；现状只排 `patrol:FLY-2080:%`，本单在把 event 升为唯一接力成功门时一并收紧。
 
 ## 3. event-first 完成门
 
-新的接力合同应把 StateStore 事件变成唯一的 `fixed|advanced` 成功证据：
+新的**事务后接力**合同应把 StateStore 事件变成唯一的 `fixed|advanced` 成功证据；这不替代事务前防伪条件：
 
-1. 修复前只保存 `BASELINE_SEQ`，不读取目标 pane，也不创建 pane 输出指纹。
-2. 修复后等待至少一个 reconcile tick，再查询同 run 中 `seq > BASELINE_SEQ` 且排除 `patrol:FLY-2080:%` 的 event。
+1. 修复前保存 `BASELINE_SEQ`，不创建 pane 输出指纹；但 receipt 配方仍必须用 pane/commit/TURN 另行证明 `preferred_actor_execution_id` 已完成该 rework，否则属于伪造 receipt 并停手。pane 如需参与此真实性证明，也只能有界读取并只记非敏感 marker。
+2. 修复后等待至少一个 reconcile tick，再查询同 run 中 `seq > BASELINE_SEQ` 且排除 `patrol:%` 的 event。
 3. `AFTER_EVENTS` 非空才允许以本段证据写 `advanced|fixed`；静态 DB 状态与 SQL changes 仍需先通过，但不能替代 engine event。
 4. 一个 tick 后没有新 event 时，不把它归为“成功”或“修复失败”。Lead 可做一次有界 pane 诊断，记录当前生命周期标记，并把 finding 留在 `escalated-with-plan`/继续观察的可执行计划中。
 
@@ -39,7 +39,7 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 
 `pane_current_command` 不能承担进度判断：项目既有 FLY-758 调研已实测 scaffold 与 Runner 在多个时点都显示相同命令，会误判。可用的最小 fallback 是：
 
-- 只在 `AFTER_EVENTS` 为空、确需定位为什么尚未推进时读取当前可见末尾的有界片段，例如 `TMUX= tmux capture-pane -p -S -40 -t "$TARGET_PANE"`；
+- pane 有两个严格分开的用途：事务前可参与证明 actor 已完成 rework 的真实性 precondition；事务后只在 `AFTER_EVENTS` 为空时诊断为什么尚未推进。两者都先校验 exact canonical `TARGET_PANE`，再用 `TMUX= tmux capture-pane -p -S -40 -t "$TARGET_PANE" | tail -40` 把实际读取上限收紧到最终 40 行；
 - 不读取完整 history，不保存原文，不计算内容摘要，不和修复前输出做比较；
 - 报告只写 Lead 从片段中识别出的非敏感生命周期标记与观察时间，例如 `pane_marker=<stage-or-wait-state>`，原始输出若可能含 secret 不落盘；
 - pane marker 只指导 `inspect|repair|retry` 的下一动作，不能单独把 result 提升为 `fixed|advanced`。
@@ -50,13 +50,14 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 
 现有 `fly369-patrol-rule.test.ts` 已钉住 FLY-2080 的修复事务、event 排除条件与接力语义，但只用 `/pane|workflow_run_event/` 做了宽松检查，无法阻止 pane-SHA 段落回流。新增内容契约应：
 
-- 在 FLY-2080 附录范围内拒绝 `BEFORE_PANE_SHA`、`AFTER_PANE_SHA`、`full-scrollback state hash`、`pane hash` 和 `capture-pane -p -S -`；
-- 要求 `BASELINE_SEQ`、`AFTER_EVENTS`、`seq > BASELINE_SEQ` 与 repair event 排除条件继续存在；
+- 在整个 `## 0.` 拒绝 `BEFORE_PANE_SHA`、`AFTER_PANE_SHA`、`full-scrollback state hash`、`pane hash`，只在 FLY-2080 appendix 拒绝无限历史 `capture-pane -p -S -`；
+- 要求 `BASELINE_SEQ`、`AFTER_EVENTS`、`seq > BASELINE_SEQ` 与 `event_uid NOT LIKE 'patrol:%'` 继续存在；
 - 要求 event 非空是成功条件，且明确 pane marker 不能单独证明 `fixed|advanced`；
-- 要求 fallback 是有界读取（`-S -40`）、不落原文、不哈希、不前后比较；
+- 要求 bounded pane read 是 `-S -40 | tail -40`、不落原文、不哈希、不前后比较；
+- 要求事务前仍保留“`preferred_actor_execution_id` 已完成这次 rework / 否则伪造 receipt”的真实性合同；
 - 既有 FLY-1855 STEP 2 full-scrollback 测试继续通过，证明没有误删整机检测面。
 
-基线测试尝试运行 `pnpm --filter flywheel-teamlead test src/__tests__/fly369-patrol-rule.test.ts`，当前 worktree 返回 `vitest: command not found`，并明确提示 `node_modules missing`。这不是代码失败；实现前需要按 lockfile 恢复已有依赖，再完成 RED/GREEN 证据。
+基线首次因 `node_modules missing` 无法启动；随后已运行 `pnpm install --frozen-lockfile` 恢复既有依赖，lockfile 无修改，现有 22 条定向测试通过。实现阶段继续完成 RED/GREEN 证据。
 
 ## 6. 部署后行为验收
 
@@ -65,7 +66,7 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 1. Founder 将 Tadashi 切回 Fable 5。
 2. 观察至少 100 条 mailbox 消息，`reasoning_extraction` 拦截为 0 才通过。
 3. 同期确认 CoS(Fable) 仍为 0，作为阴性对照。
-4. 只要出现一次同类拦截，本假设判错，回到提示词包重新定位；不以样本量或概率解释掉失败。
+4. 只要出现一次同类拦截，本假设判错，回到提示词包重新定位；第一候选是仍保留且同样含 full scrollback/state SHA 的 STEP 2，但黑盒下候选不是定论。不以样本量或概率解释掉失败。
 
 本 implement node 只交付可部署 PR 与该验收合同，不擅自换生产模型、部署或重启 Lead。
 
