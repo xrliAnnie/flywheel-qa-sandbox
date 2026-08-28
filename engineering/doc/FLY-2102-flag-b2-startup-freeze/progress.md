@@ -1,14 +1,13 @@
 ---
 issue: FLY-2102
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-28T01:44:13.921Z
-nextStep: design node COMPLETE (Codex APPROVED R4, gate passed, HTML published);
-  successor implements plan.md steps 1-6
+phase: implement
+phaseCursor: 0/6
+updated: 2026-08-28T01:46:00.493Z
+nextStep: audit current flag read sites and establish RED baselines for plan step 1
 chunks: []
 pointers: {}
 ---
 
 # FLY-2102 progress
-**phase**: design (6/6)
-**next**: design node COMPLETE (Codex APPROVED R4, gate passed, HTML published); successor implements plan.md steps 1-6
+**phase**: implement (0/6)
+**next**: audit current flag read sites and establish RED baselines for plan step 1
