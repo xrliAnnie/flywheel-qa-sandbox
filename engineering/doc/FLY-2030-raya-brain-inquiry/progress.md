@@ -1,13 +1,13 @@
 ---
 issue: FLY-2030
 phase: implement
-phaseCursor: 4/8
-updated: 2026-08-28T10:04:06.643Z
-nextStep: finish production adapters, prefix fence, and full-repo fixture migration
+phaseCursor: 5/8
+updated: 2026-08-28T10:28:08.119Z
+nextStep: format, run Flywheel/Raya full gates, then exact-head paired fence
 chunks: []
 pointers: {}
 ---
 
 # FLY-2030 progress
-**phase**: implement (4/8)
-**next**: finish production adapters, prefix fence, and full-repo fixture migration
+**phase**: implement (5/8)
+**next**: format, run Flywheel/Raya full gates, then exact-head paired fence
