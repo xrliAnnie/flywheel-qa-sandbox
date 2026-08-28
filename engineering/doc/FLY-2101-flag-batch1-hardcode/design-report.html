@@ -115,7 +115,7 @@
         <td><strong>D1</strong> 墓碑 vs 零命中</td>
         <td>不加墓碑,达成 rg 全仓零命中(验收原文「含 dist 外全部源」)</td>
         <td>按惯例加 RETIRED_FLAGS 墓碑 —— 墓碑字符串本身就是一个 rg 命中,与验收冲突</td>
-        <td>你删 <code>.env</code> 行之前,检查器报的是通用的「unknown 环境变量」而不是定制的「已退役,删这行」;仍然响,只是话糙</td>
+        <td>你删 <code>.env</code> 行之前,残行只在有人跑 check-flag-truth(环境变量体检 CLI,不在部署/启动链上)时报通用的「unknown 环境变量」,而不是定制的「已退役,删这行」;不阻断任何东西,只是话糙</td>
       </tr>
       <tr>
         <td><strong>D2</strong> 空保护名单去留</td>
@@ -146,7 +146,7 @@
     <h3>不做 / 做不到</h3>
     <ul>
       <li><strong>不回答「以后要不要能关」</strong>:merge 门、supersede 巡检从此没有全局阀。若未来出现真实操作者需求,走新 issue 重新登记(登记闸会强制走 SQLite 托管路径),本单不留后门。</li>
-      <li><strong>代码替不了人删生产文件</strong>:<code>.env</code> 那行要 Lead 手动删;删之前检查器会持续报 unknown(可见、无害,但会响)。</li>
+      <li><strong>代码替不了人删生产文件</strong>:<code>.env</code> 那行要 Lead 手动删;删之前残行只在有人跑环境变量体检 CLI 时报 unknown(不阻断部署/启动)。</li>
       <li><strong>测试改造面大于代码改造面</strong>:约 30 个测试文件要动,最重的是一批拿 <code>MERGE_APPROVAL_GATE=0</code> 当捷径绕过 merge 门的测试,要改成构造真审批 fixture。工作量风险,不是行为风险。</li>
       <li><strong>死代码只在零引用时删</strong>:flywheel-comm 的旧单条投递方法等,删除前逐个 rg 复核,清单列进 PR body,不顺手扩权。</li>
       <li>B2(9 个启动/CLI 时读的)、C(config.yaml)、任何新旋钮/告警层:不在本单。</li>
