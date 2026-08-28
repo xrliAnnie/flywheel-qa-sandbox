@@ -29,6 +29,13 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 - Use the shared command (below). Do NOT hand-craft the PR flow yourself, do
   NOT push directly to Raya's default branch, do NOT merge your own summary
   PR — the merge is Raya's read receipt, not yours.
+- **The ONLY exception anywhere in this mechanism is Raya's own read-receipt
+  merge**, defined in `founder-only-authority.md` → "Narrow exemption —
+  Raya's read-receipt merges": it applies to Raya alone, in her two repos
+  alone, and only to PRs passing that exemption's two machine-checkable
+  conditions. **No other Lead may invoke that exemption**; these two rules
+  are two faces of the same founder decision (PRD §12.3.3/.4), not a
+  conflict.
 
 ## The shared command
 
@@ -58,5 +65,5 @@ No secrets or tokens; no full transcripts; no other project's judgment calls
 ## 三、边界(决定,非遗漏)
 
 - **不做** Lead 侧的自动内容生成(判断必须是 Lead 自己的,机器只管骨架与投递)。
-- **不做** 提醒/催交机制——未交的 summary 在 Raya 侧表现为「该项目静默」,而沉默本身是一等信号(PRD §10.5);造催交器会把信号抹掉。
+- **不做** 提醒/催交机制(**决定,不是遗漏**)——一个 Lead 那周没写 summary,**本身就是信息**(没进展,或被别的事吃掉了);装上催交器之后,收到的每一份 summary 都可能只是被催出来的,**从此再也分不出「有话说」和「被催了」**——把一个信号变成噪声的典型形状(PRD §10.5「沉默=一等信号」;理由经 Tadashi 2026-08-28 加硬)。
 - CoS 与无部门的 infra bot 不在义务范围(11 个真·部门 Lead 的口径,PRD §8.8.3 的减法)。
