@@ -1,14 +1,13 @@
 ---
 issue: FLY-2101
 phase: implement
-phaseCursor: 2/6
-updated: 2026-08-28T05:37:37.125Z
-nextStep: make the three RED regressions green, then hardcode the remaining ten
-  runtime values and shrink ledgers
+phaseCursor: 3/6
+updated: 2026-08-28T05:54:40.624Z
+nextStep: repair compile/test fixtures and residue guards
 chunks: []
 pointers: {}
 ---
 
 # FLY-2101 progress
-**phase**: implement (2/6)
-**next**: make the three RED regressions green, then hardcode the remaining ten runtime values and shrink ledgers
+**phase**: implement (3/6)
+**next**: repair compile/test fixtures and residue guards
