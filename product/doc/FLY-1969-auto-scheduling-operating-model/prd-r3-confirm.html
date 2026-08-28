@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1969 最后一格 — 你已经答了,按一下确认就好</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--navy:#1a365d;}
+*{box-sizing:border-box}
+body{margin:0;padding:22px 14px 40px;background:var(--bg);color:var(--ink);
+font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;font-size:14px;}
+.wrap{max-width:860px;margin:0 auto}
+h1{font-size:23px;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+.card{background:var(--card);border-radius:12px;padding:14px 16px;margin:0 0 12px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.green{border-left-color:var(--green)}.card.blue{border-left-color:var(--blue)}
+.card.amber{border-left-color:var(--amber)}.card.gray{border-left-color:#c7c7cc}
+.sec{font-size:16px;font-weight:650;margin:22px 0 10px;letter-spacing:-.01em}
+h3{font-size:14px;margin:0 0 6px;font-weight:650}
+p{margin:0 0 7px}
+.dim{color:var(--dim);font-size:12.5px}
+.big{background:#e6f9ed;border:1px solid #a7e5bf;border-radius:10px;padding:12px 14px;margin:10px 0;
+font-size:15px;font-weight:650;color:#136c37}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px}
+textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+font:inherit;font-size:13px;resize:vertical;background:#fcfcfd;color:var(--ink);min-height:44px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 6px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 14px;
+font:inherit;font-size:13px;cursor:pointer;color:var(--ink)}
+.chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
+.btn{border:0;border-radius:9px;padding:9px 18px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.btn.p{background:var(--navy);color:#fff}.btn.s{background:#e8e8ed;color:var(--ink)}
+#status{font-size:13px;color:var(--navy);margin:9px 0 0;min-height:18px}
+#exportOut{display:none;margin-top:9px;min-height:110px;font-family:"SF Mono",ui-monospace,monospace;font-size:12px}
+.foot{color:var(--dim);font-size:12px;margin:20px 0 0;text-align:center}
+ul{margin:5px 0 7px;padding-left:19px}li{margin:3px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>最后一格 —— 你已经答了,按一下确认就好</h1>
+<p class="sub">FLY-1969 · 2026-08-25 · 这一页不需要你重新想任何事</p>
+
+<div class="card green">
+<h3>你已经给的答案</h3>
+<div class="big">巡检频率:60 分钟,保持不变</div>
+<p class="dim">你的原话:「60 min is ok」(08-25 下午),之后你又在讨论串里发了一个「60」。</p>
+<p><strong>为什么还要你按一次:</strong>你那两次回复<strong>没能被那扇门收到</strong> —— 它只认「回复到 8 月 22 号那张卡片上」,而那张卡已经被几十条自动重连的卡片压到很后面了。</p>
+<p><strong>⇒ 不是你没答,是门没收到。</strong>所以这张新卡片就是把你的答案写好放在这儿,你确认一下即可。</p>
+</div>
+
+<div class="sec">保持 60 分钟,你保住的是什么</div>
+<div class="card blue">
+<p>系统每小时回头看一遍。<strong>它看的不是「有没有新活」</strong>——新活是自动送到的,不用找。它看的是<strong>「有没有该发生却没发生的事」</strong>:</p>
+<ul>
+<li>在跑的活,和它跑到哪一步了</li>
+<li>该返工却停住的</li>
+<li>做完了卡在收尾的</li>
+<li><strong>开着没人回的门</strong>(就是你现在遇到的这种)</li>
+<li>那个活的现场还在不在(有没有已经死了)</li>
+</ul>
+<p><strong>这五样共用同一个「每小时」。</strong>所以保持 60 分钟 = 上面每一样最多一小时内被看见一次;改成 6 小时的话,<strong>它们会一起变慢</strong>,不能只慢其中一样。</p>
+<p class="dim">⚠️ 说清一件事,免得误会:<strong>你这几天那扇门开着没被应答,不是钟太慢造成的。</strong>钟每小时都看见了它开着。问题在于你的回复没能进到门里 —— 那是另一件事,已经单独记下来在修了,<strong>不是调频率能解决的</strong>。</p>
+</div>
+
+<div class="sec">确认这一格 = 这份需求文档就定稿了</div>
+<div class="card gray">
+<p>你这一轮总共定了这五件:</p>
+<table>
+<tr><th style="width:44%">问题</th><th>你定的</th></tr>
+<tr><td>批次怎么切,算哪一类改动</td><td><strong>第二类</strong> —— 我们切完告诉你,不等你</td></tr>
+<tr><td>那个固定的并发上限</td><td><strong>临时兜底,能自动判断了就撤掉</strong></td></tr>
+<tr><td>汇总多久给你一次</td><td><strong>每批做完一次</strong></td></tr>
+<tr><td>怎么算「你不满意」</td><td><strong>用你「打回重做」这个动作当信号</strong>,不用你额外做事</td></tr>
+<tr><td>系统多久回头看一遍</td><td><strong>60 分钟,保持不变</strong> ← 就是这一格</td></tr>
+</table>
+<p style="margin-top:9px"><strong>定稿之后会发生什么:</strong>Honey Lemon 建一个 Epic 把这份文档挂进去交给 Tadashi,<strong>由他决定拆成几个单</strong>。你不用再看拆单这件事。</p>
+</div>
+
+<div class="sec">你的确认</div>
+<div class="card amber">
+<div class="chips" data-chips="confirm">
+<button class="chip" type="button">确认:60 分钟不变,文档可以定稿</button>
+<button class="chip" type="button">频率我想改</button>
+<button class="chip" type="button">还有别的要改</button>
+</div>
+<textarea data-note="confirm" placeholder="只有要改的时候才需要写字;没有就留空"></textarea>
+<p style="margin-top:11px"><strong>👉 如果没有要改的:直接在这张卡片下面回复 approve 就行</strong>,连按钮都不用点。</p>
+<p class="dim">(下面那个复制按钮只在你写了字、需要把意见发回来的时候才用。复制出来的文字带前缀,系统会读成「有意见」。)</p>
+<div style="margin-top:12px;display:flex;gap:9px;flex-wrap:wrap">
+<button class="btn p" id="exportBtn" type="button">一键汇总复制</button>
+<button class="btn s" id="clearBtn" type="button">清空</button>
+</div>
+<p id="status"></p>
+<textarea id="exportOut" readonly></textarea>
+</div>
+
+<p class="foot">FLY-1969 · 批注只存在你自己浏览器里 · 没有意见的话直接回 approve 即可</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = "fly1969-r3-confirm-v1";
+  var MARK = "【页面意见汇总】FLY-1969";
+  var CHUNK = 1800;
+  var labels = { confirm:"最后一格 · 频率确认" };
+  var notes = document.querySelectorAll("textarea[data-note]");
+  var chipGroups = document.querySelectorAll("[data-chips]");
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+    notes.forEach(function(t){ var k=t.getAttribute("data-note"); if(saved["n_"+k]) t.value=saved["n_"+k]; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var p=saved["c_"+key];
+      if(p!=null){ g.querySelectorAll(".chip").forEach(function(c,i){
+        c.setAttribute("aria-pressed",(String(i)===String(p))?"true":"false"); }); } });
+  } catch(e){}
+  function persist(){
+    var o={};
+    notes.forEach(function(t){ o["n_"+t.getAttribute("data-note")]=t.value; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var s=-1;
+      g.querySelectorAll(".chip").forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") s=i; });
+      if(s>=0) o["c_"+key]=s; });
+    try{ localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){}
+  }
+  notes.forEach(function(t){ t.addEventListener("input", persist); });
+  chipGroups.forEach(function(g){ var cs=g.querySelectorAll(".chip");
+    cs.forEach(function(c){ c.addEventListener("click", function(){
+      var was = c.getAttribute("aria-pressed")==="true";
+      cs.forEach(function(x){ x.setAttribute("aria-pressed","false"); });
+      c.setAttribute("aria-pressed", was?"false":"true"); persist(); }); }); });
+
+  function collect(){
+    var blocks=[], any=false;
+    notes.forEach(function(t){
+      var k=t.getAttribute("data-note");
+      var g=document.querySelector('[data-chips="'+k+'"]');
+      var ct="";
+      if(g){ var on=g.querySelector('.chip[aria-pressed="true"]'); if(on) ct="["+on.textContent.trim()+"] "; }
+      var v=(t.value||"").trim();
+      if(ct||v){ any=true; blocks.push("【"+(labels[k]||k)+"】\n"+ct+v); }
+    });
+    return { any:any, blocks:blocks };
+  }
+  function chunk(blocks){
+    var out=[], cur="";
+    for(var i=0;i<blocks.length;i++){
+      var b=blocks[i];
+      var candidate = cur ? (cur+"\n\n"+b) : b;
+      if((MARK.length+8+candidate.length) > CHUNK && cur){ out.push(cur); cur=b; }
+      else { cur=candidate; }
+    }
+    if(cur) out.push(cur);
+    return out.map(function(body,i){
+      var head = MARK + (out.length>1 ? (" ("+(i+1)+"/"+out.length+")") : "");
+      return head+"\n"+body;
+    });
+  }
+
+  var status=document.getElementById("status"), out=document.getElementById("exportOut");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var r=collect();
+    if(!r.any){
+      out.style.display="none"; out.value="";
+      status.textContent="还没圈 / 还没写 —— 没有意见的话,直接在卡片下回复 approve 就行。";
+      return;
+    }
+    var parts=chunk(r.blocks);
+    var text=parts.join("\n\n---- 分段,请分开粘贴 ----\n\n");
+    out.value=text; out.style.display="block"; out.focus(); out.select();
+    var tail = parts.length>1 ? "(共 "+parts.length+" 段,请分开粘贴)" : "";
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ status.textContent="已汇总,并已复制到剪贴板。直接粘给我即可。"+tail; },
+        function(){ status.textContent="已汇总,但复制失败 —— 请手动选中下面的文字复制发回。"+tail; });
+    } else {
+      status.textContent="已汇总,但这个浏览器不给复制 —— 请手动选中下面的文字复制发回。"+tail;
+    }
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    notes.forEach(function(t){ t.value=""; });
+    chipGroups.forEach(function(g){ g.querySelectorAll(".chip").forEach(function(c){ c.setAttribute("aria-pressed","false"); }); });
+    persist(); out.value=""; out.style.display="none"; status.textContent="已清空。";
+  });
+})();
+</script>
+</body>
+</html>
