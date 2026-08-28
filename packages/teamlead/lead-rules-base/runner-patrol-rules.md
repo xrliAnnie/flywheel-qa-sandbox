@@ -139,8 +139,11 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 
    **步骤 A — 发现即补账推进**：
 
-   1. 从报告拿到 exact shape，读 Bridge 日志的确切错误码，再打开抛出该错误的
-      源码，把每个 `WHERE` / `if` 守卫逐条抄进报告；禁止凭错误文案猜是哪笔账。
+   1. 从报告拿到 exact shape 与 Bridge 的结构化诊断（稳定错误码、run/request/execution id、
+      当前 state/revision），把可复跑的只读 query 与相关 `workflow_run_event seq/kind`
+      结果写进报告；只引用负责该诊断的 source symbol/path 作为 owner 入口，不摘录或
+      枚举实现条件。错误文案只作索引；证据不足以判定 guard 类别时写 `UNAVAILABLE` +
+      owner + 下一动作，不得猜是哪笔账。
    2. 逐守卫分类。防篡改/真实性 guard（`digest`、authority、`head fingerprint`、
       founder consent、`approval`、`claim`、授权或头指纹）必须停手，不改账，带
       classification、evidence、owner 和下一动作上报 founder，result 写
@@ -155,10 +158,12 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
       永不终结 Runner、替换真实身份或丢失 work/context；每次修复都保留 before/after
       evidence 并执行步骤 B。任一 recipe precondition 不满足时不得硬拨，必须明确
       owner + 下一动作 + evidence，写 `escalated-with-plan`。
-   4. 补账后至少等一个 Bridge reconcile tick，并记录 baseline 之后的新
-      `workflow_run_event seq/kind` 或 pane full-scrollback state hash 变化，证明引擎
-      真的接力；SQL `changes()==1` 本身不是接力证据。只有 finding 已消失可写
-      `fixed`；Bridge 已进入下一可执行状态可写 `advanced`。
+   4. 补账后至少等一个 Bridge reconcile tick，并记录 baseline 之后由引擎追加的
+      `workflow_run_event seq/kind`；接力 event 必须同时满足 `seq > BASELINE_SEQ` 与
+      `event_uid NOT LIKE 'patrol:%'`，因为 patrol 自写 event 只证明 transaction commit。
+      SQL `changes()==1` 或目标 pane 内容变化本身都不是接力证据。只有 finding 已消失
+      可写 `fixed`；Bridge 已进入下一可执行状态可写 `advanced`。没有新 engine event
+      时只能按附录做有界 pane 诊断并留下 owner/下一动作，不能写 `fixed|advanced`。
    5. 禁止 `known-waiting`、`known_waiting`、`known`、`waiting`、
       「已知，等着」等归档值；“已知”不是处置，修掉或带可执行 plan 升级才是。
 
@@ -202,7 +207,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      team: "FLY",
      parentId: "FLY-2072",
      labels: ["Flywheel"],
-     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + Bridge 接力 pane/event 证据>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
    })
    ```
 
@@ -232,7 +237,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    ```text
    mcp__linear-api__save_comment({
      issueId: "<child identifier>",
-     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <pane/event receipt>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
    })
    mcp__linear-api__save_issue({
      id: "<child identifier>",
@@ -337,7 +342,8 @@ target `workflow_run_node`、可选 `workflow_rework_verification_path` 与
 `rework_delivery_wake_delivered` event 也必须一起闭合。
 
 先从只读错误现场取得精确 id，验证 id 字符集，保存 0600 backup 和 engine event
-baseline；同时完整 capture 目标 pane，保存 `BEFORE_PANE_SHA`：
+baseline。`TARGET_PANE` 继续用于事务前真实性证明或 event 为空后的有界诊断，不为
+pane 输出建立 baseline 指纹：
 
 ```sh
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
@@ -354,7 +360,6 @@ PRAGMA busy_timeout=5000;
 SQL
 chmod 600 "$BACKUP_PATH"
 BASELINE_SEQ="$(sqlite3 -bail "$STATE_DB" "PRAGMA busy_timeout=5000; SELECT COALESCE(MAX(e.seq),0) FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID';")"
-BEFORE_PANE_SHA="$(TMUX= tmux capture-pane -p -S - -t "$TARGET_PANE" | shasum -a 256 | awk '{print $1}')"
 ```
 
 先 run 此 read-only probe，并把输出逐字段写入报告。它必须恰好一行，且：delivery
@@ -395,7 +400,10 @@ SQL
 ```
 
 pane/commit/TURN 必须另行证明 `preferred_actor_execution_id` 已完成这次 rework；不成立
-就是伪造 receipt，按防篡改类停手。probe 恰好一行后才可 run 下列
+就是伪造 receipt，按防篡改类停手。若 pane 参与这项事务前真实性证明，只 run
+`TMUX= tmux capture-pane -p -S -40 -t "$TARGET_PANE" | tail -40`；不落原文、不做
+哈希、不与事务前后的输出做前后比较，只在报告写非敏感 `pane_marker=<state>` 与
+`observed_at=<UTC>`。probe 恰好一行后才可 run 下列
 `BEGIN IMMEDIATE`。每个 `patrol_assert_*` 都用 `CHECK(v=1)` 把竞态变成 rollback；新
 route revision 还会重新武装以 revision 为键的 stall watchdog：
 
@@ -504,21 +512,24 @@ run=`active`，再等至少一个 reconcile tick 并 run：
 
 ```sh
 sleep 10
-AFTER_EVENTS="$(sqlite3 -bail "$STATE_DB" "SELECT e.seq||':'||e.kind FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID' AND e.seq>$BASELINE_SEQ AND e.event_uid NOT LIKE 'patrol:FLY-2080:%' ORDER BY e.seq;")"
-AFTER_PANE_SHA="$(TMUX= tmux capture-pane -p -S - -t "$TARGET_PANE" | shasum -a 256 | awk '{print $1}')"
-test -n "$AFTER_EVENTS" || test "$AFTER_PANE_SHA" != "$BEFORE_PANE_SHA"
-printf 'engine_handoff events=%s before_pane=%s after_pane=%s\n' "$AFTER_EVENTS" "$BEFORE_PANE_SHA" "$AFTER_PANE_SHA"
+AFTER_EVENTS="$(sqlite3 -bail "$STATE_DB" "SELECT e.seq||':'||e.kind FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID' AND e.seq>$BASELINE_SEQ AND e.event_uid NOT LIKE 'patrol:%' ORDER BY e.seq;")"
+printf 'engine_handoff events=%s\n' "$AFTER_EVENTS"
+test -n "$AFTER_EVENTS"
 ```
 
-`patrol:FLY-2080:%` 是本配方自己写入的 repair receipt，只证明 transaction commit，
-必须从接力事件中排除；否则 Bridge 已停机时也会假绿。predecessor 分支同样只认
-非 `patrol:FLY-2080:%` 的新引擎 event 或 pane hash 变化。
+所有 `patrol:%` event 都由 patrol 配方自己写入，只证明 transaction commit，必须从
+接力事件中排除；否则 Bridge 已停机时也会假绿。`test -n` 失败时，不把“暂时没有
+event”解释为修复失败；仍用上方已校验的 `TARGET_PANE` 做同一条 40 行有界读取，
+不落原文、不做哈希、不做前后比较，只记录 `pane_marker`、`observed_at` 与明确
+`next=inspect|repair|retry:<token>`。pane_marker 不能单独支持 `fixed|advanced`。
+predecessor 分支也只认 baseline 后的新非 patrol engine event。
 
 ### FLY-2080 附录 B — replacement 铸造漏账完整配方
 
 输入必须是引擎已经 reserve 的 `NEW_EXECUTION_ID`；本配方绝不创建
 `workflow_actor`、execution、authority、approval 或 claim。先执行与附录 A 相同的
-DB path、0600 `.backup`、event baseline 和 pane hash 步骤，再设置并校验：
+DB path、0600 `.backup` 与 event baseline；如需 pane 参与事务前真实性证明或事后
+诊断，也复用附录 A 的字符校验、40 行读取与不落原文合同。再设置并校验：
 
 ```sh
 REQUEST_ID='<exact request_id from the read-only probe>'
@@ -663,7 +674,8 @@ SQL
 
 主事务后重读 dispatcher replacement guard：reason prefix、request/run、route
 node/attempt/execution、delivery revision/state 与 base SHA 必须同时成立。再用附录 A 的
-baseline event + pane 命令验证 Bridge launch/advance；只见 rows changed 不算接力。
+baseline event gate 验证 Bridge launch/advance；只见 rows changed 不算接力。同步遵守
+附录 A 的 event-empty 诊断合同：pane_marker 只能决定下一动作，不能单独过完成门。
 
 #### 仅限 `engine_predecessor_unavailable` 的 predecessor 事件分支
 
@@ -730,7 +742,8 @@ COMMIT;
 ```
 
 把占位值替换后以 `sqlite3 -bail "$STATE_DB"` 执行。事务后仍必须等 Bridge reconcile，
-用新 event 或 pane 变化证明 dispatcher 已接力，才可记 `advanced|fixed`。
+只有 baseline 后的新非 patrol engine event 能证明 dispatcher 已接力，才可记
+`advanced|fixed`；event 为空时只做附录 A 的有界诊断并留下下一动作。
 
 `runner_terminal_list` remains a useful internal starting point, but it is one
 system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= tmux`, never used alone. The tick
