@@ -26,6 +26,7 @@ make_home() {
   local h
   h=$(mktemp -d "/tmp/fly1496-lead.XXXXXX")
   mkdir -p "$h/project/.lead/eng-lead" "$h/.flywheel/manifests"
+  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: eng-lead\n---\nLead\n' > "$h/project/.lead/eng-lead/identity.md"
   echo "$h"
 }
@@ -58,7 +59,6 @@ run_dry() {
   shift 2
   env -i HOME="$h" PATH="$PATH" \
     FLYWHEEL_LEAD_DRY_RUN=1 \
-    FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1 \
     FLYWHEEL_PROJECTS="$projects" \
     DISCORD_BOT_TOKEN="CANARYBOT" \
     TEAMLEAD_API_TOKEN="CANARYTEAM" \
@@ -159,6 +159,18 @@ PLAN=$(run_dry "$H" "$P" FLYWHEEL_LEAD_MODEL="claude-opus-4-8" FLYWHEEL_LEAD_EFF
   && [ "$(arg_value "$PLAN" --effort)" = "xhigh" ] \
   && ok "companion gets explicit Fable + xhigh, not stale env" \
   || bad "companion launch policy mismatch"
+rm -rf "$H"
+
+# 6. Direct callers cannot override the canonical summary assignment. The
+# launcher resolves the projection itself and treats inherited values only as
+# consistency assertions.
+H=$(make_home)
+P=$(fixture_projects "$H")
+OUT=$(run_dry "$H" "$P" FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=0)
+PLAN=$(printf '%s\n' "$OUT" | plan_of)
+[ -z "$PLAN" ] && printf '%s\n' "$OUT" | grep -q "identity_env_conflict" \
+  && ok "conflicting inherited summary duty fails before launch" \
+  || bad "conflicting inherited summary duty was not rejected"
 rm -rf "$H"
 
 echo ""

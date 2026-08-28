@@ -21,7 +21,8 @@ bad() { FAIL=$((FAIL+1)); echo "  FAIL - $1"; }
 make_home() {
   local h
   h=$(mktemp -d "/tmp/fly1867-lead.XXXXXX")
-  mkdir -p "$h/project/.lead/eng-lead"
+  mkdir -p "$h/project/.lead/eng-lead" "$h/.flywheel"
+  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: eng-lead\n---\nLead\n' > "$h/project/.lead/eng-lead/identity.md"
   echo "$h"
 }
@@ -34,6 +35,7 @@ fixture_projects() {
       projectRoot:$root,
       leads:[{
         agentId:"eng-lead",
+        summaryRole:"producer",
         chatChannel:"1",
         match:{labels:["eng"]}
       }

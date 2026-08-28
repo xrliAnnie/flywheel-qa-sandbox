@@ -41,7 +41,9 @@ make_home() {
   local h; h=$(mktemp -d "/tmp/fly231-test.XXXXXX")
   mkdir -p "$h/proj-growth/.lead/mufasa-lead" \
            "$h/proj-gf/.lead/product-lead" \
-           "$h/proj-gf/.lead/cos-lead"
+           "$h/proj-gf/.lead/cos-lead" \
+           "$h/.flywheel"
+  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: mufasa-lead\n---\nMufasa\n' > "$h/proj-growth/.lead/mufasa-lead/identity.md"
   printf -- '---\nname: product-lead\n---\nPeter\n'  > "$h/proj-gf/.lead/product-lead/identity.md"
   printf -- '---\nname: cos-lead\n---\nSimba\n'       > "$h/proj-gf/.lead/cos-lead/identity.md"
@@ -54,10 +56,10 @@ fixture_projects() {
   cat <<JSON
 [
  {"projectName":"growth","projectRoot":"${h}/proj-growth","leads":[
-   {"agentId":"mufasa-lead","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","botUserId":"10000000000000001","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
+   {"agentId":"mufasa-lead","summaryRole":"producer","chatChannel":"111","alertChannel":"111","match":{"labels":["growth"]},"botTokenEnv":"MUFASA_BOT_TOKEN","botUserId":"10000000000000001","canSpawnRunners":false,"companion":${companion},"department":"growth"}]},
  {"projectName":"geoforge3d","projectRoot":"${h}/proj-gf","leads":[
-   {"agentId":"product-lead","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","botUserId":"10000000000000002","canSpawnRunners":true},
-   {"agentId":"cos-lead","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","botUserId":"10000000000000003","canSpawnRunners":false}]}
+   {"agentId":"product-lead","summaryRole":"producer","chatChannel":"222","match":{"labels":["Product"]},"botTokenEnv":"PETER_BOT_TOKEN","botUserId":"10000000000000002","canSpawnRunners":true},
+   {"agentId":"cos-lead","summaryRole":"aggregator","chatChannel":"333","match":{"labels":["PM"]},"botTokenEnv":"TEST_COS_BOT_TOKEN","botUserId":"10000000000000003","canSpawnRunners":false}]}
 ]
 JSON
 }
@@ -243,12 +245,14 @@ env=FLYWHEEL_FOUNDER_TZ=empty
 env=FLYWHEEL_LEAD_AUTHORITY_LIB=set
 env=FLYWHEEL_LEAD_BACKEND=empty
 env=FLYWHEEL_LEAD_CARRIER=set
+env=FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=set
 env=FLYWHEEL_LEAD_ID=set
 env=FLYWHEEL_LEAD_IDENTITY_DIGEST=empty
 env=FLYWHEEL_LEAD_KEY=empty
 env=FLYWHEEL_LEAD_LAUNCH_GEN=empty
 env=FLYWHEEL_LEAD_PROJECTS_DIGEST=empty
 env=FLYWHEEL_LEAD_ROLE=empty
+env=FLYWHEEL_LEAD_SUMMARY_ROLE=set
 env=FLYWHEEL_PROJECTS_FILE=empty
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
@@ -257,6 +261,8 @@ env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
 env=FLYWHEEL_SESSION_ID_FILE=empty
+env=FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=set
+env=FLYWHEEL_SUMMARY_GRANULARITY=set
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
@@ -286,6 +292,7 @@ rule=runner-patrol-rules.md
 rule=runner-reengage-rules.md
 rule=screencapture-l3-skill.md
 rule=stuck-runner-remanage.md
+rule=summary-inflow.md
 rule=xiaohongshu-memory-rules.md
 G
 read -r -d '' COS_GOLDEN <<'G'
@@ -302,12 +309,14 @@ env=FLYWHEEL_FOUNDER_TZ=empty
 env=FLYWHEEL_LEAD_AUTHORITY_LIB=set
 env=FLYWHEEL_LEAD_BACKEND=empty
 env=FLYWHEEL_LEAD_CARRIER=set
+env=FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=set
 env=FLYWHEEL_LEAD_ID=set
 env=FLYWHEEL_LEAD_IDENTITY_DIGEST=empty
 env=FLYWHEEL_LEAD_KEY=empty
 env=FLYWHEEL_LEAD_LAUNCH_GEN=empty
 env=FLYWHEEL_LEAD_PROJECTS_DIGEST=empty
 env=FLYWHEEL_LEAD_ROLE=empty
+env=FLYWHEEL_LEAD_SUMMARY_ROLE=set
 env=FLYWHEEL_PROJECTS_FILE=empty
 env=FLYWHEEL_PROJECT_DIR=set
 env=FLYWHEEL_PROJECT_NAME=set
@@ -316,6 +325,8 @@ env=FLYWHEEL_RECEIPT_WINDOW_P1_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P2_MIN=empty
 env=FLYWHEEL_RECEIPT_WINDOW_P3_MIN=empty
 env=FLYWHEEL_SESSION_ID_FILE=empty
+env=FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=set
+env=FLYWHEEL_SUMMARY_GRANULARITY=set
 env=FLYWHEEL_TEAMLEAD_SCRIPT_DIR=set
 env=HOME=set
 env=LEAD_ID=set
@@ -345,6 +356,7 @@ for L in product-lead ops-lead cos-lead joycon-lead sub-lead; do
 done
 # Deterministic transport stub (shadows any host agent-team-transport).
 mkdir -p "$H/.flywheel/bin"
+printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$H/.flywheel/summary-config.json"
 cat > "$H/.flywheel/bin/agent-team-transport" <<'STUB'
 #!/bin/bash
 case "$1" in
@@ -356,11 +368,11 @@ esac
 STUB
 chmod +x "$H/.flywheel/bin/agent-team-transport"
 P5='[{"projectName":"gf","projectRoot":"'"$H"'/proj","leads":[
-  {"agentId":"product-lead","chatChannel":"1","match":{"labels":["Product"]}},
-  {"agentId":"ops-lead","chatChannel":"2","match":{"labels":["Operations"]}},
-  {"agentId":"cos-lead","chatChannel":"3","match":{"labels":["PM"]},"canSpawnRunners":false},
-  {"agentId":"joycon-lead","chatChannel":"4","match":{"labels":["joycon"]}},
-  {"agentId":"sub-lead","chatChannel":"5","match":{"labels":["Sub"]}}]}]'
+  {"agentId":"product-lead","summaryRole":"producer","chatChannel":"1","match":{"labels":["Product"]}},
+  {"agentId":"ops-lead","summaryRole":"producer","chatChannel":"2","match":{"labels":["Operations"]}},
+  {"agentId":"cos-lead","summaryRole":"aggregator","chatChannel":"3","match":{"labels":["PM"]},"canSpawnRunners":false},
+  {"agentId":"joycon-lead","summaryRole":"producer","chatChannel":"4","match":{"labels":["joycon"]}},
+  {"agentId":"sub-lead","summaryRole":"producer","chatChannel":"5","match":{"labels":["Sub"]}}]}]'
 for L in product-lead ops-lead cos-lead joycon-lead sub-lead; do
   GOT=$(run_dry "$H" "$P5" "$L" "$H/proj" gf | plan_of | normalize_plan)
   if [ "$L" = "cos-lead" ]; then WANT="$COS_GOLDEN"; else WANT="$DEPT_GOLDEN"; fi

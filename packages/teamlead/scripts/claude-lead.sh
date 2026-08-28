@@ -564,6 +564,75 @@ if [ "$IS_COMPANION_ROLE" != true ]; then
   esac
 fi
 
+# FLY-2030: v2 wrappers arrive with an immutable canonical identity projection,
+# but the still-supported direct Claude launcher does not. Resolve the summary
+# coordinates once from the same strict registry/config authorities instead of
+# requiring every legacy caller to synthesize FLYWHEEL_LEAD_HAS_SUMMARY_DUTY.
+# Existing non-empty values are assertions only: a mismatch fails closed.
+_resolve_legacy_summary_projection() {
+  [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ] && return 0
+
+  local comm_cli="${FLYWHEEL_COMM_CLI:-${SCRIPT_DIR}/../../flywheel-comm/dist/index.js}"
+  local projects_file="" projects_tmp="" identity_json=""
+  local summary_role summary_granularity has_summary_duty summary_digest
+  local name expected actual
+
+  if [ ! -f "$comm_cli" ]; then
+    log "ERROR: summary identity resolver is missing: $comm_cli"
+    return 1
+  fi
+  if [ -n "${FLYWHEEL_PROJECTS:-}" ]; then
+    projects_tmp="$(mktemp "${TMPDIR:-/tmp}/fly2030-lead-projects.XXXXXX")" || {
+      log "ERROR: cannot create a private summary identity snapshot"
+      return 1
+    }
+    chmod 600 "$projects_tmp"
+    printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects_tmp"
+    projects_file="$projects_tmp"
+  else
+    projects_file="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  fi
+
+  if ! identity_json="$(node "$comm_cli" lead-identity resolve \
+    --projects-file "$projects_file" \
+    --project "$PROJECT_NAME" \
+    --lead "$LEAD_ID" \
+    --format json)"; then
+    [ -n "$projects_tmp" ] && rm -f "$projects_tmp"
+    log "ERROR: canonical summary assignment is not ready for ${PROJECT_NAME}/${LEAD_ID}"
+    return 1
+  fi
+  [ -n "$projects_tmp" ] && rm -f "$projects_tmp"
+
+  summary_role="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$identity_json")" || return 1
+  summary_granularity="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$identity_json")" || return 1
+  has_summary_duty="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("invalid") end' <<<"$identity_json")" || return 1
+  summary_digest="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
+
+  for name in \
+    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
+    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST; do
+    case "$name" in
+      FLYWHEEL_LEAD_SUMMARY_ROLE) expected="$summary_role" ;;
+      FLYWHEEL_LEAD_HAS_SUMMARY_DUTY) expected="$has_summary_duty" ;;
+      FLYWHEEL_SUMMARY_GRANULARITY) expected="$summary_granularity" ;;
+      FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST) expected="$summary_digest" ;;
+    esac
+    actual="${!name-}"
+    if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
+      log "ERROR: identity_env_conflict: $name conflicts with canonical summary assignment"
+      return 1
+    fi
+  done
+
+  export FLYWHEEL_LEAD_SUMMARY_ROLE="$summary_role"
+  export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty"
+  export FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity"
+  export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_digest"
+}
+
+_resolve_legacy_summary_projection || exit 1
+
 # ── FLY-1867: identity-bound Playwright MCP positive opt-in ────────────────
 # The machine setting is deliberately false. Only the exact project+Lead entry
 # may turn the official plugin back on for this launch. Keep this registry query
