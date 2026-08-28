@@ -1,13 +1,13 @@
 ---
 issue: FLY-2030
 phase: implement
-phaseCursor: 5/8
-updated: 2026-08-28T10:28:08.119Z
-nextStep: format, run Flywheel/Raya full gates, then exact-head paired fence
+phaseCursor: 6/8
+updated: 2026-08-28T11:02:10.220Z
+nextStep: commit implementation, prepare paired exact-head PRs, run code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2030 progress
-**phase**: implement (5/8)
-**next**: format, run Flywheel/Raya full gates, then exact-head paired fence
+**phase**: implement (6/8)
+**next**: commit implementation, prepare paired exact-head PRs, run code review
