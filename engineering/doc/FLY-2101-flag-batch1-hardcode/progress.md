@@ -1,14 +1,14 @@
 ---
 issue: FLY-2101
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-28T05:31:47.648Z
-nextStep: design node complete; successor implement node continues from plan.md
-  (blob 1841431c) + design-review.json
+phase: implement
+phaseCursor: 1/6
+updated: 2026-08-28T05:34:58.640Z
+nextStep: audit all 13 flag read points and write RED regressions for mailbox,
+  merge gate, and supersede
 chunks: []
 pointers: {}
 ---
 
 # FLY-2101 progress
-**phase**: design (6/6)
-**next**: design node complete; successor implement node continues from plan.md (blob 1841431c) + design-review.json
+**phase**: implement (1/6)
+**next**: audit all 13 flag read points and write RED regressions for mailbox, merge gate, and supersede
