@@ -243,7 +243,51 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toMatch(/引擎.*接力|Bridge.*接力/);
 		// A repair-authored event proves only that sqlite committed, never that
 		// Bridge reconciled the run. Handoff evidence must exclude those rows.
-		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:FLY-2080:%'");
+		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:%'");
+	});
+
+	it("FLY-2111: repair handoff is event-first while pane evidence stays bounded and non-fingerprinted", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const repairAppendices = section0.slice(
+			section0.indexOf("### FLY-2080 附录 A"),
+		);
+
+		for (const retiredShape of [
+			"BEFORE_PANE_SHA",
+			"AFTER_PANE_SHA",
+			"full-scrollback state hash",
+			"pane hash",
+		]) {
+			expect(section0).not.toContain(retiredShape);
+		}
+		expect(repairAppendices).not.toMatch(/capture-pane -p -S -(?=\s|$)/);
+		for (const anchor of [
+			"BASELINE_SEQ",
+			"AFTER_EVENTS",
+			"e.seq>$BASELINE_SEQ",
+			"e.event_uid NOT LIKE 'patrol:%'",
+			"capture-pane -p -S -40",
+			"tail -40",
+			"pane_marker",
+			"observed_at",
+			"preferred_actor_execution_id` 已完成这次 rework",
+			"伪造 receipt",
+		]) {
+			expect(repairAppendices).toContain(anchor);
+		}
+		expect(repairAppendices).toMatch(/不落原文.*不.*哈希.*不.*前后比较/s);
+		expect(repairAppendices).toMatch(
+			/pane_marker.*不能单独.*`fixed\|advanced`/s,
+		);
+		const handoffPrint = repairAppendices.indexOf(
+			"printf 'engine_handoff events=%s\\n'",
+		);
+		const handoffGate = repairAppendices.indexOf('test -n "$AFTER_EVENTS"');
+		expect(handoffPrint).toBeGreaterThanOrEqual(0);
+		expect(handoffGate).toBeGreaterThan(handoffPrint);
 	});
 
 	it("FLY-2094: predecessor repair omits maxIterations for an unbounded loop", () => {
