@@ -1,0 +1,24 @@
+flowchart TD
+  S["Raya 在语音里"]
+  S --> A1["① 你说一句<br/>「我要退出了」"]
+  S --> B1["② /endvoice<br/>或文字「退出语音模式」"]
+  S --> C1["③ 你离开语音房"]
+
+  A1 --> A2["模型说「好，退出语音模式。」"] --> A3["等你听完 1.5 秒"] --> Z
+  B1 --> B2["SIGTERM"] --> B3{"30 秒内停了？"}
+  B3 -->|是| Z
+  B3 -->|否| B4["SIGKILL<br/>先确认真停了再回话"] --> B5["⚠️ 语音进程未响应，已强制结束"] --> Z
+  C1 --> Z
+
+  Z["清 marker · 发一条下线消息 · exit 0"]
+  N["门② 不依赖语音进程还活着 —— 卡死时唯一有效的逃生门"]
+  Z --- N
+
+  classDef good fill:#e6f7ec,stroke:#34c759,color:#1d1d1f
+  classDef warn fill:#fff4e5,stroke:#ff9500,color:#1d1d1f
+  classDef note fill:#f5f5f7,stroke:#d2d2d7,color:#6e6e73
+  classDef norm fill:#ffffff,stroke:#86868b,color:#1d1d1f
+  class Z good
+  class B5 warn
+  class N note
+  class S,A1,A2,A3,B1,B2,B3,B4,C1 norm

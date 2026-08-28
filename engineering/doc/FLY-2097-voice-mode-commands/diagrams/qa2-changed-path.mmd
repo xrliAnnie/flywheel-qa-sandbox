@@ -1,0 +1,10 @@
+flowchart TD
+  A["Annie 说「我要退出了」"] --> B["Raya 语音进程<br/>同一段退出规则"]
+  B -->|prompt<br/>只换了这一个字段| C{"Codex app-server"}
+  C -->|规则真的到达模型| M["模型以 Raya 身份回答<br/>「好，退出语音模式。」"]
+  M --> D["管道整句匹配<br/>spoken_exit_detected"]
+  D --> E["✅ 等她听完 1.5 秒<br/>再干净拆除"]
+  classDef good fill:#e6f7ec,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef norm fill:#ffffff,stroke:#86868b,color:#1d1d1f
+  class M,D,E good
+  class A,B,C norm
