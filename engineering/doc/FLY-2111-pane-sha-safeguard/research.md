@@ -67,9 +67,14 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 必要且充分的触发面收敛到步骤 A 的两行“打开抛出错误的源码并逐条抄下每个
 `WHERE` / `if` 守卫”：
 
-- 候选包保留该两行时 14/14 命中；仅删该两行时 0/11；
+- 候选包保留该两行时最终 15/15 命中；仅删该两行的两组结果合计 0/11；
 - 在已证干净的 pre-FLY-2080 包只加回该两行时 5/5 命中；
 - QA 报告与全部原始结果保存在 `~/.flywheel/qa/FLY-2111/`。
+
+QA 终值为 24 arm / 154 次 valid run；唯一一次 invalid 是 arm B 的 harness symlink
+自指，所有 0% 组均无 invalid。零命中不等于统计上证明绝对为零：例如干净 D 组
+0/23 的 95% 上界约 15%。该台架是冷起整包首送，生产是长驻会话且事故基线约
+3%/条，因此这里证明的是同台架的 arm 分离，不能外推生产绝对命中率。
 
 因此返工不撤销 event-first 收紧，而是把实际触发项整段换成 Bridge 已提供的结构化
 诊断：稳定错误码、run/request/execution id、state/revision、可复跑的只读 query 与
@@ -105,7 +110,7 @@ run。两包内容差只有 bundle sentinel 与该条目的旧/新写法，原�
 | 结论 | as-of | 失效条件 | 重核命令/证据 |
 |---|---|---|---|
 | `workflow_run_event` 以 run 内 `MAX(seq)+1` 追加并受唯一约束 | 2026-08-27 `HEAD` | StateStore schema/append 方法变化 | `rg -n "UNIQUE \(run_id, seq\)|MAX\(seq\).*\+ 1|appendWorkflowRunEventTx" packages/teamlead/src/StateStore.ts` 后重读实现 |
-| Fable 台架的必要且充分触发面是旧步骤 A 第 1 项 | 2026-08-27，QA 143 次 + 返工 16 次 valid run | Fable 分类器或 rules bundle 漂移 | 重跑 `~/.flywheel/qa/FLY-2111/` 的旧候选/去两行对照，并与 `~/.flywheel/qa/FLY-2111-rework/pack-M-rework.md` 交替比较 |
+| Fable 台架的必要且充分触发面是旧步骤 A 第 1 项 | 2026-08-27，QA 154 次 + 返工 probes | Fable 分类器或 rules bundle 漂移 | 重跑 `~/.flywheel/qa/FLY-2111/` 的旧候选/去两行对照，并与 `~/.flywheel/qa/FLY-2111-rework/pack-M-rework.md` 交替比较 |
 | 触发条目最小返工包为 0/8、旧候选为 8/8；最终包为 0/5、旧候选为 5/5 | 2026-08-27 20:24–20:32 PDT | 模型/包/消息或分类器变化 | 检查两目录的原始 jsonl 后重新生成当前 rules bundle 并交替运行 |
 | 干净 pre-FLY-2080 包只加新条目为 0/5；同位置加旧条目为 5/5 | 2026-08-27 20:34–20:36 PDT | 模型/包/消息或分类器变化 | 对照 `pack-P-pre2080plus-new-stepA.md`、`pack-L-pre2080plus142_143.md` 与 `clean-addback-trial/` |
 | post-deploy 100-message 验收未完成 | 2026-08-27 pre-PR | 部署并完成观测 | Founder/Lead 留存的模型配置、mailbox 计数和 safeguard 错误日志 |
