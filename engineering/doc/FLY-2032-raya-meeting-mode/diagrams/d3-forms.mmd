@@ -1,0 +1,15 @@
+flowchart TB
+  subgraph R["形态 R:常驻·附着(和 lead 本人开会)"]
+    R1["该 lead 平时就在跑的<br/>常驻 Codex 进程"]
+    R2["会议挂到它正在用的<br/>工作线程上"]
+    R3["它带着自己最近的<br/>工作记忆进会"]
+    R1 --> R2 --> R3
+  end
+  subgraph S["形态 S:按会派生(和带装的分身开会)"]
+    S1["到点新起一个<br/>语音容器进程"]
+    S2["把该 lead 的身份/记忆/能力<br/>按档案装进去"]
+    S3["散会即退出,<br/>不常驻"]
+    S1 --> S2 --> S3
+  end
+  style R fill:#eef4ff,stroke:#007aff
+  style S fill:#e9f9ee,stroke:#34c759

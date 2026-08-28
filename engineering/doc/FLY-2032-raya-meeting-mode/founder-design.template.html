@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>FLY-2032 会议模式 · 设计(重做版)—— 和任何一个 lead 开会</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--line:#e6e6ea;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+  .wrap{max-width:960px;margin:0 auto;padding:22px 16px 140px}
+  h1{font-size:23px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:17px;margin:0 0 .5em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:13.5px;margin-bottom:14px}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:6px 0 16px;font-size:14.4px;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  section{background:var(--card);border-radius:12px;padding:16px;margin:0 0 14px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  section.hot{border-left-color:var(--red)}
+  section.warn{border-left-color:var(--amber)}
+  section.ok{border-left-color:var(--green)}
+  section.key{border-left-color:var(--purple)}
+  .quote{border-left:3px solid #d8d8de;padding:4px 0 4px 12px;margin:8px 0;color:#3a3a3c;font-size:13.6px}
+  table{border-collapse:collapse;width:100%;font-size:13.2px;margin:10px 0}
+  th,td{border-bottom:1px solid var(--line);padding:7px 8px;text-align:left;vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12.6px}
+  .p{font-size:14px;margin:8px 0}
+  .term{border-bottom:1px dotted var(--dim)}
+  .lbl{font-size:12.4px;color:var(--dim);margin:12px 0 4px}
+  textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:9px;
+    padding:8px 10px;font-family:inherit;font-size:13.4px;resize:vertical;background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);
+    border-top:1px solid var(--line);padding:10px 16px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;padding:10px 17px;
+    font-size:14px;font-weight:600;cursor:pointer;font-family:inherit}
+  button.ghost{background:#e8e8ed;color:var(--ink)}
+  #st{font-size:12.9px;color:var(--dim);min-height:1.2em}
+  #st.bad{color:var(--red);font-weight:600}
+  #st.good{color:#1a7f37;font-weight:600}
+  .dump{display:none;margin-top:10px;min-height:120px}
+  .note{font-size:12.8px;color:var(--dim);margin-top:8px}
+  .diagram{overflow-x:auto;background:#fff;border:1px solid var(--line);border-radius:10px;padding:8px;margin:10px 0}
+  .diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .pill{display:inline-block;font-size:11.4px;font-weight:700;padding:2px 8px;border-radius:6px;margin-right:6px;vertical-align:1px}
+  .pill.ask{background:#ffe9e9;color:#a4262c}
+  .pill.soft{background:#fff4e3;color:#8a5200}
+  .pill.info{background:#e6f0ff;color:#1a56a4}
+  ul{margin:6px 0;padding-left:20px;font-size:13.8px}
+  li{margin:4px 0}
+  td.r{background:#f4f8ff}
+  td.s{background:#f2fbf5}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>会议模式 · 设计(重做版)</h1>
+<div class="sub">FLY-2032 · 2026-08-28 · 这一版把「和谁开会」从写死的 Raya 改成了你说的「任何一个 lead」</div>
+
+<div class="hero">
+<b>一句话:你在文字频道说一句「安排会议 12:30 和 Tadashi 聊 X」,到点 Tadashi 已经在语音房里等你,你点链接进去开会;会开完它跟着退。「和谁开」是你约会时说的一个名字 —— Raya、Honey Lemon、Tadashi 都行,换个名字,其余一切照旧。</b><br>
+<span class="note">怎么回意见:每一节下面都有留言框(自动保存在你浏览器里),写完拉到最底点「一键汇总复制」贴回 thread。页面不会自动把意见传给我们。</span>
+</div>
+
+<section class="hot">
+<h2>0. 为什么重做</h2>
+<div class="p">你 8-28 打回了上一版设计。你的原话:</div>
+<div class="quote">上一版设计把「开会」理解成「她和 Raya 开会」,而实际口径是 —— <b>开会对象是任何 lead</b>(Honey Lemon、Raya、Tadashi 都可以),Raya 只是 lead 之一,既不排除也不特指。</div>
+<div class="p">这一版改了什么,一句话:<b>「一场会只有一个 AI」还是规矩(你定的),但那个 AI 是谁,变成了你约会时说的一个名字,不再写死在代码里。</b>每个 lead 在系统里是一份「档案」(它叫什么、身份是什么、有哪些记忆文件、能动哪些东西);开会前,系统按你点的名字取那份档案,把身份装进发声的引擎里。</div>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s0" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>1. 一场会长什么样(核心流程)</h2>
+<!--SVG_D1-->
+<div class="p">要点:你约会时<b>必须说清和谁</b>(下面第 5 节有一个相关的小问题要你看);到点是<b>那个 lead</b> 先进房、发链接;会里的规矩(带节奏、动单号前念一遍、想事先说一声、结束前口头总结)对<b>每个 lead</b> 一样生效 —— 因为规矩是开会时「喂」给它的话,不是某个 lead 独有的本事。</div>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s1" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>2. 系统里多了什么(结构)</h2>
+<!--SVG_D2-->
+<div class="p">三样东西:<b>lead 名册</b>(一人一份档案,纯数据文件,加一个 lead = 加一份档案,不改代码)· <b>会议台账</b>(当前这场 + 历史存档,机器重启不丢;会后产物那一单从这里读)· <b>发声容器</b>(<span class="term">Codex</span> —— 提供「耳朵和嘴巴」的语音引擎,你之前拍板过全用它)。</div>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s2" placeholder=""></textarea>
+</section>
+
+<section class="hot">
+<h2>3. <span class="pill ask">要你拍板 ①</span>那个 lead 以什么方式「到场」—— 两种做法,各有代价</h2>
+<div class="p">这是这一版最大的一个待定项。我们读了语音引擎的源码、量了现网数据,把两种做法的事实和代价摆在下面,<b>不替你选</b>。</div>
+<!--SVG_D3-->
+<table>
+<tr><th style="width:16%"></th><th class="r" style="width:42%">形态 R:和 lead 本人开会<br><span style="font-weight:400">会议接到该 lead 平时就在跑的那个「常驻程序」上(<span class="term">常驻</span>=一直开着不关的程序)</span></th><th class="s">形态 S:和带装的分身开会<br><span style="font-weight:400">到点临时起一个语音容器,把该 lead 的身份/记忆装进去,散会就退出</span></th></tr>
+<tr><td><b>哪些 lead 能开</b></td><td class="r">只有本来就用 Codex 常驻的 lead(目前 16 个里只有约 2 个)。<b>Honey Lemon、Tadashi 现在不是这种</b> —— 要么先把他们换引擎(这件事从没验证过),要么他们开不了会。<b>所以选 R 的话,你还得同时答一道题:指定的那个 Claude lead 怎么获得可附着的本体</b>(不答,「和任何 lead 开会」的验收就开不出来,这单会停在这)</td><td class="s"><b>任何 lead 都能开</b>,因为身份是装进去的,不要求那个 lead 本来是什么引擎</td></tr>
+<tr><td><b>它「记得」多少</b></td><td class="r">自带该 lead 最近的工作记忆(它的工作线程是活的)—— <b>最像「本人」</b></td><td class="s">每场都是新开的,靠会前准备好的简报把身份和记忆喂进去(这正是你定过的「context 提前备好交到它手里」那条主路径)</td></tr>
+<tr><td><b>会上让它立刻干活</b></td><td class="r">是 <b>lead 本人动手</b>,用它自己的工作现场和权限</td><td class="s">是<b>分身动手</b>,权限按档案给。⚠️ 你之前说过「会上立刻执行」的两种机制(分身自己动手 / 告诉本人去动)你还没选 —— <b>选了形态,基本就顺带选了这一格</b>,所以放在一起给你看</td></tr>
+<tr><td><b>出事故伤到谁</b></td><td class="r">会里出问题(卡死、额度打穿、误操作)<b>直接伤 lead 本人</b> —— 它还在管别的事</td><td class="s"><b>程序层面</b>只死这个临时容器,lead 本人的程序没事。⚠️ 但两样东西<b>不隔离</b>:分身若在真实仓库里写错了,错的东西照样永久留下;账号额度共享的话照样被打穿</td></tr>
+<tr><td><b>成本</b></td><td class="r">常驻程序每个占约 90–180MB 内存(实测现网 3 个);已经常驻的不新增,<b>为开会而新增常驻的才是新成本</b></td><td class="s">只在开会期间占资源;代价是每场有一段「启动等待」(具体多长还没量,后续实测)</td></tr>
+<tr><td><b>验证程度</b></td><td class="r">从没试过(把语音会话接到一个正在干活的常驻程序上,是新路)</td><td class="s">同一条链路上个月真跑通过一次(和 Raya 的语音模式同一形状)</td></tr>
+</table>
+<div class="p"><b>两种做法有一条共同的短板,先说破:</b>语音引擎的源码显示,<b>纯语音的一来一回不会写进它的长期记忆</b>(只有「交办出去干的活」会留档)。所以无论哪种形态,会中途断电,会里聊过的话都要靠我们自己记的转写来补 —— 这不是选哪边能避开的。</div>
+<div class="p">另外若选形态 S,还有个小项:临时容器用独立的「账号目录」还是共用 Raya 的。独立的好处只有一条:登录凭据分开、互不覆盖;代价是要单独登录一次。(⚠️ 我们核过引擎源码:纯语音聊天不会留下可用的「历史会议记忆」,<b>两种选法都不会</b>——续会靠的是会前简报和我们自己的会议存档。)我们倾向独立,一并听你的。</div>
+<div class="lbl">🔴 你的拍板:R / S / 先都说说你的想法</div>
+<textarea data-k="s3" placeholder="例:S,先跑起来 / R,我要的就是和本人开 / 你们把启动等待量出来再说"></textarea>
+</section>
+
+<section class="hot">
+<h2>4. <span class="pill ask">要你拍板 ②</span>「动手前念一遍」那道门,做成「探照灯」还是「闸门」</h2>
+<div class="p">你定过:它要去动某张单、某个人、某个仓库之前,把听到的号或名字念一遍。技术上有两个档位:</div>
+<table>
+<tr><th style="width:18%">档位</th><th>做法</th><th>代价</th></tr>
+<tr><td><b>探照灯</b>(本设计写的)</td><td>它动手时,系统当场核对「它念的」和「转写里你说的」对不对得上,<b>对不上就立刻在文字频道亮一行标出来</b>,并记进台账</td><td>不拦截 —— 它可能已经动了错的东西,只是错误 20 秒内可见、事后可查</td></tr>
+<tr><td><b>闸门</b></td><td>没念对之前,<b>拦住不让它动手</b></td><td>要在它干活的链路上加一道审批;在现在的引擎档位下意味着你在会里要多等;工程也更重(要另立一单做)</td></tr>
+</table>
+<div class="p">上一版把「探照灯」写成了默认 —— 那其实是把你定的「门」降了一档,<b>这个降档该由你点头,不该由我们代答</b>。你要闸门,我们就另立一单去做拦截,探照灯降为其中一层。</div>
+<div class="lbl">🔴 你的拍板:探照灯够了 / 我要闸门</div>
+<textarea data-k="s4" placeholder=""></textarea>
+</section>
+
+<section class="warn">
+<h2>5. <span class="pill soft">三个小判断</span>我们先按下面做了,你不同意就圈</h2>
+<ul>
+<li><b>约会必须说「和谁」,不设默认。</b>你说过 Raya「既不排除也不特指」—— 如果不说和谁就默认 Raya,等于又悄悄把它特殊化了。代价:你每次多说三个字。你要是想要个默认,告诉我们默认谁。</li>
+<li><b>会议里你离开语音房约 2 分钟才算散会</b>(平时的语音模式是 1 秒)。开会中途掉线、切网、临时接电话是常态,不该一断线就散会失忆;你明确说「结束」则立刻散。这个 2 分钟是给你用的起步值,用着不顺随时改。</li>
+<li><b>房间成员列表里显示的还是那一个机器人账号。</b>「对面是谁」靠三样承载:文字回执带名字(「(Tadashi)已进房」)、它开口的自我介绍和口吻、以后每人一个音色(那 19 个音色等你挑)。如果你要求成员列表里就显示那个 lead 的名字,那要每人一个机器人账号,是新的一单 —— 先如实告诉你现在做不到。</li>
+</ul>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s5" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>6. 上一版的东西怎么处置(不藏账)</h2>
+<div class="p">上一版被你打回后,分支上的设计稿和三段已写的代码<b>原样封存</b>(一行没删,也一行不再往前写)。这一版对它们的处置:</div>
+<ul>
+<li><b>弃</b>:所有把 Raya 写死的部分 —— 没有「和谁」字段的表、没有「和谁」槽位的命令、单一身份。</li>
+<li><b>重新推导</b>:两个程序之间怎么不弄丢一场会的那套细节(断了怎么接、重启怎么续)—— 要等你拍了形态才知道拓扑长什么样,旧稿里七轮评审揪出来的坑会当「检查清单」用,但不当作现成答案抄。</li>
+<li><b>保留</b>:你点名保留的四样(独立 raya 仓、Codex 原生语音、一场一个 AI、持久会议台账),以及所有与身份无关的事实和纪律。</li>
+</ul>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s6" placeholder=""></textarea>
+</section>
+
+<section class="ok">
+<h2>7. 怎么验收「任何一个 lead」不是一句空话</h2>
+<div class="p">验收开<b>两场真会</b>(在语音测试房):一场「和 Raya」,一场「和你指定的另一个 lead」(建议挑一个现在不是 Codex 的,比如 Tadashi —— 这样恰好把最没验过的那条边也压上)。<b>两场之间代码零改动</b>,只有档案和你说的名字不同 —— 这就是「身份是数据不是代码」的证明形状。每条结果照规矩记「量到的数 + 这是第 1 次」,一次通过不当成通过率。</div>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s7" placeholder=""></textarea>
+</section>
+
+<section>
+<h2>8. 诚实边界(这一版不做什么、做不到什么)</h2>
+<ul>
+<li>多人 / 多个 lead 同房 —— 你定过先跑通单个,不动。</li>
+<li>打断 —— 你选 v2 时知情放弃的,不做;你的插话会排队不丢。</li>
+<li>会后 notes / action items / 每场一 issue —— 归会议产物那一单(FLY-2033),这单只把台账存好给它读。</li>
+<li>会前简报里放什么、每个 lead 的记忆怎么摘 —— 归大脑那一单(FLY-2030),这单只负责「把备好的简报装进去」。</li>
+<li>纯语音聊的内容不进引擎的长期记忆(上面第 3 节说过)—— 断电靠我们自己的转写兜,这是引擎现状,不是我们能修的。</li>
+<li>「和谁开会」里的<b>谁</b>,v1 先入册 3 个 lead(Raya + 你指定的两个);名册是数据,以后加人不用改代码。</li>
+</ul>
+<div class="lbl">这一节的意见(可留空)</div>
+<textarea data-k="s8" placeholder=""></textarea>
+</section>
+
+<section class="key">
+<h2>9. 意见汇总</h2>
+<div class="p">下面自动汇总你在各节写的意见;点按钮复制,贴回 issue thread 我们就能收到。</div>
+<div id="agg" class="p" style="white-space:pre-wrap;background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:10px;min-height:40px;font-size:13.2px"></div>
+<div id="chunks"></div>
+<textarea id="dump" class="dump" readonly></textarea>
+</section>
+
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="st"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var PREFIX='fly2032-redo-'+location.pathname+'-';
+  var MARKER='【页面意见汇总】FLY-2032';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var st=document.getElementById('st');
+  var agg=document.getElementById('agg');
+  var chunksEl=document.getElementById('chunks');
+  var dump=document.getElementById('dump');
+
+  function title(el){
+    var sec=el.closest('section');
+    if(sec){var h=sec.querySelector('h2'); if(h) return h.textContent.replace(/\s+/g,' ').trim();}
+    return el.getAttribute('data-k');
+  }
+  function load(){
+    boxes.forEach(function(b){
+      try{ var v=localStorage.getItem(PREFIX+b.dataset.k); if(v) b.value=v; }catch(e){}
+    });
+  }
+  function save(b){
+    try{ localStorage.setItem(PREFIX+b.dataset.k, b.value); }catch(e){}
+  }
+  function build(){
+    var out=[MARKER,''];
+    var n=0;
+    boxes.forEach(function(b){
+      var v=b.value.trim(); if(!v) return;
+      n++; out.push('■ '+title(b)); out.push(v); out.push('');
+    });
+    if(!n) return null;
+    return out.join('\n').trim();
+  }
+  function splitChunks(text){
+    if(text.length<=1800) return [text];
+    var parts=[]; var body=text.slice(MARKER.length).replace(/^\n+/,'');
+    var lines=body.split('\n'); var cur=MARKER+'\n';
+    lines.forEach(function(ln){
+      if((cur+ln+'\n').length>1800){ parts.push(cur.trim()); cur=MARKER+'(续)\n'; }
+      cur+=ln+'\n';
+    });
+    if(cur.trim().length>MARKER.length) parts.push(cur.trim());
+    return parts;
+  }
+  function refresh(){
+    var text=build();
+    agg.textContent=text?text:'(还没有写任何意见)';
+    while(chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+  }
+  function flag(msg,cls){ st.textContent=msg; st.className=cls||''; }
+  function legacyCopy(text){
+    dump.style.display='block'; dump.value=text; dump.focus(); dump.select();
+    var ok=false;
+    try{ ok=document.execCommand('copy'); }catch(e){ ok=false; }
+    return ok;
+  }
+  boxes.forEach(function(b){ b.addEventListener('input',function(){ save(b); refresh(); }); });
+  load(); refresh();
+
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build();
+    if(!text){ flag('还没有写任何意见','bad'); return; }
+    var parts=splitChunks(text);
+    if(parts.length>1){
+      while(chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+      parts.forEach(function(p,i){
+        var ta=document.createElement('textarea');
+        ta.value=p; ta.readOnly=true; ta.style.marginTop='8px'; ta.style.minHeight='100px'; ta.style.width='100%';
+        var btn=document.createElement('button');
+        btn.textContent='复制第 '+(i+1)+'/'+parts.length+' 段';
+        btn.style.marginTop='4px';
+        btn.addEventListener('click',function(){ copyText(p,'第 '+(i+1)+' 段'); });
+        chunksEl.appendChild(ta); chunksEl.appendChild(btn);
+      });
+      flag('内容较长,已分成 '+parts.length+' 段,逐段复制粘回','');
+      return;
+    }
+    copyText(text,'');
+  });
+  function copyText(text,label){
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){
+        flag('✅ 已复制'+(label?label:'')+' —— 请贴回 issue thread','good');
+      },function(){
+        if(legacyCopy(text)) flag('✅ 已复制(兼容方式)—— 请贴回 thread','good');
+        else flag('❌ 复制失败 —— 请手动全选下面的框复制','bad');
+      });
+    }else{
+      if(legacyCopy(text)) flag('✅ 已复制(兼容方式)—— 请贴回 thread','good');
+      else flag('❌ 复制失败 —— 请手动全选下面的框复制','bad');
+    }
+  }
+  document.getElementById('clear').addEventListener('click',function(){
+    boxes.forEach(function(b){ b.value=''; try{ localStorage.removeItem(PREFIX+b.dataset.k); }catch(e){} });
+    dump.style.display='none'; refresh(); flag('已清空','');
+  });
+})();
+</script>
+</body>
+</html>
