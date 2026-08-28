@@ -36,7 +36,9 @@ unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_LEAD_SANDBOX \
 	FLYWHEEL_CODEX_LEAD_PROJECT_DIR FLYWHEEL_CODEX_LEAD_READ_DENY FLYWHEEL_COMM_CLI \
 	FLYWHEEL_LEAD_ID LEAD_ID FLYWHEEL_PROJECT_NAME PROJECT_NAME FLYWHEEL_LEAD_KEY \
 	FLYWHEEL_LEAD_BACKEND FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_IDENTITY_DIGEST \
-	FLYWHEEL_LEAD_PROJECTS_DIGEST DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID \
+	FLYWHEEL_LEAD_PROJECTS_DIGEST FLYWHEEL_LEAD_SUMMARY_ROLE \
+	FLYWHEEL_LEAD_HAS_SUMMARY_DUTY FLYWHEEL_SUMMARY_GRANULARITY \
+	FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID \
 	FLYWHEEL_LEAD_BOT_USER_ID
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
@@ -73,7 +75,7 @@ run_dry() {
 	ENVDUMP="$T/envdump.$$.$RANDOM"
 	export ENVDUMP
 	PATH="$T/bin:$PATH" FLYWHEEL_TEAMLEAD_ROOT="$RT" FLYWHEEL_LEAD_DRY_RUN=1 \
-		CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
+		CANONICAL_JSON='{"schemaVersion":1,"leadId":"codex-infra-bot-lead","projectName":"flywheel","leadKey":"flywheel-codex-infra-bot-lead","agentTeamName":"codex-infra-bot-lead","botUserId":"12345678901234567","botTokenEnv":"CODEX_INFRA_BOT_TOKEN","discordStateDir":"/tmp/discord-infra","backend":"codex-app-server","role":"dept","summaryRole":"exempt","summaryGranularity":"per-lead","hasSummaryDuty":false,"summaryAssignmentDigest":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","projectsDigest":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","identityDigest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}' \
 		FLYWHEEL_CODEX_LEAD_PROJECT_DIR="$T/proj" \
 		FLYWHEEL_INFRA_BOT_USER_ID=U123 \
 		FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID=C123 \

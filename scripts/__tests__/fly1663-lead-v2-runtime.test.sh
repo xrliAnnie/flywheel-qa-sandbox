@@ -35,8 +35,11 @@ chmod +x "$TMP/bin/ps"
 export FLYWHEEL_LEAD_V2_PS_BIN="$TMP/bin/ps"
 printf '%s\n' '---' 'name: ops-lead' '---' 'Ops Lead' \
   > "$TMP/project/.lead/ops-lead/identity.md"
+cat > "$TMP/home/.flywheel/summary-config.json" <<'JSON'
+{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}
+JSON
 cat > "$TMP/home/.flywheel/projects.json" <<JSON
-[{"projectName":"demo","projectRoot":"$TMP/project","generalChannel":"123456789012345678","leads":[{"agentId":"ops-lead","chatChannel":"123456789012345678","match":{"labels":["Operations"]},"botTokenEnv":"OPS_TOKEN","botUserId":"22345678901234567","discordStateDir":"$TMP/discord-state"}]}]
+[{"projectName":"demo","projectRoot":"$TMP/project","generalChannel":"123456789012345678","leads":[{"agentId":"ops-lead","summaryRole":"producer","chatChannel":"123456789012345678","match":{"labels":["Operations"]},"botTokenEnv":"OPS_TOKEN","botUserId":"22345678901234567","discordStateDir":"$TMP/discord-state"}]}]
 JSON
 cat > "$TMP/home/.flywheel/.env" <<'ENV'
 OPS_TOKEN=discord-secret
@@ -225,10 +228,14 @@ rm -f "$TMP/home/.local/bin/tmux"
 # The Claude child crosses a second env -i boundary inside claude-lead.sh.
 # Its structured dry-run plan is the authoritative projection consumed by the
 # direct-child path. It must carry the OS identity and the v2 carrier marker.
-identity_json="$(node "$ROOT/packages/flywheel-comm/dist/index.js" lead-identity resolve \
+identity_json="$(HOME="$TMP/home" node "$ROOT/packages/flywheel-comm/dist/index.js" lead-identity resolve \
   --projects-file "$TMP/home/.flywheel/projects.json" --project demo --lead ops-lead --format json)"
 identity_digest="$(jq -r '.identityDigest' <<<"$identity_json")"
 projects_digest="$(jq -r '.projectsDigest' <<<"$identity_json")"
+summary_role="$(jq -r '.summaryRole' <<<"$identity_json")"
+summary_granularity="$(jq -r '.summaryGranularity' <<<"$identity_json")"
+has_summary_duty="$(jq -r 'if .hasSummaryDuty then "1" else "0" end' <<<"$identity_json")"
+summary_assignment_digest="$(jq -r '.summaryAssignmentDigest' <<<"$identity_json")"
 child_plan="$({
   env -i \
     HOME="$TMP/home" \
@@ -249,6 +256,10 @@ child_plan="$({
     DISCORD_STATE_DIR="$TMP/discord-state" \
     DISCORD_EXPECTED_BOT_USER_ID=22345678901234567 \
     DISCORD_IDENTITY_MODE=managed \
+    FLYWHEEL_LEAD_SUMMARY_ROLE="$summary_role" \
+    FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty" \
+    FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity" \
+    FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest" \
     FLYWHEEL_LEAD_IDENTITY_DIGEST="$identity_digest" \
     FLYWHEEL_LEAD_PROJECTS_DIGEST="$projects_digest" \
     OPS_TOKEN=fixture-token \
@@ -259,6 +270,10 @@ child_plan="$({
 if grep -qF $'PANE_ENV\tUSER\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_CARRIER\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_SUMMARY_ROLE\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_HAS_SUMMARY_DUTY\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_GRANULARITY\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_IDENTITY_DIGEST\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tDISCORD_EXPECTED_BOT_USER_ID\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tDISCORD_IDENTITY_MODE\tset' <<<"$child_plan"; then

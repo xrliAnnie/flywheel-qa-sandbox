@@ -45,6 +45,8 @@ make_home() {
   h=$(mktemp -d "/tmp/fly1496-qa.XXXXXX")
   TMPDIRS+=("$h")
   mkdir -p "$h/project/.lead/eng-lead" "$h/.flywheel/manifests"
+  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' \
+    > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: eng-lead\n---\nLead\n' > "$h/project/.lead/eng-lead/identity.md"
   echo "$h"
 }
@@ -56,7 +58,7 @@ write_projects() {
   jq -n \
     --arg root "$h/project" --arg model "$model" --arg effort "$effort" \
     '[{projectName:"flywheel",projectRoot:$root,leads:[
-        {agentId:"eng-lead",chatChannel:"1",match:{labels:["eng"]},
+        {agentId:"eng-lead",summaryRole:"producer",chatChannel:"1",match:{labels:["eng"]},
          canSpawnRunners:true,companion:false}
         | if $model != "" then .model=$model else . end
         | if $effort != "" then .effort=$effort else . end]}]' \
