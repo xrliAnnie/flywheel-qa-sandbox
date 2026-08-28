@@ -40,7 +40,7 @@ Issue: FLY-2031 (https://linear.app/geoforge3d/issue/FLY-2031/rayav3-随身语�
 | ④a | 她的话与文字通道同路落地 | B §5.5 | 【PRD 已定·形状】 | 她的话 → Discord 文字(同一落点);它自己判断,不每次回来问 |
 | ④b | 动手前念专名和编号(收窄版) | B §5.6.2–5.6.4 | 【PRD 已定】 | 只在「要去动某张单/某个人/某个仓库」前念;念**转写原词**;复述验的是转写不验解析(§5.6.5) |
 | ⑤ | 用嘴批 ship(她已确认) | B §5.7 | 【她的自由表述:yes】 | 接 Flywheel 既有语音批准阶梯(FLY-546 `/api/voice/ship-approval`),同一写入原语 |
-| — | 验收:在我们实际使用的那个界面上验过,非 harness | B §3.1c | 硬验收门 | Discord `General` 语音房 + `#raya` 文字 + 她的耳机;不是 fake transport |
+| — | 验收:在我们实际使用的那个界面上验过,非 harness | B §3.1c | 硬验收门 | Discord 语音测试房 `voice-test-2`(id 1542708795720081408,Lead 2026-08-27 定的验收房,不占她的 General) + `#raya` 文字 + 真声真耳机;不是 fake transport |
 
 ### 1.1 刻意不做(⛔ 不许被本单顺手填上)
 
@@ -147,7 +147,7 @@ POST /api/voice/ship-approval  语音批准写入。守卫阶梯(voice-routes.ts
 
 | 选项 | 反面 | 取向 |
 |---|---|---|
-| B1 规则存在**它自己的记忆仓**(`~/.flywheel/raya/memory/voice-filter.json`,后台 Codex 可写、git 可审、她可改),voice 进程**读规则、代码决定念不念** | 规则要结构化(谁 / 什么类 / 关键词 → 不念);她那句话怎么变成一条规则是模型的判断 🔶 | ⭐ **选它**:机制(记住 + 应用)在代码,标准(规则内容)在使用中长;不绑 vendor(A §10.4b.2 的建议同族) |
+| B1 规则文件由 voice 进程持有、**代码决定念不念**(⚠️ 位置在 Codex design review R1 被更正:不能放模型可写的仓,权威文件在 `RAYA_STATE_DIR/voice-filter.json` —— 见 plan §2.2/§12) | 规则要结构化(谁 / 什么类 / 关键词 → 不念);她那句话怎么变成一条规则是模型的判断 🔶 | ⭐ **选它**:机制(记住 + 应用)在代码,标准(规则内容)在使用中长;不绑 vendor(A §10.4b.2 的建议同族) |
 | B2 规则只写进 `MEMORY.md` 散文,靠模型自己「记得别念」 | 检测器满足自己(B §5.6.4 那一族):它念不念全凭它自己说记住了;没有可测的行为 | ⛔ |
 | B3 规则放 `RAYA_STATE_DIR` | 后台 Codex 写不了 state(config 禁重叠)⇒ 得走 outbox 中转;而且她看不见 | ⛔ |
 
@@ -156,7 +156,7 @@ POST /api/voice/ship-approval  语音批准写入。守卫阶梯(voice-routes.ts
 ### Q3 常开流(§3.1d)+ 沉默必须被主动打破(§5.4)
 
 **§3.1d 在 [main] 已成立**(§2.1)。本单对它做的只有两件:
-1. **把它验成产品前提**(§3.1c):在真实 Discord `General` 里,她**自闭麦**(Discord self-mute)静默 N 分钟后再开口,会话仍活 —— 这正是 PRD §3.1d 写明「P-6c 没测到」的那一格(测试端不动 ≠ 桥侧零帧)。判据事先写死(§5 P0)。
+1. **把它验成产品前提**(§3.1c):在真实 Discord 语音房(验收房 = voice-test-2,Lead 定)里,她/QA 真声**自闭麦**(Discord self-mute)静默 N 分钟后再开口,会话仍活 —— 这正是 PRD §3.1d 写明「P-6c 没测到」的那一格(测试端不动 ≠ 桥侧零帧)。判据事先写死(§5 P0)。
 2. **账本**:`audio_counters` 里已有 `sent` / `silence` 计数;验收时导出「上行 sent 帧数 ≈ 时长/20ms」作为「一直在送」的证据(⛔ 不拿「没断」当证据,拿**帧数**当证据)。
 
 **§5.4 存活信号** —— 她定的:必须有;出声不只传信息,还是「我还活着」的证据;量级锚点「一小时」是体感不是配置。⬜ 间隔归 §6.2「等她用起来」。
@@ -236,7 +236,7 @@ inbox 条目 kind=ship_gate {issue, pr, gateMessageId, questionId, prHeadSha}   
 | 4 假设没有 flywheel 仓 | 不 import;ship 批准是**可选端点适配器**;Lead 目录是 Raya 自己的文件 |
 | 5 一开始简单一点 | 每格一个机制;所有「多快/多久/多少」都是可改配置 |
 | 6 merge/ship 仍 founder-gated | 语音批准只是**多一条送到同一个门的路**,门还是那道门 |
-| 3.1c 在实际界面验 | 验收全部在 `General` + `#raya` + 她的耳机;fake transport 只做单测 |
+| 3.1c 在实际界面验 | 验收全部在真语音房(voice-test-2)+ `#raya` + 真耳机;fake transport 只做单测;主 General 归她自用(B §11.3) |
 | 3.1d 常开流 | [main] 已有;本单验证它,不动它 |
 | 3.1e / 3.1e.1 它把能力说大 / 先报错数 | 「已转告」「已批」只能念回执;数字核对在 outbox 校验侧(1911 `verify()` 形状),不在它嘴里 |
 | 3.1f 打断不了 | 不做(§6.1);念读设计按「它念完才听」写(grace 窗口从它念完起算) |
@@ -248,7 +248,7 @@ inbox 条目 kind=ship_gate {issue, pr, gateMessageId, questionId, prHeadSha}   
 
 | # | 问什么 | 判据 | 过 ⇒ | 不过 ⇒ |
 |---|---|---|---|---|
-| **P0** 常开流·真房闭麦 | 她(或授权 QA 人声)在 `General` 自闭麦 ≥ N 分钟(🔶 N 由 Lead 定,不填数)后开口,会话还活 | ① user 转写出现且内容对得上 ② assistant 转写出现 ③ 房里真有声音 ④ `audio_counters.sent` ≈ 时长/20ms | §3.1d 在 v2 + Discord + 闭麦上**坐实** | 上行静音帧没在送 ⇒ 是 bug(main 的 `setMicOpen` 路径),先修再验;**不是**产品前提被削弱 |
+| **P0** 常开流·真房闭麦 | 她(或授权 QA 人声)在 voice-test-2 自闭麦 ≥ N 分钟(🔶 N 由 Lead 定,不填数)后开口,会话还活 | ① user 转写出现且内容对得上 ② assistant 转写出现 ③ 房里真有声音 ④ `audio_counters.sent` ≈ 时长/20ms | §3.1d 在 v2 + Discord + 闭麦上**坐实** | 上行静音帧没在送 ⇒ 是 bug(main 的 `setMicOpen` 路径),先修再验;**不是**产品前提被削弱 |
 | **P1** `appendSpeech` 带播报前缀的语义 | 会话中喂「【系统播报】Tadashi 问:FLY-2031 的 PR 要不要 ship」 | assistant 转写把它**念给她听**(第二人称、转述),而不是当成她说的去执行/回答她 | 会话中新条目 + 存活信号都走 appendSpeech | 会话中不念,只上文字行;存活信号退成 bed(C2)+ 文字行;**如实写进 HTML 交她判** |
 | **P2** outbox 校验闭环 | 后台 Codex 写一个 relay 动作,quotes 含一个转写里**没有**的单号 | 回执 rejected,它去问她而不是自己补 | 门有效 | 它绕过 outbox 自己发了 ⇒ writable roots / 工具面要收 |
 | **P3** ship 批准端到端(非生产 gate) | 529 测试房或 Lead 批的一次真 gate:念编号 → 她说「确认」→ 回执卡 → POST → Bridge 写入 | Bridge 返回 written=true 且 issue thread 出现同一原语的后写行为 | §5.7 接通 | 卡在哪一级(receipt/binding/identity)就报哪一级,不改 Bridge |
@@ -264,8 +264,8 @@ RAYA_STATE_DIR/voice-inbox/items.jsonl     brain 追加(owner-private 0600)
   {v:1, id, ts, source:{lead, channelId, messageId}, kind:"question"|"report"|"ship_gate"|"other",
    needsDecision:boolean, text, refs:{issue?, pr?, gate?:{gateMessageId, questionId, prHeadSha}}}
 RAYA_STATE_DIR/voice-inbox/acks.jsonl      voice 追加:{id, at, how:"spoken"|"filtered"|"deferred", sessionBootId}
-memory 仓 voice-filter.json                 voice 写(经 outbox 校验):{rules:[{scope, verdict:"skip", saidAt, quote}], prefs:{livenessIntervalMs?}}
-memory 仓 leads.json                        运营者提供:[{name, aliases[], discordChannelId}]
+RAYA_STATE_DIR/voice-filter.json           voice 写(经 outbox 提案校验)——R1 更正:权威文件不放模型可写仓
+RAYA_STATE_DIR/voice-leads.json            运营者提供:[{name, aliases[], discordChannelId}] ——同上
 RAYA_OUTBOX_DIR(新 writable root)          后台 Codex 写动作 {kind:relay|remember_filter|approve_ship, …};voice 写回执
 ```
 
