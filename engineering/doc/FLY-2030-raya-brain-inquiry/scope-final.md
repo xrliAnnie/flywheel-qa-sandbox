@@ -21,8 +21,8 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 |---|---|---|---|---|
 | 1.1 | **summary 存放约定**:路径/命名/格式;内容 = **事实 + 判断**(判断是必需项,PRD §8.8.2 她原话「光有 issue 一二三,总管毫无概念」) | 总管仓(文档合同) | 无现成;默认提案(implement 可调):`summaries/<project>/<YYYY-MM-DD>-<leadId>.md` + 头部字段 `{project, lead, period, facts, judgment}` | 一页合同文档,零代码 |
 | 1.2 | **11 个 Lead 侧的产出能力:一个共享命令 + 规则层一段**(⛔ 不是每个 Lead 各写一遍) | flywheel(**M1 最大新建块**) | 【实核】flywheel-comm 现无 summary 类子命令;`daily-standup.sh` 是 Bridge API 触发,不是此接缝——共享命令要新写(形态建议:flywheel-comm 子命令或 scripts/ 一条:组 summary 草稿 → `gh` 在总管仓开 PR);规则层 = `lead-rules-base/` 新一段「summary 义务」,全体 Lead identity 装载 | 一条命令 + 一段规则(写一遍,11 处生效) |
-| 1.3 | **总管侧未读/已阅**:open PR = 未读队列,merge = 已阅回执 | raya 侧(提示层)+ flywheel(一段规则) | 她有 shell + gh:`gh pr list`(未读)/ `gh pr merge`(已阅);**merge 权已拍**:总管自 merge、不需 founder approve,豁免**窄口径**只覆盖总管自己仓里的 summary/report PR(PRD §12.3.3/.4);落地 = `founder-only-authority.md` 加该窄口径例外(PRD §12.3.5:改 rules 文件,不动 Bridge) | 身份提示 + 一段规则例外文本 |
-| 1.4 | Belle 例外通路 | — | 【实核 2026-08-28】`~/Dev/personal-assistant` **已是 git 仓且有 remote**(xrliAnnie/belle-workspace,commit 至 08-25)——PRD「不是 git 仓」已过期,**例外大概率消失**;implement 前最终重核一次 | 大概率 0;⛔ 不预建例外机制 |
+| 1.3 | **总管侧未读/已阅**:open PR = 未读队列,merge = 已阅回执 | raya 侧(提示层)+ flywheel(一段规则) | 她有 shell + gh:`gh pr list`(未读)/ `gh pr merge`(已阅);**merge 权已拍**:总管自 merge、不需 founder approve,豁免**窄口径**只覆盖总管自己仓里的 summary/report PR(PRD §12.3.3/.4) | 身份提示 + **规则例外:🛑 已暂停顺手加**——措辞逐字稿单独成件送 Tadashi 审(`founder-only-authority-exemption-proposal.md`:要加什么/现文哪句挡住/加完恰好多允许哪一条),他判后才动 rules 文件 |
+| 1.4 | Belle 例外通路 | — | 【实核 2026-08-28】`~/Dev/personal-assistant` **已是 git 仓且有 remote**(xrliAnnie/belle-workspace,commit 至 08-25)——PRD「不是 git 仓」已过期;implement 前最终重核一次 | **0 —— 不预建例外机制:这是决定,不是遗漏**。理由:例外的前提(非 git 仓)经实核已消失,照抄过期事实会凭空造一套多余机制;若终核推翻(仓又没了),再按 PRD「不许假装六个仓都在」补通路 |
 | 1.5 | 凭证 | — | 账号级 gh token、scope 含 repo,跨仓写已可行(PRD §8.8.3 实测) | 0 |
 
 ## 2. 里程碑二 · 大脑吸收 + 追问(前提:M1 已跑通)
@@ -59,11 +59,12 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 
 两旋钮独立于 Raya 自己的巡视间隔(口径 ②,那是她「读」的节奏;这里是 Lead「写」的节奏)。
 
-## 4. 不做 / 已废弃(留档防复活)
+## 4. 不做 / 已废弃(**每条都是决定,不是遗漏**——读到空缺想去补的人,先读这里的理由再动手)
 
-- 旧 plan 全量(rev1–rev3:自建会话回路、outputSchema 合同、批结算、asks 状态机、interruptions 账本等)——Lead 运行时已有等价件或不再需要;C0 探针族随之废弃(新的待核点只剩 2.1 回执核验与 2.3 usage 通知,均在 implement 内做)。
-- 反指标独立账本(§9.2 ③「值不值」):是否要,留拆单时定。
-- 例外机制预建(1.4)。
+- 旧 plan 全量(rev1–rev3:自建会话回路、outputSchema 合同、批结算、asks 状态机、interruptions 账本等)——**决定**:founder 打回 + Lead 形态下运行时已有等价件;C0 探针族随之废弃(新的待核点只剩 2.1 回执核验与 2.3 usage 通知,均在 implement 内做)。
+- 反指标独立账本(§9.2 ③「值不值」)——**决定,暂缓**:属被打回内容,Lead 形态下是否需要独立账本留拆单时定;⛔ 不据此空缺顺手建。
+- Belle 例外机制预建(1.4)——**决定**,理由见该行。
+- 规则例外顺手落地(1.3)——**决定,暂停**:红线合同逐字审,提案已单独成件。
 
 ## 5. 挂起(等 Tadashi 批量回,不追)
 
