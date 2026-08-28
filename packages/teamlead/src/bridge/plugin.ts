@@ -253,6 +253,7 @@ import {
 } from "./flag-retirement-production.js";
 import {
 	createFlagRetirementScanner,
+	type FlagRetirementScanner,
 	type FlagScanSourceSnapshot,
 } from "./flag-retirement-scan.js";
 import {
@@ -1219,6 +1220,13 @@ export interface BridgeAppOptions {
 	flagStore?: FlagStoreRuntime;
 	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
 	flagProjectNames?: () => readonly string[];
+	/**
+	 * FLY-2104: late-bound weekly-scan runtime. The route mounts before the
+	 * catch-all in createBridgeApp; startBridge fills this after scanner wiring.
+	 */
+	flagScanRoute?: {
+		current?: Pick<FlagRetirementScanner, "runNow" | "dryRun">;
+	};
 	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
 	workKindCutoverTokens?: ConfirmTokenStore;
 	/** FLY-1436: injectable deployment evidence reader for route-level tests. */
@@ -4132,11 +4140,11 @@ export function createBridgeApp(
 		resolve(homedir(), ".flywheel", "reports");
 	const reportsRouter = createReportsRouter({
 		vercelToken: opts?.vercelToken,
-		// FLY-929 W3b ①: sender = Claude Infra Bot when P-identity holds (BOTH
-		// CLAUDE_INFRA_BOT_TOKEN + FLYWHEEL_NOTIFY_CHANNEL), else the legacy
-		// global bot token byte-for-byte. Once live there is NO Simba fallback on
-		// delivery failure — the P-expect receipt check owns fail-loud.
-		discordBotToken: infraSenderTokenOr(opts?.globalBotToken),
+		// FLY-929 W3b ① + FLY-2104: resolve the sender for every delivery so a
+		// founder-approved Infra identity change takes effect without a Bridge
+		// restart. Incomplete P-identity still falls back to the legacy global bot.
+		discordBotToken: undefined,
+		resolveDiscordBotToken: () => infraSenderTokenOr(opts?.globalBotToken),
 		projects,
 		resolveIssueThread: (issueIdentifier, projectName) =>
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
@@ -4215,6 +4223,47 @@ export function createBridgeApp(
 		app.use("/api/account-switch", (_req, res) => {
 			res.status(503).json({
 				error: "account-switch API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
+	const flagScanRunHandler: express.RequestHandler = async (req, res, next) => {
+		try {
+			if (!loopbackSelfOrigin(req.headers.host)) {
+				res.status(403).json({ error: "loopback host required" });
+				return;
+			}
+			const runtime = opts?.flagScanRoute?.current;
+			if (!runtime) {
+				res.status(503).json({ error: "flag scan is not ready" });
+				return;
+			}
+			const body = (req.body ?? {}) as Record<string, unknown>;
+			if (
+				Object.keys(body).some((key) => key !== "dryRun") ||
+				(body.dryRun !== undefined && typeof body.dryRun !== "boolean")
+			) {
+				res.status(400).json({ error: "body must be {dryRun?: boolean}" });
+				return;
+			}
+			const outcome = body.dryRun
+				? await runtime.dryRun()
+				: await runtime.runNow();
+			res.status(outcome.status === "lost_race" ? 409 : 200).json(outcome);
+		} catch (error) {
+			next(error);
+		}
+	};
+	if (config.apiToken) {
+		app.post(
+			"/api/flag-scan/run",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			flagScanRunHandler,
+		);
+	} else {
+		app.post("/api/flag-scan/run", (_req, res) => {
+			res.status(503).json({
+				error: "flag scan API requires TEAMLEAD_API_TOKEN",
 			});
 		});
 	}
@@ -6357,6 +6406,7 @@ export async function startBridge(
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
 	const alertDutyDispatcherBotUserId = { current: null as string | null };
 	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
+	const flagScanRouteHolder: BridgeAppOptions["flagScanRoute"] = {};
 
 	// FLY-1456: the external daemon is permanently authoritative. Keep the mode
 	// object as one explicit truth table for every retired Bridge execution face.
@@ -6630,6 +6680,7 @@ export async function startBridge(
 				dispatcherBotUserId: alertDutyDispatcherBotUserId,
 				alertHub: alertDutyHubHolder,
 			},
+			flagScanRoute: flagScanRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
@@ -7540,10 +7591,13 @@ export async function startBridge(
 							},
 						}),
 					effects: createProductionFlagScanEffects({
-						linearApiKey: config.linearApiKey,
 						projects,
 						reportBaseUrl: loopbackBaseUrl,
 						reportToken: config.apiToken,
+						commCliPath: join(
+							flagScanRepoRoot,
+							"packages/flywheel-comm/dist/index.js",
+						),
 						store,
 						enqueueLeadInbox: (leadId, payload) =>
 							leadInboxRuntime.enqueueInfraAlert(leadId, payload),
@@ -7588,42 +7642,7 @@ export async function startBridge(
 					enabled: () => storeFlagRetirementScanEnabled(flagStore),
 				})
 			: undefined;
-
-	const flagScanRunHandler: express.RequestHandler = async (req, res) => {
-		if (!loopbackSelfOrigin(req.headers.host)) {
-			res.status(403).json({ error: "loopback host required" });
-			return;
-		}
-		if (!flagRetirementScanner) {
-			res.status(503).json({ error: "flag scan is not ready" });
-			return;
-		}
-		const body = (req.body ?? {}) as Record<string, unknown>;
-		if (
-			Object.keys(body).some((key) => key !== "dryRun") ||
-			(body.dryRun !== undefined && typeof body.dryRun !== "boolean")
-		) {
-			res.status(400).json({ error: "body must be {dryRun?: boolean}" });
-			return;
-		}
-		const outcome = body.dryRun
-			? await flagRetirementScanner.dryRun()
-			: await flagRetirementScanner.recoverPending();
-		res.json(outcome);
-	};
-	if (config.apiToken) {
-		app.post(
-			"/api/flag-scan/run",
-			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			flagScanRunHandler,
-		);
-	} else {
-		app.post("/api/flag-scan/run", (_req, res) => {
-			res.status(503).json({
-				error: "flag scan API requires TEAMLEAD_API_TOKEN",
-			});
-		});
-	}
+	flagScanRouteHolder.current = flagRetirementScanner;
 	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
 	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
 	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship

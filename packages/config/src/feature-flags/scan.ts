@@ -1,5 +1,5 @@
 import type { FeatureFlagSpec } from "./registry.js";
-import type { FlagView } from "./resolve.js";
+import type { FlagValueClock, FlagView } from "./resolve.js";
 
 /** Annie explicitly chose a fixed weekly cadence. This is intentionally not configurable. */
 export const FLAG_SCAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -331,6 +331,147 @@ function assertInputJoin(rows: ComputeFlagScanInput["rows"]): void {
 	}
 }
 
+type StableClockResolution =
+	| { kind: "ready"; stableSince: number }
+	| { kind: "legacy"; stableSince: number }
+	| { kind: "sampling"; stableSince: null }
+	| { kind: "no_clock"; stableSince: number | null; reason: string }
+	| { kind: "invalid"; reason: string };
+
+function validClockTime(value: number, now: number): boolean {
+	return Number.isSafeInteger(value) && value >= 0 && value <= now;
+}
+
+function validateClocks(
+	clocks: FlagValueClock[],
+	now: number,
+): { byScope: Map<string, FlagValueClock>; error?: string } {
+	const byScope = new Map<string, FlagValueClock>();
+	for (const clock of clocks) {
+		if (!clock.scopeKey || byScope.has(clock.scopeKey)) {
+			return {
+				byScope,
+				error: `duplicate or empty value clock scope: ${clock.scopeKey || "<empty>"}`,
+			};
+		}
+		if (
+			!validClockTime(clock.firstRegisteredAt, now) ||
+			(clock.valueLastChanged !== null &&
+				!validClockTime(clock.valueLastChanged, now))
+		) {
+			return { byScope, error: `invalid value clock time: ${clock.scopeKey}` };
+		}
+		byScope.set(clock.scopeKey, clock);
+	}
+	return { byScope };
+}
+
+function clocksForSpec(
+	spec: FeatureFlagSpec,
+	view: FlagView,
+	expectedProjectNames: string[],
+	now: number,
+): { clocks?: FlagValueClock[]; error?: string } {
+	const clocks = view.valueClocks ?? [];
+	if (clocks.length === 0) return { clocks: [] };
+	const validated = validateClocks(clocks, now);
+	if (validated.error) return { error: validated.error };
+	if (spec.scope !== "project") {
+		if (validated.byScope.size !== 1 || !validated.byScope.has("*")) {
+			return { error: "Bridge-global value clock requires exactly scope *" };
+		}
+		return { clocks: [validated.byScope.get("*")!] };
+	}
+	const star = validated.byScope.get("*");
+	const resolved: FlagValueClock[] = [];
+	for (const projectName of expectedProjectNames) {
+		const clock = validated.byScope.get(projectName) ?? star;
+		if (!clock) {
+			return { error: `missing value clock scope for project ${projectName}` };
+		}
+		resolved.push(clock);
+	}
+	return { clocks: resolved };
+}
+
+function resolveStableClock(input: {
+	spec: FeatureFlagSpec;
+	view: FlagView;
+	advanced: FlagScanState;
+	expectedProjectNames: string[];
+	now: number;
+}): StableClockResolution {
+	const selected = clocksForSpec(
+		input.spec,
+		input.view,
+		input.expectedProjectNames,
+		input.now,
+	);
+	if (selected.error) return { kind: "invalid", reason: selected.error };
+	const clocks = selected.clocks ?? [];
+	if (input.view.clockReadiness === "ready") {
+		if (clocks.length === 0) {
+			return { kind: "invalid", reason: "ready value clock rows are missing" };
+		}
+		if (clocks.some((clock) => clock.readiness !== "ready")) {
+			return {
+				kind: "invalid",
+				reason: "ready value clock contains no-clock row",
+			};
+		}
+		return {
+			kind: "ready",
+			stableSince: Math.max(
+				...clocks.map((clock) =>
+					Math.max(
+						clock.firstRegisteredAt,
+						clock.valueLastChanged ?? clock.firstRegisteredAt,
+					),
+				),
+			),
+		};
+	}
+
+	const readiness = input.view.clockReadiness;
+	const explicitlyNoClock = readiness?.startsWith("no_clock:") === true;
+	if (explicitlyNoClock) {
+		if (input.advanced.streakStartedAt === null) {
+			return {
+				kind: "no_clock",
+				stableSince: null,
+				reason: `${readiness}; scanner streak is missing its start time`,
+			};
+		}
+		if (input.advanced.streakSamples < 2) {
+			return { kind: "sampling", stableSince: null };
+		}
+		const registeredAt = clocks.length
+			? Math.max(...clocks.map((clock) => clock.firstRegisteredAt))
+			: null;
+		return {
+			kind: "legacy",
+			stableSince:
+				registeredAt === null
+					? input.advanced.streakStartedAt
+					: Math.max(registeredAt, input.advanced.streakStartedAt),
+		};
+	}
+
+	if (clocks.length > 0) {
+		return {
+			kind: "invalid",
+			reason: "value clock rows exist without clock readiness",
+		};
+	}
+	if (
+		input.advanced.streakSamples >= 2 &&
+		input.advanced.streakStartedAt !== null
+	) {
+		return { kind: "legacy", stableSince: input.advanced.streakStartedAt };
+	}
+	return { kind: "legacy", stableSince: input.now };
+}
+
 export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 	assertInputJoin(input.rows);
 	const currentNames = new Set(input.rows.map(({ spec }) => spec.name));
@@ -450,15 +591,30 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 			});
 			continue;
 		}
+		const clock = resolveStableClock({
+			spec,
+			view,
+			advanced,
+			expectedProjectNames: input.expectedProjectNames,
+			now: input.now,
+		});
+		if (clock.kind === "invalid" || clock.kind === "no_clock") {
+			noClock.push({
+				flagName: spec.name,
+				class: "read_unavailable",
+				reason: clock.reason,
+				indeterminateStreak: advanced.indeterminateStreak,
+			});
+		}
 		if (
-			advanced.streakSamples >= 2 &&
-			advanced.streakStartedAt !== null &&
-			input.now - advanced.streakStartedAt >= FLAG_SCAN_INTERVAL_MS
+			clock.kind !== "invalid" &&
+			clock.stableSince !== null &&
+			input.now - clock.stableSince >= FLAG_SCAN_INTERVAL_MS
 		) {
 			candidates.push({
 				flagName: spec.name,
 				canonical: sample.canonical,
-				stableForMs: input.now - advanced.streakStartedAt,
+				stableForMs: input.now - clock.stableSince,
 				askPhrase: askPhrase(spec, sample.canonical),
 				reason: keepChangedReason,
 				previousAskCount: advanced.askCount,

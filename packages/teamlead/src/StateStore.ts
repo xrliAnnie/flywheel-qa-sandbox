@@ -1597,6 +1597,13 @@ export interface FlagValueRow {
 	updatedBy: string;
 }
 
+export interface FlagValueClockRow {
+	flagName: string;
+	scopeKey: string;
+	valueLastChanged: number | null;
+	firstRegisteredAt: number;
+}
+
 export interface FlagValueChangeRow {
 	id: number;
 	flagName: string;
@@ -4750,6 +4757,101 @@ export class StateStore {
 		}));
 	}
 
+	/**
+	 * FLY-2104: read persistent value clocks without owning the future scope
+	 * migration. Current tables project one `*` clock; once BOTH tables expose a
+	 * `scope` column, exact `(flag_name, scope)` rows become authoritative.
+	 */
+	listFlagValueClocks(flagName?: string): FlagValueClockRow[] {
+		if (flagName !== undefined && flagName.length === 0) {
+			throw new Error("flag value clock filter must be non-empty");
+		}
+		const columns = (table: "flag_values" | "flag_value_changelog") =>
+			new Set(
+				(
+					this.db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+						name: string;
+					}>
+				).map(({ name }) => name),
+			);
+		const valueScoped = columns("flag_values").has("scope");
+		const changelogScoped = columns("flag_value_changelog").has("scope");
+		if (valueScoped !== changelogScoped) {
+			throw new Error(
+				"flag value clock scope capability mismatch between value and changelog tables",
+			);
+		}
+
+		const filterClause = flagName === undefined ? "" : " WHERE flag_name = ?";
+		const filterArgs = flagName === undefined ? [] : [flagName];
+		const valueRows = this.db.raw
+			.prepare(
+				valueScoped
+					? `SELECT flag_name, scope AS scope_key, value_last_changed
+						 FROM flag_values${filterClause} ORDER BY flag_name, scope`
+					: `SELECT flag_name, '*' AS scope_key, value_last_changed
+						 FROM flag_values${filterClause} ORDER BY flag_name`,
+			)
+			.all(...filterArgs) as Array<{
+			flag_name: string;
+			scope_key: string;
+			value_last_changed: number | null;
+		}>;
+		const auditRows = this.db.raw
+			.prepare(
+				valueScoped
+					? `SELECT flag_name, scope AS scope_key,
+							MIN(changed_at) AS first_registered_at
+						 FROM flag_value_changelog${filterClause}
+						 GROUP BY flag_name, scope`
+					: `SELECT flag_name, '*' AS scope_key,
+							MIN(changed_at) AS first_registered_at
+						 FROM flag_value_changelog${filterClause}
+						 GROUP BY flag_name`,
+			)
+			.all(...filterArgs) as Array<{
+			flag_name: string;
+			scope_key: string;
+			first_registered_at: number;
+		}>;
+		const audits = new Map(
+			auditRows.map((row) => [
+				`${row.flag_name}\u0000${row.scope_key}`,
+				row.first_registered_at,
+			]),
+		);
+		const seen = new Set<string>();
+		const clocks: FlagValueClockRow[] = [];
+		for (const row of valueRows) {
+			const flagName = String(row.flag_name);
+			const scopeKey = String(row.scope_key);
+			if (!flagName || !scopeKey) {
+				throw new Error("flag value clock identity must be non-empty");
+			}
+			const key = `${flagName}\u0000${scopeKey}`;
+			if (seen.has(key)) {
+				throw new Error(
+					`duplicate flag value clock identity: ${flagName}/${scopeKey}`,
+				);
+			}
+			seen.add(key);
+			const firstRegisteredAt = audits.get(key);
+			if (firstRegisteredAt === undefined) {
+				throw new Error(`missing clock audit for flag value: ${flagName}/${scopeKey}`);
+			}
+			clocks.push({
+				flagName,
+				scopeKey,
+				valueLastChanged:
+					row.value_last_changed === null
+						? null
+						: Number(row.value_last_changed),
+				firstRegisteredAt: Number(firstRegisteredAt),
+			});
+		}
+		return clocks;
+	}
+
 	getFlagValueChangeSeq(name: string, scope: string = "*"): number {
 		return Number(
 			(
@@ -6004,10 +6106,14 @@ export class StateStore {
 				]),
 			);
 			if (
-				dependencies.get("linear") !== "done" ||
-				!(["done", "degraded"] as FlagScanLegStatus[]).includes(
-					dependencies.get("report") as FlagScanLegStatus,
-				)
+				(dependencies.has("linear") &&
+					!(["done", "degraded"] as FlagScanLegStatus[]).includes(
+						dependencies.get("linear") as FlagScanLegStatus,
+					)) ||
+				(dependencies.has("report") &&
+					!(["done", "degraded"] as FlagScanLegStatus[]).includes(
+						dependencies.get("report") as FlagScanLegStatus,
+					))
 			) {
 				return { claimed: false, reason: "dependencies_unsettled" };
 			}
@@ -6034,6 +6140,34 @@ export class StateStore {
 		);
 		if (!row) throw new Error("claimed flag scan leg disappeared");
 		return { claimed: true, leg: row };
+	}
+
+	/**
+	 * FLY-2104: Linear issue creation and the standalone report leg were
+	 * retired in favor of one Discord publish-report delivery. Historical
+	 * committed runs can still contain either leg, so recovery settles those
+	 * rows without invoking their former external effects.
+	 */
+	settleRetiredFlagScanLeg(input: {
+		runId: number;
+		leg: "linear" | "report";
+		evidence: string;
+	}): boolean {
+		if (!input.evidence.trim()) {
+			throw new Error("retired flag scan leg evidence is required");
+		}
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'degraded', evidence = ?, claimed_at = NULL,
+			        lease_expires_at = NULL, lease_owner = NULL,
+			        ambiguous_at = NULL, reconcile_not_before = NULL
+			  WHERE run_id = ? AND leg = ?
+			    AND status NOT IN ('done','degraded')`,
+			[input.evidence, input.runId, input.leg],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.finalizeFlagScanRunIfSettled(input.runId);
+		return changed;
 	}
 
 	completeFlagScanLeg(input: {

@@ -15,7 +15,7 @@ import type {
 	StateStore,
 } from "../StateStore.js";
 
-export const FLAG_SCAN_LEASE_MS = 2 * 60_000;
+export const FLAG_SCAN_LEASE_MS = 5 * 60_000;
 export const FLAG_SCAN_VISIBILITY_FENCE_MS = 5 * 60_000;
 export const FLAG_SCAN_REMOTE_CLOCK_SKEW_MS = 30 * 60_000;
 export const FLAG_SCAN_MAX_PENDING_AGE_MS = 24 * 60 * 60_000;
@@ -169,15 +169,6 @@ export type FlagScanReconcileResult =
 	| { status: "missing" };
 
 export interface FlagRetirementScanEffects {
-	createLinearBatch(input: {
-		runToken: string;
-		title: string;
-		body: string;
-	}): Promise<FlagScanEffectResult>;
-	reconcileLinearBatch(input: {
-		runToken: string;
-		createdAfter: number;
-	}): Promise<FlagScanReconcileResult>;
 	publishReport(input: {
 		runToken: string;
 		title: string;
@@ -230,9 +221,14 @@ export type FlagScanOutcome =
 			status: "dry_run";
 			runToken: string;
 			candidateCount: number;
-			linearBody: string | null;
 			html: string | null;
 	  };
+
+export interface FlagRetirementScanner {
+	runNow(): Promise<FlagScanOutcome>;
+	scanIfDue(): Promise<FlagScanOutcome>;
+	dryRun(): Promise<FlagScanOutcome>;
+}
 
 function canonicalDigest(canonical: string): string {
 	return createHash("sha256").update(canonical).digest("hex");
@@ -313,59 +309,6 @@ function provenanceSummary(item: RenderableFlagScanItem): string {
 	return evidence.join(" · ");
 }
 
-function itemLine(item: RenderableFlagScanItem, askCount: number): string {
-	const digest = item.canonical ? canonicalDigest(item.canonical) : "无";
-	const facts = [
-		item.currentValue === null ? null : `  - 当前值: \`${item.currentValue}\``,
-		item.stableForMs === null
-			? null
-			: `  - 稳定时长: ${displayStableDuration(item.stableForMs)}`,
-		`  - 当前样本摘要: \`${digest}\``,
-		`  - 来源: ${provenanceSummary(item)}`,
-		item.description === null ? null : `  - 人话说明: ${item.description}`,
-		`  - 已问过: ${askCount} 次`,
-	].filter((line): line is string => line !== null);
-	return `- **${item.flagName}** — ${item.askPhrase ?? item.reason ?? "待核"}\n${facts.join("\n")}`;
-}
-
-export function renderFlagScanLinearBody(input: {
-	runToken: string;
-	items: ReturnType<StateStore["getFlagScanRunItems"]>;
-}): string {
-	const sections: Array<{
-		title: string;
-		buckets: string[];
-	}> = [
-		{ title: "候选", buckets: ["candidate"] },
-		{ title: "无主候选", buckets: ["orphan_candidate"] },
-		{ title: "已认领（retiring）", buckets: ["claimed"] },
-		{ title: "判据不可用", buckets: ["no_clock", "keep_unbound"] },
-	];
-	const lines = [
-		`<!-- flywheel:flag-governance run=${input.runToken} -->`,
-		"本单是逐条裁决请求，不进派工、不指派 Runner。",
-		"",
-		"扫描产出的是候选清单，删除动作由人点头后另行执行；系统永不自动删除 flag，也不自动创建清理执行单。",
-	];
-	for (const section of sections) {
-		const items = input.items.filter((item) =>
-			section.buckets.includes(item.bucket),
-		);
-		lines.push("", `## ${section.title}`);
-		if (items.length === 0) {
-			lines.push("无");
-			continue;
-		}
-		for (const item of items) lines.push(itemLine(item, item.askCount));
-	}
-	lines.push(
-		"",
-		"## 裁决方法",
-		"请对每个候选分别答「留」或「清」。「留」请给一句理由；「清」只会进入后续人工拆单，绝不会在本扫描里删除。",
-	);
-	return lines.join("\n");
-}
-
 export function renderFlagScanReport(input: {
 	runToken: string;
 	items: ReturnType<StateStore["getFlagScanRunItems"]>;
@@ -403,26 +346,10 @@ export function renderFlagScanReport(input: {
 	return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex,nofollow"><title>每周 flag 留/清裁决</title>
 <style>:root{color-scheme:light;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;background:#f5f5f7;color:#1d1d1f}*{box-sizing:border-box}body{margin:0}.wrap{max-width:980px;margin:auto;padding:48px 22px 80px}.hero{background:linear-gradient(135deg,#fff,#eef5ff);border:1px solid #e3e3e8;border-radius:28px;padding:34px;box-shadow:0 18px 50px #0000000d}.eyebrow{color:#06c;font-weight:700}.muted{color:#6e6e73;line-height:1.6}.warning{border-left:4px solid #ff9f0a;padding:12px 16px;background:#fff8e8;border-radius:10px}.card{background:#fff;border:1px solid #e3e3e8;border-radius:22px;padding:24px;margin-top:18px;box-shadow:0 8px 30px #0000000a}.row{display:flex;justify-content:space-between;gap:16px}.pill{background:#eef5ff;color:#06c;border-radius:999px;padding:7px 11px;height:max-content;font-size:13px}h1{font-size:40px;margin:8px 0}h2{margin:0 0 8px}dl{display:grid;grid-template-columns:130px 1fr;gap:8px;margin:18px 0}dt{color:#6e6e73}label{display:block;font-weight:650;margin-top:14px}select,textarea{display:block;width:100%;margin-top:7px;border:1px solid #c7c7cc;border-radius:12px;padding:11px;background:#fff;font:inherit}button{margin-top:24px;border:0;border-radius:999px;background:#0071e3;color:#fff;padding:13px 22px;font-weight:700;cursor:pointer}#copy-status{margin-left:12px;color:#248a3d}#copy-status.copy-fail{color:#b25000}#copy-fallback{display:none;min-height:160px}</style></head>
-<body><main class="wrap"><header class="hero"><div class="eyebrow">固定每周 · 逐条裁决</div><h1>这些 flag 还要留着吗？</h1><p class="muted">同一解析后生效值连续两次采样相同且间隔满 7 天，才会出现在这里。本页只收集你的「留 / 清」意见。</p><p class="warning"><strong>不会自动删除。</strong>扫描产出的是候选清单，删除动作由人点头后另行执行。</p></header>
+<body><main class="wrap"><header class="hero"><div class="eyebrow">固定每周 · 逐条裁决</div><h1>这些 flag 还要留着吗？</h1><p class="muted">候选稳定期优先按 store 的 value_last_changed 计算；没有可用时钟时，才用两次相同扫描样本的安全起点。本页只收集你的「留 / 清」意见。</p><p class="warning"><strong>不会自动删除。</strong>扫描产出的是候选清单，删除动作由人点头后另行执行。</p></header>
 ${cards || '<section class="card"><h2>本轮没有候选</h2></section>'}
-<button id="copy-all" type="button">复制全部</button><span id="copy-status" role="status"></span><p class="muted">留言后点「复制全部」，把结果贴回 Discord。本页留言不会自动回传。</p><textarea id="copy-fallback" readonly rows="8" aria-label="手动复制裁决汇总"></textarea></main>
-<script nonce="__CSP_NONCE__">(()=>{const prefix="flag-governance:"+location.pathname+":";const cards=[...document.querySelectorAll(".card[data-flag]")];const fallback=document.getElementById("copy-fallback");const status=document.getElementById("copy-status");for(const card of cards){const flag=card.dataset.flag;const verdict=card.querySelector(".verdict");const reason=card.querySelector(".reason");const saved=JSON.parse(localStorage.getItem(prefix+flag)||"{}");verdict.value=saved.verdict||"";reason.value=saved.reason||"";const save=()=>localStorage.setItem(prefix+flag,JSON.stringify({verdict:verdict.value,reason:reason.value}));verdict.addEventListener("change",save);reason.addEventListener("input",save)}document.getElementById("copy-all").addEventListener("click",async()=>{const lines=["flag 周扫描裁决 · run ${String(input.runToken).replaceAll("<", "\\u003c")}"];for(const card of cards){const flag=card.dataset.flag;const digest=card.dataset.digest;const verdict=card.querySelector(".verdict").value||"未答";const reason=card.querySelector(".reason").value.trim();lines.push("- "+flag+": "+verdict+" | canonicalDigest: "+digest+(reason?" — "+reason:""))}const text=lines.join("\\n");let copied=false;try{if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(text);copied=true}}catch{}if(!copied){fallback.value=text;fallback.style.display="block";fallback.focus();fallback.select();try{copied=document.execCommand("copy")}catch{copied=false}}if(copied){fallback.style.display="none";status.className="";status.textContent="已复制，请贴回 Discord"}else{fallback.value=text;fallback.style.display="block";fallback.focus();fallback.select();status.className="copy-fail";status.textContent="浏览器不允许自动复制;下方文本已选中,请按 ⌘C 贴回"}})})();</script></body></html>`;
-}
-
-function renderDiscordBody(input: {
-	run: FlagScanRunRow;
-	linearEvidence: string;
-	reportStatus: string;
-	reportEvidence: string;
-}): string {
-	return [
-		`flag 周扫描 · ${input.run.candidateCount} 个候选待逐条裁决（留/清）`,
-		input.reportStatus === "done"
-			? `报告: ${input.reportEvidence}`
-			: `报告发布失败，见 Linear 单（${input.reportEvidence}）`,
-		`Linear: ${input.linearEvidence}`,
-		`\`flywheel:flag-governance run=${input.run.runToken}\``,
-	].join("\n");
+<button id="copy-all" type="button">复制全部</button><span id="copy-status" role="status"></span><p class="muted">留言后点「复制全部」，把结果贴到本报告的 Discord 结果 thread。本页留言不会自动回传。</p><textarea id="copy-fallback" readonly rows="8" aria-label="手动复制裁决汇总"></textarea></main>
+<script nonce="__CSP_NONCE__">(()=>{const prefix="flag-governance:"+location.pathname+":";const cards=[...document.querySelectorAll(".card[data-flag]")];const fallback=document.getElementById("copy-fallback");const status=document.getElementById("copy-status");for(const card of cards){const flag=card.dataset.flag;const verdict=card.querySelector(".verdict");const reason=card.querySelector(".reason");const saved=JSON.parse(localStorage.getItem(prefix+flag)||"{}");verdict.value=saved.verdict||"";reason.value=saved.reason||"";const save=()=>localStorage.setItem(prefix+flag,JSON.stringify({verdict:verdict.value,reason:reason.value}));verdict.addEventListener("change",save);reason.addEventListener("input",save)}document.getElementById("copy-all").addEventListener("click",async()=>{const lines=["flag 周扫描裁决 · run ${String(input.runToken).replaceAll("<", "\\u003c")}"];for(const card of cards){const flag=card.dataset.flag;const digest=card.dataset.digest;const verdict=card.querySelector(".verdict").value||"未答";const reason=card.querySelector(".reason").value.trim();lines.push("- "+flag+": "+verdict+" | canonicalDigest: "+digest+(reason?" — "+reason:""))}const text=lines.join("\\n");let copied=false;try{if(navigator.clipboard&&navigator.clipboard.writeText){await navigator.clipboard.writeText(text);copied=true}}catch{}if(!copied){fallback.value=text;fallback.style.display="block";fallback.focus();fallback.select();try{copied=document.execCommand("copy")}catch{copied=false}}if(copied){fallback.style.display="none";status.className="";status.textContent="已复制，请贴到本报告的 Discord 结果 thread"}else{fallback.value=text;fallback.style.display="block";fallback.focus();fallback.select();status.className="copy-fail";status.textContent="浏览器不允许自动复制;下方文本已选中,请按 ⌘C 后贴到本报告的 Discord 结果 thread"}})})();</script></body></html>`;
 }
 
 export function renderLeadAlertChunks(
@@ -552,22 +479,44 @@ function owedLegs(items: FlagScanRunItemInput[]): FlagScanLeg[] {
 	const leadDebt = items.some(
 		(item) => item.bucket === "no_clock" || item.bucket === "keep_unbound",
 	);
-	return [
-		"linear",
-		"report",
-		...(leadDebt ? (["lead_notify"] as const) : []),
-		"discord",
-	];
+	return [...(leadDebt ? (["lead_notify"] as const) : []), "discord"];
 }
 
 export function createFlagRetirementScanner(
 	deps: FlagRetirementScannerDependencies,
-): {
-	scanIfDue(): Promise<FlagScanOutcome>;
-	dryRun(): Promise<FlagScanOutcome>;
-	recoverPending(): Promise<FlagScanOutcome>;
-} {
+): FlagRetirementScanner {
 	const enabled = deps.enabled;
+	let activeEntry:
+		| {
+				kind: "force" | "scheduled";
+				result: Promise<FlagScanOutcome>;
+		  }
+		| undefined;
+
+	function singleFlightEntry(
+		kind: "force" | "scheduled",
+		entry: () => Promise<FlagScanOutcome>,
+	): Promise<FlagScanOutcome> {
+		if (activeEntry) {
+			if (kind === "force" && activeEntry.kind !== "force") {
+				return activeEntry.result.then(() =>
+					singleFlightEntry("force", runNowImpl),
+				);
+			}
+			const pending = deps.store.getPendingFlagScanRun();
+			if (pending) {
+				return Promise.resolve({ status: "pending", runId: pending.runId });
+			}
+			return activeEntry.result;
+		}
+		const result = entry();
+		activeEntry = { kind, result };
+		const clear = () => {
+			if (activeEntry?.result === result) activeEntry = undefined;
+		};
+		void result.then(clear, clear);
+		return result;
+	}
 
 	async function fail(error: unknown): Promise<FlagScanOutcome> {
 		const message = error instanceof Error ? error.message : String(error);
@@ -629,24 +578,22 @@ export function createFlagRetirementScanner(
 							? 1
 							: 0),
 				}));
-				const hasCandidates = requiredLegs.includes("linear");
+				const candidateCount = items.filter(
+					(item) =>
+						item.bucket === "candidate" || item.bucket === "orphan_candidate",
+				).length;
 				return {
 					status: "dry_run",
 					runToken,
-					candidateCount: items.filter(
-						(item) =>
-							item.bucket === "candidate" || item.bucket === "orphan_candidate",
-					).length,
-					linearBody: hasCandidates
-						? renderFlagScanLinearBody({ runToken, items: previewItems })
-						: null,
-					html: hasCandidates
-						? renderFlagScanReport({
-								runToken,
-								items: previewItems,
-								scopeState: proposed.nextScopeState,
-							})
-						: null,
+					candidateCount,
+					html:
+						candidateCount > 0
+							? renderFlagScanReport({
+									runToken,
+									items: previewItems,
+									scopeState: proposed.nextScopeState,
+								})
+							: null,
 				};
 			}
 			const committed = deps.store.commitFlagScan({
@@ -668,10 +615,8 @@ export function createFlagRetirementScanner(
 		}
 	}
 
-	async function reconcileVisibleLeg(
-		run: FlagScanRunRow,
-		leg: "linear" | "discord",
-	): Promise<void> {
+	async function reconcileVisibleLeg(run: FlagScanRunRow): Promise<void> {
+		const leg = "discord" as const;
 		const current = deps.store
 			.getFlagScanRunLegs(run.runId)
 			.find((row) => row.leg === leg);
@@ -683,16 +628,10 @@ export function createFlagRetirementScanner(
 			return;
 		}
 		const createdAfter = run.startedAt - FLAG_SCAN_REMOTE_CLOCK_SKEW_MS;
-		const result =
-			leg === "linear"
-				? await deps.effects.reconcileLinearBatch({
-						runToken: run.runToken,
-						createdAfter,
-					})
-				: await deps.effects.reconcileDiscord({
-						runToken: run.runToken,
-						createdAfter,
-					});
+		const result = await deps.effects.reconcileDiscord({
+			runToken: run.runToken,
+			createdAfter,
+		});
 		if (result.status === "found") {
 			deps.store.adoptAmbiguousFlagScanLeg({
 				runId: run.runId,
@@ -724,17 +663,24 @@ export function createFlagRetirementScanner(
 			.getFlagScanRunLegs(run.runId)
 			.find((row) => row.leg === leg);
 		if (!current) return;
+		if (leg === "linear" || leg === "report") {
+			deps.store.settleRetiredFlagScanLeg({
+				runId: run.runId,
+				leg,
+				evidence: JSON.stringify({
+					kind: "retired_by_FLY_2104",
+					message:
+						"weekly flag decisions now publish to #flywheel-notification",
+				}),
+			});
+			return;
+		}
 		if (
 			current.status === "claimed" &&
 			current.leaseExpiresAt !== null &&
 			current.leaseExpiresAt <= deps.now()
 		) {
-			if (leg === "report") {
-				deps.store.requeueExpiredReportFlagScanLeg({
-					runId: run.runId,
-					now: deps.now(),
-				});
-			} else if (leg === "lead_notify") {
+			if (leg === "lead_notify") {
 				deps.store.requeueExpiredLeadNotifyFlagScanLeg({
 					runId: run.runId,
 					now: deps.now(),
@@ -751,8 +697,8 @@ export function createFlagRetirementScanner(
 				.getFlagScanRunLegs(run.runId)
 				.find((row) => row.leg === leg);
 		}
-		if (leg === "linear" || leg === "discord") {
-			await reconcileVisibleLeg(run, leg);
+		if (leg === "discord") {
+			await reconcileVisibleLeg(run);
 			current = deps.store
 				.getFlagScanRunLegs(run.runId)
 				.find((row) => row.leg === leg);
@@ -768,58 +714,6 @@ export function createFlagRetirementScanner(
 		if (!claim.claimed) return;
 		const items = deps.store.getFlagScanRunItems(run.runId);
 		try {
-			if (leg === "linear") {
-				const title = `flag 周扫描 ${new Date(run.committedAt).toISOString().slice(0, 10)} · ${run.candidateCount} 个候选待裁决(留/清)`;
-				const result = await deps.effects.createLinearBatch({
-					runToken: run.runToken,
-					title,
-					body: renderFlagScanLinearBody({ runToken: run.runToken, items }),
-				});
-				if (result.status === "done") {
-					deps.store.completeFlagScanLeg({
-						runId: run.runId,
-						leg,
-						leaseOwner: deps.leaseOwner,
-						evidence: result.evidence,
-					});
-				} else if (result.status === "ambiguous") {
-					deps.store.markFlagScanLegAmbiguous({
-						runId: run.runId,
-						leg,
-						leaseOwner: deps.leaseOwner,
-						now: deps.now(),
-						reconcileNotBefore: deps.now() + FLAG_SCAN_VISIBILITY_FENCE_MS,
-					});
-				}
-				return;
-			}
-			if (leg === "report") {
-				const result = await deps.effects.publishReport({
-					runToken: run.runToken,
-					title: `flag 周扫描 · ${run.candidateCount} 个候选`,
-					html: renderFlagScanReport({
-						runToken: run.runToken,
-						items,
-						scopeState: deps.store.getFlagScanScopeState(),
-					}),
-				});
-				if (result.status === "done") {
-					deps.store.completeFlagScanLeg({
-						runId: run.runId,
-						leg,
-						leaseOwner: deps.leaseOwner,
-						evidence: result.evidence,
-					});
-				} else if (result.status === "degraded") {
-					deps.store.degradeFlagScanLeg({
-						runId: run.runId,
-						leg,
-						leaseOwner: deps.leaseOwner,
-						evidence: result.evidence,
-					});
-				}
-				return;
-			}
 			if (leg === "lead_notify") {
 				const chunks = renderLeadAlertChunks(run, items);
 				const evidence: string[] = [];
@@ -842,21 +736,21 @@ export function createFlagRetirementScanner(
 				});
 				return;
 			}
-			const legs = new Map(
-				deps.store.getFlagScanRunLegs(run.runId).map((row) => [row.leg, row]),
-			);
-			const linear = legs.get("linear");
-			const report = legs.get("report");
-			if (!linear?.evidence || !report?.evidence) return;
-			const result = await deps.effects.postDiscord({
-				runToken: run.runToken,
-				body: renderDiscordBody({
-					run,
-					linearEvidence: linear.evidence,
-					reportStatus: report.status,
-					reportEvidence: report.evidence,
-				}),
-			});
+			const result =
+				run.candidateCount > 0
+					? await deps.effects.publishReport({
+							runToken: run.runToken,
+							title: `flag 周扫描 · ${run.candidateCount} 个候选`,
+							html: renderFlagScanReport({
+								runToken: run.runToken,
+								items,
+								scopeState: deps.store.getFlagScanScopeState(),
+							}),
+						})
+					: await deps.effects.postDiscord({
+							runToken: run.runToken,
+							body: "本周 0 候选",
+						});
 			if (result.status === "done") {
 				deps.store.completeFlagScanLeg({
 					runId: run.runId,
@@ -873,9 +767,21 @@ export function createFlagRetirementScanner(
 					reconcileNotBefore: deps.now() + FLAG_SCAN_VISIBILITY_FENCE_MS,
 					evidence: result.evidence,
 				});
+			} else {
+				await deps.alertFailure(
+					`flag weekly scan visible delivery degraded for run ${run.runToken}: ${result.evidence}`,
+				);
+				deps.store.markFlagScanLegAmbiguous({
+					runId: run.runId,
+					leg,
+					leaseOwner: deps.leaseOwner,
+					now: deps.now(),
+					reconcileNotBefore: deps.now() + FLAG_SCAN_VISIBILITY_FENCE_MS,
+					evidence: result.evidence,
+				});
 			}
-		} catch {
-			if (leg === "linear" || leg === "discord") {
+		} catch (error) {
+			if (leg === "discord") {
 				deps.store.markFlagScanLegAmbiguous({
 					runId: run.runId,
 					leg,
@@ -883,10 +789,14 @@ export function createFlagRetirementScanner(
 					now: deps.now(),
 					reconcileNotBefore: deps.now() + FLAG_SCAN_VISIBILITY_FENCE_MS,
 				});
+				const message = error instanceof Error ? error.message : String(error);
+				try {
+					await deps.alertFailure(
+						`flag weekly scan visible delivery failed for run ${run.runToken}: ${message}`,
+					);
+				} catch {}
 			}
-			// report and Lead notification stay claimed until their bounded lease
-			// expires; their recovery contracts intentionally differ from visible
-			// Linear/Discord effects.
+			// Lead notification stays claimed until its bounded lease expires.
 		}
 	}
 
@@ -918,13 +828,15 @@ export function createFlagRetirementScanner(
 			: { status: "pending", runId: run.runId };
 	}
 
-	async function recoverPending(): Promise<FlagScanOutcome> {
+	async function runNowImpl(): Promise<FlagScanOutcome> {
 		if (!enabled()) return { status: "disabled" };
 		recoverFailureAlertsAtTickEntry();
 		const pending = deps.store.getPendingFlagScanRun();
-		if (!pending) return { status: "not_due" };
-		const settled = await settleStalledPendingRun(pending);
-		return settled ?? processPending(pending);
+		if (pending) {
+			const settled = await settleStalledPendingRun(pending);
+			return settled ? compute(false) : processPending(pending);
+		}
+		return compute(false);
 	}
 
 	async function settleStalledPendingRun(
@@ -952,24 +864,26 @@ export function createFlagRetirementScanner(
 		return { status: "published", runId: run.runId };
 	}
 
+	async function scanIfDueImpl(): Promise<FlagScanOutcome> {
+		if (!enabled()) return { status: "disabled" };
+		recoverFailureAlertsAtTickEntry();
+		const pending = deps.store.getPendingFlagScanRun();
+		if (pending) {
+			const settled = await settleStalledPendingRun(pending);
+			if (!settled) return processPending(pending);
+			if (!flagScanIsDue(deps.now(), pending.committedAt)) return settled;
+		}
+		const latest = deps.store.getLatestFlagScanRun();
+		if (!flagScanIsDue(deps.now(), latest?.committedAt)) {
+			return { status: "not_due" };
+		}
+		return compute(false);
+	}
+
 	return {
-		async scanIfDue(): Promise<FlagScanOutcome> {
-			if (!enabled()) return { status: "disabled" };
-			recoverFailureAlertsAtTickEntry();
-			const pending = deps.store.getPendingFlagScanRun();
-			if (pending) {
-				const settled = await settleStalledPendingRun(pending);
-				if (!settled) return processPending(pending);
-				if (!flagScanIsDue(deps.now(), pending.committedAt)) return settled;
-			}
-			const latest = deps.store.getLatestFlagScanRun();
-			if (!flagScanIsDue(deps.now(), latest?.committedAt)) {
-				return { status: "not_due" };
-			}
-			return compute(false);
-		},
+		runNow: () => singleFlightEntry("force", runNowImpl),
+		scanIfDue: () => singleFlightEntry("scheduled", scanIfDueImpl),
 		dryRun: () =>
 			enabled() ? compute(true) : Promise.resolve({ status: "disabled" }),
-		recoverPending,
 	};
 }

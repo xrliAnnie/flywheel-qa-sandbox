@@ -481,6 +481,14 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			displayEffective: true,
 			valueLastChanged: 200,
 			clockReadiness: "ready",
+			valueClocks: [
+				{
+					scopeKey: "*",
+					valueLastChanged: 200,
+					firstRegisteredAt: 100,
+					readiness: "ready",
+				},
+			],
 		});
 		expect(
 			views.find(({ name }) => name === "founder_review_orphan_monitor"),
@@ -488,6 +496,10 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			storeManaged: false,
 			clockReadiness: "no_clock:unmanaged",
 		});
+		expect(
+			views.find(({ name }) => name === "founder_review_orphan_monitor")
+				?.valueClocks,
+		).toBeUndefined();
 	});
 
 	it("overlays project, star, config, and default values while exposing only scoped row truth", () => {
@@ -558,6 +570,10 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 				],
 			},
 		});
+		expect(view?.valueClocks).toEqual([
+			expect.objectContaining({ scopeKey: "*", readiness: "ready" }),
+			expect.objectContaining({ scopeKey: "flywheel", readiness: "ready" }),
+		]);
 		expect(view?.effectiveByProject).toEqual([
 			{
 				projectName: "flywheel",
@@ -612,6 +628,30 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		const ponytail = bypass.find(({ name }) => name === "ponytail");
 		expect(ponytail?.projectStoreManaged).toBeUndefined();
 		expect(ponytail?.scopedStore).toBeUndefined();
+	});
+
+	it("degrades only the managed view whose value clock audit is malformed", () => {
+		const runtime = initializeFlagStore(store, {}, 100);
+		rawFlagStoreDb(store).exec(
+			"DELETE FROM flag_value_changelog WHERE flag_name='workflow_turn_divergence_alerts'",
+		);
+
+		const views = enrichFlagViewsWithStore(
+			resolveAllFlags({ env: {} }),
+			runtime,
+		);
+		expect(
+			views.find(({ name }) => name === "workflow_turn_divergence_alerts"),
+		).toMatchObject({
+			storeManaged: true,
+			clockReadiness: "no_clock:degraded",
+		});
+		expect(
+			views.find(({ name }) => name === "flag_retirement_scan"),
+		).toMatchObject({
+			storeManaged: true,
+			clockReadiness: "ready",
+		});
 	});
 
 	it.each([

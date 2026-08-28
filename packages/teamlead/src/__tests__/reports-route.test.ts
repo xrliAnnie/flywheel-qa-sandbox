@@ -315,6 +315,39 @@ describe("reports-route", () => {
 		expect(r.status).toBe(501);
 	});
 
+	it("deliver: resolves the sender token at request time", async () => {
+		let token = "infra-token-1";
+		const resolveDiscordBotToken = vi.fn(() => token);
+		await startApp({
+			discordBotToken: undefined,
+			resolveDiscordBotToken,
+		});
+
+		expect(
+			(
+				await post("/api/reports/deliver", {
+					url: "https://x/one",
+					projectName: "withGeneral",
+				})
+			).status,
+		).toBe(200);
+		token = "infra-token-2";
+		expect(
+			(
+				await post("/api/reports/deliver", {
+					url: "https://x/two",
+					projectName: "withGeneral",
+				})
+			).status,
+		).toBe(200);
+
+		expect(resolveDiscordBotToken).toHaveBeenCalledTimes(2);
+		expect(postTextMock.mock.calls.map((call) => call[2])).toEqual([
+			"infra-token-1",
+			"infra-token-2",
+		]);
+	});
+
 	it("deliver: missing url/projectName → 400", async () => {
 		await startApp();
 		expect(

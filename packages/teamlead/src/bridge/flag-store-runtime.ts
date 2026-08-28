@@ -137,6 +137,17 @@ export function enrichFlagViewsWithStore(
 				if (!spec) throw new Error(`missing flag registry entry: ${view.name}`);
 				const codec = getFlagStoreCodec(view.name);
 				if (!codec) throw new Error(`missing managed flag codec: ${view.name}`);
+				const valueClocks = runtime.store
+					.listFlagValueClocks(view.name)
+					.map((clock) => ({
+						scopeKey: clock.scopeKey,
+						valueLastChanged: clock.valueLastChanged,
+						firstRegisteredAt: clock.firstRegisteredAt,
+						readiness: "ready" as const,
+					}));
+				if (valueClocks.length === 0) {
+					throw new Error(`missing managed flag clock: ${view.name}`);
+				}
 				const rows = (scopedRows ?? []).filter(
 					(row) => row.flagName === view.name,
 				);
@@ -195,6 +206,7 @@ export function enrichFlagViewsWithStore(
 					scopedStore: { rows: publicRows },
 					effectiveByProject,
 					clockReadiness: "ready",
+					valueClocks,
 				};
 			} catch (error) {
 				return {
@@ -202,6 +214,7 @@ export function enrichFlagViewsWithStore(
 					storeManaged: false,
 					projectStoreManaged: true,
 					clockReadiness: "no_clock:degraded",
+					valueClocks: undefined,
 					error: error instanceof Error ? error.message : String(error),
 				};
 			}
@@ -225,6 +238,18 @@ export function enrichFlagViewsWithStore(
 			if (valueLastChanged === undefined) {
 				throw new Error(`missing managed flag row: ${view.name}`);
 			}
+			const valueClocks =
+				runtime.mode === "ready"
+					? runtime.store.listFlagValueClocks(view.name).map((clock) => ({
+							scopeKey: clock.scopeKey,
+							valueLastChanged: clock.valueLastChanged,
+							firstRegisteredAt: clock.firstRegisteredAt,
+							readiness: "ready" as const,
+						}))
+					: undefined;
+			if (runtime.mode === "ready" && valueClocks?.length === 0) {
+				throw new Error(`missing managed flag clock: ${view.name}`);
+			}
 			// Ready SQLite rows are sole authority; static truth validation owns
 			// detection of retired persistent-env inputs. Bypass still uses env.
 			const legacyEnvIsAuthority = runtime.mode === "bypass";
@@ -242,6 +267,7 @@ export function enrichFlagViewsWithStore(
 				storeEffective,
 				valueLastChanged,
 				clockReadiness: runtime.mode === "ready" ? "ready" : "no_clock:bypass",
+				valueClocks,
 				effective: storeEffective,
 				bridgeEffective: storeEffective,
 				displayEffective: storeEffective,
@@ -257,6 +283,7 @@ export function enrichFlagViewsWithStore(
 				storeEffective: undefined,
 				valueLastChanged: undefined,
 				clockReadiness: "no_clock:degraded",
+				valueClocks: undefined,
 				effective: undefined,
 				bridgeEffective: undefined,
 				displayEffective: undefined,

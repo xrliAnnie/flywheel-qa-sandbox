@@ -64,6 +64,8 @@ export type ReportPostTextFn = (
 export interface ReportsRouterOptions {
 	vercelToken: string | undefined;
 	discordBotToken: string | undefined;
+	/** Call-time sender resolution for identities that can change after boot. */
+	resolveDiscordBotToken?: () => string | undefined;
 	projects: ProjectEntry[];
 	registry: ReportRegistry;
 	/** Resolve an issue identifier to its existing Lead-owned Discord thread. */
@@ -336,7 +338,9 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 	});
 
 	router.post("/deliver", async (req, res) => {
-		if (!opts.discordBotToken) {
+		const discordBotToken =
+			opts.resolveDiscordBotToken?.() ?? opts.discordBotToken;
+		if (!discordBotToken) {
 			res.status(501).json({
 				error:
 					"report delivery not available — Discord bot token not configured",
@@ -481,7 +485,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 				channel,
 				message,
 				{ data: preview.data, filename: preview.filename },
-				opts.discordBotToken,
+				discordBotToken,
 			);
 			if (!result.ok) {
 				res.status(502).json({ error: result.error });
@@ -501,7 +505,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		const result: PostDiscordResult = await postText(
 			channel,
 			message,
-			opts.discordBotToken,
+			discordBotToken,
 		);
 		if (!result.ok) {
 			res.status(502).json({ error: result.error });

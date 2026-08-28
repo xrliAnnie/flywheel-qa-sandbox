@@ -427,6 +427,283 @@ describe("computeFlagScan", () => {
 		expect(due.candidates[0]?.askPhrase).toMatch(/bake in/i);
 	});
 
+	it("uses a ready value_last_changed clock without waiting for two weekly samples", () => {
+		const spec = flagSpec("clocked");
+		const atSixDays = scan({
+			specs: [spec],
+			views: [
+				flagView(spec, {
+					clockReadiness: "ready",
+					valueClocks: [
+						{
+							scopeKey: "*",
+							valueLastChanged: 4 * DAY,
+							firstRegisteredAt: DAY,
+							readiness: "ready",
+						},
+					],
+				}),
+			],
+			now: 10 * DAY,
+		});
+		expect(atSixDays.candidates).toEqual([]);
+
+		const atSevenDays = scan({
+			specs: [spec],
+			views: [
+				flagView(spec, {
+					clockReadiness: "ready",
+					valueClocks: [
+						{
+							scopeKey: "*",
+							valueLastChanged: 3 * DAY,
+							firstRegisteredAt: DAY,
+							readiness: "ready",
+						},
+					],
+				}),
+			],
+			now: 10 * DAY,
+		});
+		expect(atSevenDays.candidates).toMatchObject([
+			{ flagName: "clocked", stableForMs: 7 * DAY },
+		]);
+	});
+
+	it("treats a ready NULL clock as stable since first registration", () => {
+		const spec = flagSpec("never_changed");
+		const result = scan({
+			specs: [spec],
+			views: [
+				flagView(spec, {
+					clockReadiness: "ready",
+					valueClocks: [
+						{
+							scopeKey: "*",
+							valueLastChanged: null,
+							firstRegisteredAt: 3 * DAY,
+							readiness: "ready",
+						},
+					],
+				}),
+			],
+			now: 10 * DAY,
+		});
+		expect(result.candidates).toMatchObject([
+			{ flagName: "never_changed", stableForMs: 7 * DAY },
+		]);
+	});
+
+	it("keeps no-clock behind the post-advance two-sample gate and later safe start", () => {
+		const spec = flagSpec("bypass_clock");
+		const staleSeedView = flagView(spec, {
+			clockReadiness: "no_clock:bypass",
+			valueClocks: [
+				{
+					scopeKey: "*",
+					valueLastChanged: null,
+					firstRegisteredAt: 0,
+					readiness: "no_clock",
+				},
+			],
+		});
+		const firstSample = scan({
+			specs: [spec],
+			views: [staleSeedView],
+			now: 300 * DAY,
+		});
+		expect(firstSample.candidates).toEqual([]);
+		expect(firstSample.noClock).toEqual([]);
+
+		const changedYesterday = scan({
+			specs: [spec],
+			views: [staleSeedView],
+			prevState: [
+				state(spec.name, {
+					canonical: '{"k":"bool","v":true}',
+					streakStartedAt: 0,
+					streakSamples: 10,
+				}),
+			],
+			now: 300 * DAY,
+		});
+		expect(changedYesterday.candidates).toEqual([]);
+		expect(changedYesterday.noClock).toEqual([]);
+		expect(changedYesterday.nextState[0]).toMatchObject({
+			streakSamples: 1,
+			streakStartedAt: 300 * DAY,
+		});
+
+		const stable = scan({
+			specs: [spec],
+			views: [staleSeedView],
+			prevState: changedYesterday.nextState,
+			now: 307 * DAY,
+		});
+		expect(stable.candidates).toMatchObject([
+			{ flagName: "bypass_clock", stableForMs: 7 * DAY },
+		]);
+		expect(stable.noClock).toEqual([]);
+	});
+
+	it("requires every project scope and uses the most recent exact clock", () => {
+		const spec = flagSpec("project_clock", {
+			source: "project_config",
+			scope: "project",
+			envVar: undefined,
+			configKey: "doc_flow.enabled",
+		});
+		const projectView = (clocks: NonNullable<FlagView["valueClocks"]>) =>
+			flagView(spec, {
+				effective: undefined,
+				displayEffective: undefined,
+				effectiveByProject: [
+					{ projectName: "alpha", value: false },
+					{ projectName: "beta", value: false },
+				],
+				clockReadiness: "ready",
+				valueClocks: clocks,
+			});
+		const result = scan({
+			specs: [spec],
+			views: [
+				projectView([
+					{
+						scopeKey: "alpha",
+						valueLastChanged: 2 * DAY,
+						firstRegisteredAt: DAY,
+						readiness: "ready",
+					},
+					{
+						scopeKey: "beta",
+						valueLastChanged: 3 * DAY,
+						firstRegisteredAt: DAY,
+						readiness: "ready",
+					},
+				]),
+			],
+			expectedProjectNames: ["alpha", "beta"],
+			now: 10 * DAY,
+		});
+		expect(result.candidates).toMatchObject([
+			{ flagName: "project_clock", stableForMs: 7 * DAY },
+		]);
+
+		const star = scan({
+			specs: [spec],
+			views: [
+				projectView([
+					{
+						scopeKey: "*",
+						valueLastChanged: 3 * DAY,
+						firstRegisteredAt: DAY,
+						readiness: "ready",
+					},
+				]),
+			],
+			expectedProjectNames: ["alpha", "beta"],
+			now: 10 * DAY,
+		});
+		expect(star.candidates).toHaveLength(1);
+
+		const missing = scan({
+			specs: [spec],
+			views: [
+				projectView([
+					{
+						scopeKey: "alpha",
+						valueLastChanged: 2 * DAY,
+						firstRegisteredAt: DAY,
+						readiness: "ready",
+					},
+				]),
+			],
+			expectedProjectNames: ["alpha", "beta"],
+			now: 10 * DAY,
+		});
+		expect(missing.candidates).toEqual([]);
+		expect(missing.noClock[0]?.reason).toMatch(/beta|scope/i);
+
+		const exactOverridesStar = scan({
+			specs: [spec],
+			views: [
+				projectView([
+					{
+						scopeKey: "*",
+						valueLastChanged: 2 * DAY,
+						firstRegisteredAt: DAY,
+						readiness: "ready",
+					},
+					{
+						scopeKey: "beta",
+						valueLastChanged: 9 * DAY,
+						firstRegisteredAt: DAY,
+						readiness: "ready",
+					},
+				]),
+			],
+			expectedProjectNames: ["alpha", "beta"],
+			now: 10 * DAY,
+		});
+		expect(exactOverridesStar.candidates).toEqual([]);
+	});
+
+	it("fails closed on future, duplicate, or null-post-advance clocks", () => {
+		const spec = flagSpec("invalid_clock");
+		for (const valueClocks of [
+			[
+				{
+					scopeKey: "*",
+					valueLastChanged: 11 * DAY,
+					firstRegisteredAt: DAY,
+					readiness: "ready" as const,
+				},
+			],
+			[
+				{
+					scopeKey: "*",
+					valueLastChanged: 2 * DAY,
+					firstRegisteredAt: DAY,
+					readiness: "ready" as const,
+				},
+				{
+					scopeKey: "*",
+					valueLastChanged: 3 * DAY,
+					firstRegisteredAt: DAY,
+					readiness: "ready" as const,
+				},
+			],
+		]) {
+			const result = scan({
+				specs: [spec],
+				views: [flagView(spec, { clockReadiness: "ready", valueClocks })],
+				now: 10 * DAY,
+			});
+			expect(result.candidates).toEqual([]);
+			expect(result.noClock).toHaveLength(1);
+		}
+
+		const nullAdvanced = scan({
+			specs: [spec],
+			views: [
+				flagView(spec, {
+					clockReadiness: "no_clock:bypass",
+					valueClocks: [],
+				}),
+			],
+			prevState: [
+				state(spec.name, {
+					canonical: '{"k":"bool","v":false}',
+					streakStartedAt: null,
+					streakSamples: 2,
+				}),
+			],
+			now: 10 * DAY,
+		});
+		expect(nullAdvanced.candidates).toEqual([]);
+		expect(nullAdvanced.noClock[0]?.reason).toMatch(/missing its start time/i);
+	});
+
 	it("resets the streak on a changed effective value", () => {
 		const spec = flagSpec("changed");
 		const oldCanonical = '{"k":"bool","v":false}';

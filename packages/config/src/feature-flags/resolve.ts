@@ -61,6 +61,14 @@ export interface FlagScopedStoreView {
 	}>;
 }
 
+/** Persistent stable-value clock for one flag scope. Secret-free by design. */
+export interface FlagValueClock {
+	scopeKey: string;
+	valueLastChanged: number | null;
+	firstRegisteredAt: number;
+	readiness: "ready" | "no_clock";
+}
+
 /** Secret-free DTO handed to the console / snapshot / report renderers. */
 export interface FlagView {
 	name: string;
@@ -121,6 +129,8 @@ export interface FlagView {
 		| "no_clock:bypass"
 		| "no_clock:degraded"
 		| "no_clock:unmanaged";
+	/** FLY-2104: scope-aware clocks; current single-row schema projects `*`. */
+	valueClocks?: FlagValueClock[];
 }
 
 /** Navigate a schema path, expanding Record (`*`) and array (`[]`) segments. */
