@@ -209,14 +209,6 @@ export function handleFlagStage(
 		if (!deps.flagStore) {
 			return { code: 500, body: { error: "flag store unavailable" } };
 		}
-		if (deps.flagStore.mode === "bypass") {
-			return {
-				code: 409,
-				body: {
-					error: "managed flag changes are disabled during store bypass",
-				},
-			};
-		}
 		const row = deps.flagStore.store.getFlagValueRow(spec.name, scope);
 		const codec = getFlagStoreCodec(spec.name);
 		if (!codec) throw new Error(`missing managed flag codec: ${spec.name}`);

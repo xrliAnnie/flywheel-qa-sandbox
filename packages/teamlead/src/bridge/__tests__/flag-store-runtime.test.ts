@@ -370,7 +370,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		]);
 	});
 
-	it("leaves project config views byte-compatible during bypass and for non-whitelisted flags", () => {
+	it("ignores the retired bypass input while preserving project clock degradation and non-whitelisted views", () => {
 		const configs = new Map([
 			[
 				"flywheel",
@@ -386,18 +386,20 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			],
 		]);
 		const base = resolveAllFlags({ env: {}, projectConfigs: configs });
-		const bypass = enrichFlagViewsWithStore(
+		const views = enrichFlagViewsWithStore(
 			base,
 			initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 100),
 			["flywheel"],
 		);
-		const docFlow = bypass.find(({ name }) => name === "doc_flow");
+		const docFlow = views.find(({ name }) => name === "doc_flow");
 		expect(docFlow?.effectiveByProject).toEqual(
 			base.find(({ name }) => name === "doc_flow")?.effectiveByProject,
 		);
-		expect(docFlow?.projectStoreManaged).toBeUndefined();
+		expect(docFlow?.projectStoreManaged).toBe(true);
+		expect(docFlow?.clockReadiness).toBe("no_clock:degraded");
 		expect(docFlow?.scopedStore).toBeUndefined();
-		const ponytail = bypass.find(({ name }) => name === "ponytail");
+		expect(docFlow?.error).toBe("missing managed flag clock: doc_flow");
+		const ponytail = views.find(({ name }) => name === "ponytail");
 		expect(ponytail?.projectStoreManaged).toBeUndefined();
 		expect(ponytail?.scopedStore).toBeUndefined();
 	});
