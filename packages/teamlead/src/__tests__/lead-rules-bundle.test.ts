@@ -27,6 +27,7 @@ function runBundle(
 	baseDir: string,
 	commBackend: string,
 	governanceRequired: string,
+	summaryDuty = "0",
 ): { lines: string[]; status: number; stderr: string } {
 	try {
 		const out = execFileSync(
@@ -40,7 +41,13 @@ function runBundle(
 				commBackend,
 				governanceRequired,
 			],
-			{ encoding: "utf8" },
+			{
+				encoding: "utf8",
+				env: {
+					...process.env,
+					FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: summaryDuty,
+				},
+			},
 		);
 		return {
 			lines: out.split("\n").filter(Boolean),
@@ -144,6 +151,37 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
 		]);
+	});
+
+	it("loads summary inflow only from the canonical projected duty bit", () => {
+		const selected = runBundle("dept", BASE_RULES_DIR, "mailbox", "1", "1");
+		expect(names(selected.lines)).toContain("summary-inflow.md");
+		expect(names(selected.lines).indexOf("summary-inflow.md")).toBeLessThan(
+			names(selected.lines).indexOf("founder-local-time.md"),
+		);
+		for (const role of ["cos", "companion", "external"]) {
+			expect(
+				names(runBundle(role, BASE_RULES_DIR, "mailbox", "1", "0").lines),
+			).not.toContain("summary-inflow.md");
+		}
+	});
+
+	it("pins the Raya read-receipt exemption and validator contract to summaries/", () => {
+		const summaryRule = readFileSync(
+			join(BASE_RULES_DIR, "summary-inflow.md"),
+			"utf8",
+		);
+		expect(summaryRule).toContain("FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1");
+		expect(summaryRule).toContain("flywheel-comm summary --file");
+		expect(summaryRule).toContain("Judgment");
+		const authority = readFileSync(
+			join(BASE_RULES_DIR, "founder-only-authority.md"),
+			"utf8",
+		);
+		expect(authority).toContain(
+			"Narrow exemption — Raya's read-receipt merges",
+		);
+		expect(authority).toContain("single fixed prefix `summaries/`");
 	});
 
 	it("dept (commdb) → SKIPS runner-messaging but STILL loads runner-patrol (FLY-369: patrol is backend-independent)", () => {
@@ -409,6 +447,10 @@ exit 0
 					discordStateDir: join(home, "discord-growth"),
 					backend: "codex-app-server",
 					role: "dept",
+					summaryRole: "producer",
+					summaryGranularity: "per-lead",
+					hasSummaryDuty: true,
+					summaryAssignmentDigest: "c".repeat(64),
 					projectsDigest: "b".repeat(64),
 					identityDigest: "a".repeat(64),
 				}),

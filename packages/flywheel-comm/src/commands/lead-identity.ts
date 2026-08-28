@@ -110,7 +110,10 @@ export function runLeadIdentityCommand(
 		const code =
 			error instanceof LeadIdentityError
 				? error.code
-				: "identity_command_invalid";
+				: error instanceof SummaryAssignmentError ||
+						error instanceof SummaryConfigError
+					? error.code
+					: "identity_command_invalid";
 		const message = error instanceof Error ? error.message : String(error);
 		if (projectsPath && projectName && leadId) {
 			try {
@@ -164,6 +167,10 @@ export function identityEnvProjection(
 		`FLYWHEEL_LEAD_KEY=${identity.leadKey}`,
 		`FLYWHEEL_LEAD_ROLE=${identity.role}`,
 		`FLYWHEEL_LEAD_BACKEND=${identity.backend}`,
+		`FLYWHEEL_LEAD_SUMMARY_ROLE=${identity.summaryRole}`,
+		`FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${identity.hasSummaryDuty ? "1" : "0"}`,
+		`FLYWHEEL_SUMMARY_GRANULARITY=${identity.summaryGranularity ?? ""}`,
+		`FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${identity.summaryAssignmentDigest ?? ""}`,
 		`DISCORD_STATE_DIR=${identity.discordStateDir}`,
 		`DISCORD_EXPECTED_BOT_USER_ID=${identity.botUserId ?? ""}`,
 		"DISCORD_IDENTITY_MODE=managed",
@@ -183,3 +190,5 @@ import {
 	LeadIdentityMigrationError,
 	migrateLeadBotUserIds,
 } from "../lead-identity-migration.js";
+import { SummaryAssignmentError } from "../summary-assignment-core.js";
+import { SummaryConfigError } from "../summary-config.js";

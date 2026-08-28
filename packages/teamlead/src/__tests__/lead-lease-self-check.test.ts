@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { createServer, request as httpRequest, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -22,7 +28,17 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-self-check-route-"));
+		mkdirSync(join(dir, ".flywheel"));
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		env = {
+			FLYWHEEL_STATE_DIR: join(dir, "state"),
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
 			FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE: join(dir, "carrier-evidence.json"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "must-not-exist.db"),
@@ -32,7 +48,13 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 			JSON.stringify([
 				{
 					projectName: "flywheel",
-					leads: [{ agentId: LEAD_ID, backend: "codex-app-server" }],
+					leads: [
+						{
+							agentId: LEAD_ID,
+							backend: "codex-app-server",
+							summaryRole: "producer",
+						},
+					],
 				},
 			]),
 		);
@@ -40,6 +62,7 @@ describe("FLY-1309 Bridge carrier self-check endpoint", () => {
 			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
 			projectName: "flywheel",
 			leadId: LEAD_ID,
+			homeDir: dir,
 		}).identityDigest;
 		writeEvidence("matching");
 		const app = express();

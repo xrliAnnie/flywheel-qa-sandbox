@@ -57,11 +57,22 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-bridge-"));
+		const stateRoot = join(dir, ".flywheel");
+		mkdirSync(stateRoot, { recursive: true });
+		writeFileSync(
+			join(stateRoot, "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		commRoot = join(dir, "comm");
 		const projectDir = join(commRoot, PROJECT);
 		mkdirSync(projectDir, { recursive: true });
 		commDbPath = join(projectDir, "comm.db");
 		env = {
+			FLYWHEEL_STATE_DIR: stateRoot,
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "lead-lease.db"),
 			FLYWHEEL_LEAD_EPISODE_DB: join(dir, "lease-episodes.db"),
@@ -90,7 +101,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			JSON.stringify([
 				{
 					projectName: PROJECT,
-					leads: [{ agentId: LEAD_ID, backend }],
+					leads: [{ agentId: LEAD_ID, backend, summaryRole: "producer" }],
 				},
 			]),
 		);
@@ -98,6 +109,7 @@ describe("FLY-1309 Bridge Lead lease write boundary", () => {
 			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
 			projectName: PROJECT,
 			leadId: LEAD_ID,
+			homeDir: dir,
 		}).identityDigest;
 	}
 

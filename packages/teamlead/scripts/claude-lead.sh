@@ -103,6 +103,8 @@ assert_v2_canonical_identity() {
   for required_name in \
     FLYWHEEL_LEAD_KEY \
     FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_BACKEND FLYWHEEL_PROJECTS_FILE \
+    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
+    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST \
     DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE DISCORD_BOT_TOKEN \
     FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST; do
     required_value="${!required_name:-}"
@@ -125,6 +127,31 @@ assert_v2_canonical_identity() {
   fi
   if [ "$FLYWHEEL_LEAD_BACKEND" != claude-code ]; then
     log "ERROR: identity_env_conflict: Claude body received backend '$FLYWHEEL_LEAD_BACKEND'"
+    return 1
+  fi
+  case "$FLYWHEEL_LEAD_SUMMARY_ROLE" in
+    producer|aggregator|recipient|exempt) ;;
+    *)
+      log "ERROR: identity_env_conflict: invalid FLYWHEEL_LEAD_SUMMARY_ROLE"
+      return 1
+      ;;
+  esac
+  case "$FLYWHEEL_LEAD_HAS_SUMMARY_DUTY" in
+    0|1) ;;
+    *)
+      log "ERROR: identity_env_conflict: invalid FLYWHEEL_LEAD_HAS_SUMMARY_DUTY"
+      return 1
+      ;;
+  esac
+  case "$FLYWHEEL_SUMMARY_GRANULARITY" in
+    per-lead|per-project) ;;
+    *)
+      log "ERROR: identity_env_conflict: invalid FLYWHEEL_SUMMARY_GRANULARITY"
+      return 1
+      ;;
+  esac
+  if [[ ! "$FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST" =~ ^[a-f0-9]{64}$ ]]; then
+    log "ERROR: identity_env_conflict: malformed summary assignment digest"
     return 1
   fi
   if [[ ! "$DISCORD_EXPECTED_BOT_USER_ID" =~ ^[0-9]{17,20}$ ]] \
@@ -1909,6 +1936,10 @@ _launch_claude() {
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_LEAD_KEY=${FLYWHEEL_LEAD_KEY:-}"
     -e "FLYWHEEL_LEAD_ROLE=${FLYWHEEL_LEAD_ROLE:-}"
+    -e "FLYWHEEL_LEAD_SUMMARY_ROLE=${FLYWHEEL_LEAD_SUMMARY_ROLE:-}"
+    -e "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}"
+    -e "FLYWHEEL_SUMMARY_GRANULARITY=${FLYWHEEL_SUMMARY_GRANULARITY:-}"
+    -e "FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST:-}"
     -e "FLYWHEEL_LEAD_BACKEND=${FLYWHEEL_LEAD_BACKEND:-}"
     -e "FLYWHEEL_LEAD_IDENTITY_DIGEST=${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}"
     -e "FLYWHEEL_LEAD_PROJECTS_DIGEST=${FLYWHEEL_LEAD_PROJECTS_DIGEST:-}"
@@ -2632,6 +2663,26 @@ else
     log "Appending base cos-lead rules: ${BASE_COS_RULES}"
   fi
 fi
+
+# ── FLY-2030: registry-projected summary duty (all roles, no role formula) ──
+# The launcher identity resolver already validated the closed assignment enum,
+# founder-selected mode, and assignment digest. This path only consumes the bit.
+case "${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}" in
+  1)
+    BASE_SUMMARY_INFLOW_RULES="${BASE_RULES_DIR}/summary-inflow.md"
+    if [ ! -f "$BASE_SUMMARY_INFLOW_RULES" ] || [ ! -r "$BASE_SUMMARY_INFLOW_RULES" ]; then
+      echo "[lead] ERROR: summary duty is active but required rule is missing: ${BASE_SUMMARY_INFLOW_RULES}"
+      exit 1
+    fi
+    rules_bundle_add "$BASE_SUMMARY_INFLOW_RULES" base
+    log "Appending base summary-inflow rules: ${BASE_SUMMARY_INFLOW_RULES}"
+    ;;
+  0) ;;
+  *)
+    echo "[lead] ERROR: invalid or missing FLYWHEEL_LEAD_HAS_SUMMARY_DUTY projection"
+    exit 1
+    ;;
+esac
 
 # ── FLY-369/FLY-2080: status relay + patrol action ledger (dept Leads) ──
 # Keep the existing dispatch-capable department-Lead boundary. CoS Leads have

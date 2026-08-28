@@ -372,6 +372,18 @@ compute_lead_rule_bundle() {
       ;;
   esac
 
+  # FLY-2030: consume the canonical assignment projection. Role is NOT a proxy
+  # for summary duty (per-project aggregators and Mufasa fixtures prove why).
+  # Missing/invalid projection is an activation error, never a default.
+  case "${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}" in
+    1) _lrb_emit "${base}/summary-inflow.md" 1 || return 10 ;;
+    0) ;;
+    *)
+      printf 'INVALID_SUMMARY_DUTY:%s\n' "${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-missing}" >&2
+      return 10
+      ;;
+  esac
+
   # ── Universal governance (claude-lead.sh:1581-1617) ──
   # Founder-local time is universal for companion + cos + dept. It is a short
   # time-interpretation contract, not an engineering-role rule.

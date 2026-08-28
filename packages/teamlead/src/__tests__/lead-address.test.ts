@@ -14,6 +14,7 @@ function projectWith(overrides: Record<string, unknown> = {}) {
 			leads: [
 				{
 					agentId: "eng-lead",
+					summaryRole: "producer",
 					chatChannel: "1",
 					match: { labels: ["Engineering"] },
 					...overrides,

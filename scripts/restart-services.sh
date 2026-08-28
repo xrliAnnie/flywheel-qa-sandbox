@@ -169,6 +169,24 @@ log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
 }
 
+# FLY-2030: the new required summary assignment schema/rule bundle may activate
+# only after the live registry passes BOTH parser entrances and still matches
+# its migration receipt. This source-mode preflight runs after pulling main but
+# before build, Bridge stop, Lead bootout, or any other service mutation.
+summary_registry_activation_preflight() {
+    local source_cli="${FLYWHEEL_DIR}/packages/flywheel-comm/src/bin/summary-registry.ts"
+    local projects_path="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+    local receipt_path="${FLYWHEEL_SUMMARY_MIGRATION_RECEIPT:-${HOME}/.flywheel/state/summary-registry/migration-receipt.json}"
+    [[ -f "$source_cli" ]] || return 0
+    if [[ -n "${FLYWHEEL_PROJECTS:-}" ]]; then
+        log "ERROR: summary registry activation refuses inline FLYWHEEL_PROJECTS split-brain"
+        return 1
+    fi
+    pnpm --dir "$FLYWHEEL_DIR" exec tsx "$source_cli" verify-activation \
+        --projects-file "$projects_path" \
+        --receipt-file "$receipt_path"
+}
+
 # FLY-1638: authenticated Bridge admission brake. The token rides curl's
 # stdin config and therefore never appears in argv/process listings.
 bridge_admission_request() {
@@ -1478,6 +1496,11 @@ preflight_pull_latest_main || exit 1
 if [[ "$DRY_RUN" != "true" ]]; then
     # Also covers the already-current success path, which performs no merge.
     DEPLOY_CONSISTENCY_ARMED=true
+fi
+
+if ! summary_registry_activation_preflight; then
+    log "ERROR: summary registry activation evidence is absent or stale; existing Bridge and Leads remain untouched"
+    exit 1
 fi
 
 # The release below makes managed-Lead botUserId mandatory at every Bridge,

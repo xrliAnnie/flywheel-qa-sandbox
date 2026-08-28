@@ -71,6 +71,15 @@ describe("CLI", () => {
 	beforeEach(() => {
 		tmpDir = mkdtempSync(join(tmpdir(), "flywheel-comm-cli-"));
 		dbPath = join(tmpDir, "comm.db");
+		mkdirSync(join(tmpDir, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(tmpDir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		const projectsPath = join(tmpDir, "projects.json");
 		const discordStateDir = join(tmpDir, "discord-product-lead");
 		writeFileSync(
@@ -82,6 +91,7 @@ describe("CLI", () => {
 					leads: [
 						{
 							agentId: "product-lead",
+							summaryRole: "producer",
 							chatChannel: "11111111111111111",
 							match: { labels: ["Product"] },
 							botTokenEnv: "TEST_PRODUCT_BOT_TOKEN",
@@ -96,8 +106,10 @@ describe("CLI", () => {
 			projectsPath,
 			projectName: "test",
 			leadId: "product-lead",
+			homeDir: tmpDir,
 		});
 		defaultCliEnv = {
+			HOME: tmpDir,
 			FLYWHEEL_PROJECTS_FILE: projectsPath,
 			FLYWHEEL_PROJECT_NAME: identity.projectName,
 			PROJECT_NAME: identity.projectName,
@@ -105,6 +117,12 @@ describe("CLI", () => {
 			LEAD_ID: identity.leadId,
 			FLYWHEEL_LEAD_KEY: identity.leadKey,
 			FLYWHEEL_LEAD_BACKEND: identity.backend,
+			FLYWHEEL_LEAD_SUMMARY_ROLE: identity.summaryRole,
+			FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: identity.hasSummaryDuty ? "1" : "0",
+			FLYWHEEL_SUMMARY_GRANULARITY: identity.summaryGranularity ?? "",
+			FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST:
+				identity.summaryAssignmentDigest ?? "",
+			FLYWHEEL_STATE_DIR: join(tmpDir, ".flywheel"),
 			DISCORD_STATE_DIR: identity.discordStateDir,
 			DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
 			FLYWHEEL_LEAD_IDENTITY_DIGEST: identity.identityDigest,
@@ -289,6 +307,7 @@ globalThis.fetch = async function(url, init = {}) {
 						leads: [
 							{
 								agentId: "eng-lead",
+								summaryRole: "producer",
 								chatChannel: "11111111111111111",
 								match: { labels: ["Engineering"] },
 								botTokenEnv: "ENG_BOT_TOKEN",

@@ -1,0 +1,28 @@
+{
+  "assignments": [
+    { "projectName": "geoforge3d", "leadId": "product-lead", "summaryRole": "producer" },
+    { "projectName": "geoforge3d", "leadId": "ops-lead", "summaryRole": "producer" },
+    { "projectName": "geoforge3d", "leadId": "cos-lead", "summaryRole": "aggregator" },
+    { "projectName": "joycon-typeless", "leadId": "joycon-lead", "summaryRole": "producer" },
+    { "projectName": "personal-assistant", "leadId": "belle-lead", "summaryRole": "producer" },
+    { "projectName": "growth", "leadId": "mufasa-lead", "summaryRole": "producer" },
+    { "projectName": "growth", "leadId": "rafiki-lead", "summaryRole": "producer" },
+    { "projectName": "growth", "leadId": "reflection-lead", "summaryRole": "producer" },
+    { "projectName": "flywheel", "leadId": "flywheel-cos-lead", "summaryRole": "aggregator" },
+    { "projectName": "flywheel", "leadId": "flywheel-eng-lead", "summaryRole": "producer" },
+    { "projectName": "flywheel", "leadId": "flywheel-product-lead", "summaryRole": "producer" },
+    { "projectName": "flywheel", "leadId": "codex-infra-bot-lead", "summaryRole": "exempt" },
+    { "projectName": "flywheel", "leadId": "claude-infra-bot-lead", "summaryRole": "exempt" },
+    { "projectName": "tidal-echo", "leadId": "tidal-echo-cos-lead", "summaryRole": "aggregator" },
+    { "projectName": "tidal-echo", "leadId": "tidal-echo-content-lead", "summaryRole": "producer" },
+    { "projectName": "tidal-echo", "leadId": "sub-lead", "summaryRole": "producer" }
+  ],
+  "projectAggregators": [
+    { "projectName": "geoforge3d", "leadId": "cos-lead" },
+    { "projectName": "joycon-typeless", "leadId": "joycon-lead" },
+    { "projectName": "personal-assistant", "leadId": "belle-lead" },
+    { "projectName": "growth", "leadId": "mufasa-lead" },
+    { "projectName": "flywheel", "leadId": "flywheel-cos-lead" },
+    { "projectName": "tidal-echo", "leadId": "tidal-echo-cos-lead" }
+  ]
+}

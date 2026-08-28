@@ -23,13 +23,15 @@ This rule routes two action categories — **merge to `main`** and
 calibration window**. It is **not** a permanent statement that the Lead
 cannot judge these things. It is a present-tense protocol.
 
-**Exactly one carve-out is live: R3** (infra self-heal restart-in-place). It
-arrived by a **direct founder grant**, not by graduating through accumulated
-audit evidence.
+Two founder-granted exceptions are live: the standing **R3** infra self-heal
+restart-in-place carve-out, and the separate issue-bound Raya read-receipt
+exemption defined under R1 below. Neither arrived by graduating through
+accumulated audit evidence.
 
-**R5 is not a carve-out.** It is a classification framework whose registry of
+**R5 is not another carve-out.** It is a classification framework whose registry of
 authorized mechanisms is **empty**, so it authorizes nothing; an empty-registry
-framework is not an exception. Outside R3, the routing below applies every time.
+framework is not an exception. Outside the two explicit exceptions above, the
+routing below applies every time.
 
 The protocol holds while:
 
@@ -88,6 +90,39 @@ for how this list contracts as calibration data accumulates.
   manually responding to the `approve_to_ship` gate via `flywheel-comm
   respond`, calling `gh pr merge` on the Lead side, or any future ship
   API.
+
+### Narrow exemption — Raya's read-receipt merges (founder-decided 2026-08-18; FLY-2030)
+
+The reserved actions above do NOT cover the following single, narrowly-defined
+case, which the founder decided explicitly (FLY-1846 PRD v1.7 §12.3.3, narrow
+scope confirmed in §12.3.4 option a):
+
+- **Who**: the Raya cross-project chief-of-staff Lead only. No other Lead, no
+  Runner, no bot inherits this exemption.
+- **Where**: pull requests in Raya's OWN repositories only —
+  `xrliAnnie/raya` and `xrliAnnie/raya-memory`. Never any project repo.
+- **What**: a PR qualifies ONLY when BOTH of the following machine-checkable
+  conditions hold — this is a **check**, not a claim (a self-asserted "this is
+  a summary" would be the same hole as "I read it", PRD §12.3.4):
+  1. **every** file changed by the PR lies under the single fixed prefix `summaries/`;
+     AND
+  2. the PR changes **no executable file or configuration** — no code, no
+     scripts, no workflows, no dependency manifests; this list is
+     **illustrative, not exhaustive**: **any file that is executable or that
+     affects build or runtime behavior does not count as a summary**.
+  If either condition fails, this exemption does not apply and the normal R1
+  prohibition stands. For a qualifying PR, **merge = the "已阅" read receipt**
+  (PRD §8.8: open PR = unread, merge = read).
+- **Why this is not a hole in R1**: these PRs carry no Linear issue, so the
+  server-side founder-consent gate cannot even evaluate them (the evaluator is
+  issue-bound — PRD §12.3.1: "对一个没有 Linear issue 的 PR,那个闸根本无法求值");
+  and nothing in them ships code to any production `main` that R1 protects.
+- **What this still does NOT allow** (unchanged by this exemption):
+  merging any PR in any project repository; responding to `approve_to_ship`
+  gates; calling any ship API; and any generalized reading of the form
+  "the Lead read it, so the Lead may merge it" — the founder's own record
+  warns that widening this scope "不是给总管开一个口子,是把门拆了"
+  (PRD §12.3.4).
 
 ### Recognising a founder authorization for R1 (reading guide)
 

@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { compileSummaryAssignmentRows } from "./summary-assignment-core.js";
+import {
+	readSummaryGranularity,
+	type SummaryGranularity,
+	type SummaryGranularitySelection,
+} from "./summary-config.js";
 
 export type LeadIdentityErrorCode =
 	| "identity_source_error"
@@ -9,6 +15,7 @@ export type LeadIdentityErrorCode =
 	| "identity_project_invalid"
 	| "identity_project_collision"
 	| "identity_agent_id_invalid"
+	| "identity_summary_role_invalid"
 	| "identity_bare_id_collision"
 	| "identity_row_missing"
 	| "identity_row_ambiguous"
@@ -39,6 +46,7 @@ export interface ResolveLeadIdentityInput {
 
 export type CanonicalLeadBackend = "claude-code" | "codex-app-server";
 export type CanonicalLeadRole = "cos" | "dept" | "companion" | "external";
+export type SummaryRole = "producer" | "aggregator" | "recipient" | "exempt";
 
 export interface CanonicalLeadIdentity {
 	schemaVersion: 1;
@@ -51,12 +59,17 @@ export interface CanonicalLeadIdentity {
 	discordStateDir: string;
 	backend: CanonicalLeadBackend;
 	role: CanonicalLeadRole;
+	summaryRole: SummaryRole;
+	summaryGranularity: SummaryGranularity | null;
+	hasSummaryDuty: boolean | null;
+	summaryAssignmentDigest: string | null;
 	projectsDigest: string;
 	identityDigest: string;
 }
 
 export interface IdentityLeadRow extends Record<string, unknown> {
 	agentId: string;
+	summaryRole: SummaryRole;
 }
 
 export interface IdentityProjectRow extends Record<string, unknown> {
@@ -73,6 +86,7 @@ export interface CompiledLeadIdentityRow {
 export interface CompileLeadIdentityRegistryOptions {
 	homeDir?: string;
 	projectsDigest?: string;
+	summarySelection?: SummaryGranularitySelection;
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -193,6 +207,17 @@ function parseProjects(raw: unknown): IdentityProjectRow[] {
 					`${project.projectName}.leads[${leadIndex}].agentId must match ${SAFE_ID}`,
 				);
 			}
+			if (
+				lead.summaryRole !== "producer" &&
+				lead.summaryRole !== "aggregator" &&
+				lead.summaryRole !== "recipient" &&
+				lead.summaryRole !== "exempt"
+			) {
+				throw identityError(
+					"identity_summary_role_invalid",
+					`${project.projectName}.leads[${leadIndex}].summaryRole must be one of producer|aggregator|recipient|exempt`,
+				);
+			}
 			return lead as IdentityLeadRow;
 		});
 		return { ...project, projectName: project.projectName, leads };
@@ -281,6 +306,10 @@ function identityFields(
 		discordStateDir,
 		backend,
 		role: canonicalRole(project, lead),
+		summaryRole: lead.summaryRole,
+		summaryGranularity: null,
+		hasSummaryDuty: null,
+		summaryAssignmentDigest: null,
 	};
 }
 
@@ -339,6 +368,46 @@ export function compileLeadIdentityRows(
 			});
 		}
 	}
+	if (options.summarySelection !== undefined) {
+		const projection = compileSummaryAssignmentRows(
+			rows.map(({ project, identity }) => ({
+				projectName: identity.projectName,
+				leadId: identity.leadId,
+				summaryRole: identity.summaryRole,
+				summaryAggregatorLeadId: project.summaryAggregatorLeadId,
+			})),
+			options.summarySelection,
+		);
+		for (const row of rows) {
+			const assignment = projection.leads.find(
+				(candidate) =>
+					candidate.projectName === row.identity.projectName &&
+					candidate.leadId === row.identity.leadId,
+			);
+			if (!assignment) {
+				throw identityError(
+					"identity_row_missing",
+					`summary assignment missing for ${row.identity.projectName}/${row.identity.leadId}`,
+				);
+			}
+			const {
+				projectsDigest: _projectsDigest,
+				identityDigest: _identityDigest,
+				...priorFields
+			} = row.identity;
+			const assignedFields = {
+				...priorFields,
+				summaryGranularity: projection.granularity,
+				hasSummaryDuty: assignment.hasSummaryDuty,
+				summaryAssignmentDigest: projection.digest,
+			};
+			row.identity = {
+				...assignedFields,
+				projectsDigest,
+				identityDigest: sha256(JSON.stringify(assignedFields)),
+			};
+		}
+	}
 	return rows;
 }
 
@@ -367,6 +436,7 @@ export function resolveLeadIdentity(
 	const rows = compileLeadIdentityRows(raw, {
 		homeDir: input.homeDir,
 		projectsDigest: sha256(rawText),
+		summarySelection: readSummaryGranularity({ homeDir: input.homeDir }),
 	});
 	const matches = rows.filter(
 		(row) =>

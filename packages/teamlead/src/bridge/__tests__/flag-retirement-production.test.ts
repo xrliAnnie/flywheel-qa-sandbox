@@ -34,6 +34,7 @@ function lead(
 ): ProjectEntry["leads"][number] {
 	return {
 		agentId,
+		summaryRole: "producer",
 		chatChannel: FLYWHEEL_CORE_CHANNEL_ID,
 		match: { labels: [agentId] },
 		department,
@@ -43,6 +44,7 @@ function lead(
 
 function cass(): ProjectEntry["leads"][number] {
 	return lead("flywheel-cos-lead", undefined, {
+		summaryRole: "aggregator",
 		botUserId: CASS_ID,
 		botTokenEnv: "CASS_BOT_TOKEN",
 		botToken: "cass-token",

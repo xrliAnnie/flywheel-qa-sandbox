@@ -42,6 +42,7 @@ fixture_projects() {
       projectRoot:$root,
       leads:[{
         agentId:"eng-lead",
+        summaryRole:"producer",
         chatChannel:"1",
         match:{labels:["eng"]},
         canSpawnRunners:(if $companion then false else true end),
@@ -57,6 +58,7 @@ run_dry() {
   shift 2
   env -i HOME="$h" PATH="$PATH" \
     FLYWHEEL_LEAD_DRY_RUN=1 \
+    FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1 \
     FLYWHEEL_PROJECTS="$projects" \
     DISCORD_BOT_TOKEN="CANARYBOT" \
     TEAMLEAD_API_TOKEN="CANARYTEAM" \

@@ -41,7 +41,13 @@ describe("FLY-1309 Bridge lead lease diagnostics endpoint", () => {
 			JSON.stringify([
 				{
 					projectName: "flywheel",
-					leads: [{ agentId: "codex-lead", backend: "codex-app-server" }],
+					leads: [
+						{
+							agentId: "codex-lead",
+							backend: "codex-app-server",
+							summaryRole: "producer",
+						},
+					],
 				},
 			]),
 		);

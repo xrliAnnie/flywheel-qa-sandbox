@@ -74,6 +74,10 @@ CREATE TABLE IF NOT EXISTS store_meta (
 );
 `;
 
+function canonicalIdentityHomeDir(env: NodeJS.ProcessEnv): string | undefined {
+	return env.FLYWHEEL_STATE_DIR ? dirname(env.FLYWHEEL_STATE_DIR) : undefined;
+}
+
 export class LeaseStoreError extends Error {
 	constructor(
 		message: string,
@@ -1387,6 +1391,7 @@ export function validateLeadCarrierAuthorization(
 			projectsPath:
 				env.FLYWHEEL_PROJECTS_FILE ??
 				join(homedir(), ".flywheel", "projects.json"),
+			homeDir: canonicalIdentityHomeDir(env),
 		});
 	} catch (error) {
 		return {
@@ -2573,6 +2578,7 @@ function assertLeadIdentityIntegrity(
 			projectsPath,
 			projectName,
 			leadId: claimedLeadId,
+			homeDir: canonicalIdentityHomeDir(env),
 		});
 	} catch (error) {
 		return deny(
@@ -2597,6 +2603,12 @@ function assertLeadIdentityIntegrity(
 	if (
 		env.FLYWHEEL_LEAD_KEY !== identity.leadKey ||
 		env.FLYWHEEL_LEAD_BACKEND !== identity.backend ||
+		env.FLYWHEEL_LEAD_SUMMARY_ROLE !== identity.summaryRole ||
+		env.FLYWHEEL_LEAD_HAS_SUMMARY_DUTY !==
+			(identity.hasSummaryDuty ? "1" : "0") ||
+		env.FLYWHEEL_SUMMARY_GRANULARITY !== (identity.summaryGranularity ?? "") ||
+		env.FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST !==
+			(identity.summaryAssignmentDigest ?? "") ||
 		env.DISCORD_STATE_DIR !== identity.discordStateDir ||
 		(env.DISCORD_EXPECTED_BOT_USER_ID ?? "") !== (identity.botUserId ?? "")
 	) {
@@ -2658,6 +2670,7 @@ export function forwardedLeadAuthorizationEnv(
 		projectsPath,
 		projectName: input.projectName,
 		leadId: input.claimedLeadId,
+		homeDir: canonicalIdentityHomeDir(env),
 	});
 	for (const name of [
 		"FLYWHEEL_LEAD_LEASE_KEY",
@@ -2676,6 +2689,10 @@ export function forwardedLeadAuthorizationEnv(
 		FLYWHEEL_LEAD_KEY: identity.leadKey,
 		FLYWHEEL_LEAD_ROLE: identity.role,
 		FLYWHEEL_LEAD_BACKEND: identity.backend,
+		FLYWHEEL_LEAD_SUMMARY_ROLE: identity.summaryRole,
+		FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: identity.hasSummaryDuty ? "1" : "0",
+		FLYWHEEL_SUMMARY_GRANULARITY: identity.summaryGranularity ?? "",
+		FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: identity.summaryAssignmentDigest ?? "",
 		DISCORD_STATE_DIR: identity.discordStateDir,
 		DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
 		FLYWHEEL_LEAD_IDENTITY_DIGEST: input.identityDigest,

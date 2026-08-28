@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
@@ -9,6 +10,8 @@ export type LeadCarrier = "v2";
 
 export interface LeadConfig {
 	agentId: string;
+	/** FLY-2030: explicit summary inflow assignment. Missing/unknown values fail config load. */
+	summaryRole: SummaryRole;
 	chatChannel: string;
 	match: {
 		labels: string[];
@@ -262,6 +265,8 @@ export interface ProjectEntry {
 	projectRoot: string;
 	projectRepo?: string;
 	leads: LeadConfig[];
+	/** Required only while the founder-selected summary mode is per-project. */
+	summaryAggregatorLeadId?: string;
 	generalChannel?: string;
 	/**
 	 * FLY-892 (Step 7, ④): env var name holding the dedicated "system announcer"

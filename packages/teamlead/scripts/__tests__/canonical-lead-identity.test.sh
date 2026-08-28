@@ -21,12 +21,14 @@ chmod +x "$TMP/bin/node"
 printf '%s\n' '// test stub' > "$TMP/flywheel-comm.js"
 
 export RESOLVE_CALLS="$TMP/resolve-calls"
-export RESOLVED_IDENTITY_JSON="$(printf '{"schemaVersion":1,"leadId":"product-lead","projectName":"flywheel","leadKey":"flywheel-product-lead","agentTeamName":"product-lead","botUserId":"12345678901234567","botTokenEnv":"PRODUCT_TOKEN","discordStateDir":"%s/discord-product","backend":"codex-app-server","role":"dept","projectsDigest":"%s","identityDigest":"%s"}' "$TMP" "$(printf 'b%.0s' {1..64})" "$(printf 'a%.0s' {1..64})")"
+export RESOLVED_IDENTITY_JSON="$(printf '{"schemaVersion":1,"leadId":"product-lead","projectName":"flywheel","leadKey":"flywheel-product-lead","agentTeamName":"product-lead","botUserId":"12345678901234567","botTokenEnv":"PRODUCT_TOKEN","discordStateDir":"%s/discord-product","backend":"codex-app-server","role":"dept","summaryRole":"producer","summaryGranularity":"per-lead","hasSummaryDuty":true,"summaryAssignmentDigest":"%s","projectsDigest":"%s","identityDigest":"%s"}' "$TMP" "$(printf 'c%.0s' {1..64})" "$(printf 'b%.0s' {1..64})" "$(printf 'a%.0s' {1..64})")"
 
 SUCCESS_ENV="$TMP/success-env"
 (
   unset LEAD_ID FLYWHEEL_LEAD_ID PROJECT_NAME FLYWHEEL_PROJECT_NAME \
     FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_BACKEND FLYWHEEL_LEAD_ROLE \
+    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
+    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST \
     FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST \
     DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE FLYWHEEL_LEAD_BOT_USER_ID
   export PATH="$TMP/bin:$PATH"
@@ -50,6 +52,11 @@ envval() { grep "^$2=" "$1" | head -1 | cut -d= -f2-; }
   && pass "managed Discord identity mode projected" || fail "identity mode missing"
 [ "$(envval "$SUCCESS_ENV" FLYWHEEL_LEAD_IDENTITY_DIGEST)" = "$(printf 'a%.0s' {1..64})" ] \
   && pass "identity digest projected" || fail "identity digest missing"
+[ "$(envval "$SUCCESS_ENV" FLYWHEEL_LEAD_SUMMARY_ROLE)" = "producer" ] \
+  && [ "$(envval "$SUCCESS_ENV" FLYWHEEL_LEAD_HAS_SUMMARY_DUTY)" = "1" ] \
+  && [ "$(envval "$SUCCESS_ENV" FLYWHEEL_SUMMARY_GRANULARITY)" = "per-lead" ] \
+  && [ "$(envval "$SUCCESS_ENV" FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST)" = "$(printf 'c%.0s' {1..64})" ] \
+  && pass "summary assignment projection exported" || fail "summary assignment projection missing"
 [ "$(envval "$SUCCESS_ENV" DISCORD_BOT_TOKEN)" = "secret-token" ] \
   && pass "named token projected only as generic token" || fail "generic token missing"
 if grep -q '^PRODUCT_TOKEN=' "$SUCCESS_ENV"; then

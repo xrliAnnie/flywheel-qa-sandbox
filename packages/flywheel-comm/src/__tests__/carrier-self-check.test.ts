@@ -37,7 +37,17 @@ describe("FLY-1309 carrier-local self-check", () => {
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-self-check-"));
+		mkdirSync(join(dir, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		env = {
+			FLYWHEEL_STATE_DIR: join(dir, ".flywheel"),
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
 			FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE: join(dir, "carrier-evidence.json"),
 			FLYWHEEL_LEAD_RECEIPT_DIR: join(dir, "receipts"),
@@ -55,6 +65,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 					leads: [
 						{
 							agentId: LEAD_ID,
+							summaryRole: "producer",
 							backend: "codex-app-server",
 							discordStateDir: join(dir, "discord-eng"),
 						},
@@ -66,6 +77,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 			projectsPath: env.FLYWHEEL_PROJECTS_FILE,
 			projectName: "flywheel",
 			leadId: LEAD_ID,
+			homeDir: dir,
 		}).identityDigest;
 		env.FLYWHEEL_LEAD_IDENTITY_DIGEST = identityDigest;
 		writeFileSync(
@@ -168,6 +180,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 					leads: [
 						{
 							agentId: LEAD_ID,
+							summaryRole: "producer",
 							backend: "codex-app-server",
 							discordStateDir: join(dir, "discord-eng-reassigned"),
 						},
@@ -181,7 +194,7 @@ describe("FLY-1309 carrier-local self-check", () => {
 		expect(stderr.join("\n")).toContain("identity_digest_mismatch");
 	});
 
-	it("does not fence a carrier when only another Lead row changes", async () => {
+	it("fences a carrier when the global summary-assignment projection changes", async () => {
 		writeFileSync(
 			env.FLYWHEEL_PROJECTS_FILE,
 			JSON.stringify([
@@ -190,11 +203,13 @@ describe("FLY-1309 carrier-local self-check", () => {
 					leads: [
 						{
 							agentId: LEAD_ID,
+							summaryRole: "producer",
 							backend: "codex-app-server",
 							discordStateDir: join(dir, "discord-eng"),
 						},
 						{
 							agentId: "product-lead",
+							summaryRole: "producer",
 							backend: "claude-code",
 							discordStateDir: join(dir, "discord-product"),
 						},
@@ -207,11 +222,13 @@ describe("FLY-1309 carrier-local self-check", () => {
 				projectsPath: env.FLYWHEEL_PROJECTS_FILE,
 				projectName: "flywheel",
 				leadId: LEAD_ID,
+				homeDir: dir,
 			}).identityDigest,
-		).toBe(identityDigest);
+		).not.toBe(identityDigest);
 
-		expect(await run()).toBe(0);
-		expect(fetchImpl).toHaveBeenCalledOnce();
+		expect(await run()).not.toBe(0);
+		expect(stderr.join("\n")).toContain("identity_digest_mismatch");
+		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
 	it.each([
