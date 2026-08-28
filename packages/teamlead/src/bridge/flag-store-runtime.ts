@@ -3,6 +3,8 @@ import {
 	type FlagStoreRawValue,
 	type FlagView,
 	getFlagStoreCodec,
+	PROJECT_STORE_MANAGED_FLAGS,
+	resolveScopedEffective,
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
@@ -103,8 +105,103 @@ export function storeWorkflowTurnDivergenceAlertsEnabled(
 export function enrichFlagViewsWithStore(
 	views: FlagView[],
 	runtime: FlagStoreRuntime,
+	projectNames?: readonly string[],
 ): FlagView[] {
+	let scopedRows: ReturnType<StateStore["listScopedFlagValueRows"]> | undefined;
+	let scopedRowsError: string | undefined;
+	if (runtime.mode === "ready") {
+		try {
+			scopedRows = runtime.store.listScopedFlagValueRows();
+		} catch (error) {
+			scopedRowsError = error instanceof Error ? error.message : String(error);
+		}
+	}
 	return views.map((view) => {
+		if (PROJECT_STORE_MANAGED_FLAGS.has(view.name)) {
+			if (runtime.mode === "bypass") {
+				return {
+					...view,
+					storeManaged: false,
+					clockReadiness: "no_clock:unmanaged",
+				};
+			}
+			try {
+				if (scopedRowsError) throw new Error(scopedRowsError);
+				const spec = FEATURE_FLAGS.find(
+					(candidate) => candidate.name === view.name,
+				);
+				if (!spec) throw new Error(`missing flag registry entry: ${view.name}`);
+				const codec = getFlagStoreCodec(view.name);
+				if (!codec) throw new Error(`missing managed flag codec: ${view.name}`);
+				const rows = (scopedRows ?? []).filter(
+					(row) => row.flagName === view.name,
+				);
+				const publicRows = rows.map((row) => {
+					if (!row.hasOverride || row.raw === null) {
+						throw new Error(
+							`invalid inherited scoped flag row: ${view.name}/${row.scope}`,
+						);
+					}
+					return {
+						scope: row.scope,
+						raw: row.raw,
+						value: codec.parse({ hasOverride: true, raw: row.raw }),
+					};
+				});
+				const configRows = new Map(
+					(view.effectiveByProject ?? []).map((row) => [row.projectName, row]),
+				);
+				const names = [...new Set(projectNames ?? [...configRows.keys()])];
+				const effectiveByProject = names.map((projectName) => {
+					const configRow = configRows.get(projectName) ?? {
+						projectName,
+						value: view.default,
+						isDefault: true,
+					};
+					const resolved = resolveScopedEffective({
+						spec,
+						projectName,
+						rows: publicRows,
+						configRow,
+						codec,
+					});
+					if (resolved.via !== "project_row" && resolved.via !== "star_row") {
+						return resolved;
+					}
+					if (configRow.error !== undefined) {
+						return {
+							...resolved,
+							runtimeConfigError: configRow.error,
+							runtimeDivergence: "config_pending_cutover" as const,
+						};
+					}
+					if (configRow.value !== resolved.value) {
+						return {
+							...resolved,
+							runtimeConfigValue: configRow.value,
+							runtimeDivergence: "config_pending_cutover" as const,
+						};
+					}
+					return resolved;
+				});
+				return {
+					...view,
+					storeManaged: false,
+					projectStoreManaged: true,
+					scopedStore: { rows: publicRows },
+					effectiveByProject,
+					clockReadiness: "ready",
+				};
+			} catch (error) {
+				return {
+					...view,
+					storeManaged: false,
+					projectStoreManaged: true,
+					clockReadiness: "no_clock:degraded",
+					error: error instanceof Error ? error.message : String(error),
+				};
+			}
+		}
 		if (!STORE_MANAGED_FLAGS.has(view.name)) {
 			return {
 				...view,

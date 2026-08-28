@@ -472,6 +472,130 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		});
 	});
 
+	it("overlays project, star, config, and default values while exposing only scoped row truth", () => {
+		const runtime = initializeFlagStore(store, {}, 100);
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "doc_flow",
+				scope: "*",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "star off",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "doc_flow",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "1",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "flywheel on",
+			}),
+		).toMatchObject({ ok: true });
+
+		const view = enrichFlagViewsWithStore(
+			resolveAllFlags({
+				env: {},
+				projectConfigs: new Map([
+					[
+						"flywheel",
+						{
+							config: {
+								doc_flow: {
+									enabled: true,
+									default_department: "engineering",
+								},
+							} as never,
+						},
+					],
+					[
+						"geoforge3d",
+						{
+							config: {
+								doc_flow: {
+									enabled: true,
+									default_department: "engineering",
+								},
+							} as never,
+						},
+					],
+				]),
+			}),
+			runtime,
+			["flywheel", "geoforge3d", "new-project"],
+		).find(({ name }) => name === "doc_flow");
+
+		expect(view).toMatchObject({
+			projectStoreManaged: true,
+			storeManaged: false,
+			clockReadiness: "ready",
+			scopedStore: {
+				rows: [
+					{ scope: "*", raw: "0", value: false },
+					{ scope: "flywheel", raw: "1", value: true },
+				],
+			},
+		});
+		expect(view?.effectiveByProject).toEqual([
+			{
+				projectName: "flywheel",
+				value: true,
+				isDefault: false,
+				via: "project_row",
+			},
+			{
+				projectName: "geoforge3d",
+				value: false,
+				isDefault: true,
+				via: "star_row",
+				runtimeConfigValue: true,
+				runtimeDivergence: "config_pending_cutover",
+			},
+			{
+				projectName: "new-project",
+				value: false,
+				isDefault: true,
+				via: "star_row",
+			},
+		]);
+	});
+
+	it("leaves project config views byte-compatible during bypass and for non-whitelisted flags", () => {
+		const configs = new Map([
+			[
+				"flywheel",
+				{
+					config: {
+						doc_flow: {
+							enabled: true,
+							default_department: "engineering",
+						},
+						ponytail: { enabled: true },
+					} as never,
+				},
+			],
+		]);
+		const base = resolveAllFlags({ env: {}, projectConfigs: configs });
+		const bypass = enrichFlagViewsWithStore(
+			base,
+			initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 100),
+			["flywheel"],
+		);
+		const docFlow = bypass.find(({ name }) => name === "doc_flow");
+		expect(docFlow?.effectiveByProject).toEqual(
+			base.find(({ name }) => name === "doc_flow")?.effectiveByProject,
+		);
+		expect(docFlow?.projectStoreManaged).toBeUndefined();
+		expect(docFlow?.scopedStore).toBeUndefined();
+		const ponytail = bypass.find(({ name }) => name === "ponytail");
+		expect(ponytail?.projectStoreManaged).toBeUndefined();
+		expect(ponytail?.scopedStore).toBeUndefined();
+	});
+
 	it.each([
 		["missing", { status: "readable", content: "OTHER=1\n" }, false],
 		[

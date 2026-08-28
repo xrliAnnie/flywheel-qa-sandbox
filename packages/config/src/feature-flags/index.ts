@@ -16,6 +16,7 @@ export { FEATURE_FLAGS, validateKeepFieldContract } from "./registry.js";
 export type {
 	FlagEffectiveByProject,
 	FlagResolveCtx,
+	FlagScopedStoreView,
 	FlagView,
 } from "./resolve.js";
 export {

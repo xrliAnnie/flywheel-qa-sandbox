@@ -24,6 +24,31 @@ export function shellQuote(token: string): string {
 	return `'${token.replace(/'/g, "'\\''")}'`;
 }
 
+export type FlagCommandInput = {
+	name: string;
+	scope: string;
+	reason: string;
+} & ({ op: "set"; to: string } | { op: "clear"; to?: never });
+
+/** Build the copy/paste-only scoped feature-flag command. */
+export function buildFlagCommand(input: FlagCommandInput): string {
+	const argv = [
+		"flywheel-comm",
+		"feature-flags",
+		input.op,
+		"--name",
+		shellQuote(input.name),
+	];
+	if (input.op === "set") argv.push("--to", shellQuote(input.to));
+	argv.push(
+		"--project",
+		shellQuote(input.scope),
+		"--reason",
+		shellQuote(input.reason),
+	);
+	return argv.join(" ");
+}
+
 /** null = back to account default → the CLI literal "default". */
 function cliValue(v: string | null): string {
 	return v === null ? "default" : v;
@@ -120,6 +145,11 @@ export const APPLY_COMMAND_JS: string = [
 	"var FleetCmd = (function(){",
 	"  function shq(t){ return \"'\" + String(t).replace(/'/g, \"'\\\\''\") + \"'\"; }",
 	'  function cliVal(v){ return v === null ? "default" : v; }',
+	"  function flagCommand(input){",
+	'    var argv = ["flywheel-comm", "feature-flags", input.op, "--name", shq(input.name)];',
+	'    if (input.op === "set") { argv = argv.concat(["--to", shq(input.to)]); }',
+	'    return argv.concat(["--project", shq(input.scope), "--reason", shq(input.reason)]).join(" ");',
+	"  }",
 	"  function leadCommands(fleetScriptPath, changes){",
 	"    var lines = [];",
 	"    for (var i = 0; i < changes.length; i++) {",
@@ -145,6 +175,6 @@ export const APPLY_COMMAND_JS: string = [
 	'    if (cronId !== undefined) { argv = argv.concat(["--cron", shq(cronId)]); }',
 	'    return argv.concat(dims).concat(["--yes"]).join(" ");',
 	"  }",
-	"  return { leadCommands: leadCommands, runnerCommand: runnerCommand };",
+	"  return { flagCommand: flagCommand, leadCommands: leadCommands, runnerCommand: runnerCommand };",
 	"})();",
 ].join("\n");

@@ -259,6 +259,9 @@ export function createManagementRunnerProvider(
 }
 
 function registryPolicyReason(view: FlagView): string {
+	if (view.projectStoreManaged) {
+		return "scoped SQLite rows are read-only here; use flywheel-comm feature-flags set --project (or clear --project)";
+	}
 	if (view.storeManaged) return "flag value is owned by the SQLite flag store";
 	if (view.dormant) return "flag registry: dormant runtime path";
 	if (view.category === "governance_gate") {
@@ -315,17 +318,20 @@ function buildFlagView(
 	projectNames: readonly string[],
 	projectRevision?: (projectName: string) => string,
 ): ManagementFlagView {
+	const starRow = view.scopedStore?.rows.find((row) => row.scope === "*");
 	const global = flagManagedValue({
 		view,
 		current:
 			view.scope === "bridge_global"
 				? (view.storeEffective ?? view.displayEffective ?? null)
-				: view.default,
+				: (starRow?.value ?? view.default),
 		targetId: buildTargetId("flag", [view.name, "global"]),
 		revision,
 		scopeMismatch:
 			view.scope === "project"
-				? "project-scoped flag has no global override"
+				? view.projectStoreManaged
+					? registryPolicyReason(view)
+					: "project-scoped flag has no global override"
 				: undefined,
 		error: view.error ?? formatFlagDivergence(view),
 	});

@@ -46,6 +46,19 @@ export interface FlagEffectiveByProject {
 	isDefault?: boolean;
 	/** FLY-2100: which layer supplied the displayed project value. */
 	via?: "project_row" | "star_row" | "config" | "default";
+	/** Batch-A transition: config.yaml is still the runtime source until Batch C. */
+	runtimeConfigValue?: boolean | string;
+	runtimeConfigError?: string;
+	runtimeDivergence?: "config_pending_cutover";
+}
+
+export interface FlagScopedStoreView {
+	/** Present rows only; absence means inherit. No revision or actor metadata. */
+	rows: Array<{
+		scope: string;
+		raw: string;
+		value: boolean | string;
+	}>;
 }
 
 /** Secret-free DTO handed to the console / snapshot / report renderers. */
@@ -94,6 +107,10 @@ export interface FlagView {
 	retiring?: string;
 	/** FLY-1778: true when SQLite, rather than legacy env/config, owns the value. */
 	storeManaged?: boolean;
+	/** FLY-2100: this project flag is writable through scoped SQLite rows. */
+	projectStoreManaged?: boolean;
+	/** Secret-free row-presence DTO used by phone controls. */
+	scopedStore?: FlagScopedStoreView;
 	/** Current effective value read from the owning SQLite row or boot bypass. */
 	storeEffective?: boolean | string;
 	/** Epoch milliseconds when the canonical effective value last changed. */

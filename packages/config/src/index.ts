@@ -42,6 +42,7 @@ export type {
 	FlagScanNoClock,
 	FlagScanState,
 	FlagScope,
+	FlagScopedStoreView,
 	FlagSource,
 	FlagStoreCodec,
 	FlagStoreRawValue,

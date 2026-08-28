@@ -4701,7 +4701,13 @@ export async function startBridge(
 					envFile: managementEnvSource(),
 					projectConfigs: ffConfigCache.current(),
 				});
-				return flagStore ? enrichFlagViewsWithStore(views, flagStore) : views;
+				return flagStore
+					? enrichFlagViewsWithStore(
+							views,
+							flagStore,
+							managementProjects.map((project) => project.projectName),
+						)
+					: views;
 			};
 			const managementLaunchAgentsDir = join(
 				homedir(),

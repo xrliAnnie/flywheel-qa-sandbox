@@ -310,6 +310,64 @@ describe("existing management writer adapters", () => {
 		expect(value?.writeCapability.reason).toContain("SQLite flag store");
 	});
 
+	it("reads project flag global/project cells from the scoped DB overlay and points writes to CLI", () => {
+		const base = resolveAllFlags({ env: {}, projectConfigs: configs() }).find(
+			(flag) => flag.name === "doc_flow",
+		);
+		if (!base) throw new Error("missing doc_flow");
+		const read = (
+			rows: Array<{ scope: string; raw: string; value: boolean }>,
+			projectNames: string[] = ["flywheel", "geoforge3d"],
+		) =>
+			createManagementFlagProvider({
+				views: () => [
+					{
+						...base,
+						projectStoreManaged: true,
+						storeManaged: false,
+						scopedStore: { rows },
+						effectiveByProject: [
+							{
+								projectName: "flywheel",
+								value: false,
+								via: "project_row",
+							},
+							{
+								projectName: "geoforge3d",
+								value: true,
+								via: "star_row",
+							},
+						],
+					},
+				],
+				revision: () => "store:scoped",
+				projectNames: () => projectNames,
+			}).read().fragment.flags?.[0];
+
+		const withStar = read([
+			{ scope: "*", raw: "1", value: true },
+			{ scope: "flywheel", raw: "0", value: false },
+		]);
+		expect(withStar?.global.current).toBe(true);
+		expect(withStar?.projectOverrides).toMatchObject([
+			{ projectName: "flywheel", value: { current: false } },
+			{ projectName: "geoforge3d", value: { current: true } },
+		]);
+		expect(withStar?.global.writeCapability).toMatchObject({ writable: false });
+		expect(withStar?.global.writeCapability.reason).toContain(
+			"flywheel-comm feature-flags set --project",
+		);
+		expect(
+			withStar?.projectOverrides[0]?.value.writeCapability.reason,
+		).toContain("flywheel-comm feature-flags set --project");
+
+		expect(
+			read([{ scope: "flywheel", raw: "0", value: false }])?.global.current,
+		).toBe(base.default);
+		expect(read([], [])?.projectOverrides).toEqual([]);
+		expect(read([], [])?.global.current).toBe(base.default);
+	});
+
 	it("management flag values use displayEffective and disable writes on source divergence", () => {
 		const flagProvider = createManagementFlagProvider({
 			views: () =>
