@@ -1,13 +1,13 @@
 ---
 issue: FLY-2102
 phase: implement
-phaseCursor: 2/4
-updated: 2026-08-28T19:39:04.737Z
-nextStep: Run full-repo lint, build, and package tests on the rebased head
+phaseCursor: 3/4
+updated: 2026-08-28T19:50:20.985Z
+nextStep: Push the refreshed exact head and request exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2102 progress
-**phase**: implement (2/4)
-**next**: Run full-repo lint, build, and package tests on the rebased head
+**phase**: implement (3/4)
+**next**: Push the refreshed exact head and request exact-head code review
