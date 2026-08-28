@@ -128,6 +128,7 @@
       <tr><td>追问走 #leads-roundtable(你看得见)</td><td>走内部信箱——你看不见,而且依赖 flywheel 源码,违背「独立产品」判据(§8.5)</td></tr>
       <tr><td>👍/👎 当反馈</td><td>问你「这次值吗」或让你填表——那是你已经否掉的形态</td></tr>
       <tr><td>巡视时才看仓库状态</td><td>实时盯所有仓——PRD 明确不做「实时知道所有事」,也会多一堆部件</td></tr>
+      <tr><td>她能改的文件夹 = 她自己的仓 + <b>你全部六个项目仓</b>(第一批全给,§8.4)</td><td>只给她自己的仓——设计评审判定那正是你否过两次的「先不给」;边界改由她的行为纪律承担(不指挥 issue 级、越界是失败信号)</td></tr>
       <tr><td>不用 Codex 自带的「goal 字段」</td><td>存一个「当前目标」字段——会长成填表系统,你在 §10.4 否过</td></tr>
     </table>
     <div class="note ask">两个你可能想否的默认:①「我看了,没有」默认开(每 6 小时最多一行);②<b>改巡视间隔是一条命令</b>(<span class="mono">raya cadence set 12</span>),暂时不是「跟她说一句就改」——因为改配置的通道刻意不在她自己手里。都能改,你说话就行。</div>
@@ -141,7 +142,7 @@
       <tr><th>#</th><th>事</th><th>谁</th></tr>
       <tr><td>1</td><td>Raya bot 重新授权两项 Discord 权限:<b>读历史消息</b>(重启后补读你说过的话)、<b>在讨论串里发言</b>(追问 Lead 用);并让她能看到 #leads-roundtable</td><td>你(一个授权链接,Tadashi 会发你)</td></tr>
       <tr><td>2</td><td>把 Raya 登记进 Lead 互信名单(否则 Lead 会自动忽略陌生 bot 的 @)</td><td>Tadashi(flywheel 侧一次性配置)</td></tr>
-      <tr><td>3</td><td>merge 后从稳定目录重装并重启 brain(FLY-2074 同款收尾清单)</td><td>Tadashi</td></tr>
+      <tr><td>3</td><td>merge 后从稳定目录重装并重启 brain(FLY-2074 同款收尾清单),并更新运行配置:注册表路径、roundtable 频道、她的可写范围扩到六个项目仓</td><td>Tadashi</td></tr>
     </table>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s9"></textarea></div>
   </section>
@@ -158,13 +159,14 @@
       <li>语音侧任何行为改动</li>
       <li>她能说「X 静了很久」,<b>说不了「X 里面现在怎么样」</b>——静着的仓要等真的重启才有内容可读</li>
     </ul>
-    <h3>四件还没证的事(实现前先用小探针证,证不过有明确退路)</h3>
+    <h3>五件还没证的事(实现前先用小探针证;两件有退路,两件证不过就停)</h3>
     <table>
       <tr><th>要证什么</th><th>证不过怎么办</th></tr>
       <tr><td>重启后能接上原会话(语音那条已证明<b>不能</b>,文字这条机制不同,但没实测)</td><td>退路:每次重启新会话 + 明说「记得:否」,长期记忆只靠 MEMORY.md</td></tr>
-      <tr><td>固定结构输出在 gpt-5.6-sol 上生效,且不把回复变生硬</td><td>退路:只在巡视轮用结构,对话轮用自然文本</td></tr>
-      <tr><td>她的沙箱里能读六个项目仓(读,不是写)</td><td>退路:快照全由 brain 生成,她自己深挖受限,写进边界</td></tr>
-      <tr><td>Lead 真的会回她的 @(互信名单配好后)</td><td>退路:她在 #raya 如实说「我问不到」,前置交回 Tadashi</td></tr>
+      <tr><td>固定结构输出在 gpt-5.6-sol 上生效,且不把回复变生硬</td><td><b>硬门</b>:证不过就先停下修方案,不边写边即兴</td></tr>
+      <tr><td>她的沙箱里能读六个项目仓</td><td>退路:快照全由 brain 生成,她自己深挖受限,写进边界</td></tr>
+      <tr><td>她能真的开出一个 sub-agent(你 8-18 拍过「要给」)</td><td>如实记「当前形态不可用」并上报,不写成「已给」</td></tr>
+      <tr><td>Lead 真的会回她的 @(互信名单配好后)</td><td><b>不算可接受的退路</b>:前置由 Tadashi 补齐后重试;补不齐这单就不能算完成</td></tr>
     </table>
     <div class="note warn">另一条如实写:她每轮都用最深思考档,回复可能要几分钟——「正在输入…」会一直亮着;超过半小时会自己打断并说「我想太久了」。快不快,等你真用一周再调,不预设。</div>
     <div class="comment"><label>这一节的意见</label><textarea data-key="s10a"></textarea></div>
