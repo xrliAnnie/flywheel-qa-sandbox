@@ -1,0 +1,20 @@
+flowchart LR
+  subgraph ST["状态目录(模型碰不到 = 权威面)"]
+    ITEMS["voice-inbox/items.jsonl<br/>大脑写"]
+    ACKS["voice-inbox/acks.jsonl<br/>语音进程写"]
+    RCP["voice-actions/receipts.jsonl<br/>权威回执"]
+    FF["voice-filter.json 筛选规则"]
+    LJ["voice-leads.json 通讯录"]
+  end
+  subgraph OBX["出件箱(模型可写,单向)"]
+    ACT["*.action.json 提案<br/>(带 actionId+转写引用)"]
+  end
+  subgraph MEM["记忆仓(git)"]
+    IDM["IDENTITY.md / MEMORY.md"]
+  end
+  BRAIN["大脑进程"] --> ITEMS
+  VP["语音进程"] --> ACKS & RCP & FF
+  VP -.读.-> ITEMS & LJ & ACT
+  CX["后台 Codex(沙箱)"] --> ACT
+  CX -.读.-> IDM
+  VP -.回执用播报念给模型.-> CX
