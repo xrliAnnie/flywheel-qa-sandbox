@@ -139,8 +139,11 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 
    **步骤 A — 发现即补账推进**：
 
-   1. 从报告拿到 exact shape，读 Bridge 日志的确切错误码，再打开抛出该错误的
-      源码，把每个 `WHERE` / `if` 守卫逐条抄进报告；禁止凭错误文案猜是哪笔账。
+   1. 从报告拿到 exact shape 与 Bridge 的结构化诊断（稳定错误码、run/request/execution id、
+      当前 state/revision），把可复跑的只读 query 与相关 `workflow_run_event seq/kind`
+      结果写进报告；只引用负责该诊断的 source symbol/path 作为 owner 入口，不摘录或
+      枚举实现条件。错误文案只作索引；证据不足以判定 guard 类别时写 `UNAVAILABLE` +
+      owner + 下一动作，不得猜是哪笔账。
    2. 逐守卫分类。防篡改/真实性 guard（`digest`、authority、`head fingerprint`、
       founder consent、`approval`、`claim`、授权或头指纹）必须停手，不改账，带
       classification、evidence、owner 和下一动作上报 founder，result 写
@@ -204,7 +207,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      team: "FLY",
      parentId: "FLY-2072",
      labels: ["Flywheel"],
-     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + Bridge 接力 pane/event 证据>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
    })
    ```
 
@@ -234,7 +237,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    ```text
    mcp__linear-api__save_comment({
      issueId: "<child identifier>",
-     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <pane/event receipt>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
    })
    mcp__linear-api__save_issue({
      id: "<child identifier>",

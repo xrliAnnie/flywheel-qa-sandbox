@@ -59,14 +59,44 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 
 基线首次因 `node_modules missing` 无法启动；随后已运行 `pnpm install --frozen-lockfile` 恢复既有依赖，lockfile 无修改，现有 22 条定向测试通过。实现阶段继续完成 RED/GREEN 证据。
 
-## 6. 部署后行为验收
+## 6. QA 返工：原假设被否定后的重新定位
+
+首次 PR head `a79e9322f` 接受独立 QA 后，真实
+`claude -p --model claude-fable-5` 单变量台架否定了本调研第 1 节的因果假设：事故包
+与 pane-SHA 重构候选都为 100% 命中，而从候选删除附录 A/B 后仍然命中。二分实验把
+必要且充分的触发面收敛到步骤 A 的两行“打开抛出错误的源码并逐条抄下每个
+`WHERE` / `if` 守卫”：
+
+- 候选包保留该两行时 14/14 命中；仅删该两行时 0/11；
+- 在已证干净的 pre-FLY-2080 包只加回该两行时 5/5 命中；
+- QA 报告与全部原始结果保存在 `~/.flywheel/qa/FLY-2111/`。
+
+因此返工不撤销 event-first 收紧，而是把实际触发项整段换成 Bridge 已提供的结构化
+诊断：稳定错误码、run/request/execution id、state/revision、可复跑的只读 query 与
+`workflow_run_event seq/kind`。source symbol/path 只作为 owner 入口，不再摘录或枚举
+实现条件；证据不足时明确写 `UNAVAILABLE`、owner 和下一动作，仍不允许凭错误文案
+猜账。
+
+同一生产 bundle 原件、同一消息、同一模型、同一时间窗下交替复测：只重写触发条目
+时，旧候选包 8/8 命中，新包 0/8，且两包的内容差仅为该完整条目；随后一并清掉
+两个与 event-only 合同矛盾的旧 `pane/event` 报告模板，最终包再次得到旧候选 5/5、
+最终包 0/5。两轮共 26 次均为 valid run，证据保存在
+`~/.flywheel/qa/FLY-2111-rework/`。这证明部署前台架已恢复分离，不替代生产长驻
+会话的 100-message 验收。
+
+Lead 要求的 add-back 充分性反证也独立通过：从干净的 pre-FLY-2080 包出发，只加入
+新 Step A 条目时 0/5 命中；同一位置加入旧触发两行时 5/5 命中，10 次均为 valid
+run。两包内容差只有 bundle sentinel 与该条目的旧/新写法，原始结果在同目录的
+`clean-addback-trial/`。
+
+## 7. 部署后行为验收
 
 静态内容契约只能证明风险操作形状已被移除，不能证明黑盒 safeguard 不再触发。PR 合并并由常规 updater 部署后必须保留原判定线：
 
 1. Founder 将 Tadashi 切回 Fable 5。
 2. 观察至少 100 条 mailbox 消息，`reasoning_extraction` 拦截为 0 才通过。
 3. 同期确认 CoS(Fable) 仍为 0，作为阴性对照。
-4. 只要出现一次同类拦截，本假设判错，回到提示词包重新定位；第一候选是仍保留且同样含 full scrollback/state SHA 的 STEP 2，但黑盒下候选不是定论。不以样本量或概率解释掉失败。
+4. 只要出现一次同类拦截，本次改写仍判失败，回到提示词包重新定位；不以样本量或概率解释掉失败。
 
 本 implement node 只交付可部署 PR 与该验收合同，不擅自换生产模型、部署或重启 Lead。
 
@@ -75,6 +105,7 @@ Issue: FLY-2111 (https://linear.app/geoforge3d/issue/FLY-2111/返工2080-runner-
 | 结论 | as-of | 失效条件 | 重核命令/证据 |
 |---|---|---|---|
 | `workflow_run_event` 以 run 内 `MAX(seq)+1` 追加并受唯一约束 | 2026-08-27 `HEAD` | StateStore schema/append 方法变化 | `rg -n "UNIQUE \(run_id, seq\)|MAX\(seq\).*\+ 1|appendWorkflowRunEventTx" packages/teamlead/src/StateStore.ts` 后重读实现 |
-| pane-SHA 风险形状仅由步骤 A + 附录 A/B 三处组成 | 2026-08-27 `HEAD` | 规则新增同类段落 | `rg -n "BEFORE_PANE_SHA|AFTER_PANE_SHA|pane hash|full-scrollback state hash" packages/teamlead/lead-rules-base/runner-patrol-rules.md` |
-| package test 暂因依赖未安装而不可运行 | 2026-08-27 当前 worktree | `node_modules` 恢复 | 重跑 `pnpm --filter flywheel-teamlead test src/__tests__/fly369-patrol-rule.test.ts` |
+| Fable 台架的必要且充分触发面是旧步骤 A 第 1 项 | 2026-08-27，QA 143 次 + 返工 16 次 valid run | Fable 分类器或 rules bundle 漂移 | 重跑 `~/.flywheel/qa/FLY-2111/` 的旧候选/去两行对照，并与 `~/.flywheel/qa/FLY-2111-rework/pack-M-rework.md` 交替比较 |
+| 触发条目最小返工包为 0/8、旧候选为 8/8；最终包为 0/5、旧候选为 5/5 | 2026-08-27 20:24–20:32 PDT | 模型/包/消息或分类器变化 | 检查两目录的原始 jsonl 后重新生成当前 rules bundle 并交替运行 |
+| 干净 pre-FLY-2080 包只加新条目为 0/5；同位置加旧条目为 5/5 | 2026-08-27 20:34–20:36 PDT | 模型/包/消息或分类器变化 | 对照 `pack-P-pre2080plus-new-stepA.md`、`pack-L-pre2080plus142_143.md` 与 `clean-addback-trial/` |
 | post-deploy 100-message 验收未完成 | 2026-08-27 pre-PR | 部署并完成观测 | Founder/Lead 留存的模型配置、mailbox 计数和 safeguard 错误日志 |

@@ -263,6 +263,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		]) {
 			expect(section0).not.toContain(retiredShape);
 		}
+		expect(section0).not.toMatch(/接力 pane\/event|<pane\/event receipt>/);
 		expect(repairAppendices).not.toMatch(/capture-pane -p -S -(?=\s|$)/);
 		for (const anchor of [
 			"BASELINE_SEQ",
@@ -288,6 +289,33 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		const handoffGate = repairAppendices.indexOf('test -n "$AFTER_EVENTS"');
 		expect(handoffPrint).toBeGreaterThanOrEqual(0);
 		expect(handoffGate).toBeGreaterThan(handoffPrint);
+	});
+
+	it("FLY-2111: Step A diagnoses from reproducible Bridge evidence without copying implementation guards", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const stepA = section0.slice(
+			section0.lastIndexOf("**步骤 A — 发现即补账推进**"),
+			section0.lastIndexOf("**步骤 B — 记录进病根 Epic**"),
+		);
+
+		for (const anchor of [
+			"Bridge 的结构化诊断",
+			"稳定错误码",
+			"run/request/execution id",
+			"state/revision",
+			"可复跑的只读 query",
+			"workflow_run_event seq/kind",
+			"source symbol/path",
+			"UNAVAILABLE",
+			"owner + 下一动作",
+		]) {
+			expect(stepA).toContain(anchor);
+		}
+		expect(stepA).not.toContain("打开抛出该错误的源码");
+		expect(stepA).not.toMatch(/把每个.*WHERE.*if.*逐条抄进报告/s);
 	});
 
 	it("FLY-2094: predecessor repair omits maxIterations for an unbounded loop", () => {
