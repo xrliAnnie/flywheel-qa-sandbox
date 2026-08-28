@@ -199,8 +199,10 @@ jobs:
     # FLY-1986 was placed on shard 2 rather than here because of it.
     # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1867=2, 1572=12, 1764=2,
     # 1327=1, cmux-hooks=10, 1364=312, 1944=2, 183=11, 1402=4, 1496=10,
-    # 1663=97, 1678=78 (test total ~544s). Dependency preflight is ~0s when
+    # 1663=97 (test total ~466s). Dependency preflight is ~0s when
     # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
+    # FLY-2030 PR #975 measured this shard at 1045s on 2026-08-28. Moving the
+    # complete 75s FLY-1678 step to shard 2 restores the expected total to ~970s.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -410,17 +412,6 @@ jobs:
         run: |
           bash scripts/__tests__/voucher-watch.test.sh
 
-      # FLY-1678: the statusline renders on every Lead and Runner pane and is
-      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
-      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
-      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
-      # AND implementation; curl/security are forbidden-call markers so CI can
-      # never touch the real usage API or Keychain).
-      - name: Test — FLY-1678 statusline model-scoped bar + installer
-        run: |
-          bash scripts/__tests__/fly1678-statusline-fable.test.sh
-          bash scripts/__tests__/fly1678-install-statusline.test.sh
-
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
@@ -441,7 +432,8 @@ jobs:
     # 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
     # 1081=2, 1905=25, 1338-structure=0, 1674=0, 1338-parity=2, 1855=5,
     # 1986=95 (measured 2026-08-23; was 162s before its sleep budget was trimmed),
-    # tripwire-test~1 (test total ~637s). Dependency preflight is ~0s when tools verify; the rg
+    # 1678=75 (moved from shard 1 after the 2026-08-28 FLY-2030 PR #975 run),
+    # tripwire-test~1 (test total ~712s). Dependency preflight is ~0s when tools verify; the rg
     # fast-install path is normally ~5-15s and is bounded below the job ceiling.
     timeout-minutes: 20
     steps:
@@ -910,6 +902,18 @@ jobs:
 
       - name: Test — FLY-2007 phase-0 analyser contract
         run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
+
+      # FLY-1678: the statusline renders on every Lead and Runner pane and is
+      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
+      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
+      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
+      # AND implementation; curl/security are forbidden-call markers so CI can
+      # never touch the real usage API or Keychain). FLY-2030 PR #975 measured
+      # this complete step at 75s and moved it here to rebalance the two shards.
+      - name: Test — FLY-1678 statusline model-scoped bar + installer
+        run: |
+          bash scripts/__tests__/fly1678-statusline-fable.test.sh
+          bash scripts/__tests__/fly1678-install-statusline.test.sh
 
       - name: Test — FLY-1870 job elapsed tripwire contract
         run: bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh

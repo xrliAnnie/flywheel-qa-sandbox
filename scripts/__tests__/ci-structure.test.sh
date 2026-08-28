@@ -712,7 +712,6 @@ expected_shard_tests = {
         "Test — FLY-1830 non-Lead daemon convergence",
         "Test — FLY-1814 launchd fleet contracts",
         "Test — FLY-1929 voucher watch contracts",
-        "Test — FLY-1678 statusline model-scoped bar + installer",
     ],
     "script-tests-2": [
         "Test — FLY-1905 CI apt-install helper",
@@ -765,6 +764,7 @@ expected_shard_tests = {
         "Test — FLY-1855 executable Lead patrol snapshot",
         "Test — FLY-1986 load probe contract",
         "Test — FLY-2007 phase-0 analyser contract",
+        "Test — FLY-1678 statusline model-scoped bar + installer",
         "Test — FLY-1870 job elapsed tripwire contract",
     ],
 }
