@@ -18,16 +18,14 @@ import {
 
 const SAMPLE = [
 	"# flywheel env",
-	"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0",
+	"FLYWHEEL_LOOP_PROFILER=0",
 	"CASS_BOT_TOKEN=abc123",
 	"",
 ].join("\n");
 
 describe("readEnvValue", () => {
 	it("reads a simple KEY=value", () => {
-		expect(readEnvValue(SAMPLE, "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR")).toBe(
-			"0",
-		);
+		expect(readEnvValue(SAMPLE, "FLYWHEEL_LOOP_PROFILER")).toBe("0");
 		expect(readEnvValue(SAMPLE, "CASS_BOT_TOKEN")).toBe("abc123");
 	});
 	it("undefined when absent", () => {
@@ -51,18 +49,12 @@ describe("computeEnvSha", () => {
 
 describe("applyEnvChange", () => {
 	it("replaces an existing simple line in place, preserving other bytes", () => {
-		const r = applyEnvChange(
-			SAMPLE,
-			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
-			"1",
-		);
+		const r = applyEnvChange(SAMPLE, "FLYWHEEL_LOOP_PROFILER", "1");
 		expect(r.ok).toBe(true);
-		expect(r.next).toContain("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=1");
+		expect(r.next).toContain("FLYWHEEL_LOOP_PROFILER=1");
 		expect(r.next).toContain("# flywheel env");
 		expect(r.next).toContain("CASS_BOT_TOKEN=abc123");
-		expect(
-			readEnvValue(r.next as string, "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR"),
-		).toBe("1");
+		expect(readEnvValue(r.next as string, "FLYWHEEL_LOOP_PROFILER")).toBe("1");
 	});
 
 	it("appends an absent key (keeping the trailing blank line)", () => {
@@ -73,14 +65,10 @@ describe("applyEnvChange", () => {
 	});
 
 	it("deletes an existing key (null)", () => {
-		const r = applyEnvChange(
-			SAMPLE,
-			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
-			null,
-		);
+		const r = applyEnvChange(SAMPLE, "FLYWHEEL_LOOP_PROFILER", null);
 		expect(r.ok).toBe(true);
 		expect(
-			readEnvValue(r.next as string, "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR"),
+			readEnvValue(r.next as string, "FLYWHEEL_LOOP_PROFILER"),
 		).toBeUndefined();
 		expect(r.next).toContain("CASS_BOT_TOKEN=abc123");
 	});

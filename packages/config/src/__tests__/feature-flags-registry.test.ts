@@ -13,7 +13,7 @@ import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 
 describe("feature-flag registry invariants", () => {
 	it("exports the FLY-1981 authoring guard through the public feature-flags surface", () => {
-		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(18);
 		expect(FeatureFlags.validateFlagAuthoringPolicy).toBeTypeOf("function");
 	});
 
@@ -292,28 +292,6 @@ describe("feature-flag registry invariants", () => {
 			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-1645" });
 		}
 		expect(FeatureFlags).not.toHaveProperty("receiptFoundationEnabled");
-	});
-
-	it("FLY-1314 registers gate-hygiene rollback controls", () => {
-		const issueGateSupersede = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
-		);
-		expect(issueGateSupersede).toMatchObject({
-			name: "issue_gate_supersede_mode",
-			category: "kill_switch",
-			polarity: "default_on",
-			valueKind: "enum",
-			enumValues: ["enforce", "observe", "0"],
-			default: "enforce",
-			toggleable: "readonly",
-		});
-		expect(issueGateSupersede?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/teamlead/src/bridge/issue-gate-supersede.ts",
-				symbol: "sweepIssueGatesForProject",
-				timing: "call_time",
-			}),
-		]);
 	});
 
 	it("FLY-1423 keeps workflow re-entry as a default-on kill switch", () => {

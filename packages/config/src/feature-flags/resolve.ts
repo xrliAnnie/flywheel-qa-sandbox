@@ -264,25 +264,6 @@ export function resolveFlag(
 	};
 
 	if (spec.scope === "bridge_global") {
-		// FLY-1329 A2 (Codex R2 LOW): the activity window is a wording-only value the
-		// runtime (`activityWindowMs`) sanitizes — junk / ≤0 / non-finite all become
-		// the default. Report the SANITIZED effective value, not the raw env string,
-		// so the dashboard never shows a value the runtime does not actually use.
-		// Kept in lock-step with activityWindowMs() (same finite-&&->0 rule); config
-		// cannot import teamlead, so the tiny rule is mirrored, not shared.
-		if (spec.envVar === "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS") {
-			const raw = env[spec.envVar];
-			const n = Number(raw);
-			const effective =
-				raw !== undefined && Number.isFinite(n) && n > 0
-					? String(n)
-					: String(spec.default);
-			return {
-				...base,
-				effective,
-				isDefault: effective === String(spec.default),
-			};
-		}
 		// FLY-1356 R1#8: an enum raw outside enumValues throws in
 		// resolveEnvEffective — surface it as an explicit display-only error so
 		// the console never shows garbage as the current mode while the owning

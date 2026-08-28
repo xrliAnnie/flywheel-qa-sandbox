@@ -133,11 +133,11 @@ describe("flywheel-comm feature-flags apply", () => {
 		).rejects.toThrow("exit 1");
 
 		await runFeatureFlags(
-			["apply", "--name", "founder_review_orphan_monitor", "--to", "off"],
+			["apply", "--name", "test_direct_flag", "--to", "off"],
 			deps,
 		);
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
-			name: "founder_review_orphan_monitor",
+			name: "test_direct_flag",
 			to: false,
 		});
 	});
@@ -156,7 +156,7 @@ describe("flywheel-comm feature-flags apply", () => {
 			[
 				"apply",
 				"--name",
-				"founder_review_orphan_monitor",
+				"loop_profiler",
 				"--to",
 				"off",
 				"--reason",
@@ -168,7 +168,7 @@ describe("flywheel-comm feature-flags apply", () => {
 		// stage POST carries the sparse {name, to}; apply POST carries {canonical, confirmToken}
 		expect(httpJson.mock.calls[0]?.[0]).toContain("/api/fleet/flag/stage");
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
-			name: "founder_review_orphan_monitor",
+			name: "loop_profiler",
 			to: false,
 			reason: "operator test",
 		});

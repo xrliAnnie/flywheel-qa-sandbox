@@ -278,13 +278,12 @@ describe("FLY-1981 final governance ledgers", () => {
 	}, 15_000);
 
 	it("keeps the post-verdict snapshot historical while allowing managed growth and legacy shrink", () => {
-		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. This equation is
-		// historical evidence, not a permanent assertion on FEATURE_FLAGS.length.
-		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		// FLY-2101 removed 13 runtime env controls from the only-shrink baseline.
+		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(18);
 		expect(FLY1981_MANAGED_SNAPSHOT).toHaveLength(4);
 		expect(
 			LEGACY_UNMANAGED_BASELINE.length + FLY1981_MANAGED_SNAPSHOT.length,
-		).toBe(35);
+		).toBe(22);
 		const currentNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
 		const outsidePartition = FEATURE_FLAGS.filter(
 			(spec) =>

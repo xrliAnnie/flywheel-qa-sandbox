@@ -91,7 +91,6 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 	beforeEach(async () => {
 		// FLY-869: these FSM-mapping tests bypass merge approval. Their sessions
 		// carry a durable QA exemption instead of relying on a process switch.
-		vi.stubEnv("FLYWHEEL_MERGE_APPROVAL_GATE", "0");
 		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0"); // retired input is ignored
 		runPostShipSpy.mockClear();
 		stateRoot = mkdtempSync(join(tmpdir(), "fly108-dual-"));
@@ -191,7 +190,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 		expect(approveResult.ok).toBe(true);
 		expect(store.getSession(execId)!.status).toBe("approved_to_ship");
 
-		// 4. session_completed (auto_approve + landingStatus.merged) → completed
+		// 4. A status-only approve has no durable gate evidence, so merge blocks.
 		const mergedRes = await postEvent({
 			event_id: "evtA-merged",
 			execution_id: execId,
@@ -211,8 +210,8 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(mergedRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("completed");
-		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(store.getSession(execId)!.status).toBe("awaiting_review");
+		expect(runPostShipSpy).not.toHaveBeenCalled();
 
 		// 5. Second session_completed with NEW event_id from terminal state
 		// → FSM rejects completed→completed, no second call. (In prod, Runner
@@ -236,7 +235,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(dupRes.status).toBe(200);
-		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(runPostShipSpy).not.toHaveBeenCalled();
 	});
 
 	// FLY-115 v1.24.5 (FLY-120): production approve path uses `flywheel-comm
@@ -291,8 +290,8 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(mergedRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("completed");
-		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(store.getSession(execId)!.status).toBe("awaiting_review");
+		expect(runPostShipSpy).not.toHaveBeenCalled();
 	});
 
 	// FLY-115 v1.24.5 (Codex R2 HIGH regression guard): the natural completion
@@ -413,8 +412,8 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(completeRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("completed");
-		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(store.getSession(execId)!.status).toBe("awaiting_review");
+		expect(runPostShipSpy).not.toHaveBeenCalled();
 	});
 
 	it("Scenario D3 (FLY-208 5a): approved_to_ship + route=needs_review + NOT merged → completed with evidence-gap (no FSM reject, no finalization)", async () => {
@@ -615,7 +614,7 @@ describe("FLY-108 Integration: dual session_completed through Bridge", () => {
 			},
 		});
 		expect(mergedRes.status).toBe(200);
-		expect(store.getSession(execId)!.status).toBe("completed");
-		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
+		expect(store.getSession(execId)!.status).toBe("awaiting_review");
+		expect(runPostShipSpy).not.toHaveBeenCalled();
 	});
 });

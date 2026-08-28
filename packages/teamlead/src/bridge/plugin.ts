@@ -401,7 +401,6 @@ import {
 	qaStallInboxLoopLead,
 } from "./liveness-manifest.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
-import { releaseMailboxQueueDeployBarrier } from "./mailbox-queue-deploy-barrier.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import {
 	createManagementCronProvider,
@@ -2321,38 +2320,6 @@ export function createBridgeApp(
 				selfOrigin,
 			);
 			res.status(r.code).json(r.body);
-		});
-
-		// FLY-1573: deploy-only readiness release. The durable ownership token is
-		// issued before the new Bridge starts; loopback + same-origin prevents a
-		// browser or remote caller from presenting it. The handler performs the
-		// persistent/live CAS and clears the marker only after both are ON.
-		app.post("/api/fleet/mailbox-queue-barrier/release", (req, res) => {
-			const selfOrigin = loopbackSelfOrigin(req.headers.host);
-			if (!selfOrigin) {
-				res.status(403).json({ error: "non-loopback host" });
-				return;
-			}
-			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
-				res.status(403).json({ error: "cross-origin" });
-				return;
-			}
-			const { targetSha, ownershipToken } = (req.body ?? {}) as {
-				targetSha?: string;
-				ownershipToken?: string;
-			};
-			if (!targetSha || !ownershipToken) {
-				res.status(400).json({ error: "targetSha/ownershipToken required" });
-				return;
-			}
-			const result = releaseMailboxQueueDeployBarrier(
-				{ envPath: join(homedir(), ".flywheel", ".env") },
-				targetSha,
-				ownershipToken,
-			);
-			res
-				.status(result.ok ? 200 : result.code)
-				.json(result.ok ? result : { error: result.reason, code: result.code });
 		});
 
 		// FLY-709 P5: runner-default stage/apply — same loopback + same-origin +
@@ -7731,7 +7698,6 @@ export async function startBridge(
 
 	// FLY-945 Fix D: external-merge convergence sweeper (backstop — Fix F
 	// simultaneously retires executor-merge; this is NOT permission for it).
-	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
 	const externalMergeReconciler = createExternalMergeReconciler({
 		store,
 		withIssueLifecycleMutex: lifecycleInfra.withIssueLifecycleMutex,

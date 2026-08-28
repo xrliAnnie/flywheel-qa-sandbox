@@ -513,7 +513,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(removed.unassignedCrons).toHaveLength(before.unassignedCrons.length);
 	});
 
-	it("stages server old-to-new values, writes config/DB/flag/plist, rejects stale sources, and journals partial results", async () => {
+	it("stages server old-to-new values, writes config/DB/plist, rejects stale sources, and journals partial results", async () => {
 		const before = await snapshot();
 		const project = before.projects[0]!;
 		const runner = project.runnerDefault!.dispatch;
@@ -521,9 +521,6 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			(node) => node.name === "design",
 		)!.dispatch;
 		const cron = project.crons[0]!.schedule;
-		const flag = before.flags.find(
-			(item) => item.name === "founder_review_orphan_monitor",
-		)!.global;
 		const desiredSchedule = {
 			days: [1, 3],
 			times: [
@@ -555,11 +552,6 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 				targetId: cron.targetId,
 				desiredValue: desiredSchedule,
 				observedRevision: cron.source.revision,
-			},
-			{
-				targetId: flag.targetId,
-				desiredValue: false,
-				observedRevision: flag.source.revision,
 			},
 		];
 		const needsAck = await post("/api/fleet/changes/stage", { changes });
@@ -602,9 +594,6 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(appliedResponse.status).toBe(200);
 		expect(await appliedResponse.json()).toMatchObject({ status: "applied" });
 		expect(readFileSync(configPath, "utf8")).toContain("model: claude-fable-5");
-		expect(readFileSync(envPath, "utf8")).toContain(
-			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0",
-		);
 		expect(
 			store.getWorkflowTemplate("tpl_eng_heavy")?.current_published_revision,
 		).toBe(2);
@@ -649,16 +638,18 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(readFileSync(envPath)).toEqual(stableEnv);
 
 		const partialSnapshot = await snapshot();
-		const partialFlag = partialSnapshot.flags.find(
-			(item) => item.name === "mailbox_queue",
-		)!.global;
+		const partialRunner = partialSnapshot.projects[0]!.runnerDefault!.dispatch;
 		const failureField = partialSnapshot.extensions[0]!.fields[0]!.value;
 		const partialStage = await post("/api/fleet/changes/stage", {
 			changes: [
 				{
-					targetId: partialFlag.targetId,
-					desiredValue: false,
-					observedRevision: partialFlag.source.revision,
+					targetId: partialRunner.targetId,
+					desiredValue: {
+						provider: "anthropic",
+						model: "claude-opus-5",
+						effort: null,
+					},
+					observedRevision: partialRunner.source.revision,
 				},
 				{
 					targetId: failureField.targetId,

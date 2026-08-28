@@ -54,23 +54,12 @@ When you receive a channel message from **flywheel-inbox** (these arrive through
 the MCP channel `notifications/claude/channel`, NOT through Discord), you MUST
 acknowledge it exactly once after you have processed it:
 
-If the message starts with a **`[mailbox-batch <batch_id> | ...]`** header, the
-batch rule takes precedence over the single-message rule below: process every
-message in the batch, then call **`flywheel_inbox_ack_batch`** exactly once with
-`{ batch_id: "<batch_id>" }`. Do not call `flywheel_inbox_ack` for individual
-members. An unacked batch holds one of the three in-flight slots and will be
-re-delivered under the same durable batch id when its lease expires.
-
-1. The notification's `meta` field contains a `message_id` (e.g. `"msg_...")`.
-2. After you have acted on the instruction (or deliberately decided not to),
-   call the MCP tool **`flywheel_inbox_ack`** with `{ message_id: "<the-id>" }`.
-3. The tool is idempotent — calling it twice with the same id is safe. Unknown
-   ids return a structured error that will be surfaced back to you; this is a
-   signal that you are using the wrong id, not a reason to stop.
-
-Without the ack, the inbox server will re-deliver the same message on its retry
-window (default 30 seconds). This is the safety net for transport-level drops;
-it is NOT a substitute for acking. Treat every channel message as "arrived once,
-must be acknowledged once".
+Every instruction notification starts with a
+**`[mailbox-batch <batch_id> | ...]`** header. Process every message in the
+batch, then call **`flywheel_inbox_ack_batch`** exactly once with
+`{ batch_id: "<batch_id>" }`. An unacked batch holds one of the three in-flight
+slots and is re-delivered under the same durable batch id when its lease expires.
+Unknown batch ids return a structured error; verify the header instead of
+guessing an id.
 
 Discord messages arrive through a different path and do NOT require this ack.

@@ -10,7 +10,6 @@ import {
 	type FlagStoreCodec,
 	getFlagStoreCodec,
 	getStoreEligibility,
-	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,
 } from "../feature-flags/store-policy.js";
@@ -24,26 +23,13 @@ const MANAGED = [
 	"workflow_turn_divergence_alerts",
 ] as const;
 
-const PROTECTED = ["mailbox_queue", "merge_approval_gate_killswitch"] as const;
-
 const LEGACY_UNMANAGED = [
 	"flag_store",
-	"founder_review_orphan_monitor",
-	"mailbox_queue",
-	"liveness_activity_window_ms",
 	"converge_cmux_symlink",
 	"cmux_view_helper",
 	"cmux_node_presence",
 	"voice_qa_presence_override",
-	"merge_approval_gate_killswitch",
-	"issue_gate_supersede_mode",
-	"deferred_approval_ttl_ms",
-	"founder_reply_deadletter_age_ms",
 	"issue_display_sweep_ticks",
-	"ship_gate_grace_ms",
-	"external_merge_reconcile",
-	"merge_reconcile_window_days",
-	"ship_gate_card_grace_ms",
 	"ghost_guard_wait_ms",
 	"lead_lease_bypass",
 	"checkpoint_enabled",
@@ -55,8 +41,6 @@ const LEGACY_UNMANAGED = [
 	"proofshot",
 	"xiaohongshu_learning",
 	"ponytail",
-	"done_thread_reconcile_interval_min",
-	"done_thread_reconcile_max_per_run",
 	"publish_broker",
 ] as const;
 
@@ -168,9 +152,8 @@ function withFutureManaged(): Set<string> {
 }
 
 describe("FLY-1778 flag store policy", () => {
-	it("freezes the M0-approved managed and protected sets", () => {
+	it("freezes the M0-approved managed set", () => {
 		expect([...STORE_MANAGED_FLAGS]).toEqual(expect.arrayContaining(MANAGED));
-		expect([...PROTECTED_LEGACY_FLAG_NAMES]).toEqual(PROTECTED);
 		expect([...RETIRED_FLAG_STORE_ROWS]).toEqual([
 			"workflow_resume",
 			"auto_qa_killswitch",
@@ -407,14 +390,7 @@ describe("FLY-1778 flag store policy", () => {
 		).toEqual([]);
 	});
 
-	it("refuses protected, governance, unlisted, value, and self-referential flags", () => {
-		for (const name of PROTECTED) {
-			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
-			expect(spec, name).toBeDefined();
-			expect(getStoreEligibility(spec!)).toMatchObject({
-				eligible: false,
-			});
-		}
+	it("refuses governance, unlisted, value, and self-referential flags", () => {
 		for (const name of [
 			"voice_qa_presence_override",
 			"issue_display_sweep_ticks",

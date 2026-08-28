@@ -205,10 +205,9 @@ describe("StateStore FLY-1778 flag value store", () => {
 		});
 	});
 
-	it("mutator independently rejects protected, unlisted, and retired identities", () => {
+	it("mutator independently rejects unlisted and retired identities", () => {
 		store.ensureFlagValueRows({ env: {}, now: 100 });
 		for (const [name, reason] of [
-			["mailbox_queue", "protected_legacy"],
 			["voice_qa_presence_override", "not_store_managed"],
 			["workflow_resume", "retired_flag"],
 			["three_stage", "retired_flag"],

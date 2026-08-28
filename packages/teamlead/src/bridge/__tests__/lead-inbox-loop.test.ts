@@ -103,7 +103,7 @@ function loop(
 		handleProtocol: async () => ({ disposition: "protocol_applied" }),
 		now: () => new Date("2099-07-19T12:00:00.000Z"),
 		batchIdFactory: () => "batch-1",
-		queueConfig: () => ({ ...DEFAULT_MAILBOX_QUEUE_CONFIG, enabled: false }),
+		queueConfig: () => DEFAULT_MAILBOX_QUEUE_CONFIG,
 		...overrides,
 	});
 }
@@ -312,7 +312,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			lease_retry_count: 1,
 		});
 	});
-	it("records heartbeat and ACKs only after adapter receipt plus audit", async () => {
+	it("records heartbeat and delivery only after adapter receipt plus audit", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "A");
 		let release!: (value: DurableAcceptReceipt) => void;
@@ -331,14 +331,14 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			},
 			{ markAuditDelivered: audit },
 		).tick();
-		await vi.waitFor(() => expect(batch.batchId).toBe("batch-1"));
+		await vi.waitFor(() => expect(batch.batchId).toBe("batch-1#r0"));
 		expect(queue.getById("A")?.state).toBe("LEASED");
 		release(receipt(batch));
 		expect(await ticking).toMatchObject({ ok: true, modelConsumed: 1 });
 		expect(audit).toHaveBeenCalledTimes(1);
 		expect(queue.getById("A")).toMatchObject({
-			state: "ACKED",
-			acked_at: "2099-07-19T12:00:00.000Z",
+			state: "LEASED",
+			notified_at: "2099-07-19T12:00:00.000Z",
 		});
 		expect(queue.getHeartbeat("lead-a")?.last_success_at).toBe(
 			"2099-07-19T12:00:00.000Z",
@@ -375,10 +375,10 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(
 			batches.map((batch) => batch.members.map((row) => row.deliveryId)),
 		).toEqual([
-			["A", "B"],
-			["A", "B"],
+			["A#r0", "B#r0"],
+			["A#r0", "B#r0"],
 		]);
-		expect(batches[0]?.modelPayload).toBe("A\n\nB");
+		expect(batches[0]?.modelPayload).toContain("A\n\nB");
 		expect(queue.getById("C")?.state).toBe("QUEUED");
 	});
 
@@ -416,10 +416,10 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			expect.objectContaining({ id: "B" }),
 		);
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
-			expect.objectContaining({ deliveryId: "A" }),
-			expect.objectContaining({ deliveryId: "B" }),
+			expect.objectContaining({ deliveryId: "A#r0" }),
+			expect.objectContaining({ deliveryId: "B#r0" }),
 		]);
-		expect(queue.getById("B")?.state).toBe("ACKED");
+		expect(queue.getById("B")?.state).toBe("LEASED");
 	});
 
 	it("does not shrink a frozen batch when revalidation would revoke a member", async () => {
@@ -455,11 +455,11 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		).toMatchObject({ ok: true, modelConsumed: 2 });
 		expect(revalidateModel).not.toHaveBeenCalled();
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
-			expect.objectContaining({ deliveryId: "A" }),
-			expect.objectContaining({ deliveryId: "B" }),
+			expect.objectContaining({ deliveryId: "A#r0" }),
+			expect.objectContaining({ deliveryId: "B#r0" }),
 		]);
-		expect(queue.getById("A")?.state).toBe("ACKED");
-		expect(queue.getById("B")?.state).toBe("ACKED");
+		expect(queue.getById("A")?.state).toBe("LEASED");
+		expect(queue.getById("B")?.state).toBe("LEASED");
 	});
 
 	it("re-materializes a frozen question after pre-delivery revalidation fails", async () => {
@@ -509,12 +509,14 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(revalidateModel).toHaveBeenCalledTimes(2);
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
 			expect.objectContaining({
-				deliveryId: "question:lead-a:q1",
-				content: "rendered question",
+				deliveryId: "question:lead-a:q1#r0",
 			}),
 		]);
+		expect(
+			adapter.deliverBatch.mock.calls[0]?.[0].members[0]?.content,
+		).toContain("rendered question");
 		expect(queue.getById("q1")).toMatchObject({
-			state: "ACKED",
+			state: "LEASED",
 			source_kind: "question",
 			source_ref: "41",
 			delivery_content: "rendered question",
@@ -563,7 +565,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		).toMatchObject({ ok: true, protocolConsumed: 1, modelConsumed: 1 });
 		expect(queue.getById("protocol-1")?.state).toBe("ACKED");
 		expect(adapter.deliverBatch.mock.calls[0]?.[0].members).toEqual([
-			expect.objectContaining({ deliveryId: "model-1" }),
+			expect.objectContaining({ deliveryId: "model-1#r0" }),
 		]);
 	});
 
@@ -666,7 +668,6 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			onModelTransportStall: stalled,
 			queueConfig: () => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: false,
 				unavailableRetryMax: 2,
 			}),
 		});
@@ -704,7 +705,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(stalled).toHaveBeenCalledOnce();
 	});
 
-	it("keeps queue-OFF unavailable rows live until the terminal alert is accepted", async () => {
+	it("keeps unavailable rows live until the terminal alert is accepted", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "question-terminal-alert");
 		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
@@ -725,7 +726,6 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			onModelTransportExhausted: exhausted,
 			queueConfig: () => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: false,
 				unavailableRetryMax: 1,
 			}),
 		});
@@ -759,7 +759,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		expect(adapter.deliverBatch).toHaveBeenCalledTimes(2);
 	});
 
-	it("caps unavailable retries on the queue-ON claim path", async () => {
+	it("caps unavailable retries on the batch claim path", async () => {
 		const queue = makeQueue();
 		enqueueModel(queue, "question-queue-on-cap");
 		let nowMs = Date.parse("2099-07-19T12:00:00.000Z");
@@ -775,7 +775,6 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			onModelTransportExhausted: vi.fn(async () => undefined),
 			queueConfig: () => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: true,
 				unavailableRetryMax: 2,
 			}),
 		});
@@ -813,7 +812,6 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			now: () => new Date(nowMs),
 			queueConfig: () => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: false,
 			}),
 		});
 
@@ -857,7 +855,6 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			maxModelAttempts: 3,
 			queueConfig: () => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: false,
 				unavailableRetryMax: 10,
 			}),
 		});
@@ -904,7 +901,6 @@ describe("LeadInboxLoop mailbox consumption", () => {
 			onDiscordUndeliverable: undeliverable,
 			queueConfig: () => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: false,
 				unavailableRetryMax: 1,
 			}),
 		}).tick();
@@ -1000,7 +996,7 @@ describe("LeadInboxLoop mailbox consumption", () => {
 		});
 		expect(first.ok).toBe(false);
 		expect((await consumer.tick()).ok).toBe(true);
-		expect(queue.getById("question-after-alert-failure")?.state).toBe("ACKED");
+		expect(queue.getById("question-after-alert-failure")?.state).toBe("LEASED");
 	});
 
 	it("rate-limits Discord stall alerts and clears the episode on recovery", async () => {

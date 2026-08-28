@@ -874,8 +874,8 @@ that exact event. For a question/gate, a durable answer or confirmed founder
 surface is machine evidence and no extra ACK is needed.
 
 - Claude Lead: call `flywheel_inbox_ack_event` with the supplied
-  `event_seq`, `project`, and `token`. This is distinct from
-  `flywheel_inbox_ack(message_id)`, which only acknowledges inbox transport.
+	`event_seq`, `project`, and `token`. Batch inbox transport uses
+	`flywheel_inbox_ack_batch` instead.
 - Any Lead may use the rendered `flywheel-comm ack-event ... --token-stdin`
   fallback. Supply the bearer through stdin exactly as instructed; never place
   it in shell arguments, logs, chat, or a report.

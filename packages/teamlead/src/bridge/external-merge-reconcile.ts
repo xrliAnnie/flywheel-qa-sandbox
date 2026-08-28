@@ -37,7 +37,7 @@
  *
  * PR open / unknown / closed-unmerged → untouched (closed ≠ merged; it may be
  * a reject flow). gh calls are throttled: at most N candidates per project per
- * pass (default 3), rotating. Kill-switch: FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0.
+ * pass (default 3), rotating.
  */
 
 import { execFile } from "node:child_process";
@@ -156,7 +156,7 @@ export interface ExternalMergeReconcileDeps {
 	now?: () => number;
 	/** Path-1 idle TTL before a parked session is even gh-checked. Default 30min. */
 	staleTtlMs?: number;
-	/** Path-2 lookback window in days (FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS). Default 7. */
+	/** Path-2 lookback window in days. Default 7. */
 	windowDays?: number;
 	/** gh-call budget per project per pass. Default 3. */
 	maxCandidatesPerProject?: number;
@@ -811,13 +811,9 @@ export function createExternalMergeReconciler(
 
 	return {
 		async pass(): Promise<void> {
-			if (env().FLYWHEEL_EXTERNAL_MERGE_RECONCILE === "0") return;
 			const staleTtlMs = deps.staleTtlMs ?? 30 * 60_000;
-			const windowDays = intEnv(
-				env(),
-				"FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS",
-				deps.windowDays ?? 7,
-			);
+			// FLY-2101: founder 2026-08-27 v4 fixed the former runtime flag at 7 days.
+			const windowDays = deps.windowDays ?? 7;
 			const budgetPerProject = deps.maxCandidatesPerProject ?? 3;
 			const nowMs = now();
 

@@ -13,28 +13,17 @@ export const FLAG_AUTHORING_RUNBOOK =
 	"doc/engineer/implementation/flag-authoring-runbook.md";
 
 /**
- * FLY-1981: immutable maximum ledger for the 31 pre-store registry specs.
+ * FLY-1981: immutable maximum ledger for the remaining pre-store registry specs.
  * It is intentionally literal, never computed from FEATURE_FLAGS. Existing
  * entries may migrate into the store or retire; no new unmanaged name may enter.
  */
 export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
 	"flag_store",
-	"founder_review_orphan_monitor",
-	"mailbox_queue",
-	"liveness_activity_window_ms",
 	"converge_cmux_symlink",
 	"cmux_view_helper",
 	"cmux_node_presence",
 	"voice_qa_presence_override",
-	"merge_approval_gate_killswitch",
-	"issue_gate_supersede_mode",
-	"deferred_approval_ttl_ms",
-	"founder_reply_deadletter_age_ms",
 	"issue_display_sweep_ticks",
-	"ship_gate_grace_ms",
-	"external_merge_reconcile",
-	"merge_reconcile_window_days",
-	"ship_gate_card_grace_ms",
 	"ghost_guard_wait_ms",
 	"lead_lease_bypass",
 	"checkpoint_enabled",
@@ -46,8 +35,6 @@ export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
 	"proofshot",
 	"xiaohongshu_learning",
 	"ponytail",
-	"done_thread_reconcile_interval_min",
-	"done_thread_reconcile_max_per_run",
 	"publish_broker",
 ] as const);
 
@@ -74,11 +61,6 @@ export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 export const RETIRED_FLAG_STORE_ROWS: ReadonlySet<string> = new Set([
 	"workflow_resume",
 	"auto_qa_killswitch",
-] as const);
-
-export const PROTECTED_LEGACY_FLAG_NAMES: ReadonlySet<string> = new Set([
-	"mailbox_queue",
-	"merge_approval_gate_killswitch",
 ] as const);
 
 export interface FlagStoreRawValue {
@@ -141,9 +123,6 @@ function getStoreEligibilityAgainst(
 ): { eligible: true } | { eligible: false; reason: string } {
 	if (spec.category === "governance_gate") {
 		return { eligible: false, reason: "governance_gate" };
-	}
-	if (PROTECTED_LEGACY_FLAG_NAMES.has(spec.name)) {
-		return { eligible: false, reason: "protected_legacy" };
 	}
 	if (!managedFlags.has(spec.name)) {
 		return { eligible: false, reason: "not_store_managed" };

@@ -106,7 +106,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		);
 	});
 
-	it.each(["mailbox_queue", "future_unretired_flag"])(
+	it.each(["manual_unlisted_flag", "future_unretired_flag"])(
 		"fails boot if unretired identity %s is manually injected",
 		(flagName) => {
 			rawFlagStoreDb(store).exec(`
@@ -465,7 +465,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			clockReadiness: "ready",
 		});
 		expect(
-			views.find(({ name }) => name === "founder_review_orphan_monitor"),
+			views.find(({ name }) => name === "voice_qa_presence_override"),
 		).toMatchObject({
 			storeManaged: false,
 			clockReadiness: "no_clock:unmanaged",
