@@ -84,9 +84,20 @@ Issue: FLY-2101 (https://linear.app/geoforge3d/issue/FLY-2101/flagb1固化-13-�
    - **删单条 ACK 工具与处理器**:`index.ts` 的 `flywheel_inbox_ack` tool 注册
      (:104-127)、`delivery.ts` 的 `handleAck`(:97-),及只服务该路的 CommDB helpers
      (`getPendingPushInstructions` / `tryClaimInstructionForPush` /
-     `markInstructionDelivered` / `ackInstructionRead`——逐个零引用复核后删,列 PR body)。
-     **保留** `flywheel_inbox_ack_batch` / `flywheel_inbox_ack_event` 与 queue 侧
-     历史 claim handoff(queue 路信封只指示 batch ACK,已核 lead-inbox-loop.ts:468)。
+     `markInstructionDelivered` / `ackInstructionRead` /
+     **`recordInstructionNotified`(db.ts:4455)/ `releaseInstructionPushClaim`
+     (db.ts:4471)**——逐个零引用复核后删,列 PR body)。
+   - **删旧 push poll-loop 脚手架(Codex R3)**:`index.ts` 的 `POLL_INTERVAL_MS` /
+     `pollTimer` / `pollOnce` / `setInterval` 启动与 shutdown clear 分支(:195-263,
+     `pollOnce` 全身只调 `processPendingDeliveries`,已核)——只删调用会留下每秒空转
+     timer 且 build 不报错;仅被该路使用的 delivery types 一并删。
+   - **删 pending-push SQL 公共面(Codex R3)**:`PENDING_PUSH_INSTRUCTIONS_SQL`
+     (db.ts:57)及其 `lib.ts:46` re-export 与 `db.test.ts` 旧 push/query-plan 用例
+     (:8, :1175)——否则它会作为死公共 API 连同测试继续全绿。
+     **保留** `flywheel_inbox_ack_batch` / `flywheel_inbox_ack_event`、CLI pull 的
+     `getUnreadInstructions` / `markInstructionRead`,与 queue 侧
+     `releaseExpiredLegacyPushClaims`(仍被 lead-inbox-loop.ts:280 queue 路调用;
+     queue 路信封只指示 batch ACK,已核 lead-inbox-loop.ts:468)。
    - **提示词/规则面改写为 batch/event ACK 语义**:`packages/teamlead/scripts/
      inbox-ack-rule.md`(按 message_id 调单条工具的要求)、`claude-lead.sh` 注入段、
      `lead-rules-base/runner-patrol-rules.md` 旧 transport ACK 描述、
