@@ -123,7 +123,8 @@ transcript/done role=assistant                                 ← 念出来
 | 端点 | 用途 | 本单用不用 |
 |---|---|---|
 | `GET /gate-binding?messageId=` | messageId → `{bound, questionId, prHeadSha, issueId, prNumber}` | ✅ 用:inbox 里的 `ship_gate` 条目只带 `gateMessageId`,三元组在批之前**现查**(防 2030 吸收时过期) |
-| `GET /scope` / `GET /context` | Lead bot 清单 / 频道上下文 | ⛔ 不用(那是状态吸收,归 2030;而且它把 Raya 绑到 flywheel 部署) |
+| `GET /context?channelId=` | 频道 → `{kind, issueId, issueIdentifier, …}` | ✅ 用(R2 更正):ship 格用它做「频道↔单据」交叉核对 + 拿人念的 issueIdentifier(gate-binding 不返回它) |
+| `GET /scope` | Lead bot 清单 | ⛔ 不用(那是状态吸收,归 2030;而且它把 Raya 绑到 flywheel 部署) |
 
 ### 3.3 文字通道是怎么认批准的(用来说清「同路」)
 

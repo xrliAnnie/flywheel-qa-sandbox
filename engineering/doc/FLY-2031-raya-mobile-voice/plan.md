@@ -118,26 +118,31 @@ export function appendVoiceInboxAck(stateDir: string, ack: VoiceInboxAck): void;
 ```ts
 export interface VoiceActionEnvelope {
   v: 1;
-  actionId: string;            // ^[a-z0-9][a-z0-9-]{7,63}$;重复 actionId 拒绝(幂等键)
-  sessionGeneration: number;   // 必须等于当前 session gen,否则拒绝(stale)
-  transcriptIds: string[];     // ≥1;每个必须是 TranscriptLog 里 founder-attributed 的 user final id
+  actionId: string;            // ^[a-z0-9][a-z0-9-]{7,63}$;已有终态回执的 actionId 拒绝(幂等键)
+  sessionKey: string;          // ⭐ 本次进程唯一:voice 用现有 bootId 派生,openThread 时写进 ACTIONS 块
+                               //   (Codex R2-1:sessionGeneration 每次 boot 都从 1 起,跨 boot 会撞号)
+  utterances: string[];        // ≥1;她相关原话的【逐字全文】(模型从 handoff 的 input_transcript 抄)
+                               //   voice 在本 boot 的内存 TranscriptLog 里解析:NFKC 精确匹配 +
+                               //   founder-attributed ⇒ 得到内部 id;解析不到 ⇒ rejected{utterance_not_found, transcriptWas}
 }
 export type VoiceAction = VoiceActionEnvelope & (
-  | { kind: "relay_to_lead"; target: string;   // leads.json 的 name/alias
+  | { kind: "relay_to_lead"; target: string;   // voice-leads.json 的 name/alias
       text: string;                            // 要发出去的整理版
-      quotes: string[] }                       // 其中的单号/人名/仓库名;可为空,但 transcriptIds 仍必填
+      quotes: string[] }                       // 其中的单号/人名/仓库名;可为空,但 utterances 仍必填
   | { kind: "remember_filter";
       rule: { scope: { lead?: string; kind?: VoiceInboxItem["kind"]; keyword?: string }; verdict: "skip" };
-      quote: string }                          // 必须逐字包含于 transcriptIds 指向的 founder final
+      quote: string }                          // 必须逐字包含于某条已解析的 founder utterance
   | { kind: "set_pref"; pref: { livenessIntervalMs?: number }; quote: string });
 export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未知 kind/字段、scope 全空、envelope 缺项 → throw
 ```
+
+**信封为什么长这样(Codex R2-1)**:模型侧拿不到 voice 内存里的 transcript id,所以提案里带的是**她原话全文**(不带权威性的 hint),权威解析永远发生在 voice 的内存日志上;`sessionKey` 由 bootId 派生 ⇒ 上一场遗留的 `.action.json` 在新场必然 `rejected{stale-session}`,不存在「boot A 的提案借 boot B 的原话还魂」。测试:后台从一次真实 founder turn 能构造出合法 action(P2 真机 + handoff 形状单测);两个 boot 各自 generation=1 时,boot A 提案在 boot B 必拒(B31)。
 
 **回执不再写文件给模型**(Codex R1-3):权威回执只落 `RAYA_STATE_DIR/voice-actions/receipts.jsonl`(+evidence);模型通过 **Speaker 注入的回执播报**(带 actionId:`【Raya 系统播报】动作 a1b2… 已发送/被拒:…`)得知结果。⇒ 模型伪造不了「已发送」的依据;它若不顾播报硬说「转告了」,权威账本能当场对质。
 
 **`packages/contracts/src/integration-contract.ts` 变更**:`RAYA_VOICE_OPTIONAL_ENV_KEYS` 增加
 `RAYA_VOICE_OUTBOX_DIR`、`RAYA_APPROVAL_ENDPOINT_URL`、`RAYA_APPROVAL_API_TOKEN`。
-部署(运营者,Lead 批):`raya.env` 加这三行;`RAYA_WORKSPACE_ROOTS_JSON` 追加 outbox 目录(建议 `~/.flywheel/raya/outbox`)。
+部署(运营者,Lead 批):`raya.env` 加这三行;`RAYA_WORKSPACE_ROOTS_JSON` 追加 outbox 目录(建议 `~/.flywheel/raya/outbox`);**bot 权限追加 `ReadMessageHistory`**(现有 36703232 不含它,而 §2.8 S0 要真查 ship 卡是否在声称的频道里 —— 需要 founder 用新权限 URL 重授权一次;没加权限 ⇒ ship 格 fail-closed 不可用并明说)。
 
 ### 2.2 `apps/voice/src/config.ts` 扩展(全部 fail-closed)
 
@@ -151,11 +156,11 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 
 ### 2.3 `speech/TranscriptLog.ts`(新)—— 转写 + 说话人归属
 
-- 输入:`transport.on("transcript")` final 条目 + **utterance ownership epoch**(见下);存 `{id, role, text, atMs, speakerUserId?: string, connectionGen, sessionGen}`,id = `u-<sessionGen>-<seq>` / `a-<sessionGen>-<seq>`;环形上限 🔶 200 条。
+- 输入:`transport.on("transcript")` final 条目 + **utterance ownership epoch**(见下);存 `{id, role, text, atMs, speakerUserId?: string, connectionGen, sessionGen}`,id = `u-<sessionKey>-<seq>` / `a-<sessionKey>-<seq>`(sessionKey 由 bootId 派生,Codex R2-1:纯 sessionGen 跨 boot 会撞号);环形上限 🔶 200 条;**只存内存,不跨 boot**。
 - **说话人归属(Codex R1-2:`Uplink.owner` 在 final 到达时早已被 speakingEnd 清掉)**:runtime 在 `speakingStart(授权用户)`/`speakingEnd` 处维护 epoch 记录 `{ownerUserId, startedAt, endedAt?, connectionGen}`。user final 到达时:
   - 自最近一个 epoch 结束以来**没有**其他用户开启过新 epoch,且 final 落在该 epoch 的 `[startedAt, endedAt + 🔶 attributionWindowMs(默认 5_000)]` 内 ⇒ 归属该 owner;
   - 交叠、换人、无候选、generation 不符 ⇒ `speakerUserId = undefined`(**unattributed**)。
-  - **unattributed 一律 fail-closed**:不能当批准词(§2.8 S3)、不能被 action envelope 的 `transcriptIds` 引用(校验拒)、不能长筛选规则。念读/闲聊不受影响。
+  - **unattributed 一律 fail-closed**:不能当批准词(§2.8 S3)、不能被 action envelope 的 `utterances` 解析命中(解析只认 founder-attributed final)、不能长筛选规则。念读/闲聊不受影响。
 - 匹配原语两种,⛔ 不混用(Codex R1-4/6):
   - `containsVerbatim(role, needle, afterId)`:NFKC 后子串,**必须传 afterId 游标**(只看该游标之后的 final);
   - `containsIdentifier(role, id, afterId)`:对 `FLY-\d+`/`#\d+`/纯数字/名字类加 **token 边界**(前后不能是字母数字)——`FLY-1833` 不命中 `FLY-18338`。
@@ -172,8 +177,11 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 ### 2.5 `inbox/InboxReader.ts`(新)
 
 - 定时(`inboxPollMs`)读 `readVoiceInbox`;未处理 = items − 终态 acks。
-- **开场**(进入 Live 且 recover 行处理完):未处理条目过 `FilterRules` → `[需要你决定]` 先、`[汇报]` 后,组批交 Speaker。
-- **`spoken` ack 的时机(Codex R1-5)**:⛔ 不在 `appendSpeech` resolve 时写(那只证明请求被接受)。在**本批注入游标之后、同 sessionGeneration 的 assistant final 出现**后才写 `spoken`;等不到(超时/断线/崩溃)⇒ 不写 ⇒ 下一场重播。重播用原文案,可能重复念 —— at-least-once,如实写进 §7 验收与 HTML。
+- **开场**(进入 Live 且 recover 行处理完):未处理条目过 `FilterRules` → `[需要你决定]` 先、`[汇报]` 后,**逐条注入**(Codex R2-4:一批多条共用一个 assistant final 会造成「只念半批却整批 ack」;逐条注入让每条各有自己的注入游标与确认,「半批丢失」在结构上不存在)。条目正文超 `briefingChunkChars` 才在条内分块;还有未念条目时,本条播报末尾带「还有 N 条,我接着念」并自动续。
+- **`spoken` ack 的时机(Codex R1-5 / R2-4)**:⛔ 不在 `appendSpeech` resolve 时写(那只证明请求被接受)。写 `spoken` 需要**内容相关的确认**,判据全部来自可观察事件:
+  ① 注入后出现**游标之后、同 sessionKey** 的 assistant final;
+  ② 该 final 与本条目相关:条目带识别符(FLY-xxx / #n)时,final 必须 `containsIdentifier` 命中;纯散文条目(模型会转述,逐字匹配不成立)退用**无插话规则** —— 注入与该 final 之间没有任何 user final(有人插话 ⇒ 归属不明,不 ack,本条稍后重注);
+  ③ 等不到/判不明(超时/断线/崩溃/插话)⇒ 不写 ⇒ 稍后或下一场重播。重播用原文案,可能重复念 —— at-least-once,如实写进 §7 验收与 HTML。
 - 被规则筛掉:ack `filtered`;若 `needsDecision===true` 仍被筛,补一行 `#raya` 文字(`🔇 有一条需要你决定的没念(按你的规则):<一行摘要>`)—— B §3.2 的唯一让步,⛔ 不念出声。
 - `ship_gate` 条目不进普通念读批,单独走 §2.8(要武装批准窗口)。
 
@@ -181,7 +189,7 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 
 - 权威文件 `RAYA_STATE_DIR/voice-filter.json`(模型不可写;Codex R1-3)。无文件 = 空规则;schema 坏 → 忽略全部规则(= 全念,fail-open 向「多念」侧)+ evidence `filter_file_corrupt` + `#raya` 一行。
 - 匹配:`scope.lead`(===)/ `scope.kind`(===)/ `scope.keyword`(NFKC 子串 of text);scope 至少一个非空字段(contracts 校验);命中 ⇒ skip;无规则命中 ⇒ 念。
-- 写入只经 outbox `remember_filter` / `set_pref` 提案 + voice 校验(envelope + `quote` 逐字含于 `transcriptIds` 指向的 **founder** final)后原子重写;回执播报 `saved` 后模型才可说「好,以后不念了」。
+- 写入只经 outbox `remember_filter` / `set_pref` 提案 + voice 校验(envelope + `quote` 逐字含于已解析的 **founder** utterance)后原子重写;回执播报 `saved` 后模型才可说「好,以后不念了」。
 
 ### 2.7 `speech/Liveness.ts`(新)
 
@@ -191,44 +199,48 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 
 ### 2.8 `actions/` —— OutboxWatcher · ReadbackGate · ApprovalClient
 
-**`OutboxWatcher`**:定时扫 `outboxDir/*.action.json` → `renameSync` 认领(`.taken`,原子防重)→ `parseVoiceAction` → envelope 校验(actionId 未用过 / sessionGeneration 当前 / transcriptIds 全部 founder-attributed)→ 分发。**回执只进 `RAYA_STATE_DIR/voice-actions/receipts.jsonl` + 回执播报**,outbox 里不写任何东西。
+**`OutboxWatcher`**:定时扫 `outboxDir/*.action.json` → `renameSync` 认领(`.taken`,原子防重)→ `parseVoiceAction` → envelope 校验(actionId 无终态回执 / sessionKey === 当前 boot / utterances 在本 boot TranscriptLog 逐条解析为 founder-attributed final)→ 分发。**回执只进 `RAYA_STATE_DIR/voice-actions/receipts.jsonl` + 回执播报**,outbox 里不写任何东西。
 
-**崩溃窗口表(Codex R1-5;每个副作用前后各一行)**:
+**崩溃窗口表(Codex R1-5,R2-3 修正:分类只许由**磁盘可观察状态**推出 —— 「认领后没生效」和「发出后没回执」在盘上一模一样,⛔ 不装作分得清)**:
 
-| 崩溃点 | 下一场看到 | 处置 |
-|---|---|---|
-| 认领前 | `.action.json` | 正常处理(actionId 若已在 receipts 出现过 ⇒ 拒重复) |
-| 认领后、副作用前 | `.taken` 且 receipts 无此 actionId | 回执 `expired{reason:"crash-before-effect"}`;⛔ 不自动重发(她可以再说一次) |
-| Discord send 后、回执落盘前 | `.taken` 且 receipts 无此 actionId | 同上 `expired{reason:"unknown-outcome"}` —— **可能已发出**;⛔ 不自动重发(防重复转达);发出的消息正文带 actionId,人眼可识别重复 |
-| filter/pref 写后、回执前 | `.taken`,文件已更新 | actionId 幂等:重放校验发现规则已存在 ⇒ 回执 `saved`(幂等收敛) |
+| 下一场看到(磁盘状态) | 处置 |
+|---|---|
+| `.action.json`(未认领) | 正常处理;该 actionId 已有**终态**回执 ⇒ 拒重复(非终态的 readback_required 播报不算 dedupe 依据) |
+| `.taken` 且 receipts 无终态,kind 非幂等(relay) | 统一回执 `expired{reason:"unknown-outcome"}` —— 可能发过也可能没发;⛔ 不自动重发(防重复转达);已发出的消息正文带 actionId,人眼可识别重复 |
+| `.taken` 且 kind 幂等(remember_filter / set_pref) | 以目标文件内容收敛:规则/偏好已在文件里 ⇒ 回执 `saved`;不在 ⇒ 重放写入(同一结果写多次无害) |
+
+(不引入 pre-effect journal —— enforce simplicity:若将来产品真需要区分「没发」和「不确定」,再按 R2-3 的 `effect_started` journal 方案另立,当前按最保守读法统一 unknown-outcome。)
 
 **`ReadbackGate`(relay_to_lead 的门)**:
 
 | 步 | 判据 | 失败路径 |
 |---|---|---|
-| G0 | envelope 校验(见上) | 回执+播报 `rejected{stale/duplicate/unattributed}` |
+| G0 | envelope 校验(见上) | 回执+播报 `rejected{stale-session/duplicate/utterance_not_found/unattributed}` |
 | G1 | `target` 能在 voice-leads.json 解析 | `rejected{unknown_target}` |
-| G2 | `quotes[]` 每项 `containsIdentifier/Verbatim("user", q, afterId=会话起点)` **且** 出现在某个 `transcriptIds` 指向的 founder final 里 | `rejected{quote_not_in_transcript, transcriptWas}` ⇒ 模型只能回去问她 |
+| G2 | `quotes[]` 每项 `containsIdentifier`(token 边界)出现在**已解析的 founder utterance** 里 | `rejected{quote_not_in_transcript, transcriptWas}` ⇒ 模型只能回去问她 |
 | G3 | 回执播报 `readback_required{readback:[target 的 canonical name, ...quotes]}` ⇒ 它念 | — |
 | G4 | 记下发起时 assistant 游标;在 `readbackTimeoutMs` 内、**游标之后**的 assistant final 逐项 `containsIdentifier` 命中全部 readback 串 | 超时 ⇒ `expired` |
 | G5 | **尾音屏障**(Codex R1-6:queue 空 ≠ 她听完了):自 Downlink **最后一帧语音**写入起,等 `当时 buffered 帧数×20ms + audibleTailPadMs` ⇒ 才开 `readbackGraceMs`;窗内她的 founder-attributed final NFKC 精确 ∈ {不对, 等等, 取消} ⇒ `rejected{cancelled}` | — |
 | G6 | `RoomText.send(lead.discordChannelId, 正文)`;成功 ⇒ `sent{messageId, channelId}` | 重试(announce 同参)用尽 ⇒ `rejected{discord_send_failed}` |
 
-- 正文格式(🔶):`【Raya 转达 Annie 语音 · <actionId>】<整理版>\n> 原话转写:「<transcriptIds 对应原文>」`;≤1,800 字截断+标注。
+- 正文格式(🔶):`【Raya 转达 Annie 语音 · <actionId>】<整理版>\n> 原话转写:「<已解析 utterances 原文>」`;≤1,800 字截断+标注。
 - 「已转告」话术约束在 startInstructions 规则块:**没听到 `sent` 回执播报前禁止宣称转达完成**。
 
-**`RoomText.send(channelId, text)`(DiscordAdapter 扩展)**:只接受 voice-leads.json 频道、inbox 条目 `source.channelId`、`#raya` 三类来源(调用方传来源标记,越界 throw);guild 校验;沿用 announce 重试/超时。
+**`RoomText.send(channelId, text)` / `RoomText.fetchMessage(channelId, messageId)`(DiscordAdapter 扩展)**:send 只接受 voice-leads.json 频道、inbox 条目 `source.channelId`(经 S0b 核验)、`#raya` 三类来源(调用方传来源标记,越界 throw);fetchMessage 为只读存在性核验(S0b/S4 用;需 ReadMessageHistory);guild 校验;沿用 announce 重试/超时。
 
 **`ApprovalClient`(ship 格;approval 配了才有)。⭐ 念的目标 = Bridge 说的目标(Codex R1-1:防「念 B 写 A」)**:
 
+⚠️ **字段来源钉死(Codex R2-2:⛔ 不许引用 Bridge 没返回的字段)**:`GET /gate-binding` 实际只回 `{bound, questionId, prHeadSha, issueId, prNumber}`(`voice-routes.ts:313–319`),**没有** issueIdentifier / channelId。人类可念的单号与回执频道要各自另核:
+
 | 步 | 行为 | 判据/失败 |
 |---|---|---|
-| S0 | `ship_gate` 条目到达:校验 `refs.gate.gateMessageId === source.messageId`;**先** `GET /gate-binding?messageId=` 现查 | `bound:false` ⇒ ack `expired` + evidence,⛔ 不念;字段缺/网络错 ⇒ 不念不 ack(下轮再试) |
-| S1 | **播报文案只取 Bridge 响应**(issueId/issueIdentifier/prNumber):「<issue> 的 PR #<n> 在等 ship 批准,批请说『确认』,不批说『不批』」;记 assistant 游标 | 念的判据同 G4(游标后 final 含 issue 标识,token 边界) |
-| S2 | 念完(含尾音屏障)⇒ **武装** `armedBinding = {gateMessageId, questionId, prHeadSha, issueId, prNumber, channelId}` 快照,窗口 `gateArmWindowMs`;同一时刻至多一个(新顶旧 + evidence) | 窗口过 ⇒ 解除,条目不 ack(可再问) |
+| S0a | `ship_gate` 条目到达:校验 `refs.gate.gateMessageId === source.messageId` 且 `source.channelId` 存在;`GET /gate-binding?messageId=` 现查 | `bound:false` ⇒ ack `expired` + evidence,⛔ 不念;字段缺/网络错 ⇒ 不念不 ack(下轮再试) |
+| S0b | **频道↔单据交叉核对**:`GET /context?channelId=<source.channelId>` 须返回 `kind:"issue_thread"` 且 `context.issueId === binding.issueId`(context 端点已回 issueId/issueIdentifier,`voice-routes.ts:267–283`);**真查卡片**:DiscordAdapter 只读 `fetchMessage(source.channelId, gateMessageId)` 确认卡在声称的频道里(需 bot 加 ReadMessageHistory,§2.1 部署变更;fetch 不到 ⇒ fail-closed) | 任一不符 ⇒ ack `expired` + evidence `ship_gate_channel_mismatch`,⛔ 不念 |
+| S1 | **播报文案只取服务端**:单号用 `context.issueIdentifier`(人念的 FLY-N),PR 号用 `binding.prNumber`:「<issueIdentifier> 的 PR #<n> 在等 ship 批准,批请说『确认』,不批说『不批』」;记 assistant 游标 | 念的判据同 G4(游标后 final 含 issueIdentifier,token 边界) |
+| S2 | 念完(含尾音屏障)⇒ **武装** `armedBinding = {gateMessageId, questionId, prHeadSha, issueId, prNumber} + verifiedChannelId + spokenIssueIdentifier` 快照,窗口 `gateArmWindowMs`;同一时刻至多一个(新顶旧 + evidence) | 窗口过 ⇒ 解除,条目不 ack(可再问) |
 | S3 | 武装窗内、**founder-attributed** user final NFKC 整句精确 ∈ {确认, 对, 不对, 取消, 不批}(与 Bridge `voice-approval-source.ts:17–18` 词表逐字同源;⚠️ teamlead / flywheel-voice-core / 本单三处词表,改动必须三处一起,常量旁注释互指) | unattributed / 非 founder ⇒ 忽略 + evidence;其它话不打扰 |
-| S4 | **确认后再次现查** `/gate-binding`,要求与 `armedBinding` **全等**(五字段) | 不等(rebind/head 前进)⇒ 解除武装,念「这张卡已变化,这次不算」,⛔ 不发 receipt 不 POST |
-| S5 | 发**书面回执卡**到 `armedBinding.channelId`(格式 🔶:`【语音批准回执】Annie 语音{确认/不批} ship <issue> PR#<n> · 转写:「<原词>」· transcript <id>`)⇒ receiptMessageId | 发卡失败 ⇒ 不 POST(receipt-first),念「回执发不出去,没有批」 |
+| S4 | **确认后再次现查** `/gate-binding`,要求与 `armedBinding` 的 Bridge 字段**全等**(gateMessageId/questionId/prHeadSha/issueId/prNumber);再次 `fetchMessage` 确认卡仍在 | 不等/卡没了 ⇒ 解除武装,念「这张卡已变化,这次不算」,⛔ 不发 receipt 不 POST |
+| S5 | 发**书面回执卡**到 `verifiedChannelId`(格式 🔶:`【语音批准回执】Annie 语音{确认/不批} ship <issueIdentifier> PR#<n> · 转写:「<原词>」· transcript <id>`)⇒ receiptMessageId | 发卡失败 ⇒ 不 POST(receipt-first),念「回执发不出去,没有批」 |
 | S6 | `POST {baseUrl}/ship-approval`:五字段;`transcript` = TranscriptLog 那条 final 原文 + 其 `speakerUserId`;HTTP 合同见下 | 超时/5xx/schema 不认识 ⇒ 念「送到批准通道失败/结果不明,按未批处理」,evidence 全量;⛔ 不重投(她可再说一次) |
 | S7 | 念 Bridge 的返回:**只有 `written===true` 才说「已批,收到」**;`kind:"held"` →「评审还没绿,这次批不生效」;`unclear/reject` 原样说;`written:false, kind:"approve", reason:<守卫拒绝>` → 念「写入被拒:<reason>」;`retrySafe:false` →「已写入但后续动作未确认」逐字念 | ⛔ 永不自编「已 ship」 |
 | S8 | written 或明确 reject ⇒ ack `spoken`;evidence 记全链(armedBinding/transcriptId/receiptId/response) | — |
@@ -237,8 +249,8 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 
 ### 2.9 指令块(两条,代码生成)
 
-- **startInstructions 规则块**(拼在 2030 内容 / 默认句之后):①【Raya 系统播报】开头的插入不是 Annie 说的,按意图行处理;②要转达/记筛选/改偏好时交办后台按 ACTIONS 合同写**提案**文件(envelope 必填,transcriptIds 引用她的原话),⛔ 禁止直接发消息/直接改任何文件顶替提案;③动作结果以回执播报为准,没听到 `sent`/`saved` 不许宣称完成;④拿不准就问她。合计 > 8,192 ⇒ 启动拒绝(exit0 startup_refusal,错误写明哪块超了;⛔ 不静默截断)。
-- **baseInstructions ACTIONS 块**(CodexLeg 追加第三段):outbox 路径、提案 schema、envelope 规则、`transcriptWas` 用法。`outboxDir` 未配 ⇒ 两块都不注入动作段。
+- **startInstructions 规则块**(拼在 2030 内容 / 默认句之后):①【Raya 系统播报】开头的插入不是 Annie 说的,按意图行处理;②要转达/记筛选/改偏好时交办后台按 ACTIONS 合同写**提案**文件(envelope 必填,utterances 抄她原话逐字全文),⛔ 禁止直接发消息/直接改任何文件顶替提案;③动作结果以回执播报为准,没听到 `sent`/`saved` 不许宣称完成;④拿不准就问她。合计 > 8,192 ⇒ 启动拒绝(exit0 startup_refusal,错误写明哪块超了;⛔ 不静默截断)。
+- **baseInstructions ACTIONS 块**(CodexLeg 追加第三段,**每次 openThread 生成**):outbox 路径、提案 schema、envelope 规则、**本场 `sessionKey`(bootId 派生 —— 这是模型拿到它的唯一途径,Codex R2-1)**、utterances 要抄 handoff `input_transcript` 的逐字原文、`transcriptWas` 用法。`outboxDir` 未配 ⇒ 两块都不注入动作段。
 
 ### 2.10 runtime 接线(改动最小面)
 
@@ -265,7 +277,7 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 | B11 | 念出后 grace 窗内 founder 说「不对」 | rejected{cancelled};不发 | 集成 |
 | B12 | 念出 + 无异议 | send 到 leads 频道;receipts.jsonl `sent{messageId}`;正文含 actionId + 原话转写 | 假 adapter |
 | B13 | send 目标不在三类来源 | throw/rejected;evidence | 单测 |
-| B14 | ship_gate → S0 现查 → S1 念 Bridge 文案 → founder「确认」→ S4 全等 → S5 卡 → S6 POST | POST body 五字段 + Bearer 头 + json content-type;transcript=她那条 final 原文 | 假 fetch + 假 adapter |
+| B14 | ship_gate → S0a/S0b 现查+交叉核对 → S1 念 issueIdentifier+PR → founder「确认」→ S4 全等 → S5 卡 → S6 POST | POST body 五字段 + Bearer 头 + json content-type;transcript=她那条 final 原文 | 假 fetch + 假 adapter |
 | B15 | 武装窗内**非 founder / unattributed** final 说「确认」 | 忽略 + evidence;不 POST | 集成 |
 | B16 | 武装窗过期后说「确认」 | 无动作 | 假时钟 |
 | B17 | Bridge 回 held / unclear / `written:false,kind:"approve",reason` / retrySafe:false / 401 / 未知 schema | 对应话术;⛔ 无「已 ship」;token 不出现在任何 evidence/错误文本 | 假 fetch |
@@ -274,15 +286,19 @@ export function parseVoiceAction(raw: string): VoiceAction; // 严格校验:未�
 | B20 | 坏 inbox 行 | 跳过+corruptLines 进 evidence;其余照念 | contracts 单测 |
 | B21 | 8,192 预算超限 | 启动拒绝 exit0 + 原因写明哪块超 | 单测 |
 | B22 | 播报注入失败(appendSpeech reject / stale gen) | evidence;会话不死;条目不 ack | 假 transport |
-| B23 | **念 B 写 A**:inbox 文案是 B,gateMessageId 是 A | S1 念的是 Bridge(A)的 issue/PR,与 inbox 文案无关;若 `refs.gate.gateMessageId ≠ source.messageId` ⇒ S0 拒 | 假 fetch |
-| B24 | **确认前 rebind**:S4 现查与 armedBinding 不等 | 解除武装;不发卡不 POST;念「这张卡已变化」 | 假 fetch |
-| B25 | **owner race**:A 说完话 final 迟到,期间 B 开始说 | 该 final unattributed;不能当确认词/不能被 transcriptIds 引用 | 归属单测(end-before-final、换人、final-before-end、stale gen) |
+| B23 | **念 B 写 A**:inbox 文案是 B,gateMessageId 是 A | 播报只取 gate-binding + context(A);`refs.gate.gateMessageId ≠ source.messageId` ⇒ S0a 拒 | 假 fetch |
+| B24 | **确认前 rebind**:S4 现查与 armedBinding 不等 / 卡被删 | 解除武装;不发卡不 POST;念「这张卡已变化」 | 假 fetch |
+| B25 | **owner race**:A 说完话 final 迟到,期间 B 开始说 | 该 final unattributed;不能当确认词/不能被 utterances 解析引用 | 归属单测(end-before-final、换人、final-before-end、stale gen) |
 | B26 | **伪造回执**:模型往 outbox 写 `*.receipt.json` | voice 从不读 outbox 回执;权威 receipts.jsonl 在状态目录,模型写不到(路径断言) | 单测 |
 | B27 | **append accepted 后崩溃**:注入成功、assistant final 没来,进程亡 | 无 spoken ack ⇒ 下一场同条目重播(at-least-once) | 重启 reader 集成 |
-| B28 | **`.taken` 遗留**(含 Discord send 后崩溃) | 按崩溃窗口表:expired{crash-before-effect / unknown-outcome},⛔ 不自动重发;filter/pref 幂等收敛 | 重启 watcher 集成 |
+| B28 | **`.taken` 遗留**:仅凭磁盘状态分类 | relay ⇒ expired{unknown-outcome} 不重发;filter/pref ⇒ 按目标文件内容幂等收敛;测试只准备磁盘状态,⛔ 不注入「崩在哪一行」的隐藏知识 | 重启 watcher 集成 |
 | B29 | **旧 final 冒充念回**:注入前已有含同字符串的 assistant final | 游标之前的 final 不算;G4 不过 | 单测 |
 | B30 | **token 边界**:转写有 FLY-18338,提案 quotes=["FLY-1833"] | containsIdentifier 不命中 ⇒ rejected | 单测 |
-| B31 | envelope 违规:stale sessionGeneration / 重复 actionId / transcriptIds 引用 assistant 或 unattributed final / scope 全空 | 一律 rejected + evidence | contracts+单测 |
+| B31 | envelope 违规:sessionKey ≠ 当前 boot(含「两个 boot 各自 gen=1,boot A 提案到 boot B」)/ 重复 actionId(已有终态回执)/ utterances 解析不到 founder final / scope 全空 | 一律 rejected + evidence | contracts+单测 |
+| B32 | **receipt 频道/卡片不匹配**:context.issueId ≠ binding.issueId / fetchMessage 在 source.channelId 取不到 gateMessageId | S0b 拒,不念不武装;evidence `ship_gate_channel_mismatch` | 假 fetch+假 adapter |
+| B33 | **无关 final 介入**:注入后她先插了话,才出现 assistant final(纯散文条目) | 无插话规则不满足 ⇒ 不 ack,条目稍后重注 | 单测 |
+| B34 | **逐条确认**:3 条注入,第 2 条的 final 没等到 | 1/3 ack,2 不 ack(下场重播),3 正常;⛔ 不存在「整批一个布尔」路径 | 集成 |
+| B35 | **后台可构造性**:用 handoff 形状的 input_transcript 文本构造 envelope | utterances 逐字解析成功 ⇒ 动作走通(阳性对照,防合同「合法动作永远造不出来」) | 单测(+P2 真机) |
 
 静音语义 S1–S9(FLY-2074 plan §3)原样有效,本单不改也不豁免;B 系列不得引入任何绕过 20ms 常开流的路径(播报走 appendSpeech,不碰音频帧)。
 
@@ -308,7 +324,7 @@ P0/P1/P3 都动真环境(房间/额度/gate)——**排期、账号与「谁出�
 | 状态进耳机 = 文件 inbox | brain→JSONL→voice | 轮询延迟(≤1s 级);2030 未落地时真机验收吃 fixture(内容假、界面真,披露) |
 | 一切播报走 appendSpeech | 内容随触发 | 全押在 P1 语义上 ⇒ P1 前置为实施门;失败即停并交 founder 判 |
 | 模型动手 = **单向提案** outbox + 状态目录权威回执 + 回执播报 | 模型写不了权威面(Codex R1-3) | 模型知道结果要靠回执播报(依赖 P1);多一次文件轮询 |
-| 批 ship 的确认词不经模型 + armedBinding 快照全等 | 「念的」=「写的」(Codex R1-1) | voice 里多一个武装窗口状态;确认后多一次 GET |
+| 批 ship 的确认词不经模型 + armedBinding 快照全等 + context/卡片交叉核对 | 「念的」=「写的」,且回执卡只发进核验过的频道(Codex R1-1 / R2-2) | voice 里多一个武装窗口状态;确认前后各多一次 GET + 一次卡片 fetch;bot 要加 ReadMessageHistory 权限(部署变更) |
 | 说话人归属 = epoch + fail-closed | final 迟到不会张冠李戴(Codex R1-2) | 换人交叠时会有合法话被判 unattributed ⇒ 她要再说一遍(宁可重问,不可错归) |
 | 批准 = 可选 HTTP 适配器(严格合同) | 同一写入原语 | 部署多两个 env;没配就没有这格(明说) |
 | ack at-least-once | 崩溃不吞条目(Codex R1-5) | 可能重复念/重复播报;⛔ 不自动重发 Discord(unknown-outcome 宁可漏发要她再说) |
@@ -396,4 +412,5 @@ P0/P1/P3 都动真环境(房间/额度/gate)——**排期、账号与「谁出�
 
 | 轮 | 结论 | 处置 |
 |---|---|---|
-| R1(2026-08-27,thread `01a04602-705a-7c12-8dd1-31d9d65b46b5`) | CHANGES REQUESTED,8 条(3 BLOCKER / 4 HIGH / 1 MEDIUM) | **8 条全接受**,无一拒绝:①ship 念/写目标绑定(S0 先查、armedBinding 快照、S4 全等、B23/B24);②说话人归属 epoch + unattributed fail-closed(B25);③权威 filter/leads/回执挪到 `RAYA_STATE_DIR`,outbox 单向化 + 回执播报(B26);④动作信封 actionId/sessionGeneration/transcriptIds + token 边界(B30/B31);⑤终态 ack + 崩溃窗口表 + at-least-once(B27/B28);⑥appendSpeech 带 gen + 注入游标 + Draining 失效 + 尾音屏障(B29/B22/B19);⑦HTTP 合同(Bearer/HTTPS/超时/严格 schema/token 不落 evidence,B17);⑧P1 前置为实施门 + 批间话术改自动续 |
+| R1(2026-08-27,thread `01a04602-705a-7c12-8dd1-31d9d65b46b5`) | CHANGES REQUESTED,8 条(3 BLOCKER / 4 HIGH / 1 MEDIUM) | **8 条全接受**,无一拒绝:①ship 念/写目标绑定(S0 先查、armedBinding 快照、S4 全等、B23/B24);②说话人归属 epoch + unattributed fail-closed(B25);③权威 filter/leads/回执挪到 `RAYA_STATE_DIR`,outbox 单向化 + 回执播报(B26);④动作信封 + token 边界(B30/B31);⑤终态 ack + 崩溃窗口表 + at-least-once(B27/B28);⑥appendSpeech 带 gen + 注入游标 + Draining 失效 + 尾音屏障(B29/B22/B19);⑦HTTP 合同(Bearer/HTTPS/超时/严格 schema/token 不落 evidence,B17);⑧P1 前置为实施门 + 批间话术改自动续 |
+| R2(2026-08-27,同线程) | CHANGES REQUESTED,4 条(2 BLOCKER / 2 HIGH) | **4 条全接受**:①信封改 `sessionKey`(bootId 派生,openThread 写进 ACTIONS 块)+ `utterances` 带她原话全文由 voice 在内存日志解析(B31/B35,跨 boot 撞号反例);②armedBinding 只用 gate-binding 真实字段,issueIdentifier 走 `GET /context` 交叉核对,回执频道/卡片用只读 fetchMessage 核验(需 bot 加 ReadMessageHistory,列为部署变更;B32);③崩溃窗口按磁盘可观察状态统一 unknown-outcome,放弃不可判定的 crash-before-effect 分类,不加 journal(B28 改为纯磁盘状态测试);④spoken ack 改逐条注入 + 内容/无插话相关性判据(B33/B34) |
