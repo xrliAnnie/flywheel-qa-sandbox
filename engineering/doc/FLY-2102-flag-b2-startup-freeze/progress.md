@@ -1,13 +1,13 @@
 ---
 issue: FLY-2102
 phase: implement
-phaseCursor: 0/6
-updated: 2026-08-28T01:46:00.493Z
-nextStep: audit current flag read sites and establish RED baselines for plan step 1
+phaseCursor: 3/6
+updated: 2026-08-28T02:20:12.397Z
+nextStep: compile and run targeted/full verification
 chunks: []
 pointers: {}
 ---
 
 # FLY-2102 progress
-**phase**: implement (0/6)
-**next**: audit current flag read sites and establish RED baselines for plan step 1
+**phase**: implement (3/6)
+**next**: compile and run targeted/full verification
