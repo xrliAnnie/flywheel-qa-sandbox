@@ -1,13 +1,13 @@
 ---
 issue: FLY-2031
 phase: design
-phaseCursor: 4/6
-updated: 2026-08-28T01:41:32.966Z
-nextStep: await codex round1 verdict; then fix/loop; then publish HTML
+phaseCursor: 5/6
+updated: 2026-08-28T02:08:56.661Z
+nextStep: "await codex round3; if APPROVED: json+gate+publish HTML+report Lead+complete"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: design (4/6)
-**next**: await codex round1 verdict; then fix/loop; then publish HTML
+**phase**: design (5/6)
+**next**: await codex round3; if APPROVED: json+gate+publish HTML+report Lead+complete
