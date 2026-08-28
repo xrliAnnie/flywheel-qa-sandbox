@@ -1,0 +1,23 @@
+flowchart TB
+  classDef repo fill:#e8f0fe,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+  classDef file fill:#f5f5f7,stroke:#86868b,stroke-width:1.2px,color:#1d1d1f
+  classDef mem fill:#e9f9ef,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+
+  subgraph TH ["记忆(两层,她拍过的形态)"]
+    direction TB
+    THREAD["对话历史 = Codex 会话自己的记录<br/>重启后 resume 接上;满了自动压缩"]:::repo
+    MEMF["MEMORY.md = 阶段性提炼<br/>她交代要执行的事 + 沉淀的事实<br/>Raya 自己改、自己 commit"]:::mem
+  end
+
+  subgraph ST ["运行状态(Raya 写不到)"]
+    S1["brain-state.json<br/>会话游标 · 最后读到哪条消息"]:::file
+    S2["cadence.json<br/>巡视间隔(运行期可改)"]:::file
+    S3["asks.jsonl<br/>问了哪个 Lead · 回了没有"]:::file
+    S4["ticks/时间.json<br/>每次巡视的六仓快照(证据)"]:::file
+  end
+
+  subgraph ME ["度量(metrics 目录)"]
+    M1["resource-usage.jsonl<br/>指标① 内存 ② swap(已在跑)"]:::file
+    M2["context-usage.jsonl<br/>指标③ 实际用到的窗口"]:::file
+    M3["interruptions.jsonl<br/>反指标:打断了几次 · 哪几次她觉得值"]:::file
+  end

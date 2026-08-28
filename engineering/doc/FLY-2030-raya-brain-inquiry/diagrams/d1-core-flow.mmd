@@ -1,0 +1,40 @@
+flowchart LR
+  classDef annie fill:#fde8e8,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef brain fill:#e8f0fe,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+  classDef codex fill:#f3e8fd,stroke:#af52de,stroke-width:2px,color:#1d1d1f
+  classDef store fill:#e9f9ef,stroke:#34c759,stroke-width:1.5px,color:#1d1d1f
+  classDef ext fill:#fff4e5,stroke:#ff9500,stroke-width:1.5px,color:#1d1d1f
+
+  subgraph IN ["进(三种触发)"]
+    direction TB
+    A["Annie 在 #raya 打字"]:::annie
+    L["Lead 在 roundtable 回复她的追问"]:::ext
+    T["到点巡视(默认 6h,可改)<br/>+ 六仓状态快照:每个项目静了多久"]:::ext
+  end
+
+  Q["brain 常驻进程<br/>消息分拣 → 回合队列<br/>(一次只想一件事;只做收发与记账)"]:::brain
+
+  C["Raya 的脑子<br/>一条持久 Codex 会话<br/>gpt-5.6-sol · 最深思考档 · 1M 上下文<br/>(判断全在这里,不加规则)"]:::codex
+
+  subgraph OUT ["出(两个方向)"]
+    direction TB
+    D["回 / 主动说 → #raya(她看)"]:::brain
+    RB["追问 → roundtable @对应 Lead"]:::brain
+  end
+
+  subgraph REC ["账(三本,可查)"]
+    direction TB
+    M[("三指标 context-usage.jsonl<br/>实际用了多少上下文")]:::store
+    G[("主动开口账本 interruptions.jsonl<br/>开口理由 + 她的 👍/👎")]:::store
+    MEM[("长期记忆 raya-memory/MEMORY.md<br/>阶段性提炼,她自己 commit")]:::store
+  end
+
+  A --> Q
+  L --> Q
+  T --> Q
+  Q --> C
+  C --> D
+  C --> RB
+  C -.-> M
+  C -.-> G
+  C -.-> MEM
