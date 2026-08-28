@@ -1,14 +1,15 @@
 ---
 issue: FLY-2030
 phase: implement
-phaseCursor: 1/8
-updated: 2026-08-28T09:16:09.424Z
-nextStep: audit Raya main and resolve dispatch raya-only boundary versus
-  approved paired-repo plan
+phaseCursor: 2/8
+updated: 2026-08-28T09:20:06.258Z
+nextStep: Raya baseline green at b7abff4; implement M1 Raya slice after Lead
+  resolves paired-repo scope conflict; founder summary knobs remain
+  intentionally unselected
 chunks: []
 pointers: {}
 ---
 
 # FLY-2030 progress
-**phase**: implement (1/8)
-**next**: audit Raya main and resolve dispatch raya-only boundary versus approved paired-repo plan
+**phase**: implement (2/8)
+**next**: Raya baseline green at b7abff4; implement M1 Raya slice after Lead resolves paired-repo scope conflict; founder summary knobs remain intentionally unselected
