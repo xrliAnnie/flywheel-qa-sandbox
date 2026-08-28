@@ -36,7 +36,7 @@ flowchart LR
 | M1-a | `summaries/README.md` 落合同逐字稿 | raya 仓(fly-2030 分支) | summary-contract.md §一;前缀 `summaries/` 就此定死 |
 | M1-b | `lead-rules-base/summary-inflow.md` 落规则段逐字稿 | flywheel | lead-summary-rules-draft.md §一(含指回例外那段) |
 | M1-c | `founder-only-authority.md` 落 Narrow exemption 终稿,条 1 前缀**逐字填 `summaries/`** | flywheel,与 M1-a **成对机械门**(§2.1) | exemption-proposal 终稿 |
-| M1-c' | **规则装载接线(R1v2-4)**:`summary-inflow.md` 不会被自动发现——必须同时接 **两条显式 load path**:`scripts/claude-lead.sh` 的 dept 枚举 + `scripts/lead-rules-bundle.sh` `compute_lead_rule_bundle`,并更新 `lead-rules-base/README.md` 表与 `lead-rules-bundle.test.ts`(钉:dept 双路径含它;CoS/companion/external/无部门 infra bot 不含) | flywheel | 试点证据 = 被选 Lead 的**有效 bundle/prompt 含该文件**;只 merge 文件不算已激活 |
+| M1-c' | **规则装载接线(R1v2-4 + R2v2-1)**:`summary-inflow.md` 不会被自动发现——同时接 **两条显式 load path**:`scripts/claude-lead.sh` 的 dept 枚举 + `scripts/lead-rules-bundle.sh` `compute_lead_rule_bundle`,并更新 `lead-rules-base/README.md` 表与 `lead-rules-bundle.test.ts`。**audience 判据必须 registry-owned、可测**(R2v2-1:现 resolver 只有 external\|companion\|cos\|dept 四类,生产 infra bot 也落 `dept`——粗分类不够):`packages/flywheel-comm/src/lead-identity.ts` 导出谓词 `hasSummaryDuty(entry)` = `role==="dept" ∧ entry.department 存在且 ≠ "infra" ∧ entry.summaryRole !== "recipient"`;配套一次性数据归一:缺 `department` 的部门 Lead 行补上(如 geoforge3d 的 product/ops),**Raya 的注册行带 `summaryRole:"recipient"`**(⛔ 不在代码里硬编 id 特判);两条 load path 都从该谓词取 audience 维度 | flywheel | **测试**:fixture 枚举**完整的 11 个部门 Lead 集合**双路径都含;两个 infra bot、全部 CoS/companion/external 不含;**Raya 无论挂载在哪个 project,其解析身份/有效 bundle 都不含**(她是收件人不是义务人)。试点证据 = 被选 Lead 的**有效 bundle/prompt 含该文件**;只 merge 文件不算已激活 |
 | M1-d | 共享命令 `flywheel-comm summary` 实现,**作者协议(R1v2-5)**:`summary --file <Lead 亲笔的.md> --project … --period …`——命令只做定名/校验/git+gh 投递,模板可打印 stdout,**Judgment 必须由真实 Lead 写进传入文件**(不再有「空骨架→立即开 PR」的不可执行流);`--dry-run` = **不写 fs/git/gh**,只校验并打印 canonical plan;幂等 key = `{project, author, period}`,同 key 更新同一 open PR,**PR 已 merge 后重跑 = fail-loud 或显式 next-seq 更正**,并发创建 fail-loud | flywheel `packages/flywheel-comm` | **TDD**:校验(前缀/frontmatter/Judgment 非空/可执行拒绝含兜底口径)、幂等三态(open 更新/merged 重跑/并发)、dry-run 零副作用、gh 失败 fail-loud;gh/fs 注入 |
 | M1-d' | **merge 时只读 verifier(R1v2-5,豁免的机器可核就落在这)**:复用同一 validator + `gh`,对 PR **当前 head 的完整 diff** 核:每个路径 ∈ `summaries/`、Git mode(拒 100755 的 .md)、命名/frontmatter/Judgment、无 executable/config/build-runtime-affecting 文件(非枚举兜底)、文件列表分页;输出 verified head SHA;**Raya merge 必须 `gh pr merge --match-head-commit <verified-sha>`**(防校验后 head 被推进的 TOCTOU) | flywheel 或 raya 侧小工具(implement 定,不建服务) | **TDD**:verified 后 head 推进 → merge 拒;额外路径/越权 mode/非枚举可执行 → 不合格;分页 |
 | M1-e | Raya 身份【M1】段(未读队列纪律 + **merge 前跑 verifier、只用 `--match-head-commit` merge**) | raya 仓 IDENTITY 增段 + operator 0444 副本更新(Lead 执行) | raya-identity-draft.md(已同步) |
@@ -73,7 +73,7 @@ M1 先于 M2(没有 summary 就没有可吸收的东西);每块 RED→GREEN→RE
 | 旋钮未拍 | 变体已写死形状;实现只做与旋钮无关的部分(M1-d period 显式传入) |
 | ③ 接不上 | 如实报缺,不冒充 |
 | TUI thread 轮换(turnless self-heal 等既有语义) | 沿用运行时既有行为,不改;身份与 params 每次 resume 重钉(FLY-224 已有) |
-| 例外条款前缀漂移 | review checklist 逐字对拍(两处同批次落) |
+| 例外条款前缀漂移 | **§2.1 机械门**(三处字节断言 + exact-head 证据留 PR),不是人工 checklist(R2v2-2) |
 
 ## 6. 会过期的结论
 
@@ -97,3 +97,10 @@ M1 先于 M2(没有 summary 就没有可吸收的东西);每块 RED→GREEN→RE
 | 5 命令作者流程/dry-run/merge 门 | ✅ M1-d/d':`--file` 作者协议、dry-run 零 fs/git/gh、幂等 key 三态;merge 时只读 verifier + `gh pr merge --match-head-commit`(TOCTOU);两份草稿文档同步改 |
 | 6 cadence 只证了表存在 | ✅ M2-b:flag registry 全套合同 + GatePoller rider(不建 timer)+ lead_events durable 投递 + deterministic event id + 重放;TDD 七项 |
 | 7 ③ 接缝其实已知 | ✅ M2-c:直接指定 TUI demux 的 `thread/tokenUsage/updated` 监听 + 既有 parseContextUsage 合同;「暂缺」只作真机不发时的后备 |
+
+**R2(v2)(2026-08-28,blob 5462acb0,rev5 manifest 03d3b801)= CHANGES REQUESTED,2 项,全部采纳;两处 R1 重点(same-batch 机械门 / byte-identical 规格)本轮通过:**
+
+| # | 处置 |
+|---|---|
+| 1 audience 无 source-backed 判据(infra bot 也落 dept;Raya 挂载后可能自吞义务) | ✅ M1-c':registry-owned 谓词 `hasSummaryDuty`(dept ∧ department≠infra ∧ summaryRole≠recipient)+ 数据归一 + Raya 行标 recipient(不硬编 id);fixture 枚举 11 全集/排除集/Raya 任意挂载;draft 头行改「部门 Lead」 |
+| 2 summary-contract 注记仍写「同一 PR」与 §2.1 冲突;§5 风险行仍写 checklist | ✅ 注记 1 改指成对 exact-head PR + 三处字节机械门 + Raya 先 flywheel 后顺序;§5 风险行改指 §2.1 机械证据;前缀/例外措辞/落地时机不动 |

@@ -3,7 +3,7 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 日期: 2026-08-28
 基于: summary-contract.md(路径/格式的权威在那份,本文不复制细节)
 
-> 状态:草案,随 M1 实现 PR 落 flywheel 仓:规则段 → `packages/teamlead/lead-rules-base/`(新文件 `summary-inflow.md`,全体 Lead 装载);命令 → 形态由 implement 定(建议 `flywheel-comm summary`),**本文只钉接口合同,不写实现**。
+> 状态:草案,随 M1 实现 PR 落 flywheel 仓:规则段 → `packages/teamlead/lead-rules-base/`(新文件 `summary-inflow.md`,**只装载给部门 Lead**——audience 由 registry-owned 谓词 `hasSummaryDuty` 定,CoS/companion/external/infra bot/Raya 本人不装载,见 plan M1-c';R2v2-1 更正旧「全体 Lead」措辞);命令 → 形态由 implement 定(建议 `flywheel-comm summary`),**本文只钉接口合同,不写实现**。
 > 原则:**写一遍,11 处生效**(Tadashi 3f707089);⛔ 不许任何 Lead 各自造轮子。
 
 ## 一、规则层段落逐字稿(英文,落 `lead-rules-base/summary-inflow.md`)

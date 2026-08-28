@@ -69,6 +69,6 @@ as read material and will ask the Lead for the judgment instead of guessing.
 
 ## 二、合同外的三条工程注记(不进 README)
 
-1. **前缀与例外条款的绑定**:`summaries/` 一旦随 M1 PR 定死,例外条款条 1 填的就是它;两处必须同一 PR 内同时落,且**逐字一致**(一处 `summaries/` 另一处写任何别的写法,机器可核的门就废了)——M1 PR 的 review checklist 要含这一条对拍。
+1. **前缀与例外条款的绑定**(与 plan §2.1 同口径,R2v2-2 更正:两处在**不同仓**,不可能同一 PR):随 **M1 成对 PR** 落——raya PR(本合同)与 flywheel PR(例外条款+validator)互链并钉 exact head;merge 前**必过机械门**从两个 head 读三处 canonical prefix(本 README、founder-only-authority 条 1、validator 常量),机器断言均且只均为字节串 `summaries/`,证据留 PR;顺序先 raya 后 flywheel,第二步失败不激活。⛔ 人工对拍不算门。
 2. **Belle**:按 1.4 实核,personal-assistant 已是 git 仓(remote = belle-workspace),belle-lead 走同一合同;implement 前终核一次,若形态又变才按 PRD「不许假装六个仓都在」另开通路(这是决定过的不预建,非遗漏)。
 3. **`<seq>` 的存在理由**:粒度/频率两旋钮无论怎么拍,同日多文件都可能出现(补写、更正);不靠时间戳到秒是为了文件名可读、diff 可读。
