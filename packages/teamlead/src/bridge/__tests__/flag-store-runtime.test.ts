@@ -5,7 +5,6 @@ import {
 	resolveAllFlags,
 	resolveSkillFrameworkMode,
 	SKILL_FRAMEWORK_MODE_ENV,
-	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
@@ -200,248 +199,21 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		}
 	});
 
-	it("snapshots boot bypass and preserves legacy parsing for the whole process", () => {
-		const env: Record<string, string | undefined> = {
-			FLYWHEEL_FLAG_STORE: "0",
-			FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "0",
-			FLYWHEEL_SKILL_FRAMEWORK_MODE: "split",
-		};
-		const runtime = initializeFlagStore(store, env, 100);
-		env.FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS = "1";
-		env.FLYWHEEL_SKILL_FRAMEWORK_MODE = "matt";
-		expect(runtime.mode).toBe("bypass");
-		expect(storeWorkflowTurnDivergenceAlertsEnabled(runtime)).toBe(false);
-		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
-			hasOverride: true,
-			raw: "split",
-		});
-		expect(store.isFlagStoreBypassSeen()).toBe(true);
-		expect(
-			store.getFlagValueRow("workflow_turn_divergence_alerts"),
-		).toBeUndefined();
-	});
-
-	it("imports bypass-period env and clocks every managed value on recovery", () => {
-		initializeFlagStore(
-			store,
-			{ FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "0" },
-			100,
-		);
-		const rowsBeforeBypass = new Map(
-			[...STORE_MANAGED_FLAGS].map((name) => [
-				name,
-				store.getFlagValueRow(name),
-			]),
-		);
-		const staleRevision = store.getFlagValueRow(
-			"workflow_turn_divergence_alerts",
-		)!.revision;
-		initializeFlagStore(
+	it("ignores the retired store flag and stays DB-authoritative", () => {
+		const runtime = initializeFlagStore(
 			store,
 			{
 				FLYWHEEL_FLAG_STORE: "0",
 				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
 			},
-			200,
+			100,
 		);
-		const runtime = initializeFlagStore(
-			store,
-			{ FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1" },
-			300,
-		);
+
 		expect(runtime.mode).toBe("ready");
 		expect(storeWorkflowTurnDivergenceAlertsEnabled(runtime)).toBe(true);
-		for (const name of STORE_MANAGED_FLAGS) {
-			const row = store.getFlagValueRow(name);
-			if (name === "workflow_turn_divergence_alerts") {
-				expect(row?.valueLastChanged, name).toBe(300);
-			} else {
-				expect(row, name).toEqual(rowsBeforeBypass.get(name));
-			}
-			expect(store.listFlagValueChanges(name).at(-1)?.action, name).toBe(
-				"bypass_recovery",
-			);
-		}
-		expect(store.isFlagStoreBypassSeen()).toBe(false);
-		const auditCount = store.listFlagValueChanges(
-			"workflow_turn_divergence_alerts",
-		).length;
-		store.ensureFlagValueRows({ env: {}, now: 400 });
-		expect(
-			store.listFlagValueChanges("workflow_turn_divergence_alerts"),
-		).toHaveLength(auditCount);
-		expect(
-			store.applyFlagValueChange({
-				name: "workflow_turn_divergence_alerts",
-				rawTo: null,
-				expectedRevision: staleRevision,
-				actor: "bridge-local-operator",
-				reason: "stale pre-bypass token",
-			}),
-		).toMatchObject({ ok: false, reason: "stale_revision" });
-	});
-
-	it("preserves a store override when bypass recovery has no legacy env authority", () => {
-		initializeFlagStore(store, {}, 100);
-		const initial = store.getFlagValueRow("skill_framework_mode")!;
-		store.applyFlagValueChange({
-			name: "skill_framework_mode",
-			rawTo: "split",
-			expectedRevision: initial.revision,
-			actor: "bridge-local-operator",
-			reason: "pre-bypass managed override",
-			now: 200,
-		});
-		const beforeBypass = store.getFlagValueRow("skill_framework_mode");
-
-		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 300);
-		const runtime = initializeFlagStore(store, {}, 400);
-
-		expect(runtime.mode).toBe("ready");
-		expect(store.getFlagValueRow("skill_framework_mode")).toEqual(beforeBypass);
-		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
-			hasOverride: true,
-			raw: "split",
-		});
-		expect(
-			store.listFlagValueChanges("skill_framework_mode").at(-1),
-		).toMatchObject({
-			action: "bypass_recovery",
-			fromRaw: "split",
-			toRaw: "split",
-			fromEffective: "split",
-			toEffective: "split",
-		});
-	});
-
-	it("treats an empty legacy enum assignment as absent during recovery", () => {
-		initializeFlagStore(store, {}, 100);
-		const initial = store.getFlagValueRow("skill_framework_mode")!;
-		store.applyFlagValueChange({
-			name: "skill_framework_mode",
-			rawTo: "split",
-			expectedRevision: initial.revision,
-			actor: "bridge-local-operator",
-			reason: "pre-bypass managed override",
-			now: 200,
-		});
-		const beforeBypass = store.getFlagValueRow("skill_framework_mode");
-
-		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 300);
-		const runtime = initializeFlagStore(
-			store,
-			{ FLYWHEEL_SKILL_FRAMEWORK_MODE: "" },
-			400,
-		);
-
-		expect(runtime.mode).toBe("ready");
-		expect(store.getFlagValueRow("skill_framework_mode")).toEqual(beforeBypass);
-		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
-			hasOverride: true,
-			raw: "split",
-		});
-		expect(
-			store.listFlagValueChanges("skill_framework_mode").at(-1),
-		).toMatchObject({
-			action: "bypass_recovery",
-			fromRaw: "split",
-			toRaw: "split",
-			fromEffective: "split",
-			toEffective: "split",
-		});
-	});
-
-	it("imports an empty legacy boolean assignment with its existing semantics", () => {
-		initializeFlagStore(store, { FLYWHEEL_WORKFLOW_REWORK_REENTRY: "0" }, 100);
-		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 200);
-
-		const runtime = initializeFlagStore(
-			store,
-			{ FLYWHEEL_WORKFLOW_REWORK_REENTRY: "" },
-			300,
-		);
-
-		expect(runtime.mode).toBe("ready");
-		expect(store.getFlagValueRow("workflow_rework_reentry")).toMatchObject({
-			hasOverride: true,
-			raw: "",
-			lastEffective: "true",
-			valueLastChanged: 300,
-			revision: 2,
-		});
-		expect(storeWorkflowReworkReentryEnabled(runtime)).toBe(true);
-	});
-
-	it("reconciles a default shift while recovering without a legacy env line", () => {
-		initializeFlagStore(store, {}, 100);
-		rawFlagStoreDb(store).exec(
-			"UPDATE flag_values SET last_effective='false' WHERE flag_name='flag_retirement_scan'",
-		);
-		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 200);
-
-		const runtime = initializeFlagStore(store, {}, 300);
-
-		expect(runtime.mode).toBe("ready");
-		expect(store.getFlagValueRow("flag_retirement_scan")).toMatchObject({
-			hasOverride: false,
-			raw: null,
-			lastEffective: "true",
-			valueLastChanged: 300,
-			revision: 2,
-			updatedBy: "flag-store-recovery",
-		});
-		expect(
-			store.listFlagValueChanges("flag_retirement_scan").at(-1),
-		).toMatchObject({
-			action: "bypass_recovery",
-			fromEffective: "false",
-			toEffective: "true",
-		});
-	});
-
-	it("recovery-seeds after a first-deployment bypass with a non-null clock", () => {
-		initializeFlagStore(
-			store,
-			{
-				FLYWHEEL_FLAG_STORE: "0",
-				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
-			},
-			100,
-		);
-		initializeFlagStore(
-			store,
-			{ FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1" },
-			200,
-		);
 		expect(
 			store.getFlagValueRow("workflow_turn_divergence_alerts"),
-		).toMatchObject({
-			hasOverride: true,
-			raw: "1",
-			lastEffective: "true",
-			valueLastChanged: 200,
-			revision: 1,
-		});
-		expect(
-			store.listFlagValueChanges("workflow_turn_divergence_alerts"),
-		).toEqual([expect.objectContaining({ action: "bypass_recovery" })]);
-	});
-
-	it("rolls back the entire recovery and keeps the fence on audit failure", () => {
-		initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 100);
-		(
-			store as unknown as { db: { raw: { exec(sql: string): void } } }
-		).db.raw.exec(`
-			CREATE TRIGGER reject_bypass_recovery
-			BEFORE INSERT ON flag_value_changelog
-			WHEN NEW.action = 'bypass_recovery'
-			BEGIN SELECT RAISE(ABORT, 'forced recovery failure'); END
-		`);
-		expect(() => initializeFlagStore(store, {}, 200)).toThrow(
-			/forced recovery failure/,
-		);
-		expect(store.isFlagStoreBypassSeen()).toBe(true);
-		expect(store.getFlagValueRow("flag_retirement_scan")).toBeUndefined();
+		).toMatchObject({ hasOverride: true, raw: "1", revision: 1 });
 	});
 
 	it("feeds the raw split control into the existing issue-aware resolver", () => {
@@ -724,59 +496,11 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(view?.error).toBeUndefined();
 	});
 
-	it("keeps stale .env comparison visible during explicit store bypass", () => {
+	it("labels degraded store views without presenting legacy env as authority", () => {
 		const env = {
-			FLYWHEEL_FLAG_STORE: "0",
 			FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
 		};
-		const runtime = initializeFlagStore(store, env, 100);
-		const view = enrichFlagViewsWithStore(
-			resolveAllFlags({
-				env,
-				envFile: {
-					status: "readable",
-					content: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS=0\n",
-				},
-			}),
-			runtime,
-		).find(({ name }) => name === "workflow_turn_divergence_alerts");
-		expect(view).toMatchObject({
-			storeEffective: true,
-			bridgeEffective: true,
-			fileEffective: false,
-			displayEffective: true,
-			divergence: "split_brain",
-			clockReadiness: "no_clock:bypass",
-		});
-	});
-
-	it("labels bypass and degraded store views without presenting legacy env as authority", () => {
-		const env = {
-			FLYWHEEL_FLAG_STORE: "0",
-			FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS: "1",
-		};
-		const bypass = initializeFlagStore(store, env, 100);
-		env.FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS = "0";
-		const bypassView = enrichFlagViewsWithStore(
-			resolveAllFlags({ env }),
-			bypass,
-		).find(({ name }) => name === "workflow_turn_divergence_alerts");
-		expect(bypassView).toMatchObject({
-			storeManaged: true,
-			storeEffective: true,
-			displayEffective: true,
-			valueLastChanged: null,
-			clockReadiness: "no_clock:bypass",
-		});
-
-		const ready = initializeFlagStore(
-			store,
-			{
-				FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS:
-					env.FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS,
-			},
-			200,
-		);
+		const ready = initializeFlagStore(store, env, 200);
 		(
 			store as unknown as { db: { raw: { exec(sql: string): void } } }
 		).db.raw.exec(

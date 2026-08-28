@@ -227,18 +227,10 @@ function inspectWorkflowStartReplay(
  * races dispatcher.start()'s immediate return, and a slow Codex spawn blocks
  * the event loop AFTER the row exists, so a live runner registers well within
  * this window while a genuine ghost (threw before emitStarted) correctly
- * times out. The default is deliberately above the saturated-host launch
- * delivery observed in FLY-1336; operators can tune it only at process start.
+ * times out. The fixed deadline is deliberately above the saturated-host
+ * launch delivery observed in FLY-1336.
  */
-function positiveInt(raw: string | undefined, fallback: number): number {
-	const parsed = Number(raw);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const GHOST_GUARD_SESSION_WAIT_MS = positiveInt(
-	process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS,
-	90_000,
-);
+export const GHOST_GUARD_SESSION_WAIT_MS = 90_000;
 
 function secureTokenEqual(
 	actual: string | undefined,
@@ -345,8 +337,11 @@ export function createRunsRouter(
 		hasOverride: boolean;
 		raw: string | null;
 	} = () => ({ hasOverride: false, raw: null }),
+	testSeams: { ghostGuardSessionWaitMs?: number } = {},
 ): Router {
 	const router = Router();
+	const ghostGuardSessionWaitMs =
+		testSeams.ghostGuardSessionWaitMs ?? GHOST_GUARD_SESSION_WAIT_MS;
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
 		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
 	});
@@ -3235,13 +3230,13 @@ export function createRunsRouter(
 					startedSession = await waitForSession(
 						store,
 						generalizedSelection.executionId,
-						{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
+						{ timeoutMs: ghostGuardSessionWaitMs },
 					);
 					if (!startedSession) {
 						res.status(500).json({
 							success: false,
 							code: "GENERALIZED_START_NOT_LIVE",
-							message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms.`,
+							message: `Runner failed to start — session not registered after ${ghostGuardSessionWaitMs}ms.`,
 						});
 						return;
 					}
@@ -3250,7 +3245,7 @@ export function createRunsRouter(
 			let committedOwner = await waitForGeneralizedLaunchDelivery(
 				store,
 				generalizedSelection.executionId,
-				{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
+				{ timeoutMs: ghostGuardSessionWaitMs },
 			);
 			if (!committedOwner) {
 				// Close the wait-boundary race before degrading to accepted-pending. A
@@ -3623,7 +3618,7 @@ export function createRunsRouter(
 			// absent for the full deadline. One bounded-poll helper, not two —
 			// reuses FLY-205's `waitForSession` with the ghost-guard deadline.
 			const finalSession = await waitForSession(store, result.executionId, {
-				timeoutMs: GHOST_GUARD_SESSION_WAIT_MS,
+				timeoutMs: ghostGuardSessionWaitMs,
 			});
 			if (!finalSession) {
 				store.casLaunchClaimState(
@@ -3633,7 +3628,7 @@ export function createRunsRouter(
 				);
 				res.status(500).json({
 					success: false,
-					message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms. Check Bridge logs for errors.`,
+					message: `Runner failed to start — session not registered after ${ghostGuardSessionWaitMs}ms. Check Bridge logs for errors.`,
 				});
 				return;
 			}

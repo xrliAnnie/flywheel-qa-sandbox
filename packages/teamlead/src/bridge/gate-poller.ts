@@ -170,9 +170,8 @@ export interface GatePollerConfig {
 	 */
 	onDisplayReconcileTick?: () => void | Promise<void>;
 	/**
-	 * FLY-907: cadence for `onDisplayReconcileTick` in poll ticks (default 60 ≈
-	 * 3min at the production 3s interval; plugin reads
-	 * FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS). 0 → sweep disabled.
+	 * FLY-907: injectable test cadence for `onDisplayReconcileTick`. Production
+	 * uses 60 ticks (≈3min at the 3s interval); invalid values fall back to 60.
 	 */
 	displayReconcileEveryNTicks?: number;
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
@@ -728,12 +727,11 @@ export class GatePoller {
 
 			// FLY-907: issue-display reconcile sweep — same piggyback pattern as
 			// the FLY-513 health probe above (zero new timer, own catch, never
-			// blocks the poll). Cadence 0 → disabled.
+			// blocks the poll). The production cadence is always enabled.
 			{
 				const displayCadence = this.displayReconcileEveryNTicks();
 				if (
 					this.config.onDisplayReconcileTick &&
-					displayCadence > 0 &&
 					(this.tickCount - 1) % displayCadence === 0
 				) {
 					void Promise.resolve()
@@ -1276,7 +1274,10 @@ export class GatePoller {
 
 	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */
 	private displayReconcileEveryNTicks(): number {
-		return this.config.displayReconcileEveryNTicks ?? 60;
+		const cadence = this.config.displayReconcileEveryNTicks;
+		return cadence !== undefined && Number.isFinite(cadence) && cadence > 0
+			? cadence
+			: 60;
 	}
 
 	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {

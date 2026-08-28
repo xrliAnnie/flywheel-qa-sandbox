@@ -246,11 +246,16 @@ else
 fi
 
 FLYWHEEL_CMUX_NODE_PRESENCE=0
-DISMANTLED=""; mark_for_cleanup control-off 100; process_pending_cleanups || true
-if [[ "$DISMANTLED" == control-off && ! -e "$CLEANUP_PENDING" ]]; then
-  ok "node-presence-off cleanup control still dismantles its view"
+DISMANTLED=""; CMUX_ADDITIVE_ROUND_ID="$round_two"
+mark_for_cleanup retired-value 100
+retired_marker=$(cat "$CLEANUP_PENDING")
+process_pending_cleanups || true
+IFS='-' read -r round_epoch round_sequence <<< "$round_two"
+if [[ "$DISMANTLED" == retired-value && ! -e "$CLEANUP_PENDING" ]] \
+   && [[ "$retired_marker" == "retired-value|100|$round_epoch|$round_sequence" ]]; then
+  ok "FLYWHEEL_CMUX_NODE_PRESENCE=0 cannot disable node-presence cleanup"
 else
-  bad "node-presence-off cleanup control regressed"
+  bad "retired node-presence value restored the old cleanup path"
 fi
 
 FLYWHEEL_CMUX_NODE_PRESENCE=1

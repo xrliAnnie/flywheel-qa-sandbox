@@ -449,7 +449,6 @@ import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
-import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
@@ -4371,27 +4370,6 @@ export async function startBridge(
 			`[bridge-exit-marker] running-marker write failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
-
-	// FLY-1062 (plan §3): the publish broker. Its two outward-publish tokens are
-	// read AND SCRUBBED from process.env here — before any child spawn path can
-	// inherit them — whether or not the feature is enabled. Default OFF
-	// (FLYWHEEL_PUBLISH_BROKER=1 enables; reverse-compat sentinel): enabled, it
-	// owns the unix-socket request surface + the founder ✅-reaction approval
-	// observation. A wiring failure is fail-closed for PUBLISHING only — the
-	// Bridge still boots.
-	const publishBrokerHandle = await wirePublishBroker({
-		env: process.env,
-		stateDir: join(homedir(), ".flywheel"),
-		discordBotToken: config.discordBotToken,
-		discordOwnerUserId: config.discordOwnerUserId,
-		founderConsentUserId: config.founderConsent?.founderUserId,
-		log: (line) => console.log(line),
-	}).catch((err) => {
-		console.warn(
-			`[publish-broker] wiring failed (publishes unavailable): ${(err as Error).message}`,
-		);
-		return null;
-	});
 
 	// FLY-1082: late-bound fleet holders — the sensors need the routed alert
 	// sink (built late) while HeartbeatService/AutoRepairBot (built earlier)
@@ -8833,17 +8811,10 @@ export async function startBridge(
 		},
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		// FLY-907 (Step 4.5): issue-display reconcile sweep — piggybacked on this
-		// existing poll tick (zero new timer). The holder is populated post-listen;
-		// an empty holder / flag=0 makes the tick a no-op.
-		// FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS: cadence override (0 = disabled).
+		// existing 60-tick poll cadence (zero new timer). The holder is populated
+		// post-listen; an empty holder makes the tick a no-op.
 		onDisplayReconcileTick: () =>
 			issueDisplayRefreshHolder.current?.runSweep?.(),
-		displayReconcileEveryNTicks: (() => {
-			const raw = process.env.FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS;
-			if (raw === undefined) return undefined; // GatePoller default (60)
-			const n = Number.parseInt(raw, 10);
-			return Number.isFinite(n) && n >= 0 ? n : undefined;
-		})(),
 		// FLY-605: bidirectional in-thread founder relay fallback. owner/token
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
@@ -10941,7 +10912,6 @@ export async function startBridge(
 		workflowEngineDispatcher?.stop();
 		workflowDocsMaterializer.stop();
 		heartbeatService?.stop();
-		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();
 		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap

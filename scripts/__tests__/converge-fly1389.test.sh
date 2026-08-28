@@ -364,28 +364,28 @@ fi
 { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-flywheel-cmux-sync.sh-$i >/dev/null"; i=$((i+1)); done; } \
   > "$TRUSTED/scripts/flywheel-cmux-sync.sh"
 
-# ── C5: emergency bypass preserves the legacy regular-file shape silently. ──
+# ── C5: retired =0 value cannot preserve the legacy regular-file shape. ──
 ST="$SB/state-c5"; seed_wrappers "$ST" "$TRUSTED"
 cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
 : > "$SB/alerts.log"
 if run_conv "$TRUSTED" "$ST" FLYWHEEL_CONVERGE_CMUX_SYMLINK=0 \
-   && [[ ! -L "$ST/bin/flywheel-cmux-sync" ]] \
-   && [[ ! -s "$SB/alerts.log" ]]; then
-  pass "C5: FLYWHEEL_CONVERGE_CMUX_SYMLINK=0 → byte-compatible copy-shape bypass"
+   && [[ -L "$ST/bin/flywheel-cmux-sync" ]] \
+   && grep -q 'copy-shape-converged' "$SB/alerts.log"; then
+  pass "C5: FLYWHEEL_CONVERGE_CMUX_SYMLINK=0 still converges to the canonical symlink"
 else
-  fail "C5: copy-shape escape hatch" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+  fail "C5: retired flag restored copy-shape bypass" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
 fi
 
-# ── C5b: malformed input is fail-safe default-on, never an implicit bypass. ──
+# ── C5b: arbitrary retired values are ignored and converge normally. ──
 ST="$SB/state-c5b"; seed_wrappers "$ST" "$TRUSTED"
 cp "$TRUSTED/scripts/flywheel-cmux-sync.sh" "$ST/bin/flywheel-cmux-sync"
 : > "$SB/alerts.log"
 if run_conv "$TRUSTED" "$ST" FLYWHEEL_CONVERGE_CMUX_SYMLINK=banana \
    && [[ -L "$ST/bin/flywheel-cmux-sync" ]] \
-   && grep -q 'invalid FLYWHEEL_CONVERGE_CMUX_SYMLINK' "$SB/out.log"; then
-  pass "C5b: invalid shape flag → warning + fail-safe default-on convergence"
+   && ! grep -q 'FLYWHEEL_CONVERGE_CMUX_SYMLINK' "$SB/out.log"; then
+  pass "C5b: arbitrary retired value is ignored during convergence"
 else
-  fail "C5b: invalid flag fallback" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
+  fail "C5b: retired flag still affects convergence" "$(cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null | tail -8)"
 fi
 
 # ── C6: even with a sandbox state root, a worktree source is never trusted

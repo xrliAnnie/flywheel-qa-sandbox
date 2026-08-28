@@ -764,7 +764,7 @@ describe("handleFlagApply", () => {
 		expect(deps.writeFile).not.toHaveBeenCalled();
 	});
 
-	it("managed routes are frozen during boot bypass", async () => {
+	it("retired store flag cannot disable managed routes", async () => {
 		const store = await StateStore.create(":memory:");
 		stores.push(store);
 		const flagStore = initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" });
@@ -775,11 +775,11 @@ describe("handleFlagApply", () => {
 				{
 					name: "workflow_turn_divergence_alerts",
 					to: true,
-					reason: "must wait",
+					reason: "retired flag is ignored",
 				},
 				"o",
 			).code,
-		).toBe(409);
+		).toBe(200);
 		expect(
 			handleFlagStage(
 				deps,
@@ -787,11 +787,11 @@ describe("handleFlagApply", () => {
 					name: "doc_flow",
 					to: true,
 					project: "flywheel",
-					reason: "must wait",
+					reason: "retired flag is ignored",
 				},
 				"o",
 			).code,
-		).toBe(409);
+		).toBe(200);
 		const canonical: FlagStoreCanonical = {
 			kind: "flag_store",
 			batchId: "bypass-apply",
@@ -804,10 +804,10 @@ describe("handleFlagApply", () => {
 			effectiveFrom: false,
 			effectiveTo: true,
 			actor: "bridge-local-operator",
-			reason: "must wait",
+			reason: "retired flag is ignored",
 		};
 		const token = deps.tokens.issue(flagCanonicalSha(canonical));
-		expect(handleFlagApply(deps, canonical, token, "o").code).toBe(409);
+		expect(handleFlagApply(deps, canonical, token, "o").code).toBe(200);
 	});
 
 	it("flag canonical SHA is stable + change-sensitive", () => {

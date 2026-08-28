@@ -297,14 +297,6 @@ export function handleFlagStage(
 		if (!deps.flagStore) {
 			return { code: 500, body: { error: "flag store unavailable" } };
 		}
-		if (deps.flagStore.mode === "bypass") {
-			return {
-				code: 409,
-				body: {
-					error: "managed flag changes are disabled during store bypass",
-				},
-			};
-		}
 		const row = deps.flagStore.store.getFlagValueRow(spec.name);
 		const codec = getFlagStoreCodec(spec.name);
 		if (!row || !codec) {
@@ -441,14 +433,6 @@ export function handleFlagApply(
 		}
 		if (!deps.flagStore) {
 			return { code: 500, body: { error: "flag store unavailable" } };
-		}
-		if (deps.flagStore.mode === "bypass") {
-			return {
-				code: 409,
-				body: {
-					error: "managed flag changes are disabled during store bypass",
-				},
-			};
 		}
 		if (
 			!deps.audit.record({

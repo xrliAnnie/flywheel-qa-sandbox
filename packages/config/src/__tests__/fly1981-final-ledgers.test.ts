@@ -20,6 +20,10 @@ import {
 	type ScanSource,
 	scanSources,
 } from "./drift-scan/index.js";
+import {
+	auditFly1981LegacyLedger,
+	FLY1981_LEGACY_SNAPSHOT,
+} from "./fly1981-legacy-snapshot.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
@@ -178,6 +182,11 @@ function retiredSpecTokenOccurrences(input: readonly ScanSource[]): string[] {
 	const retired = new Set<string>(DELETED_SPECS);
 	const hits = new Set<string>();
 	for (const source of input) {
+		// Most production files contain none of the retired identities. Avoid a
+		// full TypeScript parse (or line-by-line shell walk) unless the cheap exact
+		// token prefilter finds a possible hit; the AST pass below remains the
+		// authority that distinguishes code from comments.
+		if (exactRetiredTokens(source.text).length === 0) continue;
 		if (source.file.endsWith(".sh")) {
 			for (const line of source.text.split(/\r?\n/)) {
 				for (const token of exactRetiredTokens(shellCode(line))) {
@@ -278,13 +287,24 @@ describe("FLY-1981 final governance ledgers", () => {
 	}, 15_000);
 
 	it("keeps the post-verdict snapshot historical while allowing managed growth and legacy shrink", () => {
-		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. This equation is
-		// historical evidence, not a permanent assertion on FEATURE_FLAGS.length.
-		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. The 31-row
+		// source-identity snapshot is historical evidence; the live baseline may
+		// only shrink into managed, retired, or explicitly exempt accounting.
+		expect(FLY1981_LEGACY_SNAPSHOT).toHaveLength(31);
 		expect(FLY1981_MANAGED_SNAPSHOT).toHaveLength(4);
 		expect(
-			LEGACY_UNMANAGED_BASELINE.length + FLY1981_MANAGED_SNAPSHOT.length,
+			FLY1981_LEGACY_SNAPSHOT.length + FLY1981_MANAGED_SNAPSHOT.length,
 		).toBe(35);
+		expect(
+			auditFly1981LegacyLedger({
+				baseline: LEGACY_UNMANAGED_BASELINE,
+				flags: FEATURE_FLAGS,
+				storeManagedFlags: STORE_MANAGED_FLAGS,
+				retiredFlags: RETIRED_FLAGS,
+				retiredConfigPaths: RETIRED_CONFIG_PATHS,
+				exemptions: FLAG_EXEMPTIONS,
+			}),
+		).toEqual([]);
 		const currentNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
 		const outsidePartition = FEATURE_FLAGS.filter(
 			(spec) =>

@@ -1,20 +1,17 @@
 #!/usr/bin/env node
-// FLY-1062 broker PR · shell publish PREPARE stage (plan §3 ③).
+// FLY-1062 shell publish PREPARE stage (plan §3 ③).
 //
 // Two-stage shell publishing, symmetric with the payload promote:
 //   prepare (HERE, untrusted domain ok): `npm pack` the EXACT tarball →
-//     sha256 → stage it under the publish-staging dir → print the broker
-//     request tuple. The founder's approval will bind THIS sha256.
-//   publish (broker only): the broker re-verifies the staged bytes with the
-//     AUTHORITATIVE content gate + rehash, then publishes with the in-memory
-//     GAT. Nothing this script does is trusted by the broker — it only
-//     stages and reports.
+//     sha256 → stage it under the publish-staging dir → print the candidate
+//     tuple. Any publish authorization must bind THIS sha256 and re-verify the
+//     staged bytes before publishing. This script only stages and reports.
 //
 // Usage:
 //   node scripts/release/shell-prepare.mjs [--out <stage-dir>] [--allow-placeholder]
 //
 // Prints ONE JSON line: {action, releaseId, sha256, stagedPath, name, version}
-// (the exact broker-request body; releaseId = shell-<version>, deterministic).
+// (releaseId = shell-<version>, deterministic).
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
@@ -42,7 +39,7 @@ const pkg = JSON.parse(
 );
 if (pkg.private) die("package is private:true — not a publishable form");
 
-// fast feedback only — the AUTHORITATIVE gate re-runs in the broker
+// Fast feedback only — the publish path must rerun this content gate.
 if (
 	!allowPlaceholder &&
 	fs
