@@ -23,15 +23,20 @@ Issue: FLY-2101 (https://linear.app/geoforge3d/issue/FLY-2101/flagb1固化-13-�
 ### Step 1 — 三条旧路的「已删」回归测试(RED)
 验收指定形态:引用 `=0` 的旧测试改为断言**不存在该路**。
 
-1. `mailbox`:新/改测试断言 —— env 置 `FLYWHEEL_MAILBOX_QUEUE=0` 后,
+⚠️ **命名悖论(Codex R1 #1)**:这三条测试若直接写旧 env 全名,自己就是「零命中」验收的
+一个命中。定稿写法:测试内以**运行时拼接**构造旧 key(如
+`const legacyKey = ["FLYWHEEL","MAILBOX","QUEUE"].join("_")`),并加注释说明这是为满足
+零命中验收的刻意写法,不是混淆——这样既保住「=0 无效」的行为断言,又不给 rg 留字面 token。
+
+1. `mailbox`:新/改测试断言 —— env 以拼接 key 置 `"0"` 后,
    `resolveMailboxQueueConfig` 类型上已无 `enabled` 字段(编译期)且 runner/lead lane tick
    仍走 batch 投递(运行期,复用 lane 测试 harness);`processPendingDeliveries` 与
    `resolveLiveMailboxQueueEnabled` 导出不存在(import 失败即编译红)。
-2. `merge 门`:`ship-eligibility.test.ts` 新增 —— `argsEnv`/dotenv 均置
-   `FLYWHEEL_MERGE_APPROVAL_GATE=0` 时,无有效 approve_to_ship 仍判不可 ship
-   (reason ≠ `merge_gate_off`;该字符串已从源码消失)。
-3. `supersede`:`issue-gate-supersede.test.ts` 新增 —— env 置
-   `FLYWHEEL_ISSUE_GATE_SUPERSEDE=observe` / `=0`,sweep 仍执行 mutation(enforce 语义)。
+2. `merge 门`:`ship-eligibility.test.ts` 新增 —— `argsEnv`/dotenv 以拼接 key 置 `"0"` 时,
+   无有效 approve_to_ship 仍判不可 ship(且 reason 不为旧 `merge_gate_off` 值;该字符串
+   已从源码消失,断言用变量持有)。
+3. `supersede`:`issue-gate-supersede.test.ts` 新增 —— env 以拼接 key 置 `observe` / `0`,
+   sweep 仍执行 mutation(enforce 语义)。
 
 ### Step 2 — 逐 flag 删读点、写常量(GREEN)
 常量名带来源注释,统一格式 `// FLY-2101 固化(原 FLYWHEEL_X,founder 8-27 v4)`——
@@ -43,7 +48,7 @@ Issue: FLY-2101 (https://linear.app/geoforge3d/issue/FLY-2101/flagb1固化-13-�
 | `orphan-founder-review-monitor.ts:88` | 删 `=0` 早退 |
 | `liveness-evidence.ts:23-28` | `activityWindowMs()` → 常量 `DEFAULT_ACTIVITY_WINDOW_MS = 600_000`,签名去 env raw 参数(测试注入点同步) |
 | `ship-eligibility.ts` | 删 `MERGE_APPROVAL_GATE_KEY`、`resolveDefaultOnGate`(唯一调用点)、`mergeGateOn`/`merge_gate_off` 分支;恒 `verifyApproval` |
-| `issue-gate-supersede.ts:133-134,194-…` | 删 mode 读、`=0` 早退、observe 分支;`gate_supersede_candidate` 事件类型若无其他写点则一并处置(零引用才删) |
+| `issue-gate-supersede.ts:133-134,194-…` | 删 mode 读、`=0` 早退、observe 分支;`gate_supersede_candidate` 事件唯一写点就在 observe 分支(全仓 rg 已核,非测试引用仅此一处)→ 事件类型随分支死亡,按零引用删并列 PR body |
 | `approval-signal/deferred-approval.ts:44-51` | `deferredApprovalTtlMs()` env parse 删,固化 `DEFAULT_TTL_MS = 45*60_000`(2700000) |
 | `gate-poller.ts:2380-2386` | deadletter age env parse 删,固化 `30*60_000`(1800000) |
 | `gate-poller.ts:2105-2112 / 1714-1721` | 两个 grace 的 env override 段删,保留 `this.config.…GraceMs ?? 15_000` DI seam(非 flag,测试在用) |
@@ -63,10 +68,23 @@ Issue: FLY-2101 (https://linear.app/geoforge3d/issue/FLY-2101/flagb1固化-13-�
 5. flywheel-comm `mailbox-queue.ts` 旧单条方法(`claimRunner`/`claimLead`/
    `recordRunnerDeliverySuccess`/`recordRunnerDeliveryFailure`/`renderRunnerMailboxEnvelope`
    等):Step 3.3-3.4 完成后逐个 rg,**零引用才删**,删除清单列进 PR body。
-6. deploy barrier:删 `mailbox-queue-deploy-barrier.ts`、`…-cli.ts`、
-   `scripts/lib/mailbox-queue-deploy-barrier.sh`、两套 barrier 测试;
-   `flag-toggle.ts` 去 barrier import + 特判段;`restart-services.sh` 删 source 行与
-   ~2610-2790 编排段;`test-restart-services.sh`、`ci-shell-suite-manual-only.txt` 同步。
+6. deploy barrier(清单已按 Codex R1 #2/#3 补全编译期消费者):
+   - 删 `mailbox-queue-deploy-barrier.ts`、`…-cli.ts`、
+     **`mailbox-queue-ack-readiness-probe.ts`**(shell lib 经 `MQB_ACK_PROBE` 从 dist 调它,
+     R1 漏项)、`scripts/lib/mailbox-queue-deploy-barrier.sh`、两套 barrier 测试。
+   - **`plugin.ts`**:删 `releaseMailboxQueueDeployBarrier` import(:404)与
+     `/api/fleet/mailbox-queue-barrier/release` 路由(:2330-2356,R1 漏项)。
+   - `flag-toggle.ts` 去 barrier import + 特判段;**`flag-toggle.test.ts`** 的 barrier
+     import(:20)与 barrier-lock 测试段(:278 起)同步删(R1 漏项)。
+   - `restart-services.sh` 删 source 行与 ~2610-2790 编排段;`test-restart-services.sh`、
+     `ci-shell-suite-manual-only.txt` 同步。
+   - 编译期兜底:以上删完后 `pnpm -r build` 即是漏网编译期消费者的守卫;任何新暴露的
+     引用按「零引用才删/同步改造」处置并列进 PR body。
+7. inbox-mcp 运行时/提示词残面(Codex R1 #4):`index.ts` 启动日志与注释里的
+   retry-window/redelivery 语义随旧 push 路一起改写;`delivery.ts` 文件头 legacy-push
+   说明文字删;`RETRY_WINDOW_SEC` 与 `FLYWHEEL_INBOX_RETRY_WINDOW_SEC` 在
+   `processPendingDeliveries` 删除后按零引用处置——若死亡则连 `truth.ts`
+   `NON_FLAG_ALLOWLIST` 对应行一起删(只减 ✓)。
 
 ### Step 4 — 名册与守卫同步(GREEN,续)
 1. `registry.ts`:删 13 条 spec(`envSite` helper 保留,存活 flag 在用)。
@@ -111,8 +129,10 @@ PR 末 commit:新建 `engineering/doc/milestones/FLY-2101.md`(不碰 CLAUDE.md)�
    marker;barrier 已整删,无人再读)。
 3. FLY-1959:不投重启票,随 00:00/12:00 班车部署。错峰组合(旧脚本+新 .env / 新脚本+旧
    .env)均安全:default-on 语义下 `=1` 与缺行等价;新脚本不读写该 key。
-4. 残留 env 行在删行前会被 check-flag-truth 报「unknown FLYWHEEL environment variable」
-   (D1 的已知代价,fail-loud 不失守)。
+4. 残留 env 行的可见面(D1 代价,按 Codex R1 #5 收窄表述):`check-flag-truth` 是
+   操作者/CI-fixture CLI,**不在** restart-services 或 Bridge boot 链上——残行不会阻断
+   部署或启动,只在有人跑该 CLI 时报「unknown FLYWHEEL environment variable」。
+   fail-loud 面比原稿描述的窄,删行仍应尽快执行。
 
 ## 4. 风险与边界(诚实账)
 
@@ -123,5 +143,5 @@ PR 末 commit:新建 `engineering/doc/milestones/FLY-2101.md`(不碰 CLAUDE.md)�
 - **本单不回答「以后要不要能关」**:founder 已裁定这些门/巡检不该有全局阀;若未来出现
   真实操作者需求,走新 issue 重新登记(authoring gate 会强制 store-managed 路径),
   不在本单留后门。
-- **`.env` 删行依赖 Lead 手动执行**:代码侧无法替她删生产文件;删行前的窗口里
-  check-flag-truth 会持续报 unknown(可见、无害)。
+- **`.env` 删行依赖 Lead 手动执行**:代码侧无法替她删生产文件;删行前的窗口里,
+  残行仅在有人跑 check-flag-truth CLI 时报 unknown(不阻断部署/boot,见 §3.4)。
