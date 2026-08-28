@@ -1,0 +1,18 @@
+flowchart LR
+  subgraph LEDGERS["治理账本(flag 的『户口』系统)"]
+    REG["registry.ts<br/>名册:每个 flag 一条"]
+    BASE["store-policy.ts<br/>LEGACY_UNMANAGED_BASELINE<br/>旧账上限(只许减)"]
+    PROT["store-policy.ts<br/>PROTECTED_LEGACY_FLAG_NAMES<br/>(只护着这 2 个名字)"]
+    TRUTH["truth.ts<br/>RETIRED_FLAGS 墓碑账<br/>+ 环境变量真值校验"]
+    DRIFT["drift 测试<br/>代码读点 ↔ 名册 自动对账"]
+  end
+  REG --> C1["−13 条 → 剩 18 个 flag"]
+  BASE --> C2["31 → 18(只减不增 ✓)"]
+  PROT --> C3["两个成员都删 → 空集<br/>连集合带分支整删"]
+  TRUTH --> C4["不加墓碑(裁决 D1)<br/>换来 rg 全仓零命中"]
+  DRIFT --> C5["自动收敛<br/>只改 2 处点名 fixture"]
+  style C1 fill:#eef4ff,stroke:#007aff
+  style C2 fill:#eef4ff,stroke:#007aff
+  style C3 fill:#fdecea,stroke:#ff3b30
+  style C4 fill:#fff7e6,stroke:#ff9500
+  style C5 fill:#eef4ff,stroke:#007aff
