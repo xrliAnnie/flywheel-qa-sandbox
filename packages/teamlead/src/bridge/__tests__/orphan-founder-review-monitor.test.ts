@@ -192,20 +192,27 @@ describe("FLY-1940 orphan founder review monitor", () => {
 		expect(alerts).toEqual([]);
 	});
 
-	it("honors the monitor kill switch", () => {
+	it("ignores the retired monitor kill switch", () => {
 		db.insertQuestion("exec-off", "lead", content("run-off"), {
 			checkpoint: "founder_review",
 		});
+		const retiredKey = [
+			"FLYWHEEL",
+			"FOUNDER",
+			"REVIEW",
+			"ORPHAN",
+			"MONITOR",
+		].join("_");
 		const env: Record<string, string | undefined> = {
-			FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0",
+			[retiredKey]: "0",
 		};
 		const { alerts, result } = harness({
 			bound: false,
 			env,
 		});
 		expect(result).toEqual({
-			scanned: 0,
-			live: 0,
+			scanned: 1,
+			live: 1,
 			deliveryMissing: 0,
 			aged: 0,
 			alerted: 0,
@@ -213,7 +220,7 @@ describe("FLY-1940 orphan founder review monitor", () => {
 		});
 		expect(alerts).toEqual([]);
 
-		delete env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR;
+		delete env[retiredKey];
 		expect(harness({ bound: false, env }).result).toMatchObject({
 			scanned: 1,
 			deliveryMissing: 0,

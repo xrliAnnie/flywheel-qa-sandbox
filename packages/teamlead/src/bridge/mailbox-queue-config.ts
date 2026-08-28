@@ -1,7 +1,4 @@
-import { mailboxQueueEnabled } from "flywheel-config";
-
 export interface MailboxQueueConfig {
-	enabled: boolean;
 	ackLeaseMs: number;
 	batchWindowMs: number;
 	batchMaxSize: number;
@@ -12,7 +9,6 @@ export interface MailboxQueueConfig {
 }
 
 export const DEFAULT_MAILBOX_QUEUE_CONFIG: Readonly<MailboxQueueConfig> = {
-	enabled: true,
 	ackLeaseMs: 1_800_000,
 	batchWindowMs: 30_000,
 	batchMaxSize: 10,
@@ -53,7 +49,6 @@ export function resolveMailboxQueueConfig(
 	warn: Warn = console.warn,
 ): MailboxQueueConfig {
 	return {
-		enabled: mailboxQueueEnabled(env),
 		ackLeaseMs: boundedInteger(
 			env,
 			"FLYWHEEL_MAILBOX_ACK_LEASE_MS",

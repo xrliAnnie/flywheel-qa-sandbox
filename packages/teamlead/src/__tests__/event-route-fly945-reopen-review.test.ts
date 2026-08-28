@@ -87,7 +87,6 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	};
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
 		runPostShipSpy.mockClear();
 		stateRoot = mkdtempSync(join(tmpdir(), "fly945-reopen-"));
@@ -110,7 +109,6 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -265,7 +263,7 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 		expect(params.fly208_evidence_gap).toBeTruthy();
 	});
 
-	it("NEW questionId but MERGED landing → completed (ship wins; not a recovery lap)", async () => {
+	it("NEW unbound questionId plus MERGED landing fails closed", async () => {
 		const execId = "exec-merged";
 		await driveToApproved(execId, H2);
 
@@ -284,6 +282,6 @@ describe("FLY-945 Fix C: re-open review from approved_to_ship (HTTP /events)", (
 				reviewQuestionId: Q2,
 			},
 		});
-		expect(store.getSession(execId)?.status).toBe("completed");
+		expect(store.getSession(execId)?.status).toBe("awaiting_review");
 	});
 });

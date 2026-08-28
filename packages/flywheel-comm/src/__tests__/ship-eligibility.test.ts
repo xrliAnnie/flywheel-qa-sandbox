@@ -439,39 +439,20 @@ describe("FLY-869 ship-eligibility", () => {
 		});
 	});
 
-	describe("evaluateShipEligibility — merge kill switch stays independent from the fixed QA gate", () => {
-		it("merge gate OFF must NOT bypass the QA gate", () => {
+	describe("evaluateShipEligibility — merge approval gate is always armed", () => {
+		it("ignores the retired zero value and still requires founder approval", () => {
 			writeSession({ qa_required: 1, pr_number: 5 }); // QA required, not passed
+			const legacyKey = ["FLYWHEEL", "MERGE", "APPROVAL", "GATE"].join("_");
 			const d = evaluateShipEligibility({
 				execId: EXEC,
 				prHead: HEAD,
 				commDbPath,
 				stateDbPath,
-				env: {
-					FLYWHEEL_MERGE_APPROVAL_GATE: "0", // B off
-				} as NodeJS.ProcessEnv,
+				env: { [legacyKey]: "0" },
 			});
-			expect(d.mergeApprovalOk).toBe(true); // B bypassed
-			expect(d.qaOk).toBe(false); // A still enforced
-			expect(d.eligible).toBe(false); // → still blocked
-			expect(d.qaReason).toBe("qa_not_passed");
-		});
-
-		it("retired QA env cannot join the merge-gate bypass", () => {
-			writeSession({ qa_required: 1, pr_number: 5 });
-			const d = evaluateShipEligibility({
-				execId: EXEC,
-				prHead: HEAD,
-				commDbPath,
-				stateDbPath,
-				env: {
-					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-					FLYWHEEL_QA_DONE_GATE: "0",
-				} as NodeJS.ProcessEnv,
-			});
-			expect(d.eligible).toBe(false);
-			expect(d.mergeApprovalOk).toBe(true);
+			expect(d.mergeApprovalOk).toBe(false);
 			expect(d.qaOk).toBe(false);
+			expect(d.eligible).toBe(false);
 			expect(d.qaReason).toBe("qa_not_passed");
 		});
 	});

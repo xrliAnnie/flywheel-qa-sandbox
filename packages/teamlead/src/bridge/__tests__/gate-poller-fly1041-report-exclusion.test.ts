@@ -37,13 +37,10 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 	beforeEach(() => {
 		tmp = mkdtempSync(join(tmpdir(), "fly1041-report-excl-"));
 		process.env.FLYWHEEL_COMM_DIR = tmp;
-		// Freshly-inserted questions must count as scan-mature this tick.
-		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "0";
 		emitSpy.mockClear();
 	});
 
 	afterEach(() => {
-		delete process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
 		rmSync(tmp, { recursive: true, force: true });
 		vi.restoreAllMocks();
 	});
@@ -89,6 +86,7 @@ describe("founderReplyDeliverPass excludes kind='report' questions", () => {
 			chatThreadsEnabled: true,
 			discordOwnerUserId: OWNER,
 			founderReplyDeliverGraceMs: 0,
+			shipGateGraceMs: 0,
 		}) as unknown as Priv;
 
 		await poller.founderReplyDeliverPass();

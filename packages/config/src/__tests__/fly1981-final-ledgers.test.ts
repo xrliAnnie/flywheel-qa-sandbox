@@ -250,7 +250,8 @@ function exemptionKey(exemption: FlagExemption): string {
 
 function historicalExemptionKey(
 	entry: (typeof FLY1981_LEGACY_SNAPSHOT)[number],
-): string {
+): string | undefined {
+	if (entry.sourceKey === undefined) return undefined;
 	const kind = entry.source === "env" ? "env" : "config_key";
 	return `${kind}:${entry.sourceKey}`;
 }
@@ -339,6 +340,7 @@ function auditExemptionReclassificationContract(args: {
 	}
 	for (const historical of FLY1981_LEGACY_SNAPSHOT) {
 		const key = historicalExemptionKey(historical);
+		if (key === undefined) continue;
 		if (
 			!currentRegistryNames.has(historical.name) &&
 			exemptionByKey.has(key) &&
@@ -430,6 +432,8 @@ describe("FLY-1981 final governance ledgers", () => {
 				exemptions: FLAG_EXEMPTIONS,
 			}),
 		).toEqual([]);
+		// FLY-2101 and FLY-2102 removed 22 controls from the live only-shrink baseline.
+		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(9);
 		const currentNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
 		const outsidePartition = FEATURE_FLAGS.filter(
 			(spec) =>

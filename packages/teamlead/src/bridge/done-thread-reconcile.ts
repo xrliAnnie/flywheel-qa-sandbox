@@ -81,34 +81,15 @@ export interface DoneThreadReconcileConfig {
 	runDeadlineMs: number;
 }
 
-function parsePositiveInt(
-	raw: string | undefined,
-	fallback: number,
-	opts: { allowZero?: boolean } = {},
-): number {
-	if (raw === undefined || raw.trim() === "") return fallback;
-	const n = Number(raw);
-	if (!Number.isFinite(n) || !Number.isInteger(n)) return fallback;
-	if (n < 0) return fallback;
-	if (n === 0 && !opts.allowZero) return fallback;
-	return n;
-}
-
 export function resolveDoneThreadReconcileConfig(
 	env: NodeJS.ProcessEnv = process.env,
 ): DoneThreadReconcileConfig {
 	return {
 		enabled: env.FLYWHEEL_DONE_THREAD_RECONCILE !== "0",
-		intervalMin: parsePositiveInt(
-			env.FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN,
-			360,
-			{ allowZero: true },
-		),
+		// FLY-2101: founder 2026-08-27 v4 fixed the former runtime values.
+		intervalMin: 360,
 		dryRun: false,
-		maxArchivesPerRun: parsePositiveInt(
-			env.FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN,
-			25,
-		),
+		maxArchivesPerRun: 25,
 		maxCandidatesPerRun: 200,
 		runDeadlineMs: 120_000,
 	};

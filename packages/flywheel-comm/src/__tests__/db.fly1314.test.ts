@@ -32,7 +32,6 @@ describe("FLY-1314 durable gate supersession", () => {
 			superseded_by: newGate,
 		});
 		expect(db.getMessageById(oldGate)?.superseded_at).toBeTruthy();
-		vi.stubEnv("FLYWHEEL_ISSUE_GATE_SUPERSEDE", "0");
 		expect(
 			db.insertResponse(oldGate, "bridge", JSON.stringify({ approved: true })),
 		).toEqual({ written: false, reason: "gate_not_open" });

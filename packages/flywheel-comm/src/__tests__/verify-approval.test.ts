@@ -332,9 +332,6 @@ describe("verify-approval (FLY-191 Phase 2)", () => {
 				prHead: HEAD,
 				dbPath: commDbPath,
 				stateDbPath,
-				env: {
-					FLYWHEEL_ISSUE_GATE_SUPERSEDE: "0",
-				} as NodeJS.ProcessEnv,
 				codexDotenvPath: join(tmpDir, "nonexistent.env"),
 			}),
 		).toMatchObject({

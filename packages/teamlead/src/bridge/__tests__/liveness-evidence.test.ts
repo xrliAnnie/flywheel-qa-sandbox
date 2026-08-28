@@ -88,11 +88,8 @@ describe("FLY-1329 A2 activity evidence — wording", () => {
 		);
 	});
 
-	it("activityWindowMs defaults to 10 minutes and rejects junk", () => {
-		expect(activityWindowMs(undefined)).toBe(600_000);
-		expect(activityWindowMs("not-a-number")).toBe(600_000);
-		expect(activityWindowMs("-5")).toBe(600_000);
-		expect(activityWindowMs("120000")).toBe(120_000);
+	it("activityWindowMs is fixed at 10 minutes", () => {
+		expect(activityWindowMs()).toBe(600_000);
 	});
 });
 

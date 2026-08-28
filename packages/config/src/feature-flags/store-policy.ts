@@ -13,22 +13,11 @@ export const FLAG_AUTHORING_RUNBOOK =
 	"doc/engineer/implementation/flag-authoring-runbook.md";
 
 /**
- * FLY-1981: immutable maximum ledger for the 31 pre-store registry specs.
+ * FLY-1981: immutable maximum ledger for the remaining pre-store registry specs.
  * It is intentionally literal, never computed from FEATURE_FLAGS. Existing
  * entries may migrate into the store or retire; no new unmanaged name may enter.
  */
 export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
-	"founder_review_orphan_monitor",
-	"mailbox_queue",
-	"liveness_activity_window_ms",
-	"merge_approval_gate_killswitch",
-	"issue_gate_supersede_mode",
-	"deferred_approval_ttl_ms",
-	"founder_reply_deadletter_age_ms",
-	"ship_gate_grace_ms",
-	"external_merge_reconcile",
-	"merge_reconcile_window_days",
-	"ship_gate_card_grace_ms",
 	"checkpoint_enabled",
 	"pipeline_dag",
 	"pipeline_work_kind",
@@ -38,8 +27,6 @@ export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
 	"proofshot",
 	"xiaohongshu_learning",
 	"ponytail",
-	"done_thread_reconcile_interval_min",
-	"done_thread_reconcile_max_per_run",
 ] as const);
 
 const LEGACY_UNMANAGED_NAMES: ReadonlySet<string> = new Set(
@@ -80,11 +67,6 @@ export const PROJECT_STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 export const RETIRED_FLAG_STORE_ROWS: ReadonlySet<string> = new Set([
 	"workflow_resume",
 	"auto_qa_killswitch",
-] as const);
-
-export const PROTECTED_LEGACY_FLAG_NAMES: ReadonlySet<string> = new Set([
-	"mailbox_queue",
-	"merge_approval_gate_killswitch",
 ] as const);
 
 export interface FlagStoreRawValue {
@@ -152,9 +134,6 @@ function getStoreEligibilityAgainst(
 ): { eligible: true } | { eligible: false; reason: string } {
 	if (spec.category === "governance_gate") {
 		return { eligible: false, reason: "governance_gate" };
-	}
-	if (PROTECTED_LEGACY_FLAG_NAMES.has(spec.name)) {
-		return { eligible: false, reason: "protected_legacy" };
 	}
 	if (!managedFlags.has(spec.name)) {
 		return { eligible: false, reason: "not_store_managed" };

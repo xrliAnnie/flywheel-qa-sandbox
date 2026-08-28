@@ -105,7 +105,6 @@ describe("session_completed route guard (FLY-108)", () => {
 	}
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0"; // FLY-869: FSM tests bypass ship gate
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
 		stateRoot = mkdtempSync(join(tmpdir(), "fly108-guard-"));
 		store = await StateStore.create(join(stateRoot, "teamlead.db"));
@@ -130,7 +129,6 @@ describe("session_completed route guard (FLY-108)", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -221,7 +219,7 @@ describe("session_completed route guard (FLY-108)", () => {
 		expect(store.getSession("exec-aa-empty")!.status).toBe("awaiting_review");
 	});
 
-	it("route=auto_approve + landingStatus.merged → completed", async () => {
+	it("route=auto_approve + merged without approval fails closed", async () => {
 		await startRunning("exec-aa-merged", "issue-aa-merged");
 
 		const res = await postCompleted({
@@ -243,7 +241,7 @@ describe("session_completed route guard (FLY-108)", () => {
 			},
 		});
 		expect(res.status).toBe(200);
-		expect(store.getSession("exec-aa-merged")!.status).toBe("completed");
+		expect(store.getSession("exec-aa-merged")!.status).toBe("awaiting_review");
 	});
 
 	it("route=needs_review → awaiting_review", async () => {
@@ -267,7 +265,7 @@ describe("session_completed route guard (FLY-108)", () => {
 	// action has run. Status must short-circuit to "completed" — leaving it at
 	// "awaiting_review" used to make Lead notify Annie about a PR already on
 	// main (Round 5 deadlock evidence).
-	it("route=needs_review + landingStatus.merged → completed (FLY-120)", async () => {
+	it("route=needs_review + merged without approval fails closed", async () => {
 		await startRunning("exec-nr-merged", "issue-nr-merged");
 
 		const res = await postCompleted({
@@ -284,7 +282,7 @@ describe("session_completed route guard (FLY-108)", () => {
 			},
 		});
 		expect(res.status).toBe(200);
-		expect(store.getSession("exec-nr-merged")!.status).toBe("completed");
+		expect(store.getSession("exec-nr-merged")!.status).toBe("awaiting_review");
 	});
 
 	it("route=blocked → blocked", async () => {

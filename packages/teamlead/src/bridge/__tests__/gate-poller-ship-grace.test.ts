@@ -4,7 +4,7 @@
  * The 10min FLY-605 founder-reply grace exists so the Lead can relay first;
  * an approve_to_ship gate's answer is founder-only (Lead relay is forbidden),
  * so both founder channels (text + ✅-reaction) must clear after the short
- * ship grace (default 15s, env FLYWHEEL_SHIP_GATE_GRACE_MS).
+ * ship grace (default 15s).
  */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,32 +35,12 @@ function makePoller(over: Partial<GatePollerConfig> = {}) {
 }
 
 describe("FLY-945 Fix A: ship-gate grace resolution", () => {
-	let envBak: string | undefined;
-	beforeEach(() => {
-		envBak = process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
-		delete process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
-	});
-	afterEach(() => {
-		if (envBak === undefined) delete process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
-		else process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = envBak;
-	});
-
 	it("defaults to 15s", () => {
 		expect((makePoller() as unknown as Priv).shipGateGraceMs()).toBe(15_000);
 	});
 
-	it("env FLYWHEEL_SHIP_GATE_GRACE_MS wins over config (kill-switch: set 600000 to restore old behavior)", () => {
-		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "600000";
+	it("keeps the explicit test seam", () => {
 		const poller = makePoller({ shipGateGraceMs: 5_000 });
-		expect((poller as unknown as Priv).shipGateGraceMs()).toBe(600_000);
-	});
-
-	it("config shipGateGraceMs used when env unset; garbage env ignored", () => {
-		const poller = makePoller({ shipGateGraceMs: 5_000 });
-		expect((poller as unknown as Priv).shipGateGraceMs()).toBe(5_000);
-		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "not-a-number";
-		expect((poller as unknown as Priv).shipGateGraceMs()).toBe(5_000);
-		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "-1";
 		expect((poller as unknown as Priv).shipGateGraceMs()).toBe(5_000);
 	});
 
@@ -80,10 +60,8 @@ describe("FLY-945 Fix A ⑦: reaction pass clears after ship grace (Codex R1 #6)
 		tmp = mkdtempSync(join(tmpdir(), "fly945-ship-grace-"));
 		envBak = {
 			FLYWHEEL_COMM_DIR: process.env.FLYWHEEL_COMM_DIR,
-			FLYWHEEL_SHIP_GATE_GRACE_MS: process.env.FLYWHEEL_SHIP_GATE_GRACE_MS,
 		};
 		process.env.FLYWHEEL_COMM_DIR = tmp;
-		delete process.env.FLYWHEEL_SHIP_GATE_GRACE_MS;
 	});
 	afterEach(() => {
 		for (const [k, v] of Object.entries(envBak)) {
@@ -106,7 +84,10 @@ describe("FLY-945 Fix A ⑦: reaction pass clears after ship grace (Codex R1 #6)
 		return qid;
 	}
 
-	function pollerWith(tryReaction: ReturnType<typeof vi.fn>) {
+	function pollerWith(
+		tryReaction: ReturnType<typeof vi.fn>,
+		shipGateGraceMs = 15_000,
+	) {
 		const store = {
 			getSession: vi.fn(() => ({
 				execution_id: "exec-945",
@@ -117,6 +98,7 @@ describe("FLY-945 Fix A ⑦: reaction pass clears after ship grace (Codex R1 #6)
 		} as unknown as GatePollerConfig["store"];
 		return makePoller({
 			store,
+			shipGateGraceMs,
 			projects: [
 				{
 					projectName: "flywheel",
@@ -128,17 +110,15 @@ describe("FLY-945 Fix A ⑦: reaction pass clears after ship grace (Codex R1 #6)
 		});
 	}
 
-	it("a fresh (seconds-old) ship gate IS reaction-checked (15s grace elapses fast — simulated via 0)", async () => {
-		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "0"; // deterministic: no 15s sleep in tests
+	it("a fresh ship gate is reaction-checked after the configured test seam elapses", async () => {
 		seedShipGate("flywheel", "test-lead");
 		const tryReaction = vi.fn(async () => null);
-		const poller = pollerWith(tryReaction);
+		const poller = pollerWith(tryReaction, 0);
 		await (poller as unknown as Priv).founderReactionApprovalPass();
 		expect(tryReaction).toHaveBeenCalledTimes(1);
 	});
 
-	it("reverse-compat: FLYWHEEL_SHIP_GATE_GRACE_MS=600000 → fresh gate NOT reaction-checked (old 10min behavior)", async () => {
-		process.env.FLYWHEEL_SHIP_GATE_GRACE_MS = "600000";
+	it("does not reaction-check a gate younger than the fixed grace", async () => {
 		seedShipGate("flywheel", "test-lead");
 		const tryReaction = vi.fn(async () => null);
 		const poller = pollerWith(tryReaction);
