@@ -2,14 +2,16 @@
 issue: FLY-2030
 phase: design
 phaseCursor: 6/6
-updated: 2026-08-28T08:50:45.064Z
-nextStep: "design phase fully settled (gate passed + Mufasa/Growth rulings
-  recorded in scope-final; plan blob untouched post-gate); remaining pending:
-  two knobs (frequency/granularity, founder); implement awaits Lead go-ahead"
+updated: 2026-08-28T09:12:33.307Z
+nextStep: "design node COMPLETE: gate passed (rev10 blob f87b1149, 7 rounds),
+  rulings recorded, DESIGN-HTML v2 published (dcadfae8) + reported; completing
+  with phase_design_complete; implement released by Lead (dispatch owned by DAG
+  orchestrator); knobs (frequency/granularity) still founder-pending,
+  non-blocking by design"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2030 progress
 **phase**: design (6/6)
-**next**: design phase fully settled (gate passed + Mufasa/Growth rulings recorded in scope-final; plan blob untouched post-gate); remaining pending: two knobs (frequency/granularity, founder); implement awaits Lead go-ahead
+**next**: design node COMPLETE: gate passed (rev10 blob f87b1149, 7 rounds), rulings recorded, DESIGN-HTML v2 published (dcadfae8) + reported; completing with phase_design_complete; implement released by Lead (dispatch owned by DAG orchestrator); knobs (frequency/granularity) still founder-pending, non-blocking by design
