@@ -52,13 +52,17 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
    类随 lead_lease_bypass 消亡 → 改为断言该类为空)、`feature-flags-drift.test.ts`
    (:469-471 三条 cmux 条目删)、`feature-flags-store-policy.test.ts` 同步;
    新增断言:9 名不在 FEATURE_FLAGS、8 envVar 在 RETIRED_FLAGS、voice 在豁免账。
-6. **baseline 固定快照断言**(Codex R2 MEDIUM,漏列):
+6. **baseline 固定快照断言**(Codex R2 MEDIUM,漏列;R3 MEDIUM 精化):
    - `fly1981-final-ledgers.test.ts`(:280-287)硬断言 `LEGACY_UNMANAGED_BASELINE` 长 31 且
-     31+4=35。**不改数字为 22** —— FLY-1981 落地时的 31 项在该测试内冻结为独立历史快照常量
-     (test-local literal),断言改为:当前 baseline ⊆ 历史快照(只许 shrink)+ 被移除的名字
-     必须能在 RETIRED_FLAGS 或 FLAG_EXEMPTIONS 找到去向(shrink 有账)。
-   - `feature-flags-registry.test.ts:16` 的 `toHaveLength(31)` 改为与上述同语义的断言
-     (子集 + 有账去向),不再锁死总数。
+     31+4=35。**不改数字为 22** —— FLY-1981 落地时的 31 项在该测试内冻结为独立历史快照常量,
+     且快照存 **`{name, source, sourceKey}` 三元组 literal**(只存 lowercase name 无法对退役账
+     做精确匹配,Codex R3)。断言改为:当前 baseline ⊆ 历史快照(只许 shrink)+ 被移除的名字
+     **按来源核账**:env spec → `RETIRED_FLAGS.envVar` 或 `FLAG_EXEMPTIONS(kind:"env")`;
+     project_config spec → `RETIRED_CONFIG_PATHS.path` 或 `FLAG_EXEMPTIONS(kind:"config_key")`
+     (baseline 历史 31 项里还有 9 个 project_config spec,source-blind 的「只认 RETIRED_FLAGS」
+     会在未来合法退休 config spec 时误拦,Codex R3)。
+   - `feature-flags-registry.test.ts:16` 的 `toHaveLength(31)` 复用同一快照/helper 语义
+     (子集 + 按来源有账去向),不再锁死总数、不复制第二份会漂移的 31 项映射。
 
 ### Step 3 — teamlead 包:flag store 常开 + broker 整段删 + 两个数值固化
 1. `flag-store-runtime.ts`:删 bypass 入口/双态/env fallback;`FlagStoreRuntime` 塌缩单态;
@@ -90,11 +94,15 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 8. **stale dist 字节清理**(Codex R2 HIGH):`tsc` 不会替源码删旧输出,而
    `scripts/package-onboard.sh` 会把整个 `dist/` 原样拷入交付 payload —— 曾构建过 broker 的
    checkout 在本 PR 后重 build 仍会携带 `dist/bridge/publish-broker/` 旧字节。修法沿用
-   `packages/teamlead/package.json` build script 既有的退役产物清理模式:在 `tsc` 成功后的
-   `rm` 链追加 `dist/bridge/publish-broker`(含其 `__tests__` 输出)。**不用 pre-build 清空
-   整个 dist**(保持 last-known-good build 纪律)。验收:预置 stale sentinel 文件 →
-   `pnpm --filter teamlead build` → 目录消失;`fly2102-flag-freeze.test.sh` 把该 prune
-   写进合同断言(package.json 的 build 行含此目标)。
+   `packages/teamlead/package.json` build script 既有的退役产物清理模式:`tsc` 成功后加
+   **独立的目录级 `&& rm -rf dist/bridge/publish-broker`**(或并入现有 `rm -rf dist/static
+   dist/workflow-seeds` 目录链)—— 不是塞进 `rm -f` 文件-glob 链(目录会让 `rm -f` 失败,
+   Codex R3 修正)。**不用 pre-build 清空整个 dist**(保持 last-known-good build 纪律)。
+   验收:预置 stale sentinel 文件 → **`pnpm --filter flywheel-teamlead build`**(包名是
+   `flywheel-teamlead`;`--filter teamlead` 匹配不到、exit 0 假绿 —— FLY-1466 plan:49 与
+   FLY-1652 qa-report:213-217 已两次踩过,Codex R3 修正)→ 目录消失,且验收脚本必须拒绝
+   `No projects matched the filters` 输出(阳性对照防空过绿);`fly2102-flag-freeze.test.sh`
+   把该 prune 写进合同断言(package.json 的 build 行含此目标)。
 9. 测试:`flag-store-runtime.test.ts` bypass 用例 → 「=0 仍 ready」反旋钮断言;
    `flag-routes.test.ts` / `flag-toggle.test.ts` / `feature-flag-render.test.ts` /
    `fleet-console-model-flags.test.ts` / `StateStore.flag-value-store.test.ts` fixture 换血;
