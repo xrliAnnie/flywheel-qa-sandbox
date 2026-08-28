@@ -2,12 +2,12 @@
 issue: FLY-2111
 phase: design
 phaseCursor: 3/4
-updated: 2026-08-28T02:21:35.753Z
-nextStep: commit R1 plan changes and open a new design review
+updated: 2026-08-28T02:22:57.921Z
+nextStep: poll design review be6e8133-32ef-4bcc-878e-d06790a306af
 chunks: []
 pointers: {}
 ---
 
 # FLY-2111 progress
 **phase**: design (3/4)
-**next**: commit R1 plan changes and open a new design review
+**next**: poll design review be6e8133-32ef-4bcc-878e-d06790a306af
