@@ -1122,8 +1122,7 @@ export interface LeadWriteAuthorization {
 		| "unprotected"
 		| "lease_validated"
 		| "carrier_passthrough"
-		| "audit_allowed"
-		| "bypass";
+		| "audit_allowed";
 	provenance?: MessageProvenance;
 	leaseClaim?: {
 		leaseKey: string;
@@ -2548,7 +2547,7 @@ function denyIdentityIntegrity(reason: string): never {
 
 /**
  * Identity integrity is not a lease rollout control. It is evaluated before
- * mode, audit, or bypass and therefore can never be converted into an allowed
+ * mode or audit posture and therefore can never be converted into an allowed
  * Lead write.
  */
 function assertLeadIdentityIntegrity(
@@ -2803,22 +2802,6 @@ export function authorizeLeadWrite(
 		reason: string,
 		alertType?: string,
 	): LeadWriteAuthorization => {
-		if (env.FLYWHEEL_LEAD_LEASE_BYPASS === "1") {
-			persistFault("bypass_used", reason);
-			emitIndependentLeaseAlert(env, "lead_lease_bypass_used", {
-				leadKey,
-				leadId: input.claimedLeadId,
-				reason,
-			});
-			process.stderr.write(
-				`[flywheel-comm] WARNING: FLYWHEEL_LEAD_LEASE_BYPASS=1 for ${leadKey} (${reason})\n`,
-			);
-			return {
-				disposition: "bypass",
-				provenance: decisionProvenance,
-				identityDigest: identity.identityDigest,
-			};
-		}
 		if (alertType) {
 			if (
 				LEAD_LEASE_EPISODE_KINDS.includes(alertType as LeadLeaseEpisodeKind)

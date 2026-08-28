@@ -74,25 +74,21 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		expect(html).not.toContain("CLI 与 Bridge 见值不同");
 	});
 
-	it.each(["no_clock:bypass", "no_clock:degraded"] as const)(
-		"does not tell operators to delete an authoritative .env line in %s mode",
-		(clockReadiness) => {
-			const managed = FLAGS.find(
-				(flag) => flag.name === "skill_framework_mode",
-			);
-			if (!managed) throw new Error("missing skill_framework_mode");
-			const html = renderFlagCard(
-				{
-					...managed,
-					storeManaged: true,
-					clockReadiness,
-					fileConfigured: true,
-				},
-				"console",
-			);
-			expect(html).not.toContain("legacy .env 行已忽略");
-		},
-	);
+	it("does not tell operators to delete an authoritative .env line in degraded mode", () => {
+		const clockReadiness = "no_clock:degraded" as const;
+		const managed = FLAGS.find((flag) => flag.name === "skill_framework_mode");
+		if (!managed) throw new Error("missing skill_framework_mode");
+		const html = renderFlagCard(
+			{
+				...managed,
+				storeManaged: true,
+				clockReadiness,
+				fileConfigured: true,
+			},
+			"console",
+		);
+		expect(html).not.toContain("legacy .env 行已忽略");
+	});
 
 	it("effect label maps timing → 生效路径", () => {
 		const direct = FLAGS.find(
@@ -100,11 +96,9 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		);
 		if (!direct) throw new Error("missing");
 		expect(effectLabel(direct)).toBe("热生效");
-		const bootCaptured = FLAGS.find(
-			(f) => f.name === "voice_qa_presence_override",
-		);
-		if (!bootCaptured) throw new Error("missing");
-		expect(effectLabel(bootCaptured)).toBe("需重启");
+		expect(
+			effectLabel({ ...direct, readTimings: ["object_construction"] }),
+		).toBe("需重启");
 		const docFlow = FLAGS.find((f) => f.name === "doc_flow");
 		if (!docFlow) throw new Error("missing");
 		expect(effectLabel(docFlow)).toBe("新 run 生效");

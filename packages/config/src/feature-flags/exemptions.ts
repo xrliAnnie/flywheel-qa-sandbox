@@ -117,6 +117,8 @@ export const LEGACY_FLAG_EXEMPTION_BASELINE = Object.freeze([
 	"env:FLYWHEEL_TUI_WINDOW_ALERT",
 	"env:FLYWHEEL_VOICE_APPROVAL",
 	"env:FLYWHEEL_VOICE_EDGE_TTS",
+	// FLY-2102 founder ruling: registry retirement keeps this bounded QA seam accounted.
+	"env:FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
 ] as const);
 
 export const FLAG_EXEMPTIONS: readonly FlagExemption[] = [
@@ -137,6 +139,15 @@ export const FLAG_EXEMPTIONS: readonly FlagExemption[] = [
 			"QA isolation seam; production behavior stays enabled while test-deploy may disable reconciliation for an isolated slot",
 		owner: "flywheel-eng-lead",
 		issue: "FLY-1808",
+	},
+	{
+		name: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+		kind: "env",
+		persistentEnvAllowed: false,
+		reason:
+			"FLY-1353 headless voice E2E presence QA seam; allowed only for the loopback staged Bridge and forbidden in persistent production environments",
+		owner: "flywheel-eng-lead",
+		issue: "FLY-2102",
 	},
 	...[
 		"FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",

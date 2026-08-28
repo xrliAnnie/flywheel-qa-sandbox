@@ -315,15 +315,6 @@ symlink_source_ready() { # <source> — sane, shebang-bearing, executable
   return 0
 }
 
-converge_cmux_symlink="${FLYWHEEL_CONVERGE_CMUX_SYMLINK:-1}"
-case "$converge_cmux_symlink" in
-  0|1) ;;
-  *)
-    echo "[converge-bin] WARNING: invalid FLYWHEEL_CONVERGE_CMUX_SYMLINK=${converge_cmux_symlink}; defaulting to 1" >&2
-    converge_cmux_symlink=1
-    ;;
-esac
-
 if ! is_temp_or_worktree_root "$REPO_ROOT"; then
   for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot; do
     link="$BIN_DIR/$name"
@@ -337,7 +328,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
     # the pre-FLY-1446 absent/copy behavior.
     case "$name" in
       flywheel-cmux-sync|flywheel-cmux-autostart)
-        if [ "$converge_cmux_symlink" = "1" ] && [ -e "$link" ] && [ ! -L "$link" ]; then
+        if [ -e "$link" ] && [ ! -L "$link" ]; then
           if [ ! -f "$link" ]; then
             echo "[converge-bin] ERROR: $name has unsupported non-file deployment shape at $link — NOT replacing" >&2
             alert "bin shape unhealthy: $name is not a regular file or symlink" \
@@ -407,8 +398,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
     esac
 
     # ── FLY-1577 Block A: strict names, NON-symlink shapes ──────────────────
-    # Deliberately outside the FLYWHEEL_CONVERGE_CMUX_SYMLINK switch above:
-    # that flag governs the cmux copy-shape conversion, not the alert closure.
+    # Strict-name alert closure also covers non-symlink deployment shapes.
     # Without this block, `[ -L "$link" ] || continue` below skips a regular
     # file or a directory sitting at this path and converge reports healthy —
     # e.g. a mode-000 regular meta-alert.sh, which leaves the notifier just as

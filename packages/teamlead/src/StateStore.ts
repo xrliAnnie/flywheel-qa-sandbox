@@ -4657,33 +4657,12 @@ export class StateStore {
 		}));
 	}
 
-	markFlagStoreBypassSeen(now: number = Date.now()): void {
-		this.db.raw
-			.prepare(
-				`INSERT INTO flag_store_meta(key, value, updated_at)
-				 VALUES ('bypass_seen', 1, ?)
-				 ON CONFLICT(key) DO UPDATE SET value = 1, updated_at = excluded.updated_at`,
-			)
-			.run(now);
-	}
-
-	isFlagStoreBypassSeen(): boolean {
-		return (
-			(
-				this.db.raw
-					.prepare("SELECT value FROM flag_store_meta WHERE key = 'bypass_seen'")
-					.get() as { value: number } | undefined
-			)?.value === 1
-		);
-	}
-
 	ensureFlagValueRows(args: {
 		env: Record<string, string | undefined>;
 		now?: number;
 	}): void {
 		const now = args.now ?? Date.now();
 		this.db.raw.transaction(() => {
-			const recovering = this.isFlagStoreBypassSeen();
 			for (const { flag_name } of this.db.raw
 				.prepare("SELECT flag_name FROM flag_values")
 				.all() as Array<{ flag_name: string }>) {
@@ -4699,95 +4678,6 @@ export class StateStore {
 					throw new Error(`missing flag store policy: ${name}`);
 				}
 				const existing = this.getFlagValueRow(name);
-				if (recovering) {
-					const envRaw = args.env[spec.envVar];
-					const recoveryRaw =
-						spec.valueKind === "enum" && envRaw === "" ? undefined : envRaw;
-					if (existing && recoveryRaw === undefined) {
-						const effective = codec.canonicalEffective(
-							codec.parse({
-								hasOverride: existing.hasOverride,
-								raw: existing.raw,
-							}),
-						);
-						const effectiveChanged = effective !== existing.lastEffective;
-						if (effectiveChanged) {
-							this.db.raw
-								.prepare(
-									`UPDATE flag_values SET last_effective = ?,
-										value_last_changed = ?, revision = revision + 1,
-										updated_at = ?, updated_by = 'flag-store-recovery'
-									 WHERE flag_name = ?`,
-								)
-								.run(effective, now, now, name);
-						}
-						this.db.raw
-							.prepare(
-								`INSERT INTO flag_value_changelog (
-									flag_name, action, from_present, from_raw, to_present, to_raw,
-									from_effective, to_effective, changed_by, changed_at, reason
-								) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
-									'flag-store-recovery', ?, ?)`,
-							)
-							.run(
-								name,
-								existing.hasOverride ? 1 : 0,
-								existing.raw,
-								existing.hasOverride ? 1 : 0,
-								existing.raw,
-								existing.lastEffective,
-								effective,
-								now,
-								effectiveChanged
-									? "reconcile SQLite effective after boot bypass; legacy env absent"
-									: "preserve SQLite authority after boot bypass; legacy env absent",
-							);
-						continue;
-					}
-					const raw = recoveryRaw ?? null;
-					const hasOverride = recoveryRaw !== undefined;
-					const effective = codec.canonicalEffective(
-						codec.parse({ hasOverride, raw }),
-					);
-					if (existing) {
-						this.db.raw
-							.prepare(
-								`UPDATE flag_values SET has_override = ?, raw_value = ?,
-									last_effective = ?, value_last_changed = ?, revision = revision + 1,
-									updated_at = ?, updated_by = 'flag-store-recovery'
-								 WHERE flag_name = ?`,
-							)
-							.run(hasOverride ? 1 : 0, raw, effective, now, now, name);
-					} else {
-						this.db.raw
-							.prepare(
-								`INSERT INTO flag_values (
-									flag_name, has_override, raw_value, last_effective,
-									value_last_changed, revision, updated_at, updated_by
-								) VALUES (?, ?, ?, ?, ?, 1, ?, 'flag-store-recovery')`,
-							)
-							.run(name, hasOverride ? 1 : 0, raw, effective, now, now);
-					}
-					this.db.raw
-						.prepare(
-							`INSERT INTO flag_value_changelog (
-								flag_name, action, from_present, from_raw, to_present, to_raw,
-								from_effective, to_effective, changed_by, changed_at, reason
-							) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
-								'flag-store-recovery', ?, 'restore authority after boot bypass')`,
-						)
-						.run(
-							name,
-							existing ? (existing.hasOverride ? 1 : 0) : null,
-							existing?.raw ?? null,
-							hasOverride ? 1 : 0,
-							raw,
-							existing?.lastEffective ?? null,
-							effective,
-							now,
-						);
-					continue;
-				}
 				if (!existing) {
 					const raw = args.env[spec.envVar] ?? null;
 					const hasOverride = args.env[spec.envVar] !== undefined;
@@ -4846,13 +4736,6 @@ export class StateStore {
 						effective,
 						now,
 					);
-			}
-			if (recovering) {
-				this.db.raw
-					.prepare(
-						"UPDATE flag_store_meta SET value = 0, updated_at = ? WHERE key = 'bypass_seen'",
-					)
-					.run(now);
 			}
 		})();
 	}

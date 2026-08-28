@@ -3,6 +3,8 @@
 **Issue**: FLY-1062(PR3/PR4 收尾圈)
 **Date**: 2026-07-11
 
+> **RETIRED — FLY-2102 (2026-08-27):** 本文中的 publish broker 路径、socket CLI 与 Bridge token 供给已删除,不可再按 §3/§6/§7b 操作。`@flywheel-ai/onboard` 的真实发布路径是 `.github/workflows/payload-activation.yml`;FW 发布 token 永不进入 Bridge env。以下 broker 内容只保留为历史设计记录。
+
 > ⚠️ **发布授权 = 自动化形态(Codex design R7 APPROVED,plan §3)。分两个 PR 落**:本 PR(#558)= 机器件 + beta-auto CI + promote-prepare CI(**不发布任何真东西**);**customer-facing 发布(promote-commit + shell npm publish)= FLY-245 broker 动作 + approve gate,是 1062 底下的下一个 PR**。**硬约束:真发布(§5 P5 真机段)在 broker PR 落地前不许发生**。本 runbook §3/§6/§7 涉 broker 的段落标「broker PR」。
 
 ---

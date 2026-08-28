@@ -5,13 +5,9 @@
 # candidate. It touches ONLY the internal capability (beta-publish) and NEVER
 # the customer channel.
 #
-# The COMMIT half (flip the customer pointer) is NOT a workflow — it is a
-# Bridge/broker action gated by the Flywheel approve gate (plan §3): Annie's
-# one Discord approve → broker verifies the approval against the staged
-# candidate's sha256 → the broker (holding the customer-release token ONLY in
-# its own memory, never in CI) runs the commit. That is the next PR under
-# FLY-1062. So this workflow carries ZERO customer-release credential —
-# release-workflows-structure.test.sh asserts it.
+# The COMMIT half (flip the customer pointer) is intentionally out of scope for
+# this prepare-only workflow. This workflow carries ZERO customer-release
+# credential; release-workflows-structure.test.sh asserts that boundary.
 name: Payload Promote (prepare)
 
 on:

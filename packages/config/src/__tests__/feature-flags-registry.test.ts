@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
+import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
 import * as FeatureFlags from "../feature-flags/index.js";
 import type { FeatureFlagSpec } from "../feature-flags/registry.js";
 import {
 	FEATURE_FLAGS,
 	validateKeepFieldContract,
 } from "../feature-flags/registry.js";
-import { RETIRED_FLAGS } from "../feature-flags/truth.js";
+import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
+import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
 // FLY-709: the registry's hard invariants — these are the safety rails that keep
 // a governance gate from ever being web-toggleable and keep `direct` toggles
@@ -13,7 +15,16 @@ import { RETIRED_FLAGS } from "../feature-flags/truth.js";
 
 describe("feature-flag registry invariants", () => {
 	it("exports the FLY-1981 authoring guard through the public feature-flags surface", () => {
-		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		expect(
+			auditFly1981LegacyLedger({
+				baseline: FeatureFlags.LEGACY_UNMANAGED_BASELINE,
+				flags: FEATURE_FLAGS,
+				storeManagedFlags: FeatureFlags.STORE_MANAGED_FLAGS,
+				retiredFlags: RETIRED_FLAGS,
+				retiredConfigPaths: RETIRED_CONFIG_PATHS,
+				exemptions: FLAG_EXEMPTIONS,
+			}),
+		).toEqual([]);
 		expect(FeatureFlags.validateFlagAuthoringPolicy).toBeTypeOf("function");
 	});
 
@@ -217,26 +228,6 @@ describe("feature-flag registry invariants", () => {
 		]);
 	});
 
-	it("FLY-1309 keeps the Lead lease bypass governance-safe", () => {
-		const bypass = FEATURE_FLAGS.find(
-			(f) => f.envVar === "FLYWHEEL_LEAD_LEASE_BYPASS",
-		);
-		expect(bypass).toMatchObject({
-			name: "lead_lease_bypass",
-			category: "governance_gate",
-			polarity: "opt_in",
-			default: false,
-			toggleable: "readonly",
-		});
-		expect(bypass?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/flywheel-comm/src/lead-lease.ts",
-				symbol: "authorizeLeadWrite",
-				timing: "cli_invocation",
-			}),
-		]);
-	});
-
 	it("FLY-1456 no longer registers the retired legacy delivery watchdog flag", () => {
 		const flag = FEATURE_FLAGS.find(
 			(f) => f.name === "legacy_delivery_watchdogs",
@@ -347,28 +338,45 @@ describe("feature-flag registry invariants", () => {
 		expect(cutover).toBeUndefined();
 	});
 
-	it("FLY-1353 registers the voice presence QA seam with its real external-daemon read site", () => {
-		const flag = FEATURE_FLAGS.find(
-			(candidate) => candidate.envVar === "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
-		);
-		expect(flag).toMatchObject({
-			name: "voice_qa_presence_override",
-			category: "feature",
-			source: "env",
-			scope: "bridge_global",
-			polarity: "opt_in",
-			valueKind: "bool",
-			default: false,
-			toggleable: "readonly",
+	it("FLY-2102 retires eight startup flags and accounts for the staged voice QA seam", () => {
+		const retired = [
+			"FLYWHEEL_FLAG_STORE",
+			"FLYWHEEL_GHOST_GUARD_WAIT_MS",
+			"FLYWHEEL_PUBLISH_BROKER",
+			"FLYWHEEL_CONVERGE_CMUX_SYMLINK",
+			"FLYWHEEL_CMUX_VIEW_HELPER",
+			"FLYWHEEL_CMUX_NODE_PRESENCE",
+			"FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS",
+			"FLYWHEEL_LEAD_LEASE_BYPASS",
+		] as const;
+		const removedNames = [
+			"flag_store",
+			"ghost_guard_wait_ms",
+			"publish_broker",
+			"converge_cmux_symlink",
+			"cmux_view_helper",
+			"cmux_node_presence",
+			"issue_display_sweep_ticks",
+			"voice_qa_presence_override",
+			"lead_lease_bypass",
+		] as const;
+		for (const name of removedNames) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.name === name),
+				name,
+			).toBe(false);
+		}
+		for (const envVar of retired) {
+			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-2102" });
+		}
+		expect(FLAG_EXEMPTIONS).toContainEqual({
+			name: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+			kind: "env",
+			persistentEnvAllowed: false,
+			reason: expect.stringMatching(/loopback staged Bridge/i),
+			owner: "flywheel-eng-lead",
+			issue: "FLY-2102",
 		});
-		expect(flag?.readSites).toEqual([
-			expect.objectContaining({
-				file: "packages/voice-bridge/src/assistant/wiring.ts",
-				symbol: "wireAssistantMode",
-				pattern: "env-param",
-				timing: "object_construction",
-			}),
-		]);
 	});
 
 	it("FLY-1808 retires the five linked DAG controls together", () => {
@@ -387,15 +395,6 @@ describe("feature-flag registry invariants", () => {
 			);
 			expect(RETIRED_FLAGS).toContainEqual({ envVar, retiredBy: "FLY-1808" });
 		}
-	});
-
-	it("FLY-1344 leaves the surviving authorization surface governance-readonly", () => {
-		expect(
-			FEATURE_FLAGS.find((flag) => flag.name === "lead_lease_bypass"),
-		).toMatchObject({
-			category: "governance_gate",
-			toggleable: "readonly",
-		});
 	});
 });
 

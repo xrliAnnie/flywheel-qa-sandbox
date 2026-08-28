@@ -18,25 +18,17 @@ export const FLAG_AUTHORING_RUNBOOK =
  * entries may migrate into the store or retire; no new unmanaged name may enter.
  */
 export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
-	"flag_store",
 	"founder_review_orphan_monitor",
 	"mailbox_queue",
 	"liveness_activity_window_ms",
-	"converge_cmux_symlink",
-	"cmux_view_helper",
-	"cmux_node_presence",
-	"voice_qa_presence_override",
 	"merge_approval_gate_killswitch",
 	"issue_gate_supersede_mode",
 	"deferred_approval_ttl_ms",
 	"founder_reply_deadletter_age_ms",
-	"issue_display_sweep_ticks",
 	"ship_gate_grace_ms",
 	"external_merge_reconcile",
 	"merge_reconcile_window_days",
 	"ship_gate_card_grace_ms",
-	"ghost_guard_wait_ms",
-	"lead_lease_bypass",
 	"checkpoint_enabled",
 	"pipeline_dag",
 	"pipeline_work_kind",
@@ -48,7 +40,6 @@ export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
 	"ponytail",
 	"done_thread_reconcile_interval_min",
 	"done_thread_reconcile_max_per_run",
-	"publish_broker",
 ] as const);
 
 const LEGACY_UNMANAGED_NAMES: ReadonlySet<string> = new Set(

@@ -295,8 +295,8 @@ else
 fi
 
 # ── P6 · FLY-1323 · commit --expected-sha256 binds the founder's approval ────
-# The founder-direct first publish (FLY-1323) has no broker to bind the approval
-# to the candidate tuple, so `commit` must accept the approved sha256 and refuse
+# The founder-direct publish must bind approval to the candidate tuple, so
+# `commit` must accept the approved sha256 and refuse
 # fail-closed on any mismatch. An unknown flag must NEVER be silently ignored —
 # a flag that looks like a control but does nothing is worse than no control.
 # fresh beta at a NEW commit — 9.9.9-beta.1 was already promoted by P1 and a
@@ -343,9 +343,8 @@ else
 fi
 
 # P6d · commit WITHOUT --expected-sha256 is REFUSED (Codex design R2: an
-# optional binding is not a binding. The broker does NOT call this CLI — it uses
-# bridge/publish-broker/release-commit.ts, whose sha256 is already mandatory —
-# so nothing needs the unbound form and keeping it would only preserve a footgun.)
+# optional binding is not a binding; nothing needs the unbound form and keeping
+# it would only preserve a footgun.)
 echo "payload input v6d" > "$FIX/content.txt"
 echo "v9.9.70" > "$FIX/doc/VERSION"   # fresh clean semver — 9.9.9/9.9.10 are taken by P1/W1
 git -C "$FIX" add -A && git -C "$FIX" -c user.email=t@t -c user.name=t commit -qm v6d

@@ -1,5 +1,4 @@
 import {
-	FEATURE_FLAGS,
 	type FlagStoreRawValue,
 	type FlagView,
 	getFlagStoreCodec,
@@ -7,31 +6,13 @@ import {
 } from "flywheel-config";
 import type { StateStore } from "../StateStore.js";
 
-export type FlagStoreRuntime =
-	| { mode: "ready"; store: StateStore }
-	| { mode: "bypass"; env: Record<string, string | undefined> };
+export type FlagStoreRuntime = { mode: "ready"; store: StateStore };
 
 export function initializeFlagStore(
 	store: StateStore,
 	env: Record<string, string | undefined>,
 	now: number = Date.now(),
 ): FlagStoreRuntime {
-	if (env.FLYWHEEL_FLAG_STORE === "0") {
-		try {
-			store.markFlagStoreBypassSeen(now);
-		} catch (error) {
-			console.warn(
-				`[flag-store] could not persist bypass fence: ${error instanceof Error ? error.message : String(error)}`,
-			);
-		}
-		const snapshot: Record<string, string | undefined> = {};
-		for (const spec of FEATURE_FLAGS) {
-			if (spec.envVar && STORE_MANAGED_FLAGS.has(spec.name)) {
-				snapshot[spec.envVar] = env[spec.envVar];
-			}
-		}
-		return { mode: "bypass", env: snapshot };
-	}
 	store.ensureFlagValueRows({ env, now });
 	return { mode: "ready", store };
 }
@@ -43,17 +24,9 @@ function readFlagValue(
 	if (!STORE_MANAGED_FLAGS.has(name)) {
 		throw new Error(`flag is not store-managed: ${name}`);
 	}
-	if (runtime.mode === "ready") {
-		const row = runtime.store.getFlagValueRow(name);
-		if (!row) throw new Error(`missing managed flag row: ${name}`);
-		return { hasOverride: row.hasOverride, raw: row.raw };
-	}
-	const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
-	if (!spec?.envVar) throw new Error(`missing managed flag policy: ${name}`);
-	return {
-		hasOverride: runtime.env[spec.envVar] !== undefined,
-		raw: runtime.env[spec.envVar] ?? null,
-	};
+	const row = runtime.store.getFlagValueRow(name);
+	if (!row) throw new Error(`missing managed flag row: ${name}`);
+	return { hasOverride: row.hasOverride, raw: row.raw };
 }
 
 function readBoolean(runtime: FlagStoreRuntime, name: string): boolean {
@@ -117,36 +90,24 @@ export function enrichFlagViewsWithStore(
 			const codec = getFlagStoreCodec(view.name);
 			if (!codec) throw new Error(`missing managed flag codec: ${view.name}`);
 			const storeEffective = codec.parse(value);
-			const valueLastChanged =
-				runtime.mode === "ready"
-					? runtime.store.getFlagValueRow(view.name)?.valueLastChanged
-					: null;
+			const valueLastChanged = runtime.store.getFlagValueRow(
+				view.name,
+			)?.valueLastChanged;
 			if (valueLastChanged === undefined) {
 				throw new Error(`missing managed flag row: ${view.name}`);
 			}
-			// Ready SQLite rows are sole authority; static truth validation owns
-			// detection of retired persistent-env inputs. Bypass still uses env.
-			const legacyEnvIsAuthority = runtime.mode === "bypass";
-			const divergence = !legacyEnvIsAuthority
-				? undefined
-				: view.divergence === "source_unavailable"
-					? "source_unavailable"
-					: view.fileEffective !== undefined &&
-							view.fileEffective !== storeEffective
-						? "split_brain"
-						: undefined;
 			return {
 				...view,
 				storeManaged: true,
 				storeEffective,
 				valueLastChanged,
-				clockReadiness: runtime.mode === "ready" ? "ready" : "no_clock:bypass",
+				clockReadiness: "ready",
 				effective: storeEffective,
 				bridgeEffective: storeEffective,
 				displayEffective: storeEffective,
-				fileEffective: legacyEnvIsAuthority ? view.fileEffective : undefined,
-				divergence,
-				error: legacyEnvIsAuthority ? view.error : undefined,
+				fileEffective: undefined,
+				divergence: undefined,
+				error: undefined,
 				isDefault: storeEffective === view.default,
 			};
 		} catch (error) {

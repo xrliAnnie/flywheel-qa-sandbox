@@ -27,25 +27,17 @@ const MANAGED = [
 const PROTECTED = ["mailbox_queue", "merge_approval_gate_killswitch"] as const;
 
 const LEGACY_UNMANAGED = [
-	"flag_store",
 	"founder_review_orphan_monitor",
 	"mailbox_queue",
 	"liveness_activity_window_ms",
-	"converge_cmux_symlink",
-	"cmux_view_helper",
-	"cmux_node_presence",
-	"voice_qa_presence_override",
 	"merge_approval_gate_killswitch",
 	"issue_gate_supersede_mode",
 	"deferred_approval_ttl_ms",
 	"founder_reply_deadletter_age_ms",
-	"issue_display_sweep_ticks",
 	"ship_gate_grace_ms",
 	"external_merge_reconcile",
 	"merge_reconcile_window_days",
 	"ship_gate_card_grace_ms",
-	"ghost_guard_wait_ms",
-	"lead_lease_bypass",
 	"checkpoint_enabled",
 	"pipeline_dag",
 	"pipeline_work_kind",
@@ -57,7 +49,6 @@ const LEGACY_UNMANAGED = [
 	"ponytail",
 	"done_thread_reconcile_interval_min",
 	"done_thread_reconcile_max_per_run",
-	"publish_broker",
 ] as const;
 
 const LEGACY_EXEMPTIONS = [
@@ -106,6 +97,7 @@ const LEGACY_EXEMPTIONS = [
 	"env:FLYWHEEL_TUI_WINDOW_ALERT",
 	"env:FLYWHEEL_VOICE_APPROVAL",
 	"env:FLYWHEEL_VOICE_EDGE_TTS",
+	"env:FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
 ] as const;
 
 type ValidateFlagAuthoringPolicy = (input?: {
@@ -407,7 +399,7 @@ describe("FLY-1778 flag store policy", () => {
 		).toEqual([]);
 	});
 
-	it("refuses protected, governance, unlisted, value, and self-referential flags", () => {
+	it("refuses protected and retired governance env flags", () => {
 		for (const name of PROTECTED) {
 			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
 			expect(spec, name).toBeDefined();
@@ -415,17 +407,11 @@ describe("FLY-1778 flag store policy", () => {
 				eligible: false,
 			});
 		}
-		for (const name of [
-			"voice_qa_presence_override",
-			"issue_display_sweep_ticks",
-			"flag_store",
-		]) {
-			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
-			expect(spec, name).toBeDefined();
-			expect(getStoreEligibility(spec as never)).toMatchObject({
-				eligible: false,
-			});
-		}
+		expect(
+			FEATURE_FLAGS.filter(
+				(spec) => spec.category === "governance_gate" && spec.source === "env",
+			),
+		).toEqual([]);
 	});
 
 	it("preserves the two existing boolean raw-value idioms", () => {
