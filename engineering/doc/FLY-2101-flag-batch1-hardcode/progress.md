@@ -1,13 +1,13 @@
 ---
 issue: FLY-2101
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-28T00:57:13.264Z
-nextStep: survey 13 flag read sites + guard files, write exploration.md
+phaseCursor: 2/6
+updated: 2026-08-28T01:03:48.023Z
+nextStep: write exploration.md + research.md + plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2101 progress
-**phase**: design (1/6)
-**next**: survey 13 flag read sites + guard files, write exploration.md
+**phase**: design (2/6)
+**next**: write exploration.md + research.md + plan.md
