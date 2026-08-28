@@ -58,7 +58,6 @@ allowed_hits=(
   'scripts/__tests__/test-pm-executor-contract.sh|no-three-stage'
   'packages/teamlead/src/LeadAlertNotifier.ts|three_stage_stuck'
   'packages/teamlead/src/bridge/alert-kind-copy.ts|three_stage_stuck'
-  '.lead/claude-infra-bot-lead/identity.md|three_stage_stuck'
   'packages/teamlead/src/bridge/__tests__/founder-thread-notifier.test.ts|three_stage_stuck'
   'packages/teamlead/src/bridge/__tests__/infra-alert-wiring.test.ts|three_stage_stuck'
   'packages/teamlead/src/bridge/__tests__/infra-event-router.test.ts|three_stage_stuck'

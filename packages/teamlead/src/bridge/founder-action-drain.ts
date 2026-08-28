@@ -88,6 +88,8 @@ export interface FounderActionDrainDeps {
 	}): Promise<{ ok: boolean; error?: string }>;
 	/** Must-deliver alert sink (duplicate claim ≠ receipt — §7.1). */
 	alertSink?: DrainAlertSink;
+	/** FLY-2076: hot master switch; false defers emit_alert without attempts. */
+	alertsEnabled?: () => boolean;
 	/** Lead routing for the failed-action alert (infra-owner fallback inside). */
 	resolveAlertRoute(
 		projectName: string,
@@ -317,7 +319,10 @@ async function drainOne(
 		}
 	}
 
-	// 3. Execute → outcome.
+	// 3. Execute → outcome. A disabled alert system is an operator-requested
+	// deferral, not a failed delivery attempt. Leave the durable row untouched so
+	// the must-deliver channel resumes when the store-managed flag turns ON.
+	if (row.kind === "emit_alert" && deps.alertsEnabled?.() === false) return;
 	let result: ExecResult;
 	try {
 		result = await executeAction(row, payload, deps);

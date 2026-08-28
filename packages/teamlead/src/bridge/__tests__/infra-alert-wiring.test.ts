@@ -149,6 +149,37 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		expect(rawSink.alert).not.toHaveBeenCalled();
 	});
 
+	it("FLY-2076 alert-system OFF records intake but creates no channel post, ticket, or Claw delivery", async () => {
+		const alert = payload("swap_pressure_high");
+		const sink = buildInfraAlertRouting({
+			store,
+			projects,
+			rawSink,
+			ticketSink,
+			alertsEnabled: () => false,
+			routingEnabled: () => true,
+			ticketsEnabled: () => true,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			logger: () => {},
+		});
+
+		await expect(sink.alert(alert)).resolves.toEqual({ skipped: "disabled" });
+		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).not.toHaveBeenCalled();
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(
+			store
+				.listUndeliveredLeadEvents()
+				.find(
+					(row) => row.event_id === `alert-system-suppressed:${alert.eventId}`,
+				),
+		).toMatchObject({
+			lead_id: alert.leadId,
+			event_type: alert.eventType,
+			payload: JSON.stringify(alert),
+		});
+	});
+
 	it("SENTINEL (routing OFF): every kind passes straight through to the raw sink", async () => {
 		const sink = makeSink(false);
 		for (const kind of ALERT_EVENT_TYPES) {

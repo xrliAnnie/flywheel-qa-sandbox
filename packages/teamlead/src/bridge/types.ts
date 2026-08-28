@@ -14,6 +14,8 @@ export interface BridgeConfig {
 	dbPath: string;
 	ingestToken?: string;
 	apiToken?: string;
+	/** FLY-2076: credential scoped exclusively to the `/duty` surface. */
+	alertDutyToken?: string;
 	/** @deprecated Pre-FLY-163 default fallback channel. Per-lead chatChannel now drives notifications. */
 	notificationChannel: string;
 	/** Default lead agent ID for project-less notifications (e.g., CIPHER proposals). */

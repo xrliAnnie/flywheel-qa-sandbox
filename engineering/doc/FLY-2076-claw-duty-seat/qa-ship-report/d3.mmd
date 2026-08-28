@@ -1,0 +1,14 @@
+flowchart TB
+  OP["运维一条命令<br/>feature-flags apply --name alert_system --to off"] --> API["Bridge /api/fleet/flag/stage + apply"]
+  API --> DB[("SQLite flag_values<br/>（权威值就在数据库里）")]
+  DB --> R["每次调用现读一次<br/>storeAlertSystemEnabled()"]
+  R --> P1["主管道路由"]
+  R --> P2["直连告警发送器"]
+  R --> P3["工作流 / land 待发队列"]
+  R --> P4["founder 必达动作"]
+  P1 --> Z["改完立刻生效<br/><b>不用重启任何进程</b>"]
+  P2 --> Z
+  P3 --> Z
+  P4 --> Z
+  style DB fill:#f2e8ff,stroke:#af52de,stroke-width:2px
+  style Z fill:#e8f9ee,stroke:#34c759,stroke-width:2px

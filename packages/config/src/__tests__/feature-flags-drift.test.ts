@@ -384,6 +384,7 @@ describe("feature-flag drift guard", () => {
 			),
 		).toEqual([
 			...[
+				["alert_system", "storeAlertSystemEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],
 			].map(([name, resolverSymbol]) => ({

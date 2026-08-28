@@ -1953,9 +1953,18 @@ _launch_claude() {
     # only sets it in the launcher shell; env -i strips anything outside this
     # allowlist, so the Lead saw empty and the skill fell back to a slow
     # `find /` recursive scan.
-    -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
-    -e "FLYWHEEL_FOUNDER_TZ=${FLYWHEEL_FOUNDER_TZ:-}"
-  )
+	-e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
+	-e "FLYWHEEL_FOUNDER_TZ=${FLYWHEEL_FOUNDER_TZ:-}"
+	)
+
+	# FLY-2076: final env -i capability fence. Only the sole Alerts duty seat
+	# receives the repository path / bearer; every other pane has neither.
+	if [ "$LEAD_ID" = "claude-infra-bot-lead" ]; then
+		env_args+=(-e "FLYWHEEL_DIR=${FLYWHEEL_DIR:-${FLYWHEEL_ROOT}}")
+		if [ -n "${FLYWHEEL_ALERT_DUTY_TOKEN:-}" ]; then
+			env_args+=(-e "FLYWHEEL_ALERT_DUTY_TOKEN=${FLYWHEEL_ALERT_DUTY_TOKEN}")
+		fi
+	fi
 
   # FLY-1697: pass the v2 body's bound generation through the explicit env -i
   # boundary. Degraded launches carry only the fail-closed marker.
@@ -3028,6 +3037,18 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
   else
     log "FLY-898: core-room-gate CLI/helper not built or jq missing — skip"
   fi
+fi
+
+# FLY-2076: provision the one no-mention Alerts seat after the shared access
+# reconciliation steps. Best-effort and loud: helper emits one fixed-shape line
+# for every success/skip path and never suppresses stderr.
+_alert_duty_helper="${SCRIPT_DIR}/lead-duty-provision.sh"
+if [ -f "$_alert_duty_helper" ]; then
+  # shellcheck source=lead-duty-provision.sh
+  source "$_alert_duty_helper" || true
+else
+  unset FLYWHEEL_ALERT_DUTY_TOKEN
+  log "FLY-2076: alert duty provisioning helper missing ($_alert_duty_helper) — skip"
 fi
 
 # FLY-1663: launchd-native carrier. This is the complete lifecycle of one body

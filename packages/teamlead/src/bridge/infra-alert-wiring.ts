@@ -48,6 +48,7 @@ export interface InfraAlertRoutingDeps {
 	/** Canonical founder id for workflow_engine_escalation. */
 	founderUserId?: string;
 	/** Test seams. */
+	alertsEnabled?: () => boolean;
 	routingEnabled?: () => boolean;
 	/** Test seam; production ticket enrichment is welded on by default. */
 	ticketsEnabled?: () => boolean;
@@ -179,6 +180,7 @@ export function buildInfraAlertRouting(
 	// render a 🎫 header. Enrichment failure degrades to the un-enriched payload
 	// (owner —), never blocks the alert.
 	const ticketsEnabled = deps.ticketsEnabled ?? (() => true);
+	const alertsEnabled = deps.alertsEnabled ?? (() => true);
 	const now = deps.now ?? (() => Date.now());
 	const enrich = (payload: AlertPayload): AlertPayload => {
 		if (!ticketsEnabled() || payload.ticket) return payload;
@@ -232,5 +234,19 @@ export function buildInfraAlertRouting(
 		}
 	};
 
-	return { alert: (payload) => routedSink.alert(enrich(payload)) };
+	return {
+		alert: (payload) => {
+			if (!alertsEnabled()) {
+				deps.store.recordAlertSystemSuppression({
+					leadId: payload.leadId,
+					eventId: payload.eventId,
+					eventType: payload.eventType,
+					payload: JSON.stringify(payload),
+					sessionKey: payload.sessionKey,
+				});
+				return Promise.resolve({ skipped: "disabled" });
+			}
+			return routedSink.alert(enrich(payload));
+		},
+	};
 }

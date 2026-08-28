@@ -473,6 +473,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: secondary Discord channel id for severe quota alerts (FLY-1252)",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
+	FLYWHEEL_ALERT_DUTY_TOKEN:
+		"secret capability: Claw-only alert duty ticket mutations (FLY-2076), not an on/off rollout flag",
 	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:
 		"secret: short-lived per-execution workflow submission credential",
 	FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED:

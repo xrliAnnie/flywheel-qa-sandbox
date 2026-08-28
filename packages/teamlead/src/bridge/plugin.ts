@@ -111,6 +111,7 @@ import {
 	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
+import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
 	type Session,
 	StateStore,
@@ -140,6 +141,7 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+import { createAlertDutyRouter, dutyAuth } from "./alert-duty-router.js";
 // FLY-927 (T1): unified-channel root-message rate cap.
 import {
 	createAlertRateLimiter,
@@ -263,6 +265,7 @@ import {
 	enrichFlagViewsWithStore,
 	type FlagStoreRuntime,
 	initializeFlagStore,
+	storeAlertSystemEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeShippedHuskForceEnabled,
@@ -1315,6 +1318,11 @@ export interface BridgeAppOptions {
 	rescueRoute?: { current?: RescueRouteRuntime };
 	/** FLY-1944: synchronous pre-claim dispatch visibility for host quiescence. */
 	admissionCrossingBarrier?: AdmissionCrossingBarrier;
+	/** FLY-2076: late-bound duty-seat identities owned by startBridge. */
+	alertDuty?: {
+		dispatcherBotUserId: { current: string | null };
+		alertHub: { current?: AlertChannelHub };
+	};
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -1448,6 +1456,18 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	// FLY-2076: capability-scoped duty mutations. This is intentionally outside
+	// `/api`: the shared Bridge bearer must not grant Claw ticket write access.
+	app.use(
+		"/duty",
+		dutyAuth(config.alertDutyToken),
+		createAlertDutyRouter({
+			store,
+			projects,
+			getAlertHub: () => opts?.alertDuty?.alertHub.current,
+		}),
+	);
 
 	// FLY-1638: restart/operator admission brake. This is deliberately outside
 	// /api/runs so scoped Gemini run tokens cannot mutate fleet-wide admission.
@@ -2511,6 +2531,8 @@ export function createBridgeApp(
 			// tokenAuthMiddleware no-ops when apiToken is unset, and chatThreads
 			// does not fail-start with one, so the route must fail closed itself.
 			apiTokenConfigured: Boolean(config.apiToken),
+			dispatcherBotUserId: () =>
+				opts?.alertDuty?.dispatcherBotUserId.current ?? null,
 		}),
 	);
 	app.use(
@@ -6238,6 +6260,7 @@ export async function startBridge(
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
+				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
@@ -6318,6 +6341,8 @@ export async function startBridge(
 	// below only when the rescue runtime is built (self-heal on + unified Alerts
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
+	const alertDutyDispatcherBotUserId = { current: null as string | null };
+	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
 
 	// FLY-1456: the external daemon is permanently authoritative. Keep the mode
 	// object as one explicit truth table for every retired Bridge execution face.
@@ -6586,6 +6611,10 @@ export async function startBridge(
 			// FLY-696 M1/④: event router reads this to post account_rotation notices.
 			accountRotationPost: accountRotationPostHolder,
 			rescueRoute: rescueRouteHolder,
+			alertDuty: {
+				dispatcherBotUserId: alertDutyDispatcherBotUserId,
+				alertHub: alertDutyHubHolder,
+			},
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
@@ -6605,6 +6634,26 @@ export async function startBridge(
 	const addr = server.address();
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
+	const alertSenderTokenEnv =
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+	const alertSenderToken = alertSenderTokenEnv
+		? process.env[alertSenderTokenEnv]?.trim()
+		: undefined;
+	if (alertSenderToken) {
+		try {
+			alertDutyDispatcherBotUserId.current = (
+				await resolveSelfIdentity(alertSenderToken)
+			).id;
+		} catch (error) {
+			console.warn(
+				`[alert-duty] dispatcher identity unresolved: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	} else if (config.alertDutyToken) {
+		console.warn(
+			"[alert-duty] dispatcher identity unresolved: alert sender token selector is unset or empty",
+		);
+	}
 	const designReviewManifestTimer = setInterval(
 		reconcileDesignReviewManifestOutbox,
 		30_000,
@@ -8741,6 +8790,7 @@ export async function startBridge(
 		}),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),
+		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		leadAlertSink: {
 			alert: (p) =>
 				leadPendingAlertHolder.current
@@ -8928,6 +8978,7 @@ export async function startBridge(
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
+		deliveryEnabled: () => storeAlertSystemEnabled(flagStore),
 		claimsReader,
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
@@ -10101,28 +10152,6 @@ export async function startBridge(
 		rescueRouteHolder.current = {
 			rescueLead: rescueRuntime.rescueLead,
 			rescueRunner: rescueRuntime.rescueRunner,
-			// FLY-927 (Task 2.3): a rescue call is the owner bot's claim — ACK the
-			// matching ACTIVE ticket. Lead rescues correlate by (leadId,
-			// login_expired); runner rescues by (session_key=executionId,
-			// runner_login_expired). Unresolved / legacy row = no-op (never ack the
-			// wrong episode).
-			ackTicket: ({ route, leadId, executionId }) => {
-				const row =
-					route === "lead"
-						? leadId
-							? store.getActiveAlertThreadByLeadAndType(leadId, "login_expired")
-							: undefined
-						: store
-								.listActiveAlertThreads()
-								.find(
-									(r) =>
-										r.session_key === executionId &&
-										r.event_type === "runner_login_expired",
-								);
-				if (row?.ticket_status) {
-					store.setTicketStatus(row.correlation_key, "ACK");
-				}
-			},
 		};
 	}
 
@@ -10206,10 +10235,14 @@ export async function startBridge(
 		});
 	}
 	if (alertHub) {
+		alertDutyHubHolder.current = alertHub;
 		console.log(
 			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, ordinary-route=claw-mailbox, escalation-route=channel, founder-auto-mention=workflow_engine_escalation-only, founder-id=${founderEscalationConfigured ? "resolved" : "UNRESOLVED"})`,
 		);
 	}
+	console.log(
+		`[Bridge] FLY-2076 alert duty token=${config.alertDutyToken ? "set" : "unset"} dispatcher=${alertDutyDispatcherBotUserId.current ?? "unresolved"} hub=${alertHub ? "set" : "unset"}`,
+	);
 
 	// FLY-368: a single alert sink shared by every Lead alert producer. When the Hub is on it
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
@@ -10223,6 +10256,7 @@ export async function startBridge(
 	const routedAlertSinkCore = buildInfraAlertRouting({
 		store,
 		projects,
+		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		globalBotToken: config.discordBotToken,
 		rawSink: alertSink,
 		ticketSink: {
@@ -10822,26 +10856,31 @@ export async function startBridge(
 						body: `${deadLettered} alert(s) were dead-lettered during drain (remaining=${remaining}). Check ~/.flywheel/alert-deadletter and the Discord alert config.`,
 					});
 				}
-				// No progress while items remain → drain is stuck.
-				if (sent === 0 && remaining > 0) {
-					drainStuckCycles++;
-					if (drainStuckCycles >= metaAlertStuckCycles) {
+				// OFF is an intentional pause, not evidence that the Discord path is
+				// stuck or overflowing. The queue remains durable while delivery is paused.
+				if (!storeAlertSystemEnabled(flagStore)) {
+					drainStuckCycles = 0;
+				} else {
+					if (sent === 0 && remaining > 0) {
+						drainStuckCycles++;
+						if (drainStuckCycles >= metaAlertStuckCycles) {
+							await metaAlertNotifier.notify({
+								reason: "drain_stuck",
+								title: "LeadAlert drainQueue stuck",
+								body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
+							});
+						}
+					} else {
+						drainStuckCycles = 0;
+					}
+					// Queue over cap.
+					if (remaining > alertQueueOverflow) {
 						await metaAlertNotifier.notify({
-							reason: "drain_stuck",
-							title: "LeadAlert drainQueue stuck",
-							body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
+							reason: "queue_overflow",
+							title: "LeadAlert queue overflow",
+							body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
 						});
 					}
-				} else {
-					drainStuckCycles = 0;
-				}
-				// Queue over cap.
-				if (remaining > alertQueueOverflow) {
-					await metaAlertNotifier.notify({
-						reason: "queue_overflow",
-						title: "LeadAlert queue overflow",
-						body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
-					});
 				}
 			})
 			.catch((err: Error) => {

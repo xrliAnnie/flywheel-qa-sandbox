@@ -12,6 +12,7 @@ import { StateStore } from "../../StateStore.js";
 import {
 	enrichFlagViewsWithStore,
 	initializeFlagStore,
+	storeAlertSystemEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeShippedHuskForceEnabled,
@@ -92,6 +93,23 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		}
 		expect(storeLoopProfilerEnabled(runtime)).toBe(true);
 		expect(storeShippedHuskForceEnabled(runtime)).toBe(true);
+	});
+
+	it("FLY-2076 keeps the alert system default-on and observes an off write without restart", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeAlertSystemEnabled(runtime)).toBe(true);
+
+		const revision = store.getFlagValueRow("alert_system")!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "alert_system",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "pause alert delivery for incident control",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeAlertSystemEnabled(runtime)).toBe(false);
 	});
 
 	it("fails loudly when a ready managed row disappears", () => {

@@ -1,0 +1,18 @@
+flowchart LR
+    S0(["开始"]) --> NEW["NEW<br/>Hub 开 thread<br/>(2075 后不再自动改状态)"]
+    NEW -- "Claw 认领:alert-ticket ack<br/>acked_at 只盖一次(既有列)" --> ACK["ACK<br/>值守看过了"]
+    ACK -- "① 自己动手(reply 发 🧭)" --> REP["REPAIRING<br/>(ARC 已在修时不回退)"]
+    REP -- "① 修好:alert-ticket resolve<br/>→ 既有 Hub.resolve 归档 thread" --> RES["RESOLVED"]
+    ACK -- "②/③ 转出:alert-ticket handoff<br/>owner_ref = 目标 Lead(🎫 owner 段同步)" --> ESC["ESCALATED<br/>= 值守已转出,球在 owner_ref"]
+    REP -- "① 失败,改走 ②/③" --> ESC
+    ESC -- "接手方宣告解决(FLY-2078)" --> RES
+    ESC -- "没解决,挂着可见<br/>(FLY-2078,不静默关)" --> ESC
+    RES --> S1(["结束"])
+    classDef claw fill:#e9f2ff,stroke:#0a5dc2,color:#0a5dc2;
+    classDef hub fill:#f7f7fa,stroke:#86868b,color:#48484a;
+    classDef done fill:#e8f7ee,stroke:#1d7a3e,color:#1d7a3e;
+    classDef out fill:#f3e8fb,stroke:#7d3bab,color:#7d3bab;
+    class NEW hub;
+    class ACK,REP claw;
+    class RES done;
+    class ESC out;

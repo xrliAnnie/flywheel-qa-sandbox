@@ -295,6 +295,8 @@ export interface GatePollerConfig {
 	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 
 	// Shared alert sink for retained GatePoller convergence failures.
+	/** FLY-2076: call-time store-managed master alert switch. */
+	alertsEnabled?: () => boolean;
 	/**
 	 * The LeadAlertNotifier queues transient failures and never throws.
 	 */
@@ -2728,6 +2730,7 @@ export class GatePoller {
 				}
 			},
 			alertSink: this.config.leadAlertSink,
+			alertsEnabled: this.config.alertsEnabled,
 			resolveAlertRoute: (projectName, executionId) =>
 				this.resolveAlertRoute(projectName, executionId),
 		});

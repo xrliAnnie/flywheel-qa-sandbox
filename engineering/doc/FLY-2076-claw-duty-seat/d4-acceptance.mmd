@@ -1,0 +1,24 @@
+sequenceDiagram
+    autonumber
+    participant B as Bridge / Hub
+    participant CH as 告警频道 flywheel-alerts
+    participant P as Claw 插件门控
+    participant C as Claw 会话
+    participant L as 工单账本 alert_threads
+    B->>CH: 根消息 + 🎫 行,开 thread(状态 NEW)
+    CH->>P: 消息事件(dispatcher 作者,在 allowBots)
+    Note over P: requireMention:false → 放行【证据 1:启动日志 + access.json】
+    P->>C: chat-ingest → mailbox → 会话【证据 2:comm.db 有该 message_id】
+    C->>C: 只读核实、查 runbook 与 contact book、看 thread 有无我的 🧭
+    alt ① 自己解决
+        C->>CH: reply 发 🧭 帖(不 @)
+        C->>L: alert-ticket ack(acked_at = 完成)【证据 3】
+        C->>C: 动手 → 验证
+        C->>CH: reply 发 ✅ 帖
+        C->>L: alert-ticket resolve(既有 Hub.resolve)【证据 4】
+    else ② / ③ 转出
+        C->>CH: reply 发 🧭 帖,恰一个真 @X(必达 = FLY-2078)
+        C->>L: alert-ticket handoff --to X(acked_at + ESCALATED + owner_ref)【证据 3/4】
+        L->>CH: 🎫 行 owner 与状态段重渲染
+    end
+    Note over C,CH: 24h 观察:根频道 Claw 帖 = 0(除压力自述)、同一工单 🧭 = 1【证据 5】、重启后 outstanding 补齐【证据 6】

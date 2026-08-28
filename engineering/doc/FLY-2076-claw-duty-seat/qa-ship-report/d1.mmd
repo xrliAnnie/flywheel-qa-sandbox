@@ -1,0 +1,8 @@
+flowchart LR
+  A["告警事件<br/>(runner 卡死 / 账号过期 / 引擎升级)"] --> B["Alerts 频道<br/>发一条工单根消息"]
+  B --> C{"有没有 @ Claw？"}
+  C -- "@ 了" --> D["Claw 处理"]
+  C -- "没 @" --> E["没人先看<br/>工单留在队列里"]
+  B --> F["想让告警安静下来<br/>只能改 .env + 重启"]
+  style E fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px
+  style F fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px

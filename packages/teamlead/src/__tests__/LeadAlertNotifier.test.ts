@@ -136,6 +136,45 @@ describe("LeadAlertNotifier", () => {
 		});
 	});
 
+	it("FLY-2076 direct alert-system OFF records without poisoning the later ON delivery", async () => {
+		const fetchFn = vi.fn().mockResolvedValue({
+			ok: true,
+			status: 200,
+			statusText: "OK",
+			text: async () => "",
+		});
+		let enabled = false;
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+			deliveryEnabled: () => enabled,
+		});
+		const payload = buildPayload({ eventId: "alert-system-off-direct" });
+
+		await expect(notifier.alert(payload)).resolves.toEqual({
+			skipped: "disabled",
+		});
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(queueDir)).toEqual([]);
+		expect(readdirSync(deadLetterDir)).toEqual([]);
+		const suppression = store
+			.listUndeliveredLeadEvents()
+			.find((row) => row.payload === JSON.stringify(payload));
+		expect(suppression).toMatchObject({
+			lead_id: payload.leadId,
+			event_type: payload.eventType,
+			payload: JSON.stringify(payload),
+		});
+		expect(suppression?.event_id).not.toBe(payload.eventId);
+
+		enabled = true;
+		await expect(notifier.alert(payload)).resolves.toEqual({ sent: true });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+	});
+
 	it("FLY-2051: direct non-switch payloads cannot opt out of alert framing", async () => {
 		const fetchFn = vi.fn();
 		const notifier = new LeadAlertNotifier({
@@ -397,6 +436,39 @@ describe("LeadAlertNotifier", () => {
 		expect(result.queued).toBe(true);
 		expect(readdirSync(queueDir).length).toBe(1);
 		expect(readdirSync(deadLetterDir).length).toBe(0);
+	});
+
+	it("FLY-2076 alert-system OFF pauses queue drain without posting or consuming backlog", async () => {
+		const fetchFn = vi.fn();
+		const queued = {
+			...buildPayload({ eventId: "alert-system-off-queued" }),
+			queuedAt: new Date().toISOString(),
+			queueReason: "discord-500",
+		};
+		writeFileSync(
+			join(queueDir, "2026-08-27T20-00-00-000Z-cos-lead-pane_hash_stuck.json"),
+			JSON.stringify(queued),
+			"utf-8",
+		);
+		const notifier = new LeadAlertNotifier({
+			store,
+			projects: testProjects,
+			fetchFn,
+			queueDir,
+			deadLetterDir,
+			deliveryEnabled: () => false,
+		});
+
+		await expect(notifier.drainQueue()).resolves.toEqual({
+			sent: 0,
+			remaining: 1,
+			deadLettered: 0,
+			staleSuppressed: 0,
+			delivered: [],
+		});
+		expect(fetchFn).not.toHaveBeenCalled();
+		expect(readdirSync(queueDir)).toHaveLength(1);
+		expect(readdirSync(deadLetterDir)).toEqual([]);
 	});
 
 	it("FLY-182: drainQueue dead-letters legacy permanent (no-channel) files regardless of current config", async () => {

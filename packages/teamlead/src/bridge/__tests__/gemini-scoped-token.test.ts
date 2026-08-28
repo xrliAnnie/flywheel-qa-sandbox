@@ -168,6 +168,7 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 		delete process.env.TEAMLEAD_API_TOKEN;
 		delete process.env.TEAMLEAD_INGEST_TOKEN;
 		delete process.env.TEAMLEAD_GEMINI_AGENT_TOKEN;
+		delete process.env.FLYWHEEL_ALERT_DUTY_TOKEN;
 		delete process.env.TEAMLEAD_REPLY_BY_ISSUE_ENABLED;
 		delete process.env.TEAMLEAD_REPLY_GUARD_ENABLED;
 	});
@@ -186,6 +187,31 @@ describe("loadConfig — TEAMLEAD_GEMINI_AGENT_TOKEN validation", () => {
 		process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = SCOPED;
 		expect(loadConfig().geminiAgentToken).toBe(SCOPED);
 	});
+
+	it("distinct alert-duty bearer is exposed only as alertDutyToken", () => {
+		process.env.TEAMLEAD_API_TOKEN = MASTER;
+		process.env.TEAMLEAD_INGEST_TOKEN = "ingest-secret";
+		process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = SCOPED;
+		process.env.FLYWHEEL_ALERT_DUTY_TOKEN = " alert-duty-secret ";
+		expect(loadConfig().alertDutyToken).toBe("alert-duty-secret");
+	});
+
+	it.each([
+		["TEAMLEAD_API_TOKEN", MASTER],
+		["TEAMLEAD_INGEST_TOKEN", "ingest-secret"],
+		["TEAMLEAD_GEMINI_AGENT_TOKEN", SCOPED],
+	])(
+		"alert-duty bearer collision with %s refuses startup",
+		(_name, collision) => {
+			process.env.TEAMLEAD_API_TOKEN = MASTER;
+			process.env.TEAMLEAD_INGEST_TOKEN = "ingest-secret";
+			process.env.TEAMLEAD_GEMINI_AGENT_TOKEN = SCOPED;
+			process.env.FLYWHEEL_ALERT_DUTY_TOKEN = collision;
+			expect(() => loadConfig()).toThrow(
+				new RegExp(`FLYWHEEL_ALERT_DUTY_TOKEN.*${_name}`),
+			);
+		},
+	);
 
 	it("collision (scoped == master, trim-compared) → loadConfig THROWS, Bridge refuses to start", () => {
 		process.env.TEAMLEAD_API_TOKEN = MASTER;

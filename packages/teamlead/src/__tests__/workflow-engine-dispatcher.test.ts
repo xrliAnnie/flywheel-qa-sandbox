@@ -1357,6 +1357,51 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("FLY-2076 alert-system OFF preserves workflow alert attempts until hot re-enable", async () => {
+		const store = await storeWithIntent("design");
+		store.enqueueWorkflowEngineAlert({
+			escalationUid: "fly2076-hot-switch",
+			runId: "run-1",
+			payload: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				eventId: "fly2076-hot-switch",
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				title: "Alert-system switch recovery",
+				body: "The same durable outbox row must deliver after re-enable.",
+			},
+			now: "2026-08-27T20:00:00.000Z",
+		});
+		let enabled = false;
+		const alert = vi.fn(async () => ({ sent: true as const }));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			alertsEnabled: () => enabled,
+			alertSink: { current: { alert } },
+			now: () => new Date("2026-08-27T20:00:01.000Z"),
+		});
+
+		for (let tick = 0; tick < 4; tick += 1) {
+			await expect(dispatcher.reconcileWorkflowEngineAlerts()).resolves.toBe(0);
+		}
+		expect(store.getWorkflowAlertOutbox("fly2076-hot-switch")).toMatchObject({
+			state: "pending",
+			attempt: 0,
+		});
+		expect(alert).not.toHaveBeenCalled();
+
+		enabled = true;
+		await expect(dispatcher.reconcileWorkflowEngineAlerts()).resolves.toBe(1);
+		expect(store.getWorkflowAlertOutbox("fly2076-hot-switch")).toMatchObject({
+			state: "sent",
+			attempt: 1,
+		});
+		expect(alert).toHaveBeenCalledOnce();
+		store.close();
+	});
+
 	it("holds an engine auto-advance before activation and credential writes while admission is paused", async () => {
 		const store = await storeWithIntent("implement");
 		const startDispatcher = inertStartDispatcher();

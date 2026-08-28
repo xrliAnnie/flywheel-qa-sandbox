@@ -12,6 +12,7 @@ import {
 } from "./commands/account-rotation-notify.js";
 import { ackEvent } from "./commands/ack-event.js";
 import { adoptInflight } from "./commands/adopt-inflight.js";
+import { runAlertTicketCommand } from "./commands/alert-ticket.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -94,6 +95,8 @@ Commands:
   check     Check if a question has been answered
   ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
             MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
+  alert-ticket  Claw duty actions: ack|handoff|resolve|outstanding. Uses only
+            FLYWHEEL_ALERT_DUTY_TOKEN against the Bridge /duty capability.
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
             JSON immediately; runner goes idle and is woken by mailbox.
@@ -223,6 +226,9 @@ async function main(): Promise<void> {
 			break;
 		case "ack-event":
 			await runAckEvent(commandArgs);
+			break;
+		case "alert-ticket":
+			process.exitCode = await runAlertTicketCommand(commandArgs);
 			break;
 		case "gate":
 			await runGate(commandArgs);

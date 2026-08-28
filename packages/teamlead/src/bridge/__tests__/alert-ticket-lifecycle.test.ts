@@ -101,6 +101,22 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 		expect(row?.first_seen_at).toBe("2026-07-07 09:05:00");
 	});
 
+	it("thread registration copy names the ticket, not Cass", async () => {
+		const discord = makeDiscord();
+		const posts: string[] = [];
+		discord.postToThread = async (_threadId, content) => {
+			posts.push(content);
+		};
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.handle(payload());
+		expect(posts[0]).toContain("🔧 已登记（Lead pane frozen）");
+		expect(posts[0]).not.toContain("Cass");
+	});
+
 	it("legacy payload (no ticket) keeps NULL ticket columns (byte-compat)", async () => {
 		const discord = makeDiscord();
 		const hub = new AlertChannelHub({
@@ -190,6 +206,134 @@ describe("FLY-927 Hub ticket lifecycle", () => {
 			true,
 		);
 		expect(store.getActiveAlertThread(CK)).toBeUndefined(); // resolved
+	});
+
+	it("legacy resolve keeps its pre-existing unfenced store calls", async () => {
+		const discord = makeDiscord();
+		const setTicketStatus = vi.spyOn(store, "setTicketStatus");
+		const resolveAlertThread = vi.spyOn(store, "resolveAlertThread");
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.handle(payload());
+
+		await expect(hub.resolve(CK)).resolves.toBeUndefined();
+
+		expect(setTicketStatus).toHaveBeenCalledWith(CK, "RESOLVED");
+		expect(resolveAlertThread).toHaveBeenCalledWith(CK);
+	});
+
+	it("episode-fenced resolve rejects a replacement before any Discord effect", async () => {
+		const discord = makeDiscord();
+		const getMessage = vi.spyOn(discord, "getMessage");
+		const editMessage = vi.spyOn(discord, "editMessage");
+		const postToThread = vi.spyOn(discord, "postToThread");
+		const archiveThread = vi.spyOn(discord, "archiveThread");
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.handle(payload());
+		store.openAlertThread({
+			correlationKey: CK,
+			eventId: "evt-2",
+			threadId: "thread-2",
+			rootMessageId: "root-2",
+			channelId: "UNI",
+			leadId: "tadashi",
+			projectName: "flywheel",
+			eventType: "pane_hash_stuck",
+			ticketStatus: "NEW",
+			ownerRef: "infra_bot:claude",
+		});
+		getMessage.mockClear();
+		editMessage.mockClear();
+		postToThread.mockClear();
+		archiveThread.mockClear();
+
+		await expect(hub.resolve(CK, "evt-1")).rejects.toThrow("stale_episode");
+		expect(getMessage).not.toHaveBeenCalled();
+		expect(editMessage).not.toHaveBeenCalled();
+		expect(postToThread).not.toHaveBeenCalled();
+		expect(archiveThread).not.toHaveBeenCalled();
+		expect(store.getActiveAlertThread(CK)?.event_id).toBe("evt-2");
+	});
+
+	it("episode-fenced resolve rejects a replacement created during Discord effects", async () => {
+		const discord = makeDiscord();
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.handle(payload());
+		discord.archiveThread = async () => {
+			store.openAlertThread({
+				correlationKey: CK,
+				eventId: "evt-2",
+				threadId: "thread-2",
+				rootMessageId: "root-2",
+				channelId: "UNI",
+				leadId: "tadashi",
+				projectName: "flywheel",
+				eventType: "pane_hash_stuck",
+				ticketStatus: "NEW",
+				ownerRef: "infra_bot:claude",
+			});
+		};
+
+		await expect(hub.resolve(CK, "evt-1")).rejects.toThrow("stale_episode");
+		expect(store.getActiveAlertThread(CK)).toEqual(
+			expect.objectContaining({
+				event_id: "evt-2",
+				ticket_status: "NEW",
+				resolved_at: null,
+			}),
+		);
+	});
+
+	it("episode-fenced resolve is idempotent when ARC resolves the same episode", async () => {
+		const discord = makeDiscord();
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.handle(payload());
+		discord.archiveThread = async () => {
+			store.setTicketStatus(CK, "RESOLVED", "evt-1");
+			store.resolveAlertThread(CK, "evt-1");
+		};
+
+		await expect(hub.resolve(CK, "evt-1")).resolves.toBeUndefined();
+		expect(store.getAlertThreadByEventId("evt-1")).toEqual(
+			expect.objectContaining({
+				ticket_status: "RESOLVED",
+				resolved_at: expect.any(String),
+			}),
+		);
+	});
+
+	it("duty handoff re-renders only the ticket owner and status segments", async () => {
+		const discord = makeDiscord();
+		const hub = new AlertChannelHub({
+			store,
+			notifier: { alert: async () => ({ ...SENT }) },
+			discord,
+		});
+		await hub.handle(payload());
+		store.handoffTicket(CK, "evt-1", "lead:flywheel-eng-lead");
+		const row = store.getActiveAlertThread(CK);
+		expect(row).toBeDefined();
+		await hub.renderTicketLine(row!, "<@222222222222222222>");
+
+		const rendered = discord.edits.at(-1)?.[2];
+		expect(rendered).toContain("owner <@222222222222222222>");
+		expect(rendered).toContain("· 状态 ESCALATED");
+		expect(rendered).toContain("Lead pane frozen");
 	});
 
 	it("edit degrade: root message unreadable → no edit, lifecycle still advances", async () => {

@@ -68,6 +68,8 @@ interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
 	workflowReworkReentryEnabled?: () => boolean;
+	/** FLY-2076: hot master switch; false preserves durable alert attempts. */
+	alertsEnabled?: () => boolean;
 	env?: Record<string, string | undefined>;
 	stateRoot?: string;
 	log?: (message: string) => void;
@@ -141,6 +143,7 @@ const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
 export class WorkflowEngineDispatcher {
 	private readonly env: Record<string, string | undefined>;
 	private readonly workflowReworkReentryEnabled: () => boolean;
+	private readonly alertsEnabled: () => boolean;
 	private readonly stateRoot: string;
 	private readonly log: (message: string) => void;
 	private readonly now: () => Date;
@@ -221,6 +224,7 @@ export class WorkflowEngineDispatcher {
 		this.env = options.env ?? process.env;
 		this.workflowReworkReentryEnabled =
 			options.workflowReworkReentryEnabled ?? (() => true);
+		this.alertsEnabled = options.alertsEnabled ?? (() => true);
 		this.stateRoot =
 			options.stateRoot ??
 			join(homedir(), ".flywheel", "state", "launch-commits");
@@ -357,6 +361,7 @@ export class WorkflowEngineDispatcher {
 	}
 
 	private async reconcileAdmissionPauseAlert(): Promise<void> {
+		if (!this.alertsEnabled()) return;
 		const sink = this.alertSink?.current;
 		if (!sink) return;
 		const now = this.now();
@@ -1620,6 +1625,10 @@ export class WorkflowEngineDispatcher {
 	}
 
 	async reconcileWorkflowEngineAlerts(max = 20): Promise<number> {
+		// Do not claim either workflow or legacy-land outbox rows while the alert
+		// system is OFF: claiming increments their bounded attempt counters. The
+		// existing durable rows are the ledger and resume on the first ON tick.
+		if (!this.alertsEnabled()) return 0;
 		const sink = this.alertSink?.current;
 		if (!sink) return 0;
 		let finalized = await this.reconcileLegacyLandAlerts(sink, max);

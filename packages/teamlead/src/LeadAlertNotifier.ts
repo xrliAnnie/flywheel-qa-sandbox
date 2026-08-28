@@ -615,7 +615,12 @@ export function isFleetAlertPayload(p: { projectName: string }): boolean {
 
 export interface AlertResult {
 	sent?: boolean;
-	skipped?: "duplicate" | "no-channel" | "no-token" | "unknown-lead";
+	skipped?:
+		| "duplicate"
+		| "disabled"
+		| "no-channel"
+		| "no-token"
+		| "unknown-lead";
 	queued?: boolean;
 	dmSent?: boolean;
 	/** FLY-182: payload routed to dead-letter (permanent failure, no retry). */
@@ -665,6 +670,8 @@ export type ClaimsClaimer = (
 export interface LeadAlertNotifierConfig {
 	store: StateStore;
 	projects: ProjectEntry[];
+	/** FLY-2076: call-time master delivery gate; OFF still journals intake. */
+	deliveryEnabled?: () => boolean;
 	fetchFn?: FetchLike;
 	queueDir?: string;
 	claimsReader?: ClaimsReader;
@@ -760,6 +767,7 @@ export class LeadAlertNotifier {
 	private replayFreshnessProbe?: (
 		input: ReplayFreshnessInput,
 	) => boolean | null;
+	private deliveryEnabled: () => boolean;
 
 	private withDeliveryReceipt(
 		payload: AlertPayload,
@@ -786,6 +794,7 @@ export class LeadAlertNotifier {
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
 		this.projects = config.projects;
+		this.deliveryEnabled = config.deliveryEnabled ?? (() => true);
 		this.fetchFn = config.fetchFn ?? (globalThis.fetch as FetchLike);
 		this.queueDir =
 			config.queueDir ?? join(homedir(), ".flywheel", "alert-queue");
@@ -891,6 +900,16 @@ export class LeadAlertNotifier {
 		payload: AlertPayload,
 		attempt: AlertAttemptOptions = {},
 	): Promise<AlertResult> {
+		if (!this.deliveryEnabled()) {
+			this.store.recordAlertSystemSuppression({
+				leadId: payload.leadId,
+				eventId: payload.eventId,
+				eventType: payload.eventType,
+				payload: JSON.stringify(payload),
+				sessionKey: payload.sessionKey,
+			});
+			return { skipped: "disabled" };
+		}
 		if (!hasValidDeliveryStyle(payload)) {
 			await this.deadLetter(payload, "invalid-delivery-style");
 			return this.withDeliveryReceipt(
@@ -1204,6 +1223,15 @@ export class LeadAlertNotifier {
 					this.queueEntryTimeMs(left) - this.queueEntryTimeMs(right);
 				return delta || left.localeCompare(right);
 			});
+		if (!this.deliveryEnabled()) {
+			return {
+				sent: 0,
+				remaining: entries.length,
+				deadLettered: 0,
+				staleSuppressed: 0,
+				delivered: [],
+			};
+		}
 		let sent = 0;
 		let deadLettered = 0;
 		let staleSuppressed = 0;

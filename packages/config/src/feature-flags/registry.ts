@@ -204,6 +204,28 @@ function flagStoreSite(
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	{
+		name: "alert_system",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ALERT_SYSTEM",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-2076: gate alert delivery into Discord, ticket dispatch, and the Claw duty seat while preserving the intake ledger",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeAlertSystemEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2076 default-on wrapper observes an off store write without restart",
+	},
+	{
 		name: "loop_profiler",
 		category: "kill_switch",
 		source: "env",

@@ -300,6 +300,12 @@ while IFS= read -r name; do
   if [ "$name" = "$BOT_TOKEN_ENV" ]; then
     identity_fatal identity_launch_env_conflict "$name may not be supplied by the manifest"
   fi
+	# FLY-2076: this capability may cross the carrier only for the single Claw
+	# duty seat. A stale manifest entry on any other Lead is ignored.
+	if [ "$name" = "FLYWHEEL_ALERT_DUTY_TOKEN" ] \
+	    && [ "$LEAD_ID" != "claude-infra-bot-lead" ]; then
+		continue
+	fi
   if [ "$is_identity" = true ]; then
     [ "$value" = "$expected" ] \
       || identity_fatal identity_launch_env_conflict "$name expected '$expected', got '$value'"

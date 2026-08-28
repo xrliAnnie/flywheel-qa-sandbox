@@ -11035,15 +11035,61 @@ export class StateStore {
 	 * Statuses: NEW|ACK|REPAIRING|MONITORING|ESCALATED|RESOLVED. The Hub no longer
 	 * writes ESCALATED automatically. ACK stamps acked_at once (first claim wins).
 	 */
-	setTicketStatus(correlationKey: string, status: string): void {
+	setTicketStatus(
+		correlationKey: string,
+		status: string,
+		expectedEventId?: string,
+	): number {
 		this.db.run(
 			`UPDATE alert_threads SET
 				ticket_status = ?,
 				acked_at = CASE WHEN ? = 'ACK' AND acked_at IS NULL THEN datetime('now') ELSE acked_at END
-			 WHERE correlation_key = ? AND resolved_at IS NULL`,
-			[status, status, correlationKey],
+			 WHERE correlation_key = ? AND resolved_at IS NULL${
+				expectedEventId === undefined ? "" : " AND event_id = ?"
+			}`,
+			[
+				status,
+				status,
+				correlationKey,
+				...(expectedEventId === undefined ? [] : [expectedEventId]),
+			],
 		);
-		this.save();
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed;
+	}
+
+	/** Mark a duty disposition complete for one exact alert episode. */
+	stampDutyAck(correlationKey: string, eventId: string): boolean {
+		this.db.run(
+			`UPDATE alert_threads SET
+				acked_at = COALESCE(acked_at, datetime('now'))
+			 WHERE correlation_key = ? AND event_id = ?`,
+			[correlationKey, eventId],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/** Transfer one unresolved ticket episode to a roster Lead. */
+	handoffTicket(
+		correlationKey: string,
+		eventId: string,
+		ownerRef: string,
+	): boolean {
+		this.db.run(
+			`UPDATE alert_threads SET
+				acked_at = COALESCE(acked_at, datetime('now')),
+				ticket_status = 'ESCALATED',
+				owner_ref = ?
+			 WHERE correlation_key = ? AND event_id = ?
+			   AND resolved_at IS NULL AND ticket_status <> 'RESOLVED'`,
+			[ownerRef, correlationKey, eventId],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
 	}
 
 	/** FLY-927 (Task 2.2): consume one bounded ARC attempt. */
@@ -11600,6 +11646,34 @@ export class StateStore {
 		return transitioned;
 	}
 
+	/** A bounded newest-first batch after an optional durable alert-row cursor. */
+	listDutyOutstanding(
+		limit: number,
+		since?: Pick<AlertThreadRow, "opened_at" | "event_id">,
+	): Array<AlertThreadRow & { resolved: boolean }> {
+		const stmt = this.db.prepare(
+			`SELECT * FROM alert_threads
+			 WHERE acked_at IS NULL AND ticket_status IS NOT NULL
+			   ${since ? "AND (opened_at > ? OR (opened_at = ? AND event_id > ?))" : ""}
+			 ORDER BY opened_at DESC, event_id DESC
+			 LIMIT ?`,
+		);
+		stmt.bind(
+			since
+				? [since.opened_at, since.opened_at, since.event_id, limit]
+				: [limit],
+		);
+		const out: Array<AlertThreadRow & { resolved: boolean }> = [];
+		while (stmt.step()) {
+			const row = rowToAlertThread(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+			out.push({ ...row, resolved: row.resolved_at !== null });
+		}
+		stmt.free();
+		return out;
+	}
+
 	/**
 	 * FLY-927 (Task 2.3 ACK correlation): the ACTIVE row for an exact event id.
 	 * A stale episode's event id never matches the active row (episode replace
@@ -11608,6 +11682,34 @@ export class StateStore {
 	getActiveAlertThreadByEventId(eventId: string): AlertThreadRow | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM alert_threads WHERE event_id = ? AND resolved_at IS NULL",
+		);
+		stmt.bind([eventId]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Duty lookup by the Discord root/thread id, including resolved tickets. */
+	getAlertThreadByRootMessageId(messageId: string): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE root_message_id = ? OR thread_id = ?",
+		);
+		stmt.bind([messageId, messageId]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Duty lookup by exact episode id, including resolved tickets. */
+	getAlertThreadByEventId(eventId: string): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE event_id = ?",
 		);
 		stmt.bind([eventId]);
 		let out: AlertThreadRow | undefined;
@@ -11640,12 +11742,23 @@ export class StateStore {
 	}
 
 	/** FLY-368: mark the active alert thread resolved (recovery confirmed). */
-	resolveAlertThread(correlationKey: string): void {
+	resolveAlertThread(
+		correlationKey: string,
+		expectedEventId?: string,
+	): number {
 		this.db.run(
-			"UPDATE alert_threads SET resolved_at = datetime('now') WHERE correlation_key = ? AND resolved_at IS NULL",
-			[correlationKey],
+			`UPDATE alert_threads SET resolved_at = datetime('now')
+			 WHERE correlation_key = ? AND resolved_at IS NULL${
+				expectedEventId === undefined ? "" : " AND event_id = ?"
+			}`,
+			[
+				correlationKey,
+				...(expectedEventId === undefined ? [] : [expectedEventId]),
+			],
 		);
-		this.save();
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed;
 	}
 
 	/**
@@ -11979,6 +12092,33 @@ export class StateStore {
 		if (count > 0) return false;
 		this.appendLeadEvent(leadId, eventId, eventType, payload, sessionKey);
 		return true;
+	}
+
+	/**
+	 * FLY-2076: persist an alert episode when the store-managed alert-system
+	 * switch suppresses all delivery side effects. Reuses the existing lead-event
+	 * journal so OFF means "recorded but intentionally not dispatched", not lost.
+	 */
+	recordAlertSystemSuppression(input: {
+		leadId: string;
+		eventId: string;
+		eventType: string;
+		payload: string;
+		sessionKey?: string;
+	}): boolean {
+		// A suppression is an audit fact, not a delivery claim. Keep its journal
+		// identity separate so firing the same stable producer event after hot
+		// re-enable can still win the ordinary `(lead_id, event_id)` delivery slot.
+		const suppressionEventId = `alert-system-suppressed:${input.eventId}`;
+		const inserted = this.tryClaimLeadEvent(
+			input.leadId,
+			suppressionEventId,
+			input.eventType,
+			input.payload,
+			input.sessionKey,
+		);
+		if (inserted) this.save();
+		return inserted;
 	}
 
 	/**

@@ -66,6 +66,10 @@ function readBoolean(runtime: FlagStoreRuntime, name: string): boolean {
 	return effective;
 }
 
+export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
+	return readBoolean(runtime, "alert_system");
+}
+
 export function storeFlagRetirementScanEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {
