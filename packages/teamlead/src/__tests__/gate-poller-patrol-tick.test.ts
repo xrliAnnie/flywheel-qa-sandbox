@@ -25,6 +25,9 @@ describe("FLY-1687 GatePoller patrol rider", () => {
 			await vi.waitFor(() =>
 				expect(onDisplayReconcileTick).toHaveBeenCalledTimes(1),
 			);
+			await (poller as unknown as { poll: () => Promise<void> }).poll();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(onDisplayReconcileTick).toHaveBeenCalledTimes(1);
 		},
 	);
 

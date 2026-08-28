@@ -4328,6 +4328,12 @@ export async function startBridge(
 	close: () => Promise<void>;
 	registry: RuntimeRegistry;
 }> {
+	// FLY-2102: the retired broker credentials must never leak into any child
+	// process. Scrub them before validation or any other boot work so even a
+	// failed Bridge start cannot leave them available to later process spawns.
+	delete process.env.FW_CUSTOMER_RELEASE_TOKEN;
+	delete process.env.FW_NPM_GAT_TOKEN;
+
 	if (projects.length === 0) {
 		throw new Error(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",

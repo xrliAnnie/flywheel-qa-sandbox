@@ -3,7 +3,7 @@
 **Issue**: FLY-1062(PR3/PR4 收尾圈)
 **Date**: 2026-07-11
 
-> **RETIRED — FLY-2102 (2026-08-27):** 本文中的 publish broker 路径、socket CLI 与 Bridge token 供给已删除,不可再按 §3/§6/§7b 操作。`@flywheel-ai/onboard` 的真实发布路径是 `.github/workflows/payload-activation.yml`;FW 发布 token 永不进入 Bridge env。以下 broker 内容只保留为历史设计记录。
+> **RETIRED — FLY-2102 (2026-08-27):** 本文中的 publish broker 路径、socket CLI 与 Bridge token 供给已删除,不可再按 §3/§4/§7/§7b 操作。`@flywheel-ai/onboard` 的真实发布路径是 `.github/workflows/payload-activation.yml`;FW 发布 token 不得进入 Bridge env，Bridge 启动也会在任何其他工作前防御性清除这两个旧 credential 名。以下 broker 内容只保留为历史设计记录。
 
 > ⚠️ **发布授权 = 自动化形态(Codex design R7 APPROVED,plan §3)。分两个 PR 落**:本 PR(#558)= 机器件 + beta-auto CI + promote-prepare CI(**不发布任何真东西**);**customer-facing 发布(promote-commit + shell npm publish)= FLY-245 broker 动作 + approve gate,是 1062 底下的下一个 PR**。**硬约束:真发布(§5 P5 真机段)在 broker PR 落地前不许发生**。本 runbook §3/§6/§7 涉 broker 的段落标「broker PR」。
 
@@ -112,7 +112,7 @@ registry preflight(版本未用)也在 broker 端跑;`scripts/release/shell-publ
 ## 7b. publish broker 运维(FLY-1062 broker PR)
 
 - **默认关**:Bridge env `FLYWHEEL_PUBLISH_BROKER=1` 才启动(生产字节兼容;P5 才开)。
-- **token 供给(①c)**:两把对外发布 token(`FW_CUSTOMER_RELEASE_TOKEN` / `FW_NPM_GAT_TOKEN`)由 operator 在 **Bridge 启动的进程 env** 注入(建议 macOS keychain:`security find-generic-password -w -s fw-customer-release` 喂给启动命令),Bridge boot 第一步**读入内存并从 process.env 抹除**——之后任何子进程(runner/lead/tmux)都继承不到;**绝不写进 `~/.flywheel/.env` 或任何落盘文件**(红线)。Bridge 重启 = token 与未消费审批一起消失,重新供给 + 重新 approve(对外发布本就低频 + founder-gated)。
+- **token 供给(已退役)**:不得再向 Bridge env 注入 `FW_CUSTOMER_RELEASE_TOKEN` / `FW_NPM_GAT_TOKEN`;Bridge 启动会在任何其他工作前无条件删除这两个旧 credential 名，防止误配置泄漏给 runner/lead/tmux 子进程。真实发布凭据只走 `.github/workflows/payload-activation.yml` 的既有 Actions secret 路径。
 - **审批面**:`FLYWHEEL_PUBLISH_APPROVAL_CHANNEL`(Discord 频道 id)+ canonical founder id(既有 `discordOwnerUserId`/`founderConsent` 推导)。没配 = 请求全部 pend,不执行。
 - **请求面**:unix socket `~/.flywheel/publish-broker.sock`(0600;`FLYWHEEL_PUBLISH_BROKER_SOCKET` 可改);CLI = `scripts/release/broker-request.mjs`(exit 0=已执行 / 2=等审批 / 1=拒)。
 - **audit**:每个决定(登记/挂起/执行/失败)追加 `~/.flywheel/publish-audit.jsonl`(releaseId/ver/sha/approverRef/时间戳;永无 token)。

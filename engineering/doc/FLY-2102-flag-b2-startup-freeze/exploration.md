@@ -36,7 +36,7 @@ founder 8-27 v3/v4 裁定:9 个「启动/CLI 时读」的 env flag **都不迁 D
 - 这两个 token 的正身在 GitHub Actions secrets + payload-endpoint worker env,**不在 Bridge 机器**;
 - 生产 .env 实测两个 token 都不存在;
 - runbook 红线本来就写「永不落 ~/.flywheel/.env」。
-⇒ 倾向**随 broker 一起删**(不留孤儿 scrub),把「这两个 token 永不进 Bridge env」记入 runbook 退役横幅 + 本设计的 honest boundary。备选(被拒):在 plugin.ts 留 5 行裸 scrub —— 违背「只删不加」,且保护的是一个已不存在的注入路径。
+⇒ 初始倾向是随 broker 一起删；Code Review R1 后 Lead 裁定改为保留**独立防御性 scrub**：Bridge 在校验或其他启动工作前无条件删除两个旧 credential 名。它不恢复 broker 注入路径，只把「FW token 不得进入 Bridge env」从人工纪律升级为机制，并由启动 seam 测试锁死。
 
 ### 3.2 exemptions.ts 的 baseline 是「冻结账本」
 `validateFlagAuthoringPolicy` 断言 FLAG_EXEMPTIONS 冻结:新 `kind:name` 必须同时进

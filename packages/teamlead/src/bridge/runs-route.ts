@@ -337,11 +337,11 @@ export function createRunsRouter(
 		hasOverride: boolean;
 		raw: string | null;
 	} = () => ({ hasOverride: false, raw: null }),
-	testSeams: { ghostGuardSessionWaitMs?: number } = {},
+	__testOnly: { ghostGuardSessionWaitMs?: number } = {},
 ): Router {
 	const router = Router();
 	const ghostGuardSessionWaitMs =
-		testSeams.ghostGuardSessionWaitMs ?? GHOST_GUARD_SESSION_WAIT_MS;
+		__testOnly.ghostGuardSessionWaitMs ?? GHOST_GUARD_SESSION_WAIT_MS;
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
 		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
 	});

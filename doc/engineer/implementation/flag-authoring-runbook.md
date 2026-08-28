@@ -18,9 +18,9 @@
 
 ## 豁免不是新通道
 
-`FLAG_EXEMPTIONS` 的豁免名单只许缩小；`LEGACY_FLAG_EXEMPTION_BASELINE` 是硬上限，不接受任何新 `kind:name`。补齐 reason、owner、issue 或伪造生产 read site 都不能绕过检查。
+`FLAG_EXEMPTIONS` 的豁免名单默认只许缩小；`LEGACY_FLAG_EXEMPTION_BASELINE` 是机械上限，任何不在其中的 `kind:name` 都会失败。唯一可修订情形是 founder 在具体 issue 中明确把一个**已登记的产品 flag**重分类为有界非产品 seam；baseline、exemption、reason、owner、issue 和机械守卫必须在同一 PR 原子更新。FLY-2102 将 `FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE` 从 registry 迁为仅允许 loopback staged Bridge 的 transient QA seam，是当前唯一一次此类修订。补齐字段或伪造生产 read site 都不能自行获得授权。
 
-未来如果需要单次调用、测试注入或运维调试 seam，必须建立与产品 flag 分开的非产品 ledger，先定义权威、生命周期和机械守卫；不得把它追加到 `FLAG_EXEMPTIONS`。
+未来新增单次调用、测试注入或运维调试 seam，仍必须建立与产品 flag 分开的非产品 ledger，先定义权威、生命周期和机械守卫；没有上述 founder 重分类裁定，不得把新名字追加到 `FLAG_EXEMPTIONS`。
 
 ## 生产 `.env` 移除与部署顺序
 

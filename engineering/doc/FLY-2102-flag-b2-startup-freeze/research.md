@@ -43,7 +43,7 @@ broker 只有 unix-socket 面 + 一个 scripts/release 客户端,无 flywheel-co
 它守护的注入路径 = 「操作员为 broker 在 Bridge 启动环境注入 FW token」。broker 删除后该注入
 路径失去存在理由;token 正身在 GitHub Actions secrets + `payload-endpoint` worker env
 (`serve-node.mjs` / `worker.mjs` / `wrangler.toml` 是服务端校验方,不受影响)。
-结论维持 exploration §3.1:scrub 随删,runbook 横幅 + honest boundary 记「FW token 永不进 Bridge env」。
+Code Review R1 后 Lead 覆盖初始取舍：broker 注入路径仍整段删除，但 Bridge 保留独立的启动前 scrub，先于项目校验和任何子进程工作无条件删除两个旧 credential 名；runbook 同步禁止注入。这样该边界由机制而非流程保证。
 
 ## 3. cmux 三 flag 的 shell 面
 
