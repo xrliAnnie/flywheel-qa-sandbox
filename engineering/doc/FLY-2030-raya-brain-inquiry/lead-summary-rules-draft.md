@@ -39,10 +39,16 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 
 ## The shared command
 
-Run: `flywheel-comm summary --project <name> [--period <start>/<end>]`
-It assembles your draft skeleton, validates the contract (path prefix,
-frontmatter, Judgment present, nothing executable), and opens the PR against
-Raya's repo. You edit the content; the command owns the mechanics.
+Write your summary in a file yourself (the command can print a template to
+stdout to start from), then run:
+
+    flywheel-comm summary --file <your-summary.md> --project <name> --period <start>/<end>
+
+The command owns ONLY the mechanics: target naming, contract validation
+(path prefix, frontmatter, **non-empty Judgment**, nothing executable), and
+opening/updating the PR against Raya's repo via `gh`. **The Judgment must be
+yours, written by you into the file** — the command never generates it.
+Re-running with the same `{project, author, period}` updates the same open PR.
 
 ## What NOT to put in a summary
 
@@ -52,15 +58,16 @@ No secrets or tokens; no full transcripts; no other project's judgment calls
 
 ## 二、共享命令接口合同(implement 的验收面,非实现)
 
-| 面 | 合同 |
+| 面 | 合同(R1v2-5 修订版:作者协议 = `--file`,Lead 亲笔) |
 |---|---|
-| 调用 | `flywheel-comm summary --project <name> [--period <start>/<end>] [--dry-run]`(名字可由 implement 改,接口语义不变) |
-| 输入 | 当前 Lead 身份(从既有 env/身份机制取,⛔ 不新增身份体系);period 缺省 = 上次该 Lead summary 至今 |
-| 产出 | 按 summary-contract 生成骨架文件(路径/命名/frontmatter 就位,Facts/Judgment 留空由 Lead 填)→ 校验(前缀之下、frontmatter 齐、Judgment 非空、无可执行文件)→ `gh` 在 Raya 仓开 PR,PR body 带 project/period |
+| 调用 | `flywheel-comm summary --file <Lead 亲笔的.md> --project <name> --period <start>/<end> [--dry-run]`(名字可由 implement 改,语义不变);`--template` 只打印模板到 stdout,不写任何文件 |
+| 输入 | 当前 Lead 身份(既有 env/身份机制,⛔ 不新增身份体系)+ **Lead 自己写好的内容文件**——命令不生成 Judgment,只校验它非空 |
+| 产出 | 定目标名(合同的路径/命名)→ 校验(前缀之下、frontmatter 齐、Judgment 非空、无可执行文件含兜底口径)→ `gh` 在 Raya 仓开/更新 PR,PR body 带 project/period |
 | 校验失败 | fail-loud 列出违反哪一条合同行;⛔ 不静默修正 |
 | 凭证 | 账号级 gh token(已可行,PRD §8.8.3);⛔ 不新增凭证 |
-| 幂等 | 同 period 重跑 = 更新同一个 open PR,不开第二个 |
-| dry-run | 只生成与校验,不开 PR(QA 用) |
+| 幂等 | key = `{project, author, period}`:同 key 且 PR 仍 open → 更新同一 PR;**PR 已 merge 后同 key 重跑 → fail-loud 或显式 next-seq 更正**;并发创建 → fail-loud |
+| dry-run | **不写 fs/git/gh 任何一处**,只校验并打印 canonical plan(QA 用) |
+| merge 侧 | 作者侧校验**不授权** merge——Raya merge 前另有只读 verifier 对 PR **当前 head** 全量核对并输出 verified SHA,merge 必须 `gh pr merge --match-head-commit <sha>`(见 plan M1-d';防校验后追加文件的 TOCTOU) |
 
 ## 三、边界(决定,非遗漏)
 

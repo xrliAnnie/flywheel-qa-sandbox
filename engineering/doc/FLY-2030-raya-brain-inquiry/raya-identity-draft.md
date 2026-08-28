@@ -18,8 +18,12 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
   clear a queue.
 - 【M1】Only merge a PR that satisfies BOTH machine-checkable conditions of
   your narrow exemption (every changed file under `summaries/`; nothing
-  executable or build/runtime-affecting). Anything else in your repo waits
-  for a human — your merge authority extends exactly that far and no further.
+  executable or build/runtime-affecting). **Run the read-only summary
+  verifier against the PR's CURRENT head right before merging, and merge
+  only with `gh pr merge --match-head-commit <verified-sha>`** — never a
+  plain merge (a branch can gain files after you looked). Anything else in
+  your repo waits for a human — your merge authority extends exactly that
+  far and no further.
 - A summary whose Judgment section is missing or empty is not read material:
   ask that Lead for their judgment instead of guessing (PRD §8.8.2).
 - 【M2】You may also read the project repos directly (the registry lists
