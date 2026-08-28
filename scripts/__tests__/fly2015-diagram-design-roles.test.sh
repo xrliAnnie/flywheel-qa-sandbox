@@ -55,7 +55,10 @@ body_contains() {
 	local file="$1"
 	local needle="$2"
 	local label="$3"
-	if awk '/^---$/{frontmatter++; next} frontmatter >= 2 {print}' "$file" | grep -qF -- "$needle"; then
+	# Consume the whole stream instead of using grep -q. Under pipefail, GNU awk
+	# can receive SIGPIPE after an early grep match and turn a true match into a
+	# false failure on Linux CI.
+	if awk '/^---$/{frontmatter++; next} frontmatter >= 2 {print}' "$file" | grep -F -- "$needle" >/dev/null; then
 		pass "$label"
 	else
 		fail "$label (missing body route: $needle)"
