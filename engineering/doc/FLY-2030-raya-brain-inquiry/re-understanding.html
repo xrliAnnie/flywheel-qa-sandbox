@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2030 重新理解:Raya 到底要做什么(对齐稿)</title>
+<style>
+  :root { --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height:1.6; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 80px; }
+  h1 { font-size:24px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:18px; margin:0 0 10px; color:var(--navy); }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  .mono { font-family:"SF Mono", Menlo, monospace; font-size:12.5px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:0 0 18px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); } .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#eef; color:var(--blue); margin-right:6px; vertical-align:middle; }
+  .badge.red { background:#ffe5e3; color:var(--red);} .badge.gray { background:#eee; color:#555;}
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 6px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  .note { font-size:13px; color:#444; background:#fafafa; border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .note.warn { background:#fff7e6; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:var(--navy); color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#e8e8ed; color:var(--text); }
+  .chunk { margin-top:10px; }
+  .status { font-size:12.5px; color:var(--dim); margin-left:6px; }
+  ul { padding-left:20px; margin:6px 0; } li { margin:3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>重新理解:Raya 到底要做什么</h1>
+  <div class="meta">
+    <span class="badge red">你打回之后的对齐稿</span><span class="badge">FLY-2030</span><span class="badge gray">2026-08-28 · 不是新方案,是先对齐</span><br>
+    上一版设计与它的评审循环已全部停掉,没写过一行代码。这一页只回答三件事:你问的四条、真正要新建的最短清单、一格需要你拍的口径。
+  </div>
+
+  <section class="card red" data-section="1 我听到的打回">
+    <h2>1 · 我听到的打回是什么</h2>
+    <p><b>Raya 本来就该是一个 Lead,不是一个新物种。</b>上一版把「Lead 今天已有的能力」(Discord 打字、roundtable @ 别的 Lead、收发、记忆)在 Raya 自己的仓里重新造了一遍——你点名的「Bridge 收发 vs Raya 的脑子」那个分层,就是重造的产物。打回成立。</p>
+    <p style="font-size:13.5px;color:#555">我事后逐个核过:Mufasa 在用的那套 Codex Lead 运行时,已经有 Discord 收发、「正在输入」指示、roundtable 讨论串接线、消息不丢不重的轮次账本。我上一版列的十个模块,七个在那里已经存在。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="r1" placeholder="写在这里,页底自动汇总…"></textarea></div>
+  </section>
+
+  <section class="card blue" data-section="2 你的四条原话,四条直答">
+    <h2>2 · 你的四条原话,四条直答</h2>
+    <table>
+      <tr><th>你问</th><th>直答</th></tr>
+      <tr><td>「每隔几个小时」是多少?有 feature flag 吗?</td><td><b>6 小时,是你 8-18 自己圈的</b>(当时给你的选项 a =「6 小时,且运行期可改」,你圈了 a)。<b>没有 flag</b>——按你 8-22 的规矩(能固化就别留旋钮)固化成一条调度配置。而且它只是<b>兜底</b>:主通道是事件驱动——你说话它就答,Lead 回它就接;「事件为主 + 兜底节奏」也是你 8-17 圈的 C。你现在若想砍掉兜底只留事件驱动:可以,那是改你自己那格,一句话的事。</td></tr>
+      <tr><td>Lead 都有这些能力,为什么要专门做新东西?</td><td>你说得对,不需要。上一版是我做错了。真正要新建的压缩后见下一节——<b>主要就一件半</b>。</td></tr>
+      <tr><td>为什么分「Bridge 收发」和「Raya 的脑子」?</td><td>不该分。那一层就是把 Lead 已有的东西重造一遍。已废弃。</td></tr>
+      <tr><td>是不是把简单的东西搞复杂了?</td><td>是。重造部分已全部扔掉(还没写码,零浪费)。</td></tr>
+    </table>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="r2"></textarea></div>
+  </section>
+
+  <section class="card green" data-section="3 真正要新建的最短清单">
+    <h2>3 · 如果 Raya 就是「一个带语音接口的 Lead」,还剩什么要建</h2>
+    <table>
+      <tr><th>事</th><th>用现成的什么</th><th>要新建的量</th></tr>
+      <tr><td>Raya 上岗为常驻 Lead(#raya = 她的频道)</td><td>Mufasa 同款 Lead 运行时 + 一条注册;她已有的专用 Codex 账户目录直接接上</td><td>≈ 配置 + 身份文件内容(已有底稿)</td></tr>
+      <tr><td>模型钉死(gpt-5.6-sol · 最深思考 · 1M)</td><td>gpt-5.6-sol 已是 flywheel 的标准 Codex 型号;会话参数口子已有</td><td><b>可能是本单唯一的一小块代码</b>(也可能已支持,待核)</td></tr>
+      <tr><td>读六仓状态、知道谁静了多久</td><td>Lead 本来就有 shell 和注册表</td><td>≈ 0(写进她的身份提示)</td></tr>
+      <tr><td>6 小时兜底巡视</td><td>既有定时触发形态(到点投一条消息进她的收件箱)</td><td>≈ 一条调度配置</td></tr>
+      <tr><td>追问别的 Lead</td><td>roundtable(每个 Lead 现成能力)</td><td>0(登记互信名单,Tadashi 已认领)</td></tr>
+      <tr><td>记忆</td><td>Codex Lead 自带记忆 + 她的记忆仓(已建)</td><td>0</td></tr>
+      <tr><td><b>语音(真正新的东西)</b></td><td><b>已建成在跑</b>(FLY-2074)</td><td>0;一处交接要对齐:「进入语音模式」的短语监听现住在旧 brain 进程里</td></tr>
+      <tr><td>三指标记录</td><td><b>已建成在跑</b>(FLY-2029)</td><td>0</td></tr>
+    </table>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="r3"></textarea></div>
+  </section>
+
+  <section class="card purple" data-section="4 一格需要你拍">
+    <h2>4 · 一格需要你拍(你的两句话现在指向不同,我不替你选)</h2>
+    <table>
+      <tr><th>你 8-18 拍的</th><th>你 8-27 页面上说的</th></tr>
+      <tr><td>「他有点像是一个<b>独立的产品</b>……自己的仓」;并且「假设使用者<b>没有 flywheel 这个仓库</b>,必须有 flywheel 源码才能用 = 设计错了」</td><td>「这些事情现在所有的 <b>lead 都有这些能力</b>啊……为什么会需要专门做什么新的东西呢?」</td></tr>
+      <tr><td>⇒ 沿这句走 = Raya 有自己的运行时(上一版方向,你已打回)</td><td>⇒ 沿这句走 = Raya 骑 flywheel 的 Lead 运行时(Mufasa 形态);代价:她就不再是「不依赖 flywheel」的独立产品</td></tr>
+    </table>
+    <div class="note warn">两句都是你的原话,不是谁记错。走 Lead 形态的话,只需要把 8-18 那格的口径改成「Raya 的产品形态 = flywheel 的一个 Lead 角色」——对齐时一句话定掉即可。</div>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="r4"></textarea></div>
+  </section>
+
+  <section class="card amber" data-section="5 已建成不浪费 + 挂起中">
+    <h2>5 · 已建成不浪费 · 挂起中</h2>
+    <ul>
+      <li><b>继续用</b>:语音管线(FLY-2074,在跑)· 三指标记录(FLY-2029,在跑)· raya / raya-memory 两个仓 · 她的身份文件与专用 Codex 目录 · Discord bot 身份。</li>
+      <li><b>已扔</b>:上一版的「收发层」设计(没写过代码,零沉没成本)。</li>
+      <li><b>挂起等对齐</b>:可写范围那格分歧 · 追问降级落点 · 全部旧 plan 内容。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-key="r5"></textarea></div>
+  </section>
+
+  <section class="card summary" data-section="意见汇总" id="summary-card" style="border-left-color:#1a365d">
+    <h2>📋 意见汇总(一键复制)</h2>
+    <p style="font-size:13px;color:#555">自动汇集每一节的意见;第一行固定「【页面意见汇总】FLY-2030」。<b>这是修改意见,不是通过信号</b>。</p>
+    <div id="summary-chunks"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button><span class="status" id="copy-status"></span>
+    <div class="comment"><label>总体意见(可选)</label><textarea data-key="r6" placeholder="整体上…"></textarea></div>
+  </section>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = 'FLY-2030';
+  var MARKER = '【页面意见汇总】' + ISSUE;
+  var PREFIX = 'fly2030-realign:' + location.pathname + ':';
+  var LIMIT = 1800;
+  function safeGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function safeSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+  function sectionTitle(el) {
+    var sec = el.closest('section[data-section]');
+    return sec ? sec.getAttribute('data-section') : '未命名';
+  }
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || '').trim();
+      if (!v) return;
+      lines.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return lines;
+  }
+  function chunkText(lines) {
+    var chunks = [];
+    var cur = MARKER + '\n';
+    lines.forEach(function (line) {
+      var add = line + '\n';
+      if ((cur + add).length > LIMIT && cur.length > MARKER.length + 1) {
+        chunks.push(cur.trimEnd());
+        cur = MARKER + '(续)\n' + add;
+      } else {
+        cur += add;
+      }
+    });
+    chunks.push(cur.trimEnd());
+    return chunks;
+  }
+  var chunksEl = document.getElementById('summary-chunks');
+  var statusEl = document.getElementById('copy-status');
+  function render() {
+    var lines = collect();
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    if (!lines.length) {
+      var p = document.createElement('p');
+      p.className = 'status';
+      p.textContent = '(还没有意见)';
+      chunksEl.appendChild(p);
+      return;
+    }
+    var chunks = chunkText(lines);
+    chunks.forEach(function (text, i) {
+      var box = document.createElement('div');
+      box.className = 'chunk';
+      var pre = document.createElement('pre');
+      pre.textContent = text;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn secondary';
+        b.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        b.addEventListener('click', function () { copyText(text); });
+        box.appendChild(b);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+  function execCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.top = '-1000px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  function setStatus(msg) { statusEl.textContent = msg; setTimeout(function () { statusEl.textContent = ''; }, 2500); }
+  function copyText(text) {
+    var done = function (ok) { setStatus(ok ? '已复制' : '复制失败,请手动选中文字复制'); };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(execCopy(text)); });
+    } else {
+      done(execCopy(text));
+    }
+  }
+  areas.forEach(function (ta) {
+    ta.value = safeGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      safeSet(ta.getAttribute('data-key'), ta.value);
+      render();
+    });
+  });
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var lines = collect();
+    if (!lines.length) { setStatus('还没有意见'); return; }
+    copyText(chunkText(lines).join('\n\n'));
+  });
+  render();
+})();
+</script>
+</body>
+</html>
