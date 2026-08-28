@@ -23,7 +23,9 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
    实际执行到的节为准,skip 节单独列账。
 2. `scripts/flywheel-cmux-sync.sh`:
    - 删 `build_attach_command` 的 `view_helper_enabled` 读取(:3767)与 =0 分支(:3775-3783);
-   - 删 `node_presence_enabled()`(:1090-1093),12 处守卫展开为无条件执行。
+   - 删 `node_presence_enabled()` 定义(:1090-1093),并展开 **11 个调用点**的守卫为无条件执行
+     (:1165/:1335/:1690/:1841/:2909/:9679/:9997/:10046/:10075/:10279/:11714;定义+调用共 12 次
+     文本出现 —— 验收按 caller 清单核,不按 occurrence 计数,Codex R2 LOW 修正)。
 3. `scripts/converge-flywheel-bin.sh`:删 :318-325 读取/校验块;:410 FLY-1577 注释改述(不再提开关)。
 4. 测试重工:
    - `scripts/test-cmux-sync.sh`:删 :37 全局 `export FLYWHEEL_CMUX_NODE_PRESENCE=0`;
@@ -50,10 +52,21 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
    类随 lead_lease_bypass 消亡 → 改为断言该类为空)、`feature-flags-drift.test.ts`
    (:469-471 三条 cmux 条目删)、`feature-flags-store-policy.test.ts` 同步;
    新增断言:9 名不在 FEATURE_FLAGS、8 envVar 在 RETIRED_FLAGS、voice 在豁免账。
+6. **baseline 固定快照断言**(Codex R2 MEDIUM,漏列):
+   - `fly1981-final-ledgers.test.ts`(:280-287)硬断言 `LEGACY_UNMANAGED_BASELINE` 长 31 且
+     31+4=35。**不改数字为 22** —— FLY-1981 落地时的 31 项在该测试内冻结为独立历史快照常量
+     (test-local literal),断言改为:当前 baseline ⊆ 历史快照(只许 shrink)+ 被移除的名字
+     必须能在 RETIRED_FLAGS 或 FLAG_EXEMPTIONS 找到去向(shrink 有账)。
+   - `feature-flags-registry.test.ts:16` 的 `toHaveLength(31)` 改为与上述同语义的断言
+     (子集 + 有账去向),不再锁死总数。
 
 ### Step 3 — teamlead 包:flag store 常开 + broker 整段删 + 两个数值固化
 1. `flag-store-runtime.ts`:删 bypass 入口/双态/env fallback;`FlagStoreRuntime` 塌缩单态;
    `enrichFlagViewsWithStore` 删 `legacyEnvIsAuthority` / split_brain / `no_clock:bypass` 臂。
+   **公共类型词汇同步**(Codex R2 MEDIUM):`packages/config/src/feature-flags/resolve.ts`
+   (:99-103)的 `FlagView.clockReadiness` union 删 `"no_clock:bypass"` 值;
+   `feature-flag-render.test.ts`(:77-95)把它当活模式的用例随删;残留守卫加一条语义断言:
+   活代码(非历史 changelog 值、非 doc)中 `no_clock:bypass` 零命中。
 2. `StateStore.ts`:删 `markFlagStoreBypassSeen` / `isFlagStoreBypassSeen` /
    `ensureFlagValueRows` recovering 臂(:4686-4790)+ fence 自清(:4853);
    **保留** `flag_store_meta` 表定义与 `bypass_recovery` changelog 历史行。
@@ -74,7 +87,15 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
    `positiveInt` 若再无他用随删。
 7. 删目录 `packages/teamlead/src/bridge/publish-broker/`(14 文件);
    `automated-message-inventory.test.ts:140` 清单行删。
-8. 测试:`flag-store-runtime.test.ts` bypass 用例 → 「=0 仍 ready」反旋钮断言;
+8. **stale dist 字节清理**(Codex R2 HIGH):`tsc` 不会替源码删旧输出,而
+   `scripts/package-onboard.sh` 会把整个 `dist/` 原样拷入交付 payload —— 曾构建过 broker 的
+   checkout 在本 PR 后重 build 仍会携带 `dist/bridge/publish-broker/` 旧字节。修法沿用
+   `packages/teamlead/package.json` build script 既有的退役产物清理模式:在 `tsc` 成功后的
+   `rm` 链追加 `dist/bridge/publish-broker`(含其 `__tests__` 输出)。**不用 pre-build 清空
+   整个 dist**(保持 last-known-good build 纪律)。验收:预置 stale sentinel 文件 →
+   `pnpm --filter teamlead build` → 目录消失;`fly2102-flag-freeze.test.sh` 把该 prune
+   写进合同断言(package.json 的 build 行含此目标)。
+9. 测试:`flag-store-runtime.test.ts` bypass 用例 → 「=0 仍 ready」反旋钮断言;
    `flag-routes.test.ts` / `flag-toggle.test.ts` / `feature-flag-render.test.ts` /
    `fleet-console-model-flags.test.ts` / `StateStore.flag-value-store.test.ts` fixture 换血;
    `runs-route.dag-entry.test.ts` → 「env 置位仍 90000」;GatePoller 测试 → 「0 仍 sweep」。
@@ -114,7 +135,7 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 | 现有测试全绿 | Step 6.1 全仓门 |
 | 每个删除路一条「路已不存在」断言 | §1 各步的反旋钮断言(全部是**真实置位旧值**再断言行为不变,不是 grep 缺失) |
 | `rg` 九个 env 名零命中 | `fly2102-flag-freeze.test.sh`:零命中 = 排除 tombstone 账(truth.ts)、豁免账(exemptions.ts)、voice 治具+wiring(裁定保留)、断言测试自身、`doc/**` 历史证据后全仓零命中;allowlist 逐条 liveness 自检(词面冲突的量化处理见 exploration §6) |
-| publish-broker 目录不存在;CI 无步骤;payload-activation 不受影响 | 结构断言 + Step 6.2 dry-run |
+| publish-broker 目录不存在;CI 无步骤;payload-activation 不受影响 | 结构断言 + Step 6.2 dry-run + stale dist prune 验证(Step 3.8:sentinel → build → 消失;交付 payload 无 broker 字节) |
 | Bridge 启动日志无 broker / bypass 输出 | Step 6.3 |
 
 ## 3. 风险与回退
