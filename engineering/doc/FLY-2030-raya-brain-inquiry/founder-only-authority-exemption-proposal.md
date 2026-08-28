@@ -4,6 +4,7 @@ Issue: FLY-2030 (https://linear.app/geoforge3d/issue/FLY-2030/rayav2-大脑状�
 基于: scope-final.md §1 1.3 + Tadashi 指令(6afa31aa 答复 ①:此件单独逐字审,不许顺手加)
 
 > 状态:**提案,未落任何文件**。scope-final 1.3 的规则改动部分已标暂停,以本件送审为准;Tadashi 判后再定是否上 founder。
+> 修订史:R1(2026-08-28)Tadashi 逐字审 = 实质通过,唯一必改:**What 判据由「summary 类(自证)」改为两条机器可核条件的合取**(自证判据与「声称我读完了」是同一个洞,PRD §12.3.4);其余逐字保留。本版 = 改后版。⛔ 在他说「可以落」之前不碰 rules 文件;落文件由他执行。
 
 ## 一、要加什么(逐字稿,英文与目标文件一致;插入位置 = R1「Reserved actions」列表之后、「Recognising a founder authorization」小节之前)
 
@@ -18,10 +19,17 @@ scope confirmed in §12.3.4 option a):
   Runner, no bot inherits this exemption.
 - **Where**: pull requests in Raya's OWN repositories only —
   `xrliAnnie/raya` and `xrliAnnie/raya-memory`. Never any project repo.
-- **What**: PRs of the summary/report kind defined by the FLY-2030 summary
-  contract (Lead-authored summaries flowing INTO Raya's repo), where
-  **merge = the "已阅" read receipt** (PRD §8.8: open PR = unread,
-  merge = read).
+- **What**: a PR qualifies ONLY when BOTH of the following machine-checkable
+  conditions hold — this is a **check**, not a claim (a self-asserted "this is
+  a summary" would be the same hole as "I read it", PRD §12.3.4):
+  1. **every** file changed by the PR lies under the fixed summary path
+     prefix defined by the FLY-2030 summary contract (§1.1, e.g.
+     `summaries/…`); AND
+  2. the PR changes **no executable file or configuration** — no code, no
+     scripts, no workflows, no dependency manifests.
+  If either condition fails, this exemption does not apply and the normal R1
+  prohibition stands. For a qualifying PR, **merge = the "已阅" read receipt**
+  (PRD §8.8: open PR = unread, merge = read).
 - **Why this is not a hole in R1**: these PRs carry no Linear issue, so the
   server-side founder-consent gate cannot even evaluate them (the evaluator is
   issue-bound — PRD §12.3.1: "对一个没有 Linear issue 的 PR,那个闸根本无法求值");
@@ -44,7 +52,7 @@ R1「Reserved actions」的收尾条是全称禁令,逐字:
 
 ## 三、加完之后哪些东西变成允许的(全集,恰好一条)
 
-**新允许的动作只有一个**:Raya(仅她)对 `xrliAnnie/raya` 与 `xrliAnnie/raya-memory` 两仓里、属于 summary 合同定义的那类 PR,执行 merge 作为已阅回执。
+**新允许的动作只有一个**:Raya(仅她)对 `xrliAnnie/raya` 与 `xrliAnnie/raya-memory` 两仓里、**满足两条机器可核条件(全部改动在 summary 路径前缀下 ∧ 不改任何可执行文件/配置)**的 PR,执行 merge 作为已阅回执。
 
 **没有变化的(明写防误读)**:任何项目仓的任何 PR 的 merge;`approve_to_ship` 门的应答;任何 ship API;其他 Lead/Runner 的任何 merge 权;「读完即可 merge」的一般化推理。执法面也没变:这个例外**删除的是一条文字禁令**,不新增任何服务端权限(那两仓的 PR 本来就进不了 issue-bound 的 consent 闸);审计面 = 两仓的 merge 历史,天然留痕。
 
