@@ -68,8 +68,8 @@ exploration 的 D1–D12 在协议层都有现成落点:Codex app-server 0.150.1
 |---|---|---|
 | `#raya` | `1542079099928059987` | FLY-2029 verification §3 / raya.env |
 | Raya bot id | `1542068543645024257` | `apps/brain/src/cli.ts` |
-| 邀请权限 | `36703232` = ViewChannel + SendMessages + Connect + Speak + UseVAD | FLY-2074 plan §14.1 |
-| 本单额外需要 | `ReadMessageHistory`(65536,补读断档消息)· `SendMessagesInThreads`(1<<38,在 roundtable thread 里答/追问)· roundtable 频道的 View/Send | Discord 权限表 |
+| 邀请权限(静态位) | `36703232` = ViewChannel + SendMessages + Connect + Speak + UseVAD | FLY-2074 plan §14.1 |
+| 🔴 **生效权限(实测,更正)** | **ReadMessageHistory 与 SendMessagesInThreads 实际已有,#leads-roundtable / #raya 均可读**——Tadashi 2026-08-28 01:41 实测。我此前据邀请 URL 的静态位掩码报「缺两项权限」是**错的**(生效权限 = 邀请位 ⊕ 角色授权 ⊕ 频道覆写,静态位不含后两者);该错误也进过 v1 founder HTML §9 与本文旧版 R8,**均以本行为准,不再列为阻塞项** | Lead 实测(答 880feab1) |
 | `#leads-roundtable` | `1512578695468941333`;`requireMention:true`;top-level 自动开 thread(FLY-314),被 @ 的 Lead 与 founder 成为 thread 成员 | `lead-rules-base/cross-dept-channel-rules.md` · `~/.flywheel/roundtable.json` |
 | Lead 对 bot 消息的过滤 | Discord 插件按 Lead 的 `access.json.allowBots` 白名单放行;FLY-282 自愈:`~/.flywheel/roundtable-registry/<leadId>.json` 里的 `botUserId` 在 Lead 启动时并入 | `packages/teamlead/src/roundtable-allowbots.ts` |
 | registry 现状 | 18 个 Lead 条目,**无 raya** | `ls ~/.flywheel/roundtable-registry` |
@@ -118,7 +118,7 @@ exploration 的 D1–D12 在协议层都有现成落点:Codex app-server 0.150.1
 | R5 | 额度打空(FLY-2074 坑:错误被吞成正常关闭) | `turn.status=failed` + `error.message` 落日志;同一小时只在 `#raya` 说一次「额度/错误」,tick 静默跳过并记账 |
 | R6 | 自动 thread 与 Lead 回复的形状(thread id、成员)与我读到的规则不一致 | P-ask 实证;失败分支已写 |
 | R7 | 她用 reaction 的习惯未知,反指标「值」的分母可能长期为 0 | 只记录;HTML 明写这个分母靠她打 👍/👎 |
-| R8 | 两个 Discord 权限要 founder 重邀 | 在 implement 前完成;缺权限时 preflight fail-loud 列出缺哪一项 |
+| R8 | ~~两个 Discord 权限要 founder 重邀~~ **已撤销**(§4 更正行:实测已有,不是阻塞项);preflight 的运行时实探仍保留(它测的就是生效权限,不是静态位) | — |
 
 ## 8. 会过期的结论
 

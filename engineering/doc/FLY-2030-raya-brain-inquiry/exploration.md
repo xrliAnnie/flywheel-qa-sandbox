@@ -102,7 +102,7 @@ raya-memory  MEMORY.md(只有身份锚,承诺/事实两节为空)
 | 选项 | 判 |
 |---|---|
 | A. flywheel-comm Mailbox | ❌ 需要 flywheel 源码(P12);而且 P13 说需要她看见的走 Discord |
-| **B. `#leads-roundtable`(1512578695468941333)`<@LeadBotId> 问题`;Lead 在自动开的 thread 里答;brain 只认「Raya 开的那条 thread 里、注册表里 Lead bot id」的消息,转成一轮 `【Lead 回复】` 喂给 Raya** | ✅ **选它**。前置(⬜ 全部是 flywheel/founder 侧的一次性动作,不是 raya 代码):① Raya bot 在每个 Lead 的 `allowBots` 里(现状 **没有**;FLY-282 自愈机制:往 `~/.flywheel/roundtable-registry/raya.json` 放一条 → Lead 下次重启并入)② Raya bot 对 roundtable 有 ViewChannel/SendMessages/**SendMessagesInThreads/ReadMessageHistory**(现邀请权限 36703232 只有 View+Send+语音三项)|
+| **B. `#leads-roundtable`(1512578695468941333)`<@LeadBotId> 问题`;Lead 在自动开的 thread 里答;brain 只认「Raya 开的那条 thread 里、注册表里 Lead bot id」的消息,转成一轮 `【Lead 回复】` 喂给 Raya** | ✅ **选它**。前置(⬜ 全部是 flywheel/founder 侧的一次性动作,不是 raya 代码):① Raya bot 在每个 Lead 的 `allowBots` 里(现状 **没有**;FLY-282 自愈机制:往 `~/.flywheel/roundtable-registry/raya.json` 放一条 → Lead 下次重启并入)② ~~Raya bot 对 roundtable 需补权限~~ **更正(2026-08-28 Lead 实测)**:ReadMessageHistory/SendMessagesInThreads 与 roundtable 可读**实际已有**——「邀请位 36703232 缺两项」是拿静态位掩码冒充生效权限的错误推断,不是阻塞项(research §4 更正行为准)|
 | C. 直接去 Lead 自己的 chatChannel 问 | Lead 频道不是给别的 bot 说话的地方;而且她看不见跨项目对话 | ❌ |
 
 B 失败时(权限没配好 / Lead 不答):Raya 在 `#raya` 如实说「我想问 X,但问不到」(P2/P3),不猜。**超时不另起定时器**:未回复的追问在下一次 tick 的输入里带上,由她决定说「没问清楚」。
@@ -164,7 +164,7 @@ B 失败时(权限没配好 / Lead 不答):Raya 在 `#raya` 如实说「我想�
 
 1. D9 抽公共包 vs. 复制客户端——我选抽包。
 2. D4 的 flywheel 侧前置(roundtable-registry 加 `raya.json` + Lead 重启)由谁做——我建议他在 implement 前做,本单不碰 flywheel 运行态。
-3. Discord 权限重邀(加 ReadMessageHistory + SendMessagesInThreads;roundtable 频道可见)——founder 动作,请他转。
+3. ~~Discord 权限重邀~~ **已撤销**——Lead 2026-08-28 实测两项权限已有(research §4 更正行)。
 4. D8 可写根是否要加六个项目根——我判不加,按 §8.4 自检已写在 Q8。
 
 ## 9. 会过期的结论
