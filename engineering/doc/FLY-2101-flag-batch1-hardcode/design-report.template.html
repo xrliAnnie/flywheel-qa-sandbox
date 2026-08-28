@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2101 · 13 个运行时 flag 固化删 — 设计</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#ffffff;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --navy:#1a365d;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.65;padding:24px 16px 80px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{font-size:26px;color:var(--navy);margin-bottom:6px}
+  .meta{color:var(--dim);font-size:13px;margin-bottom:24px}
+  .meta code{font-family:'SF Mono',Menlo,monospace;font-size:12px}
+  .card{background:var(--card);border-radius:12px;box-shadow:0 1px 3px rgba(0,0,0,.06);padding:20px 22px;margin-bottom:18px;border-left:4px solid var(--blue)}
+  .card.green{border-left-color:var(--green)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.red{border-left-color:var(--red)}
+  .card.navy{border-left-color:var(--navy)}
+  h2{font-size:18px;color:var(--navy);margin-bottom:10px}
+  h3{font-size:15px;margin:14px 0 6px}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0 8px 22px}
+  li{margin:4px 0}
+  .jargon{color:var(--dim);font-size:13px}
+  .diagram{overflow-x:auto;margin:12px 0;text-align:center}
+  .diagram svg{max-width:100%;height:auto}
+  .diagram.wide svg{max-width:none;width:1560px;height:auto}
+  .scroll-hint{color:var(--dim);font-size:12px;margin-top:2px}
+  table{border-collapse:collapse;width:100%;margin:10px 0;font-size:13.5px}
+  th,td{border:1px solid #e5e5ea;padding:6px 10px;text-align:left;vertical-align:top}
+  th{background:#fafafa;color:var(--navy)}
+  code{font-family:'SF Mono',Menlo,monospace;font-size:12.5px;background:#f2f2f4;border-radius:4px;padding:1px 5px}
+  .verdict{display:inline-block;border-radius:6px;padding:2px 10px;font-size:12.5px;font-weight:600}
+  .v-keep{background:#e8f5e9;color:#1b5e20}
+  .v-del{background:#fdecea;color:#b71c1c}
+  .v-warn{background:#fff7e6;color:#8a5300}
+  .comment-box{margin-top:14px;border-top:1px dashed #e5e5ea;padding-top:10px}
+  .comment-box label{font-size:12.5px;color:var(--dim);display:block;margin-bottom:6px}
+  .comment-box textarea{width:100%;min-height:64px;border:1px solid #d2d2d7;border-radius:8px;padding:8px 10px;font:inherit;font-size:13.5px;resize:vertical;background:#fbfbfd}
+  .comment-box textarea:focus{outline:2px solid var(--blue);border-color:transparent}
+  #summary-body{white-space:pre-wrap;font-size:13.5px;background:#fbfbfd;border:1px solid #e5e5ea;border-radius:8px;padding:12px;min-height:48px;font-family:'SF Mono',Menlo,monospace}
+  .btn{display:inline-block;margin-top:10px;background:var(--blue);color:#fff;border:none;border-radius:8px;padding:8px 16px;font-size:14px;cursor:pointer}
+  .btn:active{opacity:.8}
+  #copy-status{margin-left:10px;font-size:13px;color:var(--green)}
+  .chunk{margin-top:10px}
+  .chunk .btn{background:var(--navy)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2101 · 13 个运行时 env flag 全部固化删 — 设计方案</h1>
+  <div class="meta">Issue: FLY-2101 · Batch 1(无依赖;D 依赖本单)· 2026-08-27 · 依据:founder 8-27 v4 裁定<br>
+  文档:<code>engineering/doc/FLY-2101-flag-batch1-hardcode/</code>(exploration / research / plan)</div>
+
+  <!-- ① 一句话总结 -->
+  <div class="card green" data-section="① 一句话总结">
+    <h2>① 一句话总结</h2>
+    <p><strong>把 13 个从来没人动过的运行时开关(env flag)按现值写死成常量,连读点、名册条目和 mailbox / merge 门的旧回退路径一起删掉 —— 行为逐字节不变,治理账本少 13 行。</strong></p>
+    <p class="jargon">env flag = 通过环境变量文件(<code>.env</code>)控制的功能开关;「运行时读」指程序运行中每次用到才去读,理论上改了立即生效 —— 但这 13 个从上线起就没有任何人改过。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机):</label><textarea data-key="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ② 核心流程图 -->
+  <div class="card" data-section="② 核心流程:固化前后">
+    <h2>② 核心流程:固化前后</h2>
+    <p>现状:每个 flag 背后是一条完整「供应链」—— 环境变量、代码读点、名册(registry,所有 flag 的登记表)、真值守卫(truth,核对 <code>.env</code> 里每一行是不是合法开关的检查器)、drift 扫描(自动对账:代码里的读点和名册是否一致)、每周退役巡检。改后只剩一行常量。</p>
+    <div class="diagram wide">@@D1@@</div>
+    <p class="scroll-hint">↔ 这张图较宽,可左右滑动查看</p>
+    <p>13 个 flag 与固化值(<strong>全部等于现默认值</strong>,这是「行为零变化」成立的根据;生产 <code>.env</code> 里唯一显式设的一行 <code>FLYWHEEL_MAILBOX_QUEUE=1</code> 与默认等价):</p>
+    <table>
+      <tr><th>flag</th><th>固化</th><th>附加删除</th></tr>
+      <tr><td><code>founder_review_orphan_monitor</code></td><td>常开</td><td>=0 早退分支</td></tr>
+      <tr><td><code>mailbox_queue</code></td><td>常开</td><td><span class="verdict v-del">旧投递流整条 + deploy barrier 子系统</span></td></tr>
+      <tr><td><code>liveness_activity_window_ms</code></td><td>600000(10 分钟)</td><td>resolve.ts 镜像特判</td></tr>
+      <tr><td><code>merge_approval_gate_killswitch</code></td><td>门常在</td><td><span class="verdict v-del">=0 绕过 verifyApproval 分支</span>(founder 8-22:不应有全局 Hard Gate 阀)</td></tr>
+      <tr><td><code>issue_gate_supersede_mode</code></td><td>enforce</td><td>observe / =0 分支</td></tr>
+      <tr><td><code>deferred_approval_ttl_ms</code></td><td>2700000(45 分钟)</td><td>—</td></tr>
+      <tr><td><code>founder_reply_deadletter_age_ms</code></td><td>1800000(30 分钟)</td><td>—</td></tr>
+      <tr><td><code>ship_gate_grace_ms</code></td><td>15000(15 秒)</td><td>「设 600000 回旧行为」路</td></tr>
+      <tr><td><code>external_merge_reconcile</code></td><td>常开</td><td>=0 早退分支</td></tr>
+      <tr><td><code>merge_reconcile_window_days</code></td><td>7 天</td><td>—</td></tr>
+      <tr><td><code>ship_gate_card_grace_ms</code></td><td>15000(15 秒)</td><td>—</td></tr>
+      <tr><td><code>done_thread_reconcile_interval_min</code></td><td>360 分钟</td><td>—</td></tr>
+      <tr><td><code>done_thread_reconcile_max_per_run</code></td><td>25 条/轮</td><td>—</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ②b mailbox 半径 -->
+  <div class="card red" data-section="②b mailbox 旧路删除半径">
+    <h2>②b 删除半径最大的一个:mailbox_queue</h2>
+    <p>它的「=0 回切路」不只是几个 if:整个 <strong>deploy barrier</strong>(部署就绪闸 —— 每次部署时先把这个 flag 压成 0、等全舰队就绪再恢复的保护机制)存在的唯一目的就是伺候这个 flag。flag 固化后它不但没用,还会继续往 <code>.env</code> 里写这个 key,和「全仓零残名」目标直接冲突,所以连根删。</p>
+    <div class="diagram">@@D2@@</div>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s2b" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ③ 数据/结构模型 -->
+  <div class="card navy" data-section="③ 治理账本变化">
+    <h2>③ 数据 / 结构模型:五本治理账各自怎么变</h2>
+    <div class="diagram">@@D3@@</div>
+    <p class="jargon">LEGACY_UNMANAGED_BASELINE = 旧式(非 SQLite 托管)flag 的封顶名单,规则是只许减不许增;PROTECTED_LEGACY_FLAG_NAMES = 禁止两个高危 flag 进 SQLite 托管的保护名单;RETIRED_FLAGS = 已退役 flag 的「墓碑」,让残留的 <code>.env</code> 行报出「已退役,删这行」。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ④ 取舍 -->
+  <div class="card amber" data-section="④ 关键取舍与被否方案">
+    <h2>④ 关键取舍与被否方案</h2>
+    <table>
+      <tr><th>裁决</th><th>选了</th><th>没选(为什么)</th><th>代价</th></tr>
+      <tr>
+        <td><strong>D1</strong> 墓碑 vs 零命中</td>
+        <td>不加墓碑,达成 rg 全仓零命中(验收原文「含 dist 外全部源」)</td>
+        <td>按惯例加 RETIRED_FLAGS 墓碑 —— 墓碑字符串本身就是一个 rg 命中,与验收冲突</td>
+        <td>你删 <code>.env</code> 行之前,检查器报的是通用的「unknown 环境变量」而不是定制的「已退役,删这行」;仍然响,只是话糙</td>
+      </tr>
+      <tr>
+        <td><strong>D2</strong> 空保护名单去留</td>
+        <td>连集合带分支整删(两个成员都在删除名单里,空集守不住任何东西)</td>
+        <td>留一个空集合「以防将来」—— 死代码,且「只删不加」原则不许留壳</td>
+        <td>无</td>
+      </tr>
+      <tr>
+        <td><strong>D3</strong> deploy barrier</td>
+        <td>子系统整删(TS 模块 + CLI + shell 库 + 部署脚本编排段 + 两套测试)</td>
+        <td>只删 flag 留 barrier —— barrier 会继续往 .env 写这个 key,零命中永远达不成</td>
+        <td>未来若真要「部署窗口暂停某投递协议」,得重新设计(见诚实边界)</td>
+      </tr>
+    </table>
+    <p>实施顺序(TDD):先立三条旧路的「已删」回归测试(mailbox / merge 门 / supersede 各一条,红),再逐 flag 删读点写常量(绿),最后名册守卫同步 + 全仓 lint / build / test + 逐名词界扫描(<code>\b</code> 词界,因为有 4 组同前缀的幸存邻居,比如 <code>FLYWHEEL_ISSUE_GATE_SUPERSEDE_MAX_MUTATIONS</code> 要留)。</p>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- ⑤ 诚实边界 -->
+  <div class="card red" data-section="⑤ 诚实边界">
+    <h2>⑤ 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>13 个 flag 的读点、名册条目、守卫账、旧回退路径全删;行为逐字节不变(固化值 = 现默认值,已逐条核对)。</li>
+      <li>三条旧路各一条回归测试,证明「旧路已不存在」而不只是「没走」。</li>
+      <li>部署说明(由 Lead 执行):删生产 <code>.env</code> 的 <code>FLYWHEEL_MAILBOX_QUEUE=1</code> 行;顺检并删可能残留的 barrier marker 文件。不投重启票,随 00:00/12:00 班车。</li>
+    </ul>
+    <h3>不做 / 做不到</h3>
+    <ul>
+      <li><strong>不回答「以后要不要能关」</strong>:merge 门、supersede 巡检从此没有全局阀。若未来出现真实操作者需求,走新 issue 重新登记(登记闸会强制走 SQLite 托管路径),本单不留后门。</li>
+      <li><strong>代码替不了人删生产文件</strong>:<code>.env</code> 那行要 Lead 手动删;删之前检查器会持续报 unknown(可见、无害,但会响)。</li>
+      <li><strong>测试改造面大于代码改造面</strong>:约 30 个测试文件要动,最重的是一批拿 <code>MERGE_APPROVAL_GATE=0</code> 当捷径绕过 merge 门的测试,要改成构造真审批 fixture。工作量风险,不是行为风险。</li>
+      <li><strong>死代码只在零引用时删</strong>:flywheel-comm 的旧单条投递方法等,删除前逐个 rg 复核,清单列进 PR body,不顺手扩权。</li>
+      <li>B2(9 个启动/CLI 时读的)、C(config.yaml)、任何新旋钮/告警层:不在本单。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见:</label><textarea data-key="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- 意见汇总 -->
+  <div class="card navy" data-section="意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="jargon">下面实时汇总你在各节写的全部非空意见;点按钮一键复制,贴回 Discord 即可。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2101";
+  var PREFIX = "fly2101-comments:" + location.pathname + ":";
+  function lsGet(k){ try { return localStorage.getItem(PREFIX + k) || ""; } catch(e){ return ""; } }
+  function lsSet(k,v){ try { localStorage.setItem(PREFIX + k, v); } catch(e){} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(area){
+    var card = area.closest ? area.closest(".card") : null;
+    return (card && card.getAttribute("data-section")) || area.getAttribute("data-key");
+  }
+
+  function buildSummary(){
+    var parts = [];
+    areas.forEach(function(area){
+      var v = area.value.trim();
+      if (!v) return;
+      parts.push("[" + sectionTitleFor(area) + "] " + v);
+    });
+    return parts;
+  }
+
+  function fullText(){
+    var parts = buildSummary();
+    return MARKER + "\n" + (parts.length ? parts.join("\n\n") : "(无意见)");
+  }
+
+  function chunkText(){
+    var parts = buildSummary();
+    var body = parts.length ? parts.join("\n\n") : "(无意见)";
+    var full = MARKER + "\n" + body;
+    if (full.length <= 1800) return [full];
+    var chunks = [];
+    var cur = [];
+    var curLen = MARKER.length + 20;
+    parts.forEach(function(p){
+      if (curLen + p.length + 2 > 1800 && cur.length){
+        chunks.push(cur.join("\n\n"));
+        cur = []; curLen = MARKER.length + 20;
+      }
+      cur.push(p); curLen += p.length + 2;
+    });
+    if (cur.length) chunks.push(cur.join("\n\n"));
+    return chunks.map(function(c, i){
+      return MARKER + "(第 " + (i+1) + "/" + chunks.length + " 段)\n" + c;
+    });
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunkArea = document.getElementById("chunk-area");
+  var statusEl = document.getElementById("copy-status");
+
+  function copyText(text, done){
+    function fallback(){
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed"; ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch(e){ ok = false; }
+      document.body.removeChild(ta);
+      done(ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){ done(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary(){
+    var parts = buildSummary();
+    summaryBody.textContent = parts.length ? fullText() : "(还没有意见)";
+    while (chunkArea.firstChild) chunkArea.removeChild(chunkArea.firstChild);
+    var chunks = chunkText();
+    if (parts.length && chunks.length > 1){
+      chunks.forEach(function(c, i){
+        var div = document.createElement("div");
+        div.className = "chunk";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn";
+        btn.textContent = "复制第 " + (i+1) + "/" + chunks.length + " 段";
+        btn.addEventListener("click", function(){
+          copyText(c, function(ok){
+            statusEl.textContent = ok ? ("已复制第 " + (i+1) + " 段") : "复制失败,请手动全选";
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function(area){
+    var key = area.getAttribute("data-key");
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener("input", function(){
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function(){
+    var chunks = chunkText();
+    if (chunks.length === 1){
+      copyText(chunks[0], function(ok){
+        statusEl.textContent = ok ? "已复制" : "复制失败,请手动全选";
+      });
+    } else {
+      statusEl.textContent = "意见较长,请用下方分段按钮逐段复制";
+    }
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>
