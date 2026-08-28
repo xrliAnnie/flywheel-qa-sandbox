@@ -146,14 +146,17 @@ Commands:
             [--timeout-ms <n>] [--shot-timeout-ms <n>]
             [--chrome-bin <absolute executable>]. Always prints a one-line JSON
             envelope to stdout.
-  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
-            report [--project <name>] [--channel <id>] [--out <file>]
+	  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
+	            report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
             Bridge loopback endpoint and deliver via publish-report (hosted URL
             + Discord).
-            apply --name <flag> --to on|off [--bridge-url <url>]  — the command
-            the founder pastes to the Lead (copy-paste-apply); stage→apply a
-            direct-toggle flag on the loopback Bridge routes.
+	            set --name <flag> --to on|off|<enum> [--project <scope; default *>]
+	            [--reason <reason>] [--bridge-url <url>]
+	            clear --name <flag> --project <scope> --reason <reason>
+	            [--bridge-url <url>]  — copy/paste stage→apply commands. set/clear
+	            --project selects flag scope; report --project selects publishing.
+	            apply remains a set alias. clear is limited to SQLite-managed flags.
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:

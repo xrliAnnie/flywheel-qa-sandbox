@@ -1,4 +1,7 @@
-import { STORE_MANAGED_FLAGS } from "flywheel-config";
+import {
+	PROJECT_STORE_MANAGED_FLAGS,
+	STORE_MANAGED_FLAGS,
+} from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { type FeatureFlagsDeps, runFeatureFlags } from "../feature-flags.js";
 
@@ -88,7 +91,7 @@ describe("flywheel-comm feature-flags report", () => {
 	});
 });
 
-describe("flywheel-comm feature-flags apply", () => {
+describe("flywheel-comm feature-flags set/clear (apply alias)", () => {
 	function httpMock(
 		stage: { ok: boolean; status: number; body: unknown },
 		apply: { ok: boolean; status: number; body: unknown },
@@ -103,7 +106,7 @@ describe("flywheel-comm feature-flags apply", () => {
 		});
 	}
 
-	it("bad args (missing --name/--to) → exit 1", async () => {
+	it("bad set args (missing --name/--to) → exit 1", async () => {
 		const deps = baseDeps();
 		await expect(
 			runFeatureFlags(["apply", "--to", "off"], deps),
@@ -116,6 +119,9 @@ describe("flywheel-comm feature-flags apply", () => {
 	it("requires --reason only for store-managed flags", async () => {
 		const storeManagedFlag = STORE_MANAGED_FLAGS.values().next().value;
 		expect(storeManagedFlag).toBeDefined();
+		const projectManagedFlag =
+			PROJECT_STORE_MANAGED_FLAGS.values().next().value;
+		expect(projectManagedFlag).toBeDefined();
 		const httpJson = httpMock(
 			{
 				ok: true,
@@ -131,6 +137,20 @@ describe("flywheel-comm feature-flags apply", () => {
 				deps,
 			),
 		).rejects.toThrow("exit 1");
+		await expect(
+			runFeatureFlags(
+				[
+					"set",
+					"--name",
+					projectManagedFlag!,
+					"--to",
+					"on",
+					"--project",
+					"flywheel",
+				],
+				deps,
+			),
+		).rejects.toThrow("exit 1");
 
 		await runFeatureFlags(
 			["apply", "--name", "founder_review_orphan_monitor", "--to", "off"],
@@ -139,10 +159,12 @@ describe("flywheel-comm feature-flags apply", () => {
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
 			name: "founder_review_orphan_monitor",
 			to: false,
+			project: "*",
+			op: "set",
 		});
 	});
 
-	it("happy: stage → apply, logs the apply body", async () => {
+	it("set sends project scope and apply remains a compatible alias", async () => {
 		const httpJson = httpMock(
 			{
 				ok: true,
@@ -154,11 +176,13 @@ describe("flywheel-comm feature-flags apply", () => {
 		const deps = baseDeps({ httpJson });
 		await runFeatureFlags(
 			[
-				"apply",
+				"set",
 				"--name",
-				"founder_review_orphan_monitor",
+				"doc_flow",
 				"--to",
-				"off",
+				"on",
+				"--project",
+				"flywheel",
 				"--reason",
 				"operator test",
 			],
@@ -168,12 +192,75 @@ describe("flywheel-comm feature-flags apply", () => {
 		// stage POST carries the sparse {name, to}; apply POST carries {canonical, confirmToken}
 		expect(httpJson.mock.calls[0]?.[0]).toContain("/api/fleet/flag/stage");
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
-			name: "founder_review_orphan_monitor",
-			to: false,
+			name: "doc_flow",
+			to: true,
+			project: "flywheel",
+			op: "set",
 			reason: "operator test",
 		});
 		expect(httpJson.mock.calls[1]?.[0]).toContain("/api/fleet/flag/apply");
 		expect(deps.log).toHaveBeenCalledWith(expect.stringContaining('"ok":true'));
+
+		httpJson.mockClear();
+		await runFeatureFlags(
+			["apply", "--name", "founder_review_orphan_monitor", "--to", "off"],
+			deps,
+		);
+		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
+			name: "founder_review_orphan_monitor",
+			to: false,
+			project: "*",
+			op: "set",
+		});
+	});
+
+	it.each([
+		["workflow_turn_divergence_alerts", "*"],
+		["doc_flow", "flywheel"],
+	])(
+		"clear sends global/project identity %s at scope %s without a target",
+		async (name, project) => {
+			const httpJson = httpMock(
+				{
+					ok: true,
+					status: 200,
+					body: { canonical: { kind: "flag_store" }, confirmToken: "t1" },
+				},
+				{ ok: true, status: 200, body: { ok: true } },
+			);
+			const deps = baseDeps({ httpJson });
+			await runFeatureFlags(
+				["clear", "--name", name, "--project", project, "--reason", "inherit"],
+				deps,
+			);
+			expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
+				name,
+				project,
+				op: "clear",
+				reason: "inherit",
+			});
+		},
+	);
+
+	it("clear fails before HTTP unless --project and --reason are explicit", async () => {
+		const httpJson = httpMock(
+			{ ok: true, status: 200, body: {} },
+			{ ok: true, status: 200, body: {} },
+		);
+		const deps = baseDeps({ httpJson });
+		await expect(
+			runFeatureFlags(
+				["clear", "--name", "doc_flow", "--reason", "inherit"],
+				deps,
+			),
+		).rejects.toThrow("exit 1");
+		await expect(
+			runFeatureFlags(
+				["clear", "--name", "doc_flow", "--project", "flywheel"],
+				deps,
+			),
+		).rejects.toThrow("exit 1");
+		expect(httpJson).not.toHaveBeenCalled();
 	});
 
 	it("stage failure → exit 1 (no apply)", async () => {
