@@ -48,15 +48,16 @@ transaction,防止半迁移状态。
 事实:CAS(expectedRevision)+ UPDATE-only;无 INSERT(missing_row 拒)、无 DELETE;
 `getFlagValueRow(name)` 单行读(4601)。
 
-改法(签名加 `scope: string`,默认 `'*'`):
-- global store flag(STORE_MANAGED_FLAGS,scope 必为 '*'):行为逐字节不变。
-- project flag(PROJECT_STORE_MANAGED_FLAGS,scope ∈ {'*', projectName}):
-  - **set**:行存在 → CAS UPDATE(raw 总是显式 "0"/"1");行不存在 →
-    `expectedRevision=0` 语义为「期望缺行」,INSERT(revision=1);并发下 INSERT 撞
-    UNIQUE → 回报 stale_revision。
-  - **clear**(rawTo=null):行存在 → CAS DELETE + changelog(action='clear',
-    to_present=0,to_effective=删行后该 scope 的回落值,由调用方算好传入);
-    行不存在 → missing_row。
+~~改法第一稿(expectedRevision=0 表缺行、to_effective 记回落值)~~
+**已作废(Codex R1 #3/#4)**:删行后 revision 重建为 1 有 delete→recreate ABA;
+回落值在 route 层取不到且 `*` 行清除后的回落是逐项目向量,写不进单个
+to_effective。定案改为(见 plan Step 2):
+- global 六行:现有 `applyFlagValueChange` 签名/合同逐字节不变。
+- scoped 写走**新方法** `applyScopedFlagValueChange`,CAS fence = 该 (flag, scope)
+  的 changelog `MAX(id)`(append-only ⇒ 跨删建单调,无 ABA);set = UPSERT 显式
+  "0"/"1",clear = DELETE + changelog(`to_effective='inherit'` 哨兵,schema 注释
+  写明语义);delete 成功返回 `{ok:true, deleted:true}`(独立类型,不复用
+  ApplyFlagValueChangeResult)。
 - changelog 全部写 scope 列。
 - 读侧:`getFlagValueRow(name, scope='*')`;新增 `listFlagValueRows(name)` /
   `listAllFlagValueRows()`(enrich 一次拉全表,行数 ≤ 每 flag×(项目数+1),很小)。
@@ -66,10 +67,12 @@ transaction,防止半迁移状态。
 事实:PK `flag_name`;upsert `ON CONFLICT(flag_name)`(5455-);`getFlagScanState()`
 全表读;`ask_count`/`last_asked_run_id` 在 upsert 中有意不更新。
 
-改法:同款 rebuild 加 `scope TEXT NOT NULL DEFAULT '*'`,PK `(flag_name, scope)`,
-upsert 冲突键改 `(flag_name, scope)`,存量行落 `'*'`。`FlagScanState` 类型加 `scope`。
-`flag_scan_runs / flag_scan_run_legs / flag_scan_run_items / flag_keep_anchor` **不动**
-(候选、报告、留答仍 flag 级,见 §5)。
+~~改法:同款 rebuild 加 scope 列,PK `(flag_name, scope)`。~~
+**已作废(Codex R1 #5)**:`flag_scan_state` 还承载 flag 级生命周期
+(ask_count / last_asked_run_id / last_retiring_issue / departure / rowsModified===1
+断言),PK 扩了会全部炸。改为**不动此表**,另建纯增量的
+`flag_scan_scope_state(flag_name, scope, canonical, streak…)` 只记 per-scope 稳定
+账本;flag 级候选/ask/departure/anchor 逐字节不变(见 plan Step 6)。
 
 ## 2. 策略层(packages/config/src/feature-flags/store-policy.ts)
 
@@ -169,12 +172,12 @@ default→删行语义只适用于 global env 流。挂载在 plugin.ts 2286/229
   4. project flag 的 to 必须 boolean(5 个全是 bool);`op==='clear'` 时忽略 to。
   - rawTo 规则:project flag set → 显式 `to ? "1" : "0"`(**不走** computeRawTo 的
     default→null);clear → null。global store flag('*' 行)沿用 computeRawTo 不变。
-  - stage 前读行:`getFlagValueRow(name, scope)`;缺行 → revision 记 0
-    (canonical.revision=0 = 期望缺行)。
-  - `effectiveTo`(clear 时)= 删行后该 scope 的回落值(用 resolveScopedEffective
-    以「去掉本行」的行集算),进 changelog 的 to_effective,审计才诚实。
-- `handleFlagApply`:kind==='flag_store' 分支透传 scope/op 到
-  `applyFlagValueChange`;对 project flag 重复 stage 的 2/3 号校验(token 只证明
+  - ~~stage 前读行按 revision 记 fence(缺行=0);clear 的 effectiveTo 记回落值~~
+    **已作废(Codex R1 #3/#4)**:scoped fence 改用 changelog `MAX(id)`
+    (`expectedChangeSeq`),clear 的 to_effective 记 `inherit` 哨兵(见 §1.3 与
+    plan Step 2/3)。
+- `handleFlagApply`:kind==='flag_store' 且 scoped → 走
+  `applyScopedFlagValueChange`;对 project flag 重复 stage 的 2/3 号校验(token 只证明
   「canonical 没被改」,不证明「canonical 当初合法」→ 服务端 allow-set 是权威的
   既有原则,FLY-709 头注)。
 
@@ -202,26 +205,37 @@ default→删行语义只适用于 global env 流。挂载在 plugin.ts 2286/229
 
 改法:**本单不给新台加第二条写路径**(单一写点 = flag/stage+apply 路由;新台的
 projectOverrides 因 §3.2 的 enrich 自动显示 DB 值)。writeCapability reason 文案对
-PROJECT_STORE_MANAGED_FLAGS 成员改为指路「用 feature-flags set --project(或旧台
-项目下拉)」。新台的可写化留给后续 issue,避免本单同时动两套 stage/apply 协议。
+PROJECT_STORE_MANAGED_FLAGS 成员改为指路「用 feature-flags set --project」
+(~~或旧台项目下拉~~ **已作废,Codex R2 #5:旧台/console 直写通道已整体删除,
+页面只生成命令**,见 plan §0)。新台的可写化留给后续 issue,避免本单同时动两套
+stage/apply 协议。
 
 ## 5. 展示面(feature-flag-render.ts + feature-flag-report-html.ts)
 
 事实:`renderFlagState` 逐项目 badge(166-184);控制位 `renderFlagControl`
 只对 direct env flag(195-226);phone 报告脚本把勾选/下拉变化拼成
-`feature-flags apply …` 命令行(feature-flag-report-html.ts:93-148);console 模式
-按钮 data-ff-apply 由 FleetConsole 页脚本接线打 stage/apply。
+`feature-flags apply …` 命令行(feature-flag-report-html.ts:93-148)。
+**勘误(Codex R1 #1)**:render 的 `console` control mode 在生产**没有调用方** ——
+真实 localhost 管理台是 fleet-console-html.ts(management coordinator 流),不渲染
+这些卡片;所以「console 模式按钮由 FleetConsole 接线」是我此前的错误假设。
+手机 copy-paste 报告页是这套卡片唯一真实的交互控制面。
 
 改法:
 - 项目行 badge 带 via 标(`项目行` / `*行` / `config` / `默认`,小灰字),
   DB≠config 时黄标「runtime 按 config,C 单切换」。
 - `projectStoreManaged` 的卡片加「项目」控制条:
   `<select data-ffp-scope>`(选项:`*` + 名册项目)+
-  `<select data-ffp-value>`(`on` / `off` / `清除(继承)`)。
+  `<select data-ffp-value>`,**值下拉的选项与选中态由所选 scope 在 scopedStore 里
+  的 presence 决定(presence-based 状态机,Codex R2 #2 定案,细节见 plan Step 4)**:
+  无行 → 基线「继承(未设行)」,on/off 生成 set;有行 → 选中显式行值,
+  「清除(回落继承)」生成 clear;scope 切换时 phone 脚本按嵌入的
+  `{present, value}` 映射重置选项/选中/dirty。
   - phone 模式:变化 → 生成 `feature-flags set --name F --to on --project P --reason
     phone-report` 或 `feature-flags clear --name F --project P --reason phone-report`
     行进复制框(纯本地拼串,沿用零回连模型)。
-  - console 模式:生成同款 stage/apply POST(body 带 project/op)。
+  - ~~console 模式:生成同款 stage/apply POST(body 带 project/op)。~~
+    **已作废(Codex R1 #1)**:console mode 无生产调用方,本单不为它接线;
+    控件只做 phone 模式,唯一写入执行面是 CLI(见 plan §0)。
 - render 需要名册 ⇒ `renderFeatureFlagsHtml` / `renderFlagCard` 加可选
   `projectNames` 入参(或从 view.effectiveByProject 取行名 —— 后者更稳:enrich 后
   的 effectiveByProject 就是按名册逐项目的,直接用它,免传参)。**采用后者**。
@@ -233,25 +247,14 @@ PROJECT_STORE_MANAGED_FLAGS 成员改为指路「用 feature-flags set --project
 候选条件 = streakSamples≥2 且 streak ≥ 7 天(363-376);名册不匹配 → 整 flag
 indeterminate。
 
-改法(候选/报告语义保持 flag 级,只有计账粒度变细):
-- `FlagScanState` 加 `scope: string`('*' = 全局样本)。
-- `computeFlagScan`:
-  - bridge_global flag:样本/推进不变,state 落 `scope='*'`。
-  - project flag:名册守卫照旧(mismatch → 该 flag 所有 scope 行按 indeterminate
-    推进 + flag 级 noClock);守卫通过后**逐项目**取「解析后生效值」
-    (enrich 过的 effectiveByProject,天然含 DB 覆盖)各自 canonical 化、各自
-    advanceState ⇒ 一项目抖动只重置自己的 streak。
-  - flag 级候选:所有 scope 的 streak 都满足(min-over-scopes ≥ 7 天 且每行
-    samples≥2)才进 candidates;`stableForMs` 取 min。触发时机与旧「整向量」等价
-    (任何 scope 变 → 该 scope streak 重置 → min 重置),差别只在**账本可见性**:
-    报告能写出每个 (flag, scope) 各稳定几天。
-  - `nextState` 类型变为 per-(flag, scope) 数组;keep anchor 仍锚 flag 级
-    canonical(anchor canonical = 排序后的 per-scope canonical 向量 JSON,与旧
-    向量 canonical 同构,anchor 语义不变)。
-- StateStore upsert / getFlagScanState 改造见 §1.4。
-- 报告(flag-retirement-scan.ts 的 run item 渲染):project flag 的
-  `stable_for_ms` 仍 flag 级(min);报告正文对 project flag 附 per-scope 天数行
-  (从 nextState 取,只读展示,不改 run_items 表结构)。
+~~改法(第一稿:FlagScanState 加 scope、nextState 变 per-scope 数组)~~
+**已作废(Codex R1 #5)**:上述第一稿低估了 flag_scan_state 上的 flag 级生命周期
+耦合。定案改为(见 plan Step 6):flag 级扫描(canonical 整向量、候选、ask、
+departure、anchor、`nextState`)**逐字节不变**;另建纯增量表
+`flag_scan_scope_state(flag_name, scope, canonical, streak_started_at,
+streak_samples, last_sampled_at)` 记 per-scope 稳定账本,`computeFlagScan` 返回值
+**新增** `nextScopeState` 字段;commit 时 upsert 并按名册/registry 修剪失效 scope
+行;报告对 project flag 附 per-scope 天数(run_items 表不动)。
 
 ## 7. 名册(projects.json)与校验点
 
@@ -279,8 +282,9 @@ indeterminate。
 新增(对应验收):PK 迁移幂等 + 存量 6 行落 '*';scope 名册校验(未知名 400);
 bridge_global 拒项目行(mailbox_queue);三级取值顺序(config 包纯函数);双读回落
 (无行→config,有 '*' 行遮蔽 config,项目行压过 '*' 行);clear 删行 + changelog
-to_effective 为回落值;bypass 下 scoped 写 409 + 双读回落 config;per-scope 扫描
-streak(一项目变值不重置他项目)。
+to_effective 记 `inherit` 哨兵(~~回落值~~ **已作废,Codex R2 #5**,见 §1.3 /
+plan Step 2);bypass 下 scoped 写 409 + 双读回落 config;per-scope 扫描
+streak(一项目变值不重置他项目;完整清单见 plan Step 2/4/6)。
 
 ## 9. 会过期的结论(as-of 2026-08-27)
 
