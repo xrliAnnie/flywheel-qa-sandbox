@@ -206,6 +206,7 @@ if HOME="$TMP/home" \
   USER=untrusted-user \
   LOGNAME=untrusted-logname \
   PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/summary-home" \
   FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
   FLYWHEEL_DIR="$ROOT" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
@@ -216,6 +217,7 @@ if HOME="$TMP/home" \
   && grep -qF 'FLYWHEEL_LEAD_MODEL=claude-fable-5' "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_EFFORT=max' "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_TEST_PLIST_ONLY=preserved' "$TMP/server.env" \
+  && grep -qF "FLYWHEEL_SUMMARY_CONFIG_HOME=$TMP/summary-home" "$TMP/server.env" \
   && grep -qF "DISCORD_STATE_DIR=$TMP/discord-state" "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_ID=ops-lead' "$TMP/server.env" \
   && grep -Eq '^FLYWHEEL_LEAD_CARRIER_PID=[1-9][0-9]*$' "$TMP/server.env" \
@@ -300,6 +302,7 @@ child_plan="$({
     FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty" \
     FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity" \
     FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/home" \
     FLYWHEEL_LEAD_IDENTITY_DIGEST="$identity_digest" \
     FLYWHEEL_LEAD_PROJECTS_DIGEST="$projects_digest" \
     OPS_TOKEN=fixture-token \
@@ -314,6 +317,7 @@ if grep -qF $'PANE_ENV\tUSER\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_HAS_SUMMARY_DUTY\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_GRANULARITY\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_CONFIG_HOME\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_IDENTITY_DIGEST\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tDISCORD_EXPECTED_BOT_USER_ID\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tDISCORD_IDENTITY_MODE\tset' <<<"$child_plan"; then
@@ -364,24 +368,29 @@ jq -n \
 	--arg workspace "${LEAD_WORKSPACE:-}" \
 	--arg mcpExclude "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}" \
 	--arg alertChannel "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" \
-	'{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,alertChannel:$alertChannel}' \
+	--arg summaryConfigHome "${FLYWHEEL_SUMMARY_CONFIG_HOME:-}" \
+	'{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,alertChannel:$alertChannel,summaryConfigHome:$summaryConfigHome}' \
   > "${FLY1663_BODY_OUT:?}"
 BODY_STUB
 cat > "$TMP/body.env" <<'ENV'
 DISCORD_BOT_TOKEN=wrong-global-token
 OPS_TOKEN=right-lead-token
 FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=alert-channel-123
+FLYWHEEL_SUMMARY_CONFIG_HOME=/tmp/env-controlled
 ENV
 FLY1663_BODY_OUT="$TMP/body.out" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
+  FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/summary-home" \
   DISCORD_BOT_TOKEN=right-lead-token \
   bash "$TMP/body-fixture/lead-body.sh" "$TMP/manifest.json"
 if jq -e \
     --arg workspace "$TMP/custom-workspace" \
+	--arg summaryConfigHome "$TMP/summary-home" \
 	'.token == "right-lead-token"
 	  and .workspace == $workspace
 	  and .mcpExclude == "dangerous-mcp,chrome"
-	  and .alertChannel == "alert-channel-123"' \
+	  and .alertChannel == "alert-channel-123"
+	  and .summaryConfigHome == $summaryConfigHome' \
     "$TMP/body.out" >/dev/null; then
   pass "body preserves v1 manifest projection and exports launcher configuration to helpers"
 else

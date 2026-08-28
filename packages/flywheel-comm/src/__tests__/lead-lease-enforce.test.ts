@@ -74,6 +74,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 	function writeProjects(
 		backend: "claude-code" | "codex-app-server",
 		carrier?: "v1" | "v2",
+		identityHome = dir,
 	): void {
 		writeFileSync(
 			env.FLYWHEEL_PROJECTS_FILE!,
@@ -95,7 +96,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
 			projectName: "flywheel",
 			leadId: "eng-lead",
-			homeDir: dir,
+			homeDir: identityHome,
 		});
 		env.FLYWHEEL_PROJECT_NAME = identity.projectName;
 		env.FLYWHEEL_LEAD_KEY = identity.leadKey;
@@ -196,6 +197,34 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			fromAgent: "eng-lead",
 			toAgent: "runner-1",
 			content: "isolated state root",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+
+		expect(instructions()).toHaveLength(1);
+	});
+
+	it("uses the launcher's summary config home at the write enforcer", async () => {
+		const summaryHome = join(dir, "qa-summary-home");
+		mkdirSync(join(summaryHome, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(summaryHome, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test-deploy",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
+		rmSync(join(dir, ".flywheel", "summary-config.json"));
+		env.FLYWHEEL_SUMMARY_CONFIG_HOME = summaryHome;
+		writeProjects("claude-code", undefined, summaryHome);
+		setMode("off");
+
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "slot-local summary identity",
 			dbPath,
 			env,
 			authorizationDeps,

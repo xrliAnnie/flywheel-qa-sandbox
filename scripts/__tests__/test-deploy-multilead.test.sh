@@ -536,6 +536,10 @@ grep -q 'QA_SUMMARY_CONFIG_HOME="${SLOT_DIR}/identity-home"' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2030 S1: QA summary config must live under the slot"; }
 grep -q 'summary-config.json' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2030 S1: test-deploy must materialize summary config"; }
+if [ "$(grep -c 'FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}"' "$DEPLOY")" -ne 3 ]; then
+  S1_OK=0
+  fail "FLY-2030 S1: every QA Bridge start branch must receive the slot summary config home"
+fi
 if grep -q -- '--arg projectName "$TEST_PROJECT_NAME" --arg botTokenEnv' "$DEPLOY"; then
   S1_OK=0; fail "FLY-1726 S1: QA v2 manifest still declares botTokenEnv"
 fi

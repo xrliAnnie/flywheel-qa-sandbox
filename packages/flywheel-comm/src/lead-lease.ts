@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import Database from "better-sqlite3";
 import { appendRotatedLogSync } from "flywheel-config";
 import {
@@ -75,6 +75,17 @@ CREATE TABLE IF NOT EXISTS store_meta (
 `;
 
 function canonicalIdentityHomeDir(env: NodeJS.ProcessEnv): string | undefined {
+	if (env.FLYWHEEL_SUMMARY_CONFIG_HOME !== undefined) {
+		const summaryConfigHome = env.FLYWHEEL_SUMMARY_CONFIG_HOME.trim();
+		if (
+			!summaryConfigHome ||
+			!isAbsolute(summaryConfigHome) ||
+			/[\r\n]/.test(summaryConfigHome)
+		) {
+			throw new Error("FLYWHEEL_SUMMARY_CONFIG_HOME must be an absolute path");
+		}
+		return summaryConfigHome;
+	}
 	return env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
 }
 
