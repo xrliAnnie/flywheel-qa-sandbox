@@ -17,7 +17,10 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 ## 1. 分步改动(TDD:每步先写/改断言再动实现)
 
 ### Step 1 — cmux shell 三 flag(最大不确定性最先)
-1. 基线:跑 `bash scripts/test-cmux-sync.sh` 记录通过数。
+1. 基线:跑 `/bin/bash scripts/test-cmux-sync.sh` 记录通过数(**必须系统 /bin/bash 3.2**;
+   裸 `bash` 会命中 Homebrew bash 5.3,套件自身合同直接拒——Codex R1 实测)。注意本机 sandbox
+   会 skip 真 tmux/AF_UNIX 集成节:基线绿 ≠ node-off 删除后的全覆盖证明,受影响节判定只以
+   实际执行到的节为准,skip 节单独列账。
 2. `scripts/flywheel-cmux-sync.sh`:
    - 删 `build_attach_command` 的 `view_helper_enabled` 读取(:3767)与 =0 分支(:3775-3783);
    - 删 `node_presence_enabled()`(:1090-1093),12 处守卫展开为无条件执行。
@@ -39,6 +42,9 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 3. `exemptions.ts`:+1 单条 `FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE`(kind env,
    persistentEnvAllowed: false,issue "FLY-2102",reason 注明 loopback staged Bridge only);
    `LEGACY_FLAG_EXEMPTION_BASELINE` +1(账本修订,注释标注授权来源)。
+   被拒备选:「只删 registry 不进豁免账」—— 持久 .env 会报 unknown(更严),治具按进程注入
+   也不受影响,但 wiring.ts 的 env 读点会变成**无账读点**(违背 FLY-1455「必须登记、不许野建」
+   的治理意图,也违背 issue 原文「进 exemptions.ts 有账豁免」)。
 4. `store-policy.ts`:LEGACY_UNMANAGED_BASELINE 删 9 个名。
 5. 测试:`feature-flags-registry.test.ts`(两组断言换幸存同类 fixture;env 源 governance_gate
    类随 lead_lease_bypass 消亡 → 改为断言该类为空)、`feature-flags-drift.test.ts`
@@ -51,11 +57,19 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 2. `StateStore.ts`:删 `markFlagStoreBypassSeen` / `isFlagStoreBypassSeen` /
    `ensureFlagValueRows` recovering 臂(:4686-4790)+ fence 自清(:4853);
    **保留** `flag_store_meta` 表定义与 `bypass_recovery` changelog 历史行。
+   **部署前置检查**(Codex R1:「所有旧库一概无害」是过强断言):删除恢复臂的前提是目标库
+   不处于未完成恢复态 —— canonical 生产 `teamlead.db` 已实测 `flag_store_meta` 无
+   `bypass_seen` 行(2026-08-27,Codex R1 只读核验);PR 验收再跑一次
+   `sqlite3 -readonly ~/.flywheel/teamlead.db "SELECT value FROM flag_store_meta WHERE key='bypass_seen'"`
+   确认空/0。非 canonical 库(QA slot 等)不逐一保证,行为定义为「store 行原样即权威」并写入
+   honest boundary。
 3. `flag-routes.ts`:删 :177 / :284 bypass 409 分支。
 4. `plugin.ts`:删 broker import(:448)/挂载块(:4299-4319)/close(:10871);
    删 :8754-8763 sweep-ticks env 读(直接不传 → GatePoller 默认 60)。
-5. `gate-poller.ts`:`displayReconcileEveryNTicks` 保留为注入参数(测试 seam,默认 60),
-   删「0 → sweep disabled」语义与 :731 `displayCadence > 0` 守卫,注释同步。
+5. `gate-poller.ts`:`displayReconcileEveryNTicks` 保留为注入参数(测试 seam),但**入口
+   sanitize**:非有限数或 ≤0 一律回默认 60(Codex R1:只删 `> 0` 守卫会留下 `(tick-1) % 0`
+   = NaN 的静默永不触发路,等于 0=关 换了个写法活着)。sanitize 后 :731 守卫自然消失,
+   「0 仍按 60 sweep」的反旋钮断言才真成立。
 6. `runs-route.ts`:`GHOST_GUARD_SESSION_WAIT_MS` 写死 `90_000`,删 env 读(:238-241);
    `positiveInt` 若再无他用随删。
 7. 删目录 `packages/teamlead/src/bridge/publish-broker/`(14 文件);
@@ -74,7 +88,10 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 
 ### Step 5 — scripts/release + CI + 文档
 1. 删 `scripts/release/broker-request.mjs`;`shell-prepare.mjs` / `payload-promote.mjs` /
-   `shell-publish-preflight.sh`(:59)/ `shell-pack-install-dryrun.test.sh` 注释改述(功能零改动)。
+   `shell-publish-preflight.sh`(:59)/ `shell-pack-install-dryrun.test.sh` /
+   `scripts/__tests__/payload-release-pipeline.test.sh`(:298/:346-347 引用已删的
+   `publish-broker/release-commit.ts`,Codex R1 补漏)注释改述(功能零改动;
+   payload-release-pipeline 的断言逻辑不动,只改叙述)。
 2. 删 `scripts/__tests__/publish-broker-structure.test.sh` + ci.yml:975 步骤;
    `flywheel-log-rotate.test.sh:187` 清单行删。
 3. 新增 `scripts/__tests__/fly2102-flag-freeze.test.sh`(fly1674-residue 模式:
@@ -105,6 +122,7 @@ Issue: FLY-2102 (https://linear.app/geoforge3d/issue/FLY-2102/flagb2固化-9-个
 - **test-cmux-sync 重工量未知**(11633 行,node-off 全局态死亡):Step 1 最先做,若受影响节
   超预算(> ~15 节),按节列清单向 Lead 报量再继续,不静默扩 scope。
 - **回退**:单 PR 原子回退即可;无 DB 迁移(表保留)、无生产 env 依赖(九个全 absent)。
+- **旧库 fence 残留**:canonical 生产库已实测无 `bypass_seen` 行;部署前置检查见 Step 3.2。
 - **不可回退面**:无。tombstone 可撤,豁免可删,行为固化即默认值。
 
 ## 4. 不做(边界)
