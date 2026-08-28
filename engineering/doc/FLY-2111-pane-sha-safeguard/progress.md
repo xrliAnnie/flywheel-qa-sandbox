@@ -1,13 +1,13 @@
 ---
 issue: FLY-2111
 phase: implement
-phaseCursor: 3/6
-updated: 2026-08-28T03:27:21.836Z
-nextStep: Document re-localization, run repository gates, and commit
+phaseCursor: 4/6
+updated: 2026-08-28T03:32:56.601Z
+nextStep: Commit and push the rework, then request code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2111 progress
-**phase**: implement (3/6)
-**next**: Document re-localization, run repository gates, and commit
+**phase**: implement (4/6)
+**next**: Commit and push the rework, then request code review
