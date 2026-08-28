@@ -882,6 +882,9 @@ jobs:
       - name: Test — FLY-1674 legacy-path residue guard
         run: bash scripts/__tests__/fly1674-residue.test.sh
 
+      - name: Test — FLY-2102 startup flag freeze residue guard
+        run: bash scripts/__tests__/fly2102-flag-freeze.test.sh
+
       # FLY-1338 QA: the structure guard above reasons about the matrix filter
       # STRINGS; this one asks pnpm what they actually resolve to on the real
       # workspace, so "the sharded matrix still covers every packages/* package,
@@ -970,9 +973,6 @@ jobs:
 
       - name: Ship merge-token contract (SHIP_PAT first, GITHUB_TOKEN fallback)
         run: bash scripts/__tests__/ship-merge-token.test.sh
-
-      - name: Publish broker structure lint (zero-build commit + token scrub + default-off)
-        run: bash scripts/__tests__/publish-broker-structure.test.sh
 
       - name: Shell packaging verification (pack + install + publish --dry-run)
         run: bash scripts/__tests__/shell-pack-install-dryrun.test.sh

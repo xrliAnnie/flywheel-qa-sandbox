@@ -25,15 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { canonicalSubmissionDigest } from "flywheel-config";
-import {
-	afterAll,
-	afterEach,
-	beforeEach,
-	describe,
-	expect,
-	it,
-	vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
@@ -44,14 +36,6 @@ import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
-
-// Keep the launch-delivery negative path bounded. runs-route captures this
-// deadline when its module loads, so the test value must be installed first.
-const ghostGuardEnv = vi.hoisted(() => {
-	const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
-	process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
-	return { previous };
-});
 
 import { createRunsRouter } from "../runs-route.js";
 
@@ -174,14 +158,6 @@ afterEach(async () => {
 		server = undefined;
 	}
 	for (const cleanup of cleanups.splice(0)) cleanup();
-});
-
-afterAll(() => {
-	if (ghostGuardEnv.previous === undefined) {
-		delete process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
-	} else {
-		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = ghostGuardEnv.previous;
-	}
 });
 
 interface Harness {
@@ -362,6 +338,7 @@ async function startHarness(options: {
 				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
 				raw: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE ?? null,
 			}),
+			{ ghostGuardSessionWaitMs: 500 },
 		),
 	);
 	server = createServer(app);
@@ -705,6 +682,23 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("ignores the retired env knob when the module loads", async () => {
+		const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
+		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
+		try {
+			vi.resetModules();
+			const { GHOST_GUARD_SESSION_WAIT_MS } = await import("../runs-route.js");
+			expect(GHOST_GUARD_SESSION_WAIT_MS).toBe(90_000);
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
+			} else {
+				process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = previous;
+			}
+			vi.resetModules();
+		}
+	});
+
 	it("holds an in-lease keyless tpl_code re-drive and converges after lease expiry", async () => {
 		const launchBehavior = { commit: false };
 		const h = await startHarness({ menuMode: true, launchBehavior });

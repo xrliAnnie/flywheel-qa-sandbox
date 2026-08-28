@@ -1,0 +1,15 @@
+flowchart LR
+  reg["registry.ts · FEATURE_FLAGS<br/>flag 总登记册<br/><b>−9 条</b>"]
+  tomb["truth.ts · RETIRED_FLAGS<br/>墓碑账(tombstone)<br/><b>+8 条</b><br/>旧名再出现在 .env<br/>→ 校验器报「已退役,删这行」"]
+  ex["exemptions.ts · FLAG_EXEMPTIONS<br/>有账豁免<br/><b>+1 条</b>(voice QA seam)<br/>只许单次进程注入<br/>持久 .env 出现 → 报错"]
+  base["LEGACY_FLAG_EXEMPTION_BASELINE<br/>豁免账的冻结上限账本<br/><b>本单修订 +1</b>(授权:FLY-2102 裁定)"]
+  unman["store-policy.ts<br/>LEGACY_UNMANAGED_BASELINE<br/>未托管 flag 上限账本<br/><b>−9 条</b>(账本允许只减不增)"]
+  reg -->|"8 个固化/整删的 env 名"| tomb
+  reg -->|"1 个 voice"| ex
+  ex --- base
+  reg --- unman
+  style reg fill:#f5f5f7,stroke:#1a365d,color:#1d1d1f
+  style tomb fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style ex fill:#f3e5f5,stroke:#af52de,color:#1d1d1f
+  style base fill:#f3e5f5,stroke:#af52de,color:#1d1d1f
+  style unman fill:#fff3e0,stroke:#ff9500,color:#1d1d1f

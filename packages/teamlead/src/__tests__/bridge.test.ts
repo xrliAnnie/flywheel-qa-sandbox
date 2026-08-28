@@ -802,6 +802,18 @@ describe("Bridge scaffold", () => {
 		);
 	});
 
+	it("startBridge scrubs retired publish credentials before any boot work", async () => {
+		vi.stubEnv("FW_CUSTOMER_RELEASE_TOKEN", "customer-secret");
+		vi.stubEnv("FW_NPM_GAT_TOKEN", "npm-secret");
+
+		await expect(startBridge(makeConfig(), [])).rejects.toThrow(
+			"No projects configured",
+		);
+
+		expect(process.env.FW_CUSTOMER_RELEASE_TOKEN).toBeUndefined();
+		expect(process.env.FW_NPM_GAT_TOKEN).toBeUndefined();
+	});
+
 	it("startBridge starts and closes cleanly", async () => {
 		const config = makeConfig();
 		const result = await startBridge(config, [

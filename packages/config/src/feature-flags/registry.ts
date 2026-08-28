@@ -247,28 +247,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: read-on-use wrapper observes the next store write",
 	},
-	{
-		name: "flag_store",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FLAG_STORE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1778: Bridge SQLite flag store；=0 在下次 Bridge 启动时旁路到 legacy .env",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/flag-store-runtime.ts",
-				"initializeFlagStore",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "逃生开关只在 Bridge 启动时读取，永不由 flag store 自身管理。",
-	},
 	// ─── FLY-1940: unanswered founder-review lifecycle monitor ───
 	{
 		name: "founder_review_orphan_monitor",
@@ -401,97 +379,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	},
 	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
 	{
-		name: "converge_cmux_symlink",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CONVERGE_CMUX_SYMLINK",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1446: converge 将 flywheel-cmux-sync/autostart 普通部署副本留档后原子恢复为 trusted main checkout symlink；=0 暂停形态收敛",
-		readSites: [
-			envSite(
-				"scripts/converge-flywheel-bin.sh",
-				"converge_cmux_symlink",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "owner=converge CLI；每个 Lead 启动、scheduled updater、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
-	},
-	{
-		name: "cmux_view_helper",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_VIEW_HELPER",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1884: keep runner mirror tabs attached across exact tmux view-session rebuilds; =0 restores the legacy one-shot attach command.",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"view_helper_enabled",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "The resident watcher reads the shared env on each command build; disabling affects new/repaired view commands and preserves existing tabs.",
-	},
-	{
-		name: "cmux_node_presence",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_NODE_PRESENCE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1884: render Bridge-rostered windowless and recent-terminal executions as node: cmux surfaces, with cleanup freshness fencing; =0 freezes existing node surfaces and restores P0 cleanup behavior.",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"cmux_node_presence",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "Default-on founder visibility contract. OFF performs no node mutations and intentionally leaves existing node: workspaces untouched.",
-	},
-	{
-		name: "voice_qa_presence_override",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1353: voice-bridge /gemini headless 声学 E2E 的 presence QA seam —— =1 时 founderPresent() 视为满足(仅 staged rig;armed 时 allowlist 只放行 http://127.0.0.1:9877 staged Bridge,其余 boot 拒启)",
-		readSites: [
-			envSite(
-				"packages/voice-bridge/src/assistant/wiring.ts",
-				"wireAssistantMode",
-				"object_construction",
-				"env-param",
-			),
-		],
-		// The owning reader is the voice-bridge daemon (external process), not the
-		// Bridge whose env the direct-toggle surface mutates. QA-only: never a
-		// founder dashboard toggle, never set in production.
-		toggleable: "readonly",
-		note: "QA-only seam(FLY-1353)。生产永不置位;armed + 生产 Bridge URL = boot 拒启。",
-	},
-	{
 		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
 		// landing maps to completed/Done ONLY when verifyApproval confirms a bound,
 		// answered approve_to_ship for the current head (+ FLY-827 Codex gate) — else the
@@ -619,26 +506,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── env features/kill-switches captured at boot/construction → RESTART ───
 	{
-		name: "issue_display_sweep_ticks",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "60",
-		description:
-			"issue 显示自愈 sweep 的 GatePoller tick 周期(默认 60 ≈ 3min@3s;0=关,FLY-907)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
 		name: "ship_gate_grace_ms",
 		category: "feature",
 		source: "env",
@@ -727,53 +594,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	// channel id, not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to
 	// its FLYWHEEL_ROUNDTABLE_CHANNEL_ID sibling. Not deleted (that would inline
 	// the id) and not tombstoned (production still reads it).
-	{
-		name: "ghost_guard_wait_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "90000",
-		description:
-			"FLY-1336: generalized launch delivery/session confirmation guard (ms; default 90s; captured when the Bridge loads the runs route)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/runs-route.ts",
-				"GHOST_GUARD_SESSION_WAIT_MS",
-				"bridge_boot",
-			),
-		],
-		toggleable: "readonly",
-	},
-
-	// ─── governance gates → ALWAYS readonly (default-enable-policy hard exemption) ───
-	{
-		// FLY-1309: this is a loud, audited break-glass override for the Lead
-		// identity authorization gate. It is intentionally a governance gate, not
-		// a dashboard feature: each flywheel-comm invocation reads it independently
-		// and use emits both an audit record and an alert.
-		name: "lead_lease_bypass",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_LEASE_BYPASS",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1309: 紧急绕过 Lead identity lease 写授权（=1；强告警 + 审计；治理门，只读）",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/lead-lease.ts",
-				"authorizeLeadWrite",
-				"cli_invocation",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
 
 	// ─── project config flags (per-project scope) ───
 	{
@@ -1054,27 +874,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
 				"resolveDoneThreadReconcileConfig",
 				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "publish_broker",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PUBLISH_BROKER",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1062: publish broker — 对外发布(promote-commit / 薄壳 npm publish)的唯一执行点。默认关(生产字节兼容);开启 = Bridge boot 起 unix-socket 请求面 + founder ✅-reaction 审批观察。真发布另需 token 供给 + founder 批(P5)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/publish-broker/wire.ts",
-				"wirePublishBroker",
-				"bridge_boot",
 				"env-param",
 			),
 		],

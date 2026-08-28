@@ -112,7 +112,7 @@ scan_code_tree_for_secrets() {
 
   # Layer 1: vendor tokens anywhere. grep exit 1 = clean no-match; exit >1 = a
   # TOOL error (unreadable file, bad pattern) — that must return 2, never read
-  # as "clean" (FLY-1062 broker gate Codex R4: an incompletely scanned tree is
+  # as "clean" (FLY-1062 content gate Codex R4: an incompletely scanned tree is
   # not a scanned tree).
   local v1 st1=0
   v1="$(grep -rEnI "$(_fleet_vendor_re)" "$tree" 2>/dev/null)" || st1=$?

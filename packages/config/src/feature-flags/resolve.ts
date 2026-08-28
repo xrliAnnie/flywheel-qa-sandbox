@@ -119,16 +119,12 @@ export interface FlagView {
 	projectStoreManaged?: boolean;
 	/** Secret-free row-presence DTO used by phone controls. */
 	scopedStore?: FlagScopedStoreView;
-	/** Current effective value read from the owning SQLite row or boot bypass. */
+	/** Current effective value read from the owning SQLite row. */
 	storeEffective?: boolean | string;
 	/** Epoch milliseconds when the canonical effective value last changed. */
 	valueLastChanged?: number | null;
 	/** Whether the persistent value clock is safe for downstream consumers. */
-	clockReadiness?:
-		| "ready"
-		| "no_clock:bypass"
-		| "no_clock:degraded"
-		| "no_clock:unmanaged";
+	clockReadiness?: "ready" | "no_clock:degraded" | "no_clock:unmanaged";
 	/** FLY-2104: scope-aware clocks; current single-row schema projects `*`. */
 	valueClocks?: FlagValueClock[];
 }

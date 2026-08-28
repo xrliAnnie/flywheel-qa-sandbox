@@ -1,9 +1,16 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
+import {
+	FLAG_EXEMPTIONS,
+	FLY1981_FLAG_EXEMPTION_BASELINE,
+	type FlagExemption,
+	FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS,
+	LEGACY_FLAG_EXEMPTION_BASELINE,
+} from "../feature-flags/exemptions.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
 import {
 	LEGACY_UNMANAGED_BASELINE,
@@ -20,6 +27,10 @@ import {
 	type ScanSource,
 	scanSources,
 } from "./drift-scan/index.js";
+import {
+	auditFly1981LegacyLedger,
+	FLY1981_LEGACY_SNAPSHOT,
+} from "./fly1981-legacy-snapshot.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
@@ -97,6 +108,9 @@ const HISTORICAL_STORE_ROW_TOKENS: ReadonlySet<string> = new Set([
 	"workflow_resume",
 	"auto_qa_killswitch",
 ]);
+
+const FLY1981_FLAG_EXEMPTION_BASELINE_SHA256 =
+	"bd9038142d4cc59327d724922260c1b37dceb71e11b20b9a0c82e9fbf124ed31";
 
 function scannedNames(input: readonly ScanSource[]): Set<string> {
 	return new Set(scanSources(input).rawCodeHits.map((hit) => hit.name));
@@ -178,6 +192,11 @@ function retiredSpecTokenOccurrences(input: readonly ScanSource[]): string[] {
 	const retired = new Set<string>(DELETED_SPECS);
 	const hits = new Set<string>();
 	for (const source of input) {
+		// Most production files contain none of the retired identities. Avoid a
+		// full TypeScript parse (or line-by-line shell walk) unless the cheap exact
+		// token prefilter finds a possible hit; the AST pass below remains the
+		// authority that distinguishes code from comments.
+		if (exactRetiredTokens(source.text).length === 0) continue;
 		if (source.file.endsWith(".sh")) {
 			for (const line of source.text.split(/\r?\n/)) {
 				for (const token of exactRetiredTokens(shellCode(line))) {
@@ -217,6 +236,121 @@ function retiredSpecTokenOccurrences(input: readonly ScanSource[]): string[] {
 		visit(file);
 	}
 	return [...hits].sort();
+}
+
+interface ExemptionReclassificationContract {
+	authority: string;
+	registryName: string;
+	exemption: FlagExemption;
+}
+
+function exemptionKey(exemption: FlagExemption): string {
+	return `${exemption.kind}:${exemption.name}`;
+}
+
+function historicalExemptionKey(
+	entry: (typeof FLY1981_LEGACY_SNAPSHOT)[number],
+): string {
+	const kind = entry.source === "env" ? "env" : "config_key";
+	return `${kind}:${entry.sourceKey}`;
+}
+
+function sameExemption(
+	actual: FlagExemption | undefined,
+	expected: FlagExemption,
+): boolean {
+	return (
+		actual !== undefined &&
+		actual.kind === expected.kind &&
+		actual.name === expected.name &&
+		actual.reason === expected.reason &&
+		actual.owner === expected.owner &&
+		actual.issue === expected.issue &&
+		(actual.kind !== "env" ||
+			(expected.kind === "env" &&
+				actual.persistentEnvAllowed === expected.persistentEnvAllowed))
+	);
+}
+
+function auditExemptionReclassificationContract(args: {
+	legacyBaseline: readonly string[];
+	currentBaseline: readonly string[];
+	reclassifications: readonly ExemptionReclassificationContract[];
+	exemptions: readonly FlagExemption[];
+}): string[] {
+	const issues: string[] = [];
+	const rulingByKey = new Map<string, ExemptionReclassificationContract>();
+	const expectedBaseline = new Set(args.legacyBaseline);
+	const currentBaseline = new Set(args.currentBaseline);
+	const exemptionByKey = new Map(
+		args.exemptions.map((exemption) => [exemptionKey(exemption), exemption]),
+	);
+	const currentRegistryNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
+
+	for (const ruling of args.reclassifications) {
+		const key = exemptionKey(ruling.exemption);
+		if (rulingByKey.has(key)) issues.push(`${key}: duplicate founder ruling`);
+		rulingByKey.set(key, ruling);
+		expectedBaseline.add(key);
+		if (ruling.authority !== "founder") {
+			issues.push(`${key}: exemption widening requires founder authority`);
+		}
+		if (!/^FLY-\d+$/.test(ruling.exemption.issue ?? "")) {
+			issues.push(`${key}: exemption widening requires a specific FLY issue`);
+		}
+		if (!ruling.exemption.reason.trim() || !ruling.exemption.owner.trim()) {
+			issues.push(`${key}: exemption widening requires reason and owner`);
+		}
+		const historical = FLY1981_LEGACY_SNAPSHOT.find(
+			(entry) => entry.name === ruling.registryName,
+		);
+		if (!historical) {
+			issues.push(
+				`${key}: ruling does not name a historical registered product flag`,
+			);
+		} else {
+			if (historicalExemptionKey(historical) !== key) {
+				issues.push(
+					`${key}: ruling changed the historical flag source identity`,
+				);
+			}
+			if (currentRegistryNames.has(historical.name)) {
+				issues.push(`${key}: reclassified flag still exists in the registry`);
+			}
+		}
+		if (!sameExemption(exemptionByKey.get(key), ruling.exemption)) {
+			issues.push(
+				`${key}: baseline, exemption, reason, owner, issue, and guard are not atomically aligned`,
+			);
+		}
+	}
+
+	for (const key of currentBaseline) {
+		if (!expectedBaseline.has(key)) {
+			issues.push(`${key}: baseline widening has no founder ruling`);
+		}
+	}
+	for (const key of expectedBaseline) {
+		if (!currentBaseline.has(key)) {
+			issues.push(
+				`${key}: founder ruling is missing from the mechanical baseline`,
+			);
+		}
+	}
+	for (const historical of FLY1981_LEGACY_SNAPSHOT) {
+		const key = historicalExemptionKey(historical);
+		if (
+			!currentRegistryNames.has(historical.name) &&
+			exemptionByKey.has(key) &&
+			!rulingByKey.has(key)
+		) {
+			issues.push(
+				`${key}: product-flag reclassification has no founder ruling`,
+			);
+		}
+	}
+
+	return issues;
 }
 
 describe("FLY-1981 final governance ledgers", () => {
@@ -278,13 +412,24 @@ describe("FLY-1981 final governance ledgers", () => {
 	}, 15_000);
 
 	it("keeps the post-verdict snapshot historical while allowing managed growth and legacy shrink", () => {
-		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. This equation is
-		// historical evidence, not a permanent assertion on FEATURE_FLAGS.length.
-		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. The 31-row
+		// source-identity snapshot is historical evidence; the live baseline may
+		// only shrink into managed, retired, or explicitly exempt accounting.
+		expect(FLY1981_LEGACY_SNAPSHOT).toHaveLength(31);
 		expect(FLY1981_MANAGED_SNAPSHOT).toHaveLength(4);
 		expect(
-			LEGACY_UNMANAGED_BASELINE.length + FLY1981_MANAGED_SNAPSHOT.length,
+			FLY1981_LEGACY_SNAPSHOT.length + FLY1981_MANAGED_SNAPSHOT.length,
 		).toBe(35);
+		expect(
+			auditFly1981LegacyLedger({
+				baseline: LEGACY_UNMANAGED_BASELINE,
+				flags: FEATURE_FLAGS,
+				storeManagedFlags: STORE_MANAGED_FLAGS,
+				retiredFlags: RETIRED_FLAGS,
+				retiredConfigPaths: RETIRED_CONFIG_PATHS,
+				exemptions: FLAG_EXEMPTIONS,
+			}),
+		).toEqual([]);
 		const currentNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
 		const outsidePartition = FEATURE_FLAGS.filter(
 			(spec) =>
@@ -295,6 +440,94 @@ describe("FLY-1981 final governance ledgers", () => {
 		expect(
 			[...STORE_MANAGED_FLAGS].filter((name) => !currentNames.has(name)),
 		).toEqual([]);
+	});
+
+	it("allows exemption widening only through a founder-authorized atomic reclassification", () => {
+		expect(FLY1981_FLAG_EXEMPTION_BASELINE).toHaveLength(45);
+		expect(
+			createHash("sha256")
+				.update([...FLY1981_FLAG_EXEMPTION_BASELINE].sort().join("\n"))
+				.digest("hex"),
+		).toBe(FLY1981_FLAG_EXEMPTION_BASELINE_SHA256);
+		expect(
+			auditExemptionReclassificationContract({
+				legacyBaseline: FLY1981_FLAG_EXEMPTION_BASELINE,
+				currentBaseline: LEGACY_FLAG_EXEMPTION_BASELINE,
+				reclassifications: FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS,
+				exemptions: FLAG_EXEMPTIONS,
+			}),
+		).toEqual([]);
+
+		const ruling = FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS[0];
+		const rulingKey = exemptionKey(ruling.exemption);
+		const historicalRulingFlag = FLY1981_LEGACY_SNAPSHOT.find(
+			(entry) => entry.name === ruling.registryName,
+		);
+		expect(ruling).toMatchObject({
+			authority: "founder",
+			registryName: "voice_qa_presence_override",
+			exemption: {
+				kind: "env",
+				persistentEnvAllowed: false,
+				owner: "flywheel-eng-lead",
+				issue: "FLY-2102",
+			},
+		});
+		expect(ruling.exemption.name).toBe(historicalRulingFlag?.sourceKey);
+
+		const forgedExemption: FlagExemption = {
+			name: "FLYWHEEL_FORGED_PRODUCTION_READ",
+			kind: "env",
+			persistentEnvAllowed: false,
+			reason: "fully populated fields must not manufacture authorization",
+			owner: "flywheel-eng-lead",
+			issue: "FLY-9999",
+		};
+		const forgedRead = [
+			{
+				file: "packages/synthetic/src/forged.ts",
+				text: `export const enabled = process.env.${forgedExemption.name} === "1";`,
+			},
+		];
+		expect(scannedNames(forgedRead)).toContain(forgedExemption.name);
+		const forgedKey = exemptionKey(forgedExemption);
+		const forgedIssues = auditExemptionReclassificationContract({
+			legacyBaseline: FLY1981_FLAG_EXEMPTION_BASELINE,
+			currentBaseline: [...LEGACY_FLAG_EXEMPTION_BASELINE, forgedKey],
+			reclassifications: [
+				...FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS,
+				{
+					authority: "lead",
+					registryName: "forged_product_flag",
+					exemption: forgedExemption,
+				},
+			],
+			exemptions: [...FLAG_EXEMPTIONS, forgedExemption],
+		});
+		expect(forgedIssues).toEqual(
+			expect.arrayContaining([
+				`${forgedKey}: exemption widening requires founder authority`,
+				`${forgedKey}: ruling does not name a historical registered product flag`,
+			]),
+		);
+
+		const missingIssueIssues = auditExemptionReclassificationContract({
+			legacyBaseline: FLY1981_FLAG_EXEMPTION_BASELINE,
+			currentBaseline: LEGACY_FLAG_EXEMPTION_BASELINE,
+			reclassifications: [
+				{
+					...ruling,
+					exemption: { ...ruling.exemption, issue: "" },
+				},
+			],
+			exemptions: FLAG_EXEMPTIONS,
+		});
+		expect(missingIssueIssues).toEqual(
+			expect.arrayContaining([
+				`${rulingKey}: exemption widening requires a specific FLY issue`,
+				`${rulingKey}: baseline, exemption, reason, owner, issue, and guard are not atomically aligned`,
+			]),
+		);
 	});
 
 	it("finds no retired lowercase identity in production code tokens", () => {
@@ -499,13 +732,24 @@ describe("FLY-1981 final governance ledgers", () => {
 		for (const contract of [
 			"registry → managed set + codec → store row policy → management route test → guard green",
 			"PROJECT_STORE_MANAGED_FLAGS",
-			"豁免名单只许缩小",
 			"非产品 ledger",
 			"已合并 / 已 staged ≠ 已部署",
 			"no-old-binary-restart",
 		]) {
 			expect(runbook, contract).toContain(contract);
 		}
+		const exemptionPolicy = runbook
+			.split("## 豁免不是新通道")[1]
+			?.split("\n## ")[0];
+		expect(exemptionPolicy).toBeDefined();
+		expect(exemptionPolicy).toMatch(/默认只许缩小/);
+		expect(exemptionPolicy).toMatch(/founder.*具体 issue/);
+		expect(exemptionPolicy).toMatch(
+			/baseline、exemption、reason、owner、issue 和机械守卫必须在同一 PR 原子更新/,
+		);
+		expect(exemptionPolicy).toMatch(
+			/补齐字段或伪造生产 read site 都不能自行获得授权/,
+		);
 		const deployment = runbook
 			.split("## 生产 `.env` 移除与部署顺序")[1]
 			?.split("\n## ")[0];

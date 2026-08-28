@@ -40,17 +40,17 @@ function deps(over: Partial<FlagToggleDeps> = {}): FlagToggleDeps & {
 }
 
 describe("isDirectToggleable", () => {
-	it("true for a call-time env flag, false for governance / conversational", () => {
+	it("keeps a call-time env flag direct and removes retired registry entries", () => {
 		const direct = FEATURE_FLAGS.find(
 			(f) => f.name === "founder_review_orphan_monitor",
 		);
-		const gov = FEATURE_FLAGS.find((f) => f.name === "lead_lease_bypass");
-		const restart = FEATURE_FLAGS.find(
-			(f) => f.name === "voice_qa_presence_override",
-		);
 		expect(isDirectToggleable(direct as never)).toBe(true);
-		expect(isDirectToggleable(gov as never)).toBe(false);
-		expect(isDirectToggleable(restart as never)).toBe(false);
+		expect(FEATURE_FLAGS.some((f) => f.name === "lead_lease_bypass")).toBe(
+			false,
+		);
+		expect(
+			FEATURE_FLAGS.some((f) => f.name === "voice_qa_presence_override"),
+		).toBe(false);
 	});
 
 	it("rejects non-boolean value flags even if later marked direct", () => {
@@ -153,7 +153,7 @@ describe("applyFlagToggle", () => {
 		).toBe(400);
 	});
 
-	it("rejects a non-direct flag", () => {
+	it("rejects the retired voice QA registry identity", () => {
 		const r = applyFlagToggle(deps(), {
 			name: "voice_qa_presence_override",
 			rawFrom: null,
@@ -161,10 +161,10 @@ describe("applyFlagToggle", () => {
 			fileSha: SHA,
 		});
 		expect(r.code).toBe(400);
-		expect(r.reason).toMatch(/not direct-toggleable/);
+		expect(r.reason).toMatch(/unknown flag/);
 	});
 
-	it("rejects a governance gate", () => {
+	it("rejects the retired lease bypass registry identity", () => {
 		const r = applyFlagToggle(deps(), {
 			name: "lead_lease_bypass",
 			rawFrom: null,

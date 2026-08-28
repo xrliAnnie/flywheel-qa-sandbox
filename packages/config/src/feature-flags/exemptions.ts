@@ -17,6 +17,12 @@ export type FlagExemption = FlagExemptionBase &
 		  }
 	);
 
+export interface FounderAuthorizedFlagExemptionReclassification {
+	authority: "founder";
+	registryName: string;
+	exemption: FlagExemption & { issue: string };
+}
+
 const QA_AND_INVOCATION_SEAMS = [
 	"FLYWHEEL_ALLOW_LICENSE_KEY_ENV",
 	"FLYWHEEL_BUDDY_ALLOW_ANSWER_INJECTION",
@@ -66,12 +72,8 @@ const AUXILIARY_RUNTIME_SEAMS = [
 	"FLYWHEEL_VOICE_EDGE_TTS",
 ] as const;
 
-/**
- * FLY-1981: immutable maximum ledger for registry-external flag exemptions.
- * This list is deliberately literal rather than derived from FLAG_EXEMPTIONS:
- * existing entries may be deleted, but a new `kind:name` must fail governance.
- */
-export const LEGACY_FLAG_EXEMPTION_BASELINE = Object.freeze([
+/** Exact FLY-1981 exemption ceiling before any founder reclassification. */
+export const FLY1981_FLAG_EXEMPTION_BASELINE = Object.freeze([
 	"env:FLYWHEEL_LEAD_DRY_RUN",
 	"env:FLYWHEEL_DONE_THREAD_RECONCILE",
 	"env:FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",
@@ -119,6 +121,41 @@ export const LEGACY_FLAG_EXEMPTION_BASELINE = Object.freeze([
 	"env:FLYWHEEL_VOICE_EDGE_TTS",
 ] as const);
 
+/**
+ * The only route that may widen the FLY-1981 ceiling: a founder ruling tied to
+ * a concrete issue and to the exact previously registered product-flag identity.
+ * Baseline and exemption rows below are both materialized from this record so
+ * their name, reason, owner, issue, and mechanical guard change atomically.
+ */
+export const FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS =
+	Object.freeze([
+		{
+			authority: "founder",
+			registryName: "voice_qa_presence_override",
+			exemption: {
+				name: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
+				kind: "env",
+				persistentEnvAllowed: false,
+				reason:
+					"FLY-1353 headless voice E2E presence QA seam; allowed only for the loopback staged Bridge and forbidden in persistent production environments",
+				owner: "flywheel-eng-lead",
+				issue: "FLY-2102",
+			},
+		},
+	] as const satisfies readonly FounderAuthorizedFlagExemptionReclassification[]);
+
+/**
+ * FLY-1981 maximum plus explicit founder-authorized reclassifications. It is
+ * never derived from FLAG_EXEMPTIONS: arbitrary exemption rows and synthetic
+ * production reads therefore cannot widen the mechanical ceiling.
+ */
+export const LEGACY_FLAG_EXEMPTION_BASELINE = Object.freeze([
+	...FLY1981_FLAG_EXEMPTION_BASELINE,
+	...FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS.map(
+		({ exemption }) => `${exemption.kind}:${exemption.name}`,
+	),
+] as const);
+
 export const FLAG_EXEMPTIONS: readonly FlagExemption[] = [
 	{
 		name: "FLYWHEEL_LEAD_DRY_RUN",
@@ -138,6 +175,9 @@ export const FLAG_EXEMPTIONS: readonly FlagExemption[] = [
 		owner: "flywheel-eng-lead",
 		issue: "FLY-1808",
 	},
+	...FOUNDER_AUTHORIZED_FLAG_EXEMPTION_RECLASSIFICATIONS.map(
+		({ exemption }) => exemption,
+	),
 	...[
 		"FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",
 		"FLYWHEEL_QUOTA_QA_INJECTION",

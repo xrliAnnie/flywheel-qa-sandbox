@@ -1087,11 +1087,6 @@ for execution_id in sorted(seen):
   RUNNER_NODE_TMUX_STATE="ok"
 }
 
-node_presence_enabled() {
-  local cmux_node_presence="${FLYWHEEL_CMUX_NODE_PRESENCE:-1}"
-  [[ "$cmux_node_presence" != "0" ]]
-}
-
 _additive_round_id_valid() {
   local round="$1" epoch sequence
   case "$round" in *[!0-9-]*|*-*-*|-*|*-) return 1 ;; esac
@@ -1162,7 +1157,6 @@ admit_node_identity_for_window() {
   local session="$1" wid="$2" mirror_title="$3" observed observed_wid observed_title exec_id old
   local title alias state last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch
   local now round
-  node_presence_enabled || return 0
   observed=$(tmux display-message -p -t "=${session}:${wid}" \
     '#{window_id}|#{window_name}|#{@flywheel_exec_id}' 2>/dev/null) || return 1
   IFS='|' read -r observed_wid observed_title exec_id < <(printf '%s\n' "$observed")
@@ -1332,7 +1326,6 @@ node_cleanup_freshness_allows() {
   local mirror_title="$1" marker_epoch="$2" marker_round_epoch="${3:-}" marker_round_sequence="${4:-}"
   local header kind snapshot_round_epoch snapshot_round_sequence snapshot_epoch completeness
   local exec_id title alias state last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch
-  node_presence_enabled || return 0
   case "$marker_epoch" in ''|*[!0-9]*) return 1 ;; esac
   (( ${#marker_epoch} <= 18 )) || return 1
   node_registry_valid || return 1
@@ -1687,7 +1680,6 @@ reconcile_node_presence() {
   local active_count now round row exec_id node_id identifier role status adapter heartbeat issue_title last_activity route pr_number issue_url
   local old title alias old_state last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch
   local inv inv_state wid mirror_title source new_state status_path terminal_row terminal_seen
-  node_presence_enabled || return 0
   [[ "$RUNNER_EXPECTED_STATE" == ok && "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 0
   node_registry_valid || {
     _alert_cmux_cleanup "cmux node registry malformed" \
@@ -1838,21 +1830,19 @@ reconcile_roster_read_phase() {
   maintenance_requested && return 0
   reconcile_lead_roster
   reconcile_runner_roster
-  if node_presence_enabled; then
-    if ! read_runner_tmux_node_inventory; then
-      roster_alert_unhealthy runner-node-presence tmux \
-        "cmux node inventory unavailable" \
-        "The execution-to-window inventory was unavailable; node presence mutations were frozen for this round."
-    else
-      roster_mark_healthy runner-node-presence tmux
-    fi
-    if ! fetch_recent_terminal_runner_roster; then
-      roster_alert_unhealthy runner-node-terminal bridge \
-        "cmux terminal runner inventory unavailable" \
-        "The recent terminal inventory was unavailable; active nodes remain visible and terminal transitions are frozen."
-    else
-      roster_mark_healthy runner-node-terminal bridge
-    fi
+  if ! read_runner_tmux_node_inventory; then
+    roster_alert_unhealthy runner-node-presence tmux \
+      "cmux node inventory unavailable" \
+      "The execution-to-window inventory was unavailable; node presence mutations were frozen for this round."
+  else
+    roster_mark_healthy runner-node-presence tmux
+  fi
+  if ! fetch_recent_terminal_runner_roster; then
+    roster_alert_unhealthy runner-node-terminal bridge \
+      "cmux terminal runner inventory unavailable" \
+      "The recent terminal inventory was unavailable; active nodes remain visible and terminal transitions are frozen."
+  else
+    roster_mark_healthy runner-node-terminal bridge
   fi
   return 0
 }
@@ -2906,18 +2896,16 @@ cleanup_workspace_for() {
   # FLY-129 Phase 3 (R2-6 dup handling): close ALL matching refs (dedup
   # convergence), not just the first one.
   local agent_name="$1" marker="${2:-}" marker_title marker_epoch marker_round_epoch marker_round_sequence marker_extra
-  if node_presence_enabled; then
-    [[ -n "$marker" ]] || {
-      log "WARN: cleanup refused without a node-freshness marker: $agent_name"
-      return 1
-    }
-    IFS='|' read -r marker_title marker_epoch marker_round_epoch marker_round_sequence marker_extra < <(printf '%s\n' "$marker")
-    [[ "$marker_title" == "$agent_name" && -z "$marker_extra" ]] || return 1
-    node_cleanup_freshness_allows "$agent_name" "$marker_epoch" "$marker_round_epoch" "$marker_round_sequence" || {
-      log "Node-presence fence deferred cleanup for: $agent_name"
-      return 1
-    }
-  fi
+  [[ -n "$marker" ]] || {
+    log "WARN: cleanup refused without a node-freshness marker: $agent_name"
+    return 1
+  }
+  IFS='|' read -r marker_title marker_epoch marker_round_epoch marker_round_sequence marker_extra < <(printf '%s\n' "$marker")
+  [[ "$marker_title" == "$agent_name" && -z "$marker_extra" ]] || return 1
+  node_cleanup_freshness_allows "$agent_name" "$marker_epoch" "$marker_round_epoch" "$marker_round_sequence" || {
+    log "Node-presence fence deferred cleanup for: $agent_name"
+    return 1
+  }
   dismantle_view_display "$agent_name" "stale-${agent_name}" || true
   drain_stale_state_row "$agent_name"
 }
@@ -3764,22 +3752,12 @@ _managed_view_command_in_variants() {
 build_attach_command() {
   local view_session="$1" token="${2:-}" attach_tmux_bin="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-}"
   local helper="${FLYWHEEL_CMUX_VIEW_HELPER_BIN:-$HOME/.flywheel/bin/flywheel-view-attach.sh}"
-  local view_helper_enabled="${FLYWHEEL_CMUX_VIEW_HELPER:-1}"
   _managed_view_session_safe "$view_session" || return 1
   [[ -z "$token" ]] || managed_attach_token_valid "$token" || return 1
   if [[ -n "$attach_tmux_bin" ]]; then
     case "$attach_tmux_bin" in /*) ;; *) log "WARN: FLYWHEEL_CMUX_ATTACH_TMUX_BIN must be an absolute executable path"; return 1 ;; esac
     case "$attach_tmux_bin" in *"'"*|*$'\n'*|*$'\r'*) log "WARN: unsafe FLYWHEEL_CMUX_ATTACH_TMUX_BIN refused"; return 1 ;; esac
     [[ -x "$attach_tmux_bin" ]] || { log "WARN: FLYWHEEL_CMUX_ATTACH_TMUX_BIN is not executable: $attach_tmux_bin"; return 1; }
-  fi
-  if [[ "$view_helper_enabled" == "0" ]]; then
-    [[ -z "$token" ]] || return 1
-    if [[ -n "$attach_tmux_bin" ]]; then
-      printf "env -u TMUX '%s' attach -t '=%s'" "$attach_tmux_bin" "$view_session"
-    else
-      printf "env -u TMUX tmux attach -t '=%s'" "$view_session"
-    fi
-    return 0
   fi
   case "$helper" in /*) ;; *) log "WARN: FLYWHEEL_CMUX_VIEW_HELPER_BIN must be absolute"; return 1 ;; esac
   case "$helper" in *"'"*|*$'\n'*|*$'\r'*) log "WARN: unsafe FLYWHEEL_CMUX_VIEW_HELPER_BIN refused"; return 1 ;; esac
@@ -9676,11 +9654,7 @@ cleanup_stale_workspaces() {
     is_pane_alive "$agent_name" || pane_rc=$?
     if [[ "$pane_rc" == "1" ]]; then
       log "Cleaning stale: $sess (tmux window '$agent_name' gone)"
-      if node_presence_enabled; then
-        mark_for_cleanup "$agent_name" "$(date +%s)"
-      else
-        cleanup_workspace_for "$agent_name"
-      fi
+      mark_for_cleanup "$agent_name" "$(date +%s)"
     elif [[ "$pane_rc" != "0" ]]; then
       log "WARN: liveness unavailable for $agent_name; stale cleanup deferred"
     fi
@@ -9994,13 +9968,9 @@ mark_for_cleanup() {
   [[ -z "$wname" ]] && return 0
   touch "$CLEANUP_PENDING"
   awk -F'|' -v n="$wname" '$1 == n {found=1} END {exit(found ? 0 : 1)}' "$CLEANUP_PENDING" 2>/dev/null || {
-    if node_presence_enabled; then
-      _additive_round_id_valid "$round" || round=0-0
-      round_epoch="${round%%-*}"; round_sequence="${round#*-}"
-      printf '%s|%s|%s|%s\n' "$wname" "$ts" "$round_epoch" "$round_sequence" >> "$CLEANUP_PENDING"
-    else
-      printf '%s|%s\n' "$wname" "$ts" >> "$CLEANUP_PENDING"
-    fi
+    _additive_round_id_valid "$round" || round=0-0
+    round_epoch="${round%%-*}"; round_sequence="${round#*-}"
+    printf '%s|%s|%s|%s\n' "$wname" "$ts" "$round_epoch" "$round_sequence" >> "$CLEANUP_PENDING"
   }
 }
 
@@ -10043,17 +10013,15 @@ process_pending_cleanups() {
     local wname ts marker_round_epoch marker_round_sequence marker_extra
     IFS='|' read -r wname ts marker_round_epoch marker_round_sequence marker_extra < <(printf '%s\n' "$raw")
     [[ -z "$wname" || -z "$ts" ]] && continue
-    if node_presence_enabled; then
-      case "$ts" in *[!0-9]*) remaining+="${raw}"$'\n'; continue ;; esac
-      if (( ${#ts} > 18 )); then remaining+="${raw}"$'\n'; continue; fi
-      if [[ -n "$marker_extra" ]] \
-          || [[ -n "$marker_round_epoch" && -z "$marker_round_sequence" ]] \
-          || [[ -z "$marker_round_epoch" && -n "$marker_round_sequence" ]] \
-          || [[ "$marker_round_epoch$marker_round_sequence" == *[!0-9]* ]]; then
-        remaining+="${raw}"$'\n'
-        log "WARN: malformed cleanup marker preserved for $wname"
-        continue
-      fi
+    case "$ts" in *[!0-9]*) remaining+="${raw}"$'\n'; continue ;; esac
+    if (( ${#ts} > 18 )); then remaining+="${raw}"$'\n'; continue; fi
+    if [[ -n "$marker_extra" ]] \
+        || [[ -n "$marker_round_epoch" && -z "$marker_round_sequence" ]] \
+        || [[ -z "$marker_round_epoch" && -n "$marker_round_sequence" ]] \
+        || [[ "$marker_round_epoch$marker_round_sequence" == *[!0-9]* ]]; then
+      remaining+="${raw}"$'\n'
+      log "WARN: malformed cleanup marker preserved for $wname"
+      continue
     fi
     # Pane alive again → cancel cleanup. Uses #{pane_dead} (not window existence)
     # because `remain-on-exit on` means window lingers after pane dies.
@@ -10072,8 +10040,7 @@ process_pending_cleanups() {
       remaining+="${raw}"$'\n'
       continue
     fi
-    if node_presence_enabled \
-        && ! node_cleanup_freshness_allows "$wname" "$ts" "$marker_round_epoch" "$marker_round_sequence"; then
+    if ! node_cleanup_freshness_allows "$wname" "$ts" "$marker_round_epoch" "$marker_round_sequence"; then
       remaining+="${raw}"$'\n'
       log "Node-presence fence waiting for a newer complete classification: $wname"
       continue
@@ -10276,11 +10243,7 @@ cleanup_stale_conservative() {
         echo "${agent_name}|${now}" >> "$STALE_STATE"
       elif (( now - first_stale >= CONSERVATIVE_CLEANUP_SECONDS )); then
         log "Conservative cleanup: $sess (stale for $((now - first_stale))s)"
-        if node_presence_enabled; then
-          mark_for_cleanup "$agent_name" "$first_stale"
-        else
-          cleanup_workspace_for "$agent_name"
-        fi
+        mark_for_cleanup "$agent_name" "$first_stale"
         # drain_stale_state_row uses the same awk -F'|' literal compare
         # (Phase 5). Centralizes the "remove this agent from STALE_STATE"
         # operation so a future regex-safety fix only has to land there.
@@ -11711,7 +11674,7 @@ sync_once() {
   begin_cmux_additive_round \
     || log "WARN: additive round state unavailable; prepared stall counters frozen"
 
-  node_presence_enabled && reconcile_roster_read_phase
+  reconcile_roster_read_phase
 
   if ! prepare_linked_view_state pre; then
     log "WARN: once linked-view durable state reconciliation inconclusive; pass deferred"

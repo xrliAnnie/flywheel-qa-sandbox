@@ -359,13 +359,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: durable Lead identity lease and authorization audit db path (FLY-1309)",
 	FLYWHEEL_LEAD_EPISODE_DB:
 		"plumbing: deduplicated Lead identity incident episode db path (FLY-1309)",
-	FLYWHEEL_PUBLISH_BROKER_SOCKET:
-		"plumbing: publish-broker unix socket path (FLY-1062)",
-	FLYWHEEL_PUBLISH_AUDIT_PATH: "plumbing: publish audit JSONL path (FLY-1062)",
-	FLYWHEEL_PUBLISH_APPROVAL_CHANNEL:
-		"config value: publish-approval Discord channel id (FLY-1062)",
 	FLYWHEEL_FLEET_SANITIZE:
-		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
+		"plumbing: fleet-sanitize.sh scanner path override; tests point it at stubs",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:
@@ -623,6 +618,14 @@ export const RETIRED_CONFIG_PATHS = [
 
 export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_ALERT_COPY_TO_CHANNEL", retiredBy: "FLY-2075" },
+	{ envVar: "FLYWHEEL_FLAG_STORE", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_PUBLISH_BROKER", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_CONVERGE_CMUX_SYMLINK", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_CMUX_VIEW_HELPER", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_CMUX_NODE_PRESENCE", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_LEAD_LEASE_BYPASS", retiredBy: "FLY-2102" },
 	{ envVar: "FLYWHEEL_AUTO_QA", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_CODEX_HARD_GATE", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG", retiredBy: "FLY-1560" },
