@@ -1,15 +1,14 @@
 ---
 issue: FLY-2030
 phase: implement
-phaseCursor: 2/8
-updated: 2026-08-28T09:20:06.258Z
-nextStep: Raya baseline green at b7abff4; implement M1 Raya slice after Lead
-  resolves paired-repo scope conflict; founder summary knobs remain
-  intentionally unselected
+phaseCursor: 3/8
+updated: 2026-08-28T09:22:36.485Z
+nextStep: implement remaining M1 mechanics after Lead scope answer; Raya commit
+  fda601b establishes dual-mode summary contract and read-receipt discipline
 chunks: []
 pointers: {}
 ---
 
 # FLY-2030 progress
-**phase**: implement (2/8)
-**next**: Raya baseline green at b7abff4; implement M1 Raya slice after Lead resolves paired-repo scope conflict; founder summary knobs remain intentionally unselected
+**phase**: implement (3/8)
+**next**: implement remaining M1 mechanics after Lead scope answer; Raya commit fda601b establishes dual-mode summary contract and read-receipt discipline
