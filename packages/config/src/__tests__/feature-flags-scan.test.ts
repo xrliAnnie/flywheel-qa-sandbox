@@ -175,6 +175,34 @@ describe("canonicalizeFlagSample", () => {
 		).toMatchObject({ kind: "indeterminate", class: "read_unavailable" });
 	});
 
+	it("keeps a config read error indeterminate while a scoped DB row drives display", () => {
+		const spec = flagSpec("project", {
+			source: "project_config",
+			scope: "project",
+			envVar: undefined,
+			configKey: "doc_flow.enabled",
+		});
+		const view = flagView(spec, {
+			effective: undefined,
+			displayEffective: undefined,
+			effectiveByProject: [
+				{
+					projectName: "alpha",
+					value: true,
+					via: "star_row",
+					runtimeConfigError: "config.yaml: unreadable",
+					runtimeDivergence: "config_pending_cutover",
+				},
+			],
+		});
+
+		expect(canonicalizeFlagSample(spec, view, ["alpha"])).toEqual({
+			kind: "indeterminate",
+			class: "read_unavailable",
+			reason: "alpha: config.yaml: unreadable",
+		});
+	});
+
 	it("uses a stable dormant sentinel instead of inventing an effective value", () => {
 		const spec = flagSpec("dormant", {
 			source: "project_config",
@@ -226,6 +254,40 @@ describe("computeFlagScan", () => {
 				streakStartedAt: DAY,
 				streakSamples: 1,
 				lastSampledAt: DAY,
+			},
+		]);
+	});
+
+	it("deduplicates scope-state keys when a malformed roster repeats a project", () => {
+		const project = flagSpec("project", {
+			source: "project_config",
+			scope: "project",
+			envVar: undefined,
+			configKey: "doc_flow.enabled",
+		});
+		const result = scan({
+			specs: [project],
+			views: [
+				flagView(project, {
+					effective: undefined,
+					displayEffective: undefined,
+					effectiveByProject: [{ projectName: "alpha", value: true }],
+				}),
+			],
+			expectedProjectNames: ["alpha", "alpha"],
+		});
+
+		expect(result.nextState[0]).toMatchObject({
+			indeterminateClass: "read_unavailable",
+		});
+		expect(result.nextScopeState).toEqual([
+			{
+				flagName: "project",
+				scope: "alpha",
+				canonical: null,
+				streakStartedAt: null,
+				streakSamples: 0,
+				lastSampledAt: 0,
 			},
 		]);
 	});

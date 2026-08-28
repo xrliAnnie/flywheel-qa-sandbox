@@ -184,6 +184,12 @@ export function canonicalizeFlagSample(
 		);
 	}
 	for (const row of rows) {
+		if (row.runtimeConfigError !== undefined) {
+			return indeterminate(
+				"read_unavailable",
+				`${row.projectName}: ${row.runtimeConfigError}`,
+			);
+		}
 		if (row.error) {
 			return indeterminate(
 				"read_unavailable",
@@ -375,6 +381,7 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 				.filter((row) => row.flagName === spec.name)
 				.map((row) => row.scope);
 		}
+		scopes = [...new Set(scopes)];
 		const projectRows = new Map(
 			(view.effectiveByProject ?? []).map((row) => [row.projectName, row]),
 		);
