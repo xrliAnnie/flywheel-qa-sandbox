@@ -125,10 +125,12 @@ B 失败时(权限没配好 / Lead 不答):Raya 在 `#raya` 如实说「我想�
 
 ### Q8 权限(P10)——本批**不收窄任何一项**,也**不新增**一项
 
-- 沿用 V1 实测通过的 Codex 原生全权形态:`workspace-write` + `network_access: true` + `approvalPolicy: never` + 可写根 `RAYA_WORKSPACE_ROOTS_JSON`(现 = code + memory)。
+> 🔴 **2026-08-27 R1 design review 更正**:本节原版主张「写六个项目仓:不加,是 §4.1 划的界」——**被评审推翻并采纳**:那正是 §8.4/§13.7 已被 founder 推翻过两次的「第一批先不给 X」句式。**终版:可写根 = code + memory + 注册表全部 projectRoot**,preflight fail-closed 断言覆盖,回执按完整集合断言;§4.1 的边界改由行为纪律(prompt)与 §9.2 ② 失败信号承担。以下原文留档,以 plan.md §0.4 为准。
+
+- 沿用 V1 实测通过的 Codex 原生全权形态:`workspace-write` + `network_access: true` + `approvalPolicy: never` + 可写根 `RAYA_WORKSPACE_ROOTS_JSON`。
 - **读**六个项目仓:workspace-write 只限制写,不限制读(⬜ 待 C0 探针 P-read 实证)。
-- **写**六个项目仓:**不加**——不是「先不给」,是 §4.1 划的界:她的动作面是「跟 Lead 说话」与「自己的仓」,不是改别人的代码(§9.2 ② 失败信号就是它开始指挥怎么做)。要加也只是一个 env 值的事,写进 HTML 让她判。⚠️ 按 §8.4 自检:这不是能力裁剪,是动作通道的形状;若 Tadashi/她认为这算收窄,一行 env 即可放开。
-- sub-agent:Codex 原生多 agent(ThreadItem 有 collab 项)不阻塞,**不另建机制**。
+- ~~**写**六个项目仓:**不加**~~(已被上方更正取代)。
+- sub-agent:Codex 原生多 agent 能力,**不另建机制**;但「可用」要 C0 探针 P-subagent 真 spawn 实证,schema 存在不算证据(R1)。
 
 ## 6. 决策清单(本文拍的、待 plan 落实的)
 
@@ -141,7 +143,7 @@ B 失败时(权限没配好 / Lead 不答):Raya 在 `#raya` 如实说「我想�
 | D5 | 主动开口账本 + reaction 反馈;`raya ledger summary` | ⬜ |
 | D6 | 默认 6h,`raya cadence set` 运行期改;`raya tick now` 手动触发 | ✅ P5 + ⬜ |
 | D7 | 跳过时发「我看了,没有」,一个 env 开关可关 | 🔶 P17 保留 |
-| D8 | 权限沿用 V1 全权形态;可写根不变 | ⬜(§8.4 自检见 Q8) |
+| D8 | 权限沿用 V1 全权形态;~~可写根不变~~ → **可写根扩为 code + memory + 六个项目根**(R1 评审更正,见 Q8) | ⬜ → ✅ 采纳 R1 |
 | D9 | 把 voice 的 `AppServerClient` 提到 `packages/codex-client` 供两进程共用(voice 只改 import) | ⬜ 可否:替代是复制一份 |
 | D10 | 一次 Codex turn 串行:founder 消息 > Lead 回复 > tick;进行中的消息并入下一轮 | ⬜ |
 | D11 | brain 重启后用 REST 补读 `#raya` 断档期间的 founder 消息(一次性,不轮询) | ⬜ |
