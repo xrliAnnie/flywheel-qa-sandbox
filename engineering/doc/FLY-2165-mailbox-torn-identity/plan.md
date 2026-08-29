@@ -43,7 +43,7 @@ Issue: FLY-2165 (https://linear.app/geoforge3d/issue/FLY-2165/病根-mailbox-清
 - [ ] 运行：
 
 ```bash
-pnpm --filter flywheel-comm test:run -- src/__tests__/mailbox-schema.test.ts
+pnpm --filter flywheel-comm exec vitest run src/__tests__/mailbox-schema.test.ts
 ```
 
 预期：前三条中的至少 active raw delete 在当前 main 上错误地成功，测试以 contract mismatch FAIL。
@@ -136,7 +136,7 @@ expect(queue.inspectDeliveryState("delivery:torn")).toEqual({
 - [ ] 跑：
 
 ```bash
-pnpm --filter flywheel-teamlead test:run -- src/__tests__/patrol-tick.test.ts src/__tests__/patrol-tick-loop.integration.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/patrol-tick.test.ts src/__tests__/patrol-tick-loop.integration.test.ts
 ```
 
 预期：type 尚未处理或 `settlementAnchor` 访问缺失字段而 FAIL。

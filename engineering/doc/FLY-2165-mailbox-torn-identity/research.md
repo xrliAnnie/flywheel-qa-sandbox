@@ -126,8 +126,8 @@ content_ref snapshot/GC intent 与 receipt digest 可复核。
 focused：
 
 ```bash
-pnpm --filter flywheel-comm test:run -- src/__tests__/mailbox-schema.test.ts src/__tests__/mailbox-settlement.test.ts src/commands/__tests__/message-status.test.ts
-pnpm --filter @flywheel/teamlead test:run -- src/__tests__/patrol-tick.test.ts src/__tests__/patrol-tick-loop.integration.test.ts
+pnpm --filter flywheel-comm exec vitest run src/__tests__/mailbox-schema.test.ts src/__tests__/mailbox-settlement.test.ts src/commands/__tests__/message-status.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/patrol-tick.test.ts src/__tests__/patrol-tick-loop.integration.test.ts
 bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
 ```
 
