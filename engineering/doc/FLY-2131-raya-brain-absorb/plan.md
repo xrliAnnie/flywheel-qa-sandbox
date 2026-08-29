@@ -236,3 +236,5 @@ flowchart LR
 | # | 处置 |
 |---|---|
 | 1 追问账本缺稳定标识与确定性 reducer(恢复可能永久重发/重复计数);§1 数据面措辞仍称 JSONL「只是索引」与承重角色矛盾;append 失败语义未钉 | ✅ 选 deletion-friendly 方案:每轮每 PR 至多一条聚合追问,逻辑键 = `{roundId, pr}`,`posted` 结算该键全部更早 `posting`,计数按已结算 distinct 键;恢复复用同键、先 `posting` 再发;§1 措辞改双角色(吸收权威另有其主/追问汇报恢复以账本为权威);append 失败语义钉死(round/posting 失败中止副作用;posted/report 失败留未结算项走 at-least-once);验收格 8 增「双跑对账,第二次零未结算、逻辑问计 1」 |
+
+**R5(2026-08-29,plan blob 6c815564 @ cd0bee402,反馈 `/tmp/codex-rescue-design-feedback-flywheel-FLY-2131-plan-round5.md`)= ✅ APPROVED**(R4 唯一项确认完整关闭;其备注:pending 的部署/注册前置是验收门不是设计缺陷;机制未膨胀——无 watcher/Discord reader/第二账本/通用投递机制,FLY-2030 基座未被触碰)。共 5 轮:6→4→3→1→0。
