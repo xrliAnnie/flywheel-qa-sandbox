@@ -12,7 +12,7 @@ Issue: FLY-2103 (https://linear.app/geoforge3d/issue/FLY-2103/flagcconfigyaml-�
 验证脚本：`qa-bridge-parity.mjs`。它分别启动真实 baseline/candidate Bridge，使用隔离的 HOME、项目配置、端口和 SQLite；候选行通过真实 `/api/fleet/flag/stage` + `/apply` 写入，再从真实 `/api/fleet/snapshot` 读取 effective state。
 
 - baseline：`d4e08f4a55aee01ef261e7f90c40a541e03d0863`
-- candidate：`9ecbf9906745d1dc5e9bcc124def2689f0a0a3d8`
+- candidate：`9c13a3fe4` (R2 修复、scaffold 清理与 progress 证据的精确头)
 - 结果：`parity: true`
 
 | flag | flywheel | geoforge3d | growth | joycon-typeless | personal-assistant | tidal-echo |
@@ -66,6 +66,7 @@ checkpoints.<name>.enabled
 - scoped store 不可用时，skill-framework split participation 钉死为 `false` / A 臂；cron model 读取局部降级为空集，不影响其他 management provider。
 - G1 pre-cutover CLI 现在大声警告：receipt 必须在 config-removal PR 落地或 main checkout 采用前完成。
 - R2 focused 复验：Teamlead 64/64 passed；QA/deploy/onboarding helper 82/82 passed；Flywheel CLI 32/32 passed；`pnpm lint` exit 0；`pnpm -r build` exit 0。
+- 最终精确头 `9c13a3fe4` 重跑真实 Bridge 7×6 resolver：`parity: true`；SQLite exact rows 仍为 manifest 允许的 7 行，无额外行。
 
 ## 测试证据
 
