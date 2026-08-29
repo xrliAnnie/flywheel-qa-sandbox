@@ -1,13 +1,14 @@
 ---
 issue: FLY-2131
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-29T01:00:41.024Z
-nextStep: complete phase_design_complete
+phase: implement
+phaseCursor: 2/9
+updated: 2026-08-29T01:25:51.233Z
+nextStep: implement the 6-hour summary absorption cadence rider and durable
+  lead_events trigger
 chunks: []
 pointers: {}
 ---
 
 # FLY-2131 progress
-**phase**: design (6/6)
-**next**: complete phase_design_complete
+**phase**: implement (2/9)
+**next**: implement the 6-hour summary absorption cadence rider and durable lead_events trigger
