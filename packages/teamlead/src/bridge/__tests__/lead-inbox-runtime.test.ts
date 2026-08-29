@@ -57,6 +57,170 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("periodically archives terminal mailbox families with audit evidence", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2136-runtime-archive-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2136-archive",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		const archiveDueFamilies = vi.spyOn(
+			MailboxQueue.prototype,
+			"archiveDueFamilies",
+		);
+		const drainContentRefGc = vi.spyOn(
+			MailboxQueue.prototype,
+			"drainContentRefGc",
+		);
+		try {
+			queue.enqueue({
+				id: "fly2136-archive-me",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "terminal family",
+				createdAt: "2026-08-01T00:00:00.000Z",
+				senderRef: encodeSenderRef(),
+			});
+			queue.ack("fly2136-archive-me", "2026-08-01T00:00:00.000Z");
+
+			runtime.start();
+			await vi.waitFor(
+				() => expect(queue.getById("fly2136-archive-me")).toBeUndefined(),
+				{ timeout: 1_500 },
+			);
+			expect(archiveDueFamilies).toHaveBeenCalledWith({
+				now: expect.any(String),
+				maxFamilies: 5,
+			});
+			expect(drainContentRefGc).toHaveBeenCalledWith({
+				now: expect.any(String),
+				limit: 1,
+			});
+
+			const verify = new Database(dbPath, { readonly: true });
+			try {
+				expect(
+					verify
+						.prepare(
+							"SELECT event, subject_id FROM mailbox_log WHERE message_id = ?",
+						)
+						.get("fly2136-archive-me"),
+				).toEqual({ event: "archived", subject_id: "fly2136-archive-me" });
+				expect(
+					verify
+						.prepare("SELECT archived_at FROM mailbox_identity WHERE id = ?")
+						.get("fly2136-archive-me"),
+				).toEqual({ archived_at: expect.any(String) });
+			} finally {
+				verify.close();
+			}
+		} finally {
+			drainContentRefGc.mockRestore();
+			archiveDueFamilies.mockRestore();
+			queue.close();
+		}
+	});
+
+	it("throttles a persistently failing archive attempt", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2136-archive-failure-"));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => join(root, "project-a.db"),
+			ownerEpoch: "owner-fly2136-archive-failure",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const archive = vi
+			.spyOn(MailboxQueue.prototype, "archiveDueFamilies")
+			.mockImplementation(() => {
+				throw new Error("persistent archive failure");
+			});
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			runtime.start();
+			await vi.waitFor(() => expect(archive).toHaveBeenCalledTimes(1));
+			runtime.nudge("lead-a", "project-a");
+			await new Promise<void>((resolve) => setTimeout(resolve, 100));
+			expect(archive).toHaveBeenCalledTimes(1);
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining("persistent archive failure"),
+			);
+		} finally {
+			warning.mockRestore();
+			archive.mockRestore();
+		}
+	});
+
+	it("throttles dead-letter reconciliation while leaving alert draining live", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2136-alert-throttle-"));
+		const dbPath = join(root, "project-a.db");
+		const store = runtimeStoreStub();
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: store as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2136-alert-throttle",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			queue.enqueue({
+				id: "fly2136-dead-lead",
+				fromAgent: "runner-a",
+				toAgent: "retired-lead",
+				recipientKind: "lead",
+				type: "question",
+				content: "unacknowledged",
+				senderRef: encodeSenderRef(),
+			});
+			queue.markDead(
+				"fly2136-dead-lead",
+				new Date().toISOString(),
+				"lease_expired_unacked",
+			);
+
+			runtime.start();
+			await vi.waitFor(() =>
+				expect(store.createDeadLetterAlertIntent).toHaveBeenCalledTimes(1),
+			);
+			runtime.nudge("lead-a", "project-a");
+			await new Promise<void>((resolve) => setTimeout(resolve, 100));
+			expect(store.createDeadLetterAlertIntent).toHaveBeenCalledTimes(1);
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("FLY-2018: admit redrives a committed replacement event and duplicate scans stay quiet", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2018-redrive-"));
 		const dbPath = join(root, "project-a.db");

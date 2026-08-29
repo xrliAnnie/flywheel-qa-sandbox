@@ -1,0 +1,19 @@
+flowchart LR
+    A["终态行只进不出<br/>ACKED/DEAD 单调累积<br/>(Bridge 无归档机制)"] --> B["每秒 1 次死信扫描<br/>查询无索引可用<br/>成本随行数线性涨"]
+    B --> C["66K 行时单次扫描
+2412ms > 1s tick 间隔"]
+    C --> D["扫描背靠背连跑<br/>主线程 CPU ~87%<br/>事件循环被饿死"]
+    D --> E["/health p99<br/>25s → 30.7s 单调恶化"]
+    E --> F["EventLoopGuard 越阈值<br/>Bridge 自杀 ×3<br/>(FLY-2133)"]
+
+    FIX1["刀1+刀2: 索引+节流<br/>2412ms → 7.5ms"] -.->|拆除| B
+    FIX3["刀3: 周期归档<br/>常驻 ≤72h 流量"] -.->|拆除| A
+
+    style A fill:#fff4e6,stroke:#ff9500,stroke-width:2px
+    style B fill:#ffe6e6,stroke:#ff3b30,stroke-width:2px
+    style C fill:#ffe6e6,stroke:#ff3b30,stroke-width:2px
+    style D fill:#ffe6e6,stroke:#ff3b30,stroke-width:2px
+    style E fill:#ffe6e6,stroke:#ff3b30,stroke-width:2px
+    style F fill:#1a365d,stroke:#1a365d,color:#ffffff,stroke-width:2px
+    style FIX1 fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style FIX3 fill:#e8f8ee,stroke:#34c759,stroke-width:2px

@@ -333,6 +333,26 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 		db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
 			ON mailbox(claim_expires_at)
 			WHERE state = 'LEASED' AND carrier = 'inbox'`);
+		// Caller-owned compatibility schemas may expose only the lease columns.
+		// Production FLY-1572 mailboxes have the full set and must receive the
+		// FLY-2136 indexes on their first writable open.
+		if (
+			[
+				"recipient_kind",
+				"to_agent",
+				"seq",
+				"source_ref",
+				"type",
+				"source_kind",
+			].every((name) => hasMailboxColumn(db, name))
+		) {
+			db.exec(`CREATE INDEX IF NOT EXISTS mailbox_dead_scan
+				ON mailbox(recipient_kind, to_agent, seq)
+				WHERE state = 'DEAD' AND carrier = 'inbox';
+				CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
+				ON mailbox(source_ref, seq)
+				WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter'`);
+		}
 
 		const projection = db
 			.prepare(
@@ -399,6 +419,8 @@ export class MailboxQueue {
 		recipientKind: "lead" | "runner";
 		toAgent: string;
 	};
+	private archiveAckedScanCursor?: { terminalAt: string; seq: number };
+	private archiveDeadScanCursor?: { terminalAt: string; seq: number };
 
 	constructor(
 		dbPathOrConnection: string | Database.Database,
@@ -2548,27 +2570,101 @@ export class MailboxQueue {
 		}
 		const cutoff = new Date(Date.parse(input.now) - retentionMs).toISOString();
 		const candidateLimit = maxFamilies * 4;
-		const candidates = [
-			...(this.db
-				.prepare(
-					`SELECT id, acked_at AS terminal_at FROM mailbox
-					  WHERE state = 'ACKED' AND acked_at <= ?
-					  ORDER BY acked_at, seq LIMIT ?`,
-				)
-				.all(cutoff, candidateLimit) as Array<{
-				id: string;
-				terminal_at: string;
-			}>),
-			...(this.db
-				.prepare(
-					`SELECT id, dead_at AS terminal_at FROM mailbox
-					  WHERE state = 'DEAD' AND dead_at <= ?
-					  ORDER BY dead_at, seq LIMIT ?`,
-				)
-				.all(cutoff, candidateLimit) as Array<{
-				id: string;
-				terminal_at: string;
-			}>),
+		type ArchiveCandidate = {
+			id: string;
+			terminal_at: string;
+			seq: number;
+			state: "ACKED" | "DEAD";
+		};
+		const ackedRows = this.archiveAckedScanCursor
+			? (this.db
+					.prepare(
+						`SELECT id, acked_at AS terminal_at, seq FROM mailbox
+						  WHERE state = 'ACKED' AND acked_at <= ?
+						    AND (acked_at > ? OR (acked_at = ? AND seq > ?))
+						  ORDER BY acked_at, seq LIMIT ?`,
+					)
+					.all(
+						cutoff,
+						this.archiveAckedScanCursor.terminalAt,
+						this.archiveAckedScanCursor.terminalAt,
+						this.archiveAckedScanCursor.seq,
+						candidateLimit,
+					) as Array<Omit<ArchiveCandidate, "state">>)
+			: [];
+		if (ackedRows.length < candidateLimit) {
+			const wrapped = this.archiveAckedScanCursor
+				? (this.db
+						.prepare(
+							`SELECT id, acked_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'ACKED' AND acked_at <= ?
+							    AND (acked_at < ? OR (acked_at = ? AND seq <= ?))
+							  ORDER BY acked_at, seq LIMIT ?`,
+						)
+						.all(
+							cutoff,
+							this.archiveAckedScanCursor.terminalAt,
+							this.archiveAckedScanCursor.terminalAt,
+							this.archiveAckedScanCursor.seq,
+							candidateLimit - ackedRows.length,
+						) as Array<Omit<ArchiveCandidate, "state">>)
+				: (this.db
+						.prepare(
+							`SELECT id, acked_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'ACKED' AND acked_at <= ?
+							  ORDER BY acked_at, seq LIMIT ?`,
+						)
+						.all(cutoff, candidateLimit) as Array<
+						Omit<ArchiveCandidate, "state">
+					>);
+			ackedRows.push(...wrapped);
+		}
+		const deadRows = this.archiveDeadScanCursor
+			? (this.db
+					.prepare(
+						`SELECT id, dead_at AS terminal_at, seq FROM mailbox
+						  WHERE state = 'DEAD' AND dead_at <= ?
+						    AND (dead_at > ? OR (dead_at = ? AND seq > ?))
+						  ORDER BY dead_at, seq LIMIT ?`,
+					)
+					.all(
+						cutoff,
+						this.archiveDeadScanCursor.terminalAt,
+						this.archiveDeadScanCursor.terminalAt,
+						this.archiveDeadScanCursor.seq,
+						candidateLimit,
+					) as Array<Omit<ArchiveCandidate, "state">>)
+			: [];
+		if (deadRows.length < candidateLimit) {
+			const wrapped = this.archiveDeadScanCursor
+				? (this.db
+						.prepare(
+							`SELECT id, dead_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'DEAD' AND dead_at <= ?
+							    AND (dead_at < ? OR (dead_at = ? AND seq <= ?))
+							  ORDER BY dead_at, seq LIMIT ?`,
+						)
+						.all(
+							cutoff,
+							this.archiveDeadScanCursor.terminalAt,
+							this.archiveDeadScanCursor.terminalAt,
+							this.archiveDeadScanCursor.seq,
+							candidateLimit - deadRows.length,
+						) as Array<Omit<ArchiveCandidate, "state">>)
+				: (this.db
+						.prepare(
+							`SELECT id, dead_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'DEAD' AND dead_at <= ?
+							  ORDER BY dead_at, seq LIMIT ?`,
+						)
+						.all(cutoff, candidateLimit) as Array<
+						Omit<ArchiveCandidate, "state">
+					>);
+			deadRows.push(...wrapped);
+		}
+		const candidates: ArchiveCandidate[] = [
+			...ackedRows.map((row) => ({ ...row, state: "ACKED" as const })),
+			...deadRows.map((row) => ({ ...row, state: "DEAD" as const })),
 		].sort((left, right) => left.terminal_at.localeCompare(right.terminal_at));
 		const result: MailboxArchiveSweepResult = {
 			archivedFamilies: 0,
@@ -2580,6 +2676,15 @@ export class MailboxQueue {
 		const seen = new Set<string>();
 		for (const candidate of candidates) {
 			if (result.archivedFamilies >= maxFamilies) break;
+			const cursor = {
+				terminalAt: candidate.terminal_at,
+				seq: candidate.seq,
+			};
+			if (candidate.state === "ACKED") {
+				this.archiveAckedScanCursor = cursor;
+			} else {
+				this.archiveDeadScanCursor = cursor;
+			}
 			const row = this.getById(candidate.id);
 			if (!row) continue;
 			const rootId = this.familyRootId(row);
@@ -2769,6 +2874,7 @@ export class MailboxQueue {
 	drainContentRefGc(input: {
 		now: string;
 		limit?: number;
+		readFile?: (path: string) => Buffer;
 		removeFile?: (path: string) => void;
 	}): { done: number; pending: number } {
 		assertUtcIsoTimestamp(input.now, "now");
@@ -2790,17 +2896,53 @@ export class MailboxQueue {
 		const result = { done: 0, pending: 0 };
 		for (const intent of intents) {
 			try {
+				const hasLiveReference = () =>
+					(
+						this.db
+							.prepare(
+								"SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?",
+							)
+							.get(intent.path) as { count: number }
+					).count > 0;
+				if (hasLiveReference()) {
+					this.db
+						.transaction(() =>
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								"path still has a live mailbox reference",
+							),
+						)
+						.immediate();
+					result.pending++;
+					continue;
+				}
+				let fileOutcome:
+					| { kind: "ready" }
+					| { kind: "missing" }
+					| { kind: "pending"; error: string };
+				if (!isValidRefPath(intent.path)) {
+					fileOutcome = { kind: "pending", error: "invalid content_ref path" };
+				} else {
+					try {
+						const bytes = (input.readFile ?? readFileSync)(intent.path);
+						fileOutcome =
+							createHash("sha256").update(bytes).digest("hex") ===
+							intent.content_hash
+								? { kind: "ready" }
+								: { kind: "pending", error: "content_ref hash mismatch" };
+					} catch (error) {
+						fileOutcome =
+							(error as NodeJS.ErrnoException).code === "ENOENT"
+								? { kind: "missing" }
+								: { kind: "pending", error: (error as Error).message };
+					}
+				}
 				const status = this.db
 					.transaction((): "done" | "pending" => {
-						if (
-							(
-								this.db
-									.prepare(
-										"SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?",
-									)
-									.get(intent.path) as { count: number }
-							).count > 0
-						) {
+						// Recheck under the write lock after the file read so a concurrent
+						// enqueue cannot make us delete a newly-live content reference.
+						if (hasLiveReference()) {
 							this.deferContentRefGc(
 								intent,
 								input.now,
@@ -2808,49 +2950,21 @@ export class MailboxQueue {
 							);
 							return "pending";
 						}
-						if (!isValidRefPath(intent.path)) {
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								"invalid content_ref path",
-							);
+						if (fileOutcome.kind === "pending") {
+							this.deferContentRefGc(intent, input.now, fileOutcome.error);
 							return "pending";
 						}
-						let bytes: Buffer;
-						try {
-							bytes = readFileSync(intent.path);
-						} catch (error) {
-							if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-								this.finishContentRefGc(intent.intent_id, input.now);
-								return "done";
+						if (fileOutcome.kind === "ready") {
+							try {
+								(input.removeFile ?? unlinkSync)(intent.path);
+							} catch (error) {
+								this.deferContentRefGc(
+									intent,
+									input.now,
+									(error as Error).message,
+								);
+								return "pending";
 							}
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								(error as Error).message,
-							);
-							return "pending";
-						}
-						if (
-							createHash("sha256").update(bytes).digest("hex") !==
-							intent.content_hash
-						) {
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								"content_ref hash mismatch",
-							);
-							return "pending";
-						}
-						try {
-							(input.removeFile ?? unlinkSync)(intent.path);
-						} catch (error) {
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								(error as Error).message,
-							);
-							return "pending";
 						}
 						this.finishContentRefGc(intent.intent_id, input.now);
 						return "done";

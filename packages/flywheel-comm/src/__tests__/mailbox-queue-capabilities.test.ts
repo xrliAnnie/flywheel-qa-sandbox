@@ -1673,6 +1673,38 @@ describe("FLY-1573 mailbox queue capabilities", () => {
 		}
 	});
 
+	it("covers the second recipient page when more than 100 runners are dead", () => {
+		const { db, queue } = fixture();
+		try {
+			for (let index = 0; index < 101; index += 1) {
+				const recipient = `exec-${String(index).padStart(3, "0")}`;
+				const id = `dead-page-${String(index).padStart(3, "0")}`;
+				enqueue(queue, id, { recipientKind: "runner", toAgent: recipient });
+				queue.markDead(id, at(1), "recipient_terminal");
+			}
+			const scan = () =>
+				queue.scanAndInsertDeadLetterNotices({
+					ownerEpoch: OWNER,
+					now: at(10),
+					windowMs: 1_800_000,
+					maxRecipients: 100,
+					maxDeadRowsPerRecipient: 5,
+					maxSummaryBytes: 1_000,
+					resolveOwningLead: () => "lead-a",
+				});
+
+			const first = scan();
+			expect(first.inserted).toHaveLength(100);
+			expect(first.uncoveredRemaining).toBe(true);
+			const second = scan();
+			expect(second.inserted).toHaveLength(1);
+			expect(queue.getById(second.inserted[0]!)?.source_ref).toBe("exec-100");
+		} finally {
+			queue.close();
+			db.close();
+		}
+	});
+
 	it("Lead alert scans advance past routable runner dead letters", () => {
 		const { db, queue } = fixture();
 		try {

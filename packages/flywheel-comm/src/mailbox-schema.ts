@@ -159,6 +159,12 @@ CREATE INDEX IF NOT EXISTS mailbox_archive_acked
   ON mailbox(acked_at) WHERE state = 'ACKED';
 CREATE INDEX IF NOT EXISTS mailbox_archive_dead
   ON mailbox(dead_at) WHERE state = 'DEAD';
+CREATE INDEX IF NOT EXISTS mailbox_dead_scan
+  ON mailbox(recipient_kind, to_agent, seq)
+  WHERE state = 'DEAD' AND carrier = 'inbox';
+CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
+  ON mailbox(source_ref, seq)
+  WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter';
 
 -- Internal read-only compatibility projection while CommDB keeps its public
 -- Message shape. The legacy object names remain poisoned below.

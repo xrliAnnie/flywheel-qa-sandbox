@@ -1,0 +1,20 @@
+flowchart LR
+    Q["QUEUED<br/>等待投递"] --> L["LEASED<br/>已领取投递中"]
+    L --> A["ACKED<br/>收件人已确认<br/>(终态)"]
+    L -->|租约到期重试| Q
+    L -->|重试耗尽| D["DEAD<br/>死信<br/>(终态)"]
+    Q -->|收件人已终结| D
+
+    A -->|"新增: 满 72h 自动归档"| AR["归档<br/>mailbox_log 留全量快照<br/>mailbox_identity 留 tombstone<br/>热表行删除"]
+    D -->|"新增: 满 72h 自动归档"| AR
+
+    OLD["修复前: 终态行永久常驻热表<br/>唯一出口 = 手动 CLI(上次 8/23)<br/>累积到 6.6 万行 = 病灶温床"]
+    NEW["修复后: Bridge 每 60s 自动归档<br/>常驻 ≈ 3 天流量,有界<br/>审计链完整(与裸 DELETE 相反)"]
+
+    style Q fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style L fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style A fill:#fff4e6,stroke:#ff9500,stroke-width:2px
+    style D fill:#ffe6e6,stroke:#ff3b30,stroke-width:2px
+    style AR fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style OLD fill:#ffe6e6,stroke:#ff3b30,stroke-width:1px
+    style NEW fill:#e8f8ee,stroke:#34c759,stroke-width:1px

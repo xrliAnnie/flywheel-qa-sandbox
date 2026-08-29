@@ -29,10 +29,11 @@ import {
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 export interface GateMarker {
 	questionId: string;
@@ -61,6 +62,58 @@ export interface GateMarker {
 	cleanupTtlHours?: number;
 	/** Truncated original gate message (gate_timed_out payload parity). */
 	message?: string;
+}
+
+interface CachedGateMarkerFile {
+	mtimeMs: number;
+	size: number;
+	marker: GateMarker | null;
+}
+
+interface CachedGateMarkerDirectory {
+	dirMtimeMs: number;
+	markers: GateMarker[];
+	files: Map<string, CachedGateMarkerFile>;
+	retryOnNextList: boolean;
+}
+
+const MAX_CACHED_GATE_MARKER_DIRECTORIES = 32;
+const RETRYABLE_GATE_MARKER_IO_CODES = new Set([
+	"EAGAIN",
+	"EBUSY",
+	"EINTR",
+	"EIO",
+	"EMFILE",
+	"ENFILE",
+	"ENOMEM",
+]);
+const gateMarkerListCache = new Map<string, CachedGateMarkerDirectory>();
+
+function isRetryableGateMarkerIoError(error: unknown): boolean {
+	const code = (error as NodeJS.ErrnoException).code;
+	return code !== undefined && RETRYABLE_GATE_MARKER_IO_CODES.has(code);
+}
+
+function cacheGateMarkerDirectory(
+	dir: string,
+	entry: CachedGateMarkerDirectory,
+): void {
+	gateMarkerListCache.delete(dir);
+	gateMarkerListCache.set(dir, entry);
+	while (gateMarkerListCache.size > MAX_CACHED_GATE_MARKER_DIRECTORIES) {
+		const oldest = gateMarkerListCache.keys().next().value;
+		if (oldest === undefined) break;
+		gateMarkerListCache.delete(oldest);
+	}
+}
+
+function markersForExecution(
+	entry: CachedGateMarkerDirectory,
+	executionId: string,
+): GateMarker[] {
+	return entry.markers
+		.filter((marker) => marker.executionId === executionId)
+		.map((marker) => ({ ...marker }));
 }
 
 /** Marker filenames use this strict domain — also our path-traversal guard. */
@@ -169,20 +222,100 @@ export function listGateMarkersForExecution(
 	dir: string,
 	executionId: string,
 ): GateMarker[] {
-	if (!existsSync(dir)) return [];
-	const result: GateMarker[] = [];
-	for (const file of readdirSync(dir)) {
-		if (!file.endsWith(".json")) continue;
-		try {
-			const raw = JSON.parse(
-				readFileSync(join(dir, file), "utf-8"),
-			) as GateMarker;
-			if (raw.executionId === executionId) result.push(raw);
-		} catch {
-			// skip corrupted entries
+	const resolvedDir = resolve(dir);
+	let dirMtimeMs: number;
+	try {
+		const directory = statSync(resolvedDir);
+		if (!directory.isDirectory()) {
+			gateMarkerListCache.delete(resolvedDir);
+			return [];
 		}
+		dirMtimeMs = directory.mtimeMs;
+	} catch {
+		gateMarkerListCache.delete(resolvedDir);
+		return [];
 	}
-	return result;
+	const cachedDirectory = gateMarkerListCache.get(resolvedDir);
+	if (
+		cachedDirectory?.dirMtimeMs === dirMtimeMs &&
+		!cachedDirectory.retryOnNextList
+	) {
+		cacheGateMarkerDirectory(resolvedDir, cachedDirectory);
+		return markersForExecution(cachedDirectory, executionId);
+	}
+
+	let files: string[];
+	try {
+		files = readdirSync(resolvedDir);
+	} catch {
+		gateMarkerListCache.delete(resolvedDir);
+		return [];
+	}
+	const nextFiles = new Map<string, CachedGateMarkerFile>();
+	const markers: GateMarker[] = [];
+	let retryOnNextList = false;
+	for (const file of files) {
+		if (!file.endsWith(".json")) continue;
+		const path = join(resolvedDir, file);
+		let stats: ReturnType<typeof statSync>;
+		try {
+			stats = statSync(path);
+		} catch (error) {
+			// Capacity errors self-heal on the next poll. Structural errors such as
+			// a dangling *.json symlink are ignored until the directory changes.
+			retryOnNextList ||= isRetryableGateMarkerIoError(error);
+			continue;
+		}
+		const cachedFile = cachedDirectory?.files.get(path);
+		let marker: GateMarker | null;
+		if (
+			cachedFile?.mtimeMs === stats.mtimeMs &&
+			cachedFile.size === stats.size
+		) {
+			marker = cachedFile.marker;
+		} else {
+			let contents: string;
+			try {
+				contents = readFileSync(path, "utf-8");
+			} catch (error) {
+				// Do not turn EMFILE/EIO-style transient failures into a permanent
+				// negative cache entry with the same mtime and size. Stable structural
+				// failures (EISDIR/ELOOP/EACCES) must not disable the warm path forever.
+				if (isRetryableGateMarkerIoError(error)) {
+					retryOnNextList = true;
+					continue;
+				}
+				marker = null;
+				nextFiles.set(path, {
+					mtimeMs: stats.mtimeMs,
+					size: stats.size,
+					marker,
+				});
+				continue;
+			}
+			try {
+				marker = JSON.parse(contents) as GateMarker;
+			} catch {
+				// Stable malformed JSON is safe to cache until the atomic writer
+				// replaces the directory entry and advances its mtime.
+				marker = null;
+			}
+		}
+		nextFiles.set(path, {
+			mtimeMs: stats.mtimeMs,
+			size: stats.size,
+			marker,
+		});
+		if (marker) markers.push(marker);
+	}
+	const nextDirectory = {
+		dirMtimeMs,
+		markers,
+		files: nextFiles,
+		retryOnNextList,
+	};
+	cacheGateMarkerDirectory(resolvedDir, nextDirectory);
+	return markersForExecution(nextDirectory, executionId);
 }
 
 /**

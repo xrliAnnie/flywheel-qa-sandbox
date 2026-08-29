@@ -536,4 +536,69 @@ describe("RunnerMailboxLane", () => {
 			q.close();
 		}
 	});
+
+	it("throttles dead-letter scans while continuing runner delivery every tick", async () => {
+		const q = queue();
+		try {
+			let nowMs = Date.parse(NOW);
+			const deliver = vi.fn(async () => ({
+				status: "delivered" as const,
+				backend: "claude-code" as const,
+				settlement: "on_delivery" as const,
+			}));
+			const probeFactsByRecipient = vi.fn(() => new Map<string, string>());
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver,
+				now: () => new Date(nowMs),
+				queueConfig: () => ({
+					...DEFAULT_MAILBOX_QUEUE_CONFIG,
+					deadLetterWindowMs: 0,
+					deadLetterScanIntervalMs: 30_000,
+				}),
+				recipientState: () => "alive",
+				resolveOwningLead: () => "lead-a",
+				probeFactsByRecipient,
+			});
+			const enqueueRunner = (id: string) =>
+				q.enqueue({
+					id,
+					fromAgent: "lead-a",
+					toAgent: "exec-dead",
+					recipientKind: "runner",
+					type: "instruction",
+					content: id,
+					createdAt: new Date(nowMs).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+			const dead1 = enqueueRunner("dead-1");
+			if (dead1.outcome === "archived") throw new Error("archived seed");
+			q.markDead("dead-1", new Date(nowMs).toISOString(), "test");
+			enqueueRunner("live-1");
+			expect(await lane.tick()).toMatchObject({ delivered: 1 });
+			expect(q.getById(`dead_letter:exec-dead:${dead1.row.seq}`)).toBeTruthy();
+			expect(probeFactsByRecipient).toHaveBeenCalledTimes(1);
+
+			nowMs += 1_000;
+			const dead2 = enqueueRunner("dead-2");
+			if (dead2.outcome === "archived") throw new Error("archived seed");
+			q.markDead("dead-2", new Date(nowMs).toISOString(), "test");
+			enqueueRunner("live-2");
+			expect(await lane.tick()).toMatchObject({ delivered: 1 });
+			expect(
+				q.getById(`dead_letter:exec-dead:${dead2.row.seq}`),
+			).toBeUndefined();
+			expect(probeFactsByRecipient).toHaveBeenCalledTimes(1);
+
+			nowMs += 29_000;
+			enqueueRunner("live-3");
+			expect(await lane.tick()).toMatchObject({ delivered: 1 });
+			expect(q.getById(`dead_letter:exec-dead:${dead2.row.seq}`)).toBeTruthy();
+			expect(deliver).toHaveBeenCalledTimes(3);
+			expect(probeFactsByRecipient).toHaveBeenCalledTimes(2);
+		} finally {
+			q.close();
+		}
+	});
 });

@@ -555,6 +555,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_MAILBOX_ACK_LEASE_MS:
 		"numeric tuning: mailbox agent-ack lease duration (FLY-1573)",
+	FLYWHEEL_MAILBOX_ARCHIVE_INTERVAL_MS:
+		"numeric tuning: mailbox archive maintenance cadence (FLY-2136)",
 	FLYWHEEL_MAILBOX_BATCH_WINDOW_MS:
 		"numeric tuning: mailbox grouping window (FLY-1573)",
 	FLYWHEEL_MAILBOX_BATCH_MAX:
@@ -565,6 +567,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: mailbox unacked lease retry limit (FLY-1573)",
 	FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS:
 		"numeric tuning: mailbox dead-letter notification window (FLY-1573)",
+	FLYWHEEL_MAILBOX_DEADSCAN_INTERVAL_MS:
+		"numeric tuning: mailbox dead-letter scan cadence (FLY-2136)",
 	FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX:
 		"numeric tuning: unavailable mailbox delivery retry limit (FLY-1750)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:

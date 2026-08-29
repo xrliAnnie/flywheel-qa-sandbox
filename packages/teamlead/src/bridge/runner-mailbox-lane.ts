@@ -222,6 +222,7 @@ export class RunnerMailboxLane {
 	private readonly retryBackoffBaseMs: number;
 	private readonly retryBackoffCapMs: number;
 	private readonly maxPerTick: number;
+	private lastDeadLetterScanAtMs?: number;
 
 	constructor(private readonly opts: RunnerMailboxLaneOptions) {
 		this.now = opts.now ?? (() => new Date());
@@ -240,7 +241,6 @@ export class RunnerMailboxLane {
 			failed: 0,
 			dead: 0,
 		};
-		const probeFactsByRecipient = this.opts.probeFactsByRecipient?.();
 		const recipientStates = new Map<
 			string,
 			"alive" | "terminal_or_missing" | "unknown"
@@ -264,24 +264,33 @@ export class RunnerMailboxLane {
 		});
 		result.dead += reconciled.dead;
 		if (this.opts.resolveOwningLead) {
-			const leadByRecipient = new Map<string, string | undefined>();
-			this.opts.queue.scanAndInsertDeadLetterNotices({
-				ownerEpoch: this.opts.ownerEpoch,
-				now: this.now().toISOString(),
-				windowMs: queueConfig.deadLetterWindowMs,
-				maxRecipients: this.maxPerTick,
-				maxDeadRowsPerRecipient: 20,
-				maxSummaryBytes: 4_000,
-				probeFactsByRecipient,
-				resolveOwningLead: (executionId) => {
-					if (leadByRecipient.has(executionId)) {
-						return leadByRecipient.get(executionId);
-					}
-					const resolved = this.opts.resolveOwningLead?.(executionId);
-					leadByRecipient.set(executionId, resolved);
-					return resolved;
-				},
-			});
+			const scanAtMs = this.now().getTime();
+			if (
+				this.lastDeadLetterScanAtMs === undefined ||
+				scanAtMs - this.lastDeadLetterScanAtMs >=
+					queueConfig.deadLetterScanIntervalMs
+			) {
+				const probeFactsByRecipient = this.opts.probeFactsByRecipient?.();
+				const leadByRecipient = new Map<string, string | undefined>();
+				this.opts.queue.scanAndInsertDeadLetterNotices({
+					ownerEpoch: this.opts.ownerEpoch,
+					now: new Date(scanAtMs).toISOString(),
+					windowMs: queueConfig.deadLetterWindowMs,
+					maxRecipients: this.maxPerTick,
+					maxDeadRowsPerRecipient: 20,
+					maxSummaryBytes: 4_000,
+					probeFactsByRecipient,
+					resolveOwningLead: (executionId) => {
+						if (leadByRecipient.has(executionId)) {
+							return leadByRecipient.get(executionId);
+						}
+						const resolved = this.opts.resolveOwningLead?.(executionId);
+						leadByRecipient.set(executionId, resolved);
+						return resolved;
+					},
+				});
+				this.lastDeadLetterScanAtMs = scanAtMs;
+			}
 		}
 		for (let index = 0; index < this.maxPerTick; index++) {
 			const batch = this.opts.queue.claimRunnerBatch({
