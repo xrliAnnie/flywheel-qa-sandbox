@@ -1,13 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 1/4
-updated: 2026-08-29T14:18:18.240Z
-nextStep: "QA attempt2: read rework diff"
+phaseCursor: 2/4
+updated: 2026-08-29T14:20:22.021Z
+nextStep: regression face + 529 room
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (1/4)
-**next**: QA attempt2: read rework diff
+**phase**: implement (2/4)
+**next**: regression face + 529 room
