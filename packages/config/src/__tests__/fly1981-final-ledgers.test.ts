@@ -432,8 +432,8 @@ describe("FLY-1981 final governance ledgers", () => {
 				exemptions: FLAG_EXEMPTIONS,
 			}),
 		).toEqual([]);
-		// FLY-2101 and FLY-2102 removed 22 controls from the live only-shrink baseline.
-		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(9);
+		// FLY-2101/2102/2103 removed 24 controls from the live only-shrink baseline.
+		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(7);
 		const currentNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
 		const outsidePartition = FEATURE_FLAGS.filter(
 			(spec) =>
