@@ -1,14 +1,13 @@
 ---
 issue: FLY-2103
 phase: design
-phaseCursor: 2/8
-updated: 2026-08-29T04:21:17.635Z
-nextStep: 读 participation/xhs-scheduler/Blueprint checkpoint/ConfigLoader;查 6 项目
-  config.yaml 现值
+phaseCursor: 3/8
+updated: 2026-08-29T04:31:48.415Z
+nextStep: 写 exploration.md / research.md / plan.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: design (2/8)
-**next**: 读 participation/xhs-scheduler/Blueprint checkpoint/ConfigLoader;查 6 项目 config.yaml 现值
+**phase**: design (3/8)
+**next**: 写 exploration.md / research.md / plan.md
