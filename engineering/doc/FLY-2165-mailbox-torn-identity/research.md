@@ -23,13 +23,14 @@ Issue: FLY-2165 (https://linear.app/geoforge3d/issue/FLY-2165/病根-mailbox-清
 |---|---|---|
 | `MailboxQueue.archiveFamily()` | 完整四步，正确 | 不改；加 trigger parity 回归 |
 | `scripts/lib/fly-2006-mailbox-archive.mjs` | 完整四步，正确 | 不改；现有 parity 测试继续覆盖 |
-| `receipt-teardown-closeout.ts::archiveExternalRow()` | archived full snapshot → identity CAS → delete | 不改；新 trigger 成为额外守卫 |
-| `mailbox-migration.ts::persistMapped(keep=false)` | 只写 legacy source coverage log，再 stamp + delete；没有 `event='archived'` live-row snapshot | 改为调用 `queue.archiveFamily({retentionMs:0})` |
+| `receipt-teardown-closeout.ts::archiveExternalRow()` | archived full snapshot → identity CAS → delete；可处理 QUEUED/LEASED external row | 不改；trigger 只验 matching snapshot，不强制 terminal |
+| `mailbox-migration.ts::persistMapped(keep=false)` | 只写 legacy source coverage log，再 stamp + delete；没有 `event='archived'` live-row snapshot | family 全部 materialize 后对 root 调一次 `archiveFamily({retentionMs:0,maxFamilyBytes:MAX_SAFE})` |
 | 2026-08-29 手工 `mailbox_archive` 止血 | copy → raw delete | schema trigger 将确定性拒绝再次发生 |
 
-因此 trigger 不能只检查 `identity.archived_at`。它还要找到 matching `event='archived'`，并核验
-`row_json` 至少与 `OLD.id/delivery_id/state/terminal timestamp` 一致，才允许 delete。这样一张 `{}`
-假 log 也不能绕过。
+因此 trigger 不能只检查 `identity.archived_at`。它还要找到 reader 同样会选中的 newest
+`event='archived'`，核验 `row_json` 的 `OLD.id/delivery_id/state`；ACKED/DEAD 再核对对应 terminal
+timestamp（含 NULL equality）。它不能把「有归档证据」误写成「必须 terminal」，否则会打断
+FLY-1645 的 nonterminal external closeout。这样既拒绝 `{}` 假 log，也保持现有受控 closeout。
 
 ## 2. typed torn state 的语义
 
@@ -52,7 +53,7 @@ Issue: FLY-2165 (https://linear.app/geoforge3d/issue/FLY-2165/病根-mailbox-清
 
 | consumer | 新态行为 |
 |---|---|
-| `message-status` | human/JSON 显示 `location:'torn'`、空 stamps，exit 2，不能误报 absent/archived |
+| `message-status` | human/JSON 显示 `location:'torn'`、空 stamps，专用 exit 3；usage/runtime error 仍为 2 |
 | `flag-retirement-production` | 既非 acked 也非 dead，现有 guard 自然 fail-closed |
 | `lead-event-queue` / infra alert enqueue | 不把 torn 当 archived；若尝试复用 poisoned id，enqueue 仍明确失败 |
 | `patrol-tick` | 专门的 wall-clock recovery，见下节 |
@@ -83,27 +84,33 @@ delivery id 以新 journal seq/event id 为键，天然绕开坏账。最坏影�
 
 - 默认只读 dry-run；`--apply` 必须同时给尚不存在的 `--backup <path>`；
 - apply 前用 SQLite online backup，核 `quick_check='ok'`，再打开写事务；
+- `mailbox_archive` 与 `mailbox` 必须 ordered column names + normalized SQLite affinities 完全相同；
+  schema digests 进入 receipt，missing/extra/affinity drift 均拒绝；
 - authority 只取 `mailbox_archive` preserved row + matching active identity + no live row + zero log；
 - 只修 ACKED + `acked_at` 或 DEAD + `dead_at` 的 terminal row；
-- 每批写 canonical full `row_json`，追加 `lead_repair` provenance，写 `event='archived'`，
+- 每批写 canonical full `row_json`，追加 `lead_repair` provenance，以唯一
+  `event_id='fly2165:archived:<id>'` 写 `event='archived'`，
   再 CAS `identity.archived_at`；若有 content_ref，必须可读且按现有合同嵌入 bytes/hash 并写 GC intent；
 - 3 条 DEAD 但 `dead_at` 缺失的记录不猜时间，receipt 列为 `unrepairable_missing_terminal_at`；
 - 不删除 `mailbox_archive`，脚本可重跑；已修 identity 不再进入 candidate。
 
 apply 分批提交，避免 63k snapshots 形成单个超大 WAL transaction；失败可从 backup 回滚，或直接
-幂等续跑。stdout JSON receipt 含 candidate/repaired/skipped/remaining、source digest、backup path/hash。
+幂等续跑。当前只读 sizing：63,911 份 canonical row JSON 合计 148.27 MiB（未含 table/index/WAL
+overhead），另有 6 个 content refs。dry-run 给出 payload/growth/free-space 预算；apply receipt 记录
+DB/WAL before/after 与 passive checkpoint tuple，不在本工具内 VACUUM。
 
 ## 5. TDD seam 与验证矩阵
 
 ### RED 1 — schema contract
 
 `mailbox-schema.test.ts` 新增：active row raw delete 被拒；仅 stamp 仍被拒；伪 archived `{}` 仍被拒；
-valid matching archived snapshot + stamp 可删。既有 `archiveFamily` 与 closeout tests 是正门回归。
+valid matching archived snapshot + stamp 可删；matching QUEUED snapshot 也可删；newest snapshot 必须
+matching。既有 `archiveFamily` 与 `receipt-teardown-closeout` tests 是正门回归。
 
 ### RED 2 — typed reader/CLI
 
 `mailbox-settlement.test.ts` 手工删 trigger（仅 fixture）、raw delete live row，断言不 throw 且返回 torn；
-`message-status.test.ts` 断言 human/JSON 与 exit code。
+`message-status.test.ts` 断言 human/JSON 与专用 exit 3，且 bad args/db 仍为 2。
 
 ### RED 3 — patrol restart recovery
 
@@ -119,7 +126,8 @@ valid matching archived snapshot + stamp 可删。既有 `archiveFamily` 与 clo
 
 新增 `scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh`：dry-run 零写；缺 backup fail；
 apply 创建 valid backup；terminal rows 被修、invalid terminal time 被报告并保持 torn；重跑 repaired=0；
-content_ref snapshot/GC intent 与 receipt digest 可复核。
+content_ref snapshot/GC intent 与 receipt digest 可复核；archive schema drift fail-closed；新 harness 在
+`.github/workflows/ci.yml` always-on shell lane 显式枚举。
 
 ### 命令
 

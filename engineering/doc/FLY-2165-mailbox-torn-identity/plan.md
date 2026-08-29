@@ -18,18 +18,20 @@ Issue: FLY-2165 (https://linear.app/geoforge3d/issue/FLY-2165/病根-mailbox-清
 | 文件 | 责任 |
 |---|---|
 | `packages/flywheel-comm/src/mailbox-schema.ts` | 新增 delete contract trigger |
-| `packages/flywheel-comm/src/mailbox-queue.ts` | typed `torn_identity` reader result |
-| `packages/flywheel-comm/src/mailbox-migration.ts` | old-row deletion 改走 `archiveFamily()` |
+| `packages/flywheel-comm/src/mailbox-queue.ts` | typed `torn_identity` + latest archive snapshot ordering |
+| `packages/flywheel-comm/src/mailbox-migration.ts` | family 全部 materialize 后统一走 `archiveFamily()` |
 | `packages/flywheel-comm/src/commands/message-status.ts` | torn 的 CLI view/exit |
 | `packages/flywheel-comm/src/__tests__/mailbox-schema.test.ts` | raw-delete negative/positive contract |
 | `packages/flywheel-comm/src/__tests__/mailbox-settlement.test.ts` | torn reader regression |
 | `packages/flywheel-comm/src/commands/__tests__/message-status.test.ts` | human/JSON torn output |
 | `packages/flywheel-comm/src/__tests__/mailbox-migration.test.ts`（按现有 fixture 定位，若实际 owner 文件名不同则只用现存 owner test） | migration archive snapshot |
+| `packages/flywheel-comm/src/__tests__/receipt-teardown-closeout.test.ts` | nonterminal external closeout compatibility |
 | `packages/teamlead/src/bridge/patrol-tick.ts` | torn wall-clock recovery |
 | `packages/teamlead/src/__tests__/patrol-tick.test.ts` | current/old slot behavior |
 | `packages/teamlead/src/__tests__/patrol-tick-loop.integration.test.ts` | real queue restart regression |
 | `scripts/fly-2165-repair-torn-mailbox-identities.mjs` | dry-run/backup/apply/receipt repair CLI |
 | `scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh` | repair E2E harness |
+| `.github/workflows/ci.yml` | 在 always-on shell lane 显式运行 repair harness |
 | `engineering/doc/milestones/FLY-2165.md` | PR 最后一提交的交付账本 |
 
 计划自审时必须用 `rg --files packages/flywheel-comm/src/__tests__ | rg 'migration'` 确认 migration owner test 的真实文件名；不新造平行 owner。
@@ -38,8 +40,9 @@ Issue: FLY-2165 (https://linear.app/geoforge3d/issue/FLY-2165/病根-mailbox-清
 
 ### RED
 
-- [ ] 在 `mailbox-schema.test.ts` 写四个独立断言：active raw delete 拒绝；仅 stamp 拒绝；
-  `{}` fake archived log + stamp 拒绝；matching terminal snapshot + stamp 成功。
+- [ ] 在 `mailbox-schema.test.ts` 写五个独立断言：active raw delete 拒绝；仅 stamp 拒绝；
+  `{}` fake archived log + stamp 拒绝；matching terminal snapshot + stamp 成功；matching QUEUED
+  snapshot + stamp 也成功，保护 FLY-1645 closeout。
 - [ ] 运行：
 
 ```bash
@@ -63,37 +66,51 @@ WHEN NOT EXISTS (
 OR NOT EXISTS (
   SELECT 1 FROM mailbox_log l
    WHERE l.message_id=OLD.id AND l.event='archived'
+     AND l.log_seq=(
+       SELECT newest.log_seq FROM mailbox_log newest
+        WHERE newest.message_id=OLD.id AND newest.event='archived'
+        ORDER BY newest.at DESC, newest.log_seq DESC LIMIT 1
+     )
      AND json_valid(l.row_json)
      AND json_extract(l.row_json,'$.id')=OLD.id
      AND json_extract(l.row_json,'$.delivery_id')=OLD.delivery_id
      AND json_extract(l.row_json,'$.state')=OLD.state
-     AND (
-       (OLD.state='ACKED' AND OLD.acked_at IS NOT NULL
-         AND json_extract(l.row_json,'$.acked_at')=OLD.acked_at)
-       OR
-       (OLD.state='DEAD' AND OLD.dead_at IS NOT NULL
-         AND json_extract(l.row_json,'$.dead_at')=OLD.dead_at)
-     )
+     AND (OLD.state!='ACKED' OR json_extract(l.row_json,'$.acked_at') IS OLD.acked_at)
+     AND (OLD.state!='DEAD' OR json_extract(l.row_json,'$.dead_at') IS OLD.dead_at)
 )
 BEGIN
-  SELECT RAISE(ABORT, 'mailbox delete requires terminal archive evidence');
+  SELECT RAISE(ABORT, 'mailbox delete requires matching archive evidence');
 END;
 ```
 
-- [ ] 把 `mailbox-migration.ts::persistMapped()` 的 `keep=false` branch 改为：
+- [ ] `persistMapped()` 只 materialize member + coverage log，不再逐 member delete。每个 family 全部
+  `persistMapped()` 完成后，若 `keep=false`，只对 root 调一次：
 
 ```ts
-const outcome = queue.archiveFamily({ id: mapped.input.id, now, retentionMs: 0 });
+const outcome = queue.archiveFamily({
+  id: family[0].input.id,
+  now,
+  retentionMs: 0,
+  maxFamilyBytes: Number.MAX_SAFE_INTEGER,
+});
 if (outcome !== "archived") {
-  throw new Error(`migration_mailbox_archive_failed:${mapped.input.id}:${outcome}`);
+  throw new Error(
+    `migration_mailbox_archive_failed:${family[0].input.id}:${outcome}`,
+  );
 }
 ```
 
+- [ ] standalone `lead_inbox` mapped row 也走同一个 `persist family → archive once` helper。`keep=false`
+  保证 terminal/due；invalid content_ref 仍 fail-closed，因为无法生成合同要求的 full snapshot；
+  `Number.MAX_SAFE_INTEGER` 只移除旧 migration 没有的 2 MiB 行为变化。
 - [ ] 在现有 migration owner test 断言 `event='archived'` snapshot 可被
   `inspectDeliveryState()` 读为 `archived_terminal`。
-- [ ] 重跑 schema + migration focused tests，预期 PASS；再跑
+- [ ] `inspectDeliveryState()` 与 `getIdentityCarrier()` 的 archived query 都改为
+  `ORDER BY at DESC, log_seq DESC LIMIT 1`；schema test 另造 newer malformed/nonmatching snapshot，
+  断言 trigger 不会借 older good snapshot 放行。
+- [ ] 重跑 schema + migration focused tests，预期 PASS；再跑 closeout +
   `packages/flywheel-comm/src/__tests__/fly-2006-mailbox-archive-parity.test.ts`，预期 PASS。
-- [ ] commit：`fix(mailbox): enforce terminal archive before delete`。
+- [ ] commit：`fix(mailbox): enforce matching archive before delete`。
 
 ## Task 2: typed torn settlement 与 CLI
 
@@ -109,7 +126,7 @@ expect(queue.inspectDeliveryState("delivery:torn")).toEqual({
 ```
 
 - [ ] 在 `message-status.test.ts` 造同形数据库，断言 human 输出 `torn <id>`、JSON
-  `location:'torn'` 且命令 exit 2。
+  `location:'torn'` 且命令 exit 3；另断言坏参数/坏 DB 仍是 2，证明两个状态可区分。
 - [ ] 跑两份 focused test，预期当前实现 throw，RED 原因精确包含
   `active mailbox identity has no row`。
 
@@ -117,7 +134,7 @@ expect(queue.inspectDeliveryState("delivery:torn")).toEqual({
 
 - [ ] `MailboxSettlement` 增加 `{kind:'torn_identity'}`；active identity no row 分支返回它。
 - [ ] `MessageStatusView.location` 增加 `torn`，null state/evidence；human renderer 明示 torn；
-  `messageStatus()` 对 absent 返回 1、torn 返回 2、可判定 live/archive 返回 0。
+  `messageStatus()` 对 absent 返回 1、usage/runtime error 返回 2、torn 返回 3、可判定 live/archive 返回 0。
 - [ ] `rg` sweep 全部 `MailboxSettlement` consumers，逐个确认 torn 不被误当 ACKED/DEAD；只改需要
   exhaustive handling 的 owner，不扩 scope。
 - [ ] 重跑 focused tests与 `pnpm --filter flywheel-comm typecheck`，预期 PASS。
@@ -157,6 +174,10 @@ pnpm --filter flywheel-teamlead exec vitest run src/__tests__/patrol-tick.test.t
   `mailbox_archive AS SELECT * FROM mailbox WHERE 0`，种：ACKED、DEAD、缺 dead_at、content_ref 四类。
 - [ ] 断言 dry-run 零写；`--apply` 无 `--backup` exit nonzero；apply 后 backup `quick_check=ok`；
   三类合法 row archived 可读；缺 dead_at 仍 torn；二次 apply repaired=0。
+- [ ] 加 schema-negative fixtures：archive 缺列、额外列、或 column SQLite affinity 不同，dry-run/apply
+  均在 backup/write 前 fail-closed；positive fixture 的 ordered columns + normalized affinities 完全相同。
+- [ ] 加 crash/resume seam：一个 batch transaction 在 log insert 后 fault，断言 whole batch rollback；已提交
+  batch 重跑时不再入 candidate，`fly2165:archived:<id>` 不冲突。
 - [ ] 先运行 harness，预期 script 不存在而 RED。
 
 ### GREEN
@@ -168,15 +189,37 @@ pnpm --filter flywheel-teamlead exec vitest run src/__tests__/patrol-tick.test.t
 ```
 
 - [ ] 用 `createRequire(packages/flywheel-comm/package.json)` 加载 `better-sqlite3`；所有 SQL 参数化。
+- [ ] 读取 `PRAGMA table_info(mailbox|mailbox_archive)`；ordered name、normalized SQLite affinity
+  必须 byte-equal，missing/extra/affinity drift 全拒；receipt 记录两边 schema digest。
 - [ ] dry-run query 只选 exact torn + preserved archive；按 id 排序计算 SHA-256 source digest。
+- [ ] dry-run 同时算 canonical `rowJsonBytes`、可读 content-ref bytes 和预计 log/index 下界；当前生产
+  只读基线为 63,911 行、row_json **148.27 MiB**、6 个 content refs。receipt 记录主 DB/WAL 的
+  before bytes；apply 前要求可用空间至少 `backup bytes + 3 * estimatedGrowthBytes`。
 - [ ] apply 前拒绝 symlink/existing backup，`await db.backup()` 后用 readonly handle 验
   `quick_check='ok'` 并算 backup SHA-256。
 - [ ] 每 batch immediate transaction：canonical snapshot + `lead_repair`；content_ref 可读才修并写
-  `content_ref_gc_outbox`；insert archived log 后 identity CAS，任一步 changes/compare 不符即 rollback。
+  `content_ref_gc_outbox`；用普通 INSERT 写唯一 `event_id='fly2165:archived:<id>'` 后 identity CAS，
+  任一步 changes/compare 不符即 rollback。candidate 要求 zero log，所以 event collision 一律 fail-closed，
+  不用 `INSERT OR IGNORE` 掩盖历史差异。
 - [ ] stdout 只输出一份 JSON receipt：`mode/candidates/repairable/repaired/unrepairable/
-  remainingTorn/sourceDigest/backup`。
+  remainingTorn/sourceDigest/schemaDigests/sizeEstimate/beforeAfterBytes/backup`。
+- [ ] apply batches 后执行 passive WAL checkpoint 并把 `{busy,log,checkpointed}` 写 receipt；不在 repair
+  内 VACUUM。若需要 reclaim，交既有 stopped-service `scripts/db-maintenance.sh` 窗口处理。
 - [ ] harness PASS；`node ... --db <fixture>` dry-run JSON 可重复、digest byte-stable。
+- [ ] `.github/workflows/ci.yml` 的 always-on shell lane 加 literal
+  `bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh`；运行 enumeration guard。
 - [ ] commit：`fix(mailbox): add torn identity repair tool`。
+
+## Rollout / rollback（合并与部署仍解耦）
+
+- 正常顺序：PR merge 后等 updater 窗口部署同一 build（migration family fix + trigger 原子同版）；
+  后续 stopped-service maintenance window 先 dry-run → 自动 backup → apply repair → checkpoint →
+  仍由 updater 启动新 build。Runner 不执行这些生产动作，也不请求 emergency restart。
+- trigger 安装后即持久留在 DB。若必须回滚到 pre-FLY-2165 build，服务保持停止，先对每个 comm.db
+  执行 `DROP TRIGGER IF EXISTS mailbox_delete_requires_archive;`，记录 DB backup/quick_check，再启动旧版；
+  不允许旧 build 直接碰带新 trigger 的 DB。
+- repair 写入的 `mailbox_log` 与 identity stamp 是真实历史证据，不随代码 rollback 撤销；
+  `mailbox_archive` 保留。rollback 只移除 writer guard，不反修已补的归档章。
 
 ## Task 5: refactor、全量验证、review 与 PR
 
@@ -191,6 +234,7 @@ pnpm lint
 pnpm -r build
 pnpm test:packages:run
 bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
+bash scripts/__tests__/ci-shell-suite-enumeration.test.sh
 ```
 
 - [ ] 注册 code review gate + `request-review --type code`，按 structured verdict 修所有 blocking
@@ -205,6 +249,20 @@ bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
 ```bash
 node /Users/xiaorongli/Dev/flywheel/packages/flywheel-comm/dist/index.js complete --route needs_review --pr <NUMBER>
 ```
+
+## Design Review R1 逐项处置
+
+| findingKey | 处置 |
+|---|---|
+| `trigger-requires-terminal-state-breaks-closeout` | trigger 改验 matching snapshot；nonterminal state 合法，terminal timestamp 只在对应 state 核对 |
+| `migration-archivefamily-not-due-hard-abort` | family 全部入 DB 后只 archive root 一次；解除 2 MiB cap，不逐 member archive |
+| `new-shell-suite-not-classified-in-ci` | `.github/workflows/ci.yml` always-on lane literal 枚举 |
+| `message-status-torn-exit-code-collides-with-error` | torn 专用 exit 3；2 保留 usage/runtime error |
+| `no-trigger-rollback-or-deploy-ordering` | 增加 deploy/repair 顺序与 stopped-service DROP trigger rollback |
+| `repair-source-schema-parity-unverified` | ordered columns + normalized affinity 双 digest fail-close |
+| `repair-archived-log-event-id-unspecified` | 固定普通 INSERT `fly2165:archived:<id>`，batch transaction 原子 |
+| `trigger-accepts-any-archived-log-reader-reads-latest` | trigger 与两个 reader 都统一 `at DESC, log_seq DESC` newest authority |
+| `repair-db-growth-unbudgeted` | 148.27 MiB payload 基线、free-space gate、before/after bytes、checkpoint tuple |
 
 ## 自审结果
 
