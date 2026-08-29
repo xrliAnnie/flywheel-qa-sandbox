@@ -78,8 +78,8 @@ describe("handleFlagStage", () => {
 		});
 	});
 
-	it.each(["checkpoint_enabled", "ponytail", "xiaohongshu_auto_create"])(
-		"does not expose the DB writer for unsafe project flag %s",
+	it.each(["checkpoint_enabled", "xiaohongshu_auto_create"])(
+		"rejects retired project flag %s",
 		async (name) => {
 			const { deps } = await makeManagedDeps();
 			const result = handleFlagStage(
@@ -94,10 +94,36 @@ describe("handleFlagStage", () => {
 			);
 			expect(result.code).toBe(400);
 			expect(result.body).toMatchObject({
-				error: `${name} is not project-store-managed`,
+				error: `unknown feature flag: ${name}`,
 			});
 		},
 	);
+
+	it("exposes the scoped DB writer for migrated ponytail", async () => {
+		const { deps } = await makeManagedDeps();
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "ponytail",
+				to: true,
+				project: "flywheel",
+				reason: "project rollout",
+			},
+			"o",
+		);
+		expect(result.code).toBe(200);
+		expect(result.body).toMatchObject({
+			canonical: {
+				kind: "flag_store",
+				name: "ponytail",
+				scope: "flywheel",
+				rawFrom: null,
+				rawTo: "1",
+				effectiveFrom: "inherit",
+				effectiveTo: true,
+			},
+		});
+	});
 
 	it("rejects a non-direct / governance flag", () => {
 		const deps = makeDeps();
