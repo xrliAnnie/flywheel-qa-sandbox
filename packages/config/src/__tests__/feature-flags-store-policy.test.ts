@@ -16,6 +16,7 @@ import {
 } from "../feature-flags/store-policy.js";
 
 const MANAGED = [
+	"summary_absorption_cadence_ms",
 	"loop_profiler",
 	"shipped_husk_force",
 	"flag_retirement_scan",
@@ -427,7 +428,7 @@ describe("FLY-1778 flag store policy", () => {
 		);
 	});
 
-	it("rejects constant codecs, unsupported value codecs, and degenerate enums", () => {
+	it("rejects constant booleans, permissive value codecs, and degenerate enums", () => {
 		const constantBool = validateFlagAuthoringPolicy({
 			flags: [...FEATURE_FLAGS, futureSpec()],
 			storeManagedFlags: withFutureManaged(),
@@ -459,7 +460,7 @@ describe("FLY-1778 flag store policy", () => {
 					: getFlagStoreCodec(name),
 		});
 		expect(unsupportedValue.join("\n")).toMatch(
-			/future_dynamic_flag.*valueKind.*unsupported/i,
+			/future_dynamic_flag.*value codec.*reject invalid writes/i,
 		);
 
 		const degenerateEnum = validateFlagAuthoringPolicy({
@@ -508,6 +509,20 @@ describe("FLY-1778 flag store policy", () => {
 		expect(optIn?.parse({ hasOverride: true, raw: "true" })).toBe(false);
 		expect(defaultOn?.canonicalEffective(false)).toBe("false");
 		expect(optIn?.canonicalEffective(true)).toBe("true");
+	});
+
+	it("validates the summary absorption cadence as a bounded integer", () => {
+		const codec = getFlagStoreCodec("summary_absorption_cadence_ms")!;
+		expect(codec.parse({ hasOverride: false, raw: null })).toBe("21600000");
+		expect(codec.parse({ hasOverride: true, raw: "60000" })).toBe("60000");
+		expect(codec.parse({ hasOverride: true, raw: "2592000000" })).toBe(
+			"2592000000",
+		);
+		for (const raw of ["", "0", "59999", "1.5", "2592000001", "Infinity"]) {
+			expect(() => codec.parse({ hasOverride: true, raw }), raw).toThrow(
+				/summary absorption cadence/i,
+			);
+		}
 	});
 
 	it("keeps every managed codec aligned with its registry default and polarity", () => {

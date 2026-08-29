@@ -491,6 +491,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_LEAD_BACKEND: "config value: Lead runtime backend",
 	FLYWHEEL_MEMORY_MODEL: "config value: memory model",
 	FLYWHEEL_LEAD_MODEL: "config value: per-lead model (fleet)",
+	FLYWHEEL_LEAD_EFFORT:
+		"config value: per-lead Codex reasoning effort projected from the canonical registry (FLY-2131)",
+	FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW:
+		"numeric tuning: per-lead Codex model context window projected from the canonical registry (FLY-2131)",
 	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "config value: alert channel id",
 	FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID: "config value: infra bot chat channel id",
 	FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID:

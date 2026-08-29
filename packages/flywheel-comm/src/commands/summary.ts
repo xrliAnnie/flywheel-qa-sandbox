@@ -7,6 +7,14 @@ import {
 } from "../summary-contract.js";
 import { createGitHubSummaryDelivery } from "../summary-delivery.js";
 import {
+	createGitHubCliSummaryMergeGitHub,
+	mergeSummaryPullRequest,
+	type SummaryMergeGitHub,
+	type SummaryMergeInput,
+	type SummaryMergeReceiptRow,
+	SummaryReceiptWriteError,
+} from "../summary-pr-merge.js";
+import {
 	createGitHubCliSummaryVerifier,
 	type SummaryVerifierGitHub,
 	verifySummaryPullRequest,
@@ -59,11 +67,30 @@ export interface SummaryCommandDeps {
 	stderr?: (line: string) => void;
 	delivery?: SummaryDelivery;
 	verifierGitHub?: SummaryVerifierGitHub;
+	mergeGitHub?: SummaryMergeGitHub;
+	mergePullRequest?: typeof mergeSummaryPullRequest;
+	cwd?: string;
+	readLedger?: (path: string) => string;
+	appendLedgerRow?: (path: string, row: SummaryMergeReceiptRow) => void;
+	now?: () => string;
 }
 
 function required(value: string | undefined, name: string): string {
 	if (!value) throw new Error(`summary_command_invalid: ${name} is required`);
 	return value;
+}
+
+function requireRayaMergeAuthority(env: NodeJS.ProcessEnv): void {
+	if (
+		env.FLYWHEEL_PROJECT_NAME !== "raya" ||
+		env.FLYWHEEL_LEAD_ID !== "raya" ||
+		env.FLYWHEEL_LEAD_SUMMARY_ROLE !== "recipient" ||
+		env.FLYWHEEL_LEAD_HAS_SUMMARY_DUTY !== "0"
+	) {
+		throw new Error(
+			"summary_merge_authority_required: canonical Raya recipient identity is required",
+		);
+	}
 }
 
 function canonicalIdentity(env: NodeJS.ProcessEnv): {
@@ -106,6 +133,40 @@ export async function runSummaryCommand(
 	const stdout = deps.stdout ?? console.log;
 	const stderr = deps.stderr ?? console.error;
 	try {
+		if (args[0] === "merge") {
+			requireRayaMergeAuthority(deps.env ?? process.env);
+			const { values } = parseArgs({
+				args: args.slice(1),
+				options: {
+					pr: { type: "string" },
+					repo: { type: "string" },
+					round: { type: "string" },
+					method: { type: "string" },
+					"dry-run": { type: "boolean", default: false },
+				},
+				allowPositionals: false,
+			});
+			const input: SummaryMergeInput = {
+				repo: required(values.repo, "--repo"),
+				prNumber: Number(required(values.pr, "--pr")),
+				...(values.round ? { roundId: values.round } : {}),
+				...(values.method ? { method: values.method } : {}),
+				dryRun: values["dry-run"],
+			};
+			const result = await (deps.mergePullRequest ?? mergeSummaryPullRequest)(
+				input,
+				{
+					env: deps.env ?? process.env,
+					cwd: deps.cwd,
+					github: deps.mergeGitHub ?? createGitHubCliSummaryMergeGitHub(),
+					readLedger: deps.readLedger,
+					appendLedgerRow: deps.appendLedgerRow,
+					now: deps.now,
+				},
+			);
+			stdout(JSON.stringify(result));
+			return 0;
+		}
 		if (args[0] === "verify-pr") {
 			const { values } = parseArgs({
 				args: args.slice(1),
@@ -218,6 +279,15 @@ export async function runSummaryCommand(
 		stderr(
 			JSON.stringify({
 				ok: false,
+				...(error instanceof SummaryReceiptWriteError
+					? {
+							code: "summary_receipt_write_failed",
+							mergeOccurred: error.mergeOccurred,
+							verifiedHeadSha: error.verifiedHeadSha,
+							repo: error.repo,
+							pr: error.prNumber,
+						}
+					: {}),
 				message: error instanceof Error ? error.message : String(error),
 			}),
 		);

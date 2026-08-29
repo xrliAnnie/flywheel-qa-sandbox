@@ -38,6 +38,7 @@ const LEGACY_EXEMPTION_KEYS: ReadonlySet<string> = new Set(
 
 export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 	"alert_system",
+	"summary_absorption_cadence_ms",
 	"loop_profiler",
 	"shipped_husk_force",
 	"flag_retirement_scan",
@@ -101,7 +102,39 @@ const skillFrameworkCodec: FlagStoreCodec = {
 	canonicalEffective: String,
 };
 
+export const SUMMARY_ABSORPTION_CADENCE_DEFAULT_MS = 6 * 60 * 60_000;
+export const SUMMARY_ABSORPTION_CADENCE_MIN_MS = 60_000;
+export const SUMMARY_ABSORPTION_CADENCE_MAX_MS = 30 * 24 * 60 * 60_000;
+
+function parseSummaryAbsorptionCadence(raw: string): string {
+	if (!/^[1-9][0-9]*$/.test(raw)) {
+		throw new Error("summary absorption cadence must be a positive integer");
+	}
+	const value = Number(raw);
+	if (
+		!Number.isSafeInteger(value) ||
+		value < SUMMARY_ABSORPTION_CADENCE_MIN_MS ||
+		value > SUMMARY_ABSORPTION_CADENCE_MAX_MS
+	) {
+		throw new Error(
+			`summary absorption cadence must be ${SUMMARY_ABSORPTION_CADENCE_MIN_MS}..${SUMMARY_ABSORPTION_CADENCE_MAX_MS} ms`,
+		);
+	}
+	return String(value);
+}
+
+const summaryAbsorptionCadenceCodec: FlagStoreCodec = {
+	parse: ({ hasOverride, raw }) =>
+		hasOverride
+			? parseSummaryAbsorptionCadence(raw ?? "")
+			: String(SUMMARY_ABSORPTION_CADENCE_DEFAULT_MS),
+	canonicalEffective: (value) => parseSummaryAbsorptionCadence(String(value)),
+};
+
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
+	if (name === "summary_absorption_cadence_ms") {
+		return summaryAbsorptionCadenceCodec;
+	}
 	if (name === "skill_framework_mode") return skillFrameworkCodec;
 	if (
 		name === "alert_system" ||
@@ -320,11 +353,23 @@ export function validateFlagAuthoringPolicy(
 					);
 				}
 				if (spec.valueKind === "value") {
-					issues.push(
-						authoringIssue(
-							`${spec.name}: managed valueKind=value is unsupported until a store codec contract is implemented`,
-						),
-					);
+					if (codec.canonicalEffective(defaultValue) !== String(spec.default)) {
+						issues.push(
+							authoringIssue(
+								`${spec.name}: value codec must canonically round-trip its registry default`,
+							),
+						);
+					}
+					try {
+						codec.parse({ hasOverride: true, raw: "__invalid__" });
+						issues.push(
+							authoringIssue(
+								`${spec.name}: value codec must reject invalid writes`,
+							),
+						);
+					} catch {
+						// Expected: managed scalar values are strict, never fallback controls.
+					}
 				} else if (spec.valueKind === "bool") {
 					const polarityDefault = spec.polarity === "default_on";
 					if (spec.default !== polarityDefault) {

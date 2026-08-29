@@ -16,6 +16,7 @@ import {
 	storeLoopProfilerEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
+	storeSummaryAbsorptionCadenceMs,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
 } from "../flag-store-runtime.js";
@@ -109,6 +110,61 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeAlertSystemEnabled(runtime)).toBe(false);
+	});
+
+	it("reads the summary absorption cadence at call time after a store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeSummaryAbsorptionCadenceMs(runtime)).toBe(21_600_000);
+		const revision = store.getFlagValueRow(
+			"summary_absorption_cadence_ms",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "summary_absorption_cadence_ms",
+				rawTo: "60000",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "exercise hot cadence",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeSummaryAbsorptionCadenceMs(runtime)).toBe(60_000);
+	});
+
+	it("falls back to the cadence default when the bootstrap seed is invalid without weakening writes", () => {
+		const warnings: string[] = [];
+		const runtime = initializeFlagStore(
+			store,
+			{ FLYWHEEL_SUMMARY_ABSORPTION_CADENCE_MS: "6h" },
+			100,
+			(message) => warnings.push(message),
+		);
+
+		expect(
+			store.getFlagValueRow("summary_absorption_cadence_ms"),
+		).toMatchObject({
+			hasOverride: false,
+			raw: null,
+			lastEffective: "21600000",
+		});
+		expect(storeSummaryAbsorptionCadenceMs(runtime)).toBe(21_600_000);
+		expect(warnings).toEqual([
+			expect.stringMatching(
+				/FLYWHEEL_SUMMARY_ABSORPTION_CADENCE_MS.*invalid bootstrap seed.*registry default/i,
+			),
+		]);
+
+		const revision = store.getFlagValueRow(
+			"summary_absorption_cadence_ms",
+		)!.revision;
+		expect(() =>
+			store.applyFlagValueChange({
+				name: "summary_absorption_cadence_ms",
+				rawTo: "6h",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "prove management validation stays strict",
+			}),
+		).toThrow(/summary absorption cadence/i);
 	});
 
 	it("fails loudly when a ready managed row disappears", () => {

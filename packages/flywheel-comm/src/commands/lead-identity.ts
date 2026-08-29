@@ -177,6 +177,15 @@ export function identityEnvProjection(
 		`FLYWHEEL_LEAD_KEY=${identity.leadKey}`,
 		`FLYWHEEL_LEAD_ROLE=${identity.role}`,
 		`FLYWHEEL_LEAD_BACKEND=${identity.backend}`,
+		...(identity.model !== undefined
+			? [`FLYWHEEL_LEAD_MODEL=${identity.model}`]
+			: []),
+		...(identity.effort !== undefined
+			? [`FLYWHEEL_LEAD_EFFORT=${identity.effort}`]
+			: []),
+		...(identity.modelContextWindow !== undefined
+			? [`FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=${identity.modelContextWindow}`]
+			: []),
 		`FLYWHEEL_LEAD_SUMMARY_ROLE=${identity.summaryRole}`,
 		`FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${identity.hasSummaryDuty ? "1" : "0"}`,
 		`FLYWHEEL_SUMMARY_GRANULARITY=${identity.summaryGranularity ?? ""}`,

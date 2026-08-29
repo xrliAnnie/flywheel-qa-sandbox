@@ -701,6 +701,15 @@ describe("FLY-1393 flag truth", () => {
 	});
 });
 
+describe("FLY-2131 Codex Lead model coordinates", () => {
+	it("accounts for effort and context window as non-flag config values", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_EFFORT).toMatch(/config value/i);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW).toMatch(
+			/numeric tuning/i,
+		);
+	});
+});
+
 /**
  * FLY-1560 (Codex R1 MEDIUM-2). The out-of-process liveness probe's numeric
  * knobs were renamed FLYWHEEL_WATCHDOG_* → FLYWHEEL_LIVENESS_* along with the

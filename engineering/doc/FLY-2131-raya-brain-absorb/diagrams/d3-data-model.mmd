@@ -1,0 +1,14 @@
+flowchart LR
+  subgraph SR["raya 仓(她自己的仓库)"]
+    S["summaries/ 目录<br/>各项目 Lead 写来的 summary<br/>内容 = 事实 + 判断"]
+  end
+  subgraph WS["Raya 的工作区(她唯一可写的地盘)"]
+    J["运营账本(一个流水文件)<br/>轮次 / 追问 / 合入 / 汇报 四类行<br/>崩溃重启后靠它对账"]
+    MM["记忆仓 MEMORY.md<br/>每个项目现在怎样 + 出处<br/>= 她回答 founder 的底气"]
+  end
+  C1["#raya 频道<br/>每轮汇报(founder 看得见)"]
+  C2["圆桌频道<br/>追问消息(带轮号 + PR 号)"]
+  S -->|"读 + 盖已阅章"| J
+  J --> MM
+  MM --> C1
+  J --> C2

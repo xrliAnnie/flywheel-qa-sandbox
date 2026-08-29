@@ -55,6 +55,26 @@ describe("FLY-1687 GatePoller patrol rider", () => {
 		await vi.waitFor(() => expect(onLeadPatrolTick).toHaveBeenCalledTimes(2));
 	});
 
+	it("runs Raya summary absorption on the same existing 20-tick cadence", async () => {
+		const onSummaryAbsorptionTick = vi.fn();
+		const poller = new GatePoller({
+			pollIntervalMs: 3_000,
+			projects: [],
+			store: {
+				recoverFromCorruption: vi.fn(),
+				listPendingFounderActions: () => [],
+				getActiveSessions: () => [],
+			} as unknown as StateStore,
+			runtimeRegistry: new RuntimeRegistry(),
+			onSummaryAbsorptionTick,
+		});
+		const runPoll = Reflect.get(poller, "poll") as () => Promise<void>;
+		for (let i = 0; i < 21; i += 1) await runPoll.call(poller);
+		await vi.waitFor(() =>
+			expect(onSummaryAbsorptionTick).toHaveBeenCalledTimes(2),
+		);
+	});
+
 	it("FLY-2118 fires the orphan sweeper on the same cadence with an independent callback", async () => {
 		const onPatrolOrphanSweepTick = vi.fn(async () => undefined);
 		const poller = new GatePoller({

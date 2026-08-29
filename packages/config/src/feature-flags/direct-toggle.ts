@@ -13,6 +13,8 @@ export interface DirectToggleMetadata {
 	valueKind: FlagValueKind;
 	/** For valueKind === "enum": required non-empty for direct toggling. */
 	enumValues?: readonly string[];
+	/** Store-backed value flags may opt in only when stage validates a strict codec. */
+	strictValueCodec?: boolean;
 	toggleable: FlagToggleability;
 	category: FlagCategory;
 	dormant?: boolean;
@@ -23,15 +25,16 @@ export interface DirectToggleMetadata {
  * One safety predicate shared by registry specs, server apply, and UI controls.
  * FLY-1356 R1#2: widened from bool-only to bool ∨ (enum with non-empty
  * enumValues) so the enum kill-switch `skill_framework_mode` can be applied
- * through the same admission gate. `value`-kind flags stay rejected — a free
- * string has no bounded target set for the stage layer to validate against.
+ * through the same admission gate. A value-kind flag additionally needs an
+ * explicit strict-codec proof from the store-backed server boundary.
  */
 export function isDirectToggleMetadata(
 	metadata: DirectToggleMetadata,
 ): boolean {
 	const valueKindOk =
 		metadata.valueKind === "bool" ||
-		(metadata.valueKind === "enum" && (metadata.enumValues?.length ?? 0) > 0);
+		(metadata.valueKind === "enum" && (metadata.enumValues?.length ?? 0) > 0) ||
+		(metadata.valueKind === "value" && metadata.strictValueCodec === true);
 	return (
 		metadata.source === "env" &&
 		metadata.scope === "bridge_global" &&
