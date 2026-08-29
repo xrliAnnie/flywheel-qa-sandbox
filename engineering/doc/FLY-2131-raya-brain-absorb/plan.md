@@ -29,7 +29,7 @@ flowchart LR
   V["apps/voice 开场指令(义务⑤)<br/>start-instructions 文件<br/>前置:FLY-2097 prompt 通道已部署"] -.-> R2["realtime 语音 session"]
 ```
 
-数据面一句话:**回执文件是栓①与义务③的共用地基**——merge 的机械绑定顺手留证,汇报数字从回执数出来,QA 拿回执对 channel 消息核数;耐久权威 = GitHub merge 状态 × canonical 分支上的 summary 文件 × memory commit × Discord 消息,回执是它们的快捷索引而非第二本账(轮首对账见 2.4)。
+数据面一句话(R4-1 措辞钉死):**吸收的权威** = GitHub merge 状态 × canonical 分支上的 summary 文件 × memory commit——对这些,workspace JSONL 只是快捷索引;**追问与汇报的恢复**则以同一个 JSONL 为**承重的运营耐久账本**(write-ahead,2.3)——Discord 面没有可读回执,本地账本就是唯一恢复判据,QA 再拿 channel 实况核真。两种角色并存不矛盾:前者另有权威,后者账本即权威。
 
 ## 2. 工作分解
 
@@ -78,7 +78,9 @@ founder 硬要求是「每轮 review/吸收后」汇报——不止 merge 轮(R1
   - 每次追问 send **之前**:`{type:"question", roundId, pr, status:"posting", ts}`;send 成功**之后**:`{type:"question", roundId, pr, status:"posted", link, ts}`;
   - merge 回执行(2.1)结算吸收;
   - 汇报 send 成功之后:`{type:"report", roundId, ts}`。
-  重启见 `posting` 无 `posted` ⇒ **单一策略:标注「补记/recovery」重发该追问,接受可能的重复**(与汇报同款 at-least-once;⛔ 不当作已送达计数)。absorbed 数 + 项目数 ← merge 回执;reviewed 数 ← round 行快照;追问数 ← posted 行;**每条 roundtable 追问消息里带 roundId + PR 编号**。memory 落笔(2.4)保持**知识层**(吸收内容 + provenance),不再兼任运营账本。
+  **追问的逻辑键与 reducer(R4-1)**:每轮每 PR **至多一条聚合追问**(同一 PR 的多个疑点并进一条 roundtable 消息)⇒ 稳定逻辑键 = `{roundId, pr}`;**reducer = 该键下任一有效 `posted` 行结算它全部更早的 `posting` 行**;计数按**已结算的 distinct 键**数,⛔ 不数物理行。恢复重发**复用同键**:先补一行 `posting` 再发、成功再落 `posted`(write-ahead 不因是恢复而豁免)。
+  **账本 append 失败语义(fail-closed,R4-1)**:`round`/`posting` 行写失败 ⇒ **中止,不做对应外部副作用**(宁可这轮不问,不可问了无痕);`posted`/`report` 行写失败 ⇒ 留下未结算项,进 at-least-once 恢复(重发可重复,不可漏)。
+  重启见 `posting` 无 `posted` ⇒ **单一策略:标注「补记/recovery」按上述同键流程重发,接受可能的 Discord 重复投递**(⛔ 未确认的 post 不当已送达计数)。absorbed 数 + 项目数 ← merge 回执;reviewed 数 ← round 行快照;追问数 ← 已结算 distinct 键;**每条 roundtable 追问消息里带 roundId + PR 编号**(即逻辑键的外显)。memory 落笔(2.4)保持**知识层**(吸收内容 + provenance),不再兼任运营账本。
 - **汇报回执(本地耐久标记,R2-3)**:即上述 `report` 行。⛔ **不引入任何 Discord 读通路**——【实核】`discord_send` MCP 只有 target/text 无读操作、gateway 刻意丢弃她自己 bot 的消息、send audit 不留正文/roundId、send 幂等只在进程内(discord-send-core.ts:11-13)⇒ 「读自己频道核对」不成立(R1 版此设想作废);恢复判据一律用本地账本。send 失败 ⇒ fail-visible、不写标记 ⇒ 下轮补报;「send 成功后、标记写入前」崩溃 ⇒ 下轮重发一次(**接受重复汇报,不接受漏报**,重发注明「补记」)。账本的真实性由 QA 拿 channel 实况核(验收格),不自证。
 - 样式对齐 founder 原话:「今天下午 6 点,我 review 了这 N 个 PR,吸收了 M 条(覆盖 K 个项目),X 处没看懂已去问 <Lead>」+ 本轮 PR 编号列表(或其链接);经既有 `discord_send`(FLY-304)发 #raya。
 - 落点:身份 M2 段新增「Visible reporting」小节(2.5);零新代码(roundId 渲染进巡视事件文本属 M2-b 投递内容,一行字符串;report 标记行复用回执文件)。
@@ -192,7 +194,7 @@ flowchart LR
 | 5 | 栓②:源缺失 ⇒ preflight 非零且零 mutation | shell 测试 + 真机模拟 |
 | 6 | flaky:该测试文件连跑 N=20 全绿 | CI/本地循环日志 |
 | 7 | (若 M2-c 在)③ 在跑或如实报缺 | context-usage.jsonl 行 / 显式 unavailable 证据 |
-| 8 | 崩溃窗口:三个 post-side-effect 窗各注入一次 ⇒ 重启后轮首对账收敛(不重 merge、不丢吸收、不重回执、不漏汇报);**含「追问 POST 成功、posted 行落笔前崩溃」与「merge 回执后、汇报前崩溃」两格:补报且计数取自 write-ahead 账本,零编造**(R2-3/R3-1) | 故障注入记录 + 对账后状态 |
+| 8 | 崩溃窗口:三个 post-side-effect 窗各注入一次 ⇒ 重启后轮首对账收敛(不重 merge、不丢吸收、不重回执、不漏汇报);**含「追问 POST 成功、posted 行落笔前崩溃」与「merge 回执后、汇报前崩溃」两格:补报且计数取自 write-ahead 账本,零编造;且该崩溃后连跑两次对账 ⇒ 第二次无未结算项、逻辑追问只计 1(即便 Discord 收到两条)**(R2-3/R3-1/R4-1) | 故障注入记录 + 对账后状态 |
 | 9 | TUI 记忆闭环:sandbox 内写+commit MEMORY.md → rebuild/resume → 只在记忆里的事实答得出 | transcript + commit |
 
 ## 7. 会过期的结论
@@ -228,3 +230,9 @@ flowchart LR
 | 1 轮记账非 write-ahead:纯追问轮首问后崩溃三面皆空,不可恢复;merge 回执后、记账前的混合窗同病 | ✅ 2.3 重写为 **write-ahead typed rows**(选其 JSONL 方案,运营账本不进 memory/baseInstructions):round 行先于一切副作用;question posting/posted 成对包夹 send;report 行收尾;`posting` 无 `posted` ⇒ 单一策略「标注补记重发,接受重复」;2.4 对账 c 改读账本;验收格 8 扩两个注入点 |
 | 2 `--method` 不在 synopsis;reconciled 行的 method 无可信来源 | ✅ synopsis 加 `[--method <merge\|squash\|rebase>]` + gh flag 映射;命令自有 merge 的 method 必填;reconciled 行显式 `method:null`(审计元数据,⛔ 不猜历史);行 schema 断言入 TDD |
 | 3 §2.6/依赖图/风险行/§7 指针残留过期前置措辞 | ✅ 四处刷新(prompt 修复已在 main、字节未上;P4 标已 merge;风险行收窄为部署/注册延迟;指针含 research §7);R1/R2 处置表保留为史料不改写 |
+
+**R4(2026-08-29,plan blob @ 6e54f9f58,反馈 `/tmp/codex-rescue-design-feedback-flywheel-FLY-2131-plan-round4.md`)= CHANGES REQUESTED,1 项,采纳(R3 三项确认落实):**
+
+| # | 处置 |
+|---|---|
+| 1 追问账本缺稳定标识与确定性 reducer(恢复可能永久重发/重复计数);§1 数据面措辞仍称 JSONL「只是索引」与承重角色矛盾;append 失败语义未钉 | ✅ 选 deletion-friendly 方案:每轮每 PR 至多一条聚合追问,逻辑键 = `{roundId, pr}`,`posted` 结算该键全部更早 `posting`,计数按已结算 distinct 键;恢复复用同键、先 `posting` 再发;§1 措辞改双角色(吸收权威另有其主/追问汇报恢复以账本为权威);append 失败语义钉死(round/posting 失败中止副作用;posted/report 失败留未结算项走 at-least-once);验收格 8 增「双跑对账,第二次零未结算、逻辑问计 1」 |
