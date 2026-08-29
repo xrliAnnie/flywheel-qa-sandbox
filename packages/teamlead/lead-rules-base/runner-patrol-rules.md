@@ -35,13 +35,16 @@ Founder 2026-08-26 19:13 在 FLY-2029 的两步直令：
 不得写成「已知，等着」后休息。本规则不扩大巡检检测面或频率，也不改变 founder-only
 merge/stop、authority、approval、claim 等硬边界。
 
-**范围合同**:检测范围 = **整机**(默认共享 socket 的全部 canonical Runner pane +
-当前项目主仓的外部真相);处置权限 = **只覆盖你名下 Runner**。canonical Runner
-pane 的唯一口径是:session name 以 `runner-` 开头且 window name 以 Linear
-identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径尚待 founder 追认,
-但不得按 Lead、项目或前 N 个抽样。tick 名册只是 Bridge 对「你名下」的
-**待核声明**,不是巡检边界也不是结论。别家 Lead 的 Runner、无主窗口、全仓
-停摆都记入报告并在第 6 步上报,不得越权处置。
+**范围合同**:检测范围 = Department Lead **只巡检自己名下** Runner pane + 当前项目主仓的外部
+真相;处置权限 = **只覆盖你名下 Runner**。owner scope 的权威是当前项目
+`comm.sessions.lead_id = LEAD_ID` 且 status=`running|blocked` 的绑定；先从 owner
+index 得到名下 target，再与 tmux pane 元数据取交集，绝不从整机 pane 出发逐个 capture
+后再过滤。canonical Runner pane 的唯一口径是:session name 以 `runner-` 开头且
+window name 以 Linear identifier 开头;`cmux-*` 显示镜像不重复计算。tick 名册只是
+Bridge 对「你名下」的**待核声明**,两账不一致是 finding，但它不扩大可见面。
+无主 canonical pane 由 **Bridge orphan sweeper** 独立枚举，连续两个 slot 仍无主才发
+`orphan_pane` 工单；`claude-infra-bot-lead`(Claw)是唯一责任席位。任何 Department
+Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
 
 **产出物合同**:每条 tick 必产一份六步报告:
 `~/.flywheel/patrol-reports/<leadId>/<UTC>-tickNA.md`。先运行快照;它会原子
@@ -64,26 +67,30 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 
 1. **名册核对(ground truth)** — run:
    `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
-   快照段来自 `TMUX= tmux list-windows -a` 与
-   `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`;
-   与 tick 名册对账。脚本对每个 `runner-*` session + Linear identifier window
-   生成一条 canonical Runner pane;多了少了都是 finding。忽略正常 `zsh`
-   scaffolds、`cmux-*` 镜像、Codex Lead TUI;Claude Lead 在私有 socket。若第 2 步的
-   live pane 与快照不一致,run: `TMUX= tmux list-windows -a`,并在报告注明采用
-   快照时刻还是复核时刻读数。
+   脚本先只读全 registry owner index 做 target cardinality 预检，再从当前项目
+   `comm.sessions.lead_id = LEAD_ID` 物化名下 target；只有 index 完整且 target 唯一时，
+   才执行一次 `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`
+   的元数据读取并写 `OWNED_RUNNER_PANES := canonical panes ∩ owned targets`。全机列表
+   只在脚本内用于求交，不落报告，也不触发 capture。名下 index 与 live pane 对账
+   多了少了都是 finding：index 有 target 但无 pane 写 `MISSING_PANE`；pane 无名下
+   index 不进入本报告，由 Bridge orphan sweeper 独立判断。忽略正常 `zsh` scaffolds、
+   `cmux-*` 镜像、Codex Lead TUI；Claude Lead 在私有 socket。任何复核都不得另跑
+   全机 capture 扩大本 Lead 的可见面。
 2. **pane 实况** — run:
    `awk '/^## STEP 2$/{show=1; next} /^## STEP 3$/{show=0} show' "$REPORT_PATH"`。
-   快照对第 1 步的**每一个** canonical Runner pane 用 5s 有界
+   快照对第 1 步的**每一个名下** canonical Runner pane 用 5s 有界
    `TMUX= tmux capture-pane -p -S - -t <pane_id>` 读完整 scrollback;零抽样、零
    `tail -40`。原文可能含 secret,所以报告只存 SHA-256/行数/字节数/最后非空状态行
    SHA-256,并逐 pane 写:
-   `PANE_EVIDENCE ... owner=owned|cross-boundary|foreign-registry|unknown exec=<id|none> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
-   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` index,其中
-   CommDB 可达的 owning status 是 `running|blocked`;正常
-   cross-boundary / foreign-registry 本身不是 finding。index 不完整必须
-   `UNAVAILABLE(transient|structural: owner_index_incomplete)`,不得铸 unknown;
-   registered target 首次无 owner 记 `result=session_terminated`,连续两 tick 才标
-   `ORPHANED`。
+   `PANE_EVIDENCE ... owner=owned exec=<id> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
+   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` cardinality 预检
+   与本项目 `comm.sessions.lead_id` scope，其中 owning status 是 `running|blocked`。
+   index 缺库、缺 schema、绑定 target 的 lead_id 为空都必须
+   `UNAVAILABLE(transient|structural: owner_index_incomplete)` 并在 capture 前 fail closed；
+   同一 target 有多条 active claim 必须
+   `UNAVAILABLE(structural: session_target_ambiguous)`，任何 claimant 都不得 capture。
+   无主 pane 不在 Department Lead 的 PANE_EVIDENCE/continuity 中；它只由 Bridge
+   orphan sweeper 观察并投递给 Claw。
    `shasum` 缺失/失败必须标 `HASH_UNAVAILABLE` 且 STEP 2 为
    `UNAVAILABLE(structural: hash_unavailable)`,禁止留下空 hash 或自动报 clear。
 
@@ -92,14 +99,13 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      / `Claude usage limit reached`(排除 `not your usage limit`)。live 区命中为
      `LIMIT_LIVE`;reset 已过且 `owner=owned` 时 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
-     reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`;跨界只上报。
+     reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`。
    - 同 target 最后状态行逐字 hash 未变就继承脚本维护的 0600 machine-owned
-     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`;同一 sidecar
-     也保存 registered target 连续无 owner 的 observation count。Lead 不编辑该
-     sidecar,报告重排或修改 result 也不得重置停滞/orphan 连续性。连续
+     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`。Lead 不编辑该
+     sidecar,报告重排或修改 result 也不得重置停滞连续性。连续
      ≥3600 秒标 `STALLED_60M`。名下 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: pane state has been unchanged for 60 minutes; report status and continue"`;
-     跨界只上报。
+     本报告没有跨 Lead pane。
    - live 区命中 `Press Enter to confirm` / `Press Enter to continue` / 已知 resume
      menu 时标 `INTERACTIVE_MENU`;只有名下且手册明确允许 Enter 才 run:
      `TMUX= tmux send-keys -t "$PANE_ID" Enter`,随后完整 capture 复核。未知 menu
@@ -111,7 +117,11 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 3. **交接账**(`TURN belt` = CommDB `three_stage_turn`;engine node table =
    StateStore `workflow_run_node`) — run:
    `awk '/^## STEP 3$/{show=1; next} /^## STEP 4$/{show=0} show' "$REPORT_PATH"`。
-   快照已按当前 project + active workflow + live session 只读联查;active issue
+   快照已按当前 project + active workflow + owner attribution 只读联查；先按 execution
+   精确归属，否则只看当前 issue cohort，再退到最新 historical cohort；只保留
+   attributed lead = 当前 `LEAD_ID`。归属缺失或 cohort 歧义时整步写
+   `UNAVAILABLE(structural: owner_attribution_incomplete)`，且只输出聚合原因/计数。
+   对名下 active issue，
    无 TURN、holder 不在同 issue live execution、`no_turn_streak >= 3`、或 active
    node 无 live session都是 finding;历史 terminal 行不得重报。
 4. **投递账 + verdict/receipt 一致性** — run:
@@ -120,7 +130,9 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    `running|ship_parked|awaiting_review|design_done|approved_to_ship`;只看这些 Runner
    的超窗 `mailbox`、active `turn_wake_outbox` 未 ack、近 24h
    且 `state='pending'` 的 `dead_letter_alerts`、以及 active PR binding head 与
-   有效 git-head verdict claim。`accepted` dead letter 禁止重报。输出只含
+   有效 git-head verdict claim。各类事实复用第 3 步的 owner attribution，
+   `dead_letter_alerts` 还必须同时匹配当前 project + `LEAD_ID`；归属不完整同样整步
+   `UNAVAILABLE(structural: owner_attribution_incomplete)`。`accepted` dead letter 禁止重报。输出只含
    allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
 5. **外部真相(整仓维度)** — run:
    `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。
@@ -268,11 +280,6 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    `owner=founder|agent:<registered-id>` 与有限动词下一步。`bridge_problem=no` 必须
    `epic=n/a epic_marker=n/a`。
 
-   同一 tick 的跨界 finding 聚合成一条,先 run:
-   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; TADASHI_BOT_ID="$(jq -er 'first(.[] | select(.projectName == "flywheel") | .leads[] | select(.agentId == "flywheel-eng-lead") | .botUserId)' "$PROJECTS_FILE")"; ROUNDTABLE_FILE="${FLYWHEEL_ROUNDTABLE_CONFIG_FILE:-$HOME/.flywheel/roundtable.json}"; ROUNDTABLE_CHANNEL_ID="${FLYWHEEL_ROUNDTABLE_CHANNEL_ID:-}"; test -n "$ROUNDTABLE_CHANNEL_ID" || ROUNDTABLE_CHANNEL_ID="$(jq -er '.channelId | select(type == "string" and length > 0)' "$ROUNDTABLE_FILE")"; test -n "$ROUNDTABLE_CHANNEL_ID"`,
-   再用 Discord MCP
-   `reply(chat_id=$ROUNDTABLE_CHANNEL_ID, message="<@$TADASHI_BOT_ID> [patrol cross-boundary] <findings>; report: $REPORT_PATH")`。
-   地址解不出就写 `UNAVAILABLE(structural: roundtable_channel_unresolved)`,禁止猜数字。
    UNAVAILABLE 建单前 run(精确标题搜重;secret header 只走 stdin):
    `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=triage,backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -r '.truncated // false')"; PARSE_RC=$?`。
    若 `DEDUP_RC != 0`、`PARSE_RC != 0`、`TRUNCATED` 不是 `true|false` 或为 `true`,报告记

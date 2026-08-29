@@ -185,6 +185,37 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
+	it("FLY-2118 gives orphan panes one deterministic Claw-owned alert contract", () => {
+		expect(ALERT_EVENT_TYPES).toContain("orphan_pane");
+		expect(
+			(KIND_CONTRACTS as Record<string, KindContract>).orphan_pane,
+		).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+		const registry = ownerRegistryFromEnv({
+			FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID: "111111111111111111",
+			FLYWHEEL_INFRA_BOT_USER_ID: "222222222222222222",
+		} as NodeJS.ProcessEnv);
+		expect(
+			resolveTicketOwner(
+				"orphan_pane" as Parameters<typeof resolveTicketOwner>[0],
+				"unknown",
+				registry,
+			),
+		).toEqual({
+			kind: "infra_bot",
+			side: "claude",
+			userId: "111111111111111111",
+		});
+		expect(titleFor("orphan_pane" as Parameters<typeof titleFor>[0])).toBe(
+			"Runner pane has no owner",
+		);
+		expect(
+			bodyFor("orphan_pane" as Parameters<typeof bodyFor>[0], "ignored"),
+		).toContain("owner index");
+	});
+
 	it("FLY-1364 cmux/rescue kinds have the exact approved contracts", () => {
 		for (const kind of CMUX_SYNC_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);

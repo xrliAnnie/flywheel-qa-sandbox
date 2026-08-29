@@ -360,6 +360,22 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 		expect(enriched.ticket?.ownerUserId).toBe("111111111111111111");
 	});
 
+	it("FLY-2118 sends orphan-pane tickets to the final Claw owner payload", async () => {
+		const sink = makeSink();
+		await sink.alert({
+			...payload("orphan_pane"),
+			leadId: "patrol-orphan-sweeper",
+			projectName: FLEET_ALERT_PROJECT,
+			sessionKey: undefined,
+		});
+		const enriched = rawSink.alert.mock.calls[0]![0] as AlertPayload;
+		expect(enriched.ticket).toMatchObject({
+			ownerUserId: "111111111111111111",
+			ownerLabel: "claude bot",
+			ownerRef: "infra_bot:claude",
+		});
+	});
+
 	it("unbound progress kinds remain un-enriched", async () => {
 		const sink = makeSink();
 		await sink.alert({

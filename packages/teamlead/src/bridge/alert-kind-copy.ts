@@ -41,6 +41,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Lead delivery dead-lettered";
 		case "inbox_loop_stalled":
 			return "Lead inbox consume loop stalled";
+		case "orphan_pane":
+			return "Runner pane has no owner";
 		case "mailbox_dead_letter":
 			return "Mailbox messages exhausted their acknowledgement lease";
 		case "legacy_row_quarantined":
@@ -304,6 +306,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Lead-directed event exhausted bounded transport or acknowledgement retries. The founder was paged because the owning Lead path did not consume it.";
 		case "inbox_loop_stalled":
 			return "A Lead inbox consume loop stopped completing or has queue-native deadlines overdue. Inspect that Lead's loop heartbeat and pending comm.db rows.";
+		case "orphan_pane":
+			return "A canonical Runner pane is absent from every active owner index. Inspect the project comm.db registration and either restore ownership or remove the stale pane.";
 		case "mailbox_dead_letter":
 			return "Mailbox messages exhausted their acknowledgement leases or could not be routed to an owning Lead. Inspect the dead-letter summaries and decide replay, discard, or reassignment.";
 		case "legacy_row_quarantined":

@@ -488,6 +488,17 @@ export interface SessionEvent {
 	ts?: string;
 }
 
+/** FLY-2118: durable Bridge-owned continuity for one unclaimed tmux target. */
+export interface PatrolOrphanWatch {
+	target: string;
+	paneFingerprint: string;
+	firstSeenAt: number;
+	streak: number;
+	lastSlotStart: number;
+	intervalMs: number;
+	lastAlertAt: number | null;
+}
+
 export type ThreadArchiveCompensationCause =
 	| "unknown"
 	| "human"
@@ -3377,6 +3388,17 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
+				target TEXT PRIMARY KEY,
+				pane_fingerprint TEXT NOT NULL,
+				first_seen_at INTEGER NOT NULL,
+				streak INTEGER NOT NULL CHECK(streak >= 1),
+				last_slot_start INTEGER NOT NULL,
+				interval_ms INTEGER NOT NULL CHECK(interval_ms > 0),
+				last_alert_at INTEGER
+			)
+		`);
 
 		// FLY-1586 B: durable record of a legacy row the cutover refused to
 		// process. Deliberately a SEPARATE table rather than reusing
@@ -12648,6 +12670,53 @@ export class StateStore {
 			)
 			.get(leadId, sessionKey) as Record<string, unknown> | undefined;
 		return row ? mapLeadEventRow(row) : null;
+	}
+
+	getPatrolOrphanWatch(target: string): PatrolOrphanWatch | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM patrol_orphan_watch WHERE target = ?")
+			.get(target) as Record<string, unknown> | undefined;
+		return row ? mapPatrolOrphanWatch(row) : null;
+	}
+
+	listPatrolOrphanWatches(): PatrolOrphanWatch[] {
+		return (
+			this.db.raw
+				.prepare("SELECT * FROM patrol_orphan_watch ORDER BY target")
+				.all() as Record<string, unknown>[]
+		).map(mapPatrolOrphanWatch);
+	}
+
+	upsertPatrolOrphanWatch(watch: PatrolOrphanWatch): void {
+		this.db.raw
+			.prepare(
+				`INSERT INTO patrol_orphan_watch
+				   (target, pane_fingerprint, first_seen_at, streak, last_slot_start,
+				    interval_ms, last_alert_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(target) DO UPDATE SET
+				   pane_fingerprint = excluded.pane_fingerprint,
+				   first_seen_at = excluded.first_seen_at,
+				   streak = excluded.streak,
+				   last_slot_start = excluded.last_slot_start,
+				   interval_ms = excluded.interval_ms,
+				   last_alert_at = excluded.last_alert_at`,
+			)
+			.run(
+				watch.target,
+				watch.paneFingerprint,
+				watch.firstSeenAt,
+				watch.streak,
+				watch.lastSlotStart,
+				watch.intervalMs,
+				watch.lastAlertAt,
+			);
+	}
+
+	deletePatrolOrphanWatch(target: string): void {
+		this.db.raw
+			.prepare("DELETE FROM patrol_orphan_watch WHERE target = ?")
+			.run(target);
 	}
 
 	listUndeliveredLeadEvents(limit = 10_000): LeadEventRow[] {
@@ -54520,6 +54589,21 @@ export interface DeliverySecretState {
 	state: "PREPARED" | "ACTIVE";
 	activeSecretId: string | null;
 	preparedSecretId: string | null;
+}
+
+function mapPatrolOrphanWatch(
+	row: Record<string, unknown>,
+): PatrolOrphanWatch {
+	return {
+		target: String(row.target),
+		paneFingerprint: String(row.pane_fingerprint),
+		firstSeenAt: Number(row.first_seen_at),
+		streak: Number(row.streak),
+		lastSlotStart: Number(row.last_slot_start),
+		intervalMs: Number(row.interval_ms),
+		lastAlertAt:
+			row.last_alert_at == null ? null : Number(row.last_alert_at),
+	};
 }
 
 function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {

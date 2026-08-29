@@ -137,6 +137,8 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-1687: pure alarm producer on the existing 60s rider cadence. */
 	onLeadPatrolTick?: () => void | Promise<void>;
+	/** FLY-2118: machine-wide orphan-pane fallback on the same 60s rider cadence. */
+	onPatrolOrphanSweepTick?: () => void | Promise<void>;
 	/** FLY-1944: cmux watcher liveness/recovery rider on the same 60s cadence. */
 	onCmuxWatcherPatrolTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
@@ -677,6 +679,23 @@ export class GatePoller {
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] lead patrol tick error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onPatrolOrphanSweepTick &&
+				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
+			) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.patrol-orphan", () =>
+							this.config.onPatrolOrphanSweepTick?.(),
+						),
+					)
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] patrol orphan sweep error (non-fatal): ${(err as Error).message}`,
 						),
 					);
 			}

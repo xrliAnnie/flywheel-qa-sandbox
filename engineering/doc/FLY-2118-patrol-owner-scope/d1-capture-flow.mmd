@@ -1,0 +1,8 @@
+flowchart LR
+  N0[现状] --> A[tmux 全机枚举<br/>19 个 pane] --> B[逐个全量抓屏<br/>19 次 × 每个 Lead] --> C[抓完才查归属<br/>自己 3 / 别家 16]
+  T0[目标] --> D[先读自己名册<br/>owner index] --> E[反查名下 pane<br/>交集外直接丢弃] --> F[只抓自己的屏<br/>每 pane 恰好 1 次]
+  style N0 fill:#ffe5e0,stroke:#ff3b30
+  style B fill:#ffe5e0,stroke:#ff3b30
+  style C fill:#ffe5e0,stroke:#ff3b30
+  style T0 fill:#e2f7e9,stroke:#34c759
+  style F fill:#e2f7e9,stroke:#34c759

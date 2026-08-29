@@ -57,7 +57,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
 	});
 
-	it("FLY-1855: patrol_tick has an executable fleet scope, six-step artifact, and explicit UNAVAILABLE exit", () => {
+	it("FLY-2118: patrol_tick has an executable owner scope, orphan fallback, six-step artifact, and explicit UNAVAILABLE exit", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),
 			patrol.indexOf("## 1."),
@@ -65,7 +65,11 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		for (const anchor of [
 			"范围合同",
 			"检测范围",
-			"整机",
+			"只巡检自己名下",
+			"comm.sessions.lead_id",
+			"Bridge orphan sweeper",
+			"claude-infra-bot-lead",
+			"orphan_pane",
 			"处置权限",
 			"产出物合同",
 			"UNAVAILABLE",
@@ -78,6 +82,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		]) {
 			expect(section0).toContain(anchor);
 		}
+		expect(section0).not.toMatch(/检测范围\s*=\s*\*\*整机\*\*/);
 		for (let step = 1; step <= 6; step += 1) {
 			expect(section0).toMatch(new RegExp(`(?:^|\\n)${step}\\.\\s+\\*\\*`));
 		}
@@ -85,19 +90,17 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toMatch(/跳过.*不留痕.*违约|禁止静默跳过/);
 	});
 
-	it("FLY-1855: Discord truth and cross-boundary disposition have exact addresses", () => {
+	it("FLY-2118: Discord truth remains, while cross-boundary roundtable routing is outside the patrol surface", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),
 			patrol.indexOf("## 1."),
 		);
 		expect(section0).toContain("/api/chat-threads?issueId=");
 		expect(section0).toContain("fetch_messages");
-		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
-		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CONFIG_FILE");
-		expect(section0).toContain("roundtable.json");
-		expect(section0).not.toContain('reply(chat_id="1512578695468941333"');
-		expect(section0).toContain("flywheel-eng-lead");
-		expect(section0).toContain("reply(chat_id=");
+		expect(section0).not.toContain("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
+		expect(section0).not.toContain("FLYWHEEL_ROUNDTABLE_CONFIG_FILE");
+		expect(section0).not.toContain("[patrol cross-boundary]");
+		expect(section0).not.toContain("owner=cross-boundary");
 		expect(section0).toContain("--config -");
 		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
 	});
@@ -111,6 +114,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"list-panes -a",
 			"session_name",
 			"runner-",
+			"OWNED_RUNNER_PANES",
 			"capture-pane -p -S -",
 			"PANE_EVIDENCE",
 			"pane_count",
@@ -119,8 +123,10 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"INTERACTIVE_MENU",
 			"action=REQUIRED",
 			"result=UNSET",
-			"foreign-registry",
+			"owner=owned",
+			"MISSING_PANE",
 			"owner_index_incomplete",
+			"owner_attribution_incomplete",
 			"comm.sessions",
 			"patrol-continuity",
 			"ship_parked",

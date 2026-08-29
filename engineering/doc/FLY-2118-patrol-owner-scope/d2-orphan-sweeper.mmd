@@ -1,0 +1,8 @@
+flowchart LR
+  S[sweeper 发现无主 pane] --> W[观察中<br/>本轮计 1]
+  W -->|下一轮仍无主| A[连续 2 轮无主<br/>发出告警]
+  W -->|被认领 / 消失| Z[清零,结束]
+  A --> C[通知 Claw 处置]
+  style W fill:#fff3e0,stroke:#ff9500
+  style A fill:#ffe5e0,stroke:#ff3b30
+  style C fill:#e2f7e9,stroke:#34c759

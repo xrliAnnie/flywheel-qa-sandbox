@@ -54,4 +54,32 @@ describe("FLY-1687 GatePoller patrol rider", () => {
 		await (poller as unknown as { poll: () => Promise<void> }).poll();
 		await vi.waitFor(() => expect(onLeadPatrolTick).toHaveBeenCalledTimes(2));
 	});
+
+	it("FLY-2118 fires the orphan sweeper on the same cadence with an independent callback", async () => {
+		const onPatrolOrphanSweepTick = vi.fn(async () => undefined);
+		const poller = new GatePoller({
+			pollIntervalMs: 3_000,
+			projects: [],
+			store: {
+				recoverFromCorruption: vi.fn(),
+				listPendingFounderActions: () => [],
+				getActiveSessions: () => [],
+			} as unknown as StateStore,
+			runtimeRegistry: new RuntimeRegistry(),
+			onPatrolOrphanSweepTick,
+		});
+
+		await (poller as unknown as { poll: () => Promise<void> }).poll();
+		await vi.waitFor(() =>
+			expect(onPatrolOrphanSweepTick).toHaveBeenCalledTimes(1),
+		);
+		for (let i = 0; i < 19; i += 1) {
+			await (poller as unknown as { poll: () => Promise<void> }).poll();
+		}
+		expect(onPatrolOrphanSweepTick).toHaveBeenCalledTimes(1);
+		await (poller as unknown as { poll: () => Promise<void> }).poll();
+		await vi.waitFor(() =>
+			expect(onPatrolOrphanSweepTick).toHaveBeenCalledTimes(2),
+		);
+	});
 });

@@ -8382,6 +8382,44 @@ export async function startBridge(
 		},
 		log: (message) => console.warn(message),
 	});
+	const { activePatrolTargets, createPatrolOrphanSweeperPass } = await import(
+		"./patrol-orphan-sweeper.js"
+	);
+	const patrolOrphanSweepPass = createPatrolOrphanSweeperPass({
+		projects,
+		store,
+		readActiveTargets: async (projectName) => {
+			const db = CommDB.openReadonly(commDbPathForProject(projectName));
+			try {
+				return activePatrolTargets(
+					db.listSessions(projectName, ["running", "blocked"]),
+				);
+			} finally {
+				db.close();
+			}
+		},
+		alertFailure: async (failure) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) {
+				throw new Error("patrol orphan alert sink unavailable");
+			}
+			await sink.alert({
+				leadId: "patrol-orphan-sweeper",
+				projectName: FLEET_ALERT_PROJECT,
+				eventId: `orphan_pane:${failure.episodeId}`,
+				eventType: "orphan_pane",
+				title:
+					failure.condition === "unclaimed"
+						? "Runner pane has no owner"
+						: "Runner owner index is incomplete",
+				body: failure.target
+					? `project=${failure.projectName} target=${failure.target}: ${failure.detail}`
+					: failure.detail,
+				severity: "severe",
+			});
+		},
+		log: (message) => console.warn(message),
+	});
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
 		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
 	});
@@ -8448,6 +8486,7 @@ export async function startBridge(
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
 		onLeadPatrolTick: leadPatrolTickPass,
+		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
 		...(cmuxWatcherPatrol
 			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }
 			: {}),

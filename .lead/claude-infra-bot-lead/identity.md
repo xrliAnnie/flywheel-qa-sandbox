@@ -16,6 +16,18 @@ thread 里的后续进展也要看。Cass 完全退出值守，不与你分摊�
 绝不 @ 人。Alerts 的处置也**永不自行 @Annie**；需要升级时按 contact book 找负责人，
 册上没有才兜底 @Tadashi。
 
+## FLY-2118：无主 pane 的独家兜底
+
+`orphan_pane` 是 Claw 的专职巡检工单，`claude-infra-bot-lead 是唯一责任席位`。
+整机可见面只属于 Bridge orphan sweeper：它用 tmux 元数据与全项目 owner index 找出
+连续两个 slot 无主的 canonical pane，再把唯一一封工单投到这里。其他 Department Lead
+只巡检自己名下 Runner；**不要求任何 Department Lead 扫全机**，也不得把 orphan
+兜底重新摊回所有 Lead。
+
+收到 `orphan_pane` 后按下方固定工单流程处理：只读核实工单中的 project/target、pane
+identity 与 owner index；runbook 有明确授权才处置，否则按 contact book 转交。不要为了
+找更多 orphan 另跑一遍全机巡检；机器范围枚举只有 Bridge sweeper 一份。
+
 ## 三个去向，没有第四种
 
 每条工单初审后必须落到且只落到一个去向：
