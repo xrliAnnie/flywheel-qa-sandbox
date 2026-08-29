@@ -1007,18 +1007,15 @@ ${checkpointsYaml}
 				withCheckpoints(`
 checkpoints:
   brainstorm:
-    enabled: true
     timeout_ms: 172800000
     timeout_behavior: fail-close
     cleanup_ttl_hours: 24
     stage: brainstorm
   question:
-    enabled: true
     timeout_behavior: fail-open
 `),
 			);
 			const config = await loader.load("/p/config.yaml");
-			expect(config.checkpoints?.brainstorm?.enabled).toBe(true);
 			expect(config.checkpoints?.brainstorm?.timeout_ms).toBe(172800000);
 			expect(config.checkpoints?.question?.timeout_behavior).toBe("fail-open");
 		});
@@ -1033,7 +1030,6 @@ checkpoints:
 				withCheckpoints(`
 checkpoints:
   brainstorm:
-    enabled: true
     timeout_ms: 1800000
 `),
 			);
@@ -1156,7 +1152,7 @@ checkpoints:
 			);
 		});
 
-		it("rejects non-boolean enabled", async () => {
+		it("rejects a residual enabled key regardless of its value", async () => {
 			readFile.mockResolvedValue(
 				withCheckpoints(`
 checkpoints:
@@ -1165,7 +1161,7 @@ checkpoints:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/enabled.*boolean/,
+				/checkpoints\.brainstorm\.enabled was retired \(FLY-2103\)/,
 			);
 		});
 	});
@@ -1177,32 +1173,34 @@ ${MINIMAL_CONFIG_YAML}
 ${yaml}
 `;
 
-		it("accepts absent skill_framework (participate by default)", async () => {
+		it("accepts absent skill_framework", async () => {
 			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
 			const config = await loader.load("/p/config.yaml");
-			expect(config.skill_framework).toBeUndefined();
+			expect(config.project).toBe("test-project");
 		});
 
-		it("accepts split: false (project opt-out)", async () => {
+		it("rejects residual split: false", async () => {
 			readFile.mockResolvedValue(
 				withSkillFramework(`
 skill_framework:
   split: false
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.skill_framework?.split).toBe(false);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/skill_framework\.split was retired \(FLY-2103\)/,
+			);
 		});
 
-		it("accepts split: true (explicit participate)", async () => {
+		it("rejects residual split: true", async () => {
 			readFile.mockResolvedValue(
 				withSkillFramework(`
 skill_framework:
   split: true
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.skill_framework?.split).toBe(true);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/skill_framework\.split was retired \(FLY-2103\)/,
+			);
 		});
 
 		it("rejects non-mapping skill_framework", async () => {
@@ -1212,7 +1210,7 @@ skill_framework: "no"
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/skill_framework must be a YAML mapping/,
+				/skill_framework\.split was retired \(FLY-2103\)/,
 			);
 		});
 
@@ -1224,7 +1222,7 @@ skill_framework:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/skill_framework\.split must be a boolean/,
+				/skill_framework\.split was retired \(FLY-2103\)/,
 			);
 		});
 	});
@@ -1236,16 +1234,14 @@ ${MINIMAL_CONFIG_YAML}
 ${docFlowYaml}
 `;
 
-		it("accepts valid enabled doc_flow config", async () => {
+		it("accepts doc_flow path metadata without an enable flag", async () => {
 			readFile.mockResolvedValue(
 				withDocFlow(`
 doc_flow:
-  enabled: true
   default_department: content
 `),
 			);
 			const config = await loader.load("/p/config.yaml");
-			expect(config.doc_flow?.enabled).toBe(true);
 			expect(config.doc_flow?.default_department).toBe("content");
 		});
 
@@ -1255,15 +1251,14 @@ doc_flow:
 			expect(config.doc_flow).toBeUndefined();
 		});
 
-		it("rejects enabled=true without default_department", async () => {
+		it("rejects a metadata block without default_department", async () => {
 			readFile.mockResolvedValue(
 				withDocFlow(`
-doc_flow:
-  enabled: true
+doc_flow: {}
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/default_department is required when doc_flow\.enabled is true/,
+				/default_department is required when doc_flow is present/,
 			);
 		});
 
@@ -1271,7 +1266,6 @@ doc_flow:
 			readFile.mockResolvedValue(
 				withDocFlow(`
 doc_flow:
-  enabled: true
   default_department: "../escape"
 `),
 			);
@@ -1280,11 +1274,10 @@ doc_flow:
 			);
 		});
 
-		it("rejects malformed default_department even when enabled=false (fail loudly before flip-on)", async () => {
+		it("rejects malformed default_department", async () => {
 			readFile.mockResolvedValue(
 				withDocFlow(`
 doc_flow:
-  enabled: false
   default_department: "Has Spaces"
 `),
 			);
@@ -1304,7 +1297,7 @@ doc_flow: "yes"
 			);
 		});
 
-		it("rejects non-boolean doc_flow.enabled", async () => {
+		it("rejects the retired doc_flow.enabled key", async () => {
 			readFile.mockResolvedValue(
 				withDocFlow(`
 doc_flow:
@@ -1313,11 +1306,11 @@ doc_flow:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/doc_flow\.enabled must be a boolean/,
+				/doc_flow\.enabled was retired \(FLY-2103\)/,
 			);
 		});
 
-		it("accepts enabled=false with valid default_department (pre-staged config)", async () => {
+		it("rejects residual enabled=false too", async () => {
 			readFile.mockResolvedValue(
 				withDocFlow(`
 doc_flow:
@@ -1325,9 +1318,9 @@ doc_flow:
   default_department: product
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.doc_flow?.enabled).toBe(false);
-			expect(config.doc_flow?.default_department).toBe("product");
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/doc_flow\.enabled was retired \(FLY-2103\)/,
+			);
 		});
 	});
 
@@ -1338,32 +1331,34 @@ ${MINIMAL_CONFIG_YAML}
 ${ponytailYaml}
 `;
 
-		it("accepts enabled ponytail config", async () => {
+		it("rejects residual ponytail enabled true", async () => {
 			readFile.mockResolvedValue(
 				withPonytail(`
 ponytail:
   enabled: true
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.ponytail?.enabled).toBe(true);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ponytail\.enabled was retired \(FLY-2103\)/,
+			);
 		});
 
-		it("accepts absent ponytail (feature off, byte-compatible)", async () => {
+		it("accepts absent ponytail", async () => {
 			readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
 			const config = await loader.load("/p/config.yaml");
-			expect(config.ponytail).toBeUndefined();
+			expect(config.project).toBe("test-project");
 		});
 
-		it("accepts enabled:false", async () => {
+		it("rejects residual ponytail enabled false", async () => {
 			readFile.mockResolvedValue(
 				withPonytail(`
 ponytail:
   enabled: false
 `),
 			);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.ponytail?.enabled).toBe(false);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+				/ponytail\.enabled was retired \(FLY-2103\)/,
+			);
 		});
 
 		it("rejects non-boolean ponytail.enabled", async () => {
@@ -1374,7 +1369,7 @@ ponytail:
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/ponytail\.enabled must be a boolean/,
+				/ponytail\.enabled was retired \(FLY-2103\)/,
 			);
 		});
 
@@ -1385,7 +1380,7 @@ ponytail: "on"
 `),
 			);
 			await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-				/ponytail must be a YAML mapping/,
+				/ponytail\.enabled was retired \(FLY-2103\)/,
 			);
 		});
 	});
@@ -1538,77 +1533,71 @@ describe("ConfigLoader — pipeline DAG routing", () => {
 		loader = new ConfigLoader(readFile);
 	});
 
-	it("defaults pipeline.dag on when the pipeline block is absent", async () => {
+	it("accepts configs without the retired pipeline block", async () => {
 		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
 		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.dag).toBe(true);
+		expect(config.project).toBe("test-project");
 	});
 
-	it("throws when pipeline is a scalar, not a mapping", async () => {
+	it("rejects a scalar residual pipeline block", async () => {
 		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}\npipeline: nope\n`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/pipeline must be a YAML mapping/,
+			/pipeline\.dag was retired \(FLY-2103\)/,
 		);
 	});
 
-	// FLY-1372: pipeline.dag — project-level DAG dispatch enrollment.
-	it("parses pipeline.dag: true", async () => {
+	it("rejects residual pipeline.dag: true", async () => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: true\n`,
 		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.dag).toBe(true);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.dag was retired \(FLY-2103\)/,
+		);
 	});
 
-	it("parses pipeline.dag: false", async () => {
+	it("rejects residual pipeline.dag: false", async () => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: false\n`,
 		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.dag).toBe(false);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.dag was retired \(FLY-2103\)/,
+		);
 	});
 
-	it("defaults pipeline.dag on when another pipeline key is present", async () => {
+	it("rejects residual pipeline.work_kind", async () => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  work_kind: false\n`,
 		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.dag).toBe(true);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.work_kind was retired \(FLY-2103\)/,
+		);
 	});
 
-	it("throws when pipeline.dag is not a boolean", async () => {
+	it("rejects malformed pipeline.dag as retired", async () => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: "yes"\n`,
 		);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/pipeline\.dag must be a boolean/,
+			/pipeline\.dag was retired \(FLY-2103\)/,
 		);
 	});
 
-	// FLY-1407: work-kind migration enrollment is lenient at the shared-loader
-	// seam. The strict /api/runs/start reader owns fail-loud enforcement; shared
-	// handoff callers must retain every unrelated pipeline field.
-	it.each([true, false])("parses pipeline.work_kind: %s", async (workKind) => {
+	it.each([true, false])("rejects pipeline.work_kind: %s", async (workKind) => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: true\n  work_kind: ${workKind}\n`,
 		);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.pipeline?.work_kind).toBe(workKind);
-		expect(config.pipeline?.dag).toBe(true);
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.work_kind was retired \(FLY-2103\)/,
+		);
 	});
 
-	it("drops only malformed pipeline.work_kind and preserves DAG config", async () => {
-		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	it("rejects malformed pipeline.work_kind as retired", async () => {
 		readFile.mockResolvedValue(
 			`${MINIMAL_CONFIG_YAML}\npipeline:\n  dag: true\n  work_kind: "yes"\n`,
 		);
 
-		const config = await loader.load("/p/config.yaml");
-
-		expect(config.pipeline).toEqual({ dag: true });
-		expect(warn).toHaveBeenCalledWith(
-			expect.stringContaining("pipeline.work_kind must be a boolean"),
+		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
+			/pipeline\.work_kind was retired \(FLY-2103\)/,
 		);
-		warn.mockRestore();
 	});
 });

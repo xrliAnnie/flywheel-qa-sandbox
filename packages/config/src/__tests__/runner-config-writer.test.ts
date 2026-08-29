@@ -50,7 +50,6 @@ const WITH_RUNNER = `${BASE}roles:
 `;
 
 const WITH_XHS = `${BASE}xiaohongshu_learning:
-  enabled: true
   collections:
     - collection_id: "col.1"
       label: "AI-视频"

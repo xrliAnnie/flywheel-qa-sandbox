@@ -22,7 +22,10 @@
  *     re-resolve from refreshed labels so a recovered `ponytail-off` is honored.
  */
 
-import type { PonytailConfig } from "./types.js";
+/** Runtime-only project layer synthesized from the scoped flag store. */
+export interface PonytailConfig {
+	enabled: boolean;
+}
 
 /** Canonical plugin id (marketplace `ponytail`, plugin `ponytail`). */
 export const PONYTAIL_PLUGIN = "ponytail@ponytail";

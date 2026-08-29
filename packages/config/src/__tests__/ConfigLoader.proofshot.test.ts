@@ -36,7 +36,6 @@ const WITH_PROOFSHOT = `${BASE_CONFIG}
 skills:
   enabled: true
   proofshot:
-    enabled: true
     dev_command: "pnpm dev"
     port: 3000
     capture_stages:
@@ -63,7 +62,6 @@ describe("ConfigLoader.proofshot", () => {
 		const loader = new ConfigLoader(makeReadFile(WITH_PROOFSHOT));
 		const cfg = await loader.load("/dummy/.flywheel/config.yaml");
 		expect(cfg.skills?.proofshot).toBeDefined();
-		expect(cfg.skills?.proofshot?.enabled).toBe(true);
 		expect(cfg.skills?.proofshot?.dev_command).toBe("pnpm dev");
 		expect(cfg.skills?.proofshot?.port).toBe(3000);
 		expect(cfg.skills?.proofshot?.capture_stages).toEqual([
@@ -96,7 +94,7 @@ skills:
 		expect(cfg.skills).toBeUndefined();
 	});
 
-	it("rejects non-boolean enabled", async () => {
+	it("rejects the retired authoring enabled key", async () => {
 		const bad = `${BASE_CONFIG}
 skills:
   proofshot:
@@ -104,7 +102,7 @@ skills:
 `;
 		const loader = new ConfigLoader(makeReadFile(bad));
 		await expect(loader.load("/dummy/.flywheel/config.yaml")).rejects.toThrow(
-			/skills\.proofshot\.enabled must be a boolean/,
+			/skills\.proofshot\.enabled was retired \(FLY-2103\)/,
 		);
 	});
 

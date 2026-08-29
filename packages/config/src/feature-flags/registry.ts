@@ -372,7 +372,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
-				"createRunInfraDispatcher",
+				"setupRunInfrastructure",
 				"storeDocFlowEnabled",
 			),
 		],
@@ -439,7 +439,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
-				"createRunInfraDispatcher",
+				"setupRunInfrastructure",
 				"storeSkillFrameworkSplitParticipation",
 			),
 		],
@@ -457,8 +457,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description: "ProofShot 视觉验证 auto-trigger（per-project）",
 		readSites: [
 			flagStoreSite(
-				"packages/teamlead/src/DirectEventSink.ts",
-				"DirectEventSink.emitStarted",
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
 				"storeProofshotEnabled",
 			),
 		],
@@ -497,7 +497,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		readSites: [
 			flagStoreSite(
 				"packages/teamlead/src/bridge/run-infra.ts",
-				"createRunInfraDispatcher",
+				"setupRunInfrastructure",
 				"storePonytailEnabled",
 			),
 		],

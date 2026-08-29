@@ -175,7 +175,7 @@ describe("canonicalizeFlagSample", () => {
 		).toMatchObject({ kind: "indeterminate", class: "read_unavailable" });
 	});
 
-	it("keeps a config read error indeterminate while a scoped DB row drives display", () => {
+	it("ignores config health once a scoped DB row drives the flag", () => {
 		const spec = flagSpec("project", {
 			source: "project_config",
 			scope: "project",
@@ -190,16 +190,13 @@ describe("canonicalizeFlagSample", () => {
 					projectName: "alpha",
 					value: true,
 					via: "star_row",
-					runtimeConfigError: "config.yaml: unreadable",
-					runtimeDivergence: "config_pending_cutover",
 				},
 			],
 		});
 
 		expect(canonicalizeFlagSample(spec, view, ["alpha"])).toEqual({
-			kind: "indeterminate",
-			class: "read_unavailable",
-			reason: "alpha: config.yaml: unreadable",
+			kind: "value",
+			canonical: '{"k":"bool","v":[["alpha",true]]}',
 		});
 	});
 
