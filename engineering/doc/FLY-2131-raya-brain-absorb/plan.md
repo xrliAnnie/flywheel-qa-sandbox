@@ -40,8 +40,10 @@ flowchart LR
 新子命令(挂在既有 `summary` 命令族旁):
 
 ```
-flywheel-comm summary merge --repo <owner/repo> --pr <n> [--round <roundId>] [--dry-run]
+flywheel-comm summary merge --repo <owner/repo> --pr <n> [--round <roundId>] [--method <merge|squash|rebase>] [--dry-run]
 ```
+
+(`--method` 映射到 `gh pr merge` 的 `--merge|--squash|--rebase`;仅当目标仓禁用 canonical method 时需要,取值限目标仓 enabled 集,R3-2。)
 
 命令内步骤(**结构性不变量:命令里不存在任何不带 `--match-head-commit` 的 merge 代码路径**;R2-2 后为**显式状态机**,分类先行):
 1. repo ∈ 豁免允许集 `{xrliAnnie/raya, xrliAnnie/raya-memory}`(常量与豁免条款同源,注释互指),否则 fail-loud `summary_merge_repo_forbidden`。
@@ -51,12 +53,12 @@ flywheel-comm summary merge --repo <owner/repo> --pr <n> [--round <roundId>] [--
    - **MERGED**(幂等/对账分支,R1-2/R2-2):**绝不调 merge**;对**已 merge 记录的 head** 跑同一套 repo/base/summary 校验(reconciled 回执要喂吸收与计数,历史 head 必须同样证明合规,⛔ 不裸抄 SHA);校验过 ⇒ 回执缺则写 `reconciled: true` 回执、已有则 no-op 成功(幂等 key = `{repo, pr, verifiedHeadSha}`);校验不过 ⇒ fail-loud(这条 PR 从未合规,人来看)。
    - **CLOSED 未 merge** ⇒ fail-loud `summary_merge_pr_closed`。
 4. `gh pr merge <n> --repo <repo> --match-head-commit <verifiedHeadSha> --<method>`。**method 只看目标仓**(R2-4,⛔ 不做两仓交集——raya-memory 的设置变更不该挡 raya 的 merge):canonical method 钉为 **merge(普通 merge commit)**,运行时对照目标仓 enabled methods,被禁用 ⇒ fail-loud 并提示从 enabled 集显式传 `--method`;所用 method 记入回执。verify 后 head 被推进 ⇒ **gh 服务端拒绝** = TOCTOU 闭合;命令如实转发失败,⛔ 无「去栓重试」路径。
-5. 成功后追加一行 JSONL 回执:`{ts, roundId?, repo, pr, projects[], files[], verifiedHeadSha, method, reconciled?}`,落 **workspace 内** `<leadWorkspace>/state/summary-merge-receipts.jsonl`(默认由 validated TUI cwd 派生,R2-1;`FLYWHEEL_SUMMARY_RECEIPTS_FILE` 覆盖 env 仅在真需要时加进 H-1 allowlist 并带精确 allowlist 测试,默认不加)。**去重是读取侧逻辑去重**(按幂等 key;文件非权威,R2-2 ⇒ 不再承诺并发物理去重、不加锁)。回执写失败 ⇒ 退出码非零 + `summary_receipt_write_failed`(merge 已发生的事实原样打印;下轮轮首对账兜底,见 2.4)。
+5. 成功后追加一行 JSONL 回执:`{ts, roundId?, repo, pr, projects[], files[], verifiedHeadSha, method, reconciled?}`——**method 语义(R3-2)**:命令自己执行的 merge **必填**实际所用 method;`reconciled:true` 行**显式 `method: null`**(历史 merge 用了哪种 method 没有可信来源——当下 enabled 集只证明现在,不证明当时;method 是审计元数据不是吸收权威,⛔ 不猜)。落 **workspace 内** `<leadWorkspace>/state/summary-merge-receipts.jsonl`(默认由 validated TUI cwd 派生,R2-1;`FLYWHEEL_SUMMARY_RECEIPTS_FILE` 覆盖 env 仅在真需要时加进 H-1 allowlist 并带精确 allowlist 测试,默认不加)。**去重是读取侧逻辑去重**(按幂等 key;文件非权威,R2-2 ⇒ 不再承诺并发物理去重、不加锁)。回执写失败 ⇒ 退出码非零 + `summary_receipt_write_failed`(merge 已发生的事实原样打印;下轮轮首对账兜底,见 2.4)。
 6. `--dry-run`:执行同一套分类 + 校验(步骤 1–3),打印将执行的动作(merge argv 或 reconciled 判定),**压制一切写**——不 merge、也不写任何回执(含 reconciled 回执,R2-2)。
 
 **「激活前机械拒绝」的落序(R1-5,消除自相矛盾)**:栓①在 **PR-A** 先行落 main;Raya 注册/部署在 **PR-B**,其激活检查单 **fail-closed**:部署所用 `flywheel-comm` 构建里 `summary merge --dry-run` 对 fixture 走通,否则不注册不部署。⛔ 不再有「同一张 PR」表述。她的权威上线那一刻,机械通路已在且被检查单证明。
 
-**TDD**(gh/fs 注入,零真网):happy path 断言 merge argv **精确含** `--match-head-commit <verifier 返回的同一 SHA>`;verifier 失败 ⇒ 零 merge 调用;gh 拒绝(模拟 head 推进)⇒ 非零、零重试;repo 白名单负测;**状态机三分支(OPEN 校验+merge / MERGED 历史 head 复核后 reconciled 或 no-op、绝不 merge / CLOSED-unmerged fail)+ base 负测(fork base、非默认分支)**;**MERGED 分支历史 head 不合规 ⇒ fail-loud 零回执**;granularity unselected 负测;多文件多项目回执数组;**method:目标仓禁用 canonical method ⇒ fail-loud;`--method` 只接受 enabled 集;method 入回执;⛔ 无跨仓交集逻辑**;读取侧逻辑去重(重复行只计一次);回执写失败 ⇒ 非零 + 显式码 + merge 事实可见;**dry-run 三分支全零写(含 reconciled 回执)**;**全部 merge 调用点 argv 扫描断言含栓**(结构不变量测试)。
+**TDD**(gh/fs 注入,零真网):happy path 断言 merge argv **精确含** `--match-head-commit <verifier 返回的同一 SHA>`;verifier 失败 ⇒ 零 merge 调用;gh 拒绝(模拟 head 推进)⇒ 非零、零重试;repo 白名单负测;**状态机三分支(OPEN 校验+merge / MERGED 历史 head 复核后 reconciled 或 no-op、绝不 merge / CLOSED-unmerged fail)+ base 负测(fork base、非默认分支)**;**MERGED 分支历史 head 不合规 ⇒ fail-loud 零回执**;granularity unselected 负测;多文件多项目回执数组;**method:目标仓禁用 canonical method ⇒ fail-loud;`--method` 只接受 enabled 集;命令自有 merge 的回执 method 必填、reconciled 行断言 `method:null`(行 schema 断言);⛔ 无跨仓交集逻辑**;读取侧逻辑去重(重复行只计一次);**write-ahead 行序(round 先于一切副作用;question posting/posted 成对;posting 无 posted 的恢复策略)**;回执写失败 ⇒ 非零 + 显式码 + merge 事实可见;**dry-run 三分支全零写(含 reconciled 回执)**;**全部 merge 调用点 argv 扫描断言含栓**(结构不变量测试)。
 
 ### 2.2 栓② activation preflight fail-closed(scripts/restart-services.sh)
 
@@ -71,8 +73,13 @@ founder 硬要求是「每轮 review/吸收后」汇报——不止 merge 轮(R1
 
 - **轮的身份**:`roundId` = M2-b 巡视投递的 deterministic lead_events event id(✅ 原设计已有,不新造),渲染进巡视 inbox 指令文本;Raya 把它带进 `summary merge --round`、memory 落笔 provenance、汇报消息。⇒「本轮」有机器可对的边界。
 - **必须汇报的条件**:本轮 reviewed ≥1 ∨ absorbed ≥1 ∨ 追问 ≥1(**absorbed=0 的纯追问轮也必须报**)。真空轮(未读队列空、无对账补课、无追问)默认沉默(PRD §6.3),身份文本留一行 founder 可切的「空轮也报心跳」开关。
-- **计数与真值来源(⛔ 不许凭记忆报数;耐久载体 = 轮记账,R2-3)**:每个有活动的轮(reviewed ≥1 ∨ asked ≥1 ∨ absorbed ≥1)在 memory 落笔里写一条**轮记账(round journal)**——`roundId + 轮首未读快照(显式 PR 编号列表)+ 追问(roundtable 消息链接)+ 吸收清单`——**absorbed=0 的纯追问轮同样落笔、同样 commit**(它不是「无吸收就无笔记」,否则纯追问轮没有任何耐久证据可恢复/可核,恰好塌掉新验收格)。absorbed 数 + 项目数 ← 本轮回执(`roundId` 过滤);reviewed 数 ← 轮记账的 PR 编号快照(GitHub open 时间戳可复核);追问数 ← 轮记账里的 roundtable 链接;**每条 roundtable 追问消息里带 roundId + PR 编号**(消息本身成为可对账的耐久面)。
-- **汇报回执(本地耐久标记,R2-3)**:`discord_send` 成功返回**之后**,往回执文件追加一行 `{type:"report", roundId, ts}`。⛔ **不引入任何 Discord 读通路**——【实核】`discord_send` MCP 只有 target/text 无读操作、gateway 刻意丢弃她自己 bot 的消息、send audit 不留正文/roundId ⇒ 「读自己频道核对」不成立(R1 版此设想作废);恢复判据一律用本地标记 + 轮记账。send 失败 ⇒ fail-visible、不写标记 ⇒ 下轮补报;「send 成功后、标记写入前」崩溃 ⇒ 下轮重发一次(**接受重复汇报,不接受漏报**,重发注明「补记」)。标记的真实性由 QA 拿 channel 实况核(验收格),不自证。
+- **计数与真值来源(⛔ 不许凭记忆报数;耐久载体 = write-ahead 轮账本,R2-3/R3-1)**:运营账本 = **workspace state 里那一个 JSONL 文件的 typed rows**(与 merge 回执同文件;⛔ 不放 memory/baseInstructions——运营流水会无限增长,不该进 system prompt),**写在副作用之前/之后成对留痕**:
+  - 轮首、任何副作用之前:`{type:"round", roundId, reviewedPrs:[…], ts}`(reviewed 快照就此耐久,「merge 回执有了、轮行还没写」的混合窗随之消灭——轮行先行);
+  - 每次追问 send **之前**:`{type:"question", roundId, pr, status:"posting", ts}`;send 成功**之后**:`{type:"question", roundId, pr, status:"posted", link, ts}`;
+  - merge 回执行(2.1)结算吸收;
+  - 汇报 send 成功之后:`{type:"report", roundId, ts}`。
+  重启见 `posting` 无 `posted` ⇒ **单一策略:标注「补记/recovery」重发该追问,接受可能的重复**(与汇报同款 at-least-once;⛔ 不当作已送达计数)。absorbed 数 + 项目数 ← merge 回执;reviewed 数 ← round 行快照;追问数 ← posted 行;**每条 roundtable 追问消息里带 roundId + PR 编号**。memory 落笔(2.4)保持**知识层**(吸收内容 + provenance),不再兼任运营账本。
+- **汇报回执(本地耐久标记,R2-3)**:即上述 `report` 行。⛔ **不引入任何 Discord 读通路**——【实核】`discord_send` MCP 只有 target/text 无读操作、gateway 刻意丢弃她自己 bot 的消息、send audit 不留正文/roundId、send 幂等只在进程内(discord-send-core.ts:11-13)⇒ 「读自己频道核对」不成立(R1 版此设想作废);恢复判据一律用本地账本。send 失败 ⇒ fail-visible、不写标记 ⇒ 下轮补报;「send 成功后、标记写入前」崩溃 ⇒ 下轮重发一次(**接受重复汇报,不接受漏报**,重发注明「补记」)。账本的真实性由 QA 拿 channel 实况核(验收格),不自证。
 - 样式对齐 founder 原话:「今天下午 6 点,我 review 了这 N 个 PR,吸收了 M 条(覆盖 K 个项目),X 处没看懂已去问 <Lead>」+ 本轮 PR 编号列表(或其链接);经既有 `discord_send`(FLY-304)发 #raya。
 - 落点:身份 M2 段新增「Visible reporting」小节(2.5);零新代码(roundId 渲染进巡视事件文本属 M2-b 投递内容,一行字符串;report 标记行复用回执文件)。
 
@@ -85,7 +92,7 @@ founder 硬要求是「每轮 review/吸收后」汇报——不止 merge 轮(R1
 - **轮首对账(R1-2/R2-3:崩溃窗口的恢复通路,权威 = 耐久面而非回执)**:每轮开始先对三面账,补完再处理新 PR——
   a. canonical 分支上已 merge 的 `summaries/` 文件,MEMORY.md provenance 没有 ⇒ 本轮补吸收(覆盖「merge 后、落笔前崩溃」与「回执写失败」两窗);
   b. 回执里有、provenance 没有 ⇒ 同上(快捷索引路径);
-  c. **有活动无汇报**:存在 roundId 的轮记账(2.3;含纯追问轮)或 merge 回执,但回执文件里没有对应 `{type:"report", roundId}` 标记 ⇒ 本轮汇报里补报该轮(覆盖「落笔后/提问后、发声前崩溃」窗;计数取自该轮的轮记账与回执,⛔ 不凭记忆编数)。
+  c. **有活动无汇报**:账本里存在 roundId 的 round/question/merge 行(含纯追问轮——round 行是 write-ahead 的,必在)但没有对应 `{type:"report", roundId}` 行 ⇒ 本轮汇报里补报该轮(计数取自该轮账本行,⛔ 不凭记忆编数);`posting` 无 `posted` 的追问按 2.3 单一策略补发。
   对账本身零新代码:gh + grep + 读本地文件,全是她既有能力;规则落身份文本。⛔ 不读 Discord 频道当判据(通路不存在,2.3)。
 - 否决:CODEX_HOME 隐式记忆当主承载(黑箱);向量库/摘要索引(违反 enforce simplicity + founder「只删不加」红线)。
 
@@ -100,7 +107,7 @@ operator 0444 副本更新由 Lead 按既有流程执行。roundtable registry `
 
 ### 2.6 义务⑤ 语音开场身份(raya 仓 + operator 配置;**硬前置 = FLY-2097 prompt 通道**)
 
-【实核 + R1-4】机制分两半:`startInstructionsFile` 读文件的口子在 raya origin/main 已有,但 origin/main 仍走 `realtimeStartInstructions` 旧通道——FLY-2097 QA 已实证**该通道对模型行为无效**;只有 FLY-2097 PR #3 候选(改走 `thread/realtime/start.prompt`)让开场指令真正生效(2/2 自称 Raya)。⇒ 内容归本单,通道归 FLY-2097,**验收依赖后者部署**。
+【实核 + R1-4,R3-3 刷新】机制分两半:`startInstructionsFile` 读文件的口子在 raya main 已有;旧 `realtimeStartInstructions` 通道对模型行为无效(FLY-2097 QA 实证),**prompt 通道修复(4a67508)已随 FLY-2097 PR #3 merge 进 raya main(fb354a2)——但部署字节未证**:生产语音跑的还是旧构建,直到班车部署。⇒ 内容归本单,通道已在 main,**验收依赖部署**。
 
 - **交付 1(仓内)**:`apps/voice/assets/start-instructions.zh.md`(路径随仓惯例微调):Raya 自我身份 · founder 身份与称呼(**她是 Annie(李晓蓉 / Xiaorong Li),当面称呼用 Annie**;⬜ 两名并列供识别、称呼锚一个,founder 想改是改一行)· 语言纪律(简短自然中文口语)· 委托后台 Codex 一句 · 与 IDENTITY.md 一致的行为底线摘句。**预算 ≤ 6,000 字符**(8,192 上限 − FLY-2097 退出协议追加量;超限 config 拒起是既有校验)。
 - **交付 2(operator 步骤,写进部署检查单)**:raya.env 的 `RAYA_VOICE_OPTIONS_JSON` 加 `"startInstructionsFile": "<checkout>/apps/voice/assets/start-instructions.zh.md"`。
@@ -146,9 +153,9 @@ operator 0444 副本更新由 Lead 按既有流程执行。roundtable registry `
 flowchart LR
   PA["flywheel PR-A:安全栓两道 + flaky 修复<br/>(2.1 / 2.2 / 2.8)——小而快,先行"] --> PB
   PB["flywheel PR-B:M2 基座 + 拓扑 + 指标③<br/>(2.9 / 2.10 / 2.7)——激活检查单 fail-closed<br/>含栓①冒烟(installed build dry-run 走通)"] --> ACT["激活/部署(班车)"]
-  P4["raya PR #4(M1 合同,open)<br/>= 前置,原 M1 实现体持有"] --> PC
+  P4["raya PR #4(M1 合同)✅ 已 merge<br/>(main = fb354a2)"] --> PC
   PC["raya PR-C:身份 M2 段 + 开场指令文件<br/>(2.5 / 2.6)"] --> ACT
-  P97["FLY-2097 PR #3(prompt 通道)<br/>merge + 部署"] --> VACC["语音两格验收"]
+  P97["语音新构建部署<br/>(prompt 修复已在 main,字节未上)"] --> VACC["语音两格验收"]
   ACT --> VACC
 ```
 
@@ -169,7 +176,7 @@ flowchart LR
 | merge→回执→落笔→发声之间崩溃 | 轮首对账三查(2.4)以耐久面为权威收敛;回执幂等 key + reconciled 路径;故障注入测试(§6-8) |
 | 汇报数字幻觉 | 计数真值来源逐项钉死(2.3);QA 核数是验收格 |
 | brain 与 Lead 共写一个 memory checkout | 同一身份、低频写;git 历史可见;clean-tree 预检把踩踏变成 fail-loud 而非静默覆盖 |
-| raya PR #4 / FLY-2097 PR #3 / 部署延迟 | 开发不阻塞(fixture);验收格顺延,如实报「前置未齐」 |
+| 语音构建部署 / Raya 注册部署延迟(PR #3/#4 已 merge,R3-3) | 开发不阻塞(fixture);验收格顺延,如实报「前置未齐」 |
 | 8,192 开场指令上限被 2097 追加挤爆 | 本单预算 ≤6,000 + 仓内长度合同测试 + 验收实测组合总长;超限拒起是既有 fail-loud |
 | 空轮不发被读成「她没在干活」 | 纯追问轮也必报(2.3);真空轮的心跳开关呈 founder |
 | M2-c 裁决未回 | 默认纳入;砍 = 删 §2.7,零牵动 |
@@ -185,12 +192,12 @@ flowchart LR
 | 5 | 栓②:源缺失 ⇒ preflight 非零且零 mutation | shell 测试 + 真机模拟 |
 | 6 | flaky:该测试文件连跑 N=20 全绿 | CI/本地循环日志 |
 | 7 | (若 M2-c 在)③ 在跑或如实报缺 | context-usage.jsonl 行 / 显式 unavailable 证据 |
-| 8 | 崩溃窗口:三个 post-side-effect 窗各注入一次 ⇒ 重启后轮首对账收敛(不重 merge、不丢吸收、不重回执、不漏汇报);**含「追问已发、汇报前崩溃」格:补报且计数取自轮记账,零编造**(R2-3) | 故障注入记录 + 对账后状态 |
+| 8 | 崩溃窗口:三个 post-side-effect 窗各注入一次 ⇒ 重启后轮首对账收敛(不重 merge、不丢吸收、不重回执、不漏汇报);**含「追问 POST 成功、posted 行落笔前崩溃」与「merge 回执后、汇报前崩溃」两格:补报且计数取自 write-ahead 账本,零编造**(R2-3/R3-1) | 故障注入记录 + 对账后状态 |
 | 9 | TUI 记忆闭环:sandbox 内写+commit MEMORY.md → rebuild/resume → 只在记忆里的事实答得出 | transcript + commit |
 
 ## 7. 会过期的结论
 
-见 research.md §5 + §6 增补(R1 后新实核:live granularity/迁移回执/16 行/单 writable root/`~/.flywheel` overlap 拒绝/prompt files 装载链)。
+见 research.md §5 + §6 + §7 增补(R1/R2 后新实核:live granularity/迁移回执/16 行/单 writable root/`~/.flywheel` overlap 拒绝/prompt files 装载链/raya PR #3・#4 已 merge/`RAYA_WORKSPACE_ROOTS_JSON` 合同/discord_send 无读面)。
 
 ## 8. Codex design review 处理记录
 
@@ -213,3 +220,11 @@ flowchart LR
 | 2 状态机不可达(open 前置挡死 merged 分支)、dry-run 会写 reconciled 回执、历史 head 未复核、并发物理去重不可承诺 | ✅ 2.1 重写为分类先行状态机(OPEN/MERGED/CLOSED-unmerged);MERGED 分支绝不 merge、历史 head 过同套合规校验、不过即 fail;dry-run 三分支全零写;去重改读取侧逻辑去重(文件非权威) |
 | 3 汇报恢复读不到自己频道(discord_send 无读、gateway 丢自 bot 消息);纯追问轮无耐久证据 | ✅ 2.3/2.4:轮记账(roundId+PR 快照+追问链接+吸收清单)每个活动轮必落笔必 commit(absorbed=0 同);汇报后写本地 `{type:"report",roundId}` 标记;对账 c 改「有活动无标记 ⇒ 补报」;接受重复汇报不接受漏报;roundtable 追问消息带 roundId+PR;⛔ 不引入 Discord 读通路(R1 版设想作废);验收格 8 增追问-崩溃格 |
 | 4 method 取两仓交集不确定且跨仓耦合 | ✅ 2.1 只看目标仓;canonical = merge commit,禁用即 fail-loud + `--method` 逃生(限 enabled 集);method 入回执;负测补齐 |
+
+**R3(2026-08-29,plan blob dc8e301e @ 335a2120a,反馈 `/tmp/codex-rescue-design-feedback-flywheel-FLY-2131-plan-round3.md`)= CHANGES REQUESTED,3 项,全部采纳:**
+
+| # | 处置 |
+|---|---|
+| 1 轮记账非 write-ahead:纯追问轮首问后崩溃三面皆空,不可恢复;merge 回执后、记账前的混合窗同病 | ✅ 2.3 重写为 **write-ahead typed rows**(选其 JSONL 方案,运营账本不进 memory/baseInstructions):round 行先于一切副作用;question posting/posted 成对包夹 send;report 行收尾;`posting` 无 `posted` ⇒ 单一策略「标注补记重发,接受重复」;2.4 对账 c 改读账本;验收格 8 扩两个注入点 |
+| 2 `--method` 不在 synopsis;reconciled 行的 method 无可信来源 | ✅ synopsis 加 `[--method <merge\|squash\|rebase>]` + gh flag 映射;命令自有 merge 的 method 必填;reconciled 行显式 `method:null`(审计元数据,⛔ 不猜历史);行 schema 断言入 TDD |
+| 3 §2.6/依赖图/风险行/§7 指针残留过期前置措辞 | ✅ 四处刷新(prompt 修复已在 main、字节未上;P4 标已 merge;风险行收窄为部署/注册延迟;指针含 research §7);R1/R2 处置表保留为史料不改写 |
