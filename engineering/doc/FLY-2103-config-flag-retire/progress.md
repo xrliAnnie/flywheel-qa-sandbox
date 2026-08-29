@@ -1,13 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 0/8
-updated: 2026-08-29T05:23:53.705Z
-nextStep: audit current flag/config read points and add Step 1 RED tests
+phaseCursor: 1/8
+updated: 2026-08-29T05:29:55.160Z
+nextStep: add scoped flag-store runtime wrappers and remove config fallback enrichment
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (0/8)
-**next**: audit current flag/config read points and add Step 1 RED tests
+**phase**: implement (1/8)
+**next**: add scoped flag-store runtime wrappers and remove config fallback enrichment
