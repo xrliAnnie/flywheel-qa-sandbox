@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-145 设计:S6 重试 · Product-Test 标签路由 · slot-2</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; line-height:1.65; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 60px; }
+  h1 { font-size:26px; color:#1a365d; margin:0 0 6px; }
+  .meta { color:#86868b; font-size:14px; margin-bottom:28px; }
+  .meta code { font-family:'SF Mono',monospace; font-size:13px; background:#e8e8ed; padding:1px 6px; border-radius:5px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:22px 24px; margin-bottom:22px; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 12px; color:#1a365d; }
+  .lede { font-size:17px; }
+  .term { color:#86868b; font-size:14px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e8e8ed; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#f5f5f7; color:#1a365d; }
+  td code, li code, p code { font-family:'SF Mono',monospace; font-size:12.5px; background:#f0f0f4; padding:1px 5px; border-radius:4px; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  ul,ol { padding-left:22px; margin:8px 0; }
+  li { margin:5px 0; }
+  .badge { display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.ok { background:#e6f7eb; color:#34c759; }
+  .badge.no { background:#fdeaea; color:#ff3b30; }
+  .comment-box { margin-top:16px; border-top:1px dashed #e8e8ed; padding-top:12px; }
+  .comment-box label { font-size:13px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:10px; font:inherit; font-size:14px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-card { border-left-color:#1a365d; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; font-family:'SF Mono',monospace; background:#f5f5f7; border-radius:8px; padding:14px; min-height:40px; }
+  .chunk { white-space:pre-wrap; font-size:13.5px; font-family:'SF Mono',monospace; background:#f5f5f7; border-radius:8px; padding:14px; margin-bottom:10px; }
+  .btn { background:#007aff; color:#fff; border:none; border-radius:8px; padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer; margin:8px 8px 0 0; }
+  .btn:active { opacity:.75; }
+  .btn.small { padding:5px 12px; font-size:12.5px; }
+  #copy-status { font-size:13px; color:#34c759; margin-left:6px; }
+  footer { color:#86868b; font-size:12.5px; text-align:center; margin-top:30px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-145 设计:S6 重试 · Product-Test 标签路由</h1>
+  <div class="meta">issue <code>FLY-145</code> · 分支 <code>project-slot-2-FLY-145</code> · PR <code>#19</code> · 2026-08-29 · eng_design 节点(slot-2)</div>
+
+  <div class="card green" data-section="一句话总结">
+    <h2>1 · 一句话总结</h2>
+    <p class="lede">这是一次"点名测试"的设计:在隔离的测试仓库里放一个带 <code>Product-Test</code> 标签的任务,验证四个 Lead(部门主管 AI bot)里<strong>只有产品部的 flywheel-test-2 出来认领</strong>、其他三个保持安静——本 issue 不改任何产品代码,只补齐这次测试(S6 场景重试)的设计文档与证据规范。</p>
+    <p class="term">名词解释:Lead = 负责某个部门的 AI 主管 bot;S6 = 多 Lead 路由测试矩阵中的第 6 个场景;retry(重试)= 在上次同分支成果之上继续,而不是推倒重来。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="核心流程">
+    <h2>2 · 核心流程</h2>
+    <p>QA agent(负责测试的 AI)在 <code>cos-test</code> 频道发布任务标识后,防线有两层:第一层是每个 Lead 指令(prompt)里写死的部门规则——不是自己部门的标签就装作没看见;第二层是 Bridge(统一调度服务)在收到认领请求时做的部门范围校验(dept-scope check),越界请求直接以 403 拒绝。S6 期望第一层就拦住一切:其余 Lead 连请求都不发。</p>
+@@SVG_FLOW@@
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据与结构模型">
+    <h2>3 · 数据与结构模型</h2>
+    <p>设计的骨架是"标识 → 防线 → 证据"三段:每个关键事实只有一个权威来源(标签名直接作为路由依据,不另设对照词表),两层防线各自产出可采集的证据 E1–E5。</p>
+@@SVG_MODEL@@
+    <table>
+      <tr><th>证据</th><th>断言</th><th>去哪里看</th></tr>
+      <tr><td>E1</td><td>test-2 认领并启动 Runner(执行任务的 AI 工程师会话)</td><td>cos-test 频道消息 + Bridge 会话记录</td></tr>
+      <tr><td>E2</td><td>test-1/3/4 在观察窗口内零动作</td><td>频道消息流(负向证据,需限定时间窗)</td></tr>
+      <tr><td>E3</td><td>防线在位:日志里<strong>没有</strong>拒绝记录(说明第一层就拦住了)</td><td>Bridge 日志</td></tr>
+      <tr><td>E4</td><td>流水线完整走通(分支 → 提交 → PR)</td><td>PR #19(仅文档改动)</td></tr>
+      <tr><td>E5</td><td>里程碑落档</td><td>CLAUDE.md 里程碑表 FLY-145 行</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="关键取舍">
+    <h2>4 · 关键取舍与被否决的备选</h2>
+    <ul>
+      <li><span class="badge ok">选定</span><strong>沿用 FLY-138 里程碑记录模式</strong>:仅文档改动、零运行风险、与同系列测试 issue(FLY-133/134/135/138)完全一致。</li>
+      <li><span class="badge no">否决</span><strong>在测试仓库里写自动断言脚本</strong>:观察 Lead 反应是 QA agent 的职责,把它写进被测仓库等于"考生自带阅卷笔",也违反本 issue"不写代码"的约束。</li>
+      <li><span class="badge no">否决</span><strong>复用兄弟 slot 的同名设计目录 <code>doc/FLY-145-s6-retry-product-test/</code></strong>:S6 是多 Lead 矩阵,slot-1/2/4 平行走完各自流水线;三份 PR 若都合入主干,同名目录必然冲突,所以本 slot 用带 <code>-slot2</code> 后缀的独立目录,互不改写、可独立回滚。</li>
+      <li><span class="badge ok">澄清</span><strong>"没有拒绝日志"才是满分</strong>:如果日志里出现 403 拒绝,说明第一层 prompt 规则失守、第二层兜住了——记 S6 不通过并单独立项,但不算生产事故。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="诚实边界">
+    <h2>5 · 诚实边界</h2>
+    <p><strong>这个设计做了:</strong>补齐 S6 重试(slot-2)的探索/调研/计划三件套;定义 E1–E5 证据规范与负向证据的观察窗口原则;固化回滚边界(只回滚本节点新增文件)。</p>
+    <p><strong>这个设计不做:</strong></p>
+    <ul>
+      <li>不改任何运行时代码,不碰 Bridge 的部门校验开关(保持默认开启);</li>
+      <li>不执行 S6 证据采集与判分——那是 QA agent(campaign owner)的职责;</li>
+      <li>不合并 PR #19、不归档 issue——归档在 S6 通过后由 campaign owner 执行;</li>
+      <li>观察窗口的具体时长不在本设计内硬编码,由 campaign owner 掌握。</li>
+    </ul>
+    <p class="term">@@REVIEW_LINE@@</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写下你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" id="summary-card" data-section="__summary__">
+    <h2>意见汇总</h2>
+    <p class="term">下面自动汇总你在各节留下的所有非空意见;复制后直接粘贴给 Lead 即可。汇总以 <code>【页面意见汇总】FLY-145</code> 开头,是修订反馈的标记,不代表通过。</p>
+    <div id="summary-body">(暂无意见)</div>
+    <div id="chunks"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+
+  <footer>FLY-145 · eng_design 节点交付(slot-2) · 图表为本地 mmdc 渲染的内联 SVG · 零外部依赖</footer>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var MARKER = '【页面意见汇总】FLY-145';
+  var PREFIX = 'fly145-s2-comment:' + location.pathname + ':';
+  var CHUNK_LIMIT = 1800;
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ''; } catch (e) { return ''; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) { /* storage unavailable */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function buildSummary() {
+    var parts = [];
+    areas.forEach(function (a) {
+      var v = a.value.trim();
+      if (v) parts.push('[' + sectionTitleFor(a) + '] ' + v);
+    });
+    return parts;
+  }
+
+  function fullText(parts) {
+    return MARKER + '\n' + parts.join('\n');
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      if ((cur + '\n' + p).length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + '\n' + p;
+      } else {
+        cur += '\n' + p;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunksDiv = document.getElementById('chunks');
+  var copyStatus = document.getElementById('copy-status');
+
+  function render() {
+    var parts = buildSummary();
+    while (chunksDiv.firstChild) chunksDiv.removeChild(chunksDiv.firstChild);
+    if (!parts.length) {
+      summaryBody.textContent = '(暂无意见)';
+      return;
+    }
+    var text = fullText(parts);
+    if (text.length <= CHUNK_LIMIT) {
+      summaryBody.textContent = text;
+    } else {
+      summaryBody.textContent = '(意见较长,已拆分为 ' + chunkText(parts).length + ' 段,每段均带汇总标记,可分段复制)';
+      chunkText(parts).forEach(function (c, i) {
+        var box = document.createElement('div');
+        box.className = 'chunk';
+        box.textContent = c;
+        var btn = document.createElement('button');
+        btn.className = 'btn small';
+        btn.textContent = '复制第 ' + (i + 1) + ' 段';
+        btn.addEventListener('click', function () { doCopy(c); });
+        chunksDiv.appendChild(box);
+        chunksDiv.appendChild(btn);
+      });
+    }
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.left = '-9999px';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function flash(msg) {
+    copyStatus.textContent = msg;
+    setTimeout(function () { copyStatus.textContent = ''; }, 2500);
+  }
+
+  function doCopy(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        flash('已复制 ✓');
+      }, function () {
+        flash(legacyCopy(text) ? '已复制 ✓' : '复制失败,请手动选中复制');
+      });
+    } else {
+      flash(legacyCopy(text) ? '已复制 ✓' : '复制失败,请手动选中复制');
+    }
+  }
+
+  areas.forEach(function (a) {
+    a.value = lsGet(a.getAttribute('data-key'));
+    a.addEventListener('input', function () {
+      lsSet(a.getAttribute('data-key'), a.value);
+      render();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var parts = buildSummary();
+    if (!parts.length) { flash('还没有任何意见'); return; }
+    doCopy(fullText(parts));
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
