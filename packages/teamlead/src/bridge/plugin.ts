@@ -273,6 +273,7 @@ import {
 	storeSkillFrameworkModeControl,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
 import {
@@ -4867,6 +4868,8 @@ export async function startBridge(
 						buildCronModelViews(
 							fleetConfigProvider.snapshot().projects,
 							ffConfigCache.current(),
+							(projectName) =>
+								storeXiaohongshuLearningEnabled(flagStore, projectName),
 						),
 					logger: (msg) => console.log(msg),
 				}),

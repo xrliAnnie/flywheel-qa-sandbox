@@ -114,7 +114,7 @@ describe("buildConsoleSnapshot — projectRunnerDefaults", () => {
 });
 
 // FLY-709 P4.4: cron (recurring xiaohongshu trigger issue) model rows — from
-// the SAME cached config map; only projects with enabled collections appear.
+// the SAME cached config map; scoped-store enablement is injected separately.
 describe("buildCronModelViews", () => {
 	it("lists collections with their configured model (null = default)", () => {
 		const configs = new Map([
@@ -123,7 +123,6 @@ describe("buildCronModelViews", () => {
 				{
 					config: {
 						xiaohongshu_learning: {
-							enabled: true,
 							collections: [
 								{
 									collection_id: "c1",
@@ -146,7 +145,7 @@ describe("buildCronModelViews", () => {
 				},
 			],
 		]);
-		const rows = buildCronModelViews(PROJECTS, configs);
+		const rows = buildCronModelViews(PROJECTS, configs, () => true);
 		expect(rows).toEqual([
 			{
 				projectName: "flywheel",
@@ -165,14 +164,13 @@ describe("buildCronModelViews", () => {
 		]);
 	});
 
-	it("omits disabled/absent xiaohongshu configs entirely", () => {
+	it("omits store-disabled or absent xiaohongshu configs entirely", () => {
 		const configs = new Map([
 			[
 				"flywheel",
 				{
 					config: {
 						xiaohongshu_learning: {
-							enabled: false,
 							collections: [
 								{
 									collection_id: "c1",
@@ -187,7 +185,7 @@ describe("buildCronModelViews", () => {
 				},
 			],
 		]);
-		expect(buildCronModelViews(PROJECTS, configs)).toEqual([]);
-		expect(buildCronModelViews(PROJECTS, new Map())).toEqual([]);
+		expect(buildCronModelViews(PROJECTS, configs, () => false)).toEqual([]);
+		expect(buildCronModelViews(PROJECTS, new Map(), () => true)).toEqual([]);
 	});
 });
