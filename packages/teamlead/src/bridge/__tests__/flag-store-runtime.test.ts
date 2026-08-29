@@ -127,9 +127,9 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeProofshotEnabled(runtime, "flywheel")).toBe(false);
 		expect(storeXiaohongshuLearningEnabled(runtime, "flywheel")).toBe(false);
 		expect(storePonytailEnabled(runtime, "flywheel")).toBe(false);
-		expect(
-			storeSkillFrameworkSplitParticipation(runtime, "flywheel"),
-		).toBe(true);
+		expect(storeSkillFrameworkSplitParticipation(runtime, "flywheel")).toBe(
+			true,
+		);
 
 		expect(
 			store.applyScopedFlagValueChange({
@@ -395,7 +395,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		]);
 	});
 
-	it("ignores the retired bypass input while preserving project clock degradation", () => {
+	it("treats a rowless project flag as a healthy registry default", () => {
 		const base = resolveAllFlags({ env: {} });
 		const views = enrichFlagViewsWithStore(
 			base,
@@ -403,16 +403,32 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			["flywheel"],
 		);
 		const docFlow = views.find(({ name }) => name === "doc_flow");
-		expect(docFlow?.effectiveByProject).toEqual(
-			base.find(({ name }) => name === "doc_flow")?.effectiveByProject,
-		);
+		expect(docFlow?.effectiveByProject).toEqual([
+			{
+				projectName: "flywheel",
+				value: false,
+				isDefault: true,
+				via: "default",
+			},
+		]);
 		expect(docFlow?.projectStoreManaged).toBe(true);
-		expect(docFlow?.clockReadiness).toBe("no_clock:degraded");
-		expect(docFlow?.scopedStore).toBeUndefined();
-		expect(docFlow?.error).toBe("missing managed flag clock: doc_flow");
+		expect(docFlow?.clockReadiness).toBe("ready");
+		expect(docFlow?.scopedStore).toEqual({ rows: [] });
+		expect(docFlow?.valueClocks).toEqual([]);
+		expect(docFlow?.error).toBeUndefined();
 		const ponytail = views.find(({ name }) => name === "ponytail");
 		expect(ponytail?.projectStoreManaged).toBe(true);
-		expect(ponytail?.scopedStore).toBeUndefined();
+		expect(ponytail?.effectiveByProject?.[0]).toMatchObject({
+			value: false,
+			via: "default",
+		});
+		const split = views.find(
+			({ name }) => name === "skill_framework_split_participation",
+		);
+		expect(split?.effectiveByProject?.[0]).toMatchObject({
+			value: true,
+			via: "default",
+		});
 	});
 
 	it("degrades only the managed view whose value clock audit is malformed", () => {

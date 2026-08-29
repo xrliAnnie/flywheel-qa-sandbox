@@ -192,9 +192,6 @@ export function enrichFlagViewsWithStore(
 						firstRegisteredAt: clock.firstRegisteredAt,
 						readiness: "ready" as const,
 					}));
-				if (valueClocks.length === 0) {
-					throw new Error(`missing managed flag clock: ${view.name}`);
-				}
 				const rows = (scopedRows ?? []).filter(
 					(row) => row.flagName === view.name,
 				);
