@@ -1,14 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 2/6
-updated: 2026-08-29T13:44:26.618Z
-nextStep: Implement committed-state migration/receipt, scoped-store Lead rules,
-  and existing meta-alert wiring
+phaseCursor: 3/6
+updated: 2026-08-29T13:52:05.017Z
+nextStep: Run formatting, full repository gates, then commit and request fresh review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (2/6)
-**next**: Implement committed-state migration/receipt, scoped-store Lead rules, and existing meta-alert wiring
+**phase**: implement (3/6)
+**next**: Run formatting, full repository gates, then commit and request fresh review
