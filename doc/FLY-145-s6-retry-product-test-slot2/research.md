@@ -6,8 +6,10 @@
 
 ## 1. 被测机制（生产侧，PR #170 / FLY-127）
 
-S6 断言的两层防线在**驱动 test slot 的 Bridge 源码**中（`flywheel-FLY-2121` 构建，
-本 sandbox seed 不包含该代码——sandbox 仅是 Runner 的目标仓库）：
+S6 断言的两层防线在**驱动 test slot 的 Bridge 源码**中（`flywheel-FLY-2121` 构建）。
+注意：sandbox seed 是完整 flywheel fork，含旧版 Bridge 代码（`runs-route.ts` 存在），
+但**不含 PR #170 的 dept-scope 强制逻辑**（`grep DEPT_SCOPE_REJECT` 零命中）——
+被测代码在驱动侧，不在本仓库：
 
 ### Layer 1（prompt 规则层，FLY-127 R3 Layer 1/1b）
 每个 Lead 的 identity prompt 声明部门标签范围；Layer 1b 在任何 API 调用之前过滤
@@ -28,7 +30,7 @@ S6 断言的两层防线在**驱动 test slot 的 Bridge 源码**中（`flywheel
 | # | 断言 | 证据 | 位置 / 稳定标识 |
 |---|------|------|------------------|
 | E1 | test-2 认领并 spawn | claim 消息 + `session_started` | cos-test 频道；Bridge `/events`；exec-id |
-| E2 | test-1/3/4 静默 | 观察窗口内零 claim / 零 API 调用 | cos-test 频道消息流；Bridge 日志无 reject（静默≠被拒） |
+| E2 | test-1/3/4 静默 | 观察窗口内零 claim 尝试（无 runs/start 记录）且频道静默 | cos-test 频道消息流；Bridge 日志无 reject（静默≠被拒）。注：所列证据只能证明零 claim 尝试与频道静默，无法证明零只读 API 调用 |
 | E3 | 越界防线在位（**条件性诊断**：仅 Layer 1 失守时才产生日志；无日志即预期 PASS 态，见下方 E2 澄清） | （若有越界尝试）403 `DEPT_SCOPE_REJECT` 日志 | Bridge stdout `[runs/start] FLY-127 dept-scope reject` |
 | E4 | pipeline 完整 | branch → commit → PR → review gate | PR #19（OPEN，docs-only） |
 | E5 | 里程碑落档 | CLAUDE.md 表 FLY-145 行 | commit 0a3e017d |
@@ -37,7 +39,7 @@ S6 断言的两层防线在**驱动 test slot 的 Bridge 源码**中（`flywheel
 agent 发布 issue 标识后至 E1 spawn 确认 + 一个 GatePoller 周期缓冲；窗口长度由
 campaign owner（slot 1）掌握，不在本设计内硬编码。
 
-**E2 语义澄清**：S6 期望 test-1/3/4 在 Layer 1 就静默（零 API 调用），因此 Bridge
+**E2 语义澄清**：S6 期望 test-1/3/4 在 Layer 1 就静默（零 claim 尝试），因此 Bridge
 日志中**没有** reject 记录才是 PASS；出现 `DEPT_SCOPE_REJECT` 说明 Layer 1 失守、
 Layer 2 兜住（记为 S6 FAIL + 单独 finding，但不是生产事故）。
 
@@ -52,6 +54,12 @@ Layer 2 兜住（记为 S6 FAIL + 单独 finding，但不是生产事故）。
   既有里程碑产物保留，设计产物增量补齐。
 - rollback 边界：本节点只新增 `doc/FLY-145-s6-retry-product-test-slot2/` 下的
   文件；失败回滚 = revert 这些新增 commit，不触碰里程碑行 commit 0a3e017d。
+- **已知前向冲突（2026-08-29 实测）**：`git merge-tree --write-tree origin/main HEAD`
+  确认 PR #19 与 origin/main 在 CLAUDE.md 存在 content conflict——main 侧 commit
+  `7049f719`（#58）重写了 CLAUDE.md，主干上已无本系列里程碑行。解决路径与归属见
+  plan Chunk C：允许 forward merge `origin/main` 进本分支解冲突（不违反"不 rebase /
+  不 force-push"守卫），或交由 flywheel-land 冲突解决流程；本设计节点不执行解冲突，
+  仅让下游可见。
 
 ## 4. 消费者清单（本设计改动影响到谁）
 

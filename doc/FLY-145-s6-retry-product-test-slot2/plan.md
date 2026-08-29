@@ -29,7 +29,8 @@ plan 不派发它们。
 ## 2. 工作项
 
 ### Chunk A — 里程碑产物验收基线（已完成，验证即可）
-- [x] CLAUDE.md 里程碑表含 FLY-145 行（commit 0a3e017d），格式镜像 FLY-138。
+- [x] CLAUDE.md 里程碑表含 FLY-145 行（commit 0a3e017d），行文措辞镜像
+  FLY-133/134/135 系列通用格式（FLY-138 行带场景描述，非本行模板）。
   注：该行 "✅ Merged" 状态为前置落档（PR #19 尚 OPEN），其兑现以 E4 的
   pipeline 结果（review gate 合入）为准；该行本身按 §6.3 只读不改。
 - [x] PR #19 docs-only，body 引用 Linear issue，test plan 标注 docs-only waiver。
@@ -48,6 +49,12 @@ plan 不派发它们。
 ### Chunk C — 交接契约（不在本节点执行）
 - QA agent 按 research §2 证据表（E1–E5）采集 S6 证据；E2 观察窗口由 campaign
   owner 定义。
+- **已知冲突交接**：PR #19 与 origin/main 在 CLAUDE.md 存在已确认 content
+  conflict（main 的 `7049f719` #58 重写了 CLAUDE.md，主干无本系列里程碑行；
+  `git merge-tree --write-tree origin/main HEAD` 实测复现）。解决归属：land 阶段
+  ——允许 forward merge `origin/main` 进本分支解冲突（合并不改写历史，不违反
+  §6.4 守卫），或走 flywheel-land 冲突解决流程；本设计节点不执行，E4 兑现前
+  必须先解此冲突。
 - S6 PASS 后 archive 归 campaign owner；merge 由 review gate / flywheel-land
   流程决定。**merge 与 deploy 分离**：sandbox 无部署面，独立 updater 规则不适用
   但不被绕过。

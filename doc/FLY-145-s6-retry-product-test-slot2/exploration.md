@@ -29,7 +29,7 @@ branch → commit → PR → review gate 走完，使 QA 能采集 S6 证据链�
 
 | 产物 | 状态 |
 |------|------|
-| CLAUDE.md 里程碑表新增 FLY-145 行（镜像 FLY-138 记录格式） | ✅ commit 0a3e017d |
+| CLAUDE.md 里程碑表新增 FLY-145 行（镜像 FLY-133/134/135/138 系列格式） | ✅ commit 0a3e017d |
 | PR #19（docs-only，OPEN，test plan 含 docs-only waiver） | ✅ 已创建 |
 | 设计阶段产物（exploration/research/plan/design HTML） | ❌ 本节点补齐 |
 
@@ -41,7 +41,8 @@ branch → commit → PR → review gate 走完，使 QA 能采集 S6 证据链�
 ## 3. 兄弟 issue 与兄弟 slot 先例
 
 - 同系列 sandbox 里程碑 issue（FLY-133/134/135/138）均为 docs-only 里程碑记录，
-  与本 issue 形态一致；FLY-138 是 S1 happy path 的记录，FLY-145 镜像其格式。
+  与本 issue 形态一致；FLY-138 是 S1 happy path 的记录，FLY-145 行文措辞镜像
+  FLY-133/134/135 的通用格式。
 - 同一 FLY-145 在 slot-1 / slot-4 分支上已有各自的 eng_design 产物
   （`doc/FLY-145-s6-retry-product-test/`）。本节点使用带 slot 后缀的目录
   `doc/FLY-145-s6-retry-product-test-slot2/`，避免多个 slot 的 PR 合入 main 时
