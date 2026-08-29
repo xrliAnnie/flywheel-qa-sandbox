@@ -46,6 +46,7 @@ import {
 	defaultGateMarkerDir,
 	type GateMarker,
 	listGateMarkersForExecution,
+	readGateMarker,
 	removeGateMarker,
 } from "flywheel-comm/gate-marker";
 import { PONYTAIL_RULESET } from "flywheel-config";
@@ -488,6 +489,8 @@ export class CodexTmuxAdapter implements IAdapter {
 		let runtime: CodexDaemonGoalRuntimeLike | undefined;
 		let phaseLifecycle: CodexPhaseLifecycle | undefined;
 		let registeredSession = false;
+		let gateDb: CommDB | undefined;
+		let gateDbOpen = false;
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
 		let tuiOpened = false;
@@ -525,6 +528,16 @@ export class CodexTmuxAdapter implements IAdapter {
 
 			// CommDB session registration (vendor=codex → send routing).
 			registeredSession = this.registerCommDbSession(ctx);
+			if (ctx.commDbPath) {
+				try {
+					gateDb = new CommDB(ctx.commDbPath);
+					gateDbOpen = true;
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] gate authority DB unavailable; using marker fallback: ${safeErr(error)}`,
+					);
+				}
+			}
 			ctx.onHeartbeat?.(ctx.executionId);
 
 			const writableRoots = buildDaemonSandboxWritableRoots({
@@ -851,7 +864,11 @@ export class CodexTmuxAdapter implements IAdapter {
 			// `gate --no-block` marker would otherwise hang until the overall goal
 			// budget. This expires the CommDB question at the marker's configured
 			// deadline + emits gate_timed_out for fail-close (FLY-159 parity).
-			stopGateWatcher = this.startGateDeadlineWatcher(ctx, gateMarkerDir);
+			stopGateWatcher = this.startGateDeadlineWatcher(
+				ctx,
+				gateMarkerDir,
+				gateDb,
+			);
 
 			// Periodic heartbeat (Codex R2 HIGH): the exec-cycle beat every poll;
 			// the resident daemon has no such loop, so without this a long task or
@@ -932,10 +949,15 @@ export class CodexTmuxAdapter implements IAdapter {
 					overallTimeoutMs: ctx.timeoutMs ?? this.defaultTimeoutMs,
 					waitingTimeoutMs: ctx.waitingTimeoutMs ?? 176_400_000,
 					isWaiting: () => {
+						if (gateDb && gateDbOpen) {
+							try {
+								return gateDb.hasPendingBlockingGateFrom(ctx.executionId);
+							} catch {
+								// A long-lived handle can outlive a replaced/recovered DB file.
+								// The marker mirror remains the compatibility fallback.
+							}
+						}
 						try {
-							// An unanswered `gate --no-block` marker for this execution =
-							// a gate the runner is (possibly) blocked on. Best-effort: a
-							// read error must never extend the budget.
 							return listGateMarkersForExecution(
 								gateMarkerDir,
 								ctx.executionId,
@@ -1079,6 +1101,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				}
 			}
 			stopGateWatcher();
+			gateDbOpen = false;
+			try {
+				gateDb?.close();
+			} catch (error) {
+				this.log(
+					`[CodexTmuxAdapter] gate authority DB close failed (ignored): ${safeErr(error)}`,
+				);
+			}
 			if (phaseLifecycle) {
 				try {
 					await phaseLifecycle.stopIntake();
@@ -1485,11 +1515,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	private startGateDeadlineWatcher(
 		ctx: AdapterExecutionContext,
 		gateMarkerDir: string,
+		gateDb?: CommDB,
 	): () => void {
 		if (!ctx.commDbPath) return () => {};
 		const fallbackTimeoutMs = ctx.waitingTimeoutMs ?? 176_400_000;
 		const startedAt = Date.now();
 		const seen = new Set<string>(); // never re-emit for the same marker
+		const observed = new Set<string>();
 		const removeMarker = (questionId: string): void => {
 			try {
 				removeGateMarker(gateMarkerDir, questionId);
@@ -1499,10 +1531,29 @@ export class CodexTmuxAdapter implements IAdapter {
 		};
 		const tick = (): void => {
 			try {
-				const markers = listGateMarkersForExecution(
-					gateMarkerDir,
-					ctx.executionId,
-				);
+				let markers: GateMarker[];
+				if (gateDb) {
+					try {
+						for (const question of gateDb.getOpenGatesByRunner(
+							ctx.executionId,
+						)) {
+							observed.add(question.id);
+						}
+						markers = [];
+						for (const questionId of observed) {
+							const marker = readGateMarker(gateMarkerDir, questionId);
+							if (marker) markers.push(marker);
+							else observed.delete(questionId);
+						}
+					} catch {
+						markers = listGateMarkersForExecution(
+							gateMarkerDir,
+							ctx.executionId,
+						);
+					}
+				} else {
+					markers = listGateMarkersForExecution(gateMarkerDir, ctx.executionId);
+				}
 				const now = Date.now();
 				for (const m of markers) {
 					if (seen.has(m.questionId)) continue;
@@ -1512,6 +1563,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					// answered marker to residue + re-scan on every re-execute).
 					if (m.answeredAt) {
 						seen.add(m.questionId);
+						observed.delete(m.questionId);
 						removeMarker(m.questionId);
 						continue;
 					}
@@ -1526,6 +1578,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					// way the gate is resolved — stop watching + remove the marker so it
 					// doesn't residue (Codex R3 LOW).
 					seen.add(m.questionId);
+					observed.delete(m.questionId);
 					removeMarker(m.questionId);
 				}
 			} catch {

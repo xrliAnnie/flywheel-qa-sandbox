@@ -346,6 +346,81 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(makeAdapter().supportsStreaming).toBe(false);
 	});
 
+	it("uses CommDB blocking-gate authority instead of the marker mirror", async () => {
+		const db = new CommDB(dbPath);
+		db.insertQuestion(execId, "flywheel-eng-lead", "blocking", {
+			checkpoint: "question",
+		});
+		db.close();
+		expect(listGateMarkersForExecution(markerDir, execId)).toEqual([]);
+		const authority = vi.spyOn(CommDB.prototype, "hasPendingBlockingGateFrom");
+		runtime = new FakeRuntime(async (input) => {
+			expect(input.isWaiting?.()).toBe(true);
+			return complete();
+		});
+
+		await makeAdapter().execute(ctx());
+		expect(authority).toHaveBeenCalledWith(execId);
+	});
+
+	it("ignores a marker mirror when CommDB has no open gate", async () => {
+		writeGateMarker(markerDir, {
+			questionId: "marker-only",
+			executionId: execId,
+			backend: "codex-tmux",
+			vendor: "codex",
+			checkpoint: "question",
+		});
+		expect(listGateMarkersForExecution(markerDir, execId)).toHaveLength(1);
+		const authority = vi.spyOn(CommDB.prototype, "hasPendingBlockingGateFrom");
+		runtime = new FakeRuntime(async (input) => {
+			expect(input.isWaiting?.()).toBe(false);
+			return complete();
+		});
+
+		await makeAdapter().execute(ctx());
+		expect(authority).toHaveBeenCalledWith(execId);
+	});
+
+	it("falls back to the marker mirror after a CommDB gate-query failure", async () => {
+		writeGateMarker(markerDir, {
+			questionId: "fallback-marker",
+			executionId: execId,
+			backend: "codex-tmux",
+			vendor: "codex",
+			checkpoint: "question",
+		});
+		vi.spyOn(CommDB.prototype, "hasPendingBlockingGateFrom").mockImplementation(
+			() => {
+				throw new Error("closed handle");
+			},
+		);
+		runtime = new FakeRuntime(async (input) => {
+			expect(input.isWaiting?.()).toBe(true);
+			return complete();
+		});
+
+		await makeAdapter().execute(ctx());
+	});
+
+	it("a retained isWaiting closure uses marker fallback after execute closes CommDB", async () => {
+		writeGateMarker(markerDir, {
+			questionId: "closed-handle-marker",
+			executionId: execId,
+			backend: "codex-tmux",
+			vendor: "codex",
+			checkpoint: "question",
+		});
+		let isWaiting: (() => boolean) | undefined;
+		runtime = new FakeRuntime(async (input) => {
+			isWaiting = input.isWaiting;
+			return complete();
+		});
+
+		await makeAdapter().execute(ctx());
+		expect(isWaiting?.()).toBe(true);
+	});
+
 	it("happy path: runGoal → complete → success result + terminal reclaim", async () => {
 		const res = await makeAdapter().execute(ctx());
 		expect(res.success).toBe(true);

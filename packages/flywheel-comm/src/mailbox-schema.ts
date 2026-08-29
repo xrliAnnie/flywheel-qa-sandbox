@@ -149,6 +149,8 @@ CREATE INDEX IF NOT EXISTS mailbox_legacy_adopt
     AND recipient_kind <> 'lead';
 CREATE INDEX IF NOT EXISTS mailbox_questions_by_recipient
   ON mailbox(to_agent, created_at) WHERE type = 'question';
+CREATE INDEX IF NOT EXISTS mailbox_questions_by_sender
+  ON mailbox(from_agent, created_at) WHERE type = 'question';
 CREATE INDEX IF NOT EXISTS mailbox_deliverable_by_agent
   ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED';
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_unique_response

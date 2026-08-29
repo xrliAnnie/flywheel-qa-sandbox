@@ -1,0 +1,14 @@
+sequenceDiagram
+    participant M as Bridge 主循环
+    participant G as git 子进程
+    participant W as 守卫 worker
+
+    Note over M: pushCommit 开始<br/>(工作流文档推送)
+    M->>G: ls-remote (查远端版本)
+    Note over M,G: 网络挂起 → 吃满 30s 超时<br/>期间主循环完全阻塞, 心跳停跳
+    G-->>M: 超时返回
+    M->>G: push (推送提交)
+    Note over M,G: 再阻塞 30s, 心跳仍停
+    W->>W: 60s 到: 心跳缺席超阈值
+    W->>M: SIGKILL (退出码 137)
+    Note over M: 第三步 ls-remote 确认<br/>永远没机会跑到

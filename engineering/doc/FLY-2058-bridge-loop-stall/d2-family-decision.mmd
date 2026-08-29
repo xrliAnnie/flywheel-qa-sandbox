@@ -1,0 +1,20 @@
+flowchart TD
+    DET["worker 检出 stall<br/>心跳缺席 > 60s"]
+    GAP{"worker 自己的<br/>tick gap 也 > 60s ?"}
+    FA["Family A: 主线程独卡<br/>worker 一直健康在查"]
+    FB["Family B: 整进程冻结<br/>worker 同被冻结, 刚醒来"]
+    EVD["采集取证包 ≤3s<br/>tick_gap + 子进程列表<br/>+ sync-op marker + RSS"]
+    KILLA["照旧击杀 SIGKILL<br/>行为与今天一致"]
+    GRACE["宽限 5s<br/>再读一次心跳"]
+    REC{"心跳恢复了?"}
+    LIVE["不杀, 只记账<br/>stall_recovered_after_freeze"]
+
+    DET --> GAP
+    GAP -->|"否, gap 约 5s"| FA
+    GAP -->|"是"| FB
+    FA --> EVD
+    EVD --> KILLA
+    FB --> GRACE
+    GRACE --> REC
+    REC -->|"是"| LIVE
+    REC -->|"否, 真死锁"| EVD

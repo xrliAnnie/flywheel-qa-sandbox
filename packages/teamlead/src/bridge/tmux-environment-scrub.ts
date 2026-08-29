@@ -5,6 +5,7 @@ import { isAbsolute, join } from "node:path";
 import {
 	buildTmuxServerBirthEnvironment,
 	RUNNER_PANE_BASE_ALLOWLIST,
+	withSyncOpMarker,
 } from "flywheel-claude-runner";
 import { sanitizeTmuxName } from "flywheel-core";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -65,11 +66,13 @@ function defaultExec(
 	timeoutMs: number,
 ): ExecResult {
 	try {
-		const result = spawnSync("tmux", ["-S", socket, ...args], {
-			encoding: "utf8",
-			timeout: timeoutMs,
-			env: buildTmuxServerBirthEnvironment(sourceEnv),
-		});
+		const result = withSyncOpMarker("tmux-scrub", () =>
+			spawnSync("tmux", ["-S", socket, ...args], {
+				encoding: "utf8",
+				timeout: timeoutMs,
+				env: buildTmuxServerBirthEnvironment(sourceEnv),
+			}),
+		);
 		return {
 			ok: result.status === 0,
 			stdout: result.stdout ?? "",

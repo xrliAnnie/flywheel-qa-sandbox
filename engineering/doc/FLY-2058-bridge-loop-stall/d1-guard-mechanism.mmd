@@ -1,0 +1,20 @@
+flowchart LR
+    subgraph MAIN["Bridge 主线程"]
+        HB["心跳定时器<br/>每 1s 写当前时刻"]
+    end
+    SAB["共享内存槽<br/>SharedArrayBuffer"]
+    subgraph WORKER["守卫 worker 线程"]
+        CHK["检查定时器<br/>每 5s 读心跳"]
+        DEC{"心跳缺席<br/>> 60s ?"}
+    end
+    FOR["取证行落盘<br/>bridge-loop-guard.log"]
+    KILL["SIGKILL 自杀<br/>退出码 137"]
+    LD["launchd KeepAlive<br/>约 5s 后重启 Bridge"]
+
+    HB -->|"写"| SAB
+    SAB -->|"读"| CHK
+    CHK --> DEC
+    DEC -->|"否"| CHK
+    DEC -->|"是"| FOR
+    FOR --> KILL
+    KILL --> LD
