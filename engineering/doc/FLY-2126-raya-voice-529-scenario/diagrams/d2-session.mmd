@@ -1,0 +1,20 @@
+sequenceDiagram
+  participant H as Harness(编排脚本)
+  participant V as voice 进程(被测)
+  participant D as Discord 测试语音房
+  participant E as TTS Emitter(QA bot)
+  participant X as Codex realtime(模型)
+
+  H->>H: 建独立场次目录 + 写 marker
+  H->>V: spawn(隔离 env,指向被测 build)
+  V->>D: 连上语音房(真 Discord)
+  H->>E: 起 emitter,进同一个房
+  E->>D: 播放合成语音(如"我要退出语音了")
+  D->>V: 上行音频
+  V->>X: 转写 + 对话
+  X-->>V: 回答(如逐字哨兵"好，退出语音模式。")
+  V->>D: 下行音频(emitter 计包数)
+  V->>V: 检测退出 → 安静窗 → 干净退出
+  V-->>H: 进程退出 + evidence 事件流落盘
+  E-->>H: emitter 证据落盘
+  H->>H: 判据脚本读双侧证据 → 本场 verdict
