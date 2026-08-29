@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2103 设计:config.yaml 最后 9 个开关的退役</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system, system-ui, "PingFang SC", sans-serif; line-height:1.65; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono', monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06);
+    padding:20px 22px; margin:18px 0; }
+  .card.blue { border-left:4px solid #007aff; }
+  .card.green { border-left:4px solid #34c759; }
+  .card.amber { border-left:4px solid #ff9500; }
+  .card.purple { border-left:4px solid #af52de; }
+  .card.red { border-left:4px solid #ff3b30; }
+  .card.navy { border-left:4px solid #1a365d; }
+  h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; }
+  .lead { font-size:16.5px; font-weight:600; }
+  .jargon { color:#86868b; font-size:13px; }
+  table { border-collapse:collapse; width:100%; margin:10px 0; font-size:13.5px; }
+  th, td { border:1px solid #e5e5ea; padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#f5f5f7; color:#1a365d; }
+  code { font-family:'SF Mono', monospace; font-size:12.5px; background:#f5f5f7;
+    padding:1px 5px; border-radius:4px; }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #e5e5ea; border-radius:8px;
+    padding:8px; margin:12px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .badge { display:inline-block; font-size:11.5px; font-weight:600; border-radius:5px;
+    padding:1px 8px; margin-right:6px; vertical-align:middle; }
+  .badge.del { background:#ffe5e3; color:#c72c22; }
+  .badge.db { background:#e3f0ff; color:#0a5cc2; }
+  .badge.ok { background:#e4f8ea; color:#1e8a3e; }
+  .comment-block { margin-top:16px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment-block label { font-size:12.5px; color:#86868b; display:block; margin-bottom:5px; }
+  .comment-block textarea { width:100%; box-sizing:border-box; min-height:56px;
+    border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-size:14px;
+    font-family:inherit; resize:vertical; background:#fafafa; }
+  .comment-block textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-list { font-size:13.5px; white-space:pre-wrap; font-family:'SF Mono', monospace;
+    background:#f5f5f7; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px;
+    padding:9px 18px; font-size:14.5px; font-weight:600; cursor:pointer; margin-top:10px; }
+  .btn:active { opacity:.7; }
+  #copy-status { font-size:13px; color:#34c759; margin-left:10px; }
+  .footnote { color:#86868b; font-size:12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2103 设计:config.yaml 最后 9 个开关的退役</h1>
+  <div class="meta">Issue: FLY-2103 · 设计节点 · 2026-08-28 · 分支 <code>flywheel-FLY-2103</code> · Codex 设计评审 4 轮后 APPROVED</div>
+
+  <div class="card navy" data-sec="s0" data-sec-title="一句话总结">
+    <h2>一句话总结</h2>
+    <p class="lead">把散在 6 个项目 config.yaml 里的最后 9 个功能开关清干净:2 个从没用过的直接写死进代码,7 个搬进数据库按项目存值(以后改开关 = 一条命令、秒级生效,不用改文件不用重启),config 文件里残留的旧开关会被大声报错。</p>
+    <p class="jargon">背景:这是 flag 治理三批清理的最后一批(C 批)。A 批(FLY-2100)已给数据库表加了「按项目」的能力但只用于显示;B 批(FLY-2101/2102)清完了环境变量类开关。本单让数据库成为这 7 个开关的<strong>唯一真源</strong>,消掉「管理台显示一套、运行时读另一套」的分歧窗口。</p>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s0" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card blue" data-sec="s1" data-sec-title="9 个开关各去哪">
+    <h2>① 9 个开关各去哪(处置图)</h2>
+    <div class="diagram">__SVG_D1__</div>
+    <table>
+      <tr><th>处置</th><th>开关</th><th>为什么</th></tr>
+      <tr><td><span class="badge del">固化删</span></td><td><code>checkpoints.*.enabled</code></td><td>6 个项目所有检查点全是 true、从没关过 → 以后「声明了检查点就等于启用」,少一行没意义的配置</td></tr>
+      <tr><td><span class="badge del">固化删</span></td><td><code>collections[].auto_create</code></td><td>从没有项目设置过 → 行为写死为 true(自动建 issue)</td></tr>
+      <tr><td><span class="badge db">迁数据库</span></td><td>doc_flow / pipeline.dag / pipeline.work_kind / proofshot / xiaohongshu_learning / ponytail / skill_framework.split</td><td>还活着的逐项目开关,统一搬进 <code>flag_values</code> 表;config.yaml 只留「不是开关」的配置(部门名、超时、collections 清单等)</td></tr>
+    </table>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="s2" data-sec-title="改完之后值住哪、怎么读">
+    <h2>② 改完之后:值住在哪、怎么读(数据与结构)</h2>
+    <div class="diagram">__SVG_D2__</div>
+    <p><strong>读值顺序</strong>(每次用到时现查,不是启动时读一次):先看这个项目自己的行 → 没有就看 <code>*</code>(全项目)行 → 都没有就用名册里写死的默认值。<span class="jargon">「名册」= 代码里的 flag registry,每个开关的身份证(默认值、说明、读点)都登记在那里。</span></p>
+    <p><strong>写入面不变</strong>:仍然只有一条路 —— CLI 命令经 Bridge 的 stage/apply 接口落库,每次改动都留审计流水(谁、何时、从什么改到什么)。没有第二个写入口。</p>
+    <p><strong>迁移当天的现值</strong>(实查):doc_flow 在 flywheel / joycon-typeless / personal-assistant / tidal-echo 四个项目 = 开;pipeline.dag 与 work_kind 仅 flywheel = 开;其余全部没设置过。迁移脚本就写这 6 行 + ponytail 的 <code>*</code>=关 一行,共 7 行,一行不多一行不少。</p>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-sec="s3" data-sec-title="怎么安全切换">
+    <h2>③ 怎么安全切换(部署时序 = 硬门禁)</h2>
+    <div class="diagram">__SVG_D3__</div>
+    <p><strong>两道门 + 一张凭据</strong>:G1 在删任何 config 之前核验「数据库行集恰好等于 6 行」——多一行、少一行、值不对都停下人工裁决;只有 G1 真正通过才签发 receipt(凭据文件,绑定数据库路径、config 内容指纹、行集与时间);第二遍脚本必须出示并逐字段核验这张凭据才允许补第 7 行。G2 在放行前再核验 7 行 + 迁移前后行为逐项对照(文档流程注入、DAG 派工、恢复中的 DAG 任务、ProofShot、ponytail、分流、小红书计划)全绿。</p>
+    <p><strong>为什么没有危险窗口</strong>:merge 不等于部署(FLY-1959 班车制)。外部项目的 config 清理 PR 只在班车停机窗内 merge 并同步到本机检出,然后直接用新代码启动 —— 「老代码读到已删 key 的 config」这个窗口被压成 0。</p>
+    <p><strong>回滚有围栏</strong>:老版本代码启动时会检查数据库行的身份,认不出 ponytail/split 的行会<strong>直接起不来</strong>(这是实测出的事实,不是猜的)。所以降级必须先用新版本把这两个开关的行清空、复核为空,才允许回老版本;如果有「已退役项目」的孤儿行,CLI 清不掉,那就禁止降级、只能前滚。这些都会做成演练测试钉死。</p>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="s4" data-sec-title="关键取舍与被拒绝的备选">
+    <h2>④ 关键取舍与被拒绝的备选</h2>
+    <table>
+      <tr><th>决定</th><th>选了什么</th><th>拒了什么、为什么</th></tr>
+      <tr><td>ponytail 怎么迁</td><td>把「项目层」接上数据库读,但用 <code>*</code>=关 保证所有项目仍然关(与今天逐字节等价,已核实 resolver 代码);FLY-615 的按 issue 打标签路完全不动</td><td>「行进数据库但运行时不接线」被拒:一行没人读不算迁移,而且要为它在授权门上开豁免 = 长机制。<strong>副作用请你知情:以后按项目开 ponytail 从「改代码」变成「一条 CLI 命令」</strong>——如果你想保持「必须改代码才能开」,请在意见里说,退回方案已备好</td></tr>
+      <tr><td>pipeline.dag 的默认值</td><td>名册默认从「关」翻成「开」,对齐 FLY-1981 之后的运行时真相(没写 = DAG 派工开)</td><td>「写 6 行 *=开 来凑」被拒:用数据行掩盖名册说谎。今天管理台对 5 个项目显示「关(默认)」但它们实际在走 DAG——翻默认值后显示终于诚实,行为零变化</td></tr>
+      <tr><td>删掉的 2 个开关留不留墓碑</td><td>不留,登记直接删(沿 FLY-2101 先例)</td><td>tombstone 字符串本身会撞「全仓搜索零命中」的验收</td></tr>
+      <tr><td>迁移脚本怎么写库</td><td>写死的 7 行清单为唯一目标;写入走既有 Bridge 接口;幂等靠精确读现有行(同值不重写、异值报错停)</td><td>「从 config.yaml 现推要写什么」被拒:config 删 key 后脚本就失去恢复来源;「直写 SQLite」被拒:绕过唯一写入面、并发写有风险</td></tr>
+      <tr><td>split 开关的可写性</td><td>readonly → conversational(CLI 可写):config 杠杆死后 CLI 是唯一杠杆;读库失败仍然「钉回 A 臂 + 告警」保守兜底</td><td>保持 readonly 被拒:那等于没人能再改它。此开关是过渡品,FLY-1834 结账时连 skill_framework_mode 一起整体删除</td></tr>
+    </table>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card blue" data-sec="s5" data-sec-title="评审过程">
+    <h2>⑤ 设计评审过程(Codex,4 轮)</h2>
+    <p>意见条数逐轮收敛:<strong>R1 = 6 条 → R2 = 5 条 → R3 = 2 条 → R4 = 0 条(APPROVED)</strong>,且全部是「收紧既有一次性脚本/门禁」而非新增机制。R1 抓到的最重要事实:初稿以为「旧代码会忽略新开关的行」,实测恰恰相反 —— 旧代码见到认不出的行会启动失败;回滚围栏因此整个重写。R2 补上了「多余行会在切换后变成权威」的 exact-set 校验;R3 把凭据(receipt)的签发时点钉死在 G1 真正通过之后。</p>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="s6" data-sec-title="诚实边界">
+    <h2>⑥ 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>9 个开关全部离开 config.yaml;7 个的运行时真源变成数据库,改值秒级生效、全程留审计。</li>
+      <li>验收含「迁移前后 6 个项目行为零变化」的真 Bridge 前后对照,和 config 残留 key 必报错的测试。</li>
+    </ul>
+    <h3>不做 / 需要知道的</h3>
+    <ul>
+      <li><strong>不动</strong>非开关配置(agents / roles / 检查点超时 / linear / collections 清单),不动 6 个环境变量类全局开关,不动 FLY-615 的按 issue ponytail。</li>
+      <li><strong>需要 5 个外部项目仓各出一个 config 清理 PR</strong>(实施节点开),并且它们只能在班车停机窗内 merge —— 这是运维合同,写死进 PR body。</li>
+      <li><strong>两处形状语义变化</strong>(现网数据都不受影响,但要说清):检查点「声明了但没写 enabled」今天=关、以后=开(现网全部显式写了 true);小红书「开了但没配 collections」从启动报错变成运行时记日志跳过。</li>
+      <li><strong>显示会变的一处</strong>:pipeline.dag 对 5 个项目的显示从「关(默认)」变成「开(默认)」——那是修正显示谎言,不是行为变化。</li>
+      <li>小红书调度器仍是 gated pilot(launchd 未装),本单只把它的取值路径接到数据库,不启用它。</li>
+    </ul>
+    <div class="comment-block"><label>对这一节的意见(自动保存在本机)</label><textarea data-comment-for="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card navy" data-sec="sx" data-sec-title="页面意见汇总">
+    <h2>页面意见汇总</h2>
+    <p class="footnote">下面实时汇总你在各节写的意见(存在本机浏览器,不上传)。点按钮复制全部,粘给 Lead 即可。</p>
+    <div id="summary-list">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button><span id="copy-status"></span>
+  </div>
+
+  <p class="footnote">仓库路径:engineering/doc/FLY-2103-config-flag-retire/(exploration / research / plan / 本页;三张图为本地 mmdc 渲染的自包含 SVG,零外部依赖)</p>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2103";
+  var prefix;
+  try { prefix = "fly2103-comment:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2103-comment:unknown:"; }
+
+  function lsGet(key) {
+    try { return window.localStorage.getItem(key); } catch (e) { return null; }
+  }
+  function lsSet(key, value) {
+    try { window.localStorage.setItem(key, value); } catch (e) { /* 私密窗口等场景静默降级 */ }
+  }
+
+  var sections = [];
+  var cards = document.querySelectorAll("[data-sec]");
+  for (var i = 0; i < cards.length; i++) {
+    var card = cards[i];
+    var id = card.getAttribute("data-sec");
+    var title = card.getAttribute("data-sec-title") || id;
+    var ta = card.querySelector("textarea[data-comment-for]");
+    if (!ta) continue;
+    sections.push({ id: id, title: title, ta: ta });
+    var saved = lsGet(prefix + id);
+    if (saved !== null) ta.value = saved;
+    ta.addEventListener("input", (function (secId, textarea) {
+      return function () {
+        lsSet(prefix + secId, textarea.value);
+        renderSummary();
+      };
+    })(id, ta));
+  }
+
+  function collectText() {
+    var lines = [MARKER];
+    for (var i = 0; i < sections.length; i++) {
+      var v = sections[i].ta.value.replace(/^\s+|\s+$/g, "");
+      if (v) lines.push("[" + sections[i].title + "] " + v);
+    }
+    return lines.length > 1 ? lines.join("\n") : "";
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length).replace(/^\n/, "");
+    var parts = body.split("\n");
+    var chunks = [];
+    var cur = "";
+    for (var i = 0; i < parts.length; i++) {
+      var candidate = cur ? cur + "\n" + parts[i] : parts[i];
+      if ((MARKER.length + 1 + candidate.length) > 1700 && cur) {
+        chunks.push(cur);
+        cur = parts[i];
+      } else {
+        cur = candidate;
+      }
+    }
+    if (cur) chunks.push(cur);
+    var out = [];
+    for (var j = 0; j < chunks.length; j++) {
+      out.push(MARKER + "(" + (j + 1) + "/" + chunks.length + ")\n" + chunks[j]);
+    }
+    return out;
+  }
+
+  var summaryEl = document.getElementById("summary-list");
+  var chunkArea = document.getElementById("chunk-area");
+
+  function renderSummary() {
+    var full = collectText();
+    while (chunkArea.firstChild) chunkArea.removeChild(chunkArea.firstChild);
+    if (!full) { summaryEl.textContent = "(还没有意见)"; return; }
+    summaryEl.textContent = full;
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      for (var i = 0; i < chunks.length; i++) {
+        var btn = document.createElement("button");
+        btn.className = "btn";
+        btn.type = "button";
+        btn.textContent = "复制分段 " + (i + 1) + "/" + chunks.length;
+        btn.style.marginRight = "8px";
+        btn.addEventListener("click", (function (text) {
+          return function () { copyText(text); };
+        })(chunks[i]));
+        chunkArea.appendChild(btn);
+      }
+    }
+  }
+
+  var statusEl = document.getElementById("copy-status");
+  function showStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { statusEl.textContent = ""; }, 2500);
+  }
+
+  function execCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    showStatus(ok ? "已复制 ✓" : "复制失败,请手动全选上方文本");
+  }
+
+  function copyText(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { showStatus("已复制 ✓"); },
+        function () { execCopy(text); }
+      );
+    } else {
+      execCopy(text);
+    }
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var full = collectText();
+    if (!full) { showStatus("还没有可复制的意见"); return; }
+    copyText(full);
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>
