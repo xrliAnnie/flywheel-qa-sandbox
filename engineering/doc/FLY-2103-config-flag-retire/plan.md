@@ -92,19 +92,29 @@ flowchart LR
    warn-skip 路保留。run-infra 组 closure(flagStore 缺席 → undefined → 注入关,fail-closed)。
 2. **Blueprint checkpoint**::2294 `if (!cpConfig.enabled) continue;` 删;`CheckpointConfig.enabled` 删。
    测试:声明即启用;(shape 变化)无 enabled 的声明 checkpoint 也启用。
-3. **pipeline enrollment**:pipeline-config-source.ts 重写为 store 版
-   `readPipelineEnrollment(flagStore, projectName): WorkKindConfigResult`
-   (`work_kind_requires_dag` 组合校验保留;store 抛错 → `{workKind:false, dag:false}` + warn,对齐
-   今天非 ENOENT 读错);runs-route.ts:2116、workkind-cutover.ts:784、
-   `reconcileDefaultDagCategoryBindings` 三处换调用;yaml 解析路 + `loadPipelineConfigByProject` 删
-   (消费者 rg 复核,零引用才删)。测试:无行 → dag on / work_kind off;行组合 dag=0+wk=1 → 拒;
-   项目行压 `*` 行;store 错 → fail-closed。
+3. **pipeline enrollment(全部四个调用面,Codex R1 #3)**:pipeline-config-source.ts 重写为
+   store 版 `readPipelineEnrollment(flagStore, projectName): WorkKindConfigResult`
+   (`work_kind_requires_dag` 组合校验保留)。调用面逐个换 + 各自回归用例:
+   - runs-route.ts:2116(fresh master dispatch,`loadWorkKindConfigStrict`);
+   - **runs-route.ts:1895(active DAG recovery,`loadPipelineConfigByProject([proj])`)**——漏改会把
+     恢复中的 DAG run 置 held;store 版必须同时服务 recovery 路径,签名带可注入 reader 供测试;
+   - workkind-cutover.ts:784(`readFly1436ActivationEvidence` 的 preflight)——同样注入 reader,
+     保住 cutover preflight 的可测性;
+   - `reconcileDefaultDagCategoryBindings`(boot)。
+   四处全绿后 yaml 解析路 + `loadPipelineConfigByProject` 才删(零引用复核列 PR body)。
+   测试:无行 → dag on / work_kind off;行组合 dag=0+wk=1 → 拒;项目行压 `*` 行;store 错 →
+   fail-closed;**active recovery 在 store 版下恢复(不 held)**。
 4. **split participation**:skill-framework-participation.ts 整删;run-infra:1077 改传
    `(projectName) => storeSkillFrameworkSplitParticipation(flagStore, projectName)`;Blueprint catch →
    钉 A + warn 合同不动(现测试改造为 store 注入形)。
-5. **proofshot**:DirectEventSink 构造尾部加 `proofshotEnabled?: (projectName) => boolean`;
-   emitStarted 持久化 effective config 时 enabled 取 store(reader 缺席/抛错 → false,fail-closed);
-   SkillsConfig proofshot `enabled` 字段删、proofshot-defaults 同步。
+5. **proofshot(authoring 形状与 runtime 形状拆开,Codex R1 #4)**:`ProofShotConfig.enabled`
+   目前同时是 YAML authoring 类型、`DEFAULT_PROOFSHOT_CONFIG`、`persistProofShotConfig` 持久化
+   形状、和 proofshot-trigger.ts:208-223 的 kill-switch 读点 —— **runtime/session 形状的
+   `enabled` 保留**(session_params 已持久化数据 + trigger 门控不动)。只动 authoring 侧:
+   ConfigLoader 拒 YAML 的 `skills.proofshot.enabled` key;DirectEventSink 构造尾部加
+   `proofshotEnabled?: (projectName) => boolean`,emitStarted 组装 effective config 时 `enabled`
+   取 store call-time 值再持久化。测试:持久化的是 store 值;trigger 仍按持久化值门控;
+   不靠删共享字段后的编译错误来发现语义缺口。
 6. **ponytail**:run-infra 删 dormant 注释块(:1011-1018),传
    `() => (storePonytailEnabled(flagStore, projectName) ? { enabled: true } : undefined)`;
    Blueprint :859 参数同位改 reader,:1040 调用处 `this.ponytailProjectLayer?.()`。
@@ -112,8 +122,26 @@ flowchart LR
 7. **xiaohongshu**:scheduler:102 改 deps 注入 `learningEnabled(projectName)`;:168 `autoCreate: true`;
    「store-on 但 collections 空」显式日志跳过;scripts/xiaohongshu-scheduler.ts 入口接注入
    (只读取值;gated pilot,不装 plist)。
-8. **render/管理台**:feature-flag-render.ts 黄标段删;management-existing-writers 对 config 的
-   projectOverrides 显示按编译错误收敛(仅 flag 部分;非 flag 的 config 显示不动)。
+8. **render/管理台/扫描的 flag-authority 解耦(Codex R1 #3 后半)**:feature-flag-render.ts
+   黄标段删;management-existing-writers 对 config 的 projectOverrides 显示按编译错误收敛(仅
+   flag 部分;非 flag 的 config 显示不动);**scan.ts:166-205 不再把 config parse error 纳入
+   project flag 状态**(DB 是唯一 flag source,config 错误属项目健康面不属 flag 面);
+   **plugin.ts:4746-4764 `flagScanSourceLoader` 不再以 `ffConfigCache.get()` 成败决定 project
+   flag clocks**(缓存的非 flag 用途保留)。各补回归用例:config 读失败时 project flag clock
+   照常 ready。
+
+**Step 3 失败语义表(Codex R1 #5 —— `readScopedBoolean` 抛错不吞,由各调用点本地 catch)**:
+
+| 调用点 | store 抛错时行为 | 测试 |
+|---|---|---|
+| doc_flow(Blueprint 注入) | 注入关 + console.warn(**本地 catch,不让 Blueprint 组装整体失败**) | store-throw → prompt 无 DOC-FLOW 块 + warn |
+| ponytail(Blueprint) | 项目层 undefined + warn;**只有真 `PonytailLabelConflictError` 才报 conflict**(现 :1008-1053 catch 会把 reader 异常误报 PONYTAIL_CONFLICT,收窄 catch) | store-throw → 非 conflict、per-issue 路照常 |
+| pipeline(readPipelineEnrollment) | `{workKind:false, dag:false}` + warn(对齐今天非 ENOENT 读错) | store-throw → held/off |
+| split participation | 钉 A + warn(合同不变) | store-throw → A 臂 |
+| proofshot(DirectEventSink) | enabled=false 持久化 + warn | store-throw → off |
+| xiaohongshu(planner) | **跳过该项目** + warn(保住逐项目隔离,不中断整轮) | store-throw → 其余项目照常计划 |
+
+每行至少一条 store-throw 测试;不引入新抽象/状态机。
 
 ### Step 4 — ConfigLoader:9 类 key 拒绝(fail-loud)
 - 逐 key `throw`,错误信息统一形状:
@@ -126,15 +154,25 @@ flowchart LR
 - 测试:9 key 各一条 RED(残留 → 精确报错);合法新形状 config(现 6 项目删 key 后的真实文件形)
   全绿;`xiaohongshu_learning` 无 enabled + 有 collections 合法。
 
-### Step 5 — 迁移脚本 `scripts/migrate-fly2103-project-flags.ts`
-- 读:projects.json + 各项目 config.yaml **raw yaml parse**(新 ConfigLoader 会拒 key,不能用)+
-  现有行只读快照(幂等判定)。
-- 写:逐行 Bridge `stage → apply`(fence 走现有 CAS),actor `migration:FLY-2103`;已有同值行 skip。
-- 写集:doc_flow {flywheel, joycon-typeless, personal-assistant, tidal-echo}="1";
-  pipeline_dag flywheel="1";pipeline_work_kind flywheel="1";ponytail `*`="0"(老 Bridge 白名单会拒
-  → 脚本对 per-flag 拒绝**报告并继续**,部署新代码后重跑第二遍补上;同一脚本幂等两遍)。
-- `--dry-run`(默认)输出将写/将跳过全表;`--apply` 才动。测试:计划构造纯函数单测
-  (输入 config fixture → 期望写集);幂等(同值行 skip);拒绝续跑。
+### Step 5 — 迁移脚本 `scripts/migrate-fly2103-project-flags.ts`(Codex R1 #2 重设计)
+- **写入目标 = 本票据固化的有限 manifest,不从 YAML 现推**(YAML 删 key 后第二遍就失去恢复
+  来源):首遍 6 行 —— doc_flow {flywheel, joycon-typeless, personal-assistant, tidal-echo}="1"、
+  pipeline_dag flywheel="1"、pipeline_work_kind flywheel="1";第二遍 1 行 —— ponytail `*`="0"。
+  manifest 以常量写死在脚本里。
+- **YAML 只作删 key 前的一致性检查**(raw yaml parse,新 ConfigLoader 会拒 key 不能用):
+  manifest 与 config 现值不符 → 非零退出(说明现场与票据台账漂移,人工核对)。文件已删 key /
+  不存在 → 跳过该检查(第二遍形态)。
+- **幂等判定 = 精确读 raw 行**:`StateStore.openForMaintenance(dbPath, {readonly:true})`
+  (StateStore.ts:1717 一带,better-sqlite3 WAL 只读打开是 sanctioned 路径)逐行读:
+  行存在且 raw 相同 → no-op(**不重放 stage/apply** —— `applyScopedFlagValueChange` 同值重放
+  仍会涨 revision/changelog);行存在但 raw 不同 → **非零退出**(现场被人改过,不静默覆盖);
+  行缺失 → Bridge `stage → apply` 写入。
+- **actor 保持既有 `"bridge-local-operator"`**(flag-routes.ts:65 canonical 只收这个,不扩机制);
+  票据身份进必填 reason:`"FLY-2103 config.yaml flag migration"`。
+- 首遍时老 Bridge 对 ponytail 行的 400 拒绝 = **预期结果,报告并继续**;除此之外任何读/写/校验
+  失败 → 非零退出,**阻止后续删配置动作**。
+- `--dry-run`(默认)输出 manifest×现状对照全表;`--apply` 才动。测试:manifest 对照纯函数单测
+  (fixture 行/缺行/异值三态);幂等(同值 no-op 不产生 changelog);异值非零退出;拒绝续跑。
 
 ### Step 6 — config.yaml 删 key
 - flywheel(本 PR):删 `doc_flow.enabled` / `pipeline` 块 / 4 个 checkpoint 的 `enabled: true`。
@@ -143,13 +181,16 @@ flowchart LR
   (doc_flow.enabled + 3 checkpoint);tidal-echo(doc_flow.enabled + 2 checkpoint)。
 - 每个外部 PR body 注明:merge 时机 = flywheel PR merge + 迁移第一遍之后、班车之前(§4 时序)。
 
-### Step 7 — 验收:隔离真 Bridge 前后对照 + rg
+### Step 7 — 验收:隔离真 Bridge 前后对照 + rg(绑定 commit/config/DB manifest,Codex R1 #6)
 - 配方复用 FLY-2100 Step 7(独立 HOME/TEAMLEAD_DB_PATH/TEAMLEAD_PORT/FLYWHEEL_BRIDGE_URL/隔离
   projects.json + 6 项目 fixture;禁 restart-services.sh;收尾杀进程验端口)。
-- 前:老代码 + 现 config → 逐项目快照(doc_flow 注入证据、DAG enrollment、work_kind、其余 flag)。
-- 后:新代码 + 脚本 seeded 行 + 删 key config → 同快照对照:doc_flow 4 开 2 关、DAG 6 全 on、
-  flywheel work_kind on、ponytail 全 OFF、其余默认。已知显示差仅 pipeline_dag 5 项目 false→true
-  (D3,QA 报告如实标注)。
+- **对照两臂显式绑定**:前臂 = 老 commit(main@merge-base)+ 现 config fixture + 空 DB;
+  后臂 = 本分支 commit + 删 key config fixture + **固定 DB manifest**(Step 5 的 7 行);
+  QA 报告记录两臂的 commit sha 与 manifest 内容。
+- 可观察结果逐项对照(不只 resolver 快照):doc_flow 注入(4 开 2 关,prompt 里 DOC-FLOW 块
+  有/无)、fresh DAG dispatch、**active DAG recovery(恢复不 held)**、flywheel work_kind on、
+  ProofShot session_params 持久化值、ponytail resolver 全分支 OFF、split participation、
+  xhs planner。已知显示差仅 pipeline_dag 5 项目 false→true(D3,QA 报告如实标注)。
 - rg 验收(issue 原串)读点层零命中(名册数据 registry/truth 与测试 fixture 除外,逐条列出残余并
   说明);ConfigLoader 9 条报错测试绿。
 
@@ -161,25 +202,35 @@ flowchart LR
   本文件夹 docs 随分支走。PR body:消费者清单、dead-code 清单、部署时序、外部 PR 列表、
   显示差说明。
 
-## 3. 部署时序(运维合同,写进 PR body)
+## 3. 部署时序(运维合同 = 硬门禁,写进 PR body;Codex R1 #6)
 
 ```mermaid
 sequenceDiagram
   participant PR as flywheel PR
   participant B as 在跑老 Bridge
   participant S as 迁移脚本
-  participant EXT as 5 个外部 config PR
-  participant D as 00:00/12:00 班车
+  participant W as 班车维护窗(Bridge 停)
   PR->>PR: merge(不部署,FLY-1959 解耦)
-  S->>B: 第一遍 dry-run → apply(6 行;ponytail 被拒→报告继续)
-  EXT->>EXT: 紧贴班车 merge
-  D->>D: 部署:新代码 + flywheel 新 config 原子落地
-  S->>B: 第二遍(补 ponytail *=0;其余 skip)
-  Note over D: 验收对照快照 + QA 报告
+  S->>B: 第一遍 dry-run → apply(6 行)
+  S->>S: 门禁 G1:精确核验 6 行 raw 全在,否则停
+  Note over W: 窗内顺序执行,失败即停:
+  W->>W: merge 5 个外部 config PR + 同步 6 个 main checkout
+  W->>W: 起新 Bridge(新代码+新 config 原子)
+  S->>B: 第二遍(ponytail *=0)
+  S->>S: 门禁 G2:核验 7 行 raw 全在 + Step 7 对照全绿
 ```
-已知窗口(如实,PR body 列):外部 config merge → 班车之间,若 flywheel main checkout 被 pull 且
-老 Bridge dispatch,`work_kind` 强制掉回 false(仅 flywheel、仅窗口内、非崩溃);老代码在窗口内
-意外重启 + 外部 config 已删 key → 该项目 doc_flow 注入窗口内掉线。压缩手段:外部 PR 紧贴班车。
+
+硬门禁(不再是「尽量紧贴」,Codex R1 #6):
+- **G1(删任何 config key 之前)**:第一遍结束后以 `openForMaintenance(readonly)` 精确核验
+  6 行 raw 全部落库;缺行/异值 → 停,**不得 merge 任何 config PR**。
+- **配置切换收进班车维护窗**:Bridge 停机期间才 merge 外部 config PR 并同步 6 个 main
+  checkout(git pull),然后起新 Bridge —— 「老代码读到删 key 后的 config」的窗口收敛为 0
+  (老 Bridge 停机,无 dispatch)。窗内任何一步失败 → 停在原地回起老 Bridge + 老 config
+  (此时行只有老白名单可接受的 5-flag 成员,老二进制启动无碍)。
+- **G2(放行前)**:新 Bridge 起来后第二遍补 ponytail `*`=0,核验 7 行 raw 全在 + Step 7 对照
+  快照全绿(fresh run、active DAG recovery、DOC-FLOW prompt、ProofShot session_params、
+  ponytail resolver、split、xhs planner 的可观察结果);任何缺行、异值、第二遍未完成 → 不放行,
+  QA 报告如实记 FAIL。
 
 ## 4. 验收 ↔ 步骤映射
 
@@ -196,9 +247,15 @@ sequenceDiagram
 - **迁移行缺失风险**(部署了新代码但没跑脚本):doc_flow 4 项目注入静默关。防线:Step 7 对照是
   发布门;部署时序把「第一遍脚本」放 merge 后立即执行;新 Bridge 启动日志打印 scoped 行计数供
   QA 核对。
-- **回滚**:行为回滚 = revert flywheel PR + 恢复 config key(外部 repo revert);flag_values 行无害
-  (旧代码只认 5 个白名单成员的行,ponytail/split 行被忽略;changelog append-only 留审计)。
-  无 DDL 变更,无 FLY-2100 那类 forward-only 降级问题。
+- **回滚 fence(Codex R1 #1 —— 初稿「旧代码忽略新行」是错的)**:老二进制的
+  `ensureFlagValueRows` 启动即断言全部行身份(StateStore.ts:4919-4935),ponytail /
+  split 的行会让**老二进制启动失败**,不是被忽略。降级只有两条路,按序执行:
+  ① 用**新二进制**(或 CLI 经新 Bridge)`feature-flags clear` 掉 ponytail / split 的**全部
+  scope 行**,以 `openForMaintenance(readonly)` 核验为空后,才允许回滚老二进制 + 恢复 config
+  key(revert 外部 repo);② 若老二进制已回滚到起不来的状态,只能前滚回新二进制或走经验证的
+  DB 恢复流程。**回滚演练测试**:老白名单 + 新身份行 → `ensureFlagValueRows` 必抛
+  (RED 固定该事实,防 runbook 再建立在错误假设上)。无 DDL 变更,无 FLY-2100 那类
+  forward-only 降级问题 —— 但行身份 fence 使降级同样是「先清行再回」的有序动作。
 - **扫描面**:2 个 spec 删除走 flag 级 departure 既有机制(FLY-2104 per-scope 账本自行修剪);
   不需本单动扫描代码 —— 全仓测试若揭示扫描 fixture 引用被删 flag,按测试 fixture 更新处置。
 - **skill_framework_split 过渡**:本单只挪存值面;FLY-1834 结账删除时连 store 行、wrapper、spec

@@ -80,11 +80,17 @@ work_kind)在窗口内掉回 false。顺序必须是:**merge 代码 → 跑迁�
 00:00/12:00 班车统一部署**(FLY-1959 部署解耦正好兜住:main checkout 在部署时才 pull,代码与
 flywheel 自己的 config.yaml 原子落地)。详见 plan「部署时序」。
 
-### F8. 迁移脚本不能直写 SQLite
-StateStore 是 sql.js(整文件载入内存再持久化),第二进程并发写 = clobber。FLY-2100 定了
-**唯一写入执行面 = CLI → `/api/fleet/flag/stage|apply`**。迁移脚本读侧可只读打开 DB(或 raw yaml),
-写侧必须走 Bridge API(等价 `feature-flags set --project`)。另:老 Bridge 的白名单编译死在代码里
-(5 个),ponytail / split 的行要等新代码部署后才写得进去 → 脚本幂等、跑两遍(部署前 + 部署后)。
+### F8. 迁移脚本不能直写 SQLite(读侧有正门)
+StateStore 底层是 **better-sqlite3(native,WAL)**(StateStore.ts:11,sql.js 只是兼容表面 ——
+2026-08-28 Codex R1 勘误了本节初稿的 sql.js 说法);第二进程并发写仍然违反 FLY-2100 定的
+**唯一写入执行面 = CLI → `/api/fleet/flag/stage|apply`**。读侧有 sanctioned API:
+`StateStore.openForMaintenance(dbPath, {readonly:true})` 可精确读 raw 行(幂等判定用)。
+另两个硬约束(Codex R1 实证):
+- flag-routes 的 canonical actor 固定为 `"bridge-local-operator"`(flag-routes.ts:65),脚本不能
+  自造 actor,票据身份写进 reason。
+- **老 Bridge 的 `ensureFlagValueRows` 启动即断言行身份**(StateStore.ts:4919-4935):不在其编译期
+  白名单里的 project 行会让老二进制**启动失败**,不是「忽略」→ ponytail/split 行必须部署后写,
+  且回滚必须先清这两个 flag 的行(见 plan §5 回滚 fence)。
 
 ## 4. 选项与裁决
 
