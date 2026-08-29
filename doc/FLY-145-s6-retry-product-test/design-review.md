@@ -31,3 +31,28 @@ PR #56 状态、Bridge `runs-route.ts` L278/L1546 引用、403 响应体)逐条�
    "orchestrator 内部标识,不作审计事实"。
 
 **Verdict**: APPROVED — ready to implement
+
+## Head-bound code review(Bar-Raiser,2026-08-29)— APPROVED
+
+**范围**:PR #56 全量 head-bound diff(`origin/main...HEAD` @ `fd1412e0`,12 文件
+589 行纯新增)。通道同上:Codex/Gemini CLI 机器级故障持续,沿用 Bar-Raiser
+fallback(独立上下文,实读 diff / repo / PR 状态逐条核验)。
+
+**验证项(全 PASS)**:plan §6 负向守卫(零 `packages/`/`scripts/`/`.github/`
+触碰、implement ledger 对 `46cc7bcb` 字节不变、里程碑文档为纯新增文件)、
+milestone 文档事实核对、design.html 安全/交付契约(单 nonce 脚本、零外链、
+addEventListener-only、localStorage try/catch + pathname 前缀、汇总标记与
+1800 字符分块、零 innerHTML)、跨文档稳定标识一致性、双 SVG 为真 mmdc 本地
+渲染(svgId `FLY-145-d1`/`d2`,零外部引用)。
+
+**Findings(0 blocking)**:
+1. **MEDIUM(advisory,给 campaign owner)**:merge `da9bf0a3` 保留了 main 的
+   CLAUDE.md,PR head 状态下 CLAUDE.md 不再含 FLY-145 行;E5 证据采集须转向
+   "commit `4108252` 在 PR commit list 中存在",而非 head 状态文件内容。
+   设计文档为 merge 前时间戳产物,按账本纪律不回写。
+2. **LOW**:design.html `chunkText()` 不切分单条超长(>1800 字符)评论部件。
+   sandbox 产物,化妆品级,不改。
+3. **NIT ×2**:`chunkText(parts)` 重复调用一次;设计 ledger 4/5 游标为评审
+   进行时快照(本轮后推进 5/5)。
+
+**Verdict**: APPROVED — 按批准的 plan 精确交付,负向守卫完好。
