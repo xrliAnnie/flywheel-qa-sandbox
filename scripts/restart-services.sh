@@ -55,8 +55,6 @@ LAUNCHD_CENSUS_SOURCED=1
 source "${FLYWHEEL_DIR}/scripts/launchd-census.sh"
 # shellcheck source=lib/deploy-build-identity.sh
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
-# shellcheck source=lib/mailbox-queue-deploy-barrier.sh
-source "${FLYWHEEL_DIR}/scripts/lib/mailbox-queue-deploy-barrier.sh"
 # shellcheck source=lib/default-lead-agent-env.sh
 source "${FLYWHEEL_DIR}/scripts/lib/default-lead-agent-env.sh"
 # shellcheck source=lib/discord-pointer-guard.sh
@@ -2629,25 +2627,6 @@ deploy_and_verify() {
         fi
     fi
 
-    # FLY-1573: first queue-capability rollout only. Persist OFF before the new
-    # Bridge starts, then resume the same durable owner after any interrupted
-    # deploy. A pre-existing operator OFF is observed but never claimed.
-    if mqb_upgrade_requires_barrier "$DEPLOYED_SHA" "$CURRENT_HEAD"; then
-        if ! mqb_begin "$CURRENT_HEAD"; then
-            log "ERROR: mailbox queue readiness barrier could not start; new Bridge will not be launched"
-            alert_severe "mailbox-queue-barrier-begin-failed" \
-                "Mailbox queue deploy barrier failed" \
-                "FLY-1573 就绪闸无法在新 Bridge 启动前持久化 OFF；部署已中止，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
-        if [[ "$MQB_OWNED" == "true" ]]; then
-            # The release invariant is fleet-wide; a diff-derived Bridge-only
-            # wave cannot prove every Lead's new ACK surface.
-            restart_all_leads=true
-        fi
-    fi
-
     # Step 3: Start new Bridge
     if [[ "$restart_bridge" == "true" ]]; then
         start_bridge
@@ -2757,53 +2736,6 @@ deploy_and_verify() {
     # FLY-98: trigger cmux refresh after watcher restart outcome capture.
     if [[ "$restart_all_leads" == "true" ]]; then
         trigger_cmux_refresh
-    fi
-
-
-    # FLY-1573: the default-ON queue may become live only after a conclusive,
-    # zero-degradation Lead wave and real stdio MCP probes for BOTH backends.
-    # Unknown/skipped/failed/empty fleet evidence is fail-closed and durable.
-    if [[ "$MQB_OWNED" == "true" ]]; then
-        local barrier_failure=""
-        if [[ "$lead_counts_known" != "true" ]]; then
-            barrier_failure="Lead restart counts unknown (${lead_result_state})"
-        elif [[ "$restart_all_leads" != "true" ]]; then
-            barrier_failure="Lead restart wave was not run"
-        elif (( leads_failed > 0 || leads_skipped > 0 )); then
-            barrier_failure="Lead restart degraded: failed=${leads_failed} skipped=${leads_skipped} total=${leads_total}"
-        elif (( leads_total == 0 )); then
-            barrier_failure="Lead restart inventory was empty"
-        elif ! mqb_probe_ack_tools >/tmp/flywheel-mailbox-queue-ack-readiness.json 2>&1; then
-            barrier_failure="Claude/Codex ACK MCP readiness probe failed"
-        fi
-
-        if [[ -n "$barrier_failure" ]]; then
-            mqb_hold "$CURRENT_HEAD" "$barrier_failure" || true
-            log "ERROR: $barrier_failure; mailbox queue remains persistently OFF"
-            alert_severe "mailbox-queue-readiness-failed-${CURRENT_HEAD}" \
-                "Mailbox queue rollout held OFF" \
-                "FLY-1573 未通过全舰队 ACK 就绪闸: ${barrier_failure}。FLYWHEEL_MAILBOX_QUEUE=0 保持，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
-
-        local barrier_evidence="fresh_leads=${leads_total};claude=flywheel_inbox_ack_batch;codex=ack_batch"
-        if ! mqb_mark_ready "$CURRENT_HEAD" "$barrier_evidence"; then
-            mqb_hold "$CURRENT_HEAD" "could not persist all-ready evidence" || true
-            alert_severe "mailbox-queue-readiness-marker-${CURRENT_HEAD}" \
-                "Mailbox queue rollout held OFF" \
-                "FLY-1573 ACK 探活通过，但无法持久化 all-ready CAS；保持 OFF，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
-        if ! mqb_release_via_bridge "$CURRENT_HEAD" "$BRIDGE_URL"; then
-            mqb_hold "$CURRENT_HEAD" "Bridge in-process release failed" || true
-            alert_severe "mailbox-queue-release-failed-${CURRENT_HEAD}" \
-                "Mailbox queue rollout release failed" \
-                "FLY-1573 all-ready 后 direct-toggle/env 双写放开失败；保持 OFF，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
     fi
 
     # Step 5: Record code deployment truth independently of Lead health.

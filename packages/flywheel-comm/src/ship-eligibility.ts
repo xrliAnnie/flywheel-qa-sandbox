@@ -9,22 +9,16 @@
  *
  *   - B (merge approval): reuses `verifyApproval` VERBATIM (durable bound
  *     approve_to_ship question + structured `{approved:true}` + status +
- *     pr_head match + FLY-827 Codex gate). Kill-switch `FLYWHEEL_MERGE_APPROVAL_GATE=0`
- *     bypasses ONLY this check — QA stays enforced.
+ *     pr_head match + FLY-827 Codex gate).
  *   - A (QA): `evaluateQaShipGate` — reads the frozen historical `qa_required`
  *     snapshot and read-only `auto_qa_record` ledger. Fresh code-PR rows have no
  *     legacy snapshot and therefore fail closed.
  *
- * The remaining merge kill-switch uses the same BIDIRECTIONALLY-LIVE
- * `~/.flywheel/.env` resolution as the FLY-827 Codex gate (a re-arm by deleting
- * the `.env` line turns the gate back ON even for a runner that inherited `=0`).
+ * Both checks are always enforced.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { existsSync } from "node:fs";
 import Database from "better-sqlite3";
-import { readEnvValueFromContent } from "flywheel-config";
 import {
 	resolveStateDbPath,
 	type VerifyApprovalArgs,
@@ -32,35 +26,6 @@ import {
 } from "./commands/verify-approval.js";
 
 const FULL_SHA_RE = /^[0-9a-f]{40}$/;
-
-const MERGE_APPROVAL_GATE_KEY = "FLYWHEEL_MERGE_APPROVAL_GATE";
-
-/**
- * Resolve a DEFAULT-ON gate flag with the FLY-827 live-`.env` semantics:
- *   1. explicit test override (`argsEnv` HAS the key) wins,
- *   2. readable `~/.flywheel/.env` is authoritative INCLUDING key-absent (=ON),
- *   3. `.env` unreadable → inherited `processEnv` (legacy fallback).
- * `=0` = OFF; anything else (incl. absent) = ON.
- */
-function resolveDefaultOnGate(
-	key: string,
-	args: {
-		argsEnv?: NodeJS.ProcessEnv;
-		processEnv: NodeJS.ProcessEnv;
-		dotenvPath?: string;
-	},
-): boolean {
-	if (args.argsEnv && key in args.argsEnv) {
-		return args.argsEnv[key] !== "0";
-	}
-	const path = args.dotenvPath ?? join(homedir(), ".flywheel", ".env");
-	try {
-		const content = readFileSync(path, "utf-8");
-		return readEnvValueFromContent(content, key) !== "0";
-	} catch {
-		return args.processEnv[key] !== "0";
-	}
-}
 
 export type QaShipReason =
 	| "qa_ok"
@@ -314,11 +279,11 @@ export interface ShipEligibilityArgs {
 export interface ShipEligibilityDecision {
 	/** Both sub-gates satisfied → the session may reach completed/Done. */
 	eligible: boolean;
-	/** B side: merge approval satisfied (or its kill-switch is off). */
+	/** B side: merge approval satisfied. */
 	mergeApprovalOk: boolean;
 	/** A side: the always-armed QA check is satisfied. */
 	qaOk: boolean;
-	/** verifyApproval's reason (approved | why-not | merge_gate_off). */
+	/** verifyApproval's reason (approved | why-not). */
 	mergeReason: string;
 	/** evaluateQaShipGate's reason. */
 	qaReason: QaShipReason;
@@ -333,35 +298,18 @@ export interface ShipEligibilityDecision {
 export function evaluateShipEligibility(
 	args: ShipEligibilityArgs,
 ): ShipEligibilityDecision {
-	const env = args.env ?? process.env;
-
-	// B side — merge approval (independently kill-switchable).
-	const mergeGateOn = resolveDefaultOnGate(MERGE_APPROVAL_GATE_KEY, {
-		argsEnv: args.env,
-		processEnv: env,
-		// Use the shared live-dotenv test override; verifyApproval reuses it for
-		// founder attribution and founder identity/config resolution.
-		dotenvPath: args.codexDotenvPath,
+	const approval = verifyApproval({
+		execId: args.execId,
+		prHead: args.prHead,
+		dbPath: args.commDbPath,
+		stateDbPath: args.stateDbPath,
+		// Production must NOT inject env (design R2 HIGH-2): only tests pass it.
+		env: args.env,
+		codexDotenvPath: args.codexDotenvPath,
+		ciProbe: args.ciProbe,
 	});
-	let mergeApprovalOk: boolean;
-	let mergeReason: string;
-	if (!mergeGateOn) {
-		mergeApprovalOk = true;
-		mergeReason = "merge_gate_off";
-	} else {
-		const approval = verifyApproval({
-			execId: args.execId,
-			prHead: args.prHead,
-			dbPath: args.commDbPath,
-			stateDbPath: args.stateDbPath,
-			// Production must NOT inject env (design R2 HIGH-2): only tests pass it.
-			env: args.env,
-			codexDotenvPath: args.codexDotenvPath,
-			ciProbe: args.ciProbe,
-		});
-		mergeApprovalOk = approval.approved;
-		mergeReason = approval.reason;
-	}
+	const mergeApprovalOk = approval.approved;
+	const mergeReason = approval.reason;
 
 	// A side — QA gate (always enforced).
 	const qa = evaluateQaShipGate({

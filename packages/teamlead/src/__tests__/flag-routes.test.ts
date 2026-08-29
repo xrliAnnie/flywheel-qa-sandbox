@@ -59,24 +59,6 @@ async function makeManagedDeps(over: Partial<FlagRouteDeps> = {}) {
 }
 
 describe("handleFlagStage", () => {
-	it("rejects a bridge-global project row before toggleability checks", async () => {
-		const { deps } = await makeManagedDeps();
-		const result = handleFlagStage(
-			deps,
-			{
-				name: "mailbox_queue",
-				to: true,
-				project: "flywheel",
-				reason: "must not create a project row",
-			},
-			"o",
-		);
-		expect(result.code).toBe(400);
-		expect(result.body).toMatchObject({
-			error: expect.stringMatching(/bridge_global.*project/i),
-		});
-	});
-
 	it("validates project-store scope against the configured roster", async () => {
 		const { deps } = await makeManagedDeps();
 		const result = handleFlagStage(
@@ -117,24 +99,6 @@ describe("handleFlagStage", () => {
 		},
 	);
 
-	it("stages a direct flag: canonical + confirmToken + audit staged", () => {
-		const deps = makeDeps();
-		const r = handleFlagStage(
-			deps,
-			{ name: "founder_review_orphan_monitor", to: false },
-			"http://localhost",
-		);
-		expect(r.code).toBe(200);
-		const body = r.body as { canonical: FlagCanonical; confirmToken: string };
-		expect(body.canonical.kind).toBe("flag");
-		expect(body.canonical.envVar).toBe(
-			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
-		);
-		expect(body.canonical.rawTo).toBe("0"); // default_on off → write "0"
-		expect(body.canonical.fileSha).toBe(computeEnvSha(ENV_CONTENT));
-		expect(body.confirmToken).toBeTruthy();
-	});
-
 	it("rejects a non-direct / governance flag", () => {
 		const deps = makeDeps();
 		expect(
@@ -154,11 +118,8 @@ describe("handleFlagStage", () => {
 		// "off"/"false"/0 are truthy-or-not JS values that must NOT be coerced.
 		for (const bad of ["off", "false", 0, 1, null, undefined]) {
 			expect(
-				handleFlagStage(
-					deps,
-					{ name: "founder_review_orphan_monitor", to: bad as never },
-					"o",
-				).code,
+				handleFlagStage(deps, { name: "loop_profiler", to: bad as never }, "o")
+					.code,
 			).toBe(400);
 		}
 		expect(
@@ -346,23 +307,6 @@ describe("handleFlagApply", () => {
 		});
 	});
 
-	it("rejects clear for a non-store global flag", () => {
-		const result = handleFlagStage(
-			makeDeps(),
-			{
-				name: "founder_review_orphan_monitor",
-				project: "*",
-				op: "clear",
-				reason: "unsupported",
-			} as never,
-			"o",
-		);
-		expect(result.code).toBe(400);
-		expect(result.body).toMatchObject({
-			error: expect.stringMatching(/clear.*store-managed/i),
-		});
-	});
-
 	it("rejects a scoped apply after a third-party write advances the audit fence", async () => {
 		const { deps, store } = await makeManagedDeps();
 		const staged = handleFlagStage(
@@ -409,48 +353,6 @@ describe("handleFlagApply", () => {
 			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o"),
 		).toMatchObject({ code: 400 });
 		expect(store.getFlagValueRow("doc_flow", "flywheel")).toBeUndefined();
-	});
-
-	it("applies with a valid token → mutates env, audits apply-result", () => {
-		const deps = makeDeps();
-		const staged = handleFlagStage(
-			deps,
-			{ name: "founder_review_orphan_monitor", to: false },
-			"o",
-		).body as { canonical: FlagCanonical; confirmToken: string };
-		const r = handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
-		expect(r.code).toBe(200);
-		expect(deps.env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBe("0");
-		expect(deps.writeFile).toHaveBeenCalledTimes(1);
-	});
-
-	it("replay with the same token → denied (single-use)", () => {
-		const deps = makeDeps();
-		const staged = handleFlagStage(
-			deps,
-			{ name: "founder_review_orphan_monitor", to: false },
-			"o",
-		).body as { canonical: FlagCanonical; confirmToken: string };
-		handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
-		const replay = handleFlagApply(
-			deps,
-			staged.canonical,
-			staged.confirmToken,
-			"o",
-		);
-		expect(replay.code).toBe(401);
-	});
-
-	it("tampered canonical (SHA mismatch) → denied", () => {
-		const deps = makeDeps();
-		const staged = handleFlagStage(
-			deps,
-			{ name: "founder_review_orphan_monitor", to: false },
-			"o",
-		).body as { canonical: FlagCanonical; confirmToken: string };
-		const tampered = { ...staged.canonical, rawTo: null };
-		const r = handleFlagApply(deps, tampered, staged.confirmToken, "o");
-		expect(r.code).toBe(401);
 	});
 
 	// FLY-1356: enum managed flag (skill_framework_mode) — string target values.

@@ -1,0 +1,14 @@
+flowchart LR
+  subgraph BEFORE["现状:每个 flag 一条完整供应链(13 条)"]
+    direction LR
+    ENV[".env 环境变量<br/>(从没人设过)"] --> READ["代码读点<br/>process.env.X"]
+    READ --> BEH1["实际行为<br/>(一直等于默认值)"]
+    REG["registry.ts 名册条目"] -.对账.- READ
+    TRUTH["truth.ts 真值守卫"] -.核对.- ENV
+    DRIFT["drift 扫描 + 周退役巡检"] -.每周问一次留/清.- REG
+  end
+  BEFORE ==>|FLY-2101 固化删| AFTER
+  subgraph AFTER["改后:一行常量"]
+    direction LR
+    CONST["常量(写死现值)<br/>+ 来源注释"] --> BEH2["实际行为<br/>(逐字节不变)"]
+  end

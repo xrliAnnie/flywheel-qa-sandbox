@@ -130,9 +130,6 @@ export function sweepIssueGatesForProject(args: {
 		retired: 0,
 		unmapped: 0,
 	};
-	const mode = args.env.FLYWHEEL_ISSUE_GATE_SUPERSEDE;
-	if (mode === "0") return stats;
-
 	// Reconcile durable dispositions before considering new mutations. A crash
 	// after the CommDB stamp but before this StateStore write heals next tick.
 	for (const stamped of args.db.getSupersededGates()) {
@@ -190,25 +187,6 @@ export function sweepIssueGatesForProject(args: {
 			a.row.row_id - b.row.row_id,
 	);
 	stats.candidates = candidates.length;
-
-	if (mode === "observe") {
-		for (const { row, supersessor, issueId } of candidates) {
-			args.store.insertEvent({
-				event_id: `gate-supersede-candidate-${row.id}`,
-				execution_id: row.from_agent,
-				issue_id: issueId,
-				project_name: args.projectName,
-				event_type: "gate_supersede_candidate",
-				source: SOURCE,
-				payload: {
-					questionId: row.id,
-					checkpoint: row.checkpoint,
-					supersededBy: supersessor.id,
-				},
-			});
-		}
-		return stats;
-	}
 
 	for (const { row, supersessor, issueId } of candidates.slice(
 		0,

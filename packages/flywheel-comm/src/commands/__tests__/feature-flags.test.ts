@@ -153,11 +153,11 @@ describe("flywheel-comm feature-flags set/clear (apply alias)", () => {
 		).rejects.toThrow("exit 1");
 
 		await runFeatureFlags(
-			["apply", "--name", "founder_review_orphan_monitor", "--to", "off"],
+			["apply", "--name", "test_direct_flag", "--to", "off"],
 			deps,
 		);
 		expect(JSON.parse(httpJson.mock.calls[0]?.[1].body ?? "{}")).toEqual({
-			name: "founder_review_orphan_monitor",
+			name: "test_direct_flag",
 			to: false,
 			project: "*",
 			op: "set",

@@ -85,7 +85,7 @@ export interface PendingQuestionForThread {
 	createdAtMs: number;
 	/**
 	 * FLY-945 Fix A: per-checkpoint grace for founder messages matching THIS
-	 * question (approve_to_ship → FLYWHEEL_SHIP_GATE_GRACE_MS, default 15s;
+	 * question (approve_to_ship → 15s;
 	 * everything else → the 10min FLY-605 grace). A message's applicable grace
 	 * is the MINIMUM across its matching questions. Absent → ctx.graceMs
 	 * (byte-compatible with pre-FLY-945 callers).

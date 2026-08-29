@@ -91,7 +91,6 @@ describe("DirectEventSink enqueue site", () => {
 				durationMs: 10,
 			},
 			...over,
-			// biome-ignore lint/suspicious/noExplicitAny: minimal BlueprintResult shape
 		} as any;
 	}
 
@@ -182,7 +181,6 @@ describe("event-route enqueue site (HTTP /events)", () => {
 	};
 
 	beforeEach(async () => {
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		store = await StateStore.create(":memory:");
 		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
 		const executor = new DirectiveExecutor(store);
@@ -216,7 +214,6 @@ describe("event-route enqueue site (HTTP /events)", () => {
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

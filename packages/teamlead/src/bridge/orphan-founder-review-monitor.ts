@@ -85,9 +85,6 @@ export function sweepOrphanFounderReviewGates(input: {
 		alerted: 0,
 		invalid: 0,
 	};
-	if (input.env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR === "0") {
-		return stats;
-	}
 	const nowMs = (input.now ?? Date.now)();
 	const thresholdHours = staleHours(input.env);
 	const thresholdMs = thresholdHours * 3_600_000;

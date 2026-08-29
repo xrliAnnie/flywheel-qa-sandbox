@@ -26,7 +26,6 @@ import {
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
 	PROJECT_STORE_MANAGED_FLAGS,
-	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	RETIRED_FLAGS,
 	type SkillFrameworkMode,
@@ -1625,7 +1624,6 @@ export type ApplyFlagValueChangeResult =
 	| {
 			ok: false;
 			reason:
-				| "protected_legacy"
 				| "retired_flag"
 				| "not_store_managed"
 				| "missing_row"
@@ -4999,9 +4997,6 @@ export class StateStore {
 			)
 		) {
 			return { ok: false, reason: "retired_flag" };
-		}
-		if (PROTECTED_LEGACY_FLAG_NAMES.has(args.name)) {
-			return { ok: false, reason: "protected_legacy" };
 		}
 		if (!STORE_MANAGED_FLAGS.has(args.name)) {
 			return { ok: false, reason: "not_store_managed" };

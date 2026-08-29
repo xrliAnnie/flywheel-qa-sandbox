@@ -247,7 +247,10 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 			"utf8",
 		);
 		const bridgeStart = source.indexOf("\tclaimBridgeProtocol(");
-		const bridgeEnd = source.indexOf("\n\tclaimRunner(", bridgeStart);
+		const bridgeEnd = source.indexOf(
+			"\n\trecordRunnerBatchDeliveryFailure(",
+			bridgeStart,
+		);
 		const bridgeSource = source.slice(bridgeStart, bridgeEnd);
 		expect(bridgeSource).toContain("state = 'QUEUED'");
 		expect(bridgeSource).toContain("state = 'LEASED'");

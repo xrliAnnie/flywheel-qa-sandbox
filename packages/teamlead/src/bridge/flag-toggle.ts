@@ -35,10 +35,6 @@ import {
 	withEnvFileLock,
 	writeEnvFileAtomic,
 } from "./env-file-writer.js";
-import {
-	MAILBOX_QUEUE_ENV_VAR,
-	prepareMailboxQueueOperatorToggleLocked,
-} from "./mailbox-queue-deploy-barrier.js";
 
 /** The reviewed canonical flag change (raw env values, not effective booleans). */
 export interface FlagToggleChange {
@@ -64,8 +60,6 @@ export interface FlagToggleDeps {
 	 * persist→mutate runs inside it so a concurrent writer can't interleave.
 	 */
 	lock?: <T>(fn: () => T) => T;
-	/** Test hook; production ownership tokens are cryptographically random. */
-	mailboxQueueBarrierNewToken?: () => string;
 }
 
 export interface FlagToggleResult {
@@ -144,27 +138,6 @@ export function applyFlagToggle(
 			// Persist FIRST (atomic). A persist failure = zero change (disk + live consistent).
 			const applied = applyEnvChange(content, envVar, change.rawTo);
 			if (!applied.ok) return { ok: false, code: 400, reason: applied.reason };
-			if (envVar === MAILBOX_QUEUE_ENV_VAR) {
-				// We are already inside the canonical env lock. Even an OFF→OFF
-				// byte-level no-op is an operator emergency stop and must revoke a
-				// deploy barrier's ownership before that deploy can auto-release.
-				const ownership = prepareMailboxQueueOperatorToggleLocked(
-					{
-						envPath: deps.envPath,
-						env,
-						newToken: deps.mailboxQueueBarrierNewToken,
-					},
-					change.rawTo,
-					applied.next as string,
-				);
-				if (!ownership.ok) {
-					return {
-						ok: false,
-						code: ownership.code,
-						reason: ownership.reason,
-					};
-				}
-			}
 			try {
 				write(deps.envPath, applied.next as string);
 			} catch (err) {

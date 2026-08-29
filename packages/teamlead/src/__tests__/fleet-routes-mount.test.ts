@@ -336,7 +336,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 				Origin: "http://evil.test",
 			},
 			body: JSON.stringify({
-				name: "founder_review_orphan_monitor",
+				name: "loop_profiler",
 				to: false,
 			}),
 		});

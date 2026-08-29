@@ -273,7 +273,7 @@ describe("FlagRetirementScanner", () => {
 
 	it("shows the description, current enum winner, and stable duration on the Discord report", async () => {
 		const flag = spec({
-			name: "issue_gate_supersede_mode",
+			name: "enum_fixture",
 			valueKind: "enum",
 			enumValues: ["legacy", "superpowers"],
 			default: "superpowers",
