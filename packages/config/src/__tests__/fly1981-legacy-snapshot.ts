@@ -8,7 +8,7 @@ export interface HistoricalLegacySpec {
 	constantizedBy?: "FLY-2101";
 }
 
-/** Exact FLY-1981 landing snapshot; current ledgers may shrink from this set. */
+/** Annotated historical snapshot; 13 entries were constantized by FLY-2101. */
 export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 	{ name: "flag_store", source: "env", sourceKey: "FLYWHEEL_FLAG_STORE" },
 	{
@@ -158,12 +158,20 @@ export function auditFly1981LegacyLedger(args: {
 	retiredFlags: readonly { envVar: string }[];
 	retiredConfigPaths: readonly { path: string }[];
 	exemptions: readonly FlagExemption[];
+	snapshot?: readonly HistoricalLegacySpec[];
 }): string[] {
 	const issues: string[] = [];
-	const snapshotByName = new Map(
-		FLY1981_LEGACY_SNAPSHOT.map((entry) => [entry.name, entry]),
-	);
+	const snapshot = args.snapshot ?? FLY1981_LEGACY_SNAPSHOT;
+	const snapshotByName = new Map(snapshot.map((entry) => [entry.name, entry]));
 	const baseline = new Set(args.baseline);
+	for (const historical of snapshot) {
+		if (
+			historical.sourceKey === undefined &&
+			historical.constantizedBy === undefined
+		) {
+			issues.push(`${historical.name}: historical source identity is missing`);
+		}
+	}
 
 	for (const name of baseline) {
 		const historical = snapshotByName.get(name);
@@ -186,7 +194,7 @@ export function auditFly1981LegacyLedger(args: {
 		}
 	}
 
-	for (const historical of FLY1981_LEGACY_SNAPSHOT) {
+	for (const historical of snapshot) {
 		if (baseline.has(historical.name)) continue;
 		const current = args.flags.find((spec) => spec.name === historical.name);
 		if (historical.constantizedBy === "FLY-2101") {
@@ -195,12 +203,12 @@ export function auditFly1981LegacyLedger(args: {
 					`${historical.name}: FLY-2101 constantized control returned to the registry`,
 				);
 			}
+			// FLY-2101 decision: constantized entries permanently skip retirement
+			// and exemption checks. Their env keys no longer exist, so an exemption
+			// keyed by the removed source identity cannot remain live.
 			continue;
 		}
-		if (historical.sourceKey === undefined) {
-			issues.push(`${historical.name}: historical source identity is missing`);
-			continue;
-		}
+		if (historical.sourceKey === undefined) continue;
 		const migrated =
 			current !== undefined &&
 			args.storeManagedFlags.has(current.name) &&

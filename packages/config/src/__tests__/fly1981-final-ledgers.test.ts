@@ -446,6 +446,24 @@ describe("FLY-1981 final governance ledgers", () => {
 		).toEqual([]);
 	});
 
+	it("rejects a historical entry with no source identity at runtime", () => {
+		const mutatedArgs = {
+			baseline: LEGACY_UNMANAGED_BASELINE,
+			flags: FEATURE_FLAGS,
+			storeManagedFlags: STORE_MANAGED_FLAGS,
+			retiredFlags: RETIRED_FLAGS,
+			retiredConfigPaths: RETIRED_CONFIG_PATHS,
+			exemptions: FLAG_EXEMPTIONS,
+			snapshot: [
+				...FLY1981_LEGACY_SNAPSHOT,
+				{ name: "missing_source_identity_mutation", source: "env" },
+			],
+		} as Parameters<typeof auditFly1981LegacyLedger>[0];
+		expect(auditFly1981LegacyLedger(mutatedArgs)).toContain(
+			"missing_source_identity_mutation: historical source identity is missing",
+		);
+	});
+
 	it("allows exemption widening only through a founder-authorized atomic reclassification", () => {
 		expect(FLY1981_FLAG_EXEMPTION_BASELINE).toHaveLength(45);
 		expect(
