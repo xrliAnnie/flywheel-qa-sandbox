@@ -161,8 +161,12 @@ else
 fi
 
 generalized="$(qa_multilead_config_yaml test-slot-1 generalized)"
-assert_contains "$generalized" $'pipeline:\n  dag: true\n  work_kind: true' \
-	'generalized config enables DAG and work-kind together'
+if [[ "$generalized" == *'pipeline:'* ]]; then
+	echo 'FAIL: generalized config emitted retired pipeline project flags' >&2
+	failures=$((failures + 1))
+else
+	echo 'PASS: generalized config leaves DAG and work-kind in the scoped store'
+fi
 
 retired_workflow_env_names=(
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES
