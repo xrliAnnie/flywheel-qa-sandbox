@@ -39,7 +39,7 @@ Issue: FLY-2103 (https://linear.app/geoforge3d/issue/FLY-2103/flagcconfigyaml-�
 ```mermaid
 flowchart LR
   CLI["flywheel-comm feature-flags<br/>set/clear --project"] --> API["/api/fleet/flag/stage+apply"]
-  MIG["migrate-fly2103 脚本<br/>(一次性,幂等,dry-run)"] -->|"读 config.yaml 现值"| API
+  MIG["migrate-fly2103 脚本<br/>(固定 manifest 写入;YAML 仅校验)"] -->|"stage/apply"| API
   API --> FV[("flag_values<br/>(flag_name, scope)")]
   FV --> RT["flag-store-runtime<br/>readScopedBoolean + 7 个命名 wrapper"]
   RT --> BP["Blueprint: doc_flow 注入 / ponytail 层"]
@@ -119,9 +119,14 @@ flowchart LR
    `() => (storePonytailEnabled(flagStore, projectName) ? { enabled: true } : undefined)`;
    Blueprint :859 参数同位改 reader,:1040 调用处 `this.ponytailProjectLayer?.()`。
    测试:`*`=0 行 ≡ undefined(对拍 resolvePonytail 全分支);项目行=1 时 project 层生效。
-7. **xiaohongshu**:scheduler:102 改 deps 注入 `learningEnabled(projectName)`;:168 `autoCreate: true`;
-   「store-on 但 collections 空」显式日志跳过;scripts/xiaohongshu-scheduler.ts 入口接注入
-   (只读取值;gated pilot,不装 plist)。
+7. **xiaohongshu(独立进程的 store 接线定死,Codex R2 #3)**:scheduler:102 改 deps 注入
+   `learningEnabled(projectName)`;:168 `autoCreate: true`;「store-on 但 collections 空」显式
+   日志跳过。scripts/xiaohongshu-scheduler.ts(Bridge 外独立进程,gated pilot 不装 plist)的
+   取值路径**固定为既有 readonly 正门**:
+   `StateStore.openForMaintenance(TEAMLEAD_DB_PATH ?? ~/.flywheel/teamlead.db, {readonly:true})`
+   打开**一次**,构造只读 runtime 供 `storeXiaohongshuLearningEnabled` 使用,`finally` 关闭;
+   不退回 ConfigLoader,不新增写路径。入口级测试:raw 0/1;DB 打不开 → 整轮非零退出报错;
+   某项目读取抛错 → 只跳过该项目(隔离保持)。
 8. **render/管理台/扫描的 flag-authority 解耦(Codex R1 #3 后半)**:feature-flag-render.ts
    黄标段删;management-existing-writers 对 config 的 projectOverrides 显示按编译错误收敛(仅
    flag 部分;非 flag 的 config 显示不动);**scan.ts:166-205 不再把 config parse error 纳入
@@ -159,9 +164,15 @@ flowchart LR
   来源):首遍 6 行 —— doc_flow {flywheel, joycon-typeless, personal-assistant, tidal-echo}="1"、
   pipeline_dag flywheel="1"、pipeline_work_kind flywheel="1";第二遍 1 行 —— ponytail `*`="0"。
   manifest 以常量写死在脚本里。
-- **YAML 只作删 key 前的一致性检查**(raw yaml parse,新 ConfigLoader 会拒 key 不能用):
-  manifest 与 config 现值不符 → 非零退出(说明现场与票据台账漂移,人工核对)。文件已删 key /
-  不存在 → 跳过该检查(第二遍形态)。
+- **两个显式 phase,不可混淆(Codex R2 #1)**:同一脚本 `--phase pre-cutover|post-deploy` 必选。
+  - `pre-cutover`:必须找到全部 6 个 config 文件,并**双向**核对完整 legacy 台账 —— 不止正向命中
+    manifest(doc_flow×4 / dag / work_kind 现值),还包括「所有已声明 checkpoint 仍带
+    `enabled: true`」与「由六项目旧行为推导出的非默认行集合 == manifest」;缺文件 / 缺预期旧
+    key / 出现额外旧值 → 非零退出(G1 前置)。通过后产出 **G1 receipt 文件**(行集 + config
+    摘要 + 时间戳)。
+  - `post-deploy`:才允许旧 key 不存在;**必须以 `--receipt` 引用首遍产出的 G1 receipt**,否则拒跑。
+  - RED 测试:「首遍误用 post 形态」「后遍误用 pre 形态」都必须非零退出。一次性脚本参数 +
+    产物,不增加运行时机制。
 - **幂等判定 = 精确读 raw 行**:`StateStore.openForMaintenance(dbPath, {readonly:true})`
   (StateStore.ts:1717 一带,better-sqlite3 WAL 只读打开是 sanctioned 路径)逐行读:
   行存在且 raw 相同 → no-op(**不重放 stage/apply** —— `applyScopedFlagValueChange` 同值重放
@@ -179,7 +190,7 @@ flowchart LR
 - 5 个外部 repo 各一 PR(实施节点开,PR 号列入本单 PR body):
   GeoForge3D / growth(各 3 checkpoint enabled);joycon-typeless / personal-assistant
   (doc_flow.enabled + 3 checkpoint);tidal-echo(doc_flow.enabled + 2 checkpoint)。
-- 每个外部 PR body 注明:merge 时机 = flywheel PR merge + 迁移第一遍之后、班车之前(§4 时序)。
+- 每个外部 PR body 注明:merge 时机 = G1 过后、班车维护窗内(§3 时序硬门禁)。
 
 ### Step 7 — 验收:隔离真 Bridge 前后对照 + rg(绑定 commit/config/DB manifest,Codex R1 #6)
 - 配方复用 FLY-2100 Step 7(独立 HOME/TEAMLEAD_DB_PATH/TEAMLEAD_PORT/FLYWHEEL_BRIDGE_URL/隔离
@@ -220,17 +231,22 @@ sequenceDiagram
   S->>S: 门禁 G2:核验 7 行 raw 全在 + Step 7 对照全绿
 ```
 
-硬门禁(不再是「尽量紧贴」,Codex R1 #6):
-- **G1(删任何 config key 之前)**:第一遍结束后以 `openForMaintenance(readonly)` 精确核验
-  6 行 raw 全部落库;缺行/异值 → 停,**不得 merge 任何 config PR**。
+硬门禁(不再是「尽量紧贴」,Codex R1 #6 + R2 #2):
+- **G1(删任何 config key 之前)**:第一遍结束后以 `openForMaintenance(readonly)` +
+  `listScopedFlagValueRows()` 对 **7 个 flag 做 exact-set 校验:行集必须恰好等于 manifest 的
+  6 行** —— 缺行 / 异值 / **任何额外 name/scope/raw 行**(例如预存的 `proofshot/*=1`、
+  `doc_flow/geoforge3d=1`:今天只影响显示,切换后会成为运行时 authority)都 → 停,人工裁决,
+  不静默覆盖,**不得 merge 任何 config PR**。
 - **配置切换收进班车维护窗**:Bridge 停机期间才 merge 外部 config PR 并同步 6 个 main
   checkout(git pull),然后起新 Bridge —— 「老代码读到删 key 后的 config」的窗口收敛为 0
   (老 Bridge 停机,无 dispatch)。窗内任何一步失败 → 停在原地回起老 Bridge + 老 config
   (此时行只有老白名单可接受的 5-flag 成员,老二进制启动无碍)。
-- **G2(放行前)**:新 Bridge 起来后第二遍补 ponytail `*`=0,核验 7 行 raw 全在 + Step 7 对照
-  快照全绿(fresh run、active DAG recovery、DOC-FLOW prompt、ProofShot session_params、
-  ponytail resolver、split、xhs planner 的可观察结果);任何缺行、异值、第二遍未完成 → 不放行,
-  QA 报告如实记 FAIL。
+- **G2(放行前)**:新 Bridge 起来后第二遍(`--phase post-deploy --receipt <G1 receipt>`)补
+  ponytail `*`=0,对 7 个 flag **exact-set 校验:行集恰好等于最终 7 行**(额外行同样停)+
+  Step 7 对照快照全绿(fresh run、active DAG recovery、DOC-FLOW prompt、ProofShot
+  session_params、ponytail resolver、split、xhs planner 的可观察结果);任何缺行、异值、额外行、
+  第二遍未完成 → 不放行,QA 报告如实记 FAIL。测试补 extra-project-row / extra-star-row 两个
+  RED case。
 
 ## 4. 验收 ↔ 步骤映射
 
@@ -244,17 +260,20 @@ sequenceDiagram
 
 ## 5. 风险与回滚
 
-- **迁移行缺失风险**(部署了新代码但没跑脚本):doc_flow 4 项目注入静默关。防线:Step 7 对照是
-  发布门;部署时序把「第一遍脚本」放 merge 后立即执行;新 Bridge 启动日志打印 scoped 行计数供
-  QA 核对。
+- **迁移行缺失风险**(部署了新代码但没跑脚本):doc_flow 4 项目注入静默关。防线:§3 的
+  G1(exact-set,删 config 前)与 G2(exact-set,放行前)双门禁 + Step 7 对照是发布门。
 - **回滚 fence(Codex R1 #1 —— 初稿「旧代码忽略新行」是错的)**:老二进制的
   `ensureFlagValueRows` 启动即断言全部行身份(StateStore.ts:4919-4935),ponytail /
   split 的行会让**老二进制启动失败**,不是被忽略。降级只有两条路,按序执行:
-  ① 用**新二进制**(或 CLI 经新 Bridge)`feature-flags clear` 掉 ponytail / split 的**全部
-  scope 行**,以 `openForMaintenance(readonly)` 核验为空后,才允许回滚老二进制 + 恢复 config
-  key(revert 外部 repo);② 若老二进制已回滚到起不来的状态,只能前滚回新二进制或走经验证的
-  DB 恢复流程。**回滚演练测试**:老白名单 + 新身份行 → `ensureFlagValueRows` 必抛
-  (RED 固定该事实,防 runbook 再建立在错误假设上)。无 DDL 变更,无 FLY-2100 那类
+  ① **先以 `openForMaintenance(readonly)` 枚举 ponytail / split 的全部 scope 行**(Codex R2
+  #4):全部属于 `*` / 当前 roster → 用**新二进制**经 CLI `feature-flags clear` 逐行清,复核为空
+  后才允许回滚老二进制 + 恢复 config key(revert 外部 repo);**发现 orphan scope(项目已退役出
+  roster)→ 禁止降级** —— flag-routes 的 stage/apply 都拒非 roster scope(:187-195,:398-415),
+  CLI 清不掉它,老二进制照样 boot failure;只能临时恢复该项目的 roster 身份后经新 Bridge 清理,
+  或走 roll-forward / DB 恢复路径。不新增绕过 route 的维护写器。② 若老二进制已回滚到起不来的
+  状态,只能前滚回新二进制或走经验证的 DB 恢复流程。**回滚演练测试**:老白名单 + 新身份行 →
+  `ensureFlagValueRows` 必抛;**orphan-scope case**:非 roster 项目行存在时 CLI clear 400、
+  降级路径判定「禁止」(RED 固定这两个事实,防 runbook 再建立在错误假设上)。无 DDL 变更,无 FLY-2100 那类
   forward-only 降级问题 —— 但行身份 fence 使降级同样是「先清行再回」的有序动作。
 - **扫描面**:2 个 spec 删除走 flag 级 departure 既有机制(FLY-2104 per-scope 账本自行修剪);
   不需本单动扫描代码 —— 全仓测试若揭示扫描 fixture 引用被删 flag,按测试 fixture 更新处置。
