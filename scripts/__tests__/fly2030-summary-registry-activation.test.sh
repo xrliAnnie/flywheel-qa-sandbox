@@ -73,6 +73,17 @@ else
 fi
 unset INLINE_PROJECTS
 
+: > "$ROOT/pnpm.calls"
+rm -f "$ROOT/repo/packages/flywheel-comm/src/bin/summary-registry.ts"
+if run_preflight >/dev/null 2>&1; then
+  fail "missing source CLI was accepted"
+else
+  pass "missing source CLI fails closed"
+fi
+[[ ! -s "$ROOT/pnpm.calls" ]] \
+  && pass "missing source CLI is rejected before invoking pnpm" \
+  || fail "missing source CLI still invoked pnpm"
+
 pull_line=$(grep -n '^preflight_pull_latest_main || exit 1$' "$RESTART" | cut -d: -f1)
 gate_line=$(grep -n '^if ! summary_registry_activation_preflight; then$' "$RESTART" | cut -d: -f1)
 mutation_line=$(grep -n '^if ! default_lead_agent_env_converge ' "$RESTART" | cut -d: -f1)

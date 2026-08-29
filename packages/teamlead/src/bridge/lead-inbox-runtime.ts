@@ -177,6 +177,8 @@ export class LeadInboxRuntime {
 		start: string,
 	) => ProcessTupleState;
 	private readonly retiredLeadScanCursor = new Map<string, string>();
+	private readonly lastDeadAlertReconcileAtMs = new Map<string, number>();
+	private readonly lastArchiveAttemptAtMs = new Map<string, number>();
 	private retiredLeadReconcileRunning = false;
 	private cutoverPromise?: Promise<void>;
 
@@ -347,13 +349,53 @@ export class LeadInboxRuntime {
 						if (leadIndex === 0) {
 							await runnerLane.tick();
 							const queueConfig = resolveMailboxQueueConfig();
-							this.reconcileDeadLetterAlertIntents({
-								project,
-								queue,
-								resolveOwningLead,
-								windowMs: queueConfig.deadLetterWindowMs,
-							});
+							const maintenanceAtMs = Date.now();
+							const lastDeadAlertReconcileAtMs =
+								this.lastDeadAlertReconcileAtMs.get(project.projectName);
+							if (
+								lastDeadAlertReconcileAtMs === undefined ||
+								maintenanceAtMs - lastDeadAlertReconcileAtMs >=
+									queueConfig.deadLetterScanIntervalMs
+							) {
+								this.reconcileDeadLetterAlertIntents({
+									project,
+									queue,
+									resolveOwningLead,
+									windowMs: queueConfig.deadLetterWindowMs,
+								});
+								this.lastDeadAlertReconcileAtMs.set(
+									project.projectName,
+									maintenanceAtMs,
+								);
+							}
 							await this.drainDeadLetterAlerts(queueConfig.deadLetterWindowMs);
+							const lastArchiveAttemptAtMs = this.lastArchiveAttemptAtMs.get(
+								project.projectName,
+							);
+							if (
+								lastArchiveAttemptAtMs === undefined ||
+								maintenanceAtMs - lastArchiveAttemptAtMs >=
+									queueConfig.archiveIntervalMs
+							) {
+								// Attempt-level throttle: even a failed maintenance pass waits for
+								// the next interval instead of turning into a one-second error loop.
+								this.lastArchiveAttemptAtMs.set(
+									project.projectName,
+									maintenanceAtMs,
+								);
+								const archiveAt = new Date(maintenanceAtMs).toISOString();
+								try {
+									queue.archiveDueFamilies({
+										now: archiveAt,
+										maxFamilies: 5,
+									});
+									queue.drainContentRefGc({ now: archiveAt, limit: 1 });
+								} catch (error) {
+									console.warn(
+										`[lead-inbox-runtime] mailbox archive maintenance failed for project=${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								}
+							}
 						}
 					},
 					handleProtocol: (row) => protocol.handle(row),

@@ -79,6 +79,8 @@ describe("Raya summary PR read-only verifier", () => {
 			ok: true,
 			verifiedHeadSha: "a".repeat(40),
 			fileCount: 1,
+			files: ["summaries/flywheel/2026-08-28--eng-lead--01.md"],
+			projects: ["flywheel"],
 		});
 		expect(gh.listPullRequestFiles).toHaveBeenCalledWith("xrliAnnie/raya", 7);
 	});

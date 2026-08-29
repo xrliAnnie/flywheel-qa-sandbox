@@ -111,11 +111,17 @@ describe("fleet-capabilities — effort options/targets (FLY-671, backend-aware)
 		expect(computeEffortOptions("claude-code")).toBe(EFFORT_OPTIONS);
 	});
 
-	it("Codex Lead effort is display-only: only null target, readonly chip", () => {
-		expect(computeAllowedEffortTargets("codex-app-server")).toEqual([null]);
+	it("Codex Lead effort uses the same active five-level runtime path", () => {
+		expect(computeAllowedEffortTargets("codex-app-server")).toEqual([
+			null,
+			"low",
+			"medium",
+			"high",
+			"xhigh",
+			"max",
+		]);
 		const opts = computeEffortOptions("codex-app-server");
-		expect(opts).toHaveLength(1);
-		expect(opts[0]?.readonly).toBe(true);
+		expect(opts).toBe(EFFORT_OPTIONS);
 	});
 
 	it("computeLeadCapabilities carries effortOptions + allowedEffortTargets", () => {

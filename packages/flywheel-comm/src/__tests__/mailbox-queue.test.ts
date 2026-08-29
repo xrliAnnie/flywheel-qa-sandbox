@@ -704,6 +704,45 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
+	it("advances the production five-family batch past not-due families", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			for (let index = 0; index < 40; index += 1) {
+				const id = `pinned-question-${String(index).padStart(2, "0")}`;
+				enqueueLead(queue, id);
+				queue.ack(
+					id,
+					new Date(
+						Date.parse("2026-08-01T00:00:00.000Z") + index,
+					).toISOString(),
+				);
+			}
+			queue.enqueue({
+				id: "archivable-behind-pinned-window",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "must not remain hidden",
+				createdAt: NOW,
+				senderRef: SENDER_REF,
+			});
+			queue.ack("archivable-behind-pinned-window", "2026-08-01T00:00:01.000Z");
+
+			let archivedFamilies = 0;
+			for (let pass = 0; pass < 10 && archivedFamilies === 0; pass += 1) {
+				archivedFamilies += queue.archiveDueFamilies({
+					now: "2026-08-05T00:00:00.000Z",
+					maxFamilies: 5,
+				}).archivedFamilies;
+			}
+			expect(archivedFamilies).toBe(1);
+			expect(queue.getById("archivable-behind-pinned-window")).toBeUndefined();
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("archives content-ref bytes before the GC outbox deletes the file", () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1572-archive-"));
 		const dbPath = join(dir, "comm.db");
@@ -736,12 +775,21 @@ describe("FLY-1572 MailboxQueue", () => {
 				bytes: 9,
 				content_base64: Buffer.from("full body").toString("base64"),
 			});
+			let contentRefReads = 0;
 			expect(
-				queue.drainContentRefGc({ now: "2026-08-05T00:00:01.000Z" }),
+				queue.drainContentRefGc({
+					now: "2026-08-05T00:00:01.000Z",
+					readFile: (path) => {
+						contentRefReads += 1;
+						expect(db.inTransaction).toBe(false);
+						return readFileSync(path);
+					},
+				}),
 			).toEqual({
 				done: 1,
 				pending: 0,
 			});
+			expect(contentRefReads).toBe(1);
 			expect(existsSync(refPath)).toBe(false);
 			expect(readFileSync(dbPath).length).toBeGreaterThan(0);
 		} finally {
@@ -780,6 +828,37 @@ describe("FLY-1572 MailboxQueue", () => {
 			queue.close();
 		}
 	});
+
+	it("archives ten near-cap families in a bounded explicit batch", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			for (let index = 0; index < 10; index += 1) {
+				const id = `near-cap-${index}`;
+				queue.enqueue({
+					id,
+					fromAgent: "lead-a",
+					toAgent: "runner-a",
+					recipientKind: "runner",
+					type: "instruction",
+					content: "x".repeat(1_800_000),
+					createdAt: NOW,
+					senderRef: SENDER_REF,
+				});
+				queue.ack(id, "2026-08-01T00:00:00.000Z");
+			}
+
+			const result = queue.archiveDueFamilies({
+				now: "2026-08-05T00:00:00.000Z",
+				maxFamilies: 10,
+			});
+			expect(result).toMatchObject({
+				archivedFamilies: 10,
+				archivedMessages: 10,
+			});
+		} finally {
+			queue.close();
+		}
+	}, 20_000);
 
 	it("keeps the row live when its content-ref cannot be captured", () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1572-missing-ref-"));

@@ -120,6 +120,8 @@ describe("FLY-1573 mailbox queue config", () => {
 		["FLYWHEEL_MAILBOX_INFLIGHT_BATCHES", 1, 20, 3],
 		["FLYWHEEL_MAILBOX_LEASE_RETRY_MAX", 0, 10, 3],
 		["FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS", 10_000, 86_400_000, 1_800_000],
+		["FLYWHEEL_MAILBOX_DEADSCAN_INTERVAL_MS", 1_000, 3_600_000, 30_000],
+		["FLYWHEEL_MAILBOX_ARCHIVE_INTERVAL_MS", 10_000, 86_400_000, 60_000],
 		["FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX", 1, 100_000, 55],
 	])(
 		"validates %s inclusively and falls back outside the range",
@@ -132,6 +134,8 @@ describe("FLY-1573 mailbox queue config", () => {
 				FLYWHEEL_MAILBOX_INFLIGHT_BATCHES: "inflightMaxBatches",
 				FLYWHEEL_MAILBOX_LEASE_RETRY_MAX: "leaseRetryMax",
 				FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS: "deadLetterWindowMs",
+				FLYWHEEL_MAILBOX_DEADSCAN_INTERVAL_MS: "deadLetterScanIntervalMs",
+				FLYWHEEL_MAILBOX_ARCHIVE_INTERVAL_MS: "archiveIntervalMs",
 				FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX: "unavailableRetryMax",
 			}[name] as keyof typeof DEFAULT_MAILBOX_QUEUE_CONFIG;
 

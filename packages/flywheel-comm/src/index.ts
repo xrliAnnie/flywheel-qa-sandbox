@@ -113,7 +113,10 @@ Commands:
   lead-identity  Resolve one immutable Lead identity from an explicit registry selector
   summary-registry  Migrate or verify the FLY-2030 summary assignment registry fence
   summary   Validate and deliver one Lead-authored summary PR; summary verify-pr
-            validates a Raya PR's complete current-head diff and prints its verified SHA
+            validates a Raya PR's complete current-head diff and prints its verified SHA;
+            summary merge --repo <owner/repo> --pr <n> [--round <id>]
+            [--method <merge|squash|rebase>] [--dry-run] atomically binds an
+            allowed summary merge to that verified head
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id

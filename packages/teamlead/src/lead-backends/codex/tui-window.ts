@@ -23,7 +23,10 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { buildTmuxServerBirthEnvironment } from "flywheel-claude-runner";
+import {
+	buildTmuxServerBirthEnvironment,
+	withSyncOpMarker,
+} from "flywheel-claude-runner";
 
 export const TUI_TMUX_SESSION = "flywheel";
 
@@ -113,11 +116,14 @@ function defaultExec(
 	options: { env?: NodeJS.ProcessEnv } = {},
 ): { ok: boolean } {
 	try {
-		const r = spawnSync(cmd, args, {
-			stdio: "ignore",
-			timeout: 10_000,
-			...(options.env ? { env: options.env } : {}),
-		});
+		const subcommand = args.find((arg) => !arg.startsWith("-")) ?? cmd;
+		const r = withSyncOpMarker(`codex-tui:${subcommand}`, () =>
+			spawnSync(cmd, args, {
+				stdio: "ignore",
+				timeout: 10_000,
+				...(options.env ? { env: options.env } : {}),
+			}),
+		);
 		return { ok: r.status === 0 };
 	} catch {
 		return { ok: false };
@@ -197,7 +203,10 @@ export function isTuiWindowAlive(
 		deps.execOut ??
 		((cmd: string, args: string[]) => {
 			try {
-				const r = spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 });
+				const subcommand = args.find((arg) => !arg.startsWith("-")) ?? cmd;
+				const r = withSyncOpMarker(`codex-tui:${subcommand}`, () =>
+					spawnSync(cmd, args, { encoding: "utf8", timeout: 5_000 }),
+				);
 				return r.status === 0 ? r.stdout.trim() : undefined;
 			} catch {
 				return undefined;

@@ -22,9 +22,12 @@ function required(value: string | undefined, name: string): string {
 	return value;
 }
 
-function defaultTeamleadValidator(candidatePath: string): void {
+function defaultTeamleadValidator(
+	candidatePath: string,
+	env: NodeJS.ProcessEnv = process.env,
+): void {
 	const packagesDir = join(dirname(fileURLToPath(import.meta.url)), "../../..");
-	const configured = process.env.FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR;
+	const configured = env.FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR;
 	const validator =
 		configured ?? join(packagesDir, "teamlead/src/bin/validate-projects.ts");
 	const result = configured
@@ -77,7 +80,8 @@ export function runSummaryRegistryCommand(
 		const projectsPath = required(values["projects-file"], "--projects-file");
 		const receiptPath = required(values["receipt-file"], "--receipt-file");
 		const validateTeamleadCandidate =
-			deps.validateTeamleadCandidate ?? defaultTeamleadValidator;
+			deps.validateTeamleadCandidate ??
+			((candidatePath) => defaultTeamleadValidator(candidatePath, env));
 		if (subcommand === "migrate") {
 			if (env.FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD !== "1") {
 				stderr(

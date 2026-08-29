@@ -121,6 +121,16 @@ export interface CodexLeadRuntimeConfig {
 	/** FLY-404: show the Discord "typing…" indicator while processing a founder
 	 * message. Permanently enabled; posts via the Lead's own bot token. */
 	typingEnabled: boolean;
+	/** FLY-2131: optional Codex thread model pin. Absent stays absent so existing
+	 * Leads keep byte-identical thread/start and thread/resume params. */
+	model?: string;
+	/** FLY-2131: Codex protocol reasoning effort (not a CLI flag). */
+	reasoningEffort?: "low" | "medium" | "high" | "xhigh" | "max";
+	/** FLY-2131: explicit Codex model context window, e.g. Raya's 1M pin. */
+	modelContextWindow?: number;
+	/** FLY-2131: Raya-only v1 context metrics + explicit unavailable ledger. */
+	contextUsagePath?: string;
+	contextUsageUnavailablePath?: string;
 	/** Persona/identity files (e.g. `.lead/<id>/identity.md` + companion-safety-
 	 * contract) read + concatenated into the thread's `baseInstructions` system
 	 * prompt — the Codex equivalent of claude-lead.sh's `--append-system-prompt-file`.
@@ -241,6 +251,14 @@ export function pathsOverlap(a: string, b: string): boolean {
 		rel !== "" && !rel.startsWith("..") && !isAbsolute(rel);
 	// `b` under `a`  OR  `a` under `b`.
 	return under(relative(a, b)) || under(relative(b, a));
+}
+
+function containsAsciiControl(value: string): boolean {
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		if (code <= 31 || code === 127) return true;
+	}
+	return false;
 }
 
 export interface LeadWorkspaceContext {
@@ -522,6 +540,7 @@ export function parseCodexLeadRuntimeConfig(
 	const codexBin = req("FLYWHEEL_CODEX_BIN");
 	const codexHome = req("CODEX_HOME");
 	const commDbPath = req("FLYWHEEL_COMM_DB");
+	const rayaMetricsDir = leadId === "raya" ? req("RAYA_METRICS_DIR") : "";
 	// Bridge fields: required only when outbound routes through the Bridge.
 	const bridgeUrl =
 		outboundMode === "bridge"
@@ -550,6 +569,11 @@ export function parseCodexLeadRuntimeConfig(
 	if (!/^[a-f0-9]{64}$/.test(identityDigest)) {
 		throw new Error(
 			"codex-lead-runtime: FLYWHEEL_LEAD_IDENTITY_DIGEST must be a 64-character lowercase hex digest",
+		);
+	}
+	if (rayaMetricsDir && !isAbsolute(rayaMetricsDir)) {
+		throw new Error(
+			"codex-lead-runtime: RAYA_METRICS_DIR must be an absolute path",
 		);
 	}
 	if (env.LEAD_ID !== undefined && env.LEAD_ID.trim() !== leadId) {
@@ -664,6 +688,50 @@ export function parseCodexLeadRuntimeConfig(
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
+	// FLY-2131 M2-a: these are thread protocol fields, shared by the headless and
+	// TUI runtimes through buildThreadParams. Do not materialize absent fields: the
+	// default path must retain the exact pre-M2 JSON frame bytes.
+	let model: string | undefined;
+	if (env.FLYWHEEL_LEAD_MODEL !== undefined) {
+		model = env.FLYWHEEL_LEAD_MODEL.trim();
+		if (!model || containsAsciiControl(model)) {
+			throw new Error(
+				"codex-lead-runtime: FLYWHEEL_LEAD_MODEL must be a non-empty string without control characters",
+			);
+		}
+	}
+	let reasoningEffort: CodexLeadRuntimeConfig["reasoningEffort"];
+	if (env.FLYWHEEL_LEAD_EFFORT !== undefined) {
+		const effort = env.FLYWHEEL_LEAD_EFFORT.trim();
+		if (
+			effort !== "low" &&
+			effort !== "medium" &&
+			effort !== "high" &&
+			effort !== "xhigh" &&
+			effort !== "max"
+		) {
+			throw new Error(
+				`codex-lead-runtime: FLYWHEEL_LEAD_EFFORT="${effort}" invalid (one of: low, medium, high, xhigh, max)`,
+			);
+		}
+		reasoningEffort = effort;
+	}
+	let modelContextWindow: number | undefined;
+	if (env.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW !== undefined) {
+		const raw = env.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW.trim();
+		const parsed = Number(raw);
+		if (
+			!/^\d+$/.test(raw) ||
+			!Number.isSafeInteger(parsed) ||
+			parsed < 1 ||
+			parsed > 10_000_000
+		) {
+			throw new Error(
+				`codex-lead-runtime: FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW="${raw}" must be an integer from 1 through 10000000`,
+			);
+		}
+		modelContextWindow = parsed;
+	}
 	// App-server sandbox policy (HIGH-1) — validate against the schema enum; default
 	// read-only (companion). An unknown value fails loud rather than silently default.
 	const sandboxRaw = env.FLYWHEEL_CODEX_LEAD_SANDBOX?.trim() || "read-only";
@@ -827,6 +895,18 @@ export function parseCodexLeadRuntimeConfig(
 		chrome,
 		outboundMode,
 		typingEnabled,
+		...(model ? { model } : {}),
+		...(reasoningEffort ? { reasoningEffort } : {}),
+		...(modelContextWindow ? { modelContextWindow } : {}),
+		...(rayaMetricsDir
+			? {
+					contextUsagePath: join(rayaMetricsDir, "context-usage.jsonl"),
+					contextUsageUnavailablePath: join(
+						rayaMetricsDir,
+						"context-usage-unavailable.jsonl",
+					),
+				}
+			: {}),
 		systemPromptFiles,
 		sandboxMode,
 		codexProfile,
@@ -989,7 +1069,12 @@ export function resolveControlPlaneRoots(
 export function buildThreadParams(
 	config: Pick<
 		CodexLeadRuntimeConfig,
-		"sandboxMode" | "workspace" | "fullAccessProjectRoot"
+		| "sandboxMode"
+		| "workspace"
+		| "fullAccessProjectRoot"
+		| "model"
+		| "reasoningEffort"
+		| "modelContextWindow"
 	>,
 	baseInstructions: string | undefined,
 ): Record<string, unknown> {
@@ -1008,6 +1093,20 @@ export function buildThreadParams(
 	else if (config.fullAccessProjectRoot)
 		params.cwd = config.fullAccessProjectRoot;
 	if (baseInstructions) params.baseInstructions = baseInstructions;
+	if (config.model) params.model = config.model;
+	if (
+		config.reasoningEffort !== undefined ||
+		config.modelContextWindow !== undefined
+	) {
+		params.config = {
+			...(config.reasoningEffort !== undefined
+				? { model_reasoning_effort: config.reasoningEffort }
+				: {}),
+			...(config.modelContextWindow !== undefined
+				? { model_context_window: config.modelContextWindow }
+				: {}),
+		};
+	}
 	return params;
 }
 

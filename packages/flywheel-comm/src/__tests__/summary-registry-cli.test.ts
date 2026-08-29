@@ -1,5 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -112,6 +118,7 @@ describe("flywheel-comm summary-registry", () => {
 				homeDir: f.dir,
 				env: { FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD: "1" },
 				stdout: (line) => stdout.push(line),
+				validateTeamleadCandidate: () => undefined,
 			},
 		);
 		expect(rc).toBe(0);
@@ -122,8 +129,50 @@ describe("flywheel-comm summary-registry", () => {
 			runSummaryRegistryCommand(["verify-activation", ...common], {
 				homeDir: f.dir,
 				stdout: (line) => stdout.push(line),
+				validateTeamleadCandidate: () => undefined,
 			}),
 		).toBe(0);
 		expect(JSON.parse(stdout[0]!)).toMatchObject({ ok: true });
+	});
+
+	it("uses the configured lightweight Node validator without pnpm/tsx", () => {
+		const f = fixture();
+		const common = [
+			"--projects-file",
+			f.projectsPath,
+			"--receipt-file",
+			f.receiptPath,
+		];
+		expect(
+			runSummaryRegistryCommand(
+				[
+					"migrate",
+					...common,
+					"--assignments-file",
+					f.assignmentsPath,
+					"--expected-sha256",
+					createHash("sha256").update(f.projects).digest("hex"),
+				],
+				{
+					homeDir: f.dir,
+					env: { FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD: "1" },
+					validateTeamleadCandidate: () => undefined,
+				},
+			),
+		).toBe(0);
+
+		const markerPath = join(f.dir, "validator-called");
+		const validatorPath = join(f.dir, "validator.mjs");
+		writeFileSync(
+			validatorPath,
+			`import { appendFileSync, readFileSync } from "node:fs";\nreadFileSync(process.argv[2], "utf8");\nappendFileSync(${JSON.stringify(markerPath)}, process.argv[2] + "\\n");\n`,
+		);
+		expect(
+			runSummaryRegistryCommand(["verify-activation", ...common], {
+				homeDir: f.dir,
+				env: { FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR: validatorPath },
+			}),
+		).toBe(0);
+		expect(existsSync(markerPath)).toBe(true);
 	});
 });

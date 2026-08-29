@@ -149,6 +149,8 @@ CREATE INDEX IF NOT EXISTS mailbox_legacy_adopt
     AND recipient_kind <> 'lead';
 CREATE INDEX IF NOT EXISTS mailbox_questions_by_recipient
   ON mailbox(to_agent, created_at) WHERE type = 'question';
+CREATE INDEX IF NOT EXISTS mailbox_questions_by_sender
+  ON mailbox(from_agent, created_at) WHERE type = 'question';
 CREATE INDEX IF NOT EXISTS mailbox_deliverable_by_agent
   ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED';
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_unique_response
@@ -157,6 +159,12 @@ CREATE INDEX IF NOT EXISTS mailbox_archive_acked
   ON mailbox(acked_at) WHERE state = 'ACKED';
 CREATE INDEX IF NOT EXISTS mailbox_archive_dead
   ON mailbox(dead_at) WHERE state = 'DEAD';
+CREATE INDEX IF NOT EXISTS mailbox_dead_scan
+  ON mailbox(recipient_kind, to_agent, seq)
+  WHERE state = 'DEAD' AND carrier = 'inbox';
+CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
+  ON mailbox(source_ref, seq)
+  WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter';
 
 -- Internal read-only compatibility projection while CommDB keeps its public
 -- Message shape. The legacy object names remain poisoned below.

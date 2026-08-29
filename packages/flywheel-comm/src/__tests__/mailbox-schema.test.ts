@@ -82,6 +82,23 @@ describe("FLY-1572 mailbox schema", () => {
 		}
 	});
 
+	it("creates the bounded dead-letter scan indexes for a new mailbox", () => {
+		const db = openMailboxDb();
+		try {
+			const indexes = db
+				.prepare(
+					"SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('mailbox_dead_scan','mailbox_dead_notice_lookup') ORDER BY name",
+				)
+				.all();
+			expect(indexes).toEqual([
+				{ name: "mailbox_dead_notice_lookup" },
+				{ name: "mailbox_dead_scan" },
+			]);
+		} finally {
+			db.close();
+		}
+	});
+
 	it("requires a live identity reservation before inserting a mailbox row", () => {
 		const db = openMailboxDb();
 		try {

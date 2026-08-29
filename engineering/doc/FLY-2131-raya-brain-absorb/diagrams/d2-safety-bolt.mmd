@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant R as Raya
+  participant C as summary merge 命令
+  participant G as GitHub
+  R->>C: 请求合入某条 summary PR
+  C->>G: 取 PR 当前内容与状态
+  C->>C: 逐条机器核验:只动 summaries/ 目录,无任何可执行文件
+  C->>G: 执行 merge,并钉死「必须仍是刚核验过的那个版本」
+  alt 核验之后有人又推了新内容
+    G-->>C: 拒绝(版本对不上)
+    C-->>R: 失败并如实报告,绝不静默放行
+  else 版本没变
+    G-->>C: merge 成功
+    C->>C: 账本追加一行回执(时间 / PR / 项目)
+  end

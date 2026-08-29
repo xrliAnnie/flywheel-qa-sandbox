@@ -271,6 +271,7 @@ import {
 	storeLoopProfilerEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
+	storeSummaryAbsorptionCadenceMs,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
 	storeXiaohongshuLearningEnabled,
@@ -544,6 +545,7 @@ import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 } from "./stuck-remanage-routes.js";
+import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -8402,6 +8404,12 @@ export async function startBridge(
 		},
 		log: (message) => console.warn(message),
 	});
+	const summaryAbsorptionPass = createSummaryAbsorptionPass({
+		projects,
+		store,
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		cadenceMs: () => storeSummaryAbsorptionCadenceMs(flagStore),
+	});
 	const { activePatrolTargets, createPatrolOrphanSweeperPass } = await import(
 		"./patrol-orphan-sweeper.js"
 	);
@@ -8506,6 +8514,7 @@ export async function startBridge(
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
 		onLeadPatrolTick: leadPatrolTickPass,
+		onSummaryAbsorptionTick: summaryAbsorptionPass,
 		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
 		...(cmuxWatcherPatrol
 			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }

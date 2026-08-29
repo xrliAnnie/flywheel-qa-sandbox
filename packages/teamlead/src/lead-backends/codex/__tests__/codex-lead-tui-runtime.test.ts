@@ -224,6 +224,26 @@ describe("wireDemuxedProcess", () => {
 		f.fire("notification", "item/agentMessage/delta", { turnId: "x" });
 		expect(activity).toBe(2);
 	});
+
+	it("observes raw token usage before turn demux filtering", () => {
+		const f = fakeProc();
+		const usage: unknown[] = [];
+		wireDemuxedProcess({
+			proc: f.proc,
+			onFounderTurnCompleted: () => {},
+			onTokenUsage: (params) => usage.push(params),
+		});
+		const params = {
+			threadId: "raya-thread",
+			turnId: "founder-turn",
+			tokenUsage: { total: { totalTokens: 10 }, modelContextWindow: 1_000_000 },
+		};
+		f.fire("notification", "thread/tokenUsage/updated", params);
+		f.fire("notification", "item/agentMessage/delta", {
+			turnId: "founder-turn",
+		});
+		expect(usage).toEqual([params]);
+	});
 });
 
 describe("awaitTurnCompletion (bootstrap turn isolation — review HIGH-2)", () => {

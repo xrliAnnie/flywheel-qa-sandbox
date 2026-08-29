@@ -144,6 +144,101 @@ describe("flywheel-comm lead-identity resolve", () => {
 		);
 		expect(stdout.join("\n")).not.toContain("ENG_BOT_TOKEN=");
 		expect(stdout.join("\n")).not.toContain("DISCORD_BOT_TOKEN=");
+		expect(stdout.join("\n")).not.toContain("FLYWHEEL_LEAD_MODEL=");
+		expect(stdout.join("\n")).not.toContain("FLYWHEEL_LEAD_EFFORT=");
+		expect(stdout.join("\n")).not.toContain(
+			"FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=",
+		);
+	});
+
+	it("projects Codex model tuning from the canonical registry", () => {
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					projectRoot: dir,
+					leads: [
+						{
+							agentId: "raya",
+							summaryRole: "recipient",
+							backend: "codex-app-server",
+							model: "gpt-5.6-sol",
+							effort: "xhigh",
+							modelContextWindow: 1_000_000,
+							botTokenEnv: "RAYA_BOT_TOKEN",
+							botUserId: "12345678901234567",
+						},
+					],
+				},
+			]),
+		);
+		const stdout: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"raya",
+				"--format",
+				"env",
+			],
+			{ stdout: (line) => stdout.push(line), homeDir: dir },
+		);
+
+		expect(rc).toBe(0);
+		expect(stdout).toContain("FLYWHEEL_LEAD_MODEL=gpt-5.6-sol");
+		expect(stdout).toContain("FLYWHEEL_LEAD_EFFORT=xhigh");
+		expect(stdout).toContain("FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=1000000");
+	});
+
+	it.each([
+		["model", "bad\nmodel"],
+		["effort", "ultra"],
+		["modelContextWindow", 0],
+		["modelContextWindow", 10_000_001],
+	])("rejects invalid canonical %s tuning", (field, value) => {
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					projectRoot: dir,
+					leads: [
+						{
+							agentId: "raya",
+							summaryRole: "recipient",
+							backend: "codex-app-server",
+							[field]: value,
+							botTokenEnv: "RAYA_BOT_TOKEN",
+							botUserId: "12345678901234567",
+						},
+					],
+				},
+			]),
+		);
+		const stderr: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"raya",
+			],
+			{ stderr: (line) => stderr.push(line), homeDir: dir },
+		);
+
+		expect(rc).toBe(1);
+		expect(JSON.parse(stderr.at(-1)!)).toMatchObject({
+			ok: false,
+			code: "identity_model_config_invalid",
+		});
 	});
 
 	it("returns a structured error without falling back", () => {

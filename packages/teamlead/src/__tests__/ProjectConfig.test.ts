@@ -1584,6 +1584,51 @@ describe("FLY-247 leads[].{model,backend} validation", () => {
 		expect(projects[0]!.leads[0]!.codexProfile).toBe("companion");
 	});
 
+	it("accepts active Codex model, effort, and context-window configuration", () => {
+		const projects = loadWith(
+			fleetLead({
+				backend: "codex-app-server",
+				codexProfile: "full-access",
+				canSpawnRunners: false,
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				modelContextWindow: 1_000_000,
+			}),
+		);
+		expect(projects[0]!.leads[0]).toMatchObject({
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+			modelContextWindow: 1_000_000,
+		});
+	});
+
+	it.each([0, -1, 1.5, 10_000_001, "1000000"])(
+		"rejects invalid modelContextWindow %j",
+		(modelContextWindow) => {
+			expect(() =>
+				loadWith(
+					fleetLead({
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						canSpawnRunners: false,
+						modelContextWindow,
+					} as Partial<LeadConfig>),
+				),
+			).toThrow(/modelContextWindow/);
+		},
+	);
+
+	it("rejects modelContextWindow on Claude where the field would be inert", () => {
+		expect(() =>
+			loadWith(
+				fleetLead({
+					backend: "claude-code",
+					modelContextWindow: 1_000_000,
+				}),
+			),
+		).toThrow(/modelContextWindow.*codex-app-server/);
+	});
+
 	it("FLY-350 (Z): accepts codexProfile:write-capable (canSpawnRunners:false, not a companion)", () => {
 		const projects = loadWith(
 			fleetLead({

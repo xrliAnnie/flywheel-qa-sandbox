@@ -491,6 +491,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_LEAD_BACKEND: "config value: Lead runtime backend",
 	FLYWHEEL_MEMORY_MODEL: "config value: memory model",
 	FLYWHEEL_LEAD_MODEL: "config value: per-lead model (fleet)",
+	FLYWHEEL_LEAD_EFFORT:
+		"config value: per-lead Codex reasoning effort projected from the canonical registry (FLY-2131)",
+	FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW:
+		"numeric tuning: per-lead Codex model context window projected from the canonical registry (FLY-2131)",
 	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "config value: alert channel id",
 	FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID: "config value: infra bot chat channel id",
 	FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID:
@@ -555,6 +559,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_MAILBOX_ACK_LEASE_MS:
 		"numeric tuning: mailbox agent-ack lease duration (FLY-1573)",
+	FLYWHEEL_MAILBOX_ARCHIVE_INTERVAL_MS:
+		"numeric tuning: mailbox archive maintenance cadence (FLY-2136)",
 	FLYWHEEL_MAILBOX_BATCH_WINDOW_MS:
 		"numeric tuning: mailbox grouping window (FLY-1573)",
 	FLYWHEEL_MAILBOX_BATCH_MAX:
@@ -565,6 +571,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: mailbox unacked lease retry limit (FLY-1573)",
 	FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS:
 		"numeric tuning: mailbox dead-letter notification window (FLY-1573)",
+	FLYWHEEL_MAILBOX_DEADSCAN_INTERVAL_MS:
+		"numeric tuning: mailbox dead-letter scan cadence (FLY-2136)",
 	FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX:
 		"numeric tuning: unavailable mailbox delivery retry limit (FLY-1750)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:

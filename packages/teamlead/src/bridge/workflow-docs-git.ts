@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import {
 	assertPushableBranch,
 	GIT_PUSH_SAFE_CONFIG,
@@ -13,26 +14,48 @@ interface GitResult {
 	status: number;
 	stdout: string;
 	stderr: string;
+	timedOut?: boolean;
 }
 
 export interface GitWorkflowDocsGitOptions {
 	gitPath?: string;
 	token?: string;
 	remoteUrl?: (repo: string) => string;
+	/** Test seam; production network Git calls are capped at 10 seconds. */
+	networkTimeoutMs?: number;
 }
 
 const SHA_RE = /^[0-9a-f]{40}$/;
+
+export function yieldToTimers(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function gitSubcommand(args: string[]): string {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index]!;
+		if (arg === "-c" || arg === "-C" || arg === "--git-dir") {
+			index += 1;
+			continue;
+		}
+		if (arg.startsWith("--git-dir=") || arg.startsWith("-")) continue;
+		return arg;
+	}
+	return "git";
+}
 
 export class GitWorkflowDocsGit implements WorkflowDocsGit {
 	private readonly gitPath: string;
 	private readonly token: string | undefined;
 	private readonly remoteUrl: (repo: string) => string;
+	private readonly networkTimeoutMs: number;
 	private askpassPath: string | undefined;
 
 	constructor(options: GitWorkflowDocsGitOptions = {}) {
 		this.gitPath = options.gitPath ?? "/usr/bin/git";
 		this.token =
 			options.token ?? process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+		this.networkTimeoutMs = options.networkTimeoutMs ?? 10_000;
 		this.remoteUrl =
 			options.remoteUrl ??
 			((repo) => {
@@ -48,9 +71,11 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 	}): Promise<string> {
 		const remote = this.validatedRemote(input.repo, input.ref);
 		const branch = this.remoteHead(input.projectRoot, remote, input.ref);
+		await yieldToTimers();
 		const base = branch ?? this.remoteHead(input.projectRoot, remote, "HEAD");
+		if (!branch) await yieldToTimers();
 		if (!base) throw new Error("materializer_remote_base_unavailable");
-		this.runOrThrow(
+		this.runNetworkOrThrow(
 			["fetch", "--quiet", "--no-tags", remote, base],
 			input.projectRoot,
 			undefined,
@@ -226,13 +251,15 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		if (current !== undefined && current !== input.baseHead) {
 			throw new Error("materializer remote ref advanced; stale base refused");
 		}
-		this.runOrThrow(
+		await yieldToTimers();
+		this.runNetworkOrThrow(
 			["push", "--porcelain", remote, `${input.commitHead}:${input.ref}`],
 			input.projectRoot,
 			undefined,
 			undefined,
 			"materializer push",
 		);
+		await yieldToTimers();
 		const confirmed = this.remoteHead(input.projectRoot, remote, input.ref);
 		if (confirmed !== input.commitHead) {
 			throw new Error("materializer remote head confirmation failed");
@@ -250,11 +277,16 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		remote: string,
 		ref: string,
 	): string | undefined {
-		const result = this.run(
+		const result = this.runNetwork(
 			["ls-remote", "--exit-code", remote, ref],
 			projectRoot,
 		);
-		if (result.status !== 0) return undefined;
+		if (result.status === 2) return undefined;
+		if (result.status !== 0) {
+			throw new Error(
+				`materializer remote probe failed: ${result.stderr.trim() || `exit ${result.status}`}`,
+			);
+		}
 		const head = result.stdout.trim().split(/\s+/)[0]?.toLowerCase();
 		if (!head || !SHA_RE.test(head)) {
 			throw new Error("materializer remote returned an invalid head");
@@ -367,33 +399,83 @@ export class GitWorkflowDocsGit implements WorkflowDocsGit {
 		return result;
 	}
 
+	private runNetworkOrThrow(
+		args: string[],
+		cwd: string,
+		extraEnv?: Record<string, string>,
+		input?: string,
+		label = "git",
+	): GitResult {
+		const result = this.runNetwork(args, cwd, extraEnv, input);
+		if (result.status !== 0) {
+			throw new Error(
+				`${label} failed: ${result.stderr.trim() || `exit ${result.status}`}`,
+			);
+		}
+		return result;
+	}
+
 	private run(
 		args: string[],
 		cwd: string,
 		extraEnv?: Record<string, string>,
 		input?: string,
 	): GitResult {
-		const credentialEnv = this.token ? this.gitCredentialEnv() : {};
-		const result = spawnSync(this.gitPath, [...GIT_PUSH_SAFE_CONFIG, ...args], {
+		return this.execute(args, cwd, extraEnv, input, 30_000);
+	}
+
+	private runNetwork(
+		args: string[],
+		cwd: string,
+		extraEnv?: Record<string, string>,
+		input?: string,
+	): GitResult {
+		return this.execute(
+			args,
 			cwd,
-			encoding: "utf8",
-			timeout: 30_000,
+			extraEnv,
 			input,
-			env: {
-				PATH: `${this.gitPath.replace(/\/[^/]+$/, "")}:/usr/bin:/bin`,
-				LC_ALL: "C",
-				GIT_CONFIG_GLOBAL: "/dev/null",
-				GIT_CONFIG_SYSTEM: "/dev/null",
-				GIT_TERMINAL_PROMPT: "0",
-				GIT_OPTIONAL_LOCKS: "0",
-				...credentialEnv,
-				...(extraEnv ?? {}),
-			},
-		});
+			this.networkTimeoutMs,
+			"SIGKILL",
+		);
+	}
+
+	private execute(
+		args: string[],
+		cwd: string,
+		extraEnv: Record<string, string> | undefined,
+		input: string | undefined,
+		timeout: number,
+		killSignal?: NodeJS.Signals,
+	): GitResult {
+		const credentialEnv = this.token ? this.gitCredentialEnv() : {};
+		const label = gitSubcommand(args);
+		const result = withSyncOpMarker(`workflow-docs-git:${label}`, () =>
+			spawnSync(this.gitPath, [...GIT_PUSH_SAFE_CONFIG, ...args], {
+				cwd,
+				encoding: "utf8",
+				timeout,
+				...(killSignal ? { killSignal } : {}),
+				input,
+				env: {
+					PATH: `${this.gitPath.replace(/\/[^/]+$/, "")}:/usr/bin:/bin`,
+					LC_ALL: "C",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+					GIT_CONFIG_SYSTEM: "/dev/null",
+					GIT_TERMINAL_PROMPT: "0",
+					GIT_OPTIONAL_LOCKS: "0",
+					...credentialEnv,
+					...(extraEnv ?? {}),
+				},
+			}),
+		);
 		return {
 			status: result.status ?? 1,
 			stdout: result.stdout ?? "",
-			stderr: result.stderr ?? result.error?.message ?? "",
+			stderr: result.stderr || result.error?.message || "",
+			timedOut:
+				(result.error as NodeJS.ErrnoException | undefined)?.code ===
+				"ETIMEDOUT",
 		};
 	}
 
