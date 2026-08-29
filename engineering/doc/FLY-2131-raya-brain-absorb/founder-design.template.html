@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2131 · Raya 的大脑:吸收 · 追问 · 可见汇报 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #f5f5f7; color: #1d1d1f; line-height: 1.65; padding: 24px 16px 80px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta .mono { font-family: 'SF Mono', monospace; }
+  .section { margin-bottom: 34px; }
+  .section-title { font-size: 19px; font-weight: 700; color: #1a365d; margin-bottom: 12px; }
+  .section-title .dot { margin-right: 6px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 20px 22px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.green { border-left-color: #34c759; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  .card h3 { font-size: 15px; margin-bottom: 8px; color: #1d1d1f; }
+  .card p, .card li { font-size: 14px; color: #3a3a3c; }
+  .card ul, .card ol { padding-left: 20px; margin-top: 6px; }
+  .card li { margin-bottom: 5px; }
+  .lede { font-size: 16px; font-weight: 600; color: #1d1d1f; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 16px; margin-bottom: 14px; overflow-x: auto; text-align: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .diagram-caption { font-size: 13px; color: #86868b; margin-top: 8px; text-align: center; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; margin-top: 8px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: #86868b; font-weight: 600; font-size: 12.5px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .badge.done { background: #e8f8ee; color: #1d8a43; }
+  .badge.pending { background: #fff3e0; color: #c77400; }
+  .badge.hard { background: #fdebea; color: #c62d23; }
+  .mono { font-family: 'SF Mono', monospace; font-size: 12.5px; }
+  .comment-box { margin: 4px 0 8px; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 4px; }
+  .comment-box textarea { width: 100%; min-height: 64px; border: 1px solid #d2d2d7; border-radius: 10px; padding: 10px 12px; font-family: inherit; font-size: 13.5px; color: #1d1d1f; background: #fff; resize: vertical; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; }
+  #summary-card { border-left-color: #af52de; }
+  #summary-body { white-space: pre-wrap; font-size: 13px; background: #f5f5f7; border-radius: 10px; padding: 12px; margin: 10px 0; min-height: 40px; font-family: 'SF Mono', monospace; }
+  .btn { display: inline-block; background: #007aff; color: #fff; border: none; border-radius: 10px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:active { opacity: .8; }
+  #copy-status { font-size: 13px; color: #34c759; margin-left: 10px; }
+  .chunk { margin-bottom: 8px; }
+  .chunk button { margin-top: 4px; background: #86868b; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Raya 的大脑:吸收 · 追问 · 可见汇报</h1>
+  <div class="meta">FLY-2131 · 设计方案(实施前,给你过目)· 2026-08-29 · 承接 FLY-2030 M1 · Codex 设计评审 <span class="mono">5 轮通过</span></div>
+
+  <!-- S1 -->
+  <div class="section" data-section="一句话总结">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>一句话总结</div>
+    <div class="card">
+      <p class="lede">M1 让各项目 Lead 把情况写成 summary 送进 Raya 的仓库;这一单让 Raya 真正把它们读进脑子——读不懂就去问、每轮读完必须在 #raya 发汇报给你看,配两道安全栓、语音里认得你,吸收全程不许黑箱。</p>
+      <p class="jargon" style="margin-top:8px;">summary = 各项目 Lead 定期写给总管 Raya 的情况汇总,一份「事实 + 判断」的短文;PR(pull request)= 一张「请把这份文件收进仓库」的提交单;merge(合入)= 正式收下这张单。M1 定的机制:开着的 summary PR = Raya 还没读;她 merge = 盖「已阅」章。</p>
+    </div>
+    <div class="card gray">
+      <h3>这一单的六件事(全部继承自 FLY-2030 的 M2 义务清单)</h3>
+      <table>
+        <tr><th>#</th><th>事</th><th>一句话</th></tr>
+        <tr><td>1</td><td><b>吸收</b></td><td>把 summary 读进自己的记忆,成为回答你时的背景知识</td></tr>
+        <tr><td>2</td><td><b>追问</b></td><td>没看懂的,自己去问该项目的 Lead,不猜</td></tr>
+        <tr><td>3</td><td><b>可见汇报</b></td><td>每轮读完在 #raya 发:「今天下午 6 点,我 review 了这 11 个 PR……」(你 22:04Z 的原话要求)</td></tr>
+        <tr><td>4</td><td><b>两道安全栓</b></td><td>merge 只走带核验的机械通路;部署前的检查缺零件时宁可停下</td></tr>
+        <tr><td>5</td><td><b>语音身份</b></td><td>语音里自称 Raya、叫得出你的名字(FLY-2097 移交项)</td></tr>
+        <tr><td>6</td><td><b>修一个不稳定的测试</b></td><td>QA 记档的遗留项,顺手清掉</td></tr>
+      </table>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S2 -->
+  <div class="section" data-section="核心流程:她的一轮吸收">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>核心流程:她的一轮吸收长什么样</div>
+    <div class="diagram"><!--SVG:d1--></div>
+    <div class="diagram-caption">每 6 小时(可调)一轮;「轮首对账」= 先把上一轮因意外没做完的事补上,再干新活——所以断电、重启都丢不了账。</div>
+    <div class="card green">
+      <h3>三个关键设计点</h3>
+      <ul>
+        <li><b>读懂才盖章</b>:判断(Judgment)缺失或读不懂的 summary,不许 merge——PR 留在未读队列里,先去圆桌频道(各 Lead 共同在场的 Discord 频道)@ 那位 Lead 问清楚。</li>
+        <li><b>记忆有出处</b>:每轮把「每个项目现在怎样」写进她的记忆仓,逐条注明来自哪份 summary——她答你的每句话都可以追溯到原文。</li>
+        <li><b>汇报不许黑箱</b>:只问了没吸收的轮也要报;数字全部来自机器记的账本,不许她凭印象编数。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S3 -->
+  <div class="section" data-section="两道安全栓">
+    <div class="section-title"><span class="dot" style="color:#ff3b30;">●</span>两道安全栓(M1 质检提出的硬性项)</div>
+    <div class="diagram"><!--SVG:d2--></div>
+    <div class="diagram-caption">栓①:merge 唯一通路。核验和合入被锁进同一条命令——「刚核验的是哪个版本,合入的就必须还是那个版本」,有人中途掉包,GitHub 直接拒绝。</div>
+    <div class="card red">
+      <h3>为什么需要栓①</h3>
+      <p>M1 只把「先核验、再合入」写成了给 Raya 的<b>纪律文字</b>。文字挡不住一种时序攻击:核验时 PR 里只有干净的 summary,核验完、合入前,有人往同一张 PR 里塞了别的东西(行话叫 TOCTOU,「检查时」与「使用时」之间被掉包)。栓①把两步焊死成一条机械命令,命令里<b>不存在</b>不带版本钉子的合入路径。</p>
+    </div>
+    <div class="card red">
+      <h3>栓②:部署检查宁缺勿滥</h3>
+      <p>系统重启前会跑一道「summary 名册检查」。今天的代码里有一行:检查工具本身不在时,<b>静默跳过检查</b>——等于门卫不在就默认放行。改成:门卫不在,门就不开(fail-closed,缺零件时宁可停下也不放行),并补上这一格的测试。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S4 -->
+  <div class="section" data-section="数据与结构">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>数据与结构:东西都放在哪</div>
+    <div class="diagram"><!--SVG:d3--></div>
+    <div class="card purple">
+      <h3>两本账,各管各的</h3>
+      <ul>
+        <li><b>吸收的权威</b>是三样耐久的东西:GitHub 上的 merge 记录 × 仓里的 summary 原文 × 记忆仓的提交历史——谁都篡改不了。</li>
+        <li><b>运营账本</b>(一个流水文件)只管「这一轮干到哪了」:每轮开工先记一行、每次追问前后各记一行、每次合入记一行、汇报完记一行。崩溃重启后,她对着账本就知道哪步没做完,补上即可——汇报宁可重发一条(标注「补记」),绝不漏发。</li>
+        <li><b>记忆怎么进她脑子</b>:MEMORY.md 被钉进她的系统提示装载链(她每次开机/换线程必读的文件清单),所以写进去的认识,重启后自动还在。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s4" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S5 -->
+  <div class="section" data-section="语音开场身份">
+    <div class="section-title"><span class="dot" style="color:#ff9500;">●</span>语音开场身份(FLY-2097 移交项)</div>
+    <div class="diagram"><!--SVG:d4--></div>
+    <div class="card amber">
+      <h3>背景与做法</h3>
+      <p>FLY-2097 的质检发现:过去语音里那声「Xiaorong」是 Codex 账号的个性化设置在替她叫你,<b>不是 Raya 认识你</b>;修好通道后她开始自称 Raya,但叫不出你的名字了——因为「开场指令的内容」当时白纸黑字划给了本单。本单交付这份内容:写明她是 Raya、你是 Annie(李晓蓉 / Xiaorong Li)、当面称呼用 Annie(想改称呼是改一行字的事)。真机验收两格:自称 Raya + 叫得出你。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s5" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S6 -->
+  <div class="section" data-section="关键取舍与否掉的方案">
+    <div class="section-title"><span class="dot" style="color:#007aff;">●</span>关键取舍,与被否掉的方案</div>
+    <div class="card">
+      <table>
+        <tr><th>取舍点</th><th>选了什么</th><th>否掉了什么,为什么</th></tr>
+        <tr><td>记忆放哪</td><td>版本化的记忆仓 MEMORY.md,按项目分节、注出处</td><td>❌ 向量库 / 摘要索引——为每轮十来条的量级造基础设施,违反「只删不加」红线;❌ 只靠会话隐式记忆——黑箱,与「吸收不许黑箱」直接冲突</td></tr>
+        <tr><td>汇报数字哪来</td><td>机器账本数出来,QA 拿账本对频道消息</td><td>❌ 让她自己汇报数字——模型会把数字说圆,挡不住幻觉</td></tr>
+        <tr><td>崩溃恢复靠什么</td><td>本地先记账再干活(write-ahead:先写「我要做什么」再动手,断了就知道断在哪)</td><td>❌ 读自己的 Discord 频道核对——她的发消息工具根本没有「读」这个口子,造一个 = 新增读面与边界,不值</td></tr>
+        <tr><td>栓①管多宽</td><td>唯一受认可通路里机械强制,配身份红线与审计面</td><td>❌ 给 gh 命令造拦截围栏 / 监视进程——所有全权限 Lead 共有的信任边界,不为一单单独造墙</td></tr>
+        <tr><td>合入方式(merge method)</td><td>只看目标仓的设置,写死一种、禁用即报错</td><td>❌ 读两个仓取交集——另一个仓改设置会莫名挡住这个仓的合入</td></tr>
+        <tr><td>红线条款要不要改</td><td>不动。豁免条款写「什么可以 merge」,命令是「怎么 merge」的机械化,两层正交</td><td>❌ 顺手改红线文件——那份文件每个字都要 Tadashi 逐字审,不该搭车</td></tr>
+      </table>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s6" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S7 -->
+  <div class="section" data-section="诚实边界">
+    <div class="section-title"><span class="dot" style="color:#86868b;">●</span>诚实边界:这个设计做什么、不做什么</div>
+    <div class="card green">
+      <h3>做到的</h3>
+      <ul>
+        <li>受认可的 merge 通路里,机械上<b>不存在</b>绕过核验与版本钉子的路径;掉包必被 GitHub 拒绝。</li>
+        <li>每个有活动的轮(哪怕只问了没吸收)都有汇报;数字可核;崩溃不丢账、汇报不漏发(宁可重发标「补记」)。</li>
+        <li>记忆有出处、有版本历史,吸收全程可审计。</li>
+      </ul>
+    </div>
+    <div class="card gray">
+      <h3>不做 / 做不到的(每条都是决定,不是遗漏)</h3>
+      <ul>
+        <li><b>挡不住蓄意违纪</b>:Raya 是全权限 Lead,理论上能绕开命令直接敲 GitHub。机械层管住的是受认可通路;绕行属于所有全权限 Lead 共有的信任边界,靠身份红线 + 事后审计(merge 历史 × 账本互核)兜住,不为本单造围栏。</li>
+        <li><b>真空轮默认沉默</b>:没活可干的轮不发「无事」刷屏(每 6 小时 × 4 条/天的噪音);想要心跳,身份文件里改一行就开。</li>
+        <li><b>汇报标记不自证</b>:账本说「发过了」不等于频道里真有——QA 验收拿频道实况核,这一格不省。</li>
+        <li><b>验收等两个部署</b>:语音那两格等语音新构建部署;整体验收等 Raya 以 Lead 身份注册部署(都走班车,不催重启)。</li>
+      </ul>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- S8 -->
+  <div class="section" data-section="验收与前置">
+    <div class="section-title"><span class="dot" style="color:#34c759;">●</span>验收怎么算过 · 前置盘点</div>
+    <div class="card green">
+      <h3>真机验收格(摘要,全部要证据留档)</h3>
+      <ul>
+        <li>一轮真实吸收后,#raya 出现汇报,数字与账本一致 ✅ 才算过(你的原话验收格)。</li>
+        <li>一次真实追问往返:没看懂 → 圆桌问 Lead → 拿到答复 → 吸收;只问没吸收的轮也出汇报。</li>
+        <li>语音两格:自称 Raya + 叫得出 Annie(先验通道字节与总长,再放探针)。</li>
+        <li>栓①③格:核验后掉包被拒 / 门卫缺席门不开 / 不稳定测试连跑 20 次全绿。</li>
+        <li>崩溃演练:三个断点各注入一次,重启后账全对得上、汇报一条不漏。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>前置状态(截至 2026-08-29 00:40Z,证据钉到文件)</h3>
+      <table>
+        <tr><th>前置</th><th>状态</th></tr>
+        <tr><td>FLY-2030 M1(flywheel 侧 #975)</td><td><span class="badge done">已 merge</span></td></tr>
+        <tr><td>raya 仓合同 PR #4 · 语音通道修复 PR #3</td><td><span class="badge done">已 merge</span>(你 16:57 PT 授权)</td></tr>
+        <tr><td>粒度旋钮(你拍:一 Lead 一条)· 名册迁移(16/16)</td><td><span class="badge done">已完成</span></td></tr>
+        <tr><td>语音新构建部署 · Raya Lead 注册部署</td><td><span class="badge pending">待班车</span></td></tr>
+      </table>
+    </div>
+    <div class="card gray">
+      <h3>评审足迹</h3>
+      <p>Codex 设计评审(最高档 xhigh)5 轮:6 → 4 → 3 → 1 → 0 项,逐轮全采纳,第 5 轮 <b>APPROVED</b>。三轮阀已按规矩报备 Tadashi,他裁定继续;M2-c(用量指标记录)已请示,裁定纳入。机制零膨胀:没有新服务、没有监视进程、没有第二本账。</p>
+    </div>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s8" placeholder="写在这里…"></textarea></div>
+  </div>
+
+  <!-- Summary card -->
+  <div class="section">
+    <div class="section-title"><span class="dot" style="color:#af52de;">●</span>页面意见汇总</div>
+    <div class="card" id="summary-card">
+      <p class="jargon">下面自动汇集你在各节写的意见;点按钮一键复制,贴回给 Tadashi / Raya 流程即可。</p>
+      <div id="summary-body">(还没有意见)</div>
+      <div id="chunks"></div>
+      <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2131";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try { prefix = "fly2131-comments:" + location.pathname + ":"; }
+  catch (e) { prefix = "fly2131-comments:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitleFor(t) {
+    var sec = t.closest ? t.closest("[data-section]") : null;
+    return sec ? sec.getAttribute("data-section") : t.getAttribute("data-key");
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (t) {
+      var v = (t.value || "").trim();
+      if (v) parts.push("【" + sectionTitleFor(t) + "】\n" + v);
+    });
+    return parts;
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var candidate = cur + "\n\n" + p;
+      if (candidate.length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + "\n\n" + p;
+      } else {
+        cur = candidate;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copy-status");
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "absolute";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function doCopy(text, doneMsg) {
+    function done(ok) {
+      copyStatus.textContent = ok ? doneMsg : "复制失败,请手动全选复制上面的文字";
+      setTimeout(function () { copyStatus.textContent = ""; }, 4000);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); },
+        function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  function render() {
+    var parts = collect();
+    chunksDiv.textContent = "";
+    if (!parts.length) { summaryBody.textContent = "(还没有意见)"; return; }
+    var chunks = chunkText(parts);
+    if (chunks.length === 1) {
+      summaryBody.textContent = chunks[0];
+    } else {
+      summaryBody.textContent = "意见较长,已拆成 " + chunks.length + " 段,请逐段复制:";
+      chunks.forEach(function (c, i) {
+        var d = document.createElement("div");
+        d.className = "chunk";
+        var pre = document.createElement("div");
+        pre.id = "chunk-body-" + i;
+        pre.style.whiteSpace = "pre-wrap";
+        pre.style.fontFamily = "'SF Mono', monospace";
+        pre.style.fontSize = "12.5px";
+        pre.style.background = "#f5f5f7";
+        pre.style.borderRadius = "10px";
+        pre.style.padding = "10px";
+        pre.textContent = c;
+        var b = document.createElement("button");
+        b.className = "btn";
+        b.textContent = "复制第 " + (i + 1) + " 段";
+        b.addEventListener("click", function () { doCopy(c, "第 " + (i + 1) + " 段已复制"); });
+        d.appendChild(pre);
+        d.appendChild(b);
+        chunksDiv.appendChild(d);
+      });
+    }
+  }
+
+  boxes.forEach(function (t) {
+    t.value = lsGet(t.getAttribute("data-key"));
+    t.addEventListener("input", function () {
+      lsSet(t.getAttribute("data-key"), t.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    if (!parts.length) { doCopy(MARKER + "\n\n(无意见)", "已复制(无意见)"); return; }
+    doCopy(chunkText(parts).join("\n\n"), "已复制全部意见");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
