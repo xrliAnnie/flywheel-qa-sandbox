@@ -109,9 +109,14 @@ mapping in prompts or scripts.
 
 ## DAG-enrolled projects (FLY-1372)
 
-When a project is DAG-enrolled (`pipeline.dag: true` + the workflow dispatch
-flags ON), a fresh dispatch runs the workflow-template (DAG) engine and the
+When a project is DAG-enrolled (the project-scoped `pipeline_dag` flag + the
+workflow dispatch flags are ON), a fresh dispatch runs the workflow-template
+(DAG) engine and the
 TEMPLATE pins each node's vendor/model. **Keep passing `model` as usual** — it
 is accepted, recorded for audit, and explicitly echoed back as overridden
 (`templateAuthority.overrode` in the response). Nothing breaks; the template
 simply wins over the sorter's run-level pin.
+
+Enrollment is flag-store state, never project YAML. Change it only through the
+governed scoped surface, for example
+`node "$FLYWHEEL_COMM_CLI" feature-flags set --name pipeline_dag --to on --project <project> --reason "enroll DAG"`.

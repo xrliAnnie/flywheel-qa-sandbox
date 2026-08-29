@@ -13,7 +13,7 @@ import type {
 import { validateWorkflowManifest } from "../workflow-template.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
-import { loadWorkKindConfigStrict } from "./pipeline-config-source.js";
+import type { WorkKindConfigResult } from "./pipeline-config-source.js";
 
 const ACTIVATION_ID = "FLY-1436";
 const PROJECT = "flywheel";
@@ -84,6 +84,7 @@ export interface WorkKindCutoverRouteDeps {
 
 export interface Fly1436ActivationEvidenceOptions {
 	projectRoot: string;
+	pipelineEnrollment?: () => WorkKindConfigResult;
 	readFile?: (path: string) => string;
 	gitHead?: (projectRoot: string) => string;
 }
@@ -776,12 +777,11 @@ export function readFly1436ActivationEvidence(
 ): Fly1436ActivationEvidence {
 	const read =
 		options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
-	const project = {
-		projectName: PROJECT,
-		projectRoot: options.projectRoot,
-		leads: [],
+	const strict = options.pipelineEnrollment?.() ?? {
+		ok: true,
+		workKind: false,
+		dag: false,
 	};
-	const strict = loadWorkKindConfigStrict(project, read);
 	const workKind = strict.ok && strict.workKind;
 	const assetPaths = [
 		join(options.projectRoot, ".flywheel", "menus", "ic-roster.yaml"),

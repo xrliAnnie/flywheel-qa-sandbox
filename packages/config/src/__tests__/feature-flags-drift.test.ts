@@ -12,6 +12,7 @@ import {
 } from "../feature-flags/registry.js";
 import {
 	getFlagStoreCodec,
+	PROJECT_STORE_MANAGED_FLAGS,
 	STORE_MANAGED_FLAGS,
 	validateFlagAuthoringPolicy,
 } from "../feature-flags/store-policy.js";
@@ -51,6 +52,11 @@ const registeredConfigKeys = new Set(
 	FEATURE_FLAGS.flatMap((flag) =>
 		flag.valueKind === "bool" && flag.configKey ? [flag.configKey] : [],
 	),
+);
+const storeManagedConfigKeys = new Set(
+	FEATURE_FLAGS.filter((flag) =>
+		PROJECT_STORE_MANAGED_FLAGS.has(flag.name),
+	).flatMap((flag) => (flag.configKey ? [flag.configKey] : [])),
 );
 
 describe("feature-flag drift guard", () => {
@@ -299,81 +305,43 @@ describe("feature-flag drift guard", () => {
 
 	it("pins migrated config, delegated, and dynamic readSite identities", () => {
 		expect(
-			FEATURE_FLAGS.find((flag) => flag.name === "checkpoint_enabled")
-				?.readSites[0],
-		).toEqual({
-			file: "packages/edge-worker/src/Blueprint.ts",
-			symbol: "Blueprint.runInner",
-			pattern: "config",
-			timing: "call_time",
-			configAccess: "cpConfig.enabled",
-		});
+			FEATURE_FLAGS.some((flag) => flag.name === "checkpoint_enabled"),
+		).toBe(false);
+		expect(
+			FEATURE_FLAGS.some((flag) => flag.name === "xiaohongshu_auto_create"),
+		).toBe(false);
 
-		const configFlags = new Set([
+		const projectStoreFlags = new Set([
+			"pipeline_dag",
+			"pipeline_work_kind",
 			"doc_flow",
 			"skill_framework_split_participation",
 			"proofshot",
 			"xiaohongshu_learning",
 			"ponytail",
 		]);
+		for (const flag of FEATURE_FLAGS.filter((candidate) =>
+			projectStoreFlags.has(candidate.name),
+		)) {
+			expect(flag.readSites).toHaveLength(1);
+			expect(flag.readSites[0]).toMatchObject({
+				pattern: "delegated",
+				timing: "call_time",
+				resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+			});
+		}
 		expect(
-			FEATURE_FLAGS.filter((flag) => configFlags.has(flag.name)).map(
-				(flag) => ({
-					name: flag.name,
-					site: flag.readSites[0],
-				}),
+			FEATURE_FLAGS.filter((flag) => projectStoreFlags.has(flag.name)).map(
+				(flag) => flag.name,
 			),
 		).toEqual([
-			{
-				name: "doc_flow",
-				site: {
-					file: "packages/edge-worker/src/Blueprint.ts",
-					symbol: "Blueprint.runInner",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "this.docFlowConfig.enabled",
-				},
-			},
-			{
-				name: "skill_framework_split_participation",
-				site: {
-					file: "packages/teamlead/src/bridge/skill-framework-participation.ts",
-					symbol: "makeSkillFrameworkParticipationReader",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "skillFramework.split",
-				},
-			},
-			{
-				name: "proofshot",
-				site: {
-					file: "packages/config/src/ConfigLoader.ts",
-					symbol: "ConfigLoader.validate",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "ps.enabled",
-				},
-			},
-			{
-				name: "xiaohongshu_learning",
-				site: {
-					file: "packages/config/src/ConfigLoader.ts",
-					symbol: "ConfigLoader.validate",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "xhs.enabled",
-				},
-			},
-			{
-				name: "ponytail",
-				site: {
-					file: "packages/config/src/ConfigLoader.ts",
-					symbol: "ConfigLoader.validate",
-					pattern: "config",
-					timing: "call_time",
-					configAccess: "ponytail.enabled",
-				},
-			},
+			"pipeline_dag",
+			"pipeline_work_kind",
+			"doc_flow",
+			"skill_framework_split_participation",
+			"proofshot",
+			"xiaohongshu_learning",
+			"ponytail",
 		]);
 
 		expect(
@@ -424,6 +392,24 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowReworkReentryEnabled",
 				],
 				[
+					"pipeline_dag",
+					"packages/teamlead/src/bridge/pipeline-config-source.ts",
+					"readPipelineEnrollment",
+					"storePipelineDagEnabled",
+				],
+				[
+					"pipeline_work_kind",
+					"packages/teamlead/src/bridge/pipeline-config-source.ts",
+					"readPipelineEnrollment",
+					"storePipelineWorkKindEnabled",
+				],
+				[
+					"doc_flow",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"setupRunInfrastructure",
+					"storeDocFlowEnabled",
+				],
+				[
 					"skill_framework_mode",
 					"packages/teamlead/src/bridge/plugin.ts",
 					"runsRouter",
@@ -440,6 +426,30 @@ describe("feature-flag drift guard", () => {
 					"packages/teamlead/src/bridge/run-infra.ts",
 					"createRunInfraDispatcher",
 					"storeSkillFrameworkModeControl",
+				],
+				[
+					"skill_framework_split_participation",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"setupRunInfrastructure",
+					"storeSkillFrameworkSplitParticipation",
+				],
+				[
+					"proofshot",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"setupRunInfrastructure",
+					"storeProofshotEnabled",
+				],
+				[
+					"xiaohongshu_learning",
+					"scripts/xiaohongshu-scheduler.ts",
+					"main",
+					"storeXiaohongshuLearningEnabled",
+				],
+				[
+					"ponytail",
+					"packages/teamlead/src/bridge/run-infra.ts",
+					"setupRunInfrastructure",
+					"storePonytailEnabled",
 				],
 				[
 					"workflow_turn_divergence_alerts",
@@ -488,6 +498,7 @@ describe("feature-flag drift guard", () => {
 				RETIRED_CONFIG_PATHS.map((entry) => entry.path),
 			),
 			storeManagedEnvVars,
+			storeManagedConfigKeys,
 		});
 		const skillModeCompatibilityReads = scan.rawCodeHits.filter(
 			(hit) =>
@@ -666,6 +677,7 @@ describe("feature-flag drift guard", () => {
 						STORE_MANAGED_FLAGS.has(spec.name),
 					).flatMap((spec) => (spec.envVar ? [spec.envVar] : [])),
 				),
+				storeManagedConfigKeys,
 			}),
 		).toEqual([]);
 		const policyIssues = validateFlagAuthoringPolicy({ exemptions });

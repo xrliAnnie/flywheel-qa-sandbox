@@ -68,6 +68,88 @@ function readBoolean(runtime: FlagStoreRuntime, name: string): boolean {
 	return effective;
 }
 
+export function readScopedBoolean(
+	runtime: FlagStoreRuntime,
+	name: string,
+	projectName: string,
+): boolean {
+	if (!PROJECT_STORE_MANAGED_FLAGS.has(name)) {
+		throw new Error(`flag is not project-store-managed: ${name}`);
+	}
+	const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+	if (!spec) throw new Error(`missing flag registry entry: ${name}`);
+	if (typeof spec.default !== "boolean") {
+		throw new Error(`project-store flag is not boolean: ${name}`);
+	}
+	const codec = getFlagStoreCodec(name);
+	if (!codec) throw new Error(`missing managed flag codec: ${name}`);
+	const row =
+		runtime.store.getFlagValueRow(name, projectName) ??
+		runtime.store.getFlagValueRow(name, "*");
+	if (!row) return spec.default;
+	const effective = codec.parse({
+		hasOverride: row.hasOverride,
+		raw: row.raw,
+	});
+	if (typeof effective !== "boolean") {
+		throw new Error(`project-store flag is not boolean: ${name}`);
+	}
+	return effective;
+}
+
+export function storeDocFlowEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "doc_flow", projectName);
+}
+
+export function storePipelineDagEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "pipeline_dag", projectName);
+}
+
+export function storePipelineWorkKindEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "pipeline_work_kind", projectName);
+}
+
+export function storeProofshotEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "proofshot", projectName);
+}
+
+export function storeXiaohongshuLearningEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "xiaohongshu_learning", projectName);
+}
+
+export function storePonytailEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "ponytail", projectName);
+}
+
+export function storeSkillFrameworkSplitParticipation(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(
+		runtime,
+		"skill_framework_split_participation",
+		projectName,
+	);
+}
+
 export function storeSummaryAbsorptionCadenceMs(
 	runtime: FlagStoreRuntime,
 ): number {
@@ -149,9 +231,6 @@ export function enrichFlagViewsWithStore(
 						firstRegisteredAt: clock.firstRegisteredAt,
 						readiness: "ready" as const,
 					}));
-				if (valueClocks.length === 0) {
-					throw new Error(`missing managed flag clock: ${view.name}`);
-				}
 				const rows = (scopedRows ?? []).filter(
 					(row) => row.flagName === view.name,
 				);
@@ -167,41 +246,14 @@ export function enrichFlagViewsWithStore(
 						value: codec.parse({ hasOverride: true, raw: row.raw }),
 					};
 				});
-				const configRows = new Map(
-					(view.effectiveByProject ?? []).map((row) => [row.projectName, row]),
-				);
-				const names = [...new Set(projectNames ?? [...configRows.keys()])];
+				const names = [...new Set(projectNames ?? [])];
 				const effectiveByProject = names.map((projectName) => {
-					const configRow = configRows.get(projectName) ?? {
-						projectName,
-						value: view.default,
-						isDefault: true,
-					};
-					const resolved = resolveScopedEffective({
+					return resolveScopedEffective({
 						spec,
 						projectName,
 						rows: publicRows,
-						configRow,
 						codec,
 					});
-					if (resolved.via !== "project_row" && resolved.via !== "star_row") {
-						return resolved;
-					}
-					if (configRow.error !== undefined) {
-						return {
-							...resolved,
-							runtimeConfigError: configRow.error,
-							runtimeDivergence: "config_pending_cutover" as const,
-						};
-					}
-					if (configRow.value !== resolved.value) {
-						return {
-							...resolved,
-							runtimeConfigValue: configRow.value,
-							runtimeDivergence: "config_pending_cutover" as const,
-						};
-					}
-					return resolved;
 				});
 				return {
 					...view,

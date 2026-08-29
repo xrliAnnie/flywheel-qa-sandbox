@@ -23,10 +23,17 @@ describe("FLY-1436 PR-B production assets", () => {
 		const config = parseYaml(source) as {
 			pipeline?: { dag?: boolean; work_kind?: boolean };
 		};
-		expect(config.pipeline).toMatchObject({ dag: true, work_kind: true });
-		expect(source).toContain("FLY-1436");
-		expect(source).toMatch(/restore bindings first/i);
-		expect(source).toContain("G-GO");
+		const migration = readFileSync(
+			join(ROOT, "scripts", "lib", "fly2103-project-flag-migration.ts"),
+			"utf8",
+		);
+		expect(config.pipeline).toBeUndefined();
+		expect(migration).toContain(
+			'{ name: "pipeline_dag", scope: "flywheel", raw: "1" }',
+		);
+		expect(migration).toContain(
+			'{ name: "pipeline_work_kind", scope: "flywheel", raw: "1" }',
+		);
 	});
 
 	it.each([

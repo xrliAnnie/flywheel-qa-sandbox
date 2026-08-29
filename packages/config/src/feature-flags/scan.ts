@@ -184,12 +184,6 @@ export function canonicalizeFlagSample(
 		);
 	}
 	for (const row of rows) {
-		if (row.runtimeConfigError !== undefined) {
-			return indeterminate(
-				"read_unavailable",
-				`${row.projectName}: ${row.runtimeConfigError}`,
-			);
-		}
 		if (row.error) {
 			return indeterminate(
 				"read_unavailable",

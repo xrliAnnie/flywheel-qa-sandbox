@@ -104,6 +104,7 @@ interface RunOpts {
 	readiness?: (backend: string) => boolean;
 	ponytailReadiness?: (backend: string) => boolean;
 	ponytailConfig?: PonytailConfig;
+	ponytailProjectLayer?: () => PonytailConfig | undefined;
 	codexProbe?: CodexSkillAssemblyProbe;
 	agentDispatcher?: AgentDispatcher;
 	projectRoot?: string;
@@ -169,7 +170,8 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		undefined, // checkpointConfig
 		undefined, // flywheelRepoRoot
 		undefined, // docFlowConfig
-		opts.ponytailConfig,
+		opts.ponytailProjectLayer ??
+			(opts.ponytailConfig ? () => opts.ponytailConfig : undefined),
 		opts.ponytailReadiness ?? (() => true),
 		opts.participation, // FLY-1356 participation reader
 		opts.readiness ?? (() => true), // FLY-1356 matt readiness (default ready)
@@ -369,6 +371,29 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		expect(envelope.ponytailCondition).toBe("unavailable:readiness:on:arm");
 		expect(execArgs.enablePonytail).toBeUndefined();
 		expect(execArgs.disabledPlugins).toEqual([SUPERPOWERS_PLUGIN_KEY]);
+	});
+
+	it("a ponytail store read failure is not misreported as a label conflict", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const { envelope } = await runBlueprint({
+			ponytailProjectLayer: () => {
+				throw new Error("flag store unavailable");
+			},
+			ctxExtra: {
+				ponytailInput: {
+					kind: "start_signal",
+					signal: { labels: [], labelStatus: "readable" },
+				},
+			},
+		});
+		expect(envelope.ponytailCondition).toBe("off:default");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("flag store unavailable"),
+		);
+		expect(warn).not.toHaveBeenCalledWith(
+			expect.stringContaining("PONYTAIL_CONFLICT"),
+		);
+		warn.mockRestore();
 	});
 
 	it("D retry preserves a frozen explicit off instead of reopening the arm", async () => {

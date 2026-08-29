@@ -51,30 +51,41 @@ export function buildProjectRunnerDefaults(
 /**
  * FLY-709 P4.4 — cron (recurring xiaohongshu trigger issue) model rows.
  *
- * Derived from the SAME cached config map. Only projects whose
- * `xiaohongshu_learning.enabled` is true contribute rows — one per collection,
- * with the configured `model` (null = project/account default). The console
- * renders these with a copy-command that targets
+ * Derived from the SAME cached config map. Only projects enabled by the scoped
+ * flag store contribute rows — one per configured collection, with the
+ * configured `model` (null = project/account default). The console renders
+ * these with a copy-command that targets
  * `flywheel-comm runner-config apply --cron`.
  */
 export function buildCronModelViews(
 	projects: ProjectEntry[],
 	configs: Map<string, ProjectConfigEntry>,
+	learningEnabled: (projectName: string) => boolean,
+	onReadError: (error: Error) => void = () => undefined,
 ): CronModelView[] {
 	const out: CronModelView[] = [];
-	for (const project of projects) {
-		const learning = configs.get(project.projectName)?.config
-			?.xiaohongshu_learning;
-		if (!learning?.enabled || !learning.collections?.length) continue;
-		for (const col of learning.collections) {
-			out.push({
-				projectName: project.projectName,
-				collectionId: col.collection_id,
-				label: col.label,
-				leadId: col.lead_id,
-				model: col.model ?? null,
-			});
+	try {
+		for (const project of projects) {
+			const learning = configs.get(project.projectName)?.config
+				?.xiaohongshu_learning;
+			if (
+				!learningEnabled(project.projectName) ||
+				!learning?.collections?.length
+			)
+				continue;
+			for (const col of learning.collections) {
+				out.push({
+					projectName: project.projectName,
+					collectionId: col.collection_id,
+					label: col.label,
+					leadId: col.lead_id,
+					model: col.model ?? null,
+				});
+			}
 		}
+	} catch (error) {
+		onReadError(error instanceof Error ? error : new Error(String(error)));
+		return [];
 	}
 	return out;
 }

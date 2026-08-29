@@ -5,7 +5,7 @@ export interface HistoricalLegacySpec {
 	name: string;
 	source: "env" | "project_config";
 	sourceKey?: string;
-	constantizedBy?: "FLY-2101";
+	constantizedBy?: "FLY-2101" | "FLY-2103";
 }
 
 /** Annotated historical snapshot; 13 entries were constantized by FLY-2101. */
@@ -101,6 +101,7 @@ export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 		name: "checkpoint_enabled",
 		source: "project_config",
 		sourceKey: "checkpoints.*.enabled",
+		constantizedBy: "FLY-2103",
 	},
 	{ name: "pipeline_dag", source: "project_config", sourceKey: "pipeline.dag" },
 	{
@@ -112,6 +113,7 @@ export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 		name: "xiaohongshu_auto_create",
 		source: "project_config",
 		sourceKey: "xiaohongshu_learning.collections[].auto_create",
+		constantizedBy: "FLY-2103",
 	},
 	{ name: "doc_flow", source: "project_config", sourceKey: "doc_flow.enabled" },
 	{
@@ -197,15 +199,15 @@ export function auditFly1981LegacyLedger(args: {
 	for (const historical of snapshot) {
 		if (baseline.has(historical.name)) continue;
 		const current = args.flags.find((spec) => spec.name === historical.name);
-		if (historical.constantizedBy === "FLY-2101") {
+		if (historical.constantizedBy !== undefined) {
 			if (current !== undefined) {
 				issues.push(
-					`${historical.name}: FLY-2101 constantized control returned to the registry`,
+					`${historical.name}: ${historical.constantizedBy} constantized control returned to the registry`,
 				);
 			}
-			// FLY-2101 decision: constantized entries permanently skip retirement
+			// Constantized entries permanently skip retirement
 			// and exemption checks. Their env keys no longer exist, so an exemption
-			// keyed by the removed source identity cannot remain live.
+			// keyed by a removed source identity cannot remain live.
 			continue;
 		}
 		if (historical.sourceKey === undefined) continue;

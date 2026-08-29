@@ -274,6 +274,7 @@ import {
 	storeSummaryAbsorptionCadenceMs,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
 import {
@@ -438,7 +439,10 @@ import {
 	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
-import { reconcileDefaultDagCategoryBindings } from "./pipeline-config-source.js";
+import {
+	readPipelineEnrollment,
+	reconcileDefaultDagCategoryBindings,
+} from "./pipeline-config-source.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
@@ -1220,6 +1224,8 @@ export interface BridgeAppOptions {
 	flagStore?: FlagStoreRuntime;
 	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
 	flagProjectNames?: () => readonly string[];
+	/** FLY-2103: hot project root lookup for doc_flow write invariants. */
+	flagProjectConfigPath?: (projectName: string) => string | undefined;
 	/**
 	 * FLY-2104: late-bound weekly-scan runtime. The route mounts before the
 	 * catch-all in createBridgeApp; startBridge fills this after scanner wiring.
@@ -1755,6 +1761,9 @@ export function createBridgeApp(
 					flywheelProjectRoot
 						? readFly1436ActivationEvidence({
 								projectRoot: flywheelProjectRoot,
+								pipelineEnrollment: flagStore
+									? () => readPipelineEnrollment(flagStore, "flywheel")
+									: undefined,
 							})
 						: {
 								templateDispatch: false,
@@ -2315,6 +2324,14 @@ export function createBridgeApp(
 			projectNames:
 				opts?.flagProjectNames ??
 				(() => projects.map((project) => project.projectName)),
+			projectConfigPath:
+				opts?.flagProjectConfigPath ??
+				((projectName) => {
+					const root = projects.find(
+						(project) => project.projectName === projectName,
+					)?.projectRoot;
+					return root ? join(root, ".flywheel", "config.yaml") : undefined;
+				}),
 		};
 		app.post("/api/fleet/flag/stage", (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -4407,6 +4424,15 @@ export async function startBridge(
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
 	const flagStore = initializeFlagStore(store, process.env);
+	// FLY-182/2103: construct the existing Discord-independent founder alert
+	// path before project runtime setup, so ConfigLoader rejection cannot remain
+	// a console-only boot failure.
+	const metaAlertNotifier = new MetaAlertNotifier();
+	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
+		console.log(
+			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
+		);
+	});
 	const eventLoopAttribution = new EventLoopAttribution({
 		diagnosticsDir: resolve(
 			process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR?.trim() ||
@@ -4671,6 +4697,12 @@ export async function startBridge(
 	// the console is disabled there too.
 	let fleetConsole: FleetConsole | undefined;
 	let flagProjectNames = () => projects.map((project) => project.projectName);
+	let flagProjectConfigPath = (projectName: string) => {
+		const root = projects.find(
+			(project) => project.projectName === projectName,
+		)?.projectRoot;
+		return root ? join(root, ".flywheel", "config.yaml") : undefined;
+	};
 	// Hoisted so close() can clear it (Codex R3 MEDIUM-1: a block-local timer +
 	// an un-closed console keep recovering batches / hold the audit handle after
 	// shutdown).
@@ -4705,14 +4737,25 @@ export async function startBridge(
 				path: managementProjectsPath,
 				readFile: (path) => ffReadFileSync(path, "utf-8"),
 				parse: parseAndValidateProjects,
-				warm: async (nextProjects) => {
-					await ffConfigCache.get(nextProjects);
-				},
+				warm: async () => undefined,
 			});
 			await managementProjectSource.initialize();
 			let managementProjects = managementProjectSource.projects();
+			try {
+				await ffConfigCache.get(managementProjects);
+			} catch (error) {
+				console.warn(
+					`[management] project config cache unavailable: ${(error as Error).message}`,
+				);
+			}
 			flagProjectNames = () =>
 				managementProjects.map((project) => project.projectName);
+			flagProjectConfigPath = (projectName) => {
+				const root = managementProjects.find(
+					(project) => project.projectName === projectName,
+				)?.projectRoot;
+				return root ? join(root, ".flywheel", "config.yaml") : undefined;
+			};
 			let managementProjectsRevision = managementProjectSource.revision();
 			const managementEnvPath = join(homedir(), ".flywheel", ".env");
 			const managementEnvSource = () =>
@@ -4723,7 +4766,6 @@ export async function startBridge(
 				const views = resolveAllFlags({
 					env: process.env,
 					envFile: managementEnvSource(),
-					projectConfigs: ffConfigCache.current(),
 				});
 				return flagStore
 					? enrichFlagViewsWithStore(
@@ -4740,20 +4782,24 @@ export async function startBridge(
 			);
 			const managementSections = new ManagementSectionRegistry();
 			const refreshManagementSources = async () => {
-				await managementProjectSource.refresh();
+				const projectsReadable = await managementProjectSource.refresh();
 				managementProjects = managementProjectSource.projects();
 				managementProjectsRevision = managementProjectSource.revision();
+				try {
+					await ffConfigCache.get(managementProjects);
+				} catch (error) {
+					console.warn(
+						`[management] project config cache unavailable: ${(error as Error).message}`,
+					);
+				}
+				return projectsReadable;
 			};
 			flagScanRepoRoot = repoRoot;
 			flagScanSourceLoader = async () => {
-				let projectSourcesReadable = true;
-				try {
-					await refreshManagementSources();
-					await ffConfigCache.get(managementProjects);
-				} catch (error) {
-					projectSourcesReadable = false;
+				const projectSourcesReadable = await refreshManagementSources();
+				if (!projectSourcesReadable) {
 					console.warn(
-						`[flag-scan] project source refresh unavailable; project-scoped flags have no clock this round: ${(error as Error).message}`,
+						"[flag-scan] project roster refresh unavailable; project-scoped flags have no clock this round",
 					);
 				}
 				const resolvedViews = currentFlagViews();
@@ -4792,7 +4838,9 @@ export async function startBridge(
 					// Online dot from the live evidence poller (null/stale → unknown).
 					fleetEvidence: () => fleetPoller.snapshot(),
 					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
-					refreshProjectConfigs: refreshManagementSources,
+					refreshProjectConfigs: async () => {
+						await refreshManagementSources();
+					},
 					managementSnapshotProviders: () => [
 						managementProjectSource.healthProvider(),
 						...createManagementSsotProviders({
@@ -4832,9 +4880,6 @@ export async function startBridge(
 							},
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
-							projectRevision: (projectName) =>
-								ffConfigCache.current().get(projectName)?.revision ??
-								"registry:config-missing",
 						}),
 						managementSections.snapshotProvider(),
 						createManagementCronProvider({
@@ -4856,6 +4901,12 @@ export async function startBridge(
 						buildCronModelViews(
 							fleetConfigProvider.snapshot().projects,
 							ffConfigCache.current(),
+							(projectName) =>
+								storeXiaohongshuLearningEnabled(flagStore, projectName),
+							(error) =>
+								console.error(
+									`[management] cron model scoped flag read failed: ${error.message}`,
+								),
 						),
 					logger: (msg) => console.log(msg),
 				}),
@@ -5850,6 +5901,17 @@ export async function startBridge(
 				{
 					flagStore,
 					chatThreadCreator,
+					onProjectConfigInvalid: async ({
+						projectName,
+						configPath,
+						error,
+					}) => {
+						await metaAlertNotifier.notify({
+							reason: "project_config_invalid",
+							title: `Project config rejected (${projectName})`,
+							body: `${configPath} was rejected: ${error.message}. The ${projectName} runtime was not initialized.`,
+						});
+					},
 					withRepoLock: repoMutationLock.withRepoLock,
 					// FLY-603: stateless cleanup closure (own instance here — the
 					// /events one at the createEventRouter call site is a different
@@ -6395,6 +6457,7 @@ export async function startBridge(
 			vercelToken,
 			flagStore,
 			flagProjectNames,
+			flagProjectConfigPath,
 			eventLoopAttribution,
 			admissionCrossingBarrier,
 			residueHarvester,
@@ -7404,17 +7467,6 @@ export async function startBridge(
 			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
 		} catch {}
 	}
-	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink. Constructed
-	// HERE (before GatePoller) so the FLY-513 global-codex drift probe can reuse
-	// this ONE notifier instance (shared per-reason debounce) on the poll tick —
-	// rather than a second notifier with split debounce/file state (Codex R2 LOW-1).
-	const metaAlertNotifier = new MetaAlertNotifier();
-	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
-		console.log(
-			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
-		);
-	});
-
 	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
 	// host's actual `codex`. Disabled under VITEST (same boundary as
 	// BridgeEventLoopGuard below) so general Bridge integration suites never fire

@@ -96,6 +96,31 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(modelRules).not.toContain("DESIGN_BACKEND_NOT_APPLICABLE");
 	});
 
+	it("routes project flags through the scoped store and never through config.yaml", () => {
+		const defaultEnable = readFileSync(
+			join(BASE_RULES_DIR, "default-enable-policy.md"),
+			"utf8",
+		);
+		const modelRouting = readFileSync(
+			join(BASE_RULES_DIR, "model-routing.md"),
+			"utf8",
+		);
+		const executorRouting = readFileSync(
+			join(BASE_RULES_DIR, "executor-routing.md"),
+			"utf8",
+		);
+		const readme = readFileSync(join(BASE_RULES_DIR, "README.md"), "utf8");
+		const rules = [defaultEnable, modelRouting, executorRouting, readme].join(
+			"\n",
+		);
+
+		expect(rules).not.toMatch(/doc_flow\.enabled/);
+		expect(rules).not.toMatch(/pipeline\.dag:\s*true/);
+		expect(rules).toContain("feature-flags set --name doc_flow");
+		expect(rules).toContain("feature-flags set --name pipeline_dag");
+		expect(rules).toContain("--project <project>");
+	});
+
 	it("gives every present and future department Lead the parameterized menu contract, but excludes CoS", () => {
 		const rules = readFileSync(
 			join(BASE_RULES_DIR, "department-lead-rules.md"),

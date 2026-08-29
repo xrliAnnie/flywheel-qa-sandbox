@@ -6,7 +6,6 @@ import {
 	resolveScopedEffective,
 } from "../feature-flags/resolve.js";
 import { getFlagStoreCodec } from "../feature-flags/store-policy.js";
-import type { FlywheelConfig } from "../types.js";
 
 function spec(name: string) {
 	const s = FEATURE_FLAGS.find((f) => f.name === name);
@@ -47,130 +46,10 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 });
 
 describe("resolveFlag — project scope", () => {
-	const cfgA: FlywheelConfig = {
-		doc_flow: { enabled: true, default_department: "engineering" },
-	} as unknown as FlywheelConfig;
-	const cfgB: FlywheelConfig = {} as unknown as FlywheelConfig;
-
-	it("per-project effectiveByProject, each project independent", () => {
-		const s = spec("doc_flow");
-		const view = resolveFlag(s, {
-			projectConfigs: new Map([
-				["projA", { config: cfgA }],
-				["projB", { config: cfgB }],
-			]),
-		});
-		expect(view.effective).toBeUndefined();
-		const byProj = view.effectiveByProject ?? [];
-		expect(byProj.find((p) => p.projectName === "projA")?.value).toBe(true);
-		expect(byProj.find((p) => p.projectName === "projB")?.value).toBe(false); // default OFF
-	});
-
-	it("malformed config load error is surfaced as data, not silently defaulted", () => {
-		const s = spec("doc_flow");
-		const view = resolveFlag(s, {
-			projectConfigs: new Map([["projX", { error: "invalid yaml" }]]),
-		});
-		const row = view.effectiveByProject?.[0];
-		expect(row?.error).toMatch(/invalid yaml/);
-		expect(row?.value).toBeUndefined();
-	});
-
-	it("absent config (ENOENT → {}) shows the default, NOT an error", () => {
-		const s = spec("doc_flow");
-		const view = resolveFlag(s, {
-			projectConfigs: new Map([["missing", {}]]),
-		});
-		const row = view.effectiveByProject?.[0];
-		expect(row?.error).toBeUndefined();
-		expect(row?.value).toBe(false); // doc_flow.enabled default OFF
-		expect(row?.isDefault).toBe(true);
-	});
-
-	it("resolves wildcard config families without fabricating their defaults", () => {
-		const checkpoints = resolveFlag(spec("checkpoint_enabled"), {
-			projectConfigs: new Map([
-				[
-					"proj",
-					{
-						config: {
-							checkpoints: {
-								brainstorm: { enabled: true },
-								question: { enabled: true },
-							},
-						} as FlywheelConfig,
-					},
-				],
-			]),
-		});
-		expect(checkpoints.effectiveByProject).toEqual([
-			{ projectName: "proj", value: true, isDefault: false },
-		]);
-
-		const collections = resolveFlag(spec("xiaohongshu_auto_create"), {
-			projectConfigs: new Map([
-				[
-					"proj",
-					{
-						config: {
-							xiaohongshu_learning: {
-								collections: [{ auto_create: false }],
-							},
-						} as unknown as FlywheelConfig,
-					},
-				],
-			]),
-		});
-		expect(collections.effectiveByProject).toEqual([
-			{ projectName: "proj", value: false, isDefault: false },
-		]);
-	});
-
-	it("surfaces mixed wildcard config values as an error", () => {
-		const view = resolveFlag(spec("checkpoint_enabled"), {
-			projectConfigs: new Map([
-				[
-					"proj",
-					{
-						config: {
-							checkpoints: {
-								brainstorm: { enabled: true },
-								question: { enabled: false },
-							},
-						} as FlywheelConfig,
-					},
-				],
-			]),
-		});
-		expect(view.effectiveByProject).toEqual([
-			{
-				projectName: "proj",
-				error: "mixed values for checkpoints.*.enabled",
-			},
-		]);
-	});
-
-	it("no projectConfigs → empty effectiveByProject (not a crash)", () => {
+	it("leaves project rows to the scoped store enrichment path", () => {
 		const view = resolveFlag(spec("doc_flow"), {});
-		expect(view.effectiveByProject).toEqual([]);
-	});
-
-	it("dormant flag (ponytail) reports no effective value at all", () => {
-		const view = resolveFlag(spec("ponytail"), {
-			projectConfigs: new Map([
-				[
-					"projA",
-					{
-						config: {
-							ponytail: { enabled: true },
-						} as unknown as FlywheelConfig,
-					},
-				],
-			]),
-		});
-		expect(view.dormant).toBe(true);
 		expect(view.effective).toBeUndefined();
-		expect(view.effectiveByProject).toBeUndefined();
+		expect(view.effectiveByProject).toEqual([]);
 	});
 });
 
@@ -188,11 +67,6 @@ describe("resolveScopedEffective — project store precedence", () => {
 					{ scope: "*", raw: "0" },
 					{ scope: "flywheel", raw: "1" },
 				],
-				configRow: {
-					projectName: "flywheel",
-					value: false,
-					isDefault: true,
-				},
 				codec,
 			}),
 		).toEqual({
@@ -209,11 +83,6 @@ describe("resolveScopedEffective — project store precedence", () => {
 				spec: flag,
 				projectName: "flywheel",
 				rows: [{ scope: "*", raw: "1" }],
-				configRow: {
-					projectName: "flywheel",
-					value: false,
-					isDefault: true,
-				},
 				codec,
 			}),
 		).toEqual({
@@ -224,35 +93,12 @@ describe("resolveScopedEffective — project store precedence", () => {
 		});
 	});
 
-	it("falls back byte-compatibly to config and then the registry default", () => {
-		expect(
-			resolveScopedEffective({
-				spec: flag,
-				projectName: "configured",
-				rows: [],
-				configRow: {
-					projectName: "configured",
-					value: true,
-					isDefault: false,
-				},
-				codec,
-			}),
-		).toEqual({
-			projectName: "configured",
-			value: true,
-			isDefault: false,
-			via: "config",
-		});
+	it("falls back to the registry default when no scoped row exists", () => {
 		expect(
 			resolveScopedEffective({
 				spec: flag,
 				projectName: "defaulted",
 				rows: [],
-				configRow: {
-					projectName: "defaulted",
-					value: false,
-					isDefault: true,
-				},
 				codec,
 			}),
 		).toEqual({

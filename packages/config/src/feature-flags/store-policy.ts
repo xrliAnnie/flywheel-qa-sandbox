@@ -18,10 +18,8 @@ export const FLAG_AUTHORING_RUNBOOK =
  * entries may migrate into the store or retire; no new unmanaged name may enter.
  */
 export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
-	"checkpoint_enabled",
 	"pipeline_dag",
 	"pipeline_work_kind",
-	"xiaohongshu_auto_create",
 	"doc_flow",
 	"skill_framework_split_participation",
 	"proofshot",
@@ -59,6 +57,8 @@ export const PROJECT_STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 	"pipeline_work_kind",
 	"proofshot",
 	"xiaohongshu_learning",
+	"ponytail",
+	"skill_framework_split_participation",
 ] as const);
 
 /**

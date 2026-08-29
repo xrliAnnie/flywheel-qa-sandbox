@@ -26,6 +26,7 @@ import {
 	PROJECT_STORE_MANAGED_FLAGS,
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
+import { parse as parseYaml } from "yaml";
 import { computeEnvSha } from "./env-file-writer.js";
 import type { FlagStoreRuntime } from "./flag-store-runtime.js";
 import { applyFlagToggle, isDirectToggleable } from "./flag-toggle.js";
@@ -78,6 +79,8 @@ export interface FlagRouteDeps {
 	flagStore?: FlagStoreRuntime;
 	/** Current authoritative projectName roster from projects.json. */
 	projectNames: () => readonly string[];
+	/** Resolve the canonical config.yaml path for a rostered project. */
+	projectConfigPath: (projectName: string) => string | undefined;
 	/** Critical-section lock (plan §4.3); defaults to the real .env file lock. */
 	lock?: <T>(fn: () => T) => T;
 }
@@ -85,6 +88,109 @@ export interface FlagRouteDeps {
 export interface RouteResult {
 	code: number;
 	body: unknown;
+}
+
+type ScopedFlagChange = Pick<
+	FlagStoreCanonical,
+	"name" | "scope" | "op" | "rawTo"
+>;
+
+type DocFlowMetadataBlocker = {
+	project: string;
+	configPath: string;
+	reason: "missing" | "unreadable";
+	detail?: string;
+};
+
+function docFlowEnabledAfterChange(
+	deps: FlagRouteDeps,
+	change: ScopedFlagChange,
+	projectName: string,
+): boolean {
+	if (!deps.flagStore) return false;
+	const codec = getFlagStoreCodec("doc_flow");
+	if (!codec) throw new Error("missing managed flag codec: doc_flow");
+	const parseRow = (raw: string | null): boolean =>
+		codec.parse({ hasOverride: true, raw }) === true;
+	const projectRow = deps.flagStore.store.getFlagValueRow(
+		"doc_flow",
+		projectName,
+	);
+
+	if (change.scope === projectName) {
+		if (change.op === "set") return parseRow(change.rawTo ?? "");
+		const starRow = deps.flagStore.store.getFlagValueRow("doc_flow", "*");
+		return starRow ? parseRow(starRow.raw) : false;
+	}
+	if (change.scope !== "*") return false;
+	if (projectRow) return parseRow(projectRow.raw);
+	return change.op === "set" ? parseRow(change.rawTo ?? "") : false;
+}
+
+function readDocFlowMetadataBlocker(
+	deps: FlagRouteDeps,
+	projectName: string,
+): DocFlowMetadataBlocker | undefined {
+	const configPath =
+		deps.projectConfigPath(projectName) ??
+		`<project:${projectName}>/.flywheel/config.yaml`;
+	let parsed: unknown;
+	try {
+		parsed = parseYaml(deps.readFile(configPath));
+	} catch (error) {
+		return {
+			project: projectName,
+			configPath,
+			reason: "unreadable",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return { project: projectName, configPath, reason: "missing" };
+	}
+	const docFlow = (parsed as Record<string, unknown>).doc_flow;
+	if (!docFlow || typeof docFlow !== "object" || Array.isArray(docFlow)) {
+		return { project: projectName, configPath, reason: "missing" };
+	}
+	const department = (docFlow as Record<string, unknown>).default_department;
+	if (typeof department !== "string" || !department.trim()) {
+		return { project: projectName, configPath, reason: "missing" };
+	}
+	return undefined;
+}
+
+/**
+ * FLY-2103: enablement moved to SQLite while its required path metadata stayed
+ * in config.yaml. Reject any scoped write whose resulting doc_flow value would
+ * turn a project on without that metadata. This is re-run at apply time so a
+ * stage token cannot race a config edit.
+ */
+function enforceDocFlowEnablementInvariant(
+	deps: FlagRouteDeps,
+	change: ScopedFlagChange,
+): RouteResult | undefined {
+	if (change.name !== "doc_flow") return undefined;
+	const enabledProjects = deps
+		.projectNames()
+		.filter((projectName) =>
+			docFlowEnabledAfterChange(deps, change, projectName),
+		);
+	const blockers = enabledProjects
+		.map((projectName) => readDocFlowMetadataBlocker(deps, projectName))
+		.filter((blocker): blocker is DocFlowMetadataBlocker => Boolean(blocker));
+	const [first] = blockers;
+	if (!first) return undefined;
+	const detail = first.detail ? ` (${first.detail})` : "";
+	return {
+		code: 409,
+		body: {
+			error: "doc_flow_enablement_requires_default_department",
+			message: `Cannot enable doc_flow for project "${first.project}": doc_flow.default_department is ${first.reason === "missing" ? "missing from" : "not readable in"} ${first.configPath}${detail}. Add a valid doc_flow.default_department to that config.yaml before retrying.`,
+			project: first.project,
+			configPath: first.configPath,
+			blockers,
+		},
+	};
 }
 
 /** Stable SHA the confirmToken binds to (canonical, sans nothing volatile). */
@@ -217,6 +323,14 @@ export function handleFlagStage(
 		if (op === "clear" && !row) {
 			return { code: 409, body: { error: "missing_row" } };
 		}
+		const rawTo = op === "clear" ? null : input.to ? "1" : "0";
+		const invariantFailure = enforceDocFlowEnablementInvariant(deps, {
+			name: spec.name,
+			scope,
+			op,
+			rawTo,
+		});
+		if (invariantFailure) return invariantFailure;
 		const canonical: FlagStoreCanonical = {
 			kind: "flag_store",
 			batchId: newBatchId(),
@@ -224,7 +338,7 @@ export function handleFlagStage(
 			scope,
 			op,
 			rawFrom: row?.raw ?? null,
-			rawTo: op === "clear" ? null : input.to ? "1" : "0",
+			rawTo,
 			expectedChangeSeq: deps.flagStore.store.getFlagValueChangeSeq(
 				spec.name,
 				scope,
@@ -442,6 +556,17 @@ export function handleFlagApply(
 		}
 		if (!deps.flagStore) {
 			return { code: 500, body: { error: "flag store unavailable" } };
+		}
+		const invariantFailure = enforceDocFlowEnablementInvariant(deps, canonical);
+		if (invariantFailure) {
+			deps.audit.record({
+				batchId: canonical.batchId,
+				event: "denied",
+				attemptId,
+				reason: "doc_flow_enablement_requires_default_department",
+				origin,
+			});
+			return invariantFailure;
 		}
 		if (
 			!deps.audit.record({

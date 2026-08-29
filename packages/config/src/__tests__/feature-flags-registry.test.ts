@@ -25,7 +25,7 @@ describe("feature-flag registry invariants", () => {
 				exemptions: FLAG_EXEMPTIONS,
 			}),
 		).toEqual([]);
-		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(9);
+		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(7);
 		expect(FeatureFlags.validateFlagAuthoringPolicy).toBeTypeOf("function");
 	});
 
@@ -210,10 +210,55 @@ describe("feature-flag registry invariants", () => {
 		}
 	});
 
-	it("ponytail is dormant with an Annie-exception note and default off", () => {
+	it("FLY-2103 retires fixed project-config declarations", () => {
+		for (const name of ["checkpoint_enabled", "xiaohongshu_auto_create"]) {
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.name === name),
+				name,
+			).toBe(false);
+		}
+	});
+
+	it("FLY-2103 makes all seven migrated project flags active store readers", () => {
+		const expected = new Map([
+			["doc_flow", ["storeDocFlowEnabled", false, "conversational"]],
+			["pipeline_dag", ["storePipelineDagEnabled", true, "conversational"]],
+			[
+				"pipeline_work_kind",
+				["storePipelineWorkKindEnabled", false, "conversational"],
+			],
+			["proofshot", ["storeProofshotEnabled", false, "conversational"]],
+			[
+				"xiaohongshu_learning",
+				["storeXiaohongshuLearningEnabled", false, "conversational"],
+			],
+			["ponytail", ["storePonytailEnabled", false, "conversational"]],
+			[
+				"skill_framework_split_participation",
+				["storeSkillFrameworkSplitParticipation", true, "conversational"],
+			],
+		] as const);
+		for (const [name, [resolverSymbol, defaultValue, toggleable]] of expected) {
+			const flag = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+			expect(flag, name).toMatchObject({
+				default: defaultValue,
+				toggleable,
+			});
+			expect(flag?.dormant, name).not.toBe(true);
+			expect(flag?.readSites, name).toEqual([
+				expect.objectContaining({
+					pattern: "delegated",
+					timing: "call_time",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverSymbol,
+				}),
+			]);
+		}
+	});
+
+	it("ponytail keeps the Annie-exception default off", () => {
 		const p = FEATURE_FLAGS.find((f) => f.name === "ponytail");
 		expect(p).toBeDefined();
-		expect(p?.dormant).toBe(true);
 		expect(p?.default).toBe(false);
 		expect(p?.note ?? "").toMatch(/Annie/i);
 	});

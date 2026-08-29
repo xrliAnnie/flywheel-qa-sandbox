@@ -87,6 +87,7 @@ function makeMockAdapter(): IAdapter {
 
 interface BuildOpts {
 	docFlowConfig?: { enabled: boolean; default_department?: string };
+	docFlowEnabled?: () => boolean;
 	ctxExtra?: Partial<BlueprintContext>;
 	agentDispatcher?: AgentDispatcher;
 	projectRoot?: string;
@@ -109,7 +110,16 @@ async function buildPrompt(opts: BuildOpts = {}): Promise<string> {
 		opts.agentDispatcher,
 		undefined, // checkpointConfig
 		undefined, // flywheelRepoRoot
-		opts.docFlowConfig, // FLY-205: LAST param by contract
+		opts.docFlowConfig
+			? { default_department: opts.docFlowConfig.default_department }
+			: undefined,
+		undefined, // ponytailConfig
+		undefined, // ponytailReadiness
+		undefined, // skillFrameworkParticipation
+		undefined, // skillFrameworkReadiness
+		undefined, // codexSkillAssemblyProbe
+		undefined, // skillFrameworkModeControl
+		opts.docFlowEnabled ?? (() => opts.docFlowConfig?.enabled === true),
 	);
 	const ctx: BlueprintContext = {
 		teamName: "eng",
@@ -268,6 +278,23 @@ describe("DOC-FLOW injection (FLY-205)", () => {
 		expect(prompt).not.toContain("DOC-FLOW");
 		expect(warnSpy).toHaveBeenCalledWith(
 			expect.stringContaining("default_department is missing"),
+		);
+		warnSpy.mockRestore();
+	});
+
+	it("store read failure disables DOC-FLOW locally and warns", async () => {
+		const warnSpy = vi
+			.spyOn(console, "warn")
+			.mockImplementation(() => undefined);
+		const prompt = await buildPrompt({
+			docFlowConfig: ENABLED,
+			docFlowEnabled: () => {
+				throw new Error("flag store unavailable");
+			},
+		});
+		expect(prompt).not.toContain("DOC-FLOW (project doc conventions");
+		expect(warnSpy).toHaveBeenCalledWith(
+			expect.stringContaining("flag store unavailable"),
 		);
 		warnSpy.mockRestore();
 	});

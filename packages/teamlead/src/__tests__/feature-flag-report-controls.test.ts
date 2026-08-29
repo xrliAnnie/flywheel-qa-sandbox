@@ -28,9 +28,9 @@ function mount(): void {
 					},
 					{
 						projectName: "geoforge3d",
-						value: true,
-						isDefault: false,
-						via: "config",
+						value: false,
+						isDefault: true,
+						via: "default",
 					},
 				],
 			},

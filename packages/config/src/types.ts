@@ -87,7 +87,7 @@ export interface SkillsConfig {
 	/** Custom landing command (e.g. "/ship-pr"). If unset, uses default flywheel-land skill. */
 	land_command?: string;
 	/** GEO-151 ProofShot integration: browser/UI/3D visual verification */
-	proofshot?: ProofShotConfig;
+	proofshot?: ProofShotAuthoringConfig;
 }
 
 /**
@@ -118,6 +118,9 @@ export interface ProofShotConfig {
 	/** Artifact path allowlist (regex). Default: ['^/Users/.+/\\.flywheel/screens/','^/tmp/flywheel-screens/']. */
 	artifact_path_allowlist?: string[];
 }
+
+/** Project-YAML ProofShot fields; enablement lives in the scoped flag store. */
+export type ProofShotAuthoringConfig = Omit<ProofShotConfig, "enabled">;
 
 /** Agent dispatch configuration — v0.6 Step 1; FLY-137 v1.27.2 dept-aware */
 export interface AgentConfig {
@@ -179,8 +182,6 @@ export type TimeoutBehavior = "fail-open" | "fail-close";
 
 /** A single checkpoint definition */
 export interface CheckpointConfig {
-	/** Whether this checkpoint is active. Default: false */
-	enabled?: boolean;
 	/**
 	 * Timeout in ms before timeout_behavior kicks in.
 	 * Default: 172_800_000 (48h, FLY-159 `DEFAULT_GATE_TIMEOUT_MS`).
@@ -206,36 +207,20 @@ export type CheckpointsConfig = Record<string, CheckpointConfig>;
 /**
  * FLY-205: department-first doc-flow baseline configuration.
  *
- * When enabled, Runners receive a DOC-FLOW system-prompt block instructing
+ * When the scoped flag-store row is enabled, Runners receive a DOC-FLOW block
  * them to produce process docs (exploration/research/plan) under
  * `<department>/doc/<ISSUE-KEY>-<slug>/` according to the Lead-judged
- * doc tier. Absent or `enabled: false` → feature fully off (byte-compatible
- * spawn prompt).
+ * doc tier. The scoped flag-store row controls enablement; this YAML block
+ * carries authoring metadata only.
  */
 export interface DocFlowConfig {
-	enabled: boolean;
 	/**
-	 * Department directory name (e.g. "content", "product"). REQUIRED when
-	 * `enabled === true` (ConfigLoader enforces). Optional in the type because
-	 * a valid disabled config may omit it — consumers must runtime-narrow
-	 * inside their `enabled === true` branch (a required type here would let
-	 * TS consumers wrongly trust a value that disabled configs don't carry).
+	 * Department directory name (e.g. "content", "product"). Required whenever
+	 * the metadata block is present; enablement is owned by SQLite.
 	 * Used as the doc-path fallback whenever the issue's owning department
 	 * cannot be resolved to a concrete string.
 	 */
-	default_department?: string;
-}
-
-/**
- * FLY-1356: per-project skill-framework split participation (the project OPT-OUT
- * lever, not an enable switch). Only consulted when the Bridge-global flag
- * `FLYWHEEL_SKILL_FRAMEWORK_MODE=split`: `split: false` pins this project's
- * Runners to the A arm (superpowers) with via=`project_opt_out`. Absent → the
- * project participates (default true). Re-read at every dispatch resolution so
- * a Lead's opt-out takes effect immediately, no restart.
- */
-export interface SkillFrameworkConfig {
-	split?: boolean;
+	default_department: string;
 }
 
 /**
@@ -244,24 +229,6 @@ export interface SkillFrameworkConfig {
 export interface CleanupConfig {
 	/** Exact branch names or trailing-`*` prefixes never auto-deleted. */
 	protected_branches?: string[];
-}
-
-/** Project-level DAG routing controls. */
-export interface PipelineConfig {
-	/**
-	 * FLY-1372: project-level DAG dispatch enrollment. When true, a fresh `main`
-	 * master-auth dispatch is routed into the workflow-template (DAG) engine
-	 * instead of a single-session dispatch. Absent or false → OFF. Read from the
-	 * project's CANONICAL root only.
-	 */
-	dag?: boolean;
-	/**
-	 * FLY-1407: opt a project into dispatch-time work-kind enforcement.
-	 * Absent or false keeps the legacy route byte-compatible. The shared config
-	 * loader leniently drops malformed values; the fresh-start route uses its
-	 * own strict reader to fail loudly when the main flag is on.
-	 */
-	work_kind?: boolean;
 }
 
 /**
@@ -345,12 +312,6 @@ export interface XiaohongshuCollectionConfig {
 	 */
 	first_run_analyze_limit?: number;
 	/**
-	 * FLY-286: whether the Runner auto-creates issues for useful posts. Default:
-	 * true. When false, every useful post becomes a review-page candidate the
-	 * founder promotes — no issue is created without an explicit action.
-	 */
-	auto_create?: boolean;
-	/**
 	 * FLY-709: runner model for this collection's daily runs. Passed verbatim as
 	 * the `/api/runs/start` `model` dispatch param (FLY-728 Part C), so it must
 	 * be a recognized tier id or alias (`normalizeDispatchModel`). Absent =
@@ -362,15 +323,13 @@ export interface XiaohongshuCollectionConfig {
 /**
  * FLY-222: department-Lead periodic Xiaohongshu-collection "study" baseline.
  *
- * When enabled, a thin scheduler periodically spawns a Runner (via a fixed,
+ * When enabled in the scoped flag store, a thin scheduler periodically spawns a Runner (via a fixed,
  * reused trigger Linear issue per collection) that fetches the collection,
  * analyzes notes (incl. video body), proposes Linear-issue drafts to Annie via
  * a prune gate, then creates the kept issues + records learnings to project
- * memory. Absent or `enabled: false` → feature fully off (byte-compatible).
+ * memory. The YAML block only carries non-flag collection metadata.
  */
 export interface XiaohongshuLearningConfig {
-	/** Enable periodic learning. Default: false (safe rollout). */
-	enabled?: boolean;
 	/**
 	 * One-time consent to send downloaded video bodies to Google/Gemini for
 	 * analysis. Default: false. When false, video notes degrade to
@@ -501,13 +460,9 @@ export interface FlywheelConfig {
 	 * (misspelled keys must not silently no-op).
 	 */
 	roles?: RoleBackendMap;
-	/** FLY-205: department-first doc-flow baseline. Absent = off. */
+	/** FLY-205: department-first doc-flow authoring metadata. */
 	doc_flow?: DocFlowConfig;
-	/** FLY-1356: split participation opt-out lever. Absent = participate. */
-	skill_framework?: SkillFrameworkConfig;
-	/** Project-level DAG routing controls. */
-	pipeline?: PipelineConfig;
-	/** FLY-222: periodic Xiaohongshu-collection learning. Absent = off. */
+	/** FLY-222: periodic Xiaohongshu-collection authoring metadata. */
 	xiaohongshu_learning?: XiaohongshuLearningConfig;
 	/**
 	 * FLY-1185: lifecycle-closeout cleanup policy. Config, NOT a feature flag —
@@ -519,12 +474,6 @@ export interface FlywheelConfig {
 	 * itself never hard-fails on this optional key).
 	 */
 	cleanup?: CleanupConfig;
-	/**
-	 * FLY-615: per-project ponytail (code-minimalism plugin) rollout layer.
-	 * Absent or enabled:false → this project does not opt ponytail on by default
-	 * (per-issue label / per-run flag can still turn it on). Byte-compatible.
-	 */
-	ponytail?: PonytailConfig;
 	/** FLY-1687: per-project Lead patrol cadence; absent uses fleet/global policy. */
 	patrol?: PatrolConfig;
 }
@@ -532,16 +481,4 @@ export interface FlywheelConfig {
 /** Bridge patrol timing only. The Lead-side checklist is intentionally not config. */
 export interface PatrolConfig {
 	interval_minutes?: number;
-}
-
-/**
- * FLY-615: per-project ponytail rollout config. The lowest layer of the
- * resolution ladder (per-run flag > per-issue label > per-project config >
- * default off). `enabled: true` means every Runner of this project gets
- * ponytail unless a per-issue `ponytail-off` label or per-run override turns
- * it off. No `mode` field in v1 (ponytail's built-in default `full` is used);
- * exposing mode without wiring a real mechanism would be a false contract.
- */
-export interface PonytailConfig {
-	enabled: boolean;
 }

@@ -27,7 +27,7 @@ export async function founderReviewCheckpointEnabled(
 		const config = await new ConfigLoader(async (path) =>
 			readFileSync(path, "utf8"),
 		).load(configPath);
-		return config.checkpoints?.founder_review?.enabled === true;
+		return config.checkpoints?.founder_review !== undefined;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
 		throw error;

@@ -569,6 +569,7 @@ export interface AuditFlagAccountsInput {
 	retiredEnvVars: ReadonlySet<string>;
 	retiredConfigPaths: ReadonlySet<string>;
 	storeManagedEnvVars: ReadonlySet<string>;
+	storeManagedConfigKeys?: ReadonlySet<string>;
 }
 
 function isSkillModeCompatibilityRead(hit: CodeHit): boolean {
@@ -703,7 +704,7 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 		if (path in input.nonFlagConfigKeys || configExemptions.has(path)) {
 			issues.push(`ledger overlap for config key ${path}`);
 		}
-		if (!configPaths.has(path)) {
+		if (!configPaths.has(path) && !input.storeManagedConfigKeys?.has(path)) {
 			issues.push(`stale registered config key ${path}`);
 		}
 		if (retiredConfigRoot(path)) {
@@ -880,12 +881,18 @@ function delegatedEvidence(
 ): boolean {
 	const locals = new Set<string>();
 	const expected = normalizeFile(modulePath).replace(/\.(?:js|mjs)$/, ".ts");
+	const canonicalTarget = (target: string): string =>
+		target.replace(
+			"packages/teamlead/dist/bridge/flag-store-runtime.ts",
+			FLAG_STORE_RUNTIME_MODULE,
+		);
 	for (const statement of file.statements) {
 		if (
 			!ts.isImportDeclaration(statement) ||
 			!ts.isStringLiteral(statement.moduleSpecifier) ||
-			normalizedImportTarget(importer, statement.moduleSpecifier.text) !==
-				expected
+			canonicalTarget(
+				normalizedImportTarget(importer, statement.moduleSpecifier.text),
+			) !== expected
 		) {
 			continue;
 		}
@@ -1184,6 +1191,7 @@ function storeResolverReadsExactFlag(
 			ts.isCallExpression(node) &&
 			ts.isIdentifier(node.expression) &&
 			(node.expression.text === "readBoolean" ||
+				node.expression.text === "readScopedBoolean" ||
 				node.expression.text === "readFlagValue") &&
 			node.arguments.length >= 2 &&
 			ts.isStringLiteralLike(node.arguments[1] as ts.Expression) &&

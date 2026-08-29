@@ -703,7 +703,7 @@ describe("Event route", () => {
 			writeFileSync(join(repo, "agents", "generic.md"), "Execute.\n");
 			writeFileSync(
 				join(repo, ".flywheel", "config.yaml"),
-				"project: geoforge3d\nlinear:\n  team_id: GEO\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    enabled: true\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
+				"project: geoforge3d\nlinear:\n  team_id: GEO\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
 			);
 			writeFileSync(
 				join(repo, "product", "doc", "FLY-1758", "prd.html"),

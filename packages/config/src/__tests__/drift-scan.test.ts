@@ -277,17 +277,8 @@ describe("FLY-1455 config-schema enumeration", () => {
 		);
 
 		expect(paths).toEqual([
-			"checkpoints.*.enabled",
-			"doc_flow.enabled",
-			"pipeline.dag",
-			"pipeline.work_kind",
-			"ponytail.enabled",
-			"skill_framework.split",
 			"skills.enabled",
-			"skills.proofshot.enabled",
 			"skills.proofshot.vision_default",
-			"xiaohongshu_learning.collections[].auto_create",
-			"xiaohongshu_learning.enabled",
 			"xiaohongshu_learning.video_opt_in",
 		]);
 		expect(paths).not.toContain("qa.auto");

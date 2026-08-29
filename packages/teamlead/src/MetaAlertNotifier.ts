@@ -42,6 +42,9 @@ export type MetaAlertReason =
 	// missing MANAGE_THREADS). This must not be mistaken for successful repair.
 	| "roundtable_patch_permanent_failure"
 	| "roundtable_archive_default_unresolved"
+	// FLY-2103: a project runtime was dropped because ConfigLoader rejected its
+	// config. Reuse the independent desktop + state-file founder channel.
+	| "project_config_invalid"
 	// FLY-513: the global `codex` binary the review gate resolves via PATH has
 	// drifted into a per-Lead CODEX_HOME (or CODEX_HOME env is bad). The codex
 	// review gate will transiently fail config-load; meta-alert so it is caught

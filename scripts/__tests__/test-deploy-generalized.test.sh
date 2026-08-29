@@ -153,6 +153,8 @@ ordinary="$(qa_multilead_config_yaml test-slot-1)"
 assert_eq "$(printf '%s\n' "$ordinary" | tail -n 1)" \
 	'    timeout_behavior: fail-close' \
 	'ordinary config remains byte-compatible at EOF'
+assert_contains "$ordinary" $'doc_flow:\n  default_department: engineering' \
+	'ordinary config carries non-flag DOC-FLOW metadata'
 if [[ "$ordinary" == *'pipeline:'* ]]; then
 	echo 'FAIL: ordinary config unexpectedly enters the generalized pipeline domain' >&2
 	failures=$((failures + 1))
@@ -161,8 +163,14 @@ else
 fi
 
 generalized="$(qa_multilead_config_yaml test-slot-1 generalized)"
-assert_contains "$generalized" $'pipeline:\n  dag: true\n  work_kind: true' \
-	'generalized config enables DAG and work-kind together'
+assert_contains "$generalized" $'doc_flow:\n  default_department: engineering' \
+	'generalized config carries non-flag DOC-FLOW metadata'
+if [[ "$generalized" == *'pipeline:'* ]]; then
+	echo 'FAIL: generalized config emitted retired pipeline project flags' >&2
+	failures=$((failures + 1))
+else
+	echo 'PASS: generalized config leaves DAG and work-kind in the scoped store'
+fi
 
 retired_workflow_env_names=(
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES

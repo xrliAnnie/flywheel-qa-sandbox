@@ -26,6 +26,8 @@ import { FleetAdminAudit } from "../bridge/fleet-admin-audit.js";
 import { StateStore } from "../StateStore.js";
 
 const ENV_CONTENT = "# env\nFLYWHEEL_OTHER=1\n";
+const PROJECT_CONFIG =
+	"project: fixture\ndoc_flow:\n  default_department: engineering\n";
 const stores: StateStore[] = [];
 
 afterEach(() => {
@@ -40,11 +42,14 @@ function makeDeps(over: Partial<FlagRouteDeps> = {}): FlagRouteDeps & {
 	const dbPath = join(mkdtempSync(join(tmpdir(), "ffaudit-")), "audit.db");
 	return {
 		envPath: "/tmp/.env",
-		readFile: () => ENV_CONTENT,
+		readFile: (path) =>
+			path.endsWith("/.flywheel/config.yaml") ? PROJECT_CONFIG : ENV_CONTENT,
 		writeFile: vi.fn(),
 		env: {},
 		lock: (fn: () => unknown) => fn(), // pass-through; real lock tested in flag-toggle
 		projectNames: () => ["flywheel", "geoforge3d"],
+		projectConfigPath: (projectName) =>
+			`/projects/${projectName}/.flywheel/config.yaml`,
 		tokens: new ConfirmTokenStore(),
 		audit: new FleetAdminAudit(dbPath),
 		...over,
@@ -59,6 +64,100 @@ async function makeManagedDeps(over: Partial<FlagRouteDeps> = {}) {
 }
 
 describe("handleFlagStage", () => {
+	it("rejects enabling doc_flow when the project config has no default_department", async () => {
+		const { deps } = await makeManagedDeps({
+			projectConfigPath: (projectName: string) =>
+				`/projects/${projectName}/.flywheel/config.yaml`,
+			readFile: (path: string) =>
+				path.endsWith("/.flywheel/config.yaml")
+					? "project: geoforge3d\n"
+					: ENV_CONTENT,
+		});
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "geoforge3d",
+				reason: "founder enabled doc flow",
+			},
+			"o",
+		);
+
+		expect(result.code).toBe(409);
+		expect(result.body).toMatchObject({
+			error: "doc_flow_enablement_requires_default_department",
+			project: "geoforge3d",
+			configPath: "/projects/geoforge3d/.flywheel/config.yaml",
+		});
+		expect(JSON.stringify(result.body)).toContain(
+			"doc_flow.default_department",
+		);
+	});
+
+	it("allows enabling doc_flow when default_department is configured", async () => {
+		const { deps, store } = await makeManagedDeps({
+			projectConfigPath: (projectName: string) =>
+				`/projects/${projectName}/.flywheel/config.yaml`,
+			readFile: (path: string) =>
+				path.endsWith("/.flywheel/config.yaml")
+					? "project: flywheel\ndoc_flow:\n  default_department: engineering\n"
+					: ENV_CONTENT,
+		});
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "flywheel",
+				reason: "configured doc flow",
+			},
+			"o",
+		);
+
+		expect(result.code).toBe(200);
+		const staged = result.body as {
+			canonical: FlagStoreCanonical;
+			confirmToken: string;
+		};
+		expect(
+			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o").code,
+		).toBe(200);
+		expect(store.getFlagValueRow("doc_flow", "flywheel")).toMatchObject({
+			raw: "1",
+			lastEffective: "true",
+		});
+	});
+
+	it("rejects star enablement when any affected project lacks doc_flow metadata", async () => {
+		const { deps } = await makeManagedDeps({
+			readFile: (path: string) => {
+				if (!path.endsWith("/.flywheel/config.yaml")) return ENV_CONTENT;
+				return path.includes("/geoforge3d/")
+					? "project: geoforge3d\n"
+					: PROJECT_CONFIG;
+			},
+		});
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "*",
+				reason: "fleet rollout",
+			},
+			"o",
+		);
+
+		expect(result).toMatchObject({
+			code: 409,
+			body: {
+				error: "doc_flow_enablement_requires_default_department",
+				project: "geoforge3d",
+			},
+		});
+	});
+
 	it("validates project-store scope against the configured roster", async () => {
 		const { deps } = await makeManagedDeps();
 		const result = handleFlagStage(
@@ -78,8 +177,8 @@ describe("handleFlagStage", () => {
 		});
 	});
 
-	it.each(["checkpoint_enabled", "ponytail", "xiaohongshu_auto_create"])(
-		"does not expose the DB writer for unsafe project flag %s",
+	it.each(["checkpoint_enabled", "xiaohongshu_auto_create"])(
+		"rejects retired project flag %s",
 		async (name) => {
 			const { deps } = await makeManagedDeps();
 			const result = handleFlagStage(
@@ -94,10 +193,36 @@ describe("handleFlagStage", () => {
 			);
 			expect(result.code).toBe(400);
 			expect(result.body).toMatchObject({
-				error: `${name} is not project-store-managed`,
+				error: `unknown feature flag: ${name}`,
 			});
 		},
 	);
+
+	it("exposes the scoped DB writer for migrated ponytail", async () => {
+		const { deps } = await makeManagedDeps();
+		const result = handleFlagStage(
+			deps,
+			{
+				name: "ponytail",
+				to: true,
+				project: "flywheel",
+				reason: "project rollout",
+			},
+			"o",
+		);
+		expect(result.code).toBe(200);
+		expect(result.body).toMatchObject({
+			canonical: {
+				kind: "flag_store",
+				name: "ponytail",
+				scope: "flywheel",
+				rawFrom: null,
+				rawTo: "1",
+				effectiveFrom: "inherit",
+				effectiveTo: true,
+			},
+		});
+	});
 
 	it("rejects a non-direct / governance flag", () => {
 		const deps = makeDeps();
@@ -191,6 +316,36 @@ describe("handleFlagStage", () => {
 });
 
 describe("handleFlagApply", () => {
+	it("rechecks doc_flow metadata at apply time before mutating the store", async () => {
+		let projectConfig = PROJECT_CONFIG;
+		const { deps, store } = await makeManagedDeps({
+			readFile: (path: string) =>
+				path.endsWith("/.flywheel/config.yaml") ? projectConfig : ENV_CONTENT,
+		});
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "doc_flow",
+				to: true,
+				project: "flywheel",
+				reason: "metadata race proof",
+			},
+			"o",
+		).body as { canonical: FlagStoreCanonical; confirmToken: string };
+		projectConfig = "project: flywheel\n";
+
+		expect(
+			handleFlagApply(deps, staged.canonical, staged.confirmToken, "o"),
+		).toMatchObject({
+			code: 409,
+			body: {
+				error: "doc_flow_enablement_requires_default_department",
+				project: "flywheel",
+			},
+		});
+		expect(store.getFlagValueRow("doc_flow", "flywheel")).toBeUndefined();
+	});
+
 	it("sets project and star rows through one scoped stage/apply path", async () => {
 		const { deps, store } = await makeManagedDeps();
 		for (const [project, to] of [

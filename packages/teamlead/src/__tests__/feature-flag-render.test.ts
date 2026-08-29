@@ -31,8 +31,6 @@ const PROJECT_FLAG = {
 			value: false,
 			isDefault: true,
 			via: "star_row" as const,
-			runtimeConfigValue: true,
-			runtimeDivergence: "config_pending_cutover" as const,
 		},
 	],
 };
@@ -71,12 +69,11 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		expect(html).toContain('type="checkbox"');
 	});
 
-	it("renders project/store provenance, transition divergence, and row-presence controls", () => {
+	it("renders project/store provenance and row-presence controls", () => {
 		const html = renderFlagCard(PROJECT_FLAG, "phone");
 		expect(html).toContain("项目行");
 		expect(html).toContain("* 行");
-		expect(html).toContain("runtime 仍按 config");
-		expect(html).toContain("C 单切换");
+		expect(html).not.toContain("runtime 仍按 config");
 		expect(html).toContain("data-ffp-scope");
 		expect(html).toContain("data-ffp-value");
 		expect(html).toContain('data-ffp-name="doc_flow"');

@@ -36,15 +36,18 @@ function required(values, key) {
 	return value;
 }
 
-async function canonicalBindings() {
-	let config;
+async function loadBuiltConfig() {
 	try {
-		config = await import(configModuleUrl);
+		return await import(configModuleUrl);
 	} catch (error) {
 		throw new Error(
 			`built flywheel-config is unavailable; run pnpm install --frozen-lockfile && pnpm --filter flywheel-config build (${error.message})`,
 		);
 	}
+}
+
+async function canonicalBindings() {
+	const config = await loadBuiltConfig();
 	const bindings = config.WORKFLOW_MENU_BINDINGS;
 	if (!Array.isArray(bindings) || bindings.length !== 6) {
 		throw new Error(
@@ -63,6 +66,35 @@ function openDatabase(path, readonly = false) {
 	db.pragma("busy_timeout = 5000");
 	if (!readonly) db.pragma("foreign_keys = ON");
 	return db;
+}
+
+function scopedBoolean(db, config, name, project) {
+	const spec = config.FEATURE_FLAGS.find(
+		(candidate) => candidate.name === name,
+	);
+	const codec = config.getFlagStoreCodec(name);
+	if (!spec || typeof spec.default !== "boolean" || !codec) {
+		throw new Error(`missing scoped boolean flag policy: ${name}`);
+	}
+	const row = db
+		.prepare(
+			`SELECT has_override, raw_value
+			   FROM flag_values
+			  WHERE flag_name = ? AND scope IN (?, '*')
+			  ORDER BY CASE WHEN scope = ? THEN 0 ELSE 1 END
+			  LIMIT 1`,
+		)
+		.get(name, project, project);
+	const effective = row
+		? codec.parse({
+				hasOverride: Number(row.has_override) === 1,
+				raw: row.raw_value ?? null,
+			})
+		: spec.default;
+	if (typeof effective !== "boolean") {
+		throw new Error(`scoped flag is not boolean: ${name}`);
+	}
+	return effective;
 }
 
 async function seedBindings(values) {
@@ -179,8 +211,95 @@ async function verifyBindings(values) {
 	}
 }
 
+async function seedProjectFlags(values) {
+	const dbPath = required(values, "db");
+	const project = required(values, "project");
+	const updatedBy = values.actor?.trim() || "system:test-deploy-generalized";
+	const rows = values.flags
+		? values.flags.split(",").map((name) => name.trim())
+		: ["pipeline_dag", "pipeline_work_kind"];
+	if (rows.length === 0 || rows.some((name) => !name)) {
+		throw new Error("--flags must be a comma-separated list of flag names");
+	}
+	if (new Set(rows).size !== rows.length) {
+		throw new Error("--flags must not contain duplicate flag names");
+	}
+	const config = await loadBuiltConfig();
+	for (const name of rows) {
+		const spec = config.FEATURE_FLAGS.find(
+			(candidate) => candidate.name === name,
+		);
+		if (
+			!config.PROJECT_STORE_MANAGED_FLAGS.has(name) ||
+			typeof spec?.default !== "boolean"
+		) {
+			throw new Error(`project flag ${name} is not allowed for QA seeding`);
+		}
+	}
+	const db = openDatabase(dbPath);
+	try {
+		const current = db.prepare(
+			`SELECT has_override,raw_value,last_effective,revision,updated_by
+			   FROM flag_values WHERE flag_name = ? AND scope = ?`,
+		);
+		const insert = db.prepare(
+			`INSERT INTO flag_values (
+				flag_name,scope,has_override,raw_value,last_effective,
+				value_last_changed,revision,updated_at,updated_by
+			 ) VALUES (?,?,1,'1','true',NULL,1,?,?)`,
+		);
+		const update = db.prepare(
+			`UPDATE flag_values SET
+				has_override=1,raw_value='1',last_effective='true',
+				value_last_changed=?,revision=revision+1,updated_at=?,updated_by=?
+			 WHERE flag_name=? AND scope=?`,
+		);
+		const audit = db.prepare(
+			`INSERT INTO flag_value_changelog (
+				flag_name,scope,action,from_present,from_raw,to_present,to_raw,
+				from_effective,to_effective,changed_by,changed_at,reason
+			 ) VALUES (?,?,'set',?,?,1,'1',?,'true',?,?,'seed generalized QA project flags')`,
+		);
+		let changed = 0;
+		db.transaction(() => {
+			const now = Date.now();
+			for (const name of rows) {
+				const prior = current.get(name, project);
+				if (
+					prior?.has_override === 1 &&
+					prior.raw_value === "1" &&
+					prior.last_effective === "true"
+				) {
+					continue;
+				}
+				if (prior) {
+					update.run(now, now, updatedBy, name, project);
+				} else {
+					insert.run(name, project, now, updatedBy);
+				}
+				audit.run(
+					name,
+					project,
+					prior ? 1 : null,
+					prior?.raw_value ?? null,
+					prior?.last_effective ?? null,
+					updatedBy,
+					now,
+				);
+				changed += 1;
+			}
+		}).immediate();
+		process.stdout.write(
+			`${JSON.stringify({ success: true, project, flags: rows.length, changed })}\n`,
+		);
+	} finally {
+		db.close();
+	}
+}
+
 async function verifyConfig(values) {
 	const file = required(values, "file");
+	const dbPath = required(values, "db");
 	const project = required(values, "project");
 	const { config } = await canonicalBindings();
 	const loader = new config.ConfigLoader((path) => readFile(path, "utf8"));
@@ -190,11 +309,22 @@ async function verifyConfig(values) {
 			`config project ${loaded.project} does not match ${project}`,
 		);
 	}
-	if (loaded.pipeline?.dag !== true) {
-		throw new Error("pipeline.dag must resolve to true");
+	const db = openDatabase(dbPath, true);
+	let dag;
+	let workKind;
+	try {
+		dag = scopedBoolean(db, config, "pipeline_dag", project);
+		workKind = scopedBoolean(db, config, "pipeline_work_kind", project);
+	} finally {
+		db.close();
 	}
-	if (loaded.pipeline?.work_kind !== true) {
-		throw new Error("pipeline.work_kind must resolve to true");
+	if (!dag) {
+		throw new Error("pipeline_dag must resolve to true in the scoped store");
+	}
+	if (!workKind) {
+		throw new Error(
+			"pipeline_work_kind must resolve to true in the scoped store",
+		);
 	}
 	process.stdout.write(
 		`${JSON.stringify({ success: true, project, dag: true, workKind: true })}\n`,
@@ -210,12 +340,15 @@ async function main() {
 		case "verify-bindings":
 			await verifyBindings(values);
 			break;
+		case "seed-project-flags":
+			await seedProjectFlags(values);
+			break;
 		case "verify-config":
 			await verifyConfig(values);
 			break;
 		default:
 			throw new Error(
-				"usage: qa-generalized.mjs seed-bindings|verify-bindings|verify-config [options]",
+				"usage: qa-generalized.mjs seed-bindings|verify-bindings|seed-project-flags|verify-config [options; verify-config requires --db]",
 			);
 	}
 }

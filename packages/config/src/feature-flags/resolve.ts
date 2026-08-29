@@ -2,19 +2,16 @@
  * FLY-709 — feature-flag resolver.
  *
  * Computes the effective (current) value of each registered flag from
- * process.env (Bridge-global env flags) and per-project config (project-scoped
- * config flags), reusing each flag's real in-line semantics so the displayed
- * value is byte-identical to what the owning code actually observes.
+ * process.env (Bridge-global flags). Project-scoped runtime values are enriched
+ * from SQLite by the Bridge after this registry view is constructed.
  *
  * env flags are Bridge-global → single `effective`.
- * project_config flags are per-project → `effectiveByProject[]` (env is global,
- * but doc_flow / proofshot / etc. differ per project). Config-load errors are
- * surfaced as data, never silently defaulted. Dormant flags (ponytail: validated
- * by ConfigLoader but not loaded by run-infra) report no effective value.
+ * project_config flags are per-project → `effectiveByProject[]` populated by
+ * the store enrichment path (env is global, but doc_flow / proofshot / etc.
+ * differ per project).
  */
 
 import { type EnvFileSource, readEnvFileValue } from "../env-file.js";
-import type { FlywheelConfig } from "../types.js";
 import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
@@ -32,24 +29,18 @@ export interface FlagResolveCtx {
 	env?: Record<string, string | undefined>;
 	/** Explicit shared .env snapshot. Omit for legacy Bridge-only resolution. */
 	envFile?: EnvFileSource;
-	/** project name → its loaded config (or a load error). Used for project flags. */
-	projectConfigs?: Map<string, { config?: FlywheelConfig; error?: string }>;
 }
 
 /** A project-scoped flag's effective value on one project. */
 export interface FlagEffectiveByProject {
 	projectName: string;
-	/** Present when the project config loaded. */
+	/** Present when the project store resolved. */
 	value?: boolean | string;
-	/** Present when the project config failed to load (surfaced, not defaulted). */
+	/** Present when the project store failed to resolve. */
 	error?: string;
 	isDefault?: boolean;
 	/** FLY-2100: which layer supplied the displayed project value. */
-	via?: "project_row" | "star_row" | "config" | "default";
-	/** Batch-A transition: config.yaml is still the runtime source until Batch C. */
-	runtimeConfigValue?: boolean | string;
-	runtimeConfigError?: string;
-	runtimeDivergence?: "config_pending_cutover";
+	via?: "project_row" | "star_row" | "default";
 }
 
 export interface FlagScopedStoreView {
@@ -127,23 +118,6 @@ export interface FlagView {
 	clockReadiness?: "ready" | "no_clock:degraded" | "no_clock:unmanaged";
 	/** FLY-2104: scope-aware clocks; current single-row schema projects `*`. */
 	valueClocks?: FlagValueClock[];
-}
-
-/** Navigate a schema path, expanding Record (`*`) and array (`[]`) segments. */
-function getByPath(obj: unknown, path: string): unknown[] {
-	let values: unknown[] = [obj];
-	for (const segment of path.split(".")) {
-		const arraySegment = segment.endsWith("[]");
-		const key = arraySegment ? segment.slice(0, -2) : segment;
-		values = values.flatMap((value) => {
-			if (value == null || typeof value !== "object") return [undefined];
-			if (key === "*") return Object.values(value);
-			const next = (value as Record<string, unknown>)[key];
-			if (!arraySegment) return [next];
-			return Array.isArray(next) ? next : [];
-		});
-	}
-	return values;
 }
 
 function uniqueTimings(spec: FeatureFlagSpec): ReadTiming[] {
@@ -248,34 +222,14 @@ function withEnvSources(
 	};
 }
 
-/** Effective value of a project_config flag on one loaded config. */
-function resolveConfigValue(
-	spec: FeatureFlagSpec,
-	config: FlywheelConfig,
-): { value: boolean | string } | { error: string } {
-	const rawValues = spec.configKey ? getByPath(config, spec.configKey) : [];
-	const values = (rawValues.length > 0 ? rawValues : [undefined]).map((raw) => {
-		if (raw === undefined || raw === null) return spec.default;
-		if (spec.valueKind === "bool") return Boolean(raw);
-		return String(raw);
-	});
-	const value = values[0] ?? spec.default;
-	if (values.some((candidate) => candidate !== value)) {
-		return { error: `mixed values for ${spec.configKey}` };
-	}
-	return { value };
-}
-
 /**
- * Overlay project-scoped SQLite rows without changing the legacy config
- * resolver. No row means byte-compatible config/default fallback for the
- * FLY-2100 transition; an explicit project row wins over the `*` row.
+ * Resolve project-scoped SQLite rows. An explicit project row wins over the
+ * `*` row; no row means the registry default.
  */
 export function resolveScopedEffective(input: {
 	spec: FeatureFlagSpec;
 	projectName: string;
 	rows: ReadonlyArray<{ scope: string; raw: string | null }>;
-	configRow: FlagEffectiveByProject;
 	codec: FlagStoreCodec;
 }): FlagEffectiveByProject {
 	const row =
@@ -291,9 +245,10 @@ export function resolveScopedEffective(input: {
 		};
 	}
 	return {
-		...input.configRow,
 		projectName: input.projectName,
-		via: input.configRow.isDefault ? "default" : "config",
+		value: input.spec.default,
+		isDefault: true,
+		via: "default",
 	};
 }
 
@@ -337,42 +292,7 @@ export function resolveFlag(
 		return withEnvSources(base, spec, effective, ctx);
 	}
 
-	// project scope. Dormant flags never report an effective value.
-	if (spec.dormant) return base;
-
-	const configs = ctx.projectConfigs;
-	if (!configs || configs.size === 0) {
-		return { ...base, effectiveByProject: [] };
-	}
-	const effectiveByProject: FlagEffectiveByProject[] = [];
-	for (const [projectName, entry] of configs) {
-		// Only a real load error is an error row.
-		if (entry.error !== undefined) {
-			effectiveByProject.push({ projectName, error: entry.error });
-			continue;
-		}
-		// Absent config (ENOENT → {}) = absent/default semantics, NOT an error.
-		if (entry.config === undefined) {
-			effectiveByProject.push({
-				projectName,
-				value: spec.default,
-				isDefault: true,
-			});
-			continue;
-		}
-		const resolution = resolveConfigValue(spec, entry.config);
-		if ("error" in resolution) {
-			effectiveByProject.push({ projectName, error: resolution.error });
-			continue;
-		}
-		const { value } = resolution;
-		effectiveByProject.push({
-			projectName,
-			value,
-			isDefault: value === spec.default,
-		});
-	}
-	return { ...base, effectiveByProject };
+	return { ...base, effectiveByProject: [] };
 }
 
 export function resolveAllFlags(ctx: FlagResolveCtx): FlagView[] {

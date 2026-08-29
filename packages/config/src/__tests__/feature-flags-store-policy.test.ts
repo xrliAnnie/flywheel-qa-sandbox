@@ -31,13 +31,13 @@ const PROJECT_MANAGED = [
 	"pipeline_work_kind",
 	"proofshot",
 	"xiaohongshu_learning",
+	"ponytail",
+	"skill_framework_split_participation",
 ] as const;
 
 const LEGACY_UNMANAGED = [
-	"checkpoint_enabled",
 	"pipeline_dag",
 	"pipeline_work_kind",
-	"xiaohongshu_auto_create",
 	"doc_flow",
 	"skill_framework_split_participation",
 	"proofshot",
@@ -526,7 +526,7 @@ describe("FLY-1778 flag store policy", () => {
 	});
 
 	it("keeps every managed codec aligned with its registry default and polarity", () => {
-		for (const name of MANAGED) {
+		for (const name of [...MANAGED, ...PROJECT_MANAGED]) {
 			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name)!;
 			const codec = getFlagStoreCodec(name)!;
 			expect(codec.parse({ hasOverride: false, raw: null }), name).toBe(

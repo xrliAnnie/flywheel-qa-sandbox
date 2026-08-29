@@ -56,6 +56,6 @@ fi
 
 log "OK — $PLUGIN is installed and globally disabled."
 log "Per-project / per-issue rollout:"
-log "  • per-project : set 'ponytail: { enabled: true }' in <project>/.flywheel/config.yaml (restart Bridge)"
+log "  • per-project : flywheel-comm feature-flags set --name ponytail --to on --project <project> --reason \"enable ponytail rollout\""
 log "  • per-issue   : add the Linear label 'ponytail' (force on) or 'ponytail-off' (force off)"
 log "  • default     : off everywhere (byte-compatible)."

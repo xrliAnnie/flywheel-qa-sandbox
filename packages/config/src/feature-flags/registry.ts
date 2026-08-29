@@ -176,9 +176,7 @@ export function validateKeepFieldContract(spec: FeatureFlagSpec): string[] {
 }
 
 function flagStoreSite(
-	file:
-		| "packages/teamlead/src/bridge/plugin.ts"
-		| "packages/teamlead/src/bridge/run-infra.ts",
+	file: string,
 	symbol: string,
 	resolverSymbol: string,
 ): FlagReadSite {
@@ -347,45 +345,21 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
-		name: "checkpoint_enabled",
-		category: "governance_gate",
-		source: "project_config",
-		scope: "project",
-		configKey: "checkpoints.*.enabled",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "逐 checkpoint 的启用开关(动态 checkpoint 名)",
-		readSites: [
-			{
-				file: "packages/edge-worker/src/Blueprint.ts",
-				symbol: "Blueprint.runInner",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "cpConfig.enabled",
-			},
-		],
-		toggleable: "readonly",
-		note: "登记只补治理账，不改变 question 或任何 checkpoint 行为。",
-	},
-	{
 		name: "pipeline_dag",
 		category: "feature",
 		source: "project_config",
 		scope: "project",
 		configKey: "pipeline.dag",
-		polarity: "opt_in",
+		polarity: "default_on",
 		valueKind: "bool",
-		default: false,
+		default: true,
 		description: "项目级 DAG dispatch enrollment",
 		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/pipeline-config-source.ts",
-				symbol: "loadWorkKindConfigStrict",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "values.dag",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/pipeline-config-source.ts",
+				"readPipelineEnrollment",
+				"storePipelineDagEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -400,34 +374,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "项目级 dispatch work-kind enforcement",
 		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/pipeline-config-source.ts",
-				symbol: "loadWorkKindConfigStrict",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "values.work_kind",
-			},
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "xiaohongshu_auto_create",
-		category: "feature",
-		source: "project_config",
-		scope: "project",
-		configKey: "xiaohongshu_learning.collections[].auto_create",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "每个小红书 collection 是否自动创建筛出的 issue",
-		readSites: [
-			{
-				file: "packages/teamlead/src/xiaohongshu-scheduler.ts",
-				symbol: "planLearningRuns",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "col.auto_create",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/pipeline-config-source.ts",
+				"readPipelineEnrollment",
+				"storePipelineWorkKindEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -442,13 +393,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "DOC-FLOW 提示词块：Runner 写部门优先过程文档（per-project）",
 		readSites: [
-			{
-				file: "packages/edge-worker/src/Blueprint.ts",
-				symbol: "Blueprint.runInner",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "this.docFlowConfig.enabled",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeDocFlowEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -511,15 +460,13 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
 		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/skill-framework-participation.ts",
-				symbol: "makeSkillFrameworkParticipationReader",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "skillFramework.split",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeSkillFrameworkSplitParticipation",
+			),
 		],
-		toggleable: "readonly",
+		toggleable: "conversational",
 	},
 	{
 		name: "proofshot",
@@ -532,13 +479,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "ProofShot 视觉验证 auto-trigger（per-project）",
 		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "ps.enabled",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeProofshotEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -553,13 +498,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "定期小红书收藏学习管线（per-project）",
 		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "xhs.enabled",
-			},
+			flagStoreSite(
+				"scripts/xiaohongshu-scheduler.ts",
+				"main",
+				"storeXiaohongshuLearningEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -575,17 +518,14 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"代码极简 ponytail 逐项目 rollout（Annie-exception：默认 OFF）",
 		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "ponytail.enabled",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storePonytailEnabled",
+			),
 		],
-		toggleable: "readonly",
-		dormant: true,
-		note: "run-infra.ts 明确不加载 flywheelConfig?.ponytail（项目层 dormant）；Annie-exception。",
+		toggleable: "conversational",
+		note: "Annie-exception：默认 OFF；FLY-615 per-issue label 层保持独立。",
 	},
 	{
 		name: "workflow_turn_divergence_alerts",

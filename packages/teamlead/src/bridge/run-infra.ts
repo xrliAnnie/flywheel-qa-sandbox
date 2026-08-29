@@ -68,7 +68,11 @@ import {
 import { EventFilter } from "./EventFilter.js";
 import {
 	type FlagStoreRuntime,
+	storeDocFlowEnabled,
+	storePonytailEnabled,
+	storeProofshotEnabled,
 	storeSkillFrameworkModeControl,
+	storeSkillFrameworkSplitParticipation,
 } from "./flag-store-runtime.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
@@ -97,7 +101,6 @@ import {
 	RunDispatcher,
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
-import { makeSkillFrameworkParticipationReader } from "./skill-framework-participation.js";
 import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import type { BridgeConfig } from "./types.js";
@@ -323,8 +326,8 @@ async function createRunBlueprint(
 	agentDispatcher?: AgentDispatcher, // FLY-137 v1.27.2
 	flywheelRepoRoot?: string, // FLY-137 v1.27.2 (Codex Track A #1): Blueprint needs this to resolve shipped-generic agent_file
 	skillsConfig?: SkillsConfig, // GEO-151: ProofShot + skill commands surfaced to Blueprint
-	docFlowConfig?: DocFlowConfig, // FLY-205: doc-flow baseline (DOC-FLOW prompt block when enabled)
-	ponytailConfig?: PonytailConfig, // FLY-615: per-project ponytail rollout layer
+	docFlowDept?: Pick<DocFlowConfig, "default_department">, // FLY-205/2103: non-flag doc-flow path metadata
+	ponytailProjectLayer?: () => PonytailConfig | undefined, // FLY-615/2103: call-time per-project rollout layer
 	ownerStateDbPath?: string, // FLY-766: this Bridge's actual StateStore db path → claude-tmux owner marker
 	skillFrameworkParticipation?: (projectName: string | undefined) => boolean, // FLY-1356: fresh per-dispatch split-participation read (project opt-out lever)
 	skillFrameworkModeControl?: () => {
@@ -335,6 +338,7 @@ async function createRunBlueprint(
 		evidence: RunnerTuiWindowLostEvidence,
 	) => void | Promise<void>,
 	onTuiWindowRestored?: (executionId: string) => void | Promise<void>,
+	docFlowEnabled?: () => boolean,
 ): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
@@ -581,13 +585,14 @@ async function createRunBlueprint(
 			agentDispatcher, // FLY-137 v1.27.2: wired (was undefined pre-v1.27.2)
 			checkpointConfig, // FLY-47
 			flywheelRepoRoot, // FLY-137 v1.27.2: Blueprint resolves shipped-generic agent_file from this root
-			docFlowConfig, // FLY-205
-			ponytailConfig, // FLY-615: per-project ponytail rollout layer
+			docFlowDept, // FLY-205/2103
+			ponytailProjectLayer, // FLY-615/2103: per-project rollout reader
 			undefined, // ponytailReadiness — use Blueprint's default probe
 			skillFrameworkParticipation, // FLY-1356: split-participation reader
 			undefined, // skillFrameworkReadiness — use Blueprint default
 			undefined, // codexSkillAssemblyProbe — use Blueprint default
 			skillFrameworkModeControl,
+			docFlowEnabled,
 		);
 
 		const cleanup = async () => {
@@ -627,6 +632,12 @@ export interface RunInfraOptions {
 	flagStore?: FlagStoreRuntime;
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
+	/** Founder-visible existing alert path for a ConfigLoader-rejected project. */
+	onProjectConfigInvalid?: (input: {
+		projectName: string;
+		configPath: string;
+		error: Error;
+	}) => void | Promise<void>;
 	/** FLY-1718: shared structural repo lock used by fetch + worktree mutation. */
 	withRepoLock?: <T>(repoPath: string, fn: () => Promise<T>) => Promise<T>;
 	/**
@@ -992,8 +1003,7 @@ export async function setupRunInfrastructure(
 			let defaultAgentName: string | undefined;
 			let skillsConfig: SkillsConfig | undefined;
 			let rolesConfig: RoleBackendMap | undefined;
-			let docFlowConfig: DocFlowConfig | undefined;
-			let ponytailConfig: PonytailConfig | undefined;
+			let docFlowDept: Pick<DocFlowConfig, "default_department"> | undefined;
 			const configPath = join(project.projectRoot, ".flywheel", "config.yaml");
 			try {
 				const configLoader = new ConfigLoader(async (p) =>
@@ -1007,25 +1017,31 @@ export async function setupRunInfrastructure(
 				// FLY-123: per-role executor backend bindings (validated by
 				// ConfigLoader — unknown roles/backends rejected at load)
 				rolesConfig = flywheelConfig?.roles;
-				docFlowConfig = flywheelConfig?.doc_flow; // FLY-205
-				// FLY-615 v1 = per-issue only (Tadashi): the per-project config
-				// layer is DORMANT — we intentionally do NOT load
-				// `flywheelConfig?.ponytail`, so the project layer of the resolver
-				// never fires (a project's `ponytail.enabled` has no effect yet).
-				// The 3-layer resolver + Blueprint `ponytailConfig` param stay in
-				// place; v2 activates per-project rollout by loading it here.
-				// `ConfigLoader` still validates `ponytail` when present (harmless).
-				ponytailConfig = undefined;
+				docFlowDept = flywheelConfig?.doc_flow; // FLY-205/2103: path metadata only
 			} catch (err) {
 				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 					// No config file — no checkpoints, no agents block, no skills.
 					// AgentDispatcher will still be constructed (empty agents map) so the
 					// shipped-generic fallback kicks in for zero-config projects.
 				} else {
+					const error = err instanceof Error ? err : new Error(String(err));
+					try {
+						await runInfraOpts?.onProjectConfigInvalid?.({
+							projectName: project.projectName,
+							configPath,
+							error,
+						});
+					} catch (alertError) {
+						console.error(
+							`[RunInfra] ${project.projectName}: project-config alert failed (non-fatal):`,
+							alertError instanceof Error ? alertError.message : alertError,
+						);
+					}
 					throw err;
 				}
 			}
 
+			const flagStore = runInfraOpts?.flagStore;
 			const directSink = new DirectEventSink(
 				store,
 				config,
@@ -1034,6 +1050,9 @@ export async function setupRunInfrastructure(
 				registry,
 				chatThreadCreator,
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
+				flagStore
+					? (projectName) => storeProofshotEnabled(flagStore, projectName)
+					: undefined,
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.
 			directSink.removeCleanWorktree = runInfraOpts?.removeCleanWorktree;
@@ -1069,14 +1088,25 @@ export async function setupRunInfrastructure(
 				flywheelRepoRoot,
 			);
 
-			// FLY-1356: split-participation reader (extracted for direct unit
-			// testing — Codex R1 HIGH-1: a non-mapping `skill_framework` must
-			// THROW → Blueprint fails closed, never read as participate=true).
-			// Fresh config read at every dispatch resolution; ENOENT / absent
-			// key → participate (default true).
-			const skillFrameworkParticipation =
-				makeSkillFrameworkParticipationReader(configPath);
-			const flagStore = runInfraOpts?.flagStore;
+			// FLY-1356/2103: read split participation from scoped SQLite at every
+			// dispatch. A missing store pins the project to A instead of silently
+			// admitting it to an experimental arm.
+			const skillFrameworkParticipation = flagStore
+				? (projectName: string | undefined) =>
+						storeSkillFrameworkSplitParticipation(
+							flagStore,
+							projectName ?? project.projectName,
+						)
+				: () => false;
+			const docFlowEnabled = flagStore
+				? () => storeDocFlowEnabled(flagStore, project.projectName)
+				: undefined;
+			const ponytailProjectLayer = flagStore
+				? () =>
+						storePonytailEnabled(flagStore, project.projectName)
+							? { enabled: true }
+							: undefined
+				: undefined;
 			const skillFrameworkModeControl = flagStore
 				? () => storeSkillFrameworkModeControl(flagStore)
 				: undefined;
@@ -1091,13 +1121,14 @@ export async function setupRunInfrastructure(
 				agentDispatcher, // FLY-137 v1.27.2
 				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
 				skillsConfig, // GEO-151: wired into Blueprint slot 7
-				docFlowConfig, // FLY-205
-				ponytailConfig, // FLY-615: per-project ponytail rollout layer
+				docFlowDept, // FLY-205/2103
+				ponytailProjectLayer, // FLY-615/2103: store-backed project layer
 				store.getDbPath(), // FLY-766: owner marker db-path truth
 				skillFrameworkParticipation, // FLY-1356
 				skillFrameworkModeControl, // FLY-1778
 				runInfraOpts?.onTuiWindowLost,
 				runInfraOpts?.onTuiWindowRestored,
+				docFlowEnabled,
 			);
 
 			projectRuntimes.set(project.projectName, {
@@ -1110,7 +1141,7 @@ export async function setupRunInfrastructure(
 			// FLY-795: remember the doc-flow default department for the resume computer.
 			docDeptByProject.set(
 				project.projectName,
-				docFlowConfig?.default_department,
+				docFlowDept?.default_department,
 			);
 			cleanupHandles.push(cleanup);
 

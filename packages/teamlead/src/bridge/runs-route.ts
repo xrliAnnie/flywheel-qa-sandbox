@@ -17,11 +17,7 @@ import { homedir } from "node:os";
 import { join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
-import type {
-	PipelineConfig,
-	PonytailInput,
-	SkillFrameworkMode,
-} from "flywheel-config";
+import type { PonytailInput, SkillFrameworkMode } from "flywheel-config";
 import {
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
@@ -96,8 +92,8 @@ import {
 import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
 import {
-	loadPipelineConfigByProject,
-	loadWorkKindConfigStrict,
+	readPipelineEnrollment,
+	type WorkKindConfigResult,
 } from "./pipeline-config-source.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
@@ -1885,14 +1881,14 @@ export function createRunsRouter(
 		// provenance marker — NOT `engine_owned`, which every start-reservation
 		// run (existing v2 / explicit-v1) also carries (R3-1). Unmarked runs
 		// fall through to today's paths byte-identically.
-		let mainPipelineConfig: PipelineConfig | undefined;
+		let mainPipelineConfig: WorkKindConfigResult | undefined;
 		let mainPipelineConfigLoaded = false;
-		const loadMainPipelineConfig = async () => {
+		const loadMainPipelineConfig = () => {
 			if (!mainPipelineConfigLoaded) {
 				mainPipelineConfigLoaded = true;
 				const proj = projects.find((p) => p.projectName === projectName);
 				mainPipelineConfig = proj
-					? (await loadPipelineConfigByProject([proj])).get(projectName)
+					? readPipelineEnrollment({ mode: "ready", store }, projectName)
 					: undefined;
 			}
 			return mainPipelineConfig;
@@ -2013,11 +2009,11 @@ export function createRunsRouter(
 				}
 				const pipelineConfig =
 					classifiedKind === "pipeline_dag_v1"
-						? await loadMainPipelineConfig()
+						? loadMainPipelineConfig()
 						: undefined;
 				if (
 					classifiedKind === "pipeline_dag_v1" &&
-					pipelineConfig?.dag !== true
+					(pipelineConfig?.ok !== true || pipelineConfig.dag !== true)
 				) {
 					res.status(409).json({
 						success: false,
@@ -2025,7 +2021,7 @@ export function createRunsRouter(
 							classifiedKind === "pipeline_dag_v1"
 								? "ACTIVE_DAG_RUN_RECOVERY_HELD"
 								: "ACTIVE_WORKFLOW_RUN_RECOVERY_HELD",
-						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but pipeline.dag is disabled — restore pipeline.dag to converge it, or finalize/terminate the run before dispatching legacy`,
+						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but the project-scoped pipeline_dag flag is off or unreadable — use feature-flags set --name pipeline_dag --to on --project ${projectName} with a reason to converge it, or finalize/terminate the run before dispatching legacy`,
 					});
 					return;
 				}
@@ -2113,7 +2109,10 @@ export function createRunsRouter(
 		if (freshMain) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
-				const strict = loadWorkKindConfigStrict(project);
+				const strict = readPipelineEnrollment(
+					{ mode: "ready", store },
+					project.projectName,
+				);
 				if (!strict.ok) {
 					res.status(400).json({
 						success: false,
@@ -2127,8 +2126,7 @@ export function createRunsRouter(
 					res.status(409).json({
 						success: false,
 						code: "DAG_DISPATCH_DISABLED",
-						reason:
-							"pipeline.dag is explicitly disabled or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG",
+						reason: `the project-scoped pipeline_dag flag is off or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG — use feature-flags set --name pipeline_dag --project ${projectName} with --to on and a reason`,
 						silent: false,
 					});
 					return;

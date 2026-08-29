@@ -134,15 +134,13 @@ describe("FLY-1436 work-kind cutover routes", () => {
 		const paths: string[] = [];
 		const evidence = readFly1436ActivationEvidence({
 			projectRoot: "/canonical/flywheel",
-			env: {
-				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			},
+			pipelineEnrollment: () => ({
+				ok: true,
+				workKind: true,
+				dag: true,
+			}),
 			readFile: (path) => {
 				paths.push(path);
-				if (path.endsWith(".flywheel/config.yaml")) {
-					return "pipeline:\n  dag: true\n  work_kind: true\n";
-				}
 				if (path.endsWith("ic-roster.yaml")) {
 					return [
 						"design: .flywheel/agents/engineering/engineer-executor.md",
@@ -182,7 +180,7 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			deployedSha: "a".repeat(40),
 		});
 		expect(evidence.assetsDigest).toMatch(/^[0-9a-f]{64}$/);
-		expect(paths).toHaveLength(10);
+		expect(paths).toHaveLength(9);
 		expect(paths.every((path) => path.startsWith("/canonical/flywheel/"))).toBe(
 			true,
 		);
@@ -191,14 +189,12 @@ describe("FLY-1436 work-kind cutover routes", () => {
 	it("rejects the obsolete wrapped menu asset shape", () => {
 		const evidence = readFly1436ActivationEvidence({
 			projectRoot: "/canonical/flywheel",
-			env: {
-				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			},
+			pipelineEnrollment: () => ({
+				ok: true,
+				workKind: true,
+				dag: true,
+			}),
 			readFile: (path) => {
-				if (path.endsWith(".flywheel/config.yaml")) {
-					return "pipeline:\n  dag: true\n  work_kind: true\n";
-				}
 				if (path.endsWith("ic-roster.yaml")) {
 					return "roles:\n  pm: .flywheel/agents/engineering/pm-executor.md";
 				}
