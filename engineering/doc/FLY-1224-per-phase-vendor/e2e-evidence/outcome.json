@@ -1,0 +1,10 @@
+{
+	"threadId": "019f5dab-3e4f-7fa0-a7eb-64add151d550",
+	"result": {
+		"status": "complete",
+		"tokensUsed": 16926,
+		"turns": 1,
+		"succeeded": true
+	},
+	"restarts": 0
+}

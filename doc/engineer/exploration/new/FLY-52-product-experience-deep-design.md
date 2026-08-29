@@ -25,7 +25,7 @@ Flywheel = **Annie 的私人 AI 开发团队**。
 ```
 Linear issues → Bridge (Express API + SQLite StateStore)
                   → RunDispatcher → Blueprint → TmuxAdapter → Claude Code CLI (Runner)
-                  → EventFilter → ClaudeDiscordRuntime → Discord control channel → Lead
+                  → EventFilter → CommDBLeadRuntime → file inbox → Lead (flywheel_inbox MCP)
                   → HeartbeatService → stuck/orphan detection
                   
 Lead (Claude Code --agent) ↔ Runner: flywheel-comm (SQLite inbox/outbox)

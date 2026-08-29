@@ -50,6 +50,10 @@ describe("StuckWatcher (compat re-export)", () => {
 		getStuckSessions: ReturnType<typeof vi.fn>;
 		getOrphanSessions: ReturnType<typeof vi.fn>;
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
+		hasQuietWakeNotified: ReturnType<typeof vi.fn>;
+		recordQuietWakeNotified: ReturnType<typeof vi.fn>;
+		clearQuietWakeNotified: ReturnType<typeof vi.fn>;
+		pruneQuietWakeNotifiedNotIn: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
@@ -63,9 +67,15 @@ describe("StuckWatcher (compat re-export)", () => {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
+			// FLY-637 persistent quiet-wake dedup surface (no-op for these tests).
+			hasQuietWakeNotified: vi.fn().mockReturnValue(false),
+			recordQuietWakeNotified: vi.fn(),
+			clearQuietWakeNotified: vi.fn(),
+			pruneQuietWakeNotifiedNotIn: vi.fn(),
 		};
 		notifier = {
-			onSessionStuck: vi.fn().mockResolvedValue(undefined),
+			// FLY-637: onSessionStuck returns a "persisted" boolean now.
+			onSessionStuck: vi.fn().mockResolvedValue(true),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};
@@ -128,7 +138,7 @@ describe("StuckWatcher (compat re-export)", () => {
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "claude-discord" as const,
+		type: "commdb" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -161,7 +171,6 @@ describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () =>
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-100",
-			thread_id: "1234.5678",
 		};
 
 		await notifier.onSessionStuck(session, 30);
@@ -172,8 +181,7 @@ describe("WebhookStuckNotifier (RegistryHeartbeatNotifier via re-export)", () =>
 		expect(env.sessionKey).toBe("flywheel:GEO-100");
 		expect(env.event.event_type).toBe("session_stuck");
 		expect(env.event.minutes_since_activity).toBe(30);
-		expect(env.event.thread_id).toBe("1234.5678");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});

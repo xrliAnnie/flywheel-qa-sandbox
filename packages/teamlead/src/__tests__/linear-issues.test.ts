@@ -6,6 +6,7 @@
 import type http from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -34,6 +35,28 @@ const testProjects: ProjectEntry[] = [
 			},
 		],
 	},
+	// FLY-371: project with a full Linear binding (team + project + scope label).
+	{
+		projectName: "flywheel",
+		projectRoot: "/tmp/flywheel",
+		leads: [{ agentId: "eng", chatChannel: "c", match: { labels: ["Eng"] } }],
+		linear: { team: "FLY", project: "Flywheel", label: "Flywheel" },
+	},
+	// FLY-371: label-only-scoped COE (no Linear Project) — Polaris shape.
+	{
+		projectName: "polaris",
+		projectRoot: "/tmp/polaris",
+		leads: [
+			{ agentId: "pol", chatChannel: "c", match: { labels: ["Polaris"] } },
+		],
+		linear: { team: "GEO", label: "Polaris" },
+	},
+	// FLY-371: project in the roster with no Linear binding.
+	{
+		projectName: "no-binding-proj",
+		projectRoot: "/tmp/nb",
+		leads: [{ agentId: "nb", chatChannel: "c", match: { labels: ["X"] } }],
+	},
 ];
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
@@ -46,7 +69,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
-		maxConcurrentRunners: 2,
+		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }
@@ -359,5 +382,91 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 
 		const query = mockRawRequest.mock.calls[0][0] as string;
 		expect(query).toContain("description");
+	});
+
+	// ===== FLY-371: projectName → Linear binding =====
+
+	function filterOf() {
+		return (
+			mockRawRequest.mock.calls[0][1] as { filter: Record<string, unknown> }
+		).filter;
+	}
+
+	it("projectName defaults BOTH project and label filters from the binding", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
+		const res = await fetch(
+			`${baseUrl}/api/linear/issues?projectName=flywheel`,
+			{
+				headers: { Authorization: "Bearer test-token" },
+			},
+		);
+		expect(res.status).toBe(200);
+		const filter = filterOf();
+		expect(filter.project).toEqual({ name: { eq: "Flywheel" } });
+		expect(filter.labels).toEqual({ name: { eq: "Flywheel" } });
+	});
+
+	it("label-only binding (Polaris) defaults the label filter, no project", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
+		await fetch(`${baseUrl}/api/linear/issues?projectName=polaris`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
+		const filter = filterOf();
+		expect(filter.labels).toEqual({ name: { eq: "Polaris" } });
+		expect(filter.project).toBeUndefined();
+	});
+
+	it("explicit project overrides binding.project", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
+		await fetch(
+			`${baseUrl}/api/linear/issues?projectName=flywheel&project=Other`,
+			{ headers: { Authorization: "Bearer test-token" } },
+		);
+		expect(filterOf().project).toEqual({ name: { eq: "Other" } });
+	});
+
+	it("explicit labels override binding.label", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
+		await fetch(
+			`${baseUrl}/api/linear/issues?projectName=flywheel&labels=Bug`,
+			{ headers: { Authorization: "Bearer test-token" } },
+		);
+		expect(filterOf().labels).toEqual({ name: { eq: "Bug" } });
+	});
+
+	// Codex R2 LOW-3: `?labels=` (blank) must NOT suppress the binding default.
+	it("blank labels query falls back to the binding label", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
+		await fetch(`${baseUrl}/api/linear/issues?projectName=flywheel&labels=`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
+		expect(filterOf().labels).toEqual({ name: { eq: "Flywheel" } });
+	});
+
+	it("returns 404 for an unknown projectName", async () => {
+		const res = await fetch(`${baseUrl}/api/linear/issues?projectName=ghost`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
+		expect(res.status).toBe(404);
+		expect((await res.json()).error).toMatch(/Unknown Flywheel project/);
+	});
+
+	it("returns 404 for a known projectName with no linear binding", async () => {
+		const res = await fetch(
+			`${baseUrl}/api/linear/issues?projectName=no-binding-proj`,
+			{ headers: { Authorization: "Bearer test-token" } },
+		);
+		expect(res.status).toBe(404);
+		expect((await res.json()).error).toMatch(/no linear binding/);
+	});
+
+	it("no projectName ⇒ byte-compat (no project/label filter unless explicit)", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
+		await fetch(`${baseUrl}/api/linear/issues`, {
+			headers: { Authorization: "Bearer test-token" },
+		});
+		const filter = filterOf();
+		expect(filter.project).toBeUndefined();
+		expect(filter.labels).toBeUndefined();
 	});
 });

@@ -4,7 +4,11 @@
  * Tests the full session state machine: created → running → completed/failed,
  * including stage transitions, approval flow, and history queries.
  */
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import type http from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
@@ -59,7 +63,7 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 		store = await StateStore.create(":memory:");
 
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
@@ -104,6 +108,10 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
+		if (commRoot) {
+			rmSync(commRoot, { recursive: true, force: true });
+			delete process.env.FLYWHEEL_COMM_ROOT;
+		}
 	});
 
 	async function postEvent(event: Record<string, unknown>) {
@@ -114,7 +122,24 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 		});
 	}
 
+	// FLY-191 Phase 2 (Codex PR R1 HIGH-3): approve requires a writable CommDB
+	// gate question — seed one in a sandbox comm root.
+	let commRoot: string | undefined;
+	function seedApproveGate(execId: string, project = "test-proj"): string {
+		commRoot = mkdtempSync(join(tmpdir(), "fly191-lc-comm-"));
+		process.env.FLYWHEEL_COMM_ROOT = commRoot;
+		mkdirSync(join(commRoot, project), { recursive: true });
+		const db = new CommDB(join(commRoot, project, "comm.db"), true);
+		db.registerSession(execId, "sess:win", project, undefined, "test-lead");
+		const qid = db.insertQuestion(execId, "test-lead", "PR ready", {
+			checkpoint: "approve_to_ship",
+		});
+		db.close();
+		return qid;
+	}
+
 	it("session_started → running → session_completed → awaiting_review → approve → approved_to_ship", async () => {
+		const gateQid = seedApproveGate("exec-lc");
 		// 1. Start session
 		const startRes = await postEvent({
 			event_id: "evt-lc-1",
@@ -146,6 +171,9 @@ describe("FLY-96 Integration: Session lifecycle", () => {
 					linesRemoved: 20,
 				},
 				summary: "Lifecycle test completed",
+				// FLY-191 R2 HIGH-1: a Phase-2 needs_review without the binding
+				// gets the UNBOUND sentinel and approve refuses.
+				reviewQuestionId: gateQid,
 			},
 		});
 		expect(completeRes.status).toBe(200);

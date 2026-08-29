@@ -1,0 +1,27 @@
+# transcript: swap-figure-provenance
+# command: bash -c 
+echo "=== hunt for 14815 / 16384 swap figures across FLY-1082 docs + team task notes + memory ==="
+grep -rn "14815" ~/Dev/flywheel-FLY-1082/engineering/doc/ 2>/dev/null | head -5
+grep -rn "14815" ~/Dev/flywheel/engineering/doc/ 2>/dev/null | head -5
+grep -rn "14815" ~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/ 2>/dev/null | head -5
+grep -rln "14815" ~/.claude/tasks/ 2>/dev/null | head -5
+echo "=== broader: swap 打满 phrasing ==="
+grep -rn "swap.*16384\|16384.*swap" ~/Dev/flywheel-FLY-1082/engineering/doc/ ~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/ 2>/dev/null | head -8
+echo "=== FLY-1082 exploration swap mentions ==="
+grep -n "swap" ~/Dev/flywheel-FLY-1082/engineering/doc/FLY-1082-fleet-alerts-arc-repair/exploration.md 2>/dev/null | head -15
+# collected_at: 2026-07-10T08:37:33Z (host local: 2026-07-10 01:37:33 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== hunt for 14815 / 16384 swap figures across FLY-1082 docs + team task notes + memory ===
+/Users/xiaorongli/Dev/flywheel-FLY-1082/engineering/doc/FLY-1082-fleet-alerts-arc-repair/exploration.md:11:2026-07-09 14:27 PT:swap 打满(16384MB 用 14815MB)→ Bridge StateStore `sql.js corruption unrecoverable … out of memory — exiting` → 承载全部 runner 的 tmux server 整个消失 → 3 个 Lead 名下 13+ runner 全灭。**告警系统表现 = 零**:无 bot ACK、无自动修复尝试,Annie 本人先发现。
+=== broader: swap 打满 phrasing ===
+/Users/xiaorongli/Dev/flywheel-FLY-1082/engineering/doc/FLY-1082-fleet-alerts-arc-repair/exploration.md:11:2026-07-09 14:27 PT:swap 打满(16384MB 用 14815MB)→ Bridge StateStore `sql.js corruption unrecoverable … out of memory — exiting` → 承载全部 runner 的 tmux server 整个消失 → 3 个 Lead 名下 13+ runner 全灭。**告警系统表现 = 零**:无 bot ACK、无自动修复尝试,Annie 本人先发现。
+=== FLY-1082 exploration swap mentions ===
+11:2026-07-09 14:27 PT:swap 打满(16384MB 用 14815MB)→ Bridge StateStore `sql.js corruption unrecoverable … out of memory — exiting` → 承载全部 runner 的 tmux server 整个消失 → 3 个 Lead 名下 13+ runner 全灭。**告警系统表现 = 零**:无 bot ACK、无自动修复尝试,Annie 本人先发现。
+14:1. **§4.1 工单 kind 白名单没有 fleet 级故障**(机器 OOM / swap 阈值 / tmux server 死 / Bridge 异常退出 / 跨 Lead 僵尸 session)→ 无人认领,按设计落到 Annie 头上。
+39:5. **swap 水位无传感器**:没有任何代码读 `sysctl vm.swapusage` / memory_pressure —— 预警窗口(事故前 30+ 分钟水位爬升)完全浪费。
+51:| `swap_pressure_high`(OOM 预警) | Bridge tick 顺风车读 swap 水位(`sysctl vm.swapusage`),阈值默认 80% + 滞回;**传感器 seam 可注入**(QA 用) | Claude bot | (a) 置 Bridge「暂停派新 runner」flag(可逆,水位回落自动解除)+ 通知各 Lead 降载。**与 FLY-1072 的派活门槛共用同一水位读数 seam,门槛本体归 1072** | 水位持续超阈 >T 或 pause 无效 → @Annie |
+57:取舍说明:issue 里「机器 OOM」和「swap 打满」合并为一个预警 kind(`swap_pressure_high`)—— 真 OOM 已经发生时,后果必然表现为 `bridge_abnormal_exit` / `tmux_server_lost`,单独一个「OOM 已发生」kind 与这两个 100% 重叠,不设。
+83:- `swap_pressure_high`:传感器 seam 注入超阈读数 → 工单 → ACK → pause flag 置位 → 注入回落 → 安静 resolve。
+102:- A2:swap 预警的 remediation = 可逆 dispatch-pause flag(本单)+ 水位 seam 共享(1072 接走门槛)。
+# exit_code: 0

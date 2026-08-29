@@ -1,0 +1,20 @@
+[lead] 15:43:54 Claude crashed (exit code 1) after 14s. Crash count: 57
+[lead] 15:43:54 WARNING: 57 consecutive crashes. Check Claude CLI health.
+[lead-alert] 15:43:54 already claimed event_id=71954bbfa409ac02c28e2c2cff95a5c9ab9a2a30 lead=claude-infra-bot-lead kind=crash_loop signature=20260709, skipping
+[lead] 15:43:54 Waiting 60s before restart...
+[lead] 15:44:54 [restart #58] Resuming session 26846ae8-a222-4a10-aab3-fb0562262871...
+[lead] 15:44:55 (To force fresh start: rm /Users/xiaorongli/.flywheel/claude-sessions/flywheel-claude-infra-bot-lead.session-id)
+[lead] 15:44:56 MCP env propagation: forwarded 1 required env var(s) to tmux pane
+[lead] 15:44:58 Claude launched in tmux window: flywheel:@173 (name: flywheel-claude-infra-bot-lead)
+[lead] 15:45:07 Claude crashed (exit code 1) after 13s. Crash count: 58
+[lead] 15:45:07 WARNING: 58 consecutive crashes. Check Claude CLI health.
+[lead-alert] 15:45:07 already claimed event_id=71954bbfa409ac02c28e2c2cff95a5c9ab9a2a30 lead=claude-infra-bot-lead kind=crash_loop signature=20260709, skipping
+[lead] 15:45:07 Waiting 60s before restart...
+[lead] 15:46:07 [restart #59] Resuming session 26846ae8-a222-4a10-aab3-fb0562262871...
+[lead] 15:46:07 (To force fresh start: rm /Users/xiaorongli/.flywheel/claude-sessions/flywheel-claude-infra-bot-lead.session-id)
+[lead] 15:46:11 MCP env propagation: forwarded 1 required env var(s) to tmux pane
+[lead] 15:46:13 Claude launched in tmux window: flywheel:@174 (name: flywheel-claude-infra-bot-lead)
+[lead] 15:46:18 Claude crashed (exit code 1) after 11s. Crash count: 59
+[lead] 15:46:18 WARNING: 59 consecutive crashes. Check Claude CLI health.
+[lead-alert] 15:46:18 already claimed event_id=71954bbfa409ac02c28e2c2cff95a5c9ab9a2a30 lead=claude-infra-bot-lead kind=crash_loop signature=20260709, skipping
+[lead] 15:46:18 Waiting 60s before restart...

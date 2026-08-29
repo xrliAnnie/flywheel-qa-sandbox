@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ChatThreadCreator } from "../bridge/ChatThreadCreator.js";
+import type { IssueDisplayRefreshHolder } from "../bridge/issue-display-refresher.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import {
@@ -54,6 +56,11 @@ describe("HeartbeatService", () => {
 		getOrphanSessions: ReturnType<typeof vi.fn>;
 		getStaleCompletedSessions: ReturnType<typeof vi.fn>;
 		forceStatus: ReturnType<typeof vi.fn>;
+		// FLY-637 persistent quiet-wake dedup surface
+		hasQuietWakeNotified: ReturnType<typeof vi.fn>;
+		recordQuietWakeNotified: ReturnType<typeof vi.fn>;
+		clearQuietWakeNotified: ReturnType<typeof vi.fn>;
+		pruneQuietWakeNotifiedNotIn: ReturnType<typeof vi.fn>;
 	};
 	let notifier: {
 		onSessionStuck: ReturnType<typeof vi.fn>;
@@ -63,14 +70,36 @@ describe("HeartbeatService", () => {
 	let service: HeartbeatService;
 
 	beforeEach(() => {
+		const quietNotified = new Set<string>();
+		const qk = (e: string, s: string, f: string) => `${e}|${s}|${f}`;
 		store = {
 			getStuckSessions: vi.fn().mockReturnValue([]),
 			getOrphanSessions: vi.fn().mockReturnValue([]),
 			getStaleCompletedSessions: vi.fn().mockReturnValue([]),
 			forceStatus: vi.fn(),
+			hasQuietWakeNotified: vi.fn((e: string, s: string, f: string) =>
+				quietNotified.has(qk(e, s, f)),
+			),
+			recordQuietWakeNotified: vi.fn((e: string, s: string, f: string) => {
+				quietNotified.add(qk(e, s, f));
+			}),
+			clearQuietWakeNotified: vi.fn((e: string, s?: string) => {
+				for (const k of [...quietNotified]) {
+					const [ke, ks] = k.split("|");
+					if (ke === e && (!s || ks === s)) quietNotified.delete(k);
+				}
+			}),
+			pruneQuietWakeNotifiedNotIn: vi.fn((s: string, keep: string[]) => {
+				for (const k of [...quietNotified]) {
+					const [ke, ks] = k.split("|");
+					if (ks === s && !keep.includes(ke)) quietNotified.delete(k);
+				}
+			}),
 		};
 		notifier = {
-			onSessionStuck: vi.fn().mockResolvedValue(undefined),
+			// FLY-637: onSessionStuck now returns a "persisted" boolean; true so the
+			// stuck dedup engages exactly as before.
+			onSessionStuck: vi.fn().mockResolvedValue(true),
 			onSessionOrphaned: vi.fn().mockResolvedValue(undefined),
 			onSessionStale: vi.fn().mockResolvedValue(undefined),
 		};
@@ -132,6 +161,27 @@ describe("HeartbeatService", () => {
 
 		expect(notifier.onSessionStuck).not.toHaveBeenCalled();
 		expect(notifier.onSessionOrphaned).not.toHaveBeenCalled();
+	});
+
+	// --- FLY-639: StateStore corruption containment + self-heal ---
+
+	it("check() never rejects on a StateStore throw — it logs, self-heals, and skips the cycle", async () => {
+		const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+		const recoverSpy = vi.fn();
+		(store as { recoverFromCorruption?: unknown }).recoverFromCorruption =
+			recoverSpy;
+		store.getStuckSessions.mockImplementation(() => {
+			throw new Error("no such table: sessions");
+		});
+
+		// Contract: check() resolves (never rejects) so the timer can't crash the Bridge.
+		await expect(service.check()).resolves.toBeUndefined();
+
+		expect(errSpy).toHaveBeenCalled();
+		expect(recoverSpy).toHaveBeenCalledTimes(1);
+		expect(recoverSpy.mock.calls[0]![0]).toBeInstanceOf(Error);
+
+		errSpy.mockRestore();
 	});
 
 	// --- Orphan reaping ---
@@ -263,7 +313,7 @@ describe("HeartbeatService", () => {
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "claude-discord" as const,
+		type: "commdb" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -286,7 +336,143 @@ function createMockRegistry() {
 	return { registry, mockRuntime, envelopes };
 }
 
+async function makeReconnectHarness(
+	issueDisplayRefresh?: IssueDisplayRefreshHolder,
+) {
+	const projects: ProjectEntry[] = [
+		{
+			projectName: "geo-reconnect",
+			projectRoot: "/tmp/geo-reconnect",
+			leads: [
+				{
+					agentId: "product-lead",
+					chatChannel: "test-chat",
+					match: { labels: [] },
+					botToken: "test-token",
+				},
+			],
+		},
+	];
+	const runtime = {
+		type: "commdb" as const,
+		deliver: vi.fn(async () => ({ delivered: true })),
+		sendBootstrap: vi.fn(async () => {}),
+		health: vi.fn(async () => ({
+			status: "healthy" as const,
+			lastDeliveryAt: null,
+			lastDeliveredSeq: 0,
+		})),
+		shutdown: vi.fn(async () => {}),
+	};
+	const registry = new RuntimeRegistry();
+	registry.register(projects[0]!.leads[0]!, runtime);
+	const store = await StateStore.create(":memory:");
+	const session: Session = {
+		execution_id: "exec-qa-completed",
+		issue_id: "issue-reconnect",
+		project_name: "geo-reconnect",
+		status: "completed",
+		issue_identifier: "FLY-1225",
+		issue_title: "thread display refresh",
+		last_activity_at: "2026-07-14 08:00:00",
+		chat_thread_role: "qa",
+		session_role: "qa",
+	};
+	store.upsertSession(session);
+	store.upsertChatThread("thread-reconnect", "test-chat", session.issue_id);
+	const stampStatusBadge = vi.fn(async () => {});
+	const chatThreadCreator = {
+		stampStatusBadge,
+	} as unknown as ChatThreadCreator;
+	const notifier = new RegistryHeartbeatNotifier(
+		registry,
+		projects,
+		store,
+		undefined,
+		true,
+		chatThreadCreator,
+		issueDisplayRefresh,
+	);
+	return { notifier, session, stampStatusBadge, store };
+}
+
 describe("RegistryHeartbeatNotifier", () => {
+	it("still delivers the runtime re-entry advisory while suppressing its reconnect title write", async () => {
+		const { registry, envelopes } = createMockRegistry();
+		const hbStore = await StateStore.create(":memory:");
+		const notifier = new RegistryHeartbeatNotifier(
+			registry,
+			testProjects,
+			hbStore,
+		);
+		const stampReconnect = vi
+			.spyOn(
+				notifier as unknown as {
+					stampReconnect: (session: Session, mode: "enter" | "clear") => void;
+				},
+				"stampReconnect",
+			)
+			.mockImplementation(() => {});
+		const session: Session = {
+			execution_id: "exec-runtime-reentry",
+			issue_id: "i-runtime",
+			project_name: "geo",
+			status: "running",
+			issue_identifier: "GEO-1264",
+		};
+
+		await notifier.onSessionMonitoringReestablished(session, 15, {
+			stampReconnectTitle: false,
+		});
+
+		expect(stampReconnect).not.toHaveBeenCalled();
+		expect(envelopes).toHaveLength(1);
+		expect(envelopes[0]?.event.event_type).toBe(
+			"session_monitoring_reestablished",
+		);
+		hbStore.close();
+	});
+
+	it("reconnect clear delegates to the issue-level refresher when available", async () => {
+		const enqueue = vi.fn();
+		const holder: IssueDisplayRefreshHolder = {
+			current: { enqueue, refresh: vi.fn(async () => {}) },
+		};
+		const { notifier, session, stampStatusBadge, store } =
+			await makeReconnectHarness(holder);
+
+		notifier.clearReconnectStamp(session);
+
+		expect(enqueue).toHaveBeenCalledWith(session.issue_id);
+		expect(stampStatusBadge).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("reconnect enter remains owned by HeartbeatService and does not enqueue a refresh", async () => {
+		const enqueue = vi.fn();
+		const holder: IssueDisplayRefreshHolder = {
+			current: { enqueue, refresh: vi.fn(async () => {}) },
+		};
+		const { notifier, session, stampStatusBadge, store } =
+			await makeReconnectHarness(holder);
+
+		await notifier.onSessionMonitoringReestablished(session, 3);
+
+		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
+		expect(enqueue).not.toHaveBeenCalled();
+		store.close();
+	});
+
+	it("reconnect clear preserves the legacy per-session restore when the refresher is disabled", async () => {
+		const { notifier, session, stampStatusBadge, store } =
+			await makeReconnectHarness();
+
+		notifier.clearReconnectStamp(session);
+
+		expect(stampStatusBadge).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
 	it("sends session_stuck envelope via registry runtime with sessionKey", async () => {
 		const { registry, envelopes } = createMockRegistry();
 		const hbStore = await StateStore.create(":memory:");
@@ -301,7 +487,6 @@ describe("RegistryHeartbeatNotifier", () => {
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-100",
-			thread_id: "1234.5678",
 		};
 
 		await notifier.onSessionStuck(session, 30);
@@ -312,8 +497,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(env.sessionKey).toBe("flywheel:GEO-100");
 		expect(env.event.event_type).toBe("session_stuck");
 		expect(env.event.minutes_since_activity).toBe(30);
-		expect(env.event.thread_id).toBe("1234.5678");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});
@@ -332,7 +516,6 @@ describe("RegistryHeartbeatNotifier", () => {
 			project_name: "geo",
 			status: "running",
 			issue_identifier: "GEO-200",
-			thread_id: "5678.1234",
 		};
 
 		await notifier.onSessionOrphaned(session, 75);
@@ -344,8 +527,7 @@ describe("RegistryHeartbeatNotifier", () => {
 		expect(env.event.event_type).toBe("session_orphaned");
 		expect(env.event.status).toBe("failed");
 		expect(env.event.minutes_since_activity).toBe(75);
-		expect(env.event.thread_id).toBe("5678.1234");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: thread_id + forum_channel removed from HookPayload
 
 		hbStore.close();
 	});
@@ -373,8 +555,8 @@ describe("RegistryHeartbeatNotifier", () => {
 		hbStore.close();
 	});
 
-	// GEO-275: no-forum lead heartbeat notification
-	it("sends session_stuck with undefined forum_channel for no-forum lead", async () => {
+	// FLY-163: PM/triage lead heartbeat notification (formerly "no-forum")
+	it("sends session_stuck for PM lead routed via chat_channel", async () => {
 		const noForumProjects: ProjectEntry[] = [
 			{
 				projectName: "geo-nf",
@@ -384,14 +566,14 @@ describe("RegistryHeartbeatNotifier", () => {
 						agentId: "pm-lead",
 						chatChannel: "core-channel",
 						match: { labels: ["PM"] },
-						// No forumChannel
+						canSpawnRunners: false,
 					},
 				],
 			},
 		];
 		const envelopes: LeadEventEnvelope[] = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				envelopes.push(env);
 				return { delivered: true };
@@ -427,7 +609,6 @@ describe("RegistryHeartbeatNotifier", () => {
 
 		expect(envelopes).toHaveLength(1);
 		expect(envelopes[0].event.event_type).toBe("session_stuck");
-		expect(envelopes[0].event.forum_channel).toBeUndefined();
 		expect(envelopes[0].event.chat_channel).toBe("core-channel");
 
 		hbStore.close();
@@ -513,12 +694,14 @@ describe("FLY-25: RegistryHeartbeatNotifier delivery contract", () => {
 			hbStore,
 		);
 
-		// Verify all three heartbeat event types are guardrail
+		// Verify all guardrail event types
 		const { GUARDRAIL_EVENT_TYPES } = await import("../bridge/lead-runtime.js");
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stuck")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_orphaned")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_stale_completed")).toBe(true);
 		expect(GUARDRAIL_EVENT_TYPES.has("session_completed")).toBe(false);
+		// FLY-159: gate_timed_out must retry via HeartbeatService when Lead delivery fails
+		expect(GUARDRAIL_EVENT_TYPES.has("gate_timed_out")).toBe(true);
 
 		hbStore.close();
 	});

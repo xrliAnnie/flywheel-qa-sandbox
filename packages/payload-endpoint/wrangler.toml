@@ -1,0 +1,20 @@
+# FLY-1062 PR3 · Cloudflare Worker config for the gated payload endpoint.
+#
+# Deployed MANUALLY by the founder (runbook: doc/engineer/implementation/
+# fly-1062-payload-release-runbook.md) with HER Cloudflare API token —
+# the token never enters repo secrets or CI (plan §3 底线二).
+#
+# One-time setup (founder, per runbook):
+#   1. create the R2 bucket:      wrangler r2 bucket create flywheel-payloads
+#   2. set the capability hashes: wrangler secret put FW_BETA_PUBLISH_TOKEN_SHA256
+#                                 wrangler secret put FW_CUSTOMER_RELEASE_TOKEN_SHA256
+#                                 wrangler secret put FW_OPS_ADMIN_TOKEN_SHA256
+#      (each value = sha256 hex of the capability token, NOT the token)
+#   3. deploy:                    wrangler deploy
+name = "flywheel-onboard-endpoint"
+main = "src/worker.mjs"
+compatibility_date = "2026-07-01"
+
+[[r2_buckets]]
+binding = "PAYLOADS"
+bucket_name = "flywheel-payloads"

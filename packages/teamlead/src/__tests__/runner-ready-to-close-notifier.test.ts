@@ -45,6 +45,10 @@ describe("emitRunnerReadyToCloseNotification", () => {
 		expect(fetchImpl).toHaveBeenCalledTimes(1);
 		const url = fetchImpl.mock.calls[0]![0] as string;
 		expect(url).toContain("/channels/thread-1/messages");
+		const body = JSON.parse(
+			(fetchImpl.mock.calls[0]![1] as RequestInit).body as string,
+		);
+		expect(body.content).toMatch(/^🤖\[自动\] /);
 
 		const events = store.getEventsByExecution("exec-1");
 		const types = events.map((e) => e.event_type);

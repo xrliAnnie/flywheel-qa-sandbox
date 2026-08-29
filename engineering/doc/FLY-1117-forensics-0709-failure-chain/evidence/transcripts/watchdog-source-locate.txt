@@ -1,0 +1,26 @@
+# transcript: watchdog-source-locate
+# command: bash -c 
+echo "=== watchdog file path at bc9c9bfb ==="
+git -C ~/Dev/flywheel ls-tree -r bc9c9bfb --name-only | grep -i "watchdog" | head
+echo ""
+echo "=== current Bridge process identity (launchd pid 48951) ==="
+ps -p 48951 -o pid,ppid,lstart,command 2>/dev/null | cut -c1-200
+# collected_at: 2026-07-10T08:34:43Z (host local: 2026-07-10 01:34:43 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== watchdog file path at bc9c9bfb ===
+doc/engineer/exploration/new/FLY-626-state-aware-stall-watchdog.md
+doc/engineer/exploration/new/FLY-637-watchdog-backoff-fingerprint-quiet-registry.md
+doc/engineer/plan/archive/v1.22.0-FLY-92-runner-idle-watchdog.md
+doc/engineer/plan/new/v1.58.0-FLY-637-watchdog-quiet-refinement.md
+doc/engineer/plan/new/v1.60.0-FLY-626-token-frugal-state-aware-watchdog.md
+doc/engineer/qa/FLY-692-watchdog-lead-pending-escalation/report.md
+engineering/doc/FLY-1048-watchdog-detection-remaining/exploration.md
+engineering/doc/FLY-1048-watchdog-detection-remaining/plan.md
+engineering/doc/FLY-1048-watchdog-detection-remaining/progress.md
+engineering/doc/FLY-1048-watchdog-detection-remaining/qa-report.md
+
+=== current Bridge process identity (launchd pid 48951) ===
+  PID  PPID STARTED                      COMMAND
+48951     1 Thu Jul  9 23:29:59 2026     npm exec tsx scripts/run-bridge.ts   
+# exit_code: 0

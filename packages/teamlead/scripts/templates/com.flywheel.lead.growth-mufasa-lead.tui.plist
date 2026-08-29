@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- FLY-259 PR-F — Mufasa ③ TUI launchd job (TEMPLATE).
+     Install to ~/Library/LaunchAgents/com.flywheel.lead.growth-mufasa-lead.plist
+     as part of the cutover (back up the headless plist first — see the runbook).
+     Same Label as the headless job (one Mufasa identity); only the wrapper differs.
+     Token stays OUT of the plist — the wrapper sources ~/.flywheel/.env. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.flywheel.lead.growth-mufasa-lead</string>
+  <key>ProgramArguments</key><array>
+    <string>/bin/bash</string>
+    <string>/Users/xiaorongli/.flywheel/bin/flywheel-codex-lead-wrapper-mufasa-tui.sh</string>
+  </array>
+  <key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>30</integer><key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/tmp/flywheel-lead-growth-mufasa-lead.log</string>
+  <key>StandardErrorPath</key><string>/tmp/flywheel-lead-growth-mufasa-lead.log</string>
+</dict></plist>

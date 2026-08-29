@@ -66,10 +66,9 @@ GET /api/sessions?mode=by_identifier&identifier={ISSUE-ID}
   Returns session by issue identifier
 ```
 
-Response includes `thread_id` (if available) — use for Forum links:
-`https://discord.com/channels/{guild_id}/{thread_id}`
-Note: `thread_id` is only present when a valid Forum Thread exists.
-If absent, the thread has not been created yet.
+> FLY-163: forum `thread_id` field removed from session responses. Per-issue
+> chat threads now live in `chat_threads` and surface via `chat_thread_id`
+> on hook payloads — see the FLY-91 section below for chat thread routing.
 
 ### Session Capture (GEO-262)
 
@@ -202,16 +201,6 @@ Response: { "added": 1, "updated": 0 }
 - `metadata` (optional): plain object, merged with internal tags
 
 Error codes: 400 (validation), 401 (no token), 502 (mem0 error), 504 (30s timeout)
-
-### Forum Tag (Legacy — Bridge handles automatically)
-
-> Note: Forum tags are now managed automatically by ForumTagUpdater in Bridge.
-> This endpoint is kept for backward compatibility but should NOT be used by the agent.
-
-```
-POST /api/forum-tag
-Body: { thread_id: "...", tag_ids: ["..."] }
-```
 
 ### Dashboard
 

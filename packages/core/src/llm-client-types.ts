@@ -8,5 +8,11 @@ export interface LLMClient {
 		model: string;
 		messages: Array<{ role: string; content: string }>;
 		max_tokens: number;
-	}): Promise<{ content: string }>;
+		/** Optional system prompt (FLY-175 founder-consent evaluator). */
+		system?: string;
+	}): Promise<{
+		content: string;
+		/** Token usage when the provider reports it. */
+		usage?: { input_tokens?: number; output_tokens?: number };
+	}>;
 }

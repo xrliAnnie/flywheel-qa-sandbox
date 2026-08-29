@@ -43,7 +43,9 @@ export class DagDispatcher {
 		private projectRoot: string,
 		private buildContext: (node: DagNode) => BlueprintContext,
 		private semaphore: Semaphore = new Semaphore(1),
-		private tmuxSessionName: string = "flywheel",
+		// FLY-116: tmuxSessionName retained for backward-compatible constructor
+		// signature; no longer used here (opener moved into BlueprintContext callback).
+		_tmuxSessionName: string = "flywheel",
 		private worktreeManager?: WorktreeManager,
 		private projectName?: string,
 	) {}
@@ -60,7 +62,9 @@ export class DagDispatcher {
 		await this.pruneOrphansQuiet();
 
 		mkdirSync(FLYWHEEL_MARKER_DIR, { recursive: true });
-		openTmuxViewer(this.tmuxSessionName);
+		// FLY-116: opener moved into BlueprintContext.onTmuxWindowCreated
+		// (set in buildContext below). Was: openTmuxViewer(this.tmuxSessionName)
+		// — fired session-level too early, no per-window unique title.
 
 		try {
 			while (this.resolver.remaining() > 0) {
@@ -78,7 +82,23 @@ export class DagDispatcher {
 
 				for (const node of ready) {
 					scheduled.add(node.id);
-					const ctx = { ...this.buildContext(node), executionId: randomUUID() };
+					const executionId = randomUUID();
+					const baseCtx = this.buildContext(node);
+					const ctx: BlueprintContext = {
+						...baseCtx,
+						executionId,
+						// FLY-116: spawn per-window Terminal viewer with unique title
+						onTmuxWindowCreated: ({ baseSessionName, windowId }) => {
+							openTmuxViewer({
+								baseSessionName,
+								windowId,
+								executionId,
+								projectName:
+									baseCtx.projectName ?? this.projectName ?? "unknown",
+								sessionRole: baseCtx.sessionRole,
+							});
+						},
+					};
 					const p = this.dispatchOne(
 						node,
 						ctx,

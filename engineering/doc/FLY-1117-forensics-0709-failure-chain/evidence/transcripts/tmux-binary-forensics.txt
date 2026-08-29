@@ -1,0 +1,73 @@
+# transcript: tmux-binary-forensics
+# command: bash -c 
+echo "--- tmux -V ---"; tmux -V
+echo "--- symlink ---"; ls -la /usr/local/bin/tmux; readlink /usr/local/bin/tmux
+echo "--- resolved ---"; TMUX_BIN=$(cd /usr/local/bin && cd "$(dirname "$(readlink tmux)")" && pwd)/tmux; echo "$TMUX_BIN"
+echo "--- file/arch ---"; file "$TMUX_BIN"
+echo "--- sha256 ---"; shasum -a 256 "$TMUX_BIN"
+echo "--- stat ---"; stat -f "mtime=%Sm size=%z" "$TMUX_BIN"
+echo "--- brew receipt ---"; cat /usr/local/Cellar/tmux/3.5a/INSTALL_RECEIPT.json 2>/dev/null | head -40
+echo "--- brew info ---"; ls -la /usr/local/Cellar/tmux/
+# collected_at: 2026-07-10T08:20:59Z (host local: 2026-07-10 01:20:59 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+--- tmux -V ---
+tmux 3.5a
+--- symlink ---
+lrwxr-xr-x@ 1 xiaorongli  admin  28 Jun 24  2025 /usr/local/bin/tmux -> ../Cellar/tmux/3.5a/bin/tmux
+../Cellar/tmux/3.5a/bin/tmux
+--- resolved ---
+/usr/local/Cellar/tmux/3.5a/bin/tmux
+--- file/arch ---
+/usr/local/Cellar/tmux/3.5a/bin/tmux: Mach-O 64-bit executable x86_64
+--- sha256 ---
+c73251415c7c07e4b629b73836f5dc2815a33d90c06bdb7ab233e681808fcc67  /usr/local/Cellar/tmux/3.5a/bin/tmux
+--- stat ---
+mtime=Jun 24 22:56:34 2025 size=857168
+--- brew receipt ---
+{
+  "homebrew_version": "4.4.0-66-g1e29665",
+  "used_options": [],
+  "unused_options": [],
+  "built_as_bottle": true,
+  "poured_from_bottle": true,
+  "loaded_from_api": true,
+  "installed_as_dependency": false,
+  "installed_on_request": true,
+  "changed_files": [
+    "share/man/man1/tmux.1"
+  ],
+  "time": 1750830994,
+  "source_modified_time": 1728108016,
+  "compiler": "clang",
+  "aliases": [],
+  "runtime_dependencies": [
+    {
+      "full_name": "ca-certificates",
+      "version": "2025-05-20",
+      "revision": 0,
+      "bottle_rebuild": 0,
+      "pkg_version": "2025-05-20",
+      "declared_directly": false
+    },
+    {
+      "full_name": "openssl@3",
+      "version": "3.5.0",
+      "revision": 0,
+      "bottle_rebuild": 0,
+      "pkg_version": "3.5.0",
+      "declared_directly": false
+    },
+    {
+      "full_name": "libevent",
+      "version": "2.1.12",
+      "revision": 1,
+      "bottle_rebuild": 0,
+      "pkg_version": "2.1.12_1",
+      "declared_directly": true
+--- brew info ---
+total 0
+drwxr-xr-x@   3 xiaorongli  admin    96 Jun 24  2025 .
+drwxrwxr-x  281 xiaorongli  admin  8992 Jul  7 21:03 ..
+drwxr-xr-x@  11 xiaorongli  admin   352 Jun 24  2025 3.5a
+# exit_code: 0

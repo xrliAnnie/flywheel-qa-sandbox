@@ -1,0 +1,16 @@
+{"event":"bridge_event_loop_stall","stall_age_ms":61460,"threshold_ms":60000,"at":"2026-06-19T10:28:19.541Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":64064,"threshold_ms":60000,"at":"2026-06-21T05:29:58.403Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":64422,"threshold_ms":60000,"at":"2026-06-22T23:51:37.513Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":63763,"threshold_ms":60000,"at":"2026-06-23T04:57:17.265Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":143969,"threshold_ms":60000,"at":"2026-06-27T23:18:04.632Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":63632,"threshold_ms":60000,"at":"2026-07-01T21:22:54.258Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":64581,"threshold_ms":60000,"at":"2026-07-01T21:39:45.584Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":1008775,"threshold_ms":60000,"at":"2026-07-05T22:24:57.989Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":64609,"threshold_ms":60000,"at":"2026-07-07T03:44:43.367Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":61408,"threshold_ms":60000,"at":"2026-07-08T00:14:56.929Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":61301,"threshold_ms":60000,"at":"2026-07-09T21:26:20.273Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":62322,"threshold_ms":60000,"at":"2026-07-10T01:16:58.547Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":63847,"threshold_ms":60000,"at":"2026-07-10T01:23:24.078Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":64730,"threshold_ms":60000,"at":"2026-07-10T04:12:45.616Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":61383,"threshold_ms":60000,"at":"2026-07-10T04:35:23.972Z"}
+{"event":"bridge_event_loop_stall","stall_age_ms":63056,"threshold_ms":60000,"at":"2026-07-10T06:29:59.149Z"}

@@ -1,0 +1,102 @@
+# FLY-1062 gate②: payload tarball path allowlist (bash case-glob patterns,
+# matched against paths relative to the unpacked package root).
+#
+# DISCIPLINE: a NEW file entering the payload must be added here EXPLICITLY —
+# scripts are listed per-file (each has a row in the packaged-path audit
+# table); compiled dist trees and reviewed asset dirs are class patterns.
+package.json
+LICENSE
+README.md
+.flywheel-prebuilt
+dist/run-bridge.js
+agents/generic-executor.md
+agents/qa-executor.md
+# ── curated scripts (per-file; keep in sync with PO_SCRIPT_FILES + audit) ──
+scripts/flywheel-onboard.sh
+scripts/flywheel-buddy.sh
+scripts/flywheel-buddy-steps.sh
+scripts/flywheel-setup.sh
+scripts/provision-fleet-host.sh
+scripts/daily-standup.sh
+scripts/flywheel-bridge-wrapper.sh
+scripts/flywheel-lead-wrapper.sh
+scripts/update-flywheel.sh
+scripts/converge-flywheel-bin.sh
+scripts/linux-preflight.sh
+scripts/materialize-lead-manifests.sh
+scripts/com.flywheel.daily-standup.plist
+scripts/com.flywheel.updater.plist
+scripts/lib/buddy-escalate.sh
+scripts/lib/buddy-captain-preview.sh
+scripts/lib/buddy-connect.sh
+scripts/lib/fleet-sanitize.sh
+scripts/lib/host-config.sh
+scripts/lib/platform-deps.sh
+scripts/lib/script-sanity.sh
+scripts/lib/supervisor.sh
+scripts/lib/bridge-port.sh
+scripts/lib/self-ship-queue.sh
+scripts/packaged/create-compat-mirror.sh
+scripts/packaged/bootstrap-services.sh
+scripts/packaged/restart-packaged-services.sh
+# ── reviewed asset dirs (class patterns) ──
+scripts/lib/agent-cli-providers/*
+scripts/lib/buddy-connectors/*
+scripts/buddy/*
+scripts/launchd/*
+# ── embedded workspace packages: package.json + compiled dist + teamlead
+#    runtime assets (scripts/prompts/lead-rules-base/static) ──
+node_modules/flywheel-teamlead/package.json
+node_modules/flywheel-teamlead/dist/*
+node_modules/flywheel-teamlead/prompts/*
+node_modules/flywheel-teamlead/lead-rules-base/*
+node_modules/flywheel-teamlead/static/*
+# teamlead launcher runtime closure (per-file — ops/test scripts must NOT ship)
+node_modules/flywheel-teamlead/scripts/claude-lead.sh
+node_modules/flywheel-teamlead/scripts/codex-lead.sh
+node_modules/flywheel-teamlead/scripts/codex-lead-tui-home.sh
+node_modules/flywheel-teamlead/scripts/lead-rules-bundle.sh
+node_modules/flywheel-teamlead/scripts/apply-core-room-mention-gate.sh
+node_modules/flywheel-teamlead/scripts/find-window.sh
+node_modules/flywheel-teamlead/scripts/post-compact-bootstrap.sh
+node_modules/flywheel-teamlead/scripts/inbox-ack-rule.md
+node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
+node_modules/flywheel-teamlead/scripts/expect-dev-channels.exp
+node_modules/flywheel-teamlead/scripts/lib/mcp-inherit.sh
+node_modules/flywheel-teamlead/scripts/lib/reap-orphan-adapters.sh
+# staged vendored closures for registered disjoint dependency conflicts
+# (scripts/packaged/dependency-union-exceptions.tsv; installed into the
+# packages' own node_modules by create-compat-mirror.sh)
+vendor/flywheel-teamlead/*
+vendor/flywheel-claude-runner/*
+node_modules/flywheel-edge-worker/package.json
+node_modules/flywheel-edge-worker/dist/*
+node_modules/flywheel-core/package.json
+node_modules/flywheel-core/dist/*
+node_modules/flywheel-config/package.json
+node_modules/flywheel-config/dist/*
+node_modules/flywheel-comm/package.json
+node_modules/flywheel-comm/dist/*
+node_modules/flywheel-claude-runner/package.json
+node_modules/flywheel-claude-runner/dist/*
+# FLY-1188: claude-runner runtime assets resolved as ../<dir> siblings of
+# dist — the codex runner contract (materialized into $CODEX_HOME/AGENTS.md)
+# and the CODEX_HOME-aware rotation shim (FLYWHEEL_CODEX_BIN default).
+node_modules/flywheel-claude-runner/agents/codex-runner-contract.md
+node_modules/flywheel-claude-runner/bin/*
+node_modules/flywheel-dag-resolver/package.json
+node_modules/flywheel-dag-resolver/dist/*
+node_modules/flywheel-agent-team-transport/package.json
+node_modules/flywheel-agent-team-transport/dist/*
+node_modules/flywheel-inbox-mcp/package.json
+node_modules/flywheel-inbox-mcp/dist/*
+node_modules/flywheel-terminal-mcp/package.json
+node_modules/flywheel-terminal-mcp/dist/*
+node_modules/flywheel-token-usage/package.json
+node_modules/flywheel-token-usage/dist/*
+node_modules/flywheel-github-event-transport/package.json
+node_modules/flywheel-github-event-transport/dist/*
+node_modules/flywheel-linear-event-transport/package.json
+node_modules/flywheel-linear-event-transport/dist/*
+node_modules/flywheel-slack-event-transport/package.json
+node_modules/flywheel-slack-event-transport/dist/*

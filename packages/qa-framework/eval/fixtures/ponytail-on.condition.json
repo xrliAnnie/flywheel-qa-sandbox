@@ -1,0 +1,142 @@
+{
+	"label": "ponytail-on",
+	"meta": {
+		"issue": "FLY-616",
+		"date": "2026-06-28",
+		"taskSet": ["FLY-SBX-1", "FLY-SBX-2", "FLY-SBX-3"]
+	},
+	"tasks": [
+		{
+			"issueId": "FLY-SBX-1",
+			"conditionLabel": "ponytail-on",
+			"execId": "exec-ponytail-on-FLY-SBX-1",
+			"completionRoute": "awaiting_review",
+			"prOutcome": "ready_to_merge",
+			"prNumber": 410,
+			"qaVerdict": "pass",
+			"ciHealth": "green",
+			"reworkRounds": 0,
+			"costContext": {
+				"tokenUsage": null,
+				"diff": {
+					"linesAdded": 22,
+					"linesRemoved": 6,
+					"filesChanged": 2
+				},
+				"durationMs": null
+			},
+			"laggingReopen": {
+				"laggingStatus": "not_applicable",
+				"reopened": null,
+				"currentStateNonCompletedAfterReady": null,
+				"secondRunner": null,
+				"refixDetected": null,
+				"evidence": null,
+				"observedAsOf": null
+			},
+			"signalPresent": {
+				"hardSuccess": true,
+				"qa": true,
+				"ci": true,
+				"rework": true
+			},
+			"partial": false
+		},
+		{
+			"issueId": "FLY-SBX-2",
+			"conditionLabel": "ponytail-on",
+			"execId": "exec-ponytail-on-FLY-SBX-2",
+			"completionRoute": "awaiting_review",
+			"prOutcome": "ready_to_merge",
+			"prNumber": 411,
+			"qaVerdict": "pass",
+			"ciHealth": "green",
+			"reworkRounds": 0,
+			"costContext": {
+				"tokenUsage": null,
+				"diff": {
+					"linesAdded": 22,
+					"linesRemoved": 6,
+					"filesChanged": 2
+				},
+				"durationMs": null
+			},
+			"laggingReopen": {
+				"laggingStatus": "not_applicable",
+				"reopened": null,
+				"currentStateNonCompletedAfterReady": null,
+				"secondRunner": null,
+				"refixDetected": null,
+				"evidence": null,
+				"observedAsOf": null
+			},
+			"signalPresent": {
+				"hardSuccess": true,
+				"qa": true,
+				"ci": true,
+				"rework": true
+			},
+			"partial": false
+		},
+		{
+			"issueId": "FLY-SBX-3",
+			"conditionLabel": "ponytail-on",
+			"execId": "exec-ponytail-on-FLY-SBX-3",
+			"completionRoute": "awaiting_review",
+			"prOutcome": "ready_to_merge",
+			"prNumber": 412,
+			"qaVerdict": "pass",
+			"ciHealth": "green",
+			"reworkRounds": 0,
+			"costContext": {
+				"tokenUsage": null,
+				"diff": {
+					"linesAdded": 22,
+					"linesRemoved": 6,
+					"filesChanged": 2
+				},
+				"durationMs": null
+			},
+			"laggingReopen": {
+				"laggingStatus": "not_applicable",
+				"reopened": null,
+				"currentStateNonCompletedAfterReady": null,
+				"secondRunner": null,
+				"refixDetected": null,
+				"evidence": null,
+				"observedAsOf": null
+			},
+			"signalPresent": {
+				"hardSuccess": true,
+				"qa": true,
+				"ci": true,
+				"rework": true
+			},
+			"partial": false
+		}
+	],
+	"aggregate": {
+		"conditionLabel": "ponytail-on",
+		"n": 3,
+		"hardSuccessRate": 1,
+		"qaPassRate": 1,
+		"ciGreenRate": 1,
+		"avgReworkRounds": 0,
+		"coverage": {
+			"hardSuccess": 1,
+			"qa": 1,
+			"ci": 1,
+			"rework": 1
+		},
+		"partialCount": 0,
+		"costSummary": {
+			"medianTotalTokens": null,
+			"medianLinesChanged": 28
+		},
+		"recycle": {
+			"observed": 0,
+			"recycled": 0,
+			"rate": null
+		}
+	}
+}

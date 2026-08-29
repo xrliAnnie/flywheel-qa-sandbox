@@ -1,0 +1,145 @@
+{"app_name":"OrcaSlicer","timestamp":"2026-07-09 20:42:17.00 -0700","app_version":"2.4.2","slice_uuid":"03561d7d-291c-3985-9a6d-7cf4a228e3ac","build_version":"","platform":1,"bundleID":"com.orcaslicer.OrcaSlicer","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.3.2 (25D2150)","roots_installed":0,"name":"OrcaSlicer","incident_id":"1EA4C7DE-FE44-4B2B-AF55-6AF54D46BF2B"}
+{
+  "uptime" : 950000,
+  "procRole" : "Unspecified",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "Mac17,8",
+  "coalitionID" : 1180,
+  "osVersion" : {
+    "train" : "macOS 26.3.2",
+    "build" : "25D2150",
+    "releaseType" : "User"
+  },
+  "captureTime" : "2026-07-09 20:42:13.9690 -0700",
+  "codeSigningMonitor" : 2,
+  "incident" : "1EA4C7DE-FE44-4B2B-AF55-6AF54D46BF2B",
+  "pid" : 20317,
+  "translated" : true,
+  "cpuType" : "X86-64",
+  "procLaunch" : "2026-07-09 20:42:12.8592 -0700",
+  "procStartAbsTime" : 22960794919213,
+  "procExitAbsTime" : 22960821543058,
+  "procName" : "OrcaSlicer",
+  "procPath" : "\/Applications\/OrcaSlicer.app\/Contents\/MacOS\/OrcaSlicer",
+  "bundleInfo" : {"CFBundleShortVersionString":"2.4.2","CFBundleVersion":"","CFBundleIdentifier":"com.orcaslicer.OrcaSlicer"},
+  "storeInfo" : {"deviceIdentifierForVendor":"CF4BC8DC-B336-5525-8056-ED337966CDB0","thirdParty":true},
+  "parentProc" : "Exited process",
+  "parentPid" : 20289,
+  "coalitionName" : "com.flywheel.lead.flywheel-flywheel-cos-lead",
+  "crashReporterKey" : "7CF376A6-1A3F-F76A-0C4C-AEDC4D11A640",
+  "appleIntelligenceStatus" : {"state":"available"},
+  "developerMode" : 1,
+  "responsiblePid" : 69586,
+  "codeSigningID" : "com.orcaslicer.OrcaSlicer",
+  "codeSigningTeamID" : "XQK7C38HH5",
+  "codeSigningFlags" : 570491649,
+  "codeSigningValidationCategory" : 6,
+  "codeSigningTrustLevel" : 4294967295,
+  "codeSigningAuxiliaryInfo" : 0,
+  "bootSessionUUID" : "F9D974D1-87A6-4E60-84CF-4B141AA2B3A2",
+  "wakeTime" : 364214,
+  "sleepWakeUUID" : "8A9883E5-DEFB-4EC3-84E4-DF4BF38CB247",
+  "sip" : "enabled",
+  "vmRegionInfo" : "0x8 is not in any region.  Bytes before following region: 4309344248\n      REGION TYPE                    START - END         [ VSIZE] PRT\/MAX SHRMOD  REGION DETAIL\n      UNUSED SPACE AT START\n--->  \n      __TEXT                      100db6000-1060a5000    [ 82.9M] r-x\/r-x SM=COW  \/Applications\/OrcaSlicer.app\/Contents\/MacOS\/OrcaSlicer",
+  "exception" : {"codes":"0x0000000000000001, 0x0000000000000008","rawCodes":[1,8],"type":"EXC_BAD_ACCESS","signal":"SIGSEGV","subtype":"KERN_INVALID_ADDRESS at 0x0000000000000008"},
+  "termination" : {"flags":0,"code":11,"namespace":"SIGNAL","indicator":"Segmentation fault: 11","byProc":"exc handler","byPid":20317},
+  "vmregioninfo" : "0x8 is not in any region.  Bytes before following region: 4309344248\n      REGION TYPE                    START - END         [ VSIZE] PRT\/MAX SHRMOD  REGION DETAIL\n      UNUSED SPACE AT START\n--->  \n      __TEXT                      100db6000-1060a5000    [ 82.9M] r-x\/r-x SM=COW  \/Applications\/OrcaSlicer.app\/Contents\/MacOS\/OrcaSlicer",
+  "extMods" : {"caller":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"system":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"targeted":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"warnings":0},
+  "faultingThread" : 0,
+  "threads" : [{"threadState":{"r13":{"value":13114344128},"rflags":{"value":534},"rax":{"value":8},"rosetta":{"tmp2":{"value":140703466976458},"tmp1":{"value":4543657056},"tmp0":{"value":140705819338512}},"r14":{"value":13114316320},"rsi":{"value":8},"r8":{"value":116},"rdx":{"value":1},"r10":{"value":2361393152},"r9":{"value":1023},"r15":{"value":13114315328},"rbx":{"value":0},"r11":{"value":2043},"rip":{"value":140703466976467,"matchesCrashFrame":1},"rbp":{"value":13114302480},"rsp":{"value":13114302480},"r12":{"value":65},"rcx":{"value":1},"flavor":"x86_THREAD_STATE","rdi":{"value":13114312832}},"id":279818766,"triggered":true,"name":"orcaslicer_main","queue":"com.apple.main-thread","frames":[{"imageOffset":115923,"symbol":"std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>>::operator=(std::__1::basic_string<char, std::__1::char_traits<char>, std::__1::allocator<char>> const&)","symbolLocation":9,"imageIndex":4},{"imageOffset":87934,"symbol":"Slic3r::CLI::run(int, char**)","symbolLocation":27934,"imageIndex":3},{"imageOffset":578075,"symbol":"main","symbolLocation":283,"imageIndex":3},{"imageOffset":26497,"symbol":"start","symbolLocation":3457,"imageIndex":0}]},{"id":279818767,"name":"com.apple.rosetta.exceptionserver","threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":9908489551872},"r12":{"value":8589934592},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":4685809389315},"tmp0":{"value":10337986281472}},"rbx":{"value":4685809389315},"r8":{"value":2307},"r15":{"value":5033164800},"r10":{"value":3},"rdx":{"value":0},"rdi":{"value":0},"r9":{"value":1},"r13":{"value":4720925296},"rflags":{"value":582},"rax":{"value":268451845},"rsp":{"value":10337986281472},"r11":{"value":0},"rcx":{"value":17314086914},"r14":{"value":140705819338528},"rsi":{"value":2616}},"frames":[]},{"id":279818889,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13114363904},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13114900480},"rsp":{"value":409603},"r11":{"value":0},"rcx":{"value":5123},"r14":{"value":0},"rsi":{"value":0}}},{"id":279818891,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13114920960},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13115457536},"rsp":{"value":409604},"r11":{"value":0},"rcx":{"value":9987},"r14":{"value":0},"rsi":{"value":0}}}],
+  "usedImages" : [
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 8736727040,
+    "size" : 647168,
+    "uuid" : "734c5ec7-3286-329f-b95c-55c9080d31db",
+    "path" : "\/usr\/lib\/dyld",
+    "name" : "dyld"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 140703124217856,
+    "size" : 196608,
+    "uuid" : "3ae46ed1-ca8a-3d8c-b1f5-eea020395932",
+    "path" : "\/usr\/libexec\/rosetta\/runtime",
+    "name" : "runtime"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4720427008,
+    "size" : 425984,
+    "uuid" : "6065fd53-113c-30e5-9e0e-5c04d6ebd22a",
+    "path" : "\/Library\/Apple\/*\/libRosettaRuntime",
+    "name" : "libRosettaRuntime"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4309344256,
+    "CFBundleShortVersionString" : "2.4.2",
+    "CFBundleIdentifier" : "com.orcaslicer.OrcaSlicer",
+    "size" : 86962176,
+    "uuid" : "03561d7d-291c-3985-9a6d-7cf4a228e3ac",
+    "path" : "\/Applications\/OrcaSlicer.app\/Contents\/MacOS\/OrcaSlicer",
+    "name" : "OrcaSlicer",
+    "CFBundleVersion" : ""
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703466860544,
+    "size" : 566416,
+    "uuid" : "d26eea15-7d75-3107-b7e0-d35be2b06938",
+    "path" : "\/usr\/lib\/libc++.1.dylib",
+    "name" : "libc++.1.dylib"
+  },
+  {
+    "size" : 0,
+    "source" : "A",
+    "base" : 0,
+    "uuid" : "00000000-0000-0000-0000-000000000000"
+  }
+],
+  "sharedCache" : {
+  "base" : 140703421693952,
+  "size" : 30064771072,
+  "uuid" : "ecf37cd4-b9d6-36f3-b85b-42db0619754f"
+},
+  "vmSummary" : "ReadOnly portion of Libraries: Total=1.3G resident=0K(0%) swapped_out_or_unallocated=1.3G(100%)\nWritable regions: Total=2.1G written=2596K(0%) resident=2596K(0%) swapped_out=0K(0%) unallocated=2.1G(100%)\n\n                                VIRTUAL   REGION \nREGION TYPE                        SIZE    COUNT (non-coalesced) \n===========                     =======  ======= \nActivity Tracing                   256K        1 \nKernel Alloc Once                    8K        1 \nMALLOC                             1.9G       50 \nMALLOC guard page                   96K        6 \nRosetta Arena                     4096K        2 \nRosetta Generic                   1568K      389 \nRosetta IndirectBranch             384K        2 \nRosetta JIT                      128.0M        1 \nRosetta Return Stack                60K        6 \nRosetta Thread Context              60K        6 \nSTACK GUARD                          8K        2 \nStack                             9240K        3 \nStack Guard                       56.0M        1 \nVM_ALLOCATE                       2420K        3 \n__CTF                               824        1 \n__DATA                            35.0M      750 \n__DATA_CONST                     100.4M      794 \n__DATA_DIRTY                      6231K      671 \n__FONT_DATA                        2352        1 \n__INFO_FILTER                         8        1 \n__LINKEDIT                       190.2M        9 \n__OBJC_RO                         64.3M        1 \n__OBJC_RW                         2567K        1 \n__TEXT                             1.1G      812 \n__TPRO_CONST                         4K        1 \ndyld private memory                576K        2 \nmapped file                      139.2M        7 \npage table in kernel              2596K        1 \nshared memory                       80K        4 \n===========                     =======  ======= \nTOTAL                              3.8G     3529 \n",
+  "legacyInfo" : {
+  "threadTriggered" : {
+    "name" : "orcaslicer_main",
+    "queue" : "com.apple.main-thread"
+  }
+},
+  "logWritingSignature" : "08ce0efe3346f3f9d2c917c47680852ecb552aaa",
+  "roots_installed" : 0,
+  "bug_type" : "309",
+  "trmStatus" : 1,
+  "trialInfo" : {
+  "rollouts" : [
+    {
+      "rolloutId" : "5fb4245a1bbfe8005e33a1e1",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000021
+    },
+    {
+      "rolloutId" : "5f72dc58705eff005a46b3a9",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000015
+    }
+  ],
+  "experiments" : [
+
+  ]
+}
+}

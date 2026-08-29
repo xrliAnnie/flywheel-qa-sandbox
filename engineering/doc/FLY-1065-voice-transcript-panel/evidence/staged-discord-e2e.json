@@ -1,0 +1,57 @@
+{
+	"sessionId": "qa-fly1065-staged-1783643890390",
+	"model": "gemini-3.1-flash-live-preview",
+	"channelId": "1485787273193853170",
+	"captions": [
+		{
+			"id": "1524937776884351088",
+			"text": "🗣️ **Annie**:今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?"
+		},
+		{
+			"id": "1524937791849369640",
+			"text": "💬 **助理**:转写面板听起来很有意思! 是关于实时转写,还是音频文件转写呢? 你觉得它最大的优点是什么,或者有没有什么让你觉得可以改进的地方?"
+		}
+	],
+	"statusMsgIds": ["1524937749444952125"],
+	"linearIssue": {
+		"id": "FLY-1097",
+		"url": "https://linear.app/geoforge3d/issue/FLY-1097/qafly-1065-staged-逐字记录验证-qa-fly1065-staged-1783643890390"
+	},
+	"landing": {
+		"result": {
+			"ok": true,
+			"commentUrl": "https://linear.app/geoforge3d/issue/FLY-1097/qafly-1065-staged-逐字记录验证-qa-fly1065-staged-1783643890390#comment-b0eebcc9",
+			"transcriptChunks": 1
+		},
+		"comments": [
+			{
+				"url": "https://linear.app/geoforge3d/issue/FLY-1097/qafly-1065-staged-逐字记录验证-qa-fly1065-staged-1783643890390#comment-b0eebcc9",
+				"head": [
+					"## 会议纪要(/gemini 助理)",
+					"assistant-summary qa-fly1065-staged-1783643890390"
+				]
+			},
+			{
+				"url": "https://linear.app/geoforge3d/issue/FLY-1097/qafly-1065-staged-逐字记录验证-qa-fly1065-staged-1783643890390#comment-51f243d4",
+				"head": [
+					"## 逐字对话记录(/gemini 助理)",
+					"assistant-transcript qa-fly1065-staged-1783643890390 chunk 1/1"
+				]
+			}
+		]
+	},
+	"refetchedCaptions": [
+		{
+			"id": "1524937776884351088",
+			"content": "🗣️ **Annie**:今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?"
+		},
+		{
+			"id": "1524937791849369640",
+			"content": "💬 **助理**:转写面板听起来很有意思! 是关于实时转写,还是音频文件转写呢? 你觉得它最大的优点是什么,或者有没有什么让你觉得可以改进的地方?"
+		}
+	],
+	"jsonl": [
+		"{\"ts\":\"2026-07-10T00:38:17.802Z\",\"sessionId\":\"5ac02b97-fe5f-4de5-8ba4-b073cc355af9\",\"backendId\":\"gemini-live\",\"face\":\"converse\",\"role\":\"user\",\"text\":\"今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?\",\"final\":true}",
+		"{\"ts\":\"2026-07-10T00:38:21.425Z\",\"sessionId\":\"5ac02b97-fe5f-4de5-8ba4-b073cc355af9\",\"backendId\":\"gemini-live\",\"face\":\"converse\",\"role\":\"assistant\",\"text\":\"转写面板听起来很有意思! 是关于实时转写,还是音频文件转写呢? 你觉得它最大的优点是什么,或者有没有什么让你觉得可以改进的地方?\",\"final\":true}"
+	]
+}

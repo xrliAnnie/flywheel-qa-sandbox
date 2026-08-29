@@ -1,0 +1,24 @@
+{
+	"issue": "FLY-202",
+	"status": "needs_review",
+	"summary": "Refreshed doc/qa/sandbox-notes.md from the current sandbox repository snapshot and verified all five fixture requirements.",
+	"pr": {
+		"number": 136,
+		"url": "https://github.com/xrliAnnie/flywheel-qa-sandbox/pull/136",
+		"base": "main",
+		"head": "project-slot-3-FLY-202"
+	},
+	"verification": [
+		"three repository-purpose paragraphs",
+		"all 17 tracked top-level directories",
+		"exactly 10 QA framework README summary bullets",
+		"embedded output exactly matches ls -R doc/ | head -50",
+		"git diff --check",
+		"pnpm lint (zero errors; 14 pre-existing warnings)",
+		"pnpm -r build (passed after pnpm install --frozen-lockfile restored the clone's missing dependencies)",
+		"pnpm test:packages:run attempted; the unchanged macOS Terminal UI integration cannot connect to GUI services in the headless Codex sandbox",
+		"core substitute excluding the unavailable Terminal UI integration: 17 files and 206 tests passed",
+		"sanitized Teamlead run: 493 files and 7037 tests passed, with two unchanged process-certification shell cases correctly failing closed because the Codex seatbelt denies ps/pgrep process-list access",
+		"the unrelated worktree-quarantine timeout from the loaded full-suite run passed in isolation: 1 file and 5 tests passed"
+	]
+}

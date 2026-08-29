@@ -191,6 +191,12 @@ Issue: {{issue_identifier}}`;
 			proxyUrl: "http://localhost:3000",
 			flywheelHome: "/tmp/test-flywheel-home",
 			repositories: [mockRepository],
+			// Pin the runner to claude. These are hook-configuration tests, not
+			// runner-routing tests; without this the FLY-178 work-type-first
+			// routing can resolve the default runner to "codex", which
+			// initializeAgentRunner rejects in Phase 1 before the hooks are ever
+			// configured (pre-existing breakage unrelated to FLY-188).
+			defaultRunner: "claude",
 			handlers: {
 				createWorkspace: vi.fn().mockResolvedValue({
 					path: "/test/workspaces/TEST-123",
@@ -415,7 +421,14 @@ Issue: {{issue_identifier}}`;
 			expect(chromeHook).toBeDefined();
 		});
 
-		it("should provide guidance about linear_upload_file when chrome computer tool takes a screenshot", async () => {
+		// FLY-188: the real claude-in-chrome `computer` screenshot response carries
+		// only an `imageId` (NO `path`) — the image lives in the browser extension
+		// and is never written to the agent's local disk. The old hook nudged
+		// `linear_upload_file ${response.path}` which was a permanent no-op. The
+		// fixed hook must steer the agent toward a path that actually persists
+		// committable evidence (gif download as the MAIN path, visual-capture as
+		// fallback) and must NOT tell it to linear_upload_file this non-existent file.
+		it("guides chrome computer screenshots toward committable evidence (not linear_upload_file on a non-existent path)", async () => {
 			// Arrange
 			const mockIssue = createMockIssueWithLabels([]);
 			mockLinearClient.issue.mockResolvedValue(mockIssue);
@@ -443,20 +456,36 @@ Issue: {{issue_identifier}}`;
 			const chromeHook = findHookMatcher("mcp__claude-in-chrome__computer");
 			expect(chromeHook).toBeDefined();
 
-			// Simulate a screenshot action response from the chrome tool
+			// Real-shape response: imageId only, NO path (matches the live tool).
 			const additionalContext = await executeHookAndGetContext(
 				chromeHook!,
 				"mcp__claude-in-chrome__computer",
 				{
 					action: "screenshot",
 					imageId: "img_abc123",
-					path: "/tmp/chrome_screenshot.png",
 				},
 			);
 
-			// Assert - should mention linear_upload_file
+			// Assert — routes to a real persistence path, not the broken upload nudge.
 			expect(additionalContext).toBeDefined();
-			expect(additionalContext).toContain("linear_upload_file");
+			expect(additionalContext).toContain("visual-capture");
+			expect(additionalContext).not.toContain("linear_upload_file the");
+			// Should make clear the inline screenshot is not on local disk.
+			expect(additionalContext).toMatch(/imageId|not written|inline/i);
+			// FLY-188 (Annie push-back): gif_creator download is the MAIN path
+			// (claude-in-chrome native, founder keeps watching in her own Chrome);
+			// visual-capture/ProofShot is demoted to FALLBACK.
+			expect(additionalContext).toContain("gif_creator");
+			expect(additionalContext).toMatch(/MAIN PATH/);
+			expect(additionalContext).toMatch(/FALLBACK/);
+			// Must carry the empirically-verified "frames come from actions, not a
+			// bare screenshot" caveat so the agent doesn't export 0 frames.
+			expect(additionalContext).toMatch(/start_recording/);
+			expect(additionalContext).toMatch(/0 frames/);
+			// The main path must precede the fallback in the guidance text.
+			expect(additionalContext!.indexOf("gif_creator")).toBeLessThan(
+				additionalContext!.indexOf("visual-capture"),
+			);
 		});
 
 		it("should not provide upload guidance for non-screenshot chrome computer actions", async () => {

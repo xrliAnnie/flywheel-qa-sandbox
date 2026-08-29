@@ -1,0 +1,38 @@
+# FLY-342 voice lab — hardware & environment profile
+captured: Sun Jul  5 17:55:29 PDT 2026
+
+## Hardware
+      Model Name: Mac
+      Chip: Unknown
+      Total Number of Cores: 18 (6 Super and 12 Performance)
+      Memory: 48 GB
+CPU brand: Apple M5 Pro
+arch: x86_64
+
+## macOS
+ProductName:		macOS
+ProductVersion:		26.3.2
+BuildVersion:		25D2150
+
+## Disk (before experiment had ~501Gi free)
+/dev/disk3s1s1   926Gi    17Gi   498Gi     4%    455k  4.3G    0%   /
+
+## Toolchain versions
+Python 3.14.6
+venv python: Python 3.11.13
+edge-tts: 7.2.8
+ffmpeg version 8.1.2 Copyright (c) 2000-2026 the FFmpeg developers
+cmake version 4.0.2
+
+## whisper.cpp
+repo: https://github.com/ggml-org/whisper.cpp (shallow clone 2026-07-05)
+HEAD: 6fc7c33b4c3a2cec83e4b65abd5e96a890480375
+ggml commit (build log): 6fc7c33
+model: ggml-large-v3-turbo.bin
+sha256: 1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69
+size: 1624555275 bytes
+build: cmake -B build -DGGML_METAL=ON -DCMAKE_BUILD_TYPE=Release
+
+## Model cache / lab location
+lab: ~/fly342-voice-lab/ (isolated; venv + models + audio + logs)
+NOTE: no global packages installed; no launchd/plist/service touched; no prod config changed.

@@ -1,0 +1,17 @@
+# FLY-1062 gate④: registered repo-access lines inside the release tree.
+# Format: <file-glob>	<EXACT registered line>	<disposition>
+#
+# EXACT-LINE semantics (review rounds R1-R4 killed every looser scheme): the
+# registration must EQUAL the shipping line after po_g4_norm normalization
+# (shell quotes stripped, whitespace squeezed, lowercased, trimmed), and must
+# itself trigger the SAME detector as the occurrence it clears. Any other
+# line carrying a forbidden shape fails the gate — a NEW or EDITED line must
+# be re-registered here deliberately (snapshot discipline). Every row MUST
+# have a behavioral test proving the customer path never exercises it
+# (closure rule — packaged-path audit table §gate④).
+scripts/provision-fleet-host.sh	run git clone "https://github.com/${slug}.git" "$target"	customer-repo-path: manifest-driven clone; the flywheel entry is skipped in prebuilt mode (provision-prebuilt test), remaining entries are the customer's own project repos
+scripts/flywheel-setup.sh	local fs_flywheel_slug="xrliAnnie/flywheel"	runtime-branched: fleet-manifest template slug; prebuilt mode emits slug=null so customer manifests never carry the private slug (setup-prebuilt test)
+scripts/flywheel-setup.sh	--skills-repo <slug>   skills repo         (default: xrliAnnie/flywheel-skills)	default-unused-on-customer-path: usage text; never fetched on the packaged path
+scripts/flywheel-setup.sh	FS_SKILLS_REPO="xrliAnnie/flywheel-skills"	default-unused-on-customer-path: FS_SKILLS_REPO default written into host.json skillsRepo; never fetched on the packaged path
+scripts/lib/host-config.sh	[ -z "$skills_repo" ] && skills_repo="xrliAnnie/flywheel-skills"	default-unused-on-customer-path: skillsRepo default; customer manifests carry skillsSyncPresent:false and no skills clone exists on the packaged path (research audit A#4)
+scripts/flywheel-buddy-steps.sh	FS_SKILLS_REPO="${FS_SKILLS_REPO:-xrliAnnie/flywheel-skills}"	default-unused-on-customer-path: FS_SKILLS_REPO passthrough default; never fetched on the packaged path

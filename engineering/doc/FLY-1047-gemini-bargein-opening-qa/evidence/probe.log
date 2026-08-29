@@ -1,0 +1,47 @@
+[2026-07-09T08:10:02.391Z] probe online as Huddle#7573 (1523232391349403850)
+[2026-07-09T08:10:04.255Z] voice conn signalling -> connecting
+[2026-07-09T08:10:04.339Z] voice conn connecting -> connecting
+[2026-07-09T08:10:04.357Z] voice conn connecting -> connecting
+[2026-07-09T08:10:04.380Z] voice conn connecting -> connecting
+[2026-07-09T08:10:04.383Z] voice conn connecting -> signalling
+[2026-07-09T08:10:04.665Z] voice conn signalling -> connecting
+[2026-07-09T08:10:04.749Z] voice conn connecting -> connecting
+[2026-07-09T08:10:04.772Z] voice conn connecting -> signalling
+[2026-07-09T08:10:04.983Z] voice conn signalling -> connecting
+[2026-07-09T08:10:05.060Z] voice conn connecting -> connecting
+[2026-07-09T08:10:05.078Z] voice conn connecting -> connecting
+[2026-07-09T08:10:05.095Z] voice conn connecting -> connecting
+[2026-07-09T08:10:05.118Z] voice conn connecting -> ready
+[2026-07-09T08:10:05.122Z] voice conn ready -> ready
+[2026-07-09T08:10:05.122Z] probe in VC (inject+capture merged). trigger: echo "<wav>" > /tmp/fly1047-inject-cmd; QUIT to finish. capture target: 1523230048243417178
+[2026-07-09T09:03:30.533Z] voice conn ready -> connecting
+[2026-07-09T09:03:30.667Z] voice conn connecting -> ready
+[2026-07-09T10:45:09.763Z] voice conn ready -> connecting
+[2026-07-09T10:45:09.880Z] voice conn connecting -> ready
+[2026-07-09T12:59:59.265Z] voice conn ready -> connecting
+[2026-07-09T12:59:59.464Z] voice conn connecting -> ready
+[2026-07-09T13:03:24.559Z] voice conn ready -> connecting
+[2026-07-09T13:04:03.594Z] voice conn error (non-fatal): Unexpected server response: 522
+[2026-07-09T13:04:03.595Z] voice conn connecting -> signalling
+[2026-07-09T15:17:53.829Z] voice conn signalling -> disconnected
+[2026-07-09T15:17:55.399Z] voice conn disconnected -> connecting
+[2026-07-09T15:17:55.524Z] voice conn connecting -> connecting
+[2026-07-09T15:17:55.548Z] voice conn connecting -> connecting
+[2026-07-09T15:17:55.578Z] voice conn connecting -> connecting
+[2026-07-09T15:17:55.612Z] voice conn connecting -> ready
+[2026-07-09T15:19:03.735Z] subscribed to speaker 1523230048243417178
+[2026-07-09T15:19:03.742Z] OUT-AUDIO segment start (total so far 0B)
+[2026-07-09T15:19:12.051Z] OUT-AUDIO segment end — segBytes=1455360 (~7.58s audio), last data at 2026-07-09T15:19:11.272Z
+[2026-07-09T15:21:24.455Z] INJECT ▶ playing /tmp/fly1047-rig/probe-zh-48k.wav
+[2026-07-09T15:24:46.960Z] INJECT ▶ playing /tmp/fly1047-rig/probe-zh-48k.wav
+[2026-07-09T15:26:47.786Z] subscribed to speaker 1523230048243417178
+[2026-07-09T15:26:47.786Z] OUT-AUDIO segment start (total so far 1455360B)
+[2026-07-09T15:26:48.605Z] subscribed to speaker 1523230048243417178
+[2026-07-09T15:26:50.092Z] INJECT ▶ playing /tmp/fly1047-rig/interrupt-zh-48k.wav
+[2026-07-09T15:26:51.600Z] OUT-AUDIO segment end — segBytes=1620480 (~8.44s audio), last data at 2026-07-09T15:26:50.816Z
+[2026-07-09T15:27:56.712Z] probe quitting — finalizing capture
+[2026-07-09T15:27:56.717Z] voice conn ready -> destroyed
+[2026-07-09T15:27:56.919Z] captured total 3075840 bytes (~16.0s speech)
+[2026-07-09T15:27:57.100Z] WAV archived: /tmp/fly1047-rig/out-capture.wav
+[2026-07-09T15:28:00.633Z] STT transcript: 你好啊，这份简报是早上8点18分生成的。你想聊聊哪个特定任务，还是看看最近的决策？好了，简报是8点26分生成的。
+[2026-07-09T15:28:00.633Z] STT VERDICT: PASS — assistant audio transcribes to clean speech

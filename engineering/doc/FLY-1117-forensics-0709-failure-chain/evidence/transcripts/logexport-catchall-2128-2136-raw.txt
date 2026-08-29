@@ -1,0 +1,8 @@
+# transcript: logexport-catchall-2128-2136-raw
+# command: log show --start '2026-07-09 21:28:00' --end '2026-07-09 21:36:30' --info
+# collected_at: 2026-07-10T08:20:40Z (host local: 2026-07-10 01:20:40 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+# exit_code: 0
+# line_count: 48692
+# gzipped: catchall-2128-2136-raw.log.gz sha256=299e04dabb7f213598a99757e8494c3171b44ca431521826727c3185659aaf61

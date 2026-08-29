@@ -54,7 +54,7 @@ function createMockRuntime() {
 	return {
 		envelopes,
 		runtime: {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				envelopes.push(env);
 				return { delivered: true };

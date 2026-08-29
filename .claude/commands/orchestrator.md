@@ -378,18 +378,54 @@ For each PR the user approves to ship:
    - Wait for merge to complete: `gh pr view {PR_NUMBER} --json state --jq '.state'` until `MERGED`
    - **Do NOT use `gh pr merge` directly** — all ships must go through the `:cool:` flow for audit trail and CI gating
 
-   **B2. Trigger restart-services.sh (MANDATORY after merge)**
-   - After merge completes and `git pull` is done:
-     ```bash
-     cd /Users/xiaorongli/Dev/flywheel
-     set -a && source ~/.flywheel/.env && set +a
-     bash scripts/restart-services.sh
-     ```
-   - This detects what changed (Bridge code / Lead config / Discord plugin) and restarts only affected services
-   - If restart-services.sh is not yet deployed (`~/.flywheel/bin/` missing), skip with a warning
-   - The 12h launchd cron is a fallback only — this post-merge step is the primary trigger
+   **B2. Trigger deploy after merge (MANDATORY) — FLY-270 self-hosting ship (Method B)**
 
-   **C. Clean up worktree**
+   > ⚠️ **Explicit Flywheel-only guard — derive from the ACTUAL orchestrated repo,
+   > not a hardcoded path** (code-review R2 HIGH-3). A hardcoded `MAIN_REPO=.../flywheel`
+   > self-check is tautological (always passes) and would let this branch fire while
+   > orchestrating a geoforge3d/sub/joycon PR — enqueuing a foreign SHA into the
+   > Flywheel updater. Resolve the main repo of the worktree being orchestrated and
+   > require it to BE the flywheel repo; otherwise skip BEFORE `gh pr view`, worktree
+   > removal, or handoff:
+   ```bash
+   # main repo of the worktree currently being orchestrated (NOT a hardcoded path)
+   MAIN_REPO="$(git -C "$WORKTREE_PATH" rev-parse --git-common-dir 2>/dev/null | sed 's#/\.git$##' | xargs -I{} dirname {} 2>/dev/null || true)"
+   [[ -z "$MAIN_REPO" || ! -d "$MAIN_REPO" ]] && MAIN_REPO="$(cd "$WORKTREE_PATH" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null || true)"
+   if [[ "$(basename "${MAIN_REPO:-}")" != "flywheel" ]]; then
+       echo "[orchestrator] B2 self-ship is Flywheel-only; orchestrated repo is '${MAIN_REPO:-unknown}' — skipping (use the generic restart path)." ; exit 0
+   fi
+   ```
+   - **Do NOT run `restart-services.sh` inline** (it would deadlock on this still-active
+     session's idle-wait and tear down the coordinating Eng Lead). Instead, hand the
+     merged ship to the detached launchd updater via the durable queue. **Worktree
+     cleanup + clean-checkout preflight MUST happen BEFORE the handoff** (code-review R1
+     HIGH-3 / §2.3): `git worktree remove` mutates the shared `.git/worktrees` state and
+     must be the last git operation before the updater takes over (else it races the
+     updater's pull). Exact order (mirrors spin.md Step 3.4):
+     ```bash
+     set -a && source ~/.flywheel/.env && set +a
+     # (1) canonical squash-merge SHA (NOT feature HEAD)
+     MERGE_SHA="$(gh pr view {PR_NUMBER} --json mergeCommit -q '.mergeCommit.oid')"
+     [[ "$MERGE_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "[orchestrator] FATAL: no canonical merge SHA" >&2; exit 1; }
+     # (2) worktree cleanup — LAST git op before handoff
+     cd "$MAIN_REPO" && git worktree remove "$WORKTREE_PATH" 2>/dev/null || true
+     git branch -D "$BRANCH" 2>/dev/null || true
+     # (3) clean-checkout preflight (single-writer; updater pull + rollback need it)
+     [[ -z "$(git -C "$MAIN_REPO" status --porcelain)" ]] || { echo "[orchestrator] FATAL: main checkout dirty — refusing handoff" >&2; exit 1; }
+     # (4) durable handoff (fail-close: no success session_completed if this fails)
+     bash "$MAIN_REPO/scripts/self-ship-restart.sh" --target-sha "$MERGE_SHA" --pr {PR_NUMBER} --issue {ISSUE_ID} \
+       || { echo "[orchestrator] FATAL: self-ship handoff failed — do not report success" >&2; exit 1; }
+     ```
+   - The detached updater pulls main + runs `restart-services.sh`, restarting only
+     affected services (Bridge / Lead config / Discord plugin); Bridge + Eng Lead
+     self-recover via launchd KeepAlive + resume.
+   - QueueDirectories + the 12h launchd cron are durability/fallback — this post-merge
+     handoff is the primary trigger.
+   - **Bootstrap exception:** FLY-270's own first rollout uses the old controlled deploy
+     (plan Bootstrap Phase 0); this contract takes effect for ships AFTER that.
+
+   **C. Clean up worktree** — **for the Flywheel self-ship path this already happened in
+   B2 step (2), before the handoff** (do NOT remove it again here). For non-Flywheel repos:
    - `cd` out of worktree
    - `git worktree remove {worktree_path}`
    - `git branch -D {branch}` (if not already deleted by --delete-branch)

@@ -1,0 +1,202 @@
+[
+  {
+    "idx": 1,
+    "text": "把 FLY-342 派给 Tadashi",
+    "chars": 20,
+    "first_chunk_s": 0.691,
+    "synth_s": 0.791,
+    "audio_s": 3.048,
+    "rtf": 0.26,
+    "file": "edgetts_01.mp3"
+  },
+  {
+    "idx": 2,
+    "text": "approve 那个 PR，可以 ship 了",
+    "chars": 23,
+    "first_chunk_s": 0.564,
+    "synth_s": 0.67,
+    "audio_s": 2.904,
+    "rtf": 0.231,
+    "file": "edgetts_02.mp3"
+  },
+  {
+    "idx": 3,
+    "text": "先别 ship，等 QA 过了再说",
+    "chars": 17,
+    "first_chunk_s": 0.658,
+    "synth_s": 0.856,
+    "audio_s": 3.384,
+    "rtf": 0.253,
+    "file": "edgetts_03.mp3"
+  },
+  {
+    "idx": 4,
+    "text": "跑一下 pnpm lint 看看 CI 绿不绿",
+    "chars": 23,
+    "first_chunk_s": 0.467,
+    "synth_s": 0.756,
+    "audio_s": 3.936,
+    "rtf": 0.192,
+    "file": "edgetts_04.mp3"
+  },
+  {
+    "idx": 5,
+    "text": "这个 PR 有 conflict，先 rebase 到 main",
+    "chars": 32,
+    "first_chunk_s": 0.58,
+    "synth_s": 0.756,
+    "audio_s": 3.96,
+    "rtf": 0.191,
+    "file": "edgetts_05.mp3"
+  },
+  {
+    "idx": 6,
+    "text": "把 FLY-435 和 FLY-354 合并成一个 epic",
+    "chars": 30,
+    "first_chunk_s": 0.663,
+    "synth_s": 0.857,
+    "audio_s": 4.944,
+    "rtf": 0.173,
+    "file": "edgetts_06.mp3"
+  },
+  {
+    "idx": 7,
+    "text": "不要 merge，我还没 review 完",
+    "chars": 21,
+    "first_chunk_s": 0.571,
+    "synth_s": 0.768,
+    "audio_s": 2.76,
+    "rtf": 0.278,
+    "file": "edgetts_07.mp3"
+  },
+  {
+    "idx": 8,
+    "text": "Bridge 重启一下，Lead 好像掉线了",
+    "chars": 22,
+    "first_chunk_s": 0.745,
+    "synth_s": 0.854,
+    "audio_s": 3.312,
+    "rtf": 0.258,
+    "file": "edgetts_08.mp3"
+  },
+  {
+    "idx": 9,
+    "text": "给 CosyVoice 装个 MPS 版本，跑本地 TTS",
+    "chars": 29,
+    "first_chunk_s": 0.771,
+    "synth_s": 0.95,
+    "audio_s": 4.92,
+    "rtf": 0.193,
+    "file": "edgetts_09.mp3"
+  },
+  {
+    "idx": 10,
+    "text": "让 Codex 跑一轮 code review，xhigh 档",
+    "chars": 31,
+    "first_chunk_s": 0.688,
+    "synth_s": 0.827,
+    "audio_s": 3.696,
+    "rtf": 0.224,
+    "file": "edgetts_10.mp3"
+  },
+  {
+    "idx": 11,
+    "text": "这个 commit 的 hash 是 cd753eb9",
+    "chars": 27,
+    "first_chunk_s": 0.606,
+    "synth_s": 0.778,
+    "audio_s": 4.032,
+    "rtf": 0.193,
+    "file": "edgetts_11.mp3"
+  },
+  {
+    "idx": 12,
+    "text": "把 model 切成 Fable，别用 Opus",
+    "chars": 24,
+    "first_chunk_s": 0.545,
+    "synth_s": 0.641,
+    "audio_s": 3.288,
+    "rtf": 0.195,
+    "file": "edgetts_12.mp3"
+  },
+  {
+    "idx": 13,
+    "text": "Runner 卡在 awaiting review，帮我 verify 一下",
+    "chars": 38,
+    "first_chunk_s": 0.66,
+    "synth_s": 0.798,
+    "audio_s": 3.912,
+    "rtf": 0.204,
+    "file": "edgetts_13.mp3"
+  },
+  {
+    "idx": 14,
+    "text": "部署到生产之前先跑 E2E test",
+    "chars": 18,
+    "first_chunk_s": 0.633,
+    "synth_s": 0.818,
+    "audio_s": 3.624,
+    "rtf": 0.226,
+    "file": "edgetts_14.mp3"
+  },
+  {
+    "idx": 15,
+    "text": "这个 feature 先 hold 住，别急着上线",
+    "chars": 25,
+    "first_chunk_s": 0.871,
+    "synth_s": 0.966,
+    "audio_s": 3.552,
+    "rtf": 0.272,
+    "file": "edgetts_15.mp3"
+  },
+  {
+    "idx": 16,
+    "text": "Groq 的 API key 过期了，换一个",
+    "chars": 22,
+    "first_chunk_s": 0.645,
+    "synth_s": 0.725,
+    "audio_s": 3.576,
+    "rtf": 0.203,
+    "file": "edgetts_16.mp3"
+  },
+  {
+    "idx": 17,
+    "text": "whisper 大概三十秒能转完这段十分钟的音频",
+    "chars": 24,
+    "first_chunk_s": 0.67,
+    "synth_s": 0.774,
+    "audio_s": 4.536,
+    "rtf": 0.171,
+    "file": "edgetts_17.mp3"
+  },
+  {
+    "idx": 18,
+    "text": "把 research.md 的实测结果全部填进去",
+    "chars": 24,
+    "first_chunk_s": 0.84,
+    "synth_s": 1.091,
+    "audio_s": 4.128,
+    "rtf": 0.264,
+    "file": "edgetts_18.mp3"
+  },
+  {
+    "idx": 19,
+    "text": "Discord 那个 bot token 别 commit 进去",
+    "chars": 32,
+    "first_chunk_s": 0.714,
+    "synth_s": 0.985,
+    "audio_s": 3.528,
+    "rtf": 0.279,
+    "file": "edgetts_19.mp3"
+  },
+  {
+    "idx": 20,
+    "text": "明天早上八点给我一份 standup 报告",
+    "chars": 21,
+    "first_chunk_s": 0.58,
+    "synth_s": 0.784,
+    "audio_s": 3.792,
+    "rtf": 0.207,
+    "file": "edgetts_20.mp3"
+  }
+]

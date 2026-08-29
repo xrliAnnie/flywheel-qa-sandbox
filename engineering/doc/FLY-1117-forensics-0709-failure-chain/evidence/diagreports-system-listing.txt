@@ -1,0 +1,20 @@
+total 27488
+drwxrwx---  19 root  _analyticsusers      608 Jul  9 17:00 .
+drwxr-xr-x  10 root  wheel                320 Jun 29 17:19 ..
+drwxrwx---   2 root  _analyticsusers       64 Jun 28 14:48 DiagnosticLogs
+-rw-rw----@  1 root  _analyticsusers   200125 Jul  6 22:53 Finder_2026-07-06-225340_MacBook-Pro.cpu_resource.diag
+-rw-rw----@  1 root  _analyticsusers    12562 Jul  9 02:21 Google Chrome Helper_2026-07-09-022154_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers    57162 Jul  9 00:24 Google Chrome_2026-07-08-104353_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers   570180 Jul  6 00:40 JetsamEvent-2026-07-06-004042.ips
+-rw-rw----@  1 root  _analyticsusers    18724 Jul  8 00:23 Linear_2026-07-07-221842_MacBook-Pro.diag
+drwxrwx---   3 root  _analyticsusers       96 Jul  6 00:14 Retired
+-rw-rw----@  1 root  _analyticsusers   130852 Jul  4 00:13 Typeless_2026-07-03-041321_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers     6709 Jul  5 00:13 bash_2026-07-04-001435_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers  7422907 Jul  6 00:14 bash_2026-07-05-121357_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers    59992 Jul  7 00:15 com.apple.Virtualization.VirtualMachine_2026-07-07-000653_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers   738050 Jul  8 00:23 ditto_2026-07-07-151213_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers     6685 Jul  5 00:13 git_2026-07-04-190626_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers     5439 Jul  7 00:15 git_2026-07-06-190247_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers     3188 Jul  9 15:14 node_2026-07-09-151442_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers     3521 Jul  9 15:57 node_2026-07-09-155715_MacBook-Pro.diag
+-rw-rw----@  1 root  _analyticsusers  4809805 Jul  4 00:13 trustd_2026-07-03-075609_MacBook-Pro.diag

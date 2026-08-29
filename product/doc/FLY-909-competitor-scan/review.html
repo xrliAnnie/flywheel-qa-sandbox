@@ -1,0 +1,313 @@
+<title>FLY-909 竞品扫描 · Annie review(round 2 · 批注修订版)</title>
+<style>
+  :root{
+    color-scheme:light;
+    --paper:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --muted:#6e6e73;
+    --line:#e4e7ec; --line-soft:#eef1f4;
+    --accent:#2f5fd0; --accent-soft:#eaf0fd;
+    --rival:#c77d2a; --rival-soft:#fbf1e3;
+    --us:#2f9e6b; --us-soft:#e7f5ee;
+    --shadow:0 1px 3px rgba(0,0,0,.06),0 8px 24px rgba(0,0,0,.05);
+    --radius:14px;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;background:var(--paper);color:var(--ink);
+    font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;
+    line-height:1.6;-webkit-text-size-adjust:100%;
+  }
+  .wrap{max-width:780px;margin:0 auto;padding:0 18px 120px}
+  code,.mono{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:.86em}
+
+  .bar{position:sticky;top:0;z-index:40;background:color-mix(in srgb,var(--paper) 88%,transparent);
+    backdrop-filter:blur(10px);border-bottom:1px solid var(--line);}
+  .bar-in{max-width:780px;margin:0 auto;padding:10px 18px;display:flex;align-items:center;gap:12px}
+  .bar b{font-size:14px;letter-spacing:.01em}
+  .bar .sp{flex:1}
+  .btn{border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;
+    font-size:13px;font-weight:600;padding:7px 13px;border-radius:9px;cursor:pointer;white-space:nowrap}
+  .btn.ghost{background:transparent;color:var(--accent)}
+  .btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+  header.hero{padding:30px 0 6px}
+  .eyebrow{font-size:12px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--accent)}
+  h1{font-size:27px;line-height:1.22;margin:.32em 0 .3em;text-wrap:balance;letter-spacing:-.01em}
+  .lede{color:var(--muted);font-size:15px;margin:0}
+  .meta{margin-top:14px;font-size:12.5px;color:var(--muted);display:flex;flex-wrap:wrap;gap:6px 14px}
+  .howto{margin:18px 0 6px;background:var(--accent-soft);border:1px solid color-mix(in srgb,var(--accent) 25%,transparent);
+    border-radius:12px;padding:13px 15px;font-size:13.5px}
+  .howto b{color:var(--accent)}
+
+  section.card{background:var(--card);border:1px solid var(--line);border-left:4px solid var(--accent);
+    border-radius:var(--radius);box-shadow:var(--shadow);padding:20px 20px 8px;margin:18px 0}
+  section.card.rival{border-left-color:var(--rival)}
+  section.card.us{border-left-color:var(--us)}
+  .kicker{font-size:11.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted)}
+  h2{font-size:20px;margin:.15em 0 .5em;letter-spacing:-.01em;text-wrap:balance}
+  h3{font-size:15.5px;margin:1.1em 0 .3em}
+  p{margin:.55em 0}
+  ul,ol{margin:.5em 0;padding-left:1.15em}li{margin:.3em 0}
+  .small{font-size:13px;color:var(--muted)}
+  .tag{display:inline-block;font-size:11px;font-weight:700;padding:2px 8px;border-radius:20px;vertical-align:middle}
+  .tag.r{background:var(--rival-soft);color:var(--rival)}
+  .tag.u{background:var(--us-soft);color:var(--us)}
+  .tag.a{background:var(--accent-soft);color:var(--accent)}
+  mark{background:color-mix(in srgb,var(--accent) 18%,transparent);color:inherit;padding:0 3px;border-radius:3px}
+  .warn{background:var(--rival-soft);border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+  .anchor{background:var(--us-soft);border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+  .sugg{background:var(--accent-soft);border:1px dashed color-mix(in srgb,var(--accent) 40%,transparent);
+    border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+  .honest{background:#fff7ed;border:1px solid #f4c98a;border-radius:9px;padding:9px 12px;font-size:13px;margin:.6em 0}
+
+  .scroll{overflow-x:auto;margin:.6em -4px;padding:0 4px;-webkit-overflow-scrolling:touch}
+  table{border-collapse:collapse;font-size:12.5px;min-width:560px;width:100%}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--line-soft);font-weight:700;position:sticky;left:0}
+  thead th{position:static}
+  td.us,th.us{background:var(--us-soft)}
+
+  .cmt{margin:16px 0 4px;border-top:1px dashed var(--line);padding-top:12px}
+  .cmt label{display:block;font-size:12px;font-weight:700;color:var(--accent);margin-bottom:6px}
+  .cmt label::before{content:"✍️ ";}
+  textarea{width:100%;min-height:52px;resize:vertical;background:var(--paper);color:var(--ink);
+    border:1px solid var(--line);border-radius:9px;padding:9px 11px;font:inherit;font-size:14px}
+  textarea:focus{outline:2px solid var(--accent);outline-offset:1px;border-color:var(--accent)}
+  .saved{font-size:11px;color:var(--us);margin-top:4px;height:14px}
+
+  .modal{position:fixed;inset:0;background:rgba(10,14,20,.55);display:none;align-items:center;
+    justify-content:center;z-index:60;padding:18px}
+  .modal.on{display:flex}
+  .modal-in{background:var(--card);border:1px solid var(--line);border-radius:14px;max-width:640px;
+    width:100%;max-height:82vh;overflow:auto;padding:18px;box-shadow:var(--shadow)}
+  .modal-in h3{margin-top:0}
+  .modal-in textarea{min-height:240px;font-size:12.5px}
+  .row{display:flex;gap:10px;flex-wrap:wrap;margin-top:12px}
+  footer{margin-top:26px;font-size:12px;color:var(--muted);text-align:center}
+  @media(max-width:480px){h1{font-size:23px}h2{font-size:18px}.wrap{padding:0 14px 120px}}
+</style>
+
+<div class="bar">
+  <div class="bar-in">
+    <b>FLY-909 · 竞品扫描 · round 2(批注修订版)</b>
+    <span class="sp"></span>
+    <button class="btn" onclick="openExport()">导出我的批注</button>
+  </div>
+</div>
+
+<div class="wrap">
+  <header class="hero">
+    <div class="eyebrow">对外定位线 · 喂 FLY-908 / FLY-911</div>
+    <h1>市面上别人怎么做 —— 竞品扫描 &amp; 对我们的启发</h1>
+    <p class="lede">按你上轮批注重改了一版:目标客户 = <b>非技术小生意主</b>。这一页是<b>喂料</b>,不是定位定案 —— 定位大结论(我们跟 Paperclip 差异化不化那类)留到 FLY-911 跟你一起收敛。</p>
+    <div class="meta">
+      <span>日期 2026-07-07</span><span>round 2 · 你的批注已 fold</span><span>差异 = 候选,定位在 911 拍</span>
+    </div>
+    <div class="howto">
+      <b>这版改了什么 →</b> 〔上轮批注〕去丧气话 · 真挖深 Paperclip · 不再吹「完全非技术」· 修正 Lovable · 自托管诚实化 · bootstrap 打法。<b>〔本次新增〕加了 Claude Cowork + Codex app,诚实回答你问的「我们还有没有价值 / 会不会被取代」</b>(见下方第 2 张卡)。每节下面有留言框,写完点右上角<b>「导出我的批注」</b>发回来。
+    </div>
+  </header>
+
+  <!-- TLDR -->
+  <section class="card">
+    <div class="kicker">先看结论(喂料,不是定案)</div>
+    <h2>三句话</h2>
+    <ol>
+      <li><b>「一整个 AI 公司」这个形态,有人在做、做得早做得响</b>:Matrix(桌面)+ <span class="tag r">Paperclip</span>(开源免费、~70K star)+ 整个「Zero-Human Company」品类。<mark>但别人在做 ≠ 我们不能做(OpenAI 之后有 Anthropic)</mark> —— 真差异不在这个壳,在我们能不能打出<b>自己团队的优势</b>。</li>
+      <li><b>这条赛道自己也承认瓶颈</b>:执行已不是难点,<b>需求 / 有没有人买 / 信任 / 判断</b>才是;而且<b>大家都还早</b>(连 70K star 的 Paperclip 都被评测叫「原型穿着产品外衣」、每周报 bug)。<span class="tag a">定位建议 · 待你拍</span></li>
+      <li><b>对非技术小生意主,我们的差异候选(待 911)= 三条</b>:<mark>done-for-you 替你做</mark> · <mark>建并养一个真软件产品</mark> · <mark>信得过(一试真能跑、下周还能跑)</mark>。主打哪条,911 跟你收敛。</li>
+    </ol>
+    <div class="cmt"><label for="c_tldr">这三句话你怎么看?哪句最戳,哪句想改?</label>
+      <textarea id="c_tldr" placeholder="比如:最戳我的是 ___ / ___ 那句我想改成…"></textarea><div class="saved" id="s_c_tldr"></div></div>
+  </section>
+
+  <!-- Paperclip 深挖 -->
+  <section class="card rival">
+    <div class="kicker">你点名要真研究的那家</div>
+    <h2>Paperclip —— 挖深了:它是什么状态、怎么起来的、能借什么</h2>
+    <p><b>是什么</b>:@dotta(化名)2026-03 发布的<b>开源免费</b>「把 agent 组织成一个公司」的控制平面。org chart 三角色 <b>CEO → Manager → IC</b>、每个 agent 有月预算、ticket + heartbeat 唤醒、append-only 审计日志、<b>你自带 agent</b>(能收 heartbeat 就算雇了)。作者起源痛点跟我们一样:管着 20–30 个 Claude Code 窗口没人管得过来。</p>
+    <p><b>怎么起来的</b>:3-2 发布 → 3 周 30K star → <b>6 月 ~70K star、105 contributors</b>。GTM 关键:它明说<b>「给 operators、不给开发者」</b>,@dotta × Greg Isenberg 的 47 分钟 live demo 拉来的是<b>非技术买家(solo 创始人、agency、甚至牙医/营销公司)</b> —— <mark>瞄的人跟我们高度重叠</mark>。而且它自己悄悄从「0 人公司」软化成「管 AI agent 干活的工具」(它也不 overclaim 了)。</p>
+    <div class="honest"><b>诚实的成熟度(对我们是好消息)</b>:即便 70K star,评测也说它「<b>一个穿着产品外衣的原型</b>」—— 每周报 bug、agent 丢了上下文会静默重启、<b>4,953 个 open issue 对 105 个贡献者</b>、化名作者无融资无实体。<mark>「让完全非技术的人自己跑起来」是整条赛道的未解题,谁都没做到 —— 包括我们。</mark></div>
+    <h3>⭐ 能借鉴的(不是拿来下「它赢了/它死了」的结论)</h3>
+    <ul>
+      <li><b>先立具体旗舰 bootstrap 通用能力</b>(你自己也 catch 到了):generic 一开始没人用,所以 Matrix 立 live 示例公司、Paperclip 立 <code>companies</code> 模板库 —— 里面一堆<b>软件公司</b>模板(Superpowers = CEO/CTO/QA/Release Eng + TDD + code review)。<b>这是打法、该学</b>;落到我们 = 我们的旗舰样板 = 一个软件公司 = <b>dogfooding(Flywheel 建 Flywheel)</b>。</li>
+      <li><b>每 agent 月预算 + 80% 预警 + 100% 自停</b> = 把「不 surprise 账单」做成结构护栏(对非技术尤其重要)。</li>
+      <li><b>雇新 agent 要 Board 批准</b> = 「高影响动作要人批」的产品化,跟我们 founder 验收同类。</li>
+      <li><b>import 即跑的公司模板 + 回答几问就装配</b>(Company Wizard)= 非技术 onboarding 好范式(喂 FLY-910)。</li>
+    </ul>
+    <div class="cmt"><label for="c_paperclip">挖深后的 Paperclip,哪块最值得我们学?bootstrap「先立软件公司旗舰」这条你认吗?</label>
+      <textarea id="c_paperclip" placeholder="比如:先学 ___ / bootstrap 这条我 ___"></textarea><div class="saved" id="s_c_paperclip"></div></div>
+  </section>
+
+  <!-- Cowork + Codex 存在性拷问 -->
+  <section class="card rival">
+    <div class="kicker">你问的最硬的问题 · 诚实答别护短</div>
+    <h2>Claude Cowork + Codex app 已经很 general 了 —— 我们还有没有价值?会不会被取代?</h2>
+    <p><b>它俩是什么</b>:<b>Cowork</b>(Anthropic)= 给<b>非技术知识工作者</b>的 AI coworker,活在 Claude 桌面 app 里,你<b>描述「做完什么样」→ 它自己做完交到你文件夹</b>(no code / no terminal)。<b>Codex app</b>(OpenAI)= <b>开发者的 agent 指挥中心</b>,一个 manager 协调一队并行 subagent,覆盖建/发/维护全流程。</p>
+    <div class="warn"><b>诚实 1(别护短):编排引擎不是我们的护城河。</b> 「一个 lead 拆活、派给 sub-agent、还能分诊」现在是 <b>Claude 和 OpenAI 两家的一方功能</b>,大厂资源更足。我们的 leads/部门/三段式,在<b>编排机制层面跟他们重叠很多、且不占优</b>。这条得认。</div>
+    <div class="honest"><b>诚实 2(验证你的假设 —— 一半对一半不对)</b>:<br>· <b>Codex app</b> ✅ 你猜对了:开发者工具,你在桌面/CLI 当导演、要懂技术、锁 OpenAI —— 跟我们目标人群不是一路。<br>· <b>Claude Cowork</b> ⚠️ <b>你的假设对它不成立</b>:它<b>恰恰是非技术 + done-for-you + 描述结果 review 成品</b>,几乎就是我们讲的那套。<b>它是目前最贴、最该警惕的一家。</b></div>
+    <h3>那价值/差异还剩什么?(候选,待 911 —— 我验证的,没替你下结论)</h3>
+    <ul>
+      <li><b>领域</b>:Cowork 做的是<b>你文件上的知识工作</b>(研究/合同/报告),<b>不是建并长期维护一个真软件产品</b>;Codex 建软件但面向开发者。→「替非技术的人<b>建并养一个真软件产品/公司</b>」两家目前都没正面做。</li>
+      <li><b>常驻组织 vs 你启动的任务</b>:它俩本质是「你启动一个任务→它 fan-out→交付」;我们是一个<b>常驻组织</b>(自己分诊 backlog、Leads、部门)。真结构差异,但别吹太大。</li>
+      <li><b>界面</b>:它俩要<b>开电脑 / 桌面 app / 盯文件夹</b>;我们是<b>手机 IM(Discord)</b> —— 对只带手机的非技术小生意主是真差异。</li>
+      <li><b>供应商中立(你说的 ④)</b>:<b>Cowork 锁 Claude、Codex 锁 OpenAI</b>;我们架构上能跨后端(Claude/Codex/GLM/MiniMax…)。这是<b>第一方厂商结构上不会做</b>的事 —— 「定位层能打」的真差异。<br><span class="small">⚠️ 但「<b>能打</b>」≠「<b>现在就建</b>」。你早先定了 setup 先不做 agent-agnostic,不冲突:现在可以把「供应商中立」当定位候选讲,不必现在建全。</span></li>
+    </ul>
+    <div class="anchor"><b>诚实的总答</b>:不是「我们注定被取代」,也不是「我们稳」。<b>差异存在、但薄</b>;引擎层我们没护城河。<mark>赢面取决于:我们能不能比一个通用知识工作工具(尤其 Cowork)更早,把「done-for-you + 常驻组织 + 手机 IM + 供应商中立 + 真软件产品维护」这套具体组合,替一个非技术小生意主真正做成能用的东西</mark> —— 而这套现在还没产品化。这个判断,911 跟你拍。</div>
+    <div class="cmt"><label for="c_cowork">最硬的问题:看完这条,你觉得我们有没有价值?我押的这套组合(领域/常驻/手机/中立)你认吗,还是你看到别的?</label>
+      <textarea id="c_cowork" placeholder="诚实说:你觉得我们会不会被 Cowork 取代 / 我们真正的立身之本是 ___"></textarea><div class="saved" id="s_c_cowork"></div></div>
+  </section>
+
+  <!-- Open Cloud + OPC beachhead -->
+  <section class="card rival">
+    <div class="kicker">你的灵感来源 + 新 beachhead</div>
+    <h2>Open Cloud(OpenClaw)+ 「一个人开公司」这群人</h2>
+    <p><b>OpenClaw 是什么</b>:开源<b>个人 AI 助理</b>,跑你自己设备上、在你已用的 IM(Discord/Telegram/Slack… 29 个渠道)里回你。<b>界面赌注跟我们最像</b>(IM 驱动、Discord 当门面)。2026 爆红(60 天 250K star)后<b>热度回落</b> —— 因<b>定价套利泡沫</b>(算力变贵几天崩)+ 安全事故 + 创始人转投 OpenAI。</p>
+    <div class="anchor"><b>⭐ 它是我们的起点(你的真实故事)</b>:Flywheel 最早就搭在 Open Cloud 上 —— 你先在 OpenClaw 上搭这套系统,后来 Claude Code 能连 Discord 才迁过来。这条真实起源是极强的 build-in-public 素材(「我自己在 OpenClaw 上搭、撞墙,才做了 Flywheel」)。</div>
+    <div class="warn"><b>诚实差异(按你纠正 —— 不在数量、在协调)</b>:别再讲「我们多部门 vs 它单个助理」——<b>多开几个 OpenClaw 也能凑成多部门</b>,这框站不住。真差异 = <mark>N 个 OpenClaw = 各自为战、你得自己 juggle</mark>(各跑各的、不互通、你当人肉调度);<b>我们 = 一个被协调的常驻组织</b>(Leads 互通、共享 backlog、跨项目复用、部门分工)= <b>对外是一家公司在动,不是 N 个你得盯的助理</b>。<br><b>OpenClaw 踩的坑 → 我们怎么避</b>(喂持久 vs 昙花):①硬定价别做套利泡沫 ②安全别裸 provision ③可靠性要 managed(替你托管的可靠)。<br><span class="small">⚠️ 「Aimless Agent」两轮搜索查无实据(可能名字近似)—— 给个链接/真名我再补。</span></div>
+    <div class="honest"><b>OPC beachhead(你收窄后)</b>:target = <b>非技术的一人公司 operator</b>(自己做电商 / social)—— 有「一个人干一个团队的活」的痛,但<b>不是程序员、自己拼不出来</b>,要 done-for-you。<b>程序员 OPC 不是我们专门 target</b>(他们自己能搞、抢不过)。<br><b>DIY 硬问题 reframe</b>:引擎层<mark>我们确实没护城河 —— 但会自己拼的是程序员,本就不是我们攻的人</mark>,所以「能 DIY」的风险<b>不落在非技术 operator 这群身上</b>。对能 DIY 的技术人我们不占优也不攻;对非技术 operator,他们要<b>替他做 + 常驻组织 + 生态整合 + 体验气质</b>,不是自己拼引擎。<br><b>定位主线</b>:替一个非技术的一人公司 operator,把一整个「公司」的活<b>在聊天里做掉</b>。详见配套 <b>Value 工件</b>(单独一份 HTML)。</div>
+    <div class="cmt"><label for="c_openclaw">OpenClaw 这条 + 收窄后「非技术 operator 拼不出、要 done-for-you」的答法,你认吗?</label>
+      <textarea id="c_openclaw" placeholder="比如:认 / 非技术 operator 我更想强调 ___ / OpenClaw 那条 ___"></textarea><div class="saved" id="s_c_openclaw"></div></div>
+  </section>
+
+  <!-- 可信度轴 -->
+  <section class="card us">
+    <div class="kicker">你 flag 的硬问题 · 诚实答</div>
+    <h2>非技术老板不读代码,凭什么信我们?</h2>
+    <p class="small">别人的信任机制(Paperclip 的记录面板、Matrix 的 proof、Hermes 的记忆图)对纯非技术都是「看不太懂的日志」。行业数据:只有 <b>6%</b> 的公司完全信任 AI agent 自主干活。所以「信任」得换成他能亲身感知的东西(下面是<b>候选表达</b>,主线 911 拍):</p>
+    <div class="anchor"><b>⚓ 候选锚点 · 结果证明</b>:东西<b>你一试真能跑、下周还能跑</b>。这是非技术老板<b>唯一能自己验证</b>的信任。这也是赛道普遍短板(Matrix coding 弱、Paperclip 还「原型穿产品外衣」)。<b>⚠️ 诚实:我们现在也还没做实(还一堆 bug)</b> —— 这是要争的地方,不是已经赢了。</div>
+    <h3>另外三件他能感知的事</h3>
+    <ul>
+      <li><b>能对话的 named Lead</b>:在 Discord 里直接问「为什么这么做」「改一下」,像信一个员工/承包商。</li>
+      <li><b>批决定,不批 diff</b>:Lead 白话说「我打算做 X,行吗」,你批听得懂的决定。</li>
+      <li><b>能感知的护栏</b>:不 surprise 账单(可借 Paperclip 的月预算自停)+ 能喊停。</li>
+    </ul>
+    <p class="small">PR / CI / QA = 沉在引擎盖下的质量保证,是「一试真能跑」的底气,不是拿去跟非技术讲的卖点。</p>
+    <div class="cmt"><label for="c_trust">这条「信任 = 一试真能跑 + 能对话的 Lead + 白话审批 + 护栏」对得上你的感觉吗?</label>
+      <textarea id="c_trust" placeholder="比如:对 / 我最看重 ___ / 诚实说我们还没做到这点我 ___"></textarea><div class="saved" id="s_c_trust"></div></div>
+  </section>
+
+  <!-- 全景 + 诚实边界 -->
+  <section class="card">
+    <div class="kicker">全景 · 诚实版</div>
+    <h2>非技术小生意主,现在能自己用哪家?——(诚实:谁都还没做到)</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>现实体验</th><th>玩家</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>能上手(有天花板)</td><td>Base44</td><td>出全栈内部工具最快;数据锁平台、只出 SPA</td></tr>
+          <tr><td><b>其实是出 UI 的地方</b></td><td><b>Lovable</b></td><td>强在聊天快速生成好看界面/前端(能带全栈但重心在 UI);<b>跟「替你建并养真产品」不是一类,别混</b></td></tr>
+          <tr><td>要进开发环境 / 下桌面 app</td><td>Replit · Bolt · Matrix</td><td>Replit/Bolt 是 IDE 味;Matrix 要下桌面 app + 跑营销生意</td></tr>
+          <tr><td>面向工程师</td><td>Devin · Factory · v0 · OpenHands</td><td>要把活讲成工程语言 / 要懂 repo</td></tr>
+          <tr><td>面向自托管者(但瞄 operators)</td><td><b>Paperclip</b> · Hermes</td><td>要会 Docker/VPS、自带 agent;Paperclip 明确往非技术 operator 打,但还「原型穿产品外衣」</td></tr>
+          <tr class="us"><td class="us"><b>目标 done-for-you</b></td><td class="us"><b>🎯 Flywheel</b></td><td class="us"><b>目标</b>是替你做、你不用懂技术;<b>⚠️ 坦白:现在还没到</b> —— 跑起来仍要点工程水平(你自己用都撞 bug),产品化是待解题</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="honest"><b>诚实边界</b>:「非技术真能自己用」<b>现在谁都没做到</b>(连 Paperclip 都还是原型状态),我们也没到。这是赛道共同的未解题 —— <mark>谁先把「done-for-you 真产品化」跑通谁赢</mark>。差异不是「我们不用自托管」(我们八成也要 Docker/VPS),是<b>「替你做」</b>(候选,待 911)。</div>
+    <div class="cmt"><label for="c_matrix">这张诚实版分档 + 「差异是替你做、不是不用自托管」,你认吗?Lovable 归类改对了吗?</label>
+      <textarea id="c_matrix" placeholder="比如:认 / Lovable 我觉得 ___ / 诚实边界这段 ___"></textarea><div class="saved" id="s_c_matrix"></div></div>
+  </section>
+
+  <!-- GTM -->
+  <section class="card">
+    <div class="kicker">你要学的 · 他们推广为什么成功</div>
+    <h2>Go-to-Market(Building-in-Public)</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>维度</th><th>Paperclip</th><th>Matrix</th><th>Lovable</th><th>Base44</th></tr></thead>
+        <tbody>
+          <tr><td><b>定价</b></td><td>开源免费(自付基建)</td><td>公测免费+邀请码</td><td>Free/$25/$50</td><td>Free/~$16</td></tr>
+          <tr><td><b>怎么火的</b></td><td>开源 build-in-public;<b>Greg Isenberg 47 分钟 live demo</b>;明说「给 operators」;~70K star 零广告</td><td>邀请码稀缺+推荐环;X demo agent 干活;<b>小红书</b></td><td>build-in-public(全员 X+LinkedIn);249 KOL</td><td>创始人 LinkedIn 连载;产品自传播</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <h3>能直接抄的 4 条</h3>
+    <ul>
+      <li><b>Building-in-Public</b>:创始人/团队第一人称连载做产品的过程(中文圈用<b>小红书</b> —— 你就是在那刷到 Matrix 的)。</li>
+      <li><b>产品当众干活当病毒 demo</b>:Paperclip 的 Greg Isenberg live demo 是标杆;我们可演示「AI 团队当着人面把一个真功能建出来/修好」。</li>
+      <li><b>产品自传播 onboarding</b>:让人几分钟看到「真东西被建出来」→ 自发去晒(Base44「招募布道者而非转化用户」)。</li>
+      <li><b>用 operator 的话讲、不跟开发者讲</b>(Paperclip 明确「给 operators」)。</li>
+    </ul>
+    <div class="cmt"><label for="c_gtm">GTM 里哪条你最想先抄?小红书 + operator 语言这两条呢?</label>
+      <textarea id="c_gtm" placeholder="比如:先抄 ___ / 小红书 ___"></textarea><div class="saved" id="s_c_gtm"></div></div>
+  </section>
+
+  <!-- 定位候选 -->
+  <section class="card us">
+    <div class="kicker">喂料给你 / 911 收敛</div>
+    <h2>差异化候选(不是定案 —— 定位在 FLY-911 跟你拍)</h2>
+    <p class="small">这些是喂 911 的候选线索,不是我替你定的结论:</p>
+    <ul>
+      <li><b>done-for-you 替你做</b>(候选):目标是你不用自己攒/配/盯。<b>诚实</b>:差异不是「不用自托管」(我们八成也要那套基建),是「替你搞定」。</li>
+      <li><b>建并养一个真软件产品</b>(候选):不是一次性 MVP、不是营销生意。</li>
+      <li><b>结果证明「一试真能跑、下周还能跑」</b>(候选锚点):非技术唯一能亲验的信任;⚠️ 我们现在也还没做实。</li>
+      <li><b>具体旗舰 = dogfooding 软件公司</b>(bootstrap 打法落到我们)。</li>
+    </ul>
+    <div class="sugg"><b>💡 一条可选的对外反差(建议 · 待你 + 911 拍)</b>:品类都喊「Zero-Human Company / 自动赚钱」;我们诚实反着讲 —— <b>「不是零人公司。是你做判断,AI 做工程。」</b> 压在品类承认自动化不了的地方(判断/关系/信任)。</div>
+    <div class="cmt"><label for="c_pos">这几条候选里,你心里觉得哪条是主线?那句「不是零人公司、是你做判断」用不用?</label>
+      <textarea id="c_pos" placeholder="主线我倾向 ___;反差那句 用/不用…"></textarea><div class="saved" id="s_c_pos"></div></div>
+  </section>
+
+  <!-- 开放问题 -->
+  <section class="card">
+    <div class="kicker">等你定 · 喂 FLY-911</div>
+    <h2>还剩的问题</h2>
+    <ol>
+      <li>✅ <b>已定(你上轮拍的)</b>:目标客户 = 非技术小生意主。本版已按此重写。</li>
+      <li><b>主线</b>:done-for-you / 真软件 / 一试真能跑 三条候选里,哪条当一句话定位主线?</li>
+      <li><b>反差 messaging</b>:「不是零人公司、是你做判断」当不当对外主线?</li>
+      <li><b>诚实边界怎么讲</b>:我们现在还没到「完全非技术能用」—— 对外要不要坦诚「正在把它做成 done-for-you」而不是假装已经是?(我倾向坦诚,和品类一起早反而可信。)</li>
+    </ol>
+    <div class="cmt"><label for="c_open">这几个的答复:</label>
+      <textarea id="c_open" placeholder="2. 主线 ___ 3. 反差 用/不用 4. 诚实边界 ___"></textarea><div class="saved" id="s_c_open"></div></div>
+  </section>
+
+  <footer>Flywheel · FLY-909 竞品扫描 round 2(批注修订版)· 喂料给 FLY-911 · 任何东西都不会在你批准前 ship</footer>
+</div>
+
+<div class="modal" id="modal" onclick="if(event.target===this)closeExport()">
+  <div class="modal-in">
+    <h3>你的批注汇总</h3>
+    <p class="small">下面是你写的所有意见。已尝试自动复制到剪贴板;没复制成功的话,长按/全选下面文字手动复制,发回给团队即可。</p>
+    <textarea id="exportBox" readonly></textarea>
+    <div class="row">
+      <button class="btn" onclick="copyExport()">复制</button>
+      <button class="btn ghost" onclick="closeExport()">关闭</button>
+      <span class="saved" id="copyMsg" style="align-self:center"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  var KEY="fly909_cmt_v3";
+  var FIELDS={c_tldr:"三句话",c_paperclip:"Paperclip 深挖 / bootstrap",
+    c_cowork:"Cowork/Codex：我们有没有价值/会不会被取代",
+    c_openclaw:"OpenClaw + OPC beachhead",
+    c_trust:"可信度(非技术怎么信)",c_matrix:"诚实分档 / Lovable / 替你做",
+    c_gtm:"GTM / Building-in-Public",c_pos:"差异候选 + 反差",c_open:"还剩的问题"};
+  function load(){try{return JSON.parse(localStorage.getItem(KEY)||"{}")}catch(e){return{}}}
+  function save(d){try{localStorage.setItem(KEY,JSON.stringify(d))}catch(e){}}
+  var data=load();
+  Object.keys(FIELDS).forEach(function(id){
+    var el=document.getElementById(id);if(!el)return;
+    if(data[id]){el.value=data[id]}
+    el.addEventListener("input",function(){
+      data[id]=el.value;save(data);
+      var s=document.getElementById("s_"+id);if(s){s.textContent="已暂存 ✓";clearTimeout(el._t);el._t=setTimeout(function(){s.textContent=""},1200)}
+    });
+  });
+  function compile(){
+    var out="【Annie 对 FLY-909 竞品扫描 round-2 批注版的意见】\n";var any=false;
+    Object.keys(FIELDS).forEach(function(id){
+      var v=(data[id]||"").trim();if(v){any=true;out+="\n■ "+FIELDS[id]+"\n"+v+"\n"}
+    });
+    return any?out:"(还没写任何批注)";
+  }
+  function openExport(){document.getElementById("exportBox").value=compile();document.getElementById("modal").classList.add("on");
+    try{navigator.clipboard.writeText(compile()).then(function(){msg("已复制到剪贴板 ✓")},function(){})}catch(e){}}
+  function copyExport(){var t=document.getElementById("exportBox");t.select();
+    try{navigator.clipboard.writeText(t.value).then(function(){msg("已复制 ✓")},fallback)}catch(e){fallback()}
+    function fallback(){try{document.execCommand("copy");msg("已复制 ✓")}catch(e){msg("请手动全选复制")}}}
+  function msg(m){document.getElementById("copyMsg").textContent=m;}
+  function closeExport(){document.getElementById("modal").classList.remove("on")}
+</script>

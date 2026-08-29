@@ -6,6 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import { StandupService } from "../bridge/standup-service.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -36,7 +37,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
-		maxConcurrentRunners: 2,
+		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }
@@ -46,7 +47,6 @@ function makeService(store: StateStore, channel?: string): StandupService {
 		store,
 		testProjects,
 		"fake-token",
-		2,
 		15,
 		24,
 		channel,

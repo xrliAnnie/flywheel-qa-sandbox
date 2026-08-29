@@ -1,5 +1,6 @@
 import { allowedActionsForState } from "flywheel-core";
 import type { Session, StateStore } from "../StateStore.js";
+import type { FleetSnapshot } from "./fleet-data.js";
 
 export interface DashboardMetrics {
 	running: number;
@@ -20,6 +21,8 @@ export interface DashboardSession {
 	last_error?: string;
 	decision_route?: string;
 	tmux_session?: string;
+	/** FLY-728: resolved runner model (per-issue model routing visibility). */
+	runner_model?: string;
 	commit_count?: number;
 	lines_added?: number;
 	lines_removed?: number;
@@ -44,6 +47,13 @@ export interface DashboardPayload {
 	stuck: DashboardSession[];
 	delivery: DashboardDeliveryHealth;
 	generated_at: string;
+	/**
+	 * FLY-247: fleet config/observed state. OPTIONAL + default-off (R1#6):
+	 * the production broadcaster only injects it when ≥1 lead explicitly
+	 * configures a fleet field — a zero-config deployment's SSE payload is
+	 * byte-identical to pre-FLY-247.
+	 */
+	fleet?: FleetSnapshot;
 }
 
 function todayStartUTC(): string {
@@ -64,6 +74,8 @@ function toDashboardSession(s: Session): DashboardSession {
 		last_error: s.last_error,
 		decision_route: s.decision_route,
 		tmux_session: s.tmux_session,
+		// FLY-728: resolved runner model (per-issue model routing visibility).
+		runner_model: s.runner_model,
 		commit_count: s.commit_count,
 		lines_added: s.lines_added,
 		lines_removed: s.lines_removed,
@@ -74,6 +86,8 @@ function toDashboardSession(s: Session): DashboardSession {
 export function buildDashboardPayload(
 	store: StateStore,
 	stuckThresholdMinutes: number,
+	/** FLY-247: latest fleet snapshot; injected only when the default-off gate is open. */
+	fleet?: FleetSnapshot,
 ): DashboardPayload {
 	const active = store.getActiveSessions();
 	const terminal = store.getTerminalSessionsSince(todayStartUTC());
@@ -121,5 +135,6 @@ export function buildDashboardPayload(
 			monitor_status,
 		},
 		generated_at: new Date().toISOString(),
+		...(fleet !== undefined ? { fleet } : {}),
 	};
 }

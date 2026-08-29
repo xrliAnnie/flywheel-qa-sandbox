@@ -1,0 +1,34 @@
+# transcript: deployed-sha-and-prod-checkout
+# command: bash -c 
+echo "--- ~/.flywheel/deployed-sha ---"
+cat ~/.flywheel/deployed-sha 2>/dev/null; stat -f "mtime=%Sm" ~/.flywheel/deployed-sha 2>/dev/null
+echo "--- production checkout git log (last 5) ---"
+git -C ~/Dev/flywheel log --format="%h %ci %s" -5 2>/dev/null
+echo "--- production checkout HEAD + reflog tail ---"
+git -C ~/Dev/flywheel rev-parse HEAD
+git -C ~/Dev/flywheel reflog --date=iso -10 2>/dev/null
+# collected_at: 2026-07-10T08:22:32Z (host local: 2026-07-10 01:22:32 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+--- ~/.flywheel/deployed-sha ---
+bc9c9bfb1f690c2c64827317816f7fb46a78da35
+mtime=Jul  9 14:51:42 2026
+--- production checkout git log (last 5) ---
+5c6c14f0 2026-07-09 22:28:13 -0700 Merge pull request #531 from xrliAnnie/flywheel-FLY-1062
+d271ac36 2026-07-09 22:24:15 -0700 Merge pull request #534 from xrliAnnie/flywheel-FLY-1071
+53e940e8 2026-07-09 21:51:38 -0700 Merge pull request #532 from xrliAnnie/flywheel-FLY-1063
+826433a7 2026-07-09 21:45:45 -0700 docs(FLY-1063): Codex code review R3 — strict posture covers all bypass switches
+fe5ba643 2026-07-09 21:42:17 -0700 docs(FLY-1063): address Codex code review R2 — REQ-2b strict no-bypass posture
+--- production checkout HEAD + reflog tail ---
+5c6c14f0ebcc4ed8d62cd7fd7df7dab3d66fc02a
+5c6c14f0 HEAD@{2026-07-09 22:42:57 -0700}: pull --ff-only: Fast-forward
+bc9c9bfb HEAD@{2026-07-09 22:42:53 -0700}: checkout: moving from main to main
+bc9c9bfb HEAD@{2026-07-09 12:59:16 -0700}: pull --ff-only: Fast-forward
+2db55f96 HEAD@{2026-07-09 06:00:07 -0700}: pull origin main --ff-only --quiet: Fast-forward
+07622d47 HEAD@{2026-07-08 06:00:03 -0700}: pull origin main --ff-only --quiet: Fast-forward
+69122f97 HEAD@{2026-07-07 19:53:22 -0700}: pull --ff-only origin main: Fast-forward
+89e8eb52 HEAD@{2026-07-07 11:13:38 -0700}: pull --ff-only origin main: Fast-forward
+c5100544 HEAD@{2026-07-07 09:19:40 -0700}: pull -q origin main: Fast-forward
+ebdfd007 HEAD@{2026-07-07 09:19:37 -0700}: checkout: moving from main to main
+ebdfd007 HEAD@{2026-07-07 06:00:07 -0700}: pull origin main --ff-only --quiet: Fast-forward
+# exit_code: 0

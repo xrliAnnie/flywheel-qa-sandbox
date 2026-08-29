@@ -1,0 +1,602 @@
+{
+	"model": "gemini-3.1-flash-live-preview",
+	"inputFinishedSeen": false,
+	"outputFinishedSeen": false,
+	"inputPieces": [
+		{
+			"text": "今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?"
+		}
+	],
+	"outputPieces": [
+		{
+			"text": "我觉得"
+		},
+		{
+			"text": "转"
+		},
+		{
+			"text": "写"
+		},
+		{
+			"text": "面板"
+		},
+		{
+			"text": "还是"
+		},
+		{
+			"text": "挺"
+		},
+		{
+			"text": "方便"
+		},
+		{
+			"text": "的。"
+		},
+		{
+			"text": "对于"
+		},
+		{
+			"text": "需要"
+		},
+		{
+			"text": "把"
+		},
+		{
+			"text": "录音"
+		},
+		{
+			"text": "整理"
+		},
+		{
+			"text": "成"
+		},
+		{
+			"text": "文字"
+		},
+		{
+			"text": "的情况,"
+		},
+		{
+			"text": "能"
+		},
+		{
+			"text": "节省"
+		},
+		{
+			"text": "不少"
+		},
+		{
+			"text": "时间。"
+		},
+		{
+			"text": " 你"
+		},
+		{
+			"text": "是用"
+		},
+		{
+			"text": "它"
+		},
+		{
+			"text": "做"
+		},
+		{
+			"text": "什么"
+		},
+		{
+			"text": "用的呢?"
+		},
+		{
+			"text": " 觉得"
+		},
+		{
+			"text": "它有"
+		},
+		{
+			"text": "什么"
+		},
+		{
+			"text": "特别"
+		},
+		{
+			"text": "好的"
+		},
+		{
+			"text": "地方,"
+		},
+		{
+			"text": "或者"
+		},
+		{
+			"text": "有什么"
+		},
+		{
+			"text": "不足"
+		},
+		{
+			"text": "吗?"
+		}
+	],
+	"events": [
+		{
+			"ms": 433,
+			"kind": "connected"
+		},
+		{
+			"ms": 5775,
+			"kind": "audio-sent"
+		},
+		{
+			"ms": 5776,
+			"kind": "audioStreamEnd-sent"
+		},
+		{
+			"ms": 7062,
+			"kind": "inputTranscription",
+			"text": "今 天 我 们 聊 一 聊 转 写 面 板 , 你 觉 得 这 个 功 能 怎 么 样 ?"
+		},
+		{
+			"ms": 7067,
+			"kind": "outputTranscription",
+			"text": "我觉得"
+		},
+		{
+			"ms": 7067,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7082,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7103,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7108,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7124,
+			"kind": "outputTranscription",
+			"text": "转"
+		},
+		{
+			"ms": 7124,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7124,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7127,
+			"kind": "outputTranscription",
+			"text": "写"
+		},
+		{
+			"ms": 7127,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7148,
+			"kind": "outputTranscription",
+			"text": "面板"
+		},
+		{
+			"ms": 7148,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7155,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7156,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7189,
+			"kind": "outputTranscription",
+			"text": "还是"
+		},
+		{
+			"ms": 7189,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7469,
+			"kind": "outputTranscription",
+			"text": "挺"
+		},
+		{
+			"ms": 7470,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7500,
+			"kind": "outputTranscription",
+			"text": "方便"
+		},
+		{
+			"ms": 7500,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7502,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7543,
+			"kind": "outputTranscription",
+			"text": "的。"
+		},
+		{
+			"ms": 7543,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7573,
+			"kind": "outputTranscription",
+			"text": "对于"
+		},
+		{
+			"ms": 7573,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7629,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7742,
+			"kind": "outputTranscription",
+			"text": "需要"
+		},
+		{
+			"ms": 7742,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7778,
+			"kind": "outputTranscription",
+			"text": "把"
+		},
+		{
+			"ms": 7778,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7871,
+			"kind": "outputTranscription",
+			"text": "录音"
+		},
+		{
+			"ms": 7871,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 7939,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8005,
+			"kind": "outputTranscription",
+			"text": "整理"
+		},
+		{
+			"ms": 8005,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8050,
+			"kind": "outputTranscription",
+			"text": "成"
+		},
+		{
+			"ms": 8050,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8139,
+			"kind": "outputTranscription",
+			"text": "文字"
+		},
+		{
+			"ms": 8139,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8314,
+			"kind": "outputTranscription",
+			"text": "的情况,"
+		},
+		{
+			"ms": 8315,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8388,
+			"kind": "outputTranscription",
+			"text": "能"
+		},
+		{
+			"ms": 8388,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8463,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8533,
+			"kind": "outputTranscription",
+			"text": "节省"
+		},
+		{
+			"ms": 8533,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8605,
+			"kind": "outputTranscription",
+			"text": "不少"
+		},
+		{
+			"ms": 8605,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8740,
+			"kind": "outputTranscription",
+			"text": "时间。"
+		},
+		{
+			"ms": 8740,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8819,
+			"kind": "outputTranscription",
+			"text": " 你"
+		},
+		{
+			"ms": 8819,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8893,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 8996,
+			"kind": "outputTranscription",
+			"text": "是用"
+		},
+		{
+			"ms": 8996,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9065,
+			"kind": "outputTranscription",
+			"text": "它"
+		},
+		{
+			"ms": 9065,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9115,
+			"kind": "outputTranscription",
+			"text": "做"
+		},
+		{
+			"ms": 9115,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9181,
+			"kind": "outputTranscription",
+			"text": "什么"
+		},
+		{
+			"ms": 9181,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9282,
+			"kind": "outputTranscription",
+			"text": "用的呢?"
+		},
+		{
+			"ms": 9282,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9285,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9420,
+			"kind": "outputTranscription",
+			"text": " 觉得"
+		},
+		{
+			"ms": 9420,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9511,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9511,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9592,
+			"kind": "outputTranscription",
+			"text": "它有"
+		},
+		{
+			"ms": 9592,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9662,
+			"kind": "outputTranscription",
+			"text": "什么"
+		},
+		{
+			"ms": 9662,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9747,
+			"kind": "outputTranscription",
+			"text": "特别"
+		},
+		{
+			"ms": 9747,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9812,
+			"kind": "outputTranscription",
+			"text": "好的"
+		},
+		{
+			"ms": 9812,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9908,
+			"kind": "outputTranscription",
+			"text": "地方,"
+		},
+		{
+			"ms": 9908,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 9911,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10065,
+			"kind": "outputTranscription",
+			"text": "或者"
+		},
+		{
+			"ms": 10065,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10065,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10212,
+			"kind": "outputTranscription",
+			"text": "有什么"
+		},
+		{
+			"ms": 10212,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10215,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10285,
+			"kind": "outputTranscription",
+			"text": "不足"
+		},
+		{
+			"ms": 10285,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10395,
+			"kind": "outputTranscription",
+			"text": "吗?"
+		},
+		{
+			"ms": 10395,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10396,
+			"kind": "audio",
+			"parts": 1
+		},
+		{
+			"ms": 10446,
+			"kind": "generationComplete"
+		},
+		{
+			"ms": 20636,
+			"kind": "turnComplete"
+		},
+		{
+			"ms": 25823,
+			"kind": "close",
+			"reason": ""
+		}
+	]
+}

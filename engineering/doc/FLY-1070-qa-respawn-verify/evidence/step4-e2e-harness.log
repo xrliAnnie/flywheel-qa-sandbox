@@ -1,0 +1,93 @@
+
+═══ E1 — /api/actions terminate live QA → event-driven respawn (epoch+1, belt quiet) ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] terminate HTTP 200
+  [PASS] row flipped terminated
+  [PASS] event-driven respawn: exactly 1 start (no boot reconcile ran) — start=1
+  [PASS] sessionRole=qa
+  [PASS] startPoint=implement head
+  [PASS] shareParentBranch=true
+  [PASS] ignoreRunnerLabelSelection=true
+  [PASS] CommDB TURN holder = fresh QA — {"issue_id":"FLY-E2E","holder_exec_id":"qa-new-1","phase":"qa","epoch":2,"granted_at":1783637198150}
+  [PASS] epoch strictly +1 (1 → 2)
+  [PASS] zero STALE-TURN alerts (silence 800ms) — []
+  [PASS] zero alerts overall — []
+  [PASS] exactly 1 respawn thread note
+
+═══ E2 — /actions dashboard alias → same respawn ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] terminate HTTP 200
+  [PASS] respawn via dashboard mount — start=1
+  [PASS] sessionRole=qa
+  [PASS] zero alerts
+
+═══ E3a — terminate success + live-ghost probe → ghostGuard blocks spawn, TURN untouched ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] terminate HTTP 200 (tmux lookup gone → success shape)
+  [PASS] FSM row flipped terminated
+  [PASS] qa-loss fired → ghostGuard fail-closed alert — ["terminal-status qa session qa-0 still has a LIVE tmux process (qa1070-none:@999) — refusing to spawn a duplicate qa (would double-write shared branch B). Operator must reconcile the stale row/window (FLY-934); the parked runner is not lost."]
+  [PASS] alert names the live ghost (refusing duplicate spawn) — ["terminal-status qa session qa-0 still has a LIVE tmux process (qa1070-none:@999) — refusing to spawn a duplicate qa (would double-write shared branch B). Operator must reconcile the stale row/window (FLY-934); the parked runner is not lost."]
+  [PASS] zero spawn (ghost blocked)
+  [PASS] belt TURN untouched (terminated NOT fast-tracked stale; probe alive → no-op) — pre={"issue_id":"FLY-E2E","holder_exec_id":"qa-0","phase":"qa","epoch":1,"granted_at":1783637199927} post={"issue_id":"FLY-E2E","holder_exec_id":"qa-0","phase":"qa","epoch":1,"granted_at":1783637199927}
+
+═══ E3b — REAL cleanupPending (corrupt CommDB read) → qa-loss STILL fires → respawn ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+[tmux-lookup] CommDB read error for qa-0: file is not a database
+[terminate] cleanup failed for qa-0 (FSM already terminated): tmux target lookup failed: file is not a database
+  [PASS] HTTP 400 + cleanupPending=true (CommDB read error — cannot confirm tmux gone) — {"success":false,"message":"qa-0 transitioned to terminated, but tmux cleanup failed: tmux target lookup failed: file is not a database. The FSM row is terminal (no longer blocks admission); re-run close_runner to reap the tmux window.","action":"terminate","cleanupPending":true}
+  [PASS] FSM row still flipped terminated
+  [PASS] qa-loss fired on the cleanupPending shape → respawn — start=1
+
+═══ E4a — DirectEventSink.emitFailed(qa) → respawn (qa-loss before belt) ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+[DirectEventSink] pushNotification: exec=qa-0 event=session_failed registry=false eventFilter=false status=failed
+  [PASS] respawn after emitFailed — start=1
+  [PASS] row status failed
+  [PASS] TURN holder = fresh QA (belt reconcile no-oped via guard 1)
+  [PASS] zero alerts — []
+
+═══ E4b — /events session_failed (event-route) → respawn ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] /events HTTP 200
+  [PASS] respawn via event-route — start=1
+  [PASS] sessionRole=qa @ head
+  [PASS] zero alerts
+
+═══ E5 — crash-reaper reaps stale QA → onQaPhaseTerminated closure → respawn ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] reaped exactly 1
+  [PASS] row flipped terminated
+  [PASS] respawn triggered by reaper hook — start=1
+
+═══ E6 — cap storm: kill → respawn ×2 (epoch increments), 3rd dead row → failClosed, re-trigger re-alerts ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] round1: respawn
+  [PASS] round1: epoch 2, holder qa-new-1 — {"issue_id":"FLY-E2E","holder_exec_id":"qa-new-1","phase":"qa","epoch":2,"granted_at":1783637202693}
+  [PASS] round2: respawn
+  [PASS] round2: epoch 3, holder qa-new-2 — {"issue_id":"FLY-E2E","holder_exec_id":"qa-new-2","phase":"qa","epoch":3,"granted_at":1783637202733}
+  [PASS] round3: failClosed cap alert — ["three-stage QA respawn cap reached on FLY-E2E (3 dead qa sessions; max 3) — NOT respawning; Lead decides how to proceed"]
+  [PASS] round3: ZERO further spawn (start stays 2) — start=2
+[DirectEventSink] pushNotification: exec=qa-new-2 event=session_failed registry=false eventFilter=false status=failed
+  [PASS] re-trigger → cap re-alerts (discrete-event semantics) — ["three-stage QA respawn cap reached on FLY-E2E (3 dead qa sessions; max 3) — NOT respawning; Lead decides how to proceed","three-stage QA respawn cap reached on FLY-E2E (3 dead qa sessions; max 3) — NOT respawning; Lead decides how to proceed","turn-belt recovered a STALE TURN on FLY-E2E: holder session is terminal (failed); holder qa-new-2 (epoch 3) → qa-new-1 (qa, epoch 4). The parked qa phase can now re-acquire the worktree turn."]
+  [PASS] re-trigger → still zero spawn
+
+═══ E7 — escape hatch =0: scoped inert + boot reverts row-exists + stranded-pass hardening NOT gated ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] terminate HTTP 200
+  [PASS] (a) scoped reconcileQaLoss inert: zero spawn (silence 800ms)
+  [PASS] (b) boot row-exists criteria: zero spawn
+  [PASS] (c) stranded-pass alert still fires with =0 (hardening independent of switch) — ["three-stage QA reported PASS but reached terminal 'terminated' WITHOUT opening the ship gate (no review binding) — the pipeline tail is stranded (FLY-849 §3.8 shape); Lead must re-drive the ship gate"]
+
+═══ E8a — after respawn lands alive row, a re-trigger is a no-op ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] respawn once
+[DirectEventSink] pushNotification: exec=qa-0 event=session_failed registry=false eventFilter=false status=failed
+  [PASS] re-trigger no-op: start stays 1 (alive qa-new-1 owns the pipeline)
+
+═══ E8b — two concurrent reconcileQaLoss on the same issue → exactly 1 spawn (in-flight guard) ═══
+[Bridge] Daily digest configured — channel=1521630422918758472
+  [PASS] exactly 1 spawn under concurrency — start=1
+
+────────────────────────────────────────────────────────────
+silence window for negative assertions: 800ms; positive poll bound: 5000ms
+ALL E2E SCENARIOS PASS

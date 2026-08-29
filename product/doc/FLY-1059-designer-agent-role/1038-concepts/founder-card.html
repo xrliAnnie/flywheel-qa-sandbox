@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>FLY-1038 统一管理 dashboard — 概念方向轮 A/B/C</title>
+<style>
+  :root { --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --blue:#007aff; --green:#34c759; --purple:#af52de; --amber:#ff9500; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif; line-height:1.5; }
+  .wrap { max-width:1080px; margin:0 auto; padding:28px 18px 64px; }
+  header h1 { font-size:1.55rem; margin:0 0 6px; letter-spacing:-.02em; }
+  header p { color:var(--dim); margin:0 0 4px; }
+  .note { background:#fff; border-left:4px solid var(--amber); border-radius:12px; padding:14px 18px; margin:18px 0 28px; box-shadow:0 1px 3px rgba(0,0,0,.06); font-size:.94rem; }
+  .req { display:flex; flex-wrap:wrap; gap:8px; margin:10px 0 0; }
+  .chip { background:#eef; color:#334; border-radius:999px; padding:3px 11px; font-size:.8rem; }
+  .dir { background:var(--card); border-radius:16px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:22px; margin:0 0 26px; border-left:5px solid var(--blue); }
+  .dir.b { border-left-color:var(--purple); }
+  .dir.c { border-left-color:var(--green); }
+  .dir h2 { margin:0 0 2px; font-size:1.2rem; }
+  .dir .skel { color:var(--dim); font-size:.9rem; margin:0 0 4px; }
+  .dir .why { font-size:.92rem; margin:8px 0 16px; }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  @media (max-width:720px){ .pair{ grid-template-columns:1fr; } }
+  figure { margin:0; }
+  figure img { width:100%; height:auto; border:1px solid #e5e5ea; border-radius:10px; display:block; }
+  figcaption { color:var(--dim); font-size:.8rem; margin-top:6px; text-align:center; }
+  .single { max-width:640px; }
+  .react { margin-top:16px; border-top:1px dashed #d2d2d7; padding-top:12px; font-size:.9rem; color:var(--dim); }
+  .foot { color:var(--dim); font-size:.85rem; margin-top:30px; }
+  .foot b { color:var(--ink); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>FLY-1038 统一管理 dashboard — 概念方向轮</h1>
+    <p>Designer(mockup-first)首次 dogfood · <b>先看「长什么样」,再决定 build</b></p>
+    <p style="color:var(--dim);font-size:.86rem">FLY-1059 · 每方向用 codex-image ∥ gemini-image 双模型出图(对比两种取向)</p>
+    <div class="req">
+      <span class="chip">左竖 nav</span>
+      <span class="chip">实例树</span>
+      <span class="chip">DAG-role 显示(每节点模型)</span>
+      <span class="chip">Feature Flag 单 tab</span>
+      <span class="chip">Codex 后端出 Codex 型号</span>
+      <span class="chip">无外部托管</span>
+    </div>
+  </header>
+
+  <div class="note">
+    <b>怎么用这张卡:</b>看下面 3 个方向(A/B/C),每个方向有 codex 和 gemini 两张图。挑你最想往下走的那个方向(或告诉我都不满意、要再出一轮)。选定后我出高保真(真观感 + 真数据),再交工程落到真 Fleet console。<br>
+    <span style="color:var(--dim)">注:第 0 步「这是一次性方向图还是要落真 app 的 UI 增量」正式跑时会先问你确认——这里按方向图先给你看观感。</span>
+  </div>
+
+  <div class="dir a">
+    <h2>方向 A — 实例树优先</h2>
+    <p class="skel">左竖 nav + 主区一棵可展开<b>实例树</b>;展开某实例露出 Lead 模型 + 注册的 DAG 模板(Design→Implement→QA,每节点模型徽章)。</p>
+    <p class="why">💡 <b>何时更好:</b>实例越来越多、"哪个实例用哪个模型 / 哪个 DAG"是主心智时最直观——直击你说的"容易忘"。</p>
+    <div class="pair">
+      <figure><img src="directionA-codex.png" alt="方向A codex"><figcaption>codex-image(UI/文字更清晰)</figcaption></figure>
+      <figure><img src="directionA-gemini.jpeg" alt="方向A gemini"><figcaption>gemini-image(另一种取向)</figcaption></figure>
+    </div>
+    <div class="react">▶ 你的反应(选它 / 改哪 / 不喜欢):____________________</div>
+  </div>
+
+  <div class="dir b">
+    <h2>方向 B — 主从分栏</h2>
+    <p class="skel">左竖 nav + 中间实例列表 + 右侧详情(tab:Models / DAG / <b>Feature Flags 单 tab</b>);DAG tab 是竖向 DAG-role 节点链,每节点带模型。</p>
+    <p class="why">💡 <b>何时更好:</b>单个实例配置深、要频繁改某一个实例时;右侧详情区能装下复杂 config。</p>
+    <div class="pair">
+      <figure><img src="directionB-codex.png" alt="方向B codex"><figcaption>codex-image(UI/文字更清晰)</figcaption></figure>
+      <figure><img src="directionB-gemini.jpeg" alt="方向B gemini"><figcaption>gemini-image(另一种取向)</figcaption></figure>
+    </div>
+    <div class="react">▶ 你的反应:____________________</div>
+  </div>
+
+  <div class="dir c">
+    <h2>方向 C — 卡片网格</h2>
+    <p class="skel">左竖 nav + 顶栏含 Feature Flags 单 tab + 主区实例<b>卡片网格</b>;每卡片:模型 chip + 横向 DAG-role 条(🎨→🔨→🧪 每段模型)。</p>
+    <p class="why">💡 <b>何时更好:</b>想一眼扫全部实例、实例数中等、偏概览时。</p>
+    <div class="pair">
+      <figure><img src="directionC-codex.png" alt="方向C codex"><figcaption>codex-image(UI/文字更清晰)</figcaption></figure>
+      <figure><img src="directionC-gemini.jpeg" alt="方向C gemini"><figcaption>gemini-image(另一种取向)</figcaption></figure>
+    </div>
+    <div class="react">▶ 你的反应:____________________</div>
+  </div>
+
+  <p class="foot">
+    三个方向都满足:左竖 nav · DAG-role 显示(每类 workflow + 每节点模型)· Feature Flag 单 tab · Codex 后端显示 Codex 型号 · 无"外部托管"。<br>
+    <b>下一步:</b>你点一个方向 → 我出高保真 HTML(真观感 + mock 数据)→ 交工程落到真 Fleet console(FLY-1038)。都不满意就再出一轮。
+  </p>
+</div>
+</body>
+</html>

@@ -1,0 +1,1 @@
+xiaorongli       94417   0.0  0.7 436167648 347152   ??  SNs   3:48PM   0:02.40 /Users/xiaorongli/.codex-infra-bot/packages/standalone/current/codex app-server --remote-control --listen unix:///tmp/f24b/s/8d1510fb6b514952.sock -c sandbox_workspace_write.writable_roots=["/tmp/f24b/repo"] -c sandbox_workspace_write.network_access=true -c model_reasoning_effort="xhigh"

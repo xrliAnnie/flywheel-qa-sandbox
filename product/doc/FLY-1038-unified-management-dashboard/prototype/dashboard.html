@@ -1,0 +1,677 @@
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flywheel 管理台</title>
+<style>
+  :root{
+    /* cool-slate neutrals — a considered grey with a faint indigo bias, not default mid-grey */
+    --bg:#eef0f4; --paper:#fff; --nav:#f7f8fb; --ink:#191b22; --dim:#656a75; --faint:#9aa0ac;
+    --line:#e4e6ec; --line2:#d0d3dc; --soft:#eff1f5;
+    /* one brand/focal accent — indigo-violet (the flywheel ◆), used for every "where am I" cue */
+    --blue:#5646d6; --blue-soft:#ecebfb; --blue-line:#d3cff4;
+    /* semantic status — functional signals, kept distinct from the brand accent */
+    --green:#1f9d47; --purple:#7b40d6; --amber:#e8850c; --teal:#0b95ab; --red:#d1382b;
+    --info:#1160c9; --info-soft:#e9f1fe; --info-line:#c8ddfb;
+    --sans:-apple-system,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Roboto,sans-serif;
+    --mono:'SF Mono',ui-monospace,Menlo,monospace;
+    --shadow:0 1px 2px rgba(24,27,40,.05),0 8px 26px rgba(24,27,40,.06);
+  }
+  /* deliberately single-theme: a light ops-console viewed on localhost; the many
+     status-signal colors (green/amber/red pills, the 原型 band) are the point. */
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased;}
+  .wrap{max-width:1180px;margin:0 auto;padding:24px 18px 60px;min-height:100vh;display:flex;flex-direction:column;}
+  header{display:flex;align-items:baseline;gap:10px;margin-bottom:16px;}
+  header h1{font-size:1.5rem;margin:0;letter-spacing:-.02em;font-weight:700;}
+  header h1 .hdia{color:var(--blue);}
+  .protopill{font-size:.64rem;font-weight:600;color:var(--dim);background:var(--soft);border:1px solid var(--line2);
+    border-radius:999px;padding:2px 9px;white-space:nowrap;margin-left:auto;cursor:help;letter-spacing:.02em;}
+
+  .frame{background:var(--paper);border:1px solid var(--line);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);flex:1;display:flex;flex-direction:column;min-height:0;}
+  .barw{display:flex;align-items:center;gap:7px;padding:9px 14px;background:#f6f6f8;border-bottom:1px solid var(--line);}
+  .barw .d{width:11px;height:11px;border-radius:50%;} .barw .r{background:#ff5f57;}.barw .y{background:#febc2e;}.barw .g{background:#28c840;}
+  .barw .u{margin-left:8px;font-family:var(--mono);font-size:.73rem;color:var(--dim);background:#fff;border:1px solid var(--line);border-radius:7px;padding:3px 10px;}
+  .barw .ap{margin-left:auto;font-size:.75rem;color:var(--dim);border:1px solid var(--line2);border-radius:999px;padding:3px 10px;}
+
+  .app{display:grid;grid-template-columns:158px 1fr;min-height:580px;flex:1;min-height:0;}
+  .side{background:var(--nav);border-right:1px solid var(--line);padding:14px 9px;}
+  .brand{font-weight:750;font-size:.92rem;padding:2px 8px 14px;letter-spacing:-.01em;} .brand .fw{color:var(--blue);}
+  .nv{display:flex;align-items:center;gap:8px;padding:9px 11px;border-radius:8px;font-size:.86rem;font-weight:560;color:var(--dim);margin-bottom:3px;cursor:pointer;user-select:none;border-left:3px solid transparent;transition:background .12s;}
+  .nv:hover{background:var(--soft);color:var(--ink);}
+  .nv.sel{background:var(--blue-soft);color:var(--blue);font-weight:700;border-left-color:var(--blue);}
+  .nv.sel:hover{background:var(--blue-soft);}
+
+  .main{overflow:auto;}
+  .page{display:none;} .page.on{display:block;animation:fade .2s;}
+  @keyframes fade{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+  .page-instance.on{display:grid;grid-template-columns:210px 1fr;}
+
+  .list{border-right:1px solid var(--line);padding:9px 8px;overflow:auto;}
+  .lh{font-size:.7rem;color:var(--faint);text-transform:uppercase;letter-spacing:.05em;padding:2px 6px 6px;font-family:var(--mono);}
+  .psearch{width:100%;border:1px solid var(--line2);border-radius:8px;padding:6px 10px;font-size:.82rem;font-family:var(--sans);margin-bottom:8px;background:#fff;color:var(--ink);}
+  .psearch:focus{outline:none;border-color:var(--blue-line);box-shadow:0 0 0 3px var(--blue-soft);}
+  .li{padding:8px 11px 8px 12px;border-radius:8px;font-size:.9rem;font-weight:560;margin-bottom:3px;display:flex;align-items:center;gap:8px;cursor:pointer;border-left:3px solid transparent;transition:background .12s;}
+  .li:hover{background:var(--soft);} .li .dot{width:7px;height:7px;border-radius:50%;background:var(--green);flex:none;box-shadow:0 0 0 3px rgba(31,157,71,.13);}
+  .li .c{margin-left:auto;font-size:.7rem;color:var(--dim);font-family:var(--mono);background:var(--soft);border-radius:10px;padding:1px 7px;font-variant-numeric:tabular-nums;}
+  .li.sel{background:var(--blue-soft);color:var(--blue);font-weight:700;border-left-color:var(--blue);} .li.sel:hover{background:var(--blue-soft);}
+  .li.sel .c{background:#fff;color:var(--blue);}
+  .li .nm-hl{background:#fff3b0;border-radius:3px;} .empty{font-size:.8rem;color:var(--faint);padding:12px 8px;font-style:italic;}
+  .li .gicon{font-size:.78rem;flex:none;width:7px;display:inline-flex;justify-content:center;} .li.ligroup{border-left-color:var(--line2);}
+  .li .gtag{font-size:.56rem;font-weight:700;color:var(--dim);background:var(--soft);border:1px solid var(--line2);border-radius:4px;padding:0 5px;letter-spacing:.03em;margin-left:2px;}
+  .li.ligroup.sel .gtag{background:#fff;color:var(--blue);border-color:var(--blue-line);}
+  /* low-key source link — real GitHub blob link (verified) or path-hover fallback */
+  .srclink{font-size:.66rem;font-weight:600;color:var(--blue);text-decoration:none;border:1px solid var(--blue-line);background:var(--blue-soft);border-radius:5px;padding:1px 6px;white-space:nowrap;display:inline-flex;align-items:center;gap:2px;cursor:pointer;}
+  .srclink:hover{background:var(--paper);text-decoration:underline;} .srclink .ghi{font-weight:700;}
+  .srclink.pathonly{color:var(--dim);background:var(--soft);border-color:var(--line2);cursor:help;text-decoration:none;}
+  .tpl-hd .srclink,.cronhd .srclink{margin-left:2px;}
+
+  .detail{padding:16px 19px;overflow:auto;}
+  .dh{display:flex;align-items:baseline;gap:10px;margin-bottom:2px;flex-wrap:wrap;}
+  .dh .pn{font-weight:720;font-size:1.32rem;letter-spacing:-.015em;} .dh .pm{color:var(--dim);font-size:.76rem;font-family:var(--mono);}
+  .dtabs{display:flex;gap:3px;border-bottom:1.5px solid var(--line);margin:12px 0 16px;}
+  .dtab{padding:8px 14px;font-size:.85rem;color:var(--dim);border-bottom:2.5px solid transparent;font-weight:600;cursor:pointer;margin-bottom:-1.5px;transition:color .12s;}
+  .dtab.on{color:var(--blue);border-bottom-color:var(--blue);} .dtab:hover:not(.on){color:var(--ink);}
+  .pane{display:none;} .pane.on{display:block;animation:fade .2s;}
+
+  .cascade{display:flex;flex-wrap:wrap;align-items:center;gap:6px;font-size:.77rem;color:#54555c;background:#fbfbfd;border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:12px;}
+  .cascade .lvl{background:#fff;border:1px solid var(--line);border-radius:6px;padding:2px 8px;} .cascade .arr{color:var(--faint);}
+  .rowh{font-size:.7rem;color:var(--faint);text-transform:uppercase;letter-spacing:.08em;font-weight:700;margin:18px 0 7px;font-family:var(--mono);display:flex;align-items:center;gap:7px;}
+  .rowh::before{content:"";width:3px;height:11px;background:var(--blue);border-radius:2px;opacity:.55;}
+  .rowh:first-child{margin-top:2px;}
+  .lrow{display:flex;align-items:center;gap:9px;font-size:.85rem;padding:9px 2px;border-bottom:1px solid var(--line);flex-wrap:wrap;}
+  .lrow:last-child{border-bottom:none;} .lrow .nm{font-weight:640;font-size:.9rem;min-width:150px;font-family:var(--mono);letter-spacing:-.01em;} .lrow .lbl{color:var(--dim);font-size:.73rem;}
+  .lrow.ghost{opacity:.5;font-style:italic;}
+  .dot2{width:8px;height:8px;border-radius:50%;background:var(--green);display:inline-block;box-shadow:0 0 0 3px rgba(31,157,71,.15);flex:none;}
+  .dept{font-size:.63rem;font-weight:600;background:var(--blue-soft);color:var(--blue);border:1px solid var(--blue-line);border-radius:5px;padding:1px 7px;font-family:var(--mono);letter-spacing:.02em;}
+
+  /* 改A: 固定宽度,选长值不 reflow */
+  .casc3{display:inline-flex;gap:6px;align-items:center;margin-left:auto;position:relative;}
+  .casc{font-family:var(--mono);font-size:.73rem;border:1px solid var(--line2);border-radius:6px;padding:4px 7px;background:#fff;color:#1d1d1f;cursor:pointer;}
+  .casc-vendor{color:#7b40d6;font-weight:600;border-color:#e0d4ff;background:#faf7ff;width:150px;}
+  .casc-model{color:#0a63c9;font-weight:600;width:170px;} .casc-effort{color:#54555c;width:96px;}
+  /* 改B: dirty 高亮 + 待提交 */
+  .casc3.dirty .casc{border-color:var(--amber);background:#fff9ec;} .casc3.dirty .casc-vendor{background:#fff4e0;}
+  .casc3.dirty::after{content:"● 待提交 ↓";position:absolute;top:-10px;right:2px;font-size:.56rem;color:var(--amber);font-weight:700;background:var(--paper);padding:0 3px;border-radius:3px;white-space:nowrap;}
+  .savebar{position:fixed;left:50%;bottom:24px;transform:translateX(-50%) translateY(180%);min-width:340px;max-width:min(680px,92vw);background:linear-gradient(135deg,#221c17,#33291f);color:#fff;border:2px solid var(--amber);border-radius:15px;padding:15px 16px 15px 20px;display:flex;align-items:center;gap:14px;box-shadow:0 14px 44px rgba(0,0,0,.42);z-index:9999;font-size:.98rem;visibility:hidden;transition:transform .36s cubic-bezier(.2,.9,.3,1.35);}
+  .savebar.on{transform:translateX(-50%) translateY(0);visibility:visible;}
+  .savebar .up{font-size:1.35rem;line-height:1;} .savebar .sp{flex:1;}
+  .savebar .n{font-weight:600;white-space:nowrap;} .savebar .n b{color:var(--amber);font-size:1.2rem;padding:0 2px;}
+  .savebar button{border:none;border-radius:10px;padding:11px 24px;font-size:.95rem;font-weight:700;cursor:pointer;font-family:inherit;}
+  .savebar .submit{background:var(--amber);color:#1d1d1f;box-shadow:0 2px 10px rgba(255,149,0,.5);}
+  .savebar .discard{background:#3a3a3c;color:#e5e5e7;padding:11px 16px;}
+  @keyframes barbump{0%{box-shadow:0 14px 44px rgba(0,0,0,.42);}45%{box-shadow:0 16px 58px rgba(255,149,0,.72);}100%{box-shadow:0 14px 44px rgba(0,0,0,.42);}}
+  .savebar.bump{animation:barbump .62s ease;}
+  .ovl{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;align-items:center;justify-content:center;z-index:60;padding:20px;}
+  .ovl.on{display:flex;} .modal{background:#fff;border-radius:14px;padding:20px 22px;max-width:600px;width:100%;max-height:80vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.3);}
+  .modal h3{margin:0 0 4px;font-size:1.05rem;} .modal .msub{color:var(--dim);font-size:.84rem;margin:0 0 14px;}
+  .chg{display:flex;gap:10px;font-size:.82rem;padding:8px 0;border-bottom:1px dashed var(--line);align-items:baseline;flex-wrap:wrap;}
+  .chg:last-of-type{border-bottom:none;} .chg .who{font-weight:600;min-width:180px;font-family:var(--mono);font-size:.75rem;}
+  .chg .ft .o{color:var(--faint);text-decoration:line-through;} .chg .ft .arr{color:var(--faint);margin:0 5px;} .chg .ft .nw{color:#0a63c9;font-weight:600;}
+  .mbtns{display:flex;gap:10px;justify-content:flex-end;margin-top:16px;} .mbtns button{border:none;border-radius:8px;padding:8px 16px;font-size:.85rem;font-weight:600;cursor:pointer;font-family:inherit;}
+  .mbtns .ok{background:var(--blue);color:#fff;} .mbtns .cancel{background:var(--soft);color:#46474e;}
+  .staged{background:#eafaf0;border:1px solid #bfe6cb;color:#1f7a3f;border-radius:9px;padding:11px 13px;font-size:.85rem;margin-top:4px;line-height:1.5;}
+
+  /* DAG templates */
+  .tpl{border:1px solid var(--line);border-left:3px solid var(--line2);border-radius:11px;padding:13px 15px;margin-bottom:11px;background:var(--paper);box-shadow:0 1px 2px rgba(24,27,40,.03);}
+  .tpl.tpl3{border-left-color:var(--blue);background:linear-gradient(180deg,var(--blue-soft) 0%,var(--paper) 44px);}
+  .tpl-hd{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:10px;}
+  .tpl-n{font-family:var(--mono);font-weight:720;font-size:.98rem;letter-spacing:-.01em;} .tpl-badge{font-size:.66rem;font-weight:700;letter-spacing:.02em;color:var(--blue);background:var(--blue-soft);border:1px solid var(--blue-line);border-radius:999px;padding:2px 9px;}
+  .tpl-badge.single{color:#8a5a00;background:#fff6e6;border-color:#ffe0a6;}
+  .tpl-badge.def{color:var(--dim);background:var(--soft);border-color:var(--line2);}
+  .tpl.tpldef{border-left-style:dashed;background:var(--nav);}
+  .cronrow{border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:9px;background:#fff;}
+  .cronhd{display:flex;align-items:center;gap:9px;flex-wrap:wrap;}
+  .cronsrc{font-family:var(--mono);font-size:.66rem;color:var(--dim);margin-top:7px;word-break:break-all;background:#fafafb;border-radius:6px;padding:5px 8px;}
+  .cronbadge{font-size:.64rem;font-weight:700;border-radius:5px;padding:2px 7px;font-family:var(--mono);white-space:nowrap;}
+  .cronbadge.on{color:#1f8a3f;background:#e7f6ec;border:1px solid #bfe6cb;}
+  .cronbadge.stale{color:#c0392b;background:#fdecea;border:1px solid #f5c6cb;}
+  .cronbadge.paused{color:#8a5a00;background:#fff6e6;border:1px solid #ffe0a6;}
+  /* cron schedule picker v2: 7 星期多选钮 + 派生标签 + 多时间行 */
+  .cronsched{margin-top:9px;padding-top:9px;border-top:1px dashed var(--line);}
+  .cronpick2{display:inline-flex;align-items:center;gap:9px;flex-wrap:wrap;border:1px solid transparent;border-radius:8px;padding:3px 4px;}
+  .cronpick2.dirty{border-color:var(--amber);background:#fff9ec;}
+  .daybtns{display:inline-flex;gap:3px;}
+  .daybtn{width:26px;height:26px;display:inline-flex;align-items:center;justify-content:center;font-size:.74rem;font-weight:700;
+    border:1px solid var(--line2);border-radius:7px;background:var(--paper);color:var(--dim);cursor:pointer;user-select:none;transition:all .12s;}
+  .daybtn:hover{border-color:var(--blue-line);color:var(--ink);}
+  .daybtn.on{background:var(--blue);border-color:var(--blue);color:#fff;box-shadow:0 1px 4px rgba(86,70,214,.32);}
+  .daylabel{font-size:.68rem;font-weight:700;color:var(--blue);background:var(--blue-soft);border:1px solid var(--blue-line);
+    border-radius:999px;padding:2px 9px;font-family:var(--mono);white-space:nowrap;}
+  .timerows{display:inline-flex;align-items:center;gap:7px;flex-wrap:wrap;}
+  .timerow{display:inline-flex;align-items:center;gap:2px;background:var(--soft);border:1px solid var(--line);border-radius:7px;padding:2px 4px;}
+  .deltime{margin-left:3px;width:16px;height:16px;display:inline-flex;align-items:center;justify-content:center;border-radius:50%;
+    font-size:.72rem;font-weight:700;color:var(--dim);background:var(--paper);border:1px solid var(--line2);cursor:pointer;}
+  .deltime:hover{color:#fff;background:var(--red);border-color:var(--red);}
+  .addtime{font-size:.68rem;font-weight:700;color:var(--blue);background:var(--blue-soft);border:1px dashed var(--blue-line);
+    border-radius:7px;padding:3px 9px;cursor:pointer;white-space:nowrap;}
+  .addtime:hover{background:var(--paper);border-style:solid;}
+  .cronsel{font-family:var(--mono);font-size:.72rem;font-weight:600;color:var(--ink);border:1px solid var(--line2);border-radius:6px;padding:3px 5px;background:var(--paper);cursor:pointer;}
+  .cronsel:focus{outline:none;border-color:var(--blue-line);box-shadow:0 0 0 2px var(--blue-soft);}
+  .cronpick .colon{color:var(--dim);font-weight:700;margin:0 -1px;}
+  .cronen{margin-left:2px;} .cronrow.cronoff{opacity:.62;background:var(--soft);} .cronrow.cronoff .cronsch{background:var(--soft);}
+  .tabc{font-size:.6rem;background:var(--soft);border-radius:8px;padding:0 5px;margin-left:4px;color:var(--dim);}
+  .cronfact{margin-top:7px;font-size:.72rem;line-height:1.5;color:#8a5a00;background:#fff8ec;border:1px solid #ffe0a6;border-left:3px solid var(--amber);border-radius:6px;padding:7px 10px;}
+  .tpl-flow{display:flex;align-items:center;gap:4px;flex-wrap:wrap;margin-bottom:6px;}
+  .tnode{display:inline-flex;align-items:center;gap:4px;border:1.5px solid var(--line2);border-radius:8px;padding:4px 9px;font-size:.78rem;font-weight:600;background:#fff;}
+  .tarr{color:var(--faint);} .tann{font-size:.72rem;color:var(--amber);font-weight:600;margin-bottom:9px;}
+  .tann.single{color:var(--dim);}
+  .tnrow{display:flex;align-items:center;gap:9px;padding:7px 0;border-top:1px dashed var(--line);flex-wrap:wrap;}
+  .tnrow .tnn{font-weight:560;min-width:130px;font-size:.84rem;}
+  .discreal{font-size:.73rem;color:var(--dim);background:#fbfbfd;border:1px dashed var(--line2);border-radius:8px;padding:8px 11px;margin-top:6px;line-height:1.5;}
+
+  /* flags */
+  .fgrp{margin-bottom:22px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--paper);box-shadow:0 1px 2px rgba(24,27,40,.03);}
+  .fgrp-h{font-size:.82rem;font-weight:720;color:var(--ink);margin:0;padding:10px 14px;background:var(--nav);border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px;position:sticky;top:0;z-index:1;}
+  .fgrp-h .cnt{font-size:.66rem;color:var(--dim);background:var(--paper);border:1px solid var(--line);border-radius:999px;padding:1px 8px;font-family:var(--mono);font-variant-numeric:tabular-nums;}
+  .fr{display:flex;align-items:center;gap:12px;font-size:.82rem;padding:9px 14px;border-bottom:1px solid var(--line);}
+  .fr:last-child{border-bottom:none;} .fr:hover{background:var(--nav);} .fr .fn{font-family:var(--mono);font-size:.76rem;font-weight:640;color:var(--ink);min-width:290px;flex:none;letter-spacing:-.01em;}
+  .fr .fdesc{color:var(--dim);font-size:.75rem;flex:1;min-width:120px;line-height:1.45;} .fr .fc{margin-left:auto;display:flex;align-items:center;gap:6px;flex:none;}
+  .fovr{font-size:.65rem;color:#c02e60;background:#fff1f5;border:1px solid #ffd0e0;border-radius:5px;padding:1px 6px;white-space:nowrap;}
+  .pill.fdirty{outline:2px solid var(--amber);outline-offset:1px;}
+  .fr .fc{margin-left:auto;} .pill{font-family:var(--mono);font-size:.69rem;border-radius:999px;padding:2px 9px;font-weight:600;}
+  .pill.on{background:#e7f6ec;color:#1f8a3f;border:1px solid #bfe6cb;} .pill.off{background:var(--soft);color:var(--dim);border:1px solid var(--line);}
+  .pill.val{background:#eef4ff;color:#0a63c9;border:1px solid var(--blue-line);} .pill.ovr{background:#fff1f5;color:#c02e60;border:1px solid #ffd0e0;}
+  .tog{font-family:var(--mono);font-size:.7rem;border:1px solid var(--line2);border-radius:6px;padding:2px 8px;background:#fff;cursor:pointer;}
+  .rotag{font-size:.63rem;color:var(--faint);font-family:var(--mono);}
+  /* FLY-1038 Feature Flags v3: unified toggle / enum / value controls */
+  .tgl{width:40px;height:23px;border-radius:12px;background:#cfcfd4;position:relative;cursor:pointer;transition:background .18s;flex:none;display:inline-block;vertical-align:middle;}
+  .tgl.on{background:#34c759;}
+  .tgl::after{content:"";position:absolute;top:2px;left:2px;width:19px;height:19px;border-radius:50%;background:#fff;transition:transform .18s;box-shadow:0 1px 3px rgba(0,0,0,.28);}
+  .tgl.on::after{transform:translateX(17px);}
+  .tgl.locked{background:#dcdce1;cursor:not-allowed;} .tgl.locked.on{background:#a9d9b4;}
+  .tgl.dirty{outline:2px solid var(--amber);outline-offset:2px;}
+  .lk{font-size:.82rem;}
+  .segd{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden;}
+  .segd .seg{font-family:var(--mono);font-size:.65rem;padding:3px 8px;color:var(--dim);background:#fafafb;border-right:1px solid var(--line);}
+  .segd .seg:last-child{border-right:none;} .segd .seg.on{background:#1d1d1f;color:#fff;font-weight:700;}
+  .fval{font-family:var(--mono);font-size:.7rem;color:#0a63c9;background:#eef4ff;border:1px solid var(--blue-line);border-radius:6px;padding:2px 9px;}
+  .fr.fsub{padding-left:24px;background:#fbfbfc;} .fr.fsub .fn{color:#8a5a00;min-width:266px;font-size:.71rem;}
+
+  .pgpad{padding:16px 20px;} .pgh{font-size:1.06rem;font-weight:640;margin:0 0 3px;} .pgd{color:var(--dim);font-size:.86rem;margin:0 0 14px;}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:var(--shadow);max-width:640px;}
+  .card h3{margin:0 0 6px;font-size:.98rem;font-weight:640;} .card .k{font-size:.74rem;color:var(--blue);font-weight:700;font-family:var(--mono);}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1><span class="hdia">◆</span> Flywheel 管理台</h1>
+    <span class="protopill" title="只读原型 · 不接生产、改动不落盘">只读原型</span>
+  </header>
+
+  <div class="frame">
+    <div class="barw"><span class="d r"></span><span class="d y"></span><span class="d g"></span><span class="u">127.0.0.1</span><span class="ap" id="apLabel">🗂 实例</span></div>
+    <div class="app">
+      <div class="side">
+        <div class="nv sel" data-nav="instance">🗂 实例</div>
+        <div class="nv" data-nav="flags">🚩 Feature Flags</div>
+      </div>
+      <div class="main">
+        <div class="page page-instance on" data-page="instance">
+          <div class="list">
+            <div class="lh">按 Project · <span id="pcount">6</span></div>
+            <input class="psearch" id="psearch" type="text" placeholder="🔍 搜索项目…" autocomplete="off">
+            <div id="plist"></div>
+          </div>
+          <div class="detail" id="pdetail"></div>
+        </div>
+        <div class="page" data-page="flags"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="savebar" id="savebar"><span class="up">📤</span><span class="n" id="saveN"></span><span class="sp"></span><button class="submit">提交改动</button><button class="discard">放弃</button></div>
+<div class="ovl" id="ovl"><div class="modal" id="modal"></div></div>
+
+<script>
+(function(){
+  "use strict";
+  function esc(s){ return String(s==null?"":s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+  // ---- REAL vendor -> model -> effort registry (grounded in code) ----
+  var EFF_FULL=["默认","low","medium","high","xhigh","max"], EFF_CODEX=["默认","low","medium","high","xhigh"], EFF_NONE=["默认"];
+  var VENDORS=[
+    { v:"Anthropic", be:"claude", models:[
+      {l:"Opus 4.8 (1M)",eff:EFF_FULL},{l:"Opus 4.8",eff:EFF_FULL},{l:"Sonnet 5",eff:EFF_FULL},
+      {l:"Fable 5",eff:EFF_FULL},{l:"Fable 5 (1M)",eff:EFF_FULL},{l:"Haiku 4.5",eff:["默认","low","medium"]} ]},
+    { v:"OpenAI", be:"codex", models:[
+      {l:"GPT-5.5-codex",eff:EFF_CODEX},{l:"GPT-5.5",eff:EFF_CODEX},{l:"GPT-5-codex",eff:EFF_CODEX},
+      {l:"GPT-5",eff:["默认","low","medium","high"]},{l:"GPT-5-mini",eff:["默认","low","medium"]} ]},
+    { v:"Google (Gemini)", be:"gemini", models:[
+      {l:"Gemini 3 Pro",eff:EFF_NONE},{l:"Gemini 2.5 Pro",eff:EFF_NONE},{l:"Gemini 2.5 Flash",eff:EFF_NONE},{l:"Gemini 2.5 Flash Lite",eff:EFF_NONE} ]},
+    { v:"Antigravity", be:"antigravity", models:[{l:"Gemini 3 Pro",eff:EFF_NONE},{l:"Gemini 2.5 Pro",eff:EFF_NONE}] },
+    { v:"Kimi", be:"kimi", models:[{l:"Kimi K2",eff:EFF_NONE}] }
+  ];
+  function vendorByName(n){ for(var i=0;i<VENDORS.length;i++){ if(VENDORS[i].v===n) return VENDORS[i]; } return VENDORS[0]; }
+  function vendorFromBackend(be){ return be==="codex"?"OpenAI":be==="antigravity"?"Antigravity":be==="kimi"?"Kimi":be==="gemini"?"Google (Gemini)":"Anthropic"; }
+  function opts(list, valOf, sel){ var h=""; for(var i=0;i<list.length;i++){ var v=valOf(list[i]); h+='<option'+(v===sel?" selected":"")+">"+esc(v)+"</option>"; } return h; }
+  // 改B: dirty/staged state. PENDING = unsaved edits (cid→{label,from,to}); STAGED = submitted (cid→{v,m,e}).
+  var PENDING={}, STAGED={};
+  function baseOf(cid,v,m,e){ return STAGED[cid]||{v:v,m:m,e:e}; }
+  function cascade(cid, label, vendorName, modelLabel, effortLabel){
+    var base=baseOf(cid,vendorName,modelLabel,effortLabel||"默认");
+    var cur=PENDING[cid]?PENDING[cid].to:base;
+    var vd=vendorByName(cur.v), mdl=null;
+    for(var i=0;i<vd.models.length;i++){ if(vd.models[i].l===cur.m){ mdl=vd.models[i]; break; } }
+    if(!mdl) mdl=vd.models[0];
+    return '<span class="casc3'+(PENDING[cid]?" dirty":"")+'" data-cid="'+esc(cid)+'" data-label="'+esc(label)+'"'
+      + ' data-basev="'+esc(base.v)+'" data-basem="'+esc(base.m)+'" data-basee="'+esc(base.e)+'">'
+      + '<select class="casc casc-vendor">'+opts(VENDORS,function(x){return x.v;},cur.v)+'</select>'
+      + '<select class="casc casc-model">'+opts(vd.models,function(x){return x.l;},mdl.l)+'</select>'
+      + '<select class="casc casc-effort">'+opts(mdl.eff,function(x){return x;},cur.e)+'</select></span>';
+  }
+  function updateBar(){ var n=Object.keys(PENDING).length; var bar=document.getElementById("savebar");
+    bar.classList.toggle("on",n>0);
+    if(n>0){ document.getElementById("saveN").innerHTML="<b>"+n+"</b> 项改动待提交 —— 点右侧『提交改动』";
+      bar.classList.remove("bump"); void bar.offsetWidth; bar.classList.add("bump"); } }
+  function reRender(){ renderDetail(); var on=document.querySelector(".page.on"); if(on){ var pg=on.getAttribute("data-page");
+    if(pg==="flags") on.innerHTML=flagsPage(); } }
+  function openSubmit(){ var keys=Object.keys(PENDING); if(!keys.length) return;
+    var h='<h3>提交 '+keys.length+' 项改动?</h3><p class="msub">只读原型 —— <b>不落盘</b>;生产环境才会写入真实配置。确认前先列出全部改动:</p>';
+    keys.forEach(function(cid){ var c=PENDING[cid];
+      var isStr = c.type==="flag"||c.type==="cronen"||c.type==="cronsch";
+      var ft = isStr ? ('<span class="o">'+esc(c.from)+'</span><span class="arr">→</span><span class="nw">'+esc(c.to)+'</span>')
+        : ('<span class="o">'+esc(c.from.v)+' · '+esc(c.from.m)+' · '+esc(c.from.e)+'</span><span class="arr">→</span><span class="nw">'+esc(c.to.v)+' · '+esc(c.to.m)+' · '+esc(c.to.e)+'</span>');
+      h+='<div class="chg"><span class="who">'+esc(c.label)+'</span><span class="ft">'+ft+'</span></div>'; });
+    h+='<div class="mbtns"><button class="cancel" data-m="cancel">取消</button><button class="ok" data-m="ok">确认提交</button></div>';
+    document.getElementById("modal").innerHTML=h; document.getElementById("ovl").classList.add("on"); }
+  function doSubmit(){ var keys=Object.keys(PENDING), n=keys.length;
+    keys.forEach(function(cid){ STAGED[cid]=PENDING[cid].to; }); PENDING={};
+    document.getElementById("modal").innerHTML='<div class="staged">✓ 已暂存 '+n+' 项改动 —— <b>原型不落盘</b>。生产环境会写入真实配置(projects.json / config.yaml / .env)。这是只读原型的示意提交,不影响任何真环境。</div><div class="mbtns"><button class="ok" data-m="close">知道了</button></div>';
+    reRender(); updateBar(); }
+  // 放弃:连 cron 编辑态一起清 → picker 复原成真实原值
+  function doDiscard(){ PENDING={}; CRONEDIT={}; document.getElementById("ovl").classList.remove("on"); reRender(); updateBar(); }
+
+  // ---- REAL fleet: 6 projects / 16 Leads (verbatim from projects.json) ----
+  var A="Opus 4.8 (1M)", O="Opus 4.8", S="Sonnet 5", Fb="Fable 5";
+  var PROJECTS=[
+    { name:"Infra", isGroup:true,
+      groupNote:"按真实 <b>dept=infra</b> 标签归组显示。这 2 个 bot config 里仍是 <b>flywheel 项目</b>的 Lead(dept=infra)—— 这里只是按 infra 标签聚合展示,不是独立项目。",
+      def:{v:"Anthropic",m:A,e:"默认",note:"roles.runner.model"},
+      leads:[
+        {n:"codex-infra-bot-lead",v:"OpenAI",m:"GPT-5.5",e:"默认",dept:"infra"},
+        {n:"claude-infra-bot-lead",v:"Anthropic",m:"Sonnet 5",e:"high",dept:"infra"} ],
+      dag:[], cron:[], flags:[] },
+    { name:"flywheel", def:{v:"Anthropic",m:A,e:"默认",note:"roles.runner.model"},
+      leads:[
+        {n:"flywheel-cos-lead",v:"Anthropic",m:A,e:"默认",dept:""},
+        {n:"flywheel-eng-lead",v:"Anthropic",m:A,e:"默认",dept:"engineering"},
+        {n:"flywheel-product-lead",v:"Anthropic",m:A,e:"默认",dept:"product"} ],
+      dag:[
+        {title:"engineer-executor", badge:"三段式", single:false, ann:"↖ loop:qa 失败 → 回 implement（qa 是 engineer 的阶段,非独立角色）", annCls:"", src:"~/Dev/flywheel/.flywheel/agents/engineering/engineer-executor.md",
+          nodes:[{n:"🎨 design",v:"Anthropic",m:Fb,e:"默认"},{n:"🔨 implement",v:"Anthropic",m:Fb,e:"默认"},{n:"🧪 qa",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"pm-executor · PM/协作产品", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/flywheel/.flywheel/agents/engineering/pm-executor.md", nodes:[{n:"📋 pm",v:"Anthropic",m:A,e:"默认"}]},
+        {title:"designer-executor · 视觉设计", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/flywheel/.flywheel/agents/engineering/designer-executor.md", nodes:[{n:"🎨 designer",v:"Anthropic",m:A,e:"默认"}]},
+        {title:"prototype-executor · 原型工程", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/flywheel/.flywheel/agents/engineering/prototype-executor.md", nodes:[{n:"🧩 prototype",v:"Anthropic",m:A,e:"默认"}]},
+        {title:"default session · 项目默认 runner", badge:"单 session · 默认", single:true, isDef:true, ann:"无 label 命中 → 走这个（=general=roles.runner，FLY-728）", annCls:"single", src:"~/Dev/flywheel/.flywheel/agents/general-executor.md", nodes:[{n:"⚙️ general",v:"Anthropic",m:A,e:"默认"}]}
+      ],
+      cron:[{t:"daily-standup",days:[0,1,2,3,4,5,6],times:[{hh:"03",mm:"00"}],model:null,note:"GEO-288 系统状态报告(触发 Bridge /api/standup)· 无 LLM · 日志实测每日 Delivered:true 到今天",active:true,src:"~/Dev/flywheel/scripts/daily-standup.sh",plist:"com.flywheel.daily-standup"},
+            {t:"token-usage-daily",days:[0,1,2,3,4,5,6],times:[{hh:"00",mm:"30"}],model:null,note:"聚合 CC 日志→HTML 报告→publish-report · 无 LLM(读脚本确认:纯聚合渲染,--lead 只是 Discord 发帖署名不是模型调用)",active:true,src:"~/Dev/flywheel/scripts/token-usage-daily.sh",plist:"com.flywheel.token-usage-daily"},
+            {t:"updater",days:[0,1,2,3,4,5,6],times:[{hh:"06",mm:"00"}],model:null,note:"flywheel 自更新(git pull + rebuild)· 无 LLM(读脚本确认:无模型调用)· 扫 launchd 补漏发现",active:true,src:"~/Dev/flywheel/scripts/update-flywheel.sh",plist:"com.flywheel.updater"}],
+      flags:[{f:"qa.auto",v:"ON",ovr:true},{f:"doc_flow.enabled",v:"ON",ovr:true}] },
+    { name:"geoforge3d", def:{v:"Anthropic",m:A,e:"默认",note:"账号默认(项目未覆盖)"},
+      leads:[{n:"product-lead",v:"Anthropic",m:A,e:"默认",dept:""},{n:"ops-lead",v:"Anthropic",m:A,e:"默认",dept:""},{n:"cos-lead",v:"Anthropic",m:A,e:"默认",dept:""}],
+      dag:[
+        {title:"backend-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/product/backend-executor.md", nodes:[{n:"⚙️ backend",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"frontend-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/product/frontend-executor.md", nodes:[{n:"🖥 frontend",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"designer-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/product/designer-executor.md", nodes:[{n:"🎨 designer",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"product-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/product/product-executor.md", nodes:[{n:"📋 product",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"qa-executor · 独立 QA 角色", badge:"单 session", single:true, ann:"GeoForge3D 的 qa 是真独立角色（不同于 flywheel 把 qa 归进 engineer 三段）", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/product/qa-executor.md", nodes:[{n:"🧪 qa",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"operations-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/operations/operations-executor.md", nodes:[{n:"📦 operations",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"marketing-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/marketing/marketing-executor.md", nodes:[{n:"📣 marketing",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"default session · 项目默认 runner", badge:"单 session · 默认", single:true, isDef:true, ann:"无 label 命中 → 走这个（=general=roles.runner）", annCls:"single", src:"~/Dev/GeoForge3D/.flywheel/agents/general-executor.md", nodes:[{n:"⚙️ general",v:"Anthropic",m:O,e:"默认"}]}
+      ], cron:[], flags:[] },
+    { name:"growth", def:{v:"Anthropic",m:A,e:"默认",note:"账号默认(项目未覆盖)"},
+      leads:[{n:"mufasa-lead",v:"OpenAI",m:"GPT-5.5",e:"默认",dept:"growth"},
+             {n:"rafiki-lead",v:"Anthropic",m:"Sonnet 5",e:"high",dept:"xuanxue"},
+             {n:"reflection-lead",v:"Anthropic",m:"Sonnet 5",e:"high",dept:"reflection"}],
+      dag:[
+        {title:"xuanxue-executor · 玄学", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/growth/.flywheel/agents/xuanxue/xuanxue-executor.md", nodes:[{n:"🔮 xuanxue",v:"Anthropic",m:S,e:"默认"}]},
+        {title:"reflection-executor · 内在功课", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/growth/.flywheel/agents/reflection/reflection-executor.md", nodes:[{n:"🪞 reflection",v:"Anthropic",m:S,e:"默认"}]},
+        {title:"default session · 项目默认 runner", badge:"单 session · 默认", single:true, isDef:true, ann:"无 label 命中 → 走这个（本项目无 general.md → 用 shipped generic-executor + roles.runner=Sonnet 5）", annCls:"single", src:"~/Dev/flywheel/agents/generic-executor.md（shipped fallback · growth 无自有 general.md）", nodes:[{n:"⚙️ general",v:"Anthropic",m:S,e:"默认"}]}
+      ], cron:[], flags:[] },
+    { name:"joycon-typeless", def:{v:"Anthropic",m:A,e:"默认",note:"账号默认(项目未覆盖)"},
+      leads:[{n:"joycon-lead",v:"Anthropic",m:A,e:"默认",dept:"product"}],
+      dag:[
+        {title:"research-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/joycon-typeless/.flywheel/agents/product/research-executor.md", nodes:[{n:"🔬 research",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"software-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/joycon-typeless/.flywheel/agents/product/software-executor.md", nodes:[{n:"💻 software",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"hci-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/joycon-typeless/.flywheel/agents/product/hci-executor.md", nodes:[{n:"🖐 hci",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"designer-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/joycon-typeless/.flywheel/agents/product/designer-executor.md", nodes:[{n:"🎨 designer",v:"Anthropic",m:O,e:"默认"}]},
+        {title:"default session · 项目默认 runner", badge:"单 session · 默认", single:true, isDef:true, ann:"无 label 命中 → 走这个（=general=roles.runner）", annCls:"single", src:"~/Dev/joycon-typeless/.flywheel/agents/general-executor.md", nodes:[{n:"⚙️ general",v:"Anthropic",m:O,e:"默认"}]}
+      ], cron:[], flags:[] },
+    { name:"personal-assistant", def:{v:"Anthropic",m:A,e:"默认",note:"账号默认(项目未覆盖)"},
+      leads:[{n:"belle-lead",v:"Anthropic",m:"Sonnet 5",e:"high",dept:"life"}],
+      dag:[
+        {title:"default session · 项目默认 runner", badge:"单 session · 默认", single:true, isDef:true, ann:"无 .flywheel/agents/ 与 config → 只有一个 default session（模型走账号默认）", annCls:"single", src:"~/Dev/flywheel/agents/generic-executor.md（shipped fallback · personal-assistant 无 .flywheel/agents/）", nodes:[{n:"⚙️ general",v:"Anthropic",m:A,e:"默认"}]}
+      ],
+      cron:[{t:"weee-weekly",days:[2],times:[{hh:"09",mm:"00"}],model:{v:"Anthropic",m:A,e:"默认"},note:"Weee! 每周买菜车 · claude -p one-shot 跑 weee-weekly skill(有 LLM=Claude,账号默认模型)",active:true,src:"~/Dev/personal-assistant/tasks/weee-grocery/scripts/run-weekly.sh",plist:"com.xiaorongli.weee-weekly"}],
+      flags:[] },
+    { name:"tidal-echo", def:{v:"Anthropic",m:A,e:"默认",note:"账号默认(项目未覆盖)"},
+      leads:[{n:"tidal-echo-cos-lead",v:"Anthropic",m:"Sonnet 5",e:"high",dept:""},
+             {n:"tidal-echo-content-lead",v:"Anthropic",m:A,e:"默认",dept:"content"},
+             {n:"sub-lead",v:"Anthropic",m:A,e:"默认",dept:"content"}],
+      dag:[
+        {title:"content-executor", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/tidal-echo/.flywheel/agents/content/content-executor.md", nodes:[{n:"✍️ content",v:"Anthropic",m:S,e:"默认"}]},
+        {title:"sub-content-executor · Sub 子团队", badge:"单 session", single:true, ann:"", annCls:"single", src:"~/Dev/tidal-echo/.flywheel/agents/content/sub-content-executor.md", nodes:[{n:"🎵 sub-content",v:"Anthropic",m:S,e:"默认"}]},
+        {title:"default session · 项目默认 runner", badge:"单 session · 默认", single:true, isDef:true, ann:"无 label 命中 → 走这个（本项目无 general.md → shipped generic-executor + roles.runner=Sonnet 5）", annCls:"single", src:"~/Dev/flywheel/agents/generic-executor.md（shipped fallback · tidal-echo 无自有 general.md）", nodes:[{n:"⚙️ general",v:"Anthropic",m:S,e:"默认"}]}
+      ],
+      cron:[{t:"sub-create-nightly",days:[0,1,2,3,4],times:[{hh:"01",mm:"00"}],model:{v:"Anthropic",m:A,e:"默认"},note:"/sub-create Suno · 项目未覆盖→账号默认",active:true,src:"~/Dev/tidal-echo/sub/content/scripts/sub-create-nightly-tick.sh",plist:"com.flywheel.sub-create-nightly"},
+            {t:"sub-daily-loop",days:[0,1,2,3,4,5,6],times:[{hh:"03",mm:"07"}],model:{v:"Anthropic",m:A,e:"默认"},note:"LEARN-80 daily-loop",active:true,src:"~/Dev/tidal-echo/sub/content/scripts/sub-daily-loop-tick.sh",plist:"com.flywheel.sub-daily-loop"},
+            {t:"growth-learn",days:[0,1,2,3,4,5,6],times:[{hh:"04",mm:"30"}],model:null,note:"Deep Research(ChatGPT · 非 Claude)",active:true,src:"~/Dev/tidal-echo/sub/content/scripts/growth-learn-tick.sh",plist:"com.flywheel.growth-learn"},
+            {t:"growth-improve",days:[0,1,2,3,4,5,6],times:[{hh:"05",mm:"00"}],model:{v:"Anthropic",m:A,e:"默认"},note:"诊断→改动→ship Runner",active:true,src:"~/Dev/tidal-echo/sub/content/scripts/growth-improve-tick.sh",plist:"com.flywheel.growth-improve"},
+            {t:"growth-report",days:[0,1,2,3,4,5,6],times:[{hh:"17",mm:"00"}],model:null,note:"报告脚本 · 无 LLM",active:true,src:"~/Dev/tidal-echo/sub/content/scripts/growth-report-tick.sh",plist:"com.flywheel.growth-report"},
+            {t:"growth-retro",days:[6],times:[{hh:"17",mm:"30"}],model:null,note:"周复盘 → playbook",active:true,src:"~/Dev/tidal-echo/sub/content/scripts/growth-retro-tick.sh",plist:"com.flywheel.growth-retro"}],
+      cronNote:"这些都是 sub 子项目的 cron(脚本在 /tidal-echo/sub/content/scripts/,归在 tidal-echo 下)。「growth-*」= sub 的<b>内容增长引擎</b>,不是 growth 项目 —— growth 项目(mufasa/rafiki/reflection)本身没有 cron。",
+      flags:[] }
+  ];
+  PROJECTS.sort(function(a,b){ return a.name.toLowerCase()<b.name.toLowerCase()?-1:a.name.toLowerCase()>b.name.toLowerCase()?1:0; });
+
+  // DAG 现在按 per-project 真实 agent 结构(PROJECTS[i].dag,读自各项目 .flywheel/agents/)。旧统一 TEMPLATES 已移除。
+
+  // ---- ALL real feature flags (FLY-709 registry.ts, single source of truth), grouped by real category ----
+  // F(env, status, desc, ovr?). status ON/OFF(toggleable) 或值(只显示)。gate 组 = 🔒 不可点。ovr = 项目覆盖例外。
+  function F(env,kind,status,desc,enums,ovr){ return {f:env,kind:kind,s:status,d:desc||"（描述待补）",enums:enums||null,ovr:ovr||null}; }
+  var FLAG_GROUPS=[
+    { h:"🔥 常用开关", gate:false, flags:[
+      F("FLYWHEEL_AUTO_QA","bool","ON","全局关掉 code-review 后的 auto-QA runner spawn（叠在 qa.auto 上）"),F("FLYWHEEL_CODEX_HARD_GATE","bool","ON","全局关掉 Codex code-review 硬门（=0 应急放行；默认 ON=任何 PR 没过 Codex APPROVED 就卡住 auto-QA + merge）"),
+      F("FLYWHEEL_GATEPOLLER_CIRCUIT","bool","ON","GatePoller 连续 poll 失败时的熔断"),F("FLYWHEEL_MISROUTE_PATROL","bool","ON","Lead-inbox 误投巡检（每 poll 读）"),
+      F("FLYWHEEL_FOUNDER_THREAD_NOTIFY","bool","ON","gate 上给 founder 发 thread 通知"),F("FLYWHEEL_FOUNDER_REPLY_DELIVER","bool","ON","把 founder 的 gate 回复回投给 runner"),
+      F("FLYWHEEL_FOUNDER_MILESTONE_NOTIFY","bool","ON","founder 里程碑推送（FLY-725）"),F("FLYWHEEL_HEARTBEAT_READOPT","bool","ON","心跳服务 re-adopt 已有 session"),
+      F("FLYWHEEL_LIVENESS_PANE_DEAD","bool","ON","pane-dead liveness 检测"),F("FLYWHEEL_QUIET_PERSIST_DEDUP","bool","ON","quiet-persist 信号去重"),
+      F("FLYWHEEL_DONE_THREAD_RECONCILE","bool","ON","FLY-1165: 关掉 done-thread reconcile sweep（Done/Canceled issue 的未归档 thread 自动归档兜底；调度器每 tick 重读 env，off→on/on→off 无需重启）")
+    ]},
+    { h:"⚖️ founder 安全闸", gate:true, flags:[
+      F("FLYWHEEL_CODEX_LEAD_READ_DENY","bool","OFF","Codex Lead read-deny 安全约束 profile（治理门，只读）"),F("FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE","enum","off","founder-consent 硬门模式（治理门，只读）",["off","audit_only","enforce"]),
+      F("FLYWHEEL_FOUNDER_ATTRIBUTION_GATE","bool","ON","verify-approval 要求 approve gate 答复归属 founder 侧(founder id / bridge / bridge-founder-consent;=0 仅供 QA 房/应急;治理门,只读;FLY-945 Fix E)"),F("FLYWHEEL_COMM_BYPASS_BRIDGE","bool","OFF","应急：绕过 founder-consent 直写 approve gate（治理门 override，只读）"),
+      F("founder_ux_gate.mode","enum","enforce","全 issue brainstorm 对齐门（治理门，只读）— 默认 gate 所有实质性 issue，仅 brainstorm-exempt 标签豁免",["off","audit_only","enforce"]),F("FLYWHEEL_FOUNDER_UX_GATE_ENABLED","bool","OFF","全局撤掉 founder-UX 签字门（implement 前必须 thread 签字，FLY-598/869）；默认 OFF=门禁用，=1 恢复原 enforce（叠在 per-project founder_ux_gate.mode 上，FLY-900）")
+    ]},
+    { h:"📁 项目级(可每项目覆盖)", gate:false, flags:[
+      F("qa.auto","bool","OFF","code-review 后自动 spawn 独立 QA runner（per-project）",null,[{proj:"flywheel",on:true}]),F("doc_flow.enabled","bool","OFF","DOC-FLOW 提示词块：Runner 写部门优先过程文档（per-project）",null,[{proj:"flywheel",on:true},{proj:"joycon-typeless",on:true},{proj:"tidal-echo",on:true}]),
+      F("skills.proofshot.enabled","bool","OFF","ProofShot 视觉验证 auto-trigger（per-project）"),F("xiaohongshu_learning.enabled","bool","OFF","定期小红书收藏学习管线（per-project）"),
+      F("ponytail.enabled","bool","OFF","代码极简 ponytail 逐项目 rollout（Annie-exception：默认 OFF）")
+    ]},
+    { h:"♻️ 运行行为", gate:false, flags:[
+      F("FLYWHEEL_REMOTE_REPORTS","bool","ON","远程报告发布管线 /api/reports（Bridge + CLI 双侧）"),F("FLYWHEEL_FLEET_CONSOLE","bool","ON","Fleet console 面 + fleet 路由（=0 回退旧 dashboard）"),
+      F("FLYWHEEL_PANE_IDLE_SUPPRESS","bool","ON","抑制 alive-idle Lead pane 的 pane_hash_stuck 误报"),F("FLYWHEEL_ALERT_THREADS","bool","OFF","统一 alert 分线程"),
+      F("FLYWHEEL_STUCK_ERRORSIG","bool","OFF","stuck-candidate 重复错误签名路(滚动错误循环也判 candidate,FLY-1048 A3)"),F("FLYWHEEL_PANE_MULTIFRAME","bool","OFF","LeadWatchdog 多帧观察窗叠加(pane_error_stalled + frozen-thinking fail-suspicious,FLY-1048 A4)"),
+      F("FLYWHEEL_WATCHDOG_JUDGE","bool","OFF","watchdog LLM judge 层(机械快路可疑才升级,跑 Codex 不占 Claude 额度,FLY-1048 PR-B/FLY-976)"),F("FLYWHEEL_DETECTION_GAP_SCAN","bool","OFF","零 token gap/state 扫描 + focused frames(PR-A 只观测,FLY-1048 A6/A7)"),
+      F("FLYWHEEL_AUTO_REPAIR","bool","OFF","死 agent 自动修复"),F("FLYWHEEL_ACCOUNT_SELF_HEAL","bool","OFF","Claude 账号自愈：真 5h/weekly 配额用尽 → 自动切下一个可用账号 + Alerts 通知（FLY-696；529/临时限流绝不切）"),
+      F("FLYWHEEL_NOTIFY_DIGEST_EXPECT","bool","OFF","通知自我健康检查（FLY-929 P-expect）：token report 投递写回执 + Bridge 到点无回执发 notify_digest_failed 告警 + token-usage-daily.sh 失败就地 fail-loud；未设 = 零新文件/零新告警"),F("FLYWHEEL_XHS_REVIEW","bool","OFF","小红书 review localhost 路由（注册与否）"),
+      F("FLYWHEEL_WORKTREE_AUTOCLEAN","bool","ON","run 后自动清理 git worktree"),F("FLYWHEEL_BRIDGE_WATCHDOG","bool","ON","Bridge event-loop watchdog（start() 只在启动看，事后置 0 停不了已跑的）"),
+      F("FLYWHEEL_ISSUE_STATUS_EMOJI","bool","ON","issue thread 状态 emoji + 重连标记"),F("FLYWHEEL_ISSUE_STATUS_WORD","bool","ON","word 形式的 issue 状态标注"),
+      F("FLYWHEEL_ISSUE_ATTACH_PIN","bool","ON","issue thread 钉 tmux attach 救援命令（FLY-560）"),F("FLYWHEEL_ISSUE_DISPLAY_REFRESH","bool","ON","统一 issue 显示刷新：三个显示面从真实状态派生,park/wake/kill/finalize 等全生命周期触发(FLY-907);=0 回退 stage_changed 旧路径"),
+      F("FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS","value","60","issue 显示自愈 sweep 的 GatePoller tick 周期(默认 60 ≈ 3min@3s;0=关,FLY-907)"),F("FLYWHEEL_QUIET_CLASSIFIER","bool","ON","抑制安静 runner 的 token-贵 Lead wake（FLY-626）"),
+      F("FLYWHEEL_CRASH_REAPER","bool","ON","crash/orphan runner 回收"),F("FLYWHEEL_STALE_TERMINAL_CLOSE","bool","ON","FLY-867: 终态 session 的 tmux 还活着超过 stale 阈值 → 经 closeRunner 自动收(泄漏兜底);=0 回退 GEO-270 纯通知"),
+      F("FLYWHEEL_COMMDB_FSM_RECONCILE","bool","ON","CommDB↔FSM reconcile boot sweep — 清 CommDB running 但 FSM 终态+tmux 死的僵尸（FLY-817，补 FLY-638 盲区）"),F("FLYWHEEL_LEAD_PANE_READINESS","bool","OFF","冷启 Lead-pane readiness 检查（opt-in）"),
+      F("FLYWHEEL_LEAD_PENDING_ESCALATION","bool","ON","lead-pending 升级功能"),F("FLYWHEEL_CRON_STALE_GUARD","bool","ON","run-start 409 路径的 stale-blocker guard（=0 回退旧 409，FLY-742）"),
+      F("FLYWHEEL_SHIP_GATE_REBIND","bool","ON","QA PASS 证据 commit 使 PR head 前移时自动 rebind ship gate(=0 回到 FLY-945 前的 drop 行为)"),F("FLYWHEEL_EXTERNAL_MERGE_RECONCILE","bool","ON","外部 merge(executor-merge 残局)收敛兜底 pass(=0 关闭;FLY-945 Fix D——兜底不是许可)"),
+      F("FLYWHEEL_SHIP_GATE_RETIRE","bool","ON","FLY-1041 Fix A: rebind 后 retire 被取代的 approve_to_ship gate(event-route 主路径 + GatePoller sweeper 兜底)——同一时刻只留一个可绑 ship gate(=0 回到 FLY-910 前的僵尸 gate 现状)"),F("FLYWHEEL_SHIP_GATE_CARD","bool","ON","FLY-1041 Fix B: approve_to_ship 的 founder 卡转正为主载体(15s grace;=0 回到 10min FLY-605 兜底节奏)"),
+      F("FLYWHEEL_REPLY_TO_CARD","bool","ON","FLY-1041 Fix B: founder 真·Discord 回复(type 19)ship 卡 → 确定性收窄到该 gate 归因(=0 忽略 message_reference,回现状)"),F("FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN","value","360","FLY-1165: reconcile sweep 周期（分钟；0=只跑 boot pass；调度器每 tick 重读）"),
+      F("FLYWHEEL_DONE_THREAD_RECONCILE_DRYRUN","bool","OFF","FLY-1165: reconcile sweep 只记不归档（=1 观察模式；每 tick 重读）"),F("FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN","value","25","FLY-1165: 每轮 reconcile 最多归档数（Discord 429 保护；每 tick 重读）"),
+      F("FLYWHEEL_ATTRIBUTION_HOLD_ALIGN","bool","ON","FLY-1041 Fix B: held(codex 未绿/QA 未绿/merge_block)期间三个 founder 批准写入源(text/✅/voice)统一拒写(=0 回到 held 也写入的 FLY-910 现状;一个开关管三源)"),F("FLYWHEEL_TIER2_PREFIX_NORM","bool","ON","FLY-1041 Fix C: tier2 允许剥离纯语气前缀(「嗯ship」→「ship」确定性命中;=0 回到降级 tier3 的现状——确定性批准语义扩张的独立回滚)"),
+      F("FLYWHEEL_FOUNDER_APPROVAL_ACK","bool","ON","FLY-1041 Fix C: founder 消息处理后在她消息上点 ✅(绑上)/❓(没绑上)回执 reaction(纯通知,无批准语义;=0 不点)"),F("FLYWHEEL_VIEWER_SESSION_REAPER","bool","ON","boot sweep 清理泄漏的 viewer-<execId> tmux session（FLY-754）"),
+      F("FLYWHEEL_CHROME_REAPER","bool","ON","周期清理泄漏的 agent-browser headless Chrome（=0 关闭 reaper，FLY-766）"),F("FLYWHEEL_STUCK_DETECT","bool","ON","runner stuck 检测 + 升级"),
+      F("FLYWHEEL_CODEX_LEAD_TYPING","bool","ON","Codex Lead 打字指示器"),F("FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD","bool","OFF","#leads-roundtable 话题 reply-in-thread（FLY-314）"),
+      F("FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE","bool","ON","roundtable 话题线程 auto-continue"),F("FLYWHEEL_LEAD_CHROME_ENABLED","bool","OFF","Lead 侧 Chrome/claude-in-chrome 能力"),
+      F("FLYWHEEL_LEAD_CORE_MENTION_GATED","bool","OFF","core-room 无-@ 消息只让 CoS 回、非-CoS lead 需被点名才回（FLY-898，launcher 从 projects.json 计算）"),F("FLYWHEEL_ROUNDTABLE_ENABLED","bool","OFF","#leads-roundtable 跨部门频道功能（FLY-267/314）"),
+      F("FLYWHEEL_ROUNDTABLE_THREAD_OWN_BOT","bool","OFF","roundtable 线程包含 own-bot 消息"),F("FLYWHEEL_LEAD_DRY_RUN","bool","OFF","Codex Lead dry-run 预演模式（只描述不执行）")
+    ]},
+    { h:"🛡 gate / 生命周期", gate:false, flags:[
+      F("FLYWHEEL_MERGE_APPROVAL_GATE","bool","ON","全局关掉 merge-抢跑 ship 闸（=0 应急放行；默认 ON=merged 只有经 verifyApproval 批准才 completed/Done，否则挂 merge_block 不自动 revert + 响亮 alert）"),F("FLYWHEEL_QA_DONE_GATE","bool","ON","全局关掉 QA-done ship 闸（=0 应急放行；默认 ON=qa_required=1 的 session 必须有 head 的 passed auto_qa_record 才 completed/Done；豁免口=快照0/no-code/no-PR/no-qa/qa.auto:false）"),
+      F("FLYWHEEL_THREE_STAGE","bool","ON","全局关掉三段式 pipeline（Design→Implement→QA）；主开关是 per-project pipeline.three_stage config，本 env 是 fleet-wide 紧急 OFF（FLY-793）"),F("FLYWHEEL_THREE_STAGE_KEEPALIVE","bool","ON","全局关掉三段式 phase-session 保活（=0 回退 close-and-respawn 旧行为，不关三段式本身；默认 ON=三段 park 保活 + wake，QA↔implement 修复循环留全 context）(FLY-887)"),
+      F("FLYWHEEL_THREE_STAGE_QA_RESPAWN","bool","ON","三段式死 QA 重生开关（=0 回退修复前行为:死 qa row 继续挡 implement→QA 重驱,scoped 事件位点不重生;terminated stranded-pass 告警硬化不受此开关控制）(FLY-1050)"),F("FLYWHEEL_BOOT_SHA_CHECK","bool","ON","Bridge 启动打印运行 HEAD 并 best-effort 比对 origin/main;落后(stale checkout,merged 未生效)→ WARN + durable event + Lead 报警。=0 整段跳过。纯可观测,绝不影响启动;分支 checkout(dev/QA slot)自动静音 (FLY-939 G-D)"),
+      F("FLYWHEEL_PROGRESS_RESUME","bool","ON","全局关掉 restart-resilient resume（重启/terminate/reboot 后从 progress.md 游标续做）；=0 = 纯 fresh 现状 + 抑制写台账纪律 prompt（FLY-795）"),F("FLYWHEEL_CMUX_CLOSE_REQUEST","bool","ON","close_runner 写 cmux pin close-request marker + watcher 立即移除 stale pin（FLY-685）"),
+      F("FLYWHEEL_FOUNDER_AUTO_APPROVE","bool","ON","FLY-799: founder 在 [FLY-XX] thread 的文字/✅ 批准 → 归属 founder → 写 approve_to_ship gate → runner 自 ship"),F("FLYWHEEL_FOUNDER_IMAGE_APPROVAL","bool","OFF","FLY-799: founder 镜像图片确认作为批准（default-off fast-follow；v1 未接生产 evaluator，即使 =1 也 inert）"),
+      F("FLYWHEEL_STALE_SHIP_REWAKE","bool","ON","FLY-799 Part B: 重新唤醒卡在 approved_to_ship 的 runner（漏掉的自-ship wake）；死 runner → alert 一次 defer FLY-795"),F("FLYWHEEL_AUTO_LINEAR_DONE","bool","ON","FLY-799: runner 自-ship（confirmed merged）后自动把 Linear issue 翻到 Done"),
+      F("FLYWHEEL_DEFERRED_FOUNDER_APPROVAL","bool","ON","held 期间 founder 批准暂存 + hold 清后自动补绑(OFF=今日 held 提前 decline)"),F("FLYWHEEL_HELD_DECLINED_REPLY","bool","ON","held 时给 founder 发 thread 明文解释(硬要求① — ❓ 不再是哑谜)"),
+      F("FLYWHEEL_CODEX_HOLD_NUDGE","bool","ON","codex-hold 30min 早期 nudge 层(ledger 化 queue+wake 再驱动)"),F("FLYWHEEL_CODEX_HOLD_NUDGE_MS","value","1800000","codex-hold nudge 阈值(默认 30min,早于 3h stuck 层)"),
+      F("FLYWHEEL_FOUNDER_REPLY_WATCHDOG","bool","ON","founder-reply 摄取 watchdog(pass 死亡/cursor 钉死/unreachable runner 告警)"),F("FLYWHEEL_ZOMBIE_GATE_RESOLVE","bool","ON","僵尸 gate 自动 retire(Z1 三段式;OFF 连 intent 都不写=今日字节路径)"),
+      F("FLYWHEEL_RUNNER_AUTOCONTINUE","bool","OFF","FLY-818 ①: opt-in /loop-native goal-driven 自动续跑 arming（AutoContinueArmer）"),F("FLYWHEEL_STUCK_FOUNDER_PAGE","bool","ON","FLY-818 ②: 关掉「runner 真卡住 → 在其 [FLY-XX] issue thread @founder」的直达页（default-on 安全网）"),
+      F("FLYWHEEL_FLEET_SENSOR_TMUX","bool","ON","FLY-1082: 关掉 tmux server-loss coordinator（HeartbeatService pre-reaper phase：fleet 级检测 + 成组终态迁移 + 单张 fleet ticket + 按 Lead 分组通知）"),F("FLYWHEEL_FOUNDER_NOTIFY_RETRY_MAX","value","5","founder action ledger 投递重试上限(超限 failed+emit_alert)"),
+      F("FLYWHEEL_FOUNDER_REPLY_RETRY_MAX","value","10","founder 消息有界重试上限(超限 dead-letter+告警,cursor 解钉)"),F("FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS","value","1800000","founder 消息重试超龄上限(默认 30min,与次数上限双阈值)"),
+      F("FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS","value","7","外部 merge 收敛 pass 的 completed-but-unfinalized 回看窗口(天;FLY-945 Fix D)"),F("FLYWHEEL_SHIP_GATE_CARD_GRACE_MS","value","15000","FLY-1041 Fix B: ship 卡发出前的 grace(ms;默认 15s;env > config > default)"),
+      F("FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS","value","空","Codex Lead poll+mention-gate 的 #leads-roundtable 频道 id（逗号分隔）"),F("FLYWHEEL_DEFERRED_APPROVAL_TTL_MS","value","2700000","暂存批准的 TTL(默认 45min;过期需 founder 重新确认)"),
+      F("FLYWHEEL_REPORTS_TTL_DAYS","value","7","报告链接保留天数（默认 7）"),F("FLYWHEEL_SHIP_GATE_GRACE_MS","value","15000","founder 文字/✅ 对 approve_to_ship gate 的放行 grace(ms;默认 15s;设 600000 回到 FLY-605 旧 10min 行为——这就是 kill-switch,FLY-945 Fix A)")
+    ]}
+  ];
+
+  var sel=PROJECTS[0].name, curTab="m", curProj=PROJECTS[0];
+  function projByName(n){ for(var i=0;i<PROJECTS.length;i++){ if(PROJECTS[i].name===n) return PROJECTS[i]; } return PROJECTS[0]; }
+
+  function renderList(){
+    var q=(document.getElementById("psearch").value||"").trim().toLowerCase(), host=document.getElementById("plist");
+    var shown=PROJECTS.filter(function(p){ return !q||p.name.toLowerCase().indexOf(q)>=0; });
+    document.getElementById("pcount").textContent=shown.length;
+    if(!shown.length){ host.innerHTML='<div class="empty">没有匹配「'+esc(q)+'」的项目</div>'; return; }
+    host.innerHTML=shown.map(function(p){
+      var nm=esc(p.name);
+      if(q){ var i=p.name.toLowerCase().indexOf(q); if(i>=0) nm=esc(p.name.slice(0,i))+'<span class="nm-hl">'+esc(p.name.slice(i,i+q.length))+'</span>'+esc(p.name.slice(i+q.length)); }
+      return '<div class="li'+(p.name===sel?" sel":"")+(p.isGroup?" ligroup":"")+'" data-proj="'+esc(p.name)+'"><span class="'+(p.isGroup?"gicon":"dot")+'">'+(p.isGroup?"🏷":"")+'</span>'+nm+(p.isGroup?'<span class="gtag">dept 组</span>':'')+'<span class="c">'+p.leads.length+'</span></div>';
+    }).join("");
+  }
+
+  function modelPane(p){
+    var h='';
+    if(p.isGroup){ h+='<div class="discreal">'+p.groupNote+'</div>'; h+='<div class="rowh">这组 Lead · 公司 → 型号 → effort</div>'; }
+    else {
+      h+='<div class="cascade"><span style="font-family:var(--mono);font-size:.71rem;color:#86868b">解析顺序</span>'
+      + '<span class="lvl">issue label</span><span class="arr">▸</span><span class="lvl">dispatch</span><span class="arr">▸</span>'
+      + '<span class="lvl">DAG 节点</span><span class="arr">▸</span><span class="lvl">项目默认</span><span class="arr">▸</span><span class="lvl">账号默认</span></div>';
+      h+='<div class="rowh">这个项目的 Lead · 公司 → 型号 → effort</div>';
+    }
+    p.leads.forEach(function(l){
+      h+='<div class="lrow"><span class="dot2"></span><span class="nm">'+esc(l.n)+'</span>'
+        +(l.dept?'<span class="dept">'+esc(l.dept)+'</span>':'')
+        +(l.note?'<span class="lbl">'+esc(l.note)+'</span>':'')
+        +cascade("lead:"+p.name+":"+l.n, l.n+" 模型", l.v,l.m,l.e)+'</div>';
+    });
+    return h;
+  }
+  function cronEnabled(cid,orig){ return boolState(cid,orig)==="ON"; }
+  function cronSch(cid,orig){ if(PENDING[cid]) return PENDING[cid].to; if(STAGED[cid]!==undefined&&STAGED[cid]!==null) return STAGED[cid]; return orig; }
+  // cron schedule = [选中星期集合] × [时间列表]。CRONEDIT 保存每个 cron 的编辑态(days+times)。
+  var DAY_LABELS=["一","二","三","四","五","六","日"], CRONEDIT={};
+  function cronEdit(schcid,c){ if(!CRONEDIT[schcid]) CRONEDIT[schcid]={days:c.days.slice(),times:c.times.map(function(t){return {hh:t.hh,mm:t.mm};})}; return CRONEDIT[schcid]; }
+  function dayLabel(days){ var s=days.slice().sort(function(a,b){return a-b;});
+    if(s.length===7) return "每日"; if(s.length===5&&s.join()==="0,1,2,3,4") return "工作日"; if(s.length===2&&s.join()==="5,6") return "周末"; return "自定义"; }
+  function dayStr(days){ var s=days.slice().sort(function(a,b){return a-b;});
+    if(!s.length) return "（未选星期）"; if(s.length===7) return "每日"; if(s.length===5&&s.join()==="0,1,2,3,4") return "工作日"; if(s.length===2&&s.join()==="5,6") return "周末";
+    return "周"+s.map(function(i){return DAY_LABELS[i];}).join("/"); }
+  function schStr(days,times){ return dayStr(days)+" "+times.map(function(t){return t.hh+":"+t.mm;}).join(" + "); }
+  function cronBySchcid(schcid){ var parts=schcid.split(":"); var pr=projByName(parts[1]); for(var i=0;i<pr.cron.length;i++){ if(pr.cron[i].t===parts[2]) return pr.cron[i]; } return null; }
+  function cronRecompute(schcid){ var c=cronBySchcid(schcid); if(!c) return; var e=cronEdit(schcid,c);
+    var origStr=schStr(c.days,c.times), newStr=schStr(e.days,e.times);
+    if(newStr!==origStr) PENDING[schcid]={label:c.t+" 时间",from:origStr,to:newStr,type:"cronsch"}; else delete PENDING[schcid]; updateBar(); }
+  function cronPicker(schcid,c){
+    var e=cronEdit(schcid,c), dirty=!!PENDING[schcid];
+    var h='<span class="cronpick2'+(dirty?" dirty":"")+'"><span class="daybtns">';
+    for(var i=0;i<7;i++){ var on=e.days.indexOf(i)>=0; h+='<span class="daybtn'+(on?" on":"")+'" data-cronday="'+esc(schcid)+':'+i+'">'+DAY_LABELS[i]+'</span>'; }
+    h+='</span><span class="daylabel">'+esc(dayLabel(e.days))+'</span><span class="timerows">';
+    var hh=[],mm=[]; for(var a=0;a<24;a++)hh.push(("0"+a).slice(-2)); for(var b2=0;b2<60;b2++)mm.push(("0"+b2).slice(-2));
+    e.times.forEach(function(t,ti){
+      h+='<span class="timerow"><select class="cronsel ch" data-crontime="'+esc(schcid)+':'+ti+'">'+opts(hh,function(x){return x;},t.hh)+'</select>'
+        +'<span class="colon">:</span><select class="cronsel cm" data-crontime="'+esc(schcid)+':'+ti+'">'+opts(mm,function(x){return x;},t.mm)+'</select>'
+        +(e.times.length>1?'<span class="deltime" data-crondeltime="'+esc(schcid)+':'+ti+'" title="删除这个时间">×</span>':'')+'</span>';
+    });
+    h+='<span class="addtime" data-cronaddtime="'+esc(schcid)+'">+ 加时间</span></span></span>';
+    return h;
+  }
+  function cronPane(p){
+    var h='<div class="discreal">launchd 定时任务（真实来源 = plist + 脚本路径，逐个在 <b>launchctl list</b> 里核过是否真在调度）。星期多选 + 一天可多次(＋加时间);每个可 enable/disable;改动进底部『待提交』;有 LLM 的可改模型。</div>';
+    if(p.cronNote) h+='<div class="discreal">'+p.cronNote+'</div>';
+    p.cron.forEach(function(c){
+      var encid="cronen:"+p.name+":"+c.t, schcid="cronsch:"+p.name+":"+c.t;
+      var enabled=cronEnabled(encid, c.active?"ON":"OFF");
+      var badge = enabled
+        ? '<span class="cronbadge on">● active · launchd</span>'
+        : '<span class="cronbadge paused">⏸ 已暂停 · 待提交</span>';
+      h+='<div class="cronrow'+(enabled?"":" cronoff")+'"><div class="cronhd"><span class="nm">'+esc(c.t)+'</span>'
+        +'<span class="lbl">'+esc(c.note)+'</span>'+badge
+        +'<span class="cronen">'+tgl(encid, c.active?"ON":"OFF", c.t+" 启用", false)+'</span>'
+        +(c.model?cascade("cron:"+p.name+":"+c.t, c.t+" cron", c.model.v,c.model.m,c.model.e):'<span class="pill off">无 LLM</span>')
+        +srcLink(c.src+(c.plist?'（plist: '+c.plist+'）':''))+'</div>'
+        +'<div class="cronsched">'+cronPicker(schcid,c)+'</div></div>';
+    });
+    return h;
+  }
+  // real GitHub blob link else path-hover fallback。别编:只对真有 github remote 的 5 个 repo(逐个 git 核过 .md/脚本在 origin/main)给链接;
+  // personal-assistant 无 git remote(纯本地)→ 绝不给会 404 的假链接,回退路径 hover。
+  var GH_REPOS={flywheel:1,GeoForge3D:1,growth:1,"joycon-typeless":1,"tidal-echo":1};
+  function srcLink(src){
+    if(!src) return '';
+    var clean=String(src).replace(/（[^）]*）\s*$/,"").trim(), ann=(String(src).match(/（[^）]*）\s*$/)||[""])[0];
+    var m=clean.match(/^~\/Dev\/([^/]+)\/(.+)$/);
+    if(m && GH_REPOS[m[1]]){
+      var href="https://github.com/xrliAnnie/"+m[1]+"/blob/main/"+m[2];
+      return '<a class="srclink" href="'+esc(href)+'" target="_blank" rel="noopener" title="'+esc(clean)+ann+'"><span class="ghi">↗</span>源</a>';
+    }
+    return '<span class="srclink pathonly" title="'+esc(clean)+ann+'（本地路径 · 无 github remote）">📄 源</span>';
+  }
+  function tnode(n){ return '<span class="tnode">'+esc(n)+'</span>'; }
+  function dagPane(p){
+    if(!p.dag||!p.dag.length) return '<div class="discreal">此项目暂无角色。</div>';
+    var h='<div class="discreal">读自 <b>'+esc(p.name)+'/.flywheel/agents/</b> 的真实角色。每个角色 = 一个 md 一次单 session 做完;<b>三段式(design→implement→qa)只有 flywheel 的 engineer</b>。每个角色/阶段可改模型。</div>';
+    p.dag.forEach(function(t,ti){
+      var key=p.name+":"+ti;
+      h+='<div class="tpl'+(t.isDef?" tpldef":"")+(!t.single?" tpl3":"")+'"><div class="tpl-hd"><span class="tpl-n">'+esc(t.title)+'</span><span class="tpl-badge'+(t.single?" single":"")+(t.isDef?" def":"")+'">'+esc(t.badge)+'</span>'+(t.src?srcLink(t.src):'')+'</div>';
+      h+='<div class="tpl-flow">';
+      t.nodes.forEach(function(nd,i){ h+=tnode(nd.n)+(i<t.nodes.length-1?'<span class="tarr">→</span>':''); });
+      h+='</div>';
+      if(t.ann) h+='<div class="tann'+(t.annCls?" "+t.annCls:"")+'">'+esc(t.ann)+'</div>';
+      t.nodes.forEach(function(nd){
+        h+='<div class="tnrow"><span class="tnn">'+esc(nd.n)+'</span>'+cascade("dag:"+key+":"+esc(nd.n), t.title+" · "+nd.n, nd.v,nd.m,nd.e)+'</div>';
+      });
+      h+='</div>';
+    });
+    return h;
+  }
+  function projFlagsPane(p){
+    var GLOBAL=[["qa.auto","OFF"],["doc_flow.enabled","OFF"],["skills.proofshot.enabled","OFF"],["xiaohongshu_learning.enabled","OFF"]];
+    var ovr={}; p.flags.forEach(function(f){ ovr[f.f]=f; });
+    var h='<div class="fgrp"><div class="fgrp-h">本项目 flag(继承全局默认,可覆盖)</div>';
+    GLOBAL.forEach(function(g){
+      var o=ovr[g[0]];
+      if(o) h+='<div class="fr"><span class="fn">'+esc(g[0])+'</span><span class="pill ovr fc">本项目覆盖:'+esc(o.v)+' ⭐</span><span class="tog">改回继承</span></div>';
+      else h+='<div class="fr"><span class="fn">'+esc(g[0])+'</span><span class="pill val fc">继承全局:'+esc(g[1])+'</span><span class="tog">覆盖本项目</span></div>';
+    });
+    h+='</div>';
+    return h;
+  }
+  function renderDetail(){
+    var p=projByName(sel); curProj=p;
+    var threeStage=p.dag&&p.dag.some(function(t){return !t.single;});
+    var meta=p.isGroup ? ('· '+p.leads.length+' 个 Lead · 按 dept 归组') : ('· '+p.leads.length+' 个 Lead · '+(p.dag?p.dag.length:0)+' 角色'+(threeStage?' · engineer 三段式':''));
+    var h='<div class="dh"><span class="pn">'+esc(p.name)+'</span><span class="pm">'+meta+'</span></div>';
+    var hasCron=p.cron&&p.cron.length, hasDag=!p.isGroup;
+    if(curTab==="f"||(curTab==="c"&&!hasCron)||(curTab==="d"&&!hasDag)) curTab="m";
+    h+='<div class="dtabs"><span class="dtab'+(curTab==="m"?" on":"")+'" data-tab="m">模型</span>'
+      +(hasDag?'<span class="dtab'+(curTab==="d"?" on":"")+'" data-tab="d">DAG 模板</span>':'')
+      +(hasCron?'<span class="dtab'+(curTab==="c"?" on":"")+'" data-tab="c">⏰ 定时任务<span class="tabc">'+p.cron.length+'</span></span>':'')+'</div>';
+    h+='<div class="pane'+(curTab==="m"?" on":"")+'" data-pane="m">'+modelPane(p)+'</div>';
+    if(hasDag) h+='<div class="pane'+(curTab==="d"?" on":"")+'" data-pane="d">'+dagPane(p)+'</div>';
+    if(hasCron) h+='<div class="pane'+(curTab==="c"?" on":"")+'" data-pane="c">'+cronPane(p)+'</div>';
+    document.getElementById("pdetail").innerHTML=h;
+  }
+
+  function boolState(cid,orig){ if(PENDING[cid]) return PENDING[cid].to; if(STAGED[cid]!==undefined&&STAGED[cid]!==null) return STAGED[cid]; return orig; }
+  function tgl(cid,orig,label,locked){
+    var on=boolState(cid,orig)==="ON"; var dirty=!!PENDING[cid];
+    var cls="tgl"+(on?" on":"")+(locked?" locked":"")+(dirty?" dirty":"");
+    var attrs=locked?'':' data-tgl="'+esc(cid)+'" data-orig="'+esc(orig)+'" data-flabel="'+esc(label)+'" style="cursor:pointer"';
+    return '<span class="'+cls+'"'+attrs+'></span>';
+  }
+  function flagCtl(fl,g){
+    if(fl.kind==="bool"){ return (g.gate?'<span class="lk">🔒</span>':'')+tgl("flag:"+fl.f,fl.s,fl.f,g.gate); }
+    if(fl.kind==="enum"){
+      var segs=(fl.enums||[fl.s]).map(function(v){ return '<span class="seg'+(v===fl.s?" on":"")+'">'+esc(v)+'</span>'; }).join("");
+      return (g.gate?'<span class="lk">🔒</span>':'')+'<span class="segd">'+segs+'</span>';
+    }
+    return '<span class="fval">'+esc(fl.s)+'</span>';
+  }
+  function flagsPage(){
+    var h='<div class="pgpad"><h2 class="pgh">🚩 Feature Flags</h2>';
+    FLAG_GROUPS.forEach(function(g){
+      h+='<div class="fgrp"><div class="fgrp-h">'+esc(g.h)+'<span class="cnt">'+g.flags.length+'</span></div>';
+      g.flags.forEach(function(fl){
+        h+='<div class="fr"><span class="fn">'+esc(fl.f)+'</span><span class="fdesc">'+esc(fl.d)+'</span><span class="fc">'+flagCtl(fl,g)+'</span></div>';
+        if(fl.ovr){ fl.ovr.forEach(function(o){
+          var cid="flag:"+fl.f+":"+o.proj, orig=o.on?"ON":"OFF";
+          h+='<div class="fr fsub"><span class="fn">└ '+esc(o.proj)+'</span><span class="fdesc">该项目单独覆盖（否则继承全局 '+esc(fl.s)+'）</span><span class="fc">'+tgl(cid,orig,fl.f+" @ "+o.proj,false)+'</span></div>';
+        }); }
+      });
+      h+='</div>';
+    });
+    h+='</div>';
+    return h;
+  }
+  function switchNav(nav){
+    document.querySelectorAll(".nv").forEach(function(n){ n.classList.toggle("sel", n.getAttribute("data-nav")===nav); });
+    document.querySelectorAll(".page").forEach(function(pg){ pg.classList.toggle("on", pg.getAttribute("data-page")===nav); });
+    document.getElementById("apLabel").textContent={instance:"🗂 实例",flags:"🚩 Feature Flags"}[nav]||"";
+    if(nav==="flags") document.querySelector('[data-page="flags"]').innerHTML=flagsPage();
+  }
+
+  document.addEventListener("click",function(ev){
+    var t=ev.target;
+    var nav=t.closest?t.closest("[data-nav]"):null; if(nav){ switchNav(nav.getAttribute("data-nav")); return; }
+    var li=t.closest?t.closest("[data-proj]"):null; if(li){ sel=li.getAttribute("data-proj"); curTab="m"; renderList(); renderDetail(); return; }
+    var tab=t.closest?t.closest("[data-tab]"):null; if(tab){ curTab=tab.getAttribute("data-tab"); renderDetail(); return; }
+    // cron 星期多选钮 → toggle → 派生标签 + submit bar
+    var db=t.closest?t.closest("[data-cronday]"):null;
+    if(db){ var da=db.getAttribute("data-cronday").split(":"); var schcid=da[0]+":"+da[1]+":"+da[2], idx=+da[3];
+      var e=cronEdit(schcid,cronBySchcid(schcid)); var pos=e.days.indexOf(idx);
+      if(pos>=0){ if(e.days.length>1) e.days.splice(pos,1); } else e.days.push(idx);
+      cronRecompute(schcid); renderDetail(); return; }
+    // cron ＋加时间
+    var at=t.closest?t.closest("[data-cronaddtime]"):null;
+    if(at){ var sc=at.getAttribute("data-cronaddtime"); var e2=cronEdit(sc,cronBySchcid(sc)); e2.times.push({hh:"09",mm:"00"}); cronRecompute(sc); renderDetail(); return; }
+    // cron × 删时间
+    var dt=t.closest?t.closest("[data-crondeltime]"):null;
+    if(dt){ var dp=dt.getAttribute("data-crondeltime").split(":"); var sc2=dp[0]+":"+dp[1]+":"+dp[2], ti=+dp[3];
+      var e3=cronEdit(sc2,cronBySchcid(sc2)); if(e3.times.length>1) e3.times.splice(ti,1); cronRecompute(sc2); renderDetail(); return; }
+    // flag toggle 切换 → dirty → submit bar（含 per-project override toggle）
+    var fp=t.closest?t.closest("[data-tgl]"):null;
+    if(fp){ var fcid=fp.getAttribute("data-tgl"), forig=fp.getAttribute("data-orig"), flabel=fp.getAttribute("data-flabel")||fcid;
+      var isCronEn=fcid.indexOf("cronen:")===0;
+      var fcur=boolState(fcid,forig), fnw=(fcur==="ON"?"OFF":"ON");
+      if(fnw!==forig) PENDING[fcid]={label:flabel,from:forig,to:fnw,type:isCronEn?"cronen":"flag"}; else delete PENDING[fcid];
+      if(isCronEn){ renderDetail(); }
+      else { var fpg=document.querySelector('[data-page="flags"]'); if(fpg&&fpg.classList.contains("on")) fpg.innerHTML=flagsPage(); }
+      updateBar(); return; }
+    // 改B: save bar + modal buttons
+    if(t.closest && t.closest(".savebar")){ if(t.classList.contains("submit")) openSubmit(); else if(t.classList.contains("discard")) doDiscard(); return; }
+    var mb=t.getAttribute?t.getAttribute("data-m"):null;
+    if(mb==="ok"){ doSubmit(); return; }
+    if(mb==="cancel"||mb==="close"){ document.getElementById("ovl").classList.remove("on"); return; }
+    if(t.id==="ovl"){ document.getElementById("ovl").classList.remove("on"); return; }
+  });
+  document.addEventListener("change",function(ev){
+    var t=ev.target; if(!t||!t.classList) return;
+    // cron 时间行的 时/分 下拉改动 → 更新 CRONEDIT → dirty → submit bar
+    if(t.classList.contains("cronsel")){
+      var ct=t.getAttribute("data-crontime").split(":"); var scid=ct[0]+":"+ct[1]+":"+ct[2], ti=+ct[3];
+      var e=cronEdit(scid,cronBySchcid(scid));
+      if(t.classList.contains("ch")) e.times[ti].hh=t.value; else e.times[ti].mm=t.value;
+      cronRecompute(scid);
+      var pk=t.closest(".cronpick2"); if(pk) pk.classList.toggle("dirty",!!PENDING[scid]); return;
+    }
+    var box=t.closest?t.closest(".casc3"):null; if(!box) return;
+    var vsel=box.querySelector(".casc-vendor"),msel=box.querySelector(".casc-model"),esel=box.querySelector(".casc-effort");
+    if(t.classList.contains("casc-vendor")){ var vd=vendorByName(vsel.value);
+      msel.innerHTML=opts(vd.models,function(x){return x.l;},vd.models[0].l);
+      esel.innerHTML=opts(vd.models[0].eff,function(x){return x;},vd.models[0].eff[0]);
+    } else if(t.classList.contains("casc-model")){ var vd2=vendorByName(vsel.value),mdl=vd2.models[0];
+      for(var i=0;i<vd2.models.length;i++){ if(vd2.models[i].l===msel.value){ mdl=vd2.models[i]; break; } }
+      esel.innerHTML=opts(mdl.eff,function(x){return x;},mdl.eff[0]);
+    }
+    // 改B: dirty tracking vs baseline (data-base*)
+    var cid=box.getAttribute("data-cid"), label=box.getAttribute("data-label");
+    var base={v:box.getAttribute("data-basev"),m:box.getAttribute("data-basem"),e:box.getAttribute("data-basee")};
+    var cur={v:vsel.value,m:msel.value,e:esel.value};
+    if(cur.v!==base.v||cur.m!==base.m||cur.e!==base.e){ PENDING[cid]={label:label,from:base,to:cur}; box.classList.add("dirty"); }
+    else { delete PENDING[cid]; box.classList.remove("dirty"); }
+    updateBar();
+  });
+  document.getElementById("psearch").addEventListener("input",renderList);
+  renderList(); renderDetail();
+})();
+</script>

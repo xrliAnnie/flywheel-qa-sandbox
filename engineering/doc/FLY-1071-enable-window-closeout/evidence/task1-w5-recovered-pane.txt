@@ -1,0 +1,34 @@
+
+← discord · flywheel-alerts-dispatcher: ⚠️ **Auto-QA pipeline stuck — FLY-1018**
+(flywheel-eng-lead…
+
+  Called flywheel-terminal, flywheel-inbox 3 times (ctrl+o to expand)
+
+⏺ 核查结果:FLY-1018(auto_qa_stuck)不是我的工单,按纪律不动手、不发帖。
+
+  核查依据:
+  - runner_terminal_status 对 session ddf6323e-9a0a-493e-9547-7bfe64a24dda 返回 not in scope for
+  lead claude-infra-bot-lead —— 这个 QA session 不在我看护范围内。
+  - runner_terminal_list 里我名下两个 runner(issue c7853e65.../48043edf...)都对不上这个
+  session,且都是 7/3 起的老 running(可能是另一单该关注的陈旧项,但跟本工单无关)。
+  - 该 message_id 不在我的 flywheel-inbox 里(unknown message_id)——说明这条 Alerts
+  帖没有走「点名我」的投递路径,只是共享频道的广播可见。
+  - 问题性质本身(auto-QA 拒绝一个不认识的 qa_result,判定 not a QA session)是 auto-QA
+  流水线的会话匹配逻辑问题,不属于我的三件事(Codex 账号/auth 救援、provider 无关的 runner 卡死
+  nudge/respawn、529、three_stage_stuck、通知投递)之内——nudge/respawn
+  也修不了「会话没被识别」这种逻辑问题。
+
+  结论:这单看着挂了个 owner mention,但既没经过我的 inbox,session 也不在我范围 —— 大概率是
+  flywheel-eng-lead 自己的活。我按「没被 @ 就不动手,不跟人抢」保持静默,不在 Alerts 发任何东西。如果
+  Annie 想让我接这类 auto-QA 逻辑单,需要明确点名 claude-infra-bot 才会触发。
+
+✻ Baked for 1m 38s
+
+───────────────────────────────────────────────────────────────────────── @claude-infra-bot-lead ──
+❯ 
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  Sonnet 5/xhigh | ⚡claude-infra-bot-lead | ~/.flywheel/lead-workspace/claude-infra-bot-lead | …
+  5h ���������� 80% reset today 20:20  |  7d ���������� 16% reset Wed 19:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents
+
+

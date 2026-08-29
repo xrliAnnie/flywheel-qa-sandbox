@@ -15,6 +15,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { StateStore } from "../StateStore.js";
+import { markAutomatedDiscordText } from "./automated-message.js";
 
 /**
  * Derived type — avoids adding a new StateStore export.
@@ -36,6 +37,8 @@ export interface ReadyToCloseOpts {
 	thread?: ChatThreadRef;
 	/** Pre-resolved (lead.botToken ?? config.discordBotToken). */
 	botToken?: string;
+	/** FLY-892 (Step 3): message-level phase tag; "" for main (byte-compat). */
+	phasePrefix?: string;
 }
 
 export interface ReadyToCloseDeps {
@@ -102,7 +105,7 @@ export async function emitRunnerReadyToCloseNotification(
 		? "已由 postMergeTmuxCleanup 关闭"
 		: "仍在（Lead 可用 close_runner 收尾）";
 	const body = [
-		`🏁 **Runner 完工可关闭** — ${identifier}`,
+		`${opts.phasePrefix ?? ""}🏁 **Runner 完工可关闭** — ${identifier}`,
 		"",
 		`- Execution: \`${opts.executionId}\``,
 		`- Session status: \`${opts.sessionStatus}\``,
@@ -120,7 +123,9 @@ export async function emitRunnerReadyToCloseNotification(
 					Authorization: `Bot ${opts.botToken}`,
 					"Content-Type": "application/json",
 				},
-				body: JSON.stringify({ content: body }),
+				body: JSON.stringify({
+					content: markAutomatedDiscordText(body),
+				}),
 			},
 		);
 		if (!resp.ok) {

@@ -1,0 +1,5 @@
+第一句:把 FLY-545 的 voice bridge 排上,明天先跑 smoke test。
+第二句:这个 PR 的 CI 已经绿了,等 Annie 确认之后再 ship。
+第三句:Huddle 模式的 latency 目标是首音八百毫秒以内。
+第四句:如果 DAVE 解密失败,今晚就切到 fallback 方案。
+第五句:让 Tadashi 把 worktree 建好,然后开始 TDD。

@@ -1,0 +1,5 @@
+# 探针① ACK 证据 — 2026-07-09 16:27:13
+message id: 1524918656428019753 (posted 16:22:19, author=flywheel-alerts-dispatcher)
+pane inbound: 16:22:36 (≤17s, 判据 ≤120s ✓)
+claw 响应形式: ✅ reaction on probe message (claw 防刷屏纪律:react 应答不发文字) — API 核验 reactions: [('✅', 1)]
+pane 原话: 「另外处理了一条:FLY-1071 探针①(请 ACK 本帖)— 识别为对齐测试(测 mention-gate + ACK 路径),内容无害,已用 ✅ react 应答,没有发文字刷屏。」

@@ -1,0 +1,34 @@
+{
+	"meta": {
+		"issue": "FLY-616",
+		"date": "2026-06-28",
+		"taskSet": ["FLY-SBX-1", "FLY-SBX-2", "FLY-SBX-3"]
+	},
+	"conditionLabel": "ponytail-off",
+	"handles": [
+		{
+			"issueId": "FLY-SBX-1",
+			"conditionLabel": "ponytail-off",
+			"execId": "exec-ponytail-off-FLY-SBX-1",
+			"projectName": "flywheel-qa-sandbox",
+			"dbPath": "/tmp/flywheel-test-slot-1/teamlead.db",
+			"worktreePath": "/tmp/flywheel-test-slot-1/project-slot-1-FLY-SBX-1"
+		},
+		{
+			"issueId": "FLY-SBX-2",
+			"conditionLabel": "ponytail-off",
+			"execId": "exec-ponytail-off-FLY-SBX-2",
+			"projectName": "flywheel-qa-sandbox",
+			"dbPath": "/tmp/flywheel-test-slot-1/teamlead.db",
+			"worktreePath": "/tmp/flywheel-test-slot-1/project-slot-1-FLY-SBX-2"
+		},
+		{
+			"issueId": "FLY-SBX-3",
+			"conditionLabel": "ponytail-off",
+			"execId": "exec-ponytail-off-FLY-SBX-3",
+			"projectName": "flywheel-qa-sandbox",
+			"dbPath": "/tmp/flywheel-test-slot-1/teamlead.db",
+			"worktreePath": "/tmp/flywheel-test-slot-1/project-slot-1-FLY-SBX-3"
+		}
+	]
+}

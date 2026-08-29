@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# FLY-871 R1/C2 — thin launcher for the pool-token freshness helper.
+#
+# `flywheel-claude-profile use` shells out to THIS (via FLYWHEEL_CLAUDE_FRESHNESS_BIN,
+# or a path derived relative to the profile script) before writing a NON-ACTIVE
+# target to the machine Keychain. The real logic is the compiled TS CLI; this
+# wrapper only locates node + the dist entry. Exit codes pass through unchanged
+# (0 refreshed / 30 stale / 31 error) — the bash guard maps them.
+set -euo pipefail
+
+# Resolve this script's real directory (follow one symlink level; macOS bash 3.2
+# has no `readlink -f`, so keep it portable).
+src="${BASH_SOURCE[0]}"
+if [[ -L "$src" ]]; then src="$(readlink "$src")"; fi
+here="$(cd "$(dirname "$src")" && pwd)"
+
+cli="$here/../dist/account-heal/freshness-cli.js"
+if [[ ! -f "$cli" ]]; then
+  echo "freshness: compiled CLI not found at $cli (run the teamlead build)" >&2
+  exit 31
+fi
+exec node "$cli" "$@"

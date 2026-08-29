@@ -1,0 +1,13 @@
+sequenceDiagram
+    participant QA as QA 脚本<br/>inject-linear-issue.sh
+    participant BR as 测试 Bridge<br/>(slot 调度服务)
+    participant LN as Linear<br/>(任务看板)
+    participant RN as 沙箱 Runner<br/>(AI 工程师)
+    participant GH as GitHub<br/>sandbox 仓库
+    QA->>BR: POST /api/runs/start (FLY-202)
+    BR->>LN: PreHydrator 拉取 issue 全文
+    LN-->>BR: FLY-202 标题 + 5 步任务描述
+    BR->>RN: 在 tmux 里启动 Runner<br/>(独立 worktree + 分支)
+    Note over RN: 执行 5 步文档任务<br/>= QA 的 mid-work 观察窗口
+    RN->>GH: push 分支 + 开 PR → main
+    RN->>BR: 汇报 Lead / session_completed

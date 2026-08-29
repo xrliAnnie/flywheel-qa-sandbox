@@ -1,0 +1,36 @@
+[
+	{
+		"projectName": "flywheel",
+		"projectRoot": "Dev/flywheel",
+		"projectRepo": "EXAMPLE-OWNER/flywheel",
+		"generalChannel": "000000000000000001",
+		"leads": [
+			{
+				"agentId": "flywheel-cos-lead",
+				"chatChannel": "000000000000000002",
+				"botTokenEnv": "EXAMPLE_COS_BOT_TOKEN",
+				"model": "sonnet",
+				"match": { "labels": ["Flywheel"] }
+			},
+			{
+				"agentId": "flywheel-eng-lead",
+				"chatChannel": "000000000000000003",
+				"botTokenEnv": "EXAMPLE_ENG_BOT_TOKEN",
+				"model": "sonnet"
+			}
+		]
+	},
+	{
+		"projectName": "exampleproject",
+		"projectRoot": "Dev/exampleproject",
+		"projectRepo": "EXAMPLE-OWNER/exampleproject",
+		"leads": [
+			{
+				"agentId": "exampleproject-product-lead",
+				"chatChannel": "000000000000000004",
+				"botTokenEnv": "EXAMPLE_PRODUCT_BOT_TOKEN",
+				"model": "sonnet"
+			}
+		]
+	}
+]

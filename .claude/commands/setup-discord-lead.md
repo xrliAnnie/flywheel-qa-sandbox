@@ -45,6 +45,23 @@ If no arguments, ask the user for:
 
 ---
 
+## Step 0: Check the token pool first
+
+Before creating a brand-new Discord Application, check whether there's an
+unclaimed slot in the local bot token pool:
+
+```bash
+scripts/discord-bot-pool.sh list
+```
+
+If there's an `unclaimed` slot, skip Step 1/2 below and follow
+`doc/reference/discord-bot-pool-claim-guide.md` instead — it covers renaming,
+avatar, invite link, and registering the claim. Come back to **Step 3** of
+this document afterward (state dir / access.json / projects.json / launch).
+
+Only fall through to Step 1 below if the pool is empty or this Lead needs
+non-standard permissions/a separate Discord account.
+
 ## Step 1: Create Discord Application (Browser)
 
 Guide the user or use Chrome automation:
@@ -128,9 +145,7 @@ cat > "$STATE_DIR/access.json" << 'EOF'
   "dmPolicy": "pairing",
   "allowFrom": ["1138241636057481306"],
   "groups": {
-    "{chat-channel-id}": { "requireMention": false, "allowFrom": [] },
-    "{forum-channel-id}": { "requireMention": false, "allowFrom": [] },
-    "{control-channel-id}": { "requireMention": false, "allowFrom": [] }
+    "{chat-channel-id}": { "requireMention": false, "allowFrom": [] }
   },
   "pending": {}
 }
@@ -175,71 +190,7 @@ This prevents other Claude Code sessions from connecting as stale bots.
 
 ---
 
-## Step 6: Create Control Channel (Optional)
-
-If Bridge needs to send events to this Lead:
-
-```bash
-source ~/.claude/channels/discord/.env.bak  # ClaudeBot token
-
-# Permission bits:
-#   VIEW_CHANNEL         = 1024          (1 << 10)
-#   SEND_MESSAGES        = 2048          (1 << 11)
-#   READ_MESSAGE_HISTORY = 65536         (1 << 16)
-#   SEND_MESSAGES_IN_THREADS = 274877906944  (1 << 38)
-#
-# @everyone (guild ID): deny VIEW = 1024
-# ClaudeBot:  VIEW + SEND + READ_HISTORY + SEND_IN_THREADS = 274877975552
-# Lead bot:   VIEW + SEND + READ_HISTORY                  = 68608
-
-curl -X POST "https://discord.com/api/v10/guilds/1485787271192907816/channels" \
-  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "name": "{lead-name}-control",
-    "type": 0,
-    "parent_id": "1486031301764190270",
-    "permission_overwrites": [
-      {"id": "1485787271192907816", "type": 0, "deny": "1024"},
-      {"id": "{claudebot-id}", "type": 1, "allow": "274877975552"},
-      {"id": "{new-bot-id}", "type": 1, "allow": "68608"}
-    ]
-  }'
-```
-
-Add the control channel ID to the lead's `access.json` groups.
-
-### Step 6b: Repair Existing Control Channel Permissions
-
-If a control channel was created before this fix (Lead bot got `66560` instead of `68608`, missing SEND_MESSAGES → 403), repair it:
-
-```bash
-LEAD_BOT_ID="{new-bot-id}"            # Lead bot's Application ID (see Reference table)
-CONTROL_CHANNEL_ID="{control-channel-id}"
-
-source ~/.claude/channels/discord/.env.bak  # ClaudeBot token (has MANAGE_ROLES)
-
-# Set correct permission overwrite: VIEW + SEND + READ_HISTORY = 68608
-curl -X PUT "https://discord.com/api/v10/channels/${CONTROL_CHANNEL_ID}/permissions/${LEAD_BOT_ID}" \
-  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"allow": "68608", "deny": "0", "type": 1}'
-```
-
-Verify by sending a test message with the Lead bot token:
-```bash
-source ~/.claude/channels/discord-{lead-name}/.env
-curl -s -o /dev/null -w "%{http_code}" -X POST \
-  "https://discord.com/api/v10/channels/${CONTROL_CHANNEL_ID}/messages" \
-  -H "Authorization: Bot $DISCORD_BOT_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"content": "Permission test — Lead bot can send messages."}'
-# Expected: 200
-```
-
----
-
-## Step 7: Create Agent File
+## Step 6: Create Agent File
 
 Create `{project-dir}/.lead/{lead-name}/agent.md` based on existing agent template:
 
@@ -251,24 +202,25 @@ Create `{project-dir}/.lead/{lead-name}/agent.md` based on existing agent templa
 
 ---
 
-## Step 8: Update projects.json
+## Step 7: Update projects.json
 
 Add or update the lead entry in `~/.flywheel/projects.json`:
 
 ```json
 {
   "agentId": "{lead-name}",
-  "forumChannel": "{forum-id}",
   "chatChannel": "{chat-id}",
-  "match": { "labels": ["{Label}"] },
-  "runtime": "claude-discord",
-  "controlChannel": "{control-id}"
+  "match": { "labels": ["{Label}"] }
 }
 ```
 
+> FLY-163: forum channel concept removed. If your config still has a
+> `forumChannel` field, ProjectConfig strips it with a deprecation warning at
+> load — clean it up next time you edit projects.json.
+
 ---
 
-## Step 9: Launch and Test
+## Step 8: Launch and Test
 
 ```bash
 export DISCORD_STATE_DIR=$HOME/.claude/channels/discord-{lead-name}
@@ -297,7 +249,6 @@ LEAD_WORKSPACE=/path/to/project/org/.lead/{lead-name} \
 | All bots respond | Administrator permission on bot | Kick bot, re-invite without Admin |
 | "Product Lead" typing | Default `.env` has token, or other session connected | Clear default `.env` and `access.json` groups |
 | Bot typing but no reply | Channel not in this lead's `access.json` groups | Add channel ID to groups |
-| Bridge 403 on control channel | Lead bot missing SEND_MESSAGES permission | Run Step 6b to repair permissions |
 | MFA fails during save | Discord session issue | Try "Verify with something else" |
 
 ---
@@ -310,6 +261,4 @@ LEAD_WORKSPACE=/path/to/project/org/.lead/{lead-name} \
 | ops-lead | Oliver - Ops Lead | discord-oliver | 1485899317850935316 |
 
 Guild: `1485787271192907816` (claude's server)
-ClaudeBot (Bridge): `1484685699004497940`
 User Discord ID: `1138241636057481306`
-Control Category: `1486031301764190270`

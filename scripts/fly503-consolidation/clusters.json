@@ -1,0 +1,367 @@
+{
+	"clusters": [
+		{
+			"key": "orchestration",
+			"title": "多-agent 编排 / coding-agent 平台",
+			"crossProject": false,
+			"blurb": "参考性的多-agent / coding-agent 平台与框架。平台调研类高度重叠，建议合一个代表 issue 横向借鉴；并发开发与「通宵自主」是 Flywheel 核心特性的独立切点，保留。",
+			"items": [
+				{
+					"id": "FLY-379",
+					"role": "representative",
+					"rationale": "Vercel Open Agents — 最完整的云端 coding-agent 参考平台，作平台调研代表。"
+				},
+				{
+					"id": "FLY-375",
+					"role": "merge",
+					"into": "FLY-379",
+					"confidence": "high",
+					"rationale": "Dexter=金融垂直版 Claude Code，属同类 coding-agent 平台调研。"
+				},
+				{
+					"id": "FLY-427",
+					"role": "merge",
+					"into": "FLY-379",
+					"confidence": "high",
+					"rationale": "Game Studios 48-agent = 多-agent coding 平台样本。"
+				},
+				{
+					"id": "FLY-431",
+					"role": "merge",
+					"into": "FLY-379",
+					"confidence": "high",
+					"rationale": "Gstack 15-模块 dev workflow = 同类平台化 coding 工具。"
+				},
+				{
+					"id": "FLY-455",
+					"role": "merge",
+					"into": "FLY-379",
+					"confidence": "medium",
+					"rationale": "DeerFlow 2.0 长程 super-agent 框架，属多-agent 编排框架；与 Flywheel 编排最近，可考虑独立。"
+				},
+				{
+					"id": "FLY-476",
+					"role": "merge",
+					"into": "FLY-379",
+					"confidence": "high",
+					"rationale": "Droid 多-agent coding 工具，同类。"
+				},
+				{
+					"id": "FLY-456",
+					"role": "independent",
+					"rationale": "superset 并发项目工具 — 对应 Flywheel 并行 Runner 的具体 tooling 模式，独立保留。"
+				},
+				{
+					"id": "FLY-478",
+					"role": "independent",
+					"rationale": "「我睡觉 AI 不行」通宵自主 — Flywheel 自主性论点的独立验证切点，保留。"
+				}
+			]
+		},
+		{
+			"key": "agent-comm",
+			"title": "Agent 间通信",
+			"crossProject": false,
+			"blurb": "Agent 之间的通信/桥接工具。两个 P2P/桥接工具近重复，建议合一；群聊办公是协作 UI，独立。",
+			"items": [
+				{
+					"id": "FLY-410",
+					"role": "representative",
+					"rationale": "cc-bridge — Claude-Code 窗口间 + 微信桥接，覆盖面更广，作通信代表。"
+				},
+				{
+					"id": "FLY-417",
+					"role": "merge",
+					"into": "FLY-410",
+					"confidence": "high",
+					"rationale": "walkie = agent 专用 P2P 通信工具，与 cc-bridge 同主题。"
+				},
+				{
+					"id": "FLY-402",
+					"role": "independent",
+					"rationale": "nas_chat AI 群聊办公软件 = 按话题组织的人+AI 协作 workspace/UI，区别于纯通信传输，独立。"
+				}
+			]
+		},
+		{
+			"key": "memory",
+			"title": "记忆与上下文",
+			"crossProject": false,
+			"blurb": "Agent 记忆系统与上下文窗口。两个「记忆/做梦」型系统近重复建议合一；稀疏注意力扩窗与 Anthropic 长任务指南是不同机制，独立。",
+			"items": [
+				{
+					"id": "FLY-401",
+					"role": "representative",
+					"rationale": "OmbreBrain 海马体记忆系统 — 完整 agent 记忆大脑，作记忆代表。"
+				},
+				{
+					"id": "FLY-420",
+					"role": "merge",
+					"into": "FLY-401",
+					"confidence": "high",
+					"rationale": "AutoDream 2.0 记忆 sub-agent（同样「做梦/巩固」隐喻），与 OmbreBrain 同主题。"
+				},
+				{
+					"id": "FLY-418",
+					"role": "independent",
+					"rationale": "MSA(Memory Sparse Attention) 1亿token = 上下文扩窗的注意力机制，区别于记忆存储系统，独立。"
+				},
+				{
+					"id": "FLY-453",
+					"role": "independent",
+					"rationale": "Anthropic 官方 AI Agent 长任务指南 — 高价值方法论文档，独立。"
+				}
+			]
+		},
+		{
+			"key": "skill-ecosystem",
+			"title": "Skill 生态与 marketplace",
+			"crossProject": false,
+			"blurb": "Skill 市场 / 精选清单 / skill 发现。四条都是「skill marketplace 或 curated list」观察，重叠高，建议合一。",
+			"items": [
+				{
+					"id": "FLY-434",
+					"role": "representative",
+					"rationale": "腾讯 SkillHub = skill marketplace，作 skill 生态观察代表。"
+				},
+				{
+					"id": "FLY-380",
+					"role": "merge",
+					"into": "FLY-434",
+					"confidence": "medium",
+					"rationale": "phuryn/pm-skills = PM skill 市场，属 skill marketplace 观察。"
+				},
+				{
+					"id": "FLY-416",
+					"role": "merge",
+					"into": "FLY-434",
+					"confidence": "high",
+					"rationale": "试 200+ skills 留 8 = skill 精选清单，同主题。"
+				},
+				{
+					"id": "FLY-470",
+					"role": "merge",
+					"into": "FLY-434",
+					"confidence": "high",
+					"rationale": "2026 CC Skills Top 20 排行 = skill 精选清单，同主题。"
+				}
+			]
+		},
+		{
+			"key": "buildable-skills",
+			"title": "可建的具体 skill（marketing / 专家 persona / 协作）",
+			"crossProject": false,
+			"blurb": "可借鉴落地为具体 skill 的点子。marketing/growth 三条合一；专家-persona 打包两条合一；项目协作 skill 独立。",
+			"items": [
+				{
+					"id": "FLY-437",
+					"role": "representative",
+					"rationale": "Marketing-idea / Marketing Skills for Claude Code = marketing skill 集，作 marketing 代表。"
+				},
+				{
+					"id": "FLY-426",
+					"role": "merge",
+					"into": "FLY-437",
+					"confidence": "high",
+					"rationale": "Marketing for Founders repo = 同类 marketing 资源/技能。"
+				},
+				{
+					"id": "FLY-482",
+					"role": "merge",
+					"into": "FLY-437",
+					"confidence": "medium",
+					"rationale": "Claude+Perplexity MCP 批量 SEO = marketing/growth 具体手法，归 marketing。"
+				},
+				{
+					"id": "FLY-422",
+					"role": "representative",
+					"rationale": "三个产品人思维装进 Claude = 专家-persona skill 模式代表。"
+				},
+				{
+					"id": "FLY-407",
+					"role": "merge",
+					"into": "FLY-422",
+					"confidence": "medium",
+					"rationale": "Sahil 极简创业大脑打包成 skill = 同样「把专家思维打包成 skill」模式。"
+				},
+				{
+					"id": "FLY-419",
+					"role": "independent",
+					"rationale": "「项目协作者」skill 提效 = 偏 workflow/协调的 skill，区别于 persona skill，独立。"
+				}
+			]
+		},
+		{
+			"key": "research-automation",
+			"title": "研究自动化 / 前沿模型",
+			"crossProject": false,
+			"blurb": "研究自动化工具链与前沿模型。autoresearch 与 arxiv-to-prompt 同属研究工作流可合；AutoHarness/源码拆解/TimesFM 各自独立。",
+			"items": [
+				{
+					"id": "FLY-425",
+					"role": "representative",
+					"rationale": "autoresearch 全自动科研闭环 — 研究自动化代表。"
+				},
+				{
+					"id": "FLY-454",
+					"role": "merge",
+					"into": "FLY-425",
+					"confidence": "medium",
+					"rationale": "arxiv-to-prompt 论文→prompt = 研究工作流工具，归研究自动化；若想保细粒度可独立。"
+				},
+				{
+					"id": "FLY-423",
+					"role": "independent",
+					"rationale": "Google AutoHarness 自动生成约束/harness 代码 = codegen/测试方法，区别于论文研究，独立。"
+				},
+				{
+					"id": "FLY-442",
+					"role": "independent",
+					"rationale": "WiFi-DensePose 源码深读 = 源码学习样本（与 FLY-349 deep-read 同风格），独立。"
+				},
+				{
+					"id": "FLY-408",
+					"role": "independent",
+					"rationale": "谷歌 TimesFM 时序基础模型 = 前沿 ML 模型观察，独立。"
+				}
+			]
+		},
+		{
+			"key": "media",
+			"title": "视频 / 视觉 / 设计 / 语音",
+			"crossProject": false,
+			"blurb": "媒体生成与设计能力。两条视频生成近重复合一；视频分析、Figma 设计、原生 HTML 动效、本地 TTS 各自独立；3D 打印模型生成跨项目另议。",
+			"items": [
+				{
+					"id": "FLY-439",
+					"role": "representative",
+					"rationale": "Claude Code 做产品演示视频（NL→生成+剪辑）— 视频生成代表。"
+				},
+				{
+					"id": "FLY-465",
+					"role": "merge",
+					"into": "FLY-439",
+					"confidence": "high",
+					"rationale": "Remotion Agent Skills 做视频 = 同主题视频生成。"
+				},
+				{
+					"id": "FLY-441",
+					"role": "independent",
+					"rationale": "视频分析工具（5维评分）= 分析非生成，独立。"
+				},
+				{
+					"id": "FLY-479",
+					"role": "independent",
+					"rationale": "Figma AI 原型 = UI 设计工具，独立。"
+				},
+				{
+					"id": "FLY-374",
+					"role": "independent",
+					"rationale": "原生 HTML 交互 / UI 动效图标迭代设计 = 前端/视觉设计，独立（与 Flywheel HTML 报告体验相关）。"
+				},
+				{
+					"id": "FLY-435",
+					"role": "independent",
+					"rationale": "CosyVoice 本地 TTS + 语音 agent = 语音/音频能力，独立。"
+				},
+				{
+					"id": "FLY-451",
+					"role": "route_out",
+					"target": "GeoForge3D?",
+					"rationale": "Gemini 3 直接做 3D 打印模型 = 3D/GeoForge 倾向，跨项目，待 Annie 拍是否转 GeoForge3D。"
+				}
+			]
+		},
+		{
+			"key": "cc-platform",
+			"title": "Claude Code 平台特性 / 工作流 / 模型 backend",
+			"crossProject": false,
+			"blurb": "CC 平台知识与工作流。三条主题各异、互不重复，全部独立；code-review 工作流 Flywheel 已实现可作验证，GLM backend 与 Runner 多-backend(FLY-492/493) 相关。",
+			"items": [
+				{
+					"id": "FLY-444",
+					"role": "independent",
+					"rationale": "Claude Code 9 种 Hook = 平台特性知识，独立。"
+				},
+				{
+					"id": "FLY-471",
+					"role": "independent",
+					"rationale": "Claude+Codex 双 AI 自动代码评审工作流 = Flywheel 已实现（Codex review），作验证/对照，独立。"
+				},
+				{
+					"id": "FLY-473",
+					"role": "independent",
+					"rationale": "GLM4.6 配 Claude Code = 模型 backend，关联 Runner 多-backend(FLY-492/493)，独立。"
+				}
+			]
+		},
+		{
+			"key": "safety-browser",
+			"title": "Agent 安全 / sandbox / 浏览器自动化",
+			"crossProject": false,
+			"blurb": "Agent 安全与系统/网页访问。沙箱隔离与浏览器登录态继承机制不同，均独立保留。",
+			"items": [
+				{
+					"id": "FLY-458",
+					"role": "independent",
+					"rationale": "agent 开发下一机会=sandbox = 隔离/安全，独立。"
+				},
+				{
+					"id": "FLY-459",
+					"role": "independent",
+					"rationale": "agent 继承浏览器登录态 = 凭据/浏览器自动化，独立。"
+				}
+			]
+		},
+		{
+			"key": "hardware-crossproject",
+			"title": "硬件 / 3D（跨项目 — 不并入 Flywheel）",
+			"crossProject": true,
+			"blurb": "跨项目候选，默认不并入 Flywheel。Joycon 硬件(Hiro 在接) + 3D/GeoForge 倾向(同 FLY-436→GEO-431)。建议路由到对应项目或保留，待 Annie 拍；不做 Flywheel 侧合并。",
+			"items": [
+				{
+					"id": "FLY-403",
+					"role": "route_out",
+					"target": "Joycon",
+					"rationale": "个性化墨水屏 Dashboard = Joycon 硬件，Hiro 在接。"
+				},
+				{
+					"id": "FLY-415",
+					"role": "route_out",
+					"target": "Joycon",
+					"rationale": "Claude 接入 Meta 眼镜 = Joycon 硬件，Hiro 在接。"
+				},
+				{
+					"id": "FLY-457",
+					"role": "route_out",
+					"target": "Joycon",
+					"rationale": "Viture Luma XR 移动 coding = Joycon 硬件，Hiro 在接。"
+				},
+				{
+					"id": "FLY-460",
+					"role": "route_out",
+					"target": "Joycon",
+					"rationale": "Claude 控 Apple Home 智能家居 = Joycon 硬件，Hiro 在接。"
+				},
+				{
+					"id": "FLY-377",
+					"role": "route_out",
+					"target": "Joycon?",
+					"rationale": "Omi 开源 AI 可穿戴设备 = 硬件/可穿戴，疑似 Joycon 域，待 Annie 路由。"
+				},
+				{
+					"id": "FLY-438",
+					"role": "route_out",
+					"target": "GeoForge3D?",
+					"rationale": "Rhino3D 接入 OpenClaw = 3D 建模，GeoForge 倾向，待 Annie 拍。"
+				},
+				{
+					"id": "FLY-477",
+					"role": "route_out",
+					"target": "GeoForge3D?",
+					"rationale": "SHEIN 3D 打印电商机会 = 3D/商业，GeoForge 倾向，待 Annie 拍。"
+				}
+			]
+		}
+	]
+}

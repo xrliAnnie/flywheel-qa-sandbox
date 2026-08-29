@@ -19,6 +19,7 @@
  */
 
 import { createMemoryService } from "../packages/edge-worker/dist/memory/index.js";
+import { runBoundedShutdown } from "../packages/teamlead/dist/bridge/bounded-shutdown.js";
 import { startBridge } from "../packages/teamlead/dist/bridge/plugin.js";
 import { loadConfig } from "../packages/teamlead/dist/config.js";
 import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
@@ -60,13 +61,21 @@ async function main() {
 		memoryService,
 	});
 
+	// FLY-516: bound the shutdown. The old handler did `await close()` with no
+	// timeout — if close() (drain → teardownRuntimes → server.close) hangs, the
+	// process never exits and the socket stays bound on :9876, so the
+	// launchd-respawned Bridge crash-loops on EADDRINUSE (batch restart #2 wedge).
+	// runBoundedShutdown races close() against a hard ceiling and force-exits on
+	// timeout so the port is always released within the window. ~20s default is
+	// well above a normal seconds-long drain; env-tunable.
+	const shutdownTimeoutMs = Number(
+		process.env.FLYWHEEL_BRIDGE_SHUTDOWN_TIMEOUT_MS ?? 20_000,
+	);
 	let shuttingDown = false;
 	const shutdown = async () => {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		console.log("[run-bridge] Shutting down...");
-		await close(); // drain() + teardown happens inside
-		process.exit(0);
+		await runBoundedShutdown({ close, timeoutMs: shutdownTimeoutMs });
 	};
 
 	process.on("SIGINT", shutdown);

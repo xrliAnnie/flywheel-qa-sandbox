@@ -1,0 +1,39 @@
+# transcript: cmux-autostart-content
+# command: bash -c cat /Users/xiaorongli/Dev/flywheel-FLY-1117/engineering/doc/FLY-1117-forensics-0709-failure-chain/evidence/scripts-snapshot/flywheel-cmux-autostart
+# collected_at: 2026-07-10T08:37:34Z (host local: 2026-07-10 01:37:34 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+#!/bin/bash
+# flywheel-cmux-autostart.sh — Auto-start cmux workspace watcher
+# Called from .zshrc when CMUX_WORKSPACE_ID is detected.
+#
+# FLY-129 Phase 1: single-instance lock has been pushed DOWN into
+# flywheel-cmux-sync.sh (acquire_watcher_lock / WATCHER_LOCK_DIR).
+# That makes every entry path to `--watch` race-safe: autostart, manual
+# invocation, supervisor respawn, etc. Do NOT re-add lock logic here.
+
+LOG="/tmp/flywheel-cmux-watcher.log"
+SYNC_SCRIPT="$HOME/.flywheel/bin/flywheel-cmux-sync"
+
+# ── PATH for launchd (FLY-177) ──
+#
+# This wrapper is the entry for BOTH the `.zshrc` autostart path AND the launchd
+# plist (com.flywheel.cmux-watcher). launchd gives a process only the minimal
+# PATH `/usr/bin:/bin:/usr/sbin:/sbin`; the watcher shells out to `cmux`
+# (/opt/homebrew/bin) and `tmux` (/usr/local/bin). Prepend Homebrew/local so the
+# launchd-spawned watcher can find them. Idempotent + harmless on the `.zshrc`
+# path (that shell already has a full PATH). Mirrors flywheel-lead-wrapper.sh.
+export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
+
+# ── Run watcher ──
+#
+# FLY-177: `exec` the sync script so the watcher process REPLACES this wrapper.
+# Under launchd (KeepAlive) the managed PID must be the real watcher, not a
+# wrapper shell — otherwise `bootout`/`kickstart -k`/TERM would signal the
+# wrapper and could leave the child watcher orphaned (still holding the lock →
+# respawn churn). The single-instance lock + its release trap live INSIDE
+# flywheel-cmux-sync.sh (FLY-129), so no wrapper-side EXIT trap is needed.
+# `.zshrc`'s `flywheel-cmux-autostart &!` still works with exec — it just
+# backgrounds the real watcher instead of a wrapper shell.
+exec "$SYNC_SCRIPT" --watch >> "$LOG" 2>&1
+# exit_code: 0

@@ -1,0 +1,6 @@
+[drill] FLYWHEEL_ALERT_SENDER_TOKEN_ENV = FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN
+[drill] FLYWHEEL_ALERT_REPAIR_BOT_TOKEN_ENV = FLYWHEEL_ALERT_DISPATCH_BOT_TOKEN
+[drill] preflight owner render: backend=codex-app-server provider=codex owner={"kind":"infra_bot","side":"claude","userId":"1524829037825101975"} face={"ownerUserId":"1524829037825101975","ownerLabel":"claude bot"}
+[drill] preflight PASS — 恰好一个 owner mention 且 = claw,放行 POST
+[drill] result: {"sent":true,"channelId":"1518793447165661254","messageId":"1524938174600712342"}
+[drill] eventId: fly1071-drill-96875-951740881737291

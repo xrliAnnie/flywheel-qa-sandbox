@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# FLY-871 R2/C7 — thin launcher for the account-summary CLI (the Codex Infra Bot's
+# daily "看": print the per-account state summary from the ledger + store).
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec node "${here}/../dist/account-heal/account-summary-cli.js" "$@"

@@ -1,0 +1,90 @@
+Date/Time:        2026-07-09 06:06:58.516 -0700
+End time:         2026-07-09 15:14:39.119 -0700
+OS Version:       macOS 26.3.2 (Build 25D2150)
+Architecture:     arm64e
+Report Version:   67
+Incident Identifier: 6BB9639E-43F1-4C50-B64B-728DBF178ECA
+
+Data Source:      Microstackshots
+Shared Cache:     DE464D88-406A-33D0-9E2A-6EE09509013E slid base address 0x19f3c4000, slide 0x1f3c4000
+
+Command:          node
+Path:             /opt/homebrew/*/node
+Codesigning ID:   node-55554944c51c32e46a613c62bb7aa94d159b5e9a
+Resource Coalition: 1180
+Architecture:     arm64
+PID:              35918
+
+Event:            disk writes
+Action taken:     none
+Writes:           2147.48 MB of file backed memory dirtied over 32861 seconds (65.35 KB per second average), exceeding limit of 24.86 KB per second over 86400 seconds
+Writes limit:     2147.48 MB
+Limit duration:   86400s
+Writes caused:    2147.48 MB
+Writes duration:  32861s
+Duration:         32860.60s
+Duration Sampled: 0.30s (event starts 32860.18s before samples)
+Steps:            2 (10.49 MB/step)
+
+Hardware model:   Mac17,8
+Active cpus:      18
+Memory size:      48 GB
+HW page size:     16384
+VM page size:     16384
+
+Models:           UNKNOWN
+
+OS Cryptex File Extents: 1
+
+Heaviest stack for the target process:
+  2  thread_start + 8 (libsystem_pthread.dylib + 7080) [0x19f89aba8]
+  2  _pthread_start + 136 (libsystem_pthread.dylib + 27656) [0x19f89fc08]
+  2  worker + 184 (libuv.1.0.0.dylib + 12492) [0x1002cf0cc]
+  2  write + 8 (libsystem_kernel.dylib + 18464) [0x19f860820]
+
+
+Powerstats for:   node [35918] [unique pid 144048037]
+UUID:             C51C32E4-6A61-3C62-BB7A-A94D159B5E9A
+Path:             /opt/homebrew/*/node
+Codesigning ID:   node-55554944c51c32e46a613c62bb7aa94d159b5e9a
+Resource Coalition: 2 samples 1180
+Architecture:     arm64
+Footprint:        240.41 MB
+Start time:       2026-07-09 15:14:38.692 -0700
+End time:         2026-07-09 15:14:38.993 -0700
+Num samples:      2 (100%)
+Num threads:      2
+Primary state:    2 samples Non-Frontmost App, Non-Suppressed, Kernel mode, Effective Thread QoS Utility, Requested Thread QoS Default, Override Thread QoS Unspecified, p-core
+User Activity:    0 samples Idle, 2 samples Active
+Power Source:     0 samples on Battery, 2 samples on AC
+  2  thread_start + 8 (libsystem_pthread.dylib + 7080) [0x19f89aba8]
+    2  _pthread_start + 136 (libsystem_pthread.dylib + 27656) [0x19f89fc08]
+      2  worker + 184 (libuv.1.0.0.dylib + 12492) [0x1002cf0cc]
+        2  write + 8 (libsystem_kernel.dylib + 18464) [0x19f860820]
+          1  <not p-core>
+
+  Binary Images:
+           0x100254000 -                ???  node                                <C51C32E4-6A61-3C62-BB7A-A94D159B5E9A>  /opt/homebrew/*/node
+           0x1002cc000 -        0x1002effff  libuv.1.0.0.dylib (0)               <7629B1A7-EDFE-3D88-8B16-70D2FC5F1F98>  /opt/homebrew/*/libuv.1.0.0.dylib
+           0x19f85c000 -        0x19f89849f  libsystem_kernel.dylib (12377.91.3) <78EC33A6-6330-3836-8900-EB90836936E8>  /usr/lib/system/libsystem_kernel.dylib
+           0x19f899000 -        0x19f8a5acb  libsystem_pthread.dylib (539.80.3)  <0596A7B6-BCE2-3F06-A2E8-3EAAB5371ED8>  /usr/lib/system/libsystem_pthread.dylib
+
+System Profile:
+Network Service: Wi-Fi, AirPort, en0
+Thunderbolt Device: UltraFine 5K, LG Electronics, 1, 43.1
+Thunderbolt Device: TH-W3H2, SABRENT, 1, 40.1
+Boot Volume File System Type: apfs
+PCI Card: pci8086,15f0, USB eXtensible Host Controller, Thunderbolt@3,0,0
+Memory Module: LPDDR5, Samsung
+Thunderbolt Bus: MacBook Pro, Apple Inc.
+Thunderbolt Bus: MacBook Pro, Apple Inc.
+Thunderbolt Bus: MacBook Pro, Apple Inc.
+Display: Color LCD, 3456 x 2234 Retina, Main, MirrorOff, Online
+Display: S271HL, 1920 x 1080 (1080p FHD - Full High Definition), MirrorOff, Online
+Display: LG UltraFine, 2880 x 5120, MirrorOff, Online
+Model: Mac17,8, BootROM 13822.81.10, proc 18:6:0:12 processors, 48 GB, SMC 
+Graphics: Apple M5 Pro, Apple M5 Pro, Built-In
+AirPort: chip id: 0x11 api 1.2 firmware [Rev 72.11.260 N1B1 devFused=0] phy [17.1.17.0], core80211 [324.10.260 N1_silicon_b ], Mar  6 2026 19:12:58 version XBS_BUILD_TAG GIT_DESCRIBE FWID chip id: 0x11 api 1.2 firmware [Rev 72.11.260 N1B1 devFused=0] phy [17.1.17.0], core80211 [324.10.260 N1_silicon_b ]
+IO80211_driverkit-1540.16 "IO80211_driverkit-1540.16" Mar  6 2026 1
+AirPort: 
+Bluetooth: Version (null), 0 services, 0 devices, 0 incoming serial ports

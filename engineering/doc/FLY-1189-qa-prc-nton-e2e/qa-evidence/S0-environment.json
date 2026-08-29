@@ -1,0 +1,47 @@
+{
+	"scenario": "S0",
+	"run": "FLY-1189 QA run-2 (gap-injection, fresh session)",
+	"bridge_head": "98c2108c5f4e80ee75222b6966f16b2cc16ab8cd",
+	"bridge_pid": 82490,
+	"bridge_repo": "/Users/xiaorongli/Dev/flywheel/worktrees/FLY-1048-pr-c",
+	"bridge_port": 19871,
+	"campaign_id": "fly1189-1783862739-slot1",
+	"slot_dir": "/tmp/flywheel-test-slot-1",
+	"leads": [
+		{
+			"agentId": "flywheel-test-1",
+			"role": "host",
+			"labels": ["PM-Test"],
+			"channel": "1493080991290626079"
+		},
+		{
+			"agentId": "flywheel-test-2",
+			"role": "Product-Test",
+			"labels": ["Product-Test"],
+			"channel": "1493080993173737583"
+		},
+		{
+			"agentId": "flywheel-test-3",
+			"role": "Ops-Test",
+			"labels": ["Ops-Test"],
+			"channel": "1493080995862413439"
+		}
+	],
+	"flags": {
+		"GAP_SCAN": 1,
+		"PANE_MULTIFRAME": 1,
+		"STUCK_ERRORSIG": 1,
+		"WATCHDOG_JUDGE": 1,
+		"DETECTION_ESCALATION": 1
+	},
+	"timing": {
+		"gap_ask_unanswered_ms": 60000,
+		"gap_unconsumed_ms": 60000,
+		"grace_ms": 180000,
+		"clearing_ttl_ms": 120000,
+		"gap_scan_every_n_ticks": 5
+	},
+	"owner_override": "1493079116780408932 (test-4 finance bot, controlled — NOT Annie)",
+	"injection_method": "real gap2 (runner runs flywheel-comm ask, unanswered) — deterministic mechanical path",
+	"room_ports_free_at_start": "19871-19874 free before deploy"
+}

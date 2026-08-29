@@ -1,0 +1,326 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1020 每类任务的 workflow 模板(三层动态 DAG)— PRD(结论版)</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.62;-webkit-text-size-adjust:100%}
+.wrap{max-width:900px;margin:0 auto;padding:20px 16px 90px}
+h1{font-size:23px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
+h2{font-size:19px;margin:30px 0 4px;letter-spacing:-.01em}
+.secnum{color:var(--dim)}
+h3{font-size:15px;margin:12px 0 4px;color:var(--navy)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.card.blue{border-left:4px solid #007aff}.card.green{border-left:4px solid #34c759}.card.purple{border-left:4px solid var(--purple)}.card.amber{border-left:4px solid #ff9500}.card.gray{border-left:4px solid var(--dim)}.card.red{border-left:4px solid #ff3b30}
+p{margin:7px 0}ul,ol{margin:6px 0 8px 2px;padding-left:22px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.85em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+.k{color:var(--navy);font-weight:600}b{color:#111}
+.concl{background:#f1faf3;border:1px solid #b8e6c4;border-radius:10px;padding:8px 11px;margin:9px 0;font-size:13.5px}
+.concl.blue{background:#f4f9ff;border-color:#bcd9ff}
+.concl .lbl{font-weight:700;color:#1a7a37}.concl.blue .lbl{color:#1a5fb4}
+.decide{background:#fff5f4;border:2px solid #ff8f86;border-radius:12px;padding:13px 15px;margin:10px 0;font-size:14px}
+.decide .lbl{font-weight:800;color:#c0322b;display:block;margin-bottom:4px;letter-spacing:.01em}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px}
+.tag.n{background:#e7f0ff;color:#1a5fb4}.tag.keep{background:#e3f9ea;color:#1a7a3c}.tag.later{background:#fff4e5;color:#a05a00}.tag.no{background:#fde8e8;color:#c0322b}
+.hint{color:var(--dim);font-size:12.5px;margin:6px 0}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:13px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+.svgwrap{width:100%;overflow-x:auto;margin:8px 0}
+svg{max-width:100%;height:auto;display:block;margin:0 auto}
+.cmt{margin:8px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid #007aff;outline-offset:1px;border-color:transparent}
+.bar{position:sticky;bottom:0;margin-top:24px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:#007aff;color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.topnote{background:#fff;border:1px solid var(--line);border-left:4px solid #34c759;border-radius:12px;padding:12px 14px;margin:8px 0;font-size:13.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}.dlg textarea{width:100%;min-height:200px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>FLY-1020 · 每类任务的 workflow 模板(三层动态 DAG)—— PRD(结论版)</h1>
+  <p class="sub">2026-07-08 · Codex design review APPROVED(3 轮)· 待你终审 · 全文 md 在 <code>engineering/doc/FLY-1020-workflow-templates/prd.md</code></p>
+</header>
+<div class="topnote">
+  <b>你 v6 拍板后:写成详细 PRD(非 UI 部分)+ 过了 Codex 三轮评审(R1 十条 / R2 五条 findings 全采纳 → R3 APPROVED)。</b>
+  这里是结论版 —— 去掉 co-eval 过程/Q&A,只留最终结论,但每条写细。<br>
+  ⚠️ <b>有一条改动动了你 v6 看到的验收面,单独醒目放在 §2,请重点看并拍板。</b> UI 已按你的决定拆到 <b>FLY-1038</b>,本 PRD 不含 UI。
+</div>
+
+<!-- 1 -->
+<h2><span class="secnum">1 ·</span> 要解决的问题 + 北极星</h2>
+<div class="card gray">
+  <p><b>结论 —— 痛点:</b>今天 Flywheel 只有<b>一个写死的 eng 三段式</b>(Design→Implement→QA,静态直线),对所有 issue 一刀切。两个具体后果:① 一个「写 PRD」的 product issue 被自动 spawn 一个 QA runner 去「验」文档 —— <b>Auto-QA 误触发</b>,浪费 runner + 干扰你;② 现实里「验不过要回去重做」「一件事拆成 4 个 PR 逐个做」这类<b>动态</b>,静态直线表达不了。</p>
+  <p><b>结论 —— 北极星:</b>每类任务一套<b>轻的、默认的、可覆盖的</b>模板;动态由 <code>loop</code>+<code>skip</code> 给;<b>模板只钉粗脚手架,不钉模型怎么想</b>。</p>
+  <div class="concl"><span class="lbl">一句话验收:</span>eng issue 走三段式(QA 不过自动回去重做);product issue 走短模板(<b>不再被误 spawn QA</b>);没挂模板的活 = 裸单 session(agent 自己发挥);不配置 = 今天行为一个字不变。</div>
+</div>
+<div class="cmt"><label>💬 对痛点/北极星的留言</label><textarea data-k="s1" data-label="1 · 痛点+北极星"></textarea></div>
+
+<!-- 2 ⭐ 需要拍板 -->
+<h2><span class="secnum">2 ·</span> ⭐ 需要你拍的一条:MVP 收敛(动了你 v6 看到的验收面)</h2>
+<div class="card red">
+  <div class="decide">
+    <span class="lbl">⚠️ 请拍板 —— 这条跟你 v6 看到的不一样</span>
+    <b>MVP 先只做内建的三个节点(Design / Implement / QA)。</b>
+    你 v6 里看到的「创作视频 = Research / 生成视频(新节点类型)」<b>挪到阶段 2</b>。
+  </div>
+  <p><b>为什么(工程实情):</b> <code>design|implement|qa</code> 这三个名字<b>硬编码</b>在系统好几个生产面里 —— 数据库存的角色枚举、Discord 线程展示、ship 收尾清理、retry 恢复、重启对账。要支持「任意新节点类型」,得先把这五处全部泛化 + 做数据迁移。<b>把它和「抽象化现有三段式」塞进同一刀,会漏掉整片生产生命周期面。</b>(这是 Codex 评审第一条,我核过码属实。)</p>
+  <div class="concl"><span class="lbl">关键:这不是砍功能,是排期。</span><b>三层设计 + 注册表这个「可扩展的口子」原样保留</b> —— 新节点类型将来就是「往注册表里加一条」。只是<b>本轮不验收</b>它。阶段 2 会专门做那五处泛化,然后开放新节点类型。</div>
+  <div class="concl blue"><span class="lbl">你要拍的:</span>同意「MVP = 内建三节点,新节点类型排阶段 2」吗?若你要视频那类节点<b>现在就能用</b>,请说 —— 那 MVP 会显著变大、上线更晚。</div>
+</div>
+<div class="cmt"><label>💬 对 MVP 收敛的决定(同意排期 / 还是要现在就支持新节点类型?)</label><textarea data-k="s2" data-label="2 · ⭐ MVP 收敛(需拍板)"></textarea></div>
+
+<!-- 3 三层 -->
+<h2><span class="secnum">3 ·</span> 三层架构:YAML 结构 + 注册表 + Markdown(最底层不变)</h2>
+<div class="card green">
+  <div class="svgwrap">
+  <svg viewBox="0 0 720 336" role="img" aria-label="三层架构图">
+    <rect x="60" y="10" width="600" height="76" rx="12" fill="#f4f9ff" stroke="#bcd9ff" stroke-width="2"/>
+    <text x="80" y="38" font-size="15" font-weight="700" fill="#1a5fb4">第一层 · YAML = 结构(形状)</text>
+    <text x="80" y="60" font-size="13" fill="#333">哪些节点 / 顺序 / 哪里 loop / 哪里 skip —— 只按名字引用节点</text>
+    <text x="596" y="38" font-size="11" font-weight="700" fill="#1a5fb4">新增</text>
+    <path d="M360 86 L360 116" stroke="#86868b" stroke-width="2"/>
+    <path d="M360 122 l-6 -10 h12 z" fill="#86868b"/>
+    <text x="372" y="108" font-size="12" fill="#86868b">节点按名字引用</text>
+
+    <rect x="60" y="126" width="600" height="82" rx="12" fill="#faf5ff" stroke="#d9b8f0" stroke-width="2"/>
+    <text x="80" y="154" font-size="15" font-weight="700" fill="#7a2fb0">第二层 · 节点类型注册表 = 行为(是什么)</text>
+    <text x="80" y="176" font-size="13" fill="#333">每个节点:用哪个模型 · 带哪些技能 · 提示词骨架 · 能力(能否开 PR / 能否 ship …)</text>
+    <text x="80" y="196" font-size="12" fill="#86868b">= 把今天的 three-stage-phases.ts 泛化成「每节点类型一条」</text>
+    <text x="596" y="154" font-size="11" font-weight="700" fill="#7a2fb0">新增</text>
+    <path d="M360 208 L360 238" stroke="#86868b" stroke-width="2"/>
+    <path d="M360 244 l-6 -10 h12 z" fill="#86868b"/>
+    <text x="372" y="230" font-size="12" fill="#86868b">技能按名字引用</text>
+
+    <rect x="60" y="248" width="600" height="78" rx="12" fill="#f1faf3" stroke="#b8e6c4" stroke-width="2"/>
+    <text x="80" y="276" font-size="15" font-weight="700" fill="#1a7a37">第三层 · Markdown 技能 = 每个技能怎么做</text>
+    <text x="80" y="298" font-size="13" fill="#333">brainstorm.md · research.md · design-review.md · implement.md …</text>
+    <text x="80" y="317" font-size="12.5" font-weight="700" fill="#1a7a37">今天这套 · 一个字不改</text>
+    <text x="556" y="276" font-size="11" font-weight="700" fill="#1a7a37">不变</text>
+  </svg>
+  </div>
+  <div class="concl"><span class="lbl">结论(打消那个误解):</span><b>不是用 YAML 重写 brainstorm/research。</b> 上两层只是<b>加在现有 Markdown 之上的编排层</b>:<code>design</code> 节点说「用这些技能」,每个技能<b>具体怎么做</b>仍由它自己的 Markdown 决定。<b>新增只在上两层,第三层零改动。</b></div>
+  <div class="concl blue"><span class="lbl">分工一句话:</span>YAML 管「节点怎么连」· 注册表管「每节点用哪些技能 + 哪个模型 + 有什么能力」· Markdown 管「每个技能怎么做」。</div>
+</div>
+<div class="cmt"><label>💬 对三层架构的留言</label><textarea data-k="s3" data-label="3 · 三层架构"></textarea></div>
+
+<!-- 4 loop/skip -->
+<h2><span class="secnum">4 ·</span> 动态 = loop + skip(跑在固定节点上,不加新节点)</h2>
+<div class="card blue">
+  <div class="svgwrap">
+  <svg viewBox="0 0 720 372" role="img" aria-label="eng 模板 DAG:loop 回边 + skip 条件边">
+    <rect x="250" y="14" width="220" height="52" rx="10" fill="#fff" stroke="#1a365d" stroke-width="2"/>
+    <text x="360" y="38" font-size="14" font-weight="700" text-anchor="middle" fill="#1a365d">Design</text>
+    <text x="360" y="56" font-size="11" text-anchor="middle" fill="#86868b">Fable</text>
+
+    <path d="M360 66 L360 108" stroke="#1a365d" stroke-width="2"/>
+    <path d="M360 114 l-6 -10 h12 z" fill="#1a365d"/>
+
+    <rect x="250" y="116" width="220" height="52" rx="10" fill="#fff" stroke="#1a365d" stroke-width="2"/>
+    <text x="360" y="140" font-size="14" font-weight="700" text-anchor="middle" fill="#1a365d">Implement</text>
+    <text x="360" y="158" font-size="11" text-anchor="middle" fill="#86868b">Fable</text>
+
+    <path d="M360 168 L360 210" stroke="#1a365d" stroke-width="2"/>
+    <path d="M360 216 l-6 -10 h12 z" fill="#1a365d"/>
+
+    <rect x="250" y="218" width="220" height="52" rx="10" fill="#fff" stroke="#1a365d" stroke-width="2"/>
+    <text x="360" y="242" font-size="14" font-weight="700" text-anchor="middle" fill="#1a365d">QA</text>
+    <text x="360" y="260" font-size="11" text-anchor="middle" fill="#86868b">Opus</text>
+
+    <path d="M470 244 C 560 244, 560 142, 470 142" stroke="#1a7a37" stroke-width="2.5" fill="none"/>
+    <path d="M470 142 l10 -6 v12 z" fill="#1a7a37"/>
+    <text x="572" y="188" font-size="12.5" font-weight="700" fill="#1a7a37">↺ loop</text>
+    <text x="572" y="206" font-size="11.5" fill="#1a7a37">QA 不过 → 回去重做</text>
+    <text x="572" y="222" font-size="11.5" fill="#1a7a37">(也含 founder 反馈打回)</text>
+
+    <path d="M250 142 C 150 142, 150 306, 250 306" stroke="#a05a00" stroke-width="2.5" fill="none" stroke-dasharray="7 5"/>
+    <path d="M250 306 l-10 -6 v12 z" fill="#a05a00"/>
+    <text x="16" y="212" font-size="12.5" font-weight="700" fill="#a05a00">┈ skip</text>
+    <text x="16" y="230" font-size="11.5" fill="#a05a00">product 跳过 QA</text>
+    <text x="16" y="246" font-size="11.5" fill="#a05a00">(纯 doc 不用测)</text>
+
+    <path d="M360 270 L360 296" stroke="#1a365d" stroke-width="2"/>
+    <path d="M360 302 l-6 -10 h12 z" fill="#1a365d"/>
+    <rect x="280" y="304" width="160" height="46" rx="10" fill="#f1faf3" stroke="#34c759" stroke-width="2"/>
+    <text x="360" y="332" font-size="14" font-weight="700" text-anchor="middle" fill="#1a7a37">完 → 你点头 ship</text>
+  </svg>
+  </div>
+  <div class="scroll"><table>
+  <thead><tr><th>算子</th><th>做什么</th><th>你的两个铁例</th></tr></thead>
+  <tbody>
+    <tr><td class="k">loop</td><td>某段<b>重复到条件满足</b>(串行)</td><td>① QA↔Implement 来回,直到 QA 过 ② Design→4 个 PR:重复 (Implement→QA) 四次</td></tr>
+    <tr><td class="k">skip</td><td><b>条件跳过</b>某节点(同套节点、不同任务走不同路)</td><td>product 跳 QA(治 §1 的 Auto-QA 误触发)· 简单任务跳 Design</td></tr>
+  </tbody>
+  </table></div>
+  <div class="concl"><span class="lbl">结论(有硬证据):</span>「QA 不过回去重做」这个 loop <b>今天已经存在,只是焊死在 eng 三段式里</b>(FLY-939)。升级 = 把它变成<b>一行可声明的回边</b> + 加上「最多重复几次」的上限。—— 说明 loop 不是理论需求,是我们已经在用的东西。</div>
+  <div class="concl blue"><span class="lbl">安全细节:</span>每条 loop 边<b>必须写死最大重复次数</b>,到上限就<b>停下来升级给人</b>,绝不无限打转;崩溃重启能接着跑;唤醒失败也停下报人,不静默跳过。</div>
+</div>
+<div class="cmt"><label>💬 对 loop/skip 的留言</label><textarea data-k="s4" data-label="4 · loop + skip"></textarea></div>
+
+<!-- 5 config -->
+<h2><span class="secnum">5 ·</span> 怎么配(轻 YAML)+ 不配就等于今天</h2>
+<div class="card purple">
+  <div class="scroll"><table>
+  <thead><tr><th>配置项</th><th>作用</th><th>默认</th></tr></thead>
+  <tbody>
+    <tr><td><code>pipeline.workflow_templates.enabled</code></td><td>总开关:是否启用模板层</td><td><b>false</b>(不配 = 今天行为逐字不变)</td></tr>
+    <tr><td><code>pipeline.workflow_templates.default</code></td><td>没匹配到类别时用哪套</td><td><code>null</code> = <b>裸单 session</b></td></tr>
+    <tr><td><code>pipeline.workflow_templates.files</code></td><td>模板 YAML 文件(eng / product …)</td><td>—</td></tr>
+    <tr><td><code>pipeline.node_type_registry.file</code></td><td>节点类型注册表文件</td><td>—</td></tr>
+  </tbody>
+  </table></div>
+  <div class="concl"><span class="lbl">结论 —— 三种状态,都安全:</span><b>不配</b> → 关,今天行为一个字不变;<b>配错(格式坏)</b> → 该项目<b>失败关闭 + 大声报错</b>(绝不「猜着跑」,也不拖垮整个 Bridge);<b>配对</b> → 开。另有一个紧急 kill-switch 环境变量可一键回退。</div>
+  <div class="concl blue"><span class="lbl">安全约束:</span>模板只从项目的<b>主干(canonical)</b>读,<b>绝不</b>从某个实现 PR 的工作区读 —— 否则一个 runner 能改自己的模板来跳过 QA。这条沿用现有纪律。</div>
+  <p class="hint"><b>YAML 是给我们和 Tadashi 写模板的轻格式,不是给你碰的</b> —— 你永远只在 Discord 指挥。想「看有哪些 DAG / 注册到哪台 instance」的管理界面 = <b>FLY-1038</b>。</p>
+</div>
+<div class="cmt"><label>💬 对配置/默认值的留言</label><textarea data-k="s5" data-label="5 · config schema"></textarea></div>
+
+<!-- 6 codex 救回的死锁 -->
+<h2><span class="secnum">6 ·</span> 评审救回的一个大坑(值得你知道)</h2>
+<div class="card amber">
+  <p><b>结论:</b>我第一版 PRD 里,想让「模板内部的 QA」复用系统现有的 QA 放行开关。<b>Codex 核码发现这会让 ship 永久卡死</b> —— 那个开关要求存在一份「独立 QA runner 写的通过记录」,而模板内部的 QA <b>从不写那份记录</b>。真按第一版建出来,eng 的 PR 会<b>永远合不进去</b>。</p>
+  <div class="concl"><span class="lbl">已修:</span>给 ship 放行加一条<b>「模板专用」通道</b>:模板内部 QA 通过时写自己的证据(<b>绑定当时的代码 head</b>,代码一变证据作废);product 跳过 QA 的,入口就标「本次免测」。<b>没挂模板的老路径一个字不动。</b></div>
+  <div class="concl blue"><span class="lbl">另外两处也已收紧:</span>① QA 通过的证据里,「代码 head 是谁」<b>由服务端自己抓/校验,不信 runner 自报</b>(不然 runner 能自证通过);② 三个开关<b>互不串味</b> —— 关「独立 QA」不会偷偷改掉模板的形状。</div>
+  <p class="hint">Codex 三轮共 15 条 findings,我逐条核过源码、全部采纳,第三轮 APPROVED。评审报告一起存进仓库了。</p>
+</div>
+<div class="cmt"><label>💬 对这块的留言</label><textarea data-k="s6" data-label="6 · 评审救回的死锁"></textarea></div>
+
+<!-- 7 节点类型 -->
+<h2><span class="secnum">7 ·</span> 节点类型:定义时可扩展,跑中不加节点</h2>
+<div class="card gray">
+  <p><b>结论:</b>「固定节点」= ① <b>模板内固定</b>(YAML 定义时就定死,跑之前已知)② <b>跑中不临时长新节点</b>。<b>不是</b>「全世界只有三种节点」—— 新类别将来在<b>注册表里加自己的节点类型</b>(定义时加,不是跑中插)。</p>
+  <div class="concl"><span class="lbl">对照:</span>eng = Design/Implement/QA · product = 同套节点但 <b>skip QA</b> · 将来创作视频 = Research/生成视频(<b>阶段 2</b>,见 §2)。</div>
+</div>
+<div class="cmt"><label>💬 对节点类型的留言</label><textarea data-k="s7" data-label="7 · 节点类型"></textarea></div>
+
+<!-- 8 roadmap -->
+<h2><span class="secnum">8 ·</span> inject / fork = roadmap(不是不做)</h2>
+<div class="card gray">
+  <div class="scroll"><table>
+  <thead><tr><th>能力</th><th>什么时候想要(用例)</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td class="k">node-inject<br>(跑中加新节点)</td><td>跑到一半发现要一个模板里没有、又不是 loop/skip 能覆盖的新步骤 —— 如 implement 中途要插一个「安全审计」节点</td><td><span class="tag later">roadmap · post-MVP</span> 跑中改图要更强的追踪与治理,值得单独一版 PRD</td></tr>
+    <tr><td class="k">fork<br>(并行分支)</td><td>同时试多个方案比较 —— 两种实现策略并行、或 A/B 两版设计并行,择优</td><td><span class="tag later">roadmap · post-MVP</span> 成本翻倍,要专门治理</td></tr>
+  </tbody>
+  </table></div>
+  <div class="concl"><span class="lbl">结论:</span>MVP 的动态 = <b>loop + skip</b>(已够解你举的两个铁例)。inject / fork <b>有价值、排 roadmap、进后续 PRD</b>,用例记在案,不是砍掉。</div>
+</div>
+<div class="cmt"><label>💬 对 roadmap 的留言</label><textarea data-k="s8" data-label="8 · inject/fork roadmap"></textarea></div>
+
+<!-- 9 红线 -->
+<h2><span class="secnum">9 ·</span> ⚠️ 红线守卫(可验收,防「轻模板」滑成「重 DSL」)</h2>
+<div class="card red">
+  <ol>
+    <li>MVP 只提供 <b>我们内置的模板</b>;项目只能<b>选择 / 覆盖 / 关掉</b>,不能随便自定义。</li>
+    <li>阶段 2 前<b>不开放任意自定义节点类型</b>。</li>
+    <li><b>节点内部怎么推理,模板一个字都不管</b> —— 由第三层 Markdown + 模型决定。</li>
+    <li>不挂模板 = <b>裸单 session</b>,永远留着「不套流程」的出口。</li>
+    <li>loop / skip 的条件<b>只认有限的几个枚举值</b>,不引入自由表达式(那就成 DSL 了)。</li>
+  </ol>
+  <div class="concl"><span class="lbl">呼应你的红线:</span>我们<b>不绑模型的脑子</b>,只挂治理和编排的钩子(成本、独立 QA 位置、gate 落点、context 隔离、可观测)—— 这些东西模型变强也不会过时。</div>
+</div>
+<div class="cmt"><label>💬 对红线守卫的留言</label><textarea data-k="s9" data-label="9 · 红线守卫"></textarea></div>
+
+<!-- 10 分阶段 + non-goal -->
+<h2><span class="secnum">10 ·</span> 分阶段 · Non-goal · 关联 issue</h2>
+<div class="card blue">
+  <p><b>阶段 1(本轮验收)</b>:YAML 结构 + 节点类型注册表(含能力)+ 内建三节点 + <code>skip</code> + 每节点换模型 + 现有 QA loop 配置化 + 物化快照 + ship 放行的模板通道 + 内置模板(eng / product / 裸 default)+ 可覆盖。<b>Markdown 不动、默认关、字节兼容。</b></p>
+  <p><b>阶段 2</b>:任意节点类型(先做那五处泛化)+ 任意 loop 边。<b>roadmap</b>:node-inject · fork。</p>
+  <p><b>Non-goal(明确不做)</b>:可视化模板编辑器 · 让用户随便自定义模板 · 系统学历史自动调模板。</p>
+  <div class="concl blue"><span class="lbl">关联:</span><b>FLY-1038</b> = 你要的管理 UI(有哪些 DAG / 注册到哪台 instance)—— 本 PRD 不含 · <b>FLY-353</b> = 第二层编排引擎,是本层模板的<b>消费方</b> · <b>FLY-1022</b> = scale。</div>
+</div>
+<div class="cmt"><label>💬 对分阶段/Non-goal 的留言</label><textarea data-k="s10" data-label="10 · 分阶段+Non-goal"></textarea></div>
+
+<!-- 11 拆分 -->
+<h2><span class="secnum">11 ·</span> 你 OK 后:拆成 9 个 build issue 交 Tadashi</h2>
+<div class="card green">
+  <p class="hint">顺序是评审定的:<b>先定「存什么」和「ship 怎么放行」的契约,再动编排器</b> —— 否则 registry 只会变成包着旧硬编码的一层新配置,而且 ship 会卡死。</p>
+  <ol>
+    <li>模板/注册表的配置 schema + 主干加载 + 校验(坏配置失败关闭)</li>
+    <li>入口选模板 + <b>物化快照</b>(修 retry 的已知缺口)</li>
+    <li>⭐ <b>ship 放行的证据模型</b>(必须先于编排器)</li>
+    <li>把现有 phase 表迁进注册表(三节点行为逐字兼容)</li>
+    <li>编排器按快照走顺序 + <code>skip</code>;再把 QA loop 迁成可声明的回边</li>
+    <li>Auto-QA 边界迁移(模板 run 不再重复 spawn)</li>
+    <li>生命周期收口(双入口 / 重启对账 / 失败与恢复路径)</li>
+    <li>Blueprint 改读注册表能力(去掉三个硬编码分支)</li>
+    <li>内置模板 + 默认关 + 反向兼容哨兵测试</li>
+  </ol>
+  <div class="concl"><span class="lbl">下一步:</span>你在 §2 拍板 + 整体 OK → 我按上面九步开 build issue 交 <b>Tadashi</b>。<b>ship 仍然永远是你点头。</b></div>
+</div>
+<div class="cmt"><label>💬 总批注 / 终审决定(OK 就说「过,拆 build issue」)</label><textarea data-k="final" data-label="11 · 终审决定"></textarea></div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
+  <button class="ghost" id="clearBtn" type="button">清空</button>
+  <span class="hint" id="saveHint">每小节下有留言框;「复制批注」收成 markdown。批注只存你这台机器,刷新不丢。</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(Markdown)</h3>
+    <p class="hint">已自动复制到剪贴板。也可下载,或直接选中复制发给我。</p>
+    <textarea id="out" readonly></textarea>
+    <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
+      <button class="primary" id="dlBtn" type="button">下载 .md</button>
+      <button class="ghost" id="closeBtn" type="button">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly1020-prd-review::" + pathScope;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-k");
+    if (saved[k]) t.value = saved[k];
+    t.addEventListener("input", function(){
+      saved[k] = t.value;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){}
+      var h = document.getElementById("saveHint"); if (h) h.textContent = "已保存 ✓ · " + new Date().toLocaleTimeString();
+    });
+  });
+  function buildMd(){
+    var lines = ["# FLY-1020 PRD(结论版)— Annie 的终审批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var any = false;
+    areas.forEach(function(t){
+      var v = (t.value || "").trim(); if (!v) return; any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
+    });
+    if (!any) lines.push("> (还没有批注)");
+    return lines.join("\n");
+  }
+  var dlg = document.getElementById("dlg"), out = document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    if (!confirm("清空所有批注?不可撤销。")) return;
+    areas.forEach(function(t){ t.value = ""; }); saved = {};
+    try { localStorage.removeItem(KEY); } catch(e){}
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
+  });
+  document.getElementById("dlBtn").addEventListener("click", function(){
+    var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "fly1020-prd-终审批注.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
+})();
+</script>

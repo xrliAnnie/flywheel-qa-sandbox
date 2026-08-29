@@ -1,0 +1,6 @@
+sender loop @ 16:43:07Z (window end, 13min later), captured through DAVE:
+第一句,把F545的WestBridge排上,明天先跑smoke test。
+第二句,這個PR的CI已經綠了,等any確認之後再ship。
+第三句,哈斗模式的latency目標是首音800毫秒以內。
+第四句,如果Dave解密失敗,今晚就切到fallback方案。
+第五句,讓tree把work tree建好,然後開始PDD。

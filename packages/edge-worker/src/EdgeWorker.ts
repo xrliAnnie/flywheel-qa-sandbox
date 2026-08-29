@@ -4672,12 +4672,27 @@ ${input.userComment}
 								imageId?: string;
 								path?: string;
 							};
-							// Only provide upload guidance for screenshot actions
+							// Only provide guidance for screenshot actions.
 							if (response?.action === "screenshot") {
-								const filePath = response?.path || "the screenshot file";
+								// FLY-188: claude-in-chrome screenshots are returned inline
+								// (multimodal) and addressed by an in-extension `imageId` —
+								// `save_to_disk` does NOT write a file the agent can read,
+								// upload, or commit (empirically verified, GEO-386). The old
+								// `linear_upload_file ${response.path}` nudge was a no-op
+								// because `path` is never present on this tool's response.
+								// Route to a path that actually persists committable evidence.
+								// Main path is the gif_creator download (claude-in-chrome's
+								// only native to-disk export, so the founder keeps watching in
+								// her own Chrome). NOTE: gif_creator frames come from
+								// state-changing actions (navigate/click/scroll), NOT from a
+								// bare screenshot — start_recording first, THEN navigate + run
+								// the UI steps, else you export 0 frames. ProofShot/agent-browser
+								// is the fallback for non-interactive Runner pipelines or when a
+								// true-color PNG/video is required (gif is 256-color).
 								return {
 									continue: true,
-									additionalContext: `Screenshot captured. To share this screenshot in Linear comments, use the linear_upload_file tool to upload ${filePath}. This will return an asset URL that can be embedded in markdown.`,
+									additionalContext:
+										"Screenshot captured inline (image held in the browser extension by imageId; NOT written to the agent's local disk, even with save_to_disk). You can analyze it directly here, but to produce committable visual evidence (e.g. a QA artifact) do NOT rely on linear_upload_file with this image. MAIN PATH: use the gif_creator tool — call action:start_recording FIRST, THEN navigate to the page and run your UI steps (frames come from navigate/click/scroll actions, NOT from a bare screenshot — recording with only screenshots yields 0 frames), then action:stop_recording, then action:export with download:true and filename '<ISSUE>-<scenario>-<timestamp>.gif' (lands in ~/Downloads), then `mv` it into the repo and git add. This keeps the founder watching live in her own Chrome. FALLBACK (non-interactive Runner pipeline, or when you need a true-color PNG/video since gif is 256-color): run `flywheel-comm visual-capture` (ProofShot; writes PNG/WebM to disk; pass --agent-browser-profile to reuse login state). See doc/qa/qa-context.md (FLY-188) for the full recipe.",
 								};
 							}
 							return { continue: true };

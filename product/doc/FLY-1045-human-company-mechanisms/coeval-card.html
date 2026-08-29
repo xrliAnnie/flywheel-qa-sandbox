@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>FLY-1045 · 机制 co-eval 第3轮(含架构图)</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.62;
+    -webkit-text-size-adjust:100%}
+  .wrap{max-width:860px;margin:0 auto;padding:20px 16px 90px}
+  h1{font-size:22px;margin:.2em 0 .1em;letter-spacing:-.01em}
+  h2{font-size:15px;margin:0 0 .5em;letter-spacing:-.01em;color:var(--navy)}
+  .sub{color:var(--dim);font-size:14px;margin-bottom:16px}
+  .bar{background:#eef4ff;border-radius:10px;padding:11px 14px;margin:6px 0 18px;font-size:13.5px;color:var(--navy)}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left:4px solid var(--purple);
+    border-radius:12px;padding:14px 16px;margin:12px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+  .tag{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:20px;
+    background:#efe4ff;color:#5b2a9e;margin:0 4px 4px 0;vertical-align:middle}
+  .sec{background:var(--card);border-radius:12px;padding:15px 17px;margin:14px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  .sec.red{border-left-color:var(--red)}.sec.green{border-left-color:var(--green)}
+  .sec.amber{border-left-color:var(--amber)}.sec.purple{border-left-color:var(--purple)}
+  .sec.navy{border-left-color:var(--navy)}
+  .qq{background:#fff8ee;border-radius:9px;padding:9px 12px;font-size:14px;color:#7a4a00;margin:2px 0 10px}
+  .qq b{color:#8a5200}
+  .ans{font-size:14px;color:#2b2b2f;margin:8px 0}
+  .ans b{color:var(--navy)}
+  code{font-family:"SF Mono",ui-monospace,monospace;background:#f0f0f2;padding:1px 5px;border-radius:5px;font-size:.85em}
+  .eg{background:#f4f9f4;border-radius:8px;padding:8px 11px;font-size:13px;color:#1a5a2a;margin:8px 0}
+  .eg b{color:#12602a}
+  .arch{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0;padding-bottom:4px}
+  .arch svg{display:block}
+  .caption{font-size:12.5px;color:var(--dim);margin:2px 0 8px}
+  .caption b{color:#a55}
+  .opts{margin:10px 0 6px}
+  .opt{display:block;border:1px solid #dfe3ea;border-radius:10px;padding:10px 12px;margin:7px 0;
+    font-size:13.6px;cursor:pointer;background:#fcfdff}
+  .opt:hover{border-color:#b9c6de}
+  .opt input{margin-right:8px;vertical-align:middle}
+  .opt .rec{font-size:10.5px;font-weight:700;background:#1a7a33;color:#fff;padding:1px 7px;border-radius:4px;margin-left:6px}
+  .opt .ol{font-weight:700;color:var(--navy)}
+  .hmap{font-size:12.8px;color:var(--dim);margin:9px 0 2px}
+  .hmap b{color:#555}
+  .cbox{margin:10px 0 2px}
+  .cbox .ask{font-size:13px;font-weight:600;color:var(--navy);margin-bottom:6px}
+  textarea{width:100%;min-height:60px;border:1px solid #d2d2d7;border-radius:9px;
+    padding:9px 11px;font-family:inherit;font-size:15px;resize:vertical;background:#fff;color:var(--ink)}
+  textarea:focus{outline:none;border-color:var(--blue)}
+  .btn{display:inline-block;background:var(--navy);color:#fff;border:none;border-radius:10px;
+    padding:11px 18px;font-size:15px;font-weight:600;cursor:pointer;margin-top:6px}
+  .btn.sec2{background:#e8e8ed;color:var(--navy)}
+  .muted{color:var(--dim);font-size:13px}
+  ul{padding-left:20px;margin:.3em 0}
+  hr{border:none;border-top:1px solid #e2e2e6;margin:24px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>人类公司机制 → 我们的 AI 公司(第 3 轮:你的追问 + 架构图)</h1>
+  <div class="sub">FLY-1045 · 第 3 轮 co-eval · 2026-07-09 · 你上一轮追问「说太抽象、画个架构」—— 这轮全落到具体</div>
+  <div class="bar">✍️ 每段 = <b>你的追问 → 具体答案 → 我们系统里的真东西 → 留言框</b>。A 那段有你要的<b>架构图</b>。这版还是<b>不拆任务</b>,先把「做成什么样」磨清楚。写完点最下面「一键复制我全部批注」。</div>
+
+  <div class="hero">
+    <span class="tag">⭐ 一句话:这套东西本质就是 evaluation + 用它的分去给权</span>
+    <div class="ans">你上一轮点破的很准 —— <b>反馈账本本质就是 evaluation</b>。所以大方向:<b>测量层用现成 eval 工具</b>(不自己搭),我们只建薄薄一层「eval 分 → 给不给更大权」的 policy。下面每段都往这个方向落。</div>
+  </div>
+
+  <div class="sec navy" data-title="Q3/Ledger — 这其实就是 evaluation">
+    <h2>① 反馈账本 = evaluation(不用自己搭测量层)</h2>
+    <div class="qq"><b>你问:</b>这其实是不是 evaluation?有没有现成工具、不用自己搭?我觉得 eval 有很多现成的可以直接用。</div>
+    <div class="ans">对,<b>本质就是 evaluation</b>。所以:<b>测量层用现成 eval 工具</b>记每个 role/version 的 outcome —— 例如 <b>LangSmith / Braintrust / Promptfoo / OpenAI evals</b>,这些不自己造。我们只建<b>薄薄一层</b>:①「eval 分 → 给不给权」的 policy;② 一个写入 hook(把你的 approve/reject + runner 的测试/rollback 结果喂进去)。</div>
+    <div class="eg"><b>真东西:</b>现在 CI 测试、静态分析、你的 approve/reject 都已经在跑,只是没被一个 eval store 按 role/version 攒起来。补的是「攒 + 用分给权」,不是从头造 eval。</div>
+    <div class="cbox"><div class="ask">✍️ 往「现成 eval 工具 + 薄 policy 层」这个方向走,对不对你的意?你有想用的具体工具吗?</div>
+      <textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec" data-title="handoff artifact 具体是什么">
+    <h2>② handoff artifact 到底是什么(具体载体)</h2>
+    <div class="qq"><b>你问:</b>handoff artifact 到底是什么、用什么承载?用 issue 还是别的?别太抽象否则没法落地。</div>
+    <div class="ans">承载它的就是 <b>Linear issue + 它挂的文档</b>:<code>plan.md</code> / 验收标准(acceptance criteria)/ <code>progress.md</code> / <code>landing-status.json</code> / PR。下游 agent <b>读这些文件,不读聊天</b>。</div>
+    <div class="eg"><b>真例子:</b>design→implement 的交接 = implement 的 agent <b>读 plan.md + 验收标准</b>,而不是谁在聊天里说一句「去把 X 建了」。交接内容在文件里,不在对话里(对话会走样、会丢)。</div>
+    <div class="hmap"><b>对应人类:</b>交接靠工单/文档,不靠口头传话。</div>
+    <div class="cbox"><div class="ask">✍️ 这样够具体了吗?(载体 = Linear issue + 它的文档)</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec red" data-title="A/Cipher — 架构图 + 复用还是重写">
+    <h2>③ 机制 A · 反馈账本 server 长什么样(架构图)</h2>
+    <div class="qq"><b>你说:</b>复用还是重写,取决于要做成什么样 —— 你这个 server 想做成什么样?画个 architecture 让我看。</div>
+    <div class="ans">画好了。从左到右的流,颜色分三类:<b style="color:#0a4a8a">蓝 = 现成工具/已有</b>、<b style="color:#12602a">绿 = 我们已有的原语</b>、<b style="color:#a55">橙 = 真正要自建的(就中间那一薄层)</b>:</div>
+    <div class="arch">
+      <svg width="822" height="212" viewBox="0 0 822 212" role="img" aria-label="反馈账本架构图">
+        <defs>
+          <marker id="ah" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+            <path d="M0,0 L6,3 L0,6 Z" fill="#8a97ad"/>
+          </marker>
+        </defs>
+        <!-- boxes -->
+        <g font-family="-apple-system,system-ui,sans-serif" text-anchor="middle">
+          <rect x="6" y="44" width="116" height="64" rx="9" fill="#e6f0ff" stroke="#7d9fce"/>
+          <text x="64" y="70" font-size="12.5" font-weight="700" fill="#1a365d">① 写入 hook</text>
+          <text x="64" y="87" font-size="9" fill="#4a5a72">你 approve/reject</text>
+          <text x="64" y="99" font-size="9" fill="#4a5a72">+ runner outcome</text>
+
+          <rect x="136" y="44" width="116" height="64" rx="9" fill="#e6f0ff" stroke="#7d9fce"/>
+          <text x="194" y="70" font-size="12.5" font-weight="700" fill="#1a365d">② eval store</text>
+          <text x="194" y="87" font-size="9" fill="#4a5a72">现成工具</text>
+          <text x="194" y="99" font-size="8.5" fill="#4a5a72">LangSmith/Braintrust</text>
+
+          <rect x="266" y="44" width="116" height="64" rx="9" fill="#e6f0ff" stroke="#7d9fce"/>
+          <text x="324" y="70" font-size="12.5" font-weight="700" fill="#1a365d">③ 计分卡</text>
+          <text x="324" y="87" font-size="9" fill="#4a5a72">按 role+version</text>
+          <text x="324" y="99" font-size="8.5" fill="#4a5a72">(Cipher schema)</text>
+
+          <rect x="396" y="44" width="116" height="64" rx="9" fill="#e7f8ec" stroke="#5aa86e"/>
+          <text x="454" y="72" font-size="12.5" font-weight="700" fill="#12602a">④ registry 表</text>
+          <text x="454" y="90" font-size="9" fill="#2a6a3a">= 机制 F</text>
+
+          <rect x="526" y="40" width="130" height="72" rx="9" fill="#fff2e0" stroke="#e0a24a" stroke-width="2"/>
+          <text x="591" y="64" font-size="12.5" font-weight="700" fill="#8a5200">⑤ policy</text>
+          <text x="591" y="80" font-size="9" fill="#7a4a00">eval 分 → tier</text>
+          <text x="591" y="92" font-size="9" fill="#7a4a00">升降 + gate</text>
+          <text x="591" y="105" font-size="9" font-weight="700" fill="#a55">← 真正自建·薄</text>
+
+          <rect x="670" y="44" width="146" height="64" rx="9" fill="#e7f8ec" stroke="#5aa86e"/>
+          <text x="743" y="70" font-size="12.5" font-weight="700" fill="#12602a">⑥ 输出</text>
+          <text x="743" y="87" font-size="8.5" fill="#2a6a3a">权限 tier / gate</text>
+          <text x="743" y="99" font-size="8.5" fill="#2a6a3a">/ rollback / routing</text>
+        </g>
+        <!-- arrows -->
+        <g stroke="#8a97ad" stroke-width="1.6" fill="none">
+          <line x1="122" y1="76" x2="134" y2="76" marker-end="url(#ah)"/>
+          <line x1="252" y1="76" x2="264" y2="76" marker-end="url(#ah)"/>
+          <line x1="382" y1="76" x2="394" y2="76" marker-end="url(#ah)"/>
+          <line x1="512" y1="76" x2="524" y2="76" marker-end="url(#ah)"/>
+          <line x1="656" y1="76" x2="668" y2="76" marker-end="url(#ah)"/>
+        </g>
+        <!-- feedback loop arrow ⑥ back to ① -->
+        <path d="M743,108 L743,190 L64,190 L64,110" stroke="#c2a05a" stroke-width="1.4" fill="none" stroke-dasharray="4 3" marker-end="url(#ah)"/>
+        <text x="404" y="185" font-size="9.5" fill="#a5852a" text-anchor="middle">下一次 run 就按新权限跑(闭环)</text>
+        <!-- cross-cut -->
+        <rect x="266" y="120" width="390" height="26" rx="7" fill="#fff" stroke="#c9752e" stroke-dasharray="5 3"/>
+        <text x="461" y="137" font-size="10.5" font-weight="700" fill="#a55" text-anchor="middle">跨切:attribution + revert(账本 + rollback 合起来 = 机制 B）</text>
+      </svg>
+    </div>
+    <div class="caption"><b>关键:</b>①②③⑥ 大部分是<b>现成 eval 工具 + 我们已有的 gate/QA/rollback</b>;真正要自建的只有 <b>⑤ 那一薄层 policy</b>(eval 分怎么换成「给不给更大权」)。所以答案 = <b>复用蓝+绿,自建橙(薄)</b>,不是整个重写、也不是「打开开关就好」。</div>
+    <div class="opts"><div class="muted">基于这张图,你倾向(我推荐 A1):</div>
+      <label class="opt"><input type="radio" name="A"><span class="ol">A1 就按这张图做</span>:复用现成 eval + 已有 gate/QA,只自建中间薄 policy 层<span class="rec">推荐</span></label>
+      <label class="opt"><input type="radio" name="A"><span class="ol">A2 policy 层也想更简单</span>:先只做「记分 + 你手动看」,连自动给权都先不做</label>
+      <label class="opt"><input type="radio" name="A"><span class="ol">A3 这张图方向不对</span>:我想的不是这样(在框里说你想要的样子)</label>
+    </div>
+    <div class="hmap"><b>对应人类:</b>绩效档案不推倒重建,是持续记录;这里连「记录」都用现成工具,我们只写「记录怎么换成权限」。</div>
+    <div class="cbox"><div class="ask">✍️ 这张图是你想要的样子吗?A1/A2/A3?哪块想改?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec green" data-title="B — reward 真正难在 attribution+revert">
+    <h2>④ 机制 B · 真正难的是「坏了怎么找是谁、怎么 revert」</h2>
+    <div class="qq"><b>你点破:</b>gate 真不可逆的 OK。但真正难的是 reward —— agent 发了 10 个 commit 都 ship 了,之后坏了,怎么找是哪个搞坏的?怎么 revert?</div>
+    <div class="ans">你说得对,这才是难点,而且<b>这正是账本(A)的价值</b>:每个 patch 都打了「哪个 role/version + 测试签名」的标。坏了的时候:<b>①</b> 先看账本里哪个 commit 起测试/monitor 变红;<b>②</b> 定位不了就 <code>git bisect</code>(每个 commit 单独跑测试二分)+ 账本归因,定位到<b>具体那个 role-version-patch</b>;<b>③</b> <code>git revert</code> 那一个(不是回滚全部),账本记这次 rollback → 那个 role/version 降一格。</div>
+    <div class="eg"><b>所以 A 和 B 是一对:</b>账本让「归因」成为可能,rollback 是「执行」。没有账本,10 个 commit 坏了只能靠人肉猜;有账本 + bisect,能定位到人(角色)+ 那一刀。</div>
+    <div class="hmap"><b>对应人类:</b>出了事故先查是谁哪一步、只回滚那一步,不是把整周的活全推倒。</div>
+    <div class="cbox"><div class="ask">✍️ 这个「账本 + bisect 归因 + revert 那一个」的思路,解你担心的那个难点了吗?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec amber" data-title="C — runner 随来随走,分打给角色+版本">
+    <h2>⑤ 机制 C · runner 随来随走,分打给谁</h2>
+    <div class="qq"><b>你问:</b>有哪些权限、哪个更大?怎么打分,Lead 和 Runner 都适用吗?难点:Lead 常驻好打分,Runner 随来随走。</div>
+    <div class="ans"><b>权限清单(从小到大):</b> read-only → 改分支 → 跑测试 → 开 PR → merge PR → 碰生产。横切两条:更强模型/更多算力、memory-write(严管)。越靠后越大;merge/生产是真需要 gate 的(接机制 B)。<br><b>runner 随来随走怎么打分(解你的结):</b>分<b>不</b>打给 runner 实例,打给<b>「角色 + 版本」= (Agent MD 版本 + 模型)</b>。runner 是一次性的,但「文档-PR 角色 v3 + Opus」这个组合是持久的 —— 分记在它身上;一个新 runner 起来时,<b>继承它那个角色-版本当前的 tier</b>。这张分表就存在<b>机制 F 的 registry</b> 里,不落在一次性 runner 上。Lead 同理按「角色/版本」打分。</div>
+    <div class="eg"><b>真东西:</b>「角色+版本」= 我们的 Agent MD 文件版本 + 用的模型。这本来就是持久的、可版本化的,天然适合当打分对象。</div>
+    <div class="opts"><div class="muted">选哪条:</div>
+      <label class="opt"><input type="radio" name="C"><span class="ol">C1 只做 permission 阶梯</span>:纯能力升降,先不自动打分</label>
+      <label class="opt"><input type="radio" name="C"><span class="ol">C2 阶梯 + role/version 打分驱动</span>:靠 A 的账本自动决定谁升降<span class="rec">和 A 一套</span></label>
+    </div>
+    <div class="hmap"><b>对应人类:</b>权限随信任升级(新人只读→资深能改→老手独立签字);升的是「岗位+资历」,不是某个临时工个人。</div>
+    <div class="cbox"><div class="ask">✍️ 「分打给角色+版本、runner 继承」解开「随来随走」的结了吗?C1 还是 C2?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec" data-title="D — 异步 status update / 共享黑板">
+    <h2>⑥ 机制 D · 就是异步 status update(你理解对了)</h2>
+    <div class="qq"><b>你问:</b>这算异步 status update 吗?像 Slack po 个 standup?task ledger 像某种 data structure?</div>
+    <div class="ans">对,你理解对了 —— <b>就是异步 status update</b>(写下来别人异步读,不是开会)。task ledger ≈ 一块<b>共享黑板 / 依赖图</b>:谁在做什么、卡在谁的哪个 artifact 上,像 build 系统的 <b>task graph</b>。</div>
+    <div class="opts"><div class="muted">选哪条:</div>
+      <label class="opt"><input type="radio" name="D"><span class="ol">D1 先做异步 status update</span>:每个 agent 写「昨天/今天/卡哪」到共享文件<span class="rec">轻,先试</span></label>
+      <label class="opt"><input type="radio" name="D"><span class="ol">D2 直接做依赖图 task ledger</span>:谁做啥+依赖谁的哪个 artifact,一张图</label>
+    </div>
+    <div class="hmap"><b>对应人类:</b>看板(Kanban)/ 站会记录 —— 状态写在墙上,谁都能看,不用互相追问。</div>
+    <div class="cbox"><div class="ask">✍️ 理解对了?D1 还是 D2?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec navy" data-title="E — 落地就是 1022 + 942">
+    <h2>⑦ 机制 E · orchestrator + 压缩器,落地是什么</h2>
+    <div class="qq"><b>你问:</b>orchestrator + 信息压缩器,具体落地建什么?</div>
+    <div class="ans">具体 = 两个你已经有的 issue:<b>FLY-1022</b>(树状 Lead,扩容 —— orchestrator 那半)+ <b>FLY-942</b>(watchdog,把 N 个 runner 的状态压成 1 条给你 —— 压缩器那半)。而且 <b>orchestrator 这半现在就在做了</b> —— 你的 Lead 本来就是现成的 orchestrator。所以 E <b>不是新东西,是 1022 + 942</b>,本卡只是把它们放进这个大框里对齐。</div>
+    <div class="hmap"><b>对应人类:</b>团队大了加中层经理(1022);中层帮你把一线的噪声汇总成一页报告(942)。</div>
+    <div class="cbox"><div class="ask">✍️ E = 1022 + 942 这个对齐清楚了吗?</div><textarea data-q></textarea></div>
+  </div>
+
+  <div class="sec purple" data-title="F — 你日常不用读这张表">
+    <h2>⑧ 机制 F · 决策权表,你需要碰吗</h2>
+    <div class="qq"><b>你问:</b>这张表人类要读写吗?我需要吗?</div>
+    <div class="ans"><b>日常不用。</b> 这张表是给 <b>agent 机器读</b>的(它决策时查「这事该谁拍」),<b>CoS 维护</b>。你很少读写它 —— 只在<b>要改政策</b>(比如「以后这类活不用问我了」)或<b>想 review 谁能干啥</b>时才碰一下。</div>
+    <div class="eg"><b>真东西:</b>就像 <code>config.yaml</code> / <code>founder-only-authority.md</code> —— agent 天天读,你偶尔改。F 就是给「谁决定什么」也做这么一张。</div>
+    <div class="hmap"><b>对应人类:</b>公司的审批矩阵/权限表 —— 员工按它办事,老板只在改规则时看一眼。</div>
+    <div class="cbox"><div class="ask">✍️ 「你日常不碰、只改政策时看」这样 OK 吗?</div><textarea data-q></textarea></div>
+  </div>
+
+  <hr>
+  <div class="sec" data-title="下一步 / 整体想法" style="border-left-color:var(--dim)">
+    <h2>下一步</h2>
+    <div class="ans">这版还是<b>不拆任务</b>。你逐条挑 option、写想法,我把方向磨到你满意再谈落地。整体不着急,可以再来回几轮。</div>
+    <div class="cbox"><div class="ask">✍️ 整体方向你怎么看?最想先推进哪条?还有哪块想再展开?</div><textarea data-q></textarea></div>
+  </div>
+
+  <button class="btn" id="collect">📋 一键复制我全部批注</button>
+  <button class="btn sec2" id="copy" style="display:none">复制到剪贴板</button>
+  <textarea id="out" style="display:none;margin-top:12px;min-height:200px"></textarea>
+  <p class="muted" id="fallback" style="display:none">若复制按钮无效:长按上面框里的文字全选复制,发给 Honey Lemon 即可。</p>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var btn=document.getElementById('collect'),copy=document.getElementById('copy'),
+      out=document.getElementById('out'),fb=document.getElementById('fallback');
+  if(!btn) return;
+  btn.addEventListener('click',function(){
+    var parts=['# FLY-1045 co-eval 第3轮 — Annie 批注'];
+    document.querySelectorAll('.sec').forEach(function(sec){
+      var title=sec.getAttribute('data-title')||'';
+      var radio=sec.querySelector('input[type=radio]:checked');
+      var ta=sec.querySelector('textarea[data-q]');
+      var pick=radio?(radio.parentNode.textContent||'').trim():'';
+      var note=ta?(ta.value||'').trim():'';
+      if(pick||note){
+        var block='## '+title;
+        if(pick) block+='\n选择: '+pick;
+        if(note) block+='\n'+note;
+        parts.push(block);
+      }
+    });
+    out.value = parts.length>1 ? parts.join('\n\n') : '(还没挑 option、也没写批注)';
+    out.style.display='block'; copy.style.display='inline-block'; fb.style.display='block';
+    out.scrollIntoView({behavior:'smooth',block:'center'});
+  });
+  copy.addEventListener('click',function(){
+    out.select();
+    try{ navigator.clipboard.writeText(out.value); copy.textContent='已复制 ✓'; }
+    catch(e){ try{document.execCommand('copy');copy.textContent='已复制 ✓';}catch(_){ copy.textContent='请手动全选复制'; } }
+  });
+})();
+</script>
+</div>
+</body>
+</html>

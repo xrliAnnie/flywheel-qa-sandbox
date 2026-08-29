@@ -1,0 +1,10 @@
+⏺ The server throttle hit once; the operation ended and I'm back at the prompt.
+
+  ⎿  API Error: Server is temporarily limiting requests (not your usage limit).
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── @product-lead ──
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡product-lead | ~/.flywheel/lead-workspace/product-lead | ctx 31% ░░░░░░░░░░
+  5h ░░░░░░░░░░ 48% reset today 21:30  |  7d ░░░░░░░░░░ 10% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

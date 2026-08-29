@@ -1,0 +1,40 @@
+[
+	{
+		"setupComplete": {}
+	},
+	{
+		"serverContent": {}
+	},
+	{
+		"serverContent": {
+			"inputTranscription": {
+				"text": "Hey, can you briefly tell me what Fly 543 is about?"
+			}
+		}
+	},
+	{
+		"serverContent": {}
+	},
+	{
+		"serverContent": {}
+	},
+	{
+		"toolCall": {
+			"functionCalls": [
+				{
+					"name": "ask_lead",
+					"args": {
+						"question": "What is FLY-543 about?"
+					},
+					"id": "fc_7905459779253907474"
+				}
+			]
+		}
+	},
+	{
+		"sessionResumptionUpdate": {
+			"newHandle": "f6c902a7-8860-45b9-9084-cfbb8e5523d3",
+			"resumable": true
+		}
+	}
+]

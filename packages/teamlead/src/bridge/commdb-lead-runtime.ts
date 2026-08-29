@@ -1,19 +1,25 @@
 /**
  * FLY-47: CommDBLeadRuntime — delivers events to Lead via CommDB instructions.
  *
- * Replaces ClaudeDiscordRuntime: instead of posting to a Discord control channel,
- * writes to CommDB as instructions. Lead picks these up via inbox-check.sh hook
- * (same mechanism as Runner → Lead communication).
+ * Bridge writes events to CommDB as instructions. Lead picks them up via the
+ * flywheel-inbox MCP / inbox-check.sh hook (same mechanism as Runner → Lead).
+ * (FLY-77 removed the predecessor Discord control-channel transport entirely.)
  *
- * This eliminates the need for:
- * - ClaudeBot token for internal Bridge → Lead communication
- * - allowBots Discord configuration
- * - Discord control channel as internal transport
- *
- * Discord is now only used for Lead → Annie (outbound Chat messages).
+ * Internal Bridge → Lead transport uses no Discord channel and no Bridge bot
+ * token. Discord is only used for Lead → Annie (outbound chat messages).
  */
 
 import { CommDB } from "flywheel-comm/db";
+import {
+	formatDetectionEscalation,
+	formatDetectionSuspicious,
+	formatDurationMs,
+	formatGateQuestion,
+	formatMisroutedReport,
+	formatSessionStuck,
+	formatShipApprovalRequest,
+	formatStuckEscalation,
+} from "./hook-payload.js";
 import type {
 	DeliveryResult,
 	LeadBootstrap,
@@ -72,28 +78,109 @@ export class CommDBLeadRuntime implements LeadRuntime {
 	private formatEnvelope(env: LeadEventEnvelope): string {
 		const e = env.event;
 
-		// FLY-62: gate_question gets a special format
-		if (e.event_type === "gate_question") {
-			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
+		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt
+		// shape from gate_question: no checkpoint tag, framing emphasises
+		// "Runner continues working", points the Lead at `flywheel-comm respond`
+		// explicitly so the prompt is self-contained.
+		if (e.event_type === "runner_question") {
 			const issueRef = e.issue_identifier || e.issue_id;
-			// FLY-59: Role label for non-main sessions
 			const roleLabel =
 				e.session_role && e.session_role !== "main"
 					? `[${e.session_role.toUpperCase()}] `
 					: "";
 			const lines = [
-				`[Event #${env.seq}] ${roleLabel}gate_question`,
+				`[Event #${env.seq}] ${roleLabel}runner_question`,
 				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
-				`[${tag}] Runner asks:`,
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
 				"---",
 				e.summary ?? "(no content)",
 				"---",
-				`Reply to approve or provide feedback. Question ID: ${e.question_id}`,
+				`Reply via: flywheel-comm respond --db ${e.comm_db_path} --lead <your_id> ${e.question_id} "your reply"`,
+				`Question ID: ${e.question_id}`,
 				`CommDB: ${e.comm_db_path}`,
 			];
-			// FLY-91: Include Chat-Thread hint for gate questions
 			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 			return lines.join("\n");
+		}
+
+		// FLY-62: gate_question gets a special format
+		if (e.event_type === "gate_question") {
+			// FLY-208 6a: shared renderer (parity-by-construction; the
+			// approve_to_ship JSON-shape guidance must not drift between runtimes).
+			return formatGateQuestion(env);
+		}
+
+		// FLY-159: gate_timed_out gets a special format so Lead notifications
+		// surface checkpoint, wait duration, original Runner message, and
+		// fail-close vs fail-open behavior. Generic formatter (below) would
+		// otherwise drop these fields.
+		if (e.event_type === "gate_timed_out") {
+			const tag = e.checkpoint?.toUpperCase() ?? "GATE";
+			const issueRef = e.issue_identifier || e.issue_id;
+			const roleLabel =
+				e.session_role && e.session_role !== "main"
+					? `[${e.session_role.toUpperCase()}] `
+					: "";
+			const waited = formatDurationMs(e.waited_ms);
+			const behavior = e.timeout_behavior ?? "fail-close";
+			const source = e.timeout_behavior_source ?? "default";
+			const lines = [
+				`[Event #${env.seq}] ${roleLabel}gate_timed_out`,
+				`ID: ${e.execution_id || "---"} | Issue: ${issueRef || "---"}`,
+				`[${tag}] Gate timed out — waited ${waited} (behavior: ${behavior}, source: ${source})`,
+				"---",
+				"Original Runner message:",
+				e.original_message ?? "(no original message captured)",
+				"---",
+				`Question ID: ${e.question_id ?? "---"}`,
+				"Notify Annie via Discord — ask whether to retry or cancel.",
+			];
+			if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
+			return lines.join("\n");
+		}
+
+		// FLY-1018: ship_approval_request — gemini-agent's request-shaped ship
+		// surface. Shared renderer (parity-by-construction, FLY-195 lesson):
+		// PR URL / requester / "nothing merged" note must render verbatim.
+		if (e.event_type === "ship_approval_request") {
+			return formatShipApprovalRequest(env);
+		}
+
+		// FLY-195 hotfix: runner_stuck_escalation MUST render the
+		// episode_fingerprint (+ stuck evidence) — the generic formatter below
+		// drops them, the Lead cannot echo the fingerprint, its disposition
+		// POST fails validation, and the Q7 fallback false-pages Annie
+		// (production incident 2026-06-03, GEO-397). Shared renderer keeps
+		// mailbox/commdb parity by construction.
+		if (e.event_type === "runner_stuck_escalation") {
+			return formatStuckEscalation(env);
+		}
+
+		// FLY-208 A2: misrouted-report advisory (black-hole inbox patrol).
+		// Shared renderer — same parity-by-construction rationale as
+		// formatStuckEscalation (FLY-195 lesson).
+		if (e.event_type === "runner_misrouted_report") {
+			return formatMisroutedReport(env);
+		}
+
+		// FLY-1048 (A5): detection_suspicious — the generic formatter would drop
+		// suspicious_reason / suspicious_pane_tail entirely. Shared renderer
+		// (parity with MailboxLeadRuntime by construction).
+		if (e.event_type === "detection_suspicious") {
+			return formatDetectionSuspicious(env);
+		}
+
+		// FLY-1048 (C2): detection_escalation — Lead-first leg of the unified
+		// escalation flow. Shared renderer (parity by construction).
+		if (e.event_type === "detection_escalation") {
+			return formatDetectionEscalation(env);
+		}
+
+		// FLY-1234: session_stuck — the generic formatter would drop the
+		// confirm-layer annotation (confirm_note). Shared renderer, byte-compat
+		// with the generic branch when the annotation is absent.
+		if (e.event_type === "session_stuck") {
+			return formatSessionStuck(env);
 		}
 
 		// FLY-59: Prefix role label for non-main sessions
@@ -123,8 +210,6 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			lines.push(`Context: ${e.notification_context}`);
 		if (e.pr_number) lines.push(`PR: #${e.pr_number}`);
 		if (e.stage_context) lines.push(`Note: ${e.stage_context}`);
-		if (e.thread_id) lines.push(`Forum-Thread: ${e.thread_id}`);
-		if (e.forum_channel) lines.push(`Forum: ${e.forum_channel}`);
 		// FLY-91: Chat thread hint for per-issue conversation
 		if (e.chat_thread_id) lines.push(`Chat-Thread: ${e.chat_thread_id}`);
 
@@ -212,6 +297,29 @@ export class CommDBLeadRuntime implements LeadRuntime {
 			}
 			sections.push(
 				'Action: For each, relay to Annie, then: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
+			);
+			sections.push("");
+		}
+
+		// FLY-161: non-blocking Runner asks (`flywheel-comm ask`). Listed as a
+		// separate section so the Lead doesn't conflate them with hard gates.
+		if (snapshot.pendingRunnerQuestions?.length) {
+			sections.push("### Pending Runner Questions");
+			for (const rq of snapshot.pendingRunnerQuestions) {
+				const issue = rq.issueIdentifier ?? rq.executionId;
+				const roleLabel =
+					rq.sessionRole && rq.sessionRole !== "main"
+						? `[${rq.sessionRole.toUpperCase()}] `
+						: "";
+				const threadHint = rq.chatThreadId
+					? ` (Chat-Thread: ${rq.chatThreadId})`
+					: "";
+				sections.push(
+					`- ${roleLabel}[ASK] ${issue} (ID: ${rq.questionId}, DB: ${rq.commDbPath})${threadHint}: ${rq.content.slice(0, 200)}${rq.content.length > 200 ? "..." : ""}`,
+				);
+			}
+			sections.push(
+				'Action: Surface each to Annie (Runner is continuing work — non-blocking). Reply with: flywheel-comm respond --db <DB path above> --lead <your_id> <question_id> "reply"',
 			);
 			sections.push("");
 		}

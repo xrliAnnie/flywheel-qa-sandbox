@@ -1,0 +1,33 @@
+[2026-07-09T15:18:56.278Z] health endpoint on 127.0.0.1:9880/health
+[2026-07-09T15:18:57.174Z] bots online: orchestrator, note-taker
+[2026-07-09T15:18:57.662Z] Note-taker resident in VC 1485787273193853170
+[2026-07-09T15:18:57.669Z] [presence] humanCount seeded=1 (boot occupancy)
+[2026-07-09T15:18:57.863Z] /gemini registered on guild 1485787271192907816
+[2026-07-09T15:18:57.863Z] autostart QA seam armed (topic: FLY-1047 QA 幕一)
+[2026-07-09T15:18:57.863Z] daemon up — health :9880, assistant=/gemini
+[2026-07-09T15:19:01.982Z] [gemini-command] MOVE_MEMBERS unavailable — Join button is the path in
+[2026-07-09T15:19:01.982Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] state -> invoked
+[2026-07-09T15:19:02.082Z] [presence] voiceState user=1523230048243417178 bot=true - -> 1485787273193853170 delta=join humanCount=1 joinSubs=0
+[2026-07-09T15:19:02.527Z] [deferred-player] real player attached (orchestrator in VC)
+[2026-07-09T15:19:02.527Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] voice joined — orchestrator in the VC
+[2026-07-09T15:19:02.527Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] briefing composed (3150 chars, stale=false)
+[2026-07-09T15:19:02.527Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] connecting Gemini Live…
+[2026-07-09T15:19:02.793Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] conversation ready
+[2026-07-09T15:19:02.794Z] [presence] founderPresent()=true (humanCount=1)
+[2026-07-09T15:19:02.794Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] founderPresent()=true at post-connect check
+[2026-07-09T15:19:02.794Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] state -> live (initial-check)
+[2026-07-09T15:19:02.794Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] OPENING prompt sent to Gemini
+[2026-07-09T15:19:03.556Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] response started (ears frames forwarded so far: 0)
+[2026-07-09T15:19:03.556Z] [assistant-speaker] turn begin
+[2026-07-09T15:19:03.556Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] first response audio from Gemini
+[2026-07-09T15:19:03.556Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T15:19:03.643Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T15:19:11.080Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] response done (audio chunks this turn: 29, total: 29)
+[2026-07-09T15:19:11.083Z] [assistant-speaker] turn end — chunks=29 bytes=360002 dropped=0
+[2026-07-09T15:21:24.976Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] first ears frame forwarded to Gemini (640 bytes)
+[2026-07-09T15:25:54.986Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] ears frames forwarded: 250
+[2026-07-09T15:26:20.504Z] quit file seen after 442.6s
+[2026-07-09T15:26:20.507Z] shutting down (session length 442.6s)
+[2026-07-09T15:26:20.507Z] shutting down (bounded)
+[2026-07-09T15:26:20.508Z] [assistant-session][ba8fa773-4262-4b10-9e91-7a0591ee79bd] state -> landing (trigger=external-stop confirmed=false; ears frames forwarded=277, assistant audio chunks=29)
+[2026-07-09T15:26:22.402Z] daemon closed

@@ -66,6 +66,48 @@ describe("FallbackHeuristic", () => {
 		expect(result.confidence).toBe(0.5);
 	});
 
+	// ─── FLY-921 Fix D: progress-ledger-only commits ──────────
+
+	it("all commits are progress-ledger chores → blocked (FLY-921)", () => {
+		const result = fallback.evaluate(
+			makeCtx({
+				commitCount: 3,
+				commitMessages: [
+					"chore(progress): FLY-543 design 1/4",
+					"chore(progress): FLY-543 design 2/4",
+					"chore(progress): FLY-543 implement 0/8",
+				],
+			}),
+			"API error",
+		);
+		expect(result.route).toBe("blocked");
+		expect(result.reasoning).toContain("progress-ledger-only");
+	});
+
+	it("mixed ledger + real commits → not caught by Rule 1 (FLY-921)", () => {
+		const result = fallback.evaluate(
+			makeCtx({
+				commitCount: 2,
+				commitMessages: [
+					"chore(progress): FLY-543 implement 1/8",
+					"fix: actual code change",
+				],
+			}),
+			"API error",
+		);
+		expect(result.route).toBe("needs_review");
+		expect(result.confidence).toBe(0.5);
+	});
+
+	it("0 commits keeps existing blocked behavior (FLY-921 regression pin)", () => {
+		const result = fallback.evaluate(
+			makeCtx({ commitCount: 0, commitMessages: [] }),
+			"API error",
+		);
+		expect(result.route).toBe("blocked");
+		expect(result.confidence).toBe(0.9);
+	});
+
 	it("never returns auto_approve", () => {
 		const scenarios: Partial<ExecutionContext>[] = [
 			{},

@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-968 语音模型选型 — 结论一页</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { font-family:-apple-system,system-ui,sans-serif; background:#f5f5f7; color:#1d1d1f; line-height:1.6; padding:16px; }
+  .wrap { max-width:960px; margin:0 auto; }
+  h1 { font-size:22px; color:#1a365d; margin:8px 0 4px; }
+  .sub { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:18px 20px; margin-bottom:16px; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.navy { border-left-color:#1a365d; }
+  .card h2 { font-size:16px; color:#1a365d; margin-bottom:8px; }
+  .verdict { display:inline-block; padding:2px 10px; border-radius:12px; font-size:12.5px; font-weight:600; white-space:nowrap; }
+  .yes { background:#e8f8ee; color:#1d8a3e; }
+  .no { background:#ffebea; color:#c9302c; }
+  .cond { background:#fff3e0; color:#b26a00; }
+  p { font-size:14px; margin-bottom:8px; }
+  .why { color:#515154; font-size:13px; }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; margin-top:8px; }
+  th { text-align:left; color:#86868b; font-weight:600; padding:6px 8px; border-bottom:1px solid #e5e5ea; white-space:nowrap; }
+  td { padding:6px 8px; border-bottom:1px solid #f0f0f2; vertical-align:top; }
+  .tbl-scroll { overflow-x:auto; }
+  .num { font-family:'SF Mono',monospace; font-size:12px; }
+  .win { color:#1d8a3e; font-weight:600; }
+  .lose { color:#ff3b30; }
+  ul { padding-left:20px; font-size:14px; }
+  li { margin-bottom:6px; }
+  .foot { color:#86868b; font-size:12px; text-align:center; margin:20px 0 8px; }
+  .plus { color:#1d8a3e; } .minus { color:#c9302c; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>语音模型选型 — 结论</h1>
+  <div class="sub">FLY-968 · 2026-07-07 · 四家候选全部当日真机实测 · 花费 $0.30（上限 $5）</div>
+
+  <div class="card navy">
+    <h2>① 这到底是怎么回事</h2>
+    <p>我们在给 Voice（/meet 多 Lead 会议 545、/live 语音助理 967）<b>选「耳朵+嘴」用哪家的实时语音模型</b>。原方案是 Gemini 出文字、每个 Lead 本地配自己的声线，但上周实测发现 Gemini 全系<b>不支持文字输出</b>，方案被打死。你问了两个问题：能不能开多条 Gemini 各配一个声线？要不要换家（OpenAI？还有谁）？968 就是用真机把这两个问题跑出答案。</p>
+  </div>
+
+  <div class="card green">
+    <h2>② 每个候选：能用还是不能用</h2>
+    <div class="tbl-scroll">
+    <table>
+      <tr><th>候选</th><th>verdict</th><th>一句话理由</th></tr>
+      <tr><td><b>Gemini Live</b><br><span class="num">多 session</span></td><td><span class="verdict yes">能用 — 主推</span></td><td>3 条 session 各配声线真机跑通：回话 0.73-1.14 秒（开三条不变慢）、成本只有 1.05 倍（不是 3 倍）、30 个声线中文全可懂。条件：话只喂被点名的 Lead（大家一起听会抢答，10 轮 8 轮插嘴），其他 Lead 用我们实测找到的「静默注入」通路补上下文——注入后能准确复述别的 Lead 说过的话。</td></tr>
+      <tr><td><b>OpenAI Realtime</b></td><td><span class="verdict cond">有条件能用</span></td><td><b>它把原方案救活了</b>：真机验证支持纯文字输出（一条连接、任意多声线）。条件：现在全链 1.5-2 秒超标，卡的是我们本地配音工具每次冷启动（OpenAI 自己 0.4-0.7 秒就出字），换流式配音预计 1.0-1.3 秒达标。接入成本低（接口位早预留了）。</td></tr>
+      <tr><td><b>Nova Sonic</b><br><span class="num">(Amazon)</span></td><td><span class="verdict no">不能用</span></td><td>官方支持 7 种语言，<b>没有中文</b>——第一权重直接不满足。新版意外支持文字输出，若哪天加中文可再看，现在出局。</td></tr>
+      <tr><td><b>ElevenLabs Agents</b></td><td><span class="verdict cond">有条件能用 — 黑马</span></td><td>实测首音 0.72 秒（四家最快档）、可以外接 Claude 当脑、声线弹药最足。条件：价格是 Gemini 方案的 <b>7 倍</b>（$4.8/小时 vs $0.68），多 Lead 形态还没验。见下节。</td></tr>
+    </table>
+    </div>
+    <p class="why" style="margin-top:8px">其他（xAI / Qwen / MiniMax / 豆包 / Hume）= follow-up 观察名单，一句话版：xAI 兼容 OpenAI 接口（写好 OpenAI 后端等于白送一家备胎）；Qwen 支持会话内克隆声线、中文最强，是后备第一位；其余暂不动。</p>
+  </div>
+
+  <div class="card amber">
+    <h2>③ 为什么 ElevenLabs 是黑马</h2>
+    <p>它跟另外三家<b>不是一个物种</b>：那三家是「模型」，ElevenLabs Agents 是「装好的整车」——听、想、说、谁该说话、被打断怎么办，平台全包。这正好是我们现在要自己写的最麻烦的编排工程。</p>
+    <ul>
+      <li><span class="plus">强</span>：<b>脑可外接</b>——文档确认只要暴露一个 OpenAI 兼容端点，就能把 Claude 接进去当脑（= 我们的 Lead 人设、记忆、工具全保留，只租它的耳朵和嘴）。</li>
+      <li><span class="plus">强</span>：<b>声线弹药最足</b>——海量声线库 + 克隆，per-Lead 声线天然不受「内置 10 个 / 30 个」限制。</li>
+      <li><span class="plus">强</span>：实测首音 <b>0.72 秒</b>、中英混说转写全对、音频进出接口和 Gemini/OpenAI 同构（接 Discord 摩擦一样低）。</li>
+      <li><span class="minus">弱</span>：<b>按分钟收费贵</b>——60 分钟会议约 $4.8，是 Gemini 方案的 7 倍；外接脑的延迟惩罚、多 Lead 要几个 agent 怎么计费，都还没验。</li>
+    </ul>
+    <p class="why"><b>对我们意味着</b>：如果哪天想用钱换开发速度（把编排工程外包给平台），它是唯一现成的选项。建议单开一个 issue 深评（外接 Claude 实测 + 多 Lead 形态 + 真实账单），不挡 545/967 主线。</p>
+  </div>
+
+  <div class="card">
+    <h2>横评一眼版（全部实测数字）</h2>
+    <div class="tbl-scroll">
+    <table>
+      <tr><th></th><th>Gemini Live</th><th>OpenAI Realtime</th><th>ElevenLabs</th><th>Nova Sonic</th></tr>
+      <tr><td>回话延迟</td><td class="num win">0.73-1.14s</td><td class="num">文字 0.4-0.7s + 配音</td><td class="num win">0.72s</td><td class="num">—(出局)</td></tr>
+      <tr><td>文字输出</td><td class="lose">不支持</td><td class="win">支持（实测 3/3）</td><td>天然支持</td><td>支持</td></tr>
+      <tr><td>中文声线</td><td class="win">30 个全可懂</td><td>10 个全可懂</td><td>海量 + 克隆</td><td class="lose">无中文</td></tr>
+      <tr><td>60 分钟会议成本</td><td class="num win">$0.68（多 Lead 版）</td><td class="num">$1.2-1.3</td><td class="num lose">~$4.8</td><td class="num">~$0.9</td></tr>
+      <tr><td>单次连接</td><td class="lose">15 分钟要重连</td><td class="win">60 分钟</td><td>平台托管</td><td class="lose">8 分钟</td></tr>
+      <tr><td>打断响应</td><td>正常</td><td class="win">34 毫秒（最快）</td><td>平台托管</td><td>—</td></tr>
+    </table>
+    </div>
+  </div>
+
+  <div class="card purple">
+    <h2>建议</h2>
+    <ul>
+      <li><b>/meet 多 Lead 会议（545）</b>：主推 <b>Gemini 多 session + 静默补喂</b>；备选 OpenAI 文字路线（先换流式配音）。两条都活，545 迭代时按工程量拍板。</li>
+      <li><b>/live 单声线助理（967）</b>：<b>维持 Gemini 单 session 不动</b>——延迟最优、成本 1/2-1/4。</li>
+      <li><b>follow-up</b>：ElevenLabs 单开 issue 深评；Qwen 克隆声线进观察名单。</li>
+    </ul>
+  </div>
+
+  <div class="foot">证据与复现：engineering/doc/FLY-968-voice-model-bakeoff/（V1-V10 全命题 verdict + spike 脚本 · PR #494）</div>
+</div>
+</body>
+</html>

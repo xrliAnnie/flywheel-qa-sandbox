@@ -1,0 +1,27 @@
+{
+	"ts": "2026-07-08T21:54:19.430Z",
+	"degradation": "Live side driven with TEXT input turns over the same Live API/model voice-core wraps (voice-core ConversationSession is audio-in only; no mic on this box). Output = AUDIO + outputAudioTranscription (the model rejects TEXT-only response modality); announcement text read from transcription, audio bytes discarded. Mic-to-ear speech latency NOT measured — build-phase item.",
+	"liveModel": "gemini-3.1-flash-live-preview",
+	"partA": {
+		"rounds": 5,
+		"delegateCalled": 5,
+		"announced": 5,
+		"ok": 5,
+		"ackLatencyMsAll": [7121, 5884, 7680, 7823, 6944],
+		"announceLatencyMsAll": [8195, 10510, 8343, 8764, 8517],
+		"deepBrainDispatched": 5
+	},
+	"partB": {
+		"nonBlockingAccepted": true,
+		"error": null
+	},
+	"partC": {
+		"rounds": 10,
+		"ok": 10,
+		"latencyMsAll": [
+			6720, 4786, 5215, 6858, 8565, 5389, 7581, 5017, 8336, 5089
+		],
+		"hallucinated": 0
+	},
+	"outboundOrigins": ["http://127.0.0.1:47997"]
+}

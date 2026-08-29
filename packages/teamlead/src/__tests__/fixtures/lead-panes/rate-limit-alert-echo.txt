@@ -1,0 +1,10 @@
+⏺ Holding for Annie's confirmation on the GEO-371 close-up. Core alerts → silent.
+
+← discord · Peter - Product Lead: ⚠️ **Lead hit rate limit** (product-lead / rate_limit) Anthropic API rate li…
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────── @cos-lead ──
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡cos-lead | ~/.flywheel/lead-workspace/cos-lead | ctx 22% ░░░░░░░░░░
+  5h ░░░░░░░░░░ 42% reset today 21:30  |  7d ░░░░░░░░░░ 2% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -25,3 +25,12 @@ logs/
 # TypeScript
 *.tsbuildinfo
 .claude/worktrees/
+.claude/scheduled_tasks.lock
+avatar-candidates/
+
+# Python bytecode (FLY-387 hook tests)
+__pycache__/
+*.pyc
+
+# runner run-state receipts (any package cwd)
+packages/*/.flywheel/

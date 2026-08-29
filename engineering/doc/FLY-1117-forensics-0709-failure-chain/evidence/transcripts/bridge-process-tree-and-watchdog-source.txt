@@ -1,0 +1,26 @@
+# transcript: bridge-process-tree-and-watchdog-source
+# command: bash -c 
+echo "=== children of 48951 ==="
+pgrep -lf -P 48951 2>/dev/null || ps -axo pid,ppid,command | awk "\$2==48951" | cut -c1-180
+echo ""
+echo "=== locate watchdog source by forensic string at bc9c9bfb ==="
+git -C ~/Dev/flywheel grep -l "bridge_event_loop_stall" bc9c9bfb -- "*.ts" 2>/dev/null
+echo ""
+echo "=== grandchildren (bridge node children) ==="
+BRIDGE_CHILD=$(ps -axo pid,ppid | awk "\$2==48951 {print \$1; exit}")
+echo "bridge child pid: $BRIDGE_CHILD"
+[ -n "$BRIDGE_CHILD" ] && ps -p $BRIDGE_CHILD -o pid,ppid,command | cut -c1-180
+# collected_at: 2026-07-10T08:35:27Z (host local: 2026-07-10 01:35:27 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== children of 48951 ===
+49074 node /Users/xiaorongli/Dev/flywheel/node_modules/.bin/../tsx/dist/cli.mjs scripts/run-bridge.ts
+
+=== locate watchdog source by forensic string at bc9c9bfb ===
+bc9c9bfb:packages/teamlead/src/bridge/BridgeEventLoopWatchdog.ts
+
+=== grandchildren (bridge node children) ===
+bridge child pid: 49074
+  PID  PPID COMMAND
+49074 48951 node /Users/xiaorongli/Dev/flywheel/node_modules/.bin/../tsx/dist/cli.mjs scripts/run-bridge.ts
+# exit_code: 0

@@ -1,0 +1,24 @@
+{
+	"ok": true,
+	"connector": "shopify",
+	"orders": [
+		{
+			"name": "#1234",
+			"status": "pending",
+			"fulfillment": "unfulfilled",
+			"created_at": "2026-07-08T09:00:00Z"
+		},
+		{
+			"name": "#1235",
+			"status": "paid",
+			"fulfillment": "fulfilled",
+			"created_at": "2026-07-08T10:12:00Z"
+		},
+		{
+			"name": "#1236",
+			"status": "paid",
+			"fulfillment": "fulfilled",
+			"created_at": "2026-07-09T01:30:00Z"
+		}
+	]
+}

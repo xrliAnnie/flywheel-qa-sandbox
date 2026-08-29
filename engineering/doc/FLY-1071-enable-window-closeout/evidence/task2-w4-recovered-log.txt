@@ -1,0 +1,27 @@
+# W4 recovered — 2026-07-09 17:24:56
+# start 由 Annie 裸终端跑 handoff 脚本(job bootstrapped 17:24:14);baseline starts=102 → 现在:
+103
+
+## launchd
+	state = running
+	pid = 92526
+		state = active
+		state = active
+## 启动日志(gate PASSED,无 401/refresh 报错)
+[codex-lead-tui-runtime] SIGTERM → stopping
+[codex-infra-bot-wrapper] 17:24:05 Starting Codex InfraBot WINDOWED FULL-ACCESS (TUI) Lead (projectDir=/Users/xiaorongli/Dev/flywheel)
+[codex-lead-tui-home] WARNING (FLY-513): global codex /Users/xiaorongli/.local/bin/codex resolves INTO this Lead home: /Users/xiaorongli/.codex-infra-bot/packages/standalone/releases/0.144.1-aarch64-apple-darwin/bin/codex
+[codex-lead-tui-home]   → the standalone updater / Lead flips will churn it and transiently break EVERY runner's codex review gate.
+[codex-lead-tui-home]   → restore a neutral pinned global, e.g.: ln -sfn ~/.local/share/flywheel-codex/<ver>/bin/codex /Users/xiaorongli/.local/bin/codex
+[codex-lead-tui-home] config.toml written (full-access: workspace-write + network ON, writable_roots=[/Users/xiaorongli/Dev/flywheel])
+[codex-lead-tui-home] config.toml: appended [mcp_servers.lead_actions] (full-access: approve + token by name)
+[codex-lead-tui-home] home OK (full-access): /Users/xiaorongli/.codex-infra-bot
+[run-codex-infra-bot-tui] WINDOWED FULL-ACCESS Codex Infra Bot | runtime=/Users/xiaorongli/Dev/flywheel/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js projectDir=/Users/xiaorongli/Dev/flywheel outbound=direct dryRun=0
+[codex-lead-tui-runtime] full-access §10 config gate PASSED (lead_actions MCP exact + sandbox=workspace-write/network-on + writable_roots=[validated project root], approve mode, token by-name, no broker)
+TurnDemux: dropped late event for released turn 019f4969-0d4b-7080-b715-3df063dfd0d5 (turn/completed)
+bootstrap turn completed (rollout persisted)
+tui-window: real TUI up (flywheel-codex-infra-bot-lead, thread 019f4969-0cbc-74c0-b134-34822c57d2ad)
+CodexLeadRuntime started { threadId: '019f4969-0cbc-74c0-b134-34822c57d2ad' }
+[codex-lead-tui-runtime] codex-infra-bot-lead@flywheel started (③ real terminal)
+## sock
+srw-------  1 xiaorongli  staff  0 Jul  9 17:24 /Users/xiaorongli/.codex-infra-bot/app-server-control/app-server-control.sock

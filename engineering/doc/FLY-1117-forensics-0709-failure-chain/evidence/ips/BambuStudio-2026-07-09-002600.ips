@@ -1,0 +1,136 @@
+{"app_name":"BambuStudio","timestamp":"2026-07-09 00:26:00.00 -0700","app_version":"02.07.01.62","slice_uuid":"fb7d25d5-7f8d-3295-9db5-1085bc4ac83a","build_version":"","platform":1,"bundleID":"com.bambulab.bambu-studio","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.3.2 (25D2150)","roots_installed":0,"name":"BambuStudio","incident_id":"860BFBA9-174F-468F-A399-0D74F7D952A6"}
+{
+  "uptime" : 880000,
+  "procRole" : "Unspecified",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "Mac17,8",
+  "coalitionID" : 1176,
+  "osVersion" : {
+    "train" : "macOS 26.3.2",
+    "build" : "25D2150",
+    "releaseType" : "User"
+  },
+  "captureTime" : "2026-07-09 00:24:31.6643 -0700",
+  "codeSigningMonitor" : 2,
+  "incident" : "860BFBA9-174F-468F-A399-0D74F7D952A6",
+  "pid" : 70582,
+  "translated" : true,
+  "cpuType" : "X86-64",
+  "procLaunch" : "2026-07-09 00:24:30.8598 -0700",
+  "procStartAbsTime" : 21207327137316,
+  "procExitAbsTime" : 21207345359217,
+  "procName" : "BambuStudio",
+  "procPath" : "\/Applications\/BambuStudio.app\/Contents\/MacOS\/BambuStudio",
+  "bundleInfo" : {"CFBundleShortVersionString":"02.07.01.62","CFBundleVersion":"","CFBundleIdentifier":"com.bambulab.bambu-studio"},
+  "storeInfo" : {"deviceIdentifierForVendor":"A28B89EE-5961-5177-87CB-E8FD20EBF4CA","thirdParty":true},
+  "parentProc" : "bash",
+  "parentPid" : 70555,
+  "coalitionName" : "com.flywheel.bridge",
+  "crashReporterKey" : "7CF376A6-1A3F-F76A-0C4C-AEDC4D11A640",
+  "appleIntelligenceStatus" : {"state":"available"},
+  "developerMode" : 1,
+  "responsiblePid" : 56243,
+  "codeSigningID" : "com.bambulab.bambu-studio",
+  "codeSigningTeamID" : "T3UBR9Y3B2",
+  "codeSigningFlags" : 570491649,
+  "codeSigningValidationCategory" : 6,
+  "codeSigningTrustLevel" : 4294967295,
+  "codeSigningAuxiliaryInfo" : 0,
+  "bootSessionUUID" : "F9D974D1-87A6-4E60-84CF-4B141AA2B3A2",
+  "wakeTime" : 291151,
+  "sleepWakeUUID" : "8A9883E5-DEFB-4EC3-84E4-DF4BF38CB247",
+  "sip" : "enabled",
+  "vmRegionInfo" : "0 is not in any region.  Bytes before following region: 4366434304\n      REGION TYPE                    START - END         [ VSIZE] PRT\/MAX SHRMOD  REGION DETAIL\n      UNUSED SPACE AT START\n--->  \n      __TEXT                      104428000-109d2c000    [ 89.0M] r-x\/r-x SM=COW  \/Applications\/BambuStudio.app\/Contents\/MacOS\/BambuStudio",
+  "exception" : {"codes":"0x0000000000000001, 0x0000000000000000","rawCodes":[1,0],"type":"EXC_BAD_ACCESS","signal":"SIGSEGV","subtype":"KERN_INVALID_ADDRESS at 0x0000000000000000"},
+  "termination" : {"flags":0,"code":11,"namespace":"SIGNAL","indicator":"Segmentation fault: 11","byProc":"exc handler","byPid":70582},
+  "vmregioninfo" : "0 is not in any region.  Bytes before following region: 4366434304\n      REGION TYPE                    START - END         [ VSIZE] PRT\/MAX SHRMOD  REGION DETAIL\n      UNUSED SPACE AT START\n--->  \n      __TEXT                      104428000-109d2c000    [ 89.0M] r-x\/r-x SM=COW  \/Applications\/BambuStudio.app\/Contents\/MacOS\/BambuStudio",
+  "extMods" : {"caller":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"system":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"targeted":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"warnings":0},
+  "faultingThread" : 0,
+  "threads" : [{"threadState":{"r13":{"value":105553171204680},"rflags":{"value":518},"rax":{"value":0},"rosetta":{"tmp2":{"value":4531417700},"tmp1":{"value":4388641871},"tmp0":{"value":4388641871}},"r14":{"value":105553171206144},"rsi":{"value":105553151308769},"r8":{"value":101},"rdx":{"value":17},"r10":{"value":59377922867200},"r9":{"value":13825},"r15":{"value":105553171211265},"rbx":{"value":0},"r11":{"value":14016},"rip":{"value":4388641874,"matchesCrashFrame":1},"rbp":{"value":13234714880},"rsp":{"value":13234714368},"r12":{"value":105553171206144},"rcx":{"value":9},"flavor":"x86_THREAD_STATE","rdi":{"value":13234714625}},"id":251780610,"triggered":true,"name":"bambustu_main","queue":"com.apple.main-thread","frames":[{"imageOffset":22207570,"symbol":"Slic3r::GUI::get_min_flush_volumes(Slic3r::DynamicPrintConfig const&, unsigned long)","symbolLocation":1362,"imageIndex":3},{"imageOffset":213692,"symbol":"Slic3r::CLI::run(int, char**)","symbolLocation":150028,"imageIndex":3},{"imageOffset":678624,"symbol":"main","symbolLocation":256,"imageIndex":3},{"imageOffset":26497,"symbol":"start","symbolLocation":3457,"imageIndex":0}]},{"id":251780621,"name":"com.apple.rosetta.exceptionserver","threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":34097745362944},"r12":{"value":8589934592},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":4479650899203},"tmp0":{"value":10337986281472}},"rbx":{"value":4479650899203},"r8":{"value":7939},"r15":{"value":4898947072},"r10":{"value":3},"rdx":{"value":0},"rdi":{"value":0},"r9":{"value":1},"r13":{"value":4794034800},"rflags":{"value":582},"rax":{"value":268451845},"rsp":{"value":10337986281472},"r11":{"value":0},"rcx":{"value":17314086914},"r14":{"value":4531417704},"rsi":{"value":2616}},"frames":[]},{"id":251780821,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13234786304},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13235322880},"rsp":{"value":409603},"r11":{"value":0},"rcx":{"value":5635},"r14":{"value":0},"rsi":{"value":0}}},{"id":251780822,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13235343360},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13235879936},"rsp":{"value":409604},"r11":{"value":0},"rcx":{"value":9987},"r14":{"value":0},"rsi":{"value":0}}}],
+  "usedImages" : [
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 8800051200,
+    "size" : 647168,
+    "uuid" : "734c5ec7-3286-329f-b95c-55c9080d31db",
+    "path" : "\/usr\/lib\/dyld",
+    "name" : "dyld"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 140703127785472,
+    "size" : 196608,
+    "uuid" : "3ae46ed1-ca8a-3d8c-b1f5-eea020395932",
+    "path" : "\/usr\/libexec\/rosetta\/runtime",
+    "name" : "runtime"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4793536512,
+    "size" : 425984,
+    "uuid" : "6065fd53-113c-30e5-9e0e-5c04d6ebd22a",
+    "path" : "\/Library\/Apple\/*\/libRosettaRuntime",
+    "name" : "libRosettaRuntime"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4366434304,
+    "CFBundleShortVersionString" : "02.07.01.62",
+    "CFBundleIdentifier" : "com.bambulab.bambu-studio",
+    "size" : 93339648,
+    "uuid" : "fb7d25d5-7f8d-3295-9db5-1085bc4ac83a",
+    "path" : "\/Applications\/BambuStudio.app\/Contents\/MacOS\/BambuStudio",
+    "name" : "BambuStudio",
+    "CFBundleVersion" : ""
+  },
+  {
+    "size" : 0,
+    "source" : "A",
+    "base" : 0,
+    "uuid" : "00000000-0000-0000-0000-000000000000"
+  }
+],
+  "sharedCache" : {
+  "base" : 140703421693952,
+  "size" : 30064771072,
+  "uuid" : "ecf37cd4-b9d6-36f3-b85b-42db0619754f"
+},
+  "vmSummary" : "ReadOnly portion of Libraries: Total=1.3G resident=0K(0%) swapped_out_or_unallocated=1.3G(100%)\nWritable regions: Total=1.9G written=2227K(0%) resident=2227K(0%) swapped_out=0K(0%) unallocated=1.9G(100%)\n\n                                VIRTUAL   REGION \nREGION TYPE                        SIZE    COUNT (non-coalesced) \n===========                     =======  ======= \nActivity Tracing                   256K        1 \nKernel Alloc Once                    8K        1 \nMALLOC                             1.8G       51 \nMALLOC guard page                   96K        6 \nRosetta Arena                     4096K        2 \nRosetta Generic                   1472K      365 \nRosetta IndirectBranch             896K        3 \nRosetta JIT                      128.0M        1 \nRosetta Return Stack                60K        6 \nRosetta Thread Context              60K        6 \nSTACK GUARD                          8K        2 \nStack                             9240K        3 \nStack Guard                       56.0M        1 \nVM_ALLOCATE                         52K        1 \n__CTF                               824        1 \n__DATA                            35.2M      750 \n__DATA_CONST                     100.7M      794 \n__DATA_DIRTY                      6231K      671 \n__FONT_DATA                        2352        1 \n__INFO_FILTER                         8        1 \n__LINKEDIT                       187.4M        9 \n__OBJC_RO                         64.3M        1 \n__OBJC_RW                         2567K        1 \n__TEXT                             1.1G      812 \n__TPRO_CONST                         4K        1 \ndyld private memory                576K        2 \nmapped file                      150.7M        7 \npage table in kernel              2227K        1 \nshared memory                       80K        4 \n===========                     =======  ======= \nTOTAL                              3.6G     3505 \n",
+  "legacyInfo" : {
+  "threadTriggered" : {
+    "name" : "bambustu_main",
+    "queue" : "com.apple.main-thread"
+  }
+},
+  "logWritingSignature" : "5b4b2ab4947f0632b1a5c65d6a3f696e3b5384a9",
+  "roots_installed" : 0,
+  "bug_type" : "309",
+  "trmStatus" : 1,
+  "trialInfo" : {
+  "rollouts" : [
+    {
+      "rolloutId" : "5fb4245a1bbfe8005e33a1e1",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000021
+    },
+    {
+      "rolloutId" : "5f72dc58705eff005a46b3a9",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000015
+    }
+  ],
+  "experiments" : [
+
+  ]
+}
+}

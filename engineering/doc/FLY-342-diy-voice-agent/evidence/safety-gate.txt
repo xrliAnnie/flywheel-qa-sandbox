@@ -1,0 +1,22 @@
+# FLY-342 生产机安全闸留痕（plan Step 0）
+purpose: 确认 voice lab 实验对 Flywheel fleet 零重负载干扰
+
+## 前后进程快照对比
+BEFORE (17:37, 实验开始前):
+  bridge-ish=33  lead=17  runner-ish=482  (baseline load 15.24)
+AFTER  (18:02, 实验结束):
+  bridge-ish=57  lead=41  runner-ish=536
+  load: load averages: 10.44 10.82 11.93
+  memory: System-wide memory free percentage: 54%
+
+## 实验足迹（隔离，可逆）
+- 全部在 ~/fly342-voice-lab/（独立 venv + whisper.cpp + 模型缓存），非生产路径
+- 未装全局包 / 未碰 launchd·plist·服务 / 未改任何生产配置
+- 重型步骤（本地 CosyVoice/Qwen3 20-50GB + MPS 首推）= 未执行，deferred-to-idle-window
+- 轻量步骤（edge-tts 网络调用 + whisper 短推理）对 fleet 零重负载
+- 注：demo 的 claude -p 脑步骤 >60s 超时 = 既有 fleet 重载竞争（baseline load 已 15），
+  非本实验所致；本实验没有引入重型 CPU/GPU 负载
+
+## 收尾
+- lab 目录 ~/fly342-voice-lab/（~1.7GB：whisper 模型 1.6GB + 音频样本）保留至 QA 核完证据后清理
+- 证据副本已进 repo evidence/（日志/脚本/环境档案），不依赖 lab 目录存活

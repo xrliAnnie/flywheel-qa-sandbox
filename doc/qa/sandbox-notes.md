@@ -1,48 +1,53 @@
-# QA Sandbox Notes — flywheel-qa-sandbox
+# Flywheel QA Sandbox Notes
 
-**Issue**: FLY-202 (QA sandbox fixture — slot harness real-Runner E2E task)
-**Date**: 2026-06-04
+The `flywheel-qa-sandbox` repository is an isolated GitHub fork of Flywheel used by the QA test-slot framework to exercise **real Runner** behavior end to end. Each slot clones this repository into its own temporary workspace under `/tmp/flywheel-test-slot-<N>/`, starts a slot-local Bridge and Lead, and spawns a genuine Runner from a Linear issue. Nothing about the workflow is stubbed — the framework deliberately offers no synthetic fixture mode, because the failures it is built to catch (worktree collisions, gate deadlocks, branch/PR wiring, teardown leaks) only appear on the real path.
 
-## Overview
+That isolation is what makes the fork a safe blast radius. A test can create branches, commit, push, open pull requests, block on gates, and be torn down without touching production repositories, production Discord channels, or the production alert queue. The slot-suffixed clone basename (`project-slot-<N>`) keeps WorktreeManager-derived Runner branches from colliding on the sandbox remote when two slots run the same issue, and `FLYWHEEL_RUNNER_START_POINT` lets a slot Bridge start Runner worktrees from a selected sandbox branch so framework changes travel the same Git and GitHub operations a live run would.
 
-`flywheel-qa-sandbox` 是从 `xrliAnnie/flywheel` main seed 出来的 **standalone QA sandbox 仓库**（GitHub 不允许同账号 fork 自己的仓库，所以它不是真正的 fork，而是靠手动同步保持与生产 main 一致，见 `doc/qa/framework/sandbox-sync-guide.md` §3），作为 Flywheel test-slot E2E 框架（FLY-96 + FLY-115）的目标仓库。`scripts/test-deploy.sh` 会把这个仓库 clone 到 `/tmp/flywheel-test-slot-<N>/project-slot-<N>`，每个 slot 启动一个 test Bridge + test Lead，再通过 `scripts/inject-linear-issue.sh`（POST `/api/runs/start`）注入真实 Linear issue 来 spawn 一个 real Runner。Runner 产生的分支、commit、PR 全部落在这个 sandbox 上，与生产仓库完全隔离。
+The sandbox is disposable integration-test infrastructure, not a second source of truth. Its contents mirror Flywheel closely enough to be realistic, but any state here may be reset or rewritten by the next QA run. Work should stay inside the slot clone and go through the framework's `test-deploy.sh` / `inject-linear-issue.sh` / `test-teardown.sh` scripts so concurrent slots do not collide and residual worktrees, branches, and local databases get cleaned up. Production Leads and Runners must not pick up sandbox fixture issues.
 
-之所以需要独立 sandbox，是因为 slot 框架不支持 synthetic / fixture 模式——每个 slot 都是 real Runner 端到端跑完整 pipeline（onboard → implement → PR → CI → merge）。如果直接用生产 flywheel 仓库，QA 跑出的测试分支、PR 和 merge commit 会污染生产历史；独立的 sandbox 仓库让 QA 流程可以反复执行、随时重置（参见 `doc/qa/framework/sandbox-sync-guide.md`）。
-
-本文件本身就是一个 QA fixture 的产物：FLY-202 提供了一个真实的、PreHydrator 可见的 Linear issue，供 E2E 测试给 sandbox Runner 派发一个小而稳定的多步骤任务（FLY-197 发现文档中引用的 `FLY-SBX-1` 并不存在，FLY-202 填补了这个空缺）。该 issue 仅供 test-slot 使用，生产 Lead / Runner 不应认领。
-
-## Top-Level Directories
+## Top-level directories
 
 | Directory | Description |
-|-----------|-------------|
-| `.claude/` | Claude Code 项目配置：commands、skills、orchestrator、`qa-config.yaml` |
-| `.github/` | GitHub Actions workflows（CI） |
-| `.serena/` | Serena MCP 的项目索引与配置 |
-| `doc/` | 主文档树：architecture / engineer / plan / qa / reference / retro + `VERSION` |
-| `docs/` | 贡献者文档（`CONTRIB.md`、`RUNBOOK.md`） |
-| `packages/` | pnpm monorepo 包：claude-runner、core、edge-worker、flywheel-comm、qa-framework、teamlead 等 |
-| `patches/` | pnpm 依赖补丁（`mem0ai@2.3.0.patch`） |
-| `scripts/` | 运维与 QA/E2E 脚本（test-deploy、inject-linear-issue、test-teardown、daily-standup 等） |
-| `supabase/` | Supabase 配置与数据库 migrations |
+| --- | --- |
+| `.claude/` | Claude Code project commands, skills, `qa-config.yaml`, and orchestrator helpers. |
+| `.flywheel/` | Project-local Flywheel configuration (`config.yaml`) and executor role definitions. |
+| `.github/` | GitHub Actions workflows for repository CI and automation. |
+| `.lead/` | Per-Lead identity folders (cos / eng / product / infra-bot / interviewer) plus the shared Lead rule bundle. |
+| `.serena/` | Serena project configuration and local metadata. |
+| `agents/` | Runner executor role prompts — `generic-executor.md` and `qa-executor.md`. |
+| `doc/` | Primary documentation tree: architecture, engineer pipeline, QA, plans, reference, retros. |
+| `docs/` | Contributor guidance (`CONTRIB.md`), operational runbooks, and operations notes. |
+| `engineering/` | Department-scoped engineering documents and spikes under the doc-flow layout. |
+| `fleet/` | Fleet manifest examples and environment configuration for managed Flywheel fleets. |
+| `packages/` | pnpm workspace packages — Runner, Bridge/teamlead, transports, edge-worker, config, DAG resolver, QA framework. |
+| `patches/` | Version-controlled dependency patches applied at install time (e.g. `mem0ai@2.3.0.patch`). |
+| `product/` | Issue-scoped product research, specifications, and prototypes. |
+| `qa-fly294/` | Checked-in harness scripts, fixtures, and the report from the FLY-294 QA effort. |
+| `qa-fly310/` | Checked-in E2E scripts, environment helpers, evidence, and reports from the FLY-310 QA effort. |
+| `scripts/` | Development, deployment, maintenance, and QA automation scripts (plus their `__tests__`). |
+| `supabase/` | Supabase CLI metadata and database migrations. |
 
-## packages/qa-framework/README.md Summary
+## `packages/qa-framework/README.md` summary
 
-- `flywheel-qa-framework` 是可复用的 QA Agent 框架，提供 plan-aware 的测试 pipeline。
-- 从 GeoForge3D 的 QA Agent v2（GEO-308）提取，定义通用 5-step QA protocol，任何项目通过项目侧配置即可接入。
-- 两层架构：Layer 1 是框架本身（agents / skills / orchestrator / TypeScript config loader），Layer 2 是项目侧的 `.claude/qa-config.yaml`，经 `config-bridge.sh` 桥接消费。
-- Quick Start：复制 `templates/qa-config.yaml` 到项目 → 填写 domains / API 配置 / test skills → 创建 test suite 配置 → QA agent 读取配置运行协议。
-- 5-Step Protocol：Onboard → Analyze + Plan → Research → Write + Execute → Finalize。
-- Config schema 见 `templates/qa-config.yaml`（带完整注释）；TypeScript 类型通过 `import { QaConfig } from 'flywheel-qa-framework'` 获得。
-- `examples/geoforge3d/` 提供完整的 GeoForge3D 配置示例。
-- Test Slot Framework（FLY-96 + FLY-115）：并行隔离的 test slot，每个 slot 对 `xrliAnnie/flywheel-qa-sandbox` 跑 real Runner E2E，不支持 synthetic / fixture 模式。
-- 三个核心脚本：`test-deploy.sh`（clone sandbox + 启动 test Bridge/Lead）、`inject-linear-issue.sh`（直接 POST `/api/runs/start` spawn Runner）、`test-teardown.sh`（清理 tmux/Lead/Bridge、worktree、slot 目录与 CommDB）。
-- 前置条件：`LINEAR_API_KEY`、`gh` CLI 对 sandbox 仓库有 push 权限、sandbox 仓库存在（README 中称 "fork"，实际为 standalone repo）、被测分支已推到 sandbox；缺任一项 `test-deploy.sh` pre-flight 直接 exit 2。
-- Runner worktree 起点由 `FLYWHEEL_RUNNER_START_POINT` env 控制（仅 test Bridge 设置；生产 launcher 不设置，默认 `origin/main` 行为不变）。
-- Contracts：`packages/qa-framework/contracts/PLAN_SOURCE_CONTRACT.md`（QA agent 跨 worktree 获取 plan 文件）与 `packages/qa-framework/skills/SKILL_INTERFACE.md`（所有 QA test skill 的接口契约）。
+- `flywheel-qa-framework` is a reusable, plan-aware QA pipeline extracted from GeoForge3D's QA Agent v2 (GEO-308).
+- It uses a two-layer architecture: the framework ships agents, skills, orchestrator state/track/lock helpers, and a TypeScript config loader; each project supplies `.claude/qa-config.yaml` and its own test-suite file.
+- The QA agent runs a five-step protocol: **Onboard** (load config, obtain plan, verify env) → **Analyze + Plan** → **Research** → **Write + Execute** → **Finalize** (regression + report).
+- Adoption is copy-and-fill: start from `templates/qa-config.yaml`, declare your domains / API config / test skills, add a test-suite config, and import `QaConfig` for typed access.
+- The test-slot framework (FLY-96 + FLY-115) spawns parallel isolated slots, each running a **real Runner** against `xrliAnnie/flywheel-qa-sandbox` — no synthetic or fixture mode exists.
+- Three scripts drive a slot: `test-deploy.sh` (clone + slot Bridge + slot Lead), `inject-linear-issue.sh` (POST `/api/runs/start` to spawn the Runner), and `test-teardown.sh` (kill processes, clean worktrees, branches, `SLOT_DIR`, and CommDB).
+- Real-Runner runs require `LINEAR_API_KEY`, an authenticated `gh` with push access to the fork, the fork itself, and the branch under test pushed to it; `test-deploy.sh` fails fast (exit 2) at pre-flight otherwise.
+- `FLYWHEEL_RUNNER_START_POINT` is read by `WorktreeManager.create()` as a fallback start point and is set on the slot Bridge only — production launchers keep the default `origin/main` behavior.
+- The specialized suites cover the FLY-60 hard gates (one happy path plus six variants), shared-channel mirror mode (FLY-153), and FLY-529 roundtable and alert mirrors; the shared-channel modes intentionally reject Runner E2E unless their explicit escape flags are supplied, while alert overrides remain byte-compatible when disabled.
+- The framework's guides document real-Runner operation and sandbox synchronization, while `contracts/PLAN_SOURCE_CONTRACT.md` defines plan discovery across worktrees and `skills/SKILL_INTERFACE.md` defines the contract for QA test skills.
 
-## `ls -R doc/ | head -50` Output
+## `doc/` listing
 
-```
+Command: `ls -R doc/ | head -50`
+
+```text
+FLY-202-generalized-e2e
+FLY-202-qa-sandbox-fixture
 VERSION
 architecture
 engineer
@@ -51,12 +56,31 @@ qa
 reference
 retro
 
+doc//FLY-202-generalized-e2e:
+design.html
+
+doc//FLY-202-qa-sandbox-fixture:
+FLY-202-d1-e2e-chain.mmd
+FLY-202-d1-e2e-chain.svg
+FLY-202-d2-five-steps.mmd
+FLY-202-d2-five-steps.svg
+FLY-202-d3-doc-model.mmd
+FLY-202-d3-doc-model.svg
+FLY-202-d4-branch-hygiene.mmd
+FLY-202-d4-branch-hygiene.svg
+FLY-202-design.html
+design.md
+plan.md
+progress.md
+workflow-output.json
+
 doc//architecture:
 archive
 capability-matrix.md
 flywheel-agent-architecture-diagram.html
 flywheel-agent-architecture-diagram.mmd
 flywheel-agent-architecture-diagram.svg
+infra-alerts-spec.md
 product-experience-spec.md
 v0.2-architecture.md
 v2.0-product-vision.md
@@ -68,31 +92,8 @@ doc//engineer:
 deep-research
 exploration
 implementation
+onboarding
 plan
+qa
 research
-
-doc//engineer/deep-research:
-001-decision-layer-gemini.md
-002-decision-layer-chatgpt.md
-003-stripe-minions-part1.md
-004-stripe-minions-part2.md
-005-cloudflare-code-mode.md
-006-boris-cherny-claude-code-future.md
-007-parallel-ai-agents-pkarnal.md
-008-agent-orchestrator-ao.md
-009-ramp-inspect-background-agent.md
-010-ai-agent-frameworks-2026.md
-010-gastown-steve-yegge.md
-claude-code-terminal-pane-management.md
-multi-agent-architecture-best-practices.md
-
-doc//engineer/exploration:
-archive
-backlog
-new
-
-doc//engineer/exploration/archive:
-FLY-11-terminal-mcp-tool.md
 ```
-
-> Reviewed note: QA-S1 revision marker 20260604-1044

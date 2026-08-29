@@ -1,0 +1,129 @@
+# FLY-1286 QA Opus — observer regression rerun (round-3 verification)
+# host: MacBook-Pro.local | node: v25.6.1 | HEAD: 1afa999a0cfedb3bbbb1c753130b366db7e7e098
+# date(UTC): 2026-07-15T12:39:28Z
+# command: node --test 529-terminal-observer.test.mjs
+# ---------------------------------------------------------------
+✖ records requested then acked before lifecycle rows disappear (3189.666208ms)
+✖ corroborates a cadence-missed ack with the durable graceful-close event (2858.414292ms)
+✔ corroborates an ack first observed after its requested row was missed (2276.024417ms)
+✔ fails a live fresh cleanup without ack or matching durable event (2693.099792ms)
+✔ classifies a proven direct path instead of pretending it was graceful (3036.311125ms)
+✔ fails closed when direct-path liveness is indeterminate (2693.48475ms)
+✔ reports a dead tmux pane instead of treating it as live (1526.02975ms)
+✔ matches lsof holder names through a canonicalized socket root (1444.485209ms)
+✔ fails fast when the initial tmux server cannot be observed (1556.859625ms)
+✖ treats a vanished tmux server as absent only after observing it live (2705.846709ms)
+✔ accepts a parsed lsof scan with a known benign warning (1435.943333ms)
+✔ scans lsof once per snapshot for all Codex sockets (1621.821167ms)
+✔ deduplicates stable snapshots despite heartbeat age advancing (2570.034833ms)
+✖ ignores old failed FLY-1286 attempts outside the manifest (3002.863167ms)
+✖ requires TURN deletion and QA successful-chain session cleanup (6559.339292ms)
+✖ requires no socket listener or holder after cleanup (3104.797041ms)
+✔ opens both WAL databases readonly (1727.222458ms)
+ℹ tests 17
+ℹ suites 0
+ℹ pass 11
+ℹ fail 6
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 45375.108625
+
+✖ failing tests:
+
+test at engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:448:1
+✖ records requested then acked before lifecycle rows disappear (3189.666208ms)
+  AssertionError [ERR_ASSERTION]: {"stderr":"","verdict":{"kind":"verdict","at":"2026-07-15T12:39:31.742Z","pass":false,"reason":"cleanup_not_observed","executions":{"design":{"history":[{"state":"requested","requestId":"req-design","observedAt":"2026-07-15T12:39:30.395Z","requestedAt":1784119170383,"finishedAt":null,"error":null},{"state":"acked","requestId":"req-design","observedAt":"2026-07-15T12:39:31.101Z","requestedAt":1784119170383,"finishedAt":1784119171091,"error":null}]},"implement":{"history":[{"state":"requested","requestId":"req-implement","observedAt":"2026-07-15T12:39:30.395Z","requestedAt":1784119170437,"finishedAt":null,"error":null},{"state":"acked","requestId":"req-implement","observedAt":"2026-07-15T12:39:31.101Z","requestedAt":1784119170437,"finishedAt":1784119171136,"error":null}]}}}}
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/flywheel-test-slot-2/project-slot-2-FLY-1286/engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:478:11)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async startSubtestAfterBootstrap (node:internal/test_runner/harness:358:3) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:496:1
+✖ corroborates a cadence-missed ack with the durable graceful-close event (2858.414292ms)
+  AssertionError [ERR_ASSERTION]: {"stderr":"","verdict":{"kind":"verdict","at":"2026-07-15T12:39:34.686Z","pass":false,"reason":"cleanup_not_observed","executions":{"design":{"history":[{"state":"requested","requestId":"req-design","observedAt":"2026-07-15T12:39:33.408Z","requestedAt":1784119173399,"finishedAt":null,"error":null}]},"implement":{"history":[{"state":"requested","requestId":"req-implement","observedAt":"2026-07-15T12:39:33.408Z","requestedAt":1784119173442,"finishedAt":null,"error":null}]}}}}
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/flywheel-test-slot-2/project-slot-2-FLY-1286/engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:520:11)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:755:1
+✖ treats a vanished tmux server as absent only after observing it live (2705.846709ms)
+  AssertionError [ERR_ASSERTION]: {"stderr":"","verdict":{"kind":"verdict","at":"2026-07-15T12:39:52.540Z","pass":false,"reason":"cleanup_not_observed","executions":{"design":{"history":[{"state":"requested","requestId":"req-design","observedAt":"2026-07-15T12:39:51.386Z","requestedAt":1784119191384,"finishedAt":null,"error":null},{"state":"acked","requestId":"req-design","observedAt":"2026-07-15T12:39:51.973Z","requestedAt":1784119191384,"finishedAt":1784119191961,"error":null}]},"implement":{"history":[{"state":"requested","requestId":"req-implement","observedAt":"2026-07-15T12:39:51.386Z","requestedAt":1784119191423,"finishedAt":null,"error":null},{"state":"acked","requestId":"req-implement","observedAt":"2026-07-15T12:39:51.973Z","requestedAt":1784119191423,"finishedAt":1784119192000,"error":null}]}}}}
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/flywheel-test-slot-2/project-slot-2-FLY-1286/engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:793:11)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: false,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:871:1
+✖ ignores old failed FLY-1286 attempts outside the manifest (3002.863167ms)
+  AssertionError [ERR_ASSERTION]: Expected values to be strictly equal:
+  
+  1 !== 0
+  
+      at TestContext.<anonymous> (file:///private/tmp/flywheel-test-slot-2/project-slot-2-FLY-1286/engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:905:11)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 1,
+    expected: 0,
+    operator: 'strictEqual',
+    diff: 'simple'
+  }
+
+test at engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:920:1
+✖ requires TURN deletion and QA successful-chain session cleanup (6559.339292ms)
+  Error: observer did not exit
+      at Timeout._onTimeout (file:///private/tmp/flywheel-test-slot-2/project-slot-2-FLY-1286/engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:372:28)
+      at listOnTimeout (node:internal/timers:605:17)
+      at process.processTimers (node:internal/timers:541:7)
+
+test at engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:970:1
+✖ requires no socket listener or holder after cleanup (3104.797041ms)
+  AssertionError [ERR_ASSERTION]: The input did not match the regular expression /orphan_socket|orphan_holder/. Input:
+  
+  'cleanup_not_observed'
+  
+      at TestContext.<anonymous> (file:///private/tmp/flywheel-test-slot-2/project-slot-2-FLY-1286/engineering/doc/FLY-1269-codex-phase-keepalive/qa/529-terminal-observer.test.mjs:1004:11)
+      at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      at async Test.run (node:internal/test_runner/test:1125:7)
+      at async Test.processPendingSubtests (node:internal/test_runner/test:787:7) {
+    generatedMessage: true,
+    code: 'ERR_ASSERTION',
+    actual: 'cleanup_not_observed',
+    expected: /orphan_socket|orphan_holder/,
+    operator: 'match',
+    diff: 'simple'
+  }

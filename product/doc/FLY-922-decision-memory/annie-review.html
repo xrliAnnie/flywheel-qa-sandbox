@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light">
+<title>FLY-922 决策 memory — 给 Annie 的方案 review</title>
+<style>
+  html{color-scheme:light}
+  :root{
+    --bg:#f5f5f7; --card:#fff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --blue:#007aff; --green:#34c759; --amber:#ff9500; --red:#ff3b30; --purple:#af52de;
+    --line:#e5e5ea;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB",sans-serif;
+    line-height:1.62;font-size:16px;-webkit-text-size-adjust:100%}
+  .wrap{max-width:820px;margin:0 auto;padding:20px 16px 96px}
+  header.top{padding:14px 2px 6px}
+  .kicker{color:var(--blue);font-weight:700;font-size:13px;letter-spacing:.4px;text-transform:uppercase}
+  h1{font-size:26px;line-height:1.25;margin:6px 0 8px;letter-spacing:-.3px}
+  .sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+  .card{background:var(--card);border-radius:14px;box-shadow:0 1px 3px rgba(0,0,0,.06);
+    padding:18px 18px;margin:16px 0;border-left:4px solid var(--line)}
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+  .card.amber{border-left-color:var(--amber)} .card.red{border-left-color:var(--red)}
+  .card.purple{border-left-color:var(--purple)} .card.navy{border-left-color:var(--navy)}
+  h2{font-size:20px;margin:2px 0 10px;letter-spacing:-.2px}
+  h3{font-size:16px;margin:16px 0 6px}
+  p{margin:8px 0}
+  .lead{font-size:17px}
+  .muted{color:var(--dim);font-size:14px}
+  ul{margin:8px 0 8px;padding-left:20px} li{margin:5px 0}
+  .pill{display:inline-block;font-size:12px;font-weight:700;padding:2px 9px;border-radius:999px;margin-right:6px;vertical-align:middle}
+  .p-ask{background:#ffe9e7;color:#c81c0f} .p-sug{background:#fff0dc;color:#b06400}
+  .p-act{background:#e3f6e8;color:#1a7a34} .p-auto{background:#efe4fb;color:#7231a8}
+  .floor{background:#fff4f3;border:1px solid #ffd6d1;border-radius:12px;padding:12px 14px;margin:10px 0}
+  .floor b{color:var(--red)}
+  table{width:100%;border-collapse:collapse;margin:10px 0;font-size:14.5px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:13px}
+  code{font-family:"SF Mono",ui-monospace,Menlo,monospace;background:#f0f0f3;border-radius:5px;padding:1px 5px;font-size:13px}
+  .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  @media(max-width:640px){.two{grid-template-columns:1fr}.wrap{padding:14px 12px 96px}h1{font-size:22px}}
+  .yes{color:var(--green);font-weight:700} .no{color:var(--red);font-weight:700}
+  .cmt-wrap{margin-top:12px;border-top:1px dashed var(--line);padding-top:10px}
+  .cmt-wrap label{display:block;font-size:13px;font-weight:600;color:var(--navy);margin-bottom:6px}
+  textarea.cmt{width:100%;min-height:64px;border:1px solid var(--line);border-radius:10px;
+    padding:10px 12px;font:inherit;font-size:15px;background:#fcfcfd;resize:vertical;color:var(--ink)}
+  textarea.cmt:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:var(--blue)}
+  .fork{background:#fbf7ff;border:1px solid #ecdcff;border-radius:12px;padding:14px;margin:12px 0}
+  .fork h3{margin-top:0;color:#7231a8}
+  .opt{font-size:14.5px;margin:3px 0}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.92);backdrop-filter:blur(8px);
+    border-top:1px solid var(--line);padding:10px 14px;display:flex;gap:10px;justify-content:center;align-items:center;z-index:5}
+  .btn{appearance:none;border:0;border-radius:10px;padding:11px 16px;font:inherit;font-weight:700;font-size:15px;cursor:pointer}
+  .btn.primary{background:var(--blue);color:#fff} .btn.ghost{background:#ececf0;color:var(--ink)}
+  .hint{font-size:12.5px;color:var(--dim);text-align:center;margin-top:4px}
+  .tag{font-size:12px;color:var(--dim)}
+  details{margin:8px 0} summary{cursor:pointer;font-weight:600;color:var(--navy)}
+  .fallback{background:#f0f0f3;border-radius:10px;padding:12px;font-size:13px;white-space:pre-wrap;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace;overflow-x:auto}
+  /* Apple light card theme is the ONLY theme (Annie's ask + html-report-style rule).
+     Lock color-scheme so a device set to dark mode still renders light form controls. */
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <div class="kicker">FLY-922 · 产品方案 review</div>
+  <h1>Lead 决策 memory<br>学你怎么拍板 → 慢慢少来烦你</h1>
+  <p class="sub">Honey Lemon 出的产品方案 · <b>v0.6 归档版 —— 方向你拍完、打法你选定,ship 存档</b>(Codex 6 轮 + ChatGPT DR 复核)· 2026-07-06</p>
+  <p class="sub">✅ 标的是你已拍的。深入实现研究 + 按新打法拆实现单 = 交 Tadashi,这份存档作产品决策记录。</p>
+</header>
+
+<div class="card navy" id="s-final">
+  <h2>🏁 最终打法(你定的,替代早前「接通 CIPHER」的想法)</h2>
+  <p><b>不用 CIPHER 当骨架</b> —— 你的判断,代码审计也证实:它是「批了/没批」计数器,<b>不记你为什么</b>;而你给的信号恰是带理由的纠正(120 条每条有 Why),理由才能替你拍新决策。它已建的记录管道降级为数据源之一。</p>
+  <p><b>选定打法 = 「破例先记」规则树(RDR)+ 翻先例(CBR)</b>:你纠正一次 = 在出错的规则下挂条例外(绑真实案例),同类反复才升成规则 —— 整棵树你随时能打开看、直接改、随时撤;规则没覆盖的新情况翻先例给建议、没先例就问你;全程 影子→建议→做+告知 渐进,4 类地板照旧永远问你。</p>
+  <p><b>第一片</b>:120 条纠正记录 → 蒸馏一棵「issue 归类」规则树(1 文件)→ 影子跑 2-4 周(零风险)→ 达标 + 你抽查认可 → 你解锁的类别进「做+告知」。</p>
+  <p class="muted">深入实现研究 + 按此拆实现单 = Tadashi(工程);这份 PRD 的放权语义(阶梯/毕业/地板/ship 终态)继续有效。</p>
+</div>
+
+<div class="card navy" id="s-what">
+  <h2>这是什么(先说清:不是笔记 memory)</h2>
+  <p class="lead">不是「帮 Lead 记事」。是一套 <b>学你决策模式</b> 的系统 —— 记下你 <b>拍了什么 + 为什么这么拍 + 什么触发你想到该开某个新 issue</b>,沉淀成 Lead 以后能 <b>照你的风格替你拍同类决策</b> 的依据。</p>
+  <p>目标就是你说的:<b>逐步减少 human-in-the-loop</b>。该自治的 Lead 自己办、办完告诉你;该问的仍然问你。你不用一步步教「这要怎么做、那要怎么做」。</p>
+  <p class="muted">判定线:如果一个功能只是「让 Lead 记得住上下文」那不算;成败在于「Lead 能不能在该你拍板的岔口上,先照你的模式替你拍准」。</p>
+  <div class="cmt-wrap"><label>💬 这个定性对不对?有没有跑偏你的原意?</label><textarea class="cmt" data-k="what" placeholder="…"></textarea></div>
+</div>
+
+<div class="card blue" id="s-origin">
+  <h2>接上你最早那条构想</h2>
+  <p>你这个想法其实几个月前就写下过骨架了 —— 在 <code>product-experience-spec §3.2</code> 里(学习来源 / 高信心自动应用+告知 / 存决定+纠正+原因 / 偏离检测「新标准还是特例」/ 决策权按场景渐进解锁)。后来落成了几条 issue:</p>
+  <table>
+    <tr><th>脉络</th><th>内容</th><th>状态</th></tr>
+    <tr><td>spec §3.2</td><td>最早的学习循环骨架</td><td class="tag">source of truth</td></tr>
+    <tr><td>GEO-149</td><td>CIPHER:从 approve/reject 历史学 pattern</td><td class="yes">Done</td></tr>
+    <tr><td>FLY-65</td><td>Lead Learning Loop(§3.2 的完整实现)</td><td class="tag">Backlog</td></tr>
+    <tr><td>FLY-69</td><td>Decision Right Expansion(权限解锁)</td><td class="tag">Backlog</td></tr>
+  </table>
+  <p class="muted">所以这份方案 <b>接着你当初的构想往下做,不另起炉灶</b> —— 把这套骨架 build 在「现在已经在 work 的那部分」上,补齐缺的环。</p>
+  <div class="cmt-wrap"><label>💬 这条脉络接对了吗?还有你记得的更早的想法我漏了?</label><textarea class="cmt" data-k="origin" placeholder="…"></textarea></div>
+</div>
+
+<div class="card green" id="s-dogfood">
+  <h2>已经在 work 的地基(我们正在 dogfood)</h2>
+  <p>Honey Lemon 现在用的那套 file-based memory 已经在记你的决策了 —— 约 <b>186 个文件</b>,其中 <b>120 条 feedback</b> 就是决策语料。每条已经含:</p>
+  <ul>
+    <li><b>决策</b> —— 你拍了什么</li>
+    <li><b>Why</b> —— 你为什么这么拍(你的思路)</li>
+    <li><b>怎么用</b> —— 蒸馏出的、以后可复用的规则</li>
+    <li><b>判据</b> —— 区分性条件(比如「成败取决于你觉得自不自然 → 就得先 brainstorm」)</li>
+    <li><b>来源 + 关联</b> —— 哪次 session、链到别的决策</li>
+  </ul>
+  <p>甚至已经冒出「分级自治规则」的雏形了。<b>所以「记什么、怎么记才能真复用来决策」这个最难的问题,我们用实践已经答了一大半。</b> 这也是这份方案比纯理论靠谱的底气。</p>
+  <div class="cmt-wrap"><label>💬 这套现有的记法,你觉得哪里最有用 / 哪里其实没用?</label><textarea class="cmt" data-k="dogfood" placeholder="…"></textarea></div>
+</div>
+
+<div class="card blue" id="s-cipher">
+  <h2>❓ 你问的:CIPHER「做了,现在有在用它吗?」</h2>
+  <p><b>不是「建了没用」。</b>我去代码 + 数据库核实过:</p>
+  <ul>
+    <li><b>数据管道活着</b> —— <code>cipher.db</code> 里有真数据:56 条决策快照、55 条 review、15 条 pattern、825 条 review-key,而且近期还在写。</li>
+    <li><b>但「学到 → 自动放权」这个闭环是睡着的</b> —— 系统末端有条 policy(GEO-155)把「自动批准」强制降级成「还是问你」,所以 CIPHER 现在只是<b>把学到的喂给内部判断当参考,并没有真的替你自治拍板</b>(15 条候选原则、0 条生效)。</li>
+  </ul>
+  <p><b>这恰恰就是 FLY-922 要干的事</b>:CIPHER 已经在默默采集你的决策 + 理由 + pattern 了,这套方案要做的就是<b>把那个睡着的「自治闭环」接通</b>——在守住地板的前提下,让积累的 pattern 真的能按场景替你拍。</p>
+  <div class="cmt-wrap"><label>💬 这样解答清楚了吗?对 CIPHER 你还有别的疑问?</label><textarea class="cmt" data-k="cipher" placeholder="…"></textarea></div>
+</div>
+
+<div class="card purple" id="s-ladder">
+  <h2>⭐ 核心:一把「自治阶梯」(Autonomy Ladder)</h2>
+  <p class="lead">自治不是一个总开关。是 <b>每一类决策(场景)各自坐在一个级别上、各自往上爬</b>。你要的更激进——所以重点是<b>爬 L3/L4 的路</b>:</p>
+  <table>
+    <tr><th>级别</th><th>Lead 会怎么做</th></tr>
+    <tr><td><span class="pill p-ask">L0.5 影子</span></td><td>只预演「我会怎么拍+为什么」,不动手、不打扰你,纯攒数据。</td></tr>
+    <tr><td><span class="pill p-ask">L0 必问</span></td><td>每次都问你才动。</td></tr>
+    <tr><td><span class="pill p-sug">L1 建议</span></td><td>主动给「我打算这么做 + 为什么」,等你点头。</td></tr>
+    <tr><td><span class="pill p-act">L2 做+告知</span></td><td>直接做,做完用大白话告诉你,你可以事后否决。</td></tr>
+    <tr><td><span class="pill p-auto">L3 半自治+抽检</span></td><td>高频小事不逐条打断,进 digest 让你 <b>抽查标注</b>。</td></tr>
+    <tr><td><span class="pill p-auto">L4 全自治</span></td><td>长期稳的可逆场景,全权自治,只留审计+随时可收回。<b>打怪终点</b>。</td></tr>
+  </table>
+  <div class="floor" style="background:#e3f6e8;border-color:#a8e6bb">
+    <p style="margin:0"><b>🔑 你说了 ship = 自动一条龙,不再一步步烦你</b> —— 地板挡的是 Lead <b>自己擅自</b>发起不可逆动作。<b>你一旦说「ship」,merge + 清理 + 收尾就自动跑完</b>,不再逐步回来问你。你的一次授权 = 整条链的绿灯。既守住红线,又不拿冗余确认烦你。</p>
+  </div>
+
+  <h3>怎么升级(三条要同时满足)</h3>
+  <ul>
+    <li><b>一致证据</b>:这类事被一致地观察到 ≥ N 次(每次挂真实出处,防瞎归纳)</li>
+    <li><b>准确率</b>:L1 阶段 Lead 的「建议」你采纳率够高</li>
+    <li><b>你显式解锁</b>:你亲口说「这类以后你自己定」—— <b>这条不能自动跳过</b></li>
+  </ul>
+
+  <h3>怎么退级(宁可误退,不可误自治)</h3>
+  <p>你纠正一次、或行为跟以往不一样 → 该场景 <b>立刻冻结自治</b>,弹出那句问题:「这是你的新标准,还是这次特例?」你的回答决定是更新规则、记个特例、还是降级。旧记录不删。</p>
+
+  <div class="floor">
+    <p style="margin:0 0 4px"><b>🔒 焊死的地板 —— 收窄成 4 类(你定的)</b></p>
+    <p style="margin:0"><b>① 花钱 ② 真不可逆销毁(含 retry 毁证据) ③ 安全/权限 ④ ship·merge·runner 生命周期</b> —— 这 4 类<b>永远 L0、永不自治</b>(顺序是「先看这次动作是不是这 4 类,是就直接 L0、根本不进阶梯」)。<b>其余可逆的都放开去爬</b>。这条比阶梯优先级高,绕不过。</p>
+  </div>
+  <p class="muted">还有:就算某类已升到 L2/L3,这一次要是踩到「公开可见 / 权限 / 生产部署 / 敏感数据 / 负面 QA / 不可逆对外承诺 / 你意图含糊 / 记忆打架」等触发器,<b>这一次自动降回 L1 问你一声</b>(拿不准也算触发)。</p>
+  <div class="cmt-wrap"><label>💬 这把阶梯的整体感觉对不对?那条地板够不够你放心?</label><textarea class="cmt" data-k="ladder" placeholder="…"></textarea></div>
+</div>
+
+<div class="card amber" id="s-scenarios">
+  <h2>第一批:哪些先让 Lead 自治、哪些永远问你</h2>
+  <div class="two">
+    <div>
+      <h3 class="yes">✅ 可以先往上升(可逆·低风险·高频)</h3>
+      <ul>
+        <li>issue 优先级排序 / triage 归类</li>
+        <li>issue 措辞润色 / 补 label(不动需求语义)</li>
+        <li>派发<b>已经确认过</b>的 plan 给 Runner</li>
+      </ul>
+    </div>
+    <div>
+      <h3 class="no">⛔ 永远 L0(收窄成 4 类)</h3>
+      <ul>
+        <li>① 花钱 ② 真不可逆销毁(含 retry) ③ 安全/权限 ④ ship·merge·runner 生命周期</li>
+        <li>issue 说不清时补细节(你说过:绝不许自己补)</li>
+        <li>(其余可逆的都放开去爬)</li>
+      </ul>
+    </div>
+  </div>
+  <p class="muted">注:原本想把「Runner 失败重试」也放进可自治,但代码里 retry 会强关旧 runner、可能毁现场证据,算不可逆那类 —— 所以留在 L0。</p>
+  <div class="cmt-wrap"><label>💬 这两栏的分法你认吗?有想挪的、想加的?</label><textarea class="cmt" data-k="scenarios" placeholder="…"></textarea></div>
+</div>
+
+<div class="card green" id="s-forks">
+  <h2>✅ 你上次定的 5 条,已经写进方案(v0.4)</h2>
+  <table>
+    <tr><td>① L3 + 影子模式</td><td>都开:高频小事不打扰你、你抽检;最底加一档影子模式(只预演不动手)</td></tr>
+    <tr><td>② N = 10,可变速</td><td>一致 10 次可升,但**升级速度按项目/场景变**(高频简单更快、高风险复杂更慢)</td></tr>
+    <tr><td>③ 采纳率 ≥ 80%(早期 70%)</td><td>最近 10 次 L1 建议你采纳 ≥80%(早期可放 70%)才够毕业条件之一</td></tr>
+    <tr><td>④ 每日 digest + ~20 条兜底</td><td>每天一份;一天攒到约 20 条自治动作就提前推一份</td></tr>
+    <tr><td>⑤ 每 Lead 独立等级卡</td><td>放权按 Lead 独立算,不全 Lead 通用(见下「打怪」)</td></tr>
+  </table>
+  <div class="cmt-wrap"><label>💬 这 5 条我理解对了吗?有想微调的?</label><textarea class="cmt" data-k="forks_confirm" placeholder="…"></textarea></div>
+</div>
+
+<div class="card purple" id="s-levelcard">
+  <h2>🎮 每个 Lead 一张「等级卡」+ 打怪升级路径</h2>
+  <p>按你说的,自治做成 <b>每个 Lead 一张独立等级卡</b>:哪个场景在哪一级、离下一级还差什么(几条证据 / 采纳率够没 / 等你解锁)一眼看到。</p>
+  <p><b>打怪路线</b>:影子(攒数据)→ L1 建议(采纳率≥70%)→ 攒够证据(N,可变)→ <b>你解锁</b> → L2 做+告知 → 抽检稳 → L3 半自治 → 长期稳 → <b>L4 全自治</b>(只对可逆场景;碰不可逆的永远到不了)。</p>
+  <p class="muted">起点:新 Lead 从 L0 起。你的体感(待各 Lead 实测校准):Tadashi 可能已 ~L3、Honey Lemon 约 L1。这张卡也是你「想更激进就往上推谁」的抓手。</p>
+  <div class="cmt-wrap"><label>💬 这张等级卡 + 打怪路径,是你想要的形状吗?</label><textarea class="cmt" data-k="levelcard" placeholder="…"></textarea></div>
+</div>
+
+<div class="card green" id="s-shipend">
+  <h2>🏁 自治能到的最远处:ship 这条线(你定的终态)</h2>
+  <p>你要的终态:<b>ship-ready 的判断全交给 Lead</b> —— 流程 + QA 跑完,Lead <b>逐项看 QA 结果确认</b>,给你「<b>ready,因为 X / Y / Z</b>」(带理由)。这块判断以后不用你做了。</p>
+  <p>但 <b>ship 本身还是留你一下确认</b> —— 不是让 Lead 自动 ship。从「你判断 + 你决定」缩成「<b>Lead 判断完 + 你一下确认</b>」:你只需扫一眼「已 ready + 理由」点个确认,不用把 QA 再审一遍。</p>
+  <p class="muted">为什么 ship 不并进自动一条龙?防坏改动自动 ship 一串级联(呼应 FLY-918)——你那「一下确认」是省不掉的 founder 关口。确认<b>之后</b>的 merge+清理才自动跑完不再烦你。</p>
+  <p class="opt" style="color:var(--green)">✅ 你定了:<b>ship 不开「默认 yes」</b> —— 保留你那明确的「一下确认」(要真点头,不默认通过)。「撤销窗」放在<b>非 ship 的那些自治动作</b>上(可逆的做了给你短窗口能反悔),ship 本身要明确确认、不默认。</p>
+</div>
+
+<div class="card green" id="s-newq">
+  <h2>✅ 法律/合同这类不可逆对外承诺 —— 你已经定了</h2>
+  <p>Codex 复核挖到:硬地板收窄成 4 类后,<b>法律/合同/NDA/监管这类「非销毁、但收不回」的对外承诺</b>掉出了地板。</p>
+  <p>你拍的:<b>不用单设第 5 类硬地板</b> —— 放进「需要我(人类)审阅」那档就行(每次真碰到就单独降回来问你一次;场景照样能爬)。已按这个定稿。</p>
+</div>
+
+<div class="card red" id="s-metric">
+  <h2>怎么算成功(而且不自欺)</h2>
+  <ul>
+    <li><b>北极星</b>:「本该你做、Lead 替你做了、<b>而且你抽检确认没做错</b>」的比例逐月升。<span class="muted">—— 只算你确认过的;没抽检的静默动作单独记,不许混进「做对了」。</span></li>
+    <li><b>硬护栏</b>:碰地板(不可逆动作)的误自治次数 = <b>永远 0</b>。</li>
+    <li><b>护栏</b>:你事后要否决/纠正的自治决策 < 阈值。</li>
+  </ul>
+  <div class="cmt-wrap"><label>💬 用「你被同类问题打扰的频率下降」当成功感,对你成立吗?</label><textarea class="cmt" data-k="metric" placeholder="…"></textarea></div>
+</div>
+
+<div class="card" id="s-next">
+  <h2>接下来</h2>
+  <p>你 review 完 → 按你对上面 5 个岔口的选择定稿 → 回填「记什么/怎么记/怎么被调用」的细节 → 拆成给 Tadashi 的 build issue(链回 FLY-65/69/GEO-149)。<b>实现是 Tadashi 的活,这份只是产品方案。</b></p>
+  <p class="muted">你手动导出的 ChatGPT Deep Research 我已经并进方案了(research.md §8 + plan v0.3)。好消息:它<b>验证了这套设计方向</b> —— 「可读规则 + 按场景阶梯 + 记忆治理 + 该问就升级 + 不可逆动作永久锁死」正是研究和业界公认的最佳架构,不是我们拍脑袋。还补了几样成熟做法进来:破例先记、同类反复才升成规则(Ripple-Down Rules);每类事各算各的把握度;拿不准就弃权升级(conformal);阶梯最底下加一档「影子模式」(只预演不动手、纯攒数据)。硬地板还有 EU AI Act / NIST 的合规背书。这些细节在 research.md / plan.md,你 review 这 5 个岔口不用啃它们。</p>
+  <div class="cmt-wrap"><label>💬 还有什么我没问到、但你觉得关键的?</label><textarea class="cmt" data-k="freeform" placeholder="…"></textarea></div>
+</div>
+
+<div class="card navy">
+  <h2>📋 你的批注</h2>
+  <p class="muted">点下面按钮会把你写的全部批注拷到剪贴板,粘回给我就行。</p>
+  <details>
+    <summary>如果按钮没反应(托管环境可能拦了脚本)—— 点这里用手动模板</summary>
+    <p class="muted" style="margin-top:8px">直接复制下面这段、在每行冒号后填你的话,发回来:</p>
+    <div class="fallback">FLY-922 批注 ——
+定性对不对:
+最早构想接对没:
+现有记法哪有用:
+CIPHER解答清楚没:
+阶梯&地板&授权自动执行:
+第一批场景分法:
+5条定案理解对没:
+每Lead等级卡&打怪路径:
+成功感成立吗:
+其它: </div>
+  </details>
+</div>
+
+</div>
+
+<div class="bar">
+  <button class="btn primary" id="copyBtn" type="button">复制我的全部批注</button>
+  <button class="btn ghost" id="clearBtn" type="button">清空</button>
+</div>
+<div class="hint" style="position:fixed;bottom:56px;left:0;right:0" id="hint"></div>
+
+<script>
+(function(){
+  var LS="fly922-annie-cmt";
+  var areas=[].slice.call(document.querySelectorAll("textarea.cmt"));
+  var labelOf={what:"定性对不对",origin:"最早构想接对没",dogfood:"现有记法哪有用",
+    cipher:"CIPHER解答清楚没",ladder:"阶梯&地板&授权自动执行",scenarios:"第一批场景分法",
+    forks_confirm:"5条定案理解对没",levelcard:"每Lead等级卡&打怪路径",
+    metric:"成功感成立吗",freeform:"其它"};
+  // restore
+  try{var saved=JSON.parse(localStorage.getItem(LS)||"{}");
+    areas.forEach(function(a){var k=a.getAttribute("data-k"); if(saved[k])a.value=saved[k];});}catch(e){}
+  function persist(){try{var o={};areas.forEach(function(a){o[a.getAttribute("data-k")]=a.value;});
+    localStorage.setItem(LS,JSON.stringify(o));}catch(e){}}
+  areas.forEach(function(a){a.addEventListener("input",persist);});
+  function build(){
+    var out="FLY-922 决策 memory — Annie 批注\n\n";
+    areas.forEach(function(a){var v=a.value.trim(); if(v){var k=a.getAttribute("data-k");
+      out+="["+(labelOf[k]||k)+"] "+v+"\n";}});
+    return out.trim();
+  }
+  function flash(msg){var h=document.getElementById("hint");h.textContent=msg;
+    setTimeout(function(){h.textContent="";},2600);}
+  document.getElementById("copyBtn").addEventListener("click",function(){
+    var t=build();
+    if(t==="FLY-922 决策 memory — Annie 批注"){flash("还没写批注哦");return;}
+    if(navigator.clipboard&&navigator.clipboard.writeText){
+      navigator.clipboard.writeText(t).then(function(){flash("已复制 ✓ 粘回给我就行");},
+        function(){window.prompt("手动复制(Cmd+C):",t);});
+    }else{window.prompt("手动复制(Cmd+C):",t);}
+  });
+  document.getElementById("clearBtn").addEventListener("click",function(){
+    if(window.confirm("清空所有批注?")){areas.forEach(function(a){a.value="";});persist();flash("已清空");}
+  });
+})();
+</script>
+</body>
+</html>

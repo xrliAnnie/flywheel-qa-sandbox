@@ -1,0 +1,128 @@
+[2026-07-09T19:27:18.266Z] health endpoint on 127.0.0.1:9880/health
+[2026-07-09T19:27:19.873Z] bots online: orchestrator, note-taker
+[2026-07-09T19:27:20.437Z] Note-taker resident in VC 1485787273193853170
+[2026-07-09T19:27:20.492Z] [presence] humanCount seeded=1 (boot occupancy)
+[2026-07-09T19:27:20.693Z] /gemini registered on guild 1485787271192907816
+[2026-07-09T19:27:20.694Z] autostart QA seam armed (topic: FLY-1047 复验 683418b4)
+[2026-07-09T19:27:20.694Z] daemon up — health :9880, assistant=/gemini
+[2026-07-09T19:27:24.478Z] [gemini-command] MOVE_MEMBERS unavailable — Join button is the path in
+[2026-07-09T19:27:24.479Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] state -> invoked
+[2026-07-09T19:27:24.584Z] [presence] voiceState user=1523230048243417178 bot=true - -> 1485787273193853170 delta=join humanCount=1 joinSubs=0
+[2026-07-09T19:27:24.885Z] [deferred-player] real player attached (orchestrator in VC)
+[2026-07-09T19:27:24.885Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] voice joined — orchestrator in the VC
+[2026-07-09T19:27:24.886Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] briefing composed (3131 chars, stale=false)
+[2026-07-09T19:27:24.886Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] connecting Gemini Live…
+[2026-07-09T19:27:25.256Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] conversation ready
+[2026-07-09T19:27:25.256Z] [presence] founderPresent()=true (humanCount=1)
+[2026-07-09T19:27:25.257Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founderPresent()=true at post-connect check
+[2026-07-09T19:27:25.257Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] state -> live (initial-check)
+[2026-07-09T19:27:25.257Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] OPENING prompt sent to Gemini
+[2026-07-09T19:27:26.045Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 0)
+[2026-07-09T19:27:26.046Z] [assistant-speaker] turn begin
+[2026-07-09T19:27:26.046Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] first response audio from Gemini
+[2026-07-09T19:27:26.046Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T19:27:26.317Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:27:31.822Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response done (audio chunks this turn: 26, total: 26)
+[2026-07-09T19:27:31.836Z] [assistant-speaker] turn end — chunks=26 bytes=274562 dropped=0
+[2026-07-09T19:28:05.676Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] first ears frame forwarded to Gemini (640 bytes)
+[2026-07-09T19:28:07.325Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (79 frames this utterance)
+[2026-07-09T19:28:07.725Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:08.104Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:08.181Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 83)
+[2026-07-09T19:28:08.181Z] [assistant-speaker] turn begin
+[2026-07-09T19:28:08.181Z] [assistant-speaker] first audio chunk (1950 bytes, 24k mono)
+[2026-07-09T19:28:08.182Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:28:08.707Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response cancelled (barge-in) — flushing speaker
+[2026-07-09T19:28:09.159Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (26 frames this utterance)
+[2026-07-09T19:28:09.551Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:10.498Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (30 frames this utterance)
+[2026-07-09T19:28:10.907Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:11.014Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 143)
+[2026-07-09T19:28:11.014Z] [assistant-speaker] turn begin
+[2026-07-09T19:28:11.015Z] [assistant-speaker] first audio chunk (2430 bytes, 24k mono)
+[2026-07-09T19:28:11.015Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:28:12.038Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (11 frames this utterance)
+[2026-07-09T19:28:12.460Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:12.842Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:13.259Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:13.680Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:14.104Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:16.667Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response done (audio chunks this turn: 24, total: 65)
+[2026-07-09T19:28:16.668Z] [assistant-speaker] turn end — chunks=24 bytes=271230 dropped=0
+[2026-07-09T19:28:19.542Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] ears frames forwarded: 250
+[2026-07-09T19:28:20.061Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (109 frames this utterance)
+[2026-07-09T19:28:20.720Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (33 frames this utterance)
+[2026-07-09T19:28:21.197Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:21.537Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (3 frames this utterance)
+[2026-07-09T19:28:22.775Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 311)
+[2026-07-09T19:28:22.775Z] [assistant-speaker] turn begin
+[2026-07-09T19:28:22.775Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T19:28:22.775Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:28:23.609Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (22 frames this utterance)
+[2026-07-09T19:28:24.017Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:24.430Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:24.884Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:25.246Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (1 frames this utterance)
+[2026-07-09T19:28:34.727Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response done (audio chunks this turn: 47, total: 112)
+[2026-07-09T19:28:34.727Z] [assistant-speaker] turn end — chunks=47 bytes=571202 dropped=0
+[2026-07-09T19:28:37.763Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (92 frames this utterance)
+[2026-07-09T19:28:38.165Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:38.581Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:39.040Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:39.394Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (1 frames this utterance)
+[2026-07-09T19:28:39.595Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 439)
+[2026-07-09T19:28:39.595Z] [assistant-speaker] turn begin
+[2026-07-09T19:28:39.595Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T19:28:39.596Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:28:43.767Z] [assistant-speaker] stream backpressure — model audio outrunning playback beyond highWaterMark
+[2026-07-09T19:28:44.812Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (16 frames this utterance)
+[2026-07-09T19:28:45.375Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (10 frames this utterance)
+[2026-07-09T19:28:51.979Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (19 frames this utterance)
+[2026-07-09T19:28:52.415Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:52.815Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:53.313Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (6 frames this utterance)
+[2026-07-09T19:28:54.839Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response done (audio chunks this turn: 54, total: 166)
+[2026-07-09T19:28:54.839Z] [assistant-speaker] turn end — chunks=54 bytes=729602 dropped=0
+[2026-07-09T19:28:55.842Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] ears frames forwarded: 500
+[2026-07-09T19:28:57.137Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (66 frames this utterance)
+[2026-07-09T19:28:57.564Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:58.011Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:58.443Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:58.835Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:28:59.086Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 568)
+[2026-07-09T19:28:59.086Z] [assistant-speaker] turn begin
+[2026-07-09T19:28:59.086Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T19:28:59.086Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:29:03.264Z] [assistant-speaker] stream backpressure — model audio outrunning playback beyond highWaterMark
+[2026-07-09T19:29:17.800Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response done (audio chunks this turn: 68, total: 234)
+[2026-07-09T19:29:17.800Z] [assistant-speaker] turn end — chunks=68 bytes=896162 dropped=0
+[2026-07-09T19:29:19.810Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (4 frames this utterance)
+[2026-07-09T19:29:20.481Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (33 frames this utterance)
+[2026-07-09T19:29:20.967Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:29:21.311Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:29:21.739Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:29:23.007Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response started (ears frames forwarded so far: 611)
+[2026-07-09T19:29:23.007Z] [assistant-speaker] turn begin
+[2026-07-09T19:29:23.007Z] [assistant-speaker] first audio chunk (2 bytes, 24k mono)
+[2026-07-09T19:29:23.008Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T19:29:24.482Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (17 frames this utterance)
+[2026-07-09T19:29:24.947Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (2 frames this utterance)
+[2026-07-09T19:29:25.605Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (17 frames this utterance)
+[2026-07-09T19:29:25.891Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (12 frames this utterance)
+[2026-07-09T19:29:26.131Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (1 frames this utterance)
+[2026-07-09T19:29:28.731Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] ears frames forwarded: 750
+[2026-07-09T19:29:28.737Z] [presence] voiceState user=1138241636057481306 bot=false 1485787273193853170 -> 1485787273193853170 delta=none humanCount=1 joinSubs=0
+[2026-07-09T19:29:28.895Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder speaking-end — committing turn (95 frames this utterance)
+[2026-07-09T19:29:36.069Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] response done (audio chunks this turn: 49, total: 283)
+[2026-07-09T19:29:36.069Z] [assistant-speaker] turn end — chunks=49 bytes=622082 dropped=0
+[2026-07-09T19:30:30.881Z] [presence] voiceState user=1523232391349403850 bot=true 1485787273193853170 -> - delta=leave humanCount=1 joinSubs=0
+[2026-07-09T19:32:18.716Z] [presence] voiceState user=1138241636057481306 bot=false 1485787273193853170 -> - delta=leave humanCount=1 joinSubs=0
+[2026-07-09T19:32:18.717Z] [presence] LEAVE — humanCount=0
+[2026-07-09T19:32:18.718Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] founder-leave signal received (state=live)
+[2026-07-09T19:32:18.718Z] [assistant-session][e3803506-c431-4620-98cc-bce6645791d9] state -> landing (trigger=founder-leave confirmed=false; ears frames forwarded=755, assistant audio chunks=283)
+[2026-07-09T19:32:20.699Z] [presence] voiceState user=1523230048243417178 bot=true 1485787273193853170 -> - delta=leave humanCount=0 joinSubs=0
+[2026-07-09T19:32:47.273Z] [presence] voiceState user=1523232391349403850 bot=true - -> 1485787273193853170 delta=join humanCount=0 joinSubs=0
+[2026-07-09T19:35:30.870Z] quit file seen after 490.2s
+[2026-07-09T19:35:30.871Z] shutting down (session length 490.2s)
+[2026-07-09T19:35:30.871Z] shutting down (bounded)
+[2026-07-09T19:35:31.041Z] daemon closed

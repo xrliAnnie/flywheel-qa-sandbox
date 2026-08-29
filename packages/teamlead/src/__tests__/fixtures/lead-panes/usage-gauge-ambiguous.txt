@@ -1,0 +1,9 @@
+⏺ Working on something.
+
+  ⎿  Claude usage limit reached.
+
+──────────────────────────────────────────────────────────────────────────────── @product-lead ──
+❯
+───────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡product-lead | ~/.flywheel/lead-workspace/product-lead | ctx 47% ██████████
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>FLY-753 · 内存容量测算</title>
+<style>
+  :root{
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759;
+    --purple:#af52de; --gray:#86868b; --navy:#1a365d; --ink:#1d1d1f;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:#f5f5f7; color:var(--ink);
+    font-family:-apple-system,system-ui,"SF Pro Text",sans-serif;
+    line-height:1.55; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:32px 20px 64px}
+  .mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  h1{font-size:30px; letter-spacing:-.02em; margin:0 0 4px}
+  .sub{color:var(--gray); font-size:15px; margin-bottom:8px}
+  .meta{color:var(--gray); font-size:13px; margin-bottom:28px}
+  .card{
+    background:#fff; border-radius:12px; padding:20px 22px; margin:0 0 18px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid var(--gray);
+  }
+  .card.red{border-left-color:var(--red)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.blue{border-left-color:var(--blue)}
+  .card.green{border-left-color:var(--green)}
+  .card.purple{border-left-color:var(--purple)}
+  .card.navy{border-left-color:var(--navy)}
+  h2{font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--gray); margin:0 0 14px}
+  .big{font-size:19px; font-weight:600; letter-spacing:-.01em; margin:0 0 10px}
+  p{margin:0 0 10px}
+  .lede{font-size:16px}
+  .tldr{background:linear-gradient(135deg,#fff, #f0f7ff); border-left-color:var(--blue)}
+  .tldr .path{display:flex; gap:12px; margin:12px 0; align-items:flex-start}
+  .tldr .path .k{flex:0 0 92px; font-weight:600; color:var(--navy)}
+  .pill{display:inline-block; font-size:12px; font-weight:600; padding:2px 9px; border-radius:20px; color:#fff; vertical-align:middle}
+  .pill.red{background:var(--red)} .pill.amber{background:var(--amber)} .pill.blue{background:var(--blue)}
+  .pill.green{background:var(--green)} .pill.gray{background:var(--gray)} .pill.purple{background:var(--purple)}
+  table{width:100%; border-collapse:collapse; font-size:14px; margin:6px 0}
+  th{text-align:left; color:var(--gray); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em; padding:8px 10px; border-bottom:2px solid #eee}
+  td{padding:9px 10px; border-bottom:1px solid #f0f0f0; vertical-align:top}
+  td.num{font-family:"SF Mono",monospace; white-space:nowrap}
+  tr:last-child td{border-bottom:none}
+  .row-keep{background:#f2fbf5}
+  .row-del{background:#fff4f3}
+  .row-scope{background:#fff9f0}
+  .statgrid{display:flex; gap:14px; flex-wrap:wrap}
+  .stat{flex:1 1 150px; background:#fafafa; border-radius:10px; padding:14px 16px}
+  .stat .n{font-family:"SF Mono",monospace; font-size:24px; font-weight:600; letter-spacing:-.02em}
+  .stat .l{font-size:12px; color:var(--gray); margin-top:2px}
+  .stat.red .n{color:var(--red)} .stat.green .n{color:var(--green)} .stat.blue .n{color:var(--blue)} .stat.amber .n{color:var(--amber)}
+  .bar{height:26px; border-radius:6px; display:flex; overflow:hidden; margin:10px 0 4px; font-size:11px; color:#fff; font-weight:600}
+  .bar span{display:flex; align-items:center; justify-content:center; min-width:0}
+  .seg-mcp{background:var(--red)} .seg-ctx{background:var(--blue)}
+  .note{font-size:13px; color:var(--gray)}
+  .callout{background:#fffbe6; border:1px solid #ffe58f; border-radius:10px; padding:12px 14px; font-size:14px; margin:10px 0}
+  .foot{color:var(--gray); font-size:12px; text-align:center; margin-top:20px}
+  .win{background:#eafaf0; border:1px solid #b7ebc9; border-radius:10px; padding:12px 14px; font-size:14px; margin:10px 0}
+  b{font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>内存容量测算 · FLY-753</h1>
+  <div class="sub">现在能并发几个 session?100 个要多大机器?哪些 MCP 可以删?</div>
+  <div class="meta mono">48 GB / 18 核 Mac · 20 个真实 session 实测(phys_footprint,非估算)· 2026-07-01</div>
+
+  <!-- TL;DR -->
+  <div class="card tldr">
+    <h2>一句话结论</h2>
+    <p class="lede"><b>想稳定跑 100 个 session,要么换 256 GB 的机器,要么把每个 session 从 1.4 GB 砍到 ~0.4 GB —— 砍完 96 GB 机器就够,连现在这台 48 GB 都能从 ~18 个提到 ~40–50 个。</b></p>
+    <div class="path"><div class="k">换机器</div><div>不优化 → Mac Studio <b>256 GB</b>(~$7–8k)才能跑 100 个。贵且浪费。</div></div>
+    <div class="path"><div class="k">砍 footprint</div><div><span class="pill green">推荐先做</span> 删掉用不到的 MCP + 小 context 默认 → 每 session 1.4→0.4 GB → <b>96 GB</b> 机器跑 100 个舒适。</div></div>
+    <div class="path"><div class="k">当下止痛</div><div>不换机器,光删 MCP,当前 48 GB 并发上限 <b>~18 → ~40</b>,swap 抖动立刻缓解。</div></div>
+  </div>
+
+  <!-- 反直觉 -->
+  <div class="card red">
+    <h2>最反直觉的发现</h2>
+    <p class="big">吃内存的不是 Claude 的 context,是 MCP 套件。</p>
+    <p>每个 session 都<b>各自复制一整套 ~15 个 MCP 子进程</b>。小 context session 里,MCP 套件(~1.0 GB)是 Claude 主进程(0.28 GB)的 <b>3.6 倍</b>。20 个 session = 20 份 chrome-devtools、20 份 serena、20 份 context7…… 这才是 48 GB 被 20 个 session 吃满的真因。</p>
+    <div class="bar">
+      <span class="seg-mcp" style="flex:1.0">MCP 套件 ~1.0 GB(77%)</span>
+      <span class="seg-ctx" style="flex:0.284">Claude 0.28 GB</span>
+    </div>
+    <p class="note">↑ 一个小 context session 的内存构成。换 1M→小 context 每 session 只省 ~0.35 GB;砍 MCP 能省 ~0.6–1.0 GB —— <b>优化 MCP 的杠杆远大于 context。</b></p>
+  </div>
+
+  <!-- 每 session 拆开算 -->
+  <div class="card blue">
+    <h2>每个 session 真实占多少(拆开算)</h2>
+    <table>
+      <tr><th>session 形态</th><th>Claude 主进程</th><th>MCP 套件</th><th>合计</th></tr>
+      <tr><td>小 context Runner</td><td class="num">284 MB</td><td class="num">~1.0 GB</td><td class="num"><b>≈ 1.3 GB</b></td></tr>
+      <tr><td>1M-context Lead</td><td class="num">~630 MB</td><td class="num">~1.4 GB</td><td class="num"><b>≈ 1.6–2.0 GB</b></td></tr>
+      <tr class="row-keep"><td><b>fleet 均值</b></td><td class="num">421 MB</td><td class="num">~1.05 GB</td><td class="num"><b>≈ 1.4 GB</b></td></tr>
+    </table>
+    <p class="note">口径 = <span class="mono">phys_footprint</span>(Activity Monitor 的 Memory 列,含压缩 / swap 逻辑页,排除共享库)—— 衡量"必须由 RAM+swap 承载"的真实需求,比 RSS 准。</p>
+  </div>
+
+  <!-- MCP 删除清单 -->
+  <div class="card amber">
+    <h2>MCP 套件全清单 + 删/降级判断</h2>
+    <p class="note" style="margin-bottom:12px">你让我全列一遍 + 判断哪些能删。按"对 Flywheel 工程 Runner 是否必需"分档 ↓</p>
+    <table>
+      <tr><th>MCP</th><th>内存/session</th><th>用途</th><th>判断</th></tr>
+      <tr class="row-del"><td><b>chrome-devtools</b></td><td class="num">272 MB</td><td>Chrome 调试自动化</td><td><span class="pill amber">改 QA 按需</span></td></tr>
+      <tr class="row-del"><td><b>playwright</b></td><td class="num">150 MB</td><td>浏览器自动化</td><td><span class="pill amber">改 QA 按需</span></td></tr>
+      <tr class="row-scope"><td>serena</td><td class="num">197 MB</td><td>语义代码检索</td><td><span class="pill blue">改共享单例</span></td></tr>
+      <tr class="row-scope"><td>context7</td><td class="num">126 MB</td><td>库文档查询</td><td><span class="pill blue">改共享 / 按需</span></td></tr>
+      <tr class="row-scope"><td>discord</td><td class="num">~120 MB(Runner)</td><td>Discord 收发</td><td><span class="pill blue">仅 Lead</span> Runner 不直发 Discord</td></tr>
+      <tr class="row-scope"><td>gbrain</td><td class="num">76 MB</td><td>写作/记忆引擎</td><td><span class="pill blue">确认后移出</span></td></tr>
+      <tr class="row-del"><td><b>audible</b></td><td class="num">62 MB</td><td>有声书</td><td><span class="pill red">直接删</span> 跟开发无关</td></tr>
+      <tr class="row-del"><td><b>pencil</b></td><td class="num">7 MB</td><td>设计工具</td><td><span class="pill red">直接删</span></td></tr>
+      <tr class="row-del"><td>bambu-h2d</td><td class="num">—</td><td>3D 打印机</td><td><span class="pill red">移出</span> ops 专用</td></tr>
+      <tr class="row-keep"><td>terminal-mcp</td><td class="num">34 MB</td><td>读写 Runner tmux</td><td><span class="pill green">保留</span> 核心</td></tr>
+      <tr class="row-keep"><td>inbox-mcp</td><td class="num">41 MB</td><td>Lead↔Runner 收件箱</td><td><span class="pill green">保留</span> 核心</td></tr>
+      <tr class="row-keep"><td>linear-api / xiaohongshu</td><td class="num">~0</td><td>http 型远程</td><td><span class="pill gray">不占内存</span></td></tr>
+    </table>
+    <div class="win">✅ <b>保守首刀(零风险,立即可做)</b>:删 audible + pencil + Runner 去 discord ≈ 省 <b>~190 MB/session</b>。</div>
+    <div class="win">✅ <b>大刀(需 FLY-751 支持共享 MCP)</b>:浏览器改 QA 按需 + serena/context7 共享 ≈ 再省 <b>~745 MB/session</b>。</div>
+    <p class="note">注:一个 dev Runner 光删 chrome-devtools + playwright + audible + pencil + discord = 省 ~611 MB/session(套件的 ~55%)。</p>
+  </div>
+
+  <!-- 当前 48GB 上限 -->
+  <div class="card purple">
+    <h2>当前 48 GB 能稳定并发几个</h2>
+    <div class="statgrid">
+      <div class="stat green"><div class="n">15–18</div><div class="l">安全(不抖 / 几乎不 swap)</div></div>
+      <div class="stat amber"><div class="n">~20–22</div><div class="l">swap 饱和边缘(开始抖)</div></div>
+      <div class="stat blue"><div class="n">~40–50</div><div class="l">删 MCP 优化后可提到</div></div>
+    </div>
+    <p class="note" style="margin-top:12px">"~20 吃满 swap"和你的观察一致。基线(OS+Chrome+cmux+Discord 等)约占 10 GB,剩下 ~31 GB / 每 session 1.4 GB ≈ 22 个。</p>
+    <div class="callout">⚠️ <b>CPU 也是硬顶</b>:18 核。多个 session <b>同时</b> build/test 时,瓶颈变成 CPU load(历史上 load 冲到 170–450 会把 Mac 卡死 panic)。Flywheel session 多数时间 idle(等 gate/CI),所以内存是主约束;但 active-burst 要限并发。</div>
+  </div>
+
+  <!-- 100 session -->
+  <div class="card navy">
+    <h2>跑 100 个 session:优化前 vs 优化后</h2>
+    <table>
+      <tr><th>方案</th><th>每 session</th><th>100 个内存需求</th><th>需要的机器</th></tr>
+      <tr class="row-del"><td><b>优化前(现状)</b></td><td class="num">1.4 GB</td><td class="num">~150 GB</td><td><b>≥ 192 GB</b> · Mac Studio 256 GB(~$7–8k)</td></tr>
+      <tr class="row-keep"><td><b>优化后(FLY-751/752)</b></td><td class="num">~0.4 GB</td><td class="num">~51 GB</td><td><b>64–96 GB</b> · Mac Studio 96 GB(M2/M3 Max)</td></tr>
+    </table>
+    <p class="note" style="margin-top:10px">优化后每 session = 小 context Claude(0.28)+ 核心 MCP(0.08)+ 共享的 serena/context7/浏览器(机器级单例,marginal≈0)= ~0.36 GB。</p>
+  </div>
+
+  <!-- 行动 -->
+  <div class="card green">
+    <h2>建议的下一步</h2>
+    <p><b>1.</b> 先砍 footprint(FLY-751),别急着换机器 —— 删除清单见上,建议你逐项拍。保守首刀今天就能做。</p>
+    <p><b>2.</b> 浏览器 MCP(chrome-devtools/playwright)收进 <b>QA-only</b> 路径 —— 正好和 FLY-752(auto-QA 重设计)一起做,QA session 才是唯一真需要浏览器的。</p>
+    <p><b>3.</b> 优化落地后,若仍要 100 个,再上 96 GB 机器就够;不必买 256 GB。</p>
+    <p class="note">本研究不改任何生产代码;删除动作由 FLY-751 执行,要你逐项确认。</p>
+  </div>
+
+  <div class="foot mono">FLY-753 · engineering/doc/FLY-753-memory-capacity/ · 数据均为本机 phys_footprint 实测</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,57 @@
+{
+	"schemaVersion": 1,
+	"meta": {
+		"capturedAt": "2026-06-23T00:00:00Z",
+		"tool": "fleet-capture.sh",
+		"note": "SYNTHETIC EXAMPLE — not a real capture. Shows the manifest shape."
+	},
+	"deps": [
+		{ "name": "homebrew", "channel": "installer" },
+		{ "name": "node", "channel": "brew", "formula": "node" },
+		{ "name": "pnpm", "channel": "brew", "formula": "pnpm" },
+		{ "name": "tmux", "channel": "brew", "formula": "tmux" },
+		{ "name": "gh", "channel": "brew", "formula": "gh" },
+		{ "name": "jq", "channel": "brew", "formula": "jq" },
+		{ "name": "git", "channel": "brew", "formula": "git" },
+		{
+			"name": "cmux",
+			"channel": "manual",
+			"note": "cmux app + flywheel-cmux-install.sh"
+		},
+		{ "name": "codex", "channel": "manual", "note": "OpenAI Codex CLI" },
+		{ "name": "claude", "channel": "manual", "note": "Claude Code CLI" },
+		{
+			"name": "kimi",
+			"channel": "manual",
+			"note": "Kimi Code CLI (brew kimi-code)"
+		},
+		{ "name": "agy", "channel": "manual", "note": "Antigravity CLI" }
+	],
+	"repos": [
+		{
+			"name": "flywheel",
+			"slug": "EXAMPLE-OWNER/flywheel",
+			"targetDir": "Dev/flywheel"
+		},
+		{
+			"name": "exampleproject",
+			"slug": "EXAMPLE-OWNER/exampleproject",
+			"targetDir": "Dev/exampleproject"
+		}
+	],
+	"launchdJobs": [
+		{ "label": "com.flywheel.bridge", "kind": "aux" },
+		{ "label": "com.flywheel.cmux-watcher", "kind": "aux" },
+		{ "label": "com.flywheel.daily-standup", "kind": "aux" },
+		{ "label": "com.flywheel.skills-update", "kind": "aux" },
+		{ "label": "com.flywheel.updater", "kind": "aux" },
+		{ "label": "com.flywheel.lead.flywheel-flywheel-cos-lead", "kind": "lead" },
+		{ "label": "com.flywheel.lead.flywheel-flywheel-eng-lead", "kind": "lead" },
+		{ "label": "com.flywheel.lead.exampleproject-product-lead", "kind": "lead" }
+	],
+	"skills": {
+		"skillsSyncPresent": true,
+		"skillsUpdatePlistPresent": true,
+		"canonicalRepo": "EXAMPLE-OWNER/flywheel-skills"
+	}
+}

@@ -1,0 +1,24 @@
+{
+	"E1_detection": {
+		"verdict": "CONFIRMED",
+		"exec": "12eb161e-2843-40c6-8451-25f420d8351d",
+		"how": "real flywheel-comm ask (slot commdb) unanswered → gap2_ask_unanswered → episode lead_ask_unanswered LEAD_NOTIFIED @ +67s",
+		"reproduced": "twice (also 60a46d0b)",
+		"prod_taint": "none (prod commdb questions=0 both times)"
+	},
+	"E2_escalation": {
+		"verdict": "CONFIRMED (flow runs to posted founder page)",
+		"founder_page_msg": "1525862173694496850",
+		"posted_by": "product-lead-test (owner Lead bot test-2, via lead.botToken)",
+		"founder_page_ledger": "posted=1 @ 2026-07-12 13:51:31",
+		"grace": "3min (180000ms)",
+		"content": "🚨 FLY-145 [Watchdog] Runner 的提问一直没人答... owner Lead(flywheel-test-2)已在 3 分钟前收到通知,至今无处置 → 升级给你"
+	},
+	"findings_for_tadashi": {
+		"A_quiet_note_403": "LEAD-notify quiet thread-note leg uses alertDiscordOps (unified-alert Hub/repair-chain bot = test-1), which is NOT a member of the dept Lead's channel in multi-Lead topology → 403. Episode still progresses via DB + founder page still posts via owner bot. plugin.ts:6339 suspiciousThreadPoster→alertDiscordOps.postToThread",
+		"B_addThreadMember_403": "Founder added to issue thread via addThreadMember also uses the Hub bot (test-1) → 403 Missing Access. So the founder is NOT added as a thread member in this env.",
+		"C_no_at_mention_BY_DESIGN": "Founder page posts 🚨 with allowed_mentions:{users:[owner]} but content never contains <@ownerId> (postFounderThreadCore only sets allowed_mentions, a filter; createFounderPager content has no <@>). PR-C test (detection-escalation-sinks.test.ts:107) asserts only mentionUserId is passed, NOT <@ in content. So founder page does NOT @-ping; it relies on thread membership. Plan E2 'mentions[].id' assertion was over-specified.",
+		"combined_risk": "In multi-project prod where the alert Hub bot lacks membership in a dept Lead channel: founder page POSTS (owner bot) but founder is neither @-pinged (by design) NOR added to the thread (Hub-bot 403) → founder may not be notified unless already watching the channel. Needs Tadashi judgment on prod Hub-bot channel access.",
+		"env_limits": "(1) test runners spawn on Fable-5 (quota exhausted) → idle at startup; gap injected via real flywheel-comm ask CLI targeting the SLOT commdb with the runner's real execId (env-accident, not a shortcut; DB row byte-identical to runner-originated). (2) test bots lack MANAGE_ROLES → cannot grant Hub bot dept-channel access to remove the confound."
+	}
+}

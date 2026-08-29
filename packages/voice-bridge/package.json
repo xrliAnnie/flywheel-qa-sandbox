@@ -1,0 +1,36 @@
+{
+	"name": "flywheel-voice-bridge",
+	"version": "0.1.0",
+	"description": "FLY-545 Huddle mode — resident Discord voice runtime (#huddle VC): ears bot receive pipeline (DAVE opus → 16k mono PCM → Gemini Live), Lead bot playback (AudioPlayer queue, earcon/filler, barge-in stop), orchestrator bot (/meet, TIV) — a standalone launchd daemon, NOT part of the Bridge process. Engine = D1-A audio-direct (S1 spike: TEXT modality server-rejected by all current Live models).",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel-voice-bridge": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@discordjs/voice": "0.19.2",
+		"@snazzah/davey": "0.1.12",
+		"discord.js": "14.26.4",
+		"flywheel-gemini-agent": "workspace:*",
+		"flywheel-voice-core": "workspace:*",
+		"opusscript": "0.0.8",
+		"prism-media": "1.3.5"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

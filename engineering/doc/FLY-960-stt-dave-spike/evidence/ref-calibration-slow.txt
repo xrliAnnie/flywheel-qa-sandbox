@@ -1,0 +1,5 @@
+第一句 把 545的worth bridge排上，明天先跑 smoke test。
+第二句 这个PR的CI已经绿了，等Annie确认之后再ship。
+第三句 哈豆模式的latency目标是手音800毫秒以内。
+第四句 如果Dave解密失败，今晚就切到fallback方案。
+第五句 让Tai she把worth tree建好，然后开始TDD。

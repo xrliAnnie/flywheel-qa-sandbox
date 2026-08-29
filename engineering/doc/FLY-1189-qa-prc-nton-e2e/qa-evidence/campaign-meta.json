@@ -1,0 +1,17 @@
+{
+	"campaign_id": "98c2108c",
+	"pr": 556,
+	"pr_head": "98c2108c5f4e80ee75222b6966f16b2cc16ab8cd",
+	"branch": "flywheel-FLY-1048-pr-c",
+	"qa_exec_id": "6ca04936-2eff-4cab-b972-2904e5c6cdf8",
+	"qa_branch": "flywheel-FLY-1189",
+	"started": "2026-07-11T23:16 PT",
+	"hermetic_suites": {
+		"fault_inject": "26/26",
+		"multilead": "22/22",
+		"assert": "9/9",
+		"driver": "5/5"
+	},
+	"load_at_start": "10.53 / 18 cores (safe, threshold 27)",
+	"room_ports_free": "19871-19874 free"
+}

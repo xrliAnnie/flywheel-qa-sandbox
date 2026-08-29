@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>FLY-1006 · 声线试听（零消耗）</title>
+<style>
+	:root { color-scheme: light; }
+	* { box-sizing: border-box; }
+	body {
+		margin: 0; padding: 16px; background: #f5f5f7; color: #1d1d1f;
+		font-family: -apple-system, system-ui, sans-serif; max-width: 720px;
+		margin-inline: auto;
+	}
+	h1 { font-size: 20px; margin: 8px 0 4px; }
+	.sub { color: #86868b; font-size: 13px; margin-bottom: 16px; }
+	.card {
+		background: #fff; border-radius: 12px; padding: 16px;
+		box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 12px;
+	}
+	.card h2 { font-size: 16px; margin: 0 0 10px; color: #1a365d; }
+	.row { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+	.row .label { min-width: 220px; font-size: 14px; }
+	.row .tag { font-size: 11px; color: #86868b; }
+	audio { height: 32px; flex: 1; min-width: 200px; }
+	.note { font-size: 13px; color: #86868b; line-height: 1.6; }
+</style>
+</head>
+<body>
+<h1>声线试听 · 中文口音对比</h1>
+<div class="sub">同一句话逐字对比（本地样本，零 credits 消耗）· 选好了在 [FLY-1006] thread 告诉 Tadashi 就行</div>
+
+<div class="card">
+	<h2>Tadashi（工程负责人 · 男声）</h2>
+	<div class="row"><span class="label">Eric <span class="tag">现役 · 你反馈中文有怪口音</span></span><audio controls preload="none" src="/audition/audio/eric-zh.mp3"></audio></div>
+	<div class="row"><span class="label">Jason <span class="tag">备选A · 中文原生 · 北京腔</span></span><audio controls preload="none" src="/audition/audio/jason-zh.mp3"></audio></div>
+	<div class="row"><span class="label">Haoran <span class="tag">备选B · 中文原生 · 沉稳</span></span><audio controls preload="none" src="/audition/audio/haoran-zh.mp3"></audio></div>
+	<div class="row"><span class="label">George <span class="tag">备选C · 英文 premade 对照</span></span><audio controls preload="none" src="/audition/audio/george-zh.mp3"></audio></div>
+</div>
+
+<div class="card">
+	<h2>Aunt Cass（总管 · 女声）</h2>
+	<div class="row"><span class="label">Sarah <span class="tag">现役 · v9 记过中文有小瑕疵</span></span><audio controls preload="none" src="/audition/audio/sarah-zh.mp3"></audio></div>
+	<div class="row"><span class="label">Amy <span class="tag">备选 · 中文原生 · 自然</span></span><audio controls preload="none" src="/audition/audio/amy-zh.mp3"></audio></div>
+</div>
+
+<div class="card">
+	<h2>英文样本（跨语言一致性一听）</h2>
+	<div class="row"><span class="label">Jason · EN</span><audio controls preload="none" src="/audition/audio/jason-en.mp3"></audio></div>
+	<div class="row"><span class="label">Haoran · EN</span><audio controls preload="none" src="/audition/audio/haoran-en.mp3"></audio></div>
+	<div class="row"><span class="label">Amy · EN</span><audio controls preload="none" src="/audition/audio/amy-en.mp3"></audio></div>
+</div>
+
+<div class="card note">
+	样句：「帮我 check 一下 FLY-980 的 PR，顺便看看 CI 有没有过。今天下午我们把语音会议的方案定下来。」
+	（flash_v2_5 = agent 实跑同款 TTS 档;中英混句考察英文术语发音。）
+	想连人设一起听 → <a href="/">talk 页</a>选对应备选声线开会话（注：脑离线期间只有开场白，完整对话等 rig respin）。
+</div>
+</body>
+</html>

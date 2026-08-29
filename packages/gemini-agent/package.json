@@ -1,0 +1,32 @@
+{
+	"name": "flywheel-gemini-agent",
+	"version": "0.1.0",
+	"description": "FLY-1018 /gemini-advanced — tool-using Gemini agent (own-loop on @google/genai Interactions API). Thin agent loop + 6-tool Bridge HTTP surface + 3-layer guardrails; text (Discord slash) and voice (delegate LiveToolSpec) entries share one runAgentSession(). Clean-room implementation — designed from concept-level principles only.",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel-gemini-agent": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"@google/genai": "2.10.0",
+		"discord.js": "14.26.4",
+		"flywheel-voice-core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

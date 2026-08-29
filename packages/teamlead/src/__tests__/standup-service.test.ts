@@ -100,7 +100,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -108,7 +107,7 @@ describe("aggregateStandup", () => {
 
 		expect(report.systemStatus.runningCount).toBe(2);
 		expect(report.systemStatus.awaitingReviewCount).toBe(1);
-		expect(report.systemStatus.maxRunners).toBe(3);
+		expect(report.systemStatus.maxRunners).toBeNull();
 	});
 
 	it("filters completions by 24h window", async () => {
@@ -128,7 +127,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -153,7 +151,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -181,7 +178,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -206,7 +202,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -220,7 +215,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -242,7 +236,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,
@@ -257,7 +250,6 @@ describe("aggregateStandup", () => {
 		const report = await aggregateStandup(
 			store,
 			"TestProject",
-			3,
 			testProjects,
 			15,
 			24,

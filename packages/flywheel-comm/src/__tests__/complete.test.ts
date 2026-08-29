@@ -9,7 +9,7 @@
  * - Git field derivation (branch parse, commit count, diff numstat)
  */
 
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,7 +29,7 @@ describe("complete command", () => {
 	let mockFetch: ReturnType<typeof vi.fn>;
 	let exitSpy: ReturnType<typeof vi.spyOn>;
 	let errorSpy: ReturnType<typeof vi.spyOn>;
-	let logSpy: ReturnType<typeof vi.spyOn>;
+	let _logSpy: ReturnType<typeof vi.spyOn>;
 	let tmpHome: string;
 
 	beforeEach(() => {
@@ -54,13 +54,17 @@ describe("complete command", () => {
 			});
 
 		errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-		logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+		_logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
 		execFileSyncMock.mockImplementation((cmd, args) => {
 			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
 			const a = (args ?? []) as string[];
 			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref" && a[2] === "HEAD") {
 				return "feat/v1.23.0-FLY-108-session-status-flip\n";
+			}
+			// FLY-191: bare HEAD sha for evidence.headSha
+			if (a[0] === "rev-parse" && a[1] === "HEAD" && a.length === 2) {
+				return `${"c".repeat(40)}\n`;
 			}
 			if (a[0] === "merge-base") {
 				return "abc123base\n";
@@ -143,6 +147,49 @@ describe("complete command", () => {
 			"test: add tests",
 			"refactor: cleanup",
 		]);
+
+		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
+		// the Bridge persists it as pr_head_sha for verify-approval.
+		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("FLY-191: --question-id travels as payload.reviewQuestionId (review binding)", async () => {
+		await complete({
+			route: "needs_review",
+			merged: false,
+			questionId: "55555555-5555-5555-5555-555555555555",
+		});
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.reviewQuestionId).toBe(
+			"55555555-5555-5555-5555-555555555555",
+		);
+	});
+
+	it("FLY-191: no --question-id → payload.reviewQuestionId absent", async () => {
+		await complete({ route: "needs_review", merged: false });
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.reviewQuestionId).toBeUndefined();
+	});
+
+	it("FLY-191: malformed/unavailable git HEAD → evidence.headSha ABSENT (fail-closed downstream)", async () => {
+		execFileSyncMock.mockImplementation((cmd, args) => {
+			if (cmd !== "git") throw new Error(`unexpected cmd ${cmd}`);
+			const a = (args ?? []) as string[];
+			if (a[0] === "rev-parse" && a[1] === "HEAD" && a.length === 2) {
+				return "fatal: not a git repository\n"; // garbage, not a sha
+			}
+			return "";
+		});
+
+		await complete({ route: "needs_review", merged: false });
+
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		// Never guess: absent field → verify-approval fail-closes on the
+		// missing persisted sha rather than matching garbage.
+		expect(body.payload.evidence.headSha).toBeUndefined();
 	});
 
 	it("missing --route → exit 1", async () => {
@@ -171,6 +218,95 @@ describe("complete command", () => {
 		expect(errorSpy).toHaveBeenCalledWith(
 			expect.stringContaining("--merged requires --pr"),
 		);
+	});
+
+	// FLY-222 #1: no_code terminal route
+	it("FLY-222: route=no_code is accepted and posts decision.route=no_code", async () => {
+		await complete({ route: "no_code", merged: false, summary: "2 issues" });
+		expect(mockFetch).toHaveBeenCalled();
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.decision).toEqual({ route: "no_code" });
+		expect(body.payload.summary).toBe("2 issues");
+	});
+
+	it("FLY-222: route=no_code with --merged → exit 1 (contradictory)", async () => {
+		await expect(
+			complete({ route: "no_code", pr: 7, merged: true }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("no_code is for no-code/no-merge"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-222: route=no_code with --pr → exit 1 (contradictory)", async () => {
+		await expect(
+			complete({ route: "no_code", pr: 7, merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	// FLY-493: pr_handoff terminal route (no-transport antigravity build+PR).
+	it("FLY-493: route=pr_handoff posts decision.route=pr_handoff with ready_to_merge landing evidence", async () => {
+		await complete({ route: "pr_handoff", pr: 42, merged: false });
+		expect(mockFetch).toHaveBeenCalled();
+		const [, opts] = mockFetch.mock.calls[0]!;
+		const body = JSON.parse(opts.body);
+		expect(body.payload.decision).toEqual({ route: "pr_handoff" });
+		// Fail-closed PR evidence: landingStatus carries ready_to_merge + prNumber.
+		expect(body.payload.evidence.landingStatus).toEqual({
+			status: "ready_to_merge",
+			prNumber: 42,
+		});
+		// headSha still bound (so downstream has the PR head).
+		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("FLY-493: route=pr_handoff WITHOUT --pr → exit 1 (PR evidence mandatory)", async () => {
+		await expect(
+			complete({ route: "pr_handoff", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("pr_handoff requires --pr"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	// Codex code review R1: --pr parses via parseInt, so NaN / non-positive must
+	// NOT pass (NaN → JSON null, which the sinks would still terminalize).
+	it.each([Number.NaN, 0, -3, 1.5])(
+		"FLY-493: route=pr_handoff with non-positive-integer --pr (%s) → exit 1",
+		async (badPr) => {
+			await expect(
+				complete({ route: "pr_handoff", pr: badPr as number, merged: false }),
+			).rejects.toThrow("process.exit(1)");
+			expect(mockFetch).not.toHaveBeenCalled();
+		},
+	);
+
+	it("FLY-493: route=pr_handoff with --merged → exit 1 (contradictory)", async () => {
+		await expect(
+			complete({ route: "pr_handoff", pr: 42, merged: true }),
+		).rejects.toThrow("process.exit(1)");
+		expect(mockFetch).not.toHaveBeenCalled();
+	});
+
+	it("FLY-493: pr_handoff validates FLYWHEEL_LAND_STATUS_PATH prNumber against --pr (mismatch → exit 1)", async () => {
+		const landPath = join(tmpHome, "land-status.json");
+		writeFileSync(
+			landPath,
+			JSON.stringify({ status: "ready_to_merge", prNumber: 999 }),
+		);
+		process.env.FLYWHEEL_LAND_STATUS_PATH = landPath;
+		await expect(
+			complete({ route: "pr_handoff", pr: 42, merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("land-status"),
+		);
+		expect(mockFetch).not.toHaveBeenCalled();
+		delete process.env.FLYWHEEL_LAND_STATUS_PATH;
 	});
 
 	it("missing FLYWHEEL_EXEC_ID → exit 1 with explicit env name", async () => {
@@ -257,7 +393,7 @@ describe("complete command", () => {
 	});
 
 	it("git branch not matching regex → issueIdentifier omitted", async () => {
-		execFileSyncMock.mockImplementation((cmd, args) => {
+		execFileSyncMock.mockImplementation((_cmd, args) => {
 			const a = (args ?? []) as string[];
 			if (a[0] === "rev-parse" && a[1] === "--abbrev-ref") return "main\n";
 			if (a[0] === "merge-base") return "base123\n";

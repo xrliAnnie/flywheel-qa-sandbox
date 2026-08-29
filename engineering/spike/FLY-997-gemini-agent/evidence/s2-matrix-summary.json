@@ -1,0 +1,324 @@
+{
+	"runs": [
+		{
+			"ts": "2026-07-08T20:45:53.404Z",
+			"surface": "interactions",
+			"smoke": true,
+			"sessionsUsed": 5,
+			"outboundOrigins": ["http://127.0.0.1:47997"],
+			"rawFileRef": "matrix-2026-07-08T20-44-55.jsonl",
+			"summaries": [
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N1",
+					"surface": "interactions",
+					"rounds": 1,
+					"completedRounds": 1,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 1,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 6,
+					"tokens": {
+						"input": 16554,
+						"output": 636
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N2",
+					"surface": "interactions",
+					"rounds": 1,
+					"completedRounds": 1,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 1,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 3,
+					"tokens": {
+						"input": 7397,
+						"output": 451
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N3",
+					"surface": "interactions",
+					"rounds": 1,
+					"completedRounds": 1,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 1,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 1,
+					"tokens": {
+						"input": 3165,
+						"output": 99
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N4a",
+					"surface": "interactions",
+					"rounds": 1,
+					"completedRounds": 1,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 1,
+					"successRate": 1,
+					"avgParamFirstPass": 0.6,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 5,
+					"tokens": {
+						"input": 14687,
+						"output": 586
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N4b",
+					"surface": "interactions",
+					"rounds": 1,
+					"completedRounds": 1,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 1,
+					"successRate": 1,
+					"avgParamFirstPass": 0,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 1,
+					"tokens": {
+						"input": 2883,
+						"output": 63
+					}
+				}
+			]
+		},
+		{
+			"ts": "2026-07-08T21:11:21.876Z",
+			"surface": "interactions",
+			"smoke": false,
+			"sessionsUsed": 100,
+			"outboundOrigins": ["http://127.0.0.1:47997"],
+			"rawFileRef": "matrix-2026-07-08T20-46-38.jsonl",
+			"summaries": [
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N1",
+					"surface": "interactions",
+					"rounds": 20,
+					"completedRounds": 20,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 20,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 6.5,
+					"tokens": {
+						"input": 362641,
+						"output": 15108
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N2",
+					"surface": "interactions",
+					"rounds": 10,
+					"completedRounds": 10,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 10,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 3.2,
+					"tokens": {
+						"input": 83023,
+						"output": 4904
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N3",
+					"surface": "interactions",
+					"rounds": 10,
+					"completedRounds": 10,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 10,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 0.7,
+					"tokens": {
+						"input": 26878,
+						"output": 1016
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N4a",
+					"surface": "interactions",
+					"rounds": 5,
+					"completedRounds": 5,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 5,
+					"successRate": 1,
+					"avgParamFirstPass": 0.565,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 5.2,
+					"tokens": {
+						"input": 75786,
+						"output": 3125
+					}
+				},
+				{
+					"tier": "flash",
+					"model": "gemini-3.5-flash",
+					"scenario": "N4b",
+					"surface": "interactions",
+					"rounds": 5,
+					"completedRounds": 5,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 5,
+					"successRate": 1,
+					"avgParamFirstPass": 0,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 1,
+					"tokens": {
+						"input": 14394,
+						"output": 364
+					}
+				},
+				{
+					"tier": "pro",
+					"model": "gemini-3.1-pro-preview",
+					"scenario": "N1",
+					"surface": "interactions",
+					"rounds": 20,
+					"completedRounds": 20,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 20,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 5.5,
+					"tokens": {
+						"input": 301415,
+						"output": 10830
+					}
+				},
+				{
+					"tier": "pro",
+					"model": "gemini-3.1-pro-preview",
+					"scenario": "N2",
+					"surface": "interactions",
+					"rounds": 10,
+					"completedRounds": 10,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 10,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 2.9,
+					"tokens": {
+						"input": 76662,
+						"output": 4029
+					}
+				},
+				{
+					"tier": "pro",
+					"model": "gemini-3.1-pro-preview",
+					"scenario": "N3",
+					"surface": "interactions",
+					"rounds": 10,
+					"completedRounds": 10,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 10,
+					"successRate": 1,
+					"avgParamFirstPass": 1,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 0,
+					"tokens": {
+						"input": 13690,
+						"output": 523
+					}
+				},
+				{
+					"tier": "pro",
+					"model": "gemini-3.1-pro-preview",
+					"scenario": "N4a",
+					"surface": "interactions",
+					"rounds": 5,
+					"completedRounds": 5,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 5,
+					"successRate": 1,
+					"avgParamFirstPass": 0.533,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 3.4,
+					"tokens": {
+						"input": 48782,
+						"output": 2094
+					}
+				},
+				{
+					"tier": "pro",
+					"model": "gemini-3.1-pro-preview",
+					"scenario": "N4b",
+					"surface": "interactions",
+					"rounds": 5,
+					"completedRounds": 5,
+					"quotaAborted": 0,
+					"errorRounds": 0,
+					"successes": 5,
+					"successRate": 1,
+					"avgParamFirstPass": 0,
+					"hallucinatedToolsTotal": 0,
+					"maxStepsExceeded": 0,
+					"avgSteps": 1,
+					"tokens": {
+						"input": 14718,
+						"output": 417
+					}
+				}
+			]
+		}
+	]
+}

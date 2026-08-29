@@ -1,11 +1,19 @@
 {
 	"_comment": "Copy to ~/.flywheel/test-slots.json and fill in values",
 	"_setup": "Create bots at discord.com/developers/applications, channels in Discord server",
-	"_role": "slot.role selects the GeoForge3D identity.md to source from: 'cos' → .lead/cos-lead/identity.md (Simba), 'lead' → .lead/product-lead/identity.md (Peter). Required — test-deploy.sh fails fast if missing.",
+	"_role": "slot.role selects FLYWHEEL_LEAD_ROLE (cos vs lead — picks the base rule file: cos-lead-rules.md vs department-lead-rules.md). Required.",
+	"_identitySource": "FLY-153: slot.identitySource selects which GeoForge3D .lead/<dir>/identity.md to source. Allowlist: cos-lead | product-lead | ops-lead. Optional — pre-FLY-153 configs without this field fall back to role mapping (cos→cos-lead, lead→product-lead). MUST be set for slot 3 to load Oliver instead of Peter (mirror cascade coverage requires it).",
+	"_fly163": "FLY-163: forumChannelId / forumChannelName fields are removed. test-deploy.sh no longer reads them. ProjectConfig strips any deprecated forumChannel key with a warning at load time.",
+	"_mirrorChannel": "FLY-153: top-level mirrorChannel block is OPTIONAL. Required only for `test-deploy.sh --mode mirror`. Create one shared text channel in the test guild and invite bots flywheel-test-1/2/3 (View Channel + Send Messages + Read Message History). See packages/qa-framework/README.md §Mirror Mode for step-by-step.",
+	"_roundtableChannel": "FLY-529: top-level roundtableChannel block is OPTIONAL. Required only for `test-deploy.sh --mode roundtable`. Create a shared text channel (mirrors #leads-roundtable) in the test guild. hostSlot's bot ALSO needs Create Public Threads + Send Messages in Threads (the auto-thread manager creates threads). memberSlots = NON-host slot ids the manager adds to each topic thread. triggerMode = any_top_level (easiest for QA) | explicit_prefix | any_lead_mention. Run scripts/setup-roundtable-channel.sh <channel-id> to validate + install. FLY-314 Part-b QA (OPTIONAL, default OFF = byte-compatible): replyInThread (bool) routes a Lead's reply INTO the topic thread; autoContinue (bool) lets thread members continue without @-mentioning each other, bounded by threadBudget (int, OPTIONAL — omit to exercise the shipped backend default 12 per FLY-676; only set it to override) per-thread bot-only anti-loop budget. These set the plugin's FLYWHEEL_ROUNDTABLE_REPLY_IN_THREAD / _THREAD_AUTOCONTINUE / _THREAD_BUDGET on the test Lead pane; leave unset/false for the Phase-1 auto-thread smoke.",
+	"_alertChannel": "FLY-529: top-level alertChannel block is OPTIONAL. Required only for `test-deploy.sh --alerts`. Create an isolated alert channel (mirrors #flywheel-alerts) and invite the slot bot(s) + repair bot. repairBotTokenEnv defaults to the slot's tokenEnvVar. Run scripts/setup-alert-channel.sh <channel-id> to validate + install.",
 	"slots": [
 		{
 			"id": 1,
 			"role": "cos",
+			"identitySource": "cos-lead",
+			"department": "cos",
+			"deptLabel": "PM-Test",
 			"botName": "flywheel-test-1",
 			"botAppId": "<bot-application-id>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_1",
@@ -16,34 +24,61 @@
 		{
 			"id": 2,
 			"role": "lead",
+			"identitySource": "product-lead",
+			"department": "product-test",
+			"deptLabel": "Product-Test",
 			"botName": "flywheel-test-2",
 			"botAppId": "<bot-application-id>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_2",
 			"channelId": "<channel-id>",
-			"channelName": "lead-test-1",
+			"channelName": "product-lead-test",
 			"bridgePort": 19872
 		},
 		{
 			"id": 3,
 			"role": "lead",
+			"identitySource": "ops-lead",
+			"department": "ops-test",
+			"deptLabel": "Ops-Test",
 			"botName": "flywheel-test-3",
 			"botAppId": "<bot-application-id>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_3",
 			"channelId": "<channel-id>",
-			"channelName": "lead-test-2",
+			"channelName": "ops-lead-test",
 			"bridgePort": 19873
 		},
 		{
 			"id": 4,
 			"role": "lead",
+			"identitySource": "product-lead",
+			"department": "finance-test",
+			"deptLabel": "Finance-Test",
 			"botName": "flywheel-test-4",
 			"botAppId": "<bot-application-id>",
 			"tokenEnvVar": "TEST_BOT_TOKEN_4",
 			"channelId": "<channel-id>",
-			"channelName": "lead-test-3",
+			"channelName": "finance-lead-test",
 			"bridgePort": 19874
 		}
 	],
 	"categoryId": "<discord-category-id>",
-	"guildId": "<discord-guild-id>"
+	"guildId": "<discord-guild-id>",
+	"mirrorChannel": {
+		"channelId": "<shared-mirror-channel-id>",
+		"channelName": "test-core-mirror"
+	},
+	"roundtableChannel": {
+		"channelId": "<test-leads-roundtable-channel-id>",
+		"channelName": "test-leads-roundtable",
+		"hostSlot": 1,
+		"memberSlots": [2],
+		"triggerMode": "any_top_level",
+		"replyInThread": false,
+		"autoContinue": false
+	},
+	"alertChannel": {
+		"channelId": "<test-flywheel-alerts-channel-id>",
+		"channelName": "test-flywheel-alerts",
+		"repairBotTokenEnv": "TEST_BOT_TOKEN_1"
+	}
 }

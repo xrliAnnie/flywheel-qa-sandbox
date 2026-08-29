@@ -1,0 +1,31 @@
+{
+	"name": "flywheel-voice-headphone",
+	"version": "0.1.0",
+	"description": "FLY-546 headphone mode daemon — Discord gateway tap -> FIFO queue -> turn state machine (voice-core headphone logic) with Bridge voice endpoints for context/gate-binding/ship-approval. Audio face is pluggable: NullAudioIO (desktop dry-run) now, FLY-545 VC adapter in M-B4.",
+	"type": "module",
+	"main": "dist/index.js",
+	"types": "dist/index.d.ts",
+	"bin": {
+		"flywheel-voice-headphone": "dist/cli.js"
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"build": "tsc",
+		"dev": "tsc --watch",
+		"test": "vitest run",
+		"test:watch": "vitest --watch",
+		"test:run": "vitest run",
+		"typecheck": "tsc --noEmit"
+	},
+	"dependencies": {
+		"discord.js": "14.26.4",
+		"flywheel-voice-core": "workspace:*"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"typescript": "^5.3.3",
+		"vitest": "^3.1.4"
+	}
+}

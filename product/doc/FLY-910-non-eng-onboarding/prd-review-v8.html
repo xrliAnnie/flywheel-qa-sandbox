@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-910 PRD v2 · 请过目</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0 16px 160px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:23px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px; padding:14px 18px; margin:22px 0 16px; font-size:15px; color:#1d3a5f; }
+  .sec { background:#fff; border-radius:14px; padding:16px 18px 14px; margin:0 0 16px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #007aff; }
+  .sec h2 { font-size:16.5px; margin:0 0 4px; }
+  .sec .d { font-size:14.5px; color:#333; margin:4px 0 0; }
+  .sec .d b { color:#1d1d1f; }
+  .was { font-size:13.5px; color:#86868b; margin:6px 0 2px; }
+  table.t { width:100%; border-collapse:collapse; margin:8px 0; font-size:13.5px; }
+  table.t th, table.t td { text-align:left; padding:6px 9px; border-bottom:1px solid #eef0f2; vertical-align:top; }
+  table.t th { background:#1a365d; color:#fff; font-weight:600; }
+  table.t td:first-child { font-weight:600; color:#1a365d; white-space:nowrap; }
+  .scroll { overflow-x:auto; }
+  .yn { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; margin:11px 0 6px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:13.5px; border:1px solid #e3e3e6; border-radius:999px; padding:4px 12px; }
+  label.mini input { width:16px; height:16px; margin:0; accent-color:#007aff; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#007aff; background:#eef7ff; font-weight:600; }
+  textarea.cmt { width:100%; min-height:42px; resize:vertical; border:1.5px solid #ffcf5c; border-radius:10px; background:#fffdf5;
+    padding:8px 11px; font-family:inherit; font-size:14.5px; color:#1d1d1f; margin-top:2px; }
+  textarea.cmt:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.cmt::placeholder { color:#c2ad63; }
+  .overall { background:#fff8e6; border:1px solid #ffcf5c; border-radius:14px; padding:16px 18px; margin:8px 0 0; }
+  .overall h2 { font-size:16.5px; margin:0 0 6px; color:#6b4e00; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97); backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:860px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px; font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:120px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:22px; font-size:13px; color:#86868b; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>FLY-910 PRD v2 · 请过目 📋</h1>
+    <p class="sub">2026-07-08 · 折入你对 PRD 的反馈(这版取代上一版 PRD 过目卡)</p>
+  </header>
+
+  <div class="howto">
+    <b>你对 PRD 提了三点,都改了。</b> 下面逐节让你确认这三处 —— 每节自己一个留言框,👍/✏️。看完拉到底一键复制发回。
+    (PRD 全文 engineering/doc/FLY-910-onboarding/prd.md;整条 11 步流程你已批过、没动。)
+  </div>
+
+  <div class="sec">
+    <h2>① Agent CLI 默认 = Claude Code、可切 Codex</h2>
+    <div class="was">你定的:这条 open question 拍了。</div>
+    <div class="d">地基那步(装 agent CLI)写成 <b>默认装 Claude Code、可以切换成 Codex</b>;架构保持 vendor-agnostic、不写死,以后加别的 agent CLI 也不用改结构。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="s1" value="就这样">👍</label><label class="mini"><input type="radio" name="s1" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t1" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>② 改名「Buddy」+ 常驻 reframe(守住 MVP scope)</h2>
+    <div class="was">你说的:去掉 Onboarding 前缀叫「Buddy」;它不只 onboarding 时在,是常驻助手(帮修问题/帮开新 team/日常自助)。</div>
+    <div class="d">改名 <b>Buddy</b> 了。常驻这个方向我写成<b>愿景 / phase-2</b>,<b>没塞进 MVP</b> —— 按你「每加一样说清砍哪」的规矩:</div>
+    <div class="scroll"><table class="t">
+      <tr><th>阶段</th><th>Buddy 做什么</th></tr>
+      <tr><td>MVP(现在建)</td><td>onboarding(step 0–8):把人带到「有个能跑的 system + 第一个真产出」</td></tr>
+      <tr><td>phase-2(愿景,先不建)</td><td>常驻自助:开新 team / 帮修问题 / 日常引导</td></tr>
+    </table></div>
+    <div class="d">MVP 只做 onboarding;常驻三样先不建,只把架构留成「常驻 agent 形态」不是一次性脚本,phase-2 单独做。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="s2" value="就这样">👍</label><label class="mini"><input type="radio" name="s2" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t2" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="sec">
+    <h2>③ 边界:Buddy vs 系统告警 bot(别混)</h2>
+    <div class="d">加了一节讲清:<b>Buddy = 客户身边的自助搭档</b>(用户面:onboarding + 以后开 team/修问题);<b>FLY-915/942 那套是系统健康检测 + 告警的看门狗</b>(平台侧、面向运维/你)。两个角色、面向的人、触发方式都不一样,设计和 build 分开、不混。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="s3" value="就这样">👍</label><label class="mini"><input type="radio" name="s3" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="t3" placeholder="这节想说什么…"></textarea>
+  </div>
+
+  <div class="overall">
+    <h2>整体 / 其它想说的</h2>
+    <textarea class="cmt" id="tall" placeholder="对 PRD v2 / 别的想法,写这儿…(还开着没定的:命令形态 / 收费待竞品分析 / Draft 竞品链接)"></textarea>
+  </div>
+
+  <div class="foot">草稿 · 不上线 · 不替你定。PRD 全文:engineering/doc/FLY-910-onboarding/prd.md。<br>
+  <b>这版取代上一版 PRD 过目卡。</b> 你过目收敛后 → 交工程前我先跑一轮 Codex 设计 review 把关可建性 → 再拆 build issues 挂 Tadashi。</div>
+
+</div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的反馈(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">看完点这个 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var secs = [
+    { s: "s1", t: "t1", label: "① agent CLI 默认 Claude Code 可切 Codex" },
+    { s: "s2", t: "t2", label: "② 改名 Buddy + 常驻 phase-2(MVP 只 onboarding)" },
+    { s: "s3", t: "t3", label: "③ 边界 Buddy vs 告警 bot" }
+  ];
+  var lines = ["FLY-910 PRD v2 — 我的反馈:"];
+  secs.forEach(function (it) {
+    var r = document.querySelector('input[name="' + it.s + '"]:checked');
+    var c = document.getElementById(it.t);
+    var picked = r ? r.value : "(没点)";
+    var note = (c && c.value.trim()) ? " — " + c.value.trim() : "";
+    if (r || note) lines.push(it.label + ": " + picked + note);
+  });
+  var all = document.getElementById("tall");
+  if (all && all.value.trim()) lines.push("整体: " + all.value.trim());
+  if (lines.length === 1) lines.push("(还没点/写任何一节)");
+  var text = lines.join("\n");
+  var out = document.getElementById("out"), hint = document.getElementById("hint");
+  out.style.display = "block"; out.value = text; out.focus(); out.select();
+  try {
+    navigator.clipboard.writeText(text);
+    hint.textContent = "✅ 已复制,直接粘贴发回给我";
+  } catch (e) {
+    hint.textContent = "选中上面这段复制,发回给我";
+  }
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,13 @@
+⏺ Continuing the GEO-401 productionization — next I need to run the render job
+  and capture the result for Annie.
+
+  Called flywheel-terminal (ctrl+o to expand)
+
+  ⎿  Claude usage limit reached. Your limit will reset at 9:00 PM (America/Chicago).
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── @product-lead ──
+❯
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Opus 4.8/xhigh | ⚡product-lead | ~/.flywheel/lead-workspace/product-lead | ctx 47% ██████████
+  5h ██████████ 100% reset today 21:30  |  7d ████████░░ 82% reset Mon 09:00
+  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents

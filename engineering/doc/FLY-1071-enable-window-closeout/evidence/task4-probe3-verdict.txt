@@ -1,0 +1,7 @@
+# 探针③ 证据汇总 — 2026-07-09 17:39:28
+posted: 17:36:20, msg id 1524937282279178352, author=dispatcher, mention=codex-infra-bot 唯一
+W4 pane: 17:36:39(≤19s)出现 inbound 且主动回应「已被 mention 唤醒,探针③通过」(task4-probe3-w4-pane.txt)
+W5 pane: 162s 观察窗零痕迹(task4-probe3-w5-pane.txt,grep=0)
+频道: probe3 之后恰 1 条回复,作者=codex-infra-bot(不串给 claw)
+reply id: 1524937346099839197 | author: codex-infra-bot | content: 
+注:reply content 经 dispatcher token 读为空是 Discord message-content intent 限制(读他 bot 消息正文需特权 intent);实际文本见 W4 pane capture:「[FLY-1071] 已被 mention 唤醒,探针③通过。」

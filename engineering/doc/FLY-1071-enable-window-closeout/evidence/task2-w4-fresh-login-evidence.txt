@@ -1,0 +1,33 @@
+# W4 fresh login / 孤儿清理 / 延长稳定性 — 补充证据(Codex R4-P1)
+
+采样时间:2026-07-09 18:13:48(bootstrap 17:24:14 后约 50 分钟)
+
+## 1. 孤儿 broker PID 55843 已终止(16:51 处置,按 dead-broker 处理;当下 ps 复核)
+$ ps -p 55843 -o pid,command
+  PID COMMAND
+(仅表头、无进程行 = 该 PID 已不存在。处置前该 PID 的 command =
+/Users/xiaorongli/.codex-infra-bot/packages/standalone/releases/0.144.0-.../codex app-server daemon
+pid-update-loop —— 即 Tadashi 指令中点名的 dead broker。)
+
+## 2. fresh OAuth login 成功(login 全程输出留档于 /tmp/fly1071-codex-login.log)
+$ tail -3 /tmp/fly1071-codex-login.log
+On a remote or headless machine? Use codex login --device-auth instead.
+Successfully logged in
+
+$ CODEX_HOME=~/.codex-infra-bot codex login status
+Logged in using ChatGPT
+
+$ ls -la ~/.codex-infra-bot/auth.json
+-rw-------  1 xiaorongli  staff  4600 Jul  9 16:54 /Users/xiaorongli/.codex-infra-bot/auth.json
+
+「非拷贝」判据:auth.json mtime 16:54 = login 完成时刻;login 前该 home 内已无任何 codex 进程
+(孤儿已清、job 未 load),codex login 是唯一写者。整个流程未读写 codex-profile 池的任何文件。
+
+## 3. 稳定性延长核验(bootstrap 17:24:14;10min 时点 17:35:37 已核 starts=103)
+$ grep -c 'Starting Codex InfraBot' /tmp/flywheel-lead-flywheel-codex-infra-bot-lead.log
+103
+(基线 102 → bootstrap 后恒为 103 = 约 50 分钟仅一次启动,无 ~80s 重启循环。)
+
+launchctl print(节选):
+	state = running
+	pid = 92526

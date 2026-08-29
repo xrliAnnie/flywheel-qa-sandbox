@@ -784,45 +784,42 @@ describe("DagDispatcher", () => {
 		expect(result.shelved).toEqual([]);
 	});
 
-	// ─── Viewer tests (GEO-277: extracted to shared tmux-viewer.ts) ────────────────
+	// ─── Viewer wiring tests (FLY-116: opener moved into BlueprintContext callback) ──
 
-	it("dispatch calls openTmuxViewer with session name", async () => {
-		const { openTmuxViewer } = await import("flywheel-core");
-		const mockViewer = openTmuxViewer as ReturnType<typeof vi.fn>;
-
+	it("dispatch sets BlueprintContext.onTmuxWindowCreated callback for each node", async () => {
+		// FLY-116: opener is no longer called at dispatch start. Instead each
+		// BlueprintContext gets an onTmuxWindowCreated callback that the
+		// TmuxAdapter fires after `tmux new-window` returns a windowId.
 		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
 		const resolver = new DagResolver(nodes);
 		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
+		const seenContexts: BlueprintContext[] = [];
+		const ctxBuilder = (node: DagNode): BlueprintContext => {
+			const ctx = defaultContext(node);
+			// Spy by wrapping the actual blueprint.run via inspection — easier
+			// is to assert callback exists post-finalization on the builder
+			// output. But buildContext result is augmented by DagDispatcher to
+			// add onTmuxWindowCreated; we capture by spying at adapter layer.
+			return ctx;
+		};
+		const _ = ctxBuilder; // tslint silence
+
+		// Spy on blueprint.run to capture the actual ctx that flows in.
+		const originalRun = blueprint.run.bind(blueprint);
+		blueprint.run = vi.fn(async (node, projectRoot, ctx) => {
+			seenContexts.push(ctx);
+			return originalRun(node, projectRoot, ctx);
+		}) as typeof blueprint.run;
+
 		const dispatcher = new DagDispatcher(
 			resolver,
 			blueprint,
 			"/project",
 			defaultContext,
 		);
-
 		await dispatcher.dispatch();
 
-		expect(mockViewer).toHaveBeenCalledWith("flywheel");
-	});
-
-	it("dispatch calls openTmuxViewer with custom session name", async () => {
-		const { openTmuxViewer } = await import("flywheel-core");
-		const mockViewer = openTmuxViewer as ReturnType<typeof vi.fn>;
-
-		const nodes: DagNode[] = [{ id: "A", blockedBy: [] }];
-		const resolver = new DagResolver(nodes);
-		const blueprint = makeMockBlueprint(new Map([["A", { success: true }]]));
-		const dispatcher = new DagDispatcher(
-			resolver,
-			blueprint,
-			"/project",
-			defaultContext,
-			new Semaphore(1),
-			"custom-session",
-		);
-
-		await dispatcher.dispatch();
-
-		expect(mockViewer).toHaveBeenCalledWith("custom-session");
+		expect(seenContexts).toHaveLength(1);
+		expect(seenContexts[0]!.onTmuxWindowCreated).toBeTypeOf("function");
 	});
 });

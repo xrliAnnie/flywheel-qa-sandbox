@@ -1,0 +1,278 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1022 · 树状 Lead 指挥 — 终审(Codex APPROVED)</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+.wrap{max-width:980px;margin:0 auto;padding:20px 16px 90px}
+h1{font-size:24px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin:6px 6px 0 0}
+.pill.ok{background:#e3f9ea;color:#1a7a3c}
+.note{background:#fff;border:1px solid var(--line);border-left:4px solid var(--green);border-radius:12px;padding:12px 14px;margin:16px 0;font-size:14px;color:#1a5a2c}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card.blue{border-left:4px solid var(--blue)}.card.green{border-left:4px solid var(--green)}
+.card.purple{border-left:4px solid var(--purple)}.card.amber{border-left:4px solid var(--amber)}.card.gray{border-left:4px solid var(--dim)}
+h2{font-size:20px;margin:32px 0 6px;letter-spacing:-.01em}
+h3{font-size:15.5px;margin:2px 0 8px}
+.secnum{color:var(--dim);font-variant-numeric:tabular-nums}
+p{margin:8px 0}ul{margin:8px 0 8px 2px;padding-left:20px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;vertical-align:middle}
+.tag.mvp{background:#e3f9ea;color:#1a7a3c}.tag.later{background:#fff4e5;color:#a05a00}
+.k{color:var(--navy);font-weight:600}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0;border:1px solid var(--line);border-radius:12px;background:#fcfcff}
+svg{display:block}
+.legend{display:flex;flex-wrap:wrap;gap:6px 16px;margin:12px 2px 0;font-size:13px}
+.legend div{flex:1 1 250px;min-width:230px}
+.legend b{color:var(--navy)}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+.cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:transparent}
+.bar{position:sticky;bottom:0;margin-top:26px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:var(--blue);color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.hint{color:var(--dim);font-size:12.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}
+.dlg textarea{width:100%;min-height:240px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>树状 Lead 指挥(层级化 runner 管理)—— 终审</h1>
+  <p class="sub">FLY-1022 · 2026-07-09 · Codex design review 4 轮 <b>APPROVED</b> · head 冻 5cc7c364 · PR #516</p>
+  <div><span class="pill ok">✅ Codex APPROVED</span><span class="pill">终审:你点头 → 拆 build 给 Tadashi</span></div>
+</header>
+
+<div class="note">
+  <b>这是什么:</b> 1022 的<b>终审卡</b> —— 一张图看清整套设计。历经:探索(要不要做)→ PRD → grounded 8 机制 → <b>真跑 ChatGPT Deep Research</b>(独立印证 + OTP/credit 两条新增)→ <b>Codex 4 轮 APPROVED</b>。
+  下面 = ⭐ 整体架构(9 机制装进树)+ 关键契约 + build 拆分 + 状态。<b>你终审点头就拆 build 给 Tadashi。</b><br>
+  <b>怎么用:</b> 每节下留言;底部「复制批注」收 markdown。全文 PRD 在 PR #516(<code>engineering/doc/FLY-1022-hierarchical-runner-tree/prd.md</code>)。
+</div>
+
+<!-- 1 架构 SVG -->
+<h2><span class="secnum">1 ·</span> ⭐ 整体架构:9 机制装进树(一眼看清怎么拼)</h2>
+<div class="card purple">
+  <div class="scroll">
+  <svg viewBox="0 0 880 600" width="880" height="600" role="img" aria-label="Lead sub-lead runner 架构图" font-family="-apple-system,system-ui,sans-serif">
+    <defs>
+      <marker id="ad" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#1d1d1f"/></marker>
+      <marker id="au" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#007aff"/></marker>
+    </defs>
+    <!-- edges first (under nodes) -->
+    <!-- dispatch down -->
+    <line x1="380" y1="150" x2="230" y2="236" stroke="#1d1d1f" stroke-width="1.5" marker-end="url(#ad)"/>
+    <line x1="500" y1="150" x2="650" y2="236" stroke="#1d1d1f" stroke-width="1.5" marker-end="url(#ad)"/>
+    <text x="270" y="196" font-size="11" fill="#1d1d1f">⑧ dispatch↓ 落 assignedLeadId</text>
+    <!-- restart down -->
+    <line x1="175" y1="382" x2="150" y2="440" stroke="#1d1d1f" stroke-width="1.3" marker-end="url(#ad)"/>
+    <line x1="255" y1="382" x2="290" y2="440" stroke="#1d1d1f" stroke-width="1.3" marker-end="url(#ad)"/>
+    <line x1="625" y1="382" x2="600" y2="440" stroke="#1d1d1f" stroke-width="1.3" marker-end="url(#ad)"/>
+    <line x1="705" y1="382" x2="740" y2="440" stroke="#1d1d1f" stroke-width="1.3" marker-end="url(#ad)"/>
+    <text x="120" y="418" font-size="10.5" fill="#1d1d1f">⑥ restart/派活↓</text>
+    <!-- health up -->
+    <line x1="165" y1="440" x2="190" y2="384" stroke="#007aff" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#au)"/>
+    <line x1="615" y1="440" x2="640" y2="384" stroke="#007aff" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#au)"/>
+    <text x="300" y="470" font-size="10.5" fill="#007aff">⑦ health 自报↑</text>
+    <!-- rollup up sub->Lead -->
+    <line x1="250" y1="236" x2="400" y2="152" stroke="#007aff" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#au)"/>
+    <line x1="630" y1="236" x2="480" y2="152" stroke="#007aff" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#au)"/>
+    <text x="486" y="205" font-size="11" fill="#007aff">② typed 摘要 + ⑨ merge + ③ credit + ⑤ 未解↑</text>
+    <!-- escalation up Lead->founder -->
+    <line x1="440" y1="96" x2="440" y2="66" stroke="#007aff" stroke-width="1.5" stroke-dasharray="5 3" marker-end="url(#au)"/>
+    <text x="450" y="86" font-size="11" fill="#007aff">⑤ escalation 逐层→founder↑</text>
+
+    <!-- founder -->
+    <rect x="330" y="20" width="220" height="42" rx="10" fill="#fff" stroke="#1a365d" stroke-width="1.5"/>
+    <text x="440" y="38" font-size="13" font-weight="700" fill="#1a365d" text-anchor="middle">Annie (founder)</text>
+    <text x="440" y="54" font-size="11" fill="#5a5a60" text-anchor="middle">每件事 [ISSUE-ID] thread 直达(§7 树不藏)</text>
+
+    <!-- Lead root -->
+    <rect x="280" y="96" width="320" height="56" rx="11" fill="#fff" stroke="#007aff" stroke-width="2"/>
+    <text x="440" y="114" font-size="13.5" font-weight="700" fill="#1d1d1f" text-anchor="middle">Lead (root)</text>
+    <text x="440" y="130" font-size="10.8" fill="#3a3a40" text-anchor="middle">⑨ merge 各组→一屏 · ⑧ owner-resolution(label=权威;owner=assignedLeadId)</text>
+    <text x="440" y="145" font-size="10.8" fill="#3a3a40" text-anchor="middle">消费 ③ credit → 喂 353 capacity-aware 派发</text>
+
+    <!-- sub-lead A -->
+    <rect x="60" y="236" width="300" height="146" rx="11" fill="#faf5ff" stroke="#af52de" stroke-width="1.8"/>
+    <text x="210" y="256" font-size="13" font-weight="700" fill="#7a2fb0" text-anchor="middle">sub-lead A = facade / 压缩层</text>
+    <text x="210" y="278" font-size="11" fill="#3a3a40" text-anchor="middle">① bounded fan-out ≤ ~5-6 runner</text>
+    <text x="210" y="296" font-size="11" fill="#3a3a40" text-anchor="middle">④ circuit-breaker + bulkhead(子树 = cell)</text>
+    <text x="210" y="314" font-size="11" fill="#3a3a40" text-anchor="middle">⑤ soft-suspicion 第一响应(先疑再判死)</text>
+    <text x="210" y="332" font-size="11" fill="#3a3a40" text-anchor="middle">⑥ OTP restart(它那摊的 supervisor)</text>
+    <text x="210" y="350" font-size="11" fill="#3a3a40" text-anchor="middle">⑨ summary-merge(有界 top-K + dropped)</text>
+    <text x="210" y="368" font-size="11" fill="#3a3a40" text-anchor="middle">③ 有界队列 + credit(饱和发背压)</text>
+
+    <!-- sub-lead B -->
+    <rect x="520" y="236" width="300" height="146" rx="11" fill="#faf5ff" stroke="#af52de" stroke-width="1.8"/>
+    <text x="670" y="256" font-size="13" font-weight="700" fill="#7a2fb0" text-anchor="middle">sub-lead B = 同上,另一摊</text>
+    <text x="670" y="292" font-size="11" fill="#3a3a40" text-anchor="middle">① ④ ⑤ ⑥ ⑨ ③ 同 A</text>
+    <text x="670" y="316" font-size="11" fill="#86868b" text-anchor="middle">(MVP 只一层 sub-lead;</text>
+    <text x="670" y="334" font-size="11" fill="#86868b" text-anchor="middle">多层 1→5→25→125 只留设计位)</text>
+
+    <!-- runners -->
+    <rect x="105" y="440" width="120" height="46" rx="9" fill="#fff" stroke="#34c759" stroke-width="1.5"/>
+    <text x="165" y="461" font-size="11.5" font-weight="600" fill="#1a7a3c" text-anchor="middle">runner</text>
+    <text x="165" y="477" font-size="10" fill="#5a5a60" text-anchor="middle">⑦ health 自报</text>
+    <rect x="245" y="440" width="120" height="46" rx="9" fill="#fff" stroke="#34c759" stroke-width="1.5"/>
+    <text x="305" y="461" font-size="11.5" font-weight="600" fill="#1a7a3c" text-anchor="middle">runner</text>
+    <text x="305" y="477" font-size="10" fill="#5a5a60" text-anchor="middle">⑦ health 自报</text>
+    <rect x="555" y="440" width="120" height="46" rx="9" fill="#fff" stroke="#34c759" stroke-width="1.5"/>
+    <text x="615" y="461" font-size="11.5" font-weight="600" fill="#1a7a3c" text-anchor="middle">runner</text>
+    <text x="615" y="477" font-size="10" fill="#5a5a60" text-anchor="middle">⑦ health 自报</text>
+    <rect x="695" y="440" width="125" height="46" rx="9" fill="#fff" stroke="#34c759" stroke-width="1.5"/>
+    <text x="757" y="459" font-size="11.5" font-weight="600" fill="#1a7a3c" text-anchor="middle">runner</text>
+    <text x="757" y="475" font-size="9.5" fill="#5a5a60" text-anchor="middle">多机:卫星节点·1005</text>
+
+    <text x="440" y="520" font-size="11.5" fill="#86868b" text-anchor="middle">纵轴 = 1022 指挥树(谁指挥);runner 在哪台机 = 横轴 1005(正交)。实线↓=下派 · 蓝虚线↑=上汇/升级。</text>
+    <text x="440" y="540" font-size="12" fill="#1d1d1f" text-anchor="middle" font-weight="600">Lead 注意力 = O(直属 sub-lead 数),不是 O(runner 总数)。</text>
+  </svg>
+  </div>
+  <div class="legend">
+    <div><b>① bounded fan-out</b> @sub-lead — 每个 ≤~5-6(认知容量)</div>
+    <div><b>② typed 摘要上汇</b> @sub→Lead — 部分聚合成可结合摘要</div>
+    <div><b>③ 有界队列+credit</b> @sub→Lead — 饱和→背压→353 停派</div>
+    <div><b>④ circuit-breaker+bulkhead</b> @子树 — 隔离卡住/跳闸</div>
+    <div><b>⑤ soft-suspicion</b> @sub 第一响应 — 先疑再判死→逐层升 founder</div>
+    <div><b>⑥ OTP restart</b> @sub→runner — sub=supervisor,超 intensity 上报</div>
+    <div><b>⑦ health-rollup</b> @runner→sub→Lead — 叶子自报,逐层聚合</div>
+    <div><b>⑧ owner-resolution</b> @dispatch+所有事件路由 — label=权威,owner=assignedLeadId</div>
+    <div><b>⑨ summary-merge</b> @每个父节点 — 有界 top-K,任意序结果一致</div>
+  </div>
+</div>
+<div class="cmt"><label>💬 对整体架构的留言(9 机制装的层对吗?一眼看清怎么拼了吗?)</label><textarea data-k="arch" data-label="1 · 整体架构"></textarea></div>
+
+<!-- 2 一句话 -->
+<h2><span class="secnum">2 ·</span> 一句话:树 = facade,跟 353/942/1005 干净合成</h2>
+<div class="card gray">
+  <ul>
+    <li><span class="k">树的核心价值</span> = <b>facade / 压缩层</b>:Lead 只跟少数 sub-lead 谈、只看组摘要,注意力与 runner 总数<b>解耦</b>。</li>
+    <li><span class="k">跟 353</span>:353 = capacity-aware 派发(一个脑装更多);1022 = 树(更多脑各装更少)。两种互补解;<b>sub-lead 的 credit 就是 353 消费的容量信号</b>,不重造 353。</li>
+    <li><span class="k">跟 942</span>:观测半边直接接已 done 的看门狗(§5 tree-aware:报最低 sub-lead → 逐层升级),不重造检测。</li>
+    <li><span class="k">跟 1005</span>:纵轴(谁指挥)vs 横轴(在哪台机),正交;lead+sub-lead 在 hub、runner 在节点池。</li>
+  </ul>
+</div>
+<div class="cmt"><label>💬 对合成关系的留言</label><textarea data-k="compose" data-label="2 · 与 353/942/1005 合成"></textarea></div>
+
+<!-- 3 关键契约 -->
+<h2><span class="secnum">3 ·</span> 关键契约(Codex 加固的 —— 别只当细节)</h2>
+<div class="card blue">
+  <ul>
+    <li><span class="k">⑧ Tree-aware owner-resolution(最硬)</span>:Codex 核码抓出——今天 gate/stuck/thread/retry 多路径<b>从 label 重解析 owner</b>,光加 parentLeadId 会让事件漏到 root。契约 = dispatch 落 <code>assignedLeadId</code> + <b>所有</b>路径改「优先 session owner、缺失 fallback label」。这是 1022 真正的实现重心(build B1.5 先行)。</li>
+    <li><span class="k">⑨ summary-merge 有界</span>:escalations <b>有界 top-K + droppedCount</b>、任意序 merge 结果一致——否则退回 O(runner) 不是压缩。</li>
+    <li><span class="k">§7 thread 不藏(硬约束)</span>:压的是 Lead 注意力,每件事照有自己 thread 直达 founder;canonical 频道显式 + sub-lead bot 权限。</li>
+    <li><span class="k">§11 scale-gate 可度量</span>:『一层』= 现扁平基线;go/no-go 证据(942 已 ship ≥N 天 + 无误报风暴 + 扁平 fleet 零漏 prompt)贴 Linear 才启 build。</li>
+    <li><span class="k">SWIM 诚实化</span>:MVP 只借 suspect-before-declare 治误报;O(N²) 避免等要真上 gossip = later。</li>
+  </ul>
+</div>
+<div class="cmt"><label>💬 对关键契约的留言</label><textarea data-k="contracts" data-label="3 · 关键契约"></textarea></div>
+
+<!-- 4 build -->
+<h2><span class="secnum">4 ·</span> Build 拆分(挂 Tadashi · 全 <span class="tag later">scale-gated</span>)</h2>
+<div class="card gray">
+  <div class="scroll"><table>
+  <thead><tr><th>#</th><th>build</th><th>内容</th></tr></thead>
+  <tbody>
+    <tr><td>B1</td><td class="k">Lead-as-child schema</td><td>parentLeadId(default-off)+ 校验</td></tr>
+    <tr><td>B1.5⭐</td><td class="k">tree-aware owner-resolution</td><td>持久化 assignedLeadId;所有 owner-resolve 路径优先 session owner</td></tr>
+    <tr><td>B2</td><td class="k">dispatch 多一跳</td><td>派给 sub-lead + 落 assignedLeadId</td></tr>
+    <tr><td>B3</td><td class="k">组摘要聚合 + credit</td><td>merge 函数;credit→353</td></tr>
+    <tr><td>B4</td><td class="k">942 树-aware 落点</td><td>报最低 sub → 逐层升级</td></tr>
+    <tr><td>B5</td><td class="k">thread 下放 + 频道契约</td><td>sub owned;canonical 频道 + 权限</td></tr>
+    <tr><td>B6</td><td class="k">sub-lead 角色 + restart</td><td>同套 Lead 代码 + OTP 契约</td></tr>
+    <tr><td>B7</td><td class="k">(later)多层/智能分组/vnode</td><td>只留位,MVP 不做</td></tr>
+  </tbody>
+  </table></div>
+  <p class="hint">全部标 <code>scale-gated</code>(§11 gating 满足才启)。本 PRD <b>不 create build-issue、不 ship</b>——你终审点头后再 create 交 Tadashi。</p>
+</div>
+<div class="cmt"><label>💬 对 build 拆分的留言</label><textarea data-k="build" data-label="4 · build 拆分"></textarea></div>
+
+<!-- 5 状态 -->
+<h2><span class="secnum">5 ·</span> 状态 / 已知</h2>
+<div class="card green">
+  <ul>
+    <li>✅ <b>ChatGPT Deep Research 真跑</b>(8m / 29 citations / 521 searches)独立印证方向 + 加 OTP supervision / 有界队列+credit 两条。</li>
+    <li>✅ <b>Codex design review 4 轮 APPROVED</b>(R1 六项契约加固 → R2/R3/R4 收尾)。head 冻 5cc7c364。</li>
+    <li>⏳ <b>29 条精确一手引用 URL 待补</b>:DR 报告在跨域 iframe,自动导出被 hit-test 挡(FLY-541,Tadashi 修根因中)。机制来源现立在 14 条一手 web-research + DR exec 结论上,<b>substance/架构不受影响</b>。</li>
+    <li>🚫 <b>不自 ship、不自 merge</b> —— ship 永远 founder-gated。</li>
+  </ul>
+</div>
+
+<div class="cmt"><label>💬 ⭐ 终审决定 / 总批注(可直接说「OK 拆 build」或列要改的)</label><textarea data-k="final" data-label="6 · 终审决定 / 总批注"></textarea></div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
+  <button class="ghost" id="clearBtn" type="button">清空</button>
+  <span class="hint" id="saveHint">每节下都有留言框;「复制批注」收成 markdown。批注只存你这台机器,刷新不丢。</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(Markdown)</h3>
+    <p class="hint">已自动复制到剪贴板。也可下载,或直接选中复制发给我。</p>
+    <textarea id="out" readonly></textarea>
+    <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
+      <button class="primary" id="dlBtn" type="button">下载 .md</button>
+      <button class="ghost" id="closeBtn" type="button">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly1022-final-review::" + pathScope;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-k");
+    if (saved[k]) t.value = saved[k];
+    t.addEventListener("input", function(){
+      saved[k] = t.value;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){}
+      var h = document.getElementById("saveHint"); if (h) h.textContent = "已保存 ✓ · " + new Date().toLocaleTimeString();
+    });
+  });
+  function buildMd(){
+    var lines = ["# FLY-1022 树状 Lead 指挥 终审 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var any = false;
+    areas.forEach(function(t){
+      var v = (t.value || "").trim(); if (!v) return; any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
+    });
+    if (!any) lines.push("> (还没有批注)");
+    return lines.join("\n");
+  }
+  var dlg = document.getElementById("dlg"), out = document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    if (!confirm("清空所有批注?不可撤销。")) return;
+    areas.forEach(function(t){ t.value = ""; }); saved = {};
+    try { localStorage.removeItem(KEY); } catch(e){}
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
+  });
+  document.getElementById("dlBtn").addEventListener("click", function(){
+    var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "fly1022-final-review-批注.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
+})();
+</script>

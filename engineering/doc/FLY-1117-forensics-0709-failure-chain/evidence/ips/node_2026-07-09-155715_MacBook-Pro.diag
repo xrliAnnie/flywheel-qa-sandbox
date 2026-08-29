@@ -1,0 +1,94 @@
+Date/Time:        2026-07-09 15:14:39.152 -0700
+End time:         2026-07-09 15:57:14.804 -0700
+OS Version:       macOS 26.3.2 (Build 25D2150)
+Architecture:     arm64e
+Report Version:   67
+Incident Identifier: 7B36B37E-D9B4-4475-AF36-C684CD26502A
+
+Data Source:      Microstackshots
+Shared Cache:     DE464D88-406A-33D0-9E2A-6EE09509013E slid base address 0x19f3c4000, slide 0x1f3c4000
+
+Command:          node
+Path:             /opt/homebrew/*/node
+Codesigning ID:   node-55554944c51c32e46a613c62bb7aa94d159b5e9a
+Resource Coalition: 1180
+Architecture:     arm64
+PID:              57613
+
+Event:            disk writes
+Action taken:     none
+Writes:           8589.95 MB of file backed memory dirtied over 2556 seconds (3361.16 KB per second average), exceeding limit of 99.42 KB per second over 86400 seconds
+Writes limit:     8589.93 MB
+Limit duration:   86400s
+Writes caused:    8589.95 MB
+Writes duration:  2556s
+Duration:         2555.65s
+Duration Sampled: 11.90s (event starts 2543.75s before samples)
+Steps:            59 (10.49 MB/step)
+
+Hardware model:   Mac17,8
+Active cpus:      18
+Memory size:      48 GB
+HW page size:     16384
+VM page size:     16384
+
+Models:           UNKNOWN
+
+OS Cryptex File Extents: 1
+
+Heaviest stack for the target process:
+  59  thread_start + 8 (libsystem_pthread.dylib + 7080) [0x19f89aba8]
+  59  _pthread_start + 136 (libsystem_pthread.dylib + 27656) [0x19f89fc08]
+  59  worker + 184 (libuv.1.0.0.dylib + 12492) [0x1003130cc]
+  55  write + 8 (libsystem_kernel.dylib + 18464) [0x19f860820]
+
+
+Powerstats for:   node [57613] [unique pid 144960594]
+UUID:             C51C32E4-6A61-3C62-BB7A-A94D159B5E9A
+Path:             /opt/homebrew/*/node
+Codesigning ID:   node-55554944c51c32e46a613c62bb7aa94d159b5e9a
+Resource Coalition: 59 samples 1180
+Architecture:     arm64
+Footprint:        89.98 MB -> 1331.61 MB (+1241.62 MB)
+Start time:       2026-07-09 15:57:02.903 -0700
+End time:         2026-07-09 15:57:14.803 -0700
+Num samples:      59 (100%)
+Num threads:      4
+Primary state:    59 samples Non-Frontmost App, Non-Suppressed, Kernel mode, Effective Thread QoS Utility, Requested Thread QoS Default, Override Thread QoS Unspecified, p-core
+User Activity:    0 samples Idle, 59 samples Active
+Power Source:     0 samples on Battery, 59 samples on AC
+  59  thread_start + 8 (libsystem_pthread.dylib + 7080) [0x19f89aba8]
+    59  _pthread_start + 136 (libsystem_pthread.dylib + 27656) [0x19f89fc08]
+      59  worker + 184 (libuv.1.0.0.dylib + 12492) [0x1003130cc]
+        55  write + 8 (libsystem_kernel.dylib + 18464) [0x19f860820]
+          18  <not p-core>
+        2   uv__fs_work + 1396 (libuv.1.0.0.dylib + 36860) [0x100318ffc]
+          2   __open + 8 (libsystem_kernel.dylib + 5764) [0x19f85d684]
+        1   mkdir + 8 (libsystem_kernel.dylib + 10100) [0x19f85e774]
+        1   __close_nocancel + 8 (libsystem_kernel.dylib + 9584) [0x19f85e570]
+
+  Binary Images:
+           0x100298000 -                ???  node                                <C51C32E4-6A61-3C62-BB7A-A94D159B5E9A>  /opt/homebrew/*/node
+           0x100310000 -        0x100333fff  libuv.1.0.0.dylib (0)               <7629B1A7-EDFE-3D88-8B16-70D2FC5F1F98>  /opt/homebrew/*/libuv.1.0.0.dylib
+           0x19f85c000 -        0x19f89849f  libsystem_kernel.dylib (12377.91.3) <78EC33A6-6330-3836-8900-EB90836936E8>  /usr/lib/system/libsystem_kernel.dylib
+           0x19f899000 -        0x19f8a5acb  libsystem_pthread.dylib (539.80.3)  <0596A7B6-BCE2-3F06-A2E8-3EAAB5371ED8>  /usr/lib/system/libsystem_pthread.dylib
+
+System Profile:
+Network Service: Wi-Fi, AirPort, en0
+Thunderbolt Device: UltraFine 5K, LG Electronics, 1, 43.1
+Thunderbolt Device: TH-W3H2, SABRENT, 1, 40.1
+Boot Volume File System Type: apfs
+PCI Card: pci8086,15f0, USB eXtensible Host Controller, Thunderbolt@3,0,0
+Memory Module: LPDDR5, Samsung
+Thunderbolt Bus: MacBook Pro, Apple Inc.
+Thunderbolt Bus: MacBook Pro, Apple Inc.
+Thunderbolt Bus: MacBook Pro, Apple Inc.
+Display: Color LCD, 3456 x 2234 Retina, Main, MirrorOff, Online
+Display: S271HL, 1920 x 1080 (1080p FHD - Full High Definition), MirrorOff, Online
+Display: LG UltraFine, 2880 x 5120, MirrorOff, Online
+Model: Mac17,8, BootROM 13822.81.10, proc 18:6:0:12 processors, 48 GB, SMC 
+Graphics: Apple M5 Pro, Apple M5 Pro, Built-In
+AirPort: chip id: 0x11 api 1.2 firmware [Rev 72.11.260 N1B1 devFused=0] phy [17.1.17.0], core80211 [324.10.260 N1_silicon_b ], Mar  6 2026 19:12:58 version XBS_BUILD_TAG GIT_DESCRIBE FWID chip id: 0x11 api 1.2 firmware [Rev 72.11.260 N1B1 devFused=0] phy [17.1.17.0], core80211 [324.10.260 N1_silicon_b ]
+IO80211_driverkit-1540.16 "IO80211_driverkit-1540.16" Mar  6 2026 1
+AirPort: 
+Bluetooth: Version (null), 0 services, 0 devices, 0 incoming serial ports

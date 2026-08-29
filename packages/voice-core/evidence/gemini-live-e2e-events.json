@@ -1,0 +1,96 @@
+{
+	"model": "gemini-3.1-flash-live-preview",
+	"events": [
+		{
+			"t": 1783392848337,
+			"type": "transcript",
+			"data": {
+				"role": "user",
+				"text": "What is 2 + 2?",
+				"final": false
+			}
+		},
+		{
+			"t": 1783392848338,
+			"type": "response-started"
+		},
+		{
+			"t": 1783392848338,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": "4.",
+				"final": false
+			}
+		},
+		{
+			"t": 1783392848338,
+			"type": "response-audio",
+			"data": {
+				"bytes": 2,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783392848349,
+			"type": "response-audio",
+			"data": {
+				"bytes": 8160,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783392848378,
+			"type": "response-audio",
+			"data": {
+				"bytes": 13440,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783392848386,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783392848392,
+			"type": "response-audio",
+			"data": {
+				"bytes": 5760,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783392849068,
+			"type": "response-done"
+		}
+	],
+	"transcriptEntries": [],
+	"resumeHandle": {
+		"backendId": "gemini-live",
+		"payload": "3a37166d-7453-498f-9631-6b9f219c3901"
+	}
+}

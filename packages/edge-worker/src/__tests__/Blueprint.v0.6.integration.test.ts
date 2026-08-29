@@ -70,9 +70,43 @@ function makeMockAdapter(): IAdapter {
 	};
 }
 
+/**
+ * FLY-137 v1.27.2: build a Blueprint wired with the v1.27.2 contract.
+ * `flywheelRepoRoot` defaults to a sentinel tmpdir; tests that need it (shipped-generic)
+ * write the sentinel file there.
+ */
+function makeBlueprint(opts: {
+	dispatcher?: AgentDispatcher;
+	flywheelRepoRoot?: string;
+	labels?: string[];
+}) {
+	return {
+		adapter: makeMockAdapter(),
+		build(adapter: IAdapter) {
+			return new Blueprint(
+				makeHydrator(opts.labels ?? []),
+				makeMockGitChecker(),
+				() => adapter,
+				makeMockShell(),
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				undefined,
+				opts.dispatcher,
+				undefined, // checkpointConfig
+				opts.flywheelRepoRoot, // FLY-137 v1.27.2
+			);
+		},
+	};
+}
+
+const FAKE_REPO_ROOT = "/tmp/flywheel-v06-test-repo-root";
+
 // ─── Tests ───────────────────────────────────────
 
-describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
+describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aware)", () => {
 	let tmpDir: string;
 
 	beforeEach(() => {
@@ -84,15 +118,15 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 	});
 
 	it("injects agent + domain content into system prompt (additive)", async () => {
-		// Create agent and domain files
-		const agentDir = path.join(tmpDir, ".claude", "agents");
-		const domainDir = path.join(tmpDir, ".claude", "domains");
+		// FLY-137 v1.27.2: dept-grouped paths under .flywheel/agents/<dept>/
+		const agentDir = path.join(tmpDir, ".flywheel", "agents", "product");
 		fs.mkdirSync(agentDir, { recursive: true });
-		fs.mkdirSync(domainDir, { recursive: true });
 		fs.writeFileSync(
-			path.join(agentDir, "backend.md"),
+			path.join(agentDir, "backend-executor.md"),
 			"You are the backend engineer. Focus on API and database work.",
 		);
+		const domainDir = path.join(tmpDir, ".claude", "domains");
+		fs.mkdirSync(domainDir, { recursive: true });
 		fs.writeFileSync(
 			path.join(domainDir, "backend.md"),
 			"Domain: backend services, PostgreSQL, REST APIs.",
@@ -100,89 +134,129 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 
 		const agents: Record<string, AgentConfig> = {
 			backend: {
-				agent_file: ".claude/agents/backend.md",
+				agent_file: ".flywheel/agents/product/backend-executor.md",
+				department: "product",
 				domain_file: ".claude/domains/backend.md",
-				match: { labels: ["backend"], keywords: ["api"] },
+				match: { labels: ["backend"] },
 			},
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined);
+		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
 
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(["backend"]),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+		const factory = makeBlueprint({
 			dispatcher,
+			flywheelRepoRoot: FAKE_REPO_ROOT,
+			labels: ["backend"],
+		});
+		const blueprint = factory.build(factory.adapter);
+
+		await blueprint.run(
+			makeNode(),
+			tmpDir,
+			makeContext({
+				issueLabels: ["backend"],
+				owningDept: "product",
+			}),
 		);
 
-		await blueprint.run(makeNode(), tmpDir, makeContext());
-
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+		const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
-		// Agent content prepended
 		expect(sysPrompt).toContain("## Agent Role");
 		expect(sysPrompt).toContain("backend engineer");
 		expect(sysPrompt).toContain("## Domain Config");
 		expect(sysPrompt).toContain("PostgreSQL");
-
-		// Baseline always retained
 		expect(sysPrompt).toContain("## Baseline Rules");
 		expect(sysPrompt).toContain("Read the codebase");
 		expect(sysPrompt).toContain("TDD");
-		expect(sysPrompt).toContain("stop and wait");
 	});
 
 	it("agent without domain_file — only agent content injected", async () => {
-		const agentDir = path.join(tmpDir, ".claude", "agents");
+		const agentDir = path.join(tmpDir, ".flywheel", "agents", "product");
 		fs.mkdirSync(agentDir, { recursive: true });
 		fs.writeFileSync(
-			path.join(agentDir, "frontend.md"),
+			path.join(agentDir, "frontend-executor.md"),
 			"You are the frontend engineer.",
 		);
 
 		const agents: Record<string, AgentConfig> = {
 			frontend: {
-				agent_file: ".claude/agents/frontend.md",
-				match: { labels: ["frontend"], keywords: ["ui"] },
+				agent_file: ".flywheel/agents/product/frontend-executor.md",
+				department: "product",
+				match: { labels: ["frontend"] },
 			},
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined);
+		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
 
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(["frontend"]),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+		const factory = makeBlueprint({
 			dispatcher,
+			flywheelRepoRoot: FAKE_REPO_ROOT,
+			labels: ["frontend"],
+		});
+		const blueprint = factory.build(factory.adapter);
+
+		await blueprint.run(
+			makeNode(),
+			tmpDir,
+			makeContext({
+				issueLabels: ["frontend"],
+				owningDept: "product",
+			}),
 		);
 
-		await blueprint.run(makeNode(), tmpDir, makeContext());
-
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+		const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		expect(sysPrompt).toContain("## Agent Role");
 		expect(sysPrompt).toContain("frontend engineer");
 		expect(sysPrompt).not.toContain("## Domain Config");
-		// Baseline still present
 		expect(sysPrompt).toContain("## Baseline Rules");
+	});
+
+	it("FLY-137 v1.27.2 (Codex Track A #1): zero-config project → shipped-generic loads from Flywheel repo root", async () => {
+		// Set up a SEPARATE fake Flywheel repo root with the shipped generic-executor.md
+		const fakeRepoRoot = fs.mkdtempSync(
+			path.join(os.tmpdir(), "fake-flywheel-repo-"),
+		);
+		try {
+			const shippedAgentsDir = path.join(fakeRepoRoot, "agents");
+			fs.mkdirSync(shippedAgentsDir, { recursive: true });
+			fs.writeFileSync(
+				path.join(shippedAgentsDir, "generic-executor.md"),
+				"SHIPPED GENERIC CONTENT — vendor-neutral catch-all fallback.",
+			);
+
+			// Empty agents map → dispatcher returns shipped-generic
+			const dispatcher = new AgentDispatcher({}, undefined, fakeRepoRoot);
+
+			const factory = makeBlueprint({
+				dispatcher,
+				flywheelRepoRoot: fakeRepoRoot,
+				labels: ["anything"],
+			});
+			const blueprint = factory.build(factory.adapter);
+
+			await blueprint.run(
+				makeNode(),
+				tmpDir,
+				makeContext({
+					issueLabels: ["anything"],
+					owningDept: undefined,
+				}),
+			);
+
+			const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
+				.calls[0]![0] as AdapterExecutionContext;
+			const sysPrompt = runCall.appendSystemPrompt!;
+
+			// Shipped-generic content MUST be injected (agentFileRoot="flywheel" resolved correctly)
+			expect(sysPrompt).toContain("## Agent Role");
+			expect(sysPrompt).toContain("SHIPPED GENERIC CONTENT");
+			expect(sysPrompt).toContain("## Baseline Rules");
+		} finally {
+			fs.rmSync(fakeRepoRoot, { recursive: true, force: true });
+		}
 	});
 
 	it("agent_file missing — fallback to generic prompt", async () => {
@@ -190,150 +264,125 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 
 		const agents: Record<string, AgentConfig> = {
 			backend: {
-				agent_file: ".claude/agents/nonexistent.md",
-				match: { labels: ["backend"], keywords: ["api"] },
+				agent_file: ".flywheel/agents/product/nonexistent-executor.md",
+				department: "product",
+				match: { labels: ["backend"] },
 			},
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined);
+		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
 
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(["backend"]),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+		const factory = makeBlueprint({
 			dispatcher,
+			flywheelRepoRoot: FAKE_REPO_ROOT,
+			labels: ["backend"],
+		});
+		const blueprint = factory.build(factory.adapter);
+
+		await blueprint.run(
+			makeNode(),
+			tmpDir,
+			makeContext({
+				issueLabels: ["backend"],
+				owningDept: "product",
+			}),
 		);
 
-		await blueprint.run(makeNode(), tmpDir, makeContext());
-
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+		const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
-		// Falls back to generic — no agent section
 		expect(sysPrompt).not.toContain("## Agent Role");
 		expect(sysPrompt).toContain("Read the codebase");
-
 		expect(warnSpy).toHaveBeenCalledWith(
 			expect.stringContaining("Agent file not found"),
 		);
 		warnSpy.mockRestore();
 	});
 
-	it("no agent dispatch — generic prompt unchanged (regression)", async () => {
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-		);
+	it("no agent dispatcher — generic prompt unchanged (regression, no dispatcher = no agent block)", async () => {
+		const factory = makeBlueprint({ flywheelRepoRoot: FAKE_REPO_ROOT });
+		const blueprint = factory.build(factory.adapter);
 
 		await blueprint.run(makeNode(), tmpDir, makeContext());
 
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+		const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
 		expect(sysPrompt).not.toContain("## Agent Role");
-		expect(sysPrompt).not.toContain("## Baseline Rules");
 		expect(sysPrompt).toContain("Read the codebase");
 	});
 
-	it("rejects path traversal in agent_file", async () => {
-		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-
-		const agents: Record<string, AgentConfig> = {
-			evil: {
-				agent_file: "../../etc/passwd",
-				match: { labels: ["evil"], keywords: [] },
-			},
-		};
-		const dispatcher = new AgentDispatcher(agents, undefined);
-
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(["evil"]),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			dispatcher,
-		);
-
-		await blueprint.run(makeNode(), tmpDir, makeContext());
-
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
-			.calls[0]![0] as AdapterExecutionContext;
-		const sysPrompt = runCall.appendSystemPrompt!;
-
-		// Path traversal rejected — generic prompt
-		expect(sysPrompt).not.toContain("## Agent Role");
-		expect(sysPrompt).toContain("Read the codebase");
-
-		warnSpy.mockRestore();
+	it("FLY-137 v1.27.2 path safety: rejects path traversal in agent_file via ConfigLoader/dispatcher (not exercised by readAgentFile alone)", async () => {
+		// In v1.27.2 ConfigLoader hard-errors paths outside `.flywheel/agents/` BEFORE
+		// dispatcher is even constructed. AgentDispatcher's parsedDept also throws on
+		// non-`.flywheel/agents/` paths. So this test exercises the dispatcher-level guard.
+		const dispatcher = new AgentDispatcher({}, undefined, FAKE_REPO_ROOT);
+		expect(() => {
+			// Simulate a config that slipped past ConfigLoader (shouldn't be possible
+			// via the public API, but documents the dispatchByName defensive behavior).
+			new AgentDispatcher(
+				{
+					evil: {
+						agent_file: "../../etc/passwd",
+						match: { labels: ["evil"] },
+					},
+				},
+				undefined,
+				FAKE_REPO_ROOT,
+			).dispatchByName("evil");
+		}).toThrow(/agent_file/i);
+		// Plain dispatcher still functional for valid paths
+		const result = dispatcher.dispatchByName("generic");
+		expect(result.agentName).toBe("generic");
 	});
 
-	it("symlink outside repo is rejected", async () => {
+	it("symlink outside repo is rejected (project-side .flywheel/agents/<dept>/<file> path)", async () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		// Create a file outside the repo
 		const outsideDir = fs.mkdtempSync(path.join(os.tmpdir(), "outside-"));
 		fs.writeFileSync(path.join(outsideDir, "evil.md"), "HACKED");
 
-		// Create symlink inside repo pointing outside
-		const agentDir = path.join(tmpDir, ".claude", "agents");
+		// Create symlink inside project's .flywheel/agents/product/ pointing outside
+		const agentDir = path.join(tmpDir, ".flywheel", "agents", "product");
 		fs.mkdirSync(agentDir, { recursive: true });
 		fs.symlinkSync(
 			path.join(outsideDir, "evil.md"),
-			path.join(agentDir, "backend.md"),
+			path.join(agentDir, "backend-executor.md"),
 		);
 
 		const agents: Record<string, AgentConfig> = {
 			backend: {
-				agent_file: ".claude/agents/backend.md",
-				match: { labels: ["backend"], keywords: [] },
+				agent_file: ".flywheel/agents/product/backend-executor.md",
+				department: "product",
+				match: { labels: ["backend"] },
 			},
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined);
+		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
 
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(["backend"]),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+		const factory = makeBlueprint({
 			dispatcher,
+			flywheelRepoRoot: FAKE_REPO_ROOT,
+			labels: ["backend"],
+		});
+		const blueprint = factory.build(factory.adapter);
+
+		await blueprint.run(
+			makeNode(),
+			tmpDir,
+			makeContext({
+				issueLabels: ["backend"],
+				owningDept: "product",
+			}),
 		);
 
-		await blueprint.run(makeNode(), tmpDir, makeContext());
-
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+		const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
-		// Symlink outside repo rejected — generic prompt
 		expect(sysPrompt).not.toContain("## Agent Role");
 		expect(sysPrompt).not.toContain("HACKED");
-
 		expect(warnSpy).toHaveBeenCalledWith(
 			expect.stringContaining("symlinks outside repo"),
 		);
@@ -342,43 +391,43 @@ describe("Blueprint v0.6 — Agent Dispatch Integration", () => {
 	});
 
 	it("agent content is truncated at 40KB", async () => {
-		const agentDir = path.join(tmpDir, ".claude", "agents");
+		const agentDir = path.join(tmpDir, ".flywheel", "agents", "product");
 		fs.mkdirSync(agentDir, { recursive: true });
-		// Write a 50KB file
-		fs.writeFileSync(path.join(agentDir, "large.md"), "X".repeat(50_000));
+		fs.writeFileSync(
+			path.join(agentDir, "large-executor.md"),
+			"X".repeat(50_000),
+		);
 
 		const agents: Record<string, AgentConfig> = {
 			large: {
-				agent_file: ".claude/agents/large.md",
-				match: { labels: ["large"], keywords: [] },
+				agent_file: ".flywheel/agents/product/large-executor.md",
+				department: "product",
+				match: { labels: ["large"] },
 			},
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined);
+		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
 
-		const adapter = makeMockAdapter();
-		const blueprint = new Blueprint(
-			makeHydrator(["large"]),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+		const factory = makeBlueprint({
 			dispatcher,
+			flywheelRepoRoot: FAKE_REPO_ROOT,
+			labels: ["large"],
+		});
+		const blueprint = factory.build(factory.adapter);
+
+		await blueprint.run(
+			makeNode(),
+			tmpDir,
+			makeContext({
+				issueLabels: ["large"],
+				owningDept: "product",
+			}),
 		);
 
-		await blueprint.run(makeNode(), tmpDir, makeContext());
-
-		const runCall = (adapter.execute as ReturnType<typeof vi.fn>).mock
+		const runCall = (factory.adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const sysPrompt = runCall.appendSystemPrompt!;
 
-		// Agent content present but truncated
 		expect(sysPrompt).toContain("## Agent Role");
-		// The agent content section should be ~40KB, not 50KB
 		const agentSection = sysPrompt.split("## Baseline Rules")[0]!;
 		expect(agentSection.length).toBeLessThan(41_000);
 	});

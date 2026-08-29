@@ -98,7 +98,6 @@ async function main() {
 				leads: [
 					{
 						agentId: "product-lead",
-						forumChannel: "c1",
 						chatChannel: "c2",
 						match: { labels: ["Product"] },
 					},

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FLY-1199 · Skill 收编清单(圈一圈)</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#86868b; --line:#e3e3e6;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d;
+    --shadow:0 1px 3px rgba(0,0,0,.06); --radius:12px;
+    --mono:'SF Mono',ui-monospace,Menlo,monospace;
+    --font:-apple-system,BlinkMacSystemFont,system-ui,'Segoe UI',Roboto,'PingFang SC','Hiragino Sans GB',sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);
+    line-height:1.55;-webkit-text-size-adjust:100%;}
+  .wrap{max-width:920px;margin:0 auto;padding:20px 16px 96px;}
+  header h1{font-size:24px;margin:0 0 6px;letter-spacing:-.02em;}
+  header .sub{color:var(--dim);font-size:14px;margin:0 0 14px;}
+  .how{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);
+    padding:14px 16px;font-size:14px;margin:0 0 12px;border-left:4px solid var(--blue);}
+  .how b{color:var(--navy);}
+  .flag{background:#fff8f0;border:1px solid #ffe0b8;border-left:4px solid var(--amber);
+    border-radius:10px;padding:10px 14px;font-size:13px;color:#7a4a00;margin:0 0 20px;}
+  .sec{margin:26px 0 8px;}
+  .sec-title{font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px;
+    margin:0 0 4px;}
+  .sec-title .dot{font-size:12px;}
+  .sec-note{color:var(--dim);font-size:13px;margin:0 0 12px;}
+  .card{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);
+    padding:14px 16px;margin:0 0 12px;border-left:4px solid var(--line);}
+  .card.rec{border-left-color:var(--green);}
+  .card.own{border-left-color:var(--dim);}
+  .card.skip{border-left-color:var(--line);}
+  .card-top{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px;margin-bottom:2px;}
+  .name{font-weight:700;font-size:16px;}
+  .star-pick{color:var(--green);font-size:13px;font-weight:700;}
+  .meta{display:flex;flex-wrap:wrap;gap:6px;margin:6px 0;}
+  .badge{font-size:11px;font-family:var(--mono);padding:2px 7px;border-radius:6px;
+    background:#f0f0f2;color:#555;white-space:nowrap;}
+  .badge.mit{background:#e7f8ec;color:#1a7f37;}
+  .badge.apache{background:#e8f0fe;color:#1558b0;}
+  .badge.official{background:#f3e9fb;color:#7b2cbf;}
+  .badge.warn{background:#fdecea;color:#b3261e;}
+  .repo{font-family:var(--mono);font-size:12px;color:var(--blue);text-decoration:none;
+    word-break:break-all;}
+  .repo:hover{text-decoration:underline;}
+  .what{font-size:14px;margin:6px 0 2px;}
+  .fit{font-size:13px;color:#444;margin:2px 0 10px;}
+  .fit b{color:var(--navy);}
+  .chips{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 2px;}
+  .chip{border:1.5px solid var(--line);background:#fff;color:#555;border-radius:20px;
+    padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;min-height:38px;
+    user-select:none;transition:all .12s;}
+  .chip:hover{border-color:var(--dim);}
+  .chip[data-v="vendor"].on{background:var(--green);border-color:var(--green);color:#fff;}
+  .chip[data-v="skip"].on{background:#8a8a8e;border-color:#8a8a8e;color:#fff;}
+  .chip[data-v="owned"].on{background:var(--navy);border-color:var(--navy);color:#fff;}
+  .chip[data-v="later"].on{background:var(--amber);border-color:var(--amber);color:#fff;}
+  .chip.dis{opacity:.5;cursor:not-allowed;}
+  .note{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+    font-family:var(--font);font-size:13px;margin-top:8px;resize:vertical;min-height:38px;
+    background:#fafafa;}
+  .note::placeholder{color:#b0b0b5;}
+  .default-tag{font-size:11px;color:var(--dim);margin-left:4px;}
+  .catalog .card{border-left-color:var(--blue);}
+  .owned-list{background:var(--card);border-radius:var(--radius);box-shadow:var(--shadow);
+    padding:12px 16px;font-size:14px;}
+  .owned-list .tag{display:inline-block;background:#eef1f5;color:var(--navy);
+    font-family:var(--mono);font-size:12px;padding:3px 9px;border-radius:6px;margin:3px 4px 3px 0;}
+  .risk{background:#fff5f5;border:1px solid #ffd6d6;border-left:4px solid var(--red);
+    border-radius:var(--radius);padding:12px 16px;font-size:13px;}
+  .risk li{margin:6px 0;}
+  .eval-opts{display:flex;flex-direction:column;gap:8px;margin-top:8px;}
+  .opt{border:1.5px solid var(--line);border-radius:10px;padding:10px 12px;cursor:pointer;
+    font-size:14px;display:flex;gap:8px;align-items:flex-start;}
+  .opt.on{border-color:var(--blue);background:#f0f6ff;}
+  .opt .rb{width:16px;height:16px;border-radius:50%;border:2px solid var(--dim);
+    margin-top:3px;flex:0 0 auto;}
+  .opt.on .rb{border-color:var(--blue);background:var(--blue);box-shadow:inset 0 0 0 3px #fff;}
+  .xref{font-size:13px;}
+  .xref .x{margin:6px 0;}
+  .xref code{font-family:var(--mono);background:#eef1f5;padding:1px 6px;border-radius:5px;color:var(--navy);}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.94);
+    backdrop-filter:saturate(180%) blur(10px);border-top:1px solid var(--line);
+    padding:10px 16px;display:flex;gap:10px;justify-content:center;z-index:20;}
+  .btn{border:none;border-radius:10px;padding:11px 18px;font-size:14px;font-weight:700;
+    cursor:pointer;font-family:var(--font);}
+  .btn.primary{background:var(--navy);color:#fff;}
+  .btn.ghost{background:#eceef1;color:var(--navy);}
+  .modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:none;z-index:40;
+    align-items:center;justify-content:center;padding:16px;}
+  .modal.open{display:flex;}
+  .modal-box{background:#fff;border-radius:14px;max-width:640px;width:100%;padding:18px;
+    box-shadow:0 12px 48px rgba(0,0,0,.25);}
+  .modal-box h3{margin:0 0 8px;font-size:17px;}
+  .modal-box textarea{width:100%;min-height:240px;font-family:var(--mono);font-size:12px;
+    border:1px solid var(--line);border-radius:8px;padding:10px;resize:vertical;}
+  .modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:10px;}
+  footer{color:var(--dim);font-size:12px;text-align:center;margin-top:24px;}
+  @media (max-width:520px){ header h1{font-size:21px;} .chip{padding:8px 13px;} }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Skill 收编清单 —— 圈一圈 🎯</h1>
+    <p class="sub">FLY-1199 · 从 Charlie Hills「Claude as a company」42-skill org-chart 挖出来的、给我们 agent role 用的 skill 清单</p>
+  </header>
+
+  <div class="how">
+    <b>怎么用这张表:</b> 每个 skill 有一组按钮 —— <b>收编</b> / <b>先跳过</b> / <b>已拥有</b> / <b>以后再说</b>。
+    我已经按判断把默认高亮好了,你只改你想改的;想留话就写在下面的框里。看完点最下面
+    <b>「导出我的圈选」</b>,把汇总复制回传就行。<b>下面第一块(Designer)是这次的重点。</b>
+  </div>
+
+  <div class="flag">
+    ⚠️ 诚实标注:那条推特本体被 X 付费墙挡住了(读不到原图),这张表是按他<b>命名的 skill + 各部门数量 + 他的博客</b>反推的;
+    Designer 那 5 个是推文里点名的(高置信),数量/来源都实测过。个别地方(如 Transitions 的精确 repo、Marketing 的映射)标了「未 100% 锁定」。
+  </div>
+
+  <!-- ================= SECTION A: DESIGNER ================= -->
+  <div class="sec">
+    <div class="sec-title"><span class="dot" style="color:var(--green)">●</span> A. Designer role —— 立即用(重点)</div>
+    <div class="sec-note">我们已经有 Designer agent(FLY-1059)。它现在「设计不够清楚 / 一眼 AI 味」的病根,这批 skill 正好对症。默认推荐已高亮。</div>
+  </div>
+
+  <div class="card rec" data-skill="uiux-pro-max">
+    <div class="card-top"><span class="name">UI/UX Pro Max</span></div>
+    <div class="meta">
+      <a class="repo" href="https://github.com/nextlevelbuilder/ui-ux-pro-max-skill" target="_blank" rel="noopener">nextlevelbuilder/ui-ux-pro-max-skill</a>
+      <span class="badge mit">MIT</span><span class="badge">★104,703</span><span class="badge">社区</span>
+    </div>
+    <div class="what">设计智能库:67 种 UI 风格 / 161 套配色 / 57 组字体配对 / 161 条行业设计规则 + design-system 生成器,覆盖 22 种技术栈。</div>
+    <div class="fit"><b>对我们:</b> 给设计师一套结构化「设计词汇」,直接治「dashboard 长得太 generic / 一眼 AI」。注意它体量大(CLI 装),收编时看要全量还是裁剪。</div>
+    <div class="chips" data-default="vendor"></div>
+    <textarea class="note" data-note="uiux-pro-max" placeholder="想留话就写这里…"></textarea>
+  </div>
+
+  <div class="card rec" data-skill="taste">
+    <div class="card-top"><span class="name">Taste</span> <span class="star-pick">⭐ 最推荐</span></div>
+    <div class="meta">
+      <a class="repo" href="https://github.com/Leonxlnx/taste-skill" target="_blank" rel="noopener">Leonxlnx/taste-skill</a>
+      <span class="badge mit">MIT</span><span class="badge">★62,441</span><span class="badge">社区</span>
+      <span class="badge">+ impeccable.style 变体</span>
+    </div>
+    <div class="what">审美「防 slop」把关:做完设计后专门抓「太 AI / 千篇一律 / 动画过度」;把审美判断写成一份常驻 brief。</div>
+    <div class="fit"><b>对我们:</b> 直接治 FLY-1059 根因(缺审美把关),而且能<b>把你的品味一点点写进去</b>变成常驻标准 —— 这是对我们最独特的价值。</div>
+    <div class="chips" data-default="vendor"></div>
+    <textarea class="note" data-note="taste" placeholder="想留话就写这里…"></textarea>
+  </div>
+
+  <div class="card own" data-skill="frontend-design">
+    <div class="card-top"><span class="name">Frontend Design</span></div>
+    <div class="meta">
+      <a class="repo" href="https://github.com/anthropics/skills/tree/main/frontend-design" target="_blank" rel="noopener">anthropics/skills · frontend-design</a>
+      <span class="badge official">Anthropic 官方</span>
+    </div>
+    <div class="what">官方前端设计 skill,治「默认一眼 AI 味」。</div>
+    <div class="fit"><b>对我们:</b> <b>已经在用了</b> —— 它就在 designer-executor 的 skill 里(还有 frontend-design 插件)。不用收。</div>
+    <div class="chips" data-default="owned" data-lock="owned"></div>
+    <textarea class="note" data-note="frontend-design" placeholder="想留话就写这里…"></textarea>
+  </div>
+
+  <div class="card skip" data-skill="brand-guidelines">
+    <div class="card-top"><span class="name">Brand Guidelines</span></div>
+    <div class="meta">
+      <a class="repo" href="https://github.com/anthropics/skills/tree/main/brand-guidelines" target="_blank" rel="noopener">anthropics/skills · brand-guidelines</a>
+      <span class="badge official">Anthropic 官方</span>
+    </div>
+    <div class="what">把公司 brand 规则套进所有产出(色/字/语气)。</div>
+    <div class="fit"><b>对我们:</b> Flywheel 还没定真正的 brand;现在有 html-report-style.md 顶着。<b>建议先跳过</b>,等定了 brand 再回收。</div>
+    <div class="chips" data-default="skip"></div>
+    <textarea class="note" data-note="brand-guidelines" placeholder="想留话就写这里…"></textarea>
+  </div>
+
+  <div class="card skip" data-skill="transitions">
+    <div class="card-top"><span class="name">Transitions(动效)</span></div>
+    <div class="meta">
+      <a class="repo" href="https://github.com/dylantarre/animation-principles" target="_blank" rel="noopener">动效/motion 类社区 skill(如 dylantarre/animation-principles)</a>
+      <span class="badge mit">MIT</span><span class="badge warn">精确 repo 未 100% 锁定</span>
+    </div>
+    <div class="what">UI 过渡 / 缓动 / 动效工程指导。</div>
+    <div class="fit"><b>对我们:</b> 我们交付多是<b>静态报告 / dashboard</b>,不是动效重的 app;Taste 本身也警告别过度动画。<b>建议先跳过。</b></div>
+    <div class="chips" data-default="skip"></div>
+    <textarea class="note" data-note="transitions" placeholder="想留话就写这里…"></textarea>
+  </div>
+
+  <!-- ================= SECTION C: OWNED ================= -->
+  <div class="sec">
+    <div class="sec-title"><span class="dot" style="color:var(--dim)">●</span> 已经拥有(不用收)</div>
+    <div class="sec-note">org-chart 里这些我们环境里已经有了,标出来免得重复收编。</div>
+  </div>
+  <div class="owned-list">
+    <span class="tag">Frontend Design</span><span class="tag">Skill Creator</span><span class="tag">Superpowers</span><span class="tag">Context7</span>
+    <span class="tag">artifact-design</span><span class="tag">dataviz</span><span class="tag">mermaid</span><span class="tag">codex-image ∥ gemini-image</span><span class="tag">proofshot</span><span class="tag">founder-html-delivery</span>
+  </div>
+
+  <!-- ================= SECTION B: FUTURE AMMO ================= -->
+  <div class="sec catalog">
+    <div class="sec-title"><span class="dot" style="color:var(--blue)">●</span> B. 未来部门弹药目录(先编目,不用现在决定)</div>
+    <div class="sec-note">等我们真加这些部门 agent 时的现成来源。这一段只是目录 —— 想留话就写,不逼你现在勾。</div>
+  </div>
+
+  <div class="catalog">
+    <div class="card" data-skill="mkt">
+      <div class="card-top"><span class="name">Marketing(~45)</span></div>
+      <div class="meta"><a class="repo" href="https://github.com/coreyhaines31/marketingskills" target="_blank" rel="noopener">coreyhaines31/marketingskills</a>
+        <span class="badge mit">MIT</span><span class="badge">★37,890</span><span class="badge">社区</span><span class="badge warn">数量不一致(47 vs 60)</span></div>
+      <div class="what">CRO / 文案 / SEO / 分析 / 增长。最热的社区 marketing 包;不过它是「最像」的推断(推文未直读),外引前再核数量。<b>关联 FLY-437(Marketing skill 已建单)。</b></div>
+      <textarea class="note" data-note="mkt" placeholder="想留话就写这里…"></textarea>
+    </div>
+    <div class="card" data-skill="social">
+      <div class="card-top"><span class="name">Social Media(17)</span></div>
+      <div class="meta"><a class="repo" href="https://github.com/charlie947/social-media-skills" target="_blank" rel="noopener">charlie947/social-media-skills</a>
+        <span class="badge mit">MIT</span><span class="badge">★1,671</span><span class="badge official">Charlie 本人</span></div>
+      <div class="what">voice-first 内容全栈(LinkedIn/IG/Substack/X/YouTube)。溯源最实(作者/数量/license 全确认),最干净的弹药。</div>
+      <textarea class="note" data-note="social" placeholder="想留话就写这里…"></textarea>
+    </div>
+    <div class="card" data-skill="fin">
+      <div class="card-top"><span class="name">Finance(8)</span></div>
+      <div class="meta"><a class="repo" href="https://github.com/anthropics/knowledge-work-plugins" target="_blank" rel="noopener">anthropics/knowledge-work-plugins · finance</a>
+        <span class="badge apache">Apache-2.0</span><span class="badge official">Anthropic 官方</span></div>
+      <div class="what">月结 / 对账 / 报表 / 差异分析。<b>是 Anthropic 官方插件</b>,不是社区独特资产 → 未来做这部门 ≈「装官方插件 + 调 persona」。</div>
+      <textarea class="note" data-note="fin" placeholder="想留话就写这里…"></textarea>
+    </div>
+    <div class="card" data-skill="smb">
+      <div class="card-top"><span class="name">Small Business(31)</span></div>
+      <div class="meta"><a class="repo" href="https://github.com/anthropics/knowledge-work-plugins" target="_blank" rel="noopener">anthropics/knowledge-work-plugins · small-business</a>
+        <span class="badge apache">Apache-2.0</span><span class="badge official">Anthropic 官方</span></div>
+      <div class="what">现金流 / 发票 / CRM / 税季,接 QuickBooks 等。同为 Anthropic 官方插件。</div>
+      <textarea class="note" data-note="smb" placeholder="想留话就写这里…"></textarea>
+    </div>
+    <div class="card" data-skill="legal">
+      <div class="card-top"><span class="name">Legal(9)</span></div>
+      <div class="meta"><a class="repo" href="https://github.com/anthropics/knowledge-work-plugins" target="_blank" rel="noopener">anthropics/knowledge-work-plugins · legal</a>
+        <span class="badge apache">Apache-2.0</span><span class="badge official">Anthropic 官方</span></div>
+      <div class="what">合同审查 / NDA triage / 合规。同为 Anthropic 官方插件。</div>
+      <textarea class="note" data-note="legal" placeholder="想留话就写这里…"></textarea>
+    </div>
+  </div>
+
+  <!-- ================= SECTION D: LICENSE RISK ================= -->
+  <div class="sec">
+    <div class="sec-title"><span class="dot" style="color:var(--red)">●</span> license 风险旗(收编前必看)</div>
+  </div>
+  <div class="risk">
+    <ul>
+      <li><b>w95/awesome-claude-corporate-skills(166 skills,自称 MIT)= 最高风险,不收。</b> 它自己 README 说内容来自 Apache-2.0(Anthropic)+ 具名专有伙伴(S&amp;P Global / Apollo / Common Room),却用 MIT 外壳一把罩 —— 不合规。要用先逐个核来源。</li>
+      <li><b>Anthropic knowledge-work-plugins(Apache-2.0)= 低风险但非零摩擦:</b> 保留 NOTICE / attribution,保留它内置的免责声明(「不提供财务/税务/法律/HR 建议」),别隐含 Anthropic 背书。</li>
+      <li><b>UI/UX Pro Max · Taste · Charlie social · Corey marketing = MIT,低风险</b>(marketing 的数量外引前再核)。</li>
+    </ul>
+  </div>
+
+  <!-- ================= SECTION E: PER-ROLE CATALOG EVAL ================= -->
+  <div class="sec">
+    <div class="sec-title"><span class="dot" style="color:var(--purple)">●</span> 该不该给每个 agent 做「per-role skill 目录」?(短评)</div>
+    <div class="sec-note">Charlie 按部门/角色组织 skill。问题:我们要不要系统化地让每个 agent 都知道自己该有哪些 skill?</div>
+  </div>
+  <div class="card" style="border-left-color:var(--purple)">
+    <div class="what">我的判断:<b>不新建。</b> 这个想法已经被现有 infra 覆盖 —— 它其实是可以叠在 <b>FLY-216(flyview-skills,全机共享能力库)</b> 之上的一层薄「per-role manifest」(每个 role 声明自己该有哪些 skill),不是一个新工程。FLY-214(全局 Skill 框架,已 Done)+ FLY-14(动态加载)也覆盖了。而且我们其实已经有「隐式版本」:每个 executor 的 role .md(如 designer-executor 的 skill 表)就是该 role 的 skill 清单。</div>
+    <div class="eval-opts" data-eval="catalog">
+      <div class="opt" data-e="fold" data-default="1"><span class="rb"></span><span><b>归入 FLY-216</b>,当它的一个「per-role manifest 视图」子特性,本 issue 不新开单。(推荐)</span></div>
+      <div class="opt" data-e="followup"><span class="rb"></span><span>建一个<b>关联 FLY-216 的</b>轻量 follow-up 单单独跟踪。</span></div>
+      <div class="opt" data-e="other"><span class="rb"></span><span>其它想法(写在下面框里)。</span></div>
+    </div>
+    <textarea class="note" data-note="eval-catalog" placeholder="想补充就写这里…"></textarea>
+  </div>
+
+  <!-- ================= SECTION F: CROSS-REFS ================= -->
+  <div class="sec">
+    <div class="sec-title"><span class="dot" style="color:var(--navy)">●</span> 交叉引用(关联,不重复建单)</div>
+  </div>
+  <div class="card xref" style="border-left-color:var(--navy)">
+    <div class="x"><code>FLY-437</code> [XHS-deep] Marketing-idea skill —— Marketing skill 已建单,上面 Marketing 弹药<b>关联它</b>,不重复。</div>
+    <div class="x"><code>FLY-434</code> [XHS-deep] 腾讯 SkillHub / ClawHub —— skill 市场 + 信任机制(审计/加速/认证)参考。</div>
+    <div class="x">XHS skill-borrow 系列(FLY-349 引擎产出)—— 同一「借外部 skill」主题,归并思考。</div>
+  </div>
+
+  <footer>FLY-1199 · 数据经 gh + GitHub API 实测 · 仅供内部圈选 · noindex</footer>
+</div>
+
+<div class="bar">
+  <button class="btn primary" id="export">导出我的圈选</button>
+  <button class="btn ghost" id="reset">重置</button>
+</div>
+
+<div class="modal" id="modal">
+  <div class="modal-box">
+    <h3>你的圈选(复制回传给 Honey Lemon 就行)</h3>
+    <textarea id="out" readonly></textarea>
+    <div class="modal-actions">
+      <button class="btn ghost" id="copy">复制</button>
+      <button class="btn primary" id="close">关闭</button>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var LS='fly1199-checklist-v1';
+  var CHIPS=[['vendor','收编'],['skip','先跳过'],['owned','已拥有'],['later','以后再说']];
+  var SKILL_LABEL={
+    'uiux-pro-max':'UI/UX Pro Max','taste':'Taste','frontend-design':'Frontend Design',
+    'brand-guidelines':'Brand Guidelines','transitions':'Transitions'
+  };
+  var CHIP_LABEL={vendor:'收编',skip:'先跳过',owned:'已拥有',later:'以后再说'};
+  var state={decisions:{},notes:{},eval:{}};
+  try{var s=JSON.parse(localStorage.getItem(LS)||'{}');if(s&&typeof s==='object'){
+    state.decisions=s.decisions||{};state.notes=s.notes||{};state.eval=s.eval||{};}}catch(e){}
+  function save(){try{localStorage.setItem(LS,JSON.stringify(state));}catch(e){}}
+
+  // build decision chips for Section A cards
+  document.querySelectorAll('.chips').forEach(function(box){
+    var card=box.closest('.card');var id=card.getAttribute('data-skill');
+    var def=box.getAttribute('data-default');var lock=box.getAttribute('data-lock');
+    if(state.decisions[id]==null) state.decisions[id]=def;
+    CHIPS.forEach(function(c){
+      if(lock && c[0]!==lock) return; // owned-locked card only shows the owned chip
+      var b=document.createElement('button');
+      b.className='chip';b.setAttribute('data-v',c[0]);b.textContent=c[1];
+      if(lock){b.classList.add('dis');}
+      if(state.decisions[id]===c[0]) b.classList.add('on');
+      if(!lock){b.addEventListener('click',function(){
+        state.decisions[id]=c[0];
+        box.querySelectorAll('.chip').forEach(function(x){x.classList.remove('on');});
+        b.classList.add('on');save();
+      });}
+      box.appendChild(b);
+    });
+    if(def && !lock){
+      var tag=document.createElement('span');tag.className='default-tag';
+      tag.textContent='(默认: '+CHIP_LABEL[def]+')';box.parentNode.insertBefore(tag,box.nextSibling);
+    }
+  });
+
+  // notes
+  document.querySelectorAll('.note').forEach(function(t){
+    var k=t.getAttribute('data-note');
+    if(state.notes[k]) t.value=state.notes[k];
+    t.addEventListener('input',function(){state.notes[k]=t.value;save();});
+  });
+
+  // eval radio
+  document.querySelectorAll('.eval-opts').forEach(function(box){
+    var k=box.getAttribute('data-eval');
+    if(state.eval[k]==null){var d=box.querySelector('.opt[data-default]');if(d)state.eval[k]=d.getAttribute('data-e');}
+    box.querySelectorAll('.opt').forEach(function(o){
+      if(state.eval[k]===o.getAttribute('data-e')) o.classList.add('on');
+      o.addEventListener('click',function(){
+        state.eval[k]=o.getAttribute('data-e');
+        box.querySelectorAll('.opt').forEach(function(x){x.classList.remove('on');});
+        o.classList.add('on');save();
+      });
+    });
+  });
+
+  // export
+  function buildSummary(){
+    var L=[];L.push('FLY-1199 Skill 收编 —— Annie 的圈选');L.push('');
+    L.push('== A. Designer(重点)==');
+    Object.keys(SKILL_LABEL).forEach(function(id){
+      var d=state.decisions[id]||'(未选)';
+      L.push('• '+SKILL_LABEL[id]+': '+(CHIP_LABEL[d]||d)+(state.notes[id]?('  — 批注: '+state.notes[id]):''));
+    });
+    L.push('');L.push('== B. per-role catalog 评估 ==');
+    var ev={fold:'归入 FLY-216(推荐)',followup:'建关联 FLY-216 的 follow-up',other:'其它'};
+    L.push('• '+(ev[state.eval['catalog']]||'(未选)')+(state.notes['eval-catalog']?('  — '+state.notes['eval-catalog']):''));
+    var cat=[['mkt','Marketing'],['social','Social'],['fin','Finance'],['smb','Small-Biz'],['legal','Legal']];
+    var cn=cat.filter(function(c){return state.notes[c[0]];});
+    if(cn.length){L.push('');L.push('== 未来弹药 批注 ==');cn.forEach(function(c){L.push('• '+c[1]+': '+state.notes[c[0]]);});}
+    return L.join('\n');
+  }
+  var modal=document.getElementById('modal');
+  document.getElementById('export').addEventListener('click',function(){
+    document.getElementById('out').value=buildSummary();modal.classList.add('open');
+  });
+  document.getElementById('close').addEventListener('click',function(){modal.classList.remove('open');});
+  modal.addEventListener('click',function(e){if(e.target===modal)modal.classList.remove('open');});
+  document.getElementById('copy').addEventListener('click',function(){
+    var o=document.getElementById('out');o.select();
+    try{document.execCommand('copy');this.textContent='已复制 ✓';var b=this;setTimeout(function(){b.textContent='复制';},1500);}catch(e){}
+  });
+  document.getElementById('reset').addEventListener('click',function(){
+    if(!confirm('清空所有圈选和批注?')) return;
+    state={decisions:{},notes:{},eval:{}};save();location.reload();
+  });
+})();
+</script>
+</body>
+</html>

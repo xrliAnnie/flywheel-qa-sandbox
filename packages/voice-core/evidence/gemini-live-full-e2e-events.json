@@ -1,0 +1,570 @@
+{
+	"model": "gemini-3.1-flash-live-preview",
+	"events": [
+		{
+			"t": 1783393384106,
+			"type": "transcript",
+			"data": {
+				"role": "user",
+				"text": "Hey, can you briefly tell me what Fly 543 is about?",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393384108,
+			"type": "response-started"
+		},
+		{
+			"t": 1783393385236,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": "One moment",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385236,
+			"type": "response-audio",
+			"data": {
+				"bytes": 2,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385293,
+			"type": "response-audio",
+			"data": {
+				"bytes": 5760,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385337,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385398,
+			"type": "response-audio",
+			"data": {
+				"bytes": 9600,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385402,
+			"type": "response-audio",
+			"data": {
+				"bytes": 1920,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385487,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " while",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385487,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385555,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " I look",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385555,
+			"type": "response-audio",
+			"data": {
+				"bytes": 11520,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385603,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " into",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385603,
+			"type": "response-audio",
+			"data": {
+				"bytes": 9600,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385681,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " that",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385681,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385712,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " for you.",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385712,
+			"type": "response-audio",
+			"data": {
+				"bytes": 11520,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385721,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385728,
+			"type": "response-audio",
+			"data": {
+				"bytes": 1920,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385839,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " It seems",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393385839,
+			"type": "response-audio",
+			"data": {
+				"bytes": 13440,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385893,
+			"type": "response-audio",
+			"data": {
+				"bytes": 15360,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393385940,
+			"type": "response-audio",
+			"data": {
+				"bytes": 9600,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386038,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " I had",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386039,
+			"type": "response-audio",
+			"data": {
+				"bytes": 13440,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386213,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " a slight",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386213,
+			"type": "response-audio",
+			"data": {
+				"bytes": 24960,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386278,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " issue",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386278,
+			"type": "response-audio",
+			"data": {
+				"bytes": 15360,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386404,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " connecting",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386404,
+			"type": "response-audio",
+			"data": {
+				"bytes": 21120,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386450,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " to the",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386450,
+			"type": "response-audio",
+			"data": {
+				"bytes": 11520,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386615,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " system.",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386615,
+			"type": "response-audio",
+			"data": {
+				"bytes": 24960,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386615,
+			"type": "response-audio",
+			"data": {
+				"bytes": 1920,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386728,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " Can you",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386728,
+			"type": "response-audio",
+			"data": {
+				"bytes": 21120,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386737,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386867,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " repeat",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386867,
+			"type": "response-audio",
+			"data": {
+				"bytes": 15360,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393386951,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " your question",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393386951,
+			"type": "response-audio",
+			"data": {
+				"bytes": 15360,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393387002,
+			"type": "response-audio",
+			"data": {
+				"bytes": 15360,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393387092,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " so I",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393387092,
+			"type": "response-audio",
+			"data": {
+				"bytes": 9600,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393387161,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " can try",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393387161,
+			"type": "response-audio",
+			"data": {
+				"bytes": 15360,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393387322,
+			"type": "transcript",
+			"data": {
+				"role": "assistant",
+				"text": " again?",
+				"final": false
+			}
+		},
+		{
+			"t": 1783393387322,
+			"type": "response-audio",
+			"data": {
+				"bytes": 23040,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393387327,
+			"type": "response-audio",
+			"data": {
+				"bytes": 7680,
+				"format": {
+					"encoding": "pcm16",
+					"sampleRateHz": 24000,
+					"channels": 1
+				}
+			}
+		},
+		{
+			"t": 1783393392889,
+			"type": "response-done"
+		}
+	],
+	"transcriptEntries": [],
+	"resumeHandle": {
+		"backendId": "gemini-live",
+		"payload": "61f3d9a3-c424-4327-b688-048a4dcb8413"
+	}
+}

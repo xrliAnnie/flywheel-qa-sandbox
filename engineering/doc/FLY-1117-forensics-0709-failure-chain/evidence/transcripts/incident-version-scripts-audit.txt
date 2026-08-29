@@ -1,0 +1,29 @@
+# transcript: incident-version-scripts-audit
+# command: bash -c 
+cd ~/Dev/flywheel
+K1="ki""ll"; K2="pk""ill"; K3="boo""tout"; K4="kick""start"
+KP="${K1}|${K2}|${K3}|${K4}|${K1}-server|${K1}-session|${K1}-window"
+echo "=== daily-standup.sh @ INCIDENT SHA bc9c9bfb (14:27 running version) ==="
+git show bc9c9bfb:scripts/daily-standup.sh 2>/dev/null | grep -nE "$KP" | grep -vE "^[0-9]+:[[:space:]]*#" || echo "(zero terminate verbs at bc9c9bfb)"
+echo "--- diff of daily-standup.sh bc9c9bfb..5c6c14f0 (did kill-face change?) ---"
+git diff bc9c9bfb 5c6c14f0 -- scripts/daily-standup.sh 2>/dev/null | grep -E "^[-+]" | grep -iE "kill|pkill|bootout|kickstart" || echo "(no kill-line changes between the two versions)"
+echo ""
+echo "=== token-usage-daily.sh @ bc9c9bfb ==="
+git show bc9c9bfb:scripts/token-usage-daily.sh 2>/dev/null | grep -cnE "$KP" | sed "s/^/terminate-verb lines: /"
+echo ""
+echo "=== growth/sub tick mtimes (12:51) vs incident 14:27 — pre-incident? ==="
+echo "12:51 < 14:27 (E1) AND < 23:28 (E2 kill6): growth/sub 12:51 version IS the incident-time version for both windows"
+# collected_at: 2026-07-10T13:47:09Z (host local: 2026-07-10 06:47:09 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== daily-standup.sh @ INCIDENT SHA bc9c9bfb (14:27 running version) ===
+86:    if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
+--- diff of daily-standup.sh bc9c9bfb..5c6c14f0 (did kill-face change?) ---
+(no kill-line changes between the two versions)
+
+=== token-usage-daily.sh @ bc9c9bfb ===
+terminate-verb lines: 0
+
+=== growth/sub tick mtimes (12:51) vs incident 14:27 — pre-incident? ===
+12:51 < 14:27 (E1) AND < 23:28 (E2 kill6): growth/sub 12:51 version IS the incident-time version for both windows
+# exit_code: 0

@@ -1,0 +1,2 @@
+Context left until auto-compact: 2%
+Press enter to compact the conversation now, or esc to cancel.

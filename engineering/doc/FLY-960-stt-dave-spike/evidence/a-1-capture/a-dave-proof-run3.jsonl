@@ -1,0 +1,3 @@
+{"t":"2026-07-07T16:25:46.269Z","type":"session_description","dave_protocol_version":1,"mode":"aead_aes256_gcm_rtpsize"}
+{"t":"2026-07-07T16:27:42.347Z","type":"dave_execute_transition","d":{"transition_id":1}}
+{"t":"2026-07-07T16:28:49.497Z","type":"dave_execute_transition","d":{"transition_id":2}}

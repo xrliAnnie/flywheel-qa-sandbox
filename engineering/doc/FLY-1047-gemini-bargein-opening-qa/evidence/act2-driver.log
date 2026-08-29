@@ -1,0 +1,2 @@
+[2026-07-09T15:21:24.294Z] ACT2 start (daemon.log baseline line 26) — injecting probe question
+[2026-07-09T15:24:00.004Z] TIMEOUT: no 'response started' within 120s of probe inject

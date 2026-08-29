@@ -8,6 +8,7 @@
 
 import type http from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 
@@ -95,7 +96,7 @@ function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 		stuckThresholdMinutes: 15,
 		stuckCheckIntervalMs: 300000,
 		orphanThresholdMinutes: 60,
-		maxConcurrentRunners: 2,
+		runnerAdmission: RunnerAdmissionController.alwaysAdmit(),
 		...overrides,
 	};
 }
@@ -141,7 +142,7 @@ describe("FLY-22: /api/runs routes always registered", () => {
 				const body = (await res.json()) as { running: number; max: number };
 				expect(body).toHaveProperty("running");
 				expect(body).toHaveProperty("max");
-				expect(body.max).toBe(2);
+				expect(body.max).toBeNull();
 			} finally {
 				await new Promise<void>((resolve, reject) =>
 					server.close((err) => (err ? reject(err) : resolve())),

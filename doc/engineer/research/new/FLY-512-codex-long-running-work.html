@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Codex「maxx 长任务」→ 对 Flywheel 的启示 · FLY-512</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --card:#fff; --shadow:0 1px 3px rgba(0,0,0,0.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"SF Pro Text",sans-serif;line-height:1.62;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:980px;margin:0 auto;padding:40px 20px 90px}
+  .mono{font-family:"SF Mono",ui-monospace,monospace}
+  h1{font-size:31px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px;line-height:1.2}
+  .sub{color:var(--dim);font-size:15px;margin:0 0 4px}
+  .issue-id{font-family:"SF Mono",monospace;color:var(--navy);font-weight:600;text-decoration:none}
+  .tldr{background:var(--card);border-radius:12px;box-shadow:var(--shadow);
+    border-left:4px solid var(--blue);padding:18px 22px;margin:24px 0 12px}
+  .tldr b{color:var(--navy)}
+  .metrics{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0 30px}
+  .metric{flex:1;min-width:150px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);
+    padding:16px 18px;border-left:4px solid var(--purple)}
+  .metric .n{font-size:26px;font-weight:700;letter-spacing:-.02em;color:var(--navy)}
+  .metric .l{font-size:12.5px;color:var(--dim);margin-top:2px}
+  .section-title{font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--dim);margin:40px 0 14px;display:flex;align-items:center;gap:8px}
+  .section-title .dot{font-size:11px}
+  .card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:20px 22px;margin:14px 0}
+  .card.blue{border-left:4px solid var(--blue)}
+  .card.green{border-left:4px solid var(--green)}
+  .card.amber{border-left:4px solid var(--amber)}
+  .card.purple{border-left:4px solid var(--purple)}
+  .card.red{border-left:4px solid var(--red)}
+  .card.navy{border-left:4px solid var(--navy)}
+  .card-title{font-size:17px;font-weight:700;margin:0 0 4px}
+  .card-sub{color:var(--dim);font-size:13px;margin:0 0 10px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;
+    vertical-align:middle;margin-left:6px}
+  .b-green{background:rgba(52,199,89,.14);color:#1a7a37}
+  .b-amber{background:rgba(255,149,0,.16);color:#9a5b00}
+  .b-red{background:rgba(255,59,48,.14);color:#b3261c}
+  .b-blue{background:rgba(0,122,255,.14);color:#0a4ea3}
+  .b-purple{background:rgba(175,82,222,.16);color:#7a2ca0}
+  .b-navy{background:rgba(26,54,93,.12);color:#1a365d}
+  .split{display:flex;gap:18px;flex-wrap:wrap}
+  .col{flex:1;min-width:240px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:18px 20px}
+  .col h3{margin:0 0 8px;font-size:15px}
+  .col .lbl{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:5px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;
+    box-shadow:var(--shadow);font-size:13.5px;margin:14px 0}
+  th,td{padding:11px 13px;text-align:left;vertical-align:top;border-bottom:1px solid #ececef}
+  th{background:#fafafc;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--dim)}
+  tr:last-child td{border-bottom:none}
+  .tag{display:inline-block;font-weight:700;font-size:12px;white-space:nowrap}
+  .t-strong{color:#1a7a37}
+  .t-gap{color:#b3261c}
+  .t-borrow{color:#9a5b00}
+  .quote{background:var(--card);border-left:4px solid var(--purple);border-radius:8px;
+    padding:12px 16px;margin:10px 0;font-size:14px;color:#333}
+  .decision{background:linear-gradient(180deg,#fff,#fbfbfd);border-radius:14px;
+    box-shadow:0 2px 10px rgba(0,0,0,.07);border:1px solid #ececef;padding:26px;margin:20px 0}
+  .decision h2{margin:0 0 6px;font-size:20px}
+  .opt{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-bottom:1px solid #f0f0f2}
+  .opt:last-child{border-bottom:none}
+  .opt .k{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;min-width:74px;color:var(--navy)}
+  .opt .body{flex:1}
+  .opt .head{font-weight:600;margin-bottom:2px}
+  .opt .meta{font-size:13px;color:var(--dim)}
+  .imp{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:18px 20px;margin:12px 0;
+    border-left:4px solid var(--blue)}
+  .imp.p1{border-left-color:var(--red)}
+  .imp.p2{border-left-color:var(--amber)}
+  .imp.p3{border-left-color:var(--blue)}
+  .imp .h{font-size:15.5px;font-weight:700;margin:0 0 4px}
+  .imp .why{font-size:13.5px;color:#444;margin:6px 0}
+  .imp .meta{font-size:12.5px;color:var(--dim);margin-top:6px}
+  .filterbar{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px}
+  .fbtn{font:inherit;font-size:13px;font-weight:600;padding:6px 14px;border-radius:20px;cursor:pointer;
+    border:1px solid #d2d2d7;background:#fff;color:#444}
+  .fbtn.active{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .foot{color:var(--dim);font-size:12px;margin-top:44px;border-top:1px solid #e2e2e6;padding-top:16px}
+  .pill{display:inline-block;background:#eef0f3;border-radius:6px;padding:1px 7px;font-size:12px;
+    font-family:"SF Mono",monospace;color:#444}
+  .hl{background:rgba(255,214,10,.32);padding:0 3px;border-radius:3px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="sub">研究简报 · Flywheel · 2026-06-23</p>
+  <h1>OpenAI 让 Codex 跑 25 小时不间断 —— 哪一招值得 Flywheel 抄?</h1>
+  <p class="sub"><a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-512">FLY-512</a>
+    · 来源:你分享的 <span class="mono">openai.com/index/codex-maxxing-long-running-work</span>(同源镜像:developers.openai.com 博客 + openai-cookbook 的 /goal 与 repair-loop 两个 notebook)· owner Tadashi</p>
+
+  <div class="tldr">
+    <b>一句话:</b>OpenAI 这套方法的「眼」不是更聪明的模型,而是 <b>把开放式工作变成一串可验证的检查点 + 把目标/计划/状态写进一份反复回看的文件 + 完成必须靠证据而不是模型自觉</b>。
+    对 Flywheel(我们本身就是长时 agentic 编排系统)来说:<span class="hl">这几条里我们一半已经做得更硬</span>(证据驱动 done 是系统级硬门、不自合并、跨进程崩溃恢复、并行)——验证了核心赌注是对的;
+    <span class="hl">真正值得抄的就一个</span>——让 Runner 维护一份「会话内活文档」,它一举解决防漂移 + 上下文压缩存活 + 断点续跑。<b>这份给你拍方向。</b>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><div class="n">~25 h</div><div class="l">单次不间断会话</div></div>
+    <div class="metric"><div class="n">~13M</div><div class="l">tokens</div></div>
+    <div class="metric"><div class="n">~30k</div><div class="l">行代码(从零)</div></div>
+    <div class="metric"><div class="n">~7 月</div><div class="l">任务长度翻倍(METR)</div></div>
+  </div>
+
+  <!-- ============ PART 1 ============ -->
+  <div class="section-title"><span class="dot" style="color:var(--purple)">●</span> OpenAI 那套做法(提炼)</div>
+
+  <div class="card purple">
+    <div class="card-title">核心转变:不是更聪明,是「持续连贯的时长」</div>
+    <p style="margin:0;font-size:14px">GPT-5.3-Codex「Extra High」跑 ~25h、~13M token、~30k 行从零造了个设计工具。论点:<b>长任务成功「与其说靠一个巨型 prompt,不如说靠模型所在的那个 agent loop」</b>——这句话对 Flywheel 直接成立,我们的价值就在 loop(编排/续跑/验证)。</p>
+  </div>
+
+  <div class="split">
+    <div class="col" style="border-left:4px solid var(--blue)">
+      <div class="lbl">Agent Loop 结构</div>
+      <h3>有纪律的循环</h3>
+      <p style="font-size:13.5px;margin:0"><span class="mono">Plan → Edit → Run tools(test/build/lint) → Observe → Repair → Update docs → Repeat</span>。能撑长程靠三样:<b>真实反馈</b>(跑测试拿客观信号)、<b>外部化状态</b>(状态在磁盘不在上下文)、<b>时间可操纵</b>(人在 milestone steer)。</p>
+    </div>
+    <div class="col" style="border-left:4px solid var(--green)">
+      <div class="lbl">被点名的「最重要技法」</div>
+      <h3>4 文件项目记忆</h3>
+      <p style="font-size:13.5px;margin:0"><b>Prompt.md</b>(冻结规格/non-goals/done-when)· <b>Plan.md</b>(颗粒 milestone+验收+验证命令+决策记录)· <b>Implement.md</b>(runbook/每 milestone 强制验证)· <b>Documentation.md</b>(滚动状态/审计日志)。一静一动:冻结目标 vs 记录变化,<b>人可异步检查</b>。</p>
+    </div>
+  </div>
+
+  <div class="card blue">
+    <div class="card-title">/goal 命令:thread-scoped 的持久目标契约 <span class="badge b-blue">最深的一块</span></div>
+    <p style="margin:0 0 8px;font-size:14px">心智模型:普通 prompt = <span class="mono">ask→work→result→wait</span>;Goal = <span class="mono">work→check→continue or complete</span>。一个强 Goal 定义 6 件事:</p>
+    <ul style="font-size:13.5px;margin:0">
+      <li><b>Outcome / Verification surface / Constraints / Boundaries / Iteration policy / Blocked stop condition</b></li>
+      <li>架构:Goal 是<b>持久 thread 状态</b>(不是全局记忆),<b>续跑事件驱动</b>(只在 thread idle 续、无工具调用就抑制下次防空转),<b>完成必须证据驱动</b>(不能靠「模型觉得做完了」),<b>预算 ≠ 完成</b>。</li>
+      <li>工具契约有界:模型只能「发起 Goal」+「证据支持时标完成」;pause/resume/clear 留给用户。</li>
+    </ul>
+  </div>
+
+  <div class="card amber">
+    <div class="card-title">迭代修复环 Review → Repair → Validate</div>
+    <p style="margin:0 0 6px;font-size:14px">三相之间用<b>机器可读 JSON 结构化交接</b>:<b>Review</b>(只找问题、不改、返 JSON findings)→ <b>Repair</b>(只改最关键的、不假设成功)→ <b>Validate</b>(端到端执行、按 rubric 打分、返 remaining delta)。</p>
+    <p style="margin:0;font-size:13.5px">收敛/停止:全过 / <b>最大 3 轮</b> / delta 稳定 / 停滞 → <b>触发人工</b>。每轮写 <span class="mono">record.json</span> 审计「为什么继续、为什么停」。核心:<b>判断与证明分离、按证据迭代、保留审计轨迹</b>。</p>
+  </div>
+
+  <!-- ============ PART 2 ============ -->
+  <div class="section-title"><span class="dot" style="color:var(--green)">●</span> 对标 Flywheel:我们站在哪</div>
+  <p class="card-sub" style="margin:-4px 0 10px">Lead 指定对标 4 处真实机制 + context + QA loop,全部用 codebase file:line 落实。结论分三档:<span class="t-strong">✅ 已对齐/更强</span> · <span class="t-borrow">🟡 可借鉴</span> · <span class="t-gap">🔴 真缺口</span>。</p>
+
+  <table>
+    <tr><th style="width:42%">OpenAI 技法</th><th style="width:42%">Flywheel 现状(file:line)</th><th style="width:16%">档</th></tr>
+    <tr><td>证据驱动完成(<b>prompt 级</b>,模型自觉)</td><td><b>系统级硬门</b>:evidence gate + pr_head_sha 绑定 <span class="mono">event-route.ts:643-740</span> / <span class="mono">wake.ts</span></td><td><span class="tag t-strong">✅ 更强</span></td></tr>
+    <tr><td>/goal 自主续跑 / 模型自合并</td><td><b>有意不做</b>:founder-only-authority + branch protection + 无 push token</td><td><span class="tag t-strong">✅ 更保守</span></td></tr>
+    <tr><td>milestone 检查点 + 失败先修(批处理)</td><td>FLY-349 引擎 <span class="mono">checkpoint.py</span> 确定性持久状态机(原子落盘/幂等 resume/retry cap/损坏自愈)</td><td><span class="tag t-strong">✅ 更强*</span></td></tr>
+    <tr><td>跨会话耐久目标</td><td>Linear issue = 单一真相 + durable marker 续跑(<b>跨进程/Bridge 重启</b>)</td><td><span class="tag t-strong">✅ 对齐+</span></td></tr>
+    <tr><td>并行探索 / fan-out</td><td>多 Runner + 多 role(FLY-59)+ worktree 隔离</td><td><span class="tag t-strong">✅ 更强</span></td></tr>
+    <tr><td><b>4 文件项目记忆(会话内反复回看的活文档)</b></td><td><b>无</b>:Runner 被指示读仓内 CLAUDE.md(非内容持久注入);无 Runner 维护的 status/plan/audit 活文档</td><td><span class="tag t-gap">🔴 缺口</span></td></tr>
+    <tr><td><b>mid-task 续跑(从检查点恢复)</b></td><td><b>无</b>:Runner 崩溃从<b>整个 issue 重头跑</b>(引擎层有、Runner 层没有)</td><td><span class="tag t-gap">🔴 缺口</span></td></tr>
+    <tr><td>/goal 契约字段(verification surface + blocked stop)</td><td>issue 通常不含这些结构化字段</td><td><span class="tag t-gap">🔴 缺口*</span></td></tr>
+    <tr><td>Review→Repair→Validate 的<b>有界+可审计</b></td><td>Codex review loop 有骨架(且用真 Codex),但<b>无 round 计数 / 逐轮 record.json / 停滞→人工</b></td><td><span class="tag t-borrow">🟡 可借鉴</span></td></tr>
+    <tr><td>context-compaction 存活(外化状态防漂移)</td><td>无 Flywheel 级 compaction / PostCompact;信任 1M 原生窗口</td><td><span class="tag t-borrow">🟡 可借鉴</span></td></tr>
+  </table>
+  <p class="card-sub" style="margin:2px 0 0">* 「更强*」= 仅限批处理域(小红书引擎),没泛化到写代码 Runner。「缺口*」= 部分有意为之(我们不要 /goal 的自主循环,只要它的契约结构)。</p>
+
+  <div class="card navy" style="margin-top:18px">
+    <div class="card-title">一个值得盯住的反差</div>
+    <p style="margin:0;font-size:14px">我们在<b>小红书引擎</b>里做了教科书级的 checkpoint/resume(<span class="mono">checkpoint.py</span>:stage 持久 + skip-done + retry cap + 损坏自愈),<span class="hl">却没把同样的纪律用到核心的写代码 Runner 上</span>——写代码 Runner 崩了是从整个 issue 重头跑。这正是下面 P1 的最大机会:<b>不是发明新东西,是把已验证的纪律搬过去。</b></p>
+  </div>
+
+  <!-- ============ PART 3 ============ -->
+  <div class="section-title"><span class="dot" style="color:var(--red)">●</span> 可执行改进点(按杠杆排序)</div>
+  <p class="card-sub" style="margin:-4px 0 8px">贯穿主线:<b>把 FLY-349 引擎里验证过的 checkpoint 纪律泛化到写代码 Runner;借 OpenAI 的「活文档 + 证据契约」,但不借它的「自主续跑」</b>(那跟我们人类把关模型冲突)。每条可转一个 Linear issue。</p>
+
+  <div class="filterbar" id="filterbar">
+    <button class="fbtn active" data-f="all">全部</button>
+    <button class="fbtn" data-f="p1">P1 keystone</button>
+    <button class="fbtn" data-f="p2">P2 跟进</button>
+    <button class="fbtn" data-f="p3">P3 轻量</button>
+  </div>
+
+  <div class="imp p1" data-p="p1">
+    <div class="h">A. 每个 Runner 维护一份「活状态文档」(Living Run Doc)<span class="badge b-red">P1 keystone</span></div>
+    <p class="why">spawn 时建 <span class="mono">.flywheel/runs/&lt;execId&gt;/RUN.md</span>,四块对应 OpenAI 的 Prompt/Plan/Implement/Documentation:①冻结规格(目标+brainstorm 结论+non-goals+done-when)②milestone 计划(每个带验证命令+验收)③执行约束 ④滚动状态/决策日志。<b>每个 milestone 后更新、compaction/resume 后先重读。</b></p>
+    <p class="why"><b>为什么是 #1:</b>一举解决三件事——防漂移(冻结规格)、上下文压缩存活(状态外化到文件)、async 可检查(不盯 pane 就能看进度)。这正是 OpenAI 点名的「最重要技法」,也是我们唯一缺的「会话内活文档」层。</p>
+    <p class="meta">成本:中(prompt/Blueprint 注入 + 一个文件约定,无新基建)· 雏形:「Runner Living Run Doc — 会话内活文档 + compaction 重定向」</p>
+  </div>
+
+  <div class="imp p1" data-p="p1">
+    <div class="h">B. mid-task 续跑:fresh Runner 从 RUN.md 断点恢复,不从头重跑 <span class="badge b-red">P1 keystone</span></div>
+    <p class="why">基于 A。Runner 崩溃/Bridge 重启后,新 Runner 读 RUN.md 的 milestone 状态、<b>跳过已完成 milestone</b>、从断点继续——把 FLY-349 引擎 checkpoint.py 的 skip-done + 幂等 + retry cap 纪律泛化到代码 Runner。</p>
+    <p class="why"><b>为什么:</b>审计实锤「Runner 崩溃从整个 issue 重头跑」是当前最大的长任务浪费。25h 跑到 20h 挂掉重来 = 灾难。</p>
+    <p class="meta">成本:中(依赖 A 先落地;复用引擎层已验证的 checkpoint 模式)· 雏形:「Runner mid-task resume — 从 Living Run Doc 断点续跑」</p>
+  </div>
+
+  <div class="imp p2" data-p="p2">
+    <div class="h">C. 把 Codex review loop 形式化成有界 + 可审计的 Review→Repair→Validate <span class="badge b-amber">P2</span></div>
+    <p class="why">每轮写 <span class="mono">codex/round-&lt;n&gt;.json</span>(findings+repair 摘要+validate 结果);跟踪 round 数;设软上限(如 3 轮);<b>停滞(delta 不再缩小)→ 触发人工</b>(走现成 ask/gate 升级)。</p>
+    <p class="why"><b>为什么:</b>当前 review loop 无 round 计数、无逐轮审计、无停滞升级,理论上能无限循环/静默卡住(已有「codex review death detection」follow-up)。</p>
+    <p class="meta">成本:中(复用现有 codex/*.json 约定 + gate 升级)· 雏形:「Codex review loop 有界化 + record-per-round + 停滞→人工」</p>
+  </div>
+
+  <div class="imp p2" data-p="p2">
+    <div class="h">D. milestone-based plan:write-plan/implement 强制颗粒化 milestone + per-milestone 验证命令 <span class="badge b-amber">P2</span></div>
+    <p class="why">约定:plan 必须列<b>一个 loop 内可完成的 milestone</b>,每个带验证命令(lint/typecheck/test/build)+验收标准;implement 时<b>每个 milestone 后跑验证、失败先修再前进</b>。落进 A 的「②milestone 计划」块。</p>
+    <p class="why"><b>为什么:</b>我们有粗粒度阶段门(design_review/code_review),但 implement 内部没有「milestone→验证→修→下一个」的细循环。OpenAI 的 plan.md 正是这个。</p>
+    <p class="meta">成本:低-中(skill/prompt 约定)· 雏形:「write-plan/implement 强制 milestone + per-milestone 验证门」</p>
+  </div>
+
+  <div class="imp p3" data-p="p3">
+    <div class="h">E. context-compaction 重定向 hook(轻量,配 A) <span class="badge b-blue">P3</span></div>
+    <p class="why">给 Runner 一条指令/hook:任何 compaction 后先重读 RUN.md 的冻结规格 + milestone 状态再继续。Anthropic 自己承认「多次 compact 后意图变弱」——外化状态 + 强制重读是最便宜的兜底。</p>
+    <p class="meta">成本:低(一条 prompt 约定 + 可选 PostCompact hook)</p>
+  </div>
+
+  <div class="imp p3" data-p="p3">
+    <div class="h">F.(有意不做,记录理由)不在 Runner 层加 /goal 式「自主续跑到 done」循环 <span class="badge b-navy">记一笔</span></div>
+    <p class="why">我们刻意要人在 milestone/merge 处把关(founder-only-authority + approve gate)。一个「无人值守持续续跑」的循环跟这个模型冲突,也跟 pr_handoff/human-gated ship 冲突。<b>要借的是 /goal 的契约结构(A/D 已覆盖),不是它的自主循环。</b>写下来是防止有人误把「抄 /goal」理解成「让 Runner 自己一直跑到合并」。</p>
+    <p class="meta">成本:0(决策记录)</p>
+  </div>
+
+  <!-- ============ DECISION ============ -->
+  <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 给你拍的决策</div>
+  <div class="decision">
+    <h2>启动哪些改进?</h2>
+    <p class="card-sub">我的研究结论:<b>先做 P1-A(活文档)+ P1-B(断点续跑),它俩是 OpenAI 这套里唯一对我们真有增量的部分;C/D/E 是顺手的跟进。</b>但这由你拍——把取舍诚实摆给你:</p>
+    <div class="opt">
+      <span class="k">只做 P1</span>
+      <div class="body">
+        <div class="head">活文档 + 断点续跑(最高杠杆,先验证价值)</div>
+        <div class="meta">一举拿到防漂移 + 压缩存活 + 不再从头重跑。复用引擎层已验证的 checkpoint 纪律,风险低。建议起点。</div>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="k">P1 + P2</span>
+      <div class="body">
+        <div class="head">再加 review loop 有界化 + milestone 验证门</div>
+        <div class="meta">顺手补齐 QA loop 的可审计性(配合已有的 review-death follow-up)+ implement 细粒度验证。一个 sprint 能装下。</div>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="k">先不动</span>
+      <div class="body">
+        <div class="head">当作「现状体检报告」存档</div>
+        <div class="meta">结论本身有价值:我们的核心赌注被 OpenAI 实践背书,且在证据驱动/安全上更强。改进点转成 backlog issue,等优先级排到。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="quote">「长任务成功,与其说靠一个巨型 prompt,不如说靠模型所在的那个 <b>agent loop</b>。」<span style="color:var(--dim)">— OpenAI 长任务博客。这正是 Flywheel 的存在理由:我们就是那个 loop。</span></div>
+
+  <p class="foot">
+    <b>来源诚实分层:</b>① <b>OpenAI 原文直述</b>(高置信)= 25h/13M/30k 实验、4 文件项目记忆、每 milestone 验证、/goal 的 6 要素+状态机+证据驱动完成(逐字出自 <span class="mono">using_goals_in_codex.ipynb</span>)、Review→Repair→Validate 三相+3 轮+record.json(出自 <span class="mono">Build_iterative_repair_loops_with_Codex.ipynb</span>)。
+    ② <b>抓取说明</b>= 你给的 <span class="mono">openai.com/index/...</span> URL 对自动抓取返 403;内容取自 OpenAI 官方同源镜像(developers.openai.com 博客 + openai/openai-cookbook 仓两个 notebook)。<span class="mono">harness-engineering</span> 同样 403、未纳入(非必需)。
+    ③ <b>对标推断</b>(Part 2/3)= 基于 Flywheel codebase 审计(带 file:line)+ CLAUDE.md/MEMORY.md。
+    <br>完整研究:<span class="mono">doc/engineer/research/new/FLY-512-codex-long-running-work.md</span>
+  </p>
+
+</div>
+<script>
+(function(){
+  try{
+    var bar=document.getElementById('filterbar');
+    if(!bar) return;
+    var btns=bar.querySelectorAll('.fbtn');
+    var cards=document.querySelectorAll('.imp');
+    bar.addEventListener('click',function(e){
+      var b=e.target.closest('.fbtn'); if(!b) return;
+      var f=b.getAttribute('data-f');
+      btns.forEach(function(x){x.classList.toggle('active',x===b);});
+      cards.forEach(function(c){
+        c.style.display=(f==='all'||c.getAttribute('data-p')===f)?'':'none';
+      });
+    });
+  }catch(_){/* CSP 挡掉 JS 也无妨:默认全部可见 */}
+})();
+</script>
+</body>
+</html>

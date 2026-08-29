@@ -1,0 +1,31 @@
+[2026-07-09T15:26:41.029Z] health endpoint on 127.0.0.1:9880/health
+[2026-07-09T15:26:41.843Z] bots online: orchestrator, note-taker
+[2026-07-09T15:26:42.507Z] Note-taker resident in VC 1485787273193853170
+[2026-07-09T15:26:42.522Z] [presence] humanCount seeded=1 (boot occupancy)
+[2026-07-09T15:26:42.706Z] /gemini registered on guild 1485787271192907816
+[2026-07-09T15:26:42.706Z] autostart QA seam armed (topic: FLY-1047 QA 幕二 fallback)
+[2026-07-09T15:26:42.706Z] daemon up — health :9880, assistant=/gemini
+[2026-07-09T15:26:46.366Z] [gemini-command] MOVE_MEMBERS unavailable — Join button is the path in
+[2026-07-09T15:26:46.367Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] state -> invoked
+[2026-07-09T15:26:46.505Z] [presence] voiceState user=1523230048243417178 bot=true - -> 1485787273193853170 delta=join humanCount=1 joinSubs=0
+[2026-07-09T15:26:46.691Z] [deferred-player] real player attached (orchestrator in VC)
+[2026-07-09T15:26:46.691Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] voice joined — orchestrator in the VC
+[2026-07-09T15:26:46.691Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] briefing composed (3140 chars, stale=false)
+[2026-07-09T15:26:46.691Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] connecting Gemini Live…
+[2026-07-09T15:26:46.848Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] conversation ready
+[2026-07-09T15:26:46.849Z] [presence] founderPresent()=true (humanCount=1)
+[2026-07-09T15:26:46.849Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] founderPresent()=true at post-connect check
+[2026-07-09T15:26:46.849Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] state -> live (initial-check)
+[2026-07-09T15:26:46.849Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] OPENING prompt sent to Gemini
+[2026-07-09T15:26:47.641Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] response started (ears frames forwarded so far: 0)
+[2026-07-09T15:26:47.641Z] [assistant-speaker] turn begin
+[2026-07-09T15:26:47.641Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] first response audio from Gemini
+[2026-07-09T15:26:47.641Z] [assistant-speaker] first audio chunk (7230 bytes, 24k mono)
+[2026-07-09T15:26:47.738Z] [assistant-speaker] playing turn stream on the player
+[2026-07-09T15:26:50.314Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] first ears frame forwarded to Gemini (640 bytes)
+[2026-07-09T15:26:50.819Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] response cancelled (barge-in) — flushing speaker
+[2026-07-09T15:27:54.390Z] quit file seen after 71.7s
+[2026-07-09T15:27:54.391Z] shutting down (session length 71.7s)
+[2026-07-09T15:27:54.391Z] shutting down (bounded)
+[2026-07-09T15:27:54.391Z] [assistant-session][e9b65089-71dd-42ad-99d1-bac3ae61a8d7] state -> landing (trigger=external-stop confirmed=false; ears frames forwarded=128, assistant audio chunks=22)
+[2026-07-09T15:27:56.239Z] daemon closed

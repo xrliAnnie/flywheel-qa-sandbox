@@ -1,0 +1,21 @@
+FLY-310 — teamlead full vitest suite, run on flywheel-FLY-260 @ cb591dd1 (codex 0.140, machine under memory load)
+Tokens REDACTED. See QA-REPORT-FLY-310.md for the pre-existing/environmental analysis.
+============================================================
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 7 ⎯⎯⎯⎯⎯⎯⎯
+ Test Files  6 failed | 176 passed (182)
+      Tests  7 failed | 2663 passed (2670)
+--- failed test files (all pre-existing/environmental, NOT FLY-260) ---
+ FAIL  src/__tests__/LeadAlertNotifier.test.ts > LeadAlertNotifier > POSTs to alertChannel with resolved bot token and claims dedup row
+ FAIL  src/__tests__/bridge.test.ts > Bridge scaffold > /api/* requires apiToken when configured
+ FAIL  src/__tests__/cipher-bridge-e2e.test.ts > CIPHER Bridge E2E > cipher-principle API validates input and routes activate/retire
+ FAIL  src/__tests__/createLeadRuntime-preflight.test.ts > createLeadRuntime — preflight error surfacing > falls back to error signal name + detail when message is absent (QA Bug #3)
+ FAIL  src/__tests__/createLeadRuntime-preflight.test.ts > createLeadRuntime — preflight error surfacing > surfaces preflight.message in the thrown error (QA Bug #3)
+ FAIL  src/__tests__/post-ship-finalization.test.ts > runPostShipFinalization > FLY-292: writes a chat_thread_archived audit event on success
+ FAIL  src/__tests__/runs-route-registration.test.ts > FLY-22: /api/runs routes always registered > startBridge without startDispatcher → /api/runs/active returns 200 (not 404)
+--- representative environmental error signatures ---
+Test timed out in 15000ms
+Test timed out in 5000ms
+Timeout calling "onTaskUpdate"
+to be 'Bot resolved-bot-token'
+--- proof pre-existing: same test fails identically on main @ f50f0c22 (no FLY-260 changes) ---
+  FAIL LeadAlertNotifier > POSTs to alertChannel ... : expected 'Bot <REAL-TOKEN-REDACTED>' to be 'Bot resolved-bot-token'

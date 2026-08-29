@@ -1,0 +1,13 @@
+verify-windowed-lead: project=flywheel lead=codex-infra-bot-lead label=com.flywheel.lead.flywheel-codex-infra-bot-lead
+                      codexHome=/Users/xiaorongli/.codex-infra-bot window=flywheel-codex-infra-bot-lead
+
+layer 1  PASS  launchd job com.flywheel.lead.flywheel-codex-infra-bot-lead running (pid 92526, state=running)
+layer 2  PASS  pid 92526 is the TUI runtime (node …/codex-lead-tui-runtime.js)
+layer 3  PASS  daemon socket present (/Users/xiaorongli/.codex-infra-bot/app-server-control/app-server-control.sock)
+layer 4  PASS  tmux window 'flywheel-codex-infra-bot-lead' alive in session 'flywheel'
+layer 5  PASS  pane runs codex (current command: codex)
+
+── layer 6 (diagnostic — NOT part of the exit code) ──
+(launchd log not provided/found — pass --log <path> to include it; not a failure)
+
+RESULT: PASS — windowed lead flywheel-codex-infra-bot-lead is up (layers 1-5 green).

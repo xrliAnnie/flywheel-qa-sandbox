@@ -70,8 +70,6 @@ describe("CommDBLeadRuntime", () => {
 				lines_removed: 20,
 				filter_priority: "high",
 				notification_context: "PR ready for review",
-				thread_id: "thread-123",
-				forum_channel: "forum-456",
 			});
 			await runtime.deliver(envelope);
 
@@ -83,8 +81,31 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("Commits: 3 | +100/-20");
 			expect(content).toContain("Priority: high");
 			expect(content).toContain("Context: PR ready for review");
-			expect(content).toContain("Forum-Thread: thread-123");
-			expect(content).toContain("Forum: forum-456");
+			// FLY-163: Forum-Thread / Forum: lines removed
+			expect(content).not.toContain("Forum-Thread");
+			expect(content).not.toContain("Forum:");
+		});
+
+		it("formats runner_question with [ASK] non-blocking framing (FLY-161)", async () => {
+			const envelope = makeEnvelope({
+				event_type: "runner_question",
+				question_id: "q-r-1",
+				summary: "Should I use UTC?",
+				comm_db_path: "/tmp/comm.db",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[Event #1] runner_question");
+			expect(content).toContain(
+				"[ASK] Runner is asking (non-blocking — Runner continues working):",
+			);
+			expect(content).toContain("Should I use UTC?");
+			expect(content).toContain("Question ID: q-r-1");
+			expect(content).toContain("flywheel-comm respond");
+			// runner_question must NOT carry a checkpoint tag.
+			expect(content).not.toContain("[BRAINSTORM]");
+			expect(content).not.toContain("[REVIEW]");
 		});
 
 		it("formats gate_question with special format", async () => {
@@ -103,6 +124,64 @@ describe("CommDBLeadRuntime", () => {
 			expect(content).toContain("Should I proceed?");
 			expect(content).toContain("Question ID: q-1");
 			expect(content).toContain("CommDB: /tmp/comm.db");
+		});
+
+		it("FLY-159: formats gate_timed_out with checkpoint + duration + original message", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_timed_out",
+				checkpoint: "brainstorm",
+				waited_ms: 172_800_000,
+				original_message: "my brainstorm understanding draft",
+				timeout_behavior: "fail-close",
+				timeout_behavior_source: "default",
+				question_id: "q-uuid-1",
+				chat_thread_id: "chat-thread-159",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[Event #1] gate_timed_out");
+			expect(content).toContain(
+				"[BRAINSTORM] Gate timed out — waited 48h (behavior: fail-close, source: default)",
+			);
+			expect(content).toContain("Original Runner message:");
+			expect(content).toContain("my brainstorm understanding draft");
+			expect(content).toContain("Question ID: q-uuid-1");
+			expect(content).toContain("Notify Annie via Discord");
+			expect(content).toContain("Chat-Thread: chat-thread-159");
+			expect(content).not.toContain("Timestamp:");
+		});
+
+		it("FLY-159: gate_timed_out fail-open + flag source renders distinctly", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_timed_out",
+				checkpoint: "approve_to_ship",
+				waited_ms: 10_000,
+				original_message: "ready to ship",
+				timeout_behavior: "fail-open",
+				timeout_behavior_source: "flag",
+				question_id: "q-uuid-2",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain(
+				"[APPROVE_TO_SHIP] Gate timed out — waited 10s (behavior: fail-open, source: flag)",
+			);
+			expect(content).toContain("ready to ship");
+		});
+
+		it("FLY-159: gate_timed_out missing optionals → safe defaults", async () => {
+			const envelope = makeEnvelope({
+				event_type: "gate_timed_out",
+			});
+			await runtime.deliver(envelope);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("[GATE] Gate timed out — waited —");
+			expect(content).toContain("(behavior: fail-close, source: default)");
+			expect(content).toContain("(no original message captured)");
+			expect(content).toContain("Question ID: ---");
 		});
 
 		it("returns failure when CommDB throws", async () => {
@@ -155,6 +234,36 @@ describe("CommDBLeadRuntime", () => {
 			);
 			const content = mockInsertInstruction.mock.calls[0][2] as string;
 			expect(content).toContain("FLY-99: Test [running]");
+		});
+
+		it("includes pending runner questions in bootstrap (FLY-161)", async () => {
+			const snapshot: LeadBootstrap = {
+				leadId: "lead-peter",
+				activeSessions: [],
+				pendingDecisions: [],
+				recentFailures: [],
+				recentEvents: [],
+				memoryRecall: null,
+				pendingRunnerQuestions: [
+					{
+						questionId: "q-runner-1",
+						executionId: "exec-runner",
+						issueIdentifier: "FLY-161",
+						content: "Should we use UTC?",
+						commDbPath: "/tmp/comm.db",
+						createdAt: "2026-05-21T00:00:00Z",
+						chatThreadId: "thread-fly-161",
+					},
+				],
+			};
+			await runtime.sendBootstrap(snapshot);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("### Pending Runner Questions");
+			expect(content).toContain("[ASK] FLY-161");
+			expect(content).toContain("Should we use UTC?");
+			expect(content).toContain("Chat-Thread: thread-fly-161");
+			expect(content).toContain("non-blocking");
 		});
 
 		it("includes pending gate questions in bootstrap", async () => {
@@ -220,14 +329,13 @@ describe("CommDBLeadRuntime", () => {
 		it("includes Chat-Thread in generic envelope when chat_thread_id is set", async () => {
 			const envelope = makeEnvelope({
 				chat_thread_id: "chat-thread-789",
-				thread_id: "forum-thread-123",
-				forum_channel: "forum-456",
 			});
 			await runtime.deliver(envelope);
 
 			const content = mockInsertInstruction.mock.calls[0][2] as string;
 			expect(content).toContain("Chat-Thread: chat-thread-789");
-			expect(content).toContain("Forum-Thread: forum-thread-123");
+			// FLY-163: Forum-Thread line removed
+			expect(content).not.toContain("Forum-Thread");
 		});
 
 		it("includes Chat-Thread in gate_question special format", async () => {
@@ -247,14 +355,13 @@ describe("CommDBLeadRuntime", () => {
 		});
 
 		it("omits Chat-Thread when chat_thread_id is not set", async () => {
-			const envelope = makeEnvelope({
-				thread_id: "forum-thread-123",
-			});
+			const envelope = makeEnvelope({});
 			await runtime.deliver(envelope);
 
 			const content = mockInsertInstruction.mock.calls[0][2] as string;
 			expect(content).not.toContain("Chat-Thread:");
-			expect(content).toContain("Forum-Thread: forum-thread-123");
+			// FLY-163: Forum-Thread line removed
+			expect(content).not.toContain("Forum-Thread");
 		});
 
 		it("includes chatThreadId in bootstrap active sessions", async () => {

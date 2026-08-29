@@ -1,0 +1,124 @@
+# FLY-1062 PR4 · promote prepare (stage a customer-release candidate) —
+# MANUAL, main-only. This workflow does the NO-GATE prepare half only:
+# rebuild the clean version at the beta's manifest-derived sourceCommit,
+# prove byte-equivalence against the distributed beta, and stage the durable
+# candidate. It touches ONLY the internal capability (beta-publish) and NEVER
+# the customer channel.
+#
+# The COMMIT half (flip the customer pointer) is NOT a workflow — it is a
+# Bridge/broker action gated by the Flywheel approve gate (plan §3): Annie's
+# one Discord approve → broker verifies the approval against the staged
+# candidate's sha256 → the broker (holding the customer-release token ONLY in
+# its own memory, never in CI) runs the commit. That is the next PR under
+# FLY-1062. So this workflow carries ZERO customer-release credential —
+# release-workflows-structure.test.sh asserts it.
+name: Payload Promote (prepare)
+
+on:
+  workflow_dispatch:
+    inputs:
+      release-id:
+        description: "releaseId of this promote operation (retries reuse it)"
+        required: true
+        type: string
+      beta:
+        description: "the UNIQUE beta semver being promoted (sourceCommit is DERIVED from the manifest — never operator-supplied)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: payload-release
+
+jobs:
+  prepare:
+    name: Prepare candidate (no gate)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # SECURITY ORDER (Codex R1/R2): sourceCommit is DERIVED from the manifest
+      # (plan PR4-3: prepare inputs are releaseId + beta ONLY — an operator can
+      # never supply a commit). ① refuse non-main dispatch (the workflow
+      # definition itself comes from the dispatch ref) → ② checkout main →
+      # ③ derive the beta's sourceCommit from the manifest (trusted lineage —
+      # betas are built by the beta workflow) → ④ switch the tree to THAT
+      # commit → build.
+      - name: Dispatch-ref guard (main only)
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::promote may only be dispatched from main (got $GH_REF)"
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+
+      - name: Derive the beta's sourceCommit from the manifest (never operator-supplied)
+        id: derive
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          BETA_INPUT: ${{ inputs.beta }}
+        run: |
+          node --input-type=module - <<'DERIVE'
+          import fs from "node:fs";
+          const beta = process.env.BETA_INPUT || "";
+          const endpoint = (process.env.FW_ENDPOINT || "").replace(/\/+$/, "");
+          const res = await fetch(`${endpoint}/admin/manifest`, {
+            headers: { authorization: `Bearer ${process.env.FW_BETA_PUBLISH_TOKEN}` },
+          });
+          if (res.status !== 200) {
+            console.error(`cannot read manifest (HTTP ${res.status})`);
+            process.exit(1);
+          }
+          const m = await res.json();
+          const entry = m.versions?.[beta];
+          if (!entry || entry.channel !== "beta") {
+            console.error(`no beta ${beta} in the manifest`);
+            process.exit(1);
+          }
+          if (!/^[0-9a-f]{40}$/.test(entry.sourceCommit || "")) {
+            console.error("manifest sourceCommit is not a 40-hex sha — refusing");
+            process.exit(1);
+          }
+          fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${entry.sourceCommit}\n`);
+          console.log(`derived: ${beta} was built from ${entry.sourceCommit}`);
+          DERIVE
+
+      - name: Check out the DERIVED commit
+        env:
+          DERIVED_COMMIT: ${{ steps.derive.outputs.commit }}
+        run: |
+          git fetch --depth 1 origin "$DERIVED_COMMIT"
+          git checkout --detach "$DERIVED_COMMIT"
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build workspace dist
+        run: pnpm build
+
+      # dispatch inputs never interpolate into shell text — env + quoting only
+      - name: Prepare (clean build + equivalence proof + staged candidate)
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+          BETA_INPUT: ${{ inputs.beta }}
+        run: |
+          node scripts/release/payload-promote.mjs prepare \
+            --release-id "$RELEASE_ID_INPUT" \
+            --beta "$BETA_INPUT"

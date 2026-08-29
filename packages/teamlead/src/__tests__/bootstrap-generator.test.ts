@@ -1,9 +1,14 @@
+import { mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import type { MemoryService } from "flywheel-edge-worker";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	findProjectForLead,
 	generateBootstrap,
 } from "../bridge/bootstrap-generator.js";
+import { defaultGetCommDbPath } from "../bridge/session-capture.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
@@ -504,5 +509,386 @@ describe("Bootstrap Generator — Memory Recall (GEO-203)", () => {
 		expect(bootstrap.memoryRecall).not.toBeNull();
 		expect(bootstrap.memoryRecall!.length).toBeLessThanOrEqual(1600); // soft limit + suffix margin
 		expect(bootstrap.memoryRecall).toContain("…(truncated)");
+	});
+});
+
+// FLY-161: runner_question / gate_question partition in bootstrap snapshot.
+// Uses a real on-disk CommDB via temp HOME redirect so
+// defaultGetCommDbPath("geoforge3d") points to a tmp tree.
+const FLY161_PROJECTS: ProjectEntry[] = [
+	{
+		projectName: "geoforge3d",
+		projectRoot: "/tmp/fly-161-bootstrap-test",
+		leads: [
+			{
+				agentId: "product-lead",
+				chatChannel: "C_PRODUCT",
+				match: { labels: ["Product"] },
+			},
+			{
+				agentId: "ops-lead",
+				chatChannel: "C_OPS",
+				match: { labels: ["Operations"] },
+			},
+		],
+	},
+];
+
+describe("Bootstrap Generator — FLY-161 pendingRunnerQuestions", () => {
+	let store: StateStore;
+	let originalHome: string | undefined;
+	let tmpHome: string;
+	let dbPath: string;
+	let warnSpy: ReturnType<typeof vi.spyOn>;
+
+	beforeEach(async () => {
+		originalHome = process.env.HOME;
+		tmpHome = join(tmpdir(), `bootstrap-fly161-${Date.now()}-${Math.random()}`);
+		mkdirSync(tmpHome, { recursive: true });
+		process.env.HOME = tmpHome;
+		dbPath = defaultGetCommDbPath("geoforge3d");
+
+		const db = new CommDB(dbPath);
+		db.close();
+
+		store = await StateStore.create(":memory:");
+		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+	});
+
+	afterEach(() => {
+		store.close();
+		if (originalHome !== undefined) process.env.HOME = originalHome;
+		else delete process.env.HOME;
+		rmSync(tmpHome, { recursive: true, force: true });
+		warnSpy.mockRestore();
+	});
+
+	function insertQuestion(opts: {
+		from: string;
+		to: string;
+		content: string;
+		checkpoint?: string;
+	}): string {
+		const db = new CommDB(dbPath);
+		try {
+			return db.insertQuestion(opts.from, opts.to, opts.content, {
+				checkpoint: opts.checkpoint,
+			});
+		} finally {
+			db.close();
+		}
+	}
+
+	it("AC9: collects pendingRunnerQuestions for non-checkpoint questions across active + completed sessions", async () => {
+		store.upsertSession({
+			execution_id: "exec-active",
+			issue_id: "issue-active",
+			issue_identifier: "FLY-AAA",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertSession({
+			execution_id: "exec-done",
+			issue_id: "issue-done",
+			issue_identifier: "FLY-BBB",
+			project_name: "geoforge3d",
+			status: "completed",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+
+		insertQuestion({
+			from: "exec-active",
+			to: "product-lead",
+			content: "from active",
+			checkpoint: "brainstorm",
+		});
+		insertQuestion({
+			from: "exec-done",
+			to: "product-lead",
+			content: "from completed",
+		});
+
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+		);
+
+		expect(bootstrap.pendingGateQuestions?.length).toBe(1);
+		expect(bootstrap.pendingGateQuestions?.[0]!.content).toBe("from active");
+		expect(bootstrap.pendingRunnerQuestions?.length).toBe(1);
+		expect(bootstrap.pendingRunnerQuestions?.[0]!.content).toBe(
+			"from completed",
+		);
+	});
+
+	it("AC10: fills chatThreadId for pendingRunnerQuestions when chatThreadsEnabled=true (target Lead chatChannel)", async () => {
+		store.upsertSession({
+			execution_id: "exec-thread",
+			issue_id: "issue-thread",
+			issue_identifier: "FLY-CCC",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		// Seed a chat thread row for product-lead's chatChannel.
+		store.upsertChatThread(
+			"thread-product-CCC",
+			"C_PRODUCT",
+			"issue-thread",
+			"product-lead",
+		);
+		insertQuestion({
+			from: "exec-thread",
+			to: "product-lead",
+			content: "needs thread hint",
+		});
+
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+			undefined,
+			{ chatThreadsEnabled: true },
+		);
+
+		expect(bootstrap.pendingRunnerQuestions?.length).toBe(1);
+		expect(bootstrap.pendingRunnerQuestions?.[0]!.chatThreadId).toBe(
+			"thread-product-CCC",
+		);
+	});
+
+	it("AC18: excludes completed-session gate questions from pendingGateQuestions", async () => {
+		store.upsertSession({
+			execution_id: "exec-stale-gate",
+			issue_id: "issue-stale",
+			issue_identifier: "FLY-DDD",
+			project_name: "geoforge3d",
+			status: "completed", // not active
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		insertQuestion({
+			from: "exec-stale-gate",
+			to: "product-lead",
+			content: "stale checkpoint",
+			checkpoint: "brainstorm",
+		});
+
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+		);
+
+		// pendingGateQuestions should be undefined or empty (preserved
+		// pre-FLY-161 active-session check).
+		expect(bootstrap.pendingGateQuestions ?? []).toEqual([]);
+	});
+
+	it("AC19: scopes bootstrap to requested leadId only — does not leak other Leads' questions", async () => {
+		store.upsertSession({
+			execution_id: "exec-prod",
+			issue_id: "issue-prod",
+			issue_identifier: "FLY-EEE",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Product"]),
+		});
+		store.upsertSession({
+			execution_id: "exec-ops",
+			issue_id: "issue-ops",
+			issue_identifier: "FLY-FFF",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Operations"]),
+		});
+		insertQuestion({
+			from: "exec-prod",
+			to: "product-lead",
+			content: "for product",
+		});
+		insertQuestion({
+			from: "exec-ops",
+			to: "ops-lead",
+			content: "for ops",
+		});
+
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+		);
+
+		// pendingRunnerQuestions for product-lead should contain only its own.
+		expect(bootstrap.pendingRunnerQuestions?.length).toBe(1);
+		expect(bootstrap.pendingRunnerQuestions?.[0]!.content).toBe("for product");
+		// ops-lead's question must not leak through.
+		expect(
+			bootstrap.pendingRunnerQuestions?.some((q) => q.content === "for ops") ??
+				false,
+		).toBe(false);
+	});
+
+	it("AC21: lead-scope mismatch — checkpoint variant excluded from gate; non-checkpoint variant included in runner with target Lead chatThreadId", async () => {
+		// Source session label resolves to ops-lead via resolveLeadForIssue.
+		store.upsertSession({
+			execution_id: "exec-misroute",
+			issue_id: "issue-misroute",
+			issue_identifier: "FLY-GGG",
+			project_name: "geoforge3d",
+			status: "running",
+			issue_labels: JSON.stringify(["Operations"]),
+		});
+
+		// Checkpoint variant addressed to product-lead — should be rejected.
+		insertQuestion({
+			from: "exec-misroute",
+			to: "product-lead",
+			content: "misrouted gate",
+			checkpoint: "brainstorm",
+		});
+
+		// Insert chat thread rows for both channels keyed on the same issue.
+		store.upsertChatThread(
+			"thread-product-GGG",
+			"C_PRODUCT",
+			"issue-misroute",
+			"product-lead",
+		);
+		store.upsertChatThread(
+			"thread-ops-GGG",
+			"C_OPS",
+			"issue-misroute",
+			"ops-lead",
+		);
+
+		// Non-checkpoint variant addressed to product-lead — should pass to
+		// pendingRunnerQuestions because runner_question routes by to_agent.
+		insertQuestion({
+			from: "exec-misroute",
+			to: "product-lead",
+			content: "misrouted ask",
+		});
+
+		const bootstrap = await generateBootstrap(
+			"product-lead",
+			store,
+			FLY161_PROJECTS,
+			undefined,
+			{ chatThreadsEnabled: true },
+		);
+
+		// Gate: lead-scope check rejects.
+		expect(bootstrap.pendingGateQuestions ?? []).toEqual([]);
+		// Runner: still surfaces.
+		expect(bootstrap.pendingRunnerQuestions?.length).toBe(1);
+		expect(bootstrap.pendingRunnerQuestions?.[0]!.content).toBe(
+			"misrouted ask",
+		);
+		// R4 Issue 1: chatThreadId must follow the TARGET Lead (product-lead),
+		// not the label-derived ops-lead.
+		expect(bootstrap.pendingRunnerQuestions?.[0]!.chatThreadId).toBe(
+			"thread-product-GGG",
+		);
+	});
+
+	it("Codex R1 review: multi-project same leadId — chatThreadId follows the per-project Lead (NOT a globally cached one)", async () => {
+		// Codex R1 caught: `targetLead` was previously resolved once from
+		// `targetProjects[0]`. If the same `leadId` appears in TWO projects with
+		// different `chatChannel`s, the second project's runner_question would
+		// incorrectly cite the first project's chatChannel. This test pins the
+		// per-project resolution.
+		const PROJECT_A = "project-alpha";
+		const PROJECT_B = "project-beta";
+		const multiProjectProjects: ProjectEntry[] = [
+			{
+				projectName: PROJECT_A,
+				projectRoot: "/tmp/project-alpha",
+				leads: [
+					{
+						agentId: "shared-lead",
+						chatChannel: "C_ALPHA",
+						match: { labels: ["Shared"] },
+					},
+				],
+			},
+			{
+				projectName: PROJECT_B,
+				projectRoot: "/tmp/project-beta",
+				leads: [
+					{
+						agentId: "shared-lead",
+						chatChannel: "C_BETA",
+						match: { labels: ["Shared"] },
+					},
+				],
+			},
+		];
+
+		const dbA = defaultGetCommDbPath(PROJECT_A);
+		const dbB = defaultGetCommDbPath(PROJECT_B);
+		const ca = new CommDB(dbA);
+		ca.close();
+		const cb = new CommDB(dbB);
+		cb.close();
+
+		// One running session per project, same agent name pattern.
+		store.upsertSession({
+			execution_id: "exec-alpha",
+			issue_id: "issue-alpha",
+			issue_identifier: "ALPHA-1",
+			project_name: PROJECT_A,
+			status: "running",
+			issue_labels: JSON.stringify(["Shared"]),
+		});
+		store.upsertSession({
+			execution_id: "exec-beta",
+			issue_id: "issue-beta",
+			issue_identifier: "BETA-1",
+			project_name: PROJECT_B,
+			status: "running",
+			issue_labels: JSON.stringify(["Shared"]),
+		});
+
+		// Distinct chat threads per project (different channels).
+		store.upsertChatThread(
+			"thread-alpha",
+			"C_ALPHA",
+			"issue-alpha",
+			"shared-lead",
+		);
+		store.upsertChatThread(
+			"thread-beta",
+			"C_BETA",
+			"issue-beta",
+			"shared-lead",
+		);
+
+		// Insert one non-checkpoint question per project DB.
+		const aDb = new CommDB(dbA);
+		aDb.insertQuestion("exec-alpha", "shared-lead", "ask alpha");
+		aDb.close();
+		const bDb = new CommDB(dbB);
+		bDb.insertQuestion("exec-beta", "shared-lead", "ask beta");
+		bDb.close();
+
+		const bootstrap = await generateBootstrap(
+			"shared-lead",
+			store,
+			multiProjectProjects,
+			undefined,
+			{ chatThreadsEnabled: true },
+		);
+
+		expect(bootstrap.pendingRunnerQuestions?.length).toBe(2);
+		const byContent = Object.fromEntries(
+			(bootstrap.pendingRunnerQuestions ?? []).map((q) => [
+				q.content,
+				q.chatThreadId,
+			]),
+		);
+		expect(byContent["ask alpha"]).toBe("thread-alpha");
+		expect(byContent["ask beta"]).toBe("thread-beta");
 	});
 });

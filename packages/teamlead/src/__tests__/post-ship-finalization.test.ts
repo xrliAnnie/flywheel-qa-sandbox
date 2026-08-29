@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	isPostApproveShipComplete,
 	runPostShipFinalization,
+	setWorkflowShadowFinalizationHook,
 } from "../bridge/post-ship-finalization.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -11,9 +12,25 @@ import { StateStore } from "../StateStore.js";
 const mockGetTmuxTarget = vi.fn();
 const mockKillTmuxSession = vi.fn();
 
+const mockKillCmuxLinkedSession = vi.fn(async () => ({ killed: true }));
+
 vi.mock("../bridge/tmux-lookup.js", () => ({
 	getTmuxTargetFromCommDb: (...args: unknown[]) => mockGetTmuxTarget(...args),
 	killTmuxWindow: (...args: unknown[]) => mockKillTmuxSession(...args),
+	killCmuxLinkedSession: (...args: unknown[]) =>
+		mockKillCmuxLinkedSession(...args),
+}));
+
+// FLY-1238: stub the atomic CommDB finalizer.
+const mockFinalizeCommDbSession = vi.fn(() => ({
+	ok: true as const,
+	outcome: "finalized" as const,
+	retiredGateCount: 1,
+	deletedSessionCount: 1,
+}));
+vi.mock("../bridge/commdb-session-prune.js", () => ({
+	finalizeCommDbSession: (...args: unknown[]) =>
+		mockFinalizeCommDbSession(...args),
 }));
 
 // Capture ordering of Discord-side calls via a shared spy list.
@@ -52,14 +69,35 @@ function seedThread(store: StateStore): void {
 // ── Predicate tests ──────────────────────────────────────────
 
 describe("isPostApproveShipComplete", () => {
-	it("returns true when existingStatus === 'approved_to_ship'", () => {
+	it("returns true for approved_to_ship + merged landing (FLY-208 5a: merge evidence required)", () => {
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "approved_to_ship",
+				route: undefined,
+				landingStatus: { status: "merged" },
+			}),
+		).toBe(true);
+	});
+
+	it("returns FALSE for approved_to_ship WITHOUT merge evidence (FLY-208 5a evidence-gap suppression)", () => {
+		// Pre-FLY-208 this returned true on existingStatus alone — which would
+		// run tmux teardown / ready-to-close / thread archive for the
+		// evidence-gap unstick path even though nothing proves the PR merged
+		// (Codex design R2 #1). Cleanup for these is owned by FLY-210.
 		expect(
 			isPostApproveShipComplete({
 				existingStatus: "approved_to_ship",
 				route: undefined,
 				landingStatus: undefined,
 			}),
-		).toBe(true);
+		).toBe(false);
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "approved_to_ship",
+				route: "needs_review",
+				landingStatus: { status: "ready_to_merge" },
+			}),
+		).toBe(false);
 	});
 
 	it("returns true for auto_approve + merged", () => {
@@ -82,7 +120,7 @@ describe("isPostApproveShipComplete", () => {
 		).toBe(false);
 	});
 
-	it("returns false for route=needs_review", () => {
+	it("returns false for route=needs_review (no landing status)", () => {
 		expect(
 			isPostApproveShipComplete({
 				existingStatus: "running",
@@ -90,6 +128,30 @@ describe("isPostApproveShipComplete", () => {
 				landingStatus: undefined,
 			}),
 		).toBe(false);
+	});
+
+	it("returns false for route=needs_review + ready_to_merge (PR not yet merged)", () => {
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "running",
+				route: "needs_review",
+				landingStatus: { status: "ready_to_merge" },
+			}),
+		).toBe(false);
+	});
+
+	// FLY-115 v1.24.5 (FLY-120): Lead unblocked approve_to_ship via
+	// `flywheel-comm respond` so existingStatus never reached
+	// `approved_to_ship`. Without this case the Runner tmux + chat thread
+	// stay alive after the PR has merged.
+	it("returns true for route=needs_review + landingStatus.merged (FLY-120 self-shipped path)", () => {
+		expect(
+			isPostApproveShipComplete({
+				existingStatus: "running",
+				route: "needs_review",
+				landingStatus: { status: "merged" },
+			}),
+		).toBe(true);
 	});
 
 	it("returns false when existingStatus !== approved_to_ship AND not auto_approve+merged (Round 2 Issue #2)", () => {
@@ -115,6 +177,13 @@ describe("runPostShipFinalization", () => {
 		callOrder.length = 0;
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxSession.mockReset();
+		mockFinalizeCommDbSession.mockReset();
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: true,
+			outcome: "finalized",
+			retiredGateCount: 1,
+			deletedSessionCount: 1,
+		});
 
 		mockGetTmuxTarget.mockImplementation(() => {
 			callOrder.push("tmux:lookup");
@@ -165,6 +234,62 @@ describe("runPostShipFinalization", () => {
 		expect(postIdx).toBeGreaterThan(killIdx);
 		expect(archiveIdx).toBeGreaterThan(postIdx);
 		expect(removeIdx).toBeGreaterThan(postIdx);
+	});
+
+	it("FLY-1238: skips archive when post-merge communication finalization fails", async () => {
+		mockFinalizeCommDbSession.mockReturnValue({
+			ok: false,
+			outcome: "failed",
+			retiredGateCount: 0,
+			deletedSessionCount: 0,
+			error: "sqlite busy",
+		} as never);
+
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "user-annie",
+				fallbackBotToken: undefined,
+			},
+			{ store, projects: PROJECTS },
+		);
+
+		expect(callOrder).toContain("discord:post-message");
+		expect(callOrder).not.toContain("discord:archive");
+		expect(callOrder).not.toContain("discord:remove-user");
+	});
+
+	it("FLY-1232 T9: the central late-bound hook fires for a claim winner whose deps did NOT thread workflowShadow (Codex R1 #5)", async () => {
+		// event-route.ts / merge-ship-gate.ts are in-process claim contenders that
+		// build PostShipDeps without the workflowShadow field — if one of them wins
+		// the atomic claim, T9 must still run.
+		const onShipFinalized = vi.fn();
+		setWorkflowShadowFinalizationHook({ onShipFinalized });
+		try {
+			await runPostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+					discordOwnerUserId: "user-annie",
+					fallbackBotToken: undefined,
+				},
+				{ store, projects: PROJECTS }, // no workflowShadow dep
+			);
+		} finally {
+			setWorkflowShadowFinalizationHook(undefined);
+		}
+		expect(onShipFinalized).toHaveBeenCalledTimes(1);
+		expect(onShipFinalized).toHaveBeenCalledWith({
+			projectName: "flywheel",
+			issueId: "FLY-102",
+		});
 	});
 
 	it("dual-path Promise.all: Discord post-message hit exactly once", async () => {
@@ -334,6 +459,71 @@ describe("runPostShipFinalization", () => {
 		expect(claims).toHaveLength(1);
 	});
 
+	it("FLY-292: writes a chat_thread_archived audit event on success", async () => {
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "user-annie",
+				fallbackBotToken: undefined,
+			},
+			{ store, projects: PROJECTS },
+		);
+
+		const archived = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "chat_thread_archived");
+		expect(archived).toHaveLength(1);
+
+		const failed = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "chat_thread_archive_failed");
+		expect(failed).toHaveLength(0);
+
+		// FLY-369: a ship-path archive marks archived_at (archive-once record).
+		expect(
+			store.getChatThreadByIssue("FLY-102", "chan-1")?.archived_at,
+		).toBeTruthy();
+	});
+
+	it("FLY-292: marks thread missing + audits failure when Discord 404s the thread", async () => {
+		// PATCH (archive) → 404; everything else → 200.
+		fetchImpl.mockImplementation(async (url: string, init: unknown) => {
+			const method = (init as { method?: string }).method ?? "GET";
+			if (method === "POST" && String(url).includes("/messages")) {
+				return new Response("{}", { status: 200 });
+			}
+			if (method === "PATCH") {
+				return new Response('{"message":"Unknown Channel"}', { status: 404 });
+			}
+			return new Response("{}", { status: 200 });
+		});
+
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+				discordOwnerUserId: "user-annie",
+				fallbackBotToken: undefined,
+			},
+			{ store, projects: PROJECTS },
+		);
+
+		const failed = store
+			.getEventsByExecution("exec-1")
+			.filter((e) => e.event_type === "chat_thread_archive_failed");
+		expect(failed).toHaveLength(1);
+
+		// 404 → thread marked missing → no longer resolvable for this issue.
+		expect(store.getChatThreadByIssue("FLY-102", "chan-1")).toBeUndefined();
+	});
+
 	it("never throws when postMergeTmuxCleanup errors", async () => {
 		mockGetTmuxTarget.mockImplementationOnce(() => {
 			throw new Error("CommDB corrupted");
@@ -350,5 +540,44 @@ describe("runPostShipFinalization", () => {
 				{ store, projects: PROJECTS },
 			),
 		).resolves.toBeUndefined();
+	});
+
+	// FLY-799 (Codex R1 HIGH-1): auto-Linear-Done must never block teardown.
+	it("markIssueDone is called with the issue id on a confirmed ship", async () => {
+		const markIssueDone = vi.fn().mockResolvedValue(undefined);
+		await runPostShipFinalization(
+			{
+				executionId: "exec-1",
+				issueId: "FLY-102",
+				issueIdentifier: "FLY-102",
+				projectName: "flywheel",
+				sessionStatus: "completed",
+			},
+			{ store, projects: PROJECTS, markIssueDone },
+		);
+		expect(markIssueDone).toHaveBeenCalledWith("FLY-102", "FLY-102");
+		// teardown still ran: the atomic claim event exists.
+		expect(
+			store
+				.getEventsByExecution("exec-1")
+				.some((e) => e.event_id === "post-ship-finalization-exec-1"),
+		).toBe(true);
+	});
+
+	it("a rejecting markIssueDone never breaks finalization (best-effort)", async () => {
+		const markIssueDone = vi.fn().mockRejectedValue(new Error("linear down"));
+		await expect(
+			runPostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+				},
+				{ store, projects: PROJECTS, markIssueDone },
+			),
+		).resolves.toBeUndefined();
+		expect(markIssueDone).toHaveBeenCalledOnce();
 	});
 });

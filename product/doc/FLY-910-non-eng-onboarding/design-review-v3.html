@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-910 Onboarding Buddy · 做细了 · 请过目</title>
+<style>
+  * { box-sizing:border-box; }
+  body { margin:0; padding:0 16px 150px; background:#f5f5f7; color:#1d1d1f;
+    font-family:-apple-system,system-ui,"PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; -webkit-text-size-adjust:100%; }
+  .wrap { max-width:860px; margin:0 auto; }
+  header.top { padding:36px 0 6px; }
+  h1 { font-size:24px; margin:0 0 6px; letter-spacing:-0.02em; }
+  .sub { color:#86868b; font-size:15px; margin:0; }
+  .howto { background:#eaf3ff; border:1px solid #cfe3ff; border-radius:12px; padding:14px 18px; margin:22px 0 10px; font-size:15px; color:#1d3a5f; }
+  .block { background:#fff; border-radius:14px; padding:20px 22px 16px; margin:0 0 22px; box-shadow:0 1px 3px rgba(0,0,0,0.06); border-left:4px solid #34c759; }
+  .block h2 { font-size:18px; margin:0 0 4px; }
+  .cnum { color:#86868b; font-size:13px; font-weight:600; }
+  .p { font-size:15px; margin:8px 0 4px; color:#333; }
+  .p b { color:#1a7f37; }
+  .quote { background:#f7f9fb; border:1px solid #e6ebf0; border-radius:10px; padding:12px 15px; margin:10px 0;
+    font-size:14.5px; color:#33404d; white-space:pre-line; line-height:1.7; }
+  .quote .who { font-weight:700; color:#1a365d; }
+  ol.steps { margin:8px 0; padding-left:22px; font-size:14.5px; color:#333; }
+  ol.steps li { margin:3px 0; }
+  ol.steps b { color:#1a365d; }
+  table.t { width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px; }
+  table.t th, table.t td { text-align:left; padding:7px 10px; border-bottom:1px solid #eef0f2; vertical-align:top; }
+  table.t th { background:#1a365d; color:#fff; font-weight:600; font-size:13px; }
+  table.t td:first-child { font-weight:600; color:#1a365d; white-space:nowrap; }
+  .scroll { overflow-x:auto; }
+  .yn { display:flex; align-items:center; flex-wrap:wrap; gap:9px 14px; margin:12px 0 6px; }
+  label.mini { display:inline-flex; align-items:center; gap:6px; cursor:pointer; font-size:14px; border:1px solid #e3e3e6; border-radius:999px; padding:5px 13px; }
+  label.mini input { width:17px; height:17px; margin:0; accent-color:#34c759; cursor:pointer; }
+  label.mini:has(input:checked) { border-color:#34c759; background:#eafaef; font-weight:600; }
+  textarea.cmt { width:100%; min-height:44px; resize:vertical; border:1.5px solid #ffcf5c; border-radius:10px; background:#fffdf5;
+    padding:9px 12px; font-family:inherit; font-size:15px; color:#1d1d1f; margin-top:4px; }
+  textarea.cmt:focus { outline:none; border-color:#d9a400; background:#fffef9; box-shadow:0 0 0 3px rgba(255,207,92,0.28); }
+  textarea.cmt::placeholder { color:#b8a25a; }
+  .note { font-size:13px; color:#86868b; margin-top:6px; }
+  .bar { position:fixed; left:0; right:0; bottom:0; background:rgba(255,255,255,0.97); backdrop-filter:blur(8px); border-top:1px solid #ddd; padding:10px 16px; box-shadow:0 -2px 10px rgba(0,0,0,0.06); }
+  .barin { max-width:860px; margin:0 auto; display:flex; flex-direction:column; gap:7px; }
+  #genbtn { background:#007aff; color:#fff; border:none; border-radius:10px; padding:12px; font-size:16px; font-weight:650; cursor:pointer; }
+  #out { width:100%; border:1px solid #ccc; border-radius:8px; padding:9px; font-size:13px; font-family:'SF Mono',ui-monospace,monospace; resize:vertical; display:none; min-height:120px; background:#fff; color:#1d1d1f; }
+  #hint { font-size:12px; color:#86868b; text-align:center; }
+  .foot { margin-top:24px; font-size:13px; color:#86868b; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="top">
+    <h1>Onboarding Buddy · 做细了 🛠️ 请过目</h1>
+    <p class="sub">FLY-910 · 2026-07-08 · 你要的两处都改了 + Buddy 做成 Tadashi 能照着建的详细 spec</p>
+  </header>
+
+  <div class="howto">
+    <b>你上次说了两件事,都改了:</b> ① 早聊那句改成先「欢迎、像同事」,不马上派活;② Onboarding Buddy 别停在概念,做成能交给工程照着建的详细流程。
+    下面给你看关键的几块 —— 每块 <b>👍 就这样</b> / <b>✏️ 要改</b> + 留言。看完拉到底点「生成我的反馈」一键复制发回。<b>完整版在文档里(10 步 + 建 Discord 逐微步 + 用例自适应)</b>,这里是给你过目的精华。
+  </div>
+
+  <!-- R1 welcome-first -->
+  <div class="block">
+    <div class="cnum">改动 1 · 早聊改成 welcome-first</div>
+    <h2>第一句 = 欢迎,不是派活</h2>
+    <div class="p">Discord 和大脑一接好,先让你跟 Captain 打招呼。它<b>第一句是暖场、像个终于见面的同事</b>,不马上说要干嘛;要提你的事也<b>按你的用例说,不写死订单</b>;真正「要做什么」放打完招呼之后。</div>
+    <div class="quote"><span class="who">你</span>:在吗
+<span class="who">Captain</span>:在的 👋 我是你的 Captain,以后就是我陪你把活儿盯下来。终于见面了~
+你先随便跟我聊两句都行。等你把该接的东西接上,我就能真去帮你干活了 —— 到时候你想让我先看哪件事,直接跟我说就成。</div>
+    <div class="note">※ 若已知你的用例,「帮你干活」会换成贴你那件事的话(帮你盯订单 / 帮你对账 / 帮你回客户…),不硬塞订单。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="c1" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c1" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt1" placeholder="语气/用词想调就写这儿…"></textarea>
+  </div>
+
+  <!-- R2 persona -->
+  <div class="block">
+    <div class="cnum">改动 2a · Buddy 是谁</div>
+    <h2>一个像同事的自助搭档(参照 Metric)</h2>
+    <div class="p">跑完那条命令,面对你的就是 Onboarding Buddy。它<b>耐心、热情、像同事</b>——先让你觉得「有个搭档陪我」,再谈正事。能自动的它后台悄悄做,要你亲手的手把手带(点这→点这→贴回来),每步当场校验,卡住就转人工。<b>它跟 Anna 完全分开</b>(Anna=Sales,只到你进门)。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="c2" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c2" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt2" placeholder="口吻/名字想说的写这儿(Buddy 正式名还没定)…"></textarea>
+  </div>
+
+  <!-- R3 journey -->
+  <div class="block">
+    <div class="cnum">改动 2b · 从「刚拿到 access」→「有一个能跑的 system」</div>
+    <h2>10 步旅程(每步都写清了:说什么/做什么/你做什么/建出啥)</h2>
+    <ol class="steps">
+      <li><b>欢迎</b> —— 先暖场,像同事(见上)</li>
+      <li><b>问你先想搞定哪件事</b> —— 大白话,你今天正手动盯的烦事</li>
+      <li><b>提议一个小团队</b>(一个 Captain + 一个 Crew)你确认</li>
+      <li><b>接大脑</b>(贴 Claude key,安全输入)</li>
+      <li><b>建你自己的 Discord</b>(服务器 + 机器人,手把手,见下)</li>
+      <li><b>先跟 Captain 打个招呼</b>(welcome-first)</li>
+      <li><b>接后台小本子</b>(点一下授权,你平时不用管)</li>
+      <li><b>接你第一件事要用的系统</b>(只接这件要的,一次一个)</li>
+      <li><b>自动安置</b>(建工作区/配团队/让它们常驻/自检)</li>
+      <li><b>它真帮你干成第一件事</b> —— 拿到第一个「真有用」的结果</li>
+    </ol>
+    <div class="p">开场那句现在是这样(暖、像人):</div>
+    <div class="quote">嗨,我是你的搭档 —— 往后帮你把这套东西搭起来、有事招呼我就行 😊
+先不急着干活,我就是想说声:<b>欢迎入伙</b>。以后这台电脑上就有你自己的一个小团队了,咱一起把它们安顿好。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="c3" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c3" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt3" placeholder="步骤顺序/哪步想调,写这儿…"></textarea>
+  </div>
+
+  <!-- R4 discord subflow -->
+  <div class="block">
+    <div class="cnum">改动 2c · 唯一略绕那步做到「点错都难」</div>
+    <h2>手把手带非技术的人建自己的 Discord(逐微步)</h2>
+    <div class="p">建 Discord 机器人这步谁都替不了(平台不给接口),所以拆成 <b>7 个微步,每步一句人话 + 一张截图 + 一段短视频兜底</b>,能自动的(生成邀请链接、建频道)我们全包。节选:</div>
+    <div class="scroll"><table class="t">
+      <tr><th>微步</th><th>Buddy 跟你说</th><th>你做</th></tr>
+      <tr><td>建服务器</td><td>「建一个你自己的服务器——就是团队上班的『办公室』。左边那个大『+』→ 亲自创建 → 起个名。」[截图]</td><td>建 server</td></tr>
+      <tr><td>建机器人</td><td>「打开开发者页 → New Application → 起名 → Create。建好说一声。」[截图]</td><td>建 app</td></tr>
+      <tr><td>拿钥匙</td><td>「Bot → Reset Token → Copy,把那串贴进我这里的安全输入(不会显示)。」[截图]</td><td>贴 token(隐藏)</td></tr>
+      <tr><td>开两开关</td><td>「往下滑,打开 Message Content 和 Server Members 两个开关(红圈处)。」[截图]</td><td>开开关</td></tr>
+      <tr><td>请进群</td><td>「点这个链接把机器人请进你刚建的服务器 → [自动生成的邀请链接]。」</td><td>点授权</td></tr>
+    </table></div>
+    <div class="note">卡住来回 2 次 → 「我帮你转个人工,真人跟你连屏一起弄」。</div>
+    <div class="yn"><label class="mini"><input type="radio" name="c4" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c4" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt4" placeholder="这步想说什么写这儿…"></textarea>
+  </div>
+
+  <!-- R5 use-case adaptive -->
+  <div class="block">
+    <div class="cnum">改动 2d · 订单只是一个例子</div>
+    <h2>同一套流程,按你客户的用例自动变</h2>
+    <div class="p">变的只有三处、都从「你先想搞定哪件事」那句长出:<b>团队叫啥、接哪些系统、第一个产出长啥样</b>。欢迎/建 Discord/安置这些不变。</div>
+    <div class="scroll"><table class="t">
+      <tr><th>用户第一件事</th><th>自动接</th><th>第一个产出</th></tr>
+      <tr><td>盯 dropship 订单</td><td>订单/库存系统</td><td>「#1234 卡了,不是丢单,是确认邮件没读到」</td></tr>
+      <tr><td>对广告花费和成交</td><td>广告后台 + 订单</td><td>「今天花 800、成交 12 单,ROI 1.8,比昨天低」</td></tr>
+      <tr><td>先回客户询价</td><td>邮箱/CRM + 价目表</td><td>「3 个客户在等报价,草稿拟好了,你看发不发」</td></tr>
+      <tr><td>上新品写文案</td><td>商品库/图床</td><td>「这款三版标题 + 卖点,你选一个」</td></tr>
+    </table></div>
+    <div class="yn"><label class="mini"><input type="radio" name="c5" value="就这样">👍 就这样</label><label class="mini"><input type="radio" name="c5" value="要改">✏️ 要改</label></div>
+    <textarea class="cmt" id="cmt5" placeholder="想加/换用例写这儿…"></textarea>
+  </div>
+
+  <div class="foot">草稿 · 不上线 · 不替你定。完整可建 spec 在 onboarding-buddy-spec.md(10 步逐条 + 建 Discord 7 微步 + 接任务 + 卡住/转人工 + 给工程的实现要点)。<br>
+  还开着:Buddy 正式名 · 命令具体形态 · 收费(等 WorkBuddy/homerail 竞品分析)· 你说的「Draft」竞品(等你给链接)。</div>
+
+</div>
+
+<div class="bar"><div class="barin">
+  <button id="genbtn">✅ 生成我的反馈(一键复制)</button>
+  <textarea id="out" readonly></textarea>
+  <div id="hint">看完点这个 → 自动复制 → 粘贴发回给我</div>
+</div></div>
+
+<script nonce="__CSP_NONCE__">
+document.getElementById("genbtn").addEventListener("click", function () {
+  var items = [
+    { name: "c1", cmt: "cmt1", label: "改1 welcome-first 早聊" },
+    { name: "c2", cmt: "cmt2", label: "改2a Buddy persona(像同事)" },
+    { name: "c3", cmt: "cmt3", label: "改2b 10步旅程" },
+    { name: "c4", cmt: "cmt4", label: "改2c 建Discord逐微步" },
+    { name: "c5", cmt: "cmt5", label: "改2d 用例自适应" }
+  ];
+  var lines = ["FLY-910 Onboarding Buddy v3 — 我的反馈:"];
+  items.forEach(function (it) {
+    var r = document.querySelector('input[name="' + it.name + '"]:checked');
+    var c = document.getElementById(it.cmt);
+    var s = it.label + ": " + (r ? r.value : "(没点)");
+    if (c && c.value.trim()) s += " — " + c.value.trim();
+    lines.push(s);
+  });
+  var text = lines.join("\n");
+  var out = document.getElementById("out"), hint = document.getElementById("hint");
+  out.style.display = "block"; out.value = text; out.focus(); out.select();
+  try {
+    navigator.clipboard.writeText(text);
+    hint.textContent = "✅ 已复制,直接粘贴发回给我";
+  } catch (e) {
+    hint.textContent = "选中上面这段复制,发回给我";
+  }
+});
+</script>
+</body>
+</html>

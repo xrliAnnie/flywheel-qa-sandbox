@@ -1,0 +1,15 @@
+{
+	"name": "fly-997-gemini-agent-spike",
+	"private": true,
+	"type": "module",
+	"description": "FLY-997 throwaway spike: tool-capable Gemini agent loop reliability matrix (track B feasibility). NOT a production package.",
+	"scripts": {
+		"smoke": "./run.sh run-s1-smoke.mjs",
+		"matrix": "./run.sh run-matrix.mjs",
+		"guardrail": "./run.sh run-s4-guardrail.mjs",
+		"live": "./run.sh run-s3-live.mjs"
+	},
+	"dependencies": {
+		"@google/genai": "^2.10.0"
+	}
+}

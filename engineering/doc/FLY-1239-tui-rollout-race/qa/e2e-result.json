@@ -1,0 +1,39 @@
+{
+	"issue": "FLY-1239",
+	"when": "2026-07-14T07:41:12.481Z",
+	"elapsedSeconds": 128,
+	"maxSameNameWindows": 1,
+	"aliveSamples": 61,
+	"results": [
+		{
+			"id": "A3-founder-tui-recovered",
+			"pass": true,
+			"detail": "founder TUI reached a LIVE, rendering state after the rollout race (61 live samples, 53 lines)"
+		},
+		{
+			"id": "NP-no-pile-up-sampled",
+			"pass": true,
+			"detail": "max simultaneous 'FLY-1239' windows observed across 64 samples = 1 (<= 1 expected; deterministic proof is the unit multiset-by-id test, this is sampled corroboration)"
+		},
+		{
+			"id": "NP-race-diag",
+			"pass": true,
+			"detail": "transient 'no rollout found' captured mid-race by the sampler: false (informational — retries recovered), TUI_OPEN_MAX_ATTEMPTS=8"
+		},
+		{
+			"id": "G-goal-terminal",
+			"pass": true,
+			"detail": "adapter run success=true timedOut=false in 128s (threw=no)"
+		},
+		{
+			"id": "H4-worktree-commit",
+			"pass": true,
+			"detail": "worktree commits: [\"43a10fe qa 1239\",\"96b9a88 init\"]"
+		},
+		{
+			"id": "T-clean-teardown",
+			"pass": true,
+			"detail": "socket removed=true; orphan daemons=[]; lingering TUIs=[]"
+		}
+	]
+}

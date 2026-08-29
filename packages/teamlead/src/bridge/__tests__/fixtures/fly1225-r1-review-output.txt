@@ -1,0 +1,13 @@
+I've completed a thorough review. Let me summarize my verification before emitting the verdict.
+
+**What I verified:**
+- **Core fix (`deriveIssueTitleBadge`)**: The all-done branch now requires positive ship evidence (a `post_ship_finalization_claim` or all-terminal rows) before rendering ✅; otherwise it renders `ship`/`approve`/falls through conservatively. Priority order (claim → 🚀 → ⏳ → all-terminal ✅ → fall-through) is correct. The single-session `stage=completed` clamp is narrowly scoped and non-regressive.
+- **`post_ship_finalization_claim` semantics**: Confirmed the event is written only inside `runPostShipFinalization` (post-ship-finalization.ts:308-317), gated by the caller's merged+ship-eligible predicate — a genuine positive ship fact. Only one production writer.
+- **Fingerprint extension**: `computeSessionsFingerprint` adds `fc` guarded by the same `phases.length > 0` three-stage predicate used by derivation, closing the sweep layer-1 blind spot for claim-only changes (Codex R2 #1). Single-session path stays zero-query (byte-compat).
+- **HeartbeatService reconnect-clear**: The `clear`→`enqueue` redirect is correct. Crucially, `clearReconnecting` does `reconnecting.delete()` *before* calling `clearReconnectStamp`, so `isReconnecting(execId)` is already false when the refresh runs → no Face-A deferral deadlock. `enter` mode unchanged; escape-hatch (holder unset) preserves the legacy per-session restore.
+- **Wiring**: Only one production caller of `deriveIssueTitleBadge`; required params enforced at compile time (typecheck passes).
+- **Tests**: 85/85 pass, typecheck clean, biome clean. The previously bug-pinning refresher test is consciously rewritten; new tests genuinely mutation-verify the safety cases (T5 "completed can't override unclaimed gate", merge_block-never-completed, layer-1 isolation with layer-2 spied out).
+
+No correctness, security, or edge-case defects found. The one minor redundancy (two identical COUNT queries per three-stage refresh) is negligible and within the pre-existing re-query pattern of `computeSessionsFingerprint`.
+
+{"verdict": "APPROVED", "findings": [], "reviewedHeadSha": "5f4c1165055fe901c43965af2109ec0df5b05635"}

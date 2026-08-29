@@ -80,6 +80,31 @@ describe("TeamLeadClient", () => {
 		expect(body.issue_id).toBe("GEO-95");
 	});
 
+	// FLY-728: the started event must CARRY the resolved runner model in its
+	// payload so the Bridge can persist it as session.runner_model. Without this
+	// assertion, an implementation could persist runner_model when handed one
+	// directly but silently drop it on the real HTTP emission path.
+	it("emitStarted carries runnerModel in the session_started payload", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope({ runnerModel: "claude-fable-5" }));
+		await client.flush();
+
+		expect(receivedBodies).toHaveLength(1);
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.runnerModel).toBe("claude-fable-5");
+	});
+
+	it("emitStarted omits runnerModel when the envelope has none (byte-compat)", async () => {
+		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
+		await client.emitStarted(makeEnvelope());
+		await client.flush();
+
+		const body = receivedBodies[0] as Record<string, unknown>;
+		const payload = body.payload as Record<string, unknown>;
+		expect(payload.runnerModel).toBeUndefined();
+	});
+
 	it("emitCompleted includes evidence in payload", async () => {
 		const client = new TeamLeadClient(`http://127.0.0.1:${port}`);
 		const result = makeResult();

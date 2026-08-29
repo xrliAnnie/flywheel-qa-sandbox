@@ -34,12 +34,25 @@ describe("WorkflowFSM", () => {
 		["running", "completed"],
 		["running", "failed"],
 		["awaiting_review", "approved_to_ship"],
+		// FLY-60 W2: awaiting_review → completed for post-merge re-finalize
+		// path (event-route stage_changed=completed + landing_status=merged).
+		// Merge-proof guard lives at the event-route call site; FSM map only
+		// declares the transition is legal.
+		["awaiting_review", "completed"],
 		["awaiting_review", "rejected"],
 		["awaiting_review", "deferred"],
 		["awaiting_review", "shelved"],
 		// FLY-58: approved_to_ship transitions
 		["approved_to_ship", "completed"],
 		["approved_to_ship", "failed"],
+		// FLY-208 5a: ship failed/blocked AFTER approval — event-route's
+		// route=blocked branch needs this edge or the session sticks in
+		// approved_to_ship forever (LEARN-12 stuck-state family).
+		["approved_to_ship", "blocked"],
+		// FLY-945 Fix C: an approval expired on a head move (verify-approval
+		// pr_head_sha mismatch) → the runner re-opens review with a NEW gate
+		// question; the sinks map that back to awaiting_review.
+		["approved_to_ship", "awaiting_review"],
 		// GEO-168: blocked/failed/rejected → running removed (retry is composite)
 		["blocked", "deferred"],
 		["blocked", "shelved"],
@@ -117,8 +130,15 @@ describe("WorkflowFSM", () => {
 			"blocked",
 			"failed",
 			"terminated",
+			// FLY-793: three-stage Design phase handoff.
+			"design_done",
 		]);
-		expect(fsm.allowedTransitions("pending")).toEqual(["running"]);
+		// FLY-1185 (R10#5): a canceled issue must be able to close a
+		// never-started session through the FSM — pending → terminated.
+		expect(fsm.allowedTransitions("pending")).toEqual([
+			"running",
+			"terminated",
+		]);
 	});
 
 	it("returns empty array for terminal states", () => {
@@ -297,17 +317,22 @@ describe("allowedActionsForState", () => {
 		expect(allowedActionsForState("shelved")).toEqual([]);
 	});
 
-	it("returns empty for pending, terminate for running", () => {
-		expect(allowedActionsForState("pending")).toEqual([]);
+	// FLY-1185 (R10#5): pending is now terminable — a canceled issue closes a
+	// claimed-but-never-started session through the FSM, not a forceStatus.
+	it("returns terminate for pending and running", () => {
+		expect(allowedActionsForState("pending")).toEqual(["terminate"]);
 		expect(allowedActionsForState("running")).toEqual(["terminate"]);
 	});
 
-	// FLY-44: terminate available from all started non-terminal states
-	it("terminate available from all started non-terminal states", () => {
+	// FLY-44 + FLY-1185 (R10#5: pending + design_done added): terminate
+	// available from all non-terminal states
+	it("terminate available from all non-terminal states", () => {
 		for (const state of [
+			"pending",
 			"running",
 			"awaiting_review",
 			"approved_to_ship",
+			"design_done",
 			"blocked",
 			"failed",
 			"rejected",
@@ -317,14 +342,8 @@ describe("allowedActionsForState", () => {
 		}
 	});
 
-	it("terminate NOT available from terminal states or pending", () => {
-		for (const state of [
-			"pending",
-			"completed",
-			"shelved",
-			"terminated",
-			"approved",
-		]) {
+	it("terminate NOT available from terminal states", () => {
+		for (const state of ["completed", "shelved", "terminated", "approved"]) {
 			expect(allowedActionsForState(state)).not.toContain("terminate");
 		}
 	});

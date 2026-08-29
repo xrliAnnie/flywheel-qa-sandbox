@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FLY-1140 · 动态 DAG 协作编排 PRD(定稿)</title>
+<style>
+:root{ color-scheme: light; }
+*{ box-sizing:border-box; }
+body{ margin:0; background:#f5f5f7; color:#1d1d1f;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+  line-height:1.65; -webkit-font-smoothing:antialiased; }
+.wrap{ max-width:860px; margin:0 auto; padding:24px 18px 96px; }
+header.top{ padding:14px 4px 6px; }
+h1{ font-size:26px; line-height:1.28; margin:0 0 6px; letter-spacing:-.02em; }
+.sub{ color:#86868b; font-size:15px; margin:0 0 4px; }
+.meta{ color:#86868b; font-size:12.5px; font-family:"SF Mono",ui-monospace,Menlo,monospace; margin-top:8px; }
+.banner{ background:#fff; border-radius:14px; padding:16px 18px; margin:18px 0 8px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #34c759; font-size:14.5px; }
+.banner b{ color:#1a365d; }
+.card{ background:#fff; border-radius:14px; padding:18px 20px 12px; margin:14px 0;
+  box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #007aff; }
+.card.star{ border-left-color:#af52de; } .card.gray{ border-left-color:#86868b; } .card.green{ border-left-color:#34c759; }
+.card h2{ font-size:19px; margin:0 0 8px; letter-spacing:-.01em; }
+.card h2 .n{ display:inline-block; min-width:26px; height:24px; line-height:24px; text-align:center;
+  background:#f0f0f4; border-radius:7px; font-size:12.5px; color:#1d1d1f; margin-right:8px; font-weight:700; padding:0 5px; }
+.card h3{ font-size:15px; margin:14px 0 6px; color:#1a365d; }
+.card p{ margin:8px 0; font-size:14.5px; }
+ul{ margin:8px 0; padding-left:22px; } li{ margin:5px 0; font-size:14.5px; }
+b{ color:#1a365d; } .plain b{ color:inherit; }
+.mono{ font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; background:#f0f0f4; padding:1px 5px; border-radius:5px; }
+.callout{ background:#f0f0f4; border-radius:10px; padding:11px 13px; margin:10px 0; font-size:13.5px; }
+.callout b{ color:#1a365d; }
+table{ width:100%; border-collapse:collapse; margin:10px 0; font-size:13.5px; display:block; overflow-x:auto; }
+th,td{ text-align:left; padding:8px 10px; border-bottom:1px solid #ececf0; vertical-align:top; }
+th{ color:#86868b; font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.02em; }
+td:first-child{ font-weight:600; }
+.tag{ display:inline-block; font-size:11.5px; padding:2px 8px; border-radius:999px; font-weight:600; white-space:nowrap; }
+.tag.ship{ background:#e3f8ea; color:#248a3d; } .tag.pend{ background:#fff3df; color:#c76a00; } .tag.plan{ background:#eceef2; color:#86868b; } .tag.vis{ background:#ede5ff; color:#7a3ff2; }
+/* flow diagram (CSS, zero-dark) */
+.flow{ display:flex; flex-direction:column; gap:2px; margin:12px 0; }
+.fn{ background:#fff; border:1.5px solid #cfe0f5; border-radius:10px; padding:9px 12px; font-size:13.5px; text-align:center; }
+.fn.k{ border-color:#af52de; background:#faf5ff; } .fn.g{ border-color:#cdeed8; background:#f2fbf5; }
+.fn .who{ display:inline-block; background:#e3f8ea; color:#248a3d; border-radius:6px; padding:1px 8px; font-size:11.5px; font-weight:600; margin-top:3px; }
+.fd{ text-align:center; color:#86868b; font-size:11.5px; }
+.out4{ display:flex; gap:8px; flex-wrap:wrap; }
+.out4 > div{ flex:1; min-width:150px; background:#fff; border:1.5px solid #cfe0f5; border-radius:10px; padding:8px 10px; font-size:12.5px; }
+.snip{ background:#f6f7f9; border:1px solid #e4e7ec; border-left:3px solid #34c759; border-radius:10px; padding:10px 13px; margin:10px 0;
+  font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12px; color:#1d1d1f; white-space:pre-wrap; line-height:1.55; overflow-x:auto; }
+.snip .c{ color:#86868b; }
+.ladder{ margin:10px 0; }
+.rung{ display:flex; align-items:center; gap:10px; margin:5px 0; }
+.rung .lv{ flex:0 0 28px; height:28px; line-height:28px; text-align:center; border-radius:7px; font-weight:700; font-size:13px; background:#f0f0f4; }
+.rung .bd{ flex:1; background:#fff; border:1px solid #ececf0; border-radius:8px; padding:6px 11px; font-size:13px; }
+.rung.now .lv{ background:#34c759; color:#fff; } .rung.last .lv{ background:#af52de; color:#fff; }
+.cx{ margin:14px 0 4px; }
+.cx .ask{ font-size:12.5px; color:#86868b; margin-bottom:6px; font-weight:600; }
+.cx textarea{ width:100%; min-height:72px; border:1px solid #d2d2d7; border-radius:10px; padding:10px 12px;
+  font-family:inherit; font-size:14.5px; color:#1d1d1f; background:#fff; resize:vertical; }
+.cx textarea:focus{ outline:2px solid #007aff; outline-offset:0; border-color:transparent; }
+.bar{ position:sticky; bottom:0; margin-top:24px; background:rgba(245,245,247,.9);
+  backdrop-filter:saturate(180%) blur(12px); padding:12px 4px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+button{ font-family:inherit; font-size:14.5px; font-weight:600; padding:10px 16px; border-radius:10px; border:none; cursor:pointer; background:#007aff; color:#fff; }
+button.sec{ background:#e8e8ed; color:#1d1d1f; }
+#status{ font-size:13px; color:#86868b; }
+#exportOut{ width:100%; min-height:90px; margin-top:10px; display:none; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; border:1px solid #d2d2d7; border-radius:10px; padding:10px; }
+.foot{ color:#86868b; font-size:12.5px; margin-top:20px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>动态 DAG 协作编排(operating model)—— PRD 定稿</h1>
+  <p class="sub">把你圈全绿的 r3 核心收成一份 PRD。这是给你过目 + lgtm 的定稿版(已过 Codex 内部质量门 3 轮)。</p>
+  <p class="meta">FLY-1140 · 2026-07-10 · PRD · 基于 co-eval-r3 · Codex design review APPROVED(3 轮)</p>
+</header>
+
+<div class="banner">
+  <b>这份是什么:</b>你 co-eval 三轮圈定的「动态编排」核心,收成了正式 PRD。已过 Codex 设计评审 3 轮(6→4→0 个问题,已 APPROVED),主要帮我们把「现状基线、per-run 执行契约、编排唯一 owner、评估边界、依赖拆分」几处钉准,防止工程拆 build issue 时拆错。你 lgtm 后 → Tadashi 拆 build issue。
+</div>
+
+<div class="card">
+  <h2><span class="n">1</span>背景与问题</h2>
+  <p><b>现状(准确基线):</b>Flywheel 现在对符合条件的 engineering <span class="mono">main</span> 任务启用一条<b>硬编码的 Design → Implement → QA 链</b>(three-stage,<b>项目 opt-in、默认关</b>,仅 fresh main 进入);其他任务走单 session。现状<b>已经有一条固定回退</b>(QA 失败 → Implement → 再 QA)。</p>
+  <p><b>真正缺的:</b>没有一个通用机制,能<b>按任务选任意角色、长度、顺序、回退</b>,并把「怎么配合」物化成一次可执行、可恢复、可审计的 workflow。固定三段链 ≠「按任务现画一张图」。</p>
+  <p><b>目标:</b>从「几条写死的链」→「一堆职能积木(角色 markdown = IC 职能)+ 一张按任务现组的可执行图」。</p>
+</div>
+
+<div class="card">
+  <h2><span class="n">2</span>目标 / 非目标</h2>
+  <p><b>目标:</b>① 核心编排机制 + 最小执行契约;② 决策权按任务/scope 定 + 编排唯一 owner;③ 记录+复盘+call-eval 的权威与本轮边界;④ 进化阶梯 + 每级毕业条件。</p>
+  <p><b>押后 / 下一轮:</b>C(swarm)/D(成本感知派活)押后;E(好组合固化成模板)+ 两维评估<b>打分规则</b> → 下一轮(本轮 call-eval 只记 outcome、不打分);Annie 另欠一个<b>宏观综合 round</b>;拓扑上 parallel / 跑中插节点 / 任意 loop → v1 deferred。</p>
+</div>
+
+<div class="card star">
+  <h2><span class="n">3</span>核心机制:一次讨论,当场组 DAG</h2>
+  <p><b>只有一个核心机制:「Lead 讨论一个任务、当场组一张 DAG」。</b>一次讨论顺手定完这 4 样 —— 不是 4 个独立仪式:</p>
+  <div class="flow">
+    <div class="fn k">🧭 orchestrating Lead 讨论一个任务</div>
+    <div class="fd">↓ 一次定完(不是 4 个独立步骤)</div>
+    <div class="out4">
+      <div><b>① 步骤(DAG)</b><br>分哪几步、顺序</div>
+      <div><b>② 谁做每步</b><br>role + agent-file version</div>
+      <div><b>③ 谁拍板</b><br>= A 决策权(顺手定)</div>
+      <div><b>④ 轻量记录</b><br>= per-run record(顺手记)</div>
+    </div>
+  </div>
+  <div class="callout"><b>关键澄清(消除 r2 重叠错觉):</b>③ 决策权 和 ④ 记录,是 ① 那次讨论的两个<b>产出面</b>,不是另外要做的两件事。</div>
+  <h3>3.1 最小执行契约(vision 层,不写低层 schema)</h3>
+  <ul>
+    <li><b>拓扑边界(v1):</b>只支持可变长度<b>顺序 workflow + allowlisted/预声明/带 max_iterations 的有界回退边</b>(至少保留现有 <span class="mono">qa_fail</span> / <span class="mono">founder_feedback_kickback</span>,维持与现有 QA fix loop 的兼容)。任意新 loop / 自由条件 / parallel / 跑中插节点 —— deferred。</li>
+    <li><b>产出 snapshot:</b>讨论结束产出一个 per-run workflow snapshot,<b>复用 FLY-1020 的 node/edge/role-version/output 语义</b>;可从静态模板起步再覆盖,但<b>绝不改 canonical 模板</b>。</li>
+    <li><b>node 完整性:</b>每个 node 至少有 role+version、依赖、预期产出/验收、handoff、D 与 A;缺一项<b>不 dispatch</b>。</li>
+    <li><b>跑中改图:</b>由同一个 orchestrating Lead 发起,形成新 revision;明确保留/失效/runner 去留;旧事件不得推进新 revision。</li>
+    <li><b>fail closed:</b>无法形成有效 snapshot / 修订失败 → 回退静态模板或人工接管,不「猜着跑」(启动条件严格遵守 §5.2)。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h2><span class="n">4</span>决策权:按任务/scope 现定,PM 非必选</h2>
+  <table>
+    <tr><th>任务类型</th><th>组合(现挑积木)</th></tr>
+    <tr><td>🐛 简单 bug</td><td>Eng + QA(<b>无 PM</b>)</td></tr>
+    <tr><td>📄 一份 doc</td><td>PM 自己</td></tr>
+    <tr><td>🧩 完整 feature</td><td>PM + Designer + Eng + QA</td></tr>
+  </table>
+  <div class="callout"><b>注:上面三行是示例,不是硬规则</b> —— 具体谁参与、什么顺序,由 Lead 按任务当场挑。</div>
+  <p>决策权用 DACI 表达,但<b>按决策 scope 落到具体 node</b>:技术 node A=技术 Lead、产品 node A=产品 Lead;<b>merge/ship 仍走 founder gate(你)</b>,不因 node 有 A 就绕开。这张卡是讨论的产出,不是单独填的表。</p>
+</div>
+
+<div class="card star">
+  <h2><span class="n">5</span>⭐ 记录 + 复盘 + call-evaluation</h2>
+  <h3>5.1 权威与 owner(避免双写/恢复歧义)</h3>
+  <p><b>Linear</b> 继续拥有 task/issue 状态(不变)。<b>per-run record</b> 拥有 snapshot/revision、node handoff、复盘。它是<b>新的单一权威</b>,<b>不</b>把 <span class="mono">progress.md</span>(committed resume ledger)与 goal 文件(per-execution 本机 contract)合并 —— 二者是不同权威。</p>
+  <h3>5.2 流程与每步 owner</h3>
+  <div class="flow">
+    <div class="fn">1. 讨论 + 生成 snapshot/record<span class="who">orchestrating Lead</span></div>
+    <div class="fd">↓</div>
+    <div class="fn">2. 做(写自己 node 的 completion/handoff)<span class="who">该 node 的 runner</span></div>
+    <div class="fd">↓ engine 校验 output+acceptance+gate 后自动推进</div>
+    <div class="fn g">3. 交接<span class="who">orchestration engine</span><br><span style="font-size:12px;color:#86868b;">缺证据 / A 拒 / dispatch 失败 → hold generation + alert Lead</span></div>
+    <div class="fd">↓</div>
+    <div class="fn">4. 收尾:验证全图终态 + 汇总 3 行 retro<span class="who">orchestrating Lead</span></div>
+    <div class="fd">↓</div>
+    <div class="fn g">5. call-evaluation:<b>本轮只记原始 outcome</b>(不打分、不回流)<span class="who">orchestrating Lead</span></div>
+  </div>
+  <ul>
+    <li>每个 runner 只写<b>自己 node</b> 的 completion/handoff(不写全单复盘)。</li>
+    <li><b>静态 fallback 不默认自动发生:</b>只在讨论已预选为 safe fallback、或 Lead 明确确认才启动;否则 invalid snapshot=不 dispatch,revision 失败=保持最后有效 generation / 人工接管。</li>
+    <li>真正的评分与选择规则 → 下一轮(§8)。</li>
+  </ul>
+  <div class="snip"><span class="c"># per-run record(顺序 workflow;每 node 齐 mandatory fields)</span>
+做 X · snapshot: [Eng(实现)] → [QA(验)]
+node Eng: role=engineer@v3  dep=none  D=eng-runner  A=Tadashi
+          产出/验收=实现+push, CI 绿   handoff=push→QA
+node QA : role=qa@v2        dep=Eng   D=qa-runner   A=Tadashi
+          产出/验收=测试通过           handoff=报 orchestrating Lead
+<span class="c"># retro(orchestrating Lead 汇总全图终态)</span>
+终态: 全 node done   卡点: 无   下次改: —</div>
+</div>
+
+<div class="card">
+  <h2><span class="n">6</span>谁编排:Lead 派发 + 每任务唯一 orchestrating Lead</h2>
+  <p>编排归属 = <b>Lead 派发</b>(Tadashi + Honey Lemon + 以后新 Lead)。不是 IC 自认领、不是你亲自派。</p>
+  <div class="flow">
+    <div class="fn">🗂️ Cass 从 Epic 提需求</div>
+    <div class="fd">↓ department routing 定唯一 orchestrating Lead</div>
+    <div class="fn k">🧭 orchestrating Lead（record 单 writer)<br><span style="font-size:12px;color:#86868b;">其他 Lead = node-scoped A/C,无 orchestration 写权</span></div>
+    <div class="fd">↓ 讨论:组 DAG + 决策权 + record</div>
+    <div class="fn">🔀 per-run snapshot(复用 FLY-1020,可套静态模板再覆盖)</div>
+    <div class="fd">↓</div>
+    <div class="fn g">⚙️ 开干(runner 各写自己 node)</div>
+  </div>
+  <div class="callout"><b>两个维度分清:</b>① orchestration 写权 —— 只 orchestrating Lead 有;② node 决策权 —— 按 scope,其他 Lead 也可是某 node 的 A/C(如跨部门 feature:Tadashi orchestrate、Honey Lemon 作产品 node 的 A)。Lead 把 node-A 的决定写入 record,但不替其拍板。<b>IC 自认领 = 阶梯最后一级的事,不在本 PRD。</b></div>
+</div>
+
+<div class="card green">
+  <h2><span class="n">7</span>进化阶梯 + 每级毕业条件(你已锁定顺序)</h2>
+  <div class="ladder">
+    <div class="rung now"><span class="lv">1</span><span class="bd"><b>静态 DAG 跑一阵</b> — gate:FLY-1020 跑通 eng/product 两套静态 workflow + 保留 three-stage byte compat</span></div>
+    <div class="rung"><span class="lv">2</span><span class="bd"><b>建人才库(Agent File)</b> — gate:roster 每 role/version 可验证,不可用 role fail closed</span></div>
+    <div class="rung"><span class="lv">3</span><span class="bd"><b>Lead 理解 File + 静态 DAG</b> — gate:Lead 在 shadow/pilot 中能解释/选择/覆盖 + 完成 handoff+closure</span></div>
+    <div class="rung last"><span class="lv">4</span><span class="bd"><b>尝试动态编排</b> — gate:小范围 feature flag,失败回退最后有效静态 snapshot(遵守 §5.2)</span></div>
+  </div>
+  <p style="font-size:13px;color:#86868b;">注:「新角色已 ship」≠「已进入静态 DAG」—— PM/Prototype/Designer 目前主要是可派发 role,L1 gate 才是真正进入。执行底座依赖 = FLY-1020。</p>
+</div>
+
+<div class="card gray">
+  <h2><span class="n">8-9</span>押后 + 拼图现状</h2>
+  <p class="plain"><b style="color:#1a365d;">押后 / 下一轮:</b>C(swarm)、D(成本感知派活)押后;E(固化成静态模板)+ 两维评估打分 → 下一轮(含<b>「组合成功率延迟失败难追溯」</b>难题)。</p>
+  <table>
+    <tr><th>拼图块</th><th>issue</th><th>状态</th></tr>
+    <tr><td>IC 角色(role 实现)</td><td>FLY-1089 / 1059</td><td><span class="tag ship">runtime shipped</span></td></tr>
+    <tr><td>静态链</td><td>three-stage</td><td><span class="tag ship">shipped(opt-in)</span></td></tr>
+    <tr><td>per-run substrate(L1)</td><td>FLY-1020</td><td><span class="tag pend">PRD merged / build pending</span></td></tr>
+    <tr><td>issue chooser/dispatcher</td><td>FLY-353</td><td><span class="tag pend">上游 dispatcher,非本引擎</span></td></tr>
+    <tr><td>人才库 / roster</td><td>FLY-1141</td><td><span class="tag plan">planned(需确认)</span></td></tr>
+    <tr><td>goals + pilots</td><td>FLY-1045</td><td><span class="tag pend">merged(PR #519);相关上下文</span></td></tr>
+    <tr><td>PM 验收</td><td>FLY-830</td><td><span class="tag vis">vision</span></td></tr>
+  </table>
+</div>
+
+<div class="card">
+  <h2><span class="n">10</span>依赖映射 + Owner</h2>
+  <ul>
+    <li><b>FLY-1020</b> = per-run workflow substrate(<b>hard dependency</b>,L1)。</li>
+    <li><b>FLY-1140(本 PRD)</b> = Lead 讨论 → per-run 组合/revision 策略(演进 1020 的 seam)。</li>
+    <li><b>FLY-353</b> = issue 级 chooser/dispatcher(L2,<b>消费</b> 1140/1020 结果,<b>非本 PRD 引擎</b>)。</li>
+    <li><b>FLY-1045</b> = 相关公司运营上下文,非本阶梯 owner。</li>
+  </ul>
+  <p><b>Owner:</b>vision/PRD = 产品(Honey Lemon,co-eval with Annie);编排引擎/eval build = 工程(Tadashi,主要落 FLY-1020 演进 seam)。</p>
+</div>
+
+<div class="card">
+  <h2><span class="n">11-12</span>开放问题 + 下一步</h2>
+  <p><b>开放问题:</b>① 延迟失败溯源(下一轮);② 宏观综合 round(你另欠的);③ Lead 讨论粒度;④ 静态模板 vs 动态边界(下一轮);⑤ orchestrating Lead 的 routing 规则(跨部门归属)。</p>
+  <p><b>下一步:</b>你 lgtm → Tadashi 拆 build issue(<b>主要落 FLY-1020 演进 seam</b>:per-run snapshot + 顺序拓扑 + revision + fail-closed、record 约定、阶梯 L1-L2 + 毕业 gate)→ E + 两维评估打分单独一轮补进本线。</p>
+</div>
+
+<div class="card green">
+  <h2><span class="n">✓</span>你的意见</h2>
+  <div class="cx">
+    <div class="ask">💬 这份定稿 lgtm 吗?哪块想改 / 有疑问?(核心你已圈过,这里主要看收得对不对)</div>
+    <textarea data-note="lgtm" placeholder="比如:lgtm,交 Tadashi 拆 / §6 orchestrating Lead 归属再说说 / 押后的 E 我想早点做…"></textarea>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="exportBtn" type="button">📋 复制我的意见</button>
+  <button id="clearBtn" class="sec" type="button">清空</button>
+  <span id="status"></span>
+</div>
+<textarea id="exportOut" readonly placeholder="点「复制我的意见」,这里出现你写的内容,选中复制发回即可。"></textarea>
+
+<p class="foot">PRD 定稿 · Codex design review APPROVED(3 轮）· 你的批注只存你自己浏览器 · FLY-1140</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY="fly1140-prd-v1", t=document.querySelector('textarea[data-note="lgtm"]');
+  try{ var s=localStorage.getItem(KEY); if(s) t.value=s; }catch(e){}
+  t.addEventListener("input", function(){ try{ localStorage.setItem(KEY, t.value); }catch(e){} });
+  var status=document.getElementById("status"), out=document.getElementById("exportOut");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var v=(t.value||"").trim();
+    out.value = v ? ("FLY-1140 PRD 定稿 — Annie 意见\n\n"+v) : "(还没写)";
+    out.style.display="block";
+    if(v && navigator.clipboard){ navigator.clipboard.writeText(out.value).then(
+      function(){ status.textContent="已复制到剪贴板,直接粘给我即可。"; },
+      function(){ status.textContent="已汇总,选中复制发回即可。"; }); }
+    else { status.textContent = v?"已汇总,选中复制发回即可。":"还没写。"; }
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    t.value=""; try{ localStorage.removeItem(KEY); }catch(e){} out.value=""; out.style.display="none"; status.textContent="已清空。";
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,183 @@
+{"app_name":"OrcaSlicer","timestamp":"2026-07-09 11:32:39.00 -0700","app_version":"2.4.2","slice_uuid":"03561d7d-291c-3985-9a6d-7cf4a228e3ac","build_version":"","platform":1,"bundleID":"com.orcaslicer.OrcaSlicer","share_with_app_devs":0,"is_first_party":0,"bug_type":"309","os_version":"macOS 26.3.2 (25D2150)","roots_installed":0,"name":"OrcaSlicer","incident_id":"79EB3285-7A99-485D-A776-4D1DBB938C6B"}
+{
+  "uptime" : 920000,
+  "procRole" : "Unspecified",
+  "version" : 2,
+  "userID" : 501,
+  "deployVersion" : 210,
+  "modelCode" : "Mac17,8",
+  "coalitionID" : 1176,
+  "osVersion" : {
+    "train" : "macOS 26.3.2",
+    "build" : "25D2150",
+    "releaseType" : "User"
+  },
+  "captureTime" : "2026-07-09 11:32:33.4412 -0700",
+  "codeSigningMonitor" : 2,
+  "incident" : "79EB3285-7A99-485D-A776-4D1DBB938C6B",
+  "pid" : 57548,
+  "translated" : true,
+  "cpuType" : "X86-64",
+  "procLaunch" : "2026-07-09 11:32:32.9190 -0700",
+  "procStartAbsTime" : 22169285697477,
+  "procExitAbsTime" : 22169298196753,
+  "procName" : "OrcaSlicer",
+  "procPath" : "\/private\/tmp\/*\/OrcaSlicer-2.4.2.app\/Contents\/MacOS\/OrcaSlicer",
+  "bundleInfo" : {"CFBundleShortVersionString":"2.4.2","CFBundleVersion":"","CFBundleIdentifier":"com.orcaslicer.OrcaSlicer"},
+  "storeInfo" : {"deviceIdentifierForVendor":"CF4BC8DC-B336-5525-8056-ED337966CDB0","thirdParty":true},
+  "parentProc" : "bash",
+  "parentPid" : 57409,
+  "coalitionName" : "com.flywheel.bridge",
+  "crashReporterKey" : "7CF376A6-1A3F-F76A-0C4C-AEDC4D11A640",
+  "appleIntelligenceStatus" : {"state":"available"},
+  "developerMode" : 1,
+  "responsiblePid" : 56243,
+  "codeSigningID" : "com.orcaslicer.OrcaSlicer",
+  "codeSigningTeamID" : "XQK7C38HH5",
+  "codeSigningFlags" : 570491649,
+  "codeSigningValidationCategory" : 6,
+  "codeSigningTrustLevel" : 4294967295,
+  "codeSigningAuxiliaryInfo" : 0,
+  "bootSessionUUID" : "F9D974D1-87A6-4E60-84CF-4B141AA2B3A2",
+  "wakeTime" : 331233,
+  "sleepWakeUUID" : "8A9883E5-DEFB-4EC3-84E4-DF4BF38CB247",
+  "sip" : "enabled",
+  "exception" : {"codes":"0x0000000000000000, 0x0000000000000000","rawCodes":[0,0],"type":"EXC_CRASH","signal":"SIGABRT"},
+  "termination" : {"flags":0,"code":6,"namespace":"SIGNAL","indicator":"Abort trap: 6","byProc":"OrcaSlicer","byPid":57548},
+  "asi" : {"libsystem_c.dylib":["abort() called"]},
+  "extMods" : {"caller":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"system":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"targeted":{"thread_create":0,"thread_set_state":0,"task_for_pid":0},"warnings":0},
+  "faultingThread" : 0,
+  "threads" : [{"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":0},"r12":{"value":140704554831408,"symbolLocation":0,"symbol":"__stderrp"},"rosetta":{"tmp2":{"value":140703467558948},"tmp1":{"value":140705814293332},"tmp0":{"value":18446744073709551615}},"rbx":{"value":140704554863024,"symbolLocation":0,"symbol":"_os_xbs_chrooted"},"r8":{"value":13153630600},"r15":{"value":22},"r10":{"value":140704554863024,"symbolLocation":0,"symbol":"_os_xbs_chrooted"},"rdx":{"value":0},"rdi":{"value":140704554831408,"symbolLocation":0,"symbol":"__stderrp"},"r9":{"value":0},"r13":{"value":206158430216},"rflags":{"value":647},"rax":{"value":0},"rsp":{"value":140704552508352,"symbolLocation":448,"symbol":"__sFX"},"r11":{"value":0},"rcx":{"value":0},"r14":{"value":259},"rsi":{"value":8757247552,"symbolLocation":0,"symbol":"_main_thread"}},"id":265822798,"triggered":true,"name":"orcaslicer_main","queue":"com.apple.main-thread","frames":[{"imageOffset":140705814293376,"imageIndex":4},{"imageOffset":30766,"symbol":"__pthread_kill","symbolLocation":10,"imageIndex":5},{"imageOffset":23386,"symbol":"pthread_kill","symbolLocation":259,"imageIndex":6},{"imageOffset":529318,"symbol":"abort","symbolLocation":126,"imageIndex":7},{"imageOffset":66238,"symbol":"__abort_message","symbolLocation":241,"imageIndex":8},{"imageOffset":4817,"symbol":"demangling_terminate_handler()","symbolLocation":222,"imageIndex":8},{"imageOffset":114301,"symbol":"_objc_terminate()","symbolLocation":104,"imageIndex":9},{"imageOffset":63307,"symbol":"std::__terminate(void (*)())","symbolLocation":6,"imageIndex":8},{"imageOffset":75682,"symbol":"__cxa_rethrow","symbolLocation":100,"imageIndex":8},{"imageOffset":58876499,"symbol":"boost::log::v2s_mt_posix::core::push_record_move(boost::log::v2s_mt_posix::record&)","symbolLocation":1491,"imageIndex":3},{"imageOffset":63748,"symbol":"Slic3r::CLI::run(int, char**)","symbolLocation":3748,"imageIndex":3},{"imageOffset":578075,"symbol":"main","symbolLocation":283,"imageIndex":3},{"imageOffset":26497,"symbol":"start","symbolLocation":3457,"imageIndex":0}]},{"id":265822804,"name":"com.apple.rosetta.exceptionserver","threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":9908489551872},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":2307},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":0},"rdi":{"value":0},"r9":{"value":1},"r13":{"value":0},"rflags":{"value":515},"rax":{"value":268451845},"rsp":{"value":0},"r11":{"value":0},"rcx":{"value":17314086914},"r14":{"value":0},"rsi":{"value":2616}},"frames":[]},{"id":265823323,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13153701888},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13154238464},"rsp":{"value":409603},"r11":{"value":0},"rcx":{"value":5379},"r14":{"value":0},"rsi":{"value":0}}},{"id":265823324,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13154258944},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13154795520},"rsp":{"value":409604},"r11":{"value":0},"rcx":{"value":8963},"r14":{"value":0},"rsi":{"value":0}}},{"id":265823325,"frames":[],"threadState":{"flavor":"x86_THREAD_STATE","rbp":{"value":18446744073709551615},"r12":{"value":0},"rosetta":{"tmp2":{"value":0},"tmp1":{"value":0},"tmp0":{"value":0}},"rbx":{"value":0},"r8":{"value":0},"r15":{"value":0},"r10":{"value":0},"rdx":{"value":13154816000},"rdi":{"value":0},"r9":{"value":0},"r13":{"value":0},"rflags":{"value":531},"rax":{"value":13155352576},"rsp":{"value":409604},"r11":{"value":0},"rcx":{"value":9987},"r14":{"value":0},"rsi":{"value":0}}}],
+  "usedImages" : [
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 8756424704,
+    "size" : 647168,
+    "uuid" : "734c5ec7-3286-329f-b95c-55c9080d31db",
+    "path" : "\/usr\/lib\/dyld",
+    "name" : "dyld"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 140703126544384,
+    "size" : 196608,
+    "uuid" : "3ae46ed1-ca8a-3d8c-b1f5-eea020395932",
+    "path" : "\/usr\/libexec\/rosetta\/runtime",
+    "name" : "runtime"
+  },
+  {
+    "source" : "P",
+    "arch" : "arm64",
+    "base" : 4740059136,
+    "size" : 425984,
+    "uuid" : "6065fd53-113c-30e5-9e0e-5c04d6ebd22a",
+    "path" : "\/Library\/Apple\/*\/libRosettaRuntime",
+    "name" : "libRosettaRuntime"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 4328976384,
+    "CFBundleShortVersionString" : "2.4.2",
+    "CFBundleIdentifier" : "com.orcaslicer.OrcaSlicer",
+    "size" : 86962176,
+    "uuid" : "03561d7d-291c-3985-9a6d-7cf4a228e3ac",
+    "path" : "\/private\/tmp\/*\/OrcaSlicer-2.4.2.app\/Contents\/MacOS\/OrcaSlicer",
+    "name" : "OrcaSlicer",
+    "CFBundleVersion" : ""
+  },
+  {
+    "size" : 0,
+    "source" : "A",
+    "base" : 0,
+    "uuid" : "00000000-0000-0000-0000-000000000000"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703467528192,
+    "size" : 252184,
+    "uuid" : "2a7e104e-0d59-34a8-83d9-cc70154464eb",
+    "path" : "\/usr\/lib\/system\/libsystem_kernel.dylib",
+    "name" : "libsystem_kernel.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703467782144,
+    "size" : 49192,
+    "uuid" : "f9c81fc7-1abf-3b5e-a6b3-3113dad29577",
+    "path" : "\/usr\/lib\/system\/libsystem_pthread.dylib",
+    "name" : "libsystem_pthread.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703466295296,
+    "size" : 563448,
+    "uuid" : "b349e7c1-a14b-3991-b786-dbba5ee9d443",
+    "path" : "\/usr\/lib\/system\/libsystem_c.dylib",
+    "name" : "libsystem_c.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703467429888,
+    "size" : 94960,
+    "uuid" : "2d7e038d-ebfb-36e9-b64c-da767dcc18f3",
+    "path" : "\/usr\/lib\/libc++abi.dylib",
+    "name" : "libc++abi.dylib"
+  },
+  {
+    "source" : "P",
+    "arch" : "x86_64",
+    "base" : 140703463272448,
+    "size" : 282388,
+    "uuid" : "cd5fb77f-f9d8-35c7-9b9a-427da2a59b20",
+    "path" : "\/usr\/lib\/libobjc.A.dylib",
+    "name" : "libobjc.A.dylib"
+  }
+],
+  "sharedCache" : {
+  "base" : 140703421693952,
+  "size" : 30064771072,
+  "uuid" : "ecf37cd4-b9d6-36f3-b85b-42db0619754f"
+},
+  "vmSummary" : "ReadOnly portion of Libraries: Total=1.3G resident=0K(0%) swapped_out_or_unallocated=1.3G(100%)\nWritable regions: Total=1.1G written=2003K(0%) resident=2003K(0%) swapped_out=0K(0%) unallocated=1.1G(100%)\n\n                                VIRTUAL   REGION \nREGION TYPE                        SIZE    COUNT (non-coalesced) \n===========                     =======  ======= \nActivity Tracing                   256K        1 \nKernel Alloc Once                    8K        1 \nMALLOC                           913.2M       44 \nMALLOC guard page                   96K        6 \nRosetta Arena                     4096K        2 \nRosetta Generic                   1528K      379 \nRosetta IndirectBranch             384K        2 \nRosetta JIT                      128.0M        1 \nRosetta Return Stack                80K        8 \nRosetta Thread Context              80K        8 \nSTACK GUARD                         12K        3 \nStack                             9772K        4 \nStack Guard                       56.0M        1 \nVM_ALLOCATE                       2420K        3 \n__CTF                               824        1 \n__DATA                            35.0M      750 \n__DATA_CONST                     100.4M      794 \n__DATA_DIRTY                      6231K      671 \n__FONT_DATA                        2352        1 \n__INFO_FILTER                         8        1 \n__LINKEDIT                       190.2M        9 \n__OBJC_RO                         64.3M        1 \n__OBJC_RW                         2567K        1 \n__TEXT                             1.1G      812 \n__TPRO_CONST                         4K        1 \ndyld private memory                576K        2 \nmapped file                      139.2M        7 \npage table in kernel              2003K        1 \nshared memory                       80K        4 \n===========                     =======  ======= \nTOTAL                              2.7G     3519 \n",
+  "legacyInfo" : {
+  "threadTriggered" : {
+    "name" : "orcaslicer_main",
+    "queue" : "com.apple.main-thread"
+  }
+},
+  "logWritingSignature" : "5efaf4e8ef9bb29351d39aaf8beb127bf05fbda4",
+  "bug_type" : "309",
+  "roots_installed" : 0,
+  "trmStatus" : 1,
+  "trialInfo" : {
+  "rollouts" : [
+    {
+      "rolloutId" : "5fb4245a1bbfe8005e33a1e1",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000021
+    },
+    {
+      "rolloutId" : "5f72dc58705eff005a46b3a9",
+      "factorPackIds" : [
+
+      ],
+      "deploymentId" : 240000015
+    }
+  ],
+  "experiments" : [
+
+  ]
+},
+  "reportNotes" : [
+  "RIP register does not match crashing frame (0x0 vs 0x7FF8A0142B80)"
+]
+}

@@ -1,0 +1,313 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1020 · 三层动态 DAG(YAML 结构 + 注册表 + Markdown 步骤)— 设计 co-eval v6</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d;
+  --red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.6;-webkit-text-size-adjust:100%}
+.wrap{max-width:960px;margin:0 auto;padding:20px 16px 90px}
+h1{font-size:22px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:14px;margin:0 0 4px}
+.pill{display:inline-block;font-size:12px;padding:2px 9px;border-radius:999px;background:#eef;color:var(--navy);margin:6px 6px 0 0}
+.pill.cand{background:#f3e9fb;color:#7a2fb0}
+.note{background:#fff;border:1px solid var(--line);border-left:4px solid var(--amber);border-radius:12px;padding:12px 14px;margin:16px 0;font-size:14px;color:#5a4a20}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0;box-shadow:0 1px 3px rgba(0,0,0,.06)}
+.card.blue{border-left:4px solid var(--blue)}.card.green{border-left:4px solid var(--green)}
+.card.purple{border-left:4px solid var(--purple)}.card.red{border-left:4px solid var(--red)}
+.card.amber{border-left:4px solid var(--amber)}.card.gray{border-left:4px solid var(--dim)}
+h2{font-size:20px;margin:34px 0 6px;letter-spacing:-.01em}
+h3{font-size:16px;margin:2px 0 8px}
+.secnum{color:var(--dim);font-variant-numeric:tabular-nums}
+p{margin:8px 0}ul{margin:8px 0 8px 2px;padding-left:20px}li{margin:4px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.86em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+pre{background:#f6f6fa;border:1px solid var(--line);border-radius:10px;padding:12px 14px;overflow-x:auto;-webkit-overflow-scrolling:touch;
+  font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.55;margin:10px 0}
+pre .c{color:#8a8a90}pre .n{color:#1a5fb4}pre .l{color:#1a7a3c;font-weight:600}pre .s{color:#a05a00;font-weight:600}pre .r{color:#7a2fb0;font-weight:600}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;vertical-align:middle}
+.tag.done{background:#e3f9ea;color:#1a7a3c}.tag.new{background:#e7f0ff;color:#1a5fb4}
+.tag.unk{background:#ececef;color:#6a6a70}.tag.keep{background:#e3f9ea;color:#1a7a3c}
+.tag.mvp{background:#e3f9ea;color:#1a7a3c}.tag.later{background:#fff4e5;color:#a05a00}
+.k{color:var(--navy);font-weight:600}
+.src{font-size:12px;color:var(--dim);margin-top:8px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:10px 0}
+table{border-collapse:collapse;width:100%;min-width:620px;font-size:13.5px}
+th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+.map{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start;margin:12px 0}
+.nodes{flex:0 0 auto;min-width:200px}
+.node{background:#fff;border:2px solid var(--navy);border-radius:10px;padding:9px 14px;font-weight:600;text-align:center;margin:0;min-width:150px}
+.node .m{display:block;font-size:11px;font-weight:500;color:var(--dim)}
+.edge{text-align:center;color:var(--dim);font-size:13px;margin:3px 0}
+.loopnote{color:#1a7a3c;font-weight:600}.skipnote{color:#a05a00;font-weight:600}
+.legend{flex:1 1 260px;min-width:240px;font-size:13.5px}
+.legend .li{margin:8px 0;padding-left:6px;border-left:3px solid var(--line)}
+.legend .li.loop{border-color:var(--green)}.legend .li.skip{border-color:var(--amber)}
+.paths .step{display:inline-block;background:#fff;border:1px solid var(--line);border-radius:8px;padding:4px 8px;font-size:12.5px;margin:2px}
+.paths .step.sk{border-style:dashed;color:var(--dim);text-decoration:line-through}
+.paths .lp{color:#1a7a3c;font-weight:600;font-size:12px}
+.three{margin:12px 0}
+.lyr3{border:1px solid var(--line);border-radius:12px;padding:11px 14px;background:#fcfcff;margin:0}
+.lyr3.a{border-left:4px solid var(--blue)}.lyr3.b{border-left:4px solid var(--purple)}.lyr3.c{border-left:4px solid var(--green)}
+.lyr3 .h{font-weight:600;font-size:13.5px;margin-bottom:2px}
+.lyr3 .d{font-size:12.5px;color:#444}
+.dn{text-align:center;color:var(--dim);font-size:12px;margin:5px 0}
+.you{background:#fff8e6;border:1px solid #ffe0a3;border-radius:10px;padding:8px 11px;margin:10px 0;font-size:13.5px}
+.big{background:#f4f9ff;border:1px solid #bcd9ff;border-radius:10px;padding:10px 13px;margin:10px 0;font-size:13.5px}
+.new-badge{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;background:#e7f0ff;color:#1a5fb4;margin-left:6px}
+.cmt{margin:10px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;color:var(--ink);background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid var(--blue);outline-offset:1px;border-color:transparent}
+.bar{position:sticky;bottom:0;margin-top:26px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:var(--blue);color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+.hint{color:var(--dim);font-size:12.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}
+.dlg textarea{width:100%;min-height:240px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>三层动态 DAG:YAML 结构 + 注册表 + Markdown 步骤 —— 设计 co-eval v6</h1>
+  <p class="sub">FLY-1020 · 2026-07-08 · 折进你 v5 的两点(inject/fork=roadmap · 其实是三层、最底层 Markdown 不变)· 这版清了就写 PRD</p>
+  <div><span class="pill cand">设计草案 · 逐节留言</span><span class="pill">定了 → PRD → Tadashi</span></div>
+</header>
+
+<div class="note">
+  <b>v6 照你 v5 co-eval 改:</b>
+  ① ⭐⭐ <b>其实是三层,最底层 Markdown 不变</b>:YAML(结构)+ 注册表(每节点带哪些技能)= <b>加在现有 Markdown 之上的编排层,不替代 Markdown</b>;每个技能(brainstorm/research/design-review)怎么做,还是<b>今天这套 Markdown 说了算、一个字不改</b>(§6);
+  ② <b>inject / fork = roadmap</b>(post-MVP、有意义、进后续 PRD),不是「不做」,保留用例(§5)。<br>
+  其余保留 v5:节点类型 per-category 可扩展(§1)· loop+skip 是 MVP 动态(§2/3)。<br>
+  <span class="tag keep">不变</span> 今天这套 · <span class="tag mvp">MVP</span> 做 · <span class="tag later">roadmap</span> post-MVP · <span class="tag done">已核码</span>。
+</div>
+
+<!-- 0 红线 -->
+<h2><span class="secnum">0 ·</span> ⭐ 红线(不变)</h2>
+<div class="card amber">
+  <p>模板 = <b>轻 / 默认 / 可覆盖,不死板</b>。只钉粗脚手架(哪些节点 / 每个哪个模型 / 哪 loop / 哪 skip),<b>不定节点内部怎么想</b>;默认可偏离;宁可少建。</p>
+</div>
+<div class="cmt"><label>💬 对红线的留言</label><textarea data-k="redline" data-label="0 · 红线"></textarea></div>
+
+<!-- 1 节点类型 -->
+<h2><span class="secnum">1 ·</span> 节点类型:per-category + 可扩展(「固定」的准确含义)</h2>
+<div class="card purple">
+  <p>节点类型<b>不是全局只 Design/Implement/QA</b> —— 它是 <b>per-category、可扩展的</b>:</p>
+  <div class="scroll"><table>
+  <thead><tr><th>类别</th><th>节点类型(定义时定,跑中不变)</th></tr></thead>
+  <tbody>
+    <tr><td class="k">eng</td><td>Design → Implement → QA</td></tr>
+    <tr><td class="k">product</td><td>Design → Implement(skip QA)</td></tr>
+    <tr><td class="k">创作视频</td><td><b>Research → 生成视频</b>(新节点类型)</td></tr>
+    <tr><td class="k">新类别</td><td>在注册表里定义自己的新节点类型(§6 第二层)</td></tr>
+  </tbody>
+  </table></div>
+  <p class="hint"><b>「固定节点」= ① 模板内固定(YAML 定义时定死)② 跑中不加节点(no node-inject)。≠ 全局只 3 种。</b> 扩展 = 定义时在注册表加,不是跑中插。</p>
+</div>
+<div class="cmt"><label>💬 对节点类型的留言</label><textarea data-k="nodetypes" data-label="1 · 节点类型 per-category"></textarea></div>
+
+<!-- 2 loop+skip -->
+<h2><span class="secnum">2 ·</span> 动态 = loop + skip(作用在该类别的节点上)</h2>
+<div class="card blue">
+  <ul>
+    <li><span class="k">skip</span> = 条件跳过某节点(Product <b>skip QA</b> / 简单任务 <b>skip Design</b>)。同套节点、不同任务不同路。</li>
+    <li><span class="k">loop</span> = 某节点/子图重复到条件(§3)。</li>
+  </ul>
+  <p class="hint">节点类型定义时可扩展 + loop/skip 跑时造动态 = 表达千变万化的流程,全程不加新节点。</p>
+</div>
+<div class="cmt"><label>💬 对 loop+skip 的留言</label><textarea data-k="dynamic" data-label="2 · loop+skip"></textarea></div>
+
+<!-- 3 loop 两例 -->
+<h2><span class="secnum">3 ·</span> loop = 重复直到条件(你两个例子,能实现)</h2>
+<div class="card green">
+  <div class="scroll"><table>
+  <thead><tr><th>例子</th><th>= loop</th><th>能实现吗</th></tr></thead>
+  <tbody>
+    <tr><td class="k">① QA↔Implement 来回</td><td><b>loop(Implement↔QA)</b> 直到 QA 过</td><td><span class="tag done">能 · 已跑过硬编码版</span> FLY-939 kickback(<code>phase-orchestrator.ts</code>),升级 = 变成可声明的 loop 回边</td></tr>
+    <tr><td class="k">② Design→4 PR</td><td><b>loop (Implement→QA) 子图 4 次</b></td><td><span class="tag new">能 · 新形状</span> 同一个 loop 原语</td></tr>
+  </tbody>
+  </table></div>
+</div>
+<div class="cmt"><label>💬 对 loop 两例的留言</label><textarea data-k="loop" data-label="3 · loop 两例"></textarea></div>
+
+<!-- 4 一张图 -->
+<h2><span class="secnum">4 ·</span> 流程图看全(eng 例:同套节点 + loop 回边 + skip 条件边)</h2>
+<div class="card purple">
+  <div class="map">
+    <div class="nodes">
+      <div class="skipnote" style="font-size:12px">┈ skip(简单任务)┈┐</div>
+      <div class="node">Design <span class="m">Fable</span></div>
+      <div class="edge">↓</div>
+      <div class="node">Implement <span class="m">Fable</span></div>
+      <div class="edge">↓ &nbsp;&nbsp; <span class="loopnote">↺ loop</span></div>
+      <div class="node">QA <span class="m">Opus</span></div>
+      <div class="edge"><span class="loopnote">└ QA fail → 回 Implement ┘</span></div>
+      <div class="edge">↓ pass &nbsp; <span class="skipnote">┈ skip(Product)</span></div>
+      <div class="node" style="border-color:var(--green)">完</div>
+    </div>
+    <div class="legend">
+      <div class="li loop"><b>loop 回边</b>:<code>QA→Implement</code>(fail 时)。</div>
+      <div class="li skip"><b>skip 条件边</b>:Product 跳 QA · 简单跳 Design。</div>
+      <div class="li"><b>创作视频</b>是另一组节点类型(Research / 生成视频),同样用 loop+skip 组织。</div>
+    </div>
+  </div>
+  <div class="paths scroll">
+    <p><b>eng</b>:<span class="step">Design</span> → <span class="step">Implement</span> <span class="lp">⇄↺</span> <span class="step">QA</span> → <span class="step">完</span></p>
+    <p><b>product</b>:<span class="step">Design</span> → <span class="step">Implement</span> → <span class="step sk">QA</span> → <span class="step">完</span></p>
+    <p><b>创作视频</b>:<span class="step">Research</span> → <span class="step">生成视频</span> <span class="lp">↺</span> → <span class="step">完</span></p>
+  </div>
+</div>
+<div class="cmt"><label>💬 对流程图的留言</label><textarea data-k="diagram" data-label="4 · 流程图"></textarea></div>
+
+<!-- 5 roadmap -->
+<h2><span class="secnum">5 ·</span> node-inject / fork = roadmap(post-MVP,进后续 PRD)+ 用例</h2>
+<div class="card amber">
+  <div class="you"><b>你定的:</b>两个<b>都有价值,排 roadmap</b> —— 不是 MVP 这一刀、也不是不做,而是 <b>post-MVP 会加进后续 PRD</b>。概念 + 用例先留着。</div>
+  <div class="scroll"><table>
+  <thead><tr><th>能力</th><th>用例(什么时候想要)</th><th>状态</th></tr></thead>
+  <tbody>
+    <tr><td class="k">node-inject<br>(跑中加新节点)</td><td>跑中要一个<b>模板里没有、又非 loop/skip 覆盖</b>的新步骤 —— 如 implement 中途要加『安全审计』节点。</td><td><span class="tag later">roadmap · post-MVP</span> 跑中改图要更强的追踪/治理,值得单独一版 PRD 做好。</td></tr>
+    <tr><td class="k">fork<br>(并行分支)</td><td>同时试<b>多方案比较</b> —— 两种实现策略并行、或 A/B 两版设计并行,择优。</td><td><span class="tag later">roadmap · post-MVP</span> 现有痛是串行 loop 优先;成本翻倍要专门治理。</td></tr>
+  </tbody>
+  </table></div>
+  <p class="hint">MVP 动态 = <b>loop + skip</b>(+ profile 已有)。<b>node-inject / fork 排 roadmap</b>(有价值、进后续 PRD),用例记在这,不是砍掉。</p>
+</div>
+<div class="cmt"><label>💬 对 roadmap + 用例的留言</label><textarea data-k="defer" data-label="5 · node-inject/fork roadmap"></textarea></div>
+
+<!-- 6 三层定义 -->
+<h2><span class="secnum">6 ·</span> ⭐⭐ 三层定义:YAML 结构 + 注册表 + Markdown 步骤(最底层今天不变)<span class="new-badge">v6 关键</span></h2>
+<div class="card green">
+  <div class="you"><b>你 v5 co-eval 的关键澄清:</b>「其实是<b>三层</b>,最底层是 <b>Markdown(今天这套、不变)</b>:①YAML=DAG 形状 ②注册表=每节点带哪些技能+模型 ③<b>Markdown=每个技能具体怎么做</b>(brainstorm.md/research.md/design-review.md)= 我们今天这套 Markdown 结构、不动。YAML+注册表 = 加在现有 Markdown 之上的编排层、<b>不替代 Markdown</b>。」</div>
+  <div class="three">
+    <div class="lyr3 a"><div class="h">第一层 · YAML = 结构(形状)</div><div class="d">哪些节点(按名字引用)· 顺序 · 哪 loop · 哪 skip。轻、好读、好覆盖。<span class="tag new">新增</span></div></div>
+    <div class="dn">↓ 节点按名字引用</div>
+    <div class="lyr3 b"><div class="h">第二层 · 注册表 = 每节点带哪些技能 + 模型</div><div class="d"><code>design = {skills:[brainstorm,research,superpower,design-review], model:fable}</code>。= 泛化 <code>three-stage-phases.ts</code>。<span class="tag new">新增</span></div></div>
+    <div class="dn">↓ 技能按名字引用</div>
+    <div class="lyr3 c"><div class="h">第三层 · Markdown = 每个技能/步骤怎么做</div><div class="d"><code>brainstorm.md</code> · <code>research.md</code> · <code>design-review.md</code> …… <b>= 我们今天这套 Markdown,一个字不改。</b><span class="tag keep">今天这套 · 不变</span></div></div>
+  </div>
+  <div class="big"><b>⭐ 打消一个误解:不是用 YAML 重写 brainstorm/research。</b> 那些 Markdown 技能定义<b>原封不动</b>。YAML + 注册表只是<b>加在上面的编排层</b> —— design 节点说「<b>用这些技能</b>」,每个技能<b>具体怎么做</b>还是各自的 Markdown 说了算。<b>新增的只有『怎么把节点/技能编排起来』,没动『每个技能怎么做』。</b></div>
+  <p><b>三层放一起(示意):</b></p>
+<pre><span class="c"># ── 第一层 YAML:结构(新增)──</span>
+nodes: [design, implement, qa]
+edges: design -> implement -> qa;  <span class="l">qa -> implement {loop_when: fail}</span>
+skip:  <span class="s">qa {when: category == product}</span>
+
+<span class="c"># ── 第二层 注册表:每节点带哪些技能 + 模型(新增,泛化 three-stage-phases.ts)──</span>
+node_types:
+  <span class="r">design</span>:    {model: fable, skills: [brainstorm, research, superpower, design-review]}
+  <span class="r">implement</span>: {model: fable, skills: [test-driven-development]}
+  <span class="r">qa</span>:        {model: opus,  skills: [qa-verify]}
+
+<span class="c"># ── 第三层 Markdown:每个技能怎么做(= 今天这套,不动)──</span>
+skills/brainstorm.md      <span class="c">← 不变</span>
+skills/research.md         <span class="c">← 不变</span>
+skills/design-review.md    <span class="c">← 不变</span>
+</pre>
+  <p class="hint">分工:<b>YAML 管「节点怎么连」· 注册表 管「每节点用哪些技能+模型」· Markdown 管「每个技能怎么做」(不变)</b>。新增只在上两层。</p>
+</div>
+<div class="cmt"><label>💬 对三层定义的留言(三层清楚吗?「Markdown 不变、只在上面加编排层」打消你的顾虑了吗?)</label><textarea data-k="threelayer" data-label="6 · 三层定义"></textarea></div>
+
+<!-- 7 现状+auto-QA -->
+<h2><span class="secnum">7 ·</span> 头号动机(Auto-QA)+ 现状 + homerail(印证)</h2>
+<div class="card gray">
+  <p><b>Auto-QA 误触发</b>:老的一刀切(<code>auto-qa-coordinator.ts</code>,项目级 <code>qa.auto</code>)对纯 doc 的 product 误 spawn QA。<b>skip QA 从根治它</b>。</p>
+  <p><b>现状核码</b>:今天 = 静态线性(<code>three-stage-phases.ts</code>,只管 model/phase)+ 一个焊死的 QA→implement loop(FLY-939)+ 无 skip + 无注册表 + Markdown 技能已在(<code>brainstorm.md</code> 等)。<b>homerail 印证</b>:它动态也是 loop_gateway + skip、没随意加节点、模板用 YAML。= 你的收敛跟成熟做法一致。</p>
+</div>
+<div class="cmt"><label>💬 对现状/动机的留言</label><textarea data-k="current" data-label="7 · Auto-QA+现状+homerail"></textarea></div>
+
+<!-- 8 可覆盖+分阶段 -->
+<h2><span class="secnum">8 ·</span> 可覆盖 + 分阶段</h2>
+<div class="card blue">
+  <p><b>可覆盖:</b> 换整套 YAML · 单 issue 调节点(临时 skip / 换模型)· 裸兜底(不挂 = 裸 session)。</p>
+  <ul>
+    <li><span class="k">阶段 1(MVP)</span>:三层里<b>新增上两层</b>(YAML 结构 + 节点类型注册表)+ loop + skip + profile 复用 + 几套 shipped(eng/product/未来创作类)+ 裸 session 默认 + 可覆盖。<b>Markdown 第三层不动</b>。<b>default-off、字节兼容</b>。</li>
+    <li><span class="k">阶段 2 · roadmap(post-MVP,进后续 PRD)</span>:node-inject · fork(有价值、留用例)。</li>
+    <li><span class="k">不做</span>:可视化编辑器 · 用户自定义 · 学历史自动调。</li>
+  </ul>
+  <p class="hint">安全阀在第二层(353)治理里 —— 所以这层可以轻。</p>
+</div>
+<div class="cmt"><label>💬 对可覆盖/分阶段的留言</label><textarea data-k="plan" data-label="8 · 可覆盖+分阶段"></textarea></div>
+
+<!-- 9 留给你定 -->
+<h2><span class="secnum">9 ·</span> 留给你定的点(定了我就去写 PRD)</h2>
+<div class="card red">
+  <ul>
+    <li><b>⭐⭐ 三层定义(§6):</b> YAML 结构 + 注册表(带哪些技能) + <b>Markdown 步骤(今天这套不变)</b> —— 这个分层 + 「只在上面加编排层、不改 Markdown」清楚了吗?</li>
+    <li><b>节点类型(§1):</b> per-category + 可扩展、跑中不 inject —— 对吗?</li>
+    <li><b>inject/fork(§5):</b> roadmap(post-MVP、进后续 PRD)+ 留用例 —— 对吗?</li>
+    <li><b>MVP 范围(§8):</b> 新增上两层 + loop + skip + profile + 几套 shipped + 裸默认;Markdown 不动;不做编辑器/自定义 —— 认同吗?</li>
+    <li><b>就绪:</b> 这几个定了,我就把 v6 收敛成 PRD(exploration/research/plan)→ 拆 build issue 交 Tadashi。定了就说<b>「收敛,写 PRD」</b>。</li>
+  </ul>
+</div>
+<div class="cmt"><label>💬 总批注 / 决定 / 下一步</label><textarea data-k="final" data-label="9 · 总批注 / 决定"></textarea></div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn" type="button">复制批注</button>
+  <button class="ghost" id="clearBtn" type="button">清空</button>
+  <span class="hint" id="saveHint">每小节下都有留言框;「复制批注」收成 markdown。批注只存你这台机器,刷新不丢(新版本从空白开始)。</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(Markdown)</h3>
+    <p class="hint">已自动复制到剪贴板。也可下载,或直接选中复制发给我。</p>
+    <textarea id="out" readonly></textarea>
+    <div class="bar" style="position:static;background:none;border:none;padding-top:12px">
+      <button class="primary" id="dlBtn" type="button">下载 .md</button>
+      <button class="ghost" id="closeBtn" type="button">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var pathScope = (typeof location !== "undefined" && location.pathname) ? location.pathname : "local";
+  var KEY = "fly1020-templates-design-v6::" + pathScope;
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var saved = {};
+  try { saved = JSON.parse(localStorage.getItem(KEY) || "{}"); } catch(e){ saved = {}; }
+  areas.forEach(function(t){
+    var k = t.getAttribute("data-k");
+    if (saved[k]) t.value = saved[k];
+    t.addEventListener("input", function(){
+      saved[k] = t.value;
+      try { localStorage.setItem(KEY, JSON.stringify(saved)); } catch(e){}
+      var h = document.getElementById("saveHint"); if (h) h.textContent = "已保存 ✓ · " + new Date().toLocaleTimeString();
+    });
+  });
+  function buildMd(){
+    var lines = ["# FLY-1020 三层动态 DAG 设计 v6 — Annie 的批注", "", "日期: " + new Date().toLocaleString(), ""];
+    var any = false;
+    areas.forEach(function(t){
+      var v = (t.value || "").trim(); if (!v) return; any = true;
+      lines.push("## " + (t.getAttribute("data-label") || t.getAttribute("data-k")), "", v, "");
+    });
+    if (!any) lines.push("> (还没有批注)");
+    return lines.join("\n");
+  }
+  var dlg = document.getElementById("dlg"), out = document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    out.value = buildMd();
+    if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(out.value).catch(function(){});
+    if (dlg.showModal) dlg.showModal(); else alert(out.value);
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    if (!confirm("清空所有批注?不可撤销。")) return;
+    areas.forEach(function(t){ t.value = ""; }); saved = {};
+    try { localStorage.removeItem(KEY); } catch(e){}
+    var h = document.getElementById("saveHint"); if (h) h.textContent = "已清空。";
+  });
+  document.getElementById("dlBtn").addEventListener("click", function(){
+    var blob = new Blob([out.value], {type:"text/markdown"}), url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "fly1020-dag-design-v6-批注.md";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  });
+  document.getElementById("closeBtn").addEventListener("click", function(){ if (dlg.close) dlg.close(); });
+})();
+</script>

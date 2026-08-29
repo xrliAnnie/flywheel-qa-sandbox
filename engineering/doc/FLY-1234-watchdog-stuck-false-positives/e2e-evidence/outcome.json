@@ -1,0 +1,51 @@
+{
+	"generatedAt": "2026-07-14T07:09:21.914Z",
+	"prHead": "c9f755aa5",
+	"scenarios": {
+		"a": {
+			"pass": true,
+			"description": "actively-working pane — scrolling output",
+			"result": {
+				"action": "suppress",
+				"reason": "frames_changing"
+			}
+		},
+		"b": {
+			"pass": true,
+			"description": "static pane + corroborating recent comm/stage event",
+			"result": {
+				"action": "suppress",
+				"reason": "judge_a_working"
+			}
+		},
+		"c": {
+			"pass": true,
+			"description": "static pane + NO corroboration — driven through real HeartbeatService.checkStuck tick entry (not confirmStuckCandidate)",
+			"result": null
+		},
+		"d": {
+			"pass": true,
+			"description": "dead pin — remain-on-exit corpse",
+			"result": {
+				"action": "emit",
+				"reason": "dead_pin",
+				"confirmNote": "dead_pin: tmux pane process is a remain-on-exit corpse"
+			}
+		},
+		"e": {
+			"pass": true,
+			"description": "parked husk — declared park (CommDB) + idle shell pane",
+			"result": {
+				"action": "suppress",
+				"reason": "judge_b_parked"
+			}
+		},
+		"f": {
+			"pass": true,
+			"description": "kill-switch byte-revert — FLYWHEEL_STUCK_PANE_CONFIRM=0, real HeartbeatService tick, legacy 2-arg onSessionStuck arity sentinel (INV-5)",
+			"result": null
+		}
+	},
+	"allPass": true,
+	"findings": []
+}

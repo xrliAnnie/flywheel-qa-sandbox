@@ -3,7 +3,18 @@
  * Used by HardRuleEngine, HaikuTriageAgent, HaikuVerifier, FallbackHeuristic.
  */
 
-export type DecisionRoute = "auto_approve" | "needs_review" | "blocked";
+// FLY-493: `pr_handoff` — DecisionLayer routes a no-transport (antigravity)
+// ready_to_merge build to this terminal route instead of needs_review.
+// FLY-793: `phase_design_complete` — a three-stage Design phase-session finished
+// (docs committed to the shared branch, no PR/code). The PhaseOrchestrator acts
+// on it to hand off to the Implement phase. Maps to the non-terminal `design_done`
+// status (NOT a founder-facing terminal); no PR/merge evidence.
+export type DecisionRoute =
+	| "auto_approve"
+	| "needs_review"
+	| "blocked"
+	| "pr_handoff"
+	| "phase_design_complete";
 
 export type DecisionSource =
 	| "hard_rule"
@@ -56,6 +67,14 @@ export interface ExecutionContext {
 
 	// Landing status (v0.6 — undefined if landing not attempted)
 	landingStatus?: LandingStatus;
+
+	/**
+	 * FLY-493 — set to `"none"` for a no-transport (antigravity) Runner that
+	 * cannot be woken to drive the founder-gated ship. When this is `"none"` and
+	 * the landing is `ready_to_merge`, the DecisionLayer routes to `pr_handoff`
+	 * (terminal build+PR handoff) instead of the wake-dependent `needs_review`.
+	 */
+	runnerTransportMode?: "none";
 }
 
 export interface DecisionResult {

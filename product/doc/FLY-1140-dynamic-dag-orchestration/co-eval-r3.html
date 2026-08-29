@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex, nofollow">
+<title>FLY-1140 · 动态编排 —— 第 3 轮(核心化简)</title>
+<style>
+:root{ color-scheme: light; }
+*{ box-sizing:border-box; }
+body{ margin:0; background:#f5f5f7; color:#1d1d1f;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+  line-height:1.65; -webkit-font-smoothing:antialiased; }
+.wrap{ max-width:840px; margin:0 auto; padding:24px 18px 96px; }
+header.top{ padding:14px 4px 6px; }
+h1{ font-size:26px; line-height:1.28; margin:0 0 6px; letter-spacing:-.02em; }
+.sub{ color:#86868b; font-size:15px; margin:0 0 4px; }
+.meta{ color:#86868b; font-size:12.5px; font-family:"SF Mono",ui-monospace,Menlo,monospace; margin-top:8px; }
+.tldr{ background:#fff; border-radius:14px; padding:18px 18px 6px; margin:18px 0 8px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #ff9500; }
+.tldr .k{ font-size:13px; color:#ff9500; font-weight:700; letter-spacing:.02em; text-transform:uppercase; }
+.tldr p{ margin:8px 0 12px; font-size:16px; }
+.card{ background:#fff; border-radius:14px; padding:20px 20px 8px; margin:16px 0;
+  box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #007aff; }
+.card.star{ border-left-color:#af52de; }
+.card.green{ border-left-color:#34c759; }
+.card.gray{ border-left-color:#86868b; }
+.card h2{ font-size:20px; margin:0 0 8px; letter-spacing:-.01em; }
+.card h2 .n{ display:inline-block; min-width:28px; height:26px; line-height:26px; text-align:center;
+  background:#f0f0f4; border-radius:8px; font-size:13px; color:#1d1d1f; margin-right:8px; font-weight:700; padding:0 4px; }
+.card h3{ font-size:15.5px; margin:16px 0 6px; color:#1a365d; }
+.card p{ margin:9px 0; font-size:15px; }
+ul{ margin:8px 0; padding-left:22px; } li{ margin:6px 0; font-size:15px; }
+.lede{ color:#86868b; font-size:14px; margin:2px 0 12px; }
+.mono{ font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; }
+.callout{ background:#f0f0f4; border-radius:10px; padding:12px 14px; margin:12px 0; font-size:14px; }
+.callout b{ color:#1a365d; }
+.tag{ display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px; font-weight:600; margin-right:6px; }
+.tag.built{ background:#e3f8ea; color:#248a3d; } .tag.later{ background:#eceef2; color:#86868b; } .tag.next{ background:#ede5ff; color:#7a3ff2; }
+/* core diagram */
+.core{ margin:12px 0; }
+.cbox2{ background:#faf5ff; border:1.5px solid #af52de; border-radius:12px; padding:12px 14px; text-align:center; font-size:15px; font-weight:600; color:#1a365d; }
+.fdown{ text-align:center; color:#86868b; font-size:12px; margin:5px 0; }
+.outgrid{ display:flex; gap:8px; flex-wrap:wrap; }
+.outgrid > div{ flex:1; min-width:150px; background:#fff; border:1.5px solid #cfe0f5; border-radius:10px; padding:9px 11px; font-size:13px; }
+.outgrid b{ color:#1a365d; }
+.outgrid .sm{ color:#86868b; font-size:12px; }
+/* per-task composition rows */
+.comp{ display:flex; align-items:center; gap:10px; margin:8px 0; font-size:13.5px; }
+.comp .t{ flex:0 0 128px; font-weight:600; color:#1a365d; }
+.comp .d{ flex:1; }
+.chipx{ display:inline-block; background:#eef2f8; border:1px solid #dbe4ef; border-radius:7px; padding:3px 8px; font-size:12.5px; margin:2px 3px 2px 0; }
+.chipx.no{ color:#c0c0c6; text-decoration:line-through; background:#f6f6f8; border-color:#ececef; }
+/* B flow with owner tags */
+.bflow{ margin:12px 0; }
+.step{ display:flex; gap:10px; align-items:flex-start; margin:0; }
+.step .rail{ flex:0 0 24px; display:flex; flex-direction:column; align-items:center; }
+.step .dot{ width:22px; height:22px; border-radius:50%; background:#007aff; color:#fff; font-size:12px; font-weight:700; line-height:22px; text-align:center; }
+.step .line{ width:2px; flex:1; background:#dbe4ef; min-height:16px; }
+.step .body{ flex:1; padding-bottom:14px; }
+.step .body .h{ font-weight:600; font-size:14.5px; }
+.step .who{ display:inline-block; background:#e3f8ea; color:#248a3d; border-radius:7px; padding:2px 9px; font-size:12px; font-weight:600; margin-left:6px; }
+.step .body .ex{ color:#86868b; font-size:13px; margin-top:2px; }
+.snip{ background:#f6f7f9; border:1px solid #e4e7ec; border-left:3px solid #34c759; border-radius:10px; padding:11px 14px; margin:10px 0;
+  font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; color:#1d1d1f; white-space:pre-wrap; line-height:1.6; overflow-x:auto; }
+.snip .c{ color:#86868b; }
+/* ladder */
+.ladder{ margin:12px 0; }
+.rung{ display:flex; align-items:center; gap:10px; margin:6px 0; }
+.rung .lv{ flex:0 0 32px; height:32px; line-height:32px; text-align:center; border-radius:8px; font-weight:700; font-size:14px; background:#f0f0f4; }
+.rung .bd{ flex:1; background:#fff; border:1px solid #ececf0; border-radius:9px; padding:8px 12px; font-size:13.5px; }
+.rung.now .lv{ background:#34c759; color:#fff; } .rung.now .bd{ border-color:#cdeed8; }
+.rung.last .lv{ background:#af52de; color:#fff; } .rung.last .bd{ border-color:#e5d5f5; }
+/* circle box */
+.cx{ margin:14px 0 4px; }
+.cx .ask{ font-size:12.5px; color:#86868b; margin-bottom:6px; font-weight:600; }
+.chips{ display:flex; gap:8px; margin:6px 0 8px; flex-wrap:wrap; }
+.chip{ font-size:12.5px; padding:5px 12px; border-radius:999px; border:1px solid #d2d2d7; background:#fff; color:#1d1d1f; cursor:pointer; font-family:inherit; }
+.chip[aria-pressed="true"]{ background:#1d1d1f; color:#fff; border-color:#1d1d1f; }
+.cx textarea{ width:100%; min-height:56px; border:1px solid #d2d2d7; border-radius:10px; padding:10px 12px;
+  font-family:inherit; font-size:14.5px; color:#1d1d1f; background:#fff; resize:vertical; }
+.cx textarea:focus{ outline:2px solid #007aff; outline-offset:0; border-color:transparent; }
+.bar{ position:sticky; bottom:0; margin-top:24px; background:rgba(245,245,247,.9);
+  backdrop-filter:saturate(180%) blur(12px); padding:12px 4px; display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+button{ font-family:inherit; font-size:14.5px; font-weight:600; padding:10px 16px; border-radius:10px; border:none; cursor:pointer; background:#007aff; color:#fff; }
+button.sec{ background:#e8e8ed; color:#1d1d1f; }
+#status{ font-size:13px; color:#86868b; }
+#exportOut{ width:100%; min-height:140px; margin-top:10px; display:none; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; border:1px solid #d2d2d7; border-radius:10px; padding:10px; }
+.foot{ color:#86868b; font-size:12.5px; margin-top:20px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>动态编排 —— 第 3 轮:化简成「一个核心」</h1>
+  <p class="sub">你认的化简 —— 其实不是好几个并列机制,只有<b>一个核心</b>。这轮用更简的模型重画,尤其把「轻量记录 + 复盘」那条流程画死。</p>
+  <p class="meta">FLY-1140 · 2026-07-10 · co-eval 第 3 轮(r2 作废)· 核心化简</p>
+</header>
+
+<div class="tldr">
+  <span class="k">核心化简</span>
+  <p><b>只有一个核心机制:「Lead 讨论一个任务、当场组一张 DAG」。</b>r2 那个 A–E 并列菜单造成了「好多并列机制要分别做」的错觉 —— 其实 <b>A(谁拍板)和 B(轻量记录)不是单独的仪式,它们只是这次讨论的<u>产出</u></b>。一次讨论,顺手就把它们定了。</p>
+  <div class="core">
+    <div class="cbox2">🧭 Lead 讨论一个任务</div>
+    <div class="fdown">↓ 一次讨论,当场定完这 4 样(不是 4 个独立步骤)</div>
+    <div class="outgrid">
+      <div><b>① 步骤(DAG)</b><div class="sm">分哪几步、什么顺序</div></div>
+      <div><b>② 谁做每步</b><div class="sm">每步派哪个角色积木</div></div>
+      <div><b>③ 谁拍板</b><div class="sm">= A 决策权(顺手定)</div></div>
+      <div><b>④ 轻量记录</b><div class="sm">= B 目标卡(顺手记)</div></div>
+    </div>
+  </div>
+  <div class="callout"><b>一句话:</b>③④ 是 ① 那次讨论的两个产出面,不是另外要做的两件事。消除了 r2 的重叠错觉。</div>
+  <div class="cx">
+    <div class="ask">💬 这个「一个核心 + A/B 是产出」的化简,对不对?</div>
+    <div class="chips" data-chips="core">
+      <button type="button" class="chip" aria-pressed="false">✅ 对,就是这个化简</button>
+      <button type="button" class="chip" aria-pressed="false">✏️ 想调</button>
+    </div>
+    <textarea data-note="core" placeholder="比如:对,清爽多了 / ③④ 说成『产出』很准 / 还想再简…"></textarea>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="n">1</span>决策权 = 每个任务不一样,讨论当场定(PM 不是必选)</h2>
+  <p class="lede">「谁做 + 谁拍板」不是固定班子,是讨论时按<b>这个任务</b>定。看三个真例 —— 组合完全不同:</p>
+  <div class="comp"><span class="t">🐛 简单 bug</span><span class="d"><span class="chipx no">PM</span><span class="chipx">Eng</span><span class="chipx">QA</span> <span class="mono" style="color:#86868b;">— 没 PM,Eng 直接干、QA 验</span></span></div>
+  <div class="comp"><span class="t">📄 一份 doc</span><span class="d"><span class="chipx">PM</span> <span class="mono" style="color:#86868b;">— PM 自己一个人,不用拉别人</span></span></div>
+  <div class="comp"><span class="t">🧩 完整 feature</span><span class="d"><span class="chipx">PM</span><span class="chipx">Designer</span><span class="chipx">Eng</span><span class="chipx">QA</span> <span class="mono" style="color:#86868b;">— 全套上</span></span></div>
+  <div class="callout"><b>所以:</b>没有「标准班子」。<b>PM 不是必选项</b>,简单活可以没有 PM。讨论时看任务需要什么,现挑积木 —— 这就是「动态」的实际长相。</div>
+  <div class="cx">
+    <div class="ask">💬 这三个组合例子分对了吗?「PM 不是必选」你认同吗?</div>
+    <div class="chips" data-chips="dacimix">
+      <button type="button" class="chip" aria-pressed="false">✅ 对</button>
+      <button type="button" class="chip" aria-pressed="false">✏️ 例子想调</button>
+    </div>
+    <textarea data-note="dacimix" placeholder="比如:对,PM 不必选 / 简单 bug 也想留个 PM 知会 / 再加个例子…"></textarea>
+  </div>
+</div>
+
+<div class="card star">
+  <h2><span class="n">2</span>⭐ 轻量记录 + 复盘:一条真实走一遍(画死每步谁负责)</h2>
+  <p class="lede">你说这条看不懂 —— 这轮把它<b>整条走一遍</b>,标清每步<b>谁负责、产出什么</b>。拿一个真任务「今天做 X」举例:</p>
+  <div class="bflow">
+    <div class="step"><div class="rail"><div class="dot">1</div><div class="line"></div></div><div class="body">
+      <span class="h">讨论 + 记轻量记录</span><span class="who">Lead</span>
+      <div class="ex">Lead 讨论「做 X」→ 当场定 DAG + 谁做 + 谁拍板 → 顺手记成一小段(下一步/负责/交接点)。<b>谁记 = Lead</b>(讨论时)。</div>
+    </div></div>
+    <div class="step"><div class="rail"><div class="dot">2</div><div class="line"></div></div><div class="body">
+      <span class="h">做</span><span class="who">runner(被派的角色)</span>
+      <div class="ex">runner 照记录干。中途卡了 → 就地找 Lead 改记录(不用整条重来)。</div>
+    </div></div>
+    <div class="step"><div class="rail"><div class="dot">3</div><div class="line"></div></div><div class="body">
+      <span class="h">交接</span><span class="who">上一步 → 下一步角色</span>
+      <div class="ex">做完 → 交给记录里写好的下一步(如 Eng 做完 → QA)。交接点在记录里已经写死,不用临时问。</div>
+    </div></div>
+    <div class="step"><div class="rail"><div class="dot">4</div><div class="line"></div></div><div class="body">
+      <span class="h">复盘(收尾 3 行)</span><span class="who">收尾的 runner</span>
+      <div class="ex">最后做完的 runner 写 3 行:做到了什么 / 卡在哪 / 下次改什么。<b>谁复盘 = 收尾那个 runner</b>。</div>
+    </div></div>
+    <div class="step"><div class="rail"><div class="dot">5</div></div><div class="body">
+      <span class="h">call-evaluation(打分)</span><span class="who">Lead(早期)/ 自动信号(以后)</span>
+      <div class="ex"><b>谁做 = Lead;出什么 = 一个分</b>(这轮/这个角色版本好不好)→ 喂回下次派活。早期先由 Lead 人肉,以后接自动信号。</div>
+    </div></div>
+  </div>
+  <div class="snip"><span class="c"># 轻量记录长这样(第 1 步的产出)</span>
+做 X · 下一步: 实现 → QA 验
+负责: Eng(做) → QA(验)    拍板: Tadashi
+交接点: Eng 做完 push → QA 接
+<span class="c"># 复盘长这样(第 4 步的产出)</span>
+做到了: X 上线   卡在哪: 无   下次改: —</div>
+  <div class="callout"><b>看懂重点:</b>记录<b>不是新工具</b> —— 就是我们现在 runner 的 progress 文件标准化一下。整条链每步都有明确的人负责(1=Lead / 2·3·4=runner / 5=Lead)。</div>
+  <div class="cx">
+    <div class="ask">💬 这条流程现在看懂了吗?每步谁负责清楚了吗?</div>
+    <div class="chips" data-chips="bflow">
+      <button type="button" class="chip" aria-pressed="false">✅ 看懂了</button>
+      <button type="button" class="chip" aria-pressed="false">❓ 还有步没懂</button>
+      <button type="button" class="chip" aria-pressed="false">✏️ 谁负责想调</button>
+    </div>
+    <textarea data-note="bflow" placeholder="比如:懂了 / 第 5 步 call-evaluation 还是没懂 / 复盘该 Lead 写不是 runner…"></textarea>
+  </div>
+</div>
+
+<div class="card green">
+  <h2><span class="n">3</span>进化阶梯(你已锁定「就按这个走」,不变)</h2>
+  <div class="ladder">
+    <div class="rung now"><span class="lv">1</span><span class="bd"><b>先搭静态 DAG 跑一阵</b> —— 打基础(现在)</span></div>
+    <div class="rung"><span class="lv">2</span><span class="bd"><b>建「人才库」</b> —— 一堆 Agent File(接 FLY-1141)</span></div>
+    <div class="rung"><span class="lv">3</span><span class="bd"><b>Lead 理解 Agent File + 静态 DAG</b> —— 会用积木</span></div>
+    <div class="rung last"><span class="lv">4</span><span class="bd"><b>尝试动态编排</b> —— 上面那个核心真正跑起来</span></div>
+  </div>
+  <p style="font-size:13.5px;color:#86868b;">保留在这里作参照,你已确认。核心那条「Lead 讨论组 DAG」= 第 4 级的样子。</p>
+  <div class="cx">
+    <div class="ask">💬 (已锁,顺手确认)阶梯保持不变?</div>
+    <div class="chips" data-chips="ladder">
+      <button type="button" class="chip" aria-pressed="false">✅ 不变</button>
+      <button type="button" class="chip" aria-pressed="false">✏️ 又想调</button>
+    </div>
+    <textarea data-note="ladder" placeholder="(可留空)…"></textarea>
+  </div>
+</div>
+
+<div class="card gray">
+  <h2><span class="n">4</span>剩下的怎么排(不在这轮铺开)</h2>
+  <ul>
+    <li><span class="tag later">以后</span><b>C 卡壳围上来(swarm)· D 成本感知派活</b> —— 好点子,但不是核心,<b>以后再做</b>。</li>
+    <li><span class="tag next">下一轮</span><b>E 好组合固化成静态模板 + 两维评估</b> —— 核心定了,<b>下一轮专门展开</b>。</li>
+  </ul>
+  <div class="callout"><b>你点出的真难题(留下轮细想):</b>「组合成功率」这种评估有个坑 —— <b>延迟失败很难追溯到是哪个 feature / 哪套组合的锅</b>(问题过很久才暴露)。这个值得单独想清楚,不在 r3 硬铺。</div>
+  <div class="cx">
+    <div class="ask">💬 C/D 押后、E+评估下轮展开 —— 这个排法你同意吗?</div>
+    <div class="chips" data-chips="rest">
+      <button type="button" class="chip" aria-pressed="false">✅ 同意这样排</button>
+      <button type="button" class="chip" aria-pressed="false">✏️ 想调优先级</button>
+    </div>
+    <textarea data-note="rest" placeholder="比如:同意 / D 成本感知我想早点做 / 评估那个坑我有想法…"></textarea>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="n">✓</span>这轮到位了吗?可以收进 PRD 了吗?</h2>
+  <p>化简后的核心 = <b>一个机制(Lead 讨论组 DAG)+ A/B 是它的产出 + 决策权按任务现定 + 记录/复盘/打分整条链</b>。你确认了这几块,我就能收进 PRD(→ Codex design review → 拆 build issue 给 Tadashi;E + 评估留下一轮)。</p>
+  <div class="cx">
+    <div class="ask">💬 核心到位了吗?可以收进 PRD 吗?还有哪块想我再画细?</div>
+    <textarea data-note="overall" placeholder="比如:核心对了,可以收进 PRD / B 流程再确认一遍 / 先别收,E 那轮一起看…"></textarea>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="exportBtn" type="button">📋 汇总我所有批注</button>
+  <button id="clearBtn" class="sec" type="button">清空</button>
+  <span id="status"></span>
+</div>
+<textarea id="exportOut" readonly placeholder="点「汇总我所有批注」,这里出现你圈的全部内容,选中复制发回即可。"></textarea>
+
+<p class="foot">第 3 轮 · 核心化简(r2 作废)· 批注只存你自己浏览器 · FLY-1140</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = "fly1140-coeval-r3-v1";
+  var notes = document.querySelectorAll("textarea[data-note]");
+  var chipGroups = document.querySelectorAll("[data-chips]");
+  var labels = {
+    core:"核心化简(一个机制+A/B产出)", dacimix:"决策权按任务现定/PM非必选",
+    bflow:"⭐记录+复盘整条流程", ladder:"进化阶梯(锁定)", rest:"C/D押后·E+评估下轮", overall:"整体+可否收进PRD"
+  };
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+    notes.forEach(function(t){ var k=t.getAttribute("data-note"); if(saved["n_"+k]) t.value=saved["n_"+k]; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var p=saved["c_"+key];
+      if(p!=null){ var cs=g.querySelectorAll(".chip"); cs.forEach(function(c,i){ c.setAttribute("aria-pressed",(String(i)===String(p))?"true":"false"); }); } });
+  } catch(e){}
+  function persist(){ var o={};
+    notes.forEach(function(t){ o["n_"+t.getAttribute("data-note")]=t.value; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var cs=g.querySelectorAll(".chip"); var s=-1;
+      cs.forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") s=i; }); if(s>=0) o["c_"+key]=s; });
+    try{ localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){} }
+  notes.forEach(function(t){ t.addEventListener("input", persist); });
+  chipGroups.forEach(function(g){ var cs=g.querySelectorAll(".chip");
+    cs.forEach(function(c){ c.addEventListener("click", function(){ var was=c.getAttribute("aria-pressed")==="true";
+      cs.forEach(function(x){ x.setAttribute("aria-pressed","false"); }); c.setAttribute("aria-pressed", was?"false":"true"); persist(); }); }); });
+  var status=document.getElementById("status"), out=document.getElementById("exportOut");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var lines=["FLY-1140 动态 DAG 编排 co-eval 第 3 轮 — Annie 批注",""]; var any=false;
+    notes.forEach(function(t){ var k=t.getAttribute("data-note"); var g=document.querySelector('[data-chips="'+k+'"]'); var ct="";
+      if(g){ var on=g.querySelector('.chip[aria-pressed="true"]'); if(on) ct="["+on.textContent.trim()+"] "; }
+      var v=(t.value||"").trim();
+      if(ct||v){ any=true; lines.push("【"+(labels[k]||k)+"】"); lines.push(ct+v); lines.push(""); } });
+    if(!any) lines.push("(还没圈 / 还没写)");
+    out.value=lines.join("\n"); out.style.display="block";
+    if(any && navigator.clipboard){ navigator.clipboard.writeText(out.value).then(
+      function(){ status.textContent="已汇总 + 复制到剪贴板,直接粘给我即可。"; },
+      function(){ status.textContent="已汇总,选中复制发回即可。"; }); }
+    else { status.textContent = any?"已汇总,选中复制发回即可。":"还没圈 / 还没写。"; }
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    notes.forEach(function(t){ t.value=""; });
+    chipGroups.forEach(function(g){ g.querySelectorAll(".chip").forEach(function(c){ c.setAttribute("aria-pressed","false"); }); });
+    persist(); out.value=""; out.style.display="none"; status.textContent="已清空。";
+  });
+})();
+</script>
+</body>
+</html>

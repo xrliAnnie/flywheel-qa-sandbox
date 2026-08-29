@@ -1,12 +1,14 @@
 import type http from "node:http";
+import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ApplyTransitionOpts } from "../applyTransition.js";
 import { EventFilter } from "../bridge/EventFilter.js";
 import { formatNotification } from "../bridge/event-route.js";
-import { ForumTagUpdater } from "../bridge/ForumTagUpdater.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { BridgeConfig } from "../bridge/types.js";
+import { DirectiveExecutor } from "../DirectiveExecutor.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
@@ -70,9 +72,20 @@ describe("Event route", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -96,6 +109,42 @@ describe("Event route", () => {
 		expect(session).toBeDefined();
 		expect(session!.status).toBe("running");
 		expect(session!.issue_identifier).toBe("GEO-95");
+	});
+
+	// FLY-728: the loopback /events session_started handler persists the resolved
+	// runner model as runner_model (mirrors the DirectEventSink production path).
+	it("POST /events session_started persists payload.runnerModel as runner_model", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						issueTitle: "Test issue",
+						runnerModel: "claude-fable-5",
+					},
+				}),
+			),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.runner_model).toBe("claude-fable-5");
+	});
+
+	it("POST /events session_started without runnerModel leaves runner_model unset", async () => {
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(makeEvent()),
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.runner_model ?? null).toBeNull();
 	});
 
 	it("POST /events with session_completed (needs_review) sets awaiting_review", async () => {
@@ -263,53 +312,15 @@ describe("Event route", () => {
 		expect(session!.decision_route).toBe("auto_approve");
 	});
 
-	it("session_started inherits existing thread for same issue", async () => {
-		// FLY-80: Thread inheritance requires BOTH a conversation_threads entry
-		// (for getThreadByIssue) AND an active session (for getLatestSessionByIssueAndStatuses)
-		store.upsertThread("existing.thread.ts", "test-channel", "issue-1");
-		store.upsertSession({
-			execution_id: "exec-existing",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "running",
-			thread_id: "existing.thread.ts",
-		});
-
-		const res = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent({ execution_id: "exec-new" })),
-		});
-		expect(res.status).toBe(200);
-
-		const session = store.getSession("exec-new");
-		expect(session!.thread_id).toBe("existing.thread.ts");
-	});
-
-	it("session_started without existing thread leaves thread_id empty", async () => {
-		const res = await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent()),
-		});
-		expect(res.status).toBe(200);
-
-		const session = store.getSession("exec-1");
-		expect(session!.thread_id).toBeUndefined();
-	});
+	// FLY-163: forum thread inheritance tests removed — conversation_threads
+	// table dropped, session.thread_id TS field removed.
 });
 
 /** Helper: create a mock RuntimeRegistry for testProjects. */
 function createMockRegistry() {
 	const envelopes: LeadEventEnvelope[] = [];
 	const mockRuntime = {
-		type: "claude-discord" as const,
+		type: "commdb" as const,
 		deliver: vi.fn(async (env: LeadEventEnvelope) => {
 			envelopes.push(env);
 			return { delivered: true };
@@ -360,9 +371,20 @@ describe("Event route — structured hook payload", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -390,33 +412,10 @@ describe("Event route — structured hook payload", () => {
 		expect(env.event.event_type).toBe("session_started");
 		expect(env.event.execution_id).toBe("exec-1");
 		expect(env.event.issue_identifier).toBe("GEO-95");
-		expect(env.event.forum_channel).toBe("test-channel");
+		// FLY-163: forum_channel field removed from HookPayload
 	});
 
-	it("includes thread_id in payload when session has inherited thread", async () => {
-		// FLY-80: Need both conversation_threads entry AND active session for inheritance
-		store.upsertThread("inherited.thread", "CD5QZVAP6", "issue-1");
-		store.upsertSession({
-			execution_id: "exec-thread-owner",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "running",
-			thread_id: "inherited.thread",
-		});
-
-		await fetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent()),
-		});
-
-		await new Promise((r) => setTimeout(r, 100));
-
-		expect(capturedEnvelopes[0]!.event.thread_id).toBe("inherited.thread");
-	});
+	// FLY-163: thread_id payload inheritance test removed.
 });
 
 describe("formatNotification", () => {
@@ -490,12 +489,7 @@ describe("Event route — EventFilter integration", () => {
 	let server: http.Server;
 	let baseUrl: string;
 	let capturedEnvelopes: LeadEventEnvelope[];
-	const tagMap: Record<string, string[]> = {
-		running: ["tag-running"],
-		awaiting_review: ["tag-review"],
-		approved: ["tag-approved"],
-		failed: ["tag-failed"],
-	};
+	// FLY-163: tagMap fixture removed — forum tag mapping path deleted.
 
 	beforeEach(async () => {
 		const mock = createMockRegistry();
@@ -506,7 +500,6 @@ describe("Event route — EventFilter integration", () => {
 			discordBotToken: "bot-token",
 		});
 		const eventFilter = new EventFilter();
-		const forumTagUpdater = new ForumTagUpdater(tagMap);
 		const app = createBridgeApp(
 			store,
 			testProjects,
@@ -516,7 +509,7 @@ describe("Event route — EventFilter integration", () => {
 			undefined, // retryDispatcher
 			undefined, // cipherWriter
 			eventFilter,
-			forumTagUpdater,
+			undefined, // _unusedForumTagUpdater (FLY-163)
 			mock.registry,
 		);
 		server = app.listen(0, "127.0.0.1");
@@ -524,9 +517,20 @@ describe("Event route — EventFilter integration", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -566,24 +570,13 @@ describe("Event route — EventFilter integration", () => {
 		expect(completedPayload.notification_context).toContain("Chat");
 	});
 
-	it("session_started + thread_id exists → runtime.deliver called (FLY-47: Lead announces in Chat)", async () => {
-		// Pre-create thread mapping
-		store.upsertThread("thread-123", "channel-1", "issue-1");
-
-		await postEvent();
-		await new Promise((r) => setTimeout(r, 150));
-
-		// FLY-47: notify_agent — Lead needs to announce session start in Chat
-		expect(capturedEnvelopes.length).toBe(1);
-		expect(capturedEnvelopes[0]!.event.notification_context).toContain("Chat");
-	});
-
-	it("session_started + NO thread_id → runtime.deliver called (high — Chat required)", async () => {
+	it("session_started → runtime.deliver called (FLY-163: chat-only Chat announcement)", async () => {
 		await postEvent();
 		await new Promise((r) => setTimeout(r, 150));
 
 		expect(capturedEnvelopes.length).toBe(1);
 		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("high");
+		expect(capturedEnvelopes[0]!.event.notification_context).toContain("Chat");
 	});
 
 	it("session_failed → runtime.deliver called (high priority)", async () => {
@@ -597,19 +590,11 @@ describe("Event route — EventFilter integration", () => {
 		expect(capturedEnvelopes[0]!.event.filter_priority).toBe("high");
 	});
 
-	it("enriched payload includes forum_tag_update_result", async () => {
-		await postEvent();
-		await new Promise((r) => setTimeout(r, 150));
-
-		// No thread → no_thread
-		expect(capturedEnvelopes[0]!.event.forum_tag_update_result).toBe(
-			"no_thread",
-		);
-	});
+	// FLY-163: "enriched payload includes forum_tag_update_result" test removed.
 });
 
-// GEO-275: no-forum lead tests
-describe("Event route — no-forum lead (GEO-275)", () => {
+// FLY-163: PM lead tests (formerly "no-forum lead", GEO-275)
+describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 	const noForumProjects: ProjectEntry[] = [
 		{
 			projectName: "geoforge3d",
@@ -620,7 +605,7 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 					agentId: "pm-lead",
 					chatChannel: "core-channel",
 					match: { labels: ["PM"] },
-					// No forumChannel — PM lead
+					canSpawnRunners: false,
 				},
 			],
 		},
@@ -634,7 +619,7 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 	beforeEach(async () => {
 		capturedEnvelopes = [];
 		const mockRuntime = {
-			type: "claude-discord" as const,
+			type: "commdb" as const,
 			deliver: vi.fn(async (env: LeadEventEnvelope) => {
 				capturedEnvelopes.push(env);
 				return { delivered: true };
@@ -657,7 +642,6 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 		store = await StateStore.create(":memory:");
 		const config = makeConfig({ discordBotToken: "bot-token" });
 		const eventFilter = new EventFilter();
-		const forumTagUpdater = new ForumTagUpdater({});
 		const app = createBridgeApp(
 			store,
 			noForumProjects,
@@ -667,7 +651,7 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 			undefined, // retryDispatcher
 			undefined, // cipherWriter
 			eventFilter,
-			forumTagUpdater,
+			undefined, // _unusedForumTagUpdater (FLY-163)
 			registry,
 		);
 		server = app.listen(0, "127.0.0.1");
@@ -675,16 +659,27 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
 		store.close();
 	});
 
-	it("session_started event still delivers to runtime for no-forum lead", async () => {
+	it("session_started event delivers to runtime for PM lead via chat_channel", async () => {
 		await fetch(`${baseUrl}/events`, {
 			method: "POST",
 			headers: {
@@ -711,248 +706,12 @@ describe("Event route — no-forum lead (GEO-275)", () => {
 		expect(capturedEnvelopes.length).toBeGreaterThanOrEqual(1);
 		const payload = capturedEnvelopes[0]!.event;
 		expect(payload.event_type).toBe("session_started");
-		// forum_channel should be undefined for no-forum lead
-		expect(payload.forum_channel).toBeUndefined();
+		// FLY-163: forum_channel field removed; chat_channel routes notification.
 		expect(payload.chat_channel).toBe("core-channel");
 	});
 });
 
-// GEO-200: Thread validation regression tests
-describe("Event route — thread validation (GEO-200)", () => {
-	let store: StateStore;
-	let server: http.Server;
-	let baseUrl: string;
-	let capturedEnvelopes: LeadEventEnvelope[];
-	const tagMap: Record<string, string[]> = {
-		running: ["tag-running"],
-	};
-
-	const mockFetchGeo200 = vi.fn();
-
-	beforeEach(async () => {
-		vi.stubGlobal("fetch", mockFetchGeo200);
-
-		const mock = createMockRegistry();
-		capturedEnvelopes = mock.envelopes;
-
-		store = await StateStore.create(":memory:");
-		const config = makeConfig({
-			discordBotToken: "bot-token",
-		});
-		const eventFilter = new EventFilter();
-		const forumTagUpdater = new ForumTagUpdater(tagMap);
-		const app = createBridgeApp(
-			store,
-			testProjects,
-			config,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			eventFilter,
-			forumTagUpdater,
-			mock.registry,
-		);
-		server = app.listen(0, "127.0.0.1");
-		await new Promise<void>((resolve) => server.once("listening", resolve));
-		const addr = server.address();
-		const port = typeof addr === "object" && addr ? addr.port : 0;
-		baseUrl = `http://127.0.0.1:${port}`;
-	});
-
-	afterEach(async () => {
-		vi.unstubAllGlobals();
-		await new Promise<void>((resolve, reject) => {
-			server.close((err) => (err ? reject(err) : resolve()));
-		});
-		store.close();
-	});
-
-	function _postEvent(overrides: Record<string, unknown> = {}) {
-		// Use the real fetch for HTTP calls to the local test server
-		const realFetch = mockFetchGeo200;
-		return realFetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent(overrides)),
-		});
-	}
-
-	it("session_started + valid existing thread → inherit thread_id + notify Lead (FLY-47)", async () => {
-		// FLY-80: Need both conversation_threads entry AND active session for inheritance
-		store.upsertThread("thread-valid", "test-channel", "issue-1");
-		store.upsertSession({
-			execution_id: "exec-prior",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "running",
-			thread_id: "thread-valid",
-		});
-
-		// Mock Discord API validation: 200 (thread exists)
-		// The test server fetch calls also go through mockFetchGeo200
-		mockFetchGeo200.mockImplementation(async (url: string, opts?: any) => {
-			if (
-				typeof url === "string" &&
-				url.includes("discord.com/api/v10/channels/thread-valid")
-			) {
-				return { status: 200 };
-			}
-			// Real HTTP for local test server
-			return globalThis.fetch(url, opts);
-		});
-
-		// Need to restore real fetch for the HTTP call
-		vi.unstubAllGlobals();
-		// Re-seed fetch mock that delegates to real fetch for non-Discord URLs
-		const originalFetch = globalThis.fetch;
-		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
-			if (
-				typeof url === "string" &&
-				url.includes("discord.com/api/v10/channels/")
-			) {
-				return { status: 200 };
-			}
-			return originalFetch(url, opts);
-		});
-
-		const res = await originalFetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent()),
-		});
-		expect(res.status).toBe(200);
-		await new Promise((r) => setTimeout(r, 150));
-
-		// FLY-47: Thread inherited + Lead notified (notify_agent) so Lead can announce in Chat
-		expect(capturedEnvelopes.length).toBe(1);
-		expect(capturedEnvelopes[0]!.event.notification_context).toContain("Chat");
-		const session = store.getSession("exec-1");
-		expect(session?.thread_id).toBe("thread-valid");
-	});
-
-	it("session_started + deleted thread (404) → no inherit, notify_agent", async () => {
-		// FLY-80: Need both conversation_threads entry AND active session for inheritance path
-		store.upsertThread("thread-deleted", "test-channel", "issue-1");
-		store.upsertSession({
-			execution_id: "exec-prior",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "running",
-			thread_id: "thread-deleted",
-		});
-
-		vi.unstubAllGlobals();
-		const originalFetch = globalThis.fetch;
-		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
-			if (
-				typeof url === "string" &&
-				url.includes("discord.com/api/v10/channels/")
-			) {
-				return { status: 404 };
-			}
-			return originalFetch(url, opts);
-		});
-
-		const res = await originalFetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent()),
-		});
-		expect(res.status).toBe(200);
-		await new Promise((r) => setTimeout(r, 150));
-
-		// Thread not inherited → notify_agent (Lead gets notified)
-		expect(capturedEnvelopes.length).toBe(1);
-		expect(capturedEnvelopes[0]!.event.event_type).toBe("session_started");
-		// session should NOT have thread_id
-		const session = store.getSession("exec-1");
-		expect(session?.thread_id).toBeUndefined();
-		// conversation_threads marked as missing
-		expect(store.getThreadByIssue("issue-1")).toBeUndefined();
-	});
-
-	it("session_started + no existing thread → notify_agent", async () => {
-		// No thread seeded
-		vi.unstubAllGlobals();
-		const originalFetch = globalThis.fetch;
-		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
-			return originalFetch(url, opts);
-		});
-
-		const res = await originalFetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent()),
-		});
-		expect(res.status).toBe(200);
-		await new Promise((r) => setTimeout(r, 150));
-
-		// No thread → notify_agent
-		expect(capturedEnvelopes.length).toBe(1);
-		expect(capturedEnvelopes[0]!.event.event_type).toBe("session_started");
-	});
-
-	it("markDiscordMissing clears sessions.thread_id for all sessions with that thread", async () => {
-		// FLY-80: Need both conversation_threads entry AND active session for inheritance path
-		store.upsertThread("thread-stale", "test-channel", "issue-1");
-		store.upsertSession({
-			execution_id: "exec-active-prior",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "running",
-			thread_id: "thread-stale",
-		});
-
-		// Create completed session manually with thread_id pre-set
-		store.upsertSession({
-			execution_id: "exec-old",
-			issue_id: "issue-1",
-			project_name: "geoforge3d",
-			status: "completed",
-		});
-		store.setSessionThreadId("exec-old", "thread-stale");
-		expect(store.getSession("exec-old")?.thread_id).toBe("thread-stale");
-
-		vi.unstubAllGlobals();
-		const originalFetch = globalThis.fetch;
-		vi.stubGlobal("fetch", async (url: string, opts?: any) => {
-			if (
-				typeof url === "string" &&
-				url.includes("discord.com/api/v10/channels/")
-			) {
-				return { status: 404 };
-			}
-			return originalFetch(url, opts);
-		});
-
-		const res = await originalFetch(`${baseUrl}/events`, {
-			method: "POST",
-			headers: {
-				"Content-Type": "application/json",
-				Authorization: "Bearer ingest-secret",
-			},
-			body: JSON.stringify(makeEvent()),
-		});
-		expect(res.status).toBe(200);
-		await new Promise((r) => setTimeout(r, 150));
-
-		// Old session's thread_id should be cleared by markDiscordMissing
-		expect(store.getSession("exec-old")?.thread_id).toBeUndefined();
-	});
-});
+// FLY-163: GEO-200 thread validation describe removed — forum thread concept gone.
 
 // GEO-292: session_stage + pr_number tracking
 describe("Event route — GEO-292 stage tracking", () => {
@@ -963,15 +722,38 @@ describe("Event route — GEO-292 stage tracking", () => {
 	beforeEach(async () => {
 		store = await StateStore.create(":memory:");
 		const config = makeConfig();
-		const app = createBridgeApp(store, testProjects, config);
+		// FLY-60 W2: pass transitionOpts so stage_changed=completed can fire
+		// the canonical applyTransition path. Without it, the W2 branch's
+		// defensive code refuses finalization (matches plugin.ts production).
+		const fsm = new WorkflowFSM(WORKFLOW_TRANSITIONS);
+		const executor = new DirectiveExecutor(store);
+		const transitionOpts: ApplyTransitionOpts = { store, fsm, executor };
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined, // broadcaster
+			transitionOpts,
+		);
 		server = app.listen(0, "127.0.0.1");
 		await new Promise<void>((resolve) => server.once("listening", resolve));
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1071,6 +853,85 @@ describe("Event route — GEO-292 stage tracking", () => {
 			payload: { stage: "brainstorm" },
 		});
 		expect(store.getSession("exec-1")!.session_stage).toBe("brainstorm");
+	});
+
+	// FLY-324: a no-PR / no-code / QA Runner that finishes via
+	// `flywheel-comm stage set completed` only emits a stage_changed event.
+	// Before FLY-324 that left the FSM stuck at `running` (close_runner rejects
+	// it, tmux + worktree linger, idle watchdog false-positives session_stuck).
+	// The stage_changed=completed handler now transitions running→completed.
+	it("FLY-324: stage_changed=completed transitions a still-running session to completed", async () => {
+		await postEvent(); // session_started → running
+
+		const res = await postEvent({
+			event_id: "evt-fly324-done",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+
+		const session = store.getSession("exec-1");
+		expect(session!.status).toBe("completed");
+		expect(session!.session_stage).toBe("completed");
+	});
+
+	it("FLY-324: stage_changed=completed does NOT clobber an awaiting_review session", async () => {
+		await postEvent(); // running
+
+		// Dev Runner created a PR and requested review → awaiting_review.
+		await postEvent({
+			event_id: "evt-fly324-nr",
+			event_type: "session_completed",
+			payload: {
+				decision: { route: "needs_review" },
+				evidence: { commitCount: 1 },
+			},
+		});
+		expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+		// A late stage_changed=completed (no merged landing) must NOT pull the
+		// session back to completed — decision_route is set, so it is not a
+		// done-but-running zombie. Guard: only status===running is swept.
+		const res = await postEvent({
+			event_id: "evt-fly324-late",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+	});
+
+	// Design-review #3: a stage_changed=completed that carries a PR number in its
+	// landing_status must NOT be force-completed (a PR exists → it owes review),
+	// even if pr_number was not yet persisted and decision_route is unset.
+	it("FLY-324: stage_changed=completed with a landing PR number is NOT swept to completed", async () => {
+		await postEvent(); // running
+
+		const res = await postEvent({
+			event_id: "evt-fly324-haspr",
+			event_type: "stage_changed",
+			payload: {
+				stage: "completed",
+				landing_status: { status: "ready_to_merge", prNumber: 321 },
+			},
+		});
+		expect(res.status).toBe(200);
+		// Stays running — a PR session is not no-PR done; review path owns it.
+		expect(store.getSession("exec-1")!.status).toBe("running");
+	});
+
+	// Design-review #2: stage_changed=completed before any session row exists is a
+	// no-op (patchSessionMetadata is UPDATE-only; isDoneButRunning({}) is false),
+	// so FLY-324 never fabricates a transition for a non-existent session.
+	it("FLY-324: stage_changed=completed with no prior session row is a no-op", async () => {
+		const res = await postEvent({
+			execution_id: "exec-norow",
+			event_id: "evt-fly324-norow",
+			event_type: "stage_changed",
+			payload: { stage: "completed" },
+		});
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-norow")).toBeUndefined();
 	});
 
 	it("session_completed extracts pr_number from landingStatus.prNumber", async () => {
@@ -1242,6 +1103,265 @@ describe("Event route — GEO-292 stage tracking", () => {
 		expect(session!.session_stage).toBe("code_review"); // preserved
 		expect(session!.pr_number).toBeUndefined();
 	});
+
+	// FLY-60 W2: post-merge re-finalize from stage_changed=completed +
+	// landing_status.status=merged. Run-#4-repair scope: requires prior
+	// session_completed (with route=needs_review/auto_approve) to have
+	// already written decision_route to StateStore. The stage_changed
+	// event then carries fresh landing_status proving merge.
+	describe("FLY-60 W2: stage_changed=completed + merge proof", () => {
+		it("fires runPostShipFinalization + flips status when awaiting_review + decision_route present + landing_status.status=merged", async () => {
+			// (1) session_started
+			await postEvent();
+			// (2) earlier session_completed with route=needs_review +
+			//     landingStatus.status="ready_to_merge" → status=awaiting_review
+			//     and decision_route=needs_review persisted
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 9 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+			expect(store.getSession("exec-1")!.decision_route).toBe("needs_review");
+
+			// (3) Runner rewrote land-status.json after PR merge and emits
+			//     stage_changed=completed with landing_status proving merge.
+			const res = await postEvent({
+				event_id: "evt-stage-completed-merged",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: {
+						status: "merged",
+						prNumber: 9,
+						mergeCommitSha: "abc123",
+					},
+				},
+			});
+			expect(res.status).toBe(200);
+
+			// W2 assertion: status flipped to completed via canonical FSM path
+			const session = store.getSession("exec-1");
+			expect(session!.status).toBe("completed");
+			expect(session!.session_stage).toBe("completed");
+			// pr_number was patched via sessionFields, not before transition
+			expect(session!.pr_number).toBe(9);
+		});
+
+		it("no-op when stage_changed=completed has no landing_status (back-compat)", async () => {
+			await postEvent();
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 11 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+			await postEvent({
+				event_id: "evt-stage-completed-no-ls",
+				event_type: "stage_changed",
+				payload: { stage: "completed" }, // no landing_status
+			});
+
+			// Status unchanged
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+		});
+
+		it("no-op when stage_changed=completed has landing_status.status != merged", async () => {
+			await postEvent();
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 12 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+			await postEvent({
+				event_id: "evt-stage-completed-not-merged",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "ready_to_merge", prNumber: 12 },
+				},
+			});
+
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+		});
+
+		// Negative-boundary regression test (codex R6 M1):
+		//   running + merged + decision_route UNSET → predicate returns false,
+		//   no FSM transition, no orchestrator fire. Tests that W2 fails-closed
+		//   for the running-only-no-route case which is explicit out of scope
+		//   (would need stage payload to carry route).
+		it("no-op when running + merged + decision_route UNSET (boundary regression)", async () => {
+			await postEvent(); // session_started → status=running, no decision_route yet
+
+			expect(store.getSession("exec-1")!.status).toBe("running");
+			expect(store.getSession("exec-1")!.decision_route).toBeUndefined();
+
+			// stage_changed with merge proof BUT no prior session_completed
+			// → predicate sees route=undefined → returns false → no W2 action
+			await postEvent({
+				event_id: "evt-stage-completed-no-route",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: {
+						status: "merged",
+						prNumber: 50,
+						mergeCommitSha: "deadbeef",
+					},
+				},
+			});
+
+			// Status stays running; W2 did NOT fire orchestrator.
+			expect(store.getSession("exec-1")!.status).toBe("running");
+			// session_stage still updated (stage tracking is informational)
+			expect(store.getSession("exec-1")!.session_stage).toBe("completed");
+		});
+
+		// Idempotency: stage_changed=completed (W2 path) followed by a later
+		// session_completed → both predicate-match, but
+		// runPostShipFinalization atomically claims event_id, so cleanup
+		// only runs once.
+		it("idempotency: W2 then session_completed both fire predicate but cleanup only once", async () => {
+			await postEvent();
+			await postEvent({
+				event_id: "evt-pre-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: { status: "ready_to_merge", prNumber: 77 },
+					},
+				},
+			});
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
+
+			// W2 fires (stage_changed=completed + merged) → status=completed
+			const res1 = await postEvent({
+				event_id: "evt-stage-completed-merged",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: {
+						status: "merged",
+						prNumber: 77,
+						mergeCommitSha: "feedface",
+					},
+				},
+			});
+			expect(res1.status).toBe(200);
+			expect(store.getSession("exec-1")!.status).toBe("completed");
+
+			// Later session_completed arrives (e.g., Blueprint emitTerminal
+			// fired after Runner finally exited). Should be safe to apply
+			// (FSM `completed` is terminal, transition is no-op or rejected).
+			const res2 = await postEvent({
+				event_id: "evt-late-session-completed",
+				event_type: "session_completed",
+				payload: {
+					decision: { route: "needs_review" },
+					evidence: {
+						commitCount: 1,
+						landingStatus: {
+							status: "merged",
+							prNumber: 77,
+							mergeCommitSha: "feedface",
+						},
+					},
+				},
+			});
+			expect(res2.status).toBe(200);
+			expect(store.getSession("exec-1")!.status).toBe("completed");
+		});
+	});
+
+	// FLY-137 Codex R3 #1: worktree_ready can race ahead of
+	// session_started (started is fire-and-forget non-retrying;
+	// worktree_ready is reliable+retried). Upserting the row as
+	// `running` in worktree_ready would make the later
+	// `session_started → running` FSM transition illegal
+	// (`running → running` is not in WORKFLOW_TRANSITIONS) and the
+	// started handler would skip labels/identifier/thread init.
+	describe("FLY-137: worktree_ready before session_started", () => {
+		it("upserts row as pending so session_started's FSM transition is legal", async () => {
+			// 1) worktree_ready arrives first (no prior row).
+			const lateExecId = "exec-race-wt-first";
+			expect(store.getSession(lateExecId)).toBeUndefined();
+			const r1 = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: "evt-wt-race-1",
+					execution_id: lateExecId,
+					issue_id: "issue-race",
+					project_name: "geoforge3d",
+					event_type: "worktree_ready",
+					payload: { worktreePath: "/tmp/race-wt" },
+				}),
+			});
+			expect(r1.status).toBe(200);
+
+			const seeded = store.getSession(lateExecId);
+			expect(seeded?.status).toBe("pending");
+			expect(seeded?.worktree_path).toBe("/tmp/race-wt");
+
+			// 2) session_started lands second — must succeed via
+			//    `pending → running` (legal in WORKFLOW_TRANSITIONS).
+			//    Labels + identifier + stage must populate.
+			const r2 = await fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify({
+					event_id: "evt-started-race",
+					execution_id: lateExecId,
+					issue_id: "issue-race",
+					project_name: "geoforge3d",
+					event_type: "session_started",
+					payload: {
+						issueIdentifier: "GEO-RACE",
+						issueTitle: "race",
+						labels: ["Product", "backend"],
+					},
+				}),
+			});
+			expect(r2.status).toBe(200);
+
+			const after = store.getSession(lateExecId);
+			expect(after?.status).toBe("running");
+			expect(after?.issue_identifier).toBe("GEO-RACE");
+			expect(after?.issue_title).toBe("race");
+			expect(after?.session_stage).toBe("started");
+			// worktree_path preserved from the earlier upsert.
+			expect(after?.worktree_path).toBe("/tmp/race-wt");
+		});
+	});
 });
 
 // GEO-202: issue_identifier must never be null in sessions
@@ -1259,9 +1379,20 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		const addr = server.address();
 		const port = typeof addr === "object" && addr ? addr.port : 0;
 		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
 	});
 
 	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -1406,5 +1537,135 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		expect(session).toBeDefined();
 		// Empty string should be treated as missing → COALESCE preserves GEO-95
 		expect(session!.issue_identifier).toBe("GEO-95");
+	});
+});
+
+// ── FLY-208 7a: stage_context honesty (no reverse assertions from stale snapshots) ──
+//
+// Production incident: stage_changed(completed) said "PR #16 is OPEN ... do
+// NOT tell Annie the PR is merged" 31 seconds AFTER the merge, and "No PR
+// detected" 53 seconds after PR creation — both inferred solely from
+// session.pr_number existence. Now: the event's own landing_status proves a
+// merge; everything else is labeled a timestamped snapshot with a verify
+// instruction. Live PR querying is FLY-210.
+describe("Event route — stage_context honesty (FLY-208 7a)", () => {
+	let store: StateStore;
+	let server: http.Server;
+	let baseUrl: string;
+	let capturedEnvelopes: LeadEventEnvelope[];
+
+	beforeEach(async () => {
+		const mock = createMockRegistry();
+		capturedEnvelopes = mock.envelopes;
+		store = await StateStore.create(":memory:");
+		const config = makeConfig();
+		const app = createBridgeApp(
+			store,
+			testProjects,
+			config,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			mock.registry,
+		);
+		server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const addr = server.address();
+		const port = typeof addr === "object" && addr ? addr.port : 0;
+		baseUrl = `http://127.0.0.1:${port}`;
+		// FLY-827: these tests predate the Codex hard gate and verify notification /
+		// lifecycle behavior orthogonal to codex. Run gate-OFF (byte-compat) so an
+		// awaiting_review completion isn't held by the new codex/isReviewHeld branch.
+		process.env.FLYWHEEL_CODEX_HARD_GATE = "0";
+		// FLY-869: bypass the new merge/QA ship gates — these tests exercise the FSM
+		// mapping, not the approval gate (covered by ship-eligibility + new integration tests).
+		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
+		process.env.FLYWHEEL_QA_DONE_GATE = "0";
+	});
+
+	afterEach(async () => {
+		delete process.env.FLYWHEEL_CODEX_HARD_GATE;
+		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
+		delete process.env.FLYWHEEL_QA_DONE_GATE;
+		await new Promise<void>((resolve, reject) => {
+			server.close((err) => (err ? reject(err) : resolve()));
+		});
+		store.close();
+	});
+
+	async function post(body: Record<string, unknown>): Promise<void> {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(body),
+		});
+		await new Promise((r) => setTimeout(r, 100));
+	}
+
+	function lastStageContext(): string | undefined {
+		const stageEnvs = capturedEnvelopes.filter(
+			(e) => e.event.event_type === "stage_changed",
+		);
+		return stageEnvs[stageEnvs.length - 1]?.event.stage_context;
+	}
+
+	it("merged landing in the event → states the merge (with sha), no hedging needed", async () => {
+		await post(makeEvent());
+		store.patchSessionMetadata("exec-1", { pr_number: 16 });
+		await post(
+			makeEvent({
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "merged", mergeCommitSha: "a6c5d4c7" },
+				},
+			}),
+		);
+		const ctx = lastStageContext();
+		expect(ctx).toContain("PR #16 was merged by the Runner");
+		expect(ctx).toContain("a6c5d4c7");
+		expect(ctx).not.toContain("do NOT tell Annie");
+	});
+
+	it("PR known but landing not merged → timestamped snapshot + verify instruction, NO reverse assertion", async () => {
+		await post(makeEvent({ execution_id: "exec-7a2" }));
+		store.patchSessionMetadata("exec-7a2", { pr_number: 16 });
+		await post(
+			makeEvent({
+				execution_id: "exec-7a2",
+				event_type: "stage_changed",
+				payload: {
+					stage: "completed",
+					landing_status: { status: "ready_to_merge", prNumber: 16 },
+				},
+			}),
+		);
+		const ctx = lastStageContext();
+		expect(ctx).toContain("status snapshot at");
+		expect(ctx).toContain("gh pr view 16");
+		// The incident's reverse assertions are gone:
+		expect(ctx).not.toContain("is OPEN");
+		expect(ctx).not.toContain("do NOT tell Annie");
+	});
+
+	it("no PR recorded → hedged wording (just-created PR may not be ingested yet)", async () => {
+		await post(makeEvent({ execution_id: "exec-7a3" }));
+		await post(
+			makeEvent({
+				execution_id: "exec-7a3",
+				event_type: "stage_changed",
+				payload: { stage: "completed" },
+			}),
+		);
+		const ctx = lastStageContext();
+		expect(ctx).toContain("No PR recorded as of");
+		expect(ctx).toContain("may not be ingested yet");
+		expect(ctx).not.toContain("No PR detected");
 	});
 });

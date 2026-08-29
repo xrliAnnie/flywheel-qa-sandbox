@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-346 · AIO Sandbox 值不值得我们做？</title>
+<style>
+:root{ color-scheme: light; }
+*{ box-sizing:border-box; }
+body{
+  margin:0; background:#f5f5f7; color:#1d1d1f;
+  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Helvetica Neue",Arial,sans-serif;
+  line-height:1.65; -webkit-font-smoothing:antialiased;
+}
+.wrap{ max-width:820px; margin:0 auto; padding:24px 18px 96px; }
+header.top{ padding:14px 4px 6px; }
+h1{ font-size:26px; line-height:1.25; margin:0 0 6px; letter-spacing:-.02em; }
+.sub{ color:#86868b; font-size:15px; margin:0 0 4px; }
+.meta{ color:#86868b; font-size:12.5px; font-family:"SF Mono",ui-monospace,Menlo,monospace; margin-top:8px; }
+.tldr{
+  background:#fff; border-radius:14px; padding:18px 18px 6px; margin:18px 0 8px;
+  box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #ff9500;
+}
+.tldr .k{ font-size:13px; color:#ff9500; font-weight:700; letter-spacing:.02em; text-transform:uppercase; }
+.tldr p{ margin:8px 0 12px; font-size:16.5px; }
+.card{
+  background:#fff; border-radius:14px; padding:20px 20px 8px; margin:16px 0;
+  box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid #007aff;
+}
+.card.warn{ border-left-color:#ff3b30; }
+.card.star{ border-left-color:#af52de; }
+.card.green{ border-left-color:#34c759; }
+.card h2{ font-size:20px; margin:0 0 10px; letter-spacing:-.01em; }
+.card h2 .n{
+  display:inline-block; min-width:26px; height:26px; line-height:26px; text-align:center;
+  background:#f0f0f4; border-radius:8px; font-size:14px; color:#1d1d1f; margin-right:8px; font-weight:700;
+}
+.card h3{ font-size:15.5px; margin:16px 0 6px; color:#1a365d; }
+.card p{ margin:9px 0; font-size:15.5px; }
+ul{ margin:8px 0; padding-left:22px; }
+li{ margin:6px 0; font-size:15.5px; }
+.tag{ display:inline-block; font-size:12px; padding:2px 9px; border-radius:999px; font-weight:600; margin-right:6px; vertical-align:middle; }
+.tag.no{ background:#ffe5e2; color:#ff3b30; }
+.tag.yes{ background:#e3f8ea; color:#248a3d; }
+.tag.maybe{ background:#fff3df; color:#c76a00; }
+.tag.blue{ background:#e5f0ff; color:#0060df; }
+.wtbl{ width:100%; border-collapse:collapse; margin:10px 0; font-size:14.5px; display:block; overflow-x:auto; }
+.wtbl th,.wtbl td{ text-align:left; padding:9px 11px; border-bottom:1px solid #ececf0; vertical-align:top; }
+.wtbl th{ color:#86868b; font-weight:600; font-size:12.5px; text-transform:uppercase; letter-spacing:.02em; }
+.wtbl tr td:first-child{ font-weight:600; white-space:nowrap; }
+.mono{ font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:13px; background:#f0f0f4; padding:2px 6px; border-radius:6px; }
+.pre{ font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; background:#1d1d1f; color:#e6e6ea; padding:12px 14px; border-radius:10px; overflow-x:auto; margin:10px 0; }
+.callout{ background:#f0f0f4; border-radius:10px; padding:12px 14px; margin:12px 0; font-size:14.5px; }
+.callout b{ color:#1a365d; }
+.cbox{ margin:14px 0 4px; }
+.cbox label{ display:block; font-size:12.5px; color:#86868b; margin-bottom:5px; font-weight:600; }
+.cbox textarea{
+  width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:10px; padding:10px 12px;
+  font-family:inherit; font-size:14.5px; color:#1d1d1f; background:#fff; resize:vertical;
+}
+.cbox textarea:focus{ outline:2px solid #007aff; outline-offset:0; border-color:transparent; }
+.bar{
+  position:sticky; bottom:0; margin-top:24px; background:rgba(245,245,247,.9);
+  backdrop-filter:saturate(180%) blur(12px); padding:12px 4px; display:flex; gap:10px; align-items:center; flex-wrap:wrap;
+}
+button{
+  font-family:inherit; font-size:14.5px; font-weight:600; padding:10px 16px; border-radius:10px;
+  border:none; cursor:pointer; background:#007aff; color:#fff;
+}
+button.sec{ background:#e8e8ed; color:#1d1d1f; }
+#status{ font-size:13px; color:#86868b; }
+#exportOut{ width:100%; min-height:120px; margin-top:10px; display:none; font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px; border:1px solid #d2d2d7; border-radius:10px; padding:10px; }
+.foot{ color:#86868b; font-size:12.5px; margin-top:20px; text-align:center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="top">
+  <h1>AIO Sandbox 值不值得我们做？</h1>
+  <p class="sub">字节开源的「一体化 agent 沙箱」到底能不能帮到我们的系统 —— 一页讲清 + 你在每节直接回。</p>
+  <p class="meta">FLY-346 · 2026-07-08 · research（不写代码）· 结论已过 Codex 审两轮</p>
+</header>
+
+<div class="tldr">
+  <span class="k">一句话</span>
+  <p><b>现在这套系统在 Mac 上跑 —— 整个搬进 AIO Sandbox 这种容器，不划算。</b>但你说的对：真要上云 / Windows / Linux，很可能就得容器化，那时才是真问题 ——「用它，还是自研一套」。这页就把这两件事分开讲。</p>
+  <div class="cbox">
+    <label>💬 你对这个总结的第一反应（随手写）</label>
+    <textarea data-note="tldr" placeholder="比如：同意 / 我更担心的是… / 我想先搞清…"></textarea>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="n">1</span>AIO Sandbox 是什么？怎么用？</h2>
+  <p>它是字节开源的一个「<b>啥都齐了的 agent 工作台</b>」—— 把 <b>浏览器、命令行终端、VSCode、Jupyter、文件系统、还有 MCP 工具</b> 全塞进 <b>一个 Docker 容器</b>里，大家共用一套文件系统。开源（Apache 2.0，5.4k 星）。</p>
+  <p><b>怎么起：</b>一条命令，然后浏览器打开就能用（VNC 桌面 / VSCode / Jupyter / 终端都在一个网址下）。</p>
+  <div class="pre">docker run --rm -p 127.0.0.1:8080:8080 ghcr.io/agent-infra/sandbox:latest
+# 然后浏览器开 localhost:8080 —— 浏览器/终端/VSCode/Jupyter 都在这一个口</div>
+  <p><b>它想解决的痛点：</b>过去每个能力（浏览器、终端…）是分开的小沙箱，互相传文件很麻烦。它把这些合一，agent 在浏览器里下载的文件，终端里立刻能用。还自带 MCP（让 AI 直接调浏览器/文件/命令的高层接口），有 Python / TS / Go 三种 SDK。</p>
+
+  <h3>对我们的系统有没有帮助？</h3>
+  <p>看你要它帮什么：</p>
+  <ul>
+    <li><span class="tag yes">有用的点子</span> 一条命令拉起一致环境（可复现）、自带 MCP、多个界面能看 —— 这些「思路」是好的。</li>
+    <li><span class="tag no">但直接搬进来没用</span> 它是给「<b>一个 agent 配一个大工作台</b>」设计的（一个容器 = 一个 agent）。我们是「<b>一台机器上同时跑好几个 runner</b>」，两者形态对不上（详见第 2 节）。</li>
+    <li><span class="tag maybe">MCP 大部分我们已有</span> 我们的 runner 现在已经有终端 MCP + 浏览器（Claude-in-Chrome）默认可用，它的 MCP 对我们增量不大。</li>
+  </ul>
+  <div class="cbox">
+    <label>💬 这节你还有哪里没看懂 / 想让我补的？</label>
+    <textarea data-note="what" placeholder="比如：VNC 是啥 / 我们现在 runner 到底长什么样 / …"></textarea>
+  </div>
+</div>
+
+<div class="card warn">
+  <h2><span class="n">2</span>为什么我觉得「现在」不值得做</h2>
+  <p>不是它不好，是<b>放到我们现在这套（Mac + tmux + 你能在 cmux 里实时看 runner）里，代价 &gt; 收益</b>。四条理由讲透：</p>
+
+  <h3>① 你就看不到 runner 在干嘛了</h3>
+  <p>我们有条硬规矩（FLY-398）：每个 runner 都得是<b>你能在 cmux 里实时盯着的窗口</b>。AIO Sandbox 这类容器里的 agent 是「<b>无界面（headless）</b>」跑的 —— 要保留「你能实时看」，就得把整套观测重写（改成看录像 / VNC / VSCode）。这是伤筋动骨。</p>
+
+  <h3>② Runner 和 Lead 说话，被迫要走网络</h3>
+  <p>现在 Lead 和 runner 沟通是「<b>同一台机器上、走文件 + tmux</b>」，零网络、简单。一旦 runner 关进容器，它俩说话就得跨容器走网络协议（要重做唤醒、审批、心跳这一整套）。这是动整个「沟通 + 生命周期」层。</p>
+
+  <h3>③ 在你的 Mac 上，Docker 本身就有性能税 <span class="tag maybe">你点名的点</span></h3>
+  <p>你的 Mac 是 Apple 芯片。这类容器是 <b>Linux 的东西</b> —— 虽然它最新版本已经补了 arm64 镜像，但它<b>仍然不是原生 mac 程序</b>，在 mac 上跑要靠 <b>Docker Desktop 里的一层 Linux 虚拟机</b>：吃内存（每个容器 ~2GB）、吃 CPU、性能打折。我们之前评估同类沙箱（阿里 OpenSandbox）时就记下过这个「<b>mac 上 Docker 性能差</b>」的坑。</p>
+  <p>另外一个相关的点：这类沙箱的「<b>管住 agent 能连哪些网站（egress 控制）</b>」这类安全能力，<b>基本只在 Linux 上才有效</b> —— 在 mac 上享受不到。所以在 mac 上，我们既付了 Docker 的性能税，又拿不到它最值钱的隔离/管控好处。</p>
+
+  <h3>④ 要重做启动 runner 的一整套代码</h3>
+  <p>现在启动一个 runner 是「开一个 tmux 窗口」。换成容器后，四种 runner（claude / codex / antigravity / kimi）的启动、看门狗、心跳、cmux 同步全都要重写一遍。</p>
+
+  <div class="callout"><b>一句话算账：</b>收益 = 安全隔离 + 环境可复现；代价 = 同时动「启动 / 观测 / 沟通」三层 + mac 上的 Docker 性能税。<b>在单机 mac 上，收益够不着代价。</b></div>
+
+  <div class="callout"><b>⚠️ 但有一件事要诚实说：</b>我们现在的 runner（默认那种）其实<b>没有真正的安全隔离</b> —— 它以你电脑用户的身份跑，理论上能读到机器上的密钥、别的项目。想补这个洞，<b>光加个「路径白名单」是不够的</b>（挡不住 runner 里的脚本自己去读），得靠容器 / mac 的 Seatbelt / 独立用户这类真机制。这是一个<b>独立的安全话题</b>，值不值得单独立项，你定。</div>
+
+  <div class="cbox">
+    <label>💬 哪条理由你觉得站不住 / 想反驳？或哪条其实你不在乎？</label>
+    <textarea data-note="why" placeholder="比如：观测那条我可以接受改成看录像 / 性能税具体多大？ / …"></textarea>
+  </div>
+</div>
+
+<div class="card star">
+  <h2><span class="n">3</span>⭐ 你点的关键问题：上云 / Windows / Linux 之后呢？</h2>
+  <p>这才是真问题。<b>你说得对</b> —— 现在在 mac 上不划算，但如果要把整套系统搬到<b>云上、或 Windows / Linux 机器</b>上跑，<b>很可能就需要容器化了</b>。原因：</p>
+  <ul>
+    <li>云 / Linux 机器上，容器是<b>原生的</b> —— 上面第 2 节 ③ 说的「mac Docker 性能税」和「egress 只在 Linux 有效」这两个坑，<b>在 Linux 上直接消失</b>。</li>
+    <li>多台机器 / 多用户跑时，「一个 runner 关一个笼子」的<b>安全隔离</b>就从「可有可无」变成「真需要」。</li>
+  </ul>
+
+  <h3>那时的真问题：用它，还是自研一套？</h3>
+  <p>我诚实的看法（<b>不预设答案，等你和实际需求定</b>）：</p>
+  <table class="wtbl">
+    <tr><th>维度</th><th>直接用 AIO Sandbox</th><th>自研一套</th></tr>
+    <tr><td>上手速度</td><td><span class="tag yes">快</span> 开源、一条命令、现成 MCP + 多界面</td><td><span class="tag no">慢</span> 从零搭</td></tr>
+    <tr><td>贴合我们</td><td><span class="tag maybe">一般</span> 它为「单 agent 大工作台」设计，非「多 runner + 你实时看」</td><td><span class="tag yes">量身</span> 能保留 FLY-398 实时看 + 我们的沟通模型</td></tr>
+    <tr><td>维护</td><td><span class="tag maybe">依赖别人</span> 跟它的版本走</td><td><span class="tag no">自己扛</span></td></tr>
+    <tr><td>更该抄谁</td><td colspan="2">其实还有个更贴切的参考 <b>homerail</b>（见第 4 节）—— 它已经在做「容器化的 runner 隔离」，比 AIO 更像我们的场景</td></tr>
+  </table>
+  <div class="callout"><b>我的倾向：</b>真到那一步，<b>大概率不是「整套照搬 AIO」，而是「参考 AIO / homerail 的做法，搭一套贴合我们（保留你实时看 + 我们沟通模型）的容器化」</b>。但这要等「上云 / 多机」真立项时再定，跟 <span class="mono">FLY-1005（多机部署）</span> 一起想 —— 我已经跟那条对齐了。</div>
+  <div class="callout"><b>重要区分：</b>「上多机」和「用不用沙箱」是<b>两件事，不绑在一起</b>。多机技术上不一定要沙箱（可以先简单地 SSH + 远程跑）。所以别因为「以后要多机」就现在急着上 AIO 沙箱。</div>
+
+  <div class="callout" style="border-left:3px solid #af52de;">
+    <b>↪ 你在批注里问的：「既然 1005 说要容器化，那我们该容器化吗？用 AIO 还是别的 service？」</b><br><br>
+    <b>要不要容器化：</b>1005 真走到「上云 / Linux / 多机」时<b>要</b>；现在还在 Mac 上<b>不要</b>。这个决定归 <span class="mono">1005</span> 拍，346 给你「用哪个」的素材。<br><br>
+    <b>用哪个 —— 三条路，结合 1005 的一个关键需求一起看：</b>1005 要的是一个「<b>预热节点池（warm pool）</b>」——每个节点得<b>预装浏览器、预登录好 Cloud / Chrome / Suno 这些账号</b>，随时能上手干活。这个需求会直接改变「用哪个」的答案：
+  </div>
+  <table class="wtbl">
+    <tr><th>路</th><th>是什么</th><th>对 1005「预登录富节点池」贴不贴</th></tr>
+    <tr><td><b>① 直接用 AIO Sandbox</b></td><td>现成一体、重、<b>自带浏览器 + 桌面 + 终端 + IDE</b></td><td><span class="tag yes">意外地贴</span> 它「胖、自带浏览器桌面」正好能塞进「预登录 Chrome/Suno 的富节点」——之前嫌它太胖，<b>在这个场景反而是优点</b>，起步最快</td></tr>
+    <tr><td><b>② 轻执行隔离</b>（HomeRail 式，一 node 一容器）</td><td>轻、只有 node + agent CLI</td><td><span class="tag maybe">一般</span> 纯执行隔离最干净，但<b>没浏览器/桌面层</b>，warm pool 要的「预登录浏览器」得自己再加</td></tr>
+    <tr><td><b>③ 自写</b></td><td>完全定制</td><td><span class="tag maybe">最贴但最慢</span> 能保住「你实时看 + 我们的沟通」，但从零搭</td></tr>
+  </table>
+  <div class="callout" style="border-left:3px solid #af52de;">
+    <b>⭐ 跟 1005 对齐（重要，别打架）：</b>1005 的最新版（v5）已经写进去了——「<b>节点的 provisioning 可以站在 346 的 AIO Sandbox 上</b>」。所以 346 这套 AIO Sandbox 的<b>真正位置，不是「346 独立要不要采用」，而是「它当不当 1005 预热节点池的容器化基座」</b>。在云/Linux 上，前面说的 Mac Docker 性能税消失了，而它自带浏览器桌面正好用来放 profile——这时它是个<b>很合理的候选基座</b>。<br>
+    <b>我的诚实倾向：</b>短期要快 → 拿 AIO 当富节点基座起步最省事；长期要保「你实时看 + 我们的沟通」→ 往 ②/③ 收。<b>这个选择归 1005 定，346 提供素材 + 结论：AIO 最合适的角色是「1005 节点基座候选」，不是「现在拿来整套换 runner」。</b>
+  </div>
+
+  <div class="cbox">
+    <label>💬 这才是你最关心的 —— 你倾向哪种？（用它 / 自研 / 参考着搭 / 再等等）还有什么顾虑？</label>
+    <textarea data-note="reframe" placeholder="比如：我更想自研保留实时看 / 先用开源快点验证 / 上云的时间点大概是… / …"></textarea>
+  </div>
+</div>
+
+<div class="card green">
+  <h2><span class="n">4</span>你问的：AIO Sandbox 和 HomeRail 到底啥区别？（附图）</h2>
+
+  <h3>先分清：「沙箱」和「容器」不是对立的两个东西</h3>
+  <p>你问「一个是 Sandbox 一个是 Container，这俩不一样对吧？」—— 其实它俩是<b>两个层次</b>，不是二选一：</p>
+  <ul>
+    <li><b>容器（Container）= 底层砖头</b>。就是 Docker 那套「把一个程序连同它的环境打包、关进一个隔离盒子里跑」的技术。它是<b>机制</b>。</li>
+    <li><b>沙箱（Sandbox）= 用途</b>。指「给 AI agent 安全跑活的封闭环境」。它<b>通常就是用容器实现的</b>。</li>
+  </ul>
+  <div class="callout"><b>所以：AIO Sandbox 和 homerail 的 worker，都是「沙箱」，底下都用「容器」。</b>它俩的区别<b>不在</b>「沙箱 vs 容器」，而在下面这张图里的<b>形状</b>——一个是「一个大盒子」，一个是「一个工厂管很多小盒子」。</div>
+
+  <h3>一张图看懂区别</h3>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;">
+    <div style="flex:1;min-width:250px;background:#faf5ff;border:1px solid #e5d5f5;border-radius:12px;padding:14px;">
+      <div style="font-weight:700;color:#af52de;">AIO Sandbox</div>
+      <div style="font-size:13px;color:#86868b;margin:4px 0 10px;">面向<b>人用</b>的全套开发环境 · 一个胖容器啥都有</div>
+      <div style="border:2px dashed #af52de;border-radius:10px;padding:10px;background:#fff;">
+        <div style="font-size:12px;color:#af52de;margin-bottom:8px;font-weight:600;">📦 1 个容器</div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;">
+          <span style="background:#f0f0f4;border-radius:7px;padding:4px 8px;font-size:12.5px;">🌐 浏览器</span>
+          <span style="background:#f0f0f4;border-radius:7px;padding:4px 8px;font-size:12.5px;">💻 终端</span>
+          <span style="background:#f0f0f4;border-radius:7px;padding:4px 8px;font-size:12.5px;">📝 VSCode</span>
+          <span style="background:#f0f0f4;border-radius:7px;padding:4px 8px;font-size:12.5px;">📊 Jupyter</span>
+          <span style="background:#f0f0f4;border-radius:7px;padding:4px 8px;font-size:12.5px;">📁 文件</span>
+          <span style="background:#f0f0f4;border-radius:7px;padding:4px 8px;font-size:12.5px;">🤖 MCP</span>
+        </div>
+        <div style="font-size:11.5px;color:#86868b;margin-top:8px;">↑ 全部共享同一套文件系统</div>
+      </div>
+      <div style="font-size:12.5px;color:#af52de;margin-top:8px;">= 给「一个 agent」配一个啥都有的工作台。<b>它本身不管调度、不协调多个 agent</b>，就是这个盒子。</div>
+    </div>
+
+    <div style="flex:1;min-width:250px;background:#f0fbf4;border:1px solid #cdeed8;border-radius:12px;padding:14px;">
+      <div style="font-weight:700;color:#248a3d;">HomeRail 的 Docker worker</div>
+      <div style="font-size:13px;color:#86868b;margin:4px 0 10px;">面向 <b>agent 执行</b> · 一个 DAG 节点 = 一个轻隔离容器（工厂管很多小盒子）</div>
+      <div style="border:2px dashed #248a3d;border-radius:10px;padding:10px;background:#fff;">
+        <div style="background:#248a3d;color:#fff;border-radius:8px;padding:6px 10px;font-size:12.5px;text-align:center;">🧠 Manager（大脑）把活拆成 DAG、排给谁</div>
+        <div style="text-align:center;color:#86868b;font-size:11px;margin:6px 0;">Node 按需 拉起 / 关掉 容器 ↓</div>
+        <div style="display:flex;gap:6px;">
+          <span style="flex:1;background:#e3f8ea;border-radius:7px;padding:6px 4px;font-size:11.5px;text-align:center;">📦 worker A<br><span style="color:#86868b;">任务1</span></span>
+          <span style="flex:1;background:#e3f8ea;border-radius:7px;padding:6px 4px;font-size:11.5px;text-align:center;">📦 worker B<br><span style="color:#86868b;">任务2</span></span>
+          <span style="flex:1;background:#e3f8ea;border-radius:7px;padding:6px 4px;font-size:11.5px;text-align:center;">📦 worker C<br><span style="color:#86868b;">任务3</span></span>
+        </div>
+        <div style="font-size:11.5px;color:#86868b;margin-top:8px;">↑ 每个是<b>瘦</b>容器（只有 node + agent CLI），共享一个 run 的 workspace</div>
+      </div>
+      <div style="font-size:12.5px;color:#248a3d;margin-top:8px;">= 一整套<b>编排系统</b>：拉很多小容器、协调它们之间的交接。重点是「多任务协作」，不是「一个大工作台」。</div>
+    </div>
+  </div>
+  <div class="callout"><b>一句话记：</b>底下都是容器（Docker）。<b>AIO = 一个全能大盒子（给一个 agent）；HomeRail = 一个工厂大脑 + 很多小盒子（跑一个多任务流程）。</b>形状完全不同用途也不同。</div>
+
+  <h3>放到我们身上对比</h3>
+  <table class="wtbl">
+    <tr><th></th><th>AIO Sandbox</th><th>HomeRail</th><th>我们（现在）</th></tr>
+    <tr><td>是什么</td><td>一个胖容器工作台</td><td>编排系统 + 很多瘦容器</td><td>tmux 窗口 + worktree（没容器）</td></tr>
+    <tr><td>粒度</td><td>1 容器 : 1 agent</td><td>1 瘦容器 : 1 任务</td><td>N runner 共享本机</td></tr>
+    <tr><td>隔离</td><td>容器（namespace）</td><td>容器 + 挂载白名单（最严）</td><td>只有目录分离，没安全隔离</td></tr>
+    <tr><td>你能实时看？</td><td><span class="tag no">否</span> 无界面</td><td><span class="tag no">否</span> 无界面</td><td><span class="tag yes">能</span> cmux 实时看</td></tr>
+    <tr><td>给写软件用？</td><td>通用工作台</td><td><span class="tag no">明说不是</span></td><td><span class="tag yes">就是</span></td></tr>
+    <tr><td>对我们</td><td>形状不合（单 agent 胖盒 + 无界面）</td><td>形状更近（多 runner 编排 + 真隔离），但无界面 + 非 SWE，<b>抄机制不照搬</b></td><td>—</td></tr>
+  </table>
+  <p style="font-size:14px;color:#86868b;">结论没变：真要容器化时，<b>homerail 是更值得参考的形状</b>（它已经在做「多 runner + 真隔离」），但两者都得改造才贴合我们（保留你实时看）。</p>
+
+  <h3>你追问的几点</h3>
+  <p><b>Q：能把不需要的（比如 IDE / 桌面）拆掉吗？</b><br>
+  能。它开源，浏览器/终端/VSCode/Jupyter/MCP 是可拆模块，可以 fork 砍层、build 一个只留终端+浏览器+MCP 的精简镜像，更轻更省内存。<b>但这里有个关键 trade-off，诚实说清：</b>你砍得越多，最后得到的东西就<b>越接近「自己拼一个瘦容器」</b>。AIO 的价值就是「一整套还预集成好」；一旦砍到只剩终端+浏览器，那份「预集成」的价值也基本没了。<br>
+  <b>所以我的诚实结论：与其「用 AIO 再砍」，不如「拿它当参考（它的组件清单 / 镜像分层）自己搭一个瘦镜像」</b>——这样每一层都是我们自己要的、可控、可保留「你实时看 + 我们的沟通」。（小注：它的官方 repo 其实<b>没有提交现成的 Dockerfile</b>，镜像是在别处 build 的，所以「参考」= 参考它的组件构成/镜像分层，不是照抄一个文件。）判断点不变：要「带浏览器的富节点」（配合 1005 预登录 Chrome/Suno）→ 精简版或自搭都行；连浏览器都不要 → 直接自搭瘦容器 / homerail 式最省。</p>
+  <p><b>Q：这 Sandbox 跑什么系统？macOS / Linux / Windows？</b><br>
+  <b>容器里永远是 Linux。</b>不管你机器是 Mac / Windows / Linux，AIO 跑起来里面都是一个 Linux 环境。区别只在怎么跑这个 Linux 容器：Mac 上→靠 Docker Desktop 的一层 Linux 虚拟机（就是「性能税」）；Linux 机器上→原生跑、没税；Windows→也是 Docker Desktop（WSL2）。这正是「你 Mac 上有 Docker 税、云/Linux 上没有」的根因。<br>
+  <b>具体发行版：</b>外部资料指向 <b>Ubuntu 系（约 Ubuntu 25.10）</b>。诚实标注：它官方 repo <b>没提交现成 Dockerfile</b>（我翻了整个 repo，0 个 Dockerfile，镜像在别处 build），所以确切 base image 我<b>没能从官方源逐字核到 → 标「Ubuntu 系，确切版本 UNKNOWN / 待核」</b>。但「容器=Linux、Mac 上走 Linux VM」这个关键事实是确定的。</p>
+  <p><b>Q：我理解 AIO 当 hub、homerail 一人一容器，对吗？</b><br>
+  <b>基本对，各补一句：</b><br>
+  ① AIO 当 hub（一个 lead + 整个 team 跑在一个 AIO 里）= ✅ 合理用法，一个胖盒子放 lead + 几个 runner 共用同一套环境。<b>代价：他们挤在同一个盒子里、彼此没有隔离</b>（共享 fs，一个出事影响别人）。hub = 省事+共享，牺牲互隔。<br>
+  ② homerail 每个 worker 独立容器 = ✅ 对。小订正「shared」：同一次 run 的几个 worker 共享一个 <b>workspace（数据层）</b>，但它们是<b>各自独立的容器（执行层隔离）</b>。<br>
+  你抓的对比本质很准：<b>AIO-hub = 大家挤一个共享盒子（在一起、无互隔）；homerail = 一人一个隔离盒子（分开）</b>。就是「共享 vs 隔离」这条轴的两端。想「一个 lead+team 共享富环境+预登录浏览器」→ AIO-hub（拆掉 IDE）很贴；想「每个 runner 严格互隔」→ homerail 式。</p>
+
+  <h3>⭐ 关键洞察：这俩不是二选一 —— 可以「分层用」</h3>
+  <p>你上面把 AIO-hub 和 homerail-一人一容器 当成两条路。其实<b>更聪明的用法是把它俩叠起来</b>：<b>上面一层共享的 hub，下面一层每个 runner 一个瘦容器</b>。而这正好对上 1005 想要的架构（「共享 hub + 每个 runner 一个节点」）：</p>
+  <div style="background:#f7f4fc;border:1px solid #e5d5f5;border-radius:12px;padding:14px;margin:12px 0;">
+    <div style="background:#af52de;color:#fff;border-radius:10px;padding:10px 12px;text-align:center;font-size:13.5px;">
+      🧠 <b>Hub 层</b>：一个<b>普通 container</b> / 一台机器<br><span style="font-size:12px;opacity:.92;">Lead + Bridge —— 协调、排活、你在这层实时看（<b>普通容器就够，不用 AIO</b>）</span>
+    </div>
+    <div style="text-align:center;color:#86868b;font-size:12px;margin:8px 0;">每个 runner 各自一个 container ↓（互相隔离；<b>要浏览器就把浏览器装进它</b>）</div>
+    <div style="display:flex;gap:8px;">
+      <div style="flex:1;background:#fff;border:1px solid #cdeed8;border-radius:9px;padding:8px 4px;text-align:center;font-size:12px;">📦 worker<br><b>runner A</b></div>
+      <div style="flex:1;background:#fff;border:1px solid #cdeed8;border-radius:9px;padding:8px 4px;text-align:center;font-size:12px;">📦 worker<br><b>runner B</b></div>
+      <div style="flex:1;background:#fff;border:1px solid #cdeed8;border-radius:9px;padding:8px 4px;text-align:center;font-size:12px;">📦 worker<br><b>runner C</b></div>
+    </div>
+    <div style="text-align:center;color:#86868b;font-size:12px;margin-top:8px;">= hub（普通 container）+ 每 runner 一个隔离 container（homerail 式）。<b>AIO 不是这里的默认</b> —— 见下方</div>
+  </div>
+  <div class="callout"><b>把名词理清（别被绕）：</b><br>
+  · <b>Hub 层 = 一个普通 container</b>（Lead + Bridge）—— 不需要 AIO 那套胖环境，普通容器就够。<br>
+  · <b>Worker = 一个 container</b>（每 runner 一个、互相隔离）—— 要浏览器就把浏览器装进这个 container。<br>
+  · <b>AIO = 可选的「胖节点」方案</b> —— 只在某个 worker 节点要「自带浏览器 + 桌面一整套」时才考虑（多半还用精简版）；它<b>不是 hub 层的东西</b>。<br>
+  所以答案不是「AIO 还是 homerail 二选一」：<b>hub 用普通容器、worker 一人一容器（像 homerail），AIO 只是「要富节点时」的一个可选基座</b>。正好落在 1005 的「共享 hub + 每 runner 一节点」上：1005 只要决定 worker 节点要不要富（要富→AIO 精简版或自搭；不要→瘦容器装该装的），346 已把参照物摆清。</div>
+
+  <div class="cbox">
+    <label>💬 这个图/对比清楚了吗？关于 AIO vs HomeRail 你还想我补哪块？</label>
+    <textarea data-note="homerail" placeholder="比如：图看懂了 / 我更想细看 homerail 怎么隔离 / 那『薄容器化自研』大概多大工作量 / …"></textarea>
+  </div>
+</div>
+
+<div class="card">
+  <h2><span class="n">5</span>那这条 FLY-346 你想怎么处理？</h2>
+  <p>三选一（我推荐 A）：</p>
+  <table class="wtbl">
+    <tr><th>选项</th><th>意思</th></tr>
+    <tr><td><span class="tag blue">A（推荐）</span></td><td>这条 <b>关掉</b>（AIO 整套采用作罢）+ 另开一条「给 runner 补真正的安全隔离」的研究 —— 前提是你觉得 runner 会跑不可信的东西（外部依赖、被诱导的命令）</td></tr>
+    <tr><td><span class="tag blue">B</span></td><td>这条 <b>关掉</b>，隔离也暂不做（接受现在 runner 对本机密钥/项目是全开的这个风险）</td></tr>
+    <tr><td><span class="tag blue">C</span></td><td><b>留着</b>当「以后上云/多机做容器化时」的参考卡片，跟 FLY-1005 挂钩</td></tr>
+  </table>
+  <p style="color:#86868b;font-size:14px;">不管你选哪个，这条<b>都不再是「现在去搭 Docker」</b>。真正要不要沙箱，等「上云 / 多机」那条来驱动。</p>
+  <div class="cbox">
+    <label>💬 你选 A / B / C？或者你有别的想法？</label>
+    <textarea data-note="decision" placeholder="A / B / C，加一句你的理由或新想法…"></textarea>
+  </div>
+</div>
+
+<div class="bar">
+  <button id="exportBtn" type="button">📋 汇总我所有批注</button>
+  <button id="clearBtn" class="sec" type="button">清空</button>
+  <span id="status"></span>
+</div>
+<textarea id="exportOut" readonly placeholder="点上面「汇总我所有批注」，这里会出现你写的全部内容，方便复制发回。"></textarea>
+
+<p class="foot">这页是给你回意见用的 · 你的批注只存在你自己浏览器里 · FLY-346</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = "fly346-notes-v1";
+  var notes = document.querySelectorAll("textarea[data-note]");
+
+  // restore
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+    notes.forEach(function(t){
+      var k = t.getAttribute("data-note");
+      if (saved[k]) t.value = saved[k];
+    });
+  } catch(e){}
+
+  function persist(){
+    var obj = {};
+    notes.forEach(function(t){ obj[t.getAttribute("data-note")] = t.value; });
+    try { localStorage.setItem(KEY, JSON.stringify(obj)); } catch(e){}
+  }
+  notes.forEach(function(t){ t.addEventListener("input", persist); });
+
+  var status = document.getElementById("status");
+  var out = document.getElementById("exportOut");
+
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var labels = {
+      tldr:"总结反应", what:"AIO 是什么/没看懂的", why:"不值得的理由",
+      reframe:"上云/自研倾向", homerail:"AIO vs HomeRail 对比", decision:"决策 A/B/C"
+    };
+    var lines = ["FLY-346 AIO Sandbox — Annie 批注", ""];
+    var any = false;
+    notes.forEach(function(t){
+      var v = (t.value || "").trim();
+      if (v){ any = true; lines.push("【" + (labels[t.getAttribute("data-note")] || t.getAttribute("data-note")) + "】"); lines.push(v); lines.push(""); }
+    });
+    if (!any) lines.push("（还没写批注）");
+    out.value = lines.join("\n");
+    out.style.display = "block";
+    status.textContent = any ? "已汇总，选中复制发回即可。" : "还没写批注。";
+  });
+
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    notes.forEach(function(t){ t.value = ""; });
+    persist();
+    out.value = ""; out.style.display = "none";
+    status.textContent = "已清空。";
+  });
+})();
+</script>
+</body>
+</html>

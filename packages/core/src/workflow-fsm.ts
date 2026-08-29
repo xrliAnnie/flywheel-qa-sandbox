@@ -118,17 +118,60 @@ export class WorkflowFSM {
 // ── Flywheel workflow transition map ─────────────────────────────────
 
 export const WORKFLOW_TRANSITIONS: Record<string, string[]> = {
-	pending: ["running"],
-	running: ["awaiting_review", "completed", "blocked", "failed", "terminated"],
-	// FLY-44: terminate allowed from all started non-terminal states
+	// FLY-1185 §2.12 (R10#5): `terminated` added — a CANCELED issue must be
+	// able to close a never-started (admission-claimed / dispatch-crashed)
+	// session through the FSM instead of a forceStatus bypass.
+	pending: ["running", "terminated"],
+	running: [
+		"awaiting_review",
+		"completed",
+		"blocked",
+		"failed",
+		"terminated",
+		// FLY-793: a three-stage Design phase-session completes into design_done
+		// (non-terminal); the PhaseOrchestrator hands off to the Implement phase.
+		"design_done",
+	],
+	// FLY-793: Design phase done (docs on the shared branch). Non-terminal — the
+	// PhaseOrchestrator captures the head + starts Implement, then this session is
+	// finalized (completed) or fails out (blocked/failed/terminated).
+	design_done: ["completed", "blocked", "failed", "terminated"],
+	// FLY-44: terminate allowed from all started non-terminal states.
+	// FLY-60 W2 (b): `completed` added to support post-merge re-finalization
+	// from the `stage_changed=completed + landing_status.status="merged"`
+	// branch in Bridge event-route. Merge-proof guard lives at the event-route
+	// call site (it must verify landing_status before calling applyTransition);
+	// this FSM map only declares the transition is legal. Defense-in-depth FSM
+	// guard via ctx.payload is a follow-up if needed (per plan §12.3).
 	awaiting_review: [
 		"approved_to_ship",
+		"completed",
 		"rejected",
 		"deferred",
 		"shelved",
 		"terminated",
 	],
-	approved_to_ship: ["completed", "failed", "terminated"],
+	// FLY-208 5a (Codex design R2 #2): `blocked` added — event-route's
+	// route=blocked branch always claimed "ship failed after approval →
+	// blocked" semantics, but the edge was missing, so applyTransition
+	// rejected it and the session stayed stuck in approved_to_ship (the same
+	// latent stuck-state family as the LEARN-12 incident). `blocked` already
+	// has human-unblock exits (deferred/shelved/terminated).
+	//
+	// FLY-945 Fix C: `awaiting_review` added — an approved session whose head
+	// moved after the approval (verify-approval pr_head_sha mismatch) legally
+	// RE-OPENS review with a NEW gate question (`complete --route needs_review
+	// --question-id <new>`). All completion sinks map that combination (new
+	// questionId ≠ current binding, no merged landing) back to awaiting_review;
+	// without this edge the recovery lap was FSM-invalid and fell into the 5a
+	// evidence-gap completion instead of a fresh review window.
+	approved_to_ship: [
+		"awaiting_review",
+		"completed",
+		"blocked",
+		"failed",
+		"terminated",
+	],
 	blocked: ["deferred", "shelved", "terminated"],
 	failed: ["shelved", "terminated"],
 	rejected: ["shelved", "terminated"],
@@ -185,9 +228,16 @@ export const ACTION_DEFINITIONS: ActionDefinition[] = [
 	{
 		action: "terminate",
 		fromStates: [
+			// FLY-1185 (R10#5): pending + design_done added — the WORKFLOW_
+			// TRANSITIONS edges existed (design_done) / were added (pending), but
+			// the ACTION surface never allowed terminating them, so a canceled
+			// issue could not close a parked design phase or a claimed-but-
+			// never-started session without a forceStatus bypass.
+			"pending",
 			"running",
 			"awaiting_review",
 			"approved_to_ship",
+			"design_done",
 			"blocked",
 			"failed",
 			"rejected",

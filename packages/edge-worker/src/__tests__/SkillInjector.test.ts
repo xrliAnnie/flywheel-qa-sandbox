@@ -7,13 +7,14 @@ import { type SkillContext, SkillInjector } from "../SkillInjector.js";
 
 // ─── Helpers ─────────────────────────────────────
 
+// FLY-214: "flywheel-land" is no longer injected — it migrated to the
+// flywheel-skills capability library (user-level, machine-wide).
 const SKILL_NAMES = [
 	"flywheel-context",
 	"linear-issue-context",
 	"flywheel-git-workflow",
 	"flywheel-escalation",
 	"flywheel-tdd",
-	"flywheel-land",
 ];
 
 function makeCtx(overrides: Partial<SkillContext> = {}): SkillContext {

@@ -1,0 +1,10 @@
+⏺ The Lead restarted after the 529 backoff; spawning a fresh runner for GEO-401.
+
+  ⎿  API Error: Server is temporarily limiting requests (not your usage limit). Retrying in 7s… (attempt 1/10)
+
+Resuming the full session will consume a substantial portion of your usage limits.
+We recommend resuming from a summary.
+❯ 1. Resume from summary (recommended)
+  2. Resume full session as-is
+  3. Don't ask me again
+Enter to confirm · Esc to cancel

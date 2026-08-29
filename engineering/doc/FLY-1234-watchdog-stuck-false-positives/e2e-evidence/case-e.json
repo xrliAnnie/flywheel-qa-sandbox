@@ -1,0 +1,26 @@
+{
+	"scenario": "e",
+	"description": "parked husk — declared park (CommDB) + idle shell pane",
+	"execId": "qa1234-e",
+	"tmuxTarget": "qa-fly1234-e2e:case-e",
+	"result": {
+		"action": "suppress",
+		"reason": "judge_b_parked"
+	},
+	"judgeCalls": 1,
+	"judgeVerdict": {
+		"verdict": "b_parked",
+		"attribution": "runner",
+		"suggestedAction": "Leave the agent parked until the QA gate wakes it.",
+		"rationale": "The unchanged idle prompt matches the runtime park state and explicit park reason awaiting QA."
+	},
+	"judgeDurationMs": 7128,
+	"judgeRawStdout": "{\"type\":\"thread.started\",\"thread_id\":\"019f5f75-5a3a-7131-8b25-16185ecb913d\"}\n{\"type\":\"turn.started\"}\n{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"{\\\"verdict\\\":\\\"b_parked\\\",\\\"attribution\\\":\\\"runner\\\",\\\"suggestedAction\\\":\\\"Leave the agent parked until the QA gate wakes it.\\\",\\\"rationale\\\":\\\"The unchanged idle prompt matches the runtime park state and explicit park reason awaiting QA.\\\"}\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":15812,\"cached_input_tokens\":9984,\"output_tokens\":107,\"reasoning_output_tokens\":52}}\n",
+	"judgeRegexCandidates": null,
+	"judgeRealAgentMessages": [
+		"{\"verdict\":\"b_parked\",\"attribution\":\"runner\",\"suggestedAction\":\"Leave the agent parked until the QA gate wakes it.\",\"rationale\":\"The unchanged idle prompt matches the runtime park state and explicit park reason awaiting QA.\"}"
+	],
+	"framesCaptured": 2,
+	"durationMs": 22213,
+	"pass": true
+}

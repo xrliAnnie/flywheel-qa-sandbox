@@ -200,6 +200,12 @@ export interface StatusQueryResult {
 	result: StatusResult;
 	/** Non-null when capture failed with a non-tmux error (400/404). Caller should return this HTTP status. */
 	captureErrorStatus?: number;
+	/**
+	 * FLY-195: raw captured terminal output when the capture succeeded.
+	 * Lets the stuck-runner detector reuse the SAME capture as the idle
+	 * watchdog (one tmux capture-pane per session per poll, not two).
+	 */
+	output?: string;
 }
 
 /**
@@ -250,7 +256,10 @@ export function createStatusQuery(captureSessionFn: CaptureFn): {
 		}
 
 		const raw = detectTerminalStatus(capture.output);
-		return { result: applyStallWatchdog(executionId, capture.output, raw) };
+		return {
+			result: applyStallWatchdog(executionId, capture.output, raw),
+			output: capture.output,
+		};
 	};
 
 	return { query, stopEviction: () => clearInterval(evictionTimer) };

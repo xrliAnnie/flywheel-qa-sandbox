@@ -1,0 +1,106 @@
+# FLY-1062 PR4 · beta payload release — fully automated (Annie 直令: beta
+# every 6h, no gate). No customer-facing action: publishes ONLY to the
+# internal-beta channel; the customer channel is structurally unreachable
+# with the beta-publish capability (the endpoint refuses the diff).
+#
+# CREDENTIAL DISCIPLINE (plan §3): this workflow holds ONLY the app-level
+# beta-publish capability token (internal-beta blast radius). It must NEVER
+# reference a Cloudflare/vendor credential, the customer-release token, or any
+# npm credential — the two customer-facing publishes (promote-commit, shell)
+# are Bridge/broker actions, never CI. release-workflows-structure.test.sh
+# greps for exactly that.
+name: Payload Beta Release
+
+on:
+  # every 6h, fully automated (a scheduled run uses a deterministic
+  # releaseId = beta-<HEAD sourceCommit>, so an idle main never mints a new
+  # beta.N and a crash-retry converges — plan §3 ⑤). Pre-activation guard
+  # below no-ops until FW_ENDPOINT is configured (P5), so scheduled fires
+  # before activation are silent, not failures.
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      release-id:
+        description: "explicit releaseId to FORCE a fresh beta (dispatch only; scheduled runs derive beta-<sourceCommit>)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+# single-flight with every other payload publish operation (plan §B0-8:
+# Actions concurrency + manifest etag CAS, double insurance)
+concurrency:
+  group: payload-release
+
+jobs:
+  beta-release:
+    name: Build + publish beta payload
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # main-only: a scheduled run is always on the default branch; a dispatch
+      # from any other ref is refused (defense in depth — plan §3).
+      - name: Dispatch-ref guard (main only)
+        env:
+          GH_REF: ${{ github.ref }}
+        run: |
+          if [ "$GH_REF" != "refs/heads/main" ]; then
+            echo "::error::beta releases may only run from main (got $GH_REF)"
+            exit 1
+          fi
+
+      # pre-activation guard (plan §3 ⑤): until the endpoint is configured
+      # (P5), a scheduled fire is a clean no-op — never a red run.
+      - name: Pre-activation guard (no-op until FW_ENDPOINT configured)
+        id: preflight
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+        run: |
+          if [ -z "$FW_ENDPOINT" ]; then
+            echo "FW_ENDPOINT not configured — distribution not yet activated (P5). No-op."
+            echo "activated=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "activated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.preflight.outputs.activated == 'true'
+
+      - uses: pnpm/action-setup@v4
+        if: steps.preflight.outputs.activated == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.preflight.outputs.activated == 'true'
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.preflight.outputs.activated == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        if: steps.preflight.outputs.activated == 'true'
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build workspace dist (payload embeds built packages)
+        if: steps.preflight.outputs.activated == 'true'
+        run: pnpm build
+
+      # dispatch inputs never interpolate into shell text — env + quoting only.
+      # No --release-id → payload-release.mjs derives beta-<sourceCommit> and
+      # dedups (skip if that commit already has a committed beta).
+      - name: Beta release (reserve → register → upload → verify → commit)
+        if: steps.preflight.outputs.activated == 'true'
+        env:
+          FW_ENDPOINT: ${{ vars.FW_ENDPOINT }}
+          FW_BETA_PUBLISH_TOKEN: ${{ secrets.FW_BETA_PUBLISH_TOKEN }}
+          RELEASE_ID_INPUT: ${{ inputs.release-id }}
+        run: |
+          if [ -n "$RELEASE_ID_INPUT" ]; then
+            node scripts/release/payload-release.mjs --release-id "$RELEASE_ID_INPUT"
+          else
+            node scripts/release/payload-release.mjs
+          fi

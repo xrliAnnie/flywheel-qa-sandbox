@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kimi Code 视频深读 → Flywheel 接入分析 · FLY-492</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --card:#fff; --shadow:0 1px 3px rgba(0,0,0,0.06);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"SF Pro Text",sans-serif;line-height:1.6;
+    -webkit-font-smoothing:antialiased}
+  .wrap{max-width:960px;margin:0 auto;padding:40px 20px 80px}
+  .mono{font-family:"SF Mono",ui-monospace,monospace}
+  h1{font-size:30px;font-weight:700;letter-spacing:-.02em;margin:0 0 6px}
+  .sub{color:var(--dim);font-size:15px;margin:0 0 4px}
+  .issue-id{font-family:"SF Mono",monospace;color:var(--navy);font-weight:600;text-decoration:none}
+  .tldr{background:var(--card);border-radius:12px;box-shadow:var(--shadow);
+    border-left:4px solid var(--blue);padding:18px 22px;margin:24px 0 32px}
+  .tldr b{color:var(--navy)}
+  .section-title{font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;
+    color:var(--dim);margin:38px 0 14px;display:flex;align-items:center;gap:8px}
+  .section-title .dot{color:var(--red)}
+  .card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:20px 22px;margin:14px 0}
+  .card.blue{border-left:4px solid var(--blue)}
+  .card.green{border-left:4px solid var(--green)}
+  .card.amber{border-left:4px solid var(--amber)}
+  .card.purple{border-left:4px solid var(--purple)}
+  .card.red{border-left:4px solid var(--red)}
+  .card-title{font-size:17px;font-weight:700;margin:0 0 4px}
+  .card-sub{color:var(--dim);font-size:13px;margin:0 0 10px}
+  .badge{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;
+    vertical-align:middle;margin-left:8px}
+  .b-green{background:rgba(52,199,89,.14);color:#1a7a37}
+  .b-amber{background:rgba(255,149,0,.16);color:#9a5b00}
+  .b-red{background:rgba(255,59,48,.14);color:#b3261c}
+  .b-blue{background:rgba(0,122,255,.14);color:#0a4ea3}
+  .b-purple{background:rgba(175,82,222,.16);color:#7a2ca0}
+  .split{display:flex;gap:18px;flex-wrap:wrap}
+  .col{flex:1;min-width:240px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:18px 20px}
+  .col h3{margin:0 0 8px;font-size:15px}
+  .col .lbl{font-size:12px;color:var(--dim);font-weight:600;text-transform:uppercase;letter-spacing:.03em}
+  .arrow{font-size:13px;color:var(--dim)}
+  ul{margin:8px 0;padding-left:20px}
+  li{margin:4px 0}
+  table{width:100%;border-collapse:collapse;background:var(--card);border-radius:12px;overflow:hidden;
+    box-shadow:var(--shadow);font-size:13.5px;margin:14px 0}
+  th,td{padding:11px 13px;text-align:left;vertical-align:top;border-bottom:1px solid #ececef}
+  th{background:#fafafc;font-size:12px;text-transform:uppercase;letter-spacing:.03em;color:var(--dim)}
+  tr:last-child td{border-bottom:none}
+  .yes{color:#1a7a37;font-weight:700}
+  .no{color:#b3261c;font-weight:700}
+  .quote{background:var(--card);border-left:4px solid var(--purple);border-radius:8px;
+    padding:12px 16px;margin:8px 0;font-size:14px;color:#333}
+  .decision{background:linear-gradient(180deg,#fff,#fbfbfd);border-radius:14px;
+    box-shadow:0 2px 10px rgba(0,0,0,.07);border:1px solid #ececef;padding:26px;margin:20px 0}
+  .decision h2{margin:0 0 6px;font-size:20px}
+  .opt{display:flex;gap:14px;align-items:flex-start;padding:14px 0;border-bottom:1px solid #f0f0f2}
+  .opt:last-child{border-bottom:none}
+  .opt .k{font-family:"SF Mono",monospace;font-weight:700;font-size:15px;min-width:62px;color:var(--navy)}
+  .opt .body{flex:1}
+  .opt .head{font-weight:600;margin-bottom:2px}
+  .opt .meta{font-size:13px;color:var(--dim)}
+  .foot{color:var(--dim);font-size:12px;margin-top:40px;border-top:1px solid #e2e2e6;padding-top:16px}
+  .pill{display:inline-block;background:#eef0f3;border-radius:6px;padding:1px 7px;font-size:12px;
+    font-family:"SF Mono",monospace;color:#444}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <p class="sub">研究简报 · Flywheel · 2026-06-22</p>
+  <h1>Kimi Code 那条视频，到底有什么值得抄？</h1>
+  <p class="sub"><a class="issue-id" href="https://linear.app/geoforge3d/issue/FLY-492">FLY-492</a>
+    · 来源：你在 #core 发的小红书《Codex要是抄一下这个功能就好了！》· owner Tadashi · informs FLY-494</p>
+
+  <div class="tldr">
+    <b>一句话：</b>这条视频的「眼」是 Kimi Code 把<b>整段原始视频塞进 agent 上下文</b>（不是抽几张帧），所以它能看懂「过程」——运镜、节奏、转场——把一段录屏一比一复刻成可玩游戏 / 重制成有镜头语言的视频。
+    对 Flywheel 来说：<b>很酷，但当前主线（改代码出 PR）用不到视频；</b>真正的决策是——把 Kimi 接进 Runner，是要<b>便宜地换个模型</b>，还是<b>投工程拿那个独一份的视频能力</b>。这份给你拍。
+  </div>
+
+  <div class="section-title"><span class="dot">●</span> 视频里那个「值得抄的功能」</div>
+  <div class="split">
+    <div class="col" style="border-left:4px solid var(--amber)">
+      <div class="lbl">别人（含 Codex）· 抽帧</div>
+      <h3>只看到「状态」</h3>
+      <p style="font-size:13.5px;margin:0">把视频切成几张孤立静态图。能懂界面长什么样，<b>丢了帧与帧之间的变化</b>——动作、速度、节奏、转场时机、因果。复刻视频 → 「硬生生做成了 PPT」。</p>
+    </div>
+    <div class="col" style="border-left:4px solid var(--green)">
+      <div class="lbl">Kimi Code · video-in-context</div>
+      <h3>看到整个「过程」</h3>
+      <p style="font-size:13.5px;margin:0">把连续帧编码成保留<b>时间维度</b>的「时空块」直接进上下文。所以能复现运镜、动画节奏、转场——复刻视频 → <b>模拟出了摄像机运镜</b>。</p>
+    </div>
+  </div>
+  <div class="quote">「在视频理解这个场景，很可能你用的 Coding Agent 一直都是<b>残血</b>。抽帧看到的是<b>状态</b>，视频上下文看到的是整个<b>过程</b>。」<span style="color:var(--dim)">— 视频作者</span></div>
+
+  <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 它现场演示了什么</div>
+  <div class="card blue">
+    <div class="card-title">三个「从视频直接生成」的 demo <span class="badge b-blue">实拍</span></div>
+    <ul>
+      <li><b>录屏 → 可玩游戏：</b>喂一段 2D 对战游戏录屏，「完整复刻」→ 出一个能玩的 HTML5 游戏（WASD 移动、射击、喷涂占地都实现了）。</li>
+      <li><b>网页动画 1:1 复刻：</b>连作者录屏时不小心录进去的<b>播放器进度条</b>都一起复刻了——证明它在「看画面」不是「读源码」。</li>
+      <li><b>解说视频重制：</b>用 HyperFrame 框架重做一段 SpaceX 财经解说。<span class="no">Codex 版</span>=丢了镜头语言的 PPT；<span class="yes">Kimi 版</span>=还原了叙事 + 运镜。</li>
+    </ul>
+    <p class="card-sub" style="margin:6px 0 0">附带还展示了：Agent Swarm（子 agent 蜂群协同）、终端直接 <span class="pill">Used ReadMediaFile</span>、可插本地模型（Qwen）。</p>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--purple)">●</span> Kimi Code 是什么</div>
+  <div class="card purple">
+    <p style="margin:0">TypeScript 写的终端 coding agent（开源 <span class="mono">MoonshotAI/kimi-code</span>，MIT），定位<b>跟 Claude Code / Codex 一样</b>。模型 = Kimi K2.7-Code（开源、长程 coding 优化）。
+    官方 API <b>同时兼容 OpenAI 和 Anthropic 协议</b>——这点很关键，是「便宜接法」的基础。</p>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--red)">●</span> 接进 Flywheel Runner：三条路</div>
+  <p class="card-sub" style="margin:-4px 0 8px">底层好消息：Flywheel 的 Runner 后端<b>本来就是可插拔的</b>（已经有 Codex 后端在跑），加一个 Kimi 是「沿已铺的路再走一步」，不是新基建。</p>
+  <table>
+    <tr><th>路径</th><th>做法</th><th>成本</th><th>拿到视频能力？</th><th>价值</th></tr>
+    <tr>
+      <td><b>A · 换模型</b><br><span class="badge b-green">推荐先做</span></td>
+      <td>保留现有 claude Runner，把它<b>指向 Kimi 的 Anthropic-兼容端点</b>，骑 FLY-241/247 现成的「换模型」开关</td>
+      <td><b>几小时</b><br>纯配置</td>
+      <td class="no">✗ 拿不到</td>
+      <td>厂商多样性 / 成本 / 韧性（同「Codex 当 Lead」逻辑）</td>
+    </tr>
+    <tr>
+      <td><b>B · 新 Runner 后端</b><br><span class="badge b-amber">战略投入</span></td>
+      <td>写一个 <span class="mono">KimiCodeAdapter</span>，经 <span class="mono">kimi acp</span>（JSON-RPC）驱动 Kimi Code CLI——和现有 Codex 后端<b>同构</b></td>
+      <td><b>一个工程</b><br>写 ACP 客户端</td>
+      <td class="yes">✓ 唯一能拿</td>
+      <td>解锁视频驱动工作流；agent-agnostic 后端战略的旗舰</td>
+    </tr>
+    <tr>
+      <td><b>C · 我们已经在做</b><br><span class="badge b-purple">记一笔</span></td>
+      <td>FLY-349 小红书引擎<b>已经</b>在把整段原片喂多模态模型（这份研究就是用它读的视频）</td>
+      <td>已存在</td>
+      <td class="yes">✓（研究管线）</td>
+      <td>「原片入上下文 &gt; 抽帧」已在内部验证</td>
+    </tr>
+  </table>
+
+  <div class="card amber">
+    <div class="card-title">一条诚实更正 <span class="badge b-amber">关于 Path B</span></div>
+    <p style="margin:0">我初判「Path B 被 headless 卡死」——<b>不准确</b>。概览文档没提无人值守模式，但 <span class="mono">kimi acp</span> 参考页确认它就是个干净的 JSON-RPC/stdio 驱动面（能 spawn、发 prompt、流式收工具调用+完成信号，12 个稳定方法实现了 10 个）。
+    所以 Path B <b>不是「做不了」，是「能做，但要写一个适配器（真工程，不是改配置）」</b>。这反而让 A vs B 的取舍更清楚。</p>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--green)">●</span> 给你拍的决策 · FLY-494 往哪走</div>
+  <div class="decision">
+    <h2>Kimi 集成（FLY-494）第一步，走 A 还是投 B？</h2>
+    <p class="card-sub">我的研究结论：<b>先 A、B 待真实视频用例</b>。但你的 vision 是 agent-agnostic CLI 后端（偏 B），所以这个由你拍——把取舍诚实摆给你：</p>
+    <div class="opt">
+      <span class="k">走 A</span>
+      <div class="body">
+        <div class="head">便宜，立刻拿到「Kimi 这个模型」</div>
+        <div class="meta">几小时、纯配置、骑现成基建。拿厂商多样性/成本/韧性。<b>但拿不到视频能力</b>——claude 的壳不会把原始视频喂给模型。</div>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="k">投 B</span>
+      <div class="body">
+        <div class="head">投工程，拿到「视频里那个独一份的能力」</div>
+        <div class="meta">写一个 ACP 适配器（可行、与现有 Codex 后端同构，不是死路）。解锁录屏→UI 复刻 / 视觉 QA 这类工作流。<b>前提：先有一个真实视频用例值得它。</b></div>
+      </div>
+    </div>
+    <div class="opt">
+      <span class="k">两者</span>
+      <div class="body">
+        <div class="head">A 先上、B 记 backlog spike（我的默认推荐）</div>
+        <div class="meta">A 立刻拿模型多样性收益；B 等一个具体视频用例出现再投。Tadashi 会把你这个结论带进 FLY-494 scoping。</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="section-title"><span class="dot" style="color:var(--dim)">●</span> 一句元观点（值得记）</div>
+  <div class="quote">「谁最先理解模型厂的技术路线、最先在新能力上跑通整个工作流，谁就能在新一轮迭代里最早拿到红利。」
+  <br><span style="color:var(--dim)">— 这正是 Flywheel 把 Lead/Runner 做成「换后端只是配置」的同一条逻辑。</span></div>
+
+  <p class="foot">
+    诚实分层：① 视频<b>明确展示</b>=视频生成可玩游戏代码、能还原时间相关元素、内置 Agent Swarm。
+    ② <b>官方证实</b>=Kimi Code 开源 TS CLI、API 兼容 OpenAI/Anthropic、<span class="mono">kimi acp</span> 是 JSON-RPC 驱动面。
+    ③ <b>我的推断</b>=「视频入上下文」是作者基于 MoonViT-3D 技术路线的解释（非直接日志）；Path A 用的是 Claude Code 自带的「指向第三方端点」能力，且<b>不会</b>带来视频能力。
+    <br>完整研究：<span class="mono">doc/engineer/research/new/FLY-492-kimi-code-runner-cli.md</span>
+  </p>
+
+</div>
+</body>
+</html>

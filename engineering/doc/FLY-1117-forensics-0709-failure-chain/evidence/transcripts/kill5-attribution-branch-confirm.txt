@@ -1,0 +1,28 @@
+# transcript: kill5-attribution-branch-confirm
+# command: bash -c 
+echo "=== which branches contain the 21:09/21:36 ship-route commits ==="
+git -C ~/Dev/flywheel branch --all --contains 6219b990 2>/dev/null
+echo "=== FLY-1018 worktree git activity 20:00-23:59 ==="
+git -C ~/Dev/flywheel-FLY-1018 log --format="%h %ci %s" --since="2026-07-09 20:00" --until="2026-07-09 23:59" 2>/dev/null | head -10
+echo "=== FLY-1018 worktree branch ==="
+git -C ~/Dev/flywheel-FLY-1018 branch --show-current 2>/dev/null
+# collected_at: 2026-07-10T08:32:04Z (host local: 2026-07-10 01:32:04 PDT)
+# host: MacBook-Pro.local / 26.3.2 / x86_64
+# ----
+=== which branches contain the 21:09/21:36 ship-route commits ===
++ flywheel-FLY-1018
+  remotes/origin/flywheel-FLY-1018
+=== FLY-1018 worktree git activity 20:00-23:59 ===
+8510cc71 2026-07-09 23:31:53 -0700 chore(progress): FLY-1018 implement 15/15
+785fb1b0 2026-07-09 23:18:42 -0700 fix(gemini-agent): FLY-1060 R2 F4 — save_memory identity is binding-attached, never model-guessed
+39f2c6e5 2026-07-09 22:35:09 -0700 chore(progress): FLY-1018 implement 15/15
+9a3b751d 2026-07-09 22:25:02 -0700 chore(progress): FLY-1018 implement 15/15
+32d579f1 2026-07-09 22:11:11 -0700 chore(progress): FLY-1018 implement 15/15
+6d7f70cc 2026-07-09 22:11:09 -0700 fix(gemini-agent+teamlead): FLY-1060 QA kickback — F1/F2/F3 tool-contract fixes
+097e1609 2026-07-09 21:36:52 -0700 chore(progress): FLY-1018 implement 15/15
+6219b990 2026-07-09 21:36:35 -0700 test: post-rebase hygiene — stack-test 30s timeout + lint unused cleanup
+6b7dfd99 2026-07-09 21:09:25 -0700 chore(progress): FLY-1018 implement 15/15
+166adc85 2026-07-09 21:09:25 -0700 fix(teamlead): tokenless ship-approval 503 truly BEFORE body parse (Codex R1)
+=== FLY-1018 worktree branch ===
+flywheel-FLY-1018
+# exit_code: 0

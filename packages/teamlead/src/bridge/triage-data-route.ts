@@ -14,6 +14,7 @@ import {
 	LinearUpstreamError,
 	queryLinearIssues,
 } from "./linear-query.js";
+import { resolveLinearScope, resolveProjectNameParam } from "./linear-scope.js";
 import type { IStartDispatcher } from "./retry-dispatcher.js";
 
 export interface TriageDataResponse {
@@ -26,7 +27,8 @@ export interface TriageDataResponse {
 		running: number;
 		inflight: number;
 		total: number;
-		max: number;
+		/** FLY-123 WS-D (P4): `null` = uncapped (resource-based admission). */
+		max: number | null;
 	};
 }
 
@@ -41,7 +43,6 @@ export function createTriageDataRouter(
 	store: StateStore,
 	projects: ProjectEntry[],
 	linearApiKey: string | undefined,
-	maxConcurrentRunners: number,
 	startDispatcher?: IStartDispatcher,
 ): Router {
 	const router = Router();
@@ -58,6 +59,11 @@ export function createTriageDataRouter(
 		const stateParam = Array.isArray(req.query.state)
 			? (req.query.state as string[]).join(",")
 			: (req.query.state as string | undefined);
+		// FLY-371: optional labels filter (mirrors /api/linear/issues), usable on
+		// its own to let label-scoped COEs scope the triage view.
+		const labelsParam = Array.isArray(req.query.labels)
+			? (req.query.labels as string[]).join(",")
+			: (req.query.labels as string | undefined);
 		const limitRaw =
 			req.query.limit !== undefined
 				? parseInt(String(req.query.limit), 10)
@@ -67,30 +73,65 @@ export function createTriageDataRouter(
 			: Math.min(Math.max(1, limitRaw), 250);
 		const leadId = req.query.leadId as string | undefined;
 
+		// FLY-371: resolve the Flywheel projectName → Linear binding. Fail-loud on
+		// a bad/unknown projectName; absent ⇒ byte-compatible.
+		const bound = resolveProjectNameParam(projects, req.query.projectName);
+		if (!bound.ok) {
+			res.status(bound.status).json({ error: bound.error });
+			return;
+		}
+		// The validated, normalized projectName (used to scope sessions below).
+		const projectNameStr = Array.isArray(req.query.projectName)
+			? String(req.query.projectName[0])
+			: (req.query.projectName as string | undefined);
+		// Codex R2 LOW-3: drop blank label tokens before merging so an empty
+		// `?labels=` does not suppress the binding label default.
+		const explicitLabels = labelsParam
+			? labelsParam
+					.split(",")
+					.map((l) => l.trim())
+					.filter(Boolean)
+			: undefined;
+		const scope = resolveLinearScope(bound.binding, {
+			project: project ?? undefined,
+			labels: explicitLabels,
+		});
+
 		try {
 			const slim = req.query.slim === "true" || req.query.slim === "1";
 
 			// Run Linear query and local queries concurrently
 			const [linearResult, activeSessions] = await Promise.all([
 				queryLinearIssues(linearApiKey, {
-					project: project ?? undefined,
+					project: scope.project,
 					states: stateParam
 						? stateParam.split(",").map((s) => s.trim())
 						: ["backlog", "unstarted", "started"],
+					labels: scope.labels,
 					limit,
 					slim,
 				}),
 				Promise.resolve(store.getActiveSessions()),
 			]);
 
+			// FLY-371: when scoped by projectName, narrow visible sessions to that
+			// project BEFORE the existing leadId filter — a label-scoped COE should
+			// not see other Flywheel projects' sessions. Capacity (below) stays
+			// computed from ALL active sessions: it is a machine-level admission
+			// signal, not a per-project view.
+			const projectScopedSessions = projectNameStr
+				? activeSessions.filter((s) => s.project_name === projectNameStr)
+				: activeSessions;
+
 			// Apply lead scope filter to sessions
 			const filteredSessions = filterSessionsByLead(
-				activeSessions,
+				projectScopedSessions,
 				leadId,
 				projects,
 			);
 
-			// Compute capacity
+			// Compute capacity (global — counts ALL active sessions, not the
+			// project-scoped subset above).
 			const running = activeSessions.filter(
 				(s) => s.status === "running",
 			).length;
@@ -106,7 +147,8 @@ export function createTriageDataRouter(
 					running,
 					inflight,
 					total: running + inflight,
-					max: maxConcurrentRunners,
+					// FLY-123 WS-D (P4): uncapped — `null` = unbounded (never `max: 0`).
+					max: null,
 				},
 			};
 

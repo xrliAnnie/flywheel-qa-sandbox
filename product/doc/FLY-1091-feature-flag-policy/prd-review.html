@@ -1,0 +1,364 @@
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>FLY-1091 · 动态 Feature Flag PRD — 过目版</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:-apple-system,system-ui,"SF Pro Text",Segoe UI,Roboto,sans-serif;line-height:1.62;-webkit-text-size-adjust:100%}
+.wrap{max-width:920px;margin:0 auto;padding:20px 16px 96px}
+h1{font-size:22px;line-height:1.25;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 4px}
+.secnum{color:var(--dim)}
+h2{font-size:19px;margin:30px 0 6px;letter-spacing:-.01em;padding-top:10px;border-top:1px solid var(--line)}
+h2:first-of-type{border-top:none}
+h3{font-size:15px;margin:14px 0 4px;color:var(--navy)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:10px 0;box-shadow:0 1px 3px rgba(0,0,0,.05)}
+.card.blue{border-left:4px solid #007aff}.card.green{border-left:4px solid #34c759}.card.amber{border-left:4px solid #ff9500}.card.gray{border-left:4px solid var(--dim)}
+p{margin:7px 0}ul,ol{margin:6px 0 8px 2px;padding-left:22px}li{margin:5px 0}
+code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:.84em;background:#f0f0f4;padding:1px 5px;border-radius:5px}
+b{color:#111}
+.meta{background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px 13px;font-size:13px;color:#444;margin:8px 0}
+.meta b{color:#111}
+.concl{background:#f1faf3;border:1px solid #b8e6c4;border-radius:10px;padding:8px 11px;margin:9px 0;font-size:13.5px}
+.concl.blue{background:#f4f9ff;border-color:#bcd9ff}
+.concl .lbl{font-weight:700;color:#1a7a37}.concl.blue .lbl{color:#1a5fb4}
+.warn{background:#fffaf3;border:1px solid #f0d9a8;border-left:4px solid #ff9500;border-radius:10px;padding:9px 12px;margin:9px 0;font-size:13px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:8px 0}
+table{border-collapse:collapse;width:100%;min-width:560px;font-size:12.8px}
+th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+th{background:#fafafd;font-weight:600}
+pre{background:#1d1d1f;color:#e5e5ea;border-radius:10px;padding:12px 14px;overflow-x:auto;-webkit-overflow-scrolling:touch;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:11.5px;line-height:1.5;margin:8px 0}
+pre.flow{background:#f6f6fa;color:#333;border:1px solid var(--line)}
+.tag{display:inline-block;font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px}
+.tag.ok{background:#e3f9ea;color:#1a7a3c}.tag.no{background:#fdeaea;color:#c0322b}
+.own{display:inline-block;font-size:11px;font-weight:700;padding:1px 7px;border-radius:6px;vertical-align:middle}
+.own.p{background:#e7f0ff;color:#1a5fb4}.own.e{background:#fff4e5;color:#a05a00}
+.hint{color:var(--dim);font-size:12.5px;margin:6px 0}
+.topnote{background:#fff;border:1px solid var(--line);border-left:4px solid #34c759;border-radius:12px;padding:12px 14px;margin:8px 0;font-size:13.5px}
+.cmt{margin:12px 0 4px;background:#fbfbfd;border:1px dashed #d6d6de;border-radius:10px;padding:8px 10px}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin-bottom:4px}
+.cmt textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;padding:8px 10px;font:inherit;font-size:14px;background:#fff;resize:vertical}
+.cmt textarea:focus{outline:2px solid #007aff;outline-offset:1px;border-color:transparent}
+.signoff{background:#f4f9ff;border:2px solid #007aff;border-radius:12px;padding:13px 15px;margin:14px 0}
+.signoff .lbl{font-weight:800;color:#1a5fb4;display:block;margin-bottom:4px}
+.opts{margin:8px 0 2px;display:flex;flex-direction:column;gap:6px}
+.opt{display:flex;gap:9px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:10px;padding:9px 11px;cursor:pointer}
+.opt:hover{background:#fafaff}.opt input{margin-top:3px;flex:0 0 auto;width:16px;height:16px;accent-color:#007aff}
+.opt .ot{font-size:13.5px}.opt .rec{display:inline-block;font-size:11px;font-weight:700;color:#1a7a3c;background:#e3f9ea;padding:0 6px;border-radius:5px;margin-left:5px}
+.bar{position:sticky;bottom:0;margin-top:24px;background:rgba(245,245,247,.92);backdrop-filter:saturate(180%) blur(8px);border-top:1px solid var(--line);padding:10px 0;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+button{font:inherit;font-size:14px;font-weight:600;border:none;border-radius:10px;padding:9px 16px;cursor:pointer}
+button.primary{background:#007aff;color:#fff}button.ghost{background:#fff;color:var(--navy);border:1px solid var(--line)}
+#saveHint{color:var(--dim);font-size:12.5px}
+dialog{border:none;border-radius:14px;padding:0;max-width:680px;width:92%;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+.dlg{padding:18px 20px}.dlg h3{margin-top:0}.dlg textarea{width:100%;min-height:220px;border:1px solid var(--line);border-radius:10px;padding:10px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.5px}
+</style>
+</head>
+<div class="wrap">
+<header>
+  <h1>动态 Feature Flag(方案 A)—— PRD 过目版</h1>
+  <p class="sub">FLY-1091 · 2026-07-10 · 这是你 co-eval 5 轮定下来的方案,写成了工程照着能建的 PRD</p>
+</header>
+
+<div class="topnote">
+  <b>这就是把咱们聊定的方案 A 写成的正式 PRD(全文,没删没简化)。</b> 已经过了 <b>Codex 设计评审 5 轮、APPROVED</b> —— 它逐轮抠出并修掉了跨进程读取、并发、回滚这些真坑。<br>
+  你只要过目一遍、看方向和范围对不对,底部圈 <b>「放行 build 吗」</b>。<br>
+  ⚙️ 工程可行性那一关(reader 契约/表结构/性能/迁移能不能落地)<b>HL 会另外拉 Tadashi 确认</b>,你不用管细节。技术段落看不进去可以跳,重点看 §0 一句话、§1 病根、§3 目标、§8 谁负责。
+</div>
+
+<div class="meta">
+  <b>Version</b>: v5(并入 Codex R1–R5 全部修订;5 轮 APPROVED)　·　<b>Status</b>: codex-approved　·　<b>Owner</b>: 产品 = Annie + Honey Lemon / 工程 = Tadashi<br>
+  <b>PRD 全文</b>: <code>engineering/doc/FLY-1091-dynamic-feature-flags/prd.md</code>(在 PR #533)
+</div>
+
+<!-- 0 -->
+<h2><span class="secnum">0 · </span>一句话</h2>
+<div class="card blue">
+  <p>把 Feature Flag 的「开/关值」从「散在 Bridge 全局 <code>.env</code>、进程启动读死、改了要重启」,改成「存在 Bridge 已有数据库(SQLite)的<b>三张新表</b>里、进程<b>用到时现读</b>、Dashboard 改完<b>立即生效、不重启、每项目一份</b>」。</p>
+  <div class="concl blue"><span class="lbl">方案 A 已由你在 co-eval 中选定</span> 本 PRD 把它写到 Tadashi 照着能建。</div>
+  <div class="warn"><b>Codex 评审纠正的关键事实(已全部改进 PRD):</b> ① 读方是 Bridge/Lead/Runner <b>多个独立进程</b> → 要跨进程 reader 契约;② 数量 83 个 flag = 77 env + 6 项目配置、10 个能直切;③ 「每项目不一样」和「无损回滚到任意旧版本」<b>不可兼得</b> → 用分阶段 cutover 模型;④ 清除开关用 tombstone(墓碑标记)不删行,防并发 bug。</div>
+</div>
+
+<!-- 1 -->
+<h2><span class="secnum">1 · </span>Problem(病根,数字按实际代码校正)</h2>
+<div class="card">
+  <ol>
+    <li><b>改一个 flag 要重启整个项目 —— 不可接受。</b> 83 个 flag = <b>77 env + 6 项目配置</b>;只有 10 个现在能不重启切。真正「必须改代码」的规模由迁移清单(M0)得出,不写死一个数。</li>
+    <li><b>flag 值不分项目。</b> 77 个 env flag 现在全是「全局一份」;「某项目先开、别的先不开」今天做不到。</li>
+    <li><b>值和意图不分。</b> 登记表只记「flag 是什么 + 当前值」,不记「意图」—— 分不清关着的 flag 是「故意关」还是「忘了开」。</li>
+    <li><b>只增不减。</b> env flag 一周从 40→77,<b>从没删过一个</b>。</li>
+    <li><b>代码合了 ≠ 功能活了。</b> merge 与打开之间的空窗(FLY-929 睡 2 天、auto-QA 数周没触发)。</li>
+  </ol>
+  <div class="concl"><span class="lbl">本 PRD 范围</span> 主攻 ①②③(动态、每项目、记意图)。④⑤ 的清理规范 + 83 个 flag 逐条 audit = 单独的 <b>FLY-1136</b>;本 PRD 只留数据基础(intent 字段 + change-log),不实现清理/提醒机制。</div>
+</div>
+
+<!-- 2 -->
+<h2><span class="secnum">2 · </span>Users</h2>
+<div class="card">
+  <ul>
+    <li><b>唯一用户 = 你(founder)。</b> 在 Dashboard(FLY-1038)按项目自助开关、立即生效、不重启、不找工程。</li>
+    <li><b>读方 = 确有 flag 读点的进程</b>(Bridge / Runner;Lead 有没有真实读点由 M0 核实,没有就不当 reader)。它们是独立进程 —— 本设计核心约束。</li>
+  </ul>
+</div>
+
+<!-- 3 -->
+<h2><span class="secnum">3 · </span>Goals</h2>
+<div class="card green">
+  <ul>
+    <li><b>G1</b> 改一个已迁移 flag <b>不重启</b>即生效,延迟即时~几秒(不是「每小时」)。</li>
+    <li><b>G2</b> flag 值 <b>每项目一份</b>。</li>
+    <li><b>G3</b> 你在 Dashboard 自助开关、<b>不走 PR</b>;每次改留 change-log。</li>
+    <li><b>G4</b> 值和意图分开记:能查关着的 flag「为什么关 / 谁定的 / 到期日(仅记录)」。</li>
+    <li><b>G5</b> <b>不引入新服务、不上外部 flag 工具</b>;复用 Bridge 现有数据库 + 现有鉴权。</li>
+  </ul>
+</div>
+
+<!-- 4 -->
+<h2><span class="secnum">4 · </span>Non-Goals(明确不做)</h2>
+<div class="card gray">
+  <ul>
+    <li>❌ per-user A/B / 百分比放量;❌ 自托管 Unleash;❌ 权限分层。</li>
+    <li>❌ 83 个 flag 逐条 enable/disable 裁决 → <b>FLY-1136</b>。</li>
+    <li>❌ 本期不实现「用量统计 / 到期提醒 / 自动清理」——只留数据字段。</li>
+    <li>❌ 不迁运维紧急 kill switch / 治理门(默认留旧路径,逐个评估)。</li>
+    <li>❌ 不 ship、不碰 founder-gate、不改 main。</li>
+  </ul>
+</div>
+
+<!-- 5 core -->
+<h2><span class="secnum">5 · </span>⭐ 方案 A — 动态 flag store(核心设计)</h2>
+
+<div class="card green">
+  <h3>5.1　store = Bridge 现有 SQLite 加三张新表</h3>
+  <p>Bridge 已在跑一个 native SQLite(<code>StateStore</code>,库 <code>~/.flywheel/teamlead.db</code>,已开 WAL + 事务),<b>当前 16 张表</b>。flag store = 新增三张表:</p>
+  <ul>
+    <li><code>feature_flags</code>(第 17 张)—— current-value,每项目一份;</li>
+    <li><code>feature_flag_changelog</code>(第 18 张)—— 变更日志;</li>
+    <li><code>feature_flag_cutover</code>(第 19 张)—— 迁移阶段 + 镜像状态的持久权威。</li>
+  </ul>
+  <p class="hint">不新起数据库、不新起服务。</p>
+</div>
+
+<div class="card">
+  <h3>5.2　表结构(每项目一份 + tombstone 清除 + 结构化 change-log)</h3>
+  <div class="scroll"><pre>-- 第 17 张:每行 = 一个 scope 对一个 flag 的 override(含 tombstone 行)
+CREATE TABLE IF NOT EXISTS feature_flags (
+  scope_kind   TEXT    NOT NULL,           -- 'project' | 'global'（显式列，不用魔法项目名）
+  project      TEXT    NOT NULL DEFAULT '',-- project 时非空；global 时必须 ''
+  flag_name    TEXT    NOT NULL,
+  has_override INTEGER NOT NULL,           -- 1=有 override；0=tombstone(=无 override,回退 legacy)。清除不删行
+  raw_value    TEXT,                       -- has_override=1 时非空；=0 时 NULL
+  intent       TEXT,                       -- 意图，nullable，data-only
+  expires_at   INTEGER,                    -- 到期日，nullable，data-only（本期不实现提醒）
+  revision     INTEGER NOT NULL,           -- 对 key 永久单调(乐观锁)；set/clear 每次 +1，绝不因删行重置
+  updated_by   TEXT    NOT NULL,           -- server 可信上下文生成，不信浏览器
+  updated_at   INTEGER NOT NULL,
+  PRIMARY KEY (scope_kind, project, flag_name),
+  CHECK (scope_kind IN ('project','global')),
+  CHECK ((scope_kind='global' AND project='') OR (scope_kind='project' AND project&lt;&gt;'')),
+  CHECK (has_override IN (0,1)),
+  CHECK ((has_override=1 AND raw_value IS NOT NULL) OR (has_override=0 AND raw_value IS NULL)),
+  CHECK (revision &gt; 0)
+);
+
+-- 第 18 张:每改一次一行；结构化列区分 never-set / explicit / clear / metadata
+CREATE TABLE IF NOT EXISTS feature_flag_changelog (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scope_kind TEXT NOT NULL, project TEXT NOT NULL DEFAULT '', flag_name TEXT NOT NULL,
+  action       TEXT NOT NULL,             -- 'set' | 'clear' | 'metadata'(仅改 intent/expires)
+  from_present INTEGER NOT NULL, from_raw TEXT,
+  to_present   INTEGER NOT NULL, to_raw   TEXT,
+  from_intent TEXT, to_intent TEXT,        -- 可回看 intent 前后
+  from_expires INTEGER, to_expires INTEGER,
+  changed_by TEXT NOT NULL, changed_at INTEGER NOT NULL, reason TEXT,
+  CHECK (action IN ('set','clear','metadata')),
+  CHECK ((action='set' AND to_present=1) OR (action='clear' AND to_present=0) OR (action='metadata' AND to_present=from_present))
+  -- …（其余 scope/present/value 一致性 CHECK 略）
+);
+
+-- 第 19 张:每 flag 的 cutover 阶段 + 镜像状态的持久权威
+CREATE TABLE IF NOT EXISTS feature_flag_cutover (
+  flag_name         TEXT    NOT NULL PRIMARY KEY,
+  epoch             TEXT    NOT NULL,      -- 'shadow' | 'global-compatible' | 'project-capable'
+  epoch_revision    INTEGER NOT NULL,      -- 阶段转移的乐观锁版本，单调 +1
+  mirror_state      TEXT    NOT NULL,      -- 'in_sync' | 'pending'
+  mirror_target_rev INTEGER,              -- pending 时:要镜像到 .env 的目标 revision
+  last_mirror_error TEXT, last_attempt_at INTEGER,
+  CHECK (epoch IN ('shadow','global-compatible','project-capable')),
+  CHECK (mirror_state IN ('in_sync','pending')),
+  CHECK (mirror_state='in_sync' OR (mirror_state='pending' AND epoch='global-compatible'
+         AND mirror_target_rev IS NOT NULL AND mirror_target_rev &gt; 0)),
+  CHECK (mirror_state='pending' OR mirror_target_rev IS NULL)
+);</pre></div>
+  <p><b>清除 = tombstone(墓碑)</b>:清除一个 flag 不删除行,而是把它标成「无 override」+ revision+1。<b>为什么不删行</b>:删行会让 revision 重置,配合乐观锁产生并发 bug(create→clear 后又回到「无行」,过期请求能蒙混过关)。tombstone 保证版本号永远单调,这是 Codex 抓出的一个真坑。</p>
+</div>
+
+<div class="card">
+  <h3>5.3　读机制:共享只读 reader + 用到时现读</h3>
+  <ul>
+    <li>每个读方进程持一个<b>只读的长期连接 + 预编译查询</b>(不每次判断重开库)。Dashboard 改 → Bridge 写行 → reader 下次判断该 flag 就读到新值。</li>
+    <li><b>性能(答你担心的「每小时太慢」)</b>:预编译的主键单行查 ≈ <b>1 微秒/次</b>(Codex 本机实测)—— 即时,明确不是每小时。只读连接不与写互斥。</li>
+    <li>读点查询与「用量统计」拆开:本期不在每次命中同步写库(那会拖慢)。极热点可选加几秒缓存,默认不用。</li>
+  </ul>
+  <div class="warn">⚙️ <b>eng-reality-check(Tadashi)</b>:reader 连接生命周期、热读点、跨进程一致性,收 PRD 前 Tadashi 过一眼确认。</div>
+</div>
+
+<div class="card">
+  <h3>5.4　写 / 自助契约</h3>
+  <p>复用现有的鉴权外壳(loopback + 单次 confirm token + 审计),但写数据库用新契约:<b>乐观锁 CAS</b>(stage 后若有人抢先改 → 409 冲突,防漂移)+ <b>按类型定值</b>(75 bool / 6 数值 / 2 枚举,不套老的布尔接口)+ <b>清除走 tombstone</b> + <b>只改意图/到期</b>走独立 metadata 动作。改的人由服务器可信上下文生成,不信浏览器传的字段。</p>
+</div>
+
+<div class="card">
+  <h3>5.5　数据流</h3>
+  <div class="scroll"><pre class="flow">Dashboard（选 scope+项目+flag，set/clear）
+   │ stage（校验）→ apply（乐观锁事务:UPSERT/tombstone + change-log
+   │                        + global-compatible 期同事务写 cutover.pending）
+   ▼
+Bridge SQLite ── feature_flags（第17，current-value）
+   │            ├ feature_flag_changelog（第18，审计）
+   │            └ feature_flag_cutover（第19，阶段/镜像权威）     ← Bridge 唯一 writer
+   │  reconciler 按 cutover.pending + 目标 revision fencing 镜像 .env
+   ▲  只读连接 + 预编译主键查（reader 先读 cutover.epoch 决定 legacy vs DB，再读 flag，~1µs）
+确有读点的进程（Bridge / Runner；Lead 待 M0 核实）</pre></div>
+</div>
+
+<div class="card">
+  <h3>5.6　⭐ 跨进程 reader 契约(Codex 抓出的核心缺口)</h3>
+  <p>Bridge、每个 Lead、每个 Runner 是<b>独立进程</b>(部分在 tmux/worktree)。改 Bridge 内存对它们无效。好在半条链已在(Runner 已拿到 Bridge 精确库路径、verify-approval 已用只读方式打开该库)。补齐:</p>
+  <ul>
+    <li><b>Bridge = 唯一 writer</b>;所有 reader 只读,用一个<b>共享 reader client</b>。</li>
+    <li><b>逐进程矩阵</b>(M0 填满):每个 reader 的真实读点位置 / 项目上下文来源 / 库路径来源 / 连接生命周期 / 库不可读时怎么办。Lead 有没有真实读点 M0 先证明,没有就从数据流移除。</li>
+    <li>必须<b>真机多进程 E2E</b>:已运行的 Bridge 写值后,已运行的 Runner 在下一决策点看到新值。</li>
+  </ul>
+</div>
+
+<div class="card">
+  <h3>5.7 – 5.9　意图/失败/迁移阶段(简版)</h3>
+  <p><b>§5.7 意图/到期 = 只存数据</b>:本期不实现提醒/扫描,归 FLY-1136。</p>
+  <p><b>§5.8 失败语义</b>:「tombstone/无行」= 正常回退旧值;但「库不存在/损坏/报错」<b>绝不静默当无行</b>(否则已写的 OFF 会被旧值 ON 取代)。治理门/关键 kill switch 保持旧路径直到有 fail-closed 方案。</p>
+  <p><b>§5.9 ⭐ Cutover-epoch 模型</b>(「每项目不一样」和「无损回滚」不可兼得的正解):每个 flag 走一条单调前进的兼容阶段 —</p>
+  <div class="scroll"><table>
+    <tr><th>阶段</th><th>语义</th><th>生效源</th><th>回滚底线</th></tr>
+    <tr><td><b>shadow</b></td><td>DB 只存候选、不生效;reader 同时算两边、记差异但返回旧值</td><td>legacy</td><td>任意旧版本</td></tr>
+    <tr><td><b>global-compatible</b></td><td>只允许全局 override;DB 与 .env 双写</td><td>DB(与 .env 一致)</td><td>任意旧版本(仍单一全局值)</td></tr>
+    <tr><td><b>project-capable</b></td><td>证明旧 reader 清零后,才允许每项目分歧</td><td>DB only</td><td>只能回滚到含新 reader 的版本</td></tr>
+  </table></div>
+  <p class="hint">阶段的持久权威 = 第 19 张表;转移用乐观锁 + 只走合法单调边。双写期定 DB 为准 + 有界重试 reconciler(用目标 revision fencing,防并发把旧值标成已同步 —— Codex R4 抓的并发 bug)。降级契约诚实收紧:降到不含 writer 的旧版前先冻结 flag 修改。</p>
+</div>
+
+<!-- 6 -->
+<h2><span class="secnum">6 · </span>与登记表(registry)的关系</h2>
+<div class="card">
+  <p>登记表仍是「flag 定义」的单一真相,但<b>本期要小改</b>:加一个「作用域」标记(全局 / 每项目)+ 逐个读点标明「项目身份从哪来」。优先级定死:<b>项目 DB override &gt; 全局 DB override &gt; 旧的项目配置/env &gt; 登记表默认值</b>。</p>
+</div>
+
+<!-- 7 -->
+<h2><span class="secnum">7 · </span>迁移(读侧先行 + 清单驱动)</h2>
+<div class="card">
+  <div class="scroll"><table>
+    <tr><th>批次</th><th>内容</th></tr>
+    <tr><td><b>M0 清单</b></td><td>逐 flag 列来源/时机/进程/目标作用域/风险/失败策略;证明每个读点归哪个进程</td></tr>
+    <tr><td><b>M1 建表</b></td><td>建三张表 + 优先级解析纯函数;不接生产读点;零行为变化</td></tr>
+    <tr><td><b>M2 共享 reader + shadow</b></td><td>接入 reader;pilot flag 进 shadow:读两边、记差异但返回旧值;parity 测试覆盖各种情况</td></tr>
+    <tr><td><b>M3 双写</b></td><td>shadow 通过 → DB 生效 + 与 .env 双写(带崩溃恢复协议)</td></tr>
+    <tr><td><b>M4 每项目</b></td><td>证明旧 reader 清零 → 允许每项目分歧;治理门/kill switch 默认留旧</td></tr>
+    <tr><td><b>M5 Dashboard</b></td><td>FLY-1038 按项目列 flag + 开关 + 显示意图/change-log</td></tr>
+  </table></div>
+  <p class="hint">兼容 + 可回滚靠 cutover-epoch + shadow parity + 四类反向兼容测试 + 双写崩溃注入测试,不是一句「表空回退」。</p>
+</div>
+
+<!-- 8 -->
+<h2><span class="secnum">8 · </span>谁负责 + 收 PRD 前的硬前置</h2>
+<div class="card blue">
+  <div class="scroll"><table>
+    <tr><th>决定</th><th>Owner</th></tr>
+    <tr><td>选方案 A</td><td><span class="own p">✅ Annie(已选)</span></td></tr>
+    <tr><td>读法即时 vs 几秒</td><td><span class="own p">Annie 方向</span> / <span class="own e">Tadashi 实现</span></td></tr>
+    <tr><td>跨进程 reader 契约 / 表结构 / 并发 / cutover / 迁移清单</td><td><span class="own e">Tadashi(工程)</span></td></tr>
+    <tr><td>迁移清单(哪些迁、哪些留 env)</td><td><span class="own e">Tadashi</span> + <span class="own p">Annie(留哪些)</span></td></tr>
+    <tr><td>逐条 enable/disable + 清理/提醒/用量</td><td><b>FLY-1136</b></td></tr>
+  </table></div>
+  <div class="warn">⚙️ <b>收 PRD 定稿前硬前置(你要的 eng-reality-check)</b>:reader 契约 + 写契约 + cutover + 迁移清单,<b>HL 会拉 Tadashi 过一眼</b>确认真实可行/性能,再交你放行。</div>
+</div>
+
+<!-- 9 -->
+<h2><span class="secnum">9 · </span>Success metrics</h2>
+<div class="card">
+  <ul>
+    <li>✅ Dashboard 改一个已迁移 flag → 不重启,reader 进程 ≤ 几秒读到新值(真机多进程 E2E 证)。</li>
+    <li>✅ 同一 flag 两个项目取不同值。</li>
+    <li>✅ 每次改产生结构化 change-log(区分从没设过 / 显式值 / 清除)。</li>
+    <li>✅ 四类反向兼容 + shadow parity + 双写崩溃注入测试全绿。</li>
+    <li>✅ 迁移后 env flag 数量开始下降。</li>
+  </ul>
+</div>
+
+<!-- 10/11 -->
+<h2><span class="secnum">10–11 · </span>待定问题 + 拆单(交 Tadashi)</h2>
+<div class="card">
+  <p class="hint"><b>收 PRD 前定</b>:哪些 flag 迁 global/project/留 env;哪些进程真需读 flag、哪些热到要缓存;Dashboard 接法(与 FLY-1038 协同)。</p>
+  <p><b>拆成 7 个 build 子任务给 Tadashi</b>:B0 迁移清单+登记表改 / B1 三张表 / B2 共享 reader+shadow / B3 写契约 / B4 双写+reconciler+崩溃测试 / B5 每项目扩散 / B6 Dashboard 接表。83-flag 逐条 audit + 清理机制 = <b>FLY-1136</b>。</p>
+</div>
+
+<!-- sign off -->
+<h2><span class="secnum">✅ · </span>放行 build 吗?</h2>
+<div class="signoff">
+  <span class="lbl">这就是你要的东西吗?方向 + 范围对不对?</span>
+  <p class="hint" style="margin:2px 0 8px">工程能不能落地那关 HL 会拉 Tadashi 确认;你这里看的是<b>方向和范围</b>。放行的话,Tadashi 确认可行后就开始 build。</p>
+  <div class="opts">
+    <label class="opt"><input type="radio" name="go" data-q="放行 build 吗" value="放行:方向范围对,Tadashi 确认可行后 build"><span class="ot"><b>放行</b> —— 方向范围对,等 Tadashi 确认可行就 build<span class="rec">推荐</span></span></label>
+    <label class="opt"><input type="radio" name="go" data-q="放行 build 吗" value="基本可以,但有地方想改(下面写)"><span class="ot">基本可以,但有地方想改(下面写)</span></label>
+    <label class="opt"><input type="radio" name="go" data-q="放行 build 吗" value="先别,还想再聊"><span class="ot">先别放行,还想再聊</span></label>
+  </div>
+  <div class="cmt" style="margin:8px 0 0"><label>你的意见 / 想改的地方</label><textarea data-k="signoff" data-label="放行意见"></textarea></div>
+</div>
+
+<div class="bar">
+  <button class="primary" id="exportBtn">复制我的批注</button>
+  <button class="ghost" id="clearBtn">清空</button>
+  <span id="saveHint">你写的内容会自动存在本机</span>
+</div>
+</div>
+
+<dialog id="dlg">
+  <div class="dlg">
+    <h3>你的批注(已复制到剪贴板)</h3>
+    <p class="hint">粘回 Discord 发我就行;也可以下载成文件。</p>
+    <textarea id="out" readonly></textarea>
+    <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+      <button class="primary" id="dlBtn">下载 .md</button>
+      <button class="ghost" id="closeBtn">关闭</button>
+    </div>
+  </div>
+</dialog>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var scope=(typeof location!=="undefined"&&location.pathname)?location.pathname:"local";
+  var KEY="fly1091-prd-review::"+scope;
+  var areas=Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  var radios=Array.prototype.slice.call(document.querySelectorAll("input[type=radio][data-q]"));
+  var saved={}; try{saved=JSON.parse(localStorage.getItem(KEY)||"{}");}catch(e){saved={};}
+  function persist(){ try{localStorage.setItem(KEY,JSON.stringify(saved));}catch(e){} var h=document.getElementById("saveHint"); if(h)h.textContent="已保存 ✓ · "+new Date().toLocaleTimeString(); }
+  areas.forEach(function(t){var k=t.getAttribute("data-k"); if(saved["t::"+k])t.value=saved["t::"+k]; t.addEventListener("input",function(){saved["t::"+k]=t.value;persist();});});
+  radios.forEach(function(r){var nk="r::"+r.name; if(saved[nk]===r.value)r.checked=true; r.addEventListener("change",function(){if(r.checked){saved[nk]=r.value;saved["ql::"+r.name]=r.getAttribute("data-q");persist();}});});
+  function buildMd(){
+    var lines=["# FLY-1091 PRD 过目 —— Annie 的批注","","日期: "+new Date().toLocaleString(),""];
+    var any=false, picks=[];
+    radios.forEach(function(r){if(r.checked)picks.push("- **"+r.getAttribute("data-q")+"** → "+r.value);});
+    if(picks.length){any=true;lines.push("## 我的决定","",picks.join("\n"),"");}
+    var notes=[];
+    areas.forEach(function(t){var v=(t.value||"").trim(); if(v){notes.push("### "+(t.getAttribute("data-label")||t.getAttribute("data-k")),"",v,"");}});
+    if(notes.length){any=true;lines.push("## 我的留言","",notes.join("\n"));}
+    if(!any)lines.push("> (还没有圈选或批注)");
+    return lines.join("\n");
+  }
+  var dlg=document.getElementById("dlg"),out=document.getElementById("out");
+  document.getElementById("exportBtn").addEventListener("click",function(){ out.value=buildMd(); if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(out.value).catch(function(){}); if(dlg.showModal)dlg.showModal(); else alert(out.value); });
+  document.getElementById("clearBtn").addEventListener("click",function(){ if(!confirm("清空所有圈选和批注?不可撤销。"))return; areas.forEach(function(t){t.value="";}); radios.forEach(function(r){r.checked=false;}); saved={}; try{localStorage.removeItem(KEY);}catch(e){} var h=document.getElementById("saveHint"); if(h)h.textContent="已清空。"; });
+  document.getElementById("dlBtn").addEventListener("click",function(){ var b=new Blob([out.value],{type:"text/markdown"}),u=URL.createObjectURL(b); var a=document.createElement("a"); a.href=u; a.download="fly1091-prd-放行批注.md"; document.body.appendChild(a); a.click(); document.body.removeChild(a); setTimeout(function(){URL.revokeObjectURL(u);},1000); });
+  document.getElementById("closeBtn").addEventListener("click",function(){if(dlg.close)dlg.close();});
+})();
+</script>

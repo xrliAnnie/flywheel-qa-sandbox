@@ -1,0 +1,9 @@
+⏺ Implementing the retry-loop guard in session-capture.ts now.
+
+  ⎿  API Error: Server error mid-response. Please try again or check your connection.
+
+──────────────────────────────────────────────── @runner-fly-546 ──
+❯
+────────────────────────────────────────────────────────────────────
+  Opus 4.8 | ⚡runner-fly-546 | ctx 61%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

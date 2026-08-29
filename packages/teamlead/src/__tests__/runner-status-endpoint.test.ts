@@ -178,4 +178,37 @@ describe("GET /api/sessions/:id/status", () => {
 		expect(body.execution_id).toBe("exec-1");
 		expect(body.status).toBe("executing");
 	});
+
+	// --- FLY-1018 QA F3: lifecycle session_status + pr_number alongside the
+	// pane heuristic. The heuristic `status` never reports "completed" — a
+	// consumer needing a terminal signal reads session_status from the store.
+
+	it("includes session_status (running) and null pr_number before a PR is recorded", async () => {
+		await startServer("Building...");
+		const res = await fetch(`${baseUrl}/api/sessions/exec-1/status`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.status).toBe("executing"); // pane heuristic unchanged
+		expect(body.session_status).toBe("running");
+		expect(body.pr_number).toBeNull();
+	});
+
+	it("surfaces awaiting_review + pr_number once the run reached review", async () => {
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "FLY-10",
+			issue_identifier: "FLY-10",
+			issue_title: "Status Detection",
+			project_name: "test-project",
+			status: "awaiting_review",
+			pr_number: 518,
+		});
+		await startServer("exit\n$ ");
+		const res = await fetch(`${baseUrl}/api/sessions/exec-1/status`);
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.status).toBe("idle"); // pane heuristic unchanged
+		expect(body.session_status).toBe("awaiting_review");
+		expect(body.pr_number).toBe(518);
+	});
 });

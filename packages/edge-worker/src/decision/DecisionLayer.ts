@@ -44,6 +44,31 @@ export class DecisionLayer implements IDecisionLayer {
 			return result;
 		}
 
+		// HR-PR-HANDOFF (FLY-493): a no-transport (e.g. antigravity / kimi) Runner
+		// CANNOT be woken to drive the founder-gated ship, so ready_to_merge must
+		// NOT enter the wake-dependent needs_review → approve_to_ship loop (it
+		// would strand in approved_to_ship). Route to the terminal `pr_handoff`
+		// instead — the Runner's build+PR work is done and the founder ships the
+		// PR by hand. MUST run BEFORE HR-READY (which maps ready_to_merge →
+		// needs_review). FLY-494: reasoning text is vendor-NEUTRAL (this is a
+		// generic transport==="none" branch — Kimi hits it too).
+		if (
+			ctx.runnerTransportMode === "none" &&
+			ctx.landingStatus?.status === "ready_to_merge"
+		) {
+			const result: DecisionResult = {
+				route: "pr_handoff",
+				confidence: 1.0,
+				reasoning:
+					"No-transport runner build complete; PR open and handed to the founder for the founder-gated ship",
+				concerns: [],
+				decisionSource: "hard_rule",
+				hardRuleId: "HR-PR-HANDOFF",
+			};
+			await this.audit(ctx, result);
+			return result;
+		}
+
 		// HR-READY: PR passed CI, awaiting CEO approval
 		if (ctx.landingStatus?.status === "ready_to_merge") {
 			const result: DecisionResult = {
