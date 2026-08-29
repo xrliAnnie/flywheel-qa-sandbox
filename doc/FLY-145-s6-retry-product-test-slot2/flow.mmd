@@ -8,7 +8,7 @@ sequenceDiagram
     QA->>CH: 发布 FLY-145 标识<br/>(标签 Product-Test)
     CH-->>L2: Lead 读取 issue
     CH-->>LX: Lead 读取 issue
-    Note over LX: Layer 1 prompt 规则:<br/>非本部门标签 → 静默<br/>(零 API 调用)
+    Note over LX: Layer 1 prompt 规则:<br/>非本部门标签 → 静默<br/>(不发起认领)
     L2->>BR: claim + 请求 spawn Runner
     Note over BR: Layer 2 dept-scope 校验<br/>isLeadInScope(lead, labels)
     BR-->>L2: 允许 → spawn Runner

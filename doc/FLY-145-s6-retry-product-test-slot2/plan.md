@@ -34,7 +34,13 @@ plan 不派发它们。
   注：该行 "✅ Merged" 状态为前置落档（PR #19 尚 OPEN），其兑现以 E4 的
   pipeline 结果（review gate 合入）为准；该行本身按 §6.3 只读不改。
 - [x] PR #19 docs-only，body 引用 Linear issue，test plan 标注 docs-only waiver。
-- 验证命令：`git log --oneline -5`、`gh pr view 19 --json state`。
+- 验证命令（须逐项核对命名期望值，而非只看命令跑通）：
+  - `git show --stat --oneline 0a3e017d`（期望：CLAUDE.md +1，里程碑行 commit）
+  - `git merge-base --is-ancestor 0a3e017d HEAD && echo ancestor-ok`
+  - `gh pr view 19 --json state,isDraft,baseRefName,headRefName,body,files`
+    （期望：state=OPEN、isDraft=false、base=main、head=project-slot-2-FLY-145、
+    files 仅 CLAUDE.md、body 含 Linear 引用与 docs-only waiver）
+  - `gh` 访问 api.github.com 失败时**如实记录为无法核验**，不得视作通过。
 
 ### Chunk B — 设计产物（本节点）
 1. exploration / research / plan 三件套落 `doc/FLY-145-s6-retry-product-test-slot2/`。
@@ -43,8 +49,14 @@ plan 不派发它们。
 3. Founder design HTML（Mermaid 经 mmdc 本地渲染为内联 SVG，零外部依赖，评论层
    + `【页面意见汇总】FLY-145` 汇总标记，`__CSP_NONCE__` 占位脚本，svgId 带
    slot-2 前缀避免跨页 id 冲突）。
-4. commit + push（fast-forward only）→ publish-report → `ask --report` 上报
-   hosted URL（或如实上报 publish-failed）→ `complete --route phase_design_complete`。
+4. **发布前内容一致性检查**（content parity）：最终 HTML/SVG 中不得残留与
+   research §2 收窄语义冲突的旧表述——E2 只声称"零认领尝试 + 频道静默"（不声称
+   零 API 调用），E3 标注为条件性诊断（仅 Layer 1 失守才产生 reject 日志，无日志
+   不单独作为通过证明）；用 grep 核验旧短语已清除后方可发布。
+5. commit + push（fast-forward only）→ publish-report（**best-effort 上报，非完成
+   门禁**：成功上报 hosted URL，失败如实上报 `DESIGN-HTML publish-failed`，两种
+   结果都随后进入 `complete --route phase_design_complete`——此例外由 dispatch
+   契约明确规定，不隐藏失败）。
 
 ### Chunk C — 交接契约（不在本节点执行）
 - QA agent 按 research §2 证据表（E1–E5）采集 S6 证据；E2 观察窗口由 campaign
@@ -54,7 +66,12 @@ plan 不派发它们。
   `git merge-tree --write-tree origin/main HEAD` 实测复现）。解决归属：land 阶段
   ——允许 forward merge `origin/main` 进本分支解冲突（合并不改写历史，不违反
   §6.4 守卫），或走 flywheel-land 冲突解决流程；本设计节点不执行，E4 兑现前
-  必须先解此冲突。
+  必须先解此冲突。**解决后不变量**（land 阶段核验）：
+  1. 以当时 `origin/main` 的 CLAUDE.md 为基线（不整体丢弃主干新内容）；
+  2. 结果中恰好一行 FLY-145 里程碑行；
+  3. 解决后 CLAUDE.md 相对 `origin/main` 的 diff 仅为预期的里程碑新增；
+  4. `git merge-tree --write-tree origin/main HEAD` 重跑无冲突；
+  5. `git diff --check` 干净。
 - S6 PASS 后 archive 归 campaign owner；merge 由 review gate / flywheel-land
   流程决定。**merge 与 deploy 分离**：sandbox 无部署面，独立 updater 规则不适用
   但不被绕过。
@@ -76,8 +93,9 @@ plan 不派发它们。
   一致，PR #19 test plan 已声明。
 - 设计门禁：设计评审有效结论 APPROVED（记录评审通道、轮次与 verdict 于本目录
   `design-review.md`；评审通道机器级不可用时按降级链如实记录，不伪造 Codex 结论）。
-- HTML 门禁：mmdc 渲染成功（SVG 落盘、无远程渲染）；publish-report 返回 hosted
-  URL；失败则按契约上报 `DESIGN-HTML publish-failed` 而非隐藏。
+- HTML 门禁：mmdc 渲染成功（SVG 落盘、无远程渲染）+ Chunk B.4 的内容一致性检查
+  通过。publish-report 本身是 **best-effort 上报而非门禁**（见 Chunk B.5）：
+  成功报 URL、失败报 `DESIGN-HTML publish-failed`，均不阻塞 phase_design_complete。
 
 ## 6. 负向守卫
 
