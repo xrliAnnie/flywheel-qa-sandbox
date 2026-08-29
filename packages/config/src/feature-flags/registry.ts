@@ -204,6 +204,29 @@ function flagStoreSite(
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	{
+		name: "summary_absorption_cadence_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SUMMARY_ABSORPTION_CADENCE_MS",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "21600000",
+		description:
+			"FLY-2131: cadence for Raya summary review and absorption rounds (default 6h)",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeSummaryAbsorptionCadenceMs",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: reads the summary absorption cadence at call time after a store write",
+		note: "Strict integer milliseconds in [60000,2592000000]; invalid seed or management writes fail loudly.",
+	},
+	{
 		name: "alert_system",
 		category: "kill_switch",
 		source: "env",

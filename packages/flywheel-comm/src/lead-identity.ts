@@ -20,6 +20,7 @@ export type LeadIdentityErrorCode =
 	| "identity_row_missing"
 	| "identity_row_ambiguous"
 	| "identity_backend_invalid"
+	| "identity_model_config_invalid"
 	| "identity_bot_token_env_invalid"
 	| "identity_bot_user_id_invalid"
 	| "identity_bot_user_id_missing"
@@ -58,6 +59,9 @@ export interface CanonicalLeadIdentity {
 	botTokenEnv: string | null;
 	discordStateDir: string;
 	backend: CanonicalLeadBackend;
+	model?: string;
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	modelContextWindow?: number;
 	role: CanonicalLeadRole;
 	summaryRole: SummaryRole;
 	summaryGranularity: SummaryGranularity | null;
@@ -99,6 +103,14 @@ function sha256(value: string): string {
 
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function containsAsciiControl(value: string): boolean {
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		if (code <= 31 || code === 127) return true;
+	}
+	return false;
 }
 
 function identityError(
@@ -253,6 +265,50 @@ function identityFields(
 			`${project.projectName}/${lead.agentId} has unsupported backend ${String(backend)}`,
 		);
 	}
+	const model = lead.model;
+	if (
+		model !== undefined &&
+		(typeof model !== "string" ||
+			model.trim().length === 0 ||
+			containsAsciiControl(model))
+	) {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} model must be a non-empty string without control characters`,
+		);
+	}
+	const effort = lead.effort;
+	if (
+		effort !== undefined &&
+		effort !== "low" &&
+		effort !== "medium" &&
+		effort !== "high" &&
+		effort !== "xhigh" &&
+		effort !== "max"
+	) {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} effort must be one of low|medium|high|xhigh|max`,
+		);
+	}
+	const modelContextWindow = lead.modelContextWindow;
+	if (
+		modelContextWindow !== undefined &&
+		(!Number.isSafeInteger(modelContextWindow) ||
+			(modelContextWindow as number) < 1 ||
+			(modelContextWindow as number) > 10_000_000)
+	) {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} modelContextWindow must be an integer from 1 through 10000000`,
+		);
+	}
+	if (modelContextWindow !== undefined && backend !== "codex-app-server") {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} modelContextWindow requires backend codex-app-server`,
+		);
+	}
 	const botTokenEnv = lead.botTokenEnv ?? null;
 	if (
 		botTokenEnv !== null &&
@@ -305,6 +361,11 @@ function identityFields(
 		botTokenEnv,
 		discordStateDir,
 		backend,
+		...(model !== undefined ? { model } : {}),
+		...(effort !== undefined ? { effort } : {}),
+		...(modelContextWindow !== undefined
+			? { modelContextWindow: modelContextWindow as number }
+			: {}),
 		role: canonicalRole(project, lead),
 		summaryRole: lead.summaryRole,
 		summaryGranularity: null,

@@ -104,7 +104,8 @@ function computeRawTo(
 	spec: FeatureFlagSpec,
 	to: boolean | string,
 ): string | null {
-	if (spec.valueKind === "enum") return String(to);
+	if (spec.valueKind === "enum" || spec.valueKind === "value")
+		return String(to);
 	if (spec.polarity === "default_on") return to ? null : "0";
 	return to ? "1" : null;
 }
@@ -121,6 +122,7 @@ function effectiveOf(
 		}
 		return String(spec.default);
 	}
+	if (spec.valueKind === "value") return raw ?? String(spec.default);
 	return spec.polarity === "default_on" ? raw !== "0" : raw === "1";
 }
 
@@ -271,6 +273,21 @@ export function handleFlagStage(
 					error: `invalid target value for ${spec.name}`,
 					allowed: spec.enumValues ?? [],
 				},
+			};
+		}
+	} else if (op === "set" && spec.valueKind === "value") {
+		if (typeof input.to !== "string") {
+			return {
+				code: 400,
+				body: { error: `${spec.name} takes a string target` },
+			};
+		}
+		try {
+			getFlagStoreCodec(spec.name)?.parse({ hasOverride: true, raw: input.to });
+		} catch (error) {
+			return {
+				code: 400,
+				body: { error: error instanceof Error ? error.message : String(error) },
 			};
 		}
 	} else if (op === "set" && typeof input.to !== "boolean") {

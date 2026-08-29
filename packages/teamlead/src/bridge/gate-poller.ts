@@ -137,6 +137,8 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-1687: pure alarm producer on the existing 60s rider cadence. */
 	onLeadPatrolTick?: () => void | Promise<void>;
+	/** FLY-2131: durable Raya summary-absorption producer on the same cadence. */
+	onSummaryAbsorptionTick?: () => void | Promise<void>;
 	/** FLY-1944: cmux watcher liveness/recovery rider on the same 60s cadence. */
 	onCmuxWatcherPatrolTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
@@ -684,6 +686,23 @@ export class GatePoller {
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] lead patrol tick error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onSummaryAbsorptionTick &&
+				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
+			) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.summary-absorption", () =>
+							this.config.onSummaryAbsorptionTick?.(),
+						),
+					)
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] summary absorption tick error (non-fatal): ${(err as Error).message}`,
 						),
 					);
 			}

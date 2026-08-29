@@ -26,6 +26,7 @@
 import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
+	getFlagStoreCodec,
 	isDirectToggleMetadata,
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
@@ -81,6 +82,10 @@ export interface FlagToggleResult {
 export function isDirectToggleable(spec: FeatureFlagSpec): boolean {
 	return isDirectToggleMetadata({
 		...spec,
+		strictValueCodec:
+			spec.valueKind === "value" &&
+			STORE_MANAGED_FLAGS.has(spec.name) &&
+			getFlagStoreCodec(spec.name) !== undefined,
 		readTimings: spec.readSites.map((site) => site.timing),
 	});
 }

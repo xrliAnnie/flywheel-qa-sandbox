@@ -177,7 +177,10 @@ summary_registry_activation_preflight() {
     local source_cli="${FLYWHEEL_DIR}/packages/flywheel-comm/src/bin/summary-registry.ts"
     local projects_path="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
     local receipt_path="${FLYWHEEL_SUMMARY_MIGRATION_RECEIPT:-${HOME}/.flywheel/state/summary-registry/migration-receipt.json}"
-    [[ -f "$source_cli" ]] || return 0
+    if [[ ! -f "$source_cli" ]]; then
+        log "ERROR: summary registry activation source CLI is missing; refusing restart fail-closed: $source_cli"
+        return 1
+    fi
     if [[ -n "${FLYWHEEL_PROJECTS:-}" ]]; then
         log "ERROR: summary registry activation refuses inline FLYWHEEL_PROJECTS split-brain"
         return 1

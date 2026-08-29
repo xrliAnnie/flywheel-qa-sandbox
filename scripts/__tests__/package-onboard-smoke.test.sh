@@ -201,11 +201,19 @@ summary_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
   FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=0 \
   node "$PKG_ROOT/node_modules/flywheel-comm/dist/index.js" summary \
     --file "$SANDBOX/summary.md" --project smoke --period 2026-W35 2>&1)"
+summary_merge_out="$(env -i HOME="$LEAD_HOME" PATH="$SUMMARY_BIN:$PATH" \
+  SUMMARY_GH_LOG="$SANDBOX/summary-gh.log" \
+  FLYWHEEL_PROJECT_NAME=smoke FLYWHEEL_LEAD_ID=smoke-lead \
+  FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=0 FLYWHEEL_LEAD_SUMMARY_ROLE=exempt \
+  FLYWHEEL_SUMMARY_GRANULARITY=per-lead \
+  node "$PKG_ROOT/node_modules/flywheel-comm/dist/index.js" summary merge \
+    --repo xrliAnnie/raya --pr 1 --dry-run 2>&1)"
 if grep -q "summary_duty_required" <<<"$summary_out" \
+   && grep -q "summary_merge_authority_required" <<<"$summary_merge_out" \
    && [ ! -e "$SANDBOX/summary-gh.log" ]; then
-  pass "④e packaged exempt Lead cannot reach internal Raya summary transport"
+  pass "④e packaged exempt Lead cannot reach internal Raya summary delivery or merge transport"
 else
-  fail "④e packaged summary boundary failed: $summary_out"
+  fail "④e packaged summary boundary failed: delivery=$summary_out merge=$summary_merge_out"
 fi
 
 echo ""

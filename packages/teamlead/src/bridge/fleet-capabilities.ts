@@ -80,14 +80,8 @@ export const EFFORT_OPTIONS: readonly TierOption[] = [
 	...ROLE_EFFORT_LEVELS.map((e) => ({ id: e as string, label: e })),
 ];
 
-/**
- * Codex effort is display-only (`[null]`), mirroring CODEX_TIER_OPTIONS: a Codex
- * Lead has no `--effort` runtime path (FLY-671 out-of-scope), so the chip is
- * readonly and the only legal target is `null`.
- */
-export const CODEX_EFFORT_OPTIONS: readonly TierOption[] = [
-	{ id: null, label: "默认", readonly: true },
-];
+/** FLY-2131: Codex maps the same five levels into model_reasoning_effort. */
+export const CODEX_EFFORT_OPTIONS: readonly TierOption[] = EFFORT_OPTIONS;
 
 /** Effort chip options for the Lead's effective backend. */
 export function computeEffortOptions(
@@ -98,16 +92,13 @@ export function computeEffortOptions(
 
 /**
  * Legal `to.effort` targets for a managed effort switch, backend-aware (mirrors
- * `computeAllowedModelTargets`): Claude = the five levels ∪ `{null}` (null =
- * delete/back-to-default is a legal target); Codex = `[null]` only (display-only,
- * no switch).
+ * `computeAllowedModelTargets`): both backends accept the five levels ∪
+ * `{null}` (null = delete/back-to-default is a legal target).
  */
 export function computeAllowedEffortTargets(
-	backend: LeadBackendId,
+	_backend: LeadBackendId,
 ): Array<string | null> {
-	return backend === "codex-app-server"
-		? [null]
-		: [null, ...ROLE_EFFORT_LEVELS];
+	return [null, ...ROLE_EFFORT_LEVELS];
 }
 
 export const DISABLED_BACKEND_SWITCH = "受管后端切换 = FLY-264";

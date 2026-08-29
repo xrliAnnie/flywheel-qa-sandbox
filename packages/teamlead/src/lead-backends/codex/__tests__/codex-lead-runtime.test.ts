@@ -74,6 +74,60 @@ describe("parseCodexLeadRuntimeConfig", () => {
 		expect(c.chrome).toBeUndefined();
 	});
 
+	it("keeps model, effort, and context window absent without materializing empty config", () => {
+		const c = parseCodexLeadRuntimeConfig(fullEnv());
+		expect(Object.hasOwn(c, "model")).toBe(false);
+		expect(Object.hasOwn(c, "reasoningEffort")).toBe(false);
+		expect(Object.hasOwn(c, "modelContextWindow")).toBe(false);
+		expect(buildThreadParams(c, undefined)).toEqual({
+			approvalPolicy: "never",
+			sandbox: "read-only",
+		});
+		expect(Object.hasOwn(buildThreadParams(c, undefined), "config")).toBe(
+			false,
+		);
+	});
+
+	it("maps configured model, effort, and 1M window into the Codex thread schema", () => {
+		const c = parseCodexLeadRuntimeConfig(
+			fullEnv({
+				FLYWHEEL_LEAD_MODEL: "gpt-5.6-sol",
+				FLYWHEEL_LEAD_EFFORT: "xhigh",
+				FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "1000000",
+			}),
+		);
+		expect(c).toMatchObject({
+			model: "gpt-5.6-sol",
+			reasoningEffort: "xhigh",
+			modelContextWindow: 1_000_000,
+		});
+		expect(buildThreadParams(c, undefined)).toEqual({
+			approvalPolicy: "never",
+			sandbox: "read-only",
+			model: "gpt-5.6-sol",
+			config: {
+				model_reasoning_effort: "xhigh",
+				model_context_window: 1_000_000,
+			},
+		});
+	});
+
+	it.each([
+		[{ FLYWHEEL_LEAD_MODEL: "gpt\n5" }, /FLYWHEEL_LEAD_MODEL/],
+		[{ FLYWHEEL_LEAD_EFFORT: "ultra" }, /FLYWHEEL_LEAD_EFFORT/],
+		[{ FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "0" }, /MODEL_CONTEXT_WINDOW/],
+		[{ FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "1.5" }, /MODEL_CONTEXT_WINDOW/],
+		[
+			{ FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW: "10000001" },
+			/MODEL_CONTEXT_WINDOW/,
+		],
+	] as const)(
+		"fails loudly on invalid model runtime parameters: %j",
+		(over, error) => {
+			expect(() => parseCodexLeadRuntimeConfig(fullEnv(over))).toThrow(error);
+		},
+	);
+
 	it("defaults codexProfile to companion when unset", () => {
 		expect(parseCodexLeadRuntimeConfig(fullEnv()).codexProfile).toBe(
 			"companion",

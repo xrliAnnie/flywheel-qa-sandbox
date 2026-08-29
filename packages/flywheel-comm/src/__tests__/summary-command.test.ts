@@ -24,6 +24,14 @@ const env = {
 	FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: "a".repeat(64),
 };
 
+const rayaRecipientEnv = {
+	FLYWHEEL_PROJECT_NAME: "raya",
+	FLYWHEEL_LEAD_ID: "raya",
+	FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: "0",
+	FLYWHEEL_LEAD_SUMMARY_ROLE: "recipient",
+	FLYWHEEL_SUMMARY_GRANULARITY: "per-lead",
+};
+
 function deps(delivery: SummaryDelivery) {
 	return {
 		env,
@@ -35,6 +43,77 @@ function deps(delivery: SummaryDelivery) {
 }
 
 describe("flywheel-comm summary", () => {
+	it("parses the merge subcommand as one atomic verify-and-merge operation", async () => {
+		const mergePullRequest = vi.fn(async () => ({
+			ok: true,
+			action: "would-merge",
+			verifiedHeadSha: "b".repeat(40),
+		}));
+		const stdout = vi.fn();
+		expect(
+			await runSummaryCommand(
+				[
+					"merge",
+					"--repo",
+					"xrliAnnie/raya",
+					"--pr",
+					"7",
+					"--round",
+					"round-7",
+					"--method",
+					"squash",
+					"--dry-run",
+				],
+				{
+					env: rayaRecipientEnv,
+					stdout,
+					stderr: vi.fn(),
+					mergePullRequest,
+				},
+			),
+		).toBe(0);
+		expect(mergePullRequest).toHaveBeenCalledWith(
+			{
+				repo: "xrliAnnie/raya",
+				prNumber: 7,
+				roundId: "round-7",
+				method: "squash",
+				dryRun: true,
+			},
+			expect.objectContaining({ env: rayaRecipientEnv }),
+		);
+		expect(JSON.parse(stdout.mock.calls[0]![0])).toMatchObject({
+			ok: true,
+			action: "would-merge",
+		});
+	});
+
+	it("rejects summary merge before transport for any non-Raya recipient identity", async () => {
+		const mergePullRequest = vi.fn();
+		const stderr = vi.fn();
+		expect(
+			await runSummaryCommand(
+				["merge", "--repo", "xrliAnnie/raya", "--pr", "7"],
+				{
+					env: {
+						FLYWHEEL_PROJECT_NAME: "smoke",
+						FLYWHEEL_LEAD_ID: "smoke-lead",
+						FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: "0",
+						FLYWHEEL_LEAD_SUMMARY_ROLE: "exempt",
+						FLYWHEEL_SUMMARY_GRANULARITY: "per-lead",
+					},
+					stdout: vi.fn(),
+					stderr,
+					mergePullRequest,
+				},
+			),
+		).toBe(1);
+		expect(mergePullRequest).not.toHaveBeenCalled();
+		expect(stderr.mock.calls[0]![0]).toContain(
+			"summary_merge_authority_required",
+		);
+	});
+
 	it("verifies a Raya PR at its current head without requiring producer duty", async () => {
 		const verifierGitHub = {
 			readPullRequest: vi.fn(async () => ({ headSha: "b".repeat(40) })),

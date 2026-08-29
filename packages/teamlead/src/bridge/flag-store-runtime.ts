@@ -42,6 +42,19 @@ function readBoolean(runtime: FlagStoreRuntime, name: string): boolean {
 	return effective;
 }
 
+export function storeSummaryAbsorptionCadenceMs(
+	runtime: FlagStoreRuntime,
+): number {
+	const effective = getFlagStoreCodec("summary_absorption_cadence_ms")?.parse(
+		readFlagValue(runtime, "summary_absorption_cadence_ms"),
+	);
+	const value = Number(effective);
+	if (!Number.isSafeInteger(value)) {
+		throw new Error("managed summary absorption cadence is not an integer");
+	}
+	return value;
+}
+
 export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "alert_system");
 }

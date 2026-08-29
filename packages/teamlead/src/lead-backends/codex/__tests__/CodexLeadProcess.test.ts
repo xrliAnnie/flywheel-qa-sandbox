@@ -5,6 +5,7 @@ import {
 	CodexLeadProcessError,
 	JSONRPC_METHOD_NOT_FOUND,
 } from "../CodexLeadProcess.js";
+import { buildThreadParams } from "../codex-lead-runtime.js";
 
 /**
  * Fake app-server child: captures stdin writes (as parsed JSON frames) and lets
@@ -313,6 +314,61 @@ describe("CodexLeadProcess — robustness", () => {
 });
 
 describe("CodexLeadProcess — thread/turn", () => {
+	it.each([
+		[
+			"read-only without persona",
+			{ sandboxMode: "read-only" as const },
+			undefined,
+			'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"approvalPolicy":"never","sandbox":"read-only"}}\n',
+		],
+		[
+			"read-only with persona",
+			{ sandboxMode: "read-only" as const },
+			"You are Mufasa.",
+			'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"approvalPolicy":"never","sandbox":"read-only","baseInstructions":"You are Mufasa."}}\n',
+		],
+		[
+			"workspace-write scratch cwd",
+			{
+				sandboxMode: "workspace-write" as const,
+				workspace: "/scratch/lead",
+			},
+			undefined,
+			'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"approvalPolicy":"never","sandbox":"workspace-write","cwd":"/scratch/lead"}}\n',
+		],
+		[
+			"full-access project cwd",
+			{
+				sandboxMode: "workspace-write" as const,
+				fullAccessProjectRoot: "/workspace/project",
+			},
+			undefined,
+			'{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"approvalPolicy":"never","sandbox":"workspace-write","cwd":"/workspace/project"}}\n',
+		],
+	] as const)(
+		"characterizes byte-exact thread/start frame: %s",
+		async (_name, config, persona, expected) => {
+			const { child, proc } = await started();
+			const pending = proc.startThread(buildThreadParams(config, persona));
+			expect(child.writes.at(-1)).toBe(expected);
+			child.respond(2, { thread: { id: "th_123" } });
+			await pending;
+		},
+	);
+
+	it("characterizes byte-exact thread/resume frame with threadId first", async () => {
+		const { child, proc } = await started();
+		const pending = proc.resumeThread(
+			"th_saved",
+			buildThreadParams({ sandboxMode: "read-only" }, undefined),
+		);
+		expect(child.writes.at(-1)).toBe(
+			'{"jsonrpc":"2.0","id":2,"method":"thread/resume","params":{"threadId":"th_saved","approvalPolicy":"never","sandbox":"read-only"}}\n',
+		);
+		child.respond(2, { thread: { id: "th_saved" } });
+		await pending;
+	});
+
 	it("startThread extracts result.thread.id", async () => {
 		const { child, proc } = await started();
 		const p = proc.startThread({ cwd: "/tmp" });

@@ -26,6 +26,8 @@ export interface VerifiedSummaryPullRequest {
 	ok: true;
 	verifiedHeadSha: string;
 	fileCount: number;
+	files: string[];
+	projects: string[];
 }
 
 interface GitHubCliRunner {
@@ -221,6 +223,14 @@ export async function verifySummaryPullRequest(
 		ok: true,
 		verifiedHeadSha: pullRequest.headSha,
 		fileCount: files.length,
+		files: files.map(({ path }) => path).sort(),
+		projects: [
+			...new Set(
+				files.map(
+					({ path }) => path.slice(SUMMARY_PREFIX.length).split("/")[0]!,
+				),
+			),
+		].sort(),
 	};
 }
 

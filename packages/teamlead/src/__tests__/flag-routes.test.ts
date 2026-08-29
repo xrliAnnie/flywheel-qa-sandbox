@@ -550,6 +550,59 @@ describe("handleFlagApply", () => {
 		});
 	});
 
+	it("stages and applies a bounded summary cadence value and rejects invalid writes", async () => {
+		const { deps, flagStore, store } = await makeManagedDeps();
+		expect(FlagStoreReaders.storeSummaryAbsorptionCadenceMs(flagStore)).toBe(
+			21_600_000,
+		);
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "summary_absorption_cadence_ms",
+				to: "60000",
+				reason: "speed up Raya absorption for acceptance",
+			},
+			"o",
+		);
+		expect(staged.code).toBe(200);
+		const body = staged.body as {
+			canonical: FlagStoreCanonical;
+			confirmToken: string;
+		};
+		expect(body.canonical).toMatchObject({
+			name: "summary_absorption_cadence_ms",
+			rawTo: "60000",
+			effectiveTo: "60000",
+		});
+		expect(
+			handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+		).toBe(200);
+		expect(
+			store.getFlagValueRow("summary_absorption_cadence_ms"),
+		).toMatchObject({
+			raw: "60000",
+			lastEffective: "60000",
+		});
+		expect(FlagStoreReaders.storeSummaryAbsorptionCadenceMs(flagStore)).toBe(
+			60_000,
+		);
+
+		for (const invalid of ["0", "59999", "2592000001", "1.5"]) {
+			expect(
+				handleFlagStage(
+					deps,
+					{
+						name: "summary_absorption_cadence_ms",
+						to: invalid,
+						reason: "invalid cadence proof",
+					},
+					"o",
+				).code,
+				invalid,
+			).toBe(400);
+		}
+	});
+
 	it("round-trips every store-managed state through its declared runtime reader", async () => {
 		const { deps, flagStore, store } = await makeManagedDeps();
 		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);

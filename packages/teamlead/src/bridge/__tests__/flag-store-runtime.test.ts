@@ -16,6 +16,7 @@ import {
 	storeLoopProfilerEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
+	storeSummaryAbsorptionCadenceMs,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
 } from "../flag-store-runtime.js";
@@ -109,6 +110,24 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeAlertSystemEnabled(runtime)).toBe(false);
+	});
+
+	it("reads the summary absorption cadence at call time after a store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeSummaryAbsorptionCadenceMs(runtime)).toBe(21_600_000);
+		const revision = store.getFlagValueRow(
+			"summary_absorption_cadence_ms",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "summary_absorption_cadence_ms",
+				rawTo: "60000",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "exercise hot cadence",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeSummaryAbsorptionCadenceMs(runtime)).toBe(60_000);
 	});
 
 	it("fails loudly when a ready managed row disappears", () => {
