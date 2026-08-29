@@ -60,19 +60,15 @@ decision_layer:
 # state the self-ship Tier / restart blast radius, see identity.md).
 checkpoints:
   brainstorm:
-    enabled: true
     timeout_ms: 86400000        # 24h
     timeout_behavior: fail-close
   question:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-open
   founder_review:
-    enabled: true
     timeout_ms: 172800000      # 48h, non-terminal multi-round product review
     timeout_behavior: fail-close
   approve_to_ship:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-close
 
@@ -83,7 +79,6 @@ checkpoints:
 # every checkpoint/agent-role gate still applies at all doc tiers; QA runners
 # produce no docs and are skipped.
 doc_flow:
-  enabled: true
   default_department: engineering
 
 # Executors: role-based so Tadashi (one engineering Lead) covers multiple roles
@@ -215,19 +210,3 @@ agents:
 # `agents` falls through to `general` (instead of the shipped
 # agents/generic-executor.md). ConfigLoader validates the name exists.
 default_agent: general
-
-pipeline:
-  # FLY-1372 / Annie 2026-07-18: DAG dispatch enrollment — a fresh main
-  # master-auth dispatch on this project routes into the workflow-template
-  # (DAG) engine instead of a single-session dispatch, provided the DAG
-  # feature flags pass (workflow_template_dispatch + claims write/read).
-  # Grayscale: flywheel ONLY for the pilot. Rollback: delete this key (next
-  # request) or `flywheel-comm feature-flags apply --name
-  # workflow_template_dispatch --to off` (immediate) — no code rollback.
-  dag: true
-  # FLY-1436 work-kind binding cutover. Source may merge before activation, but
-  # the production pull that makes this live is authorized only inside G-GO.
-  # Rollback after activation: restore bindings first from the durable FLY-1436
-  # receipt, then revert this key; reverting the key first can strand keyless
-  # schema-v2 dispatch behind GENERALIZED_WORKFLOW_REJECTED.
-  work_kind: true
