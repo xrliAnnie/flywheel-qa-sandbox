@@ -1,13 +1,13 @@
 ---
 issue: FLY-2103
-phase: design
-phaseCursor: 8/8
-updated: 2026-08-29T05:21:57.214Z
-nextStep: "complete: phase_design_complete(实施节点接手 plan.md)"
+phase: implement
+phaseCursor: 0/8
+updated: 2026-08-29T05:23:53.705Z
+nextStep: audit current flag/config read points and add Step 1 RED tests
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: design (8/8)
-**next**: complete: phase_design_complete(实施节点接手 plan.md)
+**phase**: implement (0/8)
+**next**: audit current flag/config read points and add Step 1 RED tests
