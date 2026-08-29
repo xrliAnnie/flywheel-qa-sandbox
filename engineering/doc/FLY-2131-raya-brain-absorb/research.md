@@ -75,3 +75,15 @@ summary_registry_activation_preflight() {
 | 生产 raya.env 无 startInstructionsFile 配置 | 2026-08-28(FLY-2097 QA) | operator 读 RAYA_ENV_FILE(不入仓,不可 grep;向持有 operator 权限者确认) |
 | Raya 不在 projects.json | 2026-08-28 | `python3 -c "…"` 解析 `~/.flywheel/projects.json` |
 | flag_values + project scope 列已在 main | 2026-08-28(FLY-2100 #971) | `git log --oneline --grep 2100` |
+
+## 6. R1 评审后增补实核(2026-08-29 00:15Z;Codex R1 主张逐条本机复核)
+
+| 结论 | 实核 | 复核命令 |
+|---|---|---|
+| TUI full-access = **单一** `fullAccessProjectRoot`,`writable_roots` 被精确断言为恰等 `[validated root]` | lead-actions/mcp-config.ts:84-91;codex-lead-tui-runtime.ts:944-957 | `rg -n "writable_roots" packages/teamlead/src/` |
+| full-access root **不得**与 `~/.flywheel`/state/CODEX_HOME 重叠 ⇒ 现状 `~/.flywheel/raya/*` 无合法 root | codex-lead-runtime.ts:487 | `sed -n '480,490p' …codex-lead-runtime.ts` |
+| Lead persona 装载走显式 `FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES`(不自动发现文件)⇒ MEMORY.md 需点名接入 | codex-lead-tui-runtime.ts:385-401 附近 | `rg -n "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES" packages/teamlead/src/` |
+| **粒度已拍**:`~/.flywheel/summary-config.json` = per-lead,setBy founder(Discord msg 1543035397066588170),setAt 2026-08-28T23:58:13Z | 实读该文件 | `cat ~/.flywheel/summary-config.json` |
+| **迁移已跑**:receipt 在默认路径,postImageSha256 d942cec7a5e6…,live projects.json 16/16 行含 closed `summaryRole` | 实读 receipt + python 解析 | `cat ~/.flywheel/state/summary-registry/migration-receipt.json` |
+| raya origin/main 语音仍走 `realtimeStartInstructions` 旧通道(对模型无效,FLY-2097 QA 实证);prompt 通道修复在 FLY-2097 PR #3 候选 | FLY-2097 qa-report §D + raya origin/main 读码 | raya 仓 `git grep -n realtimeStartInstructions origin/main` |
+| FLY-2029/2074 未定义 memory 仓运行期 commit/push 生命周期(只建仓 + 初始文件 + RAYA_MEMORY_FILE 可写合同) | FLY-2029 plan/verification 通读 | 该两文档 |
