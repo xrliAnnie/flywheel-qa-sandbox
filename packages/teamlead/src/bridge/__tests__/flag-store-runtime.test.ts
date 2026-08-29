@@ -11,13 +11,21 @@ import { StateStore } from "../../StateStore.js";
 import {
 	enrichFlagViewsWithStore,
 	initializeFlagStore,
+	readScopedBoolean,
 	storeAlertSystemEnabled,
+	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
+	storePipelineDagEnabled,
+	storePipelineWorkKindEnabled,
+	storePonytailEnabled,
+	storeProofshotEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
+	storeSkillFrameworkSplitParticipation,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeXiaohongshuLearningEnabled,
 } from "../flag-store-runtime.js";
 
 function rawFlagStoreDb(store: StateStore): {
@@ -109,6 +117,60 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeAlertSystemEnabled(runtime)).toBe(false);
+	});
+
+	it("resolves all seven project flags from project row, star row, then registry default", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeDocFlowEnabled(runtime, "flywheel")).toBe(false);
+		expect(storePipelineDagEnabled(runtime, "flywheel")).toBe(true);
+		expect(storePipelineWorkKindEnabled(runtime, "flywheel")).toBe(false);
+		expect(storeProofshotEnabled(runtime, "flywheel")).toBe(false);
+		expect(storeXiaohongshuLearningEnabled(runtime, "flywheel")).toBe(false);
+		expect(storePonytailEnabled(runtime, "flywheel")).toBe(false);
+		expect(
+			storeSkillFrameworkSplitParticipation(runtime, "flywheel"),
+		).toBe(true);
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "doc_flow",
+				scope: "*",
+				op: "set",
+				rawTo: "1",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "star on",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeDocFlowEnabled(runtime, "geoforge3d")).toBe(true);
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "doc_flow",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "project off",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeDocFlowEnabled(runtime, "flywheel")).toBe(false);
+		expect(storeDocFlowEnabled(runtime, "geoforge3d")).toBe(true);
+	});
+
+	it("rejects unmanaged project identities and propagates store failures", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(() =>
+			readScopedBoolean(runtime, "checkpoint_enabled", "flywheel"),
+		).toThrow(/flag is not project-store-managed: checkpoint_enabled/);
+		const getRow = store.getFlagValueRow.bind(store);
+		store.getFlagValueRow = (() => {
+			throw new Error("scoped store unavailable");
+		}) as typeof store.getFlagValueRow;
+		expect(() => storeDocFlowEnabled(runtime, "flywheel")).toThrow(
+			/scoped store unavailable/,
+		);
+		store.getFlagValueRow = getRow;
 	});
 
 	it("fails loudly when a ready managed row disappears", () => {
@@ -262,18 +324,10 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 				},
 			],
 		});
-		expect(
-			views.find(({ name }) => name === "checkpoint_enabled"),
-		).toMatchObject({
-			storeManaged: false,
-			clockReadiness: "no_clock:unmanaged",
-		});
-		expect(
-			views.find(({ name }) => name === "checkpoint_enabled")?.valueClocks,
-		).toBeUndefined();
+		expect(views.some(({ name }) => name === "checkpoint_enabled")).toBe(false);
 	});
 
-	it("overlays project, star, config, and default values while exposing only scoped row truth", () => {
+	it("overlays project, star, and default values while exposing only scoped row truth", () => {
 		const runtime = initializeFlagStore(store, {}, 100);
 		expect(
 			store.applyScopedFlagValueChange({
@@ -299,33 +353,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		).toMatchObject({ ok: true });
 
 		const view = enrichFlagViewsWithStore(
-			resolveAllFlags({
-				env: {},
-				projectConfigs: new Map([
-					[
-						"flywheel",
-						{
-							config: {
-								doc_flow: {
-									enabled: true,
-									default_department: "engineering",
-								},
-							} as never,
-						},
-					],
-					[
-						"geoforge3d",
-						{
-							config: {
-								doc_flow: {
-									enabled: true,
-									default_department: "engineering",
-								},
-							} as never,
-						},
-					],
-				]),
-			}),
+			resolveAllFlags({ env: {} }),
 			runtime,
 			["flywheel", "geoforge3d", "new-project"],
 		).find(({ name }) => name === "doc_flow");
@@ -357,8 +385,6 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 				value: false,
 				isDefault: true,
 				via: "star_row",
-				runtimeConfigValue: true,
-				runtimeDivergence: "config_pending_cutover",
 			},
 			{
 				projectName: "new-project",
@@ -369,22 +395,8 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		]);
 	});
 
-	it("ignores the retired bypass input while preserving project clock degradation and non-whitelisted views", () => {
-		const configs = new Map([
-			[
-				"flywheel",
-				{
-					config: {
-						doc_flow: {
-							enabled: true,
-							default_department: "engineering",
-						},
-						ponytail: { enabled: true },
-					} as never,
-				},
-			],
-		]);
-		const base = resolveAllFlags({ env: {}, projectConfigs: configs });
+	it("ignores the retired bypass input while preserving project clock degradation", () => {
+		const base = resolveAllFlags({ env: {} });
 		const views = enrichFlagViewsWithStore(
 			base,
 			initializeFlagStore(store, { FLYWHEEL_FLAG_STORE: "0" }, 100),
@@ -399,7 +411,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(docFlow?.scopedStore).toBeUndefined();
 		expect(docFlow?.error).toBe("missing managed flag clock: doc_flow");
 		const ponytail = views.find(({ name }) => name === "ponytail");
-		expect(ponytail?.projectStoreManaged).toBeUndefined();
+		expect(ponytail?.projectStoreManaged).toBe(true);
 		expect(ponytail?.scopedStore).toBeUndefined();
 	});
 
