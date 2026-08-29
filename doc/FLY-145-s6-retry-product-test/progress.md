@@ -1,13 +1,13 @@
 ---
 issue: FLY-145
 phase: design
-phaseCursor: 4/6
-updated: 2026-08-29T14:09:40.506Z
-nextStep: commit+push design artifacts, publish HTML
+phaseCursor: 5/6
+updated: 2026-08-29T14:10:00.652Z
+nextStep: publish-report + report hosted URL to Lead
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
-**phase**: design (4/6)
-**next**: commit+push design artifacts, publish HTML
+**phase**: design (5/6)
+**next**: publish-report + report hosted URL to Lead
