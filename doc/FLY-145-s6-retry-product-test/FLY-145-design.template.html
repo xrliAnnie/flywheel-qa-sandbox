@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-145 · S6 重试测试设计 — Product-Test 认领路由</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --card: #ffffff; --text: #1d1d1f; --dim: #86868b;
+    --blue: #007aff; --green: #34c759; --red: #ff3b30; --amber: #ff9500;
+    --purple: #af52de; --navy: #1a365d;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    line-height: 1.65; font-size: 15px;
+  }
+  .container { max-width: 960px; margin: 0 auto; padding: 32px 20px 64px; }
+  .page-header { margin-bottom: 28px; }
+  .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+  }
+  .badge.id { background: var(--navy); color: #fff; font-family: 'SF Mono', ui-monospace, monospace; }
+  .badge.qa { background: #f3e8fd; color: var(--purple); }
+  .badge.label { background: #e3f0ff; color: var(--blue); }
+  .badge.retry { background: #fff3e0; color: var(--amber); }
+  h1 { font-size: 26px; font-weight: 700; margin: 0 0 6px; letter-spacing: -0.02em; }
+  .subtitle { color: var(--dim); font-size: 14px; margin: 0; }
+  .section {
+    background: var(--card); border-radius: 12px; padding: 22px 24px;
+    margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    border-left: 4px solid var(--blue);
+  }
+  .section.green { border-left-color: var(--green); }
+  .section.amber { border-left-color: var(--amber); }
+  .section.purple { border-left-color: var(--purple); }
+  .section.red { border-left-color: var(--red); }
+  .section.navy { border-left-color: var(--navy); }
+  .section-title { font-size: 18px; font-weight: 700; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  .section-title .dot { font-size: 12px; }
+  .section p { margin: 0 0 12px; }
+  .section p:last-of-type { margin-bottom: 0; }
+  .term { border-bottom: 1px dashed #c7c7cc; }
+  .gloss { color: var(--dim); font-size: 0.93em; }
+  .diagram-wrap { overflow-x: auto; margin: 8px 0 4px; padding: 8px 0; }
+  .diagram-wrap svg { max-width: 100%; height: auto; }
+  .kv-table { width: 100%; border-collapse: collapse; margin: 8px 0; font-size: 14px; }
+  .kv-table th, .kv-table td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #ececf0; vertical-align: top; }
+  .kv-table th { color: var(--dim); font-weight: 600; font-size: 13px; white-space: nowrap; }
+  .kv-table code, .mono { font-family: 'SF Mono', ui-monospace, monospace; font-size: 13px; background: #f2f2f6; padding: 1px 5px; border-radius: 4px; }
+  .tradeoff { border: 1px solid #ececf0; border-radius: 10px; padding: 14px 16px; margin-bottom: 12px; }
+  .tradeoff:last-child { margin-bottom: 0; }
+  .tradeoff .pick { font-weight: 700; }
+  .tradeoff .pick .yes { color: var(--green); }
+  .tradeoff .rej { color: var(--dim); font-size: 14px; margin-top: 4px; }
+  .tradeoff .rej .no { color: var(--red); font-weight: 600; }
+  ul.plain { margin: 0; padding-left: 20px; }
+  ul.plain li { margin-bottom: 8px; }
+  ul.plain li:last-child { margin-bottom: 0; }
+  .callout {
+    background: #fff8ee; border: 1px solid #ffe1b3; border-radius: 10px;
+    padding: 12px 16px; font-size: 14px; margin-top: 12px;
+  }
+  .comment-box { margin-top: 18px; padding-top: 14px; border-top: 1px dashed #e3e3e8; }
+  .comment-box label { display: block; font-size: 13px; font-weight: 600; color: var(--dim); margin-bottom: 6px; }
+  .comment-box textarea {
+    width: 100%; min-height: 64px; resize: vertical;
+    border: 1px solid #d9d9de; border-radius: 8px; padding: 10px 12px;
+    font: inherit; font-size: 14px; color: var(--text); background: #fafafc;
+  }
+  .comment-box textarea:focus { outline: none; border-color: var(--blue); background: #fff; }
+  #summary-card { border-left-color: var(--navy); }
+  #no-comments { color: var(--dim); font-size: 14px; }
+  .chunk { margin-bottom: 14px; }
+  .chunk pre {
+    background: #f2f2f6; border-radius: 8px; padding: 12px 14px; margin: 0 0 8px;
+    white-space: pre-wrap; word-break: break-word; font-size: 13px;
+    font-family: 'SF Mono', ui-monospace, monospace; max-height: 260px; overflow-y: auto;
+  }
+  button.copy-btn, #copy-all {
+    background: var(--blue); color: #fff; border: none; border-radius: 8px;
+    padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+  }
+  button.copy-btn:hover, #copy-all:hover { background: #0064d1; }
+  button.copy-btn { background: #e3f0ff; color: var(--blue); }
+  button.copy-btn:hover { background: #d2e6ff; }
+  .footer { color: var(--dim); font-size: 12px; text-align: center; margin-top: 32px; }
+  @media (max-width: 600px) { .container { padding: 20px 12px 48px; } .section { padding: 18px 16px; } }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="page-header">
+    <div class="badges">
+      <span class="badge id">FLY-145</span>
+      <span class="badge qa">QA-FLY-127 · S6</span>
+      <span class="badge label">label: Product-Test</span>
+      <span class="badge retry">重试轮 (retry)</span>
+    </div>
+    <h1>S6 重试测试设计:Product-Test 标签的认领路由验证</h1>
+    <p class="subtitle">Design 节点交付物 · 2026-08-29 · slot-4 workflow · 本页每节下方可留意见,底部一键汇总复制</p>
+  </div>
+
+  <!-- 1 一句话总结 -->
+  <div class="section green" data-sec="一句话总结">
+    <div class="section-title"><span class="dot" style="color:var(--green)">●</span> 一句话总结</div>
+    <p>用一张全新的<span class="term">沙盒工单</span><span class="gloss">(只为测试而建、与真实开发隔离的任务单)</span> FLY-145 投进 cos-test 频道,验证 4 个测试 <span class="term">Lead</span><span class="gloss">(负责在频道里认领任务并派活的部门主管 AI)</span>中,<strong>只有 flywheel-test-2(产品部门)会认领并派发,其余 3 个全程保持沉默</strong>——即"按部门标签路由任务"这条规则在生产镜像环境下确实成立。</p>
+    <div class="comment-box">
+      <label for="c1">对「一句话总结」的意见</label>
+      <textarea id="c1" class="sec-comment" data-sec-title="一句话总结" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 2 背景 -->
+  <div class="section" data-sec="测试背景">
+    <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 测试背景:这在验证什么</div>
+    <p>QA-FLY-127 是针对 Flywheel「任务认领路由」的系统性测试战役。其中 <strong>S6 场景 = 生产镜像多 Lead 矩阵</strong>:让 4 个测试 slot 像生产环境一样同时在线,再投放一张带部门标签的工单,看它们各自的反应是否符合分工。</p>
+    <p>规则由两层机制保证:一是 <span class="term">prompt 规则</span><span class="gloss">(写进每个 Lead 行为说明书里的软规则:标签不属于本部门就别响应)</span>;二是 <span class="term">Bridge</span><span class="gloss">(Flywheel 的中枢调度服务,负责分发消息和把关规则的后台程序)</span>在 PR #170 引入的 <span class="term">dept-scope check</span><span class="gloss">(部门范围检查:放行认领前,用代码硬性核对任务标签与部门是否匹配)</span>。</p>
+    <p>本轮是 S6 的<strong>重试轮</strong>:用全新工单 FLY-145 重新执行,保证证据不与上一轮混杂。测试流程:QA agent 在 cos-test 频道发布工单标识 → 各 Lead bot 各自反应 → QA agent 采集证据并判定 PASS / FAIL。<strong>本工单是 dummy(空跑)工单,不涉及任何真实代码改动;S6 PASS 后即归档。</strong></p>
+    <div class="comment-box">
+      <label for="c2">对「测试背景」的意见</label>
+      <textarea id="c2" class="sec-comment" data-sec-title="测试背景" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 3 核心流程图 -->
+  <div class="section" data-sec="核心流程图">
+    <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 核心流程图</div>
+    <p>从 QA agent 投放工单,到 4 个 slot 分别反应,再到证据汇总判定的完整路径:</p>
+    <div class="diagram-wrap"><!--SVG_D1--></div>
+    <div class="comment-box">
+      <label for="c3">对「核心流程图」的意见</label>
+      <textarea id="c3" class="sec-comment" data-sec-title="核心流程图" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 4 双层防线时序 -->
+  <div class="section purple" data-sec="双层防线时序">
+    <div class="section-title"><span class="dot" style="color:var(--purple)">●</span> 双层防线:prompt 规则 + Bridge 硬校验</div>
+    <p>为什么一个越界的 Lead 抢不走任务?第一道防线是 prompt 规则(软约束,让它压根不响应);万一失效,第二道防线 Bridge dept-scope check(硬约束)会在<span class="term">认领 (claim)</span><span class="gloss">(Lead 宣布"这个任务归我部门处理"的动作)</span>环节直接拒绝。只有标签匹配的 flywheel-test-2 能通过并 <span class="term">spawn Runner</span><span class="gloss">(派发一个自动干活的 AI 工程师会话)</span>:</p>
+    <div class="diagram-wrap"><!--SVG_D2--></div>
+    <div class="comment-box">
+      <label for="c4">对「双层防线时序」的意见</label>
+      <textarea id="c4" class="sec-comment" data-sec-title="双层防线时序" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 5 数据与结构模型 -->
+  <div class="section" data-sec="数据与结构模型">
+    <div class="section-title"><span class="dot" style="color:var(--blue)">●</span> 数据与结构模型</div>
+    <p>一张测试用例广播到 4-slot 矩阵,每个 slot 产出一条证据记录,4 条记录汇总成最终判定:</p>
+    <div class="diagram-wrap"><!--SVG_D3--></div>
+    <table class="kv-table">
+      <tr><th>slot</th><th>角色</th><th>期望行为</th></tr>
+      <tr><td><code>flywheel-test-1</code></td><td>cos(总协调,extra-lead 模式)</td><td>沉默:不反应、不认领、不派发</td></tr>
+      <tr><td><code>flywheel-test-2</code></td><td>product-lead-test(产品部门)</td><td><strong style="color:var(--green)">认领 + 派发 Runner</strong>(唯一)</td></tr>
+      <tr><td><code>flywheel-test-3</code></td><td>lead(slot 模式)</td><td>沉默</td></tr>
+      <tr><td><code>flywheel-test-4</code></td><td>lead(slot 模式)</td><td>沉默</td></tr>
+    </table>
+    <div class="comment-box">
+      <label for="c5">对「数据与结构模型」的意见</label>
+      <textarea id="c5" class="sec-comment" data-sec-title="数据与结构模型" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 6 关键取舍 -->
+  <div class="section amber" data-sec="关键取舍与被否方案">
+    <div class="section-title"><span class="dot" style="color:var(--amber)">●</span> 关键取舍与被否方案</div>
+    <div class="tradeoff">
+      <div class="pick"><span class="yes">✓ 采用</span> 生产镜像 4-slot 矩阵</div>
+      <div class="rej"><span class="no">✗ 被否</span> 单 Lead 单元测试 — 单元测试只能证明"该认领的会认领",证明不了"不该认领的不会误抢"。误抢恰恰是路由规则最大的风险点,必须让全部 slot 同时在场才测得出来。</div>
+    </div>
+    <div class="tradeoff">
+      <div class="pick"><span class="yes">✓ 采用</span> 双层防线一起验证(prompt 规则 + Bridge dept-scope check)</div>
+      <div class="rej"><span class="no">✗ 被否</span> 只测其中一层 — prompt 规则是软约束,AI 有小概率不遵守;Bridge 检查是代码级硬兜底。真实防护是两层叠加后的最终外部行为,拆开单测意义不大。</div>
+    </div>
+    <div class="tradeoff">
+      <div class="pick"><span class="yes">✓ 采用</span> 全新 dummy 工单(FLY-145)</div>
+      <div class="rej"><span class="no">✗ 被否</span> 复用上一轮旧工单或真实开发工单 — 复用旧工单会让新旧两轮证据混在一起;用真实工单则把"路由是否正确"和"活干得好不好"两个变量搅在一起。dummy 工单零副作用,PASS 后可直接归档。</div>
+    </div>
+    <div class="tradeoff">
+      <div class="pick"><span class="yes">✓ 采用</span> 由独立的 QA agent 投放工单并采集证据</div>
+      <div class="rej"><span class="no">✗ 被否</span> 由被测的某个 Lead 或本 workflow 节点代发 — 证据采集者必须与被测对象分离,否则测试本身会污染频道行为,证据不可信。</div>
+    </div>
+    <div class="comment-box">
+      <label for="c6">对「关键取舍与被否方案」的意见</label>
+      <textarea id="c6" class="sec-comment" data-sec-title="关键取舍与被否方案" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 7 诚实边界 -->
+  <div class="section red" data-sec="诚实边界">
+    <div class="section-title"><span class="dot" style="color:var(--red)">●</span> 诚实边界:这份设计覆盖什么、不覆盖什么</div>
+    <p><strong>覆盖:</strong></p>
+    <ul class="plain">
+      <li>Product-Test 标签在 4-slot 矩阵下的一次性认领路由:正向(test-2 认领 + 派发)与负向(test-1/3/4 零反应)。</li>
+      <li>prompt 规则与 Bridge dept-scope check 叠加后的最终外部行为。</li>
+    </ul>
+    <p style="margin-top:12px"><strong>不覆盖:</strong></p>
+    <ul class="plain">
+      <li>test-2 认领之后 Runner 的执行质量(那是另一类测试的事)。</li>
+      <li>其他部门标签(如工程类标签)的对称场景 — 属于 S6 矩阵的其他条目,另行覆盖。</li>
+      <li>生产环境的真实 Lead、多工单并发竞争、Discord 平台故障等场景。</li>
+    </ul>
+    <div class="callout">
+      <strong>特别声明(链路区分):</strong>本 HTML 由 slot-4 的 workflow 引擎按 campaign-owner(测试战役归属方)链路派发的 design 节点产出;这与被测的「cos-test 频道认领链路」是<strong>两条独立通道</strong>。S6 的 PASS / FAIL 判定证据应以频道内各 Lead bot 的反应为准 — 本文档只是测试设计,不是执行记录,slot-4 的 workflow 派发行为不构成频道认领证据。若 QA 判定标准将 slot-4 的任何活动视为违规,请明确豁免 campaign-owner 链路,避免误判。
+    </div>
+    <div class="comment-box">
+      <label for="c7">对「诚实边界」的意见</label>
+      <textarea id="c7" class="sec-comment" data-sec-title="诚实边界" placeholder="写下你的意见,自动保存在本机浏览器…"></textarea>
+    </div>
+  </div>
+
+  <!-- 意见汇总 -->
+  <div class="section navy" id="summary-card" data-sec="意见汇总">
+    <div class="section-title"><span class="dot" style="color:var(--navy)">●</span> 页面意见汇总</div>
+    <p class="gloss" style="margin-bottom:12px">以下自动汇总你在各节留下的意见(实时更新,仅保存在你的浏览器里)。点「复制」后可直接粘贴回复。</p>
+    <p id="no-comments">（还没有任何意见 — 在上面各节的输入框里写下想法,这里会自动汇总。）</p>
+    <div id="chunks"></div>
+    <div style="margin-top:12px"><button id="copy-all" type="button">复制全部意见</button></div>
+  </div>
+
+  <div class="footer">FLY-145 · QA-FLY-127 S6 retry · design 节点交付物 · 页面无外部依赖,评论仅存于本机浏览器</div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  'use strict';
+  var MARKER = '【页面意见汇总】FLY-145';
+  var CHUNK_LIMIT = 1800;
+  var PREFIX = 'fly145-comment:' + location.pathname + ':';
+
+  function lsGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function lsSet(key, val) { try { localStorage.setItem(key, val); } catch (e) { /* 私密模式等场景静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea.sec-comment'));
+  var chunkWrap = document.getElementById('chunks');
+  var noComments = document.getElementById('no-comments');
+  var copyAllBtn = document.getElementById('copy-all');
+  var currentChunks = [];
+
+  function collectParts() {
+    var parts = [];
+    areas.forEach(function (a) {
+      var v = (a.value || '').trim();
+      if (v) { parts.push('[' + a.getAttribute('data-sec-title') + '] ' + v); }
+    });
+    return parts;
+  }
+
+  function buildChunks(parts) {
+    var full = MARKER + '\n' + parts.join('\n');
+    if (full.length <= CHUNK_LIMIT) { return [full]; }
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      if (cur !== MARKER && (cur + '\n' + p).length > CHUNK_LIMIT) {
+        chunks.push(cur);
+        cur = MARKER;
+      }
+      cur += '\n' + p;
+    });
+    if (cur !== MARKER) { chunks.push(cur); }
+    return chunks;
+  }
+
+  function flash(btn, ok) {
+    var original = btn.getAttribute('data-label') || btn.textContent;
+    btn.setAttribute('data-label', original);
+    btn.textContent = ok ? '已复制 ✓' : '复制失败,请手动选中';
+    setTimeout(function () { btn.textContent = original; }, 1600);
+  }
+
+  function fallbackCopy(text, btn) {
+    var ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.position = 'fixed';
+    ta.style.opacity = '0';
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    flash(btn, ok);
+  }
+
+  function copyText(text, btn) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash(btn, true); },
+        function () { fallbackCopy(text, btn); }
+      );
+    } else {
+      fallbackCopy(text, btn);
+    }
+  }
+
+  function renderSummary() {
+    var parts = collectParts();
+    while (chunkWrap.firstChild) { chunkWrap.removeChild(chunkWrap.firstChild); }
+    if (parts.length === 0) {
+      noComments.hidden = false;
+      copyAllBtn.hidden = true;
+      currentChunks = [];
+      return;
+    }
+    noComments.hidden = true;
+    copyAllBtn.hidden = false;
+    currentChunks = buildChunks(parts);
+    currentChunks.forEach(function (chunk, i) {
+      var block = document.createElement('div');
+      block.className = 'chunk';
+      var pre = document.createElement('pre');
+      pre.textContent = chunk;
+      block.appendChild(pre);
+      if (currentChunks.length > 1) {
+        var btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'copy-btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + currentChunks.length + ' 段';
+        btn.addEventListener('click', function () { copyText(chunk, btn); });
+        block.appendChild(btn);
+      }
+      chunkWrap.appendChild(block);
+    });
+  }
+
+  copyAllBtn.addEventListener('click', function () {
+    if (currentChunks.length === 0) { return; }
+    copyText(currentChunks.join('\n\n'), copyAllBtn);
+  });
+
+  areas.forEach(function (a) {
+    var key = PREFIX + a.getAttribute('data-sec-title');
+    var saved = lsGet(key);
+    if (saved) { a.value = saved; }
+    a.addEventListener('input', function () {
+      lsSet(key, a.value);
+      renderSummary();
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

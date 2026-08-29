@@ -1,0 +1,30 @@
+classDiagram
+    class S6TestCase {
+      issue : FLY-145
+      label : Product-Test
+      channel : cos-test
+      expected_claimer : flywheel-test-2
+      expected_silent : test-1 test-3 test-4
+      cleanup : PASS 后归档
+    }
+    class SlotMatrix {
+      flywheel-test-1 : cos · extra-lead
+      flywheel-test-2 : product-lead-test · 应认领
+      flywheel-test-3 : lead · slot
+      flywheel-test-4 : lead · slot
+    }
+    class EvidenceRecord {
+      slot_id : 哪个 slot
+      reacted : 是否有任何反应
+      claimed : 是否认领
+      spawned : 是否派发 Runner
+      timestamp : 时间戳
+    }
+    class Verdict {
+      pass 条件 : 仅 test-2 认领且其余零反应
+      fail 处置 : 记录违规 slot 并回溯规则
+    }
+
+    S6TestCase --> SlotMatrix : 广播到全矩阵
+    SlotMatrix --> EvidenceRecord : 每 slot 一条记录
+    EvidenceRecord --> Verdict : 4 条记录汇总判定

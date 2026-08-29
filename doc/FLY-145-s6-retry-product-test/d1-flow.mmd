@@ -1,0 +1,22 @@
+flowchart TD
+    A["QA agent 在 cos-test 频道<br/>发布 issue 标识 FLY-145<br/>(label: Product-Test)"] --> B{"4 个 Lead bot<br/>同时看到消息"}
+    B --> C2["flywheel-test-2<br/>(product-lead-test)"]
+    B --> C1["flywheel-test-1<br/>(cos)"]
+    B --> C3["flywheel-test-3<br/>(lead)"]
+    B --> C4["flywheel-test-4<br/>(lead)"]
+    C2 --> D2{"标签匹配?<br/>Product-Test 属于本部门"}
+    D2 -->|是| E2["claim + spawn Runner"]
+    C1 --> S1["保持沉默"]
+    C3 --> S3["保持沉默"]
+    C4 --> S4["保持沉默"]
+    E2 --> F["QA agent 收集证据<br/>(每个 slot 的反应记录)"]
+    S1 --> F
+    S3 --> F
+    S4 --> F
+    F --> G{"只有 test-2 认领<br/>且其余 3 个 slot 零反应?"}
+    G -->|是| H["S6 PASS<br/>归档 FLY-145"]
+    G -->|否| I["S6 FAIL<br/>记录违规 slot<br/>回溯 prompt 规则 / Bridge 检查"]
+
+    style H fill:#d7f5dd,stroke:#34c759
+    style I fill:#ffe0dd,stroke:#ff3b30
+    style E2 fill:#e3f0ff,stroke:#007aff

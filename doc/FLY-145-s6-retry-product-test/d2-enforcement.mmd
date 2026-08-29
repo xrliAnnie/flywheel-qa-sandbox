@@ -1,0 +1,21 @@
+sequenceDiagram
+    participant QA as QA agent
+    participant CH as cos-test 频道
+    participant L as Lead bot (每个 slot)
+    participant BR as Bridge (调度服务)
+
+    QA->>CH: 发布 FLY-145 (label: Product-Test)
+    CH->>L: 消息对全部 4 个 slot 可见
+    L->>L: 第一道防线 - prompt 规则<br/>标签不属于本部门则不响应
+
+    alt 越界 Lead 仍尝试认领 (防线一失效)
+        L->>BR: claim 请求
+        BR->>BR: 第二道防线 - dept-scope check (PR 170)
+        BR-->>L: 拒绝 - label 与部门不匹配
+    else 标签匹配 (仅 flywheel-test-2)
+        L->>BR: claim 请求
+        BR-->>L: 通过 → spawn Runner
+    end
+
+    QA->>CH: 采集各 slot 反应作为证据
+    QA->>QA: 汇总判定 S6 PASS / FAIL
