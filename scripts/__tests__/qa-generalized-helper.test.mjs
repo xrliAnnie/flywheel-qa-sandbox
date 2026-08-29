@@ -46,7 +46,26 @@ function fixtureDb(path, { missingTemplate = false } = {}) {
 			has_override INTEGER NOT NULL,
 			raw_value TEXT,
 			last_effective TEXT NOT NULL,
+			value_last_changed INTEGER,
+			revision INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			updated_by TEXT NOT NULL,
 			PRIMARY KEY(flag_name, scope)
+		);
+		CREATE TABLE flag_value_changelog (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			flag_name TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			action TEXT NOT NULL,
+			from_present INTEGER,
+			from_raw TEXT,
+			to_present INTEGER NOT NULL,
+			to_raw TEXT,
+			from_effective TEXT,
+			to_effective TEXT NOT NULL,
+			changed_by TEXT NOT NULL,
+			changed_at INTEGER NOT NULL,
+			reason TEXT NOT NULL
 		);
 	`);
 	const ids = [
@@ -141,6 +160,122 @@ test("binding seed derives the six canonical mappings and is a no-op on replay",
 	}
 });
 
+test("project flag seed writes the two generalized rows atomically and is idempotent", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2103-generalized-flags-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		const first = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-1",
+		);
+		assert.equal(first.status, 0, first.stderr);
+		assert.equal(JSON.parse(first.stdout).changed, 2);
+
+		const db = new Database(path, { readonly: true });
+		const firstRows = db
+			.prepare(
+				"SELECT flag_name,scope,has_override,raw_value,last_effective,revision,updated_by FROM flag_values ORDER BY flag_name",
+			)
+			.all();
+		const firstAudit = db
+			.prepare(
+				"SELECT flag_name,scope,action,from_present,from_raw,to_present,to_raw,from_effective,to_effective,changed_by,reason FROM flag_value_changelog ORDER BY flag_name",
+			)
+			.all();
+		db.close();
+		assert.deepEqual(firstRows, [
+			{
+				flag_name: "pipeline_dag",
+				scope: "test-slot-1",
+				has_override: 1,
+				raw_value: "1",
+				last_effective: "true",
+				revision: 1,
+				updated_by: "system:test-deploy-generalized",
+			},
+			{
+				flag_name: "pipeline_work_kind",
+				scope: "test-slot-1",
+				has_override: 1,
+				raw_value: "1",
+				last_effective: "true",
+				revision: 1,
+				updated_by: "system:test-deploy-generalized",
+			},
+		]);
+		assert.deepEqual(
+			firstAudit.map((row) => ({
+				...row,
+				from_present: row.from_present ?? null,
+				from_raw: row.from_raw ?? null,
+				from_effective: row.from_effective ?? null,
+			})),
+			[
+				{
+					flag_name: "pipeline_dag",
+					scope: "test-slot-1",
+					action: "set",
+					from_present: null,
+					from_raw: null,
+					to_present: 1,
+					to_raw: "1",
+					from_effective: null,
+					to_effective: "true",
+					changed_by: "system:test-deploy-generalized",
+					reason: "seed generalized QA project flags",
+				},
+				{
+					flag_name: "pipeline_work_kind",
+					scope: "test-slot-1",
+					action: "set",
+					from_present: null,
+					from_raw: null,
+					to_present: 1,
+					to_raw: "1",
+					from_effective: null,
+					to_effective: "true",
+					changed_by: "system:test-deploy-generalized",
+					reason: "seed generalized QA project flags",
+				},
+			],
+		);
+
+		const replay = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-1",
+		);
+		assert.equal(replay.status, 0, replay.stderr);
+		assert.equal(JSON.parse(replay.stdout).changed, 0);
+		const replayDb = new Database(path, { readonly: true });
+		assert.deepEqual(
+			replayDb
+				.prepare(
+					"SELECT flag_name,scope,has_override,raw_value,last_effective,revision,updated_by FROM flag_values ORDER BY flag_name",
+				)
+				.all(),
+			firstRows,
+		);
+		assert.deepEqual(
+			replayDb
+				.prepare(
+					"SELECT flag_name,scope,action,from_present,from_raw,to_present,to_raw,from_effective,to_effective,changed_by,reason FROM flag_value_changelog ORDER BY flag_name",
+				)
+				.all(),
+			firstAudit,
+		);
+		replayDb.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("binding seed and verification share an explicit audit actor", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1775-binding-actor-"));
 	try {
@@ -206,16 +341,14 @@ test("strict config verification requires both scoped-store pipeline booleans", 
 		const good = join(dir, "good.yaml");
 		const dbPath = join(dir, "teamlead.db");
 		fixtureDb(dbPath);
-		const db = new Database(dbPath);
-		db.prepare("INSERT INTO flag_values VALUES (?, ?, 1, '1', 'true')").run(
-			"pipeline_dag",
+		const seeded = run(
+			"seed-project-flags",
+			"--db",
+			dbPath,
+			"--project",
 			"test-slot-1",
 		);
-		db.prepare("INSERT INTO flag_values VALUES (?, ?, 1, '1', 'true')").run(
-			"pipeline_work_kind",
-			"test-slot-1",
-		);
-		db.close();
+		assert.equal(seeded.status, 0, seeded.stderr);
 		const base = `project: test-slot-1
 linear:
   team_id: FLY

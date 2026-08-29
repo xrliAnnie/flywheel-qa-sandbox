@@ -188,4 +188,39 @@ describe("buildCronModelViews", () => {
 		expect(buildCronModelViews(PROJECTS, configs, () => false)).toEqual([]);
 		expect(buildCronModelViews(PROJECTS, new Map(), () => true)).toEqual([]);
 	});
+
+	it("fails local to an empty list when the scoped store read throws", () => {
+		const configs = new Map([
+			[
+				"flywheel",
+				{
+					config: {
+						xiaohongshu_learning: {
+							collections: [
+								{
+									collection_id: "c1",
+									label: "x",
+									lead_id: "l",
+									department_label: "D",
+									target_linear_project: "P",
+								},
+							],
+						},
+					} as never,
+				},
+			],
+		]);
+		const errors: string[] = [];
+		expect(
+			buildCronModelViews(
+				PROJECTS,
+				configs,
+				() => {
+					throw new Error("scoped store unavailable");
+				},
+				(error) => errors.push(error.message),
+			),
+		).toEqual([]);
+		expect(errors).toEqual(["scoped store unavailable"]);
+	});
 });

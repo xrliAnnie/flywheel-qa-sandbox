@@ -49,6 +49,9 @@ export const FLY2103_MIGRATED_FLAG_NAMES = new Set([
 const RECEIPT_SCHEMA_VERSION = 1;
 const ISSUE = "FLY-2103";
 
+export const FLY2103_PRE_CUTOVER_ORDER_WARNING =
+	"FLY-2103 G1 pre-cutover apply and receipt MUST complete before config-removal PRs land or any main checkout adopts them; post-deploy requires that exact receipt.";
+
 function digest(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }

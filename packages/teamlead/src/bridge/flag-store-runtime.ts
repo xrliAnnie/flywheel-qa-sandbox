@@ -124,6 +124,18 @@ export function storeSkillFrameworkSplitParticipation(
 	);
 }
 
+export function makeSkillFrameworkParticipationReader(
+	runtime: FlagStoreRuntime | undefined,
+	fallbackProjectName: string,
+): (projectName?: string) => boolean {
+	if (!runtime) return () => false;
+	return (projectName) =>
+		storeSkillFrameworkSplitParticipation(
+			runtime,
+			projectName ?? fallbackProjectName,
+		);
+}
+
 export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "alert_system");
 }

@@ -4870,6 +4870,10 @@ export async function startBridge(
 							ffConfigCache.current(),
 							(projectName) =>
 								storeXiaohongshuLearningEnabled(flagStore, projectName),
+							(error) =>
+								console.error(
+									`[management] cron model scoped flag read failed: ${error.message}`,
+								),
 						),
 					logger: (msg) => console.log(msg),
 				}),

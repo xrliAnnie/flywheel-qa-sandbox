@@ -1877,11 +1877,15 @@ if [[ "$GENERALIZED" == "1" ]]; then
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-bindings \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized workflow_category_binding seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-project-flags \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
+    || { log "ERROR: generalized scoped pipeline flag seed failed"; exit 1; }
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized binding verification failed"; exit 1; }
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
-    --file "${HOST_REPO}/.flywheel/config.yaml" --project "$TEST_PROJECT_NAME" >/dev/null \
+    --file "${HOST_REPO}/.flywheel/config.yaml" \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized pipeline config verification failed"; exit 1; }
   GENERALIZED_MENU_JSON=$(curl -sS --get \
     --data-urlencode "projectName=${TEST_PROJECT_NAME}" \

@@ -17,8 +17,9 @@
 #   2. Creates <dept>/doc/retro/ with a tracked .gitkeep.
 #   3. Writes <dept>/doc/README.md (conventions self-description) — the heredoc
 #      below is the ONE source of truth for the doc-flow conventions template.
-#   4. If .flywheel/config.yaml exists and has no doc_flow block, appends a
-#      commented doc_flow block (enabled: true). If .flywheel/ is absent,
+#   4. If .flywheel/config.yaml exists and has no doc_flow block, appends its
+#      non-flag metadata. Activation is printed as a scoped SQLite flag-store
+#      command. If .flywheel/ is absent,
 #      runs in SKELETON-ONLY mode (deliberate, supported — e.g. joycon main):
 #      directories + README are still created, and the config wiring guidance
 #      is printed instead.
@@ -58,6 +59,11 @@ DOC_DIR="${PROJECT_ROOT_ABS}/${DEPT}/doc"
 RETRO_DIR="${DOC_DIR}/retro"
 README_PATH="${DOC_DIR}/README.md"
 CONFIG_PATH="${PROJECT_ROOT_ABS}/.flywheel/config.yaml"
+PROJECT_NAME="<project>"
+if [ -f "$CONFIG_PATH" ]; then
+  CONFIG_PROJECT="$(awk '$1 == "project:" { print $2; exit }' "$CONFIG_PATH" | tr -d '\"'\''')"
+  [ -z "$CONFIG_PROJECT" ] || PROJECT_NAME="$CONFIG_PROJECT"
+fi
 
 # ── 2. Directories + tracked retro placeholder ─────────────────────────────
 mkdir -p "$RETRO_DIR"
@@ -136,11 +142,9 @@ if [ -f "$CONFIG_PATH" ]; then
     cat >> "$CONFIG_PATH" << CONFIG_EOF
 
 # FLY-205: department-first doc-flow baseline.
-# enabled: true → Runners get the DOC-FLOW prompt block (tiered process docs
-# under ${DEPT}/doc/<ISSUE>-<slug>/). Set to false to switch the feature off
-# (spawn prompts return to byte-identical pre-doc-flow form).
+# Runners get the DOC-FLOW prompt block only after the scoped SQLite flag is
+# enabled for this project. This block carries metadata, not flag ownership.
 doc_flow:
-  enabled: true
   default_department: ${DEPT}
 CONFIG_EOF
     log "Appended doc_flow block to ${CONFIG_PATH}"
@@ -155,9 +159,11 @@ else
   log "Doc skeleton created. To activate doc-flow, add to the project's .flywheel/config.yaml (wherever it lives):"
   log ""
   log "    doc_flow:"
-  log "      enabled: true"
   log "      default_department: ${DEPT}"
 fi
+
+log "  Activate doc-flow through the scoped SQLite flag store:"
+log "    flywheel-comm feature-flags set --name doc_flow --to on --project ${PROJECT_NAME} --reason \"enable doc-flow\""
 
 # ── 5. Next steps ──────────────────────────────────────────────────────────
 log ""
@@ -171,9 +177,9 @@ log "  2. Ensure the project's Lead entry in ~/.flywheel/projects.json carries"
 log "     department: \"${DEPT}\" (alignment between config and Lead routing)."
 log "  3. The running Bridge must include FLY-205 (doc_flow prompt injection)"
 log "     for the Runner-side behavior to activate."
-log "  4. ⚠️  RESTART THE BRIDGE after this config lands in the project checkout"
-log "     the Bridge reads — per-project config.yaml is loaded at Bridge BOOT"
-log "     only (run-infra), so doc_flow stays inert until the next restart."
+log "  4. ⚠️  RESTART THE BRIDGE after metadata lands in the project checkout"
+log "     the Bridge reads — per-project config.yaml metadata is loaded at BOOT."
+log "     Then run the scoped feature-flags command above; the flag is hot-effective."
 log "     (FLY-205 ship-window lesson: the first acceptance run missed the"
 log "     block because the Bridge had booted 2 minutes before the retrofit"
 log "     merge.)"

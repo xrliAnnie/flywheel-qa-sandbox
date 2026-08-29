@@ -68,11 +68,11 @@ import {
 import { EventFilter } from "./EventFilter.js";
 import {
 	type FlagStoreRuntime,
+	makeSkillFrameworkParticipationReader,
 	storeDocFlowEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
 	storeSkillFrameworkModeControl,
-	storeSkillFrameworkSplitParticipation,
 } from "./flag-store-runtime.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
@@ -1074,13 +1074,10 @@ export async function setupRunInfrastructure(
 			// THROW → Blueprint fails closed, never read as participate=true).
 			// Fresh config read at every dispatch resolution; ENOENT / absent
 			// key → participate (default true).
-			const skillFrameworkParticipation = flagStore
-				? (projectName: string | undefined) =>
-						storeSkillFrameworkSplitParticipation(
-							flagStore,
-							projectName ?? project.projectName,
-						)
-				: undefined;
+			const skillFrameworkParticipation = makeSkillFrameworkParticipationReader(
+				flagStore,
+				project.projectName,
+			);
 			const docFlowEnabled = flagStore
 				? () => storeDocFlowEnabled(flagStore, project.projectName)
 				: undefined;

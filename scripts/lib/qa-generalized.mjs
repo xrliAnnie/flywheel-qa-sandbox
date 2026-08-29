@@ -208,6 +208,72 @@ async function verifyBindings(values) {
 	}
 }
 
+async function seedProjectFlags(values) {
+	const dbPath = required(values, "db");
+	const project = required(values, "project");
+	const updatedBy = values.actor?.trim() || "system:test-deploy-generalized";
+	const rows = ["pipeline_dag", "pipeline_work_kind"];
+	const db = openDatabase(dbPath);
+	try {
+		const current = db.prepare(
+			`SELECT has_override,raw_value,last_effective,revision,updated_by
+			   FROM flag_values WHERE flag_name = ? AND scope = ?`,
+		);
+		const insert = db.prepare(
+			`INSERT INTO flag_values (
+				flag_name,scope,has_override,raw_value,last_effective,
+				value_last_changed,revision,updated_at,updated_by
+			 ) VALUES (?,?,1,'1','true',NULL,1,?,?)`,
+		);
+		const update = db.prepare(
+			`UPDATE flag_values SET
+				has_override=1,raw_value='1',last_effective='true',
+				value_last_changed=?,revision=revision+1,updated_at=?,updated_by=?
+			 WHERE flag_name=? AND scope=?`,
+		);
+		const audit = db.prepare(
+			`INSERT INTO flag_value_changelog (
+				flag_name,scope,action,from_present,from_raw,to_present,to_raw,
+				from_effective,to_effective,changed_by,changed_at,reason
+			 ) VALUES (?,?,'set',?,?,1,'1',?,'true',?,?,'seed generalized QA project flags')`,
+		);
+		let changed = 0;
+		db.transaction(() => {
+			const now = Date.now();
+			for (const name of rows) {
+				const prior = current.get(name, project);
+				if (
+					prior?.has_override === 1 &&
+					prior.raw_value === "1" &&
+					prior.last_effective === "true"
+				) {
+					continue;
+				}
+				if (prior) {
+					update.run(now, now, updatedBy, name, project);
+				} else {
+					insert.run(name, project, now, updatedBy);
+				}
+				audit.run(
+					name,
+					project,
+					prior ? 1 : null,
+					prior?.raw_value ?? null,
+					prior?.last_effective ?? null,
+					updatedBy,
+					now,
+				);
+				changed += 1;
+			}
+		}).immediate();
+		process.stdout.write(
+			`${JSON.stringify({ success: true, project, flags: rows.length, changed })}\n`,
+		);
+	} finally {
+		db.close();
+	}
+}
+
 async function verifyConfig(values) {
 	const file = required(values, "file");
 	const dbPath = required(values, "db");
@@ -251,12 +317,15 @@ async function main() {
 		case "verify-bindings":
 			await verifyBindings(values);
 			break;
+		case "seed-project-flags":
+			await seedProjectFlags(values);
+			break;
 		case "verify-config":
 			await verifyConfig(values);
 			break;
 		default:
 			throw new Error(
-				"usage: qa-generalized.mjs seed-bindings|verify-bindings|verify-config [options; verify-config requires --db]",
+				"usage: qa-generalized.mjs seed-bindings|verify-bindings|seed-project-flags|verify-config [options; verify-config requires --db]",
 			);
 	}
 }

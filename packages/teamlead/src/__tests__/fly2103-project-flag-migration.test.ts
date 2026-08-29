@@ -7,6 +7,7 @@ import {
 	createPreCutoverReceipt,
 	FLY2103_FINAL_ROWS,
 	FLY2103_MANIFEST_DIGEST,
+	FLY2103_PRE_CUTOVER_ORDER_WARNING,
 	FLY2103_PRE_CUTOVER_ROWS,
 	FLY2103_PROJECTS,
 	type MigrationRow,
@@ -80,6 +81,9 @@ describe("FLY-2103 project flag migration", () => {
 			{ name: "ponytail", scope: "*", raw: "0" },
 		]);
 		expect(FLY2103_MANIFEST_DIGEST).toMatch(/^[a-f0-9]{64}$/);
+		expect(FLY2103_PRE_CUTOVER_ORDER_WARNING).toMatch(
+			/G1.*before.*config-removal PRs.*main checkout/i,
+		);
 	});
 
 	it("audits the complete legacy roster bidirectionally", () => {

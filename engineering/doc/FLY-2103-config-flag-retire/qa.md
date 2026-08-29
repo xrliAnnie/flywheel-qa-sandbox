@@ -1,6 +1,6 @@
 # FLY-2103 project config flag 退役 — QA 报告
 Issue: FLY-2103 (https://linear.app/geoforge3d/issue/FLY-2103/flagcconfigyaml-退役-9-个-project-config-flag-处置checkpointsenabled)
-日期: 2026-08-28
+日期: 2026-08-29
 基于: plan.md
 
 ## 结论
@@ -57,6 +57,15 @@ checkpoints.<name>.enabled
 ```
 
 排除测试与一次性 migration 的读取后，唯一命中是 `ConfigLoader` 对 `collections[].auto_create` 的拒绝逻辑；无运行时 YAML flag reader。宽泛文本搜索剩余命中均属于 registry 元数据、ConfigLoader fail-loud 字符串、迁移审计、历史 provenance 文案或非 flag 字段 `plan.autoCreate`。
+
+## Code review R2 闭环
+
+- QA sandbox 的 ordinary/generalized config generator 均不再输出 checkpoint `enabled` 或 `pipeline.*`；generalized slot 在启动前改为原子、幂等地写入 `pipeline_dag` / `pipeline_work_kind` 项目行，并写 `flag_value_changelog`。
+- `setup-new-project.sh` / `setup-doc-flow.sh` 只生成非 flag 元数据，并输出 scoped `feature-flags set --project` 命令；`setup-ponytail.sh` 的引导同步迁入 DB。
+- 全库 generator 审计又发现 `flywheel init` 的标准 template 仍会生成 `checkpoints.*.enabled: false`；已删除整个默认 checkpoint 声明，保持「新项目默认不启用这两个 checkpoint」的原行为，并加入 scaffold 回归测试。
+- scoped store 不可用时，skill-framework split participation 钉死为 `false` / A 臂；cron model 读取局部降级为空集，不影响其他 management provider。
+- G1 pre-cutover CLI 现在大声警告：receipt 必须在 config-removal PR 落地或 main checkout 采用前完成。
+- R2 focused 复验：Teamlead 64/64 passed；QA/deploy/onboarding helper 82/82 passed；Flywheel CLI 32/32 passed；`pnpm lint` exit 0；`pnpm -r build` exit 0。
 
 ## 测试证据
 

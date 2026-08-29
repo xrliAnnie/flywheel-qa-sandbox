@@ -134,7 +134,6 @@ decision_layer:
 
 checkpoints:
   approve_to_ship:
-    enabled: true
     timeout_ms: 14400000     # 4h (FLY-159: ConfigLoader floor; anything lower is warn+raised)
     timeout_behavior: fail-close
 EOF
@@ -160,6 +159,13 @@ if [[ "$ref" == "$new" ]]; then
 else
   fail "A3: config.yaml drifted from reference"
   diff <(printf '%s' "$ref") <(printf '%s' "$new") | head -10
+fi
+
+generalized_config="$(qa_multilead_config_yaml test-slot-2 generalized)"
+if grep -Eq '^[[:space:]]+enabled:[[:space:]]|^pipeline:' <<<"$generalized_config"; then
+  fail "A4: generalized config must not emit retired project flag keys"
+else
+  pass "A4: generalized config declares checkpoint metadata without retired flags"
 fi
 
 # ── B1: two leads, field-by-field ──
@@ -532,6 +538,11 @@ grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag no
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
+grep -q 'seed-project-flags' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2103 S1: generalized QA must seed scoped pipeline rows"; }
+VERIFY_CONFIG_BLOCK="$(sed -n '/qa-generalized\.mjs" verify-config/,/generalized pipeline config verification/p' "$DEPLOY")"
+grep -Fq -- '--db "${SLOT_DIR}/teamlead.db"' <<<"$VERIFY_CONFIG_BLOCK" \
+  || { S1_OK=0; fail "FLY-2103 S1: generalized verify-config must receive the slot DB"; }
 grep -q 'QA_SUMMARY_CONFIG_HOME="${SLOT_DIR}/identity-home"' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2030 S1: QA summary config must live under the slot"; }
 grep -q 'summary-config.json' "$DEPLOY" \

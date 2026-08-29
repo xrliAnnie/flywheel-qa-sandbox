@@ -61,22 +61,31 @@ export function buildCronModelViews(
 	projects: ProjectEntry[],
 	configs: Map<string, ProjectConfigEntry>,
 	learningEnabled: (projectName: string) => boolean,
+	onReadError: (error: Error) => void = () => undefined,
 ): CronModelView[] {
 	const out: CronModelView[] = [];
-	for (const project of projects) {
-		const learning = configs.get(project.projectName)?.config
-			?.xiaohongshu_learning;
-		if (!learningEnabled(project.projectName) || !learning?.collections?.length)
-			continue;
-		for (const col of learning.collections) {
-			out.push({
-				projectName: project.projectName,
-				collectionId: col.collection_id,
-				label: col.label,
-				leadId: col.lead_id,
-				model: col.model ?? null,
-			});
+	try {
+		for (const project of projects) {
+			const learning = configs.get(project.projectName)?.config
+				?.xiaohongshu_learning;
+			if (
+				!learningEnabled(project.projectName) ||
+				!learning?.collections?.length
+			)
+				continue;
+			for (const col of learning.collections) {
+				out.push({
+					projectName: project.projectName,
+					collectionId: col.collection_id,
+					label: col.label,
+					leadId: col.lead_id,
+					model: col.model ?? null,
+				});
+			}
 		}
+	} catch (error) {
+		onReadError(error instanceof Error ? error : new Error(String(error)));
+		return [];
 	}
 	return out;
 }

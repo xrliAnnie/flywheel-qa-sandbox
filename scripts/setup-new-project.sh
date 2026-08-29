@@ -196,11 +196,9 @@ decision_layer:
 
 checkpoints:
   brainstorm:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-close
   question:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-open
 
@@ -215,7 +213,6 @@ default_agent: ${DEPT}
 
 # FLY-205: department-first doc-flow baseline.
 doc_flow:
-  enabled: true
   default_department: ${DEPT}
 CONFIG_EOF
 
@@ -449,8 +446,10 @@ Order matters (FLY-270: projects.json-first → manifest → install plist):
     flywheel-fleet.sh apply cannot seed it before the first carrier exists.
     Verify the manifest launchEnvironment when used, plus launchctl print output.
  8. Restart the Bridge (batch with any in-flight Bridge PRs).
- 9. Verify: bots online + reply in their channels + a real founder chat.
-10. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
+ 9. Enable doc-flow through the scoped SQLite flag store (hot-effective):
+    flywheel-comm feature-flags set --name doc_flow --to on --project ${PROJECT} --reason "enable doc-flow during project onboarding"
+10. Verify: bots online + reply in their channels + a real founder chat.
+11. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
     ${PROJECT}'s deploy point (or CI post-deploy) — call it with
     --issue FLY-N | --pr N --merge-sha <sha> at each production deploy. That records
     a deployment_events row so the daily fleet-wide digest covers ${PROJECT}.

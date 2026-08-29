@@ -17,6 +17,7 @@ import { StateStore } from "../packages/teamlead/dist/StateStore.js";
 import {
 	type ConfigSnapshot,
 	FLY2103_MIGRATED_FLAG_NAMES,
+	FLY2103_PRE_CUTOVER_ORDER_WARNING,
 	FLY2103_PROJECTS,
 	type MigrationRow,
 	type PreCutoverReceipt,
@@ -247,6 +248,9 @@ async function atomicWriteReceipt(
 
 async function main(): Promise<void> {
 	const args = parseArgs(process.argv.slice(2));
+	if (args.phase === "pre-cutover") {
+		console.warn(FLY2103_PRE_CUTOVER_ORDER_WARNING);
+	}
 	const dbRealpath = await realpath(args.dbPath);
 	const configSnapshots = await loadConfigSnapshots(args.projectsPath);
 	const currentRows = await readMigrationRows(dbRealpath);

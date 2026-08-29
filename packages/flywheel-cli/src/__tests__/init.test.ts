@@ -83,4 +83,13 @@ describe("flywheel init", () => {
 		const cfg = readFileSync(join(root, ".flywheel", "config.yaml"), "utf-8");
 		expect(cfg).toContain('name: "myproj"');
 	});
+
+	it("does not scaffold retired checkpoint enabled keys", () => {
+		init({ projectPath: root, noDepts: true });
+		const cfg = readFileSync(join(root, ".flywheel", "config.yaml"), "utf-8");
+		expect(cfg).not.toContain("checkpoints:");
+		expect(cfg).not.toMatch(
+			/^ {2}[a-z_]+:\n {4}enabled:\s+(?:true|false)\s*$/m,
+		);
+	});
 });
