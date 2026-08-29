@@ -258,6 +258,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: onboarding service endpoint override, not an on/off gate",
 	FLYWHEEL_PATROL_CONFIG:
 		"path override for the hot-read patrol timing config (FLY-1687), not an on/off gate",
+	FLYWHEEL_MEETING_NOTES_CONFIG:
+		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	// context / ids
 	FLYWHEEL_EXEC_ID: "context: runner execution id",
 	FLYWHEEL_ISSUE_ID: "context: linear issue id",

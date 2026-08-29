@@ -305,6 +305,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	flag_scan_failed: { owner: "claude", arc: "human_by_design" },
 	flag_scan_handoff: { owner: "claude", arc: "human_by_design" },
 	flag_scan_no_clock: { owner: "claude", arc: "human_by_design" },
+	meeting_notes_failed: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"按 signature 里的 failureClass 定位(schema=raya 存档损坏 / identity=issue 歧义 / linear·bridge=依赖不可用 / config=preflight);恢复依赖健康即可,幂等 tick 自行收敛,无需手工补状态",
+	},
 	// FLY-1929: host IPC-voucher pressure / kernel-panic recurrence. There is NO
 	// executable remediation today — the containment action (restarting an Apple
 	// LaunchDaemon) is root- and founder-gated, so this is honestly human_by_design

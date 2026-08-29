@@ -252,6 +252,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Weekly flag scan founder handoff";
 		case "flag_scan_no_clock":
 			return "Weekly flag scan has no trustworthy clock";
+		case "meeting_notes_failed":
+			return "会议留痕管线故障";
 		case "tmux_rescue_hold":
 			return "tmux rescue lock held too long";
 		case "host_voucher_incident":
@@ -496,6 +498,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The weekly flag scan report is ready in the Flywheel core Discord thread. Answer founder questions there and record any cleanup verdict through the guarded verdict + preflight path.";
 		case "flag_scan_no_clock":
 			return "One or more flags lack two trustworthy effective-value samples. The scan withheld them from Annie rather than guessing; repair the named read or keep-binding gap.";
+		case "meeting_notes_failed":
+			return "Meeting issue, note-taker dispatch, or artifact reconciliation failed closed. Use the alert signature's failureClass to repair the Raya schema, Linear identity/index, Bridge dependency, or routing preflight; the idempotent tick will then converge without manual state edits.";
 		case "tmux_rescue_hold":
 			return "A tmux rescue operation held its per-socket kernel lock beyond the warning threshold. Inspect the supplied socket, verb, caller, and acquisition audit evidence.";
 		// FLY-1929: the shell voucher guard builds the real body (it carries the

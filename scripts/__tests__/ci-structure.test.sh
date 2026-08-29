@@ -753,6 +753,7 @@ expected_shard_tests = {
         "Test — FLY-1434 unified restart + quota caller",
         "Test — FLY-1715 runner boundary shell contracts",
         "Test — FLY-2126 Raya voice scenario wrapper",
+        "Test — FLY-2033 meeting artifact closure",
         "Test — FLY-1726 canonical Lead identity delivery",
         "Test — Lead in-flight mailbox adoption contracts",
         "Test — FLY-1649 r4 migration-window hardening",

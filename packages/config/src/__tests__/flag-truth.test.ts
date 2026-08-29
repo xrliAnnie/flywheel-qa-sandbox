@@ -416,6 +416,17 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("registers the FLY-2033 meeting-notes config path as a non-flag value", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_MEETING_NOTES_CONFIG).toMatch(
+			/config value.*FLY-2033/i,
+		);
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_MEETING_NOTES_CONFIG=/tmp/meeting-notes.yaml",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	/**
 	 * FLY-1809 (from the FLY-1782 audit): these two were never on/off switches —
 	 * one is a Discord channel id, the other a filesystem path. They are MOVED off

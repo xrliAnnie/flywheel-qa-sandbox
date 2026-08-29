@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>{{ISSUE_IDENTIFIER}} · {{MEETING_TITLE}}</title>
+<style>
+  :root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#6e6e73;--navy:#1a365d;
+    --red:#ff3b30;--blue:#007aff;--green:#34c759;--amber:#ff9500;--line:#e6e6ea}
+  *{box-sizing:border-box} body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.6}
+  .wrap{max-width:880px;margin:0 auto;padding:24px 16px 145px} h1{font-size:24px;margin:.2em 0}
+  h2{font-size:17px;margin:0 0 8px;color:var(--navy)} .sub,.note{color:var(--dim);font-size:13px}
+  .hero,section{background:var(--card);border-radius:13px;padding:16px;margin:0 0 14px;
+    box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--blue)}
+  .hero{background:linear-gradient(135deg,#eef4ff,#fff);border-left-color:var(--navy)}
+  section.action{border-left-color:var(--amber)} section.summary{border-left-color:var(--green)}
+  .body{font-size:14px}.body p{margin:7px 0}.action-text{font-size:14px;margin:8px 0 10px}
+  .source{font-size:12px;color:var(--dim)} .choices{display:flex;gap:7px;flex-wrap:wrap;margin:9px 0}
+  .choice{background:#e8e8ed;color:var(--ink);padding:7px 12px;font-size:13px}
+  .choice.selected[data-decision="要做"]{background:var(--green);color:#fff}
+  .choice.selected[data-decision="不做"]{background:var(--red);color:#fff}
+  .choice.selected[data-decision="有意见"]{background:var(--amber);color:#fff}
+  textarea{width:100%;min-height:58px;border:1px solid var(--line);border-radius:9px;padding:9px 10px;
+    font:13.5px inherit;resize:vertical;background:#fcfcfd;color:var(--ink)}
+  textarea:focus{outline:2px solid #cfe0ff;border-color:var(--blue)}
+  .bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.97);border-top:1px solid var(--line);
+    padding:10px 16px;display:flex;gap:10px;align-items:center;justify-content:center;flex-wrap:wrap}
+  button{background:var(--navy);color:#fff;border:0;border-radius:9px;padding:10px 17px;
+    font:600 14px inherit;cursor:pointer} button.ghost{background:#e8e8ed;color:var(--ink)}
+  #status{font-size:13px;color:var(--dim)} #status.bad{color:var(--red);font-weight:600}
+  #status.good{color:#1a7f37;font-weight:600}.aggregate{white-space:pre-wrap;background:#fafafc;
+    border:1px solid var(--line);border-radius:9px;padding:10px;min-height:46px;font-size:13px}
+  .dump{display:none;min-height:120px;margin-top:10px}.empty{color:var(--dim);font-size:14px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{{MEETING_TITLE}}</h1>
+  <div class="sub">{{MEETING_META}}</div>
+  <div class="hero"><b>会议要点已经整理好。讨论总结不用逐条审批；每个 action item 请选「要做 / 不做 / 有意见」。</b><br>
+    <span class="note">页面只保存在你的浏览器，不会自动回传。选完后点底部「一键汇总复制」，贴回这条 issue thread；若要我修订，再 reply 当前卡说「打回」。</span>
+  </div>
+
+  <section class="summary" data-section="summary">
+    <h2>讨论总结</h2>
+    <div class="body">{{SUMMARY_HTML}}</div>
+    <div class="note">总结不要求审批；有补充可以写。</div>
+    <textarea data-k="summary" placeholder="可留空"></textarea>
+  </section>
+
+  {{ACTION_ITEMS_HTML}}
+
+  <section>
+    <h2>页面意见汇总</h2>
+    <div class="note">每个 action item 都会进入汇总，包括尚未选择的项。复制后请贴回 issue thread，我才能收到。</div>
+    <div id="aggregate" class="aggregate"></div>
+    <div id="chunks"></div>
+    <textarea id="dump" class="dump" readonly></textarea>
+  </section>
+</div>
+
+<div class="bar">
+  <button id="copy">一键汇总复制</button>
+  <button id="clear" class="ghost">清空我的意见</button>
+  <span id="status"></span>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var PREFIX='meeting-notes-{{ISSUE_IDENTIFIER}}-'+location.pathname+'-';
+  var MARKER='【页面意见汇总】{{ISSUE_IDENTIFIER}}';
+  var boxes=Array.prototype.slice.call(document.querySelectorAll('textarea[data-k]'));
+  var actionSections=Array.prototype.slice.call(document.querySelectorAll('section[data-action-id]'));
+  var status=document.getElementById('status');
+  var aggregate=document.getElementById('aggregate');
+  var chunks=document.getElementById('chunks');
+  var dump=document.getElementById('dump');
+  function get(key){try{return localStorage.getItem(PREFIX+key)||'';}catch(e){return '';}}
+  function set(key,value){try{if(value)localStorage.setItem(PREFIX+key,value);else localStorage.removeItem(PREFIX+key);}catch(e){}}
+  function select(section,decision){
+    section.dataset.selected=decision;
+    set('decision-'+section.dataset.actionId,decision);
+    Array.prototype.forEach.call(section.querySelectorAll('button[data-decision]'),function(button){
+      var on=button.dataset.decision===decision; button.classList.toggle('selected',on); button.setAttribute('aria-pressed',on?'true':'false');
+    });
+  }
+  function build(){
+    var out=[MARKER,''];
+    var summary=document.querySelector('textarea[data-k="summary"]').value.trim();
+    if(summary){out.push('■ 讨论总结补充');out.push(summary);out.push('');}
+    if(!actionSections.length){out.push('■ 本场没有 action items');}
+    actionSections.forEach(function(section){
+      var id=section.dataset.actionId;
+      var decision=section.dataset.selected||'未选择';
+      var text=section.querySelector('.action-text').textContent.replace(/\s+/g,' ').trim();
+      var comment=section.querySelector('textarea[data-k]').value.trim();
+      out.push('■ '+id+'〔'+decision+'〕 '+text);
+      if(comment)out.push(comment);
+      out.push('');
+    });
+    return out.join('\n').trim();
+  }
+  function refresh(){aggregate.textContent=build();while(chunks.firstChild)chunks.removeChild(chunks.firstChild);}
+  function flag(message,kind){status.textContent=message;status.className=kind||'';}
+  function split(text){
+    if(text.length<=1800)return [text];
+    var parts=[],remaining=text.slice(MARKER.length).replace(/^\n+/,''),first=true;
+    while(remaining){
+      var prefix=MARKER+(first?'':'(续)'),capacity=1800-prefix.length-1;
+      var cut=Math.min(capacity,remaining.length);
+      if(cut<remaining.length){var newline=remaining.lastIndexOf('\n',cut);if(newline>0)cut=newline;}
+      parts.push(prefix+'\n'+remaining.slice(0,cut));
+      remaining=remaining.slice(cut).replace(/^\n/,'');first=false;
+    }
+    return parts;
+  }
+  function legacyCopy(text){dump.style.display='block';dump.value=text;dump.focus();dump.select();try{return document.execCommand('copy');}catch(e){return false;}}
+  function legacyResult(text){var copied=legacyCopy(text);flag(copied?'✅ 已复制(兼容方式)—— 请贴回 issue thread':'❌ 复制失败，请手动复制下面的框',copied?'good':'bad');}
+  function copyText(text,label){
+    if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){flag('✅ 已复制'+label+' —— 请贴回 issue thread','good');},function(){legacyResult(text);});}
+    else{legacyResult(text);}
+  }
+  boxes.forEach(function(box){box.value=get(box.dataset.k);box.addEventListener('input',function(){set(box.dataset.k,box.value);refresh();});});
+  actionSections.forEach(function(section){
+    var selected=get('decision-'+section.dataset.actionId);if(['要做','不做','有意见'].indexOf(selected)>=0)select(section,selected);
+    Array.prototype.forEach.call(section.querySelectorAll('button[data-decision]'),function(button){button.addEventListener('click',function(){select(section,button.dataset.decision);refresh();});});
+  });
+  document.getElementById('copy').addEventListener('click',function(){
+    var text=build(),parts=split(text);
+    if(parts.length===1){copyText(text,'');return;}
+    while(chunks.firstChild)chunks.removeChild(chunks.firstChild);
+    parts.forEach(function(part,index){var area=document.createElement('textarea');area.value=part;area.readOnly=true;area.style.marginTop='8px';var button=document.createElement('button');button.textContent='复制第 '+(index+1)+'/'+parts.length+' 段';button.addEventListener('click',function(){copyText(part,'第 '+(index+1)+' 段');});chunks.appendChild(area);chunks.appendChild(button);});
+    flag('内容较长，已分成 '+parts.length+' 段，请逐段复制','');
+  });
+  document.getElementById('clear').addEventListener('click',function(){boxes.forEach(function(box){box.value='';set(box.dataset.k,'');});actionSections.forEach(function(section){select(section,'');});dump.style.display='none';refresh();flag('已清空','');});
+  refresh();
+})();
+</script>
+</body>
+</html>

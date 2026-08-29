@@ -341,6 +341,8 @@ export const ALERT_EVENT_TYPES = [
 	"flag_scan_failed",
 	"flag_scan_no_clock",
 	"flag_scan_handoff",
+	// FLY-2033: fail-loud meeting issue/notes/card reconciliation.
+	"meeting_notes_failed",
 	"host_voucher_incident",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and

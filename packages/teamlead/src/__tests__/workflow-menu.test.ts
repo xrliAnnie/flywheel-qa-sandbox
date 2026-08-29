@@ -425,6 +425,28 @@ describe("founder-approved workflow menu source", () => {
 		expect(productIdentity).not.toContain('"taskCategory":"research"');
 	});
 
+	it("materializes the FLY-2033 note-taker route as prd + product Lead + founder review", () => {
+		const menu = resolveLeadMenus({
+			projectRoot: REPO_ROOT,
+			leadId: "flywheel-product-lead",
+		}).find((candidate) => candidate.shape === "prd");
+		expect(menu).toBeDefined();
+		const seed = compileWorkflowMenuSeed(menu!);
+		expect(seed.templateId).toBe("tpl_prd");
+		const producer = seed.manifest.nodes.find((node) => node.role === "pm");
+		expect(producer).toMatchObject({
+			id: "produce",
+			role: "pm",
+			founder_review: true,
+		});
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: seed.templateId, revision: 1 },
+			manifest: seed.manifest,
+			canonicalRoot: REPO_ROOT,
+		});
+		expect(nodeRequiresFounderReview(snapshot, producer!.id)).toBe(true);
+	});
+
 	it("compiles every shape into a role-based v2 seed with no agent_file or review node", () => {
 		for (const menu of loadWorkflowMenuLibrary()) {
 			const seed = compileWorkflowMenuSeed(menu);

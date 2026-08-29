@@ -437,6 +437,26 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		expect(bodyFor("host_voucher_incident", "")).toMatch(/ecosystemanalyticsd/);
 	});
 
+	it("FLY-2033 meeting_notes_failed is Claude-owned on both faces with explicit recovery", () => {
+		expect(ALERT_EVENT_TYPES).toContain("meeting_notes_failed");
+		expect(shellAllowlist()).toContain("meeting_notes_failed");
+		expect(KIND_CONTRACTS.meeting_notes_failed).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+			remediationRef:
+				"按 signature 里的 failureClass 定位(schema=raya 存档损坏 / identity=issue 歧义 / linear·bridge=依赖不可用 / config=preflight);恢复依赖健康即可,幂等 tick 自行收敛,无需手工补状态",
+		});
+		const owner = resolveTicketOwner(
+			"meeting_notes_failed",
+			"codex",
+			ownerRegistryFromEnv({
+				FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID: "111111111111111111",
+				FLYWHEEL_INFRA_BOT_USER_ID: "222222222222222222",
+			} as NodeJS.ProcessEnv),
+		);
+		expect(owner).toMatchObject({ kind: "infra_bot", side: "claude" });
+	});
+
 	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {
 		expect(ALERT_EVENT_TYPES).toContain("restart_storm_hold");
 		expect(shellAllowlist()).toContain("restart_storm_hold");

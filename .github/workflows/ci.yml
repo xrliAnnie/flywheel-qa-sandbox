@@ -429,7 +429,7 @@ jobs:
     # 1775=9, 1389=48, npm-seams=13, 1501=104, 1634=10, 1671=2,
     # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1330=6, 1018=0,
     # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
-    # 2126=2, 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
+    # 2126=2, 2033=24, 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
     # 1081=2, 1905=25, 1338-structure=0, 1674=0, 1338-parity=2, 1855=5,
     # 1986=95 (measured 2026-08-23; was 162s before its sleep budget was trimmed),
     # 1678=75 (moved from shard 1 after the 2026-08-28 FLY-2030 PR #975 run),
@@ -804,6 +804,16 @@ jobs:
       # fake slots, and a fake Raya harness; no Discord or production state.
       - name: Test — FLY-2126 Raya voice scenario wrapper
         run: bash scripts/__tests__/qa-raya-voice.test.sh
+
+      # FLY-2033: the meeting-artifact scheduler's alert receipt, lock/fallback,
+      # founder card, and trusted transcript-window seams are hermetic. Keep all
+      # four in one explicit step because the shell lane never globs new suites.
+      - name: Test — FLY-2033 meeting artifact closure
+        run: |
+          bash scripts/__tests__/meeting-notes-alert.test.sh
+          bash scripts/__tests__/meeting-notes-tick.test.sh
+          bash scripts/__tests__/meeting-notes-card.test.sh
+          bash scripts/__tests__/meeting-notes-window.test.sh
 
       # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
       # while Bridge default selection is explicit on both legacy upgrades and

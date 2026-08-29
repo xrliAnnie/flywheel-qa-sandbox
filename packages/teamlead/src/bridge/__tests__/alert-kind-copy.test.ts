@@ -27,4 +27,14 @@ describe("alert kind copy", () => {
 		expect(body).toContain("bridge-log-rotation-error.json");
 		expect(body).toContain("deployed-sha");
 	});
+
+	it("provides a static fail-closed fallback for meeting artifact failures", () => {
+		expect(titleFor("meeting_notes_failed")).toBe("会议留痕管线故障");
+		expect(bodyFor("meeting_notes_failed", "ignored")).toContain(
+			"idempotent tick",
+		);
+		expect(bodyFor("meeting_notes_failed", "ignored")).toContain(
+			"failureClass",
+		);
+	});
 });
