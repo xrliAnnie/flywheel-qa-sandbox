@@ -67,6 +67,8 @@ checkpoints.<name>.enabled
 - G1 pre-cutover CLI 现在大声警告：receipt 必须在 config-removal PR 落地或 main checkout 采用前完成。
 - R2 focused 复验：Teamlead 64/64 passed；QA/deploy/onboarding helper 82/82 passed；Flywheel CLI 32/32 passed；`pnpm lint` exit 0；`pnpm -r build` exit 0。
 - 最终精确头 `9c13a3fe4` 重跑真实 Bridge 7×6 resolver：`parity: true`；SQLite exact rows 仍为 manifest 允许的 7 行，无额外行。
+- Code review R3 闭环：`run-infra.ts` 恢复 registry 声明的直接 `storeSkillFrameworkSplitParticipation` import/call，同时保持 store 缺失时 `() => false` fail-closed；flag drift 13/13、flag-store runtime 20/20、Config 全套 677/677 passed。
+- 新增 generator shell suite 已列入 always-on CI quick gate；shell enumeration 为 223 个 suite 全分类（171 CI / 52 manual-only）。`529-room-playbook.md` 已从退役 `pipeline:` YAML 改为 `seed-project-flags` scoped-row 流程。
 
 ## 测试证据
 

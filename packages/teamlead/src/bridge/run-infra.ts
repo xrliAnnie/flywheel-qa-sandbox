@@ -68,11 +68,11 @@ import {
 import { EventFilter } from "./EventFilter.js";
 import {
 	type FlagStoreRuntime,
-	makeSkillFrameworkParticipationReader,
 	storeDocFlowEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
 	storeSkillFrameworkModeControl,
+	storeSkillFrameworkSplitParticipation,
 } from "./flag-store-runtime.js";
 import type { IssueDisplayRefreshHolder } from "./issue-display-refresher.js";
 import { LaunchClaimStore } from "./launch-claim-store.js";
@@ -1069,15 +1069,16 @@ export async function setupRunInfrastructure(
 				flywheelRepoRoot,
 			);
 
-			// FLY-1356: split-participation reader (extracted for direct unit
-			// testing — Codex R1 HIGH-1: a non-mapping `skill_framework` must
-			// THROW → Blueprint fails closed, never read as participate=true).
-			// Fresh config read at every dispatch resolution; ENOENT / absent
-			// key → participate (default true).
-			const skillFrameworkParticipation = makeSkillFrameworkParticipationReader(
-				flagStore,
-				project.projectName,
-			);
+			// FLY-1356/2103: read split participation from scoped SQLite at every
+			// dispatch. A missing store pins the project to A instead of silently
+			// admitting it to an experimental arm.
+			const skillFrameworkParticipation = flagStore
+				? (projectName: string | undefined) =>
+						storeSkillFrameworkSplitParticipation(
+							flagStore,
+							projectName ?? project.projectName,
+						)
+				: () => false;
 			const docFlowEnabled = flagStore
 				? () => storeDocFlowEnabled(flagStore, project.projectName)
 				: undefined;

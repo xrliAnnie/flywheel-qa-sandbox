@@ -11,7 +11,6 @@ import { StateStore } from "../../StateStore.js";
 import {
 	enrichFlagViewsWithStore,
 	initializeFlagStore,
-	makeSkillFrameworkParticipationReader,
 	readScopedBoolean,
 	storeAlertSystemEnabled,
 	storeDocFlowEnabled,
@@ -157,23 +156,6 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		).toMatchObject({ ok: true });
 		expect(storeDocFlowEnabled(runtime, "flywheel")).toBe(false);
 		expect(storeDocFlowEnabled(runtime, "geoforge3d")).toBe(true);
-	});
-
-	it("pins split participation off when the scoped store is unavailable", () => {
-		const unavailable = makeSkillFrameworkParticipationReader(
-			undefined,
-			"flywheel",
-		);
-		expect(unavailable()).toBe(false);
-		expect(unavailable("geoforge3d")).toBe(false);
-
-		const runtime = initializeFlagStore(store, {});
-		const available = makeSkillFrameworkParticipationReader(
-			runtime,
-			"flywheel",
-		);
-		expect(available()).toBe(true);
-		expect(available("geoforge3d")).toBe(true);
 	});
 
 	it("rejects unmanaged project identities and propagates store failures", () => {

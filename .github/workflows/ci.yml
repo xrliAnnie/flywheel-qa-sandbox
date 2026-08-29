@@ -106,6 +106,9 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Enforce FLY-2103 project config generator retirement
+        run: bash scripts/__tests__/fly2103-project-config-generators.test.sh
+
       - name: Verify workflow seed authority
         run: pnpm verify:workflow-seeds
 
