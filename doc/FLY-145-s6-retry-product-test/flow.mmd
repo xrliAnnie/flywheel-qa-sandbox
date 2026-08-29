@@ -1,0 +1,17 @@
+sequenceDiagram
+    participant QA as QA agent<br/>(slot 1, campaign owner)
+    participant CH as cos-test 频道
+    participant L2 as flywheel-test-2<br/>(product-lead-test)
+    participant LX as flywheel-test-1/3/4<br/>(其他 Lead)
+    participant BR as Bridge<br/>(调度服务)
+
+    QA->>CH: 发布 FLY-145 标识<br/>(标签 Product-Test)
+    CH-->>L2: Lead 读取 issue
+    CH-->>LX: Lead 读取 issue
+    Note over LX: Layer 1 prompt 规则:<br/>非本部门标签 → 静默<br/>(零 API 调用)
+    L2->>BR: claim + 请求 spawn Runner
+    Note over BR: Layer 2 dept-scope 校验<br/>isLeadInScope(lead, labels)
+    BR-->>L2: 允许 → spawn Runner
+    Note over BR: 越界 claim 才会触发<br/>403 DEPT_SCOPE_REJECT<br/>(S6 预期:不出现)
+    L2->>CH: 认领确认
+    QA->>QA: 采集证据 E1–E5<br/>(观察窗口内)
