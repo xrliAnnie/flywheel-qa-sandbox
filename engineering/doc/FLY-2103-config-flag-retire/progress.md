@@ -1,13 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 4/6
-updated: 2026-08-29T14:03:02.812Z
-nextStep: commit and push QA rework, then request fresh exact-head code review
+phaseCursor: 5/6
+updated: 2026-08-29T14:03:32.063Z
+nextStep: request and obtain fresh code review, then write milestone as the final commit
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (4/6)
-**next**: commit and push QA rework, then request fresh exact-head code review
+**phase**: implement (5/6)
+**next**: request and obtain fresh code review, then write milestone as the final commit
