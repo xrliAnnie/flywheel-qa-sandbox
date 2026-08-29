@@ -124,7 +124,7 @@ afterEach(() => {
 async function buildPrompt(opts: {
 	ctxOverrides?: Partial<BlueprintContext>;
 	worktreePath?: string;
-	checkpointConfig?: Record<string, { enabled: boolean }>;
+	checkpointConfig?: Record<string, { enabled?: boolean }>;
 }): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
@@ -399,6 +399,17 @@ describe("FLY-1257 M1-a — resident Codex gate-wait law", () => {
 		const prompt = await buildPrompt({ ctxOverrides: {} });
 		expect(prompt).not.toContain(WAIT_LAW);
 		expect(prompt).not.toContain("fail-open timeout means continue");
+	});
+
+	it("FLY-2103 treats a declared checkpoint as enabled regardless of a legacy false value", async () => {
+		const wt = makeRealWorktree();
+		cleanups.push(wt);
+		const prompt = await buildPrompt({
+			worktreePath: wt,
+			ctxOverrides: { runnerBackend: "codex-tmux" },
+			checkpointConfig: { security_review: { enabled: false } },
+		});
+		expect(prompt).toContain("SECURITY_REVIEW GATE");
 	});
 });
 

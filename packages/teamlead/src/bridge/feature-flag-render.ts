@@ -160,21 +160,8 @@ function projectViaLabel(via: FlagEffectiveByProject["via"]): string {
 	return {
 		project_row: "项目行",
 		star_row: "* 行",
-		config: "config",
 		default: "默认",
 	}[via ?? "default"];
-}
-
-function renderProjectRuntimeDivergence(
-	flag: FlagView,
-	row: FlagEffectiveByProject,
-): string {
-	if (row.runtimeDivergence !== "config_pending_cutover") return "";
-	const runtime =
-		row.runtimeConfigError !== undefined
-			? `error: ${row.runtimeConfigError}`
-			: observedValue(flag, row.runtimeConfigValue);
-	return `<span class="ff-badge ff-warn">⚠ runtime 仍按 config: ${esc(runtime)}（C 单切换）</span>`;
 }
 
 /** Render the current-state badge for a flag view (read-only). */
@@ -206,7 +193,7 @@ export function renderFlagState(flag: FlagView): string {
 				const via = r.via
 					? `<span class="ff-badge ff-via">${esc(projectViaLabel(r.via))}</span>`
 					: "";
-				return `<span class="ff-proj">${name}: ${val} ${via}${renderProjectRuntimeDivergence(flag, r)}</span>`;
+				return `<span class="ff-proj">${name}: ${val} ${via}</span>`;
 			})
 			.join(" ");
 	}

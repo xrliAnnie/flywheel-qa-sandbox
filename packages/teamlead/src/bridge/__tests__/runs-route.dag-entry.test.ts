@@ -35,6 +35,7 @@ import {
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
+import { initializeFlagStore } from "../flag-store-runtime.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
 
 import { createRunsRouter } from "../runs-route.js";
@@ -170,6 +171,8 @@ interface Harness {
 async function startHarness(options: {
 	env?: Partial<Record<keyof typeof DAG_ENV, string>>;
 	configYaml?: string;
+	pipelineDag?: boolean;
+	pipelineWorkKind?: boolean;
 	seedBinding?: boolean;
 	bindingCategory?: string;
 	templateSchema?: 1 | 2;
@@ -229,10 +232,12 @@ async function startHarness(options: {
 			"flywheel-eng-lead: [code, simple_code, generic]\n",
 		);
 	}
+	const configYaml =
+		options.configYaml ??
+		`${CONFIG_BASE}pipeline:\n  dag: true\n${options.menuMode ? "  work_kind: true\n" : ""}`;
 	writeFileSync(
 		join(projectRoot, ".flywheel", "config.yaml"),
-		options.configYaml ??
-			`${CONFIG_BASE}pipeline:\n  dag: true\n${options.menuMode ? "  work_kind: true\n" : ""}`,
+		configYaml,
 	);
 	for (const [key, value] of Object.entries({ ...DAG_ENV, ...options.env })) {
 		if (value === undefined) delete process.env[key];
@@ -241,6 +246,26 @@ async function startHarness(options: {
 
 	const store = await StateStore.create(":memory:");
 	cleanups.push(() => store.close());
+	initializeFlagStore(store, {});
+	const pipelineDag =
+		options.pipelineDag ?? !/\n\s+dag:\s*false\b/.test(configYaml);
+	const pipelineWorkKind =
+		options.pipelineWorkKind ?? /\n\s+work_kind:\s*true\b/.test(configYaml);
+	for (const [name, value] of [
+		["pipeline_dag", pipelineDag],
+		["pipeline_work_kind", pipelineWorkKind],
+	] as const) {
+		const changed = store.applyScopedFlagValueChange({
+			name,
+			scope: "flywheel",
+			op: "set",
+			rawTo: value ? "1" : "0",
+			expectedChangeSeq: 0,
+			actor: "fixture",
+			reason: "runs-route project enrollment fixture",
+		});
+		if (!changed.ok) throw new Error(`failed to seed ${name}`);
+	}
 	if (options.seedBinding !== false) {
 		if (options.menuMode) importWorkflowMenuSeeds(store, process.env);
 		const seed = options.menuMode
@@ -1272,17 +1297,18 @@ describe("FLY-1407 work-kind entry gate", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
-	it("fails loudly on malformed work_kind only while the main flag is on", async () => {
+	it("fails loudly when work-kind is enabled without DAG", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: "yes"\n`,
+			pipelineDag: false,
+			pipelineWorkKind: true,
 		});
 		const { status, json } = await post(h.url, { taskCategory: "generic" });
 		expect(status).toBe(400);
 		expect(json).toMatchObject({
 			success: false,
 			code: "INVALID_WORK_KIND_CONFIG",
-			reason: "work_kind_not_boolean",
+			reason: "work_kind_requires_dag",
 		});
 		expect(h.calls).toHaveLength(0);
 	});

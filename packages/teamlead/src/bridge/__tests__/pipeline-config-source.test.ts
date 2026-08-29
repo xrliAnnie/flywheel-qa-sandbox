@@ -9,6 +9,7 @@ import {
 	importWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 } from "../../workflow-menu.js";
+import { initializeFlagStore } from "../flag-store-runtime.js";
 import { reconcileDefaultDagCategoryBindings } from "../pipeline-config-source.js";
 
 const roots: string[] = [];
@@ -33,6 +34,7 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 	it("converges a six-project fleet to six exact category rows per project", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
+			initializeFlagStore(store, {});
 			importWorkflowMenuSeeds(store);
 			const menuManaged = project("flywheel");
 			const menuDirectory = join(menuManaged.projectRoot, ".flywheel", "menus");
@@ -85,6 +87,7 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 	it("seeds six exact menu-shaped bindings and resolves every category idempotently", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
+			initializeFlagStore(store, {});
 			importWorkflowMenuSeeds(store);
 			const defaultOn = project("default-on");
 
@@ -129,8 +132,9 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 	it("preserves operator exact and wildcard bindings while filling missing exact categories", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
+			initializeFlagStore(store, {});
 			importWorkflowMenuSeeds(store);
-			const custom = project("custom", "pipeline:\n  dag: true\n");
+			const custom = project("custom");
 			store.bindWorkflowCategory({
 				project: custom.projectName,
 				taskCategory: "*",
@@ -173,8 +177,20 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 	it("leaves an explicitly disabled project unbound", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
+			initializeFlagStore(store, {});
 			importWorkflowMenuSeeds(store);
-			const explicitOff = project("explicit-off", "pipeline:\n  dag: false\n");
+			const explicitOff = project("explicit-off");
+			expect(
+				store.applyScopedFlagValueChange({
+					name: "pipeline_dag",
+					scope: explicitOff.projectName,
+					op: "set",
+					rawTo: "0",
+					expectedChangeSeq: 0,
+					actor: "fixture",
+					reason: "explicit project opt-out",
+				}),
+			).toMatchObject({ ok: true });
 
 			const result = reconcileDefaultDagCategoryBindings(store, [explicitOff]);
 

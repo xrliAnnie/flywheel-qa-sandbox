@@ -84,7 +84,6 @@ export interface ManagementFlagProviderInput {
 	views(): FlagView[];
 	revision(): string;
 	projectNames(): string[];
-	projectRevision?(projectName: string): string;
 }
 
 /** Revision covers both persisted `.env` bytes and the Bridge's live call-time values. */
@@ -316,7 +315,6 @@ function buildFlagView(
 	view: FlagView,
 	revision: string,
 	projectNames: readonly string[],
-	projectRevision?: (projectName: string) => string,
 ): ManagementFlagView {
 	const starRow = view.scopedStore?.rows.find((row) => row.scope === "*");
 	const global = flagManagedValue({
@@ -346,7 +344,7 @@ function buildFlagView(
 				view,
 				current: row?.value ?? null,
 				targetId: buildTargetId("flag", [view.name, "project", projectName]),
-				revision: projectRevision?.(projectName) ?? revision,
+				revision,
 				scopeMismatch:
 					view.scope === "bridge_global"
 						? "global-only flag does not support project overrides"
@@ -380,7 +378,7 @@ export function createManagementFlagProvider(
 				hint: "flywheel-config/feature-flags",
 				fragment: {
 					flags: views.map((view) =>
-						buildFlagView(view, revision, names, input.projectRevision),
+						buildFlagView(view, revision, names),
 					),
 				},
 			};
@@ -742,7 +740,6 @@ function flagViews(deps: ExistingManagementWriterDeps): FlagView[] {
 		resolveAllFlags({
 			env: deps.env,
 			envFile: readEnvFileSource(deps.envPath, deps.readEnvFile),
-			projectConfigs: new Map(deps.projectConfigs()),
 		})
 	);
 }
@@ -757,14 +754,7 @@ function resolveFlagTarget(
 	);
 	const names = deps.projects().map((project) => project.projectName);
 	for (const view of flagViews(deps)) {
-		const built = buildFlagView(
-			view,
-			revision,
-			names,
-			(projectName) =>
-				deps.projectConfigs().get(projectName)?.revision ??
-				"registry:config-missing",
-		);
+		const built = buildFlagView(view, revision, names);
 		if (built.global.targetId === targetId) {
 			return {
 				targetId,

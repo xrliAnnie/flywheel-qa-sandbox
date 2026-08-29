@@ -185,6 +185,7 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 					vision_token_budget: 5000,
 				},
 			},
+			() => true,
 		);
 
 		await sink.emitStarted(makeEnvelope());
@@ -262,6 +263,7 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 			{
 				proofshot: { enabled: true, dev_command: "pnpm dev" },
 			},
+			() => true,
 		);
 
 		await sink.emitStarted(makeEnvelope());
@@ -285,6 +287,51 @@ describe("DirectEventSink — GEO-151 ProofShot config persistence", () => {
 			"/Users/x/.flywheel/screens/exec-1/model.glb",
 		);
 		expect(params.unrelated_key).toBe("stays");
+	});
+
+	it("uses the store value instead of the YAML authoring value", async () => {
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			undefined,
+			undefined,
+			{ proofshot: { enabled: true, dev_command: "pnpm dev" } },
+			() => false,
+		);
+
+		await sink.emitStarted(makeEnvelope());
+		const params = store.getSessionParams("exec-1")!;
+		const proofshot = params.proofshot as Record<string, unknown>;
+		const cfg = proofshot.config as Record<string, unknown>;
+		expect(cfg).toMatchObject({ enabled: false, dev_command: "pnpm dev" });
+	});
+
+	it("disables ProofShot locally when the store read throws", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const sink = new DirectEventSink(
+			store,
+			makeConfig(),
+			testProjects,
+			undefined,
+			undefined,
+			undefined,
+			{ proofshot: { enabled: true } },
+			() => {
+				throw new Error("store unavailable");
+			},
+		);
+
+		await sink.emitStarted(makeEnvelope());
+		const params = store.getSessionParams("exec-1")!;
+		const proofshot = params.proofshot as Record<string, unknown>;
+		const cfg = proofshot.config as Record<string, unknown>;
+		expect(cfg.enabled).toBe(false);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("store unavailable"),
+		);
+		warn.mockRestore();
 	});
 });
 

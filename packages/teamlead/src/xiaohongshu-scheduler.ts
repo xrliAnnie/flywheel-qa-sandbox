@@ -70,7 +70,7 @@ export type CollectionDecision =
 			action: "skip";
 			project: string;
 			collectionId: string;
-			reason: "tuple_invalid" | "not_due" | "state_error";
+			reason: "tuple_invalid" | "not_due" | "state_error" | "flag_error";
 			detail: string;
 	  };
 
@@ -79,10 +79,13 @@ export interface PlannerDeps {
 	projects: ProjectEntry[];
 	/** Per-project resolved config (ConfigLoader); null when the project has none. */
 	loadProjectConfig: (projectName: string) => FlywheelConfig | null;
+	/** Call-time project-store gate. */
+	learningEnabled: (projectName: string) => boolean;
 	/** Current persisted state for a collection (state helper). */
 	readState: (project: string, collectionId: string) => XiaohongshuState;
 	/** Injectable clock. */
 	now: () => Date;
+	warn?: (message: string) => void;
 }
 
 const DEFAULT_CADENCE = "weekly";
@@ -100,7 +103,32 @@ export function planLearningRuns(deps: PlannerDeps): CollectionDecision[] {
 	for (const project of deps.projects) {
 		const cfg = deps.loadProjectConfig(project.projectName);
 		const learning = cfg?.xiaohongshu_learning;
-		if (!learning?.enabled || !learning.collections?.length) continue;
+		let enabled = false;
+		try {
+			enabled = deps.learningEnabled(project.projectName);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			deps.warn?.(
+				`xiaohongshu_learning flag read failed for ${project.projectName}: ${detail} — skipping project`,
+			);
+			for (const col of learning?.collections ?? []) {
+				out.push({
+					action: "skip",
+					project: project.projectName,
+					collectionId: col.collection_id,
+					reason: "flag_error",
+					detail,
+				});
+			}
+			continue;
+		}
+		if (!enabled) continue;
+		if (!learning?.collections?.length) {
+			deps.warn?.(
+				`xiaohongshu_learning is enabled for ${project.projectName} but no collections are configured — skipping project`,
+			);
+			continue;
+		}
 		const videoOptIn = learning.video_opt_in === true;
 
 		for (const col of learning.collections) {
@@ -158,14 +186,13 @@ export function planLearningRuns(deps: PlannerDeps): CollectionDecision[] {
 					cadence: col.cadence ?? DEFAULT_CADENCE,
 					maxFetch: resolveMaxFetch(col),
 					videoOptIn,
-					// FLY-286 post-hoc params (resolved with the config defaults so the
-					// trigger body always carries a concrete value for the skill).
+					// FLY-286/2103 post-hoc params. Auto-create is now a fixed contract.
 					reviewChannel:
 						col.review_channel ?? XIAOHONGSHU_DEFAULT_REVIEW_CHANNEL,
 					firstRunCap: col.first_run_cap ?? XIAOHONGSHU_DEFAULT_FIRST_RUN_CAP,
 					firstRunAnalyzeLimit:
 						col.first_run_analyze_limit ?? XIAOHONGSHU_MAX_FETCH_CEILING,
-					autoCreate: col.auto_create ?? true,
+					autoCreate: true,
 					// FLY-709: spread-only so an unconfigured collection keeps today's
 					// plan shape (no `model` key at all).
 					...(col.model !== undefined ? { model: col.model } : {}),

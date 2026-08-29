@@ -437,7 +437,10 @@ import {
 	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
-import { reconcileDefaultDagCategoryBindings } from "./pipeline-config-source.js";
+import {
+	readPipelineEnrollment,
+	reconcileDefaultDagCategoryBindings,
+} from "./pipeline-config-source.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
@@ -1753,6 +1756,9 @@ export function createBridgeApp(
 					flywheelProjectRoot
 						? readFly1436ActivationEvidence({
 								projectRoot: flywheelProjectRoot,
+								pipelineEnrollment: flagStore
+									? () => readPipelineEnrollment(flagStore, "flywheel")
+									: undefined,
 							})
 						: {
 								templateDispatch: false,
@@ -4703,12 +4709,17 @@ export async function startBridge(
 				path: managementProjectsPath,
 				readFile: (path) => ffReadFileSync(path, "utf-8"),
 				parse: parseAndValidateProjects,
-				warm: async (nextProjects) => {
-					await ffConfigCache.get(nextProjects);
-				},
+				warm: async () => undefined,
 			});
 			await managementProjectSource.initialize();
 			let managementProjects = managementProjectSource.projects();
+			try {
+				await ffConfigCache.get(managementProjects);
+			} catch (error) {
+				console.warn(
+					`[management] project config cache unavailable: ${(error as Error).message}`,
+				);
+			}
 			flagProjectNames = () =>
 				managementProjects.map((project) => project.projectName);
 			let managementProjectsRevision = managementProjectSource.revision();
@@ -4721,7 +4732,6 @@ export async function startBridge(
 				const views = resolveAllFlags({
 					env: process.env,
 					envFile: managementEnvSource(),
-					projectConfigs: ffConfigCache.current(),
 				});
 				return flagStore
 					? enrichFlagViewsWithStore(
@@ -4738,20 +4748,24 @@ export async function startBridge(
 			);
 			const managementSections = new ManagementSectionRegistry();
 			const refreshManagementSources = async () => {
-				await managementProjectSource.refresh();
+				const projectsReadable = await managementProjectSource.refresh();
 				managementProjects = managementProjectSource.projects();
 				managementProjectsRevision = managementProjectSource.revision();
+				try {
+					await ffConfigCache.get(managementProjects);
+				} catch (error) {
+					console.warn(
+						`[management] project config cache unavailable: ${(error as Error).message}`,
+					);
+				}
+				return projectsReadable;
 			};
 			flagScanRepoRoot = repoRoot;
 			flagScanSourceLoader = async () => {
-				let projectSourcesReadable = true;
-				try {
-					await refreshManagementSources();
-					await ffConfigCache.get(managementProjects);
-				} catch (error) {
-					projectSourcesReadable = false;
+				const projectSourcesReadable = await refreshManagementSources();
+				if (!projectSourcesReadable) {
 					console.warn(
-						`[flag-scan] project source refresh unavailable; project-scoped flags have no clock this round: ${(error as Error).message}`,
+						"[flag-scan] project roster refresh unavailable; project-scoped flags have no clock this round",
 					);
 				}
 				const resolvedViews = currentFlagViews();
@@ -4790,7 +4804,9 @@ export async function startBridge(
 					// Online dot from the live evidence poller (null/stale → unknown).
 					fleetEvidence: () => fleetPoller.snapshot(),
 					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
-					refreshProjectConfigs: refreshManagementSources,
+					refreshProjectConfigs: async () => {
+						await refreshManagementSources();
+					},
 					managementSnapshotProviders: () => [
 						managementProjectSource.healthProvider(),
 						...createManagementSsotProviders({
@@ -4830,9 +4846,6 @@ export async function startBridge(
 							},
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
-							projectRevision: (projectName) =>
-								ffConfigCache.current().get(projectName)?.revision ??
-								"registry:config-missing",
 						}),
 						managementSections.snapshotProvider(),
 						createManagementCronProvider({

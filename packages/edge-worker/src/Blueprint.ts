@@ -25,6 +25,7 @@ import {
 	MATT_SKILLS_PLUGIN_KEY,
 	normalizeOptionalBearer,
 	PONYTAIL_CONFLICT,
+	PonytailLabelConflictError,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
 	resolvePonytailRequested,
@@ -851,12 +852,12 @@ export class Blueprint {
 		// flywheelRepoRoot would silently misalign existing call sites and
 		// break shipped-generic agent resolution). Absent/disabled → no
 		// DOC-FLOW prompt block (byte-compatible spawn prompt).
-		private docFlowConfig?: DocFlowConfig,
+		private docFlowDept?: Pick<DocFlowConfig, "default_department">,
 		// FLY-615 — optional per-project ponytail config (lowest ladder layer).
 		// MUST stay among the LAST constructor parameters (same positional-
 		// alignment contract as docFlowConfig). Absent →
 		// no per-project ponytail (label/run layers still apply); byte-compatible.
-		private ponytailConfig?: PonytailConfig,
+		private ponytailProjectLayer?: () => PonytailConfig | undefined,
 		// FLY-615 — readiness probe: is ponytail actually usable for `backend`?
 		// Injectable for tests. Default (set below) checks `claude plugin details`
 		// for claude-tmux; the Codex ruleset-injection path is always ready
@@ -887,6 +888,9 @@ export class Blueprint {
 			hasOverride: false,
 			raw: null,
 		}),
+		// FLY-2103: call-time project-store reader. This stays at the constructor
+		// tail so existing positional call sites cannot shift silently.
+		private docFlowEnabled: () => boolean = () => false,
 	) {}
 
 	async run(
@@ -1035,12 +1039,23 @@ export class Blueprint {
 				},
 			};
 		}
+		let projectLayer: PonytailConfig | undefined;
+		try {
+			projectLayer = this.ponytailProjectLayer?.();
+		} catch (err) {
+			console.warn(
+				`[Blueprint] ponytail project flag read failed for ${ctx.projectName ?? "?"} — continuing without the project layer: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
 		let resolved: ReturnType<typeof resolvePonytailRequested>;
 		try {
-			resolved = resolvePonytailRequested(input, this.ponytailConfig, {
+			resolved = resolvePonytailRequested(input, projectLayer, {
 				armInject: skillFrameworkMode === "bare-ponytail",
 			});
 		} catch (err) {
+			if (!(err instanceof PonytailLabelConflictError)) throw err;
 			// Conflicting ponytail / ponytail-off labels — refuse to guess. Record
 			// a DISTINCT unavailable:conflict (loud, excluded from A/B) rather than
 			// a silent off:default; the run proceeds WITHOUT ponytail.
@@ -1981,20 +1996,28 @@ export class Blueprint {
 
 		// (commCliPath is hoisted above the role prompts — see FLY-859 note.)
 
-		// FLY-205: DOC-FLOW block — project doc conventions, injected ONLY when
-		// the project's .flywheel/config.yaml enables doc_flow. Unshifted BEFORE
+		// FLY-205/2103: DOC-FLOW block — project doc conventions, injected ONLY
+		// when the project-scoped flag store enables doc_flow. Unshifted BEFORE
 		// the onboard preamble unshift below, so the final order reads:
 		//   [onboard preamble] → [DOC-FLOW] → [6-step base flow].
 		// Controls DOCUMENT OUTPUT ONLY — checkpoint gates and executor hard
 		// gates apply at every tier (locked semantics, Codex design R1 #5).
-		// Disabled/absent config → zero lines added (byte-compatible prompt).
-		if (this.docFlowConfig?.enabled === true) {
-			const defaultDepartment = this.docFlowConfig.default_department;
+		// Disabled/failed flag reads → zero lines added (byte-compatible prompt).
+		let docFlowEnabled = false;
+		try {
+			docFlowEnabled = this.docFlowEnabled();
+		} catch (error) {
+			console.warn(
+				`[Blueprint] DOC-FLOW flag read failed: ${error instanceof Error ? error.message : String(error)} — skipping DOC-FLOW injection`,
+			);
+		}
+		if (docFlowEnabled) {
+			const defaultDepartment = this.docFlowDept?.default_department;
 			if (!defaultDepartment) {
 				// ConfigLoader enforces presence when enabled; defensive fail-safe
 				// to byte-compat rather than injecting a broken path.
 				console.warn(
-					"[Blueprint] doc_flow.enabled is true but default_department is missing — skipping DOC-FLOW injection (run ConfigLoader validation on this project's config)",
+					"[Blueprint] doc_flow is enabled but default_department is missing — skipping DOC-FLOW injection (run ConfigLoader validation on this project's config)",
 				);
 			} else {
 				const tier: DocTier = ctx.docTier ?? "full";
@@ -2291,7 +2314,6 @@ export class Blueprint {
 				for (const [cpName, cpConfig] of Object.entries(
 					this.checkpointConfig,
 				)) {
-					if (!cpConfig.enabled) continue;
 					// Generalized runners follow their pinned completion route and do
 					// not receive legacy brainstorm/ship gates.
 					if (
