@@ -9,8 +9,20 @@ export interface MigrationRow {
 export interface ConfigSnapshot {
 	projectName: string;
 	path: string;
+	worktree: {
+		contentSha: string;
+		config: Record<string, unknown>;
+	};
+	committed: CommittedConfigRef & {
+		config: Record<string, unknown>;
+	};
+}
+
+export interface CommittedConfigRef {
+	ref: string;
+	commitSha: string;
+	blobSha: string;
 	contentSha: string;
-	config: Record<string, unknown>;
 }
 
 export const FLY2103_PROJECTS = [
@@ -46,7 +58,7 @@ export const FLY2103_MIGRATED_FLAG_NAMES = new Set([
 	"skill_framework_split_participation",
 ]);
 
-const RECEIPT_SCHEMA_VERSION = 1;
+const RECEIPT_SCHEMA_VERSION = 2;
 const ISSUE = "FLY-2103";
 
 export const FLY2103_PRE_CUTOVER_ORDER_WARNING =
@@ -56,11 +68,13 @@ function digest(value: unknown): string {
 	return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-function sortedRecord(
-	input: Readonly<Record<string, string>>,
-): Record<string, string> {
+function sortedCommittedConfigRefs(
+	input: Readonly<Record<string, CommittedConfigRef>>,
+): Record<string, CommittedConfigRef> {
 	return Object.fromEntries(
-		Object.entries(input).sort(([left], [right]) => left.localeCompare(right)),
+		Object.entries(input)
+			.sort(([left], [right]) => left.localeCompare(right))
+			.map(([projectName, ref]) => [projectName, { ...ref }]),
 	);
 }
 
@@ -98,6 +112,84 @@ function sameRows(
 	return JSON.stringify(sortRows(left)) === JSON.stringify(sortRows(right));
 }
 
+const ABSENT = Symbol("absent");
+
+function retiredKeyProjection(
+	config: Record<string, unknown>,
+): Map<string, unknown> {
+	const projection = new Map<string, unknown>();
+	const addOwn = (container: unknown, key: string, path: string): void => {
+		if (hasOwn(container, key)) {
+			projection.set(path, (container as Record<string, unknown>)[key]);
+		}
+	};
+
+	if (isRecord(config.checkpoints)) {
+		for (const [name, checkpoint] of Object.entries(config.checkpoints)) {
+			addOwn(checkpoint, "enabled", `checkpoints.${name}.enabled`);
+		}
+	}
+	addOwn(config.doc_flow, "enabled", "doc_flow.enabled");
+	addOwn(config.pipeline, "dag", "pipeline.dag");
+	addOwn(config.pipeline, "work_kind", "pipeline.work_kind");
+	const proofshot = isRecord(config.skills)
+		? config.skills.proofshot
+		: undefined;
+	addOwn(proofshot, "enabled", "skills.proofshot.enabled");
+	addOwn(
+		config.xiaohongshu_learning,
+		"enabled",
+		"xiaohongshu_learning.enabled",
+	);
+	if (
+		isRecord(config.xiaohongshu_learning) &&
+		Array.isArray(config.xiaohongshu_learning.collections)
+	) {
+		for (const [
+			index,
+			collection,
+		] of config.xiaohongshu_learning.collections.entries()) {
+			addOwn(
+				collection,
+				"auto_create",
+				`xiaohongshu_learning.collections[${index}].auto_create`,
+			);
+		}
+	}
+	addOwn(config.ponytail, "enabled", "ponytail.enabled");
+	addOwn(config.skill_framework, "split", "skill_framework.split");
+	return projection;
+}
+
+function printableProjectionValue(value: unknown | typeof ABSENT): string {
+	if (value === ABSENT) return "<absent>";
+	const encoded = JSON.stringify(value);
+	return encoded === undefined ? String(value) : encoded;
+}
+
+function assertRetiredKeysMatchCommitted(snapshot: ConfigSnapshot): void {
+	const worktree = retiredKeyProjection(snapshot.worktree.config);
+	const committed = retiredKeyProjection(snapshot.committed.config);
+	const paths = [...new Set([...worktree.keys(), ...committed.keys()])].sort();
+	const differences = paths.flatMap((path) => {
+		const hasWorktreeValue = worktree.has(path);
+		const hasCommittedValue = committed.has(path);
+		const worktreeValue = hasWorktreeValue ? worktree.get(path) : ABSENT;
+		const committedValue = hasCommittedValue ? committed.get(path) : ABSENT;
+		return hasWorktreeValue === hasCommittedValue &&
+			JSON.stringify(worktreeValue) === JSON.stringify(committedValue)
+			? []
+			: [
+					`- ${path}: worktree=${printableProjectionValue(worktreeValue)}; committed=${printableProjectionValue(committedValue)}`,
+				];
+	});
+	if (differences.length > 0) {
+		throw new Error(
+			`FLY-2103 ${snapshot.projectName}: migrated keys differ between worktree and committed ${snapshot.committed.ref} at ${snapshot.committed.commitSha}; resolve the repository change explicitly before cutover:\n${differences.join("\n")}`,
+		);
+	}
+}
+
 function assertProjectRoster(snapshots: readonly ConfigSnapshot[]): void {
 	const expected = [...FLY2103_PROJECTS].sort();
 	const actual = snapshots.map((snapshot) => snapshot.projectName).sort();
@@ -110,16 +202,32 @@ function assertProjectRoster(snapshots: readonly ConfigSnapshot[]): void {
 		);
 	}
 	for (const snapshot of snapshots) {
-		if (!/^[a-f0-9]{64}$/.test(snapshot.contentSha)) {
+		if (
+			!/^[a-f0-9]{64}$/.test(snapshot.worktree.contentSha) ||
+			!/^[a-f0-9]{64}$/.test(snapshot.committed.contentSha)
+		) {
 			throw new Error(
 				`FLY-2103 config snapshot ${snapshot.projectName} has invalid content SHA`,
 			);
 		}
-		if (!isRecord(snapshot.config)) {
+		if (
+			!snapshot.committed.ref.startsWith("refs/remotes/") ||
+			!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(snapshot.committed.commitSha) ||
+			!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(snapshot.committed.blobSha)
+		) {
+			throw new Error(
+				`FLY-2103 config snapshot ${snapshot.projectName} has invalid committed Git object identity`,
+			);
+		}
+		if (
+			!isRecord(snapshot.worktree.config) ||
+			!isRecord(snapshot.committed.config)
+		) {
 			throw new Error(
 				`FLY-2103 config ${snapshot.projectName} is not a YAML mapping`,
 			);
 		}
+		assertRetiredKeysMatchCommitted(snapshot);
 	}
 }
 
@@ -130,13 +238,14 @@ function unexpectedLegacy(projectName: string, path: string): never {
 }
 
 export function auditLegacyConfigs(snapshots: readonly ConfigSnapshot[]): {
-	configShas: Record<string, string>;
+	committedConfigRefs: Record<string, CommittedConfigRef>;
 	derivedRows: readonly MigrationRow[];
 } {
 	assertProjectRoster(snapshots);
 	const derivedRows: MigrationRow[] = [];
 	for (const snapshot of snapshots) {
-		const { projectName, config } = snapshot;
+		const { projectName } = snapshot;
+		const config = snapshot.committed.config;
 		const checkpoints = config.checkpoints;
 		if (!isRecord(checkpoints) || Object.keys(checkpoints).length === 0) {
 			throw new Error(
@@ -216,11 +325,16 @@ export function auditLegacyConfigs(snapshots: readonly ConfigSnapshot[]): {
 		);
 	}
 	return {
-		configShas: sortedRecord(
+		committedConfigRefs: sortedCommittedConfigRefs(
 			Object.fromEntries(
 				snapshots.map((snapshot) => [
 					snapshot.projectName,
-					snapshot.contentSha,
+					{
+						ref: snapshot.committed.ref,
+						commitSha: snapshot.committed.commitSha,
+						blobSha: snapshot.committed.blobSha,
+						contentSha: snapshot.committed.contentSha,
+					},
 				]),
 			),
 		),
@@ -238,7 +352,9 @@ export function auditPostDeployConfigs(
 	snapshots: readonly ConfigSnapshot[],
 ): void {
 	assertProjectRoster(snapshots);
-	for (const { projectName, config } of snapshots) {
+	for (const snapshot of snapshots) {
+		const { projectName } = snapshot;
+		const config = snapshot.committed.config;
 		if (isRecord(config.checkpoints)) {
 			for (const [name, checkpoint] of Object.entries(config.checkpoints)) {
 				if (hasOwn(checkpoint, "enabled")) {
@@ -280,13 +396,13 @@ export function auditPostDeployConfigs(
 }
 
 export interface PreCutoverReceipt {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	issue: "FLY-2103";
 	phase: "pre-cutover";
 	status: "passed";
 	manifestDigest: string;
-	configShas: Record<string, string>;
-	configDigest: string;
+	committedConfigRefs: Record<string, CommittedConfigRef>;
+	committedConfigDigest: string;
 	dbRealpath: string;
 	bridgeTarget: string;
 	exactRows: readonly MigrationRow[];
@@ -299,15 +415,15 @@ export function createPreCutoverReceipt(input: {
 	bridgeTarget: string;
 	completedAt: string;
 }): PreCutoverReceipt {
-	const { configShas } = auditLegacyConfigs(input.configSnapshots);
+	const { committedConfigRefs } = auditLegacyConfigs(input.configSnapshots);
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		issue: ISSUE,
 		phase: "pre-cutover",
 		status: "passed",
 		manifestDigest: FLY2103_MANIFEST_DIGEST,
-		configShas,
-		configDigest: digest(configShas),
+		committedConfigRefs,
+		committedConfigDigest: digest(committedConfigRefs),
 		dbRealpath: input.dbRealpath,
 		bridgeTarget: input.bridgeTarget,
 		exactRows: FLY2103_PRE_CUTOVER_ROWS,
@@ -340,21 +456,48 @@ export function validatePreCutoverReceipt(
 	if (value.bridgeTarget !== expected.bridgeTarget) {
 		receiptError("Bridge target mismatch");
 	}
-	if (!isRecord(value.configShas)) receiptError("configShas missing");
-	const configShas = sortedRecord(
+	if (!isRecord(value.committedConfigRefs)) {
+		receiptError("committedConfigRefs missing");
+	}
+	const committedConfigRefs = sortedCommittedConfigRefs(
 		Object.fromEntries(
-			Object.entries(value.configShas).map(([key, sha]) => [key, String(sha)]),
+			Object.entries(value.committedConfigRefs).map(([projectName, ref]) => {
+				if (
+					!isRecord(ref) ||
+					typeof ref.ref !== "string" ||
+					typeof ref.commitSha !== "string" ||
+					typeof ref.blobSha !== "string" ||
+					typeof ref.contentSha !== "string"
+				) {
+					receiptError(`committed config ref malformed for ${projectName}`);
+				}
+				return [
+					projectName,
+					{
+						ref: ref.ref,
+						commitSha: ref.commitSha,
+						blobSha: ref.blobSha,
+						contentSha: ref.contentSha,
+					},
+				];
+			}),
 		),
 	);
 	if (
-		JSON.stringify(Object.keys(configShas)) !==
+		JSON.stringify(Object.keys(committedConfigRefs)) !==
 			JSON.stringify([...FLY2103_PROJECTS].sort()) ||
-		Object.values(configShas).some((sha) => !/^[a-f0-9]{64}$/.test(sha))
+		Object.values(committedConfigRefs).some(
+			(ref) =>
+				!ref.ref.startsWith("refs/remotes/") ||
+				!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(ref.commitSha) ||
+				!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(ref.blobSha) ||
+				!/^[a-f0-9]{64}$/.test(ref.contentSha),
+		)
 	) {
-		receiptError("config SHA roster malformed");
+		receiptError("committed config ref roster malformed");
 	}
-	if (value.configDigest !== digest(configShas)) {
-		receiptError("config SHA digest mismatch");
+	if (value.committedConfigDigest !== digest(committedConfigRefs)) {
+		receiptError("committed config digest mismatch");
 	}
 	if (!Array.isArray(value.exactRows)) receiptError("G1 exact rows missing");
 	const exactRows = value.exactRows as unknown[];

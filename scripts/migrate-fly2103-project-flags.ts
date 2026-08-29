@@ -1,5 +1,6 @@
 #!/usr/bin/env npx tsx
 
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	mkdir,
@@ -189,20 +190,83 @@ async function loadConfigSnapshots(
 		if (!projectRoot)
 			throw new Error(`${projectsPath} is missing project ${projectName}`);
 		const path = join(projectRoot, ".flywheel", "config.yaml");
-		const content = await readFile(path, "utf8");
-		const config = parseYaml(content);
-		if (
-			typeof config !== "object" ||
-			config === null ||
-			Array.isArray(config)
-		) {
-			throw new Error(`${path} must contain a YAML mapping`);
+		const git = (args: readonly string[], trim = true): string => {
+			try {
+				const output = execFileSync("git", ["-C", projectRoot, ...args], {
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "pipe"],
+				});
+				return trim ? output.trim() : output;
+			} catch (error) {
+				const detail = error instanceof Error ? error.message : String(error);
+				throw new Error(
+					`FLY-2103 ${projectName}: cannot read committed config with git ${args.join(" ")}: ${detail}`,
+				);
+			}
+		};
+		const configuredRoot = await realpath(projectRoot);
+		const repositoryRoot = await realpath(
+			git(["rev-parse", "--show-toplevel"]),
+		);
+		if (configuredRoot !== repositoryRoot) {
+			throw new Error(
+				`FLY-2103 ${projectName}: projectRoot ${configuredRoot} is not Git root ${repositoryRoot}`,
+			);
 		}
+
+		const worktreeContent = await readFile(path, "utf8");
+		const committedRef = git([
+			"rev-parse",
+			"--symbolic-full-name",
+			"@{upstream}",
+		]);
+		if (!committedRef.startsWith("refs/remotes/")) {
+			throw new Error(
+				`FLY-2103 ${projectName}: upstream must resolve to a remote-tracking ref; got ${committedRef}`,
+			);
+		}
+		const commitSha = git([
+			"rev-parse",
+			"--verify",
+			`${committedRef}^{commit}`,
+		]);
+		const blobSha = git([
+			"rev-parse",
+			"--verify",
+			`${commitSha}:.flywheel/config.yaml`,
+		]);
+		const committedContent = git(
+			["show", `${commitSha}:.flywheel/config.yaml`],
+			false,
+		);
+		const parseConfig = (
+			content: string,
+			source: "worktree" | "committed upstream",
+		): Record<string, unknown> => {
+			const config = parseYaml(content);
+			if (
+				typeof config !== "object" ||
+				config === null ||
+				Array.isArray(config)
+			) {
+				throw new Error(`${path} (${source}) must contain a YAML mapping`);
+			}
+			return config as Record<string, unknown>;
+		};
 		snapshots.push({
 			projectName,
 			path,
-			contentSha: sha256(content),
-			config: config as Record<string, unknown>,
+			worktree: {
+				contentSha: sha256(worktreeContent),
+				config: parseConfig(worktreeContent, "worktree"),
+			},
+			committed: {
+				ref: committedRef,
+				commitSha,
+				blobSha,
+				contentSha: sha256(committedContent),
+				config: parseConfig(committedContent, "committed upstream"),
+			},
 		});
 	}
 	return snapshots;

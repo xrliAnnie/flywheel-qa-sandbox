@@ -776,6 +776,9 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 			success: false,
 			code: "DAG_DISPATCH_DISABLED",
 		});
+		expect(json.reason).toContain(
+			"feature-flags set --name pipeline_dag --project",
+		);
 		expect(h.calls).toHaveLength(0);
 		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
 	});

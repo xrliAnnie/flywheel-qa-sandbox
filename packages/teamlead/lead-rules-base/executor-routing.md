@@ -148,8 +148,10 @@ framing.
 
 ## DAG-enrolled projects (FLY-1372)
 
-On a DAG-enrolled project (`pipeline.dag: true` + workflow dispatch flags ON)
-the workflow template pins each node's agent content, so your explicit
+On a DAG-enrolled project (the project-scoped `pipeline_dag` flag + workflow
+dispatch flags are ON) the workflow template pins each node's agent content, so your explicit
 `agentName` is accepted + recorded but the template's node agents execute the
 run. The response echoes this (`templateAuthority.overrode`). Keep passing
 `agentName` as usual — routing behavior on non-enrolled projects is unchanged.
+Enrollment belongs to the scoped flag store, not `.flywheel/config.yaml`; use
+`node "$FLYWHEEL_COMM_CLI" feature-flags set --name pipeline_dag --to on --project <project> --reason "enroll DAG"`.

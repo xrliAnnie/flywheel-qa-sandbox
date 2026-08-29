@@ -2021,7 +2021,7 @@ export function createRunsRouter(
 							classifiedKind === "pipeline_dag_v1"
 								? "ACTIVE_DAG_RUN_RECOVERY_HELD"
 								: "ACTIVE_WORKFLOW_RUN_RECOVERY_HELD",
-						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but pipeline.dag is disabled — restore pipeline.dag to converge it, or finalize/terminate the run before dispatching legacy`,
+						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but the project-scoped pipeline_dag flag is off or unreadable — use feature-flags set --name pipeline_dag --to on --project ${projectName} with a reason to converge it, or finalize/terminate the run before dispatching legacy`,
 					});
 					return;
 				}
@@ -2126,8 +2126,7 @@ export function createRunsRouter(
 					res.status(409).json({
 						success: false,
 						code: "DAG_DISPATCH_DISABLED",
-						reason:
-							"pipeline.dag is explicitly disabled or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG",
+						reason: `the project-scoped pipeline_dag flag is off or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG — use feature-flags set --name pipeline_dag --project ${projectName} with --to on and a reason`,
 						silent: false,
 					});
 					return;

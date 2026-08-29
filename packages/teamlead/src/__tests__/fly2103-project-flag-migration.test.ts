@@ -20,6 +20,28 @@ function sha(content: string): string {
 	return createHash("sha256").update(content).digest("hex");
 }
 
+function snapshot(
+	projectName: string,
+	config: Record<string, unknown>,
+): ConfigSnapshot {
+	const content = JSON.stringify(config);
+	return {
+		projectName,
+		path: `/${projectName}/config.yaml`,
+		worktree: {
+			contentSha: sha(content),
+			config: structuredClone(config),
+		},
+		committed: {
+			ref: "refs/remotes/origin/main",
+			commitSha: sha(`${projectName}:commit`),
+			blobSha: sha(`${projectName}:blob`),
+			contentSha: sha(content),
+			config: structuredClone(config),
+		},
+	};
+}
+
 function legacySnapshots(): ConfigSnapshot[] {
 	const docsOn = new Set([
 		"flywheel",
@@ -40,21 +62,14 @@ function legacySnapshots(): ConfigSnapshot[] {
 		if (projectName === "flywheel") {
 			config.pipeline = { dag: true, work_kind: true };
 		}
-		const content = JSON.stringify(config);
-		return {
-			projectName,
-			path: `/${projectName}/config.yaml`,
-			contentSha: sha(content),
-			config,
-		};
+		return snapshot(projectName, config);
 	});
 }
 
 function postSnapshots(): ConfigSnapshot[] {
-	return legacySnapshots().map((snapshot) => ({
-		...snapshot,
-		config: { project: snapshot.projectName },
-	}));
+	return FLY2103_PROJECTS.map((projectName) =>
+		snapshot(projectName, { project: projectName }),
+	);
 }
 
 function receipt() {
@@ -88,32 +103,51 @@ describe("FLY-2103 project flag migration", () => {
 
 	it("audits the complete legacy roster bidirectionally", () => {
 		expect(auditLegacyConfigs(legacySnapshots())).toEqual({
-			configShas: Object.fromEntries(
+			committedConfigRefs: Object.fromEntries(
 				legacySnapshots().map((snapshot) => [
 					snapshot.projectName,
-					snapshot.contentSha,
+					{
+						ref: snapshot.committed.ref,
+						commitSha: snapshot.committed.commitSha,
+						blobSha: snapshot.committed.blobSha,
+						contentSha: snapshot.committed.contentSha,
+					},
 				]),
 			),
 			derivedRows: FLY2103_PRE_CUTOVER_ROWS,
 		});
 
 		const deletedTooSoon = legacySnapshots();
-		delete deletedTooSoon[0]!.config.checkpoints;
+		delete deletedTooSoon[0]!.committed.config.checkpoints;
+		delete deletedTooSoon[0]!.worktree.config.checkpoints;
 		expect(() => auditLegacyConfigs(deletedTooSoon)).toThrow(
 			/checkpoint.*legacy enabled/i,
 		);
 
 		const unexpected = legacySnapshots();
-		unexpected[0]!.config.ponytail = { enabled: true };
+		unexpected[0]!.committed.config.ponytail = { enabled: true };
+		unexpected[0]!.worktree.config.ponytail = { enabled: true };
 		expect(() => auditLegacyConfigs(unexpected)).toThrow(
 			/ponytail\.enabled.*unexpected/i,
+		);
+	});
+
+	it("fails before cutover when any migrated key differs from committed HEAD", () => {
+		const snapshots = legacySnapshots();
+		snapshots[1]!.committed.config.doc_flow = {
+			enabled: true,
+			default_department: "product",
+		};
+		expect(() => auditLegacyConfigs(snapshots)).toThrow(
+			/worktree.*committed.*doc_flow\.enabled.*worktree=<absent>.*committed=true/is,
 		);
 	});
 
 	it("requires post-deploy configs to have every retired key removed", () => {
 		expect(() => auditPostDeployConfigs(postSnapshots())).not.toThrow();
 		const stale = postSnapshots();
-		stale[1]!.config.doc_flow = { enabled: true };
+		stale[1]!.committed.config.doc_flow = { enabled: true };
+		stale[1]!.worktree.config.doc_flow = { enabled: true };
 		expect(() => auditPostDeployConfigs(stale)).toThrow(
 			/doc_flow\.enabled.*still present/i,
 		);
@@ -122,7 +156,7 @@ describe("FLY-2103 project flag migration", () => {
 	it("creates and strictly validates a G1 receipt", () => {
 		const value = receipt();
 		expect(value).toMatchObject({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			issue: "FLY-2103",
 			phase: "pre-cutover",
 			status: "passed",
@@ -145,7 +179,13 @@ describe("FLY-2103 project flag migration", () => {
 			{ ...value, bridgeTarget: "http://127.0.0.1:9999" },
 			{
 				...value,
-				configShas: { ...value.configShas, flywheel: "0".repeat(64) },
+				committedConfigRefs: {
+					...value.committedConfigRefs,
+					flywheel: {
+						...value.committedConfigRefs.flywheel!,
+						blobSha: "0".repeat(64),
+					},
+				},
 			},
 		]) {
 			expect(() =>

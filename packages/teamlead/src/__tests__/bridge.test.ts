@@ -1,4 +1,11 @@
-import { existsSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
@@ -520,6 +527,72 @@ describe("Bridge scaffold", () => {
 		const reasons = notify.mock.calls.map(([input]) => input.reason);
 		expect(reasons).toContain("alert_unreachable_config");
 		expect(reasons).not.toContain("ticket_route_unreachable");
+	});
+
+	it("surfaces rejected retired project config through the existing founder meta-alert", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2103-invalid-config-"));
+		mkdirSync(join(root, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(root, ".flywheel", "config.yaml"),
+			[
+				"project: test",
+				"linear:",
+				"  team_id: TEST",
+				"runners:",
+				"  default: claude",
+				"  available:",
+				"    claude:",
+				"      type: claude",
+				"teams:",
+				"  - name: default",
+				"    orchestrators:",
+				"      - type: dag",
+				"        runner: claude",
+				"decision_layer:",
+				"  autonomy_level: advisor",
+				"  escalation_channel: discord",
+				"doc_flow:",
+				"  enabled: true",
+				"",
+			].join("\n"),
+			"utf8",
+		);
+		const notify = vi
+			.spyOn(MetaAlertNotifier.prototype, "notify")
+			.mockResolvedValue({ debounced: false, desktop: false, file: true });
+		vi.spyOn(
+			MetaAlertNotifier.prototype,
+			"probeDesktopCapability",
+		).mockResolvedValue(false);
+
+		try {
+			const { close } = await startBridge(makeConfig(), [
+				{
+					projectName: "test",
+					projectRoot: root,
+					leads: [
+						{
+							agentId: "product-lead",
+							summaryRole: "producer",
+							forumChannel: "test-channel",
+							chatChannel: "test-chat",
+							match: { labels: ["Product"] },
+						},
+					],
+				},
+			]);
+			closeFn = close;
+
+			expect(notify).toHaveBeenCalledWith({
+				reason: "project_config_invalid",
+				title: "Project config rejected (test)",
+				body: expect.stringMatching(
+					/doc_flow.*enabled.*runtime.*not initialized/is,
+				),
+			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("fails loud when the Hub has no valid founder escalation id", async () => {

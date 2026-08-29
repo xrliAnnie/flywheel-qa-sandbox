@@ -632,6 +632,12 @@ export interface RunInfraOptions {
 	flagStore?: FlagStoreRuntime;
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
+	/** Founder-visible existing alert path for a ConfigLoader-rejected project. */
+	onProjectConfigInvalid?: (input: {
+		projectName: string;
+		configPath: string;
+		error: Error;
+	}) => void | Promise<void>;
 	/** FLY-1718: shared structural repo lock used by fetch + worktree mutation. */
 	withRepoLock?: <T>(repoPath: string, fn: () => Promise<T>) => Promise<T>;
 	/**
@@ -1018,6 +1024,19 @@ export async function setupRunInfrastructure(
 					// AgentDispatcher will still be constructed (empty agents map) so the
 					// shipped-generic fallback kicks in for zero-config projects.
 				} else {
+					const error = err instanceof Error ? err : new Error(String(err));
+					try {
+						await runInfraOpts?.onProjectConfigInvalid?.({
+							projectName: project.projectName,
+							configPath,
+							error,
+						});
+					} catch (alertError) {
+						console.error(
+							`[RunInfra] ${project.projectName}: project-config alert failed (non-fatal):`,
+							alertError instanceof Error ? alertError.message : alertError,
+						);
+					}
 					throw err;
 				}
 			}

@@ -4414,6 +4414,15 @@ export async function startBridge(
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
 	const flagStore = initializeFlagStore(store, process.env);
+	// FLY-182/2103: construct the existing Discord-independent founder alert
+	// path before project runtime setup, so ConfigLoader rejection cannot remain
+	// a console-only boot failure.
+	const metaAlertNotifier = new MetaAlertNotifier();
+	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
+		console.log(
+			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
+		);
+	});
 	const eventLoopAttribution = new EventLoopAttribution({
 		diagnosticsDir: resolve(
 			process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR?.trim() ||
@@ -5870,6 +5879,17 @@ export async function startBridge(
 				{
 					flagStore,
 					chatThreadCreator,
+					onProjectConfigInvalid: async ({
+						projectName,
+						configPath,
+						error,
+					}) => {
+						await metaAlertNotifier.notify({
+							reason: "project_config_invalid",
+							title: `Project config rejected (${projectName})`,
+							body: `${configPath} was rejected: ${error.message}. The ${projectName} runtime was not initialized.`,
+						});
+					},
 					withRepoLock: repoMutationLock.withRepoLock,
 					// FLY-603: stateless cleanup closure (own instance here — the
 					// /events one at the createEventRouter call site is a different
@@ -7424,17 +7444,6 @@ export async function startBridge(
 			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
 		} catch {}
 	}
-	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink. Constructed
-	// HERE (before GatePoller) so the FLY-513 global-codex drift probe can reuse
-	// this ONE notifier instance (shared per-reason debounce) on the poll tick —
-	// rather than a second notifier with split debounce/file state (Codex R2 LOW-1).
-	const metaAlertNotifier = new MetaAlertNotifier();
-	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
-		console.log(
-			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
-		);
-	});
-
 	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
 	// host's actual `codex`. Disabled under VITEST (same boundary as
 	// BridgeEventLoopGuard below) so general Bridge integration suites never fire
