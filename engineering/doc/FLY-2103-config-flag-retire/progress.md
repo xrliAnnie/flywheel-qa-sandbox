@@ -1,13 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 2/3
-updated: 2026-08-29T16:22:25.332Z
-nextStep: run lint/build, commit and push fix, then wait for CI green
+phaseCursor: 3/3
+updated: 2026-08-29T16:39:58.276Z
+nextStep: record final milestone and declare terminal head
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (2/3)
-**next**: run lint/build, commit and push fix, then wait for CI green
+**phase**: implement (3/3)
+**next**: record final milestone and declare terminal head
