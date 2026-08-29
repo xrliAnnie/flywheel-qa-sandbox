@@ -1,13 +1,13 @@
 ---
 issue: FLY-2131
 phase: design
-phaseCursor: 2/6
-updated: 2026-08-28T23:56:00.483Z
-nextStep: plan.md 实施计划
+phaseCursor: 3/6
+updated: 2026-08-28T23:59:59.319Z
+nextStep: design_review gate + codex-design-review 循环
 chunks: []
 pointers: {}
 ---
 
 # FLY-2131 progress
-**phase**: design (2/6)
-**next**: plan.md 实施计划
+**phase**: design (3/6)
+**next**: design_review gate + codex-design-review 循环
