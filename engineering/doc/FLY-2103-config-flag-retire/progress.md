@@ -1,13 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-29T12:57:01.911Z
-nextStep: "QA node: build + focused suites"
+phaseCursor: 6/6
+updated: 2026-08-29T13:06:09.321Z
+nextStep: submit qa-result fail
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (1/6)
-**next**: QA node: build + focused suites
+**phase**: implement (6/6)
+**next**: submit qa-result fail
