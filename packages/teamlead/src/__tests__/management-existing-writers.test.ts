@@ -512,7 +512,9 @@ describe("existing management writer adapters", () => {
 					? spec.enumValues?.find((value) => value !== spec.default)
 					: spec.valueKind === "bool"
 						? !spec.default
-						: undefined;
+						: spec.valueKind === "value"
+							? String(spec.default)
+							: undefined;
 			expect(desired, `${name} needs a management target`).toBeDefined();
 			if (desired === undefined) continue;
 			expect(
