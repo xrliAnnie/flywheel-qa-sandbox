@@ -1,14 +1,13 @@
 ---
 issue: FLY-2103
 phase: implement
-phaseCursor: 6/8
-updated: 2026-08-29T06:15:33.093Z
-nextStep: Run the isolated six-project Bridge behavior parity harness and
-  read-site residue audit
+phaseCursor: 7/8
+updated: 2026-08-29T06:33:56.249Z
+nextStep: Audit retired readers and run full-repo gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: implement (6/8)
-**next**: Run the isolated six-project Bridge behavior parity harness and read-site residue audit
+**phase**: implement (7/8)
+**next**: Audit retired readers and run full-repo gates
