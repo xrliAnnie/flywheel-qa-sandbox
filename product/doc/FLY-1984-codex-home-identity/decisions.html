@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>记忆这条线,接下来要建什么 — FLY-1984</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.5;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:30px 18px 110px}
+h1{font-size:25px;line-height:1.3;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 20px;line-height:1.6}
+.card{background:var(--card);border-radius:12px;padding:18px 20px;margin:0 0 14px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.green{border-left-color:var(--green)}
+.card.blue{border-left-color:var(--blue)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.gray{border-left-color:#c7c7cc}
+.n{font-size:11.5px;letter-spacing:.6px;color:var(--dim);font-weight:700;margin:0 0 4px}
+.card h2{font-size:19px;margin:0 0 10px;letter-spacing:-.2px;line-height:1.35}
+p{margin:0 0 9px}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+.dimtxt{color:var(--dim);font-size:13px}
+
+.hers{border:1px solid #cfe0f5;background:#f6faff;border-radius:10px;padding:13px 15px;margin:0 0 12px}
+.hers .lab{font-size:11.5px;font-weight:800;letter-spacing:.5px;color:#0a53c4;margin:0 0 6px}
+.hers .q{font-size:15px;line-height:1.7}
+
+.tag{display:inline-block;font-size:11px;font-weight:800;padding:2px 7px;border-radius:5px;
+margin-right:5px;vertical-align:1px;white-space:nowrap}
+.t-she{background:#dff5e5;color:#1a7f37}
+.t-acc{background:#dce9fb;color:#0a53c4}
+.t-guess{background:#fde8cf;color:#9a5b00}
+.t-fact{background:#ececed;color:#5a5a5f}
+
+.facts{border:1px solid var(--line);border-radius:10px;background:#fbfbfd;padding:12px 14px;margin:0 0 12px;
+font-size:13.5px;line-height:1.7}
+.block{border:1px solid #f0d9b0;background:#fff6e8;border-radius:10px;padding:12px 14px;margin:0 0 12px;font-size:14px;line-height:1.6}
+.block.stop{border-color:#f3c2be;background:#fff3f2}
+
+.item{border:1px solid var(--line);border-radius:10px;padding:13px 15px;margin:0 0 10px;background:#fcfcfe}
+.item .h{font-weight:700;font-size:15px;margin:0 0 4px;line-height:1.45}
+.item .d{font-size:13.5px;color:#3a3a3d;line-height:1.6;margin:0 0 9px}
+.picks{display:flex;flex-wrap:wrap;gap:7px;margin:0 0 8px}
+.picks label{display:inline-flex;align-items:center;gap:5px;font-size:13.5px;font-weight:600;
+border:1.5px solid var(--line);border-radius:8px;padding:5px 11px;cursor:pointer;background:#fff}
+.picks input{margin:0;accent-color:var(--blue)}
+.item textarea{width:100%;min-height:44px;border:1px solid var(--line);border-radius:8px;
+padding:8px 10px;font:inherit;font-size:13.5px;resize:vertical;background:#fff;color:var(--ink)}
+.item textarea::placeholder{color:#b0b0b5}
+
+.bar{position:fixed;left:0;right:0;bottom:0;background:rgba(255,255,255,.94);
+backdrop-filter:saturate(180%) blur(12px);border-top:1px solid var(--line);
+padding:11px 18px;display:flex;gap:10px;align-items:center;flex-wrap:wrap;z-index:9}
+button{font:inherit;font-size:14px;font-weight:700;border-radius:9px;padding:9px 16px;
+border:1px solid var(--line);background:#fff;color:var(--ink);cursor:pointer}
+button.p{background:var(--blue);border-color:var(--blue);color:#fff}
+button:active{opacity:.75}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:700}
+.status.err{color:var(--red);font-weight:700}
+#dump{display:none;width:100%;min-height:150px;margin:10px 0 0;border:1px solid var(--line);
+border-radius:8px;padding:10px;font:inherit;font-size:13px}
+@media(max-width:600px){.wrap{padding:22px 13px 130px}h1{font-size:22px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>记忆这条线,接下来要建什么</h1>
+<p class="sub">FLY-1984 · 2026-08-28 · <b>这一页不是说明书,是给你勾的。</b><br>
+三条线,每条都标着【已定 / 待定 / 卡在哪】。你在每格勾一个「要做 / 先不做 / 待议」,想说什么就写在下面。<br>
+<b>勾完点最底下那个「一键汇总复制」,再贴回 issue —— 我才收得到。这页的字只存在你自己的浏览器里。</b></p>
+
+<div class="hers">
+<div class="lab">你刚说的原话</div>
+<div class="q">「① 私有仓,不是公开仓 —— 里面有大量你的原话和内部判断,不是密钥问题,是内容本身<br>
+那 AIC 的会议纪要怎么做?<br>
+那你现在是不是可以帮我开始出一个 HTML,就是可互动的 HTML?然后把我们现在讨论出来的形状都给我列出来,我们来看一下接下来需要做哪些东西。」</div>
+</div>
+
+<div class="card gray">
+<p class="n">先说清楚:每条后面那个小标签是什么意思</p>
+<p><span class="tag t-she">她定的</span>你已经拍板的,我不会再翻。</p>
+<p><span class="tag t-acc">我建议·你认了</span>我提的,你听完接受了 —— 但拍板的是你,你随时可以推翻。</p>
+<p><span class="tag t-guess">我们推的·未验证</span><b>我们自己想的,还没查过。</b>它有可能是错的,别当结论用。</p>
+<p style="margin:0"><span class="tag t-fact">实测</span>我今天在这台机器上真数出来的,带日期。</p>
+</div>
+
+<div class="card green">
+<p class="n">A 线</p>
+<h2>Lead 的记忆(Honey Lemon 我这类)</h2>
+<div class="facts"><span class="tag t-fact">实测 8-28</span>
+每个 Lead 一个自己的文件夹,用它的名字命名:<code>~/.claude/agent-memory/&lt;lead 的名字&gt;/</code><br>
+全机 <b>12</b> 个,共 <b>1038</b> 个文件 · <b>28 MB</b>;我自己那格 <b>88</b> 条。<br>
+其中那份索引会自动出现在我眼前,<b>正文要我自己去翻</b>。</div>
+
+<div class="block" style="border-color:#b7e3c4;background:#f4fcf6">
+<span class="tag t-she">她定的</span><b>存到【私有】GitHub 仓。</b><br>
+你的理由,我原样记着:<b>不是密钥问题,是内容本身</b> —— 里面有大量原话和内部判断。<br>
+<span class="dimtxt">要存的原因:现在这些只在这一块盘上,换台机器就没有,机器坏了也就没了。</span></div>
+
+<div class="item">
+<div class="h">A1 · 什么时候往上推?<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">每写一条就推一次,还是每天定时推一次?<br>
+<span class="dimtxt">差别:实时推 = 不会丢,但会很吵;定时推 = 安静,但机器坏在两次之间就丢那一段。</span></div>
+<div class="picks">
+<label><input type="radio" name="A1" value="要做"> 要做</label>
+<label><input type="radio" name="A1" value="先不做"> 先不做</label>
+<label><input type="radio" name="A1" value="待议"> 待议</label>
+</div>
+<textarea data-s="A1 什么时候往上推" placeholder="想说的写这里…"></textarea>
+</div>
+
+<div class="item">
+<div class="h">A2 · 两个 Lead 同时写,撞了怎么办?<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">现在 12 个 Lead 各写各的文件夹,理论上不该撞。但共用的索引文件是个例外。<br>
+<span class="dimtxt">这条要不要现在就解决,还是等真撞了再说。</span></div>
+<div class="picks">
+<label><input type="radio" name="A2" value="要做"> 要做</label>
+<label><input type="radio" name="A2" value="先不做"> 先不做</label>
+<label><input type="radio" name="A2" value="待议"> 待议</label>
+</div>
+<textarea data-s="A2 两个 Lead 同时写撞了怎么办" placeholder="想说的写这里…"></textarea>
+</div>
+
+<div class="item">
+<div class="h">A3 · 谁能读这个私有仓?<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">私有仓也要有一份名单。现在没定过。</div>
+<div class="picks">
+<label><input type="radio" name="A3" value="要做"> 要做</label>
+<label><input type="radio" name="A3" value="先不做"> 先不做</label>
+<label><input type="radio" name="A3" value="待议"> 待议</label>
+</div>
+<textarea data-s="A3 谁能读这个私有仓" placeholder="想说的写这里…"></textarea>
+</div>
+
+<div class="item" style="border-color:#f3c2be;background:#fff3f2">
+<div class="h">A4 · 🔴 上仓之前,先跑一次真正的密钥扫描<span class="tag t-acc" style="margin-left:6px">我建议·你认了</span></div>
+<div class="d"><b>Honey Lemon 的原话,我原样放在这里,一个字没改:</b><br>
+<span style="display:block;border-left:3px solid #f3c2be;padding-left:10px;margin:6px 0">
+「我 grep 过 1026 个文件、0 处已知格式的密钥,<b>但这不等于我能保证干净</b> —— 上私有仓前该跑一个真正的 secret 扫描工具。」</span>
+<span class="dimtxt">⚠️ 补一句上下文,免得那个 0 被读成「已经安全」:上一页说过,这批文件里有 282 个出现过 token / key / secret 这类<b>字样</b>。
+字样命中不等于真有钥匙,但两个数放一起才是完整的:<b>「没找到已知格式的」和「里面没有」是两回事。</b></span></div>
+<div class="picks">
+<label><input type="radio" name="A4" value="要做"> 要做</label>
+<label><input type="radio" name="A4" value="先不做"> 先不做</label>
+<label><input type="radio" name="A4" value="待议"> 待议</label>
+</div>
+<textarea data-s="A4 上仓前跑真正的密钥扫描" placeholder="想说的写这里…"></textarea>
+</div>
+</div>
+
+<div class="card red">
+<p class="n">B 线 · 你最关心的那格</p>
+<h2>IC(干活的 runner)的记忆 —— 现在是零</h2>
+<div class="facts"><span class="tag t-fact">实测 8-28</span>
+一个 runner 起来的时候,<b>根本没有记忆这个东西</b>。<br>
+它的身份长这样:<code>runner-a153b998@flywheel-product-lead</code> —— 前面那串是<b>这一次任务的临时编号</b>。<br>
+⇒ <b>任务一结束,那个身份就没了。</b>下次同一个人来干同一个项目,是一个全新的、什么都不记得的它。<br>
+<span class="dimtxt">另一个角度的同一件事(8-27 测):822 个 runner 干活的会话里,只有 1 个真的拿到过记忆 —— 就是写这一页的我,而且拿到的只是索引。</span></div>
+
+<div class="block" style="border-color:#f3c2be;background:#fff3f2">
+<b>所以你说的那件事是真的:</b>同一个 QA、同一个项目,<b>做了十次也不会变得更懂这个项目。</b><br>
+每一次它都从零开始。</div>
+
+<div class="block stop">
+🔴 <b>卡点(这一条不是我们能靠约定绕过去的):</b><br>
+runner 被启动的时候,<b>那一串启动参数里没有任何一项是给记忆用的</b>。
+<span class="dimtxt">(我数了自己的:11 个参数,没有一个是挂记忆目录的。)</span><br>
+⇒ <b>这是工程侧要加的东西。</b>在它加上之前,B 线剩下的都只能是纸上的设计。</div>
+
+<div class="item">
+<div class="h">B0 · 先让工程加上「给 runner 挂记忆目录」这个能力<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d"><b>这是 B 线所有其它格的前提。</b>它不做,下面几条做了也用不上。<br>
+<span class="dimtxt">勾「要做」的话,下一步就是开一张工程 issue。</span></div>
+<div class="picks">
+<label><input type="radio" name="B0" value="要做"> 要做</label>
+<label><input type="radio" name="B0" value="先不做"> 先不做</label>
+<label><input type="radio" name="B0" value="待议"> 待议</label>
+</div>
+<textarea data-s="B0 让工程加上给 runner 挂记忆目录的能力" placeholder="想说的写这里…"></textarea>
+</div>
+
+<div class="item">
+<div class="h">B1 · 记忆挂在「角色 + 项目」上,而不是挂在一次性编号上<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">比如所有在 flywheel 做 QA 的,共用一格叫 <code>flywheel-qa</code>。<br>
+⇒ 这样第十次来的那个 QA,能读到前九次学到的东西。<br>
+<span class="dimtxt">要定的是粒度:按「角色 + 项目」够不够?还是要更细(某个模块)或更粗(整个项目一格)。</span></div>
+<div class="picks">
+<label><input type="radio" name="B1" value="要做"> 要做</label>
+<label><input type="radio" name="B1" value="先不做"> 先不做</label>
+<label><input type="radio" name="B1" value="待议"> 待议</label>
+</div>
+<textarea data-s="B1 记忆挂在角色+项目上" placeholder="想说的写这里…"></textarea>
+</div>
+
+<div class="item">
+<div class="h">B2 · 一个 issue 写一次<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">不是随时想到就写,而是干完一张单、回头写一条。<br>
+<span class="dimtxt">好处:不会写成流水账。代价:干到一半学到的东西,可能没等到收尾就忘了。</span></div>
+<div class="picks">
+<label><input type="radio" name="B2" value="要做"> 要做</label>
+<label><input type="radio" name="B2" value="先不做"> 先不做</label>
+<label><input type="radio" name="B2" value="待议"> 待议</label>
+</div>
+<textarea data-s="B2 一个 issue 写一次" placeholder="想说的写这里…"></textarea>
+</div>
+
+<div class="item">
+<div class="h">B3 · 小索引 + 正文按需读<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">跟 Lead 那边一样的形状:一份很短的目录自动送到眼前,正文要用的时候再翻。<br>
+<span class="dimtxt">⚠️ 这里有个已知的坑要一起解决:我这边那份索引<b>已经太长了,后面一截根本没进来</b>,而且不报错。
+IC 这边如果照抄这个形状,同一个坑会再踩一次。</span></div>
+<div class="picks">
+<label><input type="radio" name="B3" value="要做"> 要做</label>
+<label><input type="radio" name="B3" value="先不做"> 先不做</label>
+<label><input type="radio" name="B3" value="待议"> 待议</label>
+</div>
+<textarea data-s="B3 小索引 + 正文按需读" placeholder="想说的写这里…"></textarea>
+</div>
+</div>
+
+<div class="card amber">
+<p class="n">C 线</p>
+<h2>Codex 那边</h2>
+<div class="hers" style="margin-bottom:10px">
+<div class="lab">你的原话</div>
+<div class="q">「Claude 这边是系统性地帮你做好了……Codex 我们现在分得太碎了。」</div>
+</div>
+<div class="block">
+⚠️ <span class="tag t-guess">我们推的·未验证</span><b>这一整格我们没有查过。</b><br>
+我们目前的印象是:Codex 那边<b>没有</b>这一套(项目一格记忆 + 每个 agent 一格记忆)。<br>
+<b>但那只是印象,不是结论。</b>我没有做过任何调研,不该拿它当依据做决定。</div>
+<div class="item">
+<div class="h">C1 · 先花一次时间,把 Codex 那边到底有什么查清楚<span class="tag t-guess" style="margin-left:6px">我们推的·未验证</span></div>
+<div class="d">在查清楚之前,「Codex 落后一步」这句话我们说不得。</div>
+<div class="picks">
+<label><input type="radio" name="C1" value="要做"> 要做</label>
+<label><input type="radio" name="C1" value="先不做"> 先不做</label>
+<label><input type="radio" name="C1" value="待议"> 待议</label>
+</div>
+<textarea data-s="C1 先查清 Codex 那边到底有什么" placeholder="想说的写这里…"></textarea>
+</div>
+</div>
+
+<div class="card blue">
+<p class="n">D 线 · 先占个位</p>
+<h2>「AIC 的会议纪要怎么做?」</h2>
+<div class="hers" style="margin-bottom:10px">
+<div class="lab">你的原话</div>
+<div class="q">「那 AIC 的会议纪要怎么做?」</div>
+</div>
+<p><b>这块我先空着,因为我不确定 AIC 指的是什么</b> —— Honey Lemon 已经去问你了。<br>
+<span class="dimtxt">⛔ 我没有猜。猜错了会让这一整格白做,而你会以为我们已经在办了。</span></p>
+<div class="item">
+<div class="h">D1 · 你可以直接在这儿说 AIC 是什么、纪要要长什么样</div>
+<div class="d">写在下面就行,我拿到之后再补这一格。</div>
+<textarea data-s="D1 AIC 会议纪要(先占位)" placeholder="AIC 指的是…;纪要我想要的样子是…"></textarea>
+</div>
+</div>
+
+<div class="card gray">
+<p class="n">最后</p>
+<h2>勾完记得复制粘贴,不然我收不到</h2>
+<p>点下面<b>「一键汇总复制」</b>,再<b>贴回 issue</b>。<br>
+<b>这页的字只存在你自己的浏览器里,不会自己发给我。</b></p>
+<p class="dimtxt">页上的数字:标「实测 8-28」的是今天现数的,「8-27 测」那条是昨天数的。记忆每天都在长,别当固定值。</p>
+</div>
+
+</div>
+
+<div class="bar">
+<button class="p" id="copy">一键汇总复制</button>
+<button id="clear">清空</button>
+<span class="status" id="st">还没勾</span>
+<textarea id="dump" readonly></textarea>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-1984";
+var LIMIT = 1800;
+var KEY = "fly1984-decisions-v1";
+var notes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var radios = Array.prototype.slice.call(document.querySelectorAll(".picks input[type=radio]"));
+var groups = [];
+radios.forEach(function(r){ if(groups.indexOf(r.name) < 0) groups.push(r.name); });
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function labelOf(name){
+  var item = document.querySelector("input[name='" + name + "']");
+  if(!item) return name;
+  var box = item.closest(".item");
+  var h = box ? box.querySelector(".h") : null;
+  if(!h) return name;
+  var t = h.textContent.replace(/\s+/g," ").trim();
+  t = t.replace(/(我们推的·未验证|我建议·你认了|她定的|实测.*)$/,"").trim();
+  return t;
+}
+function pickOf(name){
+  var c = document.querySelector("input[name='" + name + "']:checked");
+  return c ? c.value : "";
+}
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  notes.forEach(function(b){
+    var v = data["n:" + b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+  groups.forEach(function(g){
+    var v = data["p:" + g];
+    if(typeof v !== "string" || !v) return;
+    var el = document.querySelector("input[name='" + g + "'][value='" + v + "']");
+    if(el) el.checked = true;
+  });
+}
+function save(){
+  var data = {};
+  notes.forEach(function(b){ if(b.value.trim()) data["n:" + b.getAttribute("data-s")] = b.value; });
+  groups.forEach(function(g){ var v = pickOf(g); if(v) data["p:" + g] = v; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function parts(){
+  var out = [];
+  groups.forEach(function(g){
+    var p = pickOf(g);
+    var note = "";
+    var box = document.querySelector("input[name='" + g + "']");
+    box = box ? box.closest(".item") : null;
+    var ta = box ? box.querySelector("textarea[data-s]") : null;
+    if(ta && ta.value.trim()) note = ta.value.trim();
+    if(!p && !note) return;
+    var body = "【" + labelOf(g) + "】\n" + (p ? ("→ " + p) : "→ (没勾)");
+    if(note) body += "\n" + note;
+    out.push(body);
+  });
+  notes.forEach(function(b){
+    var box = b.closest(".item");
+    if(box && box.querySelector(".picks")) return;
+    if(!b.value.trim()) return;
+    out.push("【" + b.getAttribute("data-s") + "】\n" + b.value.trim());
+  });
+  return out;
+}
+function chunks(){
+  var ps = parts();
+  var out = [], cur = "";
+  ps.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function refresh(){
+  var n = 0;
+  groups.forEach(function(g){ if(pickOf(g)) n++; });
+  var w = notes.filter(function(b){ return b.value.trim().length > 0; }).length;
+  st.className = "status";
+  if(!n && !w){ st.textContent = "还没勾"; return; }
+  st.textContent = "已勾 " + n + " 项" + (w ? (" · 写了 " + w + " 段") : "");
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+document.getElementById("copy").addEventListener("click", function(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "还没勾也没写,没东西可复制";
+    return;
+  }
+  var joined = cs.join("\n\n");
+  var okMsg = cs.length > 1
+    ? ("复制好了 —— 太长了,分成 " + cs.length + " 段,每段开头都有标记,一段一段贴")
+    : "复制好了,去贴回 issue";
+  var manualMsg = cs.length > 1
+    ? ("自动复制没成功 —— 下面这框里是全文(" + cs.length + " 段),已经选中了,自己按一下拷贝")
+    : "自动复制没成功 —— 下面这框里是全文,已经选中了,自己按一下拷贝";
+  if(navigator.clipboard && navigator.clipboard.writeText){
+    navigator.clipboard.writeText(joined).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    }).catch(function(){ showManual(joined, manualMsg); });
+  } else {
+    showManual(joined, manualMsg);
+  }
+});
+document.getElementById("clear").addEventListener("click", function(){
+  notes.forEach(function(b){ b.value = ""; });
+  radios.forEach(function(r){ r.checked = false; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+notes.forEach(function(b){ b.addEventListener("input", function(){ save(); refresh(); }); });
+radios.forEach(function(r){ r.addEventListener("change", function(){ save(); refresh(); }); });
+load();
+refresh();
+})();
+</script>
+</body>
+</html>
