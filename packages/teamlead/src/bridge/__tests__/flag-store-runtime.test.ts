@@ -142,7 +142,7 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		);
 	});
 
-	it.each(["mailbox_queue", "future_unretired_flag"])(
+	it.each(["manual_unlisted_flag", "future_unretired_flag"])(
 		"fails boot if unretired identity %s is manually injected",
 		(flagName) => {
 			rawFlagStoreDb(store).exec(`
@@ -282,14 +282,13 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			],
 		});
 		expect(
-			views.find(({ name }) => name === "founder_review_orphan_monitor"),
+			views.find(({ name }) => name === "checkpoint_enabled"),
 		).toMatchObject({
 			storeManaged: false,
 			clockReadiness: "no_clock:unmanaged",
 		});
 		expect(
-			views.find(({ name }) => name === "founder_review_orphan_monitor")
-				?.valueClocks,
+			views.find(({ name }) => name === "checkpoint_enabled")?.valueClocks,
 		).toBeUndefined();
 	});
 

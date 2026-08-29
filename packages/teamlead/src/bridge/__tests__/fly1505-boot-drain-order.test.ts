@@ -68,4 +68,19 @@ describe("FLY-1505 boot ordering", () => {
 			'Promise.reject(new Error("ship-attempt alert sink unavailable"))',
 		);
 	});
+
+	it("rejects orphan alert delivery while the sink holder is unavailable", () => {
+		const sweepIndex = source.indexOf("const patrolOrphanSweepPass =");
+		const sweepEnd = source.indexOf(
+			"const workflowResumeCheckpointStore",
+			sweepIndex,
+		);
+		const sweepWiring = source.slice(sweepIndex, sweepEnd);
+
+		expect(sweepIndex).toBeGreaterThan(-1);
+		expect(sweepEnd).toBeGreaterThan(sweepIndex);
+		expect(sweepWiring).toContain(
+			'throw new Error("patrol orphan alert sink unavailable")',
+		);
+	});
 });

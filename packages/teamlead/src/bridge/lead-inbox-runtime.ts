@@ -347,17 +347,13 @@ export class LeadInboxRuntime {
 						if (leadIndex === 0) {
 							await runnerLane.tick();
 							const queueConfig = resolveMailboxQueueConfig();
-							if (queueConfig.enabled) {
-								this.reconcileDeadLetterAlertIntents({
-									project,
-									queue,
-									resolveOwningLead,
-									windowMs: queueConfig.deadLetterWindowMs,
-								});
-								await this.drainDeadLetterAlerts(
-									queueConfig.deadLetterWindowMs,
-								);
-							}
+							this.reconcileDeadLetterAlertIntents({
+								project,
+								queue,
+								resolveOwningLead,
+								windowMs: queueConfig.deadLetterWindowMs,
+							});
+							await this.drainDeadLetterAlerts(queueConfig.deadLetterWindowMs);
 						}
 					},
 					handleProtocol: (row) => protocol.handle(row),

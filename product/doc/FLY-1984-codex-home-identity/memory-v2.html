@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lead 记得,IC 不记得 — FLY-1984</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.5;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:30px 18px 96px}
+h1{font-size:25px;line-height:1.3;margin:0 0 4px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13px;margin:0 0 22px}
+.card{background:var(--card);border-radius:12px;padding:18px 20px;margin:0 0 14px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.n{font-size:11.5px;letter-spacing:.6px;color:var(--dim);font-weight:700;margin:0 0 4px}
+.card h2{font-size:18px;margin:0 0 12px;letter-spacing:-.2px;line-height:1.35}
+p{margin:0 0 9px}
+.ans{font-size:26px;font-weight:800;letter-spacing:-.6px;line-height:1.25;margin:2px 0 8px}
+.big{font-size:17px;font-weight:700;letter-spacing:-.2px;line-height:1.45}
+.dimtxt{color:var(--dim);font-size:13px}
+.q{font-size:14.5px;font-weight:700;margin:0 0 4px}
+.qa{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 9px;background:#fcfcfe}
+.qa .a{font-size:14px;line-height:1.5}
+.qa.warn{border-color:#f0d9b0;background:#fffaf2}
+
+/* two-layer diagram */
+.layers{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin:2px 0 12px}
+.ly{border:2px solid var(--line);border-radius:11px;padding:13px 14px;background:#fcfcfe}
+.ly.one{border-color:var(--green);background:#f4fcf6}
+.ly.two{border-color:var(--blue);background:#f5faff}
+.ly .lh{font-weight:800;font-size:15px;margin-bottom:2px}
+.ly .lp{font-size:12px;color:var(--dim);font-family:"SF Mono",ui-monospace,monospace;margin-bottom:8px;word-break:break-all}
+.ly .lb{font-size:13.5px;line-height:1.6}
+.ly .lb b{font-size:14.5px}
+
+/* matrix */
+.mx{width:100%;border-collapse:collapse;margin:2px 0 12px;font-size:14.5px}
+.mx th,.mx td{padding:10px 11px;border-bottom:1px solid var(--line);text-align:center}
+.mx th{font-size:12.5px;color:var(--dim);font-weight:700}
+.mx td:first-child,.mx th:first-child{text-align:left;font-weight:700}
+.mx .y{color:var(--green);font-weight:800;font-size:17px}
+.mx .n2{color:var(--red);font-weight:800;font-size:17px}
+.mx tr.hot td{background:#fff5f4}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+/* funnel */
+.fn{margin:2px 0 12px}
+.fb{border:2px solid var(--line);border-radius:10px;padding:11px 14px;background:#fcfcfe;
+text-align:center;font-size:14.5px;line-height:1.45}
+.fb b{font-size:15.5px}
+.fa{text-align:center;color:var(--dim);font-size:18px;font-weight:700;line-height:1.1;margin:4px 0}
+.fb.want{border-color:var(--purple);background:#faf5ff}
+.fb.none{border-color:var(--red);background:#fff5f4}
+.split{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+.good{background:#f1fbf3;border:1px solid #cdeed6;border-radius:9px;padding:11px 13px;
+font-size:13.5px;color:#1a5c30;margin:0 0 10px}
+.fact{background:#fafafc;border:1px solid var(--line);border-radius:9px;
+padding:10px 13px;font-size:13px;color:#4a4a4f;margin:0 0 10px}
+.fact b{color:var(--ink)}
+.unk{background:#fbf6ff;border-radius:8px;padding:9px 12px;font-size:12.5px;
+color:#5d1f77;margin:0 0 8px}
+.cmt{margin:14px 0 0;padding-top:12px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;
+padding:9px 11px;font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -90px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+@media (max-width:620px){
+.wrap{padding:22px 13px 90px}h1{font-size:21px}.ans{font-size:22px}
+.layers{grid-template-columns:1fr}.split{grid-template-columns:1fr}
+.bar{margin:20px -13px -90px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Lead 记得,IC 不记得</h1>
+<p class="sub">FLY-1984 · 先答你问的那句 · 再答你问的三件事 · 主体是你说的那个新方向 · 每节都能直接留言</p>
+
+<div class="card green">
+<p class="n">① 先正面回答你问的那句</p>
+<h2>「到底是每个人一个文件夹,还是共用一个?」</h2>
+<p class="ans">一人一个。</p>
+<p>这不是我推的,是<b>你已经定了</b>:「他们是好几个人,不是一个系统的几副面孔。」</p>
+<p class="dimtxt">上一版我把这句问题往深里翻成了「几个人还是几副面孔」—— 那是我多做了一步。你问字面,我该先答字面。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="① 一人一个" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="n">② 你问的三件事</p>
+<h2>直接答,不绕</h2>
+
+<div class="qa">
+<p class="q">「那些临时的家,你删掉了吗?」</p>
+<p class="a"><b>没有。588 个还在,占 35 GB。</b>这件事另有单在跟(FLY-1893),不归这一题。<br>
+<span class="dimtxt">我不动手删,这一页也不提怎么清 —— 那是别人的活。</span></p>
+</div>
+
+<div class="qa">
+<p class="q">「为什么 Honeylemon 列在这里?Honeylemon 不是 Claude Code 吗?」</p>
+<p class="a"><b>你猜对了,那不是 Claude Code 的 Honey Lemon。</b><br>
+那个文件夹第一行逐字写着「FLY-1911 语音分身(Honey Lemon 的会议室分身)」——
+是<b>语音测试那个东西</b>,只是沿用了同一个名字。18 次会话,全在 8/21–8/23。</p>
+</div>
+
+<div class="qa warn">
+<p class="q">「记忆开关是 Codex 里的设置吗?只要我们打开就可以了吗?」</p>
+<p class="a"><b>是 Codex 的设置</b> —— 配置文件里一行 <code>memories = true</code>,加上就行。<br>
+<b>但「只要打开就可以」这句我不敢说。</b>我没量过打开之后会不会变慢或变贵
+<span class="dimtxt">(现有那份 174 条,平均 4 KB 一条)</span>。<br>
+⇒ 我能说的是「加一行就开」,不能说「加一行就好」。</p>
+</div>
+<div class="cmt"><label>这三个答案的意见</label><textarea data-s="② 三个提问的答案" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="n">③ 图一 · 你说的新方向,从这儿看起</p>
+<h2>Claude Code 今天的记忆,分两层</h2>
+<div class="layers">
+  <div class="ly one">
+    <div class="lh">第一层 · 按「谁」分</div>
+    <div class="lp">agent-memory/&lt;哪个 agent&gt;/</div>
+    <div class="lb"><b>12 个,全是 Lead</b><br>
+    工程 Lead 462 条<br>参谋长 156 条<br>产品 Lead 87 条<br>
+    <span class="dimtxt">一个节点都没有</span></div>
+  </div>
+  <div class="ly two">
+    <div class="lh">第二层 · 按「哪个项目」分</div>
+    <div class="lp">projects/&lt;哪个仓&gt;/memory/</div>
+    <div class="lb"><b>56 个,19 个有东西</b><br>
+    flywheel 那份 <b>445 条</b><br>最近 7 天动了 97 条<br>
+    <span class="dimtxt">是活的,一直在写</span></div>
+  </div>
+</div>
+<p class="big">第一层认「谁」,第二层认「哪个仓」。<br>没有一层认「什么角色」。</p>
+<p class="dimtxt">上面的条数是我 8/26 凌晨自己数的,一直在变 —— 当数量级看,别当准数。</p>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="③ 记忆分两层" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="n">④ 图二 · 你的类比对到今天</p>
+<h2>Lead 两层都占,IC 只占一层</h2>
+<div class="scroll"><table class="mx">
+<tr><th></th><th>有 agent file</th><th>第一层<br><span class="dimtxt">自己的记忆</span></th><th>第二层<br><span class="dimtxt">项目大池子</span></th></tr>
+<tr><td>Lead<br><span class="dimtxt">manager</span></td><td class="y">✓</td><td class="y">✓</td><td class="y">✓</td></tr>
+<tr class="hot"><td>DAG 节点<br><span class="dimtxt">IC</span></td><td class="y">✓</td><td class="n2">✗</td><td class="y">✓</td></tr>
+</table></div>
+<p class="big">节点<u>不是没在记</u> —— 它记进了第二层。<br>但第二层是<b>按仓分的</b>,所以 qa、design、engineer 学到的东西<b>全混在同一个池子里</b>。</p>
+<div class="fact">你那句「DAG 每个节点也有 agent file」<b>是对的</b> —— 我核了,节点确实各有一份(pm / qa / engineer / designer / prototype)。缺的不是 agent file,<b>缺的是跟它配对的那格记忆。</b></div>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="④ Lead 两层 IC 一层" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="n">⑤ 图三 · 你想要的那一格</p>
+<h2>「qa 节点记得自己干过的所有 qa」—— 今天不存在</h2>
+<div class="fn">
+  <div class="fb want"><b>你想要的</b><br>同一个角色,几百次会话,经验汇到一起</div>
+  <div class="fa">↓ 落到今天的分法</div>
+  <div class="split">
+    <div class="fb">按<b>谁</b>分<br><span class="dimtxt">只有 Lead 进得去</span></div>
+    <div class="fb">按<b>哪个仓</b>分<br><span class="dimtxt">所有角色混着</span></div>
+  </div>
+  <div class="fa">↓</div>
+  <div class="fb none"><b>没有一层是按角色分的</b><br><span class="dimtxt">所以这件事今天做不到 —— Claude Code 也没做</span></div>
+</div>
+<p class="big">⚠️ 这一条我要正面说清楚:<br>不是「Codex 还没跟上」,是<b>这一半谁都还没做</b>。</p>
+<div class="good">✅ <b>一条好消息,顺手核到的:</b>每个 worktree 确实各有一个自己的记忆位置(242 个),但<b>它们全是空的</b> —— 因为节点被指向了主仓那一份。<br>⇒ <b>worktree 删掉,记忆不会跟着没。</b>那 445 条是攒在一起的。</div>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="⑤ 按角色汇总今天不存在" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card">
+<p class="n">⑥ 下一步</p>
+<h2>现状画完了,要不要我往下走?</h2>
+<p>你说的顺序是:<b>先确认 Claude Code 是不是真这么做的 → 画图讲清楚 → 再看 Codex 能不能复现。</b></p>
+<p>前两步在这一页里了。<b>第三步我没动</b> —— 这一页一个 Codex 方案都没提,因为顺序是你定的。</p>
+<p class="big">要不要我现在去做第三步?</p>
+<div class="unk">去之前先说清我还没验的两件:<b>①</b> 打开记忆的成本(变慢/变贵)<b>②</b> Codex 能不能按角色分记忆。第二件正好就是第三步要回答的。</div>
+<div class="cmt"><label>下一步 / 还有别的想说的</label><textarea data-s="⑥ 下一步要不要去看 Codex" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="fact" style="margin-top:16px">
+写完点下面<b>「一键汇总复制」</b>,再<b>贴回 issue</b> —— 我才收得到。<b>这页的字只存在你自己的浏览器里,不会自己发给我。</b>
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-1984";
+var LIMIT = 1800;
+var KEY = "fly1984-memory-v2-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写，没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制（共 " + cs.length + " 段，每段都要贴）"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制（共 " + cs.length + " 段，都要贴回 issue）"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    })["catch"](function(){ showManual(text, manualMsg); });
+    return;
+  }
+  showManual(text, manualMsg);
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>

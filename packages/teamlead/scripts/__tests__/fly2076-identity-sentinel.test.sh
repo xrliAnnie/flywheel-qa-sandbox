@@ -31,6 +31,10 @@ required=(
   "禁止游标先行"
   "newest-first"
   "25 条就是看得见的积压信号"
+  "orphan_pane"
+  "claude-infra-bot-lead 是唯一责任席位"
+  "不要求任何 Department Lead 扫全机"
+  "Bridge orphan sweeper"
 )
 for phrase in "${required[@]}"; do
   if ! grep -qF -- "$phrase" "$IDENTITY"; then

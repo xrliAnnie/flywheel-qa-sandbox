@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>它们是几个人,还是一个人的几副面孔 — FLY-1984</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.55;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:900px;margin:0 auto;padding:32px 18px 90px}
+h1{font-size:27px;line-height:1.28;margin:0 0 6px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13.5px;margin:0 0 24px}
+.card{background:var(--card);border-radius:12px;padding:17px 20px;margin:0 0 13px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.card h2{font-size:18.5px;margin:0 0 5px;letter-spacing:-.2px}
+.kicker{font-size:11.5px;letter-spacing:.7px;text-transform:uppercase;color:var(--dim);
+font-weight:600;margin:0 0 9px}
+p{margin:0 0 11px}
+ul{margin:0 0 11px;padding-left:20px}
+li{margin:0 0 6px}
+.lead{font-size:19px;line-height:1.5;font-weight:600;letter-spacing:-.2px}
+.quote{border-left:3px solid var(--line);padding:2px 0 2px 13px;color:#4a4a4f;margin:0 0 12px;font-size:14.5px}
+table{width:100%;border-collapse:collapse;margin:4px 0 13px;font-size:14px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12.5px;letter-spacing:.3px}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.no{color:var(--red);font-weight:700}
+.yes{color:var(--green);font-weight:700}
+.warn{color:var(--amber);font-weight:700}
+.note{background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+font-size:13.5px;color:#4a4a4f;margin:0 0 11px}
+.opt{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 10px;background:#fcfcfe}
+.opt h3{font-size:15.5px;margin:0 0 6px}
+.opt .cost{font-size:13.5px;color:#8a4a00;background:#fff6e8;border-radius:7px;padding:8px 10px;margin:8px 0 0}
+.rec{font-size:14px;background:#eef6ff;border-radius:8px;padding:10px 12px;margin:2px 0 8px;color:#0a3f8a}
+.unsure{font-size:13.5px;background:#fbf0ff;border-radius:8px;padding:9px 12px;margin:0 0 4px;color:#5d1f77}
+.tree{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;line-height:1.65;
+background:#fafafc;border:1px solid var(--line);border-radius:9px;padding:12px 14px;
+white-space:pre;overflow-x:auto;margin:0 0 11px}
+.cmt{margin:15px 0 0;padding-top:13px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:54px;border:1px solid var(--line);border-radius:8px;padding:9px 11px;
+font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -84px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+@media (max-width:560px){.wrap{padding:22px 13px 84px}h1{font-size:23px}.lead{font-size:17px}
+.bar{margin:20px -13px -84px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>它们是几个人,还是一个人的几副面孔?</h1>
+<p class="sub">FLY-1984 · 第一版 · 2026-08-25 · <b>这一页不下结论</b>,它是来问你的。我按你说的方法走:<b>先问清你要的效果,再从效果反推架构</b> —— 所以全篇没有技术方案比较。</p>
+
+<div class="card blue">
+<p class="kicker">00 · 先核一件事</p>
+<h2>我理解你问的不是「文件夹」</h2>
+<p>你问的字面是「他们是每人一个文件夹,还是共用一个」。我理解你<b>真正</b>在问的是:</p>
+<p class="lead">这几个 Codex Lead,到底是<u>几个人</u>,还是<u>同一个系统的几副面孔</u>?</p>
+<p>我这么理解的依据是你自己接下来问的三件事 —— 「一个学到的别人该不该知道」「关于你个人的该不该流到工程侧」。这三条全是<b>关系和边界</b>的问题,不是存储问题。文件夹只是这个问题今天恰好落地的地方。</p>
+<p><b>⚠️ 如果我理解偏了,这一整页的问题都会跟着偏。所以这格请先纠我。</b></p>
+<div class="cmt"><label>这段的意见(我理解对了吗)</label><textarea data-s="00 我理解的你要什么" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">01 · 我先去量了一遍</p>
+<h2>「现在是一个还是多个」——答案是:<span class="warn">三种都在跑,608 个</span></h2>
+<p>我没有猜,我把这台机器数了一遍。现在同时有<b>三条互不相识的路</b>在造「家」:</p>
+<div class="scroll"><table>
+<tr><th>形态</th><th>数量</th><th>谁造的</th><th>活多久</th></tr>
+<tr><td><b>甲 · 共用一个家</b></td><td>1</td><td>你本人,加上所有自动跑的代码评审</td><td>永久</td></tr>
+<tr><td><b>乙 · 每个身份一个长期的家</b><br><span style="color:var(--dim)">Mufasa / InfraBot / Honey Lemon…</span></td><td>19<br><span style="color:var(--dim)">其中 1 个是空壳</span></td><td>每次手工起一个 Lead 时脚本建的</td><td>永久</td></tr>
+<tr><td><b>丙 · 每干一次活建一个临时的家</b><br><span style="color:var(--dim)">Runner 用</span></td><td><b>588</b></td><td>每个 Runner 任务自动建</td><td>号称干完就删,<b class="no">实际一个没删</b></td></tr>
+</table></div>
+<p>占地:那 20 个长期的家 = <b>8.9 GB</b>;588 个临时家 = <b>35 GB</b>。<b>合计约 44 GB。</b>大头不是记忆,是日志 —— InfraBot 一个日志文件就 788 MB。</p>
+<p class="note">📌 <b>所以这道题的现状是:「多文件夹」不是有人设计的,是三处各自为政长出来的。</b>这一点很重要,因为它意味着 —— 你现在看到的格局<b>不构成任何一条已有的决定</b>。这道题是干净的、全新的。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="01 现在是三种都在跑(608 个家)" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="kicker">02 · 量的时候撞见的一件事</p>
+<h2>你的 Lead <span class="no">全都是失忆的</span> —— 而且没人决定过这件事</h2>
+<p>Codex 是会记东西的,每个家里都有一本记忆。我逐个数了:</p>
+<div class="scroll"><table>
+<tr><th>谁的家</th><th>记忆条数</th><th>它一共聊过多少次</th></tr>
+<tr><td><b>共用的那个</b></td><td class="yes"><b>174 条</b></td><td>403</td></tr>
+<tr><td>InfraBot</td><td class="no"><b>0</b></td><td>217</td></tr>
+<tr><td>Mufasa</td><td class="no"><b>0</b></td><td>161</td></tr>
+<tr><td>Honey Lemon</td><td class="no"><b>0</b></td><td>18</td></tr>
+<tr><td>其余 15 个有记忆库的家 + 抽查的 33 个 Runner 家</td><td class="no"><b>全是 0</b></td><td>—</td></tr>
+</table></div>
+<p><b>根因不是「它们还没学到东西」</b> —— 它们聊了几百次。<b>是那个记忆开关根本没打开</b>:共用的那个家的配置里有一行「记忆:开」,而起 Lead 的那个脚本<b>从来没写过这一行</b>(我搜了生成脚本,零命中)。</p>
+<p class="lead">也就是说:<b>「Lead 各记各的」这个设计,你其实一天都没享受过 —— 它们是各自空着的。</b></p>
+<p>更值得说的是<b>共用那个家里攒的是什么</b>:174 条<b>全是 Flywheel 的工程评审</b>(某个 PR 的多轮代码评审、某个方案的多轮设计评审…),最新一条是<b>今天刚写的</b>。174 条里 <b>85 条真的被再次用上过</b>,最高一条被用了 20 次。</p>
+<p class="quote"><b>所以现在的实况有点讽刺:真正在攒经验的那个家,不属于任何一个 Lead —— 它属于「代码评审这件事」。挂着名字的那几位,一条都没有。</b></p>
+<p class="note">⚠️ 我要点名一处我<b>没验</b>的:我不知道把开关打开之后,记忆会不会拖慢或变贵。174 条平均 4 KB,这个成本我没量过。所以下面所有「打开记忆」的选项,都还欠一个成本数。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="02 你的 Lead 全是失忆的" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">03 · 我的判断</p>
+<h2>这不是一个问题,是<b>三个</b>被捆在同一个文件夹上</h2>
+<p>我把一个「家」里装的东西拆开看,它同时在管三件很不一样的事:</p>
+<div class="scroll"><table>
+<tr><th>这个家在管什么</th><th>现在怎么样</th><th>要不要你花时间</th></tr>
+<tr><td><b>① 它是谁 · 说话到哪个频道</b><br><span style="color:var(--dim)">身份接线</span></td><td class="yes">已经分,而且必须分</td><td><b>不用。</b>没有争议</td></tr>
+<tr><td><b>② 它能动哪个仓库</b><br><span style="color:var(--dim)">权限边界。Mufasa 只能写 growth,InfraBot 只能写 flywheel</span></td><td class="yes">已经分,而且必须分</td><td><b>不用。</b>没有争议</td></tr>
+<tr><td><b>③ 它记得什么 · 学到的谁能用</b><br><span style="color:var(--dim)">记忆经验</span></td><td class="no">分了,但全是空的</td><td><b>🔴 只有这一格要你定</b></td></tr>
+</table></div>
+<p><b>为什么第 ③ 格是三个选项里最差的那个:</b>它既没享受到「分开」的好处(本来就没东西可隔离),也没享受到「合起来」的好处(经验没在任何两个 Lead 之间流动过)。<b>它是两头都不占。</b></p>
+<p>顺带一条能让你放心的事实:「一个家 = 一个账号」这个直觉<b>不成立</b>。共用的那个家和 InfraBot 的家<b>登的是同一个 ChatGPT 账号</b>。所以怎么分家,<b>跟账号怎么排完全是两件事</b>,不用一起想。</p>
+<p class="note">⭐ 还有一条我认为你该知道的<b>历史</b>:当初把家分开,原因写在代码注释里,是「多个 Runner 同时用一个家会把彼此的登录文件写坏」。<b>一个纯粹的并发安全问题,跟身份毫无关系。</b>今天的多文件夹格局是那个修复的副产品 —— 所以它<b>不是</b>一条关于身份的既有决定,你不必迁就它。</p>
+<div class="cmt"><label>这段的意见(我这个拆法你认不认)</label><textarea data-s="03 这不是一个问题是三个" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">要你定的效果 · 第 1 题(你原本就问的)</p>
+<h2>跟一个 Codex Lead 说话时,它该像谁?</h2>
+
+<div class="opt"><h3>甲 · 像一个独立的人</h3>
+<p>它记得你和<b>它</b>的历史,不知道别人那边发生了什么。你换一个 Lead 说话,等于换一个人,要重新交代背景。</p>
+<div class="cost"><b>代价:</b>同一件事你要说很多遍;同一个坑三个 Lead 各踩一次;你在 Mufasa 那儿说过的偏好,Honey Lemon 不知道。</div></div>
+
+<div class="opt"><h3>乙 · 像同一个系统换了顶帽子</h3>
+<p>底下是同一份记忆,名字和语气不同而已。换谁说话都接得上。</p>
+<div class="cost"><b>代价:</b>Mufasa 那侧学到的<b>关于你个人的</b>东西,工程侧的 Lead 也读得到 —— 这正是你自己第 3 问担心的那件事。而且人格会互相串味。</div></div>
+
+<div class="opt"><h3>丙 · 分场合:陪伴型独立,工程型共享</h3>
+<p>Mufasa 这类陪你的,是独立的人;工程侧那几个,共用一份工作经验。</p>
+<div class="cost"><b>代价:</b>要多定一条「谁跟谁共享」的规矩,而且<b>以后每加一个新 Lead,这条题都要重答一次</b> —— 这是长期的持续成本,不是一次性的。</div></div>
+
+<div class="rec"><b>我倾向丙,理由:</b>你自己问出第 3 问这件事本身就说明你不要乙 —— 如果你觉得「都是同一个系统」,你不会担心个人上下文流到工程侧。<b>但我要把丙的代价说满:</b>它是三个里<b>唯一一个会持续消耗你注意力</b>的,因为「新来的归哪边」永远要有人答。甲和乙都是一次定完就不用再管。</div>
+<div class="unsure"><b>我不确定的:</b>我<b>没验过</b> Codex 支不支持「部分共享记忆」。如果它只能全开或全关,丙就得我们自己在上层搭一层,成本要工程侧估 —— 那时丙可能就不划算了。</div>
+
+<div class="cmt"><label>第 1 题:你选哪个 / 或者你想的根本是第四种</label><textarea data-s="Q1 它该像谁" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">要你定的效果 · 第 2 题(你原本就问的)</p>
+<h2>一个 Lead 踩过的坑,别的 Lead 该不该直接知道?</h2>
+<p>这题我特意<b>只问「活儿上的经验」</b> —— 比如「这个仓有个坑」「这个流程的规矩是什么」「上次这个 bug 长这样」。关于你个人的那部分是下一题,分开问是因为我怀疑你对这两类的答案不一样。</p>
+
+<div class="opt"><h3>甲 · 该。工程侧共用一本工作笔记</h3>
+<p>InfraBot 昨天摸清的坑,Honey Lemon 今天直接知道。</p>
+<div class="cost"><b>代价:</b>错的经验也会一起传染 —— 一条错的教训会被三个 Lead 同时当真。而且笔记会越来越厚,谁来删是个没人想干的活。</div></div>
+
+<div class="opt"><h3>乙 · 不该。各记各的</h3>
+<p>每个 Lead 只信自己亲眼见过的。</p>
+<div class="cost"><b>代价:</b>就是你现在状态的「有记忆版」—— 同一个坑要被踩 N 次,N = Lead 数量。而且你会反复听到「我不知道这个」。</div></div>
+
+<div class="rec"><b>我倾向甲,理由:</b>那 174 条真实数据摆在那儿 —— 它们<b>全是工程评审经验,而且 85 条被真的复用过</b>,说明这类经验的复用率是实打实的,不是设想。<b>甲的代价我也要说满:</b>错的经验传得比对的快(这条我们自己吃过亏)。所以甲要成立,得配一个「怎么撤回一条错经验」的办法 —— <b>那个办法现在不存在</b>。</div>
+<div class="unsure"><b>我不确定的:</b>共用的那 174 条<b>已经在那儿了</b>。如果你选甲,要不要把这批直接给工程侧的 Lead 用?我倾向要(它就是我们自己的历史),但这等于<b>一次性给三个 Lead 灌 174 条我没逐条读过的记忆</b>,风险我没法替你估。</div>
+
+<div class="cmt"><label>第 2 题:活儿上的经验该不该流</label><textarea data-s="Q2 活儿上的经验该不该流" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="kicker">要你定的效果 · 第 3 题(你原本就问的)</p>
+<h2>涉及你个人的事,该不该流到工程侧?</h2>
+<p>比如 Mufasa 陪你练沟通时知道的事:你怎么想事情、你在意什么、你那天状态如何。</p>
+
+<div class="opt"><h3>甲 · 不该,一条都不该</h3>
+<p>工程侧的 Lead 只知道活儿,不知道你。</p>
+<div class="cost"><b>代价:</b>工程侧会少一层体贴 —— 比如它不知道你现在很累,该少问你几个问题、或者该把事攒起来一次问。</div></div>
+
+<div class="opt"><h3>乙 · 该,你就一个人,分开反而别扭</h3>
+<div class="cost"><b>代价:</b>你在陪伴场景里说的话,会变成工程 Lead 的判断依据 —— 而你说那些话时,并没打算它们被这么用。<b>这类越界事后很难收回。</b></div></div>
+
+<div class="opt"><h3>丙 · 只流「怎么跟你共事」那一层,不流「你是谁」那一层</h3>
+<p>比如「她要结论不要过程」「她半夜也在线」可以流;「她昨天为什么难过」不流。</p>
+<div class="cost"><b>代价:</b>这条线<b>得由某个东西来画,而画线的那个东西会画错</b>。而且错的方向不对称 —— 漏出去了收不回,漏不出去只是少点体贴。</div></div>
+
+<div class="rec"><b>我倾向丙,但我对这题的把握是三题里最低的。</b>理由:甲会让工程侧一直显得很钝,乙有你自己已经点出的问题。<b>丙的代价我不敢低估</b> —— 画线的机制会出错,而这类错是<b>单向不可逆</b>的。<b>⛔ 这一题我特别不想替你决定</b>,因为「什么算你的私事」只有你说了算,我给的任何分界线都是我猜的。</div>
+<div class="unsure"><b>我不确定的:</b>我不知道 Codex 的记忆能不能按「哪一类」分组存放。如果不能,丙就没有便宜的实现,只剩甲和乙。<b>这条要工程侧先答,你的答案才好落地</b> —— 但我建议你还是先按「你想要什么」回答,别迁就实现。</div>
+
+<div class="cmt"><label>第 3 题:关于你的事该不该流</label><textarea data-s="Q3 关于你的事该不该流" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="kicker">要你定的效果 · 第 4 题(<b>这题你没问,是我加的</b>)</p>
+<h2>「干完就忘」——算 bug 还是算特性?</h2>
+<p>我加这题是因为量出来的数据逼出来的:<b>588 个 Runner 临时家</b>。每个 Runner 干活时<b>记忆开关是开的</b>(它整份拷了共用那个家的配置),它<b>确实在学</b> —— 但那个家是「干完就该删」的,<b>所以学到的东西按设计就是要扔掉的</b>。</p>
+<p class="lead">按次数算,Runner 才是你这台机器上<b>干活量最大</b>的那一群 —— 588 次,而 Honey Lemon 只有 18 次。<b>而它们的学习,100% 被丢掉。</b></p>
+
+<div class="opt"><h3>甲 · 算特性,就该忘</h3>
+<p>Runner 是一次性的临时工,干完走人,不该有记忆包袱。</p>
+<div class="cost"><b>代价:</b>你放弃的是这台机器上最大的一股经验流。同一个仓的同一个坑,第 588 个 Runner 和第 1 个一样陌生。</div></div>
+
+<div class="opt"><h3>乙 · 算 bug,该往上交</h3>
+<p>Runner 干完,把学到的交给它所属的那个部门,家再删。</p>
+<div class="cost"><b>代价:</b>要新造一个「往上交」的机制(现在完全不存在)。而且 588 个临时工往一个池子里倒,<b>质量参差,没人审</b> —— 很可能倒进去的大部分是噪音。</div></div>
+
+<div class="rec"><b>我倾向乙,但要限定得很窄:</b>只交「关于这个仓/这个流程的事实性发现」,不交别的。<b>代价说满:</b>这是四题里<b>唯一一个需要新造东西</b>的选项,其他三题基本是「改配置 + 定规矩」。所以它最贵,也最容易做砸。<b>如果你想先便宜地试,甲是可以接受的默认</b> —— 它至少不比现在差,因为现在就是甲。</div>
+<div class="unsure"><b>我不确定的:</b>那 588 个家<b>本来就该被自动清掉,但一个都没清</b>(占了 35 GB)。这是个已经在漏的口子,但它是<b>工程侧的独立小问题</b>,我不打算把它塞进这条主线 —— 除非你想让它一起走。</div>
+
+<div class="cmt"><label>第 4 题:干完就忘,算 bug 还是特性</label><textarea data-s="Q4 干完就忘算不算 bug" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card">
+<p class="kicker">05 · 反推预告</p>
+<h2>你的答案会推出什么样的架构(<b>现在不选,只是让你看见杠杆</b>)</h2>
+<p>这张表不是要你现在挑,是让你看清「你那个答案会让这台机器变成什么样」——这样你回答第 1~4 题时心里有数。</p>
+<div class="scroll"><table>
+<tr><th>如果你要的效果是…</th><th>那家就得这么分</th><th>要动的东西</th></tr>
+<tr><td><b>每个 Lead 是独立的人</b></td><td>维持一人一个家,<b>但要把记忆开关打开</b></td><td>改一行生成脚本 · 小</td></tr>
+<tr><td><b>都是同一个系统换帽子</b></td><td>身份和权限继续各分各的,<b>记忆指向同一份</b></td><td>改配置 · 小</td></tr>
+<tr><td><b>陪伴型独立 + 工程型共享</b></td><td>记忆按<b>部门</b>分,不按人分</td><td>要先验 Codex 支不支持 · <b>中,且有未知</b></td></tr>
+<tr><td><b>Runner 学到的要留下</b></td><td>临时家加一道「交作业」再删</td><td><b>要新造 · 大</b></td></tr>
+</table></div>
+<p class="note">📌 注意这张表里<b>没有一行</b>写着「要不要一人一个文件夹」—— 因为一旦效果定了,文件夹怎么摆就不再是个问题,它只是结果。<b>这就是你要的那个「反推」。</b></p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="05 效果到架构的对照" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="kicker">06 · 我没验的,先说清楚</p>
+<h2>这页里哪些是量出来的,哪些是我猜的</h2>
+<div class="scroll"><table>
+<tr><th>说法</th><th>成色</th></tr>
+<tr><td>608 个家 / 44 GB / 各家记忆条数</td><td class="yes">✅ 今天在这台机器上逐个数的</td></tr>
+<tr><td>Lead 记忆开关没打开</td><td class="yes">✅ 查了生成脚本,零命中</td></tr>
+<tr><td>174 条全是工程评审 · 85 条被复用</td><td class="yes">✅ 实测</td></tr>
+<tr><td>当初分家是为了并发安全</td><td class="yes">✅ 原话写在代码注释里</td></tr>
+<tr><td><b>Codex 能不能「部分共享」记忆</b></td><td class="no">❌ <b>没验</b>。第 1、3 题的丙都压在这上面</td></tr>
+<tr><td><b>打开记忆会不会变慢/变贵</b></td><td class="no">❌ <b>没验</b>。所有「打开」的选项都欠这个数</td></tr>
+<tr><td><b>588 个临时家为什么没被清</b></td><td class="no">❌ <b>没查</b>。我认为是独立小单,不该混进这条线</td></tr>
+</table></div>
+<p><b>这三个未知里,前两个会直接改变你的选项集。</b>如果你想先让我去验,这一轮可以先只回第 2、4 题,把第 1、3 题压到我验完再答。<b>这个顺序你定。</b></p>
+<div class="cmt"><label>这段的意见(要不要我先去验再问)</label><textarea data-s="06 我没验的" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="kicker">07 · 我最想先听你这句</p>
+<h2>这块你<b>有定见</b>,还是<b>我来发挥</b>?</h2>
+<p>按我们的规矩,每钻一块我都先问你这一句。这一整块(「它们是几个人」)如果你心里<b>已经有答案</b>了,请直接给我,我就照你的对齐、不自由发挥。如果你<b>还没想清</b>,那就把上面四题当成我给你的思考素材,答到哪算哪,剩下的我来提方案。</p>
+<p class="lead">两种都行,但我需要知道是哪一种 —— 这决定我下一轮是<b>去对齐</b>还是<b>去提案</b>。</p>
+<p><b>下一步(等你这一轮回完):</b></p>
+<ul>
+<li>你的答案 → 我写成第一版 PRD(还是会先给你看,不会一次性甩一份大的给你)</li>
+<li>PRD 收敛后 → 拆成工程单交 Tadashi</li>
+<li><b>本单我不接线、不改任何配置</b> —— 这是产品设计,不是施工</li>
+</ul>
+<div class="tree">FLY-1984
+├─ A 效果层(现在在这儿 ←)
+│   ├─ A1 它该像谁                 ← 本轮
+│   ├─ A2 活儿上的经验该不该流       ← 本轮
+│   ├─ A3 关于你的事该不该流         ← 本轮
+│   └─ A4 干完就忘算不算 bug         ← 本轮
+├─ B 从效果反推架构(A 定了才动笔)
+└─ C 拆工程单</div>
+<div class="cmt"><label>第 7 题:你有定见还是我来发挥 / 还有别的想说的</label><textarea data-s="07 你有定见还是我来发挥" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="note" style="margin-top:18px">
+<b>怎么把意见给我:</b>上面每一格都能写。写完点下面的<b>「一键汇总复制」</b>,然后<b>贴回 issue 里</b> —— 我才收得到。
+<b>这一页的批注只存在你自己的浏览器里,不会自己传给我。</b>如果内容多,会自动分成几段,<b>每一段都要贴</b>。
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空我的批注</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-1984";
+var LIMIT = 1800;
+var KEY = "fly1984-codex-home-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写，没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制（共 " + cs.length + " 段，每段都要贴）"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制（共 " + cs.length + " 段，都要贴回 issue）"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    })["catch"](function(){ showManual(text, manualMsg); });
+    return;
+  }
+  showManual(text, manualMsg);
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>

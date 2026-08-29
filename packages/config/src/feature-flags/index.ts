@@ -1,6 +1,5 @@
 export type { DirectToggleMetadata } from "./direct-toggle.js";
 export { isDirectToggleMetadata } from "./direct-toggle.js";
-export { mailboxQueueEnabled } from "./mailbox-queue.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,
@@ -55,7 +54,6 @@ export {
 	getStoreEligibility,
 	LEGACY_UNMANAGED_BASELINE,
 	PROJECT_STORE_MANAGED_FLAGS,
-	PROTECTED_LEGACY_FLAG_NAMES,
 	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,
 	validateFlagAuthoringPolicy,

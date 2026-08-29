@@ -658,8 +658,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			preExistingSession?.pr_head_sha?.trim() ||
 			(result.evidence?.headSha as string | undefined)?.trim();
 		// Always route through the shared ship predicate. A missing/empty head fails
-		// closed while FLYWHEEL_MERGE_APPROVAL_GATE is armed; disabling that
-		// higher-level gate still bypasses verifyApproval (FLY-1981 leaves it intact).
+		// closed, and every merged landing must pass verifyApproval.
 		const desDecision = desMergedLanding
 			? await computeAuthoritativeShipDecision(
 					this.store,

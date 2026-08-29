@@ -497,7 +497,6 @@ describe("FLY-605 GatePoller founder-thread fallback (Part A)", () => {
 
 describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
 	afterEach(() => {
-		delete process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS;
 		vi.restoreAllMocks();
 	});
 
@@ -530,11 +529,11 @@ describe("FLY-1041 Chunk 6: ship-gate card promotion (15s grace)", () => {
 		expect(fetchImpl).not.toHaveBeenCalled();
 	});
 
-	it("FLYWHEEL_SHIP_GATE_CARD_GRACE_MS env override wins over the default", async () => {
-		process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS = "60000";
+	it("keeps the explicit card-grace test seam", async () => {
 		const fetchImpl = vi.fn(async () => new Response(null, { status: 200 }));
 		const poller = makePoller({
 			fetchImpl: fetchImpl as unknown as typeof fetch,
+			shipGateCardGraceMs: 60_000,
 		});
 		await fallback(
 			poller,

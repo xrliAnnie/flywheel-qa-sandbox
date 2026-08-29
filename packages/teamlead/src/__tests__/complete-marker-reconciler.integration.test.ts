@@ -130,7 +130,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		originalCompleteMarkerDir = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
 		// FLY-869: bypass the merge-approval gate — these tests exercise marker
 		// replay parity. QA exemptions are modeled durably per test when needed.
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0"; // retired input is ignored
 		tmp = mkdtempSync(join(tmpdir(), "fly172-int-"));
 		store = await StateStore.create(join(tmp, "teamlead.db"));
@@ -162,7 +161,6 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		} else {
 			process.env.FLYWHEEL_COMPLETE_MARKER_DIR = originalCompleteMarkerDir;
 		}
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -222,7 +220,7 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		expect(readdirSync(markerDir)).not.toContain("execLegacy.json");
 	});
 
-	it("auto_approve + merged → completed through real FSM", async () => {
+	it("auto_approve + merged without approval → durable merge block", async () => {
 		await startRunning("execB", "iss-execB");
 		setHistoricalQaRequiredSnapshot(store, {
 			executionId: "execB",
@@ -232,8 +230,8 @@ describe("FLY-172 marker replay → real /events route (parity)", () => {
 		writeMarker("execB", "auto_approve", true);
 
 		const r = await tryReconcileComplete("execB", deps());
-		expect(r.kind).toBe("reconciled");
-		expect(store.getSession("execB")!.status).toBe("completed");
+		expect(r.kind).toBe("settled_merge_block");
+		expect(store.getSession("execB")!.status).toBe("running");
 	});
 
 	it("blocked → blocked through real FSM", async () => {

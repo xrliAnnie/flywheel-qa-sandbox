@@ -98,10 +98,10 @@ describe("feature-flag drift guard", () => {
 		).toEqual([]);
 	});
 
-	it("finds known direct, helper, MJS, and shell gates", () => {
+	it("finds known surviving env gates", () => {
 		const found = new Set(scan.rawCodeHits.map((hit) => hit.name));
-		expect(found.has("FLYWHEEL_MERGE_APPROVAL_GATE")).toBe(true);
 		expect(found.has("FLYWHEEL_CMUX_REOPEN_SWEEP")).toBe(true);
+		expect(found.has("FLYWHEEL_SKILL_FRAMEWORK_MODE")).toBe(true);
 	});
 
 	// FLY-1852: the registry-wide pass lives in validateDeclaredReadSites() so
@@ -466,10 +466,7 @@ describe("feature-flag drift guard", () => {
 					.filter((site) => site.pattern === "dynamic")
 					.map((site) => `${flag.name}:${site.symbol}`),
 			),
-		).toEqual([
-			"mailbox_queue:resolveLiveMailboxQueueEnabled",
-			"merge_approval_gate_killswitch:resolveDefaultOnGate",
-		]);
+		).toEqual([]);
 	});
 
 	it("enforces registry-or-reasoned-accounting for every env/config boolean", () => {

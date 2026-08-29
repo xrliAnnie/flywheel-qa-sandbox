@@ -40,7 +40,7 @@ const PROJECT_FLAG = {
 describe("feature-flag renderer (Apple cards, read-only)", () => {
 	it("renders every flag as cards, grouped by category", () => {
 		const html = renderFeatureFlagsHtml(FLAGS);
-		expect(html).toContain("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR");
+		expect(html).toContain("FLYWHEEL_LOOP_PROFILER");
 		expect(html).not.toContain("FLYWHEEL_FOUNDER_CONSENT_DECISION_MODE");
 		expect(html).toContain("doc_flow.enabled");
 		// card structure with left-border category classes (html-report-style)
@@ -57,7 +57,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 
 	it("console mode gives direct flags a toggle button (never governance/project)", () => {
 		const html = renderFeatureFlagsHtml(FLAGS, "console");
-		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
+		expect(html).toContain('data-ff-name="loop_profiler"');
 		expect(html).toContain("data-ff-apply");
 		// governance gate + project flag never get a control
 		expect(html).not.toContain('data-ff-name="founder_consent_decision_mode"');
@@ -66,7 +66,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 
 	it("phone mode gives direct flags a checkbox (for the copy-paste command)", () => {
 		const html = renderFeatureFlagsHtml(FLAGS, "phone");
-		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
+		expect(html).toContain('data-ff-name="loop_profiler"');
 		expect(html).toContain("data-ff-toggle");
 		expect(html).toContain('type="checkbox"');
 	});
@@ -153,9 +153,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 	});
 
 	it("effect label maps timing → 生效路径", () => {
-		const direct = FLAGS.find(
-			(f) => f.name === "founder_review_orphan_monitor",
-		);
+		const direct = FLAGS.find((f) => f.name === "loop_profiler");
 		if (!direct) throw new Error("missing");
 		expect(effectLabel(direct)).toBe("热生效");
 		expect(
@@ -178,7 +176,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		"renders %s explicitly with both observations and no directional control",
 		(divergence, message) => {
 			const flag = FLAGS.find(
-				(candidate) => candidate.name === "founder_review_orphan_monitor",
+				(candidate) => candidate.name === "loop_profiler",
 			);
 			if (!flag) throw new Error("missing flag");
 			const html = renderFlagCard(
@@ -222,17 +220,17 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 
 	it("renders a bridge-global malformed value as a visible error, not blank", () => {
 		const html = renderFlagCard({
-			name: "issue_gate_supersede_mode",
+			name: "enum_fixture",
 			category: "governance_gate",
 			description: "issue gate supersede mode",
 			toggleable: "readonly",
 			valueKind: "enum",
 			scope: "bridge_global",
 			source: "env",
-			envVar: "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
+			envVar: "FLYWHEEL_ENUM_FIXTURE",
 			readTimings: ["call_time"],
 			default: "enforce",
-			error: "invalid FLYWHEEL_ISSUE_GATE_SUPERSEDE: bogus",
+			error: "invalid FLYWHEEL_ENUM_FIXTURE: bogus",
 		});
 		expect(html).toContain("ff-err");
 		expect(html).toContain("bogus");
@@ -256,7 +254,7 @@ describe("renderFlagReport (phone, read-only)", () => {
 	});
 
 	it("includes all flags", () => {
-		expect(html).toContain("FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR");
+		expect(html).toContain("FLYWHEEL_LOOP_PROFILER");
 		expect(html).toContain("doc_flow.enabled");
 		expect(html).not.toContain("DAG 控制");
 	});
@@ -290,7 +288,7 @@ describe("renderFlagReport interactive=true (phone copy-paste)", () => {
 	});
 
 	it("only lists direct-toggleable flags as controls", () => {
-		expect(html).toContain('data-ff-name="founder_review_orphan_monitor"');
+		expect(html).toContain('data-ff-name="loop_profiler"');
 		expect(html).not.toContain('data-ff-name="founder_consent_decision_mode"');
 		expect(html).not.toContain('data-ff-name="doc_flow"');
 	});

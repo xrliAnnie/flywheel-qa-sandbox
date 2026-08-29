@@ -2495,9 +2495,9 @@ if [ "$INBOX_MCP_ENABLED" = "true" ]; then
   CLAUDE_ARGS+=("server:flywheel-inbox")
   log "Channels: Discord plugin + inbox server (dev channel)"
 
-  # FLY-109: Tell the Lead model how + when to call flywheel_inbox_ack. The file
+	# Tell the Lead model how + when to acknowledge inbox batches. The file
   # ships in scripts/ so it's always present when this launcher runs; no external
-  # sync required. Only loaded when inbox-mcp is enabled — the tool doesn't exist
+	# sync required. Only loaded when inbox-mcp is enabled — the tools don't exist
   # otherwise.
   INBOX_ACK_RULE="${SCRIPT_DIR}/inbox-ack-rule.md"
   if [ -f "$INBOX_ACK_RULE" ] && [ -r "$INBOX_ACK_RULE" ]; then

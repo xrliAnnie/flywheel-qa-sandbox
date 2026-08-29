@@ -620,41 +620,13 @@ describe("resolveDoneThreadReconcileConfig (FLY-1165)", () => {
 		).toBe(true);
 	});
 
-	it("interval: 0 → boot-only; junk / negative → default", () => {
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "0",
-			}).intervalMin,
-		).toBe(0);
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "90",
-			}).intervalMin,
-		).toBe(90);
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "junk",
-			}).intervalMin,
-		).toBe(360);
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN: "-5",
-			}).intervalMin,
-		).toBe(360);
+	it("uses the fixed six-hour interval", () => {
+		expect(resolveDoneThreadReconcileConfig({}).intervalMin).toBe(360);
 	});
 
-	it("keeps production dry-run disabled and parses MAX_PER_RUN", () => {
+	it("keeps production dry-run disabled and caps each run at 25", () => {
 		expect(resolveDoneThreadReconcileConfig({}).dryRun).toBe(false);
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN: "7",
-			}).maxArchivesPerRun,
-		).toBe(7);
-		expect(
-			resolveDoneThreadReconcileConfig({
-				FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN: "junk",
-			}).maxArchivesPerRun,
-		).toBe(25);
+		expect(resolveDoneThreadReconcileConfig({}).maxArchivesPerRun).toBe(25);
 	});
 });
 

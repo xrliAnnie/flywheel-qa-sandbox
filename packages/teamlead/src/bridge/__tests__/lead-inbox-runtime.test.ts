@@ -500,8 +500,7 @@ describe("LeadInboxRuntime", () => {
 		);
 	});
 
-	it("forwards terminal transport exhaustion before a queue-OFF row dies", async () => {
-		vi.stubEnv("FLYWHEEL_MAILBOX_QUEUE", "0");
+	it("forwards terminal transport exhaustion before a row dies", async () => {
 		vi.stubEnv("FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX", "1");
 		const root = mkdtempSync(join(tmpdir(), "fly1750-runtime-exhausted-"));
 		const dbPath = join(root, "project-a.db");

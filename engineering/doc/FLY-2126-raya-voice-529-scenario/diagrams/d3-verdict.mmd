@@ -1,0 +1,13 @@
+flowchart TB
+  S["一场判据会话结束"] --> ELIG{"本场证据齐全?<br/>交互场:有转写 · 有回答 · 有下行声音<br/>静默场:进程/连接全窗存活回执齐"}
+  ELIG -->|"缺任何一腿"| IF["INSTRUMENT_FAIL<br/>= 仪器/采集问题"]
+  IF --> RETRY{"重跑预算还有?<br/>(默认 1 次)"}
+  RETRY -->|"有"| RERUN["重跑本场<br/>(两次尝试都留档)"]
+  RETRY -->|"没了"| IFINAL["记 INSTRUMENT_FAIL<br/>不计入语义门"]
+  ELIG -->|"三腿齐"| J{"判据通过?"}
+  J -->|"过"| P["PASS"]
+  J -->|"不过"| F["FAIL<br/>⛔ 永不重跑<br/>(重跑洗绿是禁手)"]
+  style P fill:#e8f5e9,stroke:#34c759
+  style F fill:#ffebee,stroke:#ff3b30
+  style IF fill:#fff3e0,stroke:#ff9500
+  style IFINAL fill:#fff3e0,stroke:#ff9500

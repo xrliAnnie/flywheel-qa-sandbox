@@ -1,0 +1,16 @@
+flowchart TB
+  TICK["Bridge 投递循环<br/>(每个 tick)"] --> Q{"queueConfig.enabled?<br/>(读 FLYWHEEL_MAILBOX_QUEUE)"}
+  Q -->|"=1 / 缺省(实际一直走这条)"| NEW["FLY-1573 批量队列投递<br/>租约重投 + 合批 + 死信闸"]
+  Q -->|"=0(从没被走过)"| OLD["FLY-1572 旧单条投递流"]
+  OLD -.-> OLDIN["inbox-mcp 旧 push 路<br/>processPendingDeliveries"]
+  BARRIER["deploy barrier 子系统<br/>(部署窗口把 flag 压 0 再恢复:<br/>TS 模块 + CLI + shell lib +<br/>restart-services 编排段)"] -.唯一存在目的.- Q
+  NEW --> KEEP["✅ 保留:成为唯一路径"]
+  Q --> DEL1["❌ 删:判断本身"]
+  OLD --> DEL2["❌ 删:旧路整条"]
+  OLDIN --> DEL3["❌ 删"]
+  BARRIER --> DEL4["❌ 删:整个子系统"]
+  style KEEP fill:#e8f5e9,stroke:#34c759
+  style DEL1 fill:#fdecea,stroke:#ff3b30
+  style DEL2 fill:#fdecea,stroke:#ff3b30
+  style DEL3 fill:#fdecea,stroke:#ff3b30
+  style DEL4 fill:#fdecea,stroke:#ff3b30

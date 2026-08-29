@@ -1,0 +1,475 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>门开着,只是没人往里搬 — FLY-1984</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.5;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto;padding:30px 18px 96px}
+h1{font-size:25px;line-height:1.3;margin:0 0 4px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13px;margin:0 0 22px}
+.card{background:var(--card);border-radius:12px;padding:18px 20px;margin:0 0 14px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.n{font-size:11.5px;letter-spacing:.6px;color:var(--dim);font-weight:700;margin:0 0 4px}
+.card h2{font-size:18px;margin:0 0 12px;letter-spacing:-.2px;line-height:1.35}
+p{margin:0 0 9px}
+.ans{font-size:26px;font-weight:800;letter-spacing:-.6px;line-height:1.25;margin:2px 0 8px}
+.big{font-size:17px;font-weight:700;letter-spacing:-.2px;line-height:1.45}
+.dimtxt{color:var(--dim);font-size:13px}
+a{color:var(--blue)}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:13px;background:#f0f0f4;
+padding:1px 5px;border-radius:4px}
+
+.q{font-size:14.5px;font-weight:700;margin:0 0 4px}
+.qa{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 9px;background:#fcfcfe}
+.qa .a{font-size:14px;line-height:1.5}
+.qa.warn{border-color:#f0d9b0;background:#fffaf2}
+.qa.hers{border-color:#cfe0f5;background:#f6faff}
+.qa .youasked{font-size:11.5px;font-weight:800;letter-spacing:.5px;color:#0a53c4;margin:0 0 4px}
+
+.prem{display:grid;grid-template-columns:1fr 34px 1fr;align-items:stretch;gap:0;margin:2px 0 12px}
+.prem .bx{border:2px solid var(--line);border-radius:10px;padding:12px 14px;background:#fcfcfe;
+font-size:14px;line-height:1.45}
+.prem .bx b:first-child{display:block;font-size:14.5px;margin-bottom:4px}
+.prem .mid{display:flex;align-items:center;justify-content:center;color:var(--dim);
+font-size:19px;font-weight:700}
+.prem .bx.old{border-color:#e0e0e6;color:var(--dim);background:#fafafa}
+.prem .bx.new{border-color:var(--green);background:#f4fcf6}
+
+.treewrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:2px 0 12px}
+.tree{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12.8px;line-height:1.95;
+background:#fbfbfd;border:1px solid var(--line);border-radius:10px;padding:14px 16px;
+white-space:pre;min-width:640px}
+.tree .k{color:var(--dim)}
+.tree .lbl{font-weight:700;color:var(--ink)}
+.tree .in{color:#1a7f37;font-weight:700}
+.tree .out{color:#c1271d;font-weight:700}
+.tree .note{color:var(--dim)}
+.tree .hdr{font-weight:800;color:var(--ink)}
+
+/* 3-step positive */
+.steps{display:grid;grid-template-columns:1fr 30px 1fr 30px 1fr;align-items:stretch;margin:2px 0 12px}
+.steps .s{border:2px solid var(--line);border-radius:10px;padding:12px 13px;background:#fcfcfe;
+text-align:center;font-size:14px;line-height:1.45}
+.steps .s b:first-child{display:block;font-size:15px;margin-bottom:4px}
+.steps .s.a{border-color:var(--green);background:#f4fcf6}
+.steps .s.b{border-color:#e0e0e6;background:#fafafa}
+.steps .s.c{border-color:var(--blue);background:#f5faff}
+.steps .ar{display:flex;align-items:center;justify-content:center;color:var(--dim);
+font-size:18px;font-weight:700}
+
+/* two halves */
+.halves{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin:2px 0 12px}
+.hf{border:2px solid var(--line);border-radius:11px;padding:13px 14px;background:#fcfcfe}
+.hf.repo{border-color:var(--green);background:#f4fcf6}
+.hf.tool{border-color:var(--amber);background:#fffaf2}
+.hf .hh{font-weight:800;font-size:15px;margin-bottom:1px}
+.hf .hs{font-size:12px;color:var(--dim);margin-bottom:8px}
+.hf .hb{font-size:13.5px;line-height:1.65}
+.hf .hb b{font-size:14px}
+.hf .badge{display:inline-block;font-size:11.5px;font-weight:800;padding:2px 8px;
+border-radius:20px;margin-top:7px}
+.hf.repo .badge{background:#dff5e5;color:#1a7f37}
+.hf.tool .badge{background:#ffe0dc;color:#c1271d}
+
+.mx{width:100%;border-collapse:collapse;margin:2px 0 12px;font-size:14.5px}
+.mx th,.mx td{padding:10px 11px;border-bottom:1px solid var(--line);text-align:left}
+.mx th{font-size:12.5px;color:var(--dim);font-weight:700}
+.mx td:first-child{font-weight:700}
+.scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+.g{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:0 0 9px;background:#fcfcfe}
+.g.yes{border-color:var(--green);background:#f4fcf6}
+.g.no{border-color:var(--red);background:#fff5f4}
+.g.half{border-color:var(--amber);background:#fffaf2}
+.g .gq{font-size:14.5px;font-weight:700;margin:0 0 5px}
+.g .gv{font-size:12px;font-weight:800;letter-spacing:.5px;padding:2px 9px;border-radius:20px;
+display:inline-block;margin:0 0 6px}
+.g.yes .gv{background:#dff5e5;color:#1a7f37}
+.g.no .gv{background:#ffe0dc;color:#c1271d}
+.g.half .gv{background:#ffeccc;color:#9a5b00}
+.g .ga{font-size:14px;line-height:1.5}
+
+.good{background:#f1fbf3;border:1px solid #cdeed6;border-radius:9px;padding:11px 13px;
+font-size:13.5px;color:#1a5c30;margin:0 0 10px}
+.trap{background:#fff6e8;border:1px solid #f0d9b0;border-radius:9px;padding:11px 13px;
+font-size:13.5px;color:#7a4a00;margin:0 0 10px}
+.fact{background:#fafafc;border:1px solid var(--line);border-radius:9px;
+padding:11px 13px;font-size:13px;color:#4a4a4f;margin:0 0 10px}
+.fact b{color:var(--ink)}
+.unk{background:#fbf6ff;border-radius:8px;padding:9px 12px;font-size:12.5px;
+color:#5d1f77;margin:0 0 8px}
+.cmt{margin:14px 0 0;padding-top:12px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;
+padding:9px 11px;font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -90px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+@media (max-width:640px){
+.wrap{padding:22px 13px 90px}h1{font-size:21px}.ans{font-size:22px}
+.prem{grid-template-columns:1fr;gap:8px}.prem .mid{transform:rotate(90deg)}
+.halves{grid-template-columns:1fr}
+.steps{grid-template-columns:1fr;gap:8px}.steps .ar{transform:rotate(90deg)}
+.bar{margin:20px -13px -90px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>门是开着的,只是从来没人往里搬</h1>
+<p class="sub">FLY-1984 · 第五版 · <b>你这一轮的三个追问都在里面,标着「你问的」</b> · 上一版有一处我写反了方向,在 ④ 已改正 · 每节都能直接留言 · <b>每个数字后面标着它是哪天数出来的</b></p>
+
+<div class="card green">
+<p class="n">① 先正面回答你最早那句</p>
+<h2>「到底是每个人一个文件夹,还是共用一个?」</h2>
+<p class="ans">一人一个。</p>
+<p>这不是我推的,是<b>你已经定了</b>:「他们是好几个人,不是一个系统的几副面孔。」</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="① 一人一个" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="n">② 你之前问的三件事</p>
+<h2>直接答,不绕</h2>
+<div class="qa">
+<p class="q">「那些临时的家,你删掉了吗?」</p>
+<p class="a"><b>没有。588 个还在,占 35 GB(8-25 测)。</b>这件事另有单在跟(FLY-1893),不归这一题。</p>
+</div>
+<div class="qa">
+<p class="q">「为什么 Honeylemon 列在这里?Honeylemon 不是 Claude Code 吗?」</p>
+<p class="a"><b>你猜对了,那不是 Claude Code 的 Honey Lemon。</b>那个文件夹第一行逐字写着
+「FLY-1911 语音分身(Honey Lemon 的会议室分身)」—— 是<b>语音测试那个东西</b>,只是沿用了同一个名字。</p>
+</div>
+<div class="qa warn">
+<p class="q">「记忆开关是 Codex 里的设置吗?只要我们打开就可以了吗?」</p>
+<p class="a"><b>是 Codex 的设置</b> —— 配置文件里一行 <code>memories = true</code>,加上就开。<br>
+<b>但「打开就可以」这句我不敢说</b>,我没量过打开之后会不会变慢或变贵。
+⇒ 我能说的是「加一行就开」,不能说「加一行就好」。</p>
+</div>
+<div class="cmt"><label>这三个答案的意见</label><textarea data-s="② 三个提问的答案" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="n">③ 前提先纠一下</p>
+<h2>「为什么 Lead 的保留了、runner 的没保留?」</h2>
+<div class="prem">
+  <div class="bx old"><b>这个问法</b>Lead 的留下来了<br>runner 的丢了</div>
+  <div class="mid">→</div>
+  <div class="bx new"><b>实际是</b>两边都留着<br>只是 runner 那份认不出是谁写的</div>
+</div>
+<p class="big">runner 的经验<u>一直在攒</u> ——<br>只是它攒在一个<b>不分角色</b>的大格子里。</p>
+<p class="dimtxt">证据:flywheel 那一格现在 466 条、过去 7 天动了 112 条(均 8-27 测);其中 107 个文件提到最近的 FLY 单号(<b>8-25 测,今日复不出同口径</b>)—— 都是节点写的。</p>
+<div class="cmt"><label>这个纠正你认不认</label><textarea data-s="③ 两边都留着,只是认不出" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="n">④ 你问的 · 上一版我说反了,这里改正</p>
+<h2>「就是把这两个文件夹加到 .gitignore,是这个意思吗?」</h2>
+<p class="big" style="color:#c1271d">不是。<u>正好相反。</u></p>
+<div class="steps">
+  <div class="s a"><b>门是开着的</b>那个仓的忽略清单里<br>特意留了口子给 memory</div>
+  <div class="ar">→</div>
+  <div class="s b"><b>但没人往里搬</b>两个多月<br><b>零次</b> git add</div>
+  <div class="ar">→</div>
+  <div class="s c"><b>所以缺的是</b>「<b>开始搬</b>」<br>不是「开门」</div>
+</div>
+<p><b>⚠️ 这是我上一版没写清楚的。</b>我当时写的是「没进去」加「不是被挡在外面的」——
+<b>用两个否定去解释一件事,结果只有「没进去」被记住了。</b>这一版正着写。</p>
+<div class="treewrap"><div class="tree"><span class="hdr">这台 Mac</span> <span class="note">(下面的条数均 8-27 测)</span>
+<span class="k">│</span>
+<span class="k">├──</span> <span class="lbl">~/Dev/flywheel</span> <span class="k">·············</span> <span class="lbl">代码</span>          <span class="in">✅ 进 GitHub</span>  <span class="note">每次 PR 都推</span>
+<span class="k">│    └──</span> <span class="lbl">flywheel-FLY-xxxx/</span> <span class="k">····</span> <span class="lbl">临时工作层</span>    <span class="in">✅ 代码进</span>     <span class="note">记忆本来就不放这儿</span>
+<span class="k">│</span>
+<span class="k">└──</span> <span class="lbl">~/.claude</span> <span class="k">··················</span> <span class="note">这本身也是一个 git 仓,而且有远端</span>
+     <span class="k">├──</span> <span class="lbl">skills / rules / agents</span> <span class="k">··</span> <span class="lbl">配置</span>          <span class="in">✅ 进了</span>       <span class="note">但停在 6/12</span>
+     <span class="k">├──</span> <span class="lbl">agent-memory/&lt;谁&gt;/</span> <span class="k">·······</span> <span class="lbl">Lead 记忆</span>     <span class="out">门开着,还没搬</span>  <span class="note">1033 个文件 · 28 MB</span>
+     <span class="k">└──</span> <span class="lbl">projects/&lt;哪个仓&gt;/memory/</span> <span class="k">·</span> <span class="lbl">节点记忆</span>      <span class="out">门开着,还没搬</span>  <span class="note">flywheel 那 466 条</span>
+</div></div>
+<p class="fact">那个远端仓就是 <a href="https://github.com/xrliAnnie/claude-config">github.com/xrliAnnie/claude-config</a> —— 你要的链接。</p>
+<div class="cmt"><label>这一格现在说清楚了吗</label><textarea data-s="④ 门开着但没人搬(上版说反了)" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="n">⑤ 你问的(这一版按你说的重画了)</p>
+<h2>「找一个实际的 Lead 和一个实际的 IC,把 memory 的路径画给我看」</h2>
+<p><b>先给结论,再看树:两边都有记忆,但【按什么分家】不一样。</b></p>
+<div class="prem">
+  <div class="bx old"><b>Lead 按【名字】分家</b>叫什么名字,就有一个用这个名字命名的文件夹。<br>换一个 Lead = 换一份记忆。</div>
+  <div class="mid">≠</div>
+  <div class="bx new"><b>IC 按【项目】分家</b>在哪个项目干活,就用哪个项目的文件夹。<br>换一个 IC = <u>还是那一份</u>。</div>
+</div>
+
+<div class="treewrap"><div class="tree"><span class="hdr">实例 A · Lead = Honey Lemon(你天天说话的这个)</span> <span class="note">(条数 8-27 测)</span>
+<span class="k">│</span>
+<span class="k">├──</span> 她干活的地方  <span class="lbl">~/.flywheel/lead-workspace/flywheel-product-lead/</span>
+<span class="k">│</span>
+<span class="k">└──</span> 她的记忆      <span class="lbl">~/.claude/agent-memory/flywheel-product-lead/</span>  <span class="in">88 条</span>
+<span class="k">      ├──</span> MEMORY.md                      <span class="note">索引</span>
+<span class="k">      ├──</span> feedback-delete-dont-add.md    <span class="note">今天 05:38 刚写的,是活的</span>
+<span class="k">      └──</span> <span class="note">…另外 86 个</span>
+
+   <span class="note">全机 12 个 Lead = 12 个这样的文件夹,名字各是各的,而且全都非空:</span>
+   <span class="k">├──</span> <span class="lbl">agent-memory/flywheel-eng-lead/</span>   <span class="note">Tadashi,481 条 —— 跟她互不相通</span>
+   <span class="k">├──</span> <span class="lbl">agent-memory/sub-lead/</span>           <span class="note">118 条</span>
+   <span class="k">└──</span> <span class="note">…共 1033 个文件 · 28 MB</span>
+</div></div>
+
+<div class="treewrap"><div class="tree"><span class="hdr">实例 B · IC = 正在写这一页的这个 runner(就是我)</span> <span class="note">(条数 8-27 测)</span>
+<span class="k">│</span>
+<span class="k">├──</span> 我干活的地方  <span class="lbl">~/Dev/flywheel-FLY-1984/</span>  <span class="note">这一单专用的临时工作层</span>
+<span class="k">│</span>
+<span class="k">├──</span> 我的对话记录  <span class="lbl">~/.claude/projects/-Users-xiaorongli-Dev-flywheel-FLY-1984/</span>
+<span class="k">│       └──</span> cc13efe0-….jsonl
+<span class="k">│       </span><span class="out">这个文件夹里没有 memory/ —— 你「看不出来」的地方,就是这儿</span>
+<span class="k">│</span>
+<span class="k">└──</span> 那我实际拿到的记忆在哪?<span class="out">在一个不属于我的文件夹里 ↓</span>
+<span class="k">        </span><span class="lbl">~/.claude/projects/-Users-xiaorongli-Dev-flywheel/memory/</span>  <span class="in">466 个文件</span>
+<span class="k">                                            </span><span class="out">^^^^^^^^^^^^^ 主仓,不是 FLY-1984</span>
+<span class="k">        </span><span class="out">而且自动送到我眼前的只有那份【目录索引】,466 个文件的正文我要自己去翻</span>
+</div></div>
+
+<p class="big">所以 IC 的那份记忆<u>不是「这个 IC 的」,是「这个项目的」</u>。<br>
+<u>而且我数完之后,答案比这句还要更空一层 ——</u></p>
+<div class="fact">⚠️ <b>我先前跟你说「今天在跑的几个 runner 都拿到了这份记忆」—— 那句话是错的,我把它改过来。</b><br>
+我当时只看到「那个路径在它们的记录里出现过」,就当成「它们拿到了」。<b>这是两件事。</b><br>
+把它们的记录逐个翻开,那些出现其实是:① onboarding 文档在<b>告诉</b>它路径 ② 一条文件变更提醒。<br>
+<b>没有一次是记忆真的被送到它眼前。</b><br><br>
+于是我把范围放到最大,重新数了一遍:<br>
+<b>822</b> 个 runner 干活的会话里,提到过那个路径的 <b>461</b> 个,
+<b>而记忆真正被自动送到眼前的,只有 1 个 —— 就是正在写这一页的我。</b><br>
+再放大到这台机器上的<b>所有</b>会话:一共只有 <b>2</b> 个,我 + Honey Lemon 现在这个会话。<br>
+<b>你自己在 ~/Dev/flywheel 里跑过的 1081 个会话:0 个。</b><br>
+<span class="dimtxt">(822 / 461 / 1 / 2 / 0 均为 8-27 实测;采样口径 = 会话记录,不是盘上文件。另有同期对照:今天起的另外两个 runner 也是 0,所以不是「旧记录看不出来」。)</span></div>
+<div class="fact">而这台机器上有 <b>231 个</b> FLY-xxxx 工作层文件夹,其中带 memory 的只有 3 个(8-27 测),<b>那 3 个里一条记忆都没有</b>。<br>
+⇒ 一个 IC 干完活,它学到的东西不会留在「它自己」名下 —— 因为它<b>没有「自己」这一格</b>。</div>
+
+<div class="trap">⚠️ <b>还有第三个地方,你哪天翻到会以为是坏了:</b><code>~/.flywheel/memories/</code> 底下四个空文件夹。
+那是 Bridge 上一个记忆服务留下的空壳 —— 它现在<b>是关着的</b>(钥匙没配齐,三把缺两把),两边谁都没在用它。
+⇒ 不是「桶是空的」,是<b>「服务根本没开」</b>。</div>
+
+<div class="trap">⚠️ <b>另一个会让你困惑的地方(上一版就在这儿,没变):</b><code>~/.claude/agents/</code> 里躺着 32 份 agent 文件(本格数字均 8-25 测)。
+其中 <b>12 份</b>是 Claude Code 自带的通用模板(Backend-Developer、Data-Scientist 之类),
+但另外 <b>16 份正是我们自己的 Lead</b>(Honey Lemon、Mufasa、Belle…)—— 跟项目仓里那份<b>逐字相同</b>,是一份镜像。<br>
+⇒ 而<b>只有那 12 份通用模板进了远端</b>,我们自己那 16 份没进。</div>
+
+<p class="big">⇒ 回你那句「IC 的 memory 我还是没有看出来」:<br>
+<u>它在盘上 —— 466 个文件(8-27 测),今天还在长。但它几乎没进过任何一个 IC 的脑子。</u></p>
+<p class="big">⇒ 所以你最早那个问题,其实问得比现状超前了一步:<br>
+<u>不是「共用一份」,是<b>桌上放着一本,基本没人翻</b>。</u></p>
+<p class="dimtxt">口径:文件夹里全部条目。记忆每天都在长,别把任何一个数当固定值。<br>📌 一个标本,说明「东西在盘上」和「东西进了脑子」真的是两回事:那份索引第 149 行我能查得到,但它在第 113 行就被截断了、没进我的上下文 —— <b>同一个文件里,两件事同时成立</b>。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="⑤ agent file 和 memory 住两个地方" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="n">⑥ 🔑 你最早那个问题的答案,就在这一格</p>
+<h2>「为什么他们的 memory 没跟着项目走?」</h2>
+<p><b>先说个类比:</b>人在<u>办公室</u>上班,笔记本带回<u>自己家</u>。<br>
+活是在办公室干的 —— 但笔记不在办公室。<code>~/Dev/flywheel</code> 是办公室,<code>~/.claude</code> 是家。</p>
+<p><b>然后是真正卡住你的那一格 ——「按仓分」和「在仓里」是两件事:</b></p>
+<div class="scroll"><table class="mx">
+<tr><th></th><th>按什么分</th><th>结果</th></tr>
+<tr><td>agent file</td><td>按<b>角色</b>分</td><td>qa 一份 · engineer 一份 · 每个 Lead 一份</td></tr>
+<tr><td>节点 memory</td><td>按<b>哪个仓</b>分</td><td>flywheel <b>一格</b> —— 所有角色共用</td></tr>
+<tr><td>Lead memory</td><td>按<b>谁</b>分</td><td>12 格,每个 Lead 一格(8-27 测)</td></tr>
+</table></div>
+<p><b>节点的记忆其实<u>是</u>跟着项目走的</b> —— 它认得出「这条是 flywheel 的」。
+但它跟的是<b>「哪个仓」</b>,不是<b>「住在仓里面」</b>。</p>
+<p class="big">🔑 agent file 按<u>角色</u>分,memory 按<u>仓</u>分 ——<br><b>两套分法不一样,所以对不上。</b></p>
+<p>于是 qa 和 engineer 共用 flywheel 那一格,经验倒进同一个池子。<br>
+你想要的是<b>第三种分法:按角色</b>。今天有的是「按谁」和「按哪个仓」这两种。</p>
+<div class="fact">⚠️ 而这第三种分法,<b>Claude Code 自己也还没做</b> —— 不是 Codex 落后一步。</div>
+<div class="cmt"><label>这一格是你卡住的地方吗</label><textarea data-s="⑥ 两套分法对不上" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="n">⑦ 你之前那三个猜测</p>
+<h2>逐条对</h2>
+<div class="g no">
+<p class="gq">猜测 1 ·「runner 的记忆存在当时 worktree 的工作层,worktree 一清就消失了」</p>
+<span class="gv">不成立</span>
+<p class="ga">节点写的是<b>主仓那一份</b>,466 条攒在一起(8-27 测)。worktree 那边每个虽然各有一个记忆位置(244 个),
+但只有 8 个建了目录,里面都是空的(<b>8-25 测</b>;8-27 我按 FLY-* 前缀重数得 3 个,<b>两次数的不是同一个集合,我复不出当时那个口径</b>)。</p>
+<div class="good" style="margin:8px 0 0">✅ <b>所以这是个好消息:worktree 清掉,记忆还在。</b></div>
+</div>
+<div class="g half">
+<p class="gq">猜测 2 ·「Lead 那边只存在 local,并没有存到远端」</p>
+<span class="gv">对,但少了一句</span>
+<p class="ga"><b>「只在 local」——对。</b>1033 个文件、28 MB 都在这块盘上(8-27 测)。<br>
+<b>少的那句是:远端其实是有的</b>,而且本地和远端完全一致 ——
+<b>不是「推不上去」,是从 6/12 之后就没再提交过任何东西。</b></p>
+</div>
+<div class="g no">
+<p class="gq">猜测 3(隐含)·「Lead 的在远端 / runner 的不在」</p>
+<span class="gv">不成立</span>
+<p class="ga">远端那个仓里<b>确实有 16 个 memory 文件,但全属于别的项目</b>(本格数字均 8-25 测)
+<span class="dimtxt">(GeoForge3D 7 个、claude-workflow-update 3 个、gogcli 2 个…)</span>,而且都停在 6/12。<br>
+<b>flywheel 的记忆,Lead 的和节点的,都还在这块盘上。</b></p>
+</div>
+<div class="cmt"><label>这三条判定的意见</label><textarea data-s="⑦ 三个猜测逐条判定" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card blue">
+<p class="n">⑧ 你问的</p>
+<h2>「那我们就是定期去 push 就可以了,对不对?」</h2>
+<p class="big">对 —— 但顺序是<u>先筛一遍再开始推</u>,不是直接推。</p>
+<p><b>为什么要筛:</b>记忆是随手写的,里面可能夹着钥匙、口令这类东西。
+<b>推上去之后很难收回。</b></p>
+<div class="fact">我粗查了一下:<b>Lead 记忆 1029 个文件里有 282 个</b>、<b>节点记忆 453 个里有 96 个</b>(<b>整条 8-25 测</b>;分母是那天的总数,今天是 1033 / 466 —— <b>我没重跑这次筛查,所以分子分母一起留在 8-25</b>)
+出现过 token / key / secret / password 这类字样。<br>
+⚠️ <b>字样命中不等于真有钥匙</b> —— 大多数应该只是在讨论这些概念。
+但这个数足以说明<b>「先筛一遍」不是一句客套话</b>。</div>
+<p class="dimtxt">这 1033 个文件、28 MB —— 工程 Lead 481 条、参谋长 149 条、产品 Lead 88 条 ——
+现在只存在于这一块盘上(均 8-27 测)。这也是为什么你这个推论方向是对的。</p>
+<div class="cmt"><label>这段的意见</label><textarea data-s="⑧ 定期 push 就行吗" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card">
+<p class="n">⑨ 下一步</p>
+<h2>「东西在哪」到这页为止讲完了</h2>
+<p>你排的顺序:<b>先确认 Claude Code 怎么做的 → 画图讲清楚 → 再看 Codex 能不能复现。</b><br>
+前两步做完了。<b>第三步我一个字都没提</b>,因为顺序是你定的。</p>
+<p class="big">要不要我现在去做第三步?</p>
+<div class="unk">去之前先交底,我还没验的两件:<b>①</b> 打开记忆之后会不会变慢或变贵 <b>②</b> Codex 能不能按角色分记忆 —— 第二件正是第三步要回答的。</div>
+<div class="cmt"><label>下一步 / 还有别的想说的</label><textarea data-s="⑨ 下一步要不要去看 Codex" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="fact" style="margin-top:16px">
+写完点下面<b>「一键汇总复制」</b>,再<b>贴回 issue</b> —— 我才收得到。<b>这页的字只存在你自己的浏览器里,不会自己发给我。</b><br>
+<span class="dimtxt">页上每个数字后面都标了它被数出来的日子:<b>(8-27 测)</b>是今天现数的,<b>(8-25 测)</b>是上一版留下、今天没有重数的。数字一直在变,当数量级看。</span>
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-1984";
+var LIMIT = 1800;
+var KEY = "fly1984-where-v5-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写，没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制（共 " + cs.length + " 段，每段都要贴）"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制（共 " + cs.length + " 段，都要贴回 issue）"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    })["catch"](function(){ showManual(text, manualMsg); });
+    return;
+  }
+  showManual(text, manualMsg);
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>

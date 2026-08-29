@@ -51,15 +51,8 @@ export const mergedPrCiProbe: NonNullable<
 /**
  * Compute the ship decision for a (session, prHead) BEFORE mutating status.
  *
- * Passes the BRIDGE process env (like the existing codex-gate sink checks, e.g.
- * isReviewHeld). This is BOTH production-correct AND testable, and does NOT
- * contradict design R2 HIGH-2: HIGH-2 forbids the *runner CLI* (whose inherited
- * env is a stale spawn-time snapshot) from passing env, so verify-approval must
- * read the authoritative `~/.flywheel/.env`. The BRIDGE process env is current;
- * and because the merge gate resolver only honors `argsEnv` when the KEY IS PRESENT,
- * a normal production Bridge (kill-switch keys absent) still falls through to the
- * live `~/.flywheel/.env` read — so an operator re-arm is honored — while a test
- * that sets `process.env.FLYWHEEL_MERGE_APPROVAL_GATE` can bypass merge approval.
+ * Passes the Bridge process env for the remaining eligibility checks and their
+ * test seams. Merge approval itself is unconditional and always fails closed.
  */
 export function computeShipDecision(
 	store: Partial<Pick<StateStore, "getDbPath">>,

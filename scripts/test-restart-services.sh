@@ -2036,7 +2036,6 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
-   "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
    "$REAL_REPO_ROOT/scripts/lib/legacy-swap-broadcast-retirement.sh" \
    "$REAL_REPO_ROOT/scripts/lib/default-lead-agent-env.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \

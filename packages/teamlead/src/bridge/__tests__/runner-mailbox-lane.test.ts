@@ -256,7 +256,6 @@ describe("RunnerMailboxLane", () => {
 				now: () => new Date(NOW),
 				queueConfig: () => ({
 					...DEFAULT_MAILBOX_QUEUE_CONFIG,
-					enabled: false,
 				}),
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 2, failed: 0 });
@@ -300,11 +299,10 @@ describe("RunnerMailboxLane", () => {
 				retryBackoffCapMs: 5_000,
 				queueConfig: () => ({
 					...DEFAULT_MAILBOX_QUEUE_CONFIG,
-					enabled: false,
 				}),
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 0, failed: 1 });
-			expect(q.getById("instruction-1")?.state).toBe("QUEUED");
+			expect(q.getById("instruction-1")?.state).toBe("LEASED");
 			nowMs += 5_000;
 			q.acquireOrRenewOwner({
 				ownerEpoch: "owner-1",
@@ -406,7 +404,7 @@ describe("RunnerMailboxLane", () => {
 		}
 	});
 
-	it("hot-toggles between ticks and snapshots configuration once per tick", async () => {
+	it("snapshots queue configuration once per tick", async () => {
 		const q = queue();
 		try {
 			for (let index = 0; index < 3; index += 1) {
@@ -421,10 +419,8 @@ describe("RunnerMailboxLane", () => {
 					senderRef: encodeSenderRef(),
 				});
 			}
-			let enabled = false;
 			const queueConfig = vi.fn(() => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled,
 			}));
 			const deliver = vi.fn(async () => ({
 				status: "delivered" as const,
@@ -441,7 +437,7 @@ describe("RunnerMailboxLane", () => {
 			});
 
 			expect(await lane.tick()).toMatchObject({ delivered: 3 });
-			expect(deliver).toHaveBeenCalledTimes(3); // legacy OFF path
+			expect(deliver).toHaveBeenCalledTimes(1);
 			expect(queueConfig).toHaveBeenCalledTimes(1);
 
 			for (let index = 3; index < 6; index += 1) {
@@ -456,11 +452,10 @@ describe("RunnerMailboxLane", () => {
 					senderRef: encodeSenderRef(),
 				});
 			}
-			enabled = true;
 			expect(await lane.tick()).toMatchObject({ delivered: 3 });
-			expect(deliver).toHaveBeenCalledTimes(4); // ON path = one batch doorbell
+			expect(deliver).toHaveBeenCalledTimes(2);
 			expect(queueConfig).toHaveBeenCalledTimes(2);
-			expect(deliver.mock.calls[3]?.[0].content).toContain("| 3 messages |");
+			expect(deliver.mock.calls[1]?.[0].content).toContain("| 3 messages |");
 		} finally {
 			q.close();
 		}

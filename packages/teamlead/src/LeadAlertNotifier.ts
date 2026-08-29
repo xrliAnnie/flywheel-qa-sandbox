@@ -298,6 +298,9 @@ export const ALERT_EVENT_TYPES = [
 	"delivery_dead_letter",
 	// FLY-1373: a per-Lead consume-loop stall or queue-native deadline breach.
 	"inbox_loop_stalled",
+	// FLY-2118: a canonical Runner pane remained outside every active owner
+	// index for two consecutive project patrol slots.
+	"orphan_pane",
 	// FLY-1402: a Claude Lead was explicitly launched through the emergency
 	// last-one-wins compatibility path instead of the single-file rules bundle.
 	// Shell-emitted only, but kept in the shared face so queued alerts drain.

@@ -4,22 +4,23 @@ import type { FeatureFlagSpec } from "../feature-flags/registry.js";
 export interface HistoricalLegacySpec {
 	name: string;
 	source: "env" | "project_config";
-	sourceKey: string;
+	sourceKey?: string;
+	constantizedBy?: "FLY-2101";
 }
 
-/** Exact FLY-1981 landing snapshot; current ledgers may shrink from this set. */
+/** Annotated historical snapshot; 13 entries were constantized by FLY-2101. */
 export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 	{ name: "flag_store", source: "env", sourceKey: "FLYWHEEL_FLAG_STORE" },
 	{
 		name: "founder_review_orphan_monitor",
 		source: "env",
-		sourceKey: "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
+		constantizedBy: "FLY-2101",
 	},
-	{ name: "mailbox_queue", source: "env", sourceKey: "FLYWHEEL_MAILBOX_QUEUE" },
+	{ name: "mailbox_queue", source: "env", constantizedBy: "FLY-2101" },
 	{
 		name: "liveness_activity_window_ms",
 		source: "env",
-		sourceKey: "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "converge_cmux_symlink",
@@ -44,22 +45,22 @@ export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 	{
 		name: "merge_approval_gate_killswitch",
 		source: "env",
-		sourceKey: "FLYWHEEL_MERGE_APPROVAL_GATE",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "issue_gate_supersede_mode",
 		source: "env",
-		sourceKey: "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "deferred_approval_ttl_ms",
 		source: "env",
-		sourceKey: "FLYWHEEL_DEFERRED_APPROVAL_TTL_MS",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "founder_reply_deadletter_age_ms",
 		source: "env",
-		sourceKey: "FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "issue_display_sweep_ticks",
@@ -69,22 +70,22 @@ export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 	{
 		name: "ship_gate_grace_ms",
 		source: "env",
-		sourceKey: "FLYWHEEL_SHIP_GATE_GRACE_MS",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "external_merge_reconcile",
 		source: "env",
-		sourceKey: "FLYWHEEL_EXTERNAL_MERGE_RECONCILE",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "merge_reconcile_window_days",
 		source: "env",
-		sourceKey: "FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "ship_gate_card_grace_ms",
 		source: "env",
-		sourceKey: "FLYWHEEL_SHIP_GATE_CARD_GRACE_MS",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "ghost_guard_wait_ms",
@@ -132,12 +133,12 @@ export const FLY1981_LEGACY_SNAPSHOT = Object.freeze([
 	{
 		name: "done_thread_reconcile_interval_min",
 		source: "env",
-		sourceKey: "FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "done_thread_reconcile_max_per_run",
 		source: "env",
-		sourceKey: "FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN",
+		constantizedBy: "FLY-2101",
 	},
 	{
 		name: "publish_broker",
@@ -157,17 +158,30 @@ export function auditFly1981LegacyLedger(args: {
 	retiredFlags: readonly { envVar: string }[];
 	retiredConfigPaths: readonly { path: string }[];
 	exemptions: readonly FlagExemption[];
+	snapshot?: readonly HistoricalLegacySpec[];
 }): string[] {
 	const issues: string[] = [];
-	const snapshotByName = new Map(
-		FLY1981_LEGACY_SNAPSHOT.map((entry) => [entry.name, entry]),
-	);
+	const snapshot = args.snapshot ?? FLY1981_LEGACY_SNAPSHOT;
+	const snapshotByName = new Map(snapshot.map((entry) => [entry.name, entry]));
 	const baseline = new Set(args.baseline);
+	for (const historical of snapshot) {
+		if (
+			historical.sourceKey === undefined &&
+			historical.constantizedBy === undefined
+		) {
+			issues.push(`${historical.name}: historical source identity is missing`);
+		}
+	}
 
 	for (const name of baseline) {
 		const historical = snapshotByName.get(name);
 		const current = args.flags.find((spec) => spec.name === name);
 		if (!historical) issues.push(`${name}: absent from FLY-1981 snapshot`);
+		if (historical?.sourceKey === undefined) {
+			issues.push(
+				`${name}: constantized snapshot entry returned to the baseline`,
+			);
+		}
 		if (!current)
 			issues.push(`${name}: baseline entry has no current registry spec`);
 		if (
@@ -180,9 +194,21 @@ export function auditFly1981LegacyLedger(args: {
 		}
 	}
 
-	for (const historical of FLY1981_LEGACY_SNAPSHOT) {
+	for (const historical of snapshot) {
 		if (baseline.has(historical.name)) continue;
 		const current = args.flags.find((spec) => spec.name === historical.name);
+		if (historical.constantizedBy === "FLY-2101") {
+			if (current !== undefined) {
+				issues.push(
+					`${historical.name}: FLY-2101 constantized control returned to the registry`,
+				);
+			}
+			// FLY-2101 decision: constantized entries permanently skip retirement
+			// and exemption checks. Their env keys no longer exist, so an exemption
+			// keyed by the removed source identity cannot remain live.
+			continue;
+		}
+		if (historical.sourceKey === undefined) continue;
 		const migrated =
 			current !== undefined &&
 			args.storeManagedFlags.has(current.name) &&

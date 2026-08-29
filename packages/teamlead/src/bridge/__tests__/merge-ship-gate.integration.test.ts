@@ -16,8 +16,7 @@
  *   ② merged-WITHOUT-approval (runner 抢跑 self-merge) → merge_block marker + NOT Done
  *      (决定③: no auto-revert, leave open, loud alert). Idempotent once-per-head.
  *   ③ recovery — a same-head founder approval CLEARS the block (B-3, R2 HIGH-5).
- *   ④ emergency kill-switch — FLYWHEEL_MERGE_APPROVAL_GATE=0 restores the old
- *      merged→completed behavior (决定②: default ON, emergency-off if problems).
+ *   ④ the retired environment key cannot bypass merge approval.
  */
 
 import { execFileSync } from "node:child_process";
@@ -62,10 +61,7 @@ const CI_GREEN = () => ({
 	checks: ["Build & Test"],
 });
 
-// Merge approval is ON; QA is always enforced and Codex evidence is durable.
-const GATES_ON = {
-	FLYWHEEL_MERGE_APPROVAL_GATE: "1",
-} as NodeJS.ProcessEnv;
+const GATES_ON = {} as NodeJS.ProcessEnv;
 
 describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", () => {
 	let tmpDir: string;
@@ -112,10 +108,10 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	}
 
 	/** Insert an approve_to_ship question FROM the runner + a structured approval. */
-	function foundersApproved(): string {
+	function foundersApproved(executionId = EXEC): string {
 		const db = new CommDB(commDbPath());
 		try {
-			const qid = db.insertQuestion(EXEC, LEAD, "PR ready", {
+			const qid = db.insertQuestion(executionId, LEAD, "PR ready", {
 				checkpoint: "approve_to_ship",
 			});
 			db.insertResponse(qid, "bridge", JSON.stringify({ approved: true }));
@@ -141,6 +137,15 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 		store.recordCodexReviewApproved({
 			executionId: EXEC,
+			targetPrHeadSha: HEAD,
+			issueId: ISSUE,
+			projectName: PROJECT,
+		});
+	}
+
+	function withCodexGreen(executionId = EXEC): void {
+		store.recordCodexReviewApproved({
+			executionId,
 			targetPrHeadSha: HEAD,
 			issueId: ISSUE,
 			projectName: PROJECT,
@@ -493,6 +498,9 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 
 	it("engine-owned terminalization additively requires every snapshot ship claim at USE time", async () => {
 		const { qaClaimId } = engineQaAtFounderGate();
+		const qid = foundersApproved();
+		upsert("approved_to_ship", qid);
+		withCodexGreen();
 		expect(store.getWorkflowClaim(qaClaimId)).toMatchObject({
 			expires_at: null,
 			permanent: 1,
@@ -500,7 +508,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const session = store.getSession(EXEC)!;
 		const off = {
 			FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
-			FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 		} as NodeJS.ProcessEnv;
 		expect(
 			await computeAuthoritativeShipDecision(store, session, HEAD, off),
@@ -538,9 +545,18 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				authorityId: "founder-engine-head",
 			}).ok,
 		).toBe(true);
-		expect(
-			await computeAuthoritativeShipDecision(store, session, HEAD, env),
-		).toMatchObject({ eligible: true, workflowClaimsOk: true });
+		const approvedDecision = await computeAuthoritativeShipDecision(
+			store,
+			session,
+			HEAD,
+			env,
+			undefined,
+			CI_GREEN,
+		);
+		expect(approvedDecision).toMatchObject({
+			eligible: true,
+			workflowClaimsOk: true,
+		});
 
 		store.revokeWorkflowClaim({
 			claimId: qaClaimId,
@@ -648,7 +664,6 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 				HEAD,
 				{
 					FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 				} as NodeJS.ProcessEnv,
 			),
 		).toMatchObject({
@@ -786,6 +801,12 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const product = productWithReviewPredicate("design_review_approved");
 		expect(product.ok).toBe(true);
 		if (!product.ok) throw new Error(product.reason);
+		const qid = foundersApproved(product.executionId);
+		store.setReviewBinding(product.executionId, {
+			questionId: qid,
+			prHeadSha: HEAD,
+		});
+		withCodexGreen(product.executionId);
 		// This test isolates materialized-head recovery for a pre-carrier run.
 		// Newly materialized runs are covered as epoch 1 elsewhere.
 		(
@@ -806,17 +827,15 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const materializedHeadAuthority = {
 			resolve: async () => ({ head: HEAD, outputId: 1, attempt: 1 }),
 		};
-		expect(
-			await computeAuthoritativeShipDecision(
-				store,
-				store.getSession(product.executionId)!,
-				HEAD,
-				{
-					FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-				} as NodeJS.ProcessEnv,
-				materializedHeadAuthority,
-			),
-		).toMatchObject({ eligible: true });
+		const productDecision = await computeAuthoritativeShipDecision(
+			store,
+			store.getSession(product.executionId)!,
+			HEAD,
+			{},
+			materializedHeadAuthority,
+			CI_GREEN,
+		);
+		expect(productDecision).toMatchObject({ eligible: true });
 
 		const completed = await finalizeRecoveredMerge(
 			store,
@@ -826,11 +845,11 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			undefined,
 			{
 				FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
-				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 			} as NodeJS.ProcessEnv,
 			undefined,
 			undefined,
 			materializedHeadAuthority,
+			CI_GREEN,
 		);
 
 		expect(completed).toBe(true);
@@ -925,17 +944,18 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		expect(isMergeBlocked(store.getSession(EXEC))).toBe(true);
 	});
 
-	// ── Group ④ — emergency kill-switch restores the pre-gate behavior (决定②) ──
-	it("FLYWHEEL_MERGE_APPROVAL_GATE=0 bypasses the merge gate (emergency-off)", () => {
+	// ── Group ④ — the retired key cannot bypass the gate ──
+	it("ignores the retired merge-gate key", () => {
 		upsert("awaiting_review"); // unapproved
-		withQaAndCodexGreen(); // QA on + passing → isolates the merge kill-switch
+		withQaAndCodexGreen();
 		const session = store.getSession(EXEC);
 		if (!session) throw new Error("session missing");
+		const retiredKey = ["FLYWHEEL", "MERGE", "APPROVAL", "GATE"].join("_");
 		const d = computeShipDecision(store, session, HEAD, {
-			FLYWHEEL_MERGE_APPROVAL_GATE: "0", // B emergency-off
+			[retiredKey]: "0",
 		} as NodeJS.ProcessEnv);
-		expect(d.mergeApprovalOk).toBe(true); // bypassed
+		expect(d.mergeApprovalOk).toBe(false);
 		expect(d.qaOk).toBe(true);
-		expect(d.eligible).toBe(true); // merged→completed restored
+		expect(d.eligible).toBe(false);
 	});
 });

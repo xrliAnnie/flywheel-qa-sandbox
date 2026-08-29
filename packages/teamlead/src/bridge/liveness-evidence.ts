@@ -17,14 +17,11 @@
  * below only changes wording.
  */
 
-const DEFAULT_ACTIVITY_WINDOW_MS = 600_000; // 10 minutes
+// FLY-2101: founder 2026-08-27 v4 fixed the former runtime flag at 10 minutes.
+const ACTIVITY_WINDOW_MS = 600_000;
 
-/** Env override, wording-only. Invalid / unset → the 10-minute default. */
-export function activityWindowMs(
-	raw: string | undefined = process.env.FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS,
-): number {
-	const n = Number(raw);
-	return Number.isFinite(n) && n > 0 ? n : DEFAULT_ACTIVITY_WINDOW_MS;
+export function activityWindowMs(): number {
+	return ACTIVITY_WINDOW_MS;
 }
 
 export interface ActivityEvidence {

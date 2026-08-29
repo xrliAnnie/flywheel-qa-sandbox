@@ -10,17 +10,12 @@ import {
 describe("FLY-1573 mailbox queue config", () => {
 	beforeEach(() => resetMailboxQueueConfigWarningsForTests());
 
-	it("uses the approved defaults and supports call-time flag changes", () => {
-		const env: NodeJS.ProcessEnv = {};
-		expect(resolveMailboxQueueConfig(env)).toEqual({
-			...DEFAULT_MAILBOX_QUEUE_CONFIG,
-			enabled: true,
-		});
+	it("always uses the queue path even when the retired flag is zero", () => {
+		const legacyKey = ["FLYWHEEL", "MAILBOX", "QUEUE"].join("_");
+		const config = resolveMailboxQueueConfig({ [legacyKey]: "0" });
 
-		env.FLYWHEEL_MAILBOX_QUEUE = "0";
-		expect(resolveMailboxQueueConfig(env).enabled).toBe(false);
-		env.FLYWHEEL_MAILBOX_QUEUE = "1";
-		expect(resolveMailboxQueueConfig(env).enabled).toBe(true);
+		expect(config).toEqual(DEFAULT_MAILBOX_QUEUE_CONFIG);
+		expect(config).not.toHaveProperty("enabled");
 	});
 
 	it("packs at most 10 messages from the head's 30-second coalescing window", () => {

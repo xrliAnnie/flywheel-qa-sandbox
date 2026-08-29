@@ -1,0 +1,32 @@
+flowchart LR
+  subgraph FW["flywheel 仓(529 场景家族的家)"]
+    W["qa-raya-voice.sh<br/>薄入口:找被测代码 · 递测试 bot 凭据<br/>不含任何判据逻辑"]
+  end
+  subgraph RY["raya 仓(被测产品的家)"]
+    O["raya-voice-529.mjs<br/>编排:锁 · 场次表 · 重跑预算 · 总 verdict"]
+    L1["env-compose<br/>隔离环境拼装(凭据只读生产 env)<br/>房间白名单:只认 voice-test 测试房"]
+    L2["tts-fixture<br/>句子→合成音频(每次运行自带)"]
+    L3["session<br/>单场编排(spawn + emitter)"]
+    L4["judges<br/>判据纯函数 C0–C5<br/>哨兵语句直接 import 产品常量"]
+    EM["emitter 库(FLY-2031 已有)<br/>QA bot 进房/播音/收音"]
+  end
+  subgraph RT2["真环境"]
+    VP["voice 进程(被测 build)"]
+    DC["Discord voice-test 房"]
+    CX["Codex + OpenAI realtime"]
+  end
+  EVD["证据包<br/>~/.flywheel/raya/qa/FLY-2126-runs/…"]
+  W --> O
+  O --> L1 & L2 & L3
+  L3 --> EM
+  L3 --> VP
+  VP --- DC
+  EM --- DC
+  VP --- CX
+  VP --> EVD
+  EM --> EVD
+  L4 --> EVD
+  O --> EVD
+  style W fill:#e3f2fd,stroke:#007aff
+  style L4 fill:#f3e5f5,stroke:#af52de
+  style EVD fill:#e8f5e9,stroke:#34c759
