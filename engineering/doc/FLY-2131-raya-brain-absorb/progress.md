@@ -1,13 +1,13 @@
 ---
 issue: FLY-2131
 phase: implement
-phaseCursor: 6/9
-updated: 2026-08-29T01:47:58.061Z
-nextStep: install Raya dependencies and run targeted then full verification
+phaseCursor: 7/9
+updated: 2026-08-29T02:22:14.493Z
+nextStep: finish packaged audit, diff review, commits and PRs
 chunks: []
 pointers: {}
 ---
 
 # FLY-2131 progress
-**phase**: implement (6/9)
-**next**: install Raya dependencies and run targeted then full verification
+**phase**: implement (7/9)
+**next**: finish packaged audit, diff review, commits and PRs
