@@ -1,13 +1,13 @@
 ---
 issue: FLY-145
-phase: design
-phaseCursor: 6/6
-updated: 2026-08-29T14:10:30.607Z
-nextStep: complete --route phase_design_complete
+phase: implement
+phaseCursor: 1/5
+updated: 2026-08-29T14:13:53.037Z
+nextStep: validate inherited PR and exact docs-only diff
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
-**phase**: design (6/6)
-**next**: complete --route phase_design_complete
+**phase**: implement (1/5)
+**next**: validate inherited PR and exact docs-only diff
