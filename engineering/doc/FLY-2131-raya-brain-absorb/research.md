@@ -85,5 +85,12 @@ summary_registry_activation_preflight() {
 | Lead persona 装载走显式 `FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES`(不自动发现文件)⇒ MEMORY.md 需点名接入 | codex-lead-tui-runtime.ts:385-401 附近 | `rg -n "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES" packages/teamlead/src/` |
 | **粒度已拍**:`~/.flywheel/summary-config.json` = per-lead,setBy founder(Discord msg 1543035397066588170),setAt 2026-08-28T23:58:13Z | 实读该文件 | `cat ~/.flywheel/summary-config.json` |
 | **迁移已跑**:receipt 在默认路径,postImageSha256 d942cec7a5e6…,live projects.json 16/16 行含 closed `summaryRole` | 实读 receipt + python 解析 | `cat ~/.flywheel/state/summary-registry/migration-receipt.json` |
-| raya origin/main 语音仍走 `realtimeStartInstructions` 旧通道(对模型无效,FLY-2097 QA 实证);prompt 通道修复在 FLY-2097 PR #3 候选 | FLY-2097 qa-report §D + raya origin/main 读码 | raya 仓 `git grep -n realtimeStartInstructions origin/main` |
 | FLY-2029/2074 未定义 memory 仓运行期 commit/push 生命周期(只建仓 + 初始文件 + RAYA_MEMORY_FILE 可写合同) | FLY-2029 plan/verification 通读 | 该两文档 |
+
+## 7. R2 评审后增补实核(2026-08-29 00:40Z)
+
+| 结论 | 实核 | 复核命令 |
+|---|---|---|
+| **raya PR #4 与 FLY-2097 PR #3 均已 merge**:origin/main = fb354a2(founder 授权 msg 1543046861844250634,2026-08-28 16:57 PT);`summaries/` 已在 main;prompt 通道修复(4a67508「deliver exit contract through realtime prompt」)已在 main。**部署仍 pending**(2.6 验收前置改为「部署该构建」) | fetch + log 实读 | raya 仓 `git log --oneline origin/main -4` |
+| brain `parseConfig` canonicalize 每个 `RAYA_WORKSPACE_ROOTS_JSON` 根、目录缺失拒起;live raya.env 的 roots = [code, memory] ⇒ memory checkout 迁移必须同步改该条目 | config.ts:139-145 + Codex R2 读了 live 非密配置 | raya 仓 `git grep -n RAYA_WORKSPACE_ROOTS_JSON origin/main -- apps/brain/src/config.ts` |
+| `discord_send` MCP 只有 target/text,无读操作;gateway 丢弃她自己 bot 的 inbound(CodexDiscordGateway.ts:268);send audit 不留正文/roundId ⇒ 「读自己频道」不可作恢复判据 | Codex R2 读码,采信(与 discord-send-core.ts 形态一致) | `rg -n "target" packages/teamlead/src/lead-backends/codex/discord-send-core.ts` |
