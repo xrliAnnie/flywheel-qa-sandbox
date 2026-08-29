@@ -1,13 +1,14 @@
 ---
 issue: FLY-2103
 phase: design
-phaseCursor: 1/8
-updated: 2026-08-29T04:19:37.969Z
-nextStep: 读 registry/store-policy/resolve/ConfigLoader,盘点 9 个 flag 的读点
+phaseCursor: 2/8
+updated: 2026-08-29T04:21:17.635Z
+nextStep: 读 participation/xhs-scheduler/Blueprint checkpoint/ConfigLoader;查 6 项目
+  config.yaml 现值
 chunks: []
 pointers: {}
 ---
 
 # FLY-2103 progress
-**phase**: design (1/8)
-**next**: 读 registry/store-policy/resolve/ConfigLoader,盘点 9 个 flag 的读点
+**phase**: design (2/8)
+**next**: 读 participation/xhs-scheduler/Blueprint checkpoint/ConfigLoader;查 6 项目 config.yaml 现值
