@@ -134,6 +134,12 @@ CREATE INDEX IF NOT EXISTS mailbox_lead_reclaim
 CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
   ON mailbox(claim_expires_at)
   WHERE state = 'LEASED' AND carrier = 'inbox';
+CREATE INDEX IF NOT EXISTS mailbox_batch_lookup
+  ON mailbox(batch_id, priority, seq)
+  WHERE batch_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_lease_expiry_order
+  ON mailbox(priority, seq, claim_expires_at)
+  WHERE state = 'LEASED' AND carrier = 'inbox' AND batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mailbox_claim_runner
   ON mailbox(priority, seq)
   WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'runner';
@@ -155,6 +161,10 @@ CREATE INDEX IF NOT EXISTS mailbox_deliverable_by_agent
   ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED';
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_unique_response
   ON mailbox(ref_id) WHERE type = 'response';
+CREATE INDEX IF NOT EXISTS mailbox_ref_lookup
+  ON mailbox(ref_id) WHERE ref_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_superseded_by_lookup
+  ON mailbox(superseded_by) WHERE superseded_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mailbox_archive_acked
   ON mailbox(acked_at) WHERE state = 'ACKED';
 CREATE INDEX IF NOT EXISTS mailbox_archive_dead

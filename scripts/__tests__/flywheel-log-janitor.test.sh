@@ -32,7 +32,7 @@ fi
 
 FAKE_BIN="$ROOT/bin"
 mkdir -p "$FAKE_BIN"
-for tool in bash date dirname du find grep id jq mkdir mktemp mv python3 readlink rm rmdir sed shasum sort sqlite3 stat tail timeout tr; do
+for tool in bash date dirname du find grep gzip id jq mkdir mktemp mv python3 readlink rm rmdir sed shasum sort sqlite3 stat tail tar timeout tr; do
   resolved="$(command -v "$tool" 2>/dev/null || true)"
   [[ -n "$resolved" ]] && ln -s "$resolved" "$FAKE_BIN/$tool"
 done
@@ -41,6 +41,13 @@ cat > "$FAKE_BIN/lsof" <<'EOF'
 exit 1
 EOF
 chmod +x "$FAKE_BIN/lsof"
+REAL_TAR="$(command -v tar)"
+cat > "$FAKE_BIN/tar-needs-gzip" <<EOF
+#!/usr/bin/env bash
+command -v gzip >/dev/null 2>&1 || exit 127
+exec "$REAL_TAR" "\$@"
+EOF
+chmod +x "$FAKE_BIN/tar-needs-gzip"
 
 MAIN_HOME="$ROOT/codex-main"
 LEAD_HOME="$ROOT/codex-lead"
@@ -48,6 +55,11 @@ INFRA_HOME="$ROOT/codex-infra"
 STATE_DIR="$ROOT/state"
 CLAUDE_HOME="$ROOT/home"
 DEFAULT_SOCKET_ROOT="$ROOT/tmux-sockets-default"
+FLYWHEEL_STATE_ROOT="$ROOT/flywheel-state"
+GATE_DIR="$FLYWHEEL_STATE_ROOT/codex-gates"
+GATE_ARCHIVE_DIR="$FLYWHEEL_STATE_ROOT/codex-gates-archive"
+FLYWHEEL_COMM_ROOT="$ROOT/comm"
+FLYWHEEL_ARCHIVE_ROOT="$ROOT/archive"
 mkdir -p \
   "$MAIN_HOME/archived_sessions" \
   "$MAIN_HOME/generated_images" \
@@ -56,6 +68,10 @@ mkdir -p \
   "$INFRA_HOME/generated_images" \
   "$STATE_DIR" \
   "$DEFAULT_SOCKET_ROOT" \
+  "$GATE_DIR/ask" \
+  "$GATE_ARCHIVE_DIR" \
+  "$FLYWHEEL_COMM_ROOT" \
+  "$FLYWHEEL_ARCHIVE_ROOT" \
   "$CLAUDE_HOME/.claude/projects"
 chmod 700 "$DEFAULT_SOCKET_ROOT"
 
@@ -107,12 +123,29 @@ run_janitor() {
   if [[ -n "${JANITOR_TEST_SOCKET_DELETE_CAP+x}" ]]; then
     extra_env+=("FLYWHEEL_JANITOR_TMUX_SOCKET_DELETE_CAP=$JANITOR_TEST_SOCKET_DELETE_CAP")
   fi
+  if [[ -n "${JANITOR_TEST_TAR_BIN+x}" ]]; then
+    extra_env+=("FLYWHEEL_JANITOR_TAR_BIN=$JANITOR_TEST_TAR_BIN")
+  fi
+  if [[ -n "${JANITOR_TEST_INVENTORY_CANDIDATE_COUNT+x}" ]]; then
+    extra_env+=("JANITOR_TEST_INVENTORY_CANDIDATE_COUNT=$JANITOR_TEST_INVENTORY_CANDIDATE_COUNT")
+  fi
+  if [[ -n "${JANITOR_TEST_INVENTORY_OBSERVED_AT+x}" ]]; then
+    extra_env+=("JANITOR_TEST_INVENTORY_OBSERVED_AT=$JANITOR_TEST_INVENTORY_OBSERVED_AT")
+  fi
+  if [[ -n "${JANITOR_TEST_APPLY_DELETED_COUNT+x}" ]]; then
+    extra_env+=("JANITOR_TEST_APPLY_DELETED_COUNT=$JANITOR_TEST_APPLY_DELETED_COUNT")
+  fi
   env -i \
     HOME="$CLAUDE_HOME" \
     PATH="$FAKE_BIN" \
     FLYWHEEL_JANITOR_CODEX_HOMES="$MAIN_HOME:$LEAD_HOME:$INFRA_HOME" \
     FLYWHEEL_JANITOR_STATE_DIR="$STATE_DIR" \
     FLYWHEEL_JANITOR_TEAMLEAD_DB="$ROOT/teamlead.db" \
+    FLYWHEEL_JANITOR_FLYWHEEL_STATE_ROOT="$FLYWHEEL_STATE_ROOT" \
+    FLYWHEEL_JANITOR_GATE_MARKER_DIR="$GATE_DIR" \
+    FLYWHEEL_JANITOR_GATE_ARCHIVE_DIR="$GATE_ARCHIVE_DIR" \
+    FLYWHEEL_JANITOR_COMM_ROOT="$FLYWHEEL_COMM_ROOT" \
+    FLYWHEEL_JANITOR_ARCHIVE_ROOT="$FLYWHEEL_ARCHIVE_ROOT" \
     "${extra_env[@]}" \
     "$shell_bin" "$JANITOR" "$@"
 }
@@ -124,6 +157,7 @@ bash32_rc=$?
 unset JANITOR_TEST_SHELL
 if [[ "$bash32_rc" -eq 0 \
   && -f "$STATE_DIR/full-dry-run-ok" \
+  && "$(jq -r '.scope.db_retention_health_url' "$STATE_DIR/full-dry-run-ok")" == "http://127.0.0.1:9876/health" \
   && "$(jq -r 'select(.action == "summary") | .mode' "$STATE_DIR/audit.jsonl" | tail -1)" == "dry-run" ]]; then
   pass "the launchd shell handles empty candidate arrays and records a full dry-run receipt"
 else
@@ -154,6 +188,37 @@ if [[ "$apply_rc" -eq 0 \
   pass "apply deletes only expired main archives and generated images"
 else
   fail "apply artifact contract failed (rc=$apply_rc output=$apply_out)"
+fi
+
+printf '[TEST] Case: cycle performs a fresh full dry-run then apply under distinct audit ids\n'
+cycle_file="$MAIN_HOME/generated_images/cycle-old.png"
+printf 'cycle\n' > "$cycle_file"
+touch -t 202001010000 "$cycle_file"
+cycle_audit_start="$(wc -l < "$STATE_DIR/audit.jsonl" | tr -d ' ')"
+cycle_out="$(run_janitor --cycle 2>&1)"
+cycle_rc=$?
+cycle_records="$(tail -n "+$((cycle_audit_start + 1))" "$STATE_DIR/audit.jsonl")"
+cycle_summary_ok="$(printf '%s\n' "$cycle_records" | jq -sc '
+  map(select(.action == "summary")) as $summaries
+  | ($summaries | length) == 2
+    and $summaries[0].mode == "dry-run"
+    and $summaries[1].mode == "apply"
+    and ($summaries[0].run_id | endswith("-dry"))
+    and ($summaries[1].run_id | endswith("-apply"))
+    and $summaries[0].run_id != $summaries[1].run_id
+    and $summaries[1].deleted_file_count >= 1
+' 2>/dev/null || true)"
+cycle_phase_actions_ok="$(printf '%s\n' "$cycle_records" | jq -sc '
+  (map(select(.action == "would-delete" and (.run_id | endswith("-dry")))) | length) >= 1
+  and (map(select(.action == "delete" and (.run_id | endswith("-apply")))) | length) >= 1
+' 2>/dev/null || true)"
+if [[ "$cycle_rc" -eq 0 \
+  && ! -e "$cycle_file" \
+  && "$cycle_summary_ok" == "true" \
+  && "$cycle_phase_actions_ok" == "true" ]]; then
+  pass "cycle mints a matching preview and applies it with isolated audit identities"
+else
+  fail "cycle orchestration contract failed (rc=$cycle_rc summaries=$cycle_summary_ok actions=$cycle_phase_actions_ok output=$cycle_out)"
 fi
 
 printf '[TEST] Case: codex_releases keeps current, rollback, newer, recent, and invalid dirs\n'
@@ -286,6 +351,8 @@ sqlite3 "$ROOT/teamlead.db" <<'SQL'
 CREATE TABLE sessions (execution_id TEXT PRIMARY KEY, status TEXT NOT NULL);
 INSERT INTO sessions VALUES ('exec-terminal', 'completed');
 INSERT INTO sessions VALUES ('exec-running', 'running');
+INSERT INTO sessions VALUES ('exec-approved', 'approved');
+INSERT INTO sessions VALUES ('exec-canceled', 'canceled');
 SQL
 
 session_dry="$(run_janitor --dry-run --module codex_sessions 2>&1)"
@@ -306,6 +373,224 @@ if [[ "$session_dry_rc" -eq 0 \
   pass "session cleanup deletes only expired, unheld, terminal-or-untracked main rollouts"
 else
   fail "session safety contract failed (dry_rc=$session_dry_rc apply_rc=$session_apply_rc dry=$session_dry apply=$session_apply)"
+fi
+
+printf '[TEST] Case: gate markers archive only answered or wake-terminal entries older than two days\n'
+terminal_marker="$GATE_DIR/terminal-main.json"
+terminal_ask_marker="$GATE_DIR/ask/terminal-ask.json"
+answered_marker="$GATE_DIR/answered-running.json"
+deadline_running_marker="$GATE_DIR/deadline-running.json"
+approved_marker="$GATE_DIR/approved-main.json"
+approved_ask_marker="$GATE_DIR/ask/approved-ask.json"
+canceled_custom_marker="$GATE_DIR/gate_custom-123.json"
+missing_marker="$GATE_DIR/missing-session.json"
+corrupt_marker="$GATE_DIR/corrupt.json"
+recent_terminal_marker="$GATE_DIR/recent-terminal.json"
+jq -n --arg executionId exec-terminal '{executionId:$executionId}' > "$terminal_marker"
+jq -n --arg executionId exec-terminal '{executionId:$executionId}' > "$terminal_ask_marker"
+jq -n --arg executionId exec-running --arg answeredAt '2020-01-01T00:00:00.000Z' \
+  '{executionId:$executionId,answeredAt:$answeredAt}' > "$answered_marker"
+jq -n --arg executionId exec-running --arg deadline '2020-01-01T00:00:00.000Z' \
+  '{executionId:$executionId,deadline:$deadline}' > "$deadline_running_marker"
+jq -n --arg executionId exec-approved '{executionId:$executionId}' > "$approved_marker"
+jq -n --arg executionId exec-approved '{executionId:$executionId}' > "$approved_ask_marker"
+jq -n --arg executionId exec-canceled '{executionId:$executionId}' > "$canceled_custom_marker"
+jq -n --arg executionId exec-missing-marker '{executionId:$executionId}' > "$missing_marker"
+printf '{not-json\n' > "$corrupt_marker"
+jq -n --arg executionId exec-terminal '{executionId:$executionId}' > "$recent_terminal_marker"
+touch -t 202001010000 \
+  "$terminal_marker" "$terminal_ask_marker" "$deadline_running_marker" \
+  "$approved_marker" "$approved_ask_marker" "$canceled_custom_marker" \
+  "$missing_marker" "$corrupt_marker"
+gate_dry_out="$(run_janitor --dry-run --module gate_markers 2>&1)"
+gate_dry_rc=$?
+gate_dry_preserved=0
+[[ -e "$terminal_marker" && -e "$terminal_ask_marker" && -e "$answered_marker" ]] \
+  || gate_dry_preserved=1
+gate_apply_out="$(run_janitor --apply --module gate_markers 2>&1)"
+gate_apply_rc=$?
+archived_terminal="$(find "$GATE_ARCHIVE_DIR" -type f -name 'terminal-main.json' -print | sed -n '1p')"
+archived_terminal_ask="$(find "$GATE_ARCHIVE_DIR" -type f -name 'terminal-ask.json' -print | sed -n '1p')"
+archived_answered="$(find "$GATE_ARCHIVE_DIR" -type f -name 'answered-running.json' -print | sed -n '1p')"
+archived_custom="$(find "$GATE_ARCHIVE_DIR" -type f -name 'gate_custom-123.json' -print | sed -n '1p')"
+gate_backlog_count="$(jq -s '[.[] | select(.module == "gate_markers" and .action == "skip" and (.reason == "corrupt-marker" or .reason == "missing-session"))] | length' "$STATE_DIR/audit.jsonl")"
+if [[ "$gate_dry_rc" -eq 0 \
+  && "$gate_apply_rc" -eq 0 \
+  && "$gate_dry_preserved" -eq 0 \
+  && -n "$archived_terminal" \
+  && -n "$archived_terminal_ask" \
+  && -n "$archived_answered" \
+  && -n "$archived_custom" \
+  && -e "$deadline_running_marker" \
+  && -e "$approved_marker" \
+  && -e "$approved_ask_marker" \
+  && -e "$missing_marker" \
+  && -e "$corrupt_marker" \
+  && -e "$recent_terminal_marker" \
+  && "$gate_backlog_count" -ge 4 ]]; then
+  pass "gate cleanup archives only proven-settled old markers and reports unclassified backlog"
+else
+  fail "gate marker contract failed (dry_rc=$gate_dry_rc apply_rc=$gate_apply_rc dry_preserved=$gate_dry_preserved backlog=$gate_backlog_count dry=$gate_dry_out apply=$gate_apply_out)"
+fi
+
+printf '[TEST] Case: state residue touches only the explicit cache, misplaced clone, and aged archive policies\n'
+playwright_cache="$FLYWHEEL_STATE_ROOT/fly2054-playwright"
+misplaced_clone="$GATE_DIR/FLY-2024-xhs-mcp"
+old_gate_archive="$GATE_ARCHIVE_DIR/20200101"
+recent_gate_archive="$GATE_ARCHIVE_DIR/20990101"
+old_loose_gate_archive="$GATE_ARCHIVE_DIR/old-loose.json"
+recent_loose_gate_archive="$GATE_ARCHIVE_DIR/recent-loose.json"
+unclassified_loose_gate_archive="$GATE_ARCHIVE_DIR/old-loose.txt"
+push_guard="$FLYWHEEL_STATE_ROOT/push-guard/worktrees"
+pending_reports="$FLYWHEEL_STATE_ROOT/log-janitor/pending-reports"
+mkdir -p \
+  "$playwright_cache" "$misplaced_clone" "$old_gate_archive" \
+  "$recent_gate_archive" "$push_guard" "$pending_reports"
+printf 'cache\n' > "$playwright_cache/browser.bin"
+printf 'clone\n' > "$misplaced_clone/repo.pack"
+printf 'old archive\n' > "$old_gate_archive/marker.json"
+printf 'recent archive\n' > "$recent_gate_archive/marker.json"
+printf 'old loose archive\n' > "$old_loose_gate_archive"
+printf 'recent loose archive\n' > "$recent_loose_gate_archive"
+printf 'unclassified loose archive\n' > "$unclassified_loose_gate_archive"
+printf 'guard\n' > "$push_guard/evidence"
+printf 'pending\n' > "$pending_reports/report.html"
+touch -t 202001010000 "$playwright_cache" "$playwright_cache/browser.bin"
+touch -t 202001010000 "$old_loose_gate_archive" "$unclassified_loose_gate_archive"
+state_dry_out="$(run_janitor --dry-run --module state_residue 2>&1)"
+state_dry_rc=$?
+state_dry_preserved=0
+[[ -d "$playwright_cache" && -d "$misplaced_clone" && -d "$old_gate_archive" \
+  && -e "$old_loose_gate_archive" ]] \
+  || state_dry_preserved=1
+state_apply_out="$(run_janitor --apply --module state_residue 2>&1)"
+state_apply_rc=$?
+archived_clone="$(find "$FLYWHEEL_ARCHIVE_ROOT/state-residue" -type f -name repo.pack -print 2>/dev/null | sed -n '1p')"
+if [[ "$state_dry_rc" -eq 0 \
+  && "$state_apply_rc" -eq 0 \
+  && "$state_dry_preserved" -eq 0 \
+  && ! -e "$playwright_cache" \
+  && ! -e "$misplaced_clone" \
+  && -n "$archived_clone" \
+  && ! -e "$old_gate_archive" \
+  && ! -e "$old_loose_gate_archive" \
+  && -e "$recent_loose_gate_archive" \
+  && -e "$unclassified_loose_gate_archive" \
+  && -e "$recent_gate_archive" \
+  && -e "$push_guard/evidence" \
+  && -e "$pending_reports/report.html" ]]; then
+  pass "state cleanup enforces the explicit allowlist and leaves durable queues and push guards untouched"
+else
+  fail "state residue contract failed (dry_rc=$state_dry_rc apply_rc=$state_apply_rc dry_preserved=$state_dry_preserved archived_clone=$archived_clone dry=$state_dry_out apply=$state_apply_out)"
+fi
+
+printf '[TEST] Case: comm DB backups compress only old verified unreferenced pre-fly1572 families\n'
+make_empty_refs_backup() {
+  local base="$1"
+  sqlite3 "$base" 'CREATE TABLE proof (id INTEGER PRIMARY KEY); INSERT INTO proof DEFAULT VALUES;'
+  jq -n '{v:1,files:[]}' > "$base.refs-manifest.json"
+}
+project_alpha="$FLYWHEEL_COMM_ROOT/alpha"
+mkdir -p "$project_alpha"
+printf 'live\n' > "$project_alpha/comm.db"
+old_valid="$project_alpha/comm.db.pre-fly1572-old-valid"
+new_valid="$project_alpha/comm.db.pre-fly1572-new-valid"
+corrupt_family="$project_alpha/comm.db.pre-fly1572-corrupt"
+referenced_family="$project_alpha/comm.db.pre-fly1572-referenced"
+stray_family="$project_alpha/comm.db.pre-fly1572-stray"
+make_empty_refs_backup "$old_valid"
+make_empty_refs_backup "$new_valid"
+make_empty_refs_backup "$corrupt_family"
+printf '%s\n' '{"v":1,"files":[{"path":"unexpected","size":0,"sha256":"0000000000000000000000000000000000000000000000000000000000000000","extra":true}]}' \
+  > "$corrupt_family.refs-manifest.json"
+make_empty_refs_backup "$referenced_family"
+make_empty_refs_backup "$stray_family"
+printf 'stray wal\n' > "$stray_family-wal"
+jq -n --arg backupPath "$referenced_family" '{backupPath:$backupPath,phase:"done"}' \
+  > "$project_alpha/comm.db.migration-swap-intent.json"
+migrated_backup="$project_alpha/comm.db.migrated-r2-failed-old"
+printf 'historical\n' > "$migrated_backup"
+old_tar="$project_alpha/comm.db.pre-fly1572-retired.tar.gz"
+tar -czf "$old_tar" -C "$project_alpha" "${migrated_backup##*/}"
+touch -t 202001010000 \
+  "$old_valid" "$old_valid.refs-manifest.json" \
+  "$corrupt_family" "$corrupt_family.refs-manifest.json" \
+  "$referenced_family" "$referenced_family.refs-manifest.json" \
+  "$stray_family" "$stray_family.refs-manifest.json" "$stray_family-wal" \
+  "$migrated_backup" "$old_tar"
+# Family age uses the newest member, while mutation-time identity must still
+# compare each member to its own stat rather than conflating those timestamps.
+touch -t 202001020000 "$old_valid.refs-manifest.json"
+printf '[TEST] Case: unavailable decompression capability fails the complete comm DB backup module loudly\n'
+mv "$FAKE_BIN/gzip" "$FAKE_BIN/gzip.hidden"
+JANITOR_TEST_TAR_BIN="$FAKE_BIN/tar-needs-gzip"
+backup_decompress_out="$(run_janitor --dry-run --module commdb_backups 2>&1)"
+backup_decompress_rc=$?
+unset JANITOR_TEST_TAR_BIN
+mv "$FAKE_BIN/gzip.hidden" "$FAKE_BIN/gzip"
+backup_decompress_action="$(jq -r 'select(.module == "commdb_backups" and .reason == "decompress-tool-unavailable") | .action' "$STATE_DIR/audit.jsonl" | tail -1)"
+if [[ "$backup_decompress_rc" -ne 0 \
+  && "$backup_decompress_out" == *"decompress-tool-unavailable"* \
+  && "$backup_decompress_action" == "failure" \
+  && -e "$old_valid" \
+  && -e "$old_valid.refs-manifest.json" \
+  && -e "$old_tar" ]]; then
+  pass "missing decompression capability is a visible module failure, never an invalid-backup skip"
+else
+  fail "missing decompression capability was not loud (rc=$backup_decompress_rc action=$backup_decompress_action output=$backup_decompress_out)"
+fi
+
+backup_dry_out="$(run_janitor --dry-run --module commdb_backups 2>&1)"
+backup_dry_rc=$?
+backup_dry_preserved=0
+[[ -e "$old_valid" && -e "$old_valid.refs-manifest.json" ]] || backup_dry_preserved=1
+backup_apply_out="$(run_janitor --apply --module commdb_backups 2>&1)"
+backup_apply_rc=$?
+if [[ "$backup_dry_rc" -eq 0 \
+  && "$backup_apply_rc" -eq 0 \
+  && "$backup_dry_preserved" -eq 0 \
+  && ! -e "$old_valid" \
+  && ! -e "$old_valid.refs-manifest.json" \
+  && -f "$old_valid.tar.gz" \
+  && -e "$new_valid" \
+  && -e "$corrupt_family" \
+  && -e "$referenced_family" \
+  && -e "$stray_family" \
+  && -e "$stray_family-wal" \
+  && -e "$migrated_backup" \
+  && ! -e "$old_tar" ]]; then
+  pass "backup cleanup compresses only verified expired families and preserves every fail-closed class"
+else
+  fail "comm DB backup classification failed (dry_rc=$backup_dry_rc apply_rc=$backup_apply_rc dry_preserved=$backup_dry_preserved dry=$backup_dry_out apply=$backup_apply_out)"
+fi
+
+printf '[TEST] Case: interrupted comm DB compression preserves the complete source family\n'
+project_beta="$FLYWHEEL_COMM_ROOT/beta"
+mkdir -p "$project_beta"
+beta_old="$project_beta/comm.db.pre-fly1572-old"
+beta_new="$project_beta/comm.db.pre-fly1572-new"
+make_empty_refs_backup "$beta_old"
+make_empty_refs_backup "$beta_new"
+touch -t 202001010000 "$beta_old" "$beta_old.refs-manifest.json"
+cat > "$FAKE_BIN/tar-fail" <<EOF
+#!/usr/bin/env bash
+for arg in "\$@"; do
+  [[ "\$arg" == "-czf" ]] && exit 9
+done
+exec "$REAL_TAR" "\$@"
+EOF
+chmod +x "$FAKE_BIN/tar-fail"
+JANITOR_TEST_TAR_BIN="$FAKE_BIN/tar-fail"
+backup_interrupt_out="$(run_janitor --apply --force --module commdb_backups 2>&1)"
+backup_interrupt_rc=$?
+unset JANITOR_TEST_TAR_BIN
+if [[ "$backup_interrupt_rc" -eq 0 \
+  && -e "$beta_old" \
+  && -e "$beta_old.refs-manifest.json" \
+  && ! -e "$beta_old.tar.gz" ]]; then
+  pass "compression failure leaves every source member intact and records a fail-closed skip"
+else
+  fail "compression interruption lost source material (rc=$backup_interrupt_rc output=$backup_interrupt_out)"
 fi
 
 printf '[TEST] Case: any live execution sharing a thread protects that rollout\n'
@@ -554,8 +839,10 @@ STATE_DIR="$ORIGINAL_STATE_DIR"
 
 printf '[TEST] Case: audit encoder failure prevents deletion\n'
 audit_fail_file="$MAIN_HOME/generated_images/audit-fail-old.png"
+cycle_audit_fail_file="$MAIN_HOME/generated_images/cycle-audit-fail-old.png"
 printf 'audit failure\n' > "$audit_fail_file"
-touch -t 202001010000 "$audit_fail_file"
+printf 'cycle audit failure\n' > "$cycle_audit_fail_file"
+touch -t 202001010000 "$audit_fail_file" "$cycle_audit_fail_file"
 rm -f "$FAKE_BIN/jq"
 cat > "$FAKE_BIN/jq" <<'EOF'
 #!/usr/bin/env bash
@@ -564,12 +851,17 @@ EOF
 chmod +x "$FAKE_BIN/jq"
 audit_fail_out="$(run_janitor --apply --module codex_artifacts 2>&1)"
 audit_fail_rc=$?
+cycle_audit_fail_out="$(run_janitor --cycle 2>&1)"
+cycle_audit_fail_rc=$?
 rm -f "$FAKE_BIN/jq"
 ln -s "$(command -v jq)" "$FAKE_BIN/jq"
-if [[ "$audit_fail_rc" -ne 0 && -e "$audit_fail_file" ]]; then
-  pass "a broken audit encoder fails closed before file deletion"
+if [[ "$audit_fail_rc" -ne 0 \
+  && "$cycle_audit_fail_rc" -ne 0 \
+  && -e "$audit_fail_file" \
+  && -e "$cycle_audit_fail_file" ]]; then
+  pass "a broken dry-run aborts standalone apply and cycle before file deletion"
 else
-  fail "audit failure was swallowed (rc=$audit_fail_rc output=$audit_fail_out)"
+  fail "audit failure was swallowed (apply_rc=$audit_fail_rc cycle_rc=$cycle_audit_fail_rc apply_output=$audit_fail_out cycle_output=$cycle_audit_fail_out)"
 fi
 
 printf '[TEST] Case: live, pidless, and stale lock directories are fail-closed\n'
@@ -664,6 +956,186 @@ else
   fail "symlink escape target or link was mutated"
 fi
 
+printf '[TEST] Case: weekly DB retention inventories first and requires activation before apply\n'
+mkdir -p "$FLYWHEEL_COMM_ROOT/flywheel"
+sqlite3 "$FLYWHEEL_COMM_ROOT/flywheel/comm.db" 'CREATE TABLE sentinel(id INTEGER PRIMARY KEY);'
+cat > "$FAKE_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAKE_BIN/lsof"
+db_retention_cli_log="$ROOT/db-retention-cli.log"
+db_retention_evidence_root="$CLAUDE_HOME/.flywheel/maintenance/fly-2139"
+REAL_NODE="$(command -v node)"
+cat > "$FAKE_BIN/node" <<EOF
+#!/usr/bin/env bash
+if [[ "\${1:-}" == "$REPO_ROOT/scripts/lib/fly-2139-retention-rates.mjs" ]]; then
+  exec "$REAL_NODE" "\$@"
+fi
+printf '%s\n' "\$*" >> "$db_retention_cli_log"
+command="\${2:-}"
+evidence_dir=""
+manifest_path=""
+activation_path=""
+while [[ \$# -gt 0 ]]; do
+  case "\$1" in
+    --evidence-dir) shift; evidence_dir="\${1:-}" ;;
+    --manifest) shift; manifest_path="\${1:-}" ;;
+    --activation-receipt) shift; activation_path="\${1:-}" ;;
+  esac
+  shift
+done
+case "\$command" in
+  inventory)
+    mkdir -p "\$evidence_dir"
+    candidate_count="\${JANITOR_TEST_INVENTORY_CANDIDATE_COUNT:-0}"
+    observed_at="\${JANITOR_TEST_INVENTORY_OBSERVED_AT:-2026-08-29T00:00:00.000Z}"
+    jq -n --arg observed_at "\$observed_at" --argjson candidate_count "\$candidate_count" \
+      '{startedAt:\$observed_at,completedAt:\$observed_at,targets:{mailbox:{candidateCount:\$candidate_count}}}' \
+      > "\$evidence_dir/manifest.json"
+    printf '{"status":"inventory_complete","manifestPath":"%s"}\n' "\$evidence_dir/manifest.json"
+    ;;
+  policy-apply)
+    receipt="\${manifest_path%/*}/apply-receipt.json"
+    activation_sha="\$(shasum -a 256 "\$activation_path" | sed 's/[[:space:]].*//')"
+    deleted_count="\${JANITOR_TEST_APPLY_DELETED_COUNT:-300}"
+    printf '{"issue":"FLY-2139","status":"complete","policyAudit":{"activationReceiptSha256":"%s"},"deleted":{"mailbox":%s},"durationMs":3600000}\n' "\$activation_sha" "\$deleted_count" > "\$receipt"
+    shasum -a 256 "\$receipt" | sed 's/[[:space:]].*//' > "\$receipt.sha256"
+    printf '{"status":"complete","applyReceiptPath":"%s"}\n' "\$receipt"
+    ;;
+  *) exit 31 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/node"
+rm -f "$STATE_DIR/db-retention-activation.json" \
+  "$STATE_DIR/db-retention-last-success.json" \
+  "$STATE_DIR/db-retention-last-inventory.json" \
+  "$db_retention_cli_log"
+for seeded_run in \
+  20200101T000000Z-101-apply \
+  20200102T000000Z-102-apply \
+  20200103T000000Z-103-apply; do
+  mkdir -p "$db_retention_evidence_root/$seeded_run"
+  printf '{}\n' > "$db_retention_evidence_root/$seeded_run/manifest.json"
+done
+db_inventory_only_out="$(run_janitor --apply --module db_retention 2>&1)"
+db_inventory_only_rc=$?
+db_calls_after_inventory="$(wc -l < "$db_retention_cli_log" | tr -d ' ')"
+db_inventory_repeat_out="$(run_janitor --apply --module db_retention 2>&1)"
+db_inventory_repeat_rc=$?
+db_calls_after_inventory_repeat="$(wc -l < "$db_retention_cli_log" | tr -d ' ')"
+db_evidence_count="$(find "$db_retention_evidence_root" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+if [[ "$db_inventory_only_rc" -eq 0 \
+  && "$db_inventory_repeat_rc" -eq 0 \
+  && "$(grep -c ' inventory ' "$db_retention_cli_log" 2>/dev/null || true)" -eq 1 \
+  && "$(grep -c ' policy-apply ' "$db_retention_cli_log" 2>/dev/null || true)" -eq 0 \
+  && ! -e "$STATE_DIR/db-retention-last-success.json" \
+  && -f "$STATE_DIR/db-retention-last-inventory.json" \
+  && "$db_calls_after_inventory_repeat" -eq "$db_calls_after_inventory" \
+  && "$db_inventory_repeat_out" == *"weekly-inventory-marker-current"* \
+  && "$db_evidence_count" -le 2 \
+  && "$(grep -c 'activation-missing-inventory-only' "$STATE_DIR/audit.jsonl" 2>/dev/null || true)" -ge 1 ]]; then
+  pass "inventory-only mode is weekly and keeps a bounded evidence history"
+else
+  fail "DB retention inventory-only boundary failed (rc=$db_inventory_only_rc repeat_rc=$db_inventory_repeat_rc evidence=$db_evidence_count output=$db_inventory_only_out repeat=$db_inventory_repeat_out)"
+fi
+
+rm -f "$STATE_DIR/db-retention-last-inventory.json" "$db_retention_cli_log"
+db_cycle_out="$(run_janitor --cycle 2>&1)"
+db_cycle_rc=$?
+db_cycle_inventory_calls="$(grep -c ' inventory ' "$db_retention_cli_log" 2>/dev/null || true)"
+db_cycle_dry_evidence="$(find "$db_retention_evidence_root" -mindepth 1 -maxdepth 1 -type d -name '*-dry' | wc -l | tr -d ' ')"
+db_cycle_evidence_count="$(find "$db_retention_evidence_root" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')"
+if [[ "$db_cycle_rc" -eq 0 \
+  && "$db_cycle_inventory_calls" -eq 1 \
+  && "$db_cycle_dry_evidence" -eq 0 \
+  && "$db_cycle_evidence_count" -le 2 \
+  && "$(grep -c 'cycle-apply-phase-owns-inventory' "$STATE_DIR/audit.jsonl" 2>/dev/null || true)" -ge 1 ]]; then
+  pass "cycle inventories once in apply and leaves no redundant dry evidence"
+else
+  fail "DB retention cycle duplicated or leaked evidence (rc=$db_cycle_rc calls=$db_cycle_inventory_calls dry=$db_cycle_dry_evidence total=$db_cycle_evidence_count output=$db_cycle_out)"
+fi
+
+printf '[TEST] Case: held historical evidence can never evict the just-sealed current run\n'
+rm -rf "$db_retention_evidence_root"
+for held_run in \
+  20200101T000000Z-201-apply \
+  20200102T000000Z-202-apply \
+  20200103T000000Z-203-apply; do
+  mkdir -p "$db_retention_evidence_root/$held_run"
+  printf '{}\n' > "$db_retention_evidence_root/$held_run/manifest.json"
+done
+cat > "$FAKE_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  *20200101T000000Z-201-apply*|*20200102T000000Z-202-apply*) exit 0 ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$FAKE_BIN/lsof"
+rm -f "$STATE_DIR/db-retention-last-inventory.json" "$db_retention_cli_log"
+db_held_out="$(run_janitor --apply --module db_retention 2>&1)"
+db_held_rc=$?
+db_current_manifest="$(jq -r '.manifest // empty' "$STATE_DIR/db-retention-last-inventory.json" 2>/dev/null || true)"
+if [[ "$db_held_rc" -eq 0 \
+  && -f "$db_current_manifest" \
+  && -d "$db_retention_evidence_root/20200101T000000Z-201-apply" \
+  && -d "$db_retention_evidence_root/20200102T000000Z-202-apply" \
+  && ! -e "$db_retention_evidence_root/20200103T000000Z-203-apply" ]]; then
+  pass "canonical current-run protection survives held historical evidence"
+else
+  fail "current retention evidence was deleted or held evidence mishandled (rc=$db_held_rc manifest=$db_current_manifest output=$db_held_out)"
+fi
+cat > "$FAKE_BIN/lsof" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$FAKE_BIN/lsof"
+
+printf '[TEST] Case: DB retention summary observes sustained mint-over-drain rates\n'
+rm -f "$db_retention_cli_log"
+# A stale success marker can coexist with the newer inventory-only marker.
+# The rate baseline must be the adjacent observation, not marker-type priority.
+jq -n '{schema_version:2,issue:"FLY-2139",completed_at:"2026-08-28T00:00:00.000Z",apply_receipt_sha256:("a" * 64),rate_observation:{candidateCount:999,observedAt:"2026-08-28T00:00:00.000Z",drainRatePerHour:300,mintExceedsDrainStreak:9}}' \
+  > "$STATE_DIR/db-retention-last-success.json"
+touch -t 202001010000 "$STATE_DIR/db-retention-last-success.json"
+printf '{}\n' > "$STATE_DIR/db-retention-activation.json"
+JANITOR_TEST_INVENTORY_CANDIDATE_COUNT=460
+JANITOR_TEST_INVENTORY_OBSERVED_AT=2026-08-29T01:00:00.000Z
+JANITOR_TEST_APPLY_DELETED_COUNT=300
+db_apply_out="$(run_janitor --apply --module db_retention 2>&1)"
+db_apply_rc=$?
+calls_after_apply="$(wc -l < "$db_retention_cli_log" | tr -d ' ')"
+first_rate_streak="$(jq -r '.rate_observation.mintExceedsDrainStreak // -1' "$STATE_DIR/db-retention-last-success.json" 2>/dev/null || true)"
+touch -t 202001010000 "$STATE_DIR/db-retention-last-success.json"
+JANITOR_TEST_INVENTORY_CANDIDATE_COUNT=920
+JANITOR_TEST_INVENTORY_OBSERVED_AT=2026-08-29T02:00:00.000Z
+db_second_apply_out="$(run_janitor --apply --module db_retention 2>&1)"
+db_second_apply_rc=$?
+calls_after_second_apply="$(wc -l < "$db_retention_cli_log" | tr -d ' ')"
+rate_summary="$(jq -c 'select(.action == "summary" and .mode == "apply") | .db_retention_rates' "$STATE_DIR/audit.jsonl" | tail -1)"
+db_repeat_out="$(run_janitor --apply --module db_retention 2>&1)"
+db_repeat_rc=$?
+calls_after_repeat="$(wc -l < "$db_retention_cli_log" | tr -d ' ')"
+if [[ "$db_apply_rc" -eq 0 \
+  && "$db_second_apply_rc" -eq 0 \
+  && "$db_repeat_rc" -eq 0 \
+  && -f "$STATE_DIR/db-retention-last-success.json" \
+  && "$first_rate_streak" -eq 1 \
+  && "$(grep -c ' policy-apply ' "$db_retention_cli_log" 2>/dev/null || true)" -eq 2 \
+  && "$calls_after_second_apply" -gt "$calls_after_apply" \
+  && "$calls_after_repeat" -eq "$calls_after_second_apply" \
+  && "$(jq -r '.candidate_count == 920 and .mint_rate_per_hour == 460 and .drain_rate_per_hour == 300 and .mint_exceeds_drain_streak == 2 and .alert == true' <<< "$rate_summary" 2>/dev/null)" == "true" \
+  && "$db_second_apply_out" == *"WARNING: DB retention mint rate exceeds drain rate for 2 consecutive cycles"* \
+  && "$db_repeat_out" == *"weekly-success-marker-current"* ]]; then
+  pass "consecutive receipts expose 460-vs-300 rates, alert on cycle two, and suppress repeat work"
+else
+  fail "DB retention rate observation failed (apply_rc=$db_apply_rc second_rc=$db_second_apply_rc repeat_rc=$db_repeat_rc first_streak=$first_rate_streak rates=$rate_summary output=$db_apply_out second=$db_second_apply_out repeat=$db_repeat_out)"
+fi
+unset JANITOR_TEST_INVENTORY_CANDIDATE_COUNT JANITOR_TEST_INVENTORY_OBSERVED_AT \
+  JANITOR_TEST_APPLY_DELETED_COUNT
+rm -f "$FAKE_BIN/node" "$STATE_DIR/db-retention-activation.json"
+
 printf '[TEST] Case: a successful full apply publishes its audit manifest report\n'
 report_old="$MAIN_HOME/generated_images/report-old.png"
 printf 'report candidate\n' > "$report_old"
@@ -714,6 +1186,8 @@ if [[ "$report_apply_rc" -eq 0 \
   && "$(<"$ROOT/captured-report.html")" == *"释放空间"* \
   && "$(<"$ROOT/captured-report.html")" == *"最老删除项"* \
   && "$(<"$ROOT/captured-report.html")" == *"防线拦下"* \
+  && "$(<"$ROOT/captured-report.html")" == *"铸信/时"* \
+  && "$(<"$ROOT/captured-report.html")" == *"排水/时"* \
   && "$(<"$ROOT/captured-report.html")" == *"codex_artifacts"* \
   && "$(jq -r 'select(.action == "summary" and .mode == "apply") | has("deleted_file_count")' \
     "$STATE_DIR/audit.jsonl" | tail -1)" == "true" ]]; then
@@ -1049,11 +1523,11 @@ EOF
 
   if grep -q '<string>com.flywheel.log-janitor</string>' "$PLIST_TEMPLATE" \
     && grep -A1 '<key>RunAtLoad</key>' "$PLIST_TEMPLATE" | grep -q '<false/>' \
-    && grep -q '<string>--apply</string>' "$PLIST_TEMPLATE" \
+    && grep -q '<string>--cycle</string>' "$PLIST_TEMPLATE" \
     && grep -q '<integer>4</integer>' "$PLIST_TEMPLATE" \
     && grep -q '<integer>15</integer>' "$PLIST_TEMPLATE" \
     && grep -q '__HOME__/.npm-global/bin' "$PLIST_TEMPLATE"; then
-    pass "plist is a daily 04:15 non-Lead apply job with RunAtLoad disabled and ProofShot on PATH"
+    pass "plist is a daily 04:15 non-Lead cycle job with RunAtLoad disabled and ProofShot on PATH"
   else
     fail "plist scheduling or label structure drifted"
   fi
@@ -1069,6 +1543,17 @@ if [[ -n "$ts_statuses" && "$shell_statuses" == "$ts_statuses" ]]; then
   pass "terminal-state cleanup vocabulary matches the TypeScript source of truth"
 else
   fail "terminal-state parity drifted (ts=$ts_statuses shell=$shell_statuses)"
+fi
+
+printf '[TEST] Case: gate marker wake-terminal statuses stay in parity with Bridge settlement authority\n'
+ts_wake_statuses="$(sed -n '/export const WAKE_TERMINAL_STATUSES = new Set(\[/,/^\]);/p' \
+  "$REPO_ROOT/packages/teamlead/src/operational-terminal-status.ts" \
+  | grep -Eo '"[a-z_]+"' | tr -d '"' | paste -sd '|' -)"
+shell_wake_statuses="$(sed -n 's/^WAKE_TERMINAL_STATUSES="\([^"]*\)"/\1/p' "$JANITOR")"
+if [[ -n "$ts_wake_statuses" && "$shell_wake_statuses" == "$ts_wake_statuses" ]]; then
+  pass "gate marker cleanup uses exactly the Bridge wake-terminal vocabulary"
+else
+  fail "wake-terminal parity drifted (ts=$ts_wake_statuses shell=$shell_wake_statuses)"
 fi
 
 printf '\n[TEST] flywheel-log-janitor: %d passed, %d failed\n' "$PASS" "$FAIL"

@@ -1,6 +1,7 @@
 import {
 	existsSync,
 	lstatSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	realpathSync,
@@ -15,10 +16,13 @@ import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	assertSupportedSqliteVersion,
+	createFly2139ActivationReceipt,
 	encodeSqliteLiteral,
 	executeApply,
 	executeInventory,
 	executeRotateLog,
+	parseFly2006Args,
+	validateFly2006InventoryPaths,
 } from "../../../../scripts/fly-1998-database-retention-sweep.mjs";
 
 const NOW = "2026-08-22T12:00:00.000Z";
@@ -657,6 +661,89 @@ describe("FLY-1998 database retention sweep", () => {
 				.value,
 		).toBe(value);
 		db.close();
+	});
+
+	it("keeps FLY-2006 inventory independent from an absent FLY-2139 root", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2006-paths-"));
+		roots.push(root);
+		const teamleadDbPath = join(root, ".flywheel", "teamlead.db");
+		const commDbPath = join(root, ".flywheel", "comm", "flywheel", "comm.db");
+		const evidenceRoot = join(root, ".flywheel", "maintenance", "fly-2006");
+		const evidenceDir = join(evidenceRoot, "run-1");
+		mkdirSync(join(root, ".flywheel", "comm", "flywheel"), { recursive: true });
+		mkdirSync(evidenceRoot, { recursive: true });
+		writeFileSync(teamleadDbPath, "");
+		writeFileSync(commDbPath, "");
+		expect(() =>
+			validateFly2006InventoryPaths({
+				homeDir: root,
+				teamleadDbPath,
+				commDbPath,
+				evidenceDir,
+			}),
+		).not.toThrow();
+		expect(existsSync(join(root, ".flywheel", "maintenance", "fly-2139"))).toBe(
+			false,
+		);
+	});
+
+	it("keeps every non-fixture consumer bound to the exported path validator", () => {
+		const source = readFileSync(
+			new URL(
+				"../../../../scripts/lib/fly-2006-retention-engine.mjs",
+				import.meta.url,
+			),
+			"utf8",
+		);
+		expect(source).not.toMatch(/\bvalidateInventoryPaths\s*\(/);
+		expect(source.match(/\bvalidateFly2006InventoryPaths\s*\(/g)).toHaveLength(
+			5,
+		);
+	});
+
+	it("mints the exact canonical activation receipt through the shipped CLI contract", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2139-activation-"));
+		roots.push(root);
+		const activationReceiptPath = join(
+			root,
+			".flywheel",
+			"state",
+			"log-janitor",
+			"db-retention-activation.json",
+		);
+		const parsed = parseFly2006Args([
+			"activation-receipt",
+			"--activation-receipt",
+			activationReceiptPath,
+			"--approved-by",
+			"flywheel-eng-lead",
+			"--approved-at",
+			NOW,
+		]);
+		expect(parsed.command).toBe("activation-receipt");
+		const result = createFly2139ActivationReceipt({
+			homeDir: root,
+			activationReceiptPath,
+			approvedBy: parsed["--approved-by"],
+			approvedAt: parsed["--approved-at"],
+		});
+		expect(result.status).toBe("complete");
+		expect(statSync(activationReceiptPath).mode & 0o777).toBe(0o600);
+		expect(
+			JSON.parse(readFileSync(activationReceiptPath, "utf8")),
+		).toMatchObject({
+			issue: "FLY-2139",
+			approvedBy: "flywheel-eng-lead",
+			approvedAt: NOW,
+		});
+		expect(() =>
+			createFly2139ActivationReceipt({
+				homeDir: root,
+				activationReceiptPath,
+				approvedBy: "flywheel-eng-lead",
+				approvedAt: NOW,
+			}),
+		).toThrow("activation_receipt_exists");
 	});
 
 	it("commits more than 200 frozen rows in sealed batches and resumes idempotently", async () => {

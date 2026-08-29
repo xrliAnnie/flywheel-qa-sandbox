@@ -25,12 +25,24 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+	createFly2139ActivationReceipt,
 	executeFly2006Apply,
 	executeFly2006Inventory,
 	executeFly2006Vacuum,
+	executeFly2139MaintenanceVacuum,
+	executeFly2139PolicyApply,
+	validateFly2006InventoryPaths,
 } from "./lib/fly-2006-retention-engine.mjs";
 
-export { executeFly2006Apply, executeFly2006Inventory, executeFly2006Vacuum };
+export {
+	executeFly2006Apply,
+	executeFly2006Inventory,
+	executeFly2006Vacuum,
+	createFly2139ActivationReceipt,
+	executeFly2139MaintenanceVacuum,
+	executeFly2139PolicyApply,
+	validateFly2006InventoryPaths,
+};
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(dirname(scriptPath), "..");
@@ -1530,7 +1542,17 @@ export async function executeRotateLog(input) {
 
 export function parseFly2006Args(argv) {
 	const [command, ...rest] = argv;
-	if (!["inventory", "apply", "vacuum", "rotate-log"].includes(command))
+	if (
+		![
+			"inventory",
+			"apply",
+			"activation-receipt",
+			"policy-apply",
+			"vacuum",
+			"maintenance-vacuum",
+			"rotate-log",
+		].includes(command)
+	)
 		throw new Error("command_required");
 	const contracts = {
 		inventory: {
@@ -1540,6 +1562,10 @@ export function parseFly2006Args(argv) {
 				"--evidence-dir",
 				"--health-url",
 			],
+			optional: ["--evidence-issue"],
+		},
+		"activation-receipt": {
+			required: ["--activation-receipt", "--approved-by", "--approved-at"],
 			optional: [],
 		},
 		apply: {
@@ -1554,12 +1580,25 @@ export function parseFly2006Args(argv) {
 			],
 			optional: [],
 		},
+		"policy-apply": {
+			required: ["--manifest", "--activation-receipt"],
+			optional: [],
+		},
 		vacuum: {
 			required: [
 				"--manifest",
 				"--database",
 				"--quiescence-ack",
 				"--rehearsal-summary",
+				"--max-duration-ms",
+			],
+			optional: [],
+		},
+		"maintenance-vacuum": {
+			required: [
+				"--database",
+				"--database-path",
+				"--evidence-dir",
 				"--max-duration-ms",
 			],
 			optional: [],
@@ -1590,11 +1629,25 @@ async function runCli() {
 		const args = parseFly2006Args(process.argv.slice(2));
 		let result;
 		if (args.command === "inventory") {
+			const evidenceIssue = args["--evidence-issue"];
+			if (
+				evidenceIssue &&
+				evidenceIssue !== "fly-2006" &&
+				evidenceIssue !== "fly-2139"
+			)
+				throw new Error("evidence_issue_invalid");
 			result = await executeFly2006Inventory({
 				teamleadDbPath: args["--teamlead-db"],
 				commDbPath: args["--comm-db"],
 				evidenceDir: args["--evidence-dir"],
 				healthUrl: args["--health-url"],
+				...(evidenceIssue ? { evidenceIssues: [evidenceIssue] } : {}),
+			});
+		} else if (args.command === "activation-receipt") {
+			result = createFly2139ActivationReceipt({
+				activationReceiptPath: args["--activation-receipt"],
+				approvedBy: args["--approved-by"],
+				approvedAt: args["--approved-at"],
 			});
 		} else if (args.command === "apply") {
 			result = await executeFly2006Apply({
@@ -1607,6 +1660,18 @@ async function runCli() {
 					respondedAt: args["--founder-responded-at"],
 					responseDigest: args["--founder-response-digest"],
 				},
+			});
+		} else if (args.command === "policy-apply") {
+			result = await executeFly2139PolicyApply({
+				manifestPath: args["--manifest"],
+				activationReceiptPath: args["--activation-receipt"],
+			});
+		} else if (args.command === "maintenance-vacuum") {
+			result = await executeFly2139MaintenanceVacuum({
+				database: args["--database"],
+				databasePath: args["--database-path"],
+				evidenceDir: args["--evidence-dir"],
+				maxDurationMs: Number(args["--max-duration-ms"]),
 			});
 		} else if (args.command === "vacuum") {
 			result = await executeFly2006Vacuum({
@@ -1631,6 +1696,8 @@ async function runCli() {
 				applyReceiptPath: result.applyReceiptPath,
 				vacuumReceiptPath: result.receiptPath,
 				rotationReceiptPath: result.rotationReceiptPath,
+				activationReceiptPath: result.activationReceiptPath,
+				activationReceiptSha256: result.activationReceiptSha256,
 				deleted: result.deleted,
 				counts: result.manifest?.targets
 					? Object.fromEntries(

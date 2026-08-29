@@ -704,6 +704,11 @@ jobs:
       - name: Test — FLY-1330 log janitor
         run: bash scripts/__tests__/flywheel-log-janitor.test.sh
 
+      # FLY-2139: stopped-service SQLite backup/checkpoint/VACUUM lifecycle.
+      # Hermetic HOME with three temporary databases; never touches host state.
+      - name: Test — FLY-2139 database maintenance
+        run: bash scripts/__tests__/db-maintenance.test.sh
+
       # FLY-1887: hard deadline + identity-fenced cleanup for global one-shot
       # Codex calls. Hermetic fake HOME/PATH/process fixtures; never installs to
       # or signals anything in the runner's real host state.

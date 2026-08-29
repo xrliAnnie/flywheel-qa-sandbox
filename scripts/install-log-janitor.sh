@@ -53,7 +53,7 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 
 if [[ "$FORCE" -ne 1 ]]; then
   [[ -f "$FIRST_APPLY_MARKER" && ! -L "$FIRST_APPLY_MARKER" ]] \
-    || die "missing $FIRST_APPLY_MARKER; run janitor --dry-run, review it, then --apply before installing"
+    || die "missing $FIRST_APPLY_MARKER; run janitor --cycle once (or review --dry-run, then --apply) before installing"
 fi
 
 if [[ -n "${FLYWHEEL_JANITOR_LAUNCHCTL:-}" ]]; then

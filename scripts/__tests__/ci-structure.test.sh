@@ -737,6 +737,7 @@ expected_shard_tests = {
         "Test — FLY-1955 Codex daemon zombie recovery",
         "Test — FLY-697 codex-log-guard",
         "Test — FLY-1330 log janitor",
+        "Test — FLY-2139 database maintenance",
         "Test — FLY-1887 one-shot Codex hard timeout",
         "Test — FLY-1887 bounded Flywheel logs",
         "Test — FLY-1961 dual-vendor workspace trust",

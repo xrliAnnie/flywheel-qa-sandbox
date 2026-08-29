@@ -2585,6 +2585,17 @@ deploy_and_verify() {
             RESTART_TERMINAL_REPORTED=true
             return 1
         fi
+
+        # FLY-2139: use the already-stopped Bridge window for bounded SQLite
+        # backup/checkpoint/weekly compaction. Failure evidence is durable and
+        # alerting is emitted by the helper; maintenance must never strand the
+        # fleet offline, so restart proceeds on a non-zero helper result.
+        if ! bash "$FLYWHEEL_DIR/scripts/db-maintenance.sh"; then
+            log "WARNING: database maintenance failed; continuing service restart"
+            alert_severe "database-maintenance-failed" \
+                "Flywheel database maintenance failed" \
+                "Stopped-window database maintenance failed. Durable evidence is under ~/.flywheel/maintenance/fly-2139/db-maintenance; the restart continues so the fleet is not stranded offline. Inspect backup/checkpoint/integrity failure receipts immediately."
+        fi
     fi
 
     # Step 2: Build (Bridge is stopped, no race possible)

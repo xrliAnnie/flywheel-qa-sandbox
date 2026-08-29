@@ -344,6 +344,11 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 				"source_ref",
 				"type",
 				"source_kind",
+				"batch_id",
+				"priority",
+				"claim_expires_at",
+				"ref_id",
+				"superseded_by",
 			].every((name) => hasMailboxColumn(db, name))
 		) {
 			db.exec(`CREATE INDEX IF NOT EXISTS mailbox_dead_scan
@@ -351,7 +356,17 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 				WHERE state = 'DEAD' AND carrier = 'inbox';
 				CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
 				ON mailbox(source_ref, seq)
-				WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter'`);
+				WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter';
+				CREATE INDEX IF NOT EXISTS mailbox_batch_lookup
+				ON mailbox(batch_id, priority, seq)
+				WHERE batch_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS mailbox_lease_expiry_order
+				ON mailbox(priority, seq, claim_expires_at)
+				WHERE state = 'LEASED' AND carrier = 'inbox' AND batch_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS mailbox_ref_lookup
+				ON mailbox(ref_id) WHERE ref_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS mailbox_superseded_by_lookup
+				ON mailbox(superseded_by) WHERE superseded_by IS NOT NULL`);
 		}
 
 		const projection = db

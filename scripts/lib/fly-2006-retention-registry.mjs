@@ -35,11 +35,12 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		commdb_finalize_failures dead_letter_alerts doa_backoff doa_backoff_participants
 		doa_backoff_reset_receipts flag_departures flag_keep_anchor flag_provenance
 		flag_scan_failure_alert_intents flag_scan_run_items flag_scan_run_legs flag_scan_runs
-		flag_scan_state flag_store_meta flag_value_changelog flag_values fleet_pressure_hold
+		flag_scan_scope_state flag_scan_state flag_store_meta flag_value_changelog flag_values fleet_pressure_hold
 		founder_reply_retry land_alert_outbox land_operation land_operation_step
 		land_recovery_episode land_repo_admission lead_inbox lead_pending_escalation
 		lifecycle_apply_claims lifecycle_launch_claims linear_state_observations
 		loop_heartbeat loop_owner merged_gate_guard_failure messages
+		patrol_orphan_watch
 		receipt_activation_episodes receipt_alert_outbox receipt_exemption_audit
 		receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents
 		runner_declared_states runner_phase_wakes runner_shutdown_controls
@@ -73,8 +74,8 @@ export const COMM_TABLE_CLASSIFICATION = Object.freeze({
 	`),
 	protectedCurrentOrAuthority: words(`
 		lead_inbox_fenced_root lead_inbox_freeze_install lead_inbox_sanitation_audit
-		loop_heartbeat loop_owner mailbox_identity mailbox_migration_meta
-		runner_declared_states runner_workflow_activation session_receipt_lineage sessions
+		loop_heartbeat loop_owner mailbox_archive mailbox_identity mailbox_migration_meta
+		runner_declared_states runner_stop_declarations runner_workflow_activation session_receipt_lineage sessions
 		three_stage_turn turn_source_history turn_wait_ledger turn_wake_outbox
 		workflow_engine_park workflow_engine_park_cursor workflow_source_event
 	`),
@@ -96,11 +97,9 @@ function registryNames(database) {
 }
 
 export function assertClassifiedSchema(database, actualNames) {
-	const { registry, names, unique } = registryNames(database);
+	const { registry, names } = registryNames(database);
 	const actual = new Set(actualNames);
-	const unknown = [...actual].filter((name) => !unique.has(name)).sort();
-	if (unknown.length > 0)
-		throw new Error(`schema_unclassified:${database}:${unknown.join(",")}`);
+	assertNoUnclassifiedSchema(database, actualNames);
 	const retiredOptional = new Set(registry.retiredOptional ?? []);
 	const missing = names
 		.filter((name) => !retiredOptional.has(name) && !actual.has(name))
@@ -117,6 +116,15 @@ export function assertClassifiedSchema(database, actualNames) {
 			]),
 		),
 	};
+}
+
+export function assertNoUnclassifiedSchema(database, actualNames) {
+	const { unique } = registryNames(database);
+	const actual = new Set(actualNames);
+	const unknown = [...actual].filter((name) => !unique.has(name)).sort();
+	if (unknown.length > 0)
+		throw new Error(`schema_unclassified:${database}:${unknown.join(",")}`);
+	return { database, total: actual.size };
 }
 
 function timestampMs(value) {
