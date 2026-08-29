@@ -1,13 +1,13 @@
 ---
 issue: FLY-145
 phase: design
-phaseCursor: 2/6
-updated: 2026-08-29T14:01:40.391Z
-nextStep: write plan + run codex design review
+phaseCursor: 3/6
+updated: 2026-08-29T14:02:17.774Z
+nextStep: codex design review loop
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
-**phase**: design (2/6)
-**next**: write plan + run codex design review
+**phase**: design (3/6)
+**next**: codex design review loop
