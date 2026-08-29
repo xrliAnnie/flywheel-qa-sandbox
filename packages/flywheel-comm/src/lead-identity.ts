@@ -101,6 +101,24 @@ function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+/**
+ * The v1 digest predates Codex runtime tuning. Keep those newly projected
+ * fields outside the digest until a coordinated schema-version migration can
+ * restart every existing Lead atomically; the canonical payload still exposes
+ * them to launchers.
+ */
+function v1IdentityDigest(
+	fields: Omit<CanonicalLeadIdentity, "projectsDigest" | "identityDigest">,
+): string {
+	const {
+		model: _model,
+		effort: _effort,
+		modelContextWindow: _modelContextWindow,
+		...v1Fields
+	} = fields;
+	return sha256(JSON.stringify(v1Fields));
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -421,7 +439,7 @@ export function compileLeadIdentityRows(
 			}
 			seenStateDirs.set(pathIdentity, location);
 
-			const identityDigest = sha256(JSON.stringify(fields));
+			const identityDigest = v1IdentityDigest(fields);
 			rows.push({
 				project,
 				lead,
@@ -465,7 +483,7 @@ export function compileLeadIdentityRows(
 			row.identity = {
 				...assignedFields,
 				projectsDigest,
-				identityDigest: sha256(JSON.stringify(assignedFields)),
+				identityDigest: v1IdentityDigest(assignedFields),
 			};
 		}
 	}

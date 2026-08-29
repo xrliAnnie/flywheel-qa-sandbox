@@ -196,6 +196,55 @@ describe("FLY-1726 canonical Lead identity", () => {
 		expect(after.projectsDigest).not.toBe(before.projectsDigest);
 	});
 
+	it("keeps the v1 identityDigest stable when Codex runtime tuning is first projected", () => {
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [
+					lead("codex-infra-bot-lead", {
+						backend: "codex-app-server",
+					}),
+				],
+			},
+		]);
+		const before = resolveLeadIdentity({
+			projectsPath,
+			projectName: "flywheel",
+			leadId: "codex-infra-bot-lead",
+			homeDir: dir,
+		});
+
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [
+					lead("codex-infra-bot-lead", {
+						backend: "codex-app-server",
+						model: "gpt-5.6-sol",
+						effort: "xhigh",
+						modelContextWindow: 1_000_000,
+					}),
+				],
+			},
+		]);
+		const after = resolveLeadIdentity({
+			projectsPath,
+			projectName: "flywheel",
+			leadId: "codex-infra-bot-lead",
+			homeDir: dir,
+		});
+
+		expect(after).toMatchObject({
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+			modelContextWindow: 1_000_000,
+		});
+		expect(after.identityDigest).toBe(before.identityDigest);
+		expect(after.projectsDigest).not.toBe(before.projectsDigest);
+	});
+
 	it.each([
 		[
 			"identity_row_missing",

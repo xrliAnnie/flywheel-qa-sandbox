@@ -11,12 +11,38 @@ import type { StateStore } from "../StateStore.js";
 
 export type FlagStoreRuntime = { mode: "ready"; store: StateStore };
 
+function bootstrapFlagEnv(
+	env: Record<string, string | undefined>,
+	log: (message: string) => void,
+): Record<string, string | undefined> {
+	let sanitized = env;
+	for (const name of STORE_MANAGED_FLAGS) {
+		const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+		const codec = getFlagStoreCodec(name);
+		if (!spec?.envVar || !codec || env[spec.envVar] === undefined) continue;
+		try {
+			codec.canonicalEffective(
+				codec.parse({ hasOverride: true, raw: env[spec.envVar] ?? null }),
+			);
+		} catch (error) {
+			if (sanitized === env) sanitized = { ...env };
+			delete sanitized[spec.envVar];
+			const detail = error instanceof Error ? error.message : String(error);
+			log(
+				`[flag-store] ${spec.envVar} has an invalid bootstrap seed; using the registry default (${detail})`,
+			);
+		}
+	}
+	return sanitized;
+}
+
 export function initializeFlagStore(
 	store: StateStore,
 	env: Record<string, string | undefined>,
 	now: number = Date.now(),
+	log: (message: string) => void = console.warn,
 ): FlagStoreRuntime {
-	store.ensureFlagValueRows({ env, now });
+	store.ensureFlagValueRows({ env: bootstrapFlagEnv(env, log), now });
 	return { mode: "ready", store };
 }
 
