@@ -40,6 +40,14 @@ function fixtureDb(path, { missingTemplate = false } = {}) {
 			template_id TEXT,
 			detail JSON
 		);
+		CREATE TABLE flag_values (
+			flag_name TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			has_override INTEGER NOT NULL,
+			raw_value TEXT,
+			last_effective TEXT NOT NULL,
+			PRIMARY KEY(flag_name, scope)
+		);
 	`);
 	const ids = [
 		"tpl_code",
@@ -192,10 +200,22 @@ test("binding seed rolls back every row when a canonical template is unavailable
 	}
 });
 
-test("strict config verification requires both generalized pipeline booleans", () => {
+test("strict config verification requires both scoped-store pipeline booleans", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1775-config-"));
 	try {
 		const good = join(dir, "good.yaml");
+		const dbPath = join(dir, "teamlead.db");
+		fixtureDb(dbPath);
+		const db = new Database(dbPath);
+		db.prepare("INSERT INTO flag_values VALUES (?, ?, 1, '1', 'true')").run(
+			"pipeline_dag",
+			"test-slot-1",
+		);
+		db.prepare("INSERT INTO flag_values VALUES (?, ?, 1, '1', 'true')").run(
+			"pipeline_work_kind",
+			"test-slot-1",
+		);
+		db.close();
 		const base = `project: test-slot-1
 linear:
   team_id: FLY
@@ -213,24 +233,31 @@ teams:
 decision_layer:
   autonomy_level: advisor
   escalation_channel: discord
-pipeline:
-  dag: true
-  work_kind: true
 `;
 		writeFileSync(good, base);
 		const accepted = run(
 			"verify-config",
 			"--file",
 			good,
+			"--db",
+			dbPath,
 			"--project",
 			"test-slot-1",
 		);
 		assert.equal(accepted.status, 0, accepted.stderr);
-		writeFileSync(good, base.replace("work_kind: true", "work_kind: false"));
+		const disabledDb = new Database(dbPath);
+		disabledDb
+			.prepare(
+				"UPDATE flag_values SET raw_value = '0', last_effective = 'false' WHERE flag_name = 'pipeline_work_kind' AND scope = 'test-slot-1'",
+			)
+			.run();
+		disabledDb.close();
 		const refused = run(
 			"verify-config",
 			"--file",
 			good,
+			"--db",
+			dbPath,
 			"--project",
 			"test-slot-1",
 		);

@@ -65,6 +65,35 @@ function openDatabase(path, readonly = false) {
 	return db;
 }
 
+function scopedBoolean(db, config, name, project) {
+	const spec = config.FEATURE_FLAGS.find(
+		(candidate) => candidate.name === name,
+	);
+	const codec = config.getFlagStoreCodec(name);
+	if (!spec || typeof spec.default !== "boolean" || !codec) {
+		throw new Error(`missing scoped boolean flag policy: ${name}`);
+	}
+	const row = db
+		.prepare(
+			`SELECT has_override, raw_value
+			   FROM flag_values
+			  WHERE flag_name = ? AND scope IN (?, '*')
+			  ORDER BY CASE WHEN scope = ? THEN 0 ELSE 1 END
+			  LIMIT 1`,
+		)
+		.get(name, project, project);
+	const effective = row
+		? codec.parse({
+				hasOverride: Number(row.has_override) === 1,
+				raw: row.raw_value ?? null,
+			})
+		: spec.default;
+	if (typeof effective !== "boolean") {
+		throw new Error(`scoped flag is not boolean: ${name}`);
+	}
+	return effective;
+}
+
 async function seedBindings(values) {
 	const dbPath = required(values, "db");
 	const project = required(values, "project");
@@ -181,6 +210,7 @@ async function verifyBindings(values) {
 
 async function verifyConfig(values) {
 	const file = required(values, "file");
+	const dbPath = required(values, "db");
 	const project = required(values, "project");
 	const { config } = await canonicalBindings();
 	const loader = new config.ConfigLoader((path) => readFile(path, "utf8"));
@@ -190,11 +220,22 @@ async function verifyConfig(values) {
 			`config project ${loaded.project} does not match ${project}`,
 		);
 	}
-	if (loaded.pipeline?.dag !== true) {
-		throw new Error("pipeline.dag must resolve to true");
+	const db = openDatabase(dbPath, true);
+	let dag;
+	let workKind;
+	try {
+		dag = scopedBoolean(db, config, "pipeline_dag", project);
+		workKind = scopedBoolean(db, config, "pipeline_work_kind", project);
+	} finally {
+		db.close();
 	}
-	if (loaded.pipeline?.work_kind !== true) {
-		throw new Error("pipeline.work_kind must resolve to true");
+	if (!dag) {
+		throw new Error("pipeline_dag must resolve to true in the scoped store");
+	}
+	if (!workKind) {
+		throw new Error(
+			"pipeline_work_kind must resolve to true in the scoped store",
+		);
 	}
 	process.stdout.write(
 		`${JSON.stringify({ success: true, project, dag: true, workKind: true })}\n`,
@@ -215,7 +256,7 @@ async function main() {
 			break;
 		default:
 			throw new Error(
-				"usage: qa-generalized.mjs seed-bindings|verify-bindings|verify-config [options]",
+				"usage: qa-generalized.mjs seed-bindings|verify-bindings|verify-config [options; verify-config requires --db]",
 			);
 	}
 }
