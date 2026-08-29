@@ -1032,8 +1032,7 @@ export async function setupRunInfrastructure(
 				chatThreadCreator,
 				skillsConfig, // GEO-151: ProofShotConfig persisted via emitStarted patch
 				flagStore
-					? (projectName) =>
-							storeProofshotEnabled(flagStore, projectName)
+					? (projectName) => storeProofshotEnabled(flagStore, projectName)
 					: undefined,
 			);
 			// FLY-603 Layer A: wire the shared cleanup closure onto this sink.

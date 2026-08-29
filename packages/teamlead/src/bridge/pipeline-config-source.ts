@@ -10,8 +10,7 @@ import {
 	storePipelineWorkKindEnabled,
 } from "./flag-store-runtime.js";
 
-export type WorkKindConfigCause =
-	"work_kind_requires_dag";
+export type WorkKindConfigCause = "work_kind_requires_dag";
 
 export type WorkKindConfigResult =
 	| { ok: true; workKind: boolean; dag: boolean }

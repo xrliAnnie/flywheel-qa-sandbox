@@ -212,9 +212,10 @@ describe("feature-flag registry invariants", () => {
 
 	it("FLY-2103 retires fixed project-config declarations", () => {
 		for (const name of ["checkpoint_enabled", "xiaohongshu_auto_create"]) {
-			expect(FEATURE_FLAGS.some((flag) => flag.name === name), name).toBe(
-				false,
-			);
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.name === name),
+				name,
+			).toBe(false);
 		}
 	});
 
@@ -234,11 +235,7 @@ describe("feature-flag registry invariants", () => {
 			["ponytail", ["storePonytailEnabled", false, "conversational"]],
 			[
 				"skill_framework_split_participation",
-				[
-					"storeSkillFrameworkSplitParticipation",
-					true,
-					"conversational",
-				],
+				["storeSkillFrameworkSplitParticipation", true, "conversational"],
 			],
 		] as const);
 		for (const [name, [resolverSymbol, defaultValue, toggleable]] of expected) {
@@ -252,8 +249,7 @@ describe("feature-flag registry invariants", () => {
 				expect.objectContaining({
 					pattern: "delegated",
 					timing: "call_time",
-					resolverModule:
-						"packages/teamlead/src/bridge/flag-store-runtime.ts",
+					resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
 					resolverSymbol,
 				}),
 			]);

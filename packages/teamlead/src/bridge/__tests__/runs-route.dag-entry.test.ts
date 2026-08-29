@@ -235,10 +235,7 @@ async function startHarness(options: {
 	const configYaml =
 		options.configYaml ??
 		`${CONFIG_BASE}pipeline:\n  dag: true\n${options.menuMode ? "  work_kind: true\n" : ""}`;
-	writeFileSync(
-		join(projectRoot, ".flywheel", "config.yaml"),
-		configYaml,
-	);
+	writeFileSync(join(projectRoot, ".flywheel", "config.yaml"), configYaml);
 	for (const [key, value] of Object.entries({ ...DAG_ENV, ...options.env })) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;

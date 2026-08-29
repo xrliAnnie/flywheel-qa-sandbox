@@ -377,9 +377,7 @@ export function createManagementFlagProvider(
 				revision,
 				hint: "flywheel-config/feature-flags",
 				fragment: {
-					flags: views.map((view) =>
-						buildFlagView(view, revision, names),
-					),
+					flags: views.map((view) => buildFlagView(view, revision, names)),
 				},
 			};
 		},

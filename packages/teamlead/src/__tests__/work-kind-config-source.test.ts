@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import type { StateStore } from "../StateStore.js";
 import type { FlagStoreRuntime } from "../bridge/flag-store-runtime.js";
 import { readPipelineEnrollment } from "../bridge/pipeline-config-source.js";
+import type { StateStore } from "../StateStore.js";
 
 function runtime(
 	rows: Record<string, Record<string, "0" | "1">> = {},
@@ -11,9 +11,7 @@ function runtime(
 		store: {
 			getFlagValueRow(name: string, scope = "*") {
 				const raw = rows[name]?.[scope];
-				return raw === undefined
-					? undefined
-					: { hasOverride: true, raw };
+				return raw === undefined ? undefined : { hasOverride: true, raw };
 			},
 		} as unknown as StateStore,
 	};

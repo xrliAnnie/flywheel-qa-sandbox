@@ -49,9 +49,9 @@ import {
 	defaultStateDir,
 	readState,
 } from "../packages/flywheel-comm/dist/xiaohongshu-state.js";
+import { storeXiaohongshuLearningEnabled } from "../packages/teamlead/dist/bridge/flag-store-runtime.js";
 import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
 import { StateStore } from "../packages/teamlead/dist/StateStore.js";
-import { storeXiaohongshuLearningEnabled } from "../packages/teamlead/dist/bridge/flag-store-runtime.js";
 import {
 	buildTriggerBody,
 	type CollectionRunPlan,
@@ -113,8 +113,7 @@ async function main(): Promise<void> {
 	const linear = new LinearClient({ apiKey: LINEAR_API_KEY });
 	const stateDir = defaultStateDir();
 	const dbPath =
-		process.env.TEAMLEAD_DB_PATH ??
-		join(homedir(), ".flywheel", "teamlead.db");
+		process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db");
 	const flagState = await StateStore.openForMaintenance(dbPath, {
 		readonly: true,
 	});
