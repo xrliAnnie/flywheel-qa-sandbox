@@ -164,15 +164,24 @@ flowchart LR
   来源):首遍 6 行 —— doc_flow {flywheel, joycon-typeless, personal-assistant, tidal-echo}="1"、
   pipeline_dag flywheel="1"、pipeline_work_kind flywheel="1";第二遍 1 行 —— ponytail `*`="0"。
   manifest 以常量写死在脚本里。
-- **两个显式 phase,不可混淆(Codex R2 #1)**:同一脚本 `--phase pre-cutover|post-deploy` 必选。
+- **两个显式 phase,不可混淆(Codex R2 #1 + R3 #1)**:同一脚本 `--phase pre-cutover|post-deploy`
+  必选。
   - `pre-cutover`:必须找到全部 6 个 config 文件,并**双向**核对完整 legacy 台账 —— 不止正向命中
     manifest(doc_flow×4 / dag / work_kind 现值),还包括「所有已声明 checkpoint 仍带
-    `enabled: true`」与「由六项目旧行为推导出的非默认行集合 == manifest」;缺文件 / 缺预期旧
-    key / 出现额外旧值 → 非零退出(G1 前置)。通过后产出 **G1 receipt 文件**(行集 + config
-    摘要 + 时间戳)。
-  - `post-deploy`:才允许旧 key 不存在;**必须以 `--receipt` 引用首遍产出的 G1 receipt**,否则拒跑。
-  - RED 测试:「首遍误用 post 形态」「后遍误用 pre 形态」都必须非零退出。一次性脚本参数 +
-    产物,不增加运行时机制。
+    `enabled: true`」与「由六项目旧行为推导出的非默认行集合 == **pre-cutover 六行 manifest**」
+    (第七行 ponytail `*`=0 是显式 kill-switch,不由旧配置推导);缺文件 / 缺预期旧 key / 出现
+    额外旧值 → 非零退出。
+  - **G1 receipt 是 G1 的输出,不是 preflight 的输出(R3 #1)**:只有
+    `--phase pre-cutover --apply` 在「YAML 双向校验通过 → 全部 stage/apply 完成 → readonly
+    exact-set == 6 行复核通过」之后,才**原子**写出 `status: passed` receipt;dry-run、部分写入、
+    任何失败都**不得**生成可被 post 接受的 receipt。receipt 至少绑定:schema 版本 + 票据号、
+    固定 manifest digest、六份 legacy config 内容 SHA、DB realpath / Bridge target、G1 exact
+    row set、完成时间。
+  - `post-deploy`:才允许旧 key 不存在;必须以 `--receipt` 引用 receipt 并**逐字段解析校验**
+    (不是查文件存在),且**写 ponytail 前先对同一 DB 重跑 exact-set == 6**(行集漂移 → 拒绝)。
+  - RED 测试:「首遍误用 post 形态」「后遍误用 pre 形态」;dry-run 产物被 post 拒;partial-apply
+    无 receipt;错 DB / 错 manifest digest / 错 config SHA 的 receipt 被拒;post 写前行集已漂移
+    → 拒。一次性脚本参数 + 产物,不增加运行时机制。
 - **幂等判定 = 精确读 raw 行**:`StateStore.openForMaintenance(dbPath, {readonly:true})`
   (StateStore.ts:1717 一带,better-sqlite3 WAL 只读打开是 sanctioned 路径)逐行读:
   行存在且 raw 相同 → no-op(**不重放 stage/apply** —— `applyScopedFlagValueChange` 同值重放
@@ -223,7 +232,7 @@ sequenceDiagram
   participant W as 班车维护窗(Bridge 停)
   PR->>PR: merge(不部署,FLY-1959 解耦)
   S->>B: 第一遍 dry-run → apply(6 行)
-  S->>S: 门禁 G1:精确核验 6 行 raw 全在,否则停
+  S->>S: 门禁 G1:七 flag 行集 exact == 六行(非 contains),否则停
   Note over W: 窗内顺序执行,失败即停:
   W->>W: merge 5 个外部 config PR + 同步 6 个 main checkout
   W->>W: 起新 Bridge(新代码+新 config 原子)
