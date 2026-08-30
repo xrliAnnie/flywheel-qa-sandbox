@@ -25,6 +25,7 @@ import {
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
 	storeSummaryAbsorptionCadenceMs,
+	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
 	storeXiaohongshuLearningEnabled,
@@ -68,11 +69,26 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		expect(storeLoopProfilerEnabled(runtime)).toBe(false);
 		expect(storeShippedHuskForceEnabled(runtime)).toBe(false);
 		expect(storeWorkflowReworkReentryEnabled(runtime)).toBe(true);
+		expect(storeWorkflowNodeReuseEnabled(runtime)).toBe(false);
 		expect(storeWorkflowTurnDivergenceAlertsEnabled(runtime)).toBe(true);
 		expect(storeSkillFrameworkModeControl(runtime)).toEqual({
 			hasOverride: true,
 			raw: "split",
 		});
+
+		const reuseRevision = store.getFlagValueRow(
+			"workflow_node_reuse",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "workflow_node_reuse",
+				rawTo: "1",
+				expectedRevision: reuseRevision,
+				actor: "bridge-local-operator",
+				reason: "prove QA node reuse reads at call time",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeWorkflowNodeReuseEnabled(runtime)).toBe(true);
 
 		const revision = store.getFlagValueRow(
 			"workflow_turn_divergence_alerts",

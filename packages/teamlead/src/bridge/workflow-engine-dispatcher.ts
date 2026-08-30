@@ -1229,6 +1229,14 @@ export class WorkflowEngineDispatcher {
 			if (sourceMs == null || nowMs < sourceMs) continue;
 			const ageMs = nowMs - sourceMs;
 			const reason = delivery.last_error ?? `delivery_${delivery.state}`;
+			const aliveEvidenceExpiresMs = delivery.next_retry_at
+				? parseSqliteUtcMs(delivery.next_retry_at)
+				: null;
+			const hasFreshActorAliveEvidence =
+				delivery.state === "wake_delivered" &&
+				delivery.last_error === "actor_alive_after_receipt" &&
+				aliveEvidenceExpiresMs != null &&
+				aliveEvidenceExpiresMs > nowMs;
 			const escalate = (action: "alert" | "hold") => {
 				const escalated = this.options.store.escalateWorkflowReworkStall({
 					requestId: delivery.request_id,
@@ -1250,7 +1258,7 @@ export class WorkflowEngineDispatcher {
 				}
 			};
 			if (ageMs >= alertMs) escalate("alert");
-			if (ageMs >= holdMs) escalate("hold");
+			if (ageMs >= holdMs && !hasFreshActorAliveEvidence) escalate("hold");
 		}
 	}
 

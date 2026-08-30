@@ -7319,6 +7319,30 @@ export class StateStore {
 		}
 	}
 
+	/** Close the durable runway owner after an external probe proves it dead. */
+	private terminalizeProvenDeadSessionTx(
+		executionId: string,
+		reason: string,
+	): void {
+		const session = this.getSession(executionId);
+		if (!session || isStateStoreIrreversibleTerminalForZombie(session.status)) {
+			return;
+		}
+		this.db.run(
+			`UPDATE sessions
+			    SET status = 'failed', last_error = ?
+			  WHERE execution_id = ? AND status = ?`,
+			[reason, executionId, session.status],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new WorkflowEngineInvariantError(
+				"workflow_proven_dead_session_cas_failed",
+			);
+		}
+		this.applyTerminalTimestamp(executionId, session.status, "failed");
+		this.bumpLifecycleRevision(executionId);
+	}
+
 	/** FLY-245 D-a: read a session's current monotonic lifecycle revision (0 if
 	 * the session is absent). */
 	getLifecycleRevision(executionId: string): number {
@@ -25149,6 +25173,34 @@ export class StateStore {
 					result = { ok: false, reason: "rollback_receipt_conflict" };
 					return;
 				}
+				const replayNode = this.getWorkflowRunNode(
+					input.runId,
+					input.nodeId,
+					input.attempt,
+				);
+				if (
+					replayNode?.state === "admitted" &&
+					replayNode.execution_id === input.executionId
+				) {
+					this.db.run(
+						`UPDATE workflow_run_node
+						    SET state = 'failed', ended_at = ?
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND execution_id = ? AND state = 'admitted'`,
+						[
+							input.now,
+							input.runId,
+							input.nodeId,
+							input.attempt,
+							input.executionId,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new WorkflowEngineInvariantError(
+							"workflow_unlaunched_rollback_replay_node_cas_failed",
+						);
+					}
+				}
 				result = { ok: true, eventUid, idempotentReplay: true };
 				return;
 			}
@@ -25263,6 +25315,24 @@ export class StateStore {
 				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
 				[input.now, input.executionId],
 			);
+			this.db.run(
+				`UPDATE workflow_run_node
+				    SET state = 'failed', ended_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND state = 'admitted'`,
+				[
+					input.now,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					"workflow_unlaunched_rollback_node_cas_failed",
+				);
+			}
 			this.db.run(
 				`UPDATE workflow_side_effect_ledger
 				    SET state = 'abandoned', reason = 'unlaunched_admission_rolled_back',
@@ -27770,6 +27840,258 @@ export class StateStore {
 	}
 
 	/**
+	 * Repair the only admissible rework split-brain: generic zombie recovery
+	 * already committed an exact writer replacement while the rework delivery
+	 * still points at the dead actor. The rollback receipt, launch intent, and
+	 * dead-execution watch must all agree before this transaction advances the
+	 * immutable route and makes that same launch rework-owned.
+	 */
+	convergeWorkflowReworkWriterReplacement(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}):
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_writer_replacement_convergence" };
+		}
+		let result:
+			| {
+					ok: true;
+					executionId: string;
+					launchOrdinal: number;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "writer_replacement_not_converged",
+		};
+		this.db.transaction(() => {
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				delivery.route_revision !== route.revision ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				![
+					"pending",
+					"turn_granted",
+					"awaiting_receipt",
+					"wake_delivered",
+					"replacement_pending",
+				].includes(delivery.state)
+			) {
+				result = { ok: false, reason: "writer_replacement_context_changed" };
+				return;
+			}
+			const target = this.getWorkflowRunNode(
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+			);
+			if (
+				!target ||
+				target.state !== "pending" ||
+				!target.execution_id ||
+				target.execution_id === route.preferred_actor_execution_id
+			) {
+				result = { ok: false, reason: "writer_replacement_target_unavailable" };
+				return;
+			}
+			const replacementExecutionId = target.execution_id;
+			const launch = this.workflowSelectAll(
+				`SELECT launch_ordinal, state
+				   FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND execution_id = ?`,
+				[
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					replacementExecutionId,
+				],
+			)[0];
+			const launchOrdinal = Number(launch?.launch_ordinal);
+			const watch = this.workflowSelectAll(
+				`SELECT new_execution_id
+				   FROM workflow_dead_execution_watch
+				  WHERE dead_execution_id = ? AND run_id = ? AND node_id = ?
+				    AND attempt = ? AND new_execution_id = ?`,
+				[
+					route.preferred_actor_execution_id,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					replacementExecutionId,
+				],
+			)[0];
+			const rollback = this.workflowSelectAll(
+				`SELECT kind, node_id, execution_id, payload
+				   FROM workflow_run_event
+				  WHERE event_uid = ?`,
+				[
+					`dead_rollback:${request.run_id}:${route.target_node_id}:${route.target_attempt}:${route.preferred_actor_execution_id}`,
+				],
+			)[0];
+			let rollbackPayload: Record<string, unknown> | undefined;
+			try {
+				rollbackPayload = rollback
+					? (JSON.parse(String(rollback.payload)) as Record<string, unknown>)
+					: undefined;
+			} catch {
+				rollbackPayload = undefined;
+			}
+			if (
+				!launch ||
+				launch.state === "abandoned" ||
+				!Number.isSafeInteger(launchOrdinal) ||
+				launchOrdinal < 1 ||
+				!watch ||
+				rollback?.kind !== "execution_dead_rolled_back" ||
+				rollback.node_id !== route.target_node_id ||
+				rollback.execution_id !== route.preferred_actor_execution_id ||
+				rollbackPayload?.attempt !== route.target_attempt ||
+				rollbackPayload.newExecutionId !== replacementExecutionId ||
+				rollbackPayload.launchOrdinal !== launchOrdinal ||
+				rollbackPayload.retryDisposition !== "retry"
+			) {
+				result = { ok: false, reason: "writer_replacement_proof_unavailable" };
+				return;
+			}
+			const existingActor = this.getWorkflowActor(replacementExecutionId);
+			if (
+				existingActor &&
+				(existingActor.project_name !== run.project_name ||
+					existingActor.issue_id !== run.issue_id ||
+					existingActor.role !== route.target_node_id)
+			) {
+				result = { ok: false, reason: "writer_replacement_actor_conflict" };
+				return;
+			}
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					replacementExecutionId,
+					run.project_name,
+					run.issue_id,
+					route.target_node_id,
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET reason = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND launch_ordinal = ? AND execution_id = ?
+				    AND state <> 'abandoned'`,
+				[
+					`rework_replacement:${input.requestId}`,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					launchOrdinal,
+					replacementExecutionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_writer_launch_cas_failed");
+			}
+			const nextRevision = route.revision + 1;
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:writer_replacement_convergence',
+				         'durable_writer_replacement', ?)`,
+				[
+					input.requestId,
+					nextRevision,
+					route.target_node_id,
+					route.target_attempt,
+					replacementExecutionId,
+					JSON.stringify(route.invalidation_scope),
+					JSON.stringify(route.verification_policy),
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET route_revision = ?, state = 'replacement_pending',
+				        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+				        last_error = 'writer_replacement_converged', updated_at = ?
+				  WHERE request_id = ? AND route_revision = ? AND owner_id = ?
+				    AND generation = ?
+				    AND state IN ('pending','turn_granted','awaiting_receipt',
+				                  'wake_delivered','replacement_pending')`,
+				[
+					nextRevision,
+					input.now,
+					input.requestId,
+					route.revision,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_writer_delivery_cas_failed");
+			}
+			this.db.run(
+				`UPDATE workflow_rework_verification_path
+				    SET route_revision = ?, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state IN ('pending','active')`,
+				[nextRevision, input.now, input.requestId, route.revision],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_writer_replacement_converged:${input.requestId}:${nextRevision}`,
+				kind: "rework_writer_replacement_converged",
+				nodeId: route.target_node_id,
+				executionId: route.preferred_actor_execution_id,
+				payload: {
+					requestId: input.requestId,
+					deadExecutionId: route.preferred_actor_execution_id,
+					newExecutionId: replacementExecutionId,
+					launchOrdinal,
+					routeRevision: nextRevision,
+					reason: "writer_replacement_converged",
+					heldPaneLossRecovery: false,
+				},
+			});
+			result = {
+				ok: true,
+				executionId: replacementExecutionId,
+				launchOrdinal,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
 	 * Convert a proven-dead rework actor reservation into one ordinary fresh
 	 * dispatch. The request and prior route remain immutable; a new route
 	 * revision records the replacement actor, while launch recognition still
@@ -27886,6 +28208,10 @@ export class StateStore {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
 				return;
 			}
+			this.terminalizeProvenDeadSessionTx(
+				input.deadExecutionId,
+				`rework_actor_proven_dead:${input.reason}`,
+			);
 			// Superseding the old exact actor also settles any rework-reachable
 			// completion park in this transaction. A crash cannot commit the new
 			// route while leaving stale wake/park evidence for the replaced actor.
@@ -28543,11 +28869,13 @@ export class StateStore {
 		}
 		this.db.run(
 			`UPDATE workflow_rework_delivery
-			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?
+			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?,
+			        last_error = ?
 			  WHERE request_id = ? AND owner_id = ? AND generation = ?
 			    AND state IN ('awaiting_receipt','wake_delivered')`,
 			[
 				input.nextRetryAt,
+				input.reason,
 				input.requestId,
 				input.ownerId,
 				input.generation,
@@ -30855,6 +31183,21 @@ export class StateStore {
 		);
 	}
 
+	hasUnlaunchedWorkflowRollbackFact(
+		runId: string,
+		nodeId: string,
+		executionId: string,
+	): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ? AND execution_id = ?
+				    AND kind = 'unlaunched_admission_rolled_back' LIMIT 1`,
+				[runId, nodeId, executionId],
+			)[0],
+		);
+	}
+
 	listRunAttributedExecutions(runId: string): string[] {
 		return this.workflowSelectAll(
 			`SELECT execution_id FROM (
@@ -32257,7 +32600,8 @@ export class StateStore {
 			const priorEngineCycles = Number(
 				this.workflowSelectAll(
 					`SELECT COUNT(*) AS count FROM workflow_rework_request
-					  WHERE run_id = ? AND authority = 'engine'`,
+					  WHERE run_id = ? AND authority = 'engine'
+					    AND source_event_id LIKE 'engine_land_rework:%'`,
 					[input.runId],
 				)[0]?.count ?? 0,
 			);
@@ -32333,13 +32677,15 @@ export class StateStore {
 				return;
 			}
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
-			const preferredActorExecutionId = [...targetAttempts]
-				.filter((candidate) => candidate.execution_id)
-				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
-			if (!preferredActorExecutionId) {
+			const preferredActor = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			);
+			if (!preferredActor) {
 				result = { ok: false, reason: "engine_land_rework_actor_missing" };
 				return;
 			}
+			const preferredActorExecutionId = preferredActor.executionId;
 			const targetAttempt =
 				targetAttempts.reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -32546,6 +32892,221 @@ export class StateStore {
 	}
 
 	/**
+	 * Choose a durable actor seed without mistaking the newest ledger row for
+	 * the best reusable actor. Physical liveness remains the coordinator's job;
+	 * this classification only orders persisted evidence.
+	 */
+	private selectPreferredWorkflowActorTx(
+		runId: string,
+		nodeId: string,
+	):
+		| {
+				executionId: string;
+				classification: "known_nonterminal" | "unknown" | "dead_seed";
+		  }
+		| undefined {
+		const rolledBackExecutionIds = new Set(
+			this.workflowSelectAll(
+				`SELECT DISTINCT execution_id
+				   FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ?
+				    AND kind = 'unlaunched_admission_rolled_back'
+				    AND execution_id IS NOT NULL`,
+				[runId, nodeId],
+			).map((row) => row.execution_id as string),
+		);
+		const ranked = this.listWorkflowRunNodes(runId, nodeId)
+			.filter(
+				(candidate): candidate is WorkflowRunNodeRow & { execution_id: string } =>
+					typeof candidate.execution_id === "string" &&
+					candidate.execution_id.length > 0,
+			)
+			.map((candidate) => {
+				const session = this.getSession(candidate.execution_id);
+				const classification = rolledBackExecutionIds.has(
+					candidate.execution_id,
+				)
+					? ("dead_seed" as const)
+					: !session
+						? ("unknown" as const)
+						: isStateStoreIrreversibleTerminalForZombie(session.status)
+							? ("dead_seed" as const)
+							: ("known_nonterminal" as const);
+				return { candidate, classification };
+			})
+			.sort((left, right) => {
+				const rank = {
+					known_nonterminal: 0,
+					unknown: 1,
+					dead_seed: 2,
+				} as const;
+				return (
+					rank[left.classification] - rank[right.classification] ||
+					right.candidate.attempt - left.candidate.attempt
+				);
+			});
+		const selected = ranked[0];
+		return selected
+			? {
+					executionId: selected.candidate.execution_id,
+					classification: selected.classification,
+				}
+			: undefined;
+	}
+
+	private resolveOperatorReworkBaseRevisionTx(input: {
+		runId: string;
+		targetNodeId: string;
+		preferredActorExecutionId: string;
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	}):
+		| {
+				baseRevision: string;
+				baseRevisionSource:
+					| "session_head"
+					| "producer_head"
+					| "materialized_head";
+		  }
+		| undefined {
+		const canonicalHead = (head: string | null | undefined) => {
+			const normalized = head?.trim().toLowerCase();
+			return normalized && /^[0-9a-f]{40}$/.test(normalized)
+				? normalized
+				: undefined;
+		};
+		const actorHead = canonicalHead(
+			this.getSession(input.preferredActorExecutionId)?.pr_head_sha,
+		);
+		if (actorHead) {
+			return {
+				baseRevision: actorHead,
+				baseRevisionSource: "session_head",
+			};
+		}
+
+		const predecessorIds = new Set(
+			input.snapshot.manifest.edges
+				.filter((edge) => edge.to === input.targetNodeId)
+				.map((edge) => edge.from),
+		);
+		const producers = input.snapshot.resolved.nodes.filter(
+			(candidate) => predecessorIds.has(candidate.id) && candidate.dispatch,
+		);
+		if (producers.length !== 1) return undefined;
+		const producer = producers[0]!;
+		const latestDone = this.listWorkflowRunNodes(input.runId, producer.id)
+			.filter(
+				(candidate) =>
+					candidate.state === "done" && candidate.execution_id !== null,
+			)
+			.sort((left, right) => right.attempt - left.attempt)[0];
+		const producerHead = latestDone?.execution_id
+			? canonicalHead(this.getSession(latestDone.execution_id)?.pr_head_sha)
+			: undefined;
+		if (producerHead) {
+			return {
+				baseRevision: producerHead,
+				baseRevisionSource: "producer_head",
+			};
+		}
+		const materialized = this.getWorkflowMaterializedHead(
+			input.runId,
+			producer.id,
+		);
+		const materializedHead = canonicalHead(materialized?.head);
+		return materializedHead
+			? {
+					baseRevision: materializedHead,
+					baseRevisionSource: "materialized_head",
+				}
+			: undefined;
+	}
+
+	private resolveNodeReuseBaseRevisionTx(input: {
+		runId: string;
+		targetNodeId: string;
+		subjectDigest?: string;
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	}):
+		| {
+				baseRevision: string;
+				baseRevisionSource:
+					| { kind: "subject_digest" }
+					| {
+							kind: "producer_head";
+							nodeId: string;
+							attempt: number;
+							executionId: string;
+					  }
+					| {
+							kind: "materialized_head";
+							effectId: string;
+							outputId: number;
+					  };
+		  }
+		| undefined {
+		const canonicalHead = (head: string | null | undefined) => {
+			const normalized = head?.trim().toLowerCase();
+			return normalized && /^[0-9a-f]{40}$/.test(normalized)
+				? normalized
+				: undefined;
+		};
+		const subjectDigest = canonicalHead(input.subjectDigest);
+		if (subjectDigest) {
+			return {
+				baseRevision: subjectDigest,
+				baseRevisionSource: { kind: "subject_digest" },
+			};
+		}
+
+		const predecessorIds = new Set(
+			input.snapshot.manifest.edges
+				.filter((edge) => edge.to === input.targetNodeId)
+				.map((edge) => edge.from),
+		);
+		const producers = input.snapshot.resolved.nodes.filter(
+			(candidate) => predecessorIds.has(candidate.id) && candidate.dispatch,
+		);
+		if (producers.length !== 1) return undefined;
+		const producer = producers[0]!;
+		const latestDone = this.listWorkflowRunNodes(input.runId, producer.id)
+			.filter(
+				(candidate) =>
+					candidate.state === "done" && candidate.execution_id !== null,
+			)
+			.sort((left, right) => right.attempt - left.attempt)[0];
+		const producerHead = latestDone?.execution_id
+			? canonicalHead(this.getSession(latestDone.execution_id)?.pr_head_sha)
+			: undefined;
+		if (latestDone?.execution_id && producerHead) {
+			return {
+				baseRevision: producerHead,
+				baseRevisionSource: {
+					kind: "producer_head",
+					nodeId: producer.id,
+					attempt: latestDone.attempt,
+					executionId: latestDone.execution_id,
+				},
+			};
+		}
+		const materialized = this.getWorkflowMaterializedHead(
+			input.runId,
+			producer.id,
+		);
+		const materializedHead = canonicalHead(materialized?.head);
+		return materialized && materializedHead
+			? {
+					baseRevision: materializedHead,
+					baseRevisionSource: {
+						kind: "materialized_head",
+						effectId: materialized.effectId,
+						outputId: materialized.outputId,
+					},
+				}
+			: undefined;
+	}
+
+	/**
 	 * FLY-1434: master-authorized recovery entry for completed or quiescent
 	 * active engine runs. It writes the same request/route/delivery contract as
 	 * QA/founder kickback, so the existing coordinator and engine tick own all
@@ -32652,7 +33213,7 @@ export class StateStore {
 			const latestHold =
 				run?.status === "held"
 					? this.workflowSelectAll(
-							`SELECT event_uid, kind, edge_id, payload
+							`SELECT run_id, event_uid, kind, node_id, edge_id, execution_id, payload
 							   FROM workflow_run_event
 							  WHERE run_id = ? AND kind IN (
 							    'run_held_by_operator','land_held',
@@ -32667,6 +33228,41 @@ export class StateStore {
 						)[0]
 					: undefined;
 			const heldLoopLimit = latestHold?.kind === "loop_limit_escalated";
+			const heldUnlaunchedRollback =
+				run?.status === "held" &&
+				latestHold?.kind === "unlaunched_admission_rolled_back";
+			let rollbackHoldTuple:
+				| { nodeId: string; executionId: string; attempt: number }
+				| undefined;
+			if (heldUnlaunchedRollback) {
+				try {
+					const payload = JSON.parse(String(latestHold.payload)) as {
+						attempt?: unknown;
+					};
+					if (
+						latestHold.run_id !== input.runId ||
+						typeof latestHold.node_id !== "string" ||
+						!latestHold.node_id ||
+						typeof latestHold.execution_id !== "string" ||
+						!latestHold.execution_id ||
+						!Number.isInteger(payload.attempt) ||
+						Number(payload.attempt) < 1
+					) {
+						throw new Error("invalid rollback receipt tuple");
+					}
+					rollbackHoldTuple = {
+						nodeId: latestHold.node_id,
+						executionId: latestHold.execution_id,
+						attempt: Number(payload.attempt),
+					};
+				} catch {
+					result = {
+						ok: false,
+						reason: "unlaunched_rollback_receipt_invalid",
+					};
+					return;
+				}
+			}
 			if (heldLoopLimit) {
 				if (!escalationAck) {
 					result = {
@@ -32752,6 +33348,7 @@ export class StateStore {
 					run.status !== "completed" &&
 					!heldNeedsLead &&
 					!heldTerminalLand &&
+					!heldUnlaunchedRollback &&
 					!heldLoopLimit)
 			) {
 				result = { ok: false, reason: "run_not_reworkable" };
@@ -32866,6 +33463,44 @@ export class StateStore {
 				result = { ok: false, reason: "invalid_rework_target" };
 				return;
 			}
+			if (rollbackHoldTuple) {
+				const rolledBackNode = this.getWorkflowRunNode(
+					input.runId,
+					rollbackHoldTuple.nodeId,
+					rollbackHoldTuple.attempt,
+				);
+				if (
+					!rolledBackNode ||
+					rolledBackNode.execution_id !== rollbackHoldTuple.executionId ||
+					!(rolledBackNode.state === "admitted" || rolledBackNode.state === "failed")
+				) {
+					result = {
+						ok: false,
+						reason: "unlaunched_rollback_receipt_invalid",
+					};
+					return;
+				}
+				if (rolledBackNode.state === "admitted") {
+					this.db.run(
+						`UPDATE workflow_run_node
+						    SET state = 'failed', ended_at = ?
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND execution_id = ? AND state = 'admitted'`,
+						[
+							input.now,
+							input.runId,
+							rollbackHoldTuple.nodeId,
+							rollbackHoldTuple.attempt,
+							rollbackHoldTuple.executionId,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new WorkflowEngineInvariantError(
+							"workflow_unlaunched_rollback_operator_node_cas_failed",
+						);
+					}
+				}
+			}
 			const openDelivery = this.workflowSelectAll(
 				`SELECT d.request_id FROM workflow_rework_delivery d
 				  JOIN workflow_rework_request r ON r.request_id = d.request_id
@@ -32892,20 +33527,25 @@ export class StateStore {
 				result = { ok: false, reason: "target_attempt_already_reserved" };
 				return;
 			}
-			const preferredActorExecutionId = targetAttempts
-				.filter((candidate) => candidate.execution_id)
-				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			const preferredActorExecutionId = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			)?.executionId;
 			if (!preferredActorExecutionId) {
 				result = { ok: false, reason: "target_actor_history_missing" };
 				return;
 			}
-			const baseRevision = this.getSession(preferredActorExecutionId)
-				?.pr_head_sha?.trim()
-				.toLowerCase();
-			if (!baseRevision || !/^[0-9a-f]{40}$/.test(baseRevision)) {
+			const base = this.resolveOperatorReworkBaseRevisionTx({
+				runId: input.runId,
+				targetNodeId: target.id,
+				preferredActorExecutionId,
+				snapshot,
+			});
+			if (!base) {
 				result = { ok: false, reason: "base_revision_unavailable" };
 				return;
 			}
+			const { baseRevision, baseRevisionSource } = base;
 			const targetAttempt =
 				targetAttempts.reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -32962,6 +33602,8 @@ export class StateStore {
 				sourceAttempt,
 				targetNodeId: target.id,
 				targetAttempt,
+				baseRevision,
+				baseRevisionSource,
 				feedback: input.feedback.trim(),
 				...(escalationAck ? { escalationAck } : {}),
 			};
@@ -33159,6 +33801,7 @@ export class StateStore {
 				targetNodeId: target.id,
 				targetAttempt,
 				preferredActorExecutionId,
+				baseRevisionSource,
 				feedback: input.feedback.trim(),
 				principal: input.principal,
 				...(escalationAck ? { escalationAck } : {}),
@@ -37262,6 +37905,7 @@ export class StateStore {
 	}
 
 	commitEnrolledCompletion(input: {
+		nodeReuseEnabled: boolean;
 		executionId: string;
 		route: string;
 		sourceEventId: string;
@@ -37857,6 +38501,7 @@ export class StateStore {
 					}
 					if (!genericNoCodeExit) {
 						const transition = this.commitWorkflowTransitionTx({
+							nodeReuseEnabled: input.nodeReuseEnabled,
 							runId: context.binding.run_id,
 							nodeId: context.binding.node_id,
 							attempt: context.binding.attempt,
@@ -38127,6 +38772,7 @@ export class StateStore {
 	 * before expiry checks so response-loss recovery survives Bridge restarts.
 	 */
 	submitWorkflowDecisionByCredential(input: {
+		nodeReuseEnabled: boolean;
 		credential: string;
 		clientRequestId: string;
 		predicate: string;
@@ -38433,6 +39079,7 @@ export class StateStore {
 						throw new Error("engine_decision_transition_refused");
 					}
 					const transition = this.commitWorkflowTransitionTx({
+						nodeReuseEnabled: input.nodeReuseEnabled,
 						runId: credential.run_id as string,
 						nodeId: credential.node_id as string,
 						attempt: Number(credential.attempt),
@@ -38618,6 +39265,7 @@ export class StateStore {
 	}
 
 	commitWorkflowLoopReentryRequest(input: {
+		nodeReuseEnabled: boolean;
 		canonical: WorkflowLoopReentryCanonical;
 		canonicalDigest: string;
 		tokenIdentity: string;
@@ -38697,6 +39345,7 @@ export class StateStore {
 					return;
 				}
 				const transition = this.commitWorkflowTransitionTx({
+					nodeReuseEnabled: input.nodeReuseEnabled,
 					runId: current.runId,
 					nodeId: current.sourceNodeId,
 					attempt: current.sourceAttempt,
@@ -38777,6 +39426,7 @@ export class StateStore {
 	}
 
 	commitWorkflowTransitionTx(input: {
+		nodeReuseEnabled: boolean;
 		runId: string;
 		nodeId: string;
 		attempt: number;
@@ -38841,11 +39491,37 @@ export class StateStore {
 					typeof payload.reworkRequestId === "string"
 						? payload.reworkRequestId
 						: undefined;
+				let committedNodeReuse = false;
 				if (committedReworkRequest) {
 					const request = this.getWorkflowReworkRequest(committedReworkRequest);
+					let nodeReuseContext:
+						| { kind?: unknown; baseRevision?: unknown }
+						| undefined;
+					try {
+						nodeReuseContext = request
+							? (JSON.parse(request.authority_context_json) as {
+									kind?: unknown;
+									baseRevision?: unknown;
+								})
+							: undefined;
+					} catch {
+						result = { ok: false, reason: "transition_receipt_corrupt" };
+						return;
+					}
+					const isNodeReuse = nodeReuseContext?.kind === "node_reuse";
+					const inputSubjectDigest = input.subjectDigest?.trim().toLowerCase();
+					const nodeReuseConflict =
+						isNodeReuse &&
+						(nodeReuseContext?.baseRevision !== request?.base_revision ||
+							(inputSubjectDigest !== undefined &&
+								inputSubjectDigest !== request?.base_revision));
+					const legacyConflict =
+						!isNodeReuse &&
+						request?.base_revision !== (input.subjectDigest ?? "unavailable");
 					if (
 						!request ||
-						request.base_revision !== (input.subjectDigest ?? "unavailable") ||
+						nodeReuseConflict ||
+						legacyConflict ||
 						(input.founderFeedback !== undefined &&
 							request.authority === "founder" &&
 							request.founder_feedback_verbatim !== input.founderFeedback)
@@ -38853,8 +39529,10 @@ export class StateStore {
 						result = { ok: false, reason: "transition_conflict" };
 						return;
 					}
+					committedNodeReuse = isNodeReuse;
 				}
 				if (
+					!committedNodeReuse &&
 					input.successorExecutionId !== undefined &&
 					committedSuccessor !== input.successorExecutionId
 				) {
@@ -39079,9 +39757,11 @@ export class StateStore {
 				activePath && activeRoute && activeRequest && authorityKickback,
 			);
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
-			const chainHistoryActorExecutionId = targetAttempts
-				.filter((candidate) => candidate.execution_id)
-				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			const preferredTargetActor = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			);
+			const chainHistoryActorExecutionId = preferredTargetActor?.executionId;
 			const chainedFreshDispatch =
 				chainedRework && !chainHistoryActorExecutionId;
 			const reworkAuthority =
@@ -39264,17 +39944,39 @@ export class StateStore {
 				};
 				return;
 			}
+			const nodeReuseActor =
+				input.nodeReuseEnabled &&
+				!activePath &&
+				!reworkAuthority &&
+				target.type === "qa"
+					? preferredTargetActor
+					: undefined;
+			const nodeReuseBase = nodeReuseActor
+				? this.resolveNodeReuseBaseRevisionTx({
+						runId: input.runId,
+						targetNodeId: target.id,
+						subjectDigest: input.subjectDigest,
+						snapshot,
+					})
+				: undefined;
+			if (nodeReuseActor && !nodeReuseBase) {
+				result = { ok: false, reason: "reuse_base_unavailable" };
+				return;
+			}
+			const effectiveReworkAuthority =
+				reworkAuthority ?? (nodeReuseActor ? "engine" : undefined);
 			const successorExecutionId =
 				target.type === "gate"
 					? undefined
-					: reworkAuthority
+					: effectiveReworkAuthority
 						? undefined
 						: (input.successorExecutionId ?? randomUUID());
-			const reworkRequestId = reworkAuthority
+			const reworkRequestId = effectiveReworkAuthority
 				? `rework:${canonicalSubmissionDigest({
 						runId: input.runId,
 						transitionUid,
-						authority: reworkAuthority,
+						authority: effectiveReworkAuthority,
+						...(nodeReuseActor ? { kind: "node_reuse" } : {}),
 						...(chainedRework || supersedingRework
 							? { parentRequestId: activePath!.request_id }
 							: {}),
@@ -39363,11 +40065,8 @@ export class StateStore {
 				}
 			}
 			let preferredActorExecutionId: string | undefined;
-			if (reworkAuthority && reworkRequestId) {
-				preferredActorExecutionId = targetAttempts
-					.filter((candidate) => candidate.execution_id)
-					.sort((left, right) => right.attempt - left.attempt)[0]
-					?.execution_id as string | undefined;
+			if (effectiveReworkAuthority && reworkRequestId) {
+				preferredActorExecutionId = preferredTargetActor?.executionId;
 				if (!preferredActorExecutionId) {
 					throw new WorkflowEngineInvariantError(
 						"workflow_rework_preferred_actor_missing",
@@ -39386,11 +40085,28 @@ export class StateStore {
 					],
 				);
 				const baseRevision =
-					input.subjectDigest ?? activeRequest?.base_revision ?? "unavailable";
-				const authorityContext =
-					chainedRework || supersedingRework
+					nodeReuseBase?.baseRevision ??
+					input.subjectDigest ??
+					activeRequest?.base_revision ??
+					"unavailable";
+				const authorityContext = nodeReuseActor
+					? {
+							kind: "node_reuse",
+							authority: effectiveReworkAuthority,
+							outcome: input.outcome,
+							sourceNodeId: input.nodeId,
+							sourceAttempt: input.attempt,
+							sourceExecutionId: input.executionId,
+							edgeId: selectedId,
+							targetNodeId: target.id,
+							targetAttempt,
+							baseRevision,
+							baseRevisionSource: nodeReuseBase!.baseRevisionSource,
+							actorClassification: nodeReuseActor.classification,
+						}
+					: chainedRework || supersedingRework
 						? {
-								authority: reworkAuthority,
+								authority: effectiveReworkAuthority,
 								outcome: input.outcome,
 								parentRequestId: activePath!.request_id,
 								parentAuthorityContextDigest:
@@ -39404,7 +40120,7 @@ export class StateStore {
 								baseRevision,
 							}
 						: {
-								authority: reworkAuthority,
+								authority: effectiveReworkAuthority,
 								outcome: input.outcome,
 								sourceNodeId: input.nodeId,
 								sourceAttempt: input.attempt,
@@ -39446,14 +40162,18 @@ export class StateStore {
 							candidate.dispatch !== undefined,
 					)
 					.map((candidate) => candidate.id);
-				const invalidationScope = chainedRework
+				const invalidationScope = nodeReuseActor
+					? [target.id]
+					: chainedRework
 					? activeRoute!.invalidation_scope.slice(
 							(activePathCurrentIndex ?? -1) + 1,
 						)
 					: topologyInvalidationScope;
-				const verificationPolicy = chainedRework
+				const verificationPolicy = nodeReuseActor
+					? ["qa_retest", "founder_gate"]
+					: chainedRework
 					? activeRoute!.verification_policy
-					: reworkAuthority === "qa"
+					: effectiveReworkAuthority === "qa"
 						? ["code_review", "qa_retest"]
 						: target.type === "design"
 							? ["design_review", "code_review", "qa_retest", "founder_gate"]
@@ -39468,13 +40188,13 @@ export class StateStore {
 						reworkRequestId,
 						input.runId,
 						transitionUid,
-						reworkAuthority,
+						effectiveReworkAuthority,
 						input.nodeId,
 						input.attempt,
 						baseRevision,
 						authorityContextJson,
 						authorityContextDigest,
-						reworkAuthority === "founder"
+						effectiveReworkAuthority === "founder"
 							? (input.founderFeedback ??
 								activeRequest?.founder_feedback_verbatim ??
 								"")
@@ -39496,14 +40216,18 @@ export class StateStore {
 						preferredActorExecutionId,
 						JSON.stringify(invalidationScope),
 						JSON.stringify(verificationPolicy),
-						chainedRework
+						nodeReuseActor
+							? "engine:node_reuse"
+							: chainedRework
 							? "engine:rework_verification"
-							: reworkAuthority === "qa"
+							: effectiveReworkAuthority === "qa"
 								? "engine:qa_verdict"
 								: "legacy_default",
-						chainedRework
+						nodeReuseActor
+							? "existing_qa_actor_for_new_verification_round"
+							: chainedRework
 							? `verification_path_next_step:${activePath!.request_id}`
-							: reworkAuthority === "qa"
+							: effectiveReworkAuthority === "qa"
 								? "qa_fail_requires_implement_and_qa_retest"
 								: "legacy_founder_feedback_defaults_to_implement",
 						now,
@@ -39530,7 +40254,7 @@ export class StateStore {
 					executionId: preferredActorExecutionId,
 					payload: {
 						requestId: reworkRequestId,
-						authority: reworkAuthority,
+						authority: effectiveReworkAuthority,
 						targetNodeId: target.id,
 						targetAttempt,
 						preferredActorExecutionId,
@@ -41452,6 +42176,9 @@ export class StateStore {
 				}
 				const now = new Date().toISOString();
 				const transition = this.commitWorkflowTransitionTx({
+					// Founder feedback already owns a founder rework route; node reuse is
+					// intentionally a Bridge-ingress decision, never a source projection.
+					nodeReuseEnabled: false,
 					runId,
 					nodeId: gateNodeId,
 					attempt: Number(holder.attempt),
@@ -41717,6 +42444,8 @@ export class StateStore {
 					}
 					if (holder.authority_mode === "land") {
 						const transition = this.commitWorkflowTransitionTx({
+							// Approval targets the engine terminal, never a reusable QA actor.
+							nodeReuseEnabled: false,
 							runId,
 							nodeId: gateNodeId,
 							attempt: Number(holder.attempt),
@@ -41839,6 +42568,8 @@ export class StateStore {
 						);
 					}
 					const transition = this.commitWorkflowTransitionTx({
+						// Approval targets the engine terminal, never a reusable QA actor.
+						nodeReuseEnabled: false,
 						runId,
 						nodeId: snapshot.manifest.approval_gate.node,
 						attempt: Number(holder.attempt),

@@ -195,6 +195,12 @@ export function storeWorkflowReworkReentryEnabled(
 	return readBoolean(runtime, "workflow_rework_reentry");
 }
 
+export function storeWorkflowNodeReuseEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "workflow_node_reuse");
+}
+
 export function storeSkillFrameworkModeControl(
 	runtime: FlagStoreRuntime,
 ): FlagStoreRawValue {

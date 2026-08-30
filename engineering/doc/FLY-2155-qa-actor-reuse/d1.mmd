@@ -1,0 +1,11 @@
+flowchart TB
+  A["implement 节点完工<br/>(新一轮代码就绪)"] --> B{"qa 节点有<br/>历史执行者吗?"}
+  B -- "没有(首轮)" --> C["照旧: 新开一个 QA 体"]
+  B -- "有" --> D["解析本轮基准代码版本<br/>subjectDigest → producer 头 → materialized 头"]
+  D -- "解析失败" --> E["fail-closed: 明确拒绝<br/>reuse_base_unavailable, 零写入"]
+  D -- "解析成功" --> F["原子落库: 复用请求<br/>request + route + delivery + path + 预留"]
+  F --> G["coordinator 探活<br/>旧 QA 体还活着吗?"]
+  G -- "活着" --> H["wake: 同一个体<br/>在新 attempt 上继续干<br/>context 完整保留 ✓"]
+  G -- "已死/从未启动" --> I["materialize 替身<br/>(与 implement 侧同一条路)"]
+  H --> J["QA 复验 → PASS 判决可提交<br/>path+delivery 同步收尾"]
+  I --> J

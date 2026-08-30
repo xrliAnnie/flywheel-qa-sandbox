@@ -277,6 +277,7 @@ import {
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSummaryAbsorptionCadenceMs,
+	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
 	storeXiaohongshuLearningEnabled,
@@ -617,6 +618,7 @@ import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
+import { renderWorkflowReworkWakeContent } from "./workflow-rework-wake-copy.js";
 import {
 	collectWorkflowRunReceipt,
 	reconcileWorkflowRunCollections,
@@ -1457,6 +1459,10 @@ export function createBridgeApp(
 ): express.Application {
 	const app = express();
 	const flagStore = opts?.flagStore;
+	const eventRouterWorkflowCompletion = () =>
+		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
+	const workflowDecisionRoutes = () =>
+		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
 	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
@@ -1720,6 +1726,7 @@ export function createBridgeApp(
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
+			nodeReuseEnabled: workflowDecisionRoutes,
 			materializedHeadAuthority: opts?.materializedHeadAuthority,
 			gateCarrierRebind: {
 				tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
@@ -2037,6 +2044,7 @@ export function createBridgeApp(
 			lifecycleInfra, // FLY-1185 entry A bundle
 			opts?.terminalArchiveEnqueue, // FLY-1282 Part C
 			opts?.materializedHeadAuthority, // FLY-1307 PR-7.5
+			eventRouterWorkflowCompletion, // FLY-2155 live QA actor reuse decision
 		),
 	);
 
@@ -9903,7 +9911,13 @@ export async function startBridge(
 							activationId,
 							purpose: "workflow_rework",
 							fromAgent: "bridge",
-							content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
+							content: renderWorkflowReworkWakeContent({
+								wakeId,
+								activationId,
+								epoch,
+								executionId: session.execution_id,
+								context,
+							}),
 							metadata: {
 								kind: "workflow_rework",
 								wakeId,

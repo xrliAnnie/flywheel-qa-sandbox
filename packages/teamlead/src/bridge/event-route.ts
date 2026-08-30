@@ -559,6 +559,8 @@ export function createEventRouter(
 	terminalArchiveEnqueue?: (issueId: string) => void,
 	// FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews.
 	materializedHeadAuthority?: MaterializedHeadAuthority,
+	// FLY-2155: live store-backed decision switch, read for every completion.
+	workflowNodeReuseEnabled?: () => boolean,
 ): Router {
 	const router = Router();
 	const issueStatusEmojiEnabled =
@@ -982,6 +984,7 @@ export function createEventRouter(
 					}
 				}
 				const completion = store.commitEnrolledCompletion({
+					nodeReuseEnabled: workflowNodeReuseEnabled?.() ?? false,
 					executionId: event.execution_id,
 					route: completionRoute,
 					sourceEventId: event.event_id,

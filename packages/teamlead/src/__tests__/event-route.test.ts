@@ -18,6 +18,7 @@ import {
 	commDbPathForProject,
 	formatNotification,
 } from "../bridge/event-route.js";
+import { initializeFlagStore } from "../bridge/flag-store-runtime.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
@@ -306,6 +307,7 @@ describe("Event route", () => {
 	beforeEach(async () => {
 		stateRoot = mkdtempSync(join(tmpdir(), "event-route-state-"));
 		store = await StateStore.create(join(stateRoot, "teamlead.db"));
+		const flagStore = initializeFlagStore(store, {});
 		const config = makeConfig();
 		turnBeltReconciler = { current: undefined };
 		onSessionAwaitingReview = vi.fn(async () => undefined);
@@ -328,6 +330,7 @@ describe("Event route", () => {
 			undefined,
 			undefined,
 			{
+				flagStore,
 				turnBeltReconciler,
 				codexReviewHold: {
 					current: { onSessionAwaitingReview } as never,
@@ -610,6 +613,50 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("reads workflow node reuse from the flag store for every generalized completion", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const commit = vi.spyOn(store, "commitEnrolledCompletion");
+		const postCompletion = (executionId: string, eventId: string) =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: eventId,
+						execution_id: executionId,
+						event_type: "session_completed",
+						source: "flywheel-comm",
+						payload: { decision: { route: "needs_review" } },
+					}),
+				),
+			});
+
+		expect((await postCompletion("exec-1", "reuse-off-complete")).status).toBe(
+			200,
+		);
+		const revision = store.getFlagValueRow("workflow_node_reuse")!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "workflow_node_reuse",
+				rawTo: "1",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "exercise completion hot read",
+			}),
+		).toMatchObject({ ok: true });
+		expect((await postCompletion("exec-1", "reuse-on-complete")).status).toBe(
+			200,
+		);
+
+		expect(commit.mock.calls.map(([input]) => input.nodeReuseEnabled)).toEqual([
+			false,
+			true,
+		]);
+	});
+
 	it("returns named engine invariant refusals as diagnostic 409 responses", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const commit = vi.spyOn(store, "commitEnrolledCompletion").mockReturnValue({
@@ -878,6 +925,7 @@ describe("Event route", () => {
 		bindGeneralizedExecution(store, "exec-1");
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "attempt-1-complete",

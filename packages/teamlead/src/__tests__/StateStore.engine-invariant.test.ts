@@ -63,6 +63,7 @@ async function createActiveOperatorRework(): Promise<{
 		executionId: "design-exec",
 	});
 	const design = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-heavy",
 		nodeId: "design",
 		attempt: 1,
@@ -180,6 +181,7 @@ async function createFreshQa(): Promise<{
 }> {
 	const fixture = await createActiveOperatorRework();
 	const completed = fixture.store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-heavy",
 		nodeId: "implement",
 		attempt: 2,
@@ -234,6 +236,7 @@ function submitQaPass(
 	options: { alertIdentity?: boolean; clientRequestId?: string } = {},
 ) {
 	return fixture.store.submitWorkflowDecisionByCredential({
+		nodeReuseEnabled: false,
 		credential: fixture.submissionCredential,
 		clientRequestId: options.clientRequestId ?? "fly1912-qa-pass",
 		predicate: "qa_passed",
@@ -336,6 +339,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 			ignoreFreshAdvance(fixture.store);
 			expect(
 				fixture.store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: "implement-exec",
 					route: "needs_review",
 					sourceEventId: "fly1912-completion",
@@ -433,6 +437,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 			`);
 			expect(() =>
 				fixture.store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
 					runId: "run-heavy",
 					nodeId: "implement",
 					attempt: 2,
@@ -454,6 +459,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 			raw.transaction(() => {
 				expect(
 					fixture.store.commitWorkflowTransitionTx({
+						nodeReuseEnabled: false,
 						runId: "run-heavy",
 						nodeId: "implement",
 						attempt: 2,

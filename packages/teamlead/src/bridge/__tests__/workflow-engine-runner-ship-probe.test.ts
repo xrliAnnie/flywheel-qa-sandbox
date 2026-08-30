@@ -61,6 +61,7 @@ async function engineRun(dbPath = ":memory:"): Promise<StateStore> {
 
 async function openRunnerShipGate(store: StateStore) {
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "design",
 		attempt: 1,
@@ -90,6 +91,7 @@ async function openRunnerShipGate(store: StateStore) {
 	});
 	expect(
 		store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "implement-1",
 			route: "needs_review",
 			sourceEventId: "implement-complete",
@@ -123,6 +125,7 @@ async function openRunnerShipGate(store: StateStore) {
 	});
 	expect(
 		store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: qaAdmission.submissionCredential,
 			clientRequestId: "qa-pass",
 			predicate: "qa_passed",

@@ -42,6 +42,7 @@ export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 	"shipped_husk_force",
 	"flag_retirement_scan",
 	"workflow_rework_reentry",
+	"workflow_node_reuse",
 	"skill_framework_mode",
 	"workflow_turn_divergence_alerts",
 ] as const);
@@ -147,7 +148,10 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	) {
 		return defaultOnCodec;
 	}
-	if (name === "workflow_turn_divergence_alerts") {
+	if (
+		name === "workflow_turn_divergence_alerts" ||
+		name === "workflow_node_reuse"
+	) {
 		return optInCodec;
 	}
 	if (PROJECT_STORE_MANAGED_FLAGS.has(name)) {

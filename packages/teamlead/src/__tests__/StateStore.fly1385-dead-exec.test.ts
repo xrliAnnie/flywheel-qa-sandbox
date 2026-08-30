@@ -57,6 +57,7 @@ async function engineRunWithImplement(
 	});
 	expect(
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "design",
 			attempt: 1,
@@ -117,6 +118,7 @@ async function engineRunWithDeadQa(): Promise<{
 	const store = await engineRunWithImplement("running");
 	expect(
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "implement",
 			attempt: 1,
@@ -214,6 +216,7 @@ async function engineRunWithOutputFromDeadExecution(
 	});
 	expect(
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "output-run",
 			nodeId: "research",
 			attempt: 1,
@@ -1074,6 +1077,7 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 		).toEqual({ ok: false, reason: "output_already_exists" });
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "produce-retry-1",
 				route: "needs_review",
 				sourceEventId: "replacement-complete",
@@ -1327,6 +1331,7 @@ describe("FLY-1385 dead workflow execution recovery", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "produce-dead",
 				route: "needs_review",
 				sourceEventId: "late-completion",

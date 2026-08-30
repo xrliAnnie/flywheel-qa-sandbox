@@ -279,6 +279,7 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId,
 				route: "needs_review",
 				sourceEventId: "completion-fly1427",
@@ -330,6 +331,7 @@ describe("FLY-1427 enrolled completion transaction immunity", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId,
 				route: "needs_review",
 				sourceEventId: "replay-source-event",

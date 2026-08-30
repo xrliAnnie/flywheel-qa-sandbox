@@ -216,6 +216,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "engine-run",
 				nodeId: "design",
 				attempt: 1,
@@ -227,6 +228,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		).toBe(true);
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "engine-run",
 				nodeId: "implement",
 				attempt: 1,
@@ -251,6 +253,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		}
 		upsert("running", undefined, EXEC);
 		const qa = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: admission.submissionCredential,
 			clientRequestId: "engine-qa-pass",
 			predicate: "qa_passed",
@@ -310,6 +313,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "product-run",
 				nodeId: "research",
 				attempt: 1,
@@ -343,6 +347,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		const outputRow = store.getWorkflowNodeOutput(output.outputId);
 		if (!outputRow) throw new Error("product output missing");
 		const completion = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "product-produce",
 			route: "needs_review",
 			sourceEventId: "product-produce-complete",
@@ -400,6 +405,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 		}
 		upsert("running", undefined, reviewExecution);
 		const submitted = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: review.submissionCredential,
 			clientRequestId: "product-review-predicate",
 			predicate,

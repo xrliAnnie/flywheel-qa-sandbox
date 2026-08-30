@@ -643,6 +643,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-fly1731",
@@ -743,6 +744,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-fly1765",
 				nodeId: "eng_design",
 				attempt: 1,
@@ -776,6 +778,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-fly1765",
 				route: "needs_review",
 				sourceEventId: "complete-implement-fly1765",
@@ -822,6 +825,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "qa-pass-fly1765",
 				predicate: "qa_passed",

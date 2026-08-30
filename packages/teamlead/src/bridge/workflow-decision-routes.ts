@@ -53,6 +53,7 @@ export interface WorkflowDecisionRouterDeps {
 		probeRepoSlug: string;
 	}) => Promise<WorkflowPrProbeResult>;
 	now?: () => string;
+	nodeReuseEnabled?: () => boolean;
 	reQa?: {
 		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
 		respawn(
@@ -694,6 +695,7 @@ export function createWorkflowDecisionRouter(
 				return;
 			}
 			const result = deps.store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
 				credential,
 				clientRequestId,
 				predicate: engineCanonical.predicate,
@@ -799,6 +801,7 @@ export function createWorkflowDecisionRouter(
 			return;
 		}
 		const result = deps.store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
 			credential,
 			clientRequestId,
 			predicate: status === "pass" ? "qa_passed" : "qa_failed",
@@ -1101,6 +1104,7 @@ export function createWorkflowDecisionRouter(
 			return;
 		}
 		const result = deps.store.commitWorkflowLoopReentryRequest({
+			nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
 			canonical,
 			canonicalDigest,
 			tokenIdentity: canonicalSubmissionDigest(confirmToken),

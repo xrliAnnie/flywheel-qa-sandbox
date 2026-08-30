@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant I as implement 体
+  participant E as 引擎
+  participant Q1 as 旧 QA 体(活着)
+  participant G as 幽灵 execution
+  I->>E: 17:11 返工完成
+  E->>G: 铸新 QA 体(病根 A)
+  Note over G: 起跑道被旧 QA 体占死(病根 C)<br/>10 分钟后 rollback, node 仍绑幽灵(病根 D)
+  E-->>E: run 冻结 held
+  Note over Q1: 已完成复验, 结论 PASS<br/>但判决交不上去
+  Q1--xQ1: 18:44 被关掉(浪费 1)
+  I->>E: 19:08 再次完成
+  E->>G: chained 返工选中幽灵(病根 B)
+  Note over G: 5 次投递失败 55 分钟(病根 G)
+  E->>E: 20:03 才判死 → 第三个 QA 体从零重跑(浪费 2)

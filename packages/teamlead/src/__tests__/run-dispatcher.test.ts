@@ -1264,6 +1264,60 @@ describe("FLY-95: Dispatcher resolved failure handling", () => {
 		await dispatcher.drain();
 	});
 
+	it("converges an exact generalized actor wake on its occupied runway", async () => {
+		const blueprint = { run: vi.fn(() => new Promise(() => {})) };
+		const runtime: ProjectRuntime = {
+			blueprint: blueprint as unknown as ProjectRuntime["blueprint"],
+			projectRoot: "/tmp/test",
+			tmuxSessionName: "runner-test",
+		};
+		const dispatcher = new CleanupObservingRunDispatcher(
+			new Map([["TestProject", runtime]]),
+			[],
+			RunnerAdmissionController.alwaysAdmit(),
+		);
+		const generalizedExecution = {
+			engineOwned: true as const,
+			executionId: "qa-reused-actor",
+			activationId: "activation-qa-reused-actor-2",
+			runId: "run-reuse",
+			nodeId: "qa",
+			attempt: 2,
+			snapshotDigest: "digest",
+			gateCarrierEpoch: 0,
+			dispatch: { vendor: "codex" as const, model: "gpt-5.6-sol" },
+			capabilities: {},
+			agentContent: "Retest on the same actor.",
+			idempotencyKey: "launch-qa-reused-actor-2",
+			launchGateToken: "token-qa-reused-actor-2",
+			commitWorkflowLaunch: vi.fn(() => ({ ok: true as const })),
+			projectTurn: vi.fn(() => ({
+				ok: true as const,
+				idempotentReplay: false,
+			})),
+		};
+
+		const first = await dispatcher.start({
+			issueId: "FLY-2155",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			generalizedExecution,
+		});
+		const converged = await dispatcher.start({
+			issueId: "FLY-2155",
+			projectName: "TestProject",
+			sessionRole: "qa",
+			generalizedExecution,
+		});
+
+		expect(converged).toMatchObject({
+			executionId: first.executionId,
+			issueId: "FLY-2155",
+		});
+		expect(blueprint.run).toHaveBeenCalledTimes(1);
+		expect(dispatcher.getInflightCount()).toBe(1);
+	});
+
 	// ══════════════════════════════════════════════════════════════════════
 	// FLY-142 PR 1.4 — Agent Team identity wiring
 	//

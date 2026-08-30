@@ -505,6 +505,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "product-run",
 				nodeId: "research",
 				attempt: 1,
@@ -544,6 +545,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		if (!producedOutput.ok) throw new Error(producedOutput.reason);
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "product-produce",
 				route: "needs_review",
 				sourceEventId: "produce-complete",
@@ -610,6 +612,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: review.submissionCredential,
 				clientRequestId: "review-pass",
 				predicate: "design_review_approved",

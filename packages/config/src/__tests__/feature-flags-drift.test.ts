@@ -393,6 +393,18 @@ describe("feature-flag drift guard", () => {
 					"storeWorkflowReworkReentryEnabled",
 				],
 				[
+					"workflow_node_reuse",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"eventRouterWorkflowCompletion",
+					"storeWorkflowNodeReuseEnabled",
+				],
+				[
+					"workflow_node_reuse",
+					"packages/teamlead/src/bridge/plugin.ts",
+					"workflowDecisionRoutes",
+					"storeWorkflowNodeReuseEnabled",
+				],
+				[
 					"pipeline_dag",
 					"packages/teamlead/src/bridge/pipeline-config-source.ts",
 					"readPipelineEnrollment",

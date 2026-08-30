@@ -1457,6 +1457,9 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		const key = this.inflightKey(req.issueId, role);
 
 		const inflightEntry = this.currentInflightEntry(key);
+		// A workflow wake may deliberately target the actor that already owns this
+		// (issue, role) runway. Converge on that exact execution instead of treating
+		// the live actor as a conflicting launch or requiring its session to close.
 		if (
 			inflightEntry &&
 			req.generalizedExecution &&

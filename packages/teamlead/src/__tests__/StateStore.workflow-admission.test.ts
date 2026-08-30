@@ -233,6 +233,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: admission.credential,
 				clientRequestId: "late-verdict",
 				predicate: "qa_passed",
@@ -255,6 +256,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 		expect(admission.ok).toBe(true);
 		if (!admission.ok) return;
 		const result = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: admission.credential,
 			clientRequestId: "req-1",
 			predicate: "qa_passed",
@@ -303,11 +305,13 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 			claimExpiresAt: T1,
 		};
 		const first = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			...input,
 			now: T0,
 		});
 		expect(first.ok).toBe(true);
 		const replay = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			...input,
 			now: "2026-07-15T00:00:00.000Z",
 		});
@@ -325,6 +329,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 		if (!admission.ok) throw new Error(admission.reason);
 		const submit = (overrides: Record<string, unknown> = {}) =>
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: admission.credential,
 				clientRequestId: "req-1",
 				predicate: "qa_passed",
@@ -356,6 +361,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: admission.credential,
 				clientRequestId: "expired-request",
 				predicate: "codex_approved",
@@ -377,6 +383,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 		if (!admission.ok) throw new Error(admission.reason);
 
 		const result = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: admission.credential,
 			clientRequestId: "late-qa-verdict",
 			predicate: "qa_passed",
@@ -448,6 +455,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 		);
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				...input,
 				now: "2026-07-15T00:00:00.000Z",
 			}),
@@ -470,6 +478,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 
 			expect(
 				store.submitWorkflowDecisionByCredential({
+					nodeReuseEnabled: false,
 					credential: admission.credential,
 					clientRequestId: `terminal-${status}`,
 					predicate: "qa_passed",

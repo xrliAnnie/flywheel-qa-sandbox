@@ -57,6 +57,7 @@ describe("FLY-1686 gate-entry PR binding", () => {
 
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-fly1686",
 				nodeId: "design",
 				attempt: 1,
@@ -86,6 +87,7 @@ describe("FLY-1686 gate-entry PR binding", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-fly1686",
 				route: "needs_review",
 				sourceEventId: "complete-implement-fly1686",
@@ -171,6 +173,7 @@ describe("FLY-1686 gate-entry PR binding", () => {
 		};
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				...missingBindingSubmission,
 				subjectDigest: "d".repeat(40),
 				alertIdentity: {
@@ -182,6 +185,7 @@ describe("FLY-1686 gate-entry PR binding", () => {
 		).toEqual({ ok: false, reason: "land_head_unavailable" });
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				...missingBindingSubmission,
 				alertIdentity: {
 					leadId: "lead-after-restart",
@@ -226,6 +230,7 @@ describe("FLY-1686 gate-entry PR binding", () => {
 
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "qa-pass-fly1686",
 				predicate: "qa_passed",

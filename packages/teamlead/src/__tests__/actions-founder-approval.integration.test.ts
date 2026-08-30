@@ -249,6 +249,7 @@ describe("FLY-1981 founder action endpoint integration", () => {
 		});
 		bindPr(store, runId, executionId);
 		const transitioned = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId,
 			nodeId: "craft",
 			attempt: 1,

@@ -41,7 +41,9 @@ afterEach(() => {
 async function createHarness(
 	options: {
 		now?: () => Date;
-		probeRegistered?: () => Promise<PhaseLiveness>;
+		probeRegistered?: (session: {
+			execution_id: string;
+		}) => Promise<PhaseLiveness>;
 		probePersisted?: () => Promise<PhaseLiveness>;
 		activateActorForWake?: () => Promise<
 			{ ok: true } | { ok: false; error: string }
@@ -119,6 +121,7 @@ async function createHarness(
 	});
 
 	const designDone = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-e2e",
 		nodeId: "design",
 		attempt: 1,
@@ -137,6 +140,7 @@ async function createHarness(
 		executionId: "implement-exec",
 	});
 	const implementDone = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-e2e",
 		nodeId: "implement",
 		attempt: 1,
@@ -304,6 +308,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			});
 		try {
 			const failed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-e2e",
 				nodeId: "qa",
 				attempt: 1,
@@ -435,6 +440,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 		try {
 			writeFileSync(join(worktree, "qa-report.md"), "untracked QA residue\n");
 			const failed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-e2e",
 				nodeId: "qa",
 				attempt: 1,
@@ -487,12 +493,169 @@ describe("FLY-1423 capability-level rework flow", () => {
 		}
 	});
 
-	it("re-enters the same implement and QA actors from fail through retest", async () => {
+	it("converges a zombie writer replacement that raced the rework coordinator", async () => {
+		let current = new Date("2026-07-23T00:11:00.000Z");
+		const { store, comm, coordinator, baseHead } = await createHarness({
+			now: () => current,
+		});
+		try {
+			const failed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
+				runId: "run-e2e",
+				nodeId: "qa",
+				attempt: 1,
+				executionId: "qa-exec",
+				outcome: "qa_fail",
+				subjectDigest: baseHead,
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!failed.ok || !failed.reworkRequestId) {
+				throw new Error("QA fail did not create a rework request");
+			}
+
+			store.upsertWorkflowRunNode({
+				runId: "run-e2e",
+				nodeId: "implement",
+				attempt: 2,
+				state: "running",
+				executionId: "implement-exec",
+			});
+			store.upsertSession({
+				execution_id: "implement-exec",
+				issue_id: "FLY-1423-E2E",
+				project_name: "flywheel",
+				status: "failed",
+				workflow_node_id: "implement",
+				session_role: "implement",
+				chat_thread_role: "implement",
+				tmux_session: "tmux:implement-exec",
+			});
+			const writerReplacement = store.rollbackDeadWorkflowNodeExecution({
+				runId: "run-e2e",
+				nodeId: "implement",
+				attempt: 2,
+				deadExecutionId: "implement-exec",
+				newExecutionId: "implement-replacement",
+				reason: "terminal_session_and_dead_probe",
+				livenessEvidence: {
+					liveness: "dead",
+					observedAt: "2026-07-23T00:11:00.000Z",
+				},
+				now: "2026-07-23T00:11:00.000Z",
+			});
+			expect(writerReplacement).toMatchObject({
+				ok: true,
+				idempotentReplay: false,
+			});
+			expect(store.getWorkflowRunNode("run-e2e", "implement", 2)).toMatchObject(
+				{
+					state: "pending",
+					execution_id: "implement-replacement",
+				},
+			);
+			expect(
+				store.getLatestWorkflowReworkRoute(failed.reworkRequestId),
+			).toMatchObject({ preferred_actor_execution_id: "implement-exec" });
+			expect(store.getWorkflowActor("implement-replacement")).toBeUndefined();
+
+			await expect(
+				coordinator.reconcile(failed.reworkRequestId),
+			).resolves.toEqual({
+				kind: "replacement_converged",
+				executionId: "implement-replacement",
+			});
+			expect(
+				store.getLatestWorkflowReworkRoute(failed.reworkRequestId),
+			).toMatchObject({
+				revision: 2,
+				preferred_actor_execution_id: "implement-replacement",
+				interpreted_by: "engine:writer_replacement_convergence",
+			});
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({ state: "replacement_pending", route_revision: 2 });
+			expect(store.getWorkflowActor("implement-replacement")).toMatchObject({
+				role: "implement",
+			});
+			expect(
+				store
+					.listWorkflowSideEffects("run-e2e")
+					.find((row) => row.execution_id === "implement-replacement"),
+			).toMatchObject({
+				state: "intent_recorded",
+				reason: `rework_replacement:${failed.reworkRequestId}`,
+			});
+
+			const launches: StartRequest[] = [];
+			const startDispatcher = {
+				start: async (request: StartRequest) => {
+					launches.push(request);
+					const generalized = request.generalizedExecution;
+					if (!generalized) throw new Error("generalized execution missing");
+					const committed = generalized.commitWorkflowLaunch?.();
+					if (!committed?.ok) {
+						throw new Error(committed?.reason ?? "launch commit failed");
+					}
+					store.upsertSession({
+						execution_id: generalized.executionId,
+						issue_id: request.issueId,
+						project_name: request.projectName,
+						status: "running",
+						session_role: request.sessionRole,
+						chat_thread_role: request.sessionRole,
+					});
+					return {
+						executionId: generalized.executionId,
+						issueId: request.issueId,
+					};
+				},
+				getInflightCount: () => 0,
+				validateAgentName: () => ({ ok: true as const }),
+			} as IStartDispatcher;
+			const stateRoot = mkdtempSync(join(tmpdir(), "fly2152-converge-e2e-"));
+			roots.push(stateRoot);
+			current = new Date("2026-07-23T00:12:00.000Z");
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher,
+				stateRoot,
+				env: WORKFLOW_ON,
+				now: () => current,
+				resolvePredecessorHead: async () => baseHead,
+				reconcileWorkflowRework: (requestId) =>
+					coordinator.reconcile(requestId),
+			});
+			expect(await dispatcher.reconcile()).toEqual({ started: 3, held: 0 });
+			expect(launches).toHaveLength(1);
+			expect(launches[0]?.generalizedExecution?.executionId).toBe(
+				"implement-replacement",
+			);
+			expect(
+				store.getWorkflowReworkDelivery(failed.reworkRequestId),
+			).toMatchObject({ state: "wake_delivered", route_revision: 2 });
+		} finally {
+			comm.close();
+			store.close();
+		}
+	});
+
+	it("keeps implement and QA context through an account-switch probe wave", async () => {
+		let current = NOW;
+		const switchingAccounts = new Set(["implement-exec", "qa-exec"]);
 		const { store, comm, coordinator, wakes, worktree, baseHead } =
-			await createHarness();
+			await createHarness({
+				now: () => current,
+				probeRegistered: async (session) => {
+					if (switchingAccounts.delete(session.execution_id)) {
+						return "indeterminate";
+					}
+					return "alive";
+				},
+			});
 		try {
 			const sideEffectsBefore = store.listWorkflowSideEffects("run-e2e");
 			const failed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-e2e",
 				nodeId: "qa",
 				attempt: 1,
@@ -511,6 +674,15 @@ describe("FLY-1423 capability-level rework flow", () => {
 				throw new Error("QA fail did not create a rework request");
 			}
 
+			expect(await coordinator.reconcile(failed.reworkRequestId)).toMatchObject(
+				{
+					kind: "retryable",
+					reason: "registered_liveness_indeterminate",
+				},
+			);
+			expect(store.getSession("implement-exec")?.status).toBe("running");
+			expect(store.getWorkflowRun("run-e2e")?.status).toBe("active");
+			current = new Date("2026-07-23T00:21:00.000Z");
 			expect(await coordinator.reconcile(failed.reworkRequestId)).toMatchObject(
 				{
 					kind: "awaiting_receipt",
@@ -564,6 +736,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 				evidence: { commitMessages: ["fix QA regression"] },
 			};
 			const completed = store.commitEnrolledCompletion({
+				nodeReuseEnabled: true,
 				executionId: "implement-exec",
 				route: "needs_review",
 				sourceEventId: "complete-implement-attempt-2",
@@ -581,6 +754,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			expect(completed).toMatchObject({ ok: true, idempotentReplay: false });
 			expect(
 				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: "implement-exec",
 					route: "needs_review",
 					sourceEventId: "complete-implement-attempt-2-replay",
@@ -621,6 +795,13 @@ describe("FLY-1423 capability-level rework flow", () => {
 			});
 
 			expect(await coordinator.reconcile(qaRequestId)).toMatchObject({
+				kind: "retryable",
+				reason: "registered_liveness_indeterminate",
+			});
+			expect(store.getSession("qa-exec")?.status).toBe("running");
+			expect(store.getWorkflowRun("run-e2e")?.status).toBe("active");
+			current = new Date("2026-07-23T00:22:00.000Z");
+			expect(await coordinator.reconcile(qaRequestId)).toMatchObject({
 				kind: "awaiting_receipt",
 				executionId: "qa-exec",
 				epoch: 5,
@@ -651,10 +832,11 @@ describe("FLY-1423 capability-level rework flow", () => {
 					qaActivation!.submission_credential!,
 				),
 			).toMatchObject({
-				expires_at: "2026-07-23T06:20:00.000Z",
-				absolute_deadline_at: "2026-07-24T00:20:00.000Z",
+				expires_at: "2026-07-23T06:22:00.000Z",
+				absolute_deadline_at: "2026-07-24T00:22:00.000Z",
 			});
 			const passed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-e2e",
 				nodeId: "qa",
 				attempt: 2,
@@ -670,6 +852,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			});
 			expect(
 				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
 					runId: "run-e2e",
 					nodeId: "qa",
 					attempt: 2,
@@ -681,6 +864,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 			).toMatchObject({ ok: true, idempotentReplay: true });
 
 			expect(store.getWorkflowRun("run-e2e")).toMatchObject({
+				status: "active",
 				current_node_id: "founder_gate",
 			});
 			expect(store.getWorkflowReworkDelivery(qaRequestId)).toMatchObject({
@@ -703,6 +887,7 @@ describe("FLY-1423 capability-level rework flow", () => {
 				"implement-exec",
 				"qa-exec",
 			]);
+			expect(switchingAccounts).toEqual(new Set());
 		} finally {
 			comm.close();
 			store.close();

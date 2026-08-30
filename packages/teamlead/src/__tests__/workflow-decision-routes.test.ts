@@ -139,6 +139,7 @@ async function reviewFixture(options: {
 		workflow_node_id: "research",
 	});
 	const researchCompletion = store.commitEnrolledCompletion({
+		nodeReuseEnabled: false,
 		executionId: "research-1",
 		route: "no_code",
 		sourceEventId: "research-complete",
@@ -179,6 +180,7 @@ async function reviewFixture(options: {
 	});
 	if (!output.ok) throw new Error(output.reason);
 	const produceCompletion = store.commitEnrolledCompletion({
+		nodeReuseEnabled: false,
 		executionId: produceExecution,
 		route: "needs_review",
 		sourceEventId: "produce-complete",
@@ -286,7 +288,7 @@ async function reviewFixture(options: {
 	};
 }
 
-async function fixture() {
+async function fixture(nodeReuseEnabled?: () => boolean) {
 	const store = await StateStore.create(":memory:");
 	const worktree = gitWorktree();
 	store.upsertSession({
@@ -346,6 +348,7 @@ async function fixture() {
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
+			nodeReuseEnabled,
 			now: () => serverNow,
 			resolveAlertIdentity: () => alertIdentity,
 		}),
@@ -415,6 +418,36 @@ describe("schema-v1 workflow recovery decision routes", () => {
 				claimId: accepted.claimId,
 			});
 			expect(f.store.countWorkflowClaims("run-1")).toBe(1);
+		} finally {
+			await f.close();
+		}
+	});
+
+	it("reads the node-reuse switch on every credential decision", async () => {
+		let enabled = false;
+		const nodeReuseEnabled = vi.fn(() => enabled);
+		const f = await fixture(nodeReuseEnabled);
+		try {
+			const submit = vi.spyOn(f.store, "submitWorkflowDecisionByCredential");
+			const body = {
+				credential: f.credential,
+				client_request_id: "reuse-hot-read",
+				status: "pass",
+			};
+			const post = () =>
+				fetch(`${f.baseUrl}/decision`, {
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify(body),
+				});
+			expect((await post()).status).toBe(200);
+			enabled = true;
+			expect((await post()).status).toBe(200);
+
+			expect(nodeReuseEnabled).toHaveBeenCalledTimes(2);
+			expect(
+				submit.mock.calls.map(([input]) => input.nodeReuseEnabled),
+			).toEqual([false, true]);
 		} finally {
 			await f.close();
 		}
@@ -1385,6 +1418,7 @@ describe("generic workflow loop reentry", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-loop",
 				nodeId: "design",
 				attempt: 1,
@@ -1408,6 +1442,7 @@ describe("generic workflow loop reentry", () => {
 		).toMatchObject({ ok: true });
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-loop",
 				nodeId: "implement",
 				attempt: 1,
@@ -1430,12 +1465,18 @@ describe("generic workflow loop reentry", () => {
 			}),
 		).toMatchObject({ ok: true });
 
+		const nodeReuseEnabled = vi.fn(() => true);
+		const commitLoopReentry = vi.spyOn(
+			store,
+			"commitWorkflowLoopReentryRequest",
+		);
 		const app = express();
 		app.use(express.json());
 		app.use(
 			"/api/workflow",
 			createWorkflowDecisionRouter({
 				store,
+				nodeReuseEnabled,
 				loopReentry: { tokens: new ConfirmTokenStore() },
 				now: () => T0,
 			}),
@@ -1494,6 +1535,8 @@ describe("generic workflow loop reentry", () => {
 			expect(store.getWorkflowRun("run-loop")?.current_node_id).toBe(
 				"implement",
 			);
+			expect(nodeReuseEnabled).toHaveBeenCalledOnce();
+			expect(commitLoopReentry.mock.calls[0]?.[0].nodeReuseEnabled).toBe(true);
 		} finally {
 			await new Promise<void>((resolve) => server.close(() => resolve()));
 			store.close();

@@ -123,6 +123,7 @@ function completeImplement(
 	},
 ) {
 	return store.commitEnrolledCompletion({
+		nodeReuseEnabled: false,
 		executionId: "implement-1",
 		route: "needs_review",
 		sourceEventId: input.sourceEventId,
@@ -197,6 +198,7 @@ function submitQa(
 	},
 ) {
 	const passed = store.submitWorkflowDecisionByCredential({
+		nodeReuseEnabled: false,
 		credential: input.credential,
 		clientRequestId: `${input.nodeId}-pass-${input.attempt}`,
 		predicate: "qa_passed",
@@ -411,6 +413,7 @@ function prepareCompiledFounderGate(store: StateStore, head: string) {
 	).toMatchObject({ ok: true });
 	expect(
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "eng_design",
 			attempt: 1,
@@ -535,6 +538,7 @@ describe("founder kickback new-card loop", () => {
 		try {
 			expect(
 				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
 					runId: "run-1",
 					nodeId: "eng_design",
 					attempt: 1,
@@ -1166,6 +1170,7 @@ describe("founder kickback new-card loop", () => {
 				now: "2026-08-14T05:00:00.000Z",
 			});
 			const design = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-1",
 				nodeId: "eng_design",
 				attempt: 2,

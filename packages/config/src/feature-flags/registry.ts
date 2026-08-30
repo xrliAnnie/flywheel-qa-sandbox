@@ -357,6 +357,33 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"workflow-engine-dispatcher.test:rework coordinator reads the re-entry switch on every reconcile",
 	},
+	{
+		name: "workflow_node_reuse",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_WORKFLOW_NODE_REUSE",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-2155: turn a later QA verification round into a same-actor rework request; dead actors still materialize replacements",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"eventRouterWorkflowCompletion",
+				"storeWorkflowNodeReuseEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowDecisionRoutes",
+				"storeWorkflowNodeReuseEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: workflow_node_reuse observes an opt-in store write at call time",
+	},
 
 	// ─── FLY-1041: founder-approval binding — single bindable ship gate ───
 	// ─── value-type env (non-boolean) → readonly display ───

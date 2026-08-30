@@ -213,6 +213,7 @@ function completeCompiledCodeImplement(store: StateStore) {
 	});
 	const beforeCompletion = store.getSession("implement-1");
 	const completion = store.commitEnrolledCompletion({
+		nodeReuseEnabled: false,
 		executionId: "implement-1",
 		route: "needs_review",
 		sourceEventId: "complete-implement-1",
@@ -241,6 +242,7 @@ function prepareCompiledReworkReplacement(store: StateStore) {
 		executionId: "qa-1",
 	});
 	const failed = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "qa",
 		attempt: 1,
@@ -294,6 +296,7 @@ function advance(
 	},
 ) {
 	return store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		...input,
 		now: "2026-07-16T01:00:00.000Z",
@@ -340,6 +343,7 @@ async function openRunnerShipGate(
 	});
 	expect(
 		store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "implement-1",
 			route: "needs_review",
 			sourceEventId: "complete-implement-for-helper",
@@ -401,6 +405,7 @@ async function openRunnerShipGate(
 		});
 	}
 	const submission = store.submitWorkflowDecisionByCredential({
+		nodeReuseEnabled: false,
 		credential: qaAdmission.submissionCredential,
 		clientRequestId: "qa-pass-helper",
 		predicate: "qa_passed",
@@ -740,6 +745,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		const store = await engineRun();
 		const head = "b".repeat(40);
 		const transition = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "design",
 			attempt: 1,
@@ -879,6 +885,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(admitted).toMatchObject({ ok: true, idempotentReplay: false });
 
 		const completed = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "design-1",
 			route: "phase_design_complete",
 			sourceEventId: "complete-design-1",
@@ -918,6 +925,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "design-1",
 				route: "phase_design_complete",
 				sourceEventId: "complete-design-retry",
@@ -1014,6 +1022,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "complete-implement-1",
@@ -1114,6 +1123,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "generic-1",
 				route: "needs_review",
 				sourceEventId: "complete-generic-1",
@@ -1159,6 +1169,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "generic-1",
 				route: "no_code",
 				sourceEventId: "complete-generic-no-code",
@@ -1205,6 +1216,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			workflow_node_id: "qa",
 		});
 		const passed = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: qaAdmission.submissionCredential,
 			clientRequestId: "qa-pass-land-authority",
 			predicate: "qa_passed",
@@ -1511,7 +1523,7 @@ describe("engine-owned snapshot transition transaction", () => {
 						event.event_uid === replacementAttachments.at(-1)?.transition_uid,
 				),
 		).toMatchObject({ kind: "rework_replacement" });
-		expect(store.getSession("implement-1")?.status).toBe("completed");
+		expect(store.getSession("implement-1")?.status).toBe("failed");
 		expect(
 			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
 		).toBeUndefined();
@@ -1529,6 +1541,31 @@ describe("engine-owned snapshot transition transaction", () => {
 		).toMatchObject({
 			ok: true,
 			idempotentReplay: true,
+		});
+		store.close();
+	});
+
+	it("terminalizes a proven-dead nonterminal actor before exposing its replacement", async () => {
+		const store = await compiledCodeEngineRun();
+		completeCompiledCodeImplement(store);
+		const { replacement } = prepareCompiledReworkReplacement(store);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1765",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "implement",
+		});
+		const beforeRevision = store.getLifecycleRevision("implement-1");
+
+		expect(
+			store.materializeWorkflowReworkReplacement(replacement),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+
+		expect(store.getSession("implement-1")).toMatchObject({
+			status: "failed",
+			lifecycle_revision: beforeRevision + 1,
+			terminal_at: expect.any(String),
 		});
 		store.close();
 	});
@@ -1553,7 +1590,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(
 			store.materializeWorkflowReworkReplacement(replacement),
 		).toMatchObject({ ok: true, idempotentReplay: false });
-		expect(store.getSession("implement-1")?.status).toBe("ship_parked");
+		expect(store.getSession("implement-1")?.status).toBe("failed");
 		expect(
 			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
 		).toBeUndefined();
@@ -1660,6 +1697,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "complete-implement-for-gate",
@@ -1713,6 +1751,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "qa-pass-opens-gate",
 				predicate: "qa_passed",
@@ -2241,6 +2280,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-2",
 				route: "needs_review",
 				sourceEventId: "complete-implement-new-head",
@@ -2302,6 +2342,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "complete-implement-1",
@@ -2349,6 +2390,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			revived.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "revived-completion",
@@ -2412,6 +2454,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			claimStore.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "revived-qa-claim",
 				predicate: "qa_failed",
@@ -4778,6 +4821,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		if (!canonical) throw new Error("loop canonical missing");
 		const canonicalDigest = canonicalSubmissionDigest(canonical);
 		const first = store.commitWorkflowLoopReentryRequest({
+			nodeReuseEnabled: false,
 			canonical,
 			canonicalDigest,
 			tokenIdentity: "b".repeat(64),
@@ -4801,6 +4845,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.commitWorkflowLoopReentryRequest({
+				nodeReuseEnabled: false,
 				canonical,
 				canonicalDigest,
 				tokenIdentity: "c".repeat(64),

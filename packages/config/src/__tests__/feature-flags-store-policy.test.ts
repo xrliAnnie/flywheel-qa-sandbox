@@ -21,6 +21,7 @@ const MANAGED = [
 	"shipped_husk_force",
 	"flag_retirement_scan",
 	"workflow_rework_reentry",
+	"workflow_node_reuse",
 	"skill_framework_mode",
 	"workflow_turn_divergence_alerts",
 ] as const;

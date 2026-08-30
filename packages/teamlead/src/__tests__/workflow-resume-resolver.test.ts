@@ -300,6 +300,7 @@ async function seedGateTargetFromWriter(writer: "legacy" | "carrier") {
 		},
 	});
 	const transition = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-gate-writer",
 		nodeId: "execute",
 		attempt: 1,

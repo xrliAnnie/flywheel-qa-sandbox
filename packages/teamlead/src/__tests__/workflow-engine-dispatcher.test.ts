@@ -196,6 +196,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 		worktree_path: "/unused/design",
 	});
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "design",
 		attempt: 1,
@@ -232,6 +233,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 			],
 		});
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "implement",
 			attempt: 1,
@@ -421,6 +423,7 @@ async function storeWithGenericLandIntent() {
 	});
 	expect(
 		store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "generic-land-1",
 			route: "needs_review",
 			sourceEventId: "generic-land-complete",
@@ -562,6 +565,7 @@ async function storeWithProductOutputIntent() {
 		status: "completed",
 	});
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "product-run",
 		nodeId: "research",
 		attempt: 1,
@@ -893,6 +897,7 @@ async function storeWithQaFailKickback() {
 	});
 	expect(
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "qa",
 			attempt: 1,
@@ -1019,6 +1024,7 @@ async function storeWithFreshVerificationIntent(): Promise<{
 	});
 	if (!receipt.ok) throw new Error(receipt.reason);
 	const completed = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "implement",
 		attempt: 2,
@@ -2967,7 +2973,7 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("keeps a post-ACK wake_delivered delivery under the durable stall owner", async () => {
+	it("does not hold a post-ACK delivery while fresh actor-alive evidence is leased", async () => {
 		const store = await storeWithQaFailKickback();
 		const delivery = store.listWorkflowReworkDeliveries()[0];
 		if (!delivery) throw new Error("rework delivery missing");
@@ -2980,6 +2986,7 @@ describe("WorkflowEngineDispatcher", () => {
 			`UPDATE workflow_rework_delivery
 			    SET state = 'wake_delivered', generation = 2,
 			        next_retry_at = '2026-07-16T01:00:00.000Z',
+			        last_error = 'actor_alive_after_receipt',
 			        updated_at = '2026-07-16T00:12:00.000Z'
 			  WHERE request_id = ?`,
 			[delivery.request_id],
@@ -3002,7 +3009,7 @@ describe("WorkflowEngineDispatcher", () => {
 			env: {
 				...WORKFLOW_ON,
 				FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
-				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "3600000",
+				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
 			},
 			now: () => new Date("2026-07-16T00:20:00.000Z"),
 			reconcileWorkflowRework,
@@ -3022,12 +3029,68 @@ describe("WorkflowEngineDispatcher", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "rework_activation_stalled_alerted"),
 		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_held"),
+		).toHaveLength(0);
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
 		expect(store.getWorkflowReworkDelivery(delivery.request_id)).toMatchObject({
 			state: "wake_delivered",
 			updated_at: "2026-07-16T00:12:00.000Z",
 		});
 		store.close();
 	});
+
+	it.each([
+		["expired", "actor_alive_after_receipt", "2026-07-16T00:19:59.000Z"],
+		["unproven", "receipt_not_observed", "2026-07-16T01:00:00.000Z"],
+	])(
+		"holds a post-ACK delivery when actor-alive evidence is %s",
+		async (_case, lastError, nextRetryAt) => {
+			const store = await storeWithQaFailKickback();
+			const delivery = store.listWorkflowReworkDeliveries()[0];
+			if (!delivery) throw new Error("rework delivery missing");
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'wake_delivered', generation = 2,
+				        next_retry_at = ?, last_error = ?,
+				        updated_at = '2026-07-16T00:12:00.000Z'
+				  WHERE request_id = ?`,
+				[nextRetryAt, lastError, delivery.request_id],
+			);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fakeStartDispatcher(store).dispatcher,
+				env: {
+					...WORKFLOW_ON,
+					FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+					FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
+				},
+				now: () => new Date("2026-07-16T00:20:00.000Z"),
+				reconcileWorkflowRework: vi.fn(async () => ({ kind: "busy" as const })),
+				resolveRunAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "rework_activation_stalled_held"),
+			).toHaveLength(1);
+			store.close();
+		},
+	);
 
 	it("keeps the genuine stall clock for a stranded replacement_pending delivery", async () => {
 		const store = await storeWithQaFailKickback();
@@ -4450,6 +4513,7 @@ describe("WorkflowEngineDispatcher", () => {
 			});
 			expect(
 				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: request.generalizedExecution!.executionId,
 					route: "needs_review",
 					sourceEventId: "complete-before-start-return",
@@ -4512,6 +4576,7 @@ describe("WorkflowEngineDispatcher", () => {
 			}),
 		).toMatchObject({ ok: true });
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "product-run",
 			nodeId: "produce",
 			attempt: 1,
@@ -4639,6 +4704,7 @@ describe("WorkflowEngineDispatcher", () => {
 			).toMatchObject({ ok: true });
 			expect(
 				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
 					runId,
 					nodeId: producer.id,
 					attempt: 1,

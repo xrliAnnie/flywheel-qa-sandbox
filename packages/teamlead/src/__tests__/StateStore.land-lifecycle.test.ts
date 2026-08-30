@@ -238,6 +238,7 @@ function prepareAwaitingFounderGate(store: StateStore, runId: string) {
 		executionId: "qa-feedback",
 	});
 	const passed = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId,
 		nodeId: "qa",
 		attempt: 1,
@@ -364,6 +365,7 @@ describe("StateStore land lifecycle ledger", () => {
 
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-claimless",
 				nodeId: "craft",
 				attempt: 1,
@@ -393,6 +395,7 @@ describe("StateStore land lifecycle ledger", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-claimless",
 				nodeId: "craft",
 				attempt: 1,
@@ -513,6 +516,7 @@ describe("StateStore land lifecycle ledger", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				...submission,
 				alertIdentity: {
 					leadId: "lead-completion-first",
@@ -523,6 +527,7 @@ describe("StateStore land lifecycle ledger", () => {
 		).toEqual({ ok: false, reason: "land_head_unavailable" });
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				...submission,
 				alertIdentity: {
 					leadId: "lead-completion-restart",
@@ -595,6 +600,7 @@ describe("StateStore land lifecycle ledger", () => {
 
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-transition",
 				nodeId: "qa",
 				attempt: 1,
@@ -816,6 +822,7 @@ describe("StateStore land lifecycle ledger", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-design-only",
 				nodeId: "design",
 				attempt: 2,
@@ -1018,6 +1025,7 @@ describe("StateStore land lifecycle ledger", () => {
 			receiptId: "run-implement-full:implement:2",
 		});
 		const implementation = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-implement-full",
 			nodeId: "implement",
 			attempt: 2,
@@ -1058,6 +1066,7 @@ describe("StateStore land lifecycle ledger", () => {
 			attempt: 2,
 		});
 		const qa = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-implement-full",
 			nodeId: "qa",
 			attempt: 2,

@@ -355,6 +355,25 @@ describe("feature-flag registry invariants", () => {
 		).toBeUndefined();
 	});
 
+	it("FLY-2155 registers QA node reuse as a default-off live feature", () => {
+		const flag = FEATURE_FLAGS.find(
+			(candidate) => candidate.envVar === "FLYWHEEL_WORKFLOW_NODE_REUSE",
+		);
+		expect(flag).toMatchObject({
+			name: "workflow_node_reuse",
+			category: "feature",
+			scope: "bridge_global",
+			polarity: "opt_in",
+			default: false,
+			toggleable: "direct",
+		});
+		expect(flag?.readSites.map((site) => site.symbol)).toEqual([
+			"eventRouterWorkflowCompletion",
+			"workflowDecisionRoutes",
+		]);
+		expect(flag?.directToggleProof).toMatch(/flag-store-runtime/i);
+	});
+
 	it("FLY-1456 removes the temporary quota daemon cutover flag", () => {
 		const cutover = FEATURE_FLAGS.find(
 			(f) => f.envVar === "FLYWHEEL_QUOTA_DAEMON_CUTOVER",

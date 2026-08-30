@@ -1,0 +1,22 @@
+flowchart LR
+  subgraph T["transition 事务(同步, StateStore)"]
+    R1["workflow_rework_request<br/>authority=engine, kind=node_reuse"]
+    R2["workflow_rework_route_revision<br/>preferred_actor = 三档选择器结果"]
+    R3["workflow_rework_delivery<br/>state=pending"]
+    R4["workflow_rework_verification_path<br/>state=pending"]
+    R5["目标节点 reservation<br/>rework_target_reserved"]
+  end
+  subgraph C["coordinator(异步 tick)"]
+    P["probe 存活判定"]
+    W["wake 旧体 / materialize 替身"]
+  end
+  subgraph S["选择器三档(WS1)"]
+    S1["1. known_nonterminal<br/>session 非终态, 优先"]
+    S2["2. unknown<br/>session 行缺失, 次选"]
+    S3["3. dead_seed<br/>已终态/有 rollback 回执<br/>只作替身种子"]
+  end
+  S1 --> R2
+  S2 --> R2
+  S3 --> R2
+  R3 --> P
+  P --> W

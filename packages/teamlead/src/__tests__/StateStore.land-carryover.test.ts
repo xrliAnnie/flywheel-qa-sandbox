@@ -180,6 +180,7 @@ async function fixture() {
 		[T0, HEAD_A],
 	);
 	const transition = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-carryover",
 		nodeId: "qa",
 		attempt: 1,
@@ -766,6 +767,69 @@ describe("equivalent-head carryover authority", () => {
 		}
 	});
 
+	it("does not charge node-reuse engine requests against the land conflict cap", async () => {
+		const { store, operation, claim } = await fixture();
+		try {
+			expect(
+				store.recordLandOperationStep({
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					step: "base_refresh_prepared",
+					receipt: { approvedHead: HEAD_A, baseOid: BASE_1 },
+					now: T1,
+				}),
+			).toMatchObject({ ok: true });
+			for (let cycle = 1; cycle <= 2; cycle += 1) {
+				db(store).run(
+					`INSERT INTO workflow_rework_request
+					   (request_id, run_id, source_event_id, authority, source_node_id,
+					    source_attempt, base_revision, authority_context_json,
+					    authority_context_digest, founder_feedback_verbatim, requested_at)
+					 VALUES (?, 'run-carryover', ?, 'engine', 'land', 1, ?, '{}', ?, NULL, ?)`,
+					[
+						`prior-land-${cycle}`,
+						`engine_land_rework:prior-${cycle}`,
+						HEAD_A,
+						String(cycle).repeat(64),
+						T0,
+					],
+				);
+			}
+			for (let cycle = 1; cycle <= 3; cycle += 1) {
+				db(store).run(
+					`INSERT INTO workflow_rework_request
+					   (request_id, run_id, source_event_id, authority, source_node_id,
+					    source_attempt, base_revision, authority_context_json,
+					    authority_context_digest, founder_feedback_verbatim, requested_at)
+					 VALUES (?, 'run-carryover', ?, 'engine', 'implement', 1, ?,
+					         '{"kind":"node_reuse"}', ?, NULL, ?)`,
+					[
+						`prior-node-reuse-${cycle}`,
+						`workflow_transition:node-reuse-${cycle}`,
+						HEAD_A,
+						String(cycle + 2).repeat(64),
+						T0,
+					],
+				);
+			}
+
+			expect(
+				store.openEngineLandConflictRework({
+					runId: "run-carryover",
+					operationId: operation.operation_id,
+					ownerId: claim.ownerId,
+					generation: claim.generation,
+					proofStep: "base_refresh_prepared",
+					reason: "merge_conflict_requires_rework",
+					now: T1,
+				}),
+			).toMatchObject({ ok: true, targetNodeId: "implement" });
+		} finally {
+			store.close();
+		}
+	});
+
 	it("stops automatic conflict rework after three immutable engine cycles", async () => {
 		const { store, operation, claim } = await fixture();
 		try {
@@ -788,7 +852,7 @@ describe("equivalent-head carryover authority", () => {
 					 VALUES (?, 'run-carryover', ?, 'engine', 'land', 1, ?, '{}', ?, NULL, ?)`,
 					[
 						`prior-engine-${cycle}`,
-						`prior-engine-event-${cycle}`,
+						`engine_land_rework:prior-${cycle}`,
 						HEAD_A,
 						String(cycle).repeat(64),
 						T0,

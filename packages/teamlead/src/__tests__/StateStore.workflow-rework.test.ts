@@ -293,10 +293,58 @@ function advanceHeavy(
 	},
 ) {
 	return store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-heavy",
 		...input,
 		now: "2026-07-23T00:10:00.000Z",
 	});
+}
+
+async function createLaterQaRound(): Promise<StateStore> {
+	const store = await createHeavyEngineRun();
+	advanceHeavy(store, {
+		nodeId: "design",
+		attempt: 1,
+		executionId: "design-exec",
+		outcome: "design_done",
+		successorExecutionId: "implement-exec",
+	});
+	advanceHeavy(store, {
+		nodeId: "implement",
+		attempt: 1,
+		executionId: "implement-exec",
+		outcome: "implement_done",
+		successorExecutionId: "qa-exec",
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-heavy",
+		nodeId: "qa",
+		attempt: 1,
+		state: "done",
+		executionId: "qa-exec",
+		endedAt: "2026-07-23T00:09:00.000Z",
+	});
+	store.upsertSession({
+		execution_id: "qa-exec",
+		issue_id: "FLY-1423",
+		project_name: "flywheel",
+		status: "running",
+		workflow_node_id: "qa",
+	});
+	store.upsertWorkflowRunNode({
+		runId: "run-heavy",
+		nodeId: "implement",
+		attempt: 2,
+		state: "running",
+		executionId: "implement-exec",
+	});
+	const raw = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+	raw
+		.prepare(
+			"UPDATE workflow_run SET current_node_id = 'implement' WHERE run_id = ?",
+		)
+		.run("run-heavy");
+	return store;
 }
 
 async function createPendingHeavyRework(): Promise<{
@@ -480,6 +528,215 @@ async function freshDispatchOperatorRework(): Promise<{
 }
 
 describe("FLY-1912 verification chain fresh dispatch", () => {
+	it("turns a later QA round into one same-actor engine reuse request when enabled", async () => {
+		const store = await createLaterQaRound();
+		try {
+			const completed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: true,
+				runId: "run-heavy",
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				subjectDigest: "b".repeat(40),
+				successorExecutionId: "must-not-launch",
+				now: "2026-07-23T00:10:00.000Z",
+			});
+
+			expect(completed).toMatchObject({
+				ok: true,
+				targetNodeId: "qa",
+				targetAttempt: 2,
+				reworkRequestId: expect.stringMatching(/^rework:/),
+			});
+			expect(completed).not.toHaveProperty("successorExecutionId");
+			if (!completed.ok || !completed.reworkRequestId) {
+				throw new Error("node reuse request missing");
+			}
+			const request = store.getWorkflowReworkRequest(completed.reworkRequestId);
+			expect(request).toMatchObject({
+				authority: "engine",
+				base_revision: "b".repeat(40),
+			});
+			expect(JSON.parse(request!.authority_context_json)).toMatchObject({
+				kind: "node_reuse",
+				baseRevisionSource: { kind: "subject_digest" },
+				actorClassification: "known_nonterminal",
+			});
+			expect(
+				store.getLatestWorkflowReworkRoute(completed.reworkRequestId),
+			).toMatchObject({
+				target_node_id: "qa",
+				target_attempt: 2,
+				preferred_actor_execution_id: "qa-exec",
+				invalidation_scope: ["qa"],
+				verification_policy: ["qa_retest", "founder_gate"],
+				interpreted_by: "engine:node_reuse",
+			});
+			expect(
+				store.getWorkflowReworkDelivery(completed.reworkRequestId),
+			).toMatchObject({
+				state: "pending",
+			});
+			expect(
+				store.getWorkflowReworkVerificationPath(completed.reworkRequestId),
+			).toMatchObject({
+				state: "pending",
+				current_node_id: "qa",
+				current_attempt: 2,
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
+				state: "pending",
+				execution_id: "qa-exec",
+			});
+			expect(
+				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: true,
+					runId: "run-heavy",
+					nodeId: "implement",
+					attempt: 2,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+					successorExecutionId: "different-provisional-successor",
+					now: "2026-07-23T00:11:00.000Z",
+				}),
+			).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+				reworkRequestId: completed.reworkRequestId,
+			});
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			for (const table of [
+				"workflow_rework_request",
+				"workflow_rework_route_revision",
+				"workflow_rework_delivery",
+				"workflow_rework_verification_path",
+			] as const) {
+				expect(
+					(
+						raw.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+							n: number;
+						}
+					).n,
+				).toBe(1);
+			}
+		} finally {
+			store.close();
+		}
+	});
+
+	it("keeps the later QA round on fresh dispatch while node reuse is off", async () => {
+		const store = await createLaterQaRound();
+		try {
+			expect(
+				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
+					runId: "run-heavy",
+					nodeId: "implement",
+					attempt: 2,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+					subjectDigest: "b".repeat(40),
+					successorExecutionId: "qa-fresh-exec",
+					now: "2026-07-23T00:10:00.000Z",
+				}),
+			).toMatchObject({
+				ok: true,
+				successorExecutionId: "qa-fresh-exec",
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
+				execution_id: "qa-fresh-exec",
+			});
+			expect(store.listWorkflowReworkDeliveries()).toEqual([]);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("fails a reusable QA round without a base before writing transition state", async () => {
+		const store = await createLaterQaRound();
+		try {
+			expect(
+				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: true,
+					runId: "run-heavy",
+					nodeId: "implement",
+					attempt: 2,
+					executionId: "implement-exec",
+					outcome: "implement_done",
+					successorExecutionId: "must-not-launch",
+					now: "2026-07-23T00:10:00.000Z",
+				}),
+			).toEqual({ ok: false, reason: "reuse_base_unavailable" });
+			expect(
+				store.getWorkflowRunNode("run-heavy", "implement", 2),
+			).toMatchObject({
+				state: "running",
+				execution_id: "implement-exec",
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toBeUndefined();
+			expect(store.listWorkflowReworkDeliveries()).toEqual([]);
+			expect(
+				store
+					.listWorkflowRunEvents("run-heavy")
+					.some(
+						(event) =>
+							event.node_id === "implement" &&
+							event.kind === "node_completed" &&
+							event.payload.attempt === 2,
+					),
+			).toBe(false);
+		} finally {
+			store.close();
+		}
+	});
+
+	it("uses the producer head instead of a stale QA head for node reuse", async () => {
+		const store = await createLaterQaRound();
+		try {
+			store.patchSessionMetadata("qa-exec", { pr_head_sha: "c".repeat(40) });
+			store.upsertSession({
+				execution_id: "implement-exec",
+				issue_id: "FLY-1423",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "implement",
+			});
+			store.patchSessionMetadata("implement-exec", {
+				pr_head_sha: "d".repeat(40),
+			});
+
+			const completed = store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: true,
+				runId: "run-heavy",
+				nodeId: "implement",
+				attempt: 2,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				now: "2026-07-23T00:10:00.000Z",
+			});
+			if (!completed.ok || !completed.reworkRequestId) {
+				throw new Error("node reuse request missing");
+			}
+			const request = store.getWorkflowReworkRequest(
+				completed.reworkRequestId,
+			)!;
+			expect(request.base_revision).toBe("d".repeat(40));
+			expect(request.base_revision).not.toBe("c".repeat(40));
+			expect(JSON.parse(request.authority_context_json)).toMatchObject({
+				kind: "node_reuse",
+				baseRevisionSource: {
+					kind: "producer_head",
+					nodeId: "implement",
+					executionId: "implement-exec",
+				},
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("fresh-dispatches a verification node that has no actor history", async () => {
 		const { store, requestId, successorExecutionId } =
 			await freshDispatchOperatorRework();
@@ -569,6 +826,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 			});
 			expect(
 				store.submitWorkflowDecisionByCredential({
+					nodeReuseEnabled: false,
 					credential: admitted.submissionCredential,
 					clientRequestId: "fly1912-qa-pass",
 					predicate: "qa_passed",
@@ -758,6 +1016,14 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				"FLY-1423",
 				"ship_parked",
 			);
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 2,
+				state: "failed",
+				executionId: "qa-sessionless-ghost",
+				endedAt: "2026-07-23T00:09:30.000Z",
+			});
 			const opened = store.openOperatorRework({
 				runId: "run-heavy",
 				targetNodeId: "implement",
@@ -787,7 +1053,7 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 			expect(completed).toMatchObject({
 				ok: true,
 				targetNodeId: "qa",
-				targetAttempt: 2,
+				targetAttempt: 3,
 				reworkRequestId: expect.stringMatching(/^rework:/),
 			});
 			if (!completed.ok || !completed.reworkRequestId) {
@@ -797,10 +1063,10 @@ describe("FLY-1912 verification chain fresh dispatch", () => {
 				store.getLatestWorkflowReworkRoute(completed.reworkRequestId),
 			).toMatchObject({
 				target_node_id: "qa",
-				target_attempt: 2,
+				target_attempt: 3,
 				preferred_actor_execution_id: "qa-exec",
 			});
-			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 3)).toMatchObject({
 				state: "pending",
 				execution_id: "qa-exec",
 			});
@@ -1581,6 +1847,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				state: "awaiting_receipt",
 				owner_id: null,
 				next_retry_at: "2026-07-23T00:17:03.000Z",
+				last_error: "receipt_not_observed",
 				updated_at: "2026-07-23T00:11:03.000Z",
 			});
 
@@ -1600,6 +1867,7 @@ describe("FLY-1423 durable unified rework request", () => {
 			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
 				state: "wake_delivered",
 				next_retry_at: "2026-07-23T00:17:04.000Z",
+				last_error: null,
 				updated_at: "2026-07-23T00:14:04.000Z",
 			});
 			expect(
@@ -1608,6 +1876,29 @@ describe("FLY-1423 durable unified rework request", () => {
 					now: "2026-07-23T00:17:04.000Z",
 				}),
 			).toHaveLength(1);
+			const postAckProbeClaim = store.claimWorkflowReworkDelivery({
+				requestId,
+				ownerId: "coordinator-c",
+				now: "2026-07-23T00:17:04.000Z",
+				leaseExpiresAt: "2026-07-23T00:17:34.000Z",
+			});
+			if (!postAckProbeClaim.ok) throw new Error(postAckProbeClaim.reason);
+			expect(
+				store.scheduleWorkflowReworkReceiptProbe({
+					requestId,
+					ownerId: "coordinator-c",
+					generation: postAckProbeClaim.generation,
+					nextRetryAt: "2026-07-23T00:20:04.000Z",
+					reason: "actor_alive_after_receipt",
+				}),
+			).toEqual({ ok: true });
+			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
+				state: "wake_delivered",
+				owner_id: null,
+				next_retry_at: "2026-07-23T00:20:04.000Z",
+				last_error: "actor_alive_after_receipt",
+				updated_at: "2026-07-23T00:14:04.000Z",
+			});
 		} finally {
 			store.close();
 		}
@@ -1797,6 +2088,236 @@ describe("FLY-1423 durable unified rework request", () => {
 			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
 				state: "pending",
 				execution_id: "qa-exec",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("prefers an older known nonterminal QA actor over a newer sessionless attempt", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-live",
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 1,
+				state: "done",
+				executionId: "qa-live",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			store.upsertSession({
+				execution_id: "qa-live",
+				issue_id: "FLY-1423",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "qa",
+			});
+			store.patchSessionMetadata("qa-live", { pr_head_sha: "c".repeat(40) });
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 2,
+				state: "failed",
+				executionId: "qa-never-launched",
+				endedAt: "2026-07-23T00:09:30.000Z",
+			});
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				"UPDATE workflow_run SET status = 'completed', current_node_id = 'qa' WHERE run_id = ?",
+				["run-heavy"],
+			);
+
+			const opened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "qa",
+				feedback: "rerun QA in the existing actor",
+				clientRequestId: "operator-rework-prefers-live-qa",
+				principal: "master",
+				evidence: [],
+				now: "2026-07-23T00:10:00.000Z",
+			});
+
+			expect(opened).toMatchObject({
+				ok: true,
+				preferredActorExecutionId: "qa-live",
+				targetAttempt: 3,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("opens QA rework from the unique upstream producer head when QA has no head", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-exec",
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 1,
+				state: "done",
+				executionId: "qa-exec",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			store.upsertSession({
+				execution_id: "qa-exec",
+				issue_id: "FLY-1423",
+				project_name: "flywheel",
+				status: "completed",
+				workflow_node_id: "qa",
+			});
+			bindActorHead(store, "implement-exec", "implement", "d".repeat(40));
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				"UPDATE workflow_run SET status = 'completed', current_node_id = 'qa' WHERE run_id = ?",
+				["run-heavy"],
+			);
+
+			const opened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "qa",
+				feedback: "rerun QA against the implementation head",
+				clientRequestId: "operator-rework-qa-producer-head",
+				principal: "master",
+				evidence: [],
+				now: "2026-07-23T00:10:00.000Z",
+			});
+
+			expect(opened).toMatchObject({
+				ok: true,
+				preferredActorExecutionId: "qa-exec",
+			});
+			if (!opened.ok) throw new Error(opened.reason);
+			const request = store.getWorkflowReworkRequest(opened.requestId);
+			expect(request?.base_revision).toBe("d".repeat(40));
+			expect(JSON.parse(request!.authority_context_json)).toMatchObject({
+				baseRevisionSource: "producer_head",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("self-heals a rollback-held QA reservation before opening operator rework", async () => {
+		const store = await createHeavyEngineRun();
+		try {
+			advanceHeavy(store, {
+				nodeId: "design",
+				attempt: 1,
+				executionId: "design-exec",
+				outcome: "design_done",
+				successorExecutionId: "implement-exec",
+			});
+			advanceHeavy(store, {
+				nodeId: "implement",
+				attempt: 1,
+				executionId: "implement-exec",
+				outcome: "implement_done",
+				successorExecutionId: "qa-live",
+			});
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 1,
+				state: "done",
+				executionId: "qa-live",
+				endedAt: "2026-07-23T00:09:00.000Z",
+			});
+			store.upsertSession({
+				execution_id: "qa-live",
+				issue_id: "FLY-1423",
+				project_name: "flywheel",
+				status: "running",
+				workflow_node_id: "qa",
+			});
+			bindActorHead(store, "implement-exec", "implement", "e".repeat(40));
+			store.upsertWorkflowRunNode({
+				runId: "run-heavy",
+				nodeId: "qa",
+				attempt: 2,
+				state: "admitted",
+				executionId: "qa-never-launched",
+			});
+			const raw = (store as unknown as { db: { raw: Database.Database } }).db
+				.raw;
+			raw
+				.prepare(
+					"UPDATE workflow_run SET status = 'held', current_node_id = 'qa' WHERE run_id = ?",
+				)
+				.run("run-heavy");
+			const nextSeq = (
+				raw
+					.prepare(
+						"SELECT COALESCE(MAX(seq), 0) + 1 AS seq FROM workflow_run_event WHERE run_id = ?",
+					)
+					.get("run-heavy") as { seq: number }
+			).seq;
+			raw
+				.prepare(
+					`INSERT INTO workflow_run_event
+					   (run_id, seq, event_uid, kind, node_id, execution_id, payload)
+					 VALUES (?, ?, ?, 'unlaunched_admission_rolled_back', ?, ?, ?)`,
+				)
+				.run(
+					"run-heavy",
+					nextSeq,
+					"legacy-rollback-receipt",
+					"qa",
+					"qa-never-launched",
+					JSON.stringify({ attempt: 2 }),
+				);
+
+			const opened = store.openOperatorRework({
+				runId: "run-heavy",
+				targetNodeId: "qa",
+				feedback: "recover the rolled-back QA attempt",
+				clientRequestId: "operator-rework-rollback-held-qa",
+				principal: "master",
+				evidence: [],
+				now: "2026-07-23T00:10:00.000Z",
+			});
+
+			expect(opened).toMatchObject({
+				ok: true,
+				preferredActorExecutionId: "qa-live",
+				targetAttempt: 3,
+			});
+			expect(store.getWorkflowRunNode("run-heavy", "qa", 2)).toMatchObject({
+				state: "failed",
+				execution_id: "qa-never-launched",
 			});
 		} finally {
 			store.close();
