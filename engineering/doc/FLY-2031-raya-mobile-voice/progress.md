@@ -2,12 +2,13 @@
 issue: FLY-2031
 phase: implement
 phaseCursor: 9/10
-updated: 2026-08-30T16:57:09.107Z
-nextStep: poll current-head code review, then finalize Raya milestone and PR handoff
+updated: 2026-08-30T17:16:21.168Z
+nextStep: commit doc supersession; root re-review; final Raya milestone; exact
+  .review-raya review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
 **phase**: implement (9/10)
-**next**: poll current-head code review, then finalize Raya milestone and PR handoff
+**next**: commit doc supersession; root re-review; final Raya milestone; exact .review-raya review
