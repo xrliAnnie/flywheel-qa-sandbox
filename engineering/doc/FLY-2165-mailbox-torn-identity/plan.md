@@ -300,6 +300,15 @@ node /Users/xiaorongli/Dev/flywheel/packages/flywheel-comm/dist/index.js complet
 | `migration-family-id-sort-collation-mismatch` | UUID-shaped production IDs 下无现时 correctness 影响；safe keep/fail-close 方向，留 follow-up |
 | `trigger-json-extract-reparses-snapshot-five-times-per-delete` | correctness 已满足；JSON parse 性能优化不与本次事故修复混做，留 follow-up benchmark |
 
+## Code Review R2 逐项处置
+
+| findingKey | 处置 |
+|---|---|
+| `repair-family-root-ignores-live-mailbox-question`（HIGH） | 新增真实事故形状：`q1` QUEUED 且仍 live、`r1` ACKED 且 torn；RED 得到 `r1→r1`，GREEN 从 archived + live question ID union 解 root，断言 `r1→q1` 且 live question byte/state 不变 |
+| `repair-family-root-question-lookup-full-scan-per-response` | 不再对无 index 的 `mailbox_archive` 每 response `.get()`；analyze 开头各扫描 archived/live question IDs 一次组成 Set，candidate loop 为 O(1) lookup |
+| `repair-unbounded-working-set-two-full-candidate-copies` | 已消除双份全量 copy；remaining one-copy family grouping 是 family atomicity 的必要 working set，production 63,914-row dry-run 已验证可承受，留 root-ordered streaming follow-up |
+| 其余 carried advisories | 沿用 R1 明示 disposition；均为 structured non-blocking advisory，不改变本轮 HIGH 修复边界 |
+
 ## QA 证据
 
 - focused：`flywheel-comm` 6 files / 91 tests PASS；`teamlead` patrol 2 files / 34 tests PASS；

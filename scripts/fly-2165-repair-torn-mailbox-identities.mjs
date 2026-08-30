@@ -165,9 +165,16 @@ function snapshotJson(item, evidence) {
 function analyze(db) {
 	const schemaDigests = assertArchiveSchemaParity(db);
 	const candidateRows = db.prepare(CANDIDATE_SQL).iterate();
-	const questionRoot = db.prepare(
-		"SELECT 1 FROM mailbox_archive WHERE id = ? AND type = 'question'",
-	);
+	const questionRoots = new Set([
+		...db
+			.prepare("SELECT id FROM mailbox_archive WHERE type = 'question'")
+			.pluck()
+			.all(),
+		...db
+			.prepare("SELECT id FROM mailbox WHERE type = 'question'")
+			.pluck()
+			.all(),
+	]);
 	const sourceHash = createHash("sha256");
 	const families = new Map();
 	const unrepairable = {
@@ -185,7 +192,7 @@ function analyze(db) {
 		const familyRootId =
 			row.type === "response" &&
 			typeof row.ref_id === "string" &&
-			questionRoot.get(row.ref_id)
+			questionRoots.has(row.ref_id)
 				? row.ref_id
 				: row.id;
 		const family = families.get(familyRootId) ?? [];

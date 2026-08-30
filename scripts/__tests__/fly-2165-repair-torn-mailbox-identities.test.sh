@@ -43,7 +43,7 @@ if (variant === "affinity") {
 db.exec(`CREATE TABLE mailbox_archive AS SELECT ${selected.join(", ")} FROM mailbox WHERE 0`);
 if (variant === "extra") db.exec("ALTER TABLE mailbox_archive ADD COLUMN extra TEXT");
 
-if (variant === "positive" || variant === "family") {
+if (variant === "positive" || variant === "family" || variant === "live-family") {
 	const refsDir = resolve(fixtureRoot, "refs");
 	mkdirSync(refsDir, { recursive: true });
 	const contentRef = resolve(refsDir, "content.txt");
@@ -95,8 +95,9 @@ if (variant === "positive" || variant === "family") {
 		seed({
 			id: "q1",
 			type: "question",
-			state: "ACKED",
-			ackedAt: "2026-08-01T01:00:00.000Z",
+			state: variant === "live-family" ? "QUEUED" : "ACKED",
+			ackedAt:
+				variant === "live-family" ? null : "2026-08-01T01:00:00.000Z",
 			checkpoint: "founder_review",
 		});
 		seed({
@@ -108,8 +109,13 @@ if (variant === "positive" || variant === "family") {
 			checkpoint: "founder_review",
 		});
 	}
-	db.exec("INSERT INTO mailbox_archive SELECT * FROM mailbox");
-	db.exec("DROP TRIGGER mailbox_delete_requires_archive; DELETE FROM mailbox");
+	if (variant === "live-family") {
+		db.exec("INSERT INTO mailbox_archive SELECT * FROM mailbox WHERE id='r1'");
+		db.exec("DROP TRIGGER mailbox_delete_requires_archive; DELETE FROM mailbox WHERE id='r1'");
+	} else {
+		db.exec("INSERT INTO mailbox_archive SELECT * FROM mailbox");
+		db.exec("DROP TRIGGER mailbox_delete_requires_archive; DELETE FROM mailbox");
+	}
 }
 db.close();
 NODE
@@ -257,6 +263,26 @@ const archivedAt = db.prepare("SELECT DISTINCT archived_at FROM mailbox_identity
 if (JSON.stringify(archivedAt) !== JSON.stringify(["2026-08-29T23:59:59.000Z"])) {
 	throw new Error(`--now was not used as repair timestamp: ${JSON.stringify(archivedAt)}`);
 }
+db.close();
+NODE
+
+LIVE_FAMILY_DB="$TMP/live-family.db"
+seed_db "$LIVE_FAMILY_DB" live-family "$TMP/live-family-fixture"
+LIVE_FAMILY_JSON="$(node "$SCRIPT" --db "$LIVE_FAMILY_DB" --apply --backup "$TMP/live-family.backup.db" --now 2026-08-30T00:00:00.000Z)"
+node -e 'const value=JSON.parse(process.argv[1]);if(value.candidates!==1||value.repaired!==1||value.remainingTorn!==0)throw new Error("live-family receipt mismatch")' "$LIVE_FAMILY_JSON"
+node --input-type=module - "$ROOT" "$LIVE_FAMILY_DB" <<'NODE'
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
+const [root, dbPath] = process.argv.slice(2);
+const requireFromComm = createRequire(resolve(root, "packages/flywheel-comm/package.json"));
+const Database = requireFromComm("better-sqlite3");
+const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+const archived = db.prepare("SELECT message_id, subject_id FROM mailbox_log WHERE event='archived'").get();
+if (archived?.message_id !== "r1" || archived?.subject_id !== "q1") {
+	throw new Error(`live question root was not preserved: ${JSON.stringify(archived)}`);
+}
+const liveQuestion = db.prepare("SELECT state FROM mailbox WHERE id='q1' AND type='question'").get();
+if (liveQuestion?.state !== "QUEUED") throw new Error("live question was changed by response repair");
 db.close();
 NODE
 
