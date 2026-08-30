@@ -166,7 +166,7 @@ done
 
 FAULT_DB="$TMP/fault.db"
 seed_db "$FAULT_DB" positive "$TMP/fault-fixture"
-if FLYWHEEL_FLY2165_FAULT_AFTER_LOG_ID=dead node "$SCRIPT" --db "$FAULT_DB" --apply --backup "$TMP/fault.backup.db" --batch-size 1 >"$TMP/fault.out" 2>&1; then
+if node "$SCRIPT" --db "$FAULT_DB" --apply --backup "$TMP/fault.backup.db" --batch-size 1 --test-fault-after-log-id dead >"$TMP/fault.out" 2>&1; then
   fail "fault injection unexpectedly succeeded"
 fi
 assert_repaired_db "$FAULT_DB" 2 2

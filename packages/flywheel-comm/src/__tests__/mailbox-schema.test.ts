@@ -287,12 +287,7 @@ describe("FLY-1572 mailbox schema", () => {
 				JSON.stringify(row),
 				"2026-08-05T02:00:00.000Z",
 			);
-			insertArchiveLog(
-				db,
-				"newest",
-				"{}",
-				"2026-08-05T03:00:00.000Z",
-			);
+			insertArchiveLog(db, "newest", "{}", "2026-08-05T03:00:00.000Z");
 			stampIdentity(db, "newest");
 			expect(() =>
 				db.prepare("DELETE FROM mailbox WHERE id = 'newest'").run(),

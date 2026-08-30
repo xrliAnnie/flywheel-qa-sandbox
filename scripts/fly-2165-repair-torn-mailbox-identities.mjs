@@ -291,7 +291,7 @@ function assertCandidateStillMatches(db, item) {
 	}
 }
 
-function applyBatch(db, batch, evidence) {
+function applyBatch(db, batch, evidence, faultAfterLogId) {
 	return db
 		.transaction((items) => {
 			for (const item of items) {
@@ -308,7 +308,7 @@ function applyBatch(db, batch, evidence) {
 					evidence.repairedAt,
 					rowJson,
 				);
-				if (process.env.FLYWHEEL_FLY2165_FAULT_AFTER_LOG_ID === item.row.id) {
+				if (faultAfterLogId === item.row.id) {
 					throw new Error(`fault_after_log:${item.row.id}`);
 				}
 				if (item.content.archive) {
@@ -345,6 +345,7 @@ function parseCli(argv) {
 			apply: { type: "boolean", default: false },
 			backup: { type: "string" },
 			"batch-size": { type: "string", default: "500" },
+			"test-fault-after-log-id": { type: "string" },
 		},
 		allowPositionals: true,
 	});
@@ -365,6 +366,7 @@ function parseCli(argv) {
 		apply: values.apply,
 		backupPath: values.backup ? resolve(values.backup) : undefined,
 		batchSize,
+		faultAfterLogId: values["test-fault-after-log-id"]?.trim() || undefined,
 	};
 }
 
@@ -441,7 +443,7 @@ async function run(argv) {
 			index += options.batchSize
 		) {
 			const batch = current.repairable.slice(index, index + options.batchSize);
-			applyBatch(db, batch, evidence);
+			applyBatch(db, batch, evidence, options.faultAfterLogId);
 			repaired += batch.length;
 		}
 		const checkpointRow = db.pragma("wal_checkpoint(PASSIVE)")[0] ?? {};

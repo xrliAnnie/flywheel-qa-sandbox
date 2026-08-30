@@ -846,7 +846,8 @@ function resolvedMailboxFamilyIds(
 	const root = db
 		.prepare("SELECT type FROM mailbox WHERE id = ?")
 		.get(rootId) as { type: string } | undefined;
-	if (!root) throw new Error(`migration mailbox family root not found: ${rootId}`);
+	if (!root)
+		throw new Error(`migration mailbox family root not found: ${rootId}`);
 	if (root.type !== "question") return [rootId];
 	return db
 		.prepare(

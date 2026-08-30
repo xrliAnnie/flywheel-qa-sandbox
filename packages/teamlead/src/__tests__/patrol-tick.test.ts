@@ -721,8 +721,9 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 			Date.parse("2026-08-13T12:00:00.000Z") +
 			patrolTickOffsetMs("eng-lead", intervalMs);
 		const h = harness({ nowMs: startMs });
-		const inspect = vi.fn((_projectName: string, id: string) =>
-			h.settlements.get(id) ?? { kind: "absent_identity" as const },
+		const inspect = vi.fn(
+			(_projectName: string, id: string) =>
+				h.settlements.get(id) ?? { kind: "absent_identity" as const },
 		);
 		h.deps.inspectDeliveryState = inspect;
 		const pass = createLeadPatrolTickPass(h.deps);

@@ -178,8 +178,6 @@ describe("message-status", () => {
 
 	it("keeps usage failures on exit 2", () => {
 		expect(messageStatus([], io())).toBe(2);
-		expect(stderr.join("\n")).toContain(
-			"exactly one <message-id> is required",
-		);
+		expect(stderr.join("\n")).toContain("exactly one <message-id> is required");
 	});
 });

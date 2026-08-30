@@ -127,15 +127,19 @@ describe("FLY-1687 MailboxQueue settlement reader", () => {
 			const row = raw
 				.prepare("SELECT * FROM mailbox WHERE id = 'nonterminal'")
 				.get();
-			raw.prepare(
-				`INSERT INTO mailbox_log
+			raw
+				.prepare(
+					`INSERT INTO mailbox_log
 				 (event_id, message_id, event, at, row_json)
 				 VALUES ('archived:nonterminal', 'nonterminal', 'archived',
 				         '2026-08-01T01:00:00.000Z', ?)`,
-			).run(JSON.stringify(row));
-			raw.prepare(
-				"UPDATE mailbox_identity SET archived_at='2026-08-01T01:00:00.000Z' WHERE id='nonterminal'",
-			).run();
+				)
+				.run(JSON.stringify(row));
+			raw
+				.prepare(
+					"UPDATE mailbox_identity SET archived_at='2026-08-01T01:00:00.000Z' WHERE id='nonterminal'",
+				)
+				.run();
 			raw.prepare("DELETE FROM mailbox WHERE id='nonterminal'").run();
 			raw.close();
 			queue = new MailboxQueue(dbPath, { readOnly: true });
@@ -173,9 +177,11 @@ describe("FLY-1687 MailboxQueue settlement reader", () => {
 			);
 			insert.run("archived:latest:old", JSON.stringify(row));
 			insert.run("archived:latest:new", "{}");
-			raw.prepare(
-				"UPDATE mailbox_identity SET archived_at='2026-08-01T02:00:00.000Z' WHERE id='latest'",
-			).run();
+			raw
+				.prepare(
+					"UPDATE mailbox_identity SET archived_at='2026-08-01T02:00:00.000Z' WHERE id='latest'",
+				)
+				.run();
 			raw.exec("DROP TRIGGER mailbox_delete_requires_archive");
 			raw.prepare("DELETE FROM mailbox WHERE id='latest'").run();
 			raw.close();

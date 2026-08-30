@@ -16,7 +16,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { MailboxQueue } from "../mailbox-queue.js";
 import {
 	backupCommDb,
 	classifyMailboxDatabase,
@@ -28,6 +27,7 @@ import {
 	rollbackMailboxMigration,
 	verifyMigratedDatabase,
 } from "../mailbox-migration.js";
+import { MailboxQueue } from "../mailbox-queue.js";
 import { MAILBOX_CORE_SCHEMA } from "../mailbox-schema.js";
 import { writeContentRef } from "../utils/content-ref.js";
 
