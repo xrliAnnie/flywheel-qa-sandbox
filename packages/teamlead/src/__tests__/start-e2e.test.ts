@@ -749,29 +749,33 @@ describe("Start API E2E", () => {
 			["null", null],
 			["empty", ""],
 			["blank", " \t "],
-		])("rejects %s Lead identity after Linear preflight", async (_label, leadId) => {
-			const linear = await mockIssueLabels(["Ops"]);
-			const res = await fetch(`${baseUrl}/api/runs/start`, {
-				method: "POST",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({
-					issueId: "GEO-FLY127",
-					projectName: "TestProject",
-					leadId,
-				}),
-			});
-			expect(res.status).toBe(403);
-			expect(await res.json()).toEqual({
-				success: false,
-				code: "DEPT_SCOPE_REJECT",
-				reason: "lead_identity_required",
-				canonicalLeadId: null,
-				silent: false,
-			});
-			expect(linear.issue).toHaveBeenCalledOnce();
-			expect(linear.labels).toHaveBeenCalledOnce();
-			expect(mockDispatcher.start).not.toHaveBeenCalled();
-		}, 15_000);
+		])(
+			"rejects %s Lead identity after Linear preflight",
+			async (_label, leadId) => {
+				const linear = await mockIssueLabels(["Ops"]);
+				const res = await fetch(`${baseUrl}/api/runs/start`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						issueId: "GEO-FLY127",
+						projectName: "TestProject",
+						leadId,
+					}),
+				});
+				expect(res.status).toBe(403);
+				expect(await res.json()).toEqual({
+					success: false,
+					code: "DEPT_SCOPE_REJECT",
+					reason: "lead_identity_required",
+					canonicalLeadId: null,
+					silent: false,
+				});
+				expect(linear.issue).toHaveBeenCalledOnce();
+				expect(linear.labels).toHaveBeenCalledOnce();
+				expect(mockDispatcher.start).not.toHaveBeenCalled();
+			},
+			15_000,
+		);
 
 		it.each([
 			["number", 42],
@@ -780,8 +784,9 @@ describe("Start API E2E", () => {
 			"rejects %s Lead identity with a boundary error",
 			async (_label, leadId) => {
 				const { LinearClient } = await import("@linear/sdk");
-				const linearClient =
-					LinearClient as unknown as ReturnType<typeof vi.fn>;
+				const linearClient = LinearClient as unknown as ReturnType<
+					typeof vi.fn
+				>;
 				linearClient.mockClear();
 				const res = await fetch(`${baseUrl}/api/runs/start`, {
 					method: "POST",
