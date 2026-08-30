@@ -92,8 +92,12 @@ SLOTS_FILE="${HOME}/.flywheel/test-slots.json"
 
 SLOT_IDX=$((SLOT - 1))
 PORT=$(jq -r ".slots[${SLOT_IDX}].bridgePort" "$SLOTS_FILE")
+LEAD_ID=$(jq -er ".slots[${SLOT_IDX}].botName | strings" "$SLOTS_FILE" 2>/dev/null) \
+  || { echo "ERROR: slot ${SLOT} has no valid botName Lead identity in ${SLOTS_FILE}" >&2; exit 1; }
 PROJECT_NAME="test-slot-${SLOT}"
 [[ -n "$PORT" && "$PORT" != "null" ]] || { echo "ERROR: slot ${SLOT} not in ${SLOTS_FILE}" >&2; exit 1; }
+[[ -n "${LEAD_ID//[[:space:]]/}" ]] \
+  || { echo "ERROR: slot ${SLOT} botName Lead identity is blank in ${SLOTS_FILE}" >&2; exit 1; }
 
 BRIDGE_URL="http://localhost:${PORT}"
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
@@ -240,10 +244,16 @@ RESP_FILE="$(mktemp -t flywheel-inject.XXXXXX)"
 trap 'rm -f "$RESP_FILE"' EXIT
 
 # POST /api/runs/start — see packages/teamlead/src/bridge/runs-route.ts
+START_PAYLOAD=$(jq -nc \
+  --arg issueId "$ISSUE_ID" \
+  --arg projectName "$PROJECT_NAME" \
+  --arg sessionRole "$ROLE" \
+  --arg leadId "$LEAD_ID" \
+  '{issueId: $issueId, projectName: $projectName, sessionRole: $sessionRole, leadId: $leadId}')
 HTTP_CODE=$(curl -s -o "$RESP_FILE" -w '%{http_code}' \
   -XPOST "${BRIDGE_URL}/api/runs/start" \
   -H 'content-type: application/json' \
-  -d "{\"issueId\":\"${ISSUE_ID}\",\"projectName\":\"${PROJECT_NAME}\",\"sessionRole\":\"${ROLE}\"}" \
+  -d "$START_PAYLOAD" \
   || echo "000")
 
 RESP_BODY="$(cat "$RESP_FILE" 2>/dev/null || echo '{}')"
@@ -260,6 +270,14 @@ case "$HTTP_CODE" in
   409)
     echo "[inject] HTTP 409 — a run for ${PROJECT_NAME}/${ROLE} is already active (per FLY-59 dedup). This is usually fine for QA re-runs; stop the existing run first if not." >&2
     exit 3
+    ;;
+  403)
+    REJECT_DETAIL=$(jq -r \
+      '"code=\(.code // "unknown") reason=\(.reason // "unknown") canonicalLeadId=\(.canonicalLeadId // "null")"' \
+      <<< "$RESP_BODY" 2>/dev/null) \
+      || REJECT_DETAIL="code=unknown reason=unknown canonicalLeadId=null"
+    echo "[inject] HTTP 403 department scope reject: ${REJECT_DETAIL}" >&2
+    exit 8
     ;;
   502)
     echo "[inject] HTTP 502 — /api/runs/start PreHydrator Linear API call failed (network / auth / Linear 5xx). Check: (a) LINEAR_API_KEY on the Bridge process, (b) network reachable to linear.app, (c) Linear status. Tail ${BRIDGE_LOG}." >&2

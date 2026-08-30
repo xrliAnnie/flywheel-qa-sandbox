@@ -31,6 +31,12 @@ function runSuite(relPath: string): void {
 }
 
 describe("FLY-247 bash suites (hermetic)", () => {
+	it("inject-linear-issue binds Lead identity and reports scope rejects", () => {
+		expect(() =>
+			runSuite("scripts/__tests__/inject-linear-issue-lead-id.test.sh"),
+		).not.toThrow();
+	}, 120_000);
+
 	it("daemon plist model env + safe generation", () => {
 		expect(() =>
 			runSuite("scripts/__tests__/flywheel-daemon-plist-env.test.sh"),
