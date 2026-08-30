@@ -37,7 +37,7 @@ brainstorm gate、approve gate、executor 自带的硬性确认环节**任何档
 `POST /api/runs/start` 的 body 里带 `docTier` 字段：
 
 ```json
-{ "issueId": "...", "projectName": "...", "docTier": "plan_only" }
+{ "issueId": "...", "projectName": "...", "leadId": "<your-agentId>", "docTier": "plan_only" }
 ```
 
 合法值：`"full"` / `"plan_only"` / `"none"`。不传 = `full`（系统缺省，宁多勿漏）。
