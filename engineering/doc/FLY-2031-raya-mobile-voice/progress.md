@@ -1,14 +1,13 @@
 ---
 issue: FLY-2031
 phase: implement
-phaseCursor: 9/10
-updated: 2026-08-30T17:16:21.168Z
-nextStep: commit doc supersession; root re-review; final Raya milestone; exact
-  .review-raya review
+phaseCursor: 10/10
+updated: 2026-08-30T20:53:26.219Z
+nextStep: "Raya PR #9 exact-head APPROVED and ready for QA; no merge/deploy/restart"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: implement (9/10)
-**next**: commit doc supersession; root re-review; final Raya milestone; exact .review-raya review
+**phase**: implement (10/10)
+**next**: Raya PR #9 exact-head APPROVED and ready for QA; no merge/deploy/restart
