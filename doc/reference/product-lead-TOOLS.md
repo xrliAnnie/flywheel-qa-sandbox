@@ -127,6 +127,20 @@ Response: { guild_id: "..." }
 
 Each issue can have a dedicated Discord thread in chatChannel for focused discussion.
 
+#### Trigger and configuration matrix
+
+| Path | Trigger | Required configuration | When automatic creation is off |
+|------|---------|------------------------|--------------------------------|
+| Runner automatic | `session_started` for any `sessionRole` (`main`, `qa`, `designer`, or custom) | `TEAMLEAD_CHAT_THREADS_ENABLED=true`, configured Lead `chatChannel`, Lead/global Discord bot token | Skipped; Runner startup continues |
+| Lead manual create | `POST /api/chat-threads/create` with an issue UUID or identifier | `TEAMLEAD_API_TOKEN`, `LINEAR_API_KEY`, configured Lead/channel, Discord bot token | Still available |
+| Lead issue reply | `POST /api/chat-threads/send`; creates on row miss, otherwise reuses | `TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true`, `TEAMLEAD_API_TOKEN`, Linear + Discord configuration | Still available; the reply flag is its kill switch |
+| Lookup | `GET /api/chat-threads` or `/api/chat-threads/by-thread/:threadId` | Bearer auth whenever `TEAMLEAD_API_TOKEN` is configured | Still available |
+| Manual archive | `POST /api/chat-threads/archive` | `TEAMLEAD_API_TOKEN`, configured Lead/channel, Discord bot token | Still available |
+
+`TEAMLEAD_CHAT_THREADS_ENABLED` controls only automatic/background creation.
+Environment/config changes require a Bridge restart. Manual create is idempotent:
+an existing mapping returns `created: false`.
+
 #### Create/Get Thread
 ```
 POST /api/chat-threads/create
@@ -143,6 +157,7 @@ Response: { "threadId": "discord-thread-id", "created": true/false }
 
 - Provide at least one of `issueId` or `issueIdentifier`
 - Returns existing thread if one already exists (`created: false`)
+- Requires a configured `TEAMLEAD_API_TOKEN`; Bridge refuses an unauthenticated write with 503
 - `issueId` is the Linear internal UUID; `issueIdentifier` is like `FLY-91`
 - Use `issueId` when you have it from an event payload's `issue_id` field
 - Use `issueIdentifier` when Annie assigns a task directly in chat
@@ -155,8 +170,9 @@ Response: { "threadId": "..." | null }
 
 #### When to Use
 - When you receive a notification with `chat_thread_id`: reply directly in the thread
-- When discussing an issue but no thread exists yet: call `/api/chat-threads/create`
-- Bridge auto-creates threads on Runner startup (fallback)
+- Immediately after creating an ad-hoc issue in chat when the discussion should become issue-bound: call `/api/chat-threads/create`; a Runner does not need to exist
+- When discussing an existing issue but no thread exists yet: call `/api/chat-threads/create`
+- With automatic creation enabled, Bridge handles every Runner role on startup and returns/surfaces the same issue thread
 - If `/api/chat-threads/create` fails, reply in chatChannel top-level instead (graceful degradation)
 
 ### Memory API (GEO-204)

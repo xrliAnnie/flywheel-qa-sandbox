@@ -353,9 +353,36 @@ If your project file does not instantiate these, the rule still works (the Lead 
 
 ---
 
+## Issue Thread Creation (FLY-147)
+
+There are two independent paths; never branch on Runner role:
+
+1. **Ad-hoc issue from chat:** after creating a Linear issue, immediately call
+   `POST /api/chat-threads/create` when the conversation should become
+   issue-bound. Pass `issueIdentifier`, `$CHAT_CHANNEL`, `$LEAD_ID`, and
+   `$PROJECT_NAME`. A Runner does not need to exist. Reuse the returned
+   `threadId`; `created:false` means the canonical thread already existed.
+2. **Runner startup:** when `TEAMLEAD_CHAT_THREADS_ENABLED=true`, Bridge creates
+   or reuses the issue thread on `session_started` for `main`, `qa`, `designer`,
+   and custom `sessionRole` values. Use the returned/event `chat_thread_id`.
+
+`TEAMLEAD_CHAT_THREADS_ENABLED` controls only the automatic/background path.
+Authenticated `/create`, lookup, `/send`, and manual archive remain available
+when it is false. Manual write endpoints require `TEAMLEAD_API_TOKEN`; `/create`
+also requires `LINEAR_API_KEY` and a configured Lead/channel/bot token. On any
+4xx/5xx, preserve context by replying once at `$CHAT_CHANNEL` top-level with the
+issue identifier; do not loop retries.
+
+---
+
 ## Issue-Bound Reply (FLY-162)
 
 Every Lead reply that is **bound to a Linear issue** (status update, Q&A, design decision, cross-issue reference, runner observation) MUST go through `POST /api/chat-threads/send`. Bridge looks up the canonical chat thread for `(issueId, chatChannel)` and posts there. This is the only correct way to keep Annie's view of different issues in different threads — replying directly with `discord.reply(chat_id=$CHAT_THREAD_ID)` works today only when the inbound event payload carries `chat_thread_id`; **`send` works in every case**, including when you're acting on a session you haven't received an event for in this turn.
+
+On a mapping miss, `/send` creates the canonical thread before posting. Its
+kill switch is `TEAMLEAD_REPLY_BY_ISSUE_ENABLED`, independent from
+`TEAMLEAD_CHAT_THREADS_ENABLED`; automatic creation being off does not disable
+`/send`.
 
 > **Runner lifecycle events are mandatory relays (FLY-369 RC-1).** This is not only for replies you *choose* to send: **every** Runner lifecycle event (`session_completed`, `session_failed`, `runner_stuck_escalation`, `runner_question`, parked-awaiting-lead) MUST be relayed to the `[FLY-XX]` thread — relay is the default, silence is the bug. And **"Runner delivered" ≠ "acceptance met" ≠ "OK to mark Done"**: never report a Runner finishing (or Linear auto-flipping to Done on a PR merge) as acceptance. The full discipline (patrol + done≠accepted + driving parked Runners) lives in `runner-patrol-rules.md`.
 
@@ -412,7 +439,7 @@ Either `issueId` (Linear UUID) or `issueIdentifier` (`FLY-162`, `GEO-374`, …) 
 | 404 | Project not in config / `reply.by_issue` flag off | Fall back to `discord.reply(chat_id=$CHAT_CHANNEL)` with the issue identifier in the text |
 | 502 partial | Discord chunk failed mid-stream | Re-send using `remainingText`; if it fails again, fall back to `chat_id=$CHAT_CHANNEL` |
 | 502 other | Discord / Linear error | Fall back to `chat_id=$CHAT_CHANNEL` with issue identifier in text |
-| 503 | Bridge missing `LINEAR_API_KEY` / bot token / `ChatThreadCreator` | Fall back to `chat_id=$CHAT_CHANNEL` |
+| 503 | Bridge missing `LINEAR_API_KEY` / bot token, or a required API token is not configured | Fall back to `chat_id=$CHAT_CHANNEL` |
 
 ### Inbound — Reverse-lookup `GET /api/chat-threads/by-thread/:threadId`
 
@@ -426,6 +453,10 @@ curl -s -H "Authorization: Bearer $TEAMLEAD_API_TOKEN" \
 ```
 
 `issueIdentifier`, `issueTitle`, and `projectName` may be `null` when there's no session row yet — the call still returns 200 with the canonical `issueId`. Use the identifier as the `issueIdentifier` field on subsequent `send` calls.
+
+Reverse lookup reads stored mappings even when automatic creation is disabled.
+Bearer authentication still applies whenever the Bridge has
+`TEAMLEAD_API_TOKEN` configured.
 
 If the reverse-lookup returns 404 (thread not registered), do not invent an issue — reply with `mcp__plugin_discord_discord__reply(chat_id=$CHAT_CHANNEL, ...)` and ask Annie which issue this concerns.
 
