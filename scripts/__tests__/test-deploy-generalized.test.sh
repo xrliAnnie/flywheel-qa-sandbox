@@ -50,6 +50,94 @@ else
 	echo 'PASS: generalized code-menu readiness has no retired role-name tuple'
 fi
 
+# FLY-2163: the slot Bridge must override an inherited production state root.
+# Evaluate the exact repo-owned array append against a fake production root,
+# then exercise a real state writer. Nothing here touches ~/.flywheel or the
+# desktop notification channel.
+bridge_state_assignment='BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")'
+bridge_state_assignment_count="$(
+	rg -F -x -c "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" || true
+)"
+assert_eq "${bridge_state_assignment_count:-0}" '1' \
+	'Bridge state root has exactly one slot-local assignment'
+bridge_last_append="$(
+	rg '^BRIDGE_EXTRA_ENV\+=' "$ROOT/scripts/test-deploy.sh" | tail -1
+)"
+assert_eq "$bridge_last_append" "$bridge_state_assignment" \
+	'Bridge state root is the final later-wins environment append'
+bridge_env_expansion_count="$(
+	rg -F -c '${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"}' \
+		"$ROOT/scripts/test-deploy.sh" || true
+)"
+assert_eq "${bridge_env_expansion_count:-0}" '3' \
+	'all three Bridge launch branches expand the isolated environment'
+
+fake_production_state="$TMP_ROOT/fake-production-state"
+slot_state_root="$TMP_ROOT/flywheel-test-slot-state"
+state_writer_bin="$TMP_ROOT/state-writer-bin"
+mkdir -p "$fake_production_state" "$slot_state_root" "$state_writer_bin"
+slot_state_root="$(cd "$slot_state_root" && pwd -P)"
+printf 'production-sentinel\n' > "$fake_production_state/sentinel.txt"
+cat > "$state_writer_bin/osascript" <<'FAKE_OSASCRIPT'
+#!/usr/bin/env bash
+exit 0
+FAKE_OSASCRIPT
+chmod +x "$state_writer_bin/osascript"
+external_shasum="$(type -P shasum)"
+production_before="$(
+	find "$fake_production_state" -type f -print | LC_ALL=C sort \
+		| while IFS= read -r path; do "$external_shasum" "$path"; done
+)"
+
+SLOT_DIR="$slot_state_root"
+BRIDGE_EXTRA_ENV=()
+actual_bridge_state_assignment="$(
+	rg -F -x -m 1 "$bridge_state_assignment" "$ROOT/scripts/test-deploy.sh" || true
+)"
+[[ -z "$actual_bridge_state_assignment" ]] || eval "$actual_bridge_state_assignment"
+FLYWHEEL_STATE_DIR="$fake_production_state" \
+FLYWHEEL_META_ALERT_DEBOUNCE_MS=0 \
+PATH="$state_writer_bin:$PATH" \
+	env ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
+	"$ROOT/scripts/meta-alert.sh" \
+	fly2163_slot_state_probe 'FLY-2163 slot state probe' \
+	'fly2163 unique slot state probe'
+
+slot_marker="$slot_state_root/meta-alert/fly2163_slot_state_probe.txt"
+if [[ -f "$slot_marker" ]]; then
+	echo 'PASS: real state writer creates its marker under the slot root'
+else
+	echo "FAIL: slot state marker missing: $slot_marker" >&2
+	failures=$((failures + 1))
+fi
+if [[ -f "$slot_marker" ]] && rg -Fq 'fly2163 unique slot state probe' "$slot_marker"; then
+	echo 'PASS: slot state marker contains the probe payload'
+else
+	echo 'FAIL: slot state marker does not contain the probe payload' >&2
+	failures=$((failures + 1))
+fi
+production_after="$(
+	find "$fake_production_state" -type f -print | LC_ALL=C sort \
+		| while IFS= read -r path; do "$external_shasum" "$path"; done
+)"
+assert_eq "$production_after" "$production_before" \
+	'fake production state tree remains byte-for-byte unchanged'
+
+bridge_state_value=''
+if (( ${#BRIDGE_EXTRA_ENV[@]} > 0 )); then
+	bridge_state_value="${BRIDGE_EXTRA_ENV[0]#*=}"
+fi
+bridge_marker_path='<missing Bridge state assignment>'
+if [[ -n "$bridge_state_value" ]]; then
+	bridge_marker_path="$(
+		cd "$ROOT"
+		FLYWHEEL_STATE_DIR="$bridge_state_value" pnpm exec tsx -e \
+			'import { bridgeMarkerPath } from "./packages/teamlead/src/bridge/bridge-exit-marker.ts"; process.stdout.write(bridgeMarkerPath());'
+	)"
+fi
+assert_eq "$bridge_marker_path" "$slot_state_root/state/bridge-running-marker.json" \
+	'root-convention Bridge marker resolves without a state/state double nest'
+
 codex_stub_kill_log="$TMP_ROOT/codex-stub-kill.log"
 slot_for_reap="$TMP_ROOT/flywheel-test-slot-2"
 mkdir -p "$slot_for_reap/stub-state"

@@ -1692,6 +1692,7 @@ EOF
     BRIDGE_EXTRA_ENV+=("${XTOKEN_ENV_NAME}=${!XTOKEN_ENV_NAME}")
   done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
 fi
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
 # FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible
