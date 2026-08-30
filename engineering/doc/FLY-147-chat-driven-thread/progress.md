@@ -2,9 +2,9 @@
 issue: FLY-147
 phase: implement
 phaseCursor: 4/5
-updated: 2026-08-30T10:56:21.540Z
-nextStep: Write the route contract RED tests, then implement the smallest
-  capability split
+updated: 2026-08-30T11:03:24.595Z
+nextStep: Add role-agnostic session-start thread characterization, then document
+  trigger and configuration paths
 chunks:
   - id: docs-exploration
     order: 1
@@ -39,7 +39,7 @@ pointers:
 
 # FLY-147 progress
 **phase**: implement (4/5)
-**next**: Write the route contract RED tests, then implement the smallest capability split
+**next**: Add role-agnostic session-start thread characterization, then document trigger and configuration paths
 
 ## chunks
 - ✅ docs-exploration — 
