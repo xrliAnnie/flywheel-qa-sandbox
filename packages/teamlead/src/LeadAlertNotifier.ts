@@ -98,6 +98,7 @@ export const ALERT_EVENT_TYPES = [
 	// rulings are supervised Lead authority; disputes and notification failures
 	// require human visibility but have no safe automatic remediation.
 	"review_advisory_pass",
+	"review_job_failed",
 	"review_ruling_recorded",
 	"review_ruling_disputed",
 	"review_ruling_notify_failed",

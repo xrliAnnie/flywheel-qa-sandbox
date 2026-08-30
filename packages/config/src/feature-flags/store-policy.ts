@@ -36,6 +36,7 @@ const LEGACY_EXEMPTION_KEYS: ReadonlySet<string> = new Set(
 
 export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 	"alert_system",
+	"review_quota_auto_retry",
 	"summary_absorption_cadence_ms",
 	"loop_profiler",
 	"shipped_husk_force",
@@ -138,6 +139,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	if (name === "skill_framework_mode") return skillFrameworkCodec;
 	if (
 		name === "alert_system" ||
+		name === "review_quota_auto_retry" ||
 		name === "loop_profiler" ||
 		name === "shipped_husk_force" ||
 		name === "flag_retirement_scan" ||

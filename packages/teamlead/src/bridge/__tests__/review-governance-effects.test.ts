@@ -82,7 +82,40 @@ describe("review governance production effects", () => {
 			title: "Reviewer disputed a Lead ruling",
 			body: "Reviewer presented new HIGH evidence.",
 			severity: "warning",
-			sessionKey: "flywheel:FLY-1251",
+			sessionKey: "exec-1",
+		});
+	});
+
+	it("routes review job failures as warning alerts without raw reviewer evidence", async () => {
+		const store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			project_name: "proj",
+			issue_id: "uuid-1",
+			issue_identifier: "FLY-1251",
+			issue_labels: JSON.stringify(["backend"]),
+			status: "running",
+		});
+		const alert = vi.fn(async () => ({ sent: true }));
+		const emit = createReviewAlertEmitter({ store, projects, alert });
+		await emit({
+			kind: "review_job_failed",
+			eventId: "review-failed:req-9:1",
+			issueId: "FLY-1251",
+			executionId: "exec-1",
+			requestId: "req-9",
+			message:
+				"Review req-9 (code R2) failed: timeout. Retry POST /review-requests with the same requestId; the gate remains closed.",
+		});
+		expect(alert).toHaveBeenCalledWith({
+			leadId: "flywheel-eng-lead",
+			projectName: "proj",
+			eventId: "review-failed:req-9:1",
+			eventType: "review_job_failed",
+			title: "Cross-family review job failed",
+			body: "Review req-9 (code R2) failed: timeout. Retry POST /review-requests with the same requestId; the gate remains closed.",
+			severity: "warning",
+			sessionKey: "exec-1",
 		});
 	});
 

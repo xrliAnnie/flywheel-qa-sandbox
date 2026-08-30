@@ -237,6 +237,28 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2076 default-on wrapper observes an off store write without restart",
 	},
 	{
+		name: "review_quota_auto_retry",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_QUOTA_AUTO_RETRY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-2177: automatically retry failed cross-family reviews after a proven Claude subscription reset while the bound gate remains valid",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeReviewQuotaAutoRetryEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2177 default-on wrapper observes an off store write without restart",
+	},
+	{
 		name: "loop_profiler",
 		category: "kill_switch",
 		source: "env",

@@ -226,6 +226,7 @@ export class WorkflowEventUidConflictError extends Error {
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
+const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
 
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
@@ -1438,6 +1439,12 @@ export interface CodexReviewJob {
 	payload_version?: number;
 	failure_reason?: string;
 	failure_raw?: string;
+	/** UTC ISO instant for the next durable same-request automatic retry. */
+	retry_at?: string;
+	/** Number of automatic retry budgets consumed by this durable request. */
+	auto_retry_count: number;
+	/** Monotonic generation incremented for every persisted failure attempt. */
+	failure_attempt_count: number;
 	author_family?: string;
 	created_at: string;
 	updated_at?: string;
@@ -4172,6 +4179,9 @@ export class StateStore {
 				payload_version       INTEGER,
 				failure_reason        TEXT,
 				failure_raw           TEXT,
+				retry_at              TEXT,
+				auto_retry_count      INTEGER NOT NULL DEFAULT 0,
+				failure_attempt_count INTEGER NOT NULL DEFAULT 0,
 				author_family         TEXT,
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
@@ -4205,6 +4215,9 @@ export class StateStore {
 		for (const [column, type] of [
 			["question_id", "TEXT"],
 			["failure_raw", "TEXT"],
+			["retry_at", "TEXT"],
+			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_verdict", "TEXT"],
 			["advisories_json", "TEXT"],
 			["settled_json", "TEXT"],
@@ -9824,6 +9837,9 @@ export class StateStore {
 					: Number(row.payload_version),
 			failure_reason: (row.failure_reason as string) ?? undefined,
 			failure_raw: (row.failure_raw as string) ?? undefined,
+			retry_at: (row.retry_at as string) ?? undefined,
+			auto_retry_count: Number(row.auto_retry_count ?? 0),
+			failure_attempt_count: Number(row.failure_attempt_count ?? 0),
 			author_family: (row.author_family as string) ?? undefined,
 			created_at: row.created_at as string,
 			updated_at: (row.updated_at as string) ?? undefined,
@@ -9931,6 +9947,7 @@ export class StateStore {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
+			       retry_at = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status IN ('pending','failed')`,
 			[requestId],
@@ -9957,7 +9974,7 @@ export class StateStore {
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
 			       findings_json = ?, advisories_json = ?, settled_json = ?,
 			       response_json = ?, payload_version = ?,
-			       failure_reason = NULL, failure_raw = NULL,
+			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
 			[
@@ -9975,6 +9992,63 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-2177: atomically persist one failure generation and, when supplied a
+	 * canonical UTC instant, consume at most one of three automatic retry slots.
+	 * Terminal done/skipped rows remain immutable.
+	 */
+	recordCodexReviewJobFailure(input: {
+		requestId: string;
+		reason: string;
+		failureRaw?: string;
+		retryAt?: string;
+	}): { updated: boolean; scheduled: boolean; job: CodexReviewJob | null } {
+		let retryAt: string | null = null;
+		if (input.retryAt) {
+			const parsed = Date.parse(input.retryAt);
+			if (
+				Number.isFinite(parsed) &&
+				new Date(parsed).toISOString() === input.retryAt
+			) {
+				retryAt = input.retryAt;
+			}
+		}
+		this.db.run(
+			`UPDATE codex_review_job
+			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
+			       retry_at = CASE
+			         WHEN ? IS NOT NULL AND auto_retry_count < ? THEN ?
+			         ELSE NULL
+			       END,
+			       auto_retry_count = auto_retry_count + CASE
+			         WHEN ? IS NOT NULL AND auto_retry_count < ? THEN 1
+			         ELSE 0
+			       END,
+			       failure_attempt_count = failure_attempt_count + 1,
+			       updated_at = datetime('now')
+			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			[
+				input.reason,
+				input.failureRaw ?? null,
+				retryAt,
+				MAX_CODEX_REVIEW_AUTO_RETRIES,
+				retryAt,
+				retryAt,
+				MAX_CODEX_REVIEW_AUTO_RETRIES,
+				input.requestId,
+			],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		this.save();
+		const job = this.getCodexReviewJob(input.requestId);
+		return {
+			updated,
+			scheduled:
+				updated && retryAt !== null && job?.retry_at === retryAt,
+			job,
+		};
+	}
+
+	/**
 	 * R13 HIGH-1: terminal done/skipped rows are IMMUTABLE here — a crashed
 	 * respond/stamp after the verdict landed must not downgrade the row out of
 	 * the outbox scan (which only re-delivers done/skipped).
@@ -9984,14 +10058,11 @@ export class StateStore {
 		reason: string,
 		failureRaw?: string,
 	): void {
-		this.db.run(
-			`UPDATE codex_review_job
-			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
-			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
-			[reason, failureRaw ?? null, requestId],
-		);
-		this.save();
+		this.recordCodexReviewJobFailure({
+			requestId,
+			reason,
+			failureRaw,
+		});
 	}
 
 	/** Stamp/refresh the claude reviewer session uuid used for this job. */
@@ -10013,6 +10084,23 @@ export class StateStore {
 		const jobs: CodexReviewJob[] = [];
 		const stmt = this.db.prepare(
 			"SELECT * FROM codex_review_job WHERE status IN ('pending','running') ORDER BY created_at ASC",
+		);
+		while (stmt.step()) {
+			jobs.push(
+				this.rowToCodexReviewJob(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return jobs;
+	}
+
+	/** FLY-2177: durable future/due automatic retries, earliest first. */
+	listScheduledCodexReviewJobs(): CodexReviewJob[] {
+		const jobs: CodexReviewJob[] = [];
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE status = 'failed' AND retry_at IS NOT NULL
+			  ORDER BY julianday(retry_at) ASC, created_at ASC`,
 		);
 		while (stmt.step()) {
 			jobs.push(

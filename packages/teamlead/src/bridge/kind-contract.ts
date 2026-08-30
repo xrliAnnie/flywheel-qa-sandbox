@@ -122,6 +122,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	auto_qa_stuck: { owner: "claude", arc: "human_by_design" },
 	codex_gate_blocked: { owner: "claude", arc: "human_by_design" },
 	review_advisory_pass: { owner: "claude", arc: "human_by_design" },
+	review_job_failed: { owner: "founder_direct", arc: "human_by_design" },
 	review_ruling_recorded: { owner: "claude", arc: "human_by_design" },
 	review_ruling_disputed: { owner: "claude", arc: "human_by_design" },
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },

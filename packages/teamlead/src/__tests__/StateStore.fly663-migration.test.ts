@@ -84,10 +84,22 @@ describe("FLY-663 — StateStore better-sqlite3 migration", () => {
 				store as unknown as { db: { raw: BetterSqlite3.Database } }
 			).db.raw.pragma("table_info(codex_review_job)") as Array<{
 				name: string;
+				dflt_value: string | null;
 			}>;
 			expect(columns.map((column) => column.name)).toEqual(
-				expect.arrayContaining(["failure_raw", "question_id"]),
+				expect.arrayContaining([
+					"failure_raw",
+					"question_id",
+					"retry_at",
+					"auto_retry_count",
+					"failure_attempt_count",
+				]),
 			);
+			for (const name of ["auto_retry_count", "failure_attempt_count"]) {
+				expect(columns.find((column) => column.name === name)?.dflt_value).toBe(
+					"0",
+				);
+			}
 			store.close();
 		}
 	});

@@ -93,6 +93,8 @@ export function titleFor(kind: AlertEventType): string {
 		// FLY-1278: emitted by the review coordinator, not this table.
 		case "review_advisory_pass":
 			return "Review passed with non-blocking advisories";
+		case "review_job_failed":
+			return "Cross-family review job failed";
 		case "review_ruling_recorded":
 			return "Lead review ruling recorded";
 		case "review_ruling_disputed":
@@ -356,6 +358,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// request/ruling-specific bodies and deterministic event ids).
 		case "review_advisory_pass":
 			return "Cross-family review approved the head with non-blocking MEDIUM/LOW advisories. The hard review gate is satisfied; triage advisories into follow-up work as appropriate.";
+		case "review_job_failed":
+			return "Cross-family review failed closed. Retry POST /review-requests with the same requestId unless an automatic retry is already scheduled; the bound review gate remains closed.";
 		case "review_ruling_recorded":
 			return "A Lead recorded a supervised governance ruling for an already-delivered review finding. The durable ruling and issue-thread audit are the authority; gate prose is not.";
 		case "review_ruling_disputed":

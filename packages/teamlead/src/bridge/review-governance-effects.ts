@@ -5,7 +5,6 @@ import type {
 	Session,
 	StateStore,
 } from "../StateStore.js";
-import { buildSessionKey } from "./hook-payload.js";
 import type { ReviewAlertEvent } from "./review-request-coordinator.js";
 import type { ReviewFindingRulingSnapshot } from "./review-verdict-policy.js";
 
@@ -51,11 +50,12 @@ export function createReviewAlertEmitter(deps: {
 			title: reviewAlertTitle(event.kind),
 			body: event.message,
 			severity:
+				event.kind === "review_job_failed" ||
 				event.kind === "review_ruling_disputed" ||
 				event.kind === "review_ruling_notify_failed"
 					? "warning"
 					: "info",
-			sessionKey: buildSessionKey(session),
+			sessionKey: session.execution_id,
 		});
 	};
 }
@@ -90,6 +90,8 @@ function reviewAlertTitle(kind: ReviewAlertEvent["kind"]): string {
 	switch (kind) {
 		case "review_advisory_pass":
 			return "Review passed with non-blocking advisories";
+		case "review_job_failed":
+			return "Cross-family review job failed";
 		case "review_ruling_recorded":
 			return "Lead review ruling recorded";
 		case "review_ruling_disputed":

@@ -72,6 +72,7 @@ const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
 const REVIEW_GOVERNANCE_KINDS = [
 	"review_advisory_pass",
+	"review_job_failed",
 	"review_ruling_recorded",
 	"review_ruling_disputed",
 	"review_ruling_notify_failed",
@@ -104,6 +105,13 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 				`missing contract for ${kind}`,
 			).toBeDefined();
 		}
+	});
+
+	it("keeps review job failures owned by the human issue-progress lane", () => {
+		expect(KIND_CONTRACTS.review_job_failed).toEqual({
+			owner: "founder_direct",
+			arc: "human_by_design",
+		});
 	});
 
 	it("the fleet kinds are in the union with the planned contracts", () => {
@@ -243,7 +251,7 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
 			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
+				owner: kind === "review_job_failed" ? "founder_direct" : "claude",
 				arc: "human_by_design",
 			});
 		}

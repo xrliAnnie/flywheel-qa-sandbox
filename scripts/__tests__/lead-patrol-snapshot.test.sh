@@ -150,9 +150,44 @@ INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_
  ('exec-claim','FLY-105','FLY-105','claim','flywheel','running'),
  ('exec-null-holder','FLY-106','FLY-106','null node exec','flywheel','running'),
  ('exec-foreign','FLY-109','FLY-109','foreign Lead','flywheel','running'),
+	('exec-review-recent','FLY-112','FLY-112','recent review failure','flywheel','running'),
+	('exec-review-scheduled','FLY-113','FLY-113','scheduled review failure','flywheel','running'),
+	('exec-review-terminal','FLY-114','FLY-114','terminal review failure','flywheel','running'),
+	('exec-review-foreign','FLY-115','FLY-115','foreign review owner','flywheel','running'),
+	('exec-review-old','FLY-116','FLY-116','old review failure','flywheel','running'),
+	('exec-review-dead','FLY-117','FLY-117','dead review runner','flywheel','terminated'),
+	('exec-review-orphan','FLY-118','FLY-118','review owner row already pruned','flywheel','running'),
+	('exec-review-other','TE-998','TE-998','other project review','tidal-echo','running'),
  ('exec-mail-parked','FLY-107','FLY-107','parked mail','flywheel','ship_parked'),
  ('exec-old','FLY-108','FLY-108','terminal','flywheel','terminated'),
  ('exec-other','TE-999','TE-999','other','tidal-echo','running');
+INSERT INTO codex_review_job(
+ request_id,execution_id,issue_id,project_name,review_type,round,question_id,
+ status,failure_reason,failure_raw,retry_at,updated_at
+) VALUES
+ ('d1d1e9ba-8337-484b-b159-91887e26e987','exec-review-recent','SECRET_STALE_JOB_ISSUE','flywheel','code',2,'review-q-recent','failed','nonzero_exit','SECRET_REVIEW_FAILURE_RAW',NULL,datetime('now','-2 hours')),
+ ('scheduled-review-request','exec-review-scheduled',NULL,'flywheel','design',1,'review-q-scheduled','failed','nonzero_exit','SECRET_SCHEDULED_FAILURE_RAW',datetime('now','+2 days'),datetime('now','-2 days')),
+ ('terminal-head-moved','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-1','failed','head_moved','SECRET_TERMINAL_HEAD',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-answered-externally','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-2','failed','gate_answered_externally','SECRET_TERMINAL_EXTERNAL',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-answered','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-3','failed','gate_answered','SECRET_TERMINAL_ANSWERED',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-expired','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-4','failed','gate_expired','SECRET_TERMINAL_EXPIRED',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-mismatch','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-5','failed','gate_mismatch','SECRET_TERMINAL_MISMATCH',NULL,datetime('now','-1 hour')),
+ ('old-unscheduled-review','exec-review-old','FLY-116','flywheel','design',1,'review-q-old','failed','timeout','SECRET_OLD_REVIEW_RAW',NULL,datetime('now','-2 days')),
+ ('foreign-lead-review','exec-review-foreign','FLY-115','flywheel','code',1,'review-q-foreign','failed','timeout','SECRET_FOREIGN_REVIEW_RAW',NULL,datetime('now','-1 hour')),
+ ('dead-runner-review','exec-review-dead','FLY-117','flywheel','code',1,'review-q-dead','failed','timeout','SECRET_DEAD_REVIEW_RAW',NULL,datetime('now','-1 hour')),
+ ('orphan-comm-review','exec-review-orphan','FLY-118','flywheel','code',1,'review-q-orphan','failed','timeout','SECRET_ORPHAN_REVIEW_RAW',NULL,datetime('now','-1 hour')),
+ ('foreign-project-review','exec-review-other','TE-998','tidal-echo','code',1,'review-q-other','failed','timeout','SECRET_OTHER_REVIEW_RAW',NULL,datetime('now','-1 hour'));
+WITH RECURSIVE historical(n) AS (
+ SELECT 1 UNION ALL SELECT n + 1 FROM historical WHERE n < 100
+)
+INSERT INTO codex_review_job(
+ request_id,execution_id,issue_id,project_name,review_type,round,question_id,
+ status,failure_reason,failure_raw,updated_at
+)
+SELECT printf('historical-review-%03d',n), printf('missing-exec-%03d',n),
+       printf('FLY-HIST-%03d',n),'flywheel','design',1,printf('historical-q-%03d',n),
+       'failed','timeout','SECRET_HISTORICAL_REVIEW_RAW',datetime('now','-1 hour')
+FROM historical;
 INSERT INTO dead_letter_alerts(id,source_kind,recipient,through_dead_seq,lead_id,project_name,dead_count,summary,state,created_at) VALUES
  ('dead-pending','runner_unroutable','exec-wake',1,'flywheel-eng-lead','flywheel',1,'SECRET_DEAD_SUMMARY','pending',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes')),
  ('dead-other-lead','runner_unroutable','exec-foreign',2,'honey-lemon-lead','flywheel',1,'SECRET_OTHER_LEAD_DEAD','pending',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes')),
@@ -174,6 +209,9 @@ INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,star
  ('exec-null-holder','runner-flywheel:pending','flywheel','FLY-106','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
  ('exec-mail-parked','runner-flywheel:pending','flywheel','FLY-107','flywheel-eng-lead',datetime('now','-2 hours'),'completed'),
  ('exec-foreign','runner-flywheel:pending','flywheel','FLY-109','honey-lemon-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-recent','runner-flywheel:pending','flywheel','FLY-112','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-scheduled','runner-flywheel:pending','flywheel','FLY-113','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-foreign','runner-flywheel:pending','flywheel','FLY-115','honey-lemon-lead',datetime('now','-2 hours'),'running'),
  ('exec-110-old','runner-flywheel:pending','flywheel','FLY-110','lead-a',datetime('now','-3 hours'),'completed'),
  ('exec-110-current','runner-flywheel:pending','flywheel','FLY-110','flywheel-eng-lead',datetime('now','-1 hour'),'running'),
  ('exec-111-old','runner-flywheel:pending','flywheel','FLY-111','lead-a',datetime('now','-3 hours'),'completed'),
@@ -236,7 +274,17 @@ not_contains "$MAIN_OUT" "dead-accepted" "accepted dead letter receipt is filter
 not_contains "$MAIN_OUT" "dead-other-lead" "other Lead dead letter is outside this report"
 not_contains "$MAIN_OUT" "dead-other-project" "other project dead letter is outside this report"
 contains "$MAIN_OUT" "VERDICT_HEAD_MISMATCH issue=FLY-105" "active binding/claim mismatch is visible"
-for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE; do
+contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-112 request=d1d1e9ba-8337-484b-b159-91887e26e987 type=code round=2 reason=nonzero_exit" "recent failed review is visible with live-session issue identity"
+contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-113 request=scheduled-review-request type=design round=1 reason=nonzero_exit" "old durable scheduled retry remains patrol-visible"
+contains "$MAIN_OUT" "STEP 4: FINDING-CANDIDATE" "review without a CommDB owner cannot black out STEP 4"
+contains "$MAIN_OUT" "recovery=POST_/review-requests_same_requestId" "failed review exposes the idempotent replay entrance"
+not_contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-114" "terminally invalid review failures are excluded"
+not_contains "$MAIN_OUT" "old-unscheduled-review" "old unscheduled review failure is excluded"
+not_contains "$MAIN_OUT" "dead-runner-review" "failed review without a live session is excluded"
+not_contains "$MAIN_OUT" "orphan-comm-review" "failed review without a resolvable CommDB owner is pruned before attribution"
+not_contains "$MAIN_OUT" "historical-review-" "historical rows without sessions are pruned before attribution"
+not_contains "$MAIN_OUT" "SECRET_STALE_JOB_ISSUE" "review issue identity is derived from the live session"
+for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE SECRET_REVIEW_FAILURE_RAW SECRET_SCHEDULED_FAILURE_RAW SECRET_TERMINAL_HEAD SECRET_TERMINAL_EXTERNAL SECRET_TERMINAL_ANSWERED SECRET_TERMINAL_EXPIRED SECRET_TERMINAL_MISMATCH SECRET_OLD_REVIEW_RAW SECRET_FOREIGN_REVIEW_RAW SECRET_DEAD_REVIEW_RAW SECRET_ORPHAN_REVIEW_RAW SECRET_OTHER_REVIEW_RAW SECRET_HISTORICAL_REVIEW_RAW; do
   not_contains "$MAIN_OUT" "$secret" "secret projection excludes $secret"
 done
 
@@ -247,6 +295,8 @@ not_contains "$MAIN_HONEY_OUT" "issue=FLY-100" "other Lead does not see this Lea
 contains "$MAIN_HONEY_OUT" "MAILBOX_STALE id=mail-foreign" "other Lead sees its stale mailbox"
 not_contains "$MAIN_HONEY_OUT" "MAILBOX_STALE id=mail-live-qu" "other Lead does not see this Lead's mailbox"
 contains "$MAIN_HONEY_OUT" "DEAD_LETTER_PENDING id=dead-other-lead" "other Lead sees its dead letter"
+contains "$MAIN_HONEY_OUT" "REVIEW_JOB_FAILED issue=FLY-115 request=foreign-lead-review" "other Lead sees its owned failed review"
+not_contains "$MAIN_HONEY_OUT" "request=d1d1e9ba-8337-484b-b159-91887e26e987" "other Lead does not see this Lead's failed review"
 not_contains "$MAIN_HONEY_OUT" "DEAD_LETTER_PENDING id=dead-pending" "other Lead does not see this Lead's dead letter"
 not_contains "$MAIN_HONEY_OUT" "dead-other-project" "other Lead does not see cross-project dead letters"
 for step in 1 2 3 4 5 6; do

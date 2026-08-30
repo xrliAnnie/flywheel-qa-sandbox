@@ -167,6 +167,12 @@ export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "alert_system");
 }
 
+export function storeReviewQuotaAutoRetryEnabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "review_quota_auto_retry");
+}
+
 export function storeFlagRetirementScanEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

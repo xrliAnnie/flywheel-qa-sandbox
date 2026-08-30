@@ -90,6 +90,10 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	"tmux_split_brain",
 	// Paid-model choices are intentionally never delegated to an infra bot.
 	"quota_choice",
+	// FLY-2177: this is issue progress owned by the issue's human lane. If its
+	// bound thread cannot be resolved, retain the durable ticket without
+	// assigning an infra bot that cannot decide the review's next action.
+	"review_job_failed",
 ]);
 
 /**

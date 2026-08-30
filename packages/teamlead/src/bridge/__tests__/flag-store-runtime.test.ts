@@ -20,6 +20,7 @@ import {
 	storePipelineWorkKindEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
+	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
@@ -118,6 +119,23 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeAlertSystemEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2177 keeps quota retry default-on and observes an off write without restart", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(true);
+
+		const revision = store.getFlagValueRow("review_quota_auto_retry")!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "review_quota_auto_retry",
+				rawTo: "0",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "pause reviewer quota recovery during incident control",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeReviewQuotaAutoRetryEnabled(runtime)).toBe(false);
 	});
 
 	it("resolves all seven project flags from project row, star row, then registry default", () => {

@@ -354,6 +354,7 @@ describe("feature-flag drift guard", () => {
 			...[
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
 				["alert_system", "storeAlertSystemEnabled"],
+				["review_quota_auto_retry", "storeReviewQuotaAutoRetryEnabled"],
 				["loop_profiler", "storeLoopProfilerEnabled"],
 				["shipped_husk_force", "storeShippedHuskForceEnabled"],
 			].map(([name, resolverSymbol]) => ({

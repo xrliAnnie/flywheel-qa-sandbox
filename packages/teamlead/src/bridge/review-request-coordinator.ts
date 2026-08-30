@@ -22,7 +22,7 @@
  */
 
 import { execFile } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { isAbsolute, relative, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -38,6 +38,7 @@ import {
 	runClaudeReviewRound,
 } from "./claude-review-runner.js";
 import { buildGovernancePromptSegment } from "./review-governance-prompt.js";
+import { parseReviewQuotaResetAt } from "./review-quota-retry.js";
 import {
 	computeEffectiveVerdict,
 	type EffectiveReviewVerdict,
@@ -124,6 +125,7 @@ export type ReviewRulingResult =
 
 export type ReviewAlertKind =
 	| "review_advisory_pass"
+	| "review_job_failed"
 	| "review_ruling_recorded"
 	| "review_ruling_disputed"
 	| "review_ruling_notify_failed";
@@ -182,6 +184,12 @@ export interface ReviewCoordinatorDeps {
 		session: Session;
 		text: string;
 	}) => Promise<{ ok: boolean }>;
+	/** FLY-2177 call-time kill switch (production: managed flag store). */
+	quotaAutoRetryEnabled?: () => boolean;
+	/** Narrow deterministic clock/timer seams. */
+	now?: () => number;
+	setTimer?: (callback: () => void, delayMs: number) => unknown;
+	clearTimer?: (handle: unknown) => void;
 }
 
 const REQUEST_ID_MAX = 128;
@@ -191,11 +199,28 @@ const SHA40 = /^[0-9a-f]{40}$/;
 const SESSION_NOT_FOUND = /no conversation found with session id/i;
 const FAILURE_RAW_MAX = 4000;
 const ALERT_SUMMARY_MAX = 300;
+const RESET_GRACE_MS = 60_000;
+const MAX_RETRY_JITTER_MS = 5 * 60_000;
+const GATE_EXPIRY_SAFETY_MS = 60_000;
+const KILL_SWITCH_RECHECK_MS = 60_000;
+const MAX_TIMER_DELAY_MS = 2_147_000_000;
+
+export function reviewRetryJitterMs(requestId: string): number {
+	const digest = createHash("sha256").update(requestId).digest();
+	return digest.readUInt32BE(0) % MAX_RETRY_JITTER_MS;
+}
 
 type FailedClaudeReviewOutcome = Extract<
 	ClaudeReviewOutcome,
 	{ kind: "failed" }
 >;
+
+type ReviewGateState = "open" | "missing" | "answered" | "mismatch" | "expired";
+
+interface ReviewGateInspection {
+	state: ReviewGateState;
+	expiresAtMs?: number;
+}
 
 interface FailedReviewAttempt {
 	label: string;
@@ -393,6 +418,10 @@ export class ReviewRequestCoordinator {
 	private readonly log: (msg: string) => void;
 	/** Per-execution serialization chains. */
 	private readonly execChains = new Map<string, Promise<void>>();
+	private readonly retryTimers = new Map<string, unknown>();
+	private readonly now: () => number;
+	private readonly setTimer: (callback: () => void, delayMs: number) => unknown;
+	private readonly clearTimer: (handle: unknown) => void;
 	private stopped = false;
 
 	constructor(deps: ReviewCoordinatorDeps) {
@@ -400,10 +429,17 @@ export class ReviewRequestCoordinator {
 		this.deps = deps;
 		this.log =
 			deps.logger ?? ((m: string) => console.log(`[review-coordinator] ${m}`));
+		this.now = deps.now ?? Date.now;
+		this.setTimer =
+			deps.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
+		this.clearTimer =
+			deps.clearTimer ?? ((handle) => clearTimeout(handle as NodeJS.Timeout));
 	}
 
 	stop(): void {
 		this.stopped = true;
+		for (const handle of this.retryTimers.values()) this.clearTimer(handle);
+		this.retryTimers.clear();
 	}
 
 	/**
@@ -685,7 +721,7 @@ export class ReviewRequestCoordinator {
 				questionId,
 				authorFamily,
 			});
-			this.store.failCodexReviewJob(requestId, `gate_${gate}`);
+			this.failReviewJob(requestId, `gate_${gate}`);
 			this.alert(
 				`review request ${requestId} (${session.issue_id}) rejected: ${reason}`,
 			);
@@ -849,7 +885,9 @@ export class ReviewRequestCoordinator {
 		if (reset > 0) this.log(`boot: reset ${reset} in-flight job(s) → pending`);
 		const jobs = this.store.listRedrivableCodexReviewJobs();
 		for (const job of jobs) this.enqueue(job.request_id, job.execution_id);
-		return jobs.length;
+		const scheduled = this.store.listScheduledCodexReviewJobs();
+		for (const job of scheduled) this.armRetryTimer(job);
+		return jobs.length + scheduled.length;
 	}
 
 	/** R12 HIGH-4: answer the bound gate from a job's STORED terminal verdict. */
@@ -943,7 +981,7 @@ export class ReviewRequestCoordinator {
 					`job ${requestId} crashed: ${err instanceof Error ? err.message : String(err)}`,
 				);
 				try {
-					this.store.failCodexReviewJob(requestId, "internal_error");
+					this.failReviewJob(requestId, "internal_error");
 				} catch {
 					/* store unavailable — job stays running, boot redrive recovers */
 				}
@@ -965,7 +1003,10 @@ export class ReviewRequestCoordinator {
 		if (!this.store.claimCodexReviewJobRunning(requestId)) return;
 		const session = this.store.getSession(job.execution_id);
 		if (!session) {
-			this.store.failCodexReviewJob(requestId, "session_missing");
+			this.failReviewJob(requestId, "session_missing");
+			this.alert(
+				`review job ${requestId} (${job.issue_id ?? job.execution_id}) failed: StateStore session ${job.execution_id} is missing; retry requires restoring or replacing the bound execution.`,
+			);
 			return;
 		}
 
@@ -1010,7 +1051,7 @@ export class ReviewRequestCoordinator {
 			job.target_repo_path ??
 			this.store.getWorktreeBinding(job.execution_id)?.path;
 		if (!cwd) {
-			this.store.failCodexReviewJob(requestId, "worktree_missing");
+			this.failReviewJob(requestId, "worktree_missing");
 			this.alert(
 				`review job ${requestId} (${job.issue_id ?? job.execution_id}) failed: no persisted worktree`,
 			);
@@ -1089,7 +1130,7 @@ export class ReviewRequestCoordinator {
 					job.review_type,
 				)
 			) {
-				this.store.failCodexReviewJob(
+				this.failReviewJob(
 					requestId,
 					"gate_answered_externally",
 					composeFailureRaw(failedAttempts),
@@ -1103,7 +1144,7 @@ export class ReviewRequestCoordinator {
 				const current = await this.tryDeriveHead(job.execution_id, cwd);
 				const frozen = job.frozen_head_sha?.toLowerCase();
 				if (!current || !frozen || current !== frozen) {
-					this.store.failCodexReviewJob(
+					this.failReviewJob(
 						requestId,
 						"head_moved",
 						composeFailureRaw(failedAttempts),
@@ -1143,7 +1184,7 @@ export class ReviewRequestCoordinator {
 				job.review_type,
 			)
 		) {
-			this.store.failCodexReviewJob(requestId, "gate_answered_externally");
+			this.failReviewJob(requestId, "gate_answered_externally");
 			this.alert(
 				`claude review ${requestId}: gate ${job.question_id} is no longer this job's open gate (resolved/expired/foreign-answered while the reviewer ran) — verdict discarded (no authority written).`,
 			);
@@ -1165,7 +1206,7 @@ export class ReviewRequestCoordinator {
 			const current = await this.tryDeriveHead(job.execution_id, cwd);
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
-				this.store.failCodexReviewJob(requestId, "head_moved");
+				this.failReviewJob(requestId, "head_moved");
 				this.alert(
 					`claude review ${requestId}: head moved (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — verdict voided; a new request/round is required.`,
 				);
@@ -1175,7 +1216,7 @@ export class ReviewRequestCoordinator {
 				// R12 HIGH-6: the reviewer MUST echo the exact sha it reviewed —
 				// a missing/mismatching echo can never become an authority record.
 				if (!outcome.reviewedHeadSha || outcome.reviewedHeadSha !== frozen) {
-					this.store.failCodexReviewJob(requestId, "reviewed_wrong_head");
+					this.failReviewJob(requestId, "reviewed_wrong_head");
 					this.alert(
 						`claude review ${requestId}: reviewer reports head ${outcome.reviewedHeadSha ?? "<missing>"} but the job froze ${frozen} — approval refused.`,
 					);
@@ -1185,7 +1226,7 @@ export class ReviewRequestCoordinator {
 				outcome.reviewedHeadSha &&
 				outcome.reviewedHeadSha !== frozen
 			) {
-				this.store.failCodexReviewJob(requestId, "reviewed_wrong_head");
+				this.failReviewJob(requestId, "reviewed_wrong_head");
 				this.alert(
 					`claude review ${requestId}: findings claim head ${outcome.reviewedHeadSha} but the job froze ${frozen} — verdict refused.`,
 				);
@@ -1269,11 +1310,175 @@ export class ReviewRequestCoordinator {
 		attempts: FailedReviewAttempt[],
 	): void {
 		const failureRaw = composeFailureRaw(attempts);
-		this.store.failCodexReviewJob(job.request_id, outcome.reason, failureRaw);
+		let retryAt: string | undefined;
+		try {
+			if ((this.deps.quotaAutoRetryEnabled?.() ?? true) && outcome.raw) {
+				const resetAt = parseReviewQuotaResetAt(outcome.raw, this.now());
+				if (resetAt !== null) {
+					const gate = this.inspectGate(
+						job.project_name,
+						job.question_id,
+						job.execution_id,
+						job.review_type,
+					);
+					const candidate =
+						resetAt + RESET_GRACE_MS + reviewRetryJitterMs(job.request_id);
+					if (
+						gate.state === "open" &&
+						gate.expiresAtMs !== undefined &&
+						candidate < gate.expiresAtMs - GATE_EXPIRY_SAFETY_MS
+					) {
+						retryAt = new Date(candidate).toISOString();
+					}
+				}
+			}
+		} catch (err) {
+			this.log(
+				`quota retry classification failed for ${job.request_id}: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+		const persisted = this.store.recordCodexReviewJobFailure({
+			requestId: job.request_id,
+			reason: outcome.reason,
+			failureRaw,
+			retryAt,
+		});
+		if (persisted.scheduled && persisted.job) {
+			this.armRetryTimer(persisted.job);
+		}
+		if (persisted.updated && persisted.job) {
+			this.emitReviewJobFailureAlert(persisted.job);
+		}
 		const summary = sanitizeFailureSummary(failureRaw);
+		const recovery =
+			persisted.scheduled && persisted.job?.retry_at
+				? `automatic same-request retry is scheduled for ${persisted.job.retry_at}; gate stays closed`
+				: "gate stays closed; retry the request or use the codex-skip governance path";
 		this.alert(
-			`claude review ${job.request_id} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — gate stays closed; retry the request or use the codex-skip governance path.${summary ? ` Evidence: ${summary}` : ""}`,
+			`claude review ${job.request_id} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — ${recovery}.${summary ? ` Evidence: ${summary}` : ""}`,
 		);
+	}
+
+	private emitReviewJobFailureAlert(job: CodexReviewJob): void {
+		const issueId =
+			job.issue_id ??
+			this.store.getSession(job.execution_id)?.issue_id ??
+			job.execution_id;
+		const recovery = job.retry_at
+			? `Automatic same-request retry is scheduled for ${job.retry_at}; the gate remains closed.`
+			: "Retry POST /review-requests with the same requestId; the gate remains closed.";
+		void this.emitReviewAlert({
+			kind: "review_job_failed",
+			eventId: `review-failed:${job.request_id}:${job.failure_attempt_count}`,
+			issueId,
+			executionId: job.execution_id,
+			requestId: job.request_id,
+			message: `Review ${job.request_id} (${job.review_type} R${job.round}) failed: ${job.failure_reason ?? "unknown"}. ${recovery}`,
+		});
+	}
+
+	private failReviewJob(
+		requestId: string,
+		reason: string,
+		failureRaw?: string,
+	): void {
+		const persisted = this.store.recordCodexReviewJobFailure({
+			requestId,
+			reason,
+			failureRaw,
+		});
+		if (persisted.updated && persisted.job) {
+			this.emitReviewJobFailureAlert(persisted.job);
+		}
+	}
+
+	private armRetryTimer(job: CodexReviewJob, notBeforeMs?: number): void {
+		if (this.stopped || !job.retry_at) return;
+		const dueAt = Date.parse(job.retry_at);
+		if (!Number.isFinite(dueAt)) return;
+		const previous = this.retryTimers.get(job.request_id);
+		if (previous !== undefined) this.clearTimer(previous);
+		const target = Math.max(dueAt, notBeforeMs ?? dueAt);
+		const delay = Math.max(
+			0,
+			Math.min(MAX_TIMER_DELAY_MS, target - this.now()),
+		);
+		try {
+			const handle = this.setTimer(() => {
+				this.retryTimers.delete(job.request_id);
+				try {
+					void this.handleScheduledRetry(job.request_id).catch((err) => {
+						this.log(
+							`scheduled review retry ${job.request_id} failed safely: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					});
+				} catch (err) {
+					this.log(
+						`scheduled review retry ${job.request_id} threw safely: ${err instanceof Error ? err.message : String(err)}`,
+					);
+				}
+			}, delay);
+			this.retryTimers.set(job.request_id, handle);
+		} catch (err) {
+			this.log(
+				`could not arm scheduled review retry ${job.request_id}; row remains patrol-visible: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+
+	private async handleScheduledRetry(requestId: string): Promise<void> {
+		if (this.stopped) return;
+		const job = this.store.getCodexReviewJob(requestId);
+		if (!job || job.status !== "failed" || !job.retry_at) return;
+		const dueAt = Date.parse(job.retry_at);
+		if (!Number.isFinite(dueAt)) return;
+		if (dueAt > this.now()) {
+			this.armRetryTimer(job);
+			return;
+		}
+		let quotaAutoRetryEnabled: boolean;
+		try {
+			quotaAutoRetryEnabled = this.deps.quotaAutoRetryEnabled?.() ?? true;
+		} catch (err) {
+			this.log(
+				`scheduled review retry ${requestId} could not read its kill switch; retrying the read later: ${err instanceof Error ? err.message : String(err)}`,
+			);
+			this.armRetryTimer(job, this.now() + KILL_SWITCH_RECHECK_MS);
+			return;
+		}
+		if (!quotaAutoRetryEnabled) {
+			this.armRetryTimer(job, this.now() + KILL_SWITCH_RECHECK_MS);
+			return;
+		}
+		const gate = this.inspectGate(
+			job.project_name,
+			job.question_id,
+			job.execution_id,
+			job.review_type,
+		);
+		if (gate.state !== "open") {
+			this.failReviewJob(
+				requestId,
+				gate.state === "answered"
+					? "gate_answered_externally"
+					: `gate_${gate.state}`,
+			);
+			return;
+		}
+		if (job.review_type === "code") {
+			const targetPath =
+				job.target_repo_path ??
+				this.store.getWorktreeBinding(job.execution_id)?.path;
+			const current = targetPath
+				? await this.tryDeriveHead(job.execution_id, targetPath)
+				: null;
+			const frozen = job.frozen_head_sha?.toLowerCase();
+			if (!current || !frozen || current !== frozen) {
+				this.failReviewJob(requestId, "head_moved");
+				return;
+			}
+		}
+		this.enqueue(requestId, job.execution_id);
 	}
 
 	/**
@@ -1379,26 +1584,44 @@ export class ReviewRequestCoordinator {
 		questionId: string,
 		executionId: string,
 		reviewType: "design" | "code",
-	): "open" | "missing" | "answered" | "mismatch" | "expired" {
+	): ReviewGateState {
+		return this.inspectGate(projectName, questionId, executionId, reviewType)
+			.state;
+	}
+
+	private inspectGate(
+		projectName: string,
+		questionId: string,
+		executionId: string,
+		reviewType: "design" | "code",
+	): ReviewGateInspection {
 		let db: ReviewCommDb | undefined;
 		try {
 			db = this.deps.openCommDb(this.deps.commDbPathFor(projectName));
 			const q = db.getMessageById(questionId);
-			if (!q) return "missing";
-			if (q.type !== "question") return "mismatch";
-			if (q.from_agent !== executionId) return "mismatch";
-			if (q.checkpoint !== `review_${reviewType}`) return "mismatch";
-			if (q.resolved_at) return "answered";
-			if (q.expires_at && new Date(q.expires_at).getTime() < Date.now()) {
-				return "expired";
+			if (!q) return { state: "missing" };
+			if (q.type !== "question") return { state: "mismatch" };
+			if (q.from_agent !== executionId) return { state: "mismatch" };
+			if (q.checkpoint !== `review_${reviewType}`) {
+				return { state: "mismatch" };
 			}
-			if (db.getResponse(questionId)) return "answered";
-			return "open";
+			if (q.resolved_at) return { state: "answered" };
+			const expiresAtMs = q.expires_at ? Date.parse(q.expires_at) : undefined;
+			if (expiresAtMs !== undefined && Number.isFinite(expiresAtMs)) {
+				if (expiresAtMs < this.now()) return { state: "expired", expiresAtMs };
+			}
+			if (db.getResponse(questionId)) return { state: "answered", expiresAtMs };
+			return {
+				state: "open",
+				...(expiresAtMs !== undefined && Number.isFinite(expiresAtMs)
+					? { expiresAtMs }
+					: {}),
+			};
 		} catch (err) {
 			this.log(
 				`CommDB check failed for ${questionId}: ${err instanceof Error ? err.message : String(err)}`,
 			);
-			return "missing"; // unreachable CommDB → fail-close
+			return { state: "missing" }; // unreachable CommDB → fail-close
 		} finally {
 			db?.close();
 		}

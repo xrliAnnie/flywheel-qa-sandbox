@@ -681,12 +681,37 @@ verdict_candidates AS (
   GROUP BY wr.issue_id, b.node_id, b.attempt, b.head_sha, n.execution_id
   HAVING sum(CASE WHEN c.subject_digest = b.head_sha THEN 1 ELSE 0 END) = 0
 ),
+failed_review_candidates AS (
+  SELECT j.request_id, j.execution_id, s.issue_id, j.review_type, j.round,
+         j.failure_reason, j.updated_at, j.retry_at
+  FROM codex_review_job j
+  JOIN sessions s ON s.execution_id = j.execution_id
+    AND s.project_name = '$PROJECT_NAME'
+    AND s.status IN ('running','ship_parked','awaiting_review','design_done','approved_to_ship')
+  WHERE j.project_name = '$PROJECT_NAME'
+    AND j.status = 'failed'
+    AND EXISTS (
+      SELECT 1 FROM comm.sessions cs
+      WHERE cs.execution_id = j.execution_id
+        AND cs.project_name = '$PROJECT_NAME'
+        AND nullif(trim(cs.lead_id),'') IS NOT NULL
+    )
+    AND (
+      j.retry_at IS NOT NULL
+      OR julianday(coalesce(j.updated_at,j.created_at)) >= julianday('now','-24 hours')
+    )
+    AND coalesce(j.failure_reason,'') NOT IN (
+      'head_moved','gate_answered_externally','gate_answered','gate_expired','gate_mismatch'
+    )
+),
 attribution_subjects AS (
   SELECT DISTINCT to_agent AS execution_id, issue_id FROM stale_mail
   UNION
   SELECT DISTINCT execution_id, issue_id FROM wake_candidates
   UNION
   SELECT DISTINCT execution_id, issue_id FROM verdict_candidates
+  UNION
+  SELECT DISTINCT execution_id, issue_id FROM failed_review_candidates
 ),
 $OWNER_ATTRIBUTION_CTES
 SELECT 'OWNER_ATTRIBUTION_INCOMPLETE reason=' || attribution_error || ' count=' || count(*)
@@ -724,6 +749,17 @@ SELECT 'VERDICT_HEAD_MISMATCH issue=' || v.issue_id || ' node=' || v.node_id ||
        ' claim=' || substr(v.claim_digest,1,8)
 FROM verdict_candidates v
 JOIN owner_resolution o ON o.execution_id IS v.execution_id AND o.issue_id = v.issue_id
+WHERE o.attributed_lead = '$LEAD_ID'
+  AND NOT EXISTS (SELECT 1 FROM owner_resolution WHERE attribution_error IS NOT NULL)
+UNION ALL
+SELECT 'REVIEW_JOB_FAILED issue=' || f.issue_id || ' request=' || f.request_id ||
+       ' type=' || f.review_type || ' round=' || f.round ||
+       ' reason=' || coalesce(f.failure_reason,'unknown') ||
+       ' updated=' || coalesce(f.updated_at,'-') ||
+       ' retry_at=' || coalesce(f.retry_at,'-') ||
+       ' recovery=POST_/review-requests_same_requestId'
+FROM failed_review_candidates f
+JOIN owner_resolution o ON o.execution_id IS f.execution_id AND o.issue_id = f.issue_id
 WHERE o.attributed_lead = '$LEAD_ID'
   AND NOT EXISTS (SELECT 1 FROM owner_resolution WHERE attribution_error IS NOT NULL)
 ORDER BY 1

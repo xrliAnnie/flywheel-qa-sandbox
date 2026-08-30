@@ -13,6 +13,9 @@ import {
 	type AlertResult,
 	INFORMATIONAL_KINDS,
 } from "../../LeadAlertNotifier.js";
+import type { ProjectEntry } from "../../ProjectConfig.js";
+import { StateStore } from "../../StateStore.js";
+import { buildInfraAlertRouting } from "../infra-alert-wiring.js";
 import {
 	type BoundIssueThread,
 	classifyInfraEvent,
@@ -20,6 +23,7 @@ import {
 	ISSUE_PROGRESS_KINDS,
 	TICKET_KINDS,
 } from "../infra-event-router.js";
+import { createReviewAlertEmitter } from "../review-governance-effects.js";
 
 const THREAD: BoundIssueThread = {
 	threadId: "t-1",
@@ -82,6 +86,83 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 				classifyInfraEvent({ eventType: kind, boundIssueThread: THREAD }),
 			).toBe("issue_thread");
 		}
+	});
+
+	it("routes production review failures through session resolution, with wrong keys failing safe to ticket", async () => {
+		const store = await StateStore.create(":memory:");
+		store.upsertSession({
+			execution_id: "exec-1",
+			issue_id: "issue-uuid",
+			issue_identifier: "FLY-1",
+			issue_title: "Review recovery",
+			issue_labels: JSON.stringify(["Flywheel"]),
+			project_name: "flywheel",
+			status: "running",
+		});
+		store.upsertChatThread("t-1", "c-1", "issue-uuid");
+		const projects = [
+			{
+				projectName: "flywheel",
+				projectRoot: "/tmp/fw",
+				leads: [
+					{
+						agentId: "flywheel-eng-lead",
+						chatChannel: "c-1",
+						alertChannel: "alerts",
+						match: { labels: ["Flywheel"] },
+						botToken: "token",
+					},
+				],
+			},
+		] as unknown as ProjectEntry[];
+		const rawSink = { alert: vi.fn(async () => ({ sent: true })) };
+		const ticketSink = { alert: vi.fn(async () => ({ queued: true })) };
+		const fetchImpl = vi.fn(async () => ({
+			ok: true,
+			status: 200,
+			headers: { get: () => null },
+			json: async () => ({ id: "message-1" }),
+			text: async () => "",
+		}));
+		const sink = buildInfraAlertRouting({
+			store,
+			projects,
+			rawSink,
+			ticketSink,
+			routingEnabled: () => true,
+			ticketsEnabled: () => false,
+			fetchImpl: fetchImpl as unknown as typeof fetch,
+			logger: () => {},
+		});
+		const emitReviewAlert = createReviewAlertEmitter({
+			store,
+			projects,
+			alert: (alert) => sink.alert(alert),
+		});
+
+		expect(ISSUE_PROGRESS_KINDS.has("review_job_failed")).toBe(true);
+		await emitReviewAlert({
+			kind: "review_job_failed",
+			eventId: "review-failed:req-1:1",
+			issueId: "FLY-1",
+			executionId: "exec-1",
+			requestId: "req-1",
+			message: "Review req-1 failed; the gate remains closed.",
+		});
+		expect(fetchImpl).toHaveBeenCalledTimes(1);
+		expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toContain(
+			"/channels/t-1/messages",
+		);
+		expect(ticketSink.alert).not.toHaveBeenCalled();
+
+		fetchImpl.mockClear();
+		await sink.alert({
+			...payload("review_job_failed"),
+			sessionKey: "flywheel:FLY-1",
+		});
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(ticketSink.alert).toHaveBeenCalledTimes(1);
+		store.close();
 	});
 
 	it("ISSUE_PROGRESS_KINDS fail-safe to ticket when NO thread is bound", () => {
