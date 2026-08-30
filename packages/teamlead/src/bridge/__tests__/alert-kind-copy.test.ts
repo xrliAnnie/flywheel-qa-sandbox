@@ -20,6 +20,14 @@ describe("alert kind copy", () => {
 		expect(body).not.toMatch(/spawn|auto-QA|QA Runner/i);
 	});
 
+	it("keeps generic review failure copy neutral about the recovery path", () => {
+		const body = bodyFor("review_job_failed", "ignored");
+		expect(body).toBe(
+			"Cross-family review failed closed. Inspect the failure reason and live bound-gate state before choosing the recovery path; obsolete or non-replayable requests require a fresh gate or request.",
+		);
+		expect(body).not.toMatch(/same requestId/i);
+	});
+
 	it("points Bridge deploy failures at rotating, startup, and marker evidence", () => {
 		const body = bodyFor("deploy_failed", "ignored");
 		expect(body).toContain("/tmp/flywheel-bridge.log");

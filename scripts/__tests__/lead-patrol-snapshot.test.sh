@@ -172,6 +172,10 @@ INSERT INTO codex_review_job(
  ('terminal-gate-answered','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-3','failed','gate_answered','SECRET_TERMINAL_ANSWERED',NULL,datetime('now','-1 hour')),
  ('terminal-gate-expired','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-4','failed','gate_expired','SECRET_TERMINAL_EXPIRED',NULL,datetime('now','-1 hour')),
  ('terminal-gate-mismatch','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-5','failed','gate_mismatch','SECRET_TERMINAL_MISMATCH',NULL,datetime('now','-1 hour')),
+ ('terminal-superseded','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-6','failed','superseded_by_revision','SECRET_TERMINAL_SUPERSEDED',NULL,datetime('now','-1 hour')),
+ ('terminal-reviewed-wrong-head','exec-review-recent','FLY-112','flywheel','code',2,'terminal-q-7','failed','reviewed_wrong_head','SECRET_TERMINAL_WRONG_HEAD',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-missing','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-8','failed','gate_missing','SECRET_TERMINAL_MISSING',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-unknown','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-9','failed','gate_unknown','SECRET_TERMINAL_UNKNOWN',NULL,datetime('now','-1 hour')),
  ('old-unscheduled-review','exec-review-old','FLY-116','flywheel','design',1,'review-q-old','failed','timeout','SECRET_OLD_REVIEW_RAW',NULL,datetime('now','-2 days')),
  ('foreign-lead-review','exec-review-foreign','FLY-115','flywheel','code',1,'review-q-foreign','failed','timeout','SECRET_FOREIGN_REVIEW_RAW',NULL,datetime('now','-1 hour')),
  ('dead-runner-review','exec-review-dead','FLY-117','flywheel','code',1,'review-q-dead','failed','timeout','SECRET_DEAD_REVIEW_RAW',NULL,datetime('now','-1 hour')),
@@ -279,12 +283,16 @@ contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-113 request=scheduled-review-r
 contains "$MAIN_OUT" "STEP 4: FINDING-CANDIDATE" "review without a CommDB owner cannot black out STEP 4"
 contains "$MAIN_OUT" "recovery=POST_/review-requests_same_requestId" "failed review exposes the idempotent replay entrance"
 not_contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-114" "terminally invalid review failures are excluded"
+not_contains "$MAIN_OUT" "request=terminal-superseded" "benign review supersede is excluded"
+not_contains "$MAIN_OUT" "request=terminal-reviewed-wrong-head" "mismatched-head review is not replayable"
+not_contains "$MAIN_OUT" "request=terminal-gate-missing" "missing-gate review is not replayable"
+not_contains "$MAIN_OUT" "request=terminal-gate-unknown" "unknown-gate review does not guess a replay path"
 not_contains "$MAIN_OUT" "old-unscheduled-review" "old unscheduled review failure is excluded"
 not_contains "$MAIN_OUT" "dead-runner-review" "failed review without a live session is excluded"
 not_contains "$MAIN_OUT" "orphan-comm-review" "failed review without a resolvable CommDB owner is pruned before attribution"
 not_contains "$MAIN_OUT" "historical-review-" "historical rows without sessions are pruned before attribution"
 not_contains "$MAIN_OUT" "SECRET_STALE_JOB_ISSUE" "review issue identity is derived from the live session"
-for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE SECRET_REVIEW_FAILURE_RAW SECRET_SCHEDULED_FAILURE_RAW SECRET_TERMINAL_HEAD SECRET_TERMINAL_EXTERNAL SECRET_TERMINAL_ANSWERED SECRET_TERMINAL_EXPIRED SECRET_TERMINAL_MISMATCH SECRET_OLD_REVIEW_RAW SECRET_FOREIGN_REVIEW_RAW SECRET_DEAD_REVIEW_RAW SECRET_ORPHAN_REVIEW_RAW SECRET_OTHER_REVIEW_RAW SECRET_HISTORICAL_REVIEW_RAW; do
+for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE SECRET_REVIEW_FAILURE_RAW SECRET_SCHEDULED_FAILURE_RAW SECRET_TERMINAL_HEAD SECRET_TERMINAL_EXTERNAL SECRET_TERMINAL_ANSWERED SECRET_TERMINAL_EXPIRED SECRET_TERMINAL_MISMATCH SECRET_TERMINAL_SUPERSEDED SECRET_TERMINAL_WRONG_HEAD SECRET_TERMINAL_MISSING SECRET_TERMINAL_UNKNOWN SECRET_OLD_REVIEW_RAW SECRET_FOREIGN_REVIEW_RAW SECRET_DEAD_REVIEW_RAW SECRET_ORPHAN_REVIEW_RAW SECRET_OTHER_REVIEW_RAW SECRET_HISTORICAL_REVIEW_RAW; do
   not_contains "$MAIN_OUT" "$secret" "secret projection excludes $secret"
 done
 

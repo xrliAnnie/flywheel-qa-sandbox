@@ -701,7 +701,8 @@ failed_review_candidates AS (
       OR julianday(coalesce(j.updated_at,j.created_at)) >= julianday('now','-24 hours')
     )
     AND coalesce(j.failure_reason,'') NOT IN (
-      'head_moved','gate_answered_externally','gate_answered','gate_expired','gate_mismatch'
+      'head_moved','reviewed_wrong_head','gate_answered_externally','gate_answered',
+      'gate_expired','gate_missing','gate_mismatch','gate_unknown','superseded_by_revision'
     )
 ),
 attribution_subjects AS (

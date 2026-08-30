@@ -359,7 +359,7 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		case "review_advisory_pass":
 			return "Cross-family review approved the head with non-blocking MEDIUM/LOW advisories. The hard review gate is satisfied; triage advisories into follow-up work as appropriate.";
 		case "review_job_failed":
-			return "Cross-family review failed closed. Retry POST /review-requests with the same requestId unless an automatic retry is already scheduled; the bound review gate remains closed.";
+			return "Cross-family review failed closed. Inspect the failure reason and live bound-gate state before choosing the recovery path; obsolete or non-replayable requests require a fresh gate or request.";
 		case "review_ruling_recorded":
 			return "A Lead recorded a supervised governance ruling for an already-delivered review finding. The durable ruling and issue-thread audit are the authority; gate prose is not.";
 		case "review_ruling_disputed":

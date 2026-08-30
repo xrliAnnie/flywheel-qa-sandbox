@@ -12,9 +12,9 @@
  *
  * Fail-close everywhere: missing gate / questionId mismatch / answered
  * question / underivable head / reviewer failure → the job fails and the gate
- * STAYS closed (Lead alert; recovery = same-requestId retry or the sanctioned
- * codex-skip governance path). There is no "send a summary and call it done"
- * degradation.
+ * STAYS closed. Failure alerts derive recovery from the durable reason and
+ * live gate state; superseded revisions stay internal. There is no "send a
+ * summary and call it done" degradation.
  *
  * Scheduling: serial per execution, with no coordinator-wide concurrency
  * ceiling (§7.1 / FLY-2037). Boot redrive: pending/running jobs re-enqueue
@@ -56,6 +56,8 @@ export interface ReviewCommDb {
 				type?: string;
 				checkpoint?: string | null;
 				resolved_at?: string | null;
+				superseded_at?: string | null;
+				superseded_by?: string | null;
 				expires_at?: string;
 				content?: string;
 		  }
@@ -215,11 +217,28 @@ type FailedClaudeReviewOutcome = Extract<
 	{ kind: "failed" }
 >;
 
-type ReviewGateState = "open" | "missing" | "answered" | "mismatch" | "expired";
+type ReviewGateState =
+	| "open"
+	| "missing"
+	| "answered"
+	| "mismatch"
+	| "expired"
+	| "superseded"
+	| "unknown";
 
 interface ReviewGateInspection {
 	state: ReviewGateState;
 	expiresAtMs?: number;
+}
+
+function runtimeGateFailureReason(state: ReviewGateState): string {
+	if (state === "superseded") return "superseded_by_revision";
+	if (state === "answered") return "gate_answered_externally";
+	return `gate_${state}`;
+}
+
+function acceptGateFailureReason(state: ReviewGateState): string {
+	return state === "superseded" ? "superseded_by_revision" : `gate_${state}`;
 }
 
 interface FailedReviewAttempt {
@@ -721,7 +740,7 @@ export class ReviewRequestCoordinator {
 				questionId,
 				authorFamily,
 			});
-			this.failReviewJob(requestId, `gate_${gate}`);
+			this.failReviewJob(requestId, acceptGateFailureReason(gate));
 			this.alert(
 				`review request ${requestId} (${session.issue_id}) rejected: ${reason}`,
 			);
@@ -1036,6 +1055,27 @@ export class ReviewRequestCoordinator {
 			}
 		}
 
+		// A boot redrive or queued job may outlive its gate. Re-prove the binding
+		// before allocating a reviewer session or spending reviewer quota. This is
+		// intentionally after request-bound authority restoration above: a crash
+		// after authority commit must still restore its terminal verdict/outbox.
+		const preflightGate = this.inspectGate(
+			job.project_name,
+			job.question_id,
+			job.execution_id,
+			job.review_type,
+		);
+		if (preflightGate.state !== "open") {
+			this.failReviewJob(
+				requestId,
+				runtimeGateFailureReason(preflightGate.state),
+			);
+			this.alert(
+				`claude review ${requestId}: gate ${job.question_id} is ${preflightGate.state} before reviewer start — no reviewer started.`,
+			);
+			return;
+		}
+
 		// reviewer session: round 1 gets a FRESH uuid at run time (a retried
 		// round-1 must not collide with a half-created claude session);
 		// rerounds resume the persisted prior-round uuid.
@@ -1122,17 +1162,16 @@ export class ReviewRequestCoordinator {
 				this.failReviewerOutcome(job, outcome, failedAttempts);
 				return;
 			}
-			if (
-				!this.gateStillOpen(
-					job.project_name,
-					job.question_id,
-					job.execution_id,
-					job.review_type,
-				)
-			) {
+			const fallbackGate = this.inspectGate(
+				job.project_name,
+				job.question_id,
+				job.execution_id,
+				job.review_type,
+			);
+			if (fallbackGate.state !== "open") {
 				this.failReviewJob(
 					requestId,
-					"gate_answered_externally",
+					runtimeGateFailureReason(fallbackGate.state),
 					composeFailureRaw(failedAttempts),
 				);
 				this.alert(
@@ -1176,17 +1215,19 @@ export class ReviewRequestCoordinator {
 		// foreign answers all mean this verdict has no gate to land on, so the
 		// job fails (still running → downgrade allowed) and no §7.3 record is
 		// committed.
-		if (
-			!this.gateStillOpen(
-				job.project_name,
-				job.question_id,
-				job.execution_id,
-				job.review_type,
-			)
-		) {
-			this.failReviewJob(requestId, "gate_answered_externally");
+		const verdictGate = this.inspectGate(
+			job.project_name,
+			job.question_id,
+			job.execution_id,
+			job.review_type,
+		);
+		if (verdictGate.state !== "open") {
+			this.failReviewJob(
+				requestId,
+				runtimeGateFailureReason(verdictGate.state),
+			);
 			this.alert(
-				`claude review ${requestId}: gate ${job.question_id} is no longer this job's open gate (resolved/expired/foreign-answered while the reviewer ran) — verdict discarded (no authority written).`,
+				`claude review ${requestId}: gate ${job.question_id} became ${verdictGate.state} while the reviewer ran — verdict discarded (no authority written).`,
 			);
 			return;
 		}
@@ -1360,13 +1401,26 @@ export class ReviewRequestCoordinator {
 	}
 
 	private emitReviewJobFailureAlert(job: CodexReviewJob): void {
+		const gate = this.inspectGate(
+			job.project_name,
+			job.question_id,
+			job.execution_id,
+			job.review_type,
+		);
+		if (
+			job.failure_reason === "superseded_by_revision" ||
+			gate.state === "superseded"
+		) {
+			this.log(
+				`review job ${job.request_id} failed after a same-execution revision supersede; founder-facing failure alert suppressed`,
+			);
+			return;
+		}
 		const issueId =
 			job.issue_id ??
 			this.store.getSession(job.execution_id)?.issue_id ??
 			job.execution_id;
-		const recovery = job.retry_at
-			? `Automatic same-request retry is scheduled for ${job.retry_at}; the gate remains closed.`
-			: "Retry POST /review-requests with the same requestId; the gate remains closed.";
+		const recovery = this.reviewFailureRecovery(job, gate.state);
 		void this.emitReviewAlert({
 			kind: "review_job_failed",
 			eventId: `review-failed:${job.request_id}:${job.failure_attempt_count}`,
@@ -1375,6 +1429,43 @@ export class ReviewRequestCoordinator {
 			requestId: job.request_id,
 			message: `Review ${job.request_id} (${job.review_type} R${job.round}) failed: ${job.failure_reason ?? "unknown"}. ${recovery}`,
 		});
+	}
+
+	private reviewFailureRecovery(
+		job: CodexReviewJob,
+		gateState: ReviewGateState,
+	): string {
+		if (job.retry_at) {
+			return `Automatic same-request retry is scheduled for ${job.retry_at}; the gate remains closed.`;
+		}
+		if (
+			job.failure_reason === "head_moved" ||
+			job.failure_reason === "reviewed_wrong_head"
+		) {
+			return "The reviewed head is stale or mismatched. Submit a new requestId to freeze and review the current head.";
+		}
+		if (
+			job.failure_reason === "session_missing" ||
+			job.failure_reason === "worktree_missing"
+		) {
+			return "Restore or replace the execution/worktree binding, then retry only if the bound review gate is verified open.";
+		}
+		if (
+			job.failure_reason === "gate_answered" ||
+			job.failure_reason === "gate_answered_externally" ||
+			job.failure_reason === "gate_expired" ||
+			job.failure_reason === "gate_missing" ||
+			job.failure_reason === "gate_mismatch"
+		) {
+			return "The bound review gate is no longer open. Open a new review gate and submit a new request.";
+		}
+		if (gateState === "unknown") {
+			return "The bound review gate could not be verified. Inspect CommDB and the gate before choosing a recovery path.";
+		}
+		if (gateState === "open") {
+			return "Retry POST /review-requests with the same requestId; the gate remains closed.";
+		}
+		return "The bound review gate is no longer open. Open a new review gate and submit a new request.";
 	}
 
 	private failReviewJob(
@@ -1457,12 +1548,7 @@ export class ReviewRequestCoordinator {
 			job.review_type,
 		);
 		if (gate.state !== "open") {
-			this.failReviewJob(
-				requestId,
-				gate.state === "answered"
-					? "gate_answered_externally"
-					: `gate_${gate.state}`,
-			);
+			this.failReviewJob(requestId, runtimeGateFailureReason(gate.state));
 			return;
 		}
 		if (job.review_type === "code") {
@@ -1605,6 +1691,21 @@ export class ReviewRequestCoordinator {
 			if (q.checkpoint !== `review_${reviewType}`) {
 				return { state: "mismatch" };
 			}
+			if (q.superseded_at) {
+				const supersessor = q.superseded_by
+					? db.getMessageById(q.superseded_by)
+					: undefined;
+				if (
+					supersessor?.type === "question" &&
+					supersessor.from_agent === q.from_agent &&
+					supersessor.checkpoint === q.checkpoint
+				) {
+					return { state: "superseded" };
+				}
+				// A cross-execution or incomplete supersede marker is terminal but
+				// not proven benign. Keep it on the fail-loud answered path.
+				return { state: "answered" };
+			}
 			if (q.resolved_at) return { state: "answered" };
 			const expiresAtMs = q.expires_at ? Date.parse(q.expires_at) : undefined;
 			if (expiresAtMs !== undefined && Number.isFinite(expiresAtMs)) {
@@ -1621,7 +1722,7 @@ export class ReviewRequestCoordinator {
 			this.log(
 				`CommDB check failed for ${questionId}: ${err instanceof Error ? err.message : String(err)}`,
 			);
-			return { state: "missing" }; // unreachable CommDB → fail-close
+			return { state: "unknown" }; // unreachable CommDB → fail-close
 		} finally {
 			db?.close();
 		}
@@ -1674,26 +1775,6 @@ export class ReviewRequestCoordinator {
 			);
 		}
 		return true;
-	}
-
-	/**
-	 * R13 MEDIUM-1 + R14 HIGH-2: full post-review gate re-validation. While a
-	 * job is being run its gate must STILL be this execution's OPEN review
-	 * question — a running job's gate cannot legitimately be answered yet
-	 * (idempotent re-delivery only happens on terminal jobs via the outbox),
-	 * so resolved/expired/re-purposed/answered all mean the verdict has no
-	 * gate to land on.
-	 */
-	private gateStillOpen(
-		projectName: string,
-		questionId: string,
-		executionId: string,
-		reviewType: "design" | "code",
-	): boolean {
-		return (
-			this.checkGate(projectName, questionId, executionId, reviewType) ===
-			"open"
-		);
 	}
 
 	private async tryDeriveHead(
