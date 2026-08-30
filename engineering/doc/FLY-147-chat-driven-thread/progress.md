@@ -1,9 +1,10 @@
 ---
 issue: FLY-147
-phase: design
-phaseCursor: 3/5
-updated: 2026-08-30T10:44:27.927Z
-nextStep: Commit plan and obtain design-review approval before implementation
+phase: implement
+phaseCursor: 4/5
+updated: 2026-08-30T10:56:21.540Z
+nextStep: Write the route contract RED tests, then implement the smallest
+  capability split
 chunks:
   - id: docs-exploration
     order: 1
@@ -19,30 +20,30 @@ chunks:
     order: 3
     deps: []
     done: ""
-    status: doing
+    status: done
   - id: implementation
     order: 4
     deps: []
     done: ""
-    status: todo
+    status: doing
   - id: verification-review-pr
     order: 5
     deps: []
     done: ""
     status: todo
 pointers:
+  plan: engineering/doc/FLY-147-chat-driven-thread/plan.md
   exploration: engineering/doc/FLY-147-chat-driven-thread/exploration.md
   research: engineering/doc/FLY-147-chat-driven-thread/research.md
-  plan: engineering/doc/FLY-147-chat-driven-thread/plan.md
 ---
 
 # FLY-147 progress
-**phase**: design (3/5)
-**next**: Commit plan and obtain design-review approval before implementation
+**phase**: implement (4/5)
+**next**: Write the route contract RED tests, then implement the smallest capability split
 
 ## chunks
 - ✅ docs-exploration — 
 - ✅ docs-research — 
-- 🔨 design-review — 
-- ⬜ implementation — 
+- ✅ design-review — 
+- 🔨 implementation — 
 - ⬜ verification-review-pr — 
