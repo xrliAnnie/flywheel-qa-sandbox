@@ -1,9 +1,9 @@
 ---
 issue: FLY-204
 phase: design
-phaseCursor: 2/6
-updated: 2026-08-30T10:37:41.191Z
-nextStep: validate holder and health-contract patterns; write research.md
+phaseCursor: 3/6
+updated: 2026-08-30T10:38:41.963Z
+nextStep: write and self-review the TDD implementation plan
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +19,8 @@ pointers: {}
 ---
 
 # FLY-204 progress
-**phase**: design (2/6)
-**next**: validate holder and health-contract patterns; write research.md
+**phase**: design (3/6)
+**next**: write and self-review the TDD implementation plan
 
 ## chunks
 - ✅ onboard — 
