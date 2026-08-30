@@ -2,9 +2,9 @@
 issue: FLY-147
 phase: implement
 phaseCursor: 4/5
-updated: 2026-08-30T11:03:24.595Z
-nextStep: Add role-agnostic session-start thread characterization, then document
-  trigger and configuration paths
+updated: 2026-08-30T11:04:28.668Z
+nextStep: Document automatic, manual-create, reply-by-issue, lookup, and archive
+  trigger/config contracts
 chunks:
   - id: docs-exploration
     order: 1
@@ -39,7 +39,7 @@ pointers:
 
 # FLY-147 progress
 **phase**: implement (4/5)
-**next**: Add role-agnostic session-start thread characterization, then document trigger and configuration paths
+**next**: Document automatic, manual-create, reply-by-issue, lookup, and archive trigger/config contracts
 
 ## chunks
 - ✅ docs-exploration — 
