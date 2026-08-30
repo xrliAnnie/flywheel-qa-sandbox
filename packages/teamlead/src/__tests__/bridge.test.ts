@@ -40,6 +40,56 @@ describe("Bridge scaffold", () => {
 		expect(body.shuttingDown).toBe(false);
 		expect(typeof body.uptime).toBe("number");
 		expect(body.sessions_count).toBe(0);
+		expect(body.watchdog).toEqual({
+			timerRunning: false,
+			pollIntervalMs: null,
+			pollInProgress: false,
+			lastPollAt: null,
+			lastPollResult: null,
+			activeRunningSessions: null,
+		});
+
+		store.close();
+	});
+
+	it("GET /health exposes the live idle-watchdog snapshot", async () => {
+		const store = await StateStore.create(":memory:");
+		const watchdogHealth = {
+			timerRunning: true,
+			pollIntervalMs: 30_000,
+			pollInProgress: false,
+			lastPollAt: "2026-08-30T10:00:00.000Z",
+			lastPollResult: "ok" as const,
+			activeRunningSessions: 0,
+		};
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig(),
+			undefined, // broadcaster
+			undefined, // transitionOpts
+			undefined, // retryDispatcher
+			undefined, // cipherWriter
+			undefined, // eventFilter
+			undefined, // _unusedForumTagUpdater
+			undefined, // registry
+			undefined, // _unusedForumPostCreator
+			undefined, // memoryService
+			undefined, // captureSessionFn
+			undefined, // startDispatcher
+			undefined, // standupService
+			undefined, // standupProjectName
+			{
+				idleWatchdogHealthHolder: {
+					current: { health: () => watchdogHealth },
+				},
+			},
+		);
+
+		const res = await fetch(await startAndGetUrl(app, "/health"));
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.watchdog).toEqual(watchdogHealth);
 
 		store.close();
 	});
