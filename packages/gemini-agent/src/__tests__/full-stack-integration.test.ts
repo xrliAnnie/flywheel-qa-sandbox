@@ -197,7 +197,7 @@ describe("full-stack N1 short-chain over real HTTP", () => {
 				{
 					id: "c2",
 					name: "dispatch_runner",
-					args: { issueId: "FLY-2001", projectName: "geoforge3d" },
+					args: { issueId: "FLY-2001" },
 				},
 			]),
 			turnOf([
@@ -239,6 +239,13 @@ describe("full-stack N1 short-chain over real HTTP", () => {
 		const createBody = bridge.requests[0]?.body ?? {};
 		expect(createBody.title).toBe("add widget");
 		expect(createBody.labels).toEqual(["backend"]);
+
+		const dispatchBody = bridge.requests[1]?.body ?? {};
+		expect(dispatchBody).toEqual({
+			issueId: "FLY-2001",
+			projectName: "geoforge3d",
+			leadId: "flywheel-eng-lead",
+		});
 
 		// F4: save_memory carried the full identity triple attached from the
 		// binding — the model only supplied content.

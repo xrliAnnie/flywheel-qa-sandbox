@@ -39,6 +39,19 @@ describe("TOOL_DECLARATIONS (plan §2.2 D3 — the closed 6-tool MVP registry)",
 		expect(params.required).toEqual(["prUrl", "summary"]);
 	});
 
+	it("dispatch_runner keeps project and Lead identity outside the model schema", () => {
+		const params = TOOL_DECLARATIONS.dispatch_runner.parameters;
+		expect(Object.keys(params.properties ?? {}).sort()).toEqual([
+			"agentName",
+			"docTier",
+			"issueId",
+		]);
+		expect(params.required).toEqual(["issueId"]);
+		expect(TOOL_DECLARATIONS.dispatch_runner.description).toMatch(
+			/session-bound/i,
+		);
+	});
+
 	it("readonly flags: query_status/search_memory true, others false", () => {
 		expect(TOOL_DECLARATIONS.query_status.readonly).toBe(true);
 		expect(TOOL_DECLARATIONS.search_memory.readonly).toBe(true);
@@ -157,7 +170,7 @@ describe("createToolRegistry — binding deptLabel auto-apply (FLY-1060 QA F2)",
 		expect(calls[0]?.body).toBe(args);
 	});
 
-	it("deptLabel never leaks into other tools", async () => {
+	it("dispatch identity comes from the binding and deptLabel never leaks", async () => {
 		const { bridge, calls } = capturingBridge();
 		const registry = createToolRegistry(bridge, {
 			projectName: "flywheel",
@@ -165,12 +178,17 @@ describe("createToolRegistry — binding deptLabel auto-apply (FLY-1060 QA F2)",
 			deptLabel: "Eng",
 		});
 		await registry.dispatch_runner?.execute(
-			{ issueId: "FLY-1", projectName: "flywheel" },
+			{
+				issueId: "FLY-1",
+				projectName: "attacker-project",
+				leadId: "attacker-lead",
+			},
 			ctx,
 		);
 		expect(calls[0]?.body).toEqual({
 			issueId: "FLY-1",
 			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
 		});
 	});
 });

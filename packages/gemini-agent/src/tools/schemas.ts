@@ -3,9 +3,8 @@
  *
  * Model-facing JSON schemas aligned to the PRODUCTION Bridge contract
  * (spike-strict deviations reverted: create_issue requires title only).
- * request_ship_approval exposes only prUrl/summary/requesterContext to the
- * model — projectName + leadId are attached by BridgeClient from the session
- * binding (two fewer hallucination surfaces).
+ * dispatch_runner and request_ship_approval keep projectName + leadId outside
+ * the model schema; BridgeClient attaches them from the session binding.
  *
  * CI guard (scripts/gemini-agent-guard.sh) asserts exactly 6 declaration
  * `name: "` lines in this file — changing the tool set must be an explicit,
@@ -66,7 +65,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 	dispatch_runner: {
 		name: "dispatch_runner",
 		description:
-			"Dispatch an autonomous engineering Runner to work on an existing Linear issue. The Runner will design, implement and open a PR. Requires the issue identifier and the project name. Returns an executionId to poll with query_status. ADMISSION: the issue must carry the target Lead's department label (issues you created via create_issue get it automatically when configured). A 403 with code DEPT_SCOPE_REJECT means the issue's labels do not satisfy that gate (reason issue_no_department_label = the label is missing; label_mismatch = it belongs to a different Lead) — recreate the issue with the correct department label or ask the user; do not retry the same dispatch unchanged.",
+			"Dispatch an autonomous engineering Runner to work on an existing Linear issue. The Runner will design, implement and open a PR. Requires the issue identifier; project and Lead identity are session-bound and attached automatically. Returns an executionId to poll with query_status. ADMISSION: the issue must carry the target Lead's department label (issues you created via create_issue get it automatically when configured). A 403 with code DEPT_SCOPE_REJECT means the issue's labels or caller identity do not satisfy that gate (reason lead_identity_required = the session binding is invalid; issue_no_department_label = the label is missing; label_mismatch = it belongs to a different Lead) — correct the binding/label or ask the user; do not retry the same dispatch unchanged.",
 		readonly: false,
 		parameters: {
 			type: "object",
@@ -75,10 +74,6 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					type: "string",
 					description:
 						'Linear issue identifier the Runner should work on, e.g. "FLY-123". Must be an existing issue.',
-				},
-				projectName: {
-					type: "string",
-					description: 'Project the issue belongs to, e.g. "geoforge3d".',
 				},
 				agentName: {
 					type: "string",
@@ -91,7 +86,7 @@ export const TOOL_DECLARATIONS: Record<string, ToolDeclaration> = {
 					description: "Optional: process-doc tier for the run.",
 				},
 			},
-			required: ["issueId", "projectName"],
+			required: ["issueId"],
 		},
 	},
 
