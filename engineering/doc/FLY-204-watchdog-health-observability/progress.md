@@ -1,9 +1,9 @@
 ---
 issue: FLY-204
 phase: implement
-phaseCursor: 1/3
-updated: 2026-08-30T10:52:42.870Z
-nextStep: Expose watchdog snapshot through /health with TDD
+phaseCursor: 2/3
+updated: 2026-08-30T10:55:44.091Z
+nextStep: Run full repository gates and code review
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +19,8 @@ pointers: {}
 ---
 
 # FLY-204 progress
-**phase**: implement (1/3)
-**next**: Expose watchdog snapshot through /health with TDD
+**phase**: implement (2/3)
+**next**: Run full repository gates and code review
 
 ## chunks
 - ✅ onboard — 
