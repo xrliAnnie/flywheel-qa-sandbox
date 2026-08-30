@@ -1,9 +1,9 @@
 ---
 issue: FLY-204
 phase: design
-phaseCursor: 1/6
-updated: 2026-08-30T10:33:49.594Z
-nextStep: install dependencies, rerun baseline, then draft exploration/research/plan
+phaseCursor: 2/6
+updated: 2026-08-30T10:37:41.191Z
+nextStep: validate holder and health-contract patterns; write research.md
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +19,8 @@ pointers: {}
 ---
 
 # FLY-204 progress
-**phase**: design (1/6)
-**next**: install dependencies, rerun baseline, then draft exploration/research/plan
+**phase**: design (2/6)
+**next**: validate holder and health-contract patterns; write research.md
 
 ## chunks
 - ✅ onboard — 
