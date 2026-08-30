@@ -2,9 +2,9 @@ import { Router } from "express";
 import { ACTION_DEFINITIONS } from "flywheel-core";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
-import type {
+import {
 	ChatThreadCreator,
-	ChatThreadResult,
+	type ChatThreadResult,
 } from "./ChatThreadCreator.js";
 import {
 	validateAndRegisterChatThread,
@@ -44,6 +44,7 @@ export interface QueryRouterOptions {
 	retryDispatcher?: IRetryDispatcher;
 	captureSessionFn?: CaptureSessionFn;
 	statusQueryFn?: StatusQueryFn;
+	/** @deprecated Automatic creation is enforced by DirectEventSink, not HTTP routes. */
 	chatThreadsEnabled?: boolean;
 	chatThreadCreator?: ChatThreadCreator;
 	globalBotToken?: string;
@@ -75,12 +76,9 @@ export interface QueryRouterOptions {
 	 */
 	issuePrefixes?: string[];
 	/**
-	 * FLY-369: whether a Bearer API token is configured (`Boolean(config.apiToken)`).
-	 * `tokenAuthMiddleware` is a no-op when the token is unset, and
-	 * `chatThreadsEnabled` (unlike reply-by-issue) does not fail-start without
-	 * one — so the privileged `POST /chat-threads/archive` route fails closed
-	 * (503) when this is false. Defaults to `false` (fail-closed) so existing
-	 * router tests are unaffected.
+	 * Whether a Bearer API token is configured (`Boolean(config.apiToken)`).
+	 * `tokenAuthMiddleware` is a no-op when the token is unset, so privileged
+	 * chat-thread write routes fail closed (503) when this is false.
 	 */
 	apiTokenConfigured?: boolean;
 }
@@ -124,11 +122,12 @@ export function createQueryRouter(
 	const retryDispatcher = opts?.retryDispatcher;
 	const captureSessionFn = opts?.captureSessionFn;
 	const statusQueryFn = opts?.statusQueryFn;
-	const chatThreadsEnabled = opts?.chatThreadsEnabled;
 	const replyByIssueEnabled = opts?.replyByIssueEnabled ?? false;
 	const replyGuardEnabled = opts?.replyGuardEnabled ?? false;
 	const issuePrefixes = opts?.issuePrefixes ?? ["FLY", "GEO"];
 	const apiTokenConfigured = opts?.apiTokenConfigured ?? false;
+	const chatThreadCreator =
+		opts?.chatThreadCreator ?? new ChatThreadCreator(store);
 	const router = Router();
 
 	router.get("/sessions", (req, res) => {
@@ -438,8 +437,11 @@ export function createQueryRouter(
 	// --- FLY-91 Round 2: Lead-centric chat thread management ---
 
 	router.post("/chat-threads/register", async (req, res) => {
-		if (!chatThreadsEnabled) {
-			res.status(404).json({ error: "Chat threads not enabled" });
+		if (!apiTokenConfigured) {
+			res.status(503).json({
+				error:
+					"chat thread write endpoint requires TEAMLEAD_API_TOKEN (refusing unauthenticated Discord/state mutation)",
+			});
 			return;
 		}
 
@@ -507,8 +509,11 @@ export function createQueryRouter(
 	// --- FLY-91 Round 3: Lead requests Bridge to create/get a chat thread ---
 
 	router.post("/chat-threads/create", async (req, res) => {
-		if (!chatThreadsEnabled) {
-			res.status(404).json({ error: "Chat threads not enabled" });
+		if (!apiTokenConfigured) {
+			res.status(503).json({
+				error:
+					"chat thread write endpoint requires TEAMLEAD_API_TOKEN (refusing unauthenticated Discord/state mutation)",
+			});
 			return;
 		}
 
@@ -622,24 +627,19 @@ export function createQueryRouter(
 			return;
 		}
 
-		// Fail-closed: chatThreadCreator must be present when flag is on
-		if (!opts?.chatThreadCreator) {
-			res.status(503).json({ error: "ChatThreadCreator not initialized" });
-			return;
-		}
-
-		// Delegate to shared ChatThreadCreator
+		// Delegate to the shared automatic creator when present, otherwise the
+		// router-local creator that keeps the manual capability available.
 		// ensureChatThread() can both return { error } AND throw on unexpected failures
 		let result: ChatThreadResult;
 		try {
-			result = await opts.chatThreadCreator.ensureChatThread({
+			result = await chatThreadCreator.ensureChatThread({
 				chatChannelId: channelId,
 				issueId: resolvedIssueId,
 				issueIdentifier: resolvedIdentifier,
 				issueTitle: resolvedTitle,
 				botToken,
 				leadId,
-				ownerUserId: opts.discordOwnerUserId,
+				ownerUserId: opts?.discordOwnerUserId,
 			});
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -670,18 +670,9 @@ export function createQueryRouter(
 	// directly to the thread via `postDiscordMessageToChannel`.
 
 	router.post("/chat-threads/send", async (req, res) => {
-		// FLY-162 Codex code-review R1 MED: fail closed on EITHER flag
-		// being off. Plan §Q6.1 status code map specifies both
-		// `chatThreadsEnabled=false` and `replyByIssueEnabled=false` →
-		// 404, matching how `/create` and `/register` gate on
-		// `chatThreadsEnabled`. Without this guard, an operator who
-		// flipped only `TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true` (and
-		// forgot to keep `TEAMLEAD_CHAT_THREADS_ENABLED=true`) would
-		// still let the route POST as the Discord bot.
-		if (!chatThreadsEnabled) {
-			res.status(404).json({ error: "Chat threads not enabled" });
-			return;
-		}
+		// Manual reply-by-issue is controlled independently from automatic
+		// session-start thread creation. On a row miss this route may create a
+		// thread; TEAMLEAD_REPLY_BY_ISSUE_ENABLED is its kill switch.
 		if (!replyByIssueEnabled) {
 			res.status(404).json({ error: "reply.by_issue not enabled" });
 			return;
@@ -841,35 +832,29 @@ export function createQueryRouter(
 		const existing = store.getChatThreadByIssue(resolvedIssueId, channelId);
 		if (existing) {
 			threadId = existing.thread_id;
-			if (opts?.chatThreadCreator) {
-				await opts.chatThreadCreator.backfillThreadName(
-					{
-						chatChannelId: channelId,
-						issueId: resolvedIssueId,
-						issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
-						issueTitle: resolvedTitle,
-						botToken,
-						leadId,
-						ownerUserId: opts.discordOwnerUserId,
-					},
-					threadId,
-				);
-			}
-		} else {
-			if (!opts?.chatThreadCreator) {
-				res.status(503).json({ error: "ChatThreadCreator not initialized" });
-				return;
-			}
-			let ensureResult: ChatThreadResult;
-			try {
-				ensureResult = await opts.chatThreadCreator.ensureChatThread({
+			await chatThreadCreator.backfillThreadName(
+				{
 					chatChannelId: channelId,
 					issueId: resolvedIssueId,
 					issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
 					issueTitle: resolvedTitle,
 					botToken,
 					leadId,
-					ownerUserId: opts.discordOwnerUserId,
+					ownerUserId: opts?.discordOwnerUserId,
+				},
+				threadId,
+			);
+		} else {
+			let ensureResult: ChatThreadResult;
+			try {
+				ensureResult = await chatThreadCreator.ensureChatThread({
+					chatChannelId: channelId,
+					issueId: resolvedIssueId,
+					issueIdentifier: resolvedIdentifier ?? bodyIdentifier,
+					issueTitle: resolvedTitle,
+					botToken,
+					leadId,
+					ownerUserId: opts?.discordOwnerUserId,
 				});
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
@@ -922,18 +907,12 @@ export function createQueryRouter(
 	// Returns 200 { threadId, channelId, issueId, issueIdentifier,
 	//               issueTitle, projectName }; the last three are null
 	//               when no session row exists yet (still 200, AC5).
-	// Returns 404 when chat threads feature disabled (AC7), or when the
-	// thread is not registered / has been marked missing (AC6).
+	// Returns 404 when the thread is not registered / has been marked missing.
 	//
-	// Pure local StateStore lookup — does NOT call Linear (AC8). Gated
-	// on `chatThreadsEnabled` (not `replyByIssueEnabled`) because
-	// inbound enrichment is still useful when outbound is rolled back.
+	// Pure local StateStore lookup — does NOT call Linear (AC8). Reading a
+	// stored mapping is independent from automatic/background creation policy.
 
 	router.get("/chat-threads/by-thread/:threadId", (req, res) => {
-		if (!chatThreadsEnabled) {
-			res.status(404).json({ error: "Chat threads not enabled" });
-			return;
-		}
 		const threadId = req.params.threadId;
 		const row = store.getChatThreadByThreadId(threadId);
 		if (!row) {
@@ -952,11 +931,6 @@ export function createQueryRouter(
 	});
 
 	router.get("/chat-threads", (req, res) => {
-		if (!chatThreadsEnabled) {
-			res.status(404).json({ error: "Chat threads not enabled" });
-			return;
-		}
-
 		const issueId = req.query.issueId as string;
 		const channelId = req.query.channelId as string;
 		if (!issueId || !channelId) {
@@ -977,14 +951,9 @@ export function createQueryRouter(
 	// Body: { issueId? | issueIdentifier?, channelId, leadId, projectName }
 	// Archive ALWAYS goes through the Bridge-local archiveChatThread (Bridge holds
 	// the bot token). Fails closed (503) when no API token is configured, since
-	// tokenAuthMiddleware no-ops without one and chatThreadsEnabled does not
-	// fail-start with a token (Codex design review R1 #4). archive-on-Done auto
+	// tokenAuthMiddleware no-ops without one. archive-on-Done auto
 	// archiving is separate (reconciler); this is the manual escape hatch.
 	router.post("/chat-threads/archive", async (req, res) => {
-		if (!chatThreadsEnabled) {
-			res.status(404).json({ error: "Chat threads not enabled" });
-			return;
-		}
 		if (!apiTokenConfigured) {
 			res.status(503).json({
 				error:
