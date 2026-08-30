@@ -187,6 +187,7 @@ expected_known_ci_consumed_doc_paths = (
     b"engineering/doc/FLY-1775-529-generalized-dag-room/plan.md",
     b"engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md",
     b"engineering/doc/FLY-1648-hot-loop-closeout/runbook.md",
+    b"engineering/doc/FLY-2166-pre-cutover-audit-fix/g2-runbook.md",
     b"doc/engineer/implementation/flag-authoring-runbook.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/exploration.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/research.md",

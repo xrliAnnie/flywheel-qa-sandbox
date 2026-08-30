@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2166 迁移审计修法 — 设计报告</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, system-ui, "PingFang SC", sans-serif;
+    background: #f5f5f7; color: #1d1d1f;
+    line-height: 1.7; padding: 24px 16px 64px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 24px; }
+  .meta code { font-family: 'SF Mono', Menlo, monospace; font-size: 12px; }
+  .card {
+    background: #fff; border-radius: 12px; padding: 22px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin-bottom: 20px;
+    border-left: 4px solid #007aff;
+  }
+  .card.red { border-left-color: #ff3b30; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.green { border-left-color: #34c759; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  h3 { font-size: 15px; color: #1d1d1f; margin: 14px 0 6px; }
+  p { margin-bottom: 10px; font-size: 15px; }
+  ul, ol { margin: 0 0 10px 22px; font-size: 15px; }
+  li { margin-bottom: 6px; }
+  .jargon { color: #86868b; font-size: 13.5px; }
+  code {
+    font-family: 'SF Mono', Menlo, monospace; font-size: 13px;
+    background: #f0f0f2; border-radius: 4px; padding: 1px 5px;
+  }
+  pre {
+    background: #f7f7f9; border: 1px solid #e5e5e8; border-radius: 8px;
+    padding: 12px 14px; overflow-x: auto; font-family: 'SF Mono', Menlo, monospace;
+    font-size: 12.5px; line-height: 1.55; margin-bottom: 10px; white-space: pre-wrap;
+  }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0 12px; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5e8; padding: 7px 10px; text-align: left; vertical-align: top; }
+  th { background: #f7f7f9; color: #1a365d; font-weight: 600; }
+  .tablewrap { overflow-x: auto; }
+  .ok { color: #34c759; font-weight: 600; }
+  .bad { color: #ff3b30; font-weight: 600; }
+  .warn { color: #ff9500; font-weight: 600; }
+  .diagram { text-align: center; margin: 14px 0; overflow-x: auto; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .badge {
+    display: inline-block; font-size: 11.5px; font-weight: 600; border-radius: 5px;
+    padding: 2px 8px; margin-right: 6px; vertical-align: middle;
+  }
+  .badge.done { background: #e6f9ec; color: #1d7a3e; }
+  .badge.pend { background: #fff3e0; color: #b25f00; }
+  .badge.dead { background: #ffe9e7; color: #c1271d; }
+  .comment-area { margin-top: 18px; padding-top: 14px; border-top: 1px dashed #d5d5d8; }
+  .comment-area label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-area textarea {
+    width: 100%; min-height: 64px; border: 1px solid #d5d5d8; border-radius: 8px;
+    padding: 10px 12px; font-family: inherit; font-size: 14px; resize: vertical;
+    background: #fbfbfd; color: #1d1d1f;
+  }
+  .comment-area textarea:focus { outline: 2px solid #007aff33; border-color: #007aff; }
+  #summary-list { margin-top: 8px; }
+  .chunk { position: relative; margin-bottom: 12px; }
+  .copy-btn {
+    background: #007aff; color: #fff; border: none; border-radius: 8px;
+    padding: 8px 16px; font-size: 14px; font-weight: 600; cursor: pointer;
+    margin: 4px 8px 4px 0;
+  }
+  .copy-btn.secondary { background: #e8e8ed; color: #1d1d1f; }
+  .copy-btn:active { opacity: 0.7; }
+  .empty-hint { color: #86868b; font-size: 13.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2166 迁移审计修法 — 设计报告</h1>
+  <div class="meta">
+    Issue: FLY-2166 · 日期: 2026-08-29 · 设计节点 · 上游: FLY-2103 (PR #987)<br>
+    分支: <code>flywheel-FLY-2166</code> · 设计评审: Codex 2 轮后 APPROVED
+  </div>
+
+  <!-- S1 -->
+  <div class="card green" data-section="一句话总结">
+    <h2>1 · 一句话总结</h2>
+    <p><strong>FLY-2103 的迁移脚本自检(pre-cutover 审计)在任何真实时点都不可能通过,而迁移本体已经手工等价完成 —— 所以这次不修脚本,而是:把这个永远跑不通的一次性脚本整体删除,把它里面仍有价值的检查转写成一份「手工收尾核对手册」,并把三条根因教训沉淀成未来迁移的守则文档。零新增代码、零新增机制。</strong></p>
+    <p class="jargon">名词:pre-cutover 审计 = 迁移脚本在正式切换前做的一遍自检;G1 receipt = 自检通过后签发的「通行凭证」文件,后半程(post-deploy)硬性要求出示它。</p>
+  </div>
+
+  <!-- S2 -->
+  <div class="card red" data-section="出了什么事">
+    <h2>2 · 出了什么事:审计在结构上永远过不了</h2>
+    <p>FLY-2103 把 6 个项目的功能开关从各仓的 <code>config.yaml</code>(配置文件)迁进集中的 SQLite flag store(一个集中管理开关的小型数据库)。随单交付的迁移脚本先做审计:读六个仓<strong>已提交</strong>的配置,推导出「应该写入哪些开关行」,并要求推导结果与 6 行目标清单(manifest)完全一致。</p>
+    <p>问题在于两个「真相」不一致:</p>
+    <ul>
+      <li><strong>清单的真相来自运行时</strong> —— geoforge3d 和 growth 两个仓的 doc_flow 开关在运行中是「关」;</li>
+      <li><strong>审计的真相来自已提交版本</strong> —— 这两个仓已提交的配置里 doc_flow 还写着「开」(当初关它时只改了磁盘上的文件,一直没提交)。</li>
+    </ul>
+    <p>于是审计推导出 8 行 ≠ 6 行,必炸。而且 flywheel 自己的配置清理和迁移脚本<strong>坐同一个 PR</strong>:合并前是 geoforge3d/growth 挡路,合并后 flywheel 的旧开关已被删、审计又要求它「必须还在」—— 两头堵死:</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p>QA 当时确实对真实仓库跑过一次演练(dry-run),它在 geoforge3d 的分歧处停了下来 —— 但这次停机被记录成「审计按预期拒绝」,没有人追问一句:<strong>「那哪个时点它才能通过?」</strong> 答案是:不存在。这就是本单最核心的教训。</p>
+  </div>
+
+  <!-- S3 -->
+  <div class="card amber" data-section="现状盘点">
+    <h2>3 · 现状盘点(2026-08-29 23:18 UTC 逐项实测)</h2>
+    <h3>3.1 数据库里的开关行(迁移主体)</h3>
+    <div class="tablewrap">
+    <table>
+      <tr><th>项目</th><th>状态</th><th>说明</th></tr>
+      <tr><td>6 行迁移清单</td><td><span class="badge done">已完成</span></td><td>2026-08-29 22:28 UTC 经 Bridge 正式接口手工写入,逐行核对与清单完全一致</td></tr>
+      <tr><td>第 7 行(ponytail 全局=关)</td><td><span class="badge pend">待执行</span></td><td>要等新版 Bridge 起来后写,计划手工执行(本设计交付核对手册)</td></tr>
+      <tr><td>G1 通行凭证</td><td><span class="badge dead">永远拿不到</span></td><td>见第 2 节;本设计明确判死,绝不伪造</td></tr>
+    </table>
+    </div>
+    <h3>3.2 六个仓的配置文件(磁盘版 vs 已提交版)</h3>
+    <div class="tablewrap">
+    <table>
+      <tr><th>仓库</th><th>磁盘上的旧开关</th><th>已提交的旧开关</th><th>两版一致?</th></tr>
+      <tr><td>flywheel</td><td>还在(未提交的旧内容)</td><td class="ok">已清理(#987)</td><td class="bad">不一致</td></tr>
+      <tr><td>geoforge3d</td><td>部分在(doc_flow 已本地删)</td><td class="bad">还在(含 doc_flow「开」)</td><td class="bad">不一致</td></tr>
+      <tr><td>growth</td><td>部分在(doc_flow 已本地删)</td><td class="bad">还在(含 doc_flow「开」)</td><td class="bad">不一致</td></tr>
+      <tr><td>joycon-typeless</td><td>还在</td><td>还在</td><td class="warn">开关一致,其他键有未提交差异</td></tr>
+      <tr><td>personal-assistant</td><td>还在</td><td>还在</td><td class="ok">完全一致</td></tr>
+      <tr><td>tidal-echo</td><td>还在</td><td>还在</td><td class="warn">开关一致,文件有未提交差异</td></tr>
+    </table>
+    </div>
+    <p>配套的 5 个外部清理 PR(GeoForge3D#283 / joycon#49 / belle#3 / growth#25 / tidal#28)全部已开、<strong>未合并</strong>,等维护窗。实查确认它们把 geoforge3d/growth 已提交配置里多出的 doc_flow「开」也一并删掉了。</p>
+    <p>⚠️ <strong>已上报 Lead 的运维风险</strong>:新版代码的配置加载器对旧开关是「见到就报错」(fail-loud)。如果下一班重启班车在配套 PR 合并 + 六仓磁盘配置清理之前部署新代码,六个项目会全部被暂时下线并触发告警。手册的前置步骤专门固化了这段处理。</p>
+  </div>
+
+  <!-- S4 -->
+  <div class="card purple" data-section="方案与取舍">
+    <h2>4 · 方案与取舍:为什么删,而不是修</h2>
+    <p>本设计选定<strong>方案 C:脚本退役(整体删除)+ 手工核对手册 + 未来迁移守则</strong>。交付物结构:</p>
+    <div class="diagram">__SVG_D2__</div>
+    <h3>被否掉的替代方案</h3>
+    <div class="tablewrap">
+    <table>
+      <tr><th>方案</th><th>内容</th><th>为什么不做</th></tr>
+      <tr><td>A · 修脚本补铸凭证</td><td>给审计加「裁决记录输入」和「历史版本指定」,重跑并补发 G1 凭证</td><td>对一个永远不会再跑第二次的一次性脚本做机制扩张;迁移实质早已发生,补铸的凭证证明力反而弱于手工核对记录;为「让它通过」而改审计 = 拿答案改尺子;与 founder「只删不加」红线正面冲突</td></tr>
+      <tr><td>B · 后半程改收人工签字</td><td>G1 判死,post-deploy 改收一份人工确认文件</td><td>仍要新增输入格式和校验分支;后半程的实质就是一条 SQL 核对 + 抽查,手工成本低于维护这段代码</td></tr>
+      <tr><td>D · 只加一个免凭证核对模式</td><td>保留脚本,加约 30 行「只核对不写入」模式</td><td>它做的事就是一条 SQL 查询;为此保留 1000+ 行跑不通的脚本主体,性价比为负</td></tr>
+    </table>
+    </div>
+    <p>删除是净删(git 历史完整保留,守则文档引用历史版本号 <code>49b57b3e9</code>);受影响的唯一活测试(fly1436)把断言锚点从脚本源码改到手册,守卫能力不降。Codex 设计评审第 1 轮就认可了「删除」这个核心决策,第 2 轮对手册的完备性提出 5 条补强后 APPROVED。</p>
+  </div>
+
+  <!-- S5 -->
+  <div class="card" data-section="手工收尾手册">
+    <h2>5 · 手工收尾手册(G2 runbook)的核对链</h2>
+    <p>迁移还剩最后一步(写第 7 行 + 验收),原本由脚本把关的每一道保护,都逐条转写进手册 —— 只是从「代码执行」变成「人照单执行」,一条都不少:</p>
+    <div class="diagram">__SVG_D3__</div>
+    <p class="jargon">exact-set = 数据库里的行集必须「恰好等于」清单,多一行少一行都停下来交人裁决,绝不静默接受;保全式清理 = 先备份差异,只动退役的键,其余本地修改一律保留,有冲突就停。</p>
+    <p>手册挂载是<strong>merge 门</strong>:手册先由 Lead 挂进 FLY-2103 讨论串并核实链接,删除 PR 才允许合并 —— 保证维护窗操作者永远找得到替代脚本的操作依据。</p>
+  </div>
+
+  <!-- S6 -->
+  <div class="card gray" data-section="诚实边界">
+    <h2>6 · 诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>删除结构性跑不通的迁移脚本三件套(脚本 362 行 + 审计库 709 行 + 专属测试 326 行),一处测试断言改锚;</li>
+      <li>写手工 G2 核对手册(内容全部转写自已批准的 FLY-2103 运维合同与脚本断言,不发明新要求);</li>
+      <li>写未来迁移守则四条:审计真相源必须显式声明并先收敛 / 脚本不得与它审计的清理同乘一个 PR / 真实环境「通过态」演练是发货硬门(「跑过但被拦」不算)/ 凭证模式保留为参考模式。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li>不执行 FLY-2103 剩余切换运维(配套 PR 合并、六仓配置清理、第 7 行写入、验收执行)—— 那归 FLY-2103 讨论串的操作者,本单只交手册;</li>
+      <li>不伪造、不补铸任何「已通过」的 G1 凭证;</li>
+      <li>不动配置加载器、告警、flag store 等任何在跑的生产机制;不加 CI 任务(真实环境演练是 QA 流程门,CI 环境里没有六个真仓,结构上做不了)。</li>
+    </ul>
+    <h3>残余风险</h3>
+    <ul>
+      <li>验收前若有人在 7 个开关名下另写了行,手册的写前体检和 exact-set 核对都会「停下来交人裁决」而不是自动处理 —— 这是设计选择(宁停不猜);</li>
+      <li>手册是文档不是代码,执行纪律依赖操作者按单走 —— 环境绑定与「证据先拷后用」两条已写死在手册骨架里以降低走样空间。</li>
+    </ul>
+  </div>
+
+  <!-- Summary card -->
+  <div class="card green" id="summary-card" data-nocomment="1">
+    <h2>📋 页面意见汇总</h2>
+    <p class="empty-hint" id="summary-empty">以上每个小节下方都有意见输入框,输入会自动保存在本机浏览器里;所有非空意见会实时汇总到这里,可一键复制发回给我。</p>
+    <div id="summary-list"></div>
+    <div id="copy-controls" hidden>
+      <button class="copy-btn" id="copy-all">复制全部意见</button>
+      <span id="copy-status" class="empty-hint"></span>
+    </div>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var ISSUE = "FLY-2166";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var PREFIX;
+  try { PREFIX = "fly2166-comments:" + location.pathname + ":"; }
+  catch (e) { PREFIX = "fly2166-comments:unknown:"; }
+
+  function lsGet(key) {
+    try { return localStorage.getItem(PREFIX + key) || ""; } catch (e) { return ""; }
+  }
+  function lsSet(key, value) {
+    try { localStorage.setItem(PREFIX + key, value); } catch (e) { /* storage unavailable */ }
+  }
+
+  var sections = [];
+  var cards = document.querySelectorAll(".card[data-section]");
+  for (var i = 0; i < cards.length; i++) {
+    (function (card) {
+      var name = card.getAttribute("data-section");
+      var area = document.createElement("div");
+      area.className = "comment-area";
+      var label = document.createElement("label");
+      label.textContent = "对「" + name + "」的意见(自动保存):";
+      var ta = document.createElement("textarea");
+      ta.value = lsGet(name);
+      ta.addEventListener("input", function () {
+        lsSet(name, ta.value);
+        renderSummary();
+      });
+      area.appendChild(label);
+      area.appendChild(ta);
+      card.appendChild(area);
+      sections.push({ name: name, ta: ta });
+    })(cards[i]);
+  }
+
+  var summaryList = document.getElementById("summary-list");
+  var summaryEmpty = document.getElementById("summary-empty");
+  var copyControls = document.getElementById("copy-controls");
+  var copyStatus = document.getElementById("copy-status");
+  var chunks = [];
+
+  function buildFullText() {
+    var parts = [];
+    for (var i = 0; i < sections.length; i++) {
+      var v = sections[i].ta.value.replace(/^\s+|\s+$/g, "");
+      if (v) parts.push("【" + sections[i].name + "】\n" + v);
+    }
+    if (parts.length === 0) return "";
+    return MARKER + "\n" + parts.join("\n\n");
+  }
+
+  function splitChunks(fullText) {
+    if (fullText.length <= 1800) return [fullText];
+    var body = fullText.slice(MARKER.length + 1);
+    var blocks = body.split("\n\n");
+    var out = [];
+    var cur = "";
+    for (var i = 0; i < blocks.length; i++) {
+      var candidate = cur ? cur + "\n\n" + blocks[i] : blocks[i];
+      if (candidate.length > 1500 && cur) {
+        out.push(cur);
+        cur = blocks[i];
+      } else {
+        cur = candidate;
+      }
+    }
+    if (cur) out.push(cur);
+    var total = out.length;
+    var result = [];
+    for (var j = 0; j < total; j++) {
+      result.push(MARKER + "(第" + (j + 1) + "/" + total + "段)\n" + out[j]);
+    }
+    return result;
+  }
+
+  function copyText(text, doneCb) {
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "readonly");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = false;
+      try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+      document.body.removeChild(ta);
+      doneCb(ok);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { doneCb(true); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function flashStatus(ok) {
+    copyStatus.textContent = ok ? "已复制 ✓" : "复制失败,请手动选择文本复制";
+    setTimeout(function () { copyStatus.textContent = ""; }, 2500);
+  }
+
+  function renderSummary() {
+    var fullText = buildFullText();
+    while (summaryList.firstChild) summaryList.removeChild(summaryList.firstChild);
+    if (!fullText) {
+      summaryEmpty.hidden = false;
+      copyControls.hidden = true;
+      chunks = [];
+      return;
+    }
+    summaryEmpty.hidden = true;
+    copyControls.hidden = false;
+    chunks = splitChunks(fullText);
+    for (var i = 0; i < chunks.length; i++) {
+      (function (chunkText, index) {
+        var div = document.createElement("div");
+        div.className = "chunk";
+        var pre = document.createElement("pre");
+        pre.textContent = chunkText;
+        div.appendChild(pre);
+        if (chunks.length > 1) {
+          var btn = document.createElement("button");
+          btn.className = "copy-btn secondary";
+          btn.textContent = "复制第 " + (index + 1) + " 段";
+          btn.addEventListener("click", function () {
+            copyText(chunkText, flashStatus);
+          });
+          div.appendChild(btn);
+        }
+        summaryList.appendChild(div);
+      })(chunks[i], i);
+    }
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    if (chunks.length === 0) return;
+    copyText(chunks.join("\n\n"), flashStatus);
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

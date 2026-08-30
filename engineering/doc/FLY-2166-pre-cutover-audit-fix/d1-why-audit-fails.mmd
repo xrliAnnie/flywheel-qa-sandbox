@@ -1,0 +1,14 @@
+flowchart TB
+    subgraph T1["时点 1:PR #987 合并前"]
+        A1["审计读六仓已提交的 config"] --> B1["geoforge3d / growth 的已提交 config<br/>仍写着 doc_flow 开启"]
+        B1 --> C1["推导出 8 行 ≠ 6 行清单<br/>审计报错停机 ❌"]
+    end
+    subgraph T2["时点 2:PR #987 合并后(现在)"]
+        A2["审计读六仓已提交的 config"] --> B2["flywheel 的已提交 config<br/>旧开关已被同一个 PR 删掉"]
+        B2 --> C2["审计要求旧开关必须还在<br/>审计报错停机 ❌"]
+    end
+    C1 --> Z["不存在任何一个真实时点<br/>能让审计通过 ⇒ G1 通行凭证永远拿不到"]
+    C2 --> Z
+    style Z fill:#fff2f0,stroke:#ff3b30,stroke-width:2px
+    style C1 fill:#fff2f0,stroke:#ff3b30
+    style C2 fill:#fff2f0,stroke:#ff3b30
