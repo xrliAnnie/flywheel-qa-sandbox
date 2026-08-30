@@ -24,5 +24,5 @@ pointers: {}
 **next**: Create milestone as the literal final commit, open the PR, and complete the handoff
 
 ## chunks
-- ✅ onboard — 
-- ✅ root-cause — 
+- ✅ onboard —
+- ✅ root-cause —
