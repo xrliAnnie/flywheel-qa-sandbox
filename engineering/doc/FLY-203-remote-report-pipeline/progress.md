@@ -1,9 +1,9 @@
 ---
 issue: FLY-203
 phase: design
-phaseCursor: 2/5
-updated: 2026-08-30T10:36:00.093Z
-nextStep: write verification-first implementation plan and request design review
+phaseCursor: 3/5
+updated: 2026-08-30T10:38:09.627Z
+nextStep: request and await Codex design review
 chunks:
   - id: audit
     order: 1
@@ -14,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-203 progress
-**phase**: design (2/5)
-**next**: write verification-first implementation plan and request design review
+**phase**: design (3/5)
+**next**: request and await Codex design review
 
 ## chunks
 - ✅ audit — 
