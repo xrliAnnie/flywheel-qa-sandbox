@@ -1,9 +1,9 @@
 ---
 issue: FLY-204
 phase: design
-phaseCursor: 3/6
-updated: 2026-08-30T10:38:41.963Z
-nextStep: write and self-review the TDD implementation plan
+phaseCursor: 4/6
+updated: 2026-08-30T10:41:17.043Z
+nextStep: commit design docs and request design review
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +19,8 @@ pointers: {}
 ---
 
 # FLY-204 progress
-**phase**: design (3/6)
-**next**: write and self-review the TDD implementation plan
+**phase**: design (4/6)
+**next**: commit design docs and request design review
 
 ## chunks
 - ✅ onboard — 
