@@ -1,27 +1,62 @@
-# FLY-127 department-scope-spawn progress
+---
+issue: FLY-127
+phase: design
+title: department-scope-spawn
+phaseCursor: 1/7
+updated: 2026-08-30T10:36:26.189Z
+nextStep: Await design review 64427e43-4fb6-4bbe-a6b0-09ded8c09ae6; then begin
+  route identity RED/GREEN
+chunks:
+  - id: baseline_audit
+    order: 1
+    deps: []
+    done: Reproduced the omitted-leadId bypass and traced caller identity across the
+      public start route, Gemini binding, QA injection, and Lead rules.
+    status: done
+  - id: route_identity_guard
+    order: 2
+    deps:
+      - baseline_audit
+    done: ""
+    status: todo
+  - id: caller_binding
+    order: 3
+    deps:
+      - route_identity_guard
+    done: ""
+    status: todo
+  - id: rules_acceptance
+    order: 4
+    deps:
+      - caller_binding
+    done: ""
+    status: todo
+  - id: verification_review
+    order: 5
+    deps:
+      - rules_acceptance
+    done: ""
+    status: todo
+  - id: pr_handoff
+    order: 6
+    deps:
+      - verification_review
+    done: ""
+    status: todo
+pointers:
+  plan: engineering/doc/FLY-127-department-scope-spawn/plan.md
+  exploration: engineering/doc/FLY-127-department-scope-spawn/exploration.md
+  research: engineering/doc/FLY-127-department-scope-spawn/research.md
+---
 
-- Phase: design
-- Cursor: 3/7
-- Updated: 2026-08-30
+# FLY-127 progress — department-scope-spawn
+**phase**: design (1/7)
+**next**: Await design review 64427e43-4fb6-4bbe-a6b0-09ded8c09ae6; then begin route identity RED/GREEN
 
-## Chunks
-
-- `baseline_audit`: completed — confirmed `origin/main` contains the original FLY-127 layers and reproduced the `leadId`-omission bypass.
-- `design_review_r1`: changes_requested — omission authorization gap, command, boundary and baseline claims corrected.
-- `design_review_r2`: changes_requested — reviewer required complete caller migration, exact response precedence, realistic Gemini/QA fixtures, shell CI wiring and a truthful TeamLead baseline policy.
-- `design_docs_r3`: completed — enumerated every repository caller/test/doc migration; configured project roots audited; guard precedence and rollback pinned; residual `/actions/retry` authentication gap named.
-- `baseline_gates`: completed — local TeamLead full suite is nondeterministic (13 files/29 tests, then 28 files) because of sandbox/host integration, permissions, timeouts and unrelated failures. Linux CI runs the authoritative suite.
-- `baseline_waiver`: pending — correction question `64213dc8-a8a7-4ac0-bbd8-5c8dd4107e4b` replaces disproved question `61b39bc0-f774-4d1d-8f39-aff33aca5a5a`.
-- `route_identity_guard`: pending
-- `caller_binding`: pending
-- `rules_acceptance`: pending
-- `verification_review`: pending
-- `pr_handoff`: pending
-
-## Next
-
-Commit the round-3 design documents and request a fresh design review. Do not modify runtime code until APPROVED.
-
-## Ledger transport note
-
-The required `flywheel-comm progress --exec-id b9541631-b28d-465a-aad0-aff162a115fd ...` call returns `exec-id ... is not the active writer (status=terminated)` even though `flywheel-comm turn` returned `yours phase=implement epoch=1`. Lead question `2b9dafc0-2400-4e07-a161-873181aa15b1` remains open. This file preserves the cursor until writer state is resolved.
+## chunks
+- ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
+- ⬜ route_identity_guard — 
+- ⬜ caller_binding — 
+- ⬜ rules_acceptance — 
+- ⬜ verification_review — 
+- ⬜ pr_handoff — 
