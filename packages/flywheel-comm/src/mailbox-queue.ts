@@ -29,10 +29,16 @@ export interface MailboxDeliveryEvidence {
 }
 export type MailboxSettlement =
 	| { kind: "absent_identity" }
+	| { kind: "torn_identity" }
 	| ({
 			kind: "live";
 			state: MailboxState;
 			settledAt: string | null;
+	  } & MailboxDeliveryEvidence)
+	| ({
+			kind: "archived_nonterminal";
+			state: "QUEUED" | "LEASED";
+			settledAt: null;
 	  } & MailboxDeliveryEvidence)
 	| ({
 			kind: "archived_terminal";
@@ -671,12 +677,10 @@ export class MailboxQueue {
 			| { id: string; archived_at: string | null }
 			| undefined;
 		if (!identity) return { kind: "absent_identity" };
-		if (!identity.archived_at) {
-			throw new Error(`active mailbox identity has no row: ${identity.id}`);
-		}
+		if (!identity.archived_at) return { kind: "torn_identity" };
 		const archived = this.db
 			.prepare(
-				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC LIMIT 1",
+				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC, log_seq DESC LIMIT 1",
 			)
 			.get(identity.id) as { row_json: string } | undefined;
 		if (!archived) {
@@ -706,6 +710,14 @@ export class MailboxQueue {
 				...deliveryEvidence(snapshot),
 			};
 		}
+		if (snapshot.state === "QUEUED" || snapshot.state === "LEASED") {
+			return {
+				kind: "archived_nonterminal",
+				state: snapshot.state,
+				settledAt: null,
+				...deliveryEvidence(snapshot),
+			};
+		}
 		throw new Error(
 			`archived mailbox snapshot is not terminal: ${identity.id}`,
 		);
@@ -727,7 +739,7 @@ export class MailboxQueue {
 		if (!identity.archived_at) return undefined;
 		const archived = this.db
 			.prepare(
-				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC LIMIT 1",
+				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC, log_seq DESC LIMIT 1",
 			)
 			.get(identity.id) as { row_json: string } | undefined;
 		if (!archived) return "unknown_archived";

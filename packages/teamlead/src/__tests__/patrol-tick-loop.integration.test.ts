@@ -1,14 +1,21 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import Database from "better-sqlite3";
 import { CommDB } from "flywheel-comm/db";
+import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { afterEach, describe, expect, it } from "vitest";
 import { formatPatrolTick } from "../bridge/hook-payload.js";
+import {
+	canonicalLeadEventDeliveryId,
+	enqueueLeadEvent as enqueueDurableLeadEvent,
+} from "../bridge/lead-event-queue.js";
 import { leadEventEnvelopeFromJournalRow } from "../bridge/legacy-lead-event-reconciler.js";
 import {
 	createLeadPatrolTickPass,
 	type PatrolTickDeps,
 	patrolSessionKey,
+	patrolTickOffsetMs,
 } from "../bridge/patrol-tick.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
@@ -391,5 +398,82 @@ describe("FLY-1925 real patrol loop acceptance", () => {
 		);
 		expect(body).toContain("圈=rework:needs_lead→implement@2 | 🔴");
 		expect(body).toContain("[waiter-e] (implement, ship_parked) 现场=alive");
+	});
+
+	it("advances past a torn real mailbox identity after restart", async () => {
+		const store = await StateStore.create(":memory:");
+		const dir = mkdtempSync(join(tmpdir(), "fly2165-patrol-restart-"));
+		dirs.push(dir);
+		const commPath = join(dir, "comm.db");
+		let queue = new MailboxQueue(commPath);
+		const intervalMs = 60 * 60_000;
+		let nowMs =
+			Date.parse("2026-08-20T12:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		try {
+			store.upsertSession({
+				execution_id: "fly2165-runner",
+				issue_id: "issue-2165",
+				issue_identifier: "FLY-2165",
+				project_name: project.projectName,
+				status: "running",
+				session_role: "implement",
+				issue_labels: '["Engineering"]',
+			});
+			const deps: PatrolTickDeps = {
+				projects: [project],
+				store,
+				now: () => nowMs,
+				getGlobalConfig: () => ({ interval_minutes: 60 }),
+				getProjectConfig: () => ({ interval_minutes: 60 }),
+				inspectDeliveryState: (_projectName, id) =>
+					queue.inspectDeliveryState(id),
+				enqueueLeadEvent: (envelope) =>
+					enqueueDurableLeadEvent({
+						queue,
+						envelope,
+						content: formatPatrolTick(envelope),
+					}),
+			};
+			const pass = createLeadPatrolTickPass(deps);
+			await pass();
+			const first = store.getLatestPatrolTickEvent(
+				"eng-lead",
+				patrolSessionKey(project.projectName, "eng-lead"),
+			);
+			if (!first) throw new Error("first patrol tick was not journaled");
+			const firstEnvelope = leadEventEnvelopeFromJournalRow(first, 2);
+			const poisonedDeliveryId = canonicalLeadEventDeliveryId(firstEnvelope);
+
+			queue.close();
+			const raw = new Database(commPath);
+			raw.exec("DROP TRIGGER IF EXISTS mailbox_delete_requires_archive");
+			raw.prepare("DELETE FROM mailbox WHERE id = ?").run(poisonedDeliveryId);
+			raw.close();
+			queue = new MailboxQueue(commPath);
+			expect(queue.inspectDeliveryState(poisonedDeliveryId)).toEqual({
+				kind: "torn_identity",
+			});
+
+			nowMs += intervalMs;
+			await pass();
+			await pass();
+			const latest = store.getLatestPatrolTickEvent(
+				"eng-lead",
+				patrolSessionKey(project.projectName, "eng-lead"),
+			);
+			if (!latest) throw new Error("replacement patrol tick was not journaled");
+			expect(latest.seq).toBe(first.seq + 1);
+			expect(latest.event_id).toBe(
+				`patrol_tick:${project.projectName}:eng-lead:after-${first.seq}`,
+			);
+			const replacementId = canonicalLeadEventDeliveryId(
+				leadEventEnvelopeFromJournalRow(latest, 2),
+			);
+			expect(queue.getById(replacementId)).toMatchObject({ state: "QUEUED" });
+		} finally {
+			queue.close();
+			store.close();
+		}
 	});
 });

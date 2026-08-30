@@ -145,4 +145,39 @@ describe("message-status", () => {
 		expect(messageStatus(["id", "--db", dbPath], io())).toBe(2);
 		expect(stderr.join("\n")).toContain("message-status:");
 	});
+
+	it("reports a torn identity in human and JSON modes with its own exit", () => {
+		const queue = new MailboxQueue(dbPath);
+		enqueue(queue, "torn");
+		queue.close();
+		const raw = new Database(dbPath);
+		raw.exec("DROP TRIGGER mailbox_delete_requires_archive");
+		raw.prepare("DELETE FROM mailbox WHERE id='torn'").run();
+		raw.close();
+
+		expect(messageStatus(["delivery:torn", "--db", dbPath], io())).toBe(3);
+		expect(stdout.pop()).toBe("torn delivery:torn");
+		expect(
+			messageStatus(["delivery:torn", "--db", dbPath, "--json"], io()),
+		).toBe(3);
+		expect(JSON.parse(stdout.pop()!)).toEqual({
+			location: "torn",
+			message_id: "delivery:torn",
+			state: null,
+			dead_reason: null,
+			last_error: null,
+			stamps: {
+				created_at: null,
+				delivered_at: null,
+				notified_at: null,
+				settled_at: null,
+			},
+		});
+		expect(stderr).toEqual([]);
+	});
+
+	it("keeps usage failures on exit 2", () => {
+		expect(messageStatus([], io())).toBe(2);
+		expect(stderr.join("\n")).toContain("exactly one <message-id> is required");
+	});
 });

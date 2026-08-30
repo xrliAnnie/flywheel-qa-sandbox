@@ -11,6 +11,53 @@ function openMailboxDb(): Database.Database {
 	return db;
 }
 
+function seedMailboxRow(
+	db: Database.Database,
+	id: string,
+	state: "QUEUED" | "ACKED" = "QUEUED",
+): Record<string, unknown> {
+	const deliveryId = `delivery:${id}`;
+	db.prepare(
+		"INSERT INTO mailbox_identity (id, delivery_id, insert_projection_hash) VALUES (?, ?, ?)",
+	).run(id, deliveryId, `hash:${id}`);
+	db.prepare(
+		`INSERT INTO mailbox
+		 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
+		  created_at, state, acked_at, sender_ref)
+		 VALUES (?, ?, 'runner', 'lead', 'lead', 'question', 'hello',
+		         '2026-08-05T00:00:00.000Z', ?, ?,
+		         '{"v":1,"authority":"unprotected"}')`,
+	).run(
+		id,
+		deliveryId,
+		state,
+		state === "ACKED" ? "2026-08-05T01:00:00.000Z" : null,
+	);
+	return db.prepare("SELECT * FROM mailbox WHERE id = ?").get(id) as Record<
+		string,
+		unknown
+	>;
+}
+
+function stampIdentity(db: Database.Database, id: string): void {
+	db.prepare(
+		"UPDATE mailbox_identity SET archived_at = '2026-08-05T02:00:00.000Z' WHERE id = ?",
+	).run(id);
+}
+
+function insertArchiveLog(
+	db: Database.Database,
+	id: string,
+	rowJson: string,
+	at = "2026-08-05T02:00:00.000Z",
+): void {
+	db.prepare(
+		`INSERT INTO mailbox_log
+		 (event_id, message_id, event, at, row_json)
+		 VALUES (?, ?, 'archived', ?, ?)`,
+	).run(`archived:${id}:${at}`, id, at, rowJson);
+}
+
 describe("FLY-1572 mailbox schema", () => {
 	it("creates the shared mailbox, identity registry, append-only log, and GC outbox", () => {
 		const db = openMailboxDb();
@@ -123,6 +170,14 @@ describe("FLY-1572 mailbox schema", () => {
 			db.prepare(
 				"UPDATE mailbox_identity SET archived_at = '2026-08-05T01:00:00.000Z' WHERE id = 'm1'",
 			).run();
+			insertArchiveLog(
+				db,
+				"m1",
+				JSON.stringify(
+					db.prepare("SELECT * FROM mailbox WHERE id = 'm1'").get(),
+				),
+				"2026-08-05T01:00:00.000Z",
+			);
 			db.prepare("DELETE FROM mailbox WHERE id = 'm1'").run();
 			expect(() =>
 				db
@@ -150,6 +205,93 @@ describe("FLY-1572 mailbox schema", () => {
 			expect(() => db.prepare("DELETE FROM mailbox_log").run()).toThrow(
 				/mailbox_log is append-only/,
 			);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rejects deleting an active mailbox row", () => {
+		const db = openMailboxDb();
+		try {
+			seedMailboxRow(db, "active");
+			expect(() =>
+				db.prepare("DELETE FROM mailbox WHERE id = 'active'").run(),
+			).toThrow(/mailbox delete requires matching archive evidence/);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rejects deleting a stamped row without an archive snapshot", () => {
+		const db = openMailboxDb();
+		try {
+			seedMailboxRow(db, "stamp-only");
+			stampIdentity(db, "stamp-only");
+			expect(() =>
+				db.prepare("DELETE FROM mailbox WHERE id = 'stamp-only'").run(),
+			).toThrow(/mailbox delete requires matching archive evidence/);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("rejects deleting a stamped row with a fake archive snapshot", () => {
+		const db = openMailboxDb();
+		try {
+			seedMailboxRow(db, "fake-log");
+			insertArchiveLog(db, "fake-log", "{}");
+			stampIdentity(db, "fake-log");
+			expect(() =>
+				db.prepare("DELETE FROM mailbox WHERE id = 'fake-log'").run(),
+			).toThrow(/mailbox delete requires matching archive evidence/);
+		} finally {
+			db.close();
+		}
+	});
+
+	it("allows deleting a stamped terminal row with a matching archive snapshot", () => {
+		const db = openMailboxDb();
+		try {
+			const row = seedMailboxRow(db, "terminal", "ACKED");
+			insertArchiveLog(db, "terminal", JSON.stringify(row));
+			stampIdentity(db, "terminal");
+			expect(() =>
+				db.prepare("DELETE FROM mailbox WHERE id = 'terminal'").run(),
+			).not.toThrow();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("allows deleting a stamped nonterminal row with a matching archive snapshot", () => {
+		const db = openMailboxDb();
+		try {
+			const row = seedMailboxRow(db, "nonterminal");
+			insertArchiveLog(db, "nonterminal", JSON.stringify(row));
+			stampIdentity(db, "nonterminal");
+			expect(() =>
+				db.prepare("DELETE FROM mailbox WHERE id = 'nonterminal'").run(),
+			).not.toThrow();
+		} finally {
+			db.close();
+		}
+	});
+
+	it("uses the newest archive snapshot as delete authority", () => {
+		const db = openMailboxDb();
+		try {
+			const row = seedMailboxRow(db, "newest");
+			insertArchiveLog(
+				db,
+				"newest",
+				JSON.stringify(row),
+				"2026-08-05T02:00:00.000Z",
+			);
+			insertArchiveLog(db, "newest", "{}", "2026-08-05T03:00:00.000Z");
+			stampIdentity(db, "newest");
+			expect(() =>
+				db.prepare("DELETE FROM mailbox WHERE id = 'newest'").run(),
+			).toThrow(/mailbox delete requires matching archive evidence/);
 		} finally {
 			db.close();
 		}

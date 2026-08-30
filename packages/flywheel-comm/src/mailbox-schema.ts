@@ -231,6 +231,45 @@ CREATE TRIGGER IF NOT EXISTS mailbox_log_no_delete
 BEFORE DELETE ON mailbox_log
 BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only'); END;
 
+CREATE TRIGGER IF NOT EXISTS mailbox_delete_requires_archive
+BEFORE DELETE ON mailbox
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM mailbox_identity AS identity
+   WHERE identity.id = OLD.id
+     AND identity.delivery_id = OLD.delivery_id
+     AND identity.archived_at IS NOT NULL
+)
+OR NOT EXISTS (
+  SELECT 1
+    FROM mailbox_log AS archived
+   WHERE archived.message_id = OLD.id
+     AND archived.event = 'archived'
+     AND archived.log_seq = (
+       SELECT newest.log_seq
+         FROM mailbox_log AS newest
+        WHERE newest.message_id = OLD.id
+          AND newest.event = 'archived'
+        ORDER BY newest.at DESC, newest.log_seq DESC
+        LIMIT 1
+     )
+     AND json_valid(archived.row_json)
+     AND json_extract(archived.row_json, '$.id') IS OLD.id
+     AND json_extract(archived.row_json, '$.delivery_id') IS OLD.delivery_id
+     AND json_extract(archived.row_json, '$.state') IS OLD.state
+     AND (
+       OLD.state != 'ACKED'
+       OR json_extract(archived.row_json, '$.acked_at') IS OLD.acked_at
+     )
+     AND (
+       OLD.state != 'DEAD'
+       OR json_extract(archived.row_json, '$.dead_at') IS OLD.dead_at
+     )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'mailbox delete requires matching archive evidence');
+END;
+
 CREATE TABLE IF NOT EXISTS content_ref_gc_outbox (
   intent_id TEXT PRIMARY KEY,
   message_id TEXT NOT NULL,

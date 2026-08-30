@@ -4,7 +4,7 @@ import type { MailboxSettlement, MailboxState } from "../mailbox-queue.js";
 import { resolveDbPath } from "../resolve-db-path.js";
 
 export interface MessageStatusView {
-	location: "live" | "archived" | "absent";
+	location: "live" | "archived" | "absent" | "torn";
 	message_id: string;
 	state: MailboxState | null;
 	dead_reason: string | null;
@@ -31,9 +31,9 @@ function toView(
 	messageId: string,
 	result: MailboxSettlement,
 ): MessageStatusView {
-	if (result.kind === "absent_identity") {
+	if (result.kind === "absent_identity" || result.kind === "torn_identity") {
 		return {
-			location: "absent",
+			location: result.kind === "absent_identity" ? "absent" : "torn",
 			message_id: messageId,
 			state: null,
 			dead_reason: null,
@@ -63,6 +63,7 @@ function toView(
 
 function renderHuman(view: MessageStatusView): string {
 	if (view.location === "absent") return `absent ${view.message_id}`;
+	if (view.location === "torn") return `torn ${view.message_id}`;
 	return `${view.location} ${view.state} ${view.message_id} | dead_reason=${view.dead_reason ?? "null"} | last_error=${view.last_error ?? "null"} | created_at=${view.stamps.created_at ?? "null"} | delivered_at=${view.stamps.delivered_at ?? "null"} | notified_at=${view.stamps.notified_at ?? "null"} | settled_at=${view.stamps.settled_at ?? "null"}`;
 }
 
@@ -98,7 +99,9 @@ export function messageStatus(
 		db = CommDB.openReadonly(dbPath);
 		const view = toView(messageId, db.inspectMailboxDeliveryState(messageId));
 		io.stdout(values.json ? JSON.stringify(view) : renderHuman(view));
-		return view.location === "absent" ? 1 : 0;
+		if (view.location === "absent") return 1;
+		if (view.location === "torn") return 3;
+		return 0;
 	} catch (error) {
 		io.stderr(
 			`message-status: ${error instanceof Error ? error.message : String(error)}`,

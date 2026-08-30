@@ -776,7 +776,6 @@ function persistMapped(
 	db: Database.Database,
 	queue: MailboxQueue,
 	mapped: MappedMessage,
-	keep: boolean,
 	now: string,
 ): void {
 	const inserted = queue.enqueue(mapped.input);
@@ -806,12 +805,91 @@ function persistMapped(
 	if (mapped.settlement) {
 		insertOrCompareHistoricalSettlement(db, mapped.input.id, mapped.settlement);
 	}
-	insertCoverageLog(db, mapped, keep, now);
-	if (!keep) {
-		db.prepare(
-			"UPDATE mailbox_identity SET archived_at = ? WHERE id = ? AND archived_at IS NULL",
-		).run(now, mapped.input.id);
-		db.prepare("DELETE FROM mailbox WHERE id = ?").run(mapped.input.id);
+}
+
+function mappedFamilyCanArchive(family: MappedMessage[]): boolean {
+	if (
+		family.some(
+			(member) =>
+				(member.state !== "ACKED" && member.state !== "DEAD") ||
+				terminalAt(member) === undefined,
+		)
+	) {
+		return false;
+	}
+	const question = family.find((member) => member.input.type === "question");
+	return !(
+		question &&
+		question.input.relayState !== "terminal_disposed" &&
+		!family.some((member) => member.input.type === "response")
+	);
+}
+
+function resolvedMailboxFamilyIds(
+	db: Database.Database,
+	memberId: string,
+): string[] {
+	const member = db
+		.prepare("SELECT id, type, ref_id FROM mailbox WHERE id = ?")
+		.get(memberId) as
+		| { id: string; type: string; ref_id: string | null }
+		| undefined;
+	if (!member) throw new Error(`migration mailbox row not found: ${memberId}`);
+	const rootId =
+		member.type === "response" &&
+		member.ref_id &&
+		db
+			.prepare("SELECT 1 FROM mailbox WHERE id = ? AND type = 'question'")
+			.get(member.ref_id)
+			? member.ref_id
+			: member.id;
+	const root = db
+		.prepare("SELECT type FROM mailbox WHERE id = ?")
+		.get(rootId) as { type: string } | undefined;
+	if (!root)
+		throw new Error(`migration mailbox family root not found: ${rootId}`);
+	if (root.type !== "question") return [rootId];
+	return db
+		.prepare(
+			`SELECT id FROM mailbox
+			  WHERE id = ? OR (type = 'response' AND ref_id = ?)
+			  ORDER BY id`,
+		)
+		.pluck()
+		.all(rootId, rootId) as string[];
+}
+
+function sameIds(left: string[], right: string[]): boolean {
+	if (left.length !== right.length) return false;
+	return left.every((id, index) => id === right[index]);
+}
+
+function persistMappedFamily(
+	db: Database.Database,
+	queue: MailboxQueue,
+	family: MappedMessage[],
+	requestedKeep: boolean,
+	now: string,
+): void {
+	for (const member of family) persistMapped(db, queue, member, now);
+	const expectedIds = family.map((member) => member.input.id).sort();
+	const resolvedIds = resolvedMailboxFamilyIds(db, family[0]!.input.id);
+	const keep =
+		requestedKeep ||
+		!mappedFamilyCanArchive(family) ||
+		!sameIds(expectedIds, resolvedIds);
+	for (const member of family) insertCoverageLog(db, member, keep, now);
+	if (keep) return;
+	const outcome = queue.archiveFamily({
+		id: family[0]!.input.id,
+		now,
+		retentionMs: 0,
+		maxFamilyBytes: Number.MAX_SAFE_INTEGER,
+	});
+	if (outcome !== "archived") {
+		throw new Error(
+			`migration_mailbox_archive_failed:${family[0]!.input.id}:${outcome}`,
+		);
 	}
 }
 
@@ -976,10 +1054,8 @@ export function migrateLegacyDatabaseFile(
 						}
 					}
 					const keep = keepFamily(family, now);
-					for (const member of family) {
-						persistMapped(db, queue, member, keep, now);
-						handled.add(member.input.id);
-					}
+					persistMappedFamily(db, queue, family, keep, now);
+					for (const member of family) handled.add(member.input.id);
 				}
 				fault(options.faultAt, "after_messages");
 
@@ -1012,10 +1088,10 @@ export function migrateLegacyDatabaseFile(
 							`live receipt_resend copy requires manual disposition: ${row.id}`,
 						);
 					}
-					persistMapped(
+					persistMappedFamily(
 						db,
 						queue,
-						mapped,
+						[mapped],
 						family === "receipt_resend" ? false : keepFamily([mapped], now),
 						now,
 					);
