@@ -23,6 +23,42 @@ trap cleanup EXIT
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
 
+wait_for_process_command() {
+  local ps_bin="$1" pid="$2" expected="$3"
+  local attempts="${4:-100}" interval="${5:-0.05}" sleep_bin="${6:-sleep}"
+  local command
+  WAIT_FOR_PROCESS_COMMAND_LAST=""
+  for _ in $(seq 1 "$attempts"); do
+    command="$(TZ=UTC LC_ALL=C "$ps_bin" -p "$pid" -o command= 2>/dev/null \
+      | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || command=""
+    WAIT_FOR_PROCESS_COMMAND_LAST="$command"
+    [[ "$command" == "$expected" ]] && return 0
+    "$sleep_bin" "$interval"
+  done
+  return 1
+}
+
+run_when_process_command_ready() {
+  [[ "$#" -ge 7 ]] || return 2
+  local ps_bin="$1" pid="$2" expected="$3"
+  local attempts="$4" interval="$5" sleep_bin="$6"
+  shift 6
+  wait_for_process_command \
+    "$ps_bin" "$pid" "$expected" "$attempts" "$interval" "$sleep_bin" || return 1
+  "$@"
+}
+
+print_fixture_process_diagnostics() {
+  [[ "$#" -eq 4 ]] || return 2
+  local ps_bin="$1" fixture_parent="$2" fixture_child="$3" observed="$4"
+  printf '  observed child command: %s\n' "${observed:-<unreadable>}" >&2
+  TZ=UTC LC_ALL=C "$ps_bin" -axo pid=,ppid=,command= 2>/dev/null \
+    | awk -v fixture_parent="$fixture_parent" -v fixture_child="$fixture_child" \
+      '$1 == fixture_parent || $1 == fixture_child || $2 == fixture_parent || $2 == fixture_child {
+        print "  fixture row: " $0
+      }' >&2 || true
+}
+
 if [[ ! -f "$LIB" ]]; then
   echo "FAIL: missing $LIB"
   exit 1
@@ -88,7 +124,39 @@ tmp="${MOCK_STATE}.next"
 awk -v doomed="$pid" '$1 != doomed' "$MOCK_STATE" > "$tmp"
 mv "$tmp" "$MOCK_STATE"
 SH
-chmod +x "$BIN_DIR/lsof" "$BIN_DIR/ps" "$BIN_DIR/kill"
+
+cat > "$BIN_DIR/readiness-ps" <<'SH'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_READY_ARGS"
+[[ "$*" == "-p 201 -o command=" ]] || exit 64
+count=$(cat "$MOCK_READY_CALLS")
+count=$((count + 1))
+printf '%s\n' "$count" > "$MOCK_READY_CALLS"
+case "${MOCK_READY_MODE:-transition}" in
+  transition)
+    if [[ "$count" -lt 3 ]]; then
+      printf 'fixture-pre-exec\n'
+    else
+      printf '/bin/sleep 300\n'
+    fi
+    ;;
+  never) printf 'fixture-pre-exec\n' ;;
+  *) exit 65 ;;
+esac
+SH
+
+cat > "$BIN_DIR/census-ps" <<'SH'
+#!/usr/bin/env bash
+[[ "$*" == "-axo pid=,ppid=,command=" ]] || exit 66
+printf '%s\n' \
+  '100 1 fixture-parent' \
+  '201 100 /bin/sleep 300' \
+  '202 201 fixture-descendant' \
+  '999 1 unrelated'
+SH
+chmod +x \
+  "$BIN_DIR/lsof" "$BIN_DIR/ps" "$BIN_DIR/kill" \
+  "$BIN_DIR/readiness-ps" "$BIN_DIR/census-ps"
 
 export MOCK_TARGET="$TMP_ROOT/project-FLY-1759"
 export MOCK_STATE="$STATE"
@@ -106,6 +174,75 @@ reset_mock() {
   export MOCK_PS_FAIL_CENSUS=0
   export MOCK_DRIFT_PID=""
 }
+
+record_mock_reaper_call() {
+  mock_reaper_called=$((mock_reaper_called + 1))
+}
+
+echo "Test: FLY-2180 fixture readiness waits for the child exec command"
+MOCK_READY_CALLS="$TMP_ROOT/ready-calls"
+MOCK_READY_ARGS="$TMP_ROOT/ready-args"
+printf '0\n' > "$MOCK_READY_CALLS"
+> "$MOCK_READY_ARGS"
+export MOCK_READY_CALLS MOCK_READY_ARGS
+export MOCK_READY_MODE=transition
+mock_reaper_called=0
+if run_when_process_command_ready \
+    "$BIN_DIR/readiness-ps" 201 "/bin/sleep 300" 5 0 /usr/bin/true record_mock_reaper_call \
+    && [[ "$(cat "$MOCK_READY_CALLS")" -eq 3 ]] \
+    && [[ "$mock_reaper_called" -eq 1 ]] \
+    && [[ "$(sort -u "$MOCK_READY_ARGS")" == "-p 201 -o command=" ]]; then
+  pass "readiness accepts the intended command before entering teardown"
+else
+  fail "readiness did not gate teardown on the intended exec identity"
+fi
+
+echo "Test: FLY-2180 fixture readiness fails closed with the last identity"
+printf '0\n' > "$MOCK_READY_CALLS"
+> "$MOCK_READY_ARGS"
+export MOCK_READY_MODE=never
+WAIT_FOR_PROCESS_COMMAND_LAST=""
+mock_reaper_called=0
+readiness_rc=0
+run_when_process_command_ready \
+  "$BIN_DIR/readiness-ps" 201 "/bin/sleep 300" 2 0 /usr/bin/true record_mock_reaper_call \
+  || readiness_rc=$?
+if [[ "$readiness_rc" -ne 0 \
+    && "$(cat "$MOCK_READY_CALLS")" -eq 2 \
+    && "$WAIT_FOR_PROCESS_COMMAND_LAST" == "fixture-pre-exec" \
+    && "$mock_reaper_called" -eq 0 ]]; then
+  pass "readiness timeout preserves diagnostics and does not enter teardown"
+else
+  fail "readiness timeout lost diagnostics or entered teardown"
+fi
+
+echo "Test: FLY-2180 fixture readiness rejects an empty teardown callback"
+printf '0\n' > "$MOCK_READY_CALLS"
+> "$MOCK_READY_ARGS"
+export MOCK_READY_MODE=transition
+empty_payload_rc=0
+run_when_process_command_ready \
+  "$BIN_DIR/readiness-ps" 201 "/bin/sleep 300" 5 0 /usr/bin/true \
+  || empty_payload_rc=$?
+if [[ "$empty_payload_rc" -ne 0 ]]; then
+  pass "readiness gate fails closed without a teardown callback"
+else
+  fail "readiness gate accepted an empty teardown callback"
+fi
+
+echo "Test: FLY-2180 fixture failure diagnostics include the bounded process census"
+fixture_diagnostic="$TMP_ROOT/fixture-diagnostic"
+print_fixture_process_diagnostics \
+  "$BIN_DIR/census-ps" 100 201 "/bin/sleep 300" 2> "$fixture_diagnostic"
+if grep -Fq 'observed child command: /bin/sleep 300' "$fixture_diagnostic" \
+    && grep -Fq 'fixture row: 100 1 fixture-parent' "$fixture_diagnostic" \
+    && grep -Fq 'fixture row: 201 100 /bin/sleep 300' "$fixture_diagnostic" \
+    && grep -Fq 'fixture row: 202 201 fixture-descendant' "$fixture_diagnostic" \
+    && ! grep -Fq 'unrelated' "$fixture_diagnostic"; then
+  pass "fixture diagnostics show parent, child, and descendants only"
+else
+  fail "fixture diagnostics omitted bounded rows or included unrelated rows"
+fi
 
 echo "Test: FLY-1759 shell reaper follows cwd roots through descendants"
 reset_mock
@@ -168,7 +305,7 @@ if ps -axo pid=,ppid= >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1; then
     cd "$REAL_WORKTREE" || exit 1
     HANDSHAKE="$REAL_HANDSHAKE" /bin/sh -c '
       printf "%s\n" "$$" > "$HANDSHAKE"
-      (cd / && /bin/sleep 300) &
+      (cd / && exec /bin/sleep 300) &
       printf "%s\n" "$!" >> "$HANDSHAKE"
       wait
     ' </dev/null >/dev/null 2>&1
@@ -182,12 +319,34 @@ if ps -axo pid=,ppid= >/dev/null 2>&1 && command -v lsof >/dev/null 2>&1; then
   real_parent=$(sed -n '1p' "$REAL_HANDSHAKE" 2>/dev/null || true)
   real_child=$(sed -n '2p' "$REAL_HANDSHAKE" 2>/dev/null || true)
   REAL_PIDS="$REAL_PIDS $real_parent $real_child"
-  if reap_worktree_processes "$REAL_PROJECT" "$REAL_WORKTREE" \
+  real_fixture_command="/bin/sleep 300"
+  real_fixture_state=not_ready
+  WAIT_FOR_PROCESS_COMMAND_LAST=""
+  if [[ -n "$real_parent" && -n "$real_child" ]]; then
+    if run_when_process_command_ready \
+        ps "$real_child" "$real_fixture_command" 100 0.05 sleep \
+        reap_worktree_processes "$REAL_PROJECT" "$REAL_WORKTREE"; then
+      real_fixture_state=reaped
+    elif [[ "$WAIT_FOR_PROCESS_COMMAND_LAST" == "$real_fixture_command" ]]; then
+      real_fixture_state=reap_failed
+    fi
+  fi
+  if [[ "$real_fixture_state" == "not_ready" ]]; then
+    print_fixture_process_diagnostics \
+      ps "$real_parent" "$real_child" "$WAIT_FOR_PROCESS_COMMAND_LAST"
+    fail "real fixture did not reach the /bin/sleep 300 identity"
+  elif [[ "$real_fixture_state" == "reaped" ]] \
       && ! /bin/kill -0 "$real_parent" 2>/dev/null \
-      && [[ -n "$real_child" ]] && ! /bin/kill -0 "$real_child" 2>/dev/null; then
+      && ! /bin/kill -0 "$real_child" 2>/dev/null; then
     pass "real non-Node child and descendant both exit"
   else
-    fail "real process closure did not converge"
+    print_fixture_process_diagnostics \
+      ps "$real_parent" "$real_child" "$WAIT_FOR_PROCESS_COMMAND_LAST"
+    if [[ "$real_fixture_state" == "reap_failed" ]]; then
+      fail "real teardown reaper returned incomplete after fixture readiness"
+    else
+      fail "real process closure did not converge"
+    fi
   fi
 else
   echo "  SKIP: host denies global ps census (Ubuntu CI runs this case)"
