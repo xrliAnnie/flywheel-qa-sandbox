@@ -11,11 +11,13 @@ Lead 的“要不要启动”是 prompt 纪律与服务端授权的串联：
 flowchart LR
     M[Discord message] --> R[department-lead-rules Action Gate]
     R -->|passive other-Lead assignment| S[stay silent]
-    R -->|direct single-Lead spawn intent| H[POST /api/runs/start with own leadId]
-    H --> I{identity present?}
+    R -->|direct single-Lead spawn intent| H[POST runs/start with own leadId]
+    H --> V[existing input/dedup/admission/Linear checks]
+    V --> I{identity present?}
     I -->|no; enforcement on| X[403 lead_identity_required]
-    I -->|yes| P[Linear pre-flight: issue + labels]
-    P --> D[DepartmentRegistry.isLeadInScope]
+    I -->|no; flag off| O[legacy owner auto-resolution]
+    I -->|yes| D[DepartmentRegistry.isLeadInScope]
+    O --> D
     D -->|reject| Y[403 DEPT_SCOPE_REJECT; no dispatch]
     D -->|allow| A[StartDispatcher.start]
 ```
@@ -24,77 +26,73 @@ flowchart LR
 
 ## 2. 根因：省略身份后自我满足的校验
 
-当前 `runs-route.ts` 顺序是：
+当前 `runs-route.ts` 把 `req.body.leadId` 当作可选字符串；完成 Linear labels 查询后，缺失时调用 `resolveLeadForIssue()`，再用解析出的 canonical owner 做 `isLeadInScope()`。对 Ops issue，这等同于把资源 owner 当作 caller identity，校验必然自我满足。现有 omission→200 测试证明该缺口可执行。
 
-1. 把 `req.body.leadId` 当作可选字符串。
-2. 获取 Linear labels。
-3. 若 `leadId` 缺失，调用 `resolveLeadForIssue()`，把 label 对应的 canonical Lead 写回 `leadId`。
-4. 调 `isLeadInScope(projectName, leadId, labels)`。
+## 3. 输入合同与 response precedence
 
-对 Ops issue，步骤 3 必然得到 `ops-lead`，步骤 4 随后比较 `ops-lead` 与 Ops label，结果必然允许。服务端无法知道请求实际来自 Peter。现有 `start-e2e.test.ts` 甚至把 `leadId` omission→200 固化为预期，证明该缺口可执行而非推测。
+修复后的顺序明确如下：
 
-修复必须在 auto-resolve 之前把“调用者身份是否存在”作为 admission 条件。`BRIDGE_DEPT_SCOPE_REJECT=off` 继续允许旧 auto-resolve，以保留已发布的紧急回滚语义。
+1. 保留最前面的 `LINEAR_API_KEY` 503、`issueId/projectName` 400。
+2. `rawLeadId` 若存在且不是字符串，立即返回 `400 INVALID_LEAD_ID / wrong_type`。这是唯一有意提前的新 precedence：畸形外部输入不再进入 agent/doc/model/dedup/admission。
+3. 非空字符串原样作为 caller id；不 trim/改写有效 id。空串或全空白按“未提供”处理，并跳过旧 membership lookup。
+4. 保留 agent/doc/model 400、active-session 409、admission 429、Linear 404/502 的原有 precedence。
+5. 仅当以上都成功后，在 Linear preflight 内、FLY-80 auto-resolution 的紧前方：enforcement on 且身份缺失/空白时返回 `403 {success:false, code:"DEPT_SCOPE_REJECT", reason:"lead_identity_required", canonicalLeadId:null, silent:false}`。
+6. flag off 时仍允许缺失/空白身份进入 legacy auto-resolution；非字符串始终是 400。
 
-## 3. 输入与响应合同
+因此正常 omission 的 200 变 403，但已有 503/400/409/429/404/502 failure contracts 不被身份缺失遮蔽。所有拒绝都发生在 dispatcher 前；缺失身份仍会做 Linear issue/label read，这是维护 failure precedence 的有意代价。
 
-启用 scope enforcement 时：
+## 4. 完整 caller migration
 
-- `leadId` 缺失、`null`、空字符串或全空白：`403`，`{success:false, code:"DEPT_SCOPE_REJECT", reason:"lead_identity_required", canonicalLeadId:null, silent:false}`。
-- `leadId` 为非字符串：`400 INVALID_LEAD_ID / wrong_type`。
-- 非空字符串继续进入项目 membership 与 department-label checks；Peter→Ops 返回 `label_mismatch`，Oliver→Ops 允许。
-- 所有上述拒绝都发生在 dispatcher 之前；缺身份/错误类型还能在 Linear preflight 前拒绝，避免无权请求消耗 API 与 admission 资源。
+### TeamLead route tests
 
-不把缺身份请求自动归到 canonical owner，因为 owner 是资源属性，不是 caller identity。
-
-## 4. 内建调用方兼容
+- `start-e2e.test.ts`：所有预期 200 且非 omission/rollback 专测的 bodies 加 `leadId:"product-lead"`；Ops happy path使用 `ops-lead`。专门保留 omitted identity 的 403、flag-off 200，以及缺 key/invalid input/409/429/Linear failure precedence 用例。
+- `runs-route.stale-blocker.test.ts`：POST helper 显式带 `leadId`，避免测试 fixture 继续教授旧合同。
 
 ### Gemini Agent
 
-`SessionBinding` 已有可信的 `projectName` 与 `leadId`，而 `registry.ts` 注释也声明 binding 字段应只在 server-bound 侧附加。当前 `dispatch_runner` 却原样转发模型 args。修复方式与 `request_ship_approval`、`save_memory` 一致：body 用 binding 值覆盖模型值；model-facing schema 移除 `projectName`，只要求 `issueId`。测试同时证明 raw caller 传伪造 `projectName`/`leadId` 也无法覆盖 binding。
+`SessionBinding` 已有可信 `projectName/leadId`。`registry.ts` 应像其他 binding-owned 字段一样以 `{...args, projectName: binding.projectName, leadId: binding.leadId}` 覆盖 raw 值；model schema 移除 `projectName`，只要求 `issueId`。测试仍必须断言 `deptLabel` 不泄漏，同时证明 raw spoof 无法覆盖 binding。mock Bridge fixture 增加缺失/空白 `leadId` 的 403 path，以免 full-stack fixture 掩盖 contract regression。
 
-### test-slot 注入
+### QA helper 与规则文档
 
-`test-deploy.sh` 明确 `AGENT_ID=$(...botName)`，并把同一 `botName` 写入项目 Lead config。因此 `inject-linear-issue.sh` 从相同 slot 字段读取 `LEAD_ID` 是唯一一致来源。payload 改用 `jq -nc --arg`，避免 issue id、project 或 role 的 shell 字符破坏 JSON。
+- `inject-linear-issue.sh` 从 slot `botName` 读 `LEAD_ID`，验证非空，用 `jq -nc --arg` 构造 payload；403 分支打印 `code/reason/canonicalLeadId` 后失败，不落入 generic unexpected response。
+- 新 shell test 用隔离 HOME/slot/curl capture 验证 payload 和 403 diagnostics，并在 `fly247-bash-suites.test.ts` 注册，确保 Linux CI 会执行。
+- `department-lead-rules.md` 要求 own non-empty `leadId` 且禁止 canonical/other Lead substitution；`doc-flow-rules.md` 的完整 JSON 例子同步补 identity。
 
-### 其他调用方
+### 当前配置项目审计
 
-仓库搜索显示 xiaohongshu scheduler 已发送显式 `leadId`；Claude Lead 的 test identity 也明确规定 start body 必须用 slot `AGENT_ID`。工程 spike与测试 mock 不是生产调用面。
+2026-08-30 对 `~/.flywheel/projects.json` 所列 roots 做只读扫描：
+
+- GeoForge3D 的 product/ops/shared start literals 都有 `leadId`。
+- personal-assistant 的完整 start literal 有 `leadId`。
+- joycon-typeless identity 明确要求总是传 `leadId`。
+- growth 的 rafiki/reflection dispatch prose 明确 identity；其余角色由 base rules 约束。
+- flywheel engineering/product identities 显式传 identity；其余角色不具备 start 行为或继承 base rules。
+- tidal-echo 未发现无身份的完整 start body literal。
+
+发布前重新执行同形扫描；若出现未迁移的完整 start literal，不得以 default-on 发布。紧急 rollback 是 `BRIDGE_DEPT_SCOPE_REJECT=off` 后重启 Bridge，恢复 FLY-80 auto-resolution。
 
 ## 5. Prompt 与静默语义
 
-现有规则已覆盖：
+现有规则已覆盖被动看到“给另一个 Lead 起 Runner”时不调用 Bridge且保持静默；明确 @ 自己而 Bridge 返回 mismatch 时只回一次机读 reason 对应诊断。新增 transport rule 明确 own `leadId` 不可省略或替换；`lead_identity_required` 是 caller contract error，不重试未修改请求。
 
-- 被动看到“给另一个 Lead 起 Runner”时，不调用 Bridge 并保持静默。
-- 明确 @ 自己且 Bridge 返回 department mismatch 时，只回一次机读 reason 对应诊断，不重试。
+## 6. 生命周期边界与 follow-up
 
-需要补一条不可省略的 transport 规则：start body 必须携带自己的 `leadId`，不得省略、使用 canonical owner 或其他 Lead id。规则表新增 `lead_identity_required`；这类拒绝是调用合同错误，Lead 不重试未修改的请求。
-
-## 6. 生命周期边界说明
-
-`DepartmentRegistry.isLeadInScope()` 目前只被 public `/api/runs/start` 调用。它不是所有 Runner 生命周期 transition 的“唯一生产边界”：
-
-- retry/phase handoff/auto-QA 从已存在 session 继续，不接受一个全新的任意 issue caller identity；
-- actions path 使用 session ownership/scope checks；
-- 要把 per-Lead authentication 扩展到所有内部 transition，需要新的 credential 与 migration 设计。
-
-本计划只宣称保护 Lead-triggered initial start。残余认证强化会通过 Lead report 明确记录，不在 FLY-127 内偷偷扩 scope 或创建未经授权的外部 issue。
+本任务只保护 Lead-triggered initial start。retry/phase handoff/auto-QA 继续已有 session。强认证仍是残余：Bridge 共享 API token 无法证明声称的 `leadId`，且 dashboard `/actions/retry` alias 没有 token middleware，`checkLeadScope()` 在缺 identity 时 fail-open。该具体路径必须写 milestone、Lead report并由 Lead决定 follow-up issue；没有授权时不在本实现节点创建外部 issue或扩大 FLY-127。
 
 ## 7. 基线验证事实
 
-在仅含设计文档、runtime 与 `origin/main` 相同的 HEAD 上：
+runtime 与 `origin/main` 相同的 docs-only HEAD 上：
 
-- `pnpm -r build`：exit 0。
-- 正确 focused 命令 `pnpm --filter flywheel-teamlead exec vitest run src/__tests__/start-e2e.test.ts`：30/30 pass。
-- department registry + rules bundle：43/43 pass。
-- 精确全仓 gate `pnpm test:packages:run`：exit 1，仅 `packages/core/test/tmux-viewer.macos.test.ts` 的 2 个 real-osascript tests 失败；受管 runner 无可用 Terminal Apple Events session，错误为 `Connection Invalid`/AppleScript syntax。17 个其他 core test files、206 个 core tests 已通过。该失败在 FLY-127 代码前存在且与本变更文件无交集。
+- `pnpm -r build` exit 0；focused start/registry/rules tests green。
+- TeamLead full suite 本地不可作为稳定 allowlist。连续两次运行分别得到 13 failed files/29 tests 与 28 failed files，集合显著漂移；失败来自受管 macOS sandbox/host integration（`mktemp`、`/.flywheel`、`/Library/LaunchAgents`、tmux/AppleScript）、root-owned npm cache EPERM、timeouts 和与 FLY-127 无关的 reconciliation/consent suites。
+- 旧的“只有 Core 两个 real-osascript failure”结论被后续 TeamLead full-suite evidence 推翻，waiver question `61b39bc0-f774-4d1d-8f39-aff33aca5a5a` 已由更正问题 `64213dc8-a8a7-4ac0-bbd8-5c8dd4107e4b` 替代。
+- `.github/workflows/ci.yml` 与 ship workflow 在 `ubuntu-latest` 执行 `pnpm test:packages:run`；Linux CI 是合并前权威 control。
 
-最终仍必须原样重跑 gate。通过标准是：lint/build/focused 与改动相关 package 全绿；全仓测试不得新增失败，并且基线两项 macOS integration failure 必须取得 Lead 的显式 waiver 才能交付。
+最终仍原样运行全部 gate 并记录真实 exit。changed/focused tests、lint/build 必须绿；本地 TeamLead 全套若继续出现环境性漂移，不伪称通过或做虚假的逐项 allowlist，必须依 Lead裁决并要求 PR 的 authoritative Linux CI green。
 
 ## 8. Acceptance 对照
 
-1. Identify where Lead decides to spawn Runner (handler in claude-lead.sh / department-lead-rules.md).
-2. Add scope check: department mismatch → don't spawn.
-3. Verify with: Annie addresses Oliver-only issue → only Oliver spawns Runner.
-4. Update CLAUDE.md / docs with department-scope-spawn rule.
-
-对应证据分别为 launcher/rule bundle audit、route identity+registry guards、paired Peter/Oliver route test、runtime rule doc + milestone。按角色硬约束不改 `CLAUDE.md`。
+1. 启动判断位置：`claude-lead.sh` 装载 `department-lead-rules.md`；Bridge `runs-route.ts` 做 admission。
+2. mismatch 不 spawn：explicit identity + registry fail-closed，omission 不再 auto-own。
+3. Oliver-only issue：paired Peter 403 / Oliver 200 regression，dispatcher 恰好一次且 owner 为 ops。
+4. 文档规则：更新 base department/doc-flow rules 与 milestone；按角色硬约束不改 `CLAUDE.md`。
