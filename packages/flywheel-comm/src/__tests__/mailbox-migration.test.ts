@@ -16,6 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MailboxQueue } from "../mailbox-queue.js";
 import {
 	backupCommDb,
 	classifyMailboxDatabase,
@@ -600,6 +601,18 @@ describe("FLY-1572 legacy mailbox migration", () => {
 					)
 					.get(),
 			).toEqual({ event: "migrated_history" });
+			expect(
+				migrated
+					.prepare(
+						"SELECT event FROM mailbox_log WHERE message_id='consumed-history' AND event='archived'",
+					)
+					.get(),
+			).toEqual({ event: "archived" });
+			const queue = new MailboxQueue(migrated, { readOnly: true });
+			expect(queue.inspectDeliveryState("consumed-history")).toMatchObject({
+				kind: "archived_terminal",
+				state: "ACKED",
+			});
 		} finally {
 			migrated.close();
 		}
@@ -709,6 +722,87 @@ describe("FLY-1572 legacy mailbox migration", () => {
 		expect(() => migrateLegacyDatabaseFile(dbPath, { now: NOW })).toThrow(
 			/live receipt_resend copy requires manual disposition/,
 		);
+	});
+
+	it("keeps a terminal receipt resend question when the resolved family is not archivable", () => {
+		const legacy = new Database(dbPath);
+		insertLead(legacy, {
+			id: "resend-question",
+			to_lead: "flywheel-eng-lead",
+			source: "receipt_resend:lead_event:flywheel-eng-lead:original",
+			type: "question",
+			created_at: "2026-07-01T00:00:00.000Z",
+			consumed_at: "2026-07-01T00:01:00.000Z",
+		});
+		legacy.close();
+
+		migrateLegacyDatabaseFile(dbPath, { now: NOW });
+		const migrated = new Database(dbPath);
+		try {
+			expect(
+				migrated
+					.prepare(
+						`SELECT mailbox.state, mailbox_identity.archived_at
+						   FROM mailbox
+						   JOIN mailbox_identity USING (id)
+						  WHERE mailbox.id='resend-question'`,
+					)
+					.get(),
+			).toEqual({ state: "ACKED", archived_at: null });
+			expect(
+				migrated
+					.prepare(
+						"SELECT event FROM mailbox_log WHERE message_id='resend-question' ORDER BY log_seq",
+					)
+					.all(),
+			).toEqual([{ event: "migration_snapshot" }]);
+		} finally {
+			migrated.close();
+		}
+	});
+
+	it("keeps a standalone terminal response when the database resolves a wider live family", () => {
+		const legacy = new Database(dbPath);
+		insertMessage(legacy, {
+			id: "live-question",
+			from_agent: "exec-1",
+			to_agent: "flywheel-eng-lead",
+			type: "question",
+		});
+		insertLead(legacy, {
+			id: "standalone-response",
+			to_lead: "flywheel-eng-lead",
+			source: "founder_reply",
+			type: "response",
+			ref_message_id: "live-question",
+			created_at: "2026-07-01T00:00:00.000Z",
+			consumed_at: "2026-07-01T00:01:00.000Z",
+		});
+		legacy.close();
+
+		migrateLegacyDatabaseFile(dbPath, { now: NOW });
+		const migrated = new Database(dbPath);
+		try {
+			expect(
+				migrated
+					.prepare(
+						"SELECT id, state FROM mailbox WHERE id IN ('live-question','standalone-response') ORDER BY id",
+					)
+					.all(),
+			).toEqual([
+				{ id: "live-question", state: "QUEUED" },
+				{ id: "standalone-response", state: "ACKED" },
+			]);
+			expect(
+				migrated
+					.prepare(
+						"SELECT archived_at FROM mailbox_identity WHERE id='standalone-response'",
+					)
+					.get(),
+			).toEqual({ archived_at: null });
+		} finally {
+			migrated.close();
+		}
 	});
 
 	it("lists every unknown legacy source family before starting cutover", () => {
@@ -836,6 +930,16 @@ describe("FLY-1572 legacy mailbox migration", () => {
 					)
 					.get(),
 			).toEqual({ count: 0 });
+			expect(
+				migrated
+					.prepare(
+						"SELECT message_id FROM mailbox_log WHERE event='archived' AND message_id IN ('question-old-terminal','response-old-terminal') ORDER BY message_id",
+					)
+					.all(),
+			).toEqual([
+				{ message_id: "question-old-terminal" },
+				{ message_id: "response-old-terminal" },
+			]);
 		} finally {
 			migrated.close();
 		}
