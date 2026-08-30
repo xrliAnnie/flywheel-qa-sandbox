@@ -2,9 +2,9 @@
 issue: FLY-127
 phase: implement
 title: department-scope-spawn
-phaseCursor: 3/7
-updated: 2026-08-30T10:59:53.743Z
-nextStep: Add hermetic QA injector identity and 403 diagnostics tests
+phaseCursor: 4/7
+updated: 2026-08-30T11:03:10.711Z
+nextStep: Pin Lead transport rules and doc-flow example with tests
 chunks:
   - id: baseline_audit
     order: 1
@@ -49,8 +49,8 @@ pointers:
 ---
 
 # FLY-127 progress — department-scope-spawn
-**phase**: implement (3/7)
-**next**: Add hermetic QA injector identity and 403 diagnostics tests
+**phase**: implement (4/7)
+**next**: Pin Lead transport rules and doc-flow example with tests
 
 ## chunks
 - ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
