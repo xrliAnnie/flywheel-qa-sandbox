@@ -1,9 +1,9 @@
 ---
 issue: FLY-203
 phase: design
-phaseCursor: 1/5
-updated: 2026-08-30T10:32:35.471Z
-nextStep: run focused baseline tests and write research evidence matrix
+phaseCursor: 2/5
+updated: 2026-08-30T10:36:00.093Z
+nextStep: write verification-first implementation plan and request design review
 chunks:
   - id: audit
     order: 1
@@ -14,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-203 progress
-**phase**: design (1/5)
-**next**: run focused baseline tests and write research evidence matrix
+**phase**: design (2/5)
+**next**: write verification-first implementation plan and request design review
 
 ## chunks
 - ✅ audit — 
