@@ -3,6 +3,8 @@ Issue: FLY-2031 (https://linear.app/geoforge3d/issue/FLY-2031/rayav3-随身语�
 日期: 2026-08-27
 基于: 无
 
+> **2026-08-30 current selection:** 本文保留 2026-08-27 的探索基线。当前产品已按 Founder replacement rework 净删除 custom barge-in，恢复正常逐轮对话，并用 `VoiceTextMirror` 将 participant/Raya final 与 thinking 状态镜像到语音房同路文字区；`ship_gate` 继续 fail-closed。当前实现与实房结论以 `plan.md` §14、`bot-qa-summary.md` R16 为准。
+
 ---
 
 ## 0. 读法(先读,否则会读错)
@@ -70,7 +72,7 @@ Issue: FLY-2031 (https://linear.app/geoforge3d/issue/FLY-2031/rayav3-随身语�
 | 往语音侧塞文字 | `RealtimeTransport.appendSpeech(text)` 存在(`RealtimeTransport.ts:225`),**runtime 没有用它**;`RuntimeTransport` 接口也没暴露 | 🔶 可用但**语义未验**:research §1.4 说「它会当成她说的」 |
 | 逐字开场指令 | `realtimeStartInstructions` 每次 `realtime/start` 喂一次,≤ 8,192 字;来源 `RAYA_VOICE_OPTIONS_JSON.startInstructionsFile`(`config.ts:307–313`),否则一句默认中文(`cli.ts:56–60`) | ✅ 通道在;**内容归 2030**(FLY-2074 plan §9) |
 | 她说的话去哪 | `transcript role=user final` → evidence 而已 | ❌ 没有任何「落地」 |
-| 后台 Codex 能动什么 | `thread/start` `sandbox: workspace-write`,`writable_roots = RAYA_WORKSPACE_ROOTS_JSON`(生产 = `~/.flywheel/raya/code` + `~/.flywheel/raya/memory`),`network_access: true`,`approvalPolicy: never`;`config.ts:200–212` 禁止 workspace 与 state/metrics/CODEX_HOME/identity 重叠 | ✅ 后台 Codex 可以写文件、跑命令;**不能碰 `RAYA_STATE_DIR`**(这是有意的安全边界) |
+| 后台 Codex 能动什么 | `thread/start` 声明 `sandbox: workspace-write`,`writable_roots = RAYA_WORKSPACE_ROOTS_JSON`,`network_access: true`,`approvalPolicy: never`;`config.ts:200–212` 禁止 workspace 与 state/metrics/CODEX_HOME/identity 重叠 | ✅ **P1b 已在 Runner 外隔离 host 证明 proposal 真落盘**：随机 exact canary 284 bytes、commandExecution exit 0、场后清理。Runner 内第一次因嵌套 Seatbelt `sandbox_apply: Operation not permitted` 失败，原件保留说明配置声明本身不等于能力证据。`RAYA_STATE_DIR` 仍是有意的不可写安全边界 |
 | 存活信号 | 无。bed 只在 busy 时响;它不说话就是一片静 | ❌ 没有 |
 | 筛选 | 无 | ❌ 没有 |
 | 用嘴批 ship | 无 | ❌ 没有 |
@@ -96,7 +98,7 @@ POST /api/voice/ship-approval  语音批准写入。守卫阶梯(voice-routes.ts
 
 ⇒ **§5.5「同路落地」在 ship 这一格已经有现成的路**:文字批准(`text-approval-source.ts`:必须是 founder 本人**回复**当前卡片 + 固定词)、表情批准、语音批准三者最后都走 `writeGateResponseAndRunPostWrite`。本单不造第二条。
 
-⚠️ **A §8.5 那把尺子**(假设使用者没有 flywheel 仓):Raya **不 import** Flywheel;它只需要「一个 HTTP 批准端点 + 一个 token」这两个**运行期配置**。换一台没有 flywheel 源码的机器,这一格退化成「语音批准不可用,它会明说」,其余四格照常。⇒ 这是**可选外部适配器**,不是依赖。
+⚠️ **A §8.5 那把尺子**(假设使用者没有 flywheel 仓):Raya **不 import** Flywheel;它只需要「一个 HTTP 批准端点 + 一个独立 credential file」这两个**运行期配置**。credential 不放 `raya.env`,且必须由 Codex host 管理员策略 deny-read 并通过运行时探针。换一台没有 flywheel 源码或没有这条 host requirement 的机器,这一格退化成「语音批准不可用,它会明说」,其余四格照常。⇒ 这是**可选外部适配器**,不是依赖。
 
 ### 2.3 FLY-1911 原型验过的形状(不是规格,是「她验过能用」的证据)
 
@@ -151,7 +153,7 @@ POST /api/voice/ship-approval  语音批准写入。守卫阶梯(voice-routes.ts
 | B2 规则只写进 `MEMORY.md` 散文,靠模型自己「记得别念」 | 检测器满足自己(B §5.6.4 那一族):它念不念全凭它自己说记住了;没有可测的行为 | ⛔ |
 | B3 规则放 `RAYA_STATE_DIR` | 后台 Codex 写不了 state(config 禁重叠)⇒ 得走 outbox 中转;而且她看不见 | ⛔ |
 
-「说一声」的代价:她说「这个不用告诉我」→ 后台 Codex 把它写成一条规则(outbox 动作 `remember_filter`)→ voice 进程校验 + 落盘 + 回执 → 它回一句「好,以后 X 类不念」。**不念专名**(这不是动单/人/仓库)。🔶 规则的**粒度**由她的话决定(某个 Lead / 某类 / 某个关键词),模型解析,代码只认三种字段。
+「说一声」的目标形状:她说「这个不用告诉我」→ 后台 Codex 把它写成一条规则(outbox 动作 `remember_filter`)→ voice 进程校验 + 落盘 + 在 `#raya` 发 bot-authored 文字收据 → Speaker 只念「已处理，请以文字收据和账本为准」。**不念专名**(这不是动单/人/仓库)。🔶 规则的**粒度**由她的话决定(某个 Lead / 某类 / 某个关键词),模型解析,代码只认三种字段。P1b 已证明后台能写 exact proposal；实际筛选行为仍待 FLY-2030 + founder 真声验收。
 
 ### Q3 常开流(§3.1d)+ 沉默必须被主动打破(§5.4)
 
@@ -179,7 +181,7 @@ POST /api/voice/ship-approval  语音批准写入。守卫阶梯(voice-routes.ts
 
 | 选项 | 反面 | 取向 |
 |---|---|---|
-| D1 后台 Codex 把要转达的话写成 outbox 文件(`{target, text, quotes}`);voice 进程**校验 → 念专名/编号 → 发 Discord → 回执写回 outbox** | 多一层文件中转;但它正是 1911 验过的形状,且核对天然在模型够不着的一侧 | ⭐ **选它** |
+| D1 后台 Codex 把要转达的话写成 outbox 文件(`{target, text, quotes}`);voice 进程**校验 → 念专名/编号 → 发 Discord → 权威回执写进 state，并由 Raya bot 在 `#raya` 发文字收据**；speech 只作旁白 | 多一层文件中转；核对天然在模型不可写的一侧。P1b 已证 proposal 真落盘；完整 relay 仍待 FLY-2030 + founder 真声 | ⭐ **选它** |
 | D2 让 Raya 的 realtime 模型直接「说」它转告了,后台 Codex 用 `gh`/curl 自己发 | 「已转告」由发送方自己书写(B §5.6.4 ⛔);念的是它改写后的版本 | ⛔ |
 | D3 Raya 给 Lead 走 Bridge mailbox(`flywheel-comm ask`) | 寄生 flywheel;而且她看不见(A §8.6.7 要看见) | ⛔ |
 
@@ -189,10 +191,10 @@ POST /api/voice/ship-approval  语音批准写入。守卫阶梯(voice-routes.ts
 1. outbox 动作到达 {kind:"relay", target:"<lead>", text:"…", quotes:["FLY-1833"]}
 2. 校验 quotes ⊂ 最近 user 转写原文(逐字)    ← 取的是【转写原文】,不是它归一化后的值(§5.6.4)
    不在 ⇒ 回执 rejected{transcript 原文} ⇒ 模型只能去问她,不能自己补
-3. 回执 readback_required{"FLY-1833"} ⇒ 它念出来(v2 回合制:它念完才听)
+3. 代码注入 readback_required{"FLY-1833"} 作为操作触发 ⇒ 它念出来(v2 回合制:它念完才听；这段 speech 不具有授权力)
 4. 代码在 assistant 转写里看到那串原词 ⇒ 开一个短 grace(🔶 可改)让她说「不对/等等/取消」
-5. 没有 ⇒ 发 Discord(Raya bot,带【转达 Annie 语音】+ 转写原文 + 它的整理版)⇒ 回执 sent{messageId}
-6. 「转告了」只在回执 sent 之后才允许它说;messageId 是 Discord 给的,不是它自己写的
+5. 没有 ⇒ 发 Discord(Raya bot,带【转达 Annie 语音】+ 转写原文 + 它的整理版)⇒ state 写 `sent{messageId}`，Raya bot 在 `#raya` 发 `【Raya 动作文字收据｜以此为准】`
+6. 任何口头「转告了」都不算凭证；只有目标频道消息、`#raya` bot 文字收据的 messageId 与 state ledger 可证明结果
 ```
 
 ⚠️ **边界一(必须交出去)**:Lead 那一侧**认不认** Raya 转达的指令,是 Flywheel 的 Lead 提示词/策略(FLY-944 共享频道 mention gating 等),**不在 Raya 里**。本单保证的是:她的话以**可核的形状**落在她能看见的地方;Lead 照不照做,和她坐在电脑前打同一段字是同一个问题。
@@ -218,7 +220,7 @@ inbox 条目 kind=ship_gate {issue, pr, gateMessageId, questionId, prHeadSha}   
 
 | 选项 | 反面 | 取向 |
 |---|---|---|
-| E1 Raya 做**可选外部适配器**:`RAYA_APPROVAL_ENDPOINT_URL` + token(0600 env);没配 ⇒ 这一格不可用且明说 | 多两个 env key;A §8.5 尺子下它是「接入一个别人给的批准端点」,不是依赖 flywheel 源码 | ⭐ **选它** |
+| E1 Raya 做**可选外部适配器**:`RAYA_APPROVAL_ENDPOINT_URL` + credential file;credential 0600、在 workspace 外、Codex admin deny-read 且运行时双探针通过;没配/探针不过 ⇒ 这一格不可用且明说 | 多 endpoint/path 两个 env key、一个 secret file 与一条 host requirement;A §8.5 尺子下它是「接入一个别人给的批准端点」,不是依赖 flywheel 源码。早期“token 放 0600 env”的取向被 code review 证明同 UID sandbox 仍可读,已废弃 | ⭐ **选它(修订)** |
 | E2 Raya 只在 Discord 发「Annie 语音批了」文字,让 Bridge 的文字通道去认 | 文字通道要求 **founder 本人**回复卡片(`text-approval-source.ts:35`);bot 消息身份不对 ⇒ 永远 unclear;等于假批 | ⛔ |
 | E3 Raya 直接改 Bridge 的 StateStore / CommDB | 寄生 + 绕过唯一写入原语 | ⛔ |
 
@@ -238,7 +240,7 @@ inbox 条目 kind=ship_gate {issue, pr, gateMessageId, questionId, prHeadSha}   
 | 6 merge/ship 仍 founder-gated | 语音批准只是**多一条送到同一个门的路**,门还是那道门 |
 | 3.1c 在实际界面验 | 验收全部在真语音房(voice-test-2)+ `#raya` + 真耳机;fake transport 只做单测;主 General 归她自用(B §11.3) |
 | 3.1d 常开流 | [main] 已有;本单验证它,不动它 |
-| 3.1e / 3.1e.1 它把能力说大 / 先报错数 | 「已转告」「已批」只能念回执;数字核对在 outbox 校验侧(1911 `verify()` 形状),不在它嘴里 |
+| 3.1e / 3.1e.1 它把能力说大 / 先报错数 | 「已转告」「已批」不能由 speech 证明；只认目标频道消息、`#raya` bot 文字收据的 messageId 与 state ledger。数字核对在 voice 校验侧,不在它嘴里 |
 | 3.1f 打断不了 | 不做(§6.1);念读设计按「它念完才听」写(grace 窗口从它念完起算) |
 | 3.2 宁可多说 | 默认全念;超预算分批 + 明说还有;筛选只减不加 |
 
@@ -250,6 +252,7 @@ inbox 条目 kind=ship_gate {issue, pr, gateMessageId, questionId, prHeadSha}   
 |---|---|---|---|---|
 | **P0** 常开流·真房闭麦 | 她(或授权 QA 人声)在 voice-test-2 自闭麦 ≥ N 分钟(🔶 N 由 Lead 定,不填数)后开口,会话还活 | ① user 转写出现且内容对得上 ② assistant 转写出现 ③ 房里真有声音 ④ `audio_counters.sent` ≈ 时长/20ms | §3.1d 在 v2 + Discord + 闭麦上**坐实** | 上行静音帧没在送 ⇒ 是 bug(main 的 `setMicOpen` 路径),先修再验;**不是**产品前提被削弱 |
 | **P1** `appendSpeech` 带播报前缀的语义 | 会话中喂「【系统播报】Tadashi 问:FLY-2031 的 PR 要不要 ship」 | assistant 转写把它**念给她听**(第二人称、转述),而不是当成她说的去执行/回答她 | 会话中新条目 + 存活信号都走 appendSpeech | 会话中不念,只上文字行;存活信号退成 bed(C2)+ 文字行;**如实写进 HTML 交她判** |
+| **P1b** 后台 proposal 真落盘 | 隔离 scratch cwd/outbox，真 app-server + realtime handoff 要求后台只创建随机 exact `.action.json`；只认磁盘文件 | Runner 内首腿因嵌套 Seatbelt 失败；Lead 在 Runner 外用同脚本/围栏重跑，random canary exact PASS（284 bytes，commandExecution exit 0，场后 outbox 空） | **已走此分支：proposal 写能力 PASS；继续 relay/filter/pref 的 FLY-2030 + founder 验收** | — |
 | **P2** outbox 校验闭环 | 后台 Codex 写一个 relay 动作,quotes 含一个转写里**没有**的单号 | 回执 rejected,它去问她而不是自己补 | 门有效 | 它绕过 outbox 自己发了 ⇒ writable roots / 工具面要收 |
 | **P3** ship 批准端到端(非生产 gate) | 529 测试房或 Lead 批的一次真 gate:念编号 → 她说「确认」→ 回执卡 → POST → Bridge 写入 | Bridge 返回 written=true 且 issue thread 出现同一原语的后写行为 | §5.7 接通 | 卡在哪一级(receipt/binding/identity)就报哪一级,不改 Bridge |
 
@@ -266,7 +269,8 @@ RAYA_STATE_DIR/voice-inbox/items.jsonl     brain 追加(owner-private 0600)
 RAYA_STATE_DIR/voice-inbox/acks.jsonl      voice 追加:{id, at, how:"spoken"|"filtered"|"deferred", sessionBootId}
 RAYA_STATE_DIR/voice-filter.json           voice 写(经 outbox 提案校验)——R1 更正:权威文件不放模型可写仓
 RAYA_STATE_DIR/voice-leads.json            运营者提供:[{name, aliases[], discordChannelId}] ——同上
-RAYA_OUTBOX_DIR(新 writable root)          后台 Codex 写动作 {kind:relay|remember_filter|approve_ship, …};voice 写回执
+RAYA_OUTBOX_DIR(新 writable root)          后台 Codex 只写动作 proposal;voice 只做原子 claim
+RAYA_STATE_DIR/voice-actions/receipts.jsonl voice 写权威账本;Raya bot 同步发 #raya 文字收据;speech 仅旁白
 ```
 
 **2030 要知道的三件**:① inbox 是「进来的一层 = 全部」,brain **不筛**;② `ship_gate` 条目要带 Bridge 绑定三元组(2030 从卡片/Bridge 吸收);③ `startInstructions` 的身份载荷内容归 2030,本单只在它后面**追加**开场积压并做 8,192 预算。
@@ -276,7 +280,7 @@ RAYA_OUTBOX_DIR(新 writable root)          后台 Codex 写动作 {kind:relay|r
 ## 7. 假设清单(全部 🔶,Codex/Lead/她任一纠正即作废)
 
 1. `appendSpeech` 加前缀能让模型把内容当「播报」而非「她说的」—— **P1 验**。
-2. 后台 Codex 在 realtime 会话里会按指令写 outbox 文件(P5 已证它能跑命令;写文件是同一沙箱)。
+2. 后台 Codex 在 realtime 会话里会按指令写 outbox 文件 —— **P1b 已证**：Runner 外隔离 host 的 exact-disk canary PASS。P5 仍只证明 handoff/result transport；Runner 内首轮失败是嵌套 Seatbelt 环境反例，不能删除，也不能拿来否定 host lane PASS。
 3. `assistant transcript/done` 是平台记录的**它实际说出的话**,可拿来核「念了没有」。
 4. 一个新的 writable root(`RAYA_OUTBOX_DIR`)是可接受的部署变更(要改 0600 env + contracts;Lead 定)。
 5. Lead 目录文件由运营者一次性填好;内容是部署事实。

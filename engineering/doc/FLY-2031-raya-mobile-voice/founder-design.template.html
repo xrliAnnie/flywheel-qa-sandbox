@@ -45,7 +45,7 @@
 <div class="wrap">
   <h1>随身语音(B):它主动念给你听,你用嘴指挥</h1>
   <div class="meta">
-    <span class="badge purple">FLY-2031</span><span class="badge gray">设计方案 · 未实施</span><span class="badge gray">2026-08-27</span><br>
+    <span class="badge purple">FLY-2031</span><span class="badge gray">实现中 · P1b 能力已过</span><span class="badge gray">2026-08-28</span><br>
     规格来源:FLY-1850 PRD v1.0(§5 已定行为 + §3 硬约束)· 代码落点:raya 仓 <span class="mono">apps/voice</span> · 与 FLY-2030(大脑)并行,接口已预留<br>
     这一页是给你审的:每一节下面都有意见框,写完到页底一键汇总复制。<b>汇总只是修改意见,不代表通过。</b>
   </div>
@@ -53,7 +53,7 @@
   <!-- ===== 1 一句话 ===== -->
   <section class="card green" data-section="1 一句话">
     <h2>1 · 一句话</h2>
-    <p>你戴着耳机进语音房,它<b>主动</b>把「要你决定的 + 要汇报的」念给你;你说一句,它<b>先念回单号/名字再动手</b>;你说「确认」,ship 就批了 —— 走的是和文字批准<b>同一道门</b>。</p>
+    <p>目标体验是:你戴着耳机进语音房,它<b>主动</b>把「要你决定的 + 要汇报的」念给你;你说一句,它<b>先念回单号/名字再动手</b>;你说「确认」,请求走和文字批准<b>同一道门</b>。后台 proposal 已用随机磁盘文件真写通过,但筛选保存、偏好保存和转达还要等 FLY-2030 + founder 真声做产品验收；用嘴批 ship 走另一条 inbox 路,仍等 2030 与批准密钥 deny-read,不冒充可用。</p>
     <div class="comment"><label>这一节的意见(自动保存在你本机)</label><textarea data-k="s1" placeholder="写在这里…"></textarea></div>
   </section>
 
@@ -63,10 +63,10 @@
     <table>
       <tr><th>你说过的</th><th>做出来是什么样</th></tr>
       <tr><td>「只要我一进语音模式…他是一定要主动开口的」(§5.1)</td><td>一进房它就开口:「现在是什么情况 + 哪些要你决定」。要决定的先念;一次念不完会说「还有 N 条,我接着念」并自动续上,不会悄悄吞掉</td></tr>
-      <tr><td>「一开始他会把所有信息都给我…我们可以慢慢减少」(§5.2/5.3)</td><td>默认全念。你随口一句「这类不用告诉我」,它记成一条规则(落在固定路径的规则文件里 —— 模型改不了那块地方,你/运营者随时能看能删),下次就少念这类</td></tr>
+      <tr><td>「一开始他会把所有信息都给我…我们可以慢慢减少」(§5.2/5.3)</td><td>默认全念。目标是你随口一句「这类不用告诉我」,它记成一条规则(落在固定路径的规则文件里,模型改不了权威文件)。后台 proposal 写能力已过；完整保存/下场少念仍待真人验收</td></tr>
       <tr><td>「它如果一小时都不跟我讲话,我就会担心它是不是坏了」(§5.4)</td><td>静太久它会自己出声报平安。多久算「太久」<b>不是拍死的数</b>:你说「别这么频繁」它就改,这个数等你用出来</td></tr>
-      <tr><td>「listening 转写那套…你可能也得做一个判断呀」(§5.5)</td><td>你对某个 Lead 说的话,它整理后<b>发成 Discord 文字</b>(和你打字发到的是同一个地方),消息里附你的原话转写 —— Lead 和你都看得见</td></tr>
-      <tr><td>「用嘴批 ship 继续算数?」——「yes」(§5.7)</td><td>它念:「FLY-xxxx 的 PR #964 在等 ship 批准」;你说「确认」→ 先落书面回执,再送进 Flywheel 的批准通道。<b>门还是那道门</b>,语音只是多一条走到门口的路</td></tr>
+      <tr><td>「listening 转写那套…你可能也得做一个判断呀」(§5.5)</td><td>目标是你对某个 Lead 说的话,它整理后<b>发成 Discord 文字</b>,消息里附你的原话转写和可核 messageId。proposal 写能力已过；整条外发链仍待 founder 真声验收</td></tr>
+      <tr><td>「用嘴批 ship 继续算数?」——「yes」(§5.7)</td><td>目标是它念:「FLY-xxxx 的 PR #964 在等 ship 批准」;你说「确认」→ 先落书面回执,再送进 Flywheel 的批准通道。<b>门还是那道门</b>。这条走 FLY-2030 的 ship_gate inbox,不依赖 proposal outbox；当前卡在 2030 未落地与批准密钥 deny-read 尚未授权,因此不跑、不声称已批</td></tr>
     </table>
     <div class="comment"><label>这一节的意见</label><textarea data-k="s2" placeholder="写在这里…"></textarea></div>
   </section>
@@ -74,7 +74,7 @@
   <!-- ===== 3 核心流程 ===== -->
   <section class="card" data-section="3 核心流程">
     <h2>3 · 核心流程:一进一出</h2>
-    <p>上面一条链是「念给你听」:大脑(FLY-2030,另一张单)把该你知道的写进<b>语音收件箱</b>(一个只追加的清单文件),语音进程过一遍筛选规则,把该念的交给 <span class="term" title="OpenAI 的编程代理,自带实时语音能力">Codex</span> 念出来。下面一条链是「你说话」:它听懂后不直接动手,而是把提案写成文件,由<b>代码</b>核对、念回、再落地。</p>
+    <p>上面一条链是「念给你听」:大脑(FLY-2030,另一张单)把该你知道的写进<b>语音收件箱</b>(一个只追加的清单文件),语音进程过一遍筛选规则,把该念的交给 <span class="term" title="OpenAI 的编程代理,自带实时语音能力">Codex</span> 念出来。下面一条链是「你说话」:后台先把 proposal 写成文件,再由<b>代码</b>核对、念回、落地。proposal exact-disk 能力已在 Runner 外隔离 host 通过；图里的端到端行为仍待 2030 + founder 验收。</p>
     <div class="diagram wide">{{D1}}</div>
     <div class="note">「常开流」这个硬前提(没声音也要一直送静音帧,不能停)<b>上一单已经做好了</b>,本单不改它 —— 只在真实房间里把「你自己闭麦很久再开口,它还活着」这一格验掉(之前恰好没测过这格)。</div>
     <div class="comment"><label>这一节的意见</label><textarea data-k="s3" placeholder="写在这里…"></textarea></div>
@@ -87,7 +87,7 @@
     <div class="diagram">{{D2}}</div>
     <ul>
       <li><b>核对不由说话的一方做</b>:模型提案里的单号,必须逐字出现在你的<span class="term" title="语音转文字(ASR)的文本记录">转写</span>里,由语音进程核 —— 模型自己念自己写的号,那是表演不是核对(PRD §5.6.4)。</li>
-      <li><b>「转告了」只能念回执</b>:Discord 返回消息编号后它才许说转告了;没回执就得如实说没送到。</li>
+      <li><b>「转告了」不能靠嘴证明</b>:任何 speech、<span class="mono">[BACKEND]</span> 或系统播报都可能被模型仿写。只认目标频道消息、<span class="mono">#raya</span> 的 bot 文字收据、Discord messageId 与权威账本;语音只作旁白。</li>
       <li>这道门<b>只验「听没听对」,不验「理解对不对」</b>:号听对了但挂错单,这门抓不到 —— 你已定「先跑一阵,真的多次转达错再修」(§6.3),照办。</li>
     </ul>
     <div class="comment"><label>这一节的意见</label><textarea data-k="s4" placeholder="写在这里…"></textarea></div>
@@ -101,9 +101,10 @@
     <ul>
       <li><b>「念的」和「写的」必须是同一张卡</b>:念之前先向 Bridge 现查这张卡、只念它回的 issue/PR;你说确认后<b>再查一次</b>,两次不一致就作废重念 —— 防「念 B 批 A」的错单。</li>
       <li><b>「确认」这个词不经过模型</b>:语音进程直接取你的转写原文和说话人身份送给 Bridge —— 模型既不能替你说确认,也不能把确认挂到别的单上。</li>
-      <li>Bridge 说「评审还没绿」就念「这次批不生效」;<b>它永远不自己编「已 ship」</b>。</li>
+      <li><b>确认词只跟刚才那次 ship 提问</b>:它念完 ship 单号后,只认你紧接着说的第一句话；期间只要它又念了别的问题、或你先说了其它话,这次武装立即作废并留记录。后面一句裸「对/确认」不会跨问题误批,必须等它重新念 ship 单号。</li>
+      <li>Bridge 说「评审还没绿」就念「这次批不生效」;但这段语音仍只是旁白,<b>最终只认回执卡、bot 文字与 Bridge audit,它永远不自己编「已 ship」</b>。</li>
       <li><b>回执卡只发进核验过的频道</b>:发卡前它会真的去查「这张 ship 卡确实在这个频道里」—— 这需要给 Raya bot 补一个<b>只读历史</b>权限(ReadMessageHistory),到时要你用新链接重新授权一次(一次性,Tadashi 会准备好)。</li>
-      <li>这一格是<b>可选适配器</b>:Raya 是独立产品(你定的:假设使用者没有 flywheel 仓库),只通过一个网址+密钥接 Bridge;没配就明说「语音批准不可用」,其余四件照常。</li>
+      <li>这一格是<b>可选适配器</b>:Raya 是独立产品(你定的:假设使用者没有 flywheel 仓库),只通过一个网址+独立密钥文件接 Bridge;密钥不放在 Codex 可读的环境文件里。启动批准面前,Raya 会用真正的 Codex 沙箱做双探针:普通记忆文件必须读得到,密钥文件必须被拒读;少 host 权限或探针不过就明说「语音批准不可用」,其余四件照常。</li>
     </ul>
     <div class="comment"><label>这一节的意见</label><textarea data-k="s5" placeholder="写在这里…"></textarea></div>
   </section>
@@ -111,7 +112,7 @@
   <!-- ===== 6 文件与结构 ===== -->
   <section class="card purple" data-section="6 文件与结构">
     <h2>6 · 谁能写什么 —— 权限即结构</h2>
-    <p>三块存储,边界故意不一样:<b>状态目录</b>模型碰不到 —— 收件箱、筛选规则、Lead 通讯录、权威回执账本全在这一侧,它伪造不了「收件箱里有事」,也改不了「你的话发给谁」;<b>出件箱</b>模型可写但<b>单向</b>(只能放提案,回执不落在这里,而是由语音进程念给它听);<b>记忆仓</b>是 git 仓(它的身份和长期记忆)。</p>
+    <p>四块边界,不要混成一句「模型碰不到」:<b>code / 记忆仓 / proposal outbox</b>是 Codex writable roots；配置之外,P1b 又在 Runner 外隔离 host 真写出 284-byte exact canary。Runner 内首轮因嵌套 sandbox 失败的反例也保留。<b>状态目录</b>不在 writable roots,所以 Codex 改不了收件箱、筛选规则、Lead 通讯录与权威账本。终态由语音进程先落账,再由 Raya bot 在 <span class="mono">#raya</span> 发文字收据;speech 只旁白。<b>批准密钥</b>另放 owner-only 文件,再由 host 管理员策略禁止读取,而且每次启用前现场探针证明。</p>
     <div class="diagram">{{D4}}</div>
     <div class="comment"><label>这一节的意见</label><textarea data-k="s6" placeholder="写在这里…"></textarea></div>
   </section>
@@ -122,8 +123,8 @@
     <table>
       <tr><th>选了</th><th>没选(为什么)</th><th>选择的代价(如实)</th></tr>
       <tr><td>大脑→文件清单→语音进程</td><td>语音进程自己去读 Discord(抢了大脑的活,两个脑子)</td><td>大脑那张单(2030)还没落地,验收先用假数据喂清单,<b>内容是假的、界面是真的</b>,会如实标注</td></tr>
-      <tr><td>所有「要它开口」走 Codex 的文字注入口</td><td>自己造提示音/TTS(你定过:耳朵嘴巴都归 Codex)</td><td>「注入的播报它会不会当成是你说的」<b>还没在真机上验过</b> —— 这是本设计最大的单点,探针排在实施第一步,失败退路已写死(改发文字行,并回来告诉你这违背了「有新消息才处理」的即时性)</td></tr>
-      <tr><td>模型动手 = 写文件提案 + 回执</td><td>让模型自己发 Discord/自己调批准接口(「已转告」会变成它自说自话)</td><td>多一层文件轮询,秒级延迟;每条提案必须引用你的转写编号,模型编不出「你说过的话」</td></tr>
+      <tr><td>所有「要它开口」走 Codex 的文字注入口</td><td>自己造提示音/TTS(你定过:耳朵嘴巴都归 Codex)</td><td>系统播报语义 P1 已用真 realtime 通过:它会转述而不代答。但 speech 仍不具动作授权力</td></tr>
+      <tr><td>outbox 动作 = 模型写 proposal + 代码写 state / bot 文字收据</td><td>让模型自己发 Discord(「已转告」会变成它自说自话)</td><td>P1b host exact-disk 已过；仍有文件轮询延迟，完整 relay/filter/pref 要在真人界面验。ship 是独立 inbox 路,另需 host 管理员策略 + 每次启动探针</td></tr>
       <tr><td>存活信号由代码定时器触发</td><td>靠模型自觉(「它没说话」和「它死了」会同形 —— 正是你要防的)</td><td>默认间隔是占位数,<b>不是你给的</b>,等你用起来再调,一句话就能改</td></tr>
       <tr><td>筛选规则 = 状态目录里的结构化文件 + 代码执行</td><td>写进记忆散文靠模型记得(没法验证它真的少念了);放模型可写的仓(它能自己改规则让某类事静默消失 —— 评审第 1 轮堵掉的洞)</td><td>你那句话怎么变成规则是模型判断的,判错了规则文件路径固定,你/运营者能直接看直接删</td></tr>
     </table>
@@ -133,17 +134,19 @@
   <!-- ===== 8 诚实边界 ===== -->
   <section class="card gray" data-section="8 诚实边界">
     <h2>8 · 诚实边界 —— 这个设计做什么、不做什么</h2>
-    <h3>做(本单五件)</h3>
+    <h3>目标范围(本单五件；不等于目前已验收)</h3>
     <ul><li>进房主动念积压 + 会话中新事照念(全给、分批、明说「还有 N 条」)</li><li>「这个不用告诉我」→ 长出筛选规则</li><li>真机验常开流(含你闭麦那格)+ 存活信号机制</li><li>你的话 → 核对念回 → Discord 文字落地</li><li>用嘴批 ship(接既有阶梯)</li></ul>
     <h3>刻意不做(PRD 留空,不替你填)</h3>
     <ul><li><b>打断</b>:v2 是回合制,它说话时不听 —— 你已裁「交给工程实施时判定」;本单按「它念完才听得见你」设计</li><li><b>存活信号的间隔数值 / 筛选的终点标准 / 挂错单兜底</b>:等你用起来;所有数字都是可改配置</li><li>状态吸收、追问、身份内容(FLY-2030)· 多人会议(FLY-1851)· 转写字幕上屏 · 掉线自动重连(你否掉的,不复活)</li></ul>
     <h3>已知的洞(交付时会带着,不假装没有)</h3>
     <ul>
-      <li>播报注入的语义探针(§7 第二行)没跑之前,整个「念给你听」是纸面设计</li>
+      <li>播报注入的语义探针 P1 已通过；但 FLY-2030 状态吸收尚未 merge,所以真实内容念读仍未完成最终联调</li>
+      <li><b>P1b exact-disk 已通过</b>:Runner 内首轮被嵌套 sandbox 拦截；Lead 在 Runner 外同围栏原样执行,后台 commandExecution exit 0，磁盘 exact canary 284 bytes，场后已清理。它只证明 proposal 写能力,不替代筛选/转达真人验收。用嘴批 ship 走独立的 <span class="mono">ship_gate</span> inbox 路径,仍卡在 FLY-2030 与批准密钥 deny-read 两道自己的硬门</li>
       <li>Lead 那一侧<b>认不认</b> Raya 转达的指令,是 Flywheel 侧的策略,不在 Raya 里 —— 本单保证的是你的话以可核的形状落在你能看见的地方</li>
       <li>你说「不对」要等它念完那句才有效(回合制);转达是可逆的(能再发更正),批 ship 根本不靠这个窗口(必须精确词)</li>
       <li>崩溃/换场后没念完的条目下一场会<b>重播</b>(宁可重复念,不可吞掉);极端崩溃窗口里一条转达可能「发没发出去不确定」—— 那时<b>不自动重发</b>,会如实说,你再说一遍即可</li>
       <li>验收在语音测试房 <b>voice-test-2</b> 做(你定的:测试不占 General),会有至少一轮<b>真人声</b>(合成音验不出真转写错误 —— 1911 的教训),排期和谁出声由 Tadashi 定</li>
+      <li>用嘴批 ship 那格还多一个硬前提:host 必须装好 Codex 管理员 deny-read requirement,而且当场探针证明「普通文件可读、批准密钥不可读」;否则这格不跑、不以 0600 env 代替</li>
     </ul>
     <div class="comment"><label>这一节的意见</label><textarea data-k="s8" placeholder="写在这里…"></textarea></div>
   </section>

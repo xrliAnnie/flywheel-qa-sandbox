@@ -1,20 +1,26 @@
 flowchart LR
-  subgraph ST["状态目录(模型碰不到 = 权威面)"]
+  subgraph ST["状态目录(不在 writable roots = Codex 不可写)"]
     ITEMS["voice-inbox/items.jsonl<br/>大脑写"]
     ACKS["voice-inbox/acks.jsonl<br/>语音进程写"]
     RCP["voice-actions/receipts.jsonl<br/>权威回执"]
     FF["voice-filter.json 筛选规则"]
     LJ["voice-leads.json 通讯录"]
   end
-  subgraph OBX["出件箱(模型可写,单向)"]
-    ACT["*.action.json 提案<br/>(带 actionId+转写引用)"]
-  end
-  subgraph MEM["记忆仓(git)"]
+  subgraph WR["Codex writable roots（配置 + P1b 能力证据）"]
+    CODE["Raya code"]
     IDM["IDENTITY.md / MEMORY.md"]
+    ACT["outbox/*.action.json proposal<br/>P1b host:exact canary PASS"]
+  end
+  subgraph SEC["批准 credential(额外读边界)"]
+    CRED["owner-only file<br/>workspace 外 + admin deny_read<br/>启动时 control/secret 双探针"]
   end
   BRAIN["大脑进程"] --> ITEMS
+  BOT["#raya Raya bot 文字收据<br/>actionId/status/messageId"]
   VP["语音进程"] --> ACKS & RCP & FF
   VP -.读.-> ITEMS & LJ & ACT
-  CX["后台 Codex(沙箱)"] --> ACT
-  CX -.读.-> IDM
-  VP -.回执用播报念给模型.-> CX
+  CX["后台 Codex(沙箱)"] -->|P1b host commandExecution exit 0| ACT
+  CX --> CODE
+  CX -.读写.-> IDM
+  CRED -->|只由语音进程读取| VP
+  VP --> BOT
+  VP -."中性旁白;speech 不证明结果".-> CX

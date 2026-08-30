@@ -3,6 +3,8 @@ Issue: FLY-2031 (https://linear.app/geoforge3d/issue/FLY-2031/rayav3-随身语�
 日期: 2026-08-27
 基于: exploration.md
 
+> **2026-08-30 current selection:** 本文记录原始调研事实，不代表最终交付形态。Founder replacement rework 已净删除 custom barge-in，采用正常逐轮对话，并按 FLY-1911 prototype 的 transcript/turn-state 思路增加 `VoiceTextMirror`；`ship_gate` fail-closed 不变。当前验证权威见 `bot-qa-summary.md` R16。
+
 > 本文只记**能被重跑或重读核实的事实**,每条带出处;方案取舍在 §6。
 > 世界标记同 exploration §0:[main] = raya `origin/main` b7abff4;[flywheel] = 主仓 `e33f87d70`;[1911] = `product/doc/FLY-1911-codex-voice-prototype/`。
 
@@ -23,12 +25,12 @@ P5 探针(`probes/p5-busy.mjs`)用 `thread/realtime/appendSpeech {text}` 提问,
 | 事实 | 成色 |
 |---|---|
 | `appendSpeech` 的文本作为 **`role:"user"`** 消息进入 realtime 对话,Codex 自己加了 `[BACKEND] ` 前缀(探针发的原文没有这个前缀,`c0-lib.mjs:330`) | ✅ 原件可核 |
-| 模型对它**会回答**(P3/P4「记随机校验词 → 回答记住了」;P5 → 交办后台跑 `pwd` 再答)| ✅ research-2074 §7.5–7.6 |
+| 模型对它**会回答**(P3/P4「记随机校验词 → 回答记住了」;P5 → 交办后台尝试 `pwd` 后把 sandbox failure 传回)| ✅ research-2074 §7.5–7.6；只证明对话/结果 transport，不证明命令成功 |
 | 1911 原型用 `appendSpeech("我上线了，现在可以跟我说话。")` 让它**先开口打招呼**(v2 独有;v3 没有文字触发口) | ✅ `bridge-hl.mjs:1383–1388`;她在 8-20/8-21 的真机场里听到过这个开场 |
 | 模型会不会把播报前缀理解成「念给她」而不是「她在说」 | ⬜ **没人量过** ⇒ exploration P1 |
 | `appendSpeech` 有没有长度上限 | ⬜ 未知(schema 不导出请求定义,research-2074 §1.1)⇒ 分批发,每批 🔶 ≤ 1,500 字,超了先验 |
 
-⇒ **它是 v2 里唯一的会话中文字入口**,而且已经被当「触发它开口」用过。本单所有「代码要它说」的动作(开场积压、会话中新条目、存活信号、念回执)都只能走它。
+⇒ **它是 v2 里唯一的会话中文字入口**,而且已经被当「触发它开口」用过。本单所有「代码要它说」的内容(开场积压、会话中新条目、存活信号、动作旁白)都只能走它。⚠️ 它与后台结果都以 `role:"user"` 进入，不能作为动作成功的权威凭证。
 
 ### 1.2 交办给后台 Codex 的链路 [raya probes]
 
@@ -38,8 +40,8 @@ P5 原件里的顺序(同一秒内):
 itemAdded  user message  "[BACKEND] …"                         ← appendSpeech 落地
 itemAdded  function_call name:"background_agent" in_progress   ← realtime 模型决定交办
 itemAdded  handoff_request {handoff_id, item_id, input_transcript:"…", active_transcript:[{role,text}]}
-item/started  commandExecution … (backend turn)                ← 后台 Codex 真跑
-item/agentMessage/delta ×23 → item/completed → turn/completed
+turn/started → userMessage                                     ← 后台 turn 启动
+agentMessage「sandbox 无法运行…」→ turn/completed              ← 没有成功 commandExecution
 transcript/done role=assistant                                 ← 念出来
 ```
 
@@ -50,9 +52,34 @@ transcript/done role=assistant                                 ← 念出来
 | 后台线程的 `baseInstructions` = `IDENTITY.md` + `MEMORY.md` 拼接 | `apps/voice/src/codex/CodexLeg.ts:83–92` |
 | 后台在忙 = keyed `item/started|completed`;它开口 = `transcript/done role=assistant` | `runtime.ts:593–600`, `638–648` |
 | 生产 writable roots = `~/.flywheel/raya/code` + `~/.flywheel/raya/memory`;cwd = code | `~/.flywheel/raya/raya.env`(非密钥行) |
-| 后台 Codex **写不了** `RAYA_STATE_DIR` / metrics / CODEX_HOME / identity —— 配置层禁止 workspace 与它们重叠 | `apps/voice/src/config.ts:200–212` |
+| 后台 Codex 的 **workspace-write** 写权限限于配置的 roots;`RAYA_STATE_DIR` / metrics / CODEX_HOME / identity 不得与 roots 重叠,所以本合同只声称“不可写”,不声称“不可读” | `apps/voice/src/config.ts` 的 canonical overlap 校验;Codex review `4d884766-5f22-4f91-b52b-338c42911689` |
+| P5 没有成功的 `commandExecution`；后台 final 明说 sandbox 不能运行，因此 P5 只证明 handoff + backend-result transport | `probes/evidence/P5-busy/P5-busy.jsonl` 原件；Code R5 finding `backend-file-write-capability-unproven` |
 
-⇒ **模型能「动手」的唯一面是:在 writable roots 里写文件 / 跑命令。** 要让 voice 进程看见它的动作,只能在 writable root 里放一个 outbox。
+⇒ `writable_roots` 描述的是**授权边界**，不是“模型已经实际写成功”的证据。目标设计仍把“语音动作授权面”收窄为 outbox proposal，但必须另过 exact-disk P1b，才能声称 action proposal 可用。
+
+### 1.2b P1b exact-disk：Runner 内失败，外部隔离 host PASS [Codex 0.150.1]
+
+2026-08-28 在 Lead 提供的隔离 scratch cwd/outbox 中，只跑一条 180 秒真 app-server + realtime handoff。请求后台创建随机 action `p1b-198647f5-184e-4244-b1d1-30467e9cc539.action.json`，通过条件只认磁盘 regular file 且 JSON 全等；assistant 文本和 tool event 均不计。
+
+Runner 内首轮：handoff 成功，三次目标 `fileChange` 均 `failed`；同一 Runner 里不走模型/API 的 `codex sandbox macos -- /bin/pwd` 也以 exit 71 返回 `sandbox_apply: Operation not permitted`，证明失败发生在嵌套 Seatbelt 初始化，而非 exact JSON 判定。该轮 `passed:false` 必须保留。
+
+Lead 随后在 Runner 沙箱之外、同 scratch/no-side-effect 围栏原样跑同一脚本。新随机 action `p1b-b98e6435-47c8-4bc3-9f88-91ba09b89533` 产生 `commandExecution status:"completed", exitCode:0`；磁盘 validator 在文件存在时核得 284 bytes、SHA-256 `09812855d2e7edb8f64eb1938c17704250206e12b87ba93d855884c1b72d9e85`，JSON 与随机 contract 全等；finally 后 outbox 为空。assistant 自报未参与判定。因此 P1b 的最终结论是 **PASS：host lane 下 backend proposal 写能力已证**。relay/filter/pref 可以进入 FLY-2030 + founder 产品验收，但尚不能据此宣称端到端已通过。`ShipGateFlow` 仍是独立 `ship_gate` inbox 路径。
+
+出处：同目录两组 evidence；`p1b-198647f5-...` 是 Runner 内 FAIL，`p1b-b98e6435-...` 是外部 host PASS。
+
+### 1.2a approval credential 的额外读边界 [Codex 0.150.1 / openai/codex]
+
+`workspace-write` 解决的是写权限,不自动挡住同 UID 进程读取 `raya.env`。因此把 bearer token 放进 owner-only env 文件仍然让后台 Codex 有机会直接绕过 voice 的 attributed transcript / armed binding / receipt-first 门。
+
+本机 Codex 0.150.1 与 OpenAI Codex 源码的配置加载合同显示:`permissions.filesystem.deny_read` 属于管理员 requirements,来源是 `/etc/codex/requirements.toml`,不是普通用户 `~/.codex/config.toml`。截至 2026-08-28 本机没有该 requirements 文件,所以 P3 不能靠“计划里说不可读”放行。
+
+本单据此收窄为三层:
+
+1. `raya.env` 只保存 `RAYA_APPROVAL_CREDENTIAL_FILE` 路径,明确拒绝 legacy inline `RAYA_APPROVAL_API_TOKEN`;
+2. credential 是 workspace 外的 owner-only regular file,由 host 管理员 requirement 对**精确 canonical path**配置 deny-read;
+3. `preflight` / `run` 在任何 Discord/Codex app-server/HTTP 副作用前,用实际 `codex sandbox` 先读已知可读 `memoryFile` 作 control,再读 credential。control 必须成功且 credential 必须 permission-denied;可读、两边都坏或结果含糊全部拒起。
+
+出处:OpenAI Codex `docs/config.md`(managed requirements section)、`codex-rs/core/src/config_loader/README.md`(requirements layer)、本仓 `apps/voice/src/security/ApprovalCredential.ts`。管理员配置只是预置条件,动态探针才是每次启动的行为证据。
 
 ### 1.3 开场指令会被忘掉 —— 内容必须跟着触发走 [1911]
 
@@ -178,12 +205,12 @@ transcript/done role=assistant                                 ← 念出来
 | 状态进耳机 | A1 brain→文件 inbox / A2 voice 读 Discord / A3 voice 调 Bridge | ⭐ A1:同族契约;2030 未落地时 fixture 可喂;A2 抢 2030 的活;A3 寄生 flywheel |
 | 它开口 | 全走 `appendSpeech`(内容随触发) / 开场走 startInstructions | ⭐ 前者:§1.3 的衰减证据;后者几分钟后就忘 |
 | 存活信号触发 | 代码定时器 → appendSpeech / 模型自觉 / 只响 bed | ⭐ 代码定时器:「没说话」和「死了」必须由模型之外的东西区分;bed 只作旁证 |
-| 筛选规则存储 | memory 仓 JSON(代码应用)/ MEMORY.md 散文(模型自觉)/ state dir | ⭐ memory 仓 JSON:可测、可审、不绑 vendor、她能改;散文 = 检测器自证 |
-| 她的话落地 | outbox+回执+代码发 Discord / 模型自己 gh·curl 发 / Bridge mailbox | ⭐ outbox:核对在模型够不着的一侧(1911 `verify()` 形状);后两者要么自证「已转告」,要么她看不见 |
+| 筛选规则存储 | state dir JSON(voice 校验后写)/ MEMORY.md 散文(模型自觉)/ model-writable root | ⭐ state dir JSON:可测且不让模型改权威状态；散文 = 检测器自证 |
+| 她的话落地 | outbox proposal + 代码发 Discord + state/bot 文字收据 / 模型自己 gh·curl 发 / Bridge mailbox | ⭐ 目标方案是 outbox：核对在模型**不可写**的 state 一侧，结果只认目标频道、bot messageId 与 ledger；P1b 写能力已过，端到端仍待 founder 验收 |
 | 念专名编号的门 | 代码核转写(user)+ 核念出(assistant)/ 提示词叫它念 | ⭐ 代码核:提示词版是表演(B §5.6.4) |
 | 用嘴批 ship | 可选端点适配器 → Bridge `/api/voice/ship-approval` / Raya 发文字让 Bridge 认 / 直改 CommDB | ⭐ 适配器:同一写入原语;文字路身份不对;直改绕过原语 |
 | outbox 位置 | 新 writable root / memory 仓 gitignored / state dir | ⭐ 新 root(§4) |
-| 模型的动作接口 | 写 outbox 文件(shell)/ 给 Codex 挂 MCP server | ⭐ 文件:1911 验过、零新进程;MCP = 新进程 + socket 通信,本单不需要 |
+| 模型的动作接口 | 写 outbox 文件 / 给 Codex 挂 MCP server | ⭐ 文件是最小目标形状、零新进程；P1b 外部 host exact-disk 已过；Runner 内嵌套 Seatbelt FAIL 保留为环境边界；MCP 是超出本单的替代架构 |
 
 ---
 
@@ -193,8 +220,10 @@ transcript/done role=assistant                                 ← 念出来
 |---|---|---|
 | `appendSpeech` 落地为 `[BACKEND]` 前缀的 user 消息 | Codex 0.149.1,P5 2026-08-26 | 重跑 `probes/p5-busy.mjs`,看 itemAdded 第一条 |
 | 交办工具名 `background_agent`;`handoff_request` 带 `input_transcript` | 同上 | 同上 |
+| 后台 proposal 写能力：Runner 内嵌套 Seatbelt FAIL；Runner 外隔离 host exact-disk PASS | Codex 0.150.1,P1b 2026-08-28,两种执行环境 | Codex/host sandbox 变更后，同样只认随机磁盘 canary；assistant 自报不算 |
 | 开场指令 8 分钟后读不到 | 1911 8-21,v2,n=5 | 有更新的 Codex 版本时,用 `bridge-hl.mjs` 的 5 场方法重跑一次 |
 | Bridge 守卫顺序与词表 | flywheel `e33f87d70` | `sed -n '322,520p' packages/teamlead/src/bridge/voice-routes.ts`;`voice-approval-source.ts:17–18` |
 | voice Discord client 没有 MessageContent intent;`announce` 只到 `#raya` | raya `b7abff4` | `grep -n Intent apps/voice/src/discord/DiscordAdapter.ts` |
 | 生产 writable roots = code + memory | raya.env 2026-08-27 | `grep WORKSPACE ~/.flywheel/raya/raya.env` |
 | FLY-2030 尚无代码 | 2026-08-27 17:30 PT | `git -C ~/.flywheel/raya/worktrees/raya-FLY-2030 log --oneline origin/main..HEAD` |
+| Codex filesystem `deny_read` 是管理员 requirements,不是普通 user config | Codex 0.150.1 / openai-codex 2026-08-28 | 重读 `docs/config.md`、`codex-rs/core/src/config_loader/README.md`;无论配置形状是否变化,保留实际 sandbox 双探针 |
