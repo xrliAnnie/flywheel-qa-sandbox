@@ -1,10 +1,10 @@
 ---
 issue: FLY-147
 phase: implement
-phaseCursor: 4/5
-updated: 2026-08-30T11:04:28.668Z
-nextStep: Document automatic, manual-create, reply-by-issue, lookup, and archive
-  trigger/config contracts
+phaseCursor: 5/5
+updated: 2026-08-30T11:07:32.706Z
+nextStep: Run scoped package verification and exact full-repository gates, then
+  request registered code review
 chunks:
   - id: docs-exploration
     order: 1
@@ -25,12 +25,12 @@ chunks:
     order: 4
     deps: []
     done: ""
-    status: doing
+    status: done
   - id: verification-review-pr
     order: 5
     deps: []
     done: ""
-    status: todo
+    status: doing
 pointers:
   plan: engineering/doc/FLY-147-chat-driven-thread/plan.md
   exploration: engineering/doc/FLY-147-chat-driven-thread/exploration.md
@@ -38,12 +38,12 @@ pointers:
 ---
 
 # FLY-147 progress
-**phase**: implement (4/5)
-**next**: Document automatic, manual-create, reply-by-issue, lookup, and archive trigger/config contracts
+**phase**: implement (5/5)
+**next**: Run scoped package verification and exact full-repository gates, then request registered code review
 
 ## chunks
 - ✅ docs-exploration — 
 - ✅ docs-research — 
 - ✅ design-review — 
-- 🔨 implementation — 
-- ⬜ verification-review-pr — 
+- ✅ implementation — 
+- 🔨 verification-review-pr — 
