@@ -1,9 +1,9 @@
 ---
 issue: FLY-204
-phase: design
-phaseCursor: 5/6
-updated: 2026-08-30T10:48:59.802Z
-nextStep: enter implement stage and execute approved TDD plan
+phase: implement
+phaseCursor: 1/3
+updated: 2026-08-30T10:52:42.870Z
+nextStep: Expose watchdog snapshot through /health with TDD
 chunks:
   - id: onboard
     order: 1
@@ -19,8 +19,8 @@ pointers: {}
 ---
 
 # FLY-204 progress
-**phase**: design (5/6)
-**next**: enter implement stage and execute approved TDD plan
+**phase**: implement (1/3)
+**next**: Expose watchdog snapshot through /health with TDD
 
 ## chunks
 - ✅ onboard — 
