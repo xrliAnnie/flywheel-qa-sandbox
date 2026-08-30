@@ -1,9 +1,9 @@
 ---
 issue: FLY-203
-phase: design
-phaseCursor: 5/5
-updated: 2026-08-30T10:49:13.892Z
-nextStep: execute approved implementation plan
+phase: implement
+phaseCursor: 1/5
+updated: 2026-08-30T10:49:57.461Z
+nextStep: rerun FLY-203 focused suites
 chunks:
   - id: audit
     order: 1
@@ -14,8 +14,8 @@ pointers: {}
 ---
 
 # FLY-203 progress
-**phase**: design (5/5)
-**next**: execute approved implementation plan
+**phase**: implement (1/5)
+**next**: rerun FLY-203 focused suites
 
 ## chunks
 - ✅ audit — 
