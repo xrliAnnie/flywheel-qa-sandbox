@@ -1085,12 +1085,34 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it.each(["design", "qa"] as const)(
-		"dispatches a real %s founder-rework replacement from base_revision with verbatim feedback",
-		async (target) => {
+	it.each([
+		{
+			target: "design" as const,
+			predecessorLeadId: undefined,
+			expectedSourceExecutionId: undefined,
+		},
+		{
+			target: "qa" as const,
+			predecessorLeadId: undefined,
+			expectedSourceExecutionId: "implement-1",
+		},
+		{
+			target: "qa" as const,
+			predecessorLeadId: "existing-lead",
+			expectedSourceExecutionId: "implement-1",
+		},
+	])(
+		"dispatches a real $target founder-rework replacement with predecessor Lead $predecessorLeadId",
+		async ({ target, predecessorLeadId, expectedSourceExecutionId }) => {
 			const { store, replacementId } =
 				await storeWithMaterializedFounderReplacement(target);
 			const fake = fakeStartDispatcher(store);
+			const resolveLeadId = vi.fn(() => predecessorLeadId);
+			const resolveReplacementLeadIntent = vi.fn(() => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "fallback" as const,
+			}));
 			const dispatcher = new WorkflowEngineDispatcher({
 				store,
 				startDispatcher: fake.dispatcher,
@@ -1102,6 +1124,8 @@ describe("WorkflowEngineDispatcher", () => {
 				resolvePredecessorHead: vi.fn(async () => {
 					throw new Error("replacement must not need a predecessor session");
 				}),
+				resolveLeadId,
+				resolveReplacementLeadIntent,
 			});
 
 			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
@@ -1117,9 +1141,73 @@ describe("WorkflowEngineDispatcher", () => {
 					),
 				},
 			});
+			expect(fake.requests[0]?.leadId).toBe(
+				predecessorLeadId ?? "flywheel-eng-lead",
+			);
+			if (expectedSourceExecutionId) {
+				expect(resolveLeadId).toHaveBeenCalledWith(expectedSourceExecutionId);
+			} else {
+				expect(resolveLeadId).not.toHaveBeenCalled();
+			}
+			if (predecessorLeadId) {
+				expect(resolveReplacementLeadIntent).not.toHaveBeenCalled();
+			} else {
+				expect(resolveReplacementLeadIntent).toHaveBeenCalledWith(
+					expect.objectContaining({
+						run_id: "run-1",
+						issue_id: "FLY-1307",
+						project_name: "flywheel",
+					}),
+					expectedSourceExecutionId,
+				);
+			}
 			store.close();
 		},
 	);
+
+	it.each([
+		{
+			name: "another project",
+			intent: {
+				leadId: "other-lead",
+				projectName: "other-project",
+				leadResolution: "resolved" as const,
+			},
+		},
+		{
+			name: "an empty Lead",
+			intent: {
+				leadId: "",
+				projectName: "flywheel",
+				leadResolution: "fallback" as const,
+			},
+		},
+		{
+			name: "the unassigned sentinel",
+			intent: {
+				leadId: "unassigned",
+				projectName: "flywheel",
+				leadResolution: "fallback" as const,
+			},
+		},
+	])("rejects $name as replacement Lead identity", async ({ intent }) => {
+		const { store } = await storeWithMaterializedFounderReplacement("design");
+		const fake = fakeStartDispatcher(store);
+		const resolveReplacementLeadIntent = vi.fn(() => intent);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-15T08:02:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2182-invalid-lead-")),
+			resolveReplacementLeadIntent,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(resolveReplacementLeadIntent).toHaveBeenCalledOnce();
+		expect(fake.requests[0]?.leadId).toBeUndefined();
+		store.close();
+	});
 
 	it("launches an attempt-1 root design without inventing a predecessor", async () => {
 		const store = await storeWithIntent("design");
@@ -2446,6 +2534,12 @@ describe("WorkflowEngineDispatcher", () => {
 	it("mints a fresh launch only after the coordinator proves the actor dead", async () => {
 		const store = await storeWithQaFailKickback();
 		const fake = fakeStartDispatcher(store);
+		const resolveLeadId = vi.fn(() => undefined);
+		const resolveReplacementLeadIntent = vi.fn(() => ({
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "fallback" as const,
+		}));
 		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
 		const routeBefore = store.getLatestWorkflowReworkRoute(requestId)!;
 		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
@@ -2472,10 +2566,22 @@ describe("WorkflowEngineDispatcher", () => {
 			now: () => new Date("2026-07-16T00:16:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			reconcileWorkflowRework,
+			resolveLeadId,
+			resolveReplacementLeadIntent,
 		});
 
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
 		expect(fake.start).toHaveBeenCalledOnce();
+		expect(resolveLeadId).toHaveBeenCalledWith("design-1");
+		expect(resolveReplacementLeadIntent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				run_id: "run-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+			}),
+			"design-1",
+		);
+		expect(fake.requests[0]?.leadId).toBe("flywheel-eng-lead");
 		const launched = fake.requests[0]?.generalizedExecution?.executionId;
 		expect(launched).toEqual(expect.any(String));
 		expect(launched).not.toBe("implement-1");

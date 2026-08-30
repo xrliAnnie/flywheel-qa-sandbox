@@ -18,6 +18,8 @@ import {
 	type WorkflowDeadExecutionWatchRow,
 	type WorkflowEngineAlertIdentity,
 	type WorkflowLaunchWindowIdentity,
+	type WorkflowReplacementLeadIntent,
+	type WorkflowRunRow,
 	type WorkflowSideEffectRow,
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
@@ -79,6 +81,10 @@ interface WorkflowEngineDispatcherOptions {
 		projectName: string,
 	) => Promise<string>;
 	resolveLeadId?: (executionId: string) => string | undefined;
+	resolveReplacementLeadIntent?: (
+		run: WorkflowRunRow,
+		sourceExecutionId: string | undefined,
+	) => WorkflowReplacementLeadIntent | undefined;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	probeLaunchLiveness?: (
 		executionId: string,
@@ -152,6 +158,9 @@ export class WorkflowEngineDispatcher {
 		projectName: string,
 	) => Promise<string>;
 	private readonly resolveLeadId: (executionId: string) => string | undefined;
+	private readonly resolveReplacementLeadIntent: NonNullable<
+		WorkflowEngineDispatcherOptions["resolveReplacementLeadIntent"]
+	>;
 	private readonly materializedHeadAuthority: MaterializedHeadAuthority;
 	private readonly probeLaunchLiveness: (
 		executionId: string,
@@ -237,6 +246,8 @@ export class WorkflowEngineDispatcher {
 					(authority) => authority.prHeadSha,
 				));
 		this.resolveLeadId = options.resolveLeadId ?? (() => undefined);
+		this.resolveReplacementLeadIntent =
+			options.resolveReplacementLeadIntent ?? (() => undefined);
 		this.materializedHeadAuthority =
 			options.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority;
 		this.probeLaunchLiveness =
@@ -2444,9 +2455,20 @@ export class WorkflowEngineDispatcher {
 		const predecessor = predecessorExecutionId
 			? store.getSession(predecessorExecutionId)
 			: undefined;
-		const leadId = predecessorExecutionId
+		const predecessorLeadId = predecessorExecutionId
 			? this.resolveLeadId(predecessorExecutionId)
 			: undefined;
+		const replacementLeadIntent =
+			replacementContext && !predecessorLeadId
+				? this.resolveReplacementLeadIntent(run, predecessorExecutionId)
+				: undefined;
+		const replacementLeadId =
+			replacementLeadIntent?.projectName === run.project_name &&
+			replacementLeadIntent.leadId !== "unassigned" &&
+			replacementLeadIntent.leadId.trim()
+				? replacementLeadIntent.leadId
+				: undefined;
+		const leadId = predecessorLeadId ?? replacementLeadId;
 		const loopIteration = Number(transitionPayload?.loopIteration);
 		const phaseFixContext =
 			node.type === "implement" &&

@@ -606,6 +606,7 @@ import {
 } from "./workflow-gate-card-lifecycle.js";
 import { materializeWorkflowGateWithFailLoud } from "./workflow-gate-materialization-alert.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
+import { resolveWorkflowReplacementLeadIntent } from "./workflow-replacement-lead-event.js";
 import {
 	GitWorkflowResumeCheckpointStore,
 	reconcileWorkflowResumeCheckpoint,
@@ -6405,6 +6406,25 @@ export async function startBridge(
 						);
 						return undefined;
 					}
+				},
+				resolveReplacementLeadIntent: (run, sourceExecutionId) => {
+					const issueSession = store.getSessionByIssue(run.issue_id);
+					const sourceSession = sourceExecutionId
+						? store.getSession(sourceExecutionId)
+						: undefined;
+					const labelSession =
+						issueSession?.project_name === run.project_name
+							? issueSession
+							: sourceSession?.project_name === run.project_name
+								? sourceSession
+								: undefined;
+					return resolveWorkflowReplacementLeadIntent({
+						projects,
+						run,
+						labels: labelSession
+							? store.getSessionLabels(labelSession.execution_id)
+							: [],
+					});
 				},
 				alertSink: workflowEngineAlertHolder,
 				resolveRunAlertIdentity: (projectName, issueId, runId) =>
