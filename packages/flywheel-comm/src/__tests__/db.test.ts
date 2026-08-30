@@ -555,7 +555,8 @@ describe("CommDB", () => {
 			db.updateSessionStatus("exec-1", "completed");
 			const before = db.getSession("exec-1");
 
-			db.updateSessionTmuxWindow("exec-1", "flywheel:@7");
+			expect(db.updateSessionTmuxWindow("exec-1", "flywheel:@7")).toBe(1);
+			expect(db.updateSessionTmuxWindow("missing-exec", "flywheel:@8")).toBe(0);
 
 			const after = db.getSession("exec-1");
 			expect(after?.tmux_window).toBe("flywheel:@7");

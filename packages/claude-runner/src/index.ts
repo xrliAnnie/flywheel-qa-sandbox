@@ -123,15 +123,15 @@ export {
 	stripSecretEnv,
 } from "./codex-home.js";
 export {
-	buildRunnerTuiCommand,
+	buildRunnerTailCommand,
 	ensureRunnerTuiWindow,
 	ensureSessionWithRetryAsync,
 	errMessage as runnerTuiErrMessage,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
+	type RunnerTailWindowSpec,
 	type RunnerTuiWindowDeps,
 	type RunnerTuiWindowOutcome, // FLY-1239
-	type RunnerTuiWindowSpec,
 	scanAndKillSameNameWindows,
 	spawnCommandAsync,
 } from "./codex-runner-tui-window.js"; // FLY-1188 M4c-3

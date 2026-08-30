@@ -35,6 +35,7 @@ import {
 	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS,
 } from "../src/CodexTmuxAdapter.js";
+import type { CodexDaemonEvents } from "../src/codex-daemon-client.js";
 import { GoalRunError } from "../src/codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
@@ -93,11 +94,17 @@ class FakeRuntime implements CodexDaemonGoalRuntimeLike {
 	drainedCalls = 0;
 	drainRejectsWith?: Error;
 	constructor(
-		private readonly script: (input: RunGoalInput) => Promise<RunGoalOutcome>,
+		private readonly script: (
+			input: RunGoalInput,
+			events?: CodexDaemonEvents,
+		) => Promise<RunGoalOutcome>,
 	) {}
-	async runGoal(input: RunGoalInput): Promise<RunGoalOutcome> {
+	async runGoal(
+		input: RunGoalInput,
+		events?: CodexDaemonEvents,
+	): Promise<RunGoalOutcome> {
 		this.runGoalInputs.push(input);
-		return this.script(input);
+		return this.script(input, events);
 	}
 	stop(): void {
 		this.stopped += 1;
@@ -131,11 +138,16 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	// FLY-1239: the injected ensureWindow now returns a RunnerTuiWindowOutcome.
 	// A queue consumed one-per-call, last value sticky.
 	let ensureWindowSeq: RunnerTuiWindowOutcome[];
+	let transcriptSinkOptions: Record<string, unknown> | undefined;
+	let transcriptHeaders: Array<Record<string, unknown>>;
+	let transcriptMeta: string[];
+	let transcriptScopes: string[];
+	let transcriptNotifications: Array<{ method: string; params: unknown }>;
+	let transcriptCloses: Array<string | undefined>;
 	// FLY-1239: the injected reopen scheduler. Default = synchronous-immediate so
 	// policy/outcome tests are deterministic; the ordering test overrides it with a
 	// queued scheduler to prove the "hook returns → goal advances → retry" ordering.
 	let reopenScheduler: (fn: () => void, ms: number) => () => void;
-	let windowAliveReturns: boolean;
 
 	const origMarkerEnv = process.env.FLYWHEEL_GATE_MARKER_DIR;
 	const origCompleteMarkerEnv = process.env.FLYWHEEL_COMPLETE_MARKER_DIR;
@@ -160,8 +172,20 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			killWindow: ((spec: Record<string, unknown>) => {
 				killWindowCalls.push(spec);
 			}) as CodexDaemonAdapterDeps["killWindow"],
-			windowAlive: () => windowAliveReturns,
 			scheduleReopen: (fn, ms) => reopenScheduler(fn, ms),
+			transcriptSinkFactory: (options) => {
+				transcriptSinkOptions = options;
+				return {
+					writeHeader: (header) => transcriptHeaders.push(header),
+					appendMeta: (line) => transcriptMeta.push(line),
+					setThreadScope: (threadId) => transcriptScopes.push(threadId),
+					onNotification: (method, params) =>
+						transcriptNotifications.push({ method, params }),
+					close: async (state) => {
+						transcriptCloses.push(state);
+					},
+				};
+			},
 		};
 	}
 
@@ -241,6 +265,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		ensureWindowCalls = [];
 		killWindowCalls = [];
 		ensureWindowSeq = [{ created: true, windowId: WINDOW_ID }];
+		transcriptSinkOptions = undefined;
+		transcriptHeaders = [];
+		transcriptMeta = [];
+		transcriptScopes = [];
+		transcriptNotifications = [];
+		transcriptCloses = [];
 		// synchronous-immediate: the reopen chain runs to completion inside the call
 		// that scheduled it — deterministic for policy tests (the ordering test
 		// overrides this with a queued scheduler).
@@ -248,7 +278,6 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			fn();
 			return () => {};
 		};
-		windowAliveReturns = true;
 
 		vi.spyOn(console, "error").mockImplementation(() => {});
 		vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -435,9 +464,17 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(ensureWindowCalls[0]).toMatchObject({
 			tmuxSession: "testsess",
 			windowName: "FLY-1188",
-			threadId: THREAD_ID,
+			transcriptPath: join(
+				process.env.FLYWHEEL_CODEX_SESSION_DIR!,
+				execId,
+				"transcript.log",
+			),
 		});
-		expect(killWindowCalls).toHaveLength(1);
+		expect(ensureWindowCalls[0]).not.toHaveProperty("threadId");
+		expect(ensureWindowCalls[0]).not.toHaveProperty("socketPath");
+		// Successful closeout leaves the observer for Blueprint's existing success
+		// cleanup rather than racing it inside the adapter.
+		expect(killWindowCalls).toHaveLength(0);
 		// daemon confirmed torn down
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
@@ -458,15 +495,135 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		]);
 	});
 
-	it("threads execution-bound state coordinates into the founder TUI", async () => {
-		await makeAdapter().execute(
-			ctx({ stateDbPath: "/tmp/slot-2/teamlead.db" }),
-		);
-		expect(ensureWindowCalls).toHaveLength(1);
-		expect(ensureWindowCalls[0]).toMatchObject({
-			executionId: execId,
-			stateDbPath: "/tmp/slot-2/teamlead.db",
+	it("starts the observer before the authoritative thread id exists", async () => {
+		runtime = new FakeRuntime(async (input) => {
+			expect(ensureWindowCalls).toHaveLength(1);
+			expect(transcriptHeaders).toHaveLength(1);
+			input.onThreadReady?.(THREAD_ID, 0);
+			return complete();
 		});
+
+		await makeAdapter().execute(ctx());
+
+		expect(transcriptScopes).toEqual([THREAD_ID]);
+	});
+
+	it("forwards owned App Server notifications into the transcript sink", async () => {
+		const params = {
+			threadId: THREAD_ID,
+			item: { type: "agentMessage", text: "visible progress" },
+		};
+		runtime = new FakeRuntime(async (input, events) => {
+			input.onSpawnIdentity?.(4321);
+			input.onThreadReady?.(THREAD_ID, 0);
+			events?.onNotification?.("item/completed", params);
+			return complete();
+		});
+
+		await makeAdapter().execute(ctx());
+
+		expect(transcriptSinkOptions).toMatchObject({
+			path: join(
+				process.env.FLYWHEEL_CODEX_SESSION_DIR!,
+				execId,
+				"transcript.log",
+			),
+		});
+		expect(transcriptMeta).toContain("daemon pgid: 4321");
+		expect(transcriptNotifications).toEqual([
+			{ method: "item/completed", params },
+		]);
+		expect(transcriptCloses).toEqual(["completed"]);
+	});
+
+	it("keeps heartbeat and transcript notification failures independent", async () => {
+		const heartbeat = vi.fn(() => {
+			throw new Error("heartbeat unavailable");
+		});
+		const sinkNotification = vi.fn(() => {
+			throw new Error("transcript unavailable");
+		});
+		runtime = new FakeRuntime(async (_input, events) => {
+			events?.onNotification?.("item/completed", {
+				threadId: THREAD_ID,
+				item: { type: "agentMessage", text: "still running" },
+			});
+			return complete();
+		});
+		const deps = makeDeps();
+		deps.startHeartbeat = () => () => {};
+		deps.transcriptSinkFactory = () => ({
+			writeHeader: () => {},
+			appendMeta: () => {},
+			setThreadScope: () => {},
+			onNotification: sinkNotification,
+			close: async () => {},
+		});
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+
+		const result = await adapter.execute(ctx({ onHeartbeat: heartbeat }));
+
+		expect(result.success).toBe(true);
+		// Initial registration + the App Server notification both remain
+		// best-effort even though this injected heartbeat throws.
+		expect(heartbeat).toHaveBeenCalledTimes(2);
+		expect(sinkNotification).toHaveBeenCalledTimes(1);
+	});
+
+	it("drains the daemon before closing the transcript sink", async () => {
+		const order: string[] = [];
+		let daemonEvents: CodexDaemonEvents | undefined;
+		const drainingRuntime: CodexDaemonGoalRuntimeLike = {
+			runGoal: async (_input, events) => {
+				daemonEvents = events;
+				return complete();
+			},
+			stop: () => order.push("runtime.stop"),
+			drained: async () => {
+				order.push("runtime.drained");
+				daemonEvents?.onNotification?.("item/completed", {
+					threadId: THREAD_ID,
+					item: { type: "agentMessage", text: "last buffered event" },
+				});
+			},
+		};
+		const deps = makeDeps();
+		deps.runtimeFactory = () => drainingRuntime;
+		deps.transcriptSinkFactory = () => ({
+			writeHeader: () => {},
+			appendMeta: () => {},
+			setThreadScope: () => {},
+			onNotification: () => order.push("sink.notification"),
+			close: async () => {
+				order.push("sink.close");
+			},
+		});
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+
+		await adapter.execute(ctx());
+
+		expect(order.indexOf("runtime.drained")).toBeLessThan(
+			order.indexOf("sink.notification"),
+		);
+		expect(order.indexOf("sink.notification")).toBeLessThan(
+			order.indexOf("sink.close"),
+		);
 	});
 
 	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {
@@ -674,7 +831,6 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			"intake.stop",
 			"runtime.stop",
 			"runtime.drained",
-			"tui.kill",
 			"credential.scrub",
 			"shutdown.ack",
 			"heartbeat.stop",
@@ -751,7 +907,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	});
 
-	it("ordinary Codex keeps terminal-window-first teardown order", async () => {
+	it("ordinary Codex drains before retaining a successful observer", async () => {
 		const order: string[] = [];
 		const ordinaryRuntime: CodexDaemonGoalRuntimeLike = {
 			runGoal: async () => complete(),
@@ -779,7 +935,6 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(result.success).toBe(true);
 		expect(order).toEqual([
 			"heartbeat.stop",
-			"tui.kill",
 			"runtime.stop",
 			"runtime.drained",
 			"credential.scrub",
@@ -818,21 +973,6 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 		expect(phaseLifecycleFactory).not.toHaveBeenCalled();
 		expect(transport.createReceiver).not.toHaveBeenCalled();
-	});
-
-	// ── QA · FLY-1188 (real-machine E2E, 2026-07-13) ────────────────────────
-	// The founder TUI once died with `Error: stdout is not a terminal` because a
-	// historical launcher captured stdout. Keep the raw-binary TUI boundary even
-	// though the current daemon launcher is a direct same-account passthrough.
-	//
-	// The founder-facing TUI must keep a TTY-capable binary — exactly
-	// what the working lead-side precedent does (lead-backends/codex/tui-window.ts
-	// defaults to raw `codex`). Evidence: qa/tui-failure-diagnosis.txt.
-	it("QA FLY-1188: does NOT launch the founder TUI through the stdout-piping fallback shim", async () => {
-		await makeAdapter().execute(ctx());
-		expect(ensureWindowCalls).toHaveLength(1);
-		const tuiBin = String(ensureWindowCalls[0].codexBin ?? "");
-		expect(tuiBin).not.toContain("flywheel-codex-with-fallback");
 	});
 
 	it("passes the sandbox writable roots + network + workspace-write to the runtime", async () => {
@@ -1220,11 +1360,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(inB?.objective ?? "").toContain("FLY-1225-fix");
 	});
 
-	it("opens the founder window from the outcome when onThreadReady never fired", async () => {
+	it("opens the founder observer without waiting for onThreadReady", async () => {
 		runtime = new FakeRuntime(async () => complete()); // never fires onThreadReady
 		await makeAdapter().execute(ctx());
 		expect(ensureWindowCalls).toHaveLength(1);
-		expect(ensureWindowCalls[0]).toMatchObject({ threadId: THREAD_ID });
+		expect(ensureWindowCalls[0]).toHaveProperty("transcriptPath");
+		expect(ensureWindowCalls[0]).not.toHaveProperty("threadId");
 	});
 
 	it("opens the founder window ONCE even if onThreadReady fires repeatedly (restart/resume)", async () => {
@@ -1238,17 +1379,17 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(ensureWindowCalls).toHaveLength(1);
 	});
 
-	it("Codex R2 MEDIUM: reopens the founder window on a daemon RESTART if the pane died", async () => {
-		windowAliveReturns = false; // the old remote TUI exited when its socket closed
+	it("keeps one passive observer across daemon restarts", async () => {
 		runtime = new FakeRuntime(async (input) => {
 			input.onThreadReady?.(THREAD_ID, 0); // first start → open
 			await Promise.resolve();
-			input.onThreadReady?.(THREAD_ID, 1); // daemon restart → pane dead → reopen
+			input.onThreadReady?.(THREAD_ID, 1); // tail remains attached to the file
 			await Promise.resolve();
 			return complete();
 		});
 		await makeAdapter().execute(ctx());
-		expect(ensureWindowCalls.length).toBe(2);
+		expect(ensureWindowCalls.length).toBe(1);
+		expect(transcriptMeta).toContain("daemon restart: 1");
 	});
 
 	// ── FLY-1239: bounded, non-blocking founder-window retry (rollout race) ─────
@@ -1340,7 +1481,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			});
 		});
 
-		it("preserves the original episode deadline across an adapter restart", async () => {
+		it("ignores the retired persisted TUI episode timestamp", async () => {
 			const episodeStartedAt = 10_000;
 			const elapsed = 7 * 60_000;
 			const sessionDir = join(process.env.FLYWHEEL_CODEX_SESSION_DIR!, execId);
@@ -1368,7 +1509,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 			await adapter.execute(ctx());
 
-			expect(scheduledFor).toBe(TUI_OPEN_DEADLINE_MS - elapsed);
+			expect(scheduledFor).toBe(TUI_OPEN_DEADLINE_MS);
 		});
 
 		it("deduplicates permanent and run-ended terminal triggers", async () => {
@@ -1436,8 +1577,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				return complete();
 			});
 			await makeAdapter().execute(ctx());
-			// bounded: exactly the cap, never a MAX+1th attempt (threadReadySeen also
-			// stops the fallback from adding one more).
+			// bounded: exactly the cap, never a MAX+1th attempt.
 			expect(ensureWindowCalls.length).toBe(TUI_OPEN_MAX_ATTEMPTS);
 		});
 
@@ -1477,8 +1617,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			}
 		});
 
-		it("the outcome fallback fires ONLY when onThreadReady never fired (threadReadySeen)", async () => {
-			// hook DID fire but the window never opened (create-failed) → NO fallback
+		it("does not add an outcome-time fallback after a permanent failure", async () => {
 			ensureWindowSeq = [
 				{ created: false, category: "permanent", reason: "tmux_absent" },
 			];
@@ -1490,13 +1629,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(ensureWindowCalls.length).toBe(1); // no extra fallback attempt
 		});
 
-		it("Codex R2 MED-2: a THROWING fallback (hook never fired) is fail-open — the run still succeeds", async () => {
+		it("a throwing pre-spawn observer open is fail-open", async () => {
 			ensureWindowSeq = [{ created: true, windowId: WINDOW_ID }];
-			// make the injected ensureWindow throw on the fallback path
 			const throwingDeps = makeDeps();
 			throwingDeps.ensureWindow = (() => {
 				ensureWindowCalls.push({});
-				throw new Error("tui blew up in fallback");
+				throw new Error("observer open failed");
 			}) as CodexDaemonAdapterDeps["ensureWindow"];
 			runtime = new FakeRuntime(async () => complete()); // never fires onThreadReady
 			const adapter = new CodexTmuxAdapter(
@@ -1825,7 +1963,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			expect(res.success).toBe(true);
 		});
 
-		it("teardown order: cancel reopen BEFORE killWindow, runtime.stop, and drained", async () => {
+		it("teardown cancels reopen, drains, then cleans an unpinned observer", async () => {
 			const order: string[] = [];
 			reopenScheduler = () => () => order.push("cancel");
 			runtime = new FakeRuntime(async (input) => {
@@ -1857,9 +1995,11 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			);
 			await adapter.execute(ctx());
 			expect(order.indexOf("cancel")).toBeGreaterThanOrEqual(0);
-			expect(order.indexOf("cancel")).toBeLessThan(order.indexOf("killWindow"));
-			expect(order.indexOf("killWindow")).toBeLessThan(order.indexOf("stop"));
+			expect(order.indexOf("cancel")).toBeLessThan(order.indexOf("stop"));
 			expect(order.indexOf("stop")).toBeLessThan(order.indexOf("drained"));
+			expect(order.indexOf("drained")).toBeLessThan(
+				order.indexOf("killWindow"),
+			);
 		});
 
 		it("Codex code R1 MED-1: a THROWING cancel handle does NOT abort teardown", async () => {
@@ -2004,6 +2144,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(res.success).toBe(false);
 		expect(res.timedOut).toBe(false);
 		expect(res.sessionParams).toMatchObject({ threadId: THREAD_ID });
+		expect(killWindowCalls).toHaveLength(0);
 	});
 
 	it("FLY-1279: a blocked goal preserves a typed failure and blocked CommDB status", async () => {
@@ -2028,6 +2169,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		const db = new CommDB(dbPath);
 		expect(db.getSession(execId)?.status).toBe("blocked");
 		db.close();
+		expect(killWindowCalls).toHaveLength(0);
+		expect(transcriptCloses).toEqual(["blocked"]);
 	});
 
 	it("FLY-2018: an owned unauthorized turn preserves the environment failure classification", async () => {
@@ -2070,13 +2213,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(runtime.drainedCalls).toBe(1);
 	});
 
-	it("a thrown non-GoalRunError → failure, still tears the daemon + window down", async () => {
+	it("a thrown non-timeout failure drains the daemon and retains diagnostics", async () => {
 		runtime = new FakeRuntime(async () => {
 			throw new Error("kaboom");
 		});
 		const res = await makeAdapter().execute(ctx());
 		expect(res.success).toBe(false);
-		expect(killWindowCalls).toHaveLength(1);
+		expect(killWindowCalls).toHaveLength(0);
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
 	});
@@ -2196,12 +2339,37 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(committedState.tmuxWindow).toBe(`testsess:${WINDOW_ID}`);
 	});
 
-	it("pins CommDB registration and teardown to the immutable founder window id", async () => {
+	it("pins CommDB registration to the immutable founder window id and retains it", async () => {
 		await makeAdapter().execute(ctx());
 		const db = new CommDB(dbPath);
 		const sess = db.getSession(execId);
 		db.close();
 		expect(sess?.tmux_window).toBe(`testsess:${WINDOW_ID}`);
+		expect(killWindowCalls).toHaveLength(0);
+	});
+
+	it("kills the observer when immutable CommDB pinning affects no row", async () => {
+		vi.spyOn(CommDB.prototype, "updateSessionTmuxWindow").mockReturnValue(0);
+
+		await makeAdapter().execute(ctx());
+
+		expect(killWindowCalls).toContainEqual({
+			tmuxSession: "testsess",
+			windowName: "FLY-1188",
+			windowId: WINDOW_ID,
+		});
+	});
+
+	it("kills the observer when CommDB terminal closeout fails", async () => {
+		vi.spyOn(
+			CommDB.prototype,
+			"updateSessionStatusIfRunning",
+		).mockImplementation(() => {
+			throw new Error("closeout unavailable");
+		});
+
+		await makeAdapter().execute(ctx());
+
 		expect(killWindowCalls).toContainEqual({
 			tmuxSession: "testsess",
 			windowName: "FLY-1188",

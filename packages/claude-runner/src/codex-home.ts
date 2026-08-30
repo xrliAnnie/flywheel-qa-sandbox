@@ -474,6 +474,44 @@ const SEP_SET_HEADER_RE =
 const ROOT_NOTIFY_RE = /^[ \t]*notify[ \t]*=.*$/gm;
 const TABLE_HEADER_RE = /^[ \t]*\[{1,2}[^\n]+$/m;
 
+/** FLY-2168: managed requirements reject the historical global
+ * `danger-full-access` runner seed. Pin the execution-scoped home to the
+ * unattended policy that requirements permit; thread/start pins the same
+ * values again at the protocol boundary. This is deliberately provisioning-
+ * only: renderCodexHomeConfig remains a general merge helper whose callers
+ * may need byte-preserving behavior. */
+function pinRunnerPolicy(baseToml: string): string {
+	let body = baseToml.trimEnd();
+	const parsed = parseTomlSanitized(body, "base");
+	const pins = [
+		["sandbox_mode", "workspace-write"],
+		["approval_policy", "never"],
+	] as const;
+
+	for (const [key, value] of pins) {
+		const assignment = new RegExp(`^[ \\t]*${key}[ \\t]*=.*$`, "gm");
+		const firstTableIndex = TABLE_HEADER_RE.exec(body)?.index ?? body.length;
+		const roots = [...body.matchAll(assignment)].filter(
+			(match) => (match.index ?? body.length) < firstTableIndex,
+		);
+		if (parsed[key] !== undefined && roots.length !== 1) {
+			throw new Error(
+				`provisionCodexHome: root ${key} has an unsupported assignment shape; refusing to provision an ambiguous runner policy`,
+			);
+		}
+		const line = `${key} = "${value}"`;
+		const root = roots[0];
+		if (root) {
+			const start = root.index ?? 0;
+			body = `${body.slice(0, start)}${line}${body.slice(start + root[0].length)}`;
+		} else {
+			body = body ? `${line}\n${body}` : line;
+		}
+	}
+
+	return body ? `${body}\n` : "";
+}
+
 function isPlainTable(v: unknown): v is Record<string, unknown> {
 	return (
 		typeof v === "object" &&
@@ -504,7 +542,7 @@ function parseTomlSanitized(
 /**
  * Render a per-runner config.toml = base config (the seeded global) + the
  * flywheel-managed GH_TOKEN block. WS-C delivery contract:
- * - base config preserved verbatim (model / sandbox_mode / trust levels).
+ * - base config preserved verbatim by this general merge helper.
  * - GH_TOKEN folded into `[shell_environment_policy.set]` — codex-side env
  *   injection identical to the old `-c shell_environment_policy.set.GH_TOKEN`,
  *   but off the argv.
@@ -1010,11 +1048,12 @@ export function provisionCodexHome(opts: ProvisionCodexHomeOptions): string {
 	const baseToml = existsSync(srcConfig)
 		? readFileSync(srcConfig, "utf-8")
 		: "";
+	const runnerBaseToml = pinRunnerPolicy(baseToml);
 	const cfgPath = join(home, "config.toml");
 	try {
 		writeFileSync(
 			cfgPath,
-			renderCodexHomeConfig(baseToml, opts.ghToken, {
+			renderCodexHomeConfig(runnerBaseToml, opts.ghToken, {
 				skillDisableNames: opts.codexSkillDisableNames,
 				notifyProgramPath: opts.notifyProgramPath,
 				trustedProjectPath: opts.trustedProjectPath,

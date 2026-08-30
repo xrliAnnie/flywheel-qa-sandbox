@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph new["新方案 — 只读转播窗口"]
+        A["Bridge 派工"] --> B["工人启动<br/>(app-server 子进程)<br/>不等窗口、零延迟"]
+        A --> H["同时开 cmux 窗口<br/>命名 FLY-XX-role-...<br/>窗口里只跑 tail -F"]
+        B --> C["工人的每条实时消息<br/>(说话/跑命令/改文件)"]
+        C --> D["转写器 sink<br/>过滤+消毒+美化"]
+        D --> E["transcript.log<br/>工人专属转播文件<br/>(落盘,永久保留)"]
+        E --> H2["窗口实时滚动显示"]
+        H --> H2
+        H --> P["窗口一建好<br/>就把真实窗口名<br/>写回账本 comm.db"]
+        H2 --> F["founder 在 cmux<br/>点开就能看到<br/>工人正在说什么"]
+    end
+    style A fill:#e8f0fe,stroke:#007aff
+    style B fill:#e6f9ed,stroke:#34c759
+    style C fill:#e6f9ed,stroke:#34c759
+    style D fill:#e8f0fe,stroke:#007aff
+    style E fill:#f3e8fd,stroke:#af52de
+    style H fill:#e8f0fe,stroke:#007aff
+    style H2 fill:#e6f9ed,stroke:#34c759
+    style P fill:#e6f9ed,stroke:#34c759
+    style F fill:#e6f9ed,stroke:#34c759

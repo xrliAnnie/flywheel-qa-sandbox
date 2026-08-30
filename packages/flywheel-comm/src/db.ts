@@ -5952,10 +5952,10 @@ export class CommDB {
 	 * window has an immutable id. Unlike registerSession's INSERT OR REPLACE,
 	 * this preserves lifecycle/review metadata already attached to the row.
 	 */
-	updateSessionTmuxWindow(executionId: string, tmuxWindow: string): void {
-		this.db
+	updateSessionTmuxWindow(executionId: string, tmuxWindow: string): number {
+		return this.db
 			.prepare("UPDATE sessions SET tmux_window = ? WHERE execution_id = ?")
-			.run(tmuxWindow, executionId);
+			.run(tmuxWindow, executionId).changes;
 	}
 
 	/** FLY-80: Remove a pre-registered session only if still in :pending state.

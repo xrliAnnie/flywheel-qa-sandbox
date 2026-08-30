@@ -185,6 +185,7 @@ import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
+import { sweepCodexRunnerOrphans } from "./codex-runner-orphan-reaper.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
@@ -7031,6 +7032,53 @@ export async function startBridge(
 			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
 			// hangs off the same master switch as every other new mutator.
 			if (!worktreeAutocleanEnabled()) return;
+			// FLY-2169: socket-hosted Codex daemons have no parent tmux pane. If
+			// Bridge or the adapter shell is killed, app-server is reparented to
+			// launchd and can otherwise live forever. Ride this existing detached,
+			// single-flight maintenance tick: no second scheduler. The reaper itself
+			// requires a fresh argv + socket + CODEX_HOME proof before every signal.
+			try {
+				const activeExecutionIds = new Set(
+					store
+						.getReadoptCandidateSessions()
+						.map((session) => session.execution_id),
+				);
+				await sweepCodexRunnerOrphans(
+					{
+						activeExecutionIds,
+						isExecutionActive: (executionId) =>
+							store
+								.getReadoptCandidateSessions()
+								.some((session) => session.execution_id === executionId),
+					},
+					{
+						audit: (event, detail) => {
+							console.warn(`[codex-orphan-reaper] ${event}`, detail);
+							try {
+								store.insertEvent({
+									event_id: `codex-orphan-${event}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+									execution_id: String(
+										detail.executionId ?? "codex-orphan-reaper",
+									),
+									issue_id: "maintenance",
+									project_name: "bridge",
+									event_type: event,
+									source: "bridge.codex-runner-orphan-reaper",
+									payload: detail,
+								});
+							} catch {
+								/* audit only */
+							}
+						},
+					},
+				);
+			} catch (error) {
+				console.warn(
+					`[codex-orphan-reaper] sweep failed (maintenance continues): ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
 			await reapMcpOrphans({
 				audit: (event, detail) => {
 					try {
