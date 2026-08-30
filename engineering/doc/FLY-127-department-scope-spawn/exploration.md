@@ -5,43 +5,42 @@ Issue: FLY-127 (https://linear.app/geoforge3d/issue/FLY-127/lead-spawns-runner-f
 
 ## 问题复述
 
-2026-05-05 的事故里，Annie 把 GEO-366、GEO-101 指给 Oliver（ops），把 GEO-371 指给 Peter（product），但 Peter 也为两个 ops issue 启动了 Runner。正确不变量是：一个 issue 只能由其 department label 对应的、具备启动权限的 Lead 启动；其他 Lead 对被明确指给别人的启动消息保持安静，任何误入服务端的越权请求也必须在 dispatch 前被拒绝。
+2026-05-05 的事故里，Annie 把 GEO-366、GEO-101 指给 Oliver（ops），把 GEO-371 指给 Peter（product），但 Peter 也为两个 ops issue 启动了 Runner。正确不变量是：Lead 发起的新 Runner 必须同时携带自己的身份，并且该身份必须与 Linear issue 的唯一 department label 对应；不属于本部门的 Lead 不得进入 dispatcher。
 
 ## 当前仓库事实
 
-本次 worktree 基于较新的 `origin/main`，已经包含 FLY-127 的原始三层修复：
+本 worktree 基于较新的 `origin/main`，已经包含 FLY-127 的原始三层修复：
 
-1. `packages/teamlead/lead-rules-base/cos-lead-rules.md` 要求 CoS 按 Lead 拆分启动指令。
-2. `packages/teamlead/lead-rules-base/department-lead-rules.md` 定义 Action Gate、被动跨部门消息静默和多 Lead 启动指令拒绝规则。
-3. `packages/teamlead/scripts/claude-lead.sh` 只给非 CoS department Lead 注入上述规则。
-4. `packages/teamlead/src/department-registry.ts` 以项目、Lead 和 Linear department label 判定启动权限。
-5. `packages/teamlead/src/bridge/runs-route.ts` 在 `POST /api/runs/start` 的 dispatch 前执行硬校验，越权返回 `403 DEPT_SCOPE_REJECT`。
-6. `packages/teamlead/src/__tests__/start-e2e.test.ts` 已分别覆盖 Peter→Ops 拒绝和 Oliver→Ops 放行。
+1. `cos-lead-rules.md` 要求 CoS 按 Lead 拆分启动指令。
+2. `department-lead-rules.md` 定义 Action Gate、被动跨部门消息静默和 Bridge 拒绝后的单行诊断。
+3. `claude-lead.sh` 把这些规则注入 department Lead。
+4. `DepartmentRegistry.isLeadInScope()` 按项目、Lead 和 department label 判定权限。
+5. `POST /api/runs/start` 在 `StartDispatcher.start()` 前执行 registry 校验。
+6. 现有测试分别覆盖 Peter→Ops 拒绝与 Oliver→Ops 放行。
 
-因此本节点不能诚实地把现有实现当作新代码重写。需要补的最小、对验收有价值的证据，是把两个独立断言合并成同一事件序列：同一个 Ops issue 先收到 Peter 的请求，再收到 Oliver 的请求，最终 dispatcher 恰好调用一次且归 Oliver 的请求所有。
+设计复核发现原实现仍有一个真实绕过：`leadId` 是可选字段。调用方省略它时，Bridge 会先从 issue label 自动解析 canonical Lead，再拿解析出的 Lead 与同一 label 做 scope check。于是任何观察到 Ops issue 的 Lead 都可以省略身份，让 Bridge 把请求当作 Oliver 的请求并启动 Runner。这正是“调用者身份”与“issue 所有者”混为一谈。
 
-## 约束与假设
+## 必须覆盖的内建调用方
 
-- department 归属继续以项目配置中的 Lead label 映射为唯一真相，不引入消息文本关键词授权。
-- 服务端守卫继续 fail-closed；不把 prompt 自律当作唯一安全边界。
-- 不修改已经上线的响应契约或 feature-flag 语义。
-- 本任务没有 UI/rendered surface，因此不需要 proofshot；验证面是 HTTP 路由、dispatcher 调用和规则文件注入。
-- 角色指令明确要求不改 `CLAUDE.md`。验收中的“CLAUDE.md / docs”采用 docs 分支：现有 `department-lead-rules.md` 是运行时规则文档，本 PR 再以 `engineering/doc/milestones/FLY-127.md` 固化交付摘要。
+- 普通 Claude Lead 的生成身份已经要求 `/api/runs/start` body 携带自己的 `leadId`。
+- Gemini `dispatch_runner` 当前把模型参数原样发给 Bridge；模型 schema 没有 `leadId`，因此它必然走省略路径。应由 session binding 在服务端附加 `projectName` 与 `leadId`，不能让模型自报身份。
+- `scripts/inject-linear-issue.sh` 是受信 QA 入口，但当前也省略 `leadId`。应从 slot 配置的 `botName`（部署时就是 slot `agentId`）读取并显式发送。
+- xiaohongshu scheduler 已显式发送配置中的 `leadId`，无需修改。
 
-## 方案比较
+## 边界与残余风险
 
-### 方案 A（推荐）：保留现有实现，补精确的成对回归证据
-
-在现有 route-level e2e suite 中增加一个场景，连续向同一 Ops-labelled issue 发出 product-lead 与 ops-lead 两次请求。断言前者 403、后者 200、dispatcher 最终只启动一次。优点是直接对应 acceptance 3，且不改变已上线行为；代价是它是回归强化，不会产生新的 production code diff。
-
-### 方案 B：重写或另加一层 department scope 实现
-
-会与 `DepartmentRegistry` 和 `runs-route.ts` 重复，增加双重真相和漂移风险，也不改善已满足的验收。否决。
-
-### 方案 C：只写文档并重跑现有测试
-
-风险最低，但现有 Peter-reject 与 Oliver-allow 是两个独立 case；读者需要自己推导“同一消息只有 Oliver 启动”。证据不如方案 A 直接。否决。
+- 本任务保护的是 public `/api/runs/start` 的“Lead 发起一个新 issue run”边界。retry、phase handoff、auto-QA 从已经授权并持久化的 session 继续工作，不是新的任意 issue admission；它们依赖 session owner/role checks，而不是重新调用 `DepartmentRegistry`。
+- Bridge 目前使用共享 API token，`leadId` 仍是声明身份而不是每 Lead 独立认证。强认证能防恶意伪装；本任务针对事故中的误路由/省略身份，要求所有内建调用方绑定真实 Lead 身份并在 route fail-closed。独立 per-Lead credential 属于后续安全设计，不在本 issue 内扩张。
+- 角色指令明确禁止改 `CLAUDE.md`。验收中的“CLAUDE.md / docs”走 docs 分支：更新运行时 `department-lead-rules.md`，并用 milestone 固化交付摘要。
+- 无 UI/rendered surface；不需要 proofshot。验证面是 HTTP、Gemini tool binding、QA shell payload、dispatcher 调用和规则 bundle。
 
 ## 设计结论
 
-采用方案 A。生产实现保持不动；新增一个精确 acceptance regression，随后执行 focused suite、全仓 gate 和 code review。文档明确说明本节点是在较新基线上的验收补强，避免虚报“新实现”。
+采用四个最小增量：
+
+1. scope enforcement 开启时，`/api/runs/start` 缺少或空白 `leadId` 直接返回机读 `403 DEPT_SCOPE_REJECT / lead_identity_required`，不得自动解析 owner；flag 关闭时保留 FLY-80 auto-resolve 作为回滚。
+2. Gemini `dispatch_runner` 从 `SessionBinding` 附加并覆盖 `projectName`、`leadId`，把身份移出模型输入面。
+3. test-slot 注入脚本从 slot `botName` 读取 `leadId`，用 `jq --arg` 构造转义安全的 JSON payload。
+4. 规则文档明确每次 start 必须发送自己的 `leadId`，并增加 `lead_identity_required` 的不重试诊断。
+
+所有行为变更逐项执行 RED→GREEN；同一 Ops issue 的 Peter 403 + Oliver 200 + dispatcher 恰好一次作为最终 acceptance regression。

@@ -3,273 +3,165 @@ Issue: FLY-127 (https://linear.app/geoforge3d/issue/FLY-127/lead-spawns-runner-f
 日期: 2026-08-30
 基于: research.md
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to execute this plan task-by-task in the current implementation node. Do not dispatch subagents; the injected DAG role requires inline execution.
+> **For agentic workers:** Use `superpowers:executing-plans`, `superpowers:test-driven-development`, and `superpowers:systematic-debugging` as needed. Execute inline; this DAG node must not dispatch subagents or successor nodes.
 
-**Goal:** Preserve the existing FLY-127 department-scope hard guard and add direct executable evidence that one Ops-labelled issue can dispatch only through Oliver/`ops-lead`, never Peter/`product-lead`.
+**Goal:** Close the `leadId`-omission authorization bypass so an Oliver-only Ops issue can never reach initial Runner dispatch through Peter or an identity-less built-in caller.
 
-**Architecture:** The production boundary remains `runs-route.ts` → `DepartmentRegistry.isLeadInScope()` → `StartDispatcher.start()`. The only code delta is a paired route-level regression in the existing TeamLead e2e suite. Existing Lead rule injection and runtime code are verification targets, not rewrite targets.
+**Architecture:** The protected boundary is the public, Lead-triggered `POST /api/runs/start` admission path. Scope enforcement requires an explicit caller `leadId` before legacy owner auto-resolution, then uses `DepartmentRegistry.isLeadInScope()` before `StartDispatcher.start()`. Trusted non-Claude callers attach identity from their server-side/session configuration. Internal retry, phase handoff, and auto-QA continue from an already admitted session and are not claimed as registry callers.
 
-**Tech Stack:** TypeScript, Express, Vitest, pnpm monorepo, Flywheel Lead rule Markdown.
+**Tech Stack:** TypeScript, Express, Vitest, Bash, jq, pnpm monorepo, Flywheel Lead rule Markdown.
 
 ---
 
+## Locked acceptance criteria
+
+1. Identify where Lead decides to spawn Runner (handler in claude-lead.sh / department-lead-rules.md).
+2. Add scope check: department mismatch → don't spawn.
+3. Verify with: Annie addresses Oliver-only issue → only Oliver spawns Runner.
+4. Update CLAUDE.md / docs with department-scope-spawn rule.
+
+Criterion 4 uses the allowed docs path: update `department-lead-rules.md` and the FLY-127 milestone; do not touch `CLAUDE.md` per the implementation-node hard rule.
+
 ## File map
 
-| Path | Responsibility | Planned action |
-|---|---|---|
-| `packages/teamlead/src/__tests__/start-e2e.test.ts` | HTTP `/api/runs/start` integration coverage with mocked Linear and dispatcher | Add one paired Peter-reject/Oliver-allow acceptance test |
-| `packages/teamlead/src/department-registry.ts` | Canonical department classification and spawn authorization | Read/verify only; modify only if the new test exposes a real defect |
-| `packages/teamlead/src/bridge/runs-route.ts` | Enforce authorization before dispatcher start | Read/verify only; modify only after a failing regression proves a defect |
-| `packages/teamlead/lead-rules-base/department-lead-rules.md` | Lead-side passive mismatch silence and Bridge reject handling | Read/verify only |
-| `packages/teamlead/scripts/claude-lead.sh` | Inject rules into department Leads | Read/verify only |
-| `engineering/doc/FLY-127-department-scope-spawn/{exploration,research,plan,progress}.md` | Durable process and restart cursor | Create/update before implementation |
-| `engineering/doc/milestones/FLY-127.md` | Founder-facing merged-doc summary | Create as the literal final commit |
+| Path | Planned responsibility |
+|---|---|
+| `packages/teamlead/src/bridge/runs-route.ts` | Validate caller identity and fail closed before Linear/admission/dispatch when enforcement is on; retain flag-off auto-resolve rollback |
+| `packages/teamlead/src/__tests__/start-e2e.test.ts` | RED/GREEN for omitted, blank, wrong-type and rollback identities; paired Peter-reject/Oliver-allow acceptance |
+| `packages/gemini-agent/src/tools/registry.ts` | Attach binding-owned `projectName` and `leadId` to `dispatch_runner`, overriding raw args |
+| `packages/gemini-agent/src/tools/schemas.ts` | Remove `projectName` from the model-facing dispatch identity surface |
+| `packages/gemini-agent/src/__tests__/registry.test.ts` | RED/GREEN for binding override and schema contract |
+| `scripts/inject-linear-issue.sh` | Read slot `botName` as Lead id and build escaped start JSON with jq |
+| `scripts/__tests__/inject-linear-issue-lead-id.test.sh` | Hermetic curl-capture proof that the QA helper sends the configured Lead id |
+| `packages/teamlead/lead-rules-base/department-lead-rules.md` | Require own `leadId`; document missing-identity response and no-retry behavior |
+| `packages/teamlead/src/__tests__/lead-rules-bundle.test.ts` | Assert the identity requirement survives runtime rule bundling |
+| `engineering/doc/FLY-127-department-scope-spawn/*` | Durable research, approved plan and progress |
+| `engineering/doc/milestones/FLY-127.md` | Literal final commit with delivery evidence |
 
-### Task 1: Add the exact acceptance regression
+### Task 0: Resolve the known baseline gate exception
 
-**Files:**
+- [ ] Register a non-blocking Lead question with the exact baseline evidence: on the docs-only pre-change HEAD, `pnpm test:packages:run` fails only the 2 real-osascript tests in `packages/core/test/tmux-viewer.macos.test.ts` because the managed runner has no usable Terminal Apple Events session. Capture its question id.
+- [ ] Continue independent work while polling. No FLY-127 PR completion may claim the exact full gate passed; final evidence must report its actual exit code and prove no new failure. A Lead response is required to waive only those two unchanged baseline failures.
+- [ ] Keep the existing writer-state question `2b9dafc0-2400-4e07-a161-873181aa15b1` open and continue manual `progress.md` updates if `flywheel-comm progress` still refuses the active TURN.
 
-- Modify: `packages/teamlead/src/__tests__/start-e2e.test.ts` inside `describe("FLY-127 — department scope reject")`
-- Test: `packages/teamlead/src/__tests__/start-e2e.test.ts`
+### Task 1: Require caller identity at `/api/runs/start` (strict TDD)
 
-- [ ] **Step 1: Confirm the baseline focused suite is green**
+**Files:** `packages/teamlead/src/__tests__/start-e2e.test.ts`, `packages/teamlead/src/bridge/runs-route.ts`
 
-Run:
-
-```bash
-pnpm --filter flywheel-teamlead test:run -- src/__tests__/start-e2e.test.ts
-```
-
-Expected: the existing FLY-127 Peter-reject and Oliver-allow cases pass. Record this as proof that the runtime behavior predates this PR.
-
-- [ ] **Step 2: Add the paired regression test**
-
-Insert this test after the existing `label_mismatch` case:
-
-```ts
-it("Oliver-only issue: Peter is rejected and only Oliver reaches dispatch", async () => {
-	await mockIssueLabels(["Ops"]);
-	const peterResponse = await fetch(`${baseUrl}/api/runs/start`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			issueId: "GEO-FLY127-OLIVER-ONLY",
-			projectName: "TestProject",
-			leadId: "product-lead",
-		}),
-	});
-
-	expect(peterResponse.status).toBe(403);
-	expect(await peterResponse.json()).toMatchObject({
-		success: false,
-		code: "DEPT_SCOPE_REJECT",
-		reason: "label_mismatch",
-		canonicalLeadId: "ops-lead",
-	});
-	expect(mockDispatcher.start).not.toHaveBeenCalled();
-
-	await mockIssueLabels(["Ops"]);
-	const oliverResponse = await fetch(`${baseUrl}/api/runs/start`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify({
-			issueId: "GEO-FLY127-OLIVER-ONLY",
-			projectName: "TestProject",
-			leadId: "ops-lead",
-		}),
-	});
-
-	expect(oliverResponse.status).toBe(200);
-	expect(mockDispatcher.start).toHaveBeenCalledOnce();
-	expect(mockDispatcher.start.mock.calls[0]?.[0]).toMatchObject({
-		issueId: "GEO-FLY127-OLIVER-ONLY",
-		leadId: "ops-lead",
-		owningDept: "ops",
-	});
-}, 15_000);
-```
-
-This is a characterization/regression addition for behavior already present in the audited baseline, so its first run is expected to be green. Do not manufacture a runtime failure. If it fails, preserve that genuine RED output, use `superpowers:systematic-debugging` to isolate the cause, make the smallest production fix, and rerun to GREEN.
-
-- [ ] **Step 3: Run the focused test**
-
-Run:
+- [ ] **RED 1 — omitted identity.** Change the existing omission test to expect `403 DEPT_SCOPE_REJECT`, reason `lead_identity_required`, `canonicalLeadId:null`, no Linear client call, and no dispatcher call. Run only this test:
 
 ```bash
-pnpm --filter flywheel-teamlead test:run -- src/__tests__/start-e2e.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/start-e2e.test.ts -t "requires explicit Lead identity"
 ```
 
-Expected: PASS, including `Oliver-only issue: Peter is rejected and only Oliver reaches dispatch`.
+Expected RED on baseline: actual status 200 and dispatcher called.
 
-- [ ] **Step 4: Commit the regression**
+- [ ] **GREEN 1 — minimum presence guard.** After `issueId`/`projectName` validation and canonical project resolution, compute the enforcement flag once. If enforcement is on and `leadId` is missing/null/empty, return the stable machine-only reject payload before admission and Linear hydration. Keep FLY-80 auto-resolve only inside the flag-off path. Rerun the one test to GREEN.
+
+- [ ] **RED/GREEN 2 — whitespace identity.** Add one test for all-whitespace `leadId`; verify RED, then extend the presence guard with `trim().length === 0` and verify GREEN. Do not trim or rewrite valid ids.
+
+- [ ] **RED/GREEN 3 — wrong type.** Add one test for a numeric `leadId` expecting `400 {code:"INVALID_LEAD_ID", reason:"wrong_type"}` and zero downstream calls; verify RED, implement explicit type validation, verify GREEN.
+
+- [ ] **Rollback guard.** Add/adjust the flag-off test so omitted `leadId` still auto-resolves the Ops owner and returns 200. This characterizes the pre-existing rollback path; it should be green after the minimum implementation.
+
+- [ ] **Acceptance pair.** Add one same-issue scenario: mock Ops labels twice; Peter/`product-lead` gets `403 label_mismatch`; Oliver/`ops-lead` gets 200; the only dispatcher call carries `leadId:"ops-lead"` and `owningDept:"ops"`.
+
+- [ ] Run the complete route file with the correct focused command (not the package script passthrough that expands to the entire suite):
 
 ```bash
-git add packages/teamlead/src/__tests__/start-e2e.test.ts
-git commit -m "test(FLY-127): prove only owning Lead dispatches"
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/start-e2e.test.ts
 ```
 
-### Task 2: Verify all locked acceptance surfaces
+- [ ] Commit only this batch: `fix(FLY-127): require Lead identity for Runner start`.
 
-**Files:**
+### Task 2: Bind Gemini dispatch identity (strict TDD)
 
-- Test: `packages/teamlead/src/__tests__/department-registry.test.ts`
-- Test: `packages/teamlead/src/__tests__/lead-rules-bundle.test.ts`
-- Test: `packages/teamlead/src/__tests__/start-e2e.test.ts`
-- Verify: `packages/teamlead/lead-rules-base/department-lead-rules.md`
-- Verify: `packages/teamlead/scripts/claude-lead.sh`
+**Files:** `packages/gemini-agent/src/__tests__/registry.test.ts`, `packages/gemini-agent/src/tools/registry.ts`, `packages/gemini-agent/src/tools/schemas.ts`
 
-- [ ] **Step 1: Run the department authorization unit suite**
+- [ ] **RED/GREEN 1.** Replace the old “deptLabel never leaks” dispatch assertion with a test that passes spoofed raw `projectName`/`leadId` and expects the outbound body to contain the session binding values plus allowed dispatch args. Run:
 
 ```bash
-pnpm --filter flywheel-teamlead test:run -- src/__tests__/department-registry.test.ts
+pnpm --filter flywheel-gemini-agent exec vitest run src/__tests__/registry.test.ts -t "dispatch_runner binds"
 ```
 
-Expected: PASS for `label_mismatch`, exact-match `ok`, no-label, multi-label, unknown and cannot-spawn precedence.
+Expected RED: current body is raw args. Implement `{...args, projectName: binding.projectName, leadId: binding.leadId}` with binding fields last; rerun GREEN.
 
-- [ ] **Step 2: Run rule-bundle injection coverage**
+- [ ] **RED/GREEN 2.** Add a schema test expecting `dispatch_runner` to omit model-facing `projectName` and require only `issueId`. Verify RED; remove the property/required entry and update the description to say project/Lead identity is session-bound; verify GREEN.
+
+- [ ] Run the complete registry file, then commit: `fix(FLY-127): bind Gemini Runner dispatch identity`.
+
+### Task 3: Make the QA injection caller explicit (strict TDD)
+
+**Files:** `scripts/__tests__/inject-linear-issue-lead-id.test.sh`, `scripts/inject-linear-issue.sh`
+
+- [ ] **RED.** Add a hermetic shell test with temporary `HOME`, a sparse test-slot config, a stubbed healthy/POST curl, and a curl payload capture. It must assert `.leadId == .slots[slot-1].botName` and verify issue/project/role remain valid JSON. Refuse to reuse a pre-existing fixed `/tmp/flywheel-test-slot-<N>` fixture and clean only the directory created by the test.
+- [ ] Run `bash scripts/__tests__/inject-linear-issue-lead-id.test.sh`; expected RED because the current payload has no `leadId`.
+- [ ] **GREEN.** In the script, read and validate `LEAD_ID` from the same slot `botName` source as `test-deploy.sh`. Construct `START_PAYLOAD` with `jq -nc --arg` for issue, project, role, and lead id; pass that value to curl. Rerun the shell test GREEN.
+- [ ] Commit: `fix(FLY-127): identify test-slot Runner injections`.
+
+### Task 4: Pin the Lead transport rule (strict TDD)
+
+**Files:** `packages/teamlead/src/__tests__/lead-rules-bundle.test.ts`, `packages/teamlead/lead-rules-base/department-lead-rules.md`
+
+- [ ] **RED.** Add a bundle assertion requiring the rendered department rules to say every `/api/runs/start` call carries the current Lead's own non-empty `leadId` and may not substitute another/canonical Lead. Run:
 
 ```bash
-pnpm --filter flywheel-teamlead test:run -- src/__tests__/lead-rules-bundle.test.ts
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/lead-rules-bundle.test.ts -t "own leadId"
 ```
 
-Expected: PASS; department Leads receive the base Action Gate and role ordering stays pinned.
+- [ ] **GREEN.** Add the explicit transport rule next to Action Gate step 4 and add `lead_identity_required` to the diagnostic table. Preserve passive cross-department silence and no-retry semantics. Rerun the one test, then the full bundle file.
+- [ ] Commit: `docs(FLY-127): require scoped Lead identity on spawn`.
 
-- [ ] **Step 3: Run the launcher contract shell suite**
+### Task 5: Affected-surface and full-repository verification
+
+- [ ] Check the Lead inbox and poll both open question ids before the long batch.
+- [ ] Run affected suites:
 
 ```bash
-bash packages/teamlead/scripts/test-fly26-rules-split.sh
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/start-e2e.test.ts src/__tests__/department-registry.test.ts src/__tests__/lead-rules-bundle.test.ts
+pnpm --filter flywheel-gemini-agent exec vitest run src/__tests__/registry.test.ts
+pnpm --filter flywheel-teamlead test:run
+pnpm --filter flywheel-gemini-agent test:run
+bash scripts/__tests__/inject-linear-issue-lead-id.test.sh
 ```
 
-Expected: PASS, including FLY-127 base-before-project ordering assertions.
-
-- [ ] **Step 4: Record restart-safe progress**
-
-```bash
-node "$FLYWHEEL_COMM_CLI" progress --exec-id b9541631-b28d-465a-aad0-aff162a115fd --file engineering/doc/FLY-127-department-scope-spawn/progress.md --phase implement --cursor 3/5 --set-chunk acceptance_regression=completed --next "Run full-repository verification"
-```
-
-Expected: progress ledger commit succeeds. If writer state still reports `status=terminated`, retain the exact error, continue safe verification, and check the outstanding Lead question before handoff.
-
-### Task 3: Run full-repository gates
-
-**Files:**
-
-- Verify only: whole repository
-
-- [ ] **Step 1: Check Lead inbox before the long gate batch**
-
-```bash
-node "$FLYWHEEL_COMM_CLI" inbox --exec-id b9541631-b28d-465a-aad0-aff162a115fd
-```
-
-- [ ] **Step 2: Run lint**
+- [ ] Run the exact repository gates:
 
 ```bash
 pnpm lint
-```
-
-Expected: exit 0.
-
-- [ ] **Step 3: Run all package builds**
-
-```bash
 pnpm -r build
-```
-
-Expected: exit 0 for every package.
-
-- [ ] **Step 4: Run all package tests**
-
-```bash
 pnpm test:packages:run
 ```
 
-Expected: exit 0 and explicit execution of the TeamLead package suite.
+`lint` and build must exit 0. The package gate must be recorded verbatim: exit 0 is ideal; otherwise its failure set must be exactly the two pre-registered baseline macOS tests, with no FLY-127 or additional failure, and the Lead waiver must be approved.
 
-- [ ] **Step 5: Discover and run every new shell test**
-
-No new `scripts/__tests__/*.test.sh` file is planned. Confirm with:
+- [ ] Discover every new shell test across root and package test directories, then run each result:
 
 ```bash
-git diff --name-only origin/main...HEAD -- 'scripts/__tests__/*.test.sh'
+git diff --name-only origin/main...HEAD -- 'scripts/__tests__/*.test.sh' 'packages/*/scripts/__tests__/*.test.sh' 'packages/*/__tests__/*.test.sh'
 ```
 
-Expected: empty. If non-empty, run every listed file with `bash <path>` and require exit 0.
+- [ ] Update durable progress after each meaningful batch with the required `flywheel-comm progress` command. If writer state remains inconsistent, preserve exact CLI output and commit the manual ledger update without representing the transport as successful.
 
-### Task 4: Code review and blocking-finding loop
+### Task 6: Code review loop
 
-**Files:**
+- [ ] Read/use `superpowers:verification-before-completion` and `superpowers:requesting-code-review` before making any completion claim.
+- [ ] Enter `code_review`, open a new `review_code` gate with the required positional message, and register it using `request-review --type code --question-id <id>` (the cross-family rescue path; never raw `codex exec`).
+- [ ] Poll the exact id. `APPROVED` permits continuation; report advisories to the Lead. On `CHANGES_REQUESTED`, verify each blocking finding, fix with TDD, rerun affected/full gates, commit/push, and request a fresh gate with a new id.
 
-- Review: `origin/main...HEAD`
+### Task 7: PR and bounded handoff
 
-- [ ] **Step 1: Enter code review and register the required gate**
-
-```bash
-node "$FLYWHEEL_COMM_CLI" stage set code_review
-node "$FLYWHEEL_COMM_CLI" gate review_code --lead flywheel-test-2 --exec-id b9541631-b28d-465a-aad0-aff162a115fd --no-block "Code review requested for FLY-127"
-```
-
-Capture the returned `questionId`, then register the cross-family rescue review:
-
-```bash
-node "$FLYWHEEL_COMM_CLI" request-review --type code --question-id <captured-question-id>
-```
-
-- [ ] **Step 2: Poll the exact review handle**
-
-```bash
-node "$FLYWHEEL_COMM_CLI" check <captured-question-id>
-```
-
-Expected: `reviewVerdict=APPROVED`. Poll across turns while pending. On `CHANGES_REQUESTED`, read `findings`, apply only evidence-backed blocking fixes, rerun affected/full gates, push the new head, and open a new review gate with a new question id.
-
-### Task 5: PR and bounded handoff
-
-**Files:**
-
-- Create last: `engineering/doc/milestones/FLY-127.md`
-
-- [ ] **Step 1: Commit process docs before the milestone**
-
-```bash
-git add engineering/doc/FLY-127-department-scope-spawn
-git commit -m "docs(FLY-127): record department spawn verification"
-```
-
-- [ ] **Step 2: Create the milestone document**
-
-The file must summarize the existing three-layer implementation, the paired regression, focused/full gate evidence, and code-review verdict without claiming deployment or merge.
-
-- [ ] **Step 3: Make the milestone the literal last commit**
-
-```bash
-git add engineering/doc/milestones/FLY-127.md
-git commit -m "docs(FLY-127): record implementation milestone"
-```
-
-Do not commit anything after this point.
-
-- [ ] **Step 4: Push and open the PR**
-
-```bash
-git push -u origin project-slot-2-FLY-127
-gh pr create --base main --head project-slot-2-FLY-127 --title "test(FLY-127): prove department-scoped Runner spawn" --body-file engineering/doc/FLY-127-department-scope-spawn/research.md
-```
-
-- [ ] **Step 5: Report and complete the implementation node**
-
-```bash
-node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-test-2 --exec-id b9541631-b28d-465a-aad0-aff162a115fd --report "DONE: FLY-127 implementation node verified the existing department-scope hard guard and added the paired Peter-reject/Oliver-only-dispatch regression; full gates and code review passed; PR: <url>"
-node "$FLYWHEEL_COMM_CLI" complete --route needs_review --pr <number>
-```
-
-Do not dispatch QA, request ship approval, merge, deploy, or touch `CLAUDE.md`.
+- [ ] Check inbox, ensure all code/process-doc commits precede the milestone, and ensure `CLAUDE.md` is unchanged.
+- [ ] Create `engineering/doc/milestones/FLY-127.md` with implementation, RED/GREEN, exact gate, baseline-waiver, and review evidence. Commit it as the literal last commit: `docs(FLY-127): record implementation milestone`. Make no later commit.
+- [ ] Push normally (never `--no-verify`, never force without explicit Lead ACK).
+- [ ] Open a PR with a purpose-built body containing `## Summary`, `## Test plan`, and `Linear Issue: FLY-127`; do not use `research.md` as the PR body.
+- [ ] Report the self-contained result through `ask --report`, including PR URL, commit shas, exact package-gate status/waiver, review verdict, and the residual shared-token/per-Lead-auth follow-up concern.
+- [ ] Run `complete --route needs_review --pr <number>`, then park/end only this implementation turn. Do not dispatch QA, request ship approval, merge, deploy, or modify the shared branch after the milestone.
 
 ## Plan self-review
 
-- Acceptance 1 maps to the audited `claude-lead.sh`, base rule file, route and registry paths.
-- Acceptance 2 maps to existing server-side enforcement plus focused unit/route verification.
-- Acceptance 3 maps directly to Task 1's paired same-issue test.
-- Acceptance 4 maps to the existing runtime rule doc plus the new milestone; `CLAUDE.md` is intentionally excluded by the implementation-role hard rule.
-- No production rewrite, new API, migration, secret, external input surface or rendered UI is introduced.
-- No unresolved placeholders or unspecified implementation steps remain; review question ids and PR values are runtime-captured handles, not design ambiguity.
+- Every behavior change has an isolated failing test before its minimum fix.
+- External identity input is validated; shell JSON uses jq escaping; no query, HTML, migration, secret, or rendered surface is introduced.
+- The plan no longer calls the registry the sole lifecycle boundary and does not hide the omitted-identity bypass.
+- Focused Vitest commands use `pnpm --filter <pkg> exec vitest run <file>` so they do not accidentally expand to the full package suite.
+- The exact repository test gate is mandatory and its known baseline failure requires explicit, narrowly scoped governance rather than a false green claim.
