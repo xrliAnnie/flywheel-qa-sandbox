@@ -107,8 +107,10 @@ delivery id 以新 journal seq/event id 为键，天然绕开坏账。最坏影�
 - 不删除 `mailbox_archive`，脚本可重跑；已修 identity 不再进入 candidate。
 
 apply 分批提交，避免 63k snapshots 形成单个超大 WAL transaction；失败可从 backup 回滚，或直接
-幂等续跑。当前只读 sizing：63,911 份 canonical row JSON 合计 148.27 MiB（未含 table/index/WAL
-overhead），另有 6 个 content refs。dry-run 给出 payload/growth/free-space 预算；apply receipt 记录
+幂等续跑。原始只读 sizing：63,911 份 canonical row JSON 合计 148.27 MiB（未含
+table/index/WAL overhead），另有 6 个 content refs。实现后 live dry-run 加入 `lead_repair`
+provenance 后为 `rowJsonBytes=166,108,466`（158.42 MiB）、
+`estimatedGrowthBytes=198,830,898`。dry-run 给出 payload/growth/free-space 预算；apply receipt 记录
 DB/WAL before/after 与 passive checkpoint tuple，不在本工具内 VACUUM。
 
 ## 5. TDD seam 与验证矩阵

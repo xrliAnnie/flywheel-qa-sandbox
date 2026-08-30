@@ -203,8 +203,10 @@ pnpm --filter flywheel-teamlead exec vitest run src/__tests__/patrol-tick.test.t
   digest；positive harness 固定覆盖 mailbox `INTEGER` 对 archive CTAS `INT`。
 - [ ] dry-run query 只选 exact torn + preserved archive；按 id 排序计算 SHA-256 source digest。
 - [ ] dry-run 同时算 canonical `rowJsonBytes`、可读 content-ref bytes 和预计 log/index 下界；当前生产
-  只读基线为 63,911 行、row_json **148.27 MiB**、6 个 content refs。receipt 记录主 DB/WAL 的
-  before bytes；apply 前要求可用空间至少 `backup bytes + 3 * estimatedGrowthBytes`。
+  原始行基线为 63,911 行、row_json **148.27 MiB**、6 个 content refs；实现后 live dry-run（同日）
+  含 `lead_repair` provenance 的 `rowJsonBytes=166,108,466`（**158.42 MiB**）、
+  `estimatedGrowthBytes=198,830,898`。receipt 记录主 DB/WAL 的 before bytes；apply 前要求可用空间至少
+  `backup bytes + 3 * estimatedGrowthBytes`。
 - [ ] apply 前拒绝 symlink/existing backup，`await db.backup()` 后用 readonly handle 验
   `quick_check='ok'` 并算 backup SHA-256。
 - [ ] 每 batch immediate transaction：canonical snapshot + `lead_repair`；content_ref 可读才修并写
