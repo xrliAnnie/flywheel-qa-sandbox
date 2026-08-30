@@ -2,8 +2,9 @@
 issue: FLY-203
 phase: implement
 phaseCursor: 4/5
-updated: 2026-08-30T11:02:19.982Z
-nextStep: final milestone head, code review, then PR after Lead gate disposition
+updated: 2026-08-30T11:48:03.626Z
+nextStep: refresh milestone as literal final head, rerun exact gates, then
+  request head-bound code review
 chunks:
   - id: audit
     order: 1
@@ -15,7 +16,7 @@ pointers: {}
 
 # FLY-203 progress
 **phase**: implement (4/5)
-**next**: final milestone head, code review, then PR after Lead gate disposition
+**next**: refresh milestone as literal final head, rerun exact gates, then request head-bound code review
 
 ## chunks
-- ✅ audit —
+- ✅ audit — 
