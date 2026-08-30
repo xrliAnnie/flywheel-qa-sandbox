@@ -3,8 +3,8 @@ issue: FLY-127
 phase: implement
 title: department-scope-spawn
 phaseCursor: 6/7
-updated: 2026-08-30T11:23:51.491Z
-nextStep: Create final milestone commit, push, and open PR
+updated: 2026-08-30T11:58:59Z
+nextStep: Add a RED test for deriving the default QA-slot department label
 chunks:
   - id: baseline_audit
     order: 1
@@ -35,13 +35,13 @@ chunks:
     deps:
       - rules_acceptance
     done: ""
-    status: done
+    status: doing
   - id: pr_handoff
     order: 6
     deps:
       - verification_review
     done: ""
-    status: doing
+    status: todo
 pointers:
   plan: engineering/doc/FLY-127-department-scope-spawn/plan.md
   exploration: engineering/doc/FLY-127-department-scope-spawn/exploration.md
@@ -50,12 +50,12 @@ pointers:
 
 # FLY-127 progress — department-scope-spawn
 **phase**: implement (6/7)
-**next**: Create final milestone commit, push, and open PR
+**next**: Add a RED test for deriving the default QA-slot department label
 
 ## chunks
 - ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
 - ✅ route_identity_guard — 
 - ✅ caller_binding — 
 - ✅ rules_acceptance — 
-- ✅ verification_review — 
-- 🔨 pr_handoff — 
+- 🔨 verification_review —
+- ⬜ pr_handoff —
