@@ -9,9 +9,17 @@ Issue: FLY-203 (https://linear.app/geoforge3d/issue/FLY-203/remote-report-pipeli
 
 ```text
 git diff --name-only origin/main...HEAD
+  FLY-2182-drill.md
   doc/reference/remote-report-pipeline.md
-  engineering/doc/FLY-203-remote-report-pipeline/{exploration,plan,progress,research}.md
+  engineering/doc/FLY-203-remote-report-pipeline/exploration.md
+  engineering/doc/FLY-203-remote-report-pipeline/plan.md
+  engineering/doc/FLY-203-remote-report-pipeline/progress.md
+  engineering/doc/FLY-203-remote-report-pipeline/research.md
+  engineering/doc/FLY-203-remote-report-pipeline/verification.md
+  engineering/doc/milestones/FLY-203.md
 ```
+
+其中 `FLY-2182-drill.md` 是控制器在 replacement drill 中注入并已推送的单行工具标记，不属于 FLY-203 产品实现；本节点没有未经 Lead 明示删除外部提交。其去留问题 `28985b7a-27e9-4c02-850a-64841e1d7c00` 在 implement handoff 时仍未答复，代码评审将其列为非阻塞 advisory。
 
 ## RED / GREEN
 
