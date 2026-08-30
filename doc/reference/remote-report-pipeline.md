@@ -2,7 +2,7 @@
 
 **Issue**: FLY-203
 **Since**: v1.32.0
-**Plan**: `doc/engineer/plan/inprogress/v1.32.0-FLY-203-remote-report-pipeline.md`
+**Plan**: `doc/engineer/plan/archive/v1.32.0-FLY-203-remote-report-pipeline.md`
 
 ## 这是什么
 
@@ -74,7 +74,7 @@ sequenceDiagram
 
 - "Anyone with link"：URL 路径含 128-bit 随机 token，不可猜（等价 signed URL 强度）；域名带随机后缀
 - 根路径/错误 token 404，无目录列表；`robots.txt` Disallow all + `noindex` meta 注入
-- CSP meta 注入（`default-src 'none'; style-src 'unsafe-inline'; img-src data:`）—— 防报告内意外 `<script>`/外链跑起来
+- 默认注入严格 CSP（`default-src 'none'; style-src 'unsafe-inline'; img-src data:`），报告内脚本和外链不会执行。需要自有交互脚本的报告必须显式使用 `<script nonce="__CSP_NONCE__">`：发布器会为每份报告生成独立 nonce，并只放行该 nonce 的脚本；生成器仍必须 HTML-escape 不可信内容，并用 `addEventListener` 绑定事件（inline handler 不受 nonce 保护）
 - Retention：**链接 7 天后自动失效**(Annie 拍的隐私要求;在下一次发布的重部署中摘除 —— 无新增定时器,挂在 publish 动作上)+ 最多 100 份 / 10MB 滚动上限,谁先到谁生效
 
 ## 注意
