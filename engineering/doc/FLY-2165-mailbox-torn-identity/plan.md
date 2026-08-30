@@ -309,6 +309,14 @@ node /Users/xiaorongli/Dev/flywheel/packages/flywheel-comm/dist/index.js complet
 | `repair-unbounded-working-set-two-full-candidate-copies` | 已消除双份全量 copy；remaining one-copy family grouping 是 family atomicity 的必要 working set，production 63,914-row dry-run 已验证可承受，留 root-ordered streaming follow-up |
 | 其余 carried advisories | 沿用 R1 明示 disposition；均为 structured non-blocking advisory，不改变本轮 HIGH 修复边界 |
 
+## Code Review R3 结论
+
+- `reviewVerdict=APPROVED`，reviewed head `1e9c20105a0ac7558d6f55908c6a185f8a905b2b`；无 blocking finding。
+- defensive LOW：question 仅存在于既有 `mailbox_log` 的理论 corner 在当前 atomic archive 与 gate-open
+  合同下不可达，不为它扫描/解析全表 archived JSON。
+- carried advisories：one-copy streaming follow-up、dangling content-ref migration fail-close、Unicode ID
+  collation、trigger JSON parse benchmark；已通过 `ask --report` 转交 Lead。
+
 ## QA 证据
 
 - focused：`flywheel-comm` 6 files / 91 tests PASS；`teamlead` patrol 2 files / 34 tests PASS；
