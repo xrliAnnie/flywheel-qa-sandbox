@@ -2,13 +2,13 @@
 issue: FLY-145
 phase: implement
 phaseCursor: 3/4
-updated: 2026-08-29T22:45:25.106Z
-nextStep: Refresh the literal-last milestone commit, push, and request
-  final-head code review
+updated: 2026-08-30T09:40:52.822Z
+nextStep: "Resolve harness-closed PR #153 handoff, then refresh literal-last
+  milestone and run final verification"
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
 **phase**: implement (3/4)
-**next**: Refresh the literal-last milestone commit, push, and request final-head code review
+**next**: Resolve harness-closed PR #153 handoff, then refresh literal-last milestone and run final verification
