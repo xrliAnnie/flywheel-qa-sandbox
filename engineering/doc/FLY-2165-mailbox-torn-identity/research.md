@@ -40,14 +40,21 @@ FLY-1645 的 nonterminal external closeout。这样既拒绝 `{}` 假 log，也�
 { kind: "torn_identity" }
 ```
 
-判定只覆盖：identity 存在、`archived_at IS NULL`、live row 不存在。它不把以下 archive corruption
-吞成 torn：
+判定只覆盖：identity 存在、`archived_at IS NULL`、live row 不存在。合法 archived snapshot 若为
+QUEUED/LEASED（现有 FLY-1645 external closeout 可产生）则返回另一精确分支：
+
+```ts
+{ kind: "archived_nonterminal"; state: "QUEUED" | "LEASED"; settledAt: null; ...evidence }
+```
+
+它不把以下 archive corruption 吞成 torn 或 nonterminal：
 
 - archived identity 无 archived snapshot；
 - archived snapshot JSON malformed；
-- archived snapshot 非 ACKED/DEAD 或缺 terminal timestamp。
+- archived snapshot state 不在四态内，或 ACKED/DEAD 缺 terminal timestamp。
 
-后三类仍 throw，保持既有 fail-closed archive authority。torn 是已知历史撕裂，不是假定终态。
+后三类仍 throw，保持 fail-closed archive authority。torn 是已知历史撕裂，不是假定终态；
+archived_nonterminal 是 writer contract 已允许且 snapshot 可证明的状态。
 
 ### 2.1 typed consumer sweep
 
@@ -57,6 +64,9 @@ FLY-1645 的 nonterminal external closeout。这样既拒绝 `{}` 假 log，也�
 | `flag-retirement-production` | 既非 acked 也非 dead，现有 guard 自然 fail-closed |
 | `lead-event-queue` / infra alert enqueue | 不把 torn 当 archived；若尝试复用 poisoned id，enqueue 仍明确失败 |
 | `patrol-tick` | 专门的 wall-clock recovery，见下节 |
+
+`archived_nonterminal` 在 settlement consumers 中按「可判定但未 terminal」处理；`message-status`
+可观测为 archived QUEUED/LEASED，patrol 不会产生此形状，其他 terminal guards 均不得把它当 ACKED/DEAD。
 
 不在 `enqueue()` 中自动复活 torn identity：permanent identity 的 projection hash 是 replay fence；
 无原行时重插不能证明内容和状态，删除/reuse identity 又被 schema 明令禁止。
@@ -85,7 +95,9 @@ delivery id 以新 journal seq/event id 为键，天然绕开坏账。最坏影�
 - 默认只读 dry-run；`--apply` 必须同时给尚不存在的 `--backup <path>`；
 - apply 前用 SQLite online backup，核 `quick_check='ok'`，再打开写事务；
 - `mailbox_archive` 与 `mailbox` 必须 ordered column names + normalized SQLite affinities 完全相同；
-  schema digests 进入 receipt，missing/extra/affinity drift 均拒绝；
+  affinity 严格按 SQLite type-name 规则归一（INT→INTEGER，CHAR/CLOB/TEXT→TEXT，BLOB/empty→BLOB，
+  REAL/FLOA/DOUB→REAL，其余→NUMERIC），且不比较 CTAS 会丢失的 notnull/default/pk；schema digests
+  进入 receipt，missing/extra/affinity drift 均拒绝；
 - authority 只取 `mailbox_archive` preserved row + matching active identity + no live row + zero log；
 - 只修 ACKED + `acked_at` 或 DEAD + `dead_at` 的 terminal row；
 - 每批写 canonical full `row_json`，追加 `lead_repair` provenance，以唯一
