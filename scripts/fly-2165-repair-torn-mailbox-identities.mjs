@@ -164,19 +164,32 @@ function snapshotJson(item, evidence) {
 
 function analyze(db) {
 	const schemaDigests = assertArchiveSchemaParity(db);
-	const rows = db.prepare(CANDIDATE_SQL).all();
+	const candidateRows = db.prepare(CANDIDATE_SQL).iterate();
+	const questionRoot = db.prepare(
+		"SELECT 1 FROM mailbox_archive WHERE id = ? AND type = 'question'",
+	);
 	const sourceHash = createHash("sha256");
-	const repairable = [];
+	const families = new Map();
 	const unrepairable = {
 		missingTerminalAt: 0,
 		invalidContentRef: 0,
+		familyBlocked: 0,
 	};
-	let contentRefBytes = 0;
-	for (const row of rows) {
+	let candidateCount = 0;
+	for (const row of candidateRows) {
+		candidateCount++;
 		sourceHash.update(row.id);
 		sourceHash.update("\0");
 		sourceHash.update(canonicalJsonString(row));
 		sourceHash.update("\n");
+		const familyRootId =
+			row.type === "response" &&
+			typeof row.ref_id === "string" &&
+			questionRoot.get(row.ref_id)
+				? row.ref_id
+				: row.id;
+		const family = families.get(familyRootId) ?? [];
+		families.set(familyRootId, family);
 		const terminalAt =
 			row.state === "ACKED"
 				? row.acked_at
@@ -188,17 +201,33 @@ function analyze(db) {
 			!Number.isFinite(Date.parse(terminalAt))
 		) {
 			unrepairable.missingTerminalAt++;
+			family.push({ row, familyRootId, error: "missingTerminalAt" });
 			continue;
 		}
 		const content = contentRefEvidence(row);
 		if (content.error) {
 			unrepairable.invalidContentRef++;
+			family.push({ row, familyRootId, error: "invalidContentRef" });
 			continue;
 		}
-		contentRefBytes += content.bytes;
-		repairable.push({ row, content });
+		family.push({ row, familyRootId, content });
 	}
 	const sourceDigest = sourceHash.digest("hex");
+	const repairableFamilies = [];
+	for (const [rootId, members] of families) {
+		if (members.some((member) => member.error)) {
+			unrepairable.familyBlocked += members.filter(
+				(member) => !member.error,
+			).length;
+			continue;
+		}
+		repairableFamilies.push({ rootId, items: members });
+	}
+	const repairable = repairableFamilies.flatMap((family) => family.items);
+	const contentRefBytes = repairable.reduce(
+		(bytes, item) => bytes + item.content.bytes,
+		0,
+	);
 	let rowJsonBytes = 0;
 	for (const item of repairable) {
 		rowJsonBytes += Buffer.byteLength(
@@ -210,8 +239,10 @@ function analyze(db) {
 		);
 	}
 	return {
-		rows,
+		candidateCount,
+		repairableCount: repairable.length,
 		repairable,
+		repairableFamilies,
 		unrepairable,
 		sourceDigest,
 		schemaDigests,
@@ -226,11 +257,11 @@ function analyze(db) {
 function receiptBase({ mode, analysis, beforeAfterBytes }) {
 	return {
 		mode,
-		candidates: analysis.rows.length,
-		repairable: analysis.repairable.length,
+		candidates: analysis.candidateCount,
+		repairable: analysis.repairableCount,
 		repaired: 0,
 		unrepairable: analysis.unrepairable,
-		remainingTorn: analysis.rows.length,
+		remainingTorn: analysis.candidateCount,
 		sourceDigest: analysis.sourceDigest,
 		schemaDigests: analysis.schemaDigests,
 		sizeEstimate: analysis.sizeEstimate,
@@ -264,11 +295,22 @@ function assertBackupTarget(dbPath, backupPath) {
 function sameAnalysisAuthority(left, right) {
 	return (
 		left.sourceDigest === right.sourceDigest &&
-		left.rows.length === right.rows.length &&
-		left.repairable.length === right.repairable.length &&
+		left.candidateCount === right.candidateCount &&
+		left.repairableCount === right.repairableCount &&
 		canonicalJsonString(left.schemaDigests) ===
 			canonicalJsonString(right.schemaDigests)
 	);
+}
+
+function analysisSummary(analysis) {
+	return {
+		candidateCount: analysis.candidateCount,
+		repairableCount: analysis.repairableCount,
+		unrepairable: analysis.unrepairable,
+		sourceDigest: analysis.sourceDigest,
+		schemaDigests: analysis.schemaDigests,
+		sizeEstimate: analysis.sizeEstimate,
+	};
 }
 
 function assertCandidateStillMatches(db, item) {
@@ -291,50 +333,69 @@ function assertCandidateStillMatches(db, item) {
 	}
 }
 
-function applyBatch(db, batch, evidence, faultAfterLogId) {
+function applyBatch(db, families, evidence, faultAfterLogId) {
 	return db
-		.transaction((items) => {
-			for (const item of items) {
-				assertCandidateStillMatches(db, item);
-				const rowJson = snapshotJson(item, evidence);
-				db.prepare(
-					`INSERT INTO mailbox_log
+		.transaction((familyBatch) => {
+			for (const family of familyBatch) {
+				for (const item of family.items) {
+					assertCandidateStillMatches(db, item);
+					const rowJson = snapshotJson(item, evidence);
+					db.prepare(
+						`INSERT INTO mailbox_log
 					 (event_id, message_id, subject_id, event, at, source_table, row_json)
 					 VALUES (?, ?, ?, 'archived', ?, 'mailbox_archive', ?)`,
-				).run(
-					`fly2165:archived:${item.row.id}`,
-					item.row.id,
-					item.row.id,
-					evidence.repairedAt,
-					rowJson,
-				);
-				if (faultAfterLogId === item.row.id) {
-					throw new Error(`fault_after_log:${item.row.id}`);
-				}
-				if (item.content.archive) {
-					db.prepare(
-						`INSERT INTO content_ref_gc_outbox
+					).run(
+						`fly2165:archived:${item.row.id}`,
+						item.row.id,
+						family.rootId,
+						evidence.repairedAt,
+						rowJson,
+					);
+					if (faultAfterLogId === item.row.id) {
+						throw new Error(`fault_after_log:${item.row.id}`);
+					}
+					if (item.content.archive) {
+						db.prepare(
+							`INSERT INTO content_ref_gc_outbox
 						 (intent_id, message_id, path, content_hash, created_at)
 						 VALUES (?, ?, ?, ?, ?)`,
-					).run(
-						`fly2165:gc:${item.row.id}`,
-						item.row.id,
-						item.content.archive.path,
-						item.content.archive.sha256,
-						evidence.repairedAt,
-					);
-				}
-				const stamped = db
-					.prepare(
-						"UPDATE mailbox_identity SET archived_at=? WHERE id=? AND delivery_id=? AND archived_at IS NULL",
-					)
-					.run(evidence.repairedAt, item.row.id, item.row.delivery_id);
-				if (stamped.changes !== 1) {
-					throw new Error(`repair_identity_cas_failed:${item.row.id}`);
+						).run(
+							`fly2165:gc:${item.row.id}`,
+							item.row.id,
+							item.content.archive.path,
+							item.content.archive.sha256,
+							evidence.repairedAt,
+						);
+					}
+					const stamped = db
+						.prepare(
+							"UPDATE mailbox_identity SET archived_at=? WHERE id=? AND delivery_id=? AND archived_at IS NULL",
+						)
+						.run(evidence.repairedAt, item.row.id, item.row.delivery_id);
+					if (stamped.changes !== 1) {
+						throw new Error(`repair_identity_cas_failed:${item.row.id}`);
+					}
 				}
 			}
 		})
-		.immediate(batch);
+		.immediate(families);
+}
+
+function familyBatches(families, messageLimit) {
+	const batches = [];
+	let batch = [];
+	let messages = 0;
+	for (const family of families) {
+		if (batch.length > 0 && messages + family.items.length > messageLimit) {
+			batches.push(batch);
+			batch = [];
+			messages = 0;
+		}
+		batch.push(family);
+		messages += family.items.length;
+	}
+	if (batch.length > 0) batches.push(batch);
+	return batches;
 }
 
 function parseCli(argv) {
@@ -344,6 +405,7 @@ function parseCli(argv) {
 			db: { type: "string" },
 			apply: { type: "boolean", default: false },
 			backup: { type: "string" },
+			now: { type: "string" },
 			"batch-size": { type: "string", default: "500" },
 			"test-fault-after-log-id": { type: "string" },
 		},
@@ -358,15 +420,30 @@ function parseCli(argv) {
 		throw new Error("--backup_requires_--apply");
 	}
 	const batchSize = Number(values["batch-size"]);
-	if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 10_000) {
-		throw new Error("--batch-size_must_be_1_through_10000");
+	if (!Number.isSafeInteger(batchSize) || batchSize < 1 || batchSize > 1_000) {
+		throw new Error("--batch-size_must_be_1_through_1000");
+	}
+	const repairNow = values.now?.trim();
+	if (
+		repairNow &&
+		(!repairNow.endsWith("Z") ||
+			!Number.isFinite(Date.parse(repairNow)) ||
+			new Date(repairNow).toISOString() !== repairNow)
+	) {
+		throw new Error("--now_must_be_canonical_utc_iso");
+	}
+	const faultAfterLogId =
+		values["test-fault-after-log-id"]?.trim() || undefined;
+	if (faultAfterLogId && process.env.NODE_ENV !== "test") {
+		throw new Error("--test-fault-after-log-id_requires_NODE_ENV=test");
 	}
 	return {
 		dbPath: resolve(values.db),
 		apply: values.apply,
 		backupPath: values.backup ? resolve(values.backup) : undefined,
 		batchSize,
-		faultAfterLogId: values["test-fault-after-log-id"]?.trim() || undefined,
+		repairNow,
+		faultAfterLogId,
 	};
 }
 
@@ -380,31 +457,53 @@ async function run(argv) {
 	readonly.pragma("busy_timeout = 5000");
 	let initial;
 	try {
-		initial = analyze(readonly);
+		const initialAnalysis = analyze(readonly);
 		if (!options.apply) {
 			return receiptBase({
 				mode: "dry-run",
-				analysis: initial,
+				analysis: initialAnalysis,
 				beforeAfterBytes: { before, after: before },
 			});
 		}
 
 		assertBackupTarget(options.dbPath, options.backupPath);
-		const availableFreeBytes = availableBytes(dirname(options.backupPath));
+		const backupDirectory = dirname(options.backupPath);
+		const dbDirectory = dirname(options.dbPath);
+		const backupAvailableFreeBytes = availableBytes(backupDirectory);
+		const dbAvailableFreeBytes = availableBytes(dbDirectory);
 		const backupBytes = before.db + before.wal;
-		const requiredFreeBytes =
-			backupBytes + 3 * initial.sizeEstimate.estimatedGrowthBytes;
-		if (availableFreeBytes < requiredFreeBytes) {
-			throw new Error(
-				`insufficient_free_space:${availableFreeBytes}:${requiredFreeBytes}`,
-			);
+		const dbGrowthRequiredBytes =
+			3 * initialAnalysis.sizeEstimate.estimatedGrowthBytes;
+		const sameFilesystem =
+			statSync(backupDirectory).dev === statSync(dbDirectory).dev;
+		if (sameFilesystem) {
+			const combinedRequiredBytes = backupBytes + dbGrowthRequiredBytes;
+			if (backupAvailableFreeBytes < combinedRequiredBytes) {
+				throw new Error(
+					`insufficient_free_space:shared:${backupAvailableFreeBytes}:${combinedRequiredBytes}`,
+				);
+			}
+		} else {
+			if (backupAvailableFreeBytes < backupBytes) {
+				throw new Error(
+					`insufficient_free_space:backup:${backupAvailableFreeBytes}:${backupBytes}`,
+				);
+			}
+			if (dbAvailableFreeBytes < dbGrowthRequiredBytes) {
+				throw new Error(
+					`insufficient_free_space:db:${dbAvailableFreeBytes}:${dbGrowthRequiredBytes}`,
+				);
+			}
 		}
-		initial.sizeEstimate = {
-			...initial.sizeEstimate,
+		initialAnalysis.sizeEstimate = {
+			...initialAnalysis.sizeEstimate,
 			backupBytes,
-			availableFreeBytes,
-			requiredFreeBytes,
+			backupAvailableFreeBytes,
+			dbAvailableFreeBytes,
+			dbGrowthRequiredBytes,
+			sameFilesystem,
 		};
+		initial = analysisSummary(initialAnalysis);
 		await readonly.backup(options.backupPath);
 	} finally {
 		readonly.close();
@@ -430,21 +529,22 @@ async function run(argv) {
 		if (!sameAnalysisAuthority(initial, current)) {
 			throw new Error("repair_authority_changed_after_backup");
 		}
-		const repairedAt = new Date().toISOString();
+		const repairedAt = options.repairNow ?? new Date().toISOString();
 		const evidence = {
 			repairedAt,
 			backupSha256,
 			sourceDigest: current.sourceDigest,
 		};
 		let repaired = 0;
-		for (
-			let index = 0;
-			index < current.repairable.length;
-			index += options.batchSize
-		) {
-			const batch = current.repairable.slice(index, index + options.batchSize);
+		for (const batch of familyBatches(
+			current.repairableFamilies,
+			options.batchSize,
+		)) {
 			applyBatch(db, batch, evidence, options.faultAfterLogId);
-			repaired += batch.length;
+			repaired += batch.reduce(
+				(count, family) => count + family.items.length,
+				0,
+			);
 		}
 		const checkpointRow = db.pragma("wal_checkpoint(PASSIVE)")[0] ?? {};
 		const remaining = analyze(db);
@@ -456,7 +556,7 @@ async function run(argv) {
 				beforeAfterBytes: { before, after },
 			}),
 			repaired,
-			remainingTorn: remaining.rows.length,
+			remainingTorn: remaining.candidateCount,
 			backup: {
 				path: options.backupPath,
 				sha256: backupSha256,

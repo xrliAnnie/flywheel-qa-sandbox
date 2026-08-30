@@ -286,6 +286,33 @@ node /Users/xiaorongli/Dev/flywheel/packages/flywheel-comm/dist/index.js complet
 | `nonterminal-archive-legal-but-reader-fatal` | 增 typed `archived_nonterminal`，保持 malformed/missing/terminal-timestamp corruption fail-closed |
 | `ci-step-placement-vs-pnpm-install` | repair harness 固定置于 quick-gate Install dependencies 之后 |
 
+## Code Review R1 逐项处置
+
+| findingKey | 处置 |
+|---|---|
+| `repair-archived-log-subject-id-not-family-root`（HIGH） | RED harness 复现 question 已提交/response rollback 的半 family；repair 从 preserved `mailbox_archive` 解 root、整 family 同 transaction，并把所有 member 的 `subject_id` 写 root；fault + resume 断言 `q1/r1 → subject_id=q1` |
+| `repair-free-space-gate-measures-wrong-filesystem` | backup mount 与 DB mount 分别量空间；同 device 合并要求 `backup + 3×growth`，异 device 分别验 backup bytes 与 DB growth |
+| `repair-unbounded-working-set-two-full-candidate-copies` | candidate 用 `.iterate()`，不再 materialize `rows`；backup 后只保留 digest/count/size summary，再开 write handle，消除 initial/current 两份全量 row object 同驻内存 |
+| `patrol-archived-nonterminal-still-permanent-throw` | 与 torn 同样按 wall-clock slot：current slot 不 double-mint，old slot 记 recovery log 后 mint fresh delivery id；新增 RED→GREEN owner test |
+| `repair-cli-contract-drift-from-approved-plan` | 实装 canonical UTC `--now`，`--batch-size` 上限收紧到 1000；harness 固定 timestamp 与 1001 rejection |
+| `repair-test-fault-seam-shipped-unguarded` | `--test-fault-after-log-id` 仅 `NODE_ENV=test` 接受；普通 operator invocation fail-closed |
+| `migration-invalid-content-ref-now-aborts-whole-migration` | 保持 design-approved fail-closed：缺失 external bytes 时不能伪造 full snapshot；不在本 issue 改写 migration coverage 语义 |
+| `migration-family-id-sort-collation-mismatch` | UUID-shaped production IDs 下无现时 correctness 影响；safe keep/fail-close 方向，留 follow-up |
+| `trigger-json-extract-reparses-snapshot-five-times-per-delete` | correctness 已满足；JSON parse 性能优化不与本次事故修复混做，留 follow-up benchmark |
+
+## QA 证据
+
+- focused：`flywheel-comm` 6 files / 91 tests PASS；`teamlead` patrol 2 files / 34 tests PASS；
+  feature-flag drift 13/13 PASS；repair Bash harness PASS；CI enumeration PASS。
+- full lint/build：`pnpm lint` exit 0（仅 repo baseline warnings）；`pnpm -r build` 22/23 workspace
+  projects PASS。
+- `pnpm test:packages:run` 在本机 default parallelism 三轮均被 Vitest worker starvation 终止；失败均为本
+  issue 外的 real tmux/timeout case，逐项 isolated control 全部 PASS。将最重的 `teamlead` 全包限制到 2 workers 后
+  741/741 files、9,763 tests PASS（6 intentional skips）。PR exact-head CI 仍是最终 full-repo authority。
+- production dry-run（只读、未 apply）：63,914 candidates、63,911 repairable、3 missing terminal、
+  `familyBlocked=0`；source digest 仍为
+  `71880e4c205d493ba36b89654e23e4a6cc1e197d965c3f56e662920c06e570aa`。
+
 ## 自审结果
 
 - spec coverage：root prevention、typed degradation、patrol self-heal、historical repair、full gates、review/PR

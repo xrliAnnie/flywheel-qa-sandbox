@@ -757,6 +757,40 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 		expect(inspect).toHaveBeenLastCalledWith("foo_bar", freshDeliveryId);
 	});
 
+	it("advances an old archived nonterminal slot instead of stalling", async () => {
+		const intervalMs = 10 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T12:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		const first = h.rows[0]!;
+		const poisonedDeliveryId = deliveryId(first);
+		h.settlements.set(poisonedDeliveryId, {
+			kind: "archived_nonterminal",
+			state: "LEASED",
+			settledAt: null,
+			deadReason: null,
+			lastError: null,
+			createdAt: "2026-08-13T12:00:00.000Z",
+			deliveredAt: null,
+			notifiedAt: null,
+		});
+
+		h.setNow(startMs + intervalMs);
+		await pass();
+
+		expect(h.rows).toHaveLength(2);
+		expect(h.enqueued).toEqual([first, h.rows[1]]);
+		expect(h.deps.log).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`archived_nonterminal delivery=${poisonedDeliveryId}`,
+			),
+		);
+		expect(h.alerts).toEqual([]);
+	});
+
 	it("isolates one lead failure from the rest of the fleet", async () => {
 		const twoLeadProject: ProjectEntry = {
 			...project,

@@ -272,13 +272,20 @@ async function runLeadPatrolTickPass(
 						lead.agentId,
 						intervalMs,
 					);
-					if (settlement.kind === "torn_identity") {
+					if (
+						settlement.kind === "torn_identity" ||
+						settlement.kind === "archived_nonterminal"
+					) {
 						if (previousSlotStart >= currentScheduledAt) {
 							failures.succeeded(project.projectName, lead.agentId);
 							continue;
 						}
+						const poisonLabel =
+							settlement.kind === "torn_identity"
+								? "torn"
+								: "archived_nonterminal";
 						deps.log?.(
-							`[patrol_tick] project=${project.projectName} lead=${lead.agentId} torn delivery=${previousDeliveryId} previous_slot=${new Date(previousSlotStart).toISOString()} current_slot=${new Date(currentScheduledAt).toISOString()}; advancing`,
+							`[patrol_tick] project=${project.projectName} lead=${lead.agentId} ${poisonLabel} delivery=${previousDeliveryId} previous_slot=${new Date(previousSlotStart).toISOString()} current_slot=${new Date(currentScheduledAt).toISOString()}; advancing`,
 						);
 					} else if (
 						settlement.kind === "live" &&

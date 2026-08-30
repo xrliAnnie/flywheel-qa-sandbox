@@ -43,7 +43,7 @@ if (variant === "affinity") {
 db.exec(`CREATE TABLE mailbox_archive AS SELECT ${selected.join(", ")} FROM mailbox WHERE 0`);
 if (variant === "extra") db.exec("ALTER TABLE mailbox_archive ADD COLUMN extra TEXT");
 
-if (variant === "positive") {
+if (variant === "positive" || variant === "family") {
 	const refsDir = resolve(fixtureRoot, "refs");
 	mkdirSync(refsDir, { recursive: true });
 	const contentRef = resolve(refsDir, "content.txt");
@@ -54,19 +54,60 @@ if (variant === "positive") {
 	const insertMailbox = db.prepare(`
 		INSERT INTO mailbox
 		 (id, delivery_id, from_agent, to_agent, recipient_kind, type, content,
-		  content_ref, created_at, state, acked_at, dead_at, dead_reason, sender_ref)
-		 VALUES (?, ?, 'bridge', 'eng-lead', 'lead', 'patrol_tick', ?, ?,
+		  content_ref, created_at, state, acked_at, dead_at, dead_reason, sender_ref,
+		  ref_id, checkpoint)
+		 VALUES (?, ?, 'bridge', 'eng-lead', 'lead', ?, ?, ?,
 		         '2026-08-01T00:00:00.000Z', ?, ?, ?, ?,
-		         '{"v":1,"authority":"unprotected"}')
+		         '{"v":1,"authority":"unprotected"}', ?, ?)
 	`);
-	const seed = ({ id, state, ackedAt = null, deadAt = null, deadReason = null, ref = null }) => {
+	const seed = ({
+		id,
+		state,
+		type = "patrol_tick",
+		ackedAt = null,
+		deadAt = null,
+		deadReason = null,
+		ref = null,
+		refId = null,
+		checkpoint = null,
+	}) => {
 		insertIdentity.run(id, `delivery:${id}`, `hash:${id}`);
-		insertMailbox.run(id, `delivery:${id}`, id, ref, state, ackedAt, deadAt, deadReason);
+		insertMailbox.run(
+			id,
+			`delivery:${id}`,
+			type,
+			id,
+			ref,
+			state,
+			ackedAt,
+			deadAt,
+			deadReason,
+			refId,
+			checkpoint,
+		);
 	};
-	seed({ id: "acked", state: "ACKED", ackedAt: "2026-08-01T01:00:00.000Z" });
-	seed({ id: "content", state: "ACKED", ackedAt: "2026-08-01T01:01:00.000Z", ref: contentRef });
-	seed({ id: "dead", state: "DEAD", deadAt: "2026-08-01T01:02:00.000Z", deadReason: "test" });
-	seed({ id: "missing-dead-at", state: "DEAD", deadReason: "missing_stamp" });
+	if (variant === "positive") {
+		seed({ id: "acked", state: "ACKED", ackedAt: "2026-08-01T01:00:00.000Z" });
+		seed({ id: "content", state: "ACKED", ackedAt: "2026-08-01T01:01:00.000Z", ref: contentRef });
+		seed({ id: "dead", state: "DEAD", deadAt: "2026-08-01T01:02:00.000Z", deadReason: "test" });
+		seed({ id: "missing-dead-at", state: "DEAD", deadReason: "missing_stamp" });
+	} else {
+		seed({
+			id: "q1",
+			type: "question",
+			state: "ACKED",
+			ackedAt: "2026-08-01T01:00:00.000Z",
+			checkpoint: "founder_review",
+		});
+		seed({
+			id: "r1",
+			type: "response",
+			refId: "q1",
+			state: "ACKED",
+			ackedAt: "2026-08-01T01:01:00.000Z",
+			checkpoint: "founder_review",
+		});
+	}
 	db.exec("INSERT INTO mailbox_archive SELECT * FROM mailbox");
 	db.exec("DROP TRIGGER mailbox_delete_requires_archive; DELETE FROM mailbox");
 }
@@ -122,6 +163,13 @@ if(!/^[a-f0-9]{64}$/.test(value.sourceDigest)) throw new Error("source digest mi
 if(value.schemaDigests?.mailbox!==value.schemaDigests?.mailboxArchive) throw new Error("normalized schema digests differ");
 ' "$DRY_JSON"
 
+if node "$SCRIPT" --db "$POSITIVE_DB" --batch-size 1001 >"$TMP/batch-size.out" 2>&1; then
+  fail "accepted --batch-size above the approved 1000-row limit"
+fi
+if node "$SCRIPT" --db "$POSITIVE_DB" --test-fault-after-log-id acked >"$TMP/unguarded-fault.out" 2>&1; then
+  fail "accepted the fault seam outside NODE_ENV=test"
+fi
+
 if node "$SCRIPT" --db "$POSITIVE_DB" --apply >"$TMP/no-backup.out" 2>&1; then
   fail "--apply succeeded without --backup"
 fi
@@ -166,12 +214,50 @@ done
 
 FAULT_DB="$TMP/fault.db"
 seed_db "$FAULT_DB" positive "$TMP/fault-fixture"
-if node "$SCRIPT" --db "$FAULT_DB" --apply --backup "$TMP/fault.backup.db" --batch-size 1 --test-fault-after-log-id dead >"$TMP/fault.out" 2>&1; then
+if NODE_ENV=test node "$SCRIPT" --db "$FAULT_DB" --apply --backup "$TMP/fault.backup.db" --batch-size 1 --test-fault-after-log-id dead >"$TMP/fault.out" 2>&1; then
   fail "fault injection unexpectedly succeeded"
 fi
 assert_repaired_db "$FAULT_DB" 2 2
 RESUME_JSON="$(node "$SCRIPT" --db "$FAULT_DB" --apply --backup "$TMP/fault-resume.backup.db" --batch-size 1)"
 node -e 'const value=JSON.parse(process.argv[1]);if(value.repaired!==1||value.remainingTorn!==1)throw new Error("resume did not repair only the rolled-back batch")' "$RESUME_JSON"
 assert_repaired_db "$FAULT_DB" 3 1
+
+FAMILY_DB="$TMP/family.db"
+seed_db "$FAMILY_DB" family "$TMP/family-fixture"
+if NODE_ENV=test node "$SCRIPT" --db "$FAMILY_DB" --apply --backup "$TMP/family-fault.backup.db" --batch-size 1 --test-fault-after-log-id r1 >"$TMP/family-fault.out" 2>&1; then
+  fail "family fault injection unexpectedly succeeded"
+fi
+node --input-type=module - "$ROOT" "$FAMILY_DB" <<'NODE'
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
+const [root, dbPath] = process.argv.slice(2);
+const requireFromComm = createRequire(resolve(root, "packages/flywheel-comm/package.json"));
+const Database = requireFromComm("better-sqlite3");
+const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+const logs = db.prepare("SELECT COUNT(*) AS n FROM mailbox_log WHERE event='archived'").get().n;
+const active = db.prepare("SELECT COUNT(*) AS n FROM mailbox_identity WHERE archived_at IS NULL").get().n;
+if (logs !== 0 || active !== 2) throw new Error(`family fault was not atomic: logs=${logs} active=${active}`);
+db.close();
+NODE
+FAMILY_JSON="$(node "$SCRIPT" --db "$FAMILY_DB" --apply --backup "$TMP/family-resume.backup.db" --batch-size 1 --now 2026-08-29T23:59:59.000Z)"
+node -e 'const value=JSON.parse(process.argv[1]);if(value.repaired!==2||value.remainingTorn!==0)throw new Error("family resume receipt mismatch")' "$FAMILY_JSON"
+node --input-type=module - "$ROOT" "$FAMILY_DB" <<'NODE'
+import { createRequire } from "node:module";
+import { resolve } from "node:path";
+const [root, dbPath] = process.argv.slice(2);
+const requireFromComm = createRequire(resolve(root, "packages/flywheel-comm/package.json"));
+const Database = requireFromComm("better-sqlite3");
+const db = new Database(dbPath, { readonly: true, fileMustExist: true });
+const logs = db.prepare("SELECT message_id, subject_id FROM mailbox_log WHERE event='archived' ORDER BY message_id").all();
+if (JSON.stringify(logs) !== JSON.stringify([
+	{ message_id: "q1", subject_id: "q1" },
+	{ message_id: "r1", subject_id: "q1" },
+])) throw new Error(`family root index mismatch: ${JSON.stringify(logs)}`);
+const archivedAt = db.prepare("SELECT DISTINCT archived_at FROM mailbox_identity").pluck().all();
+if (JSON.stringify(archivedAt) !== JSON.stringify(["2026-08-29T23:59:59.000Z"])) {
+	throw new Error(`--now was not used as repair timestamp: ${JSON.stringify(archivedAt)}`);
+}
+db.close();
+NODE
 
 printf '[PASS] FLY-2165 torn mailbox identity repair is backup-first, fail-closed, atomic, and idempotent\n'
