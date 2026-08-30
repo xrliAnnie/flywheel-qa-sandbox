@@ -52,4 +52,3 @@ Annie 已拍板产品方向：HTML 托管是完整报告骨干，截图只作 Di
 ## 验证边界
 
 Implement 节点负责：聚焦测试、全仓 gate、markup/截图命令契约、代码评审、PR。独立 QA 节点负责：使用真 Vercel/Discord 凭据发布，确认一条消息、手机视角点击可达、错误 token 404、前一份链接在下一次发布后仍存活。Implement 节点不使用生产凭据模拟 QA，也不自行 dispatch QA。
-

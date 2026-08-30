@@ -73,4 +73,3 @@ No-bail 失败明细：
 ## 已知状态差异
 
 `CLAUDE.md` 的里程碑表仍写 FLY-203 Held PR (#221)，但此 sandbox 的 `origin/main` 已包含 `publish-report`、reports route 和测试。动态任务明确禁止修改 `CLAUDE.md`，因此本分支只在 milestone/handoff 中显式记录这项 sandbox 状态差异。
-
