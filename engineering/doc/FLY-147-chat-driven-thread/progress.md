@@ -42,8 +42,8 @@ pointers:
 **next**: Create the literal-last milestone commit, register code review, then open the PR after approval
 
 ## chunks
-- ✅ docs-exploration — 
-- ✅ docs-research — 
-- ✅ design-review — 
-- ✅ implementation — 
-- ✅ verification-review-pr — 
+- ✅ docs-exploration —
+- ✅ docs-research —
+- ✅ design-review —
+- ✅ implementation —
+- ✅ verification-review-pr —

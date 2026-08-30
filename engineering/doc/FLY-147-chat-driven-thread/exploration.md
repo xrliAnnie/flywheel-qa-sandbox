@@ -28,14 +28,14 @@ Issue: FLY-147 (https://linear.app/geoforge3d/issue/FLY-147/chat-driven-issue-cr
 
 把 `TEAMLEAD_CHAT_THREADS_ENABLED` 改成 default-on、显式 `false/0/off` 才关闭。自动与手动路径同时可用，改动最小。
 
-优点：直接消除部署漏配导致的 404；任意 role 自动创建立即可用。  
+优点：直接消除部署漏配导致的 404；任意 role 自动创建立即可用。
 缺点：把“是否暴露 thread 能力”和“是否每次 spawn 自动创建”继续绑死；未配置 API token 的旧安装可能无意中暴露可写 route；无法单独保留手动能力并关闭自动噪音。
 
 ### 方案 B：拆分 capability 与 auto policy（推荐）
 
 始终构造 Bridge-local `ChatThreadCreator` 并开放受现有 `/api` 鉴权保护的 `/chat-threads/create`、查询和注册能力；`TEAMLEAD_CHAT_THREADS_ENABLED` 只控制 `session_started` 自动创建、自动 enrichment 等后台行为。自动分支继续使用现有 role-agnostic `DirectEventSink`。
 
-优点：精准打通 ad-hoc 手动路径；保留现有 engineer 自动行为和关闭自动创建的运维选择；不需要增加 role 白名单或新状态机。  
+优点：精准打通 ad-hoc 手动路径；保留现有 engineer 自动行为和关闭自动创建的运维选择；不需要增加 role 白名单或新状态机。
 缺点：需要把若干 route guard 从“功能总开关”改成“依赖是否可用/鉴权是否配置”的明确判定，并更新旧的 feature-off 测试合同。
 
 安全边界：写 Discord 的手动 route 必须继续处于 `/api` token middleware 后；若没有 `TEAMLEAD_API_TOKEN`，应 fail-closed，而不是因为 capability 常驻就变成匿名写入口。
@@ -44,7 +44,7 @@ Issue: FLY-147 (https://linear.app/geoforge3d/issue/FLY-147/chat-driven-issue-cr
 
 在 `ProjectEntry` 增加项目级策略，spawn 时按项目决定是否自动创建；手动 route 独立常驻。
 
-优点：最符合多项目差异化运维。  
+优点：最符合多项目差异化运维。
 缺点：本 issue 的实证只有单个全局开关误配，增加 schema、校验、配置迁移和 precedence 属于超出必要范围；未来可在方案 B 的 auto policy seam 上增量实现。
 
 ## 4. 推荐设计
