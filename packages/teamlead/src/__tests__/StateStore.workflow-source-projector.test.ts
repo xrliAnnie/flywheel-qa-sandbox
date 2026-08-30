@@ -638,6 +638,11 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 					repo: "geoforge3d/flywheel",
 					ref: "refs/heads/fly-1307",
 				},
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 				now: "2026-07-16T00:11:00.000Z",
 			}).ok,
 		).toBe(true);

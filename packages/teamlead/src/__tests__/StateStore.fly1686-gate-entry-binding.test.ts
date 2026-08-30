@@ -250,6 +250,11 @@ describe("FLY-1686 gate-entry PR binding", () => {
 					worktreeBindingGeneration: "generation-qa",
 					expectedProducerMirrorHead: reviewedHead,
 				},
+				alertIdentity: {
+					leadId: "lead-after-restart",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
 				now: "2026-08-11T00:05:00.000Z",
 			} as never),
 		).toMatchObject({ ok: true });

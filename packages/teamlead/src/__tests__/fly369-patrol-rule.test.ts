@@ -167,6 +167,85 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(result.stdout.trim()).toBe("6");
 	});
 
+	it("FLY-2152: the named sixth dimension audits durable verdict delivery inside STEP 4", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const step4 = section0.slice(
+			section0.indexOf("4. **"),
+			section0.indexOf("5. **"),
+		);
+		for (const anchor of [
+			"第六维度“判决层”",
+			"workflow_claims",
+			"claim_written",
+			"leadEventRequired",
+			"decision_kind",
+			"predicate",
+			"issued_at",
+			"CLAIM_DELIVERY_MISSING",
+			"CLAIM_DELIVERY_PENDING",
+			"CLAIM_DELIVERY_OWNER_MISMATCH",
+			"CLAIM_ATTRIBUTION_INCOMPLETE",
+		]) {
+			expect(step4).toContain(anchor);
+		}
+		expect(step4).toMatch(/evidence.*summary|summary.*evidence/);
+		expect(step4).toMatch(/禁止|不得/);
+		expect(step4).toMatch(/Step 4|STEP 4/);
+		expect(section0).not.toMatch(/(?:^|\n)7\.\s+\*\*/);
+	});
+
+	it("FLY-2152: the six-step consumers accept the new report and reject a seven-step mutant", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const completionPattern = section0.match(
+			/grep -Ec '([^']+)' "\$REPORT_PATH"/,
+		)?.[1];
+		const findingProgram = section0.match(
+			/# FLY-2080-FINDING-GATE-BEGIN\nawk '\n([\s\S]*?)\n' "\$REPORT_PATH"\n# FLY-2080-FINDING-GATE-END/,
+		)?.[1];
+		expect(completionPattern).toBeDefined();
+		expect(findingProgram).toBeDefined();
+
+		const marker = "a".repeat(64);
+		const receipt = "5914cef5-05bf-45a3-be14-edbc858147a2";
+		const finalized = [
+			"STEP 1: OK",
+			"STEP 2: OK",
+			"STEP 3: OK",
+			"STEP 4: FINDING",
+			`FINDING step=4 bridge_problem=yes result=escalated-with-plan evidence=claim:402 owner=agent:flywheel-eng-lead next=repair:claim-delivery epic=FLY-2072#${receipt} epic_marker=${marker}`,
+			"STEP 5: OK",
+			"STEP 6: OK",
+		];
+		const completion = spawnSync("grep", ["-Ec", completionPattern ?? ""], {
+			input: `${finalized.join("\n")}\n`,
+			encoding: "utf8",
+		});
+		const finding = spawnSync("awk", [findingProgram ?? ""], {
+			input: `${finalized.join("\n")}\n`,
+			encoding: "utf8",
+		});
+		expect(completion.stdout.trim()).toBe("6");
+		expect(finding.status).toBe(0);
+
+		const mutant = [
+			...finalized,
+			"STEP 7: FINDING",
+			"FINDING step=7 bridge_problem=no result=escalated-with-plan evidence=claim:extra owner=agent:flywheel-eng-lead next=inspect:extra epic=n/a epic_marker=n/a",
+		];
+		expect(
+			spawnSync("awk", [findingProgram ?? ""], {
+				input: `${mutant.join("\n")}\n`,
+				encoding: "utf8",
+			}).status,
+		).not.toBe(0);
+	});
+
 	it("FLY-1855: the documented dedupe parser accepts a healthy non-truncated response", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),

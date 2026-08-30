@@ -37,7 +37,7 @@ function runtimeStoreStub(
 		listDeadLetterAlertCursors: () => [],
 		createDeadLetterAlertIntent: vi.fn(),
 		listDueDeadLetterAlerts: () => [],
-		listUndeliveredWorkflowReplacementLeadEvents: () => [],
+		listUndeliveredLeadInboxEvents: () => [],
 	};
 }
 
@@ -281,6 +281,163 @@ describe("LeadInboxRuntime", () => {
 		expect(ticks).toBeLessThan(6);
 		expect(store.getLeadEventBySeq(1)?.delivered_at).toBeUndefined();
 		store.close();
+	});
+
+	it("FLY-2152: admit redrives an owner/project-scoped workflow claim event", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2152-claim-redrive-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const claimPayload = {
+			event_type: "workflow_claim_recorded",
+			execution_id: "qa-exec",
+			issue_id: "FLY-2152",
+			project_name: "project-a",
+			workflow_run_id: "run-2152",
+			workflow_node_id: "qa",
+			workflow_attempt: 1,
+			workflow_claim_id: 554,
+			workflow_decision_kind: "qa_verdict",
+			workflow_predicate: "qa_failed",
+			workflow_issued_at: "2026-08-29T06:43:00.000Z",
+			summary: "QA verdict recorded",
+		};
+		const claimSeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:554",
+			"workflow_claim_recorded",
+			JSON.stringify(claimPayload),
+			"wf:run-2152",
+		);
+		const wrongProjectSeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:555",
+			"workflow_claim_recorded",
+			JSON.stringify({ ...claimPayload, project_name: "project-b" }),
+			"wf:run-2152",
+		);
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, {
+			type: "commdb",
+			renderEnvelope: (envelope) => JSON.stringify(envelope.event),
+			deliver: async () => ({ delivered: true }),
+			sendBootstrap: async () => {},
+			health: () => ({ healthy: true }),
+			shutdown: async () => {},
+		});
+		const deliverBatch = vi.fn(async (batch) => ({
+			batchId: batch.batchId,
+			memberIds: batch.members.map((member) => member.deliveryId),
+			status: "accepted_new" as const,
+		}));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry,
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2152",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch }),
+		});
+		runtimes.push(runtime);
+		runtime.start();
+		await vi.waitFor(() =>
+			expect(store.getLeadEventBySeq(claimSeq)?.delivered_at).toEqual(
+				expect.any(String),
+			),
+		);
+		expect(
+			store.getLeadEventBySeq(wrongProjectSeq)?.delivered_at,
+		).toBeUndefined();
+		expect(deliverBatch).toHaveBeenCalledTimes(1);
+		expect(deliverBatch.mock.calls[0]?.[0].modelPayload).toContain(
+			'"workflow_claim_id":554',
+		);
+		store.close();
+	});
+
+	it("FLY-2152: one failed claim redrive does not block later rows", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2152-redrive-isolation-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const claimPayload = {
+			event_type: "workflow_claim_recorded",
+			execution_id: "qa-exec",
+			issue_id: "FLY-2152",
+			project_name: "project-a",
+			workflow_run_id: "run-2152",
+			workflow_node_id: "qa",
+			workflow_attempt: 1,
+			workflow_decision_kind: "qa_verdict",
+			workflow_predicate: "qa_failed",
+			workflow_issued_at: "2026-08-29T06:43:00.000Z",
+			summary: "QA verdict recorded",
+		};
+		const poisonSeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:poison",
+			"workflow_claim_recorded",
+			JSON.stringify({ ...claimPayload, workflow_claim_id: 555 }),
+			"wf:run-2152",
+		);
+		const healthySeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:healthy",
+			"workflow_claim_recorded",
+			JSON.stringify({ ...claimPayload, workflow_claim_id: 556 }),
+			"wf:run-2152",
+		);
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, {
+			type: "commdb",
+			renderEnvelope: (envelope) => {
+				if (envelope.seq === poisonSeq) throw new Error("poison render");
+				return JSON.stringify(envelope.event);
+			},
+			deliver: async () => ({ delivered: true }),
+			sendBootstrap: async () => {},
+			health: () => ({ healthy: true }),
+			shutdown: async () => {},
+		});
+		const deliverBatch = vi.fn(async (batch) => ({
+			batchId: batch.batchId,
+			memberIds: batch.members.map((member) => member.deliveryId),
+			status: "accepted_new" as const,
+		}));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry,
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2152-isolation",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch }),
+		});
+		runtimes.push(runtime);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			runtime.start();
+			await vi.waitFor(
+				() =>
+					expect(store.getLeadEventBySeq(healthySeq)?.delivered_at).toEqual(
+						expect.any(String),
+					),
+				{ timeout: 2_000 },
+			);
+			expect(store.getLeadEventBySeq(poisonSeq)?.delivered_at).toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(
+				"[lead-inbox-runtime] lead event redrive failed",
+				{
+					leadId: "lead-a",
+					projectName: "project-a",
+					seq: poisonSeq,
+					eventType: "workflow_claim_recorded",
+					errorName: "Error",
+				},
+			);
+		} finally {
+			warn.mockRestore();
+			store.close();
+		}
 	});
 
 	it("keeps post-boot Lead mail live when the current roster recognizes the recipient", () => {

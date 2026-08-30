@@ -5,7 +5,10 @@ import type {
 	WorkflowReplacementLeadIntent,
 	WorkflowRunRow,
 } from "../StateStore.js";
-import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
+import {
+	leadEventEnvelopeFromJournalRow,
+	REDRIVABLE_LEAD_EVENT_PRIORITY,
+} from "./legacy-lead-event-reconciler.js";
 import type {
 	DurableQueueReceipt,
 	RuntimeRegistry,
@@ -52,6 +55,6 @@ export function enqueueWorkflowReplacementLeadEvent(input: {
 		return undefined;
 	}
 	return input.registry.enqueueLeadEvent(
-		leadEventEnvelopeFromJournalRow(row, 2),
+		leadEventEnvelopeFromJournalRow(row, REDRIVABLE_LEAD_EVENT_PRIORITY),
 	);
 }

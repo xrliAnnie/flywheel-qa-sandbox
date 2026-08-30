@@ -33,8 +33,12 @@ import {
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
+import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
-import type { HookPayload } from "./bridge/hook-payload.js";
+import type {
+	HookPayload,
+	WorkflowClaimRecordedPayload,
+} from "./bridge/hook-payload.js";
 import {
 	type LandRetryClassification,
 	nextLandRetry,
@@ -13012,7 +13016,7 @@ export class StateStore {
 		).map(mapLeadEventRow);
 	}
 
-	listUndeliveredWorkflowReplacementLeadEvents(input: {
+	listUndeliveredLeadInboxEvents(input: {
 		leadId: string;
 		projectName: string;
 		limit?: number;
@@ -13022,18 +13026,20 @@ export class StateStore {
 				`SELECT * FROM lead_events
 				  WHERE delivered_at IS NULL
 				    AND lead_id = ?
-				    AND event_type = 'workflow_replacement_eligibility'
+				    AND json_valid(payload) = 1
+				    AND json_extract(payload, '$.project_name') = ?
+				    AND event_type IN (
+				      'workflow_replacement_eligibility',
+				      'workflow_claim_recorded'
+				    )
 				  ORDER BY seq ASC LIMIT ?`,
 			)
-			.all(input.leadId, input.limit ?? 1_000) as Record<string, unknown>[];
-		return rows.map(mapLeadEventRow).filter((row) => {
-			try {
-				const payload = JSON.parse(row.payload) as { project_name?: unknown };
-				return payload.project_name === input.projectName;
-			} catch {
-				return false;
-			}
-		});
+			.all(
+				input.leadId,
+				input.projectName,
+				input.limit ?? 1_000,
+			) as Record<string, unknown>[];
+		return rows.map(mapLeadEventRow);
 	}
 
 	/**
@@ -38765,6 +38771,52 @@ export class StateStore {
 			: undefined;
 	}
 
+	private ensureWorkflowClaimLeadEventTx(input: {
+		claim: WorkflowClaimRow;
+		run: WorkflowRunRow;
+		identity: WorkflowEngineAlertIdentity;
+	}): { ok: true; seq: number } | { ok: false } {
+		const eventId = `workflow_claim:${input.claim.id}`;
+		const existing = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				  WHERE event_type = 'workflow_claim_recorded' AND event_id = ?
+				  ORDER BY seq`,
+			)
+			.all(eventId) as Record<string, unknown>[];
+		if (existing.length > 1) return { ok: false };
+		if (existing.length === 1) {
+			return { ok: true, seq: Number(existing[0]?.seq) };
+		}
+		const payload: WorkflowClaimRecordedPayload = {
+			event_type: "workflow_claim_recorded",
+			execution_id: input.claim.issuer_execution_id ?? "unknown",
+			issue_id: input.claim.issue_id,
+			project_name: input.identity.projectName,
+			workflow_run_id: input.claim.workflow_run_id,
+			workflow_node_id: input.claim.node_id ?? "unknown",
+			workflow_attempt: input.claim.attempt ?? 0,
+			workflow_claim_id: input.claim.id,
+			workflow_decision_kind: input.claim.decision_kind,
+			workflow_predicate: input.claim.predicate,
+			workflow_issued_at: input.claim.issued_at,
+			summary: truncateCodePoints(
+				`${input.claim.issue_id} workflow verdict ${input.claim.predicate} recorded`,
+				300,
+			).text,
+		};
+		return {
+			ok: true,
+			seq: this.appendLeadEvent(
+				input.identity.leadId,
+				eventId,
+				"workflow_claim_recorded",
+				JSON.stringify(payload),
+				`wf:${input.run.run_id}`,
+			),
+		};
+	}
+
 	/**
 	 * Credential-authenticated verdict ingestion. Authentication, internal
 	 * decision-capability mint+consume, claim append and durable replay receipt
@@ -38783,13 +38835,16 @@ export class StateStore {
 		subjectProducerVendor?: string;
 		claimExpiresAt: string;
 		evidence?: unknown;
-		alertIdentity?: WorkflowEngineAlertIdentity;
+		alertIdentity: WorkflowEngineAlertIdentity;
 		gateEntryBinding?: WorkflowGateEntryBinding;
 		now?: string;
 	}): WorkflowCredentialSubmissionResult {
 		const nowIso = input.now ?? new Date().toISOString();
 		if (!StateStore.workflowFiniteTimestamp(nowIso)) {
 			return { ok: false, reason: "invalid_timestamp" };
+		}
+		if (!StateStore.workflowAlertIdentityValid(input.alertIdentity)) {
+			return { ok: false, reason: "alert_identity_invalid" };
 		}
 		let result: WorkflowCredentialSubmissionResult = {
 			ok: false,
@@ -38835,14 +38890,27 @@ export class StateStore {
 						credential.claim_id != null
 					) {
 						const claim = this.getWorkflowClaim(Number(credential.claim_id));
-						result = claim
-							? {
-									ok: true,
-									claimId: claim.id,
-									serverSeq: claim.server_seq,
-									idempotentReplay: true,
-								}
-							: { ok: false, reason: "credential_receipt_corrupt" };
+						const run = claim
+							? this.getWorkflowRun(claim.workflow_run_id)
+							: undefined;
+						const leadEvent =
+							claim && run
+								? this.ensureWorkflowClaimLeadEventTx({
+										claim,
+										run,
+										identity: input.alertIdentity,
+									})
+								: undefined;
+						result =
+							claim && leadEvent?.ok
+								? {
+										ok: true,
+										claimId: claim.id,
+										serverSeq: claim.server_seq,
+										leadEventSeq: leadEvent.seq,
+										idempotentReplay: true,
+									}
+								: { ok: false, reason: "credential_receipt_corrupt" };
 					} else {
 						result = { ok: false, reason: "replay_payload_mismatch" };
 					}
@@ -39045,6 +39113,18 @@ export class StateStore {
 					],
 				);
 				const claimId = this.workflowClaimIdBySeq(serverSeq);
+				const claim = this.getWorkflowClaim(claimId);
+				if (!claim) {
+					throw new Error("workflow_claim_receipt_missing");
+				}
+				const leadEvent = this.ensureWorkflowClaimLeadEventTx({
+					claim,
+					run,
+					identity: input.alertIdentity,
+				});
+				if (!leadEvent.ok) {
+					throw new Error("workflow_claim_event_receipt_corrupt");
+				}
 				this.db.run(
 					`UPDATE workflow_decision_capability
 				    SET consumed_at = ?, consumed_claim_id = ? WHERE id = ?`,
@@ -39071,7 +39151,13 @@ export class StateStore {
 					kind: "claim_written",
 					nodeId: credential.node_id as string,
 					executionId: credential.execution_id as string,
-					payload: { claimId, serverSeq, predicate: input.predicate },
+					payload: {
+						claimId,
+						serverSeq,
+						predicate: input.predicate,
+						leadEventRequired: true,
+						leadEventId: `workflow_claim:${claimId}`,
+					},
 				});
 				if (run.engine_owned === 1 && run.snapshot) {
 					if (!engineOutcome) {
@@ -39098,6 +39184,7 @@ export class StateStore {
 					ok: true,
 					claimId,
 					serverSeq,
+					leadEventSeq: leadEvent.seq,
 					idempotentReplay: false,
 				};
 			});
@@ -55861,13 +55948,20 @@ export type WorkflowExecutionAdmissionResult =
 	  };
 
 export type WorkflowCredentialSubmissionResult =
-	| { ok: true; claimId: number; serverSeq: number; idempotentReplay: boolean }
+	| {
+			ok: true;
+			claimId: number;
+			serverSeq: number;
+			leadEventSeq: number;
+			idempotentReplay: boolean;
+	  }
 	| {
 			ok: false;
 			reason:
 				| "credential_not_found"
 				| "credential_revoked"
 				| "credential_expired"
+				| "alert_identity_invalid"
 				| "credential_receipt_corrupt"
 				| "replay_payload_mismatch"
 				| "predicate_not_allowed"

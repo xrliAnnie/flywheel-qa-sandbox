@@ -212,6 +212,11 @@ function submitQa(
 			input.head,
 			`generation-${input.attempt}`,
 		),
+		alertIdentity: {
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		},
 		now: "2026-08-14T02:05:00.000Z",
 	});
 	expect(passed).toMatchObject({ ok: true });
@@ -366,6 +371,7 @@ async function passQaThroughProduction(
 				projectName: "flywheel",
 				leadResolution: "resolved",
 			}),
+			enqueueLeadEvent: () => {},
 			now: () => input.now,
 		}),
 	);
@@ -834,6 +840,7 @@ describe("founder kickback new-card loop", () => {
 						projectName: "flywheel",
 						leadResolution: "resolved",
 					}),
+					enqueueLeadEvent: () => {},
 					now: () => "2026-08-14T03:10:04.000Z",
 				}),
 			);

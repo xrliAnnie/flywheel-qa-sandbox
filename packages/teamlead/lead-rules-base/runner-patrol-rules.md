@@ -134,6 +134,26 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    `dead_letter_alerts` 还必须同时匹配当前 project + `LEAD_ID`；归属不完整同样整步
    `UNAVAILABLE(structural: owner_attribution_incomplete)`。`accepted` dead letter 禁止重报。输出只含
    allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
+
+   **第六维度“判决层”由 STEP 4 承载**：每个 tick 直接联查 active run 的
+   `workflow_claims`、同 run 的 `claim_written` marker 与 `lead_events`，不能把 Runner
+   信箱或 pane 文案当成 verdict 是否已投递的事实。只检查 credential-backed
+   `issuer_kind='runner_node'` claim，且 marker 必须含
+   `leadEventRequired=true` 与稳定 `leadEventId=workflow_claim:<claimId>`；旧的 unmarked
+   claim、founder-source claim 与 `bridge_policy/qa_exempt` 不进入这条 rollout 合同。
+   输出必须含 claim id、`decision_kind`、`predicate`、`issued_at`、node、attempt 与 execution，
+   禁止输出 claim `evidence` 或 Lead event `summary`。
+
+   - marker 存在但 event 不存在写 `CLAIM_DELIVERY_MISSING`。这是同事务原子不变量被
+     restore/tamper/corruption 破坏的 canary；Lead 必须带账本证据升级，不能假装持有已消费
+     credential 自愈。
+   - owning Lead 的 event 仍 `delivered_at IS NULL` 写 `CLAIM_DELIVERY_PENDING`。这是
+     FLY-2139 同形的静默压单信号；恢复对应 Lead runtime/投递后复核 durable delivery。
+   - 稳定 event id 只落在其他 owner 名下写 `CLAIM_DELIVERY_OWNER_MISMATCH`。修 owner
+     resolver 与既有 event 的投递归属，禁止另铸 event。
+   - marker duplicate/malformed 或 claim owner 无法唯一归属时只输出聚合
+     `CLAIM_ATTRIBUTION_INCOMPLETE`。claim 使用独立 attribution guard；它不得压掉本步已经
+     取得的 mailbox、wake、dead-letter 或 head-mismatch facts。
 5. **外部真相(整仓维度)** — run:
    `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。
    周期快照用 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'`

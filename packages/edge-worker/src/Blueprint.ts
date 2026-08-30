@@ -1639,6 +1639,44 @@ export class Blueprint {
 			path.dirname(__filename),
 			"../../flywheel-comm/dist/index.js",
 		);
+		const verdictAndLeadReport = (input: {
+			qaResult: string;
+			label: "workflow verdict" | "QA verdict";
+			status: "pass" | "fail" | "pass|fail";
+			summary: string;
+		}): string => {
+			const leadId = ctx.leadId?.trim();
+			return leadId
+				? `${input.qaResult} && node ${commCliPath} ask --lead ${leadId} --exec-id ${executionId} --report "DONE: ${input.label} recorded; status=${input.status}; evidence=${input.summary}; blocking priority=<none|priority>"`
+				: input.qaResult;
+		};
+		const verdictLeadReportRetry = ctx.leadId?.trim()
+			? "Run the compound action exactly as written. If it returns non-zero, inspect the qa-result receipt first; when the verdict was already accepted, retry only the `ask --report` half with exactly the same report message, and never resubmit qa-result or change its summary."
+			: "";
+		const generalizedVerdictAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"`,
+			label: "workflow verdict",
+			status: "pass|fail",
+			summary: "<evidence and verdict>",
+		});
+		const qaPassAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"`,
+			label: "QA verdict",
+			status: "pass",
+			summary: "<what you tested + verdict>",
+		});
+		const qaFailAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"`,
+			label: "QA verdict",
+			status: "fail",
+			summary: "<exact scenario / expected-vs-actual / severity>",
+		});
+		const qaFeedbackAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"`,
+			label: "QA verdict",
+			status: "fail",
+			summary: "founder feedback kickback: <summary of the requested changes>",
+		});
 		const isDesignNodeCompletion =
 			isDesignPhase ||
 			(isGeneralizedExecution &&
@@ -1730,8 +1768,11 @@ export class Blueprint {
 				);
 			}
 			if (ctx.workflowSubmissionCredential) {
+				const terminalVerdictInstruction = ctx.leadId?.trim()
+					? `Your terminal action is one structured workflow verdict followed by its Lead report: run \`${generalizedVerdictAction}\`. ${verdictLeadReportRetry}`
+					: `Your terminal action is one structured workflow verdict: run \`${generalizedVerdictAction}\`.`;
 				systemPromptLines.push(
-					`Your terminal action is one structured verdict: run \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"\`. Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
+					`${terminalVerdictInstruction} Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
 					"Preserve FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL in the qa-result process exactly as injected: never use env -u and never reopen a shell that drops the runner environment. If the server reports replay_payload_mismatch, stop retrying and report both possible verdicts to your Lead; stripping the credential is forbidden.",
 				);
 				if (ctx.workflowCapabilities.pass_enters_approval_gate === true) {
@@ -1821,7 +1862,7 @@ export class Blueprint {
 				"1. Read the committed design + implementation on this branch (exploration/research/plan + progress.md + the code). Do NOT re-implement the feature.",
 				"2. Verify the change against the plan: run the tests, exercise the real behavior, and add any missing test coverage. You HAVE write access — commit your tests + a QA report to THIS branch.",
 				"3. Push your commits to this branch (it updates the open PR — do NOT open a second PR).",
-				`4. On PASS: report it STRUCTURALLY first — \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"\` (DAG workflow verdicts are keyed to YOUR phase session, so --target-exec is your own exec id) — then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
+				`4. On PASS: report it STRUCTURALLY first — \`${qaPassAction}\` (DAG workflow verdicts are keyed to YOUR phase session, so --target-exec is your own exec id). ${verdictLeadReportRetry} Then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
 				sharedPhaseKeepAlive
 					? // FLY-887: keep-alive fix loop. On FAIL the implementer is ALIVE
 						// (parked, full context); the pipeline wakes it to fix on this same
@@ -1830,9 +1871,9 @@ export class Blueprint {
 						// FLY-1188: codex phrasing drops the Claude-only resource-release
 						// tooling; Claude text is byte-identical to pre-FLY-1188.
 						isCodexRunner
-						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
-						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
-					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest in this non-keep-alive mode, do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
+						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`${qaFailAction}\`. ${verdictLeadReportRetry} Then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`${qaFailAction}\`. ${verdictLeadReportRetry} Then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`${qaFailAction}\`. ${verdictLeadReportRetry} Then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest in this non-keep-alive mode, do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
 			// FLY-939 (G-B): the founder-feedback KICKBACK contract. When you (the QA
 			// phase) are woken with FEEDBACK on your OWN approve_to_ship gate — after a
@@ -1846,8 +1887,8 @@ export class Blueprint {
 					// codex variant makes no park/wake/alive-implementer promises —
 					// kick back, end the turn, and handle a re-test conditionally.
 					isCodexRunner
-						? `5-fb. If you receive FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier; the implement side does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\`, make your final message that verdict, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. ${codexPhaseWakeContract} On re-test, re-verify; on PASS re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets).`
-						: `5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
+						? `5-fb. If you receive FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier; the implement side does the fixing. Emit a KICKBACK verdict: \`${qaFeedbackAction}\`. ${verdictLeadReportRetry} Then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\`, make your final message that verdict, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. ${codexPhaseWakeContract} On re-test, re-verify; on PASS re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets).`
+						: `5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`${qaFeedbackAction}\`. ${verdictLeadReportRetry} Then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
 				);
 			}
 		} else {

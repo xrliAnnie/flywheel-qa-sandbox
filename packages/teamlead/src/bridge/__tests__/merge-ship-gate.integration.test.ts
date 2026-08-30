@@ -52,6 +52,11 @@ const LEAD = "flywheel-eng-lead";
 const PROJECT = "proj";
 const ISSUE = "FLY-869";
 const HEAD = "a".repeat(40);
+const ALERT_IDENTITY = {
+	leadId: "flywheel-eng-lead",
+	projectName: "proj",
+	leadResolution: "resolved" as const,
+};
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
 	FLYWHEEL_WORKFLOW_CLAIMS_WRITE: "1",
@@ -263,6 +268,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			subjectProducerExecutionId: "engine-implement",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: "2027-07-16T00:11:00.000Z",
+			alertIdentity: ALERT_IDENTITY,
 			now: "2026-07-16T00:12:00.000Z",
 		});
 		if (!qa.ok) throw new Error(qa.reason);
@@ -435,6 +441,7 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 						},
 					}
 				: {}),
+			alertIdentity: ALERT_IDENTITY,
 			now: "2026-07-16T00:12:00.000Z",
 		});
 		if (!submitted.ok) return submitted;

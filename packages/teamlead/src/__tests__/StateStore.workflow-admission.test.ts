@@ -12,6 +12,11 @@ const H2 = "2".repeat(40);
 const T0 = "2026-07-14T00:00:00.000Z";
 const T1 = "2026-07-14T01:00:00.000Z";
 const T2 = "2026-07-14T02:00:00.000Z";
+const ALERT_IDENTITY = {
+	leadId: "flywheel-eng-lead",
+	projectName: "flywheel",
+	leadResolution: "resolved" as const,
+};
 
 async function storeWithRun(): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
@@ -243,6 +248,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 				subjectProducerExecutionId: "impl-exec",
 				subjectProducerVendor: "codex",
 				claimExpiresAt: T1,
+				alertIdentity: ALERT_IDENTITY,
 				now: T0,
 			}),
 		).toEqual({ ok: false, reason: "binding_not_current" });
@@ -266,6 +272,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 			subjectProducerExecutionId: "impl-exec",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: T1,
+			alertIdentity: ALERT_IDENTITY,
 			now: T0,
 		});
 		expect(result.ok).toBe(true);
@@ -287,6 +294,34 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 				credential?.decision_capability_id ?? -1,
 			)?.consumed_claim_id,
 		).toBe(result.claimId);
+		expect(result.leadEventSeq).toBeTypeOf("number");
+		expect(
+			store.countLeadEvents("flywheel-eng-lead", "workflow_claim_recorded"),
+		).toBe(1);
+		const leadEvent = store.getLeadEventBySeq(result.leadEventSeq);
+		expect(leadEvent).toMatchObject({
+			lead_id: "flywheel-eng-lead",
+			event_id: `workflow_claim:${result.claimId}`,
+			event_type: "workflow_claim_recorded",
+		});
+		expect(JSON.parse(leadEvent?.payload ?? "{}")).toMatchObject({
+			event_type: "workflow_claim_recorded",
+			execution_id: "qa-exec-1",
+			issue_id: "FLY-1244",
+			project_name: "flywheel",
+			workflow_claim_id: result.claimId,
+			workflow_decision_kind: "qa_verdict",
+			workflow_predicate: "qa_passed",
+		});
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.find((event) => event.kind === "claim_written")?.payload,
+		).toMatchObject({
+			claimId: result.claimId,
+			leadEventRequired: true,
+			leadEventId: `workflow_claim:${result.claimId}`,
+		});
 	});
 
 	it("claim-commit/response-loss replay returns the same claim before checking expiry", async () => {
@@ -303,6 +338,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 			subjectProducerExecutionId: "impl-exec",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: T1,
+			alertIdentity: ALERT_IDENTITY,
 		};
 		const first = store.submitWorkflowDecisionByCredential({
 			nodeReuseEnabled: false,
@@ -313,6 +349,11 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 		const replay = store.submitWorkflowDecisionByCredential({
 			nodeReuseEnabled: false,
 			...input,
+			alertIdentity: {
+				leadId: "fallback-lead",
+				projectName: "flywheel",
+				leadResolution: "fallback",
+			},
 			now: "2026-07-15T00:00:00.000Z",
 		});
 		expect(replay).toMatchObject({
@@ -321,6 +362,120 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 			claimId: first.ok ? first.claimId : -1,
 		});
 		expect(store.countWorkflowClaims("run-1")).toBe(1);
+		if (!first.ok || !replay.ok) return;
+		expect(replay.leadEventSeq).toBe(first.leadEventSeq);
+		expect(
+			store.countLeadEvents("flywheel-eng-lead", "workflow_claim_recorded"),
+		).toBe(1);
+		expect(
+			store.countLeadEvents("fallback-lead", "workflow_claim_recorded"),
+		).toBe(0);
+	});
+
+	it("rejects an invalid alert identity before writing any claim-side state", async () => {
+		const store = await storeWithRun();
+		const admission = admit(store);
+		if (!admission.ok) throw new Error(admission.reason);
+		const beforeEvents = store.listWorkflowRunEvents("run-1").length;
+
+		expect(
+			store.submitWorkflowDecisionByCredential({
+				credential: admission.credential,
+				clientRequestId: "invalid-alert",
+				predicate: "qa_passed",
+				subjectDigest: H1,
+				issuerVendor: "claude",
+				issuerModel: "opus",
+				subjectProducerExecutionId: "impl-exec",
+				subjectProducerVendor: "codex",
+				claimExpiresAt: T1,
+				alertIdentity: {
+					leadId: " ",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				},
+				now: T0,
+			}),
+		).toEqual({ ok: false, reason: "alert_identity_invalid" });
+		expect(store.countWorkflowClaims("run-1")).toBe(0);
+		expect(
+			store.countLeadEvents("flywheel-eng-lead", "workflow_claim_recorded"),
+		).toBe(0);
+		expect(store.listWorkflowRunEvents("run-1")).toHaveLength(beforeEvents);
+		expect(
+			store.getWorkflowSubmissionCredential(admission.credentialId)
+				?.consumed_at,
+		).toBeNull();
+	});
+
+	it("heals a missing claim event on a byte-identical replay", async () => {
+		const store = await storeWithRun();
+		const admission = admit(store);
+		if (!admission.ok) throw new Error(admission.reason);
+		const input = {
+			credential: admission.credential,
+			clientRequestId: "repair-event",
+			predicate: "qa_failed",
+			subjectDigest: H1,
+			issuerVendor: "claude",
+			issuerModel: "opus",
+			subjectProducerExecutionId: "impl-exec",
+			subjectProducerVendor: "codex",
+			claimExpiresAt: T1,
+			alertIdentity: ALERT_IDENTITY,
+			now: T0,
+		};
+		const first = store.submitWorkflowDecisionByCredential(input);
+		if (!first.ok) throw new Error(first.reason);
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("DELETE FROM lead_events WHERE event_id = ?", [
+			`workflow_claim:${first.claimId}`,
+		]);
+
+		const replay = store.submitWorkflowDecisionByCredential(input);
+		expect(replay).toMatchObject({
+			ok: true,
+			claimId: first.claimId,
+			idempotentReplay: true,
+		});
+		if (!replay.ok) return;
+		expect(store.getLeadEventBySeq(replay.leadEventSeq)).toMatchObject({
+			event_id: `workflow_claim:${first.claimId}`,
+			event_type: "workflow_claim_recorded",
+		});
+		expect(
+			store.countLeadEvents("flywheel-eng-lead", "workflow_claim_recorded"),
+		).toBe(1);
+	});
+
+	it("applies project scope before limiting undelivered Lead inbox events", async () => {
+		const store = await StateStore.create(":memory:");
+		for (let index = 0; index < 3; index += 1) {
+			store.appendLeadEvent(
+				"shared-lead",
+				`other-${index}`,
+				"workflow_claim_recorded",
+				JSON.stringify({ project_name: "other-project" }),
+			);
+		}
+		const expectedSeq = store.appendLeadEvent(
+			"shared-lead",
+			"target-event",
+			"workflow_claim_recorded",
+			JSON.stringify({ project_name: "target-project" }),
+		);
+
+		expect(
+			store.listUndeliveredLeadInboxEvents({
+				leadId: "shared-lead",
+				projectName: "target-project",
+				limit: 1,
+			}),
+		).toEqual([expect.objectContaining({ seq: expectedSeq })]);
+		store.close();
 	});
 
 	it("a consumed credential with mismatched request bytes refuses; unknown/expired credentials write nothing", async () => {
@@ -339,6 +494,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 				subjectProducerExecutionId: "impl-exec",
 				subjectProducerVendor: "codex",
 				claimExpiresAt: T1,
+				alertIdentity: ALERT_IDENTITY,
 				now: T0,
 				...overrides,
 			});
@@ -371,6 +527,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 				subjectProducerExecutionId: "impl-exec",
 				subjectProducerVendor: "codex",
 				claimExpiresAt: T2,
+				alertIdentity: ALERT_IDENTITY,
 				now: T2,
 			}),
 		).toEqual({ ok: false, reason: "credential_expired" });
@@ -393,6 +550,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 			subjectProducerExecutionId: "impl-exec",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: "caller-controlled-garbage",
+			alertIdentity: ALERT_IDENTITY,
 			now: T2,
 		});
 		expect(result.ok).toBe(true);
@@ -431,6 +589,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 			subjectProducerVendor: "codex",
 			claimExpiresAt: T1,
 			evidence: { verdict: "approved" },
+			alertIdentity: ALERT_IDENTITY,
 		};
 
 		expect(
@@ -488,6 +647,7 @@ describe("submitWorkflowDecisionByCredential — durable exact replay", () => {
 					subjectProducerExecutionId: "impl-exec",
 					subjectProducerVendor: "codex",
 					claimExpiresAt: T1,
+					alertIdentity: ALERT_IDENTITY,
 					now: T0,
 				}),
 			).toEqual({ ok: false, reason: "credential_revoked" });

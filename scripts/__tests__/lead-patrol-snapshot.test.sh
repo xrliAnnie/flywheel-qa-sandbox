@@ -322,6 +322,127 @@ else
   fail "atomic publication leaves no temp residue"
 fi
 
+# FLY-2152: the sixth patrol dimension lives inside STEP 4. The durable
+# claim_written marker, rather than a deployment cutover sequence, selects the
+# new contract so a fresh database cannot silently skip its first verdict.
+CLAIMS="$TMP/verdict-delivery"
+make_case "$CLAIMS"
+sqlite3 "$CLAIMS/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-401','FLY-401','flywheel','active',datetime('now')),
+ ('run-402','FLY-402','flywheel','active',datetime('now')),
+ ('run-403','FLY-403','flywheel','active',datetime('now')),
+ ('run-404','FLY-404','flywheel','active',datetime('now')),
+ ('run-405','FLY-405','flywheel','active',datetime('now')),
+ ('run-406','FLY-406-FOREIGN','flywheel','active',datetime('now')),
+ ('run-407','FLY-407-TERMINAL','flywheel','terminated',datetime('now')),
+ ('run-408','FLY-408-FOUNDER','flywheel','active',datetime('now')),
+ ('run-409','FLY-409-POLICY','flywheel','active',datetime('now')),
+ ('run-411','FLY-411','flywheel','active',datetime('now'));
+INSERT INTO workflow_claims(
+ id,server_seq,issued_at,issue_id,workflow_run_id,node_id,decision_kind,attempt,predicate,
+ issuer_kind,issuer_execution_id,issuer_node_id,issuer_vendor,issuer_model,
+ subject_producer_execution_id,subject_kind,subject_digest,permanent,submission_digest,
+ client_request_id,evidence,authority_id
+) VALUES
+ (401,401,'2026-08-29T10:01:00Z','FLY-401','run-401','qa','qa_verdict',1,'qa_failed',
+  'runner_node','exec-401','qa','codex','gpt-5','exec-401','git_head','4014014014014014014014014014014014014014',1,'digest-401','request-401','{"secret":"SECRET_CLAIM_401"}','authority-401'),
+ (402,402,'2026-08-29T10:02:00Z','FLY-402','run-402','qa','qa_verdict',2,'qa_failed',
+  'runner_node','exec-402','qa','codex','gpt-5','exec-402','git_head','4024024024024024024024024024024024024024',1,'digest-402','request-402','{"secret":"SECRET_CLAIM_402"}','authority-402'),
+ (403,403,'2026-08-29T10:03:00Z','FLY-403','run-403','code_review','code_review',3,'codex_approved',
+  'runner_node','exec-403','code_review','codex','gpt-5','exec-403','git_head','4034034034034034034034034034034034034034',1,'digest-403','request-403','{"secret":"SECRET_CLAIM_403"}','authority-403'),
+ (404,404,'2026-08-29T10:04:00Z','FLY-404','run-404','qa','qa_verdict',4,'qa_passed',
+  'runner_node','exec-404','qa','codex','gpt-5','exec-404','git_head','4044044044044044044044044044044044044044',1,'digest-404','request-404','{"secret":"SECRET_CLAIM_404"}','authority-404'),
+ (405,405,'2026-08-29T10:05:00Z','FLY-405','run-405','qa','qa_verdict',5,'qa_failed',
+  'runner_node','exec-405','qa','codex','gpt-5','exec-405','git_head','4054054054054054054054054054054054054054',1,'digest-405','request-405','{"secret":"SECRET_LEGACY_CLAIM"}','authority-405'),
+ (406,406,'2026-08-29T10:06:00Z','FLY-406-FOREIGN','run-406','qa','qa_verdict',6,'qa_failed',
+  'runner_node','exec-406','qa','codex','gpt-5','exec-406','git_head','4064064064064064064064064064064064064064',1,'digest-406','request-406','{"secret":"SECRET_FOREIGN_CLAIM"}','authority-406'),
+ (407,407,'2026-08-29T10:07:00Z','FLY-407-TERMINAL','run-407','qa','qa_verdict',7,'qa_failed',
+  'runner_node','exec-407','qa','codex','gpt-5','exec-407','git_head','4074074074074074074074074074074074074074',1,'digest-407','request-407','{"secret":"SECRET_TERMINAL_CLAIM"}','authority-407'),
+ (408,408,'2026-08-29T10:08:00Z','FLY-408-FOUNDER','run-408',NULL,'founder_review',NULL,'founder_approved',
+  'founder_challenge',NULL,NULL,NULL,NULL,NULL,'snapshot_digest','founder-digest',1,NULL,NULL,'{"secret":"SECRET_FOUNDER_CLAIM"}','authority-408'),
+ (409,409,'2026-08-29T10:09:00Z','FLY-409-POLICY','run-409',NULL,'qa_exemption',NULL,'qa_exempt',
+  'bridge_policy',NULL,NULL,NULL,NULL,NULL,'snapshot_digest','policy-digest',1,NULL,NULL,'{"secret":"SECRET_POLICY_CLAIM"}','authority-409'),
+ (411,411,'2026-08-29T10:11:00Z','FLY-411','run-411','qa','qa_verdict',1,'qa_failed',
+  'runner_node','exec-411','qa','codex','gpt-5','exec-411','git_head','4114114114114114114114114114114114114114',1,'digest-411','request-411','{"secret":"SECRET_OWNER_MISSING"}','authority-411');
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at) VALUES
+ ('run-401',1,'credential_claim_written:401','claim_written','qa','exec-401','{"claimId":401,"leadEventRequired":true,"leadEventId":"workflow_claim:401"}',datetime('now')),
+ ('run-402',1,'credential_claim_written:402','claim_written','qa','exec-402','{"claimId":402,"leadEventRequired":true,"leadEventId":"workflow_claim:402"}',datetime('now')),
+ ('run-403',1,'credential_claim_written:403','claim_written','code_review','exec-403','{"claimId":403,"leadEventRequired":true,"leadEventId":"workflow_claim:403"}',datetime('now')),
+ ('run-404',1,'credential_claim_written:404','claim_written','qa','exec-404','{"claimId":404,"leadEventRequired":true,"leadEventId":"workflow_claim:404"}',datetime('now')),
+ ('run-405',1,'credential_claim_written:405','claim_written','qa','exec-405','{"claimId":405,"serverSeq":405,"predicate":"qa_failed"}',datetime('now')),
+ ('run-406',1,'credential_claim_written:406','claim_written','qa','exec-406','{"claimId":406,"leadEventRequired":true,"leadEventId":"workflow_claim:406"}',datetime('now')),
+ ('run-407',1,'credential_claim_written:407','claim_written','qa','exec-407','{"claimId":407,"leadEventRequired":true,"leadEventId":"workflow_claim:407"}',datetime('now')),
+ ('run-411',1,'credential_claim_written:411','claim_written','qa','exec-411','{"claimId":411,"leadEventRequired":true,"leadEventId":"workflow_claim:411"}',datetime('now'));
+INSERT INTO lead_events(lead_id,event_id,event_type,payload,delivered_at) VALUES
+ ('flywheel-eng-lead','workflow_claim:402','workflow_claim_recorded','{"project_name":"flywheel","issue_id":"FLY-402","summary":"SECRET_PENDING_SUMMARY"}',NULL),
+ ('honey-lemon-lead','workflow_claim:403','workflow_claim_recorded','{"project_name":"flywheel","issue_id":"FLY-403","summary":"SECRET_MISMATCH_SUMMARY"}',NULL),
+ ('flywheel-eng-lead','workflow_claim:404','workflow_claim_recorded','{"project_name":"flywheel","issue_id":"FLY-404","summary":"SECRET_DELIVERED_SUMMARY"}',datetime('now'));
+SQL
+sqlite3 "$CLAIMS/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-401','runner-flywheel:pending','flywheel','FLY-401','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-402','runner-flywheel:pending','flywheel','FLY-402','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-403','runner-flywheel:pending','flywheel','FLY-403','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-404','runner-flywheel:pending','flywheel','FLY-404','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-405','runner-flywheel:pending','flywheel','FLY-405','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-406','runner-flywheel:pending','flywheel','FLY-406-FOREIGN','honey-lemon-lead',datetime('now'),'running'),
+ ('exec-407','runner-flywheel:pending','flywheel','FLY-407-TERMINAL','flywheel-eng-lead',datetime('now'),'completed');
+SQL
+CLAIMS_OUT="$CLAIMS/out.txt"
+run_snapshot "$CLAIMS" "$CLAIMS_OUT" || fail "verdict delivery snapshot exits zero"
+contains "$CLAIMS_OUT" "CLAIM_DELIVERY_MISSING issue=FLY-401 claim=401 decision=qa_verdict predicate=qa_failed issued=2026-08-29T10:01:00Z node=qa attempt=1 exec=exec-401" "fresh-db first marked claim without event is visible"
+contains "$CLAIMS_OUT" "CLAIM_DELIVERY_PENDING issue=FLY-402 claim=402 decision=qa_verdict predicate=qa_failed issued=2026-08-29T10:02:00Z node=qa attempt=2 exec=exec-402" "undelivered marked claim is visible"
+contains "$CLAIMS_OUT" "CLAIM_DELIVERY_OWNER_MISMATCH issue=FLY-403 claim=403 decision=code_review predicate=codex_approved issued=2026-08-29T10:03:00Z node=code_review attempt=3 exec=exec-403" "wrong-owner marked claim is visible"
+count_is "$CLAIMS_OUT" "CLAIM_DELIVERY_" 3 "only missing, pending, and owner mismatch claims are findings"
+contains "$CLAIMS_OUT" "CLAIM_ATTRIBUTION_INCOMPLETE reason=owner_missing count=1" "one ownerless marked claim is aggregated without suppressing attributable findings"
+not_contains "$CLAIMS_OUT" "claim_delivery_marker_invalid" "legacy pre-contract marker is excluded without poisoning the verdict dimension"
+for hidden in FLY-404 FLY-405 FLY-406-FOREIGN FLY-407-TERMINAL FLY-408-FOUNDER FLY-409-POLICY FLY-411 SECRET_CLAIM SECRET_LEGACY SECRET_FOREIGN SECRET_TERMINAL SECRET_FOUNDER SECRET_POLICY SECRET_OWNER_MISSING SECRET_PENDING_SUMMARY SECRET_MISMATCH_SUMMARY SECRET_DELIVERED_SUMMARY; do
+  not_contains "$CLAIMS_OUT" "$hidden" "verdict projection excludes non-finding or secret $hidden"
+done
+
+# Claim attribution/marker failures close only the claim branch. Existing
+# mailbox and wake facts in STEP 4 remain available and visible.
+CLAIM_ATTRIB="$TMP/verdict-attribution"
+make_case "$CLAIM_ATTRIB"
+sqlite3 "$CLAIM_ATTRIB/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-410','FLY-410','flywheel','active',datetime('now'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-410','qa',1,'running','exec-410',datetime('now'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-410','FLY-410','FLY-410','claim marker invalid','flywheel','running');
+INSERT INTO workflow_claims(
+ id,server_seq,issued_at,issue_id,workflow_run_id,node_id,decision_kind,attempt,predicate,
+ issuer_kind,issuer_execution_id,issuer_node_id,issuer_vendor,issuer_model,
+ subject_producer_execution_id,subject_kind,subject_digest,permanent,submission_digest,
+ client_request_id,evidence,authority_id
+) VALUES
+ (410,410,'2026-08-29T10:10:00Z','FLY-410','run-410','qa','qa_verdict',1,'qa_failed',
+  'runner_node','exec-410','qa','codex','gpt-5','exec-410','git_head','4104104104104104104104104104104104104104',1,'digest-410','request-410','{"secret":"SECRET_INVALID_MARKER"}','authority-410');
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at) VALUES
+ ('run-410',1,'credential_claim_written:410-a','claim_written','qa','exec-410','{"claimId":410,"leadEventRequired":true,"leadEventId":"workflow_claim:410"}',datetime('now')),
+ ('run-410',2,'credential_claim_written:410-b','claim_written','qa','exec-410','{"claimId":410,"leadEventRequired":true,"leadEventId":"workflow_claim:410"}',datetime('now'));
+SQL
+sqlite3 "$CLAIM_ATTRIB/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-410','runner-flywheel:pending','flywheel','FLY-410','flywheel-eng-lead',datetime('now','-1 hour'),'running');
+INSERT INTO mailbox_identity(id,delivery_id,insert_projection_hash) VALUES
+ ('mail-410','delivery-410','hash-410');
+INSERT INTO mailbox(id,delivery_id,from_agent,to_agent,recipient_kind,type,msg_class,content,created_at,state,relay_state) VALUES
+ ('mail-410','delivery-410','lead','exec-410','runner','instruction','model','SECRET_ATTRIB_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED','terminal_disposed');
+INSERT INTO turn_wake_outbox(wake_id,execution_id,issue_id,epoch,purpose,envelope_json,backend,state,episode_id,created_at) VALUES
+ ('wake-410','exec-410','FLY-410',1,'turn','{"secret":"SECRET_ATTRIB_WAKE"}','mailbox','pending','episode-410',(unixepoch()-1200)*1000);
+SQL
+CLAIM_ATTRIB_OUT="$CLAIM_ATTRIB/out.txt"
+run_snapshot "$CLAIM_ATTRIB" "$CLAIM_ATTRIB_OUT" || fail "claim attribution failure still publishes report"
+contains "$CLAIM_ATTRIB_OUT" "CLAIM_ATTRIBUTION_INCOMPLETE reason=claim_delivery_marker_invalid count=1" "duplicate claim marker is aggregated"
+contains "$CLAIM_ATTRIB_OUT" "MAILBOX_STALE id=mail-410" "claim attribution failure does not suppress mailbox facts"
+contains "$CLAIM_ATTRIB_OUT" "WAKE_UNACKED wake=wake-410" "claim attribution failure does not suppress wake facts"
+not_contains "$CLAIM_ATTRIB_OUT" "SECRET_INVALID_MARKER" "claim attribution aggregate excludes evidence"
+not_contains "$CLAIM_ATTRIB_OUT" "SECRET_ATTRIB_MAIL" "claim attribution fixture excludes mailbox content"
+not_contains "$CLAIM_ATTRIB_OUT" "SECRET_ATTRIB_WAKE" "claim attribution fixture excludes wake envelope"
+
 # FLY-2118: unresolved or ambiguous owner attribution fails the entire STEP
 # closed and emits only aggregate, identifier-free diagnostics.
 ATTRIB3="$TMP/owner-attribution-step3"

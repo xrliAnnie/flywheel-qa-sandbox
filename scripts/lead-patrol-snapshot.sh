@@ -639,6 +639,7 @@ else
 fi
 
 STEP4_FACTS=""
+STEP4_BASE_FACTS=""
 STEP4_SQL=$(cat <<SQL
 WITH stale_mail AS (
   SELECT m.*, s.issue_id
@@ -767,16 +768,142 @@ ORDER BY 1
 LIMIT 500;
 SQL
 )
-if run_sql STEP4_FACTS "$STEP4_SQL"; then
-  if printf '%s\n' "$STEP4_FACTS" | grep -q '^OWNER_ATTRIBUTION_INCOMPLETE '; then
-    STEP4_STATUS="UNAVAILABLE(structural: owner_attribution_incomplete)"
-  elif [ -n "$STEP4_FACTS" ]; then
-    STEP4_STATUS="FINDING-CANDIDATE"
-  else
-    STEP4_STATUS="OK-CANDIDATE"
-  fi
+STEP4_BASE_OK=0
+STEP4_BASE_ERROR_TOKEN=""
+if run_sql STEP4_BASE_FACTS "$STEP4_SQL"; then
+  STEP4_BASE_OK=1
 else
-  STEP4_STATUS="UNAVAILABLE($SQL_ERROR_TOKEN)"
+  STEP4_BASE_ERROR_TOKEN="$SQL_ERROR_TOKEN"
+fi
+
+# FLY-2152 sixth dimension: marked workflow verdict claims are durable facts,
+# independent of whether the submitting Runner remembered to notify its Lead.
+# Keep this query separate from the existing delivery query: malformed claim
+# attribution closes only this branch and cannot suppress mailbox/wake/dead-letter
+# or head-mismatch facts already collected above.
+STEP4_CLAIM_FACTS=""
+STEP4_CLAIM_SQL=$(cat <<SQL
+WITH claim_candidates AS (
+  SELECT c.id, c.issue_id, c.workflow_run_id, c.node_id, c.attempt,
+         c.decision_kind, c.predicate, c.issued_at, c.issuer_execution_id
+  FROM workflow_claims c
+  JOIN workflow_run wr ON wr.run_id = c.workflow_run_id
+  WHERE wr.project_name = '$PROJECT_NAME'
+    AND wr.status = 'active'
+    AND c.issuer_kind = 'runner_node'
+    AND c.client_request_id IS NOT NULL
+    AND c.issuer_execution_id IS NOT NULL
+    AND NOT EXISTS (
+      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id
+    )
+),
+marker_rows AS (
+  SELECT c.*,
+         e.id AS marker_id,
+         CASE WHEN json_valid(e.payload) = 1
+                   AND (json_type(e.payload,'$.leadEventRequired') IS NOT NULL
+                        OR json_type(e.payload,'$.leadEventId') IS NOT NULL)
+              THEN 1 ELSE 0 END AS marker_contract,
+         CASE WHEN json_valid(e.payload) = 1
+                   AND json_extract(e.payload,'$.leadEventRequired') = 1
+                   AND json_extract(e.payload,'$.leadEventId') = 'workflow_claim:' || c.id
+              THEN 1 ELSE 0 END AS marker_valid,
+         CASE WHEN json_valid(e.payload) = 1
+              THEN json_extract(e.payload,'$.leadEventId') ELSE NULL END AS lead_event_id
+  FROM claim_candidates c
+  LEFT JOIN workflow_run_event e ON e.run_id = c.workflow_run_id
+    AND e.kind = 'claim_written'
+    AND CASE WHEN json_valid(e.payload) = 1
+             THEN json_extract(e.payload,'$.claimId') = c.id ELSE 0 END
+),
+marker_resolution AS (
+  SELECT id, issue_id, workflow_run_id, node_id, attempt, decision_kind,
+         predicate, issued_at, issuer_execution_id,
+         count(marker_id) AS marker_count,
+         sum(marker_contract) AS contract_marker_count,
+         sum(marker_valid) AS valid_marker_count,
+         min(CASE WHEN marker_valid = 1 THEN lead_event_id END) AS lead_event_id
+  FROM marker_rows
+  GROUP BY id, issue_id, workflow_run_id, node_id, attempt, decision_kind,
+           predicate, issued_at, issuer_execution_id
+),
+marked_claims AS (
+  SELECT * FROM marker_resolution
+  WHERE marker_count = 1 AND contract_marker_count = 1 AND valid_marker_count = 1
+),
+attribution_subjects AS (
+  SELECT DISTINCT issuer_execution_id AS execution_id, issue_id FROM marked_claims
+),
+$OWNER_ATTRIBUTION_CTES,
+claim_delivery AS (
+  SELECT c.*, o.attributed_lead,
+         count(le.seq) AS event_count,
+         sum(CASE WHEN le.lead_id = o.attributed_lead THEN 1 ELSE 0 END) AS owner_event_count,
+         sum(CASE WHEN le.lead_id = o.attributed_lead AND le.delivered_at IS NULL THEN 1 ELSE 0 END) AS pending_owner_count,
+         sum(CASE WHEN le.lead_id = o.attributed_lead AND le.delivered_at IS NOT NULL THEN 1 ELSE 0 END) AS delivered_owner_count
+  FROM marked_claims c
+  JOIN owner_resolution o ON o.execution_id IS c.issuer_execution_id AND o.issue_id = c.issue_id
+  LEFT JOIN lead_events le ON le.event_type = 'workflow_claim_recorded'
+    AND le.event_id = c.lead_event_id
+  WHERE o.attribution_error IS NULL
+  GROUP BY c.id, c.issue_id, c.workflow_run_id, c.node_id, c.attempt,
+           c.decision_kind, c.predicate, c.issued_at, c.issuer_execution_id,
+           c.lead_event_id, o.attributed_lead
+)
+SELECT 'CLAIM_ATTRIBUTION_INCOMPLETE reason=claim_delivery_marker_invalid count=' || count(*)
+FROM marker_resolution
+WHERE contract_marker_count > 0
+  AND (marker_count <> 1 OR contract_marker_count <> 1 OR valid_marker_count <> 1)
+HAVING count(*) > 0
+UNION ALL
+SELECT 'CLAIM_ATTRIBUTION_INCOMPLETE reason=' || attribution_error || ' count=' || count(*)
+FROM owner_resolution
+WHERE attribution_error IS NOT NULL
+GROUP BY attribution_error
+UNION ALL
+SELECT CASE
+         WHEN d.event_count = 0 THEN 'CLAIM_DELIVERY_MISSING'
+         WHEN d.owner_event_count = 0 THEN 'CLAIM_DELIVERY_OWNER_MISMATCH'
+         ELSE 'CLAIM_DELIVERY_PENDING'
+       END ||
+       ' issue=' || coalesce(d.issue_id,'none') ||
+       ' claim=' || coalesce(CAST(d.id AS TEXT),'none') ||
+       ' decision=' || coalesce(d.decision_kind,'none') ||
+       ' predicate=' || coalesce(d.predicate,'none') ||
+       ' issued=' || coalesce(d.issued_at,'none') ||
+       ' node=' || coalesce(d.node_id,'none') ||
+       ' attempt=' || coalesce(CAST(d.attempt AS TEXT),'none') ||
+       ' exec=' || coalesce(d.issuer_execution_id,'none')
+FROM claim_delivery d
+WHERE d.attributed_lead = '$LEAD_ID'
+  AND (d.event_count = 0 OR d.owner_event_count = 0 OR d.pending_owner_count > 0)
+  AND d.delivered_owner_count = 0
+ORDER BY 1
+LIMIT 500;
+SQL
+)
+STEP4_CLAIM_OK=0
+STEP4_CLAIM_ERROR_TOKEN=""
+if run_sql STEP4_CLAIM_FACTS "$STEP4_CLAIM_SQL"; then
+  STEP4_CLAIM_OK=1
+else
+  STEP4_CLAIM_ERROR_TOKEN="$SQL_ERROR_TOKEN"
+fi
+
+STEP4_FACTS="$STEP4_BASE_FACTS"
+if [ -n "$STEP4_CLAIM_FACTS" ]; then
+  STEP4_FACTS="${STEP4_FACTS:+$STEP4_FACTS$'\n'}$STEP4_CLAIM_FACTS"
+fi
+if [ "$STEP4_BASE_OK" != 1 ]; then
+  STEP4_STATUS="UNAVAILABLE($STEP4_BASE_ERROR_TOKEN)"
+elif [ "$STEP4_CLAIM_OK" != 1 ]; then
+  STEP4_STATUS="UNAVAILABLE($STEP4_CLAIM_ERROR_TOKEN)"
+elif printf '%s\n' "$STEP4_BASE_FACTS" | grep -q '^OWNER_ATTRIBUTION_INCOMPLETE '; then
+  STEP4_STATUS="UNAVAILABLE(structural: owner_attribution_incomplete)"
+elif [ -n "$STEP4_FACTS" ]; then
+  STEP4_STATUS="FINDING-CANDIDATE"
+else
+  STEP4_STATUS="OK-CANDIDATE"
 fi
 
 STEP5_FACTS=""

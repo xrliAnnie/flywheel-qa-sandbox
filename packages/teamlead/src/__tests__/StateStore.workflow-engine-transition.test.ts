@@ -1236,6 +1236,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				worktreeBindingGeneration: "generation-1",
 				expectedProducerMirrorHead: "a".repeat(40),
 			},
+			alertIdentity: carrierAlertIdentity,
 			now: "2026-08-14T01:18:00.000Z",
 		});
 		expect(passed).toMatchObject({ ok: true });
@@ -1771,6 +1772,7 @@ describe("engine-owned snapshot transition transaction", () => {
 					worktreeBindingGeneration: "generation-1",
 					expectedProducerMirrorHead: "a".repeat(40),
 				},
+				alertIdentity: carrierAlertIdentity,
 				now: "2026-07-16T01:15:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
@@ -4915,12 +4917,17 @@ describe("engine-owned snapshot transition transaction", () => {
 			subjectProducerExecutionId: "implement-1",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: "2026-07-16T02:00:00.000Z",
+			alertIdentity: carrierAlertIdentity,
 			now: "2026-07-16T01:05:00.000Z",
 		};
 		expect(store.submitWorkflowDecisionByCredential(submission)).toMatchObject({
 			ok: true,
 			idempotentReplay: false,
 		});
+		// FLY-2152: the verdict transaction may advance engine ledgers, but it
+		// does not synchronously terminate the reporting shell. The prompt's
+		// following `ask --report` half therefore remains executable.
+		expect(store.getSession("qa-1")?.status).toBe("running");
 		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
 			state: "pending",
 			execution_id: "implement-1",

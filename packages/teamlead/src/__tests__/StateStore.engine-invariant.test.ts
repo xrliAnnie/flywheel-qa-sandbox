@@ -247,7 +247,12 @@ function submitQaPass(
 		subjectProducerVendor: "codex",
 		claimExpiresAt: "2026-08-20T02:00:00.000Z",
 		...(options.alertIdentity === false
-			? {}
+			? {
+					alertIdentity: {
+						...ALERT_IDENTITY,
+						leadId: " ",
+					},
+				}
 			: { alertIdentity: ALERT_IDENTITY }),
 		now: "2026-08-20T00:08:00.000Z",
 	});
@@ -378,7 +383,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 		}
 	});
 
-	it("marks the refusal alert pending when an internal caller has no identity", async () => {
+	it("rejects an invalid identity before evaluating an engine invariant", async () => {
 		const fixture = await createFreshQa();
 		try {
 			rawDb(fixture.store)
@@ -388,12 +393,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 				.run(fixture.requestId);
 			expect(submitQaPass(fixture, { alertIdentity: false })).toEqual({
 				ok: false,
-				reason: "transition_refused",
-				detail: {
-					transitionReason:
-						"engine_invariant:workflow_rework_delivery_complete_cas_failed",
-					alertPending: true,
-				},
+				reason: "alert_identity_invalid",
 			});
 			expect(fixture.store.listWorkflowAlertOutbox()).toEqual([]);
 		} finally {

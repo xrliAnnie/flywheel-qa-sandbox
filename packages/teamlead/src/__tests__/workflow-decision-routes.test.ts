@@ -29,6 +29,14 @@ const T0 = "2026-07-14T00:00:00.000Z";
 const T1 = "2026-07-14T01:00:00.000Z";
 const T2 = "2026-07-14T02:00:00.000Z";
 const nativeFetch = globalThis.fetch;
+const ROUTER_REQUIRED_DEPS = {
+	resolveAlertIdentity: () => ({
+		leadId: "flywheel-eng-lead",
+		projectName: "flywheel",
+		leadResolution: "resolved" as const,
+	}),
+	enqueueLeadEvent: () => {},
+};
 
 const fetch = async (
 	input: Parameters<typeof globalThis.fetch>[0],
@@ -245,6 +253,7 @@ async function reviewFixture(options: {
 		status: "running",
 		adapter_type: "claude-tmux",
 	});
+	const enqueueLeadEvent = vi.fn();
 	const app = express();
 	app.use(express.json());
 	app.use(
@@ -262,6 +271,12 @@ async function reviewFixture(options: {
 					headRefOid: materializedHead,
 				})),
 			now: () => T0,
+			resolveAlertIdentity: () => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "resolved",
+			}),
+			enqueueLeadEvent,
 		}),
 	);
 	const server = app.listen(0, "127.0.0.1");
@@ -283,6 +298,7 @@ async function reviewFixture(options: {
 			ref: "refs/heads/fly-1307",
 		},
 		claimCountBeforeReview: store.countWorkflowClaims("run-review"),
+		enqueueLeadEvent,
 		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
 		close: () => new Promise<void>((resolve) => server.close(() => resolve())),
 	};
@@ -342,6 +358,7 @@ async function fixture(nodeReuseEnabled?: () => boolean) {
 		projectName: "flywheel",
 		leadResolution: "resolved" as const,
 	};
+	const enqueueLeadEvent = vi.fn();
 	const app = express();
 	app.use(express.json());
 	app.use(
@@ -351,6 +368,7 @@ async function fixture(nodeReuseEnabled?: () => boolean) {
 			nodeReuseEnabled,
 			now: () => serverNow,
 			resolveAlertIdentity: () => alertIdentity,
+			enqueueLeadEvent,
 		}),
 	);
 	const server = app.listen(0, "127.0.0.1");
@@ -362,6 +380,7 @@ async function fixture(nodeReuseEnabled?: () => boolean) {
 		worktree,
 		credential: admission.credential,
 		alertIdentity,
+		enqueueLeadEvent,
 		baseUrl: `http://127.0.0.1:${address.port}/api/workflow`,
 		setServerNow: (value: string) => {
 			serverNow = value;
@@ -418,6 +437,22 @@ describe("schema-v1 workflow recovery decision routes", () => {
 				claimId: accepted.claimId,
 			});
 			expect(f.store.countWorkflowClaims("run-1")).toBe(1);
+			expect(f.enqueueLeadEvent).toHaveBeenCalledTimes(2);
+			const firstEnvelope = f.enqueueLeadEvent.mock.calls[0]?.[0];
+			const replayEnvelope = f.enqueueLeadEvent.mock.calls[1]?.[0];
+			expect(firstEnvelope).toMatchObject({
+				eventId: `workflow_claim:${accepted.claimId}`,
+				leadId: "flywheel-eng-lead",
+				event: {
+					event_type: "workflow_claim_recorded",
+					issue_id: "FLY-1244",
+					project_name: "flywheel",
+				},
+			});
+			expect(replayEnvelope).toMatchObject({
+				seq: firstEnvelope.seq,
+				eventId: firstEnvelope.eventId,
+			});
 		} finally {
 			await f.close();
 		}
@@ -449,6 +484,53 @@ describe("schema-v1 workflow recovery decision routes", () => {
 				submit.mock.calls.map(([input]) => input.nodeReuseEnabled),
 			).toEqual([false, true]);
 		} finally {
+			await f.close();
+		}
+	});
+
+	it("returns 503 when the resolved alert identity is invalid", async () => {
+		const f = await fixture();
+		const app = express();
+		app.use(express.json());
+		app.use(
+			"/api/workflow",
+			createWorkflowDecisionRouter({
+				store: f.store,
+				now: () => T0,
+				resolveAlertIdentity: () => ({
+					leadId: " ",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+				enqueueLeadEvent: vi.fn(),
+			}),
+		);
+		const server = app.listen(0, "127.0.0.1");
+		await new Promise<void>((resolve) => server.once("listening", resolve));
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("no port");
+		try {
+			const response = await fetch(
+				`http://127.0.0.1:${address.port}/api/workflow/decision`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						credential: f.credential,
+						client_request_id: "invalid-alert-identity",
+						status: "pass",
+						client_pr_head_sha: f.worktree.head,
+					}),
+				},
+			);
+			expect(response.status).toBe(503);
+			expect(await response.json()).toEqual({
+				ok: false,
+				reason: "alert_identity_invalid",
+			});
+			expect(f.store.countWorkflowClaims("run-1")).toBe(0);
+		} finally {
+			await new Promise<void>((resolve) => server.close(() => resolve()));
 			await f.close();
 		}
 	});
@@ -1131,6 +1213,7 @@ describe("in-flight re-QA recovery", () => {
 			"/api/workflow",
 			createWorkflowDecisionRouter({
 				store,
+				...ROUTER_REQUIRED_DEPS,
 				reQa: {
 					tokens: new ConfirmTokenStore(),
 					respawn,
@@ -1205,6 +1288,7 @@ describe("in-flight re-QA recovery", () => {
 			"/api/workflow",
 			createWorkflowDecisionRouter({
 				store,
+				...ROUTER_REQUIRED_DEPS,
 				reQa: {
 					tokens: new ConfirmTokenStore(),
 					respawn: vi.fn(),
@@ -1286,6 +1370,7 @@ describe("Gate carrier rebind recovery", () => {
 			"/api/workflow",
 			createWorkflowDecisionRouter({
 				store,
+				...ROUTER_REQUIRED_DEPS,
 				gateCarrierRebind: { tokens: new ConfirmTokenStore() },
 				now: () => T0,
 			}),
@@ -1476,6 +1561,7 @@ describe("generic workflow loop reentry", () => {
 			"/api/workflow",
 			createWorkflowDecisionRouter({
 				store,
+				...ROUTER_REQUIRED_DEPS,
 				nodeReuseEnabled,
 				loopReentry: { tokens: new ConfirmTokenStore() },
 				now: () => T0,

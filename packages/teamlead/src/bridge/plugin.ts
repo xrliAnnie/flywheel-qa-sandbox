@@ -1741,6 +1741,10 @@ export function createBridgeApp(
 					runId,
 					log: (message) => console.warn(`[workflow-gate-carrier] ${message}`),
 				}),
+			enqueueLeadEvent: (envelope) => {
+				if (!registry) throw new Error("RuntimeRegistry unavailable");
+				registry.enqueueLeadEvent(envelope);
+			},
 			...(opts?.fleetConsole
 				? { loopReentry: { tokens: opts.fleetConsole.tokens } }
 				: {}),

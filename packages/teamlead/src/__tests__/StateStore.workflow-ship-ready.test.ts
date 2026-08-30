@@ -123,6 +123,7 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 		subjectProducerExecutionId: `implement-${runId}`,
 		subjectProducerVendor: "codex",
 		claimExpiresAt: "2026-07-23T00:00:00.000Z",
+		alertIdentity,
 		now: GATE_OPENED_AT,
 	});
 	if (!submitted.ok)
