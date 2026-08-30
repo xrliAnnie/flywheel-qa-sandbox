@@ -3,8 +3,8 @@ issue: FLY-127
 phase: implement
 title: department-scope-spawn
 phaseCursor: 2/7
-updated: 2026-08-30T10:47:43.230Z
-nextStep: Write omission contract RED in start-e2e.test.ts
+updated: 2026-08-30T10:56:05.611Z
+nextStep: Bind Gemini dispatch identity with strict RED/GREEN tests
 chunks:
   - id: baseline_audit
     order: 1
@@ -17,7 +17,7 @@ chunks:
     deps:
       - baseline_audit
     done: ""
-    status: doing
+    status: done
   - id: caller_binding
     order: 3
     deps:
@@ -50,11 +50,11 @@ pointers:
 
 # FLY-127 progress — department-scope-spawn
 **phase**: implement (2/7)
-**next**: Write omission contract RED in start-e2e.test.ts
+**next**: Bind Gemini dispatch identity with strict RED/GREEN tests
 
 ## chunks
 - ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
-- 🔨 route_identity_guard — 
+- ✅ route_identity_guard — 
 - ⬜ caller_binding — 
 - ⬜ rules_acceptance — 
 - ⬜ verification_review — 
