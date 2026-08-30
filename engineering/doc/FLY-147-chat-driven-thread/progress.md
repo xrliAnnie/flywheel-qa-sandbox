@@ -2,9 +2,9 @@
 issue: FLY-147
 phase: implement
 phaseCursor: 5/5
-updated: 2026-08-30T11:07:32.706Z
-nextStep: Run scoped package verification and exact full-repository gates, then
-  request registered code review
+updated: 2026-08-30T11:11:45.627Z
+nextStep: Create the literal-last milestone commit, register code review, then
+  open the PR after approval
 chunks:
   - id: docs-exploration
     order: 1
@@ -30,7 +30,7 @@ chunks:
     order: 5
     deps: []
     done: ""
-    status: doing
+    status: done
 pointers:
   plan: engineering/doc/FLY-147-chat-driven-thread/plan.md
   exploration: engineering/doc/FLY-147-chat-driven-thread/exploration.md
@@ -39,11 +39,11 @@ pointers:
 
 # FLY-147 progress
 **phase**: implement (5/5)
-**next**: Run scoped package verification and exact full-repository gates, then request registered code review
+**next**: Create the literal-last milestone commit, register code review, then open the PR after approval
 
 ## chunks
 - ✅ docs-exploration — 
 - ✅ docs-research — 
 - ✅ design-review — 
 - ✅ implementation — 
-- 🔨 verification-review-pr — 
+- ✅ verification-review-pr — 
