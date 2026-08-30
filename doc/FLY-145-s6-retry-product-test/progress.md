@@ -1,14 +1,14 @@
 ---
 issue: FLY-145
 phase: implement
-phaseCursor: 3/4
-updated: 2026-08-30T09:43:39.109Z
-nextStep: Await Lead decision on founder-deleted PR ref and macOS test waiver;
-  then refresh literal-last milestone, review, and hand off
+phaseCursor: 4/4
+updated: 2026-08-30T09:51:51.683Z
+nextStep: Refresh engineering/doc/milestones/FLY-145.md as literal last commit,
+  push superseding branch, then require exact-head CI and protected code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-145 progress
-**phase**: implement (3/4)
-**next**: Await Lead decision on founder-deleted PR ref and macOS test waiver; then refresh literal-last milestone, review, and hand off
+**phase**: implement (4/4)
+**next**: Refresh engineering/doc/milestones/FLY-145.md as literal last commit, push superseding branch, then require exact-head CI and protected code review
