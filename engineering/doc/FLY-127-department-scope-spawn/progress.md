@@ -3,8 +3,8 @@ issue: FLY-127
 phase: implement
 title: department-scope-spawn
 phaseCursor: 6/7
-updated: 2026-08-30T11:58:59Z
-nextStep: Add a RED test for deriving the default QA-slot department label
+updated: 2026-08-30T12:13:58Z
+nextStep: Run full repository gates and fresh code review
 chunks:
   - id: baseline_audit
     order: 1
@@ -50,7 +50,7 @@ pointers:
 
 # FLY-127 progress — department-scope-spawn
 **phase**: implement (6/7)
-**next**: Add a RED test for deriving the default QA-slot department label
+**next**: Run full repository gates and fresh code review
 
 ## chunks
 - ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
