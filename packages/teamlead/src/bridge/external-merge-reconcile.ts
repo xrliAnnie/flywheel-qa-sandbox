@@ -367,7 +367,6 @@ export function createExternalMergeReconciler(
 			missingPr: 0,
 			conflictingPr: 0,
 		};
-		if (env().FLYWHEEL_TURN_BELT_MERGED_RECLAIM === "0") return stats;
 		if (!deps.probeTurnHolderLiveness) return stats;
 		const ageMs = intEnv(
 			env(),

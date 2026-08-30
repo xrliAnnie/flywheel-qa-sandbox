@@ -428,9 +428,8 @@ function buildTuiGeneration(
 	let ownedTuiThreadId: string | undefined;
 	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
 	// the per-generation closure) so its consecutive-failure count + episode latch
-	// survive generation rebuilds. Default OFF — null unless the InfraBot launcher
-	// sets FLYWHEEL_TUI_WINDOW_ALERT=1 AND lead-alert.sh resolves; `?.record` is a
-	// no-op when null, so a plain Lead is byte-compat.
+	// survive generation rebuilds. It is non-null only for the canonical InfraBot
+	// identity when lead-alert.sh resolves; `?.record` keeps other Leads no-op.
 	const tuiWindowAlertGuard = createTuiWindowAlertGuard({
 		stateDir: config.stateDir,
 		leadId: config.leadId,

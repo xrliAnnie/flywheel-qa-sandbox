@@ -2232,10 +2232,6 @@ _stock_final_close_guard() {
 CMUX_STOCK_SWEEP_CONCLUSIVE=0
 reap_unledgered_stock_workspaces() {
   CMUX_STOCK_SWEEP_CONCLUSIVE=0
-  if [[ "${FLYWHEEL_CMUX_STOCK_ADOPTION:-1}" == "0" ]]; then
-    CMUX_STOCK_SWEEP_CONCLUSIVE=1
-    return 0
-  fi
   assert_or_reuse_owned_lease || return 0
 
   local generation records rc=0 grace now dir tmp keep=""
@@ -2534,10 +2530,8 @@ for w in d.get("workspaces", []):
 # sync_once). ref-keyed grace (Codex R1 HIGH-3): a pin must stay orphaned for
 # FLYWHEEL_CMUX_ORPHAN_PIN_GRACE seconds before it is closed (guards against a
 # just-created workspace whose linked session/rename momentarily lags). Every
-# close goes through the revalidating chokepoint. Kill-switch
-# FLYWHEEL_CMUX_ORPHAN_REAPER=0 → fully inert (Codex R1 MED-5, byte-compat).
+# close goes through the revalidating chokepoint.
 reap_orphan_workspace_pins() {
-  [[ "${FLYWHEEL_CMUX_ORPHAN_REAPER:-1}" == "0" ]] && return 0
   # Codex R1 (code) MED-1: validate grace is all-digits BEFORE arithmetic. Under
   # `set -euo pipefail`, a non-numeric operand in (( )) is treated as a variable
   # ref and `set -u` turns it into a fatal "unbound variable" that kills the
@@ -2591,10 +2585,9 @@ reap_orphan_workspace_pins() {
 }
 
 # gc_orphan_pin_state_file — watcher-startup GC: drop grace rows whose ref no
-# longer exists in cmux (leaked by a previous watcher). Env-gated so the OFF path
-# is byte-compatible (Codex R1 MED-5). JSON unavailable → skip (keep state).
+# longer exists in cmux (leaked by a previous watcher). JSON unavailable → skip
+# (keep state).
 gc_orphan_pin_state_file() {
-  [[ "${FLYWHEEL_CMUX_ORPHAN_REAPER:-1}" == "0" ]] && return 0
   [[ -f "$ORPHAN_PIN_STATE" ]] || return 0
   local raw live_refs tmp ref ts tb64
   raw=$(get_cmux_workspaces_json) || return 0
@@ -4950,10 +4943,9 @@ self_heal_workspace_ref() {
 # event-driven (reopen evidence = socket identity change), NOT periodic polling
 # (vetoed). Steady state adds zero cmux IPC and zero tmux scans.
 
-# FLY-254: feature gate. `FLYWHEEL_CMUX_REOPEN_SWEEP=0` reverts every FLY-254
-# behavior to the FLY-169 status quo (kill switch; regression-sentinel-tested).
+# FLY-254 reopen recovery is now canonical.
 reopen_sweep_enabled() {
-  [[ "${FLYWHEEL_CMUX_REOPEN_SWEEP:-1}" != "0" ]]
+  return 0
 }
 
 # FLY-254: validate a numeric env knob — positive integer within [1, max].
@@ -6591,14 +6583,7 @@ _restored_ledger_cas() {
 }
 
 restored_adoption_enabled() {
-  case "${FLYWHEEL_CMUX_RESTORED_ADOPTION:-1}" in
-    0) return 1 ;;
-    1|"") return 0 ;;
-    *)
-      log "WARN: invalid FLYWHEEL_CMUX_RESTORED_ADOPTION='${FLYWHEEL_CMUX_RESTORED_ADOPTION}' — using 1"
-      return 0
-      ;;
-  esac
+  return 0
 }
 
 _restored_b64() {
@@ -11634,7 +11619,7 @@ watch_main() {
   _rw=$(validated_int_env FLYWHEEL_CMUX_RENDER_WAIT_TICKS "${FLYWHEEL_CMUX_RENDER_WAIT_TICKS:-6}" 6 60)
   _rt=$(validated_int_env FLYWHEEL_CMUX_READINESS_TICKS "${FLYWHEEL_CMUX_READINESS_TICKS:-5}" 5 60)
   _ps=$(validated_int_env FLYWHEEL_CMUX_SOCKET_PROBE_SLICE "${FLYWHEEL_CMUX_SOCKET_PROBE_SLICE:-3}" 3 60)
-  log "FLY-254 knobs: reopen-sweep=${FLYWHEEL_CMUX_REOPEN_SWEEP:-1} render-wait-ticks=${_rw} readiness-ticks=${_rt} probe-slice=${_ps}s attempt-limit=${REOPEN_ATTEMPT_LIMIT}"
+  log "FLY-254 knobs: reopen-sweep=1 render-wait-ticks=${_rw} readiness-ticks=${_rt} probe-slice=${_ps}s attempt-limit=${REOPEN_ATTEMPT_LIMIT}"
 
   # Gate cmux-touching bootstrap: if cmux is broken (rc=2 already exited),
   # skip the full sync but still enter the watch loop. drain_events / loop

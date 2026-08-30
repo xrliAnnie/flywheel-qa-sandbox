@@ -7,7 +7,6 @@ import {
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { computeEnvSha } from "../bridge/env-file-writer.js";
 import {
 	type FlagCanonical,
 	type FlagRouteDeps,
@@ -25,7 +24,6 @@ import { ConfirmTokenStore } from "../bridge/fleet-admin.js";
 import { FleetAdminAudit } from "../bridge/fleet-admin-audit.js";
 import { StateStore } from "../StateStore.js";
 
-const ENV_CONTENT = "# env\nFLYWHEEL_OTHER=1\n";
 const PROJECT_CONFIG =
 	"project: fixture\ndoc_flow:\n  default_department: engineering\n";
 const stores: StateStore[] = [];
@@ -35,18 +33,11 @@ afterEach(() => {
 });
 
 function makeDeps(over: Partial<FlagRouteDeps> = {}): FlagRouteDeps & {
-	env: Record<string, string | undefined>;
-	writeFile: ReturnType<typeof vi.fn>;
 	audit: FleetAdminAudit;
 } {
 	const dbPath = join(mkdtempSync(join(tmpdir(), "ffaudit-")), "audit.db");
 	return {
-		envPath: "/tmp/.env",
-		readFile: (path) =>
-			path.endsWith("/.flywheel/config.yaml") ? PROJECT_CONFIG : ENV_CONTENT,
-		writeFile: vi.fn(),
-		env: {},
-		lock: (fn: () => unknown) => fn(), // pass-through; real lock tested in flag-toggle
+		readFile: () => PROJECT_CONFIG,
 		projectNames: () => ["flywheel", "geoforge3d"],
 		projectConfigPath: (projectName) =>
 			`/projects/${projectName}/.flywheel/config.yaml`,
@@ -555,7 +546,6 @@ describe("handleFlagApply", () => {
 		expect(store.getFlagValueRow("skill_framework_mode")?.raw).toBe(
 			"superpowers",
 		);
-		expect(deps.writeFile).not.toHaveBeenCalled();
 	});
 
 	it("enum flag: target outside enumValues / boolean target → 400", async () => {
@@ -580,7 +570,7 @@ describe("handleFlagApply", () => {
 		).toBe(400);
 	});
 
-	it("managed stage→apply changes the next read without env or file writes", async () => {
+	it("managed stage→apply changes the next store read", async () => {
 		const { deps, flagStore, store } = await makeManagedDeps();
 		expect(storeWorkflowTurnDivergenceAlertsEnabled(flagStore)).toBe(false);
 		const staged = handleFlagStage(
@@ -595,8 +585,6 @@ describe("handleFlagApply", () => {
 		const r = handleFlagApply(deps, staged.canonical, staged.confirmToken, "o");
 		expect(r.code).toBe(200);
 		expect(storeWorkflowTurnDivergenceAlertsEnabled(flagStore)).toBe(true);
-		expect(deps.env.FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS).toBeUndefined();
-		expect(deps.writeFile).not.toHaveBeenCalled();
 		expect(
 			store.listFlagValueChanges("workflow_turn_divergence_alerts").at(-1),
 		).toMatchObject({
@@ -660,16 +648,17 @@ describe("handleFlagApply", () => {
 		}
 	});
 
-	it("round-trips every store-managed state through its declared runtime reader", async () => {
+	it("round-trips every bridge-global store state through its declared runtime reader", async () => {
 		const { deps, flagStore, store } = await makeManagedDeps();
 		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);
 
-		for (const name of STORE_MANAGED_FLAGS) {
-			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+		for (const spec of FEATURE_FLAGS.filter(
+			(candidate) => candidate.scope === "bridge_global",
+		)) {
+			const { name } = spec;
 			const codec = getFlagStoreCodec(name);
-			expect(spec, name).toBeDefined();
 			expect(codec, name).toBeDefined();
-			if (!spec || !codec) continue;
+			if (!codec) continue;
 			const resolverSymbols = [
 				...new Set(spec.readSites.map((site) => site.resolverSymbol)),
 			];
@@ -761,8 +750,6 @@ describe("handleFlagApply", () => {
 				expect(codec.parse(runtimeValue as never), name).toBe(spec.default);
 			}
 		}
-
-		expect(deps.writeFile).not.toHaveBeenCalled();
 	});
 
 	it("managed apply audit failure is pre-mutation; stale revisions are 409", async () => {
@@ -862,7 +849,7 @@ describe("handleFlagApply", () => {
 			envVar: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS",
 			rawFrom: null,
 			rawTo: "1",
-			fileSha: computeEnvSha(ENV_CONTENT),
+			fileSha: "legacy-file-sha",
 			effectiveFrom: false,
 			effectiveTo: true,
 		};
@@ -871,7 +858,6 @@ describe("handleFlagApply", () => {
 		expect(
 			store.getFlagValueRow("workflow_turn_divergence_alerts")?.revision,
 		).toBe(1);
-		expect(deps.writeFile).not.toHaveBeenCalled();
 	});
 
 	it("retired store flag cannot disable managed routes", async () => {

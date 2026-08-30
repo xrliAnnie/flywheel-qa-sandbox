@@ -173,7 +173,6 @@ function makeApp(over: Partial<VoiceRouterDeps> = {}) {
 		roundtableChannelIds: ["rt-1"],
 		globalBotToken: fakeToken("222222222222222222"),
 		openCommDb: () => db,
-		env: {},
 		...over,
 	};
 	const app = express();
@@ -337,34 +336,8 @@ describe("POST /api/voice/ship-approval — guard ladder", () => {
 		expect(res.body.error).toBe("api_token_required");
 	});
 
-	it("⓪ wins over the kill-switch (503 before 403)", async () => {
-		const { app } = makeApp({
-			apiTokenConfigured: false,
-			env: { FLYWHEEL_VOICE_APPROVAL: "0" },
-		});
-		const res = await httpRequest(
-			app,
-			"POST",
-			"/api/voice/ship-approval",
-			SHIP_BODY,
-		);
-		expect(res.status).toBe(503);
-	});
-
-	it("① FLYWHEEL_VOICE_APPROVAL=0 → 403 disabled_by_kill_switch (route registered, not 404 — FLY-175 lesson)", async () => {
-		const { app } = makeApp({ env: { FLYWHEEL_VOICE_APPROVAL: "0" } });
-		const res = await httpRequest(
-			app,
-			"POST",
-			"/api/voice/ship-approval",
-			SHIP_BODY,
-		);
-		expect(res.status).toBe(403);
-		expect(res.body.error).toBe("disabled_by_kill_switch");
-	});
-
-	it("flag absent = ENABLED (kill-switch semantics, Annie ②) — reverse-compat sentinel", async () => {
-		const { app } = makeApp({ env: {} });
+	it("voice approval is always enabled", async () => {
+		const { app } = makeApp();
 		const res = await httpRequest(
 			app,
 			"POST",

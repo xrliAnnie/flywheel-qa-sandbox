@@ -109,12 +109,6 @@ export function createMergedGateGuard(deps: {
 	const cache = new Map<string, CacheEntry>();
 	const inFlight = new Map<string, Promise<PrMergeInfo>>();
 	const projectProbeTimes = new Map<string, number[]>();
-	const disabled = deps.env?.FLYWHEEL_MERGED_GATE_GUARD === "0";
-	if (disabled) {
-		(deps.log ?? console.warn)(
-			"[merged-gate-guard] DISABLED by FLYWHEEL_MERGED_GATE_GUARD=0",
-		);
-	}
 
 	function recordTerminal(
 		args: MergedGateGuardArgs,
@@ -174,8 +168,6 @@ export function createMergedGateGuard(deps: {
 	}
 
 	return async (args) => {
-		if (disabled) return { kind: "continue", prState: "open" };
-
 		const nowMs = now();
 		const projectRoot = args.projectRoot;
 		const prNumber = args.prNumber;

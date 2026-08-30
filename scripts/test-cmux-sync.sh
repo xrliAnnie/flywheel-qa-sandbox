@@ -4140,25 +4140,10 @@ if [[ "$SCAN_HEARTBEAT" == "$$|7|scan" && "$BEFORE_FIFTEEN" == "absent" \
   pass "heartbeat is scan-driven and maintenance-rate-limited to 15 polls"
 else fail "heartbeat mismatch scan='$SCAN_HEARTBEAT' before=$BEFORE_FIFTEEN maintenance='$MAINT_HEARTBEAT'"; fi
 
-echo "Test: FLY-254 kill switch — FLYWHEEL_CMUX_REOPEN_SWEEP=0 reverts to FLY-169 status quo"
-setup_escalation_scenario
-export FLYWHEEL_CMUX_REOPEN_SWEEP=0
-MOCK_SOCK_IDENT="11:22:333"
-reopen_detector_check 2>/dev/null
-if [[ ! -f "$CMUX_SOCK_IDENT_FILE" ]]; then
-  pass "off: detector writes no state file"
-else fail "off: state file was created"; fi
-echo "11:22:333|pending|0" > "$CMUX_SOCK_IDENT_FILE"
-consume_pending_reopen_sweep 2>/dev/null
-if echo "$MOCK_CMUX_OPS" | grep -q "select-workspace\|send"; then
-  fail "off: consume still acted"
-else pass "off: consume is a no-op"; fi
-CMUX_HEALTH_LAST_RC=1
-MOCK_SLEEPS=0
-reopen_aware_sleep 30 2>/dev/null
-if [[ "$MOCK_SLEEPS" -eq 10 ]]; then
-  pass "off: reopen detection is inert while the independent 3s event SLA remains"
-else fail "off: expected 10 event-probe sleeps, got $MOCK_SLEEPS"; fi
+echo "Test: FLY-254 retired reopen env cannot disable the sweep"
+if FLYWHEEL_CMUX_REOPEN_SWEEP=0 reopen_sweep_enabled; then
+  pass "retired reopen env is ignored"
+else fail "retired reopen env still disabled the sweep"; fi
 # Regression sentinel: escalation never fires from a plain (FLY-169) sweep,
 # and the event-path heal stays fail-closed on read-screen failure.
 setup_escalation_scenario
@@ -4892,13 +4877,13 @@ test_fly293_reap_multiple_orphans() {
 }
 
 test_fly293_reap_env_off_inert() {
-  echo "Test: FLYWHEEL_CMUX_ORPHAN_REAPER=0 → periodic reaper fully inert (byte-compat)"
-  _fly293_fixture
-  printf 'workspace:36|1|eA==\n' > "$ORPHAN_PIN_STATE"   # would otherwise close
-  FLYWHEEL_CMUX_ORPHAN_REAPER=0 reap_orphan_workspace_pins
-  if [[ -z "$MOCK_CMUX_OPS" ]]; then pass "no cmux ops (no close, no refresh) when off"; else fail "ops=[$MOCK_CMUX_OPS]"; fi
-  # state file left untouched (row still present — inert)
-  if grep -q "^workspace:36|" "$ORPHAN_PIN_STATE" 2>/dev/null; then pass "state untouched when off"; else fail "state mutated when off"; fi
+  echo "Test: retired orphan-reaper env cannot disable periodic cleanup"
+	_fly293_fixture
+	printf 'workspace:36|1|eA==\n' > "$ORPHAN_PIN_STATE"   # would otherwise close
+	FLYWHEEL_CMUX_ORPHAN_REAPER=0 reap_orphan_workspace_pins
+  if echo "$MOCK_CMUX_OPS" | grep -q "close-workspace --workspace workspace:36"; then
+    pass "retired env is ignored and the orphan closes"
+  else fail "retired env still blocked orphan cleanup ops=[$MOCK_CMUX_OPS]"; fi
 }
 
 test_fly293_list_orphan_pins_readonly() {
@@ -4928,7 +4913,7 @@ test_fly293_reap_oneshot_works_when_env_off() {
 }
 
 test_fly293_gc_orphan_pin_state() {
-  echo "Test: gc_orphan_pin_state_file drops rows whose ref is gone; env off = inert"
+  echo "Test: gc_orphan_pin_state_file drops rows whose ref is gone"
   _fly293_fixture
   # workspace:36 exists in JSON; workspace:9999 does not
   printf 'workspace:36|1|eA==\nworkspace:9999|1|eA==\n' > "$ORPHAN_PIN_STATE"
@@ -4936,10 +4921,10 @@ test_fly293_gc_orphan_pin_state() {
   if grep -q "^workspace:36|" "$ORPHAN_PIN_STATE" && ! grep -q "^workspace:9999|" "$ORPHAN_PIN_STATE"; then
     pass "gc kept live ref, dropped dead ref"
   else fail "gc wrong. state=[$(cat "$ORPHAN_PIN_STATE")]"; fi
-  # env off → inert (no change)
-  printf 'workspace:9999|1|eA==\n' > "$ORPHAN_PIN_STATE"
-  FLYWHEEL_CMUX_ORPHAN_REAPER=0 gc_orphan_pin_state_file
-  if grep -q "^workspace:9999|" "$ORPHAN_PIN_STATE"; then pass "gc inert when reaper off (byte-compat)"; else fail "gc ran when off"; fi
+  # The retired env cannot disable GC.
+	printf 'workspace:9999|1|eA==\n' > "$ORPHAN_PIN_STATE"
+	FLYWHEEL_CMUX_ORPHAN_REAPER=0 gc_orphan_pin_state_file
+  if ! grep -q "^workspace:9999|" "$ORPHAN_PIN_STATE"; then pass "retired env is ignored by GC"; else fail "retired env still blocked GC"; fi
 }
 
 # Codex code-review R1 MED-1/MED-2: reap must never abort the watcher under
@@ -7477,29 +7462,11 @@ test_fly1596_one_restored_action_failure_does_not_abort_later_markers() {
 }
 
 test_fly1596_flag_off_aborts_synthetic_receipt_without_close() {
-  echo "Test: FLY-1596 Fix 2 — flag-off abort rolls back synthetic authority non-destructively"
-  reset_mocks
-  FLYWHEEL_CMUX_RESTORED_ADOPTION=0; MOCK_CMUX_MUTATE_JSON=1
-  local title="FLY-1596-implement" generation="cmux-generation-1" ref="workspace:1596"
-  local title_b64 orig_b64 fingerprint epoch rc=0
-  MOCK_SOCK_IDENT="$generation"
-  MOCK_CMUX_WORKSPACES_JSON='{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}'
-  title_b64=$(printf '%s' "$title" | base64 | tr -d '\n')
-  orig_b64=$(printf 'none|%s|%s|%s' "$generation" "$ref" "$title" | base64 | tr -d '\n')
-  fingerprint=$(printf '%064d' 0)
-  epoch=$(date +%s)
-  printf 'restoredv1|W1|%s|%s|%s|%s|%s|%s\n' \
-    "$generation" "$ref" "$title_b64" "$orig_b64" "$fingerprint" "$epoch" > "$RESTORED_STATE"
-  printf 'committed|%s|%s|%s\n' "$generation" "$ref" "$title" > "$VIEW_LEDGER"
-  test_ensure_mutator_lease || { fail "cannot acquire fixture mutator lease"; return; }
-  recover_restored_transactions || rc=$?
-  release_mutator_lease
-  if [[ "$rc" -eq 0 && ! -s "$RESTORED_STATE" && ! -s "$VIEW_LEDGER" \
-      && "$MOCK_CMUX_WORKSPACES_JSON" == '{"workspaces":[{"ref":"workspace:1596","title":"FLY-1596-implement"}]}' \
-      && -z "$MOCK_CMUX_OPS" ]]; then
-    pass "flag off drains marker and synthetic receipt without touching the cmux row"
+  echo "Test: retired restored-adoption env cannot disable adoption"
+  if FLYWHEEL_CMUX_RESTORED_ADOPTION=0 restored_adoption_enabled; then
+    pass "retired restored-adoption env is ignored"
   else
-    fail "flag-off abort mismatch rc=$rc marker=[$(cat "$RESTORED_STATE" 2>/dev/null)] ledger=[$(cat "$VIEW_LEDGER" 2>/dev/null)] json=[$MOCK_CMUX_WORKSPACES_JSON] ops=[$MOCK_CMUX_OPS]"
+    fail "retired restored-adoption env still disabled adoption"
   fi
 }
 

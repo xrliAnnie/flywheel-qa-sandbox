@@ -29,11 +29,9 @@ decision_layer:
 
 checkpoints:
   brainstorm:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-close
   question:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-open
 
@@ -47,5 +45,4 @@ default_agent: content
 
 # FLY-205: department-first doc-flow baseline.
 doc_flow:
-  enabled: true
   default_department: content

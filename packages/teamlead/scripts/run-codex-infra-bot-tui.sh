@@ -48,11 +48,6 @@ fi
 # Derived from the DEPLOYED main dist so the resolved script matches production.
 FLYWHEEL_ROOT="$(cd "${TEAMLEAD_ROOT}/../.." && pwd)"
 export FLYWHEEL_ROOT
-# Opt IN to the silent-no-pane guard — this bot is the one whose founder-facing
-# pane MUST be visible (FLY-398). Default OFF in the shared runtime, so any other
-# TUI Lead (future Mufasa/task-114 bootstrap) is byte-compat.
-export FLYWHEEL_TUI_WINDOW_ALERT=1
-
 # ── Infra Bot identity: selectors in launcher, coordinates from registry ──
 . "${TEAMLEAD_ROOT}/scripts/lib/canonical-lead-identity.sh"
 canonical_lead_identity_resolve "flywheel" "codex-infra-bot-lead"

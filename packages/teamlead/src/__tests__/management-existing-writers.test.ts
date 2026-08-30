@@ -253,7 +253,7 @@ describe("existing management writer adapters", () => {
 		]);
 	});
 
-	it("runner and flag snapshot providers expose live managed targets", () => {
+	it("runner and flag snapshot providers expose store-only managed targets", () => {
 		const runnerProvider = createManagementRunnerProvider({
 			projects,
 			projectConfigs: configs,
@@ -276,7 +276,11 @@ describe("existing management writer adapters", () => {
 			flags.find((flag) => flag.name === "loop_profiler")?.global,
 		).toMatchObject({
 			current: false,
-			writeCapability: { writable: true, consequence: "hot" },
+			writeCapability: {
+				writable: false,
+				consequence: "governance-readonly",
+				reason: expect.stringContaining("SQLite flag store"),
+			},
 		});
 		expect(
 			flags.find((flag) => flag.name === "doc_flow")?.projectOverrides[0]?.value
@@ -514,18 +518,13 @@ describe("existing management writer adapters", () => {
 			return value;
 		};
 		const fleetBatches: unknown[] = [];
-		let envFile = "";
 		const env: Record<string, string | undefined> = {};
 		const writers = createExistingManagementWriters({
 			projects: multiProjects,
 			projectsRevision: () => PROJECTS_REVISION,
 			projectConfigs: configs,
 			readProjectConfig: () => CONFIG,
-			readEnvFile: () => envFile,
-			writeEnvFile: (_path, content) => {
-				envFile = content;
-			},
-			flagLock: (fn) => fn(),
+			readEnvFile: () => "",
 			envPath: "/server/.flywheel/.env",
 			env,
 			flagViews: () => resolveAllFlags({ env, projectConfigs: configs() }),

@@ -911,12 +911,13 @@ describe("FLY-1314: external-merge TURN-belt reclaim", () => {
 		},
 	);
 
-	it("child kill-switch disables only belt reclaim", async () => {
+	it("retired child kill-switch no longer disables belt reclaim", async () => {
 		const h = await beltHarness({
 			env: { FLYWHEEL_TURN_BELT_MERGED_RECLAIM: "0" },
 		});
 		await h.pass();
-		expect(h.checkPr).not.toHaveBeenCalled();
+		expect(h.probe).toHaveBeenCalledOnce();
+		expect(h.checkPr).toHaveBeenCalledOnce();
 	});
 
 	it("the retired parent kill switch no longer disables belt probing", async () => {

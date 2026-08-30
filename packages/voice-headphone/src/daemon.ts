@@ -175,7 +175,6 @@ export async function runHeadphoneDaemon(cfg: HeadphoneConfig): Promise<void> {
 		io,
 		queue,
 		timers: new NodeTimerHost(),
-		voiceApprovalEnabled: cfg.voiceApprovalEnabled,
 		vocabulary: cfg.phrases,
 		restore: normalizedTurn,
 		onModeOff: (recap) => {
@@ -238,7 +237,7 @@ export async function runHeadphoneDaemon(cfg: HeadphoneConfig): Promise<void> {
 	theCore.selfBotId = selfId;
 
 	console.log(
-		`[headphone] up — listening ${theCore.scopeChannels.length} channels, mode=${theCore.modeOn ? "ON" : "OFF"}, approval=${cfg.voiceApprovalEnabled ? "enabled" : "KILL-SWITCHED"}`,
+		`[headphone] up — listening ${theCore.scopeChannels.length} channels, mode=${theCore.modeOn ? "ON" : "OFF"}, approval=enabled`,
 	);
 
 	// offline backfill (only meaningful when the mode survived the restart)

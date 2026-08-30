@@ -47,7 +47,6 @@ export interface CodexHealthResult {
 	severity: CodexHealthSeverity;
 	reason:
 		| "healthy"
-		| "guard-disabled"
 		| "lead-home-binary"
 		| "bad-codex-home"
 		| "missing-codex-home"
@@ -56,9 +55,6 @@ export interface CodexHealthResult {
 	/** Diagnostic context (resolved realpath / CODEX_HOME) for logs + alerts. */
 	detail?: string;
 }
-
-/** The env var that disables the guard entirely (escape hatch / byte-compat). */
-export const HEALTH_GUARD_ENV = "FLYWHEEL_CODEX_HEALTH_GUARD";
 
 /** Neutral, pinned global-codex install root (the operational repoint target). */
 export const NEUTRAL_CODEX_ROOT_SEGMENTS = [
@@ -226,11 +222,6 @@ export function checkCodexGlobalHealth(
 	deps: CodexHealthDeps = {},
 ): CodexHealthResult {
 	const env = deps.env ?? process.env;
-
-	// Escape hatch: byte-compat / emergency bypass — short-circuit before any I/O.
-	if (env[HEALTH_GUARD_ENV] === "0") {
-		return { ok: true, alert: false, severity: "ok", reason: "guard-disabled" };
-	}
 
 	const homedir = (deps.homedir ?? osHomedir)();
 	const resolveExecutable = deps.resolveExecutable ?? resolveExecutableOnPath;

@@ -38,7 +38,6 @@ describe("loadHeadphoneConfig", () => {
 		// defaults
 		expect(cfg.includeRoundtable).toBe(false);
 		expect(cfg.stateFile.endsWith("headphone-state.json")).toBe(true);
-		expect(cfg.voiceApprovalEnabled).toBe(true);
 	});
 
 	it.each(["botTokenEnv", "coreChannelId", "founderUserId", "bridgeUrl"])(
@@ -60,7 +59,7 @@ describe("loadHeadphoneConfig", () => {
 		).toThrow(/HP_BOT_TOKEN/);
 	});
 
-	it("voice approval defaults ON → bridgeTokenEnv is REQUIRED (Codex R1 #1)", () => {
+	it("voice approval requires bridgeTokenEnv", () => {
 		const noBridgeToken: Record<string, unknown> = { ...VALID };
 		delete noBridgeToken.bridgeTokenEnv;
 		expect(() =>
@@ -71,14 +70,15 @@ describe("loadHeadphoneConfig", () => {
 		).toThrow(/bridgeTokenEnv/);
 	});
 
-	it("FLYWHEEL_VOICE_APPROVAL=0 (kill-switch) allows missing bridgeTokenEnv and disables approval", () => {
+	it("ignores the retired voice-approval env and still requires bridgeTokenEnv", () => {
 		const noBridgeToken: Record<string, unknown> = { ...VALID };
 		delete noBridgeToken.bridgeTokenEnv;
-		const cfg = loadHeadphoneConfig({
-			configPath: writeConfig(noBridgeToken),
-			env: { ...ENV, FLYWHEEL_VOICE_APPROVAL: "0" },
-		});
-		expect(cfg.voiceApprovalEnabled).toBe(false);
+		expect(() =>
+			loadHeadphoneConfig({
+				configPath: writeConfig(noBridgeToken),
+				env: { ...ENV, FLYWHEEL_VOICE_APPROVAL: "0" },
+			}),
+		).toThrow(/bridgeTokenEnv/);
 	});
 
 	it("missing config file fail-fasts with setup guidance", () => {
@@ -99,7 +99,7 @@ describe("loadHeadphoneConfig", () => {
 				voices: { tadashi: { voiceId: "zh-CN-YunyangNeural" } },
 				phrases: { skip: ["算了"] },
 			}),
-			env: { ...ENV },
+			env: { ...ENV, FLYWHEEL_HEADPHONE_INCLUDE_ROUNDTABLE: "0" },
 		});
 		expect(cfg.includeRoundtable).toBe(true);
 		expect(cfg.stateFile).toBe("/tmp/custom-state.json");

@@ -1,11 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import {
-	resolveAllFlags,
-	resolveSkillFrameworkMode,
-	SKILL_FRAMEWORK_MODE_ENV,
-} from "flywheel-config";
+import { resolveAllFlags, resolveSkillFrameworkMode } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import {
@@ -373,11 +369,9 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			FLYWHEEL_SKILL_FRAMEWORK_MODE: "split",
 		});
 		const control = storeSkillFrameworkModeControl(runtime);
-		const env = control.hasOverride
-			? { [SKILL_FRAMEWORK_MODE_ENV]: control.raw ?? undefined }
-			: {};
-		const first = resolveSkillFrameworkMode({ env, issueIdentifier: "FLY-1" });
-		const second = resolveSkillFrameworkMode({ env, issueIdentifier: "FLY-2" });
+		const raw = control.hasOverride ? (control.raw ?? undefined) : undefined;
+		const first = resolveSkillFrameworkMode({ raw, issueIdentifier: "FLY-1" });
+		const second = resolveSkillFrameworkMode({ raw, issueIdentifier: "FLY-2" });
 		expect(first.via).toBe("hash");
 		expect(second.via).toBe("hash");
 	});

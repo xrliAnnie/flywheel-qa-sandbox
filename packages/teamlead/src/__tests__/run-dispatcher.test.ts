@@ -1026,11 +1026,11 @@ describe("FLY-751: runnerMcpProfile wiring", () => {
 		});
 	});
 
-	it("start(): FLYWHEEL_RUNNER_SLIM_MCP=0 kill-switch (profile null)", async () => {
+	it("start(): ignores the retired FLYWHEEL_RUNNER_SLIM_MCP kill-switch", async () => {
 		vi.stubEnv("FLYWHEEL_RUNNER_SLIM_MCP", "0");
 		const { runtime, start } = startWith({});
 		await start();
-		expect(ctxOf(runtime).runnerMcpProfile).toBeNull();
+		expect(ctxOf(runtime).runnerMcpProfile).toEqual(DEFAULT_PROFILE);
 	});
 
 	it("start(): non-claude backend gets NO profile field at all", async () => {

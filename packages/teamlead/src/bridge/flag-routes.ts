@@ -27,9 +27,8 @@ import {
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { parse as parseYaml } from "yaml";
-import { computeEnvSha } from "./env-file-writer.js";
 import type { FlagStoreRuntime } from "./flag-store-runtime.js";
-import { applyFlagToggle, isDirectToggleable } from "./flag-toggle.js";
+import { isDirectToggleable } from "./flag-toggle.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { newBatchId } from "./fleet-admin.js";
 import type { FleetAdminAudit } from "./fleet-admin-audit.js";
@@ -70,10 +69,7 @@ export interface FlagStoreCanonical {
 export type AnyFlagCanonical = FlagCanonical | FlagStoreCanonical;
 
 export interface FlagRouteDeps {
-	envPath: string;
 	readFile: (path: string) => string;
-	writeFile?: (path: string, content: string) => void;
-	env?: Record<string, string | undefined>;
 	tokens: ConfirmTokenStore;
 	audit: FleetAdminAudit;
 	flagStore?: FlagStoreRuntime;
@@ -81,8 +77,6 @@ export interface FlagRouteDeps {
 	projectNames: () => readonly string[];
 	/** Resolve the canonical config.yaml path for a rostered project. */
 	projectConfigPath: (projectName: string) => string | undefined;
-	/** Critical-section lock (plan §4.3); defaults to the real .env file lock. */
-	lock?: <T>(fn: () => T) => T;
 }
 
 export interface RouteResult {
@@ -214,22 +208,6 @@ function computeRawTo(
 		return String(to);
 	if (spec.polarity === "default_on") return to ? null : "0";
 	return to ? "1" : null;
-}
-
-function effectiveOf(
-	spec: FeatureFlagSpec,
-	raw: string | null,
-): boolean | string {
-	if (spec.valueKind === "enum") {
-		// Garbage / empty raw displays as the default (the owning resolver fails
-		// closed the same way — R1#8 display honesty).
-		if (raw !== null && raw !== "" && spec.enumValues?.includes(raw)) {
-			return raw;
-		}
-		return String(spec.default);
-	}
-	if (spec.valueKind === "value") return raw ?? String(spec.default);
-	return spec.polarity === "default_on" ? raw !== "0" : raw === "1";
 }
 
 export function handleFlagStage(
@@ -459,37 +437,10 @@ export function handleFlagStage(
 		const confirmToken = deps.tokens.issue(flagCanonicalSha(canonical));
 		return { code: 200, body: { canonical, confirmToken } };
 	}
-	const env = deps.env ?? process.env;
-	let content: string;
-	try {
-		content = deps.readFile(deps.envPath);
-	} catch (err) {
-		return {
-			code: 500,
-			body: { error: `read .env: ${(err as Error).message}` },
-		};
-	}
-	const rawFrom = env[spec.envVar] ?? null;
-	const rawTo = computeRawTo(spec, input.to as boolean | string);
-	const canonical: FlagCanonical = {
-		kind: "flag",
-		batchId: newBatchId(),
-		name: spec.name,
-		envVar: spec.envVar,
-		rawFrom,
-		rawTo,
-		fileSha: computeEnvSha(content),
-		effectiveFrom: effectiveOf(spec, rawFrom),
-		effectiveTo: input.to as boolean | string,
+	return {
+		code: 500,
+		body: { error: `${spec.name}: registry/store invariant violated` },
 	};
-	deps.audit.record({
-		batchId: canonical.batchId,
-		event: "staged",
-		canonicalRequest: JSON.stringify(canonical),
-		origin,
-	});
-	const confirmToken = deps.tokens.issue(flagCanonicalSha(canonical));
-	return { code: 200, body: { canonical, confirmToken } };
 }
 
 export function handleFlagApply(
@@ -619,46 +570,17 @@ export function handleFlagApply(
 		if (warn) console.warn(`[flag-store] ${warn}: ${canonical.batchId}`);
 		return { code: 200, body: { ok: true, warn } };
 	}
-	if (
-		STORE_MANAGED_FLAGS.has(canonical.name) ||
-		PROJECT_STORE_MANAGED_FLAGS.has(canonical.name)
-	) {
-		return {
-			code: 409,
-			body: { error: `${canonical.name} must use the flag store route` },
-		};
-	}
-	const result = applyFlagToggle(
-		{
-			envPath: deps.envPath,
-			readFile: deps.readFile,
-			writeFile: deps.writeFile,
-			env: deps.env,
-			lock: deps.lock,
-		},
-		{
-			name: canonical.name,
-			rawFrom: canonical.rawFrom,
-			rawTo: canonical.rawTo,
-			fileSha: canonical.fileSha,
-		},
-	);
-	if (!result.ok) {
-		deps.audit.record({
-			batchId: canonical.batchId,
-			event: "denied",
-			attemptId,
-			reason: result.reason,
-			origin,
-		});
-		return { code: result.code, body: { error: result.reason } };
-	}
 	deps.audit.record({
 		batchId: canonical.batchId,
-		event: "apply-result",
-		result: result.warn ? `applied-with-warning` : "applied",
-		reason: result.warn,
+		event: "denied",
+		attemptId,
+		reason: "legacy env flag canonical is retired",
 		origin,
 	});
-	return { code: 200, body: { ok: true, warn: result.warn } };
+	return {
+		code: 409,
+		body: {
+			error: `${canonical.name}: legacy env flag canonical is retired; use flag store`,
+		},
+	};
 }

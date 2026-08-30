@@ -50,7 +50,11 @@ function readFlagValue(
 	runtime: FlagStoreRuntime,
 	name: string,
 ): FlagStoreRawValue {
-	if (!STORE_MANAGED_FLAGS.has(name)) {
+	if (
+		!STORE_MANAGED_FLAGS.has(name) ||
+		FEATURE_FLAGS.find((candidate) => candidate.name === name)?.scope !==
+			"bridge_global"
+	) {
 		throw new Error(`flag is not store-managed: ${name}`);
 	}
 	const row = runtime.store.getFlagValueRow(name);

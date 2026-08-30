@@ -329,8 +329,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			}),
 			createManagementFlagProvider({
 				views: flagViews,
-				revision: () =>
-					managementFlagRevision(readFileSync(envPath, "utf8"), env),
+				revision: () => managementFlagRevision(flagViews()),
 				projectNames: () => projects.map((project) => project.projectName),
 			}),
 			sections.snapshotProvider(),
@@ -366,10 +365,8 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			applyLeadCanonical: () => ({ status: "applied" }),
 			envPath,
 			readEnvFile: (path) => readFileSync(path, "utf8"),
-			writeEnvFile: (path, content) => writeFileSync(path, content),
 			env,
 			flagViews,
-			flagLock: (operation) => operation(),
 		});
 		const cronAuthority = new ManagementCronWriter({
 			launchAgentsDir,

@@ -30,7 +30,6 @@ import {
 	PonytailLabelConflictError,
 	resolvePonytailRequested,
 	resolveSkillFrameworkMode,
-	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_SPLIT,
 	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
@@ -1090,17 +1089,12 @@ export class Blueprint {
 		hydrated: HydratedContext,
 	): ResolvedSkillFrameworkForRun | undefined {
 		const control = this.skillFrameworkModeControl();
-		const modeEnv = control.hasOverride
-			? { [SKILL_FRAMEWORK_MODE_ENV]: control.raw ?? undefined }
-			: {};
+		const raw = control.hasOverride ? (control.raw ?? undefined) : undefined;
 		// Participation is only meaningful under `split`; skip the config read
 		// entirely otherwise (default path stays zero-IO). The env read here is
 		// the injected Bridge-global control at call time (direct-toggle live).
 		let participation: boolean | undefined;
-		if (
-			modeEnv[SKILL_FRAMEWORK_MODE_ENV] === SKILL_FRAMEWORK_SPLIT &&
-			this.skillFrameworkParticipation
-		) {
+		if (raw === SKILL_FRAMEWORK_SPLIT && this.skillFrameworkParticipation) {
 			try {
 				participation = this.skillFrameworkParticipation(ctx.projectName);
 			} catch (err) {
@@ -1122,7 +1116,7 @@ export class Blueprint {
 			hydrated.issueIdentifier?.trim() ||
 			hydrated.issueId;
 		const resolved = resolveSkillFrameworkMode({
-			env: modeEnv,
+			raw,
 			issueIdentifier: identifier,
 			override: ctx.skillFrameworkModeOverride,
 			priorStamp: ctx.skillFrameworkModePrior,

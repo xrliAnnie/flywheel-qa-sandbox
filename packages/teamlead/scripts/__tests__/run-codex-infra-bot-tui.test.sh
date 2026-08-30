@@ -39,7 +39,7 @@ unset FLYWHEEL_CODEX_LEAD_PROFILE FLYWHEEL_CODEX_LEAD_SANDBOX \
 	FLYWHEEL_LEAD_PROJECTS_DIGEST FLYWHEEL_LEAD_SUMMARY_ROLE \
 	FLYWHEEL_LEAD_HAS_SUMMARY_DUTY FLYWHEEL_SUMMARY_GRANULARITY \
 	FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID \
-	FLYWHEEL_LEAD_BOT_USER_ID
+	FLYWHEEL_LEAD_BOT_USER_ID FLYWHEEL_TUI_WINDOW_ALERT
 
 # Fake TEAMLEAD_ROOT: stub dist runtime + lead-actions + tui-home; REAL lead-rules-base
 # (symlinked) so assemble_full_access_governance resolves founder-only-authority for real.
@@ -120,6 +120,9 @@ if [ -f "$D" ]; then
 	if grep -q "^FLYWHEEL_CODEX_LEAD_READ_DENY=" "$D"; then
 		fail "retired FLYWHEEL_CODEX_LEAD_READ_DENY pin is still emitted"
 	else pass "FLY-1241: no retired read-deny env pin"; fi
+	if grep -q "^FLYWHEEL_TUI_WINDOW_ALERT=" "$D"; then
+		fail "retired FLYWHEEL_TUI_WINDOW_ALERT pin is still emitted"
+	else pass "FLY-2105: no retired TUI alert env pin"; fi
 else
 	fail "dry-run did not exec mock node (no env dump)"
 fi

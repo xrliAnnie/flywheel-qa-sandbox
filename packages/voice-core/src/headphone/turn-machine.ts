@@ -17,7 +17,7 @@
  * | announcing | founder_speaking_start | stopSpeaking (<100ms barge-in) → awaiting_disposition (item context kept) |
  * | awaiting_disposition | utterance∈SKIP | finish item → next (or idle) |
  * | awaiting_disposition | utterance∈REPLY | speak(「说吧」) → dictating |
- * | awaiting_disposition | utterance∈APPROVE_INTENT ∧ kind=ship_gate ∧ voiceApprovalEnabled | speak(readback「你确认把 {issueRef} ship 上线?」) → awaiting_approval_confirm |
+ * | awaiting_disposition | utterance∈APPROVE_INTENT ∧ kind=ship_gate | speak(readback「你确认把 {issueRef} ship 上线?」) → awaiting_approval_confirm |
  * | awaiting_disposition | utterance∈APPROVE_INTENT ∧ (kind=normal ∨ kill-switch down) | narrate「这条我这里不能批…回屏幕处理」→ finish (gate stays on the existing text/reaction paths) |
  * | awaiting_disposition | utterance∈PAUSE | speak(「好,先放回队列」) + defer → idle (mode stays ON) |
  * | awaiting_disposition | silence(15s) | speak(「先放回队尾」) + defer → next |
@@ -137,8 +137,6 @@ export interface TurnMachineOptions {
 	io: HeadphoneIO;
 	queue: HeadphoneQueue;
 	timers: TimerHost;
-	/** FLYWHEEL_VOICE_APPROVAL kill-switch state (default ON per Annie ②). */
-	voiceApprovalEnabled: boolean;
 	onModeOff?: (recap: {
 		processed: number;
 		remaining: number;
@@ -402,7 +400,7 @@ export class HeadphoneTurnMachine {
 			return;
 		}
 		if (matchPhrase(text, this.vocab.approveIntent)) {
-			if (item.kind === "ship_gate" && this.opts.voiceApprovalEnabled) {
+			if (item.kind === "ship_gate") {
 				this.toState("awaiting_approval_confirm");
 				const readback = `你确认把 ${item.headline.issueRef ?? item.gate?.issueId ?? "这条"} ship 上线?`;
 				this.lastPrompt = readback;

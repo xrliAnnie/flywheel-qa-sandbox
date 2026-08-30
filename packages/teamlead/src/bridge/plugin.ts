@@ -2334,7 +2334,6 @@ export function createBridgeApp(
 		// token store + audit. Only direct-toggle flags are accepted (server
 		// allow-set is authority; governance/restart-type refused in handleFlagStage).
 		const flagRouteDeps: FlagRouteDeps = {
-			envPath: join(homedir(), ".flywheel", ".env"),
 			readFile: (p) => ffReadFileSync(p, "utf-8"),
 			tokens: fleetConsole.tokens,
 			audit: fleetConsole.audit,
@@ -4935,12 +4934,7 @@ export async function startBridge(
 						}),
 						createManagementFlagProvider({
 							views: currentFlagViews,
-							revision: () => {
-								const source = managementEnvSource();
-								return source.status === "readable"
-									? managementFlagRevision(source.content, process.env)
-									: `env-unavailable:${managementFlagRevision("", process.env)}`;
-							},
+							revision: () => managementFlagRevision(currentFlagViews()),
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
 						}),
@@ -9047,7 +9041,7 @@ export async function startBridge(
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
-		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
+		// Always-on advisory probe; failures alert but never abort Bridge boot.
 		onHealthTick: codexHealthEnabled
 			? () => {
 					void reportCodexGlobalHealth(metaAlertNotifier);

@@ -582,9 +582,6 @@ importers:
       flywheel-edge-worker:
         specifier: workspace:*
         version: link:../edge-worker
-      flywheel-gemini-agent:
-        specifier: workspace:*
-        version: link:../gemini-agent
       flywheel-voice-core:
         specifier: workspace:*
         version: link:../voice-core

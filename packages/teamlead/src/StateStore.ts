@@ -5086,6 +5086,7 @@ export class StateStore {
 
 			for (const name of STORE_MANAGED_FLAGS) {
 				const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+				if (spec?.scope !== "bridge_global") continue;
 				const codec = getFlagStoreCodec(name);
 				if (!spec?.envVar || !codec) {
 					throw new Error(`missing flag store policy: ${name}`);
@@ -5169,7 +5170,11 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "retired_flag" };
 		}
-		if (!STORE_MANAGED_FLAGS.has(args.name)) {
+		if (
+			!STORE_MANAGED_FLAGS.has(args.name) ||
+			FEATURE_FLAGS.find(({ name }) => name === args.name)?.scope !==
+				"bridge_global"
+		) {
 			return { ok: false, reason: "not_store_managed" };
 		}
 		if (!args.actor.trim() || !args.reason.trim()) {

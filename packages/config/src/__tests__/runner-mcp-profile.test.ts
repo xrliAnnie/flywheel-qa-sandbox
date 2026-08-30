@@ -74,29 +74,14 @@ describe("resolveRunnerMcpProfile (FLY-751)", () => {
 		});
 	});
 
-	it("FLYWHEEL_RUNNER_SLIM_MCP=0 is a global kill-switch", () => {
+	it("ignores the retired FLYWHEEL_RUNNER_SLIM_MCP kill-switch", () => {
 		expect(
 			resolveRunnerMcpProfile({ env: { FLYWHEEL_RUNNER_SLIM_MCP: "0" } }),
-		).toBeNull();
-	});
-
-	// FLY-1185 §2.7 documented limitation: under the kill-switch the label
-	// CANNOT opt back in (null profile → no --settings → machine default-off
-	// applies unconditionally). Combination test pins this.
-	it("SLIM_MCP=0 + playwright label → STILL null (label ineffective under the kill-switch)", () => {
-		expect(
-			resolveRunnerMcpProfile({
-				issueLabels: ["playwright"],
-				sessionRole: "qa",
-				env: { FLYWHEEL_RUNNER_SLIM_MCP: "0" },
-			}),
-		).toBeNull();
-	});
-
-	it("FLYWHEEL_RUNNER_SLIM_MCP=1 (or any non-0) keeps slimming on", () => {
-		expect(
-			resolveRunnerMcpProfile({ env: { FLYWHEEL_RUNNER_SLIM_MCP: "1" } }),
-		).not.toBeNull();
+		).toEqual({
+			disabledPlugins: ["serena@claude-plugins-official"],
+			disableChrome: false,
+			enabledPluginsExtra: [],
+		});
 	});
 
 	it("FLYWHEEL_RUNNER_DISABLED_PLUGINS set is authoritative (split/trim/filter)", () => {

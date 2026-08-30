@@ -791,10 +791,7 @@ async function finalizeConsume(
 	if (!consumed) return;
 
 	const botToken = deps.resolveBotToken(row);
-	if (
-		botToken &&
-		(deps.env ?? process.env).FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0"
-	) {
+	if (botToken) {
 		const markerFresh = deps.store.insertEvent({
 			event_id: `founder-ack-${row.msg_id}-bound`,
 			execution_id: row.execution_id,

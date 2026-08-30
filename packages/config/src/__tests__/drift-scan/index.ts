@@ -572,20 +572,6 @@ export interface AuditFlagAccountsInput {
 	storeManagedConfigKeys?: ReadonlySet<string>;
 }
 
-function isSkillModeCompatibilityRead(hit: CodeHit): boolean {
-	return (
-		hit.name === "FLYWHEEL_SKILL_FRAMEWORK_MODE" &&
-		hit.file === "packages/config/src/skill-framework-mode.ts" &&
-		hit.form === "const-key" &&
-		hit.code === "args.env[SKILL_FRAMEWORK_MODE_ENV]" &&
-		hit.anchorSymbol === "resolveSkillFrameworkMode" &&
-		typeof hit.anchorStart === "number" &&
-		typeof hit.anchorEnd === "number" &&
-		hit.anchorStart <= hit.start &&
-		hit.end <= hit.anchorEnd
-	);
-}
-
 function duplicateValues(values: readonly string[]): string[] {
 	return [
 		...new Set(
@@ -612,18 +598,8 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 		[...input.retiredConfigPaths].find(
 			(retired) => path === retired || path.startsWith(`${retired}.`),
 		);
-	const skillModeCompatibilityReads = input.rawCodeHits.filter(
-		isSkillModeCompatibilityRead,
-	);
-	const allowedManagedRawRead =
-		skillModeCompatibilityReads.length === 1
-			? skillModeCompatibilityReads[0]
-			: undefined;
 	for (const hit of input.rawCodeHits) {
-		if (
-			input.storeManagedEnvVars.has(hit.name) &&
-			hit !== allowedManagedRawRead
-		) {
+		if (input.storeManagedEnvVars.has(hit.name)) {
 			issues.push(
 				`${hit.name}: store-managed flag has raw production read at ${hit.file}:${hit.form}`,
 			);

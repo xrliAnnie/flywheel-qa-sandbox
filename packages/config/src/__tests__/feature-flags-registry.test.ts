@@ -25,7 +25,8 @@ describe("feature-flag registry invariants", () => {
 				exemptions: FLAG_EXEMPTIONS,
 			}),
 		).toEqual([]);
-		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(7);
+		expect(FeatureFlags.LEGACY_UNMANAGED_BASELINE).toHaveLength(0);
+		expect(FeatureFlags.STORE_MANAGED_FLAGS.size).toBe(FEATURE_FLAGS.length);
 		expect(FeatureFlags.validateFlagAuthoringPolicy).toBeTypeOf("function");
 	});
 
@@ -416,9 +417,11 @@ describe("feature-flag registry invariants", () => {
 			name: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
 			kind: "env",
 			persistentEnvAllowed: false,
-			reason: expect.stringMatching(/loopback staged Bridge/i),
+			reason: expect.stringMatching(/staged voice E2E/i),
 			owner: "flywheel-eng-lead",
 			issue: "FLY-2102",
+			seam: "qa_isolation",
+			retireWhen: expect.stringMatching(/test adapter/i),
 		});
 	});
 

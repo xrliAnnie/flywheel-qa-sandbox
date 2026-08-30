@@ -62,10 +62,13 @@ const FLY_1806_RETIRED_FLAGS = [
 
 describe("FLY-1393 flag truth", () => {
 	it("rejects every SQLite-managed flag from persistent environments", () => {
-		const managedEnvVars = FEATURE_FLAGS.filter((flag) =>
-			STORE_MANAGED_FLAGS.has(flag.name),
-		).map((flag) => flag.envVar);
-		expect(managedEnvVars).toHaveLength(STORE_MANAGED_FLAGS.size);
+		const managedEnvVars = FEATURE_FLAGS.flatMap((flag) =>
+			STORE_MANAGED_FLAGS.has(flag.name) && flag.envVar ? [flag.envVar] : [],
+		);
+		expect(STORE_MANAGED_FLAGS.size).toBe(FEATURE_FLAGS.length);
+		expect(managedEnvVars).toHaveLength(
+			FEATURE_FLAGS.filter(({ scope }) => scope === "bridge_global").length,
+		);
 		for (const envVar of managedEnvVars) {
 			expect(envVar).toBeTruthy();
 			expect(validateFlagTruthEnvironment([`${envVar}=1`]), envVar).toEqual({

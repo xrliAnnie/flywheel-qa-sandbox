@@ -136,11 +136,7 @@ const shipGate = (n: number, over: Partial<QueueItem> = {}): QueueItem =>
 	});
 
 function build(
-	opts: {
-		voiceApprovalEnabled?: boolean;
-		items?: QueueItem[];
-		restore?: PersistedTurnState;
-	} = {},
+	opts: { items?: QueueItem[]; restore?: PersistedTurnState } = {},
 ) {
 	const io = new FakeIO();
 	const timers = new FakeTimers();
@@ -155,7 +151,6 @@ function build(
 		io,
 		queue,
 		timers,
-		voiceApprovalEnabled: opts.voiceApprovalEnabled ?? true,
 		onModeOff: (r) => offCalls.push(r),
 		restore: opts.restore,
 	});
@@ -489,16 +484,6 @@ describe("HeadphoneTurnMachine — §14 c-tier voice approval", () => {
 		ctx.m.handleEvent({ type: "utterance", text: "对" });
 		expect(ctx.io.approvals).toHaveLength(0);
 		expect(ctx.m.state).toBe("off");
-	});
-
-	it("kill-switch down (voiceApprovalEnabled=false): approval state is UNREACHABLE", async () => {
-		const ctx = build({ items: [shipGate(1)], voiceApprovalEnabled: false });
-		await startToDisposition(ctx);
-		ctx.m.handleEvent({ type: "utterance", text: "ship 吧" });
-		expect(ctx.m.state).toBe("idle"); // narrate + finish
-		expect(ctx.io.lastSpeak()).toContain("回屏幕");
-		expect(ctx.io.receipts).toHaveLength(0);
-		expect(ctx.io.approvals).toHaveLength(0);
 	});
 
 	it("APPROVE_INTENT on a NORMAL item never triggers approval", async () => {

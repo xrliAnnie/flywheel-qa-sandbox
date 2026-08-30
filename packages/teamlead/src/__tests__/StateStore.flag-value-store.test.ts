@@ -1,4 +1,4 @@
-import { STORE_MANAGED_FLAGS } from "flywheel-config";
+import { FEATURE_FLAGS, STORE_MANAGED_FLAGS } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
@@ -85,11 +85,15 @@ describe("StateStore FLY-1778 flag value store", () => {
 		]);
 	});
 
-	it("seeds every store-managed registry flag and its audit origin", () => {
+	it("seeds only bridge-global registry flags and leaves project rows scoped", () => {
 		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);
 		store.ensureFlagValueRows({ env: {}, now: 100 });
 
-		for (const name of STORE_MANAGED_FLAGS) {
+		for (const { name, scope } of FEATURE_FLAGS) {
+			if (scope === "project") {
+				expect(store.getFlagValueRow(name), name).toBeUndefined();
+				continue;
+			}
 			expect(store.getFlagValueRow(name), name).toMatchObject({
 				flagName: name,
 				revision: 1,
@@ -101,6 +105,19 @@ describe("StateStore FLY-1778 flag value store", () => {
 				}),
 			]);
 		}
+	});
+
+	it("rejects project flags from the bridge-global apply API", () => {
+		store.ensureFlagValueRows({ env: {}, now: 100 });
+		expect(
+			store.applyFlagValueChange({
+				name: "doc_flow",
+				rawTo: "1",
+				expectedRevision: 1,
+				actor: "test",
+				reason: "prove scope guard",
+			}),
+		).toEqual({ ok: false, reason: "not_store_managed" });
 	});
 
 	it("advances revision on every write but the value clock only on effective change", () => {

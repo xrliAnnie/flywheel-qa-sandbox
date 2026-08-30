@@ -37,8 +37,6 @@ export type HeadphoneConfig = {
 		approveIntent: string[];
 		pause: string[];
 	}>;
-	/** FLYWHEEL_VOICE_APPROVAL kill-switch: default ON, "0" = emergency off. */
-	voiceApprovalEnabled: boolean;
 };
 
 const SETUP_HINT =
@@ -96,27 +94,11 @@ export function loadHeadphoneConfig(opts: {
 		);
 	}
 
-	// Annie ②: voice approval is a KILL-SWITCH — default ON, "0" only for
-	// emergency rollback. While approval is enabled the Bridge token must be
-	// in place at startup (Codex R1 #1: never boot into a state where the
-	// approval call would fail auth at the worst moment).
-	const voiceApprovalEnabled = opts.env.FLYWHEEL_VOICE_APPROVAL !== "0";
-	const bridgeTokenEnv =
-		typeof parsed.bridgeTokenEnv === "string" &&
-		parsed.bridgeTokenEnv.length > 0
-			? parsed.bridgeTokenEnv
-			: undefined;
-	let bridgeToken: string | undefined;
-	if (bridgeTokenEnv) {
-		bridgeToken = opts.env[bridgeTokenEnv];
-		if (!bridgeToken) {
-			throw new Error(
-				`headphone config: env var ${bridgeTokenEnv} (Bridge apiToken) is not set.`,
-			);
-		}
-	} else if (voiceApprovalEnabled) {
+	const bridgeTokenEnv = requireString(parsed, "bridgeTokenEnv");
+	const bridgeToken = opts.env[bridgeTokenEnv];
+	if (!bridgeToken) {
 		throw new Error(
-			"headphone config: bridgeTokenEnv is required while voice approval is enabled (it is ON by default; FLYWHEEL_VOICE_APPROVAL=0 is an emergency kill-switch, not a config mode).",
+			`headphone config: env var ${bridgeTokenEnv} (Bridge apiToken) is not set.`,
 		);
 	}
 
@@ -153,10 +135,7 @@ export function loadHeadphoneConfig(opts: {
 		}
 	}
 
-	const includeRoundtableRaw =
-		opts.env.FLYWHEEL_HEADPHONE_INCLUDE_ROUNDTABLE ?? parsed.includeRoundtable;
-	const includeRoundtable =
-		includeRoundtableRaw === true || includeRoundtableRaw === "1";
+	const includeRoundtable = parsed.includeRoundtable === true;
 
 	return {
 		botTokenEnv,
@@ -174,6 +153,5 @@ export function loadHeadphoneConfig(opts: {
 				: join(homedir(), ".flywheel", "headphone-state.json")),
 		voices,
 		phrases: parsed.phrases as HeadphoneConfig["phrases"],
-		voiceApprovalEnabled,
 	};
 }

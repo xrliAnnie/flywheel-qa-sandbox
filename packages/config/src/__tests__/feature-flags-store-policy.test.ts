@@ -15,7 +15,7 @@ import {
 	STORE_MANAGED_FLAGS,
 } from "../feature-flags/store-policy.js";
 
-const MANAGED = [
+const _MANAGED = [
 	"summary_absorption_cadence_ms",
 	"loop_profiler",
 	"shipped_husk_force",
@@ -26,7 +26,7 @@ const MANAGED = [
 	"workflow_turn_divergence_alerts",
 ] as const;
 
-const PROJECT_MANAGED = [
+const _PROJECT_MANAGED = [
 	"doc_flow",
 	"pipeline_dag",
 	"pipeline_work_kind",
@@ -36,17 +36,9 @@ const PROJECT_MANAGED = [
 	"skill_framework_split_participation",
 ] as const;
 
-const LEGACY_UNMANAGED = [
-	"pipeline_dag",
-	"pipeline_work_kind",
-	"doc_flow",
-	"skill_framework_split_participation",
-	"proofshot",
-	"xiaohongshu_learning",
-	"ponytail",
-] as const;
+const LEGACY_UNMANAGED = [] as const;
 
-const LEGACY_EXEMPTIONS = [
+const TRUE_EXEMPTIONS = [
 	"env:FLYWHEEL_LEAD_DRY_RUN",
 	"env:FLYWHEEL_DONE_THREAD_RECONCILE",
 	"env:FLYWHEEL_CHROME_REAPER_MIGRATE_UNATTRIBUTED",
@@ -70,28 +62,11 @@ const LEGACY_EXEMPTIONS = [
 	"env:FLYWHEEL_PROFILE_IDENTITY_BYPASS",
 	"env:FLYWHEEL_QUOTA_E2E_KEEP",
 	"env:FLYWHEEL_SKIP_AGENT_TEAM_PREFLIGHT",
-	"env:FLYWHEEL_CMUX_ORPHAN_REAPER",
-	"env:FLYWHEEL_CMUX_REOPEN_SWEEP",
-	"env:FLYWHEEL_CMUX_RESTORED_ADOPTION",
-	"env:FLYWHEEL_CMUX_STOCK_ADOPTION",
-	"env:FLYWHEEL_CODEX_HEALTH_GUARD",
 	"env:FLYWHEEL_CONVERGE_ALLOW_TEMP_ROOT",
 	"env:FLYWHEEL_DAEMON_SKIP_PS_SELF_PROBE",
 	"env:FLYWHEEL_DISABLE_MAILBOX_SENTINEL",
-	"env:FLYWHEEL_FOUNDER_APPROVAL_ACK",
-	"env:FLYWHEEL_LEAD_CTX_RESUME_GATE",
-	"env:FLYWHEEL_MERGED_GATE_GUARD",
-	"env:FLYWHEEL_TURN_BELT_MERGED_RECLAIM",
 	"env:FLYWHEEL_ELEVEN_AUTOSTART",
-	"env:FLYWHEEL_GEMINI_AGENT",
 	"env:FLYWHEEL_GEMINI_AUTOSTART",
-	"env:FLYWHEEL_HEADPHONE_INCLUDE_ROUNDTABLE",
-	"env:FLYWHEEL_HUDDLE_EARCON",
-	"env:FLYWHEEL_HUDDLE_FILLER",
-	"env:FLYWHEEL_RUNNER_SLIM_MCP",
-	"env:FLYWHEEL_TUI_WINDOW_ALERT",
-	"env:FLYWHEEL_VOICE_APPROVAL",
-	"env:FLYWHEEL_VOICE_EDGE_TTS",
 	"env:FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
 ] as const;
 
@@ -167,11 +142,12 @@ function futureProjectSpec(
 		default: false,
 		readSites: [
 			{
-				file: "packages/example/src/config.ts",
-				symbol: "future project flag",
-				pattern: "config",
+				file: "packages/example/src/future-project.ts",
+				symbol: "futureProjectFlag",
+				pattern: "delegated",
 				timing: "call_time",
-				configAccess: "future.enabled",
+				resolverModule: "packages/teamlead/src/bridge/flag-store-runtime.ts",
+				resolverSymbol: "storeFutureProjectFlagEnabled",
 			},
 		],
 		toggleable: "conversational",
@@ -185,17 +161,24 @@ function withFutureProjectManaged(): Set<string> {
 }
 
 describe("FLY-1778 flag store policy", () => {
-	it("freezes the M0-approved managed set", () => {
-		expect([...STORE_MANAGED_FLAGS]).toEqual(expect.arrayContaining(MANAGED));
-		expect([...PROJECT_STORE_MANAGED_FLAGS]).toEqual(PROJECT_MANAGED);
+	it("keeps the registry and store ledgers closed over the same names", () => {
+		const registryNames = FEATURE_FLAGS.map(({ name }) => name).sort();
+		const projectNames = FEATURE_FLAGS.filter(
+			({ scope }) => scope === "project",
+		).map(({ name }) => name);
+		expect(STORE_MANAGED_FLAGS.size).toBe(FEATURE_FLAGS.length);
+		expect([...STORE_MANAGED_FLAGS].sort()).toEqual(registryNames);
+		expect([...PROJECT_STORE_MANAGED_FLAGS]).toEqual(projectNames);
 		expect([...RETIRED_FLAG_STORE_ROWS]).toEqual([
 			"workflow_resume",
 			"auto_qa_killswitch",
 		]);
-		for (const name of MANAGED) {
-			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
-			expect(spec, name).toBeDefined();
-			expect(getStoreEligibility(spec!)).toEqual({ eligible: true });
+		for (const spec of FEATURE_FLAGS) {
+			expect(getStoreEligibility(spec), spec.name).toEqual(
+				spec.scope === "bridge_global"
+					? { eligible: true }
+					: { eligible: false, reason: "project_scope" },
+			);
 		}
 	});
 
@@ -209,23 +192,32 @@ describe("FLY-1778 flag store policy", () => {
 			"LEGACY_FLAG_EXEMPTION_BASELINE",
 		) as readonly string[] | undefined;
 		expect(unmanagedBaseline).toEqual(LEGACY_UNMANAGED);
-		expect(exemptionBaseline).toEqual(LEGACY_EXEMPTIONS);
+		expect(exemptionBaseline).toEqual([]);
 		expect(Object.isFrozen(unmanagedBaseline)).toBe(true);
 		expect(Object.isFrozen(exemptionBaseline)).toBe(true);
 
-		const unmanaged = FEATURE_FLAGS.filter(
-			(spec) =>
-				!STORE_MANAGED_FLAGS.has(spec.name) &&
-				!PROJECT_STORE_MANAGED_FLAGS.has(spec.name),
-		).map((spec) => spec.name);
-		for (const name of unmanaged) {
-			expect(unmanagedBaseline, name).toContain(name);
-		}
+		expect(unmanagedBaseline).toHaveLength(0);
+		expect(exemptionBaseline).toHaveLength(0);
+	});
+
+	it("pins only bounded transient exemptions with retirement conditions", () => {
+		expect(
+			FlagExemptions.FLAG_EXEMPTIONS.map(
+				(exemption) => `${exemption.kind}:${exemption.name}`,
+			).sort(),
+		).toEqual([...TRUE_EXEMPTIONS].sort());
 		for (const exemption of FlagExemptions.FLAG_EXEMPTIONS) {
 			expect(
-				exemptionBaseline,
-				`${exemption.kind}:${exemption.name}`,
-			).toContain(`${exemption.kind}:${exemption.name}`);
+				["qa_isolation", "dry_run", "one_time_migration"],
+				exemption.name,
+			).toContain(Reflect.get(exemption, "seam"));
+			expect(
+				Reflect.get(exemption, "persistentEnvAllowed"),
+				exemption.name,
+			).toBe(false);
+			expect(Reflect.get(exemption, "retireWhen"), exemption.name).toMatch(
+				/\S/,
+			);
 		}
 	});
 
@@ -233,18 +225,12 @@ describe("FLY-1778 flag store policy", () => {
 		expect(validateFlagAuthoringPolicy()).toEqual([]);
 	});
 
-	it("assigns every current registry spec to exactly one active authoring branch", () => {
+	it("assigns every registry spec to the all-set and only project specs to the routing subset", () => {
 		for (const spec of FEATURE_FLAGS) {
-			const memberships = [
-				STORE_MANAGED_FLAGS.has(spec.name),
-				PROJECT_STORE_MANAGED_FLAGS.has(spec.name),
-				LEGACY_UNMANAGED.includes(
-					spec.name as (typeof LEGACY_UNMANAGED)[number],
-				) &&
-					!STORE_MANAGED_FLAGS.has(spec.name) &&
-					!PROJECT_STORE_MANAGED_FLAGS.has(spec.name),
-			].filter(Boolean);
-			expect(memberships, spec.name).toHaveLength(1);
+			expect(STORE_MANAGED_FLAGS.has(spec.name), spec.name).toBe(true);
+			expect(PROJECT_STORE_MANAGED_FLAGS.has(spec.name), spec.name).toBe(
+				spec.scope === "project",
+			);
 		}
 	});
 
@@ -252,6 +238,7 @@ describe("FLY-1778 flag store policy", () => {
 		expect(
 			validateFlagAuthoringPolicy({
 				flags: [...FEATURE_FLAGS, futureProjectSpec()],
+				storeManagedFlags: withFutureManaged(),
 				projectStoreManagedFlags: withFutureProjectManaged(),
 				codecForName: (name) =>
 					name === "future_dynamic_flag"
@@ -276,6 +263,7 @@ describe("FLY-1778 flag store policy", () => {
 				...FEATURE_FLAGS,
 				futureProjectSpec(over as Partial<FeatureFlagSpec>),
 			],
+			storeManagedFlags: withFutureManaged(),
 			projectStoreManagedFlags: withFutureProjectManaged(),
 			codecForName: (name) =>
 				name === "future_dynamic_flag"
@@ -288,14 +276,14 @@ describe("FLY-1778 flag store policy", () => {
 		expect(issues.join("\n")).toMatch(/future_dynamic_flag.*project-store/i);
 	});
 
-	it("rejects a name assigned to both managed branches", () => {
+	it("rejects a bridge-global name in the project routing subset", () => {
 		const issues = validateFlagAuthoringPolicy({
 			projectStoreManagedFlags: new Set([
 				...PROJECT_STORE_MANAGED_FLAGS,
 				"loop_profiler",
 			]),
 		});
-		expect(issues.join("\n")).toMatch(/loop_profiler.*both managed branches/i);
+		expect(issues.join("\n")).toMatch(/loop_profiler.*project/i);
 	});
 
 	it("rejects a new env spec until every store-management contract is present", () => {
@@ -359,7 +347,7 @@ describe("FLY-1778 flag store policy", () => {
 				name === "future_dynamic_flag" ? futureCodec : getFlagStoreCodec(name),
 		});
 		expect(projectConfig.join("\n")).toMatch(
-			/future_dynamic_flag.*project_config/i,
+			/future_dynamic_flag.*PROJECT_STORE_MANAGED_FLAGS/i,
 		);
 	});
 
@@ -526,8 +514,8 @@ describe("FLY-1778 flag store policy", () => {
 		}
 	});
 
-	it("keeps every managed codec aligned with its registry default and polarity", () => {
-		for (const name of [...MANAGED, ...PROJECT_MANAGED]) {
+	it("keeps every registry codec aligned with its default and polarity", () => {
+		for (const name of FEATURE_FLAGS.map(({ name }) => name)) {
 			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name)!;
 			const codec = getFlagStoreCodec(name)!;
 			expect(codec.parse({ hasOverride: false, raw: null }), name).toBe(

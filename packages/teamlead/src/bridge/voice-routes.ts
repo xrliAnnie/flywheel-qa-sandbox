@@ -119,8 +119,6 @@ export interface VoiceRouterDeps {
 	 * → no hold check (byte-compat).
 	 */
 	isHeld?: (executionId: string) => boolean;
-	/** env override for tests; kill-switches are read PER CALL. */
-	env?: Record<string, string | undefined>;
 }
 
 /**
@@ -205,7 +203,6 @@ function resolveBindingByMessageId(
 
 export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 	const router = express.Router();
-	const env = () => deps.env ?? process.env;
 	const founderId = () =>
 		deriveCanonicalFounderId(
 			deps.discordOwnerUserId,
@@ -327,12 +324,6 @@ export function createVoiceRouter(deps: VoiceRouterDeps): express.Router {
 			// pre-parse; "before body USE" is the contract (Codex R2 #2).
 			if (!deps.apiTokenConfigured) {
 				res.status(503).json({ error: "api_token_required" });
-				return;
-			}
-			// ① Annie ②: FLYWHEEL_VOICE_APPROVAL is a KILL-SWITCH — default ON,
-			// "0" = emergency rollback. Route stays registered: 403, never 404.
-			if (env().FLYWHEEL_VOICE_APPROVAL === "0") {
-				res.status(403).json({ error: "disabled_by_kill_switch" });
 				return;
 			}
 			const body = (req.body ?? {}) as {

@@ -1,31 +1,7 @@
 import { FEATURE_FLAGS } from "flywheel-config";
-import { describe, expect, it, vi } from "vitest";
-import { computeEnvSha } from "../bridge/env-file-writer.js";
-import {
-	applyFlagToggle,
-	type FlagToggleDeps,
-	isDirectToggleable,
-} from "../bridge/flag-toggle.js";
-
-const ENV_CONTENT = "# env\nFLYWHEEL_OTHER=1\n";
-const SHA = computeEnvSha(ENV_CONTENT);
-
-function deps(over: Partial<FlagToggleDeps> = {}): FlagToggleDeps & {
-	env: Record<string, string | undefined>;
-	writeFile: ReturnType<typeof vi.fn>;
-} {
-	return {
-		envPath: "/tmp/.env",
-		readFile: () => ENV_CONTENT,
-		writeFile: vi.fn(),
-		env: {},
-		lock: (fn: () => unknown) => fn(), // pass-through; real lock tested separately
-		...over,
-	} as FlagToggleDeps & {
-		env: Record<string, string | undefined>;
-		writeFile: ReturnType<typeof vi.fn>;
-	};
-}
+import { describe, expect, it } from "vitest";
+import * as FlagToggle from "../bridge/flag-toggle.js";
+import { isDirectToggleable } from "../bridge/flag-toggle.js";
 
 describe("isDirectToggleable", () => {
 	it("keeps store-backed call-time metadata direct and removes retired entries", () => {
@@ -52,37 +28,8 @@ describe("isDirectToggleable", () => {
 	});
 });
 
-describe("applyFlagToggle", () => {
-	it("refuses a store-managed flag even when its registry metadata is direct", () => {
-		expect(
-			applyFlagToggle(deps(), {
-				name: "workflow_turn_divergence_alerts",
-				rawFrom: null,
-				rawTo: "1",
-				fileSha: SHA,
-			}),
-		).toMatchObject({
-			ok: false,
-			code: 409,
-			reason:
-				"workflow_turn_divergence_alerts is managed by the SQLite flag store",
-		});
-	});
-
-	it("rejects unknown, conversational, and governance flags", () => {
-		for (const name of [
-			"nope",
-			"voice_qa_presence_override",
-			"lead_lease_bypass",
-		]) {
-			expect(
-				applyFlagToggle(deps(), {
-					name,
-					rawFrom: null,
-					rawTo: "0",
-					fileSha: SHA,
-				}).ok,
-			).toBe(false);
-		}
+describe("retired env writer", () => {
+	it("does not export an env toggle apply path", () => {
+		expect(Reflect.get(FlagToggle, "applyFlagToggle")).toBeUndefined();
 	});
 });

@@ -359,6 +359,36 @@ test("project flag seed rejects names outside the QA project-flag allow-set", ()
 	}
 });
 
+test("project flag seed rejects a registered bridge-global store flag", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2105-global-flag-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		const refused = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-2",
+			"--flags",
+			"workflow_turn_divergence_alerts",
+		);
+		assert.notEqual(refused.status, 0);
+		assert.match(
+			refused.stderr,
+			/workflow_turn_divergence_alerts.*not allowed/i,
+		);
+		const db = new Database(path, { readonly: true });
+		assert.equal(
+			db.prepare("SELECT count(*) AS n FROM flag_values").get().n,
+			0,
+		);
+		db.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
 test("binding seed and verification share an explicit audit actor", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1775-binding-actor-"));
 	try {

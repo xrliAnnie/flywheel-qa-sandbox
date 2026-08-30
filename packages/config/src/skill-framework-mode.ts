@@ -117,8 +117,8 @@ export function hashModeBucket(identifier: string): SkillFrameworkMode {
 }
 
 export interface SkillFrameworkResolveArgs {
-	/** The Bridge-global env (call_time read → direct-toggleable). */
-	env: Record<string, string | undefined>;
+	/** Raw Bridge-global store control (call_time read → direct-toggleable). */
+	raw?: string;
 	/** Linear identifier (e.g. "FLY-1356"); hash input on first admission. */
 	issueIdentifier: string;
 	/** Per-dispatch override (529 eval / successor-carried). split-only. */
@@ -157,7 +157,7 @@ export function resolveSkillFrameworkMode(args: SkillFrameworkResolveArgs): {
 	mode: SkillFrameworkMode;
 	via: SkillFrameworkVia;
 } {
-	const raw = args.env[SKILL_FRAMEWORK_MODE_ENV];
+	const raw = args.raw;
 	const override = sanitizeMode(args.override, "override");
 	const priorStamp = sanitizeMode(args.priorStamp, "priorStamp");
 

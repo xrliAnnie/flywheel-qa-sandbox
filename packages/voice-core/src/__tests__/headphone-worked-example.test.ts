@@ -125,7 +125,6 @@ describe("PRD §17 worked example — full replay", () => {
 			io,
 			queue,
 			timers: new Timers(),
-			voiceApprovalEnabled: true,
 		});
 
 		// 「芝麻开门」accepted by the daemon → start

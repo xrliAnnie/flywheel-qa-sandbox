@@ -21,10 +21,8 @@ import {
 	GeminiLiveBackend,
 	ResidentBrainManager,
 } from "flywheel-voice-core";
-import { loadAdvancedAgentConfig } from "./assistant/advanced.js";
 import {
 	type AssistantModeConfig,
-	DEFAULT_ADVANCED_COMMAND,
 	loadAssistantConfig,
 } from "./assistant/config.js";
 import {
@@ -111,6 +109,11 @@ export async function runVoiceBridge(
 	const assistant =
 		opts.assistant !== undefined ? opts.assistant : loadAssistantConfig();
 	const eleven = opts.eleven !== undefined ? opts.eleven : loadElevenConfig();
+	if (assistant?.advanced) {
+		throw new Error(
+			"voice-bridge: huddle.assistant.advanced was retired by FLY-2105; remove huddle.assistant.advanced",
+		);
+	}
 
 	// playback stack dies here, not after a bot already joined the VC.
 	// (GEMINI_API_KEY / FLYWHEEL_API_TOKEN / DISCORD_OWNER_USER_ID fail-fast
@@ -140,9 +143,6 @@ export async function runVoiceBridge(
 	const voiceCommandNames = [
 		config.commandName,
 		assistant ? (assistant.commandName ?? "gemini") : null,
-		assistant?.advanced
-			? (assistant.advanced.commandName ?? DEFAULT_ADVANCED_COMMAND)
-			: null,
 		eleven ? eleven.commandName : null,
 	].filter((n): n is string => n != null);
 	const dupCommandName = voiceCommandNames.find(
@@ -153,12 +153,6 @@ export async function runVoiceBridge(
 			`voice-bridge: duplicate voice command name "/${dupCommandName}" — huddle / assistant / assistant.advanced / eleven command names must all be unique (each registers its own interaction handler on the orchestrator bot)`,
 		);
 	}
-	// FLY-1018 voice phase: a half-configured advanced mode must kill the
-	// deploy at startup, never at the founder's first /gemini-advanced use.
-	if (assistant?.advanced && !opts.assistantWiring?.createConversation) {
-		loadAdvancedAgentConfig(process.env);
-	}
-
 	const deps = opts.deps ?? (await createDiscordDeps());
 	const registry = new BotRegistry<
 		ReturnType<DiscordDeps["createClient"]>,
@@ -369,9 +363,7 @@ export async function runVoiceBridge(
 			// edge-tts (command overridable for deploys that vend it differently).
 			const residentTts =
 				config.brain?.mode === "resident"
-					? new EdgeTts({
-							command: process.env.FLYWHEEL_VOICE_EDGE_TTS || "edge-tts",
-						})
+					? new EdgeTts({ command: "edge-tts" })
 					: undefined;
 
 			// FLY-1160 §4.1: resident mode ONLY. Open the line's resident brain on

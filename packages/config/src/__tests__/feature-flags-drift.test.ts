@@ -1,7 +1,9 @@
+import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { ConfigLoader } from "../ConfigLoader.js";
 import {
 	FLAG_EXEMPTIONS,
 	type FlagExemption,
@@ -38,6 +40,12 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
 const sources = collectProductionSources(REPO_ROOT);
+const trackedConfigFiles = execFileSync("git", ["ls-files", "-z"], {
+	cwd: REPO_ROOT,
+	encoding: "utf8",
+})
+	.split("\0")
+	.filter((file) => file === "config.yaml" || file.endsWith("/config.yaml"));
 const sourceByFile = new Map(
 	sources.map((source) => [source.file, source.text]),
 );
@@ -60,6 +68,22 @@ const storeManagedConfigKeys = new Set(
 );
 
 describe("feature-flag drift guard", () => {
+	it("loads every tracked config.yaml through the production retired-key judge", async () => {
+		const failures: string[] = [];
+		for (const file of trackedConfigFiles) {
+			try {
+				await new ConfigLoader(async (path) => readFileSync(path, "utf8")).load(
+					join(REPO_ROOT, file),
+				);
+			} catch (error) {
+				failures.push(
+					`${file}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+		}
+		expect(failures, failures.join("\n")).toEqual([]);
+	});
+
 	it("scans every production package root plus root/package scripts", () => {
 		expect(
 			sources.some((source) =>
@@ -104,10 +128,10 @@ describe("feature-flag drift guard", () => {
 		).toEqual([]);
 	});
 
-	it("finds known surviving env gates", () => {
+	it("finds exempt env gates but no raw skill-mode store read", () => {
 		const found = new Set(scan.rawCodeHits.map((hit) => hit.name));
-		expect(found.has("FLYWHEEL_CMUX_REOPEN_SWEEP")).toBe(true);
-		expect(found.has("FLYWHEEL_SKILL_FRAMEWORK_MODE")).toBe(true);
+		expect(found.has("FLYWHEEL_GEMINI_AUTOSTART")).toBe(true);
+		expect(found.has("FLYWHEEL_SKILL_FRAMEWORK_MODE")).toBe(false);
 	});
 
 	// FLY-1852: the registry-wide pass lives in validateDeclaredReadSites() so
@@ -513,21 +537,6 @@ describe("feature-flag drift guard", () => {
 			storeManagedEnvVars,
 			storeManagedConfigKeys,
 		});
-		const skillModeCompatibilityReads = scan.rawCodeHits.filter(
-			(hit) =>
-				hit.name === "FLYWHEEL_SKILL_FRAMEWORK_MODE" &&
-				hit.file === "packages/config/src/skill-framework-mode.ts" &&
-				hit.code === "args.env[SKILL_FRAMEWORK_MODE_ENV]" &&
-				hit.anchorSymbol === "resolveSkillFrameworkMode" &&
-				typeof hit.anchorStart === "number" &&
-				typeof hit.anchorEnd === "number" &&
-				hit.anchorStart <= hit.start &&
-				hit.end <= hit.anchorEnd,
-		);
-		expect(
-			skillModeCompatibilityReads,
-			"the sole store-fed synthetic env compatibility read must be exercised",
-		).toHaveLength(1);
 		expect(issues, `flag accounting violations:\n${issues.join("\n")}`).toEqual(
 			[],
 		);
@@ -621,23 +630,22 @@ describe("feature-flag drift guard", () => {
 		);
 	});
 
-	it("allows only one skill-mode compatibility read inside its named resolver", () => {
-		const duplicateRead = scanSources([
+	it("rejects the former skill-mode synthetic-env compatibility read", () => {
+		const rawRead = scanSources([
 			{
 				file: "packages/config/src/skill-framework-mode.ts",
 				text: [
 					'const SKILL_FRAMEWORK_MODE_ENV = "FLYWHEEL_SKILL_FRAMEWORK_MODE";',
 					"function resolveSkillFrameworkMode(args: { env: Record<string, string | undefined> }) {",
 					"  const first = args.env[SKILL_FRAMEWORK_MODE_ENV];",
-					"  const duplicate = args.env[SKILL_FRAMEWORK_MODE_ENV];",
-					"  return first ?? duplicate;",
+					"  return first;",
 					"}",
 				].join("\n"),
 			},
 		]);
-		expect(duplicateRead.rawCodeHits).toHaveLength(2);
+		expect(rawRead.rawCodeHits).toHaveLength(1);
 		const issues = auditFlagAccounts({
-			rawCodeHits: duplicateRead.rawCodeHits,
+			rawCodeHits: rawRead.rawCodeHits,
 			configPaths: [],
 			registeredEnvVars: new Set(["FLYWHEEL_SKILL_FRAMEWORK_MODE"]),
 			registeredConfigKeys: new Set(),
@@ -648,9 +656,7 @@ describe("feature-flag drift guard", () => {
 			retiredConfigPaths: new Set(),
 			storeManagedEnvVars: new Set(["FLYWHEEL_SKILL_FRAMEWORK_MODE"]),
 		});
-		expect(issues.join("\n")).toMatch(
-			/FLYWHEEL_SKILL_FRAMEWORK_MODE.*(?:single|cardinality|raw)/i,
-		);
+		expect(issues.join("\n")).toMatch(/FLYWHEEL_SKILL_FRAMEWORK_MODE.*raw/i);
 	});
 
 	it("freezes exemptions even when the old audit sees a legal entry and real read", () => {

@@ -109,17 +109,17 @@ else
   bad "unknown transcript did not fail closed"
 fi
 
-disabled_id="10000000-0000-4000-8000-000000000004"
-setup_case disabled "$disabled_id"
+retired_bypass_id="10000000-0000-4000-8000-000000000004"
+setup_case retired-bypass "$retired_bypass_id"
 FLYWHEEL_LEAD_CTX_RESUME_GATE=0
 if lead_session_prepare \
-  && [ "$_v2_is_resume" = true ] \
-  && [ -e "$SESSION_ID_FILE" ] \
-  && jq -e '.gate == "disabled" and .verdict == "disabled" and .action == "resumed"' \
+  && [ "$_v2_is_resume" = false ] \
+  && [ ! -e "$SESSION_ID_FILE" ] \
+  && jq -e '.gate == "enabled" and .verdict == "unknown" and .action == "parked"' \
     "$(receipt_file)" >/dev/null; then
-  ok "the explicit escape hatch preserves legacy resume and records it"
+  ok "the retired bypass cannot resume an unverified session"
 else
-  bad "escape hatch did not preserve legacy resume"
+  bad "retired bypass skipped the resume safety gate"
 fi
 
 million_id="10000000-0000-4000-8000-000000000005"
