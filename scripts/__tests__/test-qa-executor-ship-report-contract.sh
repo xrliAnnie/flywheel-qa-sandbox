@@ -5,7 +5,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-QA_MD="${SCRIPT_DIR}/../../.flywheel/agents/engineering/qa-executor.md"
+QA_MD="${SCRIPT_DIR}/../../.flywheel/agents/nodes/qa.md"
 TEMPLATE="${SCRIPT_DIR}/../../.flywheel/templates/ship-report-template.html"
 
 PASS=0; FAIL=0
@@ -41,8 +41,8 @@ assert_max_bytes() {
 
 echo "Test: QA PASS ship-report HTML mandate (FLY-1463)"
 
-assert_file_exists "$QA_MD" "qa-executor.md exists"
-assert_max_bytes "$QA_MD" 40000 "qa-executor.md stays under runtime byte budget"
+assert_file_exists "$QA_MD" "qa node prompt exists"
+assert_max_bytes "$QA_MD" 40000 "qa node prompt stays under runtime byte budget"
 assert_contains "$QA_MD" "QA PASS opens the founder ship gate" "mandate heading survives"
 assert_contains "$QA_MD" "you own it, not your Lead" "QA owns the report"
 assert_contains "$QA_MD" "BEFORE emitting qa-result --status pass" "pipeline PASS ordering survives"

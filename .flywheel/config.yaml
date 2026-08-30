@@ -81,16 +81,12 @@ checkpoints:
 doc_flow:
   default_department: engineering
 
-# Executors: role-based so Tadashi (one engineering Lead) covers multiple roles
-# by issue label — the GeoForge3D "Peter covers many roles" pattern, narrowed by
-# Annie to 3 roles. All agents live under .flywheel/agents/engineering/, so each
-# agent's HOME department is inferred from that path. AgentDispatcher step-2a
-# (dept label match) routes an agent when the spawning Lead's department is in the
-# agent's registered dept set: by default that set is just the path-derived home
-# dept; an agent MAY declare `departments: [...]` to register under additional
-# depts (FLY-901 dual-register — see `product-designer` below). Depts NOT listed
-# are never relaxed. A folder named anything else (e.g. product/) still infers a
-# different home dept.
+# Nodes are selected by issue label while their file, display label, and explicit
+# department ownership come from `.flywheel/agents/registry.yaml`. AgentDispatcher
+# step-2a routes a node only when the spawning Lead's department appears in the
+# registry entry's `department` / `departments` set; unlisted departments are never
+# inferred from file paths or relaxed. `general` intentionally has no department
+# and remains the top-level catch-all.
 #
 # FLY-604 / FLY-1059 / FLY-1089: one executor per role, zero label overlap
 # (REPLACE, not augment). Three creative work-types are now three distinct roles
@@ -123,28 +119,21 @@ doc_flow:
 # product-designer owns doc/docs/design/ux; designer owns designer/mockup.
 agents:
   engineer:
-    agent_file: .flywheel/agents/engineering/engineer-executor.md
-    department: engineering
+    node: engineer
     # change-type labels (migrated from the former code-executor) + technical
     # domains + research/plan (technical research + implementation plans).
     match:
       labels: ["code", "feat", "fix", "refactor", "test", "infra", "tooling", "bug", "backend", "frontend", "api", "server", "ui", "web", "be", "fe", "eng", "research", "plan"]
   qa:
-    agent_file: .flywheel/agents/engineering/qa-executor.md
-    department: engineering
+    node: qa
     # bare "test" stays with `engineer` (TDD unit-test work, migrated from code);
     # qa owns qa/testing to avoid a same-dept first-match collision.
     match:
       labels: ["qa", "testing"]
   product-designer:
-    agent_file: .flywheel/agents/engineering/product-designer-executor.md
-    department: engineering        # home (physical file location — unchanged)
-    # FLY-901 dual-register: this one role serves BOTH the engineering Lead's
-    # doc/design work AND the product Lead's dispatch. The file stays under
-    # engineering/, but it also registers under `product` so the product Lead's
-    # auto-dispatch (owningDept=product) reaches it in step-2a instead of falling to
-    # the shipped-generic executor. Only the listed depts are relaxed.
-    departments: [engineering, product]
+    node: product_designer
+    # FLY-901 dual-register ownership now comes from registry.yaml; config only
+    # references the stable node identity.
     # doc/docs + design (UX design) + ux — docs / UX-spec / design-production for a
     # DEFINED issue. research/plan route to `engineer`.
     # FLY-1059 moved `designer` OUT (visual mockup) ; FLY-1089 moved `product`/`pm`
@@ -158,11 +147,8 @@ agents:
     # "Mode A" inside product-designer (FLY-880); split out per Annie's one-role-
     # per-agent.md lock. Dispatch with `no-three-stage` (or from the product channel)
     # so the co-creation loop is not chopped by DAG workflow stops.
-    agent_file: .flywheel/agents/engineering/pm-executor.md
-    department: engineering        # home (physical file location)
-    # FLY-901 dual-register: serves BOTH the engineering Lead and the product Lead's
-    # auto-dispatch (owningDept=product).
-    departments: [engineering, product]
+    node: pm
+    # FLY-901 dual-register ownership comes from registry.yaml.
     # DISJOINT from product-designer / designer / prototype / engineer / qa.
     match:
       labels: ["pm", "product"]
@@ -172,10 +158,8 @@ agents:
     # doable (hand to engineer to productionize) / not-doable (drop). Throwaway,
     # function-real, NOT production-grade. Distinct from `designer` (visual look).
     # One agent.md, one session; dispatch with `no-three-stage` (or product channel).
-    agent_file: .flywheel/agents/engineering/prototype-executor.md
-    department: engineering        # home (physical file location)
-    # FLY-901 dual-register: serves BOTH the engineering Lead and the product Lead.
-    departments: [engineering, product]
+    node: proto
+    # FLY-901 dual-register ownership comes from registry.yaml.
     # DISJOINT from product-designer / designer / pm / engineer / qa. Single label
     # only — `poc` deliberately NOT an alias (去黑话 / no-jargon, Annie).
     match:
@@ -186,11 +170,8 @@ agents:
     # design gate → high-fidelity mockup, BEFORE implement. The DAG workflow Design
     # PHASE mockup-first behavior lives in Blueprint (isUiDesignFlavored) and is a
     # SEPARATE mechanism from this whole-issue label route.
-    agent_file: .flywheel/agents/engineering/designer-executor.md
-    department: engineering        # home (physical file location)
-    # FLY-901 dual-register: like product-designer, this serves BOTH the
-    # engineering Lead and the product Lead's auto-dispatch (owningDept=product).
-    departments: [engineering, product]
+    node: product_design
+    # FLY-901 ownership comes from registry.yaml.
     # DISJOINT from product-designer / engineer / qa. (SINGLE-label routing is
     # order-independent; a MULTI-label issue still first-matches by YAML order —
     # precondition: one executor-family label per issue. FLY-1089.)
@@ -202,11 +183,11 @@ agents:
   # `default_agent` declaration below — any issue whose labels match no
   # executor above falls through to it (AgentDispatcher Step 3a).
   general:
-    agent_file: .flywheel/agents/general-executor.md
+    node: general
     match:
       labels: []
 
 # FLY-1335: the real catch-all wiring. Label dispatch that matches nothing in
 # `agents` falls through to `general` (instead of the shipped
-# agents/generic-executor.md). ConfigLoader validates the name exists.
+# registered general node). ConfigLoader validates the name exists.
 default_agent: general

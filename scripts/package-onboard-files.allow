@@ -9,14 +9,18 @@ LICENSE
 README.md
 .flywheel-prebuilt
 dist/run-bridge.js
-agents/generic-executor.md
-agents/qa-executor.md
-menus/shapes/code.yaml
-menus/shapes/prd.yaml
-menus/shapes/design.yaml
-menus/shapes/prototype.yaml
-menus/shapes/generic.yaml
-menus/shapes/simple_code.yaml
+.flywheel/agents/registry.yaml
+.flywheel/agents/nodes/eng_design.md
+.flywheel/agents/nodes/implement.md
+.flywheel/agents/nodes/qa.md
+.flywheel/agents/nodes/pm.md
+.flywheel/agents/nodes/product_design.md
+.flywheel/agents/nodes/proto.md
+.flywheel/agents/nodes/general.md
+.flywheel/agents/nodes/general.bare.md
+.flywheel/agents/nodes/general.matt.md
+.flywheel/agents/nodes/engineer.md
+.flywheel/agents/nodes/product_designer.md
 # ── curated scripts (per-file; keep in sync with PO_SCRIPT_FILES + audit) ──
 scripts/flywheel-onboard.sh
 scripts/flywheel-buddy.sh

@@ -115,11 +115,14 @@ import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
 	type Session,
 	StateStore,
+	WorkflowCatalogMigrationIntegrityError,
 	type WorkflowEngineAlertIdentity,
 	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
+import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import {
-	importWorkflowMenuSeeds,
+	loadBundledWorkflowNodeNames,
+	loadWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -4424,6 +4427,52 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-2121: schema first, then a pure registry compile + DB-aware preflight,
+	// then verified backup and one catalog transaction. This runs before any
+	// listener, timer, CommDB warmup, or dispatch admission can create new work.
+	const workflowMenuSeeds = loadWorkflowMenuSeeds();
+	const workflowCatalogMigration = await migrateFly2121WorkflowCatalog(
+		store,
+		workflowMenuSeeds,
+		{
+			resolvableRoleNames: loadBundledWorkflowNodeNames(),
+			...(store.getDbPath() === ":memory:"
+				? {}
+				: {
+						backupPath: join(
+							dirname(store.getDbPath()),
+							"backups",
+							`teamlead.pre-fly2121.${Date.now()}-${randomUUID()}.db`,
+						),
+					}),
+		},
+	).catch((error: unknown) => {
+		if (error instanceof WorkflowCatalogMigrationIntegrityError) {
+			console.error(
+				`[workflow-catalog] ${error.code} stage=${error.stage} baseline=${error.baselineFingerprint} observed=${error.observedFingerprint} added_violations=${JSON.stringify(error.addedViolations)}`,
+			);
+		}
+		throw error;
+	});
+	console.warn(
+		`[workflow-catalog] FLY-2121 migration: changed=${workflowCatalogMigration.plan.requiresMutation} bindings=${workflowCatalogMigration.plan.bindingRows} deleted=${workflowCatalogMigration.plan.templatesToDelete.length} skipped=${workflowCatalogMigration.plan.templateSkips.length + workflowCatalogMigration.plan.seeds.filter((seed) => seed.status === "skipped").length} backup=${workflowCatalogMigration.backupPath ?? "not-required"}`,
+	);
+	for (const skip of workflowCatalogMigration.plan.templateSkips) {
+		console.warn(
+			`[workflow-catalog] FLY-2121 preserved template ${skip.templateId}: ${skip.reason}; durable skip audit=${skip.requiresAudit ? "recorded" : "existing"}`,
+		);
+	}
+	for (const seed of workflowCatalogMigration.plan.seeds) {
+		if (seed.status !== "skipped") continue;
+		const isUnrunnable =
+			seed.manifestUnreadable === true ||
+			Boolean(seed.unresolvableRoles?.length);
+		const message = isUnrunnable
+			? `[workflow-catalog] FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE template=${seed.templateId} preserved_by=${seed.reason ?? "owner_protected"}${seed.manifestUnreadable ? " manifest_status=unreadable" : ` unresolvable_roles=${seed.unresolvableRoles?.join(",")}`} action=repair_and_republish_with_registered_roles; durable skip audit=${seed.requiresAudit ? "recorded" : "existing"}`
+			: `[workflow-catalog] FLY-2121 preserved seed ${seed.templateId}: ${seed.reason ?? "owner_protected"}; durable skip audit=${seed.requiresAudit ? "recorded" : "existing"}`;
+		if (isUnrunnable) console.error(message);
+		else console.warn(message);
+	}
 	const flagStore = initializeFlagStore(store, process.env);
 	// FLY-182/2103: construct the existing Discord-independent founder alert
 	// path before project runtime setup, so ConfigLoader rejection cannot remain
@@ -4467,7 +4516,6 @@ export async function startBridge(
 	await terminalCommDbSync.warmProjects(
 		projects.map((project) => project.projectName),
 	);
-	importWorkflowMenuSeeds(store);
 	const retirement = retireLegacyWorkflowTemplates(store);
 	console.warn(
 		`[workflow-template] FLY-1693 retirement reconcile: unbound=${retirement.unbound} retired=${retirement.retired} blocked=${JSON.stringify(retirement.blocked)} errors=${JSON.stringify(retirement.errors)}`,

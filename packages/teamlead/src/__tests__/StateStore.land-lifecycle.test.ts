@@ -122,7 +122,7 @@ function claimlessLandSnapshot(): string {
 					{
 						id: "craft",
 						type: "generic",
-						role: "generic",
+						role: "general",
 						vendor: "claude",
 						model: "claude-opus-5",
 						effort: "xhigh",
@@ -720,8 +720,13 @@ describe("StateStore land lifecycle ledger", () => {
 			target_node_id: "design",
 			target_attempt: 2,
 			preferred_actor_execution_id: "design-exec",
-			invalidation_scope: ["design"],
-			verification_policy: ["design_review", "founder_gate"],
+			invalidation_scope: ["design", "implement", "qa"],
+			verification_policy: [
+				"design_review",
+				"code_review",
+				"qa_retest",
+				"founder_gate",
+			],
 			interpreted_by: "flywheel-eng-lead",
 		});
 		expect(store.getWorkflowRun("run-design-only")).toMatchObject({
@@ -821,26 +826,24 @@ describe("StateStore land lifecycle ledger", () => {
 			}),
 		).toMatchObject({
 			ok: true,
-			targetNodeId: "founder_gate",
-			gateOpened: true,
+			targetNodeId: "implement",
+			targetAttempt: 3,
 		});
 		expect(store.getWorkflowReworkVerificationPath(requestId!)).toMatchObject({
 			state: "completed",
-			current_node_id: "founder_gate",
+			current_node_id: "implement",
+			current_attempt: 3,
 		});
 		expect(store.getWorkflowReworkDelivery(requestId!)).toMatchObject({
 			state: "completed",
 		});
 		expect(
 			store.getCurrentWorkflowGateHolder("run-design-only", "founder_gate"),
-		).toMatchObject({
-			head_sha: correctedHead,
-			source_execution_id: "design-exec",
-		});
+		).toBeUndefined();
 		store.close();
 	});
 
-	it("rejects an invalid correction hint atomically without consuming the founder gate", async () => {
+	it("normalizes an incomplete correction hint through pinned topology", async () => {
 		const store = await StateStore.create(":memory:");
 		const holder = prepareAwaitingFounderGate(store, "run-invalid-hint");
 		const sourcePayload = {
@@ -862,7 +865,7 @@ describe("StateStore land lifecycle ledger", () => {
 			},
 		};
 
-		expect(() =>
+		expect(
 			store.applyWorkflowSourceEvent({
 				project: "flywheel",
 				sourceEventId: `founder-feedback:${holder.question_id}:invalid`,
@@ -871,15 +874,21 @@ describe("StateStore land lifecycle ledger", () => {
 				payloadDigest: canonicalSubmissionDigest(sourcePayload),
 				schemaVersion: 1,
 			}),
-		).toThrow(/invalid_rework_route|source payload invalid/i);
+		).toEqual({ kind: "founder_feedback", status: "applied" });
 		expect(
 			store.getCurrentWorkflowGateHolderByQuestionId(holder.question_id),
-		).toMatchObject({ state: "awaiting_review" });
-		expect(
-			store
-				.listWorkflowRunEvents("run-invalid-hint")
-				.filter((entry) => entry.kind === "rework_requested"),
-		).toHaveLength(0);
+		).toBeUndefined();
+		const requestEvent = store
+			.listWorkflowRunEvents("run-invalid-hint")
+			.find((entry) => entry.kind === "rework_requested");
+		const requestId = (requestEvent?.payload as { requestId?: string })
+			.requestId;
+		expect(requestId).toBeTruthy();
+		expect(store.getLatestWorkflowReworkRoute(requestId!)).toMatchObject({
+			target_node_id: "implement",
+			invalidation_scope: ["implement", "qa"],
+			verification_policy: ["code_review", "qa_retest", "founder_gate"],
+		});
 		store.close();
 	});
 

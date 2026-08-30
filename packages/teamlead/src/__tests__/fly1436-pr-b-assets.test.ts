@@ -65,13 +65,13 @@ describe("FLY-1436 PR-B production assets", () => {
 	});
 
 	it.each([
-		["pm-executor.md", "prd"],
-		["prototype-executor.md", "prototype"],
+		["pm.md", "prd"],
+		["proto.md", "prototype"],
 	])(
 		"replaces label routing in %s with canonical taskCategory=%s",
 		(file, category) => {
 			const source = readFileSync(
-				join(ROOT, ".flywheel", "agents", "engineering", file),
+				join(ROOT, ".flywheel", "agents", "nodes", file),
 				"utf8",
 			);
 			expect(source).not.toContain("no-three-stage");

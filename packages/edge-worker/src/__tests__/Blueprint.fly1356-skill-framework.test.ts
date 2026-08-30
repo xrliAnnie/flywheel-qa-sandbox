@@ -47,6 +47,10 @@ import type { EventEnvelope } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
+import {
+	resolvedTestAgent,
+	testAgentFallbacks,
+} from "./agent-dispatch-fixtures.js";
 
 const ID = "FLY-1356";
 
@@ -852,19 +856,18 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		return tmpRoot;
 	}
 
-	function makeDispatcher(): AgentDispatcher {
+	function makeDispatcher(projectRoot: string): AgentDispatcher {
 		return new AgentDispatcher(
 			{
-				exec: {
-					agent_file: ".flywheel/agents/exec.md",
-					match: { labels: ["whatever"] },
-				},
+				exec: resolvedTestAgent({
+					nodeName: "exec",
+					labels: ["whatever"],
+					projectRoot,
+					relativeFile: "exec.md",
+				}),
 			},
 			"exec",
-			path.resolve(
-				path.dirname(new URL(import.meta.url).pathname),
-				"../../../..",
-			),
+			testAgentFallbacks(projectRoot),
 		);
 	}
 
@@ -875,7 +878,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		});
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BARE-VARIANT-MARKER");
@@ -890,7 +893,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const { execArgs } = await runBlueprint({
 			envValue: "bare-ponytail",
 			ponytailReadiness: () => true,
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BARE-VARIANT-MARKER");
@@ -905,7 +908,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const { execArgs } = await runBlueprint({
 			envValue: "matt",
 			readiness: () => true,
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("MATT-VARIANT-MARKER");
@@ -916,7 +919,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const root = makeProjectWithAgent({ "exec.md": "BASELINE-MARKER" });
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BASELINE-MARKER");
@@ -929,7 +932,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 			"exec.matt.md": "MATT-VARIANT-MARKER",
 		});
 		const { execArgs } = await runBlueprint({
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BASELINE-MARKER");
@@ -944,7 +947,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		});
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 			ctxExtra: { runnerBackend: "kimi-tmux" },
 		});
@@ -965,7 +968,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 			});
 			const { execArgs } = await runBlueprint({
 				envValue,
-				agentDispatcher: makeDispatcher(),
+				agentDispatcher: makeDispatcher(root),
 				projectRoot: root,
 				ctxExtra: { runnerBackend: "codex-tmux" },
 				codexProbe: () => ({
@@ -984,7 +987,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const root = makeProjectWithAgent({ "exec.md": "BASELINE-MARKER" });
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 			ctxExtra: { runnerBackend: "codex-tmux" },
 			codexProbe: () => ({ disableNames: ["superpowers:fixture"] }),

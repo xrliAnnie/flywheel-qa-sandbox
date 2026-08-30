@@ -840,11 +840,8 @@ export class Blueprint {
 		private agentDispatcher?: AgentDispatcher,
 		// FLY-47 — optional checkpoint gate configuration
 		private checkpointConfig?: CheckpointsConfig,
-		// FLY-137 v1.27.2 — Flywheel repo root, used by Blueprint to resolve
-		// shipped-generic agent files when `dispatchResult.agentFileRoot === "flywheel"`.
-		// Optional for backward compat with test stubs; if absent AND a dispatch
-		// returns `agentFileRoot: "flywheel"`, agent content load logs a warning
-		// and the system prompt falls back to baseline (same as v1.27.0 behavior).
+		// Flywheel repo root used by other prompt/runtime assets. Agent files now
+		// arrive as a registry-resolved absolute root + file pair.
 		private flywheelRepoRoot?: string,
 		// FLY-205 — optional doc-flow config from project .flywheel/config.yaml.
 		// MUST stay the LAST constructor parameter (Codex design R2 #5: long
@@ -2575,11 +2572,9 @@ export class Blueprint {
 		const baseSystemPrompt = systemPromptLines.join("\n");
 
 		// Agent context (additive — prepend before base system prompt)
-		// FLY-137 v1.27.2: resolve agent_file root via agentFileRoot discriminant:
-		//   - "project" → project cwd (project-declared agents)
-		//   - "flywheel" → Flywheel repo root (shipped-generic fallback)
-		// Codex Track A Round 1 #1 fix — was previously always cwd, which silently
-		// dropped shipped-generic content for zero-config projects.
+		// FLY-2121: runtime agent paths are resolved once from the project registry.
+		// Blueprint consumes the immutable root + file pair and never re-derives
+		// identity or ownership from a path.
 		let agentContext = "";
 		if (isGeneralizedExecution) {
 			agentContext = [
@@ -2588,24 +2583,18 @@ export class Blueprint {
 				"",
 			].join("\n");
 		} else if (dispatchResult) {
-			const agentFileBaseDir =
-				dispatchResult.agentFileRoot === "flywheel"
-					? this.flywheelRepoRoot
-					: cwd;
-			if (!agentFileBaseDir) {
-				console.warn(
-					`[Blueprint] agentFileRoot="${dispatchResult.agentFileRoot}" but ` +
-						`flywheelRepoRoot is unset on this Blueprint instance — falling back to cwd. ` +
-						`Update the construction site to pass flywheelRepoRoot (FLY-137 v1.27.2).`,
-				);
-			}
+			const agentFileBaseDir = dispatchResult.agentConfig.agentFileRoot;
+			const relativeAgentFile = path.relative(
+				agentFileBaseDir,
+				dispatchResult.agentConfig.agentFile,
+			);
 			// FLY-1356: B/C arms read the `<agent-file>.{matt,bare}.md` variant
 			// when it exists, falling back to the baseline file (arm definition
 			// frozen in the variants; A arm = baseline, byte-untouched).
 			// domain_file and the generalized-workflow path get NO variants.
 			const agentContent = await readAgentFileWithSkillVariant(
-				agentFileBaseDir ?? cwd,
-				dispatchResult.agentConfig.agent_file,
+				agentFileBaseDir,
+				relativeAgentFile,
 				variantAssembly ? skillFrameworkMode : undefined,
 			);
 			if (agentContent) {
@@ -2627,11 +2616,10 @@ export class Blueprint {
 							"",
 						]
 					: ["## Agent Role", agentContent.slice(0, 40_000), ""];
-				if (dispatchResult.agentConfig.domain_file) {
-					// FLY-137 v1.27.2: domain_file resolves against the same root as agent_file
+				if (dispatchResult.agentConfig.domainFile) {
 					const domainContent = await readAgentFile(
-						agentFileBaseDir ?? cwd,
-						dispatchResult.agentConfig.domain_file,
+						cwd,
+						dispatchResult.agentConfig.domainFile,
 					);
 					if (domainContent) {
 						parts.push(`## Domain Config\n${domainContent.slice(0, 10_000)}`);
@@ -2641,7 +2629,7 @@ export class Blueprint {
 				agentContext = parts.join("\n");
 			} else {
 				console.warn(
-					`[Blueprint] Agent file not found: ${dispatchResult.agentConfig.agent_file}, using generic prompt`,
+					`[Blueprint] Agent file not found: ${dispatchResult.agentConfig.agentFile}, using generic prompt`,
 				);
 			}
 		}

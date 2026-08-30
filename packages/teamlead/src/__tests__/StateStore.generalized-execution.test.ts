@@ -17,7 +17,11 @@ import {
 } from "../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const cleanups: string[] = [];
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -199,6 +203,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-review-producer-"));
 		cleanups.push(root);
+		installSelfHostedWorkflowAgentProject(root);
 		mkdirSync(join(root, "agents"));
 		writeFileSync(join(root, "agents", "generic.md"), "Produce nothing.\n");
 		const snapshot = buildWorkflowRunSnapshotV2({
@@ -218,6 +223,7 @@ describe("generalized execution admission and terminal contracts", () => {
 					{
 						id: "review",
 						type: "review",
+						role: "qa",
 						vendor: "claude",
 						model: "claude-opus-5",
 						effort: "high",
@@ -306,12 +312,13 @@ describe("generalized execution admission and terminal contracts", () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-same-vendor-"));
 		cleanups.push(root);
-		mkdirSync(join(root, "agents"));
-		writeFileSync(join(root, "agents", "generic-executor.md"), "Execute.\n");
-		const seed = structuredClone(
-			legacyWorkflowSeeds().find(
-				(candidate) => candidate.templateId === "tpl_product_v1",
-			)!,
+		installSelfHostedWorkflowAgentProject(root);
+		const seed = pinLegacyWorkflowSeedAgents(
+			structuredClone(
+				legacyWorkflowSeeds().find(
+					(candidate) => candidate.templateId === "tpl_product_v1",
+				)!,
+			),
 		);
 		seed.templateId = "tpl_product_same_vendor";
 		const reviewNode = seed.manifest.nodes.find(

@@ -33,6 +33,7 @@ if (
 const repoPath = resolve(values.repo);
 const body = "FLY-1707 historical credential reconstruction replay";
 const bodyDigest = createHash("sha256").update(body).digest("hex");
+const legacyDesignNodeId = "design"; // FLY-2121-history: these pinned August runs predate the node-id cutover.
 const cases = [
 	{
 		issueId: "FLY-1645",
@@ -110,7 +111,7 @@ for (const item of cases) {
 	);
 	designBefore.set(
 		item.runId,
-		store.listWorkflowRunNodes(item.runId, "design").length,
+		store.listWorkflowRunNodes(item.runId, legacyDesignNodeId).length,
 	);
 	const run = store.getWorkflowRun(item.runId)!;
 	const snapshot = parseWorkflowRunSnapshot(run.snapshot!);
@@ -331,7 +332,7 @@ const output = {
 	designAttempts: cases.map((item) => ({
 		issueId: item.issueId,
 		before: designBefore.get(item.runId),
-		after: store.listWorkflowRunNodes(item.runId, "design").length,
+		after: store.listWorkflowRunNodes(item.runId, legacyDesignNodeId).length,
 	})),
 	mutationRefused,
 	logs,

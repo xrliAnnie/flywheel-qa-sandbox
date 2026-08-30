@@ -1,0 +1,35 @@
+flowchart TB
+  subgraph REG["registry.yaml — 单一注册表(名字只在这里定义)"]
+    direction TB
+    subgraph NODES["nodes: GraphNode 层(每段工作由谁、按哪本说明书做)"]
+      N1["eng_design<br/>file: nodes/eng_design.md<br/>label: 设计(工程)"]
+      N2["implement<br/>file: nodes/implement.md<br/>label: 实现"]
+      N3["qa<br/>file: nodes/qa.md<br/>label: QA 验证"]
+      N4["product_design<br/>file: nodes/product_design.md<br/>label: 产品设计"]
+      N5["pm<br/>file: nodes/pm.md<br/>label: 产品需求"]
+      N6["proto<br/>file: nodes/proto.md<br/>label: 原型"]
+      N7["general<br/>file: nodes/general.md<br/>label: 通用执行"]
+    end
+    subgraph GRAPHS["graphs: Graph 层(流水线只许引用上面注册过的名字)"]
+      G1["code = 工程开发<br/>eng_design → implement → qa<br/>→ founder_gate → land"]
+      G2["simple_code = 轻量开发<br/>implement → qa → founder_gate → land"]
+      G3["prd = 产品需求<br/>pm → founder_gate → land"]
+      G4["product_design_flow = 产品设计<br/>product_design → founder_gate → land"]
+      G5["prototype = 原型验证<br/>proto → founder_gate → land"]
+      G6["generic = 通用<br/>general → founder_gate → land"]
+    end
+  end
+  L["loader 三道硬校验:<br/>1. 注册名 == md 文件名<br/>2. 引用未注册名 → 拒载<br/>3. 两层名字全局互斥"]
+  G1 -.引用.-> N1
+  G1 -.引用.-> N2
+  G1 -.引用.-> N3
+  G2 -.引用.-> N2
+  G2 -.引用.-> N3
+  G3 -.引用.-> N5
+  G4 -.引用.-> N4
+  G5 -.引用.-> N6
+  G6 -.引用.-> N7
+  REG --> L
+  style NODES fill:#e8f0fb,stroke:#007aff
+  style GRAPHS fill:#e8f5ec,stroke:#34c759
+  style L fill:#fff4e5,stroke:#ff9500

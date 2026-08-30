@@ -1,5 +1,32 @@
+export type {
+	BundledRegistry,
+	BundledRegistryGraph,
+	BundledRegistryNode,
+	BundledRegistryStructuralNode,
+	ProjectRegistryOverlay,
+	ProjectRegistryOverlayNode,
+	RegistryEdge,
+	RegistryLoop,
+	RegistryModelPolicy,
+	RegistryNodePolicy,
+	RegistryWorkflowEffort,
+	ResolvedProjectRegistry,
+	ResolvedRegistryNode,
+} from "./agent-registry.js";
+export {
+	loadBundledRegistry,
+	loadDefaultBundledRegistry,
+	loadProjectRegistryOverlay,
+	resolveProjectRegistry,
+	workflowRegistryBindings,
+	workflowRegistryShapes,
+} from "./agent-registry.js";
 export type { ReadFileFn } from "./ConfigLoader.js";
-export { ConfigLoader } from "./ConfigLoader.js";
+export {
+	agentConfigsRequireRegistry,
+	ConfigLoader,
+	resolveAgentConfigs,
+} from "./ConfigLoader.js";
 export {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
@@ -341,6 +368,8 @@ export {
 } from "./skill-framework-mode.js";
 export type {
 	AgentConfig,
+	AgentConfigSource,
+	AgentMatchConfig,
 	AgentNodeConfig,
 	AutonomyLevel,
 	CheckpointConfig,
@@ -356,6 +385,7 @@ export type {
 	ProofShotAuthoringConfig,
 	ProofShotConfig,
 	ReactionsConfig,
+	ResolvedAgentConfig,
 	RoleBackendConfig,
 	RoleBackendMap,
 	RoleEffort,
@@ -380,9 +410,3 @@ export {
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
 } from "./types.js";
-export {
-	WORKFLOW_MENU_BINDINGS,
-	WORKFLOW_MENU_SHAPES,
-	type WorkflowMenuShapeId,
-	workflowMenuTemplateId,
-} from "./workflow-menu-contract.js";

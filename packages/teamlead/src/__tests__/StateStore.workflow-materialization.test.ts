@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const RUN = "run-materialize-1";
 const ISSUE = "FLY-1307";
@@ -27,6 +28,7 @@ async function seededStore(
 	let snapshotJson: string | undefined;
 	if (options.engineOwned) {
 		const root = mkdtempSync(join(tmpdir(), "flywheel-materialize-authority-"));
+		installSelfHostedWorkflowAgentProject(root);
 		mkdirSync(join(root, "agents"));
 		writeFileSync(join(root, "agents", "producer.md"), "Produce docs.\n");
 		snapshotJson = JSON.stringify(
@@ -49,6 +51,7 @@ async function seededStore(
 						{
 							id: REVIEW,
 							type: "review",
+							role: "qa",
 							vendor: "claude",
 							model: "claude-opus-5",
 							effort: "high",

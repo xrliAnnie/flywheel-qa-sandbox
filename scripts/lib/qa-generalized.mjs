@@ -48,10 +48,10 @@ async function loadBuiltConfig() {
 
 async function canonicalBindings() {
 	const config = await loadBuiltConfig();
-	const bindings = config.WORKFLOW_MENU_BINDINGS;
+	const bindings = config.workflowRegistryBindings();
 	if (!Array.isArray(bindings) || bindings.length !== 6) {
 		throw new Error(
-			"built WORKFLOW_MENU_BINDINGS must contain exactly six rows",
+			"built registry must project exactly six workflow bindings",
 		);
 	}
 	return { config, bindings };

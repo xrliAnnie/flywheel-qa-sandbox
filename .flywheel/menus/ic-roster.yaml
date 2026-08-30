@@ -1,7 +1,7 @@
-design: .flywheel/agents/engineering/engineer-executor.md
-implement: .flywheel/agents/engineering/engineer-executor.md
-qa: .flywheel/agents/engineering/qa-executor.md
-pm: .flywheel/agents/engineering/pm-executor.md
-designer: .flywheel/agents/engineering/designer-executor.md
-proto: .flywheel/agents/engineering/prototype-executor.md
-generic: .flywheel/agents/general-executor.md
+eng_design: .flywheel/agents/nodes/eng_design.md
+implement: .flywheel/agents/nodes/implement.md
+qa: .flywheel/agents/nodes/qa.md
+pm: .flywheel/agents/nodes/pm.md
+product_design: .flywheel/agents/nodes/product_design.md
+proto: .flywheel/agents/nodes/proto.md
+general: .flywheel/agents/nodes/general.md

@@ -1,9 +1,8 @@
 /**
  * FLY-137 Phase 6: `flywheel init` — scaffold a fresh project.
  *
- * Creates `.flywheel/config.yaml` + `.flywheel/agents/<dept>/.gitkeep`
- * (or top-level `.flywheel/agents/` if `--no-depts`) + a starter
- * `example-executor.md` under the first declared dept (or top-level).
+ * Creates `.flywheel/config.yaml`, a node-only project registry, and a starter
+ * `.flywheel/agents/nodes/example.md` implementation.
  *
  * Flags:
  *   --project-path <path>  Target project (default: cwd, init does not walk up)
@@ -16,13 +15,7 @@
  * suggestions (`--linear-team` flag) — kept for v1.28 follow-up.
  */
 
-import {
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve as resolvePath } from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveProjectPath } from "../lib/resolve-project.js";
@@ -38,6 +31,7 @@ export interface InitOpts {
 export interface InitResult {
 	projectPath: string;
 	configPath: string;
+	registryPath: string;
 	depts: string[];
 	exampleAgentPath: string;
 }
@@ -101,19 +95,12 @@ export function init(opts: InitOpts): InitResult {
 		depts = opts.depts.map((d) => d.trim()).filter((d) => d.length > 0);
 	}
 
-	// Create directories.
+	// Create the project registry implementation root. Department is semantic
+	// registry metadata, never derived from this path.
 	mkdirSync(dotFly, { recursive: true });
 	const agentsDir = join(dotFly, "agents");
-	mkdirSync(agentsDir, { recursive: true });
-	if (depts.length > 0) {
-		for (const d of depts) {
-			const dir = join(agentsDir, d);
-			mkdirSync(dir, { recursive: true });
-			writeFileSync(join(dir, ".gitkeep"), "");
-		}
-	} else {
-		writeFileSync(join(agentsDir, ".gitkeep"), "");
-	}
+	const nodesDir = join(agentsDir, "nodes");
+	mkdirSync(nodesDir, { recursive: true });
 
 	// Write config.yaml.
 	const projectName =
@@ -125,15 +112,27 @@ export function init(opts: InitOpts): InitResult {
 	});
 	writeFileSync(configPath, configContent);
 
-	// Write starter executor. Under first dept if depts declared, else top-level.
-	const targetDir = depts.length > 0 ? join(agentsDir, depts[0]!) : agentsDir;
-	const examplePath = join(targetDir, "example-executor.md");
+	// Write starter node implementation + node-only project registry.
+	const examplePath = join(nodesDir, "example.md");
 	const exampleContent = readTemplate("example-executor.md.tmpl");
 	writeFileSync(examplePath, exampleContent);
+	const registryPath = join(agentsDir, "registry.yaml");
+	writeFileSync(
+		registryPath,
+		[
+			"nodes:",
+			"  example:",
+			"    file: nodes/example.md",
+			"    label: Example",
+			`    department: ${depts[0] ?? "general"}`,
+			"",
+		].join("\n"),
+	);
 
 	return {
 		projectPath,
 		configPath,
+		registryPath,
 		depts,
 		exampleAgentPath: examplePath,
 	};
@@ -148,16 +147,14 @@ export function runInit(opts: InitOpts): void {
 	const summary = [
 		`✓ Flywheel scaffolded at ${result.projectPath}`,
 		`  config:        ${result.configPath}`,
+		`  registry:      ${result.registryPath}`,
 		`  example agent: ${result.exampleAgentPath}`,
 		`  depts:         ${result.depts.length > 0 ? result.depts.join(", ") : "(flat — no dept subdirs)"}`,
 		``,
 		`Next steps:`,
-		`  1. Edit .flywheel/config.yaml to declare your agents.`,
-		`  2. Replace the example executor file with your role definition.`,
+		`  1. Edit registry.yaml to declare stable nodes and display labels.`,
+		`  2. Edit config.yaml to map dispatch aliases to those nodes.`,
 		`  3. Run 'flywheel doctor' to validate setup.`,
 	].join("\n");
 	console.log(summary);
 }
-
-// Silence unused — kept for future use (statSync used elsewhere).
-void statSync;

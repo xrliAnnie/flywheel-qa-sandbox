@@ -40,6 +40,15 @@ assert_contains "$test_deploy_source" \
 assert_contains "$test_deploy_source" \
 	'"FLYWHEEL_STATE_DIR=${state}"' \
 	'QA Lead manifest pins the slot-local state directory'
+assert_contains "$test_deploy_source" \
+	'([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]' \
+	'generalized code-menu readiness follows stable backend node ids'
+if [[ "$test_deploy_source" == *'["design","implement","qa"]'* ]]; then
+	echo 'FAIL: generalized code-menu readiness still asserts retired role names' >&2
+	failures=$((failures + 1))
+else
+	echo 'PASS: generalized code-menu readiness has no retired role-name tuple'
+fi
 
 codex_stub_kill_log="$TMP_ROOT/codex-stub-kill.log"
 slot_for_reap="$TMP_ROOT/flywheel-test-slot-2"

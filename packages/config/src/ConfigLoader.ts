@@ -1,9 +1,16 @@
 import * as path from "node:path";
 import { parse } from "yaml";
+import type { ResolvedProjectRegistry } from "./agent-registry.js";
 import { MIN_GATE_TIMEOUT_MS } from "./constants.js";
 import { RETIRED_CONFIG_PATHS } from "./feature-flags/truth.js";
 import { getModelConfigSnapshot } from "./model-config.js";
-import type { CheckpointConfig, FlywheelConfig, RoleEffort } from "./types.js";
+import type {
+	AgentConfigSource,
+	CheckpointConfig,
+	FlywheelConfig,
+	ResolvedAgentConfig,
+	RoleEffort,
+} from "./types.js";
 import {
 	EXECUTOR_BACKENDS,
 	ROLE_EFFORT_LEVELS,
@@ -19,6 +26,116 @@ function retiredProjectFlag(key: string): never {
 	throw new Error(
 		`${key} was retired (FLY-2103): per-project flags live in the flag store — delete this key; see flywheel-comm feature-flags`,
 	);
+}
+
+function freezeMatch(
+	match: AgentConfigSource["match"],
+): Readonly<AgentConfigSource["match"]> {
+	return Object.freeze({
+		labels: Object.freeze([...match.labels]) as unknown as string[],
+		...(match.keywords
+			? {
+					keywords: Object.freeze([...match.keywords]) as unknown as string[],
+				}
+			: {}),
+	});
+}
+
+function parseLegacyAgentDepartment(
+	agentFile: string,
+	fieldName: string,
+): string | null {
+	const prefix = ".flywheel/agents/";
+	if (!agentFile.startsWith(prefix)) {
+		throw new Error(
+			`${fieldName}: agent_file must live under ".flywheel/agents/", got "${agentFile}". ` +
+				'If this is a legacy ".claude/agents/" reference, run `flywheel migrate-agents-path` to update.',
+		);
+	}
+	const rest = agentFile.slice(prefix.length);
+	if (rest.length === 0) {
+		throw new Error(
+			`${fieldName}: agent_file cannot be the agents/ directory itself`,
+		);
+	}
+	const segments = rest.split("/");
+	if (segments.length === 1) return null;
+	if (segments.length === 2) {
+		if (segments[0]!.length === 0) {
+			throw new Error(`${fieldName}: empty dept segment in "${agentFile}"`);
+		}
+		return segments[0]!;
+	}
+	throw new Error(
+		`${fieldName}: nested subdirs not supported (depth ${segments.length - 1}); v1.27.2 allows only flat .flywheel/agents/<dept>/<file>.md`,
+	);
+}
+
+export function agentConfigsRequireRegistry(
+	sources: Record<string, AgentConfigSource> | undefined,
+): boolean {
+	return Object.values(sources ?? {}).some(
+		(source) => typeof source.node === "string",
+	);
+}
+
+export function resolveAgentConfigs(
+	sources: Record<string, AgentConfigSource> | undefined,
+	registry?: ResolvedProjectRegistry,
+	projectRoot?: string,
+): Readonly<Record<string, ResolvedAgentConfig>> {
+	const resolved: Record<string, ResolvedAgentConfig> = {};
+	for (const [name, source] of Object.entries(sources ?? {})) {
+		const match = freezeMatch(source.match);
+		if (typeof source.node === "string") {
+			if (!registry) {
+				throw new Error(
+					`AGENT_REGISTRY_REQUIRED: agents.${name}.node ${source.node} requires project registry activation`,
+				);
+			}
+			const node = registry.nodes[source.node];
+			if (!node) {
+				throw new Error(
+					`NODE_NOT_REGISTERED: agents.${name}.node ${source.node} is absent from project ${registry.projectName}`,
+				);
+			}
+			resolved[name] = Object.freeze({
+				nodeName: node.name,
+				label: node.label,
+				agentFile: node.agentFile,
+				agentFileRoot: node.agentFileRoot,
+				...(source.domain_file ? { domainFile: source.domain_file } : {}),
+				...(node.department ? { department: node.department } : {}),
+				departments: Object.freeze([...node.departments]),
+				match,
+			});
+			continue;
+		}
+
+		const root = registry?.projectRoot ?? projectRoot;
+		if (!root) {
+			throw new Error(
+				`LEGACY_AGENT_ROOT_REQUIRED: agents.${name}.agent_file requires a project root`,
+			);
+		}
+		const pathDepartment = parseLegacyAgentDepartment(
+			source.agent_file,
+			`agents.${name}.agent_file`,
+		);
+		const department = source.department ?? pathDepartment ?? undefined;
+		const departments = source.departments ?? (department ? [department] : []);
+		resolved[name] = Object.freeze({
+			nodeName: name,
+			label: name,
+			agentFile: path.resolve(root, source.agent_file),
+			agentFileRoot: root,
+			...(source.domain_file ? { domainFile: source.domain_file } : {}),
+			...(department ? { department } : {}),
+			departments: Object.freeze([...departments]),
+			match,
+		});
+	}
+	return Object.freeze(resolved);
 }
 
 /**
@@ -552,14 +669,97 @@ export class ConfigLoader {
 				);
 			}
 			for (const [name, agentRaw] of Object.entries(agents)) {
+				if (
+					agentRaw == null ||
+					typeof agentRaw !== "object" ||
+					Array.isArray(agentRaw)
+				) {
+					throw new Error(`agents.${name} must be an object`);
+				}
 				const agent = agentRaw as Record<string, unknown>;
-				if (!agent.agent_file || typeof agent.agent_file !== "string") {
+				const hasNode = Object.hasOwn(agent, "node");
+				const hasAgentFile = Object.hasOwn(agent, "agent_file");
+				if (hasNode === hasAgentFile) {
 					throw new Error(
-						`agents.${name}: missing required field "agent_file"`,
+						`agents.${name} must define exactly one of node or agent_file`,
 					);
 				}
-				const agentFile = agent.agent_file as string;
-				this.validateAgentPath(agentFile, `agents.${name}.agent_file`);
+				const allowedKeys = hasNode
+					? ["node", "domain_file", "match"]
+					: ["agent_file", "domain_file", "department", "departments", "match"];
+				for (const key of Object.keys(agent)) {
+					if (!allowedKeys.includes(key)) {
+						throw new Error(`agents.${name}.${key} is not allowed`);
+					}
+				}
+				if (hasNode) {
+					if (typeof agent.node !== "string" || !agent.node.trim()) {
+						throw new Error(`agents.${name}.node must be a non-empty string`);
+					}
+				} else {
+					if (typeof agent.agent_file !== "string" || !agent.agent_file) {
+						throw new Error(
+							`agents.${name}.agent_file must be a non-empty string`,
+						);
+					}
+					const agentFile = agent.agent_file;
+					this.validateAgentPath(agentFile, `agents.${name}.agent_file`);
+					const pathDept = parseLegacyAgentDepartment(
+						agentFile,
+						`agents.${name}.agent_file`,
+					);
+					const explicitDept = agent.department;
+					if (explicitDept != null && typeof explicitDept !== "string") {
+						throw new Error(`agents.${name}.department must be a string`);
+					}
+					if (typeof explicitDept === "string") {
+						if (pathDept === null) {
+							throw new Error(
+								`agents.${name}: agent_file "${agentFile}" is at top-level (no dept dir) but department: "${explicitDept}" is declared. Top-level agents must omit the department field.`,
+							);
+						}
+						if (pathDept !== explicitDept) {
+							throw new Error(
+								`agents.${name}.department="${explicitDept}" mismatches agent_file path "${agentFile}" (expected department="${pathDept}").`,
+							);
+						}
+					}
+					if (agent.departments != null) {
+						const departments = agent.departments;
+						if (
+							!Array.isArray(departments) ||
+							departments.length === 0 ||
+							!departments.every((department) => typeof department === "string")
+						) {
+							throw new Error(
+								`agents.${name}.departments must be a non-empty array of strings`,
+							);
+						}
+						const depts = departments as string[];
+						for (const department of depts) {
+							if (!/^[a-z0-9-]+$/.test(department)) {
+								throw new Error(
+									`agents.${name}.departments entries must be lowercase directory-safe tokens matching ^[a-z0-9-]+$, got "${department}"`,
+								);
+							}
+						}
+						if (new Set(depts).size !== depts.length) {
+							throw new Error(
+								`agents.${name}.departments contains duplicate entries: [${depts.join(", ")}]`,
+							);
+						}
+						if (pathDept === null) {
+							throw new Error(
+								`agents.${name}: agent_file "${agentFile}" is at top-level (no dept dir) but departments is declared. Top-level agents must omit the departments field.`,
+							);
+						}
+						if (!depts.includes(pathDept)) {
+							throw new Error(
+								`agents.${name}.departments must include the path-derived home department "${pathDept}" (agent_file "${agentFile}").`,
+							);
+						}
+					}
+				}
 				if (agent.domain_file != null) {
 					if (typeof agent.domain_file !== "string") {
 						throw new Error(`agents.${name}.domain_file must be a string`);
@@ -568,71 +768,6 @@ export class ConfigLoader {
 						agent.domain_file as string,
 						`agents.${name}.domain_file`,
 					);
-				}
-				// FLY-137 v1.27.2: optional `department` field with bidirectional consistency check.
-				const explicitDept = agent.department;
-				if (explicitDept != null && typeof explicitDept !== "string") {
-					throw new Error(`agents.${name}.department must be a string`);
-				}
-				const pathDept = this.parseAgentDept(
-					agentFile,
-					`agents.${name}.agent_file`,
-				);
-				if (typeof explicitDept === "string") {
-					if (pathDept === null) {
-						throw new Error(
-							`agents.${name}: agent_file "${agentFile}" is at top-level (no dept dir) but department: "${explicitDept}" is declared. Top-level agents must omit the department field.`,
-						);
-					}
-					if (pathDept !== explicitDept) {
-						throw new Error(
-							`agents.${name}.department="${explicitDept}" mismatches agent_file path "${agentFile}" (expected department="${pathDept}").`,
-						);
-					}
-				}
-				// FLY-901: optional `departments` set — explicit multi-dept registration
-				// for AgentDispatcher step-2a (dual-register). Omitted => path-derived
-				// single dept (byte-compat).
-				if (agent.departments != null) {
-					const departments = agent.departments;
-					// V1: non-empty string array
-					if (
-						!Array.isArray(departments) ||
-						departments.length === 0 ||
-						!departments.every((d) => typeof d === "string")
-					) {
-						throw new Error(
-							`agents.${name}.departments must be a non-empty array of strings`,
-						);
-					}
-					const depts = departments as string[];
-					// V2: path-safe tokens (each dept becomes a directory-segment semantic).
-					for (const d of depts) {
-						if (!/^[a-z0-9-]+$/.test(d)) {
-							throw new Error(
-								`agents.${name}.departments entries must be lowercase directory-safe tokens matching ^[a-z0-9-]+$, got "${d}"`,
-							);
-						}
-					}
-					// V3: no duplicate entries.
-					if (new Set(depts).size !== depts.length) {
-						throw new Error(
-							`agents.${name}.departments contains duplicate entries: [${depts.join(", ")}]`,
-						);
-					}
-					// V4: only dept-owned agents may declare departments (mirrors the
-					// singular `department` rule for top-level catch-all agents).
-					if (pathDept === null) {
-						throw new Error(
-							`agents.${name}: agent_file "${agentFile}" is at top-level (no dept dir) but departments is declared. Top-level agents must omit the departments field.`,
-						);
-					}
-					// V5: the file's physical home dept must be a member of the set.
-					if (!depts.includes(pathDept)) {
-						throw new Error(
-							`agents.${name}.departments must include the path-derived home department "${pathDept}" (agent_file "${agentFile}").`,
-						);
-					}
 				}
 				// match validation
 				if (!agent.match || typeof agent.match !== "object") {
@@ -719,42 +854,5 @@ export class ConfigLoader {
 				`${fieldName}: agent path must not escape repo, got "${relativePath}"`,
 			);
 		}
-	}
-
-	/**
-	 * FLY-137 v1.27.2: extract dept from `.flywheel/agents/<dept>/<file>.md` paths.
-	 * Returns:
-	 *   - `null` for `.flywheel/agents/<file>.md` (top-level catch-all, depth 0)
-	 *   - `<dept>` (string) for `.flywheel/agents/<dept>/<file>.md` (dept-owned, depth 1)
-	 * Throws on:
-	 *   - paths not starting with `.flywheel/agents/` (legacy `.claude/agents/...` is hard-errored
-	 *     — operators run `flywheel migrate-agents-path` to fix)
-	 *   - depth ≥ 2 (nested subdirs not supported in v1.27.2)
-	 */
-	private parseAgentDept(agentFile: string, fieldName: string): string | null {
-		const prefix = ".flywheel/agents/";
-		if (!agentFile.startsWith(prefix)) {
-			throw new Error(
-				`${fieldName}: agent_file must live under ".flywheel/agents/", got "${agentFile}". ` +
-					`If this is a legacy ".claude/agents/" reference, run \`flywheel migrate-agents-path\` to update.`,
-			);
-		}
-		const rest = agentFile.slice(prefix.length);
-		if (rest.length === 0) {
-			throw new Error(
-				`${fieldName}: agent_file cannot be the agents/ directory itself`,
-			);
-		}
-		const segments = rest.split("/");
-		if (segments.length === 1) return null;
-		if (segments.length === 2) {
-			if (segments[0]!.length === 0) {
-				throw new Error(`${fieldName}: empty dept segment in "${agentFile}"`);
-			}
-			return segments[0]!;
-		}
-		throw new Error(
-			`${fieldName}: nested subdirs not supported (depth ${segments.length - 1}); v1.27.2 allows only flat .flywheel/agents/<dept>/<file>.md`,
-		);
 	}
 }

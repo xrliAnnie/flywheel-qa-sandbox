@@ -24,6 +24,10 @@ import type { EventEnvelope } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
+import {
+	resolvedTestAgent,
+	testAgentFallbacks,
+} from "./agent-dispatch-fixtures.js";
 
 const ID = "FLY-1395";
 
@@ -68,13 +72,15 @@ async function runCodex(envValue?: string): Promise<{
 	} as unknown as WorktreeManager;
 	const dispatcher = new AgentDispatcher(
 		{
-			exec: {
-				agent_file: ".flywheel/agents/exec.md",
-				match: { labels: ["x"] },
-			},
+			exec: resolvedTestAgent({
+				nodeName: "exec",
+				labels: ["x"],
+				projectRoot: root,
+				relativeFile: "exec.md",
+			}),
 		},
 		"exec",
-		root,
+		testAgentFallbacks(root),
 	);
 	const blueprint = new Blueprint(
 		new PreHydrator(async () => ({

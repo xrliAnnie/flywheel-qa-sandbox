@@ -105,7 +105,7 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 		startReservation: {
 			idempotencyKey: "start-1",
 			selectionDigest: "selection-1",
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			createdAt: "2026-08-14T00:00:00.000Z",
@@ -113,7 +113,7 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-1",
-		nodeId: "design",
+		nodeId: "eng_design",
 		attempt: 1,
 		state: "running",
 		executionId: "design-1",
@@ -123,7 +123,7 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 		issue_id: "FLY-1765",
 		project_name: "flywheel",
 		status: "running",
-		workflow_node_id: "design",
+		workflow_node_id: "eng_design",
 	});
 	return store;
 }
@@ -149,7 +149,7 @@ async function compiledGenericEngineRun(): Promise<StateStore> {
 		startReservation: {
 			idempotencyKey: "start-generic",
 			selectionDigest: "selection-generic",
-			nodeId: "execute",
+			nodeId: "general",
 			attempt: 1,
 			executionId: "generic-1",
 			createdAt: "2026-08-24T00:00:00.000Z",
@@ -157,14 +157,14 @@ async function compiledGenericEngineRun(): Promise<StateStore> {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-1",
-		nodeId: "execute",
+		nodeId: "general",
 		attempt: 1,
 		state: "running",
 		executionId: "generic-1",
 	});
 	const admission = store.admitGeneralizedWorkflowExecution({
 		runId: "run-1",
-		nodeId: "execute",
+		nodeId: "general",
 		executionId: "generic-1",
 		attempt: 1,
 		expiresAt: "2026-08-24T02:00:00.000Z",
@@ -179,14 +179,14 @@ async function compiledGenericEngineRun(): Promise<StateStore> {
 		issue_id: "FLY-2027",
 		project_name: "flywheel",
 		status: "running",
-		workflow_node_id: "execute",
+		workflow_node_id: "general",
 	});
 	return store;
 }
 
 function completeCompiledCodeImplement(store: StateStore) {
 	advance(store, {
-		nodeId: "design",
+		nodeId: "eng_design",
 		attempt: 1,
 		executionId: "design-1",
 		outcome: "design_done",
@@ -1106,7 +1106,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			subjectKind: "git_head",
 		});
 		expect(
-			snapshot.resolved.nodes.find((node) => node.id === "execute"),
+			snapshot.resolved.nodes.find((node) => node.id === "general"),
 		).toMatchObject({
 			type: "generic",
 			capabilities: { creates_pr: true, keepalive_park: true },
@@ -1140,7 +1140,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			event: "park_opened",
 			reason: "rework_reachable_wait",
 			run_id: "run-1",
-			node_id: "execute",
+			node_id: "general",
 		});
 		store.close();
 	});
@@ -2322,7 +2322,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		const revived = await compiledCodeEngineRun();
 		advance(revived, {
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			outcome: "design_done",
@@ -4472,7 +4472,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			);
 		};
 		advance(store, {
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			outcome: "design_done",

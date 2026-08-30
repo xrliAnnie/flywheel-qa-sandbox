@@ -97,6 +97,7 @@
 	"workflow_carrier_redrive_receipt",
 	"workflow_carryover_activation",
 	"workflow_carryover_pr_binding",
+	"workflow_catalog_migration_audit",
 	"workflow_category_binding",
 	"workflow_claim_revocation",
 	"workflow_claims",

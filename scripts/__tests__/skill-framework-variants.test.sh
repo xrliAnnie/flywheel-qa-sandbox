@@ -4,7 +4,7 @@
 # The arm definitions are FROZEN artifacts. This test pins:
 #   - vendor/matt-skills: plugin layout, the 6 SKILL.md files, LICENSE,
 #     to-spec/to-tickets frontmatter flip (no disable-model-invocation)
-#   - agents/generic-executor.{matt,bare}.md + designer variants exist
+#   - registered general.{matt,bare}.md variants exist; retired designer variants do not
 #   - matt generic variant references `grilling`, never the bare-name
 #     `brainstorming` (hyphen-aware boundary — `product-brainstorming` in the
 #     bare DESIGNER variant is legitimate and must not trip this)
@@ -69,15 +69,18 @@ done
 
 # ── prompt variants exist ───────────────────────────────────────────────────
 for f in \
-	agents/generic-executor.matt.md \
-	agents/generic-executor.bare.md \
-	.flywheel/agents/engineering/designer-executor.matt.md \
-	.flywheel/agents/engineering/designer-executor.bare.md; do
+	.flywheel/agents/nodes/general.matt.md \
+	.flywheel/agents/nodes/general.bare.md; do
 	if [[ -f "$f" ]]; then pass "variant exists: $f"; else fail "variant MISSING: $f"; fi
+done
+for f in \
+	.flywheel/agents/nodes/product_design.matt.md \
+	.flywheel/agents/nodes/product_design.bare.md; do
+	if [[ ! -e "$f" ]]; then pass "retired variant absent: $f"; else fail "retired variant still exists: $f"; fi
 done
 
 # ── matt generic variant: grilling in, bare-name brainstorming out ─────────
-grep -q "matt-skills:grilling" agents/generic-executor.matt.md &&
+grep -q "matt-skills:grilling" .flywheel/agents/nodes/general.matt.md &&
 	pass "matt variant drives matt-skills:grilling" || fail "matt variant missing matt-skills:grilling"
 # Hyphen-aware boundary (FLY-1326 v5): match `brainstorming` NOT preceded/followed
 # by [A-Za-z0-9_-] so product-brainstorming / superpowers:brainstorming don't count.
@@ -89,50 +92,39 @@ if grep -Eq '(^|[^A-Za-z0-9_-])brainstorming($|[^A-Za-z0-9_-])' /tmp/fly1356-bar
 else
 	fail "positive control BROKEN: bare-name brainstorming pattern finds nothing"
 fi
-for f in agents/generic-executor.matt.md .flywheel/agents/engineering/designer-executor.matt.md; do
+for f in .flywheel/agents/nodes/general.matt.md; do
 	if grep -Eq '(^|[^A-Za-z0-9_-])brainstorming($|[^A-Za-z0-9_-])' "$f"; then
 		fail "matt variant still references bare-name brainstorming: $f"
 	else
 		pass "no bare-name brainstorming in $f"
 	fi
 done
-grep -q '`grilling`' .flywheel/agents/engineering/designer-executor.matt.md &&
-	pass "designer matt variant points at grilling" || fail "designer matt variant missing grilling"
-
 # ── bare generic variant: whole-word Superpowers grep-zero (R1#5) ──────────
-# Positive control: the baseline MUST trip the same ruler.
-if grep -Eiq '(^|[^A-Za-z0-9_-])superpowers($|[^A-Za-z0-9_-])' agents/generic-executor.md; then
-	pass "positive control: Superpowers pattern fires on the baseline"
+# Positive control: the matt variant MUST trip the same ruler.
+if grep -Eiq '(^|[^A-Za-z0-9_-])superpowers($|[^A-Za-z0-9_-])' .flywheel/agents/nodes/general.matt.md; then
+	pass "positive control: Superpowers pattern fires on the matt variant"
 else
-	fail "positive control BROKEN: Superpowers pattern finds nothing in the baseline"
+	fail "positive control BROKEN: Superpowers pattern finds nothing in the matt variant"
 fi
-if grep -Eiq '(^|[^A-Za-z0-9_-])superpowers($|[^A-Za-z0-9_-])' agents/generic-executor.bare.md; then
+if grep -Eiq '(^|[^A-Za-z0-9_-])superpowers($|[^A-Za-z0-9_-])' .flywheel/agents/nodes/general.bare.md; then
 	fail "bare variant still mentions Superpowers (whole-word, case-insensitive)"
 else
 	pass "bare variant is Superpowers grep-zero (no whitelist needed)"
 fi
-if grep -Eq 'superpowers:' agents/generic-executor.bare.md; then
+if grep -Eq 'superpowers:' .flywheel/agents/nodes/general.bare.md; then
 	fail "bare variant still names a superpowers:* skill"
 else
 	pass "bare variant carries no superpowers:* skill names"
 fi
-if grep -Eiq '(^|[^A-Za-z0-9_-])superpowers($|[^A-Za-z0-9_-])' .flywheel/agents/engineering/designer-executor.bare.md; then
-	fail "designer bare variant still mentions Superpowers"
-else
-	pass "designer bare variant is Superpowers grep-zero"
-fi
 
 # ── baselines stay on the A arm (variant markers must NOT leak in) ─────────
-for f in agents/generic-executor.md .flywheel/agents/engineering/designer-executor.md; do
+for f in .flywheel/agents/nodes/general.md .flywheel/agents/nodes/product_design.md; do
 	if grep -q "FLY-1356" "$f"; then
 		fail "baseline gained FLY-1356 variant markers (A arm must stay untouched): $f"
 	else
 		pass "baseline free of variant markers: $f"
 	fi
 done
-grep -q "Superpowers RPC" agents/generic-executor.md &&
-	pass "baseline still carries the Superpowers RPC flow (A arm intact)" ||
-	fail "baseline lost its Superpowers RPC section"
 
 rm -f /tmp/fly1356-dmi-control.md /tmp/fly1356-bare-name-control.md
 echo ""

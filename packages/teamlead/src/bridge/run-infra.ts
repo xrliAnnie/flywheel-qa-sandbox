@@ -21,11 +21,15 @@ import {
 } from "flywheel-claude-runner";
 import {
 	type AgentConfig,
+	agentConfigsRequireRegistry,
 	type CheckpointsConfig,
 	ConfigLoader,
 	type DocFlowConfig,
+	loadBundledRegistry,
 	type PonytailConfig,
 	type RoleBackendMap,
+	resolveAgentConfigs,
+	resolveProjectRegistry,
 	type SkillsConfig,
 } from "flywheel-config";
 import type { LLMClient } from "flywheel-core";
@@ -286,7 +290,7 @@ export function createFetchIssue(store: StateStore) {
  * FLY-137 v1.27.2: resolve the Flywheel repo root canonically (single source of truth
  * across all Bridge entrypoints — `scripts/run-bridge.ts`, `packages/teamlead/src/index.ts`).
  * Order: caller-supplied option → `FLYWHEEL_REPO_ROOT` env → `import.meta.url`-derived path.
- * Validates the resolved root contains `agents/generic-executor.md` (sanity check, NOT fail-fast).
+ * Validates the resolved root contains the bundled agent registry.
  */
 function resolveFlywheelRepoRoot(explicit?: string): string {
 	const candidate =
@@ -300,12 +304,12 @@ function resolveFlywheelRepoRoot(explicit?: string): string {
 			const here = dirname(fileURLToPath(import.meta.url));
 			return resolve(here, "..", "..", "..", "..");
 		})();
-	const sentinel = join(candidate, "agents", "generic-executor.md");
+	const sentinel = join(candidate, ".flywheel", "agents", "registry.yaml");
 	if (!existsSync(sentinel)) {
 		console.warn(
 			`[RunInfra] FLYWHEEL_REPO_ROOT resolved to "${candidate}" but expected sentinel "${sentinel}" not found. ` +
-				`AgentDispatcher's shipped-generic fallback will fail at dispatch time. ` +
-				`Set FLYWHEEL_REPO_ROOT to the Flywheel repo root that contains agents/generic-executor.md.`,
+				`Agent registry resolution will fail. ` +
+				`Set FLYWHEEL_REPO_ROOT to the root that contains .flywheel/agents/registry.yaml.`,
 		);
 	} else {
 		console.log(
@@ -643,7 +647,7 @@ export interface RunInfraOptions {
 	/**
 	 * FLY-137 v1.27.2: optional explicit Flywheel repo root. If unset, falls back to
 	 * `FLYWHEEL_REPO_ROOT` env var, then to a module-location-derived path. Used by
-	 * `AgentDispatcher` to resolve the shipped `agents/generic-executor.md` fallback.
+	 * registry loaders to resolve bundled node implementations.
 	 */
 	flywheelRepoRoot?: string;
 	/**
@@ -925,6 +929,25 @@ export async function setupRunInfrastructure(
 	const flywheelRepoRoot = resolveFlywheelRepoRoot(
 		runInfraOpts?.flywheelRepoRoot,
 	);
+	const bundledAgentRegistry = loadBundledRegistry(
+		join(flywheelRepoRoot, ".flywheel", "agents", "registry.yaml"),
+	);
+	const flywheelAgentRegistry = resolveProjectRegistry({
+		bundled: bundledAgentRegistry,
+		projectName: "flywheel",
+		projectRoot: flywheelRepoRoot,
+	});
+	const fallbackAgentConfigs = resolveAgentConfigs(
+		{
+			generic: { node: "general", match: { labels: [] } },
+			qa: { node: "qa", match: { labels: [] } },
+		},
+		flywheelAgentRegistry,
+	);
+	const agentFallbacks = {
+		generic: fallbackAgentConfigs.generic!,
+		qa: fallbackAgentConfigs.qa!,
+	};
 
 	// FLY-123 R1 MED #3 (crash-recovery credential janitor): if the Bridge was
 	// killed mid-run the per-runner CODEX_HOME's `finally` token-scrub never
@@ -999,7 +1022,7 @@ export async function setupRunInfrastructure(
 			// Restructured from previous post-DirectEventSink load.
 			// FLY-47 + FLY-137 v1.27.2: also loads per-project checkpoint + agents config
 			let checkpointConfig: CheckpointsConfig | undefined;
-			let agentsConfig: Record<string, AgentConfig> | undefined;
+			let agentsConfig: Readonly<Record<string, AgentConfig>> | undefined;
 			let defaultAgentName: string | undefined;
 			let skillsConfig: SkillsConfig | undefined;
 			let rolesConfig: RoleBackendMap | undefined;
@@ -1011,7 +1034,22 @@ export async function setupRunInfrastructure(
 				);
 				const flywheelConfig = await configLoader.load(configPath);
 				checkpointConfig = flywheelConfig?.checkpoints;
-				agentsConfig = flywheelConfig?.agents;
+				if (flywheelConfig.agents) {
+					const projectAgentRegistry = agentConfigsRequireRegistry(
+						flywheelConfig.agents,
+					)
+						? resolveProjectRegistry({
+								bundled: bundledAgentRegistry,
+								projectName: project.projectName,
+								projectRoot: project.projectRoot,
+							})
+						: undefined;
+					agentsConfig = resolveAgentConfigs(
+						flywheelConfig.agents,
+						projectAgentRegistry,
+						project.projectRoot,
+					);
+				}
 				defaultAgentName = flywheelConfig?.default_agent;
 				skillsConfig = flywheelConfig?.skills;
 				// FLY-123: per-role executor backend bindings (validated by
@@ -1019,7 +1057,7 @@ export async function setupRunInfrastructure(
 				rolesConfig = flywheelConfig?.roles;
 				docFlowDept = flywheelConfig?.doc_flow; // FLY-205/2103: path metadata only
 			} catch (err) {
-				if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+				if (isMissingProjectConfigError(err, configPath)) {
 					// No config file — no checkpoints, no agents block, no skills.
 					// AgentDispatcher will still be constructed (empty agents map) so the
 					// shipped-generic fallback kicks in for zero-config projects.
@@ -1085,7 +1123,7 @@ export async function setupRunInfrastructure(
 			const agentDispatcher = new AgentDispatcher(
 				agentsConfig ?? {},
 				defaultAgentName,
-				flywheelRepoRoot,
+				agentFallbacks,
 			);
 
 			// FLY-1356/2103: read split participation from scoped SQLite at every
@@ -1326,6 +1364,16 @@ export async function setupRunInfrastructure(
 		admissionCrossingBarrier: runInfraOpts?.admissionCrossingBarrier,
 		flagStore: runInfraOpts?.flagStore,
 	});
+}
+
+export function isMissingProjectConfigError(
+	error: unknown,
+	configPath: string,
+): boolean {
+	return (
+		(error as NodeJS.ErrnoException).code === "ENOENT" &&
+		!existsSync(configPath)
+	);
 }
 
 // ── CIPHER helpers ──────────────────────────────────────────────────

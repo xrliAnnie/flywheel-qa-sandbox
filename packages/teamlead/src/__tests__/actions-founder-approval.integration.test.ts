@@ -69,7 +69,7 @@ function claimlessLandSnapshot(): string {
 					{
 						id: "craft",
 						type: "generic",
-						role: "generic",
+						role: "general",
 						vendor: "claude",
 						model: "claude-opus-5",
 						effort: "xhigh",

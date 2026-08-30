@@ -1,9 +1,11 @@
 /** FLY-2103: project pipeline enrollment is read from scoped flag-store rows. */
 
-import { WORKFLOW_MENU_BINDINGS } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import { hasProjectMenuConfig } from "../workflow-menu.js";
+import {
+	hasProjectMenuConfig,
+	workflowMenuBindings,
+} from "../workflow-menu.js";
 import {
 	type FlagStoreRuntime,
 	storePipelineDagEnabled,
@@ -68,7 +70,7 @@ export function reconcileDefaultDagCategoryBindings(
 			menuManaged += 1;
 			continue;
 		}
-		for (const binding of WORKFLOW_MENU_BINDINGS) {
+		for (const binding of workflowMenuBindings()) {
 			if (
 				store.getWorkflowCategoryBindingExact(
 					project.projectName,

@@ -31,7 +31,7 @@ describe("management DAG writer", () => {
 		const { store, dag } = await setup();
 		const beforeRow = store.getWorkflowTemplateRevision(dag.templateId, 1)!;
 		const before = validateWorkflowManifest(JSON.parse(beforeRow.manifest));
-		const target = dag.nodes.find((node) => node.name === "design")!;
+		const target = dag.nodes.find((node) => node.nodeId === "design")!;
 		const publish = vi.spyOn(store, "createAndPublishWorkflowTemplateRevision");
 		const result = applyManagementDagEdit({
 			store,
@@ -162,7 +162,7 @@ describe("management DAG writer", () => {
 		);
 		for (const node of editedNodes) {
 			expect(
-				latest.nodes.find((candidate) => candidate.id === node.name),
+				latest.nodes.find((candidate) => candidate.id === node.nodeId),
 			).toMatchObject({
 				vendor: "codex",
 				model: "gpt-5.6-sol",
@@ -281,7 +281,7 @@ describe("management DAG writer", () => {
 		}).projectDags[0]!.dags[0]!;
 		expect(dag.error).toBeUndefined();
 		expect(dag.nodes).toHaveLength(3);
-		const target = dag.nodes.find((node) => node.name === "design")!;
+		const target = dag.nodes.find((node) => node.nodeId === "design")!;
 		expect(target.dispatch).toMatchObject({
 			current: {
 				provider: "anthropic",
@@ -323,7 +323,7 @@ describe("management DAG writer", () => {
 			projectNames: ["flywheel"],
 		}).projectDags[0]!.dags[0]!;
 		const secondTarget = nextDag.nodes.find(
-			(node) => node.name === "implement",
+			(node) => node.nodeId === "implement",
 		)!;
 		expect(
 			applyManagementDagEdit({

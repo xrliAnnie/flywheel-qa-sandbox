@@ -11,6 +11,7 @@ import {
 	formatWorkflowRouteVisibility,
 	ROUTING_OVERRIDES_ALLOWLIST,
 	WORK_KIND_CATEGORIES,
+	WORKFLOW_SNAPSHOT_TASK_CATEGORIES,
 } from "../work-kind.js";
 
 describe("work-kind vocabulary", () => {
@@ -19,9 +20,13 @@ describe("work-kind vocabulary", () => {
 			"code",
 			"simple_code",
 			"prd",
-			"design",
+			"product_design_flow",
 			"prototype",
 			"generic",
+		]);
+		expect(WORKFLOW_SNAPSHOT_TASK_CATEGORIES).toEqual([
+			...WORK_KIND_CATEGORIES,
+			"design",
 		]);
 		expect(ENG_TIERS).toEqual(["trivial", "light", "heavy"]);
 		expect(DEFAULT_ENG_TIER).toBe("heavy");
@@ -43,9 +48,9 @@ describe("work-kind vocabulary", () => {
 	);
 
 	it("canonicalizes case and surrounding whitespace", () => {
-		expect(canonicalizeWorkKind("  DeSiGn ")).toEqual({
+		expect(canonicalizeWorkKind("  PrOdUcT_DeSiGn_FlOw ")).toEqual({
 			status: "valid",
-			category: "design",
+			category: "product_design_flow",
 		});
 	});
 
@@ -55,6 +60,10 @@ describe("work-kind vocabulary", () => {
 			reason: "unknown_category",
 		});
 		expect(canonicalizeWorkKind("designer")).toEqual({
+			status: "invalid",
+			reason: "unknown_category",
+		});
+		expect(canonicalizeWorkKind("design")).toEqual({
 			status: "invalid",
 			reason: "unknown_category",
 		});

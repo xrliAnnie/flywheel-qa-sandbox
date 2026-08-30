@@ -1,13 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_MENU_BINDINGS } from "flywheel-config";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import { StateStore } from "../../StateStore.js";
 import {
 	importWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
+	workflowMenuBindings,
 } from "../../workflow-menu.js";
 import { initializeFlagStore } from "../flag-store-runtime.js";
 import { reconcileDefaultDagCategoryBindings } from "../pipeline-config-source.js";
@@ -32,6 +32,7 @@ function project(name: string, config?: string): ProjectEntry {
 
 describe("FLY-1981 fleet DAG default binding reconcile", () => {
 	it("converges a six-project fleet to six exact category rows per project", async () => {
+		const workflowBindings = workflowMenuBindings();
 		const store = await StateStore.create(":memory:");
 		try {
 			initializeFlagStore(store, {});
@@ -39,10 +40,9 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 			const menuManaged = project("flywheel");
 			const menuDirectory = join(menuManaged.projectRoot, ".flywheel", "menus");
 			mkdirSync(menuDirectory, { recursive: true });
-			writeFileSync(join(menuDirectory, "ic-roster.yaml"), "{}\n");
 			writeFileSync(
 				join(menuDirectory, "adoption.yaml"),
-				`lead:\n${WORKFLOW_MENU_BINDINGS.map(({ taskCategory }) => `  - ${taskCategory}`).join("\n")}\n`,
+				`lead:\n${workflowBindings.map(({ taskCategory }) => `  - ${taskCategory}`).join("\n")}\n`,
 			);
 			const defaultProjects = Array.from({ length: 5 }, (_, index) =>
 				project(`default-${index + 1}`),
@@ -70,7 +70,7 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 				expect(rows.some(({ task_category }) => task_category === "*")).toBe(
 					false,
 				);
-				for (const binding of WORKFLOW_MENU_BINDINGS) {
+				for (const binding of workflowBindings) {
 					expect(
 						store.getWorkflowCategoryBindingExact(
 							projectEntry.projectName,
@@ -85,6 +85,7 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 	});
 
 	it("seeds six exact menu-shaped bindings and resolves every category idempotently", async () => {
+		const workflowBindings = workflowMenuBindings();
 		const store = await StateStore.create(":memory:");
 		try {
 			initializeFlagStore(store, {});
@@ -97,7 +98,7 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 			expect(
 				store.getWorkflowCategoryBindingExact(defaultOn.projectName, "*"),
 			).toBeUndefined();
-			for (const binding of WORKFLOW_MENU_BINDINGS) {
+			for (const binding of workflowBindings) {
 				expect(
 					store.getWorkflowCategoryBindingExact(
 						defaultOn.projectName,
@@ -129,6 +130,38 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 		}
 	});
 
+	it("keeps an agent-registry-only project on default DAG bindings", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			importWorkflowMenuSeeds(store);
+			const registryOnly = project("registry-only", "pipeline:\n  dag: true\n");
+			const agentsDirectory = join(
+				registryOnly.projectRoot,
+				".flywheel",
+				"agents",
+			);
+			mkdirSync(agentsDirectory, { recursive: true });
+			writeFileSync(join(agentsDirectory, "registry.yaml"), "nodes: {}\n");
+
+			expect(reconcileMenuCategoryBindings(store, [registryOnly])).toEqual({
+				bound: 0,
+				existing: 0,
+				errors: [],
+			});
+			expect(
+				reconcileDefaultDagCategoryBindings(store, [registryOnly]),
+			).toMatchObject({
+				bound: 6,
+				existing: 0,
+				disabled: 0,
+				menuManaged: 0,
+				errors: [],
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("preserves operator exact and wildcard bindings while filling missing exact categories", async () => {
 		const store = await StateStore.create(":memory:");
 		try {
@@ -143,7 +176,7 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 			});
 			store.bindWorkflowCategory({
 				project: custom.projectName,
-				taskCategory: "design",
+				taskCategory: "product_design_flow",
 				templateId: "tpl_generic_menu",
 				updatedBy: "lead",
 			});
@@ -158,7 +191,10 @@ describe("FLY-1981 fleet DAG default binding reconcile", () => {
 				updated_by: "lead",
 			});
 			expect(
-				store.getWorkflowCategoryBindingExact(custom.projectName, "design"),
+				store.getWorkflowCategoryBindingExact(
+					custom.projectName,
+					"product_design_flow",
+				),
 			).toMatchObject({ template_id: "tpl_generic_menu", updated_by: "lead" });
 			expect(
 				store.getWorkflowCategoryBindingExact(custom.projectName, "code"),

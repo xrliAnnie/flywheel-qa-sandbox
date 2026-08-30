@@ -1,4 +1,5 @@
-import type { FlywheelConfig } from "flywheel-config";
+import { relative } from "node:path";
+import type { FlywheelConfig, ResolvedAgentConfig } from "flywheel-config";
 import { getModelRegistryEntry } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { computeLeadCapabilities } from "./fleet-capabilities.js";
@@ -13,6 +14,7 @@ import {
 
 export interface LoadedProjectConfig {
 	config?: FlywheelConfig;
+	resolvedAgents?: Readonly<Record<string, ResolvedAgentConfig>>;
 	revision: string;
 	error?: string;
 }
@@ -136,14 +138,15 @@ export function buildTopologyView(input: BuildTopologyInput): TopologyView {
 		const roles: ManagementProjectView["roles"] = [];
 		if (loaded?.config) {
 			for (const [name, agent] of Object.entries(
-				loaded.config.agents ?? {},
+				loaded.resolvedAgents ?? {},
 			).sort(([a], [b]) => a.localeCompare(b))) {
-				const source = githubSourceLink(project.projectRepo, agent.agent_file);
+				const agentFile = relative(project.projectRoot, agent.agentFile);
+				const source = githubSourceLink(project.projectRepo, agentFile);
 				roles.push({
 					id: `${project.projectName}/role/${name}`,
-					name,
+					name: agent.label,
 					department: agent.department,
-					agentFile: agent.agent_file,
+					agentFile,
 					sourceLink: source.link,
 					error: source.error,
 				});

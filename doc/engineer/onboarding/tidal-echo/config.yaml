@@ -37,11 +37,10 @@ checkpoints:
     timeout_ms: 86400000
     timeout_behavior: fail-open
 
-# Single content executor; key = agent name, value = file + dispatch labels.
+# Single content dispatch alias; stable identity/file/label live in registry.yaml.
 agents:
   content:
-    agent_file: .flywheel/agents/content/content-executor.md
-    department: content
+    node: content
     match:
       labels: ["content"]
 default_agent: content

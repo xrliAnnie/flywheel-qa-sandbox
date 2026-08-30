@@ -1003,22 +1003,21 @@ qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" \
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
 
 if [[ "$GENERALIZED" == "1" ]]; then
-  # Complete menu-domain activation: a partial roster/adoption pair is a hard
-  # config error. Role content is copied from the checkout under test; Bridge
-  # validates and injects it when compiling each node prompt.
+  # Complete menu-domain activation: adopted graph nodes require explicit
+  # project-registry implementations. Node content is copied from the checkout
+  # under test; Bridge validates the overlay before compiling each prompt.
   mkdir -p "${HOST_REPO}/.flywheel/menus" \
-    "${HOST_REPO}/.flywheel/agents/engineering"
-  cp "${REPO_ROOT}/.flywheel/agents/engineering/engineer-executor.md" \
-    "${HOST_REPO}/.flywheel/agents/engineering/engineer-executor.md"
-  cp "${REPO_ROOT}/.flywheel/agents/engineering/qa-executor.md" \
-    "${HOST_REPO}/.flywheel/agents/engineering/qa-executor.md"
-  cp "${REPO_ROOT}/.flywheel/agents/general-executor.md" \
-    "${HOST_REPO}/.flywheel/agents/general-executor.md"
-  cat > "${HOST_REPO}/.flywheel/menus/ic-roster.yaml" <<'EOF'
-design: .flywheel/agents/engineering/engineer-executor.md
-implement: .flywheel/agents/engineering/engineer-executor.md
-qa: .flywheel/agents/engineering/qa-executor.md
-generic: .flywheel/agents/general-executor.md
+    "${HOST_REPO}/.flywheel/agents/nodes"
+  for node in eng_design implement qa general; do
+    cp "${REPO_ROOT}/.flywheel/agents/nodes/${node}.md" \
+      "${HOST_REPO}/.flywheel/agents/nodes/${node}.md"
+  done
+  cat > "${HOST_REPO}/.flywheel/agents/registry.yaml" <<'EOF'
+nodes:
+  eng_design: { file: nodes/eng_design.md, department: engineering }
+  implement: { file: nodes/implement.md, department: engineering }
+  qa: { file: nodes/qa.md, department: engineering }
+  general: { file: nodes/general.md }
 EOF
   printf '%s: [code, generic]\n' "$AGENT_ID" \
     > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
@@ -1028,7 +1027,7 @@ EOF
       "${REPO_ROOT}/scripts/qa-529-generalized-codex-stub.mjs"
     BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
   fi
-  log "Wrote generalized menu roster/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
+  log "Wrote generalized registry/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
 fi
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
@@ -1897,7 +1896,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     .success == true and
     ([.menus[].item] | sort) == ["code","generic"] and
     (any(.menus[]; .item == "code" and
-      ([.nodes[] | select(.role != null) | .role] | sort) == ["design","implement","qa"]))
+      ([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]))
   ' <<<"$GENERALIZED_MENU_JSON" >/dev/null; then
     log "ERROR: generalized menu readiness failed: $(jq -c '{success,code,reason,legal,menus}' <<<"$GENERALIZED_MENU_JSON" 2>/dev/null || echo invalid-json)"
     exit 1

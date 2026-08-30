@@ -1,10 +1,15 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -12,14 +17,17 @@ const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_CLAIMS_READ: "1",
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
 };
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 async function engineRunWithImplement(
 	sessionStatus: "running" | "failed" = "failed",
 ): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_eng_heavy",
-	)!;
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!,
+	);
 	store.importWorkflowTemplateSeed(seed);
 	store.materializeWorkflowRun({
 		runId: "run-1",
@@ -29,6 +37,7 @@ async function engineRunWithImplement(
 		templateId: seed.templateId,
 		claimsReadEnrolled: true,
 		actor: "lead",
+		canonicalRoot: REPO_ROOT,
 		env: WORKFLOW_ON,
 		startReservation: {
 			idempotencyKey: "start-1",
@@ -170,14 +179,12 @@ async function engineRunWithOutputFromDeadExecution(
 }> {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), "fly1385-output-"));
-	mkdirSync(join(canonicalRoot, "agents"));
-	writeFileSync(
-		join(canonicalRoot, "agents", "generic-executor.md"),
-		"Produce the requested artifact.\n",
+	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_product_v1",
+		)!,
 	);
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_product_v1",
-	)!;
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
 	store.materializeWorkflowRun({
 		runId: "output-run",

@@ -856,7 +856,7 @@ export const LEGACY_WORKFLOW_SEED_DEFINITIONS = [
 					vendor: "codex",
 					model: "gpt-5.6-sol",
 					effort: "low",
-					agent_file: "agents/generic-executor.md",
+					agent_file: ".flywheel/agents/nodes/general.md",
 					produces_output: true,
 					output: {
 						schema: "json_v1",
@@ -911,7 +911,7 @@ export const LEGACY_WORKFLOW_SEED_DEFINITIONS = [
 					vendor: "claude",
 					model: "claude-fable-5",
 					effort: "high",
-					agent_file: "agents/designer-executor.md",
+					agent_file: ".flywheel/agents/nodes/product_design.md",
 					produces_output: true,
 					output: {
 						schema: "json_v1",
@@ -989,7 +989,7 @@ export const LEGACY_WORKFLOW_SEED_DEFINITIONS = [
 					vendor: "codex",
 					model: "gpt-5.6-sol",
 					effort: "high",
-					agent_file: "agents/prototype-executor.md",
+					agent_file: ".flywheel/agents/nodes/proto.md",
 					produces_output: true,
 					output: {
 						schema: "json_v1",
@@ -1067,7 +1067,7 @@ export const LEGACY_WORKFLOW_SEED_DEFINITIONS = [
 					vendor: "codex",
 					model: "gpt-5.6-sol",
 					effort: "low",
-					agent_file: "agents/generic-executor.md",
+					agent_file: ".flywheel/agents/nodes/general.md",
 				},
 				{
 					id: "produce",
@@ -1075,7 +1075,7 @@ export const LEGACY_WORKFLOW_SEED_DEFINITIONS = [
 					vendor: "codex",
 					model: "gpt-5.6-sol",
 					effort: "high",
-					agent_file: "agents/generic-executor.md",
+					agent_file: ".flywheel/agents/nodes/general.md",
 					produces_output: true,
 					output: {
 						schema: "json_v1",

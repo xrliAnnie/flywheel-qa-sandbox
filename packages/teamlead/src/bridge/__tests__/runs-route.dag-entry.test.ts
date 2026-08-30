@@ -29,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
+	Fly2121PreservedTemplateUnrunnableError,
 	StateStore,
 	type WorkflowResumeAttachmentRow,
 } from "../../StateStore.js";
@@ -204,26 +205,45 @@ async function startHarness(options: {
 	writeFileSync(join(projectRoot, "agents", "generic.md"), "Do the work.\n");
 	if (options.menuMode) {
 		mkdirSync(join(projectRoot, ".flywheel", "menus"), { recursive: true });
-		mkdirSync(join(projectRoot, ".flywheel", "agents"), { recursive: true });
+		mkdirSync(join(projectRoot, ".flywheel", "agents", "nodes"), {
+			recursive: true,
+		});
 		writeFileSync(
-			join(projectRoot, ".flywheel", "agents", "engineer.md"),
-			"Engineer menu agent.\n",
+			join(projectRoot, ".flywheel", "agents", "nodes", "eng_design.md"),
+			"Engineering design menu agent.\n",
 		);
 		writeFileSync(
-			join(projectRoot, ".flywheel", "agents", "qa.md"),
+			join(projectRoot, ".flywheel", "agents", "nodes", "implement.md"),
+			"Implement menu agent.\n",
+		);
+		writeFileSync(
+			join(projectRoot, ".flywheel", "agents", "nodes", "qa.md"),
 			"QA menu agent.\n",
 		);
 		writeFileSync(
-			join(projectRoot, ".flywheel", "agents", "generic.md"),
+			join(projectRoot, ".flywheel", "agents", "nodes", "general.md"),
 			"Generic menu agent.\n",
 		);
+		for (const node of [
+			"pm",
+			"product_design",
+			"proto",
+			"engineer",
+			"product_designer",
+		]) {
+			writeFileSync(
+				join(projectRoot, ".flywheel", "agents", "nodes", `${node}.md`),
+				`${node} menu agent.\n`,
+			);
+		}
 		writeFileSync(
-			join(projectRoot, ".flywheel", "menus", "ic-roster.yaml"),
+			join(projectRoot, ".flywheel", "agents", "registry.yaml"),
 			[
-				"design: .flywheel/agents/engineer.md",
-				"implement: .flywheel/agents/engineer.md",
-				"qa: .flywheel/agents/qa.md",
-				"generic: .flywheel/agents/generic.md",
+				"nodes:",
+				"  eng_design: { file: nodes/eng_design.md, department: engineering }",
+				"  implement: { file: nodes/implement.md, department: engineering }",
+				"  qa: { file: nodes/qa.md, department: engineering }",
+				"  general: { file: nodes/general.md }",
 				"",
 			].join("\n"),
 		);
@@ -391,10 +411,14 @@ async function post(
 			...body,
 		}),
 	});
-	return {
-		status: res.status,
-		json: (await res.json()) as Record<string, unknown>,
-	};
+	const text = await res.text();
+	let json: Record<string, unknown>;
+	try {
+		json = JSON.parse(text) as Record<string, unknown>;
+	} catch {
+		throw new Error(`non-JSON runs/start response ${res.status}: ${text}`);
+	}
+	return { status: res.status, json };
 }
 
 function seedResumeTarget(store: StateStore, projectRoot: string): string {
@@ -733,7 +757,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(first.status).toBe(202);
 		expect(first.json).toMatchObject({
 			code: "LAUNCH_PENDING",
-			workflowNodeId: "design",
+			workflowNodeId: "eng_design",
 		});
 		const run = h.store.getWorkflowRun(first.json.workflowRunId as string)!;
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
@@ -1484,6 +1508,33 @@ describe("FLY-1407 work-kind entry gate", () => {
 });
 
 describe("FLY-1436 menu start contract", () => {
+	it("returns a stable FLY-2121 diagnostic for a protected pre-cutover template that cannot resolve", async () => {
+		const h = await startHarness({ menuMode: true });
+		vi.spyOn(h.store, "materializeWorkflowRun").mockImplementationOnce(() => {
+			throw new Fly2121PreservedTemplateUnrunnableError(
+				"tpl_code",
+				["design"],
+				new Error("node design has no project implementation"),
+			);
+		});
+
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+		});
+
+		expect(status).toBe(409);
+		expect(json).toMatchObject({
+			success: false,
+			code: "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE",
+			templateId: "tpl_code",
+			legacyRoles: ["design"],
+			retryable: false,
+			silent: false,
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
 	it("starts simple_code at root implement on the parent issue with no predecessor", async () => {
 		const h = await startHarness({
 			menuMode: true,
@@ -1545,17 +1596,17 @@ describe("FLY-1436 menu start contract", () => {
 			leadId: "flywheel-eng-lead",
 			taskCategory: "code",
 			overrides: {
-				design: { model: "codex", effort: "max" },
+				eng_design: { model: "codex", effort: "max" },
 			},
 		});
 		expect(status).toBe(200);
 		expect(json).toMatchObject({
 			success: true,
 			generalized: true,
-			workflowNodeId: "design",
+			workflowNodeId: "eng_design",
 			resolved: {
 				nodeModels: {
-					design: {
+					eng_design: {
 						model: "codex (= gpt-5.6-sol)",
 						effort: "max",
 						overridden: true,
@@ -1584,15 +1635,15 @@ describe("FLY-1436 menu start contract", () => {
 		[
 			{ overrides: { missing: { model: "fable" } } },
 			"MENU_NODE_NOT_FOUND",
-			["design", "implement", "qa"],
+			["eng_design", "implement", "qa"],
 		],
 		[
-			{ overrides: { design: { model: "opus" } } },
+			{ overrides: { eng_design: { model: "opus" } } },
 			"MODEL_NOT_ALLOWED_FOR_NODE",
 			["fable", "codex"],
 		],
 		[
-			{ overrides: { design: { model: "fable", effort: "ultra" } } },
+			{ overrides: { eng_design: { model: "fable", effort: "ultra" } } },
 			"EFFORT_NOT_ALLOWED_FOR_MODEL",
 			["low", "medium", "high", "xhigh", "max"],
 		],

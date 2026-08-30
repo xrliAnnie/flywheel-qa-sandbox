@@ -2,11 +2,11 @@ import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+	type BundledRegistry,
 	getModelRegistryEntry,
 	getNodeTypeRegistryEntry,
-	WORKFLOW_MENU_SHAPES,
-	type WorkflowMenuShapeId,
-	workflowMenuTemplateId,
+	loadBundledRegistry,
+	resolveProjectRegistry,
 } from "flywheel-config";
 import { parse } from "yaml";
 import type { StateStore } from "./StateStore.js";
@@ -14,16 +14,14 @@ import {
 	type LoadedWorkflowSeed,
 	validateWorkflowManifest,
 	type WorkflowEffort,
-	type WorkflowManifestNode,
 	type WorkflowTemplateOverride,
 	workflowSeedContentHash,
 } from "./workflow-template.js";
 
-export { WORKFLOW_MENU_SHAPES, type WorkflowMenuShapeId };
+export type WorkflowMenuShapeId = string;
 
-const MENU_EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
-const MENU_SOURCE_DIRECTORY = fileURLToPath(
-	new URL("../../../menus/shapes/", import.meta.url),
+const BUNDLED_REGISTRY_PATH = fileURLToPath(
+	new URL("../../../.flywheel/agents/registry.yaml", import.meta.url),
 );
 
 export interface WorkflowMenuModel {
@@ -34,8 +32,8 @@ export interface WorkflowMenuModel {
 
 export interface WorkflowMenuNode {
 	id: string;
-	role?: string;
-	type?: "gate";
+	label: string;
+	type: "design" | "implement" | "qa" | "generic" | "gate";
 	defaultModel?: string;
 	models?: WorkflowMenuModel[];
 }
@@ -59,6 +57,9 @@ export interface WorkflowMenuLoop {
 
 export interface WorkflowMenuShape {
 	shape: WorkflowMenuShapeId;
+	templateId: string;
+	label: string;
+	landLabel: string;
 	founderReview?: boolean;
 	nodes: WorkflowMenuNode[];
 	edges: WorkflowMenuEdge[];
@@ -66,7 +67,6 @@ export interface WorkflowMenuShape {
 }
 
 export interface ProjectMenuConfig {
-	roster: Record<string, string>;
 	adoption: Record<string, WorkflowMenuShapeId[]>;
 }
 
@@ -135,267 +135,69 @@ function safeProjectRelativePath(value: unknown, path: string): string {
 	return candidate;
 }
 
-function parseMenuModel(value: unknown, path: string): WorkflowMenuModel {
-	const raw = asRecord(value, path);
-	exactKeys(raw, ["model", "allowedEfforts", "defaultEffort"], path);
-	const model = nonempty(raw.model, `${path}.model`);
-	const registry = getModelRegistryEntry(model);
-	if (
-		!registry ||
-		!registry.aliases.some(
-			(alias) => alias.toLowerCase() === model.toLowerCase(),
-		) ||
-		!registry.surfaces.includes("workflow")
-	) {
-		throw new Error(
-			`${path}.model must be a workflow alias from the canonical model registry`,
-		);
-	}
-	if (!Array.isArray(raw.allowedEfforts)) {
-		throw new Error(`${path}.allowedEfforts must be an array`);
-	}
-	const allowedEfforts = raw.allowedEfforts.map((effort, index) =>
-		oneOf(effort, MENU_EFFORTS, `${path}.allowedEfforts[${index}]`),
-	);
-	if (new Set(allowedEfforts).size !== allowedEfforts.length) {
-		throw new Error(`${path}.allowedEfforts contains duplicates`);
-	}
-	const registryEfforts = [
-		...(registry.effortsBySurface.workflow ?? []),
-	] as WorkflowEffort[];
-	if (allowedEfforts.some((effort) => !registryEfforts.includes(effort))) {
-		throw new Error(
-			`${path}.allowedEfforts must be a subset of the ${model} workflow CLI set: ${registryEfforts.join(", ")}`,
-		);
-	}
-	const defaultEffort = oneOf(
-		raw.defaultEffort,
-		allowedEfforts,
-		`${path}.defaultEffort`,
-	);
-	return { model, allowedEfforts, defaultEffort };
-}
-
-function parseMenuNode(value: unknown, path: string): WorkflowMenuNode {
-	const raw = asRecord(value, path);
-	const id = nonempty(raw.id, `${path}.id`);
-	if (raw.type === "gate") {
-		exactKeys(raw, ["id", "type"], path);
-		return { id, type: "gate" };
-	}
-	exactKeys(raw, ["id", "role", "defaultModel", "models"], path);
-	const role = nonempty(raw.role, `${path}.role`);
-	const defaultModel = nonempty(raw.defaultModel, `${path}.defaultModel`);
-	if (!Array.isArray(raw.models) || raw.models.length === 0) {
-		throw new Error(`${path}.models must be a non-empty array`);
-	}
-	const models = raw.models.map((model, index) =>
-		parseMenuModel(model, `${path}.models[${index}]`),
-	);
-	if (new Set(models.map((model) => model.model)).size !== models.length) {
-		throw new Error(`${path}.models contains duplicate aliases`);
-	}
-	if (!models.some((model) => model.model === defaultModel)) {
-		throw new Error(`${path}.defaultModel must identify one declared model`);
-	}
-	return { id, role, defaultModel, models };
-}
-
-function parseMenuShape(value: unknown, source: string): WorkflowMenuShape {
-	const raw = asRecord(value, source);
-	exactKeys(raw, ["shape", "founderReview", "nodes", "edges", "loops"], source);
-	const shape = oneOf(raw.shape, WORKFLOW_MENU_SHAPES, `${source}.shape`);
-	if (
-		raw.founderReview !== undefined &&
-		typeof raw.founderReview !== "boolean"
-	) {
-		throw new Error(`${source}.founderReview must be a boolean`);
-	}
-	if (!Array.isArray(raw.nodes) || raw.nodes.length < 2) {
-		throw new Error(`${source}.nodes must contain executable and gate nodes`);
-	}
-	const nodes = raw.nodes.map((node, index) =>
-		parseMenuNode(node, `${source}.nodes[${index}]`),
-	);
-	const nodeIds = new Set<string>();
-	for (const node of nodes) {
-		if (nodeIds.has(node.id))
-			throw new Error(`${source} duplicate node ${node.id}`);
-		nodeIds.add(node.id);
-	}
-	const gates = nodes.filter((node) => node.type === "gate");
-	if (gates.length !== 1) {
-		throw new Error(`${source} must contain exactly one gate`);
-	}
-	if (!Array.isArray(raw.edges))
-		throw new Error(`${source}.edges must be an array`);
-	const edges = raw.edges.map((value, index): WorkflowMenuEdge => {
-		const path = `${source}.edges[${index}]`;
-		const edge = asRecord(value, path);
-		exactKeys(edge, ["id", "from", "to", "condition"], path);
-		const from = nonempty(edge.from, `${path}.from`);
-		const to = nonempty(edge.to, `${path}.to`);
-		if (!nodeIds.has(from) || !nodeIds.has(to)) {
-			throw new Error(`${path} references an unknown node`);
-		}
-		return {
-			id: nonempty(edge.id, `${path}.id`),
-			from,
-			to,
-			condition: oneOf(
-				edge.condition,
-				["design_done", "implement_done", "qa_pass", "node_done"] as const,
-				`${path}.condition`,
-			),
-		};
-	});
-	if (!Array.isArray(raw.loops))
-		throw new Error(`${source}.loops must be an array`);
-	const loops = raw.loops.map((value, index): WorkflowMenuLoop => {
-		const path = `${source}.loops[${index}]`;
-		const loop = asRecord(value, path);
-		exactKeys(
-			loop,
-			["id", "from", "to", "loopWhen", "exitWhen", "maxIterations", "onLimit"],
-			path,
-		);
-		const from = nonempty(loop.from, `${path}.from`);
-		const to = nonempty(loop.to, `${path}.to`);
-		if (!nodeIds.has(from) || !nodeIds.has(to)) {
-			throw new Error(`${path} references an unknown node`);
-		}
-		const loopWhen = oneOf(
-			loop.loopWhen,
-			["qa_fail", "founder_feedback_kickback"] as const,
-			`${path}.loopWhen`,
-		);
-		const hasMaxIterations = loop.maxIterations !== undefined;
-		const hasOnLimit = loop.onLimit !== undefined;
-		if (hasMaxIterations !== hasOnLimit) {
-			throw new Error(
-				`${path}.maxIterations and ${path}.onLimit must be provided together`,
-			);
-		}
-		const maxIterations = hasMaxIterations
-			? Number(loop.maxIterations)
-			: undefined;
-		if (
-			maxIterations !== undefined &&
-			(!Number.isInteger(maxIterations) || maxIterations <= 0)
-		) {
-			throw new Error(`${path}.maxIterations must be a positive integer`);
-		}
-		return {
-			id: nonempty(loop.id, `${path}.id`),
-			from,
-			to,
-			loopWhen,
-			exitWhen: oneOf(
-				loop.exitWhen,
-				["qa_pass", "founder_approved"] as const,
-				`${path}.exitWhen`,
-			),
-			...(maxIterations !== undefined
-				? {
-						maxIterations,
-						onLimit: oneOf(
-							loop.onLimit,
-							["escalate"] as const,
-							`${path}.onLimit`,
-						),
-					}
-				: {}),
-		};
-	});
-	const executableCount = nodes.filter((node) => node.type !== "gate").length;
-	if (shape === "code") {
-		const qaLoop = loops.find(
-			(loop) => loop.loopWhen === "qa_fail" && loop.exitWhen === "qa_pass",
-		);
-		const founderLoop = loops.find(
-			(loop) =>
-				loop.loopWhen === "founder_feedback_kickback" &&
-				loop.exitWhen === "founder_approved",
-		);
-		if (
-			executableCount !== 3 ||
-			loops.length !== 2 ||
-			!qaLoop ||
-			!founderLoop ||
-			founderLoop?.maxIterations !== undefined ||
-			founderLoop?.onLimit !== undefined
-		) {
-			throw new Error(
-				`${source} code must have three executable nodes plus a QA retry loop and an unbounded founder-rework loop`,
-			);
-		}
-	} else if (shape === "simple_code") {
-		const executable = nodes.filter((node) => node.type !== "gate");
-		const implement = executable.find((node) => node.role === "implement");
-		const qa = executable.find((node) => node.role === "qa");
-		const qaLoop = loops.find(
-			(loop) =>
-				loop.from === qa?.id &&
-				loop.to === implement?.id &&
-				loop.loopWhen === "qa_fail" &&
-				loop.exitWhen === "qa_pass",
-		);
-		const founderLoop = loops.find(
-			(loop) =>
-				loop.from === gates[0]?.id &&
-				loop.to === implement?.id &&
-				loop.loopWhen === "founder_feedback_kickback" &&
-				loop.exitWhen === "founder_approved",
-		);
-		if (
-			executableCount !== 2 ||
-			!implement ||
-			!qa ||
-			loops.length !== 2 ||
-			!qaLoop ||
-			!founderLoop ||
-			founderLoop?.maxIterations !== undefined ||
-			founderLoop?.onLimit !== undefined
-		) {
-			throw new Error(
-				`${source} simple_code must have implement and QA executable nodes plus a QA retry loop and an unbounded founder-rework loop`,
-			);
-		}
-	} else if (executableCount !== 1 || loops.length !== 0) {
-		throw new Error(
-			`${source} single-session shape must have one executable node and no loops`,
-		);
-	}
+function menuFromGraph(
+	registry: BundledRegistry,
+	shape: string,
+): WorkflowMenuShape {
+	const graph = registry.graphs[shape];
+	if (!graph) throw new Error(`workflow graph ${shape} is not registered`);
+	const landId = graph.nodes.find((node) => node === "land");
+	if (!landId) throw new Error(`workflow graph ${shape} must register land`);
+	const nodes = graph.nodes
+		.filter((node) => node !== landId)
+		.map((id): WorkflowMenuNode => {
+			const executable = registry.nodes[id];
+			if (executable) {
+				const policy = graph.policies[id]!;
+				return {
+					id,
+					label: executable.label,
+					type: executable.type!,
+					defaultModel: policy.defaultModel,
+					models: policy.models,
+				};
+			}
+			const structural = registry.structural[id];
+			if (!structural || id !== "founder_gate") {
+				throw new Error(
+					`workflow graph ${shape} has unsupported structural node ${id}`,
+				);
+			}
+			return { id, label: structural.label, type: "gate" };
+		});
 	return {
 		shape,
-		...(raw.founderReview !== undefined
-			? { founderReview: raw.founderReview }
-			: {}),
+		templateId: graph.templateId,
+		label: graph.label,
+		landLabel: registry.structural[landId]!.label,
+		...(graph.founderReview === undefined
+			? {}
+			: { founderReview: graph.founderReview }),
 		nodes,
-		edges,
-		loops,
+		edges: graph.edges.filter(
+			(edge) => edge.from !== landId && edge.to !== landId,
+		) as WorkflowMenuEdge[],
+		loops: graph.loops,
 	};
 }
 
 export function loadWorkflowMenuLibrary(
-	input: { shapesDirectory?: string } = {},
+	input: { registryPath?: string } = {},
 ): WorkflowMenuShape[] {
-	const directory = input.shapesDirectory ?? MENU_SOURCE_DIRECTORY;
-	return WORKFLOW_MENU_SHAPES.map((shape) => {
-		const filename = join(directory, `${shape}.yaml`);
-		return parseMenuShape(
-			parse(readFileSync(filename, "utf8")),
-			`menu ${shape}`,
-		);
-	});
+	const registry = loadBundledRegistry(
+		input.registryPath ?? BUNDLED_REGISTRY_PATH,
+	);
+	return Object.keys(registry.graphs).map((shape) =>
+		menuFromGraph(registry, shape),
+	);
 }
 
-function nodeType(node: WorkflowMenuNode): WorkflowManifestNode["type"] {
-	if (node.type === "gate") return "gate";
-	if (node.role === "design") return "design";
-	if (node.role === "implement") return "implement";
-	if (node.role === "qa") return "qa";
-	return "generic";
+export function isBundledWorkflowNodeName(nodeName: string): boolean {
+	return Boolean(loadBundledRegistry(BUNDLED_REGISTRY_PATH).nodes[nodeName]);
+}
+
+export function loadBundledWorkflowNodeNames(): string[] {
+	return Object.keys(loadBundledRegistry(BUNDLED_REGISTRY_PATH).nodes).sort();
 }
 
 function resolveAlias(alias: string): {
@@ -420,7 +222,7 @@ function menuReviewPairs(menu: WorkflowMenuShape): Array<{
 	producer: WorkflowMenuNode;
 }> {
 	return menu.nodes
-		.filter((node) => node.role === "qa")
+		.filter((node) => node.type === "qa")
 		.map((qa) => {
 			const producers = menu.edges
 				.filter((edge) => edge.to === qa.id)
@@ -453,7 +255,7 @@ export function compileWorkflowMenuSeed(
 	const hasPrProducer = menu.nodes.some(
 		(node) =>
 			node.type !== "gate" &&
-			getNodeTypeRegistryEntry(nodeType(node)).capabilities.creates_pr,
+			getNodeTypeRegistryEntry(node.type).capabilities.creates_pr,
 	);
 	let terminalNode = "land";
 	while (menu.nodes.some((node) => node.id === terminalNode)) {
@@ -463,24 +265,31 @@ export function compileWorkflowMenuSeed(
 		schema_version: 2,
 		nodes: [
 			...menu.nodes.map((node) => {
-				const type = nodeType(node);
-				if (type === "gate") return { id: node.id, type };
+				const type = node.type;
+				if (type === "gate") return { id: node.id, label: node.label, type };
 				const defaultPolicy = node.models!.find(
 					(model) => model.model === node.defaultModel,
 				)!;
 				const resolved = resolveAlias(defaultPolicy.model);
 				return {
 					id: node.id,
+					label: node.label,
 					type,
 					...(menu.founderReview === true ? { founder_review: true } : {}),
-					role: node.role,
 					vendor: resolved.vendor,
 					model: resolved.model,
 					effort: defaultPolicy.defaultEffort,
 				};
 			}),
 			...(hasPrProducer
-				? [{ id: terminalNode, type: "land", execution: "engine" }]
+				? [
+						{
+							id: terminalNode,
+							label: menu.landLabel,
+							type: "land",
+							execution: "engine",
+						},
+					]
 				: []),
 		],
 		edges: [
@@ -523,13 +332,13 @@ export function compileWorkflowMenuSeed(
 						predicate: "founder_approved",
 					},
 				}),
-		ship_claims: menu.nodes.some((node) => node.role === "qa")
+		ship_claims: menu.nodes.some((node) => node.type === "qa")
 			? ["qa_passed", "founder_approved"]
 			: ["founder_approved"],
 	});
 	const seed = {
-		templateId: workflowMenuTemplateId(menu.shape),
-		name: `${menu.shape} menu`,
+		templateId: menu.templateId,
+		name: menu.label,
 		projectScope: "global",
 		manifest,
 	};
@@ -549,6 +358,30 @@ export function importWorkflowMenuSeeds(
 	}
 }
 
+export function workflowMenuBindings(): Array<{
+	taskCategory: WorkflowMenuShapeId;
+	templateId: string;
+}> {
+	return loadWorkflowMenuLibrary().map((menu) => ({
+		taskCategory: menu.shape,
+		templateId: menu.templateId,
+	}));
+}
+
+export function workflowMenuTemplateId(shape: WorkflowMenuShapeId): string {
+	const menu = loadWorkflowMenuLibrary().find(
+		(candidate) => candidate.shape === shape,
+	);
+	if (!menu) {
+		throw new WorkflowMenuValidationError(
+			"MENU_NOT_FOUND",
+			`workflow graph ${shape} is not registered`,
+			loadWorkflowMenuLibrary().map((candidate) => candidate.shape),
+		);
+	}
+	return menu.templateId;
+}
+
 export function reconcileMenuCategoryBindings(
 	store: Pick<
 		StateStore,
@@ -560,6 +393,9 @@ export function reconcileMenuCategoryBindings(
 	let bound = 0;
 	let existing = 0;
 	const errors: string[] = [];
+	const menuByShape = new Map(
+		loadWorkflowMenuLibrary().map((menu) => [menu.shape, menu]),
+	);
 	for (const project of projects) {
 		if (!hasProjectMenuConfig(project.projectRoot)) continue;
 		let adopted: Set<WorkflowMenuShapeId>;
@@ -584,7 +420,7 @@ export function reconcileMenuCategoryBindings(
 				store.bindWorkflowCategory({
 					project: project.projectName,
 					taskCategory: shape,
-					templateId: workflowMenuTemplateId(shape),
+					templateId: menuByShape.get(shape)!.templateId,
 					updatedBy: "system:menu-binding-reconcile",
 				});
 				bound += 1;
@@ -600,8 +436,51 @@ export function reconcileMenuCategoryBindings(
 
 export function loadProjectMenuConfig(projectRoot: string): ProjectMenuConfig {
 	const menuDirectory = join(projectRoot, ".flywheel", "menus");
+	const adoptionRaw = asRecord(
+		parse(readFileSync(join(menuDirectory, "adoption.yaml"), "utf8")),
+		"adoption",
+	);
+	const legalShapes = loadWorkflowMenuLibrary().map((menu) => menu.shape);
+	const adoption: Record<string, WorkflowMenuShapeId[]> = {};
+	for (const [leadId, value] of Object.entries(adoptionRaw)) {
+		if (!Array.isArray(value) || value.length === 0) {
+			throw new Error(`adoption.${leadId} must be a non-empty array`);
+		}
+		const menus = value.map((shape, index) =>
+			oneOf(shape, legalShapes, `adoption.${leadId}[${index}]`),
+		);
+		if (new Set(menus).size !== menus.length) {
+			throw new Error(`adoption.${leadId} contains duplicate menus`);
+		}
+		adoption[nonempty(leadId, "adoption lead id")] = menus;
+	}
+	return { adoption };
+}
+
+/** True when a project explicitly adopts Lead-scoped workflow menus. */
+export function hasProjectMenuConfig(projectRoot: string): boolean {
+	return existsSync(join(projectRoot, ".flywheel", "menus", "adoption.yaml"));
+}
+
+function projectNameFromConfig(projectRoot: string): string {
+	const raw = asRecord(
+		parse(readFileSync(join(projectRoot, ".flywheel", "config.yaml"), "utf8")),
+		"project config",
+	);
+	return nonempty(raw.project, "project config.project");
+}
+
+function projectUsesAgentRegistry(projectRoot: string): boolean {
+	return (
+		projectNameFromConfig(projectRoot) === "flywheel" ||
+		existsSync(join(projectRoot, ".flywheel", "agents", "registry.yaml"))
+	);
+}
+
+function loadLegacyProjectRoster(projectRoot: string): Record<string, string> {
+	const rosterPath = join(projectRoot, ".flywheel", "menus", "ic-roster.yaml");
 	const rosterRaw = asRecord(
-		parse(readFileSync(join(menuDirectory, "ic-roster.yaml"), "utf8")),
+		parse(readFileSync(rosterPath, "utf8")),
 		"ic-roster",
 	);
 	const roster: Record<string, string> = {};
@@ -623,39 +502,41 @@ export function loadProjectMenuConfig(projectRoot: string): ProjectMenuConfig {
 		}
 		roster[cleanRole] = configuredPath;
 	}
-	const adoptionRaw = asRecord(
-		parse(readFileSync(join(menuDirectory, "adoption.yaml"), "utf8")),
-		"adoption",
-	);
-	const adoption: Record<string, WorkflowMenuShapeId[]> = {};
-	for (const [leadId, value] of Object.entries(adoptionRaw)) {
-		if (!Array.isArray(value) || value.length === 0) {
-			throw new Error(`adoption.${leadId} must be a non-empty array`);
-		}
-		const menus = value.map((shape, index) =>
-			oneOf(shape, WORKFLOW_MENU_SHAPES, `adoption.${leadId}[${index}]`),
-		);
-		if (new Set(menus).size !== menus.length) {
-			throw new Error(`adoption.${leadId} contains duplicate menus`);
-		}
-		adoption[nonempty(leadId, "adoption lead id")] = menus;
-	}
-	return { roster, adoption };
+	return roster;
 }
 
-/** True when a project has entered the menu-config domain (partial config counts). */
-export function hasProjectMenuConfig(projectRoot: string): boolean {
-	const menuDirectory = join(projectRoot, ".flywheel", "menus");
-	return (
-		existsSync(join(menuDirectory, "ic-roster.yaml")) ||
-		existsSync(join(menuDirectory, "adoption.yaml"))
-	);
+function resolveLegacyNodeAgentFile(
+	projectRoot: string,
+	nodeName: string,
+	roster = loadLegacyProjectRoster(projectRoot),
+): string {
+	const agentFile = roster[nodeName];
+	if (!agentFile) {
+		throw new WorkflowMenuValidationError(
+			"NODE_NOT_REGISTERED",
+			`node ${nodeName} has no project implementation`,
+			Object.keys(roster),
+		);
+	}
+	return agentFile;
+}
+
+export function resolveProjectAgentRegistry(
+	projectRoot: string,
+	registryPath?: string,
+) {
+	const bundled = loadBundledRegistry(registryPath ?? BUNDLED_REGISTRY_PATH);
+	return resolveProjectRegistry({
+		bundled,
+		projectName: projectNameFromConfig(projectRoot),
+		projectRoot,
+	});
 }
 
 export function resolveLeadMenus(input: {
 	projectRoot: string;
 	leadId: string;
-	shapesDirectory?: string;
+	registryPath?: string;
 }): WorkflowMenuShape[] {
 	const config = loadProjectMenuConfig(input.projectRoot);
 	const adopted = config.adoption[input.leadId];
@@ -667,40 +548,56 @@ export function resolveLeadMenus(input: {
 		);
 	}
 	const library = loadWorkflowMenuLibrary({
-		...(input.shapesDirectory
-			? { shapesDirectory: input.shapesDirectory }
-			: {}),
+		...(input.registryPath ? { registryPath: input.registryPath } : {}),
 	});
 	const byShape = new Map(library.map((menu) => [menu.shape, menu]));
 	const menus = adopted.map((shape) => byShape.get(shape)!);
-	for (const menu of menus) {
-		for (const node of menu.nodes) {
-			if (node.role && !config.roster[node.role]) {
-				throw new WorkflowMenuValidationError(
-					"IC_ROLE_NOT_FOUND",
-					`menu ${menu.shape} role ${node.role} is absent from the IC roster`,
-					Object.keys(config.roster),
-				);
+	if (projectUsesAgentRegistry(input.projectRoot)) {
+		const resolved = resolveProjectAgentRegistry(
+			input.projectRoot,
+			input.registryPath,
+		);
+		for (const menu of menus) {
+			for (const node of menu.nodes) {
+				if (node.type !== "gate" && !resolved.nodes[node.id]) {
+					throw new WorkflowMenuValidationError(
+						"NODE_NOT_REGISTERED",
+						`menu ${menu.shape} node ${node.id} has no project implementation`,
+						Object.keys(resolved.nodes),
+					);
+				}
+			}
+		}
+	} else {
+		const roster = loadLegacyProjectRoster(input.projectRoot);
+		for (const menu of menus) {
+			for (const node of menu.nodes) {
+				if (node.type !== "gate") {
+					resolveLegacyNodeAgentFile(input.projectRoot, node.id, roster);
+				}
 			}
 		}
 	}
 	return menus;
 }
 
-export function resolveMenuAgentFile(
+export function resolveNodeAgentFile(
 	projectRoot: string,
-	role: string,
+	nodeName: string,
 ): string {
-	const roster = loadProjectMenuConfig(projectRoot).roster;
-	const agentFile = roster[role];
-	if (!agentFile) {
+	if (!projectUsesAgentRegistry(projectRoot)) {
+		return resolveLegacyNodeAgentFile(projectRoot, nodeName);
+	}
+	const resolved = resolveProjectAgentRegistry(projectRoot);
+	const node = resolved.nodes[nodeName];
+	if (!node) {
 		throw new WorkflowMenuValidationError(
-			"IC_ROLE_NOT_FOUND",
-			`role ${role} is absent from the IC roster`,
-			Object.keys(roster),
+			"NODE_NOT_REGISTERED",
+			`node ${nodeName} has no project implementation`,
+			Object.keys(resolved.nodes),
 		);
 	}
-	return agentFile;
+	return relative(projectRoot, node.agentFile);
 }
 
 export function resolveMenuOverrides(

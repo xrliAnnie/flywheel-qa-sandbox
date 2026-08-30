@@ -237,7 +237,7 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		const menus = loadWorkflowMenuLibrary();
 		const cases = [
 			{ shape: "prd", templateId: "tpl_prd" },
-			{ shape: "design", templateId: "tpl_design" },
+			{ shape: "product_design_flow", templateId: "tpl_design" },
 			{ shape: "prototype", templateId: "tpl_prototype" },
 			{ shape: "generic", templateId: "tpl_generic_menu" },
 		] as const;

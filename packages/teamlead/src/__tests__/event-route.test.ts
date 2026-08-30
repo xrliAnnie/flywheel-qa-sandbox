@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import {
 	computeFounderArtifactDigest,
@@ -27,6 +28,8 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -201,12 +204,12 @@ function bindGeneralizedDesignExecution(
 ): void {
 	const snapshot = buildWorkflowRunSnapshotV2({
 		template: { id: "test-design", revision: 1 },
-		canonicalRoot: "/tmp",
+		canonicalRoot: REPO_ROOT,
 		manifest: {
 			schema_version: 2,
 			nodes: [
 				{
-					id: "design",
+					id: "eng_design",
 					type: "design",
 					vendor: "claude",
 					model: "claude-fable-5",
@@ -231,7 +234,7 @@ function bindGeneralizedDesignExecution(
 			edges: [
 				{
 					id: "design_done",
-					from: "design",
+					from: "eng_design",
 					to: "implement",
 					condition: "design_done",
 				},
@@ -275,7 +278,7 @@ function bindGeneralizedDesignExecution(
 	});
 	const admission = store.admitGeneralizedWorkflowExecution({
 		runId: `run-${executionId}`,
-		nodeId: "design",
+		nodeId: "eng_design",
 		executionId,
 		attempt: 1,
 		now: "2026-07-15T00:00:00.000Z",
@@ -1291,7 +1294,7 @@ describe("Event route", () => {
 			),
 		});
 		expect(completed.status).toBe(409);
-		expect(store.getWorkflowNodeCompletion("run-exec-1", "design", 1)).toBe(
+		expect(store.getWorkflowNodeCompletion("run-exec-1", "eng_design", 1)).toBe(
 			undefined,
 		);
 		expect(

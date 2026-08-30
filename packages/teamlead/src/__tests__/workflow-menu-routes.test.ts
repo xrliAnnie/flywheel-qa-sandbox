@@ -87,11 +87,13 @@ describe("GET /api/workflow/menus", () => {
 		]);
 		expect(body.menus[0]).toMatchObject({
 			item: "code",
+			label: "工程开发",
 			templateId: "tpl_code",
 		});
 		expect(body.menus[0].nodes[0]).toMatchObject({
-			id: "design",
-			role: "design",
+			id: "eng_design",
+			label: "设计(工程)",
+			type: "design",
 			defaultModel: "fable",
 			models: [
 				{
@@ -108,6 +110,13 @@ describe("GET /api/workflow/menus", () => {
 				},
 			],
 		});
+		expect(Object.hasOwn(body.menus[0].nodes[0], "role")).toBe(false);
+		for (const menu of body.menus) {
+			expect(String(menu.label).trim().length).toBeGreaterThan(0);
+			for (const node of menu.nodes) {
+				expect(String(node.label).trim().length).toBeGreaterThan(0);
+			}
+		}
 	});
 
 	it("returns Honey Lemon's three single-session menus", async () => {
@@ -119,7 +128,7 @@ describe("GET /api/workflow/menus", () => {
 		const body = await response.json();
 		expect(body.menus.map((menu: { item: string }) => menu.item)).toEqual([
 			"prd",
-			"design",
+			"product_design_flow",
 			"prototype",
 		]);
 	});

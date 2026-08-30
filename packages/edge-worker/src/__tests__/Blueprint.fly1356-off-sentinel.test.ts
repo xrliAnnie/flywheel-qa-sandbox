@@ -29,6 +29,10 @@ import { Blueprint } from "../Blueprint.js";
 import type { EventEnvelope } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import {
+	resolvedTestAgent,
+	testAgentFallbacks,
+} from "./agent-dispatch-fixtures.js";
 
 function makeNode(): DagNode {
 	return { id: "FLY-1356", blockedBy: [] };
@@ -140,13 +144,15 @@ describe("FLY-1356 OFF sentinel — default env is byte-compatible", () => {
 		fs.writeFileSync(path.join(dir, "exec.bare.md"), "SENTINEL-VARIANT");
 		const dispatcher = new AgentDispatcher(
 			{
-				exec: {
-					agent_file: ".flywheel/agents/exec.md",
-					match: { labels: ["x"] },
-				},
+				exec: resolvedTestAgent({
+					nodeName: "exec",
+					labels: ["x"],
+					projectRoot: root,
+					relativeFile: "exec.md",
+				}),
 			},
 			"exec",
-			root,
+			testAgentFallbacks(root),
 		);
 		const { execArgs } = await runOnce({
 			projectRoot: root,
@@ -190,13 +196,15 @@ describe("FLY-1356 OFF sentinel — default env is byte-compatible", () => {
 		fs.writeFileSync(path.join(dir, "exec.bare.md"), "SENTINEL-VARIANT");
 		const dispatcher = new AgentDispatcher(
 			{
-				exec: {
-					agent_file: ".flywheel/agents/exec.md",
-					match: { labels: ["x"] },
-				},
+				exec: resolvedTestAgent({
+					nodeName: "exec",
+					labels: ["x"],
+					projectRoot: root,
+					relativeFile: "exec.md",
+				}),
 			},
 			"exec",
-			root,
+			testAgentFallbacks(root),
 		);
 		const { execArgs } = await runOnce({
 			envValue: "bare",

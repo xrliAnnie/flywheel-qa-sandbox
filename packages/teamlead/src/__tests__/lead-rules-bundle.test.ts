@@ -131,7 +131,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"code",
 			"simple_code",
 			"prd",
-			"design",
+			"product_design_flow",
 			"prototype",
 			"generic",
 		]) {

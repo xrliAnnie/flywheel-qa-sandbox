@@ -443,90 +443,49 @@ parallel:
 		expect(config.parallel?.session_timeout_minutes).toBe(120);
 	});
 
-	// ─── v0.6 agents config (FLY-137 v1.27.2 dept-aware) ────────────────────────
+	// ─── registry-backed agents config (FLY-2121) ───────────────────────────────
 
-	it("loads config with dept-grouped agents section", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
+	it("loads node-only agent authoring rules", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
+    node: engineer
     domain_file: .claude/domains/backend.md
     match:
-      labels:
-        - "backend"
-        - "api"
-      keywords:
-        - "database"
-        - "server"
-  frontend:
-    agent_file: .flywheel/agents/product/frontend-executor.md
-    department: product
-    match:
-      labels:
-        - "frontend"
+      labels: [backend, api]
+      keywords: [database]
 default_agent: backend
-`;
-		readFile.mockResolvedValue(yaml);
+`);
 		const config = await loader.load("/p/config.yaml");
-		expect(Object.keys(config.agents!)).toEqual(["backend", "frontend"]);
-		expect(config.agents!.backend.agent_file).toBe(
-			".flywheel/agents/product/backend-executor.md",
-		);
-		expect(config.agents!.backend.department).toBe("product");
-		expect(config.agents!.backend.domain_file).toBe(
-			".claude/domains/backend.md",
-		);
-		expect(config.agents!.backend.match.labels).toEqual(["backend", "api"]);
-		expect(config.agents!.frontend.domain_file).toBeUndefined();
+		expect(config.agents?.backend).toEqual({
+			node: "engineer",
+			domain_file: ".claude/domains/backend.md",
+			match: { labels: ["backend", "api"], keywords: ["database"] },
+		});
 		expect(config.default_agent).toBe("backend");
 	});
 
-	it("loads config with top-level cross-dept agent (no department field)", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  general:
-    agent_file: .flywheel/agents/general-executor.md
-    match:
-      labels: ["chore", "tooling"]
-`;
-		readFile.mockResolvedValue(yaml);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.agents!.general.agent_file).toBe(
-			".flywheel/agents/general-executor.md",
-		);
-		expect(config.agents!.general.department).toBeUndefined();
-	});
-
-	it("loads config without agents section (backward compat)", async () => {
+	it("loads config without agents section", async () => {
 		readFile.mockResolvedValue(MINIMAL_CONFIG_YAML);
 		const config = await loader.load("/p/config.yaml");
 		expect(config.agents).toBeUndefined();
 		expect(config.default_agent).toBeUndefined();
 	});
 
-	// ─── FLY-1335: empty match.labels warning (empty array is NOT a wildcard) ───
-
 	describe("FLY-1335 empty match.labels warning", () => {
-		afterEach(() => {
-			vi.restoreAllMocks();
-		});
+		afterEach(() => vi.restoreAllMocks());
 
-		it("warns when an agent has empty match.labels and is not default_agent", async () => {
+		it("warns when an empty-label agent is not default_agent", async () => {
 			const warnSpy = vi
 				.spyOn(console, "warn")
 				.mockImplementation(() => undefined);
-			const yaml = `${MINIMAL_CONFIG_YAML}
+			readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
   general:
-    agent_file: .flywheel/agents/general-executor.md
-    match:
-      labels: []
-`;
-			readFile.mockResolvedValue(yaml);
-			const config = await loader.load("/p/config.yaml");
-			// load succeeds — warn, don't throw (boot continuity, FLY-159 precedent)
-			expect(config.agents!.general).toBeDefined();
+    node: general
+    match: { labels: [] }
+`);
+			await loader.load("/p/config.yaml");
 			expect(warnSpy).toHaveBeenCalledWith(
 				expect.stringMatching(
 					/agents\.general\.match\.labels is empty.*not a wildcard/i,
@@ -534,445 +493,100 @@ agents:
 			);
 		});
 
-		it("does NOT warn when the empty-labels agent IS the declared default_agent", async () => {
+		it("does not warn when the empty-label agent is default_agent", async () => {
 			const warnSpy = vi
 				.spyOn(console, "warn")
 				.mockImplementation(() => undefined);
-			const yaml = `${MINIMAL_CONFIG_YAML}
+			readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
   general:
-    agent_file: .flywheel/agents/general-executor.md
-    match:
-      labels: []
+    node: general
+    match: { labels: [] }
 default_agent: general
-`;
-			readFile.mockResolvedValue(yaml);
-			const config = await loader.load("/p/config.yaml");
-			expect(config.default_agent).toBe("general");
-			const fly1335 = warnSpy.mock.calls.filter((args) =>
-				String(args[0]).includes("match.labels is empty"),
-			);
-			expect(fly1335).toEqual([]);
-		});
-
-		it("does NOT warn for agents with non-empty labels", async () => {
-			const warnSpy = vi
-				.spyOn(console, "warn")
-				.mockImplementation(() => undefined);
-			const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    match:
-      labels: ["backend"]
-`;
-			readFile.mockResolvedValue(yaml);
+`);
 			await loader.load("/p/config.yaml");
-			const fly1335 = warnSpy.mock.calls.filter((args) =>
-				String(args[0]).includes("match.labels is empty"),
-			);
-			expect(fly1335).toEqual([]);
+			expect(
+				warnSpy.mock.calls.filter(([message]) =>
+					String(message).includes("match.labels is empty"),
+				),
+			).toEqual([]);
 		});
 	});
 
-	it("throws when agent_file is missing", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
+	it("rejects missing identity, malformed match, and mixed-format keys", async () => {
+		for (const [agentBody, expected] of [
+			["match: { labels: [backend] }", /exactly one of node or agent_file/i],
+			["node: engineer", /missing required field "match"/i],
+			[
+				"node: engineer\n    match: { labels: backend }",
+				/match\.labels must be an array/i,
+			],
+			[
+				"node: engineer\n    department: engineering\n    match: { labels: [backend] }",
+				/department is not allowed/i,
+			],
+		] as const) {
+			readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
+    ${agentBody}
+`);
+			await expect(loader.load("/p/config.yaml")).rejects.toThrow(expected);
+		}
+	});
+
+	it("rejects invalid domain paths", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
+agents:
+  backend:
+    node: engineer
+    domain_file: ../../secret.md
+    match: { labels: [backend] }
+`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/agents\.backend.*agent_file/i,
+			/domain_file.*must not escape repo/i,
 		);
 	});
 
-	it("throws when agent_file is absolute path", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: /etc/passwd
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/must be relative/i,
-		);
-	});
-
-	it("throws when agent_file starts with ..", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: "../../secret.md"
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/must not escape repo/i,
-		);
-	});
-
-	it("throws when agent_file has embedded .. segments", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: "foo/../../etc/passwd"
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/must not escape repo/i,
-		);
-	});
-
-	// ─── FLY-137 v1.27.2: agent_file path contract (dept-aware) ────────────
-
-	it("FLY-137 v1.27.2: rejects legacy .claude/agents/ path with migration hint", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .claude/agents/backend-executor.md
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/must live under "\.flywheel\/agents\/".*migrate-agents-path/i,
-		);
-	});
-
-	it("FLY-137 v1.27.2: rejects nested subdirs (depth >= 2)", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/eng/backend-executor.md
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/nested subdirs not supported/i,
-		);
-	});
-
-	it("FLY-137 v1.27.2: rejects reserved 'generic' agent name", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
+	it("rejects reserved generic agent name", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
   generic:
-    agent_file: .flywheel/agents/generic-executor.md
-    match:
-      labels: ["chore"]
-`;
-		readFile.mockResolvedValue(yaml);
+    node: general
+    match: { labels: [chore] }
+`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
 			/"generic" is reserved/i,
 		);
 	});
 
-	it("FLY-137 v1.27.2: rejects explicit department on top-level (no subdir) agent_file", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
+	it("rejects default_agent references outside agents", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
   backend:
-    agent_file: .flywheel/agents/backend-executor.md
-    department: product
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
+    node: engineer
+    match: { labels: [backend] }
+default_agent: missing
+`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/top-level.*department.*Top-level agents must omit/i,
+			/default_agent.*missing.*not found/i,
 		);
 	});
 
-	it("FLY-137 v1.27.2: rejects mismatch between department field and agent_file dept", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: operations
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/department="operations" mismatches agent_file path/i,
-		);
-	});
-
-	it("FLY-137 v1.27.2: auto-derives dept when department absent + dept-subdir path", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		const config = await loader.load("/p/config.yaml");
-		// Auto-derive happens at dispatch time in AgentDispatcher (via parsedDept);
-		// ConfigLoader does not write the derived value back. It just accepts the file as-is.
-		expect(config.agents!.backend.agent_file).toBe(
-			".flywheel/agents/product/backend-executor.md",
-		);
-		expect(config.agents!.backend.department).toBeUndefined();
-	});
-
-	// ─── FLY-901: dual-register `departments` field validation ────────────
-
-	it("FLY-901: accepts a dept-owned agent with a valid departments set", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  product-designer:
-    agent_file: .flywheel/agents/engineering/product-designer-executor.md
-    department: engineering
-    departments: [engineering, product]
-    match:
-      labels: ["product", "design"]
-`;
-		readFile.mockResolvedValue(yaml);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.agents!["product-designer"].departments).toEqual([
-			"engineering",
-			"product",
-		]);
-		expect(config.agents!["product-designer"].department).toBe("engineering");
-	});
-
-	it("FLY-901 V1a: rejects departments that is not an array", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    departments: product
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/departments must be a non-empty array of strings/i,
-		);
-	});
-
-	it("FLY-901 V1b: rejects an empty departments array", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    departments: []
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/departments must be a non-empty array of strings/i,
-		);
-	});
-
-	it("FLY-901 V1c: rejects departments with a non-string element", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    departments: [product, 7]
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/departments must be a non-empty array of strings/i,
-		);
-	});
-
-	it("FLY-901 V2: rejects a departments entry with an illegal token", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    departments: [product, "Not Safe"]
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/departments entries must be lowercase directory-safe tokens/i,
-		);
-	});
-
-	it("FLY-901 V3: rejects duplicate departments entries", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    departments: [product, product]
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/departments contains duplicate entries/i,
-		);
-	});
-
-	it("FLY-901 V4: rejects departments declared on a top-level (no subdir) agent", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  general:
-    agent_file: .flywheel/agents/general-executor.md
-    departments: [engineering, product]
-    match:
-      labels: ["chore"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/top-level.*departments.*Top-level agents must omit/i,
-		);
-	});
-
-	it("FLY-901 V5: rejects departments that omit the path-derived home dept", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  product-designer:
-    agent_file: .flywheel/agents/engineering/product-designer-executor.md
-    departments: [product]
-    match:
-      labels: ["product"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/departments must include the path-derived home department/i,
-		);
-	});
-
-	it("FLY-137 v1.27.1: match.keywords is optional (no error if absent)", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
-		const config = await loader.load("/p/config.yaml");
-		expect(config.agents!.backend.match.keywords).toBeUndefined();
-	});
-
-	it("FLY-137 v1.27.1: match.keywords still validates when present (must be array)", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-    match:
-      labels: ["backend"]
-      keywords: "not-an-array"
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/keywords must be an array/i,
-		);
-	});
-
-	it("throws when match field is missing", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/agents\.backend.*match/i,
-		);
-	});
-
-	it("throws when match.labels is missing", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-    match:
-      keywords: ["db"]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/labels.*array/i,
-		);
-	});
-
-	it("throws when match.labels contains non-string elements", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-    match:
-      labels: [123, true]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/labels.*strings/i,
-		);
-	});
-
-	it("throws when match.keywords contains non-string elements (when present)", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-    match:
-      labels: ["backend"]
-      keywords: [42]
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/keywords.*strings/i,
-		);
-	});
-
-	it("throws when default_agent references nonexistent agent", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
-agents:
-  backend:
-    agent_file: .flywheel/agents/product/backend-executor.md
-    department: product
-    match:
-      labels: ["backend"]
-default_agent: nonexistent
-`;
-		readFile.mockResolvedValue(yaml);
-		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/default_agent.*nonexistent.*not found/i,
-		);
-	});
-
-	it("throws when default_agent is set without agents section", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
+	it("rejects default_agent without agents and non-mapping agents", async () => {
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 default_agent: backend
-`;
-		readFile.mockResolvedValue(yaml);
+`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/default_agent.*requires an agents section/i,
+			/requires an agents section/i,
 		);
-	});
-
-	it("throws when agents is a YAML array instead of object", async () => {
-		const yaml = `${MINIMAL_CONFIG_YAML}
+		readFile.mockResolvedValue(`${MINIMAL_CONFIG_YAML}
 agents:
-  - agent_file: .flywheel/agents/product/backend.md
-    match:
-      labels: ["backend"]
-`;
-		readFile.mockResolvedValue(yaml);
+  - node: engineer
+    match: { labels: [backend] }
+`);
 		await expect(loader.load("/p/config.yaml")).rejects.toThrow(
-			/agents must be a YAML mapping/,
+			/agents must be a YAML mapping/i,
 		);
 	});
 

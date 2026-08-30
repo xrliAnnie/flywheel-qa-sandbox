@@ -91,12 +91,17 @@ import { readFileSync } from "node:fs";
 const result = JSON.parse(readFileSync(process.env.RESULT_JSON, "utf8"));
 assert.equal(result.qualified, 4);
 assert.deepEqual(
-  result.rows.map((row) => [row.issueId, row.targetNodeId, row.newDesignAttempts]),
+  result.rows.map((row) => [
+    row.issueId,
+    row.targetNodeId,
+    row.designAttempts,
+    row.newDesignAttempts,
+  ]),
   [
-    ["FLY-1645", "qa", 0],
-    ["FLY-1680", "implement", 0],
-    ["FLY-1614", "implement", 0],
-    ["FLY-1686", "implement", 0],
+    ["FLY-1645", "qa", 1, 0],
+    ["FLY-1680", "implement", 1, 0],
+    ["FLY-1614", "implement", 1, 0],
+    ["FLY-1686", "implement", 1, 0],
   ],
 );
 assert.equal(result.rows.find((row) => row.issueId === "FLY-1614").lineage, "forward");

@@ -1,0 +1,14 @@
+flowchart LR
+  R["registry.yaml<br/>名字 + 展示名 label<br/>一处定义"]
+  T["模板 版本+1<br/>(新版本用新名<br/>历史版本不碰)"]
+  NEW["新 run<br/>全部新名"]
+  OLD["跑着/跑完的旧 run<br/>保持旧名不动"]
+  API["Bridge API<br/>菜单项 = Graph 名<br/>同时给 id 和 label"]
+  MAP["显示层映射<br/>旧 id → 新 label<br/>(如 design → 设计(工程))"]
+  FE["前端 (Honey Lemon)<br/>只显示后端 label<br/>零硬编码名字"]
+  R --> T --> NEW --> API
+  OLD --> MAP --> API
+  API --> FE
+  style R fill:#e8f0fb,stroke:#007aff
+  style OLD fill:#f5f5f7,stroke:#86868b
+  style FE fill:#e8f5ec,stroke:#34c759

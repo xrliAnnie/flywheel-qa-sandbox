@@ -562,6 +562,7 @@ jobs:
       - name: Test — FLY-1775 generalized-DAG 529 room
         run: |
           bash scripts/__tests__/test-deploy-generalized.test.sh
+          bash scripts/__tests__/fly2121-node-contract-and-setup.test.sh
           node --test scripts/__tests__/qa-generalized-helper.test.mjs
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs

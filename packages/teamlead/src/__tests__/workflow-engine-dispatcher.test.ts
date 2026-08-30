@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,11 @@ import type {
 	WorkflowShipReadyNotice,
 } from "../workflow-ship-ready.js";
 import { isWorkflowManifestV1Land } from "../workflow-template.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const generalizedRecoveryMocks = vi.hoisted(() => ({
 	waitForDelivery: vi.fn(),
@@ -143,9 +147,11 @@ function deadExecEngineClockBaseMs(): number {
 
 async function storeWithIntent(target: "design" | "implement" | "qa") {
 	const store = await StateStore.create(":memory:");
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_eng_heavy",
-	)!;
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!,
+	);
 	store.importWorkflowTemplateSeed(seed);
 	store.materializeWorkflowRun({
 		runId: "run-1",
@@ -155,6 +161,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 		templateId: seed.templateId,
 		claimsReadEnrolled: true,
 		actor: "lead",
+		canonicalRoot: REPO_ROOT,
 		env: WORKFLOW_ON,
 		...(target === "design" ? { entryKind: "pipeline_dag_v1" as const } : {}),
 		startReservation: {
@@ -380,7 +387,7 @@ async function storeWithGenericLandIntent() {
 		startReservation: {
 			idempotencyKey: "generic-land-start",
 			selectionDigest: "generic-land-selection",
-			nodeId: "execute",
+			nodeId: "general",
 			attempt: 1,
 			executionId: "generic-land-1",
 			createdAt: "2026-08-24T00:00:00.000Z",
@@ -388,7 +395,7 @@ async function storeWithGenericLandIntent() {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-generic-land",
-		nodeId: "execute",
+		nodeId: "general",
 		attempt: 1,
 		state: "running",
 		executionId: "generic-land-1",
@@ -396,7 +403,7 @@ async function storeWithGenericLandIntent() {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
 			runId: "run-generic-land",
-			nodeId: "execute",
+			nodeId: "general",
 			executionId: "generic-land-1",
 			attempt: 1,
 			expiresAt: "2026-08-24T02:00:00.000Z",
@@ -410,7 +417,7 @@ async function storeWithGenericLandIntent() {
 		issue_id: "FLY-2027",
 		project_name: "flywheel",
 		status: "running",
-		workflow_node_id: "execute",
+		workflow_node_id: "general",
 	});
 	expect(
 		store.commitEnrolledCompletion({
@@ -512,14 +519,12 @@ function failRunningDesign(store: StateStore, lastError?: string): void {
 async function storeWithProductOutputIntent() {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), "fly1307-product-agent-"));
-	mkdirSync(join(canonicalRoot, "agents"));
-	writeFileSync(
-		join(canonicalRoot, "agents", "generic-executor.md"),
-		"Execute the pinned node.\n",
+	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_product_v1",
+		)!,
 	);
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_product_v1",
-	)!;
 	const env = {
 		...WORKFLOW_ON,
 	};
@@ -574,10 +579,12 @@ async function storeWithBundledOutputFirstIntent(input: {
 }) {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), `${input.runId}-agent-`));
-	mkdirSync(join(canonicalRoot, "agents"));
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === input.templateId,
-	)!;
+	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === input.templateId,
+		)!,
+	);
 	const producer = seed.manifest.nodes.find(
 		(node) => node.type === "generic" && node.produces_output === true,
 	)!;

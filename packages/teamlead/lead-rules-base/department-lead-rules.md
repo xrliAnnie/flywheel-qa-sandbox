@@ -186,7 +186,7 @@ values are:
 | `code` | engineering work that needs a distinct design phase: architecture, cross-module changes, new mechanisms, or high-risk changes |
 | `simple_code` | a code change whose approach does not need a distinct design phase: a small bug fix, local refactor, test, config/script change, or small feature following an existing pattern |
 | `prd` | product requirements, product planning, or a feature brief |
-| `design` | product/UX design, flows, visual specifications, or design review |
+| `product_design_flow` | product/UX design, flows, visual specifications, or design review |
 | `prototype` | a runnable or interactive product prototype |
 | `generic` | strictly non-code investigation, inventory, analysis, synthesis, or one-off operations; one node completes the work and no QA node runs |
 

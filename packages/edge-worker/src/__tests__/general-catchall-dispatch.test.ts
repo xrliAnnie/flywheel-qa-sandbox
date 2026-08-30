@@ -4,13 +4,14 @@ import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "flywheel-config";
 import { ConfigLoader } from "flywheel-config";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { AgentDispatcher } from "../AgentDispatcher.js";
+import type { AgentDispatcher } from "../AgentDispatcher.js";
+import { resolvedRepoDispatcher } from "./agent-dispatch-fixtures.js";
 
 /**
  * FLY-1335: the `general` catch-all contract, driven against the REAL
  * `.flywheel/config.yaml` on this branch (real ConfigLoader + real
  * AgentDispatcher — no synthetic fixture), mirroring run-infra's wiring
- * (`new AgentDispatcher(agents, config.default_agent, repoRoot)`). An empty
+ * (registry-resolved configs + registered fallbacks). An empty
  * `match.labels` never wins label matching — the "no label matched" fallback
  * is expressed by `default_agent`, and this suite pins that wiring so the
  * config can never silently regress to the shipped-generic fall-through again.
@@ -34,9 +35,10 @@ describe("general catch-all dispatch (FLY-1335, real .flywheel/config.yaml)", ()
 		warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
 		const loader = new ConfigLoader((p) => readFile(p, "utf-8"));
 		const config = await loader.load(CONFIG_PATH);
-		agents = config.agents ?? {};
+		const resolved = resolvedRepoDispatcher(config, REPO_ROOT);
+		agents = resolved.agents;
 		defaultAgent = config.default_agent;
-		dispatcher = new AgentDispatcher(agents, defaultAgent, REPO_ROOT);
+		dispatcher = resolved.dispatcher;
 	});
 
 	afterAll(() => {
@@ -46,9 +48,8 @@ describe("general catch-all dispatch (FLY-1335, real .flywheel/config.yaml)", ()
 	it("config declares default_agent: general and the agent exists", () => {
 		expect(defaultAgent).toBe("general");
 		expect(agents.general).toBeDefined();
-		expect(agents.general?.agent_file).toBe(
-			".flywheel/agents/general-executor.md",
-		);
+		expect(agents.general?.nodeName).toBe("general");
+		expect(agents.general?.label).toBe("通用执行");
 	});
 
 	it("unmatched label falls through to general via default_agent", () => {
@@ -58,9 +59,11 @@ describe("general catch-all dispatch (FLY-1335, real .flywheel/config.yaml)", ()
 		});
 		expect(r.agentName).toBe("general");
 		expect(r.matchMethod).toBe("default");
-		expect(r.agentFileRoot).toBe("project");
-		expect(r.agentConfig.agent_file).toBe(
-			".flywheel/agents/general-executor.md",
+		expect(r.agentConfig.agentFileRoot).toBe(
+			path.join(REPO_ROOT, ".flywheel", "agents"),
+		);
+		expect(r.agentConfig.agentFile).toBe(
+			path.join(REPO_ROOT, ".flywheel", "agents", "nodes", "general.md"),
 		);
 	});
 
@@ -95,14 +98,16 @@ describe("general catch-all dispatch (FLY-1335, real .flywheel/config.yaml)", ()
 		const r = dispatcher.dispatchByName("general");
 		expect(r.agentName).toBe("general");
 		expect(r.matchMethod).toBe("override");
-		expect(r.agentFileRoot).toBe("project");
+		expect(r.agentConfig.agentFileRoot).toBe(
+			path.join(REPO_ROOT, ".flywheel", "agents"),
+		);
 	});
 
 	it('reserved agentName:"generic" still resolves to shipped-generic', () => {
 		const r = dispatcher.dispatchByName("generic");
 		expect(r.matchMethod).toBe("shipped-generic");
-		expect(r.agentFileRoot).toBe("flywheel");
-		expect(r.agentConfig.agent_file).toBe("agents/generic-executor.md");
+		expect(r.agentConfig.nodeName).toBe("general");
+		expect(r.agentConfig.label).toBe("通用执行");
 	});
 
 	it("loading the real config emits NO FLY-1335 empty-labels warning", () => {

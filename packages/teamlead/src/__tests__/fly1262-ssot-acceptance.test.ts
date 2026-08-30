@@ -151,6 +151,23 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 				"alpha",
 				{
 					config: parse(bytes.toString("utf8")) as FlywheelConfig,
+					resolvedAgents: {
+						alpha: {
+							nodeName: "engineer",
+							label: "Alpha Engineer",
+							agentFile: join(
+								projectRoot,
+								".flywheel",
+								"agents",
+								"nodes",
+								"engineer.md",
+							),
+							agentFileRoot: join(projectRoot, ".flywheel", "agents"),
+							department: "engineering",
+							departments: ["engineering"],
+							match: { labels: ["engineering"] },
+						},
+					},
 					revision: fileSourceRevision(bytes),
 				},
 			],
@@ -237,8 +254,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			"    model: claude-opus-4-8",
 			"agents:",
 			"  alpha:",
-			"    agent_file: .flywheel/agents/engineering/alpha-executor.md",
-			"    department: engineering",
+			"    node: engineer",
 			"    match:",
 			"      labels: [engineering]",
 			"",
@@ -427,7 +443,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(current.projects[0]).toMatchObject({
 			name: "alpha",
 			leads: [{ leadId: "alpha-lead" }],
-			roles: [{ name: "alpha" }],
+			roles: [{ name: "Alpha Engineer" }],
 			dags: [{ nodes: expect.any(Array) }],
 			crons: [{ label: "org.example.alpha-daily" }],
 		});
@@ -518,7 +534,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		const project = before.projects[0]!;
 		const runner = project.runnerDefault!.dispatch;
 		const dag = project.dags[0]!.nodes.find(
-			(node) => node.name === "design",
+			(node) => node.nodeId === "design",
 		)!.dispatch;
 		const cron = project.crons[0]!.schedule;
 		const desiredSchedule = {

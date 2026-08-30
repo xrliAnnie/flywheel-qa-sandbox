@@ -4,7 +4,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
-import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "../../__tests__/fixtures/workflow-agent-project.js";
 import { StateStore } from "../../StateStore.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
 import type { PhaseLiveness } from "../phase-actor-reentry.js";
@@ -60,12 +64,16 @@ async function createHarness(
 	const baseHead = git(worktree, "rev-parse", "HEAD");
 	const store = await StateStore.create(join(root, "state.db"));
 	const comm = new CommDB(join(root, "comm.db"));
-	const seed = structuredClone(
+	const canonicalRoot = join(root, "project");
+	mkdirSync(canonicalRoot);
+	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	const legacySeed = structuredClone(
 		legacyWorkflowSeeds().find(
 			(candidate) => candidate.templateId === "tpl_eng_heavy",
 		),
 	);
-	if (!seed) throw new Error("tpl_eng_heavy seed missing");
+	if (!legacySeed) throw new Error("tpl_eng_heavy seed missing");
+	const seed = pinLegacyWorkflowSeedAgents(legacySeed);
 	const qaSeed = seed.manifest.nodes.find((node) => node.id === "qa");
 	if (!qaSeed) throw new Error("tpl_eng_heavy QA node missing");
 	delete qaSeed.submissionWindowMinutes;
@@ -84,6 +92,7 @@ async function createHarness(
 		taskCategory: "code",
 		claimsReadEnrolled: true,
 		actor: "lead",
+		canonicalRoot,
 		env: WORKFLOW_ON,
 		startReservation: {
 			idempotencyKey: "start-e2e",

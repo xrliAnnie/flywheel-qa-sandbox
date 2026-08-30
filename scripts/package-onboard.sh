@@ -29,8 +29,7 @@
 # a public registry.
 #
 # Sourceable for tests via PACKAGE_ONBOARD_SOURCED=1 (fixture monorepos may
-# override PO_PACKAGES / PO_SCRIPT_FILES / PO_SCRIPT_DIRS / PO_AGENT_FILES /
-# PO_MENU_FILES).
+# override PO_PACKAGES / PO_SCRIPT_FILES / PO_SCRIPT_DIRS / PO_AGENT_FILES).
 set -uo pipefail
 
 PO_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,21 +127,21 @@ lib/buddy-connectors
 buddy
 launchd"}
 
-# Runtime prompt assets at the repo root — run-infra.ts resolves the repo root
-# by the agents/generic-executor.md sentinel; a payload without it boots the
-# Bridge but fails on first dispatch (Codex R1#3).
-PO_AGENT_FILES=${PO_AGENT_FILES:-"generic-executor.md
-qa-executor.md"}
-
-# Global workflow menu assets. workflow-menu.ts resolves these from the
-# checkout/package root in both source and compiled layouts, so the packaged
-# Bridge must carry the same reviewed YAML bytes.
-PO_MENU_FILES=${PO_MENU_FILES:-"shapes/code.yaml
-shapes/prd.yaml
-shapes/design.yaml
-shapes/prototype.yaml
-shapes/generic.yaml
-shapes/simple_code.yaml"}
+# Bundled registry full-file + Flywheel self-host node implementations. Managed
+# project overlays remain in each project repository and are never baked into
+# this global payload.
+PO_AGENT_FILES=${PO_AGENT_FILES:-"registry.yaml
+nodes/eng_design.md
+nodes/implement.md
+nodes/qa.md
+nodes/pm.md
+nodes/product_design.md
+nodes/proto.md
+nodes/general.md
+nodes/general.bare.md
+nodes/general.matt.md
+nodes/engineer.md
+nodes/product_designer.md"}
 
 PO_PAYLOAD_NAME=${PO_PAYLOAD_NAME:-flywheel-onboard-payload}
 
@@ -571,7 +570,7 @@ po_assemble() {
   version="$(po_release_version "$root")" || return 1
 
   rm -rf "$tree"
-  mkdir -p "$tree/scripts" "$tree/agents" "$tree/menus" "$tree/node_modules"
+  mkdir -p "$tree/scripts" "$tree/.flywheel/agents" "$tree/node_modules"
 
   # 1. curated scripts (fail-closed on any missing whitelist entry).
   po_copy_curated_scripts "$root" "$tree" || return 1
@@ -581,22 +580,15 @@ po_assemble() {
     po_patch_onboard "$tree/scripts/flywheel-onboard.sh" || return 1
   fi
 
-  # 3. agents/ runtime prompts.
+  # 3. bundled registry + self-host node implementations.
   while IFS= read -r f; do
     case "$f" in *[![:space:]]*) ;; *) continue ;; esac
-    [ -f "$root/agents/$f" ] || { po_err "agent prompt missing: agents/$f"; return 1; }
-    cp -p "$root/agents/$f" "$tree/agents/$f" || return 1
+    [ -f "$root/.flywheel/agents/$f" ] || { po_err "agent registry asset missing: .flywheel/agents/$f"; return 1; }
+    mkdir -p "$tree/.flywheel/agents/$(dirname "$f")"
+    cp -p "$root/.flywheel/agents/$f" "$tree/.flywheel/agents/$f" || return 1
   done <<<"$PO_AGENT_FILES"
 
-  # 4. global workflow menu assets.
-  while IFS= read -r f; do
-    case "$f" in *[![:space:]]*) ;; *) continue ;; esac
-    [ -f "$root/menus/$f" ] || { po_err "workflow menu missing: menus/$f"; return 1; }
-    mkdir -p "$tree/menus/$(dirname "$f")"
-    cp -p "$root/menus/$f" "$tree/menus/$f" || return 1
-  done <<<"$PO_MENU_FILES"
-
-  # 5. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
+  # 4. workspace packages → node_modules/<npm-name>/ (dist REQUIRED — an
   #    unbuilt package must fail the build, never ship hollow).
   local dir name mirror_json="{}"
   for dir in $PO_PACKAGES; do
@@ -693,7 +685,7 @@ po_assemble() {
       engines: { node: ">=20" },
       dependencies: ($deps | to_entries | sort_by(.key) | from_entries),
       bundleDependencies: ($bundle | sort),
-      files: ["scripts", "agents", "menus", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
+      files: ["scripts", ".flywheel", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
       flywheelPackagesMirror: $mirror
     }' > "$tree/package.json" || return 1
 
@@ -726,7 +718,7 @@ po_pack() {
   local tree="$1" out="$2"
   mkdir -p "$out"
   local tarball
-  tarball="$(cd "$tree" && npm pack --pack-destination "$out" 2>/dev/null | tail -1)"
+  tarball="$(cd "$tree" && npm pack --pack-destination "$out" | tail -1)"
   [ -n "$tarball" ] && [ -f "$out/$tarball" ] || { po_err "npm pack failed"; return 1; }
   printf '%s/%s\n' "$out" "$tarball"
 }

@@ -10,9 +10,9 @@
 # designer-agent-dispatch.test.ts + AgentDispatcher.test.ts).
 #
 # FLY-1089 split the three creative work-types into three role files:
-#   - pm-executor.md          (Product Manager / product co-creation, ex-"Mode A")
-#   - prototype-executor.md   (Prototype Engineer / feasibility-first prototype)
-#   - product-designer-executor.md (docs / UX-spec / design-production only)
+#   - pm.md               (Product Manager / product co-creation, ex-"Mode A")
+#   - proto.md            (Prototype Engineer / feasibility-first prototype)
+#   - product_designer.md (docs / UX-spec / design-production only)
 # This guard defends: (1) each file stays under the 40k byte budget; (2) each role's
 # process semantics + required section headings survive; (3) Mode A did not leak back
 # into product-designer.
@@ -20,10 +20,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-AGENTS_DIR="${SCRIPT_DIR}/../../.flywheel/agents/engineering"
-PM_MD="${AGENTS_DIR}/pm-executor.md"
-PROTO_MD="${AGENTS_DIR}/prototype-executor.md"
-PD_MD="${AGENTS_DIR}/product-designer-executor.md"
+AGENTS_DIR="${SCRIPT_DIR}/../../.flywheel/agents/nodes"
+PM_MD="${AGENTS_DIR}/pm.md"
+PROTO_MD="${AGENTS_DIR}/proto.md"
+PD_MD="${AGENTS_DIR}/product_designer.md"
 
 PASS=0; FAIL=0
 assert_file_exists() {
@@ -71,9 +71,9 @@ for f in "$PM_MD" "$PROTO_MD" "$PD_MD"; do
 done
 
 # ════════════════════════════════════════════════════════════════════════════
-# pm-executor.md — product co-creation (FLY-880 Mode A, extracted) + v5 additions
+# pm node — product co-creation (FLY-880 Mode A, extracted) + v5 additions
 # ════════════════════════════════════════════════════════════════════════════
-echo "--- pm-executor.md ---"
+echo "--- pm.md ---"
 assert_contains "$PM_MD" "产品共创"        "PM anchor: 产品共创 (product co-creation)"
 assert_contains "$PM_MD" "有定见"          "探定见 protocol: 有定见 / 发挥 (opinion vs run-with-it)"
 assert_contains "$PM_MD" "gate question"   "interaction primitive: gate question (one-question-per-round)"
@@ -107,9 +107,9 @@ assert_contains "$PM_MD" "fail-closed by discipline" "no-answer gate => BLOCKED,
 assert_contains "$PM_MD" "BLOCKED"         "reports BLOCKED on an un-answered decision round"
 
 # ════════════════════════════════════════════════════════════════════════════
-# prototype-executor.md — feasibility-first (new, FLY-1089)
+# proto node — feasibility-first (new, FLY-1089)
 # ════════════════════════════════════════════════════════════════════════════
-echo "--- prototype-executor.md ---"
+echo "--- proto.md ---"
 assert_contains "$PROTO_MD" "可行性"         "prototype anchor: 可行性 (feasibility)"
 assert_contains "$PROTO_MD" "drop"           "verdict: not-doable -> drop (a success)"
 assert_contains "$PROTO_MD" "不是生产级"      "boundary: prototype is NOT production-grade"
@@ -143,17 +143,17 @@ assert_contains "$PROTO_MD" "verdict"        "structural: doable/not-doable verd
 assert_contains "$PROTO_MD" "交工程"          "structural: handoff (交工程) / drop"
 
 # ════════════════════════════════════════════════════════════════════════════
-# product-designer-executor.md — docs / design-production ONLY (Mode A removed)
+# product_designer node — docs / design-production ONLY (Mode A removed)
 # ════════════════════════════════════════════════════════════════════════════
-echo "--- product-designer-executor.md ---"
+echo "--- product_designer.md ---"
 assert_contains "$PD_MD" "codex-design-review" "docs/design survives: codex-design-review"
 assert_contains "$PD_MD" "design"          "docs/design survives: design labels"
 assert_contains "$PD_MD" "FLY-1089"        "boundary: references the FLY-1089 split"
 # Mode A (product co-creation) must NOT have leaked back — the sentinel is the
-# Chinese 产品共创; the boundary text points to pm-executor in English instead.
+# Chinese 产品共创; the boundary text points to the pm node instead.
 assert_not_contains "$PD_MD" "产品共创"     "Mode A removed: no 产品共创 co-creation body"
 assert_not_contains "$PD_MD" "有定见"       "Mode A removed: no 有定见 probe protocol"
-assert_contains "$PD_MD" "pm-executor"     "routes PM co-creation to pm-executor"
+assert_contains "$PD_MD" "the pm node"     "routes PM co-creation to the pm node"
 
 echo ""
 echo "RESULT: $PASS passed, $FAIL failed"

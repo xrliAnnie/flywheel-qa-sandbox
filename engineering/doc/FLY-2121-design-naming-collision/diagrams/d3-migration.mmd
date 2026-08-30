@@ -1,0 +1,25 @@
+flowchart TB
+  M["PR 合入 main<br/>(不触发部署 - FLY-1959)"]
+  R["00:00 / 12:00 部署班车<br/>Bridge 重启"]
+  P["纯读预检: 注册表加载+全部校验<br/>失败则不启动、数据库零改动"]
+  S1["清理事务(单事务、可重复执行):<br/>菜单绑定换词 design → product_design_flow<br/>删 11 个零使用模板(逐个验证 0 使用 0 绑定,<br/>任一不满足即整体回滚并拒绝启动)"]
+  S2["种子导入: 各活跃模板 版本+1<br/>逐个核对导入结果,不符即不 ready"]
+  SPLIT["从这一刻起"]
+  NEW["新 run: 全部新名"]
+  OLD["旧 run: 原名原样继续跑"]
+  A["A 类兼容: 历史解码<br/>(旧快照/旧分类词/显示翻译)<br/>永久保留 - 历史永远可读"]
+  B["B 类兼容: 活跃旧 run 的执行分支<br/>(打 FLY-2121-legacy 标记)"]
+  CEN["收场哨: 定期数活跃旧名 run<br/>归零 = 只删 B 类标记"]
+  END["后续 issue: B 类双名退场<br/>A 类作为历史解码永续"]
+  M --> R --> P --> S1 --> S2 --> SPLIT
+  SPLIT --> NEW
+  SPLIT --> OLD
+  OLD --> A
+  OLD --> B --> CEN --> END
+  style M fill:#f5f5f7,stroke:#86868b
+  style P fill:#fff4e5,stroke:#ff9500
+  style S1 fill:#fff4e5,stroke:#ff9500
+  style NEW fill:#e8f5ec,stroke:#34c759
+  style A fill:#e8f0fb,stroke:#007aff
+  style B fill:#f0e8fb,stroke:#af52de
+  style END fill:#e8f5ec,stroke:#34c759

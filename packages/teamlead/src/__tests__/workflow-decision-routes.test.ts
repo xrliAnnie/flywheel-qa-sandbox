@@ -12,7 +12,11 @@ import {
 	type WorkflowPrProbeResult,
 } from "../bridge/workflow-decision-routes.js";
 import { StateStore } from "../StateStore.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -63,6 +67,7 @@ function gitWorktree(): { path: string; head: string } {
 	);
 	execFileSync("git", ["-C", path, "add", "README.md"]);
 	execFileSync("git", ["-C", path, "commit", "-qm", "head"]);
+	installSelfHostedWorkflowAgentProject(path);
 	return {
 		path,
 		head: execFileSync("git", ["-C", path, "rev-parse", "HEAD"], {
@@ -78,9 +83,11 @@ async function reviewFixture(options: {
 	const store = await StateStore.create(":memory:");
 	const worktree = gitWorktree();
 	const materializedHead = "c".repeat(40);
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_product_v1",
-	)!;
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_product_v1",
+		)!,
+	);
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
 	store.materializeWorkflowRun({
 		runId: "run-review",

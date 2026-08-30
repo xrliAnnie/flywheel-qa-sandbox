@@ -44,7 +44,7 @@ trap 'rm -rf "$SANDBOX"' EXIT
 FIX="$SANDBOX/fixture-repo"
 mk_fixture() {
   rm -rf "$FIX"
-  mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/agents" "$FIX/menus/shapes" "$FIX/node_modules" \
+  mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/.flywheel/agents/nodes" "$FIX/node_modules" \
            "$FIX/packages/alpha/dist" "$FIX/packages/beta/dist" \
            "$FIX/packages/alpha/node_modules/zeta" \
            "$FIX/packages/alpha/node_modules/omega" \
@@ -55,8 +55,8 @@ mk_fixture() {
   cp -p "$REPO_ROOT/scripts/lib/fleet-sanitize.sh" "$FIX/scripts/lib/fleet-sanitize.sh"
   # real typescript for the run-bridge transpile step
   ln -s "$REPO_ROOT/node_modules/typescript" "$FIX/node_modules/typescript"
-  echo "# generic executor" > "$FIX/agents/generic-executor.md"
-  echo "shape: code" > "$FIX/menus/shapes/code.yaml"
+  printf 'nodes:\n  general:\n    file: nodes/general.md\n    label: General\n' > "$FIX/.flywheel/agents/registry.yaml"
+  echo "# general" > "$FIX/.flywheel/agents/nodes/general.md"
 
   cat > "$FIX/packages/alpha/package.json" <<'EOF'
 { "name": "fw-alpha", "version": "0.1.0",
@@ -104,8 +104,8 @@ LICENSE
 README.md
 .flywheel-prebuilt
 dist/run-bridge.js
-agents/generic-executor.md
-menus/shapes/code.yaml
+.flywheel/agents/registry.yaml
+.flywheel/agents/nodes/general.md
 scripts/flywheel-onboard.sh
 node_modules/fw-alpha/package.json
 node_modules/fw-alpha/dist/*
@@ -122,13 +122,15 @@ run_po() {
   # NB: overrides use a single SPACE for "none" — ${VAR:-default} treats an
   # empty string as unset and would fall back to the real policy lists.
   env PACKAGE_ONBOARD_SOURCED=1 \
+    NPM_CONFIG_CACHE="$SANDBOX/npm-cache" \
     PO_PACKAGES="alpha beta" \
     PO_PACKAGE_ASSETS=" " \
     PO_PACKAGE_ASSET_FILES=" " \
     PO_SCRIPT_FILES="flywheel-onboard.sh" \
     PO_SCRIPT_DIRS=" " \
-    PO_AGENT_FILES="generic-executor.md" \
-    PO_MENU_FILES="shapes/code.yaml" \
+    PO_AGENT_FILES="registry.yaml
+nodes/general.md" \
+    PO_MENU_FILES=" " \
     PO_FILES_ALLOWLIST="$FIX/files.allow" \
     PO_GREP_ALLOWLIST="$FIX/grep.allow" \
     bash -c 'source "$1"; shift; "$@"' _ "$PO" "$@"
@@ -142,7 +144,8 @@ if run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1; then
   ok=1
   [ -f "$TREE/node_modules/fw-alpha/dist/index.js" ] || ok=0
   [ -f "$TREE/node_modules/fw-beta/dist/index.js" ] || ok=0
-  [ -f "$TREE/menus/shapes/code.yaml" ] || ok=0
+  [ -f "$TREE/.flywheel/agents/registry.yaml" ] || ok=0
+  [ -f "$TREE/.flywheel/agents/nodes/general.md" ] || ok=0
   [ "$(cat "$TREE/.flywheel-prebuilt")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.version' "$TREE/package.json")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.dependencies["lodash-x"]' "$TREE/package.json")" = "^1.4.0" ] || ok=0
@@ -259,11 +262,11 @@ fi
 # ── G0 · pack + gates: clean PASS ────────────────────────────────────────────
 mk_fixture
 run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1
-TARBALL="$(run_po po_pack "$TREE" "$SANDBOX/out" 2>/dev/null)"
+TARBALL="$(run_po po_pack "$TREE" "$SANDBOX/out" 2>"$SANDBOX/npm-pack.log")"
 if [ -n "$TARBALL" ] && [ -f "$TARBALL" ]; then
   pass "G0a npm pack produced a tarball"
 else
-  fail "G0a npm pack failed"; TARBALL=""
+  fail "G0a npm pack failed: $(tail -8 "$SANDBOX/npm-pack.log")"; TARBALL=""
 fi
 if [ -n "$TARBALL" ] && run_po po_gate_tarball "$TARBALL" "$FIX" >/dev/null 2>&1; then
   pass "G0b release gates PASS on a clean payload tarball"

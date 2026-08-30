@@ -78,6 +78,8 @@ import {
 import {
 	type FounderReworkHint,
 	parseFounderReworkHint,
+	resolveFounderReworkRoute,
+	resolveWorkflowReworkTarget,
 } from "./workflow-rework-hint.js";
 import {
 	type WorkflowRunNodeState,
@@ -109,6 +111,7 @@ import {
 	isWorkflowManifestLand,
 	type LoadedWorkflowSeed,
 	validateWorkflowManifest,
+	type WorkflowManifest,
 	type WorkflowTemplateOverride,
 	workflowApprovalGate,
 	workflowSeedContentHash,
@@ -119,6 +122,80 @@ import {
 	engineInvariantFromReason,
 	WorkflowEngineInvariantError,
 } from "./workflow-engine-invariant.js";
+
+export class Fly2121PreservedTemplateUnrunnableError extends Error {
+	readonly code = "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE" as const;
+
+	constructor(
+		readonly templateId: string,
+		readonly legacyRoles: readonly string[],
+		cause: Error,
+		readonly manifestUnreadable = false,
+	) {
+		super(
+			legacyRoles.length > 0
+				? `${templateId} is preserved by founder ownership but cannot run after FLY-2121 because it retains unresolvable pre-cutover roles: ${legacyRoles.join(", ")}; republish the template with registered node roles (${cause.message})`
+				: `${templateId} is preserved by founder ownership but cannot run after FLY-2121 because its published manifest does not pass current validation; repair and republish the template (${cause.message})`,
+			{ cause },
+		);
+		this.name = "Fly2121PreservedTemplateUnrunnableError";
+	}
+}
+
+export class WorkflowCatalogMigrationIntegrityError extends Error {
+	readonly code =
+		"FLY2121_WORKFLOW_CATALOG_MIGRATION_INTEGRITY_FAILED" as const;
+
+	constructor(
+		readonly stage: WorkflowCatalogMigrationIntegrityStage,
+		readonly baselineFingerprint: string,
+		readonly observedFingerprint: string,
+		readonly addedViolations: readonly WorkflowCatalogForeignKeyViolation[] = [],
+	) {
+		super(`workflow catalog migration integrity check failed at ${stage}`);
+		this.name = "WorkflowCatalogMigrationIntegrityError";
+	}
+}
+
+function normalizeWorkflowCatalogForeignKeyViolations(
+	rows: readonly unknown[],
+): WorkflowCatalogForeignKeyViolation[] {
+	return rows
+		.map((value) => {
+			const row = value as Record<string, unknown>;
+			return {
+				table: String(row.table),
+				rowId: row.rowid === null ? null : Number(row.rowid),
+				parent: String(row.parent),
+				foreignKeyId: Number(row.fkid),
+			};
+		})
+		.sort((left, right) =>
+			JSON.stringify(left).localeCompare(JSON.stringify(right)),
+		);
+}
+
+function workflowCatalogForeignKeyBaseline(
+	rows: readonly unknown[],
+): WorkflowCatalogForeignKeyBaseline {
+	const violations = normalizeWorkflowCatalogForeignKeyViolations(rows);
+	return {
+		fingerprint: canonicalSubmissionDigest(violations),
+		violations,
+	};
+}
+
+function workflowCatalogAddedForeignKeyViolations(
+	baseline: WorkflowCatalogForeignKeyBaseline,
+	observed: WorkflowCatalogForeignKeyBaseline,
+): WorkflowCatalogForeignKeyViolation[] {
+	const baselineKeys = new Set(
+		baseline.violations.map((violation) => canonicalJsonString(violation)),
+	);
+	return observed.violations.filter(
+		(violation) => !baselineKeys.has(canonicalJsonString(violation)),
+	);
+}
 
 type LeadEventAckPolicy =
 	| "question_response"
@@ -1995,6 +2072,61 @@ export class StateStore {
 		}
 		mkdirSync(dirname(destination), { recursive: true });
 		await this.db.raw.backup(destination);
+	}
+
+	/** Online backup boundary for a fail-closed startup catalog migration. */
+	async createVerifiedOnlineBackup(
+		destination: string,
+		expectedForeignKeyBaseline: WorkflowCatalogForeignKeyBaseline,
+	): Promise<void> {
+		if (this.maintenance) throw new Error("regular_store_mode_required");
+		if (
+			this.dbPath === ":memory:" ||
+			!destination.trim() ||
+			existsSync(destination)
+		) {
+			throw new Error("workflow_catalog_backup_destination_invalid");
+		}
+		mkdirSync(dirname(destination), { recursive: true });
+		try {
+			await this.db.raw.backup(destination);
+			const backup = new BetterSqlite3(destination, {
+				readonly: true,
+				fileMustExist: true,
+			});
+			try {
+				const quickCheck = backup.pragma("quick_check", { simple: true });
+				const observedForeignKeyBaseline = workflowCatalogForeignKeyBaseline(
+					backup.pragma("foreign_key_check") as unknown[],
+				);
+				if (quickCheck !== "ok") {
+					throw new WorkflowCatalogMigrationIntegrityError(
+						"backup_quick_check",
+						expectedForeignKeyBaseline.fingerprint,
+						observedForeignKeyBaseline.fingerprint,
+					);
+				}
+				if (
+					observedForeignKeyBaseline.fingerprint !==
+					expectedForeignKeyBaseline.fingerprint
+				) {
+					throw new WorkflowCatalogMigrationIntegrityError(
+						"backup_foreign_key_baseline_drift",
+						expectedForeignKeyBaseline.fingerprint,
+						observedForeignKeyBaseline.fingerprint,
+						workflowCatalogAddedForeignKeyViolations(
+							expectedForeignKeyBaseline,
+							observedForeignKeyBaseline,
+						),
+					);
+				}
+			} finally {
+				backup.close();
+			}
+		} catch (error) {
+			rmSync(destination, { force: true });
+			throw error;
+		}
 	}
 
 	maintenanceIntegrityCheck(): {
@@ -6520,6 +6652,27 @@ export class StateStore {
 				detail JSON
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_catalog_migration_audit (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at TEXT NOT NULL DEFAULT (datetime('now')),
+				migration_id TEXT NOT NULL,
+				item_kind TEXT NOT NULL CHECK (
+					item_kind IN ('template_cleanup','seed_update')
+				),
+				item_id TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				detail JSON NOT NULL,
+				UNIQUE (migration_id, item_kind, item_id, detail)
+			)
+		`);
+		for (const action of ["update", "delete"] as const) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS workflow_catalog_migration_audit_no_${action}
+				BEFORE ${action.toUpperCase()} ON workflow_catalog_migration_audit
+				BEGIN SELECT RAISE(ABORT, 'workflow_catalog_migration_audit is append-only'); END
+			`);
+		}
 		const workflowTemplateAuditSql = (
 			this.db.raw
 				.prepare(
@@ -20430,6 +20583,57 @@ export class StateStore {
 		) as unknown as WorkflowTemplateAuditRow[];
 	}
 
+	listWorkflowCatalogMigrationAudit(): WorkflowCatalogMigrationAuditRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_catalog_migration_audit ORDER BY id",
+			[],
+		) as unknown as WorkflowCatalogMigrationAuditRow[];
+	}
+
+	private preservedTemplateUnrunnableDiagnostic(
+		templateId: string,
+	):
+		| { legacyRoles: string[]; manifestUnreadable: boolean }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT detail FROM workflow_catalog_migration_audit
+			 WHERE migration_id = 'FLY-2121'
+			   AND item_kind = 'seed_update'
+			   AND item_id = ?
+			   AND reason = 'founder_owned'
+			 ORDER BY id DESC
+			 LIMIT 1`,
+			[templateId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const detail = JSON.parse(String(row.detail)) as {
+				dispatchStatus?: unknown;
+				diagnosticCode?: unknown;
+				manifestStatus?: unknown;
+				unresolvableRoles?: unknown;
+			};
+			if (
+				detail.dispatchStatus !== "unrunnable" ||
+				detail.diagnosticCode !== "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE"
+			) {
+				return undefined;
+			}
+			const legacyRoles = Array.isArray(detail.unresolvableRoles)
+				? detail.unresolvableRoles.filter(
+						(role): role is string => typeof role === "string" && !!role.trim(),
+					)
+				: [];
+			const manifestUnreadable = detail.manifestStatus === "unreadable";
+			return legacyRoles.length > 0 || manifestUnreadable
+				? { legacyRoles, manifestUnreadable }
+				: undefined;
+		} catch {
+			// Append-only audit corruption must not mask the original resolver error.
+			return undefined;
+		}
+	}
+
 	/** Internal authoring API. HTTP intentionally exposes no mutation route. */
 	createWorkflowTemplateRevision(input: {
 		templateId: string;
@@ -20773,6 +20977,449 @@ export class StateStore {
 		});
 		this.save();
 		return { status: existing ? "updated" : "imported", revision };
+	}
+
+	/**
+	 * Pure-read plan for a startup catalog cutover. Validation includes the
+	 * current owner/hash/revision facts that compilation alone cannot prove.
+	 */
+	preflightWorkflowCatalogMigration(
+		input: WorkflowCatalogMigrationInput,
+	): WorkflowCatalogMigrationPlan {
+		const foreignKeyBaseline = workflowCatalogForeignKeyBaseline(
+			this.db.raw.pragma("foreign_key_check") as unknown[],
+		);
+		const sourceCategory = input.categoryRename.from.trim();
+		const targetCategory = input.categoryRename.to.trim();
+		if (!sourceCategory || !targetCategory || sourceCategory === targetCategory) {
+			throw new Error("workflow_catalog_category_rename_invalid");
+		}
+		if (
+			new Set(input.removableTemplateIds).size !==
+			input.removableTemplateIds.length
+		) {
+			throw new Error("workflow_catalog_removable_template_duplicate");
+		}
+		if (
+			new Set(input.seeds.map((seed) => seed.templateId)).size !==
+			input.seeds.length
+		) {
+			throw new Error("workflow_catalog_seed_duplicate");
+		}
+		const requiresSkipAudit = (
+			itemKind: "template_cleanup" | "seed_update",
+			templateId: string,
+			detail: string,
+		): boolean =>
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_catalog_migration_audit
+				 WHERE migration_id = 'FLY-2121' AND item_kind = ?
+				   AND item_id = ? AND detail = ?
+				 LIMIT 1`,
+				[itemKind, templateId, detail],
+			).length === 0;
+		const resolvableRoleNames = new Set(
+			input.resolvableRoleNames.map((role) => role.trim()).filter(Boolean),
+		);
+
+		const sourceRows = this.workflowSelectAll(
+			`SELECT project FROM workflow_category_binding
+			 WHERE task_category = ? ORDER BY project`,
+			[sourceCategory],
+		);
+		for (const row of sourceRows) {
+			const project = String(row.project);
+			const conflict = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_category_binding
+				 WHERE project = ? AND task_category = ? LIMIT 1`,
+				[project, targetCategory],
+			)[0];
+			if (conflict) {
+				throw new Error(`workflow_catalog_category_conflict:${project}`);
+			}
+		}
+
+		const templatesToDelete: string[] = [];
+		const templateSkips: WorkflowCatalogTemplateSkipPlan[] = [];
+		for (const templateId of input.removableTemplateIds) {
+			const template = this.getWorkflowTemplate(templateId);
+			if (!template) continue;
+			if (template.seed_owner !== "system" || template.created_by !== "system") {
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "template_cleanup",
+					reason: "founder_owned",
+					seedOwner: template.seed_owner,
+					createdBy: template.created_by,
+					seedContentHash: template.seed_content_hash,
+				});
+				templateSkips.push({
+					templateId,
+					reason: "founder_owned",
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"template_cleanup",
+						templateId,
+						auditDetail,
+					),
+				});
+				continue;
+			}
+			if (template.retired_at === null) {
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "template_cleanup",
+					reason: "not_retired",
+					seedContentHash: template.seed_content_hash,
+					publishedRevision: template.current_published_revision,
+				});
+				templateSkips.push({
+					templateId,
+					reason: "not_retired",
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"template_cleanup",
+						templateId,
+						auditDetail,
+					),
+				});
+				continue;
+			}
+			const runRefs = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM workflow_run WHERE template_id = ?",
+					[templateId],
+				)[0]?.count ?? 0,
+			);
+			const bindingRefs = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM workflow_category_binding WHERE template_id = ?",
+					[templateId],
+				)[0]?.count ?? 0,
+			);
+			if (runRefs > 0 || bindingRefs > 0) {
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "template_cleanup",
+					reason: "referenced",
+					runRefs,
+					bindingRefs,
+				});
+				templateSkips.push({
+					templateId,
+					reason: "referenced",
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"template_cleanup",
+						templateId,
+						auditDetail,
+					),
+				});
+				continue;
+			}
+			templatesToDelete.push(templateId);
+		}
+
+		const seeds: WorkflowCatalogSeedPlan[] = input.seeds.map((seed) => {
+			const manifest = validateWorkflowManifest(seed.manifest);
+			const computedHash = workflowSeedContentHash({ ...seed, manifest });
+			if (computedHash !== seed.contentHash) {
+				throw new Error(`workflow seed content hash mismatch: ${seed.templateId}`);
+			}
+			const existing = this.getWorkflowTemplate(seed.templateId);
+			if (existing?.seed_content_hash === seed.contentHash) {
+				if (existing.current_published_revision === null) {
+					throw new Error(
+						`workflow_catalog_seed_unpublished:${seed.templateId}`,
+					);
+				}
+				return {
+					templateId: seed.templateId,
+					status: "unchanged" as const,
+					expectedRevision: existing.current_published_revision,
+				};
+			}
+			if (
+				existing &&
+				(existing.seed_owner === "founder" || existing.created_by !== "system")
+			) {
+				const publishedRevision = existing.current_published_revision
+					? this.getWorkflowTemplateRevision(
+							existing.template_id,
+							existing.current_published_revision,
+						)
+					: undefined;
+				let publishedManifest: WorkflowManifest | undefined;
+				let manifestValidationError: string | undefined;
+				if (publishedRevision) {
+					try {
+						publishedManifest = validateWorkflowManifest(
+							JSON.parse(publishedRevision.manifest),
+						);
+					} catch (error) {
+						manifestValidationError =
+							error instanceof Error ? error.message : String(error);
+					}
+				}
+				const unresolvableRoles =
+					publishedManifest?.schema_version === 2
+						? [
+								...new Set(
+									publishedManifest.nodes.flatMap((node) =>
+										node.role && !resolvableRoleNames.has(node.role)
+											? [node.role]
+											: [],
+									),
+								),
+							].sort()
+						: [];
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "seed_update",
+					reason: "founder_owned",
+					seedOwner: existing.seed_owner,
+					createdBy: existing.created_by,
+					currentSeedContentHash: existing.seed_content_hash,
+					targetSeedContentHash: seed.contentHash,
+					publishedRevision: existing.current_published_revision,
+					...(unresolvableRoles.length > 0 || manifestValidationError
+						? {
+								dispatchStatus: "unrunnable",
+								diagnosticCode:
+									"FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE",
+								...(unresolvableRoles.length > 0
+									? { unresolvableRoles }
+									: {}),
+								...(manifestValidationError
+									? {
+											manifestStatus: "unreadable",
+											manifestValidationError,
+										}
+									: {}),
+							}
+						: {}),
+				});
+				return {
+					templateId: seed.templateId,
+					status: "skipped" as const,
+					expectedRevision: existing.current_published_revision,
+					reason: "founder_owned" as const,
+					...(unresolvableRoles.length > 0 ? { unresolvableRoles } : {}),
+					...(manifestValidationError ? { manifestUnreadable: true } : {}),
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"seed_update",
+						seed.templateId,
+						auditDetail,
+					),
+				};
+			}
+			const expectedRevision = existing
+				? Number(
+						this.workflowSelectAll(
+							`SELECT COALESCE(MAX(revision), 0) AS revision
+							 FROM workflow_template_revision WHERE template_id = ?`,
+							[seed.templateId],
+						)[0]?.revision ?? 0,
+					) + 1
+				: 1;
+			return {
+				templateId: seed.templateId,
+				status: existing ? ("updated" as const) : ("imported" as const),
+				expectedRevision,
+			};
+		});
+
+		return {
+			requiresMutation:
+				sourceRows.length > 0 ||
+				templatesToDelete.length > 0 ||
+				templateSkips.some((skip) => skip.requiresAudit) ||
+				seeds.some(
+					(seed) =>
+						(seed.status !== "unchanged" && seed.status !== "skipped") ||
+						seed.requiresAudit === true,
+				),
+			bindingRows: sourceRows.length,
+			templatesToDelete,
+			templateSkips,
+			seeds,
+			foreignKeyBaseline,
+		};
+	}
+
+	/** Apply one preflighted catalog cutover in one SQLite batch transaction. */
+	applyWorkflowCatalogMigration(
+		input: WorkflowCatalogMigrationInput,
+		hooks: WorkflowCatalogMigrationHooks = {},
+	): WorkflowCatalogMigrationPlan {
+		let appliedPlan: WorkflowCatalogMigrationPlan | undefined;
+		this.db.transaction(() => {
+			const plan = this.preflightWorkflowCatalogMigration(input);
+			const foreignKeyBaseline =
+				hooks.foreignKeyBaseline ?? plan.foreignKeyBaseline;
+			if (
+				plan.foreignKeyBaseline.fingerprint !== foreignKeyBaseline.fingerprint
+			) {
+				throw new WorkflowCatalogMigrationIntegrityError(
+					"apply_foreign_key_baseline_drift",
+					foreignKeyBaseline.fingerprint,
+					plan.foreignKeyBaseline.fingerprint,
+					workflowCatalogAddedForeignKeyViolations(
+						foreignKeyBaseline,
+						plan.foreignKeyBaseline,
+					),
+				);
+			}
+			appliedPlan = plan;
+			if (!plan.requiresMutation) return;
+
+			this.db.run(
+				`UPDATE workflow_category_binding
+				 SET task_category = ?, updated_at = datetime('now')
+				 WHERE task_category = ?`,
+				[input.categoryRename.to, input.categoryRename.from],
+			);
+			if (this.db.getRowsModified() !== plan.bindingRows) {
+				throw new Error("workflow_catalog_binding_rename_drift");
+			}
+			const oldBindingCount = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM workflow_category_binding WHERE task_category = ?",
+					[input.categoryRename.from],
+				)[0]?.count ?? 0,
+			);
+			if (oldBindingCount !== 0) {
+				throw new Error("workflow_catalog_old_binding_remains");
+			}
+			hooks.onStep?.("bindings");
+
+			if (plan.templatesToDelete.length > 0) {
+				this.db.run(
+					"DROP TRIGGER IF EXISTS workflow_template_revision_no_delete",
+				);
+				this.db.run(
+					"DROP TRIGGER IF EXISTS workflow_template_publication_no_delete",
+				);
+				for (const templateId of plan.templatesToDelete) {
+					this.db.run(
+						"UPDATE workflow_template SET current_published_revision = NULL WHERE template_id = ?",
+						[templateId],
+					);
+					this.db.run(
+						"DELETE FROM workflow_template_publication WHERE template_id = ?",
+						[templateId],
+					);
+					this.db.run(
+						"DELETE FROM workflow_template_revision WHERE template_id = ?",
+						[templateId],
+					);
+					this.db.run("DELETE FROM workflow_template WHERE template_id = ?", [
+						templateId,
+					]);
+					hooks.onStep?.(`delete:${templateId}`);
+				}
+				this.db.run(`
+					CREATE TRIGGER workflow_template_revision_no_delete
+					BEFORE DELETE ON workflow_template_revision
+					BEGIN SELECT RAISE(ABORT, 'workflow_template_revision is append-only'); END
+				`);
+				this.db.run(`
+					CREATE TRIGGER workflow_template_publication_no_delete
+					BEFORE DELETE ON workflow_template_publication
+					BEGIN SELECT RAISE(ABORT, 'workflow_template_publication is append-only'); END
+				`);
+			}
+
+			for (const skip of plan.templateSkips) {
+				if (!skip.requiresAudit) continue;
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_catalog_migration_audit
+					 (migration_id, item_kind, item_id, reason, detail)
+					 VALUES ('FLY-2121', 'template_cleanup', ?, ?, ?)`,
+					[skip.templateId, skip.reason, skip.auditDetail],
+				);
+				hooks.onStep?.(`skip:${skip.templateId}`);
+			}
+
+			for (const [index, seed] of input.seeds.entries()) {
+				const expected = plan.seeds[index]!;
+				if (expected.templateId !== seed.templateId) {
+					throw new Error("workflow_catalog_seed_plan_drift");
+				}
+				if (expected.status === "skipped") {
+					if (expected.requiresAudit && expected.auditDetail) {
+						this.db.run(
+							`INSERT OR IGNORE INTO workflow_catalog_migration_audit
+							 (migration_id, item_kind, item_id, reason, detail)
+							 VALUES ('FLY-2121', 'seed_update', ?, ?, ?)`,
+							[
+								seed.templateId,
+								expected.reason ?? "founder_owned",
+								expected.auditDetail,
+							],
+						);
+					}
+					hooks.onStep?.(`skip:${seed.templateId}`);
+					continue;
+				}
+				const result = this.importWorkflowTemplateSeed(seed);
+				if (
+					result.status !== expected.status ||
+					result.revision !== expected.expectedRevision
+				) {
+					throw new Error(`workflow_catalog_seed_result_mismatch:${seed.templateId}`);
+				}
+				const row = this.getWorkflowTemplate(seed.templateId);
+				if (
+					row?.seed_content_hash !== seed.contentHash ||
+					row.current_published_revision !== expected.expectedRevision
+				) {
+					throw new Error(`workflow_catalog_seed_postcondition:${seed.templateId}`);
+				}
+				hooks.onStep?.(`seed:${seed.templateId}`);
+			}
+
+			for (const templateId of plan.templatesToDelete) {
+				if (this.getWorkflowTemplate(templateId)) {
+					throw new Error(`workflow_catalog_template_delete_failed:${templateId}`);
+				}
+			}
+			const requiredTriggers = new Set([
+				"workflow_template_revision_no_delete",
+				"workflow_template_publication_no_delete",
+			]);
+			for (const row of this.workflowSelectAll(
+				`SELECT name FROM sqlite_master
+				 WHERE type = 'trigger' AND name IN (
+					   'workflow_template_revision_no_delete',
+					   'workflow_template_publication_no_delete'
+					 )`,
+					[],
+				)) {
+				requiredTriggers.delete(String(row.name));
+			}
+			if (requiredTriggers.size > 0) {
+				throw new Error("workflow_catalog_delete_trigger_missing");
+			}
+			const observedForeignKeyBaseline = workflowCatalogForeignKeyBaseline(
+				this.db.raw.pragma("foreign_key_check") as unknown[],
+			);
+			const addedViolations = workflowCatalogAddedForeignKeyViolations(
+				foreignKeyBaseline,
+				observedForeignKeyBaseline,
+			);
+			if (addedViolations.length > 0) {
+				throw new WorkflowCatalogMigrationIntegrityError(
+					"apply_foreign_key_violation",
+					foreignKeyBaseline.fingerprint,
+					observedForeignKeyBaseline.fingerprint,
+					addedViolations,
+				);
+			}
+			hooks.onStep?.("verified");
+		});
+		return appliedPlan!;
 	}
 
 	retireWorkflowTemplate(input: {
@@ -21458,13 +22105,37 @@ export class StateStore {
 		);
 		if (!revision)
 			throw new Error("published workflow template revision not found");
-		const base = validateWorkflowManifest(JSON.parse(revision.manifest));
+		let base: WorkflowManifest;
+		try {
+			base = validateWorkflowManifest(JSON.parse(revision.manifest));
+		} catch (error) {
+			const diagnostic =
+				this.preservedTemplateUnrunnableDiagnostic(
+					template.template_id,
+				);
+			if (
+				diagnostic?.manifestUnreadable &&
+				error instanceof Error
+			) {
+				throw new Fly2121PreservedTemplateUnrunnableError(
+					template.template_id,
+					diagnostic.legacyRoles,
+					error,
+					true,
+				);
+			}
+			throw error;
+		}
 		const applied = input.override
 			? applyWorkflowOverride(base, input.override)
 			: { manifest: base, override: undefined };
-		const generalizedSnapshot =
-			applied.manifest.schema_version === 2
-				? buildWorkflowRunSnapshotV2({
+		let generalizedSnapshot: ReturnType<
+			typeof buildWorkflowRunSnapshotV2
+		> | undefined;
+		try {
+			generalizedSnapshot =
+				applied.manifest.schema_version === 2
+					? buildWorkflowRunSnapshotV2({
 						template: {
 							id: template.template_id,
 							revision: template.current_published_revision,
@@ -21491,8 +22162,28 @@ export class StateStore {
 									},
 								}
 							: {}),
-					})
-				: undefined;
+						})
+					: undefined;
+		} catch (error) {
+			const diagnostic =
+				this.preservedTemplateUnrunnableDiagnostic(
+					template.template_id,
+				);
+			if (
+				diagnostic &&
+				diagnostic.legacyRoles.length > 0 &&
+				error instanceof Error &&
+				error.name === "WorkflowMenuValidationError" &&
+				(error as Error & { code?: string }).code === "NODE_NOT_REGISTERED"
+			) {
+				throw new Fly2121PreservedTemplateUnrunnableError(
+					template.template_id,
+					diagnostic.legacyRoles,
+					error,
+				);
+			}
+			throw error;
+		}
 		const engineSnapshot =
 			applied.manifest.schema_version === 1 && input.startReservation
 				? buildWorkflowRunSnapshotV1({
@@ -28537,10 +29228,10 @@ export class StateStore {
 
 	appendWorkflowReworkRouteRevision(input: {
 		requestId: string;
-		targetNodeId: "design" | "implement" | "qa";
+		targetNodeId: string;
 		targetAttempt: number;
 		preferredActorExecutionId: string;
-		invalidationScope: Array<"design" | "implement" | "qa">;
+		invalidationScope: string[];
 		verificationPolicy: Array<
 			"design_review" | "code_review" | "qa_retest" | "founder_gate"
 		>;
@@ -28548,34 +29239,6 @@ export class StateStore {
 		interpretationReason: string;
 		now: string;
 	}): { ok: true; revision: number } | { ok: false; reason: string } {
-		const sameSequence = (left: readonly string[], right: readonly string[]) =>
-			left.length === right.length &&
-			left.every((value, index) => value === right[index]);
-		const routeIsValid =
-			(input.targetNodeId === "design" &&
-				sameSequence(input.invalidationScope, ["design"]) &&
-				sameSequence(input.verificationPolicy, [
-					"design_review",
-					"founder_gate",
-				])) ||
-			(input.targetNodeId === "design" &&
-				sameSequence(input.invalidationScope, ["design", "implement", "qa"]) &&
-				sameSequence(input.verificationPolicy, [
-					"design_review",
-					"code_review",
-					"qa_retest",
-					"founder_gate",
-				])) ||
-			(input.targetNodeId === "implement" &&
-				sameSequence(input.invalidationScope, ["implement", "qa"]) &&
-				sameSequence(input.verificationPolicy, [
-					"code_review",
-					"qa_retest",
-					"founder_gate",
-				])) ||
-			(input.targetNodeId === "qa" &&
-				sameSequence(input.invalidationScope, ["qa"]) &&
-				sameSequence(input.verificationPolicy, ["qa_retest", "founder_gate"]));
 		if (
 			!input.requestId ||
 			!input.preferredActorExecutionId ||
@@ -28583,8 +29246,7 @@ export class StateStore {
 			!input.interpretationReason.trim() ||
 			!Number.isInteger(input.targetAttempt) ||
 			input.targetAttempt < 1 ||
-			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!routeIsValid
+			!StateStore.workflowFiniteTimestamp(input.now)
 		) {
 			return { ok: false, reason: "invalid_rework_route" };
 		}
@@ -28619,8 +29281,43 @@ export class StateStore {
 			}
 			const run = this.getWorkflowRun(request.run_id);
 			const actor = this.getWorkflowActor(input.preferredActorExecutionId);
+			let routeIsValid = false;
+			if (run?.snapshot) {
+				try {
+					const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+					const target = snapshot.resolved.nodes.find(
+						(node) => node.id === input.targetNodeId,
+					);
+					if (
+						target &&
+						(target.type === "design" ||
+							target.type === "implement" ||
+							target.type === "qa")
+					) {
+						const expected = resolveFounderReworkRoute(snapshot, target.type);
+						const sameSequence = (
+							left: readonly string[],
+							right: readonly string[],
+						) =>
+							left.length === right.length &&
+							left.every((value, index) => value === right[index]);
+						routeIsValid =
+							expected.targetNodeId === input.targetNodeId &&
+							sameSequence(expected.invalidationScope, input.invalidationScope) &&
+							sameSequence(
+								expected.verificationPolicy,
+								input.verificationPolicy,
+							);
+					}
+				} catch {
+					// Invalid or ambiguous semantic routes fail closed below.
+				}
+			}
+			if (!run || !routeIsValid) {
+				result = { ok: false, reason: "invalid_rework_route" };
+				return;
+			}
 			if (
-				!run ||
 				!actor ||
 				actor.project_name !== run.project_name ||
 				actor.issue_id !== run.issue_id ||
@@ -31454,6 +32151,7 @@ export class StateStore {
 				>;
 				if (
 					typeof payload.requestId === "string" &&
+					typeof payload.targetNodeId === "string" &&
 					typeof payload.targetAttempt === "number" &&
 					typeof payload.preferredActorExecutionId === "string"
 				) {
@@ -31461,7 +32159,7 @@ export class StateStore {
 						ok: true,
 						idempotentReplay: true,
 						requestId: payload.requestId,
-						targetNodeId: "implement",
+						targetNodeId: payload.targetNodeId,
 						targetAttempt: payload.targetAttempt,
 						preferredActorExecutionId: payload.preferredActorExecutionId,
 					};
@@ -31520,8 +32218,15 @@ export class StateStore {
 			) {
 				return;
 			}
+			let resolvedRoute: ReturnType<typeof resolveFounderReworkRoute>;
+			try {
+				resolvedRoute = resolveFounderReworkRoute(snapshot, "implement");
+			} catch {
+				result = { ok: false, reason: "engine_land_rework_target_invalid" };
+				return;
+			}
 			const target = snapshot.resolved.nodes.find(
-				(node) => node.id === "implement",
+				(node) => node.id === resolvedRoute.targetNodeId,
 			);
 			if (!target?.dispatch || target.type === "gate") {
 				result = { ok: false, reason: "engine_land_rework_target_invalid" };
@@ -31558,8 +32263,8 @@ export class StateStore {
 					(max, candidate) => Math.max(max, candidate.attempt),
 					0,
 				) || 1;
-			const invalidationScope = ["implement", "qa"];
-			const verificationPolicy = ["code_review", "qa_retest", "founder_gate"];
+			const invalidationScope = resolvedRoute.invalidationScope;
+			const verificationPolicy = resolvedRoute.verificationPolicy;
 			const authorityContext = {
 				authority: "engine",
 				sourceEventId,
@@ -31643,11 +32348,11 @@ export class StateStore {
 			const staleClaims = this.workflowSelectAll(
 				`SELECT c.id, c.node_id FROM workflow_claims c
 				  WHERE c.workflow_run_id = ?
-				    AND (c.predicate = 'founder_approved' OR c.node_id IN ('implement','qa'))
+				    AND (c.predicate = 'founder_approved' OR c.node_id IN (${invalidationScope.map(() => "?").join(",") || "NULL"}))
 				    AND NOT EXISTS (
 				      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id
 				    )`,
-				[input.runId],
+				[input.runId, ...invalidationScope],
 			);
 			for (const stale of staleClaims) {
 				this.revokeWorkflowClaimTx({
@@ -31810,6 +32515,13 @@ export class StateStore {
 			)[0];
 			if (prior) {
 				try {
+					const priorRun = this.getWorkflowRun(input.runId);
+					const requestedTargetNodeId = priorRun?.snapshot
+						? resolveWorkflowReworkTarget(
+								parseWorkflowRunSnapshot(priorRun.snapshot),
+								input.targetNodeId,
+							).id
+						: input.targetNodeId;
 					const payload = JSON.parse(prior.payload as string) as {
 						requestId?: unknown;
 						targetNodeId?: unknown;
@@ -31821,7 +32533,7 @@ export class StateStore {
 					};
 					if (
 						prior.kind !== "operator_rework_requested" ||
-						payload.targetNodeId !== input.targetNodeId ||
+						payload.targetNodeId !== requestedTargetNodeId ||
 						payload.feedback !== input.feedback.trim() ||
 						payload.principal !== input.principal ||
 						canonicalSubmissionDigest(payload.escalationAck ?? null) !==
@@ -31836,7 +32548,7 @@ export class StateStore {
 					result = {
 						ok: true,
 						requestId: payload.requestId,
-						targetNodeId: input.targetNodeId,
+						targetNodeId: requestedTargetNodeId,
 						targetAttempt: payload.targetAttempt,
 						preferredActorExecutionId: payload.preferredActorExecutionId,
 						idempotentReplay: true,
@@ -32059,10 +32771,10 @@ export class StateStore {
 				result = { ok: false, reason: "invalid_snapshot" };
 				return;
 			}
-			const target = snapshot.resolved.nodes.find(
-				(node) => node.id === input.targetNodeId,
-			);
-			if (!target?.dispatch || target.type === "gate") {
+			let target: ReturnType<typeof resolveWorkflowReworkTarget>;
+			try {
+				target = resolveWorkflowReworkTarget(snapshot, input.targetNodeId);
+			} catch {
 				result = { ok: false, reason: "invalid_rework_target" };
 				return;
 			}
@@ -38655,7 +39367,7 @@ export class StateStore {
 					? activeRoute!.verification_policy
 					: reworkAuthority === "qa"
 						? ["code_review", "qa_retest"]
-						: target.id === "design"
+						: target.type === "design"
 							? ["design_review", "code_review", "qa_retest", "founder_gate"]
 							: ["code_review", "qa_retest", "founder_gate"];
 				this.db.run(
@@ -39888,8 +40600,8 @@ export class StateStore {
 		approvedHead: string;
 		feedback: string;
 		sourceEventId: string;
-		targetNodeId: "design" | "implement" | "qa";
-		invalidationScope: Array<"design" | "implement" | "qa">;
+		targetNodeId: string;
+		invalidationScope: string[];
 		verificationPolicy: Array<
 			"design_review" | "code_review" | "qa_retest" | "founder_gate"
 		>;
@@ -40522,6 +41234,25 @@ export class StateStore {
 				} catch {
 					throw new Error("founder feedback source payload invalid: snapshot");
 				}
+				let resolvedFounderRework:
+					| (ReturnType<typeof resolveFounderReworkRoute> & {
+							interpretedBy: string;
+							interpretationReason: string;
+					  })
+					| undefined;
+				if (founderRework) {
+					try {
+						resolvedFounderRework = {
+							...resolveFounderReworkRoute(snapshot, founderRework.target),
+							interpretedBy: founderRework.interpretedBy,
+							interpretationReason: founderRework.interpretationReason,
+						};
+					} catch {
+						throw new Error(
+							"founder feedback source payload invalid: rework target",
+						);
+					}
+				}
 				const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
 				const feedbackLoop = snapshot.manifest.loops.find(
 					(loop) =>
@@ -40535,16 +41266,22 @@ export class StateStore {
 				const questionId =
 					typeof payload.question_id === "string" ? payload.question_id : "";
 				if (run.current_node_id !== gateNodeId) {
-					const cutoffTarget = founderRework?.target ?? feedbackLoop.to;
-					if (
-						cutoffTarget !== "design" &&
-						cutoffTarget !== "implement" &&
-						cutoffTarget !== "qa"
-					) {
+					const cutoffTarget =
+						resolvedFounderRework?.targetNodeId ?? feedbackLoop.to;
+					const cutoffNode = snapshot.resolved.nodes.find(
+						(node) => node.id === cutoffTarget,
+					);
+					if (!cutoffNode?.dispatch || cutoffNode.type === "gate") {
 						throw new Error(
 							"founder feedback source payload invalid: rework target",
 						);
 					}
+					const defaultRoute =
+						cutoffNode.type === "design" ||
+						cutoffNode.type === "implement" ||
+						cutoffNode.type === "qa"
+							? resolveFounderReworkRoute(snapshot, cutoffNode.type)
+							: undefined;
 					const early = this.openPendingCarryoverFounderFeedbackTx({
 						run,
 						snapshot,
@@ -40553,15 +41290,13 @@ export class StateStore {
 						feedback: response.feedback,
 						sourceEventId: input.sourceEventId,
 						targetNodeId: cutoffTarget,
-						invalidationScope: founderRework?.invalidationScope ?? [
-							"implement",
-							"qa",
-						],
-						verificationPolicy: founderRework?.verificationPolicy ?? [
-							"code_review",
-							"qa_retest",
-							"founder_gate",
-						],
+						invalidationScope:
+							resolvedFounderRework?.invalidationScope ??
+							defaultRoute?.invalidationScope ??
+							[cutoffTarget],
+						verificationPolicy:
+							resolvedFounderRework?.verificationPolicy ??
+							defaultRoute?.verificationPolicy ?? ["founder_gate"],
 						now: input.at ?? new Date().toISOString(),
 					});
 					if (!early) {
@@ -40686,7 +41421,7 @@ export class StateStore {
 				}
 				let effectiveTargetNodeId = transition.targetNodeId;
 				let effectiveTargetAttempt = transition.targetAttempt;
-				if (founderRework) {
+				if (resolvedFounderRework) {
 					if (!transition.reworkRequestId) {
 						throw new Error(
 							"founder feedback kickback failed: request_missing",
@@ -40694,14 +41429,15 @@ export class StateStore {
 					}
 					const priorTarget = this.listWorkflowRunNodes(
 						runId,
-						founderRework.target,
+						resolvedFounderRework.targetNodeId,
 					)
 						.filter((candidate) => candidate.execution_id)
 						.sort((left, right) => right.attempt - left.attempt)
 						.find(
 							(candidate) =>
 								candidate.attempt !== transition.targetAttempt ||
-								founderRework.target !== transition.targetNodeId,
+								resolvedFounderRework.targetNodeId !==
+									transition.targetNodeId,
 						);
 					if (!priorTarget?.execution_id) {
 						throw new Error(
@@ -40709,21 +41445,24 @@ export class StateStore {
 						);
 					}
 					const targetAttempt =
-						founderRework.target === transition.targetNodeId
+						resolvedFounderRework.targetNodeId === transition.targetNodeId
 							? transition.targetAttempt
-							: this.listWorkflowRunNodes(runId, founderRework.target).reduce(
+							: this.listWorkflowRunNodes(
+									runId,
+									resolvedFounderRework.targetNodeId,
+								).reduce(
 									(max, candidate) => Math.max(max, candidate.attempt),
 									0,
 								) + 1;
 					const interpreted = this.appendWorkflowReworkRouteRevision({
 						requestId: transition.reworkRequestId,
-						targetNodeId: founderRework.target,
+						targetNodeId: resolvedFounderRework.targetNodeId,
 						targetAttempt,
 						preferredActorExecutionId: priorTarget.execution_id,
-						invalidationScope: founderRework.invalidationScope,
-						verificationPolicy: founderRework.verificationPolicy,
-						interpretedBy: founderRework.interpretedBy,
-						interpretationReason: founderRework.interpretationReason,
+						invalidationScope: resolvedFounderRework.invalidationScope,
+						verificationPolicy: resolvedFounderRework.verificationPolicy,
+						interpretedBy: resolvedFounderRework.interpretedBy,
+						interpretationReason: resolvedFounderRework.interpretationReason,
 						now,
 					});
 					if (!interpreted.ok) {
@@ -40731,7 +41470,7 @@ export class StateStore {
 							`founder feedback source payload invalid: ${interpreted.reason}`,
 						);
 					}
-					effectiveTargetNodeId = founderRework.target;
+					effectiveTargetNodeId = resolvedFounderRework.targetNodeId;
 					effectiveTargetAttempt = targetAttempt;
 				}
 				this.db.run(
@@ -52992,6 +53731,16 @@ export interface WorkflowTemplateAuditRow {
 	detail: string | null;
 }
 
+export interface WorkflowCatalogMigrationAuditRow {
+	id: number;
+	at: string;
+	migration_id: string;
+	item_kind: "template_cleanup" | "seed_update";
+	item_id: string;
+	reason: "founder_owned" | "not_retired" | "referenced";
+	detail: string;
+}
+
 export type WorkflowTemplatePublishResult =
 	| { status: "published"; revision: number }
 	| { status: "conflict"; currentRevision: number | null }
@@ -53014,6 +53763,65 @@ export type WorkflowTemplateSeedImportResult = {
 	status: "imported" | "updated" | "unchanged" | "refused";
 	revision: number;
 };
+
+export interface WorkflowCatalogMigrationInput {
+	categoryRename: { from: string; to: string };
+	removableTemplateIds: readonly string[];
+	seeds: readonly LoadedWorkflowSeed[];
+	resolvableRoleNames: readonly string[];
+}
+
+export interface WorkflowCatalogSeedPlan {
+	templateId: string;
+	status:
+		| Exclude<WorkflowTemplateSeedImportResult["status"], "refused">
+		| "skipped";
+	expectedRevision: number | null;
+	reason?: "founder_owned";
+	unresolvableRoles?: string[];
+	manifestUnreadable?: boolean;
+	auditDetail?: string;
+	requiresAudit?: boolean;
+}
+
+export interface WorkflowCatalogTemplateSkipPlan {
+	templateId: string;
+	reason: "founder_owned" | "not_retired" | "referenced";
+	auditDetail: string;
+	requiresAudit: boolean;
+}
+
+export interface WorkflowCatalogMigrationPlan {
+	requiresMutation: boolean;
+	bindingRows: number;
+	templatesToDelete: string[];
+	templateSkips: WorkflowCatalogTemplateSkipPlan[];
+	seeds: WorkflowCatalogSeedPlan[];
+	foreignKeyBaseline: WorkflowCatalogForeignKeyBaseline;
+}
+
+export interface WorkflowCatalogMigrationHooks {
+	onStep?: (step: string) => void;
+	foreignKeyBaseline?: WorkflowCatalogForeignKeyBaseline;
+}
+
+export interface WorkflowCatalogForeignKeyViolation {
+	table: string;
+	rowId: number | null;
+	parent: string;
+	foreignKeyId: number;
+}
+
+export interface WorkflowCatalogForeignKeyBaseline {
+	fingerprint: string;
+	violations: WorkflowCatalogForeignKeyViolation[];
+}
+
+export type WorkflowCatalogMigrationIntegrityStage =
+	| "backup_quick_check"
+	| "backup_foreign_key_baseline_drift"
+	| "apply_foreign_key_baseline_drift"
+	| "apply_foreign_key_violation";
 
 export interface WorkflowRunRow {
 	run_id: string;

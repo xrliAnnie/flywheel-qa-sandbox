@@ -78,7 +78,7 @@ async function compiledRun(): Promise<StateStore> {
 		startReservation: {
 			idempotencyKey: "start-1",
 			selectionDigest: "selection-1",
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			createdAt: "2026-08-14T00:00:00.000Z",
@@ -86,7 +86,7 @@ async function compiledRun(): Promise<StateStore> {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-1",
-		nodeId: "design",
+		nodeId: "eng_design",
 		attempt: 1,
 		state: "running",
 		executionId: "design-1",
@@ -241,7 +241,7 @@ function deliverFounderRework(
 	input: {
 		requestId: string;
 		runId: string;
-		nodeId: "design" | "implement" | "qa";
+		nodeId: "eng_design" | "implement" | "qa";
 		executionId: string;
 		attempt: number;
 		now: string;
@@ -400,7 +400,7 @@ function prepareCompiledFounderGate(store: StateStore, head: string) {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
 			runId: "run-1",
-			nodeId: "design",
+			nodeId: "eng_design",
 			executionId: "design-1",
 			attempt: 1,
 			expiresAt: "2026-08-14T02:00:00.000Z",
@@ -412,7 +412,7 @@ function prepareCompiledFounderGate(store: StateStore, head: string) {
 	expect(
 		store.commitWorkflowTransitionTx({
 			runId: "run-1",
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			outcome: "design_done",
@@ -453,6 +453,77 @@ function prepareCompiledFounderGate(store: StateStore, head: string) {
 }
 
 describe("founder kickback new-card loop", () => {
+	it("replays an operator semantic design target against the pinned new node id", async () => {
+		const store = await compiledRun();
+		try {
+			const now = "2026-08-14T00:30:00.000Z";
+			store.upsertWorkflowRunNode({
+				runId: "run-1",
+				nodeId: "eng_design",
+				attempt: 1,
+				state: "done",
+				executionId: "design-1",
+				endedAt: now,
+			});
+			store.upsertSession({
+				execution_id: "design-1",
+				issue_id: "FLY-1772",
+				project_name: "flywheel",
+				status: "completed",
+				pr_head_sha: "a".repeat(40),
+			});
+			store.patchSessionMetadata("design-1", {
+				pr_head_sha: "a".repeat(40),
+			});
+			(
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db.run(
+				"UPDATE workflow_run SET status = 'completed', current_node_id = 'eng_design' WHERE run_id = 'run-1'",
+			);
+			const input = {
+				runId: "run-1",
+				targetNodeId: "设计",
+				feedback: "重新做工程设计",
+				clientRequestId: "semantic-design-replay",
+				principal: "master",
+				evidence: [
+					{
+						executionId: "design-1",
+						sessionStatus: "completed",
+						lifecycleRevision: null,
+						liveness: "dead" as const,
+						observedAt: now,
+					},
+				],
+				now,
+			};
+			const opened = store.openOperatorRework(input);
+			if (!opened.ok) throw new Error(opened.reason);
+			expect(opened).toMatchObject({
+				ok: true,
+				idempotentReplay: false,
+				targetNodeId: "eng_design",
+			});
+			expect(
+				store.getLatestWorkflowReworkRoute(opened.requestId),
+			).toMatchObject({
+				target_node_id: "eng_design",
+				invalidation_scope: ["eng_design", "implement", "qa"],
+			});
+			expect(
+				store.openOperatorRework({ ...input, targetNodeId: "design" }),
+			).toMatchObject({
+				ok: true,
+				idempotentReplay: true,
+				targetNodeId: "eng_design",
+			});
+		} finally {
+			store.close();
+		}
+	});
+
 	it("rejects card A, reworks a new head, emits card B, and accepts only card B", async () => {
 		const worktree = gitWorktree();
 		const head1 = worktree.head1;
@@ -465,7 +536,7 @@ describe("founder kickback new-card loop", () => {
 			expect(
 				store.commitWorkflowTransitionTx({
 					runId: "run-1",
-					nodeId: "design",
+					nodeId: "eng_design",
 					attempt: 1,
 					executionId: "design-1",
 					outcome: "design_done",
@@ -1082,21 +1153,21 @@ describe("founder kickback new-card loop", () => {
 			);
 			if (!designRoute) throw new Error("design route missing");
 			expect(designRoute).toMatchObject({
-				target_node_id: "design",
+				target_node_id: "eng_design",
 				target_attempt: 2,
-				invalidation_scope: ["design", "implement", "qa"],
+				invalidation_scope: ["eng_design", "implement", "qa"],
 			});
 			deliverFounderRework(store, {
 				requestId: designDelivery.request_id,
 				runId: "run-1",
-				nodeId: "design",
+				nodeId: "eng_design",
 				executionId: designRoute.preferred_actor_execution_id,
 				attempt: 2,
 				now: "2026-08-14T05:00:00.000Z",
 			});
 			const design = store.commitWorkflowTransitionTx({
 				runId: "run-1",
-				nodeId: "design",
+				nodeId: "eng_design",
 				attempt: 2,
 				executionId: designRoute.preferred_actor_execution_id,
 				outcome: "design_done",

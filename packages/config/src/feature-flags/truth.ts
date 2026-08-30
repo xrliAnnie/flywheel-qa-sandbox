@@ -290,6 +290,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_BRIDGE_URL: "plumbing: bridge base URL",
 	FLYWHEEL_BRIDGE_SOURCE_MODE:
 		"plumbing: source-run build identity marker, not a rollout gate",
+	FLYWHEEL_BUNDLED_REGISTRY_PATH:
+		"plumbing: bundled agent-registry file path override for packaging and hermetic tests (FLY-2121), not an on/off gate",
 	FLYWHEEL_SANDBOX_REMOTE_URL: "plumbing: remote sandbox service URL",
 	FLYWHEEL_COMM_DB: "plumbing: comm db path",
 	FLYWHEEL_COMM_DIR: "plumbing: comm dir path",

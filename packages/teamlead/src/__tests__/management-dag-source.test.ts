@@ -23,7 +23,7 @@ async function catalog(templateId = "tpl_eng_heavy") {
 }
 
 describe("management DAG source", () => {
-	it("projects current category bindings into editable design/implement/qa nodes", async () => {
+	it("projects historical bindings with decoded backend display labels", async () => {
 		const store = await catalog();
 		const projection = readManagementDags({
 			reader: store,
@@ -37,9 +37,21 @@ describe("management DAG source", () => {
 			templateId: "tpl_eng_heavy",
 			revision: 1,
 			nodes: [
-				{ name: "design", dispatch: { current: { provider: "anthropic" } } },
-				{ name: "implement", dispatch: { current: { provider: "openai" } } },
-				{ name: "qa", dispatch: { current: { provider: "anthropic" } } },
+				{
+					nodeId: "design",
+					name: "设计(工程)",
+					dispatch: { current: { provider: "anthropic" } },
+				},
+				{
+					nodeId: "implement",
+					name: "实现",
+					dispatch: { current: { provider: "openai" } },
+				},
+				{
+					nodeId: "qa",
+					name: "QA 验证",
+					dispatch: { current: { provider: "anthropic" } },
+				},
 			],
 		});
 		expect(
@@ -47,6 +59,29 @@ describe("management DAG source", () => {
 				(item) => item.projectName === "personal-assistant",
 			)?.dags,
 		).toEqual([]);
+		store.close();
+	});
+
+	it("projects current manifest labels without exposing graph or node ids", async () => {
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "test",
+		});
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		expect(dag.title).toBe("工程开发");
+		expect(dag.nodes.map((node) => [node.nodeId, node.name])).toEqual([
+			["eng_design", "设计(工程)"],
+			["implement", "实现"],
+			["qa", "QA 验证"],
+		]);
 		store.close();
 	});
 
@@ -99,12 +134,12 @@ describe("management DAG source", () => {
 		}).projectDags[0]!.dags[0]!;
 
 		expect(dag.error).toBeUndefined();
-		expect(dag.nodes.map((node) => node.name)).toEqual([
-			"design",
-			"implement",
-			"qa",
+		expect(dag.nodes.map((node) => [node.nodeId, node.name])).toEqual([
+			["design", "设计(工程)"],
+			["implement", "实现"],
+			["qa", "QA 验证"],
 		]);
-		expect(dag.nodes.some((node) => node.name === "land")).toBe(false);
+		expect(dag.nodes.some((node) => node.nodeId === "land")).toBe(false);
 		expect(
 			dag.nodes.every((node) => node.dispatch.writeCapability.writable),
 		).toBe(true);
@@ -204,7 +239,7 @@ describe("management DAG source", () => {
 		const retiredDag = invalid.projectDags[0]!.dags[0]!;
 		expect(retiredDag.error).toBeUndefined();
 		expect(
-			retiredDag.nodes.find((node) => node.name === "design")?.dispatch,
+			retiredDag.nodes.find((node) => node.nodeId === "design")?.dispatch,
 		).toMatchObject({
 			current: { provider: "anthropic", model: "claude-invented" },
 			writeCapability: { writable: true },

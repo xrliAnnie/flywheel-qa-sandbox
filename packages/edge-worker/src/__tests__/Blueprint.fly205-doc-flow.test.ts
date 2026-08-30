@@ -37,6 +37,10 @@ import {
 } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import {
+	resolvedTestAgent,
+	testAgentFallbacks,
+} from "./agent-dispatch-fixtures.js";
 
 function makeNode(id = "LEARN-21"): DagNode {
 	return { id, blockedBy: [] };
@@ -315,13 +319,15 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 		);
 		const dispatcher = new AgentDispatcher(
 			{
-				exec: {
-					agent_file: ".flywheel/agents/exec.md",
-					match: { labels: ["whatever"] },
-				},
+				exec: resolvedTestAgent({
+					nodeName: "exec",
+					labels: ["whatever"],
+					projectRoot: tmpRoot,
+					relativeFile: "exec.md",
+				}),
 			},
 			"exec",
-			path.resolve(__dirname, "../../../.."), // required by ctor; unused for project-root agents
+			testAgentFallbacks(tmpRoot),
 		);
 		const prompt = await buildPrompt({
 			docFlowConfig: ENABLED,
@@ -339,16 +345,26 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 		);
 	});
 
-	it("shipped-generic regression: doc_flow enabled + generic fallback still resolves agents/generic-executor.md", async () => {
+	it("registry general fallback coexists with enabled doc_flow", async () => {
 		// flywheelRepoRoot = real repo root (4 levels up from this test file dir
 		// at runtime is fragile — use the package path resolution instead).
 		const repoRoot = path.resolve(__dirname, "../../../..");
-		const genericPath = path.join(repoRoot, "agents", "generic-executor.md");
+		const genericPath = path.join(
+			repoRoot,
+			".flywheel",
+			"agents",
+			"nodes",
+			"general.md",
+		);
 		// Precondition: shipped file exists in this checkout
 		expect(fs.existsSync(genericPath)).toBe(true);
 
 		const adapter = makeMockAdapter();
-		const dispatcher = new AgentDispatcher({}, undefined, repoRoot);
+		const dispatcher = new AgentDispatcher(
+			{},
+			undefined,
+			testAgentFallbacks(repoRoot),
+		);
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
@@ -363,7 +379,14 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 			dispatcher,
 			undefined, // checkpointConfig
 			repoRoot, // flywheelRepoRoot — must stay in ITS slot
-			ENABLED, // docFlowConfig — LAST param
+			ENABLED, // doc-flow department authoring config
+			undefined, // ponytailConfig
+			undefined, // ponytailReadiness
+			undefined, // skillFrameworkParticipation
+			undefined, // skillFrameworkReadiness
+			undefined, // codexSkillAssemblyProbe
+			undefined, // skillFrameworkModeControl
+			() => true, // project-scoped doc_flow flag-store reader
 		);
 		const ctx: BlueprintContext = {
 			teamName: "eng",
@@ -375,7 +398,7 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 			.calls[0]![0] as AdapterExecutionContext;
 		const prompt = call.appendSystemPrompt ?? "";
 		// Shipped-generic content loaded (constructor slots not misaligned)
-		expect(prompt).toContain("Generic Executor");
+		expect(prompt).toContain("Flywheel General Executor");
 		// AND the DOC-FLOW block is present
 		expect(prompt).toContain("DOC-FLOW");
 	});
@@ -395,7 +418,11 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 		// word the override references.
 		const repoRoot = path.resolve(__dirname, "../../../..");
 		const adapter = makeMockAdapter();
-		const dispatcher = new AgentDispatcher({}, undefined, repoRoot);
+		const dispatcher = new AgentDispatcher(
+			{},
+			undefined,
+			testAgentFallbacks(repoRoot),
+		);
 		const blueprint = new Blueprint(
 			makeHydrator(),
 			makeMockGitChecker(),
@@ -421,7 +448,7 @@ describe("DOC-FLOW with project agent.md (coexistence + constructor slot regress
 		const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
 			.calls[0]![0] as AdapterExecutionContext;
 		const prompt = call.appendSystemPrompt ?? "";
-		expect(prompt).toContain("Generic Executor");
+		expect(prompt).toContain("Flywheel General Executor");
 		// FLY-217: assert the runtime-injected DOC-FLOW block is absent (its
 		// distinctive header + lines), NOT the bare word — generic-executor.md's
 		// override-B prose legitimately contains "DOC-FLOW"/"doc-flow path".

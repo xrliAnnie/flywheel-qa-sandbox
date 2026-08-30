@@ -25,7 +25,6 @@ import {
 	isWorkflowPhaseRole,
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
-	workflowMenuTemplateId,
 } from "flywheel-config";
 import {
 	DOC_TIERS,
@@ -40,6 +39,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import {
+	Fly2121PreservedTemplateUnrunnableError,
 	type Session,
 	type StateStore,
 	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
@@ -66,6 +66,7 @@ import {
 	resolveLeadMenus,
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
+	workflowMenuTemplateId,
 } from "../workflow-menu.js";
 import {
 	nodeRequiresFounderReview,
@@ -978,6 +979,22 @@ export function createRunsRouter(
 	});
 
 	router.post("/start", async (req, res) => {
+		const rejectFly2121PreservedTemplate = (error: unknown): boolean => {
+			if (!(error instanceof Fly2121PreservedTemplateUnrunnableError)) {
+				return false;
+			}
+			console.error(`[runs/start] ${error.code}: ${error.message}`);
+			res.status(409).json({
+				success: false,
+				code: error.code,
+				reason: error.message,
+				templateId: error.templateId,
+				legacyRoles: error.legacyRoles,
+				retryable: false,
+				silent: false,
+			});
+			return true;
+		};
 		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
 		// Without it, Runner gets stub metadata → degraded agent routing.
 		if (!process.env.LINEAR_API_KEY) {
@@ -2420,6 +2437,7 @@ export function createRunsRouter(
 					});
 					return;
 				}
+				if (rejectFly2121PreservedTemplate(err)) return;
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_WORKFLOW_REJECTED",
@@ -2559,6 +2577,7 @@ export function createRunsRouter(
 					});
 					return;
 				}
+				if (rejectFly2121PreservedTemplate(err)) return;
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_WORKFLOW_REJECTED",
@@ -3671,6 +3690,7 @@ export function createRunsRouter(
 				"starting",
 				"cancelled",
 			);
+			if (rejectFly2121PreservedTemplate(err)) return;
 			// FLY-137 v1.27.2: InvalidAgentNameError thrown from AgentDispatcher
 			// when Lead override `agentName` doesn't match any configured agent.
 			// Map to FLY-127-shaped machine-only diagnostic.

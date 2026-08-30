@@ -48,6 +48,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		ship_relevant_diff_snapshot state_store_migration three_stage_turn
 		workflow_activation_turn workflow_actor workflow_alert_outbox
 		workflow_binding_cutover_claim workflow_carrier_delivery
+		workflow_catalog_migration_audit
 		workflow_carrier_redrive_receipt workflow_carryover_activation
 		workflow_category_binding workflow_dead_execution_watch workflow_declared_pr
 		workflow_divergence_check workflow_engine_park workflow_engine_park_cursor

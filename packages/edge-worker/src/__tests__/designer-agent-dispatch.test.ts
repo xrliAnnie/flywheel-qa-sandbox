@@ -4,7 +4,8 @@ import { fileURLToPath } from "node:url";
 import type { AgentConfig } from "flywheel-config";
 import { ConfigLoader } from "flywheel-config";
 import { beforeAll, describe, expect, it } from "vitest";
-import { AgentDispatcher } from "../AgentDispatcher.js";
+import type { AgentDispatcher } from "../AgentDispatcher.js";
+import { resolvedRepoDispatcher } from "./agent-dispatch-fixtures.js";
 
 /**
  * FLY-1059: routing for the new visual `designer` role, driven against the REAL
@@ -26,8 +27,9 @@ describe("designer agent dispatch (FLY-1059, real .flywheel/config.yaml)", () =>
 	beforeAll(async () => {
 		const loader = new ConfigLoader((p) => readFile(p, "utf-8"));
 		const config = await loader.load(CONFIG_PATH);
-		agents = config.agents ?? {};
-		dispatcher = new AgentDispatcher(agents, config.default_agent, REPO_ROOT);
+		const resolved = resolvedRepoDispatcher(config, REPO_ROOT);
+		agents = resolved.agents;
+		dispatcher = resolved.dispatcher;
 	});
 
 	it("designer is dual-registered [engineering, product]", () => {

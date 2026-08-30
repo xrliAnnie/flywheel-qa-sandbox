@@ -122,60 +122,56 @@ export interface ProofShotConfig {
 /** Project-YAML ProofShot fields; enablement lives in the scoped flag store. */
 export type ProofShotAuthoringConfig = Omit<ProofShotConfig, "enabled">;
 
-/** Agent dispatch configuration — v0.6 Step 1; FLY-137 v1.27.2 dept-aware */
-export interface AgentConfig {
-	/**
-	 * Relative path to agent executor file (e.g., `.flywheel/agents/<dept>/<role>-executor.md`
-	 * for dept-owned agents, or `.flywheel/agents/<role>-executor.md` for cross-dept catch-all).
-	 * REQUIRED. Path validation enforced by ConfigLoader via parsedDept() helper.
-	 */
-	agent_file: string;
+export interface AgentMatchConfig {
+	labels: string[];
+	keywords?: string[];
+}
+
+/** Registry-backed agent dispatch rule after a project activates the new catalog. */
+export interface RegistryAgentConfigSource {
+	/** Stable node identity registered in `.flywheel/agents/registry.yaml`. */
+	node: string;
+	agent_file?: never;
+	department?: never;
+	departments?: never;
 	/** Relative path to domain config file (e.g., .claude/domains/backend.md). Optional. */
 	domain_file?: string;
-	/**
-	 * FLY-137 v1.27.2: optional explicit department. If absent, auto-derived from
-	 * agent_file's first subdir under `.flywheel/agents/` (or `undefined` for top-level
-	 * cross-dept catch-all). ConfigLoader errors on mismatch between explicit value and
-	 * path-derived value.
-	 */
-	department?: string;
-	/**
-	 * FLY-901: optional explicit owning-department SET this agent registers under for
-	 * label-based dispatch (AgentDispatcher step-2a). Enables dual-register — one role
-	 * file reachable from multiple depts' auto-dispatch (e.g. the product/design executor
-	 * lives under `engineering/` but is also reached by the product Lead's `owningDept`).
-	 * Contract (enforced by ConfigLoader):
-	 *   - Omitted → step-2a uses the single path-derived dept (BYTE-COMPAT: existing
-	 *     agents behave exactly as before).
-	 *   - Only dept-owned agents (agent_file under `.flywheel/agents/<dept>/`) may declare
-	 *     it; top-level catch-all agents must omit it.
-	 *   - Non-empty string[] of `^[a-z0-9-]+$` tokens, no duplicates.
-	 *   - MUST include the path-derived home dept (the file's physical home is always a
-	 *     member; the singular `department` field, if also present, stays pinned to it).
-	 * Does NOT relax matching for any dept not explicitly listed.
-	 */
-	departments?: string[];
 	/** Dispatch matching rules */
-	match: {
-		/**
-		 * Linear labels that map to this agent (case-insensitive). Multiple entries =
-		 * multi-alias (e.g. `["designer", "design", "ui", "ux"]` — any label hit matches).
-		 *
-		 * FLY-1335: an EMPTY array NEVER wins label matching (empty is not a
-		 * wildcard). Such an agent is reachable via an explicit agentName override,
-		 * and additionally via the Step-3a fallback when its name is declared as
-		 * `default_agent`. To express a "no label matched" catch-all, declare the
-		 * agent as `default_agent` — an empty labels array alone does nothing.
-		 */
-		labels: string[];
-		/**
-		 * @deprecated FLY-137 v1.27.1: Haiku classify step removed; keywords no longer consulted.
-		 * Kept optional for backward compat with existing config files. ConfigLoader accepts
-		 * the field if present (must still be array of strings) but never reads it at dispatch.
-		 */
-		keywords?: string[];
-	};
+	match: AgentMatchConfig;
 }
+
+/**
+ * Pre-activation agent dispatch rule. Kept only so projects remain runnable
+ * until their explicit `migrate-agent-registry` activation succeeds.
+ */
+export interface LegacyAgentConfigSource {
+	node?: never;
+	agent_file: string;
+	domain_file?: string;
+	department?: string;
+	departments?: string[];
+	match: AgentMatchConfig;
+}
+
+/** Authoring-only agent dispatch rule from `.flywheel/config.yaml`. */
+export type AgentConfigSource =
+	| RegistryAgentConfigSource
+	| LegacyAgentConfigSource;
+
+/** Immutable runtime dispatch config resolved from AgentConfigSource × registry. */
+export interface ResolvedAgentConfig {
+	nodeName: string;
+	label: string;
+	agentFile: string;
+	agentFileRoot: string;
+	domainFile?: string;
+	department?: string;
+	departments: readonly string[];
+	match: Readonly<AgentMatchConfig>;
+}
+
+/** Runtime agent config consumed by AgentDispatcher. */
+export type AgentConfig = ResolvedAgentConfig;
 
 /** Timeout behavior on expiry */
 export type TimeoutBehavior = "fail-open" | "fail-close";
@@ -443,7 +439,7 @@ export interface FlywheelConfig {
 	parallel?: ParallelConfig;
 	skills?: SkillsConfig;
 	/** Agent dispatch rules (project-aware). Optional for backward compat. */
-	agents?: Record<string, AgentConfig>;
+	agents?: Record<string, AgentConfigSource>;
 	/**
 	 * Default agent when no label matches — the mechanism for expressing an
 	 * unmatched-label catch-all (an empty match.labels alone is name-only and

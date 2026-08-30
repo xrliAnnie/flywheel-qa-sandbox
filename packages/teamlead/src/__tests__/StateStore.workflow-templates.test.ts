@@ -45,7 +45,7 @@ function generalizedOpsSeed() {
 					vendor: "codex" as const,
 					model: "gpt-5.6-sol",
 					effort: "low" as const,
-					agent_file: "agents/generic-executor.md",
+					agent_file: "agents/general.md",
 				},
 				{ id: "founder_gate", type: "gate" as const },
 				{ id: "land", type: "land" as const, execution: "engine" as const },
@@ -100,7 +100,7 @@ describe("StateStore workflow templates", () => {
 			cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 			mkdirSync(join(root, "agents"));
 			writeFileSync(
-				join(root, "agents", "generic-executor.md"),
+				join(root, "agents", "general.md"),
 				"Execute the bounded node.\n",
 			);
 			const seed =
@@ -249,7 +249,7 @@ describe("StateStore workflow templates", () => {
 		cleanups.push(() => rmSync(root, { recursive: true, force: true }));
 		mkdirSync(join(root, "agents"));
 		writeFileSync(
-			join(root, "agents", "generic-executor.md"),
+			join(root, "agents", "general.md"),
 			"Execute the bounded ops task.\n",
 		);
 		const seed = generalizedOpsSeed();

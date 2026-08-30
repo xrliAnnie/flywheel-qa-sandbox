@@ -24,7 +24,6 @@ roles:
 
 agents:
   personal:
-    agent_file: .flywheel/agents/engineering/personal-executor.md
-    department: engineering
+    node: personal
     match:
       labels: [personal]

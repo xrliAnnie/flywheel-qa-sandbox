@@ -91,7 +91,7 @@ export function legacyGenericManifest(): WorkflowManifestV2 {
 				vendor: "codex",
 				model: "gpt-5.6-sol",
 				effort: "low",
-				agent_file: "agents/generic-executor.md",
+				agent_file: ".flywheel/agents/nodes/general.md",
 				produces_output: true,
 				output: { schema: "json_v1", max_bytes: 262_144 },
 			},
@@ -163,6 +163,64 @@ export function legacyEngineeringSeed(
 		`Legacy engineering ${templateId}`,
 		legacyEngineeringManifest(),
 	);
+}
+
+/**
+ * Test-only cutover fixture: retain historical node ids/topology while pinning
+ * every executable node through the current registry contract. Production
+ * history remains byte-for-byte schema v1 and receives no execution fallback.
+ */
+export function pinLegacyWorkflowSeedAgents(
+	legacySeed: LoadedWorkflowSeed,
+): LoadedWorkflowSeed {
+	const roleByType = {
+		design: "eng_design",
+		implement: "implement",
+		qa: "qa",
+		review: "qa",
+	} as const;
+	const nodes = legacySeed.manifest.nodes.map((node) => {
+		if (node.type === "gate" || node.type === "land") return node;
+		if (node.type === "generic") {
+			return node.role || node.agent_file
+				? node
+				: { ...node, agent_file: ".flywheel/agents/nodes/general.md" };
+		}
+		return {
+			...node,
+			effort: node.effort ?? ("high" as const),
+			role: node.role ?? roleByType[node.type],
+		};
+	});
+	const manifestInput =
+		legacySeed.manifest.schema_version === 1 &&
+		"manifest_variant" in legacySeed.manifest
+			? (() => {
+					const { manifest_variant: _variant, ...manifest } =
+						legacySeed.manifest;
+					return {
+						...manifest,
+						schema_version: 2 as const,
+						nodes,
+						loops: manifest.loops.filter(
+							(loop) =>
+								loop.exit_when === "qa_pass" ||
+								loop.exit_when === "review_pass",
+						),
+					};
+				})()
+			: {
+					...legacySeed.manifest,
+					schema_version: 2 as const,
+					nodes,
+					loops: legacySeed.manifest.loops.filter(
+						(loop) =>
+							loop.exit_when === "qa_pass" || loop.exit_when === "review_pass",
+					),
+				};
+	const manifest = validateWorkflowManifest(manifestInput);
+	const value = { ...legacySeed, manifest };
+	return { ...value, contentHash: workflowSeedContentHash(value) };
 }
 
 export function legacyGenericSeed(

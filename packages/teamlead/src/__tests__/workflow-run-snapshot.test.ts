@@ -325,9 +325,7 @@ describe("typed generalized workflow snapshot", () => {
 			max_iterations: 3,
 			on_limit: "escalate",
 		});
-		expect(workflowNodeAgentContent(parsed.resolved.nodes[0]!)).toContain(
-			"design",
-		);
+		expect(workflowNodeAgentContent(parsed.resolved.nodes[0]!)).toBeUndefined();
 
 		const corrupted = { ...snapshot, schema_version: 99 };
 		expect(() => parseWorkflowRunSnapshot(JSON.stringify(corrupted))).toThrow(
@@ -462,69 +460,95 @@ describe("typed generalized workflow snapshot", () => {
 		});
 	});
 
-	it("pins a built-in verdict role for review nodes without an agent file", () => {
-		const { root } = fixture();
-		const snapshot = buildWorkflowRunSnapshotV2({
-			template: { id: "tpl-product", revision: 1 },
+	it("parses an active historical design snapshot without reopening design routing", () => {
+		const { root, manifest } = fixture();
+		const current = buildWorkflowRunSnapshotV2({
+			template: { id: "tpl_design", revision: 1 },
+			manifest,
 			canonicalRoot: root,
-			manifest: {
-				schema_version: 2,
-				nodes: [
-					{
-						id: "produce",
-						type: "generic",
-						vendor: "codex",
-						model: "gpt-5.6-sol",
-						effort: "high",
-						agent_file: "agents/generic.md",
-						produces_output: true,
-						output: { schema: "json_v1", max_bytes: 128 },
-					},
-					{
-						id: "review",
-						type: "review",
-						vendor: "claude",
-						model: "claude-sonnet-4-5",
-						effort: "high",
-					},
-					{ id: "founder_gate", type: "gate" },
-				],
-				edges: [
-					{
-						id: "produce_done",
-						from: "produce",
-						to: "review",
-						condition: "node_done",
-					},
-					{
-						id: "review_pass",
-						from: "review",
-						to: "founder_gate",
-						condition: "review_pass",
-					},
-				],
-				loops: [
-					{
-						id: "review_retry",
-						from: "review",
-						to: "produce",
-						loop_when: "review_fail",
-						exit_when: "review_pass",
-						max_iterations: 3,
-						on_limit: "escalate",
-					},
-				],
-				terminal_gate: {
-					node: "founder_gate",
-					predicate: "founder_approved",
-				},
-				ship_claims: ["design_review_approved", "founder_approved"],
-			},
 		});
-		expect(
-			snapshot.resolved.nodes.find((node) => node.id === "review")?.agent
-				?.content,
-		).toContain("verdict");
+		const { snapshot_digest: _digest, ...body } = current;
+		const historicalBody = {
+			...body,
+			task_category: "design",
+			category_source: "task_category",
+		};
+		const activeRun = {
+			status: "active",
+			snapshot: JSON.stringify({
+				...historicalBody,
+				snapshot_digest: canonicalSubmissionDigest(historicalBody),
+			}),
+		};
+
+		expect(activeRun.status).toBe("active");
+		expect(parseWorkflowRunSnapshot(activeRun.snapshot)).toMatchObject({
+			task_category: "design",
+			category_source: "task_category",
+		});
+	});
+
+	it("rejects review nodes without a pinned or registered agent", () => {
+		const { root } = fixture();
+		expect(() =>
+			buildWorkflowRunSnapshotV2({
+				template: { id: "tpl-product", revision: 1 },
+				canonicalRoot: root,
+				manifest: {
+					schema_version: 2,
+					nodes: [
+						{
+							id: "produce",
+							type: "generic",
+							vendor: "codex",
+							model: "gpt-5.6-sol",
+							effort: "high",
+							agent_file: "agents/generic.md",
+							produces_output: true,
+							output: { schema: "json_v1", max_bytes: 128 },
+						},
+						{
+							id: "review",
+							type: "review",
+							vendor: "claude",
+							model: "claude-sonnet-4-5",
+							effort: "high",
+						},
+						{ id: "founder_gate", type: "gate" },
+					],
+					edges: [
+						{
+							id: "produce_done",
+							from: "produce",
+							to: "review",
+							condition: "node_done",
+						},
+						{
+							id: "review_pass",
+							from: "review",
+							to: "founder_gate",
+							condition: "review_pass",
+						},
+					],
+					loops: [
+						{
+							id: "review_retry",
+							from: "review",
+							to: "produce",
+							loop_when: "review_fail",
+							exit_when: "review_pass",
+							max_iterations: 3,
+							on_limit: "escalate",
+						},
+					],
+					terminal_gate: {
+						node: "founder_gate",
+						predicate: "founder_approved",
+					},
+					ship_claims: ["design_review_approved", "founder_approved"],
+				},
+			}),
+		).toThrow(/requires a registered agent/);
 	});
 
 	it("fails closed on corruption, missing agents, and unknown capability words", () => {

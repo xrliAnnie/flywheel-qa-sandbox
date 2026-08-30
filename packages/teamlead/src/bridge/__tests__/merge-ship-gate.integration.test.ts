@@ -25,7 +25,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import { installWorkflowAgentFiles } from "../../__tests__/fixtures/workflow-agent-project.js";
 import {
 	insertHistoricalAutoQaRecord,
 	setHistoricalQaRequiredSnapshot,
@@ -90,10 +94,10 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 			recursive: true,
 		});
 		writeFileSync(join(worktreePath, ".git", headRef), `${HEAD}\n`);
-		mkdirSync(join(worktreePath, "agents"));
+		installWorkflowAgentFiles(worktreePath);
 		writeFileSync(
-			join(worktreePath, "agents", "generic-executor.md"),
-			"Execute the pinned workflow node.\n",
+			join(worktreePath, ".flywheel", "config.yaml"),
+			"project: flywheel\n",
 		);
 	});
 
@@ -271,9 +275,11 @@ describe("FLY-869 B — merge-race ship gate (real StateStore + real CommDB)", (
 	function productWithReviewPredicate(
 		predicate: "codex_approved" | "design_review_approved",
 	) {
-		const seed = legacyWorkflowSeeds().find(
-			(candidate) => candidate.templateId === "tpl_product_v1",
-		)!;
+		const seed = pinLegacyWorkflowSeedAgents(
+			legacyWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_product_v1",
+			)!,
+		);
 		const flags = WORKFLOW_ON;
 		store.importWorkflowTemplateSeed(seed, flags);
 		store.materializeWorkflowRun({
