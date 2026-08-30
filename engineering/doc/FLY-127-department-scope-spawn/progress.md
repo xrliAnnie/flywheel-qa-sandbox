@@ -1,11 +1,10 @@
 ---
 issue: FLY-127
-phase: design
+phase: implement
 title: department-scope-spawn
-phaseCursor: 1/7
-updated: 2026-08-30T10:36:26.189Z
-nextStep: Await design review 64427e43-4fb6-4bbe-a6b0-09ded8c09ae6; then begin
-  route identity RED/GREEN
+phaseCursor: 2/7
+updated: 2026-08-30T10:47:43.230Z
+nextStep: Write omission contract RED in start-e2e.test.ts
 chunks:
   - id: baseline_audit
     order: 1
@@ -18,7 +17,7 @@ chunks:
     deps:
       - baseline_audit
     done: ""
-    status: todo
+    status: doing
   - id: caller_binding
     order: 3
     deps:
@@ -50,12 +49,12 @@ pointers:
 ---
 
 # FLY-127 progress — department-scope-spawn
-**phase**: design (1/7)
-**next**: Await design review 64427e43-4fb6-4bbe-a6b0-09ded8c09ae6; then begin route identity RED/GREEN
+**phase**: implement (2/7)
+**next**: Write omission contract RED in start-e2e.test.ts
 
 ## chunks
 - ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
-- ⬜ route_identity_guard — 
+- 🔨 route_identity_guard — 
 - ⬜ caller_binding — 
 - ⬜ rules_acceptance — 
 - ⬜ verification_review — 
