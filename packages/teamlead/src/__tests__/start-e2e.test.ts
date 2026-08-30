@@ -164,6 +164,7 @@ describe("Start API E2E", () => {
 			body: JSON.stringify({
 				issueId: "GEO-TEST",
 				projectName: "TestProject",
+				leadId: "product-lead",
 			}),
 		});
 		expect(res.status).toBe(200);
@@ -183,6 +184,7 @@ describe("Start API E2E", () => {
 			body: JSON.stringify({
 				issueId: "GEO-INJECT",
 				projectName: "TestProject",
+				leadId: "product-lead",
 				phaseFixContext: { round: 9, qaSummary: "injected" },
 				shareParentBranch: true,
 			}),
@@ -380,6 +382,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-RACE",
 					projectName: "TestProject",
+					leadId: "product-lead",
 				}),
 			});
 			expect(res.status).toBe(429);
@@ -413,6 +416,26 @@ describe("Start API E2E", () => {
 		expect(res.status).toBe(502);
 		const body = (await res.json()) as { message: string };
 		expect(body.message).toContain("Cannot verify issue");
+	});
+
+	it("POST with missing Linear issue → 404 before identity enforcement", async () => {
+		const { LinearClient } = await import("@linear/sdk");
+		const mockIssue = vi.fn().mockResolvedValueOnce(null);
+		(
+			LinearClient as unknown as ReturnType<typeof vi.fn>
+		).mockImplementationOnce(() => ({ issue: mockIssue }));
+
+		const res = await fetch(`${baseUrl}/api/runs/start`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({
+				issueId: "GEO-MISSING",
+				projectName: "TestProject",
+			}),
+		});
+		expect(res.status).toBe(404);
+		expect(mockIssue).toHaveBeenCalledOnce();
+		expect(mockDispatcher.start).not.toHaveBeenCalled();
 	});
 
 	it("POST without LINEAR_API_KEY → 503", async () => {
@@ -464,19 +487,25 @@ describe("Start API E2E", () => {
 	describe("FLY-127 — department scope reject", () => {
 		// Override the LinearClient mock for one upcoming `/api/runs/start` call
 		// so the pre-flight returns the requested labels.
-		async function mockIssueLabels(labels: string[]): Promise<void> {
+		async function mockIssueLabels(labels: string[]): Promise<{
+			issue: ReturnType<typeof vi.fn>;
+			labels: ReturnType<typeof vi.fn>;
+		}> {
 			const { LinearClient } = await import("@linear/sdk");
+			const labelsFn = vi.fn().mockResolvedValue({
+				nodes: labels.map((name) => ({ name })),
+			});
+			const issueFn = vi.fn().mockResolvedValue({
+				title: "Test Issue",
+				identifier: "GEO-FLY127",
+				labels: labelsFn,
+			});
 			(
 				LinearClient as unknown as ReturnType<typeof vi.fn>
 			).mockImplementationOnce(() => ({
-				issue: vi.fn().mockResolvedValue({
-					title: "Test Issue",
-					identifier: "GEO-FLY127",
-					labels: vi.fn().mockResolvedValue({
-						nodes: labels.map((name) => ({ name })),
-					}),
-				}),
+				issue: issueFn,
 			}));
+			return { issue: issueFn, labels: labelsFn };
 		}
 
 		beforeEach(() => {
@@ -622,20 +651,159 @@ describe("Start API E2E", () => {
 			expect(mockDispatcher.start).toHaveBeenCalledOnce();
 		}, 15_000);
 
-		it("auto-resolve path: leadId omitted, labels uniquely resolve to ops-lead", async () => {
+		it.each([
+			["omitted", undefined],
+			["blank", " \t "],
+		])(
+			"feature flag off: %s identity retains owner auto-resolution",
+			async (_label, leadId) => {
+				process.env.BRIDGE_DEPT_SCOPE_REJECT = "off";
+				await mockIssueLabels(["Ops"]);
+				const res = await fetch(`${baseUrl}/api/runs/start`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						issueId: "GEO-FLY127-ROLLBACK",
+						projectName: "TestProject",
+						...(leadId !== undefined && { leadId }),
+					}),
+				});
+				expect(res.status).toBe(200);
+				expect(mockDispatcher.start).toHaveBeenCalledOnce();
+				expect(mockDispatcher.start).toHaveBeenCalledWith(
+					expect.objectContaining({
+						leadId: "ops-lead",
+						owningDept: "ops",
+					}),
+				);
+			},
+			15_000,
+		);
+
+		it("allows only Oliver to dispatch the same Oliver-owned issue", async () => {
 			await mockIssueLabels(["Ops"]);
+			const peter = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-366",
+					projectName: "TestProject",
+					leadId: "product-lead",
+				}),
+			});
+			expect(peter.status).toBe(403);
+			expect(await peter.json()).toEqual({
+				success: false,
+				code: "DEPT_SCOPE_REJECT",
+				reason: "label_mismatch",
+				canonicalLeadId: "ops-lead",
+				silent: false,
+			});
+
+			await mockIssueLabels(["Ops"]);
+			const oliver = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-366",
+					projectName: "TestProject",
+					leadId: "ops-lead",
+				}),
+			});
+			expect(oliver.status).toBe(200);
+			expect(mockDispatcher.start).toHaveBeenCalledOnce();
+			expect(mockDispatcher.start).toHaveBeenCalledWith(
+				expect.objectContaining({
+					issueId: "GEO-366",
+					leadId: "ops-lead",
+					owningDept: "ops",
+				}),
+			);
+		}, 15_000);
+
+		it("requires explicit Lead identity before owner auto-resolution", async () => {
+			const linear = await mockIssueLabels(["Ops"]);
 			const res = await fetch(`${baseUrl}/api/runs/start`, {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({
 					issueId: "GEO-FLY127",
 					projectName: "TestProject",
-					// no leadId — Bridge auto-resolves from labels (FLY-80)
+					// no leadId — enforcement must reject before legacy auto-resolution
 				}),
 			});
-			expect(res.status).toBe(200);
-			expect(mockDispatcher.start).toHaveBeenCalledOnce();
+			expect(res.status).toBe(403);
+			expect(await res.json()).toEqual({
+				success: false,
+				code: "DEPT_SCOPE_REJECT",
+				reason: "lead_identity_required",
+				canonicalLeadId: null,
+				silent: false,
+			});
+			expect(linear.issue).toHaveBeenCalledOnce();
+			expect(linear.labels).toHaveBeenCalledOnce();
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
 		}, 15_000);
+
+		it.each([
+			["null", null],
+			["empty", ""],
+			["blank", " \t "],
+		])("rejects %s Lead identity after Linear preflight", async (_label, leadId) => {
+			const linear = await mockIssueLabels(["Ops"]);
+			const res = await fetch(`${baseUrl}/api/runs/start`, {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({
+					issueId: "GEO-FLY127",
+					projectName: "TestProject",
+					leadId,
+				}),
+			});
+			expect(res.status).toBe(403);
+			expect(await res.json()).toEqual({
+				success: false,
+				code: "DEPT_SCOPE_REJECT",
+				reason: "lead_identity_required",
+				canonicalLeadId: null,
+				silent: false,
+			});
+			expect(linear.issue).toHaveBeenCalledOnce();
+			expect(linear.labels).toHaveBeenCalledOnce();
+			expect(mockDispatcher.start).not.toHaveBeenCalled();
+		}, 15_000);
+
+		it.each([
+			["number", 42],
+			["object", { agentId: "ops-lead" }],
+		])(
+			"rejects %s Lead identity with a boundary error",
+			async (_label, leadId) => {
+				const { LinearClient } = await import("@linear/sdk");
+				const linearClient =
+					LinearClient as unknown as ReturnType<typeof vi.fn>;
+				linearClient.mockClear();
+				const res = await fetch(`${baseUrl}/api/runs/start`, {
+					method: "POST",
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify({
+						issueId: "GEO-FLY127",
+						projectName: "TestProject",
+						leadId,
+					}),
+				});
+				expect(res.status).toBe(400);
+				expect(await res.json()).toEqual({
+					success: false,
+					code: "INVALID_LEAD_ID",
+					reason: "wrong_type",
+					silent: false,
+				});
+				expect(linearClient).not.toHaveBeenCalled();
+				expect(mockDispatcher.start).not.toHaveBeenCalled();
+			},
+			15_000,
+		);
 	});
 
 	// FLY-205 — docTier boundary validation + transport + persistence
@@ -647,6 +815,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-TEST",
 					projectName: "TestProject",
+					leadId: "product-lead",
 					docTier: "plan_only",
 				}),
 			});
@@ -686,6 +855,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-TEST",
 					projectName: "TestProject",
+					leadId: "product-lead",
 				}),
 			});
 			expect(res.status).toBe(200);
@@ -707,6 +877,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-TEST",
 					projectName: "TestProject",
+					leadId: "product-lead",
 					model: "claude-fable-5",
 				}),
 			});
@@ -726,6 +897,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-TEST",
 					projectName: "TestProject",
+					leadId: "product-lead",
 					model: "opus",
 				}),
 			});
@@ -742,6 +914,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-TEST",
 					projectName: "TestProject",
+					leadId: "product-lead",
 					model: "opus-1m",
 				}),
 			});
@@ -774,6 +947,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-TEST",
 					projectName: "TestProject",
+					leadId: "product-lead",
 				}),
 			});
 			expect(res.status).toBe(200);
@@ -796,6 +970,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-CASE-LO",
 					projectName: "testproject", // canonical is "TestProject"
+					leadId: "product-lead",
 				}),
 			});
 			// Resolves (200), NOT a project_unknown reject.
@@ -813,6 +988,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-CASE-UP",
 					projectName: "TESTPROJECT",
+					leadId: "product-lead",
 				}),
 			});
 			expect(res.status).toBe(200);
@@ -827,6 +1003,7 @@ describe("Start API E2E", () => {
 				body: JSON.stringify({
 					issueId: "GEO-CASE-EXACT",
 					projectName: "TestProject",
+					leadId: "product-lead",
 				}),
 			});
 			expect(res.status).toBe(200);
