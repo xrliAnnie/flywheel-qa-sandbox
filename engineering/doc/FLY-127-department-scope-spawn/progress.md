@@ -2,9 +2,9 @@
 issue: FLY-127
 phase: implement
 title: department-scope-spawn
-phaseCursor: 5/7
-updated: 2026-08-30T11:04:46.787Z
-nextStep: Run caller audit, affected suites, and full repository gates
+phaseCursor: 6/7
+updated: 2026-08-30T11:12:01.560Z
+nextStep: Request and resolve code review
 chunks:
   - id: baseline_audit
     order: 1
@@ -23,19 +23,19 @@ chunks:
     deps:
       - route_identity_guard
     done: ""
-    status: todo
+    status: done
   - id: rules_acceptance
     order: 4
     deps:
       - caller_binding
     done: ""
-    status: todo
+    status: done
   - id: verification_review
     order: 5
     deps:
       - rules_acceptance
     done: ""
-    status: todo
+    status: doing
   - id: pr_handoff
     order: 6
     deps:
@@ -49,13 +49,13 @@ pointers:
 ---
 
 # FLY-127 progress — department-scope-spawn
-**phase**: implement (5/7)
-**next**: Run caller audit, affected suites, and full repository gates
+**phase**: implement (6/7)
+**next**: Request and resolve code review
 
 ## chunks
 - ✅ baseline_audit — Reproduced the omitted-leadId bypass and traced caller identity across the public start route, Gemini binding, QA injection, and Lead rules.
 - ✅ route_identity_guard — 
-- ⬜ caller_binding — 
-- ⬜ rules_acceptance — 
-- ⬜ verification_review — 
+- ✅ caller_binding — 
+- ✅ rules_acceptance — 
+- 🔨 verification_review — 
 - ⬜ pr_handoff — 
