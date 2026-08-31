@@ -1,13 +1,13 @@
 ---
 issue: FLY-2207
 phase: design
-phaseCursor: 1/4
-updated: 2026-08-31T19:03:01.413Z
-nextStep: "research.md: 收敛 5 个待研究问题"
+phaseCursor: 2/4
+updated: 2026-08-31T19:06:35.060Z
+nextStep: plan.md + codex design review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2207 progress
-**phase**: design (1/4)
-**next**: research.md: 收敛 5 个待研究问题
+**phase**: design (2/4)
+**next**: plan.md + codex design review
