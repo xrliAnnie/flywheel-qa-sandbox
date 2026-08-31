@@ -1,13 +1,14 @@
 ---
 issue: FLY-2031
 phase: implement
-phaseCursor: 4/5
-updated: 2026-08-31T04:01:36.537Z
-nextStep: Run exact-head code reviews for Raya a7c5b5f and Bridge b31241087
+phaseCursor: 5/5
+updated: 2026-08-31T05:17:13.850Z
+nextStep: "Complete implement route needs_review for Raya PR #9; QA retests both
+  PR heads"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: implement (4/5)
-**next**: Run exact-head code reviews for Raya a7c5b5f and Bridge b31241087
+**phase**: implement (5/5)
+**next**: Complete implement route needs_review for Raya PR #9; QA retests both PR heads
