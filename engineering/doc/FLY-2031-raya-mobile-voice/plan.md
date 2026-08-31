@@ -596,4 +596,5 @@ publishReceipt: (text) =>
 - [x] **错误 review 作废:**gate `566b66ee-1d85-476b-abaa-e3ddb8687393` 错绑 Flywheel `fcf240401`，不是 Raya `e8d7867`，其 verdict 不能计入本轮。Lead 已裁定最终必须分别精确审查 Raya 与 Flywheel Bridge 两个 head。
 - [x] **Raya 全仓验证:**`pnpm lint`（180 files）、`pnpm -r build`、`pnpm typecheck`、`pnpm test` 全绿；contracts 62 + voice 322 + brain 125 + root QA/probes 94，共 603 tests。
 - [x] **Flywheel 验证:**`pnpm lint`、`pnpm -r build`、Bridge matcher 6/6 通过；全包并行中 `tmux-viewer.macos` 因当前 session 无 Terminal.app 服务独立复现失败，排除该 GUI 文件后 core 219/219 通过；其余包共 9,888 tests 中 6 个无关并发失败，四个失败文件串行复跑 59/59 通过。
-- [ ] 两仓功能提交、各自 milestone 最后提交与 push；分别开 exact-head code review，只有两个 `reviewedHeadSha === HEAD` 且 `reviewVerdict=APPROVED` 才交回 QA。
+- [x] **双仓提交/PR:**Raya 最终 head `a7c5b5f`（PR #9），Bridge 最终 head `b31241087`（PR #1001）；两仓 milestone 均为最后提交并已正常 fast-forward push。Bridge GitHub CI 全绿。
+- [x] **双仓 exact review:**Raya gate `22312a37-cf94-49df-a57d-c59ce65acce7` 返回 `reviewedHeadSha=a7c5b5f...`、`reviewVerdict=APPROVED`；Bridge 首个 gate `7acdb31a-...` 因 request 未带 `targetRepoPath` 作废，显式 nested target gate `bb2e714d-d325-41ef-8026-b30c026eae54` 返回 `reviewedHeadSha=b31241087...`、`reviewVerdict=APPROVED`。两轮只有 MEDIUM/LOW advisories，已通过 Lead report 与 PR verbatim comments 留档，无 HIGH finding。
