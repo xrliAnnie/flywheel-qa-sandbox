@@ -38,6 +38,7 @@ mkdir -p "$TMP/bin"
 cat > "$TMP/bin/curl" <<'FAKE'
 #!/bin/bash
 printf '%s\n' "$*" >> "$CURL_ARGS_FILE"
+printf '%s' "${UNRELATED_ALERT_SECRET:-}" >> "${CURL_ARGS_FILE}.unrelated"
 out=""; prev=""
 for a in "$@"; do
   [ "$prev" = "-o" ] && out="$a"
@@ -176,6 +177,53 @@ grep -q "channels/444444444444444444/messages" "$TMP/curl-s1" \
 grep -qF "Authorization: Bot ${LEGACY}" "$TMP/curl-s1.stdin" \
   && ok "sentinel: per-lead token via alertBotTokenEnv" || bad "sentinel: wrong token"
 grep -q '🎫' "$TMP/curl-s1" && bad "sentinel: 🎫 leaked into legacy path" || ok "sentinel: no 🎫 on legacy path"
+
+# ── FLY-2207: supervised watcher alert self-loads only its trusted route ──
+WATCHER_ENV="$TMP/watcher.env"
+cat > "$WATCHER_ENV" <<EOF
+FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=777666555444333222
+FLYWHEEL_ALERT_SENDER_TOKEN_ENV=WATCHER_ALERT_TOKEN
+WATCHER_ALERT_TOKEN=$CANARY
+UNRELATED_ALERT_SECRET=must-not-project
+EOF
+chmod 600 "$WATCHER_ENV"
+RESULT=$(run_alert watcher-valid cmux_cleanup test-lead \
+  FLYWHEEL_CMUX_SUPERVISED=1 \
+  FLYWHEEL_SYSTEM_ALERT_ENV_FILE="$WATCHER_ENV")
+[ "$RESULT" = "sent" ] && ok "watcher trusted env: bare assignments deliver" || bad "watcher trusted env: expected sent, got '$RESULT'"
+grep -q "channels/777666555444333222/messages" "$TMP/curl-watcher-valid" \
+  && ok "watcher trusted env: unified channel projected" || bad "watcher trusted env: wrong channel"
+grep -qF "Authorization: Bot ${CANARY}" "$TMP/curl-watcher-valid.stdin" \
+  && ok "watcher trusted env: selected token projected" || bad "watcher trusted env: token unresolved"
+[ ! -s "$TMP/curl-watcher-valid.unrelated" ] \
+  && ok "watcher trusted env: unrelated secret not exported to transport" \
+  || bad "watcher trusted env: unrelated secret leaked"
+
+RESULT=$(run_alert watcher-inherited cmux_cleanup test-lead \
+  FLYWHEEL_CMUX_SUPERVISED=1 \
+  FLYWHEEL_SYSTEM_ALERT_ENV_FILE="$WATCHER_ENV" \
+  FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=111222333444555666 \
+  FLYWHEEL_ALERT_SENDER_TOKEN_ENV=WATCHER_ALERT_TOKEN \
+  WATCHER_ALERT_TOKEN="$LEGACY")
+grep -q "channels/111222333444555666/messages" "$TMP/curl-watcher-inherited" \
+  && grep -qF "Authorization: Bot ${LEGACY}" "$TMP/curl-watcher-inherited.stdin" \
+  && ok "watcher trusted env: inherited route values win" \
+  || bad "watcher trusted env: file overrode inherited route"
+
+for shape in missing unsafe symlink malformed; do
+  case "$shape" in
+    missing) bad_env="$TMP/no-such-watcher.env" ;;
+    unsafe) bad_env="$TMP/watcher-unsafe.env"; cp "$WATCHER_ENV" "$bad_env"; chmod 644 "$bad_env" ;;
+    symlink) bad_env="$TMP/watcher-link.env"; ln -s "$WATCHER_ENV" "$bad_env" ;;
+    malformed) bad_env="$TMP/watcher-malformed.env"; printf 'FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="unterminated\n' > "$bad_env"; chmod 600 "$bad_env" ;;
+  esac
+  RESULT=$(run_alert "watcher-$shape" cmux_cleanup test-lead \
+    FLYWHEEL_CMUX_SUPERVISED=1 \
+    FLYWHEEL_SYSTEM_ALERT_ENV_FILE="$bad_env")
+  [ "$RESULT" = "sent" ] && grep -q 'ERROR: watcher alert env' "$TMP/err-watcher-$shape" \
+    && ok "watcher trusted env: $shape is loud and non-blocking" \
+    || bad "watcher trusted env: $shape did not degrade safely (result=$RESULT)"
+done
 
 # ════════════════════════════════════════════════════════════════
 # FLY-1081: deploy kinds + --mention-user + queue filename EVENT_ID

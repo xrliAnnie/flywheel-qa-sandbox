@@ -687,6 +687,7 @@ def t8_real_lead_alert_integration():
                 "SYSTEM_ALERT_MUST_NOT_LEAK=latent-secret\n"
                 f"FLYWHEEL_CLAIMS_DB={production_claims}\n"
             )
+            os.chmod(state / ".env", 0o600)
             env = {
                 "HOME": str(home),
                 "PATH": f"{bindir}:{os.environ.get('PATH', '')}",

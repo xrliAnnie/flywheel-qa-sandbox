@@ -230,11 +230,10 @@ if [ -n "$MENTION_USER" ] && ! printf '%s' "$MENTION_USER" | grep -Eq '^[0-9]{17
   MENTION_USER=""
 fi
 
-# The restart guard can run outside every Lead pane. Its explicit `system`
-# attribution must use the fleet-wide alert dispatcher, never impersonate a
-# registry Lead. Read only the three values this route needs from the trusted
-# env in an isolated subshell. Caller-projected queue/DB/path seams keep
-# precedence, and unrelated secrets never enter this process environment.
+# The restart guard and resident cmux watcher can run without an interactive
+# shell. Read only the three values their unified route needs from the trusted
+# env in isolated subshells. Inherited values win, and unrelated secrets never
+# enter this process environment or its curl child.
 system_alert_env_value() {
   local -r _system_alert_requested_name="$1"
   (
@@ -243,55 +242,74 @@ system_alert_env_value() {
     printf '%s' "${!_system_alert_requested_name:-}"
   )
 }
-if [ "$LEAD_ID" = "system" ]; then
+
+trusted_alert_env_valid() {
+  local path="$1" metadata owner mode
+  [ -e "$path" ] || { log "ERROR: watcher alert env is missing: $path"; return 1; }
+  [ ! -L "$path" ] || { log "ERROR: watcher alert env is a symlink: $path"; return 1; }
+  [ -f "$path" ] || { log "ERROR: watcher alert env is not a regular file: $path"; return 1; }
+  metadata=$(stat -f '%u %Lp' "$path" 2>/dev/null || stat -c '%u %a' "$path" 2>/dev/null) || {
+    log "ERROR: watcher alert env metadata is unreadable: $path"
+    return 1
+  }
+  owner=${metadata%% *}
+  mode=${metadata##* }
+  [ "$owner" = "$(id -u)" ] && [ "$mode" = "600" ] || {
+    log "ERROR: watcher alert env must be owned by uid $(id -u) with mode 0600: $path"
+    return 1
+  }
+  /bin/bash -n "$path" >/dev/null 2>&1 || {
+    log "ERROR: watcher alert env has invalid shell syntax: $path"
+    return 1
+  }
+}
+
+if [ "$LEAD_ID" = "system" ] || [ "${FLYWHEEL_CMUX_SUPERVISED:-0}" = "1" ]; then
   SYSTEM_ALERT_ENV_FILE="${FLYWHEEL_SYSTEM_ALERT_ENV_FILE:-${HOME}/.flywheel/.env}"
+  TRUSTED_ALERT_ENV_OK=1
   if [ -n "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
       && [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-    log "ERROR: system alert sender token selector is not a valid env name"
-    emit_result "config_error"
-    exit 1
+    log "ERROR: watcher alert sender token selector is not a valid env name"
+    TRUSTED_ALERT_ENV_OK=0
   fi
   if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
       || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
       || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
-    if [ ! -f "$SYSTEM_ALERT_ENV_FILE" ]; then
-      log "ERROR: system alert route has no trusted env file at $SYSTEM_ALERT_ENV_FILE"
-      emit_result "config_error"
-      exit 1
-    fi
-    if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ]; then
+    trusted_alert_env_valid "$SYSTEM_ALERT_ENV_FILE" || TRUSTED_ALERT_ENV_OK=0
+    if [ "$TRUSTED_ALERT_ENV_OK" = "1" ] && [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ]; then
       FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID="$(system_alert_env_value FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID)" || {
-        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
-        emit_result "config_error"
-        exit 1
+        log "ERROR: watcher alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+        TRUSTED_ALERT_ENV_OK=0
       }
     fi
-    if [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    if [ "$TRUSTED_ALERT_ENV_OK" = "1" ] && [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
       FLYWHEEL_ALERT_SENDER_TOKEN_ENV="$(system_alert_env_value FLYWHEEL_ALERT_SENDER_TOKEN_ENV)" || {
-        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
-        emit_result "config_error"
-        exit 1
+        log "ERROR: watcher alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+        TRUSTED_ALERT_ENV_OK=0
       }
     fi
-    if [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      log "ERROR: system alert sender token selector is not a valid env name"
-      emit_result "config_error"
-      exit 1
+    if [ "$TRUSTED_ALERT_ENV_OK" = "1" ] \
+        && [[ ! "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+      log "ERROR: watcher alert sender token selector is not a valid env name"
+      TRUSTED_ALERT_ENV_OK=0
     fi
-    if [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+    if [ "$TRUSTED_ALERT_ENV_OK" = "1" ] \
+        && [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
       _system_alert_token="$(system_alert_env_value "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV")" || {
-        log "ERROR: system alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
-        emit_result "config_error"
-        exit 1
+        log "ERROR: watcher alert env is unreadable: $SYSTEM_ALERT_ENV_FILE"
+        TRUSTED_ALERT_ENV_OK=0
       }
-      printf -v "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" '%s' "$_system_alert_token"
-      export -n "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" 2>/dev/null || true
+      if [ "$TRUSTED_ALERT_ENV_OK" = "1" ]; then
+        printf -v "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" '%s' "$_system_alert_token"
+        export -n "$FLYWHEEL_ALERT_SENDER_TOKEN_ENV" 2>/dev/null || true
+      fi
       unset _system_alert_token
     fi
   fi
-  if [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
+  if [ "$LEAD_ID" = "system" ] && { [ "$TRUSTED_ALERT_ENV_OK" != "1" ] \
+      || [ -z "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" ] \
       || [ -z "${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ] \
-      || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; then
+      || [ -z "${!FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}" ]; }; then
     log "ERROR: system alert route requires unified channel + sender token"
     emit_result "config_error"
     exit 1
