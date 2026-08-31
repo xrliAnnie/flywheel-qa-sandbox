@@ -39,6 +39,11 @@ Decision algorithm (design: engineering/doc/FLY-913-restart-guard-hook/plan.md):
         unless it matches the explicit read-only allowlist below. Unknown and
         externally-defined subcommands fail closed. Lead/founder sessions have
         no execution id, so their brew mutations are allowed with an audit row.
+    P6  a `gog calendar|cal` or Calendar-scoped `gws` write from any Claude
+        session. Known reads and help/version introspection stay allowed;
+        unknown Calendar methods fail closed. Before founder enforcement the
+        hit is audited as `would_deny`; after a durable receipt it is denied,
+        except when every extracted write target is the configured QA calendar.
 
   hit → the ONLY exits are: deny, or a bypass whose accounting FULLY succeeds.
     bypass = the command starts (anchored prefix, a real shell env assignment,
@@ -63,6 +68,8 @@ Env:  FLYWHEEL_RESTART_GUARD_LOG        — audit log override (tests);
                                           (default ~/Dev/flywheel)
       PROJECT_NAME / FLYWHEEL_PROJECT_NAME / FLYWHEEL_LEAD_ID — alert identity
       FLYWHEEL_EXEC_ID                  — Runner-context marker for P5
+      ~/.flywheel/calendar-guard/mode + enforce-receipt.json — P6 rollout latch
+      ~/.flywheel/qa-calendar-id        — the only agent-writable Calendar target
 Deployed to: ~/.flywheel/bin/flywheel-restart-guard.py
              (scripts/hooks/install-restart-guard.sh + claude-lead.sh converge)
 """
@@ -121,6 +128,46 @@ BREW_READ_SUBCOMMANDS = {
 BREW_OPTION_ONLY_NO_VALUE = {"--version", "-v", "--caskroom", "--repository"}
 BREW_OPTION_ONLY_OPTIONAL_FORMULA = {"--prefix", "--cellar"}
 
+GOG_GLOBAL_VALUE_FLAGS = {
+    "--account", "-a", "--client", "--enable-commands", "--color",
+    "--select", "--fields",
+}
+GOG_GLOBAL_BOOL_FLAGS = {
+    "--json", "-j", "--plain", "-p", "--results-only", "--dry-run", "-n",
+    "--force", "-y", "--no-input", "--verbose", "-v",
+}
+GOG_CALENDAR_READ_METHODS = {
+    "calendars", "acl", "permissions", "perms", "events", "list", "ls",
+    "event", "get", "info", "show", "search", "find", "query", "freebusy",
+    "conflicts", "colors", "time", "users", "team", "propose-time",
+}
+GOG_DIRECT_TARGET_METHODS = {
+    "create", "add", "new", "update", "edit", "set", "delete", "rm", "del",
+    "remove", "respond", "rsvp", "reply",
+}
+GOG_OPTIONAL_TARGET_METHODS = {
+    "focus-time", "focus", "out-of-office", "ooo", "working-location", "wl",
+}
+GOG_METHOD_BOOL_FLAGS = {
+    "--all-day", "--guests-can-invite", "--guests-can-modify",
+    "--guests-can-see-others", "--with-meet", "--dry-run", "-n", "--force",
+    "-y", "--no-input", "--json", "-j", "--plain", "-p", "--results-only",
+    "--verbose", "-v",
+}
+
+GWS_GLOBAL_VALUE_FLAGS = {"--sanitize", "--format", "--api-version"}
+GWS_GLOBAL_BOOL_FLAGS = {"--dry-run"}
+GWS_CALENDAR_READS = {
+    ("+agenda", None),
+    ("events", "list"), ("events", "get"), ("events", "instances"),
+    ("calendarList", "list"), ("calendarList", "get"),
+    ("calendars", "get"), ("acl", "list"), ("colors", "get"),
+    ("freebusy", "query"), ("settings", "list"), ("settings", "get"),
+}
+GWS_EVENTS_TARGET_METHODS = {"insert", "update", "patch", "delete", "quickAdd", "move"}
+QA_CALENDAR_ID_RE = re.compile(r"^[A-Za-z0-9._-]+@group\.calendar\.google\.com$")
+CALENDAR_VERSION_RE = re.compile(r"^calendar:v\d+$")
+
 SEG_SPLIT_RE = re.compile(r";|&&|\|\||\|")
 ENV_ASSIGN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 
@@ -162,6 +209,28 @@ BREW_DENY_REASON = (
     "tmux/git/node/Homebrew link 等宿主工具是全舰单点;在用版本被无声替换会让所有 "
     "Runner 与 cmux 同时断连。\n"
     "正确做法:用 flywheel-comm ask 报告 Lead,由 Lead/founder 在宿主终端执行并安排验证窗口。"
+)
+
+CALENDAR_DENY_REASON = (
+    "🚫 founder 日历写入护栏(FLY-2137):检测到 agent 直接调用 gog/gws Calendar 写操作,"
+    "已硬拦。\n"
+    "唯一获准的自动写入方是 Raya meeting 模块(事件必须带 raya_meeting_id 并有 receipt/审计);"
+    "QA 写入必须使用 ~/.flywheel/qa-calendar-id 指定的测试日历,不可写 primary。\n"
+    "Calendar 读操作不受限制。确有新写入需求时请通过 Lead 回到 FLY-2137 授权名单公开申请,"
+    "agent 会话内没有 ACK/bypass 特批通道。"
+)
+
+CALENDAR_CONFIG_ERROR_REASON = (
+    "🚫 founder 日历写入护栏(FLY-2137):enforce 批准 receipt 已存在,但 mode 文件缺失或损坏;"
+    "为防止静默降级到 audit,本次 Calendar 写操作按 fail-closed 拒绝。\n"
+    "请由 Lead/founder 核对 ~/.flywheel/calendar-guard/mode,按留痕授权写入首 token "
+    "enforce 或 audit;不要删除 receipt。"
+)
+
+CALENDAR_AUDIT_ERROR_REASON = (
+    "🚫 founder 日历写入护栏(FLY-2137):写操作审计记账失败;为防止无痕写入,"
+    "本次 Calendar 写操作按 fail-closed 拒绝。\n"
+    "请由 Lead/founder 修复 ~/.flywheel/logs/restart-guard.log 的路径、权限或磁盘空间后重试。"
 )
 
 
@@ -352,6 +421,225 @@ def _brew_mutation_hit(cmd: str, depth: int = 0) -> bool:
         if command == "brew" and not _brew_args_are_read_only(args):
             return True
     return False
+
+
+def _strip_global_flags(
+    args: list[str], value_flags: set[str], bool_flags: set[str]
+) -> tuple[list[str], bool]:
+    """Strip known global flags before the service positional.
+
+    Returns (remaining, ambiguous). Unknown/malformed leading flag shapes are
+    deliberately ambiguous so a Calendar-looking invocation cannot acquire a
+    read or QA exemption through parser confusion.
+    """
+    i = 0
+    while i < len(args) and args[i].startswith("-") and args[i] != "-":
+        flag = args[i]
+        name = flag.split("=", 1)[0]
+        if name in bool_flags:
+            i += 1
+            continue
+        if name in value_flags:
+            if "=" in flag:
+                if not flag.split("=", 1)[1]:
+                    return args[i:], True
+                i += 1
+                continue
+            if i + 1 >= len(args) or args[i + 1].startswith("-"):
+                return args[i:], True
+            i += 2
+            continue
+        return args[i:], True
+    return args[i:], False
+
+
+def _first_cli_positional(args: list[str]) -> str | None:
+    """Find a method positional without treating option values as targets.
+
+    Unknown flags are assumed value-bearing. That may withhold a QA exemption,
+    but can never grant one to an uncertain target.
+    """
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token == "--":
+            return args[i + 1] if i + 1 < len(args) else None
+        if not token.startswith("-"):
+            return token
+        name = token.split("=", 1)[0]
+        if "=" in token or name in GOG_METHOD_BOOL_FLAGS:
+            i += 1
+        else:
+            i += 2
+    return None
+
+
+def _flag_value(args: list[str], wanted: str) -> str | None:
+    value = None
+    for i, token in enumerate(args):
+        if token.startswith(wanted + "="):
+            value = token.split("=", 1)[1] or None
+        elif token == wanted:
+            value = args[i + 1] if i + 1 < len(args) else None
+    return value
+
+
+def _gog_calendar_candidate(args: list[str]) -> dict | None:
+    if any(token in {"-h", "--help", "--version"} for token in args):
+        return None
+    remaining, ambiguous = _strip_global_flags(
+        args, GOG_GLOBAL_VALUE_FLAGS, GOG_GLOBAL_BOOL_FLAGS
+    )
+    if ambiguous:
+        if not any(token in {"calendar", "cal"} for token in args):
+            return None
+        # Scope cannot be proven. Preserve the fail-closed parse contract while
+        # making the uncertainty explicit in the audit row.
+        return {
+            "cli": "gog", "service": "unknown", "method": "unknown",
+            "targets": ["unknown"],
+        }
+    if not remaining:
+        return None
+    service = remaining[0]
+    if service not in {"calendar", "cal"}:
+        return None
+    method = remaining[1] if len(remaining) > 1 else "unknown"
+    if method == "help":
+        return None
+    if method in GOG_CALENDAR_READ_METHODS:
+        return None
+    method_args = remaining[2:]
+    targets: list[str] = []
+    if method in GOG_DIRECT_TARGET_METHODS | GOG_OPTIONAL_TARGET_METHODS:
+        target = _first_cli_positional(method_args)
+        if target:
+            targets = [target]
+    return {
+        "cli": "gog", "service": "calendar", "method": method,
+        "targets": targets or ["unknown"],
+    }
+
+
+def _gws_calendar_candidate(args: list[str]) -> dict | None:
+    if any(token in {"-h", "--help", "--version"} for token in args):
+        return None
+    remaining, ambiguous = _strip_global_flags(
+        args, GWS_GLOBAL_VALUE_FLAGS, GWS_GLOBAL_BOOL_FLAGS
+    )
+    if ambiguous:
+        if not any(
+            token == "calendar" or CALENDAR_VERSION_RE.fullmatch(token)
+            for token in args
+        ):
+            return None
+        return {
+            "cli": "gws", "service": "unknown", "method": "unknown",
+            "targets": ["unknown"],
+        }
+    if not remaining:
+        return None
+    raw_service = remaining[0]
+    if raw_service != "calendar" and not CALENDAR_VERSION_RE.fullmatch(raw_service):
+        return None
+    resource = remaining[1] if len(remaining) > 1 else "unknown"
+    if resource == "help":
+        return None
+    method = remaining[2] if len(remaining) > 2 and not remaining[2].startswith("-") else None
+    if method == "help" or (resource, method) in GWS_CALENDAR_READS:
+        return None
+    method_label = resource if resource.startswith("+") else (
+        f"{resource}.{method}" if method else resource
+    )
+    method_args = remaining[2:] if resource.startswith("+") else remaining[3:]
+    targets: list[str] = []
+    if resource == "+insert":
+        target = _flag_value(method_args, "--calendar")
+        if target:
+            targets = [target]
+    elif resource == "events" and method in GWS_EVENTS_TARGET_METHODS:
+        raw_params = _flag_value(method_args, "--params")
+        try:
+            params = json.loads(raw_params) if raw_params is not None else None
+        except Exception:
+            params = None
+        if isinstance(params, dict):
+            calendar_id = params.get("calendarId")
+            if isinstance(calendar_id, str) and calendar_id:
+                targets.append(calendar_id)
+            if method == "move":
+                destination = params.get("destination")
+                if isinstance(destination, str) and destination:
+                    targets.append(destination)
+    return {
+        "cli": "gws", "service": "calendar", "method": method_label,
+        "targets": targets or ["unknown"],
+    }
+
+
+def _calendar_write_candidates(cmd: str, depth: int = 0) -> list[dict]:
+    """Return every Calendar write candidate in the Bash command.
+
+    A Bash tool invocation can contain multiple shell segments. QA exemption is
+    valid only when every write in the complete invocation targets the QA
+    calendar; returning just the first candidate would let a later primary write
+    hide behind an earlier QA write.
+    """
+    if depth > 1:
+        return []
+    candidates: list[dict] = []
+    for tokens in _shell_segments(cmd):
+        if not tokens or _plain_read_tokens(tokens):
+            continue
+        split = _wrapper_split_string_payload(tokens)
+        if split is not None:
+            payload, remainder = split
+            candidates.extend(_calendar_write_candidates(payload, depth + 1))
+            tokens = remainder
+            if not tokens:
+                continue
+        command, args = _brew_effective_command(tokens)
+        if command in SHELLS:
+            payload = _extract_c_payload(args)
+            if payload is not None:
+                candidates.extend(_calendar_write_candidates(payload, depth + 1))
+            continue
+        if command == "gog":
+            candidate = _gog_calendar_candidate(args)
+        elif command == "gws":
+            candidate = _gws_calendar_candidate(args)
+        else:
+            candidate = None
+        if candidate is not None:
+            candidates.append(candidate)
+    return candidates
+
+
+def _calendar_write_candidate(cmd: str, depth: int = 0) -> dict | None:
+    """Aggregate all write candidates into one fail-closed decision record."""
+    candidates = _calendar_write_candidates(cmd, depth)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    targets = [
+        target
+        for candidate in candidates
+        for target in candidate.get("targets", ["unknown"])
+    ]
+    cli_values = {candidate.get("cli", "unknown") for candidate in candidates}
+    method_values = {
+        candidate.get("method", "unknown") for candidate in candidates
+    }
+    return {
+        "cli": next(iter(cli_values)) if len(cli_values) == 1 else "multiple",
+        "service": "calendar",
+        "method": (
+            next(iter(method_values)) if len(method_values) == 1 else "multiple"
+        ),
+        "targets": targets or ["unknown"],
+        "candidates": candidates,
+    }
 
 
 def _wrapper_split_string_payload(
@@ -575,13 +863,20 @@ def _restart_block(cmd: str, depth: int = 0):
 
 
 def scan_block(cmd: str, depth: int = 0):
-    """Return the matched pattern name (P1/P2/P3/P4/P5) or None. One level of
+    """Return the matched pattern name (P1/P2/P3/P4/P5/P6) or None. One level of
     shell -c recursion only (depth > 1 stops). Restart authority always wins
     over the narrower Lead/founder Homebrew exemption."""
     block = _restart_block(cmd, depth)
     if block is not None:
         return block
-    if _brew_mutation_hit(cmd, depth):
+    brew_hit = _brew_mutation_hit(cmd, depth)
+    # A Runner brew mutation is an unconditional existing hard deny. It must
+    # win over P6 rollout/QA allow paths for a compound Bash command.
+    if brew_hit and "FLYWHEEL_EXEC_ID" in os.environ:
+        return "P5"
+    if _calendar_write_candidate(cmd, depth) is not None:
+        return "P6"
+    if brew_hit:
         return "P5"
     return None
 
@@ -600,6 +895,51 @@ def bypass_reason(cmd: str):
         raw = raw[1:-1]
     raw = raw.strip()
     return raw or None
+
+
+# ── P6 calendar rollout / QA state ──────────────────────────────────────────
+def _calendar_guard_dir() -> Path:
+    return Path.home() / ".flywheel" / "calendar-guard"
+
+
+def _calendar_mode_state() -> tuple[bool, str]:
+    """Return (receipt_exists, audit|enforce|invalid).
+
+    Before the immutable founder receipt exists, rollout is audit regardless
+    of a stray mode file. Once it exists, missing/unknown mode is invalid and
+    therefore denied by the caller; deletion can never silently disable P6.
+    """
+    root = _calendar_guard_dir()
+    receipt_exists = (root / "enforce-receipt.json").exists()
+    if not receipt_exists:
+        return False, "audit"
+    try:
+        tokens = (root / "mode").read_text().split()
+        mode = tokens[0] if tokens else ""
+    except Exception:
+        return True, "invalid"
+    return (True, mode) if mode in {"audit", "enforce"} else (True, "invalid")
+
+
+def _qa_calendar_id() -> str | None:
+    try:
+        value = (Path.home() / ".flywheel" / "qa-calendar-id").read_text().strip()
+    except Exception:
+        return None
+    if value == "primary" or not QA_CALENDAR_ID_RE.fullmatch(value):
+        return None
+    return value
+
+
+def _calendar_qa_exempt(candidate: dict) -> bool:
+    qa_id = _qa_calendar_id()
+    targets = candidate.get("targets")
+    return bool(
+        qa_id
+        and isinstance(targets, list)
+        and targets
+        and all(isinstance(target, str) and target == qa_id for target in targets)
+    )
 
 
 # ── Accounting ────────────────────────────────────────────────────────────────
@@ -794,10 +1134,11 @@ def main() -> int:
     if not isinstance(cmd, str) or not cmd:
         return 0
     try:
+        calendar_candidate = _calendar_write_candidate(cmd)
         pattern = scan_block(cmd)
     except Exception:
         return 0  # judgment failure only — never reached once a hit is known
-    if not pattern:
+    if not pattern and calendar_candidate is None:
         return 0
 
     # ── Hit: the only exits below are deny or a fully-accounted bypass. ──────
@@ -808,6 +1149,50 @@ def main() -> int:
         "pattern": pattern,
         "command": cmd[:COMMAND_AUDIT_CAP],
     }
+    if calendar_candidate is not None:
+        # P6 has no bypass/ACK path and is evaluated independently from the
+        # winning P1-P5 pattern. Otherwise a bypassed co-located mutation could
+        # carry an enforce-mode Calendar write through the same Bash command.
+        candidate = calendar_candidate
+        receipt_exists, mode = _calendar_mode_state()
+        calendar_rec = {
+            **base_rec,
+            "pattern": "P6",
+            "mode": mode,
+            "cli": candidate.get("cli"),
+            "service": candidate.get("service"),
+            "method": candidate.get("method"),
+            "targets": candidate.get("targets", ["unknown"]),
+        }
+        if _calendar_qa_exempt(candidate):
+            if not audit_write(
+                {**calendar_rec, "decision": "allow", "note": "qa_calendar"}
+            ):
+                deny(CALENDAR_AUDIT_ERROR_REASON)
+                return 0
+            if pattern == "P6":
+                return 0
+        elif not receipt_exists or mode == "audit":
+            if not audit_write({**calendar_rec, "decision": "would_deny"}):
+                deny(CALENDAR_AUDIT_ERROR_REASON)
+                return 0
+            if pattern == "P6":
+                return 0
+        elif mode == "enforce":
+            audit_write({**calendar_rec, "decision": "deny"})
+            deny(CALENDAR_DENY_REASON)
+            return 0
+        else:
+            audit_write(
+                {
+                    **calendar_rec,
+                    "decision": "deny",
+                    "note": "mode_invalid_with_receipt",
+                }
+            )
+            deny(CALENDAR_CONFIG_ERROR_REASON)
+            return 0
+
     if pattern == "P5" and "FLYWHEEL_EXEC_ID" not in os.environ:
         audit_write({**base_rec, "decision": "allow", "note": "lead_or_founder"})
         return 0

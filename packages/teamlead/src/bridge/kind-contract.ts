@@ -141,6 +141,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	founder_gate_delivery_failed: { owner: "claude", arc: "human_by_design" },
 	tui_window_lost: { owner: "claude", arc: "human_by_design" },
 	restart_guard_bypass: { owner: "claude", arc: "human_by_design" },
+	calendar_wild_write: {
+		owner: "claude",
+		arc: "none_escalate",
+		remediationRef:
+			"engineering/doc/FLY-2137-calendar-write-governance/plan.md",
+	},
 	restart_storm_hold: {
 		owner: "claude",
 		arc: "human_by_design",

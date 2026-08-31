@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2137 日历写入权治理 — 设计方案</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #f5f5f7; color: #1d1d1f; font-family: -apple-system, system-ui, "PingFang SC", sans-serif; line-height: 1.65; padding: 24px 16px 64px; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  h1 { font-size: 26px; color: #1a365d; margin-bottom: 6px; }
+  .meta { color: #86868b; font-size: 13px; margin-bottom: 28px; }
+  .meta code { font-family: 'SF Mono', monospace; font-size: 12px; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); padding: 22px 24px; margin-bottom: 14px; border-left: 4px solid #007aff; }
+  .card.red { border-left-color: #ff3b30; }
+  .card.green { border-left-color: #34c759; }
+  .card.amber { border-left-color: #ff9500; }
+  .card.purple { border-left-color: #af52de; }
+  .card.gray { border-left-color: #86868b; }
+  h2 { font-size: 19px; color: #1a365d; margin-bottom: 12px; }
+  h3 { font-size: 15px; color: #1a365d; margin: 14px 0 6px; }
+  p, li { font-size: 14.5px; margin-bottom: 8px; }
+  ul, ol { padding-left: 22px; margin-bottom: 8px; }
+  .jargon { color: #86868b; font-size: 13px; }
+  .diagram { overflow-x: auto; background: #fff; padding: 8px 0; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13.5px; }
+  th, td { border: 1px solid #e5e5ea; padding: 8px 10px; text-align: left; vertical-align: top; }
+  th { background: #f5f5f7; color: #1a365d; font-weight: 600; }
+  .ok { color: #34c759; font-weight: 600; }
+  .no { color: #ff3b30; font-weight: 600; }
+  .warn { color: #ff9500; font-weight: 600; }
+  .badge { display: inline-block; border-radius: 6px; padding: 1px 8px; font-size: 12px; font-weight: 600; margin-right: 6px; }
+  .badge.decision { background: #fff3e0; color: #ff9500; }
+  code { font-family: 'SF Mono', monospace; font-size: 12.5px; background: #f5f5f7; border-radius: 4px; padding: 1px 5px; }
+  .comment-box { margin-top: 16px; border-top: 1px dashed #e5e5ea; padding-top: 12px; }
+  .comment-box label { font-size: 12.5px; color: #86868b; display: block; margin-bottom: 6px; }
+  .comment-box textarea { width: 100%; min-height: 56px; border: 1px solid #d2d2d7; border-radius: 8px; padding: 8px 10px; font-size: 13.5px; font-family: inherit; resize: vertical; background: #fafafa; }
+  .comment-box textarea:focus { outline: none; border-color: #007aff; background: #fff; }
+  #summary-card { border-left-color: #1a365d; }
+  #summary-body { white-space: pre-wrap; font-size: 13px; font-family: 'SF Mono', monospace; background: #f5f5f7; border-radius: 8px; padding: 12px; min-height: 40px; margin: 10px 0; }
+  .btn { background: #007aff; color: #fff; border: none; border-radius: 8px; padding: 9px 18px; font-size: 14px; font-weight: 600; cursor: pointer; }
+  .btn:active { opacity: .7; }
+  #copy-status { font-size: 13px; color: #34c759; margin-left: 10px; }
+  .chunk { margin-bottom: 8px; }
+  .chunk button { margin-top: 4px; background: #86868b; padding: 5px 12px; font-size: 12.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2137 · 给你的 Google Calendar 上锁</h1>
+  <div class="meta">Issue: FLY-2137 · 设计节点交付 · 2026-08-31 · 配套文档: <code>engineering/doc/FLY-2137-calendar-write-governance/</code></div>
+
+  <!-- s1 -->
+  <div class="card green" data-section="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p><strong>给你的日历立规矩:只有 Raya 排会模块被授权自动写你的真日历;Claude agent 会话里的日历写命令由守卫拦截(先只记账,你批了才真拦),每日只读清扫兜底。</strong></p>
+    <p>如实说明:这套守卫是<strong>行为护栏</strong>,不是牢不可破的安全边界——只要机器上的 Google 凭据没隔离,绕开守卫的技术路径仍然存在(⑧ 有细账)。根治方案(凭据隔离)将另立专项,并作为本治理目标真正关闭的前置。</p>
+    <p class="jargon">agent = 在你机器上干活的 AI 会话(各 Lead、各 runner、QA 都是);守卫 = 装在每个 AI 会话命令入口的检查程序,命令执行前先过它;凭据 = 登录你 Google 账号的钥匙文件。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- s2 -->
+  <div class="card red" data-section="出了什么事">
+    <h2>② 出了什么事(为什么要定这个规矩)</h2>
+    <p>2026-08-29 凌晨,FLY-2130 的 QA 在测试期间实测发现:<strong>另一个 agent 看到测试消息后,自作主张往你的真日历建了一个假会议</strong>(「FLY-2130 日历同步验收 — 与 Tadashi」),还带 10 分钟邮件提醒。QA 及时删掉了,否则你会收到一封假会议提醒邮件。</p>
+    <ul>
+      <li>根源:登录你 Google 账号的命令行工具(<code>gog</code> 和 <code>gws</code><span class="jargon">,两个能读写你 Gmail/日历的终端工具</span>)在这台机器上<strong>全局可用</strong>——任何拿到 shell 的 agent 都能直接建、改、删你的日程;</li>
+      <li>FLY-2130 的正路写入带隐形标记、有回执、可审计;这次的野路写入<strong>零标记零审计,事后无法归因</strong>;</li>
+      <li>你的日历是个人高敏面:假会议、假提醒直接打扰到你本人。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- s3 -->
+  <div class="card" data-section="治理后的写入格局">
+    <h2>③ 治理后的写入格局(核心流程图)</h2>
+    <div class="diagram">@@SVG1@@</div>
+    <p>读图要点:</p>
+    <ul>
+      <li><strong>唯一授权的自动写入方</strong>:Raya 排会模块是独立后台程序,每个事件带 <code>raya_meeting_id</code> 隐形标记<span class="jargon">(写在事件的扩展属性里,你在日历界面上看不到,但程序能查)</span>,不经过守卫——因为它根本不在 agent 会话里;</li>
+      <li><strong>agent 会话里的日历写命令按命令语法精确识别</strong>(建、改、删、回复邀请、专注时间、转移日历所有权、改共享权限等全部写形态,gog 和 gws 两个工具都覆盖);<strong>不认识的新写法一律先当成写来拦</strong>(宁可误拦让 agent 来问,不放过);<strong>读日历不受任何限制</strong>,gws 里与日历无关的服务也不会被误伤;</li>
+      <li><strong>QA 测试日历</strong>:QA 需要练手时写专用测试日历(和你的真日历完全隔离);守卫逐字核对目标日历号,命令里不写目标(默认=你的真日历)不算豁免;放行也记账;</li>
+      <li><strong>没有特批旁路</strong>:评审明确否决了「agent 带特批标记就放行」的设计——标记是 agent 自己就能加的,证明不了你授权过。确需给某链路写权限时,走 ⑤ 的名单公开加名,由你批准;你自己加日程用 Google 界面或自己的终端即可(守卫不装在那里);</li>
+      <li><strong>每日清扫</strong>:只读扫一遍你的真日历,汇总「无标记 + 新出现 + 内容像机器建的」可疑事件 + 守卫账本摘要 + 模式一致性检查(一天最多一条,零发现完全安静,绝不删任何东西)。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- s4 -->
+  <div class="card amber" data-section="上线路线与你要做的决定">
+    <h2>④ 上线路线 + 你要做的决定</h2>
+    <div class="diagram">@@SVG2@@</div>
+    <p><span class="badge decision">待你决定</span>守卫合入后先以 <strong>audit(只记账)</strong>模式运行:所有本该拦的命令照常放行,但记一笔账,每日清扫会汇总给你看。<strong>真正开拦(enforce)必须由你批准</strong>,二选一:</p>
+    <table>
+      <tr><th>选项</th><th>含义</th><th>适合</th></tr>
+      <tr><td><strong>audit(只记账)</strong></td><td>不拦任何命令,只记录 + 每日汇总。</td><td>想先观察一段,确认不会误伤</td></tr>
+      <tr><td><strong>enforce(开拦)</strong></td><td>agent 会话里的日历写命令被真实拦截(QA 日历与特批除外)。</td><td>确认规矩后的常态</td></tr>
+    </table>
+    <p>你批 enforce 后:Lead 写入一份<strong>永久批准回执</strong>(记你的批准消息编号)+ 模式文件,即刻生效(零重启)。此后模式文件若丢失或损坏,守卫<strong>宁拦不放</strong>(fail-closed)——不存在「误删文件就静默不拦了」。回滚到 audit 也必须你授权后显式写回(同样留痕),不是删文件。QA 随后回归验证:Raya 排会仍正常写 ✅、野路演练确实被拦(用替身命令,绝不碰你的真日历)❌、QA 日历确实放行 ✅、模式文件故障时确实拦 ✅。</p>
+    <div class="comment-box"><label>你的决定或意见(自动保存)</label><textarea data-key="s4" placeholder="例如:批 enforce / 先 audit 两周再说 / 有疑问…"></textarea></div>
+  </div>
+
+  <!-- s5 -->
+  <div class="card purple" data-section="规矩草案-授权写入方名单">
+    <h2>⑤ 规矩草案:授权写入方名单(逐个列名)</h2>
+    <table>
+      <tr><th>写入方</th><th>路径</th><th>标记与审计</th><th>结论</th></tr>
+      <tr><td>Raya 排会同步(FLY-2130)</td><td>独立后台程序直接调用</td><td><code>raya_meeting_id</code> 标记 + 回执文件 + 事件审计</td><td class="ok">✅ 唯一授权的自动写入方</td></tr>
+      <tr><td>会议纪要链路(meeting-notes)</td><td>—</td><td>本次逐文件实审:<strong>代码里零日历调用,它根本不写日历</strong></td><td>列名存档,不是日历写入方</td></tr>
+      <tr><td>你本人</td><td>Google 界面 / 你自己的终端</td><td>—</td><td class="ok">不受治理(守卫只装在 AI 会话里)</td></tr>
+      <tr><td>其他一切 agent</td><td>AI 会话内命令</td><td>守卫全量记账</td><td class="no">❌ 禁止(enforce 后拦截;QA 走测试日历;<strong>无任何特批旁路</strong>)</td></tr>
+    </table>
+    <p>今后如需给某条链路新增日历写权限,必须回到这份名单公开加名,不允许静默扩权。</p>
+    <div class="comment-box"><label>对名单的意见(自动保存)</label><textarea data-key="s5" placeholder="名单有遗漏或异议?"></textarea></div>
+  </div>
+
+  <!-- s6 -->
+  <div class="card" data-section="数据与机制模型">
+    <h2>⑥ 数据与机制模型</h2>
+    <table>
+      <tr><th>部件</th><th>是什么</th><th>放哪</th></tr>
+      <tr><td>守卫 P6 规则</td><td>在既有「机器边界守卫」(已在生产拦手动重启、拦 brew 变更的那个)里新增日历写检查,复用它全部的注册、审计与防绕过机制,不新建守卫;按命令语法精确解析,只放行已知的「读」方法,未知方法一律当写拦</td><td><code>flywheel-restart-guard.py</code></td></tr>
+      <tr><td>批准回执 + 模式文件</td><td>你批 enforce 时写入回执(记批准消息编号,永不删除)+ 模式文件;回执在而模式文件坏 = 宁拦不放;回滚 = 授权后显式写回 audit</td><td><code>~/.flywheel/calendar-guard/</code></td></tr>
+      <tr><td>QA 测试日历号</td><td>一行日历 id(必须是独立日历格式,明确拒绝「primary/邮箱」);命令里每个受影响的目标日历都与它逐字相同才豁免;缺失=无豁免</td><td><code>~/.flywheel/qa-calendar-id</code></td></tr>
+      <tr><td>审计账本</td><td>每次命中记一行:时间、会话、命令、工具、方法、目标日历、决定(放行/该拦/已拦)、当时模式</td><td>守卫既有日志</td></tr>
+      <tr><td>每日清扫</td><td>只读小程序,每天 09:05 跑一次;按你所在时区的自然日聚合,发送有回执、断电重跑不重复不丢报;有发现才发一条,零发现零消息</td><td><code>calendar-write-sweep.mjs</code> + 专用安装/卸载脚本</td></tr>
+      <tr><td>告警种类</td><td>新增一种:「清扫发现可疑情况」(提醒级,每日至多一条;含可疑事件、守卫账本摘要、模式一致性)</td><td>既有告警通道</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- s7 -->
+  <div class="card gray" data-section="关键取舍与被否掉的方案">
+    <h2>⑦ 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>决策点</th><th>选了</th><th>否掉了</th><th>为什么</th></tr>
+      <tr><td>拦截层放哪</td><td>扩展既有机器边界守卫(加一族规则)</td><td>新建独立守卫文件;或用「壳程序」包住 gog 本体</td><td>复用已实战验证的注册/审计/告警/防绕过全套,零新增注册面;壳程序会被 brew 升级悄悄还原,且要反向豁免 Raya,复杂度倒挂</td></tr>
+      <tr><td>检测层放哪</td><td>独立每日清扫小程序(照既有周期任务模式)</td><td>塞进 Bridge 主服务</td><td>不动主服务代码、不等重启班车;部署回滚独立</td></tr>
+      <tr><td>先拦还是先看</td><td>先 audit 只记账,你批了才 enforce;批准落永久回执,之后故障宁拦不放</td><td>合入即拦;或「文件丢了就静默回到不拦」</td><td>不误伤已 ship 功能;开拦是治理决定,应由你拍板;批准后的状态不能被一次误删悄悄清零</td></tr>
+      <tr><td>特批设计</td><td><strong>v1 不设特批通道</strong>;例外走名单公开加名</td><td>「agent 带特批标记+强制告警」方案(初稿)</td><td>评审否决:标记是 agent 自己就能设的,告警只能事后广播,证明不了你事前授权;删掉整条旁路最干净</td></tr>
+      <tr><td>没见过的新写命令</td><td>一律先拦(只放行已知读方法)</td><td>只拦已知写方法清单</td><td>工具升级冒出的新写法不该默认放过;误拦的代价只是 agent 来问一句</td></tr>
+      <tr><td>清扫发现处理</td><td>只报告,绝不自动删</td><td>自动删可疑事件</td><td>启发式可能误判,误删你的真日程不可接受</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- s8 -->
+  <div class="card amber" data-section="诚实边界">
+    <h2>⑧ 诚实边界:这套规矩管什么、不管什么</h2>
+    <h3>管得住</h3>
+    <ul>
+      <li>所有 Claude agent 会话里的 gog/gws 日历写命令——<strong>这次实测事件的路径正是这一类</strong>,含各种包裹写法(转一层 shell、加 env 前缀等);</li>
+      <li>事后归因:每次命中都有账,谁在什么会话里试图写、被怎么处理,查得到。</li>
+    </ul>
+    <h3>管不住(如实说明)</h3>
+    <ul>
+      <li>Codex / Gemini 等非 Claude 跑道的 agent 直接执行 shell——守卫装在 Claude 会话入口,它们不经过;</li>
+      <li>agent 把写命令藏进脚本文件再运行——守卫只看得见「运行了某脚本」;</li>
+      <li>直接拿机器上的 Google 凭据调 API——凭据仍是机器全局可读的;</li>
+      <li>清扫对以上绕过形态只有<strong>启发式</strong>发现能力:Google 不告诉我们事件是谁的程序建的,只能靠「无标记 + 新出现 + 内容特征」圈嫌疑——<strong>内容不含特征词的绕过写入可能完全发现不了</strong>,所以清扫只报告、由你目视裁决,不能当保证。</li>
+    </ul>
+    <p><strong>因此本单的定性是「规矩 + 行为护栏 + 检测」,不是「机器强制的唯一写入方」。</strong>根治 = 凭据隔离(Raya 持独立写钥匙,agent 环境读不到你的钥匙)。实现节点开工时会开出独立专项 issue 并挂在 FLY-2137 上;<strong>该专项落地前,「唯一写入方」这个治理目标不算真正关闭。</strong></p>
+    <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="s8" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- summary -->
+  <div class="card" id="summary-card" data-section="__summary__">
+    <h2>💬 意见汇总(实时聚合上面各节的评论)</h2>
+    <div id="summary-body">(还没有评论)</div>
+    <div id="chunks"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2137';
+  var PREFIX = 'fly2137-comments:' + location.pathname + ':';
+  var CHUNK_LIMIT = 1800;
+
+  function lsGet(key) { try { return localStorage.getItem(PREFIX + key) || ''; } catch (e) { return ''; } }
+  function lsSet(key, val) { try { localStorage.setItem(PREFIX + key, val); } catch (e) {} }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll('textarea[data-key]'));
+
+  function sectionTitle(ta) {
+    var card = ta.closest('.card');
+    return (card && card.getAttribute('data-section')) || ta.getAttribute('data-key');
+  }
+
+  function buildSummary() {
+    var parts = [];
+    boxes.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push('[' + sectionTitle(ta) + '] ' + v);
+    });
+    return parts;
+  }
+
+  function fullText(parts) {
+    return MARKER + '\n' + parts.join('\n');
+  }
+
+  function chunkText(parts) {
+    var chunks = [];
+    var cur = MARKER;
+    parts.forEach(function (p) {
+      var line = '\n' + p;
+      if ((cur + line).length > CHUNK_LIMIT && cur !== MARKER) {
+        chunks.push(cur);
+        cur = MARKER + line;
+      } else {
+        cur += line;
+      }
+    });
+    chunks.push(cur);
+    return chunks;
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunksDiv = document.getElementById('chunks');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  function renderSummary() {
+    var parts = buildSummary();
+    if (!parts.length) {
+      summaryBody.textContent = '(还没有评论)';
+      chunksDiv.textContent = '';
+      return;
+    }
+    var text = fullText(parts);
+    summaryBody.textContent = text;
+    chunksDiv.textContent = '';
+    if (text.length > CHUNK_LIMIT) {
+      var chunks = chunkText(parts);
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var label = document.createElement('div');
+        label.className = 'jargon';
+        label.textContent = '分段 ' + (i + 1) + '/' + chunks.length + '(' + c.length + ' 字符)';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制分段 ' + (i + 1);
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? '分段 ' + (i + 1) + ' 已复制 ✓' : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(label);
+        div.appendChild(btn);
+        chunksDiv.appendChild(div);
+      });
+    }
+  }
+
+  boxes.forEach(function (ta) {
+    ta.value = lsGet(ta.getAttribute('data-key'));
+    ta.addEventListener('input', function () {
+      lsSet(ta.getAttribute('data-key'), ta.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var parts = buildSummary();
+    copyText(fullText(parts), function (ok) {
+      copyStatus.textContent = ok ? '已复制 ✓(以 ' + MARKER + ' 开头)' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

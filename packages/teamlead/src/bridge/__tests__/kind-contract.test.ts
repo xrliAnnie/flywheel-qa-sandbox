@@ -465,6 +465,19 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		expect(owner).toMatchObject({ kind: "infra_bot", side: "claude" });
 	});
 
+	it("FLY-2137 calendar_wild_write exists on both faces with a no-ARC contract", () => {
+		expect(ALERT_EVENT_TYPES).toContain("calendar_wild_write");
+		expect(shellAllowlist()).toContain("calendar_wild_write");
+		expect(KIND_CONTRACTS.calendar_wild_write).toEqual({
+			owner: "claude",
+			arc: "none_escalate",
+			remediationRef:
+				"engineering/doc/FLY-2137-calendar-write-governance/plan.md",
+		});
+		expect(titleFor("calendar_wild_write")).toMatch(/calendar/i);
+		expect(bodyFor("calendar_wild_write", "")).toContain("raya_meeting_id");
+	});
+
 	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {
 		expect(ALERT_EVENT_TYPES).toContain("restart_storm_hold");
 		expect(shellAllowlist()).toContain("restart_storm_hold");

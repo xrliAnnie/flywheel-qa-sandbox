@@ -115,6 +115,8 @@ export function titleFor(kind: AlertEventType): string {
 		// title); case exists for switch exhaustiveness.
 		case "restart_guard_bypass":
 			return "Restart-guard BYPASS used";
+		case "calendar_wild_write":
+			return "Founder calendar write governance finding";
 		// FLY-1501: shell/Python gate supplies the concrete title; this keeps the
 		// shared union switch readable if a queued record is rendered later.
 		case "restart_storm_hold":
@@ -375,6 +377,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// FLY-913: never routed through this table (the restart-guard PreToolUse hook builds its own body via lead-alert.sh).
 		case "restart_guard_bypass":
 			return "An agent used the restart-guard bypass to run a manual Flywheel service restart. The command + reason are in ~/.flywheel/logs/restart-guard.log — review whether it was justified.";
+		case "calendar_wild_write":
+			return "The FLY-2137 daily sweep found an unmarked founder-calendar event, a direct agent Calendar write attempt, or a guard-mode degradation. Verify raya_meeting_id provenance, preserve the audit receipt, and keep QA writes on the dedicated test calendar.";
 		case "restart_storm_hold":
 			return "An OS-supervised Flywheel service reached its durable restart ceiling, so the wrapper stopped launching it. Inspect the service logs and cause, then explicitly resume that child with restart-storm-gate.py.";
 		// FLY-939 (G-D): never routed through this table (boot-sha-check builds its own body).

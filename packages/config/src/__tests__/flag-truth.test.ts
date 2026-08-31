@@ -451,6 +451,35 @@ describe("FLY-1393 flag truth", () => {
 		).toEqual({ ok: true, errors: [] });
 	});
 
+	it("registers the FLY-2137 calendar sweep installer inputs as non-flags", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_REPO).toMatch(
+			/plumbing.*repo.*FLY-2137/i,
+		);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CALENDAR_SWEEP_LAUNCHCTL).toMatch(
+			/test-only.*launchctl.*FLY-2137/i,
+		);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CALENDAR_SWEEP_NODE).toMatch(
+			/plumbing.*node.*FLY-2137/i,
+		);
+		for (const envVar of [
+			"FLYWHEEL_CALENDAR_SWEEP_TEST_APPEND_AUDIT_AFTER_READ",
+			"FLYWHEEL_CALENDAR_SWEEP_TEST_CRASH_AFTER_ALERT",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(
+				/test-only.*seam.*FLY-2137/i,
+			);
+		}
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_REPO=/tmp/flywheel",
+				"FLYWHEEL_CALENDAR_SWEEP_LAUNCHCTL=/tmp/launchctl",
+				"FLYWHEEL_CALENDAR_SWEEP_NODE=/tmp/node",
+				"FLYWHEEL_CALENDAR_SWEEP_TEST_APPEND_AUDIT_AFTER_READ={}",
+				"FLYWHEEL_CALENDAR_SWEEP_TEST_CRASH_AFTER_ALERT=1",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	/**
 	 * FLY-1809 (from the FLY-1782 audit): these two were never on/off switches —
 	 * one is a Discord channel id, the other a filesystem path. They are MOVED off

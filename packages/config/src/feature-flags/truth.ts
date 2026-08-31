@@ -353,6 +353,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"test-only census path for isolated carrier-source fixtures (FLY-2190), not a runtime gate",
 	FLYWHEEL_HOST_TMUX_GATE_TEST_MODE:
 		"test-only hermetic probe seam rejected by production state roots (FLY-2190), not a runtime gate",
+	FLYWHEEL_REPO:
+		"plumbing: canonical repo path rendered into the calendar sweep LaunchAgent (FLY-2137), not an on/off gate",
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
@@ -468,6 +470,14 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: launchctl executable override for hermetic pool-rebuild QA (FLY-1182)",
 	FLYWHEEL_JANITOR_LAUNCHCTL:
 		"plumbing: launchctl executable override for hermetic log-janitor installer QA (FLY-1330)",
+	FLYWHEEL_CALENDAR_SWEEP_LAUNCHCTL:
+		"test-only launchctl executable override for hermetic calendar sweep installer QA (FLY-2137), not a runtime gate",
+	FLYWHEEL_CALENDAR_SWEEP_NODE:
+		"plumbing: absolute Node executable rendered into the calendar sweep LaunchAgent (FLY-2137), not an on/off gate",
+	FLYWHEEL_CALENDAR_SWEEP_TEST_APPEND_AUDIT_AFTER_READ:
+		"test-only hermetic append-after-read seam for calendar sweep cursor QA (FLY-2137), not a runtime gate",
+	FLYWHEEL_CALENDAR_SWEEP_TEST_CRASH_AFTER_ALERT:
+		"test-only hermetic crash-window seam for calendar sweep outbox QA (FLY-2137), not a runtime gate",
 	FLYWHEEL_JANITOR_REPORT_CHANNEL:
 		"config value: tri-state log-janitor Discord destination (unset inherits FLYWHEEL_NOTIFY_CHANNEL, empty disables, non-empty overrides) for FLY-1330, not a persistent on/off rollout gate",
 	FLYWHEEL_QUOTA_STATUSLINE_CACHE:

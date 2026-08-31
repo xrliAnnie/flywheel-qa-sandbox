@@ -110,6 +110,12 @@ def deny_reason(stdout: str) -> str:
         return ""
 
 
+def jsonl(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
 # ── T1: must-block matrix (incident forms, research §4) ─────────────────────
 MUST_BLOCK = [
     # P1 — launchctl mutating subcommand + com.flywheel.
@@ -849,6 +855,41 @@ def t10_brew_guard():
         else:
             bad(f"T10 runner read: {name}", f"exit={code} decision={decision_of(out)}")
 
+    for enforce_qa, name in (
+        (False, "calendar audit allow cannot mask runner brew deny"),
+        (True, "calendar QA exemption cannot mask runner brew deny"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            qa_id = "flywheel-qa@group.calendar.google.com"
+            mode, receipt, qa_path = calendar_home(tmp)
+            if enforce_qa:
+                mode.write_text("enforce\n")
+                write_enforce_receipt(receipt)
+                qa_path.write_text(qa_id + "\n")
+            target = qa_id if enforce_qa else "primary"
+            log = Path(tmp) / "guard.log"
+            code, out = run_hook(
+                bash_event(f"brew install tmux && gog calendar create {target}"),
+                env_extra={
+                    **runner_env,
+                    "HOME": tmp,
+                    "FLYWHEEL_RESTART_GUARD_LOG": str(log),
+                },
+            )
+            records = jsonl(log)
+            if (
+                code == 0
+                and decision_of(out) == "deny"
+                and any(
+                    record.get("pattern") == "P5"
+                    and record.get("decision") == "deny"
+                    for record in records
+                )
+            ):
+                ok(f"T10 {name}")
+            else:
+                bad(f"T10 {name}", f"decision={decision_of(out)} records={records}")
+
     with tempfile.TemporaryDirectory() as tmp:
         log = Path(tmp) / "guard.log"
         code, out = run_hook(
@@ -934,6 +975,275 @@ def t10_brew_guard():
             bad("T10 runner bypass", f"exit={code} decision={decision_of(out)}")
 
 
+# ── T11/T12: FLY-2137 founder-calendar CLI governance ───────────────────────
+CALENDAR_WRITES = [
+    ("gog calendar create primary --summary QA", "gog create"),
+    ("gog cal add primary --summary QA", "gog cal alias + add"),
+    ("gog --account personal calendar update primary event-1", "gog spaced global flag"),
+    ("gog --account=personal --dry-run calendar delete primary event-1", "gog equals flag + dry-run"),
+    ("gog calendar respond primary event-1 accepted", "gog respond"),
+    ("gog calendar focus-time --summary focus", "gog focus-time omitted calendar = primary"),
+    ("gog calendar future-mutation primary", "gog unknown method fails closed"),
+    ("gws calendar +insert --calendar primary", "gws helper insert"),
+    ("gws calendar:v3 events insert --params '{\"calendarId\":\"primary\"}'", "gws version-qualified service"),
+    ("gws --api-version v3 calendar events update --params '{\"calendarId\":\"primary\"}'", "gws api-version spaced flag"),
+    ("gws --api-version=v3 calendar events delete --params '{\"calendarId\":\"primary\"}'", "gws api-version equals flag"),
+    ("gws calendar calendars transferOwnership --params '{}'", "gws transfer ownership"),
+    ("gws calendar acl insert --params '{}'", "gws acl write"),
+    ("gws calendar futureResource futureMethod", "gws unknown resource fails closed"),
+    ("env FOO=1 gog calendar create primary", "env wrapper"),
+    ("sudo -E gws calendar events insert --params '{\"calendarId\":\"primary\"}'", "sudo wrapper"),
+    ('bash -lc "gog calendar create primary --summary QA"', "shell -c recursion"),
+]
+
+CALENDAR_READS = [
+    ("gog calendar events primary --from 2026-08-01 --to 2026-09-01", "gog events read"),
+    ("gog calendar list", "gog list read"),
+    ("gog calendar freebusy primary", "gog freebusy read"),
+    ("gog gmail send --to founder@example.com", "gog other service"),
+    ("gog calendar create --help", "gog mutator help introspection"),
+    ("gog --version", "gog version introspection"),
+    ("gws calendar events list --params '{\"calendarId\":\"primary\"}'", "gws events list"),
+    ("gws calendar:v3 settings get", "gws version-qualified read"),
+    ("gws calendar help", "gws calendar help"),
+    ("gws --help", "gws top-level help"),
+    ("gws gmail:v1 users messages send", "gws other version-qualified service"),
+    ("gws events insert", "Workspace Events is not Calendar"),
+    ("gog --unknown-flag gmail messages list", "ambiguous gog flag stays outside non-calendar service"),
+    ("gws --unknown drive files list", "ambiguous gws flag stays outside non-calendar service"),
+    ('grep "gog calendar create" engineering/doc/FLY-2137-calendar-write-governance/plan.md', "grep source inspection"),
+    ('rg "gws calendar events insert" scripts', "rg source inspection"),
+]
+
+
+def calendar_home(tmp: str) -> tuple[Path, Path, Path]:
+    root = Path(tmp) / ".flywheel" / "calendar-guard"
+    root.mkdir(parents=True)
+    return root / "mode", root / "enforce-receipt.json", Path(tmp) / ".flywheel" / "qa-calendar-id"
+
+
+def write_enforce_receipt(path: Path) -> None:
+    path.write_text(json.dumps({
+        "schemaVersion": 1,
+        "approvedBy": "founder",
+        "discordMsgId": "founder-msg-1",
+        "approvedAt": "2026-08-31T12:00:00Z",
+        "decision": "enforce",
+    }))
+
+
+def t11_calendar_grammar():
+    print("T11: FLY-2137 calendar CLI grammar")
+    for cmd, name in CALENDAR_WRITES:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "guard.log"
+            code, out = run_hook(
+                bash_event(cmd),
+                env_extra={"HOME": tmp, "FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            p6 = [r for r in jsonl(log) if r.get("pattern") == "P6"]
+            if code == 0 and decision_of(out) == "allow" and len(p6) == 1 and p6[0].get("decision") == "would_deny":
+                ok(f"T11 write candidate audited: {name}")
+            else:
+                bad(f"T11 write candidate: {name}", f"exit={code} decision={decision_of(out)} records={jsonl(log)}")
+
+    for cmd, name in CALENDAR_READS:
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "guard.log"
+            code, out = run_hook(
+                bash_event(cmd),
+                env_extra={"HOME": tmp, "FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            p6 = [r for r in jsonl(log) if r.get("pattern") == "P6"]
+            if code == 0 and decision_of(out) == "allow" and not p6:
+                ok(f"T11 read/unrelated allowed: {name}")
+            else:
+                bad(f"T11 read/unrelated: {name}", f"exit={code} decision={decision_of(out)} records={p6}")
+
+
+def t12_calendar_decision_and_qa_targets():
+    print("T12: FLY-2137 calendar audit/enforce/QA target contract")
+    command = "gog calendar create primary --summary QA"
+    for mode_case, mode_text, receipt_present, expected_decision, expected_note in (
+        ("rollout without receipt", "enforce\n", False, "allow", None),
+        ("founder enforce", "enforce\n", True, "deny", None),
+        ("explicit founder rollback", "audit # founder-msg-2\n", True, "allow", None),
+        ("missing mode after receipt", None, True, "deny", "mode_invalid_with_receipt"),
+        ("damaged mode after receipt", "surprise\n", True, "deny", "mode_invalid_with_receipt"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            mode, receipt, _qa = calendar_home(tmp)
+            if mode_text is not None:
+                mode.write_text(mode_text)
+            if receipt_present:
+                write_enforce_receipt(receipt)
+            log = Path(tmp) / "guard.log"
+            code, out = run_hook(
+                bash_event(command),
+                env_extra={"HOME": tmp, "FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            p6 = [r for r in jsonl(log) if r.get("pattern") == "P6"]
+            rec = p6[-1] if p6 else {}
+            expected_audit = "deny" if expected_decision == "deny" else "would_deny"
+            if (
+                code == 0
+                and decision_of(out) == expected_decision
+                and rec.get("decision") == expected_audit
+                and (expected_note is None or rec.get("note") == expected_note)
+            ):
+                ok(f"T12 mode: {mode_case}")
+            else:
+                bad(f"T12 mode: {mode_case}", f"decision={decision_of(out)} reason={deny_reason(out)[:100]} records={p6}")
+
+    qa_id = "flywheel-qa@group.calendar.google.com"
+    qa_cases = [
+        (f"gog calendar create {qa_id} --summary QA", True, "gog positional target"),
+        (f"gog calendar focus-time {qa_id} --summary focus", True, "gog helper target"),
+        (f"gws calendar +insert --calendar {qa_id}", True, "gws helper target"),
+        (f"gws calendar events insert --params '{{\"calendarId\":\"{qa_id}\"}}'", True, "gws params target"),
+        (f"gws calendar events move --params '{{\"calendarId\":\"{qa_id}\",\"destination\":\"{qa_id}\"}}'", True, "gws move both targets QA"),
+        (f"gws calendar events move --params '{{\"calendarId\":\"{qa_id}\",\"destination\":\"primary\"}}'", False, "gws move mixed targets"),
+        (f"gog calendar create {qa_id} && gws calendar +insert --calendar {qa_id}", True, "multiple writes all target QA"),
+        (f"gog calendar create {qa_id} && gog calendar create primary", False, "later primary write cannot hide behind QA first"),
+        (f"gws calendar +insert --calendar {qa_id} --calendar primary", False, "repeated target flag cannot preserve QA exemption"),
+        (f"gws calendar events insert --params '{{\"calendarId\":\"primary\",\"summary\":\"{qa_id}\"}}'", False, "QA id only in summary"),
+        ("gws calendar events insert --params not-json", False, "invalid params JSON"),
+        ("gws calendar +insert", False, "omitted calendar means primary"),
+        ("gws calendar calendars clear --params '{}'", False, "no extractor never exempt"),
+    ]
+    for cmd, exempt, name in qa_cases:
+        with tempfile.TemporaryDirectory() as tmp:
+            mode, receipt, qa_path = calendar_home(tmp)
+            mode.write_text("enforce\n")
+            write_enforce_receipt(receipt)
+            qa_path.write_text(qa_id + "\n")
+            log = Path(tmp) / "guard.log"
+            code, out = run_hook(
+                bash_event(cmd),
+                env_extra={"HOME": tmp, "FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            recs = [r for r in jsonl(log) if r.get("pattern") == "P6"]
+            rec = recs[-1] if recs else {}
+            got_exempt = decision_of(out) == "allow" and rec.get("note") == "qa_calendar"
+            got_denied = decision_of(out) == "deny" and rec.get("decision") == "deny"
+            if code == 0 and ((exempt and got_exempt) or (not exempt and got_denied)):
+                ok(f"T12 QA target: {name}")
+            else:
+                bad(f"T12 QA target: {name}", f"decision={decision_of(out)} records={recs}")
+
+    for invalid_id in ("primary", "founder@gmail.com", "founder@u.northwestern.edu"):
+        with tempfile.TemporaryDirectory() as tmp:
+            mode, receipt, qa_path = calendar_home(tmp)
+            mode.write_text("enforce\n")
+            write_enforce_receipt(receipt)
+            qa_path.write_text(invalid_id + "\n")
+            log = Path(tmp) / "guard.log"
+            _code, out = run_hook(
+                bash_event(f"gog calendar create {invalid_id}"),
+                env_extra={"HOME": tmp, "FLYWHEEL_RESTART_GUARD_LOG": str(log)},
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            if decision_of(out) == "deny":
+                ok(f"T12 invalid QA id denied: {invalid_id}")
+            else:
+                bad(f"T12 invalid QA id: {invalid_id}", f"decision={decision_of(out)}")
+
+    for command, setup_enforce, name in (
+        ("gog calendar create primary", False, "audit-mode accounting failure denies"),
+        (f"gog calendar create {qa_id}", True, "QA-exemption accounting failure denies"),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            mode, receipt, qa_path = calendar_home(tmp)
+            if setup_enforce:
+                mode.write_text("enforce\n")
+                write_enforce_receipt(receipt)
+                qa_path.write_text(qa_id + "\n")
+            audit_path = Path(tmp) / "audit-is-a-directory"
+            audit_path.mkdir()
+            _code, out = run_hook(
+                bash_event(command),
+                env_extra={
+                    "HOME": tmp,
+                    "FLYWHEEL_RESTART_GUARD_LOG": str(audit_path),
+                },
+                env_remove=("FLYWHEEL_EXEC_ID",),
+            )
+            if decision_of(out) == "deny":
+                ok(f"T12 {name}")
+            else:
+                bad(f"T12 {name}", f"decision={decision_of(out)}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mode, receipt, _qa = calendar_home(tmp)
+        mode.write_text("enforce\n")
+        write_enforce_receipt(receipt)
+        args_file = Path(tmp) / "alert-args.txt"
+        fake_alert = make_fake_alert(tmp, "sent", str(args_file))
+        log = Path(tmp) / "guard.log"
+        bypassed = 'FLYWHEEL_RESTART_GUARD_BYPASS="calendar exception" gog calendar create primary'
+        _code, out = run_hook(
+            bash_event(bypassed),
+            env_extra={
+                "HOME": tmp,
+                "FLYWHEEL_RESTART_GUARD_LOG": str(log),
+                "FLYWHEEL_RESTART_GUARD_ALERT_CMD": fake_alert,
+            },
+            env_remove=("FLYWHEEL_EXEC_ID",),
+        )
+        if decision_of(out) == "deny" and not args_file.exists():
+            ok("T12 restart-guard bypass has no effect on P6")
+        else:
+            bad("T12 P6 bypass", f"decision={decision_of(out)} alert_fired={args_file.exists()}")
+
+    for command, runner_context, name in (
+        (
+            'FLYWHEEL_RESTART_GUARD_BYPASS="need tmux" brew install tmux && gog calendar create primary',
+            True,
+            "P5 bypass cannot carry an enforce-mode primary write",
+        ),
+        (
+            'FLYWHEEL_RESTART_GUARD_BYPASS="rescue" pkill -f run-bridge && gog calendar create primary',
+            False,
+            "P2 bypass cannot carry an enforce-mode primary write",
+        ),
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            mode, receipt, _qa = calendar_home(tmp)
+            mode.write_text("enforce\n")
+            write_enforce_receipt(receipt)
+            args_file = Path(tmp) / "alert-args.txt"
+            fake_alert = make_fake_alert(tmp, "sent", str(args_file))
+            log = Path(tmp) / "guard.log"
+            env_extra = {
+                "HOME": tmp,
+                "FLYWHEEL_RESTART_GUARD_LOG": str(log),
+                "FLYWHEEL_RESTART_GUARD_ALERT_CMD": fake_alert,
+            }
+            if runner_context:
+                env_extra["FLYWHEEL_EXEC_ID"] = "fly-2137-compound-test"
+            _code, out = run_hook(
+                bash_event(command),
+                env_extra=env_extra,
+                env_remove=() if runner_context else ("FLYWHEEL_EXEC_ID",),
+            )
+            p6 = [record for record in jsonl(log) if record.get("pattern") == "P6"]
+            if (
+                decision_of(out) == "deny"
+                and any(record.get("decision") == "deny" for record in p6)
+                and not args_file.exists()
+            ):
+                ok(f"T12 {name}")
+            else:
+                bad(
+                    f"T12 {name}",
+                    f"decision={decision_of(out)} records={jsonl(log)} alert_fired={args_file.exists()}",
+                )
+
+
 def main() -> int:
     if not HOOK.exists():
         print(f"FAIL: hook not found at {HOOK}")
@@ -950,6 +1260,8 @@ def main() -> int:
     t8_real_lead_alert_integration()
     t9_log_rotation()
     t10_brew_guard()
+    t11_calendar_grammar()
+    t12_calendar_decision_and_qa_targets()
     print(f"\n{PASS} passed, {FAIL} failed")
     return 1 if FAIL else 0
 

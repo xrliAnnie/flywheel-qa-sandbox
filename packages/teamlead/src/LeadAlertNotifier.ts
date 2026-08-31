@@ -150,6 +150,9 @@ export const ALERT_EVENT_TYPES = [
 	// present in the union so a queued bypass alert drains with a known
 	// eventType and the shared kind face (lead-alert.sh ↔ TS) has no drift.
 	"restart_guard_bypass",
+	// FLY-2137: shell-only daily sweep for unmarked founder-calendar events,
+	// direct P6 write attempts, and calendar-guard mode degradation.
+	"calendar_wild_write",
 	// FLY-1501: an OS-supervised service hit the durable 10-minute restart
 	// ceiling and its wrapper stopped exec'ing it. Emitted by the
 	// kernel-independent Python gate through lead-alert.sh; kept in the shared

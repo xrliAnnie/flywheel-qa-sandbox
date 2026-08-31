@@ -1,0 +1,11 @@
+flowchart TB
+    subgraph agents["所有 Claude agent 会话"]
+        A["agent 试图执行<br/>gog / gws 日历写命令"] --> G{"P6 守卫检查<br/>(装在每个会话的命令入口)<br/>按命令语法精确解析,<br/>不认识的新写法一律当写拦"}
+    end
+    G -->|"目标是 QA 测试日历<br/>(逐字核对,缺省不算)"| OK1["✅ 放行 + 记账"]
+    OK1 --> QACAL[("QA 测试日历<br/>(独立,不打扰你)")]
+    G -->|"audit 模式"| OK2["✅ 放行<br/>但记『本应拦截』一笔账"]
+    G -->|"enforce 模式"| DENY["❌ 拦截<br/>并向 agent 解释规矩"]
+    G -->|"enforce 批准回执在<br/>但模式文件丢失/损坏"| DENY2["❌ 一样拦截<br/>(故障时宁拦不放)"]
+    RAYA["Raya 排会模块<br/>(独立后台程序,FLY-2130)"] -->|"唯一正路:每个事件带<br/>raya_meeting_id 隐形标记"| CAL[("你的真日历<br/>(primary)")]
+    SWEEP["每日清扫(只读)"] -.->|"扫可疑事件 + 核对守卫账本<br/>与模式一致性;有发现才报,<br/>一天至多一条"| CAL

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bodyFor, titleFor } from "../alert-kind-copy.js";
+import { bodyFor, severityFor, titleFor } from "../alert-kind-copy.js";
 
 describe("alert kind copy", () => {
 	it("describes Discord plugin integrity failures with recovery guidance", () => {
@@ -44,5 +44,16 @@ describe("alert kind copy", () => {
 		expect(bodyFor("meeting_notes_failed", "ignored")).toContain(
 			"failureClass",
 		);
+	});
+
+	it("renders founder-calendar wild writes as an actionable warning", () => {
+		expect(titleFor("calendar_wild_write")).toBe(
+			"Founder calendar write governance finding",
+		);
+		expect(bodyFor("calendar_wild_write", "ignored")).toContain(
+			"raya_meeting_id",
+		);
+		expect(bodyFor("calendar_wild_write", "ignored")).toContain("FLY-2137");
+		expect(severityFor("calendar_wild_write")).toBe("warning");
 	});
 });

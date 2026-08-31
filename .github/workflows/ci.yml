@@ -790,15 +790,18 @@ jobs:
       - name: Test — FLY-1981 runtime role auto-QA retirement
         run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
 
-      # FLY-913: restart-guard deployment guardrail. Hermetic — the hook runs
-      # against stdin JSON fixtures with the alert seam stubbed (plus one
-      # integration case through the REAL lead-alert.sh with a fake curl); the
-      # install matrix runs against fake HOMEs; the strict-delivery matrix uses
-      # isolated FLYWHEEL_* dirs. Needs jq/sqlite3 (installed above) + python3.
+      # FLY-913/2137: restart/calendar guard deployment guardrails. Hermetic —
+      # the hook runs against stdin JSON fixtures with the alert seam stubbed
+      # (plus one integration case through the REAL lead-alert.sh with a fake
+      # curl); install matrices run against fake HOMEs; the calendar sweep uses
+      # fake gog/alert seams and private state; strict delivery uses isolated
+      # FLYWHEEL_* dirs. Needs jq/sqlite3 (installed above) + python3.
       - name: Test — FLY-913 restart-guard hook + install + strict-delivery
         run: |
           python3 scripts/hooks/test-flywheel-restart-guard.py
           bash scripts/hooks/test-restart-guard-install.sh
+          bash scripts/__tests__/test-calendar-write-sweep.test.sh
+          bash scripts/__tests__/test-install-calendar-sweep.test.sh
           bash scripts/__tests__/lead-alert-strict-delivery.test.sh
 
       # FLY-1434: the single full-fleet restart contract and quota-monitor
