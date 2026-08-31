@@ -1,0 +1,12 @@
+flowchart TD
+    A["沙箱 main 上的残留文件 doc/FLY-202-generalized-e2e/design.html<br/>与 stub(替身脚本)要写的设计文件逐字节相同"]
+    B["stub 从 main 开工作分支、写入同样的文件<br/>→ git 发现内容一模一样,零改动,不产生提交<br/>→ 分支停在 main 原地"]
+    C["完成校验闸计算『这次到底改了什么』的变更区间<br/>→ 起点终点是同一个提交,区间是空集"]
+    D["FLY-1404 闸 fail-closed(宁可拦下也不放行)<br/>『变更区间里没有设计 HTML』"]
+    E["stub 把死因写进 stub-state 的 fatal 字段后退出<br/>→ 工作流节点永远不变 done"]
+    F["🕳 driver(九步校验脚本)只查数据库、不读 fatal<br/>静默卡在 step 2,15 分钟后通用超时,看不到真因"]
+    A --> B --> C --> D --> E --> F
+
+    style A fill:#ffe5e0,stroke:#ff3b30,stroke-width:2px
+    style D fill:#fff3e0,stroke:#ff9500,stroke-width:2px
+    style F fill:#ffe5e0,stroke:#ff3b30,stroke-width:2px

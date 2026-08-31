@@ -590,7 +590,7 @@ assert_contains "$a3_diagnosis_branch" \
 	'closeout: { status: "failed"' \
 	'A3 records a failed closeout without erasing its diagnosis'
 assert_eq "$(node "$ROOT/scripts/qa-529-generalized-stub.mjs" --version)" \
-	'Flywheel 529 generalized persistent stub 1.0.0' \
+	'Flywheel 529 generalized persistent stub 1.1.0' \
 	'persistent stub has a deterministic version probe'
 if node "$ROOT/scripts/qa-529-generalized-e2e.mjs" 2 \
 	--issue not-canonical >/dev/null 2>&1; then
@@ -601,8 +601,8 @@ else
 fi
 
 playbook="$ROOT/doc/qa/framework/529-room-playbook.md"
-assert_eq "$(rg -c '^\| [0-9]+ \|' "$playbook")" '14' \
-	'529 room playbook carries exactly fourteen numbered field pitfalls'
+assert_eq "$(rg -c '^\| [0-9]+ \|' "$playbook")" '15' \
+	'529 room playbook carries exactly fifteen numbered field pitfalls'
 assert_contains "$(<"$playbook")" \
 	'无 Runner 演练必须省略 `--from-branch`' \
 	'529 room playbook preserves the no-Runner from-branch rule'

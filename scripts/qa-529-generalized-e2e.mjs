@@ -23,7 +23,9 @@ import {
 	buildGateDeliveryRespondArgs,
 	buildGeneralizedStartRequest,
 	buildSlotCommEnv,
+	buildStubFatalAbortError,
 	classifyDurableLaunchDrain,
+	classifyStubFatal,
 	generalizedEntryAuthorityIsReady,
 	hasOwnedPrMarker,
 	parseTmuxTargetIdentity,
@@ -31,17 +33,19 @@ import {
 	reconcileOwnedExecutionSet,
 	resolveOwnedPrEvidence,
 	resolveVerifiedPrCleanupTarget,
+	STUB_FATAL_DIAGNOSIS_EXIT,
 	shouldTerminatePriorRun,
+	stubFatalAbortDecision,
 	terminateQaSessionForA3,
 	tmuxObservationIsAlive,
 	validateGeneralizedStartResponse,
 	validateQaShipPreconditions,
 	validateRoomInfo,
+	waitFor,
 } from "./lib/qa-generalized-e2e-lib.mjs";
 
 const A3_DIAGNOSIS_EXIT = 20;
 const DEFAULT_TIMEOUT_MS = 15 * 60_000;
-const POLL_MS = 500;
 
 function usage() {
 	process.stderr.write(`Usage:
@@ -49,6 +53,7 @@ function usage() {
 
 Exit 0: steps 1-9 completed
 Exit ${A3_DIAGNOSIS_EXIT}: steps 1-7 completed; step 8 emitted the known F2 PR-authority diagnosis
+Exit ${STUB_FATAL_DIAGNOSIS_EXIT}: a stub recorded a fatal error; the driver emitted a diagnosis instead of timing out
 Other non-zero: fail-closed setup, ownership, assertion, or infrastructure error
 `);
 }
@@ -101,27 +106,6 @@ function command(file, args, options = {}) {
 
 function stableId(prefix, value) {
 	return `${prefix}-${createHash("sha256").update(value).digest("hex").slice(0, 24)}`;
-}
-
-function sleep(ms) {
-	return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
-}
-
-async function waitFor(label, probe, timeoutMs) {
-	const deadline = Date.now() + timeoutMs;
-	let last;
-	while (Date.now() < deadline) {
-		try {
-			last = await probe();
-			if (last) return last;
-		} catch (error) {
-			last = error instanceof Error ? error.message : String(error);
-		}
-		await sleep(POLL_MS);
-	}
-	throw new Error(
-		`${label} timed out after ${timeoutMs}ms; last=${JSON.stringify(last)}`,
-	);
 }
 
 async function httpJson(url, options = {}) {
@@ -655,7 +639,7 @@ function remotePrFromStub(stub) {
 	return rows;
 }
 
-async function runDrill(context) {
+async function runDrillSteps(context) {
 	const {
 		room,
 		token,
@@ -711,6 +695,89 @@ async function runDrill(context) {
 	};
 	writeJsonAtomic(ownerPath, owner);
 	const writeStep = stepWriter(evidenceDir, runId);
+	const fatalObservations = new Map();
+	const guardStubFatal = (step) => {
+		if (context.runnerMode === "real") return;
+		const latestNodes = new Map();
+		for (const node of all(
+			db,
+			`SELECT node_id AS nodeId, execution_id AS executionId, state, attempt
+			   FROM workflow_run_node
+			  WHERE run_id = ? AND execution_id IS NOT NULL
+			  ORDER BY node_id, attempt DESC`,
+			runId,
+		)) {
+			if (!latestNodes.has(node.nodeId)) latestNodes.set(node.nodeId, node);
+		}
+		const unfinished = [...latestNodes.values()].filter(
+			(node) => node.state !== "done",
+		);
+		const unfinishedNodeIds = new Set(unfinished.map((node) => node.nodeId));
+		for (const nodeId of fatalObservations.keys()) {
+			if (!unfinishedNodeIds.has(nodeId)) fatalObservations.delete(nodeId);
+		}
+		for (const node of unfinished) {
+			const stub = latestStub(slotDir, node.executionId);
+			const classification = classifyStubFatal(stub?.fatal);
+			if (!classification) {
+				fatalObservations.delete(node.nodeId);
+				continue;
+			}
+			const pidAlive = processAlive(stub?.pid);
+			const decision = stubFatalAbortDecision({
+				executionId: node.executionId,
+				fatal: stub.fatal,
+				pidAlive,
+				isCurrentExecution: true,
+				kind: classification.kind,
+				nowMs: Date.now(),
+				priorObservation: fatalObservations.get(node.nodeId) ?? null,
+			});
+			if (decision.nextObservation) {
+				fatalObservations.set(node.nodeId, decision.nextObservation);
+			} else {
+				fatalObservations.delete(node.nodeId);
+			}
+			if (!decision.abort) continue;
+			const rebound = one(
+				db,
+				`SELECT execution_id AS executionId, state
+				   FROM workflow_run_node
+				  WHERE run_id = ? AND node_id = ?
+				  ORDER BY attempt DESC LIMIT 1`,
+				runId,
+				node.nodeId,
+			);
+			if (
+				rebound?.executionId !== node.executionId ||
+				rebound.state === "done"
+			) {
+				fatalObservations.delete(node.nodeId);
+				continue;
+			}
+			let evidenceWriteError;
+			try {
+				writeStep(step, "stub fatal diagnosed before timeout", {
+					status: "diagnosed_stub_fatal",
+					nodeId: node.nodeId,
+					executionId: node.executionId,
+					classification,
+					fatal: stub.fatal,
+					pidAlive,
+				});
+			} catch (error) {
+				evidenceWriteError =
+					error instanceof Error ? error.message : String(error);
+			}
+			const abort = buildStubFatalAbortError({
+				step,
+				executionId: node.executionId,
+				classification,
+			});
+			if (evidenceWriteError) abort.evidenceWriteError = evidenceWriteError;
+			throw abort;
+		}
+	};
 	if (pretrustedWorktree) {
 		const session = await waitFor(
 			"pretrusted worktree binding",
@@ -759,6 +826,7 @@ async function runDrill(context) {
 	const design = await waitFor(
 		"step 2 design completion",
 		() => {
+			guardStubFatal(2);
 			const node = one(
 				db,
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'eng_design' ORDER BY attempt DESC LIMIT 1",
@@ -784,6 +852,7 @@ async function runDrill(context) {
 	const implement1 = await waitFor(
 		"step 3 implement dispatch",
 		() => {
+			guardStubFatal(3);
 			const node = one(
 				db,
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'implement' AND attempt = 1",
@@ -809,6 +878,7 @@ async function runDrill(context) {
 	const parked1 = await waitFor(
 		"step 4 implement ship park",
 		() => {
+			guardStubFatal(4);
 			const node = one(
 				db,
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'implement' AND attempt = 1",
@@ -851,6 +921,7 @@ async function runDrill(context) {
 	const qa1Ready = await waitFor(
 		"QA attempt 1 release boundary",
 		() => {
+			guardStubFatal(5);
 			const row = one(
 				db,
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'qa' AND attempt = 1",
@@ -896,6 +967,7 @@ async function runDrill(context) {
 	const rework = await waitFor(
 		"step 6 QA fail rework wake",
 		() => {
+			guardStubFatal(6);
 			const delivery = one(
 				db,
 				`SELECT d.*, r.authority, r.source_attempt AS sourceAttempt
@@ -932,6 +1004,7 @@ async function runDrill(context) {
 	const implement2 = await waitFor(
 		"step 7 current implement actor attempt 2",
 		() => {
+			guardStubFatal(7);
 			const node = one(
 				db,
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'implement' AND attempt = 2",
@@ -995,6 +1068,7 @@ async function runDrill(context) {
 	const qa2 = await waitFor(
 		"QA attempt 2 preflight boundary",
 		() => {
+			guardStubFatal(8);
 			const node = one(
 				db,
 				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'qa' AND attempt = 2",
@@ -1107,7 +1181,10 @@ async function runDrill(context) {
 	);
 	await waitFor(
 		"QA PASS submission",
-		() => latestStub(slotDir, qa2.node.execution_id)?.qaPassResult ?? false,
+		() => {
+			guardStubFatal(8);
+			return latestStub(slotDir, qa2.node.execution_id)?.qaPassResult ?? false;
+		},
 		timeoutMs,
 	);
 	const holder = await waitFor(
@@ -1222,6 +1299,18 @@ async function runDrill(context) {
 		settled,
 	);
 	return 0;
+}
+
+async function runDrill(context) {
+	try {
+		return await runDrillSteps(context);
+	} catch (error) {
+		if (error?.qa529Abort !== true) throw error;
+		process.stdout.write(
+			`[qa529] step ${error.step} diagnosis: ${error.classification.kind}; ${error.classification.remediation}\n`,
+		);
+		return error.exitCode;
+	}
 }
 
 async function main() {

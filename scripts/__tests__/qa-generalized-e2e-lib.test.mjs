@@ -5,13 +5,17 @@ import test from "node:test";
 import {
 	a3QaSessionIsIrreversiblyTerminal,
 	buildA3QaTerminationRequest,
+	buildDesignFixtureHtml,
 	buildGateDeliveryOpenArgs,
 	buildGateDeliveryRespondArgs,
 	buildGeneralizedStartRequest,
 	buildSlotCommEnv,
+	buildStubFatalAbortError,
 	classifyDurableLaunchDrain,
+	classifyStubFatal,
 	generalizedEntryAuthorityIsReady,
 	generalizedFixtureBranch,
+	generalizedFixtureMarker,
 	hasOwnedPrMarker,
 	nextStubAction,
 	parseTmuxTargetIdentity,
@@ -20,13 +24,16 @@ import {
 	reconcileOwnedExecutionSet,
 	resolveOwnedPrEvidence,
 	resolveVerifiedPrCleanupTarget,
+	STUB_FATAL_DIAGNOSIS_EXIT,
 	shouldTerminatePriorRun,
+	stubFatalAbortDecision,
 	terminateQaSessionForA3,
 	tmuxObservationIsAlive,
 	validateGeneralizedStartResponse,
 	validateQaRelease,
 	validateQaShipPreconditions,
 	validateRoomInfo,
+	waitFor,
 } from "../lib/qa-generalized-e2e-lib.mjs";
 
 const ROOM = {
@@ -169,6 +176,281 @@ test("fixture PR body takeover accepts only the canonical reusable fixture", () 
 			),
 		/not a reusable generalized fixture/,
 	);
+});
+
+test("generalized fixture marker is canonical, stable, and identity-bound", () => {
+	const marker =
+		"<!-- flywheel-qa-529-generalized run=run-new exec=implement-new -->";
+	assert.equal(generalizedFixtureMarker("run-new", "implement-new"), marker);
+	assert.equal(generalizedFixtureMarker("run-new", "implement-new"), marker);
+	assert.notEqual(
+		generalizedFixtureMarker("run-newer", "implement-new"),
+		marker,
+	);
+	assert.throws(
+		() => generalizedFixtureMarker("run/new", "implement-new"),
+		/generalized fixture marker identity is invalid/,
+	);
+});
+
+test("design fixture HTML is stable per execution and unique across runs", () => {
+	const first = buildDesignFixtureHtml("FLY-202", "run-one", "design-one");
+	const same = buildDesignFixtureHtml("FLY-202", "run-one", "design-one");
+	const nextRun = buildDesignFixtureHtml("FLY-202", "run-two", "design-one");
+	const nextExecution = buildDesignFixtureHtml(
+		"FLY-202",
+		"run-one",
+		"design-two",
+	);
+	assert.equal(first, same);
+	assert.notEqual(first, nextRun);
+	assert.notEqual(first, nextExecution);
+	assert.match(
+		first,
+		/^<!doctype html>\n<!-- flywheel-qa-529-generalized run=run-one exec=design-one -->\n/,
+	);
+	for (const heading of [
+		"一句话",
+		"核心流程",
+		"数据与结构",
+		"取舍",
+		"诚实边界",
+	]) {
+		assert.match(first, new RegExp(`<h2>${heading}</h2>`));
+	}
+});
+
+test("stub fatal classification recognizes the real collapsed FLY-1404 range", () => {
+	const sameSha = "a".repeat(40);
+	const otherSha = "b".repeat(40);
+	const fatalPrefix =
+		"design complete failed: [complete] FLY-1404 founder design HTML is required before phase_design_complete: ";
+	const sameRange = classifyStubFatal({
+		message: `${fatalPrefix}no committed .html exists under doc/FLY-202-<slug>/ in ${sameSha}..${sameSha}.\nRemediation: create the design HTML.`,
+		at: "2026-08-31T00:00:00.000Z",
+	});
+	assert.equal(sameRange.kind, "collapsed_baseline");
+	assert.match(sameRange.remediation, /--issue/);
+	assert.match(sameRange.remediation, /qa-sandbox main/);
+	assert.match(sameRange.remediation, /FLY-2164/);
+
+	assert.deepEqual(
+		classifyStubFatal({
+			message: `${fatalPrefix}no committed .html exists under doc/FLY-202-<slug>/ in ${sameSha}..${otherSha}.`,
+			at: "2026-08-31T00:00:00.000Z",
+		}).kind,
+		"stub_fatal",
+	);
+	assert.equal(classifyStubFatal(null), null);
+	assert.equal(classifyStubFatal(undefined), null);
+});
+
+test("stub fatal classification never drops malformed fatal state", () => {
+	for (const fatal of [{}, { message: 42 }, "corrupt"]) {
+		assert.deepEqual(classifyStubFatal(fatal), {
+			kind: "stub_fatal",
+			malformed: true,
+			remediation:
+				"Inspect the execution stub-state fatal record and bridge.log.",
+		});
+	}
+	assert.deepEqual(classifyStubFatal({ message: "runner crashed" }), {
+		kind: "stub_fatal",
+		remediation:
+			"Inspect the execution stub-state fatal record and bridge.log.",
+	});
+});
+
+test("collapsed baseline aborts immediately only for the dead current execution", () => {
+	const fatal = {
+		message: "collapsed",
+		at: "2026-08-31T00:00:00.000Z",
+	};
+	const base = {
+		executionId: "design-current",
+		fatal,
+		pidAlive: false,
+		isCurrentExecution: true,
+		kind: "collapsed_baseline",
+		nowMs: 1_000,
+		priorObservation: null,
+	};
+	assert.deepEqual(stubFatalAbortDecision(base), {
+		abort: true,
+		nextObservation: null,
+	});
+	for (const override of [
+		{ fatal: null },
+		{ pidAlive: true },
+		{ isCurrentExecution: false },
+	]) {
+		assert.deepEqual(stubFatalAbortDecision({ ...base, ...override }), {
+			abort: false,
+			nextObservation: null,
+		});
+	}
+});
+
+test("generic stub fatal requires one continuous two-second observation window", () => {
+	const fatal = { message: "runner crashed", at: "fatal-one" };
+	const decide = (nowMs, priorObservation = null) =>
+		stubFatalAbortDecision({
+			executionId: "qa-current",
+			fatal,
+			pidAlive: false,
+			isCurrentExecution: true,
+			kind: "stub_fatal",
+			nowMs,
+			priorObservation,
+		});
+	const opened = decide(10_000);
+	assert.deepEqual(opened, {
+		abort: false,
+		nextObservation: {
+			executionId: "qa-current",
+			fatalAt: "fatal-one",
+			firstObservedAtMs: 10_000,
+		},
+	});
+	for (const elapsed of [500, 1_999]) {
+		assert.deepEqual(decide(10_000 + elapsed, opened.nextObservation), opened);
+	}
+	assert.deepEqual(decide(12_000, opened.nextObservation), {
+		abort: true,
+		nextObservation: null,
+	});
+});
+
+test("stub fatal observation resets across recovery, rebinding, and tuple changes", () => {
+	const fatal = { message: "runner crashed", at: "shared-fatal-at" };
+	const priorObservation = {
+		executionId: "qa-old",
+		fatalAt: fatal.at,
+		firstObservedAtMs: 1_000,
+	};
+	const base = {
+		executionId: "qa-old",
+		fatal,
+		pidAlive: false,
+		isCurrentExecution: true,
+		kind: "stub_fatal",
+		nowMs: 5_000,
+		priorObservation,
+	};
+	for (const override of [
+		{ pidAlive: true },
+		{ isCurrentExecution: false },
+		{ fatal: null },
+	]) {
+		const reset = stubFatalAbortDecision({ ...base, ...override });
+		assert.deepEqual(reset, {
+			abort: false,
+			nextObservation: null,
+		});
+		assert.deepEqual(
+			stubFatalAbortDecision({
+				...base,
+				nowMs: 6_000,
+				priorObservation: reset.nextObservation,
+			}),
+			{
+				abort: false,
+				nextObservation: {
+					executionId: "qa-old",
+					fatalAt: fatal.at,
+					firstObservedAtMs: 6_000,
+				},
+			},
+		);
+	}
+	assert.deepEqual(
+		stubFatalAbortDecision({ ...base, executionId: "qa-replacement" }),
+		{
+			abort: false,
+			nextObservation: {
+				executionId: "qa-replacement",
+				fatalAt: fatal.at,
+				firstObservedAtMs: 5_000,
+			},
+		},
+	);
+	assert.deepEqual(
+		stubFatalAbortDecision({
+			...base,
+			fatal: { ...fatal, at: "new-fatal-at" },
+		}),
+		{
+			abort: false,
+			nextObservation: {
+				executionId: "qa-old",
+				fatalAt: "new-fatal-at",
+				firstObservedAtMs: 5_000,
+			},
+		},
+	);
+});
+
+test("shared waitFor retries ordinary probe failures but propagates QA diagnostics", async () => {
+	let attempts = 0;
+	assert.equal(
+		await waitFor(
+			"ordinary retry",
+			() => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("transient read race");
+				return "ready";
+			},
+			1_100,
+		),
+		"ready",
+	);
+	assert.equal(attempts, 2);
+
+	const order = [];
+	await assert.rejects(
+		() =>
+			waitFor(
+				"stub fatal",
+				() => {
+					order.push("evidence-written");
+					throw buildStubFatalAbortError({
+						step: 2,
+						executionId: "design-dead",
+						classification: {
+							kind: "collapsed_baseline",
+							remediation: "choose another --issue",
+						},
+					});
+				},
+				1_100,
+			),
+		(error) => {
+			order.push("abort-propagated");
+			assert.equal(error.qa529Abort, true);
+			assert.equal(error.exitCode, STUB_FATAL_DIAGNOSIS_EXIT);
+			return true;
+		},
+	);
+	assert.deepEqual(order, ["evidence-written", "abort-propagated"]);
+});
+
+test("stub fatal abort error carries the stable structured driver contract", () => {
+	const classification = {
+		kind: "stub_fatal",
+		remediation: "inspect stub-state and bridge.log",
+	};
+	const error = buildStubFatalAbortError({
+		step: 7,
+		executionId: "implement-dead",
+		classification,
+	});
+	assert.equal(error.qa529Abort, true);
+	assert.equal(error.exitCode, 21);
+	assert.equal(error.step, 7);
+	assert.equal(error.executionId, "implement-dead");
+	assert.equal(error.classification, classification);
+	assert.match(error.message, /stub_fatal/);
+	assert.match(error.message, /inspect stub-state and bridge\.log/);
 });
 
 test("fixture PR branch is run-scoped instead of colliding with stable issue worktrees", () => {

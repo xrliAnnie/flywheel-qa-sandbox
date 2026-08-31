@@ -13,6 +13,31 @@ function requiredString(value, field, source = "") {
 	return value;
 }
 
+const WAIT_POLL_MS = 500;
+export const STUB_FATAL_DIAGNOSIS_EXIT = 21;
+
+function sleep(ms) {
+	return new Promise((resolvePromise) => setTimeout(resolvePromise, ms));
+}
+
+export async function waitFor(label, probe, timeoutMs) {
+	const deadline = Date.now() + timeoutMs;
+	let last;
+	while (Date.now() < deadline) {
+		try {
+			last = await probe();
+			if (last) return last;
+		} catch (error) {
+			if (error?.qa529Abort === true) throw error;
+			last = error instanceof Error ? error.message : String(error);
+		}
+		await sleep(WAIT_POLL_MS);
+	}
+	throw new Error(
+		`${label} timed out after ${timeoutMs}ms; last=${JSON.stringify(last)}`,
+	);
+}
+
 const A3_QA_TERMINATION_REASON =
 	"FLY-1775 A3 diagnostic exit: retire the QA session before the driver exits";
 
@@ -199,7 +224,7 @@ export function generalizedFixtureBranch(issue, runId) {
 	return `qa529-${issue}-${runId.replaceAll(":", "-")}`;
 }
 
-export function reconcileGeneralizedFixturePrBody(body, runId, executionId) {
+export function generalizedFixtureMarker(runId, executionId) {
 	const safeRunId = requiredString(runId, "fixture.runId", "fixture marker");
 	const safeExecutionId = requiredString(
 		executionId,
@@ -214,6 +239,121 @@ export function reconcileGeneralizedFixturePrBody(body, runId, executionId) {
 	) {
 		throw new Error("generalized fixture marker identity is invalid");
 	}
+	return `<!-- flywheel-qa-529-generalized run=${safeRunId} exec=${safeExecutionId} -->`;
+}
+
+export function buildDesignFixtureHtml(issue, runId, executionId) {
+	if (!/^[A-Z]+-[0-9]+$/.test(issue ?? "")) {
+		throw new Error("fixture issue is invalid");
+	}
+	return `<!doctype html>
+${generalizedFixtureMarker(runId, executionId)}
+<html lang="zh-CN"><head><meta charset="utf-8"><title>${issue} generalized QA design</title></head>
+<body>
+<h1>${issue} generalized QA design</h1>
+<h2>一句话</h2><p>用确定性持久 stub 验证 generalized DAG 的真控制面。</p>
+<h2>核心流程</h2><p>design → implement → QA FAIL → implement wake → QA PASS → land。</p>
+<h2>数据与结构</h2><p>证据来自 slot StateStore、CommDB、tmux 与 sandbox PR。</p>
+<h2>取舍</h2><p>保留真 spawn、git、PR 与 CLI；只替换非确定性的模型推理。</p>
+<h2>诚实边界</h2><p>F2 的 QA PR 身份若缺失，驱动输出诊断而不伪造通过。</p>
+</body></html>
+`;
+}
+
+const COLLAPSED_BASELINE_REMEDIATION =
+	"Choose a fresh --issue or remove the byte-identical fixture from qa-sandbox main; see FLY-2164.";
+const STUB_FATAL_REMEDIATION =
+	"Inspect the execution stub-state fatal record and bridge.log.";
+
+export function classifyStubFatal(fatal) {
+	if (fatal == null) return null;
+	const message = fatal?.message;
+	const malformed = typeof fatal !== "object" || typeof message !== "string";
+	if (
+		!malformed &&
+		/no committed \.html exists under .+ in ([0-9a-f]{40})\.\.\1(?![0-9a-f])/.test(
+			message,
+		)
+	) {
+		return {
+			kind: "collapsed_baseline",
+			remediation: COLLAPSED_BASELINE_REMEDIATION,
+		};
+	}
+	return {
+		kind: "stub_fatal",
+		...(malformed ? { malformed: true } : {}),
+		remediation: STUB_FATAL_REMEDIATION,
+	};
+}
+
+export function stubFatalAbortDecision(input) {
+	if (!input?.fatal || input.pidAlive || !input.isCurrentExecution) {
+		return { abort: false, nextObservation: null };
+	}
+	if (input.kind === "collapsed_baseline") {
+		return { abort: true, nextObservation: null };
+	}
+	const tuple = {
+		executionId: requiredString(
+			input.executionId,
+			"executionId",
+			"stub fatal observation",
+		),
+		fatalAt: typeof input.fatal?.at === "string" ? input.fatal.at : null,
+	};
+	const prior = input.priorObservation;
+	if (
+		prior?.executionId !== tuple.executionId ||
+		prior?.fatalAt !== tuple.fatalAt
+	) {
+		return {
+			abort: false,
+			nextObservation: {
+				...tuple,
+				firstObservedAtMs: input.nowMs,
+			},
+		};
+	}
+	if (input.nowMs - prior.firstObservedAtMs >= 2_000) {
+		return { abort: true, nextObservation: null };
+	}
+	return { abort: false, nextObservation: prior };
+}
+
+export function buildStubFatalAbortError(input) {
+	const step = input?.step;
+	if (!Number.isInteger(step) || step < 1) {
+		throw new Error("stub fatal diagnosis step must be a positive integer");
+	}
+	const executionId = requiredString(
+		input?.executionId,
+		"executionId",
+		"stub fatal diagnosis",
+	);
+	const kind = requiredString(
+		input?.classification?.kind,
+		"classification.kind",
+		"stub fatal diagnosis",
+	);
+	const remediation = requiredString(
+		input?.classification?.remediation,
+		"classification.remediation",
+		"stub fatal diagnosis",
+	);
+	const error = new Error(
+		`step ${step} stub diagnosis ${kind}: ${remediation}`,
+	);
+	error.qa529Abort = true;
+	error.exitCode = STUB_FATAL_DIAGNOSIS_EXIT;
+	error.step = step;
+	error.executionId = executionId;
+	error.classification = input.classification;
+	return error;
+}
+
+export function reconcileGeneralizedFixturePrBody(body, runId, executionId) {
+	const current = generalizedFixtureMarker(runId, executionId);
 	const normalized = typeof body === "string" ? body.trim() : "";
 	let markers = [];
 	if (normalized === GENERALIZED_FIXTURE_BODY) {
@@ -231,7 +371,6 @@ export function reconcileGeneralizedFixturePrBody(body, runId, executionId) {
 			throw new Error("PR body is not a reusable generalized fixture");
 		}
 	}
-	const current = `<!-- flywheel-qa-529-generalized run=${safeRunId} exec=${safeExecutionId} -->`;
 	return `${[...new Set([...markers, current])].join("\n")}\n\n${GENERALIZED_FIXTURE_BODY}`;
 }
 

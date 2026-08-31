@@ -1,0 +1,21 @@
+flowchart LR
+    subgraph SANDBOX["共享 QA 沙箱仓 (flywheel-qa-sandbox)"]
+        M["main 分支<br/>残留: doc/FLY-202-generalized-e2e/design.html<br/>← C7 经 PR 删除"]
+        FB["每轮演练的工作分支<br/>qa529-issue-runId<br/>fixture 提交落在这里"]
+        M -. "开分支" .-> FB
+    end
+
+    subgraph SLOT["测试房间 (/tmp/flywheel-test-slot-N)"]
+        SS["stub-state/&lt;exec&gt;.json<br/>stub 的心跳、进度、fatal 遗言"]
+        EV["e2e-evidence/&lt;run&gt;/step-N.json<br/>driver 的每步证据(含新诊断)"]
+    end
+
+    STUB["529 演练 stub<br/>(扮演 design/implement/QA 角色)"] -- "写 fixture 提交" --> FB
+    STUB -- "写状态与 fatal" --> SS
+    DRIVER["529 演练 driver<br/>(九步校验脚本)"] -- "读 fatal → 快败诊断 (C4)" --> SS
+    DRIVER -- "写诊断证据" --> EV
+    DRIVER -- "查节点状态" --> DB["房间 StateStore<br/>(工作流数据库)"]
+
+    style M fill:#ffe5e0,stroke:#ff3b30,stroke-width:1.5px
+    style SS fill:#fff3e0,stroke:#ff9500,stroke-width:1.5px
+    style EV fill:#e2f7e8,stroke:#34c759,stroke-width:1.5px

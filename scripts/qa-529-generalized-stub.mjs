@@ -13,6 +13,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+	buildDesignFixtureHtml,
 	generalizedFixtureBranch,
 	nextStubAction,
 	reconcileGeneralizedFixturePrBody,
@@ -20,7 +21,7 @@ import {
 } from "./lib/qa-generalized-e2e-lib.mjs";
 
 if (process.argv.includes("--version") || process.argv.includes("-v")) {
-	process.stdout.write("Flywheel 529 generalized persistent stub 1.0.0\n");
+	process.stdout.write("Flywheel 529 generalized persistent stub 1.1.0\n");
 	process.exit(0);
 }
 
@@ -256,17 +257,7 @@ function completeDesign(context) {
 	const issue = issueIdentifier(context);
 	selectFixtureBranch(context, issue);
 	const path = `doc/${issue}-generalized-e2e/design.html`;
-	const content = `<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><title>${issue} generalized QA design</title></head>
-<body>
-<h1>${issue} generalized QA design</h1>
-<h2>一句话</h2><p>用确定性持久 stub 验证 generalized DAG 的真控制面。</p>
-<h2>核心流程</h2><p>design → implement → QA FAIL → implement wake → QA PASS → land。</p>
-<h2>数据与结构</h2><p>证据来自 slot StateStore、CommDB、tmux 与 sandbox PR。</p>
-<h2>取舍</h2><p>保留真 spawn、git、PR 与 CLI；只替换非确定性的模型推理。</p>
-<h2>诚实边界</h2><p>F2 的 QA PR 身份若缺失，驱动输出诊断而不伪造通过。</p>
-</body></html>
-`;
+	const content = buildDesignFixtureHtml(issue, context.runId, executionId);
 	const head = commitFile(
 		path,
 		content,

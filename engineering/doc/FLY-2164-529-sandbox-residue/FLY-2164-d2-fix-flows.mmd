@@ -1,0 +1,8 @@
+flowchart TD
+    A1["stub 生成 design.html 时嵌入一行本轮唯一标记<br/>run=本轮ID exec=执行ID<br/>(复用 PR 描述里已有的标记格式,只有一处定义)"]
+    B1["任何残留都不可能与新一轮逐字节相同<br/>→ 提交必然发生,变更区间必然非空"]
+    C1["✅ FLY-1404 闸正常通过,九步演练照常走完<br/>残留从此对新版本无害(『忽略它』结构性成立)"]
+    A1 --> B1 --> C1
+
+    style A1 fill:#e8f1ff,stroke:#007aff,stroke-width:2px
+    style C1 fill:#e2f7e8,stroke:#34c759,stroke-width:2px

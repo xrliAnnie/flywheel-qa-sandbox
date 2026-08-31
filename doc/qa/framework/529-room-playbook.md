@@ -28,6 +28,7 @@ FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本
 
 - `0`：九步全走完；
 - `20`：1–7 步已走完，第 8 步证实 F2 的 PR authority 链不完整，QA PASS 未发送；这是一份可直接开产品侧 issue 的诊断包，不是假绿，也不表示装房失败；
+- `21`：某个 stub 已把 fatal 写入 `stub-state` 且当前进程死亡；driver 已先落对应 step evidence，再输出明确分类与整改建议，而不是等 15 分钟通用超时；
 - 其他非零：装房、所有权、断言或基础设施失败，按错误停手。
 
 测试结束后：
@@ -44,7 +45,7 @@ teardown 不负责删 sandbox remote PR / branch；同一房内下一次 driver 
 
 exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保持 fail-closed，不会猜测或批量删除 sandbox remote PR / branch；只有下一轮 driver 能凭上一轮 `owner.json`、run marker、完整 execution set 与未漂移 head 做定向收敛。若旧房已被拆掉、其 slot-local evidence 随之消失，旧 run 的 marker-owned PR 就不能再被新房安全认领，必须由操作者核对 marker 后人工清理。QA 实测换 head 留下了 sandbox PR #107、#108、#109；这是隔离房重建的已知代价，不是 `test-teardown.sh` 可以用宽匹配自动回收的对象。频繁改 HEAD 前应预期这项清理成本，正式九步复测尽量先冻结被测 SHA。
 
-## 2. 14 条实测坑位对照
+## 2. 15 条实测坑位对照
 
 | # | 现象 | 根因 | 现在的闸 | 非 generalized 房 |
 |---:|---|---|---|---|
@@ -62,6 +63,7 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 | 12 | slot 内 launchd-v2 bootstrap Lead 失败 | 九步 engine 演练并不需要常驻 Lead，却先被 Lead bootstrap 卡住 | **路书**：九步用 `--no-lead`；step 5 的 `question` gate delivery 由 driver 以 QA execution attribution 走 CommDB 真路径，step 8 走真实 ship holder | 需要 Lead 的消息类 QA 仍应起 Lead 并修 bootstrap，不得借 `--no-lead` 假装覆盖 |
 | 13 | sensor 演练“什么都没发生” | watchdog 默认 interval 不适合作为短时观测窗口 | **路书**：sensor 专项演练必须显式设置 `FLYWHEEL_LEAD_WATCHDOG_INTERVAL_MS`；它不是 generalized 九步 Quickstart 的隐式环境要求 | sensor 单同样必须显式设置并在证据中记录值 |
 | 14 | QA PASS 后 409 `land_head_unavailable` | QA execution 无可信 worktree / PR identity；producer session、`workflow_node_pr_binding`、remote PR head 任一断链都不能铸 gate authority | **预检 + 诊断**：driver 发 PASS 前检查四段链；缺项则永不写 release，落 `step-8.json`、预测 server reason、退出 20。机制修复属于 FLY-1768 F2 后续，不在本单伪造 binding | 手工 verdict 也不得绕过；必须修产品侧身份传播 |
+| 15 | step 2 静默超时、design 永远 `running` | 沙箱 main 已有与旧 stub 逐字节相同的 design fixture，提交塌空；`stub-state` fatal 中 FLY-1404 区间两端是同一 SHA | **自动 + 诊断**：1.1.0 fixture 带 run/execution marker，不再与残留同字节；driver 识别同 SHA 区间，先落 `diagnosed_stub_fatal` evidence，再退出 21。旧房可换 `--issue`；共享残留清理见 FLY-2164 | 先读 fatal；不要把 15 分钟通用超时当成模型慢 |
 
 ## 3. 房间解剖
 
