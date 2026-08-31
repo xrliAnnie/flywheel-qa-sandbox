@@ -1,14 +1,13 @@
 ---
 issue: FLY-2031
 phase: implement
-phaseCursor: 4/4
-updated: 2026-08-31T00:49:18.936Z
-nextStep: Exact-head review APPROVED on 36ababbd; QA retest only claim 602 in
-  the actual room
+phaseCursor: 1/5
+updated: 2026-08-31T03:17:23.891Z
+nextStep: Implement minimal GREEN for claim 604 four-item scope
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: implement (4/4)
-**next**: Exact-head review APPROVED on 36ababbd; QA retest only claim 602 in the actual room
+**phase**: implement (1/5)
+**next**: Implement minimal GREEN for claim 604 four-item scope
