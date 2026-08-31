@@ -1,14 +1,13 @@
 ---
 issue: FLY-2207
 phase: implement
-phaseCursor: 0/6
-updated: 2026-08-31T19:57:27.171Z
-nextStep: Audit lifecycle code and tests against approved plan plus
-  tab-lifecycle addendum
+phaseCursor: 1/6
+updated: 2026-08-31T20:12:55.333Z
+nextStep: TDD launchd-safe kickstart and job-absent rebuild
 chunks: []
 pointers: {}
 ---
 
 # FLY-2207 progress
-**phase**: implement (0/6)
-**next**: Audit lifecycle code and tests against approved plan plus tab-lifecycle addendum
+**phase**: implement (1/6)
+**next**: TDD launchd-safe kickstart and job-absent rebuild
