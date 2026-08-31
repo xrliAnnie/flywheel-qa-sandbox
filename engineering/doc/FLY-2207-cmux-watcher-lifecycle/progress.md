@@ -1,13 +1,13 @@
 ---
 issue: FLY-2207
 phase: implement
-phaseCursor: 6/8
-updated: 2026-08-31T21:59:53.202Z
-nextStep: Run full-repository gates and code review
+phaseCursor: 7/8
+updated: 2026-08-31T22:35:51.126Z
+nextStep: Await code re-review; then write milestone as final commit and open PR
 chunks: []
 pointers: {}
 ---
 
 # FLY-2207 progress
-**phase**: implement (6/8)
-**next**: Run full-repository gates and code review
+**phase**: implement (7/8)
+**next**: Await code re-review; then write milestone as final commit and open PR
