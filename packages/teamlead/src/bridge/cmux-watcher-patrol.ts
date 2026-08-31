@@ -115,7 +115,14 @@ function decision(
 	episodeKey: string | null,
 	detail: string,
 ): CmuxWatcherDecision {
-	return { branch, alert, recovery, recover: recovery !== null, episodeKey, detail };
+	return {
+		branch,
+		alert,
+		recovery,
+		recover: recovery !== null,
+		episodeKey,
+		detail,
+	};
 }
 
 /**
@@ -528,15 +535,11 @@ export function runHostCmuxWatcherRecovery(
 		if (recovery === "kickstart" && owner) {
 			args.push("--expected-owner", owner.tuple);
 		}
-		const child = spawn(
-			"/bin/bash",
-			args,
-			{
-				detached: true,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...env, FLYWHEEL_DIR: projectRoot },
-			},
-		);
+		const child = spawn("/bin/bash", args, {
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...env, FLYWHEEL_DIR: projectRoot },
+		});
 		let output = "";
 		let timedOut = false;
 		const append = (chunk: Buffer) => {

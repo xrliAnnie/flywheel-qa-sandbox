@@ -8628,8 +8628,7 @@ export async function startBridge(
 			? createHostCmuxWatcherPatrol({
 					homeDir: homedir(),
 					projectRoot: cmuxWatcherProjectRoot,
-					rebuildDisabled: () =>
-						storeCmuxWatcherRebuildDisabled(flagStore),
+					rebuildDisabled: () => storeCmuxWatcherRebuildDisabled(flagStore),
 					execFile: async (file, args, options) => {
 						const result = await execFileP(file, [...args], {
 							...options,
