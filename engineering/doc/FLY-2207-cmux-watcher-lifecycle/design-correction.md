@@ -68,50 +68,94 @@ Issue: FLY-2207 (https://linear.app/geoforge3d/issue/FLY-2207/可见性watcher-c
 
 ### T6 watcher 告警腿修复(前置,其余两条的可观测性依赖它)
 
-文件:`scripts/flywheel-cmux-autostart.sh`
+文件:`scripts/flywheel-cmux-autostart.sh`(或 lead-alert.sh 的受信自载通用化,二选一见下)
 
-1. supervised 分支在 `exec sync --watch` 前,按 Lead wrapper 的**既有机制**
-   `source ~/.flywheel/.env`(仅 0600 且属主本人时;文件缺失/权限不符 →
-   log 一行 ERROR 后照常启动 —— 告警腿降级不能反过来挡住 watcher 本体)。
-   不在 plist 里放任何 secret;FLY-927 D2 的 fail-closed 语义
-   (SENDER_TOKEN_ENV 设而不可解析 = 死信)不变。
-2. 负向护栏:只动 supervised 分支;source 前后不覆盖已存在的同名变量语义
-   (与 Lead wrapper 相同的直接 source);不新增告警 kind。
-3. 测试:autostart 测试夹具加 case —— stub lead-alert 捕获环境,断言
-   supervised 启动后 token env 可解析;env 文件缺失时 watcher 仍正常 exec。
+1. **最小投影,不整包继承**(Codex R4 #5):裸 `source ~/.flywheel/.env` 不
+   export、还会覆盖继承值;`set -a` 又会把全部 secrets 注入长命 watcher 及其
+   所有 tmux/cmux/curl 子进程。改为二选一(implement 时按代码现状取更小者):
+   a. 复用/通用化 lead-alert.sh 既有的隔离受信 env 自载(现仅 `--lead system`
+      生效)使 watcher 的告警调用路径可走同一自载 —— secrets 只进短命的
+      lead-alert 进程;或
+   b. autostart supervised 分支**只 export 本告警路由需要的变量**
+      (unified channel、sender selector、被选中 token),已继承的同名变量
+      **优先保留**,不整包 source。
+2. 安全校验与降级:env 文件缺失 / 非常规文件 / symlink / 属主或权限
+   (0600)不符 / 解析失败 → log 一行 ERROR 后**照常 exec watcher**
+   (告警腿降级绝不挡住 watcher 本体)。不在 plist 里放任何 secret;
+   FLY-927 D2 fail-closed 语义(SENDER_TOKEN_ENV 设而不可解析 = 死信)不变。
+3. 测试(Codex R4 #5 的证据面):env 文件用**裸非 export 赋值**写成;
+   断言经 supervised 启动后一次真实(stub 传输)告警不再 no-token 死信;
+   已继承的同名变量覆盖被保留;缺失/不安全/symlink 各得 ERROR 且 watcher
+   照常 exec;**无关 secret 不出现在 watcher stub 的环境里**(最小投影证明)。
 
 ### T7 关单自动收 tab(修 1a)
 
 文件:`scripts/flywheel-cmux-sync.sh`
 
-1. **快照管线修复**:以 8-25 17:20 断点为锚取证并修复停更根因;
-   合同化为两条可测不变量:
-   a. 每个 roster 健康且完成的 reconcile 轮,快照 mtime 必须推进
-      (`node_write_cleanup_snapshot` 失败不再被 `|| true` 静默 ——
-      失败经 `_alert_cmux_cleanup` 发声,复用既有 kind);
-   b. 同一清理 marker 被 fence 连续阻挡 > 24h → 经(T6 修复后的)既有
-      cmux_cleanup 告警发声一次(per-marker 去重)。fence 的保守语义本身不变。
-2. **终态驱动**:closed/shipped issue 的 workspace 走既有
-   `fetch_recent_terminal_runner_roster` → terminal 分类 → 既有清理路径;
-   本附录不新造清理器,只把断粮的喂食链修通。
+1. **快照管线修复**(Codex R4 #4 对齐实现):以 8-25 17:20 断点为锚取证并
+   修复停更根因;合同化为两条可测不变量:
+   a. 每个 roster 健康且完成的 reconcile 轮,必须产出**原子替换的、结构合法的
+      complete 快照**,其 `(snapshot_epoch, round_epoch, round_sequence)` 按
+      fence 的比较序**严格推进** —— 断言对象是 header 与 fence 判定,
+      mtime 仅作诊断;`node_write_cleanup_snapshot` 失败不再被 `|| true`
+      静默,失败经 `_alert_cmux_cleanup` 发声(复用既有 kind);
+   b. **快照断供 episode 告警**(替代 R4 前的 per-marker 方案,避免风暴且
+      不受 `_alert_cmux_cleanup` 64 签名/代上限影响):fence 存在被阻挡
+      marker 且快照持续未推进 > 24h → 发**一条** episode 告警(载最老
+      marker 年龄 + 被阻挡计数),以持久记账去重,仅在快照有效推进后
+      重新武装。fence 的保守语义本身不变。
+2. **终态驱动 —— 权威边界显式化**(Codex R4 #3):现状因果链是
+   pane-died/window-unlinked 事件与 conservative 扫描铸 marker,
+   terminal roster 只喂节点摘要、**不铸 marker**;且 `process_pending_cleanups`
+   在源 pane 仍活时会撤销 marker。修法两腿并走:
+   a. 主腿:修通快照后,既有事件/conservative marker 路径即恢复对
+      「pane 已死」的关单 tab 的清理(2162 族的主形态);
+   b. 显式桥:对 terminal roster 中连续 N 轮(默认 3)稳定 terminal、
+      经精确 execution 身份验证、且其镜像 workspace 源 pane 仍
+      lingering 存活的 execution,铸清理 marker —— **这是一条新的、
+      有界的 teardown authority,明说不藏**:配 exact-id、mutation-time
+      重验、和歧义(多窗/多 ref)即拒绝的全套护栏;kill 源 window 仍走
+      既有清理原语。
 3. 验收:关单后其 tab 在 ≤2 个 conservative-cleanup 周期(≈10min)内收走;
-   hermetic 测试用隔离 env(plan T5.4 的缝隙枚举)+ 伪造 terminal roster 断言。
+   hermetic 测试用隔离 env(plan T5.4 的缝隙枚举),触发链用**真实机理**
+   (杀死 fixture 源 pane / lingering pane + terminal 行)而非仅伪造 roster 应答。
 
 ### T8 重启波后自动重建 viewer 窗 + tab 重连(修 1b)
 
-文件:`scripts/flywheel-cmux-sync.sh`
+文件:`scripts/flywheel-cmux-sync.sh` + 活跃 flag 注册表(kill 开关登记,
+truth.ts 只是文档面,注册/漂移测试随注册表走;Codex R4 #2)
 
-1. strict-view healing 增加一条**正身份优先**分支:同名 workspace 虽无当代
-   receipt,但能以**精确证据**绑定到一个存活 execution
-   (node registry 在册 ∧ 全局 tmux 存在恰一个携带该 execution 精确
-   `@flywheel_exec_id` option 的窗口)→ 执行既有 ensure/view 重建原语:
-   重建 viewer 窗(tmux link-window 族)+ 以当代 generation 重铸 receipt +
-   重连 workspace surface —— 即把 Lead 的两层手补代码化,且仅在正身份成立时。
-2. 每 workspace 每 generation episode 至多自动重建一次(复用既有 episode
-   记账形态);二次失败 → 经既有 cmux_cleanup 告警发声。无精确身份的同名
-   workspace 维持既有 fail-closed(拒绝 + 发声)。
-3. 验收:重启波(隔离台架内模拟扫窗)后,存活 runner 的 tab 在 ≤1 个
-   scan 周期内自动重连,founder 无感;无身份孤儿仍不被自动动。
+1. **双侧正身份,缺一不修**(Codex R4 #1:仅源侧身份会把 founder 手开的
+   同名 tab 误当成 Flywheel 的):
+   - **源侧**:node registry 在册的存活 execution ∧ 全局 tmux 恰一个携带
+     精确 `@flywheel_exec_id` option 的窗口;
+   - **workspace 侧**(所有权,任一成立):
+     (i) 首选:既有 birth-record/UUID 收养路径(`adopt_birth_candidate` +
+     `_birth_adoption_guard`)对该精确 ref 的收养证据成立;
+     (ii) 备选(重启波毁掉 birth 证据时):存在**唯一**的过代 committed
+     receipt,其存储的 workspace UUID 与当前精确 ref/UUID 仍匹配,且无
+     任何当代/过代竞争主张。
+   - 两侧齐备才修;否则维持既有 fail-closed(拒绝 + 发声)。founder 手开的
+     同名 workspace 没有 birth/receipt 证据,天然落在拒绝侧。
+2. **崩溃安全的重建事务**(Codex R4 #2):不发明新协议,整段走既有
+   `create_or_replace_view_session` 的 WAL 化构建协议与 mutation-time guard,
+   顺序固定:恢复遗留构建 WAL → 证明双侧权威 → 经 WAL 协议建/验 viewer 窗 →
+   收养/prepare 精确 UUID 绑定的 receipt → guarded attach → 验证 surface →
+   commit 并清 episode 记账。**每次 tmux/cmux mutation 前即时重验**:
+   cmux generation + 精确 ref + workspace UUID/title;tmux generation +
+   精确源 session/window id + exec id + pane 存活。
+3. **尝试语义**(消除 R4 指出的自相矛盾):持久 key =
+   (cmux generation, workspace UUID/ref, tmux generation, exec id);
+   每 key **恰一次**自动尝试,失败即发声(既有 kind)并保持 fail-closed;
+   key 任一分量变化(任一侧换代 / exec 更替)才重新武装;崩溃重放由
+   构建 WAL 恢复决定,不重复已 commit 的步骤。
+   kill 开关 `FLYWHEEL_CMUX_REBIND_DISABLED`(活跃 flag 注册表登记 +
+   注册/漂移测试),设置后回到纯 fail-closed 现状。
+4. 验收与负向测试(Codex R4 #1/#2):重启波(隔离台架内模拟扫窗)后,
+   存活 runner 的 tab 在 ≤1 个 scan 周期内自动重连,founder 无感;
+   负向全覆盖:founder 同名 workspace 不被接管、重复 ref、重复 exec-id 窗、
+   过期 registry 行、window id 被换、cmux/tmux 任一侧换代翻转、
+   以及在每个事务边界注入崩溃/竞态 + kill 开关生效。
 
 ### 与 plan T1–T5 的关系
 
