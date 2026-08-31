@@ -1,0 +1,18 @@
+flowchart TB
+    subgraph now["修复后的生命周期(本设计)"]
+        H[健康<br/>心跳新鲜] -->|cmux 变慢| S[慢而不死<br/>每次调用结束都补一跳心跳]
+        S -->|cmux 恢复| H
+        H -->|真卡死:心跳 300 秒不动| K[patrol 原地重启 kickstart -k<br/>岗位牌全程不摘]
+        K -->|新 watcher 上岗<br/>凭 lease+心跳验明正身| H
+        A[岗位牌意外消失<br/>任何原因] -->|patrol 每 60 秒巡逻发现| R[自动重建 bootstrap<br/>失败下一轮再试]
+        R -->|挂牌成功| H
+        P2[维护停机牌存在<br/>QA 拆除 / 运维重建] -.->|一律不动手| P2
+        A -->|连续 10 分钟没修好| E[走既有升级通道<br/>Discord 通知 founder,一集一响]
+    end
+    style H fill:#e8f5ec,stroke:#34c759
+    style S fill:#fff7e6,stroke:#ff9500
+    style K fill:#e8f0fe,stroke:#007aff
+    style R fill:#e8f0fe,stroke:#007aff
+    style E fill:#fdebea,stroke:#ff3b30
+    style A fill:#f2f2f7,stroke:#86868b
+    style P2 fill:#f5eefe,stroke:#af52de

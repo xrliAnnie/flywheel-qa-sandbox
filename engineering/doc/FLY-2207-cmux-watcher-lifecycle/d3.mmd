@@ -1,0 +1,19 @@
+flowchart LR
+    subgraph auto["机器平面(FLY-913 护栏管不到,天然合法)"]
+        B[Bridge patrol<br/>每 60 秒巡逻] --> RC[恢复脚本<br/>kickstart / bootstrap]
+        U[updater 部署班车<br/>00:00 与 12:00] --> RC
+    end
+    subgraph human["人肉平面(Claude 会话,FLY-913 生效)"]
+        LD[Lead 手敲 launchctl] -->|P1 硬拦| DENY[拒绝 + 文案指路]
+        DENY --> FD[被承认的人肉正门<br/>flywheel-cmux-autostart<br/>幂等:牌在就不动,牌丢才挂]
+    end
+    subgraph vis["可见性(禁新增告警层)"]
+        RC -->|恢复成功| Q[零消息<br/>founder 无感]
+        B -->|普通异常工单| M[claw 机器人信箱<br/>不进 Discord,维持现状]
+        B -->|10 分钟没修好<br/>cmux_watcher_unrecovered| ESC[既有升级通道<br/>Discord @founder 一集一响]
+    end
+    style Q fill:#e8f5ec,stroke:#34c759
+    style ESC fill:#fdebea,stroke:#ff3b30
+    style DENY fill:#fff7e6,stroke:#ff9500
+    style FD fill:#e8f0fe,stroke:#007aff
+    style M fill:#f2f2f7,stroke:#86868b
