@@ -1,14 +1,13 @@
 ---
 issue: FLY-2207
 phase: implement
-phaseCursor: 5/8
-updated: 2026-08-31T21:26:08.231Z
-nextStep: Implement crash-safe dual-identity viewer rebind with kill switch and
-  hermetic QA
+phaseCursor: 6/8
+updated: 2026-08-31T21:59:53.202Z
+nextStep: Run full-repository gates and code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2207 progress
-**phase**: implement (5/8)
-**next**: Implement crash-safe dual-identity viewer rebind with kill switch and hermetic QA
+**phase**: implement (6/8)
+**next**: Run full-repository gates and code review
