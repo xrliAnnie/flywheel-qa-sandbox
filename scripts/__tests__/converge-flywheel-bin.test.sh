@@ -30,9 +30,11 @@ cp "$REAL_REPO_ROOT/scripts/lib/path-hygiene.sh" "$FR/scripts/lib/"
 cp "$REAL_REPO_ROOT/scripts/converge-flywheel-bin.sh" "$FR/scripts/"
 CONVERGE="$FR/scripts/converge-flywheel-bin.sh"
 for f in flywheel-lead-wrapper-v2.sh \
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+    flywheel-codex-lead-wrapper-codex-infra-bot.sh \
     flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
     flywheel-bridge-wrapper.sh restart-services.sh \
-    lib/bounded-run.sh lib/lead-address.sh; do
+    host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh; do
   { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$FR/scripts/$f"
 done
 # FLY-1577: the gate is PYTHON. It is in FILES because the cmux watcher's
@@ -49,7 +51,7 @@ done
 # must start from a converged copy-lane steady state — otherwise the widened
 # FILES makes converge repair the un-seeded entries and the "exactly one alert"
 # assertions below count repairs they never meant to trigger.
-COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+COPY_FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
 seed_steady_state() {  # <state-dir>
   local st="$1" f
   for f in $COPY_FILES; do
@@ -198,6 +200,66 @@ if [ "$RC" -eq 0 ] \
   pass "C9: missing restart-storm-gate.py repaired to 555 + reported drifted (never 'clean')"
 else fail "C9: gate not converged (rc=$RC, mode=$(t_mode "$ST/bin/restart-storm-gate.py"))"
   cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+
+# C9b (FLY-2190): every host-selection mount resolves through state/bin. The
+# gate and the two formerly-unmanaged Codex carrier sources must therefore be
+# installed atomically by this same convergence authority. Their first valid
+# adoption is expected rollout work, not pre-existing integrity drift, so only
+# the independently-new host gate alerts on this first pass.
+: > "$SB/alerts.log"
+seed_steady_state "$ST"
+rm -rf "$ST/state/converge-adoptions"
+rm -f "$ST/bin/host-tmux-selection-gate.sh" \
+  "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
+  "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] \
+  && cmp -s "$ST/bin/host-tmux-selection-gate.sh" "$FR/scripts/host-tmux-selection-gate.sh" \
+  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
+  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
+  && [ "$(t_mode "$ST/bin/host-tmux-selection-gate.sh")" = "555" ] \
+  && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 1 ] \
+  && [ "$(t_mode "$ST/state/converge-adoptions/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh")" = "600" ] \
+  && [ "$(t_mode "$ST/state/converge-adoptions/flywheel-codex-lead-wrapper-codex-infra-bot.sh")" = "600" ]; then
+  pass "C9b: first Codex carrier adoption converges silently and records durable baselines"
+else fail "C9b: FLY-2190 runtime closure not converged (rc=$RC)"
+  cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+
+# C9c: adoption is one-shot, never a permanent alert exemption. Once the
+# durable baseline exists, both managed wrappers use the normal severe drift
+# repair path.
+: > "$SB/alerts.log"
+chmod u+w "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
+  "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh"
+printf '%s\n' '#!/bin/bash' > "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"
+printf '%s\n' '#!/bin/bash' > "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] \
+  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
+  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
+  && [ "$(grep -c '^ALERT' "$SB/alerts.log")" -eq 2 ] \
+  && grep -q 'flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh' "$SB/alerts.log" \
+  && grep -q 'flywheel-codex-lead-wrapper-codex-infra-bot.sh' "$SB/alerts.log"; then
+  pass "C9c: post-adoption Codex carrier drift repairs loudly"
+else fail "C9c: adopted carrier drift lost its alert (rc=$RC)"
+  cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+
+# C9d: the marker controls alert wording only. If state storage cannot retain
+# it, the already-healthy runtime wrappers remain eligible for restart while a
+# loud diagnostic preserves the bookkeeping failure.
+: > "$SB/alerts.log"
+rm -rf "$ST/state/converge-adoptions"
+mkdir -p "$ST/state"
+: > "$ST/state/converge-adoptions"
+run_converge; RC=$?
+if [ "$RC" -eq 0 ] \
+  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$FR/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" \
+  && cmp -s "$ST/bin/flywheel-codex-lead-wrapper-codex-infra-bot.sh" "$FR/scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh" \
+  && [ "$(grep -c 'adoption baseline FAILED' "$SB/alerts.log")" -eq 2 ]; then
+  pass "C9d: adoption-marker failure alerts without blocking healthy runtime bytes"
+else fail "C9d: bookkeeping marker blocked healthy convergence (rc=$RC)"
+  cat "$SB/out.log" "$SB/alerts.log" 2>/dev/null; fi
+rm -f "$ST/state/converge-adoptions"
 
 # C10: the alert TRANSPORT is a hard dependency too. bounded-run.sh is what
 # carries the "brake is missing" meta-alert out of the launch path; without it

@@ -1,0 +1,29 @@
+flowchart LR
+    subgraph legend["实测结论：新旧 tmux 之间只能单向通话"]
+        direction TB
+
+        subgraph ok["✅ 可以：新的指挥旧的"]
+            direction LR
+            C1["tmux 3.7c<br/>（新，原生 arm64）<br/>发指令的一端"]
+            S1["tmux 3.5a<br/>（旧，Intel）<br/>真正扛着 Lead 的一端"]
+            C1 -->|"握手成功<br/>已验证：list-sessions"| S1
+        end
+
+        subgraph bad["❌ 不行：旧的指挥不动新的"]
+            direction LR
+            C2["tmux 3.5a<br/>（旧，Intel）<br/>发指令的一端"]
+            S2["tmux 3.7c<br/>（新，原生 arm64）<br/>真正扛着 Lead 的一端"]
+            C2 -->|"报错退出<br/>但对面不会被弄死"| S2
+        end
+    end
+
+    ok --> RULE["<b>由此定死顺序</b><br/>升级：必须先换「发指令的一端」，再换「扛活的一端」<br/>回滚：必须先让所有新版退场，才能把发指令端降回旧版"]
+    bad --> RULE
+
+    classDef good fill:#e3f9e9,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+    classDef bad fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+    classDef rule fill:#e8f1ff,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+
+    class C1,S1 good
+    class C2,S2 bad
+    class RULE rule

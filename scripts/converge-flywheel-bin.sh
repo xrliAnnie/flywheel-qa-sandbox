@@ -78,7 +78,7 @@ fi
 # No installer writes either file into bin, and both are plain files — so the
 # copy lane, not the symlink lane (see symlink_strict_name below for the shapes
 # that must NOT be copied).
-FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
 # FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
 # restart-services.sh — it is monorepo deploy machinery. There its absence is
 # the EXPECTED shape, not an integrity incident; without this branch every
@@ -89,7 +89,7 @@ FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.
 # in package-onboard.sh's PO_SCRIPT_FILES whitelist and packaged-seams.test.sh
 # S0 asserts the closure is executable there — so they stay in both branches.)
 if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
-  FILES="flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh"
+  FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
 fi
 
 log() { echo "[converge-bin] $*"; }
@@ -144,6 +144,41 @@ alert() {  # <title> <body> <signature> — best-effort (claims.db dedup inside)
     --title "${ALERT_TITLE_PREFIX}$1" --body "$2" --signature "$3" || true
 }
 
+# FLY-2190: these two wrappers were already live state-bin artifacts before
+# this converger began managing them. Their first successful convergence is an
+# expected adoption, not evidence that an established managed file drifted.
+# Record that transition durably and silently exactly once; every later drift
+# takes the ordinary severe-alert path below.
+ADOPTION_DIR="$STATE_DIR/state/converge-adoptions"
+is_first_adoption_name() {
+  case "$1" in
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+adoption_is_complete() { # <name>
+  local marker="$ADOPTION_DIR/$1"
+  [ -f "$marker" ] && [ ! -L "$marker" ] && [ -s "$marker" ] \
+    && grep -Fqx "managed=$1" "$marker"
+}
+record_adoption() { # <name> <source-sha>
+  local name="$1" source_sha="$2" marker="$ADOPTION_DIR/$1" tmp="${ADOPTION_DIR}/.$1.tmp.$$"
+  if [ -L "$ADOPTION_DIR" ] || { [ -e "$ADOPTION_DIR" ] && [ ! -d "$ADOPTION_DIR" ]; }; then
+    return 1
+  fi
+  if ( umask 077
+    mkdir -p "$ADOPTION_DIR" \
+      && chmod 700 "$ADOPTION_DIR" \
+      && printf 'managed=%s\nsourceSha=%s\n' "$name" "$source_sha" > "$tmp" \
+      && chmod 600 "$tmp" \
+      && mv -f "$tmp" "$marker"
+  ); then
+    return 0
+  fi
+  rm -f "$tmp" 2>/dev/null || true
+  return 1
+}
+
 # ── FLY-1389 P1-b: write-time guard — refuse to converge the GLOBAL bin from
 # a temp/worktree checkout. The converger is a WRITER (copies its own repo's
 # sources into bin): run from a worktree it would install worktree content
@@ -187,6 +222,16 @@ for f in $FILES; do
         log "ERROR: chmod 555 failed: $dst"; rc=1
       fi
     fi
+    if is_first_adoption_name "$f" && ! adoption_is_complete "$f"; then
+      if record_adoption "$f" "$src_sha"; then
+        log "adoption baseline recorded: $f was already converged"
+      else
+        log "ERROR: could not persist adoption baseline for $f"
+        alert "bin integrity: adoption baseline FAILED for $f" \
+          "$dst already matches the repo source, but the one-shot adoption marker could not be written under $ADOPTION_DIR. Runtime bytes are healthy and remain eligible; repair state-directory permissions so later drift can use normal alert wording (FLY-2190)." \
+          "$f|adoption-marker-failed"
+      fi
+    fi
     continue
   fi
   # ([ -f ] first: a bare `wc -c < missing` prints the shell's redirect error
@@ -202,9 +247,20 @@ for f in $FILES; do
   fi
   if install_script_atomic "$src" "$dst"; then
     log "repaired: $f (bin was ${size}B sha ${dst_sha:-missing}; now repo ${src_sha:0:12})"
-    alert "bin integrity drift repaired: $f" \
-      "$dst had drifted from the repo source (found ${size}B, sha ${dst_sha:-missing}). Auto-repaired to repo ${src_sha:0:12} (mode 555). Drift itself is abnormal — find the writer (FLY-954)." \
-      "$f|repaired|${src_sha:0:12}"
+    if is_first_adoption_name "$f" && ! adoption_is_complete "$f"; then
+      if record_adoption "$f" "$src_sha"; then
+        log "first managed adoption recorded: $f (expected rollout; alert suppressed once)"
+      else
+        log "ERROR: repaired $f but could not persist its adoption baseline"
+        alert "bin integrity: adoption baseline FAILED for $f" \
+          "$dst was installed from the sane repo source, but the one-shot adoption marker could not be written under $ADOPTION_DIR. Runtime bytes are healthy and remain eligible; repair state-directory permissions so later drift can use normal alert wording (FLY-2190)." \
+          "$f|adoption-marker-failed|${src_sha:0:12}"
+      fi
+    else
+      alert "bin integrity drift repaired: $f" \
+        "$dst had drifted from the repo source (found ${size}B, sha ${dst_sha:-missing}). Auto-repaired to repo ${src_sha:0:12} (mode 555). Drift itself is abnormal — find the writer (FLY-954)." \
+        "$f|repaired|${src_sha:0:12}"
+    fi
   else
     log "ERROR: repair FAILED for $f"
     alert "bin integrity: repair FAILED for $f" \

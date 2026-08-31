@@ -94,7 +94,7 @@ ensure_host_json() {
 install_bin() {
   local f
   mkdir -p "$STATE_DIR/bin/lib" "$STATE_DIR/pids" "$STATE_DIR/state" "$STATE_DIR/logs" "$STATE_DIR/manifests"
-  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh; do
+  for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh host-tmux-selection-gate.sh; do
     [ -f "$SCRIPTS/$f" ] || die "wrapper missing from package: scripts/$f"
     if [ "$DRY_RUN" -eq 1 ]; then log "[dry-run] would install $f -> $STATE_DIR/bin/$f"; continue; fi
     install_script_atomic "$SCRIPTS/$f" "$STATE_DIR/bin/$f" \

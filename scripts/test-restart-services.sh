@@ -346,9 +346,13 @@ rn_run_terminal_case rollback-voice-failed rollback-voice-bridge-failed
 
 echo "Test: FLY-1603 skip-test candidates never inflate the Lead total"
 rn_restart_all_func="$TMPDIR_ROOT/restart-all-leads.sh"
+printf '%s\n' \
+  'restart_host_tmux_gate() { return 0; }' \
+  'restart_host_tmux_census() { return 0; }' \
+  > "$rn_restart_all_func"
 awk '/^do_restart_all_leads\(\)/ { capture=1 }
      capture && /^# Build$/ { exit }
-     capture { print }' "$SCRIPT_DIR/restart-services.sh" > "$rn_restart_all_func"
+     capture { print }' "$SCRIPT_DIR/restart-services.sh" >> "$rn_restart_all_func"
 rn_skip_root="$TMPDIR_ROOT/skip-test-total"
 mkdir -p "$rn_skip_root"
 rn_skip_manifest="$rn_skip_root/prod.json"
@@ -2299,9 +2303,16 @@ cat > "$BO_HOME/.flywheel/bin/update-discord-plugin.sh" <<'EOF'
 #!/bin/bash
 exit 0
 EOF
+cat > "$BO_HOME/.flywheel/bin/host-tmux-selection-gate.sh" <<'EOF'
+#!/bin/bash
+# Unrelated restart harness seam. FLY-2190 gate/census failure semantics are
+# exercised by host-tmux-selection-restart-mounts.test.sh.
+exit 0
+EOF
 chmod +x \
   "$BO_HOME/.flywheel/bin/check-discord-plugin.sh" \
-  "$BO_HOME/.flywheel/bin/update-discord-plugin.sh"
+  "$BO_HOME/.flywheel/bin/update-discord-plugin.sh" \
+  "$BO_HOME/.flywheel/bin/host-tmux-selection-gate.sh"
 cat > "$BO_HOME/.flywheel/manifests/flywheel-eng.json" <<EOF
 {"leadId":"eng","projectDir":"$BO_FLYWHEEL","projectName":"flywheel","botTokenEnv":"TEST_BOT_TOKEN","leadBackend":{"backendId":"claude-code"},"resolvedModel":"claude-fable-5"}
 EOF
@@ -2347,6 +2358,7 @@ bo_run() {
     echo '333|watcher-old|watch|watcher-old-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
     rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/completion-probe"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
+        FLYWHEEL_STATE_DIR="$BO_HOME/.flywheel" \
         BRIDGE_URL="http://127.0.0.1:19876" \
         CLAUDE_INFRA_BOT_TOKEN="${BO_NOTIFY_TOKEN:-}" FLYWHEEL_NOTIFY_CHANNEL="${BO_NOTIFY_CHANNEL:-}" \
         TEST_BOT_TOKEN="test-token" \

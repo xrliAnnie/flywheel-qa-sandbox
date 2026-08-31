@@ -430,6 +430,27 @@ describe("FLY-1393 flag truth", () => {
 		).toEqual({ ok: true, errors: [] });
 	});
 
+	it("registers the FLY-2190 host-tmux hermetic test inputs as non-flags", () => {
+		for (const envVar of [
+			"FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR",
+			"FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(
+				/test-only.*path.*FLY-2190/i,
+			);
+		}
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_HOST_TMUX_GATE_TEST_MODE).toMatch(
+			/test-only.*seam.*FLY-2190/i,
+		);
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR=/tmp/launch-agents",
+				"FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR=/tmp/sources",
+				"FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	/**
 	 * FLY-1809 (from the FLY-1782 audit): these two were never on/off switches —
 	 * one is a Discord channel id, the other a filesystem path. They are MOVED off

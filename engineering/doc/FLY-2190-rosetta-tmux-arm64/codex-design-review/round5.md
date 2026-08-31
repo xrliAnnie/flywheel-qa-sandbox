@@ -1,0 +1,32 @@
+# Design Review — FLY-2190 plan.md (Round 5)
+
+Date: 2026-08-30
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+R5 correctly separates S0 from S1, fixes the pathname/PID primitive, closes the source-format gap, and leaves S3 honestly parked behind a complete P1–P7 blocker set. I still cannot approve S1 implementation because S0's stated fail-closed guarantee does not cover direct launchd KeepAlive births, and the acceptance table plus mandatory upstream documents retain contradictory executable guidance.
+
+## What's Good (Keep)
+
+- Making S0 a separately deployed predecessor is the right correction for a self-updating repository. Source confirms that `update-flywheel.sh` fast-forwards the live checkout before calling `restart-services.sh`, so an S1-local pre-fast-forward gate could never protect the first deployment of its own bytes.
+- The S0 pass criterion is now evidence-sized: evaluate the exact post-S1 PATH, canonicalize the selected pathname directly, and require the selected client to be 3.5a x86_64. The explicit rejection of the PID-only `extract_tmux_image` helper in this pathname-only context is correct.
+- The shared file enumerator now covers shell, Python, the JS/TS family, plist files, and extensionless shebang executables. The implement-time rerun and cross-format negative tests make S1's inventory and S2's discovery claim substantially more reproducible.
+- The carrier/out-of-carrier classification remains proportionate, and the `npx`, `gh`, Python brake, and functional codec smokes cover the load-bearing consumers without authorizing mutating production actions or leaking credentials.
+- S2's registry plus discovery design, CI-only claimed mount, separate source-tree mode, and existing alert-pipeline reuse remain consistent with repository conventions.
+- P1–P7 still cover the S3 blocker classes: transactionality, full server ownership, executable rollback, mixed-version production commands, runtime-client convergence, consumer compatibility, and launch-architecture provenance. I do not see a missing P8 at this design level.
+
+## Issues & Recommendations
+
+1. **BLOCKER — S0 still does not cover every carrier birth that can consume S1, despite claiming that it does.** Plan §0 correctly observes that Bridge and voice-Bridge launchd jobs point directly at wrapper files in the live checkout and have `KeepAlive=true`; the quota monitor has the same shape. Plan §1.6 then promises that “每次可能消费新 PATH 的重启” evaluates S0, but its required mounts are only (a) updater pre-fast-forward, (b) the explicit restart transaction, and (c) manual `restart-services.sh`. A crash or launchd retry starts those wrappers directly, without either script. It can occur after the fast-forward and before the transaction recheck, or later after the receipt expires or host selection drifts. The pre-fast-forward check narrows that window but is not a transaction-bound, fail-closed check at the direct birth path. **Fix:** either invoke a reusable S0 gate from every affected carrier wrapper before its first PATH-sensitive command, with tests for each supervisor/birth class, or make the primary deployment transaction unload/pause all affected KeepAlive jobs before fast-forward and re-enable them only after the bound gate passes. If S0 is intended to protect only the deployment transaction—not later direct restarts—narrow §1.6 accordingly and state the separate enforced invariant that prevents post-deploy tmux selection drift. The current combination of “every restart” and three incomplete mounts is unsafe to hand to an implementer.
+
+2. **HIGH — the acceptance contract contradicts the corrected S0 specification and does not verify S0's staged deployment.** A4b still says to obtain the canonical image “经 `extract_tmux_image`,” although §1.6 correctly explains that the helper requires a live PID and cannot accept the pathname held by this gate. There is also no S0-specific acceptance item proving that the gate's bytes are live before S1 merges, that all claimed mounts execute, or that a direct carrier birth fails closed. **Fix:** replace the A4b extractor language with direct pathname canonicalization plus `tmux -V`/`file`, and add a separate A0 acceptance gate. A0 should prove the deployed SHA/live updater contains S0, exercise each real entry path (including the resolution of issue 1), and show missing, expired, wrong-host, wrong-SHA, and shadowed-binary cases refusing before S1 can be consumed. Bind S1 merge authorization to that evidence, rather than leaving the most important phase only in prose.
+
+3. **HIGH — the correction banners still leave withdrawn conclusions in mandatory onboarding documents.** `exploration.md:111` still concludes that upgrading the client via “PATH / link” is safe and that the old servers will be “正常驱动,” immediately before a correction saying that `brew link` safety and the production command surface are unproven. `research.md:38,46` still calls `host-terminal-cutover.sh` a directly usable cutover transaction even though plan P1–P3 classify it as a toolbox without the required rolling/rollback transaction. `research.md:166` still says provisioning will automatically run the new guard, contradicting plan §2.1's explicit withdrawal of that mount. Because these documents are required reading, a reader can still recover exactly the unsafe rollout and provisioning claims the plan retracts. **Fix:** correct those body sentences in place (or explicitly withdraw those exact paragraphs in the banners): retain only the measured handshake/`list-sessions` result, describe the cutover script as reusable primitives pending P1–P3, and say the source-tree S2 mode is mounted only in CI in this scope.
+
+4. **Implementation notes — not independently blocking once the items above are fixed.** Update the plan header from R4 / 26 findings to R5 / 38 accepted findings. Name the S0 helper, receipt location, expiry policy, atomic-write/ownership contract, and test files so two implementers cannot build incompatible evidence formats. For S2, make the discovery seed explicitly fail on a new unregistered dual-prefix non-PATH precedence array; the current grammar says such arrays are outside PATH matching while only the known `qa-result` array is explicitly registered, which could otherwise leave a future `qa-result`-shaped list outside the claimed discovery closure.
+
+## Verdict
+
+CHANGES REQUESTED — address items above

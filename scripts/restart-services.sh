@@ -590,6 +590,56 @@ DISCORD_PLUGIN_CONTRACT="discord@flywheel-plugins/v1"
 # or service-restart decision. The caller owns restart.lock.d, so fetch/merge
 # cannot race another restart's build. Dry-run fetches remote truth but never
 # moves HEAD, the index, or the working tree.
+restart_host_tmux_gate() {
+    local target_sha="$1" carrier="$2" mount_point="$3"
+    local state_dir="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+    local gate_bin="${state_dir}/bin/host-tmux-selection-gate.sh" rc=0
+    [[ "$target_sha" =~ ^[0-9a-fA-F]{40}$ ]] || return 2
+    if [[ ! -x "$gate_bin" ]]; then
+        gate_bin="${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh"
+    fi
+    [[ -f "$gate_bin" && ! -L "$gate_bin" && -x "$gate_bin" ]] || return 127
+    (
+        unset FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
+          FLYWHEEL_HOST_TMUX_POST_S1_PATH \
+          FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH \
+          FLYWHEEL_HOST_TMUX_FILE_BIN \
+          FLYWHEEL_HOST_TMUX_HOST_ID \
+          FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH \
+          FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS \
+          FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY \
+          FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR \
+          FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR
+        FLYWHEEL_STATE_DIR="$state_dir" \
+        FLYWHEEL_HOST_TMUX_TARGET_SHA="$target_sha" \
+        FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="${carrier}:${target_sha}" \
+        FLYWHEEL_HOST_TMUX_MOUNT_POINT="$mount_point" \
+          "$gate_bin" gate "$carrier" || rc=$?
+        if (( rc == 0 )); then
+            FLYWHEEL_STATE_DIR="$state_dir" \
+            FLYWHEEL_HOST_TMUX_TARGET_SHA="$target_sha" \
+            FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="${carrier}:${target_sha}" \
+            FLYWHEEL_HOST_TMUX_MOUNT_POINT="$mount_point" \
+              "$gate_bin" verify "$carrier" || rc=$?
+        fi
+        exit "$rc"
+    )
+}
+
+restart_host_tmux_census() {
+    local candidates_file="$1"
+    local state_dir="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+    local gate_bin="${state_dir}/bin/host-tmux-selection-gate.sh"
+    [[ -x "$gate_bin" ]] || return 127
+    (
+        unset FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
+          FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR \
+          FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR
+        FLYWHEEL_STATE_DIR="$state_dir" FLYWHEEL_DIR="$FLYWHEEL_DIR" \
+          "$gate_bin" census "$candidates_file"
+    )
+}
+
 preflight_pull_latest_main() {
     local branch="" branch_rc=0 status_output="" status_rc=0
     local status_preview="" status_alert_preview=""
@@ -856,6 +906,17 @@ preflight_pull_latest_main() {
             return 1
             ;;
     esac
+
+    if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY RUN: would run host tmux selection gate for ${target_sha}"
+    elif ! restart_host_tmux_gate "$target_sha" restart-preflight \
+      scripts/restart-services.sh:before-ff; then
+        log "ERROR: host tmux selection gate refused restart target ${target_sha}"
+        alert_severe "restart-preflight-host-tmux-gate" \
+            "Flywheel restart host tmux gate failed" \
+            "restart-services could not prove the future PATH selects the bound tmux 3.5a carrier for ${target_sha}. No merge, build, or restart was attempted."
+        return 1
+    fi
 
     if [[ "$accepted_state" == "already-at" ]]; then
         log "restart preflight: already at origin/main (${target_sha})"
@@ -2297,6 +2358,15 @@ do_restart_all_leads() {
         fi
     fi
 
+    local host_tmux_target_sha=""
+    host_tmux_target_sha="$(git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 2>/dev/null)" || host_tmux_target_sha=""
+    if ! restart_host_tmux_gate "$host_tmux_target_sha" restart-lead-wave \
+      scripts/restart-services.sh:before-lead-wave; then
+        log "ERROR: host tmux selection gate failed after bin convergence — refusing Lead restart wave" >&2
+        record_lead_restart_detail wave_error "host tmux 选择门失败"
+        echo "skipped:0 failed:1 total:0"
+        return 0
+    fi
     # FLY-1507: one authoritative inventory (manifest + positively loaded plist),
     # deduplicated by exact
     # (projectName, leadId) daemon key. QA candidates never affect counts.
@@ -2318,6 +2388,13 @@ do_restart_all_leads() {
         log "ERROR: Lead candidate inventory is indeterminate (rc=$candidate_rc)" >&2
         rm -f "$candidates_file"
         record_lead_restart_detail wave_error "清单收敛失败(rc=$candidate_rc)"
+        echo "skipped:0 failed:1 total:0"
+        return 0
+    fi
+    if ! restart_host_tmux_census "$candidates_file"; then
+        log "ERROR: loaded Lead plist carrier census failed — refusing Lead restart wave" >&2
+        rm -f "$candidates_file"
+        record_lead_restart_detail wave_error "Lead carrier census 失败"
         echo "skipped:0 failed:1 total:0"
         return 0
     fi

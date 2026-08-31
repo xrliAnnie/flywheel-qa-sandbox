@@ -1,0 +1,30 @@
+flowchart TB
+    ISSUE["FLY-2190<br/>Rosetta 退场那天，16 个 Lead 起不来"]
+
+    ISSUE --> S0["<b>S0 · 先上线一道安全检查</b><br/>确认改完之后系统真正会选到哪个 tmux<br/>必须先单独上线，因为本仓库合入即自动部署"]
+    S0 --> S1["<b>S1 · 改 PATH 顺序</b><br/>让系统优先找原生版本的工具<br/>纯代码改动，不重启任何东西"]
+    ISSUE --> S2["<b>S2 · 加一道守卫</b><br/>防止这个顺序将来又被改回去<br/>每次提交自动检查"]
+    ISSUE --> S3["<b>S3 · 换掉 tmux 本体</b><br/>这才是真正解除到期风险的一步"]
+
+    S0 --> DONE["✅ 本单交付"]
+    S1 --> DONE
+    S2 --> DONE
+
+    S3 --> PARK["⏸ 本单不做<br/>只交付「顺序规则」+「开工前必须先解决的 7 个问题」"]
+
+    PARK --> P["P1 缺事务保证<br/>P2 非 Lead 的 tmux 没人管<br/>P3 混合状态下回滚不可执行<br/>P4 缺混合版本验证门<br/>P5 运行中的进程状态未证明<br/>P6 消费者矩阵不全<br/>P7 启动链的架构溯源"]
+
+    DONE --> WARN["⚠️ 注意：S1+S2 做完，<br/>Rosetta 到期风险<b>并未解除</b><br/>全舰 tmux 仍是 Intel 版<br/>FLY-2190 不能因此关闭"]
+    P --> WARN
+
+    classDef issue fill:#1a365d,stroke:#1a365d,stroke-width:2px,color:#ffffff
+    classDef ship fill:#e3f9e9,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+    classDef park fill:#fff4e0,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+    classDef warn fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+    classDef todo fill:#ffffff,stroke:#86868b,stroke-width:1.5px,color:#1d1d1f
+
+    class ISSUE issue
+    class S0,S1,S2,DONE ship
+    class S3,PARK park
+    class WARN warn
+    class P todo

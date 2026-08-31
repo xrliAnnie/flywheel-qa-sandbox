@@ -103,6 +103,7 @@ package.json
 LICENSE
 README.md
 .flywheel-prebuilt
+.flywheel-build-sha
 dist/run-bridge.js
 .flywheel/agents/registry.yaml
 .flywheel/agents/nodes/general.md
@@ -115,6 +116,11 @@ vendor/fw-alpha/*
 EOF
   # repo-access grep allowlist: empty (fixture payload must be reference-free)
   printf '# fixture: no registered occurrences\n' > "$FIX/grep.allow"
+
+  git -C "$FIX" init -q
+  git -C "$FIX" add -A
+  git -C "$FIX" -c user.name=fixture -c user.email=fixture@example.com \
+    commit -qm fixture
 }
 
 # run_po <fn-and-args...> — run a pipeline function inside the fixture policy.
@@ -147,6 +153,7 @@ if run_po po_assemble "$FIX" "$TREE" >/dev/null 2>&1; then
   [ -f "$TREE/.flywheel/agents/registry.yaml" ] || ok=0
   [ -f "$TREE/.flywheel/agents/nodes/general.md" ] || ok=0
   [ "$(cat "$TREE/.flywheel-prebuilt")" = "9.9.9" ] || ok=0
+  [ "$(cat "$TREE/.flywheel-build-sha" 2>/dev/null)" = "$(git -C "$FIX" rev-parse HEAD)" ] || ok=0
   [ "$(jq -r '.version' "$TREE/package.json")" = "9.9.9" ] || ok=0
   [ "$(jq -r '.dependencies["lodash-x"]' "$TREE/package.json")" = "^1.4.0" ] || ok=0
   [ "$(jq -r '.dependencies["fw-alpha"]' "$TREE/package.json")" = "file:node_modules/fw-alpha" ] || ok=0
@@ -332,6 +339,14 @@ mut_ver() { echo "0.0.1" > "$1/.flywheel-prebuilt"; }
 if gate_mutated mut_ver; then fail "G5 version mismatch passed the gates"; else
   grep -q "version mismatch" "$SANDBOX/gate.log" && pass "G5 sentinel/package.json/doc-VERSION mismatch fails" \
     || fail "G5 failed but not via version check: $(cat "$SANDBOX/gate.log")"
+fi
+
+# ── G6 · packaged source identity mismatch fails ────────────────────────────
+mut_build_sha() { printf '%040d\n' 0 > "$1/.flywheel-build-sha"; }
+if gate_mutated mut_build_sha; then fail "G6 build identity mismatch passed the gates"; else
+  grep -q "packaged build identity mismatch" "$SANDBOX/gate.log" \
+    && pass "G6 packaged source identity is sealed to the assembly HEAD" \
+    || fail "G6 failed but not via build identity check: $(cat "$SANDBOX/gate.log")"
 fi
 
 # ── M1 · compat mirror on an installed-shape tree ────────────────────────────

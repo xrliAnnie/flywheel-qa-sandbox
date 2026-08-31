@@ -92,6 +92,9 @@ run_preflight() {
         printf "%s\n" "${1:-}" >> "$PREFLIGHT_TEST_CUTOVER_ARG"
         return "$CUTOVER_RC"
       }
+      # This suite isolates Git preflight behavior. FLY-2190 host-gate behavior
+      # is exercised by host-tmux-selection-restart-mounts.test.sh.
+      restart_host_tmux_gate() { return 0; }
       preflight_pull_latest_main
     ' _ "$FUNCTION_FILE"
 }

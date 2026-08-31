@@ -355,7 +355,7 @@ phase_flywheel_home() {
   local f
   for f in flywheel-lead-wrapper-v2.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
-      flywheel-bridge-wrapper.sh restart-services.sh; do
+      flywheel-bridge-wrapper.sh restart-services.sh host-tmux-selection-gate.sh; do
     if [ -f "$REPO_ROOT/scripts/$f" ]; then
       if [ "$DRY_RUN" -eq 1 ]; then
         plan "install (sanity+atomic+555) $REPO_ROOT/scripts/$f -> $FW/bin/$f"

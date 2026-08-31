@@ -48,6 +48,7 @@ package.json
 LICENSE
 README.md
 .flywheel-prebuilt
+.flywheel-build-sha
 dist/run-bridge.js
 .flywheel/agents/registry.yaml
 .flywheel/agents/nodes/general.md
@@ -56,6 +57,11 @@ node_modules/fw-alpha/package.json
 node_modules/fw-alpha/dist/*
 EOF
 printf '# fixture: no registered occurrences\n' > "$FIX/grep.allow"
+git -C "$FIX" init -q
+git -C "$FIX" config user.email "fixture@example.com"
+git -C "$FIX" config user.name "Fixture"
+git -C "$FIX" add .
+git -C "$FIX" commit -qm "fixture"
 
 # run_po <fn-and-args...> — run a pipeline function inside the fixture policy.
 # Inject PO_RELEASE_VERSION by prefixing the call (exported prefix assignments

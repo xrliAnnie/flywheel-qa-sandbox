@@ -347,6 +347,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"tuning knob: determinate drift passes before stale prepared receipt release (FLY-1884)",
 	FLYWHEEL_CMUX_PREPARED_MIN_AGE_SECONDS:
 		"tuning knob: minimum prepared receipt age before recovery counters advance (FLY-1884)",
+	FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR:
+		"test-only census path for isolated launch-agent fixtures (FLY-2190), not a runtime gate",
+	FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR:
+		"test-only census path for isolated carrier-source fixtures (FLY-2190), not a runtime gate",
+	FLYWHEEL_HOST_TMUX_GATE_TEST_MODE:
+		"test-only hermetic probe seam rejected by production state roots (FLY-2190), not a runtime gate",
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",

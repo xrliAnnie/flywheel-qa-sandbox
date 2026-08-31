@@ -1,0 +1,429 @@
+<title>Rosetta 退场与载体迁移</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#86868b;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759;
+    --purple:#af52de; --navy:#1a365d; --line:#e6e6ea;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,system-ui,"Helvetica Neue",Arial,sans-serif;
+    font-size:15px; line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:40px 20px 80px}
+  header.top{margin-bottom:32px}
+  .eyebrow{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12px; color:var(--dim); letter-spacing:.04em}
+  h1{font-size:30px; line-height:1.25; margin:8px 0 14px; letter-spacing:-.02em}
+  .lede{font-size:17px; color:#3a3a3c; margin:0}
+  .lede b{color:var(--ink)}
+  .card{
+    background:var(--card); border-radius:12px; padding:22px 24px; margin:18px 0;
+    box-shadow:0 1px 3px rgba(0,0,0,.06); border-left:4px solid var(--line);
+  }
+  .card.red{border-left-color:var(--red)}
+  .card.amber{border-left-color:var(--amber)}
+  .card.blue{border-left-color:var(--blue)}
+  .card.green{border-left-color:var(--green)}
+  .card.purple{border-left-color:var(--purple)}
+  .card.navy{border-left-color:var(--navy)}
+  h2{font-size:21px; margin:0 0 6px; letter-spacing:-.01em}
+  h3{font-size:16px; margin:22px 0 6px}
+  .sub{color:var(--dim); font-size:13.5px; margin:0 0 14px}
+  p{margin:10px 0}
+  ul,ol{margin:10px 0; padding-left:22px}
+  li{margin:6px 0}
+  code{font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px;
+       background:#f0f0f3; padding:1.5px 5px; border-radius:4px}
+  .term{border-bottom:1px dotted var(--dim)}
+  .plain{color:var(--dim); font-size:13.5px}
+  .diagram{margin:18px 0; overflow-x:auto; background:#fff; border-radius:8px; padding:8px 0}
+  .diagram svg{max-width:100%; height:auto; display:block; margin:0 auto}
+  .tbl{overflow-x:auto; margin:14px 0}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:520px}
+  th,td{text-align:left; padding:9px 11px; border-bottom:1px solid var(--line); vertical-align:top}
+  th{color:var(--dim); font-weight:600; font-size:12px; text-transform:uppercase; letter-spacing:.04em}
+  tr:last-child td{border-bottom:none}
+  .badge{display:inline-block; font-size:11px; font-weight:600; padding:2px 8px;
+         border-radius:20px; letter-spacing:.02em; vertical-align:middle}
+  .b-ship{background:#e3f9e9; color:#1a7f37}
+  .b-park{background:#fff4e0; color:#9a5b00}
+  .b-warn{background:#ffe5e3; color:#c0271d}
+  .b-info{background:#e8f1ff; color:#0a4d9c}
+  .kv{display:grid; grid-template-columns:auto 1fr; gap:6px 14px; font-size:14px; margin:12px 0}
+  .kv dt{color:var(--dim)}
+  .kv dd{margin:0}
+  .callout{background:#fbfbfd; border:1px solid var(--line); border-radius:8px; padding:14px 16px; margin:14px 0}
+  .callout.warn{background:#fff8f7; border-color:#ffd4d0}
+  .callout.good{background:#f6fdf8; border-color:#cfeeda}
+  .cmt{margin-top:18px; padding-top:16px; border-top:1px dashed var(--line)}
+  .cmt label{display:block; font-size:12px; color:var(--dim); margin-bottom:6px; letter-spacing:.02em}
+  .cmt textarea{
+    width:100%; min-height:64px; resize:vertical; padding:10px 12px;
+    border:1px solid var(--line); border-radius:8px; background:#fcfcfd;
+    font-family:inherit; font-size:14px; line-height:1.5; color:var(--ink);
+  }
+  .cmt textarea:focus{outline:none; border-color:var(--blue); background:#fff}
+  .sumcard{background:var(--navy); color:#fff; border-radius:12px; padding:24px; margin-top:34px}
+  .sumcard h2{color:#fff}
+  .sumcard .sub{color:#b9c6d8}
+  .sumout{
+    background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.16);
+    border-radius:8px; padding:14px; margin:14px 0; white-space:pre-wrap;
+    font-family:"SF Mono",ui-monospace,Menlo,monospace; font-size:12.5px;
+    max-height:340px; overflow-y:auto; color:#e8eef7;
+  }
+  .btn{
+    background:#fff; color:var(--navy); border:none; border-radius:8px;
+    padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer;
+    font-family:inherit; margin-right:8px;
+  }
+  .btn:hover{background:#eef3fa}
+  .btn:active{transform:translateY(1px)}
+  .chunk{margin:10px 0}
+  .chunk-hd{font-size:12px; color:#b9c6d8; margin-bottom:4px}
+  footer{margin-top:40px; color:var(--dim); font-size:12.5px; text-align:center}
+  @media (max-width:620px){ h1{font-size:24px} .wrap{padding:26px 14px 60px} }
+</style>
+
+<div class="wrap">
+
+<header class="top">
+  <div class="eyebrow">FLY-2190 · 工程设计 · 2026-08-30</div>
+  <h1>Rosetta 退场那天，16 个 Lead 会起不来</h1>
+  <p class="lede">
+    全舰 Lead 跑在一个<b>只有 Intel 版本</b>的 tmux 上，靠 macOS 的翻译层 Rosetta 运行。
+    今天零影响，但苹果已经开始预告这个翻译层会消失。
+    <b>本次设计交付两件可以马上做的事，并把真正解除风险的那一步（换掉 tmux）诚实地留成待办 —— 因为评审查出它还缺 7 项设计。</b>
+  </p>
+</header>
+
+<div class="card navy">
+  <h2>先说结论</h2>
+  <dl class="kv">
+    <dt>问题</dt><dd>载体是 Intel 二进制，翻译层退场那天 <b>tmux 起不来 ⇒ 16 个 Lead 全部无法启动</b>。今天无任何功能受影响。</dd>
+    <dt>本单交付</dt><dd><span class="badge b-ship">S0 先上线安全检查</span> <span class="badge b-ship">S1 改 PATH 顺序</span> <span class="badge b-ship">S2 加守卫</span> —— 都是纯代码改动，不重启任何东西。三者有先后：S0 必须先单独上线。</dd>
+    <dt>本单不做</dt><dd><span class="badge b-park">S3 换 tmux 本体</span> —— 交付「顺序规则 + 开工前必须先解决的 7 个问题」，不交付可照做的操作手册。</dd>
+    <dt>最重要的一句</dt><dd><span class="badge b-warn">S1+S2 做完，到期风险并未解除</span>。全舰 tmux 仍是 Intel 版，这张单不能因为这个 PR 就关闭。</dd>
+  </dl>
+</div>
+
+<!--SECTION:结论-->
+
+<div class="card blue">
+  <h2>一、为什么整条链都在翻译层，而最贵的那部分逃掉了</h2>
+  <p class="sub">先解释两个词，后面会反复出现</p>
+  <p>
+    <span class="term">Rosetta</span><span class="plain"> —— 苹果做的一个翻译层，让为 Intel 芯片编译的老程序能在新的 Apple 芯片上运行。它总有一天会被移除。</span><br>
+    <span class="term">tmux</span><span class="plain"> —— 一个「终端复用器」，可以理解为承载每个 Lead 的那个后台窗口。它死了，Lead 就没有容身之处。</span>
+  </p>
+  <div class="diagram">__SVG_D1__</div>
+  <p>
+    关键机制是 <b>「用哪种芯片模式运行」这件事会从父进程继承下去</b>。
+    像 <code>zsh</code> 这类同时提供两种版本的程序，跑哪一种<b>不由它自己决定</b>，而是跟着启动它的那个进程走。
+    Intel 版的 tmux 一旦成为源头，它派生出来的整条链就都被拖进了翻译层。
+  </p>
+  <div class="callout good">
+    <b>node 为什么逃掉了：</b>它<b>只有</b> Apple 芯片版本，没有 Intel 版可选，系统只能让它原生运行。
+    所以创始人「最贵的那部分（Claude Code / Bridge）没被翻译」的判断是对的 —— 本次实测也确认了这一点。
+    <span class="plain">（顺带查清：<code>/usr/local/bin/node</code> 其实是一个指向原生版本的快捷方式，不是第二份 Intel 程序。）</span>
+  </div>
+  <div class="cmt"><label for="c1">对这一节的意见</label><textarea id="c1" data-sec="一、翻译链机制"></textarea></div>
+</div>
+
+<div class="card purple">
+  <h2>二、决定性实测：新旧 tmux 之间只能单向通话</h2>
+  <p class="sub">这是本次设计唯一能定死操作顺序的证据，全程在隔离环境完成，没有碰生产</p>
+  <div class="diagram">__SVG_D2__</div>
+  <p>
+    tmux 分成两半：一半是<b>真正扛着 Lead 的那个常驻进程</b>，另一半是<b>每次发指令时临时启动的小程序</b>。
+    两者要能对上话。实测结果是：<b>新版能指挥旧版，旧版指挥不动新版</b>（旧版会自己报错退出，好在不会把对面弄死）。
+  </p>
+  <div class="callout warn">
+    <b>诚实的强度说明：</b>这个「能对上话」目前只验证了<b>握手</b>和<b>一条查询命令</b>。
+    真正每天在用的那些操作（接入窗口、发送按键、窗口生命周期钩子、关闭指令）<b>都还没验</b>。
+    所以现阶段只能说「握手与查询已验证」，<b>不能说「工作正常」</b> —— 这正是待办清单里 P4 那一项。
+  </div>
+  <div class="cmt"><label for="c2">对这一节的意见</label><textarea id="c2" data-sec="二、单向兼容实测"></textarea></div>
+</div>
+
+<div class="card green">
+  <h2>三、本单实际交付的两件事</h2>
+  <div class="diagram">__SVG_D3__</div>
+  <h3>S0 · 先单独上线一道安全检查</h3>
+  <p>
+    评审查出一件我原本没意识到的事：<b>这个仓库是自部署的</b> —— 代码一旦合入主干，更新器会自动把它同步到正在运行的目录，
+    然后重启服务；而且服务配置了「挂了就自动拉起」。
+    所以<b>「先合入，部署时再检查」这个想法在这里行不通</b> —— 和改动写在同一次提交里的检查，
+    根本赶不上那次自动部署。检查必须<b>先自己上线</b>，成为已经在跑的代码，S1 才能合入。
+  </p>
+
+  <h3>S1 · 把系统找工具的顺序改成「原生优先」</h3>
+  <p>
+    机器上装了两套 Homebrew（<span class="plain">一个软件安装器</span>）：一套 Intel 的、一套原生的。
+    系统按一个顺序表去找工具，而这张表把 Intel 那套<b>排在了前面</b>。
+    根因不是谁写错了配置 —— 是 Homebrew 自己的行为变了，它现在会重建这张顺序表，把原生那套<b>追加到末尾</b>。
+    <b>用户自己怎么改配置文件都改不动这个顺序</b>，只能在我们自己的代码里改。
+  </p>
+  <div class="callout good">
+    好消息：Lead 的启动流程被刻意设计成<b>不读用户的个人配置</b>，所以这一半完全在我们仓库代码的掌控内 —— 10 处生产声明加 1 处测试对齐点。
+  </div>
+  <h3>S2 · 加一道守卫，防止顺序将来又被改回去</h3>
+  <p>
+    创始人明确要求「保留一条检查」。做法是扩展仓库里已有的一个只读扫描器，每次提交自动跑。
+    <b>关键设计点：光有一份「被监视文件清单」是不够的</b> —— 清单只能证明已列文件还守规矩，
+    一个<b>新写的</b>文件不在清单里就完全看不见。所以守卫必须同时做全仓发现，对「发现到但没登记」的也判违规。
+  </p>
+  <div class="cmt"><label for="c3">对这一节的意见</label><textarea id="c3" data-sec="三、S1 与 S2 交付内容"></textarea></div>
+</div>
+
+<div class="card amber">
+  <h2>四、关键取舍，以及评审逼我收回的两句话</h2>
+  <p class="sub">这一节是本次设计最该被审视的部分</p>
+  <h3>被否决的备选</h3>
+  <div class="tbl"><table>
+    <tr><th>方案</th><th>为什么不选</th></tr>
+    <tr><td>只钉住 tmux 的绝对路径，绕开顺序问题</td><td>只管住了「扛活的那一半」，管不住散布在 5 个代码包里的 50 多处发指令调用 —— 恰好造成最危险的那种错配</td></tr>
+    <tr><td>只改顺序，不换 tmux</td><td>解决了工具版本，但载体仍是 Intel 版，到期那天照样起不来。不解决核心风险</td></tr>
+    <tr><td>把 50 多处调用收敛成统一入口</td><td>方向正确，但那是跨 5 个包的大重构，与「到期」这一个理由不成比例。另立单子</td></tr>
+    <tr><td>改动系统全局配置或用户个人配置</td><td>超出授权范围，而且没必要 —— 改仓库代码就够</td></tr>
+    <tr><td>重写一套迁移工具</td><td>已有的那套（含预算闸、静止证明、回滚闭包）是前一张单子做好的，重写违反「只调用不重写」</td></tr>
+  </table></div>
+
+  <h3>评审后收回的两句话</h3>
+  <div class="callout warn">
+    <p><b>收回一：「改顺序是零风险的几秒钟操作」。</b>
+    实测两个工具目录有 373 个同名条目，其中 372 个<b>会指向不同的文件</b><span class="plain">（注意：这说的是「指向不同」，不等于「行为不同」—— 有些其实是等价的）</span>。除了 python 之外还有
+    <code>ffmpeg</code>（语音功能<b>启动时会显式检查它</b>）、<code>gh</code>（跨了 13 个月的版本差、21 个生产文件在用）、
+    <code>npm</code>、<code>openssl</code>。<b>我第一版是靠「我能想到哪些命令」列的白名单，方法本身就是错的</b>，
+    正确做法是从被改的文件出发反查它们的子进程真正调用了什么。</p>
+    <p><b>收回二：「换 tmux 已经可以逐个 Lead 滚动做了」。</b>
+    我一度据单向兼容性得出「不需要全舰停机窗口」，评审查出滚动方案至少缺三样没设计的东西：
+    没有事务保证、没管非 Lead 的那些 tmux、以及混合状态下的回滚方向是反的
+    （一旦有新版存在，先撤销链接会让剩下的旧版指令端<b>控制不了</b>它）。<b>已整体降级为待办。</b></p>
+  </div>
+  <p class="plain">
+    这两条都曾经出口给过工程负责人，已经单独发了更正；三份设计文档也都加了更正横幅，
+    防止后来的人从证据文件里把已撤回的方案「恢复」出来。
+  </p>
+  <div class="cmt"><label for="c4">对这一节的意见</label><textarea id="c4" data-sec="四、取舍与收回的两句话"></textarea></div>
+</div>
+
+<div class="card red">
+  <h2>五、诚实边界：这个设计做什么、不做什么</h2>
+  <h3>做了</h3>
+  <ul>
+    <li>查清了完整机制，并用隔离实验验证（不是推断）：芯片模式如何继承、换成原生版能否根治、工具顺序这一半是否独立。</li>
+    <li>发现前一张单子（FLY-1944）<b>已经把迁移工装做好了</b>，原生版 tmux 也早已装在机器上。这是很大的一笔省工 —— 不需要重造。
+      <span class="plain">（但要说清：剩下那一步「让系统正式启用原生版」<b>不是准备工作，而是迁移动作本身</b>，一旦做了就会立刻改变全机的选择。所以它属于需要授权的执行环节，不是「差一个小文件」。）</span></li>
+    <li>定死了操作顺序，并把它限定在实测过的那一对版本上，不做过度推广。</li>
+    <li>交付 S1、S2 的完整实施方案与验收标准。</li>
+  </ul>
+  <h3>没做，而且明确不在本单做</h3>
+  <ul>
+    <li><b>没有换掉 tmux。</b>这是唯一能真正解除到期风险的一步，需要停机、需要创始人择时授权。</li>
+    <li><b>没有交付可照做的迁移手册。</b>还缺 7 项设计（事务保证、非 Lead 的 tmux 处置、混合状态回滚、生产命令面验证门、运行中进程的状态证明、消费者矩阵、启动链架构溯源）。
+      <span class="plain">给一份未经验证的回滚步骤，比不给更危险。</span></li>
+    <li><b>没有声称任何性能收益。</b>被翻译的是短命的小进程，实际开销没有测量过。本单的理由<b>只有「到期」这一条</b>。</li>
+    <li>没有对齐两个 Python 的小版本号；没有动系统全局配置。</li>
+  </ul>
+  <div class="callout">
+    <b>另一处必须说准的边界：</b>本次查清了「哪些工具会因为改顺序而换成另一个版本」，方法是从被改的文件反查它们的子进程真正调用了什么，查出 8 个。
+    但这 8 个是<b>仓库代码自己写死的</b>命令；<b>不包含</b>两类：Lead 和 Runner 里的 AI 每天在终端自己敲的命令（这其实是本次改动最大的行为面，但没法用搜索穷举），
+    以及第三方库自己去找的程序（比如语音库自己找 ffmpeg）。这两类只能靠冒烟测试和实际观察兜底。
+  </div>
+  <div class="callout warn">
+    <b>最需要创始人知道的一点：</b>S1+S2 的 PR 合入后，全舰 tmux <b>仍然是 Intel 版</b>。
+    这张单子不能因此关闭 —— 要么保持打开，要么建立一张带负责人、期限和退出条件的承接单子。
+  </div>
+  <div class="callout warn">
+    <b>顺带查出的一个治理问题（不在原始范围内，但必须处置）：</b>
+    16 个 Lead 里有 <b>2 个</b>（Mufasa 和 Codex 基础设施 Bot）的启动脚本<b>根本不在代码仓库里</b> ——
+    它们是当初手动装到机器上的，仓库里找不到对应文件。这两个文件同样带着「Intel 优先」的顺序。
+    <span class="plain">（我原本改的是仓库里一个同名近似的模板，但那不是这两个 Lead 实际用的那份。）</span>
+    后果是：如果不处理，这 2 个 Lead 会既拿不到修复也拿不到防护检查，而设计却在声称「覆盖全舰」。
+    已加入设计：要么把它们纳入代码管理，要么把它们迁到统一的启动脚本上；并且验收要用<b>机器普查</b>逐个核对
+    每个 Lead 实际用的启动脚本，而不是靠人列清单。
+  </div>
+  <div class="cmt"><label for="c5">对这一节的意见</label><textarea id="c5" data-sec="五、诚实边界"></textarea></div>
+</div>
+
+<div class="card">
+  <h2>六、这份设计经过了什么</h2>
+  <div class="tbl"><table>
+    <tr><th>环节</th><th>结果</th></tr>
+    <tr><td>真机实测</td><td>芯片模式继承（3 组对照）、新旧 tmux 双向兼容性（含「对面会不会被弄死」的严重性判定）、工具顺序独立性、承重脚本在原生 Python 下的两套测试（221 + 108 全绿）</td></tr>
+    <tr><td>代码审计</td><td>三轮并行审计：tmux 二进制如何被选中、工具顺序在仓库里的所有声明点、以及从被改文件反查子进程真正调用了什么</td></tr>
+    <tr><td>独立设计评审</td><td>六轮，共 42 条意见，<b>全部接受、零驳回</b>；其中 12 条是阻塞级。它们直接导致上面那两句话被收回，并查出了两个我自己没看到的问题：一个硬编码的工具优先级会造成「分裂状态」，以及本仓库<b>合入即自动部署</b>——所以防护检查必须先单独上线，不能和改动放在同一次提交里</td></tr>
+    <tr><td>一处对审计的反向纠正</td><td>审计推断「建立链接就会版本冲突」，实测证明那个方向是通的 —— 会出问题的是相反方向</td></tr>
+  </table></div>
+  <div class="cmt"><label for="c6">对这一节的意见</label><textarea id="c6" data-sec="六、设计经过"></textarea></div>
+</div>
+
+<div class="card">
+  <h2>七、还需要创始人拍板的</h2>
+  <ol>
+    <li><b>S3 什么时候做、由谁做。</b>换 tmux 必须停机（每个 Lead 重启会丢当前上下文），且开工前要先解决那 7 项。</li>
+    <li><b>这张单子的归属。</b>S1+S2 合入后保持打开，还是新建一张承接单子？</li>
+    <li><b>前一张单子（FLY-1944）的阶段 2 门是否已绿。</b>它给迁移窗口设了前置条件「绿才授权、不绿即停」。本单不重开它的验收，只把它列为待核前置。</li>
+  </ol>
+  <div class="cmt"><label for="c7">对这一节的意见</label><textarea id="c7" data-sec="七、待拍板事项"></textarea></div>
+</div>
+
+<div class="sumcard">
+  <h2>页面意见汇总</h2>
+  <p class="sub">在上面任意一节写下意见后，这里会自动汇总。点按钮复制，粘贴回给我即可。</p>
+  <div id="sumout" class="sumout">（还没有填写任何意见）</div>
+  <button class="btn" id="copyBtn" type="button">复制全部意见</button>
+  <button class="btn" id="clearBtn" type="button">清空</button>
+  <span id="copyMsg" style="margin-left:10px; font-size:13px; color:#b9c6d8"></span>
+</div>
+
+<footer>
+  FLY-2190 · 工程设计节点产物 · 意见会自动保存在你这台设备的浏览器里
+</footer>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+
+  var MARKER = "【页面意见汇总】FLY-2190";
+  var CHUNK_LIMIT = 1800;
+  var KEY_PREFIX = "fly2190::" + location.pathname + "::";
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll(".cmt textarea"));
+  var sumout = document.getElementById("sumout");
+  var copyBtn = document.getElementById("copyBtn");
+  var clearBtn = document.getElementById("clearBtn");
+  var copyMsg = document.getElementById("copyMsg");
+
+  function safeGet(k) {
+    try { return window.localStorage.getItem(k); } catch (e) { return null; }
+  }
+  function safeSet(k, v) {
+    try { window.localStorage.setItem(k, v); } catch (e) { /* private mode / blocked */ }
+  }
+  function safeRemove(k) {
+    try { window.localStorage.removeItem(k); } catch (e) { /* ignore */ }
+  }
+
+  areas.forEach(function (ta) {
+    var k = KEY_PREFIX + ta.id;
+    var saved = safeGet(k);
+    if (saved !== null) { ta.value = saved; }
+    ta.addEventListener("input", function () {
+      safeSet(k, ta.value);
+      render();
+    });
+  });
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = (ta.value || "").trim();
+      if (v) { parts.push("【" + (ta.getAttribute("data-sec") || ta.id) + "】\n" + v); }
+    });
+    return parts;
+  }
+
+  function buildChunks() {
+    var parts = collect();
+    if (!parts.length) { return []; }
+    var body = parts.join("\n\n");
+    var full = MARKER + "\n" + body;
+    if (full.length <= CHUNK_LIMIT) { return [full]; }
+
+    var chunks = [];
+    var cur = "";
+    parts.forEach(function (p) {
+      var candidate = cur ? cur + "\n\n" + p : p;
+      if ((MARKER.length + 1 + candidate.length) > CHUNK_LIMIT && cur) {
+        chunks.push(cur);
+        cur = p;
+      } else {
+        cur = candidate;
+      }
+    });
+    if (cur) { chunks.push(cur); }
+    return chunks.map(function (c, i) {
+      return MARKER + "（" + (i + 1) + "/" + chunks.length + "）\n" + c;
+    });
+  }
+
+  function render() {
+    var chunks = buildChunks();
+    while (sumout.firstChild) { sumout.removeChild(sumout.firstChild); }
+    if (!chunks.length) {
+      sumout.textContent = "（还没有填写任何意见）";
+      return;
+    }
+    if (chunks.length === 1) {
+      sumout.textContent = chunks[0];
+      return;
+    }
+    chunks.forEach(function (c, i) {
+      var wrap = document.createElement("div");
+      wrap.className = "chunk";
+      var hd = document.createElement("div");
+      hd.className = "chunk-hd";
+      hd.textContent = "— 第 " + (i + 1) + " 段 / 共 " + chunks.length + " 段 —";
+      var body = document.createElement("div");
+      body.textContent = c;
+      wrap.appendChild(hd);
+      wrap.appendChild(body);
+      sumout.appendChild(wrap);
+    });
+  }
+
+  function flash(msg) {
+    copyMsg.textContent = msg;
+    window.setTimeout(function () { copyMsg.textContent = ""; }, 2600);
+  }
+
+  function legacyCopy(text) {
+    try {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "readonly");
+      ta.style.position = "fixed";
+      ta.style.top = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(ta);
+      return ok;
+    } catch (e) { return false; }
+  }
+
+  copyBtn.addEventListener("click", function () {
+    var chunks = buildChunks();
+    if (!chunks.length) { flash("还没有可复制的意见"); return; }
+    var text = chunks.join("\n\n");
+    var done = function () {
+      flash(chunks.length > 1 ? ("已复制（共 " + chunks.length + " 段）") : "已复制");
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, function () {
+        if (legacyCopy(text)) { done(); } else { flash("复制失败，请手动选中上方文字"); }
+      });
+    } else if (legacyCopy(text)) {
+      done();
+    } else {
+      flash("复制失败，请手动选中上方文字");
+    }
+  });
+
+  clearBtn.addEventListener("click", function () {
+    areas.forEach(function (ta) {
+      ta.value = "";
+      safeRemove(KEY_PREFIX + ta.id);
+    });
+    render();
+    flash("已清空");
+  });
+
+  render();
+})();
+</script>

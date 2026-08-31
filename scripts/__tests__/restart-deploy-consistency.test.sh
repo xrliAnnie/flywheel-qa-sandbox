@@ -573,6 +573,9 @@ env \
       printf "%s\n" "$3" >> "$FLY1743_BODY_FILE"
     }
     discord_pointer_cutover_required() { return 1; }
+    # This fixture isolates the post-merge signal boundary. Dedicated FLY-2190
+    # tests exercise the host tmux gate itself.
+    restart_host_tmux_gate() { return 0; }
     DEPLOY_CONSISTENCY_ARMED=false
     DRY_RUN=false
     RESTART_NOTICE_STARTED=false

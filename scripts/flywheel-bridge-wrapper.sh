@@ -53,6 +53,81 @@ set +a
 # tsx, npx, node, jq, brew tools live outside that.
 export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
 
+# FLY-2190: this wrapper can be born directly from launchd KeepAlive, bypassing
+# updater and restart-services. Gate here before a preflight can consume the
+# PATH that S1 will change. Prefer the converged state-bin copy, but first
+# deployment must fall back to the gate in the live checkout because launchd
+# can birth this wrapper before restart-services reaches convergence.
+host_tmux_gate_fail_loud() {
+  local rc="$1"
+  local bounded_run="${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh"
+  local meta_alert="${FLYWHEEL_META_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/meta-alert.sh}"
+  local reason="host_tmux_selection_gate_unavailable_bridge"
+  local title="Bridge host tmux selection gate unavailable"
+  local body="Host tmux selection gate failed with exit ${rc}; refusing to launch the Bridge until host selection authority is restored."
+  log "FAIL-LOUD [${reason}] ${title} — ${body}" >&2
+  if [ -x "$bounded_run" ] && [ -x "$meta_alert" ]; then
+    "$bounded_run" "${FLYWHEEL_META_ALERT_TIMEOUT_S:-15}" \
+      "$meta_alert" "$reason" "$title" "$body" >/dev/null 2>&1 || true
+  else
+    log "FAIL-LOUD notifier unavailable (bounded-run=${bounded_run}, meta-alert=${meta_alert})." >&2
+  fi
+}
+
+HOST_TMUX_GATE_DEFAULT="${FLYWHEEL_STATE_DIR}/bin/host-tmux-selection-gate.sh"
+HOST_TMUX_GATE_FALLBACK="${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh"
+HOST_TMUX_GATE_OVERRIDE="${FLYWHEEL_HOST_TMUX_GATE_BIN:-}"
+if [ -n "$HOST_TMUX_GATE_OVERRIDE" ]; then
+  HOST_TMUX_GATE_BIN="$HOST_TMUX_GATE_OVERRIDE"
+  case "$FLYWHEEL_STATE_DIR" in
+    /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) : ;;
+    *)
+      log "Host tmux gate override is not allowed for the production state root — refusing to launch the Bridge."
+      host_tmux_gate_fail_loud 126
+      exit 0
+      ;;
+  esac
+elif [ -f "$HOST_TMUX_GATE_DEFAULT" ] && [ ! -L "$HOST_TMUX_GATE_DEFAULT" ] \
+  && [ -x "$HOST_TMUX_GATE_DEFAULT" ]; then
+  HOST_TMUX_GATE_BIN="$HOST_TMUX_GATE_DEFAULT"
+else
+  HOST_TMUX_GATE_BIN="$HOST_TMUX_GATE_FALLBACK"
+fi
+unset HOST_TMUX_GATE_OVERRIDE
+# Fixture-only observation seams must never ride a sourced production .env.
+unset FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
+  FLYWHEEL_HOST_TMUX_POST_S1_PATH \
+  FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH \
+  FLYWHEEL_HOST_TMUX_FILE_BIN \
+  FLYWHEEL_HOST_TMUX_HOST_ID \
+  FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY \
+  FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH \
+  FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS
+HOST_TMUX_TARGET_SHA="$(/usr/bin/git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 2>/dev/null || true)"
+if [ -z "$HOST_TMUX_TARGET_SHA" ] && [ -f "${FLYWHEEL_STATE_DIR}/deployed-sha" ]; then
+  HOST_TMUX_TARGET_SHA="$(/bin/cat "${FLYWHEEL_STATE_DIR}/deployed-sha" 2>/dev/null || true)"
+fi
+if [ -z "$HOST_TMUX_TARGET_SHA" ] && [ -f "${FLYWHEEL_DIR}/.flywheel-build-sha" ] \
+  && [ ! -L "${FLYWHEEL_DIR}/.flywheel-build-sha" ]; then
+  HOST_TMUX_TARGET_SHA="$(/bin/cat "${FLYWHEEL_DIR}/.flywheel-build-sha" 2>/dev/null || true)"
+fi
+HOST_TMUX_GATE_RC=0
+FLYWHEEL_HOST_TMUX_TARGET_SHA="$HOST_TMUX_TARGET_SHA" \
+FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="keepalive:bridge" \
+FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/flywheel-bridge-wrapper.sh" \
+  "$HOST_TMUX_GATE_BIN" gate bridge || HOST_TMUX_GATE_RC=$?
+if [ "$HOST_TMUX_GATE_RC" -eq 0 ]; then
+  FLYWHEEL_HOST_TMUX_TARGET_SHA="$HOST_TMUX_TARGET_SHA" \
+  FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="keepalive:bridge" \
+  FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/flywheel-bridge-wrapper.sh" \
+    "$HOST_TMUX_GATE_BIN" verify bridge || HOST_TMUX_GATE_RC=$?
+fi
+if [ "$HOST_TMUX_GATE_RC" -ne 0 ]; then
+  log "Host tmux selection gate held or unavailable (exit ${HOST_TMUX_GATE_RC}) — refusing to launch the Bridge."
+  host_tmux_gate_fail_loud "$HOST_TMUX_GATE_RC"
+  exit 0
+fi
+
 # ── FLY-516: port preflight — guarantee :PORT is ours before binding ────────
 # Root-cures batch restart #2: an orphan Bridge stuck mid-close() keeps :9876
 # bound, so the launchd-respawned Bridge crash-loops on EADDRINUSE for ~30min.

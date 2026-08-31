@@ -44,6 +44,7 @@ cp -p "$REPO_ROOT/scripts/lib/fleet-sanitize.sh" "$ROOT/scripts/lib/fleet-saniti
 cat > "$ROOT/scripts/pkg-files.allow" <<'EOF'
 package.json
 .flywheel-prebuilt
+.flywheel-build-sha
 scripts/provision-fleet-host.sh
 EOF
 
@@ -51,6 +52,12 @@ EOF
 # neither row can clear a line it does not normalize-equal.
 printf 'scripts/provision-fleet-host.sh\tgit clone\tbroad clone row\nscripts/provision-fleet-host.sh\txrliAnnie/flywheel\tbroad slug row\n' \
   > "$ROOT/scripts/pkg-grep.allow"
+git -C "$ROOT" init -q
+git -C "$ROOT" config user.email "fixture@example.com"
+git -C "$ROOT" config user.name "Fixture"
+git -C "$ROOT" add .
+git -C "$ROOT" commit -qm "fixture"
+BUILD_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 
 # probe <label> <line(%b: \t and \\ interpreted)> <reject|pass> [must-detector: clone|slug|combo]
 #   reject → the run MUST fail AND the failure MUST be a gate④ "UNREGISTERED
@@ -63,6 +70,7 @@ probe() {
   local V="$SANDBOX/v"; rm -rf "$V"; mkdir -p "$V/scripts"
   printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$V/package.json"
   printf '%s\n' "$VER" > "$V/.flywheel-prebuilt"
+  printf '%s\n' "$BUILD_SHA" > "$V/.flywheel-build-sha"
   printf '#!/bin/bash\n' > "$V/scripts/provision-fleet-host.sh"
   printf '%b\n' "$line" >> "$V/scripts/provision-fleet-host.sh"
   local rc=0

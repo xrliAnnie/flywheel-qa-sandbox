@@ -14,8 +14,9 @@
 #      package.json — any version conflict FAILS the build (align by hand);
 #   4. run-bridge entry compiled to dist/run-bridge.js (imports rewritten from
 #      ../packages/<dir>/dist → ../node_modules/<name>/dist, types stripped);
-#   5. `.flywheel-prebuilt` sentinel (content = version) at the tree root —
-#      every packaged-mode runtime branch keys off this file;
+#   5. `.flywheel-prebuilt` sentinel (content = version) plus immutable
+#      `.flywheel-build-sha` source identity at the tree root — packaged-mode
+#      branches key off the sentinel and carrier receipts bind the source SHA;
 #   6. release security gates (also run standalone in CI): secret scan +
 #      explicit path allowlist snapshot + zero .ts/src/__tests__/doc/.git +
 #      the zero-repo-access invariant (no unregistered private-repo slug or
@@ -89,10 +90,13 @@ provision-fleet-host.sh
 daily-standup.sh
 flywheel-bridge-wrapper.sh
 flywheel-lead-wrapper-v2.sh
+flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
+flywheel-codex-lead-wrapper-codex-infra-bot.sh
 flywheel-lead-attach.sh
 flywheel-view-attach.sh
 flywheel-node-status.sh
 restart-storm-gate.py
+host-tmux-selection-gate.sh
 lead-alert.sh
 meta-alert.sh
 update-flywheel.sh
@@ -566,8 +570,17 @@ po_assemble() {
   local root="$1" tree="$2"
   command -v jq >/dev/null 2>&1 || { po_err "jq required"; return 1; }
   command -v node >/dev/null 2>&1 || { po_err "node required"; return 1; }
-  local version
+  local version build_sha
   version="$(po_release_version "$root")" || return 1
+  build_sha="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null)" \
+    || { po_err "cannot resolve source HEAD for packaged build identity"; return 1; }
+  if [ "${#build_sha}" -ne 40 ]; then
+    po_err "packaged build identity is not a 40-character source SHA"
+    return 1
+  fi
+  case "$build_sha" in
+    *[!0-9a-fA-F]*) po_err "packaged build identity is not hexadecimal"; return 1 ;;
+  esac
 
   rm -rf "$tree"
   mkdir -p "$tree/scripts" "$tree/.flywheel/agents" "$tree/node_modules"
@@ -685,7 +698,7 @@ po_assemble() {
       engines: { node: ">=20" },
       dependencies: ($deps | to_entries | sort_by(.key) | from_entries),
       bundleDependencies: ($bundle | sort),
-      files: ["scripts", ".flywheel", "dist", "node_modules", "vendor", ".flywheel-prebuilt", "LICENSE", "README.md"],
+      files: ["scripts", ".flywheel", "dist", "node_modules", "vendor", ".flywheel-prebuilt", ".flywheel-build-sha", "LICENSE", "README.md"],
       flywheelPackagesMirror: $mirror
     }' > "$tree/package.json" || return 1
 
@@ -694,6 +707,7 @@ po_assemble() {
 
   # 9. sentinel + license + readme.
   printf '%s\n' "$version" > "$tree/.flywheel-prebuilt"
+  printf '%s\n' "$build_sha" > "$tree/.flywheel-build-sha"
   cat > "$tree/LICENSE" <<'EOF'
 UNLICENSED — proprietary.
 
@@ -872,12 +886,18 @@ po_gate() {
   # a LEGAL DERIVATION of doc/VERSION's base (FLY-1062 PR4, B0-3: base itself
   # or base-beta.N — the default un-injected build still stamps the base, so
   # the old exact-equality behavior is a strict subset of this check).
-  local v_pkg v_sent v_doc
+  local v_pkg v_sent v_doc v_build expected_build
   v_pkg="$(jq -r '.version' "$tree/package.json" 2>/dev/null)"
   v_sent="$(tr -d '[:space:]' < "$tree/.flywheel-prebuilt" 2>/dev/null)"
   v_doc="$(po_version "$root")"
   if [ -z "$v_pkg" ] || [ "$v_pkg" != "$v_sent" ] || ! po_version_is_derivation "$v_doc" "$v_pkg"; then
     po_err "gate: version mismatch (package.json=$v_pkg sentinel=$v_sent doc/VERSION base=$v_doc; expect base or base-beta.N)"
+    fail=1
+  fi
+  v_build="$(tr -d '[:space:]' < "$tree/.flywheel-build-sha" 2>/dev/null)"
+  expected_build="$(git -C "$root" rev-parse --verify HEAD 2>/dev/null || true)"
+  if [ "${#v_build}" -ne 40 ] || [ "$v_build" != "$expected_build" ]; then
+    po_err "gate: packaged build identity mismatch (payload=$v_build source=$expected_build)"
     fail=1
   fi
   if [ "$fail" -eq 0 ]; then

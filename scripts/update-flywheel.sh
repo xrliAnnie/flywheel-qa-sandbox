@@ -135,6 +135,10 @@ default_deploy() {
     log "origin/main selects discord@flywheel-plugins but the live checker is still legacy — refusing to pull before the guarded FLY-1676 cutover"
     return 3
   fi
+  if ! updater_host_tmux_gate; then
+    log "host tmux selection gate refused the frozen target — no fast-forward attempted"
+    return 3
+  fi
   updater_merge_remote
   remote_rc=$?
   if (( remote_rc != 0 )); then
@@ -177,6 +181,40 @@ updater_restart_services() {
   FLYWHEEL_RESTART_FOREGROUND=1 "${SCRIPT_DIR}/restart-services.sh" --reason updater
 }
 updater_remote_sha() { git -C "$FLYWHEEL_DIR" rev-parse origin/main 2>/dev/null; }
+updater_host_tmux_gate() {
+  local target="" gate_bin="${FLYWHEEL_HOME}/bin/host-tmux-selection-gate.sh" rc=0
+  target="$(updater_remote_sha)" || return 2
+  updater_is_sha40 "$target" || return 2
+  if [[ ! -x "$gate_bin" ]]; then
+    gate_bin="${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh"
+  fi
+  [[ -f "$gate_bin" && ! -L "$gate_bin" && -x "$gate_bin" ]] || return 127
+  (
+    unset FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
+      FLYWHEEL_HOST_TMUX_POST_S1_PATH \
+      FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH \
+      FLYWHEEL_HOST_TMUX_FILE_BIN \
+      FLYWHEEL_HOST_TMUX_HOST_ID \
+      FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH \
+      FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS \
+      FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY \
+      FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR \
+      FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR
+    FLYWHEEL_STATE_DIR="$FLYWHEEL_HOME" \
+    FLYWHEEL_HOST_TMUX_TARGET_SHA="$target" \
+    FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="updater-fast-forward:$target" \
+    FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/update-flywheel.sh:before-ff" \
+      "$gate_bin" gate updater || rc=$?
+    if (( rc == 0 )); then
+      FLYWHEEL_STATE_DIR="$FLYWHEEL_HOME" \
+      FLYWHEEL_HOST_TMUX_TARGET_SHA="$target" \
+      FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="updater-fast-forward:$target" \
+      FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/update-flywheel.sh:before-ff" \
+        "$gate_bin" verify updater || rc=$?
+    fi
+    exit "$rc"
+  )
+}
 updater_merge_remote() {
   local target=""
   target="$(updater_remote_sha)" || return 2

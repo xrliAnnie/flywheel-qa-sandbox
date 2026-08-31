@@ -46,6 +46,7 @@ cp -p "$REPO_ROOT/scripts/lib/fleet-sanitize.sh" "$ROOT/scripts/lib/fleet-saniti
 cat > "$ROOT/scripts/pkg-files.allow" <<'EOF'
 package.json
 .flywheel-prebuilt
+.flywheel-build-sha
 scripts/provision-fleet-host.sh
 EOF
 
@@ -53,6 +54,12 @@ EOF
 # `git clone` substring for the customer-repo clone.
 printf 'scripts/provision-fleet-host.sh\tgit clone\tcustomer-repo-path (broad, as in production)\n' \
   > "$ROOT/scripts/pkg-grep.allow"
+git -C "$ROOT" init -q
+git -C "$ROOT" config user.email "fixture@example.com"
+git -C "$ROOT" config user.name "Fixture"
+git -C "$ROOT" add .
+git -C "$ROOT" commit -qm "fixture"
+BUILD_SHA="$(git -C "$ROOT" rev-parse HEAD)"
 
 # ── the payload tree under gate: a provision script whose allowlisted
 #    `git clone` line ALSO carries the PRIVATE flywheel slug ──
@@ -60,6 +67,7 @@ TREE="$SANDBOX/tree"
 mkdir -p "$TREE/scripts"
 printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$TREE/package.json"
 printf '%s\n' "$VER" > "$TREE/.flywheel-prebuilt"
+printf '%s\n' "$BUILD_SHA" > "$TREE/.flywheel-build-sha"
 cat > "$TREE/scripts/provision-fleet-host.sh" <<'SH'
 #!/bin/bash
 # customer repo clone line (legitimately allowlisted for the `git clone` substring)
@@ -79,6 +87,7 @@ run_gate() {
 BARE="$SANDBOX/bare"; mkdir -p "$BARE/scripts"
 printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$BARE/package.json"
 printf '%s\n' "$VER" > "$BARE/.flywheel-prebuilt"
+printf '%s\n' "$BUILD_SHA" > "$BARE/.flywheel-build-sha"
 printf '#!/bin/bash\n# ref: https://github.com/xrliAnnie/flywheel private\n' > "$BARE/scripts/provision-fleet-host.sh"
 if env PACKAGE_ONBOARD_SOURCED=1 \
      PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
@@ -110,6 +119,7 @@ variant_case() { # <label> <line>
   local V="$SANDBOX/variant"; rm -rf "$V"; mkdir -p "$V/scripts"
   printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$V/package.json"
   printf '%s\n' "$VER" > "$V/.flywheel-prebuilt"
+  printf '%s\n' "$BUILD_SHA" > "$V/.flywheel-build-sha"
   printf '#!/bin/bash\n%s\n' "$line" > "$V/scripts/provision-fleet-host.sh"
   if env PACKAGE_ONBOARD_SOURCED=1 \
        PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
@@ -140,6 +150,7 @@ printf 'scripts/provision-fleet-host.sh\trun git clone "https://github.com/${slu
 LEGIT="$SANDBOX/legit"; mkdir -p "$LEGIT/scripts"
 printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$LEGIT/package.json"
 printf '%s\n' "$VER" > "$LEGIT/.flywheel-prebuilt"
+printf '%s\n' "$BUILD_SHA" > "$LEGIT/.flywheel-build-sha"
 printf '#!/bin/bash\nrun git clone "https://github.com/${slug}.git" "$target"\n' > "$LEGIT/scripts/provision-fleet-host.sh"
 if env PACKAGE_ONBOARD_SOURCED=1 \
      PO_FILES_ALLOWLIST="$ROOT/scripts/pkg-files.allow" \
@@ -162,6 +173,7 @@ printf 'scripts/provision-fleet-host.sh\tgit clone\tbroad clone row\nscripts/pro
 COMBO="$SANDBOX/combo"; mkdir -p "$COMBO/scripts"
 printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$COMBO/package.json"
 printf '%s\n' "$VER" > "$COMBO/.flywheel-prebuilt"
+printf '%s\n' "$BUILD_SHA" > "$COMBO/.flywheel-build-sha"
 printf '#!/bin/bash\ngit clone https://github.com/xrliAnnie/flywheel.git "$PWD/private-flywheel"\n' \
   > "$COMBO/scripts/provision-fleet-host.sh"
 if env PACKAGE_ONBOARD_SOURCED=1 \
@@ -183,6 +195,7 @@ fi
 CONT="$SANDBOX/cont"; mkdir -p "$CONT/scripts"
 printf '{"name":"flywheel-onboard-payload","version":"%s","private":true}\n' "$VER" > "$CONT/package.json"
 printf '%s\n' "$VER" > "$CONT/.flywheel-prebuilt"
+printf '%s\n' "$BUILD_SHA" > "$CONT/.flywheel-build-sha"
 cat > "$CONT/scripts/provision-fleet-host.sh" <<'SH'
 #!/bin/bash
 git clone \

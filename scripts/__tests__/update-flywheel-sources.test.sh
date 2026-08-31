@@ -229,23 +229,59 @@ else
   fail "origin fetch lacks bounded one-shot and retry seams"
 fi
 
+# FLY-2190: a custom state root may not have converged the gate yet. The
+# updater must use the checked-out gate as its first-deploy fallback and pass
+# the configured state root through both the gate and verify calls.
+if declare -F updater_host_tmux_gate >/dev/null 2>&1; then
+  gate_calls="$TMP/updater-host-tmux-gate.calls"
+  mkdir -p "$FLYWHEEL_DIR/scripts"
+  cat > "$FLYWHEEL_DIR/scripts/host-tmux-selection-gate.sh" <<'EOF'
+#!/bin/bash
+printf '%s|%s|%s|%s\n' "$*" "${FLYWHEEL_STATE_DIR:-}" \
+  "${FLYWHEEL_HOST_TMUX_TARGET_SHA:-}" "${FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION:-}" \
+  >> "${UPDATER_HOST_TMUX_GATE_CALLS:?}"
+exit 0
+EOF
+  chmod +x "$FLYWHEEL_DIR/scripts/host-tmux-selection-gate.sh"
+  rm -f "$FLYWHEEL_HOME/bin/host-tmux-selection-gate.sh"
+  UPDATER_HOST_TMUX_GATE_CALLS="$gate_calls" updater_host_tmux_gate
+  fallback_rc=$?
+  rm -rf "$FLYWHEEL_DIR/scripts"
+  if [ "$fallback_rc" -eq 0 ] \
+    && grep -Fqx "gate updater|$FLYWHEEL_HOME|$SHA1|updater-fast-forward:$SHA1" "$gate_calls" \
+    && grep -Fqx "verify updater|$FLYWHEEL_HOME|$SHA1|updater-fast-forward:$SHA1" "$gate_calls"; then
+    pass "host tmux gate falls back to checkout and preserves a custom state root"
+  else
+    fail "host tmux checkout fallback missing (rc=$fallback_rc calls=$(cat "$gate_calls" 2>/dev/null))"
+  fi
+else
+  fail "updater lacks the host tmux gate seam"
+fi
+
 if declare -F updater_git_bounded >/dev/null 2>&1 \
   && declare -F updater_merge_remote >/dev/null 2>&1 \
+  && declare -F updater_host_tmux_gate >/dev/null 2>&1 \
   && declare -F updater_restart_services >/dev/null 2>&1; then
   deploy_path_calls="$TMP/default-deploy-path.calls"
   : > "$deploy_path_calls"
   saved_fetch="$(declare -f updater_fetch_origin)"
   saved_bounded_git="$(declare -f updater_git_bounded)"
   saved_merge_remote="$(declare -f updater_merge_remote)"
+  saved_host_tmux_gate="$(declare -f updater_host_tmux_gate)"
   saved_restart_services="$(declare -f updater_restart_services)"
   saved_pointer_guard="$(declare -f discord_pointer_cutover_required)"
   updater_fetch_origin() { printf 'fetch\n' >> "$deploy_path_calls"; }
   updater_git_bounded() { printf 'git|%s\n' "$*" >> "$deploy_path_calls"; }
   updater_merge_remote() { printf 'merge\n' >> "$deploy_path_calls"; }
+  updater_host_tmux_gate() { printf 'host-tmux-gate\n' >> "$deploy_path_calls"; }
   updater_restart_services() { printf 'restart\n' >> "$deploy_path_calls"; }
   discord_pointer_cutover_required() { return 1; }
   default_deploy >/dev/null 2>&1; rc=$?
   success_calls="$(cat "$deploy_path_calls")"
+  : > "$deploy_path_calls"
+  updater_host_tmux_gate() { printf 'host-tmux-gate\n' >> "$deploy_path_calls"; return 42; }
+  default_deploy >/dev/null 2>&1; gate_held_rc=$?
+  gate_held_calls="$(cat "$deploy_path_calls")"
   : > "$deploy_path_calls"
   updater_fetch_origin() { return 127; }
   default_deploy >/dev/null 2>&1; missing_deploy_rc=$?
@@ -253,19 +289,21 @@ if declare -F updater_git_bounded >/dev/null 2>&1 \
   eval "$saved_fetch"
   eval "$saved_bounded_git"
   eval "$saved_merge_remote"
+  eval "$saved_host_tmux_gate"
   eval "$saved_restart_services"
   eval "$saved_pointer_guard"
-  if [ "$rc" -eq 0 ] && [ "$(printf '%s\n' "$success_calls" | grep -c '^fetch$')" -eq 1 ] \
-    && [ "$(printf '%s\n' "$success_calls" | grep -c '^merge$')" -eq 1 ] \
+  if [ "$rc" -eq 0 ] \
+    && [ "$success_calls" = $'fetch\nhost-tmux-gate\nmerge\nrestart' ] \
     && ! printf '%s\n' "$success_calls" | grep -q '^git|' \
-    && [ "$(printf '%s\n' "$success_calls" | grep -c '^restart$')" -eq 1 ] \
+    && [ "$gate_held_rc" -eq 3 ] \
+    && [ "$gate_held_calls" = $'fetch\nhost-tmux-gate' ] \
     && [ "$missing_deploy_rc" -eq 127 ] && [ -z "$missing_deploy_calls" ]; then
-    pass "default deploy uses bounded fetch then a local frozen-SHA merge"
+    pass "default deploy gates the frozen target before merge and refuses held targets"
   else
-    fail "default deploy retained an unbounded/misclassified remote git path (rc=$rc calls=$success_calls missing=$missing_deploy_rc/$missing_deploy_calls)"
+    fail "default deploy host-tmux ordering drifted (rc=$rc calls=$success_calls held=$gate_held_rc/$gate_held_calls missing=$missing_deploy_rc/$missing_deploy_calls)"
   fi
 else
-  fail "default deploy lacks bounded-fetch/local-merge/restart seams"
+  fail "default deploy lacks bounded-fetch/host-gate/local-merge/restart seams"
 fi
 
 reset_case

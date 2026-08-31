@@ -628,6 +628,17 @@ jobs:
           bash scripts/__tests__/setup-prebuilt.test.sh
           bash scripts/__tests__/provision-prebuilt.test.sh
 
+      # FLY-2190 S0: the host-selection gate must stay fail-closed at every
+      # carrier/restart birth and must not leak its hermetic probes into the
+      # production state root. Keep the five public shell seams together.
+      - name: Test — FLY-2190 host tmux selection S0
+        run: |
+          bash scripts/__tests__/host-tmux-selection-census.test.sh
+          bash scripts/__tests__/host-tmux-selection-gate.test.sh
+          bash scripts/__tests__/host-tmux-selection-mounts.test.sh
+          bash scripts/__tests__/host-tmux-selection-restart-mounts.test.sh
+          bash scripts/__tests__/host-tmux-selection-s0-scope.test.sh
+
       # FLY-1501: the restart-storm brake and the launchd heartbeat guard are
       # the mechanisms that stop a production restart storm, so their contract
       # suites must not be hand-run only. The script-tests job enumerates files

@@ -8,6 +8,7 @@ package.json
 LICENSE
 README.md
 .flywheel-prebuilt
+.flywheel-build-sha
 dist/run-bridge.js
 .flywheel/agents/registry.yaml
 .flywheel/agents/nodes/eng_design.md
@@ -30,10 +31,13 @@ scripts/provision-fleet-host.sh
 scripts/daily-standup.sh
 scripts/flywheel-bridge-wrapper.sh
 scripts/flywheel-lead-wrapper-v2.sh
+scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
+scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 scripts/flywheel-lead-attach.sh
 scripts/flywheel-view-attach.sh
 scripts/flywheel-node-status.sh
 scripts/restart-storm-gate.py
+scripts/host-tmux-selection-gate.sh
 scripts/lead-alert.sh
 scripts/meta-alert.sh
 scripts/update-flywheel.sh

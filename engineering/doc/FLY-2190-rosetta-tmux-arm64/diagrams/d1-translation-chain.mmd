@@ -1,0 +1,29 @@
+flowchart TB
+    subgraph now["今天的启动链 —— 为什么整条链都在翻译层"]
+        direction TB
+        LD["launchd<br/>(系统自带，原生 arm64)"]
+        TMUX["/usr/local/bin/tmux 3.5a<br/>只有 Intel 版，必须靠 Rosetta 翻译"]
+        SH["/bin/zsh · /bin/bash<br/>两种版本都有，跟着父进程走"]
+        PY["/usr/local/bin/python3<br/>只有 Intel 版 → 又一次翻译"]
+        ND["/opt/homebrew/bin/node<br/>只有 arm64 版 → 无法翻译，只能原生跑"]
+
+        LD -->|"启动"| TMUX
+        TMUX -->|"派生，并把「用 Intel 模式」这个偏好传下去"| SH
+        SH -->|"PATH 先命中 Intel 那个"| PY
+        SH -->|"没有 Intel 版可选"| ND
+    end
+
+    TMUX -.->|"翻译中"| R1(["Rosetta"])
+    SH -.->|"翻译中"| R1
+    PY -.->|"翻译中"| R1
+    ND -.->|"逃过翻译<br/>最贵的那部分没受影响"| OK(["原生运行"])
+
+    classDef translated fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+    classDef native fill:#e3f9e9,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+    classDef neutral fill:#ffffff,stroke:#86868b,stroke-width:1.5px,color:#1d1d1f
+    classDef rosetta fill:#fff4e0,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+
+    class TMUX,PY translated
+    class ND,OK native
+    class LD,SH neutral
+    class R1 rosetta

@@ -51,8 +51,11 @@ else
 fi
 
 closure_ok=1
-for f in restart-storm-gate.py lib/bounded-run.sh meta-alert.sh lead-alert.sh \
-  flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh flywheel-view-attach.sh \
+for f in restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh meta-alert.sh lead-alert.sh \
+  flywheel-lead-wrapper-v2.sh \
+  flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+  flywheel-codex-lead-wrapper-codex-infra-bot.sh \
+  flywheel-lead-attach.sh flywheel-view-attach.sh \
   flywheel-node-status.sh lib/lead-address.sh; do
   [ -x "$PACKAGED_ASSEMBLY/scripts/$f" ] || closure_ok=0
 done
@@ -76,7 +79,7 @@ mk_tree() {
   fi
   for f in flywheel-bridge-wrapper.sh flywheel-lead-wrapper-v2.sh daily-standup.sh \
            update-flywheel.sh converge-flywheel-bin.sh linux-preflight.sh \
-           launchd-census.sh restart-storm-gate.py meta-alert.sh lead-alert.sh \
+           launchd-census.sh restart-storm-gate.py host-tmux-selection-gate.sh meta-alert.sh lead-alert.sh \
            flywheel-view-attach.sh flywheel-node-status.sh; do
     cp -p "$REPO_ROOT/scripts/$f" "$dir/scripts/$f"
   done
@@ -121,6 +124,9 @@ calls() { cat "$1/calls.log" 2>/dev/null || true; }
 run_bridge_wrapper() { # <tree> <home>
   local tree="$1" h="$2"
   rm -f "$tree/scripts/lib/bridge-port.sh"
+  mkdir -p "$h/.flywheel/bin"
+  printf '%s\n' '#!/bin/bash' 'exit 0' > "$h/.flywheel/bin/host-tmux-selection-gate.sh"
+  chmod +x "$h/.flywheel/bin/host-tmux-selection-gate.sh"
   env -i HOME="$h" PATH="/usr/bin:/bin" FLYWHEEL_DIR="$tree" \
     FLYWHEEL_STATE_DIR="$h/.flywheel" \
     FLYWHEEL_BRIDGE_LOG_PATH="$h/bridge-main.log" \
@@ -331,9 +337,11 @@ echo "gitdir: /main/.git/worktrees/s7-fixture" > "$T/.git"
 # dependencies (both ship in a packaged tree — see the S0 closure check above),
 # so steady state now has to include them or this case counts their repairs.
 mkdir -p "$H/.flywheel/bin/lib"
-for f in flywheel-lead-wrapper-v2.sh flywheel-lead-attach.sh \
+for f in flywheel-lead-wrapper-v2.sh \
+  flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+  flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh \
   flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh \
-  restart-storm-gate.py lib/bounded-run.sh lib/lead-address.sh; do
+  restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh; do
   cp -p "$T/scripts/$f" "$H/.flywheel/bin/$f"; chmod 555 "$H/.flywheel/bin/$f"
 done
 run_converge "$T" "$H"; rc=$?
