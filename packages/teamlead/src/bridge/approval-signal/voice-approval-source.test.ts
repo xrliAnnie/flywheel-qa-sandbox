@@ -40,6 +40,19 @@ describe("evaluateVoiceSource — §14 c-tier voice signal (no classifier, ever)
 		}
 	});
 
+	it("normalizes ASR punctuation, spacing, and adjacent oral repetition", () => {
+		for (const text of ["确认认。", "对对", "确，认", "确 认"]) {
+			expect(
+				evaluateVoiceSource({ gate: GATE, utterance: utter(text) })?.kind,
+			).toBe("approve");
+		}
+		for (const text of ["不批批。", "取消消", "不不对"]) {
+			expect(
+				evaluateVoiceSource({ gate: GATE, utterance: utter(text) })?.kind,
+			).toBe("reject");
+		}
+	});
+
 	it("DENY words → reject", () => {
 		for (const text of ["不对", "取消", "不批"]) {
 			expect(
@@ -54,6 +67,9 @@ describe("evaluateVoiceSource — §14 c-tier voice signal (no classifier, ever)
 			"ship 吧",
 			"确认一下再说",
 			"好的确认",
+			"不确认",
+			"确认吗?",
+			"先别确认",
 			"",
 		]) {
 			expect(
