@@ -1,0 +1,62 @@
+<svg id="FLY-2031-d4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 760" role="img" aria-labelledby="d4-title d4-desc">
+  <title id="d4-title">Raya voice 文件与权限边界</title>
+  <desc id="d4-desc">Codex 配置了 code、memory 与 proposal outbox 写边界，P1b 外部 host exact canary 已证明实际写入；voice state 与 bot 文字收据才是动作结果权威；approval credential 另由管理员 deny-read 并在启动时探针验证。</desc>
+  <defs>
+    <marker id="d4-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#475569"/></marker>
+    <style>
+      .bg{fill:#fff}.group{rx:20;stroke-width:2}.write{fill:#eef6ff;stroke:#60a5fa}.state{fill:#f0fdf4;stroke:#4ade80}.secret{fill:#fff7ed;stroke:#fb923c}.process{fill:#f8fafc;stroke:#64748b;stroke-width:2;rx:14}.node{fill:#fff;stroke:#94a3b8;stroke-width:1.5;rx:12}.title{font:700 23px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#0f172a}.subtitle{font:600 17px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#334155}.body{font:15px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#334155}.small{font:13px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#475569}.line{fill:none;stroke:#475569;stroke-width:2;marker-end:url(#d4-arrow)}.dash{stroke-dasharray:7 6}.deny{stroke:#dc2626;stroke-width:3}.denyText{font:700 14px -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;fill:#b91c1c}
+    </style>
+  </defs>
+  <rect class="bg" width="1200" height="760"/>
+  <text class="title" x="36" y="42">写入能力单独实证；动作结果仍不由 speech 证明</text>
+
+  <rect class="process" x="36" y="82" width="220" height="90"/>
+  <text class="subtitle" x="146" y="117" text-anchor="middle">后台 Codex</text>
+  <text class="body" x="146" y="145" text-anchor="middle">workspace-write 沙箱</text>
+
+  <rect class="process" x="36" y="322" width="220" height="90"/>
+  <text class="subtitle" x="146" y="357" text-anchor="middle">Raya 语音进程</text>
+  <text class="body" x="146" y="385" text-anchor="middle">校验 · 回执 · Discord / Bridge</text>
+
+  <rect class="group write" x="310" y="82" width="360" height="330"/>
+  <text class="subtitle" x="334" y="116">Codex writable roots</text>
+  <text class="small" x="334" y="142">配置授权这些 roots；P1b host exact-disk PASS</text>
+  <rect class="node" x="338" y="170" width="304" height="58"/>
+  <text class="body" x="490" y="205" text-anchor="middle">Raya code</text>
+  <rect class="node" x="338" y="246" width="304" height="58"/>
+  <text class="body" x="490" y="281" text-anchor="middle">IDENTITY.md / MEMORY.md</text>
+  <rect class="node" x="338" y="322" width="304" height="66"/>
+  <text class="body" x="490" y="350" text-anchor="middle">outbox/*.action.json</text>
+  <text class="small" x="490" y="372" text-anchor="middle">284-byte exact canary · commandExecution exit 0</text>
+
+  <rect class="group state" x="714" y="82" width="450" height="450"/>
+  <text class="subtitle" x="738" y="116">Voice state：不在 writable roots</text>
+  <text class="small" x="738" y="142">合同保证 Codex 不可写；不把它夸大成不可读</text>
+  <rect class="node" x="742" y="170" width="394" height="58"/>
+  <text class="body" x="939" y="205" text-anchor="middle">voice-inbox/items.jsonl · acks.jsonl</text>
+  <rect class="node" x="742" y="246" width="394" height="58"/>
+  <text class="body" x="939" y="281" text-anchor="middle">receipts.jsonl + #raya bot 文字 · 权威结果</text>
+  <rect class="node" x="742" y="322" width="394" height="58"/>
+  <text class="body" x="939" y="357" text-anchor="middle">voice-filter.json · 筛选规则</text>
+  <rect class="node" x="742" y="398" width="394" height="58"/>
+  <text class="body" x="939" y="433" text-anchor="middle">voice-leads.json · Lead 通讯录</text>
+  <text class="small" x="939" y="493" text-anchor="middle">speech 只作旁白；不反向生成账本或 bot messageId</text>
+
+  <rect class="group secret" x="310" y="570" width="854" height="150"/>
+  <text class="subtitle" x="334" y="607">Approval credential：额外的读取边界</text>
+  <text class="body" x="334" y="638">owner-only regular file · workspace 外 · /etc/codex/requirements.toml 精确 deny_read</text>
+  <text class="body" x="334" y="670">每次启用批准面前：普通 memory control 必须可读，credential 必须 Permission denied；否则零外部副作用</text>
+  <text class="denyText" x="146" y="655" text-anchor="middle">Codex 读取必须失败</text>
+  <path class="deny" d="M124 620 L168 664 M168 620 L124 664"/>
+
+  <path class="line" d="M256 126 L338 196"/>
+  <path class="line" d="M256 142 L338 274"/>
+  <path class="line" d="M256 158 L338 354"/>
+  <path class="line dash" d="M642 354 L742 278"/>
+  <path class="line" d="M256 366 L742 199"/>
+  <path class="line" d="M256 382 L742 278"/>
+  <path class="line" d="M256 398 L742 351"/>
+  <path class="line" d="M714 492 L256 404"/>
+  <path class="line" d="M738 570 L242 412"/>
+  <text class="small" x="486" y="472" text-anchor="middle">中性旁白给 Codex；请人查看 #raya / 目标频道文字收据</text>
+</svg>

@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2031 随身语音(B):常开流 + 念读筛选 + 用嘴批 ship — 设计方案(founder 审阅版)</title>
+<style>
+  :root { --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height:1.65; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 80px; }
+  h1 { font-size:25px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:19px; margin:0 0 10px; color:var(--navy); }
+  h3 { font-size:15px; margin:14px 0 6px; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  .mono { font-family:"SF Mono", Menlo, monospace; font-size:12.5px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:0 0 18px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); } .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); } .card.gray { border-left-color:var(--dim); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#eef; color:var(--blue); margin-right:6px; vertical-align:middle; }
+  .badge.red { background:#ffe5e3; color:var(--red);} .badge.amber { background:#fff1dc; color:#b36b00;} .badge.green { background:#e3f8e9; color:#1f7a3a;} .badge.purple { background:#f3e6fb; color:var(--purple);} .badge.gray { background:#eee; color:#555;}
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 6px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #eee; border-radius:10px; padding:10px; margin:10px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .diagram.wide svg { width:1400px; max-width:none; }
+  .diagram.wide { position:relative; }
+  .diagram.wide::after { content:"← 图较宽,可左右拖动 →"; position:absolute; right:12px; top:6px; font-size:11px; color:#86868b; }
+  .term { border-bottom:1px dotted var(--dim); }
+  .note { font-size:13px; color:#444; background:#fafafa; border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .note.warn { background:#fff7e6; } .note.ok { background:#eefbf1; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:var(--navy); color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#e8e8ed; color:var(--text); }
+  .status { font-size:12.5px; color:var(--dim); margin-left:6px; }
+  ul { padding-left:20px; margin:6px 0; } li { margin:3px 0; }
+  @media (max-width:640px) { h1 { font-size:21px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>随身语音(B):它主动念给你听,你用嘴指挥</h1>
+  <div class="meta">
+    <span class="badge purple">FLY-2031</span><span class="badge gray">实现中 · P1b 能力已过</span><span class="badge gray">2026-08-28</span><br>
+    规格来源:FLY-1850 PRD v1.0(§5 已定行为 + §3 硬约束)· 代码落点:raya 仓 <span class="mono">apps/voice</span> · 与 FLY-2030(大脑)并行,接口已预留<br>
+    这一页是给你审的:每一节下面都有意见框,写完到页底一键汇总复制。<b>汇总只是修改意见,不代表通过。</b>
+  </div>
+
+  <!-- ===== 1 一句话 ===== -->
+  <section class="card green" data-section="1 一句话">
+    <h2>1 · 一句话</h2>
+    <p>目标体验是:你戴着耳机进语音房,它<b>主动</b>把「要你决定的 + 要汇报的」念给你;你说一句,它<b>先念回单号/名字再动手</b>;你说「确认」,请求走和文字批准<b>同一道门</b>。后台 proposal 已用随机磁盘文件真写通过,但筛选保存、偏好保存和转达还要等 FLY-2030 + founder 真声做产品验收；用嘴批 ship 走另一条 inbox 路,仍等 2030 与批准密钥 deny-read,不冒充可用。</p>
+    <div class="comment"><label>这一节的意见(自动保存在你本机)</label><textarea data-k="s1" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 2 你会体验到什么 ===== -->
+  <section class="card" data-section="2 你会体验到什么">
+    <h2>2 · 你会体验到什么(五件事,全部来自你已定的 PRD)</h2>
+    <table>
+      <tr><th>你说过的</th><th>做出来是什么样</th></tr>
+      <tr><td>「只要我一进语音模式…他是一定要主动开口的」(§5.1)</td><td>一进房它就开口:「现在是什么情况 + 哪些要你决定」。要决定的先念;一次念不完会说「还有 N 条,我接着念」并自动续上,不会悄悄吞掉</td></tr>
+      <tr><td>「一开始他会把所有信息都给我…我们可以慢慢减少」(§5.2/5.3)</td><td>默认全念。目标是你随口一句「这类不用告诉我」,它记成一条规则(落在固定路径的规则文件里,模型改不了权威文件)。后台 proposal 写能力已过；完整保存/下场少念仍待真人验收</td></tr>
+      <tr><td>「它如果一小时都不跟我讲话,我就会担心它是不是坏了」(§5.4)</td><td>静太久它会自己出声报平安。多久算「太久」<b>不是拍死的数</b>:你说「别这么频繁」它就改,这个数等你用出来</td></tr>
+      <tr><td>「listening 转写那套…你可能也得做一个判断呀」(§5.5)</td><td>目标是你对某个 Lead 说的话,它整理后<b>发成 Discord 文字</b>,消息里附你的原话转写和可核 messageId。proposal 写能力已过；整条外发链仍待 founder 真声验收</td></tr>
+      <tr><td>「用嘴批 ship 继续算数?」——「yes」(§5.7)</td><td>目标是它念:「FLY-xxxx 的 PR #964 在等 ship 批准」;你说「确认」→ 先落书面回执,再送进 Flywheel 的批准通道。<b>门还是那道门</b>。这条走 FLY-2030 的 ship_gate inbox,不依赖 proposal outbox；当前卡在 2030 未落地与批准密钥 deny-read 尚未授权,因此不跑、不声称已批</td></tr>
+    </table>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s2" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 3 核心流程 ===== -->
+  <section class="card" data-section="3 核心流程">
+    <h2>3 · 核心流程:一进一出</h2>
+    <p>上面一条链是「念给你听」:大脑(FLY-2030,另一张单)把该你知道的写进<b>语音收件箱</b>(一个只追加的清单文件),语音进程过一遍筛选规则,把该念的交给 <span class="term" title="OpenAI 的编程代理,自带实时语音能力">Codex</span> 念出来。下面一条链是「你说话」:后台先把 proposal 写成文件,再由<b>代码</b>核对、念回、落地。proposal exact-disk 能力已在 Runner 外隔离 host 通过；图里的端到端行为仍待 2030 + founder 验收。</p>
+    <div class="diagram wide">{{D1}}</div>
+    <div class="note">「常开流」这个硬前提(没声音也要一直送静音帧,不能停)<b>上一单已经做好了</b>,本单不改它 —— 只在真实房间里把「你自己闭麦很久再开口,它还活着」这一格验掉(之前恰好没测过这格)。</div>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s3" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 4 念回编号的门 ===== -->
+  <section class="card amber" data-section="4 动手前念回编号">
+    <h2>4 · 动手前念回编号/名字 —— 为什么是「门」不是「提示词」</h2>
+    <p>你定过:只有「要去动某张单、某个人、某个仓库」之前才念,其余一律不念;而且要念<b>你说的原词</b>,不是它改写后的版本。做法上这不是叮嘱模型一句,而是代码里的一道门:</p>
+    <div class="diagram">{{D2}}</div>
+    <ul>
+      <li><b>核对不由说话的一方做</b>:模型提案里的单号,必须逐字出现在你的<span class="term" title="语音转文字(ASR)的文本记录">转写</span>里,由语音进程核 —— 模型自己念自己写的号,那是表演不是核对(PRD §5.6.4)。</li>
+      <li><b>「转告了」不能靠嘴证明</b>:任何 speech、<span class="mono">[BACKEND]</span> 或系统播报都可能被模型仿写。只认目标频道消息、<span class="mono">#raya</span> 的 bot 文字收据、Discord messageId 与权威账本;语音只作旁白。</li>
+      <li>这道门<b>只验「听没听对」,不验「理解对不对」</b>:号听对了但挂错单,这门抓不到 —— 你已定「先跑一阵,真的多次转达错再修」(§6.3),照办。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s4" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 5 用嘴批 ship ===== -->
+  <section class="card red" data-section="5 用嘴批 ship">
+    <h2>5 · 用嘴批 ship —— 走既有的那道门</h2>
+    <p>Flywheel 的 <span class="term" title="Flywheel 的中枢服务,管理 runner 会话和 founder 批准">Bridge</span> 早就留好了语音批准入口(先书面回执 → 校验绑定 → 校验你的身份 → 只认「确认/对/不对/取消/不批」这几个词 → 才写入),写入和你打字批准用的是<b>同一段代码</b>。本单只做「送信端」:</p>
+    <div class="diagram">{{D3}}</div>
+    <ul>
+      <li><b>「念的」和「写的」必须是同一张卡</b>:念之前先向 Bridge 现查这张卡、只念它回的 issue/PR;你说确认后<b>再查一次</b>,两次不一致就作废重念 —— 防「念 B 批 A」的错单。</li>
+      <li><b>「确认」这个词不经过模型</b>:语音进程直接取你的转写原文和说话人身份送给 Bridge —— 模型既不能替你说确认,也不能把确认挂到别的单上。</li>
+      <li><b>确认词只跟刚才那次 ship 提问</b>:它念完 ship 单号后,只认你紧接着说的第一句话；期间只要它又念了别的问题、或你先说了其它话,这次武装立即作废并留记录。后面一句裸「对/确认」不会跨问题误批,必须等它重新念 ship 单号。</li>
+      <li>Bridge 说「评审还没绿」就念「这次批不生效」;但这段语音仍只是旁白,<b>最终只认回执卡、bot 文字与 Bridge audit,它永远不自己编「已 ship」</b>。</li>
+      <li><b>回执卡只发进核验过的频道</b>:发卡前它会真的去查「这张 ship 卡确实在这个频道里」—— 这需要给 Raya bot 补一个<b>只读历史</b>权限(ReadMessageHistory),到时要你用新链接重新授权一次(一次性,Tadashi 会准备好)。</li>
+      <li>这一格是<b>可选适配器</b>:Raya 是独立产品(你定的:假设使用者没有 flywheel 仓库),只通过一个网址+独立密钥文件接 Bridge;密钥不放在 Codex 可读的环境文件里。启动批准面前,Raya 会用真正的 Codex 沙箱做双探针:普通记忆文件必须读得到,密钥文件必须被拒读;少 host 权限或探针不过就明说「语音批准不可用」,其余四件照常。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s5" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 6 文件与结构 ===== -->
+  <section class="card purple" data-section="6 文件与结构">
+    <h2>6 · 谁能写什么 —— 权限即结构</h2>
+    <p>四块边界,不要混成一句「模型碰不到」:<b>code / 记忆仓 / proposal outbox</b>是 Codex writable roots；配置之外,P1b 又在 Runner 外隔离 host 真写出 284-byte exact canary。Runner 内首轮因嵌套 sandbox 失败的反例也保留。<b>状态目录</b>不在 writable roots,所以 Codex 改不了收件箱、筛选规则、Lead 通讯录与权威账本。终态由语音进程先落账,再由 Raya bot 在 <span class="mono">#raya</span> 发文字收据;speech 只旁白。<b>批准密钥</b>另放 owner-only 文件,再由 host 管理员策略禁止读取,而且每次启用前现场探针证明。</p>
+    <div class="diagram">{{D4}}</div>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s6" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 7 取舍 ===== -->
+  <section class="card" data-section="7 关键取舍">
+    <h2>7 · 关键取舍与被否掉的路</h2>
+    <table>
+      <tr><th>选了</th><th>没选(为什么)</th><th>选择的代价(如实)</th></tr>
+      <tr><td>大脑→文件清单→语音进程</td><td>语音进程自己去读 Discord(抢了大脑的活,两个脑子)</td><td>大脑那张单(2030)还没落地,验收先用假数据喂清单,<b>内容是假的、界面是真的</b>,会如实标注</td></tr>
+      <tr><td>所有「要它开口」走 Codex 的文字注入口</td><td>自己造提示音/TTS(你定过:耳朵嘴巴都归 Codex)</td><td>系统播报语义 P1 已用真 realtime 通过:它会转述而不代答。但 speech 仍不具动作授权力</td></tr>
+      <tr><td>outbox 动作 = 模型写 proposal + 代码写 state / bot 文字收据</td><td>让模型自己发 Discord(「已转告」会变成它自说自话)</td><td>P1b host exact-disk 已过；仍有文件轮询延迟，完整 relay/filter/pref 要在真人界面验。ship 是独立 inbox 路,另需 host 管理员策略 + 每次启动探针</td></tr>
+      <tr><td>存活信号由代码定时器触发</td><td>靠模型自觉(「它没说话」和「它死了」会同形 —— 正是你要防的)</td><td>默认间隔是占位数,<b>不是你给的</b>,等你用起来再调,一句话就能改</td></tr>
+      <tr><td>筛选规则 = 状态目录里的结构化文件 + 代码执行</td><td>写进记忆散文靠模型记得(没法验证它真的少念了);放模型可写的仓(它能自己改规则让某类事静默消失 —— 评审第 1 轮堵掉的洞)</td><td>你那句话怎么变成规则是模型判断的,判错了规则文件路径固定,你/运营者能直接看直接删</td></tr>
+    </table>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s7" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 8 诚实边界 ===== -->
+  <section class="card gray" data-section="8 诚实边界">
+    <h2>8 · 诚实边界 —— 这个设计做什么、不做什么</h2>
+    <h3>目标范围(本单五件；不等于目前已验收)</h3>
+    <ul><li>进房主动念积压 + 会话中新事照念(全给、分批、明说「还有 N 条」)</li><li>「这个不用告诉我」→ 长出筛选规则</li><li>真机验常开流(含你闭麦那格)+ 存活信号机制</li><li>你的话 → 核对念回 → Discord 文字落地</li><li>用嘴批 ship(接既有阶梯)</li></ul>
+    <h3>刻意不做(PRD 留空,不替你填)</h3>
+    <ul><li><b>打断</b>:v2 是回合制,它说话时不听 —— 你已裁「交给工程实施时判定」;本单按「它念完才听得见你」设计</li><li><b>存活信号的间隔数值 / 筛选的终点标准 / 挂错单兜底</b>:等你用起来;所有数字都是可改配置</li><li>状态吸收、追问、身份内容(FLY-2030)· 多人会议(FLY-1851)· 转写字幕上屏 · 掉线自动重连(你否掉的,不复活)</li></ul>
+    <h3>已知的洞(交付时会带着,不假装没有)</h3>
+    <ul>
+      <li>播报注入的语义探针 P1 已通过；但 FLY-2030 状态吸收尚未 merge,所以真实内容念读仍未完成最终联调</li>
+      <li><b>P1b exact-disk 已通过</b>:Runner 内首轮被嵌套 sandbox 拦截；Lead 在 Runner 外同围栏原样执行,后台 commandExecution exit 0，磁盘 exact canary 284 bytes，场后已清理。它只证明 proposal 写能力,不替代筛选/转达真人验收。用嘴批 ship 走独立的 <span class="mono">ship_gate</span> inbox 路径,仍卡在 FLY-2030 与批准密钥 deny-read 两道自己的硬门</li>
+      <li>Lead 那一侧<b>认不认</b> Raya 转达的指令,是 Flywheel 侧的策略,不在 Raya 里 —— 本单保证的是你的话以可核的形状落在你能看见的地方</li>
+      <li>你说「不对」要等它念完那句才有效(回合制);转达是可逆的(能再发更正),批 ship 根本不靠这个窗口(必须精确词)</li>
+      <li>崩溃/换场后没念完的条目下一场会<b>重播</b>(宁可重复念,不可吞掉);极端崩溃窗口里一条转达可能「发没发出去不确定」—— 那时<b>不自动重发</b>,会如实说,你再说一遍即可</li>
+      <li>验收在语音测试房 <b>voice-test-2</b> 做(你定的:测试不占 General),会有至少一轮<b>真人声</b>(合成音验不出真转写错误 —— 1911 的教训),排期和谁出声由 Tadashi 定</li>
+      <li>用嘴批 ship 那格还多一个硬前提:host 必须装好 Codex 管理员 deny-read requirement,而且当场探针证明「普通文件可读、批准密钥不可读」;否则这格不跑、不以 0600 env 代替</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s8" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 汇总 ===== -->
+  <section class="card summary" data-section="9 意见汇总">
+    <h2>9 · 意见汇总</h2>
+    <p>下面自动汇总你在各节写的意见;复制出来的文本第一行是固定标记 <span class="mono">【页面意见汇总】FLY-2031</span>,直接发给 Tadashi 即可。</p>
+    <pre id="agg">(还没有意见)</pre>
+    <div id="chunks"></div>
+    <button class="btn" id="copyAll" type="button">复制全部意见</button><span class="status" id="copyStatus"></span>
+  </section>
+
+  <div class="meta">FLY-2031 · 设计稿 · 图为本地 Mermaid 预渲染 SVG,页面零外部依赖</div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARK = "【页面意见汇总】FLY-2031";
+  var PFX;
+  try { PFX = "fly2031:" + location.pathname + ":"; } catch (e) { PFX = "fly2031:unknown:"; }
+  function lsGet(k) { try { return localStorage.getItem(PFX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PFX + k, v); } catch (e) {} }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+  function sectionTitle(el) {
+    var s = el.closest("section");
+    return (s && s.getAttribute("data-section")) || "未命名节";
+  }
+  function aggregate() {
+    var parts = [MARK];
+    areas.forEach(function (a) {
+      var v = a.value.trim();
+      if (v) parts.push("〔" + sectionTitle(a) + "〕\n" + v);
+    });
+    return parts.length > 1 ? parts.join("\n\n") : "";
+  }
+  var agg = document.getElementById("agg");
+  var chunksBox = document.getElementById("chunks");
+  function renderChunks(text) {
+    while (chunksBox.firstChild) chunksBox.removeChild(chunksBox.firstChild);
+    if (!text || text.length <= 1800) return;
+    var body = text.slice(MARK.length).replace(/^\n+/, "");
+    var pieces = [];
+    var budget = 1700;
+    while (body.length > 0) { pieces.push(body.slice(0, budget)); body = body.slice(budget); }
+    pieces.forEach(function (p, i) {
+      var d = document.createElement("div");
+      d.className = "chunk";
+      var b = document.createElement("button");
+      b.className = "btn secondary"; b.type = "button";
+      b.textContent = "复制分段 " + (i + 1) + "/" + pieces.length;
+      var st = document.createElement("span"); st.className = "status";
+      b.addEventListener("click", function () {
+        copyText(MARK + "(" + (i + 1) + "/" + pieces.length + ")\n\n" + p, st);
+      });
+      d.appendChild(b); d.appendChild(st); chunksBox.appendChild(d);
+    });
+  }
+  function refresh() {
+    var t = aggregate();
+    agg.textContent = t || "(还没有意见)";
+    renderChunks(t);
+  }
+  areas.forEach(function (a) {
+    a.value = lsGet(a.getAttribute("data-k"));
+    a.addEventListener("input", function () {
+      lsSet(a.getAttribute("data-k"), a.value);
+      refresh();
+    });
+  });
+  function fallbackCopy(text, st) {
+    var ta = document.createElement("textarea");
+    ta.value = text; ta.setAttribute("readonly", "");
+    ta.style.position = "fixed"; ta.style.left = "-9999px";
+    document.body.appendChild(ta); ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    st.textContent = ok ? "已复制 ✓" : "复制失败,请手动全选上面的文本";
+  }
+  function copyText(text, st) {
+    st.textContent = "";
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { st.textContent = "已复制 ✓"; },
+        function () { fallbackCopy(text, st); });
+    } else { fallbackCopy(text, st); }
+  }
+  var copyStatus = document.getElementById("copyStatus");
+  document.getElementById("copyAll").addEventListener("click", function () {
+    var t = aggregate();
+    if (!t) { copyStatus.textContent = "还没有写任何意见"; return; }
+    copyText(t, copyStatus);
+  });
+  refresh();
+})();
+</script>
+</body>
+</html>

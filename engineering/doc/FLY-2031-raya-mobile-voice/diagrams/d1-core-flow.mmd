@@ -1,0 +1,9 @@
+flowchart LR
+  BR["大脑吸收状态<br/>(FLY-2030)"] -->|"写清单"| VI["语音收件箱<br/>items.jsonl"] --> FL["筛选规则<br/>她说一声长出来"] -->|该念的| SP["播报器"] --> RT["Codex 实时语音"] --> HER(("她·耳机"))
+  HER2(("她说一句")) --> RT2["Codex 听+理解"] -->|提案写文件| OB["动作出件箱"] --> GATE["念回编号/名字<br/>核对转写原词"]
+  GATE -->|无异议| DS["发 Discord 文字<br/>Lead 频道"]
+  GATE -->|她说“确认”| SHIP["ship 批准通道<br/>Flywheel Bridge"]
+  style HER fill:#e3f8e9,stroke:#34c759
+  style HER2 fill:#e3f8e9,stroke:#34c759
+  style GATE fill:#fff1dc,stroke:#ff9500
+  style SHIP fill:#ffe5e3,stroke:#ff3b30

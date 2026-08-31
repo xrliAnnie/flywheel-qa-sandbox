@@ -1,0 +1,52 @@
+{
+	"schemaVersion": 1,
+	"recordedAt": "2026-08-29T06:54:03Z",
+	"scope": "FLY-2031 QA-only founder round baseline",
+	"git": {
+		"head": "4915d0b263aaa4ef8e2a6e4f3c30ae1ad8d34fce",
+		"originMain": "bb9656f22736c02f93cc378ac39dfc128b4ec8b7"
+	},
+	"runtime": {
+		"node": "v25.6.1",
+		"pnpm": "10.13.1",
+		"launchdLabel": "com.xrli.raya.voice.fly2031.qa",
+		"launchdPid": 10135,
+		"launchdState": "running",
+		"voiceChannelId": "1542708795720081408",
+		"loopbackApprovalEndpoint": "http://127.0.0.1:18731/api/voice",
+		"loopbackUnauthenticatedHttpStatus": 401
+	},
+	"approvalCredential": {
+		"canonicalPathSha256": "d644f78ac23c603489b150e3bd163381b58c97e2a603e7b4d13ccaee756df572",
+		"mode": "0600",
+		"owner": "xiaorongli",
+		"legacyInlineKeyPresent": false,
+		"managedDenyReadExactPathConfigured": true,
+		"controlProbeExitCode": 0,
+		"credentialProbeResult": "permission-denied-before-runtime-pid-claim"
+	},
+	"files": {
+		"voice-inbox/items.jsonl": {
+			"lines": 6,
+			"sha256": "414b5e2cebd20698df96d46017b02ba85caa2c772eb73ce4feca8b85c4618b98"
+		},
+		"voice-inbox/acks.jsonl": {
+			"lines": 1,
+			"sha256": "eb1db86007d29f71360ab6f8af8aafcea85d95f54001657abc3a1cec9eb6b5dc"
+		},
+		"voice-filter.json": "absent",
+		"voice-actions/receipts.jsonl": "absent",
+		"voice-evidence/events.jsonl": {
+			"lines": 342,
+			"sha256": "2313f6c327684fa9eb60dbf47cc8d9f6564bfcdf5fc7678c4863a8df81758a38"
+		},
+		"workspace/outbox": {
+			"files": 0
+		}
+	},
+	"safety": {
+		"productionLabelTouched": false,
+		"realShipTargetUsed": false,
+		"credentialContentRecorded": false
+	}
+}

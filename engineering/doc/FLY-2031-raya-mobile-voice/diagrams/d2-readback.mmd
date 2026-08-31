@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant A as 她(耳机)
+  participant C as Codex 语音
+  participant V as voice 进程(代码)
+  participant D as Discord 文字
+  A->>C: 「告诉 Tadashi,FLY-1833 先停一停」
+  C->>V: 提案:转给 Tadashi,引号里带 FLY-1833
+  V->>V: 核对:FLY-1833 逐字在她的转写里?
+  alt 对不上(比如它写成 1838)
+    V-->>C: 拒绝,并附上真转写
+    C->>A: 「我听到的是 1833,对吗?」
+  else 对得上
+    V-->>C: 要求先念回
+    C->>A: 「转给 Tadashi:FLY-1833,先停一停」
+    A-->>C: (没有异议)
+    V->>D: 发文字(带她的原话转写)
+    D-->>V: 消息回执 id
+    C->>A: 「转告了」(只有拿到回执才许说)
+  end

@@ -1,0 +1,35 @@
+{
+	"issue": "FLY-2031",
+	"probe": "P1b exact backend outbox write over real Codex realtime handoff",
+	"runId": "d81e6388-d71d-4070-ba00-2e988baa2f02",
+	"startedAt": "2026-08-28T10:03:17.395Z",
+	"codexVersion": "codex-cli 0.150.1",
+	"codexSha256": "a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
+	"probeSha256": "ae7b7d7a78d46b962c582eba4b2e98411881ef77f083af04fa1e3177e5f845ef",
+	"authMode": "chatgpt",
+	"openaiApiKeyPresent": true,
+	"contractsHead": "5b1f779c8fd16ba40cb27a2fb36662188265027b",
+	"transport": "websocket",
+	"version": "v2",
+	"actionId": "p1b-b98e6435-47c8-4bc3-9f88-91ba09b89533",
+	"sessionKey": "p1b-session-db1b454a-7274-4e40-b753-ea039b030945",
+	"outboxDir": "/Users/xiaorongli/.flywheel/qa/FLY-2031/p1b/outbox",
+	"passAuthority": "exact_disk_canary_only",
+	"threadId": "01a047d2-e0c9-7bf3-9a81-d85e5aa75443",
+	"validation": {
+		"bytes": 284,
+		"sha256": "09812855d2e7edb8f64eb1938c17704250206e12b87ba93d855884c1b72d9e85"
+	},
+	"answer": {
+		"ok": true,
+		"text": "文件已经成功创建并校验完成，一切 OK!"
+	},
+	"backendItemTypes": [
+		"userMessage",
+		"reasoning",
+		"commandExecution",
+		"agentMessage"
+	],
+	"passed": true,
+	"finishedAt": "2026-08-28T10:03:35.309Z"
+}

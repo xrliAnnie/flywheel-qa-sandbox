@@ -1,0 +1,22 @@
+{
+	"issue": "FLY-2031",
+	"probe": "P1b exact backend outbox write over real Codex realtime handoff",
+	"runId": "bf30dde5-1343-4be3-b27d-7d1cbba38a17",
+	"startedAt": "2026-08-28T09:42:06.732Z",
+	"codexVersion": "codex-cli 0.150.1",
+	"codexSha256": "a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
+	"probeSha256": "ae7b7d7a78d46b962c582eba4b2e98411881ef77f083af04fa1e3177e5f845ef",
+	"authMode": "chatgpt",
+	"openaiApiKeyPresent": true,
+	"contractsHead": "5b1f779c8fd16ba40cb27a2fb36662188265027b",
+	"transport": "websocket",
+	"version": "v2",
+	"actionId": "p1b-198647f5-184e-4244-b1d1-30467e9cc539",
+	"sessionKey": "p1b-session-8ecd3623-300a-4226-94cd-2362c23f08c9",
+	"outboxDir": "/Users/xiaorongli/.flywheel/qa/FLY-2031/p1b/outbox",
+	"passAuthority": "exact_disk_canary_only",
+	"threadId": "01a047bf-8101-7cf0-8a03-546fea4e712f",
+	"passed": false,
+	"error": "P1b exact canary did not appear before the hard timeout",
+	"finishedAt": "2026-08-28T09:45:09.524Z"
+}

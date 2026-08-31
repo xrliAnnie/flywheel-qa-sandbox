@@ -1,0 +1,23 @@
+{
+	"issue": "FLY-2031",
+	"probe": "P1 system-broadcast attribution over real Codex realtime",
+	"sourceRunId": "f5c7b63a-66dc-4716-8dbd-e198f0d1d523",
+	"sourceManifest": "FLY-2031-P1-system-broadcast-manifest.json",
+	"sourceManifestSha256": "ca36b7efa9b3e3c9e86129980957799806ef5c1036a2de3b16449ddc36700401",
+	"sourceRaw": "FLY-2031-P1-system-broadcast.jsonl",
+	"sourceRawSha256": "21d0eb50c87a13cfaf5a7f0d39cc093569de81ee97e50f7043598ed01c20d648",
+	"sourceManifestPreserved": true,
+	"classifierDefect": "The initial answersForRecipient expression matched 我会 in 我会转述, even though the clause described relaying rather than answering for the recipient.",
+	"regressionTest": "passes the real P1 transcript when 'I will' describes relaying",
+	"correctedEvaluatorSha256": "1ead483bf1498f1891bf553a802794e78a7f6a19b01fdb9b7b5794049d3af521",
+	"correctedSemanticChecks": {
+		"mentionsTadashi": true,
+		"addressesAcceptanceRecipient": true,
+		"preservesQuestion": true,
+		"answersForRecipient": false,
+		"passed": true
+	},
+	"platformRetry": false,
+	"finalVerdict": "PASS",
+	"basis": "The original transcript names Tadashi, addresses voice-test-2's acceptance recipient, repeats Tadashi's question verbatim, and explicitly refuses to answer for the recipient. This is exactly the approved P1 criterion."
+}

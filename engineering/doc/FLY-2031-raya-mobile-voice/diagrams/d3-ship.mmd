@@ -1,0 +1,16 @@
+sequenceDiagram
+  autonumber
+  participant A as 她(耳机)
+  participant V as voice 进程(代码)
+  participant D as Discord
+  participant B as Flywheel Bridge
+  V->>B: 先现查这张 ship 卡(拿权威的 issue/PR)
+  V->>A: 念:「FLY-xxxx 的 PR #964 在等 ship 批准,批请说『确认』」
+  A->>V: 「确认」(必须是固定词之一,别的话不算 · 必须是她本人的声道)
+  V->>B: 再查一次,和念之前的快照逐字段对比
+  Note over V,B: 对不上(卡换了/PR 前进了)⇒ 作废,念「这张卡已变化」
+  V->>D: 先发一张书面回执卡(文字是收据)
+  V->>B: 送批准:她的转写原词 + 说话人身份 + 回执卡号
+  B->>B: 自己的守卫(绑定/身份/词表/评审绿没绿)
+  B-->>V: 写入结果(批了 / 评审没绿 / 不算数)
+  V->>A: 念 Bridge 的结果(不许自编「已 ship」)

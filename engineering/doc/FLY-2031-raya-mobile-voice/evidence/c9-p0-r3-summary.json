@@ -1,0 +1,63 @@
+{
+	"schemaVersion": 1,
+	"issue": "FLY-2031",
+	"scope": "qa-repeatability-p0-only",
+	"outcome": "passed",
+	"founderAuthority": false,
+	"sourceTextProvenance": "generated QA TTS; not Annie original words",
+	"room": {
+		"guildId": "1485787271192907816",
+		"channelId": "1542708795720081408",
+		"name": "voice-test-2"
+	},
+	"operator": {
+		"kind": "authorized-qa-bot",
+		"discordUserId": "1516207680836866219",
+		"selfMuteMs": 180000
+	},
+	"window": {
+		"emitterConnectedAt": "2026-08-28T07:43:39.432Z",
+		"emitterUnmutedAt": "2026-08-28T07:46:39.439Z",
+		"audioCompletedAt": "2026-08-28T07:46:47.072Z",
+		"postAudioSettledAt": "2026-08-28T07:46:52.075Z",
+		"voiceExitedAt": "2026-08-28T07:46:53.515Z",
+		"observedMs": 194083
+	},
+	"userTranscript": {
+		"at": "2026-08-28T07:46:48.316Z",
+		"speakerUserId": "1516207680836866219",
+		"text": "Rhea F2031QA腾开流三分钟静默已经结束,请回复,收到FLY2031。",
+		"expectedAnchorMatched": "FLY-2031"
+	},
+	"assistantTranscript": {
+		"at": "2026-08-28T07:46:52.579Z",
+		"text": "已回复收到 FLY-2031。如果你还有其他需要，尽管说。"
+	},
+	"roomAudioEnvelope": {
+		"audioSha256": "sha256:384ce544a6e43065d5841bbfb1f2dc6555e23a3408c04dca0991953862fc6201",
+		"rayaOpusPackets": 632,
+		"rayaOpusBytes": 104807,
+		"rayaSpeakingStartsAfterArm": 0,
+		"audioContentSaved": false
+	},
+	"audioCounters": {
+		"silence": 4584,
+		"sent": 9571,
+		"voice": 6823,
+		"clockStall": 108,
+		"droppedClosed": 2,
+		"playerIdleRecovered": 1,
+		"sentPlusStallMs": 193580,
+		"observedWindowDeltaMs": 503
+	},
+	"build": {
+		"emitterHead": "8b1eb06",
+		"continuousStreamFix": "81d9094"
+	},
+	"exclusions": [
+		"founder human voice round",
+		"spoken filter or preference persistence",
+		"P2 relay rejection",
+		"P3 ship approval"
+	]
+}

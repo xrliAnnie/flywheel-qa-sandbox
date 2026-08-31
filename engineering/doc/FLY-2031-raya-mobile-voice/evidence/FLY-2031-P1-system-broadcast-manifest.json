@@ -1,0 +1,50 @@
+{
+  "issue": "FLY-2031",
+  "probe": "P1 system-broadcast attribution over real Codex realtime",
+  "runId": "f5c7b63a-66dc-4716-8dbd-e198f0d1d523",
+  "startedAt": "2026-08-28T02:54:19.236Z",
+  "codexVersion": "codex-cli 0.150.1",
+  "codexSha256": "a14f9a907c12c8812878b70e6b7d65f81c39ed795513e46a55817d7428c0ca6b",
+  "probeSha256": "2c5252c16867eaa0956f5f2191c7f1748b407d184039f5229bddeea76f351890",
+  "authMode": null,
+  "openaiApiKeyPresent": true,
+  "contractsHead": "a66381d52977d745f65e0cf0d3014db4228b6f51",
+  "transport": "websocket",
+  "version": "v2",
+  "acceptanceRecipient": {
+    "kind": "discord_voice_channel",
+    "name": "voice-test-2",
+    "id": "1542708795720081408"
+  },
+  "execution": {
+    "codexCwd": "/Users/xiaorongli/.flywheel/raya/worktrees/raya-FLY-2031",
+    "codexHome": "/private/tmp/raya-fly2031-p1.v6PLau",
+    "process": "isolated_probe",
+    "discordConnected": false,
+    "productionLaunchdMutation": false
+  },
+  "usageEstimate": {
+    "legCount": 1,
+    "expectedDurationMs": 60000,
+    "hardTimeoutMs": 180000
+  },
+  "injection": "【Raya 系统播报|非验收人发言】Tadashi 问 voice-test-2 里的验收人：“今天的发布窗口定在几点？”意图：把 Tadashi 的这个问题转述给 voice-test-2 里的验收人；不要代收件人回答。",
+  "threadId": "01a0464a-252c-76f2-a3f4-7a9e64bc1ec7",
+  "answer": "好的，我会转述 Tadashi 的问题给 voice-test-2 里的验收人：“今天的发布窗口定在几点？”我不会代替他们回答。",
+  "semanticChecks": {
+    "mentionsTadashi": true,
+    "addressesAcceptanceRecipient": true,
+    "preservesQuestion": true,
+    "answersForRecipient": true,
+    "passed": false
+  },
+  "actualUsage": {
+    "legCount": 1,
+    "durationMs": 3793,
+    "injectedSpeechItems": 1,
+    "assistantTranscriptItems": 1
+  },
+  "passed": false,
+  "error": "assistant did not relay the system broadcast to Annie with source attribution",
+  "finishedAt": "2026-08-28T02:54:23.321Z"
+}
