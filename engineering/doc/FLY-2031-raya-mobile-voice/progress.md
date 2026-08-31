@@ -1,13 +1,13 @@
 ---
 issue: FLY-2031
 phase: implement
-phaseCursor: 1/5
-updated: 2026-08-31T03:17:23.891Z
-nextStep: Implement minimal GREEN for claim 604 four-item scope
+phaseCursor: 2/5
+updated: 2026-08-31T03:22:50.583Z
+nextStep: Audit diff and run full Raya gates
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: implement (1/5)
-**next**: Implement minimal GREEN for claim 604 four-item scope
+**phase**: implement (2/5)
+**next**: Audit diff and run full Raya gates
