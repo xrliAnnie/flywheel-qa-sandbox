@@ -14,12 +14,12 @@ scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202
 第一条命令只有在以下 readiness 全部成立后才发布 mode `0600` 的 `/tmp/flywheel-test-slot-2/room-info.json`：
 
 - `/health` 同时报 `ok=true`、`buildMode=built`，且 `buildSha` / `artifactBuildSha` 等于被测 worktree HEAD；
-- `.flywheel/config.yaml` 同时有 `pipeline.dag: true` 与 `pipeline.work_kind: true`；
+- slot SQLite 中 `pipeline_dag` 与 `pipeline_work_kind` 的项目行均解析为 `true`；
 - `workflow_category_binding` 的 5 个 canonical mapping 全部存在且模板为 published、未 retired；
 - menu 端点能解析 `code` / `generic`，`code` 含 design、implement、qa；
 - slot master token 为 mode `0600`。
 
-FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本不再注入、断言或 attestation；generalized authority 只读 config、engine schema 与 category bindings。
+FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本不再注入、断言或 attestation；generalized authority 只读 scoped flag store、engine schema 与 category bindings。
 
 第二条命令把每一步证据原子写入 `/tmp/flywheel-test-slot-2/e2e-evidence/<runId>-<timestamp>/step-N.json`。它的退出语义是：
 
@@ -67,7 +67,7 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 
 ### 3.1 字节与 exec boundary
 
-`scripts/test-deploy.sh` 本身必须从被测 worktree 运行。generalized 模式依赖 `pipeline.dag=true`、`pipeline.work_kind=true`、schema-v2 engine authority 与 category bindings；FLY-1808 已退役的 workflow env flags 不再注入或 attestation。
+`scripts/test-deploy.sh` 本身必须从被测 worktree 运行。generalized 模式依赖 slot SQLite 中项目级 `pipeline_dag=true`、`pipeline_work_kind=true`、schema-v2 engine authority 与 category bindings；FLY-1808 已退役的 workflow env flags 不再注入或 attestation。
 
 不要为了临时验收去改生产 `.env`。flag 归属 exec boundary；`.env` 热改既不能证明 slot 用的是同一值，还可能污染生产服务的下一次 restart。
 
@@ -75,13 +75,7 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 
 Bridge boot 先把 canonical template 编译进 StateStore；随后 `scripts/lib/qa-generalized.mjs seed-bindings` 在单事务内验证模板并幂等写入 5 个 category binding。任何模板缺失、未 published 或 retired 都整体回滚。helper 的第二次执行是 no-op，不重复写 audit。
 
-`.flywheel/config.yaml` 由 slot config builder 原生输出：
-
-```yaml
-pipeline:
-  dag: true
-  work_kind: true
-```
+`scripts/lib/qa-generalized.mjs seed-project-flags` 在同一 slot DB 中原子、幂等地写入 `pipeline_dag` 和 `pipeline_work_kind` 项目行，并写入 `flag_value_changelog`。`.flywheel/config.yaml` 只保留 checkpoint 超时、agents 等非 flag 配置；重新加入 `pipeline:` 会被 ConfigLoader 拒绝。
 
 menu / roster / adoption 一并由装房脚本落盘，readiness 从 HTTP 端点验证实际加载结果，不能只看文件存在。
 

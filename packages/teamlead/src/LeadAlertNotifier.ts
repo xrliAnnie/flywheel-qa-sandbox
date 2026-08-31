@@ -98,6 +98,7 @@ export const ALERT_EVENT_TYPES = [
 	// rulings are supervised Lead authority; disputes and notification failures
 	// require human visibility but have no safe automatic remediation.
 	"review_advisory_pass",
+	"review_job_failed",
 	"review_ruling_recorded",
 	"review_ruling_disputed",
 	"review_ruling_notify_failed",
@@ -298,6 +299,9 @@ export const ALERT_EVENT_TYPES = [
 	"delivery_dead_letter",
 	// FLY-1373: a per-Lead consume-loop stall or queue-native deadline breach.
 	"inbox_loop_stalled",
+	// FLY-2118: a canonical Runner pane remained outside every active owner
+	// index for two consecutive project patrol slots.
+	"orphan_pane",
 	// FLY-1402: a Claude Lead was explicitly launched through the emergency
 	// last-one-wins compatibility path instead of the single-file rules bundle.
 	// Shell-emitted only, but kept in the shared face so queued alerts drain.
@@ -338,6 +342,8 @@ export const ALERT_EVENT_TYPES = [
 	"flag_scan_failed",
 	"flag_scan_no_clock",
 	"flag_scan_handoff",
+	// FLY-2033: fail-loud meeting issue/notes/card reconciliation.
+	"meeting_notes_failed",
 	"host_voucher_incident",
 	/**
 	 * FLY-1586: the boot cutover refused a deterministically-bad legacy row and
@@ -615,7 +621,12 @@ export function isFleetAlertPayload(p: { projectName: string }): boolean {
 
 export interface AlertResult {
 	sent?: boolean;
-	skipped?: "duplicate" | "no-channel" | "no-token" | "unknown-lead";
+	skipped?:
+		| "duplicate"
+		| "disabled"
+		| "no-channel"
+		| "no-token"
+		| "unknown-lead";
 	queued?: boolean;
 	dmSent?: boolean;
 	/** FLY-182: payload routed to dead-letter (permanent failure, no retry). */
@@ -665,6 +676,8 @@ export type ClaimsClaimer = (
 export interface LeadAlertNotifierConfig {
 	store: StateStore;
 	projects: ProjectEntry[];
+	/** FLY-2076: call-time master delivery gate; OFF still journals intake. */
+	deliveryEnabled?: () => boolean;
 	fetchFn?: FetchLike;
 	queueDir?: string;
 	claimsReader?: ClaimsReader;
@@ -760,6 +773,7 @@ export class LeadAlertNotifier {
 	private replayFreshnessProbe?: (
 		input: ReplayFreshnessInput,
 	) => boolean | null;
+	private deliveryEnabled: () => boolean;
 
 	private withDeliveryReceipt(
 		payload: AlertPayload,
@@ -786,6 +800,7 @@ export class LeadAlertNotifier {
 	constructor(config: LeadAlertNotifierConfig) {
 		this.store = config.store;
 		this.projects = config.projects;
+		this.deliveryEnabled = config.deliveryEnabled ?? (() => true);
 		this.fetchFn = config.fetchFn ?? (globalThis.fetch as FetchLike);
 		this.queueDir =
 			config.queueDir ?? join(homedir(), ".flywheel", "alert-queue");
@@ -891,6 +906,16 @@ export class LeadAlertNotifier {
 		payload: AlertPayload,
 		attempt: AlertAttemptOptions = {},
 	): Promise<AlertResult> {
+		if (!this.deliveryEnabled()) {
+			this.store.recordAlertSystemSuppression({
+				leadId: payload.leadId,
+				eventId: payload.eventId,
+				eventType: payload.eventType,
+				payload: JSON.stringify(payload),
+				sessionKey: payload.sessionKey,
+			});
+			return { skipped: "disabled" };
+		}
 		if (!hasValidDeliveryStyle(payload)) {
 			await this.deadLetter(payload, "invalid-delivery-style");
 			return this.withDeliveryReceipt(
@@ -1204,6 +1229,15 @@ export class LeadAlertNotifier {
 					this.queueEntryTimeMs(left) - this.queueEntryTimeMs(right);
 				return delta || left.localeCompare(right);
 			});
+		if (!this.deliveryEnabled()) {
+			return {
+				sent: 0,
+				remaining: entries.length,
+				deadLettered: 0,
+				staleSuppressed: 0,
+				delivered: [],
+			};
+		}
 		let sent = 0;
 		let deadLettered = 0;
 		let staleSuppressed = 0;

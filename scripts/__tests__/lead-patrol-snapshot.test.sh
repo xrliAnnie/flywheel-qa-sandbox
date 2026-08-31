@@ -97,7 +97,7 @@ SH
 }
 
 run_snapshot() {
-  local dir="$1" out="$2"
+  local dir="$1" out="$2" lead_id="${3:-flywheel-eng-lead}"
   HOME="$dir/home" \
   PATH="$dir/bin:$PATH" \
   FLYWHEEL_STATE_DIR="$dir/state" \
@@ -109,7 +109,7 @@ run_snapshot() {
   GH_EMPTY="${GH_EMPTY:-0}" \
   TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
   TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
-    bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead > "$out" 2>&1
+    bash "$SCRIPT" --project flywheel --lead "$lead_id" > "$out" 2>&1
 }
 
 MAIN="$TMP/main"
@@ -123,6 +123,9 @@ INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
  ('run-104','FLY-104','flywheel','active',datetime('now')),
  ('run-105','FLY-105','flywheel','active',datetime('now')),
  ('run-106','FLY-106','flywheel','active',datetime('now')),
+ ('run-109','FLY-109','flywheel','active',datetime('now')),
+ ('run-110','FLY-110','flywheel','active',datetime('now')),
+ ('run-111','FLY-111','flywheel','active',datetime('now')),
  ('run-108','FLY-108','flywheel','terminated',datetime('now')),
  ('run-999','TE-999','tidal-echo','active',datetime('now'));
 INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
@@ -133,6 +136,9 @@ INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_
  ('run-104','implement',1,'running','exec-wake',datetime('now')),
  ('run-105','implement',1,'running','exec-claim',datetime('now')),
  ('run-106','implement',1,'running',NULL,datetime('now')),
+ ('run-109','implement',1,'running','exec-foreign',datetime('now')),
+ ('run-110','implement',1,'running',NULL,datetime('now')),
+ ('run-111','implement',1,'running',NULL,datetime('now')),
  ('run-108','implement',1,'running','exec-old',datetime('now')),
  ('run-999','implement',1,'running','exec-other',datetime('now'));
 INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
@@ -143,11 +149,53 @@ INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_
  ('exec-wake','FLY-104','FLY-104','wake','flywheel','running'),
  ('exec-claim','FLY-105','FLY-105','claim','flywheel','running'),
  ('exec-null-holder','FLY-106','FLY-106','null node exec','flywheel','running'),
+ ('exec-foreign','FLY-109','FLY-109','foreign Lead','flywheel','running'),
+	('exec-review-recent','FLY-112','FLY-112','recent review failure','flywheel','running'),
+	('exec-review-scheduled','FLY-113','FLY-113','scheduled review failure','flywheel','running'),
+	('exec-review-terminal','FLY-114','FLY-114','terminal review failure','flywheel','running'),
+	('exec-review-foreign','FLY-115','FLY-115','foreign review owner','flywheel','running'),
+	('exec-review-old','FLY-116','FLY-116','old review failure','flywheel','running'),
+	('exec-review-dead','FLY-117','FLY-117','dead review runner','flywheel','terminated'),
+	('exec-review-orphan','FLY-118','FLY-118','review owner row already pruned','flywheel','running'),
+	('exec-review-other','TE-998','TE-998','other project review','tidal-echo','running'),
  ('exec-mail-parked','FLY-107','FLY-107','parked mail','flywheel','ship_parked'),
  ('exec-old','FLY-108','FLY-108','terminal','flywheel','terminated'),
  ('exec-other','TE-999','TE-999','other','tidal-echo','running');
+INSERT INTO codex_review_job(
+ request_id,execution_id,issue_id,project_name,review_type,round,question_id,
+ status,failure_reason,failure_raw,retry_at,updated_at
+) VALUES
+ ('d1d1e9ba-8337-484b-b159-91887e26e987','exec-review-recent','SECRET_STALE_JOB_ISSUE','flywheel','code',2,'review-q-recent','failed','nonzero_exit','SECRET_REVIEW_FAILURE_RAW',NULL,datetime('now','-2 hours')),
+ ('scheduled-review-request','exec-review-scheduled',NULL,'flywheel','design',1,'review-q-scheduled','failed','nonzero_exit','SECRET_SCHEDULED_FAILURE_RAW',datetime('now','+2 days'),datetime('now','-2 days')),
+ ('terminal-head-moved','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-1','failed','head_moved','SECRET_TERMINAL_HEAD',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-answered-externally','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-2','failed','gate_answered_externally','SECRET_TERMINAL_EXTERNAL',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-answered','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-3','failed','gate_answered','SECRET_TERMINAL_ANSWERED',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-expired','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-4','failed','gate_expired','SECRET_TERMINAL_EXPIRED',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-mismatch','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-5','failed','gate_mismatch','SECRET_TERMINAL_MISMATCH',NULL,datetime('now','-1 hour')),
+ ('terminal-superseded','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-6','failed','superseded_by_revision','SECRET_TERMINAL_SUPERSEDED',NULL,datetime('now','-1 hour')),
+ ('terminal-reviewed-wrong-head','exec-review-recent','FLY-112','flywheel','code',2,'terminal-q-7','failed','reviewed_wrong_head','SECRET_TERMINAL_WRONG_HEAD',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-missing','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-8','failed','gate_missing','SECRET_TERMINAL_MISSING',NULL,datetime('now','-1 hour')),
+ ('terminal-gate-unknown','exec-review-recent','FLY-112','flywheel','design',2,'terminal-q-9','failed','gate_unknown','SECRET_TERMINAL_UNKNOWN',NULL,datetime('now','-1 hour')),
+ ('old-unscheduled-review','exec-review-old','FLY-116','flywheel','design',1,'review-q-old','failed','timeout','SECRET_OLD_REVIEW_RAW',NULL,datetime('now','-2 days')),
+ ('foreign-lead-review','exec-review-foreign','FLY-115','flywheel','code',1,'review-q-foreign','failed','timeout','SECRET_FOREIGN_REVIEW_RAW',NULL,datetime('now','-1 hour')),
+ ('dead-runner-review','exec-review-dead','FLY-117','flywheel','code',1,'review-q-dead','failed','timeout','SECRET_DEAD_REVIEW_RAW',NULL,datetime('now','-1 hour')),
+ ('orphan-comm-review','exec-review-orphan','FLY-118','flywheel','code',1,'review-q-orphan','failed','timeout','SECRET_ORPHAN_REVIEW_RAW',NULL,datetime('now','-1 hour')),
+ ('foreign-project-review','exec-review-other','TE-998','tidal-echo','code',1,'review-q-other','failed','timeout','SECRET_OTHER_REVIEW_RAW',NULL,datetime('now','-1 hour'));
+WITH RECURSIVE historical(n) AS (
+ SELECT 1 UNION ALL SELECT n + 1 FROM historical WHERE n < 100
+)
+INSERT INTO codex_review_job(
+ request_id,execution_id,issue_id,project_name,review_type,round,question_id,
+ status,failure_reason,failure_raw,updated_at
+)
+SELECT printf('historical-review-%03d',n), printf('missing-exec-%03d',n),
+       printf('FLY-HIST-%03d',n),'flywheel','design',1,printf('historical-q-%03d',n),
+       'failed','timeout','SECRET_HISTORICAL_REVIEW_RAW',datetime('now','-1 hour')
+FROM historical;
 INSERT INTO dead_letter_alerts(id,source_kind,recipient,through_dead_seq,lead_id,project_name,dead_count,summary,state,created_at) VALUES
  ('dead-pending','runner_unroutable','exec-wake',1,'flywheel-eng-lead','flywheel',1,'SECRET_DEAD_SUMMARY','pending',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes')),
+ ('dead-other-lead','runner_unroutable','exec-foreign',2,'honey-lemon-lead','flywheel',1,'SECRET_OTHER_LEAD_DEAD','pending',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes')),
+ ('dead-other-project','runner_unroutable','exec-other',3,'flywheel-eng-lead','tidal-echo',1,'SECRET_OTHER_PROJECT_DEAD','pending',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes')),
  ('dead-accepted','runner_unroutable','exec-wake-accepted',2,'flywheel-eng-lead','flywheel',1,'SECRET_ACCEPTED_SUMMARY','accepted',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes'));
 INSERT INTO workflow_node_pr_binding(run_id,node_id,attempt,pr_number,head_sha,target_repo_identity,probe_repo_slug,target_repo_path,worktree_binding_generation,receipt_id,bound_at)
  VALUES('run-105','implement',1,105,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','__main__','xrliAnnie/flywheel','.', 'gen-1','receipt-105',datetime('now'));
@@ -155,6 +203,23 @@ INSERT INTO workflow_claims(server_seq,issued_at,issue_id,workflow_run_id,node_i
  VALUES(105,datetime('now'),'FLY-105','run-105','implement','code_review',1,'codex_approved','bridge_policy','git_head','bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',datetime('now','+1 day'),0,'{"secret":"SECRET_CLAIM_EVIDENCE"}','authority-105');
 SQL
 sqlite3 "$MAIN/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-no-turn','runner-flywheel:pending','flywheel','FLY-100','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-holder','runner-flywheel:pending','flywheel','FLY-101','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-wait','runner-flywheel:pending','flywheel','FLY-102','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-mail','runner-flywheel:pending','flywheel','FLY-103','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-wake','runner-flywheel:pending','flywheel','FLY-104','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-claim','runner-flywheel:pending','flywheel','FLY-105','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-null-holder','runner-flywheel:pending','flywheel','FLY-106','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+ ('exec-mail-parked','runner-flywheel:pending','flywheel','FLY-107','flywheel-eng-lead',datetime('now','-2 hours'),'completed'),
+ ('exec-foreign','runner-flywheel:pending','flywheel','FLY-109','honey-lemon-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-recent','runner-flywheel:pending','flywheel','FLY-112','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-scheduled','runner-flywheel:pending','flywheel','FLY-113','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-foreign','runner-flywheel:pending','flywheel','FLY-115','honey-lemon-lead',datetime('now','-2 hours'),'running'),
+ ('exec-110-old','runner-flywheel:pending','flywheel','FLY-110','lead-a',datetime('now','-3 hours'),'completed'),
+ ('exec-110-current','runner-flywheel:pending','flywheel','FLY-110','flywheel-eng-lead',datetime('now','-1 hour'),'running'),
+ ('exec-111-old','runner-flywheel:pending','flywheel','FLY-111','lead-a',datetime('now','-3 hours'),'completed'),
+ ('exec-111-latest','runner-flywheel:pending','flywheel','FLY-111','flywheel-eng-lead',datetime('now','-1 hour'),'completed');
 INSERT INTO three_stage_turn(issue_id,holder_exec_id,phase,epoch,granted_at) VALUES
  ('FLY-101','ghost-holder','implement',1,unixepoch()*1000),
  ('FLY-102','exec-wait','implement',1,unixepoch()*1000),
@@ -171,13 +236,15 @@ INSERT INTO mailbox_identity(id,delivery_id,insert_projection_hash) VALUES
  ('mail-live-lease','delivery-live-lease','hash-2'),
  ('mail-old-lease','delivery-old-lease','hash-3'),
  ('mail-dead-runner','delivery-dead-runner','hash-4'),
- ('mail-parked-queued','delivery-parked-queued','hash-5');
+ ('mail-parked-queued','delivery-parked-queued','hash-5'),
+ ('mail-foreign','delivery-foreign','hash-6');
 INSERT INTO mailbox(id,delivery_id,from_agent,to_agent,recipient_kind,type,msg_class,content,created_at,state,claim_expires_at,relay_state) VALUES
  ('mail-live-queued','delivery-live-queued','lead','exec-mail','runner','instruction','model','SECRET_MAILBOX_CONTENT',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed'),
  ('mail-live-lease','delivery-live-lease','lead','exec-mail','runner','instruction','model','SECRET_LIVE_LEASE',strftime('%Y-%m-%dT%H:%M:%fZ','now','-10 minutes'),'LEASED',strftime('%Y-%m-%dT%H:%M:%fZ','now','-5 minutes'),'terminal_disposed'),
  ('mail-old-lease','delivery-old-lease','lead','exec-mail','runner','instruction','model','SECRET_OLD_LEASE',strftime('%Y-%m-%dT%H:%M:%fZ','now','-25 hours'),'LEASED',strftime('%Y-%m-%dT%H:%M:%fZ','now','-24 hours'),'terminal_disposed'),
  ('mail-dead-runner','delivery-dead-runner','lead','exec-old','runner','instruction','model','SECRET_DEAD_RUNNER',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed'),
- ('mail-parked-queued','delivery-parked-queued','lead','exec-mail-parked','runner','instruction','model','SECRET_PARKED_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed');
+ ('mail-parked-queued','delivery-parked-queued','lead','exec-mail-parked','runner','instruction','model','SECRET_PARKED_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed'),
+ ('mail-foreign','delivery-foreign','lead','exec-foreign','runner','instruction','model','SECRET_FOREIGN_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED',NULL,'terminal_disposed');
 INSERT INTO turn_wake_outbox(wake_id,execution_id,issue_id,epoch,purpose,envelope_json,backend,state,episode_id,created_at) VALUES
  ('wake-active','exec-wake','FLY-104',1,'turn','{"secret":"SECRET_WAKE_ENVELOPE"}','mailbox','pending','episode-active',(unixepoch()-1200)*1000),
  ('wake-terminal','exec-old','FLY-108',1,'turn','{"secret":"SECRET_WAKE_TERMINAL"}','mailbox','pending','episode-terminal',(unixepoch()-1200)*1000);
@@ -193,6 +260,9 @@ contains "$MAIN_OUT" "TURN_MISSING issue=FLY-100" "active issue without TURN is 
 contains "$MAIN_OUT" "TURN_HOLDER_NOT_LIVE issue=FLY-101" "dead TURN holder is visible"
 contains "$MAIN_OUT" "NO_TURN_STREAK issue=FLY-102" "live no-turn streak is visible"
 contains "$MAIN_OUT" "NODE_SESSION_NOT_LIVE issue=FLY-106 exec=none" "NULL node execution id is a visible divergence"
+contains "$MAIN_OUT" "NODE_SESSION_NOT_LIVE issue=FLY-110 exec=none" "current owner wins over historical Lead handoff"
+contains "$MAIN_OUT" "NODE_SESSION_NOT_LIVE issue=FLY-111 exec=none" "latest historical cohort resolves a missing execution mapping"
+not_contains "$MAIN_OUT" "issue=FLY-109" "other Lead active workflow is outside this report"
 not_contains "$MAIN_OUT" "issue=TE-999" "other project active run is filtered"
 not_contains "$MAIN_OUT" "issue=FLY-108" "terminal run is filtered from active ledgers"
 contains "$MAIN_OUT" "MAILBOX_STALE id=mail-live-qu" "old live-runner queued mail is visible"
@@ -200,14 +270,43 @@ contains "$MAIN_OUT" "MAILBOX_STALE id=mail-live-le" "recent expired live-runner
 contains "$MAIN_OUT" "MAILBOX_STALE id=mail-parked-" "old parked-runner queued mail is visible"
 not_contains "$MAIN_OUT" "mail-old-lea" "ancient expired lease is filtered"
 not_contains "$MAIN_OUT" "mail-dead-ru" "terminal runner mailbox is filtered"
+not_contains "$MAIN_OUT" "mail-foreign" "other Lead mailbox is outside this report"
 contains "$MAIN_OUT" "WAKE_UNACKED wake=wake-active" "active integer-ms wake window is visible"
 not_contains "$MAIN_OUT" "wake-terminal" "terminal wake is filtered"
 contains "$MAIN_OUT" "DEAD_LETTER_PENDING id=dead-pending" "recent pending dead letter is visible"
 not_contains "$MAIN_OUT" "dead-accepted" "accepted dead letter receipt is filtered"
+not_contains "$MAIN_OUT" "dead-other-lead" "other Lead dead letter is outside this report"
+not_contains "$MAIN_OUT" "dead-other-project" "other project dead letter is outside this report"
 contains "$MAIN_OUT" "VERDICT_HEAD_MISMATCH issue=FLY-105" "active binding/claim mismatch is visible"
-for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE; do
+contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-112 request=d1d1e9ba-8337-484b-b159-91887e26e987 type=code round=2 reason=nonzero_exit" "recent failed review is visible with live-session issue identity"
+contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-113 request=scheduled-review-request type=design round=1 reason=nonzero_exit" "old durable scheduled retry remains patrol-visible"
+contains "$MAIN_OUT" "STEP 4: FINDING-CANDIDATE" "review without a CommDB owner cannot black out STEP 4"
+contains "$MAIN_OUT" "recovery=POST_/review-requests_same_requestId" "failed review exposes the idempotent replay entrance"
+not_contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-114" "terminally invalid review failures are excluded"
+not_contains "$MAIN_OUT" "request=terminal-superseded" "benign review supersede is excluded"
+not_contains "$MAIN_OUT" "request=terminal-reviewed-wrong-head" "mismatched-head review is not replayable"
+not_contains "$MAIN_OUT" "request=terminal-gate-missing" "missing-gate review is not replayable"
+not_contains "$MAIN_OUT" "request=terminal-gate-unknown" "unknown-gate review does not guess a replay path"
+not_contains "$MAIN_OUT" "old-unscheduled-review" "old unscheduled review failure is excluded"
+not_contains "$MAIN_OUT" "dead-runner-review" "failed review without a live session is excluded"
+not_contains "$MAIN_OUT" "orphan-comm-review" "failed review without a resolvable CommDB owner is pruned before attribution"
+not_contains "$MAIN_OUT" "historical-review-" "historical rows without sessions are pruned before attribution"
+not_contains "$MAIN_OUT" "SECRET_STALE_JOB_ISSUE" "review issue identity is derived from the live session"
+for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE SECRET_REVIEW_FAILURE_RAW SECRET_SCHEDULED_FAILURE_RAW SECRET_TERMINAL_HEAD SECRET_TERMINAL_EXTERNAL SECRET_TERMINAL_ANSWERED SECRET_TERMINAL_EXPIRED SECRET_TERMINAL_MISMATCH SECRET_TERMINAL_SUPERSEDED SECRET_TERMINAL_WRONG_HEAD SECRET_TERMINAL_MISSING SECRET_TERMINAL_UNKNOWN SECRET_OLD_REVIEW_RAW SECRET_FOREIGN_REVIEW_RAW SECRET_DEAD_REVIEW_RAW SECRET_ORPHAN_REVIEW_RAW SECRET_OTHER_REVIEW_RAW SECRET_HISTORICAL_REVIEW_RAW; do
   not_contains "$MAIN_OUT" "$secret" "secret projection excludes $secret"
 done
+
+MAIN_HONEY_OUT="$MAIN/honey.txt"
+run_snapshot "$MAIN" "$MAIN_HONEY_OUT" honey-lemon-lead || fail "other Lead queue snapshot exits zero"
+contains "$MAIN_HONEY_OUT" "TURN_MISSING issue=FLY-109" "other Lead sees its active workflow"
+not_contains "$MAIN_HONEY_OUT" "issue=FLY-100" "other Lead does not see this Lead's workflow"
+contains "$MAIN_HONEY_OUT" "MAILBOX_STALE id=mail-foreign" "other Lead sees its stale mailbox"
+not_contains "$MAIN_HONEY_OUT" "MAILBOX_STALE id=mail-live-qu" "other Lead does not see this Lead's mailbox"
+contains "$MAIN_HONEY_OUT" "DEAD_LETTER_PENDING id=dead-other-lead" "other Lead sees its dead letter"
+contains "$MAIN_HONEY_OUT" "REVIEW_JOB_FAILED issue=FLY-115 request=foreign-lead-review" "other Lead sees its owned failed review"
+not_contains "$MAIN_HONEY_OUT" "request=d1d1e9ba-8337-484b-b159-91887e26e987" "other Lead does not see this Lead's failed review"
+not_contains "$MAIN_HONEY_OUT" "DEAD_LETTER_PENDING id=dead-pending" "other Lead does not see this Lead's dead letter"
+not_contains "$MAIN_HONEY_OUT" "dead-other-project" "other Lead does not see cross-project dead letters"
 for step in 1 2 3 4 5 6; do
   contains "$MAIN_OUT" "## STEP $step" "report contains STEP $step"
 done
@@ -223,8 +322,187 @@ else
   fail "atomic publication leaves no temp residue"
 fi
 
-# Founder increment: canonical Runner panes are all captured in full, while a
-# cmux mirror of the same window is excluded. Ownership spans project CommDBs.
+# FLY-2152: the sixth patrol dimension lives inside STEP 4. The durable
+# claim_written marker, rather than a deployment cutover sequence, selects the
+# new contract so a fresh database cannot silently skip its first verdict.
+CLAIMS="$TMP/verdict-delivery"
+make_case "$CLAIMS"
+sqlite3 "$CLAIMS/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-401','FLY-401','flywheel','active',datetime('now')),
+ ('run-402','FLY-402','flywheel','active',datetime('now')),
+ ('run-403','FLY-403','flywheel','active',datetime('now')),
+ ('run-404','FLY-404','flywheel','active',datetime('now')),
+ ('run-405','FLY-405','flywheel','active',datetime('now')),
+ ('run-406','FLY-406-FOREIGN','flywheel','active',datetime('now')),
+ ('run-407','FLY-407-TERMINAL','flywheel','terminated',datetime('now')),
+ ('run-408','FLY-408-FOUNDER','flywheel','active',datetime('now')),
+ ('run-409','FLY-409-POLICY','flywheel','active',datetime('now')),
+ ('run-411','FLY-411','flywheel','active',datetime('now'));
+INSERT INTO workflow_claims(
+ id,server_seq,issued_at,issue_id,workflow_run_id,node_id,decision_kind,attempt,predicate,
+ issuer_kind,issuer_execution_id,issuer_node_id,issuer_vendor,issuer_model,
+ subject_producer_execution_id,subject_kind,subject_digest,permanent,submission_digest,
+ client_request_id,evidence,authority_id
+) VALUES
+ (401,401,'2026-08-29T10:01:00Z','FLY-401','run-401','qa','qa_verdict',1,'qa_failed',
+  'runner_node','exec-401','qa','codex','gpt-5','exec-401','git_head','4014014014014014014014014014014014014014',1,'digest-401','request-401','{"secret":"SECRET_CLAIM_401"}','authority-401'),
+ (402,402,'2026-08-29T10:02:00Z','FLY-402','run-402','qa','qa_verdict',2,'qa_failed',
+  'runner_node','exec-402','qa','codex','gpt-5','exec-402','git_head','4024024024024024024024024024024024024024',1,'digest-402','request-402','{"secret":"SECRET_CLAIM_402"}','authority-402'),
+ (403,403,'2026-08-29T10:03:00Z','FLY-403','run-403','code_review','code_review',3,'codex_approved',
+  'runner_node','exec-403','code_review','codex','gpt-5','exec-403','git_head','4034034034034034034034034034034034034034',1,'digest-403','request-403','{"secret":"SECRET_CLAIM_403"}','authority-403'),
+ (404,404,'2026-08-29T10:04:00Z','FLY-404','run-404','qa','qa_verdict',4,'qa_passed',
+  'runner_node','exec-404','qa','codex','gpt-5','exec-404','git_head','4044044044044044044044044044044044044044',1,'digest-404','request-404','{"secret":"SECRET_CLAIM_404"}','authority-404'),
+ (405,405,'2026-08-29T10:05:00Z','FLY-405','run-405','qa','qa_verdict',5,'qa_failed',
+  'runner_node','exec-405','qa','codex','gpt-5','exec-405','git_head','4054054054054054054054054054054054054054',1,'digest-405','request-405','{"secret":"SECRET_LEGACY_CLAIM"}','authority-405'),
+ (406,406,'2026-08-29T10:06:00Z','FLY-406-FOREIGN','run-406','qa','qa_verdict',6,'qa_failed',
+  'runner_node','exec-406','qa','codex','gpt-5','exec-406','git_head','4064064064064064064064064064064064064064',1,'digest-406','request-406','{"secret":"SECRET_FOREIGN_CLAIM"}','authority-406'),
+ (407,407,'2026-08-29T10:07:00Z','FLY-407-TERMINAL','run-407','qa','qa_verdict',7,'qa_failed',
+  'runner_node','exec-407','qa','codex','gpt-5','exec-407','git_head','4074074074074074074074074074074074074074',1,'digest-407','request-407','{"secret":"SECRET_TERMINAL_CLAIM"}','authority-407'),
+ (408,408,'2026-08-29T10:08:00Z','FLY-408-FOUNDER','run-408',NULL,'founder_review',NULL,'founder_approved',
+  'founder_challenge',NULL,NULL,NULL,NULL,NULL,'snapshot_digest','founder-digest',1,NULL,NULL,'{"secret":"SECRET_FOUNDER_CLAIM"}','authority-408'),
+ (409,409,'2026-08-29T10:09:00Z','FLY-409-POLICY','run-409',NULL,'qa_exemption',NULL,'qa_exempt',
+  'bridge_policy',NULL,NULL,NULL,NULL,NULL,'snapshot_digest','policy-digest',1,NULL,NULL,'{"secret":"SECRET_POLICY_CLAIM"}','authority-409'),
+ (411,411,'2026-08-29T10:11:00Z','FLY-411','run-411','qa','qa_verdict',1,'qa_failed',
+  'runner_node','exec-411','qa','codex','gpt-5','exec-411','git_head','4114114114114114114114114114114114114114',1,'digest-411','request-411','{"secret":"SECRET_OWNER_MISSING"}','authority-411');
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at) VALUES
+ ('run-401',1,'credential_claim_written:401','claim_written','qa','exec-401','{"claimId":401,"leadEventRequired":true,"leadEventId":"workflow_claim:401"}',datetime('now')),
+ ('run-402',1,'credential_claim_written:402','claim_written','qa','exec-402','{"claimId":402,"leadEventRequired":true,"leadEventId":"workflow_claim:402"}',datetime('now')),
+ ('run-403',1,'credential_claim_written:403','claim_written','code_review','exec-403','{"claimId":403,"leadEventRequired":true,"leadEventId":"workflow_claim:403"}',datetime('now')),
+ ('run-404',1,'credential_claim_written:404','claim_written','qa','exec-404','{"claimId":404,"leadEventRequired":true,"leadEventId":"workflow_claim:404"}',datetime('now')),
+ ('run-405',1,'credential_claim_written:405','claim_written','qa','exec-405','{"claimId":405,"serverSeq":405,"predicate":"qa_failed"}',datetime('now')),
+ ('run-406',1,'credential_claim_written:406','claim_written','qa','exec-406','{"claimId":406,"leadEventRequired":true,"leadEventId":"workflow_claim:406"}',datetime('now')),
+ ('run-407',1,'credential_claim_written:407','claim_written','qa','exec-407','{"claimId":407,"leadEventRequired":true,"leadEventId":"workflow_claim:407"}',datetime('now')),
+ ('run-411',1,'credential_claim_written:411','claim_written','qa','exec-411','{"claimId":411,"leadEventRequired":true,"leadEventId":"workflow_claim:411"}',datetime('now'));
+INSERT INTO lead_events(lead_id,event_id,event_type,payload,delivered_at) VALUES
+ ('flywheel-eng-lead','workflow_claim:402','workflow_claim_recorded','{"project_name":"flywheel","issue_id":"FLY-402","summary":"SECRET_PENDING_SUMMARY"}',NULL),
+ ('honey-lemon-lead','workflow_claim:403','workflow_claim_recorded','{"project_name":"flywheel","issue_id":"FLY-403","summary":"SECRET_MISMATCH_SUMMARY"}',NULL),
+ ('flywheel-eng-lead','workflow_claim:404','workflow_claim_recorded','{"project_name":"flywheel","issue_id":"FLY-404","summary":"SECRET_DELIVERED_SUMMARY"}',datetime('now'));
+SQL
+sqlite3 "$CLAIMS/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-401','runner-flywheel:pending','flywheel','FLY-401','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-402','runner-flywheel:pending','flywheel','FLY-402','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-403','runner-flywheel:pending','flywheel','FLY-403','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-404','runner-flywheel:pending','flywheel','FLY-404','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-405','runner-flywheel:pending','flywheel','FLY-405','flywheel-eng-lead',datetime('now'),'running'),
+ ('exec-406','runner-flywheel:pending','flywheel','FLY-406-FOREIGN','honey-lemon-lead',datetime('now'),'running'),
+ ('exec-407','runner-flywheel:pending','flywheel','FLY-407-TERMINAL','flywheel-eng-lead',datetime('now'),'completed');
+SQL
+CLAIMS_OUT="$CLAIMS/out.txt"
+run_snapshot "$CLAIMS" "$CLAIMS_OUT" || fail "verdict delivery snapshot exits zero"
+contains "$CLAIMS_OUT" "CLAIM_DELIVERY_MISSING issue=FLY-401 claim=401 decision=qa_verdict predicate=qa_failed issued=2026-08-29T10:01:00Z node=qa attempt=1 exec=exec-401" "fresh-db first marked claim without event is visible"
+contains "$CLAIMS_OUT" "CLAIM_DELIVERY_PENDING issue=FLY-402 claim=402 decision=qa_verdict predicate=qa_failed issued=2026-08-29T10:02:00Z node=qa attempt=2 exec=exec-402" "undelivered marked claim is visible"
+contains "$CLAIMS_OUT" "CLAIM_DELIVERY_OWNER_MISMATCH issue=FLY-403 claim=403 decision=code_review predicate=codex_approved issued=2026-08-29T10:03:00Z node=code_review attempt=3 exec=exec-403" "wrong-owner marked claim is visible"
+count_is "$CLAIMS_OUT" "CLAIM_DELIVERY_" 3 "only missing, pending, and owner mismatch claims are findings"
+contains "$CLAIMS_OUT" "CLAIM_ATTRIBUTION_INCOMPLETE reason=owner_missing count=1" "one ownerless marked claim is aggregated without suppressing attributable findings"
+not_contains "$CLAIMS_OUT" "claim_delivery_marker_invalid" "legacy pre-contract marker is excluded without poisoning the verdict dimension"
+for hidden in FLY-404 FLY-405 FLY-406-FOREIGN FLY-407-TERMINAL FLY-408-FOUNDER FLY-409-POLICY FLY-411 SECRET_CLAIM SECRET_LEGACY SECRET_FOREIGN SECRET_TERMINAL SECRET_FOUNDER SECRET_POLICY SECRET_OWNER_MISSING SECRET_PENDING_SUMMARY SECRET_MISMATCH_SUMMARY SECRET_DELIVERED_SUMMARY; do
+  not_contains "$CLAIMS_OUT" "$hidden" "verdict projection excludes non-finding or secret $hidden"
+done
+
+# Claim attribution/marker failures close only the claim branch. Existing
+# mailbox and wake facts in STEP 4 remain available and visible.
+CLAIM_ATTRIB="$TMP/verdict-attribution"
+make_case "$CLAIM_ATTRIB"
+sqlite3 "$CLAIM_ATTRIB/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-410','FLY-410','flywheel','active',datetime('now'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-410','qa',1,'running','exec-410',datetime('now'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-410','FLY-410','FLY-410','claim marker invalid','flywheel','running');
+INSERT INTO workflow_claims(
+ id,server_seq,issued_at,issue_id,workflow_run_id,node_id,decision_kind,attempt,predicate,
+ issuer_kind,issuer_execution_id,issuer_node_id,issuer_vendor,issuer_model,
+ subject_producer_execution_id,subject_kind,subject_digest,permanent,submission_digest,
+ client_request_id,evidence,authority_id
+) VALUES
+ (410,410,'2026-08-29T10:10:00Z','FLY-410','run-410','qa','qa_verdict',1,'qa_failed',
+  'runner_node','exec-410','qa','codex','gpt-5','exec-410','git_head','4104104104104104104104104104104104104104',1,'digest-410','request-410','{"secret":"SECRET_INVALID_MARKER"}','authority-410');
+INSERT INTO workflow_run_event(run_id,seq,event_uid,kind,node_id,execution_id,payload,at) VALUES
+ ('run-410',1,'credential_claim_written:410-a','claim_written','qa','exec-410','{"claimId":410,"leadEventRequired":true,"leadEventId":"workflow_claim:410"}',datetime('now')),
+ ('run-410',2,'credential_claim_written:410-b','claim_written','qa','exec-410','{"claimId":410,"leadEventRequired":true,"leadEventId":"workflow_claim:410"}',datetime('now'));
+SQL
+sqlite3 "$CLAIM_ATTRIB/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-410','runner-flywheel:pending','flywheel','FLY-410','flywheel-eng-lead',datetime('now','-1 hour'),'running');
+INSERT INTO mailbox_identity(id,delivery_id,insert_projection_hash) VALUES
+ ('mail-410','delivery-410','hash-410');
+INSERT INTO mailbox(id,delivery_id,from_agent,to_agent,recipient_kind,type,msg_class,content,created_at,state,relay_state) VALUES
+ ('mail-410','delivery-410','lead','exec-410','runner','instruction','model','SECRET_ATTRIB_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED','terminal_disposed');
+INSERT INTO turn_wake_outbox(wake_id,execution_id,issue_id,epoch,purpose,envelope_json,backend,state,episode_id,created_at) VALUES
+ ('wake-410','exec-410','FLY-410',1,'turn','{"secret":"SECRET_ATTRIB_WAKE"}','mailbox','pending','episode-410',(unixepoch()-1200)*1000);
+SQL
+CLAIM_ATTRIB_OUT="$CLAIM_ATTRIB/out.txt"
+run_snapshot "$CLAIM_ATTRIB" "$CLAIM_ATTRIB_OUT" || fail "claim attribution failure still publishes report"
+contains "$CLAIM_ATTRIB_OUT" "CLAIM_ATTRIBUTION_INCOMPLETE reason=claim_delivery_marker_invalid count=1" "duplicate claim marker is aggregated"
+contains "$CLAIM_ATTRIB_OUT" "MAILBOX_STALE id=mail-410" "claim attribution failure does not suppress mailbox facts"
+contains "$CLAIM_ATTRIB_OUT" "WAKE_UNACKED wake=wake-410" "claim attribution failure does not suppress wake facts"
+not_contains "$CLAIM_ATTRIB_OUT" "SECRET_INVALID_MARKER" "claim attribution aggregate excludes evidence"
+not_contains "$CLAIM_ATTRIB_OUT" "SECRET_ATTRIB_MAIL" "claim attribution fixture excludes mailbox content"
+not_contains "$CLAIM_ATTRIB_OUT" "SECRET_ATTRIB_WAKE" "claim attribution fixture excludes wake envelope"
+
+# FLY-2118: unresolved or ambiguous owner attribution fails the entire STEP
+# closed and emits only aggregate, identifier-free diagnostics.
+ATTRIB3="$TMP/owner-attribution-step3"
+make_case "$ATTRIB3"
+sqlite3 "$ATTRIB3/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-300','FLY-300','flywheel','active',datetime('now')),
+ ('run-302','FLY-302','flywheel','active',datetime('now')),
+ ('run-303','FLY-303','flywheel','active',datetime('now')),
+ ('run-304','FLY-304','flywheel','active',datetime('now'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-300','implement',1,'running',NULL,datetime('now')),
+ ('run-302','implement',1,'running',NULL,datetime('now')),
+ ('run-303','implement',1,'running',NULL,datetime('now')),
+ ('run-304','implement',1,'running','exec-blank-lead',datetime('now'));
+SQL
+sqlite3 "$ATTRIB3/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-300-a','runner-flywheel:pending','flywheel','FLY-300','flywheel-eng-lead',datetime('now','-1 hour'),'running'),
+ ('exec-300-b','runner-flywheel:pending','flywheel','FLY-300','honey-lemon-lead',datetime('now','-1 hour'),'blocked'),
+ ('exec-302-a','runner-flywheel:pending','flywheel','FLY-302','flywheel-eng-lead','2026-08-28T10:00:00Z','completed'),
+ ('exec-302-b','runner-flywheel:pending','flywheel','FLY-302','honey-lemon-lead','2026-08-28T10:00:00Z','failed'),
+ ('exec-blank-lead','runner-flywheel:pending','flywheel','FLY-304',NULL,datetime('now','-1 hour'),'completed');
+SQL
+ATTRIB3_OUT="$ATTRIB3/out.txt"
+run_snapshot "$ATTRIB3" "$ATTRIB3_OUT" || fail "STEP 3 attribution failure still publishes report"
+contains "$ATTRIB3_OUT" "STEP 3: UNAVAILABLE(structural: owner_attribution_incomplete)" "STEP 3 fails closed for incomplete owner attribution"
+contains "$ATTRIB3_OUT" "OWNER_ATTRIBUTION_INCOMPLETE reason=current_owner_ambiguous count=1" "current owner ambiguity is aggregated"
+contains "$ATTRIB3_OUT" "OWNER_ATTRIBUTION_INCOMPLETE reason=latest_owner_ambiguous count=1" "latest cohort tie is aggregated"
+contains "$ATTRIB3_OUT" "OWNER_ATTRIBUTION_INCOMPLETE reason=owner_missing count=1" "missing execution and issue owner is aggregated"
+contains "$ATTRIB3_OUT" "OWNER_ATTRIBUTION_INCOMPLETE reason=execution_owner_invalid count=1" "blank exact owner is aggregated"
+for hidden in FLY-300 FLY-302 FLY-303 FLY-304 exec-blank honey-lemon-lead; do
+  not_contains "$ATTRIB3_OUT" "$hidden" "STEP 3 aggregate hides foreign identifier $hidden"
+done
+
+ATTRIB4="$TMP/owner-attribution-step4"
+make_case "$ATTRIB4"
+sqlite3 "$ATTRIB4/teamlead.db" <<'SQL'
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-mail-ambiguous','FLY-301','FLY-301','ambiguous mail owner','flywheel','running');
+SQL
+sqlite3 "$ATTRIB4/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-301-a','runner-flywheel:pending','flywheel','FLY-301','flywheel-eng-lead',datetime('now','-1 hour'),'running'),
+ ('exec-301-b','runner-flywheel:pending','flywheel','FLY-301','honey-lemon-lead',datetime('now','-1 hour'),'blocked');
+INSERT INTO mailbox_identity(id,delivery_id,insert_projection_hash) VALUES
+ ('mail-ambiguous','delivery-ambiguous','hash-ambiguous');
+INSERT INTO mailbox(id,delivery_id,from_agent,to_agent,recipient_kind,type,msg_class,content,created_at,state,relay_state) VALUES
+ ('mail-ambiguous','delivery-ambiguous','lead','exec-mail-ambiguous','runner','instruction','model','SECRET_AMBIGUOUS_MAIL',strftime('%Y-%m-%dT%H:%M:%fZ','now','-40 minutes'),'QUEUED','terminal_disposed');
+SQL
+ATTRIB4_OUT="$ATTRIB4/out.txt"
+run_snapshot "$ATTRIB4" "$ATTRIB4_OUT" || fail "STEP 4 attribution failure still publishes report"
+contains "$ATTRIB4_OUT" "STEP 4: UNAVAILABLE(structural: owner_attribution_incomplete)" "STEP 4 fails closed for incomplete owner attribution"
+contains "$ATTRIB4_OUT" "OWNER_ATTRIBUTION_INCOMPLETE reason=current_owner_ambiguous count=1" "STEP 4 ambiguity is aggregated"
+for hidden in FLY-301 mail-ambiguous exec-mail-ambiguous honey-lemon-lead SECRET_AMBIGUOUS_MAIL; do
+  not_contains "$ATTRIB4_OUT" "$hidden" "STEP 4 aggregate hides foreign identifier $hidden"
+done
+
+# FLY-2118: owner-first capture. Two Leads sharing one tmux server must each
+# capture only their own panes; foreign, unclaimed, QA, and cmux panes stay out.
 PANES="$TMP/panes"
 make_case "$PANES"
 cat > "$PANES/bin/tmux" <<'SH'
@@ -232,7 +510,7 @@ cat > "$PANES/bin/tmux" <<'SH'
 printf '%s\n' "$*" >> "${TMUX_CALL_LOG:?}"
 case "${1:-}" in
   list-windows)
-    printf '%s\n' 'runner-flywheel: FLY-200 FLY-201 FLY-202' 'runner-tidal-echo: TE-300' 'runner-test-slot-2: TEST-1' 'cmux-FLY-200: FLY-200'
+    printf '%s\n' 'runner-flywheel: FLY-200 FLY-201 FLY-202 FLY-207' 'runner-tidal-echo: TE-300' 'runner-test-slot-2: TEST-1' 'cmux-FLY-200: FLY-200'
     ;;
   list-panes)
     printf '%%1\trunner-flywheel\trunner-flywheel:@1\tFLY-200\tclaude\t0\n'
@@ -241,6 +519,7 @@ case "${1:-}" in
     printf '%%4\tcmux-FLY-200\tcmux-FLY-200:@4\tFLY-200\tclaude\t0\n'
     printf '%%5\trunner-test-slot-2\trunner-test-slot-2:@5\tTEST-1\tclaude\t0\n'
     printf '%%6\trunner-flywheel\trunner-flywheel:@6\tFLY-202\tclaude\t0\n'
+    printf '%%7\trunner-flywheel\trunner-flywheel:@7\tFLY-207\tclaude\t0\n'
     ;;
   capture-pane)
     target=""
@@ -257,6 +536,7 @@ case "${1:-}" in
       %3) printf '%s\n' 'Working on another project' ;;
       %5) printf '%s\n' 'QA slot is healthy' ;;
       %6) printf '%s\n' 'Runner cleanup pending' ;;
+      %7) printf '%s\n' 'Honey Lemon runner is healthy' ;;
       *) exit 2 ;;
     esac
     ;;
@@ -267,7 +547,8 @@ chmod 0755 "$PANES/bin/tmux"
 sqlite3 "$PANES/comm/flywheel/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
  ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
- ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
+ ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude'),
+ ('exec-pane-7','runner-flywheel:@7','flywheel','FLY-207','honey-lemon-lead','running','claude');
 SQL
 sqlite3 "$PANES/state/comm/tidal-echo/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
@@ -284,37 +565,36 @@ printf 'runner-flywheel:@1\t%s\t%s\n' "$PANE_STATE_HASH" "$(($(date +%s) - 3700)
   > "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv"
 PANES_OUT="$PANES/out.txt"
 TMUX_CALL_LOG="$PANES/tmux-calls.log" run_snapshot "$PANES" "$PANES_OUT" || fail "pane evidence snapshot exits zero"
-contains "$PANES_OUT" "pane_count=5" "canonical Runner pane count excludes cmux mirror"
-count_is "$PANES_OUT" "PANE_EVIDENCE " 5 "every canonical Runner pane has one evidence row"
-for pane in %1 %2 %3 %5 %6; do
+contains "$PANES_OUT" "pane_count=2" "Lead pane count contains only its two owned panes"
+count_is "$PANES_OUT" "PANE_EVIDENCE " 2 "only owned panes have evidence rows"
+for pane in %1 %2; do
   contains "$PANES/tmux-calls.log" "capture-pane -p -S - -t $pane" "pane $pane uses full scrollback capture"
 done
-not_contains "$PANES/tmux-calls.log" "capture-pane -p -S - -t %4" "cmux mirror is not captured twice"
+for pane in %3 %4 %5 %6 %7; do
+  not_contains "$PANES/tmux-calls.log" "capture-pane -p -S - -t $pane" "pane $pane is outside this Lead's capture surface"
+done
 not_contains "$PANES_OUT" "SECRET_PANE_TRANSCRIPT" "raw pane transcript is never persisted"
 contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned" "owned pane is mapped from current CommDB"
 contains "$PANES_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned exec=exec-pane-1" "owned evidence includes execution id"
 contains "$PANES_OUT" "findings=STALLED_60M action=REQUIRED result=UNSET" "unchanged state for one hour is a required finding"
 contains "$PANES_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "second owned pane is mapped"
 contains "$PANES_OUT" "findings=LIMIT_LIVE,INTERACTIVE_MENU action=REQUIRED result=UNSET" "live limit and menu are explicit findings"
-contains "$PANES_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=cross-boundary" "other-project pane uses machine-wide owner index"
-contains "$PANES_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=cross-boundary exec=exec-pane-3" "cross-boundary evidence preserves the mapped execution"
-contains "$PANES_OUT" "findings=none action=none result=clear" "healthy cross-boundary pane is not a finding"
-contains "$PANES_OUT" "pane=%5 target=runner-test-slot-2:@5 owner=foreign-registry" "QA-only session is classified without false orphan alert"
-contains "$PANES_OUT" "result=foreign_registry_clear" "healthy foreign-registry pane auto-closes"
-contains "$PANES_OUT" "pane=%6 target=runner-flywheel:@6 owner=unknown" "unclaimed registered pane remains visible"
-contains "$PANES_OUT" "result=session_terminated" "first unclaimed observation gets teardown grace"
+for hidden in 'runner-tidal-echo:@3' 'runner-test-slot-2:@5' 'runner-flywheel:@6' 'runner-flywheel:@7' 'exec-pane-3' 'exec-pane-7'; do
+  not_contains "$PANES_OUT" "$hidden" "foreign/unclaimed fact $hidden is absent from this Lead report"
+done
 contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner-flywheel:@1" "stall continuity is persisted outside the Lead-editable report"
+not_contains "$PANES/state/patrol-continuity/flywheel-eng-lead/flywheel.tsv" "runner-flywheel:@6" "orphan continuity is no longer kept by department Leads"
 
-# The published first report is now prior evidence. A second observation of the
-# same registered unclaimed target must become a real orphan finding.
-awk '!/target=runner-flywheel:@1 / && !/target=runner-flywheel:@6 /' "$REPORT_PATH" > "$PANES/reflowed-report" \
-  && mv "$PANES/reflowed-report" "$REPORT_PATH"
-PANES_SECOND_OUT="$PANES/second.txt"
-TMUX_CALL_LOG="$PANES/tmux-calls-second.log" run_snapshot "$PANES" "$PANES_SECOND_OUT" || fail "second pane snapshot exits zero"
-contains "$PANES_SECOND_OUT" "pane=%1 target=runner-flywheel:@1 owner=owned" "report reflow does not erase machine-owned pane continuity"
-contains "$PANES_SECOND_OUT" "findings=STALLED_60M action=REQUIRED result=UNSET" "report reflow cannot disable stall detection"
-contains "$PANES_SECOND_OUT" "pane=%6 target=runner-flywheel:@6 owner=unknown" "persistent orphan stays attributed to its target"
-contains "$PANES_SECOND_OUT" "findings=ORPHANED action=REQUIRED result=UNSET" "second unclaimed observation becomes a finding"
+HONEY_OUT="$PANES/honey.txt"
+TMUX_CALL_LOG="$PANES/tmux-calls-honey.log" run_snapshot "$PANES" "$HONEY_OUT" honey-lemon-lead || fail "second Lead snapshot exits zero"
+contains "$HONEY_OUT" "pane_count=1" "second Lead sees only its one owned pane"
+contains "$HONEY_OUT" "pane=%7 target=runner-flywheel:@7 owner=owned exec=exec-pane-7" "second Lead owns its pane"
+for pane in %1 %2 %3 %4 %5 %6; do
+  not_contains "$PANES/tmux-calls-honey.log" "capture-pane -p -S - -t $pane" "second Lead does not capture pane $pane"
+done
+count_is "$PANES/tmux-calls.log" "capture-pane -p -S - -t %1" 1 "owner captures pane %1 exactly once"
+count_is "$PANES/tmux-calls.log" "capture-pane -p -S - -t %2" 1 "owner captures pane %2 exactly once"
+count_is "$PANES/tmux-calls-honey.log" "capture-pane -p -S - -t %7" 1 "owner captures pane %7 exactly once"
 
 PANE_FAIL="$TMP/pane-fail"
 make_case "$PANE_FAIL"
@@ -331,14 +611,19 @@ SQL
 PANE_FAIL_OUT="$PANE_FAIL/out.txt"
 TMUX_CALL_LOG="$PANE_FAIL/tmux-calls.log" TMUX_CAPTURE_FAIL=%2 run_snapshot "$PANE_FAIL" "$PANE_FAIL_OUT" || fail "capture failure still publishes report"
 contains "$PANE_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: pane_capture_incomplete)" "one failed capture makes partial patrol visible"
-contains "$PANE_FAIL_OUT" "pane_count=5" "capture failure does not hide declared pane count"
-count_is "$PANE_FAIL_OUT" "PANE_EVIDENCE " 5 "capture failure still emits one row per pane"
+contains "$PANE_FAIL_OUT" "pane_count=2" "capture failure does not hide owned pane count"
+count_is "$PANE_FAIL_OUT" "PANE_EVIDENCE " 2 "capture failure still emits one row per owned pane"
 contains "$PANE_FAIL_OUT" "pane=%2 target=runner-flywheel:@2 owner=owned" "failed pane keeps identity evidence"
 contains "$PANE_FAIL_OUT" "findings=CAPTURE_FAILED action=REQUIRED result=UNSET" "failed pane requires explicit disposition"
 
 HASH_FAIL="$TMP/hash-fail"
 make_case "$HASH_FAIL"
 cp "$PANES/bin/tmux" "$HASH_FAIL/bin/tmux"
+sqlite3 "$HASH_FAIL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-pane-1','runner-flywheel:@1','flywheel','FLY-200','flywheel-eng-lead','running','claude'),
+ ('exec-pane-2','runner-flywheel:@2','flywheel','FLY-201','flywheel-eng-lead','running','claude');
+SQL
 cat > "$HASH_FAIL/bin/shasum" <<'SH'
 #!/bin/bash
 exit 127
@@ -364,8 +649,10 @@ sqlite3 "$INDEX_FAIL/state/comm/tidal-echo/comm.db" 'DROP TABLE sessions;'
 INDEX_FAIL_OUT="$INDEX_FAIL/out.txt"
 TMUX_CALL_LOG="$INDEX_FAIL/tmux-calls.log" run_snapshot "$INDEX_FAIL" "$INDEX_FAIL_OUT" || fail "owner-index failure still publishes report"
 contains "$INDEX_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: owner_index_incomplete)" "owner-index schema failure is UNAVAILABLE"
-contains "$INDEX_FAIL_OUT" "pane=%3 target=runner-tidal-echo:@3 owner=unknown" "incomplete owner index keeps the affected pane visible"
-contains "$INDEX_FAIL_OUT" "findings=OWNER_INDEX_INCOMPLETE action=REQUIRED result=UNSET" "incomplete index never becomes a false orphan finding"
+count_is "$INDEX_FAIL_OUT" "PANE_EVIDENCE " 0 "incomplete machine owner index captures no pane"
+not_contains "$INDEX_FAIL_OUT" "runner-tidal-echo:@3" "incomplete foreign index leaks no foreign pane"
+[ -e "$INDEX_FAIL/tmux-calls.log" ] || : > "$INDEX_FAIL/tmux-calls.log"
+not_contains "$INDEX_FAIL/tmux-calls.log" "capture-pane" "incomplete owner index fails closed before capture"
 not_contains "$INDEX_FAIL_OUT" "no such table" "raw owner-index error is not persisted"
 
 REGISTRY_FAIL="$TMP/registry-fail"
@@ -375,9 +662,9 @@ rm -f "$REGISTRY_FAIL/state/projects.json"
 REGISTRY_FAIL_OUT="$REGISTRY_FAIL/out.txt"
 TMUX_CALL_LOG="$REGISTRY_FAIL/tmux-calls.log" run_snapshot "$REGISTRY_FAIL" "$REGISTRY_FAIL_OUT" || fail "missing registry still publishes report"
 contains "$REGISTRY_FAIL_OUT" "STEP 2: UNAVAILABLE(structural: owner_index_incomplete)" "missing owner registry is fail-closed"
-contains "$REGISTRY_FAIL_OUT" "pane=%1 target=runner-flywheel:@1 owner=unknown" "missing registry does not misclassify owned panes as foreign"
-contains "$REGISTRY_FAIL_OUT" "findings=OWNER_INDEX_INCOMPLETE action=REQUIRED result=UNSET" "missing registry requires explicit pane disposition"
-not_contains "$REGISTRY_FAIL_OUT" "result=foreign_registry_clear" "missing registry never auto-clears panes as foreign"
+count_is "$REGISTRY_FAIL_OUT" "PANE_EVIDENCE " 0 "missing registry yields zero pane evidence"
+[ -e "$REGISTRY_FAIL/tmux-calls.log" ] || : > "$REGISTRY_FAIL/tmux-calls.log"
+not_contains "$REGISTRY_FAIL/tmux-calls.log" "capture-pane" "missing registry performs no capture"
 
 DUPLICATE="$TMP/duplicate-owner"
 make_case "$DUPLICATE"
@@ -388,13 +675,43 @@ INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,stat
 SQL
 sqlite3 "$DUPLICATE/state/comm/tidal-echo/comm.db" <<'SQL'
 INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
- ('exec-duplicate','runner-flywheel:@1','tidal-echo','TE-999','tidal-echo-content-lead','running','claude');
+ ('exec-duplicate','runner-flywheel:@1','flywheel','FLY-999','honey-lemon-lead','running','claude');
 SQL
 DUPLICATE_OUT="$DUPLICATE/out.txt"
 TMUX_CALL_LOG="$DUPLICATE/tmux-calls.log" run_snapshot "$DUPLICATE" "$DUPLICATE_OUT" || fail "duplicate owner target still publishes report"
 contains "$DUPLICATE_OUT" "STEP 2: UNAVAILABLE(structural: session_target_ambiguous)" "duplicate machine owner is fail-visible"
-contains "$DUPLICATE_OUT" "pane=%1 target=runner-flywheel:@1 owner=unknown" "ambiguous pane remains individually attributable"
-contains "$DUPLICATE_OUT" "findings=SESSION_TARGET_AMBIGUOUS action=REQUIRED result=UNSET" "ambiguous target requires disposition"
+count_is "$DUPLICATE_OUT" "PANE_EVIDENCE " 0 "ambiguous target emits no pane capture evidence"
+not_contains "$DUPLICATE/tmux-calls.log" "capture-pane -p -S - -t %1" "ambiguous target is captured by neither claimant"
+DUPLICATE_HONEY_OUT="$DUPLICATE/honey.txt"
+TMUX_CALL_LOG="$DUPLICATE/tmux-calls-honey.log" run_snapshot "$DUPLICATE" "$DUPLICATE_HONEY_OUT" honey-lemon-lead || fail "other duplicate claimant still publishes report"
+contains "$DUPLICATE_HONEY_OUT" "STEP 2: UNAVAILABLE(structural: session_target_ambiguous)" "other claimant sees the same structural ambiguity"
+not_contains "$DUPLICATE/tmux-calls-honey.log" "capture-pane -p -S - -t %1" "other claimant also performs zero capture"
+
+MISSING_PANE="$TMP/missing-owned-pane"
+make_case "$MISSING_PANE"
+cp "$PANES/bin/tmux" "$MISSING_PANE/bin/tmux"
+sqlite3 "$MISSING_PANE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-missing-pane','runner-flywheel:@99','flywheel','FLY-299','flywheel-eng-lead','running','claude');
+SQL
+MISSING_PANE_OUT="$MISSING_PANE/out.txt"
+TMUX_CALL_LOG="$MISSING_PANE/tmux-calls.log" run_snapshot "$MISSING_PANE" "$MISSING_PANE_OUT" || fail "missing owned pane still publishes report"
+contains "$MISSING_PANE_OUT" "ROSTER_EVIDENCE target=runner-flywheel:@99 exec=exec-missing-pane live_panes=0 findings=MISSING_PANE" "owned roster row without a pane is visible"
+count_is "$MISSING_PANE_OUT" "PANE_EVIDENCE " 0 "missing pane cannot be captured"
+
+BLANK_OWNER="$TMP/blank-owner"
+make_case "$BLANK_OWNER"
+cp "$PANES/bin/tmux" "$BLANK_OWNER/bin/tmux"
+sqlite3 "$BLANK_OWNER/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,status,vendor) VALUES
+ ('exec-blank-owner','runner-flywheel:@1','flywheel','FLY-200',NULL,'running','claude');
+SQL
+BLANK_OWNER_OUT="$BLANK_OWNER/out.txt"
+TMUX_CALL_LOG="$BLANK_OWNER/tmux-calls.log" run_snapshot "$BLANK_OWNER" "$BLANK_OWNER_OUT" || fail "blank owner still publishes report"
+contains "$BLANK_OWNER_OUT" "STEP 2: UNAVAILABLE(structural: owner_index_incomplete)" "bound target with blank lead fails closed"
+count_is "$BLANK_OWNER_OUT" "PANE_EVIDENCE " 0 "blank owner yields zero pane evidence"
+[ -e "$BLANK_OWNER/tmux-calls.log" ] || : > "$BLANK_OWNER/tmux-calls.log"
+not_contains "$BLANK_OWNER/tmux-calls.log" "capture-pane" "blank owner performs no capture"
 
 DEAD_PANE="$TMP/dead-pane"
 make_case "$DEAD_PANE"

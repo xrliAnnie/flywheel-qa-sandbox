@@ -277,17 +277,8 @@ describe("FLY-1455 config-schema enumeration", () => {
 		);
 
 		expect(paths).toEqual([
-			"checkpoints.*.enabled",
-			"doc_flow.enabled",
-			"pipeline.dag",
-			"pipeline.work_kind",
-			"ponytail.enabled",
-			"skill_framework.split",
 			"skills.enabled",
-			"skills.proofshot.enabled",
 			"skills.proofshot.vision_default",
-			"xiaohongshu_learning.collections[].auto_create",
-			"xiaohongshu_learning.enabled",
 			"xiaohongshu_learning.video_opt_in",
 		]);
 		expect(paths).not.toContain("qa.auto");
@@ -817,7 +808,7 @@ describe("FLY-1852 registry-wide readSite pass", () => {
 		// (file, symbol) drops one of every pair; keying by (pattern, symbol)
 		// still drops one of each same-pattern pair, though not the cross-pattern
 		// one. Each drop removes a distinct message. The shapes are:
-		// env-param + env-param (external_merge_reconcile, done_thread_reconcile),
+		// env-param + env-param fixtures,
 		// dynamic + dynamic (ship-eligibility.ts / resolveDefaultOnGate), and
 		// env-param + config across patterns on one shared resolver symbol.
 		{

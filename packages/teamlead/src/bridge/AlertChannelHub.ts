@@ -420,10 +420,10 @@ export class AlertChannelHub {
 				: null,
 		});
 		// FLY-368 v1.58.0: ack is HONEST per kind (no premature "waiting for human"):
-		//  - Cass will try this kind → "正在尝试自动修复…"
-		//  - Cass can't (bot present, non-repairable kind) → bare "收到"; a
-		//    needs_human result leaves the visible ticket NEW for duty triage.
-		//  - auto-repair disabled (no bot) → say so and leave it for duty triage.
+		//  - the existing repair path will try this kind → "正在尝试自动修复…"
+		//  - a non-repairable kind gets a bare "收到"; needs_human leaves the
+		//    visible ticket NEW for duty triage.
+		//  - an unavailable repair path is stated plainly and leaves duty in charge.
 		const bot = this.deps.autoRepairBot;
 		const ackTail = !bot
 			? "自动修复未启用，工单留在频道等值守处理。"
@@ -432,7 +432,7 @@ export class AlertChannelHub {
 				: "";
 		await this.safePostToThread(
 			threadId,
-			`🔧 Cass 收到（${payload.title}）。${ackTail}`.trimEnd(),
+			`🔧 已登记（${payload.title}）。收到，${ackTail}`.trimEnd(),
 		);
 
 		if (bot) {
@@ -500,17 +500,37 @@ export class AlertChannelHub {
 	 * place. Best-effort at every step — missing ops methods / message gone /
 	 * no 🎫 line all degrade silently (the thread narrative is the truth stream).
 	 */
+	async renderTicketLine(
+		row: AlertThreadRow,
+		ownerText?: string,
+	): Promise<void> {
+		if (!row.ticket_status) return;
+		await this.updateRootTicketStatus(
+			row.channel_id,
+			row.root_message_id,
+			row.ticket_status,
+			ownerText,
+		);
+	}
+
 	private async updateRootTicketStatus(
 		channelId: string,
 		messageId: string | null | undefined,
 		status: string,
+		ownerText?: string,
 	): Promise<void> {
 		const ops = this.deps.discord;
 		if (!messageId || !ops.getMessage || !ops.editMessage) return;
 		try {
 			const content = await ops.getMessage(channelId, messageId);
 			if (!content) return;
-			const updated = content.replace(/^(🎫 .*· 状态 )\S+$/mu, `$1${status}`);
+			let updated = content.replace(/^(🎫 .*· 状态 )\S+$/mu, `$1${status}`);
+			if (ownerText) {
+				updated = updated.replace(
+					/^(🎫 .*· owner )[^·\n]+(?= · 状态 )/mu,
+					`$1${ownerText}`,
+				);
+			}
 			if (updated === content) return; // no 🎫 line (legacy root) — skip
 			await ops.editMessage(channelId, messageId, updated);
 		} catch (err) {
@@ -554,13 +574,33 @@ export class AlertChannelHub {
 	}
 
 	/** Post "recovered" + archive + mark resolved for an active incident. */
-	async resolve(correlationKey: string): Promise<void> {
+	async resolve(
+		correlationKey: string,
+		expectedEventId?: string,
+	): Promise<void> {
 		const active = this.deps.store.getActiveAlertThread(correlationKey);
-		if (!active) return;
+		if (!active) {
+			if (
+				expectedEventId &&
+				this.deps.store.getAlertThreadByEventId(expectedEventId)?.resolved_at
+			) {
+				return;
+			}
+			if (expectedEventId) throw new Error("stale_episode");
+			return;
+		}
+		if (expectedEventId && active.event_id !== expectedEventId) {
+			throw new Error("stale_episode");
+		}
+		const eventId = active.event_id;
 		// FLY-927 (Task 2.3): a ticket row flips to RESOLVED without a mention
 		// with the root 🎫 line re-rendered; legacy rows (NULL status) untouched.
 		if (active.ticket_status) {
-			this.deps.store.setTicketStatus(correlationKey, "RESOLVED");
+			// No event id is the established ARC/reconcile API. Preserve its original
+			// write order and unfenced/no-throw semantics for existing callers.
+			if (expectedEventId === undefined) {
+				this.deps.store.setTicketStatus(correlationKey, "RESOLVED");
+			}
 			await this.updateRootTicketStatus(
 				active.channel_id,
 				active.root_message_id,
@@ -569,7 +609,21 @@ export class AlertChannelHub {
 		}
 		await this.safePostToThread(active.thread_id, this.formatResolved(active));
 		await this.safeArchive(active.thread_id);
-		this.deps.store.resolveAlertThread(correlationKey);
+		if (expectedEventId === undefined) {
+			this.deps.store.resolveAlertThread(correlationKey);
+			return;
+		}
+		if (
+			active.ticket_status &&
+			this.deps.store.setTicketStatus(correlationKey, "RESOLVED", eventId) === 0
+		) {
+			if (this.deps.store.getAlertThreadByEventId(eventId)?.resolved_at) return;
+			throw new Error("stale_episode");
+		}
+		if (this.deps.store.resolveAlertThread(correlationKey, eventId) === 0) {
+			if (this.deps.store.getAlertThreadByEventId(eventId)?.resolved_at) return;
+			throw new Error("stale_episode");
+		}
 	}
 
 	/**

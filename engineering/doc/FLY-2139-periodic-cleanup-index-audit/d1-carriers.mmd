@@ -1,0 +1,24 @@
+flowchart TB
+    subgraph J["载体 1 · launchd janitor — 每天 04:15 自动跑"]
+        J0["--cycle 新模式<br/>先试算 dry-run 再执行 apply<br/>(修复:部署后永久失败的断链)"]
+        J1["gate_markers 模块<br/>清已终结的门记号<br/>(1.6 万个残留文件)"]
+        J2["state_residue 模块<br/>清点名的残留目录<br/>(浏览器缓存 520MB + 误放 clone 162MB)"]
+        J3["commdb_backups 模块<br/>压缩过期 DB 备份<br/>(可验证的 pre-fly1572 族)"]
+        J4["db_retention 模块 · 每 7 天<br/>DB 陈旧行清扫<br/>(先盘点,授权后才删)"]
+        J0 --> J1
+        J0 --> J2
+        J0 --> J3
+        J0 --> J4
+    end
+    subgraph S["载体 2 · 部署班车 — 每天 00:00 / 12:00 重启窗"]
+        S1["wal_checkpoint<br/>把 160MB 日志并回主库"]
+        S2["VACUUM · 每 7 天<br/>回收删除后的空洞 ~170MB<br/>(先备份 + 完整性校验)"]
+        S1 --> S2
+    end
+    subgraph B["载体 3 · Bridge 进程内 — 不加任何新负载"]
+        B1["只保留 FLY-2136 已有的<br/>mailbox 60 秒周期归档"]
+    end
+    G["目标:Bridge 常快<br/>只读进行中的数据,陈旧数据定期离场"]
+    J --> G
+    S --> G
+    B --> G

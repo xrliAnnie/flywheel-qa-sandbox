@@ -7,7 +7,7 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-AGENTS_DIR="$ROOT/.flywheel/agents/engineering"
+AGENTS_DIR="$ROOT/.flywheel/agents/nodes"
 
 PASSED=0
 FAILED=0
@@ -55,7 +55,10 @@ body_contains() {
 	local file="$1"
 	local needle="$2"
 	local label="$3"
-	if awk '/^---$/{frontmatter++; next} frontmatter >= 2 {print}' "$file" | grep -qF -- "$needle"; then
+	# Consume the whole stream instead of using grep -q. Under pipefail, GNU awk
+	# can receive SIGPIPE after an early grep match and turn a true match into a
+	# false failure on Linux CI.
+	if awk '/^---$/{frontmatter++; next} frontmatter >= 2 {print}' "$file" | grep -F -- "$needle" >/dev/null; then
 		pass "$label"
 	else
 		fail "$label (missing body route: $needle)"
@@ -63,13 +66,11 @@ body_contains() {
 }
 
 roles=(
-	engineer-executor.md
-	designer-executor.md
-	designer-executor.bare.md
-	designer-executor.matt.md
-	product-designer-executor.md
-	prototype-executor.md
-	pm-executor.md
+	engineer.md
+	product_design.md
+	product_designer.md
+	proto.md
+	pm.md
 )
 
 for role in "${roles[@]}"; do
@@ -77,15 +78,15 @@ for role in "${roles[@]}"; do
 done
 
 body_contains \
-	"$AGENTS_DIR/engineer-executor.md" \
+	"$AGENTS_DIR/engineer.md" \
 	'For architecture, flow, relationship, or standalone HTML/SVG explanations, explicitly invoke `diagram-design` when a visual is clearer than prose or a table.' \
 	'engineer explicitly routes architecture and HTML diagrams'
 body_contains \
-	"$AGENTS_DIR/engineer-executor.md" \
+	"$AGENTS_DIR/engineer.md" \
 	'Skill-missing fallback: if `diagram-design` is not installed in this runtime, follow its intended HTML/SVG workflow by hand and report the missing skill to your Lead.' \
 	'engineer carries a diagram-design missing-skill fallback'
 
-for variant in designer-executor.md designer-executor.bare.md designer-executor.matt.md; do
+for variant in product_design.md; do
 	body_contains \
 		"$AGENTS_DIR/$variant" \
 		'Use `dataviz` when quantitative encoding is the point; use `diagram-design` for polished editorial flows, relationships, or architecture; keep `mermaid` for simple source-first diagrams.' \
@@ -97,27 +98,27 @@ for variant in designer-executor.md designer-executor.bare.md designer-executor.
 done
 
 body_contains \
-	"$AGENTS_DIR/product-designer-executor.md" \
+	"$AGENTS_DIR/product_designer.md" \
 	'| Polished editorial architecture / flow / relationship diagram for a doc or spec | `diagram-design`; keep simple source-first diagrams in Mermaid syntax |' \
 	'product designer separates polished diagrams from source-first Mermaid'
 body_contains \
-	"$AGENTS_DIR/product-designer-executor.md" \
+	"$AGENTS_DIR/product_designer.md" \
 	'Skill-missing fallback: if `diagram-design` is not installed in this runtime, follow its intended HTML/SVG workflow by hand and report the missing skill to your Lead.' \
 	'product designer carries a diagram-design missing-skill fallback'
 
 body_contains \
-	"$AGENTS_DIR/prototype-executor.md" \
+	"$AGENTS_DIR/proto.md" \
 	'| Standalone HTML architecture / flow explanation for the prototype | `diagram-design` |' \
 	'prototype routes explanatory HTML diagrams'
 
 body_contains \
-	"$AGENTS_DIR/pm-executor.md" \
+	"$AGENTS_DIR/pm.md" \
 	'| `diagram-design` | Add a polished architecture / flow / relationship diagram when it explains the founder-facing page better than prose or a table |' \
 	'PM routes diagrams used in founder explainers'
 
-qa="$AGENTS_DIR/qa-executor.md"
+qa="$AGENTS_DIR/qa.md"
 if [[ ! -f "$qa" ]]; then
-	fail 'qa-executor.md missing; cannot enforce independent QA exclusion'
+	fail 'qa.md missing; cannot enforce independent QA exclusion'
 elif grep -qF 'diagram-design' "$qa"; then
 	fail 'QA must not receive diagram-design as a default production capability'
 else

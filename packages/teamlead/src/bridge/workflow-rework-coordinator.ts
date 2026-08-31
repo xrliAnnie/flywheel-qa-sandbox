@@ -105,6 +105,19 @@ export interface WorkflowReworkCoordinatorStore {
 		nodeId: string,
 		attempt: number,
 	): WorkflowRunNodeRow | undefined;
+	hasUnlaunchedWorkflowRollbackFact(
+		runId: string,
+		nodeId: string,
+		executionId: string,
+	): boolean;
+	convergeWorkflowReworkWriterReplacement(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}):
+		| { ok: true; executionId: string; launchOrdinal: number }
+		| { ok: false; reason: string };
 	claimWorkflowReworkDelivery(input: {
 		requestId: string;
 		ownerId: string;
@@ -228,6 +241,7 @@ export type WorkflowReworkCoordinatorOutcome =
 			executionId: string;
 	  }
 	| { kind: "replacement_pending"; executionId: string; reason: string }
+	| { kind: "replacement_converged"; executionId: string }
 	| { kind: "disabled"; reason: "rework_reentry_disabled" }
 	| { kind: "retryable"; reason: string }
 	| { kind: "busy" }
@@ -374,6 +388,26 @@ export class WorkflowReworkCoordinator {
 			route.target_attempt,
 		);
 		if (
+			target?.state === "pending" &&
+			target.execution_id &&
+			target.execution_id !== route.preferred_actor_execution_id
+		) {
+			const converged = this.deps.store.convergeWorkflowReworkWriterReplacement(
+				{
+					requestId,
+					ownerId: this.deps.ownerId,
+					generation: claim.generation,
+					now: this.now().toISOString(),
+				},
+			);
+			if (converged.ok) {
+				return {
+					kind: "replacement_converged",
+					executionId: converged.executionId,
+				};
+			}
+		}
+		if (
 			!target ||
 			target.execution_id !== route.preferred_actor_execution_id ||
 			!(
@@ -393,9 +427,48 @@ export class WorkflowReworkCoordinator {
 				reason: "rework_target_not_reserved",
 			});
 		}
+		const markReplacementPending = (
+			executionId: string,
+			reason: string,
+		): WorkflowReworkCoordinatorOutcome => {
+			const moved = this.deps.store.advanceWorkflowReworkDelivery({
+				requestId,
+				ownerId: this.deps.ownerId,
+				generation: claim.generation,
+				from: delivery.state,
+				to: "replacement_pending",
+				now: this.now().toISOString(),
+				error: reason,
+				releaseOwner: true,
+			});
+			return moved.ok
+				? {
+						kind: "replacement_pending",
+						executionId,
+						reason,
+					}
+				: { kind: "retryable", reason: moved.reason };
+		};
 		const actor = this.deps.effects.getActorSession(
 			route.preferred_actor_execution_id,
 		);
+		const rolledBack = this.deps.store.hasUnlaunchedWorkflowRollbackFact(
+			request.run_id,
+			route.target_node_id,
+			route.preferred_actor_execution_id,
+		);
+		if (rolledBack) {
+			return markReplacementPending(
+				route.preferred_actor_execution_id,
+				"unlaunched_admission_rolled_back",
+			);
+		}
+		if (actor && isStateStoreIrreversibleTerminalForZombie(actor.status)) {
+			return markReplacementPending(
+				actor.execution_id,
+				`actor_session_terminal:${actor.status}`,
+			);
+		}
 		if (!actor) {
 			if (observingReceipt) {
 				return this.deferReceiptProbe({
@@ -438,24 +511,7 @@ export class WorkflowReworkCoordinator {
 			});
 		}
 		if (reentry.kind === "replace") {
-			const moved = this.deps.store.advanceWorkflowReworkDelivery({
-				requestId,
-				ownerId: this.deps.ownerId,
-				generation: claim.generation,
-				from: delivery.state,
-				to: "replacement_pending",
-				now: this.now().toISOString(),
-				error: reentry.reason,
-				releaseOwner: true,
-			});
-			if (!moved.ok) {
-				return { kind: "retryable", reason: moved.reason };
-			}
-			return {
-				kind: "replacement_pending",
-				executionId: actor.execution_id,
-				reason: reentry.reason,
-			};
+			return markReplacementPending(actor.execution_id, reentry.reason);
 		}
 		if (observingReceipt) {
 			return this.deferReceiptProbe({

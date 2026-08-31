@@ -20,6 +20,15 @@ describe("FLY-1726 canonical Lead identity", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1726-identity-"));
 		projectsPath = join(dir, "projects.json");
+		mkdirSync(join(dir, ".flywheel"));
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "founder",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 	});
 
 	afterEach(() => {
@@ -29,6 +38,7 @@ describe("FLY-1726 canonical Lead identity", () => {
 	function lead(agentId: string, overrides: Record<string, unknown> = {}) {
 		return {
 			agentId,
+			summaryRole: "producer",
 			backend: "claude-code",
 			botTokenEnv: `${agentId.replaceAll("-", "_").toUpperCase()}_BOT_TOKEN`,
 			botUserId: "12345678901234567",
@@ -75,9 +85,81 @@ describe("FLY-1726 canonical Lead identity", () => {
 			),
 			backend: "claude-code",
 			role: "dept",
+			summaryRole: "producer",
+			summaryGranularity: "per-lead",
+			hasSummaryDuty: true,
+			summaryAssignmentDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 			projectsDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 			identityDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
 		});
+	});
+
+	it("binds the selected mode and projected duty into identityDigest", () => {
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [lead("flywheel-eng-lead")],
+			},
+		]);
+		const perLead = resolveLeadIdentity({
+			projectsPath,
+			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
+			homeDir: dir,
+		});
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-project",
+				setBy: "founder",
+				setAt: "2026-08-28T01:00:00.000Z",
+			}),
+		);
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				summaryAggregatorLeadId: "flywheel-eng-lead",
+				leads: [lead("flywheel-eng-lead")],
+			},
+		]);
+		const perProject = resolveLeadIdentity({
+			projectsPath,
+			projectName: "flywheel",
+			leadId: "flywheel-eng-lead",
+			homeDir: dir,
+		});
+
+		expect(perProject.summaryGranularity).toBe("per-project");
+		expect(perProject.hasSummaryDuty).toBe(true);
+		expect(perProject.summaryAssignmentDigest).not.toBe(
+			perLead.summaryAssignmentDigest,
+		);
+		expect(perProject.identityDigest).not.toBe(perLead.identityDigest);
+	});
+
+	it("rejects a Lead row without an explicit summaryRole assignment", () => {
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [lead("flywheel-eng-lead", { summaryRole: undefined })],
+			},
+		]);
+
+		expect(() =>
+			resolveLeadIdentity({
+				projectsPath,
+				projectName: "flywheel",
+				leadId: "flywheel-eng-lead",
+				homeDir: dir,
+			}),
+		).toThrowError(
+			expect.objectContaining<Partial<LeadIdentityError>>({
+				code: "identity_summary_role_invalid",
+			}),
+		);
 	});
 
 	it("keeps identityDigest stable when another Lead changes", () => {
@@ -110,6 +192,55 @@ describe("FLY-1726 canonical Lead identity", () => {
 			homeDir: dir,
 		});
 
+		expect(after.identityDigest).toBe(before.identityDigest);
+		expect(after.projectsDigest).not.toBe(before.projectsDigest);
+	});
+
+	it("keeps the v1 identityDigest stable when Codex runtime tuning is first projected", () => {
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [
+					lead("codex-infra-bot-lead", {
+						backend: "codex-app-server",
+					}),
+				],
+			},
+		]);
+		const before = resolveLeadIdentity({
+			projectsPath,
+			projectName: "flywheel",
+			leadId: "codex-infra-bot-lead",
+			homeDir: dir,
+		});
+
+		write([
+			{
+				projectName: "flywheel",
+				projectRoot: dir,
+				leads: [
+					lead("codex-infra-bot-lead", {
+						backend: "codex-app-server",
+						model: "gpt-5.6-sol",
+						effort: "xhigh",
+						modelContextWindow: 1_000_000,
+					}),
+				],
+			},
+		]);
+		const after = resolveLeadIdentity({
+			projectsPath,
+			projectName: "flywheel",
+			leadId: "codex-infra-bot-lead",
+			homeDir: dir,
+		});
+
+		expect(after).toMatchObject({
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+			modelContextWindow: 1_000_000,
+		});
 		expect(after.identityDigest).toBe(before.identityDigest);
 		expect(after.projectsDigest).not.toBe(before.projectsDigest);
 	});

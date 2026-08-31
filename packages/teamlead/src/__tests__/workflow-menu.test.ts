@@ -8,11 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-	resetModelConfigCacheForTests,
-	WORKFLOW_MENU_BINDINGS,
-	workflowMenuTemplateId,
-} from "flywheel-config";
+import { resetModelConfigCacheForTests } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FLY1436_TARGET_BINDINGS } from "../bridge/workkind-cutover.js";
 import { StateStore } from "../StateStore.js";
@@ -25,6 +21,8 @@ import {
 	resolveLeadMenus,
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
+	workflowMenuBindings,
+	workflowMenuTemplateId,
 } from "../workflow-menu.js";
 import {
 	buildWorkflowRunSnapshotV2,
@@ -38,13 +36,13 @@ const ALL_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 const OPUS_EFFORTS = ["low", "medium", "high", "max"];
 
 describe("founder-approved workflow menu source", () => {
-	it("loads exactly six shapes and removes research", () => {
+	it("loads exactly six registered graphs and removes research", () => {
 		const menus = loadWorkflowMenuLibrary();
 		expect(menus.map((menu) => menu.shape)).toEqual([
 			"code",
 			"simple_code",
 			"prd",
-			"design",
+			"product_design_flow",
 			"prototype",
 			"generic",
 		]);
@@ -54,16 +52,17 @@ describe("founder-approved workflow menu source", () => {
 		).toBe(false);
 	});
 
-	it("uses one category-to-template table for validation, compilation, and cutover projection", () => {
-		expect(WORKFLOW_MENU_BINDINGS).toEqual([
+	it("derives one category-to-template projection from the registry", () => {
+		const bindings = workflowMenuBindings();
+		expect(bindings).toEqual([
 			{ taskCategory: "code", templateId: "tpl_code" },
 			{ taskCategory: "simple_code", templateId: "tpl_simple_code" },
 			{ taskCategory: "prd", templateId: "tpl_prd" },
-			{ taskCategory: "design", templateId: "tpl_design" },
+			{ taskCategory: "product_design_flow", templateId: "tpl_design" },
 			{ taskCategory: "prototype", templateId: "tpl_prototype" },
 			{ taskCategory: "generic", templateId: "tpl_generic_menu" },
 		]);
-		expect(FLY1436_TARGET_BINDINGS).toBe(WORKFLOW_MENU_BINDINGS);
+		expect(FLY1436_TARGET_BINDINGS).toEqual(bindings);
 	});
 
 	it("pins the Simple Code DAG to GPT-5.6 implement then cross-vendor Opus 5 QA", () => {
@@ -73,13 +72,29 @@ describe("founder-approved workflow menu source", () => {
 		expect(
 			menu.nodes.map((node) => ({
 				id: node.id,
-				role: node.role,
+				label: node.label,
+				type: node.type,
 				defaultModel: node.defaultModel,
 			})),
 		).toEqual([
-			{ id: "implement", role: "implement", defaultModel: "codex" },
-			{ id: "qa", role: "qa", defaultModel: "opus" },
-			{ id: "founder_gate", role: undefined, defaultModel: undefined },
+			{
+				id: "implement",
+				label: "实现",
+				type: "implement",
+				defaultModel: "codex",
+			},
+			{
+				id: "qa",
+				label: "QA 验证",
+				type: "qa",
+				defaultModel: "opus",
+			},
+			{
+				id: "founder_gate",
+				label: "创始人门",
+				type: "gate",
+				defaultModel: undefined,
+			},
 		]);
 		expect(menu.edges).toEqual([
 			{
@@ -144,106 +159,22 @@ describe("founder-approved workflow menu source", () => {
 		expect(qaLoop).not.toHaveProperty("on_limit");
 	});
 
-	it("rejects simple_code without a QA role", () => {
-		const shapes = mkdtempSync(join(tmpdir(), "fly1859-invalid-simple-code-"));
-		try {
-			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
-			const filename = join(shapes, "simple_code.yaml");
-			writeFileSync(
-				filename,
-				readFileSync(filename, "utf8").replace(
-					"    role: qa",
-					"    role: implement",
-				),
-			);
-			expect(() =>
-				loadWorkflowMenuLibrary({ shapesDirectory: shapes }),
-			).toThrow(
-				/simple_code must have implement and QA executable nodes.*QA retry loop/i,
-			);
-		} finally {
-			rmSync(shapes, { recursive: true, force: true });
-		}
-	});
-
-	it.each([
-		["code", 7],
-		["simple_code", 12],
-	] as const)("accepts a declared positive QA cap for %s", (shape, cap) => {
-		const shapes = mkdtempSync(join(tmpdir(), "fly2094-declared-cap-"));
-		try {
-			cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
-			const filename = join(shapes, `${shape}.yaml`);
-			const withoutQaCap = readFileSync(filename, "utf8").replace(
-				/ {4}maxIterations: \d+\n {4}onLimit: escalate\n/,
-				"",
-			);
-			writeFileSync(
-				filename,
-				withoutQaCap.replace(
-					"    exitWhen: qa_pass\n",
-					`    exitWhen: qa_pass\n    maxIterations: ${cap}\n    onLimit: escalate\n`,
-				),
-			);
-
-			const menu = loadWorkflowMenuLibrary({ shapesDirectory: shapes }).find(
-				(candidate) => candidate.shape === shape,
-			)!;
-			expect(
-				menu.loops.find((loop) => loop.loopWhen === "qa_fail"),
-			).toMatchObject({
-				maxIterations: cap,
-				onLimit: "escalate",
-			});
-			expect(
-				compileWorkflowMenuSeed(menu).manifest.loops.find(
-					(loop) => loop.loop_when === "qa_fail",
-				),
-			).toMatchObject({ max_iterations: cap, on_limit: "escalate" });
-		} finally {
-			rmSync(shapes, { recursive: true, force: true });
-		}
-	});
-
-	it.each(["code", "simple_code"] as const)(
-		"rejects %s without its QA retry loop",
-		(shape) => {
-			const shapes = mkdtempSync(join(tmpdir(), "fly2094-missing-qa-loop-"));
-			try {
-				cpSync(join(REPO_ROOT, "menus/shapes"), shapes, { recursive: true });
-				const filename = join(shapes, `${shape}.yaml`);
-				writeFileSync(
-					filename,
-					readFileSync(filename, "utf8").replace(
-						"    loopWhen: qa_fail",
-						"    loopWhen: founder_feedback_kickback",
-					),
-				);
-				expect(() =>
-					loadWorkflowMenuLibrary({ shapesDirectory: shapes }),
-				).toThrow(new RegExp(`${shape}.*QA retry loop`, "i"));
-			} finally {
-				rmSync(shapes, { recursive: true, force: true });
-			}
-		},
-	);
-
 	it("pins the Code DAG, unbounded retry loop, exact models, defaults, and nested efforts", () => {
 		const code = loadWorkflowMenuLibrary().find(
 			(menu) => menu.shape === "code",
 		)!;
 		expect(
-			code.nodes.map((node) => ({ id: node.id, role: node.role })),
+			code.nodes.map((node) => ({ id: node.id, type: node.type })),
 		).toEqual([
-			{ id: "design", role: "design" },
-			{ id: "implement", role: "implement" },
-			{ id: "qa", role: "qa" },
-			{ id: "founder_gate", role: undefined },
+			{ id: "eng_design", type: "design" },
+			{ id: "implement", type: "implement" },
+			{ id: "qa", type: "qa" },
+			{ id: "founder_gate", type: "gate" },
 		]);
 		expect(code.edges).toEqual([
 			{
 				id: "design_done",
-				from: "design",
+				from: "eng_design",
 				to: "implement",
 				condition: "design_done",
 			},
@@ -277,7 +208,7 @@ describe("founder-approved workflow menu source", () => {
 			},
 		]);
 		for (const [nodeId, models, defaultModel] of [
-			["design", ["fable", "codex"], "fable"],
+			["eng_design", ["fable", "codex"], "fable"],
 			["implement", ["fable", "codex"], "codex"],
 			["qa", ["opus"], "opus"],
 		] as const) {
@@ -319,31 +250,31 @@ describe("founder-approved workflow menu source", () => {
 			menus.map((menu) => ({
 				shape: menu.shape,
 				nodes: menu.nodes.map((node) => node.id),
-				roles: menu.nodes.map((node) => node.role),
+				types: menu.nodes.map((node) => node.type),
 				edges: menu.edges,
 			})),
 		).toEqual([
 			{
 				shape: "prd",
-				nodes: ["produce", "founder_gate"],
-				roles: ["pm", undefined],
+				nodes: ["pm", "founder_gate"],
+				types: ["generic", "gate"],
 				edges: [
 					{
-						id: "produce_done",
-						from: "produce",
+						id: "pm_done",
+						from: "pm",
 						to: "founder_gate",
 						condition: "node_done",
 					},
 				],
 			},
 			{
-				shape: "design",
-				nodes: ["produce", "founder_gate"],
-				roles: ["designer", undefined],
+				shape: "product_design_flow",
+				nodes: ["product_design", "founder_gate"],
+				types: ["generic", "gate"],
 				edges: [
 					{
-						id: "produce_done",
-						from: "produce",
+						id: "product_design_done",
+						from: "product_design",
 						to: "founder_gate",
 						condition: "node_done",
 					},
@@ -351,12 +282,12 @@ describe("founder-approved workflow menu source", () => {
 			},
 			{
 				shape: "prototype",
-				nodes: ["produce", "founder_gate"],
-				roles: ["proto", undefined],
+				nodes: ["proto", "founder_gate"],
+				types: ["generic", "gate"],
 				edges: [
 					{
-						id: "produce_done",
-						from: "produce",
+						id: "proto_done",
+						from: "proto",
 						to: "founder_gate",
 						condition: "node_done",
 					},
@@ -364,12 +295,12 @@ describe("founder-approved workflow menu source", () => {
 			},
 			{
 				shape: "generic",
-				nodes: ["execute", "founder_gate"],
-				roles: ["generic", undefined],
+				nodes: ["general", "founder_gate"],
+				types: ["generic", "gate"],
 				edges: [
 					{
-						id: "execute_done",
-						from: "execute",
+						id: "general_done",
+						from: "general",
 						to: "founder_gate",
 						condition: "node_done",
 					},
@@ -377,7 +308,7 @@ describe("founder-approved workflow menu source", () => {
 			},
 		]);
 		for (const menu of menus) {
-			const executable = menu.nodes.find((node) => node.role)!;
+			const executable = menu.nodes.find((node) => node.type !== "gate")!;
 			expect(executable.defaultModel).toBe("opus");
 			expect(executable.models).toEqual([
 				{
@@ -390,20 +321,11 @@ describe("founder-approved workflow menu source", () => {
 		}
 	});
 
-	it("loads the Flywheel IC roster and Lead adoption without rewriting IC assets", () => {
+	it("loads Lead adoption and resolves every adopted node through the registry", () => {
 		const config = loadProjectMenuConfig(REPO_ROOT);
-		expect(config.roster).toEqual({
-			design: ".flywheel/agents/engineering/engineer-executor.md",
-			implement: ".flywheel/agents/engineering/engineer-executor.md",
-			qa: ".flywheel/agents/engineering/qa-executor.md",
-			pm: ".flywheel/agents/engineering/pm-executor.md",
-			designer: ".flywheel/agents/engineering/designer-executor.md",
-			proto: ".flywheel/agents/engineering/prototype-executor.md",
-			generic: ".flywheel/agents/general-executor.md",
-		});
 		expect(config.adoption).toEqual({
 			"flywheel-eng-lead": ["code", "simple_code", "generic"],
-			"flywheel-product-lead": ["prd", "design", "prototype"],
+			"flywheel-product-lead": ["prd", "product_design_flow", "prototype"],
 		});
 		expect(
 			resolveLeadMenus({
@@ -416,7 +338,7 @@ describe("founder-approved workflow menu source", () => {
 				projectRoot: REPO_ROOT,
 				leadId: "flywheel-product-lead",
 			}).map((menu) => menu.shape),
-		).toEqual(["prd", "design", "prototype"]);
+		).toEqual(["prd", "product_design_flow", "prototype"]);
 		const productIdentity = readFileSync(
 			`${REPO_ROOT}/.lead/flywheel-product-lead/identity.md`,
 			"utf8",
@@ -425,7 +347,28 @@ describe("founder-approved workflow menu source", () => {
 		expect(productIdentity).not.toContain('"taskCategory":"research"');
 	});
 
-	it("compiles every shape into a role-based v2 seed with no agent_file or review node", () => {
+	it("materializes the FLY-2033 note-taker route as prd + product Lead + founder review", () => {
+		const menu = resolveLeadMenus({
+			projectRoot: REPO_ROOT,
+			leadId: "flywheel-product-lead",
+		}).find((candidate) => candidate.shape === "prd");
+		expect(menu).toBeDefined();
+		const seed = compileWorkflowMenuSeed(menu!);
+		expect(seed.templateId).toBe("tpl_prd");
+		const producer = seed.manifest.nodes.find((node) => node.id === "pm");
+		expect(producer).toMatchObject({
+			id: "pm",
+			founder_review: true,
+		});
+		const snapshot = buildWorkflowRunSnapshotV2({
+			template: { id: seed.templateId, revision: 1 },
+			manifest: seed.manifest,
+			canonicalRoot: REPO_ROOT,
+		});
+		expect(nodeRequiresFounderReview(snapshot, producer!.id)).toBe(true);
+	});
+
+	it("compiles every graph into a label-bearing v2 seed with no role or agent_file", () => {
 		for (const menu of loadWorkflowMenuLibrary()) {
 			const seed = compileWorkflowMenuSeed(menu);
 			expect(seed.templateId).toBe(workflowMenuTemplateId(menu.shape));
@@ -437,15 +380,18 @@ describe("founder-approved workflow menu source", () => {
 			for (const node of seed.manifest.nodes.filter(
 				(candidate) => candidate.type !== "gate" && candidate.type !== "land",
 			)) {
-				expect(node.role).toBeTruthy();
+				expect(node.label).toBeTruthy();
+				expect(node).not.toHaveProperty("role");
 				expect(node.agent_file).toBeUndefined();
 			}
 		}
 	});
 
-	it("pins founder review only on prd/design/prototype produce nodes", () => {
+	it("pins founder review only on prd/product-design/prototype nodes", () => {
 		for (const menu of loadWorkflowMenuLibrary()) {
-			const expected = ["prd", "design", "prototype"].includes(menu.shape);
+			const expected = ["prd", "product_design_flow", "prototype"].includes(
+				menu.shape,
+			);
 			expect(menu.founderReview ?? false, menu.shape).toBe(expected);
 			const seed = compileWorkflowMenuSeed(menu);
 			const executable = seed.manifest.nodes.find(
@@ -493,6 +439,7 @@ describe("founder-approved workflow menu source", () => {
 			.terminal_node.node;
 		expect(seed.manifest.nodes.find((node) => node.id === terminalId)).toEqual({
 			id: terminalId,
+			label: "合入",
 			type: "land",
 			execution: "engine",
 		});
@@ -536,7 +483,7 @@ describe("founder-approved workflow menu source", () => {
 	it("imports the six compiled identities into the SQLite registry", async () => {
 		const store = await StateStore.create(":memory:");
 		importWorkflowMenuSeeds(store);
-		for (const binding of WORKFLOW_MENU_BINDINGS) {
+		for (const binding of workflowMenuBindings()) {
 			const row = store.getWorkflowTemplate(binding.templateId);
 			expect(row).toMatchObject({
 				template_id: binding.templateId,
@@ -621,13 +568,11 @@ describe("founder-approved workflow menu source", () => {
 		expect(
 			store.listWorkflowTemplateRevisions("tpl_generic_menu"),
 		).toHaveLength(1);
-		expect(store.getWorkflowTemplate("tpl_generic_menu")?.name).toBe(
-			"generic menu",
-		);
+		expect(store.getWorkflowTemplate("tpl_generic_menu")?.name).toBe("通用");
 		store.close();
 	});
 
-	it("materializes every executable role from the project IC roster", () => {
+	it("materializes every executable node from its registered markdown file", () => {
 		const seed = compileWorkflowMenuSeed(
 			loadWorkflowMenuLibrary().find((menu) => menu.shape === "code")!,
 		);
@@ -636,25 +581,30 @@ describe("founder-approved workflow menu source", () => {
 			manifest: seed.manifest,
 			canonicalRoot: REPO_ROOT,
 		});
-		const design = snapshot.resolved.nodes.find(
-			(node) => node.id === "design",
+		const engDesign = snapshot.resolved.nodes.find(
+			(node) => node.id === "eng_design",
 		)!;
 		const implement = snapshot.resolved.nodes.find(
 			(node) => node.id === "implement",
 		)!;
 		const qa = snapshot.resolved.nodes.find((node) => node.id === "qa")!;
-		expect(design.agent?.content).toBe(
+		expect(engDesign.agent?.content).toBe(
 			readFileSync(
-				`${REPO_ROOT}/.flywheel/agents/engineering/engineer-executor.md`,
+				`${REPO_ROOT}/.flywheel/agents/nodes/eng_design.md`,
 				"utf8",
 			).slice(0, 40_000),
 		);
-		expect(implement.agent).toEqual(design.agent);
-		expect(qa.agent?.content).toBe(
+		expect(implement.agent?.content).toBe(
 			readFileSync(
-				`${REPO_ROOT}/.flywheel/agents/engineering/qa-executor.md`,
+				`${REPO_ROOT}/.flywheel/agents/nodes/implement.md`,
 				"utf8",
 			).slice(0, 40_000),
+		);
+		expect(qa.agent?.content).toBe(
+			readFileSync(`${REPO_ROOT}/.flywheel/agents/nodes/qa.md`, "utf8").slice(
+				0,
+				40_000,
+			),
 		);
 	});
 
@@ -671,7 +621,7 @@ describe("founder-approved workflow menu source", () => {
 			(candidate) => candidate.shape === "code",
 		)!;
 		const firstOverride = resolveMenuOverrides(menu, {
-			design: { model: "codex", effort: "max" },
+			eng_design: { model: "codex", effort: "max" },
 		});
 		const ids = ["run-menu", "exec-menu"];
 		const first = await resolveWorkflowTemplateSelection(store, {
@@ -716,7 +666,7 @@ describe("founder-approved workflow menu source", () => {
 				categorySource: "task_category",
 				entryKind: "workflow_v2",
 				override: resolveMenuOverrides(menu, {
-					design: { model: "fable" },
+					eng_design: { model: "fable" },
 				}).templateOverride,
 				env: {
 					FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -736,12 +686,12 @@ describe("workflow menu override validation", () => {
 
 	it("resolves aliases through the canonical registry and emits truthful receipts", () => {
 		const resolved = resolveMenuOverrides(code(), {
-			design: { model: "codex", effort: "max" },
+			eng_design: { model: "codex", effort: "max" },
 		});
 		expect(resolved.templateOverride).toEqual({
 			reason: "menu_api_override",
 			nodes: {
-				design: {
+				eng_design: {
 					vendor: "codex",
 					model: "gpt-5.6-sol",
 					effort: "max",
@@ -749,7 +699,7 @@ describe("workflow menu override validation", () => {
 			},
 		});
 		expect(resolved.receipts).toMatchObject({
-			design: {
+			eng_design: {
 				model: "codex (= gpt-5.6-sol)",
 				effort: "max",
 				overridden: true,
@@ -771,15 +721,15 @@ describe("workflow menu override validation", () => {
 		[
 			{ missing: { model: "fable" } },
 			"MENU_NODE_NOT_FOUND",
-			["design", "implement", "qa"],
+			["eng_design", "implement", "qa"],
 		],
 		[
-			{ design: { model: "opus" } },
+			{ eng_design: { model: "opus" } },
 			"MODEL_NOT_ALLOWED_FOR_NODE",
 			["fable", "codex"],
 		],
 		[
-			{ design: { model: "fable", effort: "ultra" } },
+			{ eng_design: { model: "fable", effort: "ultra" } },
 			"EFFORT_NOT_ALLOWED_FOR_MODEL",
 			ALL_EFFORTS,
 		],
@@ -886,30 +836,21 @@ describe("Opus 4.6 menu compatibility", () => {
 	});
 
 	it("still rejects an effort the bound model cannot run", () => {
-		for (const shape of [
-			"code",
-			"simple_code",
-			"prd",
-			"design",
-			"prototype",
-			"generic",
-		]) {
-			cpSync(
-				join(REPO_ROOT, "menus", "shapes", `${shape}.yaml`),
-				join(root, `${shape}.yaml`),
-			);
-		}
-		const codePath = join(root, "code.yaml");
+		const registryPath = join(root, "registry.yaml");
+		cpSync(
+			join(REPO_ROOT, ".flywheel", "agents", "registry.yaml"),
+			registryPath,
+		);
 		writeFileSync(
-			codePath,
-			readFileSync(codePath, "utf8").replace(
+			registryPath,
+			readFileSync(registryPath, "utf8").replace(
 				"allowedEfforts: [low, medium, high, max]",
 				"allowedEfforts: [low, medium, high, xhigh, max]",
 			),
 		);
 
-		expect(() => loadWorkflowMenuLibrary({ shapesDirectory: root })).toThrow(
-			/allowedEfforts must be a subset.*low, medium, high, max/,
+		expect(() => loadWorkflowMenuLibrary({ registryPath })).toThrow(
+			/allowedEfforts must be supported.*low, medium, high, max/,
 		);
 	});
 });

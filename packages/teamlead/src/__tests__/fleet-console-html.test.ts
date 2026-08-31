@@ -54,6 +54,12 @@ describe("management console HTML", () => {
 		expect(html).not.toContain("data-dag-command");
 	});
 
+	it("renders workflow names exclusively from backend DAG fields", () => {
+		expect(html).not.toContain("QA 失败 → 回实现");
+		expect(html).toContain("esc(qaNode.name)");
+		expect(html).toContain("esc(implementNode.name)");
+	});
+
 	it("ships syntactically valid dependency-free browser JavaScript", () => {
 		const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)];
 		expect(scripts).toHaveLength(1);

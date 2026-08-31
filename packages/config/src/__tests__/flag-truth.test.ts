@@ -62,10 +62,13 @@ const FLY_1806_RETIRED_FLAGS = [
 
 describe("FLY-1393 flag truth", () => {
 	it("rejects every SQLite-managed flag from persistent environments", () => {
-		const managedEnvVars = FEATURE_FLAGS.filter((flag) =>
-			STORE_MANAGED_FLAGS.has(flag.name),
-		).map((flag) => flag.envVar);
-		expect(managedEnvVars).toHaveLength(STORE_MANAGED_FLAGS.size);
+		const managedEnvVars = FEATURE_FLAGS.flatMap((flag) =>
+			STORE_MANAGED_FLAGS.has(flag.name) && flag.envVar ? [flag.envVar] : [],
+		);
+		expect(STORE_MANAGED_FLAGS.size).toBe(FEATURE_FLAGS.length);
+		expect(managedEnvVars).toHaveLength(
+			FEATURE_FLAGS.filter(({ scope }) => scope === "bridge_global").length,
+		);
 		for (const envVar of managedEnvVars) {
 			expect(envVar).toBeTruthy();
 			expect(validateFlagTruthEnvironment([`${envVar}=1`]), envVar).toEqual({
@@ -416,6 +419,17 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("registers the FLY-2033 meeting-notes config path as a non-flag value", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_MEETING_NOTES_CONFIG).toMatch(
+			/config value.*FLY-2033/i,
+		);
+		expect(
+			validateFlagTruthEnvironment([
+				"FLYWHEEL_MEETING_NOTES_CONFIG=/tmp/meeting-notes.yaml",
+			]),
+		).toEqual({ ok: true, errors: [] });
+	});
+
 	/**
 	 * FLY-1809 (from the FLY-1782 audit): these two were never on/off switches —
 	 * one is a Discord channel id, the other a filesystem path. They are MOVED off
@@ -697,6 +711,15 @@ describe("FLY-1393 flag truth", () => {
 		expect(disabled.ok).toBe(false);
 		expect(disabled.errors.join("\n")).toMatch(
 			/w1_process_liveness.*effective_enabled/,
+		);
+	});
+});
+
+describe("FLY-2131 Codex Lead model coordinates", () => {
+	it("accounts for effort and context window as non-flag config values", () => {
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_EFFORT).toMatch(/config value/i);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW).toMatch(
+			/numeric tuning/i,
 		);
 	});
 });

@@ -121,7 +121,6 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_HUDDLE_GEMINI_MODEL",
 	"FLYWHEEL_IDENTITY_FAILURE_DIR",
 	"FLYWHEEL_INBOX_LOOP_STALL_MIN",
-	"FLYWHEEL_INBOX_RETRY_WINDOW_SEC",
 	"FLYWHEEL_INTERACTION_PORT",
 	"FLYWHEEL_ISSUE_GATE_SUPERSEDE_MAX_MUTATIONS",
 	"FLYWHEEL_KIMI_PREFLIGHT_TIMEOUT_MS",
@@ -145,6 +144,7 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_LEAD_CTX_RESUME_MAX",
 	"FLYWHEEL_LEAD_EXTERNAL",
 	"FLYWHEEL_LEAD_GENERATION",
+	"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
 	"FLYWHEEL_LEAD_IDENTITY_DIGEST",
 	"FLYWHEEL_LEAD_KEY",
 	"FLYWHEEL_LEAD_LEASE_AUDIT_LOG",
@@ -153,6 +153,7 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_LEAD_LEASE_MODE_FILE",
 	"FLYWHEEL_LEAD_MENTION_PATTERNS",
 	"FLYWHEEL_LEAD_RECEIPT_DIR",
+	"FLYWHEEL_LEAD_SUMMARY_ROLE",
 	"FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES",
 	"FLYWHEEL_MAILBOX_READ_KEEP",
 	"FLYWHEEL_MAILBOX_READ_RETENTION_MS",
@@ -198,11 +199,15 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_SLACK_CHANNEL",
 	"FLYWHEEL_STATE_DB_PATH",
 	"FLYWHEEL_STUCK_COMM_ACTIVITY_MS",
+	"FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST",
+	"FLYWHEEL_SUMMARY_CONFIG_LOCK_HELD",
+	"FLYWHEEL_SUMMARY_GRANULARITY",
 	"FLYWHEEL_SUPERVISOR_BACKEND",
 	"FLYWHEEL_SUPERVISOR_DARWIN_INSTALL",
 	"FLYWHEEL_SWAP_PRESSURE_TIMEOUT_MIN",
 	"FLYWHEEL_SWAP_SENSOR_CMD",
 	"FLYWHEEL_SYSTEM_HEALTH_DIR",
+	"FLYWHEEL_TEAMLEAD_PROJECTS_VALIDATOR",
 	"FLYWHEEL_TEAMLEAD_DB",
 	"FLYWHEEL_TMUX_AUDIT_ALLOWLIST",
 	"FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS",
@@ -253,9 +258,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: onboarding service endpoint override, not an on/off gate",
 	FLYWHEEL_PATROL_CONFIG:
 		"path override for the hot-read patrol timing config (FLY-1687), not an on/off gate",
+	FLYWHEEL_MEETING_NOTES_CONFIG:
+		"config value: trusted meeting-notes YAML path override for hermetic QA and deployment (FLY-2033), not an on/off gate",
 	// context / ids
 	FLYWHEEL_EXEC_ID: "context: runner execution id",
 	FLYWHEEL_ISSUE_ID: "context: linear issue id",
+	FLYWHEEL_QA_ISSUE: "context: QA evidence issue id (FLY-2168)",
 	FLYWHEEL_PROJECT_NAME: "context: project name",
 	FLYWHEEL_PROJECT_DIR: "context: project dir",
 	FLYWHEEL_TMUX_SESSION: "context: tmux session name",
@@ -283,12 +291,16 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_BRIDGE_URL: "plumbing: bridge base URL",
 	FLYWHEEL_BRIDGE_SOURCE_MODE:
 		"plumbing: source-run build identity marker, not a rollout gate",
+	FLYWHEEL_BUNDLED_REGISTRY_PATH:
+		"plumbing: bundled agent-registry file path override for packaging and hermetic tests (FLY-2121), not an on/off gate",
 	FLYWHEEL_SANDBOX_REMOTE_URL: "plumbing: remote sandbox service URL",
 	FLYWHEEL_COMM_DB: "plumbing: comm db path",
 	FLYWHEEL_COMM_DIR: "plumbing: comm dir path",
 	FLYWHEEL_COMM_ROOT: "plumbing: comm root path",
 	FLYWHEEL_CLAIMS_DB: "plumbing: claims db path",
 	FLYWHEEL_GATE_MARKER_DIR: "plumbing: gate marker dir",
+	FLYWHEEL_QA_EVID_DIR:
+		"plumbing: QA evidence output directory override (FLY-2168)",
 	FLYWHEEL_CMUX_CLOSE_REQUEST_FILE:
 		"plumbing: cmux close-request marker file path (FLY-685)",
 	FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED:
@@ -342,6 +354,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: event-loop diagnostics dir override for isolated slot runtimes (FLY-1995)",
 	FLYWHEEL_PROJECTS_FILE:
 		"plumbing: canonical Lead identity registry path selector (FLY-1726), not a rollout gate",
+	FLYWHEEL_SUMMARY_CONFIG_HOME:
+		"plumbing: absolute home root for canonical summary config in isolated QA runtimes (FLY-2030), not a rollout gate",
 	FLYWHEEL_REPORTS_DIR: "plumbing: reports dir",
 	FLYWHEEL_COMPLETE_MARKER_DIR:
 		"plumbing: complete-failed marker dir override for isolated slot runtimes (FLY-1608)",
@@ -359,13 +373,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: durable Lead identity lease and authorization audit db path (FLY-1309)",
 	FLYWHEEL_LEAD_EPISODE_DB:
 		"plumbing: deduplicated Lead identity incident episode db path (FLY-1309)",
-	FLYWHEEL_PUBLISH_BROKER_SOCKET:
-		"plumbing: publish-broker unix socket path (FLY-1062)",
-	FLYWHEEL_PUBLISH_AUDIT_PATH: "plumbing: publish audit JSONL path (FLY-1062)",
-	FLYWHEEL_PUBLISH_APPROVAL_CHANNEL:
-		"config value: publish-approval Discord channel id (FLY-1062)",
 	FLYWHEEL_FLEET_SANITIZE:
-		"plumbing: fleet-sanitize.sh scanner path override (FLY-1062 broker gate; tests point it at stubs)",
+		"plumbing: fleet-sanitize.sh scanner path override; tests point it at stubs",
 	FLYWHEEL_CLAUDE_ACCOUNTS_PATH:
 		"plumbing: claude account-state json path (FLY-696)",
 	FLYWHEEL_CLAUDE_ACCOUNTS_LOCK:
@@ -473,6 +482,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: secondary Discord channel id for severe quota alerts (FLY-1252)",
 	// secrets / token env names
 	FLYWHEEL_INGEST_TOKEN: "secret: ingest token",
+	FLYWHEEL_ALERT_DUTY_TOKEN:
+		"secret capability: Claw-only alert duty ticket mutations (FLY-2076), not an on/off rollout flag",
 	FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL:
 		"secret: short-lived per-execution workflow submission credential",
 	FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED:
@@ -487,6 +498,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_LEAD_BACKEND: "config value: Lead runtime backend",
 	FLYWHEEL_MEMORY_MODEL: "config value: memory model",
 	FLYWHEEL_LEAD_MODEL: "config value: per-lead model (fleet)",
+	FLYWHEEL_LEAD_EFFORT:
+		"config value: per-lead Codex reasoning effort projected from the canonical registry (FLY-2131)",
+	FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW:
+		"numeric tuning: per-lead Codex model context window projected from the canonical registry (FLY-2131)",
 	FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "config value: alert channel id",
 	FLYWHEEL_INFRA_BOT_CHAT_CHANNEL_ID: "config value: infra bot chat channel id",
 	FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID:
@@ -551,6 +566,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_MAILBOX_WRITE_TIMEOUT_MS: "tuning knob: mailbox write timeout",
 	FLYWHEEL_MAILBOX_ACK_LEASE_MS:
 		"numeric tuning: mailbox agent-ack lease duration (FLY-1573)",
+	FLYWHEEL_MAILBOX_ARCHIVE_INTERVAL_MS:
+		"numeric tuning: mailbox archive maintenance cadence (FLY-2136)",
 	FLYWHEEL_MAILBOX_BATCH_WINDOW_MS:
 		"numeric tuning: mailbox grouping window (FLY-1573)",
 	FLYWHEEL_MAILBOX_BATCH_MAX:
@@ -561,6 +578,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: mailbox unacked lease retry limit (FLY-1573)",
 	FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS:
 		"numeric tuning: mailbox dead-letter notification window (FLY-1573)",
+	FLYWHEEL_MAILBOX_DEADSCAN_INTERVAL_MS:
+		"numeric tuning: mailbox dead-letter scan cadence (FLY-2136)",
 	FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX:
 		"numeric tuning: unavailable mailbox delivery retry limit (FLY-1750)",
 	FLYWHEEL_LAND_CLEANUP_GRACE_MS:
@@ -621,6 +640,14 @@ export const RETIRED_CONFIG_PATHS = [
 
 export const RETIRED_FLAGS = [
 	{ envVar: "FLYWHEEL_ALERT_COPY_TO_CHANNEL", retiredBy: "FLY-2075" },
+	{ envVar: "FLYWHEEL_FLAG_STORE", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_PUBLISH_BROKER", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_CONVERGE_CMUX_SYMLINK", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_CMUX_VIEW_HELPER", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_CMUX_NODE_PRESENCE", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS", retiredBy: "FLY-2102" },
+	{ envVar: "FLYWHEEL_LEAD_LEASE_BYPASS", retiredBy: "FLY-2102" },
 	{ envVar: "FLYWHEEL_AUTO_QA", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_CODEX_HARD_GATE", retiredBy: "FLY-1981" },
 	{ envVar: "FLYWHEEL_BRIDGE_WATCHDOG", retiredBy: "FLY-1560" },

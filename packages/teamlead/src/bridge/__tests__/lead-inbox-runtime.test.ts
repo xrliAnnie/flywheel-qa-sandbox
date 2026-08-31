@@ -37,7 +37,7 @@ function runtimeStoreStub(
 		listDeadLetterAlertCursors: () => [],
 		createDeadLetterAlertIntent: vi.fn(),
 		listDueDeadLetterAlerts: () => [],
-		listUndeliveredWorkflowReplacementLeadEvents: () => [],
+		listUndeliveredLeadInboxEvents: () => [],
 	};
 }
 
@@ -48,6 +48,7 @@ const projects: ProjectEntry[] = [
 		leads: [
 			{
 				agentId: "lead-a",
+				summaryRole: "producer",
 				chatChannel: "chat-a",
 				match: { labels: ["Engineering"] },
 			},
@@ -56,6 +57,170 @@ const projects: ProjectEntry[] = [
 ];
 
 describe("LeadInboxRuntime", () => {
+	it("periodically archives terminal mailbox families with audit evidence", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2136-runtime-archive-"));
+		const dbPath = join(root, "project-a.db");
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2136-archive",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		const archiveDueFamilies = vi.spyOn(
+			MailboxQueue.prototype,
+			"archiveDueFamilies",
+		);
+		const drainContentRefGc = vi.spyOn(
+			MailboxQueue.prototype,
+			"drainContentRefGc",
+		);
+		try {
+			queue.enqueue({
+				id: "fly2136-archive-me",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "terminal family",
+				createdAt: "2026-08-01T00:00:00.000Z",
+				senderRef: encodeSenderRef(),
+			});
+			queue.ack("fly2136-archive-me", "2026-08-01T00:00:00.000Z");
+
+			runtime.start();
+			await vi.waitFor(
+				() => expect(queue.getById("fly2136-archive-me")).toBeUndefined(),
+				{ timeout: 1_500 },
+			);
+			expect(archiveDueFamilies).toHaveBeenCalledWith({
+				now: expect.any(String),
+				maxFamilies: 5,
+			});
+			expect(drainContentRefGc).toHaveBeenCalledWith({
+				now: expect.any(String),
+				limit: 1,
+			});
+
+			const verify = new Database(dbPath, { readonly: true });
+			try {
+				expect(
+					verify
+						.prepare(
+							"SELECT event, subject_id FROM mailbox_log WHERE message_id = ?",
+						)
+						.get("fly2136-archive-me"),
+				).toEqual({ event: "archived", subject_id: "fly2136-archive-me" });
+				expect(
+					verify
+						.prepare("SELECT archived_at FROM mailbox_identity WHERE id = ?")
+						.get("fly2136-archive-me"),
+				).toEqual({ archived_at: expect.any(String) });
+			} finally {
+				verify.close();
+			}
+		} finally {
+			drainContentRefGc.mockRestore();
+			archiveDueFamilies.mockRestore();
+			queue.close();
+		}
+	});
+
+	it("throttles a persistently failing archive attempt", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2136-archive-failure-"));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: runtimeStoreStub() as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => join(root, "project-a.db"),
+			ownerEpoch: "owner-fly2136-archive-failure",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const archive = vi
+			.spyOn(MailboxQueue.prototype, "archiveDueFamilies")
+			.mockImplementation(() => {
+				throw new Error("persistent archive failure");
+			});
+		const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			runtime.start();
+			await vi.waitFor(() => expect(archive).toHaveBeenCalledTimes(1));
+			runtime.nudge("lead-a", "project-a");
+			await new Promise<void>((resolve) => setTimeout(resolve, 100));
+			expect(archive).toHaveBeenCalledTimes(1);
+			expect(warning).toHaveBeenCalledWith(
+				expect.stringContaining("persistent archive failure"),
+			);
+		} finally {
+			warning.mockRestore();
+			archive.mockRestore();
+		}
+	});
+
+	it("throttles dead-letter reconciliation while leaving alert draining live", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2136-alert-throttle-"));
+		const dbPath = join(root, "project-a.db");
+		const store = runtimeStoreStub();
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store: store as never,
+			registry: new RuntimeRegistry(),
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2136-alert-throttle",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch: vi.fn() }),
+			runnerAdapterForProject: () => ({
+				deliver: vi.fn(),
+				resolveQuestion: () => undefined,
+				close: vi.fn(),
+			}),
+		});
+		runtimes.push(runtime);
+		const queue = new MailboxQueue(dbPath);
+		try {
+			queue.enqueue({
+				id: "fly2136-dead-lead",
+				fromAgent: "runner-a",
+				toAgent: "retired-lead",
+				recipientKind: "lead",
+				type: "question",
+				content: "unacknowledged",
+				senderRef: encodeSenderRef(),
+			});
+			queue.markDead(
+				"fly2136-dead-lead",
+				new Date().toISOString(),
+				"lease_expired_unacked",
+			);
+
+			runtime.start();
+			await vi.waitFor(() =>
+				expect(store.createDeadLetterAlertIntent).toHaveBeenCalledTimes(1),
+			);
+			runtime.nudge("lead-a", "project-a");
+			await new Promise<void>((resolve) => setTimeout(resolve, 100));
+			expect(store.createDeadLetterAlertIntent).toHaveBeenCalledTimes(1);
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("FLY-2018: admit redrives a committed replacement event and duplicate scans stay quiet", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly2018-redrive-"));
 		const dbPath = join(root, "project-a.db");
@@ -116,6 +281,163 @@ describe("LeadInboxRuntime", () => {
 		expect(ticks).toBeLessThan(6);
 		expect(store.getLeadEventBySeq(1)?.delivered_at).toBeUndefined();
 		store.close();
+	});
+
+	it("FLY-2152: admit redrives an owner/project-scoped workflow claim event", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2152-claim-redrive-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const claimPayload = {
+			event_type: "workflow_claim_recorded",
+			execution_id: "qa-exec",
+			issue_id: "FLY-2152",
+			project_name: "project-a",
+			workflow_run_id: "run-2152",
+			workflow_node_id: "qa",
+			workflow_attempt: 1,
+			workflow_claim_id: 554,
+			workflow_decision_kind: "qa_verdict",
+			workflow_predicate: "qa_failed",
+			workflow_issued_at: "2026-08-29T06:43:00.000Z",
+			summary: "QA verdict recorded",
+		};
+		const claimSeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:554",
+			"workflow_claim_recorded",
+			JSON.stringify(claimPayload),
+			"wf:run-2152",
+		);
+		const wrongProjectSeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:555",
+			"workflow_claim_recorded",
+			JSON.stringify({ ...claimPayload, project_name: "project-b" }),
+			"wf:run-2152",
+		);
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, {
+			type: "commdb",
+			renderEnvelope: (envelope) => JSON.stringify(envelope.event),
+			deliver: async () => ({ delivered: true }),
+			sendBootstrap: async () => {},
+			health: () => ({ healthy: true }),
+			shutdown: async () => {},
+		});
+		const deliverBatch = vi.fn(async (batch) => ({
+			batchId: batch.batchId,
+			memberIds: batch.members.map((member) => member.deliveryId),
+			status: "accepted_new" as const,
+		}));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry,
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2152",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch }),
+		});
+		runtimes.push(runtime);
+		runtime.start();
+		await vi.waitFor(() =>
+			expect(store.getLeadEventBySeq(claimSeq)?.delivered_at).toEqual(
+				expect.any(String),
+			),
+		);
+		expect(
+			store.getLeadEventBySeq(wrongProjectSeq)?.delivered_at,
+		).toBeUndefined();
+		expect(deliverBatch).toHaveBeenCalledTimes(1);
+		expect(deliverBatch.mock.calls[0]?.[0].modelPayload).toContain(
+			'"workflow_claim_id":554',
+		);
+		store.close();
+	});
+
+	it("FLY-2152: one failed claim redrive does not block later rows", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2152-redrive-isolation-"));
+		const dbPath = join(root, "project-a.db");
+		const store = await StateStore.create(":memory:");
+		const claimPayload = {
+			event_type: "workflow_claim_recorded",
+			execution_id: "qa-exec",
+			issue_id: "FLY-2152",
+			project_name: "project-a",
+			workflow_run_id: "run-2152",
+			workflow_node_id: "qa",
+			workflow_attempt: 1,
+			workflow_decision_kind: "qa_verdict",
+			workflow_predicate: "qa_failed",
+			workflow_issued_at: "2026-08-29T06:43:00.000Z",
+			summary: "QA verdict recorded",
+		};
+		const poisonSeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:poison",
+			"workflow_claim_recorded",
+			JSON.stringify({ ...claimPayload, workflow_claim_id: 555 }),
+			"wf:run-2152",
+		);
+		const healthySeq = store.appendLeadEvent(
+			"lead-a",
+			"workflow_claim:healthy",
+			"workflow_claim_recorded",
+			JSON.stringify({ ...claimPayload, workflow_claim_id: 556 }),
+			"wf:run-2152",
+		);
+		const registry = new RuntimeRegistry();
+		registry.register(projects[0]!.leads[0]!, {
+			type: "commdb",
+			renderEnvelope: (envelope) => {
+				if (envelope.seq === poisonSeq) throw new Error("poison render");
+				return JSON.stringify(envelope.event);
+			},
+			deliver: async () => ({ delivered: true }),
+			sendBootstrap: async () => {},
+			health: () => ({ healthy: true }),
+			shutdown: async () => {},
+		});
+		const deliverBatch = vi.fn(async (batch) => ({
+			batchId: batch.batchId,
+			memberIds: batch.members.map((member) => member.deliveryId),
+			status: "accepted_new" as const,
+		}));
+		const runtime = new LeadInboxRuntime({
+			projects,
+			store,
+			registry,
+			commDbPathForProject: () => dbPath,
+			ownerEpoch: "owner-fly2152-isolation",
+			runLegacyCutover: () => {},
+			adapterForLead: () => ({ deliverBatch }),
+		});
+		runtimes.push(runtime);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			runtime.start();
+			await vi.waitFor(
+				() =>
+					expect(store.getLeadEventBySeq(healthySeq)?.delivered_at).toEqual(
+						expect.any(String),
+					),
+				{ timeout: 2_000 },
+			);
+			expect(store.getLeadEventBySeq(poisonSeq)?.delivered_at).toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(
+				"[lead-inbox-runtime] lead event redrive failed",
+				{
+					leadId: "lead-a",
+					projectName: "project-a",
+					seq: poisonSeq,
+					eventType: "workflow_claim_recorded",
+					errorName: "Error",
+				},
+			);
+		} finally {
+			warn.mockRestore();
+			store.close();
+		}
 	});
 
 	it("keeps post-boot Lead mail live when the current roster recognizes the recipient", () => {
@@ -499,8 +821,7 @@ describe("LeadInboxRuntime", () => {
 		);
 	});
 
-	it("forwards terminal transport exhaustion before a queue-OFF row dies", async () => {
-		vi.stubEnv("FLYWHEEL_MAILBOX_QUEUE", "0");
+	it("forwards terminal transport exhaustion before a row dies", async () => {
 		vi.stubEnv("FLYWHEEL_MAILBOX_UNAVAILABLE_RETRY_MAX", "1");
 		const root = mkdtempSync(join(tmpdir(), "fly1750-runtime-exhausted-"));
 		const dbPath = join(root, "project-a.db");

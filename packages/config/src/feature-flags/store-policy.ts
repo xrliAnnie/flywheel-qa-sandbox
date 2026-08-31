@@ -2,70 +2,33 @@ import {
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
 } from "../skill-framework-mode.js";
-import {
-	FLAG_EXEMPTIONS,
-	type FlagExemption,
-	LEGACY_FLAG_EXEMPTION_BASELINE,
-} from "./exemptions.js";
+import { FLAG_EXEMPTIONS, type FlagExemption } from "./exemptions.js";
 import { FEATURE_FLAGS, type FeatureFlagSpec } from "./registry.js";
 
 export const FLAG_AUTHORING_RUNBOOK =
 	"doc/engineer/implementation/flag-authoring-runbook.md";
 
+/** Closed: no registry flag may remain outside the store. */
+export const LEGACY_UNMANAGED_BASELINE = Object.freeze([] as const);
+const APPROVED_EXEMPTION_KEYS: ReadonlySet<string> = new Set(
+	FLAG_EXEMPTIONS.map(({ kind, name }) => `${kind}:${name}`),
+);
+
+export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set(
+	FEATURE_FLAGS.map(({ name }) => name),
+);
+
 /**
- * FLY-1981: immutable maximum ledger for the 31 pre-store registry specs.
- * It is intentionally literal, never computed from FEATURE_FLAGS. Existing
- * entries may migrate into the store or retire; no new unmanaged name may enter.
+ * FLY-2100: project-config flags whose explicit values may be stored per
+ * project. Wildcard/array config families, governance gates, dormant flags,
+ * and readonly escape hatches stay out because one boolean per project cannot
+ * preserve their contracts.
  */
-export const LEGACY_UNMANAGED_BASELINE = Object.freeze([
-	"flag_store",
-	"founder_review_orphan_monitor",
-	"mailbox_queue",
-	"liveness_activity_window_ms",
-	"converge_cmux_symlink",
-	"cmux_view_helper",
-	"cmux_node_presence",
-	"voice_qa_presence_override",
-	"merge_approval_gate_killswitch",
-	"issue_gate_supersede_mode",
-	"deferred_approval_ttl_ms",
-	"founder_reply_deadletter_age_ms",
-	"issue_display_sweep_ticks",
-	"ship_gate_grace_ms",
-	"external_merge_reconcile",
-	"merge_reconcile_window_days",
-	"ship_gate_card_grace_ms",
-	"ghost_guard_wait_ms",
-	"lead_lease_bypass",
-	"checkpoint_enabled",
-	"pipeline_dag",
-	"pipeline_work_kind",
-	"xiaohongshu_auto_create",
-	"doc_flow",
-	"skill_framework_split_participation",
-	"proofshot",
-	"xiaohongshu_learning",
-	"ponytail",
-	"done_thread_reconcile_interval_min",
-	"done_thread_reconcile_max_per_run",
-	"publish_broker",
-] as const);
-
-const LEGACY_UNMANAGED_NAMES: ReadonlySet<string> = new Set(
-	LEGACY_UNMANAGED_BASELINE,
+export const PROJECT_STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set(
+	FEATURE_FLAGS.filter(({ scope }) => scope === "project").map(
+		({ name }) => name,
+	),
 );
-const LEGACY_EXEMPTION_KEYS: ReadonlySet<string> = new Set(
-	LEGACY_FLAG_EXEMPTION_BASELINE,
-);
-
-export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
-	"loop_profiler",
-	"shipped_husk_force",
-	"flag_retirement_scan",
-	"workflow_rework_reentry",
-	"skill_framework_mode",
-	"workflow_turn_divergence_alerts",
-] as const);
 
 /**
  * Former store-managed identities whose current-value row is removed on
@@ -74,11 +37,6 @@ export const STORE_MANAGED_FLAGS: ReadonlySet<string> = new Set([
 export const RETIRED_FLAG_STORE_ROWS: ReadonlySet<string> = new Set([
 	"workflow_resume",
 	"auto_qa_killswitch",
-] as const);
-
-export const PROTECTED_LEGACY_FLAG_NAMES: ReadonlySet<string> = new Set([
-	"mailbox_queue",
-	"merge_approval_gate_killswitch",
 ] as const);
 
 export interface FlagStoreRawValue {
@@ -113,9 +71,43 @@ const skillFrameworkCodec: FlagStoreCodec = {
 	canonicalEffective: String,
 };
 
+export const SUMMARY_ABSORPTION_CADENCE_DEFAULT_MS = 6 * 60 * 60_000;
+export const SUMMARY_ABSORPTION_CADENCE_MIN_MS = 60_000;
+export const SUMMARY_ABSORPTION_CADENCE_MAX_MS = 30 * 24 * 60 * 60_000;
+
+function parseSummaryAbsorptionCadence(raw: string): string {
+	if (!/^[1-9][0-9]*$/.test(raw)) {
+		throw new Error("summary absorption cadence must be a positive integer");
+	}
+	const value = Number(raw);
+	if (
+		!Number.isSafeInteger(value) ||
+		value < SUMMARY_ABSORPTION_CADENCE_MIN_MS ||
+		value > SUMMARY_ABSORPTION_CADENCE_MAX_MS
+	) {
+		throw new Error(
+			`summary absorption cadence must be ${SUMMARY_ABSORPTION_CADENCE_MIN_MS}..${SUMMARY_ABSORPTION_CADENCE_MAX_MS} ms`,
+		);
+	}
+	return String(value);
+}
+
+const summaryAbsorptionCadenceCodec: FlagStoreCodec = {
+	parse: ({ hasOverride, raw }) =>
+		hasOverride
+			? parseSummaryAbsorptionCadence(raw ?? "")
+			: String(SUMMARY_ABSORPTION_CADENCE_DEFAULT_MS),
+	canonicalEffective: (value) => parseSummaryAbsorptionCadence(String(value)),
+};
+
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
+	if (name === "summary_absorption_cadence_ms") {
+		return summaryAbsorptionCadenceCodec;
+	}
 	if (name === "skill_framework_mode") return skillFrameworkCodec;
 	if (
+		name === "alert_system" ||
+		name === "review_quota_auto_retry" ||
 		name === "loop_profiler" ||
 		name === "shipped_husk_force" ||
 		name === "flag_retirement_scan" ||
@@ -123,8 +115,15 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	) {
 		return defaultOnCodec;
 	}
-	if (name === "workflow_turn_divergence_alerts") {
+	if (
+		name === "workflow_turn_divergence_alerts" ||
+		name === "workflow_node_reuse"
+	) {
 		return optInCodec;
+	}
+	if (PROJECT_STORE_MANAGED_FLAGS.has(name)) {
+		const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+		return spec?.polarity === "default_on" ? defaultOnCodec : optInCodec;
 	}
 	return undefined;
 }
@@ -142,8 +141,8 @@ function getStoreEligibilityAgainst(
 	if (spec.category === "governance_gate") {
 		return { eligible: false, reason: "governance_gate" };
 	}
-	if (PROTECTED_LEGACY_FLAG_NAMES.has(spec.name)) {
-		return { eligible: false, reason: "protected_legacy" };
+	if (spec.scope === "project") {
+		return { eligible: false, reason: "project_scope" };
 	}
 	if (!managedFlags.has(spec.name)) {
 		return { eligible: false, reason: "not_store_managed" };
@@ -155,6 +154,7 @@ export interface FlagAuthoringPolicyInput {
 	flags?: readonly FeatureFlagSpec[];
 	exemptions?: readonly FlagExemption[];
 	storeManagedFlags?: ReadonlySet<string>;
+	projectStoreManagedFlags?: ReadonlySet<string>;
 	codecForName?: (name: string) => FlagStoreCodec | undefined;
 }
 
@@ -176,6 +176,8 @@ export function validateFlagAuthoringPolicy(
 	const flags = input.flags ?? FEATURE_FLAGS;
 	const exemptions = input.exemptions ?? FLAG_EXEMPTIONS;
 	const managedFlags = input.storeManagedFlags ?? STORE_MANAGED_FLAGS;
+	const projectManagedFlags =
+		input.projectStoreManagedFlags ?? PROJECT_STORE_MANAGED_FLAGS;
 	const codecForName = input.codecForName ?? getFlagStoreCodec;
 	const issues: string[] = [];
 	const registryNames = new Set(flags.map((spec) => spec.name));
@@ -183,7 +185,7 @@ export function validateFlagAuthoringPolicy(
 
 	for (const exemption of exemptions) {
 		const key = `${exemption.kind}:${exemption.name}`;
-		if (!LEGACY_EXEMPTION_KEYS.has(key)) {
+		if (!APPROVED_EXEMPTION_KEYS.has(key)) {
 			issues.push(
 				authoringIssue(
 					`${key}: FLAG_EXEMPTIONS is frozen and accepts no new entries`,
@@ -199,53 +201,87 @@ export function validateFlagAuthoringPolicy(
 			);
 		}
 	}
+	for (const name of projectManagedFlags) {
+		const spec = flags.find((candidate) => candidate.name === name);
+		if (!spec) {
+			issues.push(
+				authoringIssue(
+					`${name}: PROJECT_STORE_MANAGED_FLAGS has no registry spec`,
+				),
+			);
+		} else if (spec.scope !== "project") {
+			issues.push(
+				authoringIssue(
+					`${name}: project routing subset requires project scope`,
+				),
+			);
+		}
+	}
 
 	for (const spec of flags) {
 		const managed = managedFlags.has(spec.name);
-		const legacyUnmanaged = LEGACY_UNMANAGED_NAMES.has(spec.name);
+		const projectManaged = projectManagedFlags.has(spec.name);
 		if (!managed) {
-			if (!legacyUnmanaged) {
+			issues.push(
+				authoringIssue(`${spec.name}: new registry spec must be store-managed`),
+			);
+			if (spec.scope === "project") {
 				issues.push(
 					authoringIssue(
-						`${spec.name}: new registry spec must be store-managed`,
+						`${spec.name}: project specs must join PROJECT_STORE_MANAGED_FLAGS`,
 					),
 				);
-				if (spec.source === "project_config") {
-					issues.push(
-						authoringIssue(
-							`${spec.name}: new project_config specs are forbidden until project-scoped store authority exists`,
-						),
-					);
-				}
 			}
 			continue;
 		}
+		if (projectManaged !== (spec.scope === "project")) {
+			issues.push(
+				authoringIssue(
+					`${spec.name}: PROJECT_STORE_MANAGED_FLAGS must exactly match project scope`,
+				),
+			);
+		}
 
-		const eligibility = getStoreEligibilityAgainst(spec, managedFlags);
-		if (!eligibility.eligible) {
-			issues.push(
-				authoringIssue(
-					`${spec.name}: store eligibility rejected ${eligibility.reason}`,
-				),
-			);
-		}
-		if (
-			spec.source !== "env" ||
-			spec.scope !== "bridge_global" ||
-			!spec.envVar
-		) {
-			issues.push(
-				authoringIssue(
-					`${spec.name}: managed specs must be bridge_global env specs with envVar; project_config is unsupported`,
-				),
-			);
-		}
-		if (spec.toggleable !== "direct") {
-			issues.push(
-				authoringIssue(
-					`${spec.name}: managed specs must be direct-toggleable for the management route`,
-				),
-			);
+		if (spec.scope === "project") {
+			if (
+				spec.source !== "project_config" ||
+				spec.valueKind !== "bool" ||
+				spec.category === "governance_gate" ||
+				spec.dormant === true ||
+				spec.toggleable === "readonly" ||
+				!spec.configKey ||
+				spec.configKey.includes("[]") ||
+				spec.configKey.includes("*")
+			) {
+				issues.push(
+					authoringIssue(
+						`${spec.name}: project-store specs must be non-governance, active, writable project_config booleans with one exact configKey`,
+					),
+				);
+			}
+		} else {
+			const eligibility = getStoreEligibilityAgainst(spec, managedFlags);
+			if (!eligibility.eligible) {
+				issues.push(
+					authoringIssue(
+						`${spec.name}: store eligibility rejected ${eligibility.reason}`,
+					),
+				);
+			}
+			if (spec.source !== "env" || !spec.envVar) {
+				issues.push(
+					authoringIssue(
+						`${spec.name}: bridge-global managed specs require an envVar`,
+					),
+				);
+			}
+			if (spec.toggleable !== "direct") {
+				issues.push(
+					authoringIssue(
+						`${spec.name}: managed specs must be direct-toggleable for the management route`,
+					),
+				);
+			}
 		}
 
 		const codec = codecForName(spec.name);
@@ -262,11 +298,23 @@ export function validateFlagAuthoringPolicy(
 					);
 				}
 				if (spec.valueKind === "value") {
-					issues.push(
-						authoringIssue(
-							`${spec.name}: managed valueKind=value is unsupported until a store codec contract is implemented`,
-						),
-					);
+					if (codec.canonicalEffective(defaultValue) !== String(spec.default)) {
+						issues.push(
+							authoringIssue(
+								`${spec.name}: value codec must canonically round-trip its registry default`,
+							),
+						);
+					}
+					try {
+						codec.parse({ hasOverride: true, raw: "__invalid__" });
+						issues.push(
+							authoringIssue(
+								`${spec.name}: value codec must reject invalid writes`,
+							),
+						);
+					} catch {
+						// Expected: managed scalar values are strict, never fallback controls.
+					}
 				} else if (spec.valueKind === "bool") {
 					const polarityDefault = spec.polarity === "default_on";
 					if (spec.default !== polarityDefault) {

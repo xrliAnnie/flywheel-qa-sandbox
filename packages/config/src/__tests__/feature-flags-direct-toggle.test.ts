@@ -41,6 +41,14 @@ describe("direct-toggle flags observe a live process.env mutation", () => {
 				expect(resolveFlag(spec, {}).effective).toBe(String(spec.default));
 				return;
 			}
+			if (spec.valueKind === "value") {
+				expect(resolveFlag(spec, {}).effective).toBe(String(spec.default));
+				process.env[key] = "60000";
+				expect(resolveFlag(spec, {}).effective).toBe("60000");
+				process.env[key] = String(spec.default);
+				expect(resolveFlag(spec, {}).effective).toBe(String(spec.default));
+				return;
+			}
 			expect(resolveFlag(spec, {}).effective).toBe(spec.default);
 			// Live mutate — no spec/object reconstruction.
 			process.env[key] = "0";

@@ -19,7 +19,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "../../__tests__/fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "../../__tests__/fixtures/workflow-agent-project.js";
 import { StateStore } from "../../StateStore.js";
 import {
 	compileWorkflowMenuSeed,
@@ -63,14 +67,12 @@ function bindPredecessorToGeneralizedWorkflow(): void {
 	}
 	generalizedRoot = mkdtempSync(join(tmpdir(), "fly1336-actions-pending-"));
 	process.env.HOME = generalizedRoot;
-	mkdirSync(join(generalizedRoot, "agents"));
-	writeFileSync(
-		join(generalizedRoot, "agents", "generic-executor.md"),
-		"Execute the pinned node.\n",
+	installSelfHostedWorkflowAgentProject(generalizedRoot);
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_product_v1",
+		)!,
 	);
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_product_v1",
-	)!;
 	store.importWorkflowTemplateSeed(seed, WORKFLOW_ON);
 	store.materializeWorkflowRun({
 		runId: "retry-run-1",
@@ -120,15 +122,21 @@ function bindPredecessorToPrdWorkflow(): void {
 	}
 	generalizedRoot = mkdtempSync(join(tmpdir(), "fly1788-actions-prd-"));
 	process.env.HOME = generalizedRoot;
-	mkdirSync(join(generalizedRoot, "agents"), { recursive: true });
+	mkdirSync(join(generalizedRoot, ".flywheel", "agents", "nodes"), {
+		recursive: true,
+	});
 	mkdirSync(join(generalizedRoot, ".flywheel", "menus"), { recursive: true });
 	writeFileSync(
-		join(generalizedRoot, "agents", "generic-executor.md"),
+		join(generalizedRoot, ".flywheel", "agents", "nodes", "pm.md"),
 		"Produce the pinned PRD.\n",
 	);
 	writeFileSync(
-		join(generalizedRoot, ".flywheel", "menus", "ic-roster.yaml"),
-		"pm: agents/generic-executor.md\n",
+		join(generalizedRoot, ".flywheel", "agents", "registry.yaml"),
+		"nodes:\n  pm: { file: nodes/pm.md, department: engineering }\n",
+	);
+	writeFileSync(
+		join(generalizedRoot, ".flywheel", "config.yaml"),
+		"project: fly245-d2-route-test\n",
 	);
 	writeFileSync(
 		join(generalizedRoot, ".flywheel", "menus", "adoption.yaml"),
@@ -151,7 +159,7 @@ function bindPredecessorToPrdWorkflow(): void {
 		startReservation: {
 			idempotencyKey: "retry-start-1",
 			selectionDigest: "retry-selection-1",
-			nodeId: "produce",
+			nodeId: "pm",
 			attempt: 1,
 			executionId: "pred-1",
 			createdAt: "2026-08-16T00:00:00.000Z",
@@ -160,7 +168,7 @@ function bindPredecessorToPrdWorkflow(): void {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
 			runId: "retry-run-1",
-			nodeId: "produce",
+			nodeId: "pm",
 			executionId: "pred-1",
 			attempt: 1,
 			now: "2026-08-16T00:00:01.000Z",
@@ -172,7 +180,7 @@ function bindPredecessorToPrdWorkflow(): void {
 	).toMatchObject({ ok: true });
 	store.upsertWorkflowRunNode({
 		runId: "retry-run-1",
-		nodeId: "produce",
+		nodeId: "pm",
 		attempt: 2,
 		state: "pending",
 		executionId: "11111111-2222-3333-4444-555555555555",
@@ -469,7 +477,7 @@ describe("POST /api/actions/retry — D2 pre-bound dispatch flow", () => {
 			executionId: SUCC,
 			activationId: expect.any(String),
 			runId: "retry-run-1",
-			nodeId: "produce",
+			nodeId: "pm",
 			attempt: 2,
 			capabilities: { founder_review_required: true },
 			projectTurn: expect.any(Function),

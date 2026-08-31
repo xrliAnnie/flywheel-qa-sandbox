@@ -761,7 +761,7 @@ async function runDrill(context) {
 		() => {
 			const node = one(
 				db,
-				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'design' ORDER BY attempt DESC LIMIT 1",
+				"SELECT * FROM workflow_run_node WHERE run_id = ? AND node_id = 'eng_design' ORDER BY attempt DESC LIMIT 1",
 				runId,
 			);
 			if (node?.state !== "done" || !node.execution_id) return false;

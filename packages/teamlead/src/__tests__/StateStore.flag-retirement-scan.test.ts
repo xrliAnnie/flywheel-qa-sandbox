@@ -1,5 +1,6 @@
 import type {
 	FlagKeepAnchor,
+	FlagScanScopeState,
 	FlagScanState,
 	ProposedFlagScan,
 } from "flywheel-config";
@@ -28,6 +29,7 @@ function state(
 function proposed(
 	input: {
 		states?: FlagScanState[];
+		scopeStates?: FlagScanScopeState[];
 		anchors?: FlagKeepAnchor[];
 		candidates?: ProposedFlagScan["candidates"];
 		claimed?: ProposedFlagScan["claimed"];
@@ -38,12 +40,29 @@ function proposed(
 ): ProposedFlagScan {
 	return {
 		nextState: input.states ?? [],
+		nextScopeState: input.scopeStates ?? [],
 		nextAnchors: input.anchors ?? [],
 		candidates: input.candidates ?? [],
 		claimed: input.claimed ?? [],
 		noClock: input.noClock ?? [],
 		keepUnbound: input.keepUnbound ?? [],
 		departures: input.departures ?? [],
+	};
+}
+
+function scopeState(
+	flagName: string,
+	scope: string,
+	overrides: Partial<FlagScanScopeState> = {},
+): FlagScanScopeState {
+	return {
+		flagName,
+		scope,
+		canonical: `{"k":"bool","v":false}`,
+		streakStartedAt: 1,
+		streakSamples: 2,
+		lastSampledAt: 10,
+		...overrides,
 	};
 }
 
@@ -82,6 +101,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 		const tables = new Set(rows.map(({ name }) => name));
 		for (const table of [
 			"flag_scan_state",
+			"flag_scan_scope_state",
 			"flag_scan_runs",
 			"flag_scan_run_legs",
 			"flag_scan_run_items",
@@ -94,7 +114,59 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 		}
 	});
 
-	it("freezes the exact owed legs for candidate, lead-only, and healthy-empty runs", async () => {
+	it("persists per-scope clocks across commits and prunes scopes outside the next registry/roster set", () => {
+		const first = store.commitFlagScan({
+			expectedLatestCommittedAt: null,
+			runToken: "scope-first",
+			now: 100,
+			proposed: proposed({
+				states: [state("project")],
+				scopeStates: [
+					scopeState("project", "alpha"),
+					scopeState("project", "beta"),
+				],
+			}),
+			items: [],
+			provenance: [],
+			requiredLegs: [],
+		});
+		if (!first.committed) throw new Error("scope seed failed");
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ flagName: "project", scope: "alpha", streakSamples: 2 },
+			{ flagName: "project", scope: "beta", streakSamples: 2 },
+		]);
+
+		const second = store.commitFlagScan({
+			expectedLatestCommittedAt: first.run.committedAt,
+			runToken: "scope-second",
+			now: 200,
+			proposed: proposed({
+				states: [state("project")],
+				scopeStates: [
+					scopeState("project", "beta", {
+						streakSamples: 3,
+						lastSampledAt: 200,
+					}),
+					scopeState("project", "gamma", {
+						canonical: `{"k":"bool","v":true}`,
+						streakStartedAt: 200,
+						streakSamples: 1,
+						lastSampledAt: 200,
+					}),
+				],
+			}),
+			items: [],
+			provenance: [],
+			requiredLegs: [],
+		});
+		expect(second).toMatchObject({ committed: true });
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{ flagName: "project", scope: "beta", streakSamples: 3 },
+			{ flagName: "project", scope: "gamma", streakSamples: 1 },
+		]);
+	});
+
+	it("freezes Discord as the only founder-visible leg for new candidate runs", async () => {
 		const candidateStore = store;
 		const candidateResult = candidateStore.commitFlagScan({
 			expectedLatestCommittedAt: null,
@@ -118,7 +190,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 				},
 			],
 			provenance: [],
-			requiredLegs: ["linear", "report", "discord"],
+			requiredLegs: ["discord"],
 		});
 		expect(candidateResult).toMatchObject({ committed: true });
 		if (!candidateResult.committed) throw new Error("candidate commit failed");
@@ -129,7 +201,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 			candidateStore
 				.getFlagScanRunLegs(candidateResult.run.runId)
 				.map(({ leg }) => leg),
-		).toEqual(["discord", "linear", "report"]);
+		).toEqual(["discord"]);
 		expect(candidateStore.getFlagScanState()[0]).toMatchObject({
 			flagName: "candidate",
 			askCount: 1,
@@ -208,6 +280,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 			now: 100,
 			proposed: proposed({
 				states: [state("candidate")],
+				scopeStates: [scopeState("candidate", "*")],
 				candidates: [candidate("candidate")],
 			}),
 			items: [],
@@ -219,13 +292,29 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 			expectedLatestCommittedAt: null,
 			runToken: "run-two",
 			now: 101,
-			proposed: proposed({ states: [state("candidate")] }),
+			proposed: proposed({
+				states: [state("candidate")],
+				scopeStates: [
+					scopeState("candidate", "*", {
+						canonical: `{"k":"bool","v":true}`,
+						streakSamples: 1,
+					}),
+				],
+			}),
 			items: [],
 			provenance: [],
 			requiredLegs: ["linear"],
 		});
 		expect(second).toEqual({ committed: false, reason: "pending_exists" });
 		expect(store.listFlagScanRuns()).toHaveLength(1);
+		expect(store.getFlagScanScopeState()).toMatchObject([
+			{
+				flagName: "candidate",
+				scope: "*",
+				canonical: `{"k":"bool","v":false}`,
+				streakSamples: 2,
+			},
+		]);
 	});
 
 	it("deduplicates failure alert milestones and ignores legacy alert receipts", () => {
@@ -350,7 +439,7 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 		]);
 	});
 
-	it("fences leg completion by lease owner and enforces Discord dependencies", () => {
+	it("lets new Discord-only runs claim immediately while fencing completion by lease owner", () => {
 		const committed = store.commitFlagScan({
 			expectedLatestCommittedAt: null,
 			runToken: "legs",
@@ -359,6 +448,46 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 				states: [state("candidate")],
 				candidates: [candidate("candidate")],
 			}),
+			items: [],
+			provenance: [],
+			requiredLegs: ["discord"],
+		});
+		if (!committed.committed) throw new Error("commit failed");
+		const runId = committed.run.runId;
+
+		expect(
+			store.claimFlagScanLeg({
+				runId,
+				leg: "discord",
+				leaseOwner: "worker-a",
+				now: 110,
+				leaseMs: 100,
+			}),
+		).toMatchObject({ claimed: true });
+		expect(
+			store.completeFlagScanLeg({
+				runId,
+				leg: "discord",
+				leaseOwner: "stale-worker",
+				evidence: "stale completion",
+			}),
+		).toBe(false);
+		expect(
+			store.completeFlagScanLeg({
+				runId,
+				leg: "discord",
+				leaseOwner: "worker-a",
+				evidence: "discord-message-1",
+			}),
+		).toBe(true);
+	});
+
+	it("settles retired Linear/report legs on historical pending runs before Discord", () => {
+		const committed = store.commitFlagScan({
+			expectedLatestCommittedAt: null,
+			runToken: "historical-legs",
+			now: 100,
+			proposed: proposed({ states: [state("candidate")] }),
 			items: [],
 			provenance: [],
 			requiredLegs: ["linear", "report", "discord"],
@@ -375,57 +504,35 @@ describe("StateStore FLY-1781 weekly flag scan", () => {
 				leaseMs: 100,
 			}),
 		).toEqual({ claimed: false, reason: "dependencies_unsettled" });
-
 		expect(
-			store.claimFlagScanLeg({
+			store.settleRetiredFlagScanLeg({
 				runId,
 				leg: "linear",
-				leaseOwner: "worker-a",
-				now: 110,
-				leaseMs: 100,
-			}),
-		).toMatchObject({ claimed: true });
-		expect(
-			store.completeFlagScanLeg({
-				runId,
-				leg: "linear",
-				leaseOwner: "stale-worker",
-				evidence: "https://linear.app/issue/FLY-1",
-			}),
-		).toBe(false);
-		expect(
-			store.completeFlagScanLeg({
-				runId,
-				leg: "linear",
-				leaseOwner: "worker-a",
-				evidence: "https://linear.app/issue/FLY-1",
+				evidence: "retired_by_FLY_2104",
 			}),
 		).toBe(true);
-
-		store.claimFlagScanLeg({
-			runId,
-			leg: "report",
-			leaseOwner: "worker-b",
-			now: 110,
-			leaseMs: 100,
-		});
 		expect(
-			store.completeFlagScanLeg({
+			store.settleRetiredFlagScanLeg({
 				runId,
 				leg: "report",
-				leaseOwner: "worker-b",
-				evidence: "https://report.invalid/token",
+				evidence: "retired_by_FLY_2104",
 			}),
 		).toBe(true);
 		expect(
 			store.claimFlagScanLeg({
 				runId,
 				leg: "discord",
-				leaseOwner: "worker-c",
-				now: 120,
+				leaseOwner: "worker-a",
+				now: 111,
 				leaseMs: 100,
 			}),
 		).toMatchObject({ claimed: true });
+		expect(store.getFlagScanRunLegs(runId)).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ leg: "linear", status: "degraded" }),
+				expect.objectContaining({ leg: "report", status: "degraded" }),
+			]),
+		);
 	});
 
 	it("does not re-create an ambiguous external effect before its visibility fence", () => {

@@ -4,6 +4,8 @@ import type { LeadEventRow } from "../StateStore.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { parseLegacyEventPayload } from "./legacy-row-errors.js";
 
+export const REDRIVABLE_LEAD_EVENT_PRIORITY = 2 as const;
+
 export function sqliteTimestampToIso(value: string): string {
 	const normalized = value.includes("T")
 		? value

@@ -1,0 +1,10 @@
+meetingStateDir: /Users/xiaorongli/.flywheel/raya/data/state
+linear:
+  team: FLY
+  project: Flywheel
+  meetingLabel: meeting
+  departmentLabel: Flywheel-Product
+dispatch:
+  taskCategory: prd
+  leadId: flywheel-product-lead
+tickIntervalSeconds: 120

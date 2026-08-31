@@ -45,6 +45,8 @@ export interface WorkflowOutputContract {
 
 export interface WorkflowManifestNode {
 	id: string;
+	/** Backend-owned display name; absent only on historical/custom manifests. */
+	label?: string;
 	type: WorkflowNodeType;
 	/** Menu-sourced nodes resolve this role through the project's IC roster. */
 	role?: string;
@@ -923,6 +925,7 @@ function validateWorkflowManifestV2(
 			node,
 			[
 				"id",
+				"label",
 				"type",
 				"role",
 				"vendor",
@@ -939,6 +942,10 @@ function validateWorkflowManifestV2(
 			nodePath,
 		);
 		const id = nonempty(node.id, `${nodePath}.id`);
+		const label =
+			node.label === undefined
+				? undefined
+				: nonempty(node.label, `${nodePath}.label`);
 		if (nodeIds.has(id)) throw new Error(`duplicate node id: ${id}`);
 		nodeIds.add(id);
 		const type = oneOf(
@@ -986,7 +993,12 @@ function validateWorkflowManifestV2(
 					throw new Error(`land node ${id} cannot define ${key}`);
 				}
 			}
-			return { id, type, execution: "engine" };
+			return {
+				id,
+				...(label ? { label } : {}),
+				type,
+				execution: "engine",
+			};
 		}
 		if (type === "gate") {
 			for (const key of [
@@ -1007,6 +1019,7 @@ function validateWorkflowManifestV2(
 			}
 			return {
 				id,
+				...(label ? { label } : {}),
 				type,
 				...(submissionWindowMinutes ? { submissionWindowMinutes } : {}),
 			};
@@ -1079,6 +1092,7 @@ function validateWorkflowManifestV2(
 		if (type !== "generic") {
 			return {
 				id,
+				...(label ? { label } : {}),
 				type,
 				...(vendor ? { vendor } : {}),
 				...(model ? { model } : {}),
@@ -1095,9 +1109,9 @@ function validateWorkflowManifestV2(
 			node.agent_file === undefined
 				? undefined
 				: assertSafeAgentFile(node.agent_file, `${nodePath}.agent_file`);
-		if ((role ? 1 : 0) + (agentFile ? 1 : 0) !== 1) {
+		if ((role ? 1 : 0) + (agentFile ? 1 : 0) > 1) {
 			throw new Error(
-				`generic node ${id} must define exactly one of role or agent_file`,
+				`generic node ${id} cannot define both role and agent_file`,
 			);
 		}
 		if (
@@ -1131,6 +1145,7 @@ function validateWorkflowManifestV2(
 		}
 		return {
 			id,
+			...(label ? { label } : {}),
 			type,
 			...(vendor ? { vendor } : {}),
 			...(model ? { model } : {}),

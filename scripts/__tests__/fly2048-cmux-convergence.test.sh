@@ -82,15 +82,16 @@ else
   bad "ref-gone revalidation returned rc=$ref_gone_rc instead of 1"
 fi
 
-stock_disabled_receipt=$(ROOT="$ROOT" /bin/bash -c '
+stock_retired_env_receipt=$(ROOT="$ROOT" /bin/bash -c '
   source "$ROOT/scripts/flywheel-cmux-sync.sh"
+  assert_or_reuse_owned_lease() { return 1; }
   FLYWHEEL_CMUX_STOCK_ADOPTION=0 reap_unledgered_stock_workspaces
   printf "%s\n" "$CMUX_STOCK_SWEEP_CONCLUSIVE"
 ')
-if [[ "$stock_disabled_receipt" == 1 ]]; then
-  ok "a disabled stock-adoption sweep returns a conclusive configured-skip receipt"
+if [[ "$stock_retired_env_receipt" == 0 ]]; then
+  ok "the retired stock-adoption env cannot manufacture a configured-skip receipt"
 else
-  bad "stock-adoption kill switch looked inconclusive receipt=[$stock_disabled_receipt]"
+  bad "retired stock-adoption env still skipped the sweep receipt=[$stock_retired_env_receipt]"
 fi
 
 trace="$TMP/converge.trace"

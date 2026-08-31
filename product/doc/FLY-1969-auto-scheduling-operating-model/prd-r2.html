@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1969 自动排期 — 第一版方案 + 5 个待你定的</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;}
+*{box-sizing:border-box}
+body{margin:0;padding:22px 14px 40px;background:var(--bg);color:var(--ink);
+font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.55;font-size:14px;}
+.wrap{max-width:960px;margin:0 auto}
+h1{font-size:24px;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px;margin:0 0 18px}
+.card{background:var(--card);border-radius:12px;padding:14px 16px;margin:0 0 12px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.blue{border-left-color:var(--blue)}.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}.card.gray{border-left-color:#c7c7cc}
+.sec{font-size:16px;font-weight:650;margin:22px 0 10px;letter-spacing:-.01em}
+.sec span.n{color:var(--dim);font-weight:400;font-size:13px;margin-left:6px}
+h3{font-size:14px;margin:0 0 6px;font-weight:650}
+p{margin:0 0 7px}
+.dim{color:var(--dim);font-size:12.5px}
+.q{background:#fffbe6;border:1px solid #ffe58f;border-radius:8px;padding:8px 11px;margin:9px 0 0;font-size:13px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(285px,1fr));gap:9px}
+.req{display:flex;gap:9px;align-items:flex-start;padding:7px 0;border-bottom:1px solid var(--line)}
+.req:last-child{border-bottom:0}
+.rid{flex:0 0 auto;font-family:"SF Mono",ui-monospace,monospace;font-size:11px;font-weight:700;
+background:#1a365d;color:#fff;border-radius:5px;padding:2px 6px;margin-top:2px}
+.rid.you{background:var(--green)}
+.rtx{flex:1;font-size:13.5px}
+.you-tag{display:inline-block;font-size:11px;font-weight:650;background:#e6f9ed;color:#1a7f3c;
+border-radius:5px;padding:1px 7px;margin-left:5px}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:6px 0}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:12px}
+textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+font:inherit;font-size:13px;resize:vertical;background:#fcfcfd;color:var(--ink)}
+textarea.note{min-height:42px}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 6px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:4px 12px;
+font:inherit;font-size:12.5px;cursor:pointer;color:var(--ink)}
+.chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
+.btn{border:0;border-radius:9px;padding:9px 18px;font:inherit;font-size:14px;font-weight:600;cursor:pointer}
+.btn.p{background:var(--navy);color:#fff}.btn.s{background:#e8e8ed;color:var(--ink)}
+#status{font-size:13px;color:var(--navy);margin:9px 0 0;min-height:18px}
+#exportOut{display:none;margin-top:9px;min-height:130px;font-family:"SF Mono",ui-monospace,monospace;font-size:12px}
+.foot{color:var(--dim);font-size:12px;margin:20px 0 0;text-align:center}
+.qn{display:inline-block;background:var(--amber);color:#fff;border-radius:6px;
+font-size:12px;font-weight:700;padding:1px 8px;margin-right:7px}
+ul{margin:5px 0 7px;padding-left:19px}li{margin:2px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>自动排期 — 第一版方案,外加 5 个只有你能定的</h1>
+<p class="sub">FLY-1969 · 第 2 轮 · 2026-08-22 · 批注只存在你自己浏览器里,写完点最下面的按钮复制发回来我才收得到</p>
+
+<div class="card blue">
+<h3>这一版是什么</h3>
+<p>你上一轮把整页批完了,所以这一版<strong>不是新提案</strong> —— 是把<strong>你已经拍过板的东西写成了具体要求</strong>,加上执行时发现的、必须你来定的 5 个口子。</p>
+<p><strong>⛔ 没有一条要求推倒重来。</strong>你说的是「在这个基础上」,每条都挂在现在已经在跑的机制上。</p>
+<p class="dim">👉 如果整页你都没意见:<strong>直接在卡片下回复 approve 就行,不用点复制按钮</strong>(复制出来的文字带前缀,会被系统读成「有意见」)。</p>
+</div>
+
+<div class="sec">一 · 八条要求 <span class="n">绿色那两条是你上一轮直接给的</span></div>
+<div class="card gray">
+<div class="req"><span class="rid">1</span><span class="rtx"><strong>让系统主动发现「有活没派出去」。</strong>挂在已经在跑的每小时闹钟上,⛔ 不新造一个。<br><span class="dim">今天这个能力是零 —— 闹钟只看得见已经开工的,没派过的活它完全不知道。</span></span></div>
+<div class="req"><span class="rid you">2</span><span class="rtx"><strong>容量:先设一个实测过的上限兜底,和实时水位两条路并行走。</strong><span class="you-tag">你给的做法</span><br><span class="dim">重点是你说的那句:<strong>不许让它成为推进整体的阻碍</strong>。上限只是手段。</span></span></div>
+<div class="req"><span class="rid">3</span><span class="rtx"><strong>派活要 Lead 点头,并且记下「原本提议派什么 vs 实际派了什么」。</strong><br><span class="dim">不是记「批了没」—— 记「批了没」就分不清「机器判对了」和「机器差一点、Lead 顺手改对了」,而恰恰是后者才告诉我们以后哪些可以不用再问。</span></span></div>
+<div class="req"><span class="rid">4</span><span class="rtx"><strong>一条铁律:每条派活的路,要么有人点头,要么留下提案。不许两者都没有。</strong><br><span class="dim">现在写下来很便宜,以后补很贵。</span></span></div>
+<div class="req"><span class="rid">5</span><span class="rtx"><strong>派不动的时候必须说人话:「因为有 N 个在等你 review」。</strong><br><span class="dim">今天系统只会说「负载高」「内存低」两种,没有这一种 —— 于是堆积会被当成「机器变慢了」去查。</span></span></div>
+<div class="req"><span class="rid you">6</span><span class="rtx"><strong>改动分两类:第一类等你拍板;第二类我们定,按体量告诉你。</strong><span class="you-tag">你选的丙</span></span></div>
+<div class="req"><span class="rid">7</span><span class="rtx"><strong>一个能一眼看全的面:在跑的 / 排队的 / 等你的 / 卡住的。</strong><br><span class="dim">今天没有任何一处能同时看到这四样。</span></span></div>
+<div class="req"><span class="rid">8</span><span class="rtx"><strong>清掉一个没用的旧引擎。</strong>纯粹是还债,不挡任何事,随时做。</span></div>
+<textarea class="note" data-note="reqs" placeholder="这八条有哪条不对 / 少了什么"></textarea>
+</div>
+
+<div class="sec">二 · 关于那个「5」,我要跟你说清成色 <span class="n">不是质疑,是我们要自己再量一次</span></div>
+<div class="card amber">
+<p>你说的是「Tarsier 跑一段时间只跑 5 个 issue,<strong>这已经验证过很多次了,一定不会把内存搞崩</strong>」。</p>
+<p>我们把它记成<strong>有实测支撑的经验值,不是拍出来的数字</strong>。但要说准的是 ——</p>
+<p style="background:#fff;border-radius:8px;padding:9px 12px;margin:9px 0"><strong>「验证过很多次不会崩」是一段经历,不是一次测量。</strong></p>
+<p>所以落地取那个数之前,<strong>工程会自己再量一次</strong>,并且写清楚是<strong>哪台机器、什么并发形态</strong>下量的 —— 5 在你的经历里成立,不代表换个形态还成立。</p>
+<p class="dim">这不影响你那句「不许它成为阻碍」:量这一次很快,而且它跟主线是并行的,不排队。</p>
+</div>
+
+<div class="sec">三 · 成功怎么算 —— 但我要当面说这个指标能作弊 <span class="n">这条我不想藏在附录里</span></div>
+<div class="card red">
+<p><strong>主要看一个数:每周「必须你阻塞式拍板」的<u>绝对次数</u>下降。</strong></p>
+<p style="background:#fff;border-radius:8px;padding:9px 12px;margin:9px 0">
+我本来写的是<strong>比例</strong>(你被叫的次数 ÷ 总共派了多少活),<strong>那是错的,已经改掉</strong> ——<br>
+因为<strong>「总共派了多少活」正是这个系统要做大的东西</strong>。派得越多,分母越大,<strong>比例自己就会掉,而你被叫的次数可以同时在涨。</strong><br>
+⇒ <strong>「我们在进步」和「你更累了」会共用同一个下降的数字。</strong>而你感受到的是后者 —— 你数的是「这周我被叫了几次」,不是一个百分比。</p>
+<p style="background:#fff1f0;border-radius:8px;padding:9px 12px;margin:9px 0">
+⚠️ <strong>还有一重:这个指标可以靠「少问你」作弊 —— 而少烦你恰好就是这个项目的目标本身。</strong><br>
+⇒ <strong>「做得好」和「藏着不问」在数字上长得一模一样。</strong><br>
+⇒ 而<strong>只有你能判断我们是不是在少问你</strong>,所以这件事我放在这里说,不埋在文档深处。</p>
+<p>所以我不靠自觉,配了一条会留痕迹的护栏:</p>
+<table>
+<tr><th>指标</th><th>方向</th><th>作用</th></tr>
+<tr><td><strong>需要你阻塞式拍板的<u>绝对次数</u>/周</strong></td><td><strong>↓</strong></td><td><strong>主指标 —— 你真正体验到的</strong></td></tr>
+<tr><td>它占全部派活决定的比例</td><td>↓</td><td>辅助 —— ⛔ 不单独报</td></tr>
+<tr><td><strong>你事后反悔率</strong>(批过之后又要求改)</td><td><strong>不许上升</strong></td><td><strong>护栏 —— 靠少问你刷分,会在这条上露出来</strong></td></tr>
+<tr><td>机器崩溃次数</td><td>不许上升</td><td>护栏</td></tr>
+<tr><td>没派的活平均等多久</td><td>↓</td><td>次要</td></tr>
+</table>
+<textarea class="note" data-note="metrics" placeholder="这么算对不对 / 你更在意什么"></textarea>
+</div>
+
+<div class="sec">四 · 5 个只有你能定的 <span class="n">全在这一页,不会再分几次来问你</span></div>
+
+<div class="card purple">
+<h3><span class="qn">1</span>「批次怎么切」算第一类还是第二类?</h3>
+<p>这是两类分法边界上最要紧的一个例子。你上次说「<strong>我只是告诉你们把这个 batch 再拆分一下而已</strong>」—— 听起来像第二类(你信我们能判);但按内容它离「最终做完是什么样」很近。</p>
+<p class="dim">定这个的实际后果:算第一类 = 每次切批都要等你;算第二类 = 我们切完告诉你。</p>
+<div class="chips" data-chips="q1">
+<button class="chip" type="button">第一类 · 等我拍板</button>
+<button class="chip" type="button">第二类 · 你们切完告诉我</button>
+<button class="chip" type="button">看情况(写在下面)</button>
+</div>
+<textarea class="note" data-note="q1" placeholder="补充"></textarea>
+</div>
+
+<div class="card purple">
+<h3><span class="qn">2</span>那个固定上限,是临时兜底还是长期机制?</h3>
+<p>我上一轮建议过「别用需要人维护的固定数字」,而你这次选的正是一个固定上限 —— 看起来像撞车。<strong>但我们核过,这两个数根本不是同一个量:</strong></p>
+<table>
+<tr><th>哪个数</th><th>量的是什么</th></tr>
+<tr><td>我反对的那个「超过 30 就停派」</td><td><strong>堆在你面前等 review 的有多少</strong></td></tr>
+<tr><td>你说的上限(比如 5)</td><td><strong>同时在跑几个 issue</strong></td></tr>
+</table>
+<p style="margin-top:8px">我反对 30 是因为<strong>它要替代你说的那个物理封顶</strong>;你的上限<strong>不替代任何东西</strong> —— 它填的是「内存那条腿还没接上」的洞。</p>
+<p class="dim">所以我判它没撞车。<strong>但这是我们的读法,不是你说过的话</strong>,所以要你确认。</p>
+<div class="chips" data-chips="q2">
+<button class="chip" type="button">临时兜底 · 接上就撤</button>
+<button class="chip" type="button">长期留着也行</button>
+<button class="chip" type="button">你们的读法不对</button>
+</div>
+<textarea class="note" data-note="q2" placeholder="补充"></textarea>
+</div>
+
+<div class="card purple">
+<h3><span class="qn">3</span>汇总多久给你一次?</h3>
+<p>第二类改动按你选的走「按体量」,但<strong>汇总的频率我们还没定</strong>。</p>
+<p class="dim">⚠️ 说明一下:上一轮我把这条列成「不确定」,但其实<strong>那一页的选项里根本没给你这个口子</strong> —— 所以那儿的空白不是你跳过了,是我没问。这次补上。</p>
+<div class="chips" data-chips="q3">
+<button class="chip" type="button">每天一次</button>
+<button class="chip" type="button">每批做完一次</button>
+<button class="chip" type="button">攒够一定量再给</button>
+<button class="chip" type="button">你们看着办</button>
+</div>
+<textarea class="note" data-note="q3" placeholder="补充"></textarea>
+</div>
+
+<div class="card purple">
+<h3><span class="qn">4</span>系统多久回头看一遍?</h3>
+<p>现在那个闹钟是<strong>每 60 分钟</strong>敲一次(可配)。七月那份旧设计写的是<strong>每 6 小时</strong>。</p>
+<p class="dim">影响:太密 = 噪音多;太疏 = 活躺着没人发现的时间变长。</p>
+<div class="chips" data-chips="q4">
+<button class="chip" type="button">保持每小时</button>
+<button class="chip" type="button">改成 6 小时</button>
+<button class="chip" type="button">你们定</button>
+</div>
+<textarea class="note" data-note="q4" placeholder="补充"></textarea>
+</div>
+
+<div class="card purple">
+<h3><span class="qn">5</span>「你事后反悔」这件事,怎么算才不用你额外做事?</h3>
+<p>上面那条护栏靠它。但我不想做成「需要你以后回来标一下」的东西 —— <strong>我们刚刚才实测发现,这种需要有人事后回来填的东西在这里会消失</strong>(有一张审计表设计得很好,六周后打分列一格都没人填过)。</p>
+<p>所以我想找一个<strong>你本来就会做的动作</strong>来代表「反悔」。比如:你在已经批过的东西下面又提了要求、或者把某个已完成的重新打回。</p>
+<div class="chips" data-chips="q5">
+<button class="chip" type="button">用「打回重做」当信号就行</button>
+<button class="chip" type="button">我批过又提要求 = 反悔</button>
+<button class="chip" type="button">这条护栏没必要</button>
+</div>
+<textarea class="note" data-note="q5" placeholder="你觉得怎么算才准 / 或者你根本不在意这条"></textarea>
+</div>
+
+<div class="sec">五 · 最后</div>
+<div class="card gray">
+<p class="dim">定完之后:拆成 7 个工程单交给 Tadashi 排期(主链 3 个必须按序,其余可以并行插)。你上一轮点名要「排后面」的负载和内存那条,已经单独走了,不占这条线。</p>
+<div class="chips" data-chips="overall">
+<button class="chip" type="button">可以,按这版往下</button>
+<button class="chip" type="button">大方向对,有几处要改</button>
+<button class="chip" type="button">先停一下</button>
+</div>
+<textarea class="note" data-note="overall" placeholder="任何补充 / 我漏了什么"></textarea>
+<div style="margin-top:14px;display:flex;gap:9px;flex-wrap:wrap">
+<button class="btn p" id="exportBtn" type="button">一键汇总复制</button>
+<button class="btn s" id="clearBtn" type="button">清空</button>
+</div>
+<p id="status"></p>
+<textarea id="exportOut" readonly></textarea>
+</div>
+
+<p class="foot">FLY-1969 · 第 2 轮 · 批注只存在你自己浏览器里,<strong>写完点「一键汇总复制」再粘回来我才收得到</strong>(页面不会自动同步)</p>
+
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY = "fly1969-prd-r2-v1";
+  var MARK = "【页面意见汇总】FLY-1969";
+  var CHUNK = 1800;
+  var labels = {
+    reqs:"一 八条要求", metrics:"三 成功怎么算",
+    q1:"问1 批次怎么切算哪一类", q2:"问2 固定上限 临时还是长期",
+    q3:"问3 汇总多久一次", q4:"问4 系统多久回头看一遍",
+    q5:"问5 事后反悔怎么算", overall:"五 整体"
+  };
+  var notes = document.querySelectorAll("textarea[data-note]");
+  var chipGroups = document.querySelectorAll("[data-chips]");
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+    notes.forEach(function(t){ var k=t.getAttribute("data-note"); if(saved["n_"+k]) t.value=saved["n_"+k]; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var p=saved["c_"+key];
+      if(p!=null){ g.querySelectorAll(".chip").forEach(function(c,i){
+        c.setAttribute("aria-pressed",(String(i)===String(p))?"true":"false"); }); } });
+  } catch(e){}
+  function persist(){
+    var o={};
+    notes.forEach(function(t){ o["n_"+t.getAttribute("data-note")]=t.value; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var s=-1;
+      g.querySelectorAll(".chip").forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") s=i; });
+      if(s>=0) o["c_"+key]=s; });
+    try{ localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){}
+  }
+  notes.forEach(function(t){ t.addEventListener("input", persist); });
+  chipGroups.forEach(function(g){ var cs=g.querySelectorAll(".chip");
+    cs.forEach(function(c){ c.addEventListener("click", function(){
+      var was = c.getAttribute("aria-pressed")==="true";
+      cs.forEach(function(x){ x.setAttribute("aria-pressed","false"); });
+      c.setAttribute("aria-pressed", was?"false":"true"); persist(); }); }); });
+
+  function collect(){
+    var blocks=[], any=false;
+    notes.forEach(function(t){
+      var k=t.getAttribute("data-note");
+      var g=document.querySelector('[data-chips="'+k+'"]');
+      var ct="";
+      if(g){ var on=g.querySelector('.chip[aria-pressed="true"]'); if(on) ct="["+on.textContent.trim()+"] "; }
+      var v=(t.value||"").trim();
+      if(ct||v){ any=true; blocks.push("【"+(labels[k]||k)+"】\n"+ct+v); }
+    });
+    return { any:any, blocks:blocks };
+  }
+  function chunk(blocks){
+    var out=[], cur="";
+    for(var i=0;i<blocks.length;i++){
+      var b=blocks[i];
+      var candidate = cur ? (cur+"\n\n"+b) : b;
+      if((MARK.length+8+candidate.length) > CHUNK && cur){ out.push(cur); cur=b; }
+      else { cur=candidate; }
+    }
+    if(cur) out.push(cur);
+    return out.map(function(body,i){
+      var head = MARK + (out.length>1 ? (" ("+(i+1)+"/"+out.length+")") : "");
+      return head+"\n"+body;
+    });
+  }
+
+  var status=document.getElementById("status"), out=document.getElementById("exportOut");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var r=collect();
+    if(!r.any){
+      out.style.display="none"; out.value="";
+      status.textContent="还没圈 / 还没写 —— 如果整页都没意见,直接在卡片下回复 approve 就行。";
+      return;
+    }
+    var parts=chunk(r.blocks);
+    var text=parts.join("\n\n---- 分段,请分开粘贴 ----\n\n");
+    out.value=text; out.style.display="block"; out.focus(); out.select();
+    var tail = parts.length>1 ? "(共 "+parts.length+" 段,请分开粘贴)" : "";
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ status.textContent="已汇总,并已复制到剪贴板。直接粘给我即可。"+tail; },
+        function(){ status.textContent="已汇总,但复制失败 —— 请手动选中下面的文字复制发回。"+tail; });
+    } else {
+      status.textContent="已汇总,但这个浏览器不给复制 —— 请手动选中下面的文字复制发回。"+tail;
+    }
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    notes.forEach(function(t){ t.value=""; });
+    chipGroups.forEach(function(g){ g.querySelectorAll(".chip").forEach(function(c){ c.setAttribute("aria-pressed","false"); }); });
+    persist(); out.value=""; out.style.display="none"; status.textContent="已清空。";
+  });
+})();
+</script>
+</body>
+</html>

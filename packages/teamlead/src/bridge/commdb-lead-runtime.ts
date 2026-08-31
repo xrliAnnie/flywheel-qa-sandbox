@@ -22,6 +22,7 @@ import {
 	formatSessionStuck,
 	formatShipApprovalRequest,
 	formatStuckEscalation,
+	formatWorkflowClaimRecorded,
 	formatWorkflowReplacementEligibility,
 } from "./hook-payload.js";
 import { appendLeadEventAckInstructions } from "./lead-event-ack-render.js";
@@ -98,6 +99,9 @@ export class CommDBLeadRuntime implements LeadRuntime {
 		if (e.event_type === "patrol_tick") return formatPatrolTick(env);
 		if (e.event_type === "workflow_replacement_eligibility") {
 			return formatWorkflowReplacementEligibility(env);
+		}
+		if (e.event_type === "workflow_claim_recorded") {
+			return formatWorkflowClaimRecorded(env);
 		}
 
 		// FLY-161: runner_question — non-blocking Runner ask. Distinct prompt

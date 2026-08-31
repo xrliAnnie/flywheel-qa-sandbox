@@ -132,6 +132,26 @@ describe("FLY-1573 mailbox queue schema upgrade", () => {
 		db.close();
 	});
 
+	it("adds the dead-letter scan indexes to an existing full mailbox", () => {
+		const db = new Database(":memory:");
+		db.exec(MAILBOX_SCHEMA);
+		db.exec(
+			"DROP INDEX mailbox_dead_scan; DROP INDEX mailbox_dead_notice_lookup",
+		);
+
+		expect(() => ensureMailboxQueueSchema(db)).not.toThrow();
+		const indexes = db
+			.prepare(
+				"SELECT name FROM sqlite_master WHERE type = 'index' AND name IN ('mailbox_dead_scan','mailbox_dead_notice_lookup') ORDER BY name",
+			)
+			.all();
+		expect(indexes).toEqual([
+			{ name: "mailbox_dead_notice_lookup" },
+			{ name: "mailbox_dead_scan" },
+		]);
+		db.close();
+	});
+
 	it("rebuilds an old delivered-at projection and preserves legacy push transport evidence", () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1773-view-upgrade-"));
 		roots.push(root);

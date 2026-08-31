@@ -33,6 +33,9 @@ _V2_IDENTITY_ENV_NAMES=(
   FLYWHEEL_LEAD_ID LEAD_ID
   FLYWHEEL_PROJECT_NAME PROJECT_NAME
   FLYWHEEL_LEAD_KEY FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_BACKEND
+  FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY
+  FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST
+  FLYWHEEL_SUMMARY_CONFIG_HOME
   DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE DISCORD_BOT_TOKEN
   FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST
   FLYWHEEL_PROJECTS_FILE
@@ -78,6 +81,11 @@ unset _V2_IDENTITY_ENV_NAMES _V2_IDENTITY_ENV_DECLARATIONS
 LEAD_ID="$(jq -er '.leadId' "$MANIFEST")"
 PROJECT_DIR="$(jq -er '.projectDir' "$MANIFEST")"
 PROJECT_NAME="$(jq -er '.projectName' "$MANIFEST")"
+# FLY-2076: .env is a fleet-wide source, but the duty bearer is a one-seat
+# capability. Scrub it immediately after the body reload for every other Lead.
+if [ "$LEAD_ID" != "claude-infra-bot-lead" ]; then
+  unset FLYWHEEL_ALERT_DUTY_TOKEN
+fi
 SUBDIR="$(jq -r '.subdir // ""' "$MANIFEST")"
 WORKSPACE="$(jq -er '(.workspace // "") | select(type == "string")' "$MANIFEST")" \
   || { echo '[lead-body] ERROR: invalid workspace' >&2; exit 1; }

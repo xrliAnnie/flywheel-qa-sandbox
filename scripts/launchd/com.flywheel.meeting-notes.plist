@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  FLY-2033 meeting artifact reconciler. A pre-ship QA live pilot MUST first run
+  the one-shot tick against a real meeting and capture issue/thread/card proof.
+  Only after that hard gate and routing preflight may deployment install it:
+    cp this file ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.flywheel.meeting-notes.plist
+    launchctl kickstart -k gui/$(id -u)/com.flywheel.meeting-notes
+  Health: launchctl print gui/$(id -u)/com.flywheel.meeting-notes and inspect
+  /tmp/flywheel-meeting-notes.log. Roll back with launchctl bootout followed by
+  removing the copied plist. Merge/deploy alone does not load or restart it.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>com.flywheel.meeting-notes</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/xiaorongli/Dev/flywheel/scripts/meeting-notes-tick.sh</string>
+    </array>
+    <key>StartInterval</key><integer>120</integer>
+    <key>RunAtLoad</key><true/>
+    <key>StandardOutPath</key><string>/tmp/flywheel-meeting-notes.log</string>
+    <key>StandardErrorPath</key><string>/tmp/flywheel-meeting-notes.log</string>
+</dict>
+</plist>

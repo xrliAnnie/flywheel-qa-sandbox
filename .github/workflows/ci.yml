@@ -76,6 +76,13 @@ jobs:
       - name: Enforce FLY-2045 milestone layout
         run: bash scripts/__tests__/fly2045-milestone-layout.test.sh
 
+      # FLY-2030: these hermetic contracts guard the cross-repository prefix
+      # fence and ensure activation fails before any running service is stopped.
+      - name: Enforce FLY-2030 summary inflow gates
+        run: |
+          bash scripts/__tests__/fly2030-summary-prefix-pair.test.sh
+          bash scripts/__tests__/fly2030-summary-registry-activation.test.sh
+
       - uses: pnpm/action-setup@v4
 
       - uses: actions/setup-node@v4
@@ -98,6 +105,12 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      - name: Enforce FLY-2165 torn mailbox identity repair contracts
+        run: bash scripts/__tests__/fly-2165-repair-torn-mailbox-identities.test.sh
+
+      - name: Enforce FLY-2103 project config generator retirement
+        run: bash scripts/__tests__/fly2103-project-config-generators.test.sh
 
       - name: Verify workflow seed authority
         run: pnpm verify:workflow-seeds
@@ -192,8 +205,10 @@ jobs:
     # FLY-1986 was placed on shard 2 rather than here because of it.
     # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1867=2, 1572=12, 1764=2,
     # 1327=1, cmux-hooks=10, 1364=312, 1944=2, 183=11, 1402=4, 1496=10,
-    # 1663=97, 1678=78 (test total ~544s). Dependency preflight is ~0s when
+    # 1663=97 (test total ~466s). Dependency preflight is ~0s when
     # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
+    # FLY-2030 PR #975 measured this shard at 1045s on 2026-08-28. Moving the
+    # complete 75s FLY-1678 step to shard 2 restores the expected total to ~970s.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -403,17 +418,6 @@ jobs:
         run: |
           bash scripts/__tests__/voucher-watch.test.sh
 
-      # FLY-1678: the statusline renders on every Lead and Runner pane and is
-      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
-      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
-      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
-      # AND implementation; curl/security are forbidden-call markers so CI can
-      # never touch the real usage API or Keychain).
-      - name: Test — FLY-1678 statusline model-scoped bar + installer
-        run: |
-          bash scripts/__tests__/fly1678-statusline-fable.test.sh
-          bash scripts/__tests__/fly1678-install-statusline.test.sh
-
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
@@ -431,10 +435,11 @@ jobs:
     # 1775=9, 1389=48, npm-seams=13, 1501=104, 1634=10, 1671=2,
     # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1330=6, 1018=0,
     # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
-    # 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
+    # 2126=2, 2033=24, 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
     # 1081=2, 1905=25, 1338-structure=0, 1674=0, 1338-parity=2, 1855=5,
     # 1986=95 (measured 2026-08-23; was 162s before its sleep budget was trimmed),
-    # tripwire-test~1 (test total ~637s). Dependency preflight is ~0s when tools verify; the rg
+    # 1678=75 (moved from shard 1 after the 2026-08-28 FLY-2030 PR #975 run),
+    # tripwire-test~1 (test total ~712s). Dependency preflight is ~0s when tools verify; the rg
     # fast-install path is normally ~5-15s and is bounded below the job ceiling.
     timeout-minutes: 20
     steps:
@@ -557,6 +562,7 @@ jobs:
       - name: Test — FLY-1775 generalized-DAG 529 room
         run: |
           bash scripts/__tests__/test-deploy-generalized.test.sh
+          bash scripts/__tests__/fly2121-node-contract-and-setup.test.sh
           node --test scripts/__tests__/qa-generalized-helper.test.mjs
           node --test scripts/__tests__/qa-generalized-e2e-lib.test.mjs
           node --test scripts/__tests__/qa-generalized-codex-stub.test.mjs
@@ -705,6 +711,11 @@ jobs:
       - name: Test — FLY-1330 log janitor
         run: bash scripts/__tests__/flywheel-log-janitor.test.sh
 
+      # FLY-2139: stopped-service SQLite backup/checkpoint/VACUUM lifecycle.
+      # Hermetic HOME with three temporary databases; never touches host state.
+      - name: Test — FLY-2139 database maintenance
+        run: bash scripts/__tests__/db-maintenance.test.sh
+
       # FLY-1887: hard deadline + identity-fenced cleanup for global one-shot
       # Codex calls. Hermetic fake HOME/PATH/process fixtures; never installs to
       # or signals anything in the runner's real host state.
@@ -795,6 +806,22 @@ jobs:
           bash scripts/__tests__/runner-tier-token-preflight.test.sh
           bash scripts/__tests__/restart-services-voice-bridge.test.sh
 
+      # FLY-2126: the Flywheel wrapper is the credential and contract boundary
+      # for Raya's two-bot voice scenario. The suite is hermetic: fake HOME,
+      # fake slots, and a fake Raya harness; no Discord or production state.
+      - name: Test — FLY-2126 Raya voice scenario wrapper
+        run: bash scripts/__tests__/qa-raya-voice.test.sh
+
+      # FLY-2033: the meeting-artifact scheduler's alert receipt, lock/fallback,
+      # founder card, and trusted transcript-window seams are hermetic. Keep all
+      # four in one explicit step because the shell lane never globs new suites.
+      - name: Test — FLY-2033 meeting artifact closure
+        run: |
+          bash scripts/__tests__/meeting-notes-alert.test.sh
+          bash scripts/__tests__/meeting-notes-tick.test.sh
+          bash scripts/__tests__/meeting-notes-card.test.sh
+          bash scripts/__tests__/meeting-notes-window.test.sh
+
       # FLY-1726: registry-owned Lead identity must reach the v2 wrapper/body,
       # while Bridge default selection is explicit on both legacy upgrades and
       # fresh setup. Hermetic registries/HOMEs; no production config mutation.
@@ -882,6 +909,9 @@ jobs:
       - name: Test — FLY-1674 legacy-path residue guard
         run: bash scripts/__tests__/fly1674-residue.test.sh
 
+      - name: Test — FLY-2102 startup flag freeze residue guard
+        run: bash scripts/__tests__/fly2102-flag-freeze.test.sh
+
       # FLY-1338 QA: the structure guard above reasons about the matrix filter
       # STRINGS; this one asks pnpm what they actually resolve to on the real
       # workspace, so "the sharded matrix still covers every packages/* package,
@@ -903,6 +933,18 @@ jobs:
 
       - name: Test — FLY-2007 phase-0 analyser contract
         run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
+
+      # FLY-1678: the statusline renders on every Lead and Runner pane and is
+      # re-read every frame, so a bad edit blanks the whole fleet at once. Both
+      # suites are hermetic (fake HOMEs; deterministic date/stat/tr shims because
+      # the script is BSD-only and `tr`'s multibyte behaviour differs by locale
+      # AND implementation; curl/security are forbidden-call markers so CI can
+      # never touch the real usage API or Keychain). FLY-2030 PR #975 measured
+      # this complete step at 75s and moved it here to rebalance the two shards.
+      - name: Test — FLY-1678 statusline model-scoped bar + installer
+        run: |
+          bash scripts/__tests__/fly1678-statusline-fable.test.sh
+          bash scripts/__tests__/fly1678-install-statusline.test.sh
 
       - name: Test — FLY-1870 job elapsed tripwire contract
         run: bash scripts/__tests__/ci-job-elapsed-tripwire.test.sh
@@ -970,9 +1012,6 @@ jobs:
 
       - name: Ship merge-token contract (SHIP_PAT first, GITHUB_TOKEN fallback)
         run: bash scripts/__tests__/ship-merge-token.test.sh
-
-      - name: Publish broker structure lint (zero-build commit + token scrub + default-off)
-        run: bash scripts/__tests__/publish-broker-structure.test.sh
 
       - name: Shell packaging verification (pack + install + publish --dry-run)
         run: bash scripts/__tests__/shell-pack-install-dryrun.test.sh

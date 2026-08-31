@@ -56,10 +56,8 @@ done
 # is not the placeholder" and continued — a file that does not exist is not evidence
 # that the endpoint is real. --check-endpoint-only then exited 0, indistinguishable
 # from a genuine pass: the same phantom-control class this PR exists to remove.
-# The broker's equivalent (bridge/publish-broker/shell-verify.ts) reads the file and
-# throws ENOENT if it is gone; this is the fail-closed the direct path had not
-# restored. Existence and readability are checked FIRST, so absence cannot read as
-# "no placeholder found".
+# Existence and readability are checked FIRST, so absence cannot read as "no
+# placeholder found".
 CONFIG="$SHELL_DIR/lib/config.mjs"
 [ -f "$CONFIG" ] \
   || die "cannot read $CONFIG — the endpoint gate cannot confirm DEFAULT_ENDPOINT is real, refusing. A missing file is not a passing check."

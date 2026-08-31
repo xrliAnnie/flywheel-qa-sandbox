@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import type { SummaryRole } from "flywheel-comm/lead-identity";
 import { compileLeadIdentityRegistry } from "flywheel-comm/lead-identity";
 import type { LeadBackendId } from "./lead-backends/lead-backend.js";
 import { isLeadEffort, type LeadEffort } from "./lead-effort.js";
@@ -9,6 +10,8 @@ export type LeadCarrier = "v2";
 
 export interface LeadConfig {
 	agentId: string;
+	/** FLY-2030: explicit summary inflow assignment. Missing/unknown values fail config load. */
+	summaryRole: SummaryRole;
 	chatChannel: string;
 	match: {
 		labels: string[];
@@ -107,15 +110,17 @@ export interface LeadConfig {
 	 * model does this Lead run on" (previously a hand-edited plist env that any
 	 * `flywheel-daemon.sh install` silently wiped).
 	 *
-	 * Only effective for the `claude-code` backend (flows into the launchd plist
-	 * as `FLYWHEEL_LEAD_MODEL` via `fleet apply` → manifest → `generate_plist`).
-	 * For codex Leads it is display-only ("configured", never claimed active).
+	 * Effective for both Lead backends. Claude consumes the launchd value as a CLI
+	 * flag; Codex consumes the same `FLYWHEEL_LEAD_MODEL` carrier in thread params.
 	 *
 	 * Absent = account default model. Deliberately NOT normalized (FLY-231
 	 * pattern): absent stays absent so existing in-memory Lead objects keep
 	 * their exact shape (reverse-compat).
 	 */
 	model?: string;
+	/** FLY-2131: Codex-only protocol context-window pin. The numeric registry
+	 * field is projected to FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW by the launcher. */
+	modelContextWindow?: number;
 	/**
 	 * FLY-1867: identity-bound opt-in for the official Playwright MCP plugin.
 	 * Machine settings keep the plugin disabled by default; `claude-lead.sh`
@@ -180,13 +185,8 @@ export interface LeadConfig {
 	voice?: string | { voiceId: string; rate?: string; pitch?: string };
 	/**
 	 * FLY-671: per-Lead reasoning-effort override (`low|medium|high|xhigh|max`).
-	 * Mirrors `model`: only effective for the `claude-code` backend, flowing
-	 * `fleet apply → manifest → generate_plist` as `FLYWHEEL_LEAD_EFFORT` →
-	 * `claude-lead.sh --effort`. Lowering it from the account default (effectively
-	 * xhigh) directly saves tokens.
-	 *
-	 * Cross-field (validated below): rejected on a `codex-app-server` Lead — Codex
-	 * has no `--effort` runtime path, so a value there would be inert dead config.
+	 * Mirrors `model`: Claude consumes it as `claude-lead.sh --effort`; Codex maps
+	 * the same carrier to thread config `model_reasoning_effort` (FLY-2131).
 	 *
 	 * Absent = account default (companions still get their FLY-583 `xhigh`).
 	 * Deliberately NOT normalized (FLY-231 pattern): absent stays absent so
@@ -262,6 +262,8 @@ export interface ProjectEntry {
 	projectRoot: string;
 	projectRepo?: string;
 	leads: LeadConfig[];
+	/** Required only while the founder-selected summary mode is per-project. */
+	summaryAggregatorLeadId?: string;
 	generalChannel?: string;
 	/**
 	 * FLY-892 (Step 7, ④): env var name holding the dedicated "system announcer"
@@ -737,22 +739,28 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 				}
 			}
 
-			// FLY-671: validate optional per-lead effort (closed CLI enum). Absent
-			// stays absent (reverse-compat). Codex Leads have no `--effort` runtime
-			// path → reject the mixture as dead config (Codex design review R2 LOW-5,
-			// same fail-closed cross-field discipline as the codexProfile block).
+			// FLY-671/FLY-2131: validate optional per-lead effort (closed enum).
+			// Both backends consume it now; absent stays absent (reverse-compat).
 			if (lead.effort !== undefined) {
 				if (!isLeadEffort(lead.effort)) {
 					throw new Error(
 						`Project "${entry.projectName}" leads[${i}].effort: must be "low"|"medium"|"high"|"xhigh"|"max", got ${JSON.stringify(lead.effort)}`,
 					);
 				}
-				if (lead.backend === "codex-app-server") {
+			}
+			if (lead.modelContextWindow !== undefined) {
+				if (
+					!Number.isSafeInteger(lead.modelContextWindow) ||
+					lead.modelContextWindow < 1 ||
+					lead.modelContextWindow > 10_000_000
+				) {
 					throw new Error(
-						`Project "${entry.projectName}" leads[${i}] (${lead.agentId}): ` +
-							`effort is not supported on backend "codex-app-server" (Codex has no ` +
-							`--effort runtime path — it would be inert config). Remove effort or ` +
-							`use the claude-code backend.`,
+						`Project "${entry.projectName}" leads[${i}].modelContextWindow: must be an integer from 1 through 10000000, got ${JSON.stringify(lead.modelContextWindow)}`,
+					);
+				}
+				if (lead.backend !== "codex-app-server") {
+					throw new Error(
+						`Project "${entry.projectName}" leads[${i}].modelContextWindow: is only supported on backend "codex-app-server"`,
 					);
 				}
 			}

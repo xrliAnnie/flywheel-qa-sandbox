@@ -1,24 +1,24 @@
-import { mailboxQueueEnabled } from "flywheel-config";
-
 export interface MailboxQueueConfig {
-	enabled: boolean;
 	ackLeaseMs: number;
 	batchWindowMs: number;
 	batchMaxSize: number;
 	inflightMaxBatches: number;
 	leaseRetryMax: number;
 	deadLetterWindowMs: number;
+	deadLetterScanIntervalMs: number;
+	archiveIntervalMs: number;
 	unavailableRetryMax: number;
 }
 
 export const DEFAULT_MAILBOX_QUEUE_CONFIG: Readonly<MailboxQueueConfig> = {
-	enabled: true,
 	ackLeaseMs: 1_800_000,
 	batchWindowMs: 30_000,
 	batchMaxSize: 10,
 	inflightMaxBatches: 3,
 	leaseRetryMax: 3,
 	deadLetterWindowMs: 1_800_000,
+	deadLetterScanIntervalMs: 30_000,
+	archiveIntervalMs: 60_000,
 	unavailableRetryMax: 55,
 };
 
@@ -53,7 +53,6 @@ export function resolveMailboxQueueConfig(
 	warn: Warn = console.warn,
 ): MailboxQueueConfig {
 	return {
-		enabled: mailboxQueueEnabled(env),
 		ackLeaseMs: boundedInteger(
 			env,
 			"FLYWHEEL_MAILBOX_ACK_LEASE_MS",
@@ -98,6 +97,22 @@ export function resolveMailboxQueueConfig(
 			env,
 			"FLYWHEEL_MAILBOX_DEADLETTER_WINDOW_MS",
 			DEFAULT_MAILBOX_QUEUE_CONFIG.deadLetterWindowMs,
+			10_000,
+			86_400_000,
+			warn,
+		),
+		deadLetterScanIntervalMs: boundedInteger(
+			env,
+			"FLYWHEEL_MAILBOX_DEADSCAN_INTERVAL_MS",
+			DEFAULT_MAILBOX_QUEUE_CONFIG.deadLetterScanIntervalMs,
+			1_000,
+			3_600_000,
+			warn,
+		),
+		archiveIntervalMs: boundedInteger(
+			env,
+			"FLYWHEEL_MAILBOX_ARCHIVE_INTERVAL_MS",
+			DEFAULT_MAILBOX_QUEUE_CONFIG.archiveIntervalMs,
 			10_000,
 			86_400_000,
 			warn,

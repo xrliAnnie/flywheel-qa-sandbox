@@ -69,7 +69,7 @@ function claimlessLandSnapshot(): string {
 					{
 						id: "craft",
 						type: "generic",
-						role: "generic",
+						role: "general",
 						vendor: "claude",
 						model: "claude-opus-5",
 						effort: "xhigh",
@@ -249,6 +249,7 @@ describe("FLY-1981 founder action endpoint integration", () => {
 		});
 		bindPr(store, runId, executionId);
 		const transitioned = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId,
 			nodeId: "craft",
 			attempt: 1,

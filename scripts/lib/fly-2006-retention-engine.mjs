@@ -8,10 +8,11 @@ import {
 	realpathSync,
 	statfsSync,
 	statSync,
+	writeFileSync,
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { archiveMailboxFamily } from "./fly-2006-mailbox-archive.mjs";
 import { buildActiveSnapshot } from "./fly-2006-retention-cohort.mjs";
@@ -25,8 +26,16 @@ import {
 	assertClassifiedSchema,
 	RETENTION_MS,
 } from "./fly-2006-retention-registry.mjs";
+import {
+	FLY2139_STANDING_POLICY,
+	FLY2139_STANDING_POLICY_PATH,
+	validateFly2139StandingPolicy,
+} from "./fly-2139-standing-policy.mjs";
 
 const enginePath = fileURLToPath(import.meta.url);
+const registryPath = fileURLToPath(
+	new URL("./fly-2006-retention-registry.mjs", import.meta.url),
+);
 const repoRoot = resolve(dirname(enginePath), "../..");
 const packageRequire = createRequire(
 	join(repoRoot, "packages/teamlead/package.json"),
@@ -337,6 +346,17 @@ function sha256File(path) {
 	return sha256(readFileSync(path));
 }
 
+function pathEntryExists(path) {
+	try {
+		lstatSync(path);
+		return true;
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "ENOENT")
+			return false;
+		throw error;
+	}
+}
+
 function engineSourceDigest() {
 	return sha256(
 		[
@@ -353,6 +373,183 @@ function engineSourceDigest() {
 			)
 			.join("\n"),
 	);
+}
+
+export function fly2139ActivationRequirements() {
+	validateFly2139StandingPolicy(FLY2139_STANDING_POLICY);
+	return {
+		schemaVersion: 1,
+		issue: FLY2139_STANDING_POLICY.issue,
+		policySha256: sha256File(FLY2139_STANDING_POLICY_PATH),
+		registrySha256: sha256File(registryPath),
+		engineSha256: engineSourceDigest(),
+		globalRowCap: FLY2139_STANDING_POLICY.globalRowCap,
+		perTableRowCap: FLY2139_STANDING_POLICY.perTableRowCap,
+	};
+}
+
+export function validateFly2139ActivationReceipt(input) {
+	const expectedPath = resolve(
+		input.homeDir ?? homedir(),
+		".flywheel",
+		"state",
+		"log-janitor",
+		"db-retention-activation.json",
+	);
+	if (resolve(input.activationReceiptPath) !== expectedPath) {
+		throw new Error("activation_receipt_path_not_canonical");
+	}
+	let info;
+	try {
+		info = lstatSync(input.activationReceiptPath);
+	} catch {
+		throw new Error("activation_receipt_not_regular");
+	}
+	if (
+		info.isSymbolicLink() ||
+		!info.isFile() ||
+		(info.mode & 0o777) !== 0o600
+	) {
+		throw new Error("activation_receipt_not_regular");
+	}
+	const bytes = readFileSync(input.activationReceiptPath);
+	let receipt;
+	try {
+		receipt = JSON.parse(bytes.toString("utf8"));
+	} catch {
+		throw new Error("activation_receipt_invalid");
+	}
+	const requirements = fly2139ActivationRequirements();
+	const expectedKeys = [
+		"approvedAt",
+		"approvedBy",
+		"engineSha256",
+		"globalRowCap",
+		"issue",
+		"perTableRowCap",
+		"policySha256",
+		"registrySha256",
+		"schemaVersion",
+	];
+	const actualKeys =
+		receipt && typeof receipt === "object" ? Object.keys(receipt).sort() : [];
+	if (
+		actualKeys.length !== expectedKeys.length ||
+		!actualKeys.every((key, index) => key === expectedKeys[index]) ||
+		Object.entries(requirements).some(
+			([key, value]) => receipt[key] !== value,
+		) ||
+		typeof receipt.approvedBy !== "string" ||
+		receipt.approvedBy.trim() === "" ||
+		!Number.isFinite(Date.parse(receipt.approvedAt ?? ""))
+	) {
+		throw new Error("activation_receipt_invalid");
+	}
+	return Object.freeze({
+		...requirements,
+		approvedBy: receipt.approvedBy,
+		approvedAt: receipt.approvedAt,
+		activationReceiptPath: realpathSync(input.activationReceiptPath),
+		activationReceiptSha256: sha256(bytes),
+	});
+}
+
+export function createFly2139ActivationReceipt(input) {
+	const homeDir = input.homeDir ?? homedir();
+	const expectedPath = resolve(
+		homeDir,
+		".flywheel",
+		"state",
+		"log-janitor",
+		"db-retention-activation.json",
+	);
+	if (resolve(input.activationReceiptPath) !== expectedPath)
+		throw new Error("activation_receipt_path_not_canonical");
+	const approvedBy = String(input.approvedBy ?? "").trim();
+	const approvedAt = String(input.approvedAt ?? "").trim();
+	if (!approvedBy || !Number.isFinite(Date.parse(approvedAt)))
+		throw new Error("activation_approval_invalid");
+	const parent = dirname(expectedPath);
+	mkdirSync(parent, { recursive: true, mode: 0o700 });
+	const parentInfo = lstatSync(parent);
+	if (parentInfo.isSymbolicLink() || !parentInfo.isDirectory())
+		throw new Error("activation_receipt_parent_unsafe");
+	chmodSync(parent, 0o700);
+	if (pathEntryExists(expectedPath))
+		throw new Error("activation_receipt_exists");
+	const receipt = {
+		...fly2139ActivationRequirements(),
+		approvedBy,
+		approvedAt,
+	};
+	try {
+		writeFileSync(expectedPath, `${JSON.stringify(receipt, null, 2)}\n`, {
+			encoding: "utf8",
+			flag: "wx",
+			mode: 0o600,
+		});
+		chmodSync(expectedPath, 0o600);
+	} catch (error) {
+		if (error && typeof error === "object" && error.code === "EEXIST")
+			throw new Error("activation_receipt_exists");
+		throw error;
+	}
+	const audit = validateFly2139ActivationReceipt({
+		activationReceiptPath: expectedPath,
+		homeDir,
+	});
+	return Object.freeze({
+		status: "complete",
+		activationReceiptPath: audit.activationReceiptPath,
+		activationReceiptSha256: audit.activationReceiptSha256,
+	});
+}
+
+export function assertFly2139PolicyCaps(manifest) {
+	const targets = manifest?.targets;
+	if (!targets || typeof targets !== "object" || Array.isArray(targets)) {
+		throw new Error("policy_manifest_targets_invalid");
+	}
+	const allowed = Object.fromEntries(
+		Object.entries(FLY2139_STANDING_POLICY.deleteTargets).map(
+			([database, tables]) => [database, new Set(tables)],
+		),
+	);
+	const perTableRows = {};
+	let totalRows = 0;
+	for (const target of Object.values(targets)) {
+		const database = target?.database;
+		const table = target?.table;
+		const candidateCount = target?.candidateCount;
+		if (
+			typeof database !== "string" ||
+			typeof table !== "string" ||
+			!Number.isSafeInteger(candidateCount) ||
+			candidateCount < 0
+		) {
+			throw new Error("policy_manifest_target_invalid");
+		}
+		if (!allowed[database]?.has(table)) {
+			throw new Error(`policy_target_not_allowed:${database}.${table}`);
+		}
+		const key = `${database}.${table}`;
+		perTableRows[key] = (perTableRows[key] ?? 0) + candidateCount;
+		if (perTableRows[key] > FLY2139_STANDING_POLICY.perTableRowCap) {
+			throw new Error(`policy_cap_exceeded:${key}`);
+		}
+		totalRows += candidateCount;
+		if (totalRows > FLY2139_STANDING_POLICY.globalRowCap) {
+			throw new Error("policy_cap_exceeded:global");
+		}
+	}
+	return {
+		totalRows,
+		perTableRows: Object.fromEntries(
+			Object.entries(perTableRows).sort(([left], [right]) =>
+				left.localeCompare(right),
+			),
+		),
+	};
 }
 
 function databaseStateFingerprint(db) {
@@ -420,20 +617,22 @@ function databaseIdentity(path) {
 	};
 }
 
-function validateInventoryPaths(input) {
+export function validateFly2006InventoryPaths(input) {
 	if (input.allowFixturePaths === true) return;
-	const teamlead = realpathSync(join(homedir(), ".flywheel", "teamlead.db"));
+	const homeDir = input.homeDir ?? homedir();
+	const teamlead = realpathSync(join(homeDir, ".flywheel", "teamlead.db"));
 	const comm = realpathSync(
-		join(homedir(), ".flywheel", "comm", "flywheel", "comm.db"),
+		join(homeDir, ".flywheel", "comm", "flywheel", "comm.db"),
 	);
 	if (realpathSync(input.teamleadDbPath) !== teamlead)
 		throw new Error("teamlead_db_path_not_canonical");
 	if (realpathSync(input.commDbPath) !== comm)
 		throw new Error("comm_db_path_not_canonical");
-	const evidenceRoot = realpathSync(
-		join(homedir(), ".flywheel", "maintenance", "fly-2006"),
+	const evidenceIssues = input.evidenceIssues ?? ["fly-2006"];
+	const evidenceRoots = evidenceIssues.map((issue) =>
+		realpathSync(join(homeDir, ".flywheel", "maintenance", issue)),
 	);
-	if (realpathSync(dirname(input.evidenceDir)) !== evidenceRoot)
+	if (!evidenceRoots.includes(realpathSync(dirname(input.evidenceDir))))
 		throw new Error("evidence_dir_not_canonical_child");
 }
 
@@ -801,7 +1000,10 @@ export async function executeFly2006Inventory(input) {
 	if (!input.allowFixturePaths && !input.healthUrl)
 		throw new Error("health_url_required");
 	const healthUrl = input.healthUrl ? validateHealthUrl(input.healthUrl) : null;
-	validateInventoryPaths(input);
+	validateFly2006InventoryPaths({
+		...input,
+		evidenceIssues: input.evidenceIssues ?? ["fly-2006"],
+	});
 	mkdirSync(input.evidenceDir, { mode: 0o700 });
 	chmodSync(input.evidenceDir, 0o700);
 	mkdirSync(join(input.evidenceDir, "receipts"), { mode: 0o700 });
@@ -1311,8 +1513,9 @@ async function applyTarget({
 	return deleted;
 }
 
-export async function executeFly2006Apply(input) {
-	validateFounderGateAudit(input.founderGateAudit, input.allowFixturePaths);
+async function executeFrozenApply(input, authority) {
+	const authorityField = authority.field;
+	const authorityAudit = authority.audit;
 	const manifest = readSealedJson(input.manifestPath, "manifest");
 	if (manifest.issue !== "FLY-2006" || manifest.schemaVersion !== 2)
 		throw new Error("manifest_identity_mismatch");
@@ -1325,23 +1528,25 @@ export async function executeFly2006Apply(input) {
 	if (existsSync(applyReceiptPath)) {
 		const receipt = readSealedJson(applyReceiptPath, "apply_receipt");
 		if (
-			receipt.issue !== "FLY-2006" ||
+			receipt.issue !== authority.issue ||
 			receipt.status !== "complete" ||
 			receipt.manifestSha256 !== manifestSha256 ||
-			!sameFounderGateAudit(receipt.founderGateAudit, input.founderGateAudit)
+			!sameFounderGateAudit(receipt[authorityField], authorityAudit)
 		)
 			throw new Error("apply_receipt_identity_mismatch");
 		return { ...receipt, applyReceiptPath };
 	}
 	if (manifest.engineSha256 !== engineSourceDigest())
 		throw new Error("engine_digest_mismatch");
+	const applyStarted = performance.now();
 	assertDatabaseIdentity(manifest.databases.teamlead);
 	assertDatabaseIdentity(manifest.databases.comm);
 	if (!input.allowFixturePaths) {
-		validateInventoryPaths({
+		validateFly2006InventoryPaths({
 			teamleadDbPath: manifest.databases.teamlead.path,
 			commDbPath: manifest.databases.comm.path,
 			evidenceDir: dirname(input.manifestPath),
+			evidenceIssues: [authority.evidenceIssue],
 		});
 	}
 	const teamlead = new Database(manifest.databases.teamlead.path, {
@@ -1409,13 +1614,14 @@ export async function executeFly2006Apply(input) {
 			};
 		}
 		const receipt = {
-			issue: "FLY-2006",
+			issue: authority.issue,
 			status: "complete",
 			manifestPath: realpathSync(input.manifestPath),
 			manifestSha256,
-			founderGateAudit: input.founderGateAudit,
+			[authorityField]: authorityAudit,
 			deleted,
 			integrity,
+			durationMs: Math.max(1, Math.ceil(performance.now() - applyStarted)),
 			completedAt: new Date().toISOString(),
 		};
 		writeSealedJson(applyReceiptPath, receipt);
@@ -1428,7 +1634,7 @@ export async function executeFly2006Apply(input) {
 			);
 			if (!existsSync(partialPath)) {
 				writeSealedJson(partialPath, {
-					issue: "FLY-2006",
+					issue: authority.issue,
 					status: "partial",
 					manifestSha256,
 					committedTargets,
@@ -1442,6 +1648,68 @@ export async function executeFly2006Apply(input) {
 		teamlead.close();
 		comm.close();
 	}
+}
+
+export async function executeFly2006Apply(input) {
+	validateFounderGateAudit(input.founderGateAudit, input.allowFixturePaths);
+	return executeFrozenApply(input, {
+		issue: "FLY-2006",
+		field: "founderGateAudit",
+		audit: input.founderGateAudit,
+		evidenceIssue: "fly-2006",
+	});
+}
+
+function writeFly2139PolicyFailure(manifestPath, activationAudit, error) {
+	const failurePath = join(dirname(manifestPath), "policy-apply-failure.json");
+	if (!existsSync(failurePath)) {
+		writeSealedJson(failurePath, {
+			issue: "FLY-2139",
+			status: "failed",
+			manifestPath: realpathSync(manifestPath),
+			manifestSha256: sha256File(manifestPath),
+			activationReceiptSha256: activationAudit.activationReceiptSha256,
+			error: error instanceof Error ? error.message : String(error),
+			recordedAt: new Date().toISOString(),
+		});
+	}
+	return failurePath;
+}
+
+export async function executeFly2139PolicyApply(input) {
+	const activationAudit = validateFly2139ActivationReceipt({
+		activationReceiptPath: input.activationReceiptPath,
+		homeDir: input.homeDir,
+	});
+	const manifest = readSealedJson(input.manifestPath, "manifest");
+	if (manifest.issue !== "FLY-2006" || manifest.schemaVersion !== 2)
+		throw new Error("manifest_identity_mismatch");
+	validateManifestRetentionWindow(manifest);
+	if (!input.allowFixturePaths) {
+		validateFly2006InventoryPaths({
+			teamleadDbPath: manifest.databases.teamlead.path,
+			commDbPath: manifest.databases.comm.path,
+			evidenceDir: dirname(input.manifestPath),
+			evidenceIssues: ["fly-2139"],
+		});
+	}
+	let actualRows;
+	try {
+		actualRows = assertFly2139PolicyCaps(manifest);
+	} catch (error) {
+		writeFly2139PolicyFailure(input.manifestPath, activationAudit, error);
+		throw error;
+	}
+	const policyAudit = Object.freeze({
+		...activationAudit,
+		actualRows,
+	});
+	return executeFrozenApply(input, {
+		issue: "FLY-2139",
+		field: "policyAudit",
+		audit: policyAudit,
+		evidenceIssue: "fly-2139",
+	});
 }
 
 function existingFileBytes(path) {
@@ -1552,7 +1820,7 @@ export async function executeFly2006Vacuum(input) {
 	const expectedDatabase = manifest.databases[input.database];
 	assertDatabaseIdentity(expectedDatabase);
 	if (!input.allowFixturePaths) {
-		validateInventoryPaths({
+		validateFly2006InventoryPaths({
 			teamleadDbPath: manifest.databases.teamlead.path,
 			commDbPath: manifest.databases.comm.path,
 			evidenceDir,
@@ -1647,6 +1915,276 @@ export async function executeFly2006Vacuum(input) {
 		};
 		writeSealedJson(receiptPath, receipt);
 		return { ...receipt, startedPath, receiptPath };
+	} finally {
+		db.close();
+	}
+}
+
+function maintenancePathSpec(input) {
+	const flywheelRoot = resolve(homedir(), ".flywheel");
+	const databasePath = resolve(input.databasePath);
+	if (input.database === "teamlead") {
+		if (databasePath !== join(flywheelRoot, "teamlead.db")) {
+			throw new Error("maintenance_database_path_not_canonical");
+		}
+		return { flywheelRoot, project: null };
+	}
+	const project = basename(dirname(databasePath));
+	if (
+		!/^[A-Za-z0-9._-]+$/.test(project) ||
+		project === "." ||
+		project === ".." ||
+		databasePath !== join(flywheelRoot, "comm", project, "comm.db")
+	) {
+		throw new Error("maintenance_database_path_not_canonical");
+	}
+	return { flywheelRoot, project };
+}
+
+function validateMaintenancePaths(input) {
+	if (input.allowFixturePaths === true) return;
+	const { flywheelRoot, project } = maintenancePathSpec(input);
+	const actualDatabase = realpathSync(input.databasePath);
+	if (input.database === "teamlead") {
+		if (actualDatabase !== realpathSync(join(flywheelRoot, "teamlead.db"))) {
+			throw new Error("maintenance_database_path_not_canonical");
+		}
+	} else if (
+		actualDatabase !==
+		join(realpathSync(join(flywheelRoot, "comm")), project, "comm.db")
+	) {
+		throw new Error("maintenance_database_path_not_canonical");
+	}
+	const evidenceRoot = realpathSync(
+		join(flywheelRoot, "maintenance", "fly-2139", "db-maintenance"),
+	);
+	if (realpathSync(dirname(input.evidenceDir)) !== evidenceRoot) {
+		throw new Error("maintenance_evidence_dir_not_canonical");
+	}
+}
+
+function normalizeCheckpointResult(value) {
+	const row = Array.isArray(value) ? value[0] : value;
+	const checkpoint = {
+		busy: Number(row?.busy),
+		log: Number(row?.log),
+		checkpointed: Number(row?.checkpointed),
+	};
+	if (
+		!Object.values(checkpoint).every(
+			(item) => Number.isSafeInteger(item) && item >= 0,
+		)
+	) {
+		throw new Error("maintenance_checkpoint_result_invalid");
+	}
+	return checkpoint;
+}
+
+function runMaintenanceCheckpoint(db, phase, testHooks) {
+	try {
+		const injected = testHooks?.checkpointResult?.(phase);
+		return normalizeCheckpointResult(
+			injected ?? db.pragma("wal_checkpoint(TRUNCATE)"),
+		);
+	} catch (error) {
+		if (error?.code === "SQLITE_BUSY") {
+			throw new Error(`maintenance_checkpoint_busy:${phase}`);
+		}
+		throw error;
+	}
+}
+
+function checkpointHasUnflushedPages(checkpoint) {
+	return checkpoint.busy !== 0 && checkpoint.log !== checkpoint.checkpointed;
+}
+
+function writeMaintenanceFailure(path, input, reason, checkpoint) {
+	if (!existsSync(path)) {
+		writeSealedJson(path, {
+			issue: "FLY-2139",
+			status: "failed",
+			database: input.database,
+			databasePath: realpathSync(input.databasePath),
+			reason,
+			...(checkpoint ? { checkpoint } : {}),
+			recordedAt: new Date().toISOString(),
+		});
+	}
+}
+
+export async function executeFly2139MaintenanceVacuum(input) {
+	if (!new Set(["teamlead", "comm"]).has(input.database)) {
+		throw new Error("maintenance_database_invalid");
+	}
+	if (!Number.isSafeInteger(input.maxDurationMs) || input.maxDurationMs <= 0) {
+		throw new Error("maintenance_max_duration_invalid");
+	}
+	if (input.allowFixturePaths !== true) maintenancePathSpec(input);
+	const databaseInfo = lstatSync(input.databasePath);
+	if (databaseInfo.isSymbolicLink() || !databaseInfo.isFile()) {
+		throw new Error("maintenance_database_not_regular");
+	}
+	validateMaintenancePaths(input);
+	if (existsSync(input.evidenceDir)) {
+		const evidenceInfo = lstatSync(input.evidenceDir);
+		if (evidenceInfo.isSymbolicLink() || !evidenceInfo.isDirectory()) {
+			throw new Error("maintenance_evidence_dir_unsafe");
+		}
+	} else {
+		mkdirSync(input.evidenceDir, { mode: 0o700 });
+	}
+	chmodSync(input.evidenceDir, 0o700);
+	const startedPath = join(
+		input.evidenceDir,
+		`maintenance-${input.database}-started.json`,
+	);
+	const receiptPath = join(
+		input.evidenceDir,
+		`maintenance-${input.database}-receipt.json`,
+	);
+	const failurePath = join(
+		input.evidenceDir,
+		`maintenance-${input.database}-failure.json`,
+	);
+	if (existsSync(receiptPath)) {
+		const receipt = readSealedJson(receiptPath, "maintenance_receipt");
+		if (
+			receipt.issue !== "FLY-2139" ||
+			receipt.status !== "complete" ||
+			receipt.database !== input.database ||
+			receipt.databasePath !== realpathSync(input.databasePath)
+		) {
+			throw new Error("maintenance_receipt_identity_mismatch");
+		}
+		return { ...receipt, receiptPath };
+	}
+	const startedMarker = existsSync(startedPath)
+		? readSealedJson(startedPath, "maintenance_started")
+		: null;
+	if (
+		startedMarker &&
+		(startedMarker.issue !== "FLY-2139" ||
+			startedMarker.status !== "started" ||
+			startedMarker.database !== input.database ||
+			startedMarker.databasePath !== realpathSync(input.databasePath))
+	) {
+		throw new Error("maintenance_started_identity_mismatch");
+	}
+	const db = new Database(input.databasePath, { fileMustExist: true });
+	let checkpoint;
+	try {
+		db.pragma("busy_timeout=0");
+		const schemaBefore = databaseStateFingerprint(db);
+		const currentBefore = vacuumDatabaseState(db, input.databasePath);
+		const before = startedMarker?.before ?? currentBefore;
+		const requiredBytes =
+			2 * (currentBefore.mainBytes + currentBefore.walBytes) +
+			1024 * 1024 * 1024;
+		const disk = statfsSync(dirname(input.databasePath));
+		const availableBytes =
+			input.testHooks?.availableBytes ??
+			Number(disk.bavail) * Number(disk.bsize);
+		if (availableBytes < requiredBytes) {
+			throw new Error("maintenance_disk_space_insufficient");
+		}
+		try {
+			db.exec("BEGIN EXCLUSIVE; ROLLBACK");
+		} catch (error) {
+			if (error?.code === "SQLITE_BUSY") {
+				throw new Error("maintenance_writer_busy");
+			}
+			throw error;
+		}
+		if (!startedMarker) {
+			writeSealedJson(startedPath, {
+				issue: "FLY-2139",
+				status: "started",
+				database: input.database,
+				databasePath: realpathSync(input.databasePath),
+				requiredBytes,
+				availableBytes,
+				before,
+				startedAt: new Date().toISOString(),
+			});
+		}
+		input.testHooks?.afterStarted?.();
+		checkpoint = runMaintenanceCheckpoint(db, "before", input.testHooks);
+		if (checkpointHasUnflushedPages(checkpoint)) {
+			throw new Error("maintenance_checkpoint_busy:before");
+		}
+		const vacuumStarted = performance.now();
+		try {
+			db.exec("VACUUM");
+		} catch (error) {
+			if (error?.code === "SQLITE_BUSY") {
+				throw new Error("maintenance_vacuum_busy");
+			}
+			throw error;
+		}
+		const measuredDurationMs = Math.ceil(performance.now() - vacuumStarted);
+		const durationMs = input.testHooks?.durationMs ?? measuredDurationMs;
+		if (!Number.isFinite(durationMs) || durationMs < 0) {
+			throw new Error("maintenance_duration_invalid");
+		}
+		const checkpointAfter = runMaintenanceCheckpoint(
+			db,
+			"after",
+			input.testHooks,
+		);
+		if (checkpointHasUnflushedPages(checkpointAfter)) {
+			checkpoint = checkpointAfter;
+			throw new Error("maintenance_checkpoint_busy:after");
+		}
+		let quickCheck;
+		let integrityCheck;
+		try {
+			quickCheck = db.pragma("quick_check", { simple: true });
+			integrityCheck = db.pragma("integrity_check", { simple: true });
+		} catch (error) {
+			if (error?.code === "SQLITE_BUSY") {
+				throw new Error("maintenance_integrity_busy");
+			}
+			throw error;
+		}
+		if (quickCheck !== "ok" || integrityCheck !== "ok") {
+			throw new Error("maintenance_integrity_failed");
+		}
+		const schemaAfter = databaseStateFingerprint(db);
+		if (
+			schemaAfter.schemaSha256 !== schemaBefore.schemaSha256 ||
+			schemaAfter.triggerSha256 !== schemaBefore.triggerSha256 ||
+			schemaAfter.foreignKeySha256 !== schemaBefore.foreignKeySha256
+		) {
+			throw new Error("maintenance_database_state_changed");
+		}
+		const after = vacuumDatabaseState(db, input.databasePath);
+		const durationExceeded = durationMs > input.maxDurationMs;
+		const receipt = {
+			issue: "FLY-2139",
+			status: "complete",
+			slaStatus: durationExceeded ? "degraded" : "within_budget",
+			durationExceeded,
+			recoveredFromStartedMarker: startedMarker !== null,
+			database: input.database,
+			databasePath: realpathSync(input.databasePath),
+			before,
+			after,
+			checkpoint: { before: checkpoint, after: checkpointAfter },
+			integrity: { quickCheck, integrityCheck },
+			durationMs,
+			maxDurationMs: input.maxDurationMs,
+			completedAt: new Date().toISOString(),
+		};
+		writeSealedJson(receiptPath, receipt);
+		return { ...receipt, receiptPath };
+	} catch (error) {
+		writeMaintenanceFailure(
+			failurePath,
+			input,
+			error instanceof Error ? error.message : String(error),
+			checkpoint,
+		);
+		throw error;
 	} finally {
 		db.close();
 	}

@@ -35,6 +35,7 @@
  */
 
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { LinearClient } from "@linear/sdk";
 // Workspace packages are imported by RELATIVE dist path (matching
@@ -48,7 +49,9 @@ import {
 	defaultStateDir,
 	readState,
 } from "../packages/flywheel-comm/dist/xiaohongshu-state.js";
+import { storeXiaohongshuLearningEnabled } from "../packages/teamlead/dist/bridge/flag-store-runtime.js";
 import { loadProjects } from "../packages/teamlead/dist/ProjectConfig.js";
+import { StateStore } from "../packages/teamlead/dist/StateStore.js";
 import {
 	buildTriggerBody,
 	type CollectionRunPlan,
@@ -109,17 +112,30 @@ async function main(): Promise<void> {
 	const configMap = await loadProjectConfigs(projects);
 	const linear = new LinearClient({ apiKey: LINEAR_API_KEY });
 	const stateDir = defaultStateDir();
-
-	const decisions = planLearningRuns({
-		projects,
-		loadProjectConfig: (name) => configMap.get(name) ?? null,
-		// PlannerDeps.readState is (project, collectionId); the flywheel-comm fn is
-		// (stateDir, project, collectionId) — bind stateDir so the planner reads the
-		// RIGHT collection state (codex PR-5 code R1: the bare ref shifted args).
-		readState: (project, collectionId) =>
-			readState(stateDir, project, collectionId),
-		now: () => new Date(),
+	const dbPath =
+		process.env.TEAMLEAD_DB_PATH ?? join(homedir(), ".flywheel", "teamlead.db");
+	const flagState = await StateStore.openForMaintenance(dbPath, {
+		readonly: true,
 	});
+	let decisions: ReturnType<typeof planLearningRuns>;
+	try {
+		const flagStore = { mode: "ready" as const, store: flagState };
+		decisions = planLearningRuns({
+			projects,
+			loadProjectConfig: (name) => configMap.get(name) ?? null,
+			learningEnabled: (projectName) =>
+				storeXiaohongshuLearningEnabled(flagStore, projectName),
+			// PlannerDeps.readState is (project, collectionId); the flywheel-comm fn is
+			// (stateDir, project, collectionId) — bind stateDir so the planner reads the
+			// RIGHT collection state (codex PR-5 code R1: the bare ref shifted args).
+			readState: (project, collectionId) =>
+				readState(stateDir, project, collectionId),
+			now: () => new Date(),
+			warn: log,
+		});
+	} finally {
+		flagState.close();
+	}
 
 	// Resolve a project's Linear team (by key OR id) once, cached → {id, key}.
 	const teamCache = new Map<string, { id: string; key: string }>();

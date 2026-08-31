@@ -1,10 +1,12 @@
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -19,6 +21,15 @@ describe("flywheel-comm lead-identity resolve", () => {
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1726-cli-"));
 		projectsPath = join(dir, "projects.json");
+		mkdirSync(join(dir, ".flywheel"));
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "founder",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		writeFileSync(
 			projectsPath,
 			JSON.stringify([
@@ -28,6 +39,7 @@ describe("flywheel-comm lead-identity resolve", () => {
 					leads: [
 						{
 							agentId: "eng-lead",
+							summaryRole: "producer",
 							chatChannel: "11111111111111111",
 							match: { labels: ["Engineering"] },
 							botTokenEnv: "ENG_BOT_TOKEN",
@@ -69,6 +81,40 @@ describe("flywheel-comm lead-identity resolve", () => {
 		});
 	});
 
+	it("accepts an explicit summary config home for an isolated launcher", () => {
+		const summaryHome = join(dir, "qa-summary-home");
+		mkdirSync(join(summaryHome, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(summaryHome, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test-deploy",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
+		const stdout: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"eng-lead",
+				"--summary-config-home",
+				summaryHome,
+			],
+			{ stdout: (line) => stdout.push(line) },
+		);
+
+		expect(rc).toBe(0);
+		expect(JSON.parse(stdout[0]!)).toMatchObject({
+			summaryGranularity: "per-lead",
+			hasSummaryDuty: true,
+		});
+	});
+
 	it("emits a non-secret env projection", () => {
 		const stdout: string[] = [];
 		const rc = runLeadIdentityCommand(
@@ -90,8 +136,109 @@ describe("flywheel-comm lead-identity resolve", () => {
 		expect(stdout).toContain("FLYWHEEL_LEAD_ID=eng-lead");
 		expect(stdout).toContain("DISCORD_EXPECTED_BOT_USER_ID=12345678901234567");
 		expect(stdout).toContain("DISCORD_IDENTITY_MODE=managed");
+		expect(stdout).toContain("FLYWHEEL_LEAD_SUMMARY_ROLE=producer");
+		expect(stdout).toContain("FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1");
+		expect(stdout).toContain("FLYWHEEL_SUMMARY_GRANULARITY=per-lead");
+		expect(stdout.join("\n")).toMatch(
+			/^FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=[a-f0-9]{64}$/m,
+		);
 		expect(stdout.join("\n")).not.toContain("ENG_BOT_TOKEN=");
 		expect(stdout.join("\n")).not.toContain("DISCORD_BOT_TOKEN=");
+		expect(stdout.join("\n")).not.toContain("FLYWHEEL_LEAD_MODEL=");
+		expect(stdout.join("\n")).not.toContain("FLYWHEEL_LEAD_EFFORT=");
+		expect(stdout.join("\n")).not.toContain(
+			"FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=",
+		);
+	});
+
+	it("projects Codex model tuning from the canonical registry", () => {
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					projectRoot: dir,
+					leads: [
+						{
+							agentId: "raya",
+							summaryRole: "recipient",
+							backend: "codex-app-server",
+							model: "gpt-5.6-sol",
+							effort: "xhigh",
+							modelContextWindow: 1_000_000,
+							botTokenEnv: "RAYA_BOT_TOKEN",
+							botUserId: "12345678901234567",
+						},
+					],
+				},
+			]),
+		);
+		const stdout: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"raya",
+				"--format",
+				"env",
+			],
+			{ stdout: (line) => stdout.push(line), homeDir: dir },
+		);
+
+		expect(rc).toBe(0);
+		expect(stdout).toContain("FLYWHEEL_LEAD_MODEL=gpt-5.6-sol");
+		expect(stdout).toContain("FLYWHEEL_LEAD_EFFORT=xhigh");
+		expect(stdout).toContain("FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW=1000000");
+	});
+
+	it.each([
+		["model", "bad\nmodel"],
+		["effort", "ultra"],
+		["modelContextWindow", 0],
+		["modelContextWindow", 10_000_001],
+	])("rejects invalid canonical %s tuning", (field, value) => {
+		writeFileSync(
+			projectsPath,
+			JSON.stringify([
+				{
+					projectName: "flywheel",
+					projectRoot: dir,
+					leads: [
+						{
+							agentId: "raya",
+							summaryRole: "recipient",
+							backend: "codex-app-server",
+							[field]: value,
+							botTokenEnv: "RAYA_BOT_TOKEN",
+							botUserId: "12345678901234567",
+						},
+					],
+				},
+			]),
+		);
+		const stderr: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"raya",
+			],
+			{ stderr: (line) => stderr.push(line), homeDir: dir },
+		);
+
+		expect(rc).toBe(1);
+		expect(JSON.parse(stderr.at(-1)!)).toMatchObject({
+			ok: false,
+			code: "identity_model_config_invalid",
+		});
 	});
 
 	it("returns a structured error without falling back", () => {
@@ -113,6 +260,29 @@ describe("flywheel-comm lead-identity resolve", () => {
 		expect(JSON.parse(stderr[0]!)).toMatchObject({
 			ok: false,
 			code: "identity_row_missing",
+		});
+	});
+
+	it("fails summary activation when the founder has not selected a mode", () => {
+		unlinkSync(join(dir, ".flywheel", "summary-config.json"));
+		const stderr: string[] = [];
+		const rc = runLeadIdentityCommand(
+			[
+				"resolve",
+				"--projects-file",
+				projectsPath,
+				"--project",
+				"flywheel",
+				"--lead",
+				"eng-lead",
+			],
+			{ stderr: (line) => stderr.push(line), homeDir: dir },
+		);
+
+		expect(rc).toBe(1);
+		expect(JSON.parse(stderr.at(-1)!)).toMatchObject({
+			ok: false,
+			code: "summary_granularity_unselected",
 		});
 	});
 
@@ -249,6 +419,7 @@ describe("flywheel-comm lead-identity resolve", () => {
 			{
 				stderr: (line) => stderr.push(line),
 				failureDir: impossibleDir,
+				homeDir: dir,
 			},
 		);
 		expect(rc).toBe(1);
@@ -276,8 +447,16 @@ describe("flywheel-comm lead-identity migrate-bot-user-ids", () => {
 					projectName: "flywheel",
 					projectRoot: dir,
 					leads: [
-						{ agentId: "eng-lead", botTokenEnv: "ENG_BOT_TOKEN" },
-						{ agentId: "cos-lead", botTokenEnv: "COS_BOT_TOKEN" },
+						{
+							agentId: "eng-lead",
+							summaryRole: "producer",
+							botTokenEnv: "ENG_BOT_TOKEN",
+						},
+						{
+							agentId: "cos-lead",
+							summaryRole: "aggregator",
+							botTokenEnv: "COS_BOT_TOKEN",
+						},
 					],
 				},
 			],

@@ -24,7 +24,6 @@
 		"@snazzah/davey": "0.1.12",
 		"discord.js": "14.26.4",
 		"flywheel-edge-worker": "workspace:*",
-		"flywheel-gemini-agent": "workspace:*",
 		"flywheel-voice-core": "workspace:*",
 		"opusscript": "0.0.8",
 		"prism-media": "1.3.5"

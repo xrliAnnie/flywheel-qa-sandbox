@@ -1,0 +1,59 @@
+{
+  "issue": "FLY-2168",
+  "when": "2026-08-30T18:10:42.639Z",
+  "elapsedSeconds": 77,
+  "maxSameNameWindows": 1,
+  "aliveSamples": 15,
+  "results": [
+    {
+      "id": "A3-founder-tui-recovered",
+      "pass": false,
+      "detail": "founder TUI never rendered a live pane (aliveSamples=15, 329 bytes) — see qa/tui-pane-capture.txt"
+    },
+    {
+      "id": "A3-native-tui-command",
+      "pass": true,
+      "detail": "pane command=\"/Users/xiaorongli/.local/bin/codex resume --remote unix:///Users/xiaorongli/.flywheel/cdx-sock/654232d188e50c71.sock -C /private/tmp/qa-fly1239-dCAIB2/repo-qa-wt -s workspace-write -c approval_policy=\\\"never\\\" 01a053dc-ae17-7722-9bd3-22220ec12811\""
+    },
+    {
+      "id": "NP-no-pile-up-sampled",
+      "pass": true,
+      "detail": "max simultaneous 'FLY-2168' windows observed across 39 samples = 1 (<= 1 expected; deterministic proof is the unit multiset-by-id test, this is sampled corroboration)"
+    },
+    {
+      "id": "NP-race-diag",
+      "pass": true,
+      "detail": "transient 'no rollout found' captured mid-race by the sampler: false (informational — retries recovered), TUI_OPEN_MAX_ATTEMPTS=3"
+    },
+    {
+      "id": "G-goal-terminal",
+      "pass": true,
+      "detail": "adapter run success=true timedOut=false in 77s (threw=no)"
+    },
+    {
+      "id": "H4-worktree-commit",
+      "pass": true,
+      "detail": "worktree commits: [\"65c8aa1 qa FLY-2168\",\"ad865ee init\"]"
+    },
+    {
+      "id": "P-managed-runner-policy",
+      "pass": true,
+      "detail": "generated config has workspace-write=true never=true"
+    },
+    {
+      "id": "NF-classifier-self-check",
+      "pass": true,
+      "detail": "classifier accepts the intended root + native subagent and rejects a synthetic non-subagent fork"
+    },
+    {
+      "id": "NF-no-unexpected-root-or-fork",
+      "pass": true,
+      "detail": "root=01a053dc-ae17-7722-9bd3-22220ec12811; roots=1; allowed native subagents=0; unexpected=none"
+    },
+    {
+      "id": "T-clean-teardown",
+      "pass": true,
+      "detail": "before fallback cleanup: window count=0; socket removed=true; orphan daemons=[]; lingering TUIs=[]"
+    }
+  ]
+}

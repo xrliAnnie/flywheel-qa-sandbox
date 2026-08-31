@@ -83,6 +83,8 @@ export interface QueryRouterOptions {
 	 * router tests are unaffected.
 	 */
 	apiTokenConfigured?: boolean;
+	/** FLY-2076: late-bound alert dispatcher identity for Claw startup. */
+	dispatcherBotUserId?: () => string | null;
 }
 
 function omitIssueId(
@@ -128,6 +130,12 @@ export function createQueryRouter(
 	const issuePrefixes = opts?.issuePrefixes ?? ["FLY", "GEO"];
 	const apiTokenConfigured = opts?.apiTokenConfigured ?? false;
 	const router = Router();
+
+	router.get("/alert-duty/seat", (_req, res) => {
+		res.status(200).json({
+			dispatcherBotUserId: opts?.dispatcherBotUserId?.() ?? null,
+		});
+	});
 
 	router.get("/sessions", (req, res) => {
 		const mode = (req.query.mode as string) ?? "active";

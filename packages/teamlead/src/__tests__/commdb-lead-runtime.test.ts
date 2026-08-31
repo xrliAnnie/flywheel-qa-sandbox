@@ -59,6 +59,36 @@ describe("CommDBLeadRuntime", () => {
 			);
 		});
 
+		it("renders a workflow claim with bounded Unicode-safe verdict context", async () => {
+			await runtime.deliver(
+				makeEnvelope({
+					event_type: "workflow_claim_recorded",
+					execution_id: "qa-exec",
+					issue_id: "FLY-2152",
+					project_name: "flywheel",
+					workflow_run_id: "run-2152",
+					workflow_node_id: "qa",
+					workflow_attempt: 2,
+					workflow_claim_id: 554,
+					workflow_decision_kind: "qa_verdict",
+					workflow_predicate: "qa_failed",
+					workflow_issued_at: "2026-08-29T06:43:00.000Z",
+					summary: "🧪".repeat(350),
+				}),
+			);
+
+			const content = mockInsertInstruction.mock.calls[0][2] as string;
+			expect(content).toContain("workflow_claim_recorded");
+			expect(content).toContain("FLY-2152");
+			expect(content).toContain("run-2152");
+			expect(content).toContain("qa attempt 2");
+			expect(content).toContain("Claim: 554 | qa_verdict → qa_failed");
+			expect(content).toContain("Issued: 2026-08-29T06:43:00.000Z");
+			expect(content).toContain(`Summary: ${"🧪".repeat(300)}`);
+			expect(content).not.toContain("🧪".repeat(301));
+			expect(content).toContain("返工、结果汇报或 ship");
+		});
+
 		it("FLY-1259: renders the locked backend for a design start", async () => {
 			await runtime.deliver(
 				makeEnvelope(

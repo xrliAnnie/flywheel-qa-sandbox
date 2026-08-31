@@ -118,7 +118,13 @@ function rosterEntry(session: Session): PatrolRosterEntry {
 }
 
 function settlementAnchor(settlement: MailboxSettlement): string | null {
-	if (settlement.kind === "absent_identity") return null;
+	if (
+		settlement.kind === "absent_identity" ||
+		settlement.kind === "torn_identity" ||
+		settlement.kind === "archived_nonterminal"
+	) {
+		return null;
+	}
 	if (settlement.kind === "live") {
 		if (settlement.state === "QUEUED" || settlement.state === "LEASED") {
 			return null;
@@ -241,28 +247,16 @@ async function runLeadPatrolTickPass(
 				);
 				if (previous) {
 					const previousEnvelope = leadEventEnvelopeFromJournalRow(previous, 2);
+					const previousDeliveryId =
+						canonicalLeadEventDeliveryId(previousEnvelope);
 					const settlement = deps.inspectDeliveryState(
 						project.projectName,
-						canonicalLeadEventDeliveryId(previousEnvelope),
+						previousDeliveryId,
 					);
 					if (settlement.kind === "absent_identity") {
 						deps.enqueueLeadEvent(previousEnvelope);
 						failures.succeeded(project.projectName, lead.agentId);
 						continue;
-					}
-					if (
-						settlement.kind === "live" &&
-						(settlement.state === "QUEUED" || settlement.state === "LEASED")
-					) {
-						failures.succeeded(project.projectName, lead.agentId);
-						continue;
-					}
-					const anchor = settlementAnchor(settlement);
-					const anchorMs = parseSqliteUtcMs(anchor);
-					if (anchorMs == null) {
-						throw new Error(
-							`invalid patrol settlement timestamp: ${String(anchor)}`,
-						);
 					}
 					const previousPayload = JSON.parse(previous.payload) as HookPayload;
 					const previousBasisMs = parseSqliteUtcMs(
@@ -278,17 +272,47 @@ async function runLeadPatrolTickPass(
 						lead.agentId,
 						intervalMs,
 					);
-					// FLY-1771: phase is anchored to this Lead's deterministic wall-clock grid,
-					// not the previous mailbox settlement. Settlement retains one job:
-					// a stale tick settled inside the current slot counts that slot as
-					// served, preventing an immediate catch-up double tick.
 					if (
-						previousSlotStart >= currentScheduledAt ||
-						anchorMs >= currentScheduledAt ||
-						nowMs - anchorMs < PATROL_SETTLEMENT_DOUBLE_TICK_GUARD_MS
+						settlement.kind === "torn_identity" ||
+						settlement.kind === "archived_nonterminal"
+					) {
+						if (previousSlotStart >= currentScheduledAt) {
+							failures.succeeded(project.projectName, lead.agentId);
+							continue;
+						}
+						const poisonLabel =
+							settlement.kind === "torn_identity"
+								? "torn"
+								: "archived_nonterminal";
+						deps.log?.(
+							`[patrol_tick] project=${project.projectName} lead=${lead.agentId} ${poisonLabel} delivery=${previousDeliveryId} previous_slot=${new Date(previousSlotStart).toISOString()} current_slot=${new Date(currentScheduledAt).toISOString()}; advancing`,
+						);
+					} else if (
+						settlement.kind === "live" &&
+						(settlement.state === "QUEUED" || settlement.state === "LEASED")
 					) {
 						failures.succeeded(project.projectName, lead.agentId);
 						continue;
+					} else {
+						const anchor = settlementAnchor(settlement);
+						const anchorMs = parseSqliteUtcMs(anchor);
+						if (anchorMs == null) {
+							throw new Error(
+								`invalid patrol settlement timestamp: ${String(anchor)}`,
+							);
+						}
+						// FLY-1771: phase is anchored to this Lead's deterministic wall-clock grid,
+						// not the previous mailbox settlement. Settlement retains one job:
+						// a stale tick settled inside the current slot counts that slot as
+						// served, preventing an immediate catch-up double tick.
+						if (
+							previousSlotStart >= currentScheduledAt ||
+							anchorMs >= currentScheduledAt ||
+							nowMs - anchorMs < PATROL_SETTLEMENT_DOUBLE_TICK_GUARD_MS
+						) {
+							failures.succeeded(project.projectName, lead.agentId);
+							continue;
+						}
 					}
 				}
 

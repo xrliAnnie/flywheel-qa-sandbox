@@ -31,6 +31,10 @@ assert_contains_file() {
     FAIL=$((FAIL+1)); echo "  FAIL: $3 (file $1 missing '$2')"
   fi
 }
+assert_not_contains_file() {
+  if ! grep -qF "$2" "$1"; then PASS=$((PASS+1)); echo "  PASS: $3"
+  else FAIL=$((FAIL+1)); echo "  FAIL: $3 (file $1 unexpectedly contains '$2')"; fi
+}
 
 TMP_BASE="$(mktemp -d /tmp/fly205-setup-test.XXXXXX)"
 trap 'rm -rf "$TMP_BASE"' EXIT
@@ -59,11 +63,17 @@ decision_layer:
   autonomy_level: observer
   escalation_channel: "#dev"
 EOF
-"$SETUP" "$T1" content > /dev/null
+T1_OUT="$("$SETUP" "$T1" content)"
 assert_file_exists "${T1}/content/doc/README.md" "README created"
 assert_file_exists "${T1}/content/doc/retro/.gitkeep" "retro/.gitkeep created (tracked skeleton)"
 assert_contains_file "${T1}/.flywheel/config.yaml" "doc_flow:" "doc_flow block appended to config"
 assert_contains_file "${T1}/.flywheel/config.yaml" "default_department: content" "default_department wired"
+assert_not_contains_file "${T1}/.flywheel/config.yaml" "enabled: true" "doc_flow metadata emits no retired enabled key"
+if echo "$T1_OUT" | grep -q "feature-flags set --name doc_flow --to on --project t1"; then
+  PASS=$((PASS+1)); echo "  PASS: scoped doc_flow activation command printed"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: scoped doc_flow activation command missing"
+fi
 assert_contains_file "${T1}/content/doc/README.md" "一个 issue 一个文件夹" "README carries conventions"
 # git status shows the full skeleton (PR face completeness — Codex design R2 #3)
 T1_STATUS="$(git -C "$T1" status --porcelain)"
@@ -88,7 +98,6 @@ git init -q "$T3"
 cat > "${T3}/.flywheel/config.yaml" << 'EOF'
 project: t3
 doc_flow:
-  enabled: false
   default_department: product
 EOF
 "$SETUP" "$T3" product > /dev/null
@@ -107,6 +116,11 @@ if echo "$T4_OUT" | grep -q "SKELETON-ONLY"; then
   PASS=$((PASS+1)); echo "  PASS: skeleton-only mode announced with config guidance"
 else
   FAIL=$((FAIL+1)); echo "  FAIL: skeleton-only mode not announced"
+fi
+if echo "$T4_OUT" | grep -q "feature-flags set --name doc_flow --to on --project <project>"; then
+  PASS=$((PASS+1)); echo "  PASS: skeleton-only guidance uses scoped flag store"
+else
+  FAIL=$((FAIL+1)); echo "  FAIL: skeleton-only guidance still lacks scoped flag-store command"
 fi
 if [ ! -d "${T4}/.flywheel" ]; then
   PASS=$((PASS+1)); echo "  PASS: did not fabricate .flywheel/"

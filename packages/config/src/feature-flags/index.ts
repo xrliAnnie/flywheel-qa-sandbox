@@ -1,6 +1,5 @@
 export type { DirectToggleMetadata } from "./direct-toggle.js";
 export { isDirectToggleMetadata } from "./direct-toggle.js";
-export { mailboxQueueEnabled } from "./mailbox-queue.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,
@@ -16,9 +15,14 @@ export { FEATURE_FLAGS, validateKeepFieldContract } from "./registry.js";
 export type {
 	FlagEffectiveByProject,
 	FlagResolveCtx,
+	FlagScopedStoreView,
 	FlagView,
 } from "./resolve.js";
-export { resolveAllFlags, resolveFlag } from "./resolve.js";
+export {
+	resolveAllFlags,
+	resolveFlag,
+	resolveScopedEffective,
+} from "./resolve.js";
 export type {
 	ComputeFlagScanInput,
 	FlagDeparture,
@@ -29,6 +33,7 @@ export type {
 	FlagScanClaimed,
 	FlagScanKeepUnbound,
 	FlagScanNoClock,
+	FlagScanScopeState,
 	FlagScanState,
 	ProposedFlagScan,
 	ResolvedFlagKeepBinding,
@@ -48,7 +53,7 @@ export {
 	getFlagStoreCodec,
 	getStoreEligibility,
 	LEGACY_UNMANAGED_BASELINE,
-	PROTECTED_LEGACY_FLAG_NAMES,
+	PROJECT_STORE_MANAGED_FLAGS,
 	RETIRED_FLAG_STORE_ROWS,
 	STORE_MANAGED_FLAGS,
 	validateFlagAuthoringPolicy,

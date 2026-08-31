@@ -14,7 +14,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import Database from "better-sqlite3";
 import { appendRotatedLogSync } from "flywheel-config";
 import {
@@ -73,6 +73,21 @@ CREATE TABLE IF NOT EXISTS store_meta (
   v TEXT NOT NULL
 );
 `;
+
+function canonicalIdentityHomeDir(env: NodeJS.ProcessEnv): string | undefined {
+	if (env.FLYWHEEL_SUMMARY_CONFIG_HOME !== undefined) {
+		const summaryConfigHome = env.FLYWHEEL_SUMMARY_CONFIG_HOME.trim();
+		if (
+			!summaryConfigHome ||
+			!isAbsolute(summaryConfigHome) ||
+			/[\r\n]/.test(summaryConfigHome)
+		) {
+			throw new Error("FLYWHEEL_SUMMARY_CONFIG_HOME must be an absolute path");
+		}
+		return summaryConfigHome;
+	}
+	return env.HOME?.trim() || env.USERPROFILE?.trim() || homedir();
+}
 
 export class LeaseStoreError extends Error {
 	constructor(
@@ -1122,8 +1137,7 @@ export interface LeadWriteAuthorization {
 		| "unprotected"
 		| "lease_validated"
 		| "carrier_passthrough"
-		| "audit_allowed"
-		| "bypass";
+		| "audit_allowed";
 	provenance?: MessageProvenance;
 	leaseClaim?: {
 		leaseKey: string;
@@ -1387,6 +1401,7 @@ export function validateLeadCarrierAuthorization(
 			projectsPath:
 				env.FLYWHEEL_PROJECTS_FILE ??
 				join(homedir(), ".flywheel", "projects.json"),
+			homeDir: canonicalIdentityHomeDir(env),
 		});
 	} catch (error) {
 		return {
@@ -2548,7 +2563,7 @@ function denyIdentityIntegrity(reason: string): never {
 
 /**
  * Identity integrity is not a lease rollout control. It is evaluated before
- * mode, audit, or bypass and therefore can never be converted into an allowed
+ * mode or audit posture and therefore can never be converted into an allowed
  * Lead write.
  */
 function assertLeadIdentityIntegrity(
@@ -2573,6 +2588,7 @@ function assertLeadIdentityIntegrity(
 			projectsPath,
 			projectName,
 			leadId: claimedLeadId,
+			homeDir: canonicalIdentityHomeDir(env),
 		});
 	} catch (error) {
 		return deny(
@@ -2597,6 +2613,12 @@ function assertLeadIdentityIntegrity(
 	if (
 		env.FLYWHEEL_LEAD_KEY !== identity.leadKey ||
 		env.FLYWHEEL_LEAD_BACKEND !== identity.backend ||
+		env.FLYWHEEL_LEAD_SUMMARY_ROLE !== identity.summaryRole ||
+		env.FLYWHEEL_LEAD_HAS_SUMMARY_DUTY !==
+			(identity.hasSummaryDuty ? "1" : "0") ||
+		env.FLYWHEEL_SUMMARY_GRANULARITY !== (identity.summaryGranularity ?? "") ||
+		env.FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST !==
+			(identity.summaryAssignmentDigest ?? "") ||
 		env.DISCORD_STATE_DIR !== identity.discordStateDir ||
 		(env.DISCORD_EXPECTED_BOT_USER_ID ?? "") !== (identity.botUserId ?? "")
 	) {
@@ -2658,6 +2680,7 @@ export function forwardedLeadAuthorizationEnv(
 		projectsPath,
 		projectName: input.projectName,
 		leadId: input.claimedLeadId,
+		homeDir: canonicalIdentityHomeDir(env),
 	});
 	for (const name of [
 		"FLYWHEEL_LEAD_LEASE_KEY",
@@ -2676,6 +2699,10 @@ export function forwardedLeadAuthorizationEnv(
 		FLYWHEEL_LEAD_KEY: identity.leadKey,
 		FLYWHEEL_LEAD_ROLE: identity.role,
 		FLYWHEEL_LEAD_BACKEND: identity.backend,
+		FLYWHEEL_LEAD_SUMMARY_ROLE: identity.summaryRole,
+		FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: identity.hasSummaryDuty ? "1" : "0",
+		FLYWHEEL_SUMMARY_GRANULARITY: identity.summaryGranularity ?? "",
+		FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: identity.summaryAssignmentDigest ?? "",
 		DISCORD_STATE_DIR: identity.discordStateDir,
 		DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
 		FLYWHEEL_LEAD_IDENTITY_DIGEST: input.identityDigest,
@@ -2803,22 +2830,6 @@ export function authorizeLeadWrite(
 		reason: string,
 		alertType?: string,
 	): LeadWriteAuthorization => {
-		if (env.FLYWHEEL_LEAD_LEASE_BYPASS === "1") {
-			persistFault("bypass_used", reason);
-			emitIndependentLeaseAlert(env, "lead_lease_bypass_used", {
-				leadKey,
-				leadId: input.claimedLeadId,
-				reason,
-			});
-			process.stderr.write(
-				`[flywheel-comm] WARNING: FLYWHEEL_LEAD_LEASE_BYPASS=1 for ${leadKey} (${reason})\n`,
-			);
-			return {
-				disposition: "bypass",
-				provenance: decisionProvenance,
-				identityDigest: identity.identityDigest,
-			};
-		}
 		if (alertType) {
 			if (
 				LEAD_LEASE_EPISODE_KINDS.includes(alertType as LeadLeaseEpisodeKind)

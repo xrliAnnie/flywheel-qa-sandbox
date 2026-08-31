@@ -1,12 +1,19 @@
-import {
-	WORKFLOW_MENU_SHAPES,
-	type WorkflowMenuShapeId,
-} from "flywheel-config";
+import { workflowRegistryShapes } from "flywheel-config";
 
 /** FLY-1436: dispatch validation aliases the menu binding SSOT. */
-export const WORK_KIND_CATEGORIES = WORKFLOW_MENU_SHAPES;
-export type WorkKindCategory = (typeof WORK_KIND_CATEGORIES)[number];
-export type { WorkflowMenuShapeId };
+export const WORK_KIND_CATEGORIES = workflowRegistryShapes();
+export type WorkKindCategory = string;
+
+/**
+ * Read-only decoder vocabulary for snapshots sealed before the FLY-2121
+ * category cutover. Keep this separate from WORK_KIND_CATEGORIES so retired
+ * names can be read but can never admit or route new work.
+ */
+export const WORKFLOW_SNAPSHOT_TASK_CATEGORIES = [
+	...WORK_KIND_CATEGORIES,
+	"design",
+] as const;
+export type WorkflowMenuShapeId = string;
 
 export const ENG_TIERS = ["trivial", "light", "heavy"] as const;
 export type EngTier = (typeof ENG_TIERS)[number];

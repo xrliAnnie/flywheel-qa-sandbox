@@ -238,6 +238,98 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 		});
 	}
 
+	it("initializes durable retry and failure-attempt fields", () => {
+		insertJob("retry-defaults");
+		expect(store.getCodexReviewJob("retry-defaults")).toMatchObject({
+			auto_retry_count: 0,
+			failure_attempt_count: 0,
+		});
+		expect(store.getCodexReviewJob("retry-defaults")?.retry_at).toBeUndefined();
+	});
+
+	it("atomically records a failure generation and schedules one retry", () => {
+		insertJob("retry-scheduled");
+		const result = store.recordCodexReviewJobFailure({
+			requestId: "retry-scheduled",
+			reason: "nonzero_exit",
+			failureRaw: "quota evidence",
+			retryAt: "2026-08-31T00:10:00.000Z",
+		});
+
+		expect(result.updated).toBe(true);
+		expect(result.scheduled).toBe(true);
+		expect(result.job).toMatchObject({
+			status: "failed",
+			failure_reason: "nonzero_exit",
+			failure_raw: "quota evidence",
+			retry_at: "2026-08-31T00:10:00.000Z",
+			auto_retry_count: 1,
+			failure_attempt_count: 1,
+		});
+	});
+
+	it("claiming a scheduled retry clears its due time but preserves counters", () => {
+		insertJob("retry-claim");
+		store.recordCodexReviewJobFailure({
+			requestId: "retry-claim",
+			reason: "nonzero_exit",
+			retryAt: "2026-08-31T00:10:00.000Z",
+		});
+
+		expect(store.claimCodexReviewJobRunning("retry-claim")).toBe(true);
+		expect(store.getCodexReviewJob("retry-claim")).toMatchObject({
+			status: "running",
+			auto_retry_count: 1,
+			failure_attempt_count: 1,
+		});
+		expect(store.getCodexReviewJob("retry-claim")?.retry_at).toBeUndefined();
+	});
+
+	it("caps automatic retry budget while every failure gets a new generation", () => {
+		insertJob("retry-budget");
+		const scheduled: boolean[] = [];
+		for (let attempt = 1; attempt <= 4; attempt += 1) {
+			const result = store.recordCodexReviewJobFailure({
+				requestId: "retry-budget",
+				reason: "nonzero_exit",
+				retryAt: `2026-08-31T00:1${attempt}:00.000Z`,
+			});
+			scheduled.push(result.scheduled);
+			if (attempt < 4) {
+				expect(store.claimCodexReviewJobRunning("retry-budget")).toBe(true);
+			}
+		}
+
+		expect(scheduled).toEqual([true, true, true, false]);
+		expect(store.getCodexReviewJob("retry-budget")).toMatchObject({
+			status: "failed",
+			auto_retry_count: 3,
+			failure_attempt_count: 4,
+		});
+		expect(store.getCodexReviewJob("retry-budget")?.retry_at).toBeUndefined();
+	});
+
+	it("lists only scheduled failed jobs in due-time order", () => {
+		for (const requestId of ["retry-later", "retry-sooner", "not-scheduled"]) {
+			insertJob(requestId);
+		}
+		store.recordCodexReviewJobFailure({
+			requestId: "retry-later",
+			reason: "nonzero_exit",
+			retryAt: "2026-08-31T00:20:00.000Z",
+		});
+		store.recordCodexReviewJobFailure({
+			requestId: "retry-sooner",
+			reason: "nonzero_exit",
+			retryAt: "2026-08-31T00:10:00.000Z",
+		});
+		store.failCodexReviewJob("not-scheduled", "timeout");
+
+		expect(
+			store.listScheduledCodexReviewJobs().map((job) => job.request_id),
+		).toEqual(["retry-sooner", "retry-later"]);
+	});
+
 	it("failure_raw is overwritten by each failure instead of retaining stale evidence", () => {
 		insertJob("raw-overwrite");
 		store.failCodexReviewJob("raw-overwrite", "no_verdict", "first raw");
@@ -284,6 +376,19 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 		expect(
 			store.getCodexReviewJob("raw-complete")?.failure_raw,
 		).toBeUndefined();
+	});
+
+	it("terminal completion removes any outstanding retry schedule", () => {
+		insertJob("retry-complete");
+		store.recordCodexReviewJobFailure({
+			requestId: "retry-complete",
+			reason: "nonzero_exit",
+			retryAt: "2026-08-31T00:10:00.000Z",
+		});
+		store.completeCodexReviewJob("retry-complete", "APPROVED", "[]");
+
+		expect(store.getCodexReviewJob("retry-complete")?.status).toBe("done");
+		expect(store.getCodexReviewJob("retry-complete")?.retry_at).toBeUndefined();
 	});
 });
 

@@ -10,7 +10,15 @@ import { dirname, join, resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AnthropicLLMClient } from "../../packages/claude-runner/dist/AnthropicLLMClient.js";
 import { TmuxAdapter } from "../../packages/claude-runner/dist/TmuxAdapter.js";
-import { ConfigLoader } from "../../packages/config/dist/ConfigLoader.js";
+import {
+	loadBundledRegistry,
+	resolveProjectRegistry,
+} from "../../packages/config/dist/agent-registry.js";
+import {
+	agentConfigsRequireRegistry,
+	ConfigLoader,
+	resolveAgentConfigs,
+} from "../../packages/config/dist/ConfigLoader.js";
 import type { FlywheelConfig } from "../../packages/config/dist/types.js";
 import type { LLMClient } from "../../packages/core/dist/llm-client-types.js";
 // FLY-137 v1.27.2: ClassifyFn type removed (Haiku step dropped); AgentDispatcher
@@ -96,6 +104,54 @@ export interface SetupOptions {
 export function log(msg: string) {
 	const time = new Date().toLocaleTimeString();
 	console.log(`[${time}] ${msg}`);
+}
+
+export interface SetupProjectConfigInput {
+	configPath: string;
+	projectRoot: string;
+	bundledAgentRegistry: ReturnType<typeof loadBundledRegistry>;
+	onMissingConfig?: (message: string) => void;
+}
+
+/**
+ * Load operator-CLI project config without conflating a missing config file
+ * with a missing registry required by node-backed agent entries.
+ */
+export async function loadSetupProjectConfig(
+	input: SetupProjectConfigInput,
+): Promise<{
+	flywheelConfig: FlywheelConfig | undefined;
+	resolvedAgents: ReturnType<typeof resolveAgentConfigs>;
+}> {
+	let flywheelConfig: FlywheelConfig;
+	try {
+		const configLoader = new ConfigLoader(async (path) =>
+			readFileSync(path, "utf-8"),
+		);
+		flywheelConfig = await configLoader.load(input.configPath);
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		input.onMissingConfig?.("No .flywheel/config.yaml — using defaults");
+		return { flywheelConfig: undefined, resolvedAgents: {} };
+	}
+
+	const projectAgentRegistry = agentConfigsRequireRegistry(
+		flywheelConfig.agents,
+	)
+		? resolveProjectRegistry({
+				bundled: input.bundledAgentRegistry,
+				projectName: flywheelConfig.project,
+				projectRoot: input.projectRoot,
+			})
+		: undefined;
+	return {
+		flywheelConfig,
+		resolvedAgents: resolveAgentConfigs(
+			flywheelConfig.agents,
+			projectAgentRegistry,
+			input.projectRoot,
+		),
+	};
 }
 
 export function killTmuxSession(sessionName: string): void {
@@ -450,37 +506,48 @@ export async function setupComponents(
 			log("SLACK_BOT_TOKEN not set — Slack notifications disabled");
 		}
 
+		const flywheelRepoRoot = resolveFlywheelRepoRootForSetup();
+		const bundledAgentRegistry = loadBundledRegistry(
+			join(flywheelRepoRoot, ".flywheel", "agents", "registry.yaml"),
+		);
+		const flywheelAgentRegistry = resolveProjectRegistry({
+			bundled: bundledAgentRegistry,
+			projectName: "flywheel",
+			projectRoot: flywheelRepoRoot,
+		});
+		const fallbackConfigs = resolveAgentConfigs(
+			{
+				generic: { node: "general", match: { labels: [] } },
+				qa: { node: "qa", match: { labels: [] } },
+			},
+			flywheelAgentRegistry,
+		);
+
 		// ── Config loading (v0.6 — .flywheel/config.yaml) ──────
-		let flywheelConfig: FlywheelConfig | undefined;
 		const configPath = join(projectRoot, ".flywheel", "config.yaml");
-		try {
-			const configLoader = new ConfigLoader(async (p) =>
-				readFileSync(p, "utf-8"),
-			);
-			flywheelConfig = await configLoader.load(configPath);
+		const { flywheelConfig, resolvedAgents } = await loadSetupProjectConfig({
+			configPath,
+			projectRoot,
+			bundledAgentRegistry,
+			onMissingConfig: log,
+		});
+		if (flywheelConfig) {
 			log(`Config loaded from ${configPath}`);
-		} catch (err) {
-			const code = (err as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
-				log("No .flywheel/config.yaml — using defaults");
-			} else {
-				// Config exists but is invalid → fail fast
-				throw err;
-			}
 		}
 
 		// ── AgentDispatcher (FLY-137 v1.27.2) ──────────────────────────
-		// Dispatcher always constructs (even with empty agents map) so the shipped
-		// `agents/generic-executor.md` fallback always wins step 3. Haiku classify
-		// step removed in v1.27.1 — dispatcher is fully deterministic.
-		const flywheelRepoRoot = resolveFlywheelRepoRootForSetup();
+		// Dispatcher always constructs (even with an empty project map) so the
+		// bundled registry's resolved general node remains the deterministic fallback.
 		const agentDispatcher = new AgentDispatcher(
-			flywheelConfig?.agents ?? {},
+			resolvedAgents,
 			flywheelConfig?.default_agent,
-			flywheelRepoRoot,
+			{
+				generic: fallbackConfigs.generic!,
+				qa: fallbackConfigs.qa!,
+			},
 		);
 		log(
-			`AgentDispatcher: ${Object.keys(flywheelConfig?.agents ?? {}).length} agents configured (+ shipped-generic fallback at ${flywheelRepoRoot}/agents/generic-executor.md)`,
+			`AgentDispatcher: ${Object.keys(resolvedAgents).length} registry-backed agents configured`,
 		);
 
 		// Hydrator
@@ -586,8 +653,8 @@ export async function teardownComponents(c: FlywheelComponents): Promise<void> {
  * to avoid a circular import; both helpers have identical behavior).
  *
  * Order: `FLYWHEEL_REPO_ROOT` env var → `import.meta.url`-derived path.
- * Sanity-checks the sentinel `agents/generic-executor.md` (logged warning, NOT
- * fail-fast — dispatcher will surface a clearer error at agent_file read time).
+ * Sanity-checks the bundled registry sentinel (logged warning; registry loading
+ * then fails loud if the root is wrong).
  *
  * From `scripts/lib/setup.ts` (TypeScript source) or `scripts/lib/setup.js` (built),
  * 2 levels up = repo root.
@@ -599,11 +666,11 @@ function resolveFlywheelRepoRootForSetup(): string {
 			const here = dirname(fileURLToPath(import.meta.url));
 			return pathResolve(here, "..", "..");
 		})();
-	const sentinel = join(candidate, "agents", "generic-executor.md");
+	const sentinel = join(candidate, ".flywheel", "agents", "registry.yaml");
 	if (!existsSync(sentinel)) {
 		log(
 			`WARNING: FLYWHEEL_REPO_ROOT resolved to "${candidate}" but sentinel "${sentinel}" not found. ` +
-				`AgentDispatcher shipped-generic fallback will fail at dispatch.`,
+				`Agent registry resolution will fail.`,
 		);
 	} else {
 		log(`FLYWHEEL_REPO_ROOT="${candidate}" (sentinel found)`);

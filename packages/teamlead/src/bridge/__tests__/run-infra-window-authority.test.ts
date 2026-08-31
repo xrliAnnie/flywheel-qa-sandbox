@@ -1,10 +1,32 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { StateStore } from "../../StateStore.js";
 import { type ProjectRuntime, RunDispatcher } from "../run-dispatcher.js";
 import {
 	createRunInfraDispatcher,
+	isMissingProjectConfigError,
 	resolveWorkflowTmuxWindowAuthority,
 } from "../run-infra.js";
+
+describe("project config ENOENT classification", () => {
+	it("allows fallback only when config.yaml itself is absent", () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2121-run-infra-config-"));
+		try {
+			const configPath = join(root, "config.yaml");
+			const enoent = Object.assign(new Error("registry missing"), {
+				code: "ENOENT",
+			});
+			expect(isMissingProjectConfigError(enoent, configPath)).toBe(true);
+
+			writeFileSync(configPath, "project: fixture\n");
+			expect(isMissingProjectConfigError(enoent, configPath)).toBe(false);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 class NoRegistrationRunDispatcher extends RunDispatcher {
 	protected override preRegisterCommDb(): void {}

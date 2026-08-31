@@ -8,6 +8,7 @@ import { resolveWorkflowResumeTarget } from "../bridge/workflow-resume-resolver.
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { legacyGenericManifest } from "./fixtures/legacy-workflow-manifests.js";
+import { installWorkflowAgentFiles } from "./fixtures/workflow-agent-project.js";
 
 const roots: string[] = [];
 const at = "2026-08-15T00:00:00.000Z";
@@ -246,11 +247,7 @@ async function seedTarget(
 async function seedGateTargetFromWriter(writer: "legacy" | "carrier") {
 	const root = mkdtempSync(join(tmpdir(), "workflow-resume-gate-writer-"));
 	roots.push(root);
-	mkdirSync(join(root, "agents"));
-	writeFileSync(
-		join(root, "agents", "generic-executor.md"),
-		"Execute safely.\n",
-	);
+	installWorkflowAgentFiles(root);
 	const snapshot = buildWorkflowRunSnapshotV2({
 		template: { id: "tpl-gate-writer", revision: 1 },
 		canonicalRoot: root,
@@ -303,6 +300,7 @@ async function seedGateTargetFromWriter(writer: "legacy" | "carrier") {
 		},
 	});
 	const transition = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-gate-writer",
 		nodeId: "execute",
 		attempt: 1,

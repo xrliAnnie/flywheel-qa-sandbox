@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2121 设计方案 — 两层注册表命名统一</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system, system-ui, "PingFang SC", sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .sub { color:#86868b; font-size:14px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.green { border-left-color:#34c759; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  p, li { font-size:14px; line-height:1.75; }
+  code { font-family:'SF Mono', Menlo, monospace; font-size:12.5px; background:#f0f0f2; padding:1px 5px; border-radius:4px; }
+  .term { color:#86868b; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:7px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#fafafa; color:#1a365d; }
+  .diagram { overflow-x:auto; margin:12px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .old { color:#ff3b30; font-weight:600; }
+  .new { color:#34c759; font-weight:600; }
+  .keep { color:#007aff; font-weight:600; }
+  .comment-box { margin-top:16px; border-top:1px dashed #e5e5ea; padding-top:12px; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-size:13.5px; font-family:inherit; resize:vertical; background:#fbfbfd; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; }
+  #summary-list { white-space:pre-wrap; font-size:13.5px; background:#fbfbfd; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; font-family:'SF Mono', Menlo, monospace; }
+  .btn { display:inline-block; margin-top:10px; background:#007aff; color:#fff; border:none; border-radius:8px; padding:9px 18px; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#34c759; }
+  .badge { display:inline-block; font-size:11.5px; border-radius:5px; padding:2px 7px; margin-right:6px; vertical-align:middle; }
+  .badge.decision { background:#e8f5ec; color:#1d7d3f; }
+  .badge.reject { background:#ffebe9; color:#c1271f; }
+  .badge.diff { background:#f0e8fb; color:#7a2fb5; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2121 · 命名统一(两层注册表)— 设计方案</h1>
+  <div class="sub">设计节点产物 · 2026-08-28 · 按你拍板的 Option 2 v2 细化 · 文档: engineering/doc/FLY-2121-design-naming-collision/</div>
+
+  <div class="card green" data-section="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p>按你拍板的 Option 2 v2 落成可实施方案:建单一注册表 <code>.flywheel/agents/registry.yaml</code>(nodes 层=每段工作的执行者说明书,graphs 层=流水线),名字一处定义、处处引用、加载时校验;工程设计节点改名 <span class="new">eng_design</span>(显示「设计(工程)」)、产品设计节点 <span class="new">product_design</span>、产品设计流水线 <span class="new">product_design_flow</span>;派工菜单不再自立词表(菜单项=流水线名);迁移<b>零改史</b>——模板发新版本只管新 run,跑过的 run 一个字不动,旧名显示层翻译;顺手删掉 11 个零使用模板和三个残留文件。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在本机,不会丢)</label><textarea data-key="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="两层注册表">
+    <h2>② 两层注册表(核心结构)</h2>
+    <p>今天名字散落在 5 个地方互不引用(派工菜单、模板库、模板里的节点、config 注册键、真正的 md 文件),所以一个 <span class="old">design</span> 能同时指三件事。注册表把定义收成一处:<b>nodes 层</b>登记每个执行者(名字、说明书文件、展示名、行为类),<b>graphs 层</b>登记每条流水线(只许引用已登记的名字)。加载器<span class="term">(loader = Bridge 启动时读配置的程序)</span>三道硬校验,写错名字直接拒绝启动,不会带病运行。</p>
+    <div class="diagram">%%SVG1%%</div>
+    <p><span class="badge decision">增量修订</span><b>六条流水线全部展开</b>:工程开发、轻量开发、产品需求、产品设计、原型验证、通用。PM、产品设计执行者、Prototype 三个单节点业务 DAG 已在注册表中,现在不再被图里的省略号藏住。</p>
+    <table>
+      <tr><th>位置</th><th>旧名</th><th>新名</th><th>说明</th></tr>
+      <tr><td>code 流水线第一节点</td><td><span class="old">design</span></td><td><span class="new">eng_design</span></td><td>显示「设计(工程)」</td></tr>
+      <tr><td>产品设计节点(原 produce/designer)</td><td><span class="old">produce</span></td><td><span class="new">product_design</span></td><td>显示「产品设计」</td></tr>
+      <tr><td>产品设计流水线(菜单项)</td><td><span class="old">design</span></td><td><span class="new">product_design_flow</span></td><td>与节点名刻意不同,防两层重名</td></tr>
+      <tr><td>执行者 designer(按标签路由)</td><td colspan="2"><span class="keep">不动</span></td><td>你定的:designer 保留,定义收缩为对注册名的引用</td></tr>
+      <tr><td>prd / prototype 流水线的节点(也都叫 produce)</td><td><span class="old">produce</span></td><td><span class="new">pm</span> / <span class="new">proto</span></td><td>同一个词第三次互撞,注册表规则下自然修掉(差异标注见 ⑥)</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="项目身份边界">
+    <h2>②A 项目身份边界(增量裁定)</h2>
+    <p>节点 id <b>不加项目前缀</b>。运行时身份不是裸 nodeName,而是 <code>(project, nodeName)</code>;统一 IC markdown 来自 bundled registry,项目差异由 project overlay 提供,记忆按 <code>(project, identity)</code> 分桶,因此跨项目同名不会调用错执行者或串记忆。展示名需要时可以带项目。personal-assistant 的 companion 转换由 Tadashi 在激活阶段作为 operator 执行;目标 registry 不存在或 bundled/project 两入口校验失败时,系统拒绝激活并保留旧 loader。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s2a" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="菜单收编与展示名">
+    <h2>③ 菜单收编 + 展示名(前端零编名)</h2>
+    <p>派工菜单不再有自己的词表:Lead 派活时选的就是流水线名(code、product_design_flow……),一份词表两处共用,这是你要求的 A+B 融合。每个名字都带 <b>label</b><span class="term">(label = 给人看的展示名)</span>,两个前端接口(派工菜单、DAG 管理视图)都返回 label;前端只显示后端给的 label,不再出现裸 id,更不自己编——「后端叫什么我们就显示什么」。</p>
+    <div class="diagram">%%SVG2%%</div>
+    <p>现状实证:管理视图代码里 <code>name: node.id</code>、标题直接拼分类裸词——都在这次一并改为 label。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="零改史迁移">
+    <h2>④ 零改史迁移(沿用你同意的原则)</h2>
+    <p>模板发新版本<span class="term">(版本+1 = 同一个模板追加一个新版本,旧版本原样保留)</span>,只有新 run 用新名;跑着/跑完的 run 连同它的历史记录一个字不改。旧 run 的旧名由显示层翻译成新展示名(如 design → 「设计(工程)」;同名 produce 按所属模板区分翻译)。需要认识旧名的代码分两类管:<b>A 类是历史解码</b>(读旧快照、旧分类词、显示翻译)——历史 run 永远存在,这几处<b>永久保留</b>,保证多年后的旧 run 依然打得开;<b>B 类是活跃旧 run 的执行分支</b>——打 <code>FLY-2121-legacy</code> 标记,「收场哨」脚本定期数还有多少旧名 run 在跑,归零那天开收尾 issue 只删 B 类,双名执行彻底退场。founder 中文说「设计要返工」这类指令,系统按每个 run 自己的图纸解析到该 run 的实际节点名,旧 run 新 run 都指得准。零停机、每步可回退。</p>
+    <div class="diagram">%%SVG3%%</div>
+    <p>审计里揪出的一个隐形炸弹已拆:快照解析器会拿旧 run 里存的分类词对照<b>现行词表</b>校验,词表一换,所有旧的产品设计 run 会「读取即报错」——五处兼容里专门有一处就是给它的放行。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="清理">
+    <h2>⑤ 清理(你已批的部分)</h2>
+    <ul>
+      <li><b>删 11 个零使用模板</b>:数据库实测这 11 个全部已停用且零次使用,与你批的清单完全一致。删除前逐个再验证「使用次数=0」,有任何一个不为零就整体放弃并报警——绝不误删。</li>
+      <li><b>tpl_eng_heavy 保留</b>:它有 36 个历史 run,你还没点头,Tadashi 单列问询,不进本次 PR。</li>
+      <li><b>删三胞胎</b>:designer-executor.bare.md / .matt.md 两个残留副本删除。</li>
+      <li><b>内置一行话退役</b>:代码里写死的四句「一行话说明书」不再用于新 run(注册节点必有正式 md);常量本体给旧 run 留着,随收场哨归零一起删。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="关键取舍与差异标注">
+    <h2>⑥ 关键取舍 + 与简报的差异标注(按你的授权)</h2>
+    <p>你说过设计时发现问题可以改、但要标明差异和理由。本方案与简报的差异共五处,全部只是落地精化,不改你拍的架构:</p>
+    <p><span class="badge diff">差异1</span><b>模板的内部存储编号(tpl_code 之类)不换新号</b>:「版本+1」按字面执行=同一行追加版本;这些编号降级为无人念的内部键,所有人看到的名字全是流水线名和 label。换新号会让新旧 run 分家,三处要写双行逻辑,复杂度不划算。</p>
+    <p><span class="badge diff">差异2</span><b>prd/prototype 的节点一并改名 pm/proto</b>:它们和产品设计节点原来都叫 produce——同一个词指三段不同工作,和 design 同病;注册表「名字全局唯一」的规则下重名根本注册不进去,属于架构的必然结果。</p>
+    <p><span class="badge diff">差异3</span><b>nodes 层带一个行为类字段</b>:引擎判断「这节点能不能开 PR、走哪条完成路线」的内部分类词冻在历史快照里,改它=改史,违反零改史;所以行为类作为注册表里的声明字段保留原词。</p>
+    <p><span class="badge diff">差异4</span><b>「旧名删干净」的语义按简报修订</b>:issue 原文禁双名层;你后拍的零改史要求过渡双名。取后者,但把双名压缩到五个显式标记处+可执行收场判据,守卫对其余全仓照旧零容忍——两个决定的交集,不是弃守。</p>
+    <p><span class="badge diff">差异5</span><b>config 引用形态定稿</b>:「config 不再重复定义」落成 <code>node: 注册名</code> 引用;执行者归属哪个部门也改为注册表里的显式字段(今天靠文件放在哪个目录来猜,搬家就会猜错);标签路由专用的 engineer / product_designer 也进 nodes 层注册(不进任何流水线)。</p>
+    <p><span class="badge diff">差异6</span><b>派工接口的字段名不改</b>:「词表消失」落成合法值收编(只认流水线名),但接口/存储里那个字段的名字保留——改字段名要全量排查所有外部消费者(FLY-1914 级),纯代价零收益。</p>
+    <p><span class="badge reject">否决</span>role 改名 product_designer(与既有 product-designer 只差一个符号=制造新撞名)· 运行时旧名改写(改史)· 只改展示名不改 id(把病藏进皮下)。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="诚实边界">
+    <h2>⑦ 诚实边界 — 做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>两层注册表 + loader 三道硬校验;菜单收编;label 展示层;零改史迁移;清理(⑤);常驻守卫+阴性对照(故意喂一个坏名字,守卫必须变红)。</li>
+    </ul>
+    <h3>不做(是决定,不是遗漏)</h3>
+    <ul>
+      <li><b>不为「System Design 和 Engineering 图上分不出来」做显示区分</b>——后端就是同一个东西,该被看见;要分先做产品决定,另立 issue。</li>
+      <li><span class="keep">保留</span>引擎内部行为类词表与协议常量(理由见差异3;改它们要动历史快照与对外命令契约)。</li>
+      <li>不动 Linear 标签词汇(designer/mockup 等是你在 Linear 用的词)。</li>
+      <li>tpl_eng_heavy 不删(等你点头,单列问询)。</li>
+      <li>founder 手工自建模板若无 label,视图回落显示 id——声明的边界,不是兼容层。</li>
+      <li>B 类 legacy 标记的最终删除是收场 issue 的事,本 PR 只放好收场哨;A 类历史解码永久保留(历史可读性优先于「删干净」的洁癖)。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-key="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="意见汇总">
+    <h2>⑧ 意见汇总</h2>
+    <p class="term">下面自动汇总你在各节写的意见;点按钮一键复制,直接粘回 Discord 即可。</p>
+    <div id="summary-list">(暂无意见)</div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var PREFIX = "fly2121-comments:" + location.pathname + ":";
+  var MARKER = "【页面意见汇总】FLY-2121";
+  var CHUNK_LIMIT = 1800;
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) { /* storage unavailable */ } }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".comment-box textarea"));
+
+  function sectionTitleFor(ta) {
+    var card = ta.closest ? ta.closest(".card") : null;
+    return card ? (card.getAttribute("data-section") || "未命名段落") : "未命名段落";
+  }
+
+  function collect() {
+    var parts = [];
+    boxes.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push("[" + sectionTitleFor(ta) + "] " + v);
+    });
+    return parts;
+  }
+
+  function buildChunks(parts) {
+    var chunks = [];
+    var current = MARKER + "\n";
+    parts.forEach(function (p) {
+      var line = p + "\n";
+      if (current.length + line.length > CHUNK_LIMIT && current.length > MARKER.length + 1) {
+        chunks.push(current.trimEnd());
+        current = MARKER + "\n" + line;
+      } else {
+        current += line;
+      }
+    });
+    chunks.push(current.trimEnd());
+    return chunks;
+  }
+
+  function render() {
+    var parts = collect();
+    var list = document.getElementById("summary-list");
+    if (parts.length === 0) {
+      list.textContent = "(暂无意见)";
+    } else {
+      list.textContent = buildChunks(parts).join("\n\n----(分段)----\n\n");
+    }
+  }
+
+  boxes.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = lsGet(key);
+    ta.addEventListener("input", function () {
+      lsSet(key, ta.value);
+      render();
+    });
+  });
+
+  function fallbackCopy(text) {
+    var scratch = document.createElement("textarea");
+    scratch.value = text;
+    scratch.setAttribute("readonly", "");
+    scratch.style.position = "fixed";
+    scratch.style.left = "-9999px";
+    document.body.appendChild(scratch);
+    scratch.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(scratch);
+    return ok;
+  }
+
+  function setStatus(msg) {
+    var el = document.getElementById("copy-status");
+    el.textContent = msg;
+    setTimeout(function () { el.textContent = ""; }, 3000);
+  }
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    var text = parts.length === 0 ? MARKER + "\n(暂无意见)" : buildChunks(parts).join("\n\n");
+    function done(ok) { setStatus(ok ? "已复制 ✓" : "复制失败,请手动全选上方文本"); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

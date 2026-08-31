@@ -1,22 +1,31 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	readFileSync,
+	rmSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parse, stringify } from "yaml";
 import { doctor } from "../commands/doctor.js";
 import { init } from "../commands/init.js";
 
-describe("flywheel doctor", () => {
+const BUNDLED_REGISTRY = resolve(
+	dirname(fileURLToPath(import.meta.url)),
+	"../../../..",
+	".flywheel/agents/registry.yaml",
+);
+
+describe("flywheel doctor registry preflight", () => {
 	let root: string;
 
 	beforeEach(() => {
-		const raw = join(tmpdir(), `fly-doctor-${Date.now()}-${Math.random()}`);
-		mkdirSync(raw, { recursive: true });
-		// macOS tmpdir is `/var/folders/...` symlinked to `/private/var/folders/...`.
-		// Process.cwd() returns the canonical (realpath) form after chdir, so
-		// normalize `root` once to match — otherwise walk-up tests compare
-		// symlink-prefixed vs canonical paths and fail.
-		root = realpathSync(raw);
+		root = join(tmpdir(), `fly-doctor-${Date.now()}-${Math.random()}`);
+		mkdirSync(root, { recursive: true });
 		execFileSync("git", ["init", "-q"], { cwd: root });
 	});
 
@@ -24,121 +33,80 @@ describe("flywheel doctor", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("errors when config.yaml is missing", () => {
-		const report = doctor({ projectPath: root });
-		expect(report.errors.some((e) => e.includes("Missing"))).toBe(true);
-	});
-
-	it("exits clean on a fresh init project", () => {
-		init({ projectPath: root, depts: ["product"] });
-		const report = doctor({ projectPath: root });
-		expect(report.errors).toEqual([]);
-	});
-
-	it("detects legacy .claude/agents/ paths BEFORE attempting parse", () => {
-		init({ projectPath: root, noDepts: true });
-		// Hand-edit config to include the legacy path.
-		const cfgPath = join(root, ".flywheel", "config.yaml");
-		writeFileSync(
-			cfgPath,
-			`project:\n  name: "x"\nagents:\n  backend:\n    agent_file: .claude/agents/backend-executor.md\n    match:\n      labels: ["backend"]\n`,
-		);
-		const report = doctor({ projectPath: root });
-		expect(report.errors.length).toBeGreaterThan(0);
-		expect(report.errors[0]).toMatch(/migrate-agents-path/);
-	});
-
-	it("errors on a broken agent_file path", () => {
-		init({ projectPath: root, depts: ["product"] });
-		const cfgPath = join(root, ".flywheel", "config.yaml");
-		writeFileSync(
-			cfgPath,
-			`project:\n  name: "x"\nagents:\n  backend:\n    agent_file: .flywheel/agents/product/missing-executor.md\n    department: product\n    match:\n      labels: ["backend"]\n`,
-		);
-		const report = doctor({ projectPath: root });
-		expect(report.errors.some((e) => e.includes("does not exist"))).toBe(true);
-	});
-
-	it("warns on duplicate aliases across multiple agents", () => {
-		init({ projectPath: root, depts: ["product"] });
-		// Create two real agent files.
-		mkdirSync(join(root, ".flywheel", "agents", "product"), {
-			recursive: true,
+	it("errors when config.yaml is missing", async () => {
+		const report = await doctor({
+			projectPath: root,
+			bundledRegistryPath: BUNDLED_REGISTRY,
 		});
-		writeFileSync(
-			join(root, ".flywheel", "agents", "product", "frontend-executor.md"),
-			"# frontend",
-		);
-		writeFileSync(
-			join(root, ".flywheel", "agents", "product", "designer-executor.md"),
-			"# designer",
-		);
-		writeFileSync(
-			join(root, ".flywheel", "config.yaml"),
-			[
-				`project:`,
-				`  name: "x"`,
-				`agents:`,
-				`  frontend:`,
-				`    agent_file: .flywheel/agents/product/frontend-executor.md`,
-				`    department: product`,
-				`    match:`,
-				`      labels: ["frontend", "ui"]`,
-				`  designer:`,
-				`    agent_file: .flywheel/agents/product/designer-executor.md`,
-				`    department: product`,
-				`    match:`,
-				`      labels: ["designer", "ui"]`,
-				``,
-			].join("\n"),
-		);
-		const report = doctor({ projectPath: root });
-		expect(
-			report.warnings.some((w) => w.includes("ui") && w.includes("frontend")),
-		).toBe(true);
+		expect(report.errors.some((error) => error.includes("Missing"))).toBe(true);
 	});
 
-	it("info-logs orphan dept dirs (no agent declares the dept)", () => {
-		init({ projectPath: root, depts: ["product", "marketing"] });
-		// Declare only product agents — marketing/ is orphan.
-		writeFileSync(
-			join(root, ".flywheel", "agents", "product", "backend-executor.md"),
-			"# backend",
-		);
-		writeFileSync(
-			join(root, ".flywheel", "config.yaml"),
-			[
-				`project:`,
-				`  name: "x"`,
-				`agents:`,
-				`  backend:`,
-				`    agent_file: .flywheel/agents/product/backend-executor.md`,
-				`    department: product`,
-				`    match:`,
-				`      labels: ["backend"]`,
-				``,
-			].join("\n"),
-		);
-		const report = doctor({ projectPath: root });
-		expect(report.errors).toEqual([]);
-		expect(
-			report.info.some(
-				(i) => i.includes("'marketing'") && i.includes("orphan"),
-			),
-		).toBe(true);
-	});
-
-	it("walks up from a nested subdir to find .flywheel/", () => {
+	it("passes both bundled and project registry entries on a fresh init", async () => {
 		init({ projectPath: root, depts: ["product"] });
-		const nested = join(root, "packages", "foo");
-		mkdirSync(nested, { recursive: true });
-		const origCwd = process.cwd();
-		try {
-			process.chdir(nested);
-			const report = doctor();
-			expect(report.projectPath).toBe(root);
-		} finally {
-			process.chdir(origCwd);
-		}
+		const report = await doctor({
+			projectPath: root,
+			bundledRegistryPath: BUNDLED_REGISTRY,
+		});
+		expect(report.errors).toEqual([]);
+		expect(report.info).toContain("Bundled registry preflight passed");
+		expect(report.info).toContain("Project registry preflight passed");
+	});
+
+	it("rejects the retired agent_file authoring contract", async () => {
+		init({ projectPath: root, noDepts: true });
+		const configPath = join(root, ".flywheel", "config.yaml");
+		writeFileSync(
+			configPath,
+			readFileSync(configPath, "utf8").replace(
+				"node: example",
+				"agent_file: .flywheel/agents/nodes/example.md",
+			),
+		);
+		const report = await doctor({
+			projectPath: root,
+			bundledRegistryPath: BUNDLED_REGISTRY,
+		});
+		expect(report.errors[0]).toMatch(/migrate-agent-registry/);
+	});
+
+	it("fails loud when the project registry is missing", async () => {
+		init({ projectPath: root, noDepts: true });
+		unlinkSync(join(root, ".flywheel", "agents", "registry.yaml"));
+		const report = await doctor({
+			projectPath: root,
+			bundledRegistryPath: BUNDLED_REGISTRY,
+		});
+		expect(report.errors.join("\n")).toMatch(/registry\.yaml|ENOENT/i);
+	});
+
+	it("fails loud when config references an unregistered node", async () => {
+		init({ projectPath: root, noDepts: true });
+		const configPath = join(root, ".flywheel", "config.yaml");
+		writeFileSync(
+			configPath,
+			readFileSync(configPath, "utf8").replace("node: example", "node: absent"),
+		);
+		const report = await doctor({
+			projectPath: root,
+			bundledRegistryPath: BUNDLED_REGISTRY,
+		});
+		expect(report.errors.join("\n")).toMatch(/NODE_NOT_REGISTERED.*absent/i);
+	});
+
+	it("warns on duplicate aliases after registry resolution", async () => {
+		init({ projectPath: root, depts: ["product"] });
+		const configPath = join(root, ".flywheel", "config.yaml");
+		const config = parse(readFileSync(configPath, "utf8"));
+		config.agents.secondary = {
+			node: "example",
+			match: { labels: ["example"] },
+		};
+		writeFileSync(configPath, stringify(config));
+		const report = await doctor({
+			projectPath: root,
+			bundledRegistryPath: BUNDLED_REGISTRY,
+		});
+		expect(report.errors).toEqual([]);
+		expect(report.warnings.join("\n")).toMatch(/example.*multiple agents/i);
 	});
 });

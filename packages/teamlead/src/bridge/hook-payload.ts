@@ -34,6 +34,11 @@ export interface HookPayload {
 	workflow_run_id?: string;
 	workflow_node_id?: string;
 	workflow_attempt?: number;
+	/** FLY-2152: durable workflow-claim delivery identity. */
+	workflow_claim_id?: number;
+	workflow_decision_kind?: string;
+	workflow_predicate?: string;
+	workflow_issued_at?: string;
 	launch_ordinal?: number;
 	blind_replacements?: number;
 	max_blind_replacements?: number;
@@ -192,6 +197,22 @@ export interface HookPayload {
 	requester_context?: string;
 }
 
+/** FLY-2152: the narrowed journal payload for an accepted workflow verdict. */
+export interface WorkflowClaimRecordedPayload extends HookPayload {
+	event_type: "workflow_claim_recorded";
+	execution_id: string;
+	issue_id: string;
+	project_name: string;
+	workflow_run_id: string;
+	workflow_node_id: string;
+	workflow_attempt: number;
+	workflow_claim_id: number;
+	workflow_decision_kind: string;
+	workflow_predicate: string;
+	workflow_issued_at: string;
+	summary: string;
+}
+
 export interface PatrolRosterEntry {
 	identifier: string;
 	issueId?: string;
@@ -303,6 +324,22 @@ export function formatWorkflowReplacementEligibility(
 		`Stable Event: ${event.workflow_event_id ?? "---"}`,
 		`ID: ${event.execution_id || "---"} | Issue: ${event.issue_identifier || event.issue_id || "---"}`,
 		`引擎最早于 ~${event.next_check_at ?? "未知"} 重新检查(盲换 ${event.blind_replacements ?? 0}/${event.max_blind_replacements ?? 3});若死亡确认与 current-execution fencing 成立,将执行 ${disposition}。`,
+		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
+	].join("\n");
+}
+
+export function formatWorkflowClaimRecorded(
+	env: StuckEscalationEnvelopeLike,
+): string {
+	const event = env.event;
+	return [
+		`[Event #${env.seq}] workflow_claim_recorded`,
+		`Issue: ${event.issue_id || "---"} | Project: ${event.project_name || "---"}`,
+		`Run: ${event.workflow_run_id ?? "---"} | Node: ${event.workflow_node_id ?? "---"} attempt ${event.workflow_attempt ?? "---"}`,
+		`Claim: ${event.workflow_claim_id ?? "---"} | ${event.workflow_decision_kind ?? "---"} → ${event.workflow_predicate ?? "---"}`,
+		`Issued: ${event.workflow_issued_at ?? "---"}`,
+		`Summary: ${truncateCodePoints(event.summary ?? "(no summary)", 300).text}`,
+		"Action: 立即推进返工、结果汇报或 ship；不要把已落库判决留在信箱等待。",
 		`Timestamp: ${env.timestamp} | Session Key: ${env.sessionKey}`,
 	].join("\n");
 }

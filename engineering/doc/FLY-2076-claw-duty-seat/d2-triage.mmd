@@ -1,0 +1,18 @@
+flowchart TD
+    R["收到一条工单根消息"] --> RO["只读核实:看 thread / runner 状态 / 日志尾<br/>查 runbook 与 contact book"]
+    RO --> Q1{"runbook 有这一类<br/>且动作在授权范围内?"}
+    Q1 -- "是" --> ONE["① 自己解决<br/>动手 → 验证 → ✅ 帖<br/>+ 立刻写 runbook 草稿"]
+    Q1 -- "否 / 不确定<br/>(宁转勿吞)" --> Q2{"contact book<br/>查得到该找谁?"}
+    ONE -- "修不好 → 改走 ②/③" --> Q2
+    Q2 -- "查到 X" --> TWO["② 转 @X"]
+    Q2 -- "查不到" --> THREE["③ 兜底 @Tadashi<br/>标记 📒 册上无此类"]
+    ONE --> P["🧭 帖留痕(先看 thread 没有才发;恰一个 @ 或没有)<br/>+ 根因线一行:代码/配置问题 → 开单;判不清 → 写到哪一步"]
+    TWO --> P
+    THREE --> P
+    P --> A["记账 = 完成(既有账本)<br/>① → alert-ticket ack(acked_at)<br/>②③ → alert-ticket handoff --to X(ESCALATED + owner_ref)<br/>压不过来 → 一帖 @Tadashi 压力自述"]
+    classDef one fill:#e8f7ee,stroke:#1d7a3e,color:#1d7a3e;
+    classDef two fill:#e9f2ff,stroke:#0a5dc2,color:#0a5dc2;
+    classDef three fill:#f3e8fb,stroke:#7d3bab,color:#7d3bab;
+    class ONE one;
+    class TWO two;
+    class THREE three;

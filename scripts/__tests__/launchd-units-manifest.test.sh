@@ -202,6 +202,7 @@ def validate_repo_manifest(text):
         "com.flywheel.voucher-watch": ("com.flywheel.voucher-watch.plist", "copy", "0", "repo plist is byte authority"),
         "com.flywheel.daily-digest": ("com.flywheel.daily-digest.plist", "hold", "0", "pending-founder-optin"),
         "com.flywheel.xiaohongshu-learning": ("com.flywheel.xiaohongshu-learning.plist", "hold", "0", "founder-gated-pilot"),
+        "com.flywheel.meeting-notes": ("com.flywheel.meeting-notes.plist", "hold", "0", "pre-ship-live-pilot-hard-gate-before-install"),
         "com.flywheel.bridge": ("com.flywheel.bridge.plist", "setup", "0", None),
         "com.flywheel.quota-monitor": ("-", "setup", "0", None),
         "com.flywheel.cmux-watcher": ("-", "setup", "0", None),

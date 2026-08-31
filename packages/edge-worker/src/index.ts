@@ -12,15 +12,13 @@ export type {
 } from "flywheel-core";
 export type {
 	AgentDispatchResult,
-	AgentFileRoot,
+	AgentFallbacks,
 	AgentMatchMethod,
 	DispatchOptions,
 } from "./AgentDispatcher.js";
 export {
 	AgentDispatcher,
-	InvalidAgentFilePathError,
 	InvalidAgentNameError,
-	parsedDept,
 } from "./AgentDispatcher.js";
 export { AgentSessionManager } from "./AgentSessionManager.js";
 export type {

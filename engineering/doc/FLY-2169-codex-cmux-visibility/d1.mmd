@@ -1,0 +1,16 @@
+flowchart LR
+    subgraph now["现状 — 那一晚发生了什么"]
+        A["Bridge 派工<br/>codex 工人启动<br/>(app-server 子进程)"] --> B["工人正常干活<br/>真实工作记录 11MB<br/>持续增长"]
+        A --> C["旧可见性通道:<br/>codex resume TUI<br/>附着到工人线程"]
+        C --> D["TUI 出生即死<br/>一晚 47 次<br/>6 个窗口全灭"]
+        D --> E["账本里窗口名<br/>永远停在 pending<br/>(占位符)"]
+        E --> F["cmux 黑窗<br/>founder 一晚四问:<br/>『我什么都看不到』"]
+        D -. 每次尝试还会 .-> G["污染工人的家目录<br/>fork 出 3 个<br/>2.5MB 副本线程"]
+    end
+    style A fill:#e8f0fe,stroke:#007aff
+    style B fill:#e6f9ed,stroke:#34c759
+    style C fill:#fff4e5,stroke:#ff9500
+    style D fill:#ffe5e3,stroke:#ff3b30
+    style E fill:#ffe5e3,stroke:#ff3b30
+    style F fill:#ffe5e3,stroke:#ff3b30
+    style G fill:#fff4e5,stroke:#ff9500

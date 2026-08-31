@@ -149,7 +149,7 @@ describe("FLY-513 checkCodexGlobalHealth (wrapper, injected deps)", () => {
 		resolveExecutable: (_name: string) => `${HOME}/.local/bin/codex`,
 	};
 
-	it("11. FLYWHEEL_CODEX_HEALTH_GUARD=0 → short-circuits to ok (guard-disabled), no resolution", () => {
+	it("11. ignores the retired health-guard bypass and still resolves", () => {
 		let resolved = false;
 		const r = checkCodexGlobalHealth({
 			...baseDeps,
@@ -161,8 +161,8 @@ describe("FLY-513 checkCodexGlobalHealth (wrapper, injected deps)", () => {
 		});
 		expect(r.ok).toBe(true);
 		expect(r.alert).toBe(false);
-		expect(r.reason).toBe("guard-disabled");
-		expect(resolved).toBe(false);
+		expect(r.reason).toBe("healthy");
+		expect(resolved).toBe(true);
 	});
 
 	it("12. healthy neutral binary → ok, no alert", () => {
@@ -291,7 +291,7 @@ describe("FLY-513 reportCodexGlobalHealth (logs + meta-alert, never throws)", ()
 		).resolves.toMatchObject({ alert: true });
 	});
 
-	it("guard disabled → no alert even with a contaminated binary", async () => {
+	it("retired guard env cannot suppress a contaminated-binary alert", async () => {
 		const notify = vi.fn().mockResolvedValue(undefined);
 		const r = await reportCodexGlobalHealth(
 			{ notify },
@@ -301,7 +301,7 @@ describe("FLY-513 reportCodexGlobalHealth (logs + meta-alert, never throws)", ()
 				realpath: () => LEAD_BIN,
 			},
 		);
-		expect(r.reason).toBe("guard-disabled");
-		expect(notify).not.toHaveBeenCalled();
+		expect(r.reason).toBe("lead-home-binary");
+		expect(notify).toHaveBeenCalledOnce();
 	});
 });

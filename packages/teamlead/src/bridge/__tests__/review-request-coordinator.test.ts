@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import type { ClaudeReviewOutcome } from "../claude-review-runner.js";
 import { toReviewFindingRulingSnapshot } from "../review-governance-effects.js";
@@ -14,12 +14,18 @@ import { findingFingerprint } from "../review-verdict-policy.js";
 
 const HEAD = "a".repeat(40);
 
+afterEach(() => {
+	vi.useRealTimers();
+});
+
 interface FakeQuestion {
 	id: string;
 	from_agent?: string;
 	type?: string;
 	checkpoint?: string | null;
 	resolved_at?: string | null;
+	superseded_at?: string | null;
+	superseded_by?: string | null;
 	expires_at?: string;
 	content?: string;
 }
@@ -59,6 +65,7 @@ class FakeCommDb implements ReviewCommDb {
 			q.from_agent !== input.expectedOwner ||
 			q.checkpoint !== input.expectedCheckpoint ||
 			q.resolved_at ||
+			q.superseded_at ||
 			(q.expires_at && new Date(q.expires_at).getTime() < Date.now()) ||
 			this.responses.has(input.questionId)
 		) {
@@ -132,6 +139,8 @@ async function makeHarness(
 			prompt: string;
 			effort?: string;
 		}) => Promise<ClaudeReviewOutcome>;
+		quotaAutoRetryEnabled?: () => boolean;
+		openCommDb?: (comm: FakeCommDb) => ReviewCommDb;
 	} = {},
 ): Promise<Harness> {
 	const store = await StateStore.create(":memory:");
@@ -147,7 +156,7 @@ async function makeHarness(
 	const coordinator = new ReviewRequestCoordinator({
 		store,
 		commDbPathFor: (p) => `/fake/${p}/comm.db`,
-		openCommDb: () => comm,
+		openCommDb: () => harnessOpts.openCommDb?.(comm) ?? comm,
 		...(harnessOpts.reviewerEffort && {
 			reviewerEffort: harnessOpts.reviewerEffort,
 		}),
@@ -188,6 +197,7 @@ async function makeHarness(
 			rulingThreadPosts.push(text);
 			return { ok: harnessOpts.postReviewRulingOk !== false };
 		},
+		quotaAutoRetryEnabled: harnessOpts.quotaAutoRetryEnabled ?? (() => true),
 		logger: () => {},
 	});
 	return {
@@ -1397,6 +1407,609 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		expect(h.alerts[0]).not.toContain("`");
 		expect(h.alerts[0]).not.toContain("@everyone");
 		expect(h.alerts[0]).toContain("stderr diagnostic");
+		expect(h.reviewAlerts).toContainEqual({
+			kind: "review_job_failed",
+			eventId: "review-failed:r1:1",
+			issueId: "FLY-1188",
+			executionId: "e1",
+			requestId: "r1",
+			message:
+				"Review r1 (design R1) failed: timeout. Retry POST /review-requests with the same requestId; the gate remains closed.",
+		});
+		expect(JSON.stringify(h.reviewAlerts)).not.toContain("stderr diagnostic");
+		expect(JSON.stringify(h.reviewAlerts)).not.toContain("unsafe");
+	});
+
+	it("does not guess a retry path when live gate inspection is unavailable", async () => {
+		let commAvailable = true;
+		const round = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({
+			reviewRound: async () => round.promise,
+			openCommDb: (comm) => {
+				if (!commAvailable) throw new Error("comm db locked");
+				return comm;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "unknown-gate",
+			reviewType: "design",
+			questionId: "q1",
+			planPath: "engineering/doc/plan.md",
+		});
+		await settle();
+		commAvailable = false;
+		round.resolve({
+			kind: "failed",
+			reason: "timeout",
+			detail: "30min",
+			exitCode: null,
+			timedOut: true,
+		});
+		await settle();
+
+		expect(h.reviewAlerts).toContainEqual({
+			kind: "review_job_failed",
+			eventId: "review-failed:unknown-gate:1",
+			issueId: "FLY-1188",
+			executionId: "e1",
+			requestId: "unknown-gate",
+			message:
+				"Review unknown-gate (design R1) failed: timeout. The bound review gate could not be verified. Inspect CommDB and the gate before choosing a recovery path.",
+		});
+	});
+
+	it("schedules an observed quota reset on the same durable request", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "claude exited 1",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 429,
+				result:
+					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+			}),
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-r1",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+
+		const retryAt = Date.parse(
+			h.store.getCodexReviewJob("quota-r1")?.retry_at ?? "",
+		);
+		const resetAt = Date.parse("2026-08-30T18:10:00.000Z");
+		expect(retryAt).toBeGreaterThanOrEqual(resetAt + 60_000);
+		expect(retryAt).toBeLessThan(resetAt + 6 * 60_000);
+		expect(h.store.getCodexReviewJob("quota-r1")).toMatchObject({
+			auto_retry_count: 1,
+			failure_attempt_count: 1,
+		});
+		expect(vi.getTimerCount()).toBe(1);
+		expect(h.alerts[0]).toContain("automatic same-request retry is scheduled");
+		expect(h.alerts[0]).not.toContain("retry the request");
+	});
+
+	it("re-enters the existing execution queue when the scheduled retry is due", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "quota",
+				exitCode: 1,
+				timedOut: false,
+				raw: JSON.stringify({
+					api_error_status: 429,
+					result:
+						"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+				}),
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			},
+		);
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-due",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		const retryAt = Date.parse(
+			h.store.getCodexReviewJob("quota-due")?.retry_at ?? "",
+		);
+
+		await vi.advanceTimersByTimeAsync(retryAt - now);
+		await settle();
+
+		expect(h.invocations).toHaveLength(2);
+		expect(h.store.getCodexReviewJob("quota-due")?.status).toBe("done");
+		expect(h.comm.getResponse("q1")).toBeDefined();
+	});
+
+	it("does not schedule a reset that outlives the bound gate", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 5 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "quota",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 429,
+				result:
+					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+			}),
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-after-gate",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("quota-after-gate")).toMatchObject({
+			status: "failed",
+			auto_retry_count: 0,
+			failure_attempt_count: 1,
+		});
+		expect(
+			h.store.getCodexReviewJob("quota-after-gate")?.retry_at,
+		).toBeUndefined();
+		expect(vi.getTimerCount()).toBe(0);
+	});
+
+	it("pauses an already scheduled retry behind the live kill switch", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		let enabled = true;
+		const h = await makeHarness({ quotaAutoRetryEnabled: () => enabled });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "quota",
+				exitCode: 1,
+				timedOut: false,
+				raw: JSON.stringify({
+					api_error_status: 429,
+					result:
+						"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+				}),
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				raw: "",
+			},
+		);
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-paused",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		const retryAt = Date.parse(
+			h.store.getCodexReviewJob("quota-paused")?.retry_at ?? "",
+		);
+
+		enabled = false;
+		await vi.advanceTimersByTimeAsync(retryAt - now);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(vi.getTimerCount()).toBe(1);
+
+		enabled = true;
+		await vi.advanceTimersByTimeAsync(60_000);
+		await settle();
+		expect(h.invocations).toHaveLength(2);
+		expect(h.store.getCodexReviewJob("quota-paused")?.status).toBe("done");
+	});
+
+	it.each([
+		["answered", "gate_answered_externally"],
+		["expired", "gate_expired"],
+		["missing", "gate_missing"],
+		["mismatch", "gate_mismatch"],
+	] as const)(
+		"revalidates a %s gate before the scheduled retry",
+		async (gateState, expectedReason) => {
+			const now = Date.parse("2026-08-30T18:00:00.000Z");
+			vi.useFakeTimers({
+				now,
+				toFake: ["Date", "setTimeout", "clearTimeout"],
+			});
+			const h = await makeHarness();
+			registerSession(h.store, "e1");
+			openGate(h.comm, "q1", "e1", "review_design", {
+				expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+			});
+			h.outcomes.push({
+				kind: "failed",
+				reason: "nonzero_exit",
+				detail: "quota",
+				exitCode: 1,
+				timedOut: false,
+				raw: JSON.stringify({
+					api_error_status: 429,
+					result:
+						"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+				}),
+			});
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: `quota-${gateState}`,
+				reviewType: "design",
+				questionId: "q1",
+			});
+			await settle();
+			const retryAt = Date.parse(
+				h.store.getCodexReviewJob(`quota-${gateState}`)?.retry_at ?? "",
+			);
+
+			const question = h.comm.questions.get("q1");
+			if (gateState === "answered" && question) {
+				question.resolved_at = new Date(now).toISOString();
+			} else if (gateState === "expired" && question) {
+				question.expires_at = new Date(now - 1).toISOString();
+			} else if (gateState === "missing") {
+				h.comm.questions.delete("q1");
+			} else if (gateState === "mismatch" && question) {
+				question.checkpoint = "review_code";
+			}
+
+			await vi.advanceTimersByTimeAsync(retryAt - now);
+			await settle();
+
+			expect(h.invocations).toHaveLength(1);
+			expect(
+				h.store.getCodexReviewJob(`quota-${gateState}`)?.failure_reason,
+			).toBe(expectedReason);
+			expect(
+				h.store.getCodexReviewJob(`quota-${gateState}`)?.retry_at,
+			).toBeUndefined();
+			expect(h.reviewAlerts).toContainEqual(
+				expect.objectContaining({
+					kind: "review_job_failed",
+					eventId: `review-failed:quota-${gateState}:2`,
+					requestId: `quota-${gateState}`,
+					message: `Review quota-${gateState} (design R1) failed: ${expectedReason}. The bound review gate is no longer open. Open a new review gate and submit a new request.`,
+				}),
+			);
+		},
+	);
+
+	it("silently retires a scheduled retry when its gate was superseded", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "quota",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 429,
+				result:
+					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+			}),
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-superseded",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		const retryAt = Date.parse(
+			h.store.getCodexReviewJob("quota-superseded")?.retry_at ?? "",
+		);
+
+		openGate(h.comm, "q2", "e1", "review_design");
+		Object.assign(h.comm.questions.get("q1")!, {
+			resolved_at: new Date(now).toISOString(),
+			superseded_at: new Date(now).toISOString(),
+			superseded_by: "q2",
+		});
+		h.reviewAlerts.length = 0;
+
+		await vi.advanceTimersByTimeAsync(retryAt - now);
+		await settle();
+
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("quota-superseded")).toMatchObject({
+			status: "failed",
+			failure_reason: "superseded_by_revision",
+		});
+		expect(
+			h.store.getCodexReviewJob("quota-superseded")?.retry_at,
+		).toBeUndefined();
+		expect(h.reviewAlerts).toEqual([]);
+	});
+
+	it("boot-redrives a future durable retry without rerunning it early", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.store.insertCodexReviewJob({
+			requestId: "quota-boot",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		h.store.recordCodexReviewJobFailure({
+			requestId: "quota-boot",
+			reason: "nonzero_exit",
+			retryAt: new Date(now + 5 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		expect(h.coordinator.redriveOnBoot()).toBe(1);
+		await vi.advanceTimersByTimeAsync(5 * 60_000 - 1);
+		await settle();
+		expect(h.invocations).toHaveLength(0);
+
+		await vi.advanceTimersByTimeAsync(1);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("quota-boot")?.status).toBe("done");
+	});
+
+	it("re-arms a scheduled retry when the kill-switch read throws", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		let reads = 0;
+		const h = await makeHarness({
+			quotaAutoRetryEnabled: () => {
+				reads += 1;
+				if (reads > 1) throw new Error("flag store unavailable");
+				return true;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "quota",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 429,
+				result:
+					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+			}),
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-callback-error",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		const retryAt = Date.parse(
+			h.store.getCodexReviewJob("quota-callback-error")?.retry_at ?? "",
+		);
+
+		await vi.advanceTimersByTimeAsync(retryAt - now);
+		await settle();
+
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("quota-callback-error")).toMatchObject({
+			status: "failed",
+			retry_at: new Date(retryAt).toISOString(),
+		});
+		expect(vi.getTimerCount()).toBe(1);
+	});
+
+	it("uses the plain Lead alert fallback when the review session vanished", async () => {
+		const h = await makeHarness();
+		h.store.insertCodexReviewJob({
+			requestId: "missing-session",
+			executionId: "gone",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q-gone",
+		});
+
+		expect(h.coordinator.redriveOnBoot()).toBe(1);
+		await settle();
+
+		expect(h.store.getCodexReviewJob("missing-session")).toMatchObject({
+			status: "failed",
+			failure_reason: "session_missing",
+		});
+		expect(h.alerts).toContain(
+			"review job missing-session (FLY-1188) failed: StateStore session gone is missing; retry requires restoring or replacing the bound execution.",
+		);
+		expect(h.reviewAlerts).toContainEqual({
+			kind: "review_job_failed",
+			eventId: "review-failed:missing-session:1",
+			issueId: "FLY-1188",
+			executionId: "gone",
+			requestId: "missing-session",
+			message:
+				"Review missing-session (design R1) failed: session_missing. Restore or replace the execution/worktree binding, then retry only if the bound review gate is verified open.",
+		});
+	});
+
+	it("refuses a scheduled code retry after the trusted head moves", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_code", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "quota",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 429,
+				result:
+					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+			}),
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-head-moved",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+		const retryAt = Date.parse(
+			h.store.getCodexReviewJob("quota-head-moved")?.retry_at ?? "",
+		);
+
+		h.setHead("b".repeat(40));
+		await vi.advanceTimersByTimeAsync(retryAt - now);
+		await settle();
+
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("quota-head-moved")?.failure_reason).toBe(
+			"head_moved",
+		);
+		expect(
+			h.store.getCodexReviewJob("quota-head-moved")?.retry_at,
+		).toBeUndefined();
+		expect(h.reviewAlerts).toContainEqual(
+			expect.objectContaining({
+				kind: "review_job_failed",
+				eventId: "review-failed:quota-head-moved:2",
+				requestId: "quota-head-moved",
+				message:
+					"Review quota-head-moved (code R1) failed: head_moved. The reviewed head is stale or mismatched. Submit a new requestId to freeze and review the current head.",
+			}),
+		);
+	});
+
+	it("stop clears scheduled retry timers and prevents later spawn", async () => {
+		const now = Date.parse("2026-08-30T18:00:00.000Z");
+		vi.useFakeTimers({
+			now,
+			toFake: ["Date", "setTimeout", "clearTimeout"],
+		});
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			expires_at: new Date(now + 3 * 60 * 60_000).toISOString(),
+		});
+		h.outcomes.push({
+			kind: "failed",
+			reason: "nonzero_exit",
+			detail: "quota",
+			exitCode: 1,
+			timedOut: false,
+			raw: JSON.stringify({
+				api_error_status: 429,
+				result:
+					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
+			}),
+		});
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "quota-stop",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		expect(vi.getTimerCount()).toBe(1);
+
+		h.coordinator.stop();
+		expect(vi.getTimerCount()).toBe(0);
+		await vi.advanceTimersByTimeAsync(3 * 60 * 60_000);
+		await settle();
+		expect(h.invocations).toHaveLength(1);
+		expect(h.store.getCodexReviewJob("quota-stop")?.status).toBe("failed");
 	});
 
 	it("round derivation + reround resumes the SAME reviewer session", async () => {
@@ -2024,6 +2637,202 @@ describe("ReviewRequestCoordinator — scheduling", () => {
 	});
 });
 
+// ── FLY-2194 — benign revision supersede classification ────────────────
+
+describe("FLY-2194 — superseded review failures stay internal", () => {
+	it.each(["design", "code"] as const)(
+		"silences a same-execution %s revision supersede without granting authority",
+		async (reviewType) => {
+			const round = deferred<ClaudeReviewOutcome>();
+			const h = await makeHarness({ reviewRound: async () => round.promise });
+			registerSession(h.store, "e1");
+			const checkpoint = `review_${reviewType}`;
+			openGate(h.comm, "q1", "e1", checkpoint);
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: `superseded-${reviewType}`,
+				reviewType,
+				questionId: "q1",
+				...(reviewType === "design" && {
+					planPath: "engineering/doc/plan.md",
+				}),
+			});
+			await settle();
+			expect(h.invocations).toHaveLength(1);
+
+			openGate(h.comm, "q2", "e1", checkpoint);
+			Object.assign(h.comm.questions.get("q1")!, {
+				resolved_at: new Date().toISOString(),
+				superseded_at: new Date().toISOString(),
+				superseded_by: "q2",
+			});
+			round.resolve({
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: reviewType === "code" ? HEAD : null,
+				raw: "",
+			});
+			await settle();
+
+			expect(h.comm.getResponse("q1")).toBeUndefined();
+			expect(
+				h.store.getCodexReviewJob(`superseded-${reviewType}`),
+			).toMatchObject({
+				status: "failed",
+				failure_reason: "superseded_by_revision",
+			});
+			expect(
+				h.reviewAlerts.filter(
+					(event) =>
+						event.kind === "review_job_failed" &&
+						event.requestId === `superseded-${reviewType}`,
+				),
+			).toEqual([]);
+			if (reviewType === "code") {
+				expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
+			}
+		},
+	);
+
+	it("keeps a cross-execution supersessor founder-visible", async () => {
+		const round = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({ reviewRound: async () => round.promise });
+		registerSession(h.store, "e1");
+		registerSession(h.store, "e2");
+		openGate(h.comm, "q1", "e1", "review_design");
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "cross-execution",
+			reviewType: "design",
+			questionId: "q1",
+			planPath: "engineering/doc/plan.md",
+		});
+		await settle();
+		openGate(h.comm, "q2", "e2", "review_design");
+		Object.assign(h.comm.questions.get("q1")!, {
+			resolved_at: new Date().toISOString(),
+			superseded_at: new Date().toISOString(),
+			superseded_by: "q2",
+		});
+		round.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("cross-execution")?.failure_reason).toBe(
+			"gate_answered_externally",
+		);
+		expect(h.reviewAlerts).toContainEqual(
+			expect.objectContaining({
+				kind: "review_job_failed",
+				requestId: "cross-execution",
+			}),
+		);
+	});
+
+	it("boot redrive does not start a reviewer for a superseded gate", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			resolved_at: new Date().toISOString(),
+			superseded_at: new Date().toISOString(),
+			superseded_by: "q2",
+		});
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "boot-superseded",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+			authorFamily: "codex",
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			raw: "",
+		});
+
+		expect(h.coordinator.redriveOnBoot()).toBe(1);
+		await settle();
+
+		expect(h.invocations).toHaveLength(0);
+		expect(h.store.getCodexReviewJob("boot-superseded")).toMatchObject({
+			status: "failed",
+			failure_reason: "superseded_by_revision",
+		});
+		expect(h.reviewAlerts).toEqual([]);
+	});
+
+	it("pins accept-time answered gates to gate_answered", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			resolved_at: new Date().toISOString(),
+		});
+		const result = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "answered-at-accept",
+			reviewType: "design",
+			questionId: "q1",
+			planPath: "engineering/doc/plan.md",
+		});
+
+		expect(result).toMatchObject({ accepted: false, httpStatus: 409 });
+		expect(
+			h.store.getCodexReviewJob("answered-at-accept")?.failure_reason,
+		).toBe("gate_answered");
+	});
+
+	it("failed-job replay names a superseded gate and refuses the old request", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design", {
+			resolved_at: new Date().toISOString(),
+			superseded_at: new Date().toISOString(),
+			superseded_by: "q2",
+		});
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.store.insertCodexReviewJob({
+			requestId: "replay-superseded",
+			executionId: "e1",
+			issueId: "FLY-1188",
+			projectName: "proj",
+			reviewType: "design",
+			questionId: "q1",
+			authorFamily: "codex",
+		});
+		h.store.claimCodexReviewJobRunning("replay-superseded");
+		h.store.recordCodexReviewJobFailure({
+			requestId: "replay-superseded",
+			reason: "timeout",
+		});
+
+		const result = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "replay-superseded",
+			reviewType: "design",
+			questionId: "q1",
+			planPath: "engineering/doc/plan.md",
+		});
+
+		expect(result).toEqual({
+			accepted: false,
+			httpStatus: 409,
+			reason:
+				"retry refused for replay-superseded: gate superseded (question q1)",
+		});
+	});
+});
+
 // ── R12 findings — regression coverage ──────────────────────────────────
 
 describe("R12 HIGH-2 — gate binding is execution/checkpoint-bound", () => {
@@ -2315,6 +3124,15 @@ describe("R12 HIGH-6 — code approval requires a matching head echo", () => {
 		);
 		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
 		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.reviewAlerts).toContainEqual({
+			kind: "review_job_failed",
+			eventId: "review-failed:r1:1",
+			issueId: "FLY-1188",
+			executionId: "e1",
+			requestId: "r1",
+			message:
+				"Review r1 (code R1) failed: reviewed_wrong_head. The reviewed head is stale or mismatched. Submit a new requestId to freeze and review the current head.",
+		});
 	});
 
 	it("CHANGES_REQUESTED on a moved head → refused (stale findings not delivered)", async () => {

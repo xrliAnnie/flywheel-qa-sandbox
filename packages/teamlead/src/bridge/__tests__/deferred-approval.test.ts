@@ -348,6 +348,15 @@ describe("rebind pass — write outcomes (今晚场景镜像 + R2 #1/R4 #2)", ()
 		);
 	});
 
+	it("ignores the retired founder-ack env and still upgrades the receipt", async () => {
+		const { deps, reactImpl } = await rebindHarness({});
+		Object.assign(deps, { env: { FLYWHEEL_FOUNDER_APPROVAL_ACK: "0" } });
+		await runDeferredApprovalRebindPass(deps);
+		expect(reactImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ messageId: "100", emoji: "✅" }),
+		);
+	});
+
 	it("R2 #1: response written but hook does NOT flip → stays ACTIVE (no consume, no ✅, no '已生效')", async () => {
 		const { store, deps, reactImpl } = await rebindHarness({
 			hookFlips: false,

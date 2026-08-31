@@ -22,12 +22,13 @@
 | This package file | Destination |
 |---|---|
 | `config.yaml` | `~/Dev/tidal-echo/.flywheel/config.yaml` |
-| `content-executor.md` | `~/Dev/tidal-echo/.flywheel/agents/content/content-executor.md` |
+| `registry.yaml` | `~/Dev/tidal-echo/.flywheel/agents/registry.yaml` |
+| `content.md` | `~/Dev/tidal-echo/.flywheel/agents/nodes/content.md` |
 | `cos-lead.identity.md` (Triton) | `~/Dev/tidal-echo/.lead/tidal-echo-cos-lead/identity.md` |
 | `content-lead.identity.md` (Ariel) | `~/Dev/tidal-echo/.lead/tidal-echo-content-lead/identity.md` |
 | projects.json entry (inline below) | merge into `~/.flywheel/projects.json` |
 
-> `config.yaml` + `content-executor.md` are exactly what `setup-new-project.sh
+> `config.yaml` + `registry.yaml` + `content.md` are exactly what `setup-new-project.sh
 > tidal-echo content --team TIDE --two-layer --cos-persona Triton --dept-persona
 > Ariel` generates. The two `*.identity.md` files here are the **bespoke**
 > tidal-echo Leads (richer than the script's skeleton) — use these.

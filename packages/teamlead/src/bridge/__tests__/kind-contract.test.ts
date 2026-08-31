@@ -72,6 +72,7 @@ const QUOTA_GUARD_KINDS = ["quota_guard_bypassed"] as const;
 
 const REVIEW_GOVERNANCE_KINDS = [
 	"review_advisory_pass",
+	"review_job_failed",
 	"review_ruling_recorded",
 	"review_ruling_disputed",
 	"review_ruling_notify_failed",
@@ -104,6 +105,13 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 				`missing contract for ${kind}`,
 			).toBeDefined();
 		}
+	});
+
+	it("keeps review job failures owned by the human issue-progress lane", () => {
+		expect(KIND_CONTRACTS.review_job_failed).toEqual({
+			owner: "founder_direct",
+			arc: "human_by_design",
+		});
 	});
 
 	it("the fleet kinds are in the union with the planned contracts", () => {
@@ -185,6 +193,37 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
+	it("FLY-2118 gives orphan panes one deterministic Claw-owned alert contract", () => {
+		expect(ALERT_EVENT_TYPES).toContain("orphan_pane");
+		expect(
+			(KIND_CONTRACTS as Record<string, KindContract>).orphan_pane,
+		).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+		const registry = ownerRegistryFromEnv({
+			FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID: "111111111111111111",
+			FLYWHEEL_INFRA_BOT_USER_ID: "222222222222222222",
+		} as NodeJS.ProcessEnv);
+		expect(
+			resolveTicketOwner(
+				"orphan_pane" as Parameters<typeof resolveTicketOwner>[0],
+				"unknown",
+				registry,
+			),
+		).toEqual({
+			kind: "infra_bot",
+			side: "claude",
+			userId: "111111111111111111",
+		});
+		expect(titleFor("orphan_pane" as Parameters<typeof titleFor>[0])).toBe(
+			"Runner pane has no owner",
+		);
+		expect(
+			bodyFor("orphan_pane" as Parameters<typeof bodyFor>[0], "ignored"),
+		).toContain("owner index");
+	});
+
 	it("FLY-1364 cmux/rescue kinds have the exact approved contracts", () => {
 		for (const kind of CMUX_SYNC_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
@@ -212,7 +251,7 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
 			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: "claude",
+				owner: kind === "review_job_failed" ? "founder_direct" : "claude",
 				arc: "human_by_design",
 			});
 		}
@@ -404,6 +443,26 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 		// in the body and the dedup signature, not by a second kind.
 		expect(titleFor("host_voucher_incident")).toMatch(/voucher/i);
 		expect(bodyFor("host_voucher_incident", "")).toMatch(/ecosystemanalyticsd/);
+	});
+
+	it("FLY-2033 meeting_notes_failed is Claude-owned on both faces with explicit recovery", () => {
+		expect(ALERT_EVENT_TYPES).toContain("meeting_notes_failed");
+		expect(shellAllowlist()).toContain("meeting_notes_failed");
+		expect(KIND_CONTRACTS.meeting_notes_failed).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+			remediationRef:
+				"按 signature 里的 failureClass 定位(schema=raya 存档损坏 / identity=issue 歧义 / linear·bridge=依赖不可用 / config=preflight);恢复依赖健康即可,幂等 tick 自行收敛,无需手工补状态",
+		});
+		const owner = resolveTicketOwner(
+			"meeting_notes_failed",
+			"codex",
+			ownerRegistryFromEnv({
+				FLYWHEEL_CLAUDE_INFRA_BOT_USER_ID: "111111111111111111",
+				FLYWHEEL_INFRA_BOT_USER_ID: "222222222222222222",
+			} as NodeJS.ProcessEnv),
+		);
+		expect(owner).toMatchObject({ kind: "infra_bot", side: "claude" });
 	});
 
 	it("FLY-1501 restart-storm hold is present on both faces with a human investigation contract", () => {

@@ -253,7 +253,7 @@ describe("existing management writer adapters", () => {
 		]);
 	});
 
-	it("runner and flag snapshot providers expose live managed targets", () => {
+	it("runner and flag snapshot providers expose store-only managed targets", () => {
 		const runnerProvider = createManagementRunnerProvider({
 			projects,
 			projectConfigs: configs,
@@ -265,7 +265,7 @@ describe("existing management writer adapters", () => {
 			effort: "high",
 		});
 
-		const env = { FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0" };
+		const env = { FLYWHEEL_LOOP_PROFILER: "0" };
 		const flagProvider = createManagementFlagProvider({
 			views: () => resolveAllFlags({ env, projectConfigs: configs() }),
 			revision: () => "registry:flags-v1",
@@ -273,11 +273,14 @@ describe("existing management writer adapters", () => {
 		});
 		const flags = flagProvider.read().fragment.flags ?? [];
 		expect(
-			flags.find((flag) => flag.name === "founder_review_orphan_monitor")
-				?.global,
+			flags.find((flag) => flag.name === "loop_profiler")?.global,
 		).toMatchObject({
 			current: false,
-			writeCapability: { writable: true, consequence: "hot" },
+			writeCapability: {
+				writable: false,
+				consequence: "governance-readonly",
+				reason: expect.stringContaining("SQLite flag store"),
+			},
 		});
 		expect(
 			flags.find((flag) => flag.name === "doc_flow")?.projectOverrides[0]?.value
@@ -308,6 +311,64 @@ describe("existing management writer adapters", () => {
 			consequence: "governance-readonly",
 		});
 		expect(value?.writeCapability.reason).toContain("SQLite flag store");
+	});
+
+	it("reads project flag global/project cells from the scoped DB overlay and points writes to CLI", () => {
+		const base = resolveAllFlags({ env: {}, projectConfigs: configs() }).find(
+			(flag) => flag.name === "doc_flow",
+		);
+		if (!base) throw new Error("missing doc_flow");
+		const read = (
+			rows: Array<{ scope: string; raw: string; value: boolean }>,
+			projectNames: string[] = ["flywheel", "geoforge3d"],
+		) =>
+			createManagementFlagProvider({
+				views: () => [
+					{
+						...base,
+						projectStoreManaged: true,
+						storeManaged: false,
+						scopedStore: { rows },
+						effectiveByProject: [
+							{
+								projectName: "flywheel",
+								value: false,
+								via: "project_row",
+							},
+							{
+								projectName: "geoforge3d",
+								value: true,
+								via: "star_row",
+							},
+						],
+					},
+				],
+				revision: () => "store:scoped",
+				projectNames: () => projectNames,
+			}).read().fragment.flags?.[0];
+
+		const withStar = read([
+			{ scope: "*", raw: "1", value: true },
+			{ scope: "flywheel", raw: "0", value: false },
+		]);
+		expect(withStar?.global.current).toBe(true);
+		expect(withStar?.projectOverrides).toMatchObject([
+			{ projectName: "flywheel", value: { current: false } },
+			{ projectName: "geoforge3d", value: { current: true } },
+		]);
+		expect(withStar?.global.writeCapability).toMatchObject({ writable: false });
+		expect(withStar?.global.writeCapability.reason).toContain(
+			"flywheel-comm feature-flags set --project",
+		);
+		expect(
+			withStar?.projectOverrides[0]?.value.writeCapability.reason,
+		).toContain("flywheel-comm feature-flags set --project");
+
+		expect(
+			read([{ scope: "flywheel", raw: "0", value: false }])?.global.current,
+		).toBe(base.default);
+		expect(read([], [])?.projectOverrides).toEqual([]);
+		expect(read([], [])?.global.current).toBe(base.default);
 	});
 
 	it("management flag values use displayEffective and disable writes on source divergence", () => {
@@ -373,60 +434,6 @@ describe("existing management writer adapters", () => {
 		},
 	);
 
-	it("direct flag delegates the safe env writer, refreshes live state, and rejects unsupported scopes", async () => {
-		const env: Record<string, string | undefined> = {};
-		let envFile = "KEEP=1\n";
-		const views = () => resolveAllFlags({ env, projectConfigs: configs() });
-		const { flag } = createExistingManagementWriters({
-			projects,
-			projectsRevision: () => PROJECTS_REVISION,
-			projectConfigs: configs,
-			readProjectConfig: () => CONFIG,
-			readEnvFile: () => envFile,
-			writeEnvFile: (_path, content) => {
-				envFile = content;
-			},
-			envPath: "/server/.flywheel/.env",
-			env,
-			flagViews: views,
-			flagLock: (fn) => fn(),
-			applyLeadCanonical: async () => ({ status: "applied" }),
-		});
-		const targetId = buildTargetId("flag", [
-			"founder_review_orphan_monitor",
-			"global",
-		]);
-		const target = await flag.resolve(targetId);
-		expect(target?.currentValue).toBe(true);
-		const ready = await flag.preflight(target!, false, target!.sourceRevision);
-		if (!ready.ok) throw new Error(ready.reason);
-		expect(await flag.apply(ready.change)).toMatchObject({ status: "applied" });
-		expect(env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBe("0");
-		expect((await flag.resolve(targetId))?.currentValue).toBe(false);
-
-		const projectFlag = buildTargetId("flag", [
-			"doc_flow",
-			"project",
-			"flywheel",
-		]);
-		const projectTarget = await flag.resolve(projectFlag);
-		expect(
-			await flag.preflight(
-				projectTarget!,
-				false,
-				projectTarget!.sourceRevision,
-			),
-		).toMatchObject({ ok: false, code: "readonly_registry_policy" });
-
-		const globalOnlyOverride = buildTargetId("flag", [
-			"founder_review_orphan_monitor",
-			"project",
-			"flywheel",
-		]);
-		const globalOnlyTarget = await flag.resolve(globalOnlyOverride);
-		expect(globalOnlyTarget?.writeCapability.reason).toMatch(/global/i);
-	});
-
 	it("writer preflight independently refuses every store-managed flag", async () => {
 		const { flag } = createExistingManagementWriters({
 			projects,
@@ -454,7 +461,9 @@ describe("existing management writer adapters", () => {
 					? spec.enumValues?.find((value) => value !== spec.default)
 					: spec.valueKind === "bool"
 						? !spec.default
-						: undefined;
+						: spec.valueKind === "value"
+							? String(spec.default)
+							: undefined;
 			expect(desired, `${name} needs a management target`).toBeDefined();
 			if (desired === undefined) continue;
 			expect(
@@ -466,49 +475,6 @@ describe("existing management writer adapters", () => {
 				reason: expect.stringContaining("SQLite flag store"),
 			});
 		}
-	});
-
-	it("direct flag rejects an out-of-band .env edit that lands after apply revalidation", async () => {
-		const env: Record<string, string | undefined> = {};
-		const initial = "KEEP=1\n";
-		const edited = "KEEP=2\n";
-		let reads = 0;
-		let persisted = initial;
-		const { flag } = createExistingManagementWriters({
-			projects,
-			projectsRevision: () => PROJECTS_REVISION,
-			projectConfigs: configs,
-			readProjectConfig: () => CONFIG,
-			readEnvFile: () => {
-				reads += 1;
-				// Initial resolve and apply-time re-resolve both see the reviewed file.
-				// The next read models a concurrent edit after preflight returns.
-				if (reads >= 3) persisted = edited;
-				return persisted;
-			},
-			writeEnvFile: (_path, content) => {
-				persisted = content;
-			},
-			envPath: "/server/.flywheel/.env",
-			env,
-			flagViews: () => resolveAllFlags({ env, projectConfigs: configs() }),
-			flagLock: (fn) => fn(),
-			applyLeadCanonical: async () => ({ status: "applied" }),
-		});
-		const targetId = buildTargetId("flag", [
-			"founder_review_orphan_monitor",
-			"global",
-		]);
-		const target = await flag.resolve(targetId);
-		const ready = await flag.preflight(target!, false, target!.sourceRevision);
-		if (!ready.ok) throw new Error(ready.reason);
-
-		expect(await flag.apply(ready.change)).toMatchObject({
-			status: "rejected",
-			reason: expect.stringMatching(/changed|stale/i),
-		});
-		expect(persisted).toBe(edited);
-		expect(env.FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR).toBeUndefined();
 	});
 
 	it("ignores client-only authority fields because desired values are closed-shape", async () => {
@@ -540,7 +506,7 @@ describe("existing management writer adapters", () => {
 		expect(result).toMatchObject({ ok: false, code: "invalid_desired_value" });
 	});
 
-	it("groups shared-authority changes into one Fleet batch and rebases sequential .env writes", async () => {
+	it("groups shared-authority changes into one Fleet batch", async () => {
 		const multiProjects = () => {
 			const value = projects();
 			value[0]!.leads.push({
@@ -552,18 +518,13 @@ describe("existing management writer adapters", () => {
 			return value;
 		};
 		const fleetBatches: unknown[] = [];
-		let envFile = "";
 		const env: Record<string, string | undefined> = {};
 		const writers = createExistingManagementWriters({
 			projects: multiProjects,
 			projectsRevision: () => PROJECTS_REVISION,
 			projectConfigs: configs,
 			readProjectConfig: () => CONFIG,
-			readEnvFile: () => envFile,
-			writeEnvFile: (_path, content) => {
-				envFile = content;
-			},
-			flagLock: (fn) => fn(),
+			readEnvFile: () => "",
 			envPath: "/server/.flywheel/.env",
 			env,
 			flagViews: () => resolveAllFlags({ env, projectConfigs: configs() }),
@@ -593,27 +554,5 @@ describe("existing management writer adapters", () => {
 		expect(leadResults).toHaveLength(2);
 		expect(fleetBatches).toHaveLength(1);
 		expect(fleetBatches[0]).toMatchObject({ changes: [{}, {}] });
-
-		const flagChanges = [];
-		for (const name of ["founder_review_orphan_monitor", "mailbox_queue"]) {
-			const target = await writers.flag.resolve(
-				buildTargetId("flag", [name, "global"]),
-			);
-			const checked = await writers.flag.preflight(
-				target!,
-				false,
-				target!.sourceRevision,
-			);
-			if (!checked.ok) throw new Error(checked.reason);
-			flagChanges.push(checked.change);
-		}
-		expect(await writers.flag.applyGroup!(flagChanges)).toEqual([
-			expect.objectContaining({ status: "applied" }),
-			expect.objectContaining({ status: "applied" }),
-		]);
-		expect(env).toMatchObject({
-			FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR: "0",
-			FLYWHEEL_MAILBOX_QUEUE: "0",
-		});
 	});
 });

@@ -141,9 +141,32 @@ async function buildPrompt(
 	return call.appendSystemPrompt ?? "";
 }
 
+function expectVerdictLeadReport(input: {
+	prompt: string;
+	executionId: string;
+	status: "pass" | "fail" | "pass|fail";
+	label: "workflow verdict" | "QA verdict";
+	summary: string;
+	leadId?: string;
+}): void {
+	const verdict = `qa-result --exec-id ${input.executionId} --target-exec ${input.executionId} --status ${input.status} --summary "${input.summary}"`;
+	const verdictIndex = input.prompt.indexOf(verdict);
+	expect(verdictIndex).toBeGreaterThanOrEqual(0);
+	const commandEnd = input.prompt.indexOf("`", verdictIndex);
+	const leadId = input.leadId ?? "flywheel-eng-lead";
+	const report = `ask --lead ${leadId} --exec-id ${input.executionId} --report "DONE: ${input.label} recorded; status=${input.status}; evidence=${input.summary}; blocking priority=<none|priority>"`;
+	const reportIndex = input.prompt.indexOf(report, verdictIndex);
+	expect(reportIndex).toBeGreaterThan(verdictIndex);
+	expect(reportIndex).toBeLessThan(commandEnd);
+	expect(input.prompt.slice(verdictIndex, reportIndex)).toContain(" && node ");
+	expect(input.prompt).toContain("retry only the `ask --report` half");
+	expect(input.prompt).toContain("exactly the same report message");
+}
+
 describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 	it("PASS chains into the APPROVE GATE flow — the QA phase is the ship executor", async () => {
 		const p = await buildPrompt({
+			executionId: "exec-qa-pass",
 			sessionRole: "qa",
 			shareParentBranch: true,
 		});
@@ -153,6 +176,16 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		expect(p).toContain("--status pass");
 		expect(p).toContain("APPROVE GATE flow below");
 		expect(p).toContain("ship executor");
+		expectVerdictLeadReport({
+			prompt: p,
+			executionId: "exec-qa-pass",
+			status: "pass",
+			label: "QA verdict",
+			summary: "<what you tested + verdict>",
+		});
+		expect(p.indexOf("DONE: QA verdict recorded; status=pass")).toBeLessThan(
+			p.indexOf("APPROVE GATE flow below"),
+		);
 		// the standard APPROVE GATE block itself is present for the QA phase
 		expect(p).toContain("APPROVE GATE (MANDATORY");
 	});
@@ -162,6 +195,7 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		// RE-TEST wake (the implementer stays alive to fix), NOT the old
 		// close-and-respawn "Implement-fix phase" / "Do NOT park for retest" text.
 		const p = await buildPrompt({
+			executionId: "exec-qa-fail",
 			sessionRole: "qa",
 			shareParentBranch: true,
 		});
@@ -171,6 +205,16 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		expect(p).toContain("park --exec-id");
 		expect(p).toContain("turn --exec-id");
 		expect(p).toContain("Do NOT run `complete`");
+		expectVerdictLeadReport({
+			prompt: p,
+			executionId: "exec-qa-fail",
+			status: "fail",
+			label: "QA verdict",
+			summary: "<exact scenario / expected-vs-actual / severity>",
+		});
+		expect(p.indexOf("DONE: QA verdict recorded; status=fail")).toBeLessThan(
+			p.indexOf("park --exec-id exec-qa-fail"),
+		);
 		// the legacy close-and-respawn wording is gone under keep-alive
 		expect(p).not.toContain("Do NOT park for retest");
 		expect(p).not.toContain("the pipeline closes this session");
@@ -191,6 +235,7 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 
 	it("Codex QA FAIL parks after qa-result and replays stable wake ids safely", async () => {
 		const p = await buildPrompt({
+			executionId: "exec-codex-qa-fail",
 			runnerBackend: "codex-tmux",
 			sessionRole: "qa",
 			shareParentBranch: true,
@@ -201,6 +246,81 @@ describe("Blueprint QA-phase PASS/FAIL sequencing (FLY-859)", () => {
 		expect(park).toBeGreaterThan(verdict);
 		expect(p).toContain("[phase-wake <id>]");
 		expect(p).toContain("do not repeat external or worktree side effects");
+		expectVerdictLeadReport({
+			prompt: p,
+			executionId: "exec-codex-qa-fail",
+			status: "fail",
+			label: "QA verdict",
+			summary: "<exact scenario / expected-vs-actual / severity>",
+		});
+	});
+
+	it("founder feedback kickback reports the accepted QA verdict before parking", async () => {
+		const p = await buildPrompt({
+			executionId: "exec-feedback",
+			runnerBackend: "codex-tmux",
+			sessionRole: "qa",
+			shareParentBranch: true,
+		});
+		expectVerdictLeadReport({
+			prompt: p,
+			executionId: "exec-feedback",
+			status: "fail",
+			label: "QA verdict",
+			summary: "founder feedback kickback: <summary of the requested changes>",
+		});
+		const report = p.indexOf(
+			"DONE: QA verdict recorded; status=fail; evidence=founder feedback kickback",
+		);
+		const park = p.indexOf(
+			'park --exec-id exec-feedback --reason "DAG workflow QA awaiting implement fix (founder feedback)"',
+		);
+		expect(report).toBeGreaterThanOrEqual(0);
+		expect(park).toBeGreaterThan(report);
+	});
+
+	it("generalized credential verdict uses the workflow label and degrades safely without a Lead", async () => {
+		const generalized = {
+			executionId: "exec-generalized-qa",
+			projectName: "flywheel",
+			generalizedExecutionContext: {
+				runId: "run-generalized-qa",
+				nodeId: "qa",
+				attempt: 1,
+				snapshotDigest: "snapshot-generalized-qa",
+			},
+			workflowCapabilities: {
+				shared_branch_writer: false,
+				creates_pr: false,
+				can_ship: false,
+				can_land: false,
+				produces_output: false,
+				completion_route: "needs_review",
+			},
+			workflowAgentContent: "Verify the bounded workflow node.",
+			workflowSubmissionCredential: "submission-ticket",
+			workflowSubmissionExpected: true,
+		};
+		const withLead = await buildPrompt(generalized);
+		expectVerdictLeadReport({
+			prompt: withLead,
+			executionId: "exec-generalized-qa",
+			status: "pass|fail",
+			label: "workflow verdict",
+			summary: "<evidence and verdict>",
+		});
+
+		const withoutLead = await buildPrompt({
+			...generalized,
+			leadId: undefined,
+		});
+		expect(withoutLead).toContain(
+			'qa-result --exec-id exec-generalized-qa --target-exec exec-generalized-qa --status pass|fail --summary "<evidence and verdict>"',
+		);
+		expect(withoutLead).not.toContain("DONE: workflow verdict recorded");
+		expect(withoutLead).not.toContain("followed by its Lead report");
+		expect(withoutLead).not.toContain("retry only the `ask --report` half");
+		expect(withoutLead.match(/qa-result --exec-id/g)).toHaveLength(1);
 	});
 
 	it("Implement-fix dispatch renders the QA fix-round context", async () => {

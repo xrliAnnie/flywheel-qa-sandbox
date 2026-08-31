@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2126 · Raya 语音 529 房标准场景 — 设计</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:32px 20px 80px; }
+  h1 { font-size:26px; color:var(--navy); margin:0 0 6px; }
+  .sub { color:var(--gray); font-size:14px; margin-bottom:28px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:22px 24px; margin-bottom:14px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); }
+  .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); }
+  .card.navy { border-left-color:var(--navy); }
+  h2 { font-size:19px; color:var(--navy); margin:0 0 12px; }
+  h3 { font-size:15px; margin:18px 0 8px; }
+  p { margin:8px 0; }
+  .one-liner { font-size:17px; font-weight:600; }
+  .jargon { border-bottom:1px dotted var(--gray); }
+  .note { color:var(--gray); font-size:13px; }
+  .diagram { background:#fff; border:1px solid #e8e8ed; border-radius:10px; padding:12px; margin:14px 0; overflow-x:auto; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th,td { border:1px solid #e8e8ed; padding:7px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafc; color:var(--navy); }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f7; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; font-size:11px; font-weight:600; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.pass { background:#e8f5e9; color:#1b7a34; } .badge.fail { background:#ffebee; color:#c62828; }
+  .badge.inst { background:#fff3e0; color:#b26a00; }
+  ul { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .cmt { margin-top:16px; border-top:1px dashed #e0e0e5; padding-top:12px; }
+  .cmt label { font-size:12.5px; color:var(--gray); display:block; margin-bottom:6px; }
+  .cmt textarea { width:100%; min-height:64px; border:1px solid #d8d8dd; border-radius:8px; padding:9px 11px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .cmt textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  #summary-list { white-space:pre-wrap; font-size:13.5px; background:#fafafc; border-radius:8px; padding:14px; min-height:44px; }
+  .btn { display:inline-block; background:var(--blue); color:#fff; border:none; border-radius:8px; padding:9px 18px; font-size:14px; font-weight:600; cursor:pointer; margin-top:10px; }
+  .btn:active { opacity:.75; }
+  #copy-status { margin-left:10px; font-size:13px; color:var(--green); }
+  .kv { display:flex; flex-wrap:wrap; gap:8px 18px; font-size:13px; color:var(--gray); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2126 · 把 Raya 语音链路做成 529 房标准场景</h1>
+  <div class="sub">设计文档(founder 版)· 2026-08-28 · 上游素材:FLY-2097 两轮真机 QA + FLY-2031 隔离配方 · 已经 5 轮 Codex 独立设计评审收敛至 APPROVED(14 条意见全部吸收,其中含把「测试身份与生产 Raya 身份彻底分开」升为硬要求)</div>
+
+  <!-- §1 -->
+  <div class="card navy" data-section="s1" data-title="一句话总结">
+    <h2>1 · 一句话总结</h2>
+    <p class="one-liner">给 Raya 语音做一把「一条命令就能跑」的标准回归尺:自动拉起一个隔离的真语音进程、用合成语音进真 Discord 房间说话、由代码(不是人眼)逐项判定五个关键行为,最后产出证据包和结论文件。</p>
+    <p>「<span class="jargon">529 房</span>」是 Flywheel 的标准 QA 场景家族 —— 一批可以反复跑的自动化测试环境,用真 Discord、真进程,而不是纯模拟。本单把 Raya 语音也纳入这个家族,场景名 <code>raya-voice</code>。</p>
+    <p><b>为什么现在做</b>:FLY-2097 两轮真机 QA,每轮都要 QA 手工搭一次性的测试台架(临时改生产启动配置须你/Lead 批 15 分钟窗口、手写语音注入器、逐场人眼比对转写)。同样的活已经付了两遍,后面每个 Raya 语音 issue 的 QA 还会再付。做成标准场景后:<b>零审批、零生产接触、一条命令</b>。</p>
+    <div class="cmt"><label>对这一节的意见(自动保存在你本机)</label><textarea data-cmt="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §2 -->
+  <div class="card" data-section="s2" data-title="核心流程">
+    <h2>2 · 核心流程</h2>
+    <p>一次完整运行长这样:</p>
+    <div class="diagram"><!--SVG:d1--></div>
+    <p>最关键的一步是最前面的 <b>C0「指令腿对照」</b>:先塞一条不可能被误读的英文指令进去,看模型是不是真的收到了开场指令。这是 FLY-2097 第一轮 QA 用一整轮换来的教训 —— 那轮 5 场退出测试 0 通过,查到最后不是 Raya 行为不对,而是指令根本没送到模型手里。把这个探针做成每次运行的第一步,以后「指令腿断了」和「行为不对」永远不会再混在一起。</p>
+    <h3>单场会话的时序(以「口头退出」为例)</h3>
+    <div class="diagram"><!--SVG:d2--></div>
+    <p class="note">「<span class="jargon">TTS</span>」= 文字转语音(让机器替 QA 开口说话);「<span class="jargon">emitter</span>」= 扮演说话人的 QA 机器人,它进房播放合成语音、并记录 Raya 有没有出声回应。</p>
+    <div class="cmt"><label>对这一节的意见</label><textarea data-cmt="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §3 -->
+  <div class="card purple" data-section="s3" data-title="判据与结论模型">
+    <h2>3 · 判什么、怎么判</h2>
+    <p>六项判据,全部继承 FLY-2097 已经真机验证过的人工判法,只是把「人眼看」换成「代码判」:</p>
+    <table>
+      <tr><th>判据</th><th>怎么跑</th><th>算过的标准</th></tr>
+      <tr><td><b>C0 指令腿对照</b>(前置)</td><td>塞英文-only 指令,中文提问</td><td>回答里零中文字符;失败则整场判「仪器问题」,后面不跑</td></tr>
+      <tr><td><b>C1 口头退出</b></td><td>5 句不同措辞的退出意图,一句一场</td><td>每场都逐字说出约定句「好，退出语音模式。」并干净退出,退出时延在安静窗内(不截她的音)</td></tr>
+      <tr><td><b>C2 不误退</b></td><td>3 句意图相反 + 3 句含糊的话</td><td>0 次误退;含糊时有没有先问一句,只记录不设门槛</td></tr>
+      <tr><td><b>C3 静默窗</b></td><td>进房后 40 秒不说话</td><td>Raya 不自言自语、不乱退出</td></tr>
+      <tr><td><b>C4 委托后台</b></td><td>在工作目录放一个只有文件里才有的暗号,请它后台去读</td><td>回答里出现那个暗号 = 真的动了后台,不是编的</td></tr>
+      <tr><td><b>C5 身份自称</b></td><td>问「你是谁」</td><td>自称 Raya(FLY-2097 修复前它会自称 Codex —— 这条防退化)</td></tr>
+    </table>
+    <h3>每一场的结论只有三种</h3>
+    <div class="diagram"><!--SVG:d3--></div>
+    <p>把「仪器坏了」(<span class="badge inst">INSTRUMENT_FAIL</span>)和「产品坏了」(<span class="badge fail">FAIL</span>)分成两种结论,是这套设计的骨架:合成语音转文字天然有失误率,失误场次允许在显式预算内重跑(默认 1 次,且两次尝试都留档);但只要证据齐全、判据真的没过,<b>永不重跑</b> —— 不给「多跑几次直到变绿」留任何口子。</p>
+    <p>「证据齐全」按场次类型分别定义:交互场看三样(她说的有转写、它答了、有下行声音);静默场恰恰要求 40 秒内什么都没有,所以它的「齐全」改看存活回执(进程和连接全窗活着,<b>且</b>语音大脑真正上线的落盘回执已出现 —— 静默计时从那一刻才起算)。否则「进程根本没起来」或「大脑还在热身」都会被误判成「安静得很好」。混合结果怎么算总结论,写成了明确的真值表,不留裁量。</p>
+    <div class="cmt"><label>对这一节的意见</label><textarea data-cmt="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §4 -->
+  <div class="card" data-section="s4" data-title="结构模型">
+    <h2>4 · 东西放在哪、怎么分工</h2>
+    <div class="diagram"><!--SVG:d4--></div>
+    <p>代码分两处放,各放各的家:</p>
+    <ul>
+      <li><b>判据和编排放 raya 仓</b>(被测产品所在的仓库):判据里的约定句直接引用产品代码里的常量 —— 将来产品改了那句话,判据在编译时就跟着变,不会出现「尺子和产品各说各话」。语音相关的重依赖(Discord 语音库)也只在那个仓有。</li>
+      <li><b>flywheel 仓只放一个薄入口</b>:负责找到被测代码、递测试机器人凭据、把命令转发过去。它不含任何判据逻辑,所以两个仓之间不会各自养一套判法。</li>
+    </ul>
+    <p><b>隔离怎么保证</b>(全部继承两轮 QA 已实测的配方):测试专用的状态/日志/工作目录、Discord 房间走<b>白名单</b>(只认固定的 voice-test 测试房,其它任何房间一律拒绝启动 —— 比「拒绝生产房」的黑名单强:漏配的房间也进不去)、凭据只从生产配置文件<b>只读</b>(且强制该文件是仅本人可读的 0600 权限)。证据包落在 QA 目录,不进代码仓(里面有转写和音频)。</p>
+    <p><b>身份隔离(评审中升级为硬要求)</b>:测试语音进程<b>不用</b>生产 Raya 的 Discord 身份,而是用一个专用测试身份(可直接复用现有测试机器人池里的一只,不必新建)。原因:同一个身份在整个服务器里只能同时待在一个语音房,如果 QA 复用生产身份,哪怕开跑前查过「Raya 现在空闲」,你也可能在测试进行到一半时喊生产 Raya 进语音 —— 那一刻两边就会打架。换成专用身份后,这种打架<b>结构性不可能</b>。生产身份模式仍保留为显式声明的「危险模式」开关,只给「必须用生产身份复现某个问题」的罕见场合,并要求有人盯着。运行中若有陌生成员进测试房,照样立即中止判仪器失败。</p>
+    <div class="cmt"><label>对这一节的意见</label><textarea data-cmt="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §5 -->
+  <div class="card amber" data-section="s5" data-title="关键取舍">
+    <h2>5 · 关键取舍(含被否掉的方案)</h2>
+    <table>
+      <tr><th>决定</th><th>选了什么</th><th>放弃了什么(如实)</th></tr>
+      <tr><td>进程怎么拉起</td><td><b>直接以子进程方式启动被测语音进程</b>,不经过 macOS 的开机服务系统(<span class="jargon">launchd</span>,即系统级进程管家)</td><td>issue 原文写的是「隔离 plist/env」(plist = launchd 的服务配置文件)。我们保留了配方里全部环境隔离,只丢掉 launchd 这层壳 —— 因为它带来的 60 秒冷却窗在 FLY-2097 造过假失败,而五项判据没有一项依赖它。<b>这是对 issue 字面的一个偏离,在此明示</b>;将来若要测「文字命令唤起语音」那条链(它才真的需要 launchd),另立场景</td></tr>
+      <tr><td>要不要动生产配置</td><td><b>完全不动</b>:不改绑生产启动项,生产配置文件只读</td><td>放弃了顺带覆盖「brain→launchctl」链路的机会(FLY-2097 已真机验过那部分,收益低、风险高)</td></tr>
+      <tr><td>用谁的 Discord 身份</td><td><b>专用测试身份</b>(评审第二轮从「可选升级」升为标准要求):复用现有测试机器人池,一次性确认它有测试房的语音权限即可</td><td>生产身份模式降级为显式「危险模式」开关(要求有人在场)—— 因为「开跑前查空闲 + 出事后报警」挡不住你在测试中途唤起生产语音的并发,事后报警不配当互斥锁用</td></tr>
+      <tr><td>判据引擎</td><td>事后读证据文件的<b>纯代码判据</b></td><td>否掉「让另一个 AI 当裁判」:裁判要可审计、可单测、判错了能修;也否掉引用 Codex 底层通信日志计数当证据 —— FLY-2097 第二轮已证明那个计数不可靠</td></tr>
+      <tr><td>合成语音来源</td><td>只用 macOS 自带 TTS(零成本;FLY-2097 已实测它能让 5 场退出全过)</td><td>真人声与你的听感<b>永远不在本场景内</b> —— 自动化回归和真人验收是两回事,结论文件首行会永久标注这一点。评审中还删掉了三处「现在没人用」的通用化(外置配置文件、OpenAI TTS 分支、跨次缓存):尺子自己的零件越少,越不容易骗人</td></tr>
+      <tr><td>一次运行的成本</td><td>约 15 场会话、30–45 分钟、占一个测试语音房</td><td>没有做成定时自动跑(要常态化是另一张单);判据子集可选,不必每次全跑</td></tr>
+    </table>
+    <div class="cmt"><label>对这一节的意见</label><textarea data-cmt="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §6 -->
+  <div class="card green" data-section="s6" data-title="尺子自证">
+    <h2>6 · 这把尺子自己怎么验收</h2>
+    <p>量具出厂前先证明它能区分好坏 —— 素材现成:</p>
+    <ul>
+      <li><b>正对照</b>:在 FLY-2097 第二轮 QA 通过的那个版本上跑完整场景 → 应当全绿,且逐项结论与当时的人工 QA 一致。不一致就修尺子。</li>
+      <li><b>阴对照</b>:在第一轮 QA 失败的那个旧版本(指令腿是死的)上跑 C0 → 应当报「仪器问题:指令腿断」,而<b>不是</b>报「退出行为失败」。这一条直接证明:第一轮 QA 那种误读,在这套场景里不可能再发生。</li>
+    </ul>
+    <div class="cmt"><label>对这一节的意见</label><textarea data-cmt="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- §7 -->
+  <div class="card red" data-section="s7" data-title="诚实边界">
+    <h2>7 · 诚实边界 — 这套设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>五项语义判据 + 指令腿对照的<b>自动化回归</b>,一条命令,证据包 + 结论文件</li>
+      <li>零生产接触(结构性保证,不是靠小心)、零每次审批</li>
+    </ul>
+    <h3>不做(如实列出)</h3>
+    <ul>
+      <li><b>不顶替真人验收</b>:合成语音测不出你的听感(结束语会不会被截音),也测不出真人口音/语速下的表现</li>
+      <li><b>不覆盖文字命令唤起语音的链路</b>(slash 命令、口令、逃生梯)—— 那条链 FLY-2097 已真机验过,且需要动生产启动配置,划出本单</li>
+      <li><b>不覆盖「用嘴批 ship」</b>(需要 Bridge 审批链,依赖面完全不同)</li>
+      <li><b>不改一行 Raya 产品代码</b>:判据只读产品已经落盘的证据,不为了好测而改产品;判据里的约定句也在运行时直接读<b>被测版本</b>自己的编译产物 —— 尺子永远量的是被测对象自己的合同</li>
+      <li><b>标准路径对生产 Raya 身份零触碰</b>(结构性);只有显式打开「危险模式」开关、且有人在场时,才允许以生产身份跑 —— 那条路径上的风险靠空闲证明 + 守卫围住,如实标注为运行时防线而非结构性排除</li>
+      <li><b>模型行为天然有波动</b>:场景是回归尺不是数学证明;红了触发人工复判(证据包都在),绿了也只代表「这次这些场景过了」</li>
+      <li><b>一个排序依赖交 Lead 定</b>:语音注入器目前在 FLY-2031 分支上,本单实施要么排在它合入之后、要么把注入器先行落主干 —— 两种排法不改本设计的任何接口</li>
+    </ul>
+    <div class="cmt"><label>对这一节的意见</label><textarea data-cmt="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <!-- 意见汇总 -->
+  <div class="card navy" data-section="sx" data-title="意见汇总">
+    <h2>意见汇总</h2>
+    <p class="note">下面实时汇总你在各节写下的意见(只存在你本机浏览器里)。点按钮复制全部,贴回给 Lead 即可。</p>
+    <div id="summary-list">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all" type="button">复制全部意见</button><span id="copy-status"></span>
+  </div>
+
+  <div class="kv">
+    <span>Issue: FLY-2126</span><span>文档: engineering/doc/FLY-2126-raya-voice-529-scenario/</span><span>图均为本地 mmdc 预渲染 SVG,零外部请求</span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2126";
+  var PREFIX = "fly2126-cmt:" + location.pathname + ":";
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) { /* storage unavailable */ } }
+  function sectionTitle(id) {
+    var el = document.querySelector('[data-section="' + id + '"]');
+    return el ? (el.getAttribute("data-title") || id) : id;
+  }
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-cmt]"));
+  function collect() {
+    var parts = [];
+    areas.forEach(function (ta) {
+      var v = ta.value.trim();
+      if (v) parts.push("■ " + sectionTitle(ta.getAttribute("data-cmt")) + "\n" + v);
+    });
+    return parts;
+  }
+  var summaryEl = document.getElementById("summary-list");
+  var chunkArea = document.getElementById("chunk-area");
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var chunks = [];
+    var body = full.slice(MARKER.length).replace(/^\n/, "");
+    var pieces = body.split("\n\n");
+    var cur = "";
+    pieces.forEach(function (p) {
+      var candidate = cur ? cur + "\n\n" + p : p;
+      if ((MARKER + "\n" + candidate).length > 1800 && cur) {
+        chunks.push(MARKER + "\n" + cur);
+        cur = p;
+      } else {
+        cur = candidate;
+      }
+    });
+    if (cur) chunks.push(MARKER + "\n" + cur);
+    return chunks;
+  }
+  function render() {
+    var parts = collect();
+    summaryEl.textContent = parts.length ? parts.join("\n\n") : "(还没有意见)";
+    chunkArea.textContent = "";
+    if (parts.length) {
+      var full = MARKER + "\n" + parts.join("\n\n");
+      var chunks = chunkText(full);
+      if (chunks.length > 1) {
+        var note = document.createElement("p");
+        note.className = "note";
+        note.textContent = "意见较长,已拆成 " + chunks.length + " 段,每段单独复制:";
+        chunkArea.appendChild(note);
+        chunks.forEach(function (c, i) {
+          var b = document.createElement("button");
+          b.className = "btn";
+          b.type = "button";
+          b.textContent = "复制第 " + (i + 1) + " 段";
+          b.addEventListener("click", function () { copyText(c, b); });
+          chunkArea.appendChild(b);
+          chunkArea.appendChild(document.createTextNode(" "));
+        });
+      }
+    }
+  }
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+  var statusEl = document.getElementById("copy-status");
+  function flash(msg) {
+    statusEl.textContent = msg;
+    setTimeout(function () { statusEl.textContent = ""; }, 2500);
+  }
+  function copyText(text, _btn) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flash("已复制 ✓"); },
+        function () { flash(fallbackCopy(text) ? "已复制 ✓" : "复制失败,请手动选取"); }
+      );
+    } else {
+      flash(fallbackCopy(text) ? "已复制 ✓" : "复制失败,请手动选取");
+    }
+  }
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var parts = collect();
+    var full = MARKER + "\n" + (parts.length ? parts.join("\n\n") : "(无意见)");
+    copyText(full, null);
+  });
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-cmt");
+    ta.value = lsGet(key);
+    ta.addEventListener("input", function () { lsSet(key, ta.value); render(); });
+  });
+  render();
+})();
+</script>
+</body>
+</html>

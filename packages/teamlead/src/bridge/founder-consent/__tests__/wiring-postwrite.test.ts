@@ -48,7 +48,9 @@ const origCfg = process.env.CLAUDE_CONFIG_DIR;
 const origBackend = process.env.FLYWHEEL_COMM_BACKEND;
 const origAgent = process.env.FLYWHEEL_AGENT_BACKEND;
 const origProjectsFile = process.env.FLYWHEEL_PROJECTS_FILE;
+const origStateDir = process.env.FLYWHEEL_STATE_DIR;
 const origLeaseMode = process.env.FLYWHEEL_LEAD_LEASE_MODE;
+const origHome = process.env.HOME;
 
 const inboxPath = () => {
 	const { agentName, teamName } = deriveRunnerMailboxIdentity(EXEC, LEAD);
@@ -99,7 +101,9 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 			leadId: LEAD,
 		});
 		identityDigest = identity.identityDigest;
+		process.env.HOME = identity.env.HOME;
 		process.env.FLYWHEEL_PROJECTS_FILE = identity.env.FLYWHEEL_PROJECTS_FILE;
+		process.env.FLYWHEEL_STATE_DIR = identity.env.FLYWHEEL_STATE_DIR;
 		process.env.FLYWHEEL_LEAD_LEASE_MODE = "off";
 		process.env.CLAUDE_CONFIG_DIR = join(dir, "claude-config");
 		delete process.env.FLYWHEEL_COMM_BACKEND;
@@ -170,9 +174,13 @@ describe("wiring onResponseWritten (FLY-191 Phase 2)", () => {
 		if (origProjectsFile === undefined)
 			delete process.env.FLYWHEEL_PROJECTS_FILE;
 		else process.env.FLYWHEEL_PROJECTS_FILE = origProjectsFile;
+		if (origStateDir === undefined) delete process.env.FLYWHEEL_STATE_DIR;
+		else process.env.FLYWHEEL_STATE_DIR = origStateDir;
 		if (origLeaseMode === undefined)
 			delete process.env.FLYWHEEL_LEAD_LEASE_MODE;
 		else process.env.FLYWHEEL_LEAD_LEASE_MODE = origLeaseMode;
+		if (origHome === undefined) delete process.env.HOME;
+		else process.env.HOME = origHome;
 		vi.restoreAllMocks();
 	});
 

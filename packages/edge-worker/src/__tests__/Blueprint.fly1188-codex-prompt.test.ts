@@ -26,6 +26,7 @@ import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
+import { resolvedTestAgent } from "./agent-dispatch-fixtures.js";
 
 const BANNED_IN_CODEX_PROMPT = [
 	"SendMessage",
@@ -124,7 +125,7 @@ afterEach(() => {
 async function buildPrompt(opts: {
 	ctxOverrides?: Partial<BlueprintContext>;
 	worktreePath?: string;
-	checkpointConfig?: Record<string, { enabled: boolean }>;
+	checkpointConfig?: Record<string, { enabled?: boolean }>;
 }): Promise<string> {
 	const adapter = makeMockAdapter();
 	const blueprint = new Blueprint(
@@ -274,20 +275,21 @@ describe("FLY-1188 M2 — role-file ENVIRONMENT TRANSLATION header (codex only)"
 		const adapter = makeMockAdapter();
 		const dispatcher = {
 			dispatch: vi.fn(() => ({
-				agentConfig: {
-					agent_file: "role.md",
-					// keep the mock minimal — content injected via readAgentFile
-				},
-				agentFileRoot: "project",
+				agentConfig: resolvedTestAgent({
+					nodeName: "role",
+					projectRoot: wt,
+					relativeFile: "role.md",
+				}),
 			})),
 			dispatchByName: vi.fn(),
 		};
 		const wt = makeRealWorktree();
 		cleanups.push(wt);
-		// place the role file inside the worktree (agentFileRoot "project" → cwd)
+		// Place the role file inside the registry-owned agent root.
 		const { writeFileSync } = await import("node:fs");
+		mkdirSync(join(wt, ".flywheel", "agents"), { recursive: true });
 		writeFileSync(
-			join(wt, "role.md"),
+			join(wt, ".flywheel", "agents", "role.md"),
 			"Use the Skill tool and SendMessage as usual.",
 		);
 		const blueprint = new Blueprint(
@@ -399,6 +401,17 @@ describe("FLY-1257 M1-a — resident Codex gate-wait law", () => {
 		const prompt = await buildPrompt({ ctxOverrides: {} });
 		expect(prompt).not.toContain(WAIT_LAW);
 		expect(prompt).not.toContain("fail-open timeout means continue");
+	});
+
+	it("FLY-2103 treats a declared checkpoint as enabled regardless of a legacy false value", async () => {
+		const wt = makeRealWorktree();
+		cleanups.push(wt);
+		const prompt = await buildPrompt({
+			worktreePath: wt,
+			ctxOverrides: { runnerBackend: "codex-tmux" },
+			checkpointConfig: { security_review: { enabled: false } },
+		});
+		expect(prompt).toContain("SECURITY_REVIEW GATE");
 	});
 });
 

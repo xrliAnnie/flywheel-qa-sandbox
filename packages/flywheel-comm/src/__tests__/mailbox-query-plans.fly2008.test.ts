@@ -172,6 +172,38 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 		expectUses(pendingQuestions, "mailbox_questions_by_recipient");
 		expectNoBareMailboxScan(pendingQuestions);
 
+		const pendingBlockingGateByRunner = plan(
+			db,
+			`SELECT COUNT(*) as cnt FROM mailbox_message_projection q
+			 WHERE q.from_agent = ? AND q.type = 'question'
+			   AND q.checkpoint IS NOT NULL
+			   AND NOT EXISTS (
+			     SELECT 1 FROM mailbox_message_projection r
+			      WHERE r.parent_id = q.id AND r.type = 'response'
+			   )
+			   AND q.relay_state != 'terminal_disposed'`,
+			"runner-a",
+		);
+		expectUses(pendingBlockingGateByRunner, "mailbox_questions_by_sender");
+		expectNoBareMailboxScan(pendingBlockingGateByRunner);
+
+		const openGatesByRunner = plan(
+			db,
+			`SELECT q.* FROM mailbox_message_projection q
+			 WHERE q.from_agent = ? AND q.type = 'question'
+			   AND q.checkpoint IS NOT NULL
+			   AND q.relay_state != 'terminal_disposed'
+			   AND q.superseded_at IS NULL
+			   AND NOT EXISTS (
+			     SELECT 1 FROM mailbox_message_projection response
+			      WHERE response.parent_id = q.id AND response.type = 'response'
+			   )
+			 ORDER BY q.created_at ASC, q.id ASC`,
+			"runner-a",
+		);
+		expectUses(openGatesByRunner, "mailbox_questions_by_sender");
+		expectNoBareMailboxScan(openGatesByRunner);
+
 		const deliverableForLead = plan(
 			db,
 			`SELECT COUNT(*) AS count FROM mailbox
@@ -247,7 +279,10 @@ describe("FLY-2008 mailbox hot-path query plans", () => {
 			"utf8",
 		);
 		const bridgeStart = source.indexOf("\tclaimBridgeProtocol(");
-		const bridgeEnd = source.indexOf("\n\tclaimRunner(", bridgeStart);
+		const bridgeEnd = source.indexOf(
+			"\n\trecordRunnerBatchDeliveryFailure(",
+			bridgeStart,
+		);
 		const bridgeSource = source.slice(bridgeStart, bridgeEnd);
 		expect(bridgeSource).toContain("state = 'QUEUED'");
 		expect(bridgeSource).toContain("state = 'LEASED'");

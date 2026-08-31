@@ -41,13 +41,11 @@ import {
 	writeGateResponseAndRunPostWrite,
 } from "./write-gate-response.js";
 
-const DEFAULT_TTL_MS = 45 * 60_000; // §8: FLYWHEEL_DEFERRED_APPROVAL_TTL_MS
+// FLY-2101: founder 2026-08-27 v4 fixed the former runtime flag at 45 minutes.
+const DEFERRED_APPROVAL_TTL_MS = 45 * 60_000;
 
-export function deferredApprovalTtlMs(
-	env: Record<string, string | undefined> = process.env,
-): number {
-	const n = Number.parseInt(env.FLYWHEEL_DEFERRED_APPROVAL_TTL_MS ?? "", 10);
-	return Number.isFinite(n) && n > 0 ? n : DEFAULT_TTL_MS;
+export function deferredApprovalTtlMs(): number {
+	return DEFERRED_APPROVAL_TTL_MS;
 }
 
 // ── founder-facing texts (人话; exported for tests) ─────────────────────────
@@ -199,14 +197,12 @@ export function makeDeferralSupport(args: {
 	store: DeferralCaptureStore;
 	holdReasonFor(executionId: string): ReviewHoldReason | null;
 	ctx: { issueId: string; threadId: string; projectName: string };
-	env?: Record<string, string | undefined>;
 }): DeferralSupport {
-	const env = args.env ?? process.env;
 	const { store, ctx } = args;
 	return {
 		holdReason: (executionId) => args.holdReasonFor(executionId),
 		defer: (a) => {
-			const ttlMs = deferredApprovalTtlMs(env);
+			const ttlMs = deferredApprovalTtlMs();
 			const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
 			return store.deferFounderApproval({
 				questionId: a.questionId,
@@ -305,7 +301,7 @@ export function makeDeferralSupport(args: {
 				authorUserId: a.authorUserId,
 				founderIdAtCapture: a.founderIdAtCapture,
 				founderRework: a.founderRework,
-				ttlSeconds: Math.floor(deferredApprovalTtlMs(env) / 1000),
+				ttlSeconds: Math.floor(deferredApprovalTtlMs() / 1000),
 				audit: {
 					event_id: `founder-approval-parked-${a.questionId}-${a.msgId}`,
 					execution_id: a.executionId,
@@ -795,10 +791,7 @@ async function finalizeConsume(
 	if (!consumed) return;
 
 	const botToken = deps.resolveBotToken(row);
-	if (
-		botToken &&
-		(deps.env ?? process.env).FLYWHEEL_FOUNDER_APPROVAL_ACK !== "0"
-	) {
+	if (botToken) {
 		const markerFresh = deps.store.insertEvent({
 			event_id: `founder-ack-${row.msg_id}-bound`,
 			execution_id: row.execution_id,

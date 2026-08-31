@@ -208,6 +208,16 @@ describe("resolveHuddleBridgeConfig", () => {
 		});
 	});
 
+	it("ignores retired huddle media env overlays", () => {
+		const cfg = resolveHuddleBridgeConfig([project()], {
+			...env,
+			FLYWHEEL_HUDDLE_EARCON: "/tmp/earcon.mp3",
+			FLYWHEEL_HUDDLE_FILLER: "/tmp/filler.mp3",
+		});
+		expect(cfg.earconPath).toBeUndefined();
+		expect(cfg.fillerPath).toBeUndefined();
+	});
+
 	it("fails when NO project has a huddle block (with fix guidance)", () => {
 		expect(() =>
 			resolveHuddleBridgeConfig([project({ huddle: undefined })], env),

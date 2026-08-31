@@ -25,7 +25,7 @@ const session = {
 	execution_id: "implement-exec",
 	issue_id: "FLY-1423",
 	project_name: "flywheel",
-	status: "completed",
+	status: "running",
 	chat_thread_role: "implement",
 	tmux_session: "flywheel:implement-exec",
 	worktree_path: "/tmp/flywheel-FLY-1423",
@@ -167,6 +167,7 @@ function makeHarness(input: {
 						: "pending",
 			execution_id: "implement-exec",
 		})),
+		hasUnlaunchedWorkflowRollbackFact: vi.fn(() => false),
 		claimWorkflowReworkDelivery: vi.fn((claim) => {
 			if (delivery.owner_id && delivery.owner_id !== claim.ownerId) {
 				return { ok: false as const, reason: "delivery_busy" };
@@ -462,6 +463,34 @@ describe("WorkflowReworkCoordinator", () => {
 		expect(h.effects.wakeActor).not.toHaveBeenCalled();
 	});
 
+	it("short-circuits durable terminal and rollback evidence to replacement", async () => {
+		const terminal = makeHarness({ registered: "alive" });
+		terminal.effects.getActorSession.mockReturnValue({
+			...session,
+			status: "completed",
+		});
+		await expect(
+			terminal.coordinator.reconcile("rework-1"),
+		).resolves.toMatchObject({
+			kind: "replacement_pending",
+			executionId: "implement-exec",
+		});
+		expect(terminal.effects.probeRegistered).not.toHaveBeenCalled();
+
+		const rolledBack = makeHarness({ registered: "alive" });
+		rolledBack.effects.getActorSession.mockReturnValue(undefined);
+		vi.mocked(
+			rolledBack.store.hasUnlaunchedWorkflowRollbackFact,
+		).mockReturnValue(true);
+		await expect(
+			rolledBack.coordinator.reconcile("rework-1"),
+		).resolves.toMatchObject({
+			kind: "replacement_pending",
+			executionId: "implement-exec",
+		});
+		expect(rolledBack.effects.probeRegistered).not.toHaveBeenCalled();
+	});
+
 	it("owns post-ACK liveness without replaying TURN or wake", async () => {
 		const h = makeHarness({
 			registered: "alive",
@@ -680,7 +709,7 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 	});
 
-	it("backs off a missing persisted target before handing it to pane-loss recovery", async () => {
+	it("short-circuits a terminal actor with a missing persisted target to replacement", async () => {
 		const h = makeHarness({ registered: "absent" });
 		h.effects.getActorSession.mockReturnValue({
 			...session,
@@ -692,14 +721,22 @@ describe("WorkflowReworkCoordinator", () => {
 		});
 
 		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
+			kind: "replacement_pending",
+			reason: "actor_session_terminal:terminated",
+		});
+		expect(h.store.settleWorkflowReworkFailure).not.toHaveBeenCalled();
+	});
+
+	it("backs off when the actor session row is entirely missing", async () => {
+		const h = makeHarness({ registered: "absent" });
+		h.effects.getActorSession.mockReturnValue(undefined);
+
+		await expect(h.coordinator.reconcile("rework-1")).resolves.toMatchObject({
 			kind: "retryable",
-			reason: "persisted_target_missing",
+			reason: "actor_session_missing",
 		});
 		expect(h.store.settleWorkflowReworkFailure).toHaveBeenCalledWith(
-			expect.objectContaining({
-				reason: "persisted_target_missing",
-				onExhausted: "handoff_held_pane_loss",
-			}),
+			expect.objectContaining({ reason: "actor_session_missing" }),
 		);
 	});
 

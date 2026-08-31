@@ -119,6 +119,26 @@ export function loadConfig(): BridgeConfig {
 		}
 	}
 
+	// FLY-2076: the duty surface is deliberately isolated from every existing
+	// Bridge credential. Claw receives this bearer and no broader API token.
+	const alertDutyToken = normalizeOptionalBearer(
+		process.env.FLYWHEEL_ALERT_DUTY_TOKEN,
+	);
+	if (alertDutyToken) {
+		const collisions: Array<[string, string | undefined]> = [
+			["TEAMLEAD_API_TOKEN", apiToken],
+			["TEAMLEAD_INGEST_TOKEN", ingestToken],
+			["TEAMLEAD_GEMINI_AGENT_TOKEN", geminiAgentToken],
+		];
+		for (const [name, token] of collisions) {
+			if (token && token === alertDutyToken) {
+				throw new Error(
+					`FLYWHEEL_ALERT_DUTY_TOKEN must differ from ${name} (refusing to start)`,
+				);
+			}
+		}
+	}
+
 	// Configured team prefixes the guard counts as issue tokens (default
 	// FLY,GEO). Normalized to uppercase; empties dropped.
 	const issuePrefixes = (process.env.TEAMLEAD_ISSUE_PREFIXES ?? "FLY,GEO")
@@ -151,6 +171,7 @@ export function loadConfig(): BridgeConfig {
 			join(homedir(), ".flywheel", "teamlead.db"),
 		ingestToken,
 		apiToken,
+		alertDutyToken,
 		notificationChannel:
 			process.env.TEAMLEAD_NOTIFICATION_CHANNEL ?? "CD5QZVAP6",
 		defaultLeadAgentId: (() => {

@@ -137,7 +137,6 @@ describe("automated Discord sender inventory", () => {
 			"bridge/founder-reply-deliverer.ts",
 			"bridge/founder-thread-notifier.ts",
 			"bridge/legacy-phase-thread-sweep.ts",
-			"bridge/publish-broker/wire.ts",
 			"bridge/roundtable/RoundtableThreadManager.ts",
 			"bridge/runner-ready-to-close-notifier.ts",
 			"bridge/standup-service.ts",

@@ -1,0 +1,11 @@
+flowchart LR
+  A["告警事件"] --> G{"alert_system<br/>总开关（读数据库）"}
+  G -- "OFF" --> L["只写既有账本 lead_events<br/>不进频道 · 不派工单 · 不投 Claw"]
+  G -- "ON" --> B["Alerts 频道根消息 + thread + 工单"]
+  B --> C["Claw 值守：<b>每条都归它先看</b><br/>(不看有没有 @)"]
+  C --> T1["① 会解决 → 处理 + 立刻写 runbook"]
+  C --> T2["② 解决不了 → 查 contact book 转负责人"]
+  C --> T3["③ 册上没有 → 兜底转 Tadashi"]
+  style G fill:#fff4e0,stroke:#ff9500,stroke-width:2px
+  style L fill:#eef4ff,stroke:#007aff,stroke-width:2px
+  style C fill:#e8f9ee,stroke:#34c759,stroke-width:2px

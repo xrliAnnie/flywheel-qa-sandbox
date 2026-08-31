@@ -90,6 +90,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	detection_page_undeliverable: { owner: "claude", arc: "human_by_design" },
 	delivery_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	inbox_loop_stalled: { owner: "founder_direct", arc: "none_escalate" },
+	orphan_pane: { owner: "claude", arc: "human_by_design" },
 	mailbox_dead_letter: { owner: "founder_direct", arc: "none_escalate" },
 	// FLY-1586: a real notification was held back by the cutover. It needs a
 	// human decision (replay or discard), so it is not auto-repaired — nothing
@@ -121,6 +122,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	auto_qa_stuck: { owner: "claude", arc: "human_by_design" },
 	codex_gate_blocked: { owner: "claude", arc: "human_by_design" },
 	review_advisory_pass: { owner: "claude", arc: "human_by_design" },
+	review_job_failed: { owner: "founder_direct", arc: "human_by_design" },
 	review_ruling_recorded: { owner: "claude", arc: "human_by_design" },
 	review_ruling_disputed: { owner: "claude", arc: "human_by_design" },
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
@@ -304,6 +306,12 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	flag_scan_failed: { owner: "claude", arc: "human_by_design" },
 	flag_scan_handoff: { owner: "claude", arc: "human_by_design" },
 	flag_scan_no_clock: { owner: "claude", arc: "human_by_design" },
+	meeting_notes_failed: {
+		owner: "claude",
+		arc: "human_by_design",
+		remediationRef:
+			"按 signature 里的 failureClass 定位(schema=raya 存档损坏 / identity=issue 歧义 / linear·bridge=依赖不可用 / config=preflight);恢复依赖健康即可,幂等 tick 自行收敛,无需手工补状态",
+	},
 	// FLY-1929: host IPC-voucher pressure / kernel-panic recurrence. There is NO
 	// executable remediation today — the containment action (restarting an Apple
 	// LaunchDaemon) is root- and founder-gated, so this is honestly human_by_design

@@ -27,13 +27,14 @@ SANDBOX="$(mktemp -d -t fly1062-pover-XXXXXX)"
 trap 'rm -rf "$SANDBOX"' EXIT
 
 FIX="$SANDBOX/fixture-repo"
-mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/agents" "$FIX/node_modules" \
+mkdir -p "$FIX/doc" "$FIX/scripts/lib" "$FIX/.flywheel/agents/nodes" "$FIX/node_modules" \
          "$FIX/packages/alpha/dist" "$FIX/scripts/packaged"
 echo "v9.9.9" > "$FIX/doc/VERSION"
 cp -p "$REPO_ROOT/scripts/flywheel-onboard.sh" "$FIX/scripts/flywheel-onboard.sh"
 cp -p "$REPO_ROOT/scripts/lib/fleet-sanitize.sh" "$FIX/scripts/lib/fleet-sanitize.sh"
 ln -s "$REPO_ROOT/node_modules/typescript" "$FIX/node_modules/typescript"
-echo "# generic executor" > "$FIX/agents/generic-executor.md"
+printf 'nodes:\n  general:\n    file: nodes/general.md\n    label: General\n' > "$FIX/.flywheel/agents/registry.yaml"
+echo "# general" > "$FIX/.flywheel/agents/nodes/general.md"
 cat > "$FIX/packages/alpha/package.json" <<'EOF'
 { "name": "fw-alpha", "version": "0.1.0", "dependencies": {} }
 EOF
@@ -48,7 +49,8 @@ LICENSE
 README.md
 .flywheel-prebuilt
 dist/run-bridge.js
-agents/generic-executor.md
+.flywheel/agents/registry.yaml
+.flywheel/agents/nodes/general.md
 scripts/flywheel-onboard.sh
 node_modules/fw-alpha/package.json
 node_modules/fw-alpha/dist/*
@@ -60,12 +62,14 @@ printf '# fixture: no registered occurrences\n' > "$FIX/grep.allow"
 # pass through env, which does not clear the environment).
 run_po() {
   env PACKAGE_ONBOARD_SOURCED=1 \
+    NPM_CONFIG_CACHE="$SANDBOX/npm-cache" \
     PO_PACKAGES="alpha" \
     PO_PACKAGE_ASSETS=" " \
     PO_PACKAGE_ASSET_FILES=" " \
     PO_SCRIPT_FILES="flywheel-onboard.sh" \
     PO_SCRIPT_DIRS=" " \
-    PO_AGENT_FILES="generic-executor.md" \
+    PO_AGENT_FILES="registry.yaml
+nodes/general.md" \
     PO_MENU_FILES=" " \
     PO_FILES_ALLOWLIST="$FIX/files.allow" \
     PO_GREP_ALLOWLIST="$FIX/grep.allow" \

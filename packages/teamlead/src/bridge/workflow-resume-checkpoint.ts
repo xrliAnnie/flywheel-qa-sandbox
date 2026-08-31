@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { GIT_SAFE_CONFIG } from "../lead-backends/codex/gateway/ship-preflight.js";
 import type {
 	WorkflowResumeAttachmentAdvanceResult,
@@ -11,6 +12,19 @@ import type {
 } from "../StateStore.js";
 
 const ZERO_SHA = "0".repeat(40);
+
+function gitSubcommand(args: string[]): string {
+	for (let index = 0; index < args.length; index += 1) {
+		const arg = args[index]!;
+		if (arg === "-c" || arg === "-C" || arg === "--git-dir") {
+			index += 1;
+			continue;
+		}
+		if (arg.startsWith("--git-dir=") || arg.startsWith("-")) continue;
+		return arg;
+	}
+	return "git";
+}
 const SHA_RE = /^[0-9a-f]{40}$/;
 
 interface GitResult {
@@ -395,17 +409,20 @@ export class GitWorkflowResumeCheckpointStore {
 	}
 
 	private run(args: string[], cwd: string): GitResult {
-		const result = spawnSync(this.gitPath, [...GIT_SAFE_CONFIG, ...args], {
-			cwd,
-			encoding: "utf8",
-			timeout: 10_000,
-			env: {
-				PATH: "/usr/bin:/bin",
-				GIT_CONFIG_GLOBAL: "/dev/null",
-				GIT_CONFIG_SYSTEM: "/dev/null",
-				GIT_TERMINAL_PROMPT: "0",
-			},
-		});
+		const label = gitSubcommand(args);
+		const result = withSyncOpMarker(`workflow-resume-checkpoint:${label}`, () =>
+			spawnSync(this.gitPath, [...GIT_SAFE_CONFIG, ...args], {
+				cwd,
+				encoding: "utf8",
+				timeout: 10_000,
+				env: {
+					PATH: "/usr/bin:/bin",
+					GIT_CONFIG_GLOBAL: "/dev/null",
+					GIT_CONFIG_SYSTEM: "/dev/null",
+					GIT_TERMINAL_PROMPT: "0",
+				},
+			}),
+		);
 		return {
 			status: result.status ?? 1,
 			stdout: result.stdout ?? "",

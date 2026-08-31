@@ -72,10 +72,9 @@ cat >"$SLOTS" <<'JSON'
 }
 JSON
 
-# ── Reference implementations (VERBATIM copies of the current inline code
-# in scripts/test-deploy.sh — the byte-compat baseline). If test-deploy.sh's
-# pre-FLY-1189 behavior ever legitimately changes, update these fixtures in
-# the same PR. ──
+# ── Reference implementations for the canonical QA registry/config baseline.
+# If the closed registry contract legitimately changes, update these fixtures
+# in the same PR. ──
 reference_build_projects() {
   jq -n \
     --arg projectName "$1" \
@@ -94,6 +93,7 @@ reference_build_projects() {
       leads: [
         {
           agentId: $agentId,
+          summaryRole: "exempt",
           chatChannel: $chatChannel,
           botTokenEnv: $botTokenEnv,
           match: { labels: ["*"] }
@@ -132,20 +132,22 @@ decision_layer:
   autonomy_level: advisor
   escalation_channel: discord
 
+doc_flow:
+  default_department: engineering
+
 checkpoints:
   approve_to_ship:
-    enabled: true
     timeout_ms: 14400000     # 4h (FLY-159: ConfigLoader floor; anything lower is warn+raised)
     timeout_behavior: fail-close
 EOF
 }
 
-# ── A1/A2: builder byte-compat ──
+# ── A1/A2: canonical builder baseline ──
 for role in lead cos; do
   ref="$(reference_build_projects test-slot-2 /tmp/hr xrliAnnie/flywheel-qa-sandbox flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 "$role")"
   new="$(qa_multilead_build_projects test-slot-2 /tmp/hr xrliAnnie/flywheel-qa-sandbox flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 "$role" '["*"]' '[]')"
   if [[ "$ref" == "$new" ]]; then
-    pass "A-${role}: builder byte-compat (no new flags → byte-identical)"
+    pass "A-${role}: builder matches the canonical no-extra-lead baseline"
   else
     fail "A-${role}: builder output drifted from reference"
     diff <(printf '%s' "$ref") <(printf '%s' "$new") | head -10
@@ -162,16 +164,29 @@ else
   diff <(printf '%s' "$ref") <(printf '%s' "$new") | head -10
 fi
 
+generalized_config="$(qa_multilead_config_yaml test-slot-2 generalized)"
+if ! grep -A1 '^doc_flow:$' <<<"$generalized_config" \
+  | grep -Fq '  default_department: engineering'; then
+  fail "A4: generalized config must carry doc_flow.default_department metadata"
+fi
+if grep -Eq '^[[:space:]]+enabled:[[:space:]]|^pipeline:' <<<"$generalized_config"; then
+  fail "A4: generalized config must not emit retired project flag keys"
+else
+  pass "A4: generalized config declares checkpoint metadata without retired flags"
+fi
+
 # ── B1: two leads, field-by-field ──
 EXTRAS='[{"slotId":3,"agentId":"flywheel-test-3","botAppId":"333","tokenEnvVar":"TEST_BOT_TOKEN_3","chatChannel":"chan-3","role":"lead","identitySource":"ops-lead","deptLabel":"Ops-Test","labels":["Ops-Test"]}]'
 out="$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 lead '["Product-Test"]' "$EXTRAS")"
 checks=(
   '.[0].leads | length == 2'
   '.[0].leads[0].agentId == "flywheel-test-2"'
+  '.[0].leads[0].summaryRole == "exempt"'
   '.[0].leads[0].chatChannel == "chan-2"'
   '.[0].leads[0].botTokenEnv == "TEST_BOT_TOKEN_2"'
   '.[0].leads[0].match.labels == ["Product-Test"]'
   '.[0].leads[1].agentId == "flywheel-test-3"'
+  '.[0].leads[1].summaryRole == "exempt"'
   '.[0].leads[1].chatChannel == "chan-3"'
   '.[0].leads[1].botTokenEnv == "TEST_BOT_TOKEN_3"'
   '.[0].leads[1].match.labels == ["Ops-Test"]'
@@ -196,6 +211,41 @@ if jq -e '
 else
   fail "FLY-1726 B1: QA registry omitted canonical botUserId/discordStateDir"
 fi
+
+# Compile the builder output through the production identity CLI. Shape-only
+# checks missed the FLY-2030 closed-enum migration and let every 529 Lead fail
+# before tmux startup.
+IDENTITY_HOME="${TMP}/identity-home"
+mkdir -p "${IDENTITY_HOME}/.flywheel"
+printf '%s\n' '{"granularity":"per-lead","setBy":"test-deploy","setAt":"2026-08-28T00:00:00.000Z"}' \
+  > "${IDENTITY_HOME}/.flywheel/summary-config.json"
+IDENTITY_CLI="${SCRIPT_DIR}/../packages/flywheel-comm/dist/index.js"
+IDENTITY_PROJECTS="${TMP}/identity-projects.json"
+printf '%s\n' "$identity_out" > "$IDENTITY_PROJECTS"
+IDENTITY_COMPILE_OK=1
+for identity_lead in flywheel-test-2 flywheel-test-3; do
+  if ! compiled_identity=$(node "$IDENTITY_CLI" lead-identity resolve \
+      --projects-file "$IDENTITY_PROJECTS" \
+      --project test-slot-2 --lead "$identity_lead" \
+      --summary-config-home "$IDENTITY_HOME" --format json \
+      2>"${TMP}/identity-${identity_lead}.err"); then
+    IDENTITY_COMPILE_OK=0
+    fail "FLY-2030 B1: canonical compiler rejected QA Lead ${identity_lead}"
+    cat "${TMP}/identity-${identity_lead}.err"
+    continue
+  fi
+  jq -e '
+    .summaryRole == "exempt"
+    and .hasSummaryDuty == false
+    and .summaryGranularity == "per-lead"
+    and (.summaryAssignmentDigest | test("^[a-f0-9]{64}$"))
+  ' >/dev/null 2>&1 <<<"$compiled_identity" || {
+    IDENTITY_COMPILE_OK=0
+    fail "FLY-2030 B1: QA Lead ${identity_lead} compiled to a non-exempt summary identity"
+  }
+done
+[[ "$IDENTITY_COMPILE_OK" == "1" ]] \
+  && pass "FLY-2030 B1: real identity compiler accepts every QA Lead as summary-exempt"
 
 # ── B2: --lead-label narrows main labels only ──
 out="$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 lead '["Product-Test"]' '[]')"
@@ -495,6 +545,21 @@ grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag no
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
+grep -q 'seed-project-flags' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2103 S1: generalized QA must seed scoped pipeline rows"; }
+grep -Fq -- '--flags pipeline_dag,pipeline_work_kind,doc_flow' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2103 S1: generalized QA must seed doc_flow before issue dispatch"; }
+VERIFY_CONFIG_BLOCK="$(sed -n '/qa-generalized\.mjs" verify-config/,/generalized pipeline config verification/p' "$DEPLOY")"
+grep -Fq -- '--db "${SLOT_DIR}/teamlead.db"' <<<"$VERIFY_CONFIG_BLOCK" \
+  || { S1_OK=0; fail "FLY-2103 S1: generalized verify-config must receive the slot DB"; }
+grep -q 'QA_SUMMARY_CONFIG_HOME="${SLOT_DIR}/identity-home"' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2030 S1: QA summary config must live under the slot"; }
+grep -q 'summary-config.json' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2030 S1: test-deploy must materialize summary config"; }
+if [ "$(grep -c 'FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}"' "$DEPLOY")" -ne 3 ]; then
+  S1_OK=0
+  fail "FLY-2030 S1: every QA Bridge start branch must receive the slot summary config home"
+fi
 if grep -q -- '--arg projectName "$TEST_PROJECT_NAME" --arg botTokenEnv' "$DEPLOY"; then
   S1_OK=0; fail "FLY-1726 S1: QA v2 manifest still declares botTokenEnv"
 fi

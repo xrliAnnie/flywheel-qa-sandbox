@@ -14,6 +14,10 @@ import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import {
+	resolvedTestAgent,
+	testAgentFallbacks,
+} from "./agent-dispatch-fixtures.js";
 
 // ─── Helpers ─────────────────────────────────────
 
@@ -133,14 +137,20 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 		);
 
 		const agents: Record<string, AgentConfig> = {
-			backend: {
-				agent_file: ".flywheel/agents/product/backend-executor.md",
-				department: "product",
-				domain_file: ".claude/domains/backend.md",
-				match: { labels: ["backend"] },
-			},
+			backend: resolvedTestAgent({
+				nodeName: "backend",
+				labels: ["backend"],
+				departments: ["product"],
+				projectRoot: tmpDir,
+				relativeFile: "product/backend-executor.md",
+				domainFile: ".claude/domains/backend.md",
+			}),
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			testAgentFallbacks(FAKE_REPO_ROOT),
+		);
 
 		const factory = makeBlueprint({
 			dispatcher,
@@ -180,13 +190,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 		);
 
 		const agents: Record<string, AgentConfig> = {
-			frontend: {
-				agent_file: ".flywheel/agents/product/frontend-executor.md",
-				department: "product",
-				match: { labels: ["frontend"] },
-			},
+			frontend: resolvedTestAgent({
+				nodeName: "frontend",
+				labels: ["frontend"],
+				departments: ["product"],
+				projectRoot: tmpDir,
+				relativeFile: "product/frontend-executor.md",
+			}),
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			testAgentFallbacks(FAKE_REPO_ROOT),
+		);
 
 		const factory = makeBlueprint({
 			dispatcher,
@@ -220,15 +236,24 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 			path.join(os.tmpdir(), "fake-flywheel-repo-"),
 		);
 		try {
-			const shippedAgentsDir = path.join(fakeRepoRoot, "agents");
+			const shippedAgentsDir = path.join(
+				fakeRepoRoot,
+				".flywheel",
+				"agents",
+				"nodes",
+			);
 			fs.mkdirSync(shippedAgentsDir, { recursive: true });
 			fs.writeFileSync(
-				path.join(shippedAgentsDir, "generic-executor.md"),
+				path.join(shippedAgentsDir, "general.md"),
 				"SHIPPED GENERIC CONTENT — vendor-neutral catch-all fallback.",
 			);
 
 			// Empty agents map → dispatcher returns shipped-generic
-			const dispatcher = new AgentDispatcher({}, undefined, fakeRepoRoot);
+			const dispatcher = new AgentDispatcher(
+				{},
+				undefined,
+				testAgentFallbacks(fakeRepoRoot),
+			);
 
 			const factory = makeBlueprint({
 				dispatcher,
@@ -250,7 +275,7 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 				.calls[0]![0] as AdapterExecutionContext;
 			const sysPrompt = runCall.appendSystemPrompt!;
 
-			// Shipped-generic content MUST be injected (agentFileRoot="flywheel" resolved correctly)
+			// Registered generic content MUST be injected from its resolved root.
 			expect(sysPrompt).toContain("## Agent Role");
 			expect(sysPrompt).toContain("SHIPPED GENERIC CONTENT");
 			expect(sysPrompt).toContain("## Baseline Rules");
@@ -259,17 +284,23 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 		}
 	});
 
-	it("agent_file missing — fallback to generic prompt", async () => {
+	it("resolved agent file missing — fallback to generic prompt", async () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
 		const agents: Record<string, AgentConfig> = {
-			backend: {
-				agent_file: ".flywheel/agents/product/nonexistent-executor.md",
-				department: "product",
-				match: { labels: ["backend"] },
-			},
+			backend: resolvedTestAgent({
+				nodeName: "backend",
+				labels: ["backend"],
+				departments: ["product"],
+				projectRoot: tmpDir,
+				relativeFile: "product/nonexistent-executor.md",
+			}),
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			testAgentFallbacks(FAKE_REPO_ROOT),
+		);
 
 		const factory = makeBlueprint({
 			dispatcher,
@@ -313,30 +344,6 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 		expect(sysPrompt).toContain("Read the codebase");
 	});
 
-	it("FLY-137 v1.27.2 path safety: rejects path traversal in agent_file via ConfigLoader/dispatcher (not exercised by readAgentFile alone)", async () => {
-		// In v1.27.2 ConfigLoader hard-errors paths outside `.flywheel/agents/` BEFORE
-		// dispatcher is even constructed. AgentDispatcher's parsedDept also throws on
-		// non-`.flywheel/agents/` paths. So this test exercises the dispatcher-level guard.
-		const dispatcher = new AgentDispatcher({}, undefined, FAKE_REPO_ROOT);
-		expect(() => {
-			// Simulate a config that slipped past ConfigLoader (shouldn't be possible
-			// via the public API, but documents the dispatchByName defensive behavior).
-			new AgentDispatcher(
-				{
-					evil: {
-						agent_file: "../../etc/passwd",
-						match: { labels: ["evil"] },
-					},
-				},
-				undefined,
-				FAKE_REPO_ROOT,
-			).dispatchByName("evil");
-		}).toThrow(/agent_file/i);
-		// Plain dispatcher still functional for valid paths
-		const result = dispatcher.dispatchByName("generic");
-		expect(result.agentName).toBe("generic");
-	});
-
 	it("symlink outside repo is rejected (project-side .flywheel/agents/<dept>/<file> path)", async () => {
 		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
@@ -353,13 +360,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 		);
 
 		const agents: Record<string, AgentConfig> = {
-			backend: {
-				agent_file: ".flywheel/agents/product/backend-executor.md",
-				department: "product",
-				match: { labels: ["backend"] },
-			},
+			backend: resolvedTestAgent({
+				nodeName: "backend",
+				labels: ["backend"],
+				departments: ["product"],
+				projectRoot: tmpDir,
+				relativeFile: "product/backend-executor.md",
+			}),
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			testAgentFallbacks(FAKE_REPO_ROOT),
+		);
 
 		const factory = makeBlueprint({
 			dispatcher,
@@ -399,13 +412,19 @@ describe("Blueprint v0.6 — Agent Dispatch Integration (FLY-137 v1.27.2 dept-aw
 		);
 
 		const agents: Record<string, AgentConfig> = {
-			large: {
-				agent_file: ".flywheel/agents/product/large-executor.md",
-				department: "product",
-				match: { labels: ["large"] },
-			},
+			large: resolvedTestAgent({
+				nodeName: "large",
+				labels: ["large"],
+				departments: ["product"],
+				projectRoot: tmpDir,
+				relativeFile: "product/large-executor.md",
+			}),
 		};
-		const dispatcher = new AgentDispatcher(agents, undefined, FAKE_REPO_ROOT);
+		const dispatcher = new AgentDispatcher(
+			agents,
+			undefined,
+			testAgentFallbacks(FAKE_REPO_ROOT),
+		);
 
 		const factory = makeBlueprint({
 			dispatcher,

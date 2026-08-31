@@ -20,8 +20,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "${SCRIPT_DIR}/lib/qa-room.sh"
 
 # FLY-1189: multi-Lead (single Bridge, ≥2 real test Leads) additive extension.
-# All flags default OFF → byte-identical behavior (guarded by
-# scripts/__tests__/test-deploy-multilead.test.sh A1-A3).
+# The canonical no-extra-lead registry baseline is guarded by
+# scripts/__tests__/test-deploy-multilead.test.sh A1-A3.
 # shellcheck source=lib/qa-multilead.sh
 source "${SCRIPT_DIR}/lib/qa-multilead.sh"
 
@@ -710,6 +710,16 @@ fi
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 mkdir -p "${SLOT_DIR}/discord-state"
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
+# FLY-2030: canonical identity compilation requires the founder-selected
+# summary granularity. QA uses a slot-local selection and summary-exempt Leads,
+# so the 529 harness neither depends on nor mutates the operator's real HOME.
+QA_SUMMARY_CONFIG_HOME="${SLOT_DIR}/identity-home"
+mkdir -p "${QA_SUMMARY_CONFIG_HOME}/.flywheel"
+chmod 700 "$QA_SUMMARY_CONFIG_HOME" "${QA_SUMMARY_CONFIG_HOME}/.flywheel"
+printf '%s\n' \
+  "{\"granularity\":\"per-lead\",\"setBy\":\"test-deploy\",\"setAt\":\"$(date -u '+%Y-%m-%dT%H:%M:%SZ')\"}" \
+  > "${QA_SUMMARY_CONFIG_HOME}/.flywheel/summary-config.json"
+chmod 600 "${QA_SUMMARY_CONFIG_HOME}/.flywheel/summary-config.json"
 GENERALIZED_READINESS_PENDING=0
 GENERALIZED_CHILD_TMPDIR="${TMPDIR:-/tmp}"
 GENERALIZED_API_TOKEN_PATH=""
@@ -993,22 +1003,21 @@ qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" \
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
 
 if [[ "$GENERALIZED" == "1" ]]; then
-  # Complete menu-domain activation: a partial roster/adoption pair is a hard
-  # config error. Role content is copied from the checkout under test; Bridge
-  # validates and injects it when compiling each node prompt.
+  # Complete menu-domain activation: adopted graph nodes require explicit
+  # project-registry implementations. Node content is copied from the checkout
+  # under test; Bridge validates the overlay before compiling each prompt.
   mkdir -p "${HOST_REPO}/.flywheel/menus" \
-    "${HOST_REPO}/.flywheel/agents/engineering"
-  cp "${REPO_ROOT}/.flywheel/agents/engineering/engineer-executor.md" \
-    "${HOST_REPO}/.flywheel/agents/engineering/engineer-executor.md"
-  cp "${REPO_ROOT}/.flywheel/agents/engineering/qa-executor.md" \
-    "${HOST_REPO}/.flywheel/agents/engineering/qa-executor.md"
-  cp "${REPO_ROOT}/.flywheel/agents/general-executor.md" \
-    "${HOST_REPO}/.flywheel/agents/general-executor.md"
-  cat > "${HOST_REPO}/.flywheel/menus/ic-roster.yaml" <<'EOF'
-design: .flywheel/agents/engineering/engineer-executor.md
-implement: .flywheel/agents/engineering/engineer-executor.md
-qa: .flywheel/agents/engineering/qa-executor.md
-generic: .flywheel/agents/general-executor.md
+    "${HOST_REPO}/.flywheel/agents/nodes"
+  for node in eng_design implement qa general; do
+    cp "${REPO_ROOT}/.flywheel/agents/nodes/${node}.md" \
+      "${HOST_REPO}/.flywheel/agents/nodes/${node}.md"
+  done
+  cat > "${HOST_REPO}/.flywheel/agents/registry.yaml" <<'EOF'
+nodes:
+  eng_design: { file: nodes/eng_design.md, department: engineering }
+  implement: { file: nodes/implement.md, department: engineering }
+  qa: { file: nodes/qa.md, department: engineering }
+  general: { file: nodes/general.md }
 EOF
   printf '%s: [code, generic]\n' "$AGENT_ID" \
     > "${HOST_REPO}/.flywheel/menus/adoption.yaml"
@@ -1018,7 +1027,7 @@ EOF
       "${REPO_ROOT}/scripts/qa-529-generalized-codex-stub.mjs"
     BRIDGE_EXTRA_ENV+=("PATH=${SLOT_DIR}/stub-bin:${PATH}")
   fi
-  log "Wrote generalized menu roster/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
+  log "Wrote generalized registry/adoption (lead=${AGENT_ID}, menus=code,generic, runner=$([[ "$STUB_RUNNER" == "1" ]] && echo stub || echo real))"
 fi
 
 # ── Generate DISCORD_STATE_DIR files ──────────────────
@@ -1398,7 +1407,7 @@ qa_slot_start_lead() {
   chmod 600 "$manifest"
   FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_plist \
     "$plist" "$label" "$wrapper" "$manifest" "$HOME" "$state" \
-    "$projects" "$env_file" "$lead_log" || return 1
+    "$projects" "$env_file" "$lead_log" "$QA_SUMMARY_CONFIG_HOME" || return 1
   qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "$manifest" || return 1
   launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
   topology=$(qa_launchd_lead_verify "$label" "$manifest") \
@@ -1683,6 +1692,7 @@ EOF
     BRIDGE_EXTRA_ENV+=("${XTOKEN_ENV_NAME}=${!XTOKEN_ENV_NAME}")
   done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
 fi
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──
 # FLY-115 §4.5: file-backed teamlead.db so FLY-108 S4 chain is visible
@@ -1735,6 +1745,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
@@ -1762,6 +1773,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
@@ -1798,6 +1810,7 @@ else
     TEAMLEAD_URL="http://localhost:${SLOT_PORT}" \
     FLYWHEEL_PROJECTS="${FLYWHEEL_PROJECTS}" \
     FLYWHEEL_PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE}" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="${QA_SUMMARY_CONFIG_HOME}" \
     LINEAR_API_KEY="${LINEAR_API_KEY}" \
     FLYWHEEL_RUNNER_START_POINT="${RUNNER_START_REF}" \
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
@@ -1864,11 +1877,16 @@ if [[ "$GENERALIZED" == "1" ]]; then
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-bindings \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized workflow_category_binding seed failed"; exit 1; }
+  node "${SCRIPT_DIR}/lib/qa-generalized.mjs" seed-project-flags \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" \
+    --flags pipeline_dag,pipeline_work_kind,doc_flow >/dev/null \
+    || { log "ERROR: generalized scoped pipeline/doc_flow flag seed failed"; exit 1; }
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-bindings \
     --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized binding verification failed"; exit 1; }
   node "${SCRIPT_DIR}/lib/qa-generalized.mjs" verify-config \
-    --file "${HOST_REPO}/.flywheel/config.yaml" --project "$TEST_PROJECT_NAME" >/dev/null \
+    --file "${HOST_REPO}/.flywheel/config.yaml" \
+    --db "${SLOT_DIR}/teamlead.db" --project "$TEST_PROJECT_NAME" >/dev/null \
     || { log "ERROR: generalized pipeline config verification failed"; exit 1; }
   GENERALIZED_MENU_JSON=$(curl -sS --get \
     --data-urlencode "projectName=${TEST_PROJECT_NAME}" \
@@ -1879,7 +1897,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     .success == true and
     ([.menus[].item] | sort) == ["code","generic"] and
     (any(.menus[]; .item == "code" and
-      ([.nodes[] | select(.role != null) | .role] | sort) == ["design","implement","qa"]))
+      ([.nodes[].id] | sort) == ["eng_design","founder_gate","implement","qa"]))
   ' <<<"$GENERALIZED_MENU_JSON" >/dev/null; then
     log "ERROR: generalized menu readiness failed: $(jq -c '{success,code,reason,legal,menus}' <<<"$GENERALIZED_MENU_JSON" 2>/dev/null || echo invalid-json)"
     exit 1

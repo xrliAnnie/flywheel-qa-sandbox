@@ -27,9 +27,9 @@ import {
 	PONYTAIL_CONFLICT,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
+	PonytailLabelConflictError,
 	resolvePonytailRequested,
 	resolveSkillFrameworkMode,
-	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_SPLIT,
 	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
@@ -839,11 +839,8 @@ export class Blueprint {
 		private agentDispatcher?: AgentDispatcher,
 		// FLY-47 — optional checkpoint gate configuration
 		private checkpointConfig?: CheckpointsConfig,
-		// FLY-137 v1.27.2 — Flywheel repo root, used by Blueprint to resolve
-		// shipped-generic agent files when `dispatchResult.agentFileRoot === "flywheel"`.
-		// Optional for backward compat with test stubs; if absent AND a dispatch
-		// returns `agentFileRoot: "flywheel"`, agent content load logs a warning
-		// and the system prompt falls back to baseline (same as v1.27.0 behavior).
+		// Flywheel repo root used by other prompt/runtime assets. Agent files now
+		// arrive as a registry-resolved absolute root + file pair.
 		private flywheelRepoRoot?: string,
 		// FLY-205 — optional doc-flow config from project .flywheel/config.yaml.
 		// MUST stay the LAST constructor parameter (Codex design R2 #5: long
@@ -851,12 +848,12 @@ export class Blueprint {
 		// flywheelRepoRoot would silently misalign existing call sites and
 		// break shipped-generic agent resolution). Absent/disabled → no
 		// DOC-FLOW prompt block (byte-compatible spawn prompt).
-		private docFlowConfig?: DocFlowConfig,
+		private docFlowDept?: Pick<DocFlowConfig, "default_department">,
 		// FLY-615 — optional per-project ponytail config (lowest ladder layer).
 		// MUST stay among the LAST constructor parameters (same positional-
 		// alignment contract as docFlowConfig). Absent →
 		// no per-project ponytail (label/run layers still apply); byte-compatible.
-		private ponytailConfig?: PonytailConfig,
+		private ponytailProjectLayer?: () => PonytailConfig | undefined,
 		// FLY-615 — readiness probe: is ponytail actually usable for `backend`?
 		// Injectable for tests. Default (set below) checks `claude plugin details`
 		// for claude-tmux; the Codex ruleset-injection path is always ready
@@ -887,6 +884,9 @@ export class Blueprint {
 			hasOverride: false,
 			raw: null,
 		}),
+		// FLY-2103: call-time project-store reader. This stays at the constructor
+		// tail so existing positional call sites cannot shift silently.
+		private docFlowEnabled: () => boolean = () => false,
 	) {}
 
 	async run(
@@ -1035,12 +1035,23 @@ export class Blueprint {
 				},
 			};
 		}
+		let projectLayer: PonytailConfig | undefined;
+		try {
+			projectLayer = this.ponytailProjectLayer?.();
+		} catch (err) {
+			console.warn(
+				`[Blueprint] ponytail project flag read failed for ${ctx.projectName ?? "?"} — continuing without the project layer: ${
+					err instanceof Error ? err.message : String(err)
+				}`,
+			);
+		}
 		let resolved: ReturnType<typeof resolvePonytailRequested>;
 		try {
-			resolved = resolvePonytailRequested(input, this.ponytailConfig, {
+			resolved = resolvePonytailRequested(input, projectLayer, {
 				armInject: skillFrameworkMode === "bare-ponytail",
 			});
 		} catch (err) {
+			if (!(err instanceof PonytailLabelConflictError)) throw err;
 			// Conflicting ponytail / ponytail-off labels — refuse to guess. Record
 			// a DISTINCT unavailable:conflict (loud, excluded from A/B) rather than
 			// a silent off:default; the run proceeds WITHOUT ponytail.
@@ -1078,17 +1089,12 @@ export class Blueprint {
 		hydrated: HydratedContext,
 	): ResolvedSkillFrameworkForRun | undefined {
 		const control = this.skillFrameworkModeControl();
-		const modeEnv = control.hasOverride
-			? { [SKILL_FRAMEWORK_MODE_ENV]: control.raw ?? undefined }
-			: {};
+		const raw = control.hasOverride ? (control.raw ?? undefined) : undefined;
 		// Participation is only meaningful under `split`; skip the config read
 		// entirely otherwise (default path stays zero-IO). The env read here is
 		// the injected Bridge-global control at call time (direct-toggle live).
 		let participation: boolean | undefined;
-		if (
-			modeEnv[SKILL_FRAMEWORK_MODE_ENV] === SKILL_FRAMEWORK_SPLIT &&
-			this.skillFrameworkParticipation
-		) {
+		if (raw === SKILL_FRAMEWORK_SPLIT && this.skillFrameworkParticipation) {
 			try {
 				participation = this.skillFrameworkParticipation(ctx.projectName);
 			} catch (err) {
@@ -1110,7 +1116,7 @@ export class Blueprint {
 			hydrated.issueIdentifier?.trim() ||
 			hydrated.issueId;
 		const resolved = resolveSkillFrameworkMode({
-			env: modeEnv,
+			raw,
 			issueIdentifier: identifier,
 			override: ctx.skillFrameworkModeOverride,
 			priorStamp: ctx.skillFrameworkModePrior,
@@ -1627,6 +1633,44 @@ export class Blueprint {
 			path.dirname(__filename),
 			"../../flywheel-comm/dist/index.js",
 		);
+		const verdictAndLeadReport = (input: {
+			qaResult: string;
+			label: "workflow verdict" | "QA verdict";
+			status: "pass" | "fail" | "pass|fail";
+			summary: string;
+		}): string => {
+			const leadId = ctx.leadId?.trim();
+			return leadId
+				? `${input.qaResult} && node ${commCliPath} ask --lead ${leadId} --exec-id ${executionId} --report "DONE: ${input.label} recorded; status=${input.status}; evidence=${input.summary}; blocking priority=<none|priority>"`
+				: input.qaResult;
+		};
+		const verdictLeadReportRetry = ctx.leadId?.trim()
+			? "Run the compound action exactly as written. If it returns non-zero, inspect the qa-result receipt first; when the verdict was already accepted, retry only the `ask --report` half with exactly the same report message, and never resubmit qa-result or change its summary."
+			: "";
+		const generalizedVerdictAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"`,
+			label: "workflow verdict",
+			status: "pass|fail",
+			summary: "<evidence and verdict>",
+		});
+		const qaPassAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"`,
+			label: "QA verdict",
+			status: "pass",
+			summary: "<what you tested + verdict>",
+		});
+		const qaFailAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"`,
+			label: "QA verdict",
+			status: "fail",
+			summary: "<exact scenario / expected-vs-actual / severity>",
+		});
+		const qaFeedbackAction = verdictAndLeadReport({
+			qaResult: `node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"`,
+			label: "QA verdict",
+			status: "fail",
+			summary: "founder feedback kickback: <summary of the requested changes>",
+		});
 		const isDesignNodeCompletion =
 			isDesignPhase ||
 			(isGeneralizedExecution &&
@@ -1718,8 +1762,11 @@ export class Blueprint {
 				);
 			}
 			if (ctx.workflowSubmissionCredential) {
+				const terminalVerdictInstruction = ctx.leadId?.trim()
+					? `Your terminal action is one structured workflow verdict followed by its Lead report: run \`${generalizedVerdictAction}\`. ${verdictLeadReportRetry}`
+					: `Your terminal action is one structured workflow verdict: run \`${generalizedVerdictAction}\`.`;
 				systemPromptLines.push(
-					`Your terminal action is one structured verdict: run \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass|fail --summary "<evidence and verdict>"\`. Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
+					`${terminalVerdictInstruction} Do not run \`complete\`; the accepted verdict is this node attempt's terminal fact.`,
 					"Preserve FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL in the qa-result process exactly as injected: never use env -u and never reopen a shell that drops the runner environment. If the server reports replay_payload_mismatch, stop retrying and report both possible verdicts to your Lead; stripping the credential is forbidden.",
 				);
 				if (ctx.workflowCapabilities.pass_enters_approval_gate === true) {
@@ -1809,7 +1856,7 @@ export class Blueprint {
 				"1. Read the committed design + implementation on this branch (exploration/research/plan + progress.md + the code). Do NOT re-implement the feature.",
 				"2. Verify the change against the plan: run the tests, exercise the real behavior, and add any missing test coverage. You HAVE write access — commit your tests + a QA report to THIS branch.",
 				"3. Push your commits to this branch (it updates the open PR — do NOT open a second PR).",
-				`4. On PASS: report it STRUCTURALLY first — \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status pass --summary "<what you tested + verdict>"\` (DAG workflow verdicts are keyed to YOUR phase session, so --target-exec is your own exec id) — then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
+				`4. On PASS: report it STRUCTURALLY first — \`${qaPassAction}\` (DAG workflow verdicts are keyed to YOUR phase session, so --target-exec is your own exec id). ${verdictLeadReportRetry} Then IMMEDIATELY run the APPROVE GATE flow below (steps a-g): YOU are this pipeline's ship executor. Use the PR the Implement phase opened on this branch (\`gh pr view --json number\`).`,
 				sharedPhaseKeepAlive
 					? // FLY-887: keep-alive fix loop. On FAIL the implementer is ALIVE
 						// (parked, full context); the pipeline wakes it to fix on this same
@@ -1818,9 +1865,9 @@ export class Blueprint {
 						// FLY-1188: codex phrasing drops the Claude-only resource-release
 						// tooling; Claude text is byte-identical to pre-FLY-1188.
 						isCodexRunner
-						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
-						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
-					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "<exact scenario / expected-vs-actual / severity>"\`, then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest in this non-keep-alive mode, do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
+						? `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`${qaFailAction}\`. ${verdictLeadReportRetry} Then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, make your final message that report, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer; the message is context and TURN is authority. Your worktree will already be at the new head — re-run your scenarios directly. ${codexPhaseWakeContract} Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+						: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST (unchanged), then \`${qaFailAction}\`. ${verdictLeadReportRetry} Then release heavy resources (close Claude-in-Chrome tabs; \`/compact\` if large) and \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix"\`, then STOP and WAIT for a RE-TEST wake — the implementer (alive, with full context) fixes on this same branch and the pipeline wakes you to re-verify. On wake, FIRST run \`node ${commCliPath} turn --exec-id ${executionId}\` and proceed ONLY on a \`yours\` answer (the wake text is context, not authority); your worktree will already be at the new head — re-run your scenarios directly. Do NOT run \`complete\`, do NOT open the approve gate on a FAIL.`
+					: `5. On FAIL: commit + push your findings/failing tests to this branch FIRST, then \`${qaFailAction}\`. ${verdictLeadReportRetry} Then STOP and wait — the pipeline closes this session and starts an Implement-fix phase on this branch. Do NOT park for retest in this non-keep-alive mode, do NOT run \`complete\`, and do NOT open the approve gate on a FAIL.`,
 			];
 			// FLY-939 (G-B): the founder-feedback KICKBACK contract. When you (the QA
 			// phase) are woken with FEEDBACK on your OWN approve_to_ship gate — after a
@@ -1834,8 +1881,8 @@ export class Blueprint {
 					// codex variant makes no park/wake/alive-implementer promises —
 					// kick back, end the turn, and handle a re-test conditionally.
 					isCodexRunner
-						? `5-fb. If you receive FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier; the implement side does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\`, make your final message that verdict, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. ${codexPhaseWakeContract} On re-test, re-verify; on PASS re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets).`
-						: `5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`node ${commCliPath} qa-result --exec-id ${executionId} --target-exec ${executionId} --status fail --summary "founder feedback kickback: <summary of the requested changes>"\`, then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
+						? `5-fb. If you receive FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier; the implement side does the fixing. Emit a KICKBACK verdict: \`${qaFeedbackAction}\`. ${verdictLeadReportRetry} Then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\`, make your final message that verdict, and END YOUR CURRENT TURN. The phase controller stays alive for the RE-TEST wake. ${codexPhaseWakeContract} On re-test, re-verify; on PASS re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets).`
+						: `5-fb. If you are woken with FEEDBACK (changes requested — NOT an approval) on your approve_to_ship gate: do NOT edit code yourself — you are the verifier, the implement phase (alive, parked, full context on this branch) does the fixing. Emit a KICKBACK verdict: \`${qaFeedbackAction}\`. ${verdictLeadReportRetry} Then \`node ${commCliPath} park --exec-id ${executionId} --reason "DAG workflow QA awaiting implement fix (founder feedback)"\` and WAIT for the RE-TEST wake (identical to the FAIL path in step 5). The pipeline wakes the implementer to fix, then wakes you to re-verify; on PASS you re-open a NEW approve gate (step 4 again — a fresh \`gate approve_to_ship --no-block\` + fresh \`complete --route needs_review\`; the review window resets, exactly like the single-session re-request flow).`,
 				);
 			}
 		} else {
@@ -1981,20 +2028,28 @@ export class Blueprint {
 
 		// (commCliPath is hoisted above the role prompts — see FLY-859 note.)
 
-		// FLY-205: DOC-FLOW block — project doc conventions, injected ONLY when
-		// the project's .flywheel/config.yaml enables doc_flow. Unshifted BEFORE
+		// FLY-205/2103: DOC-FLOW block — project doc conventions, injected ONLY
+		// when the project-scoped flag store enables doc_flow. Unshifted BEFORE
 		// the onboard preamble unshift below, so the final order reads:
 		//   [onboard preamble] → [DOC-FLOW] → [6-step base flow].
 		// Controls DOCUMENT OUTPUT ONLY — checkpoint gates and executor hard
 		// gates apply at every tier (locked semantics, Codex design R1 #5).
-		// Disabled/absent config → zero lines added (byte-compatible prompt).
-		if (this.docFlowConfig?.enabled === true) {
-			const defaultDepartment = this.docFlowConfig.default_department;
+		// Disabled/failed flag reads → zero lines added (byte-compatible prompt).
+		let docFlowEnabled = false;
+		try {
+			docFlowEnabled = this.docFlowEnabled();
+		} catch (error) {
+			console.warn(
+				`[Blueprint] DOC-FLOW flag read failed: ${error instanceof Error ? error.message : String(error)} — skipping DOC-FLOW injection`,
+			);
+		}
+		if (docFlowEnabled) {
+			const defaultDepartment = this.docFlowDept?.default_department;
 			if (!defaultDepartment) {
-				// ConfigLoader enforces presence when enabled; defensive fail-safe
-				// to byte-compat rather than injecting a broken path.
+				// The scoped writer rejects new enablement without this metadata; keep
+				// this skip as the final runtime guard for pre-existing or corrupt state.
 				console.warn(
-					"[Blueprint] doc_flow.enabled is true but default_department is missing — skipping DOC-FLOW injection (run ConfigLoader validation on this project's config)",
+					"[Blueprint] doc_flow is enabled but default_department is missing — skipping DOC-FLOW injection (run ConfigLoader validation on this project's config)",
 				);
 			} else {
 				const tier: DocTier = ctx.docTier ?? "full";
@@ -2291,7 +2346,6 @@ export class Blueprint {
 				for (const [cpName, cpConfig] of Object.entries(
 					this.checkpointConfig,
 				)) {
-					if (!cpConfig.enabled) continue;
 					// Generalized runners follow their pinned completion route and do
 					// not receive legacy brainstorm/ship gates.
 					if (
@@ -2553,11 +2607,9 @@ export class Blueprint {
 		const baseSystemPrompt = systemPromptLines.join("\n");
 
 		// Agent context (additive — prepend before base system prompt)
-		// FLY-137 v1.27.2: resolve agent_file root via agentFileRoot discriminant:
-		//   - "project" → project cwd (project-declared agents)
-		//   - "flywheel" → Flywheel repo root (shipped-generic fallback)
-		// Codex Track A Round 1 #1 fix — was previously always cwd, which silently
-		// dropped shipped-generic content for zero-config projects.
+		// FLY-2121: runtime agent paths are resolved once from the project registry.
+		// Blueprint consumes the immutable root + file pair and never re-derives
+		// identity or ownership from a path.
 		let agentContext = "";
 		if (isGeneralizedExecution) {
 			agentContext = [
@@ -2566,24 +2618,18 @@ export class Blueprint {
 				"",
 			].join("\n");
 		} else if (dispatchResult) {
-			const agentFileBaseDir =
-				dispatchResult.agentFileRoot === "flywheel"
-					? this.flywheelRepoRoot
-					: cwd;
-			if (!agentFileBaseDir) {
-				console.warn(
-					`[Blueprint] agentFileRoot="${dispatchResult.agentFileRoot}" but ` +
-						`flywheelRepoRoot is unset on this Blueprint instance — falling back to cwd. ` +
-						`Update the construction site to pass flywheelRepoRoot (FLY-137 v1.27.2).`,
-				);
-			}
+			const agentFileBaseDir = dispatchResult.agentConfig.agentFileRoot;
+			const relativeAgentFile = path.relative(
+				agentFileBaseDir,
+				dispatchResult.agentConfig.agentFile,
+			);
 			// FLY-1356: B/C arms read the `<agent-file>.{matt,bare}.md` variant
 			// when it exists, falling back to the baseline file (arm definition
 			// frozen in the variants; A arm = baseline, byte-untouched).
 			// domain_file and the generalized-workflow path get NO variants.
 			const agentContent = await readAgentFileWithSkillVariant(
-				agentFileBaseDir ?? cwd,
-				dispatchResult.agentConfig.agent_file,
+				agentFileBaseDir,
+				relativeAgentFile,
 				variantAssembly ? skillFrameworkMode : undefined,
 			);
 			if (agentContent) {
@@ -2605,11 +2651,10 @@ export class Blueprint {
 							"",
 						]
 					: ["## Agent Role", agentContent.slice(0, 40_000), ""];
-				if (dispatchResult.agentConfig.domain_file) {
-					// FLY-137 v1.27.2: domain_file resolves against the same root as agent_file
+				if (dispatchResult.agentConfig.domainFile) {
 					const domainContent = await readAgentFile(
-						agentFileBaseDir ?? cwd,
-						dispatchResult.agentConfig.domain_file,
+						cwd,
+						dispatchResult.agentConfig.domainFile,
 					);
 					if (domainContent) {
 						parts.push(`## Domain Config\n${domainContent.slice(0, 10_000)}`);
@@ -2619,7 +2664,7 @@ export class Blueprint {
 				agentContext = parts.join("\n");
 			} else {
 				console.warn(
-					`[Blueprint] Agent file not found: ${dispatchResult.agentConfig.agent_file}, using generic prompt`,
+					`[Blueprint] Agent file not found: ${dispatchResult.agentConfig.agentFile}, using generic prompt`,
 				);
 			}
 		}

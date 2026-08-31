@@ -5,7 +5,8 @@
  * --remote-control` daemon over its unix-socket control channel, sets a
  * first-class Goal (thread/goal/set), kicks a turn, and lets the native Goal
  * machinery auto-continue across turns until it reaches a terminal status.
- * The founder watches the SAME thread via `codex resume --remote` in cmux.
+ * The founder watches the same run through the passive transcript-tail window
+ * owned by CodexTmuxAdapter; this client remains the only App Server writer.
  *
  * Dependency-direction note: claude-runner MUST NOT import teamlead's
  * lead-backends/codex components (teamlead depends on claude-runner, so that

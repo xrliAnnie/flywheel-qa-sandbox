@@ -15,6 +15,7 @@ import {
 	crossFamilyReviewSatisfied,
 	type DesignBackend,
 	type FlagKeepAnchor,
+	type FlagScanScopeState,
 	type FlagScanState,
 	FEATURE_FLAGS,
 	getFlagStoreCodec,
@@ -24,7 +25,7 @@ import {
 	isSkillFrameworkVia,
 	type ModelConfigSnapshot,
 	type ProposedFlagScan,
-	PROTECTED_LEGACY_FLAG_NAMES,
+	PROJECT_STORE_MANAGED_FLAGS,
 	RETIRED_FLAG_STORE_ROWS,
 	RETIRED_FLAGS,
 	type SkillFrameworkMode,
@@ -32,8 +33,12 @@ import {
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
 import { isNoOutEdgeTerminalStatus } from "flywheel-core";
+import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
-import type { HookPayload } from "./bridge/hook-payload.js";
+import type {
+	HookPayload,
+	WorkflowClaimRecordedPayload,
+} from "./bridge/hook-payload.js";
 import {
 	type LandRetryClassification,
 	nextLandRetry,
@@ -77,6 +82,8 @@ import {
 import {
 	type FounderReworkHint,
 	parseFounderReworkHint,
+	resolveFounderReworkRoute,
+	resolveWorkflowReworkTarget,
 } from "./workflow-rework-hint.js";
 import {
 	type WorkflowRunNodeState,
@@ -108,6 +115,7 @@ import {
 	isWorkflowManifestLand,
 	type LoadedWorkflowSeed,
 	validateWorkflowManifest,
+	type WorkflowManifest,
 	type WorkflowTemplateOverride,
 	workflowApprovalGate,
 	workflowSeedContentHash,
@@ -118,6 +126,80 @@ import {
 	engineInvariantFromReason,
 	WorkflowEngineInvariantError,
 } from "./workflow-engine-invariant.js";
+
+export class Fly2121PreservedTemplateUnrunnableError extends Error {
+	readonly code = "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE" as const;
+
+	constructor(
+		readonly templateId: string,
+		readonly legacyRoles: readonly string[],
+		cause: Error,
+		readonly manifestUnreadable = false,
+	) {
+		super(
+			legacyRoles.length > 0
+				? `${templateId} is preserved by founder ownership but cannot run after FLY-2121 because it retains unresolvable pre-cutover roles: ${legacyRoles.join(", ")}; republish the template with registered node roles (${cause.message})`
+				: `${templateId} is preserved by founder ownership but cannot run after FLY-2121 because its published manifest does not pass current validation; repair and republish the template (${cause.message})`,
+			{ cause },
+		);
+		this.name = "Fly2121PreservedTemplateUnrunnableError";
+	}
+}
+
+export class WorkflowCatalogMigrationIntegrityError extends Error {
+	readonly code =
+		"FLY2121_WORKFLOW_CATALOG_MIGRATION_INTEGRITY_FAILED" as const;
+
+	constructor(
+		readonly stage: WorkflowCatalogMigrationIntegrityStage,
+		readonly baselineFingerprint: string,
+		readonly observedFingerprint: string,
+		readonly addedViolations: readonly WorkflowCatalogForeignKeyViolation[] = [],
+	) {
+		super(`workflow catalog migration integrity check failed at ${stage}`);
+		this.name = "WorkflowCatalogMigrationIntegrityError";
+	}
+}
+
+function normalizeWorkflowCatalogForeignKeyViolations(
+	rows: readonly unknown[],
+): WorkflowCatalogForeignKeyViolation[] {
+	return rows
+		.map((value) => {
+			const row = value as Record<string, unknown>;
+			return {
+				table: String(row.table),
+				rowId: row.rowid === null ? null : Number(row.rowid),
+				parent: String(row.parent),
+				foreignKeyId: Number(row.fkid),
+			};
+		})
+		.sort((left, right) =>
+			JSON.stringify(left).localeCompare(JSON.stringify(right)),
+		);
+}
+
+function workflowCatalogForeignKeyBaseline(
+	rows: readonly unknown[],
+): WorkflowCatalogForeignKeyBaseline {
+	const violations = normalizeWorkflowCatalogForeignKeyViolations(rows);
+	return {
+		fingerprint: canonicalSubmissionDigest(violations),
+		violations,
+	};
+}
+
+function workflowCatalogAddedForeignKeyViolations(
+	baseline: WorkflowCatalogForeignKeyBaseline,
+	observed: WorkflowCatalogForeignKeyBaseline,
+): WorkflowCatalogForeignKeyViolation[] {
+	const baselineKeys = new Set(
+		baseline.violations.map((violation) => canonicalJsonString(violation)),
+	);
+	return observed.violations.filter(
+		(violation) => !baselineKeys.has(canonicalJsonString(violation)),
+	);
+}
 
 type LeadEventAckPolicy =
 	| "question_response"
@@ -148,6 +230,7 @@ export class WorkflowEventUidConflictError extends Error {
 
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
+const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
 
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
@@ -485,6 +568,17 @@ export interface SessionEvent {
 	/** FLY-1048 PR-B: row timestamp (sqlite DATETIME) — populated on reads
 	 * that need event ages (getEventsByExecution); optional/additive. */
 	ts?: string;
+}
+
+/** FLY-2118: durable Bridge-owned continuity for one unclaimed tmux target. */
+export interface PatrolOrphanWatch {
+	target: string;
+	paneFingerprint: string;
+	firstSeenAt: number;
+	streak: number;
+	lastSlotStart: number;
+	intervalMs: number;
+	lastAlertAt: number | null;
 }
 
 export type ThreadArchiveCompensationCause =
@@ -1349,6 +1443,12 @@ export interface CodexReviewJob {
 	payload_version?: number;
 	failure_reason?: string;
 	failure_raw?: string;
+	/** UTC ISO instant for the next durable same-request automatic retry. */
+	retry_at?: string;
+	/** Number of automatic retry budgets consumed by this durable request. */
+	auto_retry_count: number;
+	/** Monotonic generation incremented for every persisted failure attempt. */
+	failure_attempt_count: number;
 	author_family?: string;
 	created_at: string;
 	updated_at?: string;
@@ -1585,6 +1685,7 @@ export type CommitFlagScanResult =
 
 export interface FlagValueRow {
 	flagName: string;
+	scope: string;
 	hasOverride: boolean;
 	raw: string | null;
 	lastEffective: string;
@@ -1594,9 +1695,17 @@ export interface FlagValueRow {
 	updatedBy: string;
 }
 
+export interface FlagValueClockRow {
+	flagName: string;
+	scopeKey: string;
+	valueLastChanged: number | null;
+	firstRegisteredAt: number;
+}
+
 export interface FlagValueChangeRow {
 	id: number;
 	flagName: string;
+	scope: string;
 	action: "seed" | "set" | "clear" | "default_shift" | "bypass_recovery";
 	fromPresent: boolean | null;
 	fromRaw: string | null;
@@ -1614,12 +1723,30 @@ export type ApplyFlagValueChangeResult =
 	| {
 			ok: false;
 			reason:
-				| "protected_legacy"
 				| "retired_flag"
 				| "not_store_managed"
 				| "missing_row"
 				| "stale_revision";
 			currentRevision?: number;
+		  };
+
+export type ApplyScopedFlagValueChangeResult =
+	| {
+			ok: true;
+			deleted: false;
+			row: FlagValueRow;
+			changeSeq: number;
+	  }
+	| { ok: true; deleted: true; changeSeq: number }
+	| {
+			ok: false;
+			reason:
+				| "not_project_store_managed"
+				| "invalid_scope"
+				| "invalid_raw"
+				| "missing_row"
+				| "stale_change_seq";
+			currentChangeSeq?: number;
 	  };
 
 export class StateStore {
@@ -1956,6 +2083,61 @@ export class StateStore {
 		}
 		mkdirSync(dirname(destination), { recursive: true });
 		await this.db.raw.backup(destination);
+	}
+
+	/** Online backup boundary for a fail-closed startup catalog migration. */
+	async createVerifiedOnlineBackup(
+		destination: string,
+		expectedForeignKeyBaseline: WorkflowCatalogForeignKeyBaseline,
+	): Promise<void> {
+		if (this.maintenance) throw new Error("regular_store_mode_required");
+		if (
+			this.dbPath === ":memory:" ||
+			!destination.trim() ||
+			existsSync(destination)
+		) {
+			throw new Error("workflow_catalog_backup_destination_invalid");
+		}
+		mkdirSync(dirname(destination), { recursive: true });
+		try {
+			await this.db.raw.backup(destination);
+			const backup = new BetterSqlite3(destination, {
+				readonly: true,
+				fileMustExist: true,
+			});
+			try {
+				const quickCheck = backup.pragma("quick_check", { simple: true });
+				const observedForeignKeyBaseline = workflowCatalogForeignKeyBaseline(
+					backup.pragma("foreign_key_check") as unknown[],
+				);
+				if (quickCheck !== "ok") {
+					throw new WorkflowCatalogMigrationIntegrityError(
+						"backup_quick_check",
+						expectedForeignKeyBaseline.fingerprint,
+						observedForeignKeyBaseline.fingerprint,
+					);
+				}
+				if (
+					observedForeignKeyBaseline.fingerprint !==
+					expectedForeignKeyBaseline.fingerprint
+				) {
+					throw new WorkflowCatalogMigrationIntegrityError(
+						"backup_foreign_key_baseline_drift",
+						expectedForeignKeyBaseline.fingerprint,
+						observedForeignKeyBaseline.fingerprint,
+						workflowCatalogAddedForeignKeyViolations(
+							expectedForeignKeyBaseline,
+							observedForeignKeyBaseline,
+						),
+					);
+				}
+			} finally {
+				backup.close();
+			}
+		} catch (error) {
+			rmSync(destination, { force: true });
+			throw error;
+		}
 	}
 
 	maintenanceIntegrityCheck(): {
@@ -3349,6 +3531,17 @@ export class StateStore {
 		this.db.run(
 			"CREATE UNIQUE INDEX IF NOT EXISTS idx_lead_events_dedup ON lead_events(lead_id, event_id)",
 		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS patrol_orphan_watch (
+				target TEXT PRIMARY KEY,
+				pane_fingerprint TEXT NOT NULL,
+				first_seen_at INTEGER NOT NULL,
+				streak INTEGER NOT NULL CHECK(streak >= 1),
+				last_slot_start INTEGER NOT NULL,
+				interval_ms INTEGER NOT NULL CHECK(interval_ms > 0),
+				last_alert_at INTEGER
+			)
+		`);
 
 		// FLY-1586 B: durable record of a legacy row the cutover refused to
 		// process. Deliberately a SEPARATE table rather than reusing
@@ -3990,6 +4183,9 @@ export class StateStore {
 				payload_version       INTEGER,
 				failure_reason        TEXT,
 				failure_raw           TEXT,
+				retry_at              TEXT,
+				auto_retry_count      INTEGER NOT NULL DEFAULT 0,
+				failure_attempt_count INTEGER NOT NULL DEFAULT 0,
 				author_family         TEXT,
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
 				updated_at            TEXT,
@@ -4023,6 +4219,9 @@ export class StateStore {
 		for (const [column, type] of [
 			["question_id", "TEXT"],
 			["failure_raw", "TEXT"],
+			["retry_at", "TEXT"],
+			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_verdict", "TEXT"],
 			["advisories_json", "TEXT"],
 			["settled_json", "TEXT"],
@@ -4542,26 +4741,84 @@ export class StateStore {
 		this.migrateFly1427TerminalStatusCorrections();
 	}
 
-	/** FLY-1778: one current-value row plus an append-only operator audit. */
+	/** FLY-1778/2100: scoped current-value rows plus append-only operator audit. */
 	private migrateFlagValueStore(): void {
-		this.db.run(`
-			CREATE TABLE IF NOT EXISTS flag_values (
-				flag_name TEXT PRIMARY KEY,
-				has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
-				raw_value TEXT,
-				last_effective TEXT NOT NULL,
-				value_last_changed INTEGER,
-				revision INTEGER NOT NULL CHECK (revision > 0),
-				updated_at INTEGER NOT NULL,
-				updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
-				CHECK (
-					(has_override = 1 AND raw_value IS NOT NULL) OR
-					(has_override = 0 AND raw_value IS NULL)
+		const flagValuesExists = Boolean(
+			this.db.raw
+				.prepare(
+					"SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'flag_values'",
 				)
-			);
+				.get(),
+		);
+		if (!flagValuesExists) {
+			this.db.run(`
+				CREATE TABLE flag_values (
+					flag_name TEXT NOT NULL,
+					scope TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0),
+					has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
+					raw_value TEXT,
+					last_effective TEXT NOT NULL,
+					value_last_changed INTEGER,
+					revision INTEGER NOT NULL CHECK (revision > 0),
+					updated_at INTEGER NOT NULL,
+					updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
+					CHECK (
+						(has_override = 1 AND raw_value IS NOT NULL) OR
+						(has_override = 0 AND raw_value IS NULL)
+					),
+					PRIMARY KEY (flag_name, scope)
+				)
+			`);
+		} else if (!this.workflowTableColumns("flag_values").has("scope")) {
+			if (this.dbPath !== ":memory:") {
+				const backupPath = `${this.dbPath}.pre-fly2100.bak`;
+				if (existsSync(backupPath)) {
+					console.info(
+						`[StateStore] FLY-2100: reusing existing migration backup ${backupPath}`,
+					);
+				} else {
+					this.db.raw.pragma("wal_checkpoint(FULL)");
+					const escaped = backupPath.replaceAll("'", "''");
+					this.db.raw.exec(`VACUUM INTO '${escaped}'`);
+				}
+			}
+			this.db.raw.transaction(() => {
+				this.db.raw.exec(`
+					DROP TABLE IF EXISTS flag_values_fly2100;
+					CREATE TABLE flag_values_fly2100 (
+						flag_name TEXT NOT NULL,
+						scope TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0),
+						has_override INTEGER NOT NULL CHECK (has_override IN (0, 1)),
+						raw_value TEXT,
+						last_effective TEXT NOT NULL,
+						value_last_changed INTEGER,
+						revision INTEGER NOT NULL CHECK (revision > 0),
+						updated_at INTEGER NOT NULL,
+						updated_by TEXT NOT NULL CHECK (length(updated_by) > 0),
+						CHECK (
+							(has_override = 1 AND raw_value IS NOT NULL) OR
+							(has_override = 0 AND raw_value IS NULL)
+						),
+						PRIMARY KEY (flag_name, scope)
+					);
+					INSERT INTO flag_values_fly2100 (
+						flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					)
+					SELECT flag_name, '*', has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					FROM flag_values;
+					DROP TABLE flag_values;
+					ALTER TABLE flag_values_fly2100 RENAME TO flag_values;
+				`);
+			})();
+		}
+
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS flag_value_changelog (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0),
 				action TEXT NOT NULL CHECK (
 					action IN ('seed','set','clear','default_shift','bypass_recovery')
 				),
@@ -4587,6 +4844,15 @@ export class StateStore {
 				updated_at INTEGER NOT NULL
 			);
 		`);
+		this.addColumnIfMissing(
+			"flag_value_changelog",
+			"scope",
+			"TEXT NOT NULL DEFAULT '*' CHECK (length(scope) > 0)",
+		);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_flag_value_changelog_flag_scope
+				ON flag_value_changelog(flag_name, scope, id)
+		`);
 
 		// FLY-1981: retire only explicitly ledgered current-value rows from prior
 		// releases. The append-only changelog intentionally remains untouched.
@@ -4598,16 +4864,17 @@ export class StateStore {
 		}
 	}
 
-	getFlagValueRow(name: string): FlagValueRow | undefined {
+	getFlagValueRow(name: string, scope: string = "*"): FlagValueRow | undefined {
 		const row = this.db.raw
 			.prepare(
-				`SELECT flag_name, has_override, raw_value, last_effective,
+				`SELECT flag_name, scope, has_override, raw_value, last_effective,
 					value_last_changed, revision, updated_at, updated_by
-				 FROM flag_values WHERE flag_name = ?`,
+				 FROM flag_values WHERE flag_name = ? AND scope = ?`,
 			)
-			.get(name) as
+			.get(name, scope) as
 			| {
 					flag_name: string;
+					scope: string;
 					has_override: number;
 					raw_value: string | null;
 					last_effective: string;
@@ -4620,6 +4887,7 @@ export class StateStore {
 		return row
 			? {
 					flagName: row.flag_name,
+					scope: row.scope,
 					hasOverride: row.has_override === 1,
 					raw: row.raw_value,
 					lastEffective: row.last_effective,
@@ -4631,18 +4899,158 @@ export class StateStore {
 			: undefined;
 	}
 
-	listFlagValueChanges(name: string): FlagValueChangeRow[] {
+	listScopedFlagValueRows(): FlagValueRow[] {
+		if (PROJECT_STORE_MANAGED_FLAGS.size === 0) return [];
+		const names = [...PROJECT_STORE_MANAGED_FLAGS];
+		const placeholders = names.map(() => "?").join(", ");
 		return (
 			this.db.raw
 				.prepare(
-					`SELECT id, flag_name, action, from_present, from_raw, to_present,
-						to_raw, from_effective, to_effective, changed_by, changed_at, reason
-					 FROM flag_value_changelog WHERE flag_name = ? ORDER BY id`,
+					`SELECT flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					 FROM flag_values WHERE flag_name IN (${placeholders})
+					 ORDER BY flag_name, scope`,
 				)
-				.all(name) as Array<Record<string, unknown>>
+				.all(...names) as Array<Record<string, unknown>>
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			scope: String(row.scope),
+			hasOverride: Number(row.has_override) === 1,
+			raw: (row.raw_value as string | null) ?? null,
+			lastEffective: String(row.last_effective),
+			valueLastChanged:
+				row.value_last_changed === null ? null : Number(row.value_last_changed),
+			revision: Number(row.revision),
+			updatedAt: Number(row.updated_at),
+			updatedBy: String(row.updated_by),
+		}));
+	}
+
+	/**
+	 * FLY-2104: read persistent value clocks without owning the future scope
+	 * migration. Current tables project one `*` clock; once BOTH tables expose a
+	 * `scope` column, exact `(flag_name, scope)` rows become authoritative.
+	 */
+	listFlagValueClocks(flagName?: string): FlagValueClockRow[] {
+		if (flagName !== undefined && flagName.length === 0) {
+			throw new Error("flag value clock filter must be non-empty");
+		}
+		const columns = (table: "flag_values" | "flag_value_changelog") =>
+			new Set(
+				(
+					this.db.raw.prepare(`PRAGMA table_info(${table})`).all() as Array<{
+						name: string;
+					}>
+				).map(({ name }) => name),
+			);
+		const valueScoped = columns("flag_values").has("scope");
+		const changelogScoped = columns("flag_value_changelog").has("scope");
+		if (valueScoped !== changelogScoped) {
+			throw new Error(
+				"flag value clock scope capability mismatch between value and changelog tables",
+			);
+		}
+
+		const filterClause = flagName === undefined ? "" : " WHERE flag_name = ?";
+		const filterArgs = flagName === undefined ? [] : [flagName];
+		const valueRows = this.db.raw
+			.prepare(
+				valueScoped
+					? `SELECT flag_name, scope AS scope_key, value_last_changed
+						 FROM flag_values${filterClause} ORDER BY flag_name, scope`
+					: `SELECT flag_name, '*' AS scope_key, value_last_changed
+						 FROM flag_values${filterClause} ORDER BY flag_name`,
+			)
+			.all(...filterArgs) as Array<{
+			flag_name: string;
+			scope_key: string;
+			value_last_changed: number | null;
+		}>;
+		const auditRows = this.db.raw
+			.prepare(
+				valueScoped
+					? `SELECT flag_name, scope AS scope_key,
+							MIN(changed_at) AS first_registered_at
+						 FROM flag_value_changelog${filterClause}
+						 GROUP BY flag_name, scope`
+					: `SELECT flag_name, '*' AS scope_key,
+							MIN(changed_at) AS first_registered_at
+						 FROM flag_value_changelog${filterClause}
+						 GROUP BY flag_name`,
+			)
+			.all(...filterArgs) as Array<{
+			flag_name: string;
+			scope_key: string;
+			first_registered_at: number;
+		}>;
+		const audits = new Map(
+			auditRows.map((row) => [
+				`${row.flag_name}\u0000${row.scope_key}`,
+				row.first_registered_at,
+			]),
+		);
+		const seen = new Set<string>();
+		const clocks: FlagValueClockRow[] = [];
+		for (const row of valueRows) {
+			const flagName = String(row.flag_name);
+			const scopeKey = String(row.scope_key);
+			if (!flagName || !scopeKey) {
+				throw new Error("flag value clock identity must be non-empty");
+			}
+			const key = `${flagName}\u0000${scopeKey}`;
+			if (seen.has(key)) {
+				throw new Error(
+					`duplicate flag value clock identity: ${flagName}/${scopeKey}`,
+				);
+			}
+			seen.add(key);
+			const firstRegisteredAt = audits.get(key);
+			if (firstRegisteredAt === undefined) {
+				throw new Error(`missing clock audit for flag value: ${flagName}/${scopeKey}`);
+			}
+			clocks.push({
+				flagName,
+				scopeKey,
+				valueLastChanged:
+					row.value_last_changed === null
+						? null
+						: Number(row.value_last_changed),
+				firstRegisteredAt: Number(firstRegisteredAt),
+			});
+		}
+		return clocks;
+	}
+
+	getFlagValueChangeSeq(name: string, scope: string = "*"): number {
+		return Number(
+			(
+				this.db.raw
+					.prepare(
+						`SELECT COALESCE(MAX(id), 0) AS seq
+						 FROM flag_value_changelog WHERE flag_name = ? AND scope = ?`,
+					)
+					.get(name, scope) as { seq: number }
+			).seq,
+		);
+	}
+
+	listFlagValueChanges(
+		name: string,
+		scope: string = "*",
+	): FlagValueChangeRow[] {
+		return (
+			this.db.raw
+				.prepare(
+					`SELECT id, flag_name, scope, action, from_present, from_raw, to_present,
+						to_raw, from_effective, to_effective, changed_by, changed_at, reason
+					 FROM flag_value_changelog
+					 WHERE flag_name = ? AND scope = ? ORDER BY id`,
+				)
+				.all(name, scope) as Array<Record<string, unknown>>
 		).map((row) => ({
 			id: Number(row.id),
 			flagName: String(row.flag_name),
+			scope: String(row.scope),
 			action: row.action as FlagValueChangeRow["action"],
 			fromPresent:
 				row.from_present === null ? null : Number(row.from_present) === 1,
@@ -4657,137 +5065,33 @@ export class StateStore {
 		}));
 	}
 
-	markFlagStoreBypassSeen(now: number = Date.now()): void {
-		this.db.raw
-			.prepare(
-				`INSERT INTO flag_store_meta(key, value, updated_at)
-				 VALUES ('bypass_seen', 1, ?)
-				 ON CONFLICT(key) DO UPDATE SET value = 1, updated_at = excluded.updated_at`,
-			)
-			.run(now);
-	}
-
-	isFlagStoreBypassSeen(): boolean {
-		return (
-			(
-				this.db.raw
-					.prepare("SELECT value FROM flag_store_meta WHERE key = 'bypass_seen'")
-					.get() as { value: number } | undefined
-			)?.value === 1
-		);
-	}
-
 	ensureFlagValueRows(args: {
 		env: Record<string, string | undefined>;
 		now?: number;
 	}): void {
 		const now = args.now ?? Date.now();
 		this.db.raw.transaction(() => {
-			const recovering = this.isFlagStoreBypassSeen();
-			for (const { flag_name } of this.db.raw
-				.prepare("SELECT flag_name FROM flag_values")
-				.all() as Array<{ flag_name: string }>) {
-				if (!STORE_MANAGED_FLAGS.has(flag_name)) {
-					throw new Error(`invalid flag_values identity: ${flag_name}`);
+			for (const { flag_name, scope } of this.db.raw
+				.prepare("SELECT flag_name, scope FROM flag_values")
+				.all() as Array<{ flag_name: string; scope: string }>) {
+				const valid =
+					PROJECT_STORE_MANAGED_FLAGS.has(flag_name) ||
+					(scope === "*" && STORE_MANAGED_FLAGS.has(flag_name));
+				if (!valid) {
+					throw new Error(
+						`invalid flag_values identity: ${flag_name} scope=${scope}`,
+					);
 				}
 			}
 
 			for (const name of STORE_MANAGED_FLAGS) {
 				const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+				if (spec?.scope !== "bridge_global") continue;
 				const codec = getFlagStoreCodec(name);
 				if (!spec?.envVar || !codec) {
 					throw new Error(`missing flag store policy: ${name}`);
 				}
 				const existing = this.getFlagValueRow(name);
-				if (recovering) {
-					const envRaw = args.env[spec.envVar];
-					const recoveryRaw =
-						spec.valueKind === "enum" && envRaw === "" ? undefined : envRaw;
-					if (existing && recoveryRaw === undefined) {
-						const effective = codec.canonicalEffective(
-							codec.parse({
-								hasOverride: existing.hasOverride,
-								raw: existing.raw,
-							}),
-						);
-						const effectiveChanged = effective !== existing.lastEffective;
-						if (effectiveChanged) {
-							this.db.raw
-								.prepare(
-									`UPDATE flag_values SET last_effective = ?,
-										value_last_changed = ?, revision = revision + 1,
-										updated_at = ?, updated_by = 'flag-store-recovery'
-									 WHERE flag_name = ?`,
-								)
-								.run(effective, now, now, name);
-						}
-						this.db.raw
-							.prepare(
-								`INSERT INTO flag_value_changelog (
-									flag_name, action, from_present, from_raw, to_present, to_raw,
-									from_effective, to_effective, changed_by, changed_at, reason
-								) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
-									'flag-store-recovery', ?, ?)`,
-							)
-							.run(
-								name,
-								existing.hasOverride ? 1 : 0,
-								existing.raw,
-								existing.hasOverride ? 1 : 0,
-								existing.raw,
-								existing.lastEffective,
-								effective,
-								now,
-								effectiveChanged
-									? "reconcile SQLite effective after boot bypass; legacy env absent"
-									: "preserve SQLite authority after boot bypass; legacy env absent",
-							);
-						continue;
-					}
-					const raw = recoveryRaw ?? null;
-					const hasOverride = recoveryRaw !== undefined;
-					const effective = codec.canonicalEffective(
-						codec.parse({ hasOverride, raw }),
-					);
-					if (existing) {
-						this.db.raw
-							.prepare(
-								`UPDATE flag_values SET has_override = ?, raw_value = ?,
-									last_effective = ?, value_last_changed = ?, revision = revision + 1,
-									updated_at = ?, updated_by = 'flag-store-recovery'
-								 WHERE flag_name = ?`,
-							)
-							.run(hasOverride ? 1 : 0, raw, effective, now, now, name);
-					} else {
-						this.db.raw
-							.prepare(
-								`INSERT INTO flag_values (
-									flag_name, has_override, raw_value, last_effective,
-									value_last_changed, revision, updated_at, updated_by
-								) VALUES (?, ?, ?, ?, ?, 1, ?, 'flag-store-recovery')`,
-							)
-							.run(name, hasOverride ? 1 : 0, raw, effective, now, now);
-					}
-					this.db.raw
-						.prepare(
-							`INSERT INTO flag_value_changelog (
-								flag_name, action, from_present, from_raw, to_present, to_raw,
-								from_effective, to_effective, changed_by, changed_at, reason
-							) VALUES (?, 'bypass_recovery', ?, ?, ?, ?, ?, ?,
-								'flag-store-recovery', ?, 'restore authority after boot bypass')`,
-						)
-						.run(
-							name,
-							existing ? (existing.hasOverride ? 1 : 0) : null,
-							existing?.raw ?? null,
-							hasOverride ? 1 : 0,
-							raw,
-							existing?.lastEffective ?? null,
-							effective,
-							now,
-						);
-					continue;
-				}
 				if (!existing) {
 					const raw = args.env[spec.envVar] ?? null;
 					const hasOverride = args.env[spec.envVar] !== undefined;
@@ -4797,17 +5101,17 @@ export class StateStore {
 					this.db.raw
 						.prepare(
 							`INSERT INTO flag_values (
-								flag_name, has_override, raw_value, last_effective,
+								flag_name, scope, has_override, raw_value, last_effective,
 								value_last_changed, revision, updated_at, updated_by
-							) VALUES (?, ?, ?, ?, NULL, 1, ?, 'flag-store-bootstrap')`,
+							) VALUES (?, '*', ?, ?, ?, NULL, 1, ?, 'flag-store-bootstrap')`,
 						)
 						.run(name, hasOverride ? 1 : 0, raw, effective, now);
 					this.db.raw
 						.prepare(
 							`INSERT INTO flag_value_changelog (
-								flag_name, action, from_present, from_raw, to_present, to_raw,
+								flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 								from_effective, to_effective, changed_by, changed_at, reason
-							) VALUES (?, 'seed', NULL, NULL, ?, ?, NULL, ?,
+							) VALUES (?, '*', 'seed', NULL, NULL, ?, ?, NULL, ?,
 								'flag-store-bootstrap', ?, 'initial registry seed')`,
 						)
 						.run(name, hasOverride ? 1 : 0, raw, effective, now);
@@ -4825,15 +5129,15 @@ export class StateStore {
 					.prepare(
 						`UPDATE flag_values SET last_effective = ?, value_last_changed = ?,
 							revision = revision + 1, updated_at = ?, updated_by = 'flag-store-bootstrap'
-						 WHERE flag_name = ?`,
+						 WHERE flag_name = ? AND scope = '*'`,
 					)
 					.run(effective, now, now, name);
 				this.db.raw
 					.prepare(
 						`INSERT INTO flag_value_changelog (
-							flag_name, action, from_present, from_raw, to_present, to_raw,
+							flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 							from_effective, to_effective, changed_by, changed_at, reason
-						) VALUES (?, 'default_shift', ?, ?, ?, ?, ?, ?,
+						) VALUES (?, '*', 'default_shift', ?, ?, ?, ?, ?, ?,
 							'flag-store-bootstrap', ?, 'effective default or codec changed')`,
 					)
 					.run(
@@ -4846,13 +5150,6 @@ export class StateStore {
 						effective,
 						now,
 					);
-			}
-			if (recovering) {
-				this.db.raw
-					.prepare(
-						"UPDATE flag_store_meta SET value = 0, updated_at = ? WHERE key = 'bypass_seen'",
-					)
-					.run(now);
 			}
 		})();
 	}
@@ -4873,10 +5170,11 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "retired_flag" };
 		}
-		if (PROTECTED_LEGACY_FLAG_NAMES.has(args.name)) {
-			return { ok: false, reason: "protected_legacy" };
-		}
-		if (!STORE_MANAGED_FLAGS.has(args.name)) {
+		if (
+			!STORE_MANAGED_FLAGS.has(args.name) ||
+			FEATURE_FLAGS.find(({ name }) => name === args.name)?.scope !==
+				"bridge_global"
+		) {
 			return { ok: false, reason: "not_store_managed" };
 		}
 		if (!args.actor.trim() || !args.reason.trim()) {
@@ -4910,7 +5208,8 @@ export class StateStore {
 				.prepare(
 					`UPDATE flag_values SET has_override = ?, raw_value = ?,
 						last_effective = ?, value_last_changed = ?, revision = revision + 1,
-						updated_at = ?, updated_by = ? WHERE flag_name = ?`,
+						updated_at = ?, updated_by = ?
+					 WHERE flag_name = ? AND scope = '*'`,
 				)
 				.run(
 					hasOverride ? 1 : 0,
@@ -4924,9 +5223,9 @@ export class StateStore {
 			this.db.raw
 				.prepare(
 					`INSERT INTO flag_value_changelog (
-						flag_name, action, from_present, from_raw, to_present, to_raw,
+						flag_name, scope, action, from_present, from_raw, to_present, to_raw,
 						from_effective, to_effective, changed_by, changed_at, reason
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					) VALUES (?, '*', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				)
 				.run(
 					args.name,
@@ -4948,6 +5247,151 @@ export class StateStore {
 		return result;
 	}
 
+	applyScopedFlagValueChange(args: {
+		name: string;
+		scope: string;
+		op: "set" | "clear";
+		rawTo: string | null;
+		expectedChangeSeq: number;
+		actor: string;
+		reason: string;
+		now?: number;
+	}): ApplyScopedFlagValueChangeResult {
+		if (!PROJECT_STORE_MANAGED_FLAGS.has(args.name)) {
+			return { ok: false, reason: "not_project_store_managed" };
+		}
+		if (!args.scope.trim()) return { ok: false, reason: "invalid_scope" };
+		if (
+			(args.op === "set" && args.rawTo !== "0" && args.rawTo !== "1") ||
+			(args.op === "clear" && args.rawTo !== null)
+		) {
+			return { ok: false, reason: "invalid_raw" };
+		}
+		if (!args.actor.trim() || !args.reason.trim()) {
+			throw new Error("flag value changes require actor and reason");
+		}
+
+		let result: ApplyScopedFlagValueChangeResult = {
+			ok: false,
+			reason: "missing_row",
+		};
+		this.db.raw.transaction(() => {
+			const currentChangeSeq = this.getFlagValueChangeSeq(
+				args.name,
+				args.scope,
+			);
+			if (currentChangeSeq !== args.expectedChangeSeq) {
+				result = {
+					ok: false,
+					reason: "stale_change_seq",
+					currentChangeSeq,
+				};
+				return;
+			}
+			const current = this.getFlagValueRow(args.name, args.scope);
+			if (args.op === "clear" && !current) return;
+
+			const now = args.now ?? Date.now();
+			if (args.op === "clear") {
+				this.db.raw
+					.prepare("DELETE FROM flag_values WHERE flag_name = ? AND scope = ?")
+					.run(args.name, args.scope);
+				this.db.raw
+					.prepare(
+						`INSERT INTO flag_value_changelog (
+							flag_name, scope, action, from_present, from_raw,
+							to_present, to_raw, from_effective, to_effective,
+							changed_by, changed_at, reason
+						) VALUES (?, ?, 'clear', 1, ?, 0, NULL, ?, 'inherit', ?, ?, ?)`,
+					)
+					.run(
+						args.name,
+						args.scope,
+						current?.raw ?? null,
+						current?.lastEffective ?? null,
+						args.actor,
+						now,
+						args.reason,
+					);
+				result = {
+					ok: true,
+					deleted: true,
+					changeSeq: this.getFlagValueChangeSeq(args.name, args.scope),
+				};
+				return;
+			}
+
+			const codec = getFlagStoreCodec(args.name);
+			if (!codec) throw new Error(`missing flag store codec: ${args.name}`);
+			const effective = codec.canonicalEffective(
+				codec.parse({ hasOverride: true, raw: args.rawTo }),
+			);
+			const revision = (current?.revision ?? 0) + 1;
+			const valueLastChanged =
+				current && current.lastEffective !== effective
+					? now
+					: (current?.valueLastChanged ?? null);
+			this.db.raw
+				.prepare(
+					`INSERT INTO flag_values (
+						flag_name, scope, has_override, raw_value, last_effective,
+						value_last_changed, revision, updated_at, updated_by
+					) VALUES (?, ?, 1, ?, ?, ?, ?, ?, ?)
+					ON CONFLICT(flag_name, scope) DO UPDATE SET
+						has_override = 1,
+						raw_value = excluded.raw_value,
+						last_effective = excluded.last_effective,
+						value_last_changed = excluded.value_last_changed,
+						revision = excluded.revision,
+						updated_at = excluded.updated_at,
+						updated_by = excluded.updated_by`,
+				)
+				.run(
+					args.name,
+					args.scope,
+					args.rawTo,
+					effective,
+					valueLastChanged,
+					revision,
+					now,
+					args.actor,
+				);
+			this.db.raw
+				.prepare(
+					`INSERT INTO flag_value_changelog (
+						flag_name, scope, action, from_present, from_raw,
+						to_present, to_raw, from_effective, to_effective,
+						changed_by, changed_at, reason
+					) VALUES (?, ?, 'set', ?, ?, 1, ?, ?, ?, ?, ?, ?)`,
+				)
+				.run(
+					args.name,
+					args.scope,
+					current ? 1 : null,
+					current?.raw ?? null,
+					args.rawTo,
+					current?.lastEffective ?? null,
+					effective,
+					args.actor,
+					now,
+					args.reason,
+				);
+			const row = this.getFlagValueRow(args.name, args.scope);
+			if (!row) {
+				throw new Error(
+					`scoped flag value disappeared: ${args.name}/${args.scope}`,
+				);
+			}
+			result = {
+				ok: true,
+				deleted: false,
+				row,
+				changeSeq: this.getFlagValueChangeSeq(args.name, args.scope),
+			};
+		})();
+		return result;
+	}
+
 	/** FLY-1781: durable weekly flag-retirement scan + side-effect outbox. */
 	private migrateFlagRetirementScan(): void {
 		this.db.run(`
@@ -4965,6 +5409,17 @@ export class StateStore {
 				last_retiring_issue TEXT,
 				ask_count INTEGER NOT NULL DEFAULT 0,
 				last_asked_run_id INTEGER
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS flag_scan_scope_state (
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				canonical TEXT,
+				streak_started_at INTEGER,
+				streak_samples INTEGER NOT NULL DEFAULT 0,
+				last_sampled_at INTEGER NOT NULL,
+				PRIMARY KEY (flag_name, scope)
 			)
 		`);
 		this.db.run(`
@@ -5125,6 +5580,21 @@ export class StateStore {
 			askCount: Number(row.ask_count),
 			lastAskedRunId:
 				row.last_asked_run_id == null ? null : Number(row.last_asked_run_id),
+		}));
+	}
+
+	getFlagScanScopeState(): FlagScanScopeState[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM flag_scan_scope_state ORDER BY flag_name, scope",
+			[],
+		).map((row) => ({
+			flagName: String(row.flag_name),
+			scope: String(row.scope),
+			canonical: row.canonical == null ? null : String(row.canonical),
+			streakStartedAt:
+				row.streak_started_at == null ? null : Number(row.streak_started_at),
+			streakSamples: Number(row.streak_samples),
+			lastSampledAt: Number(row.last_sampled_at),
 		}));
 	}
 
@@ -5480,6 +5950,46 @@ export class StateStore {
 				);
 			}
 
+			const scopeKeys = new Set<string>();
+			for (const state of input.proposed.nextScopeState) {
+				if (!state.flagName.trim() || !state.scope.trim()) {
+					throw new Error("flag scan scope state requires flag and scope");
+				}
+				const key = `${state.flagName}\u0000${state.scope}`;
+				if (scopeKeys.has(key)) {
+					throw new Error(
+						`duplicate flag scan scope state: ${state.flagName}/${state.scope}`,
+					);
+				}
+				scopeKeys.add(key);
+				this.db.run(
+					`INSERT INTO flag_scan_scope_state
+					 (flag_name, scope, canonical, streak_started_at, streak_samples,
+					  last_sampled_at)
+					 VALUES (?, ?, ?, ?, ?, ?)
+					 ON CONFLICT(flag_name, scope) DO UPDATE SET
+					  canonical = excluded.canonical,
+					  streak_started_at = excluded.streak_started_at,
+					  streak_samples = excluded.streak_samples,
+					  last_sampled_at = excluded.last_sampled_at`,
+					[
+						state.flagName,
+						state.scope,
+						state.canonical,
+						state.streakStartedAt,
+						state.streakSamples,
+						state.lastSampledAt,
+					],
+				);
+			}
+			for (const existing of this.getFlagScanScopeState()) {
+				if (scopeKeys.has(`${existing.flagName}\u0000${existing.scope}`)) continue;
+				this.db.run(
+					"DELETE FROM flag_scan_scope_state WHERE flag_name = ? AND scope = ?",
+					[existing.flagName, existing.scope],
+				);
+			}
+
 			for (const anchor of input.proposed.nextAnchors) {
 				this.db.run(
 					`INSERT INTO flag_keep_anchor
@@ -5650,10 +6160,14 @@ export class StateStore {
 				]),
 			);
 			if (
-				dependencies.get("linear") !== "done" ||
-				!(["done", "degraded"] as FlagScanLegStatus[]).includes(
-					dependencies.get("report") as FlagScanLegStatus,
-				)
+				(dependencies.has("linear") &&
+					!(["done", "degraded"] as FlagScanLegStatus[]).includes(
+						dependencies.get("linear") as FlagScanLegStatus,
+					)) ||
+				(dependencies.has("report") &&
+					!(["done", "degraded"] as FlagScanLegStatus[]).includes(
+						dependencies.get("report") as FlagScanLegStatus,
+					))
 			) {
 				return { claimed: false, reason: "dependencies_unsettled" };
 			}
@@ -5680,6 +6194,34 @@ export class StateStore {
 		);
 		if (!row) throw new Error("claimed flag scan leg disappeared");
 		return { claimed: true, leg: row };
+	}
+
+	/**
+	 * FLY-2104: Linear issue creation and the standalone report leg were
+	 * retired in favor of one Discord publish-report delivery. Historical
+	 * committed runs can still contain either leg, so recovery settles those
+	 * rows without invoking their former external effects.
+	 */
+	settleRetiredFlagScanLeg(input: {
+		runId: number;
+		leg: "linear" | "report";
+		evidence: string;
+	}): boolean {
+		if (!input.evidence.trim()) {
+			throw new Error("retired flag scan leg evidence is required");
+		}
+		this.db.run(
+			`UPDATE flag_scan_run_legs
+			    SET status = 'degraded', evidence = ?, claimed_at = NULL,
+			        lease_expires_at = NULL, lease_owner = NULL,
+			        ambiguous_at = NULL, reconcile_not_before = NULL
+			  WHERE run_id = ? AND leg = ?
+			    AND status NOT IN ('done','degraded')`,
+			[input.evidence, input.runId, input.leg],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.finalizeFlagScanRunIfSettled(input.runId);
+		return changed;
 	}
 
 	completeFlagScanLeg(input: {
@@ -6132,6 +6674,27 @@ export class StateStore {
 				detail JSON
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_catalog_migration_audit (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at TEXT NOT NULL DEFAULT (datetime('now')),
+				migration_id TEXT NOT NULL,
+				item_kind TEXT NOT NULL CHECK (
+					item_kind IN ('template_cleanup','seed_update')
+				),
+				item_id TEXT NOT NULL,
+				reason TEXT NOT NULL,
+				detail JSON NOT NULL,
+				UNIQUE (migration_id, item_kind, item_id, detail)
+			)
+		`);
+		for (const action of ["update", "delete"] as const) {
+			this.db.run(`
+				CREATE TRIGGER IF NOT EXISTS workflow_catalog_migration_audit_no_${action}
+				BEFORE ${action.toUpperCase()} ON workflow_catalog_migration_audit
+				BEGIN SELECT RAISE(ABORT, 'workflow_catalog_migration_audit is append-only'); END
+			`);
+		}
 		const workflowTemplateAuditSql = (
 			this.db.raw
 				.prepare(
@@ -6763,6 +7326,30 @@ export class StateStore {
 				[executionId],
 			);
 		}
+	}
+
+	/** Close the durable runway owner after an external probe proves it dead. */
+	private terminalizeProvenDeadSessionTx(
+		executionId: string,
+		reason: string,
+	): void {
+		const session = this.getSession(executionId);
+		if (!session || isStateStoreIrreversibleTerminalForZombie(session.status)) {
+			return;
+		}
+		this.db.run(
+			`UPDATE sessions
+			    SET status = 'failed', last_error = ?
+			  WHERE execution_id = ? AND status = ?`,
+			[reason, executionId, session.status],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new WorkflowEngineInvariantError(
+				"workflow_proven_dead_session_cas_failed",
+			);
+		}
+		this.applyTerminalTimestamp(executionId, session.status, "failed");
+		this.bumpLifecycleRevision(executionId);
 	}
 
 	/** FLY-245 D-a: read a session's current monotonic lifecycle revision (0 if
@@ -9283,6 +9870,9 @@ export class StateStore {
 					: Number(row.payload_version),
 			failure_reason: (row.failure_reason as string) ?? undefined,
 			failure_raw: (row.failure_raw as string) ?? undefined,
+			retry_at: (row.retry_at as string) ?? undefined,
+			auto_retry_count: Number(row.auto_retry_count ?? 0),
+			failure_attempt_count: Number(row.failure_attempt_count ?? 0),
 			author_family: (row.author_family as string) ?? undefined,
 			created_at: row.created_at as string,
 			updated_at: (row.updated_at as string) ?? undefined,
@@ -9390,6 +9980,7 @@ export class StateStore {
 		this.db.run(
 			`UPDATE codex_review_job
 			   SET status = 'running', failure_reason = NULL, failure_raw = NULL,
+			       retry_at = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status IN ('pending','failed')`,
 			[requestId],
@@ -9416,7 +10007,7 @@ export class StateStore {
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
 			       findings_json = ?, advisories_json = ?, settled_json = ?,
 			       response_json = ?, payload_version = ?,
-			       failure_reason = NULL, failure_raw = NULL,
+			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
 			[
@@ -9434,6 +10025,63 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-2177: atomically persist one failure generation and, when supplied a
+	 * canonical UTC instant, consume at most one of three automatic retry slots.
+	 * Terminal done/skipped rows remain immutable.
+	 */
+	recordCodexReviewJobFailure(input: {
+		requestId: string;
+		reason: string;
+		failureRaw?: string;
+		retryAt?: string;
+	}): { updated: boolean; scheduled: boolean; job: CodexReviewJob | null } {
+		let retryAt: string | null = null;
+		if (input.retryAt) {
+			const parsed = Date.parse(input.retryAt);
+			if (
+				Number.isFinite(parsed) &&
+				new Date(parsed).toISOString() === input.retryAt
+			) {
+				retryAt = input.retryAt;
+			}
+		}
+		this.db.run(
+			`UPDATE codex_review_job
+			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
+			       retry_at = CASE
+			         WHEN ? IS NOT NULL AND auto_retry_count < ? THEN ?
+			         ELSE NULL
+			       END,
+			       auto_retry_count = auto_retry_count + CASE
+			         WHEN ? IS NOT NULL AND auto_retry_count < ? THEN 1
+			         ELSE 0
+			       END,
+			       failure_attempt_count = failure_attempt_count + 1,
+			       updated_at = datetime('now')
+			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+			[
+				input.reason,
+				input.failureRaw ?? null,
+				retryAt,
+				MAX_CODEX_REVIEW_AUTO_RETRIES,
+				retryAt,
+				retryAt,
+				MAX_CODEX_REVIEW_AUTO_RETRIES,
+				input.requestId,
+			],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		this.save();
+		const job = this.getCodexReviewJob(input.requestId);
+		return {
+			updated,
+			scheduled:
+				updated && retryAt !== null && job?.retry_at === retryAt,
+			job,
+		};
+	}
+
+	/**
 	 * R13 HIGH-1: terminal done/skipped rows are IMMUTABLE here — a crashed
 	 * respond/stamp after the verdict landed must not downgrade the row out of
 	 * the outbox scan (which only re-delivers done/skipped).
@@ -9443,14 +10091,11 @@ export class StateStore {
 		reason: string,
 		failureRaw?: string,
 	): void {
-		this.db.run(
-			`UPDATE codex_review_job
-			   SET status = 'failed', failure_reason = ?, failure_raw = ?,
-			       updated_at = datetime('now')
-			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
-			[reason, failureRaw ?? null, requestId],
-		);
-		this.save();
+		this.recordCodexReviewJobFailure({
+			requestId,
+			reason,
+			failureRaw,
+		});
 	}
 
 	/** Stamp/refresh the claude reviewer session uuid used for this job. */
@@ -9472,6 +10117,23 @@ export class StateStore {
 		const jobs: CodexReviewJob[] = [];
 		const stmt = this.db.prepare(
 			"SELECT * FROM codex_review_job WHERE status IN ('pending','running') ORDER BY created_at ASC",
+		);
+		while (stmt.step()) {
+			jobs.push(
+				this.rowToCodexReviewJob(stmt.getAsObject() as Record<string, unknown>),
+			);
+		}
+		stmt.free();
+		return jobs;
+	}
+
+	/** FLY-2177: durable future/due automatic retries, earliest first. */
+	listScheduledCodexReviewJobs(): CodexReviewJob[] {
+		const jobs: CodexReviewJob[] = [];
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE status = 'failed' AND retry_at IS NOT NULL
+			  ORDER BY julianday(retry_at) ASC, created_at ASC`,
 		);
 		while (stmt.step()) {
 			jobs.push(
@@ -11035,15 +11697,61 @@ export class StateStore {
 	 * Statuses: NEW|ACK|REPAIRING|MONITORING|ESCALATED|RESOLVED. The Hub no longer
 	 * writes ESCALATED automatically. ACK stamps acked_at once (first claim wins).
 	 */
-	setTicketStatus(correlationKey: string, status: string): void {
+	setTicketStatus(
+		correlationKey: string,
+		status: string,
+		expectedEventId?: string,
+	): number {
 		this.db.run(
 			`UPDATE alert_threads SET
 				ticket_status = ?,
 				acked_at = CASE WHEN ? = 'ACK' AND acked_at IS NULL THEN datetime('now') ELSE acked_at END
-			 WHERE correlation_key = ? AND resolved_at IS NULL`,
-			[status, status, correlationKey],
+			 WHERE correlation_key = ? AND resolved_at IS NULL${
+				expectedEventId === undefined ? "" : " AND event_id = ?"
+			}`,
+			[
+				status,
+				status,
+				correlationKey,
+				...(expectedEventId === undefined ? [] : [expectedEventId]),
+			],
 		);
-		this.save();
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed;
+	}
+
+	/** Mark a duty disposition complete for one exact alert episode. */
+	stampDutyAck(correlationKey: string, eventId: string): boolean {
+		this.db.run(
+			`UPDATE alert_threads SET
+				acked_at = COALESCE(acked_at, datetime('now'))
+			 WHERE correlation_key = ? AND event_id = ?`,
+			[correlationKey, eventId],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
+	}
+
+	/** Transfer one unresolved ticket episode to a roster Lead. */
+	handoffTicket(
+		correlationKey: string,
+		eventId: string,
+		ownerRef: string,
+	): boolean {
+		this.db.run(
+			`UPDATE alert_threads SET
+				acked_at = COALESCE(acked_at, datetime('now')),
+				ticket_status = 'ESCALATED',
+				owner_ref = ?
+			 WHERE correlation_key = ? AND event_id = ?
+			   AND resolved_at IS NULL AND ticket_status <> 'RESOLVED'`,
+			[ownerRef, correlationKey, eventId],
+		);
+		const changed = this.db.getRowsModified() === 1;
+		if (changed) this.save();
+		return changed;
 	}
 
 	/** FLY-927 (Task 2.2): consume one bounded ARC attempt. */
@@ -11600,6 +12308,34 @@ export class StateStore {
 		return transitioned;
 	}
 
+	/** A bounded newest-first batch after an optional durable alert-row cursor. */
+	listDutyOutstanding(
+		limit: number,
+		since?: Pick<AlertThreadRow, "opened_at" | "event_id">,
+	): Array<AlertThreadRow & { resolved: boolean }> {
+		const stmt = this.db.prepare(
+			`SELECT * FROM alert_threads
+			 WHERE acked_at IS NULL AND ticket_status IS NOT NULL
+			   ${since ? "AND (opened_at > ? OR (opened_at = ? AND event_id > ?))" : ""}
+			 ORDER BY opened_at DESC, event_id DESC
+			 LIMIT ?`,
+		);
+		stmt.bind(
+			since
+				? [since.opened_at, since.opened_at, since.event_id, limit]
+				: [limit],
+		);
+		const out: Array<AlertThreadRow & { resolved: boolean }> = [];
+		while (stmt.step()) {
+			const row = rowToAlertThread(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+			out.push({ ...row, resolved: row.resolved_at !== null });
+		}
+		stmt.free();
+		return out;
+	}
+
 	/**
 	 * FLY-927 (Task 2.3 ACK correlation): the ACTIVE row for an exact event id.
 	 * A stale episode's event id never matches the active row (episode replace
@@ -11608,6 +12344,34 @@ export class StateStore {
 	getActiveAlertThreadByEventId(eventId: string): AlertThreadRow | undefined {
 		const stmt = this.db.prepare(
 			"SELECT * FROM alert_threads WHERE event_id = ? AND resolved_at IS NULL",
+		);
+		stmt.bind([eventId]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Duty lookup by the Discord root/thread id, including resolved tickets. */
+	getAlertThreadByRootMessageId(messageId: string): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE root_message_id = ? OR thread_id = ?",
+		);
+		stmt.bind([messageId, messageId]);
+		let out: AlertThreadRow | undefined;
+		if (stmt.step()) {
+			out = rowToAlertThread(stmt.getAsObject() as Record<string, unknown>);
+		}
+		stmt.free();
+		return out;
+	}
+
+	/** Duty lookup by exact episode id, including resolved tickets. */
+	getAlertThreadByEventId(eventId: string): AlertThreadRow | undefined {
+		const stmt = this.db.prepare(
+			"SELECT * FROM alert_threads WHERE event_id = ?",
 		);
 		stmt.bind([eventId]);
 		let out: AlertThreadRow | undefined;
@@ -11640,12 +12404,23 @@ export class StateStore {
 	}
 
 	/** FLY-368: mark the active alert thread resolved (recovery confirmed). */
-	resolveAlertThread(correlationKey: string): void {
+	resolveAlertThread(
+		correlationKey: string,
+		expectedEventId?: string,
+	): number {
 		this.db.run(
-			"UPDATE alert_threads SET resolved_at = datetime('now') WHERE correlation_key = ? AND resolved_at IS NULL",
-			[correlationKey],
+			`UPDATE alert_threads SET resolved_at = datetime('now')
+			 WHERE correlation_key = ? AND resolved_at IS NULL${
+				expectedEventId === undefined ? "" : " AND event_id = ?"
+			}`,
+			[
+				correlationKey,
+				...(expectedEventId === undefined ? [] : [expectedEventId]),
+			],
 		);
-		this.save();
+		const changed = this.db.getRowsModified();
+		if (changed > 0) this.save();
+		return changed;
 	}
 
 	/**
@@ -11982,6 +12757,33 @@ export class StateStore {
 	}
 
 	/**
+	 * FLY-2076: persist an alert episode when the store-managed alert-system
+	 * switch suppresses all delivery side effects. Reuses the existing lead-event
+	 * journal so OFF means "recorded but intentionally not dispatched", not lost.
+	 */
+	recordAlertSystemSuppression(input: {
+		leadId: string;
+		eventId: string;
+		eventType: string;
+		payload: string;
+		sessionKey?: string;
+	}): boolean {
+		// A suppression is an audit fact, not a delivery claim. Keep its journal
+		// identity separate so firing the same stable producer event after hot
+		// re-enable can still win the ordinary `(lead_id, event_id)` delivery slot.
+		const suppressionEventId = `alert-system-suppressed:${input.eventId}`;
+		const inserted = this.tryClaimLeadEvent(
+			input.leadId,
+			suppressionEventId,
+			input.eventType,
+			input.payload,
+			input.sessionKey,
+		);
+		if (inserted) this.save();
+		return inserted;
+	}
+
+	/**
 	 * FLY-1018: transactional outbox pair for a ship-approval REQUEST
 	 * (plan §2.8 ②). The `ship_approval_request` lead event and its
 	 * `ship_approval_requests` row commit together or not at all — zero
@@ -12144,6 +12946,53 @@ export class StateStore {
 		return row ? mapLeadEventRow(row) : null;
 	}
 
+	getPatrolOrphanWatch(target: string): PatrolOrphanWatch | null {
+		const row = this.db.raw
+			.prepare("SELECT * FROM patrol_orphan_watch WHERE target = ?")
+			.get(target) as Record<string, unknown> | undefined;
+		return row ? mapPatrolOrphanWatch(row) : null;
+	}
+
+	listPatrolOrphanWatches(): PatrolOrphanWatch[] {
+		return (
+			this.db.raw
+				.prepare("SELECT * FROM patrol_orphan_watch ORDER BY target")
+				.all() as Record<string, unknown>[]
+		).map(mapPatrolOrphanWatch);
+	}
+
+	upsertPatrolOrphanWatch(watch: PatrolOrphanWatch): void {
+		this.db.raw
+			.prepare(
+				`INSERT INTO patrol_orphan_watch
+				   (target, pane_fingerprint, first_seen_at, streak, last_slot_start,
+				    interval_ms, last_alert_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?)
+				 ON CONFLICT(target) DO UPDATE SET
+				   pane_fingerprint = excluded.pane_fingerprint,
+				   first_seen_at = excluded.first_seen_at,
+				   streak = excluded.streak,
+				   last_slot_start = excluded.last_slot_start,
+				   interval_ms = excluded.interval_ms,
+				   last_alert_at = excluded.last_alert_at`,
+			)
+			.run(
+				watch.target,
+				watch.paneFingerprint,
+				watch.firstSeenAt,
+				watch.streak,
+				watch.lastSlotStart,
+				watch.intervalMs,
+				watch.lastAlertAt,
+			);
+	}
+
+	deletePatrolOrphanWatch(target: string): void {
+		this.db.raw
+			.prepare("DELETE FROM patrol_orphan_watch WHERE target = ?")
+			.run(target);
+	}
+
 	listUndeliveredLeadEvents(limit = 10_000): LeadEventRow[] {
 		return (
 			this.db.raw
@@ -12172,7 +13021,7 @@ export class StateStore {
 		).map(mapLeadEventRow);
 	}
 
-	listUndeliveredWorkflowReplacementLeadEvents(input: {
+	listUndeliveredLeadInboxEvents(input: {
 		leadId: string;
 		projectName: string;
 		limit?: number;
@@ -12182,18 +13031,20 @@ export class StateStore {
 				`SELECT * FROM lead_events
 				  WHERE delivered_at IS NULL
 				    AND lead_id = ?
-				    AND event_type = 'workflow_replacement_eligibility'
+				    AND json_valid(payload) = 1
+				    AND json_extract(payload, '$.project_name') = ?
+				    AND event_type IN (
+				      'workflow_replacement_eligibility',
+				      'workflow_claim_recorded'
+				    )
 				  ORDER BY seq ASC LIMIT ?`,
 			)
-			.all(input.leadId, input.limit ?? 1_000) as Record<string, unknown>[];
-		return rows.map(mapLeadEventRow).filter((row) => {
-			try {
-				const payload = JSON.parse(row.payload) as { project_name?: unknown };
-				return payload.project_name === input.projectName;
-			} catch {
-				return false;
-			}
-		});
+			.all(
+				input.leadId,
+				input.projectName,
+				input.limit ?? 1_000,
+			) as Record<string, unknown>[];
+		return rows.map(mapLeadEventRow);
 	}
 
 	/**
@@ -19855,6 +20706,57 @@ export class StateStore {
 		) as unknown as WorkflowTemplateAuditRow[];
 	}
 
+	listWorkflowCatalogMigrationAudit(): WorkflowCatalogMigrationAuditRow[] {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_catalog_migration_audit ORDER BY id",
+			[],
+		) as unknown as WorkflowCatalogMigrationAuditRow[];
+	}
+
+	private preservedTemplateUnrunnableDiagnostic(
+		templateId: string,
+	):
+		| { legacyRoles: string[]; manifestUnreadable: boolean }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT detail FROM workflow_catalog_migration_audit
+			 WHERE migration_id = 'FLY-2121'
+			   AND item_kind = 'seed_update'
+			   AND item_id = ?
+			   AND reason = 'founder_owned'
+			 ORDER BY id DESC
+			 LIMIT 1`,
+			[templateId],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const detail = JSON.parse(String(row.detail)) as {
+				dispatchStatus?: unknown;
+				diagnosticCode?: unknown;
+				manifestStatus?: unknown;
+				unresolvableRoles?: unknown;
+			};
+			if (
+				detail.dispatchStatus !== "unrunnable" ||
+				detail.diagnosticCode !== "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE"
+			) {
+				return undefined;
+			}
+			const legacyRoles = Array.isArray(detail.unresolvableRoles)
+				? detail.unresolvableRoles.filter(
+						(role): role is string => typeof role === "string" && !!role.trim(),
+					)
+				: [];
+			const manifestUnreadable = detail.manifestStatus === "unreadable";
+			return legacyRoles.length > 0 || manifestUnreadable
+				? { legacyRoles, manifestUnreadable }
+				: undefined;
+		} catch {
+			// Append-only audit corruption must not mask the original resolver error.
+			return undefined;
+		}
+	}
+
 	/** Internal authoring API. HTTP intentionally exposes no mutation route. */
 	createWorkflowTemplateRevision(input: {
 		templateId: string;
@@ -20198,6 +21100,449 @@ export class StateStore {
 		});
 		this.save();
 		return { status: existing ? "updated" : "imported", revision };
+	}
+
+	/**
+	 * Pure-read plan for a startup catalog cutover. Validation includes the
+	 * current owner/hash/revision facts that compilation alone cannot prove.
+	 */
+	preflightWorkflowCatalogMigration(
+		input: WorkflowCatalogMigrationInput,
+	): WorkflowCatalogMigrationPlan {
+		const foreignKeyBaseline = workflowCatalogForeignKeyBaseline(
+			this.db.raw.pragma("foreign_key_check") as unknown[],
+		);
+		const sourceCategory = input.categoryRename.from.trim();
+		const targetCategory = input.categoryRename.to.trim();
+		if (!sourceCategory || !targetCategory || sourceCategory === targetCategory) {
+			throw new Error("workflow_catalog_category_rename_invalid");
+		}
+		if (
+			new Set(input.removableTemplateIds).size !==
+			input.removableTemplateIds.length
+		) {
+			throw new Error("workflow_catalog_removable_template_duplicate");
+		}
+		if (
+			new Set(input.seeds.map((seed) => seed.templateId)).size !==
+			input.seeds.length
+		) {
+			throw new Error("workflow_catalog_seed_duplicate");
+		}
+		const requiresSkipAudit = (
+			itemKind: "template_cleanup" | "seed_update",
+			templateId: string,
+			detail: string,
+		): boolean =>
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_catalog_migration_audit
+				 WHERE migration_id = 'FLY-2121' AND item_kind = ?
+				   AND item_id = ? AND detail = ?
+				 LIMIT 1`,
+				[itemKind, templateId, detail],
+			).length === 0;
+		const resolvableRoleNames = new Set(
+			input.resolvableRoleNames.map((role) => role.trim()).filter(Boolean),
+		);
+
+		const sourceRows = this.workflowSelectAll(
+			`SELECT project FROM workflow_category_binding
+			 WHERE task_category = ? ORDER BY project`,
+			[sourceCategory],
+		);
+		for (const row of sourceRows) {
+			const project = String(row.project);
+			const conflict = this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_category_binding
+				 WHERE project = ? AND task_category = ? LIMIT 1`,
+				[project, targetCategory],
+			)[0];
+			if (conflict) {
+				throw new Error(`workflow_catalog_category_conflict:${project}`);
+			}
+		}
+
+		const templatesToDelete: string[] = [];
+		const templateSkips: WorkflowCatalogTemplateSkipPlan[] = [];
+		for (const templateId of input.removableTemplateIds) {
+			const template = this.getWorkflowTemplate(templateId);
+			if (!template) continue;
+			if (template.seed_owner !== "system" || template.created_by !== "system") {
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "template_cleanup",
+					reason: "founder_owned",
+					seedOwner: template.seed_owner,
+					createdBy: template.created_by,
+					seedContentHash: template.seed_content_hash,
+				});
+				templateSkips.push({
+					templateId,
+					reason: "founder_owned",
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"template_cleanup",
+						templateId,
+						auditDetail,
+					),
+				});
+				continue;
+			}
+			if (template.retired_at === null) {
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "template_cleanup",
+					reason: "not_retired",
+					seedContentHash: template.seed_content_hash,
+					publishedRevision: template.current_published_revision,
+				});
+				templateSkips.push({
+					templateId,
+					reason: "not_retired",
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"template_cleanup",
+						templateId,
+						auditDetail,
+					),
+				});
+				continue;
+			}
+			const runRefs = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM workflow_run WHERE template_id = ?",
+					[templateId],
+				)[0]?.count ?? 0,
+			);
+			const bindingRefs = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM workflow_category_binding WHERE template_id = ?",
+					[templateId],
+				)[0]?.count ?? 0,
+			);
+			if (runRefs > 0 || bindingRefs > 0) {
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "template_cleanup",
+					reason: "referenced",
+					runRefs,
+					bindingRefs,
+				});
+				templateSkips.push({
+					templateId,
+					reason: "referenced",
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"template_cleanup",
+						templateId,
+						auditDetail,
+					),
+				});
+				continue;
+			}
+			templatesToDelete.push(templateId);
+		}
+
+		const seeds: WorkflowCatalogSeedPlan[] = input.seeds.map((seed) => {
+			const manifest = validateWorkflowManifest(seed.manifest);
+			const computedHash = workflowSeedContentHash({ ...seed, manifest });
+			if (computedHash !== seed.contentHash) {
+				throw new Error(`workflow seed content hash mismatch: ${seed.templateId}`);
+			}
+			const existing = this.getWorkflowTemplate(seed.templateId);
+			if (existing?.seed_content_hash === seed.contentHash) {
+				if (existing.current_published_revision === null) {
+					throw new Error(
+						`workflow_catalog_seed_unpublished:${seed.templateId}`,
+					);
+				}
+				return {
+					templateId: seed.templateId,
+					status: "unchanged" as const,
+					expectedRevision: existing.current_published_revision,
+				};
+			}
+			if (
+				existing &&
+				(existing.seed_owner === "founder" || existing.created_by !== "system")
+			) {
+				const publishedRevision = existing.current_published_revision
+					? this.getWorkflowTemplateRevision(
+							existing.template_id,
+							existing.current_published_revision,
+						)
+					: undefined;
+				let publishedManifest: WorkflowManifest | undefined;
+				let manifestValidationError: string | undefined;
+				if (publishedRevision) {
+					try {
+						publishedManifest = validateWorkflowManifest(
+							JSON.parse(publishedRevision.manifest),
+						);
+					} catch (error) {
+						manifestValidationError =
+							error instanceof Error ? error.message : String(error);
+					}
+				}
+				const unresolvableRoles =
+					publishedManifest?.schema_version === 2
+						? [
+								...new Set(
+									publishedManifest.nodes.flatMap((node) =>
+										node.role && !resolvableRoleNames.has(node.role)
+											? [node.role]
+											: [],
+									),
+								),
+							].sort()
+						: [];
+				const auditDetail = JSON.stringify({
+					migration: "FLY-2121",
+					kind: "seed_update",
+					reason: "founder_owned",
+					seedOwner: existing.seed_owner,
+					createdBy: existing.created_by,
+					currentSeedContentHash: existing.seed_content_hash,
+					targetSeedContentHash: seed.contentHash,
+					publishedRevision: existing.current_published_revision,
+					...(unresolvableRoles.length > 0 || manifestValidationError
+						? {
+								dispatchStatus: "unrunnable",
+								diagnosticCode:
+									"FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE",
+								...(unresolvableRoles.length > 0
+									? { unresolvableRoles }
+									: {}),
+								...(manifestValidationError
+									? {
+											manifestStatus: "unreadable",
+											manifestValidationError,
+										}
+									: {}),
+							}
+						: {}),
+				});
+				return {
+					templateId: seed.templateId,
+					status: "skipped" as const,
+					expectedRevision: existing.current_published_revision,
+					reason: "founder_owned" as const,
+					...(unresolvableRoles.length > 0 ? { unresolvableRoles } : {}),
+					...(manifestValidationError ? { manifestUnreadable: true } : {}),
+					auditDetail,
+					requiresAudit: requiresSkipAudit(
+						"seed_update",
+						seed.templateId,
+						auditDetail,
+					),
+				};
+			}
+			const expectedRevision = existing
+				? Number(
+						this.workflowSelectAll(
+							`SELECT COALESCE(MAX(revision), 0) AS revision
+							 FROM workflow_template_revision WHERE template_id = ?`,
+							[seed.templateId],
+						)[0]?.revision ?? 0,
+					) + 1
+				: 1;
+			return {
+				templateId: seed.templateId,
+				status: existing ? ("updated" as const) : ("imported" as const),
+				expectedRevision,
+			};
+		});
+
+		return {
+			requiresMutation:
+				sourceRows.length > 0 ||
+				templatesToDelete.length > 0 ||
+				templateSkips.some((skip) => skip.requiresAudit) ||
+				seeds.some(
+					(seed) =>
+						(seed.status !== "unchanged" && seed.status !== "skipped") ||
+						seed.requiresAudit === true,
+				),
+			bindingRows: sourceRows.length,
+			templatesToDelete,
+			templateSkips,
+			seeds,
+			foreignKeyBaseline,
+		};
+	}
+
+	/** Apply one preflighted catalog cutover in one SQLite batch transaction. */
+	applyWorkflowCatalogMigration(
+		input: WorkflowCatalogMigrationInput,
+		hooks: WorkflowCatalogMigrationHooks = {},
+	): WorkflowCatalogMigrationPlan {
+		let appliedPlan: WorkflowCatalogMigrationPlan | undefined;
+		this.db.transaction(() => {
+			const plan = this.preflightWorkflowCatalogMigration(input);
+			const foreignKeyBaseline =
+				hooks.foreignKeyBaseline ?? plan.foreignKeyBaseline;
+			if (
+				plan.foreignKeyBaseline.fingerprint !== foreignKeyBaseline.fingerprint
+			) {
+				throw new WorkflowCatalogMigrationIntegrityError(
+					"apply_foreign_key_baseline_drift",
+					foreignKeyBaseline.fingerprint,
+					plan.foreignKeyBaseline.fingerprint,
+					workflowCatalogAddedForeignKeyViolations(
+						foreignKeyBaseline,
+						plan.foreignKeyBaseline,
+					),
+				);
+			}
+			appliedPlan = plan;
+			if (!plan.requiresMutation) return;
+
+			this.db.run(
+				`UPDATE workflow_category_binding
+				 SET task_category = ?, updated_at = datetime('now')
+				 WHERE task_category = ?`,
+				[input.categoryRename.to, input.categoryRename.from],
+			);
+			if (this.db.getRowsModified() !== plan.bindingRows) {
+				throw new Error("workflow_catalog_binding_rename_drift");
+			}
+			const oldBindingCount = Number(
+				this.workflowSelectAll(
+					"SELECT COUNT(*) AS count FROM workflow_category_binding WHERE task_category = ?",
+					[input.categoryRename.from],
+				)[0]?.count ?? 0,
+			);
+			if (oldBindingCount !== 0) {
+				throw new Error("workflow_catalog_old_binding_remains");
+			}
+			hooks.onStep?.("bindings");
+
+			if (plan.templatesToDelete.length > 0) {
+				this.db.run(
+					"DROP TRIGGER IF EXISTS workflow_template_revision_no_delete",
+				);
+				this.db.run(
+					"DROP TRIGGER IF EXISTS workflow_template_publication_no_delete",
+				);
+				for (const templateId of plan.templatesToDelete) {
+					this.db.run(
+						"UPDATE workflow_template SET current_published_revision = NULL WHERE template_id = ?",
+						[templateId],
+					);
+					this.db.run(
+						"DELETE FROM workflow_template_publication WHERE template_id = ?",
+						[templateId],
+					);
+					this.db.run(
+						"DELETE FROM workflow_template_revision WHERE template_id = ?",
+						[templateId],
+					);
+					this.db.run("DELETE FROM workflow_template WHERE template_id = ?", [
+						templateId,
+					]);
+					hooks.onStep?.(`delete:${templateId}`);
+				}
+				this.db.run(`
+					CREATE TRIGGER workflow_template_revision_no_delete
+					BEFORE DELETE ON workflow_template_revision
+					BEGIN SELECT RAISE(ABORT, 'workflow_template_revision is append-only'); END
+				`);
+				this.db.run(`
+					CREATE TRIGGER workflow_template_publication_no_delete
+					BEFORE DELETE ON workflow_template_publication
+					BEGIN SELECT RAISE(ABORT, 'workflow_template_publication is append-only'); END
+				`);
+			}
+
+			for (const skip of plan.templateSkips) {
+				if (!skip.requiresAudit) continue;
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_catalog_migration_audit
+					 (migration_id, item_kind, item_id, reason, detail)
+					 VALUES ('FLY-2121', 'template_cleanup', ?, ?, ?)`,
+					[skip.templateId, skip.reason, skip.auditDetail],
+				);
+				hooks.onStep?.(`skip:${skip.templateId}`);
+			}
+
+			for (const [index, seed] of input.seeds.entries()) {
+				const expected = plan.seeds[index]!;
+				if (expected.templateId !== seed.templateId) {
+					throw new Error("workflow_catalog_seed_plan_drift");
+				}
+				if (expected.status === "skipped") {
+					if (expected.requiresAudit && expected.auditDetail) {
+						this.db.run(
+							`INSERT OR IGNORE INTO workflow_catalog_migration_audit
+							 (migration_id, item_kind, item_id, reason, detail)
+							 VALUES ('FLY-2121', 'seed_update', ?, ?, ?)`,
+							[
+								seed.templateId,
+								expected.reason ?? "founder_owned",
+								expected.auditDetail,
+							],
+						);
+					}
+					hooks.onStep?.(`skip:${seed.templateId}`);
+					continue;
+				}
+				const result = this.importWorkflowTemplateSeed(seed);
+				if (
+					result.status !== expected.status ||
+					result.revision !== expected.expectedRevision
+				) {
+					throw new Error(`workflow_catalog_seed_result_mismatch:${seed.templateId}`);
+				}
+				const row = this.getWorkflowTemplate(seed.templateId);
+				if (
+					row?.seed_content_hash !== seed.contentHash ||
+					row.current_published_revision !== expected.expectedRevision
+				) {
+					throw new Error(`workflow_catalog_seed_postcondition:${seed.templateId}`);
+				}
+				hooks.onStep?.(`seed:${seed.templateId}`);
+			}
+
+			for (const templateId of plan.templatesToDelete) {
+				if (this.getWorkflowTemplate(templateId)) {
+					throw new Error(`workflow_catalog_template_delete_failed:${templateId}`);
+				}
+			}
+			const requiredTriggers = new Set([
+				"workflow_template_revision_no_delete",
+				"workflow_template_publication_no_delete",
+			]);
+			for (const row of this.workflowSelectAll(
+				`SELECT name FROM sqlite_master
+				 WHERE type = 'trigger' AND name IN (
+					   'workflow_template_revision_no_delete',
+					   'workflow_template_publication_no_delete'
+					 )`,
+					[],
+				)) {
+				requiredTriggers.delete(String(row.name));
+			}
+			if (requiredTriggers.size > 0) {
+				throw new Error("workflow_catalog_delete_trigger_missing");
+			}
+			const observedForeignKeyBaseline = workflowCatalogForeignKeyBaseline(
+				this.db.raw.pragma("foreign_key_check") as unknown[],
+			);
+			const addedViolations = workflowCatalogAddedForeignKeyViolations(
+				foreignKeyBaseline,
+				observedForeignKeyBaseline,
+			);
+			if (addedViolations.length > 0) {
+				throw new WorkflowCatalogMigrationIntegrityError(
+					"apply_foreign_key_violation",
+					foreignKeyBaseline.fingerprint,
+					observedForeignKeyBaseline.fingerprint,
+					addedViolations,
+				);
+			}
+			hooks.onStep?.("verified");
+		});
+		return appliedPlan!;
 	}
 
 	retireWorkflowTemplate(input: {
@@ -20883,13 +22228,37 @@ export class StateStore {
 		);
 		if (!revision)
 			throw new Error("published workflow template revision not found");
-		const base = validateWorkflowManifest(JSON.parse(revision.manifest));
+		let base: WorkflowManifest;
+		try {
+			base = validateWorkflowManifest(JSON.parse(revision.manifest));
+		} catch (error) {
+			const diagnostic =
+				this.preservedTemplateUnrunnableDiagnostic(
+					template.template_id,
+				);
+			if (
+				diagnostic?.manifestUnreadable &&
+				error instanceof Error
+			) {
+				throw new Fly2121PreservedTemplateUnrunnableError(
+					template.template_id,
+					diagnostic.legacyRoles,
+					error,
+					true,
+				);
+			}
+			throw error;
+		}
 		const applied = input.override
 			? applyWorkflowOverride(base, input.override)
 			: { manifest: base, override: undefined };
-		const generalizedSnapshot =
-			applied.manifest.schema_version === 2
-				? buildWorkflowRunSnapshotV2({
+		let generalizedSnapshot: ReturnType<
+			typeof buildWorkflowRunSnapshotV2
+		> | undefined;
+		try {
+			generalizedSnapshot =
+				applied.manifest.schema_version === 2
+					? buildWorkflowRunSnapshotV2({
 						template: {
 							id: template.template_id,
 							revision: template.current_published_revision,
@@ -20916,8 +22285,28 @@ export class StateStore {
 									},
 								}
 							: {}),
-					})
-				: undefined;
+						})
+					: undefined;
+		} catch (error) {
+			const diagnostic =
+				this.preservedTemplateUnrunnableDiagnostic(
+					template.template_id,
+				);
+			if (
+				diagnostic &&
+				diagnostic.legacyRoles.length > 0 &&
+				error instanceof Error &&
+				error.name === "WorkflowMenuValidationError" &&
+				(error as Error & { code?: string }).code === "NODE_NOT_REGISTERED"
+			) {
+				throw new Fly2121PreservedTemplateUnrunnableError(
+					template.template_id,
+					diagnostic.legacyRoles,
+					error,
+				);
+			}
+			throw error;
+		}
 		const engineSnapshot =
 			applied.manifest.schema_version === 1 && input.startReservation
 				? buildWorkflowRunSnapshotV1({
@@ -23795,6 +25184,34 @@ export class StateStore {
 					result = { ok: false, reason: "rollback_receipt_conflict" };
 					return;
 				}
+				const replayNode = this.getWorkflowRunNode(
+					input.runId,
+					input.nodeId,
+					input.attempt,
+				);
+				if (
+					replayNode?.state === "admitted" &&
+					replayNode.execution_id === input.executionId
+				) {
+					this.db.run(
+						`UPDATE workflow_run_node
+						    SET state = 'failed', ended_at = ?
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND execution_id = ? AND state = 'admitted'`,
+						[
+							input.now,
+							input.runId,
+							input.nodeId,
+							input.attempt,
+							input.executionId,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new WorkflowEngineInvariantError(
+							"workflow_unlaunched_rollback_replay_node_cas_failed",
+						);
+					}
+				}
 				result = { ok: true, eventUid, idempotentReplay: true };
 				return;
 			}
@@ -23909,6 +25326,24 @@ export class StateStore {
 				    AND status NOT IN ('completed','cancelled','merged','superseded')`,
 				[input.now, input.executionId],
 			);
+			this.db.run(
+				`UPDATE workflow_run_node
+				    SET state = 'failed', ended_at = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND execution_id = ? AND state = 'admitted'`,
+				[
+					input.now,
+					input.runId,
+					input.nodeId,
+					input.attempt,
+					input.executionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					"workflow_unlaunched_rollback_node_cas_failed",
+				);
+			}
 			this.db.run(
 				`UPDATE workflow_side_effect_ledger
 				    SET state = 'abandoned', reason = 'unlaunched_admission_rolled_back',
@@ -26416,6 +27851,258 @@ export class StateStore {
 	}
 
 	/**
+	 * Repair the only admissible rework split-brain: generic zombie recovery
+	 * already committed an exact writer replacement while the rework delivery
+	 * still points at the dead actor. The rollback receipt, launch intent, and
+	 * dead-execution watch must all agree before this transaction advances the
+	 * immutable route and makes that same launch rework-owned.
+	 */
+	convergeWorkflowReworkWriterReplacement(input: {
+		requestId: string;
+		ownerId: string;
+		generation: number;
+		now: string;
+	}):
+		| {
+				ok: true;
+				executionId: string;
+				launchOrdinal: number;
+		  }
+		| { ok: false; reason: string } {
+		if (
+			!input.requestId ||
+			!input.ownerId ||
+			!Number.isInteger(input.generation) ||
+			input.generation < 1 ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_writer_replacement_convergence" };
+		}
+		let result:
+			| {
+					ok: true;
+					executionId: string;
+					launchOrdinal: number;
+			  }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "writer_replacement_not_converged",
+		};
+		this.db.transaction(() => {
+			const request = this.getWorkflowReworkRequest(input.requestId);
+			const route = this.getLatestWorkflowReworkRoute(input.requestId);
+			const delivery = this.getWorkflowReworkDelivery(input.requestId);
+			const run = request ? this.getWorkflowRun(request.run_id) : undefined;
+			if (
+				!request ||
+				!route ||
+				!delivery ||
+				!run ||
+				run.engine_owned !== 1 ||
+				run.status !== "active" ||
+				delivery.route_revision !== route.revision ||
+				delivery.owner_id !== input.ownerId ||
+				delivery.generation !== input.generation ||
+				![
+					"pending",
+					"turn_granted",
+					"awaiting_receipt",
+					"wake_delivered",
+					"replacement_pending",
+				].includes(delivery.state)
+			) {
+				result = { ok: false, reason: "writer_replacement_context_changed" };
+				return;
+			}
+			const target = this.getWorkflowRunNode(
+				request.run_id,
+				route.target_node_id,
+				route.target_attempt,
+			);
+			if (
+				!target ||
+				target.state !== "pending" ||
+				!target.execution_id ||
+				target.execution_id === route.preferred_actor_execution_id
+			) {
+				result = { ok: false, reason: "writer_replacement_target_unavailable" };
+				return;
+			}
+			const replacementExecutionId = target.execution_id;
+			const launch = this.workflowSelectAll(
+				`SELECT launch_ordinal, state
+				   FROM workflow_side_effect_ledger
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND execution_id = ?`,
+				[
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					replacementExecutionId,
+				],
+			)[0];
+			const launchOrdinal = Number(launch?.launch_ordinal);
+			const watch = this.workflowSelectAll(
+				`SELECT new_execution_id
+				   FROM workflow_dead_execution_watch
+				  WHERE dead_execution_id = ? AND run_id = ? AND node_id = ?
+				    AND attempt = ? AND new_execution_id = ?`,
+				[
+					route.preferred_actor_execution_id,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					replacementExecutionId,
+				],
+			)[0];
+			const rollback = this.workflowSelectAll(
+				`SELECT kind, node_id, execution_id, payload
+				   FROM workflow_run_event
+				  WHERE event_uid = ?`,
+				[
+					`dead_rollback:${request.run_id}:${route.target_node_id}:${route.target_attempt}:${route.preferred_actor_execution_id}`,
+				],
+			)[0];
+			let rollbackPayload: Record<string, unknown> | undefined;
+			try {
+				rollbackPayload = rollback
+					? (JSON.parse(String(rollback.payload)) as Record<string, unknown>)
+					: undefined;
+			} catch {
+				rollbackPayload = undefined;
+			}
+			if (
+				!launch ||
+				launch.state === "abandoned" ||
+				!Number.isSafeInteger(launchOrdinal) ||
+				launchOrdinal < 1 ||
+				!watch ||
+				rollback?.kind !== "execution_dead_rolled_back" ||
+				rollback.node_id !== route.target_node_id ||
+				rollback.execution_id !== route.preferred_actor_execution_id ||
+				rollbackPayload?.attempt !== route.target_attempt ||
+				rollbackPayload.newExecutionId !== replacementExecutionId ||
+				rollbackPayload.launchOrdinal !== launchOrdinal ||
+				rollbackPayload.retryDisposition !== "retry"
+			) {
+				result = { ok: false, reason: "writer_replacement_proof_unavailable" };
+				return;
+			}
+			const existingActor = this.getWorkflowActor(replacementExecutionId);
+			if (
+				existingActor &&
+				(existingActor.project_name !== run.project_name ||
+					existingActor.issue_id !== run.issue_id ||
+					existingActor.role !== route.target_node_id)
+			) {
+				result = { ok: false, reason: "writer_replacement_actor_conflict" };
+				return;
+			}
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_actor
+				   (execution_id, project_name, issue_id, role, created_at)
+				 VALUES (?, ?, ?, ?, ?)`,
+				[
+					replacementExecutionId,
+					run.project_name,
+					run.issue_id,
+					route.target_node_id,
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_side_effect_ledger
+				    SET reason = ?
+				  WHERE run_id = ? AND node_id = ? AND attempt = ?
+				    AND kind = 'dispatch' AND launch_ordinal = ? AND execution_id = ?
+				    AND state <> 'abandoned'`,
+				[
+					`rework_replacement:${input.requestId}`,
+					request.run_id,
+					route.target_node_id,
+					route.target_attempt,
+					launchOrdinal,
+					replacementExecutionId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_writer_launch_cas_failed");
+			}
+			const nextRevision = route.revision + 1;
+			this.db.run(
+				`INSERT INTO workflow_rework_route_revision
+				   (request_id, revision, target_node_id, target_attempt,
+				    preferred_actor_execution_id, invalidation_scope_json,
+				    verification_policy_json, interpreted_by,
+				    interpretation_reason, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, 'engine:writer_replacement_convergence',
+				         'durable_writer_replacement', ?)`,
+				[
+					input.requestId,
+					nextRevision,
+					route.target_node_id,
+					route.target_attempt,
+					replacementExecutionId,
+					JSON.stringify(route.invalidation_scope),
+					JSON.stringify(route.verification_policy),
+					input.now,
+				],
+			);
+			this.db.run(
+				`UPDATE workflow_rework_delivery
+				    SET route_revision = ?, state = 'replacement_pending',
+				        owner_id = NULL, lease_expires_at = NULL, next_retry_at = NULL,
+				        last_error = 'writer_replacement_converged', updated_at = ?
+				  WHERE request_id = ? AND route_revision = ? AND owner_id = ?
+				    AND generation = ?
+				    AND state IN ('pending','turn_granted','awaiting_receipt',
+				                  'wake_delivered','replacement_pending')`,
+				[
+					nextRevision,
+					input.now,
+					input.requestId,
+					route.revision,
+					input.ownerId,
+					input.generation,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error("workflow_rework_writer_delivery_cas_failed");
+			}
+			this.db.run(
+				`UPDATE workflow_rework_verification_path
+				    SET route_revision = ?, updated_at = ?
+				  WHERE request_id = ? AND route_revision = ?
+				    AND state IN ('pending','active')`,
+				[nextRevision, input.now, input.requestId, route.revision],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: request.run_id,
+				eventUid: `rework_writer_replacement_converged:${input.requestId}:${nextRevision}`,
+				kind: "rework_writer_replacement_converged",
+				nodeId: route.target_node_id,
+				executionId: route.preferred_actor_execution_id,
+				payload: {
+					requestId: input.requestId,
+					deadExecutionId: route.preferred_actor_execution_id,
+					newExecutionId: replacementExecutionId,
+					launchOrdinal,
+					routeRevision: nextRevision,
+					reason: "writer_replacement_converged",
+					heldPaneLossRecovery: false,
+				},
+			});
+			result = {
+				ok: true,
+				executionId: replacementExecutionId,
+				launchOrdinal,
+			};
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	/**
 	 * Convert a proven-dead rework actor reservation into one ordinary fresh
 	 * dispatch. The request and prior route remain immutable; a new route
 	 * revision records the replacement actor, while launch recognition still
@@ -26532,6 +28219,10 @@ export class StateStore {
 				result = { ok: false, reason: "rework_replacement_target_changed" };
 				return;
 			}
+			this.terminalizeProvenDeadSessionTx(
+				input.deadExecutionId,
+				`rework_actor_proven_dead:${input.reason}`,
+			);
 			// Superseding the old exact actor also settles any rework-reachable
 			// completion park in this transaction. A crash cannot commit the new
 			// route while leaving stale wake/park evidence for the replaced actor.
@@ -27189,11 +28880,13 @@ export class StateStore {
 		}
 		this.db.run(
 			`UPDATE workflow_rework_delivery
-			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?
+			    SET owner_id = NULL, lease_expires_at = NULL, next_retry_at = ?,
+			        last_error = ?
 			  WHERE request_id = ? AND owner_id = ? AND generation = ?
 			    AND state IN ('awaiting_receipt','wake_delivered')`,
 			[
 				input.nextRetryAt,
+				input.reason,
 				input.requestId,
 				input.ownerId,
 				input.generation,
@@ -27962,10 +29655,10 @@ export class StateStore {
 
 	appendWorkflowReworkRouteRevision(input: {
 		requestId: string;
-		targetNodeId: "design" | "implement" | "qa";
+		targetNodeId: string;
 		targetAttempt: number;
 		preferredActorExecutionId: string;
-		invalidationScope: Array<"design" | "implement" | "qa">;
+		invalidationScope: string[];
 		verificationPolicy: Array<
 			"design_review" | "code_review" | "qa_retest" | "founder_gate"
 		>;
@@ -27973,34 +29666,6 @@ export class StateStore {
 		interpretationReason: string;
 		now: string;
 	}): { ok: true; revision: number } | { ok: false; reason: string } {
-		const sameSequence = (left: readonly string[], right: readonly string[]) =>
-			left.length === right.length &&
-			left.every((value, index) => value === right[index]);
-		const routeIsValid =
-			(input.targetNodeId === "design" &&
-				sameSequence(input.invalidationScope, ["design"]) &&
-				sameSequence(input.verificationPolicy, [
-					"design_review",
-					"founder_gate",
-				])) ||
-			(input.targetNodeId === "design" &&
-				sameSequence(input.invalidationScope, ["design", "implement", "qa"]) &&
-				sameSequence(input.verificationPolicy, [
-					"design_review",
-					"code_review",
-					"qa_retest",
-					"founder_gate",
-				])) ||
-			(input.targetNodeId === "implement" &&
-				sameSequence(input.invalidationScope, ["implement", "qa"]) &&
-				sameSequence(input.verificationPolicy, [
-					"code_review",
-					"qa_retest",
-					"founder_gate",
-				])) ||
-			(input.targetNodeId === "qa" &&
-				sameSequence(input.invalidationScope, ["qa"]) &&
-				sameSequence(input.verificationPolicy, ["qa_retest", "founder_gate"]));
 		if (
 			!input.requestId ||
 			!input.preferredActorExecutionId ||
@@ -28008,8 +29673,7 @@ export class StateStore {
 			!input.interpretationReason.trim() ||
 			!Number.isInteger(input.targetAttempt) ||
 			input.targetAttempt < 1 ||
-			!StateStore.workflowFiniteTimestamp(input.now) ||
-			!routeIsValid
+			!StateStore.workflowFiniteTimestamp(input.now)
 		) {
 			return { ok: false, reason: "invalid_rework_route" };
 		}
@@ -28044,8 +29708,43 @@ export class StateStore {
 			}
 			const run = this.getWorkflowRun(request.run_id);
 			const actor = this.getWorkflowActor(input.preferredActorExecutionId);
+			let routeIsValid = false;
+			if (run?.snapshot) {
+				try {
+					const snapshot = parseWorkflowRunSnapshot(run.snapshot);
+					const target = snapshot.resolved.nodes.find(
+						(node) => node.id === input.targetNodeId,
+					);
+					if (
+						target &&
+						(target.type === "design" ||
+							target.type === "implement" ||
+							target.type === "qa")
+					) {
+						const expected = resolveFounderReworkRoute(snapshot, target.type);
+						const sameSequence = (
+							left: readonly string[],
+							right: readonly string[],
+						) =>
+							left.length === right.length &&
+							left.every((value, index) => value === right[index]);
+						routeIsValid =
+							expected.targetNodeId === input.targetNodeId &&
+							sameSequence(expected.invalidationScope, input.invalidationScope) &&
+							sameSequence(
+								expected.verificationPolicy,
+								input.verificationPolicy,
+							);
+					}
+				} catch {
+					// Invalid or ambiguous semantic routes fail closed below.
+				}
+			}
+			if (!run || !routeIsValid) {
+				result = { ok: false, reason: "invalid_rework_route" };
+				return;
+			}
 			if (
-				!run ||
 				!actor ||
 				actor.project_name !== run.project_name ||
 				actor.issue_id !== run.issue_id ||
@@ -29495,6 +31194,21 @@ export class StateStore {
 		);
 	}
 
+	hasUnlaunchedWorkflowRollbackFact(
+		runId: string,
+		nodeId: string,
+		executionId: string,
+	): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ? AND execution_id = ?
+				    AND kind = 'unlaunched_admission_rolled_back' LIMIT 1`,
+				[runId, nodeId, executionId],
+			)[0],
+		);
+	}
+
 	listRunAttributedExecutions(runId: string): string[] {
 		return this.workflowSelectAll(
 			`SELECT execution_id FROM (
@@ -30879,6 +32593,7 @@ export class StateStore {
 				>;
 				if (
 					typeof payload.requestId === "string" &&
+					typeof payload.targetNodeId === "string" &&
 					typeof payload.targetAttempt === "number" &&
 					typeof payload.preferredActorExecutionId === "string"
 				) {
@@ -30886,7 +32601,7 @@ export class StateStore {
 						ok: true,
 						idempotentReplay: true,
 						requestId: payload.requestId,
-						targetNodeId: "implement",
+						targetNodeId: payload.targetNodeId,
 						targetAttempt: payload.targetAttempt,
 						preferredActorExecutionId: payload.preferredActorExecutionId,
 					};
@@ -30896,7 +32611,8 @@ export class StateStore {
 			const priorEngineCycles = Number(
 				this.workflowSelectAll(
 					`SELECT COUNT(*) AS count FROM workflow_rework_request
-					  WHERE run_id = ? AND authority = 'engine'`,
+					  WHERE run_id = ? AND authority = 'engine'
+					    AND source_event_id LIKE 'engine_land_rework:%'`,
 					[input.runId],
 				)[0]?.count ?? 0,
 			);
@@ -30945,8 +32661,15 @@ export class StateStore {
 			) {
 				return;
 			}
+			let resolvedRoute: ReturnType<typeof resolveFounderReworkRoute>;
+			try {
+				resolvedRoute = resolveFounderReworkRoute(snapshot, "implement");
+			} catch {
+				result = { ok: false, reason: "engine_land_rework_target_invalid" };
+				return;
+			}
 			const target = snapshot.resolved.nodes.find(
-				(node) => node.id === "implement",
+				(node) => node.id === resolvedRoute.targetNodeId,
 			);
 			if (!target?.dispatch || target.type === "gate") {
 				result = { ok: false, reason: "engine_land_rework_target_invalid" };
@@ -30965,13 +32688,15 @@ export class StateStore {
 				return;
 			}
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
-			const preferredActorExecutionId = [...targetAttempts]
-				.filter((candidate) => candidate.execution_id)
-				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
-			if (!preferredActorExecutionId) {
+			const preferredActor = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			);
+			if (!preferredActor) {
 				result = { ok: false, reason: "engine_land_rework_actor_missing" };
 				return;
 			}
+			const preferredActorExecutionId = preferredActor.executionId;
 			const targetAttempt =
 				targetAttempts.reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -30983,8 +32708,8 @@ export class StateStore {
 					(max, candidate) => Math.max(max, candidate.attempt),
 					0,
 				) || 1;
-			const invalidationScope = ["implement", "qa"];
-			const verificationPolicy = ["code_review", "qa_retest", "founder_gate"];
+			const invalidationScope = resolvedRoute.invalidationScope;
+			const verificationPolicy = resolvedRoute.verificationPolicy;
 			const authorityContext = {
 				authority: "engine",
 				sourceEventId,
@@ -31068,11 +32793,11 @@ export class StateStore {
 			const staleClaims = this.workflowSelectAll(
 				`SELECT c.id, c.node_id FROM workflow_claims c
 				  WHERE c.workflow_run_id = ?
-				    AND (c.predicate = 'founder_approved' OR c.node_id IN ('implement','qa'))
+				    AND (c.predicate = 'founder_approved' OR c.node_id IN (${invalidationScope.map(() => "?").join(",") || "NULL"}))
 				    AND NOT EXISTS (
 				      SELECT 1 FROM workflow_claim_revocation r WHERE r.claim_id = c.id
 				    )`,
-				[input.runId],
+				[input.runId, ...invalidationScope],
 			);
 			for (const stale of staleClaims) {
 				this.revokeWorkflowClaimTx({
@@ -31178,6 +32903,221 @@ export class StateStore {
 	}
 
 	/**
+	 * Choose a durable actor seed without mistaking the newest ledger row for
+	 * the best reusable actor. Physical liveness remains the coordinator's job;
+	 * this classification only orders persisted evidence.
+	 */
+	private selectPreferredWorkflowActorTx(
+		runId: string,
+		nodeId: string,
+	):
+		| {
+				executionId: string;
+				classification: "known_nonterminal" | "unknown" | "dead_seed";
+		  }
+		| undefined {
+		const rolledBackExecutionIds = new Set(
+			this.workflowSelectAll(
+				`SELECT DISTINCT execution_id
+				   FROM workflow_run_event
+				  WHERE run_id = ? AND node_id = ?
+				    AND kind = 'unlaunched_admission_rolled_back'
+				    AND execution_id IS NOT NULL`,
+				[runId, nodeId],
+			).map((row) => row.execution_id as string),
+		);
+		const ranked = this.listWorkflowRunNodes(runId, nodeId)
+			.filter(
+				(candidate): candidate is WorkflowRunNodeRow & { execution_id: string } =>
+					typeof candidate.execution_id === "string" &&
+					candidate.execution_id.length > 0,
+			)
+			.map((candidate) => {
+				const session = this.getSession(candidate.execution_id);
+				const classification = rolledBackExecutionIds.has(
+					candidate.execution_id,
+				)
+					? ("dead_seed" as const)
+					: !session
+						? ("unknown" as const)
+						: isStateStoreIrreversibleTerminalForZombie(session.status)
+							? ("dead_seed" as const)
+							: ("known_nonterminal" as const);
+				return { candidate, classification };
+			})
+			.sort((left, right) => {
+				const rank = {
+					known_nonterminal: 0,
+					unknown: 1,
+					dead_seed: 2,
+				} as const;
+				return (
+					rank[left.classification] - rank[right.classification] ||
+					right.candidate.attempt - left.candidate.attempt
+				);
+			});
+		const selected = ranked[0];
+		return selected
+			? {
+					executionId: selected.candidate.execution_id,
+					classification: selected.classification,
+				}
+			: undefined;
+	}
+
+	private resolveOperatorReworkBaseRevisionTx(input: {
+		runId: string;
+		targetNodeId: string;
+		preferredActorExecutionId: string;
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	}):
+		| {
+				baseRevision: string;
+				baseRevisionSource:
+					| "session_head"
+					| "producer_head"
+					| "materialized_head";
+		  }
+		| undefined {
+		const canonicalHead = (head: string | null | undefined) => {
+			const normalized = head?.trim().toLowerCase();
+			return normalized && /^[0-9a-f]{40}$/.test(normalized)
+				? normalized
+				: undefined;
+		};
+		const actorHead = canonicalHead(
+			this.getSession(input.preferredActorExecutionId)?.pr_head_sha,
+		);
+		if (actorHead) {
+			return {
+				baseRevision: actorHead,
+				baseRevisionSource: "session_head",
+			};
+		}
+
+		const predecessorIds = new Set(
+			input.snapshot.manifest.edges
+				.filter((edge) => edge.to === input.targetNodeId)
+				.map((edge) => edge.from),
+		);
+		const producers = input.snapshot.resolved.nodes.filter(
+			(candidate) => predecessorIds.has(candidate.id) && candidate.dispatch,
+		);
+		if (producers.length !== 1) return undefined;
+		const producer = producers[0]!;
+		const latestDone = this.listWorkflowRunNodes(input.runId, producer.id)
+			.filter(
+				(candidate) =>
+					candidate.state === "done" && candidate.execution_id !== null,
+			)
+			.sort((left, right) => right.attempt - left.attempt)[0];
+		const producerHead = latestDone?.execution_id
+			? canonicalHead(this.getSession(latestDone.execution_id)?.pr_head_sha)
+			: undefined;
+		if (producerHead) {
+			return {
+				baseRevision: producerHead,
+				baseRevisionSource: "producer_head",
+			};
+		}
+		const materialized = this.getWorkflowMaterializedHead(
+			input.runId,
+			producer.id,
+		);
+		const materializedHead = canonicalHead(materialized?.head);
+		return materializedHead
+			? {
+					baseRevision: materializedHead,
+					baseRevisionSource: "materialized_head",
+				}
+			: undefined;
+	}
+
+	private resolveNodeReuseBaseRevisionTx(input: {
+		runId: string;
+		targetNodeId: string;
+		subjectDigest?: string;
+		snapshot: ReturnType<typeof parseWorkflowRunSnapshot>;
+	}):
+		| {
+				baseRevision: string;
+				baseRevisionSource:
+					| { kind: "subject_digest" }
+					| {
+							kind: "producer_head";
+							nodeId: string;
+							attempt: number;
+							executionId: string;
+					  }
+					| {
+							kind: "materialized_head";
+							effectId: string;
+							outputId: number;
+					  };
+		  }
+		| undefined {
+		const canonicalHead = (head: string | null | undefined) => {
+			const normalized = head?.trim().toLowerCase();
+			return normalized && /^[0-9a-f]{40}$/.test(normalized)
+				? normalized
+				: undefined;
+		};
+		const subjectDigest = canonicalHead(input.subjectDigest);
+		if (subjectDigest) {
+			return {
+				baseRevision: subjectDigest,
+				baseRevisionSource: { kind: "subject_digest" },
+			};
+		}
+
+		const predecessorIds = new Set(
+			input.snapshot.manifest.edges
+				.filter((edge) => edge.to === input.targetNodeId)
+				.map((edge) => edge.from),
+		);
+		const producers = input.snapshot.resolved.nodes.filter(
+			(candidate) => predecessorIds.has(candidate.id) && candidate.dispatch,
+		);
+		if (producers.length !== 1) return undefined;
+		const producer = producers[0]!;
+		const latestDone = this.listWorkflowRunNodes(input.runId, producer.id)
+			.filter(
+				(candidate) =>
+					candidate.state === "done" && candidate.execution_id !== null,
+			)
+			.sort((left, right) => right.attempt - left.attempt)[0];
+		const producerHead = latestDone?.execution_id
+			? canonicalHead(this.getSession(latestDone.execution_id)?.pr_head_sha)
+			: undefined;
+		if (latestDone?.execution_id && producerHead) {
+			return {
+				baseRevision: producerHead,
+				baseRevisionSource: {
+					kind: "producer_head",
+					nodeId: producer.id,
+					attempt: latestDone.attempt,
+					executionId: latestDone.execution_id,
+				},
+			};
+		}
+		const materialized = this.getWorkflowMaterializedHead(
+			input.runId,
+			producer.id,
+		);
+		const materializedHead = canonicalHead(materialized?.head);
+		return materialized && materializedHead
+			? {
+					baseRevision: materializedHead,
+					baseRevisionSource: {
+						kind: "materialized_head",
+						effectId: materialized.effectId,
+						outputId: materialized.outputId,
+					},
+				}
+			: undefined;
+	}
+
+	/**
 	 * FLY-1434: master-authorized recovery entry for completed or quiescent
 	 * active engine runs. It writes the same request/route/delivery contract as
 	 * QA/founder kickback, so the existing coordinator and engine tick own all
@@ -31235,6 +33175,13 @@ export class StateStore {
 			)[0];
 			if (prior) {
 				try {
+					const priorRun = this.getWorkflowRun(input.runId);
+					const requestedTargetNodeId = priorRun?.snapshot
+						? resolveWorkflowReworkTarget(
+								parseWorkflowRunSnapshot(priorRun.snapshot),
+								input.targetNodeId,
+							).id
+						: input.targetNodeId;
 					const payload = JSON.parse(prior.payload as string) as {
 						requestId?: unknown;
 						targetNodeId?: unknown;
@@ -31246,7 +33193,7 @@ export class StateStore {
 					};
 					if (
 						prior.kind !== "operator_rework_requested" ||
-						payload.targetNodeId !== input.targetNodeId ||
+						payload.targetNodeId !== requestedTargetNodeId ||
 						payload.feedback !== input.feedback.trim() ||
 						payload.principal !== input.principal ||
 						canonicalSubmissionDigest(payload.escalationAck ?? null) !==
@@ -31261,7 +33208,7 @@ export class StateStore {
 					result = {
 						ok: true,
 						requestId: payload.requestId,
-						targetNodeId: input.targetNodeId,
+						targetNodeId: requestedTargetNodeId,
 						targetAttempt: payload.targetAttempt,
 						preferredActorExecutionId: payload.preferredActorExecutionId,
 						idempotentReplay: true,
@@ -31277,7 +33224,7 @@ export class StateStore {
 			const latestHold =
 				run?.status === "held"
 					? this.workflowSelectAll(
-							`SELECT event_uid, kind, edge_id, payload
+							`SELECT run_id, event_uid, kind, node_id, edge_id, execution_id, payload
 							   FROM workflow_run_event
 							  WHERE run_id = ? AND kind IN (
 							    'run_held_by_operator','land_held',
@@ -31292,6 +33239,41 @@ export class StateStore {
 						)[0]
 					: undefined;
 			const heldLoopLimit = latestHold?.kind === "loop_limit_escalated";
+			const heldUnlaunchedRollback =
+				run?.status === "held" &&
+				latestHold?.kind === "unlaunched_admission_rolled_back";
+			let rollbackHoldTuple:
+				| { nodeId: string; executionId: string; attempt: number }
+				| undefined;
+			if (heldUnlaunchedRollback) {
+				try {
+					const payload = JSON.parse(String(latestHold.payload)) as {
+						attempt?: unknown;
+					};
+					if (
+						latestHold.run_id !== input.runId ||
+						typeof latestHold.node_id !== "string" ||
+						!latestHold.node_id ||
+						typeof latestHold.execution_id !== "string" ||
+						!latestHold.execution_id ||
+						!Number.isInteger(payload.attempt) ||
+						Number(payload.attempt) < 1
+					) {
+						throw new Error("invalid rollback receipt tuple");
+					}
+					rollbackHoldTuple = {
+						nodeId: latestHold.node_id,
+						executionId: latestHold.execution_id,
+						attempt: Number(payload.attempt),
+					};
+				} catch {
+					result = {
+						ok: false,
+						reason: "unlaunched_rollback_receipt_invalid",
+					};
+					return;
+				}
+			}
 			if (heldLoopLimit) {
 				if (!escalationAck) {
 					result = {
@@ -31377,6 +33359,7 @@ export class StateStore {
 					run.status !== "completed" &&
 					!heldNeedsLead &&
 					!heldTerminalLand &&
+					!heldUnlaunchedRollback &&
 					!heldLoopLimit)
 			) {
 				result = { ok: false, reason: "run_not_reworkable" };
@@ -31484,12 +33467,50 @@ export class StateStore {
 				result = { ok: false, reason: "invalid_snapshot" };
 				return;
 			}
-			const target = snapshot.resolved.nodes.find(
-				(node) => node.id === input.targetNodeId,
-			);
-			if (!target?.dispatch || target.type === "gate") {
+			let target: ReturnType<typeof resolveWorkflowReworkTarget>;
+			try {
+				target = resolveWorkflowReworkTarget(snapshot, input.targetNodeId);
+			} catch {
 				result = { ok: false, reason: "invalid_rework_target" };
 				return;
+			}
+			if (rollbackHoldTuple) {
+				const rolledBackNode = this.getWorkflowRunNode(
+					input.runId,
+					rollbackHoldTuple.nodeId,
+					rollbackHoldTuple.attempt,
+				);
+				if (
+					!rolledBackNode ||
+					rolledBackNode.execution_id !== rollbackHoldTuple.executionId ||
+					!(rolledBackNode.state === "admitted" || rolledBackNode.state === "failed")
+				) {
+					result = {
+						ok: false,
+						reason: "unlaunched_rollback_receipt_invalid",
+					};
+					return;
+				}
+				if (rolledBackNode.state === "admitted") {
+					this.db.run(
+						`UPDATE workflow_run_node
+						    SET state = 'failed', ended_at = ?
+						  WHERE run_id = ? AND node_id = ? AND attempt = ?
+						    AND execution_id = ? AND state = 'admitted'`,
+						[
+							input.now,
+							input.runId,
+							rollbackHoldTuple.nodeId,
+							rollbackHoldTuple.attempt,
+							rollbackHoldTuple.executionId,
+						],
+					);
+					if (this.db.getRowsModified() !== 1) {
+						throw new WorkflowEngineInvariantError(
+							"workflow_unlaunched_rollback_operator_node_cas_failed",
+						);
+					}
+				}
 			}
 			const openDelivery = this.workflowSelectAll(
 				`SELECT d.request_id FROM workflow_rework_delivery d
@@ -31517,20 +33538,25 @@ export class StateStore {
 				result = { ok: false, reason: "target_attempt_already_reserved" };
 				return;
 			}
-			const preferredActorExecutionId = targetAttempts
-				.filter((candidate) => candidate.execution_id)
-				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			const preferredActorExecutionId = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			)?.executionId;
 			if (!preferredActorExecutionId) {
 				result = { ok: false, reason: "target_actor_history_missing" };
 				return;
 			}
-			const baseRevision = this.getSession(preferredActorExecutionId)
-				?.pr_head_sha?.trim()
-				.toLowerCase();
-			if (!baseRevision || !/^[0-9a-f]{40}$/.test(baseRevision)) {
+			const base = this.resolveOperatorReworkBaseRevisionTx({
+				runId: input.runId,
+				targetNodeId: target.id,
+				preferredActorExecutionId,
+				snapshot,
+			});
+			if (!base) {
 				result = { ok: false, reason: "base_revision_unavailable" };
 				return;
 			}
+			const { baseRevision, baseRevisionSource } = base;
 			const targetAttempt =
 				targetAttempts.reduce(
 					(max, candidate) => Math.max(max, candidate.attempt),
@@ -31587,6 +33613,8 @@ export class StateStore {
 				sourceAttempt,
 				targetNodeId: target.id,
 				targetAttempt,
+				baseRevision,
+				baseRevisionSource,
 				feedback: input.feedback.trim(),
 				...(escalationAck ? { escalationAck } : {}),
 			};
@@ -31784,6 +33812,7 @@ export class StateStore {
 				targetNodeId: target.id,
 				targetAttempt,
 				preferredActorExecutionId,
+				baseRevisionSource,
 				feedback: input.feedback.trim(),
 				principal: input.principal,
 				...(escalationAck ? { escalationAck } : {}),
@@ -35887,6 +37916,7 @@ export class StateStore {
 	}
 
 	commitEnrolledCompletion(input: {
+		nodeReuseEnabled: boolean;
 		executionId: string;
 		route: string;
 		sourceEventId: string;
@@ -36482,6 +38512,7 @@ export class StateStore {
 					}
 					if (!genericNoCodeExit) {
 						const transition = this.commitWorkflowTransitionTx({
+							nodeReuseEnabled: input.nodeReuseEnabled,
 							runId: context.binding.run_id,
 							nodeId: context.binding.node_id,
 							attempt: context.binding.attempt,
@@ -36745,6 +38776,52 @@ export class StateStore {
 			: undefined;
 	}
 
+	private ensureWorkflowClaimLeadEventTx(input: {
+		claim: WorkflowClaimRow;
+		run: WorkflowRunRow;
+		identity: WorkflowEngineAlertIdentity;
+	}): { ok: true; seq: number } | { ok: false } {
+		const eventId = `workflow_claim:${input.claim.id}`;
+		const existing = this.db.raw
+			.prepare(
+				`SELECT * FROM lead_events
+				  WHERE event_type = 'workflow_claim_recorded' AND event_id = ?
+				  ORDER BY seq`,
+			)
+			.all(eventId) as Record<string, unknown>[];
+		if (existing.length > 1) return { ok: false };
+		if (existing.length === 1) {
+			return { ok: true, seq: Number(existing[0]?.seq) };
+		}
+		const payload: WorkflowClaimRecordedPayload = {
+			event_type: "workflow_claim_recorded",
+			execution_id: input.claim.issuer_execution_id ?? "unknown",
+			issue_id: input.claim.issue_id,
+			project_name: input.identity.projectName,
+			workflow_run_id: input.claim.workflow_run_id,
+			workflow_node_id: input.claim.node_id ?? "unknown",
+			workflow_attempt: input.claim.attempt ?? 0,
+			workflow_claim_id: input.claim.id,
+			workflow_decision_kind: input.claim.decision_kind,
+			workflow_predicate: input.claim.predicate,
+			workflow_issued_at: input.claim.issued_at,
+			summary: truncateCodePoints(
+				`${input.claim.issue_id} workflow verdict ${input.claim.predicate} recorded`,
+				300,
+			).text,
+		};
+		return {
+			ok: true,
+			seq: this.appendLeadEvent(
+				input.identity.leadId,
+				eventId,
+				"workflow_claim_recorded",
+				JSON.stringify(payload),
+				`wf:${input.run.run_id}`,
+			),
+		};
+	}
+
 	/**
 	 * Credential-authenticated verdict ingestion. Authentication, internal
 	 * decision-capability mint+consume, claim append and durable replay receipt
@@ -36752,6 +38829,7 @@ export class StateStore {
 	 * before expiry checks so response-loss recovery survives Bridge restarts.
 	 */
 	submitWorkflowDecisionByCredential(input: {
+		nodeReuseEnabled: boolean;
 		credential: string;
 		clientRequestId: string;
 		predicate: string;
@@ -36762,13 +38840,16 @@ export class StateStore {
 		subjectProducerVendor?: string;
 		claimExpiresAt: string;
 		evidence?: unknown;
-		alertIdentity?: WorkflowEngineAlertIdentity;
+		alertIdentity: WorkflowEngineAlertIdentity;
 		gateEntryBinding?: WorkflowGateEntryBinding;
 		now?: string;
 	}): WorkflowCredentialSubmissionResult {
 		const nowIso = input.now ?? new Date().toISOString();
 		if (!StateStore.workflowFiniteTimestamp(nowIso)) {
 			return { ok: false, reason: "invalid_timestamp" };
+		}
+		if (!StateStore.workflowAlertIdentityValid(input.alertIdentity)) {
+			return { ok: false, reason: "alert_identity_invalid" };
 		}
 		let result: WorkflowCredentialSubmissionResult = {
 			ok: false,
@@ -36814,14 +38895,27 @@ export class StateStore {
 						credential.claim_id != null
 					) {
 						const claim = this.getWorkflowClaim(Number(credential.claim_id));
-						result = claim
-							? {
-									ok: true,
-									claimId: claim.id,
-									serverSeq: claim.server_seq,
-									idempotentReplay: true,
-								}
-							: { ok: false, reason: "credential_receipt_corrupt" };
+						const run = claim
+							? this.getWorkflowRun(claim.workflow_run_id)
+							: undefined;
+						const leadEvent =
+							claim && run
+								? this.ensureWorkflowClaimLeadEventTx({
+										claim,
+										run,
+										identity: input.alertIdentity,
+									})
+								: undefined;
+						result =
+							claim && leadEvent?.ok
+								? {
+										ok: true,
+										claimId: claim.id,
+										serverSeq: claim.server_seq,
+										leadEventSeq: leadEvent.seq,
+										idempotentReplay: true,
+									}
+								: { ok: false, reason: "credential_receipt_corrupt" };
 					} else {
 						result = { ok: false, reason: "replay_payload_mismatch" };
 					}
@@ -37024,6 +39118,18 @@ export class StateStore {
 					],
 				);
 				const claimId = this.workflowClaimIdBySeq(serverSeq);
+				const claim = this.getWorkflowClaim(claimId);
+				if (!claim) {
+					throw new Error("workflow_claim_receipt_missing");
+				}
+				const leadEvent = this.ensureWorkflowClaimLeadEventTx({
+					claim,
+					run,
+					identity: input.alertIdentity,
+				});
+				if (!leadEvent.ok) {
+					throw new Error("workflow_claim_event_receipt_corrupt");
+				}
 				this.db.run(
 					`UPDATE workflow_decision_capability
 				    SET consumed_at = ?, consumed_claim_id = ? WHERE id = ?`,
@@ -37050,7 +39156,13 @@ export class StateStore {
 					kind: "claim_written",
 					nodeId: credential.node_id as string,
 					executionId: credential.execution_id as string,
-					payload: { claimId, serverSeq, predicate: input.predicate },
+					payload: {
+						claimId,
+						serverSeq,
+						predicate: input.predicate,
+						leadEventRequired: true,
+						leadEventId: `workflow_claim:${claimId}`,
+					},
 				});
 				if (run.engine_owned === 1 && run.snapshot) {
 					if (!engineOutcome) {
@@ -37058,6 +39170,7 @@ export class StateStore {
 						throw new Error("engine_decision_transition_refused");
 					}
 					const transition = this.commitWorkflowTransitionTx({
+						nodeReuseEnabled: input.nodeReuseEnabled,
 						runId: credential.run_id as string,
 						nodeId: credential.node_id as string,
 						attempt: Number(credential.attempt),
@@ -37076,6 +39189,7 @@ export class StateStore {
 					ok: true,
 					claimId,
 					serverSeq,
+					leadEventSeq: leadEvent.seq,
 					idempotentReplay: false,
 				};
 			});
@@ -37243,6 +39357,7 @@ export class StateStore {
 	}
 
 	commitWorkflowLoopReentryRequest(input: {
+		nodeReuseEnabled: boolean;
 		canonical: WorkflowLoopReentryCanonical;
 		canonicalDigest: string;
 		tokenIdentity: string;
@@ -37322,6 +39437,7 @@ export class StateStore {
 					return;
 				}
 				const transition = this.commitWorkflowTransitionTx({
+					nodeReuseEnabled: input.nodeReuseEnabled,
 					runId: current.runId,
 					nodeId: current.sourceNodeId,
 					attempt: current.sourceAttempt,
@@ -37402,6 +39518,7 @@ export class StateStore {
 	}
 
 	commitWorkflowTransitionTx(input: {
+		nodeReuseEnabled: boolean;
 		runId: string;
 		nodeId: string;
 		attempt: number;
@@ -37466,11 +39583,37 @@ export class StateStore {
 					typeof payload.reworkRequestId === "string"
 						? payload.reworkRequestId
 						: undefined;
+				let committedNodeReuse = false;
 				if (committedReworkRequest) {
 					const request = this.getWorkflowReworkRequest(committedReworkRequest);
+					let nodeReuseContext:
+						| { kind?: unknown; baseRevision?: unknown }
+						| undefined;
+					try {
+						nodeReuseContext = request
+							? (JSON.parse(request.authority_context_json) as {
+									kind?: unknown;
+									baseRevision?: unknown;
+								})
+							: undefined;
+					} catch {
+						result = { ok: false, reason: "transition_receipt_corrupt" };
+						return;
+					}
+					const isNodeReuse = nodeReuseContext?.kind === "node_reuse";
+					const inputSubjectDigest = input.subjectDigest?.trim().toLowerCase();
+					const nodeReuseConflict =
+						isNodeReuse &&
+						(nodeReuseContext?.baseRevision !== request?.base_revision ||
+							(inputSubjectDigest !== undefined &&
+								inputSubjectDigest !== request?.base_revision));
+					const legacyConflict =
+						!isNodeReuse &&
+						request?.base_revision !== (input.subjectDigest ?? "unavailable");
 					if (
 						!request ||
-						request.base_revision !== (input.subjectDigest ?? "unavailable") ||
+						nodeReuseConflict ||
+						legacyConflict ||
 						(input.founderFeedback !== undefined &&
 							request.authority === "founder" &&
 							request.founder_feedback_verbatim !== input.founderFeedback)
@@ -37478,8 +39621,10 @@ export class StateStore {
 						result = { ok: false, reason: "transition_conflict" };
 						return;
 					}
+					committedNodeReuse = isNodeReuse;
 				}
 				if (
+					!committedNodeReuse &&
 					input.successorExecutionId !== undefined &&
 					committedSuccessor !== input.successorExecutionId
 				) {
@@ -37704,9 +39849,11 @@ export class StateStore {
 				activePath && activeRoute && activeRequest && authorityKickback,
 			);
 			const targetAttempts = this.listWorkflowRunNodes(input.runId, target.id);
-			const chainHistoryActorExecutionId = targetAttempts
-				.filter((candidate) => candidate.execution_id)
-				.sort((left, right) => right.attempt - left.attempt)[0]?.execution_id;
+			const preferredTargetActor = this.selectPreferredWorkflowActorTx(
+				input.runId,
+				target.id,
+			);
+			const chainHistoryActorExecutionId = preferredTargetActor?.executionId;
 			const chainedFreshDispatch =
 				chainedRework && !chainHistoryActorExecutionId;
 			const reworkAuthority =
@@ -37889,17 +40036,39 @@ export class StateStore {
 				};
 				return;
 			}
+			const nodeReuseActor =
+				input.nodeReuseEnabled &&
+				!activePath &&
+				!reworkAuthority &&
+				target.type === "qa"
+					? preferredTargetActor
+					: undefined;
+			const nodeReuseBase = nodeReuseActor
+				? this.resolveNodeReuseBaseRevisionTx({
+						runId: input.runId,
+						targetNodeId: target.id,
+						subjectDigest: input.subjectDigest,
+						snapshot,
+					})
+				: undefined;
+			if (nodeReuseActor && !nodeReuseBase) {
+				result = { ok: false, reason: "reuse_base_unavailable" };
+				return;
+			}
+			const effectiveReworkAuthority =
+				reworkAuthority ?? (nodeReuseActor ? "engine" : undefined);
 			const successorExecutionId =
 				target.type === "gate"
 					? undefined
-					: reworkAuthority
+					: effectiveReworkAuthority
 						? undefined
 						: (input.successorExecutionId ?? randomUUID());
-			const reworkRequestId = reworkAuthority
+			const reworkRequestId = effectiveReworkAuthority
 				? `rework:${canonicalSubmissionDigest({
 						runId: input.runId,
 						transitionUid,
-						authority: reworkAuthority,
+						authority: effectiveReworkAuthority,
+						...(nodeReuseActor ? { kind: "node_reuse" } : {}),
 						...(chainedRework || supersedingRework
 							? { parentRequestId: activePath!.request_id }
 							: {}),
@@ -37988,11 +40157,8 @@ export class StateStore {
 				}
 			}
 			let preferredActorExecutionId: string | undefined;
-			if (reworkAuthority && reworkRequestId) {
-				preferredActorExecutionId = targetAttempts
-					.filter((candidate) => candidate.execution_id)
-					.sort((left, right) => right.attempt - left.attempt)[0]
-					?.execution_id as string | undefined;
+			if (effectiveReworkAuthority && reworkRequestId) {
+				preferredActorExecutionId = preferredTargetActor?.executionId;
 				if (!preferredActorExecutionId) {
 					throw new WorkflowEngineInvariantError(
 						"workflow_rework_preferred_actor_missing",
@@ -38011,11 +40177,28 @@ export class StateStore {
 					],
 				);
 				const baseRevision =
-					input.subjectDigest ?? activeRequest?.base_revision ?? "unavailable";
-				const authorityContext =
-					chainedRework || supersedingRework
+					nodeReuseBase?.baseRevision ??
+					input.subjectDigest ??
+					activeRequest?.base_revision ??
+					"unavailable";
+				const authorityContext = nodeReuseActor
+					? {
+							kind: "node_reuse",
+							authority: effectiveReworkAuthority,
+							outcome: input.outcome,
+							sourceNodeId: input.nodeId,
+							sourceAttempt: input.attempt,
+							sourceExecutionId: input.executionId,
+							edgeId: selectedId,
+							targetNodeId: target.id,
+							targetAttempt,
+							baseRevision,
+							baseRevisionSource: nodeReuseBase!.baseRevisionSource,
+							actorClassification: nodeReuseActor.classification,
+						}
+					: chainedRework || supersedingRework
 						? {
-								authority: reworkAuthority,
+								authority: effectiveReworkAuthority,
 								outcome: input.outcome,
 								parentRequestId: activePath!.request_id,
 								parentAuthorityContextDigest:
@@ -38029,7 +40212,7 @@ export class StateStore {
 								baseRevision,
 							}
 						: {
-								authority: reworkAuthority,
+								authority: effectiveReworkAuthority,
 								outcome: input.outcome,
 								sourceNodeId: input.nodeId,
 								sourceAttempt: input.attempt,
@@ -38071,16 +40254,20 @@ export class StateStore {
 							candidate.dispatch !== undefined,
 					)
 					.map((candidate) => candidate.id);
-				const invalidationScope = chainedRework
+				const invalidationScope = nodeReuseActor
+					? [target.id]
+					: chainedRework
 					? activeRoute!.invalidation_scope.slice(
 							(activePathCurrentIndex ?? -1) + 1,
 						)
 					: topologyInvalidationScope;
-				const verificationPolicy = chainedRework
+				const verificationPolicy = nodeReuseActor
+					? ["qa_retest", "founder_gate"]
+					: chainedRework
 					? activeRoute!.verification_policy
-					: reworkAuthority === "qa"
+					: effectiveReworkAuthority === "qa"
 						? ["code_review", "qa_retest"]
-						: target.id === "design"
+						: target.type === "design"
 							? ["design_review", "code_review", "qa_retest", "founder_gate"]
 							: ["code_review", "qa_retest", "founder_gate"];
 				this.db.run(
@@ -38093,13 +40280,13 @@ export class StateStore {
 						reworkRequestId,
 						input.runId,
 						transitionUid,
-						reworkAuthority,
+						effectiveReworkAuthority,
 						input.nodeId,
 						input.attempt,
 						baseRevision,
 						authorityContextJson,
 						authorityContextDigest,
-						reworkAuthority === "founder"
+						effectiveReworkAuthority === "founder"
 							? (input.founderFeedback ??
 								activeRequest?.founder_feedback_verbatim ??
 								"")
@@ -38121,14 +40308,18 @@ export class StateStore {
 						preferredActorExecutionId,
 						JSON.stringify(invalidationScope),
 						JSON.stringify(verificationPolicy),
-						chainedRework
+						nodeReuseActor
+							? "engine:node_reuse"
+							: chainedRework
 							? "engine:rework_verification"
-							: reworkAuthority === "qa"
+							: effectiveReworkAuthority === "qa"
 								? "engine:qa_verdict"
 								: "legacy_default",
-						chainedRework
+						nodeReuseActor
+							? "existing_qa_actor_for_new_verification_round"
+							: chainedRework
 							? `verification_path_next_step:${activePath!.request_id}`
-							: reworkAuthority === "qa"
+							: effectiveReworkAuthority === "qa"
 								? "qa_fail_requires_implement_and_qa_retest"
 								: "legacy_founder_feedback_defaults_to_implement",
 						now,
@@ -38155,7 +40346,7 @@ export class StateStore {
 					executionId: preferredActorExecutionId,
 					payload: {
 						requestId: reworkRequestId,
-						authority: reworkAuthority,
+						authority: effectiveReworkAuthority,
 						targetNodeId: target.id,
 						targetAttempt,
 						preferredActorExecutionId,
@@ -39313,8 +41504,8 @@ export class StateStore {
 		approvedHead: string;
 		feedback: string;
 		sourceEventId: string;
-		targetNodeId: "design" | "implement" | "qa";
-		invalidationScope: Array<"design" | "implement" | "qa">;
+		targetNodeId: string;
+		invalidationScope: string[];
 		verificationPolicy: Array<
 			"design_review" | "code_review" | "qa_retest" | "founder_gate"
 		>;
@@ -39947,6 +42138,25 @@ export class StateStore {
 				} catch {
 					throw new Error("founder feedback source payload invalid: snapshot");
 				}
+				let resolvedFounderRework:
+					| (ReturnType<typeof resolveFounderReworkRoute> & {
+							interpretedBy: string;
+							interpretationReason: string;
+					  })
+					| undefined;
+				if (founderRework) {
+					try {
+						resolvedFounderRework = {
+							...resolveFounderReworkRoute(snapshot, founderRework.target),
+							interpretedBy: founderRework.interpretedBy,
+							interpretationReason: founderRework.interpretationReason,
+						};
+					} catch {
+						throw new Error(
+							"founder feedback source payload invalid: rework target",
+						);
+					}
+				}
 				const gateNodeId = workflowApprovalGate(snapshot.manifest).node;
 				const feedbackLoop = snapshot.manifest.loops.find(
 					(loop) =>
@@ -39960,16 +42170,22 @@ export class StateStore {
 				const questionId =
 					typeof payload.question_id === "string" ? payload.question_id : "";
 				if (run.current_node_id !== gateNodeId) {
-					const cutoffTarget = founderRework?.target ?? feedbackLoop.to;
-					if (
-						cutoffTarget !== "design" &&
-						cutoffTarget !== "implement" &&
-						cutoffTarget !== "qa"
-					) {
+					const cutoffTarget =
+						resolvedFounderRework?.targetNodeId ?? feedbackLoop.to;
+					const cutoffNode = snapshot.resolved.nodes.find(
+						(node) => node.id === cutoffTarget,
+					);
+					if (!cutoffNode?.dispatch || cutoffNode.type === "gate") {
 						throw new Error(
 							"founder feedback source payload invalid: rework target",
 						);
 					}
+					const defaultRoute =
+						cutoffNode.type === "design" ||
+						cutoffNode.type === "implement" ||
+						cutoffNode.type === "qa"
+							? resolveFounderReworkRoute(snapshot, cutoffNode.type)
+							: undefined;
 					const early = this.openPendingCarryoverFounderFeedbackTx({
 						run,
 						snapshot,
@@ -39978,15 +42194,13 @@ export class StateStore {
 						feedback: response.feedback,
 						sourceEventId: input.sourceEventId,
 						targetNodeId: cutoffTarget,
-						invalidationScope: founderRework?.invalidationScope ?? [
-							"implement",
-							"qa",
-						],
-						verificationPolicy: founderRework?.verificationPolicy ?? [
-							"code_review",
-							"qa_retest",
-							"founder_gate",
-						],
+						invalidationScope:
+							resolvedFounderRework?.invalidationScope ??
+							defaultRoute?.invalidationScope ??
+							[cutoffTarget],
+						verificationPolicy:
+							resolvedFounderRework?.verificationPolicy ??
+							defaultRoute?.verificationPolicy ?? ["founder_gate"],
 						now: input.at ?? new Date().toISOString(),
 					});
 					if (!early) {
@@ -40054,6 +42268,9 @@ export class StateStore {
 				}
 				const now = new Date().toISOString();
 				const transition = this.commitWorkflowTransitionTx({
+					// Founder feedback already owns a founder rework route; node reuse is
+					// intentionally a Bridge-ingress decision, never a source projection.
+					nodeReuseEnabled: false,
 					runId,
 					nodeId: gateNodeId,
 					attempt: Number(holder.attempt),
@@ -40111,7 +42328,7 @@ export class StateStore {
 				}
 				let effectiveTargetNodeId = transition.targetNodeId;
 				let effectiveTargetAttempt = transition.targetAttempt;
-				if (founderRework) {
+				if (resolvedFounderRework) {
 					if (!transition.reworkRequestId) {
 						throw new Error(
 							"founder feedback kickback failed: request_missing",
@@ -40119,14 +42336,15 @@ export class StateStore {
 					}
 					const priorTarget = this.listWorkflowRunNodes(
 						runId,
-						founderRework.target,
+						resolvedFounderRework.targetNodeId,
 					)
 						.filter((candidate) => candidate.execution_id)
 						.sort((left, right) => right.attempt - left.attempt)
 						.find(
 							(candidate) =>
 								candidate.attempt !== transition.targetAttempt ||
-								founderRework.target !== transition.targetNodeId,
+								resolvedFounderRework.targetNodeId !==
+									transition.targetNodeId,
 						);
 					if (!priorTarget?.execution_id) {
 						throw new Error(
@@ -40134,21 +42352,24 @@ export class StateStore {
 						);
 					}
 					const targetAttempt =
-						founderRework.target === transition.targetNodeId
+						resolvedFounderRework.targetNodeId === transition.targetNodeId
 							? transition.targetAttempt
-							: this.listWorkflowRunNodes(runId, founderRework.target).reduce(
+							: this.listWorkflowRunNodes(
+									runId,
+									resolvedFounderRework.targetNodeId,
+								).reduce(
 									(max, candidate) => Math.max(max, candidate.attempt),
 									0,
 								) + 1;
 					const interpreted = this.appendWorkflowReworkRouteRevision({
 						requestId: transition.reworkRequestId,
-						targetNodeId: founderRework.target,
+						targetNodeId: resolvedFounderRework.targetNodeId,
 						targetAttempt,
 						preferredActorExecutionId: priorTarget.execution_id,
-						invalidationScope: founderRework.invalidationScope,
-						verificationPolicy: founderRework.verificationPolicy,
-						interpretedBy: founderRework.interpretedBy,
-						interpretationReason: founderRework.interpretationReason,
+						invalidationScope: resolvedFounderRework.invalidationScope,
+						verificationPolicy: resolvedFounderRework.verificationPolicy,
+						interpretedBy: resolvedFounderRework.interpretedBy,
+						interpretationReason: resolvedFounderRework.interpretationReason,
 						now,
 					});
 					if (!interpreted.ok) {
@@ -40156,7 +42377,7 @@ export class StateStore {
 							`founder feedback source payload invalid: ${interpreted.reason}`,
 						);
 					}
-					effectiveTargetNodeId = founderRework.target;
+					effectiveTargetNodeId = resolvedFounderRework.targetNodeId;
 					effectiveTargetAttempt = targetAttempt;
 				}
 				this.db.run(
@@ -40315,6 +42536,8 @@ export class StateStore {
 					}
 					if (holder.authority_mode === "land") {
 						const transition = this.commitWorkflowTransitionTx({
+							// Approval targets the engine terminal, never a reusable QA actor.
+							nodeReuseEnabled: false,
 							runId,
 							nodeId: gateNodeId,
 							attempt: Number(holder.attempt),
@@ -40437,6 +42660,8 @@ export class StateStore {
 						);
 					}
 					const transition = this.commitWorkflowTransitionTx({
+						// Approval targets the engine terminal, never a reusable QA actor.
+						nodeReuseEnabled: false,
 						runId,
 						nodeId: snapshot.manifest.approval_gate.node,
 						attempt: Number(holder.attempt),
@@ -52417,6 +54642,16 @@ export interface WorkflowTemplateAuditRow {
 	detail: string | null;
 }
 
+export interface WorkflowCatalogMigrationAuditRow {
+	id: number;
+	at: string;
+	migration_id: string;
+	item_kind: "template_cleanup" | "seed_update";
+	item_id: string;
+	reason: "founder_owned" | "not_retired" | "referenced";
+	detail: string;
+}
+
 export type WorkflowTemplatePublishResult =
 	| { status: "published"; revision: number }
 	| { status: "conflict"; currentRevision: number | null }
@@ -52439,6 +54674,65 @@ export type WorkflowTemplateSeedImportResult = {
 	status: "imported" | "updated" | "unchanged" | "refused";
 	revision: number;
 };
+
+export interface WorkflowCatalogMigrationInput {
+	categoryRename: { from: string; to: string };
+	removableTemplateIds: readonly string[];
+	seeds: readonly LoadedWorkflowSeed[];
+	resolvableRoleNames: readonly string[];
+}
+
+export interface WorkflowCatalogSeedPlan {
+	templateId: string;
+	status:
+		| Exclude<WorkflowTemplateSeedImportResult["status"], "refused">
+		| "skipped";
+	expectedRevision: number | null;
+	reason?: "founder_owned";
+	unresolvableRoles?: string[];
+	manifestUnreadable?: boolean;
+	auditDetail?: string;
+	requiresAudit?: boolean;
+}
+
+export interface WorkflowCatalogTemplateSkipPlan {
+	templateId: string;
+	reason: "founder_owned" | "not_retired" | "referenced";
+	auditDetail: string;
+	requiresAudit: boolean;
+}
+
+export interface WorkflowCatalogMigrationPlan {
+	requiresMutation: boolean;
+	bindingRows: number;
+	templatesToDelete: string[];
+	templateSkips: WorkflowCatalogTemplateSkipPlan[];
+	seeds: WorkflowCatalogSeedPlan[];
+	foreignKeyBaseline: WorkflowCatalogForeignKeyBaseline;
+}
+
+export interface WorkflowCatalogMigrationHooks {
+	onStep?: (step: string) => void;
+	foreignKeyBaseline?: WorkflowCatalogForeignKeyBaseline;
+}
+
+export interface WorkflowCatalogForeignKeyViolation {
+	table: string;
+	rowId: number | null;
+	parent: string;
+	foreignKeyId: number;
+}
+
+export interface WorkflowCatalogForeignKeyBaseline {
+	fingerprint: string;
+	violations: WorkflowCatalogForeignKeyViolation[];
+}
+
+export type WorkflowCatalogMigrationIntegrityStage =
+	| "backup_quick_check"
+	| "backup_foreign_key_baseline_drift"
+	| "apply_foreign_key_baseline_drift"
+	| "apply_foreign_key_violation";
 
 export interface WorkflowRunRow {
 	run_id: string;
@@ -53659,13 +55953,20 @@ export type WorkflowExecutionAdmissionResult =
 	  };
 
 export type WorkflowCredentialSubmissionResult =
-	| { ok: true; claimId: number; serverSeq: number; idempotentReplay: boolean }
+	| {
+			ok: true;
+			claimId: number;
+			serverSeq: number;
+			leadEventSeq: number;
+			idempotentReplay: boolean;
+	  }
 	| {
 			ok: false;
 			reason:
 				| "credential_not_found"
 				| "credential_revoked"
 				| "credential_expired"
+				| "alert_identity_invalid"
 				| "credential_receipt_corrupt"
 				| "replay_payload_mismatch"
 				| "predicate_not_allowed"
@@ -54014,6 +56315,21 @@ export interface DeliverySecretState {
 	state: "PREPARED" | "ACTIVE";
 	activeSecretId: string | null;
 	preparedSecretId: string | null;
+}
+
+function mapPatrolOrphanWatch(
+	row: Record<string, unknown>,
+): PatrolOrphanWatch {
+	return {
+		target: String(row.target),
+		paneFingerprint: String(row.pane_fingerprint),
+		firstSeenAt: Number(row.first_seen_at),
+		streak: Number(row.streak),
+		lastSlotStart: Number(row.last_slot_start),
+		intervalMs: Number(row.interval_ms),
+		lastAlertAt:
+			row.last_alert_at == null ? null : Number(row.last_alert_at),
+	};
 }
 
 function mapLeadEventRow(row: Record<string, unknown>): LeadEventRow {

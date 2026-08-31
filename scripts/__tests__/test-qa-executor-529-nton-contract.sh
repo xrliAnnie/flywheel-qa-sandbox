@@ -2,7 +2,7 @@
 # FLY-1461: Guard test for the 529 QA Room real-Discord-N-to-N mandate in the QA
 # executor role .md file.
 #
-# The QA executor role .md (.flywheel/agents/engineering/qa-executor.md) is injected
+# The QA node prompt (.flywheel/agents/nodes/qa.md) is injected
 # verbatim into the QA Runner system prompt (readAgentFile, truncated at 40k CHARS —
 # Blueprint.ts). It is prompt text, not runtime code, so there is no vitest surface:
 # this is a CHEAP SMOKE SENTINEL, not a behavior test — grep anchors can only prove
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-QA_MD="${SCRIPT_DIR}/../../.flywheel/agents/engineering/qa-executor.md"
+QA_MD="${SCRIPT_DIR}/../../.flywheel/agents/nodes/qa.md"
 
 PASS=0; FAIL=0
 assert_file_exists() {
@@ -48,9 +48,9 @@ assert_max_bytes() {
   fi
 }
 
-echo "Test: qa-executor.md 529 QA Room N-to-N mandate (FLY-1461)"
+echo "Test: qa node 529 QA Room N-to-N mandate (FLY-1461)"
 
-assert_file_exists "$QA_MD" "qa-executor.md exists (runtime-loaded QA role)"
+assert_file_exists "$QA_MD" "qa.md exists (runtime-loaded QA node)"
 assert_max_bytes "$QA_MD" 40000 "under 40k byte-budget sentinel (readAgentFile truncation)"
 
 # ── the mandate section + its heading survive ──

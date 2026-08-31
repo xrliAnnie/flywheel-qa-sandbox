@@ -7,6 +7,7 @@ import {
 	parseWorkflowDocsOutput,
 	type WorkflowDocsOutput,
 } from "../workflow-docs-output.js";
+import { yieldToTimers } from "./workflow-docs-git.js";
 
 export interface WorkflowMaterializationCandidate {
 	runId: string;
@@ -233,6 +234,7 @@ export class WorkflowDocsMaterializer {
 
 		return this.options.withRepoLock(project.projectRoot, async () => {
 			const baseHead = await this.options.git.resolveBaseHead(common);
+			await yieldToTimers();
 			const intent = this.options.store.allocateWorkflowMaterialization({
 				runId: candidate.runId,
 				nodeId: candidate.producerNodeId,
@@ -257,6 +259,7 @@ export class WorkflowDocsMaterializer {
 					outputDigest: candidate.outputDigest,
 					payload,
 				});
+				await yieldToTimers();
 				this.options.store.adoptWorkflowMaterializationCommit({
 					effectId: intent.effect_id,
 					treeHead: commit.treeHead,
@@ -275,11 +278,13 @@ export class WorkflowDocsMaterializer {
 
 			let remoteHead = await this.options.git.readRemoteHead(common);
 			if (remoteHead !== adopted.commit_head) {
+				await yieldToTimers();
 				await this.options.git.pushCommit({
 					...common,
 					baseHead,
 					commitHead: adopted.commit_head,
 				});
+				await yieldToTimers();
 				remoteHead = await this.options.git.readRemoteHead(common);
 			}
 			if (remoteHead !== adopted.commit_head) {

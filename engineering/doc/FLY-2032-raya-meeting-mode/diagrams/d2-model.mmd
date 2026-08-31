@@ -1,0 +1,20 @@
+flowchart TB
+  subgraph REG["lead 名册(数据文件,一人一份)"]
+    P1["Raya 的档案"]
+    P2["Tadashi 的档案"]
+    P3["Honey Lemon 的档案"]
+    NOTE1["档案里写:名字与别名 ·<br/>它的工作目录 · 身份文件 ·<br/>记忆文件 · 能动什么"]
+  end
+  subgraph ORCH["会议编排(常驻小管家)"]
+    L["会议台账<br/>(当前这场 + 历史存档)"]
+    T["到点闹钟"]
+  end
+  subgraph VESSEL["发声容器(Codex 语音)"]
+    ASM["开会前把【身份+议题+<br/>简报+会里规矩】装进去"]
+  end
+  REG -->|"按『和谁』取那份档案"| ASM
+  ORCH --> VESSEL
+  L -.->|"存档给会议产物单"| OUT["会后:notes / action items<br/>(另一单负责)"]
+  style REG fill:#f3ecff,stroke:#af52de
+  style ORCH fill:#eef4ff,stroke:#007aff
+  style VESSEL fill:#fff8e6,stroke:#ff9500

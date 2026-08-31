@@ -1,0 +1,5 @@
+nodes:
+  content:
+    file: nodes/content.md
+    label: Content
+    department: content

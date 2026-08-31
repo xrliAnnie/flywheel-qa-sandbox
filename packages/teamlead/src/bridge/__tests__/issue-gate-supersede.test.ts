@@ -185,7 +185,7 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 		expect(db.getMessageById(q2)).toMatchObject({ superseded_by: q3 });
 	});
 
-	it("observe mode records a distinct candidate and enforce later records the outcome", () => {
+	it("ignores the retired observe value and enforces immediately", () => {
 		const oldGate = db.insertQuestion("exec-1", "lead", "ship 1", {
 			checkpoint: "approve_to_ship",
 		});
@@ -203,28 +203,18 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 			},
 		};
 
-		const observed = sweepIssueGatesForProject({
+		const legacyKey = ["FLYWHEEL", "ISSUE", "GATE", "SUPERSEDE"].join("_");
+		const result = sweepIssueGatesForProject({
 			projectName: "flywheel",
 			db,
 			store,
-			env: { FLYWHEEL_ISSUE_GATE_SUPERSEDE: "observe" },
+			env: { [legacyKey]: "observe" },
 		});
-		expect(observed).toMatchObject({ candidates: 1, retired: 0 });
-		expect(db.getMessageById(oldGate)?.superseded_at).toBeNull();
-		expect(events.get(`gate-supersede-candidate-${oldGate}`)).toBe(
-			"gate_supersede_candidate",
-		);
-
-		const enforced = sweepIssueGatesForProject({
-			projectName: "flywheel",
-			db,
-			store,
-			env: {},
-		});
-		expect(enforced).toMatchObject({ candidates: 1, retired: 1 });
+		expect(result).toMatchObject({ candidates: 1, retired: 1 });
 		expect(db.getMessageById(oldGate)).toMatchObject({
 			superseded_by: newGate,
 		});
+		expect(events.has(`gate-supersede-candidate-${oldGate}`)).toBe(false);
 		expect(events.get(`ship-gate-superseded-${oldGate}`)).toBe(
 			"ship_gate_superseded",
 		);
@@ -299,7 +289,7 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 		expect(db.getResponse(oldGate)).toBeDefined();
 	});
 
-	it("leaves unmapped gates untouched and honors the patrol mode", () => {
+	it("leaves unmapped gates untouched and ignores the retired zero value", () => {
 		const oldApprove = db.insertQuestion("unknown-a", "lead", "ship 1", {
 			checkpoint: "approve_to_ship",
 		});
@@ -338,20 +328,13 @@ describe("FLY-1314 issue gate supersede patrol", () => {
 		const newReview = db.insertQuestion("review-b", "lead", "review 2", {
 			checkpoint: "review_code",
 		});
+		const legacyKey = ["FLYWHEEL", "ISSUE", "GATE", "SUPERSEDE"].join("_");
 		expect(
 			sweepIssueGatesForProject({
 				projectName: "flywheel",
 				db,
 				store: mappedStore,
-				env: { FLYWHEEL_ISSUE_GATE_SUPERSEDE: "0" },
-			}),
-		).toEqual({ scanned: 0, candidates: 0, retired: 0, unmapped: 0 });
-		expect(
-			sweepIssueGatesForProject({
-				projectName: "flywheel",
-				db,
-				store: mappedStore,
-				env: {},
+				env: { [legacyKey]: "0" },
 			}),
 		).toMatchObject({ retired: 2 });
 		expect(db.getMessageById(oldApprove)).toMatchObject({

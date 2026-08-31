@@ -51,11 +51,15 @@ export interface LoopGuardWorkerData {
 	stallThresholdMs: number;
 	checkIntervalMs: number;
 	logPath: string;
-	/** Test-only: postMessage("stall") + stop instead of killing the process. */
+	/** Test-only: post terminal "stall" instead of killing the process. */
 	testMode: boolean;
 	pid: number;
 	bootTs: number;
 	syncOpMarkerPath: string;
+	/** Test-only executable + fixed argv prefix used in place of /bin/ps. */
+	psCommand?: string[];
+	/** Test-only freeze recovery grace; production defaults to 5 seconds. */
+	graceMs?: number;
 }
 
 /**
@@ -69,8 +73,12 @@ export interface LoopGuardWorkerData {
  */
 export const LOOP_GUARD_WORKER_SOURCE = `
 const { workerData, parentPort } = require("node:worker_threads");
+const childProcess = require("node:child_process");
 const fs = require("node:fs");
-	const { sab, stallThresholdMs, checkIntervalMs, logPath, testMode, pid, bootTs, syncOpMarkerPath } = workerData;
+const os = require("node:os");
+const path = require("node:path");
+	const { sab, stallThresholdMs, checkIntervalMs, logPath, testMode, pid, bootTs, syncOpMarkerPath, psCommand } = workerData;
+	const graceMs = workerData.graceMs ?? 5000;
 	const view = new BigInt64Array(sab);
 	function readSyncOp(lastBeat, now) {
 		if (!syncOpMarkerPath) return undefined;
@@ -100,44 +108,211 @@ const fs = require("node:fs");
 		}
 		return undefined;
 	}
-	const timer = setInterval(() => {
-		const lastBeat = Number(Atomics.load(view, 0));
-		const now = Date.now();
-		const age = now - lastBeat;
-		if (age <= stallThresholdMs) return;
-		clearInterval(timer);
+	function gitSubcommand(args) {
+		const allowed = new Set([
+			"branch", "cat-file", "check-ref-format", "commit-tree", "config",
+			"diff", "fetch", "for-each-ref", "hash-object", "log", "ls-remote",
+			"merge-base", "push", "read-tree", "remote", "rev-parse", "show",
+			"status", "symbolic-ref", "update-index", "update-ref", "worktree",
+			"write-tree",
+		]);
+		const tokens = args.trim().split(/\\s+/).slice(1);
+		for (let index = 0; index < tokens.length; index += 1) {
+			const token = tokens[index];
+			if (token === "-c" || token === "-C" || token === "--git-dir") {
+				index += 1;
+				continue;
+			}
+			if (token.startsWith("--git-dir=") || token.startsWith("-")) continue;
+			return allowed.has(token) ? token : undefined;
+		}
+		return undefined;
+	}
+	function tmuxSubcommand(args) {
+		const allowed = new Set([
+			"capture-pane", "display-message", "has-session", "kill-window",
+			"list-panes", "list-sessions", "list-windows", "new-session",
+			"new-window", "rename-window", "send-keys", "set-environment",
+			"set-option", "show-environment", "show-options", "wait-for",
+		]);
+		const tokens = args.trim().split(/\\s+/).slice(1);
+		for (let index = 0; index < tokens.length; index += 1) {
+			const token = tokens[index];
+			if (["-L", "-S", "-f"].includes(token)) {
+				index += 1;
+				continue;
+			}
+			if (token.startsWith("-")) continue;
+			return allowed.has(token) ? token : undefined;
+		}
+		return undefined;
+	}
+	function collectChildren() {
+		try {
+			const command = testMode && Array.isArray(psCommand) && psCommand.length > 0
+				? psCommand
+				: ["/bin/ps"];
+			const executable = command[0];
+			const prefix = command.slice(1);
+			const table = childProcess.execFileSync(
+				executable,
+				[...prefix, "-axo", "pid=,ppid=,etime=,comm="],
+				{ encoding: "utf8", timeout: 2000 },
+			);
+			const children = [];
+			for (const line of table.split(/\\r?\\n/)) {
+				const match = line.match(/^\\s*(\\d+)\\s+(\\d+)\\s+(\\S+)\\s+(.+?)\\s*$/);
+				if (!match || Number(match[2]) !== pid) continue;
+				const comm = path.basename(match[4]);
+				if (comm === "ps") continue;
+				children.push({ pid: Number(match[1]), etime: match[3], comm });
+			}
+			const allowlisted = children.filter((child) => child.comm === "git" || child.comm === "tmux");
+			if (allowlisted.length > 0) {
+				try {
+					const details = childProcess.execFileSync(
+						executable,
+						[...prefix, "-o", "pid=,args=", "-p", allowlisted.map((child) => child.pid).join(",")],
+						{ encoding: "utf8", timeout: 2000 },
+					);
+					const detailByPid = new Map();
+					for (const line of details.split(/\\r?\\n/)) {
+						const match = line.match(/^\\s*(\\d+)\\s+(.+?)\\s*$/);
+						if (match) detailByPid.set(Number(match[1]), match[2]);
+					}
+					for (const child of allowlisted) {
+						const args = detailByPid.get(child.pid);
+						const sub = args && (child.comm === "git" ? gitSubcommand(args) : tmuxSubcommand(args));
+						if (sub) child.sub = sub;
+					}
+				} catch (e) { /* base child snapshot remains useful */ }
+			}
+			return children.slice(0, 10);
+		} catch (e) {
+			return null;
+		}
+	}
+	function append(record) {
+		if (!logPath) return;
+		try { fs.appendFileSync(logPath, JSON.stringify(record) + "\\n"); } catch (e) { /* best-effort */ }
+	}
+	function resourceSnapshot() {
+		let rssMb = null;
+		let load = null;
+		try { rssMb = process.memoryUsage().rss / 1024 / 1024; } catch (e) { /* best-effort */ }
+		try { load = os.loadavg()[0]; } catch (e) { /* best-effort */ }
+		return { rss_mb: rssMb, load };
+	}
+	let lastCheckAt = Date.now();
+	let timer;
+	let pendingGrace;
+	let terminal = false;
+	function stopMonitoring() {
+		if (timer) clearInterval(timer);
+		timer = undefined;
+	}
+	function startMonitoring() {
+		if (terminal || timer) return;
+		timer = setInterval(check, checkIntervalMs);
+	}
+	function recover(snapshot, recoveredVia, lastSyncOp) {
+		append({
+			event: recoveredVia === "forensic"
+				? "stall_recovered_during_forensics"
+				: "stall_recovered_after_freeze",
+			stall_age_at_detect_ms: snapshot.ageAtDetect,
+			tick_gap_ms: snapshot.tickGapAtDetect,
+			threshold_ms: stallThresholdMs,
+			...(recoveredVia === "forensic"
+				? { last_sync_op: lastSyncOp ?? null }
+				: { recovered_via: recoveredVia }),
+			at: new Date().toISOString(),
+			pid,
+			bootTs,
+		});
+		if (testMode && parentPort) parentPort.postMessage("recovered");
+		pendingGrace = undefined;
+		lastCheckAt = Date.now();
+		startMonitoring();
+	}
+	function stall(snapshot) {
+		if (terminal) return;
+		stopMonitoring();
+		if (pendingGrace) clearTimeout(pendingGrace);
+		pendingGrace = undefined;
+		const lastSyncOp = readSyncOp(snapshot.lastBeatAtDetect, snapshot.detectedAt);
+		const children = collectChildren();
+		const finalNow = Date.now();
+		const currentBeat = Number(Atomics.load(view, 0));
+		if (currentBeat !== snapshot.lastBeatAtDetect) {
+			recover(snapshot, "forensic", lastSyncOp);
+			return;
+		}
+		terminal = true;
 		const forensic = {
 			event: "bridge_event_loop_stall",
-			stall_age_ms: age,
+			stall_age_ms: snapshot.ageAtDetect,
+			stall_age_at_detect_ms: snapshot.ageAtDetect,
+			stall_age_final_ms: finalNow - currentBeat,
+			tick_gap_ms: snapshot.tickGapAtDetect,
 			threshold_ms: stallThresholdMs,
 			at: new Date().toISOString(),
 			pid,
 			bootTs,
+			children,
+			...resourceSnapshot(),
+			attribution: lastSyncOp ? "marker" : children && children.length > 0 ? "child" : "unknown",
 		};
-		const lastSyncOp = readSyncOp(lastBeat, now);
 		if (lastSyncOp) forensic.last_sync_op = lastSyncOp;
-		const line = JSON.stringify(forensic) + "\\n";
-	if (logPath) {
-		try { fs.appendFileSync(logPath, line); } catch (e) { /* best-effort */ }
-	}
-	try {
-		console.error(
-			"[BridgeLoopGuard] event loop stalled for " + age +
-			"ms (threshold " + stallThresholdMs + "ms) — killing process for KeepAlive restart",
-		);
-	} catch (e) { /* best-effort */ }
-	if (testMode) {
-		// Post the stall signal, then self-terminate: close the port so the
-		// worker has no live handles left (the interval is already cleared) and
-		// exits with code 0. Avoids a leaked worker between tests.
-		if (parentPort) {
-			parentPort.postMessage("stall");
-			parentPort.close();
+		append(forensic);
+		try {
+			console.error(
+				"[BridgeLoopGuard] event loop stalled for " + forensic.stall_age_final_ms +
+				"ms (threshold " + stallThresholdMs + "ms) — killing process for KeepAlive restart",
+			);
+		} catch (e) { /* best-effort */ }
+		if (testMode) {
+			if (parentPort) parentPort.postMessage("stall");
+			return;
 		}
-		return;
+		process.kill(process.pid, "SIGKILL");
 	}
-	process.kill(process.pid, "SIGKILL");
-}, checkIntervalMs);
+	function check() {
+		const lastBeat = Number(Atomics.load(view, 0));
+		const now = Date.now();
+		const age = now - lastBeat;
+		const forcedTickGap = testMode && view.length > 1
+			? Number(Atomics.exchange(view, 1, 0n))
+			: 0;
+		const tickGap = forcedTickGap > 0 ? forcedTickGap : now - lastCheckAt;
+		lastCheckAt = now;
+		const snapshot = {
+			lastBeatAtDetect: lastBeat,
+			ageAtDetect: age,
+			tickGapAtDetect: tickGap,
+			detectedAt: now,
+		};
+		if (tickGap < stallThresholdMs) {
+			if (age <= stallThresholdMs) return;
+			stopMonitoring();
+			stall(snapshot);
+			return;
+		}
+		stopMonitoring();
+		if (age <= stallThresholdMs) {
+			recover(snapshot, "immediate");
+			return;
+		}
+		pendingGrace = setTimeout(() => {
+			const currentBeat = Number(Atomics.load(view, 0));
+			if (currentBeat !== snapshot.lastBeatAtDetect) {
+				recover(snapshot, "grace");
+				return;
+			}
+			stall(snapshot);
+		}, graceMs);
+	}
+	startMonitoring();
 `;
 
 /** Minimal structural view of a Worker so tests can inject a stub. */
@@ -170,6 +345,10 @@ export interface BridgeEventLoopGuardOptions {
 	pid?: number;
 	syncOpMarkerPath?: string;
 	testMode?: boolean;
+	/** Test-only collector command forwarded to the real worker. */
+	psCommand?: string[];
+	/** Test-only freeze recovery grace forwarded to the real worker. */
+	graceMs?: number;
 }
 
 export class BridgeEventLoopGuard {
@@ -188,6 +367,8 @@ export class BridgeEventLoopGuard {
 	private readonly pid: number;
 	private readonly syncOpMarkerPath: string;
 	private readonly testMode: boolean;
+	private readonly psCommand: string[] | undefined;
+	private readonly graceMs: number | undefined;
 
 	private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 	private worker: WorkerLike | null = null;
@@ -226,6 +407,8 @@ export class BridgeEventLoopGuard {
 		this.pid = options.pid ?? process.pid;
 		this.syncOpMarkerPath = options.syncOpMarkerPath ?? "";
 		this.testMode = options.testMode ?? false;
+		this.psCommand = options.psCommand;
+		this.graceMs = options.graceMs;
 	}
 
 	/** The injected `enabled` option remains a test and embedding seam. */
@@ -270,6 +453,12 @@ export class BridgeEventLoopGuard {
 				pid: this.pid,
 				bootTs: this.bootTs,
 				syncOpMarkerPath: this.syncOpMarkerPath,
+				...(this.testMode && this.psCommand
+					? { psCommand: this.psCommand }
+					: {}),
+				...(this.testMode && this.graceMs !== undefined
+					? { graceMs: this.graceMs }
+					: {}),
 			},
 		});
 		this.worker.unref();

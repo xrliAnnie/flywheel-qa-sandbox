@@ -11,6 +11,7 @@ com.flywheel.bridge-liveness-probe	com.flywheel.bridge-liveness-probe.plist	copy
 com.flywheel.codex-log-guard	com.flywheel.codex-log-guard.plist	copy	0	approved never-installed-copy-exception
 com.flywheel.daily-digest	com.flywheel.daily-digest.plist	hold	0	pending-founder-optin
 com.flywheel.xiaohongshu-learning	com.flywheel.xiaohongshu-learning.plist	hold	0	founder-gated-pilot
+com.flywheel.meeting-notes	com.flywheel.meeting-notes.plist	hold	0	pre-ship-live-pilot-hard-gate-before-install
 com.flywheel.bridge	com.flywheel.bridge.plist	setup	0	installed through bridge setup
 com.flywheel.quota-monitor	-	setup	0	installed through quota-monitor setup
 com.flywheel.cmux-watcher	-	setup	0	installed through cmux watcher setup

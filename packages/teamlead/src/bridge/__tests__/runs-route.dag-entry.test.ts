@@ -25,33 +25,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import { canonicalSubmissionDigest } from "flywheel-config";
-import {
-	afterAll,
-	afterEach,
-	beforeEach,
-	describe,
-	expect,
-	it,
-	vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { legacyWorkflowSeeds } from "../../__tests__/fixtures/legacy-workflow-manifests.js";
 import type { ProjectEntry } from "../../ProjectConfig.js";
 import {
+	Fly2121PreservedTemplateUnrunnableError,
 	StateStore,
 	type WorkflowResumeAttachmentRow,
 } from "../../StateStore.js";
 import { importWorkflowMenuSeeds } from "../../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../../workflow-template.js";
+import { initializeFlagStore } from "../flag-store-runtime.js";
 import type { IStartDispatcher, StartRequest } from "../retry-dispatcher.js";
-
-// Keep the launch-delivery negative path bounded. runs-route captures this
-// deadline when its module loads, so the test value must be installed first.
-const ghostGuardEnv = vi.hoisted(() => {
-	const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
-	process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
-	return { previous };
-});
 
 import { createRunsRouter } from "../runs-route.js";
 
@@ -176,14 +162,6 @@ afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) cleanup();
 });
 
-afterAll(() => {
-	if (ghostGuardEnv.previous === undefined) {
-		delete process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
-	} else {
-		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = ghostGuardEnv.previous;
-	}
-});
-
 interface Harness {
 	url: string;
 	store: StateStore;
@@ -194,6 +172,8 @@ interface Harness {
 async function startHarness(options: {
 	env?: Partial<Record<keyof typeof DAG_ENV, string>>;
 	configYaml?: string;
+	pipelineDag?: boolean;
+	pipelineWorkKind?: boolean;
 	seedBinding?: boolean;
 	bindingCategory?: string;
 	templateSchema?: 1 | 2;
@@ -225,26 +205,45 @@ async function startHarness(options: {
 	writeFileSync(join(projectRoot, "agents", "generic.md"), "Do the work.\n");
 	if (options.menuMode) {
 		mkdirSync(join(projectRoot, ".flywheel", "menus"), { recursive: true });
-		mkdirSync(join(projectRoot, ".flywheel", "agents"), { recursive: true });
+		mkdirSync(join(projectRoot, ".flywheel", "agents", "nodes"), {
+			recursive: true,
+		});
 		writeFileSync(
-			join(projectRoot, ".flywheel", "agents", "engineer.md"),
-			"Engineer menu agent.\n",
+			join(projectRoot, ".flywheel", "agents", "nodes", "eng_design.md"),
+			"Engineering design menu agent.\n",
 		);
 		writeFileSync(
-			join(projectRoot, ".flywheel", "agents", "qa.md"),
+			join(projectRoot, ".flywheel", "agents", "nodes", "implement.md"),
+			"Implement menu agent.\n",
+		);
+		writeFileSync(
+			join(projectRoot, ".flywheel", "agents", "nodes", "qa.md"),
 			"QA menu agent.\n",
 		);
 		writeFileSync(
-			join(projectRoot, ".flywheel", "agents", "generic.md"),
+			join(projectRoot, ".flywheel", "agents", "nodes", "general.md"),
 			"Generic menu agent.\n",
 		);
+		for (const node of [
+			"pm",
+			"product_design",
+			"proto",
+			"engineer",
+			"product_designer",
+		]) {
+			writeFileSync(
+				join(projectRoot, ".flywheel", "agents", "nodes", `${node}.md`),
+				`${node} menu agent.\n`,
+			);
+		}
 		writeFileSync(
-			join(projectRoot, ".flywheel", "menus", "ic-roster.yaml"),
+			join(projectRoot, ".flywheel", "agents", "registry.yaml"),
 			[
-				"design: .flywheel/agents/engineer.md",
-				"implement: .flywheel/agents/engineer.md",
-				"qa: .flywheel/agents/qa.md",
-				"generic: .flywheel/agents/generic.md",
+				"nodes:",
+				"  eng_design: { file: nodes/eng_design.md, department: engineering }",
+				"  implement: { file: nodes/implement.md, department: engineering }",
+				"  qa: { file: nodes/qa.md, department: engineering }",
+				"  general: { file: nodes/general.md }",
 				"",
 			].join("\n"),
 		);
@@ -253,11 +252,10 @@ async function startHarness(options: {
 			"flywheel-eng-lead: [code, simple_code, generic]\n",
 		);
 	}
-	writeFileSync(
-		join(projectRoot, ".flywheel", "config.yaml"),
+	const configYaml =
 		options.configYaml ??
-			`${CONFIG_BASE}pipeline:\n  dag: true\n${options.menuMode ? "  work_kind: true\n" : ""}`,
-	);
+		`${CONFIG_BASE}pipeline:\n  dag: true\n${options.menuMode ? "  work_kind: true\n" : ""}`;
+	writeFileSync(join(projectRoot, ".flywheel", "config.yaml"), configYaml);
 	for (const [key, value] of Object.entries({ ...DAG_ENV, ...options.env })) {
 		if (value === undefined) delete process.env[key];
 		else process.env[key] = value;
@@ -265,6 +263,26 @@ async function startHarness(options: {
 
 	const store = await StateStore.create(":memory:");
 	cleanups.push(() => store.close());
+	initializeFlagStore(store, {});
+	const pipelineDag =
+		options.pipelineDag ?? !/\n\s+dag:\s*false\b/.test(configYaml);
+	const pipelineWorkKind =
+		options.pipelineWorkKind ?? /\n\s+work_kind:\s*true\b/.test(configYaml);
+	for (const [name, value] of [
+		["pipeline_dag", pipelineDag],
+		["pipeline_work_kind", pipelineWorkKind],
+	] as const) {
+		const changed = store.applyScopedFlagValueChange({
+			name,
+			scope: "flywheel",
+			op: "set",
+			rawTo: value ? "1" : "0",
+			expectedChangeSeq: 0,
+			actor: "fixture",
+			reason: "runs-route project enrollment fixture",
+		});
+		if (!changed.ok) throw new Error(`failed to seed ${name}`);
+	}
 	if (options.seedBinding !== false) {
 		if (options.menuMode) importWorkflowMenuSeeds(store, process.env);
 		const seed = options.menuMode
@@ -362,6 +380,7 @@ async function startHarness(options: {
 				hasOverride: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE !== undefined,
 				raw: process.env.FLYWHEEL_SKILL_FRAMEWORK_MODE ?? null,
 			}),
+			{ ghostGuardSessionWaitMs: 500 },
 		),
 	);
 	server = createServer(app);
@@ -392,10 +411,14 @@ async function post(
 			...body,
 		}),
 	});
-	return {
-		status: res.status,
-		json: (await res.json()) as Record<string, unknown>,
-	};
+	const text = await res.text();
+	let json: Record<string, unknown>;
+	try {
+		json = JSON.parse(text) as Record<string, unknown>;
+	} catch {
+		throw new Error(`non-JSON runs/start response ${res.status}: ${text}`);
+	}
+	return { status: res.status, json };
 }
 
 function seedResumeTarget(store: StateStore, projectRoot: string): string {
@@ -705,6 +728,23 @@ describe("FLY-1436 staging cutover fixture", () => {
 });
 
 describe("FLY-1385 schema-v2 entry compatibility", () => {
+	it("ignores the retired env knob when the module loads", async () => {
+		const previous = process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
+		process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = "500";
+		try {
+			vi.resetModules();
+			const { GHOST_GUARD_SESSION_WAIT_MS } = await import("../runs-route.js");
+			expect(GHOST_GUARD_SESSION_WAIT_MS).toBe(90_000);
+		} finally {
+			if (previous === undefined) {
+				delete process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS;
+			} else {
+				process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS = previous;
+			}
+			vi.resetModules();
+		}
+	});
+
 	it("holds an in-lease keyless tpl_code re-drive and converges after lease expiry", async () => {
 		const launchBehavior = { commit: false };
 		const h = await startHarness({ menuMode: true, launchBehavior });
@@ -717,7 +757,7 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 		expect(first.status).toBe(202);
 		expect(first.json).toMatchObject({
 			code: "LAUNCH_PENDING",
-			workflowNodeId: "design",
+			workflowNodeId: "eng_design",
 		});
 		const run = h.store.getWorkflowRun(first.json.workflowRunId as string)!;
 		expect(run).toMatchObject({ engine_owned: 1, entry_kind: "workflow_v2" });
@@ -760,6 +800,9 @@ describe("FLY-1385 schema-v2 entry compatibility", () => {
 			success: false,
 			code: "DAG_DISPATCH_DISABLED",
 		});
+		expect(json.reason).toContain(
+			"feature-flags set --name pipeline_dag --project",
+		);
 		expect(h.calls).toHaveLength(0);
 		expect(h.store.getActiveWorkflowRunForIssue("FLY-802")).toBeUndefined();
 	});
@@ -1278,17 +1321,18 @@ describe("FLY-1407 work-kind entry gate", () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
-	it("fails loudly on malformed work_kind only while the main flag is on", async () => {
+	it("fails loudly when work-kind is enabled without DAG", async () => {
 		const h = await startHarness({
 			templateSchema: 2,
-			configYaml: `${CONFIG_BASE}pipeline:\n  dag: true\n  work_kind: "yes"\n`,
+			pipelineDag: false,
+			pipelineWorkKind: true,
 		});
 		const { status, json } = await post(h.url, { taskCategory: "generic" });
 		expect(status).toBe(400);
 		expect(json).toMatchObject({
 			success: false,
 			code: "INVALID_WORK_KIND_CONFIG",
-			reason: "work_kind_not_boolean",
+			reason: "work_kind_requires_dag",
 		});
 		expect(h.calls).toHaveLength(0);
 	});
@@ -1464,6 +1508,33 @@ describe("FLY-1407 work-kind entry gate", () => {
 });
 
 describe("FLY-1436 menu start contract", () => {
+	it("returns a stable FLY-2121 diagnostic for a protected pre-cutover template that cannot resolve", async () => {
+		const h = await startHarness({ menuMode: true });
+		vi.spyOn(h.store, "materializeWorkflowRun").mockImplementationOnce(() => {
+			throw new Fly2121PreservedTemplateUnrunnableError(
+				"tpl_code",
+				["design"],
+				new Error("node design has no project implementation"),
+			);
+		});
+
+		const { status, json } = await post(h.url, {
+			leadId: "flywheel-eng-lead",
+			taskCategory: "code",
+		});
+
+		expect(status).toBe(409);
+		expect(json).toMatchObject({
+			success: false,
+			code: "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE",
+			templateId: "tpl_code",
+			legacyRoles: ["design"],
+			retryable: false,
+			silent: false,
+		});
+		expect(h.calls).toHaveLength(0);
+	});
+
 	it("starts simple_code at root implement on the parent issue with no predecessor", async () => {
 		const h = await startHarness({
 			menuMode: true,
@@ -1525,17 +1596,17 @@ describe("FLY-1436 menu start contract", () => {
 			leadId: "flywheel-eng-lead",
 			taskCategory: "code",
 			overrides: {
-				design: { model: "codex", effort: "max" },
+				eng_design: { model: "codex", effort: "max" },
 			},
 		});
 		expect(status).toBe(200);
 		expect(json).toMatchObject({
 			success: true,
 			generalized: true,
-			workflowNodeId: "design",
+			workflowNodeId: "eng_design",
 			resolved: {
 				nodeModels: {
-					design: {
+					eng_design: {
 						model: "codex (= gpt-5.6-sol)",
 						effort: "max",
 						overridden: true,
@@ -1564,15 +1635,15 @@ describe("FLY-1436 menu start contract", () => {
 		[
 			{ overrides: { missing: { model: "fable" } } },
 			"MENU_NODE_NOT_FOUND",
-			["design", "implement", "qa"],
+			["eng_design", "implement", "qa"],
 		],
 		[
-			{ overrides: { design: { model: "opus" } } },
+			{ overrides: { eng_design: { model: "opus" } } },
 			"MODEL_NOT_ALLOWED_FOR_NODE",
 			["fable", "codex"],
 		],
 		[
-			{ overrides: { design: { model: "fable", effort: "ultra" } } },
+			{ overrides: { eng_design: { model: "fable", effort: "ultra" } } },
 			"EFFORT_NOT_ALLOWED_FOR_MODEL",
 			["low", "medium", "high", "xhigh", "max"],
 		],

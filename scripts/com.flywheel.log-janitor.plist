@@ -9,7 +9,7 @@
     <array>
         <string>/bin/bash</string>
         <string>__REPO_ROOT__/scripts/flywheel-log-janitor.sh</string>
-        <string>--apply</string>
+        <string>--cycle</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

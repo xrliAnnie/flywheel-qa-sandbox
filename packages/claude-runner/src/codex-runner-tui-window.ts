@@ -1,23 +1,6 @@
-/**
- * FLY-1188 M4c-3 — the founder-facing cmux/tmux window for a resident codex
- * RUNNER: a real interactive `codex resume --remote` TUI attached to the SAME
- * thread the runner's daemon is driving, so the founder can WATCH the /goal run
- * live in cmux (Annie's core acceptance: "cmux 能看它跑"). A second human
- * client on the same thread — the machine client (M4a) drives it; this pane
- * observes + can intervene.
- *
- * Shape mirrors the verified lead-side precedent
- * (teamlead/src/lead-backends/codex/tui-window.ts), adapted for the runner:
- *   - the remote socket is the runner daemon's SHORT SUN_LEN-safe socketPath
- *     (M4c-1), NOT one derived from CODEX_HOME (the lead convention);
- *   - the founder TUI shares the runner thread's `workspace-write` sandbox
- *     (not the lead's read-only), so it matches the daemon/machine client;
- *   - the window name is the runner-scoped label (a Linear identifier, per
- *     FLY-272) so the founder can find it.
- *
- * Fail-open: a window failure costs VISIBILITY, never the run (the machine
- * client keeps driving the goal). All side effects are injected for tests.
- */
+/** Founder-facing native Codex TUI for a resident runner. The pane reconnects
+ * to the App Server socket and owned thread while the machine client remains
+ * the automated goal driver. Visibility failures remain fail-open. */
 
 import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
@@ -29,7 +12,7 @@ import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { buildTmuxServerBirthEnvironment } from "./tmux-server-environment.js";
 
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
-const SAFE_ID = /^[A-Za-z0-9-]+$/; // thread ids are UUID-shaped
+const SAFE_ID = /^[A-Za-z0-9-]+$/; // execution/thread ids
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/; // tmux session/window names
 const SAFE_WINDOW_ID = /^@[0-9]+$/; // immutable tmux window ids
 
@@ -47,8 +30,7 @@ function assertShellSafe(name: string, value: string, re: RegExp): string {
 
 /**
  * FLY-1239: the outcome of one `ensureRunnerTuiWindow` attempt. The reason
- * discriminates so the caller can retry ONLY the case worth retrying — a TUI
- * that spawned but died during settle (the rollout-landing race) — while a
+ * discriminates so the caller can retry transient tmux failures while a
  * headless box (`tmux-absent`) or a tmux-level failure (`create-failed`) stops
  * after one attempt.
  */
@@ -85,28 +67,20 @@ export interface RunnerTuiWindowSpec {
 	tmuxSession: string;
 	/** Window name — the runner-scoped label (a Linear identifier, FLY-272). */
 	windowName: string;
-	/** The runner's isolated CODEX_HOME (auth/config). */
+	/** The runner's isolated CODEX_HOME. */
 	codexHome: string;
-	/** The daemon's SHORT control-socket path (M4c-1 — NOT under CODEX_HOME). */
+	/** The daemon's short control socket. */
 	socketPath: string;
-	/** Working directory for the TUI (`-C` — kills the resume cwd menu). */
+	/** TUI working directory. */
 	cwd: string;
-	/** Thread the TUI must resume (the one the runner's daemon is driving). */
+	/** The App Server-owned thread to rejoin. */
 	threadId: string;
-	/** Execution identity inherited by generalized-room stub binaries. */
 	executionId?: string;
-	/** Slot StateStore path used to derive the execution's durable exit fence. */
 	stateDbPath?: string;
-	/** codex binary (default "codex"). */
 	codexBin?: string;
 }
 
-/**
- * Build the exact `codex resume --remote` command line (pure — unit-testable;
- * quoted for the shell tmux spawns). The founder TUI shares the runner thread's
- * workspace-write sandbox and never prompts for approval (the daemon enforces
- * the sandbox for every client of the thread).
- */
+/** Build the native remote TUI command (pure and shell-boundary validated). */
 export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 	assertShellSafe("codexHome", spec.codexHome, SAFE_PATH);
 	assertShellSafe("socketPath", spec.socketPath, SAFE_PATH);
@@ -117,7 +91,6 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 	if (spec.stateDbPath)
 		assertShellSafe("stateDbPath", spec.stateDbPath, SAFE_PATH);
 	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_PATH);
-	const bin = spec.codexBin ?? "codex";
 	return [
 		`exec ${buildRunnerPaneEnvironmentPrefix()}`,
 		`CODEX_HOME="${spec.codexHome}"`,
@@ -125,11 +98,11 @@ export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
 		...(spec.stateDbPath
 			? [`FLYWHEEL_STATE_DB_PATH="${spec.stateDbPath}"`]
 			: []),
-		bin,
+		spec.codexBin ?? "codex",
 		"resume",
 		`--remote "unix://${spec.socketPath}"`,
 		`-C "${spec.cwd}"`,
-		"-s workspace-write", // the founder pane matches the thread's sandbox
+		"-s workspace-write",
 		`-c 'approval_policy="never"'`,
 		spec.threadId,
 	].join(" ");
@@ -189,7 +162,7 @@ function tmuxSocketPath(): string {
 	}
 	const uid = process.getuid?.();
 	if (!Number.isSafeInteger(uid) || (uid ?? -1) < 0) {
-		throw new Error("runner-tui-window: cannot determine tmux socket uid");
+		throw new Error("runner-tail-window: cannot determine tmux socket uid");
 	}
 	return join(tmp, `tmux-${uid}`, "default");
 }
@@ -305,7 +278,7 @@ export function ensureSessionWithRetry(
 				) {
 					safeLog(
 						options.log,
-						`runner-tui-window: guarded session ensure attempt ${attempt} succeeded despite exit anomaly (signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"}) — helper reported ${helperSuccess.action}, re-verified`,
+						`runner-tail-window: guarded session ensure attempt ${attempt} succeeded despite exit anomaly (signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"}) — helper reported ${helperSuccess.action}, re-verified`,
 					);
 					return true;
 				}
@@ -314,12 +287,12 @@ export function ensureSessionWithRetry(
 			const tail = stdout.length > 500 ? stdout.slice(-500) : stdout;
 			safeLog(
 				options.log,
-				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"}, signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"})${tail ? `: ${tail}` : ""}`,
+				`runner-tail-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"}, signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"})${tail ? `: ${tail}` : ""}`,
 			);
 		} catch (error) {
 			safeLog(
 				options.log,
-				`runner-tui-window: guarded session ensure attempt ${attempt} failed: ${errMessage(error)}`,
+				`runner-tail-window: guarded session ensure attempt ${attempt} failed: ${errMessage(error)}`,
 			);
 		}
 		const afterAttemptRemaining =
@@ -372,7 +345,7 @@ export async function ensureSessionWithRetryAsync(
 			if (result.terminated === "abort" || options.signal?.aborted) {
 				safeLog(
 					options.log,
-					`runner-tui-window: guarded session ensure attempt ${attempt} cancelled (${abortCause(options.signal)}) after helper output ${helperSuccess?.action ?? "none"}`,
+					`runner-tail-window: guarded session ensure attempt ${attempt} cancelled (${abortCause(options.signal)}) after helper output ${helperSuccess?.action ?? "none"}`,
 				);
 				return false;
 			}
@@ -394,7 +367,7 @@ export async function ensureSessionWithRetryAsync(
 					if (reverified && !options.signal?.aborted) {
 						safeLog(
 							options.log,
-							`runner-tui-window: guarded session ensure attempt ${attempt} succeeded despite exit anomaly (signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"}) — helper reported ${helperSuccess.action}, re-verified`,
+							`runner-tail-window: guarded session ensure attempt ${attempt} succeeded despite exit anomaly (signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"}) — helper reported ${helperSuccess.action}, re-verified`,
 						);
 						return true;
 					}
@@ -404,13 +377,13 @@ export async function ensureSessionWithRetryAsync(
 			const tail = stdout.length > 500 ? stdout.slice(-500) : stdout;
 			safeLog(
 				options.log,
-				`runner-tui-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"}, signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"})${tail ? `: ${tail}` : ""}`,
+				`runner-tail-window: guarded session ensure attempt ${attempt} held (status=${result.status ?? "null"}, signal=${result.signal ?? "none"}, termination=${result.terminated ?? "none"})${tail ? `: ${tail}` : ""}`,
 			);
 		} catch (error) {
 			if (options.signal?.aborted) return false;
 			safeLog(
 				options.log,
-				`runner-tui-window: guarded session ensure attempt ${attempt} failed: ${errMessage(error)}`,
+				`runner-tail-window: guarded session ensure attempt ${attempt} failed: ${errMessage(error)}`,
 			);
 		}
 		const afterAttemptRemaining =
@@ -424,6 +397,11 @@ export async function ensureSessionWithRetryAsync(
 function positiveInt(raw: string | undefined, fallback: number): number {
 	const value = Number(raw);
 	return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+/** Shared runtime accessor so tmux rescue and its outer TUI budget cannot drift. */
+export function tmuxEnsureDeadlineMs(): number {
+	return positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS, 210_000);
 }
 
 type AsyncSpawnOptions = {
@@ -564,10 +542,7 @@ function defaultEnsureSessionAsync(
 		sleep: defaultSleepAsync,
 		now: Date.now,
 		log,
-		deadlineMs: positiveInt(
-			process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS,
-			210_000,
-		),
+		deadlineMs: tmuxEnsureDeadlineMs(),
 		attemptCapMs: positiveInt(
 			process.env.FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS,
 			90_000,
@@ -639,7 +614,7 @@ function defaultExec(cmd: string, args: string[]): { ok: boolean } {
 			cmd === "tmux" && process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE
 				? ["-S", tmuxSocketPath(), ...args]
 				: args;
-		const r = withSyncOpMarker("codex-tui:tmux-exec", () =>
+		const r = withSyncOpMarker("codex-tail:tmux-exec", () =>
 			spawnSync(cmd, effectiveArgs, {
 				stdio: "ignore",
 				timeout: 10_000,
@@ -657,7 +632,7 @@ function defaultExecOut(cmd: string, args: string[]): string | undefined {
 			cmd === "tmux" && process.env.FLYWHEEL_TMUX_SOCKET_OVERRIDE
 				? ["-S", tmuxSocketPath(), ...args]
 				: args;
-		const r = withSyncOpMarker("codex-tui:tmux-read", () =>
+		const r = withSyncOpMarker("codex-tail:tmux-read", () =>
 			spawnSync(cmd, effectiveArgs, {
 				encoding: "utf8",
 				timeout: 5_000,
@@ -817,16 +792,16 @@ async function purgeSameNameWindowsAsync(
 }
 
 /**
- * Ensure the founder-facing TUI window. Steps (each fail-open):
+ * Ensure the founder-facing native TUI. Steps (each fail-open):
  *   1. `tmux -V` probe — absent → `{ created:false, reason:"tmux-absent" }`
  *      (headless box: the run continues, only the terminal view is missing).
  *   2. ensure the runner's session (idempotent attach-or-create).
  *   3. FLY-1239 PROVABLE purge: kill every same-named window by immutable id,
  *      re-ensure the session, and verify none remain — else `create-failed`
  *      (never create over a stale/ambiguous same-named window → ≤1 window).
- *   4. create the window running the real `codex resume --remote` TUI.
+ *   4. create the window running `codex resume --remote` on the owned thread.
  *   5. settle + liveness probe: a pane gone after settle → `{ reason:"died" }`
- *      (the rollout-race the caller retries).
+ *      (a transient tmux/filesystem failure the caller may retry).
  */
 export function ensureRunnerTuiWindow(
 	spec: RunnerTuiWindowSpec,
@@ -884,14 +859,14 @@ async function ensureRunnerTuiWindowAsync(
 		) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: tmux unavailable — skipping (${spec.windowName})`,
+				`runner-tail-window: tmux unavailable — skipping (${spec.windowName})`,
 			);
 			return tuiFailure("permanent", "tmux_absent");
 		}
 		if (!(await ensureSession(spec.tmuxSession, signal))) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: guarded tmux session ensure held — skipping (${spec.windowName})`,
+				`runner-tail-window: guarded tmux session ensure held — skipping (${spec.windowName})`,
 			);
 			if (signal?.aborted) {
 				return tuiFailure("cancellation", "aborted", {
@@ -911,7 +886,7 @@ async function ensureRunnerTuiWindowAsync(
 		) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: could not prove the session is free of stale '${spec.windowName}' windows — skipping create this attempt (non-fatal, run unaffected)`,
+				`runner-tail-window: could not prove the session is free of stale '${spec.windowName}' windows — skipping create this attempt (non-fatal, run unaffected)`,
 			);
 			if (signal?.aborted) {
 				return tuiFailure("cancellation", "aborted", {
@@ -947,7 +922,7 @@ async function ensureRunnerTuiWindowAsync(
 		if (!created.ok) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: create failed (non-fatal, run unaffected): ${spec.windowName}`,
+				`runner-tail-window: create failed (non-fatal, run unaffected): ${spec.windowName}`,
 			);
 			return tuiFailure("retryable-transient-ipc", "new_window_failed");
 		}
@@ -955,16 +930,14 @@ async function ensureRunnerTuiWindowAsync(
 		if (!windowId || !SAFE_WINDOW_ID.test(windowId)) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: create returned no immutable window id (${spec.windowName})`,
+				`runner-tail-window: create returned no immutable window id (${spec.windowName})`,
 			);
 			return tuiFailure("retryable-transient-ipc", "window_id_unproven");
 		}
-		// QA · FLY-1188 — PROVE it. `tmux new-window` reports success as soon as it
+		// `tmux new-window` reports success as soon as it
 		// forks the shell, so it says "ok" even for a command that dies 200ms later
-		// (the shipped TUI died instantly on `stdout is not a terminal`). Claiming
-		// "founder TUI up" on that is how an EMPTY cmux tab — the founder's original
-		// symptom — stayed invisible to the mocks AND to the operator. Let it settle,
-		// then ask tmux whether the pane is actually still there.
+		// (for example, a missing `tail` binary). Let it settle, then prove the pane
+		// still exists before publishing its tmux identity.
 		await (
 			deps.sleepAsync ??
 			(deps.sleep ? async (ms: number) => deps.sleep!(ms) : defaultSleepAsync)
@@ -988,7 +961,7 @@ async function ensureRunnerTuiWindowAsync(
 		) {
 			safeLog(
 				deps.log,
-				`runner-tui-window: founder TUI DIED immediately (${spec.windowName}) — the pane is gone right after tmux reported success (most likely the FLY-1239 rollout-landing race: 'no rollout found'). The run continues (the machine client drives the goal) but the founder CANNOT WATCH it. Inspect by hand: ${buildRunnerTuiCommand(spec)}`,
+				`runner-tui-window: founder TUI died immediately (${spec.windowName}) — the pane is gone right after tmux reported success. The run continues but the founder cannot watch it. Inspect by hand: ${buildRunnerTuiCommand(spec)}`,
 			);
 			if (signal?.aborted) {
 				return tuiFailure("cancellation", "aborted", {
@@ -999,13 +972,13 @@ async function ensureRunnerTuiWindowAsync(
 		}
 		safeLog(
 			deps.log,
-			`runner-tui-window: founder TUI up (${spec.windowName}, thread ${spec.threadId})`,
+			`runner-tui-window: founder TUI up (${spec.windowName}, thread=${spec.threadId})`,
 		);
 		return { created: true, windowId };
 	} catch (err) {
 		safeLog(
 			deps.log,
-			`runner-tui-window: ensure failed (non-fatal): ${errMessage(err)}`,
+			`runner-tail-window: ensure failed (non-fatal): ${errMessage(err)}`,
 		);
 		if (signal?.aborted) {
 			return tuiFailure("cancellation", "aborted", {
@@ -1014,10 +987,10 @@ async function ensureRunnerTuiWindowAsync(
 		}
 		const detail = errMessage(err).slice(0, 500);
 		return tuiFailure(
-			detail.startsWith("runner-tui-window:")
+			detail.startsWith("runner-tail-window:")
 				? "permanent"
 				: "retryable-transient-ipc",
-			detail.startsWith("runner-tui-window:")
+			detail.startsWith("runner-tail-window:")
 				? "config_invalid"
 				: "ipc_exception",
 			{ detail },
@@ -1047,8 +1020,7 @@ export function isRunnerTuiWindowAlive(
 	return out === `${spec.windowName} 0`;
 }
 
-/** Explicitly tear down the founder TUI window (on run completion / shutdown —
- * leaving it alive orphans a TUI pointing at a dead daemon socket). Fail-open. */
+/** Explicitly tear down the founder TUI when lifecycle policy requires it. */
 export function killRunnerTuiWindow(
 	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName"> & {
 		/** Immutable tmux identity captured after creation. Survives pane rename. */
@@ -1089,7 +1061,7 @@ export function killRunnerTuiWindow(
 			if (windows && !stillPresent) {
 				safeLog(
 					deps.log,
-					`runner-tui-window: kill skipped — window already gone (${spec.windowName})`,
+					`runner-tail-window: kill skipped — window already gone (${spec.windowName})`,
 				);
 				return;
 			}
@@ -1097,13 +1069,13 @@ export function killRunnerTuiWindow(
 		safeLog(
 			deps.log,
 			r.ok
-				? `runner-tui-window: killed (${spec.windowName})`
-				: `runner-tui-window: kill returned non-ok (non-fatal): ${spec.windowName}`,
+				? `runner-tail-window: killed (${spec.windowName})`
+				: `runner-tail-window: kill returned non-ok (non-fatal): ${spec.windowName}`,
 		);
 	} catch (err) {
 		safeLog(
 			deps.log,
-			`runner-tui-window: kill threw (non-fatal): ${errMessage(err)}`,
+			`runner-tail-window: kill threw (non-fatal): ${errMessage(err)}`,
 		);
 	}
 }

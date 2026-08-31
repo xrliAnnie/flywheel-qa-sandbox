@@ -2,6 +2,12 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { compileSummaryAssignmentRows } from "./summary-assignment-core.js";
+import {
+	readSummaryGranularity,
+	type SummaryGranularity,
+	type SummaryGranularitySelection,
+} from "./summary-config.js";
 
 export type LeadIdentityErrorCode =
 	| "identity_source_error"
@@ -9,10 +15,12 @@ export type LeadIdentityErrorCode =
 	| "identity_project_invalid"
 	| "identity_project_collision"
 	| "identity_agent_id_invalid"
+	| "identity_summary_role_invalid"
 	| "identity_bare_id_collision"
 	| "identity_row_missing"
 	| "identity_row_ambiguous"
 	| "identity_backend_invalid"
+	| "identity_model_config_invalid"
 	| "identity_bot_token_env_invalid"
 	| "identity_bot_user_id_invalid"
 	| "identity_bot_user_id_missing"
@@ -39,6 +47,7 @@ export interface ResolveLeadIdentityInput {
 
 export type CanonicalLeadBackend = "claude-code" | "codex-app-server";
 export type CanonicalLeadRole = "cos" | "dept" | "companion" | "external";
+export type SummaryRole = "producer" | "aggregator" | "recipient" | "exempt";
 
 export interface CanonicalLeadIdentity {
 	schemaVersion: 1;
@@ -50,13 +59,21 @@ export interface CanonicalLeadIdentity {
 	botTokenEnv: string | null;
 	discordStateDir: string;
 	backend: CanonicalLeadBackend;
+	model?: string;
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	modelContextWindow?: number;
 	role: CanonicalLeadRole;
+	summaryRole: SummaryRole;
+	summaryGranularity: SummaryGranularity | null;
+	hasSummaryDuty: boolean | null;
+	summaryAssignmentDigest: string | null;
 	projectsDigest: string;
 	identityDigest: string;
 }
 
 export interface IdentityLeadRow extends Record<string, unknown> {
 	agentId: string;
+	summaryRole: SummaryRole;
 }
 
 export interface IdentityProjectRow extends Record<string, unknown> {
@@ -73,6 +90,7 @@ export interface CompiledLeadIdentityRow {
 export interface CompileLeadIdentityRegistryOptions {
 	homeDir?: string;
 	projectsDigest?: string;
+	summarySelection?: SummaryGranularitySelection;
 }
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
@@ -83,8 +101,34 @@ function sha256(value: string): string {
 	return createHash("sha256").update(value).digest("hex");
 }
 
+/**
+ * The v1 digest predates Codex runtime tuning. Keep those newly projected
+ * fields outside the digest until a coordinated schema-version migration can
+ * restart every existing Lead atomically; the canonical payload still exposes
+ * them to launchers.
+ */
+function v1IdentityDigest(
+	fields: Omit<CanonicalLeadIdentity, "projectsDigest" | "identityDigest">,
+): string {
+	const {
+		model: _model,
+		effort: _effort,
+		modelContextWindow: _modelContextWindow,
+		...v1Fields
+	} = fields;
+	return sha256(JSON.stringify(v1Fields));
+}
+
 function errorMessage(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+function containsAsciiControl(value: string): boolean {
+	for (const character of value) {
+		const code = character.charCodeAt(0);
+		if (code <= 31 || code === 127) return true;
+	}
+	return false;
 }
 
 function identityError(
@@ -193,6 +237,17 @@ function parseProjects(raw: unknown): IdentityProjectRow[] {
 					`${project.projectName}.leads[${leadIndex}].agentId must match ${SAFE_ID}`,
 				);
 			}
+			if (
+				lead.summaryRole !== "producer" &&
+				lead.summaryRole !== "aggregator" &&
+				lead.summaryRole !== "recipient" &&
+				lead.summaryRole !== "exempt"
+			) {
+				throw identityError(
+					"identity_summary_role_invalid",
+					`${project.projectName}.leads[${leadIndex}].summaryRole must be one of producer|aggregator|recipient|exempt`,
+				);
+			}
 			return lead as IdentityLeadRow;
 		});
 		return { ...project, projectName: project.projectName, leads };
@@ -226,6 +281,50 @@ function identityFields(
 		throw identityError(
 			"identity_backend_invalid",
 			`${project.projectName}/${lead.agentId} has unsupported backend ${String(backend)}`,
+		);
+	}
+	const model = lead.model;
+	if (
+		model !== undefined &&
+		(typeof model !== "string" ||
+			model.trim().length === 0 ||
+			containsAsciiControl(model))
+	) {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} model must be a non-empty string without control characters`,
+		);
+	}
+	const effort = lead.effort;
+	if (
+		effort !== undefined &&
+		effort !== "low" &&
+		effort !== "medium" &&
+		effort !== "high" &&
+		effort !== "xhigh" &&
+		effort !== "max"
+	) {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} effort must be one of low|medium|high|xhigh|max`,
+		);
+	}
+	const modelContextWindow = lead.modelContextWindow;
+	if (
+		modelContextWindow !== undefined &&
+		(!Number.isSafeInteger(modelContextWindow) ||
+			(modelContextWindow as number) < 1 ||
+			(modelContextWindow as number) > 10_000_000)
+	) {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} modelContextWindow must be an integer from 1 through 10000000`,
+		);
+	}
+	if (modelContextWindow !== undefined && backend !== "codex-app-server") {
+		throw identityError(
+			"identity_model_config_invalid",
+			`${project.projectName}/${lead.agentId} modelContextWindow requires backend codex-app-server`,
 		);
 	}
 	const botTokenEnv = lead.botTokenEnv ?? null;
@@ -280,7 +379,16 @@ function identityFields(
 		botTokenEnv,
 		discordStateDir,
 		backend,
+		...(model !== undefined ? { model } : {}),
+		...(effort !== undefined ? { effort } : {}),
+		...(modelContextWindow !== undefined
+			? { modelContextWindow: modelContextWindow as number }
+			: {}),
 		role: canonicalRole(project, lead),
+		summaryRole: lead.summaryRole,
+		summaryGranularity: null,
+		hasSummaryDuty: null,
+		summaryAssignmentDigest: null,
 	};
 }
 
@@ -331,12 +439,52 @@ export function compileLeadIdentityRows(
 			}
 			seenStateDirs.set(pathIdentity, location);
 
-			const identityDigest = sha256(JSON.stringify(fields));
+			const identityDigest = v1IdentityDigest(fields);
 			rows.push({
 				project,
 				lead,
 				identity: { ...fields, projectsDigest, identityDigest },
 			});
+		}
+	}
+	if (options.summarySelection !== undefined) {
+		const projection = compileSummaryAssignmentRows(
+			rows.map(({ project, identity }) => ({
+				projectName: identity.projectName,
+				leadId: identity.leadId,
+				summaryRole: identity.summaryRole,
+				summaryAggregatorLeadId: project.summaryAggregatorLeadId,
+			})),
+			options.summarySelection,
+		);
+		for (const row of rows) {
+			const assignment = projection.leads.find(
+				(candidate) =>
+					candidate.projectName === row.identity.projectName &&
+					candidate.leadId === row.identity.leadId,
+			);
+			if (!assignment) {
+				throw identityError(
+					"identity_row_missing",
+					`summary assignment missing for ${row.identity.projectName}/${row.identity.leadId}`,
+				);
+			}
+			const {
+				projectsDigest: _projectsDigest,
+				identityDigest: _identityDigest,
+				...priorFields
+			} = row.identity;
+			const assignedFields = {
+				...priorFields,
+				summaryGranularity: projection.granularity,
+				hasSummaryDuty: assignment.hasSummaryDuty,
+				summaryAssignmentDigest: projection.digest,
+			};
+			row.identity = {
+				...assignedFields,
+				projectsDigest,
+				identityDigest: v1IdentityDigest(assignedFields),
+			};
 		}
 	}
 	return rows;
@@ -367,6 +515,7 @@ export function resolveLeadIdentity(
 	const rows = compileLeadIdentityRows(raw, {
 		homeDir: input.homeDir,
 		projectsDigest: sha256(rawText),
+		summarySelection: readSummaryGranularity({ homeDir: input.homeDir }),
 	});
 	const matches = rows.filter(
 		(row) =>

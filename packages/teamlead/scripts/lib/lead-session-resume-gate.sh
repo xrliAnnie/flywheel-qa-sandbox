@@ -135,23 +135,14 @@ _lead_session_prepare_locked() {
   _v2_is_resume=false
   [ -z "$session_id" ] || _v2_is_resume=true
 
-  gate="${FLYWHEEL_LEAD_CTX_RESUME_GATE:-1}"
+  gate_label="enabled"
   if [ -z "$session_id" ]; then
-    gate_label="$([ "$gate" = 0 ] && printf disabled || printf enabled)"
     action="fresh"
     ctx="$(jq -nc --argjson window "$window" --argjson threshold "$threshold_json" '{
       verdict:"no_session",estTokens:null,base:null,tailBytes:null,
       window:$window,threshold:$threshold,reason:"session_file_empty"
     }')"
-  elif [ "$gate" = 0 ]; then
-    gate_label="disabled"
-    action="resumed"
-    ctx="$(jq -nc --argjson window "$window" --argjson threshold "$threshold_json" '{
-      verdict:"disabled",estTokens:null,base:null,tailBytes:null,
-      window:$window,threshold:$threshold,reason:"gate_disabled"
-    }')"
   else
-    gate_label="enabled"
     if [ "$window" = null ]; then
       ctx="$(_lead_session_unknown_context "$window" "$threshold_json" unknown_model_window)"
     elif [[ ! "$session_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then

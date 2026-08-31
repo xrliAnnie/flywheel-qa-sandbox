@@ -10,7 +10,11 @@
  * surface for the `direct`-toggleable flags only.
  */
 
-import { type FlagView, isDirectToggleMetadata } from "flywheel-config";
+import {
+	type FlagEffectiveByProject,
+	type FlagView,
+	isDirectToggleMetadata,
+} from "flywheel-config";
 
 /** HTML-escape (attributes + text). */
 export function esc(s: string): string {
@@ -152,6 +156,14 @@ function renderDivergence(flag: FlagView): string {
 		: "";
 }
 
+function projectViaLabel(via: FlagEffectiveByProject["via"]): string {
+	return {
+		project_row: "项目行",
+		star_row: "* 行",
+		default: "默认",
+	}[via ?? "default"];
+}
+
 /** Render the current-state badge for a flag view (read-only). */
 export function renderFlagState(flag: FlagView): string {
 	// A malformed value (e.g. an invalid DECISION_MODE the real parser rejects)
@@ -178,7 +190,10 @@ export function renderFlagState(flag: FlagView): string {
 					flag.valueKind === "bool"
 						? boolBadge(r.value === true)
 						: `<span class="ff-badge ff-val">${esc(String(r.value ?? ""))}</span>`;
-				return `<span class="ff-proj">${name}: ${val}</span>`;
+				const via = r.via
+					? `<span class="ff-badge ff-via">${esc(projectViaLabel(r.via))}</span>`
+					: "";
+				return `<span class="ff-proj">${name}: ${val} ${via}</span>`;
 			})
 			.join(" ");
 	}
@@ -191,8 +206,69 @@ export function renderFlagState(flag: FlagView): string {
 /** How the per-card interactive control is rendered (differs by surface). */
 export type FlagControlMode = "none" | "console" | "phone";
 
+interface ProjectControlState {
+	p: 0 | 1;
+	v?: "on" | "off";
+}
+
+function projectValueOptions(state: ProjectControlState): string {
+	if (state.p === 0) {
+		return [
+			'<option value="inherit" selected>继承（未设行）</option>',
+			'<option value="on">ON（新建显式行）</option>',
+			'<option value="off">OFF（新建显式行）</option>',
+		].join("");
+	}
+	return [
+		`<option value="on"${state.v === "on" ? " selected" : ""}>ON（显式行）</option>`,
+		`<option value="off"${state.v === "off" ? " selected" : ""}>OFF（显式行）</option>`,
+		'<option value="clear">清除（回落继承）</option>',
+	].join("");
+}
+
+function renderProjectFlagControl(flag: FlagView): string {
+	const projectNames = [
+		...new Set((flag.effectiveByProject ?? []).map((row) => row.projectName)),
+	];
+	const scopes = ["*", ...projectNames];
+	const storeRows = new Map(
+		(flag.scopedStore?.rows ?? []).map((row) => [row.scope, row]),
+	);
+	const state: Record<string, ProjectControlState> = {};
+	for (const scope of scopes) {
+		const row = storeRows.get(scope);
+		state[scope] = row
+			? { p: 1, v: row.value === true ? "on" : "off" }
+			: { p: 0 };
+	}
+	const scopeOptions = scopes
+		.map(
+			(scope) =>
+				`<option value="${esc(scope)}"${scope === "*" ? " selected" : ""}>${scope === "*" ? "*（全项目）" : esc(scope)}</option>`,
+		)
+		.join("");
+	const initial = state["*"] ?? { p: 0 };
+	const current = initial.p === 1 ? initial.v : "inherit";
+	return [
+		`<span class="ffc-project-control" data-ffp-control data-ffp-name="${esc(flag.name)}" data-ffp-state="${esc(JSON.stringify(state))}">`,
+		`<label>项目 <select data-ffp-scope>${scopeOptions}</select></label>`,
+		`<label>值 <select data-ffp-value data-current="${current}">${projectValueOptions(initial)}</select></label>`,
+		"</span>",
+	].join("");
+}
+
 /** The in-card control for a direct-toggleable flag (console button / phone checkbox). */
 function renderFlagControl(flag: FlagView, mode: FlagControlMode): string {
+	if (
+		mode === "phone" &&
+		flag.projectStoreManaged &&
+		flag.scopedStore &&
+		flag.clockReadiness === "ready" &&
+		!flag.retiring &&
+		!flag.error
+	) {
+		return renderProjectFlagControl(flag);
+	}
 	if (
 		mode === "none" ||
 		flag.retiring ||
@@ -290,6 +366,10 @@ export const FEATURE_FLAG_CSS = `
   padding:4px 12px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit}
 .ffc-btn:disabled{opacity:.5;cursor:default}
 .ffc-check{margin-left:auto;font-size:12px;color:#1d1d1f;display:flex;align-items:center;gap:5px;cursor:pointer}
+.ffc-project-control{margin-left:auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap;font-size:11px;color:#48484a}
+.ffc-project-control label{display:flex;align-items:center;gap:4px}
+.ffc-project-control select{border:1px solid #d5d5da;border-radius:7px;background:#fff;color:#1d1d1f;
+  font-family:inherit;font-size:11px;padding:3px 5px;max-width:170px}
 .ff-badge{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600}
 .ff-on{background:#e3f7ea;color:#248a3d}
 .ff-off{background:#f0f0f2;color:#86868b}
@@ -301,6 +381,7 @@ export const FEATURE_FLAG_CSS = `
 .ff-gov{background:#f3e8fe;color:#8944ab}
 .ff-eff{background:#f5f5f7;color:#48484a}
 .ff-warn{background:#fff3e0;color:#9a5b00}
+.ff-via{background:#eef2f7;color:#59636e}
 .ff-retiring{background:#fff0f0;color:#c40018}
 .ff-proj{display:inline-block;margin-right:8px}
 .ff-divergence{display:flex;flex-direction:column;align-items:flex-end;gap:3px}

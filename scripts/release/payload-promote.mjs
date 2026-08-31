@@ -347,11 +347,8 @@ async function cmdCommit() {
 	if (!releaseId) die("commit: --release-id required");
 	// FLY-1323: binds THIS invocation to the exact tuple the founder approved.
 	// REQUIRED, not optional — an unbound direct commit is precisely the hole the
-	// founder-direct first publish opens (the broker binds its approval to a
-	// sha256 structurally, via PublishReleaseArgs.sha256). Nothing in the repo
-	// needs the unbound form: the broker does not call this CLI, it calls
-	// bridge/publish-broker/release-commit.ts. So an optional flag would only
-	// preserve a footgun.
+	// founder-direct first publish opens. Nothing in the repo needs the unbound
+	// form, so an optional flag would only preserve a footgun.
 	const expectedSha = argValue("expected-sha256", "");
 	if (!expectedSha)
 		die(

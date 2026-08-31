@@ -2012,6 +2012,7 @@ mkdir -p \
   "$BO_FLYWHEEL/scripts/launchd" \
   "$BO_FLYWHEEL/packages/teamlead/scripts/lib" \
   "$BO_FLYWHEEL/packages/teamlead/dist" \
+  "$BO_FLYWHEEL/packages/flywheel-comm/src/bin" \
   "$BO_FLYWHEEL/packages/flywheel-comm/dist" \
   "$BO_HOME/.flywheel/bin" \
   "$BO_HOME/.flywheel/manifests" \
@@ -2019,6 +2020,8 @@ mkdir -p \
   "$BO_SHIMS" "$BO_CALLS"
 printf '%s\n' '// hermetic canonical identity CLI target; node shim handles execution' \
   > "$BO_FLYWHEEL/packages/flywheel-comm/dist/index.js"
+printf '%s\n' '// hermetic summary registry source target; pnpm shim handles execution' \
+  > "$BO_FLYWHEEL/packages/flywheel-comm/src/bin/summary-registry.ts"
 cp "$REAL_REPO_ROOT/scripts/restart-services.sh" "$BO_FLYWHEEL/scripts/"
 cp "$REAL_REPO_ROOT/scripts/launchd-census.sh" "$BO_FLYWHEEL/scripts/"
 cat > "$BO_FLYWHEEL/scripts/launchd/units.manifest" <<'EOF'
@@ -2033,7 +2036,6 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
-   "$REAL_REPO_ROOT/scripts/lib/mailbox-queue-deploy-barrier.sh" \
    "$REAL_REPO_ROOT/scripts/lib/legacy-swap-broadcast-retirement.sh" \
    "$REAL_REPO_ROOT/scripts/lib/default-lead-agent-env.sh" \
    "$REAL_REPO_ROOT/scripts/lib/cmux-mutator-process-census.sh" \
@@ -2184,6 +2186,9 @@ exit 1
 EOF
 cat > "$BO_SHIMS/pnpm" <<EOF
 #!/bin/bash
+if [[ "\$*" == *"summary-registry.ts verify-activation"* ]]; then
+  exit 0
+fi
 echo "\$*" >> "$BO_CALLS/pnpm.calls"
 head_sha="\$(git -C "$BO_FLYWHEEL" rev-parse HEAD)"
 printf '{"artifactBuildSha":"%s"}\n' "\$head_sha" \

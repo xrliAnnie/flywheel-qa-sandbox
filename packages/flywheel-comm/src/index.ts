@@ -12,6 +12,7 @@ import {
 } from "./commands/account-rotation-notify.js";
 import { ackEvent } from "./commands/ack-event.js";
 import { adoptInflight } from "./commands/adopt-inflight.js";
+import { runAlertTicketCommand } from "./commands/alert-ticket.js";
 import { ask } from "./commands/ask.js";
 import { awaitCodexGate } from "./commands/await-codex-gate.js";
 import { capture } from "./commands/capture.js";
@@ -56,6 +57,8 @@ import { send } from "./commands/send.js";
 import { sessions } from "./commands/sessions.js";
 import { type SetArtifactArgs, setArtifact } from "./commands/set-artifact.js";
 import { stage } from "./commands/stage.js";
+import { runSummaryCommand } from "./commands/summary.js";
+import { runSummaryRegistryCommand } from "./commands/summary-registry.js";
 import { runTokenReport } from "./commands/token-report.js";
 import {
 	formatTurnStatus,
@@ -94,6 +97,8 @@ Commands:
   check     Check if a question has been answered
   ack-event Write a backend-neutral Lead-event ACK receipt. The bearer token
             MUST arrive on stdin: ack-event <seq> --project <name> --token-stdin
+  alert-ticket  Claw duty actions: ack|handoff|resolve|outstanding. Uses only
+            FLYWHEEL_ALERT_DUTY_TOKEN against the Bridge /duty capability.
   gate      Block at a checkpoint until Lead responds (ask+poll+resolve).
             With --no-block (FLY-191): park the question + return questionId
             JSON immediately; runner goes idle and is woken by mailbox.
@@ -106,6 +111,12 @@ Commands:
   chat-ingest   Enqueue one Discord inbound into the unified mailbox
   send      Send an instruction to a runner (Lead use)
   lead-identity  Resolve one immutable Lead identity from an explicit registry selector
+  summary-registry  Migrate or verify the FLY-2030 summary assignment registry fence
+  summary   Validate and deliver one Lead-authored summary PR; summary verify-pr
+            validates a Raya PR's complete current-head diff and prints its verified SHA;
+            summary merge --repo <owner/repo> --pr <n> [--round <id>]
+            [--method <merge|squash|rebase>] [--dry-run] atomically binds an
+            allowed summary merge to that verified head
   lead-lease  Manage the Lead identity lease (acquire|bind|verify-bound|progress-snapshot|status|set-mode|resolve|carrier-self-check|readiness)
   inbox     Check for instructions from Lead (Runner use)
   message-status  Read one mailbox message's live/archive delivery evidence by exact id
@@ -146,14 +157,17 @@ Commands:
             [--timeout-ms <n>] [--shot-timeout-ms <n>]
             [--chrome-bin <absolute executable>]. Always prints a one-line JSON
             envelope to stdout.
-  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
-            report [--project <name>] [--channel <id>] [--out <file>]
+	  feature-flags   Feature-flag console helpers (FLY-709). Subcommands:
+	            report [--project <name>] [--channel <id>] [--out <file>]
             [--bridge-url <url>]  — fetch the read-only flag report from the
             Bridge loopback endpoint and deliver via publish-report (hosted URL
             + Discord).
-            apply --name <flag> --to on|off [--bridge-url <url>]  — the command
-            the founder pastes to the Lead (copy-paste-apply); stage→apply a
-            direct-toggle flag on the loopback Bridge routes.
+	            set --name <flag> --to on|off|<enum> [--project <scope; default *>]
+	            [--reason <reason>] [--bridge-url <url>]
+	            clear --name <flag> --project <scope> --reason <reason>
+	            [--bridge-url <url>]  — copy/paste stage→apply commands. set/clear
+	            --project selects flag scope; report --project selects publishing.
+	            apply remains a set alias. clear is limited to SQLite-managed flags.
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
@@ -224,6 +238,9 @@ async function main(): Promise<void> {
 		case "ack-event":
 			await runAckEvent(commandArgs);
 			break;
+		case "alert-ticket":
+			process.exitCode = await runAlertTicketCommand(commandArgs);
+			break;
 		case "gate":
 			await runGate(commandArgs);
 			break;
@@ -241,6 +258,12 @@ async function main(): Promise<void> {
 			break;
 		case "lead-identity":
 			process.exitCode = await runLeadIdentityCommand(commandArgs);
+			break;
+		case "summary-registry":
+			process.exitCode = runSummaryRegistryCommand(commandArgs);
+			break;
+		case "summary":
+			process.exitCode = await runSummaryCommand(commandArgs);
 			break;
 		case "lead-lease":
 			process.exitCode = await runLeadLeaseCommand(commandArgs);

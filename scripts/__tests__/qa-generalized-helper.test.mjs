@@ -40,6 +40,33 @@ function fixtureDb(path, { missingTemplate = false } = {}) {
 			template_id TEXT,
 			detail JSON
 		);
+		CREATE TABLE flag_values (
+			flag_name TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			has_override INTEGER NOT NULL,
+			raw_value TEXT,
+			last_effective TEXT NOT NULL,
+			value_last_changed INTEGER,
+			revision INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			updated_by TEXT NOT NULL,
+			PRIMARY KEY(flag_name, scope)
+		);
+		CREATE TABLE flag_value_changelog (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			flag_name TEXT NOT NULL,
+			scope TEXT NOT NULL,
+			action TEXT NOT NULL,
+			from_present INTEGER,
+			from_raw TEXT,
+			to_present INTEGER NOT NULL,
+			to_raw TEXT,
+			from_effective TEXT,
+			to_effective TEXT NOT NULL,
+			changed_by TEXT NOT NULL,
+			changed_at INTEGER NOT NULL,
+			reason TEXT NOT NULL
+		);
 	`);
 	const ids = [
 		"tpl_code",
@@ -93,9 +120,9 @@ test("binding seed derives the six canonical mappings and is a no-op on replay",
 			firstRows.map((row) => [row.task_category, row.template_id]),
 			[
 				["code", "tpl_code"],
-				["design", "tpl_design"],
 				["generic", "tpl_generic_menu"],
 				["prd", "tpl_prd"],
+				["product_design_flow", "tpl_design"],
 				["prototype", "tpl_prototype"],
 				["simple_code", "tpl_simple_code"],
 			],
@@ -128,6 +155,235 @@ test("binding seed derives the six canonical mappings and is a no-op on replay",
 			firstAudit,
 		);
 		replayDb.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("project flag seed writes the two generalized rows atomically and is idempotent", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2103-generalized-flags-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		const first = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-1",
+		);
+		assert.equal(first.status, 0, first.stderr);
+		assert.equal(JSON.parse(first.stdout).changed, 2);
+
+		const db = new Database(path, { readonly: true });
+		const firstRows = db
+			.prepare(
+				"SELECT flag_name,scope,has_override,raw_value,last_effective,revision,updated_by FROM flag_values ORDER BY flag_name",
+			)
+			.all();
+		const firstAudit = db
+			.prepare(
+				"SELECT flag_name,scope,action,from_present,from_raw,to_present,to_raw,from_effective,to_effective,changed_by,reason FROM flag_value_changelog ORDER BY flag_name",
+			)
+			.all();
+		db.close();
+		assert.deepEqual(firstRows, [
+			{
+				flag_name: "pipeline_dag",
+				scope: "test-slot-1",
+				has_override: 1,
+				raw_value: "1",
+				last_effective: "true",
+				revision: 1,
+				updated_by: "system:test-deploy-generalized",
+			},
+			{
+				flag_name: "pipeline_work_kind",
+				scope: "test-slot-1",
+				has_override: 1,
+				raw_value: "1",
+				last_effective: "true",
+				revision: 1,
+				updated_by: "system:test-deploy-generalized",
+			},
+		]);
+		assert.deepEqual(
+			firstAudit.map((row) => ({
+				...row,
+				from_present: row.from_present ?? null,
+				from_raw: row.from_raw ?? null,
+				from_effective: row.from_effective ?? null,
+			})),
+			[
+				{
+					flag_name: "pipeline_dag",
+					scope: "test-slot-1",
+					action: "set",
+					from_present: null,
+					from_raw: null,
+					to_present: 1,
+					to_raw: "1",
+					from_effective: null,
+					to_effective: "true",
+					changed_by: "system:test-deploy-generalized",
+					reason: "seed generalized QA project flags",
+				},
+				{
+					flag_name: "pipeline_work_kind",
+					scope: "test-slot-1",
+					action: "set",
+					from_present: null,
+					from_raw: null,
+					to_present: 1,
+					to_raw: "1",
+					from_effective: null,
+					to_effective: "true",
+					changed_by: "system:test-deploy-generalized",
+					reason: "seed generalized QA project flags",
+				},
+			],
+		);
+
+		const replay = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-1",
+		);
+		assert.equal(replay.status, 0, replay.stderr);
+		assert.equal(JSON.parse(replay.stdout).changed, 0);
+		const replayDb = new Database(path, { readonly: true });
+		assert.deepEqual(
+			replayDb
+				.prepare(
+					"SELECT flag_name,scope,has_override,raw_value,last_effective,revision,updated_by FROM flag_values ORDER BY flag_name",
+				)
+				.all(),
+			firstRows,
+		);
+		assert.deepEqual(
+			replayDb
+				.prepare(
+					"SELECT flag_name,scope,action,from_present,from_raw,to_present,to_raw,from_effective,to_effective,changed_by,reason FROM flag_value_changelog ORDER BY flag_name",
+				)
+				.all(),
+			firstAudit,
+		);
+		replayDb.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("project flag seed accepts an explicit bounded flag list for pre-dispatch setup", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2103-explicit-flags-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		const seeded = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-2",
+			"--flags",
+			"pipeline_dag,pipeline_work_kind,doc_flow",
+		);
+		assert.equal(seeded.status, 0, seeded.stderr);
+		assert.deepEqual(JSON.parse(seeded.stdout), {
+			success: true,
+			project: "test-slot-2",
+			flags: 3,
+			changed: 3,
+		});
+
+		const db = new Database(path, { readonly: true });
+		assert.deepEqual(
+			db
+				.prepare(
+					"SELECT flag_name,scope,raw_value,last_effective FROM flag_values ORDER BY flag_name",
+				)
+				.all(),
+			[
+				{
+					flag_name: "doc_flow",
+					scope: "test-slot-2",
+					raw_value: "1",
+					last_effective: "true",
+				},
+				{
+					flag_name: "pipeline_dag",
+					scope: "test-slot-2",
+					raw_value: "1",
+					last_effective: "true",
+				},
+				{
+					flag_name: "pipeline_work_kind",
+					scope: "test-slot-2",
+					raw_value: "1",
+					last_effective: "true",
+				},
+			],
+		);
+		db.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("project flag seed rejects names outside the QA project-flag allow-set", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2103-invalid-flags-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		const refused = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-2",
+			"--flags",
+			"doc_flow,not_a_flag",
+		);
+		assert.notEqual(refused.status, 0);
+		assert.match(refused.stderr, /not_a_flag.*not allowed/i);
+		const db = new Database(path, { readonly: true });
+		assert.equal(
+			db.prepare("SELECT count(*) AS n FROM flag_values").get().n,
+			0,
+		);
+		db.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("project flag seed rejects a registered bridge-global store flag", () => {
+	const dir = mkdtempSync(join(tmpdir(), "fly2105-global-flag-"));
+	try {
+		const path = join(dir, "teamlead.db");
+		fixtureDb(path);
+		const refused = run(
+			"seed-project-flags",
+			"--db",
+			path,
+			"--project",
+			"test-slot-2",
+			"--flags",
+			"workflow_turn_divergence_alerts",
+		);
+		assert.notEqual(refused.status, 0);
+		assert.match(
+			refused.stderr,
+			/workflow_turn_divergence_alerts.*not allowed/i,
+		);
+		const db = new Database(path, { readonly: true });
+		assert.equal(
+			db.prepare("SELECT count(*) AS n FROM flag_values").get().n,
+			0,
+		);
+		db.close();
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}
@@ -192,10 +448,20 @@ test("binding seed rolls back every row when a canonical template is unavailable
 	}
 });
 
-test("strict config verification requires both generalized pipeline booleans", () => {
+test("strict config verification requires both scoped-store pipeline booleans", () => {
 	const dir = mkdtempSync(join(tmpdir(), "fly1775-config-"));
 	try {
 		const good = join(dir, "good.yaml");
+		const dbPath = join(dir, "teamlead.db");
+		fixtureDb(dbPath);
+		const seeded = run(
+			"seed-project-flags",
+			"--db",
+			dbPath,
+			"--project",
+			"test-slot-1",
+		);
+		assert.equal(seeded.status, 0, seeded.stderr);
 		const base = `project: test-slot-1
 linear:
   team_id: FLY
@@ -213,24 +479,31 @@ teams:
 decision_layer:
   autonomy_level: advisor
   escalation_channel: discord
-pipeline:
-  dag: true
-  work_kind: true
 `;
 		writeFileSync(good, base);
 		const accepted = run(
 			"verify-config",
 			"--file",
 			good,
+			"--db",
+			dbPath,
 			"--project",
 			"test-slot-1",
 		);
 		assert.equal(accepted.status, 0, accepted.stderr);
-		writeFileSync(good, base.replace("work_kind: true", "work_kind: false"));
+		const disabledDb = new Database(dbPath);
+		disabledDb
+			.prepare(
+				"UPDATE flag_values SET raw_value = '0', last_effective = 'false' WHERE flag_name = 'pipeline_work_kind' AND scope = 'test-slot-1'",
+			)
+			.run();
+		disabledDb.close();
 		const refused = run(
 			"verify-config",
 			"--file",
 			good,
+			"--db",
+			dbPath,
 			"--project",
 			"test-slot-1",
 		);

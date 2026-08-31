@@ -175,6 +175,7 @@ export interface ManagementRoleView {
 
 export interface ManagementDagNodeView {
 	id: string;
+	nodeId: string;
 	name: string;
 	dispatch: ManagedValue<ModelSelection>;
 }

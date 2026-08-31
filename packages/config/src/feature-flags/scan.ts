@@ -1,5 +1,5 @@
 import type { FeatureFlagSpec } from "./registry.js";
-import type { FlagView } from "./resolve.js";
+import type { FlagValueClock, FlagView } from "./resolve.js";
 
 /** Annie explicitly chose a fixed weekly cadence. This is intentionally not configurable. */
 export const FLAG_SCAN_INTERVAL_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -27,6 +27,16 @@ export interface FlagScanState {
 	lastRetiringIssue: string | null;
 	askCount: number;
 	lastAskedRunId: number | null;
+}
+
+/** Independent stability clock for one resolved flag scope. */
+export interface FlagScanScopeState {
+	flagName: string;
+	scope: string;
+	canonical: string | null;
+	streakStartedAt: number | null;
+	streakSamples: number;
+	lastSampledAt: number;
 }
 
 export interface FlagKeepAnchor {
@@ -75,6 +85,7 @@ export interface FlagDeparture {
 
 export interface ProposedFlagScan {
 	nextState: FlagScanState[];
+	nextScopeState: FlagScanScopeState[];
 	nextAnchors: FlagKeepAnchor[];
 	candidates: FlagScanCandidate[];
 	claimed: FlagScanClaimed[];
@@ -87,6 +98,7 @@ export interface ComputeFlagScanInput {
 	rows: Array<{ spec: FeatureFlagSpec; view: FlagView }>;
 	expectedProjectNames: string[];
 	prevState: FlagScanState[];
+	prevScopeState: FlagScanScopeState[];
 	anchors: FlagKeepAnchor[];
 	keepBindings: Map<string, ResolvedFlagKeepBinding | "unbound">;
 	now: number;
@@ -209,6 +221,38 @@ function emptyState(flagName: string): FlagScanState {
 	};
 }
 
+function emptyScopeState(flagName: string, scope: string): FlagScanScopeState {
+	return {
+		flagName,
+		scope,
+		canonical: null,
+		streakStartedAt: null,
+		streakSamples: 0,
+		lastSampledAt: 0,
+	};
+}
+
+function advanceScopeState(
+	previous: FlagScanScopeState,
+	canonical: string,
+	now: number,
+): FlagScanScopeState {
+	if (canonical === previous.canonical) {
+		return {
+			...previous,
+			streakSamples: previous.streakSamples + 1,
+			lastSampledAt: now,
+		};
+	}
+	return {
+		...previous,
+		canonical,
+		streakStartedAt: now,
+		streakSamples: 1,
+		lastSampledAt: now,
+	};
+}
+
 function advanceState(
 	previous: FlagScanState,
 	sample: FlagSample,
@@ -281,11 +325,158 @@ function assertInputJoin(rows: ComputeFlagScanInput["rows"]): void {
 	}
 }
 
+type StableClockResolution =
+	| { kind: "ready"; stableSince: number }
+	| { kind: "legacy"; stableSince: number }
+	| { kind: "sampling"; stableSince: null }
+	| { kind: "no_clock"; stableSince: number | null; reason: string }
+	| { kind: "invalid"; reason: string };
+
+function validClockTime(value: number, now: number): boolean {
+	return Number.isSafeInteger(value) && value >= 0 && value <= now;
+}
+
+function validateClocks(
+	clocks: FlagValueClock[],
+	now: number,
+): { byScope: Map<string, FlagValueClock>; error?: string } {
+	const byScope = new Map<string, FlagValueClock>();
+	for (const clock of clocks) {
+		if (!clock.scopeKey || byScope.has(clock.scopeKey)) {
+			return {
+				byScope,
+				error: `duplicate or empty value clock scope: ${clock.scopeKey || "<empty>"}`,
+			};
+		}
+		if (
+			!validClockTime(clock.firstRegisteredAt, now) ||
+			(clock.valueLastChanged !== null &&
+				!validClockTime(clock.valueLastChanged, now))
+		) {
+			return { byScope, error: `invalid value clock time: ${clock.scopeKey}` };
+		}
+		byScope.set(clock.scopeKey, clock);
+	}
+	return { byScope };
+}
+
+function clocksForSpec(
+	spec: FeatureFlagSpec,
+	view: FlagView,
+	expectedProjectNames: string[],
+	now: number,
+): { clocks?: FlagValueClock[]; error?: string } {
+	const clocks = view.valueClocks ?? [];
+	if (clocks.length === 0) return { clocks: [] };
+	const validated = validateClocks(clocks, now);
+	if (validated.error) return { error: validated.error };
+	if (spec.scope !== "project") {
+		if (validated.byScope.size !== 1 || !validated.byScope.has("*")) {
+			return { error: "Bridge-global value clock requires exactly scope *" };
+		}
+		return { clocks: [validated.byScope.get("*")!] };
+	}
+	const star = validated.byScope.get("*");
+	const resolved: FlagValueClock[] = [];
+	for (const projectName of expectedProjectNames) {
+		const clock = validated.byScope.get(projectName) ?? star;
+		if (!clock) {
+			return { error: `missing value clock scope for project ${projectName}` };
+		}
+		resolved.push(clock);
+	}
+	return { clocks: resolved };
+}
+
+function resolveStableClock(input: {
+	spec: FeatureFlagSpec;
+	view: FlagView;
+	advanced: FlagScanState;
+	expectedProjectNames: string[];
+	now: number;
+}): StableClockResolution {
+	const selected = clocksForSpec(
+		input.spec,
+		input.view,
+		input.expectedProjectNames,
+		input.now,
+	);
+	if (selected.error) return { kind: "invalid", reason: selected.error };
+	const clocks = selected.clocks ?? [];
+	if (input.view.clockReadiness === "ready") {
+		if (clocks.length === 0) {
+			return { kind: "invalid", reason: "ready value clock rows are missing" };
+		}
+		if (clocks.some((clock) => clock.readiness !== "ready")) {
+			return {
+				kind: "invalid",
+				reason: "ready value clock contains no-clock row",
+			};
+		}
+		return {
+			kind: "ready",
+			stableSince: Math.max(
+				...clocks.map((clock) =>
+					Math.max(
+						clock.firstRegisteredAt,
+						clock.valueLastChanged ?? clock.firstRegisteredAt,
+					),
+				),
+			),
+		};
+	}
+
+	const readiness = input.view.clockReadiness;
+	const explicitlyNoClock = readiness?.startsWith("no_clock:") === true;
+	if (explicitlyNoClock) {
+		if (input.advanced.streakStartedAt === null) {
+			return {
+				kind: "no_clock",
+				stableSince: null,
+				reason: `${readiness}; scanner streak is missing its start time`,
+			};
+		}
+		if (input.advanced.streakSamples < 2) {
+			return { kind: "sampling", stableSince: null };
+		}
+		const registeredAt = clocks.length
+			? Math.max(...clocks.map((clock) => clock.firstRegisteredAt))
+			: null;
+		return {
+			kind: "legacy",
+			stableSince:
+				registeredAt === null
+					? input.advanced.streakStartedAt
+					: Math.max(registeredAt, input.advanced.streakStartedAt),
+		};
+	}
+
+	if (clocks.length > 0) {
+		return {
+			kind: "invalid",
+			reason: "value clock rows exist without clock readiness",
+		};
+	}
+	if (
+		input.advanced.streakSamples >= 2 &&
+		input.advanced.streakStartedAt !== null
+	) {
+		return { kind: "legacy", stableSince: input.advanced.streakStartedAt };
+	}
+	return { kind: "legacy", stableSince: input.now };
+}
+
 export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 	assertInputJoin(input.rows);
 	const currentNames = new Set(input.rows.map(({ spec }) => spec.name));
 	const previousByName = new Map(
 		input.prevState.map((row) => [row.flagName, row]),
+	);
+	const previousScopeByKey = new Map(
+		input.prevScopeState.map((row) => [
+			`${row.flagName}\u0000${row.scope}`,
+			row,
+		]),
 	);
 	const anchorByName = new Map(
 		input.anchors
@@ -302,6 +493,7 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 				: ("feature_removed" as const),
 		}));
 	const nextState: FlagScanState[] = [];
+	const nextScopeState: FlagScanScopeState[] = [];
 	const candidates: FlagScanCandidate[] = [];
 	const claimed: FlagScanClaimed[] = [];
 	const noClock: FlagScanNoClock[] = [];
@@ -316,6 +508,39 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 		);
 		const advanced = advanceState(previous, sample, input.now, spec.retiring);
 		nextState.push(advanced);
+
+		let scopes =
+			spec.scope === "bridge_global" ? ["*"] : input.expectedProjectNames;
+		if (spec.scope === "project" && scopes.length === 0) {
+			scopes = input.prevScopeState
+				.filter((row) => row.flagName === spec.name)
+				.map((row) => row.scope);
+		}
+		scopes = [...new Set(scopes)];
+		const projectRows = new Map(
+			(view.effectiveByProject ?? []).map((row) => [row.projectName, row]),
+		);
+		for (const scope of scopes) {
+			const key = `${spec.name}\u0000${scope}`;
+			const previousScope =
+				previousScopeByKey.get(key) ?? emptyScopeState(spec.name, scope);
+			if (sample.kind === "indeterminate") {
+				nextScopeState.push(previousScope);
+				continue;
+			}
+			let canonical = sample.canonical;
+			if (spec.scope === "project" && !spec.dormant && !view.dormant) {
+				const value = projectRows.get(scope)?.value;
+				if (value === undefined) {
+					nextScopeState.push(previousScope);
+					continue;
+				}
+				canonical = JSON.stringify({ k: spec.valueKind, v: value });
+			}
+			nextScopeState.push(
+				advanceScopeState(previousScope, canonical, input.now),
+			);
+		}
 
 		if (spec.retiring) {
 			claimed.push({ flagName: spec.name, retiringIssue: spec.retiring });
@@ -360,15 +585,30 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 			});
 			continue;
 		}
+		const clock = resolveStableClock({
+			spec,
+			view,
+			advanced,
+			expectedProjectNames: input.expectedProjectNames,
+			now: input.now,
+		});
+		if (clock.kind === "invalid" || clock.kind === "no_clock") {
+			noClock.push({
+				flagName: spec.name,
+				class: "read_unavailable",
+				reason: clock.reason,
+				indeterminateStreak: advanced.indeterminateStreak,
+			});
+		}
 		if (
-			advanced.streakSamples >= 2 &&
-			advanced.streakStartedAt !== null &&
-			input.now - advanced.streakStartedAt >= FLAG_SCAN_INTERVAL_MS
+			clock.kind !== "invalid" &&
+			clock.stableSince !== null &&
+			input.now - clock.stableSince >= FLAG_SCAN_INTERVAL_MS
 		) {
 			candidates.push({
 				flagName: spec.name,
 				canonical: sample.canonical,
-				stableForMs: input.now - advanced.streakStartedAt,
+				stableForMs: input.now - clock.stableSince,
 				askPhrase: askPhrase(spec, sample.canonical),
 				reason: keepChangedReason,
 				previousAskCount: advanced.askCount,
@@ -378,6 +618,11 @@ export function computeFlagScan(input: ComputeFlagScanInput): ProposedFlagScan {
 
 	return {
 		nextState,
+		nextScopeState: nextScopeState.sort(
+			(left, right) =>
+				left.flagName.localeCompare(right.flagName) ||
+				left.scope.localeCompare(right.scope),
+		),
 		nextAnchors: [...anchorByName.values()].sort((left, right) =>
 			left.flagName.localeCompare(right.flagName),
 		),

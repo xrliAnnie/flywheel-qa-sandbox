@@ -1,7 +1,7 @@
 /**
  * FLY-137 Phase 6: project-root resolution for flywheel-cli.
  *
- * All three subcommands (init / doctor / migrate-agents-path) accept an
+ * All three subcommands (init / doctor / migrate-agent-registry) accept an
  * optional `--project-path <path>` flag. When omitted, the resolver
  * walks up parent directories from `process.cwd()` looking for a
  * `.flywheel/` directory (the same pattern git uses to find `.git/`).

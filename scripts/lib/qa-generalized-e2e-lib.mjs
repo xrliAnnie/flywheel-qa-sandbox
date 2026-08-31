@@ -440,7 +440,7 @@ export function buildGeneralizedStartRequest(input) {
 			"workflow start",
 		),
 		overrides: {
-			design: { model: "fable" },
+			eng_design: { model: "fable" },
 			implement: { model: "codex" },
 		},
 	};
@@ -463,7 +463,7 @@ export function validateGeneralizedStartResponse(response) {
 export function nextStubAction(input) {
 	if (input.exitRequested) return "exit";
 	const completed = new Set(input.completedAttempts ?? []);
-	if (input.role === "design") {
+	if (input.role === "eng_design") {
 		return completed.has(input.attempt) ? "park" : "complete-design";
 	}
 	if (input.role === "implement") {

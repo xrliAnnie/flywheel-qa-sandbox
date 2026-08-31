@@ -19,17 +19,19 @@ describe("flywheel init", () => {
 		rmSync(root, { recursive: true, force: true });
 	});
 
-	it("scaffolds .flywheel/ with no depts (flat agents/)", () => {
+	it("scaffolds a node-only project registry and node-backed config", () => {
 		const result = init({ projectPath: root, noDepts: true });
 
 		expect(existsSync(join(root, ".flywheel", "config.yaml"))).toBe(true);
-		expect(existsSync(join(root, ".flywheel", "agents"))).toBe(true);
-		expect(existsSync(join(root, ".flywheel", "agents", ".gitkeep"))).toBe(
+		expect(existsSync(join(root, ".flywheel", "agents", "registry.yaml"))).toBe(
 			true,
 		);
 		expect(
-			existsSync(join(root, ".flywheel", "agents", "example-executor.md")),
+			existsSync(join(root, ".flywheel", "agents", "nodes", "example.md")),
 		).toBe(true);
+		const config = readFileSync(result.configPath, "utf8");
+		expect(config).toContain("node: example");
+		expect(config).not.toContain("agent_file");
 		expect(result.depts).toHaveLength(0);
 	});
 
@@ -38,18 +40,12 @@ describe("flywheel init", () => {
 			projectPath: root,
 			depts: ["product", "operations", "marketing"],
 		});
-		for (const d of ["product", "operations", "marketing"]) {
-			expect(existsSync(join(root, ".flywheel", "agents", d))).toBe(true);
-			expect(existsSync(join(root, ".flywheel", "agents", d, ".gitkeep"))).toBe(
-				true,
-			);
-		}
-		// Example agent goes under FIRST dept.
-		expect(
-			existsSync(
-				join(root, ".flywheel", "agents", "product", "example-executor.md"),
-			),
-		).toBe(true);
+		const registry = readFileSync(
+			join(root, ".flywheel", "agents", "registry.yaml"),
+			"utf8",
+		);
+		expect(registry).toContain("department: product");
+		expect(registry).not.toContain("department: operations");
 	});
 
 	it("refuses to scaffold over an existing .flywheel/ without --force", () => {
@@ -81,6 +77,15 @@ describe("flywheel init", () => {
 	it("substitutes project name into config.yaml", () => {
 		init({ projectPath: root, noDepts: true, projectName: "myproj" });
 		const cfg = readFileSync(join(root, ".flywheel", "config.yaml"), "utf-8");
-		expect(cfg).toContain('name: "myproj"');
+		expect(cfg).toContain('project: "myproj"');
+	});
+
+	it("does not scaffold retired checkpoint enabled keys", () => {
+		init({ projectPath: root, noDepts: true });
+		const cfg = readFileSync(join(root, ".flywheel", "config.yaml"), "utf-8");
+		expect(cfg).not.toContain("checkpoints:");
+		expect(cfg).not.toMatch(
+			/^ {2}[a-z_]+:\n {4}enabled:\s+(?:true|false)\s*$/m,
+		);
 	});
 });

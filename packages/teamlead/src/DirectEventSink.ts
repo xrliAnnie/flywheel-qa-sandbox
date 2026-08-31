@@ -189,6 +189,8 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		 * (`enabled=false`), which makes ProofShot a no-op for them.
 		 */
 		private skillsConfig?: SkillsConfig,
+		/** FLY-2103: call-time project flag reader; failures disable locally. */
+		private proofshotEnabled: (projectName: string) => boolean = () => false,
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
@@ -279,7 +281,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		// Uses patchSessionParams (read-modify-write) so a replayed session_started
 		// event does NOT clobber existing `proofshot.runs` or `last_artifact`
 		// state from prior captures in the same execution (Bridge restart safety).
-		this.persistProofShotConfig(env.executionId);
+		this.persistProofShotConfig(env.executionId, env.projectName);
 		if (env.routeSummary) {
 			patchSessionParams(this.store, env.executionId, (cur) => ({
 				...cur,
@@ -658,8 +660,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 			preExistingSession?.pr_head_sha?.trim() ||
 			(result.evidence?.headSha as string | undefined)?.trim();
 		// Always route through the shared ship predicate. A missing/empty head fails
-		// closed while FLYWHEEL_MERGE_APPROVAL_GATE is armed; disabling that
-		// higher-level gate still bypasses verifyApproval (FLY-1981 leaves it intact).
+		// closed, and every merged landing must pass verifyApproval.
 		const desDecision = desMergedLanding
 			? await computeAuthoritativeShipDecision(
 					this.store,
@@ -1379,8 +1380,20 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * Only overwrites `proofshot.config`; preserves `proofshot.runs` and
 	 * unrelated `session_params` keys (e.g., `last_artifact`).
 	 */
-	private persistProofShotConfig(executionId: string): void {
-		const effective = this.skillsConfig?.proofshot ?? DEFAULT_PROOFSHOT_CONFIG;
+	private persistProofShotConfig(
+		executionId: string,
+		projectName: string,
+	): void {
+		let enabled = false;
+		try {
+			enabled = this.proofshotEnabled(projectName);
+		} catch (error) {
+			console.warn(
+				`[DirectEventSink] proofshot flag read failed for ${projectName}: ${error instanceof Error ? error.message : String(error)} — disabling ProofShot`,
+			);
+		}
+		const authoring = this.skillsConfig?.proofshot ?? DEFAULT_PROOFSHOT_CONFIG;
+		const effective = { ...authoring, enabled };
 		patchSessionParams(this.store, executionId, (cur) => {
 			const prior = getProofShotParams(cur);
 			return {

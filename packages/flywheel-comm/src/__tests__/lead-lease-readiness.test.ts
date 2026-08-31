@@ -29,7 +29,17 @@ describe("FLY-1309 executable lease readiness", () => {
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-readiness-"));
+		mkdirSync(join(dir, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		env = {
+			FLYWHEEL_STATE_DIR: join(dir, ".flywheel"),
 			FLYWHEEL_PROJECTS_FILE: join(dir, "projects.json"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "lease.db"),
 			FLYWHEEL_LEAD_LEASE_MODE_FILE: join(dir, "mode.json"),
@@ -52,8 +62,16 @@ describe("FLY-1309 executable lease readiness", () => {
 				{
 					projectName: "flywheel",
 					leads: [
-						{ agentId: "claude-lead", backend: "claude-code" },
-						{ agentId: "codex-lead", backend: "codex-app-server" },
+						{
+							agentId: "claude-lead",
+							summaryRole: "producer",
+							backend: "claude-code",
+						},
+						{
+							agentId: "codex-lead",
+							summaryRole: "producer",
+							backend: "codex-app-server",
+						},
 					],
 				},
 			]),

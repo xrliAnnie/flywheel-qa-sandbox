@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>home 到底在管什么 — FLY-1984</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);
+font-family:-apple-system,BlinkMacSystemFont,system-ui,"PingFang SC","Helvetica Neue",sans-serif;
+line-height:1.5;font-size:15.5px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:860px;margin:0 auto;padding:30px 18px 96px}
+h1{font-size:25px;line-height:1.3;margin:0 0 4px;letter-spacing:-.4px}
+.sub{color:var(--dim);font-size:13px;margin:0 0 22px}
+.card{background:var(--card);border-radius:12px;padding:18px 20px;margin:0 0 14px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.red{border-left-color:var(--red)}
+.card.amber{border-left-color:var(--amber)}
+.card.blue{border-left-color:var(--blue)}
+.card.green{border-left-color:var(--green)}
+.card.purple{border-left-color:var(--purple)}
+.n{font-size:11.5px;letter-spacing:.6px;color:var(--dim);font-weight:700;margin:0 0 4px}
+.card h2{font-size:18px;margin:0 0 12px;letter-spacing:-.2px;line-height:1.35}
+p{margin:0 0 9px}
+.big{font-size:17.5px;font-weight:700;letter-spacing:-.2px;line-height:1.45}
+.dimtxt{color:var(--dim);font-size:13px}
+
+/* ---- diagram: three rows ---- */
+.rows{display:flex;flex-direction:column;gap:9px;margin:2px 0 13px}
+.r{display:grid;grid-template-columns:1fr 46px 1.15fr;align-items:stretch;gap:0}
+.b{border:2px solid var(--line);border-radius:10px;padding:11px 13px;background:#fcfcfe;
+display:flex;flex-direction:column;justify-content:center}
+.b .t{font-weight:700;font-size:15px}
+.b .s{font-size:12.5px;color:var(--dim);margin-top:2px}
+.arw{display:flex;align-items:center;justify-content:center;color:var(--dim);
+font-size:19px;font-weight:700}
+.r.hot .b{border-color:var(--red);background:#fff5f4}
+.r.hot .arw{color:var(--red)}
+.r.hot .b .t{color:#c1271d}
+.r.cool .b{border-color:#cfe4ff;background:#f6faff}
+.tagline{font-size:12px;font-weight:700;padding:2px 8px;border-radius:20px;
+display:inline-block;margin-top:6px}
+.tg-off{background:#eaf4ff;color:#0a53c4}
+.tg-on{background:#ffe9e6;color:#c1271d}
+
+/* ---- diagram: tree ---- */
+.tree{margin:4px 0 13px}
+.top{max-width:330px;margin:0 auto;border:2px solid var(--ink);border-radius:10px;
+padding:11px 14px;text-align:center;font-weight:700;font-size:15.5px;background:#fff}
+.stem{width:2px;height:16px;background:var(--line);margin:0 auto}
+.brs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;align-items:start}
+.br{display:flex;flex-direction:column;align-items:center}
+.brline{width:2px;height:14px;background:var(--line)}
+.brlabel{font-size:12.5px;font-weight:700;color:var(--dim);margin:0 0 5px}
+.leaf{width:100%;border:2px solid var(--line);border-radius:10px;padding:11px 12px;
+text-align:center;background:#fcfcfe;min-height:96px;display:flex;flex-direction:column;
+justify-content:center}
+.leaf .lt{font-weight:700;font-size:14.5px;line-height:1.35}
+.leaf .ls{font-size:12.5px;color:var(--dim);margin-top:5px;line-height:1.4}
+.br.a .leaf{border-color:var(--green);background:#f3fcf5}
+.br.a .brlabel{color:#1a7f37}
+.br.c .leaf{border-color:var(--blue);background:#f5faff}
+.br.c .brlabel{color:#0a53c4}
+.br.mid .leaf{border-style:dashed;border-color:#c9c9d0;background:#fafafc}
+.br.mid .brlabel{color:#9a9aa2}
+
+/* ---- diagram: status chips ---- */
+.chips{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin:2px 0 12px}
+.chip{border-radius:11px;padding:12px 13px;border:2px solid var(--line);background:#fcfcfe}
+.chip .ct{font-weight:700;font-size:14.5px;margin-bottom:5px}
+.chip .cv{font-size:13px;line-height:1.45}
+.chip.ok{border-color:var(--green);background:#f3fcf5}
+.chip.bad{border-color:var(--red);background:#fff5f4}
+.chip.wait{border-color:#d8c4ea;background:#fbf6ff}
+.lamp{font-size:17px;margin-right:4px}
+
+/* ---- before/after ---- */
+.ba{display:grid;grid-template-columns:1fr 34px 1fr;align-items:center;gap:0;margin:2px 0 12px}
+.ba .bx{border:2px solid var(--line);border-radius:10px;padding:11px 13px;background:#fcfcfe;
+text-align:center;font-size:14px;line-height:1.4}
+.ba .bx b{display:block;font-size:15px;margin-bottom:3px}
+.ba .mid{text-align:center;color:var(--dim);font-size:19px;font-weight:700}
+.ba .bx.no{border-color:#e0e0e6;color:var(--dim);background:#fafafa}
+.ba .bx.yes{border-color:var(--green);background:#f3fcf5}
+
+.fact{background:#fafafc;border:1px solid var(--line);border-radius:9px;
+padding:10px 13px;font-size:13px;color:#4a4a4f;margin:0 0 10px}
+.fact b{color:var(--ink)}
+.unk{background:#fbf6ff;border-radius:8px;padding:9px 12px;font-size:12.5px;
+color:#5d1f77;margin:0 0 8px}
+.cmt{margin:14px 0 0;padding-top:12px;border-top:1px dashed var(--line)}
+.cmt label{display:block;font-size:12px;color:var(--dim);margin:0 0 5px;font-weight:600}
+textarea{width:100%;min-height:52px;border:1px solid var(--line);border-radius:8px;
+padding:9px 11px;font:inherit;font-size:14px;background:#fcfcfe;color:var(--ink);resize:vertical}
+textarea:focus{outline:2px solid var(--blue);outline-offset:-1px;background:#fff}
+.bar{position:sticky;bottom:0;background:rgba(245,245,247,.94);
+backdrop-filter:saturate(160%) blur(12px);border-top:1px solid var(--line);
+margin:20px -18px -90px;padding:12px 18px 18px}
+button{font:inherit;font-size:14.5px;font-weight:600;border:0;border-radius:9px;
+padding:10px 17px;background:var(--blue);color:#fff;cursor:pointer}
+button.sec{background:#e8e8ed;color:var(--ink)}
+button:active{opacity:.75}
+.row{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.status{font-size:13px;color:var(--dim)}
+.status.ok{color:#1a7f37;font-weight:600}
+.status.err{color:var(--red);font-weight:600}
+#dump{width:100%;min-height:110px;margin-top:10px;display:none;font-size:12.5px;
+font-family:"SF Mono",ui-monospace,monospace}
+@media (max-width:620px){
+.wrap{padding:22px 13px 90px}h1{font-size:21px}
+.r{grid-template-columns:1fr 34px 1.1fr}
+.brs{grid-template-columns:1fr;gap:12px}
+.chips{grid-template-columns:1fr}
+.ba{grid-template-columns:1fr;gap:8px}.ba .mid{transform:rotate(90deg)}
+.bar{margin:20px -13px -90px;padding:12px 13px 18px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>home 这个文件夹,到底在管什么?</h1>
+<p class="sub">FLY-1984 · 五张图 · 每张下面都能直接留言 · 看完只要你勾一格</p>
+
+<div class="card blue">
+<p class="n">① 图一</p>
+<h2>一个 Codex agent 会「记得」三样 —— 但只有一样住在 home 里</h2>
+<div class="rows">
+  <div class="r cool">
+    <div class="b"><div class="t">我是谁</div><div class="s">身份 · 职责 · 语气</div></div>
+    <div class="arw">→</div>
+    <div class="b"><div class="t">住在「桥」</div><div class="s">每次开会话现灌<span class="tagline tg-off">跟 home 无关</span></div></div>
+  </div>
+  <div class="r cool">
+    <div class="b"><div class="t">这个项目是什么</div><div class="s">规矩 · 边界 · 怎么干活</div></div>
+    <div class="arw">→</div>
+    <div class="b"><div class="t">住在「仓库」</div><div class="s">仓库根目录的 AGENTS.md<span class="tagline tg-off">跟 home 无关</span></div></div>
+  </div>
+  <div class="r hot">
+    <div class="b"><div class="t">我干过什么</div><div class="s">经验 · 踩过的坑 · 学到的</div></div>
+    <div class="arw">→</div>
+    <div class="b"><div class="t">住在 home</div><div class="s">这个文件夹本身<span class="tagline tg-on">只有这一格</span></div></div>
+  </div>
+</div>
+<p class="big">所以「一人一个 home 还是共用一个」,<br>其实只在问第三样。</p>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="① 三样里只有一样住在 home" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card green">
+<p class="n">② 图二</p>
+<h2>所以整个架构,由「要不要第三样」一刀切开</h2>
+<div class="tree">
+  <div class="top">要不要「我干过什么」?</div>
+  <div class="stem"></div>
+  <div class="brs">
+    <div class="br a">
+      <div class="brline"></div>
+      <div class="brlabel">要</div>
+      <div class="leaf"><div class="lt">一人一个 home</div><div class="ls">各记各的<br>共用会串味<br><b>代价:每个都要单独教</b></div></div>
+    </div>
+    <div class="br mid">
+      <div class="brline"></div>
+      <div class="brlabel">中间档(我没验过)</div>
+      <div class="leaf"><div class="lt">按部门分</div><div class="ls">工程侧共用一份<br>陪伴侧自己一份</div></div>
+    </div>
+    <div class="br c">
+      <div class="brline"></div>
+      <div class="brlabel">不要</div>
+      <div class="leaf"><div class="lt">共用一个 home</div><div class="ls">省事<br>少一层要管<br><b>代价:每次从零开始</b></div></div>
+    </div>
+  </div>
+</div>
+<div class="unk">中间那根是虚线,因为<b>我没验过 Codex 支不支持</b>。我把它画出来是不想替你少一个选择,但它现在不算数。</div>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="② 架构由第三样一刀切开" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card amber">
+<p class="n">③ 图三</p>
+<h2>这三样,现在各是什么状态</h2>
+<div class="chips">
+  <div class="chip ok"><div class="ct"><span class="lamp">🟢</span>我是谁</div>
+    <div class="cv">没问题。<br>每次现灌,丢不了。</div></div>
+  <div class="chip bad"><div class="ct"><span class="lamp">🔴</span>项目是什么</div>
+    <div class="cv"><b>完全空白。</b><br>flywheel 仓库里<br>根本没有那个文件。</div></div>
+  <div class="chip wait"><div class="ct"><span class="lamp">⚪</span>我干过什么</div>
+    <div class="cv"><b>没有任何机制。</b><br>等你这一勾。</div></div>
+</div>
+<p class="big">红的那格<b>不用你决定</b> —— 它跟 home 无关,是该补一个文件。</p>
+<div class="fact">而且这件事<b>今天刚变便宜</b>:项目规矩那份文件今天从 <b>184 KB 砍到 11.8 KB</b>(里程碑账本搬走了)。剩下的正好是规矩本身 —— 现在给 Codex 看,不贵了。</div>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="③ 三格现状红绿灯" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card purple">
+<p class="n">④ 图四</p>
+<h2>你说过一句,已经把第三样定了一半</h2>
+<p class="dimtxt" style="margin-bottom:10px">你的原话:<b style="color:var(--ink)">聊天不自动进记忆,只记重要的就够。</b></p>
+<div class="ba">
+  <div class="bx no"><b>不是这样</b>聊什么都往里存<br><span class="dimtxt">越攒越脏</span></div>
+  <div class="mid">→</div>
+  <div class="bx yes"><b>是这样</b>挑重要的才存<br><span class="dimtxt">谁来挑 · 待定</span></div>
+</div>
+<p class="big">所以图二那一勾,不是「全记 vs 不记」,<br>是「<u>挑着记</u> vs 不记」。</p>
+<div class="unk">还剩一个我没验的:<b>打开记忆会不会变慢或变贵</b>,我没量过。</div>
+<div class="cmt"><label>这张图的意见</label><textarea data-s="④ 挑着记不是全记" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="card red">
+<p class="n">⑤ 就这一格</p>
+<h2>请你勾一个,别的我来</h2>
+<div class="chips" style="grid-template-columns:1fr 1fr">
+  <div class="chip ok" style="border-color:var(--green)"><div class="ct">A · 要它记得</div>
+    <div class="cv">→ 一人一个 home<br><span class="dimtxt">代价:每个都要单独教<br>下一步:定「什么算重要」</span></div></div>
+  <div class="chip" style="border-color:var(--blue);background:#f5faff"><div class="ct">B · 不用记</div>
+    <div class="cv">→ 共用一个<br><span class="dimtxt">代价:每次从零开始<br>下一步:没有,就这样</span></div></div>
+</div>
+<p class="big">还有一句我想先听你说:<br>这块你<u>有定见</u>,还是<u>我来发挥</u>?</p>
+<p class="dimtxt">有定见 → 我照你的对齐,不自己发挥。<br>我来发挥 → 我按上面四张图提方案,再拿给你。</p>
+<div class="cmt"><label>你勾哪个 / 有定见还是我来发挥</label><textarea data-s="⑤ 你勾哪个 · 有定见还是我发挥" placeholder="写在这里…"></textarea></div>
+</div>
+
+<div class="fact" style="margin-top:16px">
+写完点下面<b>「一键汇总复制」</b>,再<b>贴回 issue</b> —— 我才收得到。<b>这页的字只存在你自己的浏览器里,不会自己发给我。</b>
+</div>
+
+<div class="bar">
+<div class="row">
+<button id="copy">一键汇总复制</button>
+<button id="clear" class="sec">清空</button>
+<span id="st" class="status">还没写意见</span>
+</div>
+<textarea id="dump" readonly></textarea>
+</div>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+"use strict";
+var MARK = "【页面意见汇总】FLY-1984";
+var LIMIT = 1800;
+var KEY = "fly1984-decide-notes-v1";
+var boxes = Array.prototype.slice.call(document.querySelectorAll("textarea[data-s]"));
+var st = document.getElementById("st");
+var dump = document.getElementById("dump");
+
+function load(){
+  var raw = null;
+  try { raw = window.localStorage.getItem(KEY); } catch(e){ raw = null; }
+  if(!raw) return;
+  var data = null;
+  try { data = JSON.parse(raw); } catch(e){ return; }
+  if(!data || typeof data !== "object") return;
+  boxes.forEach(function(b){
+    var v = data[b.getAttribute("data-s")];
+    if(typeof v === "string") b.value = v;
+  });
+}
+function save(){
+  var data = {};
+  boxes.forEach(function(b){ if(b.value.trim()) data[b.getAttribute("data-s")] = b.value; });
+  try { window.localStorage.setItem(KEY, JSON.stringify(data)); } catch(e){}
+}
+function filled(){
+  return boxes.filter(function(b){ return b.value.trim().length > 0; });
+}
+function refresh(){
+  var n = filled().length;
+  st.className = "status";
+  st.textContent = n === 0 ? "还没写意见" : ("已写 " + n + " 段意见");
+}
+function chunks(){
+  var parts = filled().map(function(b){
+    return "【" + b.getAttribute("data-s") + "】\n" + b.value.trim();
+  });
+  var out = [], cur = "";
+  parts.forEach(function(p){
+    var cand = cur ? (cur + "\n\n" + p) : p;
+    if(cur && (MARK.length + 1 + cand.length) > LIMIT){ out.push(cur); cur = p; }
+    else { cur = cand; }
+  });
+  if(cur) out.push(cur);
+  if(!out.length) return [];
+  return out.map(function(body, i){
+    var head = MARK;
+    if(out.length > 1) head = MARK + "  (" + (i+1) + "/" + out.length + ")";
+    return head + "\n" + body;
+  });
+}
+function showManual(text, msg){
+  dump.style.display = "block";
+  dump.value = text;
+  dump.focus();
+  dump.select();
+  st.className = "status err";
+  st.textContent = msg;
+}
+function doCopy(){
+  var cs = chunks();
+  if(!cs.length){
+    st.className = "status err";
+    st.textContent = "一条意见都没写，没东西可复制";
+    return;
+  }
+  var text = cs.join("\n\n----\n\n");
+  var manualMsg = cs.length > 1
+    ? "自动复制失败 — 请在下方框里手动全选复制（共 " + cs.length + " 段，每段都要贴）"
+    : "自动复制失败 — 请在下方框里手动全选复制";
+  var okMsg = cs.length > 1
+    ? "已复制（共 " + cs.length + " 段，都要贴回 issue）"
+    : "已复制 — 请贴回 issue 里";
+  var nav = window.navigator;
+  if(nav && nav.clipboard && nav.clipboard.writeText){
+    nav.clipboard.writeText(text).then(function(){
+      dump.style.display = "none";
+      st.className = "status ok";
+      st.textContent = okMsg;
+    })["catch"](function(){ showManual(text, manualMsg); });
+    return;
+  }
+  showManual(text, manualMsg);
+}
+boxes.forEach(function(b){
+  b.addEventListener("input", function(){ save(); refresh(); });
+});
+document.getElementById("copy").addEventListener("click", doCopy);
+document.getElementById("clear").addEventListener("click", function(){
+  boxes.forEach(function(b){ b.value = ""; });
+  try { window.localStorage.removeItem(KEY); } catch(e){}
+  dump.style.display = "none";
+  refresh();
+});
+load();
+refresh();
+})();
+</script>
+</body>
+</html>

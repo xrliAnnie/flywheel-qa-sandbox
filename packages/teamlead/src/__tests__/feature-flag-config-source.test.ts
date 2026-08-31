@@ -78,6 +78,71 @@ describe("loadFeatureFlagProjectConfigs", () => {
 		expect(map.get("broken")?.config).toBeUndefined();
 		expect(map.get("broken")?.revision).toMatch(/^file:[a-f0-9]{64}$/);
 	});
+
+	it("surfaces a missing registry after config.yaml was read", async () => {
+		const project = {
+			projectName: "registry-project",
+			projectRoot: "/p/registry-project",
+			leads: [],
+		} as unknown as ProjectEntry;
+		const config = [
+			"project: registry-project",
+			"linear: { team_id: TEAM }",
+			"runners:",
+			"  default: claude",
+			"  available: { claude: { type: claude } }",
+			"teams:",
+			"  - name: default",
+			"decision_layer:",
+			"  autonomy_level: advisor",
+			"  escalation_channel: discord",
+			"agents:",
+			"  backend:",
+			"    node: engineer",
+			"    match: { labels: [backend] }",
+			"",
+		].join("\n");
+
+		const map = await loadFeatureFlagProjectConfigs([project], () => config);
+
+		expect(map.get("registry-project")?.config).toBeUndefined();
+		expect(map.get("registry-project")?.error).toMatch(/ENOENT|no such file/i);
+		expect(map.get("registry-project")?.revision).toMatch(/^file:/);
+	});
+
+	it("loads a legacy agent_file config without requiring a registry", async () => {
+		const project = {
+			projectName: "legacy-project",
+			projectRoot: "/p/legacy-project",
+			leads: [],
+		} as unknown as ProjectEntry;
+		const config = [
+			"project: legacy-project",
+			"linear: { team_id: TEAM }",
+			"runners:",
+			"  default: claude",
+			"  available: { claude: { type: claude } }",
+			"teams:",
+			"  - name: default",
+			"decision_layer:",
+			"  autonomy_level: advisor",
+			"  escalation_channel: discord",
+			"agents:",
+			"  backend:",
+			"    agent_file: .flywheel/agents/engineering/backend.md",
+			"    match: { labels: [backend] }",
+			"",
+		].join("\n");
+
+		const map = await loadFeatureFlagProjectConfigs([project], () => config);
+
+		expect(map.get("legacy-project")?.error).toBeUndefined();
+		expect(map.get("legacy-project")?.resolvedAgents?.backend).toMatchObject({
+			agentFile: "/p/legacy-project/.flywheel/agents/engineering/backend.md",
+			department: "engineering",
+			departments: ["engineering"],
+		});
+	});
 });
 
 // FLY-709 P4 (Codex R1 #6): mtime-cached per-project config — a runner-config

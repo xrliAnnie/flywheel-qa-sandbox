@@ -72,6 +72,7 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 		executionId: `design-${runId}`,
 	});
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId,
 		nodeId: "design",
 		attempt: 1,
@@ -81,6 +82,7 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 		now: "2026-07-22T00:10:00.000Z",
 	});
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId,
 		nodeId: "implement",
 		attempt: 1,
@@ -111,6 +113,7 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 		workflow_node_id: "qa",
 	});
 	const submitted = store.submitWorkflowDecisionByCredential({
+		nodeReuseEnabled: false,
 		credential: admission.submissionCredential,
 		clientRequestId: `qa-pass-${runId}`,
 		predicate: "qa_passed",
@@ -120,6 +123,7 @@ async function readyRun(runId = "run-ship-ready"): Promise<StateStore> {
 		subjectProducerExecutionId: `implement-${runId}`,
 		subjectProducerVendor: "codex",
 		claimExpiresAt: "2026-07-23T00:00:00.000Z",
+		alertIdentity,
 		now: GATE_OPENED_AT,
 	});
 	if (!submitted.ok)

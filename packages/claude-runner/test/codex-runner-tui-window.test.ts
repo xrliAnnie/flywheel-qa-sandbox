@@ -12,9 +12,10 @@ import {
 	type RunnerTuiWindowSpec,
 	scanAndKillSameNameWindows,
 	spawnCommandAsync,
+	tmuxEnsureDeadlineMs,
 } from "../src/codex-runner-tui-window.js";
 
-// ── FLY-1188 M4c-3 — founder-facing cmux TUI window (exec injected) ───────
+// ── FLY-2168 — restore the founder-facing native Codex TUI ────────────────
 
 const spec: RunnerTuiWindowSpec = {
 	tmuxSession: "flywheel",
@@ -368,7 +369,7 @@ describe("spawnCommandAsync", () => {
 });
 
 describe("buildRunnerTuiCommand", () => {
-	it("rebuilds the pane environment before applying the runner's explicit CODEX_HOME", () => {
+	it("rebuilds the pane environment before applying the isolated CODEX_HOME", () => {
 		const cmd = buildRunnerTuiCommand(spec);
 		expect(cmd).toMatch(/^exec \/usr\/bin\/env -i /);
 		expect(cmd).toContain(`\${PATH+"PATH=$PATH"}`);
@@ -376,11 +377,10 @@ describe("buildRunnerTuiCommand", () => {
 		expect(cmd.indexOf("env -i")).toBeLessThan(cmd.indexOf("CODEX_HOME="));
 	});
 
-	it("resumes the daemon's SHORT socket with workspace-write + no-approval, on the given thread", () => {
+	it("resumes the owned thread on its exact short socket with managed policy", () => {
 		const cmd = buildRunnerTuiCommand(spec);
 		expect(cmd).toContain('CODEX_HOME="/home/x/.flywheel/codex-homes/exec-1"');
 		expect(cmd).toContain("/bin/codex resume");
-		// the EXPLICIT short socket path (not a CODEX_HOME-derived one)
 		expect(cmd).toContain(
 			'--remote "unix:///home/x/.flywheel/cdx-sock/abc.sock"',
 		);
@@ -390,24 +390,19 @@ describe("buildRunnerTuiCommand", () => {
 		expect(cmd.trim().endsWith(spec.threadId)).toBe(true);
 	});
 
-	it("defaults the codex binary to `codex`", () => {
-		const cmd = buildRunnerTuiCommand({ ...spec, codexBin: undefined });
-		expect(cmd).toContain("codex resume");
-	});
-
-	it("injects execution-bound state coordinates for durable stub exit fences", () => {
+	it("injects execution-bound state coordinates", () => {
 		const cmd = buildRunnerTuiCommand({
 			...spec,
 			executionId: "exec-1",
 			stateDbPath: "/tmp/flywheel-test-slot-2/teamlead.db",
-		} as RunnerTuiWindowSpec);
+		});
 		expect(cmd).toContain('FLYWHEEL_EXEC_ID="exec-1"');
 		expect(cmd).toContain(
 			'FLYWHEEL_STATE_DB_PATH="/tmp/flywheel-test-slot-2/teamlead.db"',
 		);
 	});
 
-	it("throws (fail-loud) on a shell-unsafe threadId or path", () => {
+	it("throws fail-loud on shell-unsafe thread and path values", () => {
 		expect(() =>
 			buildRunnerTuiCommand({ ...spec, threadId: 'x"; rm -rf /' }),
 		).toThrow(/unsafe for the tmux shell/);
@@ -417,6 +412,22 @@ describe("buildRunnerTuiCommand", () => {
 		expect(() =>
 			buildRunnerTuiCommand({ ...spec, cwd: "/a b/with space" }),
 		).toThrow(/unsafe for the tmux shell/);
+	});
+});
+
+describe("tmuxEnsureDeadlineMs", () => {
+	it("shares the production default and reads an env override at call time", () => {
+		const previous = process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+		try {
+			delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+			expect(tmuxEnsureDeadlineMs()).toBe(210_000);
+			process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS = "345000";
+			expect(tmuxEnsureDeadlineMs()).toBe(345_000);
+		} finally {
+			if (previous === undefined)
+				delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+			else process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS = previous;
+		}
 	});
 });
 
@@ -654,6 +665,7 @@ describe("ensureRunnerTuiWindow", () => {
 		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
 		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
+		expect(createCall?.some((a) => a.includes("tail -F"))).toBe(false);
 		expect(birthEnvironments).toHaveLength(2);
 		for (const env of birthEnvironments) {
 			expect(env?.PATH).toBe(
@@ -697,10 +709,10 @@ describe("ensureRunnerTuiWindow", () => {
 		});
 	});
 
-	it("returns died when the pane dies during settle (the rollout-landing race)", async () => {
+	it("returns died when the observer pane dies during settle", async () => {
 		const t = fakeTmux({
 			initial: [{ id: "@0", name: "zsh" }],
-			paneAlive: false, // window created but the TUI exited immediately
+			paneAlive: false, // window created but the observer exited immediately
 		});
 		await expect(
 			ensureRunnerTuiWindow(spec, {
@@ -1073,7 +1085,7 @@ describe("killRunnerTuiWindow", () => {
 		);
 
 		expect(logs).toEqual([
-			"runner-tui-window: kill skipped — window already gone (FLY-1188)",
+			"runner-tail-window: kill skipped — window already gone (FLY-1188)",
 		]);
 	});
 
@@ -1104,25 +1116,13 @@ describe("killRunnerTuiWindow", () => {
 
 // ── QA · FLY-1188 — regressions from the real-machine E2E (2026-07-13) ──────
 //
-// The founder-visible TUI (hard problem #3: "cmux 里的 tab 是空的") did NOT work
-// on a real machine. `tmux new-window` reports success even when the command it
-// launches dies instantly, so ensureRunnerTuiWindow logged "founder TUI up" and
-// returned true for a window that was ALREADY GONE — the failure was invisible
-// to every mocked test AND to the operator.
-//
-// Real-machine capture (engineering/doc/FLY-1188-.../qa/tui-failure-diagnosis.txt):
-//     Error: stdout is not a terminal
-//     TUI EXITED WITH CODE=1
-//
-// Root cause: the TUI was launched through `flywheel-codex-with-fallback`, which
-// historically redirected codex stdout. That removes the
-// TTY, and a TUI refuses to render without one. The daemon may keep using the
-// shim (`app-server` needs no TTY); the TUI may not.
-describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawned", () => {
+// Preserve the real-machine lesson from FLY-1188: `tmux new-window` reports
+// success even when its command exits immediately. The observer must be proven
+// alive after settle before the adapter publishes its immutable window id.
+describe("QA FLY-1188: the founder observer must actually be RUNNING, not just spawned", () => {
 	it("reports died when the window dies immediately (tmux new-window 'succeeds' regardless)", async () => {
-		// tmux accepts every command and the purge/verify pass, but the window never
-		// comes up — exactly what a TUI that exits 1 on 'stdout is not a terminal' (or
-		// the FLY-1239 'no rollout found' race) looks like from outside.
+		// tmux accepts every command and the purge/verify pass, but the observer
+		// never stays up.
 		const t = fakeTmux({
 			initial: [{ id: "@0", name: "zsh" }],
 			paneAlive: false,
@@ -1132,7 +1132,7 @@ describe("QA FLY-1188: the founder TUI must actually be RUNNING, not just spawne
 			execOut: t.execOut,
 			sleep: t.sleep,
 		});
-		// must NOT claim "founder TUI up" for a dead pane; must classify as retryable died
+		// must NOT claim "founder observer up" for a dead pane; must classify as retryable died
 		expect(outcome).toEqual({
 			created: false,
 			category: "retryable-transient-ipc",

@@ -174,9 +174,9 @@ describe("merged gate last-mile guard", () => {
 		expect(checkPrMerge).toHaveBeenCalledTimes(6);
 	});
 
-	it("kill switch bypasses only the network guard", async () => {
+	it("ignores the retired kill switch and still probes", async () => {
 		const { store } = storeHarness();
-		const checkPrMerge = vi.fn();
+		const checkPrMerge = vi.fn(async () => ({ state: "unknown" as const }));
 		const log = vi.fn();
 		const guard = createMergedGateGuard({
 			store,
@@ -185,8 +185,11 @@ describe("merged gate last-mile guard", () => {
 			env: { FLYWHEEL_MERGED_GATE_GUARD: "0" },
 			log,
 		});
-		expect(await guard(args)).toEqual({ kind: "continue", prState: "open" });
-		expect(checkPrMerge).not.toHaveBeenCalled();
-		expect(log).toHaveBeenCalledWith(expect.stringContaining("DISABLED"));
+		expect(await guard(args)).toEqual({
+			kind: "retry_later",
+			reason: "unknown",
+		});
+		expect(checkPrMerge).toHaveBeenCalledOnce();
+		expect(log).not.toHaveBeenCalled();
 	});
 });

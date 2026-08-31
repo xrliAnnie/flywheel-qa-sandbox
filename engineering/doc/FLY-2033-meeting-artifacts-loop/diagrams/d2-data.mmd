@@ -1,0 +1,22 @@
+flowchart LR
+  subgraph raya["raya 会议数据面(V4 已交付,本单只读不写)"]
+    A1["会议存档<br/>meetings/id/meeting.json<br/>(不可改:和谁/议题/起止时刻)"]
+    A2["逐句转写<br/>voice-evidence/events.jsonl<br/>(谁说的、说了什么、几点说的)"]
+    A3["会前简报 briefing.md<br/>(如有)"]
+  end
+  subgraph tick["定时对账器(新增,每 2 分钟看一眼)"]
+    B1["发现新会 → 开任务单"]
+    B2["发现会结束 → 派 note taker"]
+    B3["错过/取消的会 → 留痕后关单"]
+  end
+  subgraph reuse["全部复用现有机制(零新造)"]
+    C1["Linear 任务单 + 讨论串<br/>(一单一串,现成)"]
+    C2["互动 HTML 卡 + 意见汇总回流<br/>(现成 founder review 流程)"]
+    C3["PR + Ship Card + 她批准才合入<br/>(现成 ship 流程)"]
+  end
+  A1 --> tick
+  A1 --> D["note taker<br/>(标准 runner)"]
+  A2 --> D
+  A3 --> D
+  tick --> C1
+  D --> C2 --> C3

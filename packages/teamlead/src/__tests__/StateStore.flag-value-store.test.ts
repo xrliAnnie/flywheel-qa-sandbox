@@ -1,4 +1,4 @@
-import { STORE_MANAGED_FLAGS } from "flywheel-config";
+import { FEATURE_FLAGS, STORE_MANAGED_FLAGS } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
 
@@ -85,11 +85,15 @@ describe("StateStore FLY-1778 flag value store", () => {
 		]);
 	});
 
-	it("seeds every store-managed registry flag and its audit origin", () => {
+	it("seeds only bridge-global registry flags and leaves project rows scoped", () => {
 		expect(STORE_MANAGED_FLAGS.size).toBeGreaterThan(0);
 		store.ensureFlagValueRows({ env: {}, now: 100 });
 
-		for (const name of STORE_MANAGED_FLAGS) {
+		for (const { name, scope } of FEATURE_FLAGS) {
+			if (scope === "project") {
+				expect(store.getFlagValueRow(name), name).toBeUndefined();
+				continue;
+			}
 			expect(store.getFlagValueRow(name), name).toMatchObject({
 				flagName: name,
 				revision: 1,
@@ -101,6 +105,19 @@ describe("StateStore FLY-1778 flag value store", () => {
 				}),
 			]);
 		}
+	});
+
+	it("rejects project flags from the bridge-global apply API", () => {
+		store.ensureFlagValueRows({ env: {}, now: 100 });
+		expect(
+			store.applyFlagValueChange({
+				name: "doc_flow",
+				rawTo: "1",
+				expectedRevision: 1,
+				actor: "test",
+				reason: "prove scope guard",
+			}),
+		).toEqual({ ok: false, reason: "not_store_managed" });
 	});
 
 	it("advances revision on every write but the value clock only on effective change", () => {
@@ -149,6 +166,113 @@ describe("StateStore FLY-1778 flag value store", () => {
 			valueLastChanged: 300,
 			revision: 4,
 		});
+	});
+
+	it("projects current-schema clocks as * with the immutable seed time", () => {
+		store.ensureFlagValueRows({ env: {}, now: 100 });
+		const row = store.getFlagValueRow("workflow_turn_divergence_alerts")!;
+		store.applyFlagValueChange({
+			name: row.flagName,
+			rawTo: "1",
+			expectedRevision: row.revision,
+			actor: "bridge-local-operator",
+			reason: "clock projection proof",
+			now: 300,
+		});
+
+		expect(
+			store
+				.listFlagValueClocks()
+				.find(({ flagName }) => flagName === row.flagName),
+		).toEqual({
+			flagName: row.flagName,
+			scopeKey: "*",
+			valueLastChanged: 300,
+			firstRegisteredAt: 100,
+		});
+	});
+
+	it("reads exact future scope rows when both value tables expose scope", () => {
+		const db = rawDb();
+		db.exec(`
+			DROP TABLE flag_values;
+			DROP TABLE flag_value_changelog;
+			CREATE TABLE flag_values (
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				value_last_changed INTEGER,
+				PRIMARY KEY(flag_name, scope)
+			);
+			CREATE TABLE flag_value_changelog (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				action TEXT NOT NULL,
+				changed_at INTEGER NOT NULL
+			);
+			INSERT INTO flag_values VALUES
+				('project_flag','alpha',700),
+				('project_flag','beta',NULL);
+			INSERT INTO flag_value_changelog(flag_name,scope,action,changed_at) VALUES
+				('project_flag','alpha','seed',100),
+				('project_flag','alpha','set',700),
+				('project_flag','beta','seed',200);
+		`);
+
+		expect(store.listFlagValueClocks()).toEqual([
+			{
+				flagName: "project_flag",
+				scopeKey: "alpha",
+				valueLastChanged: 700,
+				firstRegisteredAt: 100,
+			},
+			{
+				flagName: "project_flag",
+				scopeKey: "beta",
+				valueLastChanged: null,
+				firstRegisteredAt: 200,
+			},
+		]);
+	});
+
+	it("fails loud on partial scope migrations, duplicate identities, or missing audit origins", () => {
+		const db = rawDb();
+		db.exec(`
+			DROP TABLE flag_value_changelog;
+			CREATE TABLE flag_value_changelog (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				flag_name TEXT NOT NULL,
+				action TEXT NOT NULL,
+				changed_at INTEGER NOT NULL
+			);
+		`);
+		expect(() => store.listFlagValueClocks()).toThrow(/scope.*mismatch/i);
+
+		db.exec(`
+			DROP TABLE flag_values;
+			DROP TABLE flag_value_changelog;
+			CREATE TABLE flag_values (
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				value_last_changed INTEGER
+			);
+			CREATE TABLE flag_value_changelog (
+				flag_name TEXT NOT NULL,
+				scope TEXT NOT NULL,
+				action TEXT NOT NULL,
+				changed_at INTEGER NOT NULL
+			);
+			INSERT INTO flag_values VALUES
+				('duplicate','alpha',1),('duplicate','alpha',2),('missing_seed','beta',NULL);
+			INSERT INTO flag_value_changelog VALUES
+				('duplicate','alpha','seed',1);
+		`);
+		expect(() => store.listFlagValueClocks()).toThrow(/duplicate/i);
+
+		db.exec(
+			"DELETE FROM flag_values WHERE flag_name='duplicate' AND value_last_changed=2",
+		);
+		expect(() => store.listFlagValueClocks()).toThrow(/missing clock audit/i);
 	});
 
 	it("clear preserves the row and CAS rejects a stale reviewed revision", () => {
@@ -205,10 +329,9 @@ describe("StateStore FLY-1778 flag value store", () => {
 		});
 	});
 
-	it("mutator independently rejects protected, unlisted, and retired identities", () => {
+	it("mutator independently rejects unlisted and retired identities", () => {
 		store.ensureFlagValueRows({ env: {}, now: 100 });
 		for (const [name, reason] of [
-			["mailbox_queue", "protected_legacy"],
 			["voice_qa_presence_override", "not_store_managed"],
 			["workflow_resume", "retired_flag"],
 			["three_stage", "retired_flag"],

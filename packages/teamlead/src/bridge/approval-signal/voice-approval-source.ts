@@ -7,10 +7,9 @@
  * word, so there is NO Tier-3 classifier here — ambiguity is `unclear`,
  * never a guess (mishearing an approval is the expensive failure).
  *
- * The word sets + normalization mirror flywheel-voice-core's headphone
- * phrases module (exact normalized match, never substring); duplicated here
- * because teamlead does not depend on voice-core — change BOTH if the c-tier
- * vocabulary ever changes.
+ * The word sets mirror flywheel-voice-core's headphone phrases module. This
+ * source owns the authoritative voice-approval normalizer: clients submit the
+ * founder's verbatim transcript and must not pre-decide the approval result.
  */
 import type { ApprovalSignal } from "./types.js";
 
@@ -18,11 +17,15 @@ const CONFIRM = ["确认", "对"] as const;
 const DENY = ["不对", "取消", "不批"] as const;
 
 function normalize(text: string): string {
-	return text
-		.normalize("NFKC")
-		.toLowerCase()
-		.replace(/^[\p{P}\p{S}\s]+|[\p{P}\p{S}\s]+$/gu, "")
-		.replace(/\s+/gu, " ");
+	const compact = Array.from(
+		text
+			.normalize("NFKC")
+			.toLowerCase()
+			.replace(/[\p{P}\p{S}\s]+/gu, ""),
+	);
+	return compact
+		.filter((character, index) => character !== compact[index - 1])
+		.join("");
 }
 
 function matches(text: string, words: readonly string[]): boolean {

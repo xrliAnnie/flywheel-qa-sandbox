@@ -1,5 +1,5 @@
 #!/bin/bash
-# FLY-1062 broker PR · ③ CUSTOMER end-to-end acceptance — the whole chain in
+# FLY-1062 · ③ CUSTOMER end-to-end acceptance — the whole chain in
 # its REAL form, zero stubs on the serving path:
 #
 #   real release scripts ──publish──▶ real endpoint (serve-node + FsBucket)
@@ -10,8 +10,7 @@
 #   E2  beta release via payload-release.mjs (reserve→pack→claim→upload→
 #       readback→commit, B0-9);
 #   E3  promote prepare (equivalence proof) + commit via payload-promote.mjs
-#       → customer-release pointer flips;   [the broker path for this same
-#       commit is pinned by the teamlead vitest suite against this handler]
+#       → customer-release pointer flips;
 #   E4  license key issued through the REAL ops route;
 #   E5  a fresh HOME + the shell installed FROM ITS NPM TARBALL installs the
 #       promoted version end to end (zero repository access anywhere);

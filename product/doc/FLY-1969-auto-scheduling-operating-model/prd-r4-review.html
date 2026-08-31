@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1969 PRD 逐节审 — 先答第 0 题</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;}
+*{box-sizing:border-box}
+body{margin:0;padding:20px 14px 60px;background:var(--bg);color:var(--ink);
+font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;font-size:14px;}
+.wrap{max-width:880px;margin:0 auto}
+h1{font-size:23px;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px;margin:0 0 16px}
+.card{background:var(--card);border-radius:12px;padding:14px 16px;margin:0 0 12px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.green{border-left-color:var(--green)}.card.blue{border-left-color:var(--blue)}
+.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}
+.card.purple{border-left-color:var(--purple)}.card.gray{border-left-color:#c7c7cc}
+.sec{font-size:16px;font-weight:650;margin:24px 0 10px;letter-spacing:-.01em}
+h3{font-size:14.5px;margin:0 0 6px;font-weight:650}
+h3 .tag{font-size:11px;font-weight:600;color:var(--dim);margin-left:6px;
+border:1px solid var(--line);border-radius:5px;padding:1px 5px;vertical-align:1px}
+p{margin:0 0 7px}
+.dim{color:var(--dim);font-size:12.5px}
+.gist{background:#f0f6ff;border:1px solid #cfe2ff;border-radius:9px;padding:9px 12px;
+margin:2px 0 9px;font-size:14px;color:#0b3d80}
+.q0{background:#fff;border:2px solid var(--navy);border-radius:14px;padding:18px 18px 16px;margin:0 0 14px;
+box-shadow:0 2px 10px rgba(0,0,0,.07)}
+.q0 h2{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}
+.forks{display:flex;flex-direction:column;gap:9px;margin:13px 0 4px}
+.fork{display:block;width:100%;text-align:left;border:1.5px solid var(--line);background:#fcfcfd;
+border-radius:11px;padding:12px 14px;font:inherit;cursor:pointer;color:var(--ink)}
+.fork:hover{border-color:#b8b8bd}
+.fork .k{font-size:15px;font-weight:650;display:block;margin-bottom:3px}
+.fork .d{font-size:12.5px;color:var(--dim);display:block}
+.q0 .fork[aria-pressed="true"]{border-color:var(--navy);background:#eef3fb;color:var(--ink)}
+.q0 .fork[aria-pressed="true"] .k{color:var(--navy)}
+.q0 .fork[aria-pressed="true"] .d{color:var(--dim)}
+.verdict{display:none;margin:12px 0 0;border-radius:10px;padding:12px 14px;font-size:14px}
+.verdict.on{display:block}
+.verdict.a{background:#fff1f0;border:1px solid #ffc9c4;color:#8c1d16}
+.verdict.b{background:#e6f9ed;border:1px solid #a7e5bf;color:#136c37}
+.verdict.c{background:#fff8e6;border:1px solid #ffdf99;color:#7a5200}
+#body{display:none}#body.on{display:block}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 15px;
+font:inherit;font-size:13px;cursor:pointer;color:var(--ink)}
+.chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
+textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+font:inherit;font-size:13px;resize:vertical;background:#fcfcfd;color:var(--ink);min-height:42px}
+details{margin:8px 0 2px;border-top:1px dashed var(--line);padding-top:8px}
+summary{cursor:pointer;font-size:12.5px;color:var(--blue);outline:none}
+details[open] summary{margin-bottom:7px}
+details .inner{font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:11.5px}
+pre{background:#f6f6f8;border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:7px 0;
+font-family:"SF Mono",ui-monospace,monospace;font-size:12px;overflow-x:auto;line-height:1.5;white-space:pre}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;background:#f0f0f3;padding:1px 4px;border-radius:4px}
+ul{margin:5px 0 7px;padding-left:19px}li{margin:3px 0}
+.bar{position:sticky;top:0;z-index:9;background:rgba(245,245,247,.94);backdrop-filter:blur(8px);
+margin:0 -14px 14px;padding:10px 14px;border-bottom:1px solid var(--line);
+display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{border:0;border-radius:9px;padding:8px 16px;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+.btn.p{background:var(--navy);color:#fff}.btn.s{background:#e8e8ed;color:var(--ink)}
+#status{font-size:12.5px;color:var(--navy);flex:1;min-width:180px}
+#exportOut{display:none;margin:10px 0 0;min-height:120px;
+font-family:"SF Mono",ui-monospace,monospace;font-size:12px}
+.foot{color:var(--dim);font-size:12px;margin:26px 0 0;text-align:center;line-height:1.7}
+.warn{background:#fff8e6;border:1px solid #ffdf99;border-radius:8px;padding:8px 11px;margin:8px 0;font-size:12.5px;color:#7a5200}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<div class="bar">
+  <button class="btn p" id="exportBtn" type="button">一键汇总复制</button>
+  <button class="btn s" id="clearBtn" type="button">清空</button>
+  <span id="status">写完点「一键汇总复制」,再粘回给我 —— 我才收得到。</span>
+</div>
+<textarea id="exportOut" readonly></textarea>
+
+<h1>PRD 逐节审</h1>
+<p class="sub">FLY-1969 自动排期 operating model · PRD v1.9 · 2026-08-27<br>
+你说「很有可能完全错」。所以这一页<strong>不请你读完全文</strong> —— 先答第 0 题,可能一下就省掉底下全部。</p>
+
+<div class="q0">
+<h2>第 0 题:你要的到底是哪一个?</h2>
+<p class="dim">这一题决定底下还要不要看。<strong>现在这份 PRD 整份是往 B 长的。</strong></p>
+
+<div class="forks" data-chips="q0" id="q0chips">
+  <button class="fork chip" type="button" aria-pressed="false"><span class="k">A · 分批派活这件事我不想自己干了</span><span class="d">你要系统替你做:它自己切批、自己决定先后、自己往下推,你只在结果上点头。</span></button>
+  <button class="fork chip" type="button" aria-pressed="false"><span class="k">B · 有活躺着没人管,我事后才发现</span><span class="d">派活还是人来(你和 Lead),你只要一个兜底:别让活躺在那儿没人知道。</span></button>
+  <button class="fork chip" type="button" aria-pressed="false"><span class="k">C · 都不是 —— 我要的是别的</span><span class="d">上面两个都没说中。写在下面那个框里就行,底下的节可以不看。</span></button>
+</div>
+
+<div class="verdict a" id="v0"><strong>选了 A ⇒ 底下的内容大部分自动作废,你不用逐条看。</strong><br>
+这份 PRD 的骨架是「人来派、系统兜底」;A 是「系统来派」。<strong>那是另一份 PRD,我重写。</strong><br>
+你只要在下面那个框里补一句「哪里最不像你要的」,其余可以直接跳到最下面点「一键汇总复制」。</div>
+
+<div class="verdict b" id="v1"><strong>选了 B ⇒ 方向没错,那问题在具体哪几节。</strong><br>
+往下逐节勾就行 —— 每节先给一句话,觉得需要再展开原文。<strong>只勾「不对」的那几节也完全够用。</strong></div>
+
+<div class="verdict c" id="v2"><strong>选了 C ⇒ 底下不用看。</strong><br>
+把你要的写在下面那个框里,我照你说的重写。</div>
+
+<textarea data-note="q0" placeholder="选完可以在这里补一句(不写也行)。如果选了 A 或 C,这个框是这一页里唯一重要的地方。"></textarea>
+</div>
+
+<div id="body">
+
+<div class="warn">下面每一节的<strong>「一句话」是我写的摘要</strong>,原文折叠在「展开原文」里。<strong>摘要写歪了也算「不对」</strong> —— 直接勾,不用替我找补。</div>
+
+<!-- ============ 1 ============ -->
+<div class="sec">一、这件事的问题是什么</div>
+<div class="card blue">
+<h3>§1 Problem<span class="tag">PRD §1</span></h3>
+<div class="gist">你的注意力被花在本来不需要你的环节上(分批、派给谁、什么时候派);同时系统有个洞:<strong>没有任何机制会主动发现「有活没派出去」</strong> —— 巡检钟只看已经起过 session 的,Linear 上从没派过的 issue 不在它视野里。</div>
+<details><summary>展开原文</summary><div class="inner">
+<p>Annie 和 Tadashi 今天是<strong>人工</strong>跑一件事的:她写一份大纲 → <strong>手动分批</strong> → 一批批推 → 中途发现 bug 就把修复并进来 → 一轮轮做完。</p>
+<p>这条链上,唯一稀缺的是<strong>她的注意力</strong>,而它被消耗在<strong>本来不需要她的环节</strong>上(分批、派给谁、什么时候派、这批做完了该推下一批了)。</p>
+<p>同时,系统侧有一个具体的空洞:<strong>没有任何机制会主动发现「有活没派出去」。</strong> 巡检钟(FLY-1687)每 60 分钟敲一次,但它的名册只包含<strong>已经起过 session 的</strong>六种状态;Linear 上从没派过的 issue <strong>不在它的视野里</strong>。⇒ 一个 issue 只要没人手动提起,它可以永远躺着,而系统<strong>完全不知道</strong>。</p>
+</div></details>
+<div class="chips" data-chips="s1"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s1" placeholder="这一节哪里不对?"></textarea>
+</div>
+
+<!-- ============ 2 ============ -->
+<div class="sec">二、谁在这套流程里做什么</div>
+<div class="card blue">
+<h3>§2 Users<span class="tag">PRD §2</span></h3>
+<div class="gist">你只做两件:<strong>review 和 approve</strong>,第一类改动由你敲定。编排 Lead 对派发建议点头、判第二类改动。CoS 定期分诊<strong>只产建议、不起 runner</strong>。Runner 只执行,不参与排期决策。</div>
+<details><summary>展开原文</summary><div class="inner">
+<table><tr><th>谁</th><th>在这套流程里做什么</th></tr>
+<tr><td><strong>Annie(founder)</strong></td><td>只做两件:<strong>review</strong> 和 <strong>approve</strong>。第一类改动由她敲定</td></tr>
+<tr><td><strong>编排 Lead</strong>(Tadashi / Honey Lemon,以后新增的 Lead)</td><td>对派发建议<strong>点头</strong>;判第二类改动;学习闸的默认判官</td></tr>
+<tr><td><strong>CoS(Aunt Cass)</strong></td><td>定期主动分诊,<strong>只产建议、不起 runner</strong>(<code>canSpawnRunners:false</code> 不变)</td></tr>
+<tr><td><strong>Runner</strong></td><td>执行,不参与排期决策</td></tr></table>
+</div></details>
+<div class="chips" data-chips="s2"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s2" placeholder="这一节哪里不对?"></textarea>
+</div>
+
+<!-- ============ 3 ============ -->
+<div class="sec">三、要达到什么 / 明确不做什么</div>
+<div class="card blue">
+<h3>§3 Goals<span class="tag">PRD §3</span></h3>
+<div class="gist">四条:① 没派的活会被主动发现并变成带理由的建议(今天:零)② 派发受容量约束,<strong>而且约束的理由要人话可读</strong> ③ 改动按两类分流,第一类阻塞你、第二类只告知 ④ 每次派发留下「以后能放松闸门」的证据,<strong>而且是别人本来就要做的动作的副产品</strong>。</div>
+<details><summary>展开原文</summary><div class="inner">
+<ol><li><strong>没派的活会被主动发现</strong>,并变成一条带理由的派发建议。(今天:零)</li>
+<li><strong>派发受容量约束</strong>,且<strong>约束的理由对人可读</strong> —— 不能让人把背压当成「机器变慢了」去查。</li>
+<li><strong>改动按两类分流</strong>:第一类阻塞她;第二类我们决定、<strong>按体量</strong>告知。</li>
+<li><strong>每次派发留下能事后放松闸门的证据</strong> —— 而且这个证据是<strong>别人本来就要做的动作的副产品</strong>,不是一条需要有人回访的新通道。</li></ol>
+</div></details>
+<div class="chips" data-chips="s3"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s3" placeholder="这一节哪里不对?"></textarea>
+</div>
+
+<div class="card gray">
+<h3>§4 Non-goals(明确不做的)<span class="tag">PRD §4</span></h3>
+<div class="gist">不重建 workflow 引擎(你说「在这个基础上」)· 不做第一层模板泛化(已被建掉)· 不做 Lead 当场动态组流程(FLY-1140)· 不做学习引擎本体(FLY-1034)· 不做完整层级容量模型(FLY-1022)· <strong>不加任何新 flag</strong>(现行铁律)。</div>
+<details><summary>展开原文</summary><div class="inner">
+<table><tr><th>不做</th><th>为什么</th></tr>
+<tr><td>重建 workflow 引擎</td><td>她说「在这个基础上」;schema-v2 / TURN / gate / land 都在跑</td></tr>
+<tr><td><strong>第一层模板泛化(旧 E6)</strong></td><td><strong>已被建掉</strong> —— 6 个任务类型各有编译模板,本单<strong>关闭这一块</strong></td></tr>
+<tr><td>Lead 当场按任务动态组流程</td><td>FLY-1140 那条线,不在本轮</td></tr>
+<tr><td>学习引擎本体</td><td>FLY-1034</td></tr>
+<tr><td>层级 lead-tree / 容量的完整模型</td><td>FLY-1022;本单只做够用的那一层(见 R2)</td></tr>
+<tr><td><strong>加任何新 flag</strong></td><td>违反现行铁律(FLY-1466 / 1806 / 1808 / 1455)</td></tr>
+<tr><td>抢救 <code>~/.flywheel/audit.db</code></td><td>已单独上报 Lead,处置不在本单</td></tr></table>
+</div></details>
+<div class="chips" data-chips="s4"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s4" placeholder="有该做却被划到「不做」里的吗?"></textarea>
+</div>
+
+<!-- ============ R1 ============ -->
+<div class="sec">四、八条需求,一条一条看</div>
+
+<div class="card green">
+<h3>R1 · 主动分诊 —— 每小时回头看一次<span class="tag">PRD §5 R1 + §5B</span></h3>
+<div class="gist">巡检钟的名册从「已起过 session 的」<strong>扩出一条:该项目里没有对应 session 的待办 issue</strong>。CoS 对这批产派发建议(相关吗/派给谁/用哪套模板/现在还是等会儿/置信度),低置信升级给人。<strong>频率 = 60 分钟,你已经定了。</strong></div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后那一分钟长这样(给 Lead 看,不给你):</strong><br>
+10:00 闹钟响 → 发现 FLY-2101 躺了 5 天从没派过、FLY-2088 派了 3 小时没动静 → Tadashi 频道出现一条消息 → 他回「12」→ 派出去。<br>
+<strong>你要做什么:什么都不做。</strong>你只会在每批做完的汇总里看到一行「本批新派 3 件」。</div>
+<details><summary>展开原文(含「他为什么需要回头看」那一层)</summary><div class="inner">
+<p><strong>你问的前一层:「他为什么需要回头看?」</strong></p>
+<p><strong>能被推过来的(⛔ 不需要回头看)—— 已核过代码:</strong>Linear issue 新建/改标签/状态变更(webhook 推)· runner 起来/完成/失败(事件)· PR 合并/CI 结果 · 你回话。<br>⇒ <strong>「有新活」这件事是推得过来的。</strong>所以闹钟<strong>不该</strong>是「定期看有没有新活」。</p>
+<p><strong>推不过来、只能靠回头看的 —— 四类:</strong></p>
+<table><tr><th>类别</th><th>为什么推不过来</th><th>实例</th></tr>
+<tr><td>该发生却没发生的</td><td><strong>缺席不产生事件</strong></td><td>派了但 runner 没起来;gate 开了三天没人回;一批做完没人推下一批</td></tr>
+<tr><td>随时间漂移、无离散事件的状态</td><td>没有「我现在有空了」这个事件</td><td>容量空出来、负载降下来</td></tr>
+<tr><td>漏掉的通知本身</td><td>漏掉的事件按定义看不见</td><td>Bridge 重启期间的 webhook、投递失败</td></tr>
+<tr><td>时间变成条件</td><td>时钟走到某一点不是外部事件</td><td>「这个已经等了三天」</td></tr></table>
+<p><strong>⇒ 结论:闹钟的唯一职责是「看有没有该发生却没发生的事」,不是「看有没有新活」。</strong></p>
+<p><strong>频率不是这条需求私有的旋钮</strong>(已核 <code>patrol-config.ts</code>):粒度只有 project 和 global 两级,默认 60、范围 10–1440。同一口钟上还挂着:在跑的 session、workflow runs、node attempts、非终态返工、收尾、开着的门、现场存活。<strong>改这个数不是「这一条扫得慢一点」,是所有巡检职责一起变慢。</strong></p>
+<p><strong>✅ 取值已定:60 分钟,保持不变。</strong>出处是你本人两次给出、值一致(「60 min is ok」+ thread 里单发「60」)。⛔ 不再为这个值向你要任何动作 —— 你的原话:「我确认个 60,就确认个这个东西干嘛呀?」<strong>你是对的,那一下是纯仪式。</strong></p>
+<p><strong>需求本体:</strong>挂在已有巡检钟上(⛔ 不新造周期扫)· 名册扩出「没有对应 session 的待办 issue」· CoS 产派发建议、低置信升级给人 · ⛔ CoS 不起 runner。</p>
+<p><strong>⬜ 还没定的:</strong>「躺多久算久」这个门槛没定 —— 场景里写 5 天<strong>只是举例</strong>。</p>
+</div></details>
+<div class="chips" data-chips="r1"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r1" placeholder="R1 哪里不对?(「躺多久算久」如果你有数,也写这里)"></textarea>
+</div>
+
+<!-- ============ R2 ============ -->
+<div class="card green">
+<h3>R2 · 容量:先用实测上限兜底<span class="tag">PRD §5 R2 + §5B</span></h3>
+<div class="gist">先设一个<strong>实测过的固定上限</strong>(你给的例子:Tarsier 一段时间内只跑 5 个 issue),<strong>不等</strong>内存 telemetry 接上,两条路并行。这是<strong>临时兜底,水位那条腿接上就撤</strong>(你第 2 轮定的)。重点是:<strong>不许让它成为推进整体的 blocker</strong>。</div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后:</strong>到 5 个就不派了,第 6 件进队列;有活做完了,队列里那件<strong>自动补上,没有人需要动手</strong>。<br>
+<strong>你要做什么:什么都不做,没有后果</strong> —— 这一条的全部意义就是「不用你管」。</div>
+<details><summary>展开原文</summary><div class="inner">
+<p><strong>三件都要在:</strong></p>
+<ul><li><strong>手段</strong> —— 先设实测过的固定数值上限,<strong>不等</strong>内存 telemetry。两条路<strong>并行</strong>,不是串行。</li>
+<li><strong>成色</strong> —— <strong>你自己标了「这肯定不是最优解」</strong>。⛔ 任何转述不得把它写成最优方案。</li>
+<li><strong>用意</strong> —— ⭐ <strong>不许让它成为推进整体的 blocker。</strong>这是重点,上面两件只是手段。</li>
+<li>⟦你已定 · 第 2 轮问 2⟧ <strong>这个固定上限是【临时兜底】,内存/水位接上就撤。</strong>⛔ 不是长期机制。</li></ul>
+<p><strong>关于「5」的出处:</strong>你提供 —— 「Tarsier 跑一段时间内只跑 5 个 issue,这已经验证过很多次了」⇒ 记为【有实测支撑的经验值】,⛔ 不是拍的。</p>
+<div class="warn"><strong>但成色要说准:</strong>你说的是「验证过很多次不会崩」——<strong>那是一段经历,不是一次测量</strong>。⇒ 落地取值前工程必须自己量一次,量完写清<strong>哪台机器、什么并发形态</strong>。5 在你的经历里成立,不等于在别的形态下成立。⚠️ PM 也<strong>没有</strong>独立核过 Tarsier 的实际配置,这条出处目前只来自你的陈述。</div>
+<p><strong>与实时水位那条腿的关系:</strong>今天 runner 放行走 <code>runner-admission.ts</code>,负载腿始终开(每核 8.0,18 核 ⇒ load 144 才拒),内存腿默认关(macOS <code>os.freemem()</code> 不可信)。唯一一次观测到生产 Bridge 出事是 load 88。⇒ 调阈值 + 接内存腿<strong>已独立转给 Tadashi,不在本 PRD 交付范围</strong>,本 PRD 只声明它不阻塞 R1/R3。</p>
+</div></details>
+<div class="chips" data-chips="r2"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r2" placeholder="R2 哪里不对?"></textarea>
+</div>
+
+<!-- ============ R3 ============ -->
+<div class="card green">
+<h3>R3 · 派发闸:Lead 点头才派,<strong>记 diff 不记 yes/no</strong><span class="tag">PRD §5 R3 + §5B</span></h3>
+<div class="gist">第一版<strong>每一条</strong>派发都要 Lead 点头。点头时记录 <strong>diff</strong>:提案原文 vs 实际派出去的。⛔ 不许只记「批准了吗」—— 只记 yes/no 就分不清「机器判对了」和「机器差一点、Lead 顺手改对了」,<strong>而后者的分布才是以后放松闸门的依据</strong>。</div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后:</strong>建议「派给 A / 写代码」,Tadashi 改成「派给 B / 小改动」,派出去的同时记一行「建议=A,实际=B,改了」。<br>
+<strong>你看到的东西:现在看不到,几周后才看到一句</strong>「最近 20 次派发建议里,有 17 次 Lead 一个字没改」。<strong>它是「以后这类事可以不用问人」的唯一依据。</strong></div>
+<details><summary>展开原文</summary><div class="inner">
+<ul><li>第一版<strong>每一条</strong>派发都要 Lead 点头。「默认关的开关」那种形态<strong>不可用</strong>(不加新 flag),安全性由<strong>人</strong>承载。</li>
+<li><strong>点头时记录 diff</strong>:提案原文 vs 实际派出去的。</li>
+<li>⛔ <strong>不许只记「批准了吗」。</strong>只记 yes/no 就分不清「机器判对了」和「机器差一点、Lead 顺手改对了」——<strong>而恰恰是后者的分布,才是放松闸门的依据。</strong></li>
+<li>⛔ <strong>不做 dry-run / 只报不派的首批。</strong>理由见 R4。</li></ul>
+</div></details>
+<div class="chips" data-chips="r3"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r3" placeholder="R3 哪里不对?"></textarea>
+</div>
+
+<!-- ============ R4 ============ -->
+<div class="card green">
+<h3>R4 · 不变量:每条派发路径,<strong>要么留 diff,要么留提案</strong><span class="tag">PRD §5 R4 + §5B</span></h3>
+<div class="gist">不许有第三种:<strong>既没人点头、也没留提案</strong>。这条现在写下来很便宜、以后补很贵,并且自动覆盖了「将来开一条自动直派快车道」的情况 —— 那条路没有人点头,所以它<strong>必须</strong>留提案。</div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后:</strong>你随时问「FLY-2101 怎么会派给 B 的?」→ 立刻答得上来。<br>
+<strong>平时看不到,这一条的全部价值在你问的那一刻。</strong></div>
+<details><summary>展开原文(含「为什么不用 dry-run」)</summary><div class="inner">
+<p><strong>为什么不用 dry-run 来满足它 —— 本单立名的一条发现:</strong></p>
+<p>📌 <strong>一个需要「以后有人专门回来读」的机制,已经被本组织实证会消失。</strong><br>
+📌 <strong>而一个没有人读的存储,它的损坏在结构上不可能被发现 —— 没有读者就没有投诉。</strong></p>
+<p>证据:FLY-175 Track 2 的 <code>founder_consent_audit</code> —— 六周后人工打分列在可读行里<strong>全 null</strong>、<code>integrity_check</code> 失败、且是<strong>第二次坏</strong>。</p>
+<p>⇒ 所以要拿评分,就把它做成<strong>别人本来就要做的动作的副产品</strong>(= 点头时的 diff),而不是新开一条需要人回访的通道。</p>
+</div></details>
+<div class="chips" data-chips="r4"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r4" placeholder="R4 哪里不对?"></textarea>
+</div>
+
+<!-- ============ R5 ============ -->
+<div class="card amber">
+<h3>R5 · 背压必须说人话<span class="tag">PRD §5 R5 + §5B</span></h3>
+<div class="gist">今天拒绝派发只有两种理由:<code>load_pressure</code> / <code>memory_pressure</code>。<strong>补第三类:「N 个在等你 review」。</strong>因为等 review 的活是常驻占用、会吃掉可派发容量 —— 这是<strong>好的背压</strong>,但它<strong>长得像「机器变慢了」</strong>,必须明说,不能让人当资源问题去查。</div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后:</strong>你觉得推进慢,看到的不是「负载高」,是<strong>「现在派不动,因为有 6 件在等你 review」</strong>。你清掉 2 件,立刻又派出去 2 件。<br>
+<strong>不清的后果:就继续慢 —— 而且你知道是为什么,不会去查机器。</strong></div>
+<div class="warn"><strong>⬜ 这条的具体措辞是 PM 拟的,你没看过。</strong>真正的文案要在你第一次看到时才知道对不对。上面那句「派发受限:有 6 件在等你 review,占着位置。清掉几件,就能继续派。」<strong>就是它,现在你正在看它</strong> —— 觉得别扭直接勾「不对」。</div>
+<details><summary>展开原文</summary><div class="inner">
+<ul><li>今天拒绝派发的理由只有 <code>load_pressure</code> / <code>memory_pressure</code> 两类。<strong>补一类:「N 个在等你 review」。</strong></li>
+<li>理由:等 review 的活是<strong>常驻占用</strong>,会吃掉可派发容量 ⇒ 她面前堆得越多,系统能派的越少。这是<strong>好的背压</strong>,但<strong>它长得像「机器变慢了」</strong>,必须明说。</li>
+<li>⛔ <strong>不做</strong>「等 review 的堆积超过 N 个就停派」作为<strong>长期机制</strong>(要人维护、且一定会调错)。</li>
+<li>⚠️ 这与 R2 的固定上限<strong>不是同一件事,连量都不同</strong> —— 见下面「必须跟读的注记」。</li></ul>
+</div></details>
+<div class="chips" data-chips="r5"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r5" placeholder="R5 哪里不对?(那句文案你想怎么写,也写这里)"></textarea>
+</div>
+
+<!-- ============ R6 ============ -->
+<div class="card green">
+<h3>R6 · 两类改动分流<span class="tag">PRD §5 R6 + §5B</span></h3>
+<div class="gist"><strong>第一类</strong>(最终做完是什么样,例:批次怎么切)= 你敲定、<strong>阻塞</strong>;<strong>第二类</strong>(具体怎么做,例:派给谁/用哪套模板/现在还是等会儿)= 我们直接决定、<strong>按体量</strong>告知。<strong>两类都要告知,只有第一类阻塞。</strong>你已定:「批次怎么切」= <strong>第二类</strong>;汇总节奏 = <strong>每批做完一次</strong>。</div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后:一批做完你收到一条消息,这一天你只会被找这一次</strong>(除非有第一类)。消息分两段:<br>
+「我们自己定的(不用你回)」3 条 ·「要你定的(1 件,在等你)」1 条。<br>
+<strong>你只回第二段。</strong>不回的后果:第一类那件一直等着(它就该等);第二类<strong>已经做完了</strong>,不会因为你没回而停。</div>
+<details><summary>展开原文</summary><div class="inner">
+<table><tr><th>类</th><th>内容</th><th>处理</th></tr>
+<tr><td><strong>第一类</strong></td><td>最终做完是什么样(例:批次怎么切)</td><td><strong>她敲定,阻塞</strong>,等她看完确认</td></tr>
+<tr><td><strong>第二类</strong></td><td>具体怎么做(例:派给谁 / 用哪套模板 / 现在还是等会儿)</td><td><strong>我们直接决定</strong>,按体量告知</td></tr></table>
+<p>⟦你已定 · 第 2 轮问 1⟧ <strong>「批次怎么切」= 第二类</strong> —— 我们切完告诉你,不阻塞你。<br>
+⇒ 这修正了第 1 轮的猜测(当时 PM 猜它离「最终做完是什么样」很近):<strong>你把切批的判断给了我们。</strong></p>
+<p>⟦你已定 · 第 2 轮问 3⟧ <strong>汇总节奏 = 每批做完一次</strong>(不是每天一次、不是攒够一定量)。⇒ 与「按体量」并行:体量大的当场说,其余进每批一次的汇总。</p>
+<div class="warn"><strong>你接受的代价(页面原文,逐字):</strong>「边界判断权落在我们手上;判错了你就晚知道。」<br>📌 这是<strong>你的裁定,不是讨论后的一致</strong> —— 你没有采纳 PM 推荐的「甲 + 例外」。未采纳的那条连理由完整保留在 <code>decisions.md</code>。</div>
+<p><strong>白拿的联动:</strong>R3 的 diff 累积后会显示<strong>哪些决定 Lead 从来没改过</strong> ⇒ 那些正是以后可以停止询问的。所以 R6 的「告知」不只是通知,它是<strong>放松闸门的依据来源</strong>。</p>
+</div></details>
+<div class="chips" data-chips="r6"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r6" placeholder="R6 哪里不对?"></textarea>
+</div>
+
+<!-- ============ R7 ============ -->
+<div class="card amber">
+<h3>R7 · 面板:一眼看全景<span class="tag">PRD §5 R7 + §5B</span></h3>
+<div class="gist">今天没有任何一处能同时看到「在跑 / 排队 / 等你 review / 卡住」。巡检钟的名册最接近,但它是<strong>发给 Lead 的一条消息,不是一个面</strong>。与 R5 是同一块 —— 「为什么派不动」的答案就长在这个面上。</div>
+<div class="gist" style="background:#f4f0ff;border-color:#ddd0ff;color:#4c2a85">
+<strong>ship 之后:</strong>你随时打开一个地方,四个数一眼看完 —— <strong>在跑 3 · 排队 2 · 等你 6 · 卡住 1</strong>。点「等你 6」列出是哪 6 件、各等了多久。<br>
+<strong>想看就看,不看也没事,它不会来找你。</strong></div>
+<div class="warn"><strong>⬜ 那四栏的名字是 PM 拟的,你没看过。</strong>觉得该换名字、该多一栏少一栏,直接写下面。</div>
+<div class="chips" data-chips="r7"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r7" placeholder="R7 哪里不对?(那四栏你想叫什么,也写这里)"></textarea>
+</div>
+
+<!-- ============ R8 ============ -->
+<div class="card gray">
+<h3>R8 · 清理:<code>dag-resolver</code> 退役<span class="tag">PRD §5 R8 + §5B</span></h3>
+<div class="gist">纯技术债清理。<strong>⚠️ 这一条你看不到任何东西</strong> —— ship 前 ship 后你的一天完全一样。它唯一的价值:让以后改这块的人少读一份已经没用的旧代码。<strong>该不该做、什么时候做,是 Tadashi 的判断,不需要你看。</strong></div>
+<details><summary>展开原文</summary><div class="inner">
+<p>生产消费者只剩类型 <code>DagNode</code>(<code>Blueprint.ts</code> / <code>PreHydrator.ts</code>);<code>DagResolver</code> 类的非测试消费者只有<strong>未被实例化的</strong> <code>DagDispatcher</code>。</p>
+<p>⇒ <strong>是清理债务,不再是「先删了才能建新的」的前置</strong>,可以排在任何位置。</p>
+<p>⛔ PRD 里明写:这一条没有 founder 可见面,<strong>给它编一个场景会是假的,所以不编。</strong></p>
+</div></details>
+<div class="chips" data-chips="r8"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r8" placeholder="R8 哪里不对?(不关心就跳过)"></textarea>
+</div>
+
+<!-- ============ 指标 ============ -->
+<div class="sec">五、指标 · 注记 · 交付形状</div>
+
+<div class="card purple">
+<h3>§6 指标 —— 北极星已整体撤除<span class="tag">PRD §6</span></h3>
+<div class="gist">按你的既有口径(「东西都还没建好,你设主指标干什么?」),<strong>北极星和配比整体撤掉了</strong>。保留:两条<strong>护栏</strong>(打回重做次数、机器崩溃次数,都是「不上升」)+ 三条<strong>观测量</strong>(只看不设目标)。</div>
+<div class="warn"><strong>⚠️ 这里有一句必须让你知道的归属:</strong>撤除北极星是 <strong>Lead 按你的既有原则定的,不是你新回的一句</strong>。Lead 曾拿「撤/留」去问你并倾向留 —— 你没回。<br>同样地,<strong>三条观测量「保留为只观测」也是 Lead 的判断,不是你说过的</strong>。<strong>你若认为过界,一句话即撤。</strong></div>
+<details><summary>展开原文(保留的五条)</summary><div class="inner">
+<table><tr><th>类型</th><th>指标</th><th>方向</th></tr>
+<tr><td><strong>护栏</strong></td><td><strong>「打回重做」的次数</strong> ⟦你已定 · 第 2 轮问 5⟧</td><td><strong>不上升</strong></td></tr>
+<tr><td><strong>护栏</strong></td><td>机器崩溃 / Bridge 非计划退出次数</td><td><strong>不上升</strong></td></tr>
+<tr><td>观测量</td><td>未派 backlog 的平均等待时长</td><td>只观测,⛔ 不设目标</td></tr>
+<tr><td>观测量</td><td>派发被拒时带可读理由的比例</td><td>只观测,⛔ 不设目标</td></tr>
+<tr><td>观测量</td><td>Lead 点头时<strong>改动过</strong>的提案比例</td><td>只观测,⛔ 不设目标 —— 它是 R3 放松闸门的依据</td></tr></table>
+<p>✅ 两条护栏是你<strong>本人第 2 轮亲定</strong>的(用已有的「打回重做」动作当信号,⛔ 不需要你额外补标),<strong>不在你那条否决的范围里</strong>,故保留。</p>
+</div></details>
+<div class="chips" data-chips="m1"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="m1" placeholder="指标这块哪里不对?(觉得三条观测量也该撤,写「撤」就行)"></textarea>
+</div>
+
+<div class="card red">
+<h3>§7 三条必须跟读的注记<span class="tag">PRD §7</span></h3>
+<div class="gist">五个开放问题都结了,但有三条<strong>不能因为「问题已结」就丢掉</strong>的注记 —— 它们是这份文档里最容易被下一个人读错的地方。</div>
+<details><summary>展开原文</summary><div class="inner">
+<p><strong>① 问 2 附带的那个区分,是内部读法,你没确认过。</strong><br>
+PM 第 1 轮反对过「超过 30 就停派」,而你选的正是一个固定上限 —— 看起来撞车。<strong>但两个数不是同一个量</strong>:PM 反对的那个量的是<strong>堆在你面前等 review 的有多少</strong>,你的上限量的是<strong>同时在跑几个 issue</strong>。<br>⛔ <strong>你选的是处置,不是明确认可这个读法。不得写成你说过。</strong></p>
+<p><strong>② 问 3 那个空白当初不是你跳过,是 PM 没问</strong> —— 第 1 轮的选项集里根本没给你这个口子。</p>
+<p><strong>③ 问 4 的选项当初没核作用域</strong> —— PM 把一个<strong>连带全局</strong>的后果(项目级共享参数)说成了独立选项;Lead 已向你显式更正。R1 里现在写明了作用域并逐条列出同一口钟上的五样。</p>
+<p><strong>④ §6 撤除:在一个你已经给过原则的问题上,沉默的安全解读是「按原则办」,不是「等你破例」。</strong>⛔ 不得把这一条记成「你定的」。</p>
+</div></details>
+<div class="chips" data-chips="m2"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="m2" placeholder="这几条注记里有把你的意思记歪的吗?"></textarea>
+</div>
+
+<div class="card blue">
+<h3>§8 交付形状 —— 本单不拆工程单<span class="tag">PRD §8</span></h3>
+<div class="gist">按你 8-22 改的口径:<strong>PRD 定稿 → 建一个 Epic 把 PRD 挂进去 → 交 Tadashi → 拆几个单由他判断</strong>。本单原来准备的那 7 个工程单已作废。<strong>本单唯一的路是把 PRD 收完。</strong></div>
+<details><summary>展开原文</summary><div class="inner">
+<p><strong>你的原话:</strong>「你不一定需要马上拆成单。等 PRD 做好之后,<strong>建一个 Epic 给 Tadashi,把 PRD 放在里面,他自己来决定要分几个单</strong>。但是我们先去把 PRD 定好。」</p>
+<p><strong>留给 Tadashi 的技术事实</strong>(是事实,不是拆分建议):「巡检名册扩到没派的」无前置 ·「CoS 定期分诊」需要上一条先在 ·「diff 记录 + R4 不变量」需要派发闸先在 ·「全景面板」需要名册与派发闸先在 · <strong>容量兜底上限与 dag-resolver 退役无前置,且不阻塞其它任何一条</strong> · 负载阈值 + 内存腿已独立转 Tadashi,不在本单。</p>
+</div></details>
+<div class="chips" data-chips="m3"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="m3" placeholder="交付形状哪里不对?"></textarea>
+</div>
+
+<div class="card gray">
+<h3>最后:还有什么这份 PRD 整个没提到的?</h3>
+<div class="gist">上面十六格如果都没勾中你说的「完全错」,那错的可能是<strong>它没写的东西</strong>。</div>
+<textarea data-note="miss" placeholder="它漏了什么?或者:你觉得它错在哪个更根本的地方?"></textarea>
+</div>
+
+</div><!-- /#body -->
+
+<p class="foot">写完点上面的「一键汇总复制」,再<strong>粘回给我</strong> —— 这一页的意见<strong>不会自动同步</strong>,不粘我就收不到。<br>
+你写的东西只存在你自己的浏览器里,刷新不会丢。<br>
+FLY-1969 · PRD v1.9 · 内容取自 commit a9e5c98c9,一字未改</p>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY  = "fly1969-prd-r4-review-v1";
+  var MARK = "【页面意见汇总】FLY-1969";
+  var CHUNK = 1800;
+  var labels = {
+    q0:"第 0 题 · 你要的是哪一个",
+    s1:"§1 Problem", s2:"§2 Users", s3:"§3 Goals", s4:"§4 Non-goals",
+    r1:"R1 主动分诊", r2:"R2 容量兜底", r3:"R3 派发闸 diff", r4:"R4 不变量",
+    r5:"R5 背压可读", r6:"R6 两类改动分流", r7:"R7 面板", r8:"R8 dag-resolver 退役",
+    m1:"§6 指标", m2:"§7 注记", m3:"§8 交付形状", miss:"它漏了什么 / 更根本的错"
+  };
+  var FORK = ["A 系统替我派","B 只要兜底","C 都不是"];
+  var notes = document.querySelectorAll("textarea[data-note]");
+  var chipGroups = document.querySelectorAll("[data-chips]");
+  var body = document.getElementById("body");
+  var verdicts = [document.getElementById("v0"),document.getElementById("v1"),document.getElementById("v2")];
+
+  function applyFork(){
+    var g = document.getElementById("q0chips");
+    var cs = g.querySelectorAll(".chip"), sel = -1;
+    cs.forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") sel=i; });
+    verdicts.forEach(function(v,i){ if(v) v.className = "verdict "+["a","b","c"][i]+(i===sel?" on":""); });
+    body.className = (sel===1) ? "on" : "";
+  }
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+    notes.forEach(function(t){ var k=t.getAttribute("data-note"); if(saved["n_"+k]) t.value=saved["n_"+k]; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var p=saved["c_"+key];
+      if(p!=null){ g.querySelectorAll(".chip").forEach(function(c,i){
+        c.setAttribute("aria-pressed",(String(i)===String(p))?"true":"false"); }); } });
+  } catch(e){}
+  applyFork();
+
+  function persist(){
+    var o={};
+    notes.forEach(function(t){ o["n_"+t.getAttribute("data-note")]=t.value; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var s=-1;
+      g.querySelectorAll(".chip").forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") s=i; });
+      if(s>=0) o["c_"+key]=s; });
+    try{ localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){}
+  }
+  notes.forEach(function(t){ t.addEventListener("input", persist); });
+  chipGroups.forEach(function(g){
+    var isFork = g.getAttribute("data-chips")==="q0";
+    var cs=g.querySelectorAll(".chip");
+    cs.forEach(function(c){ c.addEventListener("click", function(){
+      var was = c.getAttribute("aria-pressed")==="true";
+      cs.forEach(function(x){ x.setAttribute("aria-pressed","false"); });
+      c.setAttribute("aria-pressed", was?"false":"true");
+      if(isFork) applyFork();
+      persist(); }); }); });
+
+  function forkLabel(){
+    var g=document.getElementById("q0chips"), out="";
+    g.querySelectorAll(".chip").forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") out=FORK[i]; });
+    return out;
+  }
+  function collect(){
+    var blocks=[], any=false;
+    var fl = forkLabel();
+    var q0n = (document.querySelector('textarea[data-note="q0"]').value||"").trim();
+    if(fl || q0n){ any=true; blocks.push("【"+labels.q0+"】\n"+(fl?"["+fl+"] ":"")+q0n); }
+    notes.forEach(function(t){
+      var k=t.getAttribute("data-note");
+      if(k==="q0") return;
+      var g=document.querySelector('[data-chips="'+k+'"]');
+      var ct="";
+      if(g){ var on=g.querySelector('.chip[aria-pressed="true"]'); if(on) ct="["+on.textContent.trim()+"] "; }
+      var v=(t.value||"").trim();
+      if(ct||v){ any=true; blocks.push("【"+(labels[k]||k)+"】\n"+ct+v); }
+    });
+    return { any:any, blocks:blocks };
+  }
+  function chunk(blocks){
+    var out=[], cur="";
+    for(var i=0;i<blocks.length;i++){
+      var b=blocks[i];
+      var candidate = cur ? (cur+"\n\n"+b) : b;
+      if((MARK.length+8+candidate.length) > CHUNK && cur){ out.push(cur); cur=b; }
+      else { cur=candidate; }
+    }
+    if(cur) out.push(cur);
+    return out.map(function(bd,i){
+      var head = MARK + (out.length>1 ? (" ("+(i+1)+"/"+out.length+")") : "");
+      return head+"\n"+bd;
+    });
+  }
+  var status=document.getElementById("status"), out=document.getElementById("exportOut");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var r=collect();
+    if(!r.any){
+      out.style.display="none"; out.value="";
+      status.textContent="还没勾也还没写 —— 至少答一下第 0 题。";
+      return;
+    }
+    var parts=chunk(r.blocks);
+    var text=parts.join("\n\n---- 分段,请分开粘贴 ----\n\n");
+    out.value=text; out.style.display="block"; out.focus(); out.select();
+    var tail = parts.length>1 ? "(共 "+parts.length+" 段,请分开粘贴)" : "";
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ status.textContent="已汇总并复制到剪贴板,直接粘给我。"+tail; },
+        function(){ status.textContent="已汇总,但复制失败 —— 请手动选中下面的文字复制。"+tail; });
+    } else {
+      status.textContent="已汇总,但这个浏览器不给复制 —— 请手动选中下面的文字复制。"+tail;
+    }
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    notes.forEach(function(t){ t.value=""; });
+    chipGroups.forEach(function(g){ g.querySelectorAll(".chip").forEach(function(c){ c.setAttribute("aria-pressed","false"); }); });
+    applyFork(); persist(); out.value=""; out.style.display="none"; status.textContent="已清空。";
+  });
+})();
+</script>
+</body>
+</html>

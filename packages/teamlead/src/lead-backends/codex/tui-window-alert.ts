@@ -22,9 +22,8 @@
  *      and clears the in-proc latch → the next episode gets a fresh startedAt =
  *      fresh signature = re-alertable. The file survives a KeepAlive restart so a
  *      new incarnation of the SAME unresolved episode does not double-report.
- *   2. Default OFF (Codex R1#5). The shared TUI runtime never alerts unless the
- *      InfraBot launcher opts in with FLYWHEEL_TUI_WINDOW_ALERT=1. Any future
- *      Mufasa/task-114 bootstrap on this same runtime is byte-compat.
+ *   2. Scoped to the canonical `codex-infra-bot-lead` identity. Other TUI
+ *      Leads remain byte-compatible without a mutable runtime flag.
  *
  * Fail-soft everywhere: an unresolved lead-alert.sh path (no FLYWHEEL_ROOT /
  * missing script) disables the guard with a warning (never throws); an alert
@@ -266,11 +265,11 @@ export interface CreateTuiWindowAlertGuardOptions {
 }
 
 /**
- * Build the guard from env, or return null (disabled) — the runtime calls
+ * Build the guard for InfraBot, or return null (disabled) — the runtime calls
  * `guard?.record(...)` so null is a no-op.
  *
  * Disabled when:
- *   - FLYWHEEL_TUI_WINDOW_ALERT !== "1" (default OFF — Codex R1#5), OR
+ *   - leadId is not the canonical InfraBot identity, OR
  *   - lead-alert.sh cannot be resolved (no FLYWHEEL_LEAD_ALERT_SH override AND no
  *     FLYWHEEL_ROOT), OR the resolved script does not exist (fail-soft — Codex R1#4).
  *
@@ -285,7 +284,7 @@ export function createTuiWindowAlertGuard(
 	const log = opts.log ?? (() => {});
 	const exists = opts.exists ?? ((p: string) => existsSync(p));
 
-	if (opts.env.FLYWHEEL_TUI_WINDOW_ALERT?.trim() !== "1") return null;
+	if (opts.leadId !== "codex-infra-bot-lead") return null;
 
 	const override = opts.env.FLYWHEEL_LEAD_ALERT_SH?.trim();
 	const root = opts.env.FLYWHEEL_ROOT?.trim();
@@ -293,7 +292,7 @@ export function createTuiWindowAlertGuard(
 		override || (root ? join(root, "scripts", "lead-alert.sh") : "");
 	if (!alertScriptPath) {
 		log(
-			"tui-window-alert: FLYWHEEL_TUI_WINDOW_ALERT=1 but neither FLYWHEEL_LEAD_ALERT_SH nor FLYWHEEL_ROOT is set — silent-no-pane guard DISABLED (fail-soft).",
+			"tui-window-alert: neither FLYWHEEL_LEAD_ALERT_SH nor FLYWHEEL_ROOT is set — silent-no-pane guard DISABLED (fail-soft).",
 		);
 		return null;
 	}

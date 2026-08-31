@@ -94,6 +94,7 @@ export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> =
 		"workflow_engine_issue_alert",
 		"founder_gate_delivery_failed",
 		"runner_lead_pending_unhandled",
+		"review_job_failed",
 	]);
 
 /** The issue thread an event resolved to (sessions → issue → chat_threads). */

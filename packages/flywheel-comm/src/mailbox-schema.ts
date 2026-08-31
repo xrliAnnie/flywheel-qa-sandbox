@@ -134,6 +134,12 @@ CREATE INDEX IF NOT EXISTS mailbox_lead_reclaim
 CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
   ON mailbox(claim_expires_at)
   WHERE state = 'LEASED' AND carrier = 'inbox';
+CREATE INDEX IF NOT EXISTS mailbox_batch_lookup
+  ON mailbox(batch_id, priority, seq)
+  WHERE batch_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_lease_expiry_order
+  ON mailbox(priority, seq, claim_expires_at)
+  WHERE state = 'LEASED' AND carrier = 'inbox' AND batch_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mailbox_claim_runner
   ON mailbox(priority, seq)
   WHERE carrier = 'inbox' AND state = 'QUEUED' AND recipient_kind = 'runner';
@@ -149,14 +155,26 @@ CREATE INDEX IF NOT EXISTS mailbox_legacy_adopt
     AND recipient_kind <> 'lead';
 CREATE INDEX IF NOT EXISTS mailbox_questions_by_recipient
   ON mailbox(to_agent, created_at) WHERE type = 'question';
+CREATE INDEX IF NOT EXISTS mailbox_questions_by_sender
+  ON mailbox(from_agent, created_at) WHERE type = 'question';
 CREATE INDEX IF NOT EXISTS mailbox_deliverable_by_agent
   ON mailbox(to_agent) WHERE carrier = 'inbox' AND state = 'QUEUED';
 CREATE UNIQUE INDEX IF NOT EXISTS mailbox_unique_response
   ON mailbox(ref_id) WHERE type = 'response';
+CREATE INDEX IF NOT EXISTS mailbox_ref_lookup
+  ON mailbox(ref_id) WHERE ref_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS mailbox_superseded_by_lookup
+  ON mailbox(superseded_by) WHERE superseded_by IS NOT NULL;
 CREATE INDEX IF NOT EXISTS mailbox_archive_acked
   ON mailbox(acked_at) WHERE state = 'ACKED';
 CREATE INDEX IF NOT EXISTS mailbox_archive_dead
   ON mailbox(dead_at) WHERE state = 'DEAD';
+CREATE INDEX IF NOT EXISTS mailbox_dead_scan
+  ON mailbox(recipient_kind, to_agent, seq)
+  WHERE state = 'DEAD' AND carrier = 'inbox';
+CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
+  ON mailbox(source_ref, seq)
+  WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter';
 
 -- Internal read-only compatibility projection while CommDB keeps its public
 -- Message shape. The legacy object names remain poisoned below.
@@ -212,6 +230,45 @@ BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only'); END;
 CREATE TRIGGER IF NOT EXISTS mailbox_log_no_delete
 BEFORE DELETE ON mailbox_log
 BEGIN SELECT RAISE(ABORT, 'mailbox_log is append-only'); END;
+
+CREATE TRIGGER IF NOT EXISTS mailbox_delete_requires_archive
+BEFORE DELETE ON mailbox
+WHEN NOT EXISTS (
+  SELECT 1
+    FROM mailbox_identity AS identity
+   WHERE identity.id = OLD.id
+     AND identity.delivery_id = OLD.delivery_id
+     AND identity.archived_at IS NOT NULL
+)
+OR NOT EXISTS (
+  SELECT 1
+    FROM mailbox_log AS archived
+   WHERE archived.message_id = OLD.id
+     AND archived.event = 'archived'
+     AND archived.log_seq = (
+       SELECT newest.log_seq
+         FROM mailbox_log AS newest
+        WHERE newest.message_id = OLD.id
+          AND newest.event = 'archived'
+        ORDER BY newest.at DESC, newest.log_seq DESC
+        LIMIT 1
+     )
+     AND json_valid(archived.row_json)
+     AND json_extract(archived.row_json, '$.id') IS OLD.id
+     AND json_extract(archived.row_json, '$.delivery_id') IS OLD.delivery_id
+     AND json_extract(archived.row_json, '$.state') IS OLD.state
+     AND (
+       OLD.state != 'ACKED'
+       OR json_extract(archived.row_json, '$.acked_at') IS OLD.acked_at
+     )
+     AND (
+       OLD.state != 'DEAD'
+       OR json_extract(archived.row_json, '$.dead_at') IS OLD.dead_at
+     )
+)
+BEGIN
+  SELECT RAISE(ABORT, 'mailbox delete requires matching archive evidence');
+END;
 
 CREATE TABLE IF NOT EXISTS content_ref_gc_outbox (
   intent_id TEXT PRIMARY KEY,

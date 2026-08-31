@@ -1,0 +1,18 @@
+flowchart TB
+  classDef q fill:#e8f0fe,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+  classDef y fill:#e9f9ef,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef n fill:#f5f5f7,stroke:#86868b,stroke-width:1.5px,color:#1d1d1f
+  classDef w fill:#fff4e5,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+
+  S["巡视到点 / 有新信息"]:::q
+  D1{"信息够吗?"}:::q
+  ASK["先去问对应 Lead<br/>(不用她在场)"]:::w
+  D2{"「在做的」和「她说要紧的」<br/>对得上吗?"}:::q
+  SKIP["跳过:只留一句<br/>「我看了,没有」"]:::n
+  SPEAK["开口问一句她当场可否掉的话<br/>(不排序 · 不下结论替她选)"]:::y
+  D1 -->|"不够,且 Lead 能补"| ASK --> D2
+  D1 -->|"不够,也问不到"| HON["如实说「这里没问清楚」<br/>绝不猜着填"]:::n
+  S --> D1
+  D1 -->|"够"| D2
+  D2 -->|"对得上 / 没东西说"| SKIP
+  D2 -->|"分岔了"| SPEAK

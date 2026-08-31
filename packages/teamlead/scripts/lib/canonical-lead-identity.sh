@@ -51,6 +51,9 @@ canonical_lead_identity_resolve() {
   local canonical_lead canonical_project canonical_key canonical_team
   local canonical_bot_id canonical_token_env canonical_state_dir
   local canonical_backend canonical_role projects_digest identity_digest
+  local canonical_summary_role canonical_summary_granularity
+  local canonical_has_summary_duty summary_assignment_digest
+  local canonical_model canonical_effort canonical_model_context_window
   local token_value
 
   _FLYWHEEL_CANONICAL_PROJECTS_FILE="$projects_file"
@@ -92,7 +95,14 @@ canonical_lead_identity_resolve() {
   }
   canonical_state_dir="$(jq -er '.discordStateDir | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
   canonical_backend="$(jq -er '.backend | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
+  canonical_model="$(jq -er '.model // "" | select(type == "string")' <<<"$identity_json")" || return 1
+  canonical_effort="$(jq -er '.effort // "" | select(type == "string")' <<<"$identity_json")" || return 1
+  canonical_model_context_window="$(jq -er '.modelContextWindow // "" | if . == "" then "" elif type == "number" and floor == . then tostring else error("modelContextWindow must be an integer") end' <<<"$identity_json")" || return 1
   canonical_role="$(jq -er '.role | select(type == "string" and length > 0)' <<<"$identity_json")" || return 1
+  canonical_summary_role="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$identity_json")" || return 1
+  canonical_summary_granularity="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$identity_json")" || return 1
+  canonical_has_summary_duty="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("hasSummaryDuty must be boolean") end' <<<"$identity_json")" || return 1
+  summary_assignment_digest="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
   projects_digest="$(jq -er '.projectsDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
   identity_digest="$(jq -er '.identityDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
 
@@ -123,7 +133,14 @@ canonical_lead_identity_resolve() {
   canonical_lead_identity_assert_existing PROJECT_NAME "$canonical_project" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_KEY "$canonical_key" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_BACKEND "$canonical_backend" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_MODEL "$canonical_model" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_EFFORT "$canonical_effort" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW "$canonical_model_context_window" || return 1
   canonical_lead_identity_assert_existing FLYWHEEL_LEAD_ROLE "$canonical_role" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_SUMMARY_ROLE "$canonical_summary_role" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_LEAD_HAS_SUMMARY_DUTY "$canonical_has_summary_duty" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_SUMMARY_GRANULARITY "$canonical_summary_granularity" || return 1
+  canonical_lead_identity_assert_existing FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST "$summary_assignment_digest" || return 1
   canonical_lead_identity_assert_existing DISCORD_STATE_DIR "$canonical_state_dir" || return 1
   canonical_lead_identity_assert_existing DISCORD_EXPECTED_BOT_USER_ID "$canonical_bot_id" || return 1
   canonical_lead_identity_assert_existing DISCORD_IDENTITY_MODE managed || return 1
@@ -149,7 +166,26 @@ canonical_lead_identity_resolve() {
   export PROJECT_NAME="$canonical_project"
   export FLYWHEEL_LEAD_KEY="$canonical_key"
   export FLYWHEEL_LEAD_ROLE="$canonical_role"
+  export FLYWHEEL_LEAD_SUMMARY_ROLE="$canonical_summary_role"
+  export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$canonical_has_summary_duty"
+  export FLYWHEEL_SUMMARY_GRANULARITY="$canonical_summary_granularity"
+  export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest"
   export FLYWHEEL_LEAD_BACKEND="$canonical_backend"
+  if [ -n "$canonical_model" ]; then
+    export FLYWHEEL_LEAD_MODEL="$canonical_model"
+  else
+    unset FLYWHEEL_LEAD_MODEL
+  fi
+  if [ -n "$canonical_effort" ]; then
+    export FLYWHEEL_LEAD_EFFORT="$canonical_effort"
+  else
+    unset FLYWHEEL_LEAD_EFFORT
+  fi
+  if [ -n "$canonical_model_context_window" ]; then
+    export FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW="$canonical_model_context_window"
+  else
+    unset FLYWHEEL_LEAD_MODEL_CONTEXT_WINDOW
+  fi
   export DISCORD_STATE_DIR="$canonical_state_dir"
   export DISCORD_EXPECTED_BOT_USER_ID="$canonical_bot_id"
   export DISCORD_IDENTITY_MODE=managed

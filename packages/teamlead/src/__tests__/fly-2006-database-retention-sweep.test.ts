@@ -39,6 +39,7 @@ import {
 } from "../../../../scripts/lib/fly-2006-retention-evidence.mjs";
 import {
 	assertClassifiedSchema,
+	assertNoUnclassifiedSchema,
 	COMM_TABLE_CLASSIFICATION,
 	classifyMailboxRow,
 	classifyRetentionTime,
@@ -49,6 +50,7 @@ import { MailboxQueue } from "../../../flywheel-comm/src/mailbox-queue.js";
 import { MAILBOX_SCHEMA } from "../../../flywheel-comm/src/mailbox-schema.js";
 import { encodeSenderRef } from "../../../flywheel-comm/src/sender-ref.js";
 import { CMUX_LIVE_SESSION_STATUSES } from "../operational-terminal-status.js";
+import { StateStore } from "../StateStore.js";
 
 function sha256File(path: string): string {
 	return createHash("sha256").update(readFileSync(path)).digest("hex");
@@ -74,6 +76,40 @@ const TEAMLEAD_PRODUCTION_TABLES = JSON.parse(
 ) as string[];
 
 describe("FLY-2006 retention registry", () => {
+	it("classifies the current production schemas created for both live database families", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2006-live-schema-"));
+		const teamleadPath = join(root, "teamlead.db");
+		const commPath = join(root, "comm.db");
+		try {
+			const store = await StateStore.create(teamleadPath);
+			store.close();
+			const queue = new MailboxQueue(commPath);
+			queue.close();
+
+			for (const [database, path] of [
+				["teamlead", teamleadPath],
+				["comm", commPath],
+			] as const) {
+				const sqlite = new Database(path, { readonly: true });
+				try {
+					const tables = sqlite
+						.prepare(
+							"SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+						)
+						.all()
+						.map((row) => String((row as { name: string }).name));
+					expect(() =>
+						assertNoUnclassifiedSchema(database, tables),
+					).not.toThrow();
+				} finally {
+					sqlite.close();
+				}
+			}
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("labels copy-only rehearsal authority without impersonating a Discord message", () => {
 		expect(buildIsolatedRehearsalAudit()).toEqual({
 			source: "isolated-rehearsal",
@@ -89,7 +125,27 @@ describe("FLY-2006 retention registry", () => {
 		).rejects.toThrow("founder_gate_audit_required");
 	});
 
-	it("parses only the bounded v2 inventory/apply/vacuum operator contracts", () => {
+	it("parses only the bounded v2 inventory/apply/policy/vacuum operator contracts", () => {
+		expect(
+			parseFly2006Args([
+				"policy-apply",
+				"--manifest",
+				"/evidence/manifest.json",
+				"--activation-receipt",
+				"/authority/activation.json",
+			]),
+		).toEqual({
+			command: "policy-apply",
+			"--manifest": "/evidence/manifest.json",
+			"--activation-receipt": "/authority/activation.json",
+		});
+		expect(() =>
+			parseFly2006Args([
+				"policy-apply",
+				"--manifest",
+				"/evidence/manifest.json",
+			]),
+		).toThrow("missing_argument:--activation-receipt");
 		expect(
 			parseFly2006Args([
 				"apply",
@@ -112,6 +168,25 @@ describe("FLY-2006 retention registry", () => {
 			command: "apply",
 			"--founder-source": "discord-message",
 			"--founder-message-id": FOUNDER_DISCORD_AUDIT.messageId,
+		});
+		expect(
+			parseFly2006Args([
+				"maintenance-vacuum",
+				"--database",
+				"teamlead",
+				"--database-path",
+				"/db/teamlead.db",
+				"--evidence-dir",
+				"/evidence/run",
+				"--max-duration-ms",
+				"30000",
+			]),
+		).toEqual({
+			command: "maintenance-vacuum",
+			"--database": "teamlead",
+			"--database-path": "/db/teamlead.db",
+			"--evidence-dir": "/evidence/run",
+			"--max-duration-ms": "30000",
 		});
 		expect(
 			parseFly2006Args([
@@ -186,25 +261,31 @@ describe("FLY-2006 retention registry", () => {
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(36);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(102);
+		).toHaveLength(105);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
+			"flag_scan_scope_state",
+		);
 		expect(
 			(TEAMLEAD_TABLE_CLASSIFICATION as Record<string, readonly string[]>)
 				.retiredOptional,
 		).toEqual(retiredNames);
 		expect(COMM_TABLE_CLASSIFICATION.deleteTarget).toHaveLength(7);
 		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toHaveLength(
-			18,
+			20,
+		);
+		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toEqual(
+			expect.arrayContaining(["mailbox_archive", "runner_stop_declarations"]),
 		);
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(157);
+		expect(new Set(teamleadNames).size).toBe(160);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
-		expect(new Set(commNames).size).toBe(25);
+		expect(new Set(commNames).size).toBe(27);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 157,
+			total: 160,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -213,9 +294,9 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 154 });
+		).toMatchObject({ total: 157 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
-			total: 25,
+			total: 27,
 		});
 		expect(() =>
 			assertClassifiedSchema("teamlead", [...teamleadNames, "future_table"]),
@@ -1167,6 +1248,7 @@ describe("FLY-2006 multi-target inventory", () => {
 				founderGateAudit: FOUNDER_DISCORD_AUDIT,
 			});
 			expect(applied.status).toBe("complete");
+			expect(applied.durationMs).toBeGreaterThan(0);
 			expect(applied.deleted.sessionEvents).toBe(1);
 			expect(applied.deleted.mailbox).toBe(1);
 			expect(applied.deleted.contentRefGcOutbox).toBe(1);

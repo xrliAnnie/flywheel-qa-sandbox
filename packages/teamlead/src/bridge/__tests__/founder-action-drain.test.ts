@@ -205,6 +205,48 @@ describe("drainFounderActionLedger — bounded failure + must-deliver alerts (§
 		expect(alert.mock.calls[1]?.[0].eventId).toBe("base-evt:r1");
 	});
 
+	it("FLY-2076 alert-system OFF preserves an emit_alert budget until hot re-enable", async () => {
+		let enabled = false;
+		const alert = vi.fn(async () => ({ sent: true as const }));
+		const { store, deps } = await harness({
+			alertSink: { alert },
+			alertsEnabled: () => enabled,
+		});
+		store.insertFounderAction(
+			intent({
+				actionKey: "emit-alert-hot-switch",
+				kind: "emit_alert",
+				payload: {
+					alert: {
+						leadId: "lead-1",
+						eventId: "must-deliver-hot-switch",
+						eventType: "founder_notify_dead_letter",
+						title: "Must deliver after re-enable",
+						body: "Founder action alert",
+						severity: "warning",
+					},
+				},
+			}),
+		);
+
+		for (let pass = 0; pass < FOUNDER_NOTIFY_RETRY_MAX; pass += 1) {
+			await drainFounderActionLedger(deps);
+		}
+		expect(store.getFounderAction("emit-alert-hot-switch")).toMatchObject({
+			status: "pending",
+			attempts: 0,
+		});
+		expect(alert).not.toHaveBeenCalled();
+
+		enabled = true;
+		await drainFounderActionLedger(deps);
+		expect(store.getFounderAction("emit-alert-hot-switch")).toMatchObject({
+			status: "delivered",
+			attempts: 0,
+		});
+		expect(alert).toHaveBeenCalledOnce();
+	});
+
 	it("an emit_alert's own terminal failure NEVER spawns another emit_alert (R4 #3 anti-recursion)", async () => {
 		const { store, deps } = await harness({
 			alertSink: { alert: vi.fn(async () => ({ skipped: "no-channel" })) },

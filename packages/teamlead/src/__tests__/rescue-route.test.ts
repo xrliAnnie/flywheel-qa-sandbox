@@ -142,43 +142,25 @@ describe("POST /api/rescue", () => {
 	});
 });
 
-describe("FLY-927 Task 2.3: rescue call ACKs the ticket", () => {
-	it("runner rescue fires ackTicket with the correlation inputs BEFORE the rescue", async () => {
-		const calls: string[] = [];
-		const app = makeApp({
+describe("FLY-2076: rescue leaves duty acknowledgment to Claw", () => {
+	it("runner rescue never ACKs the alert ticket", async () => {
+		const ackTicket = vi.fn();
+		const rescueRunner = vi.fn(
+			async () => ({ outcome: "attempted", detail: "ok" }) as never,
+		);
+		const runtime = {
 			rescueLead: vi.fn(),
-			rescueRunner: vi.fn(async () => {
-				calls.push("rescue");
-				return { outcome: "attempted", detail: "ok" } as never;
-			}),
-			ackTicket: (input) => {
-				calls.push(`ack:${input.route}:${input.executionId}`);
-			},
-		});
+			rescueRunner,
+			ackTicket,
+		} as RescueRouteRuntime & { ackTicket: typeof ackTicket };
+		const app = makeApp(runtime);
 		const res = await request(app, "/api/rescue", {
 			route: "runner",
 			executionId: "exec-9",
 		});
 		expect(res.status).toBe(200);
-		expect(calls).toEqual(["ack:runner:exec-9", "rescue"]);
-	});
-
-	it("ackTicket throwing never fails the rescue", async () => {
-		const app = makeApp({
-			rescueLead: vi.fn(
-				async () => ({ outcome: "attempted", detail: "ok" }) as never,
-			),
-			rescueRunner: vi.fn(),
-			ackTicket: () => {
-				throw new Error("ack broke");
-			},
-		});
-		const res = await request(app, "/api/rescue", {
-			route: "lead",
-			projectName: "fw",
-			leadId: "lead-a",
-		});
-		expect(res.status).toBe(200);
+		expect(rescueRunner).toHaveBeenCalledOnce();
+		expect(ackTicket).not.toHaveBeenCalled();
 	});
 
 	it("runtime WITHOUT ackTicket keeps working (byte-compat)", async () => {

@@ -3,11 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-	CommDB,
-	PENDING_PUSH_INSTRUCTIONS_SQL,
-	UNREAD_INSTRUCTIONS_SQL,
-} from "../db.js";
+import { CommDB, UNREAD_INSTRUCTIONS_SQL } from "../db.js";
 
 describe("CommDB", () => {
 	let db: CommDB;
@@ -559,7 +555,8 @@ describe("CommDB", () => {
 			db.updateSessionStatus("exec-1", "completed");
 			const before = db.getSession("exec-1");
 
-			db.updateSessionTmuxWindow("exec-1", "flywheel:@7");
+			expect(db.updateSessionTmuxWindow("exec-1", "flywheel:@7")).toBe(1);
+			expect(db.updateSessionTmuxWindow("missing-exec", "flywheel:@8")).toBe(0);
 
 			const after = db.getSession("exec-1");
 			expect(after?.tmux_window).toBe("flywheel:@7");
@@ -903,222 +900,8 @@ describe("CommDB", () => {
 		});
 	});
 
-	// ── FLY-109/1773: legacy push transport receipt + ack semantics ──
-
-	describe("FLY-109 push-path helpers", () => {
-		const pendingPush = (
-			leadId: string,
-			retryWindowSec = 30,
-			now = new Date().toISOString(),
-		) =>
-			db.getPendingPushInstructions(
-				leadId,
-				new Date(Date.parse(now) - retryWindowSec * 1_000).toISOString(),
-				now,
-			);
-		it("should expose delivery state through the mailbox projection", () => {
-			const dbPath = join(tmpDir, "delivered-migrate.db");
-			const db1 = new CommDB(dbPath);
-			db1.close();
-
-			const db2 = new CommDB(dbPath);
-			const columns = (db2 as any).db
-				.prepare("PRAGMA table_info(mailbox_message_projection)")
-				.all() as Array<{ name: string }>;
-			expect(
-				columns.some((c: { name: string }) => c.name === "delivered_at"),
-			).toBe(true);
-			db2.close();
-		});
-
-		it("should be idempotent when migration runs multiple times", () => {
-			const dbPath = join(tmpDir, "delivered-idempotent.db");
-			const db1 = new CommDB(dbPath);
-			db1.close();
-			const db2 = new CommDB(dbPath);
-			db2.close();
-			// Third open should not throw
-			expect(() => {
-				const db3 = new CommDB(dbPath);
-				db3.close();
-			}).not.toThrow();
-		});
-
-		it("getPendingPushInstructions returns the first unnotified instruction", () => {
-			const id1 = db.insertInstruction("bridge", "test-lead", "msg 1");
-			db.insertInstruction("bridge", "test-lead", "msg 2");
-
-			const pending = pendingPush("test-lead");
-			expect(pending).toHaveLength(1);
-			expect(pending[0]!.id).toBe(id1);
-			expect(pending[0]!.delivered_at).toBeNull();
-		});
-
-		it("getPendingPushInstructions hides delivered messages within retry window", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "msg");
-			db.markInstructionDelivered(id);
-
-			const pending = pendingPush("test-lead");
-			expect(pending).toHaveLength(0);
-		});
-
-		it("getPendingPushInstructions re-surfaces messages after retry window", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "stale");
-			db.markInstructionDelivered(id);
-			// Backdate the transport receipt beyond the retry window.
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET notified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-60 seconds') WHERE id = ?",
-				)
-				.run(id);
-
-			const pending = pendingPush("test-lead");
-			expect(pending).toHaveLength(1);
-			expect(pending[0]!.id).toBe(id);
-			expect(pending[0]!.delivered_at).toBeNull();
-		});
-
-		it("getPendingPushInstructions hides acked messages regardless of retry window", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "acked");
-			db.markInstructionDelivered(id);
-			db.ackInstructionRead(id);
-			// Backdate transport evidence far past retry window.
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET notified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now','-600 seconds') WHERE id = ?",
-				)
-				.run(id);
-
-			const pending = pendingPush("test-lead");
-			expect(pending).toHaveLength(0);
-		});
-
-		it("getPendingPushInstructions hides DEAD messages", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "dead");
-			(db as any).db
-				.prepare(
-					`UPDATE mailbox
-					 SET state = 'DEAD', dead_at = datetime('now'),
-					     dead_reason = 'lease_expired_unacked'
-					 WHERE id = ?`,
-				)
-				.run(id);
-
-			expect(pendingPush("test-lead")).toHaveLength(0);
-		});
-
-		it("filters DEAD messages by state regardless of dead_reason", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "terminal");
-			(db as any).db
-				.prepare(
-					`UPDATE mailbox
-					 SET state = 'DEAD', dead_at = datetime('now'),
-					     dead_reason = 'recipient_terminal'
-					 WHERE id = ?`,
-				)
-				.run(id);
-
-			expect(pendingPush("test-lead")).toHaveLength(0);
-		});
-
-		it("does not re-deliver a leased message after it becomes DEAD", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "treadmill");
-			db.markInstructionDelivered(id);
-			(db as any).db
-				.prepare(
-					`UPDATE mailbox
-					 SET state = 'DEAD', dead_at = datetime('now'),
-					     dead_reason = 'lease_expired_unacked'
-					 WHERE id = ?`,
-				)
-				.run(id);
-
-			expect(pendingPush("test-lead", 0)).toHaveLength(0);
-		});
-
-		it("the compatibility marker writes notified_at without sealing delivery", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "msg");
-			db.markInstructionDelivered(id);
-
-			const row = (db as any).db
-				.prepare(
-					`SELECT m.notified_at, p.delivered_at
-					 FROM mailbox m JOIN mailbox_message_projection p ON p.id=m.id
-					 WHERE m.id = ?`,
-				)
-				.get(id) as { notified_at: string | null; delivered_at: string | null };
-			expect(row.notified_at).not.toBeNull();
-			expect(row.delivered_at).toBeNull();
-		});
-
-		it("the compatibility marker refreshes transport evidence", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "msg");
-			db.markInstructionDelivered(id);
-			// Backdate the receipt, then record another successful transport.
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET notified_at = '1970-01-01T00:00:00.000Z' WHERE id = ?",
-				)
-				.run(id);
-			const before = (db as any).db
-				.prepare("SELECT notified_at FROM mailbox WHERE id = ?")
-				.get(id) as { notified_at: string };
-
-			// Re-deliver
-			db.markInstructionDelivered(id);
-			const after = (db as any).db
-				.prepare("SELECT notified_at FROM mailbox WHERE id = ?")
-				.get(id) as { notified_at: string };
-			expect(after.notified_at).not.toBe(before.notified_at);
-		});
-
-		it("ackInstructionRead sets read_at", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "msg");
-			db.markInstructionDelivered(id);
-			db.ackInstructionRead(id);
-
-			const row = (db as any).db
-				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
-				.get(id) as { read_at: string | null };
-			expect(row.read_at).not.toBeNull();
-		});
-
-		it("ackInstructionRead is idempotent — preserves original read_at on repeat", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "msg");
-			db.markInstructionDelivered(id);
-			db.ackInstructionRead(id);
-
-			const first = (db as any).db
-				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
-				.get(id) as { read_at: string };
-
-			db.ackInstructionRead(id);
-
-			const second = (db as any).db
-				.prepare("SELECT read_at FROM mailbox_message_projection WHERE id = ?")
-				.get(id) as { read_at: string };
-			expect(second.read_at).toBe(first.read_at);
-		});
-
-		it("ackInstructionRead is a no-op for unknown id (no throw)", () => {
-			expect(() => db.ackInstructionRead("nonexistent-id")).not.toThrow();
-		});
-
-		it("keeps CLI pull visibility independent of delivered_at for live messages", () => {
-			// Instruction marked delivered but NOT acked — CLI pull should still see it
-			const id = db.insertInstruction(
-				"bridge",
-				"test-lead",
-				"delivered not acked",
-			);
-			db.markInstructionDelivered(id);
-
-			const unread = db.getUnreadInstructions("test-lead");
-			expect(unread).toHaveLength(1);
-			expect(unread[0]!.id).toBe(id);
-		});
-
-		it("getUnreadInstructions hides DEAD messages", () => {
+	describe("instruction pull path", () => {
+		it("hides DEAD messages", () => {
 			const id = db.insertInstruction("bridge", "test-lead", "dead pull");
 			(db as any).db
 				.prepare(
@@ -1132,64 +915,14 @@ describe("CommDB", () => {
 			expect(db.getUnreadInstructions("test-lead")).toHaveLength(0);
 		});
 
-		it("markInstructionRead (CLI pull path) still hides from getUnreadInstructions", () => {
+		it("hides messages after markInstructionRead", () => {
 			const id = db.insertInstruction("bridge", "test-lead", "cli path");
 			db.markInstructionRead(id);
 
 			expect(db.getUnreadInstructions("test-lead")).toHaveLength(0);
 		});
 
-		it("getPendingPushInstructions filters out expired instructions", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "expired");
-			(db as any).db
-				.prepare(
-					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
-				)
-				.run(id);
-
-			expect(pendingPush("test-lead")).toHaveLength(0);
-		});
-
-		it("compares legacy ISO expiry spellings by time rather than text", () => {
-			const id = db.insertInstruction("bridge", "test-lead", "expired");
-			(db as any).db
-				.prepare("UPDATE mailbox SET expires_at = ? WHERE id = ?")
-				.run("2099-07-19T12:00:00Z", id);
-
-			expect(
-				pendingPush("test-lead", 30, "2099-07-19T12:00:00.050Z"),
-			).toHaveLength(0);
-		});
-
-		it("getPendingPushInstructions advances FIFO by immutable seq", () => {
-			const id1 = db.insertInstruction("bridge", "test-lead", "first");
-			const id2 = db.insertInstruction("bridge", "test-lead", "second");
-
-			const pending = pendingPush("test-lead");
-			expect(pending[0]!.id).toBe(id1);
-			expect(pending.some(({ id }) => id === id2)).toBe(false);
-		});
-
-		it("uses mailbox_live for the production push query", () => {
-			const plan = (db as any).db
-				.prepare(`EXPLAIN QUERY PLAN ${PENDING_PUSH_INSTRUCTIONS_SQL}`)
-				.all(
-					"test-lead",
-					"2026-08-14T12:00:00.000Z",
-					"2026-08-14T11:59:30.000Z",
-					"2026-08-14T12:00:00.000Z",
-					"2026-08-14T12:00:00.000Z",
-					"2026-08-14T12:00:00.000Z",
-					"2026-08-14T12:00:00.000Z",
-					"2026-08-14T11:59:30.000Z",
-				) as Array<{ detail: string }>;
-
-			expect(
-				plan.some(({ detail }) => detail.includes("USING INDEX mailbox_live")),
-			).toBe(true);
-		});
-
-		it("uses mailbox_live for the production pull query", () => {
+		it("uses mailbox_live for the production query", () => {
 			const plan = (db as any).db
 				.prepare(`EXPLAIN QUERY PLAN ${UNREAD_INSTRUCTIONS_SQL}`)
 				.all("test-lead") as Array<{ detail: string }>;

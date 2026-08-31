@@ -280,12 +280,21 @@ describe("QuestionAdmission mailbox claim service", () => {
 
 	it("FLY-1788: admits founder_review from the current activation when one exec has two bindings", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1788-question-admission-"));
-		mkdirSync(join(root, "agents"), { recursive: true });
+		mkdirSync(join(root, ".flywheel", "agents", "nodes"), {
+			recursive: true,
+		});
 		mkdirSync(join(root, ".flywheel", "menus"), { recursive: true });
-		writeFileSync(join(root, "agents", "pm-executor.md"), "Write the PRD.\n");
 		writeFileSync(
-			join(root, ".flywheel", "menus", "ic-roster.yaml"),
-			"pm: agents/pm-executor.md\n",
+			join(root, ".flywheel", "agents", "nodes", "pm.md"),
+			"Write the PRD.\n",
+		);
+		writeFileSync(
+			join(root, ".flywheel", "agents", "registry.yaml"),
+			"nodes:\n  pm: { file: nodes/pm.md, department: engineering }\n",
+		);
+		writeFileSync(
+			join(root, ".flywheel", "config.yaml"),
+			"project: project-a\n",
 		);
 		writeFileSync(
 			join(root, ".flywheel", "menus", "adoption.yaml"),
@@ -317,7 +326,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 			startReservation: {
 				idempotencyKey: "start-fly1788",
 				selectionDigest: "selection-fly1788",
-				nodeId: "produce",
+				nodeId: "pm",
 				attempt: 1,
 				executionId: "exec-1",
 				createdAt: "2026-08-16T08:00:00.000Z",
@@ -326,7 +335,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(
 			store.admitGeneralizedWorkflowExecution({
 				runId: "run-fly1788",
-				nodeId: "produce",
+				nodeId: "pm",
 				executionId: "exec-1",
 				attempt: 1,
 				activationId: "activation-fly1788-1",
@@ -338,7 +347,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		).toMatchObject({ ok: true });
 		store.upsertWorkflowRunNode({
 			runId: "run-fly1788",
-			nodeId: "produce",
+			nodeId: "pm",
 			attempt: 2,
 			state: "pending",
 			executionId: "exec-1",
@@ -346,7 +355,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		expect(
 			store.admitGeneralizedWorkflowExecution({
 				runId: "run-fly1788",
-				nodeId: "produce",
+				nodeId: "pm",
 				executionId: "exec-1",
 				attempt: 2,
 				activationId: "activation-fly1788-2",
@@ -558,7 +567,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 						vendor: "codex",
 						model: "gpt-5.6-sol",
 						effort: "low",
-						agent_file: "agents/generic-executor.md",
+						agent_file: ".flywheel/agents/nodes/general.md",
 					},
 					{ id: "founder_gate", type: "gate" },
 					{ id: "land", type: "land", execution: "engine" },
@@ -634,6 +643,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-fly1731",
@@ -719,7 +729,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 			startReservation: {
 				idempotencyKey: "start-fly1765",
 				selectionDigest: "selection-fly1765",
-				nodeId: "design",
+				nodeId: "eng_design",
 				attempt: 1,
 				executionId: "design-fly1765",
 				createdAt: "2026-08-14T09:30:00.000Z",
@@ -727,15 +737,16 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		store.upsertWorkflowRunNode({
 			runId: "run-fly1765",
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			state: "running",
 			executionId: "design-fly1765",
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-fly1765",
-				nodeId: "design",
+				nodeId: "eng_design",
 				attempt: 1,
 				executionId: "design-fly1765",
 				outcome: "design_done",
@@ -767,6 +778,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-fly1765",
 				route: "needs_review",
 				sourceEventId: "complete-implement-fly1765",
@@ -813,6 +825,7 @@ describe("QuestionAdmission mailbox claim service", () => {
 		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "qa-pass-fly1765",
 				predicate: "qa_passed",

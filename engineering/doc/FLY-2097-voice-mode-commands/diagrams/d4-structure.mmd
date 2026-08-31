@@ -1,0 +1,36 @@
+classDiagram
+  class SlashCommands {
+    /voice
+    /endvoice
+    名字是单处常量,一句话可改
+  }
+  class 命令入口 {
+    文字消息 与 slash 共用动作
+    先应答(3秒内) 动作再排队
+    只认 allowlist 用户
+  }
+  class 标记文件 {
+    voice-mode.requested
+    想要语音 = 存在
+    原子写 · 0600
+  }
+  class 停止梯子 {
+    status() 只读探测
+    SIGTERM → 30s → SIGKILL → 收敛确认
+    结果: 正常退 / 强制杀 / 未确认
+  }
+  class 退出协议 {
+    开场指令追加一段规则
+    结束语: 「好，退出语音模式。」
+    整句匹配 + 安静窗
+  }
+  class 语音会话 {
+    命中 → 清标记 → 说再见
+    → 停 Codex → exit 0
+    证据逐条落盘
+  }
+  SlashCommands --> 命令入口
+  命令入口 --> 标记文件 : 进=写 · 退=清
+  命令入口 --> 停止梯子
+  停止梯子 --> 语音会话 : 拉起 / 停止
+  退出协议 --> 语音会话 : 说一句就退

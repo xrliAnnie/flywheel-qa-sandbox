@@ -27,7 +27,9 @@ make_home() {
     "$h/project/.lead/cos-lead" \
     "$h/project/.lead/companion-lead" \
     "$h/project/.lead/external-lead" \
-    "$h/project/.lead/shared"
+    "$h/project/.lead/shared" \
+    "$h/.flywheel"
+  printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$h/.flywheel/summary-config.json"
   printf -- '---\nname: department-lead\n---\nDepartment Lead\n' \
     > "$h/project/.lead/department-lead/identity.md"
   printf -- '---\nname: cos-lead\n---\nChief of Staff\n' \
@@ -44,10 +46,10 @@ make_home() {
 fixture_projects() {
   local h="$1"
   printf '%s\n' '[{"projectName":"fixture","projectRoot":"'"$h"'/project","leads":[' \
-    '{"agentId":"department-lead","chatChannel":"1","match":{"labels":["dept"]},"canSpawnRunners":true},' \
-    '{"agentId":"cos-lead","chatChannel":"2","match":{"labels":["cos"]},"canSpawnRunners":false},' \
-    '{"agentId":"companion-lead","chatChannel":"3","match":{"labels":["companion"]},"canSpawnRunners":false,"companion":true},' \
-    '{"agentId":"external-lead","chatChannel":"4","match":{"labels":["external"]},"canSpawnRunners":false,"external":true}' \
+    '{"agentId":"department-lead","summaryRole":"producer","chatChannel":"1","match":{"labels":["dept"]},"canSpawnRunners":true},' \
+    '{"agentId":"cos-lead","summaryRole":"aggregator","chatChannel":"2","match":{"labels":["cos"]},"canSpawnRunners":false},' \
+    '{"agentId":"companion-lead","summaryRole":"producer","chatChannel":"3","match":{"labels":["companion"]},"canSpawnRunners":false,"companion":true},' \
+    '{"agentId":"external-lead","summaryRole":"exempt","chatChannel":"4","match":{"labels":["external"]},"canSpawnRunners":false,"external":true}' \
     ']}]'
 }
 

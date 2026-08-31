@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { Router } from "express";
-import { getModelRegistryEntry, workflowMenuTemplateId } from "flywheel-config";
+import { getModelRegistryEntry } from "flywheel-config";
 import {
 	loadProjectMenuConfig,
 	resolveLeadMenus,
@@ -107,14 +107,16 @@ export function createWorkflowMenuRouter(
 				menuVersion,
 				menus: menus.map((menu) => ({
 					item: menu.shape,
-					templateId: workflowMenuTemplateId(menu.shape),
+					label: menu.label,
+					templateId: menu.templateId,
 					nodes: menu.nodes.map((node) => {
 						if (node.type === "gate") {
-							return { id: node.id, type: "gate" };
+							return { id: node.id, label: node.label, type: "gate" };
 						}
 						return {
 							id: node.id,
-							role: node.role,
+							label: node.label,
+							type: node.type,
 							defaultModel: node.defaultModel,
 							models: node.models!.map((model) => {
 								const registry = getModelRegistryEntry(model.model)!;

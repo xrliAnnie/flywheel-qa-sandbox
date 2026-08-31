@@ -5,7 +5,6 @@ import {
 	hashModeBucket,
 	MATT_SKILLS_PLUGIN_KEY,
 	resolveSkillFrameworkMode,
-	SKILL_FRAMEWORK_MODE_ENV,
 	SKILL_FRAMEWORK_MODES,
 	SUPERPOWERS_CODEX_NAMESPACE,
 	SUPERPOWERS_PLUGIN_KEY,
@@ -16,14 +15,10 @@ import { EXECUTOR_BACKENDS } from "../types.js";
 // FLY-1356 — single-truth resolver for the three-way skill-framework switch.
 // Semantics under test = plan §0 mode table, row by row. The resolver is a
 // TOTAL function (Bar-Raiser R1#1): every input combination returns {mode, via},
-// it never throws — a kill (env flipped off `split`) must not break an in-flight
+// it never throws — a kill (control flipped off `split`) must not break an in-flight
 // successor pipeline that still carries an old override.
 
 const ID = "FLY-1356";
-
-function envWith(value?: string): Record<string, string | undefined> {
-	return value === undefined ? {} : { [SKILL_FRAMEWORK_MODE_ENV]: value };
-}
 
 describe("constants", () => {
 	it("exposes the four experiment arms in fixed bucket order", () => {
@@ -64,14 +59,14 @@ describe("constants", () => {
 describe("resolveSkillFrameworkMode — §0 priority table", () => {
 	it("env unset → superpowers via default", () => {
 		expect(
-			resolveSkillFrameworkMode({ env: envWith(), issueIdentifier: ID }),
+			resolveSkillFrameworkMode({ raw: undefined, issueIdentifier: ID }),
 		).toEqual({ mode: "superpowers", via: "default" });
 	});
 
 	it("env forced to each of the three modes → that value via forced", () => {
 		for (const mode of SKILL_FRAMEWORK_MODES) {
 			expect(
-				resolveSkillFrameworkMode({ env: envWith(mode), issueIdentifier: ID }),
+				resolveSkillFrameworkMode({ raw: mode, issueIdentifier: ID }),
 			).toEqual({ mode, via: "forced" });
 		}
 	});
@@ -83,7 +78,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 			// carries override "bare" — the pipeline must proceed as A.
 			expect(
 				resolveSkillFrameworkMode({
-					env: envWith("superpowers"),
+					raw: "superpowers",
 					issueIdentifier: ID,
 					override: "bare",
 				}),
@@ -99,7 +94,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		try {
 			expect(
 				resolveSkillFrameworkMode({
-					env: envWith(),
+					raw: undefined,
 					issueIdentifier: ID,
 					override: "matt",
 				}),
@@ -112,7 +107,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 	it("split + project opt-out → superpowers via project_opt_out (beats override/stamp)", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("split"),
+				raw: "split",
 				issueIdentifier: ID,
 				override: "bare",
 				priorStamp: "matt",
@@ -124,7 +119,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 	it("split + per-dispatch override → override (beats stamp/hash)", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("split"),
+				raw: "split",
 				issueIdentifier: ID,
 				override: "bare",
 				priorStamp: "matt",
@@ -137,7 +132,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		const stamp = SKILL_FRAMEWORK_MODES.find((m) => m !== hashed);
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("split"),
+				raw: "split",
 				issueIdentifier: ID,
 				priorStamp: stamp,
 			}),
@@ -152,7 +147,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		(_name, carrier, via) => {
 			expect(
 				resolveSkillFrameworkMode({
-					env: envWith("split"),
+					raw: "split",
 					issueIdentifier: ID,
 					...carrier,
 				}),
@@ -162,14 +157,14 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 
 	it("split first admission → hash bucket", () => {
 		expect(
-			resolveSkillFrameworkMode({ env: envWith("split"), issueIdentifier: ID }),
+			resolveSkillFrameworkMode({ raw: "split", issueIdentifier: ID }),
 		).toEqual({ mode: hashModeBucket(ID), via: "hash" });
 	});
 
 	it("split + participation explicitly true → normal split path", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("split"),
+				raw: "split",
 				issueIdentifier: ID,
 				projectSplitParticipation: true,
 			}),
@@ -181,7 +176,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		try {
 			expect(
 				resolveSkillFrameworkMode({
-					env: envWith("SPLIT-nonsense"),
+					raw: "SPLIT-nonsense",
 					issueIdentifier: ID,
 				}),
 			).toEqual({ mode: "superpowers", via: "default" });
@@ -196,7 +191,7 @@ describe("resolveSkillFrameworkMode — §0 priority table", () => {
 		try {
 			expect(
 				resolveSkillFrameworkMode({
-					env: envWith("split"),
+					raw: "split",
 					issueIdentifier: ID,
 					// simulate corrupted DB / boundary bypass values
 					override: "garbage" as never,
@@ -226,7 +221,7 @@ describe("resolveSkillFrameworkMode — priorStampReadFailed", () => {
 		try {
 			expect(
 				resolveSkillFrameworkMode({
-					env: envWith("split"),
+					raw: "split",
 					issueIdentifier: ID,
 					priorStampReadFailed: true,
 				}),
@@ -239,7 +234,7 @@ describe("resolveSkillFrameworkMode — priorStampReadFailed", () => {
 	it("a successfully read stamp is authoritative over readFailed (sticky wins)", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("split"),
+				raw: "split",
 				issueIdentifier: ID,
 				priorStamp: "matt",
 				priorStampReadFailed: true,
@@ -250,7 +245,7 @@ describe("resolveSkillFrameworkMode — priorStampReadFailed", () => {
 	it("override still wins under readFailed (deterministic carrier, no DB read)", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("split"),
+				raw: "split",
 				issueIdentifier: ID,
 				override: "matt",
 				priorStampReadFailed: true,
@@ -261,7 +256,7 @@ describe("resolveSkillFrameworkMode — priorStampReadFailed", () => {
 	it("forced env ignores readFailed (kill-switch semantics)", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith("matt"),
+				raw: "matt",
 				issueIdentifier: ID,
 				priorStampReadFailed: true,
 			}),
@@ -271,7 +266,7 @@ describe("resolveSkillFrameworkMode — priorStampReadFailed", () => {
 	it("default env ignores readFailed (byte-compat)", () => {
 		expect(
 			resolveSkillFrameworkMode({
-				env: envWith(),
+				raw: undefined,
 				issueIdentifier: ID,
 				priorStampReadFailed: true,
 			}),

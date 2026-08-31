@@ -1,0 +1,12 @@
+flowchart TD
+  A["她排一场会<br/>(V4 已有:安排会议 12:30 和 Tadashi 聊 X)"] --> B["自动开一张任务单<br/>(Linear issue,几分钟内出现)"]
+  A --> C["开会(V4 负责)"]
+  C --> D["会议结束<br/>(留下不可改的会议存档 + 逐句转写)"]
+  D --> E["自动派一个 note taker<br/>(记录员 AI,会后读转写,不在会上)"]
+  E --> F["写出 meeting notes<br/>(要点摘要 + action items 待办清单)"]
+  F --> G["互动卡发进这张单的讨论串<br/>(现有 HTML 卡:分节留言 + 一键汇总)"]
+  G --> H["她逐条批 action items<br/>(要做 / 不做 / 有意见)+ 留言"]
+  H --> I{"她的裁决"}
+  I -->|"打回(对卡回复)"| J["note taker 修订<br/>出新一版卡"] --> G
+  I -->|"批准"| K["定稿:notes + 每条待办的处置<br/>提 PR + Ship Card"]
+  K --> L["她在 Ship Card 点批准<br/>→ 归档进 main → 任务单关闭"]

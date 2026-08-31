@@ -1,9 +1,9 @@
 #!/bin/bash
-# FLY-1062 broker PR · ① thin-shell PACKAGING verification (hermetic, no
+# FLY-1062 · ① thin-shell PACKAGING verification (hermetic, no
 # registry contact): the customer-facing form is proven publishable WITHOUT
 # publishing anything —
 #   P1  npm pack → the exact tarball a customer install resolves;
-#   P2  shell-prepare.mjs stages that form + emits the broker request tuple
+#   P2  shell-prepare.mjs stages that form + emits the candidate tuple
 #       (sha256 of the staged bytes = what the founder approval will bind);
 #   P3  npm install --prefix <tmp> <tarball> → the installed bin EXECUTES
 #       (packaged-mode reality: installs ≠ importable source tree);
@@ -37,7 +37,7 @@ else
   fail "P1 npm pack failed"; echo "RESULTS: $PASSED passed, $FAILED failed"; exit 1
 fi
 
-# ── P2 · prepare/stage emits the broker tuple bound to the staged bytes ─────
+# ── P2 · prepare/stage emits a tuple bound to the staged bytes ───────────────
 REQ_JSON="$(node "$PREPARE" --allow-placeholder --out "$SANDBOX/stage" 2>"$SANDBOX/prep.err")"
 RC=$?
 STAGED="$(node -e 'console.log(JSON.parse(process.argv[1]).stagedPath)' "$REQ_JSON" 2>/dev/null)"

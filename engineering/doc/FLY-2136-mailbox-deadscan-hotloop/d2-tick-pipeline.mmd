@@ -1,0 +1,27 @@
+flowchart TB
+    LOOP["LeadInboxLoop<br/>每个项目的收件循环<br/>活跃时每 1 秒跑一轮"] --> ADMIT["admit 阶段"]
+
+    subgraph TICK["每轮 tick 的工作 — 修复前后对比"]
+        direction TB
+        R1["reconcileExpiredLeases<br/>租约回收 — 量小有索引<br/>保持每 tick ✓"]
+        R2["scanAndInsertDeadLetterNotices<br/>死信通知扫描<br/>修前: 每 tick 全表扫 ✗<br/>修后: 30s 一次 + 走索引 ✓"]
+        R3["claim / deliver<br/>取件投递 — 主业务<br/>保持每 tick ✓"]
+        R4["reconcileDeadLetterAlertIntents<br/>死信告警意向<br/>修前: 每 tick 全 DEAD 扫 ✗<br/>修后: 30s 一次 + 走索引 ✓"]
+        R5["drainDeadLetterAlerts<br/>告警投递<br/>保持每 tick(零延迟变化)✓"]
+        R6["archiveDueFamilies(新增)<br/>60s 一次归档 72h 前终态行<br/>每次最多 10 组,有界"]
+        R1 --> R2 --> R3 --> R4 --> R5 --> R6
+    end
+
+    ADMIT --> TICK
+
+    DB[("comm.db mailbox 表<br/>新增 2 个 partial index:<br/>mailbox_dead_scan<br/>mailbox_dead_notice_lookup")]
+    R2 -.查询.-> DB
+    R4 -.查询.-> DB
+    R6 -.搬走终态行.-> LOG[("mailbox_log<br/>归档快照,留审计")]
+
+    style LOOP fill:#e8f0fe,stroke:#007aff,stroke-width:2px
+    style R2 fill:#fff4e6,stroke:#ff9500,stroke-width:2px
+    style R4 fill:#fff4e6,stroke:#ff9500,stroke-width:2px
+    style R6 fill:#e8f8ee,stroke:#34c759,stroke-width:2px
+    style DB fill:#f3e8fd,stroke:#af52de,stroke-width:2px
+    style LOG fill:#f5f5f7,stroke:#86868b,stroke-width:2px

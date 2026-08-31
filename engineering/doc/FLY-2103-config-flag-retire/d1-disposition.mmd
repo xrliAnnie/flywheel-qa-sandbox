@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph nine["config.yaml 里最后 9 个 flag"]
+    direction TB
+    c1["checkpoints.每个检查点.enabled<br/>6 项目全 true,从没关过"]
+    c2["collections 的 auto_create<br/>从没有项目设置过"]
+    m1["doc_flow.enabled<br/>4 项目开 / 2 项目关"]
+    m2["pipeline.dag<br/>仅 flywheel 显式 true"]
+    m3["pipeline.work_kind<br/>仅 flywheel true"]
+    m4["skills.proofshot.enabled<br/>无项目设置"]
+    m5["xiaohongshu_learning.enabled<br/>无项目设置"]
+    m6["ponytail.enabled<br/>无项目设置"]
+    m7["skill_framework.split<br/>无项目设置"]
+  end
+  HARD["固化删(2 个)<br/>行为写死进代码<br/>开关本身消失"]
+  DB["迁入数据库(7 个)<br/>flag_values 表按项目存行<br/>改值 = 一条 CLI 命令,秒级生效"]
+  CLEAN["6 个项目 config.yaml 删掉这些 key<br/>残留 key 会被启动检查大声报错"]
+  c1 --> HARD
+  c2 --> HARD
+  m1 --> DB
+  m2 --> DB
+  m3 --> DB
+  m4 --> DB
+  m5 --> DB
+  m6 --> DB
+  m7 --> DB
+  HARD --> CLEAN
+  DB --> CLEAN

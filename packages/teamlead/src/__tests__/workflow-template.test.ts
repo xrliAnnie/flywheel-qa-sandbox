@@ -14,7 +14,10 @@ import {
 	validateWorkflowManifest,
 	WORKFLOW_OUTCOME_VOCABULARY,
 } from "../workflow-template.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
 
 const generalizedManifest = () => ({
 	schema_version: 2,
@@ -671,15 +674,19 @@ describe("workflow template manifest v2", () => {
 		const canonicalRoot = resolve(process.cwd(), "../..");
 		for (const seed of legacyWorkflowSeeds()) {
 			const template = { id: seed.templateId, revision: 1 };
-			const snapshot =
+			const executableSeed =
 				seed.manifest.schema_version === 1
+					? seed
+					: pinLegacyWorkflowSeedAgents(seed);
+			const snapshot =
+				executableSeed.manifest.schema_version === 1
 					? buildWorkflowRunSnapshotV1({
 							template,
-							manifest: seed.manifest,
+							manifest: executableSeed.manifest,
 						})
 					: buildWorkflowRunSnapshotV2({
 							template,
-							manifest: seed.manifest,
+							manifest: executableSeed.manifest,
 							canonicalRoot,
 						});
 
@@ -690,35 +697,34 @@ describe("workflow template manifest v2", () => {
 		}
 	});
 
-	it("ships bounded designer and prototype executor contracts", () => {
+	it("ships bounded product-design and prototype node contracts", () => {
 		const root = resolve(process.cwd(), "../..");
 		const designer = readFileSync(
-			resolve(root, "agents/designer-executor.md"),
+			resolve(root, ".flywheel/agents/nodes/product_design.md"),
 			"utf8",
 		);
 		const prototype = readFileSync(
-			resolve(root, "agents/prototype-executor.md"),
+			resolve(root, ".flywheel/agents/nodes/proto.md"),
 			"utf8",
 		);
 		for (const source of [designer, prototype]) {
 			expect(source.trim()).not.toBe("");
 			expect(source.length).toBeLessThanOrEqual(40_000);
-			expect(source).toContain('"kind":"docs_v1"');
+			expect(source).toContain("founder-html-delivery");
+			expect(source).toContain("flywheel-comm ask");
 		}
 
 		const deliveryOrder = [
-			"publish-only URL",
-			"交 Lead",
-			"founder-html-delivery",
-			"flywheel-comm check",
-			"才开 question gate",
+			"concept images",
+			"Publish WITHOUT",
+			"founder_review",
+			"approved high-fidelity artifact",
 		].map((anchor) => designer.indexOf(anchor));
 		expect(deliveryOrder.every((position) => position >= 0)).toBe(true);
 		expect(deliveryOrder).toEqual([...deliveryOrder].sort((a, b) => a - b));
-		expect(designer).toContain("screenshot:null / delivered:false");
-		expect(designer).toContain("超时或无回复不等于批准");
-		expect(prototype).toContain("自证能开");
-		expect(prototype).toContain("判定归 founder gate");
-		expect(prototype).toContain("不揣测结论");
+		expect(designer).toContain("do not hand off or complete");
+		expect(prototype).toContain("doable / not-doable");
+		expect(prototype).toContain("no answer → BLOCKED");
+		expect(prototype).toContain("not doable → drop");
 	});
 });

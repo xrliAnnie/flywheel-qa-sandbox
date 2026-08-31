@@ -15,17 +15,21 @@ follow-up that gets forgotten.
 
 Opt-ins come in two shapes; both count:
 
-- **Config opt-ins** in `<your-project>/.flywheel/config.yaml` — e.g.
-  `doc_flow.enabled: true`, `proofshot.enabled: true`. These
-  are repo changes and ship in the feature's PR (or a fast-follow enablement PR).
+- **Project-scoped flag-store opt-ins** — set them through the governed Bridge
+  surface, for example
+  `node "$FLYWHEEL_COMM_CLI" feature-flags set --name doc_flow --to on --project <project> --reason "enable doc-flow"`
+  or the same command with `--name proofshot`. These values live in SQLite and
+  are effective without adding flag keys to `.flywheel/config.yaml`; that file
+  is reserved for non-flag project structure such as agents, roles, checkpoint
+  timeouts, and Linear metadata.
 - **Deployment env flags** (`FLYWHEEL_*`) set in the production launchd / wrapper
   / `~/.flywheel/.env`. Distinguish the two flag idioms before touching anything:
   a flag read as `=== "1"` is **default-OFF opt-in** (set it to enable); a flag
   read as `!== "0"` is a **default-ON kill-switch** (already on — do NOT "enable"
   it, there is nothing to do, and forcing it can only break the escape hatch).
 
-**Verify it really fires — do not just merge the flag.** A config diff that
-parses is not proof the feature runs. Confirm the live behavior (a real session,
+**Verify it really fires — do not just set the flag.** A successful command is
+not proof the feature runs. Confirm the live behavior (a real session,
 a 529-Room run, or a regression test that drives the actual code path with the
 canonical config). "Enabled" means *observed firing*, not *key present*.
 

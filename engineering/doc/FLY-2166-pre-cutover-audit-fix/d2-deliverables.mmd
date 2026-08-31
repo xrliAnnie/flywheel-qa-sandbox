@@ -1,0 +1,18 @@
+flowchart LR
+    subgraph DEL["删(退役)"]
+        S1["迁移脚本 362 行"]
+        S2["审计库 709 行"]
+        S3["专属测试 326 行"]
+    end
+    subgraph DOC["写(纯文档)"]
+        R1["手工 G2 核对手册<br/>g2-runbook.md"]
+        R2["一次性迁移守则<br/>doc/reference/"]
+    end
+    T1["fly1436 测试断言<br/>改锚到手册(先红后绿)"] --> R1
+    DEL --> PR["删除 PR"]
+    R1 --> GATE["merge 门:手册先挂进<br/>FLY-2103 讨论串并核实链接"]
+    GATE --> PR
+    R2 --> PR
+    PR --> M["founder 批准后 merge<br/>(不触发任何部署或重启)"]
+    style GATE fill:#fff8e6,stroke:#ff9500,stroke-width:2px
+    style M fill:#f0fff4,stroke:#34c759

@@ -7,6 +7,7 @@ import type {
 	WorkflowTemplateRevisionRow,
 	WorkflowTemplateRow,
 } from "../StateStore.js";
+import { workflowNodeDisplayLabel } from "../workflow-display-labels.js";
 import { validateWorkflowManifest } from "../workflow-template.js";
 import {
 	buildTargetId,
@@ -107,7 +108,8 @@ function projectDag(
 				);
 				return {
 					id: `${template.template_id}/${node.id}`,
-					name: node.id,
+					nodeId: node.id,
+					name: workflowNodeDisplayLabel(template.template_id, node),
 					dispatch: {
 						targetId: buildTargetId("dag", [
 							template.template_id,
@@ -136,10 +138,7 @@ function projectDag(
 			});
 		return {
 			id: dagId(projectName, binding),
-			title:
-				binding.task_category === "*"
-					? template.name
-					: `${template.name} · ${binding.task_category}`,
+			title: template.name,
 			templateId: template.template_id,
 			revision: revision.revision,
 			digest: revision.manifest_digest,

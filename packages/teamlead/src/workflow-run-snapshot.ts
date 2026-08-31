@@ -10,10 +10,13 @@ import {
 	type CategorySource,
 	ENG_TIERS,
 	type EngTier,
-	WORK_KIND_CATEGORIES,
+	WORKFLOW_SNAPSHOT_TASK_CATEGORIES,
 	type WorkKindCategory,
 } from "./work-kind.js";
-import { resolveMenuAgentFile } from "./workflow-menu.js";
+import {
+	isBundledWorkflowNodeName,
+	resolveNodeAgentFile,
+} from "./workflow-menu.js";
 import {
 	isWorkflowManifestLand,
 	isWorkflowManifestV1Land,
@@ -271,23 +274,6 @@ function readAgent(canonicalRoot: string, agentFile: string) {
 	return { content, digest: canonicalSubmissionDigest(content) };
 }
 
-const BUILTIN_NODE_AGENT: Partial<Record<WorkflowNodeType, string>> = {
-	design:
-		"Complete the bounded design phase, persist its handoff, and report completion. Do not dispatch successors.",
-	implement:
-		"Implement the approved design on the pinned shared branch, verify it, and report completion. Do not dispatch successors.",
-	qa: "Independently verify the current code producer and emit one structured pass or fail verdict. Do not dispatch successors.",
-	review:
-		"Review the current materialized output against the bounded task and emit one structured pass or fail verdict. Do not dispatch successors.",
-};
-
-function builtInAgent(type: WorkflowNodeType) {
-	const content = BUILTIN_NODE_AGENT[type];
-	return content
-		? { content, digest: canonicalSubmissionDigest(content) }
-		: undefined;
-}
-
 function assertDesignNodeCompletionCapabilities(
 	capabilities: WorkflowNodeCapabilities,
 	path: string,
@@ -304,9 +290,9 @@ function assertDesignNodeCompletionCapabilities(
 
 /** Resolve the immutable role text delivered with a typed execution. */
 export function workflowNodeAgentContent(
-	node: Pick<ResolvedWorkflowNode, "type" | "agent">,
+	node: Pick<ResolvedWorkflowNode, "agent">,
 ): string | undefined {
-	return node.agent?.content ?? BUILTIN_NODE_AGENT[node.type];
+	return node.agent?.content;
 }
 
 /** Materialize the legacy engineering manifest into the same typed engine envelope. */
@@ -455,16 +441,20 @@ export function buildWorkflowRunSnapshotV2(input: {
 				effort: node.effort,
 			},
 			...(node.output ? { output: node.output } : {}),
-			...(node.role
-				? {
-						agent: readAgent(
-							input.canonicalRoot,
-							resolveMenuAgentFile(input.canonicalRoot, node.role),
-						),
-					}
-				: node.type === "generic"
-					? { agent: readAgent(input.canonicalRoot, node.agent_file!) }
-					: { agent: builtInAgent(node.type) }),
+			...(node.agent_file
+				? { agent: readAgent(input.canonicalRoot, node.agent_file) }
+				: node.role || isBundledWorkflowNodeName(node.id)
+					? {
+							agent: readAgent(
+								input.canonicalRoot,
+								resolveNodeAgentFile(input.canonicalRoot, node.role ?? node.id),
+							),
+						}
+					: (() => {
+							throw new Error(
+								`workflow node type ${node.type} requires a registered agent`,
+							);
+						})()),
 		};
 	});
 	const body = snapshotBody({
@@ -580,7 +570,9 @@ export function parseWorkflowRunSnapshot(source: string): WorkflowRunSnapshot {
 			: nonempty(root.task_category, "workflow snapshot.task_category");
 	if (
 		taskCategory !== undefined &&
-		!WORK_KIND_CATEGORIES.includes(taskCategory as WorkKindCategory)
+		!WORKFLOW_SNAPSHOT_TASK_CATEGORIES.includes(
+			taskCategory as (typeof WORKFLOW_SNAPSHOT_TASK_CATEGORIES)[number],
+		)
 	) {
 		throw new Error("workflow snapshot.task_category is unknown");
 	}

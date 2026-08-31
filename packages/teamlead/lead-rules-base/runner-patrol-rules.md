@@ -35,13 +35,16 @@ Founder 2026-08-26 19:13 在 FLY-2029 的两步直令：
 不得写成「已知，等着」后休息。本规则不扩大巡检检测面或频率，也不改变 founder-only
 merge/stop、authority、approval、claim 等硬边界。
 
-**范围合同**:检测范围 = **整机**(默认共享 socket 的全部 canonical Runner pane +
-当前项目主仓的外部真相);处置权限 = **只覆盖你名下 Runner**。canonical Runner
-pane 的唯一口径是:session name 以 `runner-` 开头且 window name 以 Linear
-identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径尚待 founder 追认,
-但不得按 Lead、项目或前 N 个抽样。tick 名册只是 Bridge 对「你名下」的
-**待核声明**,不是巡检边界也不是结论。别家 Lead 的 Runner、无主窗口、全仓
-停摆都记入报告并在第 6 步上报,不得越权处置。
+**范围合同**:检测范围 = Department Lead **只巡检自己名下** Runner pane + 当前项目主仓的外部
+真相;处置权限 = **只覆盖你名下 Runner**。owner scope 的权威是当前项目
+`comm.sessions.lead_id = LEAD_ID` 且 status=`running|blocked` 的绑定；先从 owner
+index 得到名下 target，再与 tmux pane 元数据取交集，绝不从整机 pane 出发逐个 capture
+后再过滤。canonical Runner pane 的唯一口径是:session name 以 `runner-` 开头且
+window name 以 Linear identifier 开头;`cmux-*` 显示镜像不重复计算。tick 名册只是
+Bridge 对「你名下」的**待核声明**,两账不一致是 finding，但它不扩大可见面。
+无主 canonical pane 由 **Bridge orphan sweeper** 独立枚举，连续两个 slot 仍无主才发
+`orphan_pane` 工单；`claude-infra-bot-lead`(Claw)是唯一责任席位。任何 Department
+Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
 
 **产出物合同**:每条 tick 必产一份六步报告:
 `~/.flywheel/patrol-reports/<leadId>/<UTC>-tickNA.md`。先运行快照;它会原子
@@ -64,26 +67,30 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 
 1. **名册核对(ground truth)** — run:
    `awk '/^## STEP 1$/{show=1; next} /^## STEP 2$/{show=0} show' "$REPORT_PATH"`。
-   快照段来自 `TMUX= tmux list-windows -a` 与
-   `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`;
-   与 tick 名册对账。脚本对每个 `runner-*` session + Linear identifier window
-   生成一条 canonical Runner pane;多了少了都是 finding。忽略正常 `zsh`
-   scaffolds、`cmux-*` 镜像、Codex Lead TUI;Claude Lead 在私有 socket。若第 2 步的
-   live pane 与快照不一致,run: `TMUX= tmux list-windows -a`,并在报告注明采用
-   快照时刻还是复核时刻读数。
+   脚本先只读全 registry owner index 做 target cardinality 预检，再从当前项目
+   `comm.sessions.lead_id = LEAD_ID` 物化名下 target；只有 index 完整且 target 唯一时，
+   才执行一次 `TMUX= tmux list-panes -a -F '<pane_id> <session_name> <target> <window_name> ...'`
+   的元数据读取并写 `OWNED_RUNNER_PANES := canonical panes ∩ owned targets`。全机列表
+   只在脚本内用于求交，不落报告，也不触发 capture。名下 index 与 live pane 对账
+   多了少了都是 finding：index 有 target 但无 pane 写 `MISSING_PANE`；pane 无名下
+   index 不进入本报告，由 Bridge orphan sweeper 独立判断。忽略正常 `zsh` scaffolds、
+   `cmux-*` 镜像、Codex Lead TUI；Claude Lead 在私有 socket。任何复核都不得另跑
+   全机 capture 扩大本 Lead 的可见面。
 2. **pane 实况** — run:
    `awk '/^## STEP 2$/{show=1; next} /^## STEP 3$/{show=0} show' "$REPORT_PATH"`。
-   快照对第 1 步的**每一个** canonical Runner pane 用 5s 有界
+   快照对第 1 步的**每一个名下** canonical Runner pane 用 5s 有界
    `TMUX= tmux capture-pane -p -S - -t <pane_id>` 读完整 scrollback;零抽样、零
    `tail -40`。原文可能含 secret,所以报告只存 SHA-256/行数/字节数/最后非空状态行
    SHA-256,并逐 pane 写:
-   `PANE_EVIDENCE ... owner=owned|cross-boundary|foreign-registry|unknown exec=<id|none> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
-   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` index,其中
-   CommDB 可达的 owning status 是 `running|blocked`;正常
-   cross-boundary / foreign-registry 本身不是 finding。index 不完整必须
-   `UNAVAILABLE(transient|structural: owner_index_incomplete)`,不得铸 unknown;
-   registered target 首次无 owner 记 `result=session_terminated`,连续两 tick 才标
-   `ORPHANED`。
+   `PANE_EVIDENCE ... owner=owned exec=<id> ... last_change_epoch=<epoch> findings=<csv|none> action=<none|REQUIRED> result=<clear|UNSET>`。
+   owner 来自 projects registry 全项目只读 `comm.sessions.tmux_window` cardinality 预检
+   与本项目 `comm.sessions.lead_id` scope，其中 owning status 是 `running|blocked`。
+   index 缺库、缺 schema、绑定 target 的 lead_id 为空都必须
+   `UNAVAILABLE(transient|structural: owner_index_incomplete)` 并在 capture 前 fail closed；
+   同一 target 有多条 active claim 必须
+   `UNAVAILABLE(structural: session_target_ambiguous)`，任何 claimant 都不得 capture。
+   无主 pane 不在 Department Lead 的 PANE_EVIDENCE/continuity 中；它只由 Bridge
+   orphan sweeper 观察并投递给 Claw。
    `shasum` 缺失/失败必须标 `HASH_UNAVAILABLE` 且 STEP 2 为
    `UNAVAILABLE(structural: hash_unavailable)`,禁止留下空 hash 或自动报 clear。
 
@@ -92,14 +99,13 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      / `Claude usage limit reached`(排除 `not your usage limit`)。live 区命中为
      `LIMIT_LIVE`;reset 已过且 `owner=owned` 时 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: usage/session limit reset has passed; resume now"`。
-     reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`;跨界只上报。
+     reset 无法解析写 `UNAVAILABLE(structural: limit_reset_unparseable)`。
    - 同 target 最后状态行逐字 hash 未变就继承脚本维护的 0600 machine-owned
-     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`;同一 sidecar
-     也保存 registered target 连续无 owner 的 observation count。Lead 不编辑该
-     sidecar,报告重排或修改 result 也不得重置停滞/orphan 连续性。连续
+     `patrol-continuity/<lead>/<project>.tsv` 中的 `last_change_epoch`。Lead 不编辑该
+     sidecar,报告重排或修改 result 也不得重置停滞连续性。连续
      ≥3600 秒标 `STALLED_60M`。名下 run:
      `flywheel-comm send --project "$PROJECT_NAME" --from "$LEAD_ID" --to "$EXEC_ID" "patrol: pane state has been unchanged for 60 minutes; report status and continue"`;
-     跨界只上报。
+     本报告没有跨 Lead pane。
    - live 区命中 `Press Enter to confirm` / `Press Enter to continue` / 已知 resume
      menu 时标 `INTERACTIVE_MENU`;只有名下且手册明确允许 Enter 才 run:
      `TMUX= tmux send-keys -t "$PANE_ID" Enter`,随后完整 capture 复核。未知 menu
@@ -111,7 +117,11 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 3. **交接账**(`TURN belt` = CommDB `three_stage_turn`;engine node table =
    StateStore `workflow_run_node`) — run:
    `awk '/^## STEP 3$/{show=1; next} /^## STEP 4$/{show=0} show' "$REPORT_PATH"`。
-   快照已按当前 project + active workflow + live session 只读联查;active issue
+   快照已按当前 project + active workflow + owner attribution 只读联查；先按 execution
+   精确归属，否则只看当前 issue cohort，再退到最新 historical cohort；只保留
+   attributed lead = 当前 `LEAD_ID`。归属缺失或 cohort 歧义时整步写
+   `UNAVAILABLE(structural: owner_attribution_incomplete)`，且只输出聚合原因/计数。
+   对名下 active issue，
    无 TURN、holder 不在同 issue live execution、`no_turn_streak >= 3`、或 active
    node 无 live session都是 finding;历史 terminal 行不得重报。
 4. **投递账 + verdict/receipt 一致性** — run:
@@ -120,8 +130,30 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    `running|ship_parked|awaiting_review|design_done|approved_to_ship`;只看这些 Runner
    的超窗 `mailbox`、active `turn_wake_outbox` 未 ack、近 24h
    且 `state='pending'` 的 `dead_letter_alerts`、以及 active PR binding head 与
-   有效 git-head verdict claim。`accepted` dead letter 禁止重报。输出只含
+   有效 git-head verdict claim。各类事实复用第 3 步的 owner attribution，
+   `dead_letter_alerts` 还必须同时匹配当前 project + `LEAD_ID`；归属不完整同样整步
+   `UNAVAILABLE(structural: owner_attribution_incomplete)`。`accepted` dead letter 禁止重报。输出只含
    allowlist 元数据;禁止消息正文、envelope、summary、token、evidence 原文。
+
+   **第六维度“判决层”由 STEP 4 承载**：每个 tick 直接联查 active run 的
+   `workflow_claims`、同 run 的 `claim_written` marker 与 `lead_events`，不能把 Runner
+   信箱或 pane 文案当成 verdict 是否已投递的事实。只检查 credential-backed
+   `issuer_kind='runner_node'` claim，且 marker 必须含
+   `leadEventRequired=true` 与稳定 `leadEventId=workflow_claim:<claimId>`；旧的 unmarked
+   claim、founder-source claim 与 `bridge_policy/qa_exempt` 不进入这条 rollout 合同。
+   输出必须含 claim id、`decision_kind`、`predicate`、`issued_at`、node、attempt 与 execution，
+   禁止输出 claim `evidence` 或 Lead event `summary`。
+
+   - marker 存在但 event 不存在写 `CLAIM_DELIVERY_MISSING`。这是同事务原子不变量被
+     restore/tamper/corruption 破坏的 canary；Lead 必须带账本证据升级，不能假装持有已消费
+     credential 自愈。
+   - owning Lead 的 event 仍 `delivered_at IS NULL` 写 `CLAIM_DELIVERY_PENDING`。这是
+     FLY-2139 同形的静默压单信号；恢复对应 Lead runtime/投递后复核 durable delivery。
+   - 稳定 event id 只落在其他 owner 名下写 `CLAIM_DELIVERY_OWNER_MISMATCH`。修 owner
+     resolver 与既有 event 的投递归属，禁止另铸 event。
+   - marker duplicate/malformed 或 claim owner 无法唯一归属时只输出聚合
+     `CLAIM_ATTRIBUTION_INCOMPLETE`。claim 使用独立 attribution guard；它不得压掉本步已经
+     取得的 mailbox、wake、dead-letter 或 head-mismatch facts。
 5. **外部真相(整仓维度)** — run:
    `awk '/^## STEP 5$/{show=1; next} /^## STEP 6$/{show=0} show' "$REPORT_PATH"`。
    周期快照用 `GH_REPO=<projectRepo> gh api 'repos/{owner}/{repo}/pulls?state=open&per_page=50'`
@@ -139,8 +171,11 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
 
    **步骤 A — 发现即补账推进**：
 
-   1. 从报告拿到 exact shape，读 Bridge 日志的确切错误码，再打开抛出该错误的
-      源码，把每个 `WHERE` / `if` 守卫逐条抄进报告；禁止凭错误文案猜是哪笔账。
+   1. 从报告拿到 exact shape 与 Bridge 的结构化诊断（稳定错误码、run/request/execution id、
+      当前 state/revision），把可复跑的只读 query 与相关 `workflow_run_event seq/kind`
+      结果写进报告；只引用负责该诊断的 source symbol/path 作为 owner 入口，不摘录或
+      枚举实现条件。错误文案只作索引；证据不足以判定 guard 类别时写 `UNAVAILABLE` +
+      owner + 下一动作，不得猜是哪笔账。
    2. 逐守卫分类。防篡改/真实性 guard（`digest`、authority、`head fingerprint`、
       founder consent、`approval`、`claim`、授权或头指纹）必须停手，不改账，带
       classification、evidence、owner 和下一动作上报 founder，result 写
@@ -155,10 +190,12 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
       永不终结 Runner、替换真实身份或丢失 work/context；每次修复都保留 before/after
       evidence 并执行步骤 B。任一 recipe precondition 不满足时不得硬拨，必须明确
       owner + 下一动作 + evidence，写 `escalated-with-plan`。
-   4. 补账后至少等一个 Bridge reconcile tick，并记录 baseline 之后的新
-      `workflow_run_event seq/kind` 或 pane full-scrollback state hash 变化，证明引擎
-      真的接力；SQL `changes()==1` 本身不是接力证据。只有 finding 已消失可写
-      `fixed`；Bridge 已进入下一可执行状态可写 `advanced`。
+   4. 补账后至少等一个 Bridge reconcile tick，并记录 baseline 之后由引擎追加的
+      `workflow_run_event seq/kind`；接力 event 必须同时满足 `seq > BASELINE_SEQ` 与
+      `event_uid NOT LIKE 'patrol:%'`，因为 patrol 自写 event 只证明 transaction commit。
+      SQL `changes()==1` 或目标 pane 内容变化本身都不是接力证据。只有 finding 已消失
+      可写 `fixed`；Bridge 已进入下一可执行状态可写 `advanced`。没有新 engine event
+      时只能按附录做有界 pane 诊断并留下 owner/下一动作，不能写 `fixed|advanced`。
    5. 禁止 `known-waiting`、`known_waiting`、`known`、`waiting`、
       「已知，等着」等归档值；“已知”不是处置，修掉或带可执行 plan 升级才是。
 
@@ -202,7 +239,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
      team: "FLY",
      parentId: "FLY-2072",
      labels: ["Flywheel"],
-     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + Bridge 接力 pane/event 证据>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+     description: "class_key:<ROOT_KEY>\n形状: <错误码/卡点/结构形状>\n根因: <漏的表字段或断裂剧本>\n处置: <补了什么 + baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\n首见时间: <UTC ISO-8601>\n\noccurrences: 1\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
    })
    ```
 
@@ -232,7 +269,7 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    ```text
    mcp__linear-api__save_comment({
      issueId: "<child identifier>",
-     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <pane/event receipt>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
+     body: "本次实例: <UTC + stable run/request/execution id>\n形状: <本次错误码/卡点>\n处置: <本次补账或升级动作>\n引擎接力证据: <baseline 后非 patrol engine event seq:kind；无 event 则 owner/下一动作>\npatrol-finding:<report>:<step>:<ordinal>:<64hex>"
    })
    mcp__linear-api__save_issue({
      id: "<child identifier>",
@@ -263,11 +300,6 @@ identifier 开头;`cmux-*` 显示镜像不重复计算。这个操作化口径�
    `owner=founder|agent:<registered-id>` 与有限动词下一步。`bridge_problem=no` 必须
    `epic=n/a epic_marker=n/a`。
 
-   同一 tick 的跨界 finding 聚合成一条,先 run:
-   `PROJECTS_FILE="${FLYWHEEL_PROJECTS_FILE:-${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/projects.json}"; TADASHI_BOT_ID="$(jq -er 'first(.[] | select(.projectName == "flywheel") | .leads[] | select(.agentId == "flywheel-eng-lead") | .botUserId)' "$PROJECTS_FILE")"; ROUNDTABLE_FILE="${FLYWHEEL_ROUNDTABLE_CONFIG_FILE:-$HOME/.flywheel/roundtable.json}"; ROUNDTABLE_CHANNEL_ID="${FLYWHEEL_ROUNDTABLE_CHANNEL_ID:-}"; test -n "$ROUNDTABLE_CHANNEL_ID" || ROUNDTABLE_CHANNEL_ID="$(jq -er '.channelId | select(type == "string" and length > 0)' "$ROUNDTABLE_FILE")"; test -n "$ROUNDTABLE_CHANNEL_ID"`,
-   再用 Discord MCP
-   `reply(chat_id=$ROUNDTABLE_CHANNEL_ID, message="<@$TADASHI_BOT_ID> [patrol cross-boundary] <findings>; report: $REPORT_PATH")`。
-   地址解不出就写 `UNAVAILABLE(structural: roundtable_channel_unresolved)`,禁止猜数字。
    UNAVAILABLE 建单前 run(精确标题搜重;secret header 只走 stdin):
    `TITLE='[patrol-unavailable] step <n>: <稳定原因>'; DEDUP_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "$BRIDGE_URL/api/linear/issues?project=Flywheel&labels=Flywheel&state=triage,backlog,unstarted,started&limit=250&slim=true")"; DEDUP_RC=$?; TRUNCATED="$(printf '%s' "$DEDUP_JSON" | jq -r '.truncated // false')"; PARSE_RC=$?`。
    若 `DEDUP_RC != 0`、`PARSE_RC != 0`、`TRUNCATED` 不是 `true|false` 或为 `true`,报告记
@@ -337,7 +369,8 @@ target `workflow_run_node`、可选 `workflow_rework_verification_path` 与
 `rework_delivery_wake_delivered` event 也必须一起闭合。
 
 先从只读错误现场取得精确 id，验证 id 字符集，保存 0600 backup 和 engine event
-baseline；同时完整 capture 目标 pane，保存 `BEFORE_PANE_SHA`：
+baseline。`TARGET_PANE` 继续用于事务前真实性证明或 event 为空后的有界诊断，不为
+pane 输出建立 baseline 指纹：
 
 ```sh
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
@@ -354,7 +387,6 @@ PRAGMA busy_timeout=5000;
 SQL
 chmod 600 "$BACKUP_PATH"
 BASELINE_SEQ="$(sqlite3 -bail "$STATE_DB" "PRAGMA busy_timeout=5000; SELECT COALESCE(MAX(e.seq),0) FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID';")"
-BEFORE_PANE_SHA="$(TMUX= tmux capture-pane -p -S - -t "$TARGET_PANE" | shasum -a 256 | awk '{print $1}')"
 ```
 
 先 run 此 read-only probe，并把输出逐字段写入报告。它必须恰好一行，且：delivery
@@ -395,7 +427,10 @@ SQL
 ```
 
 pane/commit/TURN 必须另行证明 `preferred_actor_execution_id` 已完成这次 rework；不成立
-就是伪造 receipt，按防篡改类停手。probe 恰好一行后才可 run 下列
+就是伪造 receipt，按防篡改类停手。若 pane 参与这项事务前真实性证明，只 run
+`TMUX= tmux capture-pane -p -S -40 -t "$TARGET_PANE" | tail -40`；不落原文、不做
+哈希、不与事务前后的输出做前后比较，只在报告写非敏感 `pane_marker=<state>` 与
+`observed_at=<UTC>`。probe 恰好一行后才可 run 下列
 `BEGIN IMMEDIATE`。每个 `patrol_assert_*` 都用 `CHECK(v=1)` 把竞态变成 rollback；新
 route revision 还会重新武装以 revision 为键的 stall watchdog：
 
@@ -504,21 +539,24 @@ run=`active`，再等至少一个 reconcile tick 并 run：
 
 ```sh
 sleep 10
-AFTER_EVENTS="$(sqlite3 -bail "$STATE_DB" "SELECT e.seq||':'||e.kind FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID' AND e.seq>$BASELINE_SEQ AND e.event_uid NOT LIKE 'patrol:FLY-2080:%' ORDER BY e.seq;")"
-AFTER_PANE_SHA="$(TMUX= tmux capture-pane -p -S - -t "$TARGET_PANE" | shasum -a 256 | awk '{print $1}')"
-test -n "$AFTER_EVENTS" || test "$AFTER_PANE_SHA" != "$BEFORE_PANE_SHA"
-printf 'engine_handoff events=%s before_pane=%s after_pane=%s\n' "$AFTER_EVENTS" "$BEFORE_PANE_SHA" "$AFTER_PANE_SHA"
+AFTER_EVENTS="$(sqlite3 -bail "$STATE_DB" "SELECT e.seq||':'||e.kind FROM workflow_run_event e JOIN workflow_rework_request q ON q.run_id=e.run_id WHERE q.request_id='$REQUEST_ID' AND e.seq>$BASELINE_SEQ AND e.event_uid NOT LIKE 'patrol:%' ORDER BY e.seq;")"
+printf 'engine_handoff events=%s\n' "$AFTER_EVENTS"
+test -n "$AFTER_EVENTS"
 ```
 
-`patrol:FLY-2080:%` 是本配方自己写入的 repair receipt，只证明 transaction commit，
-必须从接力事件中排除；否则 Bridge 已停机时也会假绿。predecessor 分支同样只认
-非 `patrol:FLY-2080:%` 的新引擎 event 或 pane hash 变化。
+所有 `patrol:%` event 都由 patrol 配方自己写入，只证明 transaction commit，必须从
+接力事件中排除；否则 Bridge 已停机时也会假绿。`test -n` 失败时，不把“暂时没有
+event”解释为修复失败；仍用上方已校验的 `TARGET_PANE` 做同一条 40 行有界读取，
+不落原文、不做哈希、不做前后比较，只记录 `pane_marker`、`observed_at` 与明确
+`next=inspect|repair|retry:<token>`。pane_marker 不能单独支持 `fixed|advanced`。
+predecessor 分支也只认 baseline 后的新非 patrol engine event。
 
 ### FLY-2080 附录 B — replacement 铸造漏账完整配方
 
 输入必须是引擎已经 reserve 的 `NEW_EXECUTION_ID`；本配方绝不创建
 `workflow_actor`、execution、authority、approval 或 claim。先执行与附录 A 相同的
-DB path、0600 `.backup`、event baseline 和 pane hash 步骤，再设置并校验：
+DB path、0600 `.backup` 与 event baseline；如需 pane 参与事务前真实性证明或事后
+诊断，也复用附录 A 的字符校验、40 行读取与不落原文合同。再设置并校验：
 
 ```sh
 REQUEST_ID='<exact request_id from the read-only probe>'
@@ -663,7 +701,8 @@ SQL
 
 主事务后重读 dispatcher replacement guard：reason prefix、request/run、route
 node/attempt/execution、delivery revision/state 与 base SHA 必须同时成立。再用附录 A 的
-baseline event + pane 命令验证 Bridge launch/advance；只见 rows changed 不算接力。
+baseline event gate 验证 Bridge launch/advance；只见 rows changed 不算接力。同步遵守
+附录 A 的 event-empty 诊断合同：pane_marker 只能决定下一动作，不能单独过完成门。
 
 #### 仅限 `engine_predecessor_unavailable` 的 predecessor 事件分支
 
@@ -730,7 +769,8 @@ COMMIT;
 ```
 
 把占位值替换后以 `sqlite3 -bail "$STATE_DB"` 执行。事务后仍必须等 Bridge reconcile，
-用新 event 或 pane 变化证明 dispatcher 已接力，才可记 `advanced|fixed`。
+只有 baseline 后的新非 patrol engine event 能证明 dispatcher 已接力，才可记
+`advanced|fixed`；event 为空时只做附录 A 的有界诊断并留下下一动作。
 
 `runner_terminal_list` remains a useful internal starting point, but it is one
 system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= tmux`, never used alone. The tick
@@ -874,8 +914,8 @@ that exact event. For a question/gate, a durable answer or confirmed founder
 surface is machine evidence and no extra ACK is needed.
 
 - Claude Lead: call `flywheel_inbox_ack_event` with the supplied
-  `event_seq`, `project`, and `token`. This is distinct from
-  `flywheel_inbox_ack(message_id)`, which only acknowledges inbox transport.
+	`event_seq`, `project`, and `token`. Batch inbox transport uses
+	`flywheel_inbox_ack_batch` instead.
 - Any Lead may use the rendered `flywheel-comm ack-event ... --token-stdin`
   fallback. Supply the bearer through stdin exactly as instructed; never place
   it in shell arguments, logs, chat, or a report.

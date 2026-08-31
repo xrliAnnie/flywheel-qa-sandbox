@@ -120,40 +120,10 @@ export function resolveAssistantConfig(
 		);
 	}
 
-	// FLY-1018 voice phase: optional deep-dispatch block. leadId is required
-	// and explicit (the ship-request / dispatch target Lead is never inferred
-	// from the project — same contract as the text daemon's bindings).
-	let advanced: AssistantAdvancedConfig | undefined;
 	if (a.advanced != null) {
-		if (typeof a.advanced !== "object" || Array.isArray(a.advanced)) {
-			throw new Error(
-				"voice-bridge: huddle.assistant.advanced must be an object — { leadId, deptLabel?, identityPath? }",
-			);
-		}
-		const adv = a.advanced as Record<string, unknown>;
-		const leadId = optString(adv, "leadId");
-		if (!leadId) {
-			throw new Error(
-				"voice-bridge: huddle.assistant.advanced.leadId is required — the explicit dispatch Lead, never inferred from the project",
-			);
-		}
-		// FLY-1159 founder contract (2026-07-11): the delegate mounts on its
-		// OWN voice command — /gemini stays plain, so the two names must differ.
-		const advancedCommandName =
-			optString(adv, "commandName") ?? DEFAULT_ADVANCED_COMMAND;
-		if (advancedCommandName === commandName) {
-			throw new Error(
-				"voice-bridge: huddle.assistant.advanced.commandName must differ from huddle.assistant.commandName — the plain assistant never carries the delegate; give the advanced command its own name",
-			);
-		}
-		const deptLabel = optString(adv, "deptLabel");
-		const identityPath = optString(adv, "identityPath");
-		advanced = {
-			leadId,
-			commandName: advancedCommandName,
-			...(deptLabel && { deptLabel }),
-			...(identityPath && { identityPath }),
-		};
+		throw new Error(
+			"voice-bridge: huddle.assistant.advanced was retired by FLY-2105; remove huddle.assistant.advanced",
+		);
 	}
 
 	return {
@@ -169,7 +139,6 @@ export function resolveAssistantConfig(
 		localBargeIn: a.localBargeIn === true,
 		bargeIn: optBoolean(a, "bargeIn") ?? true,
 		captions: optBoolean(a, "captions") ?? true,
-		...(advanced && { advanced }),
 	};
 }
 

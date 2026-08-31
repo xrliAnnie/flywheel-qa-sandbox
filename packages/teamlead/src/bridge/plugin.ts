@@ -111,14 +111,18 @@ import {
 	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
+import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
 	type Session,
 	StateStore,
+	WorkflowCatalogMigrationIntegrityError,
 	type WorkflowEngineAlertIdentity,
 	type WorkflowRunCollectReceiptRow,
 } from "../StateStore.js";
+import { migrateFly2121WorkflowCatalog } from "../workflow-catalog-migration.js";
 import {
-	importWorkflowMenuSeeds,
+	loadBundledWorkflowNodeNames,
+	loadWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 } from "../workflow-menu.js";
 import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
@@ -140,6 +144,7 @@ import {
 	buildRepairChain,
 	resolveFirstAvailableBotToken,
 } from "./alert-bot-chain.js";
+import { createAlertDutyRouter, dutyAuth } from "./alert-duty-router.js";
 // FLY-927 (T1): unified-channel root-message rate cap.
 import {
 	createAlertRateLimiter,
@@ -183,6 +188,7 @@ import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
+import { sweepCodexRunnerOrphans } from "./codex-runner-orphan-reaper.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
@@ -251,6 +257,7 @@ import {
 } from "./flag-retirement-production.js";
 import {
 	createFlagRetirementScanner,
+	type FlagRetirementScanner,
 	type FlagScanSourceSnapshot,
 } from "./flag-retirement-scan.js";
 import {
@@ -263,12 +270,17 @@ import {
 	enrichFlagViewsWithStore,
 	type FlagStoreRuntime,
 	initializeFlagStore,
+	storeAlertSystemEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
+	storeReviewQuotaAutoRetryEnabled,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
+	storeSummaryAbsorptionCadenceMs,
+	storeWorkflowNodeReuseEnabled,
 	storeWorkflowReworkReentryEnabled,
 	storeWorkflowTurnDivergenceAlertsEnabled,
+	storeXiaohongshuLearningEnabled,
 } from "./flag-store-runtime.js";
 import { ConfirmTokenStore } from "./fleet-admin.js";
 import {
@@ -401,7 +413,6 @@ import {
 	qaStallInboxLoopLead,
 } from "./liveness-manifest.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
-import { releaseMailboxQueueDeployBarrier } from "./mailbox-queue-deploy-barrier.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import {
 	createManagementCronProvider,
@@ -434,7 +445,10 @@ import {
 	parsePaneLossGenerationParams,
 	reconcilePaneLoss,
 } from "./pane-loss-reconcile.js";
-import { reconcileDefaultDagCategoryBindings } from "./pipeline-config-source.js";
+import {
+	readPipelineEnrollment,
+	reconcileDefaultDagCategoryBindings,
+} from "./pipeline-config-source.js";
 import { postMergeTmuxCleanup } from "./post-merge.js";
 import {
 	type LifecycleShipInfra,
@@ -445,7 +459,6 @@ import {
 	buildCronModelViews,
 	buildProjectRunnerDefaults,
 } from "./project-runner-model-source.js";
-import { wirePublishBroker } from "./publish-broker/wire.js";
 import { createPublishHtmlRouter } from "./publish-html-route.js";
 import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
@@ -538,6 +551,7 @@ import {
 	createLeadDetectionAckRouter,
 	createStuckRemanageRouter,
 } from "./stuck-remanage-routes.js";
+import { createSummaryAbsorptionPass } from "./summary-absorption-rider.js";
 import {
 	createTerminalCommDbSync,
 	type TerminalCommDbSync,
@@ -594,6 +608,7 @@ import {
 } from "./workflow-gate-card-lifecycle.js";
 import { materializeWorkflowGateWithFailLoud } from "./workflow-gate-materialization-alert.js";
 import { createWorkflowMenuRouter } from "./workflow-menu-routes.js";
+import { resolveWorkflowReplacementLeadIntent } from "./workflow-replacement-lead-event.js";
 import {
 	GitWorkflowResumeCheckpointStore,
 	reconcileWorkflowResumeCheckpoint,
@@ -603,6 +618,7 @@ import {
 	grantWorkflowReworkTurn,
 	WorkflowReworkCoordinator,
 } from "./workflow-rework-coordinator.js";
+import { renderWorkflowReworkWakeContent } from "./workflow-rework-wake-copy.js";
 import {
 	collectWorkflowRunReceipt,
 	reconcileWorkflowRunCollections,
@@ -1214,6 +1230,17 @@ export interface BridgeAppOptions {
 	vercelToken?: string;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
+	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
+	flagProjectNames?: () => readonly string[];
+	/** FLY-2103: hot project root lookup for doc_flow write invariants. */
+	flagProjectConfigPath?: (projectName: string) => string | undefined;
+	/**
+	 * FLY-2104: late-bound weekly-scan runtime. The route mounts before the
+	 * catch-all in createBridgeApp; startBridge fills this after scanner wiring.
+	 */
+	flagScanRoute?: {
+		current?: Pick<FlagRetirementScanner, "runNow" | "dryRun">;
+	};
 	/** FLY-1436: isolated confirm tokens for the founder-gated binding cutover. */
 	workKindCutoverTokens?: ConfirmTokenStore;
 	/** FLY-1436: injectable deployment evidence reader for route-level tests. */
@@ -1315,6 +1342,11 @@ export interface BridgeAppOptions {
 	rescueRoute?: { current?: RescueRouteRuntime };
 	/** FLY-1944: synchronous pre-claim dispatch visibility for host quiescence. */
 	admissionCrossingBarrier?: AdmissionCrossingBarrier;
+	/** FLY-2076: late-bound duty-seat identities owned by startBridge. */
+	alertDuty?: {
+		dispatcherBotUserId: { current: string | null };
+		alertHub: { current?: AlertChannelHub };
+	};
 }
 
 /** FLY-579: tolerant parse of a JSON-encoded string[] (session.issue_labels). */
@@ -1427,6 +1459,10 @@ export function createBridgeApp(
 ): express.Application {
 	const app = express();
 	const flagStore = opts?.flagStore;
+	const eventRouterWorkflowCompletion = () =>
+		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
+	const workflowDecisionRoutes = () =>
+		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
 	const buildIdentity = resolveBridgeBuildIdentity();
 	const actionGateAuthorityView = makeGateAuthorityView(store);
 	app.disable("x-powered-by");
@@ -1448,6 +1484,18 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	// FLY-2076: capability-scoped duty mutations. This is intentionally outside
+	// `/api`: the shared Bridge bearer must not grant Claw ticket write access.
+	app.use(
+		"/duty",
+		dutyAuth(config.alertDutyToken),
+		createAlertDutyRouter({
+			store,
+			projects,
+			getAlertHub: () => opts?.alertDuty?.alertHub.current,
+		}),
+	);
 
 	// FLY-1638: restart/operator admission brake. This is deliberately outside
 	// /api/runs so scoped Gemini run tokens cannot mutate fleet-wide admission.
@@ -1678,6 +1726,7 @@ export function createBridgeApp(
 		"/api/workflow",
 		createWorkflowDecisionRouter({
 			store,
+			nodeReuseEnabled: workflowDecisionRoutes,
 			materializedHeadAuthority: opts?.materializedHeadAuthority,
 			gateCarrierRebind: {
 				tokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
@@ -1692,6 +1741,10 @@ export function createBridgeApp(
 					runId,
 					log: (message) => console.warn(`[workflow-gate-carrier] ${message}`),
 				}),
+			enqueueLeadEvent: (envelope) => {
+				if (!registry) throw new Error("RuntimeRegistry unavailable");
+				registry.enqueueLeadEvent(envelope);
+			},
 			...(opts?.fleetConsole
 				? { loopReentry: { tokens: opts.fleetConsole.tokens } }
 				: {}),
@@ -1725,6 +1778,9 @@ export function createBridgeApp(
 					flywheelProjectRoot
 						? readFly1436ActivationEvidence({
 								projectRoot: flywheelProjectRoot,
+								pipelineEnrollment: flagStore
+									? () => readPipelineEnrollment(flagStore, "flywheel")
+									: undefined,
 							})
 						: {
 								templateDispatch: false,
@@ -1992,6 +2048,7 @@ export function createBridgeApp(
 			lifecycleInfra, // FLY-1185 entry A bundle
 			opts?.terminalArchiveEnqueue, // FLY-1282 Part C
 			opts?.materializedHeadAuthority, // FLY-1307 PR-7.5
+			eventRouterWorkflowCompletion, // FLY-2155 live QA actor reuse decision
 		),
 	);
 
@@ -2277,11 +2334,21 @@ export function createBridgeApp(
 		// token store + audit. Only direct-toggle flags are accepted (server
 		// allow-set is authority; governance/restart-type refused in handleFlagStage).
 		const flagRouteDeps: FlagRouteDeps = {
-			envPath: join(homedir(), ".flywheel", ".env"),
 			readFile: (p) => ffReadFileSync(p, "utf-8"),
 			tokens: fleetConsole.tokens,
 			audit: fleetConsole.audit,
 			flagStore,
+			projectNames:
+				opts?.flagProjectNames ??
+				(() => projects.map((project) => project.projectName)),
+			projectConfigPath:
+				opts?.flagProjectConfigPath ??
+				((projectName) => {
+					const root = projects.find(
+						(project) => project.projectName === projectName,
+					)?.projectRoot;
+					return root ? join(root, ".flywheel", "config.yaml") : undefined;
+				}),
 		};
 		app.post("/api/fleet/flag/stage", (req, res) => {
 			const selfOrigin = loopbackSelfOrigin(req.headers.host);
@@ -2321,38 +2388,6 @@ export function createBridgeApp(
 				selfOrigin,
 			);
 			res.status(r.code).json(r.body);
-		});
-
-		// FLY-1573: deploy-only readiness release. The durable ownership token is
-		// issued before the new Bridge starts; loopback + same-origin prevents a
-		// browser or remote caller from presenting it. The handler performs the
-		// persistent/live CAS and clears the marker only after both are ON.
-		app.post("/api/fleet/mailbox-queue-barrier/release", (req, res) => {
-			const selfOrigin = loopbackSelfOrigin(req.headers.host);
-			if (!selfOrigin) {
-				res.status(403).json({ error: "non-loopback host" });
-				return;
-			}
-			if (!ffIsSameOrigin(fleetHeaders(req), selfOrigin)) {
-				res.status(403).json({ error: "cross-origin" });
-				return;
-			}
-			const { targetSha, ownershipToken } = (req.body ?? {}) as {
-				targetSha?: string;
-				ownershipToken?: string;
-			};
-			if (!targetSha || !ownershipToken) {
-				res.status(400).json({ error: "targetSha/ownershipToken required" });
-				return;
-			}
-			const result = releaseMailboxQueueDeployBarrier(
-				{ envPath: join(homedir(), ".flywheel", ".env") },
-				targetSha,
-				ownershipToken,
-			);
-			res
-				.status(result.ok ? 200 : result.code)
-				.json(result.ok ? result : { error: result.reason, code: result.code });
 		});
 
 		// FLY-709 P5: runner-default stage/apply — same loopback + same-origin +
@@ -2511,6 +2546,8 @@ export function createBridgeApp(
 			// tokenAuthMiddleware no-ops when apiToken is unset, and chatThreads
 			// does not fail-start with one, so the route must fail closed itself.
 			apiTokenConfigured: Boolean(config.apiToken),
+			dispatcherBotUserId: () =>
+				opts?.alertDuty?.dispatcherBotUserId.current ?? null,
 		}),
 	);
 	app.use(
@@ -4105,11 +4142,11 @@ export function createBridgeApp(
 		resolve(homedir(), ".flywheel", "reports");
 	const reportsRouter = createReportsRouter({
 		vercelToken: opts?.vercelToken,
-		// FLY-929 W3b ①: sender = Claude Infra Bot when P-identity holds (BOTH
-		// CLAUDE_INFRA_BOT_TOKEN + FLYWHEEL_NOTIFY_CHANNEL), else the legacy
-		// global bot token byte-for-byte. Once live there is NO Simba fallback on
-		// delivery failure — the P-expect receipt check owns fail-loud.
-		discordBotToken: infraSenderTokenOr(opts?.globalBotToken),
+		// FLY-929 W3b ① + FLY-2104: resolve the sender for every delivery so a
+		// founder-approved Infra identity change takes effect without a Bridge
+		// restart. Incomplete P-identity still falls back to the legacy global bot.
+		discordBotToken: undefined,
+		resolveDiscordBotToken: () => infraSenderTokenOr(opts?.globalBotToken),
 		projects,
 		resolveIssueThread: (issueIdentifier, projectName) =>
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
@@ -4192,6 +4229,47 @@ export function createBridgeApp(
 		});
 	}
 
+	const flagScanRunHandler: express.RequestHandler = async (req, res, next) => {
+		try {
+			if (!loopbackSelfOrigin(req.headers.host)) {
+				res.status(403).json({ error: "loopback host required" });
+				return;
+			}
+			const runtime = opts?.flagScanRoute?.current;
+			if (!runtime) {
+				res.status(503).json({ error: "flag scan is not ready" });
+				return;
+			}
+			const body = (req.body ?? {}) as Record<string, unknown>;
+			if (
+				Object.keys(body).some((key) => key !== "dryRun") ||
+				(body.dryRun !== undefined && typeof body.dryRun !== "boolean")
+			) {
+				res.status(400).json({ error: "body must be {dryRun?: boolean}" });
+				return;
+			}
+			const outcome = body.dryRun
+				? await runtime.dryRun()
+				: await runtime.runNow();
+			res.status(outcome.status === "lost_race" ? 409 : 200).json(outcome);
+		} catch (error) {
+			next(error);
+		}
+	};
+	if (config.apiToken) {
+		app.post(
+			"/api/flag-scan/run",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			flagScanRunHandler,
+		);
+	} else {
+		app.post("/api/flag-scan/run", (_req, res) => {
+			res.status(503).json({
+				error: "flag scan API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
+
 	// FLY-871 R3/C9: POST /api/rescue — the Codex Infra Bot's entry to trigger an
 	// infra self-heal rescue (lead kickstart OR runner close+resumed-successor).
 	// AUTH-REQUIRED (503 without TEAMLEAD_API_TOKEN, this triggers destructive ops),
@@ -4253,6 +4331,12 @@ export async function startBridge(
 	close: () => Promise<void>;
 	registry: RuntimeRegistry;
 }> {
+	// FLY-2102: the retired broker credentials must never leak into any child
+	// process. Scrub them before validation or any other boot work so even a
+	// failed Bridge start cannot leave them available to later process spawns.
+	delete process.env.FW_CUSTOMER_RELEASE_TOKEN;
+	delete process.env.FW_NPM_GAT_TOKEN;
+
 	if (projects.length === 0) {
 		throw new Error(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
@@ -4295,27 +4379,6 @@ export async function startBridge(
 			`[bridge-exit-marker] running-marker write failed (non-fatal): ${(err as Error).message}`,
 		);
 	}
-
-	// FLY-1062 (plan §3): the publish broker. Its two outward-publish tokens are
-	// read AND SCRUBBED from process.env here — before any child spawn path can
-	// inherit them — whether or not the feature is enabled. Default OFF
-	// (FLYWHEEL_PUBLISH_BROKER=1 enables; reverse-compat sentinel): enabled, it
-	// owns the unix-socket request surface + the founder ✅-reaction approval
-	// observation. A wiring failure is fail-closed for PUBLISHING only — the
-	// Bridge still boots.
-	const publishBrokerHandle = await wirePublishBroker({
-		env: process.env,
-		stateDir: join(homedir(), ".flywheel"),
-		discordBotToken: config.discordBotToken,
-		discordOwnerUserId: config.discordOwnerUserId,
-		founderConsentUserId: config.founderConsent?.founderUserId,
-		log: (line) => console.log(line),
-	}).catch((err) => {
-		console.warn(
-			`[publish-broker] wiring failed (publishes unavailable): ${(err as Error).message}`,
-		);
-		return null;
-	});
 
 	// FLY-1082: late-bound fleet holders — the sensors need the routed alert
 	// sink (built late) while HeartbeatService/AutoRepairBot (built earlier)
@@ -4377,7 +4440,62 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	// FLY-2121: schema first, then a pure registry compile + DB-aware preflight,
+	// then verified backup and one catalog transaction. This runs before any
+	// listener, timer, CommDB warmup, or dispatch admission can create new work.
+	const workflowMenuSeeds = loadWorkflowMenuSeeds();
+	const workflowCatalogMigration = await migrateFly2121WorkflowCatalog(
+		store,
+		workflowMenuSeeds,
+		{
+			resolvableRoleNames: loadBundledWorkflowNodeNames(),
+			...(store.getDbPath() === ":memory:"
+				? {}
+				: {
+						backupPath: join(
+							dirname(store.getDbPath()),
+							"backups",
+							`teamlead.pre-fly2121.${Date.now()}-${randomUUID()}.db`,
+						),
+					}),
+		},
+	).catch((error: unknown) => {
+		if (error instanceof WorkflowCatalogMigrationIntegrityError) {
+			console.error(
+				`[workflow-catalog] ${error.code} stage=${error.stage} baseline=${error.baselineFingerprint} observed=${error.observedFingerprint} added_violations=${JSON.stringify(error.addedViolations)}`,
+			);
+		}
+		throw error;
+	});
+	console.warn(
+		`[workflow-catalog] FLY-2121 migration: changed=${workflowCatalogMigration.plan.requiresMutation} bindings=${workflowCatalogMigration.plan.bindingRows} deleted=${workflowCatalogMigration.plan.templatesToDelete.length} skipped=${workflowCatalogMigration.plan.templateSkips.length + workflowCatalogMigration.plan.seeds.filter((seed) => seed.status === "skipped").length} backup=${workflowCatalogMigration.backupPath ?? "not-required"}`,
+	);
+	for (const skip of workflowCatalogMigration.plan.templateSkips) {
+		console.warn(
+			`[workflow-catalog] FLY-2121 preserved template ${skip.templateId}: ${skip.reason}; durable skip audit=${skip.requiresAudit ? "recorded" : "existing"}`,
+		);
+	}
+	for (const seed of workflowCatalogMigration.plan.seeds) {
+		if (seed.status !== "skipped") continue;
+		const isUnrunnable =
+			seed.manifestUnreadable === true ||
+			Boolean(seed.unresolvableRoles?.length);
+		const message = isUnrunnable
+			? `[workflow-catalog] FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE template=${seed.templateId} preserved_by=${seed.reason ?? "owner_protected"}${seed.manifestUnreadable ? " manifest_status=unreadable" : ` unresolvable_roles=${seed.unresolvableRoles?.join(",")}`} action=repair_and_republish_with_registered_roles; durable skip audit=${seed.requiresAudit ? "recorded" : "existing"}`
+			: `[workflow-catalog] FLY-2121 preserved seed ${seed.templateId}: ${seed.reason ?? "owner_protected"}; durable skip audit=${seed.requiresAudit ? "recorded" : "existing"}`;
+		if (isUnrunnable) console.error(message);
+		else console.warn(message);
+	}
 	const flagStore = initializeFlagStore(store, process.env);
+	// FLY-182/2103: construct the existing Discord-independent founder alert
+	// path before project runtime setup, so ConfigLoader rejection cannot remain
+	// a console-only boot failure.
+	const metaAlertNotifier = new MetaAlertNotifier();
+	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
+		console.log(
+			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
+		);
+	});
 	const eventLoopAttribution = new EventLoopAttribution({
 		diagnosticsDir: resolve(
 			process.env.FLYWHEEL_LOOP_DIAGNOSTICS_DIR?.trim() ||
@@ -4411,7 +4529,6 @@ export async function startBridge(
 	await terminalCommDbSync.warmProjects(
 		projects.map((project) => project.projectName),
 	);
-	importWorkflowMenuSeeds(store);
 	const retirement = retireLegacyWorkflowTemplates(store);
 	console.warn(
 		`[workflow-template] FLY-1693 retirement reconcile: unbound=${retirement.unbound} retired=${retirement.retired} blocked=${JSON.stringify(retirement.blocked)} errors=${JSON.stringify(retirement.errors)}`,
@@ -4641,6 +4758,13 @@ export async function startBridge(
 	// (FLYWHEEL_PROJECTS) deployments can't run the engine (split-brain guard), so
 	// the console is disabled there too.
 	let fleetConsole: FleetConsole | undefined;
+	let flagProjectNames = () => projects.map((project) => project.projectName);
+	let flagProjectConfigPath = (projectName: string) => {
+		const root = projects.find(
+			(project) => project.projectName === projectName,
+		)?.projectRoot;
+		return root ? join(root, ".flywheel", "config.yaml") : undefined;
+	};
 	// Hoisted so close() can clear it (Codex R3 MEDIUM-1: a block-local timer +
 	// an un-closed console keep recovering batches / hold the audit handle after
 	// shutdown).
@@ -4675,12 +4799,25 @@ export async function startBridge(
 				path: managementProjectsPath,
 				readFile: (path) => ffReadFileSync(path, "utf-8"),
 				parse: parseAndValidateProjects,
-				warm: async (nextProjects) => {
-					await ffConfigCache.get(nextProjects);
-				},
+				warm: async () => undefined,
 			});
 			await managementProjectSource.initialize();
 			let managementProjects = managementProjectSource.projects();
+			try {
+				await ffConfigCache.get(managementProjects);
+			} catch (error) {
+				console.warn(
+					`[management] project config cache unavailable: ${(error as Error).message}`,
+				);
+			}
+			flagProjectNames = () =>
+				managementProjects.map((project) => project.projectName);
+			flagProjectConfigPath = (projectName) => {
+				const root = managementProjects.find(
+					(project) => project.projectName === projectName,
+				)?.projectRoot;
+				return root ? join(root, ".flywheel", "config.yaml") : undefined;
+			};
 			let managementProjectsRevision = managementProjectSource.revision();
 			const managementEnvPath = join(homedir(), ".flywheel", ".env");
 			const managementEnvSource = () =>
@@ -4691,9 +4828,14 @@ export async function startBridge(
 				const views = resolveAllFlags({
 					env: process.env,
 					envFile: managementEnvSource(),
-					projectConfigs: ffConfigCache.current(),
 				});
-				return flagStore ? enrichFlagViewsWithStore(views, flagStore) : views;
+				return flagStore
+					? enrichFlagViewsWithStore(
+							views,
+							flagStore,
+							managementProjects.map((project) => project.projectName),
+						)
+					: views;
 			};
 			const managementLaunchAgentsDir = join(
 				homedir(),
@@ -4702,20 +4844,24 @@ export async function startBridge(
 			);
 			const managementSections = new ManagementSectionRegistry();
 			const refreshManagementSources = async () => {
-				await managementProjectSource.refresh();
+				const projectsReadable = await managementProjectSource.refresh();
 				managementProjects = managementProjectSource.projects();
 				managementProjectsRevision = managementProjectSource.revision();
+				try {
+					await ffConfigCache.get(managementProjects);
+				} catch (error) {
+					console.warn(
+						`[management] project config cache unavailable: ${(error as Error).message}`,
+					);
+				}
+				return projectsReadable;
 			};
 			flagScanRepoRoot = repoRoot;
 			flagScanSourceLoader = async () => {
-				let projectSourcesReadable = true;
-				try {
-					await refreshManagementSources();
-					await ffConfigCache.get(managementProjects);
-				} catch (error) {
-					projectSourcesReadable = false;
+				const projectSourcesReadable = await refreshManagementSources();
+				if (!projectSourcesReadable) {
 					console.warn(
-						`[flag-scan] project source refresh unavailable; project-scoped flags have no clock this round: ${(error as Error).message}`,
+						"[flag-scan] project roster refresh unavailable; project-scoped flags have no clock this round",
 					);
 				}
 				const resolvedViews = currentFlagViews();
@@ -4754,7 +4900,9 @@ export async function startBridge(
 					// Online dot from the live evidence poller (null/stale → unknown).
 					fleetEvidence: () => fleetPoller.snapshot(),
 					// FLY-709 P4: stat-and-reload-on-change before a snapshot build.
-					refreshProjectConfigs: refreshManagementSources,
+					refreshProjectConfigs: async () => {
+						await refreshManagementSources();
+					},
 					managementSnapshotProviders: () => [
 						managementProjectSource.healthProvider(),
 						...createManagementSsotProviders({
@@ -4786,17 +4934,9 @@ export async function startBridge(
 						}),
 						createManagementFlagProvider({
 							views: currentFlagViews,
-							revision: () => {
-								const source = managementEnvSource();
-								return source.status === "readable"
-									? managementFlagRevision(source.content, process.env)
-									: `env-unavailable:${managementFlagRevision("", process.env)}`;
-							},
+							revision: () => managementFlagRevision(currentFlagViews()),
 							projectNames: () =>
 								managementProjects.map((project) => project.projectName),
-							projectRevision: (projectName) =>
-								ffConfigCache.current().get(projectName)?.revision ??
-								"registry:config-missing",
 						}),
 						managementSections.snapshotProvider(),
 						createManagementCronProvider({
@@ -4818,6 +4958,12 @@ export async function startBridge(
 						buildCronModelViews(
 							fleetConfigProvider.snapshot().projects,
 							ffConfigCache.current(),
+							(projectName) =>
+								storeXiaohongshuLearningEnabled(flagStore, projectName),
+							(error) =>
+								console.error(
+									`[management] cron model scoped flag read failed: ${error.message}`,
+								),
 						),
 					logger: (msg) => console.log(msg),
 				}),
@@ -5812,6 +5958,17 @@ export async function startBridge(
 				{
 					flagStore,
 					chatThreadCreator,
+					onProjectConfigInvalid: async ({
+						projectName,
+						configPath,
+						error,
+					}) => {
+						await metaAlertNotifier.notify({
+							reason: "project_config_invalid",
+							title: `Project config rejected (${projectName})`,
+							body: `${configPath} was rejected: ${error.message}. The ${projectName} runtime was not initialized.`,
+						});
+					},
 					withRepoLock: repoMutationLock.withRepoLock,
 					// FLY-603: stateless cleanup closure (own instance here — the
 					// /events one at the createEventRouter call site is a different
@@ -6238,6 +6395,7 @@ export async function startBridge(
 		? new WorkflowEngineDispatcher({
 				store,
 				startDispatcher,
+				alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
@@ -6255,6 +6413,25 @@ export async function startBridge(
 						);
 						return undefined;
 					}
+				},
+				resolveReplacementLeadIntent: (run, sourceExecutionId) => {
+					const issueSession = store.getSessionByIssue(run.issue_id);
+					const sourceSession = sourceExecutionId
+						? store.getSession(sourceExecutionId)
+						: undefined;
+					const labelSession =
+						issueSession?.project_name === run.project_name
+							? issueSession
+							: sourceSession?.project_name === run.project_name
+								? sourceSession
+								: undefined;
+					return resolveWorkflowReplacementLeadIntent({
+						projects,
+						run,
+						labels: labelSession
+							? store.getSessionLabels(labelSession.execution_id)
+							: [],
+					});
 				},
 				alertSink: workflowEngineAlertHolder,
 				resolveRunAlertIdentity: (projectName, issueId, runId) =>
@@ -6318,6 +6495,9 @@ export async function startBridge(
 	// below only when the rescue runtime is built (self-heal on + unified Alerts
 	// channel). Undefined ⇒ route returns 409 needs_human (byte-compat).
 	const rescueRouteHolder: { current?: RescueRouteRuntime } = {};
+	const alertDutyDispatcherBotUserId = { current: null as string | null };
+	const alertDutyHubHolder: { current?: AlertChannelHub } = {};
+	const flagScanRouteHolder: BridgeAppOptions["flagScanRoute"] = {};
 
 	// FLY-1456: the external daemon is permanently authoritative. Keep the mode
 	// object as one explicit truth table for every retired Bridge execution face.
@@ -6352,6 +6532,8 @@ export async function startBridge(
 		{
 			vercelToken,
 			flagStore,
+			flagProjectNames,
+			flagProjectConfigPath,
 			eventLoopAttribution,
 			admissionCrossingBarrier,
 			residueHarvester,
@@ -6586,6 +6768,11 @@ export async function startBridge(
 			// FLY-696 M1/④: event router reads this to post account_rotation notices.
 			accountRotationPost: accountRotationPostHolder,
 			rescueRoute: rescueRouteHolder,
+			alertDuty: {
+				dispatcherBotUserId: alertDutyDispatcherBotUserId,
+				alertHub: alertDutyHubHolder,
+			},
+			flagScanRoute: flagScanRouteHolder,
 			// FLY-907: unified issue-display refresher (populated post-listen).
 			issueDisplayRefresh: issueDisplayRefreshHolder,
 		},
@@ -6605,6 +6792,26 @@ export async function startBridge(
 	const addr = server.address();
 	const port = typeof addr === "object" && addr ? addr.port : config.port;
 	console.log(`[Bridge] Listening on ${config.host}:${port}`);
+	const alertSenderTokenEnv =
+		process.env.FLYWHEEL_ALERT_SENDER_TOKEN_ENV?.trim();
+	const alertSenderToken = alertSenderTokenEnv
+		? process.env[alertSenderTokenEnv]?.trim()
+		: undefined;
+	if (alertSenderToken) {
+		try {
+			alertDutyDispatcherBotUserId.current = (
+				await resolveSelfIdentity(alertSenderToken)
+			).id;
+		} catch (error) {
+			console.warn(
+				`[alert-duty] dispatcher identity unresolved: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	} else if (config.alertDutyToken) {
+		console.warn(
+			"[alert-duty] dispatcher identity unresolved: alert sender token selector is unset or empty",
+		);
+	}
 	const designReviewManifestTimer = setInterval(
 		reconcileDesignReviewManifestOutbox,
 		30_000,
@@ -6900,6 +7107,53 @@ export async function startBridge(
 			// R3#1: TERM/KILL of orphan MCP processes is a NEW deletion — it
 			// hangs off the same master switch as every other new mutator.
 			if (!worktreeAutocleanEnabled()) return;
+			// FLY-2169: socket-hosted Codex daemons have no parent tmux pane. If
+			// Bridge or the adapter shell is killed, app-server is reparented to
+			// launchd and can otherwise live forever. Ride this existing detached,
+			// single-flight maintenance tick: no second scheduler. The reaper itself
+			// requires a fresh argv + socket + CODEX_HOME proof before every signal.
+			try {
+				const activeExecutionIds = new Set(
+					store
+						.getReadoptCandidateSessions()
+						.map((session) => session.execution_id),
+				);
+				await sweepCodexRunnerOrphans(
+					{
+						activeExecutionIds,
+						isExecutionActive: (executionId) =>
+							store
+								.getReadoptCandidateSessions()
+								.some((session) => session.execution_id === executionId),
+					},
+					{
+						audit: (event, detail) => {
+							console.warn(`[codex-orphan-reaper] ${event}`, detail);
+							try {
+								store.insertEvent({
+									event_id: `codex-orphan-${event}-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
+									execution_id: String(
+										detail.executionId ?? "codex-orphan-reaper",
+									),
+									issue_id: "maintenance",
+									project_name: "bridge",
+									event_type: event,
+									source: "bridge.codex-runner-orphan-reaper",
+									payload: detail,
+								});
+							} catch {
+								/* audit only */
+							}
+						},
+					},
+				);
+			} catch (error) {
+				console.warn(
+					`[codex-orphan-reaper] sweep failed (maintenance continues): ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
 			await reapMcpOrphans({
 				audit: (event, detail) => {
 					try {
@@ -7336,17 +7590,6 @@ export async function startBridge(
 			founderReplyCursorPath = join(getStateDir(), "founder-reply-cursor.json");
 		} catch {}
 	}
-	// FLY-182 Track B / FLY-513: Discord-independent meta-alert sink. Constructed
-	// HERE (before GatePoller) so the FLY-513 global-codex drift probe can reuse
-	// this ONE notifier instance (shared per-reason debounce) on the poll tick —
-	// rather than a second notifier with split debounce/file state (Codex R2 LOW-1).
-	const metaAlertNotifier = new MetaAlertNotifier();
-	void metaAlertNotifier.probeDesktopCapability().then((ok) => {
-		console.log(
-			`[Bridge] MetaAlertNotifier desktop notifications ${ok ? "available" : "UNAVAILABLE (file channel only — Bridge not in an Aqua GUI session?)"}`,
-		);
-	});
-
 	// FLY-513: the global-codex drift probe does real PATH/realpath I/O against the
 	// host's actual `codex`. Disabled under VITEST (same boundary as
 	// BridgeEventLoopGuard below) so general Bridge integration suites never fire
@@ -7476,10 +7719,13 @@ export async function startBridge(
 							},
 						}),
 					effects: createProductionFlagScanEffects({
-						linearApiKey: config.linearApiKey,
 						projects,
 						reportBaseUrl: loopbackBaseUrl,
 						reportToken: config.apiToken,
+						commCliPath: join(
+							flagScanRepoRoot,
+							"packages/flywheel-comm/dist/index.js",
+						),
 						store,
 						enqueueLeadInbox: (leadId, payload) =>
 							leadInboxRuntime.enqueueInfraAlert(leadId, payload),
@@ -7524,42 +7770,7 @@ export async function startBridge(
 					enabled: () => storeFlagRetirementScanEnabled(flagStore),
 				})
 			: undefined;
-
-	const flagScanRunHandler: express.RequestHandler = async (req, res) => {
-		if (!loopbackSelfOrigin(req.headers.host)) {
-			res.status(403).json({ error: "loopback host required" });
-			return;
-		}
-		if (!flagRetirementScanner) {
-			res.status(503).json({ error: "flag scan is not ready" });
-			return;
-		}
-		const body = (req.body ?? {}) as Record<string, unknown>;
-		if (
-			Object.keys(body).some((key) => key !== "dryRun") ||
-			(body.dryRun !== undefined && typeof body.dryRun !== "boolean")
-		) {
-			res.status(400).json({ error: "body must be {dryRun?: boolean}" });
-			return;
-		}
-		const outcome = body.dryRun
-			? await flagRetirementScanner.dryRun()
-			: await flagRetirementScanner.recoverPending();
-		res.json(outcome);
-	};
-	if (config.apiToken) {
-		app.post(
-			"/api/flag-scan/run",
-			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
-			flagScanRunHandler,
-		);
-	} else {
-		app.post("/api/flag-scan/run", (_req, res) => {
-			res.status(503).json({
-				error: "flag scan API requires TEAMLEAD_API_TOKEN",
-			});
-		});
-	}
+	flagScanRouteHolder.current = flagRetirementScanner;
 	// FLY-799: founder-in-thread ship approval. When the founder replies "ship
 	// it" / ✅ in a `[FLY-XX]` thread, this callback attributes the approval to
 	// HER (canonical founder id), writes {"approved":true} to the approve_to_ship
@@ -7731,7 +7942,6 @@ export async function startBridge(
 
 	// FLY-945 Fix D: external-merge convergence sweeper (backstop — Fix F
 	// simultaneously retires executor-merge; this is NOT permission for it).
-	// Kill-switch FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 lives inside pass().
 	const externalMergeReconciler = createExternalMergeReconciler({
 		store,
 		withIssueLifecycleMutex: lifecycleInfra.withIssueLifecycleMutex,
@@ -8349,6 +8559,50 @@ export async function startBridge(
 		},
 		log: (message) => console.warn(message),
 	});
+	const summaryAbsorptionPass = createSummaryAbsorptionPass({
+		projects,
+		store,
+		enqueueLeadEvent: (envelope) => registry.enqueueLeadEvent(envelope),
+		cadenceMs: () => storeSummaryAbsorptionCadenceMs(flagStore),
+	});
+	const { activePatrolTargets, createPatrolOrphanSweeperPass } = await import(
+		"./patrol-orphan-sweeper.js"
+	);
+	const patrolOrphanSweepPass = createPatrolOrphanSweeperPass({
+		projects,
+		store,
+		readActiveTargets: async (projectName) => {
+			const db = CommDB.openReadonly(commDbPathForProject(projectName));
+			try {
+				return activePatrolTargets(
+					db.listSessions(projectName, ["running", "blocked"]),
+				);
+			} finally {
+				db.close();
+			}
+		},
+		alertFailure: async (failure) => {
+			const sink = leadPendingAlertHolder.current;
+			if (!sink) {
+				throw new Error("patrol orphan alert sink unavailable");
+			}
+			await sink.alert({
+				leadId: "patrol-orphan-sweeper",
+				projectName: FLEET_ALERT_PROJECT,
+				eventId: `orphan_pane:${failure.episodeId}`,
+				eventType: "orphan_pane",
+				title:
+					failure.condition === "unclaimed"
+						? "Runner pane has no owner"
+						: "Runner owner index is incomplete",
+				body: failure.target
+					? `project=${failure.projectName} target=${failure.target}: ${failure.detail}`
+					: failure.detail,
+				severity: "severe",
+			});
+		},
+		log: (message) => console.warn(message),
+	});
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
 		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
 	});
@@ -8415,6 +8669,8 @@ export async function startBridge(
 		onWorkflowGateMaterializeTick: workflowGateMaterializeTick,
 		onLandOperationTick: landOperationTick,
 		onLeadPatrolTick: leadPatrolTickPass,
+		onSummaryAbsorptionTick: summaryAbsorptionPass,
+		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
 		...(cmuxWatcherPatrol
 			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }
 			: {}),
@@ -8741,6 +8997,7 @@ export async function startBridge(
 		}),
 		// FLY-945 Fix D: run the sweeper on the patrol cadence (zero new timer).
 		externalMergeReconcile: () => externalMergeReconciler.pass(),
+		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		leadAlertSink: {
 			alert: (p) =>
 				leadPendingAlertHolder.current
@@ -8749,17 +9006,10 @@ export async function startBridge(
 		},
 		chatThreadsEnabled: config.chatThreadsEnabled,
 		// FLY-907 (Step 4.5): issue-display reconcile sweep — piggybacked on this
-		// existing poll tick (zero new timer). The holder is populated post-listen;
-		// an empty holder / flag=0 makes the tick a no-op.
-		// FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS: cadence override (0 = disabled).
+		// existing 60-tick poll cadence (zero new timer). The holder is populated
+		// post-listen; an empty holder makes the tick a no-op.
 		onDisplayReconcileTick: () =>
 			issueDisplayRefreshHolder.current?.runSweep?.(),
-		displayReconcileEveryNTicks: (() => {
-			const raw = process.env.FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS;
-			if (raw === undefined) return undefined; // GatePoller default (60)
-			const n = Number.parseInt(raw, 10);
-			return Number.isFinite(n) && n >= 0 ? n : undefined;
-		})(),
 		// FLY-605: bidirectional in-thread founder relay fallback. owner/token
 		// from config; the founder-reply cursor persists across restarts.
 		discordBotToken: config.discordBotToken,
@@ -8791,7 +9041,7 @@ export async function startBridge(
 			? new FileInboundCursorStore(founderReplyCursorPath)
 			: undefined,
 		// FLY-513: periodic global-codex drift detection (path-only, zero new timer).
-		// Default-on; `FLYWHEEL_CODEX_HEALTH_GUARD=0` short-circuits inside the probe.
+		// Always-on advisory probe; failures alert but never abort Bridge boot.
 		onHealthTick: codexHealthEnabled
 			? () => {
 					void reportCodexGlobalHealth(metaAlertNotifier);
@@ -8928,6 +9178,7 @@ export async function startBridge(
 	const leadAlertNotifier = new LeadAlertNotifier({
 		store,
 		projects,
+		deliveryEnabled: () => storeAlertSystemEnabled(flagStore),
 		claimsReader,
 		claimsClaimer,
 		metaAlert: metaAlertNotifier,
@@ -9234,6 +9485,7 @@ export async function startBridge(
 			reviewerTimeoutMs: parseReviewerTimeoutMs(
 				process.env.FLYWHEEL_CLAUDE_REVIEW_TIMEOUT_MS,
 			),
+			quotaAutoRetryEnabled: () => storeReviewQuotaAutoRetryEnabled(flagStore),
 			listActiveReviewFindingRulings: ({ projectName, issueId }) =>
 				store
 					.listActiveReviewFindingRulings(projectName, issueId)
@@ -9657,7 +9909,13 @@ export async function startBridge(
 							activationId,
 							purpose: "workflow_rework",
 							fromAgent: "bridge",
-							content: `[phase-wake ${wakeId}] Workflow rework activation ${activationId} is ready at TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; proceed only if it answers yours. Rework context: ${JSON.stringify(context)}`,
+							content: renderWorkflowReworkWakeContent({
+								wakeId,
+								activationId,
+								epoch,
+								executionId: session.execution_id,
+								context,
+							}),
 							metadata: {
 								kind: "workflow_rework",
 								wakeId,
@@ -10101,28 +10359,6 @@ export async function startBridge(
 		rescueRouteHolder.current = {
 			rescueLead: rescueRuntime.rescueLead,
 			rescueRunner: rescueRuntime.rescueRunner,
-			// FLY-927 (Task 2.3): a rescue call is the owner bot's claim — ACK the
-			// matching ACTIVE ticket. Lead rescues correlate by (leadId,
-			// login_expired); runner rescues by (session_key=executionId,
-			// runner_login_expired). Unresolved / legacy row = no-op (never ack the
-			// wrong episode).
-			ackTicket: ({ route, leadId, executionId }) => {
-				const row =
-					route === "lead"
-						? leadId
-							? store.getActiveAlertThreadByLeadAndType(leadId, "login_expired")
-							: undefined
-						: store
-								.listActiveAlertThreads()
-								.find(
-									(r) =>
-										r.session_key === executionId &&
-										r.event_type === "runner_login_expired",
-								);
-				if (row?.ticket_status) {
-					store.setTicketStatus(row.correlation_key, "ACK");
-				}
-			},
 		};
 	}
 
@@ -10206,10 +10442,14 @@ export async function startBridge(
 		});
 	}
 	if (alertHub) {
+		alertDutyHubHolder.current = alertHub;
 		console.log(
 			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, ordinary-route=claw-mailbox, escalation-route=channel, founder-auto-mention=workflow_engine_escalation-only, founder-id=${founderEscalationConfigured ? "resolved" : "UNRESOLVED"})`,
 		);
 	}
+	console.log(
+		`[Bridge] FLY-2076 alert duty token=${config.alertDutyToken ? "set" : "unset"} dispatcher=${alertDutyDispatcherBotUserId.current ?? "unresolved"} hub=${alertHub ? "set" : "unset"}`,
+	);
 
 	// FLY-368: a single alert sink shared by every Lead alert producer. When the Hub is on it
 	// adds threading + auto-repair; otherwise it's the raw notifier (byte-compat).
@@ -10223,6 +10463,7 @@ export async function startBridge(
 	const routedAlertSinkCore = buildInfraAlertRouting({
 		store,
 		projects,
+		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		globalBotToken: config.discordBotToken,
 		rawSink: alertSink,
 		ticketSink: {
@@ -10822,26 +11063,31 @@ export async function startBridge(
 						body: `${deadLettered} alert(s) were dead-lettered during drain (remaining=${remaining}). Check ~/.flywheel/alert-deadletter and the Discord alert config.`,
 					});
 				}
-				// No progress while items remain → drain is stuck.
-				if (sent === 0 && remaining > 0) {
-					drainStuckCycles++;
-					if (drainStuckCycles >= metaAlertStuckCycles) {
+				// OFF is an intentional pause, not evidence that the Discord path is
+				// stuck or overflowing. The queue remains durable while delivery is paused.
+				if (!storeAlertSystemEnabled(flagStore)) {
+					drainStuckCycles = 0;
+				} else {
+					if (sent === 0 && remaining > 0) {
+						drainStuckCycles++;
+						if (drainStuckCycles >= metaAlertStuckCycles) {
+							await metaAlertNotifier.notify({
+								reason: "drain_stuck",
+								title: "LeadAlert drainQueue stuck",
+								body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
+							});
+						}
+					} else {
+						drainStuckCycles = 0;
+					}
+					// Queue over cap.
+					if (remaining > alertQueueOverflow) {
 						await metaAlertNotifier.notify({
-							reason: "drain_stuck",
-							title: "LeadAlert drainQueue stuck",
-							body: `drainQueue has made no progress for ${drainStuckCycles} cycles (remaining=${remaining}). The Discord alert path is likely down or misconfigured.`,
+							reason: "queue_overflow",
+							title: "LeadAlert queue overflow",
+							body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
 						});
 					}
-				} else {
-					drainStuckCycles = 0;
-				}
-				// Queue over cap.
-				if (remaining > alertQueueOverflow) {
-					await metaAlertNotifier.notify({
-						reason: "queue_overflow",
-						title: "LeadAlert queue overflow",
-						body: `The alert queue holds ${remaining} entries (> ${alertQueueOverflow}).`,
-					});
 				}
 			})
 			.catch((err: Error) => {
@@ -10868,7 +11114,6 @@ export async function startBridge(
 		workflowEngineDispatcher?.stop();
 		workflowDocsMaterializer.stop();
 		heartbeatService?.stop();
-		await publishBrokerHandle?.close(); // FLY-1062: socket + observe timer
 		gatePoller.stop();
 		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap

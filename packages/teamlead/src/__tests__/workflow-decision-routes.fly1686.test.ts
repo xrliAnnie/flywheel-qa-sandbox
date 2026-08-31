@@ -49,8 +49,10 @@ describe("FLY-1686 workflow decision route", () => {
 				ok: true,
 				claimId: 1,
 				serverSeq: 1,
+				leadEventSeq: 41,
 				idempotentReplay: false,
 			});
+		const enqueueLeadEvent = vi.fn();
 		const prProbe = vi
 			.fn()
 			.mockResolvedValueOnce({
@@ -124,6 +126,20 @@ describe("FLY-1686 workflow decision route", () => {
 				branch: "flywheel-FLY-1686",
 				generation: "generation-qa",
 			}),
+			getLeadEventBySeq: () => ({
+				seq: 41,
+				lead_id: "flywheel-eng-lead",
+				event_id: "workflow_claim:1",
+				event_type: "workflow_claim_recorded",
+				payload: JSON.stringify({
+					event_type: "workflow_claim_recorded",
+					execution_id: "qa-route",
+					issue_id: "FLY-1686",
+					project_name: "flywheel",
+				}),
+				session_key: "wf:run-route",
+				created_at: "2026-08-11 20:00:00",
+			}),
 			submitWorkflowDecisionByCredential: submit,
 			insertEvent: vi.fn(),
 		};
@@ -134,6 +150,12 @@ describe("FLY-1686 workflow decision route", () => {
 			createWorkflowDecisionRouter({
 				store,
 				prProbe,
+				resolveAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+				enqueueLeadEvent,
 				now: () => "2026-08-11T20:00:00.000Z",
 			} as never),
 		);
@@ -215,6 +237,12 @@ describe("FLY-1686 workflow decision route", () => {
 						worktreeBindingGeneration: "generation-qa",
 						expectedProducerMirrorHead: "b".repeat(40),
 					},
+				}),
+			);
+			expect(enqueueLeadEvent).toHaveBeenCalledWith(
+				expect.objectContaining({
+					seq: 41,
+					eventId: "workflow_claim:1",
 				}),
 			);
 

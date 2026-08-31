@@ -3,7 +3,7 @@
 /**
  * FLY-137 Phase 6: flywheel-cli — project scaffolding + diagnostics.
  *
- * Subcommands: init / doctor / migrate-agents-path
+ * Subcommands: init / doctor / migrate-agent-registry
  *
  * Designed to mirror flywheel-comm's invocation pattern:
  *   pnpm --filter flywheel-cli exec flywheel <cmd> [--project-path <path>]
@@ -15,7 +15,7 @@
 import { parseArgs } from "node:util";
 import { runDoctor } from "./commands/doctor.js";
 import { runInit } from "./commands/init.js";
-import { runMigrate } from "./commands/migrate-agents-path.js";
+import { runMigrateAgentRegistry } from "./commands/migrate-agent-registry.js";
 
 function printUsage(): void {
 	console.log(`Usage: flywheel <command> [options]
@@ -24,11 +24,11 @@ Commands:
   init [--project-path <path>] [--depts <a,b,c> | --no-depts] [--force] [--project-name <name>]
        Scaffold a fresh .flywheel/ directory in a git project.
 
-  doctor [--project-path <path>]
-       Validate config.yaml + agent_file paths + dept hierarchy + alias collisions.
+  doctor [--project-path <path>] [--bundled-registry <path>]
+       Validate bundled registry + project registry + config node references.
 
-  migrate-agents-path [--project-path <path>] [--dept-map <file>] [--force]
-       Move .claude/agents/<file>.md → .flywheel/agents/<dept>/<file>.md.
+  migrate-agent-registry [--project-path <path>] [--bundled-registry <path>] [--node-map <file>] [--force]
+       Cut path-authored agents over to stable registry nodes and emit a receipt.
 
 Global flags:
   --project-path <path>   Project root (default: walk up to find .flywheel/)
@@ -83,26 +83,32 @@ async function main(): Promise<void> {
 				args: rest,
 				options: {
 					"project-path": { type: "string" },
+					"bundled-registry": { type: "string" },
 				},
 				allowPositionals: false,
 			});
-			const code = runDoctor({ projectPath: values["project-path"] });
+			const code = await runDoctor({
+				projectPath: values["project-path"],
+				bundledRegistryPath: values["bundled-registry"],
+			});
 			process.exit(code);
 			break;
 		}
-		case "migrate-agents-path": {
+		case "migrate-agent-registry": {
 			const { values } = parseArgs({
 				args: rest,
 				options: {
 					"project-path": { type: "string" },
-					"dept-map": { type: "string" },
+					"bundled-registry": { type: "string" },
+					"node-map": { type: "string" },
 					force: { type: "boolean", default: false },
 				},
 				allowPositionals: false,
 			});
-			const code = runMigrate({
+			const code = runMigrateAgentRegistry({
 				projectPath: values["project-path"],
-				deptMap: values["dept-map"],
+				bundledRegistryPath: values["bundled-registry"],
+				nodeMap: values["node-map"],
 				force: values.force,
 			});
 			process.exit(code);

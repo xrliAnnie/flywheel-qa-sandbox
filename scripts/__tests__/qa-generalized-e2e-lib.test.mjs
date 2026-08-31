@@ -427,7 +427,7 @@ test("driver start request pins a cross-vendor producer/reviewer topology", () =
 			sessionRole: "main",
 			idempotencyKey: "qa529-fly-202-1",
 			overrides: {
-				design: { model: "fable" },
+				eng_design: { model: "fable" },
 				implement: { model: "codex" },
 			},
 		},

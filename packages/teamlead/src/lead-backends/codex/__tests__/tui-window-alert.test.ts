@@ -180,12 +180,23 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		return d;
 	}
 
-	it("returns null (disabled) when FLYWHEEL_TUI_WINDOW_ALERT is unset (default OFF)", () => {
+	it("enables the canonical InfraBot without an env flag", () => {
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env: { FLYWHEEL_ROOT: "/x" },
+			exists: () => true,
+		});
+		expect(guard).not.toBeNull();
+	});
+
+	it("does not enable a non-InfraBot Lead even with the retired env", () => {
+		const guard = createTuiWindowAlertGuard({
+			stateDir: stateDir(),
+			leadId: "other-lead",
+			projectName: "p",
+			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
 			exists: () => true,
 		});
 		expect(guard).toBeNull();
@@ -195,7 +206,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		let resolved = "";
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env: {
 				FLYWHEEL_TUI_WINDOW_ALERT: "1",
@@ -214,7 +225,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		let resolved = "";
 		createTuiWindowAlertGuard({
 			stateDir: stateDir(),
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env: {
 				FLYWHEEL_TUI_WINDOW_ALERT: "1",
@@ -232,7 +243,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 	it("disabled (null) when neither FLYWHEEL_ROOT nor override is set", () => {
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1" },
 			exists: () => true,
@@ -243,7 +254,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 	it("disabled (null, fail-soft) when the resolved script does not exist", () => {
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
 			exists: () => false,
@@ -256,7 +267,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const calls: string[][] = [];
 		const guard = createTuiWindowAlertGuard({
 			stateDir: dir,
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
 			exists: () => true,
@@ -285,7 +296,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const calls1: string[][] = [];
 		const g1 = createTuiWindowAlertGuard({
 			stateDir: dir,
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env,
 			exists: () => true,
@@ -301,7 +312,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const calls2: string[][] = [];
 		const g2 = createTuiWindowAlertGuard({
 			stateDir: dir,
-			leadId: "l",
+			leadId: "codex-infra-bot-lead",
 			projectName: "p",
 			env,
 			exists: () => true,

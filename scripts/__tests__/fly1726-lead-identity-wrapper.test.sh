@@ -12,6 +12,9 @@ pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
 
 mkdir -p "$TMP/home/.flywheel" "$TMP/project" "$TMP/bin" "$TMP/state"
+cat > "$TMP/home/.flywheel/summary-config.json" <<'JSON'
+{"schemaVersion":1,"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}
+JSON
 cat > "$TMP/home/.flywheel/projects.json" <<JSON
 [
   {
@@ -21,6 +24,7 @@ cat > "$TMP/home/.flywheel/projects.json" <<JSON
     "leads": [
       {
         "agentId": "eng-lead",
+        "summaryRole": "producer",
         "chatChannel": "12345678901234567",
         "match": {"labels": ["Engineering"]},
         "botTokenEnv": "ENG_BOT_TOKEN",
@@ -80,6 +84,10 @@ if [ "$valid_rc" -eq 0 ] \
     && grep -qF 'DISCORD_IDENTITY_MODE=managed' "$TMP/server.env" \
     && grep -qF 'DISCORD_BOT_TOKEN=canonical-token' "$TMP/server.env" \
     && grep -Eq '^FLYWHEEL_LEAD_IDENTITY_DIGEST=[a-f0-9]{64}$' "$TMP/server.env" \
+    && grep -qF 'FLYWHEEL_LEAD_SUMMARY_ROLE=producer' "$TMP/server.env" \
+    && grep -qF 'FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1' "$TMP/server.env" \
+    && grep -qF 'FLYWHEEL_SUMMARY_GRANULARITY=per-lead' "$TMP/server.env" \
+    && grep -Eq '^FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=[a-f0-9]{64}$' "$TMP/server.env" \
     && grep -qF 'FLYWHEEL_TEST_ONLY=preserved' "$TMP/server.env" \
     && ! grep -q '^ENG_BOT_TOKEN=' "$TMP/server.env" \
     && ! grep -q '^FLYWHEEL_PROJECTS=' "$TMP/server.env"; then

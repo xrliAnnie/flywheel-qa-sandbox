@@ -1,0 +1,14 @@
+flowchart LR
+    D["Dispatcher bot<br/>告警根消息 + 🎫 行"] --> CH["#flywheel-alerts 频道<br/>(Hub 开 thread)"]
+    CH --> G{"Claw 的插件门控 gate()<br/>告警频道那一组"}
+    G -- "现状 requireMention:true<br/>没 @ 我 → 丢弃" --> X["❌ 看不见"]
+    G -- "本单 requireMention:false<br/>每条都放行" --> I["chat-ingest<br/>→ mailbox 一行"]
+    I --> L["Lead inbox loop<br/>成批 + 唤醒"]
+    L --> C["Claw 会话<br/>收到 &lt;channel&gt; 包络"]
+    B["启动补扫<br/>fetch_messages ≤100"] -.-> C
+    classDef cut fill:#ffe9e7,stroke:#c22e24,color:#c22e24;
+    classDef keep fill:#e8f7ee,stroke:#1d7a3e,color:#1d7a3e;
+    classDef flip fill:#fff1dc,stroke:#9a5b00,color:#9a5b00;
+    class X cut;
+    class I,L,C keep;
+    class G flip;

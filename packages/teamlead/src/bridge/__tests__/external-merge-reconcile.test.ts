@@ -112,6 +112,25 @@ function seedSession(
 	});
 }
 
+function seedMergeApproval(store: StateStore, executionId = "exec-1"): void {
+	const db = new CommDB(join(tmpRoot, "comm", "proj", "comm.db"));
+	const questionId = db.insertQuestion(executionId, "lead-1", "ship?", {
+		checkpoint: "approve_to_ship",
+	});
+	db.insertResponse(questionId, "bridge", JSON.stringify({ approved: true }));
+	db.close();
+	store.setReviewBinding(executionId, {
+		questionId,
+		prHeadSha: HEAD,
+	});
+	store.recordCodexReviewApproved({
+		executionId,
+		targetPrHeadSha: HEAD,
+		issueId: "FLY-921",
+		projectName: "proj",
+	});
+}
+
 function bindEngineRun(store: StateStore, executionId = "exec-1"): void {
 	const dispatchBak = process.env.FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH;
 	const writeBak = process.env.FLYWHEEL_WORKFLOW_CLAIMS_WRITE;
@@ -207,9 +226,6 @@ async function setup(opts?: {
 			},
 	);
 	const env = {
-		// Merge approval is bypassed by default; seedSession records the intended
-		// durable QA policy for each candidate.
-		FLYWHEEL_MERGE_APPROVAL_GATE: "0",
 		FLYWHEEL_WORKFLOW_CLAIMS_READ: "0",
 		...(opts?.env ?? {}),
 	};
@@ -239,12 +255,8 @@ async function setup(opts?: {
 }
 
 describe("FLY-945 Fix D: external-merge reconcile pass", () => {
-	let envBak: Record<string, string | undefined>;
 	let priorCommDir: string | undefined;
 	beforeEach(() => {
-		envBak = {
-			FLYWHEEL_MERGE_APPROVAL_GATE: process.env.FLYWHEEL_MERGE_APPROVAL_GATE,
-		};
 		tmpRoot = mkdtempSync(join(tmpdir(), "fly945-external-merge-"));
 		worktreePath = join(tmpRoot, "worktree");
 		mkdirSync(worktreePath);
@@ -269,18 +281,15 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		runPostShipSpy.mockClear();
 	});
 	afterEach(() => {
-		for (const [k, v] of Object.entries(envBak)) {
-			if (v === undefined) delete process.env[k];
-			else process.env[k] = v;
-		}
 		if (priorCommDir === undefined) delete process.env.FLYWHEEL_COMM_DIR;
 		else process.env.FLYWHEEL_COMM_DIR = priorCommDir;
 		rmSync(tmpRoot, { recursive: true, force: true });
 	});
 
-	it("path 1: stale parked + PR MERGED + ship-eligible (gates off) → completed + finalization + audit", async () => {
+	it("path 1: stale parked + PR MERGED + approved → completed + finalization + audit", async () => {
 		const s = await setup();
 		seedSession(s.store);
+		seedMergeApproval(s.store);
 		await s.pass();
 		expect(s.store.getSession("exec-1")?.status).toBe("completed");
 		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
@@ -321,11 +330,7 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 	});
 
 	it("path 1: an already-merged PR does not re-run the open-PR CI probe", async () => {
-		const s = await setup({
-			env: {
-				FLYWHEEL_MERGE_APPROVAL_GATE: "1",
-			},
-		});
+		const s = await setup();
 		seedSession(s.store, {}, 1);
 		const db = new CommDB(join(tmpRoot, "comm", "proj", "comm.db"));
 		const qid = db.insertQuestion("exec-1", "lead-1", "ship?", {
@@ -382,6 +387,7 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		const finalizeWorkflowPhaseRoles = vi.fn(async () => {});
 		const s = await setup({ finalizeWorkflowPhaseRoles });
 		seedSession(s.store);
+		seedMergeApproval(s.store);
 		await s.pass();
 		expect(runPostShipSpy).toHaveBeenCalledTimes(1);
 		const deps = runPostShipSpy.mock.calls[0]?.[1] as {
@@ -390,13 +396,11 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		expect(deps.finalizeWorkflowPhaseRoles).toBe(finalizeWorkflowPhaseRoles);
 	});
 
-	it("path 1: NOT ship-eligible (approval gate armed, no approval) → merge_block park + ONE alert, no finalize", async () => {
+	it("path 1: no approval → merge_block park + ONE alert, no finalize", async () => {
 		// NOTE: approved_to_ship anchors staleness on last_activity_at (settable
 		// in tests); an awaiting_review row's entered_at is stamped to real-now
 		// by upsertSession, so it can't be aged in a unit test. Prod covers both.
-		const s = await setup({
-			env: { FLYWHEEL_MERGE_APPROVAL_GATE: "1" },
-		});
+		const s = await setup();
 		seedSession(s.store);
 		await s.pass();
 		const row = s.store.getSession("exec-1");
@@ -731,13 +735,14 @@ describe("FLY-945 Fix D: external-merge reconcile pass", () => {
 		expect(prNums.size).toBe(4);
 	});
 
-	it("FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0 → complete no-op (reverse-compat)", async () => {
+	it("ignores the retired parent kill switch and still scans", async () => {
+		const retiredKey = ["FLYWHEEL", "EXTERNAL", "MERGE", "RECONCILE"].join("_");
 		const s = await setup({
-			env: { FLYWHEEL_EXTERNAL_MERGE_RECONCILE: "0" },
+			env: { [retiredKey]: "0" },
 		});
 		seedSession(s.store);
 		await s.pass();
-		expect(s.checkPr).not.toHaveBeenCalled();
+		expect(s.checkPr).toHaveBeenCalledOnce();
 		expect(s.store.getSession("exec-1")?.status).toBe("approved_to_ship");
 	});
 });
@@ -816,10 +821,7 @@ describe("FLY-1314: external-merge TURN-belt reclaim", () => {
 			store,
 			config,
 			projects,
-			env: {
-				FLYWHEEL_MERGE_APPROVAL_GATE: "0",
-				...(args?.env ?? {}),
-			},
+			env: args?.env ?? {},
 			now: args?.now ?? (() => NOW_MS),
 			checkPrMerge: checkPr as never,
 			probeTurnHolderLiveness: probe,
@@ -909,21 +911,23 @@ describe("FLY-1314: external-merge TURN-belt reclaim", () => {
 		},
 	);
 
-	it("child kill-switch disables only belt reclaim", async () => {
+	it("retired child kill-switch no longer disables belt reclaim", async () => {
 		const h = await beltHarness({
 			env: { FLYWHEEL_TURN_BELT_MERGED_RECLAIM: "0" },
 		});
 		await h.pass();
-		expect(h.checkPr).not.toHaveBeenCalled();
+		expect(h.probe).toHaveBeenCalledOnce();
+		expect(h.checkPr).toHaveBeenCalledOnce();
 	});
 
-	it("parent kill-switch disables the whole pass before belt probing", async () => {
+	it("the retired parent kill switch no longer disables belt probing", async () => {
+		const retiredKey = ["FLYWHEEL", "EXTERNAL", "MERGE", "RECONCILE"].join("_");
 		const h = await beltHarness({
-			env: { FLYWHEEL_EXTERNAL_MERGE_RECONCILE: "0" },
+			env: { [retiredKey]: "0" },
 		});
 		await h.pass();
-		expect(h.probe).not.toHaveBeenCalled();
-		expect(h.checkPr).not.toHaveBeenCalled();
+		expect(h.probe).toHaveBeenCalledOnce();
+		expect(h.checkPr).toHaveBeenCalledOnce();
 	});
 
 	it("requires a persisted tmux target before treating a terminal holder as dead", async () => {

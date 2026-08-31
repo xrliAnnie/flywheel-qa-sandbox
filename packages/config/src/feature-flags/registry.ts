@@ -60,7 +60,7 @@ export interface FlagReadSite {
 }
 
 export interface FeatureFlagSpec {
-	/** Stable key, e.g. "founder_review_orphan_monitor". */
+	/** Stable key, e.g. "loop_profiler". */
 	name: string;
 	category: FlagCategory;
 	source: FlagSource;
@@ -175,20 +175,8 @@ export function validateKeepFieldContract(spec: FeatureFlagSpec): string[] {
 	return violations;
 }
 
-// Helper builders keep the big table terse and consistent.
-function envSite(
-	file: string,
-	symbol: string,
-	timing: ReadTiming,
-	pattern: FlagReadSite["pattern"] = "process.env",
-): FlagReadSite {
-	return { file, symbol, pattern, timing };
-}
-
 function flagStoreSite(
-	file:
-		| "packages/teamlead/src/bridge/plugin.ts"
-		| "packages/teamlead/src/bridge/run-infra.ts",
+	file: string,
 	symbol: string,
 	resolverSymbol: string,
 ): FlagReadSite {
@@ -203,6 +191,73 @@ function flagStoreSite(
 }
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
+	{
+		name: "summary_absorption_cadence_ms",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_SUMMARY_ABSORPTION_CADENCE_MS",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "21600000",
+		description:
+			"FLY-2131: cadence for Raya summary review and absorption rounds (default 6h)",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeSummaryAbsorptionCadenceMs",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: reads the summary absorption cadence at call time after a store write",
+		note: "Strict integer milliseconds in [60000,2592000000]; invalid seed or management writes fail loudly.",
+	},
+	{
+		name: "alert_system",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_ALERT_SYSTEM",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-2076: gate alert delivery into Discord, ticket dispatch, and the Claw duty seat while preserving the intake ledger",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeAlertSystemEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2076 default-on wrapper observes an off store write without restart",
+	},
+	{
+		name: "review_quota_auto_retry",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_REVIEW_QUOTA_AUTO_RETRY",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-2177: automatically retry failed cross-family reviews after a proven Claude subscription reset while the bound gate remains valid",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeReviewQuotaAutoRetryEnabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2177 default-on wrapper observes an off store write without restart",
+	},
 	{
 		name: "loop_profiler",
 		category: "kill_switch",
@@ -224,53 +279,6 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		toggleable: "direct",
 		directToggleProof:
 			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: read-on-use wrapper observes the next store write",
-	},
-	{
-		name: "flag_store",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FLAG_STORE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1778: Bridge SQLite flag store；=0 在下次 Bridge 启动时旁路到 legacy .env",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/flag-store-runtime.ts",
-				"initializeFlagStore",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "逃生开关只在 Bridge 启动时读取，永不由 flag store 自身管理。",
-	},
-	// ─── FLY-1940: unanswered founder-review lifecycle monitor ───
-	{
-		name: "founder_review_orphan_monitor",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1940: monitor live, open, unsuperseded, unanswered founder_review gates and surface missing card delivery or aged unanswered rounds to the Lead",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/orphan-founder-review-monitor.ts",
-				"sweepOrphanFounderReviewGates",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"packages/teamlead/src/bridge/__tests__/orphan-founder-review-monitor.test.ts: kill switch live-observe",
-		note: "=0 pauses only new monitor alerts; it does not reopen, retire, answer, or mutate any gate.",
 	},
 	// ─── FLY-1992: shipped workflow-node husk convergence ───
 	{
@@ -320,253 +328,8 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			"packages/teamlead/src/bridge/__tests__/flag-retirement-scan.test.ts: kill switch live-observe",
 		note: "固定 Sunday 08:00 PT 周槽，故意没有周期配置；=0 只暂停扫描 rider，不改变已有裁决或删除任何东西。",
 	},
-	// ─── FLY-1393: liveness controls ───
-	// ─── FLY-1573: lease redelivery + batch delivery + dead-letter gate ───
-	{
-		name: "mailbox_queue",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_MAILBOX_QUEUE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"mailbox 租约原地重投、合批投递与死信闸(=0 运行时回切 FLY-1572 旧投递流)",
-		readSites: [
-			envSite(
-				"packages/config/src/feature-flags/mailbox-queue.ts",
-				"mailboxQueueEnabled",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/inbox-mcp/src/queue-mode.ts",
-				"resolveLiveMailboxQueueEnabled",
-				"dotenv_live",
-				"dynamic",
-			),
-		],
-		toggleable: "direct",
-		directToggleProof:
-			"packages/teamlead/src/bridge/__tests__/mailbox-queue-config.test.ts",
-		note: "每个 lane tick 开头解析一次不可变快照；默认 ON，只有精确值 0 回旧流。",
-	},
-	// ─── FLY-1329: session lifecycle floor — liveness never authorizes alone ───
-	{
-		// FLY-1329 (A2): wording-only. Deliberately NOT an input to the destructive
-		// verdict — a decision that swung on "was there traffic recently" would be
-		// unreproducible and would re-introduce the FLY-1319 bug class.
-		name: "liveness_activity_window_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "600000",
-		description:
-			"absent-park 告警正文里判定 likely-alive / likely-dead 的活动窗口(默认 10 分钟)。【只影响告警措辞,绝不影响裁决】——活动证据故意不作为 decideDestructive 的输入 (FLY-1329 A2)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/liveness-evidence.ts",
-				"activityWindowMs",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-		note: "非法/未设/≤0 的 env 值由 activityWindowMs() 在运行时 sanitize 回默认 600000;resolveFlag 对本 flag 走同款 sanitizer(见 resolve.ts 特判),故 registry 显示的 effective 值 = 运行时实际生效值(Codex R2 LOW,修正 R1 LOW-6 的 raw-string 展示)。改这个改不了任何生命周期决定,只改人读的那句话。",
-	},
-	// ─── env kill-switches / features, call_time → DIRECT-toggle candidates ───
-	{
-		name: "converge_cmux_symlink",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CONVERGE_CMUX_SYMLINK",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1446: converge 将 flywheel-cmux-sync/autostart 普通部署副本留档后原子恢复为 trusted main checkout symlink；=0 暂停形态收敛",
-		readSites: [
-			envSite(
-				"scripts/converge-flywheel-bin.sh",
-				"converge_cmux_symlink",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "owner=converge CLI；每个 Lead 启动、scheduled updater、restart-services pre-kickstart 的下一次独立调用生效。非法值 fail-safe 回到默认开启；退役条件是全机不再存在可写部署副本路径。",
-	},
-	{
-		name: "cmux_view_helper",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_VIEW_HELPER",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1884: keep runner mirror tabs attached across exact tmux view-session rebuilds; =0 restores the legacy one-shot attach command.",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"view_helper_enabled",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "The resident watcher reads the shared env on each command build; disabling affects new/repaired view commands and preserves existing tabs.",
-	},
-	{
-		name: "cmux_node_presence",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_CMUX_NODE_PRESENCE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"FLY-1884: render Bridge-rostered windowless and recent-terminal executions as node: cmux surfaces, with cleanup freshness fencing; =0 freezes existing node surfaces and restores P0 cleanup behavior.",
-		readSites: [
-			envSite(
-				"scripts/flywheel-cmux-sync.sh",
-				"cmux_node_presence",
-				"cli_invocation",
-				"dynamic",
-			),
-		],
-		toggleable: "conversational",
-		note: "Default-on founder visibility contract. OFF performs no node mutations and intentionally leaves existing node: workspaces untouched.",
-	},
-	{
-		name: "voice_qa_presence_override",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1353: voice-bridge /gemini headless 声学 E2E 的 presence QA seam —— =1 时 founderPresent() 视为满足(仅 staged rig;armed 时 allowlist 只放行 http://127.0.0.1:9877 staged Bridge,其余 boot 拒启)",
-		readSites: [
-			envSite(
-				"packages/voice-bridge/src/assistant/wiring.ts",
-				"wireAssistantMode",
-				"object_construction",
-				"env-param",
-			),
-		],
-		// The owning reader is the voice-bridge daemon (external process), not the
-		// Bridge whose env the direct-toggle surface mutates. QA-only: never a
-		// founder dashboard toggle, never set in production.
-		toggleable: "readonly",
-		note: "QA-only seam(FLY-1353)。生产永不置位;armed + 生产 Bridge URL = boot 拒启。",
-	},
-	{
-		// FLY-869 B: the merge-race ship gate kill-switch. Default-ON (决定②): a merged
-		// landing maps to completed/Done ONLY when verifyApproval confirms a bound,
-		// answered approve_to_ship for the current head (+ FLY-827 Codex gate) — else the
-		// session is parked with a merge_block marker (决定③, no auto-revert) + a loud
-		// alert. `=0` bypasses only this merge-approval half; the independent QA
-		// check remains always armed. Read via the shared evaluateShipEligibility
-		// predicate (const key in ship-eligibility.ts).
-		name: "merge_approval_gate_killswitch",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_MERGE_APPROVAL_GATE",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description:
-			"全局关掉 ship 判定中的 merge-approval 半闸（=0 只绕过 verifyApproval；QA 校验固定开启，仍须通过）",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOnGate argsEnv-wins Bridge caller (MERGE_APPROVAL_GATE_KEY)",
-				"call_time",
-				"env-param",
-			),
-			envSite(
-				"packages/flywheel-comm/src/ship-eligibility.ts",
-				"resolveDefaultOnGate",
-				"dotenv_live",
-				"dynamic",
-			),
-		],
-		toggleable: "readonly",
-		note: "B 的逃生开关只影响 merge approval；A（QA）固定开启且没有环境变量旁路。B 的 Bridge caller 与 CLI live-.env 均在下一次调用生效，分歧时可能 split-brain；授权面保持 readonly。",
-	},
-	{
-		name: "issue_gate_supersede_mode",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_ISSUE_GATE_SUPERSEDE",
-		polarity: "default_on",
-		valueKind: "enum",
-		enumValues: ["enforce", "observe", "0"],
-		default: "enforce",
-		description:
-			"FLY-1314: issue gate supersede patrol 模式（enforce=收敛、observe=只审计、0=停止新 mutation）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/issue-gate-supersede.ts",
-				"sweepIssueGatesForProject",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-		note: "已写入 superseded_at/superseded_by 的 disposition 永久有效；=0 只停止新的 mutation，不回滚历史 stamp。",
-	},
 	// ─── FLY-799: founder-in-thread ship approval + auto-finalize ───
 	// ─── FLY-1099: founder-reply ingest reliability ───
-	{
-		name: "deferred_approval_ttl_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DEFERRED_APPROVAL_TTL_MS",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "2700000",
-		description: "暂存批准的 TTL(默认 45min;过期需 founder 重新确认)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/approval-signal/deferred-approval.ts",
-				"deferredApprovalTtlMs",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "founder_reply_deadletter_age_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "1800000",
-		description: "founder 消息重试超龄上限(默认 30min,与次数上限双阈值)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"GatePoller (method)",
-				"call_time",
-			),
-		],
-		toggleable: "readonly",
-	},
 	{
 		name: "workflow_rework_reentry",
 		category: "kill_switch",
@@ -594,206 +357,58 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		directToggleProof:
 			"workflow-engine-dispatcher.test:rework coordinator reads the re-entry switch on every reconcile",
 	},
-
-	// ─── env features/kill-switches captured at boot/construction → RESTART ───
 	{
-		name: "issue_display_sweep_ticks",
+		name: "workflow_node_reuse",
 		category: "feature",
 		source: "env",
 		scope: "bridge_global",
-		envVar: "FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "60",
-		description:
-			"issue 显示自愈 sweep 的 GatePoller tick 周期(默认 60 ≈ 3min@3s;0=关,FLY-907)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/plugin.ts",
-				"startBridge",
-				"object_construction",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "ship_gate_grace_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_SHIP_GATE_GRACE_MS",
+		envVar: "FLYWHEEL_WORKFLOW_NODE_REUSE",
 		polarity: "opt_in",
-		valueKind: "value",
-		default: "15000",
-		description:
-			"founder 文字/✅ 对 approve_to_ship gate 的放行 grace(ms;默认 15s;设 600000 回到 FLY-605 旧 10min 行为——这就是 kill-switch,FLY-945 Fix A)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"shipGateGraceMs",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "external_merge_reconcile",
-		category: "kill_switch",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_EXTERNAL_MERGE_RECONCILE",
-		polarity: "default_on",
 		valueKind: "bool",
-		default: true,
+		default: false,
 		description:
-			"外部 merge(executor-merge 残局)收敛兜底 pass(=0 关闭;FLY-945 Fix D——兜底不是许可)",
+			"FLY-2155: turn a later QA verification round into a same-actor rework request; dead actors still materialize replacements",
 		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/external-merge-reconcile.ts",
-				"createExternalMergeReconciler pass()",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"eventRouterWorkflowCompletion",
+				"storeWorkflowNodeReuseEnabled",
+			),
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"workflowDecisionRoutes",
+				"storeWorkflowNodeReuseEnabled",
 			),
 		],
-		toggleable: "conversational",
-	},
-	{
-		name: "merge_reconcile_window_days",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_MERGE_RECONCILE_WINDOW_DAYS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "7",
-		description:
-			"外部 merge 收敛 pass 的 completed-but-unfinalized 回看窗口(天;FLY-945 Fix D)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/external-merge-reconcile.ts",
-				"createExternalMergeReconciler pass()",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "conversational",
-	},
-	// ─── FLY-1041: founder-approval binding — single bindable ship gate ───
-	{
-		name: "ship_gate_card_grace_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_SHIP_GATE_CARD_GRACE_MS",
-		polarity: "opt_in",
-		valueKind: "value",
-		default: "15000",
-		description:
-			"FLY-1041 Fix B: ship 卡发出前的 grace(ms;默认 15s;env > config > default)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/gate-poller.ts",
-				"shipGateCardGraceMs",
-				"call_time",
-			),
-		],
-		toggleable: "conversational",
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: workflow_node_reuse observes an opt-in store write at call time",
 	},
 
+	// ─── FLY-1041: founder-approval binding — single bindable ship gate ───
 	// ─── value-type env (non-boolean) → readonly display ───
 	// FLY-1809: `lead_cross_dept_channel_ids` used to sit here. It is a Discord
 	// channel id, not a switch — moved to NON_FLAG_ALLOWLIST in truth.ts next to
 	// its FLYWHEEL_ROUNDTABLE_CHANNEL_ID sibling. Not deleted (that would inline
 	// the id) and not tombstoned (production still reads it).
-	{
-		name: "ghost_guard_wait_ms",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_GHOST_GUARD_WAIT_MS",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "90000",
-		description:
-			"FLY-1336: generalized launch delivery/session confirmation guard (ms; default 90s; captured when the Bridge loads the runs route)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/runs-route.ts",
-				"GHOST_GUARD_SESSION_WAIT_MS",
-				"bridge_boot",
-			),
-		],
-		toggleable: "readonly",
-	},
-
-	// ─── governance gates → ALWAYS readonly (default-enable-policy hard exemption) ───
-	{
-		// FLY-1309: this is a loud, audited break-glass override for the Lead
-		// identity authorization gate. It is intentionally a governance gate, not
-		// a dashboard feature: each flywheel-comm invocation reads it independently
-		// and use emits both an audit record and an alert.
-		name: "lead_lease_bypass",
-		category: "governance_gate",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_LEAD_LEASE_BYPASS",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1309: 紧急绕过 Lead identity lease 写授权（=1；强告警 + 审计；治理门，只读）",
-		readSites: [
-			envSite(
-				"packages/flywheel-comm/src/lead-lease.ts",
-				"authorizeLeadWrite",
-				"cli_invocation",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
 
 	// ─── project config flags (per-project scope) ───
-	{
-		name: "checkpoint_enabled",
-		category: "governance_gate",
-		source: "project_config",
-		scope: "project",
-		configKey: "checkpoints.*.enabled",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description: "逐 checkpoint 的启用开关(动态 checkpoint 名)",
-		readSites: [
-			{
-				file: "packages/edge-worker/src/Blueprint.ts",
-				symbol: "Blueprint.runInner",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "cpConfig.enabled",
-			},
-		],
-		toggleable: "readonly",
-		note: "登记只补治理账，不改变 question 或任何 checkpoint 行为。",
-	},
 	{
 		name: "pipeline_dag",
 		category: "feature",
 		source: "project_config",
 		scope: "project",
 		configKey: "pipeline.dag",
-		polarity: "opt_in",
+		polarity: "default_on",
 		valueKind: "bool",
-		default: false,
+		default: true,
 		description: "项目级 DAG dispatch enrollment",
 		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/pipeline-config-source.ts",
-				symbol: "loadWorkKindConfigStrict",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "values.dag",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/pipeline-config-source.ts",
+				"readPipelineEnrollment",
+				"storePipelineDagEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -808,34 +423,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "项目级 dispatch work-kind enforcement",
 		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/pipeline-config-source.ts",
-				symbol: "loadWorkKindConfigStrict",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "values.work_kind",
-			},
-		],
-		toggleable: "conversational",
-	},
-	{
-		name: "xiaohongshu_auto_create",
-		category: "feature",
-		source: "project_config",
-		scope: "project",
-		configKey: "xiaohongshu_learning.collections[].auto_create",
-		polarity: "default_on",
-		valueKind: "bool",
-		default: true,
-		description: "每个小红书 collection 是否自动创建筛出的 issue",
-		readSites: [
-			{
-				file: "packages/teamlead/src/xiaohongshu-scheduler.ts",
-				symbol: "planLearningRuns",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "col.auto_create",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/pipeline-config-source.ts",
+				"readPipelineEnrollment",
+				"storePipelineWorkKindEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -850,13 +442,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "DOC-FLOW 提示词块：Runner 写部门优先过程文档（per-project）",
 		readSites: [
-			{
-				file: "packages/edge-worker/src/Blueprint.ts",
-				symbol: "Blueprint.runInner",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "this.docFlowConfig.enabled",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeDocFlowEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -919,15 +509,13 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
 		readSites: [
-			{
-				file: "packages/teamlead/src/bridge/skill-framework-participation.ts",
-				symbol: "makeSkillFrameworkParticipationReader",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "skillFramework.split",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeSkillFrameworkSplitParticipation",
+			),
 		],
-		toggleable: "readonly",
+		toggleable: "conversational",
 	},
 	{
 		name: "proofshot",
@@ -940,13 +528,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "ProofShot 视觉验证 auto-trigger（per-project）",
 		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "ps.enabled",
-			},
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeProofshotEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -961,13 +547,11 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		default: false,
 		description: "定期小红书收藏学习管线（per-project）",
 		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "xhs.enabled",
-			},
+			flagStoreSite(
+				"scripts/xiaohongshu-scheduler.ts",
+				"main",
+				"storeXiaohongshuLearningEnabled",
+			),
 		],
 		toggleable: "conversational",
 	},
@@ -983,80 +567,14 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		description:
 			"代码极简 ponytail 逐项目 rollout（Annie-exception：默认 OFF）",
 		readSites: [
-			{
-				file: "packages/config/src/ConfigLoader.ts",
-				symbol: "ConfigLoader.validate",
-				pattern: "config",
-				timing: "call_time",
-				configAccess: "ponytail.enabled",
-			},
-		],
-		toggleable: "readonly",
-		dormant: true,
-		note: "run-infra.ts 明确不加载 flywheelConfig?.ponytail（项目层 dormant）；Annie-exception。",
-	},
-	{
-		name: "done_thread_reconcile_interval_min",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE_INTERVAL_MIN",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "360",
-		description:
-			"FLY-1165: reconcile sweep 周期（分钟；0=只跑 boot pass；调度器每 tick 重读）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
-				"resolveDoneThreadReconcileConfig",
-				"call_time",
-				"env-param",
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storePonytailEnabled",
 			),
 		],
-		toggleable: "readonly",
-	},
-	{
-		name: "done_thread_reconcile_max_per_run",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_DONE_THREAD_RECONCILE_MAX_PER_RUN",
-		polarity: "default_on",
-		valueKind: "value",
-		default: "25",
-		description:
-			"FLY-1165: 每轮 reconcile 最多归档数（Discord 429 保护；每 tick 重读）",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/done-thread-reconcile.ts",
-				"resolveDoneThreadReconcileConfig",
-				"call_time",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
-	},
-	{
-		name: "publish_broker",
-		category: "feature",
-		source: "env",
-		scope: "bridge_global",
-		envVar: "FLYWHEEL_PUBLISH_BROKER",
-		polarity: "opt_in",
-		valueKind: "bool",
-		default: false,
-		description:
-			"FLY-1062: publish broker — 对外发布(promote-commit / 薄壳 npm publish)的唯一执行点。默认关(生产字节兼容);开启 = Bridge boot 起 unix-socket 请求面 + founder ✅-reaction 审批观察。真发布另需 token 供给 + founder 批(P5)",
-		readSites: [
-			envSite(
-				"packages/teamlead/src/bridge/publish-broker/wire.ts",
-				"wirePublishBroker",
-				"bridge_boot",
-				"env-param",
-			),
-		],
-		toggleable: "readonly",
+		toggleable: "conversational",
+		note: "Annie-exception：默认 OFF；FLY-615 per-issue label 层保持独立。",
 	},
 	{
 		name: "workflow_turn_divergence_alerts",

@@ -15,8 +15,15 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-import { ConfigLoader, type FlywheelConfig } from "flywheel-config";
+import {
+	agentConfigsRequireRegistry,
+	ConfigLoader,
+	type FlywheelConfig,
+	type ResolvedAgentConfig,
+	resolveAgentConfigs,
+} from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
+import { resolveProjectAgentRegistry } from "../workflow-menu.js";
 import {
 	fileSourceRevision,
 	registrySourceRevision,
@@ -24,6 +31,7 @@ import {
 
 export type ProjectConfigEntry = {
 	config?: FlywheelConfig;
+	resolvedAgents?: Readonly<Record<string, ResolvedAgentConfig>>;
 	revision: string;
 	error?: string;
 };
@@ -42,15 +50,25 @@ export async function loadFeatureFlagProjectConfigs(
 				return raw;
 			});
 			const cfg = await loader.load(configPath);
+			const resolvedAgents = cfg.agents
+				? resolveAgentConfigs(
+						cfg.agents,
+						agentConfigsRequireRegistry(cfg.agents)
+							? resolveProjectAgentRegistry(project.projectRoot)
+							: undefined,
+						project.projectRoot,
+					)
+				: undefined;
 			// ENOENT surfaces as ConfigLoader returning undefined / throwing below;
 			// a loaded config (even empty) is stored as the config.
 			map.set(project.projectName, {
 				config: cfg ?? undefined,
+				...(resolvedAgents ? { resolvedAgents } : {}),
 				revision: fileSourceRevision(Buffer.from(raw ?? "")),
 			});
 		} catch (err) {
 			const code = (err as NodeJS.ErrnoException).code;
-			if (code === "ENOENT") {
+			if (code === "ENOENT" && raw === undefined) {
 				// No project config → absent/default semantics (not an error).
 				map.set(project.projectName, {
 					revision: registrySourceRevision("absent"),

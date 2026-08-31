@@ -256,7 +256,6 @@ describe("RunnerMailboxLane", () => {
 				now: () => new Date(NOW),
 				queueConfig: () => ({
 					...DEFAULT_MAILBOX_QUEUE_CONFIG,
-					enabled: false,
 				}),
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 2, failed: 0 });
@@ -300,11 +299,10 @@ describe("RunnerMailboxLane", () => {
 				retryBackoffCapMs: 5_000,
 				queueConfig: () => ({
 					...DEFAULT_MAILBOX_QUEUE_CONFIG,
-					enabled: false,
 				}),
 			});
 			expect(await lane.tick()).toMatchObject({ delivered: 0, failed: 1 });
-			expect(q.getById("instruction-1")?.state).toBe("QUEUED");
+			expect(q.getById("instruction-1")?.state).toBe("LEASED");
 			nowMs += 5_000;
 			q.acquireOrRenewOwner({
 				ownerEpoch: "owner-1",
@@ -406,7 +404,7 @@ describe("RunnerMailboxLane", () => {
 		}
 	});
 
-	it("hot-toggles between ticks and snapshots configuration once per tick", async () => {
+	it("snapshots queue configuration once per tick", async () => {
 		const q = queue();
 		try {
 			for (let index = 0; index < 3; index += 1) {
@@ -421,10 +419,8 @@ describe("RunnerMailboxLane", () => {
 					senderRef: encodeSenderRef(),
 				});
 			}
-			let enabled = false;
 			const queueConfig = vi.fn(() => ({
 				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled,
 			}));
 			const deliver = vi.fn(async () => ({
 				status: "delivered" as const,
@@ -441,7 +437,7 @@ describe("RunnerMailboxLane", () => {
 			});
 
 			expect(await lane.tick()).toMatchObject({ delivered: 3 });
-			expect(deliver).toHaveBeenCalledTimes(3); // legacy OFF path
+			expect(deliver).toHaveBeenCalledTimes(1);
 			expect(queueConfig).toHaveBeenCalledTimes(1);
 
 			for (let index = 3; index < 6; index += 1) {
@@ -456,11 +452,10 @@ describe("RunnerMailboxLane", () => {
 					senderRef: encodeSenderRef(),
 				});
 			}
-			enabled = true;
 			expect(await lane.tick()).toMatchObject({ delivered: 3 });
-			expect(deliver).toHaveBeenCalledTimes(4); // ON path = one batch doorbell
+			expect(deliver).toHaveBeenCalledTimes(2);
 			expect(queueConfig).toHaveBeenCalledTimes(2);
-			expect(deliver.mock.calls[3]?.[0].content).toContain("| 3 messages |");
+			expect(deliver.mock.calls[1]?.[0].content).toContain("| 3 messages |");
 		} finally {
 			q.close();
 		}
@@ -537,6 +532,71 @@ describe("RunnerMailboxLane", () => {
 			await lane.tick();
 			expect(recipientState.mock.calls.length).toBeLessThanOrEqual(2);
 			expect(resolveOwningLead.mock.calls.length).toBeLessThanOrEqual(2);
+		} finally {
+			q.close();
+		}
+	});
+
+	it("throttles dead-letter scans while continuing runner delivery every tick", async () => {
+		const q = queue();
+		try {
+			let nowMs = Date.parse(NOW);
+			const deliver = vi.fn(async () => ({
+				status: "delivered" as const,
+				backend: "claude-code" as const,
+				settlement: "on_delivery" as const,
+			}));
+			const probeFactsByRecipient = vi.fn(() => new Map<string, string>());
+			const lane = new RunnerMailboxLane({
+				queue: q,
+				ownerEpoch: "owner-1",
+				deliver,
+				now: () => new Date(nowMs),
+				queueConfig: () => ({
+					...DEFAULT_MAILBOX_QUEUE_CONFIG,
+					deadLetterWindowMs: 0,
+					deadLetterScanIntervalMs: 30_000,
+				}),
+				recipientState: () => "alive",
+				resolveOwningLead: () => "lead-a",
+				probeFactsByRecipient,
+			});
+			const enqueueRunner = (id: string) =>
+				q.enqueue({
+					id,
+					fromAgent: "lead-a",
+					toAgent: "exec-dead",
+					recipientKind: "runner",
+					type: "instruction",
+					content: id,
+					createdAt: new Date(nowMs).toISOString(),
+					senderRef: encodeSenderRef(),
+				});
+			const dead1 = enqueueRunner("dead-1");
+			if (dead1.outcome === "archived") throw new Error("archived seed");
+			q.markDead("dead-1", new Date(nowMs).toISOString(), "test");
+			enqueueRunner("live-1");
+			expect(await lane.tick()).toMatchObject({ delivered: 1 });
+			expect(q.getById(`dead_letter:exec-dead:${dead1.row.seq}`)).toBeTruthy();
+			expect(probeFactsByRecipient).toHaveBeenCalledTimes(1);
+
+			nowMs += 1_000;
+			const dead2 = enqueueRunner("dead-2");
+			if (dead2.outcome === "archived") throw new Error("archived seed");
+			q.markDead("dead-2", new Date(nowMs).toISOString(), "test");
+			enqueueRunner("live-2");
+			expect(await lane.tick()).toMatchObject({ delivered: 1 });
+			expect(
+				q.getById(`dead_letter:exec-dead:${dead2.row.seq}`),
+			).toBeUndefined();
+			expect(probeFactsByRecipient).toHaveBeenCalledTimes(1);
+
+			nowMs += 29_000;
+			enqueueRunner("live-3");
+			expect(await lane.tick()).toMatchObject({ delivered: 1 });
+			expect(q.getById(`dead_letter:exec-dead:${dead2.row.seq}`)).toBeTruthy();
+			expect(deliver).toHaveBeenCalledTimes(3);
+			expect(probeFactsByRecipient).toHaveBeenCalledTimes(2);
 		} finally {
 			q.close();
 		}

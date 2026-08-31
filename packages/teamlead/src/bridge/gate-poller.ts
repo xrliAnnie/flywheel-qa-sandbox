@@ -137,6 +137,10 @@ export interface GatePollerConfig {
 	onHealthTick?: () => void | Promise<void>;
 	/** FLY-1687: pure alarm producer on the existing 60s rider cadence. */
 	onLeadPatrolTick?: () => void | Promise<void>;
+	/** FLY-2131: durable Raya summary-absorption producer on the same cadence. */
+	onSummaryAbsorptionTick?: () => void | Promise<void>;
+	/** FLY-2118: machine-wide orphan-pane fallback on the same 60s rider cadence. */
+	onPatrolOrphanSweepTick?: () => void | Promise<void>;
 	/** FLY-1944: cmux watcher liveness/recovery rider on the same 60s cadence. */
 	onCmuxWatcherPatrolTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
@@ -170,9 +174,8 @@ export interface GatePollerConfig {
 	 */
 	onDisplayReconcileTick?: () => void | Promise<void>;
 	/**
-	 * FLY-907: cadence for `onDisplayReconcileTick` in poll ticks (default 60 ≈
-	 * 3min at the production 3s interval; plugin reads
-	 * FLYWHEEL_ISSUE_DISPLAY_SWEEP_TICKS). 0 → sweep disabled.
+	 * FLY-907: injectable test cadence for `onDisplayReconcileTick`. Production
+	 * uses 60 ticks (≈3min at the 3s interval); invalid values fall back to 60.
 	 */
 	displayReconcileEveryNTicks?: number;
 	// ── FLY-605: bidirectional in-thread founder relay fallback ──
@@ -192,17 +195,16 @@ export interface GatePollerConfig {
 	 * FLY-945 Fix A: grace for approve_to_ship gates ONLY (text + ✅-reaction
 	 * founder approvals). The 10min FLY-605 grace exists so the Lead can relay
 	 * first — but a ship gate's answer is founder-only (the Lead is FORBIDDEN
-	 * from relaying it), so the wait is pure dead time. Default 15s. Env
-	 * `FLYWHEEL_SHIP_GATE_GRACE_MS` overrides (set 600000 to restore the old
-	 * behavior — that IS the kill-switch). Non-ship checkpoints are untouched.
+	 * from relaying it), so the wait is pure dead time. Default 15s.
+	 * Non-ship checkpoints are untouched.
 	 */
 	shipGateGraceMs?: number;
 	/**
 	 * FLY-1041 Chunk 6: grace before the approve_to_ship founder CARD is
 	 * posted (the deterministic approval carrier — reply-to-card / ✅). The
 	 * 10min FLY-605 grace made the card a rarely-seen fallback; for ship gates
-	 * the card IS the primary surface, so it fires after ~15s (default). Env
-	 * `FLYWHEEL_SHIP_GATE_CARD_GRACE_MS` overrides. Brainstorm is untouched.
+	 * the card IS the primary surface, so it fires after ~15s (default).
+	 * Brainstorm is untouched.
 	 */
 	shipGateCardGraceMs?: number;
 	/** Part B slow sub-cadence in poll ticks (default 20 ≈ 60s at 3s). */
@@ -295,6 +297,8 @@ export interface GatePollerConfig {
 	}) => Promise<{ handled: string[]; retrySafe: boolean } | null>;
 
 	// Shared alert sink for retained GatePoller convergence failures.
+	/** FLY-2076: call-time store-managed master alert switch. */
+	alertsEnabled?: () => boolean;
 	/**
 	 * The LeadAlertNotifier queues transient failures and never throws.
 	 */
@@ -315,12 +319,6 @@ const yieldToEventLoop = (): Promise<void> =>
 	new Promise((resolve) => setImmediate(resolve));
 const compareThreadIds = (left: string, right: string): number =>
 	left < right ? -1 : left > right ? 1 : 0;
-
-/** FLY-725: parse a strictly-positive int env, else fall back. */
-function positiveIntEnv(raw: string | undefined, fallback: number): number {
-	const n = Number.parseInt(raw ?? "", 10);
-	return Number.isFinite(n) && n > 0 ? n : fallback;
-}
 
 interface PendingQuestion {
 	id: string;
@@ -688,6 +686,40 @@ export class GatePoller {
 			}
 
 			if (
+				this.config.onSummaryAbsorptionTick &&
+				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
+			) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.summary-absorption", () =>
+							this.config.onSummaryAbsorptionTick?.(),
+						),
+					)
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] summary absorption tick error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onPatrolOrphanSweepTick &&
+				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
+			) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.patrol-orphan", () =>
+							this.config.onPatrolOrphanSweepTick?.(),
+						),
+					)
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] patrol orphan sweep error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
 				this.config.onCmuxWatcherPatrolTick &&
 				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
 			) {
@@ -726,12 +758,11 @@ export class GatePoller {
 
 			// FLY-907: issue-display reconcile sweep — same piggyback pattern as
 			// the FLY-513 health probe above (zero new timer, own catch, never
-			// blocks the poll). Cadence 0 → disabled.
+			// blocks the poll). The production cadence is always enabled.
 			{
 				const displayCadence = this.displayReconcileEveryNTicks();
 				if (
 					this.config.onDisplayReconcileTick &&
-					displayCadence > 0 &&
 					(this.tickCount - 1) % displayCadence === 0
 				) {
 					void Promise.resolve()
@@ -1072,8 +1103,7 @@ export class GatePoller {
 
 			// FLY-945 Fix D: external-merge convergence sweeper on the patrol
 			// cadence (zero new timer). The closure (built in plugin.ts) owns its
-			// own kill-switch (FLYWHEEL_EXTERNAL_MERGE_RECONCILE=0) and gh budget;
-			// fully isolated — its errors never abort the poll loop.
+			// gh budget; its errors never abort the poll loop.
 			if (
 				this.config.externalMergeReconcile &&
 				this.tickCount % this.patrolEveryNTicks() === 1
@@ -1274,7 +1304,10 @@ export class GatePoller {
 
 	/** FLY-907: display-reconcile sweep cadence (default 60 ≈ 3min at 3s). */
 	private displayReconcileEveryNTicks(): number {
-		return this.config.displayReconcileEveryNTicks ?? 60;
+		const cadence = this.config.displayReconcileEveryNTicks;
+		return cadence !== undefined && Number.isFinite(cadence) && cadence > 0
+			? cadence
+			: 60;
 	}
 
 	private ensureCommDbMigrated(dbPath: string, project: ProjectEntry): boolean {
@@ -1710,13 +1743,8 @@ export class GatePoller {
 		return this.config.founderThreadNotifyGraceMs ?? 10 * 60_000;
 	}
 
-	/** FLY-1041 Chunk 6: ship-card grace (env > config > 15s default). */
+	/** FLY-2101: founder fixed ship-card grace at 15s; config remains a test seam. */
 	private shipGateCardGraceMs(): number {
-		const env = Number.parseInt(
-			process.env.FLYWHEEL_SHIP_GATE_CARD_GRACE_MS ?? "",
-			10,
-		);
-		if (Number.isFinite(env) && env >= 0) return env;
 		return this.config.shipGateCardGraceMs ?? 15_000;
 	}
 
@@ -2101,13 +2129,8 @@ export class GatePoller {
 		return this.config.founderReplyDeliverGraceMs ?? 10 * 60_000;
 	}
 
-	/** FLY-945 Fix A: ship-gate grace (env > config > 15s default). */
+	/** FLY-2101: founder fixed ship-gate grace at 15s; config remains a test seam. */
 	private shipGateGraceMs(): number {
-		const env = Number.parseInt(
-			process.env.FLYWHEEL_SHIP_GATE_GRACE_MS ?? "",
-			10,
-		);
-		if (Number.isFinite(env) && env >= 0) return env;
 		return this.config.shipGateGraceMs ?? 15_000;
 	}
 
@@ -2377,12 +2400,9 @@ export class GatePoller {
 
 	// ── FLY-1099: founder-reply reliability wiring ──────────────────────────
 
-	/** §7.1: FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS (default 30min). */
+	/** FLY-2101: founder fixed the former runtime flag at 30 minutes. */
 	private founderReplyDeadletterAgeMs(): number {
-		return positiveIntEnv(
-			process.env.FLYWHEEL_FOUNDER_REPLY_DEADLETTER_AGE_MS,
-			30 * 60_000,
-		);
+		return 30 * 60_000;
 	}
 
 	/** Parse a session's issue_labels JSON (defensive — never throws). */
@@ -2728,6 +2748,7 @@ export class GatePoller {
 				}
 			},
 			alertSink: this.config.leadAlertSink,
+			alertsEnabled: this.config.alertsEnabled,
 			resolveAlertRoute: (projectName, executionId) =>
 				this.resolveAlertRoute(projectName, executionId),
 		});

@@ -1,0 +1,15 @@
+sequenceDiagram
+  participant P as flywheel PR
+  participant B as 在跑的老 Bridge
+  participant S as 迁移脚本
+  participant W as 班车维护窗(Bridge 停机)
+  P->>P: merge(按 FLY-1959:merge 不等于部署)
+  S->>B: 第一遍:dry-run 核对后 apply 写 6 行
+  S->>S: 门禁 G1:数据库行集必须恰好等于 6 行。多一行少一行都停
+  S->>S: G1 通过才签发 receipt(通行凭据)
+  Note over W: 停机窗内按序执行。任何一步失败就停
+  W->>W: merge 5 个外部项目的 config 清理 PR + 同步 6 个主检出
+  W->>W: 用新代码 + 新 config 启动新 Bridge
+  S->>B: 第二遍(必须出示 receipt):补 ponytail 全项目=关 一行
+  S->>S: 门禁 G2:行集恰好等于 7 行 + 前后行为对照全绿
+  Note over W: G2 通过才放行。否则如实记 FAIL 不放行

@@ -63,6 +63,7 @@ async function createActiveOperatorRework(): Promise<{
 		executionId: "design-exec",
 	});
 	const design = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-heavy",
 		nodeId: "design",
 		attempt: 1,
@@ -180,6 +181,7 @@ async function createFreshQa(): Promise<{
 }> {
 	const fixture = await createActiveOperatorRework();
 	const completed = fixture.store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-heavy",
 		nodeId: "implement",
 		attempt: 2,
@@ -234,6 +236,7 @@ function submitQaPass(
 	options: { alertIdentity?: boolean; clientRequestId?: string } = {},
 ) {
 	return fixture.store.submitWorkflowDecisionByCredential({
+		nodeReuseEnabled: false,
 		credential: fixture.submissionCredential,
 		clientRequestId: options.clientRequestId ?? "fly1912-qa-pass",
 		predicate: "qa_passed",
@@ -244,7 +247,12 @@ function submitQaPass(
 		subjectProducerVendor: "codex",
 		claimExpiresAt: "2026-08-20T02:00:00.000Z",
 		...(options.alertIdentity === false
-			? {}
+			? {
+					alertIdentity: {
+						...ALERT_IDENTITY,
+						leadId: " ",
+					},
+				}
 			: { alertIdentity: ALERT_IDENTITY }),
 		now: "2026-08-20T00:08:00.000Z",
 	});
@@ -336,6 +344,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 			ignoreFreshAdvance(fixture.store);
 			expect(
 				fixture.store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: "implement-exec",
 					route: "needs_review",
 					sourceEventId: "fly1912-completion",
@@ -374,7 +383,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 		}
 	});
 
-	it("marks the refusal alert pending when an internal caller has no identity", async () => {
+	it("rejects an invalid identity before evaluating an engine invariant", async () => {
 		const fixture = await createFreshQa();
 		try {
 			rawDb(fixture.store)
@@ -384,12 +393,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 				.run(fixture.requestId);
 			expect(submitQaPass(fixture, { alertIdentity: false })).toEqual({
 				ok: false,
-				reason: "transition_refused",
-				detail: {
-					transitionReason:
-						"engine_invariant:workflow_rework_delivery_complete_cas_failed",
-					alertPending: true,
-				},
+				reason: "alert_identity_invalid",
 			});
 			expect(fixture.store.listWorkflowAlertOutbox()).toEqual([]);
 		} finally {
@@ -433,6 +437,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 			`);
 			expect(() =>
 				fixture.store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
 					runId: "run-heavy",
 					nodeId: "implement",
 					attempt: 2,
@@ -454,6 +459,7 @@ describe("FLY-1912 workflow engine invariants", () => {
 			raw.transaction(() => {
 				expect(
 					fixture.store.commitWorkflowTransitionTx({
+						nodeReuseEnabled: false,
 						runId: "run-heavy",
 						nodeId: "implement",
 						attempt: 2,

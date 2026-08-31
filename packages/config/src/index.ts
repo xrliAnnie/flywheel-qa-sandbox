@@ -1,5 +1,32 @@
+export type {
+	BundledRegistry,
+	BundledRegistryGraph,
+	BundledRegistryNode,
+	BundledRegistryStructuralNode,
+	ProjectRegistryOverlay,
+	ProjectRegistryOverlayNode,
+	RegistryEdge,
+	RegistryLoop,
+	RegistryModelPolicy,
+	RegistryNodePolicy,
+	RegistryWorkflowEffort,
+	ResolvedProjectRegistry,
+	ResolvedRegistryNode,
+} from "./agent-registry.js";
+export {
+	loadBundledRegistry,
+	loadDefaultBundledRegistry,
+	loadProjectRegistryOverlay,
+	resolveProjectRegistry,
+	workflowRegistryBindings,
+	workflowRegistryShapes,
+} from "./agent-registry.js";
 export type { ReadFileFn } from "./ConfigLoader.js";
-export { ConfigLoader } from "./ConfigLoader.js";
+export {
+	agentConfigsRequireRegistry,
+	ConfigLoader,
+	resolveAgentConfigs,
+} from "./ConfigLoader.js";
 export {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
@@ -40,8 +67,10 @@ export type {
 	FlagScanClaimed,
 	FlagScanKeepUnbound,
 	FlagScanNoClock,
+	FlagScanScopeState,
 	FlagScanState,
 	FlagScope,
+	FlagScopedStoreView,
 	FlagSource,
 	FlagStoreCodec,
 	FlagStoreRawValue,
@@ -62,14 +91,14 @@ export {
 	getStoreEligibility,
 	isDirectToggleMetadata,
 	LEGACY_UNMANAGED_BASELINE,
-	mailboxQueueEnabled,
 	NON_FLAG_ALLOWLIST,
-	PROTECTED_LEGACY_FLAG_NAMES,
+	PROJECT_STORE_MANAGED_FLAGS,
 	RETIRED_CONFIG_PATHS,
 	RETIRED_FLAG_STORE_ROWS,
 	RETIRED_FLAGS,
 	resolveAllFlags,
 	resolveFlag,
+	resolveScopedEffective,
 	STORE_MANAGED_FLAGS,
 	validateFlagAuthoringPolicy,
 	validateFlagTruthEnvironment,
@@ -223,6 +252,7 @@ export {
 	PONYTAIL_LABEL_ON,
 	PONYTAIL_PLUGIN,
 	PONYTAIL_SELECTOR_UNAVAILABLE,
+	type PonytailConfig,
 	PonytailLabelConflictError,
 	resolvePonytailRequested,
 	toPonytailCondition,
@@ -338,6 +368,8 @@ export {
 } from "./skill-framework-mode.js";
 export type {
 	AgentConfig,
+	AgentConfigSource,
+	AgentMatchConfig,
 	AgentNodeConfig,
 	AutonomyLevel,
 	CheckpointConfig,
@@ -350,16 +382,15 @@ export type {
 	FlywheelConfig,
 	OrchestratorConfig,
 	ParallelConfig,
-	PipelineConfig,
-	PonytailConfig,
+	ProofShotAuthoringConfig,
 	ProofShotConfig,
 	ReactionsConfig,
+	ResolvedAgentConfig,
 	RoleBackendConfig,
 	RoleBackendMap,
 	RoleEffort,
 	RoleName,
 	RunnerConfig,
-	SkillFrameworkConfig,
 	SkillsConfig,
 	TeamConfig,
 	TimeoutBehavior,
@@ -379,9 +410,3 @@ export {
 	XIAOHONGSHU_MAX_FETCH_CEILING,
 	XIAOHONGSHU_REVIEW_CHANNELS,
 } from "./types.js";
-export {
-	WORKFLOW_MENU_BINDINGS,
-	WORKFLOW_MENU_SHAPES,
-	type WorkflowMenuShapeId,
-	workflowMenuTemplateId,
-} from "./workflow-menu-contract.js";

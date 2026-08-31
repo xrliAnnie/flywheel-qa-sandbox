@@ -2,19 +2,16 @@
  * FLY-709 — feature-flag resolver.
  *
  * Computes the effective (current) value of each registered flag from
- * process.env (Bridge-global env flags) and per-project config (project-scoped
- * config flags), reusing each flag's real in-line semantics so the displayed
- * value is byte-identical to what the owning code actually observes.
+ * process.env (Bridge-global flags). Project-scoped runtime values are enriched
+ * from SQLite by the Bridge after this registry view is constructed.
  *
  * env flags are Bridge-global → single `effective`.
- * project_config flags are per-project → `effectiveByProject[]` (env is global,
- * but doc_flow / proofshot / etc. differ per project). Config-load errors are
- * surfaced as data, never silently defaulted. Dormant flags (ponytail: validated
- * by ConfigLoader but not loaded by run-infra) report no effective value.
+ * project_config flags are per-project → `effectiveByProject[]` populated by
+ * the store enrichment path (env is global, but doc_flow / proofshot / etc.
+ * differ per project).
  */
 
 import { type EnvFileSource, readEnvFileValue } from "../env-file.js";
-import type { FlywheelConfig } from "../types.js";
 import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
@@ -25,24 +22,42 @@ import {
 	type FlagValueKind,
 	type ReadTiming,
 } from "./registry.js";
+import type { FlagStoreCodec } from "./store-policy.js";
 
 export interface FlagResolveCtx {
 	/** Defaults to process.env — the Bridge-global env for env flags. */
 	env?: Record<string, string | undefined>;
 	/** Explicit shared .env snapshot. Omit for legacy Bridge-only resolution. */
 	envFile?: EnvFileSource;
-	/** project name → its loaded config (or a load error). Used for project flags. */
-	projectConfigs?: Map<string, { config?: FlywheelConfig; error?: string }>;
 }
 
 /** A project-scoped flag's effective value on one project. */
 export interface FlagEffectiveByProject {
 	projectName: string;
-	/** Present when the project config loaded. */
+	/** Present when the project store resolved. */
 	value?: boolean | string;
-	/** Present when the project config failed to load (surfaced, not defaulted). */
+	/** Present when the project store failed to resolve. */
 	error?: string;
 	isDefault?: boolean;
+	/** FLY-2100: which layer supplied the displayed project value. */
+	via?: "project_row" | "star_row" | "default";
+}
+
+export interface FlagScopedStoreView {
+	/** Present rows only; absence means inherit. No revision or actor metadata. */
+	rows: Array<{
+		scope: string;
+		raw: string;
+		value: boolean | string;
+	}>;
+}
+
+/** Persistent stable-value clock for one flag scope. Secret-free by design. */
+export interface FlagValueClock {
+	scopeKey: string;
+	valueLastChanged: number | null;
+	firstRegisteredAt: number;
+	readiness: "ready" | "no_clock";
 }
 
 /** Secret-free DTO handed to the console / snapshot / report renderers. */
@@ -91,33 +106,18 @@ export interface FlagView {
 	retiring?: string;
 	/** FLY-1778: true when SQLite, rather than legacy env/config, owns the value. */
 	storeManaged?: boolean;
-	/** Current effective value read from the owning SQLite row or boot bypass. */
+	/** FLY-2100: this project flag is writable through scoped SQLite rows. */
+	projectStoreManaged?: boolean;
+	/** Secret-free row-presence DTO used by phone controls. */
+	scopedStore?: FlagScopedStoreView;
+	/** Current effective value read from the owning SQLite row. */
 	storeEffective?: boolean | string;
 	/** Epoch milliseconds when the canonical effective value last changed. */
 	valueLastChanged?: number | null;
 	/** Whether the persistent value clock is safe for downstream consumers. */
-	clockReadiness?:
-		| "ready"
-		| "no_clock:bypass"
-		| "no_clock:degraded"
-		| "no_clock:unmanaged";
-}
-
-/** Navigate a schema path, expanding Record (`*`) and array (`[]`) segments. */
-function getByPath(obj: unknown, path: string): unknown[] {
-	let values: unknown[] = [obj];
-	for (const segment of path.split(".")) {
-		const arraySegment = segment.endsWith("[]");
-		const key = arraySegment ? segment.slice(0, -2) : segment;
-		values = values.flatMap((value) => {
-			if (value == null || typeof value !== "object") return [undefined];
-			if (key === "*") return Object.values(value);
-			const next = (value as Record<string, unknown>)[key];
-			if (!arraySegment) return [next];
-			return Array.isArray(next) ? next : [];
-		});
-	}
-	return values;
+	clockReadiness?: "ready" | "no_clock:degraded" | "no_clock:unmanaged";
+	/** FLY-2104: scope-aware clocks; current single-row schema projects `*`. */
+	valueClocks?: FlagValueClock[];
 }
 
 function uniqueTimings(spec: FeatureFlagSpec): ReadTiming[] {
@@ -222,22 +222,34 @@ function withEnvSources(
 	};
 }
 
-/** Effective value of a project_config flag on one loaded config. */
-function resolveConfigValue(
-	spec: FeatureFlagSpec,
-	config: FlywheelConfig,
-): { value: boolean | string } | { error: string } {
-	const rawValues = spec.configKey ? getByPath(config, spec.configKey) : [];
-	const values = (rawValues.length > 0 ? rawValues : [undefined]).map((raw) => {
-		if (raw === undefined || raw === null) return spec.default;
-		if (spec.valueKind === "bool") return Boolean(raw);
-		return String(raw);
-	});
-	const value = values[0] ?? spec.default;
-	if (values.some((candidate) => candidate !== value)) {
-		return { error: `mixed values for ${spec.configKey}` };
+/**
+ * Resolve project-scoped SQLite rows. An explicit project row wins over the
+ * `*` row; no row means the registry default.
+ */
+export function resolveScopedEffective(input: {
+	spec: FeatureFlagSpec;
+	projectName: string;
+	rows: ReadonlyArray<{ scope: string; raw: string | null }>;
+	codec: FlagStoreCodec;
+}): FlagEffectiveByProject {
+	const row =
+		input.rows.find((candidate) => candidate.scope === input.projectName) ??
+		input.rows.find((candidate) => candidate.scope === "*");
+	if (row) {
+		const value = input.codec.parse({ hasOverride: true, raw: row.raw });
+		return {
+			projectName: input.projectName,
+			value,
+			isDefault: value === input.spec.default,
+			via: row.scope === "*" ? "star_row" : "project_row",
+		};
 	}
-	return { value };
+	return {
+		projectName: input.projectName,
+		value: input.spec.default,
+		isDefault: true,
+		via: "default",
+	};
 }
 
 export function resolveFlag(
@@ -264,25 +276,6 @@ export function resolveFlag(
 	};
 
 	if (spec.scope === "bridge_global") {
-		// FLY-1329 A2 (Codex R2 LOW): the activity window is a wording-only value the
-		// runtime (`activityWindowMs`) sanitizes — junk / ≤0 / non-finite all become
-		// the default. Report the SANITIZED effective value, not the raw env string,
-		// so the dashboard never shows a value the runtime does not actually use.
-		// Kept in lock-step with activityWindowMs() (same finite-&&->0 rule); config
-		// cannot import teamlead, so the tiny rule is mirrored, not shared.
-		if (spec.envVar === "FLYWHEEL_LIVENESS_ACTIVITY_WINDOW_MS") {
-			const raw = env[spec.envVar];
-			const n = Number(raw);
-			const effective =
-				raw !== undefined && Number.isFinite(n) && n > 0
-					? String(n)
-					: String(spec.default);
-			return {
-				...base,
-				effective,
-				isDefault: effective === String(spec.default),
-			};
-		}
 		// FLY-1356 R1#8: an enum raw outside enumValues throws in
 		// resolveEnvEffective — surface it as an explicit display-only error so
 		// the console never shows garbage as the current mode while the owning
@@ -299,42 +292,7 @@ export function resolveFlag(
 		return withEnvSources(base, spec, effective, ctx);
 	}
 
-	// project scope. Dormant flags never report an effective value.
-	if (spec.dormant) return base;
-
-	const configs = ctx.projectConfigs;
-	if (!configs || configs.size === 0) {
-		return { ...base, effectiveByProject: [] };
-	}
-	const effectiveByProject: FlagEffectiveByProject[] = [];
-	for (const [projectName, entry] of configs) {
-		// Only a real load error is an error row.
-		if (entry.error !== undefined) {
-			effectiveByProject.push({ projectName, error: entry.error });
-			continue;
-		}
-		// Absent config (ENOENT → {}) = absent/default semantics, NOT an error.
-		if (entry.config === undefined) {
-			effectiveByProject.push({
-				projectName,
-				value: spec.default,
-				isDefault: true,
-			});
-			continue;
-		}
-		const resolution = resolveConfigValue(spec, entry.config);
-		if ("error" in resolution) {
-			effectiveByProject.push({ projectName, error: resolution.error });
-			continue;
-		}
-		const { value } = resolution;
-		effectiveByProject.push({
-			projectName,
-			value,
-			isDefault: value === spec.default,
-		});
-	}
-	return { ...base, effectiveByProject };
+	return { ...base, effectiveByProject: [] };
 }
 
 export function resolveAllFlags(ctx: FlagResolveCtx): FlagView[] {

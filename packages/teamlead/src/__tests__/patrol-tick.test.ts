@@ -695,6 +695,102 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 		}
 	});
 
+	it("does not double mint when the current wall-clock slot has a torn identity", async () => {
+		const intervalMs = 10 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T12:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		h.settlements.set(deliveryId(h.rows[0]!), { kind: "torn_identity" });
+
+		await pass();
+		await pass();
+		await pass();
+		await pass();
+
+		expect(h.rows).toHaveLength(1);
+		expect(h.enqueued).toHaveLength(1);
+		expect(h.alerts).toEqual([]);
+	});
+
+	it("advances an old torn slot with a fresh journal and delivery identity", async () => {
+		const intervalMs = 10 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T12:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		const inspect = vi.fn(
+			(_projectName: string, id: string) =>
+				h.settlements.get(id) ?? { kind: "absent_identity" as const },
+		);
+		h.deps.inspectDeliveryState = inspect;
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		const first = h.rows[0]!;
+		const poisonedDeliveryId = deliveryId(first);
+		h.settlements.set(poisonedDeliveryId, { kind: "torn_identity" });
+
+		h.setNow(startMs + intervalMs);
+		await pass();
+		expect(h.rows).toHaveLength(2);
+		expect(h.enqueued).toEqual([first, h.rows[1]]);
+		expect(h.rows[1]!.event_id).toBe(
+			`patrol_tick:foo_bar:eng-lead:after-${first.seq}`,
+		);
+		expect(h.deps.log).toHaveBeenCalledWith(
+			expect.stringContaining(`torn delivery=${poisonedDeliveryId}`),
+		);
+
+		const freshDeliveryId = deliveryId(h.rows[1]!);
+		h.settlements.set(freshDeliveryId, {
+			kind: "live",
+			state: "QUEUED",
+			settledAt: null,
+		});
+		await pass();
+		expect(h.rows).toHaveLength(2);
+		expect(
+			inspect.mock.calls.filter(([, id]) => id === poisonedDeliveryId),
+		).toHaveLength(1);
+		expect(inspect).toHaveBeenLastCalledWith("foo_bar", freshDeliveryId);
+	});
+
+	it("advances an old archived nonterminal slot instead of stalling", async () => {
+		const intervalMs = 10 * 60_000;
+		const startMs =
+			Date.parse("2026-08-13T12:00:00.000Z") +
+			patrolTickOffsetMs("eng-lead", intervalMs);
+		const h = harness({ nowMs: startMs });
+		const pass = createLeadPatrolTickPass(h.deps);
+		await pass();
+		const first = h.rows[0]!;
+		const poisonedDeliveryId = deliveryId(first);
+		h.settlements.set(poisonedDeliveryId, {
+			kind: "archived_nonterminal",
+			state: "LEASED",
+			settledAt: null,
+			deadReason: null,
+			lastError: null,
+			createdAt: "2026-08-13T12:00:00.000Z",
+			deliveredAt: null,
+			notifiedAt: null,
+		});
+
+		h.setNow(startMs + intervalMs);
+		await pass();
+
+		expect(h.rows).toHaveLength(2);
+		expect(h.enqueued).toEqual([first, h.rows[1]]);
+		expect(h.deps.log).toHaveBeenCalledWith(
+			expect.stringContaining(
+				`archived_nonterminal delivery=${poisonedDeliveryId}`,
+			),
+		);
+		expect(h.alerts).toEqual([]);
+	});
+
 	it("isolates one lead failure from the rest of the fleet", async () => {
 		const twoLeadProject: ProjectEntry = {
 			...project,

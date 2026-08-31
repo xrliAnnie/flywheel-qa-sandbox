@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -15,7 +15,17 @@ describe("flywheel-comm lead-lease", () => {
 
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1309-cli-"));
+		mkdirSync(join(dir, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		env = {
+			FLYWHEEL_STATE_DIR: join(dir, ".flywheel"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "lease.db"),
 			FLYWHEEL_LEAD_EPISODE_DB: join(dir, "lease-episodes.db"),
 			FLYWHEEL_LEAD_LEASE_MODE_FILE: join(dir, "mode.json"),
@@ -24,7 +34,10 @@ describe("flywheel-comm lead-lease", () => {
 		writeFileSync(
 			env.FLYWHEEL_PROJECTS_FILE,
 			JSON.stringify([
-				{ projectName: "flywheel", leads: [{ agentId: "eng-lead" }] },
+				{
+					projectName: "flywheel",
+					leads: [{ agentId: "eng-lead", summaryRole: "producer" }],
+				},
 			]),
 		);
 		stdout = [];

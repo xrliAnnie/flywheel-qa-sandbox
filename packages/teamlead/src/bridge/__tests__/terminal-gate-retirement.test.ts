@@ -384,6 +384,7 @@ describe("terminal gate retirement", () => {
 		);
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-1",
 				nodeId: "craft",
 				attempt: 1,

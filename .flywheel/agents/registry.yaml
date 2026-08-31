@@ -1,0 +1,254 @@
+nodes:
+  eng_design:
+    file: nodes/eng_design.md
+    label: 设计(工程)
+    type: design
+    department: engineering
+  implement:
+    file: nodes/implement.md
+    label: 实现
+    type: implement
+    department: engineering
+  qa:
+    file: nodes/qa.md
+    label: QA 验证
+    type: qa
+    department: engineering
+  pm:
+    file: nodes/pm.md
+    label: 产品需求
+    type: generic
+    department: engineering
+    departments: [engineering, product]
+  product_design:
+    file: nodes/product_design.md
+    label: 产品设计
+    type: generic
+    department: engineering
+    departments: [engineering, product]
+  proto:
+    file: nodes/proto.md
+    label: 原型
+    type: generic
+    department: engineering
+    departments: [engineering, product]
+  general:
+    file: nodes/general.md
+    label: 通用执行
+    type: generic
+  engineer:
+    file: nodes/engineer.md
+    label: 工程师
+    department: engineering
+  product_designer:
+    file: nodes/product_designer.md
+    label: UX 设计
+    department: engineering
+    departments: [engineering, product]
+
+structural:
+  founder_gate:
+    label: 创始人门
+  land:
+    label: 合入
+
+graphs:
+  code:
+    templateId: tpl_code
+    label: 工程开发
+    nodes: [eng_design, implement, qa, founder_gate, land]
+    policies:
+      eng_design:
+        defaultModel: fable
+        models:
+          - model: fable
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+      implement:
+        defaultModel: codex
+        models:
+          - model: fable
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+      qa:
+        defaultModel: opus
+        models:
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+    edges:
+      - id: design_done
+        from: eng_design
+        to: implement
+        condition: design_done
+      - id: implement_done
+        from: implement
+        to: qa
+        condition: implement_done
+      - id: qa_pass
+        from: qa
+        to: founder_gate
+        condition: qa_pass
+      - id: founder_approved
+        from: founder_gate
+        to: land
+        condition: founder_approved
+    loops:
+      - id: qa_retry
+        from: qa
+        to: implement
+        loopWhen: qa_fail
+        exitWhen: qa_pass
+      - id: founder_rework
+        from: founder_gate
+        to: implement
+        loopWhen: founder_feedback_kickback
+        exitWhen: founder_approved
+
+  simple_code:
+    templateId: tpl_simple_code
+    label: 轻量开发
+    nodes: [implement, qa, founder_gate, land]
+    policies:
+      implement:
+        defaultModel: codex
+        models:
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+          - model: fable
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+      qa:
+        defaultModel: opus
+        models:
+          - model: codex
+            allowedEfforts: [low, medium, high, xhigh, max]
+            defaultEffort: xhigh
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+    edges:
+      - id: implement_done
+        from: implement
+        to: qa
+        condition: implement_done
+      - id: qa_pass
+        from: qa
+        to: founder_gate
+        condition: qa_pass
+      - id: founder_approved
+        from: founder_gate
+        to: land
+        condition: founder_approved
+    loops:
+      - id: qa_retry
+        from: qa
+        to: implement
+        loopWhen: qa_fail
+        exitWhen: qa_pass
+      - id: founder_rework
+        from: founder_gate
+        to: implement
+        loopWhen: founder_feedback_kickback
+        exitWhen: founder_approved
+
+  prd:
+    templateId: tpl_prd
+    label: 产品需求
+    founderReview: true
+    nodes: [pm, founder_gate, land]
+    policies:
+      pm:
+        defaultModel: opus
+        models:
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+    edges:
+      - id: pm_done
+        from: pm
+        to: founder_gate
+        condition: node_done
+      - id: founder_approved
+        from: founder_gate
+        to: land
+        condition: founder_approved
+    loops: []
+
+  product_design_flow:
+    templateId: tpl_design
+    label: 产品设计
+    founderReview: true
+    nodes: [product_design, founder_gate, land]
+    policies:
+      product_design:
+        defaultModel: opus
+        models:
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+    edges:
+      - id: product_design_done
+        from: product_design
+        to: founder_gate
+        condition: node_done
+      - id: founder_approved
+        from: founder_gate
+        to: land
+        condition: founder_approved
+    loops: []
+
+  prototype:
+    templateId: tpl_prototype
+    label: 原型验证
+    founderReview: true
+    nodes: [proto, founder_gate, land]
+    policies:
+      proto:
+        defaultModel: opus
+        models:
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+    edges:
+      - id: proto_done
+        from: proto
+        to: founder_gate
+        condition: node_done
+      - id: founder_approved
+        from: founder_gate
+        to: land
+        condition: founder_approved
+    loops: []
+
+  generic:
+    templateId: tpl_generic_menu
+    label: 通用
+    nodes: [general, founder_gate, land]
+    policies:
+      general:
+        defaultModel: opus
+        models:
+          - model: opus
+            allowedEfforts: [low, medium, high, max]
+            defaultEffort: high
+    edges:
+      - id: general_done
+        from: general
+        to: founder_gate
+        condition: node_done
+      - id: founder_approved
+        from: founder_gate
+        to: land
+        condition: founder_approved
+    loops: []

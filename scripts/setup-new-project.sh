@@ -102,7 +102,9 @@ if [ -n "$DEPT_ID_OVERRIDE" ]; then
   DEPT_LEAD_ID="$DEPT_ID_OVERRIDE"
 fi
 [ "$COS_LEAD_ID" != "$DEPT_LEAD_ID" ] || err "--cos-id and --dept-id resolve to the same lead id ($COS_LEAD_ID)"
-EXECUTOR_REL=".flywheel/agents/${DEPT}/${DEPT}-executor.md"
+NODE_ID="${DEPT//-/_}"
+DEPT_LABEL="$(printf '%s' "$DEPT" | awk '{ print toupper(substr($0,1,1)) substr($0,2) }')"
+EXECUTOR_REL=".flywheel/agents/nodes/${NODE_ID}.md"
 
 # Small idempotent file writer: write heredoc only if the file is absent.
 # Usage: write_if_absent <path>  (heredoc piped on stdin)
@@ -163,7 +165,15 @@ TODO (domain safety boundaries — e.g. content rules, review gates).
 - Produce work as a reviewable PR. Merge / ship stays founder-gated (FLY-175).
 AGENTS_EOF
 
-# ── 4. .flywheel/config.yaml (full, ConfigLoader-valid schema) ───────────────
+# ── 4. Stable node registry + ConfigLoader-valid dispatch aliases ───────────
+write_if_absent "${TARGET}/.flywheel/agents/registry.yaml" << REGISTRY_EOF
+nodes:
+  ${NODE_ID}:
+    file: nodes/${NODE_ID}.md
+    label: ${DEPT_LABEL}
+    department: ${DEPT}
+REGISTRY_EOF
+
 write_if_absent "${TARGET}/.flywheel/config.yaml" << CONFIG_EOF
 # Flywheel configuration for \`${PROJECT}\` — Blueprint/Runner-side config.
 # Lead/Discord routing lives in ~/.flywheel/projects.json (machine-local, added
@@ -196,26 +206,22 @@ decision_layer:
 
 checkpoints:
   brainstorm:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-close
   question:
-    enabled: true
     timeout_ms: 86400000
     timeout_behavior: fail-open
 
-# Single ${DEPT} executor; key = agent name, value = file + dispatch labels.
+# Single ${DEPT} dispatch alias; stable identity/file/label live in registry.yaml.
 agents:
   ${DEPT}:
-    agent_file: ${EXECUTOR_REL}
-    department: ${DEPT}
+    node: ${NODE_ID}
     match:
       labels: ["${DEPT}"]
 default_agent: ${DEPT}
 
 # FLY-205: department-first doc-flow baseline.
 doc_flow:
-  enabled: true
   default_department: ${DEPT}
 CONFIG_EOF
 
@@ -253,7 +259,7 @@ chmod +x "${TARGET}/.flywheel/hooks/report-deployment.sh" 2>/dev/null || true
 if [ "$DEPT" = "content" ]; then
   write_if_absent "${TARGET}/${EXECUTOR_REL}" << 'EXEC_EOF'
 ---
-name: content-executor
+name: content
 description: General content engineer. Takes a Linear issue and produces content (text/media/publishing) end-to-end as a reviewable PR. NOT a thin wrapper around one tool.
 model: opus
 permissionMode: default
@@ -301,7 +307,7 @@ EXEC_EOF
 else
   write_if_absent "${TARGET}/${EXECUTOR_REL}" << EXEC_GENERIC_EOF
 ---
-name: ${DEPT}-executor
+name: ${NODE_ID}
 description: ${DEPT} executor for ${PROJECT}. Takes a Linear issue and ships the work as a reviewable PR.
 model: opus
 permissionMode: default
@@ -449,8 +455,10 @@ Order matters (FLY-270: projects.json-first → manifest → install plist):
     flywheel-fleet.sh apply cannot seed it before the first carrier exists.
     Verify the manifest launchEnvironment when used, plus launchctl print output.
  8. Restart the Bridge (batch with any in-flight Bridge PRs).
- 9. Verify: bots online + reply in their channels + a real founder chat.
-10. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
+ 9. Enable doc-flow through the scoped SQLite flag store (hot-effective):
+    flywheel-comm feature-flags set --name doc_flow --to on --project ${PROJECT} --reason "enable doc-flow during project onboarding"
+10. Verify: bots online + reply in their channels + a real founder chat.
+11. Digest onboarding (FLY-727): wire .flywheel/hooks/report-deployment.sh into
     ${PROJECT}'s deploy point (or CI post-deploy) — call it with
     --issue FLY-N | --pr N --merge-sha <sha> at each production deploy. That records
     a deployment_events row so the daily fleet-wide digest covers ${PROJECT}.

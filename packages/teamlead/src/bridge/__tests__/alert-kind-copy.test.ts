@@ -20,11 +20,29 @@ describe("alert kind copy", () => {
 		expect(body).not.toMatch(/spawn|auto-QA|QA Runner/i);
 	});
 
+	it("keeps generic review failure copy neutral about the recovery path", () => {
+		const body = bodyFor("review_job_failed", "ignored");
+		expect(body).toBe(
+			"Cross-family review failed closed. Inspect the failure reason and live bound-gate state before choosing the recovery path; obsolete or non-replayable requests require a fresh gate or request.",
+		);
+		expect(body).not.toMatch(/same requestId/i);
+	});
+
 	it("points Bridge deploy failures at rotating, startup, and marker evidence", () => {
 		const body = bodyFor("deploy_failed", "ignored");
 		expect(body).toContain("/tmp/flywheel-bridge.log");
 		expect(body).toContain("bridge-startup.log");
 		expect(body).toContain("bridge-log-rotation-error.json");
 		expect(body).toContain("deployed-sha");
+	});
+
+	it("provides a static fail-closed fallback for meeting artifact failures", () => {
+		expect(titleFor("meeting_notes_failed")).toBe("会议留痕管线故障");
+		expect(bodyFor("meeting_notes_failed", "ignored")).toContain(
+			"idempotent tick",
+		);
+		expect(bodyFor("meeting_notes_failed", "ignored")).toContain(
+			"failureClass",
+		);
 	});
 });

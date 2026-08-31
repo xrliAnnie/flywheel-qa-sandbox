@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CommDB } from "flywheel-comm/db";
@@ -12,7 +12,9 @@ import { StateStore } from "../StateStore.js";
 import {
 	legacyGenericSeed,
 	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
 } from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const WORKFLOW_ON = {
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
@@ -247,11 +249,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 
 	it("FLY-1788: projects generic spawn and rework TURNs addressed by bound node id", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1788-generic-projector-"));
-		mkdirSync(join(root, "agents"));
-		writeFileSync(
-			join(root, "agents", "generic-executor.md"),
-			"Produce the pinned artifact.\n",
-		);
+		installSelfHostedWorkflowAgentProject(root);
 		const store = await StateStore.create(":memory:");
 		try {
 			const seed = legacyGenericSeed("tpl-generic-fly1788");
@@ -471,14 +469,12 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 	it("advances an approved product v2 run to its terminal land node", async () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "fly1307-product-source-"));
-		mkdirSync(join(root, "agents"));
-		writeFileSync(
-			join(root, "agents", "generic-executor.md"),
-			"Execute the pinned node.\n",
+		installSelfHostedWorkflowAgentProject(root);
+		const seed = pinLegacyWorkflowSeedAgents(
+			legacyWorkflowSeeds().find(
+				(candidate) => candidate.templateId === "tpl_product_v1",
+			)!,
 		);
-		const seed = legacyWorkflowSeeds().find(
-			(candidate) => candidate.templateId === "tpl_product_v1",
-		)!;
 		const flags = WORKFLOW_ON;
 		store.importWorkflowTemplateSeed(seed, flags);
 		store.materializeWorkflowRun({
@@ -509,6 +505,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "product-run",
 				nodeId: "research",
 				attempt: 1,
@@ -548,6 +545,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		if (!producedOutput.ok) throw new Error(producedOutput.reason);
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "product-produce",
 				route: "needs_review",
 				sourceEventId: "produce-complete",
@@ -614,6 +612,7 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: review.submissionCredential,
 				clientRequestId: "review-pass",
 				predicate: "design_review_approved",
@@ -638,6 +637,11 @@ describe("StateStore.applyWorkflowSourceEvent", () => {
 					outputAttempt: 1,
 					repo: "geoforge3d/flywheel",
 					ref: "refs/heads/fly-1307",
+				},
+				alertIdentity: {
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
 				},
 				now: "2026-07-16T00:11:00.000Z",
 			}).ok,

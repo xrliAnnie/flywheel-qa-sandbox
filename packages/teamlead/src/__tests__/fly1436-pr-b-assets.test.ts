@@ -23,20 +23,55 @@ describe("FLY-1436 PR-B production assets", () => {
 		const config = parseYaml(source) as {
 			pipeline?: { dag?: boolean; work_kind?: boolean };
 		};
-		expect(config.pipeline).toMatchObject({ dag: true, work_kind: true });
-		expect(source).toContain("FLY-1436");
-		expect(source).toMatch(/restore bindings first/i);
-		expect(source).toContain("G-GO");
+		const migrationRunbook = readFileSync(
+			join(
+				ROOT,
+				"engineering",
+				"doc",
+				"FLY-2166-pre-cutover-audit-fix",
+				"g2-runbook.md",
+			),
+			"utf8",
+		);
+		expect(config.pipeline).toBeUndefined();
+		expect(migrationRunbook).toContain(
+			'{ name: "pipeline_dag", scope: "flywheel", raw: "1" }',
+		);
+		expect(migrationRunbook).toContain(
+			'{ name: "pipeline_work_kind", scope: "flywheel", raw: "1" }',
+		);
+	});
+
+	it("keeps the FLY-2103 manual config audit fail-closed", () => {
+		const runbook = readFileSync(
+			join(
+				ROOT,
+				"engineering",
+				"doc",
+				"FLY-2166-pre-cutover-audit-fix",
+				"g2-runbook.md",
+			),
+			"utf8",
+		);
+
+		expect(runbook).toContain(
+			'if (Object.hasOwn(c, "pipeline")) hit.push("pipeline");',
+		);
+		expect(runbook).toContain('test -n "$upstream_ref"');
+		expect(runbook).toContain('2> "$upstream_error"');
+		expect(runbook).toContain(
+			'if (hit.length) console.log(hit.sort().join("\\n"));',
+		);
 	});
 
 	it.each([
-		["pm-executor.md", "prd"],
-		["prototype-executor.md", "prototype"],
+		["pm.md", "prd"],
+		["proto.md", "prototype"],
 	])(
 		"replaces label routing in %s with canonical taskCategory=%s",
 		(file, category) => {
 			const source = readFileSync(
-				join(ROOT, ".flywheel", "agents", "engineering", file),
+				join(ROOT, ".flywheel", "agents", "nodes", file),
 				"utf8",
 			);
 			expect(source).not.toContain("no-three-stage");

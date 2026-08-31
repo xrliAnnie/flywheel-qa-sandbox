@@ -1,0 +1,11 @@
+flowchart LR
+  subgraph write["写入(唯一入口不变)"]
+    CLI["flywheel-comm feature-flags<br/>set / clear --project"] --> API["Bridge 的 flag 写入接口<br/>(stage 预检 + apply 落库)"]
+  end
+  API --> FV[("flag_values 表<br/>主键 = flag 名 + 范围<br/>范围 = 项目名 或 * 全项目")]
+  FV --> R["读值三级顺序:<br/>1. 本项目行<br/>2. * 全项目行<br/>3. 名册默认值"]
+  R --> RP1["doc_flow:Runner 提示词<br/>是否注入文档流程块"]
+  R --> RP2["pipeline:派工是否走 DAG 引擎<br/>+ work_kind 强制"]
+  R --> RP3["proofshot / 小红书 / ponytail /<br/>skill 框架分流 等其余读点"]
+  CFG[("config.yaml<br/>只剩非开关配置:<br/>部门名 / 超时 / collections / agents")] --> RP1
+  CFG -.->|"9 类残留 flag key"| ERR["ConfigLoader 大声报错<br/>fail-loud,拒绝启动该项目"]

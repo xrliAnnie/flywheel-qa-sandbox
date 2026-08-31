@@ -119,6 +119,13 @@
 		},
 		{
 			"file": "packages/flywheel-comm/src/mailbox-schema.ts",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "packages/flywheel-comm/src/mailbox-schema.ts",
 			"relation": "mailbox",
 			"baseTable": "mailbox",
 			"usage": "read",
@@ -296,6 +303,27 @@
 			"file": "scripts/fly-1995-session-events-residue-surgery.mjs",
 			"relation": "session_events",
 			"baseTable": "session_events",
+			"usage": "read",
+			"disposition": "candidate_guarded"
+		},
+		{
+			"file": "scripts/fly-2165-repair-torn-mailbox-identities.mjs",
+			"relation": "mailbox_log",
+			"baseTable": "mailbox_log",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/fly-2165-repair-torn-mailbox-identities.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
+			"usage": "anti_join",
+			"disposition": "protect"
+		},
+		{
+			"file": "scripts/fly-2165-repair-torn-mailbox-identities.mjs",
+			"relation": "mailbox",
+			"baseTable": "mailbox",
 			"usage": "read",
 			"disposition": "candidate_guarded"
 		},

@@ -137,7 +137,6 @@ describe("FLY-1505 QA: a stalled ship attempt must not spend the founder approva
 	beforeEach(async () => {
 		// Same gate stubs the sibling FLY-108 integration suite uses: these are
 		// legacy-session FSM paths, not the merge-approval gate under test here.
-		vi.stubEnv("FLYWHEEL_MERGE_APPROVAL_GATE", "0");
 		vi.stubEnv("FLYWHEEL_WORKFLOW_CLAIMS_READ", "0");
 
 		tmp = mkdtempSync(join(tmpdir(), "fly1505-qa-"));

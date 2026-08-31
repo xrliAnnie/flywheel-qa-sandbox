@@ -1,0 +1,1 @@
+/Users/xiaorongli/.local/bin/codex resume --remote unix:///Users/xiaorongli/.flywheel/cdx-sock/feb902fbf89d6735.sock -C /private/tmp/qa-fly1239-BkfVdI/repo-qa-wt -s workspace-write -c approval_policy="never" 01a054ca-22ad-7f82-9b5c-95af77f6c4c8

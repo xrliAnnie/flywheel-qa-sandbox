@@ -65,6 +65,113 @@ const PREFIX_TARGETS: Record<string, FounderReworkTarget> = {
 	测试: "qa",
 };
 
+interface WorkflowReworkTopology {
+	manifest: {
+		edges: readonly { from: string; to: string }[];
+		loops: readonly { from: string; to: string }[];
+	};
+	resolved: {
+		nodes: readonly {
+			id: string;
+			type: string;
+			dispatch?: unknown;
+		}[];
+	};
+}
+
+export interface ResolvedFounderReworkRoute {
+	semanticTarget: FounderReworkTarget;
+	targetNodeId: string;
+	invalidationScope: string[];
+	verificationPolicy: FounderReworkVerificationStep[];
+}
+
+function semanticReworkTarget(value: string): FounderReworkTarget | undefined {
+	return PREFIX_TARGETS[value.normalize("NFKC").trim().toLowerCase()];
+}
+
+/**
+ * Interpret design/implement/qa (and their Chinese tokens) as semantic node
+ * types inside the pinned snapshot. Other values remain exact custom node ids.
+ */
+export function resolveWorkflowReworkTarget(
+	topology: WorkflowReworkTopology,
+	requestedTarget: string,
+): WorkflowReworkTopology["resolved"]["nodes"][number] {
+	const normalized = requestedTarget.normalize("NFKC").trim();
+	const semantic = semanticReworkTarget(normalized);
+	const exact = topology.resolved.nodes.find(
+		(node) => node.id === normalized && node.dispatch !== undefined,
+	);
+	if (!semantic) {
+		if (!exact)
+			throw new Error(`unknown workflow rework target: ${normalized}`);
+		return exact;
+	}
+	const candidates = topology.resolved.nodes.filter(
+		(node) => node.type === semantic && node.dispatch !== undefined,
+	);
+	// A historical custom graph can use a reserved word as an exact generic id.
+	// Preserve that pin only when the semantic type is absent from the snapshot.
+	if (candidates.length === 0 && exact) return exact;
+	if (candidates.length === 0) {
+		throw new Error(`missing semantic workflow rework target: ${semantic}`);
+	}
+	if (candidates.length !== 1) {
+		throw new Error(`ambiguous semantic workflow rework target: ${semantic}`);
+	}
+	return candidates[0]!;
+}
+
+/** Resolve the physical target and downstream invalidation path from one pin. */
+export function resolveFounderReworkRoute(
+	topology: WorkflowReworkTopology,
+	requestedTarget: string,
+): ResolvedFounderReworkRoute {
+	const semanticTarget = semanticReworkTarget(requestedTarget);
+	if (!semanticTarget) {
+		throw new Error(`unknown founder rework target: ${requestedTarget}`);
+	}
+	const target = resolveWorkflowReworkTarget(topology, semanticTarget);
+	const reachable = new Set<string>();
+	const pending = [target.id];
+	while (pending.length > 0) {
+		const current = pending.shift()!;
+		if (reachable.has(current)) continue;
+		const node = topology.resolved.nodes.find(
+			(candidate) => candidate.id === current,
+		);
+		if (!node || node.dispatch === undefined) continue;
+		reachable.add(current);
+		for (const edge of topology.manifest.edges) {
+			if (edge.from === current) pending.push(edge.to);
+		}
+	}
+	const routeNodes = topology.resolved.nodes.filter((node) =>
+		reachable.has(node.id),
+	);
+	const verificationPolicy: FounderReworkVerificationStep[] = [
+		...(routeNodes.some((node) => node.type === "design")
+			? (["design_review"] as const)
+			: []),
+		...(routeNodes.some(
+			(node) => node.type === "implement" || node.type === "review",
+		)
+			? (["code_review"] as const)
+			: []),
+		...(routeNodes.some((node) => node.type === "qa")
+			? (["qa_retest"] as const)
+			: []),
+		"founder_gate",
+	];
+	return {
+		semanticTarget,
+		targetNodeId: target.id,
+		invalidationScope: routeNodes.map((node) => node.id),
+		verificationPolicy,
+	};
+}
+
 export function parseFounderReworkPrefix(
 	content: string,
 ): { target: FounderReworkTarget; prefix: string } | undefined {

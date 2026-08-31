@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +31,11 @@ import type {
 	WorkflowShipReadyNotice,
 } from "../workflow-ship-ready.js";
 import { isWorkflowManifestV1Land } from "../workflow-template.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const generalizedRecoveryMocks = vi.hoisted(() => ({
 	waitForDelivery: vi.fn(),
@@ -143,9 +147,11 @@ function deadExecEngineClockBaseMs(): number {
 
 async function storeWithIntent(target: "design" | "implement" | "qa") {
 	const store = await StateStore.create(":memory:");
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_eng_heavy",
-	)!;
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_eng_heavy",
+		)!,
+	);
 	store.importWorkflowTemplateSeed(seed);
 	store.materializeWorkflowRun({
 		runId: "run-1",
@@ -155,6 +161,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 		templateId: seed.templateId,
 		claimsReadEnrolled: true,
 		actor: "lead",
+		canonicalRoot: REPO_ROOT,
 		env: WORKFLOW_ON,
 		...(target === "design" ? { entryKind: "pipeline_dag_v1" as const } : {}),
 		startReservation: {
@@ -189,6 +196,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 		worktree_path: "/unused/design",
 	});
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "design",
 		attempt: 1,
@@ -225,6 +233,7 @@ async function storeWithIntent(target: "design" | "implement" | "qa") {
 			],
 		});
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "implement",
 			attempt: 1,
@@ -380,7 +389,7 @@ async function storeWithGenericLandIntent() {
 		startReservation: {
 			idempotencyKey: "generic-land-start",
 			selectionDigest: "generic-land-selection",
-			nodeId: "execute",
+			nodeId: "general",
 			attempt: 1,
 			executionId: "generic-land-1",
 			createdAt: "2026-08-24T00:00:00.000Z",
@@ -388,7 +397,7 @@ async function storeWithGenericLandIntent() {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-generic-land",
-		nodeId: "execute",
+		nodeId: "general",
 		attempt: 1,
 		state: "running",
 		executionId: "generic-land-1",
@@ -396,7 +405,7 @@ async function storeWithGenericLandIntent() {
 	expect(
 		store.admitGeneralizedWorkflowExecution({
 			runId: "run-generic-land",
-			nodeId: "execute",
+			nodeId: "general",
 			executionId: "generic-land-1",
 			attempt: 1,
 			expiresAt: "2026-08-24T02:00:00.000Z",
@@ -410,10 +419,11 @@ async function storeWithGenericLandIntent() {
 		issue_id: "FLY-2027",
 		project_name: "flywheel",
 		status: "running",
-		workflow_node_id: "execute",
+		workflow_node_id: "general",
 	});
 	expect(
 		store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "generic-land-1",
 			route: "needs_review",
 			sourceEventId: "generic-land-complete",
@@ -512,14 +522,12 @@ function failRunningDesign(store: StateStore, lastError?: string): void {
 async function storeWithProductOutputIntent() {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), "fly1307-product-agent-"));
-	mkdirSync(join(canonicalRoot, "agents"));
-	writeFileSync(
-		join(canonicalRoot, "agents", "generic-executor.md"),
-		"Execute the pinned node.\n",
+	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === "tpl_product_v1",
+		)!,
 	);
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === "tpl_product_v1",
-	)!;
 	const env = {
 		...WORKFLOW_ON,
 	};
@@ -557,6 +565,7 @@ async function storeWithProductOutputIntent() {
 		status: "completed",
 	});
 	store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "product-run",
 		nodeId: "research",
 		attempt: 1,
@@ -574,10 +583,12 @@ async function storeWithBundledOutputFirstIntent(input: {
 }) {
 	const store = await StateStore.create(":memory:");
 	const canonicalRoot = mkdtempSync(join(tmpdir(), `${input.runId}-agent-`));
-	mkdirSync(join(canonicalRoot, "agents"));
-	const seed = legacyWorkflowSeeds().find(
-		(candidate) => candidate.templateId === input.templateId,
-	)!;
+	installSelfHostedWorkflowAgentProject(canonicalRoot);
+	const seed = pinLegacyWorkflowSeedAgents(
+		legacyWorkflowSeeds().find(
+			(candidate) => candidate.templateId === input.templateId,
+		)!,
+	);
 	const producer = seed.manifest.nodes.find(
 		(node) => node.type === "generic" && node.produces_output === true,
 	)!;
@@ -886,6 +897,7 @@ async function storeWithQaFailKickback() {
 	});
 	expect(
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "qa",
 			attempt: 1,
@@ -1012,6 +1024,7 @@ async function storeWithFreshVerificationIntent(): Promise<{
 	});
 	if (!receipt.ok) throw new Error(receipt.reason);
 	const completed = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "implement",
 		attempt: 2,
@@ -1078,12 +1091,34 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it.each(["design", "qa"] as const)(
-		"dispatches a real %s founder-rework replacement from base_revision with verbatim feedback",
-		async (target) => {
+	it.each([
+		{
+			target: "design" as const,
+			predecessorLeadId: undefined,
+			expectedSourceExecutionId: undefined,
+		},
+		{
+			target: "qa" as const,
+			predecessorLeadId: undefined,
+			expectedSourceExecutionId: "implement-1",
+		},
+		{
+			target: "qa" as const,
+			predecessorLeadId: "existing-lead",
+			expectedSourceExecutionId: "implement-1",
+		},
+	])(
+		"dispatches a real $target founder-rework replacement with predecessor Lead $predecessorLeadId",
+		async ({ target, predecessorLeadId, expectedSourceExecutionId }) => {
 			const { store, replacementId } =
 				await storeWithMaterializedFounderReplacement(target);
 			const fake = fakeStartDispatcher(store);
+			const resolveLeadId = vi.fn(() => predecessorLeadId);
+			const resolveReplacementLeadIntent = vi.fn(() => ({
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				leadResolution: "fallback" as const,
+			}));
 			const dispatcher = new WorkflowEngineDispatcher({
 				store,
 				startDispatcher: fake.dispatcher,
@@ -1095,6 +1130,8 @@ describe("WorkflowEngineDispatcher", () => {
 				resolvePredecessorHead: vi.fn(async () => {
 					throw new Error("replacement must not need a predecessor session");
 				}),
+				resolveLeadId,
+				resolveReplacementLeadIntent,
 			});
 
 			expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
@@ -1110,9 +1147,73 @@ describe("WorkflowEngineDispatcher", () => {
 					),
 				},
 			});
+			expect(fake.requests[0]?.leadId).toBe(
+				predecessorLeadId ?? "flywheel-eng-lead",
+			);
+			if (expectedSourceExecutionId) {
+				expect(resolveLeadId).toHaveBeenCalledWith(expectedSourceExecutionId);
+			} else {
+				expect(resolveLeadId).not.toHaveBeenCalled();
+			}
+			if (predecessorLeadId) {
+				expect(resolveReplacementLeadIntent).not.toHaveBeenCalled();
+			} else {
+				expect(resolveReplacementLeadIntent).toHaveBeenCalledWith(
+					expect.objectContaining({
+						run_id: "run-1",
+						issue_id: "FLY-1307",
+						project_name: "flywheel",
+					}),
+					expectedSourceExecutionId,
+				);
+			}
 			store.close();
 		},
 	);
+
+	it.each([
+		{
+			name: "another project",
+			intent: {
+				leadId: "other-lead",
+				projectName: "other-project",
+				leadResolution: "resolved" as const,
+			},
+		},
+		{
+			name: "an empty Lead",
+			intent: {
+				leadId: "",
+				projectName: "flywheel",
+				leadResolution: "fallback" as const,
+			},
+		},
+		{
+			name: "the unassigned sentinel",
+			intent: {
+				leadId: "unassigned",
+				projectName: "flywheel",
+				leadResolution: "fallback" as const,
+			},
+		},
+	])("rejects $name as replacement Lead identity", async ({ intent }) => {
+		const { store } = await storeWithMaterializedFounderReplacement("design");
+		const fake = fakeStartDispatcher(store);
+		const resolveReplacementLeadIntent = vi.fn(() => intent);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			now: () => new Date("2026-08-15T08:02:00.000Z"),
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2182-invalid-lead-")),
+			resolveReplacementLeadIntent,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(resolveReplacementLeadIntent).toHaveBeenCalledOnce();
+		expect(fake.requests[0]?.leadId).toBeUndefined();
+		store.close();
+	});
 
 	it("launches an attempt-1 root design without inventing a predecessor", async () => {
 		const store = await storeWithIntent("design");
@@ -1354,6 +1455,51 @@ describe("WorkflowEngineDispatcher", () => {
 				eventType: "workflow_engine_escalation",
 			}),
 		);
+		store.close();
+	});
+
+	it("FLY-2076 alert-system OFF preserves workflow alert attempts until hot re-enable", async () => {
+		const store = await storeWithIntent("design");
+		store.enqueueWorkflowEngineAlert({
+			escalationUid: "fly2076-hot-switch",
+			runId: "run-1",
+			payload: {
+				leadId: "flywheel-eng-lead",
+				projectName: "flywheel",
+				eventId: "fly2076-hot-switch",
+				eventType: "workflow_engine_escalation",
+				severity: "severe",
+				title: "Alert-system switch recovery",
+				body: "The same durable outbox row must deliver after re-enable.",
+			},
+			now: "2026-08-27T20:00:00.000Z",
+		});
+		let enabled = false;
+		const alert = vi.fn(async () => ({ sent: true as const }));
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: inertStartDispatcher(),
+			alertsEnabled: () => enabled,
+			alertSink: { current: { alert } },
+			now: () => new Date("2026-08-27T20:00:01.000Z"),
+		});
+
+		for (let tick = 0; tick < 4; tick += 1) {
+			await expect(dispatcher.reconcileWorkflowEngineAlerts()).resolves.toBe(0);
+		}
+		expect(store.getWorkflowAlertOutbox("fly2076-hot-switch")).toMatchObject({
+			state: "pending",
+			attempt: 0,
+		});
+		expect(alert).not.toHaveBeenCalled();
+
+		enabled = true;
+		await expect(dispatcher.reconcileWorkflowEngineAlerts()).resolves.toBe(1);
+		expect(store.getWorkflowAlertOutbox("fly2076-hot-switch")).toMatchObject({
+			state: "sent",
+			attempt: 1,
+		});
+		expect(alert).toHaveBeenCalledOnce();
 		store.close();
 	});
 
@@ -2394,6 +2540,12 @@ describe("WorkflowEngineDispatcher", () => {
 	it("mints a fresh launch only after the coordinator proves the actor dead", async () => {
 		const store = await storeWithQaFailKickback();
 		const fake = fakeStartDispatcher(store);
+		const resolveLeadId = vi.fn(() => undefined);
+		const resolveReplacementLeadIntent = vi.fn(() => ({
+			leadId: "flywheel-eng-lead",
+			projectName: "flywheel",
+			leadResolution: "fallback" as const,
+		}));
 		const requestId = store.listWorkflowReworkDeliveries()[0]!.request_id;
 		const routeBefore = store.getLatestWorkflowReworkRoute(requestId)!;
 		const reconcileWorkflowRework = vi.fn(async (requestId: string) => {
@@ -2420,10 +2572,22 @@ describe("WorkflowEngineDispatcher", () => {
 			now: () => new Date("2026-07-16T00:16:00.000Z"),
 			resolvePredecessorHead: async () => HEAD,
 			reconcileWorkflowRework,
+			resolveLeadId,
+			resolveReplacementLeadIntent,
 		});
 
 		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
 		expect(fake.start).toHaveBeenCalledOnce();
+		expect(resolveLeadId).toHaveBeenCalledWith("design-1");
+		expect(resolveReplacementLeadIntent).toHaveBeenCalledWith(
+			expect.objectContaining({
+				run_id: "run-1",
+				issue_id: "FLY-1307",
+				project_name: "flywheel",
+			}),
+			"design-1",
+		);
+		expect(fake.requests[0]?.leadId).toBe("flywheel-eng-lead");
 		const launched = fake.requests[0]?.generalizedExecution?.executionId;
 		expect(launched).toEqual(expect.any(String));
 		expect(launched).not.toBe("implement-1");
@@ -2809,7 +2973,7 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
-	it("keeps a post-ACK wake_delivered delivery under the durable stall owner", async () => {
+	it("does not hold a post-ACK delivery while fresh actor-alive evidence is leased", async () => {
 		const store = await storeWithQaFailKickback();
 		const delivery = store.listWorkflowReworkDeliveries()[0];
 		if (!delivery) throw new Error("rework delivery missing");
@@ -2822,6 +2986,7 @@ describe("WorkflowEngineDispatcher", () => {
 			`UPDATE workflow_rework_delivery
 			    SET state = 'wake_delivered', generation = 2,
 			        next_retry_at = '2026-07-16T01:00:00.000Z',
+			        last_error = 'actor_alive_after_receipt',
 			        updated_at = '2026-07-16T00:12:00.000Z'
 			  WHERE request_id = ?`,
 			[delivery.request_id],
@@ -2844,7 +3009,7 @@ describe("WorkflowEngineDispatcher", () => {
 			env: {
 				...WORKFLOW_ON,
 				FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
-				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "3600000",
+				FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
 			},
 			now: () => new Date("2026-07-16T00:20:00.000Z"),
 			reconcileWorkflowRework,
@@ -2864,12 +3029,68 @@ describe("WorkflowEngineDispatcher", () => {
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "rework_activation_stalled_alerted"),
 		).toHaveLength(1);
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind === "rework_activation_stalled_held"),
+		).toHaveLength(0);
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
 		expect(store.getWorkflowReworkDelivery(delivery.request_id)).toMatchObject({
 			state: "wake_delivered",
 			updated_at: "2026-07-16T00:12:00.000Z",
 		});
 		store.close();
 	});
+
+	it.each([
+		["expired", "actor_alive_after_receipt", "2026-07-16T00:19:59.000Z"],
+		["unproven", "receipt_not_observed", "2026-07-16T01:00:00.000Z"],
+	])(
+		"holds a post-ACK delivery when actor-alive evidence is %s",
+		async (_case, lastError, nextRetryAt) => {
+			const store = await storeWithQaFailKickback();
+			const delivery = store.listWorkflowReworkDeliveries()[0];
+			if (!delivery) throw new Error("rework delivery missing");
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				`UPDATE workflow_rework_delivery
+				    SET state = 'wake_delivered', generation = 2,
+				        next_retry_at = ?, last_error = ?,
+				        updated_at = '2026-07-16T00:12:00.000Z'
+				  WHERE request_id = ?`,
+				[nextRetryAt, lastError, delivery.request_id],
+			);
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fakeStartDispatcher(store).dispatcher,
+				env: {
+					...WORKFLOW_ON,
+					FLYWHEEL_ENGINE_REWORK_ALERT_MS: "1000",
+					FLYWHEEL_ENGINE_REWORK_HOLD_MS: "2000",
+				},
+				now: () => new Date("2026-07-16T00:20:00.000Z"),
+				reconcileWorkflowRework: vi.fn(async () => ({ kind: "busy" as const })),
+				resolveRunAlertIdentity: () => ({
+					leadId: "flywheel-eng-lead",
+					projectName: "flywheel",
+					leadResolution: "resolved",
+				}),
+			});
+
+			expect(await dispatcher.reconcile()).toEqual({ started: 0, held: 0 });
+			expect(store.getWorkflowRun("run-1")?.status).toBe("held");
+			expect(
+				store
+					.listWorkflowRunEvents("run-1")
+					.filter((event) => event.kind === "rework_activation_stalled_held"),
+			).toHaveLength(1);
+			store.close();
+		},
+	);
 
 	it("keeps the genuine stall clock for a stranded replacement_pending delivery", async () => {
 		const store = await storeWithQaFailKickback();
@@ -4292,6 +4513,7 @@ describe("WorkflowEngineDispatcher", () => {
 			});
 			expect(
 				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: request.generalizedExecution!.executionId,
 					route: "needs_review",
 					sourceEventId: "complete-before-start-return",
@@ -4354,6 +4576,7 @@ describe("WorkflowEngineDispatcher", () => {
 			}),
 		).toMatchObject({ ok: true });
 		store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "product-run",
 			nodeId: "produce",
 			attempt: 1,
@@ -4481,6 +4704,7 @@ describe("WorkflowEngineDispatcher", () => {
 			).toMatchObject({ ok: true });
 			expect(
 				store.commitWorkflowTransitionTx({
+					nodeReuseEnabled: false,
 					runId,
 					nodeId: producer.id,
 					attempt: 1,

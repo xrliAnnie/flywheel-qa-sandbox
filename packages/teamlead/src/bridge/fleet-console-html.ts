@@ -314,7 +314,8 @@ const MANAGEMENT_CONSOLE_APP = `
       if(dag.error){html+='<div class="role-error">'+esc(dag.error)+'</div>';}
       if(dag.nodes.length){
         html+='<div class="dag-flow">'+dag.nodes.map(function(node,index){return (index?'<span class="dag-arrow">→</span>':'')+'<span class="dag-step">'+esc(node.name)+'</span>';}).join("")+'</div>';
-        if(dag.nodes.some(function(node){return node.name==="qa";})&&dag.nodes.some(function(node){return node.name==="implement";})){html+='<div class="dag-loop">↩ loop: qa 失败 → 回 implement</div>';}
+        var qaNode=dag.nodes.filter(function(node){return node.nodeId==="qa";})[0];var implementNode=dag.nodes.filter(function(node){return node.nodeId==="implement";})[0];
+        if(qaNode&&implementNode){html+='<div class="dag-loop">↩ loop: '+esc(qaNode.name)+' 失败 → 回'+esc(implementNode.name)+'</div>';}
       }
       dag.nodes.forEach(function(node){html+='<div class="dag-row"><strong>'+esc(node.name)+'</strong>'+modelControl(node.dispatch,"workflow","stage 模型",false,false)+'</div>';});
       html+='</article>';

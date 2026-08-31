@@ -47,6 +47,10 @@ import type { EventEnvelope } from "../ExecutionEventEmitter.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
+import {
+	resolvedTestAgent,
+	testAgentFallbacks,
+} from "./agent-dispatch-fixtures.js";
 
 const ID = "FLY-1356";
 
@@ -104,6 +108,7 @@ interface RunOpts {
 	readiness?: (backend: string) => boolean;
 	ponytailReadiness?: (backend: string) => boolean;
 	ponytailConfig?: PonytailConfig;
+	ponytailProjectLayer?: () => PonytailConfig | undefined;
 	codexProbe?: CodexSkillAssemblyProbe;
 	agentDispatcher?: AgentDispatcher;
 	projectRoot?: string;
@@ -169,7 +174,8 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		undefined, // checkpointConfig
 		undefined, // flywheelRepoRoot
 		undefined, // docFlowConfig
-		opts.ponytailConfig,
+		opts.ponytailProjectLayer ??
+			(opts.ponytailConfig ? () => opts.ponytailConfig : undefined),
 		opts.ponytailReadiness ?? (() => true),
 		opts.participation, // FLY-1356 participation reader
 		opts.readiness ?? (() => true), // FLY-1356 matt readiness (default ready)
@@ -369,6 +375,29 @@ describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
 		expect(envelope.ponytailCondition).toBe("unavailable:readiness:on:arm");
 		expect(execArgs.enablePonytail).toBeUndefined();
 		expect(execArgs.disabledPlugins).toEqual([SUPERPOWERS_PLUGIN_KEY]);
+	});
+
+	it("a ponytail store read failure is not misreported as a label conflict", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+		const { envelope } = await runBlueprint({
+			ponytailProjectLayer: () => {
+				throw new Error("flag store unavailable");
+			},
+			ctxExtra: {
+				ponytailInput: {
+					kind: "start_signal",
+					signal: { labels: [], labelStatus: "readable" },
+				},
+			},
+		});
+		expect(envelope.ponytailCondition).toBe("off:default");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("flag store unavailable"),
+		);
+		expect(warn).not.toHaveBeenCalledWith(
+			expect.stringContaining("PONYTAIL_CONFLICT"),
+		);
+		warn.mockRestore();
 	});
 
 	it("D retry preserves a frozen explicit off instead of reopening the arm", async () => {
@@ -827,19 +856,18 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		return tmpRoot;
 	}
 
-	function makeDispatcher(): AgentDispatcher {
+	function makeDispatcher(projectRoot: string): AgentDispatcher {
 		return new AgentDispatcher(
 			{
-				exec: {
-					agent_file: ".flywheel/agents/exec.md",
-					match: { labels: ["whatever"] },
-				},
+				exec: resolvedTestAgent({
+					nodeName: "exec",
+					labels: ["whatever"],
+					projectRoot,
+					relativeFile: "exec.md",
+				}),
 			},
 			"exec",
-			path.resolve(
-				path.dirname(new URL(import.meta.url).pathname),
-				"../../../..",
-			),
+			testAgentFallbacks(projectRoot),
 		);
 	}
 
@@ -850,7 +878,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		});
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BARE-VARIANT-MARKER");
@@ -865,7 +893,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const { execArgs } = await runBlueprint({
 			envValue: "bare-ponytail",
 			ponytailReadiness: () => true,
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BARE-VARIANT-MARKER");
@@ -880,7 +908,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const { execArgs } = await runBlueprint({
 			envValue: "matt",
 			readiness: () => true,
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("MATT-VARIANT-MARKER");
@@ -891,7 +919,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const root = makeProjectWithAgent({ "exec.md": "BASELINE-MARKER" });
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BASELINE-MARKER");
@@ -904,7 +932,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 			"exec.matt.md": "MATT-VARIANT-MARKER",
 		});
 		const { execArgs } = await runBlueprint({
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 		});
 		expect(execArgs.appendSystemPrompt).toContain("BASELINE-MARKER");
@@ -919,7 +947,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		});
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 			ctxExtra: { runnerBackend: "kimi-tmux" },
 		});
@@ -940,7 +968,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 			});
 			const { execArgs } = await runBlueprint({
 				envValue,
-				agentDispatcher: makeDispatcher(),
+				agentDispatcher: makeDispatcher(root),
 				projectRoot: root,
 				ctxExtra: { runnerBackend: "codex-tmux" },
 				codexProbe: () => ({
@@ -959,7 +987,7 @@ describe("FLY-1356 Blueprint — prompt variant layer", () => {
 		const root = makeProjectWithAgent({ "exec.md": "BASELINE-MARKER" });
 		const { execArgs } = await runBlueprint({
 			envValue: "bare",
-			agentDispatcher: makeDispatcher(),
+			agentDispatcher: makeDispatcher(root),
 			projectRoot: root,
 			ctxExtra: { runnerBackend: "codex-tmux" },
 			codexProbe: () => ({ disableNames: ["superpowers:fixture"] }),

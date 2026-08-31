@@ -754,6 +754,28 @@ describe("provisionCodexHome (WS-A)", () => {
 		});
 	});
 
+	it("FLY-2168 pins a requirements-compatible runner policy", () => {
+		writeFileSync(
+			join(sourceCodexDir(env), "config.toml"),
+			`sandbox_mode = "danger-full-access"
+approval_policy = "never"
+model = "gpt-5-codex"
+`,
+		);
+
+		const home = provisionCodexHome({
+			executionId: "exec-managed-requirements",
+			env,
+		});
+		const parsed = parseToml(
+			readFileSync(join(home, "config.toml"), "utf8"),
+		) as Record<string, unknown>;
+
+		expect(parsed.sandbox_mode).toBe("workspace-write");
+		expect(parsed.approval_policy).toBe("never");
+		expect(parsed.model).toBe("gpt-5-codex");
+	});
+
 	it.each([
 		["personal", "personal@example.test", "acct-personal", "primary"],
 		["school", "school@example.test", "acct-school", "manual_backup"],

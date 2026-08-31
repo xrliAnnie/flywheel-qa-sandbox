@@ -1,0 +1,28 @@
+flowchart LR
+  subgraph discord["Discord"]
+    slashIn["/voice<br/>(输 / 就有自动补全)"]
+    slashOut["/endvoice"]
+    textCmd["#raya 文字口令<br/>(三句全保留)"]
+    room["现有语音频道 General"]
+  end
+  subgraph brain["brain 常驻进程(一直在)"]
+    gw["命令入口<br/>消息 + slash 共用一套动作"]
+    marker["voice-mode.requested<br/>『想要语音』标记文件"]
+    ladder["launchctl 监督<br/>启动 / 停止梯子"]
+  end
+  subgraph voicep["voice 按需进程(只在语音模式时在)"]
+    rt["实时语音会话<br/>听 · 想 · 说"]
+    exitp["退出协议<br/>结束语匹配器"]
+  end
+  slashIn --> gw
+  slashOut --> gw
+  textCmd --> gw
+  gw --> marker
+  marker --> ladder
+  ladder -->|拉起| rt
+  ladder -->|"SIGTERM → SIGKILL"| rt
+  room <-->|20ms 双向音频流| rt
+  rt -->|它每句话的文字稿| exitp
+  exitp -->|命中结束语 → 干净拆除| rt
+  rt -->|清标记 · 说再见 · 退出| marker
+  room -->|她离开房间也能退| rt

@@ -1,7 +1,7 @@
 {
 	"name": "flywheel-cli",
 	"version": "0.1.0",
-	"description": "Flywheel project setup CLI: init / doctor / migrate-agents-path",
+	"description": "Flywheel project setup CLI: init / doctor / migrate-agent-registry",
 	"type": "module",
 	"main": "dist/index.js",
 	"types": "dist/index.d.ts",
@@ -20,7 +20,9 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@linear/sdk": "60.0.0"
+		"@linear/sdk": "60.0.0",
+		"flywheel-config": "workspace:*",
+		"yaml": "^2.7.1"
 	},
 	"devDependencies": {
 		"@types/node": "^20.0.0",

@@ -55,8 +55,6 @@ LAUNCHD_CENSUS_SOURCED=1
 source "${FLYWHEEL_DIR}/scripts/launchd-census.sh"
 # shellcheck source=lib/deploy-build-identity.sh
 source "${FLYWHEEL_DIR}/scripts/lib/deploy-build-identity.sh"
-# shellcheck source=lib/mailbox-queue-deploy-barrier.sh
-source "${FLYWHEEL_DIR}/scripts/lib/mailbox-queue-deploy-barrier.sh"
 # shellcheck source=lib/default-lead-agent-env.sh
 source "${FLYWHEEL_DIR}/scripts/lib/default-lead-agent-env.sh"
 # shellcheck source=lib/discord-pointer-guard.sh
@@ -167,6 +165,27 @@ fi
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] [restart] $*"
+}
+
+# FLY-2030: the new required summary assignment schema/rule bundle may activate
+# only after the live registry passes BOTH parser entrances and still matches
+# its migration receipt. This source-mode preflight runs after pulling main but
+# before build, Bridge stop, Lead bootout, or any other service mutation.
+summary_registry_activation_preflight() {
+    local source_cli="${FLYWHEEL_DIR}/packages/flywheel-comm/src/bin/summary-registry.ts"
+    local projects_path="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+    local receipt_path="${FLYWHEEL_SUMMARY_MIGRATION_RECEIPT:-${HOME}/.flywheel/state/summary-registry/migration-receipt.json}"
+    if [[ ! -f "$source_cli" ]]; then
+        log "ERROR: summary registry activation source CLI is missing; refusing restart fail-closed: $source_cli"
+        return 1
+    fi
+    if [[ -n "${FLYWHEEL_PROJECTS:-}" ]]; then
+        log "ERROR: summary registry activation refuses inline FLYWHEEL_PROJECTS split-brain"
+        return 1
+    fi
+    pnpm --dir "$FLYWHEEL_DIR" exec tsx "$source_cli" verify-activation \
+        --projects-file "$projects_path" \
+        --receipt-file "$receipt_path"
 }
 
 # FLY-1638: authenticated Bridge admission brake. The token rides curl's
@@ -1480,6 +1499,11 @@ if [[ "$DRY_RUN" != "true" ]]; then
     DEPLOY_CONSISTENCY_ARMED=true
 fi
 
+if ! summary_registry_activation_preflight; then
+    log "ERROR: summary registry activation evidence is absent or stale; existing Bridge and Leads remain untouched"
+    exit 1
+fi
+
 # The release below makes managed-Lead botUserId mandatory at every Bridge,
 # launcher, and write boundary. Prove the independent-roster migration landed
 # before changing host config, building strict binaries, or stopping services.
@@ -2561,6 +2585,17 @@ deploy_and_verify() {
             RESTART_TERMINAL_REPORTED=true
             return 1
         fi
+
+        # FLY-2139: use the already-stopped Bridge window for bounded SQLite
+        # backup/checkpoint/weekly compaction. Failure evidence is durable and
+        # alerting is emitted by the helper; maintenance must never strand the
+        # fleet offline, so restart proceeds on a non-zero helper result.
+        if ! bash "$FLYWHEEL_DIR/scripts/db-maintenance.sh"; then
+            log "WARNING: database maintenance failed; continuing service restart"
+            alert_severe "database-maintenance-failed" \
+                "Flywheel database maintenance failed" \
+                "Stopped-window database maintenance failed. Durable evidence is under ~/.flywheel/maintenance/fly-2139/db-maintenance; the restart continues so the fleet is not stranded offline. Inspect backup/checkpoint/integrity failure receipts immediately."
+        fi
     fi
 
     # Step 2: Build (Bridge is stopped, no race possible)
@@ -2603,25 +2638,6 @@ deploy_and_verify() {
                 # rollback_and_restart already handles rebuild + Bridge/Lead recovery.
                 return 1
             fi
-        fi
-    fi
-
-    # FLY-1573: first queue-capability rollout only. Persist OFF before the new
-    # Bridge starts, then resume the same durable owner after any interrupted
-    # deploy. A pre-existing operator OFF is observed but never claimed.
-    if mqb_upgrade_requires_barrier "$DEPLOYED_SHA" "$CURRENT_HEAD"; then
-        if ! mqb_begin "$CURRENT_HEAD"; then
-            log "ERROR: mailbox queue readiness barrier could not start; new Bridge will not be launched"
-            alert_severe "mailbox-queue-barrier-begin-failed" \
-                "Mailbox queue deploy barrier failed" \
-                "FLY-1573 就绪闸无法在新 Bridge 启动前持久化 OFF；部署已中止，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
-        if [[ "$MQB_OWNED" == "true" ]]; then
-            # The release invariant is fleet-wide; a diff-derived Bridge-only
-            # wave cannot prove every Lead's new ACK surface.
-            restart_all_leads=true
         fi
     fi
 
@@ -2734,53 +2750,6 @@ deploy_and_verify() {
     # FLY-98: trigger cmux refresh after watcher restart outcome capture.
     if [[ "$restart_all_leads" == "true" ]]; then
         trigger_cmux_refresh
-    fi
-
-
-    # FLY-1573: the default-ON queue may become live only after a conclusive,
-    # zero-degradation Lead wave and real stdio MCP probes for BOTH backends.
-    # Unknown/skipped/failed/empty fleet evidence is fail-closed and durable.
-    if [[ "$MQB_OWNED" == "true" ]]; then
-        local barrier_failure=""
-        if [[ "$lead_counts_known" != "true" ]]; then
-            barrier_failure="Lead restart counts unknown (${lead_result_state})"
-        elif [[ "$restart_all_leads" != "true" ]]; then
-            barrier_failure="Lead restart wave was not run"
-        elif (( leads_failed > 0 || leads_skipped > 0 )); then
-            barrier_failure="Lead restart degraded: failed=${leads_failed} skipped=${leads_skipped} total=${leads_total}"
-        elif (( leads_total == 0 )); then
-            barrier_failure="Lead restart inventory was empty"
-        elif ! mqb_probe_ack_tools >/tmp/flywheel-mailbox-queue-ack-readiness.json 2>&1; then
-            barrier_failure="Claude/Codex ACK MCP readiness probe failed"
-        fi
-
-        if [[ -n "$barrier_failure" ]]; then
-            mqb_hold "$CURRENT_HEAD" "$barrier_failure" || true
-            log "ERROR: $barrier_failure; mailbox queue remains persistently OFF"
-            alert_severe "mailbox-queue-readiness-failed-${CURRENT_HEAD}" \
-                "Mailbox queue rollout held OFF" \
-                "FLY-1573 未通过全舰队 ACK 就绪闸: ${barrier_failure}。FLYWHEEL_MAILBOX_QUEUE=0 保持，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
-
-        local barrier_evidence="fresh_leads=${leads_total};claude=flywheel_inbox_ack_batch;codex=ack_batch"
-        if ! mqb_mark_ready "$CURRENT_HEAD" "$barrier_evidence"; then
-            mqb_hold "$CURRENT_HEAD" "could not persist all-ready evidence" || true
-            alert_severe "mailbox-queue-readiness-marker-${CURRENT_HEAD}" \
-                "Mailbox queue rollout held OFF" \
-                "FLY-1573 ACK 探活通过，但无法持久化 all-ready CAS；保持 OFF，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
-        if ! mqb_release_via_bridge "$CURRENT_HEAD" "$BRIDGE_URL"; then
-            mqb_hold "$CURRENT_HEAD" "Bridge in-process release failed" || true
-            alert_severe "mailbox-queue-release-failed-${CURRENT_HEAD}" \
-                "Mailbox queue rollout release failed" \
-                "FLY-1573 all-ready 后 direct-toggle/env 双写放开失败；保持 OFF，deployed-sha 未推进。"
-            RESTART_TERMINAL_REPORTED=true
-            return 1
-        fi
     fi
 
     # Step 5: Record code deployment truth independently of Lead health.

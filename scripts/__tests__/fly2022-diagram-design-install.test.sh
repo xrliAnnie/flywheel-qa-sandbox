@@ -32,11 +32,12 @@ fi
 
 tracked_paths="$(git -C "$ROOT" ls-files -- .claude/skills)"
 tracked_count="$(printf '%s\n' "$tracked_paths" | sed '/^$/d' | wc -l | tr -d ' ')"
-unexpected_paths="$(printf '%s\n' "$tracked_paths" | sed '/^$/d' | grep -v '^\.claude/skills/diagram-design/' || true)"
-if [[ "$tracked_count" == "208" && -z "$unexpected_paths" ]]; then
-	pass 'tracked .claude/skills set is exactly the 208 diagram-design files'
+unexpected_paths="$(printf '%s\n' "$tracked_paths" | sed '/^$/d' | grep -Ev '^\.claude/skills/diagram-design/|^\.claude/skills/meeting-notes/(SKILL\.md|assets/meeting-notes\.template\.html|scripts/build_report\.py)$' || true)"
+meeting_notes_count="$(printf '%s\n' "$tracked_paths" | grep -c '^\.claude/skills/meeting-notes/' || true)"
+if [[ "$tracked_count" == "211" && "$meeting_notes_count" == "3" && -z "$unexpected_paths" ]]; then
+	pass 'tracked skills set is the exact diagram-design tree plus the three-file meeting-notes skill'
 else
-	fail "tracked .claude/skills set must be exactly 208 diagram-design files (count=$tracked_count unexpected=${unexpected_paths:-none})"
+	fail "tracked skills set is unexpected (count=$tracked_count meeting_notes=$meeting_notes_count unexpected=${unexpected_paths:-none})"
 fi
 
 if [[ -f "$SKILL/SKILL.md" ]]; then

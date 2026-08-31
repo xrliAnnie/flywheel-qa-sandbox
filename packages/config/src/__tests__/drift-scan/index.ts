@@ -569,20 +569,7 @@ export interface AuditFlagAccountsInput {
 	retiredEnvVars: ReadonlySet<string>;
 	retiredConfigPaths: ReadonlySet<string>;
 	storeManagedEnvVars: ReadonlySet<string>;
-}
-
-function isSkillModeCompatibilityRead(hit: CodeHit): boolean {
-	return (
-		hit.name === "FLYWHEEL_SKILL_FRAMEWORK_MODE" &&
-		hit.file === "packages/config/src/skill-framework-mode.ts" &&
-		hit.form === "const-key" &&
-		hit.code === "args.env[SKILL_FRAMEWORK_MODE_ENV]" &&
-		hit.anchorSymbol === "resolveSkillFrameworkMode" &&
-		typeof hit.anchorStart === "number" &&
-		typeof hit.anchorEnd === "number" &&
-		hit.anchorStart <= hit.start &&
-		hit.end <= hit.anchorEnd
-	);
+	storeManagedConfigKeys?: ReadonlySet<string>;
 }
 
 function duplicateValues(values: readonly string[]): string[] {
@@ -611,18 +598,8 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 		[...input.retiredConfigPaths].find(
 			(retired) => path === retired || path.startsWith(`${retired}.`),
 		);
-	const skillModeCompatibilityReads = input.rawCodeHits.filter(
-		isSkillModeCompatibilityRead,
-	);
-	const allowedManagedRawRead =
-		skillModeCompatibilityReads.length === 1
-			? skillModeCompatibilityReads[0]
-			: undefined;
 	for (const hit of input.rawCodeHits) {
-		if (
-			input.storeManagedEnvVars.has(hit.name) &&
-			hit !== allowedManagedRawRead
-		) {
+		if (input.storeManagedEnvVars.has(hit.name)) {
 			issues.push(
 				`${hit.name}: store-managed flag has raw production read at ${hit.file}:${hit.form}`,
 			);
@@ -703,7 +680,7 @@ export function auditFlagAccounts(input: AuditFlagAccountsInput): string[] {
 		if (path in input.nonFlagConfigKeys || configExemptions.has(path)) {
 			issues.push(`ledger overlap for config key ${path}`);
 		}
-		if (!configPaths.has(path)) {
+		if (!configPaths.has(path) && !input.storeManagedConfigKeys?.has(path)) {
 			issues.push(`stale registered config key ${path}`);
 		}
 		if (retiredConfigRoot(path)) {
@@ -880,12 +857,18 @@ function delegatedEvidence(
 ): boolean {
 	const locals = new Set<string>();
 	const expected = normalizeFile(modulePath).replace(/\.(?:js|mjs)$/, ".ts");
+	const canonicalTarget = (target: string): string =>
+		target.replace(
+			"packages/teamlead/dist/bridge/flag-store-runtime.ts",
+			FLAG_STORE_RUNTIME_MODULE,
+		);
 	for (const statement of file.statements) {
 		if (
 			!ts.isImportDeclaration(statement) ||
 			!ts.isStringLiteral(statement.moduleSpecifier) ||
-			normalizedImportTarget(importer, statement.moduleSpecifier.text) !==
-				expected
+			canonicalTarget(
+				normalizedImportTarget(importer, statement.moduleSpecifier.text),
+			) !== expected
 		) {
 			continue;
 		}
@@ -1184,6 +1167,7 @@ function storeResolverReadsExactFlag(
 			ts.isCallExpression(node) &&
 			ts.isIdentifier(node.expression) &&
 			(node.expression.text === "readBoolean" ||
+				node.expression.text === "readScopedBoolean" ||
 				node.expression.text === "readFlagValue") &&
 			node.arguments.length >= 2 &&
 			ts.isStringLiteralLike(node.arguments[1] as ts.Expression) &&

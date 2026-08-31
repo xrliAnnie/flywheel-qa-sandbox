@@ -4,6 +4,33 @@ import { RuntimeRegistry } from "../bridge/runtime-registry.js";
 import type { StateStore } from "../StateStore.js";
 
 describe("FLY-1687 GatePoller patrol rider", () => {
+	it.each([0, -1, Number.NaN])(
+		"keeps the display sweep enabled when the test cadence is %s",
+		async (displayReconcileEveryNTicks) => {
+			const onDisplayReconcileTick = vi.fn(async () => undefined);
+			const poller = new GatePoller({
+				pollIntervalMs: 3_000,
+				projects: [],
+				store: {
+					recoverFromCorruption: vi.fn(),
+					listPendingFounderActions: () => [],
+					getActiveSessions: () => [],
+				} as unknown as StateStore,
+				runtimeRegistry: new RuntimeRegistry(),
+				onDisplayReconcileTick,
+				displayReconcileEveryNTicks,
+			});
+
+			await (poller as unknown as { poll: () => Promise<void> }).poll();
+			await vi.waitFor(() =>
+				expect(onDisplayReconcileTick).toHaveBeenCalledTimes(1),
+			);
+			await (poller as unknown as { poll: () => Promise<void> }).poll();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+			expect(onDisplayReconcileTick).toHaveBeenCalledTimes(1);
+		},
+	);
+
 	it("fires on the existing 20-tick cadence without adding a timer", async () => {
 		const onLeadPatrolTick = vi.fn(async () => undefined);
 		const poller = new GatePoller({
@@ -26,5 +53,53 @@ describe("FLY-1687 GatePoller patrol rider", () => {
 		expect(onLeadPatrolTick).toHaveBeenCalledTimes(1);
 		await (poller as unknown as { poll: () => Promise<void> }).poll();
 		await vi.waitFor(() => expect(onLeadPatrolTick).toHaveBeenCalledTimes(2));
+	});
+
+	it("runs Raya summary absorption on the same existing 20-tick cadence", async () => {
+		const onSummaryAbsorptionTick = vi.fn();
+		const poller = new GatePoller({
+			pollIntervalMs: 3_000,
+			projects: [],
+			store: {
+				recoverFromCorruption: vi.fn(),
+				listPendingFounderActions: () => [],
+				getActiveSessions: () => [],
+			} as unknown as StateStore,
+			runtimeRegistry: new RuntimeRegistry(),
+			onSummaryAbsorptionTick,
+		});
+		const runPoll = Reflect.get(poller, "poll") as () => Promise<void>;
+		for (let i = 0; i < 21; i += 1) await runPoll.call(poller);
+		await vi.waitFor(() =>
+			expect(onSummaryAbsorptionTick).toHaveBeenCalledTimes(2),
+		);
+	});
+
+	it("FLY-2118 fires the orphan sweeper on the same cadence with an independent callback", async () => {
+		const onPatrolOrphanSweepTick = vi.fn(async () => undefined);
+		const poller = new GatePoller({
+			pollIntervalMs: 3_000,
+			projects: [],
+			store: {
+				recoverFromCorruption: vi.fn(),
+				listPendingFounderActions: () => [],
+				getActiveSessions: () => [],
+			} as unknown as StateStore,
+			runtimeRegistry: new RuntimeRegistry(),
+			onPatrolOrphanSweepTick,
+		});
+
+		await (poller as unknown as { poll: () => Promise<void> }).poll();
+		await vi.waitFor(() =>
+			expect(onPatrolOrphanSweepTick).toHaveBeenCalledTimes(1),
+		);
+		for (let i = 0; i < 19; i += 1) {
+			await (poller as unknown as { poll: () => Promise<void> }).poll();
+		}
+		expect(onPatrolOrphanSweepTick).toHaveBeenCalledTimes(1);
+		await (poller as unknown as { poll: () => Promise<void> }).poll();
+		await vi.waitFor(() =>
+			expect(onPatrolOrphanSweepTick).toHaveBeenCalledTimes(2),
+		);
 	});
 });

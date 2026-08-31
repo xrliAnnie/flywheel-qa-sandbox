@@ -1,0 +1,16 @@
+flowchart TB
+    A["founder 设计评审通过<br/>(本 issue,一次性授权升级为常设授权)"]
+    P["常设政策文件 standing-policy<br/>仓库内固定:可清表族 / 14 天窗<br/>单次上限 50 万行 / 单表 30 万行"]
+    I["首夜只盘点 inventory-only<br/>不删任何行,产出候选清单"]
+    L["Lead 审阅首夜清单后<br/>手工写入 activation receipt<br/>(激活回执,janitor 自己写不了)"]
+    E["引擎 policy-apply<br/>打开数据库前强制校验:<br/>回执 + 政策指纹 + 行数上限"]
+    OK["上限内:备份快照 → 删除 → 留收据<br/>(与 FLY-2006 已批流程同一套代码)"]
+    NO["超上限 / 回执失效:<br/>零删除 + 告警给 Lead(fail-closed)"]
+    A --> P
+    P --> I
+    I --> L
+    L --> E
+    E --> OK
+    E --> NO
+    C["政策 / 名册 / 引擎任一文件被改动<br/>→ 指纹失配 → 回执自动失效<br/>→ 退回只盘点模式"]
+    C --> E

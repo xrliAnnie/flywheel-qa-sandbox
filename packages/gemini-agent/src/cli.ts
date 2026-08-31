@@ -6,9 +6,7 @@
  *                          [--identity <path>] [--resume <sessionId>]
  *   flywheel-gemini-agent daemon        (M2 Discord entry)
  *
- * Fail-closed: FLYWHEEL_GEMINI_AGENT unset, missing env, or missing
- * --project/--lead refuse to start (Terminal reason config_error semantics —
- * exit 2). No invented default Lead: the binding is explicit (Codex R3-1).
+ * Retired by FLY-2105: every command exits through the config_error path.
  */
 
 import { ConfigError, loadAgentConfig } from "./config.js";

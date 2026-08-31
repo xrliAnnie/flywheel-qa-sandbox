@@ -17,11 +17,7 @@ import { homedir } from "node:os";
 import { join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { Router } from "express";
-import type {
-	PipelineConfig,
-	PonytailInput,
-	SkillFrameworkMode,
-} from "flywheel-config";
+import type { PonytailInput, SkillFrameworkMode } from "flywheel-config";
 import {
 	canonicalSubmissionDigest,
 	getModelConfigSnapshot,
@@ -29,7 +25,6 @@ import {
 	isWorkflowPhaseRole,
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
-	workflowMenuTemplateId,
 } from "flywheel-config";
 import {
 	DOC_TIERS,
@@ -44,6 +39,7 @@ import {
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
 import {
+	Fly2121PreservedTemplateUnrunnableError,
 	type Session,
 	type StateStore,
 	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
@@ -70,6 +66,7 @@ import {
 	resolveLeadMenus,
 	resolveMenuOverrides,
 	WorkflowMenuValidationError,
+	workflowMenuTemplateId,
 } from "../workflow-menu.js";
 import {
 	nodeRequiresFounderReview,
@@ -96,8 +93,8 @@ import {
 import { resolveLifecycleRootKey } from "./lifecycle-root-key.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
 import {
-	loadPipelineConfigByProject,
-	loadWorkKindConfigStrict,
+	readPipelineEnrollment,
+	type WorkKindConfigResult,
 } from "./pipeline-config-source.js";
 import type { IStartDispatcher, StartResult } from "./retry-dispatcher.js";
 import { collectRunQuiescenceEvidence } from "./run-quiescence.js";
@@ -227,18 +224,10 @@ function inspectWorkflowStartReplay(
  * races dispatcher.start()'s immediate return, and a slow Codex spawn blocks
  * the event loop AFTER the row exists, so a live runner registers well within
  * this window while a genuine ghost (threw before emitStarted) correctly
- * times out. The default is deliberately above the saturated-host launch
- * delivery observed in FLY-1336; operators can tune it only at process start.
+ * times out. The fixed deadline is deliberately above the saturated-host
+ * launch delivery observed in FLY-1336.
  */
-function positiveInt(raw: string | undefined, fallback: number): number {
-	const parsed = Number(raw);
-	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-const GHOST_GUARD_SESSION_WAIT_MS = positiveInt(
-	process.env.FLYWHEEL_GHOST_GUARD_WAIT_MS,
-	90_000,
-);
+export const GHOST_GUARD_SESSION_WAIT_MS = 90_000;
 
 function secureTokenEqual(
 	actual: string | undefined,
@@ -345,8 +334,11 @@ export function createRunsRouter(
 		hasOverride: boolean;
 		raw: string | null;
 	} = () => ({ hasOverride: false, raw: null }),
+	__testOnly: { ghostGuardSessionWaitMs?: number } = {},
 ): Router {
 	const router = Router();
+	const ghostGuardSessionWaitMs =
+		__testOnly.ghostGuardSessionWaitMs ?? GHOST_GUARD_SESSION_WAIT_MS;
 	const workflowResumeCheckpointStore = new GitWorkflowResumeCheckpointStore({
 		storeRoot: join(homedir(), ".flywheel", "checkpoint-store"),
 	});
@@ -987,6 +979,22 @@ export function createRunsRouter(
 	});
 
 	router.post("/start", async (req, res) => {
+		const rejectFly2121PreservedTemplate = (error: unknown): boolean => {
+			if (!(error instanceof Fly2121PreservedTemplateUnrunnableError)) {
+				return false;
+			}
+			console.error(`[runs/start] ${error.code}: ${error.message}`);
+			res.status(409).json({
+				success: false,
+				code: error.code,
+				reason: error.message,
+				templateId: error.templateId,
+				legacyRoles: error.legacyRoles,
+				retryable: false,
+				silent: false,
+			});
+			return true;
+		};
 		// GEO-267: LINEAR_API_KEY is required for issue hydration (PreHydrator).
 		// Without it, Runner gets stub metadata → degraded agent routing.
 		if (!process.env.LINEAR_API_KEY) {
@@ -1890,14 +1898,14 @@ export function createRunsRouter(
 		// provenance marker — NOT `engine_owned`, which every start-reservation
 		// run (existing v2 / explicit-v1) also carries (R3-1). Unmarked runs
 		// fall through to today's paths byte-identically.
-		let mainPipelineConfig: PipelineConfig | undefined;
+		let mainPipelineConfig: WorkKindConfigResult | undefined;
 		let mainPipelineConfigLoaded = false;
-		const loadMainPipelineConfig = async () => {
+		const loadMainPipelineConfig = () => {
 			if (!mainPipelineConfigLoaded) {
 				mainPipelineConfigLoaded = true;
 				const proj = projects.find((p) => p.projectName === projectName);
 				mainPipelineConfig = proj
-					? (await loadPipelineConfigByProject([proj])).get(projectName)
+					? readPipelineEnrollment({ mode: "ready", store }, projectName)
 					: undefined;
 			}
 			return mainPipelineConfig;
@@ -2018,11 +2026,11 @@ export function createRunsRouter(
 				}
 				const pipelineConfig =
 					classifiedKind === "pipeline_dag_v1"
-						? await loadMainPipelineConfig()
+						? loadMainPipelineConfig()
 						: undefined;
 				if (
 					classifiedKind === "pipeline_dag_v1" &&
-					pipelineConfig?.dag !== true
+					(pipelineConfig?.ok !== true || pipelineConfig.dag !== true)
 				) {
 					res.status(409).json({
 						success: false,
@@ -2030,7 +2038,7 @@ export function createRunsRouter(
 							classifiedKind === "pipeline_dag_v1"
 								? "ACTIVE_DAG_RUN_RECOVERY_HELD"
 								: "ACTIVE_WORKFLOW_RUN_RECOVERY_HELD",
-						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but pipeline.dag is disabled — restore pipeline.dag to converge it, or finalize/terminate the run before dispatching legacy`,
+						reason: `issue ${issueId} has an active ${classifiedKind} run (${activeRun.run_id}) but the project-scoped pipeline_dag flag is off or unreadable — use feature-flags set --name pipeline_dag --to on --project ${projectName} with a reason to converge it, or finalize/terminate the run before dispatching legacy`,
 					});
 					return;
 				}
@@ -2118,7 +2126,10 @@ export function createRunsRouter(
 		if (freshMain) {
 			const project = projects.find((p) => p.projectName === projectName);
 			if (project) {
-				const strict = loadWorkKindConfigStrict(project);
+				const strict = readPipelineEnrollment(
+					{ mode: "ready", store },
+					project.projectName,
+				);
 				if (!strict.ok) {
 					res.status(400).json({
 						success: false,
@@ -2132,8 +2143,7 @@ export function createRunsRouter(
 					res.status(409).json({
 						success: false,
 						code: "DAG_DISPATCH_DISABLED",
-						reason:
-							"pipeline.dag is explicitly disabled or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG",
+						reason: `the project-scoped pipeline_dag flag is off or unreadable; FLY-1981 retired legacy auto-QA, so fresh code dispatch must use the generalized DAG — use feature-flags set --name pipeline_dag --project ${projectName} with --to on and a reason`,
 						silent: false,
 					});
 					return;
@@ -2427,6 +2437,7 @@ export function createRunsRouter(
 					});
 					return;
 				}
+				if (rejectFly2121PreservedTemplate(err)) return;
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_WORKFLOW_REJECTED",
@@ -2566,6 +2577,7 @@ export function createRunsRouter(
 					});
 					return;
 				}
+				if (rejectFly2121PreservedTemplate(err)) return;
 				res.status(409).json({
 					success: false,
 					code: "GENERALIZED_WORKFLOW_REJECTED",
@@ -3235,13 +3247,13 @@ export function createRunsRouter(
 					startedSession = await waitForSession(
 						store,
 						generalizedSelection.executionId,
-						{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
+						{ timeoutMs: ghostGuardSessionWaitMs },
 					);
 					if (!startedSession) {
 						res.status(500).json({
 							success: false,
 							code: "GENERALIZED_START_NOT_LIVE",
-							message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms.`,
+							message: `Runner failed to start — session not registered after ${ghostGuardSessionWaitMs}ms.`,
 						});
 						return;
 					}
@@ -3250,7 +3262,7 @@ export function createRunsRouter(
 			let committedOwner = await waitForGeneralizedLaunchDelivery(
 				store,
 				generalizedSelection.executionId,
-				{ timeoutMs: GHOST_GUARD_SESSION_WAIT_MS },
+				{ timeoutMs: ghostGuardSessionWaitMs },
 			);
 			if (!committedOwner) {
 				// Close the wait-boundary race before degrading to accepted-pending. A
@@ -3623,7 +3635,7 @@ export function createRunsRouter(
 			// absent for the full deadline. One bounded-poll helper, not two —
 			// reuses FLY-205's `waitForSession` with the ghost-guard deadline.
 			const finalSession = await waitForSession(store, result.executionId, {
-				timeoutMs: GHOST_GUARD_SESSION_WAIT_MS,
+				timeoutMs: ghostGuardSessionWaitMs,
 			});
 			if (!finalSession) {
 				store.casLaunchClaimState(
@@ -3633,7 +3645,7 @@ export function createRunsRouter(
 				);
 				res.status(500).json({
 					success: false,
-					message: `Runner failed to start — session not registered after ${GHOST_GUARD_SESSION_WAIT_MS}ms. Check Bridge logs for errors.`,
+					message: `Runner failed to start — session not registered after ${ghostGuardSessionWaitMs}ms. Check Bridge logs for errors.`,
 				});
 				return;
 			}
@@ -3678,6 +3690,7 @@ export function createRunsRouter(
 				"starting",
 				"cancelled",
 			);
+			if (rejectFly2121PreservedTemplate(err)) return;
 			// FLY-137 v1.27.2: InvalidAgentNameError thrown from AgentDispatcher
 			// when Lead override `agentName` doesn't match any configured agent.
 			// Map to FLY-127-shaped machine-only diagnostic.

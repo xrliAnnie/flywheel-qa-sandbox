@@ -76,7 +76,6 @@ export interface LeadInboxLoopOptions {
 	claimTtlMs?: number;
 	activeIntervalMs?: number;
 	idleIntervalMs?: number;
-	maxBatchSize?: number;
 	maxBatchBytes?: number;
 	onModelTransportStall?: (context: {
 		leadId: string;
@@ -130,7 +129,6 @@ export class LeadInboxLoop {
 	private readonly idleIntervalMs: number;
 	private readonly leaseTtlMs: number;
 	private readonly claimTtlMs: number;
-	private readonly maxBatchSize: number;
 	private readonly maxBatchBytes: number;
 	private readonly maxProtocolAttempts: number;
 	private readonly maxModelAttempts: number;
@@ -156,7 +154,6 @@ export class LeadInboxLoop {
 		this.idleIntervalMs = opts.idleIntervalMs ?? IDLE_LEAD_INBOX_INTERVAL_MS;
 		this.leaseTtlMs = opts.leaseTtlMs ?? 10_000;
 		this.claimTtlMs = opts.claimTtlMs ?? 15_000;
-		this.maxBatchSize = opts.maxBatchSize ?? 10_000;
 		this.maxBatchBytes = opts.maxBatchBytes ?? 4 * 1024 * 1024;
 		this.maxProtocolAttempts = opts.maxProtocolAttempts ?? 3;
 		this.maxModelAttempts = opts.maxModelAttempts ?? 5;
@@ -221,10 +218,8 @@ export class LeadInboxLoop {
 		let protocolConsumed = 0;
 		let modelConsumed = 0;
 		try {
-			const queueConfig = this.opts.queueConfig?.() ?? {
-				...DEFAULT_MAILBOX_QUEUE_CONFIG,
-				enabled: false,
-			};
+			const queueConfig =
+				this.opts.queueConfig?.() ?? DEFAULT_MAILBOX_QUEUE_CONFIG;
 			const recipientStates = new Map<string, MailboxRecipientState>();
 			const recipientState = (recipient: string): MailboxRecipientState => {
 				const cached = recipientStates.get(recipient);
@@ -252,38 +247,36 @@ export class LeadInboxLoop {
 				throw new Error("owner lease unavailable");
 			}
 			await this.opts.admit?.();
-			if (queueConfig.enabled) {
-				const reconciliation = this.opts.queue.reconcileExpiredLeases({
-					ownerEpoch: this.opts.ownerEpoch,
-					now: this.isoNow(),
-					recipientKind: "lead",
-					toAgent: this.opts.leadId,
-					leaseRetryMax: queueConfig.leaseRetryMax,
-					recipientState,
-					maxBatches: 100,
-					maxTerminalRows: 0,
-				});
-				if (reconciliation.skippedUnknown > 0) {
-					if (!this.unknownRecipientHoldActive) {
-						this.opts.logger?.warn(
-							"Lead inbox held expired batches for an unknown recipient incarnation",
-							{
-								leadId: this.opts.leadId,
-								skippedUnknown: reconciliation.skippedUnknown,
-							},
-						);
-					}
-					this.unknownRecipientHoldActive = true;
-				} else {
-					this.unknownRecipientHoldActive = false;
+			const reconciliation = this.opts.queue.reconcileExpiredLeases({
+				ownerEpoch: this.opts.ownerEpoch,
+				now: this.isoNow(),
+				recipientKind: "lead",
+				toAgent: this.opts.leadId,
+				leaseRetryMax: queueConfig.leaseRetryMax,
+				recipientState,
+				maxBatches: 100,
+				maxTerminalRows: 0,
+			});
+			if (reconciliation.skippedUnknown > 0) {
+				if (!this.unknownRecipientHoldActive) {
+					this.opts.logger?.warn(
+						"Lead inbox held expired batches for an unknown recipient incarnation",
+						{
+							leadId: this.opts.leadId,
+							skippedUnknown: reconciliation.skippedUnknown,
+						},
+					);
 				}
-				this.opts.queue.releaseExpiredLegacyPushClaims({
-					toAgent: this.opts.leadId,
-					ownerEpoch: this.opts.ownerEpoch,
-					now: this.isoNow(),
-					maxRows: 100,
-				});
+				this.unknownRecipientHoldActive = true;
+			} else {
+				this.unknownRecipientHoldActive = false;
 			}
+			this.opts.queue.releaseExpiredLegacyPushClaims({
+				toAgent: this.opts.leadId,
+				ownerEpoch: this.opts.ownerEpoch,
+				now: this.isoNow(),
+				maxRows: 100,
+			});
 
 			for (;;) {
 				const now = this.isoNow();
@@ -324,33 +317,19 @@ export class LeadInboxLoop {
 			}
 
 			const candidateBatchId = this.batchIdFactory();
-			const claimed = queueConfig.enabled
-				? this.opts.queue.claimLeadBatchQueue({
-						toAgent: this.opts.leadId,
-						msgClass: "model",
-						ownerEpoch: this.opts.ownerEpoch,
-						batchId: candidateBatchId,
-						now: this.isoNow(),
-						transportClaimTtlMs: this.claimTtlMs,
-						batchWindowMs: queueConfig.batchWindowMs,
-						batchMaxSize: queueConfig.batchMaxSize,
-						inflightMaxBatches: queueConfig.inflightMaxBatches,
-						maxBatchBytes: this.maxBatchBytes,
-						partitionKey: discordBatchPartitionKey,
-					})
-				: this.opts.queue.claimLeadBatch({
-						// FLY-1573 legacy (pre-queue) path — delete with
-						// FLYWHEEL_MAILBOX_QUEUE cleanup.
-						toAgent: this.opts.leadId,
-						msgClass: "model",
-						ownerEpoch: this.opts.ownerEpoch,
-						batchId: candidateBatchId,
-						now: this.isoNow(),
-						claimTtlMs: this.claimTtlMs,
-						maxBatchSize: this.maxBatchSize,
-						maxBatchBytes: this.maxBatchBytes,
-						partitionKey: discordBatchPartitionKey,
-					});
+			const claimed = this.opts.queue.claimLeadBatchQueue({
+				toAgent: this.opts.leadId,
+				msgClass: "model",
+				ownerEpoch: this.opts.ownerEpoch,
+				batchId: candidateBatchId,
+				now: this.isoNow(),
+				transportClaimTtlMs: this.claimTtlMs,
+				batchWindowMs: queueConfig.batchWindowMs,
+				batchMaxSize: queueConfig.batchMaxSize,
+				inflightMaxBatches: queueConfig.inflightMaxBatches,
+				maxBatchBytes: this.maxBatchBytes,
+				partitionKey: discordBatchPartitionKey,
+			});
 			if (claimed.length > 0) {
 				const freshBatch = claimed[0]?.batch_id === candidateBatchId;
 				const deliverable: MailboxRow[] = [];
@@ -458,15 +437,11 @@ export class LeadInboxLoop {
 		if (rows.some((row) => row.lease_retry_count !== attempt)) {
 			throw new Error("claimed model batch mixes lease retry attempts");
 		}
-		const transportBatchId = queueConfig.enabled
-			? `${batchId}#r${attempt}`
-			: batchId;
-		const transportMemberIds = rows.map((row) =>
-			queueConfig.enabled ? `${row.delivery_id}#r${attempt}` : row.delivery_id,
+		const transportBatchId = `${batchId}#r${attempt}`;
+		const transportMemberIds = rows.map(
+			(row) => `${row.delivery_id}#r${attempt}`,
 		);
-		const header = queueConfig.enabled
-			? `[mailbox-batch ${batchId} | ${rows.length} messages | from ${rows[0]?.from_agent}]\nYou must ack this batch with ${this.opts.ackInstruction ?? "flywheel_inbox_ack_batch or lead_actions.ack_batch"} promptly so the sender can see you received it; unacked batches are redelivered and eventually dead-lettered.`
-			: "";
+		const header = `[mailbox-batch ${batchId} | ${rows.length} messages | from ${rows[0]?.from_agent}]\nYou must ack this batch with ${this.opts.ackInstruction ?? "flywheel_inbox_ack_batch or lead_actions.ack_batch"} promptly so the sender can see you received it; unacked batches are redelivered and eventually dead-lettered.`;
 		const batch: LeadDeliveryBatch = {
 			batchId: transportBatchId,
 			leadId: this.opts.leadId,
@@ -474,9 +449,7 @@ export class LeadInboxLoop {
 			kind: discord ? "discord_chat" : "model",
 			members: rows.map((row, index) => {
 				const content = row.delivery_content ?? row.content;
-				const modelContent = queueConfig.enabled
-					? `${index === 0 ? `${header}\n\n` : ""}${content}`
-					: content;
+				const modelContent = `${index === 0 ? `${header}\n\n` : ""}${content}`;
 				return {
 					deliveryId: transportMemberIds[index]!,
 					content: modelContent,
@@ -484,7 +457,7 @@ export class LeadInboxLoop {
 					seq: row.seq,
 				};
 			}),
-			modelPayload: `${header}${header ? "\n\n" : ""}${
+			modelPayload: `${header}\n\n${
 				this.opts.renderModelBatch?.(rows) ??
 				rows.map((row) => row.delivery_content ?? row.content).join("\n\n")
 			}`,
@@ -524,26 +497,15 @@ export class LeadInboxLoop {
 			// Cross-store order is deliberate: adapter receipt → audit mirror → queue
 			// consume. Any crash before the last step retries through adapter dedupe.
 			for (const row of rows) await this.opts.markAuditDelivered?.(row);
-			if (queueConfig.enabled) {
-				if (
-					this.opts.queue.recordLeadBatchDelivered({
-						batchId,
-						ownerEpoch: this.opts.ownerEpoch,
-						now: this.isoNow(),
-						ackLeaseTtlMs: queueConfig.ackLeaseMs,
-					}) === "lost_race"
-				) {
-					throw new Error("owner fence lost before queue delivery receipt");
-				}
-			} else if (
-				!this.opts.queue.ackBatch({
+			if (
+				this.opts.queue.recordLeadBatchDelivered({
 					batchId,
 					ownerEpoch: this.opts.ownerEpoch,
-					memberIds: rows.map(({ delivery_id }) => delivery_id),
 					now: this.isoNow(),
-				})
+					ackLeaseTtlMs: queueConfig.ackLeaseMs,
+				}) === "lost_race"
 			) {
-				throw new Error("owner fence lost before queue consume");
+				throw new Error("owner fence lost before queue delivery receipt");
 			}
 			if (this.transportStalled) {
 				this.transportStalled = false;

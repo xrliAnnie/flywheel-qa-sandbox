@@ -1,0 +1,452 @@
+diff --git a/apps/brain/src/voice-mode.test.ts b/apps/brain/src/voice-mode.test.ts
+index abed8c6..9eee10c 100644
+--- a/apps/brain/src/voice-mode.test.ts
++++ b/apps/brain/src/voice-mode.test.ts
+@@ -1,11 +1,12 @@
+ import { mkdtempSync } from "node:fs";
+ import { tmpdir } from "node:os";
+ import { join } from "node:path";
+-import { readVoiceModeRequest } from "@raya/contracts";
++import { readVoiceModeRequest, requestVoiceMode } from "@raya/contracts";
+ import { describe, expect, it, vi } from "vitest";
+ import {
+ 	createLaunchctlVoiceSupervisor,
+ 	parseVoiceModeCommand,
++	slashCommandData,
+ 	startVoiceModeGateway,
+ 	VoiceModeController,
+ } from "./voice-mode.js";
+@@ -27,6 +28,20 @@ function message(overrides: Record<string, unknown> = {}) {
+ 	};
+ }
+ 
++function interaction(overrides: Record<string, unknown> = {}) {
++	return {
++		commandName: "进入语音",
++		guildId: guild,
++		channelId: channel,
++		user: { id: founder, bot: false },
++		deferReply: vi.fn(async () => {}),
++		editReply: vi.fn(async () => {}),
++		followUp: vi.fn(async () => {}),
++		replyEphemeral: vi.fn(async () => {}),
++		...overrides,
++	};
++}
++
+ describe("voice mode text contract", () => {
+ 	it("matches only the approved exact start/stop phrases after trimming", () => {
+ 		expect(parseVoiceModeCommand("进入语音模式")).toBe("start");
+@@ -53,7 +68,9 @@ describe("voice mode text contract", () => {
+ 		expect(
+ 			await controller.handle(message({ content: "开一下语音模式", reply })),
+ 		).toBe("hinted");
+-		expect(reply).toHaveBeenCalledWith("要进语音模式请发：进入语音模式");
++		expect(reply).toHaveBeenCalledWith(
++			"要进语音模式请发：进入语音模式，或用 /进入语音",
++		);
+ 	});
+ 
+ 	it("ignores bot, outsider, guild, and channel mismatches", async () => {
+@@ -374,3 +391,401 @@ describe("voice mode text contract", () => {
+ 		expect(client.destroy).toHaveBeenCalledOnce();
+ 	});
+ });
++
++describe("voice mode slash contract", () => {
++	it("publishes the two approved guild commands exactly", () => {
++		expect(slashCommandData()).toEqual([
++			{
++				name: "进入语音",
++				description: "进入语音模式：Raya 加入现有 Voice Channel",
++				dmPermission: false,
++			},
++			{
++				name: "退出语音",
++				description: "退出语音模式（语音卡住时也能用的逃生门）",
++				dmPermission: false,
++			},
++		]);
++	});
++
++	it("rejects an unauthorized slash actor immediately without touching launchd", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-slash-denied-"));
++		const supervisor = {
++			status: vi.fn(async () => "stopped" as const),
++			start: vi.fn(async () => "launched" as const),
++			stop: vi.fn(async () => "signaled" as const),
++		};
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++		const denied = interaction({ user: { id: "999999999999999999", bot: false } });
++
++		expect(await controller.handleInteraction(denied)).toBe("ignored");
++		expect(denied.replyEphemeral).toHaveBeenCalledWith(
++			"这个命令只有 Raya 的主人能用",
++		);
++		expect(denied.deferReply).not.toHaveBeenCalled();
++		expect(supervisor.status).not.toHaveBeenCalled();
++		expect(supervisor.start).not.toHaveBeenCalled();
++		expect(supervisor.stop).not.toHaveBeenCalled();
++	});
++
++	it("ignores an unknown interaction command without acknowledging or enqueueing it", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-slash-unknown-"));
++		const supervisor = {
++			status: vi.fn(async () => "stopped" as const),
++			start: vi.fn(async () => "launched" as const),
++			stop: vi.fn(async () => "signaled" as const),
++		};
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++		const unknown = interaction({ commandName: "something-else" });
++
++		expect(await controller.handleInteraction(unknown)).toBe("ignored");
++		expect(unknown.deferReply).not.toHaveBeenCalled();
++		expect(supervisor.status).not.toHaveBeenCalled();
++	});
++
++	it("acknowledges a slash command outside the serialized action queue", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-slash-ack-"));
++		let release!: () => void;
++		const blockedStart = new Promise<void>((resolve) => {
++			release = resolve;
++		});
++		const supervisor = {
++			status: vi.fn(async () => "stopped" as const),
++			start: vi
++				.fn<() => Promise<"launched">>()
++				.mockImplementationOnce(async () => {
++					await blockedStart;
++					return "launched";
++				})
++				.mockResolvedValue("launched"),
++			stop: vi.fn(async () => "signaled" as const),
++		};
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++		const textStart = controller.handle(message());
++		await vi.waitFor(() => expect(supervisor.start).toHaveBeenCalledOnce());
++		const slash = interaction();
++		const slashStart = controller.handleInteraction(slash);
++		await vi.waitFor(() => expect(slash.deferReply).toHaveBeenCalledOnce());
++		expect(supervisor.start).toHaveBeenCalledOnce();
++
++		release();
++		await Promise.all([textStart, slashStart]);
++		expect(slash.editReply).toHaveBeenCalledWith("🎙️ 正在进入语音模式");
++	});
++
++	it("does not enqueue an interaction whose Discord acknowledgement fails", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-slash-ack-fail-"));
++		const supervisor = {
++			status: vi.fn(async () => "stopped" as const),
++			start: vi.fn(async () => "launched" as const),
++			stop: vi.fn(async () => "signaled" as const),
++		};
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++		const failed = interaction({
++			deferReply: vi.fn(async () => {
++				throw new Error("interaction expired");
++			}),
++		});
++
++		await expect(controller.handleInteraction(failed)).rejects.toThrow(
++			"interaction expired",
++		);
++		expect(supervisor.status).not.toHaveBeenCalled();
++		expect(supervisor.start).not.toHaveBeenCalled();
++	});
++
++	it("fails closed when a running job has no desired-state marker", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-start-unsettled-"));
++		const reply = vi.fn(async () => {});
++		const supervisor = {
++			status: vi.fn(async () => "running" as const),
++			start: vi.fn(async () => "launched" as const),
++			stop: vi.fn(async () => "signaled" as const),
++		};
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++
++		expect(await controller.handle(message({ reply }))).toBe(
++			"start_blocked_unsettled",
++		);
++		expect(readVoiceModeRequest(stateDir)).toBeNull();
++		expect(supervisor.start).not.toHaveBeenCalled();
++		expect(reply).toHaveBeenCalledWith(
++			"⚠️ 语音进程正在退出或未收敛，请稍后再试或先用 /退出语音",
++		);
++	});
++
++	it("clears desired state and starts the stop ladder even after a brain restart", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-stop-restart-"));
++		let release!: (value: "signaled") => void;
++		const stopped = new Promise<"signaled">((resolve) => {
++			release = resolve;
++		});
++		const reply = vi.fn(async () => {});
++		const supervisor = {
++			status: vi.fn(async () => "running" as const),
++			start: vi.fn(async () => "launched" as const),
++			stop: vi.fn(() => stopped),
++		};
++		const controllerAfterRestart = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++
++		const stopping = controllerAfterRestart.handle(
++			message({ content: "退出语音模式", reply }),
++		);
++		await vi.waitFor(() => expect(supervisor.stop).toHaveBeenCalledOnce());
++		expect(reply).toHaveBeenCalledWith("正在退出语音模式");
++		expect(readVoiceModeRequest(stateDir)).toBeNull();
++		release("signaled");
++		expect(await stopping).toBe("stopped");
++	});
++
++	it("reports an absent stop only after clearing a stale marker and trying the ladder", async () => {
++		const stateDir = mkdtempSync(join(tmpdir(), "raya-stop-stale-marker-"));
++		requestVoiceMode(stateDir, {
++			requestedAt: "2026-08-27T05:42:00.000Z",
++			requestedBy: founder,
++		});
++		const reply = vi.fn(async () => {});
++		const supervisor = {
++			status: vi.fn(async () => "stopped" as const),
++			start: vi.fn(async () => "launched" as const),
++			stop: vi.fn(async () => "absent" as const),
++		};
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			supervisor,
++		);
++
++		expect(
++			await controller.handle(message({ content: "退出语音模式", reply })),
++		).toBe("already_stopped");
++		expect(readVoiceModeRequest(stateDir)).toBeNull();
++		expect(supervisor.stop).toHaveBeenCalledOnce();
++		expect(reply.mock.calls).toEqual([
++			["正在退出语音模式"],
++			["当前未在语音模式"],
++		]);
++	});
++
++	it.each([
++		[
++			"forced",
++			"stop_forced",
++			"⚠️ 语音进程未响应，已强制结束",
++		],
++		[
++			"force_failed",
++			"stop_force_failed",
++			"⚠️ 强制结束未能确认，请人工检查 launchctl",
++		],
++	] as const)("reports the %s stop result honestly", async (native, result, warning) => {
++		const stateDir = mkdtempSync(join(tmpdir(), `raya-stop-${native}-`));
++		const slash = interaction({ commandName: "退出语音" });
++		const controller = new VoiceModeController(
++			{
++				guildId: guild,
++				textChannelId: channel,
++				triggerUserIds: [founder],
++				stateDir,
++			},
++			{
++				status: vi.fn(async () => "running" as const),
++				start: vi.fn(async () => "launched" as const),
++				stop: vi.fn(async () => native),
++			},
++		);
++
++		expect(await controller.handleInteraction(slash)).toBe(result);
++		expect(slash.deferReply).toHaveBeenCalledOnce();
++		expect(slash.editReply).toHaveBeenCalledWith("正在退出语音模式");
++		expect(slash.followUp).toHaveBeenCalledWith(warning);
++	});
++});
++
++describe("launchctl voice supervisor", () => {
++	function clockOptions(overrides: Record<string, unknown> = {}) {
++		let current = 0;
++		return {
++			stopGraceMs: 2_000,
++			forceSettleMs: 2_000,
++			pollIntervalMs: 1_000,
++			now: () => current,
++			sleep: async (ms: number) => {
++				current += ms;
++			},
++			...overrides,
++		};
++	}
++
++	it("waits through a rebound pid until the job is truly not running", async () => {
++		let prints = 0;
++		const run = vi.fn(async (_file: string, args: readonly string[]) => {
++			if (args[0] !== "print") return "";
++			prints += 1;
++			if (prints <= 3) return "state = running\npid = 100\n";
++			if (prints === 4) return "state = running\npid = 200\n";
++			throw Object.assign(new Error("not running"), { code: 113 });
++		});
++		const supervisor = createLaunchctlVoiceSupervisor(
++			501,
++			run,
++			clockOptions(),
++		);
++
++		expect(await supervisor.stop()).toBe("forced");
++		expect(run).toHaveBeenCalledWith("/bin/launchctl", [
++			"kill",
++			"SIGKILL",
++			"gui/501/com.xrli.raya.voice",
++		]);
++		expect(prints).toBe(5);
++	});
++
++	it("returns force_failed while any old or rebound instance remains running", async () => {
++		const run = vi.fn(async (_file: string, args: readonly string[]) =>
++			args[0] === "print" ? "state = running\npid = 100\n" : "",
++		);
++		const supervisor = createLaunchctlVoiceSupervisor(
++			501,
++			run,
++			clockOptions(),
++		);
++
++		expect(await supervisor.stop()).toBe("force_failed");
++		expect(run).toHaveBeenCalledWith("/bin/launchctl", [
++			"kill",
++			"SIGKILL",
++			"gui/501/com.xrli.raya.voice",
++		]);
++	});
++
++	it("returns signaled without SIGKILL once SIGTERM converges", async () => {
++		let prints = 0;
++		const run = vi.fn(async (_file: string, args: readonly string[]) => {
++			if (args[0] !== "print") return "";
++			prints += 1;
++			if (prints === 1) return "state = running\npid = 100\n";
++			throw Object.assign(new Error("not running"), { code: 113 });
++		});
++		const supervisor = createLaunchctlVoiceSupervisor(
++			501,
++			run,
++			clockOptions(),
++		);
++
++		expect(await supervisor.stop()).toBe("signaled");
++		expect(
++			run.mock.calls.some(([, args]) => args[1] === "SIGKILL"),
++		).toBe(false);
++	});
++
++	it("maps an absent SIGTERM target to absent", async () => {
++		const absent = Object.assign(new Error("not running"), { code: 113 });
++		const run = vi.fn(async (_file: string, args: readonly string[]) => {
++			if (args[0] === "print" || args[1] === "SIGTERM") throw absent;
++			return "";
++		});
++		const supervisor = createLaunchctlVoiceSupervisor(
++			501,
++			run,
++			clockOptions(),
++		);
++
++		expect(await supervisor.stop()).toBe("absent");
++	});
++
++	it("retries a flapping pre-marker rebound and requires two stable pid samples", async () => {
++		let prints = 0;
++		const run = vi.fn(async (_file: string, args: readonly string[]) => {
++			if (args[0] !== "print") return "";
++			prints += 1;
++			if (prints === 1) return "state = running\npid = 100\n";
++			if (prints === 2)
++				throw Object.assign(new Error("rebound left"), { code: 113 });
++			return "state = running\npid = 200\n";
++		});
++		const supervisor = createLaunchctlVoiceSupervisor(
++			501,
++			run,
++			clockOptions({ startAttempts: 2 }),
++		);
++
++		expect(await supervisor.start()).toBe("launched");
++		expect(
++			run.mock.calls.filter(([, args]) => args[0] === "kickstart"),
++		).toHaveLength(2);
++		expect(prints).toBe(4);
++	});
++
++	it("reports requested_but_down after all stable-start attempts flap", async () => {
++		let prints = 0;
++		const run = vi.fn(async (_file: string, args: readonly string[]) => {
++			if (args[0] !== "print") return "";
++			prints += 1;
++			return prints % 2 === 1
++				? "state = running\npid = 100\n"
++				: Promise.reject(
++						Object.assign(new Error("rebound left"), { code: 113 }),
++					);
++		});
++		const supervisor = createLaunchctlVoiceSupervisor(
++			501,
++			run,
++			clockOptions({ startAttempts: 2 }),
++		);
++
++		expect(await supervisor.start()).toBe("requested_but_down");
++	});
++});

@@ -3,13 +3,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 GENERIC_ROLES=(
-  "$ROOT/agents/generic-executor.md"
-  "$ROOT/agents/generic-executor.bare.md"
-  "$ROOT/agents/generic-executor.matt.md"
+  "$ROOT/.flywheel/agents/nodes/general.md"
+  "$ROOT/.flywheel/agents/nodes/general.bare.md"
+  "$ROOT/.flywheel/agents/nodes/general.matt.md"
+)
+DAG_GENERIC_ROLES=(
+  "$ROOT/.flywheel/agents/nodes/general.bare.md"
+  "$ROOT/.flywheel/agents/nodes/general.matt.md"
 )
 QA_ROLES=(
-  "$ROOT/agents/qa-executor.md"
-  "$ROOT/.flywheel/agents/engineering/qa-executor.md"
+  "$ROOT/.flywheel/agents/nodes/qa.md"
 )
 PROJECT_CONFIG="$ROOT/.flywheel/config.yaml"
 BLUEPRINT="$ROOT/packages/edge-worker/src/Blueprint.ts"
@@ -36,10 +39,13 @@ assert_not_contains() {
 }
 
 for file in "${GENERIC_ROLES[@]}"; do
-  assert_contains "$file" "DAG workflow"
   assert_not_contains "$file" "Auto-QA"
   assert_not_contains "$file" "automatically spawn"
   assert_not_contains "$file" "founder is never bothered before QA is green"
+done
+
+for file in "${DAG_GENERIC_ROLES[@]}"; do
+  assert_contains "$file" "DAG workflow"
 done
 
 for file in "${QA_ROLES[@]}"; do
@@ -60,8 +66,7 @@ for file in "${QA_ROLES[@]}"; do
   assert_not_contains "$file" "Same QA session"
 done
 
-assert_contains "$ROOT/agents/qa-executor.md" 'node "$FLYWHEEL_COMM_CLI" ask --lead <lead-id> --exec-id <exec-id> --report'
-assert_contains "$ROOT/.flywheel/agents/engineering/qa-executor.md" 'node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-eng-lead --exec-id <your-execution-id> --report'
+assert_contains "$ROOT/.flywheel/agents/nodes/qa.md" 'node "$FLYWHEEL_COMM_CLI" ask --lead flywheel-eng-lead --exec-id <your-execution-id> --report'
 
 assert_not_contains "$PROJECT_CONFIG" "auto-QA pipeline"
 assert_not_contains "$PROJECT_CONFIG" "QA·FLY-XX"

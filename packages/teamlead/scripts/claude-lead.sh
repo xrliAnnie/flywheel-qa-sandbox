@@ -103,6 +103,8 @@ assert_v2_canonical_identity() {
   for required_name in \
     FLYWHEEL_LEAD_KEY \
     FLYWHEEL_LEAD_ROLE FLYWHEEL_LEAD_BACKEND FLYWHEEL_PROJECTS_FILE \
+    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
+    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST FLYWHEEL_SUMMARY_CONFIG_HOME \
     DISCORD_STATE_DIR DISCORD_EXPECTED_BOT_USER_ID DISCORD_IDENTITY_MODE DISCORD_BOT_TOKEN \
     FLYWHEEL_LEAD_IDENTITY_DIGEST FLYWHEEL_LEAD_PROJECTS_DIGEST; do
     required_value="${!required_name:-}"
@@ -125,6 +127,31 @@ assert_v2_canonical_identity() {
   fi
   if [ "$FLYWHEEL_LEAD_BACKEND" != claude-code ]; then
     log "ERROR: identity_env_conflict: Claude body received backend '$FLYWHEEL_LEAD_BACKEND'"
+    return 1
+  fi
+  case "$FLYWHEEL_LEAD_SUMMARY_ROLE" in
+    producer|aggregator|recipient|exempt) ;;
+    *)
+      log "ERROR: identity_env_conflict: invalid FLYWHEEL_LEAD_SUMMARY_ROLE"
+      return 1
+      ;;
+  esac
+  case "$FLYWHEEL_LEAD_HAS_SUMMARY_DUTY" in
+    0|1) ;;
+    *)
+      log "ERROR: identity_env_conflict: invalid FLYWHEEL_LEAD_HAS_SUMMARY_DUTY"
+      return 1
+      ;;
+  esac
+  case "$FLYWHEEL_SUMMARY_GRANULARITY" in
+    per-lead|per-project) ;;
+    *)
+      log "ERROR: identity_env_conflict: invalid FLYWHEEL_SUMMARY_GRANULARITY"
+      return 1
+      ;;
+  esac
+  if [[ ! "$FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST" =~ ^[a-f0-9]{64}$ ]]; then
+    log "ERROR: identity_env_conflict: malformed summary assignment digest"
     return 1
   fi
   if [[ ! "$DISCORD_EXPECTED_BOT_USER_ID" =~ ^[0-9]{17,20}$ ]] \
@@ -536,6 +563,75 @@ if [ "$IS_COMPANION_ROLE" != true ]; then
       ;;
   esac
 fi
+
+# FLY-2030: v2 wrappers arrive with an immutable canonical identity projection,
+# but the still-supported direct Claude launcher does not. Resolve the summary
+# coordinates once from the same strict registry/config authorities instead of
+# requiring every legacy caller to synthesize FLYWHEEL_LEAD_HAS_SUMMARY_DUTY.
+# Existing non-empty values are assertions only: a mismatch fails closed.
+_resolve_legacy_summary_projection() {
+  [ "${FLYWHEEL_LEAD_BODY_V2:-0}" = "1" ] && return 0
+
+  local comm_cli="${FLYWHEEL_COMM_CLI:-${SCRIPT_DIR}/../../flywheel-comm/dist/index.js}"
+  local projects_file="" projects_tmp="" identity_json=""
+  local summary_role summary_granularity has_summary_duty summary_digest
+  local name expected actual
+
+  if [ ! -f "$comm_cli" ]; then
+    log "ERROR: summary identity resolver is missing: $comm_cli"
+    return 1
+  fi
+  if [ -n "${FLYWHEEL_PROJECTS:-}" ]; then
+    projects_tmp="$(mktemp "${TMPDIR:-/tmp}/fly2030-lead-projects.XXXXXX")" || {
+      log "ERROR: cannot create a private summary identity snapshot"
+      return 1
+    }
+    chmod 600 "$projects_tmp"
+    printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects_tmp"
+    projects_file="$projects_tmp"
+  else
+    projects_file="${FLYWHEEL_PROJECTS_FILE:-${HOME}/.flywheel/projects.json}"
+  fi
+
+  if ! identity_json="$(node "$comm_cli" lead-identity resolve \
+    --projects-file "$projects_file" \
+    --project "$PROJECT_NAME" \
+    --lead "$LEAD_ID" \
+    --format json)"; then
+    [ -n "$projects_tmp" ] && rm -f "$projects_tmp"
+    log "ERROR: canonical summary assignment is not ready for ${PROJECT_NAME}/${LEAD_ID}"
+    return 1
+  fi
+  [ -n "$projects_tmp" ] && rm -f "$projects_tmp"
+
+  summary_role="$(jq -er '.summaryRole | select(. == "producer" or . == "aggregator" or . == "recipient" or . == "exempt")' <<<"$identity_json")" || return 1
+  summary_granularity="$(jq -er '.summaryGranularity | select(. == "per-lead" or . == "per-project")' <<<"$identity_json")" || return 1
+  has_summary_duty="$(jq -er '.hasSummaryDuty | if . == true then "1" elif . == false then "0" else error("invalid") end' <<<"$identity_json")" || return 1
+  summary_digest="$(jq -er '.summaryAssignmentDigest | select(test("^[a-f0-9]{64}$"))' <<<"$identity_json")" || return 1
+
+  for name in \
+    FLYWHEEL_LEAD_SUMMARY_ROLE FLYWHEEL_LEAD_HAS_SUMMARY_DUTY \
+    FLYWHEEL_SUMMARY_GRANULARITY FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST; do
+    case "$name" in
+      FLYWHEEL_LEAD_SUMMARY_ROLE) expected="$summary_role" ;;
+      FLYWHEEL_LEAD_HAS_SUMMARY_DUTY) expected="$has_summary_duty" ;;
+      FLYWHEEL_SUMMARY_GRANULARITY) expected="$summary_granularity" ;;
+      FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST) expected="$summary_digest" ;;
+    esac
+    actual="${!name-}"
+    if [ -n "$actual" ] && [ "$actual" != "$expected" ]; then
+      log "ERROR: identity_env_conflict: $name conflicts with canonical summary assignment"
+      return 1
+    fi
+  done
+
+  export FLYWHEEL_LEAD_SUMMARY_ROLE="$summary_role"
+  export FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty"
+  export FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity"
+  export FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_digest"
+}
+
+_resolve_legacy_summary_projection || exit 1
 
 # ── FLY-1867: identity-bound Playwright MCP positive opt-in ────────────────
 # The machine setting is deliberately false. Only the exact project+Lead entry
@@ -1909,6 +2005,10 @@ _launch_claude() {
     -e "FLYWHEEL_LEAD_ID=${LEAD_ID}"
     -e "FLYWHEEL_LEAD_KEY=${FLYWHEEL_LEAD_KEY:-}"
     -e "FLYWHEEL_LEAD_ROLE=${FLYWHEEL_LEAD_ROLE:-}"
+    -e "FLYWHEEL_LEAD_SUMMARY_ROLE=${FLYWHEEL_LEAD_SUMMARY_ROLE:-}"
+    -e "FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}"
+    -e "FLYWHEEL_SUMMARY_GRANULARITY=${FLYWHEEL_SUMMARY_GRANULARITY:-}"
+    -e "FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST=${FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST:-}"
     -e "FLYWHEEL_LEAD_BACKEND=${FLYWHEEL_LEAD_BACKEND:-}"
     -e "FLYWHEEL_LEAD_IDENTITY_DIGEST=${FLYWHEEL_LEAD_IDENTITY_DIGEST:-}"
     -e "FLYWHEEL_LEAD_PROJECTS_DIGEST=${FLYWHEEL_LEAD_PROJECTS_DIGEST:-}"
@@ -1953,9 +2053,21 @@ _launch_claude() {
     # only sets it in the launcher shell; env -i strips anything outside this
     # allowlist, so the Lead saw empty and the skill fell back to a slow
     # `find /` recursive scan.
-    -e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
-    -e "FLYWHEEL_FOUNDER_TZ=${FLYWHEEL_FOUNDER_TZ:-}"
-  )
+	-e "FLYWHEEL_TEAMLEAD_SCRIPT_DIR=${FLYWHEEL_TEAMLEAD_SCRIPT_DIR:-}"
+	-e "FLYWHEEL_FOUNDER_TZ=${FLYWHEEL_FOUNDER_TZ:-}"
+	)
+	if [ -n "${FLYWHEEL_SUMMARY_CONFIG_HOME:-}" ]; then
+		env_args+=(-e "FLYWHEEL_SUMMARY_CONFIG_HOME=${FLYWHEEL_SUMMARY_CONFIG_HOME}")
+	fi
+
+	# FLY-2076: final env -i capability fence. Only the sole Alerts duty seat
+	# receives the repository path / bearer; every other pane has neither.
+	if [ "$LEAD_ID" = "claude-infra-bot-lead" ]; then
+		env_args+=(-e "FLYWHEEL_DIR=${FLYWHEEL_DIR:-${FLYWHEEL_ROOT}}")
+		if [ -n "${FLYWHEEL_ALERT_DUTY_TOKEN:-}" ]; then
+			env_args+=(-e "FLYWHEEL_ALERT_DUTY_TOKEN=${FLYWHEEL_ALERT_DUTY_TOKEN}")
+		fi
+	fi
 
   # FLY-1697: pass the v2 body's bound generation through the explicit env -i
   # boundary. Degraded launches carry only the fail-closed marker.
@@ -2383,9 +2495,9 @@ if [ "$INBOX_MCP_ENABLED" = "true" ]; then
   CLAUDE_ARGS+=("server:flywheel-inbox")
   log "Channels: Discord plugin + inbox server (dev channel)"
 
-  # FLY-109: Tell the Lead model how + when to call flywheel_inbox_ack. The file
+	# Tell the Lead model how + when to acknowledge inbox batches. The file
   # ships in scripts/ so it's always present when this launcher runs; no external
-  # sync required. Only loaded when inbox-mcp is enabled — the tool doesn't exist
+	# sync required. Only loaded when inbox-mcp is enabled — the tools don't exist
   # otherwise.
   INBOX_ACK_RULE="${SCRIPT_DIR}/inbox-ack-rule.md"
   if [ -f "$INBOX_ACK_RULE" ] && [ -r "$INBOX_ACK_RULE" ]; then
@@ -2623,6 +2735,26 @@ else
     log "Appending base cos-lead rules: ${BASE_COS_RULES}"
   fi
 fi
+
+# ── FLY-2030: registry-projected summary duty (all roles, no role formula) ──
+# The launcher identity resolver already validated the closed assignment enum,
+# founder-selected mode, and assignment digest. This path only consumes the bit.
+case "${FLYWHEEL_LEAD_HAS_SUMMARY_DUTY:-}" in
+  1)
+    BASE_SUMMARY_INFLOW_RULES="${BASE_RULES_DIR}/summary-inflow.md"
+    if [ ! -f "$BASE_SUMMARY_INFLOW_RULES" ] || [ ! -r "$BASE_SUMMARY_INFLOW_RULES" ]; then
+      echo "[lead] ERROR: summary duty is active but required rule is missing: ${BASE_SUMMARY_INFLOW_RULES}"
+      exit 1
+    fi
+    rules_bundle_add "$BASE_SUMMARY_INFLOW_RULES" base
+    log "Appending base summary-inflow rules: ${BASE_SUMMARY_INFLOW_RULES}"
+    ;;
+  0) ;;
+  *)
+    echo "[lead] ERROR: invalid or missing FLYWHEEL_LEAD_HAS_SUMMARY_DUTY projection"
+    exit 1
+    ;;
+esac
 
 # ── FLY-369/FLY-2080: status relay + patrol action ledger (dept Leads) ──
 # Keep the existing dispatch-capable department-Lead boundary. CoS Leads have
@@ -3028,6 +3160,18 @@ if [ "${FLYWHEEL_LEAD_DRY_RUN:-0}" != "1" ]; then
   else
     log "FLY-898: core-room-gate CLI/helper not built or jq missing — skip"
   fi
+fi
+
+# FLY-2076: provision the one no-mention Alerts seat after the shared access
+# reconciliation steps. Best-effort and loud: helper emits one fixed-shape line
+# for every success/skip path and never suppresses stderr.
+_alert_duty_helper="${SCRIPT_DIR}/lead-duty-provision.sh"
+if [ -f "$_alert_duty_helper" ]; then
+  # shellcheck source=lead-duty-provision.sh
+  source "$_alert_duty_helper" || true
+else
+  unset FLYWHEEL_ALERT_DUTY_TOKEN
+  log "FLY-2076: alert duty provisioning helper missing ($_alert_duty_helper) — skip"
 fi
 
 # FLY-1663: launchd-native carrier. This is the complete lifecycle of one body

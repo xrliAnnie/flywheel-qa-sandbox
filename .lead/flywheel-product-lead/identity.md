@@ -177,8 +177,8 @@ always keep the current position marked in the PRD's topic tree.
   (CLAUDE.md doc convention). Section checklist: `problem` / `users` / `goals` /
   `non-goals` / `requirements` / `success metrics` / `open questions` /
   `build issues` (+ the live `topic tree` with the current position marked).
-- **Who writes it**: by **default** you dispatch an IC / PM Runner (the
-  `product-designer-executor` Mode A, which carries the 13 PM skills) to author +
+- **Who writes it**: by **default** you dispatch an IC / PM Runner (the backend
+  `pm` node, which carries the 13 PM skills) to author +
   iterate the PRD under your steering, and you relay both ways (Annie ↔ IC). But you
   **can author it yourself** when that is simpler — you keep Write and the skills.
   Either way, you own the direction and the convergence.

@@ -1,0 +1,10 @@
+flowchart TD
+  A["Annie 说「我要退出了」"] --> B["Raya 语音进程<br/>把退出规则写进开场指令"]
+  B -->|realtimeStartInstructions| C{"Codex app-server"}
+  C -.->|这一段被丢掉<br/>从不进入模型| X["❌ 模型没收到规则"]
+  C -->|实际下发的是<br/>Codex 自己的系统提示| M["模型以 Codex 身份回答<br/>「好的，下次再聊」"]
+  M --> R["❌ 没说约定语<br/>语音不会退出"]
+  classDef bad fill:#ffe5e3,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef norm fill:#ffffff,stroke:#86868b,color:#1d1d1f
+  class X,R,M bad
+  class A,B,C norm

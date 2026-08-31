@@ -1,0 +1,21 @@
+flowchart TD
+    A["工人到达终点<br/>(任务结束,不论成败)"] --> B["先停消息源头<br/>再把最后几条消息<br/>写完进转播文件"]
+    B --> C["向账本 comm.db<br/>登记终局状态"]
+    C --> D{"终局是哪种?"}
+    D -->|"超时 timeout"| E["当场关窗<br/>(与 claude 工人<br/>既有规则一致)"]
+    D -->|"成功 completed"| F["交给上游 Blueprint<br/>按既有规则关窗<br/>(claude 工人同款)"]
+    D -->|"失败 / 被卡住"| G["窗口留着当现场<br/>供人查看诊断<br/>24 小时后自动回收"]
+    C -->|"登记失败<br/>(账本写不进)"| H["兜底:当场关窗<br/>防止探活误判"]
+    E --> I["转播文件永久保留<br/>关窗不丢现场"]
+    F --> I
+    G --> I
+    H --> I
+    style A fill:#e8f0fe,stroke:#007aff
+    style B fill:#e8f0fe,stroke:#007aff
+    style C fill:#e8f0fe,stroke:#007aff
+    style D fill:#fff4e5,stroke:#ff9500
+    style E fill:#fff4e5,stroke:#ff9500
+    style F fill:#e6f9ed,stroke:#34c759
+    style G fill:#f3e8fd,stroke:#af52de
+    style H fill:#ffe5e3,stroke:#ff3b30
+    style I fill:#e6f9ed,stroke:#34c759

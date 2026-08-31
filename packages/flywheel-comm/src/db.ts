@@ -54,42 +54,6 @@ export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
    AND datetime(p.expires_at) > datetime('now')
  ORDER BY p.created_at ASC`;
 
-export const PENDING_PUSH_INSTRUCTIONS_SQL = `SELECT p.*
-  FROM mailbox AS m
-  JOIN mailbox_message_projection AS p ON p.id = m.id
- WHERE m.to_agent = ? AND m.type = 'instruction'
-   AND m.batch_id IS NULL
-   AND (m.state = 'QUEUED' OR (m.state = 'LEASED'
-        AND m.claimed_by = 'legacy-push' AND m.claim_expires_at <= ?))
-   AND p.read_at IS NULL
-   AND (COALESCE(m.notified_at, m.delivered_at) IS NULL
-        OR COALESCE(m.notified_at, m.delivered_at) <= ?)
-	AND datetime(p.expires_at) > datetime(?)
-   AND NOT EXISTS (
-     SELECT 1 FROM mailbox AS predecessor INDEXED BY mailbox_live
-      WHERE predecessor.to_agent = m.to_agent
-        AND predecessor.type = 'instruction'
-        AND predecessor.batch_id IS NULL
-        AND predecessor.state IN ('QUEUED','LEASED')
-        AND predecessor.seq < m.seq
-		AND datetime(predecessor.expires_at) > datetime(?)
-        AND (
-          (predecessor.state = 'LEASED'
-           AND predecessor.claimed_by = 'legacy-push'
-           AND predecessor.claim_expires_at > ?)
-          OR (
-            (predecessor.state = 'QUEUED' OR (
-              predecessor.state = 'LEASED'
-              AND predecessor.claimed_by = 'legacy-push'
-              AND predecessor.claim_expires_at <= ?
-            ))
-            AND (COALESCE(predecessor.notified_at, predecessor.delivered_at) IS NULL
-                 OR COALESCE(predecessor.notified_at, predecessor.delivered_at) <= ?)
-          )
-        )
-   )
- ORDER BY m.seq ASC`;
-
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   execution_id  TEXT PRIMARY KEY,
@@ -4342,157 +4306,6 @@ export class CommDB {
 		);
 	}
 
-	// ── FLY-109/1773: legacy push helpers (notified_at + explicit read ACK) ──
-	//
-	// These are push-only helpers used by inbox-mcp's poll → channel notification loop.
-	// The CLI pull path (packages/flywheel-comm/src/commands/inbox.ts) continues to use
-	// getUnreadInstructions()/markInstructionRead(). Since FLY-1748, both read paths exclude
-	// terminal mailbox states.
-	//
-	// State machine:
-	//   inserted         → notified_at=NULL, read_at=NULL → pending
-	//   pre-notify CAS   → short, attempt-fenced legacy-push claim
-	//   notify succeeds  → notified_at=now, read_at=NULL → hidden within retry window
-	//   (retry window expires) → re-surfaces in getPendingPushInstructions
-	//   ackRead()        → delivered_at/read_at=acked_at in the projection → settled
-	//
-	// retry_window_sec is provided by the caller (inbox-mcp via FLYWHEEL_INBOX_RETRY_WINDOW_SEC).
-
-	getPendingPushInstructions(
-		agentId: string,
-		retryCutoff: string,
-		now: string,
-	): Message[] {
-		assertUtcIsoTimestamp(retryCutoff, "retryCutoff");
-		assertUtcIsoTimestamp(now, "now");
-		return this.db
-			.prepare(PENDING_PUSH_INSTRUCTIONS_SQL)
-			.all(
-				agentId,
-				now,
-				retryCutoff,
-				now,
-				now,
-				now,
-				now,
-				retryCutoff,
-			) as Message[];
-	}
-
-	tryClaimInstructionForPush(input: {
-		id: string;
-		toAgent: string;
-		now: string;
-		retryCutoff: string;
-		transportClaimTtlMs: number;
-	}): string | null {
-		assertUtcIsoTimestamp(input.now, "now");
-		assertUtcIsoTimestamp(input.retryCutoff, "retryCutoff");
-		if (
-			!Number.isSafeInteger(input.transportClaimTtlMs) ||
-			input.transportClaimTtlMs <= 0
-		) {
-			throw new Error("transportClaimTtlMs must be a positive safe integer");
-		}
-		const fence = new Date(
-			Date.parse(input.now) + input.transportClaimTtlMs,
-		).toISOString();
-		const claimed = this.db
-			.transaction(
-				() =>
-					this.db
-						.prepare(
-							`UPDATE mailbox SET state = 'LEASED', claimed_by = 'legacy-push',
-						   claim_expires_at = ?
-						 WHERE id = ? AND to_agent = ? AND type = 'instruction'
-						   AND batch_id IS NULL
-						   AND (state = 'QUEUED' OR (state = 'LEASED'
-						        AND claimed_by = 'legacy-push' AND claim_expires_at <= ?))
-						   AND (COALESCE(notified_at, delivered_at) IS NULL
-						        OR COALESCE(notified_at, delivered_at) <= ?)
-						   AND expires_at > ?
-						   AND NOT EXISTS (
-						     SELECT 1 FROM mailbox AS predecessor INDEXED BY mailbox_live
-						      WHERE predecessor.to_agent = mailbox.to_agent
-						        AND predecessor.type = 'instruction'
-						        AND predecessor.batch_id IS NULL
-						        AND predecessor.state IN ('QUEUED','LEASED')
-						        AND predecessor.seq < mailbox.seq
-						        AND predecessor.expires_at > ?
-						        AND (
-						          (predecessor.state = 'LEASED'
-						           AND predecessor.claimed_by = 'legacy-push'
-						           AND predecessor.claim_expires_at > ?)
-						          OR (
-						            (predecessor.state = 'QUEUED' OR (
-						              predecessor.state = 'LEASED'
-						              AND predecessor.claimed_by = 'legacy-push'
-						              AND predecessor.claim_expires_at <= ?
-						            ))
-						            AND (COALESCE(predecessor.notified_at, predecessor.delivered_at) IS NULL
-						                 OR COALESCE(predecessor.notified_at, predecessor.delivered_at) <= ?)
-						          )
-						        )
-						   )`,
-						)
-						.run(
-							fence,
-							input.id,
-							input.toAgent,
-							input.now,
-							input.retryCutoff,
-							input.now,
-							input.now,
-							input.now,
-							input.now,
-							input.retryCutoff,
-						).changes === 1,
-			)
-			.immediate();
-		return claimed ? fence : null;
-	}
-
-	recordInstructionNotified(id: string, fence: string, now: string): boolean {
-		assertUtcIsoTimestamp(fence, "fence");
-		assertUtcIsoTimestamp(now, "now");
-		return (
-			this.db
-				.prepare(
-					`UPDATE mailbox SET state = 'QUEUED', claimed_by = NULL,
-					   claim_expires_at = NULL, notified_at = ?
-					 WHERE id = ? AND type = 'instruction' AND batch_id IS NULL
-					   AND state = 'LEASED' AND claimed_by = 'legacy-push'
-					   AND claim_expires_at = ?`,
-				)
-				.run(now, id, fence).changes === 1
-		);
-	}
-
-	releaseInstructionPushClaim(id: string, fence: string): boolean {
-		assertUtcIsoTimestamp(fence, "fence");
-		return (
-			this.db
-				.prepare(
-					`UPDATE mailbox SET state = 'QUEUED', claimed_by = NULL,
-					   claim_expires_at = NULL
-					 WHERE id = ? AND type = 'instruction' AND batch_id IS NULL
-					   AND state = 'LEASED' AND claimed_by = 'legacy-push'
-					   AND claim_expires_at = ?`,
-				)
-				.run(id, fence).changes === 1
-		);
-	}
-
-	/** @deprecated Use the attempt-fenced legacy push methods above. */
-	markInstructionDelivered(id: string): void {
-		this.db
-			.prepare(
-				`UPDATE mailbox SET notified_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-				 WHERE id = ? AND type = 'instruction' AND state IN ('QUEUED','LEASED')`,
-			)
-			.run(id);
-	}
-
 	/**
 	 * The only consuming read for a gate response. Internal probes continue to
 	 * use getResponse(), which is intentionally pure. Consumption ACKs the
@@ -4520,15 +4333,6 @@ export class CommDB {
 				.get(response.id) as Message;
 		});
 		return consume.immediate();
-	}
-
-	/**
-	 * Idempotent ack — only sets read_at if not already set.
-	 * Called by inbox-mcp's flywheel_inbox_ack tool when the Lead model explicitly
-	 * confirms it has processed a message. No-op for unknown ids.
-	 */
-	ackInstructionRead(id: string): void {
-		new MailboxQueue(this.db).ack(id, new Date().toISOString());
 	}
 
 	// ── Dynamic Timeout (Phase 2) ──
@@ -6148,10 +5952,10 @@ export class CommDB {
 	 * window has an immutable id. Unlike registerSession's INSERT OR REPLACE,
 	 * this preserves lifecycle/review metadata already attached to the row.
 	 */
-	updateSessionTmuxWindow(executionId: string, tmuxWindow: string): void {
-		this.db
+	updateSessionTmuxWindow(executionId: string, tmuxWindow: string): number {
+		return this.db
 			.prepare("UPDATE sessions SET tmux_window = ? WHERE execution_id = ?")
-			.run(tmuxWindow, executionId);
+			.run(tmuxWindow, executionId).changes;
 	}
 
 	/** FLY-80: Remove a pre-registered session only if still in :pending state.

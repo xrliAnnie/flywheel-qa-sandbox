@@ -134,38 +134,41 @@ describe("FLY-1436 work-kind cutover routes", () => {
 		const paths: string[] = [];
 		const evidence = readFly1436ActivationEvidence({
 			projectRoot: "/canonical/flywheel",
-			env: {
-				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			},
+			pipelineEnrollment: () => ({
+				ok: true,
+				workKind: true,
+				dag: true,
+			}),
 			readFile: (path) => {
 				paths.push(path);
-				if (path.endsWith(".flywheel/config.yaml")) {
-					return "pipeline:\n  dag: true\n  work_kind: true\n";
-				}
-				if (path.endsWith("ic-roster.yaml")) {
+				if (path.endsWith(".flywheel/agents/registry.yaml")) {
 					return [
-						"design: .flywheel/agents/engineering/engineer-executor.md",
-						"implement: .flywheel/agents/engineering/engineer-executor.md",
-						"qa: .flywheel/agents/engineering/qa-executor.md",
-						"pm: .flywheel/agents/engineering/pm-executor.md",
-						"designer: .flywheel/agents/engineering/designer-executor.md",
-						"proto: .flywheel/agents/engineering/prototype-executor.md",
-						"generic: .flywheel/agents/general-executor.md",
+						"nodes:",
+						"  eng_design: { file: nodes/eng_design.md, label: Engineering Design }",
+						"  implement: { file: nodes/implement.md, label: Implement }",
+						"  qa: { file: nodes/qa.md, label: QA }",
+						"  pm: { file: nodes/pm.md, label: Product Requirements }",
+						"  product_design: { file: nodes/product_design.md, label: Product Design }",
+						"  proto: { file: nodes/proto.md, label: Prototype }",
+						"  general: { file: nodes/general.md, label: General }",
+						"graphs:",
+						"  code: { templateId: tpl_code }",
+						"  simple_code: { templateId: tpl_simple_code }",
+						"  prd: { templateId: tpl_prd }",
+						"  product_design_flow: { templateId: tpl_design }",
+						"  prototype: { templateId: tpl_prototype }",
+						"  generic: { templateId: tpl_generic_menu }",
 					].join("\n");
 				}
 				if (path.endsWith("adoption.yaml")) {
 					return [
 						"flywheel-eng-lead: [generic, code]",
-						"flywheel-product-lead: [prd, design, prototype]",
+						"flywheel-product-lead: [prd, product_design_flow, prototype]",
 						"claude-infra-bot-lead: [generic]",
 					].join("\n");
 				}
-				if (path.includes("menus/shapes/")) {
-					return `shape: ${path.split("/").at(-1)?.replace(".yaml", "")}`;
-				}
 				if (path.endsWith("schemas.js")) {
-					return 'taskCategory code simple_code prd design prototype generic required: ["issueId", "taskCategory"]';
+					return 'taskCategory code simple_code prd product_design_flow prototype generic required: ["issueId", "taskCategory"]';
 				}
 				throw new Error(`unexpected path ${path}`);
 			},
@@ -182,7 +185,7 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			deployedSha: "a".repeat(40),
 		});
 		expect(evidence.assetsDigest).toMatch(/^[0-9a-f]{64}$/);
-		expect(paths).toHaveLength(10);
+		expect(paths).toHaveLength(3);
 		expect(paths.every((path) => path.startsWith("/canonical/flywheel/"))).toBe(
 			true,
 		);
@@ -191,25 +194,20 @@ describe("FLY-1436 work-kind cutover routes", () => {
 	it("rejects the obsolete wrapped menu asset shape", () => {
 		const evidence = readFly1436ActivationEvidence({
 			projectRoot: "/canonical/flywheel",
-			env: {
-				FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH: "1",
-				FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES: "1",
-			},
+			pipelineEnrollment: () => ({
+				ok: true,
+				workKind: true,
+				dag: true,
+			}),
 			readFile: (path) => {
-				if (path.endsWith(".flywheel/config.yaml")) {
-					return "pipeline:\n  dag: true\n  work_kind: true\n";
-				}
-				if (path.endsWith("ic-roster.yaml")) {
-					return "roles:\n  pm: .flywheel/agents/engineering/pm-executor.md";
+				if (path.endsWith(".flywheel/agents/registry.yaml")) {
+					return "nodes:\n  pm: { file: nodes/pm.md, label: Product Requirements }";
 				}
 				if (path.endsWith("adoption.yaml")) {
-					return "leads:\n  flywheel-product-lead: [prd, design, prototype]";
-				}
-				if (path.includes("menus/shapes/")) {
-					return `shape: ${path.split("/").at(-1)?.replace(".yaml", "")}`;
+					return "leads:\n  flywheel-product-lead: [prd, product_design_flow, prototype]";
 				}
 				if (path.endsWith("schemas.js")) {
-					return 'taskCategory code simple_code prd design prototype generic required: ["issueId", "taskCategory"]';
+					return 'taskCategory code simple_code prd product_design_flow prototype generic required: ["issueId", "taskCategory"]';
 				}
 				throw new Error(`unexpected path ${path}`);
 			},
@@ -625,5 +623,55 @@ describe("FLY-1436 work-kind cutover routes", () => {
 			reason: "restore_preflight_failed",
 			causes: ["BINDING_TARGET_DRIFT"],
 		});
+	});
+
+	it("retires a pre-FLY-2121 design-category restore receipt as BINDING_TARGET_DRIFT", async () => {
+		const activationOperationId = "fly-1436-activate-old-design";
+		const deps = await makeDeps({
+			newOperationId: (kind) =>
+				kind === "activate"
+					? activationOperationId
+					: "fly-1436-restore-old-design",
+		});
+		const url = await listen(deps);
+		const staged = await post(url, "stage", { kind: "activate" });
+		const canonical = staged.json.canonical as WorkKindCutoverCanonical;
+		const historicalTarget = FLY1436_TARGET_BINDINGS.map((binding) =>
+			binding.taskCategory === "product_design_flow"
+				? { ...binding, taskCategory: "design" }
+				: binding,
+		);
+		expect(
+			deps.store.commitWorkflowBindingCutover({
+				operationId: activationOperationId,
+				activationId: "FLY-1436",
+				kind: "activate",
+				canonicalHash: "historical-canonical-hash",
+				snapshotHash: canonical.snapshotHash,
+				project: "flywheel",
+				actor: "system:fly-1436-cutover",
+				expectedBefore: [{ taskCategory: "*", templateId: "tpl_eng_heavy" }],
+				targetBindings: historicalTarget,
+			}).status,
+		).toBe("committed");
+		deps.store.applyWorkflowCatalogMigration({
+			categoryRename: { from: "design", to: "product_design_flow" },
+			removableTemplateIds: [],
+			seeds: [],
+			resolvableRoleNames: [],
+		});
+
+		const restore = await post(url, "stage", {
+			kind: "restore",
+			sourceOperationId: activationOperationId,
+			operationId: "fly-1436-restore-old-design",
+			snapshot: staged.json.snapshot,
+		});
+		expect(restore.status).toBe(409);
+		expect(restore.json).toMatchObject({
+			reason: "restore_preflight_failed",
+			causes: ["BINDING_TARGET_DRIFT"],
+		});
+		expect(restore.json).not.toHaveProperty("confirmToken");
 	});
 });

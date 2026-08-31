@@ -54,6 +54,7 @@ function gitAcceptsLineage(reviewedHead, materializedHead) {
 	}
 }
 
+const legacyDesignNodeId = "design"; // FLY-2121-history: these pinned August runs predate the node-id cutover.
 const cases = [
 	{ issueId: "FLY-1645", targetNodeId: "qa", targetAttempt: 1 },
 	{ issueId: "FLY-1680", targetNodeId: "implement", targetAttempt: 2 },
@@ -90,9 +91,9 @@ try {
 		const designAttempts = Number(
 			db
 				.prepare(
-					"SELECT COUNT(*) AS count FROM workflow_run_node WHERE run_id = ? AND node_id = 'design'",
+					"SELECT COUNT(*) AS count FROM workflow_run_node WHERE run_id = ? AND node_id = ?",
 				)
-				.get(run.run_id).count,
+				.get(run.run_id, legacyDesignNodeId).count,
 		);
 		const binding = db
 			.prepare(

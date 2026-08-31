@@ -60,6 +60,7 @@ import {
 	resolveCoreStrictChannelIds,
 	writeThreadId,
 } from "./codex-lead-runtime.js";
+import { recordContextUsage } from "./context-usage-recorder.js";
 import { DaemonConnectionSupervisor } from "./DaemonConnectionSupervisor.js";
 import { DirectDiscordOutboundSender } from "./DirectDiscordOutboundSender.js";
 import { DiscordTypingNotifier } from "./DiscordTypingNotifier.js";
@@ -217,6 +218,7 @@ export interface DemuxedWiring {
 export function wireDemuxedProcess(args: {
 	proc: CodexLeadProcess;
 	onFounderTurnCompleted: (turnId: string) => void;
+	onTokenUsage?: (params: unknown) => void;
 	onActivity?: () => void;
 	log?: (m: string) => void;
 }): DemuxedWiring {
@@ -264,7 +266,10 @@ export function wireDemuxedProcess(args: {
 		onActivity: args.onActivity,
 		log: args.log,
 	});
-	args.proc.on("notification", (method, params) => demux.route(method, params));
+	args.proc.on("notification", (method, params) => {
+		if (method === "thread/tokenUsage/updated") args.onTokenUsage?.(params);
+		demux.route(method, params);
+	});
 	args.proc.on("turnCompleted", (params) =>
 		demux.route("turn/completed", params),
 	);
@@ -423,9 +428,8 @@ function buildTuiGeneration(
 	let ownedTuiThreadId: string | undefined;
 	// FLY-871 §12 W2: silent-no-pane guard. Process-scoped (declared here, outside
 	// the per-generation closure) so its consecutive-failure count + episode latch
-	// survive generation rebuilds. Default OFF — null unless the InfraBot launcher
-	// sets FLYWHEEL_TUI_WINDOW_ALERT=1 AND lead-alert.sh resolves; `?.record` is a
-	// no-op when null, so a plain Lead is byte-compat.
+	// survive generation rebuilds. It is non-null only for the canonical InfraBot
+	// identity when lead-alert.sh resolves; `?.record` keeps other Leads no-op.
 	const tuiWindowAlertGuard = createTuiWindowAlertGuard({
 		stateDir: config.stateDir,
 		leadId: config.leadId,
@@ -493,6 +497,7 @@ function buildTuiGeneration(
 				// turn with no persistent ready status, so that gate false-timed-out and
 				// tore Mufasa down. codex can only spawn what the (gated) config declares.
 
+				let activeThreadId: string | null = null;
 				const { facade, awaitTurnCompletion } = wireDemuxedProcess({
 					proc,
 					onFounderTurnCompleted: (turnId) => {
@@ -501,6 +506,25 @@ function buildTuiGeneration(
 							payload: "founder terminal turn (observed; see TUI/rollout)",
 						});
 					},
+					...(config.leadId === "raya" &&
+					config.contextUsagePath &&
+					config.contextUsageUnavailablePath
+						? {
+								onTokenUsage: (params: unknown) => {
+									if (!activeThreadId) return;
+									const result = recordContextUsage({
+										activeThreadId,
+										notification: params,
+										usagePath: config.contextUsagePath!,
+										unavailablePath: config.contextUsageUnavailablePath!,
+										log: (message) => logger.warn(message),
+									});
+									if (result === "unavailable") {
+										logger.warn("Raya context usage sample unavailable");
+									}
+								},
+							}
+						: {}),
 					log: (m) => logger.warn(m),
 				});
 
@@ -528,6 +552,7 @@ function buildTuiGeneration(
 						if (saved) {
 							try {
 								await p.resumeThread(saved, threadParams); // re-pin (HIGH-1)
+								activeThreadId = saved;
 								return saved;
 							} catch (err) {
 								// Real-machine finding: a TURNLESS thread has no rollout —
@@ -546,6 +571,7 @@ function buildTuiGeneration(
 						}
 						const id = await p.startThread(threadParams);
 						writeThreadId(config.threadIdPath, id);
+						activeThreadId = id;
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {

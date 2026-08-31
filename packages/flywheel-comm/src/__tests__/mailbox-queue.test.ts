@@ -612,125 +612,6 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
-	it("claims each Runner row once and leaves successful doorbells LEASED for pull ACK", () => {
-		const queue = new MailboxQueue(":memory:");
-		try {
-			queue.enqueue({
-				id: "instruction-1",
-				fromAgent: "lead-a",
-				toAgent: "exec-1",
-				recipientKind: "runner",
-				type: "instruction",
-				content: "continue",
-				createdAt: NOW,
-				senderRef: SENDER_REF,
-			});
-			queue.acquireOrRenewOwner({
-				ownerEpoch: "epoch-1",
-				now: NOW,
-				leaseTtlMs: 10_000,
-			});
-			const row = queue.claimRunner({
-				ownerEpoch: "epoch-1",
-				now: NOW,
-				claimTtlMs: 30 * 60_000,
-			});
-			expect(row).toMatchObject({
-				id: "instruction-1",
-				state: "LEASED",
-				claimed_by: "epoch-1",
-			});
-			expect(
-				queue.claimRunner({
-					ownerEpoch: "epoch-1",
-					now: "2026-08-05T12:00:01.000Z",
-					claimTtlMs: 30 * 60_000,
-				}),
-			).toBeUndefined();
-			expect(
-				queue.recordRunnerDeliverySuccess({
-					id: row!.id,
-					ownerEpoch: "epoch-1",
-				}),
-			).toBe(true);
-			expect(queue.getById("instruction-1")?.state).toBe("LEASED");
-			expect(queue.countRunnerDeliverable()).toBe(0);
-		} finally {
-			queue.close();
-		}
-	});
-
-	it("requeues Runner doorbell failures with backoff, then marks exhaustion DEAD", () => {
-		const queue = new MailboxQueue(":memory:");
-		try {
-			queue.enqueue({
-				id: "instruction-1",
-				fromAgent: "lead-a",
-				toAgent: "exec-1",
-				recipientKind: "runner",
-				type: "instruction",
-				content: "continue",
-				createdAt: NOW,
-				senderRef: SENDER_REF,
-			});
-			queue.acquireOrRenewOwner({
-				ownerEpoch: "epoch-1",
-				now: NOW,
-				leaseTtlMs: 10_000,
-			});
-			queue.claimRunner({
-				ownerEpoch: "epoch-1",
-				now: NOW,
-				claimTtlMs: 30 * 60_000,
-			});
-			expect(
-				queue.recordRunnerDeliveryFailure({
-					id: "instruction-1",
-					ownerEpoch: "epoch-1",
-					now: "2026-08-05T12:00:01.000Z",
-					nextRetryAt: "2026-08-05T12:00:05.000Z",
-					error: "offline",
-					maxAttempts: 2,
-				}),
-			).toEqual({ deadLettered: false });
-			expect(queue.getById("instruction-1")).toMatchObject({
-				state: "QUEUED",
-				retry_count: 1,
-				next_retry_at: "2026-08-05T12:00:05.000Z",
-			});
-			expect(
-				queue.claimRunner({
-					ownerEpoch: "epoch-1",
-					now: "2026-08-05T12:00:04.000Z",
-					claimTtlMs: 30 * 60_000,
-				}),
-			).toBeUndefined();
-			queue.acquireOrRenewOwner({
-				ownerEpoch: "epoch-1",
-				now: "2026-08-05T12:00:05.000Z",
-				leaseTtlMs: 10_000,
-			});
-			queue.claimRunner({
-				ownerEpoch: "epoch-1",
-				now: "2026-08-05T12:00:05.000Z",
-				claimTtlMs: 30 * 60_000,
-			});
-			expect(
-				queue.recordRunnerDeliveryFailure({
-					id: "instruction-1",
-					ownerEpoch: "epoch-1",
-					now: "2026-08-05T12:00:06.000Z",
-					nextRetryAt: "2026-08-05T12:00:10.000Z",
-					error: "offline",
-					maxAttempts: 2,
-				}),
-			).toEqual({ deadLettered: true });
-			expect(queue.getById("instruction-1")?.state).toBe("DEAD");
-		} finally {
-			queue.close();
-		}
-	});
-
 	it("archives a whole resolved RPC family only after the retention window", () => {
 		const queue = new MailboxQueue(":memory:");
 		try {
@@ -823,6 +704,45 @@ describe("FLY-1572 MailboxQueue", () => {
 		}
 	});
 
+	it("advances the production five-family batch past not-due families", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			for (let index = 0; index < 40; index += 1) {
+				const id = `pinned-question-${String(index).padStart(2, "0")}`;
+				enqueueLead(queue, id);
+				queue.ack(
+					id,
+					new Date(
+						Date.parse("2026-08-01T00:00:00.000Z") + index,
+					).toISOString(),
+				);
+			}
+			queue.enqueue({
+				id: "archivable-behind-pinned-window",
+				fromAgent: "lead-a",
+				toAgent: "runner-a",
+				recipientKind: "runner",
+				type: "instruction",
+				content: "must not remain hidden",
+				createdAt: NOW,
+				senderRef: SENDER_REF,
+			});
+			queue.ack("archivable-behind-pinned-window", "2026-08-01T00:00:01.000Z");
+
+			let archivedFamilies = 0;
+			for (let pass = 0; pass < 10 && archivedFamilies === 0; pass += 1) {
+				archivedFamilies += queue.archiveDueFamilies({
+					now: "2026-08-05T00:00:00.000Z",
+					maxFamilies: 5,
+				}).archivedFamilies;
+			}
+			expect(archivedFamilies).toBe(1);
+			expect(queue.getById("archivable-behind-pinned-window")).toBeUndefined();
+		} finally {
+			queue.close();
+		}
+	});
+
 	it("archives content-ref bytes before the GC outbox deletes the file", () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1572-archive-"));
 		const dbPath = join(dir, "comm.db");
@@ -855,12 +775,21 @@ describe("FLY-1572 MailboxQueue", () => {
 				bytes: 9,
 				content_base64: Buffer.from("full body").toString("base64"),
 			});
+			let contentRefReads = 0;
 			expect(
-				queue.drainContentRefGc({ now: "2026-08-05T00:00:01.000Z" }),
+				queue.drainContentRefGc({
+					now: "2026-08-05T00:00:01.000Z",
+					readFile: (path) => {
+						contentRefReads += 1;
+						expect(db.inTransaction).toBe(false);
+						return readFileSync(path);
+					},
+				}),
 			).toEqual({
 				done: 1,
 				pending: 0,
 			});
+			expect(contentRefReads).toBe(1);
 			expect(existsSync(refPath)).toBe(false);
 			expect(readFileSync(dbPath).length).toBeGreaterThan(0);
 		} finally {
@@ -899,6 +828,37 @@ describe("FLY-1572 MailboxQueue", () => {
 			queue.close();
 		}
 	});
+
+	it("archives ten near-cap families in a bounded explicit batch", () => {
+		const queue = new MailboxQueue(":memory:");
+		try {
+			for (let index = 0; index < 10; index += 1) {
+				const id = `near-cap-${index}`;
+				queue.enqueue({
+					id,
+					fromAgent: "lead-a",
+					toAgent: "runner-a",
+					recipientKind: "runner",
+					type: "instruction",
+					content: "x".repeat(1_800_000),
+					createdAt: NOW,
+					senderRef: SENDER_REF,
+				});
+				queue.ack(id, "2026-08-01T00:00:00.000Z");
+			}
+
+			const result = queue.archiveDueFamilies({
+				now: "2026-08-05T00:00:00.000Z",
+				maxFamilies: 10,
+			});
+			expect(result).toMatchObject({
+				archivedFamilies: 10,
+				archivedMessages: 10,
+			});
+		} finally {
+			queue.close();
+		}
+	}, 20_000);
 
 	it("keeps the row live when its content-ref cannot be captured", () => {
 		const dir = mkdtempSync(join(tmpdir(), "fly1572-missing-ref-"));

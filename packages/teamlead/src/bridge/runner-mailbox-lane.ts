@@ -222,6 +222,7 @@ export class RunnerMailboxLane {
 	private readonly retryBackoffBaseMs: number;
 	private readonly retryBackoffCapMs: number;
 	private readonly maxPerTick: number;
+	private lastDeadLetterScanAtMs?: number;
 
 	constructor(private readonly opts: RunnerMailboxLaneOptions) {
 		this.now = opts.now ?? (() => new Date());
@@ -233,44 +234,47 @@ export class RunnerMailboxLane {
 	}
 
 	async tick(): Promise<RunnerMailboxTickResult> {
-		const queueConfig = this.opts.queueConfig?.() ?? {
-			...DEFAULT_MAILBOX_QUEUE_CONFIG,
-			enabled: false,
-		};
+		const queueConfig =
+			this.opts.queueConfig?.() ?? DEFAULT_MAILBOX_QUEUE_CONFIG;
 		const result: RunnerMailboxTickResult = {
 			delivered: 0,
 			failed: 0,
 			dead: 0,
 		};
-		if (queueConfig.enabled) {
-			const probeFactsByRecipient = this.opts.probeFactsByRecipient?.();
-			const recipientStates = new Map<
-				string,
-				"alive" | "terminal_or_missing" | "unknown"
-			>();
-			const recipientState = (executionId: string) => {
-				const cached = recipientStates.get(executionId);
-				if (cached) return cached;
-				const resolved = this.opts.recipientState?.(executionId) ?? "unknown";
-				recipientStates.set(executionId, resolved);
-				return resolved;
-			};
-			const reconciled = this.opts.queue.reconcileExpiredLeases({
-				ownerEpoch: this.opts.ownerEpoch,
-				now: this.now().toISOString(),
-				recipientKind: "runner",
-				leaseRetryMax: queueConfig.leaseRetryMax,
-				recipientState,
-				isTerminalDeliveryObligation: this.opts.isTerminalDeliveryObligation,
-				maxBatches: this.maxPerTick,
-				maxTerminalRows: this.maxPerTick,
-			});
-			result.dead += reconciled.dead;
-			if (this.opts.resolveOwningLead) {
+		const recipientStates = new Map<
+			string,
+			"alive" | "terminal_or_missing" | "unknown"
+		>();
+		const recipientState = (executionId: string) => {
+			const cached = recipientStates.get(executionId);
+			if (cached) return cached;
+			const resolved = this.opts.recipientState?.(executionId) ?? "unknown";
+			recipientStates.set(executionId, resolved);
+			return resolved;
+		};
+		const reconciled = this.opts.queue.reconcileExpiredLeases({
+			ownerEpoch: this.opts.ownerEpoch,
+			now: this.now().toISOString(),
+			recipientKind: "runner",
+			leaseRetryMax: queueConfig.leaseRetryMax,
+			recipientState,
+			isTerminalDeliveryObligation: this.opts.isTerminalDeliveryObligation,
+			maxBatches: this.maxPerTick,
+			maxTerminalRows: this.maxPerTick,
+		});
+		result.dead += reconciled.dead;
+		if (this.opts.resolveOwningLead) {
+			const scanAtMs = this.now().getTime();
+			if (
+				this.lastDeadLetterScanAtMs === undefined ||
+				scanAtMs - this.lastDeadLetterScanAtMs >=
+					queueConfig.deadLetterScanIntervalMs
+			) {
+				const probeFactsByRecipient = this.opts.probeFactsByRecipient?.();
 				const leadByRecipient = new Map<string, string | undefined>();
 				this.opts.queue.scanAndInsertDeadLetterNotices({
 					ownerEpoch: this.opts.ownerEpoch,
-					now: this.now().toISOString(),
+					now: new Date(scanAtMs).toISOString(),
 					windowMs: queueConfig.deadLetterWindowMs,
 					maxRecipients: this.maxPerTick,
 					maxDeadRowsPerRecipient: 20,
@@ -285,63 +289,39 @@ export class RunnerMailboxLane {
 						return resolved;
 					},
 				});
+				this.lastDeadLetterScanAtMs = scanAtMs;
 			}
 		}
 		for (let index = 0; index < this.maxPerTick; index++) {
-			const batch = queueConfig.enabled
-				? this.opts.queue.claimRunnerBatch({
-						ownerEpoch: this.opts.ownerEpoch,
-						now: this.now().toISOString(),
-						transportClaimTtlMs: this.claimTtlMs,
-						batchWindowMs: queueConfig.batchWindowMs,
-						batchMaxSize: queueConfig.batchMaxSize,
-						inflightMaxBatches: queueConfig.inflightMaxBatches,
-					})
-				: (() => {
-						// FLY-1573 legacy (pre-queue) path — delete with
-						// FLYWHEEL_MAILBOX_QUEUE cleanup.
-						const row = this.opts.queue.claimRunner({
-							ownerEpoch: this.opts.ownerEpoch,
-							now: this.now().toISOString(),
-							claimTtlMs: this.claimTtlMs,
-						});
-						return row ? [row] : undefined;
-					})();
+			const batch = this.opts.queue.claimRunnerBatch({
+				ownerEpoch: this.opts.ownerEpoch,
+				now: this.now().toISOString(),
+				transportClaimTtlMs: this.claimTtlMs,
+				batchWindowMs: queueConfig.batchWindowMs,
+				batchMaxSize: queueConfig.batchMaxSize,
+				inflightMaxBatches: queueConfig.inflightMaxBatches,
+			});
 			if (!batch) break;
 			const row = batch[0]!;
 			try {
-				const envelope = queueConfig.enabled
-					? renderRunnerMailboxBatchEnvelope(
-							batch,
-							this.now(),
-							this.opts.resolveQuestion,
-						)
-					: renderRunnerMailboxEnvelope(
-							row,
-							row.ref_id ? this.opts.resolveQuestion?.(row.ref_id) : undefined,
-						);
+				const envelope = renderRunnerMailboxBatchEnvelope(
+					batch,
+					this.now(),
+					this.opts.resolveQuestion,
+				);
 				const delivered = await this.opts.deliver(envelope);
 				if (delivered.status === "failed") throw new Error(delivered.error);
-				if (queueConfig.enabled) {
-					if (
-						this.opts.queue.recordRunnerBatchDelivered({
-							batchId: row.batch_id!,
-							ownerEpoch: this.opts.ownerEpoch,
-							now: this.now().toISOString(),
-							ackLeaseTtlMs: queueConfig.ackLeaseMs,
-							settlement:
-								delivered.status === "delivered"
-									? delivered.settlement
-									: "on_consume",
-						}) === "lost_race"
-					) {
-						throw new Error("runner claim fence lost after delivery");
-					}
-				} else if (
-					!this.opts.queue.recordRunnerDeliverySuccess({
-						id: row.id,
+				if (
+					this.opts.queue.recordRunnerBatchDelivered({
+						batchId: row.batch_id!,
 						ownerEpoch: this.opts.ownerEpoch,
-					})
+						now: this.now().toISOString(),
+						ackLeaseTtlMs: queueConfig.ackLeaseMs,
+						settlement:
+							delivered.status === "delivered"
+								? delivered.settlement
+								: "on_consume",
+					}) === "lost_race"
 				) {
 					throw new Error("runner claim fence lost after delivery");
 				}
@@ -349,23 +329,14 @@ export class RunnerMailboxLane {
 			} catch (error) {
 				const errorText =
 					error instanceof Error ? error.message : String(error);
-				const failure = queueConfig.enabled
-					? this.opts.queue.recordRunnerBatchDeliveryFailure({
-							batchId: row.batch_id!,
-							ownerEpoch: this.opts.ownerEpoch,
-							now: this.now().toISOString(),
-							nextRetryAt: this.nextRetryAt(row.retry_count),
-							error: errorText,
-							maxAttempts: this.maxAttempts,
-						})
-					: this.opts.queue.recordRunnerDeliveryFailure({
-							id: row.id,
-							ownerEpoch: this.opts.ownerEpoch,
-							now: this.now().toISOString(),
-							nextRetryAt: this.nextRetryAt(row.retry_count),
-							error: errorText,
-							maxAttempts: this.maxAttempts,
-						});
+				const failure = this.opts.queue.recordRunnerBatchDeliveryFailure({
+					batchId: row.batch_id!,
+					ownerEpoch: this.opts.ownerEpoch,
+					now: this.now().toISOString(),
+					nextRetryAt: this.nextRetryAt(row.retry_count),
+					error: errorText,
+					maxAttempts: this.maxAttempts,
+				});
 				result.failed += batch.length;
 				if (failure.deadLettered) result.dead++;
 			}

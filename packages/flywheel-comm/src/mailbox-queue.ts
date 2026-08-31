@@ -29,10 +29,16 @@ export interface MailboxDeliveryEvidence {
 }
 export type MailboxSettlement =
 	| { kind: "absent_identity" }
+	| { kind: "torn_identity" }
 	| ({
 			kind: "live";
 			state: MailboxState;
 			settledAt: string | null;
+	  } & MailboxDeliveryEvidence)
+	| ({
+			kind: "archived_nonterminal";
+			state: "QUEUED" | "LEASED";
+			settledAt: null;
 	  } & MailboxDeliveryEvidence)
 	| ({
 			kind: "archived_terminal";
@@ -333,6 +339,41 @@ export function ensureMailboxQueueSchema(db: Database.Database): void {
 		db.exec(`CREATE INDEX IF NOT EXISTS mailbox_lease_expiry
 			ON mailbox(claim_expires_at)
 			WHERE state = 'LEASED' AND carrier = 'inbox'`);
+		// Caller-owned compatibility schemas may expose only the lease columns.
+		// Production FLY-1572 mailboxes have the full set and must receive the
+		// FLY-2136 indexes on their first writable open.
+		if (
+			[
+				"recipient_kind",
+				"to_agent",
+				"seq",
+				"source_ref",
+				"type",
+				"source_kind",
+				"batch_id",
+				"priority",
+				"claim_expires_at",
+				"ref_id",
+				"superseded_by",
+			].every((name) => hasMailboxColumn(db, name))
+		) {
+			db.exec(`CREATE INDEX IF NOT EXISTS mailbox_dead_scan
+				ON mailbox(recipient_kind, to_agent, seq)
+				WHERE state = 'DEAD' AND carrier = 'inbox';
+				CREATE INDEX IF NOT EXISTS mailbox_dead_notice_lookup
+				ON mailbox(source_ref, seq)
+				WHERE type = 'dead_letter_notice' AND source_kind = 'dead_letter';
+				CREATE INDEX IF NOT EXISTS mailbox_batch_lookup
+				ON mailbox(batch_id, priority, seq)
+				WHERE batch_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS mailbox_lease_expiry_order
+				ON mailbox(priority, seq, claim_expires_at)
+				WHERE state = 'LEASED' AND carrier = 'inbox' AND batch_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS mailbox_ref_lookup
+				ON mailbox(ref_id) WHERE ref_id IS NOT NULL;
+				CREATE INDEX IF NOT EXISTS mailbox_superseded_by_lookup
+				ON mailbox(superseded_by) WHERE superseded_by IS NOT NULL`);
+		}
 
 		const projection = db
 			.prepare(
@@ -399,6 +440,8 @@ export class MailboxQueue {
 		recipientKind: "lead" | "runner";
 		toAgent: string;
 	};
+	private archiveAckedScanCursor?: { terminalAt: string; seq: number };
+	private archiveDeadScanCursor?: { terminalAt: string; seq: number };
 
 	constructor(
 		dbPathOrConnection: string | Database.Database,
@@ -634,12 +677,10 @@ export class MailboxQueue {
 			| { id: string; archived_at: string | null }
 			| undefined;
 		if (!identity) return { kind: "absent_identity" };
-		if (!identity.archived_at) {
-			throw new Error(`active mailbox identity has no row: ${identity.id}`);
-		}
+		if (!identity.archived_at) return { kind: "torn_identity" };
 		const archived = this.db
 			.prepare(
-				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC LIMIT 1",
+				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC, log_seq DESC LIMIT 1",
 			)
 			.get(identity.id) as { row_json: string } | undefined;
 		if (!archived) {
@@ -669,6 +710,14 @@ export class MailboxQueue {
 				...deliveryEvidence(snapshot),
 			};
 		}
+		if (snapshot.state === "QUEUED" || snapshot.state === "LEASED") {
+			return {
+				kind: "archived_nonterminal",
+				state: snapshot.state,
+				settledAt: null,
+				...deliveryEvidence(snapshot),
+			};
+		}
 		throw new Error(
 			`archived mailbox snapshot is not terminal: ${identity.id}`,
 		);
@@ -690,7 +739,7 @@ export class MailboxQueue {
 		if (!identity.archived_at) return undefined;
 		const archived = this.db
 			.prepare(
-				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC LIMIT 1",
+				"SELECT row_json FROM mailbox_log WHERE message_id = ? AND event = 'archived' ORDER BY at DESC, log_seq DESC LIMIT 1",
 			)
 			.get(identity.id) as { row_json: string } | undefined;
 		if (!archived) return "unknown_archived";
@@ -2320,85 +2369,6 @@ export class MailboxQueue {
 			.immediate();
 	}
 
-	claimRunner(input: {
-		ownerEpoch: string;
-		now: string;
-		claimTtlMs: number;
-	}): MailboxRow | undefined {
-		const claimExpiresAt = addMilliseconds(input.now, input.claimTtlMs);
-		return this.db
-			.transaction(() => {
-				if (!this.isCurrentOwner(input.ownerEpoch, input.now)) return undefined;
-				const row = this.db
-					.prepare(
-						`SELECT * FROM mailbox
-						  WHERE recipient_kind = 'runner' AND carrier = 'inbox'
-						    AND state = 'QUEUED'
-						    AND (next_retry_at IS NULL OR next_retry_at <= ?)
-						  ORDER BY priority, seq LIMIT 1`,
-					)
-					.get(input.now) as MailboxRow | undefined;
-				if (!row) return undefined;
-				const updated = this.db
-					.prepare(
-						`UPDATE mailbox SET state = 'LEASED', claimed_by = ?, claim_expires_at = ?
-						 WHERE id = ? AND state = 'QUEUED'`,
-					)
-					.run(input.ownerEpoch, claimExpiresAt, row.id);
-				return updated.changes === 1 ? this.getById(row.id) : undefined;
-			})
-			.immediate();
-	}
-
-	recordRunnerDeliverySuccess(input: {
-		id: string;
-		ownerEpoch: string;
-	}): boolean {
-		return (
-			this.db
-				.prepare(
-					`UPDATE mailbox SET last_error = NULL, next_retry_at = NULL
-					 WHERE id = ? AND recipient_kind = 'runner'
-					   AND state = 'LEASED' AND claimed_by = ?`,
-				)
-				.run(input.id, input.ownerEpoch).changes === 1
-		);
-	}
-
-	recordRunnerDeliveryFailure(input: {
-		id: string;
-		ownerEpoch: string;
-		now: string;
-		nextRetryAt: string;
-		error: string;
-		maxAttempts: number;
-	}): { deadLettered: boolean } {
-		const updated = this.db
-			.prepare(
-				`UPDATE mailbox SET retry_count = retry_count + 1, last_error = ?,
-				   next_retry_at = CASE WHEN retry_count + 1 >= ? THEN NULL ELSE ? END,
-				   state = CASE WHEN retry_count + 1 >= ? THEN 'DEAD' ELSE 'QUEUED' END,
-				   dead_at = CASE WHEN retry_count + 1 >= ? THEN ? ELSE dead_at END,
-				   dead_reason = CASE WHEN retry_count + 1 >= ? THEN 'delivery_attempts_exhausted' ELSE dead_reason END,
-				   claimed_by = NULL, claim_expires_at = NULL
-				 WHERE id = ? AND recipient_kind = 'runner'
-				   AND state = 'LEASED' AND claimed_by = ?`,
-			)
-			.run(
-				input.error,
-				input.maxAttempts,
-				input.nextRetryAt,
-				input.maxAttempts,
-				input.maxAttempts,
-				input.now,
-				input.maxAttempts,
-				input.id,
-				input.ownerEpoch,
-			);
-		if (updated.changes !== 1) throw new Error("runner claim fence lost");
-		return { deadLettered: this.getById(input.id)?.state === "DEAD" };
-	}
-
 	recordRunnerBatchDeliveryFailure(input: {
 		batchId: string;
 		ownerEpoch: string;
@@ -2627,27 +2597,101 @@ export class MailboxQueue {
 		}
 		const cutoff = new Date(Date.parse(input.now) - retentionMs).toISOString();
 		const candidateLimit = maxFamilies * 4;
-		const candidates = [
-			...(this.db
-				.prepare(
-					`SELECT id, acked_at AS terminal_at FROM mailbox
-					  WHERE state = 'ACKED' AND acked_at <= ?
-					  ORDER BY acked_at, seq LIMIT ?`,
-				)
-				.all(cutoff, candidateLimit) as Array<{
-				id: string;
-				terminal_at: string;
-			}>),
-			...(this.db
-				.prepare(
-					`SELECT id, dead_at AS terminal_at FROM mailbox
-					  WHERE state = 'DEAD' AND dead_at <= ?
-					  ORDER BY dead_at, seq LIMIT ?`,
-				)
-				.all(cutoff, candidateLimit) as Array<{
-				id: string;
-				terminal_at: string;
-			}>),
+		type ArchiveCandidate = {
+			id: string;
+			terminal_at: string;
+			seq: number;
+			state: "ACKED" | "DEAD";
+		};
+		const ackedRows = this.archiveAckedScanCursor
+			? (this.db
+					.prepare(
+						`SELECT id, acked_at AS terminal_at, seq FROM mailbox
+						  WHERE state = 'ACKED' AND acked_at <= ?
+						    AND (acked_at > ? OR (acked_at = ? AND seq > ?))
+						  ORDER BY acked_at, seq LIMIT ?`,
+					)
+					.all(
+						cutoff,
+						this.archiveAckedScanCursor.terminalAt,
+						this.archiveAckedScanCursor.terminalAt,
+						this.archiveAckedScanCursor.seq,
+						candidateLimit,
+					) as Array<Omit<ArchiveCandidate, "state">>)
+			: [];
+		if (ackedRows.length < candidateLimit) {
+			const wrapped = this.archiveAckedScanCursor
+				? (this.db
+						.prepare(
+							`SELECT id, acked_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'ACKED' AND acked_at <= ?
+							    AND (acked_at < ? OR (acked_at = ? AND seq <= ?))
+							  ORDER BY acked_at, seq LIMIT ?`,
+						)
+						.all(
+							cutoff,
+							this.archiveAckedScanCursor.terminalAt,
+							this.archiveAckedScanCursor.terminalAt,
+							this.archiveAckedScanCursor.seq,
+							candidateLimit - ackedRows.length,
+						) as Array<Omit<ArchiveCandidate, "state">>)
+				: (this.db
+						.prepare(
+							`SELECT id, acked_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'ACKED' AND acked_at <= ?
+							  ORDER BY acked_at, seq LIMIT ?`,
+						)
+						.all(cutoff, candidateLimit) as Array<
+						Omit<ArchiveCandidate, "state">
+					>);
+			ackedRows.push(...wrapped);
+		}
+		const deadRows = this.archiveDeadScanCursor
+			? (this.db
+					.prepare(
+						`SELECT id, dead_at AS terminal_at, seq FROM mailbox
+						  WHERE state = 'DEAD' AND dead_at <= ?
+						    AND (dead_at > ? OR (dead_at = ? AND seq > ?))
+						  ORDER BY dead_at, seq LIMIT ?`,
+					)
+					.all(
+						cutoff,
+						this.archiveDeadScanCursor.terminalAt,
+						this.archiveDeadScanCursor.terminalAt,
+						this.archiveDeadScanCursor.seq,
+						candidateLimit,
+					) as Array<Omit<ArchiveCandidate, "state">>)
+			: [];
+		if (deadRows.length < candidateLimit) {
+			const wrapped = this.archiveDeadScanCursor
+				? (this.db
+						.prepare(
+							`SELECT id, dead_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'DEAD' AND dead_at <= ?
+							    AND (dead_at < ? OR (dead_at = ? AND seq <= ?))
+							  ORDER BY dead_at, seq LIMIT ?`,
+						)
+						.all(
+							cutoff,
+							this.archiveDeadScanCursor.terminalAt,
+							this.archiveDeadScanCursor.terminalAt,
+							this.archiveDeadScanCursor.seq,
+							candidateLimit - deadRows.length,
+						) as Array<Omit<ArchiveCandidate, "state">>)
+				: (this.db
+						.prepare(
+							`SELECT id, dead_at AS terminal_at, seq FROM mailbox
+							  WHERE state = 'DEAD' AND dead_at <= ?
+							  ORDER BY dead_at, seq LIMIT ?`,
+						)
+						.all(cutoff, candidateLimit) as Array<
+						Omit<ArchiveCandidate, "state">
+					>);
+			deadRows.push(...wrapped);
+		}
+		const candidates: ArchiveCandidate[] = [
+			...ackedRows.map((row) => ({ ...row, state: "ACKED" as const })),
+			...deadRows.map((row) => ({ ...row, state: "DEAD" as const })),
 		].sort((left, right) => left.terminal_at.localeCompare(right.terminal_at));
 		const result: MailboxArchiveSweepResult = {
 			archivedFamilies: 0,
@@ -2659,6 +2703,15 @@ export class MailboxQueue {
 		const seen = new Set<string>();
 		for (const candidate of candidates) {
 			if (result.archivedFamilies >= maxFamilies) break;
+			const cursor = {
+				terminalAt: candidate.terminal_at,
+				seq: candidate.seq,
+			};
+			if (candidate.state === "ACKED") {
+				this.archiveAckedScanCursor = cursor;
+			} else {
+				this.archiveDeadScanCursor = cursor;
+			}
 			const row = this.getById(candidate.id);
 			if (!row) continue;
 			const rootId = this.familyRootId(row);
@@ -2848,6 +2901,7 @@ export class MailboxQueue {
 	drainContentRefGc(input: {
 		now: string;
 		limit?: number;
+		readFile?: (path: string) => Buffer;
 		removeFile?: (path: string) => void;
 	}): { done: number; pending: number } {
 		assertUtcIsoTimestamp(input.now, "now");
@@ -2869,17 +2923,53 @@ export class MailboxQueue {
 		const result = { done: 0, pending: 0 };
 		for (const intent of intents) {
 			try {
+				const hasLiveReference = () =>
+					(
+						this.db
+							.prepare(
+								"SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?",
+							)
+							.get(intent.path) as { count: number }
+					).count > 0;
+				if (hasLiveReference()) {
+					this.db
+						.transaction(() =>
+							this.deferContentRefGc(
+								intent,
+								input.now,
+								"path still has a live mailbox reference",
+							),
+						)
+						.immediate();
+					result.pending++;
+					continue;
+				}
+				let fileOutcome:
+					| { kind: "ready" }
+					| { kind: "missing" }
+					| { kind: "pending"; error: string };
+				if (!isValidRefPath(intent.path)) {
+					fileOutcome = { kind: "pending", error: "invalid content_ref path" };
+				} else {
+					try {
+						const bytes = (input.readFile ?? readFileSync)(intent.path);
+						fileOutcome =
+							createHash("sha256").update(bytes).digest("hex") ===
+							intent.content_hash
+								? { kind: "ready" }
+								: { kind: "pending", error: "content_ref hash mismatch" };
+					} catch (error) {
+						fileOutcome =
+							(error as NodeJS.ErrnoException).code === "ENOENT"
+								? { kind: "missing" }
+								: { kind: "pending", error: (error as Error).message };
+					}
+				}
 				const status = this.db
 					.transaction((): "done" | "pending" => {
-						if (
-							(
-								this.db
-									.prepare(
-										"SELECT COUNT(*) AS count FROM mailbox WHERE content_ref = ?",
-									)
-									.get(intent.path) as { count: number }
-							).count > 0
-						) {
+						// Recheck under the write lock after the file read so a concurrent
+						// enqueue cannot make us delete a newly-live content reference.
+						if (hasLiveReference()) {
 							this.deferContentRefGc(
 								intent,
 								input.now,
@@ -2887,49 +2977,21 @@ export class MailboxQueue {
 							);
 							return "pending";
 						}
-						if (!isValidRefPath(intent.path)) {
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								"invalid content_ref path",
-							);
+						if (fileOutcome.kind === "pending") {
+							this.deferContentRefGc(intent, input.now, fileOutcome.error);
 							return "pending";
 						}
-						let bytes: Buffer;
-						try {
-							bytes = readFileSync(intent.path);
-						} catch (error) {
-							if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-								this.finishContentRefGc(intent.intent_id, input.now);
-								return "done";
+						if (fileOutcome.kind === "ready") {
+							try {
+								(input.removeFile ?? unlinkSync)(intent.path);
+							} catch (error) {
+								this.deferContentRefGc(
+									intent,
+									input.now,
+									(error as Error).message,
+								);
+								return "pending";
 							}
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								(error as Error).message,
-							);
-							return "pending";
-						}
-						if (
-							createHash("sha256").update(bytes).digest("hex") !==
-							intent.content_hash
-						) {
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								"content_ref hash mismatch",
-							);
-							return "pending";
-						}
-						try {
-							(input.removeFile ?? unlinkSync)(intent.path);
-						} catch (error) {
-							this.deferContentRefGc(
-								intent,
-								input.now,
-								(error as Error).message,
-							);
-							return "pending";
 						}
 						this.finishContentRefGc(intent.intent_id, input.now);
 						return "done";

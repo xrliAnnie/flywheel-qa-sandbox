@@ -45,7 +45,10 @@ import {
 } from "./lead-recipient-liveness.js";
 import type { LeadEventEnvelope } from "./lead-runtime.js";
 import { matchesLead } from "./lead-scope.js";
-import { leadEventEnvelopeFromJournalRow } from "./legacy-lead-event-reconciler.js";
+import {
+	leadEventEnvelopeFromJournalRow,
+	REDRIVABLE_LEAD_EVENT_PRIORITY,
+} from "./legacy-lead-event-reconciler.js";
 import { resolveMailboxQueueConfig } from "./mailbox-queue-config.js";
 import { ProtocolIngress } from "./protocol-ingress.js";
 import { QuestionAdmission } from "./question-admission.js";
@@ -177,6 +180,8 @@ export class LeadInboxRuntime {
 		start: string,
 	) => ProcessTupleState;
 	private readonly retiredLeadScanCursor = new Map<string, string>();
+	private readonly lastDeadAlertReconcileAtMs = new Map<string, number>();
+	private readonly lastArchiveAttemptAtMs = new Map<string, number>();
 	private retiredLeadReconcileRunning = false;
 	private cutoverPromise?: Promise<void>;
 
@@ -330,33 +335,85 @@ export class LeadInboxRuntime {
 						await this.ensureCutover();
 						const runtime = opts.registry.getRawForLead(lead.agentId);
 						if (runtime) {
-							for (const row of opts.store.listUndeliveredWorkflowReplacementLeadEvents(
-								{
-									leadId: lead.agentId,
-									projectName: project.projectName,
-								},
-							)) {
-								const envelope = leadEventEnvelopeFromJournalRow(row, 2);
-								this.enqueueLeadEvent(
-									envelope,
-									runtime.renderEnvelope?.(envelope) ??
-										JSON.stringify(envelope.event),
-								);
+							for (const row of opts.store.listUndeliveredLeadInboxEvents({
+								leadId: lead.agentId,
+								projectName: project.projectName,
+							})) {
+								try {
+									const envelope = leadEventEnvelopeFromJournalRow(
+										row,
+										REDRIVABLE_LEAD_EVENT_PRIORITY,
+									);
+									this.enqueueLeadEvent(
+										envelope,
+										runtime.renderEnvelope?.(envelope) ??
+											JSON.stringify(envelope.event),
+									);
+								} catch (error) {
+									if (row.event_type !== "workflow_claim_recorded") throw error;
+									console.warn(
+										"[lead-inbox-runtime] lead event redrive failed",
+										{
+											leadId: lead.agentId,
+											projectName: project.projectName,
+											seq: row.seq,
+											eventType: row.event_type,
+											errorName:
+												error instanceof Error ? error.name : typeof error,
+										},
+									);
+								}
 							}
 						}
 						if (leadIndex === 0) {
 							await runnerLane.tick();
 							const queueConfig = resolveMailboxQueueConfig();
-							if (queueConfig.enabled) {
+							const maintenanceAtMs = Date.now();
+							const lastDeadAlertReconcileAtMs =
+								this.lastDeadAlertReconcileAtMs.get(project.projectName);
+							if (
+								lastDeadAlertReconcileAtMs === undefined ||
+								maintenanceAtMs - lastDeadAlertReconcileAtMs >=
+									queueConfig.deadLetterScanIntervalMs
+							) {
 								this.reconcileDeadLetterAlertIntents({
 									project,
 									queue,
 									resolveOwningLead,
 									windowMs: queueConfig.deadLetterWindowMs,
 								});
-								await this.drainDeadLetterAlerts(
-									queueConfig.deadLetterWindowMs,
+								this.lastDeadAlertReconcileAtMs.set(
+									project.projectName,
+									maintenanceAtMs,
 								);
+							}
+							await this.drainDeadLetterAlerts(queueConfig.deadLetterWindowMs);
+							const lastArchiveAttemptAtMs = this.lastArchiveAttemptAtMs.get(
+								project.projectName,
+							);
+							if (
+								lastArchiveAttemptAtMs === undefined ||
+								maintenanceAtMs - lastArchiveAttemptAtMs >=
+									queueConfig.archiveIntervalMs
+							) {
+								// Attempt-level throttle: even a failed maintenance pass waits for
+								// the next interval instead of turning into a one-second error loop.
+								this.lastArchiveAttemptAtMs.set(
+									project.projectName,
+									maintenanceAtMs,
+								);
+								const archiveAt = new Date(maintenanceAtMs).toISOString();
+								try {
+									queue.archiveDueFamilies({
+										now: archiveAt,
+										maxFamilies: 5,
+									});
+									queue.drainContentRefGc({ now: archiveAt, limit: 1 });
+								} catch (error) {
+									console.warn(
+										`[lead-inbox-runtime] mailbox archive maintenance failed for project=${project.projectName}: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								}
 							}
 						}
 					},

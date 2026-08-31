@@ -157,7 +157,7 @@ anchor_in() { # <label> <file> <fixed-string>
   if [ -r "$2" ] && grep -Fq -- "$3" "$2"; then pass "G4 $1"
   else fail G4 "$1 — missing anchor in ${2#$ROOT/}: $3"; fi
 }
-EXEC_MD="$ROOT/.flywheel/agents/engineering/engineer-executor.md"
+EXEC_MD="$ROOT/.flywheel/agents/nodes/engineer.md"
 SPIN_MD="$ROOT/.claude/commands/spin.md"
 ORCH_MD="$ROOT/.claude/commands/orchestrator.md"
 

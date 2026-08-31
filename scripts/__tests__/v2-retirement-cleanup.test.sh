@@ -67,7 +67,16 @@ retired_paths=(
   scripts/__tests__/v2-cutover-rehearsal.test.mjs
   scripts/__tests__/v2-host-install.test.sh
   scripts/__tests__/v2-scheduler-install.test.sh
-  .flywheel/agents/nodes
+  # FLY-2121 reclaims this directory for registry-backed node manuals. Keep
+  # guarding only the retired runtime-v2-only manuals; implement.md and qa.md
+  # are intentionally new registry nodes and cannot be banned by path alone.
+  .flywheel/agents/nodes/build.md
+  .flywheel/agents/nodes/design.md
+  .flywheel/agents/nodes/design_iterate.md
+  .flywheel/agents/nodes/generic.md
+  .flywheel/agents/nodes/produce.md
+  .flywheel/agents/nodes/research.md
+  .flywheel/agents/nodes/review.md
 )
 
 path_residue=()
@@ -115,8 +124,10 @@ lead_home="$SANDBOX/home"
 project_dir="$lead_home/project"
 identity_dir="$project_dir/.lead/test-lead"
 mkdir -p "$identity_dir"
+mkdir -p "$lead_home/.flywheel"
+printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}' > "$lead_home/.flywheel/summary-config.json"
 printf -- '---\nname: test-lead\n---\nTest Lead\n' > "$identity_dir/identity.md"
-projects_json="[{\"projectName\":\"test\",\"projectRoot\":\"$project_dir\",\"leads\":[{\"agentId\":\"test-lead\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"test\"]},\"botTokenEnv\":\"TEST_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":true}]}]"
+projects_json="[{\"projectName\":\"test\",\"projectRoot\":\"$project_dir\",\"leads\":[{\"agentId\":\"test-lead\",\"summaryRole\":\"producer\",\"chatChannel\":\"111\",\"match\":{\"labels\":[\"test\"]},\"botTokenEnv\":\"TEST_BOT_TOKEN\",\"botUserId\":\"12345678901234567\",\"canSpawnRunners\":true}]}]"
 launcher_output="$SANDBOX/launcher.out"
 env -i HOME="$lead_home" PATH="$PATH" \
   FLYWHEEL_LEAD_DRY_RUN=1 \

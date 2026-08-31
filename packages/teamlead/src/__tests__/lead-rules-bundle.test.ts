@@ -27,6 +27,7 @@ function runBundle(
 	baseDir: string,
 	commBackend: string,
 	governanceRequired: string,
+	summaryDuty = "0",
 ): { lines: string[]; status: number; stderr: string } {
 	try {
 		const out = execFileSync(
@@ -40,7 +41,13 @@ function runBundle(
 				commBackend,
 				governanceRequired,
 			],
-			{ encoding: "utf8" },
+			{
+				encoding: "utf8",
+				env: {
+					...process.env,
+					FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: summaryDuty,
+				},
+			},
 		);
 		return {
 			lines: out.split("\n").filter(Boolean),
@@ -89,6 +96,31 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 		expect(modelRules).not.toContain("DESIGN_BACKEND_NOT_APPLICABLE");
 	});
 
+	it("routes project flags through the scoped store and never through config.yaml", () => {
+		const defaultEnable = readFileSync(
+			join(BASE_RULES_DIR, "default-enable-policy.md"),
+			"utf8",
+		);
+		const modelRouting = readFileSync(
+			join(BASE_RULES_DIR, "model-routing.md"),
+			"utf8",
+		);
+		const executorRouting = readFileSync(
+			join(BASE_RULES_DIR, "executor-routing.md"),
+			"utf8",
+		);
+		const readme = readFileSync(join(BASE_RULES_DIR, "README.md"), "utf8");
+		const rules = [defaultEnable, modelRouting, executorRouting, readme].join(
+			"\n",
+		);
+
+		expect(rules).not.toMatch(/doc_flow\.enabled/);
+		expect(rules).not.toMatch(/pipeline\.dag:\s*true/);
+		expect(rules).toContain("feature-flags set --name doc_flow");
+		expect(rules).toContain("feature-flags set --name pipeline_dag");
+		expect(rules).toContain("--project <project>");
+	});
+
 	it("gives every present and future department Lead the parameterized menu contract, but excludes CoS", () => {
 		const rules = readFileSync(
 			join(BASE_RULES_DIR, "department-lead-rules.md"),
@@ -99,7 +131,7 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"code",
 			"simple_code",
 			"prd",
-			"design",
+			"product_design_flow",
 			"prototype",
 			"generic",
 		]) {
@@ -144,6 +176,37 @@ describe("lead-rules-bundle.sh — behavioral", () => {
 			"founder-html-delivery.md",
 			"cross-dept-channel-rules.md",
 		]);
+	});
+
+	it("loads summary inflow only from the canonical projected duty bit", () => {
+		const selected = runBundle("dept", BASE_RULES_DIR, "mailbox", "1", "1");
+		expect(names(selected.lines)).toContain("summary-inflow.md");
+		expect(names(selected.lines).indexOf("summary-inflow.md")).toBeLessThan(
+			names(selected.lines).indexOf("founder-local-time.md"),
+		);
+		for (const role of ["cos", "companion", "external"]) {
+			expect(
+				names(runBundle(role, BASE_RULES_DIR, "mailbox", "1", "0").lines),
+			).not.toContain("summary-inflow.md");
+		}
+	});
+
+	it("pins the Raya read-receipt exemption and validator contract to summaries/", () => {
+		const summaryRule = readFileSync(
+			join(BASE_RULES_DIR, "summary-inflow.md"),
+			"utf8",
+		);
+		expect(summaryRule).toContain("FLYWHEEL_LEAD_HAS_SUMMARY_DUTY=1");
+		expect(summaryRule).toContain("flywheel-comm summary --file");
+		expect(summaryRule).toContain("Judgment");
+		const authority = readFileSync(
+			join(BASE_RULES_DIR, "founder-only-authority.md"),
+			"utf8",
+		);
+		expect(authority).toContain(
+			"Narrow exemption — Raya's read-receipt merges",
+		);
+		expect(authority).toContain("single fixed prefix `summaries/`");
 	});
 
 	it("dept (commdb) → SKIPS runner-messaging but STILL loads runner-patrol (FLY-369: patrol is backend-independent)", () => {
@@ -409,6 +472,10 @@ exit 0
 					discordStateDir: join(home, "discord-growth"),
 					backend: "codex-app-server",
 					role: "dept",
+					summaryRole: "producer",
+					summaryGranularity: "per-lead",
+					hasSummaryDuty: true,
+					summaryAssignmentDigest: "c".repeat(64),
 					projectsDigest: "b".repeat(64),
 					identityDigest: "a".repeat(64),
 				}),

@@ -4,7 +4,6 @@ import {
 	type ApplyResult,
 	applyRunnerDefaults,
 	canonicalJsonString,
-	FEATURE_FLAGS,
 	type FlagView,
 	type FlywheelConfig,
 	getModelRegistryEntry,
@@ -15,13 +14,7 @@ import {
 } from "flywheel-config";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
-import { computeEnvSha } from "./env-file-writer.js";
 import { formatFlagDivergence } from "./feature-flag-render.js";
-import {
-	applyFlagToggle,
-	type FlagToggleDeps,
-	isDirectToggleable,
-} from "./flag-toggle.js";
 import {
 	buildCanonicalRequest,
 	type CanonicalRequest,
@@ -69,10 +62,8 @@ export interface ExistingManagementWriterDeps {
 	): MaybePromise<ManagementWriterResult>;
 	envPath: string;
 	readEnvFile(path: string): string;
-	writeEnvFile?: (path: string, content: string) => void;
 	env?: Record<string, string | undefined>;
 	flagViews?: () => FlagView[];
-	flagLock?: FlagToggleDeps["lock"];
 }
 
 export interface ManagementRunnerProviderInput {
@@ -84,29 +75,12 @@ export interface ManagementFlagProviderInput {
 	views(): FlagView[];
 	revision(): string;
 	projectNames(): string[];
-	projectRevision?(projectName: string): string;
 }
 
-/** Revision covers both persisted `.env` bytes and the Bridge's live call-time values. */
-export function managementFlagRevision(
-	envFile: string,
-	env: Record<string, string | undefined>,
-): string {
-	const liveDirectValues = FEATURE_FLAGS.filter(
-		(spec) => spec.envVar && isDirectToggleable(spec),
-	)
-		.map((spec): [string, string | null] => [
-			spec.envVar as string,
-			env[spec.envVar as string] ?? null,
-		])
-		.sort(([a], [b]) => a.localeCompare(b));
+/** Revision follows the resolved registry/store view, the only flag authority. */
+export function managementFlagRevision(views: readonly FlagView[]): string {
 	return `flags:${createHash("sha256")
-		.update(
-			canonicalJsonString({
-				fileSha: computeEnvSha(envFile),
-				liveDirectValues,
-			}),
-		)
+		.update(canonicalJsonString(views))
 		.digest("hex")}`;
 }
 
@@ -259,7 +233,12 @@ export function createManagementRunnerProvider(
 }
 
 function registryPolicyReason(view: FlagView): string {
-	if (view.storeManaged) return "flag value is owned by the SQLite flag store";
+	if (view.projectStoreManaged) {
+		return "scoped SQLite rows are read-only here; use flywheel-comm feature-flags set --project (or clear --project)";
+	}
+	if (view.storeManaged || STORE_MANAGED_FLAGS.has(view.name)) {
+		return "flag value is owned by the SQLite flag store";
+	}
 	if (view.dormant) return "flag registry: dormant runtime path";
 	if (view.category === "governance_gate") {
 		return "flag registry: governance flag is readonly";
@@ -281,13 +260,6 @@ function flagManagedValue(input: {
 	scopeMismatch?: string;
 	error?: string;
 }): ManagedValue<unknown> {
-	const spec = FEATURE_FLAGS.find(
-		(candidate) => candidate.name === input.view.name,
-	);
-	const direct = Boolean(
-		spec && !input.view.storeManaged && isDirectToggleable(spec),
-	);
-	const writable = direct && !input.scopeMismatch && !input.error;
 	return {
 		targetId: input.targetId,
 		current: input.current,
@@ -297,12 +269,10 @@ function flagManagedValue(input: {
 			hint: input.view.envVar ?? input.view.configKey ?? input.view.source,
 		},
 		writeCapability: {
-			writable,
+			writable: false,
 			reason:
-				input.scopeMismatch ??
-				input.error ??
-				(writable ? undefined : registryPolicyReason(input.view)),
-			consequence: writable ? "hot" : "governance-readonly",
+				input.scopeMismatch ?? input.error ?? registryPolicyReason(input.view),
+			consequence: "governance-readonly",
 			requiresAcknowledgement: false,
 		},
 		error: input.error,
@@ -313,19 +283,21 @@ function buildFlagView(
 	view: FlagView,
 	revision: string,
 	projectNames: readonly string[],
-	projectRevision?: (projectName: string) => string,
 ): ManagementFlagView {
+	const starRow = view.scopedStore?.rows.find((row) => row.scope === "*");
 	const global = flagManagedValue({
 		view,
 		current:
 			view.scope === "bridge_global"
 				? (view.storeEffective ?? view.displayEffective ?? null)
-				: view.default,
+				: (starRow?.value ?? view.default),
 		targetId: buildTargetId("flag", [view.name, "global"]),
 		revision,
 		scopeMismatch:
 			view.scope === "project"
-				? "project-scoped flag has no global override"
+				? view.projectStoreManaged
+					? registryPolicyReason(view)
+					: "project-scoped flag has no global override"
 				: undefined,
 		error: view.error ?? formatFlagDivergence(view),
 	});
@@ -340,7 +312,7 @@ function buildFlagView(
 				view,
 				current: row?.value ?? null,
 				targetId: buildTargetId("flag", [view.name, "project", projectName]),
-				revision: projectRevision?.(projectName) ?? revision,
+				revision,
 				scopeMismatch:
 					view.scope === "bridge_global"
 						? "global-only flag does not support project overrides"
@@ -373,9 +345,7 @@ export function createManagementFlagProvider(
 				revision,
 				hint: "flywheel-config/feature-flags",
 				fragment: {
-					flags: views.map((view) =>
-						buildFlagView(view, revision, names, input.projectRevision),
-					),
+					flags: views.map((view) => buildFlagView(view, revision, names)),
 				},
 			};
 		},
@@ -736,7 +706,6 @@ function flagViews(deps: ExistingManagementWriterDeps): FlagView[] {
 		resolveAllFlags({
 			env: deps.env,
 			envFile: readEnvFileSource(deps.envPath, deps.readEnvFile),
-			projectConfigs: new Map(deps.projectConfigs()),
 		})
 	);
 }
@@ -745,20 +714,11 @@ function resolveFlagTarget(
 	deps: ExistingManagementWriterDeps,
 	targetId: string,
 ): ManagementResolvedTarget | null {
-	const revision = managementFlagRevision(
-		deps.readEnvFile(deps.envPath),
-		deps.env ?? process.env,
-	);
+	const views = flagViews(deps);
+	const revision = managementFlagRevision(views);
 	const names = deps.projects().map((project) => project.projectName);
-	for (const view of flagViews(deps)) {
-		const built = buildFlagView(
-			view,
-			revision,
-			names,
-			(projectName) =>
-				deps.projectConfigs().get(projectName)?.revision ??
-				"registry:config-missing",
-		);
+	for (const view of views) {
+		const built = buildFlagView(view, revision, names);
 		if (built.global.targetId === targetId) {
 			return {
 				targetId,
@@ -782,14 +742,6 @@ function resolveFlagTarget(
 	return null;
 }
 
-function directFlagName(targetId: string): string | null {
-	for (const spec of FEATURE_FLAGS) {
-		if (buildTargetId("flag", [spec.name, "global"]) === targetId)
-			return spec.name;
-	}
-	return null;
-}
-
 function createFlagWriter(
 	deps: ExistingManagementWriterDeps,
 ): ManagementWriter {
@@ -797,47 +749,17 @@ function createFlagWriter(
 		id: "existing-direct-flag-v1",
 		kind: "flag",
 		resolve: (targetId) => resolveFlagTarget(deps, targetId),
-		preflight: (target, desiredValue, observedRevision) => {
+		preflight: (target, _desiredValue, observedRevision) => {
 			if (observedRevision !== target.sourceRevision) {
-				return rejectedPreflight("stale_source", ".env changed since view");
-			}
-			const managedName = directFlagName(target.targetId);
-			if (managedName && STORE_MANAGED_FLAGS.has(managedName)) {
 				return rejectedPreflight(
-					"readonly_registry_policy",
-					"flag value is owned by the SQLite flag store",
+					"stale_source",
+					"flag registry/store view changed since review",
 				);
 			}
-			if (!target.writeCapability.writable) {
-				return rejectedPreflight(
-					"readonly_registry_policy",
-					target.writeCapability.reason ??
-						"flag registry marks target readonly",
-				);
-			}
-			// FLY-1356: enum direct flags take a string ∈ enumValues; bool flags
-			// keep the boolean-only contract (byte-compat).
-			const pfName = directFlagName(target.targetId);
-			const pfSpec = FEATURE_FLAGS.find((c) => c.name === pfName);
-			if (pfSpec?.valueKind === "enum") {
-				if (
-					typeof desiredValue !== "string" ||
-					!pfSpec.enumValues?.includes(desiredValue)
-				) {
-					return rejectedPreflight(
-						"invalid_desired_value",
-						`enum flag desired value must be one of ${(pfSpec.enumValues ?? []).join("|")}`,
-					);
-				}
-				return preparedChange({ writer, target, newValue: desiredValue });
-			}
-			if (typeof desiredValue !== "boolean") {
-				return rejectedPreflight(
-					"invalid_desired_value",
-					"direct flag desired value must be boolean",
-				);
-			}
-			return preparedChange({ writer, target, newValue: desiredValue });
+			return rejectedPreflight(
+				"readonly_registry_policy",
+				"flag value is owned by the SQLite flag store",
+			);
 		},
 		apply: async (change) => {
 			const target = await writer.resolve(change.targetId);
@@ -849,63 +771,10 @@ function createFlagWriter(
 				change.sourceRevision,
 			);
 			if (!checked.ok) return { status: "rejected", reason: checked.reason };
-			if (checked.status === "no_op") return { status: "no_op" };
-			const name = directFlagName(change.targetId);
-			const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
-			if (!name || !spec?.envVar || !isDirectToggleable(spec)) {
-				return { status: "rejected", reason: "flag is not direct-toggleable" };
-			}
-			// Re-capture the reviewed authorities as one baseline after preflight.
-			// If either source changed in the await gap, reject instead of adopting
-			// the new bytes/value as an unreviewed apply baseline. applyFlagToggle
-			// rechecks both again under its file lock, closing the remaining gap.
-			const authorityEnv = deps.env ?? process.env;
-			const authorityFile = deps.readEnvFile(deps.envPath);
-			if (
-				managementFlagRevision(authorityFile, authorityEnv) !==
-				change.sourceRevision
-			) {
-				return {
-					status: "rejected",
-					reason: ".env or live flag value changed since review",
-				};
-			}
-			const rawFrom = authorityEnv[spec.envVar] ?? null;
-			// FLY-1356: enum flags write the target value ITSELF (always explicit,
-			// never delete — matches the flag-routes stage policy). Bool flags keep
-			// the per-polarity delete-on-default policy byte-identically.
-			let rawTo: string | null;
-			if (spec.valueKind === "enum") {
-				rawTo = String(change.newValue);
-			} else {
-				const desired = change.newValue as boolean;
-				rawTo =
-					spec.polarity === "default_on"
-						? desired
-							? null
-							: "0"
-						: desired
-							? "1"
-							: null;
-			}
-			const result = applyFlagToggle(
-				{
-					envPath: deps.envPath,
-					readFile: deps.readEnvFile,
-					writeFile: deps.writeEnvFile,
-					env: deps.env,
-					lock: deps.flagLock,
-				},
-				{
-					name,
-					rawFrom,
-					rawTo,
-					fileSha: computeEnvSha(authorityFile),
-				},
-			);
-			return result.ok
-				? { status: "applied", details: result }
-				: { status: "rejected", reason: result.reason, details: result };
+			return {
+				status: "rejected",
+				reason: "flag value is owned by the SQLite flag store",
+			};
 		},
 		applyGroup: (changes) =>
 			applySequentiallyAgainstCurrentAuthority(writer, changes),

@@ -1,0 +1,17 @@
+flowchart TB
+  A["9 个启动/CLI 时读的 env flag<br/>(Bridge 进程启动或脚本调用那一刻读一次,之后改 env 无效)"]
+  A --> B{"founder 8-27 v3/v4 裁定<br/>都不迁数据库,固化删"}
+  B --> C["固化默认值 · 6 个<br/>flag_store 常开 / ghost_guard 90s<br/>issue_display_sweep 60 tick<br/>cmux 三个(symlink 收敛 / view helper / node presence)常开"]
+  B --> D["整段删 · 2 个<br/>publish_broker(连代码带 CI 步骤)<br/>lead_lease_bypass(治理旁路分支)"]
+  B --> E["移入豁免账 · 1 个<br/>voice_qa_presence_override<br/>(语音测试治具仍在用)"]
+  C --> F["删 env 读点<br/>行为 = 今天生产的默认行为<br/>(九个 var 生产 .env 实测全未设置)"]
+  D --> G["代码 + 测试 + CI 步骤一并删<br/>真 npm 发布走 GitHub Actions<br/>payload-activation.yml,不受影响"]
+  E --> H["读点保留<br/>只许单次进程注入<br/>写进持久 .env 会被校验器报错"]
+  style A fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+  style B fill:#fff3e0,stroke:#ff9500,color:#1d1d1f
+  style C fill:#e8f5e9,stroke:#34c759,color:#1d1d1f
+  style D fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style E fill:#f3e5f5,stroke:#af52de,color:#1d1d1f
+  style F fill:#e8f5e9,stroke:#34c759,color:#1d1d1f
+  style G fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style H fill:#f3e5f5,stroke:#af52de,color:#1d1d1f

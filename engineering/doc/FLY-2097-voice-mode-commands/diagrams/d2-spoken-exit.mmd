@@ -1,0 +1,14 @@
+sequenceDiagram
+  autonumber
+  participant A as Annie(在语音里)
+  participant M as 实时语音模型
+  participant P as voice 管道
+  participant D as ＃raya 文字频道
+  A->>M: 「OK 我现在要退出了」
+  Note over M: 模型判断:明确的退出意图<br/>(含糊时会先问「要退出语音吗?」)
+  M->>A: 🔊「好，退出语音模式。」
+  M-->>P: 同一句话的文字稿(最终版)
+  Note over P: 整句匹配命中<br/>等她听完:音频放完 + 至少 1.5 秒安静
+  P->>D: 「我下线了(语音退出)」
+  Note over P: 清标记 → 停 Codex → 进程退出(干净,不重拉)
+  Note over A,D: 反例:「我不想退出这个话题」→ 照常聊。<br/>匹配器只看模型自己的结束语,她的话永远不直接触发

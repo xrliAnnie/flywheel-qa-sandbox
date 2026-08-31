@@ -10,8 +10,7 @@
  *   - defer → ACK follow-up ("已受理") → final answer chunked at 2000
  *     chars; non-completed Terminals are reported honestly with the
  *     reason + sessionId (audit pointer), never swallowed;
- *   - refuses to start unless FLYWHEEL_GEMINI_AGENT=1 (default-off) and
- *     FLYWHEEL_GEMINI_AGENT_DISCORD_TOKEN is set.
+ *   - retired by FLY-2105; config loading refuses every daemon start.
  *
  * The interaction handler + command-upsert helper are exported and tested
  * against structural mocks; only the discord.js login wiring in

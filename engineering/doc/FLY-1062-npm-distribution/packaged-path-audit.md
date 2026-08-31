@@ -65,3 +65,4 @@ Issue: FLY-1062 (URL 不可得,只写 issue 号)
 | flywheel-setup.sh × `xrliAnnie/flywheel`(manifest 模板 slug) | setup-prebuilt.test.sh:prebuilt manifest flywheel slug=null |
 | flywheel-setup.sh × `git clone`(注释文案) | gate④ 自身(substring 匹配注册)+ 冒烟(payload 内该行仍为注释) |
 | host-config.sh / flywheel-setup.sh / flywheel-buddy-steps.sh × `xrliAnnie/flywheel-skills`(默认值) | setup-prebuilt.test.sh:客户 manifest `skillsSyncPresent:false`,packaged 路径零 skills clone(research 审计 A#4) |
+| flywheel-comm `summary.js` / `summary-pr-merge.js` + founder-only-authority.md × Raya 自有仓名 | package-onboard-smoke.test.sh ④d/④e:客户 Lead 显式为 `summaryRole=exempt`;即使给出其余 plausible selector,summary delivery 也以 `summary_duty_required`、summary merge 也以 `summary_merge_authority_required` 在调用 `gh` 前 fail-closed;规则文档只描述窄豁免,不含 fetch verb |

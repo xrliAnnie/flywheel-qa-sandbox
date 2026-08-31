@@ -13,7 +13,10 @@
 import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { STORE_MANAGED_FLAGS } from "flywheel-config";
+import {
+	PROJECT_STORE_MANAGED_FLAGS,
+	STORE_MANAGED_FLAGS,
+} from "flywheel-config";
 import { publishReport } from "./publish-report.js";
 
 export interface PublishInput {
@@ -43,8 +46,15 @@ export interface FeatureFlagsDeps {
 	outDefault?: string;
 }
 
-const USAGE =
-	"usage: flywheel-comm feature-flags report [--project <name>] [--channel <id>] [--out <file>] [--bridge-url <url>]";
+const USAGE = [
+	"usage:",
+	"  flywheel-comm feature-flags report [--project <publish-project>] [--channel <id>] [--out <file>] [--bridge-url <url>]",
+	"  flywheel-comm feature-flags set --name <flag> --to on|off|<enum-value> [--project <scope; default *>] [--reason <required for store flags>] [--bridge-url <url>]",
+	"  flywheel-comm feature-flags clear --name <flag> --project <scope> --reason <reason> [--bridge-url <url>]",
+	"  feature-flags apply remains an alias for set",
+	"  set/clear --project selects a flag scope; report --project selects the publish project.",
+	"  clear supports project-store rows (delete to inherit) and global store overrides (return to default); other flags fail closed.",
+].join("\n");
 
 function flagVal(args: string[], name: string): string | undefined {
 	const i = args.indexOf(name);
@@ -88,23 +98,41 @@ export async function runFeatureFlags(
 		"http://localhost:9876"
 	).replace(/\/+$/, "");
 
-	// ── apply: the command Annie pastes to the Lead. stage → apply against the
+	// ── set/clear: commands Annie pastes to the Lead. stage → apply against the
 	// loopback flag routes (Origin = the Bridge URL so same-origin passes). ──
-	if (sub === "apply") {
+	if (sub === "set" || sub === "apply" || sub === "clear") {
+		const op = sub === "clear" ? "clear" : "set";
+		const action = sub === "apply" ? "apply" : op;
 		const name = flagVal(rest, "--name");
 		const toStr = flagVal(rest, "--to");
+		const explicitProject = flagVal(rest, "--project");
+		const project = explicitProject ?? "*";
 		const reason = flagVal(rest, "--reason")?.trim();
 		// FLY-1356: bool flags keep on|off; enum flags (skill_framework_mode)
 		// take the target value itself (e.g. --to split). The server validates
 		// enum membership and 400s unknown values — the CLI only shapes the type.
-		if (!name || !toStr || (STORE_MANAGED_FLAGS.has(name) && !reason)) {
-			errorLog(
-				"usage: flywheel-comm feature-flags apply --name <flag> --to on|off|<enum-value> [--reason <required-for-managed-flags>] [--bridge-url <url>]",
-			);
+		const storeManaged =
+			!!name &&
+			(STORE_MANAGED_FLAGS.has(name) || PROJECT_STORE_MANAGED_FLAGS.has(name));
+		if (
+			!name ||
+			!project ||
+			(op === "set" && !toStr) ||
+			(op === "clear" &&
+				(explicitProject === undefined || toStr !== undefined)) ||
+			((storeManaged || op === "clear") && !reason)
+		) {
+			errorLog(USAGE);
 			return exit(1);
 		}
-		const toValue: boolean | string =
-			toStr === "on" ? true : toStr === "off" ? false : toStr;
+		const toValue: boolean | string | undefined =
+			op === "clear"
+				? undefined
+				: toStr === "on"
+					? true
+					: toStr === "off"
+						? false
+						: toStr;
 		const httpJson =
 			deps.httpJson ??
 			((
@@ -120,10 +148,16 @@ export async function runFeatureFlags(
 			const sres = await httpJson(`${bridgeUrl}/api/fleet/flag/stage`, {
 				method: "POST",
 				headers: hdr,
-				body: JSON.stringify({ name, to: toValue, reason }),
+				body: JSON.stringify({
+					name,
+					...(op === "set" ? { to: toValue } : {}),
+					project,
+					op,
+					reason,
+				}),
 			});
 			if (!sres.ok) {
-				errorLog(`feature-flags apply: stage failed (${sres.status})`);
+				errorLog(`feature-flags ${action}: stage failed (${sres.status})`);
 				return exit(1);
 			}
 			staged = (await sres.json()) as {
@@ -132,21 +166,28 @@ export async function runFeatureFlags(
 			};
 		} catch (err) {
 			errorLog(
-				`feature-flags apply: cannot reach Bridge at ${bridgeUrl}: ${(err as Error).message}`,
+				`feature-flags ${action}: cannot reach Bridge at ${bridgeUrl}: ${(err as Error).message}`,
 			);
 			return exit(1);
 		}
-		const ares = await httpJson(`${bridgeUrl}/api/fleet/flag/apply`, {
-			method: "POST",
-			headers: hdr,
-			body: JSON.stringify({
-				canonical: staged.canonical,
-				confirmToken: staged.confirmToken,
-			}),
-		});
-		const body = await ares.json().catch(() => ({}));
-		log(JSON.stringify(body));
-		if (!ares.ok) return exit(1);
+		try {
+			const ares = await httpJson(`${bridgeUrl}/api/fleet/flag/apply`, {
+				method: "POST",
+				headers: hdr,
+				body: JSON.stringify({
+					canonical: staged.canonical,
+					confirmToken: staged.confirmToken,
+				}),
+			});
+			const body = await ares.json().catch(() => ({}));
+			log(JSON.stringify(body));
+			if (!ares.ok) return exit(1);
+		} catch (err) {
+			errorLog(
+				`feature-flags ${action}: cannot reach Bridge at ${bridgeUrl}: ${(err as Error).message}`,
+			);
+			return exit(1);
+		}
 		return;
 	}
 
@@ -162,7 +203,7 @@ export async function runFeatureFlags(
 		deps.outDefault ??
 		join(tmpdir(), "flywheel-feature-flags.html");
 	// interactive=1 → the phone copy-paste page: report-registry mints the CSP
-	// nonce at serve time; local toggles build `feature-flags apply …` commands
+	// nonce at serve time; local toggles build `feature-flags set/clear …` commands
 	// Annie copies to a Lead (Annie's locked control model; zero network callback).
 	const url = `${bridgeUrl}/api/fleet/flag-report.html?interactive=1`;
 

@@ -27,7 +27,6 @@
  * while still answering normally.
  *
  * Default ON fleet-wide (FLY-707 default-enable policy). Escape hatches:
- *   - `FLYWHEEL_RUNNER_SLIM_MCP=0`  — global kill-switch (byte-compat spawn)
  *   - `full-mcp` issue label        — per-issue opt-out of ALL slimming
  *     (re-enables serena; a safety hatch for a runner that needs it back)
  *   - `no-chrome` issue label       — per-issue chrome opt-out ONLY (serena
@@ -89,19 +88,13 @@ export interface ResolveRunnerMcpProfileArgs {
 
 /**
  * Resolve the MCP slim profile for a claude-tmux runner launch, or `null`
- * when the launch must NOT be slimmed (kill-switch, full-mcp label, or a
+ * when the launch must NOT be slimmed (full-mcp label or a
  * degenerate profile with nothing to disable). Pure given args.env.
  */
 export function resolveRunnerMcpProfile(
 	args: ResolveRunnerMcpProfileArgs,
 ): RunnerMcpProfile | null {
 	const env = args.env ?? process.env;
-
-	// FLY-1185 §2.7 KNOWN LIMITATION (byte-compat trade-off, documented in the
-	// plan): FLYWHEEL_RUNNER_SLIM_MCP=0 keeps the legacy null-profile spawn, so
-	// the `playwright` label CANNOT opt back in under the kill-switch — the
-	// machine-level default-off then applies unconditionally.
-	if (env.FLYWHEEL_RUNNER_SLIM_MCP?.trim() === "0") return null;
 
 	const labels = args.issueLabels ?? [];
 	const lower = labels.map((l) => l.toLowerCase());

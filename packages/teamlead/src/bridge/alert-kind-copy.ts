@@ -41,6 +41,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Lead delivery dead-lettered";
 		case "inbox_loop_stalled":
 			return "Lead inbox consume loop stalled";
+		case "orphan_pane":
+			return "Runner pane has no owner";
 		case "mailbox_dead_letter":
 			return "Mailbox messages exhausted their acknowledgement lease";
 		case "legacy_row_quarantined":
@@ -91,6 +93,8 @@ export function titleFor(kind: AlertEventType): string {
 		// FLY-1278: emitted by the review coordinator, not this table.
 		case "review_advisory_pass":
 			return "Review passed with non-blocking advisories";
+		case "review_job_failed":
+			return "Cross-family review job failed";
 		case "review_ruling_recorded":
 			return "Lead review ruling recorded";
 		case "review_ruling_disputed":
@@ -250,6 +254,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Weekly flag scan founder handoff";
 		case "flag_scan_no_clock":
 			return "Weekly flag scan has no trustworthy clock";
+		case "meeting_notes_failed":
+			return "会议留痕管线故障";
 		case "tmux_rescue_hold":
 			return "tmux rescue lock held too long";
 		case "host_voucher_incident":
@@ -304,6 +310,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "A Lead-directed event exhausted bounded transport or acknowledgement retries. The founder was paged because the owning Lead path did not consume it.";
 		case "inbox_loop_stalled":
 			return "A Lead inbox consume loop stopped completing or has queue-native deadlines overdue. Inspect that Lead's loop heartbeat and pending comm.db rows.";
+		case "orphan_pane":
+			return "A canonical Runner pane is absent from every active owner index. Inspect the project comm.db registration and either restore ownership or remove the stale pane.";
 		case "mailbox_dead_letter":
 			return "Mailbox messages exhausted their acknowledgement leases or could not be routed to an owning Lead. Inspect the dead-letter summaries and decide replay, discard, or reassignment.";
 		case "legacy_row_quarantined":
@@ -350,6 +358,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		// request/ruling-specific bodies and deterministic event ids).
 		case "review_advisory_pass":
 			return "Cross-family review approved the head with non-blocking MEDIUM/LOW advisories. The hard review gate is satisfied; triage advisories into follow-up work as appropriate.";
+		case "review_job_failed":
+			return "Cross-family review failed closed. Inspect the failure reason and live bound-gate state before choosing the recovery path; obsolete or non-replayable requests require a fresh gate or request.";
 		case "review_ruling_recorded":
 			return "A Lead recorded a supervised governance ruling for an already-delivered review finding. The durable ruling and issue-thread audit are the authority; gate prose is not.";
 		case "review_ruling_disputed":
@@ -492,6 +502,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "The weekly flag scan report is ready in the Flywheel core Discord thread. Answer founder questions there and record any cleanup verdict through the guarded verdict + preflight path.";
 		case "flag_scan_no_clock":
 			return "One or more flags lack two trustworthy effective-value samples. The scan withheld them from Annie rather than guessing; repair the named read or keep-binding gap.";
+		case "meeting_notes_failed":
+			return "Meeting issue, note-taker dispatch, or artifact reconciliation failed closed. Use the alert signature's failureClass to repair the Raya schema, Linear identity/index, Bridge dependency, or routing preflight; the idempotent tick will then converge without manual state edits.";
 		case "tmux_rescue_hold":
 			return "A tmux rescue operation held its per-socket kernel lock beyond the warning threshold. Inspect the supplied socket, verb, caller, and acquisition audit evidence.";
 		// FLY-1929: the shell voucher guard builds the real body (it carries the

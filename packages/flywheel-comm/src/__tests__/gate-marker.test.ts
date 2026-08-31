@@ -2,10 +2,18 @@
  * FLY-123: unanswered-gate marker module — question-bound (Codex R5 #1),
  * the awaiting_gate detection + wake-routing data source.
  */
-import { mkdtempSync, rmSync, statSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	utimesSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	defaultGateMarkerDir,
 	listGateMarkersForExecution,
@@ -17,6 +25,11 @@ import {
 	writeAskMarker,
 	writeGateMarker,
 } from "../gate-marker.js";
+
+vi.mock("node:fs", async () => {
+	const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+	return { ...actual, readFileSync: vi.fn(actual.readFileSync) };
+});
 
 describe("gate-marker (FLY-123)", () => {
 	let dir: string;
@@ -121,6 +134,120 @@ describe("gate-marker (FLY-123)", () => {
 		expect(list[0]?.questionId).toBe("q-abc-123");
 		expect(listGateMarkersForExecution(dir, "exec-3")).toEqual([]);
 	});
+
+	it("does not reread marker files when the directory is unchanged", () => {
+		writeGateMarker(dir, base);
+		writeGateMarker(dir, { ...base, questionId: "q-2" });
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(2);
+		expect(vi.mocked(readFileSync)).toHaveBeenCalled();
+
+		vi.mocked(readFileSync).mockClear();
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(2);
+		expect(vi.mocked(readFileSync)).not.toHaveBeenCalled();
+	});
+
+	it("retries transient marker IO failures on the next list", () => {
+		writeGateMarker(dir, base);
+		vi.mocked(readFileSync).mockImplementationOnce(() => {
+			throw Object.assign(new Error("too many open files"), { code: "EMFILE" });
+		});
+
+		expect(listGateMarkersForExecution(dir, "exec-1")).toEqual([]);
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(1);
+		expect(vi.mocked(readFileSync)).toHaveBeenCalledTimes(2);
+	});
+
+	it("negative-caches structurally unreadable marker entries", () => {
+		writeGateMarker(dir, base);
+		mkdirSync(join(dir, "directory.json"));
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(1);
+
+		vi.mocked(readFileSync).mockClear();
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(1);
+		expect(vi.mocked(readFileSync)).not.toHaveBeenCalled();
+	});
+
+	it("does not expose mutable objects retained by the process cache", () => {
+		writeGateMarker(dir, base);
+		const listed = listGateMarkersForExecution(dir, "exec-1");
+		listed[0]!.answeredAt = "2026-08-29T00:00:00.000Z";
+
+		expect(
+			listGateMarkersForExecution(dir, "exec-1")[0]?.answeredAt,
+		).toBeUndefined();
+	});
+
+	it("invalidates on answered rewrites, deletes, and corrupted additions", () => {
+		writeGateMarker(dir, base);
+		expect(listGateMarkersForExecution(dir, "exec-1")[0]?.answeredAt).toBe(
+			undefined,
+		);
+
+		markGateMarkerAnswered(dir, base.questionId);
+		expect(
+			listGateMarkersForExecution(dir, "exec-1")[0]?.answeredAt,
+		).toBeTruthy();
+
+		writeFileSync(join(dir, "broken.json"), "{broken", "utf8");
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(1);
+		removeGateMarker(dir, base.questionId);
+		expect(listGateMarkersForExecution(dir, "exec-1")).toEqual([]);
+	});
+
+	it("isolates caches for directories with identical mtimes", () => {
+		const otherDir = mkdtempSync(join(tmpdir(), "fly123-marker-other-"));
+		try {
+			writeGateMarker(dir, base);
+			writeGateMarker(otherDir, {
+				...base,
+				questionId: "q-other",
+				executionId: "exec-other",
+			});
+			const sharedMtime = new Date("2026-08-29T01:15:00.000Z");
+			utimesSync(dir, sharedMtime, sharedMtime);
+			utimesSync(otherDir, sharedMtime, sharedMtime);
+
+			expect(
+				listGateMarkersForExecution(dir, "exec-1").map(
+					({ questionId }) => questionId,
+				),
+			).toEqual(["q-abc-123"]);
+			expect(
+				listGateMarkersForExecution(otherDir, "exec-other").map(
+					({ questionId }) => questionId,
+				),
+			).toEqual(["q-other"]);
+		} finally {
+			rmSync(otherDir, { recursive: true, force: true });
+		}
+	});
+
+	it("reuses cached parses across an 8K-marker warm and incremental pass", () => {
+		for (let index = 0; index < 8_000; index += 1) {
+			writeFileSync(
+				join(dir, `q-${String(index).padStart(4, "0")}.json`),
+				JSON.stringify({
+					...base,
+					questionId: `q-${index}`,
+				}),
+				"utf8",
+			);
+		}
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(8_000);
+
+		vi.mocked(readFileSync).mockClear();
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(8_000);
+		expect(vi.mocked(readFileSync)).not.toHaveBeenCalled();
+
+		writeFileSync(
+			join(dir, "q-new.json"),
+			JSON.stringify({ ...base, questionId: "q-new" }),
+			"utf8",
+		);
+		vi.mocked(readFileSync).mockClear();
+		expect(listGateMarkersForExecution(dir, "exec-1")).toHaveLength(8_001);
+		expect(vi.mocked(readFileSync)).toHaveBeenCalledTimes(1);
+	}, 30_000);
 
 	it("defaultGateMarkerDir: env override wins, else ~/.flywheel default", () => {
 		expect(

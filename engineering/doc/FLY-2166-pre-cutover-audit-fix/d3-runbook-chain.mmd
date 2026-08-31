@@ -1,0 +1,9 @@
+flowchart TB
+    E["0 环境绑定<br/>记下 Bridge 地址 + 数据库真实路径<br/>+ 六仓 commit 号,并验证 SQL 查的<br/>就是这台 Bridge 用的库"] --> P
+    P["1 前置收敛<br/>维护窗内合并 5 个配套 PR;<br/>六仓 config 逐仓保全式清理<br/>(备份 diff,只动退役键,冲突即停)"] --> F
+    F["2 写前体检(只读)<br/>库里恰好 6 行 → 允许写<br/>恰好最终 7 行 → 无事可做,安全重入<br/>其他任何状态 → 停,人工裁决"] --> W
+    W["3 写第 7 行<br/>ponytail 全局=关<br/>走 Bridge 正式接口,任一步失败即中止"] --> G
+    G["4 三道验收<br/>G2-a 库里恰好 7 行<br/>G2-b 六仓退役键零残留<br/>G2-c 完整可观察面清单逐项核对"] --> REC
+    REC["5 记录<br/>证据先拷贝再引用<br/>全程记入 FLY-2103 讨论串"]
+    style F fill:#fff8e6,stroke:#ff9500,stroke-width:2px
+    style G fill:#eef6ff,stroke:#007aff

@@ -17,7 +17,11 @@ import {
 } from "../workflow-menu.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { workflowSeedContentHash } from "../workflow-template.js";
-import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
+import {
+	legacyWorkflowSeeds,
+	pinLegacyWorkflowSeedAgents,
+} from "./fixtures/legacy-workflow-manifests.js";
+import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent-project.js";
 
 const cleanups: string[] = [];
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
@@ -199,6 +203,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-review-producer-"));
 		cleanups.push(root);
+		installSelfHostedWorkflowAgentProject(root);
 		mkdirSync(join(root, "agents"));
 		writeFileSync(join(root, "agents", "generic.md"), "Produce nothing.\n");
 		const snapshot = buildWorkflowRunSnapshotV2({
@@ -218,6 +223,7 @@ describe("generalized execution admission and terminal contracts", () => {
 					{
 						id: "review",
 						type: "review",
+						role: "qa",
 						vendor: "claude",
 						model: "claude-opus-5",
 						effort: "high",
@@ -279,6 +285,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "review-guard-run",
 				nodeId: "prepare",
 				attempt: 1,
@@ -306,12 +313,13 @@ describe("generalized execution admission and terminal contracts", () => {
 		const store = await StateStore.create(":memory:");
 		const root = mkdtempSync(join(tmpdir(), "flywheel-same-vendor-"));
 		cleanups.push(root);
-		mkdirSync(join(root, "agents"));
-		writeFileSync(join(root, "agents", "generic-executor.md"), "Execute.\n");
-		const seed = structuredClone(
-			legacyWorkflowSeeds().find(
-				(candidate) => candidate.templateId === "tpl_product_v1",
-			)!,
+		installSelfHostedWorkflowAgentProject(root);
+		const seed = pinLegacyWorkflowSeedAgents(
+			structuredClone(
+				legacyWorkflowSeeds().find(
+					(candidate) => candidate.templateId === "tpl_product_v1",
+				)!,
+			),
 		);
 		seed.templateId = "tpl_product_same_vendor";
 		const reviewNode = seed.manifest.nodes.find(
@@ -349,6 +357,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "same-vendor-run",
 				nodeId: "research",
 				attempt: 1,
@@ -359,6 +368,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toBe(true);
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "same-vendor-run",
 				nodeId: "produce",
 				attempt: 1,
@@ -424,6 +434,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toMatchObject({ ok: true });
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "simple-code-run",
 				nodeId: "implement",
 				attempt: 1,
@@ -532,6 +543,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toEqual({ ok: false, reason: "credential_revoked" });
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "late-completion",
@@ -550,6 +562,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toEqual({ ok: false, reason: "stale_execution_superseded" });
 		expect(
 			store.commitWorkflowTransitionTx({
+				nodeReuseEnabled: false,
 				runId: "run-1",
 				nodeId: "execute",
 				attempt: 1,
@@ -1022,6 +1035,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toEqual({ ok: false, reason: "credential_revoked" });
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "cancelled-completion",
@@ -1159,7 +1173,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(store.getWorkflowExecutionBinding("exec-1")).toEqual(binding);
 		expect(store.getWorkflowExecutionRuntime("exec-1")).toEqual(runtime);
 		expect(store.getWorkflowRunNode("run-1", "execute", 1)).toMatchObject({
-			state: "admitted",
+			state: "failed",
 			execution_id: "exec-1",
 		});
 		expect(store.getWorkflowRun("run-1")?.status).toBe("held");
@@ -1182,6 +1196,14 @@ describe("generalized execution admission and terminal contracts", () => {
 				now: "2026-07-15T02:02:00.000Z",
 			}),
 		).toEqual({ ok: false, reason: "credential_revoked" });
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run(
+			"UPDATE workflow_run_node SET state = 'admitted', ended_at = NULL WHERE run_id = ? AND node_id = ? AND attempt = ?",
+			["run-1", "execute", 1],
+		);
 		expect(
 			store.rollbackUnlaunchedWorkflowAdmission({
 				runId: "run-1",
@@ -1199,6 +1221,10 @@ describe("generalized execution admission and terminal contracts", () => {
 				},
 			}),
 		).toMatchObject({ ok: true, idempotentReplay: true });
+		expect(store.getWorkflowRunNode("run-1", "execute", 1)).toMatchObject({
+			state: "failed",
+			execution_id: "exec-1",
+		});
 		expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
 		store.close();
 	});
@@ -1692,6 +1718,7 @@ describe("generalized execution admission and terminal contracts", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-1",
@@ -1717,6 +1744,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toMatchObject({ ok: true, idempotentReplay: true });
 
 		const completed = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "exec-1",
 			route: "needs_review",
 			sourceEventId: "complete-1",
@@ -1734,6 +1762,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toMatchObject({ enrolled: true, receipt: true, held: false });
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-2",
@@ -1785,6 +1814,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "no_code",
 				sourceEventId: "stale-no-output",
@@ -1798,6 +1828,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toEqual({ ok: false, reason: "no_code_attestation_stale" });
 
 		const completion = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "exec-1",
 			route: "no_code",
 			sourceEventId: "cancelled-no-output",
@@ -1857,6 +1888,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			custom.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "no_code",
 				sourceEventId: "custom-no-code",
@@ -1878,6 +1910,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			generic.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "no_code",
 				sourceEventId: "missing-proof",
@@ -1894,6 +1927,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toMatchObject({ ok: true });
 		expect(
 			generic.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "no_code",
 				sourceEventId: "output-bypass",
@@ -1925,6 +1959,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			| undefined;
 		expect(() => {
 			completion = store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "missing-runner-ship-head",
@@ -1959,6 +1994,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		const complete = () =>
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "completion-with-conflicting-receipt",
@@ -2005,6 +2041,7 @@ describe("generalized execution admission and terminal contracts", () => {
 
 		expect(() =>
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "completion-with-busy-receipt",
@@ -2047,6 +2084,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-with-pr-1",
@@ -2132,6 +2170,7 @@ describe("generalized execution admission and terminal contracts", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "generic-complete-without-pr",
@@ -2191,6 +2230,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "generic-complete-replay-after-rebind",
@@ -2240,6 +2280,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		const headSha = "b".repeat(40);
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "generic-complete-with-pr",
@@ -2310,6 +2351,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(store.getLifecycleRevision("exec-1")).toBe(0);
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-1",
@@ -2351,6 +2393,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		expect(store.getSession("exec-1")?.terminal_at ?? null).toBeNull();
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-1",
@@ -2407,6 +2450,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		};
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-original",
@@ -2428,6 +2472,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		};
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-stale-missing-context",
@@ -2448,6 +2493,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			turnEpoch: 1,
 		};
 		const first = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "exec-1",
 			route: "needs_review",
 			sourceEventId: "complete-stale-1",
@@ -2494,6 +2540,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			executionId: "exec-2",
 		});
 		const replay = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "exec-1",
 			route: "needs_review",
 			sourceEventId: "complete-stale-2",
@@ -2550,6 +2597,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-1",
@@ -2592,6 +2640,7 @@ describe("generalized execution admission and terminal contracts", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-2-missing-context",
@@ -2601,6 +2650,7 @@ describe("generalized execution admission and terminal contracts", () => {
 		).toEqual({ ok: false, reason: "workflow_activation_required" });
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "complete-2-wrong-epoch",
@@ -2628,6 +2678,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			round: 2,
 		};
 		const refused = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "exec-1",
 			route: "needs_review",
 			sourceEventId: "complete-2",
@@ -2675,6 +2726,7 @@ describe("generalized execution admission and terminal contracts", () => {
 			});
 			expect(
 				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: "exec-1",
 					route: "needs_review",
 					sourceEventId: "complete-original",
@@ -2706,6 +2758,7 @@ describe("generalized execution admission and terminal contracts", () => {
 
 			expect(
 				store.commitEnrolledCompletion({
+					nodeReuseEnabled: false,
 					executionId: "exec-1",
 					route: "needs_review",
 					sourceEventId: "complete-changed",

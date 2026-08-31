@@ -43,7 +43,6 @@ export type {
 } from "./db.js";
 export {
 	CommDB,
-	PENDING_PUSH_INSTRUCTIONS_SQL,
 	patrolJudgmentFingerprint,
 } from "./db.js";
 export type { IngestDiscordChatArgs } from "./discord-chat-ingest.js";

@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import type http from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { CommDB } from "flywheel-comm/db";
 import {
 	computeFounderArtifactDigest,
@@ -17,6 +18,7 @@ import {
 	commDbPathForProject,
 	formatNotification,
 } from "../bridge/event-route.js";
+import { initializeFlagStore } from "../bridge/flag-store-runtime.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
 import { createBridgeApp } from "../bridge/plugin.js";
 import { RuntimeRegistry } from "../bridge/runtime-registry.js";
@@ -27,6 +29,8 @@ import type { ProjectEntry } from "../ProjectConfig.js";
 import type { Session } from "../StateStore.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
+
+const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
 
 const testProjects: ProjectEntry[] = [
 	{
@@ -201,12 +205,12 @@ function bindGeneralizedDesignExecution(
 ): void {
 	const snapshot = buildWorkflowRunSnapshotV2({
 		template: { id: "test-design", revision: 1 },
-		canonicalRoot: "/tmp",
+		canonicalRoot: REPO_ROOT,
 		manifest: {
 			schema_version: 2,
 			nodes: [
 				{
-					id: "design",
+					id: "eng_design",
 					type: "design",
 					vendor: "claude",
 					model: "claude-fable-5",
@@ -231,7 +235,7 @@ function bindGeneralizedDesignExecution(
 			edges: [
 				{
 					id: "design_done",
-					from: "design",
+					from: "eng_design",
 					to: "implement",
 					condition: "design_done",
 				},
@@ -275,7 +279,7 @@ function bindGeneralizedDesignExecution(
 	});
 	const admission = store.admitGeneralizedWorkflowExecution({
 		runId: `run-${executionId}`,
-		nodeId: "design",
+		nodeId: "eng_design",
 		executionId,
 		attempt: 1,
 		now: "2026-07-15T00:00:00.000Z",
@@ -303,6 +307,7 @@ describe("Event route", () => {
 	beforeEach(async () => {
 		stateRoot = mkdtempSync(join(tmpdir(), "event-route-state-"));
 		store = await StateStore.create(join(stateRoot, "teamlead.db"));
+		const flagStore = initializeFlagStore(store, {});
 		const config = makeConfig();
 		turnBeltReconciler = { current: undefined };
 		onSessionAwaitingReview = vi.fn(async () => undefined);
@@ -325,6 +330,7 @@ describe("Event route", () => {
 			undefined,
 			undefined,
 			{
+				flagStore,
 				turnBeltReconciler,
 				codexReviewHold: {
 					current: { onSessionAwaitingReview } as never,
@@ -341,14 +347,12 @@ describe("Event route", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass merge approval. Merged fixtures carry an explicit durable
 		// QA exemption through attachGitHeadAuthority.
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		// FLY-1385: this block exercises legacy event semantics. The retired
 		// FORCE_LEGACY switch can no longer mask a host-level claims-read setting.
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
 		await new Promise<void>((resolve, reject) => {
@@ -609,6 +613,50 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("reads workflow node reuse from the flag store for every generalized completion", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const commit = vi.spyOn(store, "commitEnrolledCompletion");
+		const postCompletion = (executionId: string, eventId: string) =>
+			fetch(`${baseUrl}/events`, {
+				method: "POST",
+				headers: {
+					"Content-Type": "application/json",
+					Authorization: "Bearer ingest-secret",
+				},
+				body: JSON.stringify(
+					makeEvent({
+						event_id: eventId,
+						execution_id: executionId,
+						event_type: "session_completed",
+						source: "flywheel-comm",
+						payload: { decision: { route: "needs_review" } },
+					}),
+				),
+			});
+
+		expect((await postCompletion("exec-1", "reuse-off-complete")).status).toBe(
+			200,
+		);
+		const revision = store.getFlagValueRow("workflow_node_reuse")!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "workflow_node_reuse",
+				rawTo: "1",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "exercise completion hot read",
+			}),
+		).toMatchObject({ ok: true });
+		expect((await postCompletion("exec-1", "reuse-on-complete")).status).toBe(
+			200,
+		);
+
+		expect(commit.mock.calls.map(([input]) => input.nodeReuseEnabled)).toEqual([
+			false,
+			true,
+		]);
+	});
+
 	it("returns named engine invariant refusals as diagnostic 409 responses", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const commit = vi.spyOn(store, "commitEnrolledCompletion").mockReturnValue({
@@ -705,7 +753,7 @@ describe("Event route", () => {
 			writeFileSync(join(repo, "agents", "generic.md"), "Execute.\n");
 			writeFileSync(
 				join(repo, ".flywheel", "config.yaml"),
-				"project: geoforge3d\nlinear:\n  team_id: GEO\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    enabled: true\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
+				"project: geoforge3d\nlinear:\n  team_id: GEO\nrunners:\n  default: claude\n  available:\n    claude:\n      type: claude\nteams:\n  - name: default\n    orchestrators:\n      - type: dag\n        runner: claude\ndecision_layer:\n  autonomy_level: advisor\n  escalation_channel: discord\ncheckpoints:\n  founder_review:\n    timeout_ms: 172800000\n    timeout_behavior: fail-close\n",
 			);
 			writeFileSync(
 				join(repo, "product", "doc", "FLY-1758", "prd.html"),
@@ -877,6 +925,7 @@ describe("Event route", () => {
 		bindGeneralizedExecution(store, "exec-1");
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "exec-1",
 				route: "needs_review",
 				sourceEventId: "attempt-1-complete",
@@ -1293,7 +1342,7 @@ describe("Event route", () => {
 			),
 		});
 		expect(completed.status).toBe(409);
-		expect(store.getWorkflowNodeCompletion("run-exec-1", "design", 1)).toBe(
+		expect(store.getWorkflowNodeCompletion("run-exec-1", "eng_design", 1)).toBe(
 			undefined,
 		);
 		expect(
@@ -1749,7 +1798,7 @@ describe("Event route", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("POST /events with auto_approve + landingStatus merged → completed (FLY-58)", async () => {
+	it("POST /events with auto_approve + merged but no approval fails closed", async () => {
 		attachGitHeadAuthority(store);
 		const res = await fetch(`${baseUrl}/events`, {
 			method: "POST",
@@ -1773,8 +1822,7 @@ describe("Event route", () => {
 		expect(res.status).toBe(200);
 
 		const session = store.getSession("exec-1");
-		// FLY-58: auto_approve + already merged → completed (not approved)
-		expect(session!.status).toBe("completed");
+		expect(session!.status).toBe("awaiting_review");
 		expect(session!.decision_route).toBe("auto_approve");
 	});
 
@@ -1864,13 +1912,11 @@ describe("Event route — structured hook payload", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
 		// mapping, not that gate (covered by ship-eligibility + integration tests).
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		// FLY-1385: keep this legacy FSM suite independent of the host rollout.
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -2034,12 +2080,10 @@ describe("Event route — EventFilter integration", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
 		// mapping, not that gate (covered by ship-eligibility + integration tests).
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
@@ -2204,11 +2248,9 @@ describe("Event route — PM lead routed via chat_channel (FLY-163)", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
 		// mapping, not that gate (covered by ship-eligibility + integration tests).
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -2285,12 +2327,10 @@ describe("Event route — GEO-292 stage tracking", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass merge approval. Merged fixtures carry an explicit durable
 		// QA exemption through attachGitHeadAuthority.
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 		process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		delete process.env.FLYWHEEL_WORKFLOW_CLAIMS_READ;
 		delete process.env.FLYWHEEL_COMM_DIR;
 		if (a5CommRoot) rmSync(a5CommRoot, { recursive: true, force: true });
@@ -2764,7 +2804,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 	// already written decision_route to StateStore. The stage_changed
 	// event then carries fresh landing_status proving merge.
 	describe("FLY-60 W2: stage_changed=completed + merge proof", () => {
-		it("fires runPostShipFinalization + flips status when awaiting_review + decision_route present + landing_status.status=merged", async () => {
+		it("fails closed when merge proof has no durable approval", async () => {
 			// (1) session_started
 			await postEvent();
 			// (2) earlier session_completed with route=needs_review +
@@ -2801,9 +2841,9 @@ describe("Event route — GEO-292 stage tracking", () => {
 			});
 			expect(res.status).toBe(200);
 
-			// W2 assertion: status flipped to completed via canonical FSM path
+			// Merge proof alone cannot cross the approval gate.
 			const session = store.getSession("exec-1");
-			expect(session!.status).toBe("completed");
+			expect(session!.status).toBe("awaiting_review");
 			expect(session!.session_stage).toBe("completed");
 			// pr_number was patched via sessionFields, not before transition
 			expect(session!.pr_number).toBe(9);
@@ -2897,7 +2937,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 		// session_completed → both predicate-match, but
 		// runPostShipFinalization atomically claims event_id, so cleanup
 		// only runs once.
-		it("idempotency: W2 then session_completed both fire predicate but cleanup only once", async () => {
+		it("repeated merged evidence remains blocked without durable approval", async () => {
 			await postEvent();
 			await postEvent({
 				event_id: "evt-pre-completed",
@@ -2913,7 +2953,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
 			attachGitHeadAuthority(store);
 
-			// W2 fires (stage_changed=completed + merged) → status=completed
+			// W2 observes the merge but cannot cross the approval gate.
 			const res1 = await postEvent({
 				event_id: "evt-stage-completed-merged",
 				event_type: "stage_changed",
@@ -2927,7 +2967,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 				},
 			});
 			expect(res1.status).toBe(200);
-			expect(store.getSession("exec-1")!.status).toBe("completed");
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
 
 			// Later session_completed arrives (e.g., Blueprint emitTerminal
 			// fired after Runner finally exited). Should be safe to apply
@@ -2948,7 +2988,7 @@ describe("Event route — GEO-292 stage tracking", () => {
 				},
 			});
 			expect(res2.status).toBe(200);
-			expect(store.getSession("exec-1")!.status).toBe("completed");
+			expect(store.getSession("exec-1")!.status).toBe("awaiting_review");
 		});
 	});
 
@@ -3037,11 +3077,9 @@ describe("Event route — issue_identifier fallback (GEO-202)", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
 		// mapping, not that gate (covered by ship-eligibility + integration tests).
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});
@@ -3227,11 +3265,9 @@ describe("Event route — stage_context honesty (FLY-208 7a)", () => {
 		baseUrl = `http://127.0.0.1:${port}`;
 		// FLY-869: bypass the merge-approval gate — these tests exercise the FSM
 		// mapping, not that gate (covered by ship-eligibility + integration tests).
-		process.env.FLYWHEEL_MERGE_APPROVAL_GATE = "0";
 	});
 
 	afterEach(async () => {
-		delete process.env.FLYWHEEL_MERGE_APPROVAL_GATE;
 		await new Promise<void>((resolve, reject) => {
 			server.close((err) => (err ? reject(err) : resolve()));
 		});

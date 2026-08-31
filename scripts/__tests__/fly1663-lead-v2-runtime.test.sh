@@ -35,8 +35,11 @@ chmod +x "$TMP/bin/ps"
 export FLYWHEEL_LEAD_V2_PS_BIN="$TMP/bin/ps"
 printf '%s\n' '---' 'name: ops-lead' '---' 'Ops Lead' \
   > "$TMP/project/.lead/ops-lead/identity.md"
+cat > "$TMP/home/.flywheel/summary-config.json" <<'JSON'
+{"granularity":"per-lead","setBy":"test","setAt":"2026-08-28T00:00:00.000Z"}
+JSON
 cat > "$TMP/home/.flywheel/projects.json" <<JSON
-[{"projectName":"demo","projectRoot":"$TMP/project","generalChannel":"123456789012345678","leads":[{"agentId":"ops-lead","chatChannel":"123456789012345678","match":{"labels":["Operations"]},"botTokenEnv":"OPS_TOKEN","botUserId":"22345678901234567","discordStateDir":"$TMP/discord-state"}]}]
+[{"projectName":"demo","projectRoot":"$TMP/project","generalChannel":"123456789012345678","leads":[{"agentId":"ops-lead","summaryRole":"producer","chatChannel":"123456789012345678","match":{"labels":["Operations"]},"botTokenEnv":"OPS_TOKEN","botUserId":"22345678901234567","discordStateDir":"$TMP/discord-state"}]}]
 JSON
 cat > "$TMP/home/.flywheel/.env" <<'ENV'
 OPS_TOKEN=discord-secret
@@ -64,6 +67,46 @@ if grep -q '^V2_SOCKET=' <<<"$out" \
 else
   fail "wrapper dry-run/manifest RMW contract"
   printf '%s\n' "$out"
+fi
+
+# 529 QA keeps its synthetic summary selection outside the operator's HOME.
+# The override belongs to the trusted launchd environment and must be consumed
+# before canonical identity resolution.
+mkdir -p "$TMP/summary-home/.flywheel"
+mv "$TMP/home/.flywheel/summary-config.json" "$TMP/home/.flywheel/summary-config.saved"
+cat > "$TMP/summary-home/.flywheel/summary-config.json" <<'JSON'
+{"granularity":"per-lead","setBy":"test-deploy","setAt":"2026-08-28T00:00:00.000Z"}
+JSON
+summary_home_out="$(
+  HOME="$TMP/home" \
+  FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/summary-home" \
+  FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+  FLYWHEEL_DIR="$ROOT" \
+  FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+  bash "$WRAPPER" "$TMP/manifest.json" 2>&1
+)" || true
+mv "$TMP/home/.flywheel/summary-config.saved" "$TMP/home/.flywheel/summary-config.json"
+if grep -q '^V2_SOCKET=' <<<"$summary_home_out"; then
+  pass "wrapper resolves canonical identity from the trusted summary config home"
+else
+  fail "wrapper summary config home override"
+  printf '%s\n' "$summary_home_out"
+fi
+
+jq '.launchEnvironment.FLYWHEEL_SUMMARY_CONFIG_HOME = "/tmp/manifest-controlled"' \
+  "$TMP/manifest.json" > "$TMP/manifest-summary-home.json"
+if HOME="$TMP/home" \
+    FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
+    FLYWHEEL_DIR="$ROOT" \
+    FLYWHEEL_LEAD_V2_DRY_RUN=1 \
+    bash "$WRAPPER" "$TMP/manifest-summary-home.json" \
+      >"$TMP/manifest-summary-home.out" 2>&1; then
+  fail "manifest must not control the summary config home"
+elif grep -qF 'identity_launch_env_conflict' "$TMP/manifest-summary-home.out"; then
+  pass "wrapper rejects a manifest-controlled summary config home"
+else
+  fail "wrapper summary config home authority diagnostic"
+  cat "$TMP/manifest-summary-home.out" 2>/dev/null || true
 fi
 
 conf="$(sed -n 's/^V2_CONF=//p' <<<"$out" | tail -1)"
@@ -163,6 +206,7 @@ if HOME="$TMP/home" \
   USER=untrusted-user \
   LOGNAME=untrusted-logname \
   PATH="/usr/bin:/bin:/usr/sbin:/sbin" \
+  FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/summary-home" \
   FLYWHEEL_STATE_DIR="$TMP/home/.flywheel" \
   FLYWHEEL_DIR="$ROOT" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
@@ -173,6 +217,7 @@ if HOME="$TMP/home" \
   && grep -qF 'FLYWHEEL_LEAD_MODEL=claude-fable-5' "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_EFFORT=max' "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_TEST_PLIST_ONLY=preserved' "$TMP/server.env" \
+  && grep -qF "FLYWHEEL_SUMMARY_CONFIG_HOME=$TMP/summary-home" "$TMP/server.env" \
   && grep -qF "DISCORD_STATE_DIR=$TMP/discord-state" "$TMP/server.env" \
   && grep -qF 'FLYWHEEL_LEAD_ID=ops-lead' "$TMP/server.env" \
   && grep -Eq '^FLYWHEEL_LEAD_CARRIER_PID=[1-9][0-9]*$' "$TMP/server.env" \
@@ -225,10 +270,14 @@ rm -f "$TMP/home/.local/bin/tmux"
 # The Claude child crosses a second env -i boundary inside claude-lead.sh.
 # Its structured dry-run plan is the authoritative projection consumed by the
 # direct-child path. It must carry the OS identity and the v2 carrier marker.
-identity_json="$(node "$ROOT/packages/flywheel-comm/dist/index.js" lead-identity resolve \
+identity_json="$(HOME="$TMP/home" node "$ROOT/packages/flywheel-comm/dist/index.js" lead-identity resolve \
   --projects-file "$TMP/home/.flywheel/projects.json" --project demo --lead ops-lead --format json)"
 identity_digest="$(jq -r '.identityDigest' <<<"$identity_json")"
 projects_digest="$(jq -r '.projectsDigest' <<<"$identity_json")"
+summary_role="$(jq -r '.summaryRole' <<<"$identity_json")"
+summary_granularity="$(jq -r '.summaryGranularity' <<<"$identity_json")"
+has_summary_duty="$(jq -r 'if .hasSummaryDuty then "1" else "0" end' <<<"$identity_json")"
+summary_assignment_digest="$(jq -r '.summaryAssignmentDigest' <<<"$identity_json")"
 child_plan="$({
   env -i \
     HOME="$TMP/home" \
@@ -249,6 +298,11 @@ child_plan="$({
     DISCORD_STATE_DIR="$TMP/discord-state" \
     DISCORD_EXPECTED_BOT_USER_ID=22345678901234567 \
     DISCORD_IDENTITY_MODE=managed \
+    FLYWHEEL_LEAD_SUMMARY_ROLE="$summary_role" \
+    FLYWHEEL_LEAD_HAS_SUMMARY_DUTY="$has_summary_duty" \
+    FLYWHEEL_SUMMARY_GRANULARITY="$summary_granularity" \
+    FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST="$summary_assignment_digest" \
+    FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/home" \
     FLYWHEEL_LEAD_IDENTITY_DIGEST="$identity_digest" \
     FLYWHEEL_LEAD_PROJECTS_DIGEST="$projects_digest" \
     OPS_TOKEN=fixture-token \
@@ -259,6 +313,11 @@ child_plan="$({
 if grep -qF $'PANE_ENV\tUSER\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tLOGNAME\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_CARRIER\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_SUMMARY_ROLE\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_HAS_SUMMARY_DUTY\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_GRANULARITY\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST\tset' <<<"$child_plan" \
+    && grep -qF $'PANE_ENV\tFLYWHEEL_SUMMARY_CONFIG_HOME\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tFLYWHEEL_LEAD_IDENTITY_DIGEST\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tDISCORD_EXPECTED_BOT_USER_ID\tset' <<<"$child_plan" \
     && grep -qF $'PANE_ENV\tDISCORD_IDENTITY_MODE\tset' <<<"$child_plan"; then
@@ -309,24 +368,29 @@ jq -n \
 	--arg workspace "${LEAD_WORKSPACE:-}" \
 	--arg mcpExclude "${FLYWHEEL_LEAD_MCP_EXCLUDE:-}" \
 	--arg alertChannel "${FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID:-}" \
-	'{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,alertChannel:$alertChannel}' \
+	--arg summaryConfigHome "${FLYWHEEL_SUMMARY_CONFIG_HOME:-}" \
+	'{token:$token,workspace:$workspace,mcpExclude:$mcpExclude,alertChannel:$alertChannel,summaryConfigHome:$summaryConfigHome}' \
   > "${FLY1663_BODY_OUT:?}"
 BODY_STUB
 cat > "$TMP/body.env" <<'ENV'
 DISCORD_BOT_TOKEN=wrong-global-token
 OPS_TOKEN=right-lead-token
 FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=alert-channel-123
+FLYWHEEL_SUMMARY_CONFIG_HOME=/tmp/env-controlled
 ENV
 FLY1663_BODY_OUT="$TMP/body.out" \
   FLYWHEEL_WRAPPER_ENV_FILE="$TMP/body.env" \
+  FLYWHEEL_SUMMARY_CONFIG_HOME="$TMP/summary-home" \
   DISCORD_BOT_TOKEN=right-lead-token \
   bash "$TMP/body-fixture/lead-body.sh" "$TMP/manifest.json"
 if jq -e \
     --arg workspace "$TMP/custom-workspace" \
+	--arg summaryConfigHome "$TMP/summary-home" \
 	'.token == "right-lead-token"
 	  and .workspace == $workspace
 	  and .mcpExclude == "dangerous-mcp,chrome"
-	  and .alertChannel == "alert-channel-123"' \
+	  and .alertChannel == "alert-channel-123"
+	  and .summaryConfigHome == $summaryConfigHome' \
     "$TMP/body.out" >/dev/null; then
   pass "body preserves v1 manifest projection and exports launcher configuration to helpers"
 else

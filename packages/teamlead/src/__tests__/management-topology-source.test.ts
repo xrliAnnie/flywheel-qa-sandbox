@@ -50,6 +50,17 @@ async function loadedConfigs(names: string[]) {
 	for (const name of names) {
 		result.set(name, {
 			config: await config(name),
+			resolvedAgents: {
+				personal: {
+					nodeName: "personal",
+					label: "Personal",
+					agentFile: `/tmp/${name}/.flywheel/agents/nodes/personal.md`,
+					agentFileRoot: `/tmp/${name}/.flywheel/agents`,
+					department: "engineering",
+					departments: ["engineering"],
+					match: { labels: ["personal"] },
+				},
+			},
 			revision: `file:${name}`,
 		});
 	}
@@ -111,10 +122,10 @@ describe("management topology source", () => {
 		});
 		expect(view.projects[0]!.roles).toEqual([
 			expect.objectContaining({
-				name: "personal",
-				agentFile: ".flywheel/agents/engineering/personal-executor.md",
+				name: "Personal",
+				agentFile: ".flywheel/agents/nodes/personal.md",
 				sourceLink:
-					"https://github.com/xrliAnnie/flywheel/blob/main/.flywheel/agents/engineering/personal-executor.md",
+					"https://github.com/xrliAnnie/flywheel/blob/main/.flywheel/agents/nodes/personal.md",
 			}),
 		]);
 	});

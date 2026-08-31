@@ -607,6 +607,7 @@ function structuralProjection(projects: ProjectEntry[]): string {
 					model: _m,
 					backend: _b,
 					effort: _e,
+					modelContextWindow: _w,
 					botToken: _t,
 					carrier: _c,
 					...rest
@@ -649,7 +650,8 @@ export class ConfigSnapshotProvider {
 				(l) =>
 					l.model !== undefined ||
 					l.backend !== undefined ||
-					l.effort !== undefined,
+					l.effort !== undefined ||
+					l.modelContextWindow !== undefined,
 			),
 		);
 	}
@@ -694,6 +696,9 @@ export class ConfigSnapshotProvider {
 				else delete next.backend;
 				if (f.effort !== undefined) next.effort = f.effort;
 				else delete next.effort;
+				if (f.modelContextWindow !== undefined)
+					next.modelContextWindow = f.modelContextWindow;
+				else delete next.modelContextWindow;
 				return next;
 			}),
 		}));

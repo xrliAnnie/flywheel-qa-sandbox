@@ -23,11 +23,12 @@ import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
 	getFlagStoreCodec,
+	PROJECT_STORE_MANAGED_FLAGS,
 	STORE_MANAGED_FLAGS,
 } from "flywheel-config";
-import { computeEnvSha } from "./env-file-writer.js";
+import { parse as parseYaml } from "yaml";
 import type { FlagStoreRuntime } from "./flag-store-runtime.js";
-import { applyFlagToggle, isDirectToggleable } from "./flag-toggle.js";
+import { isDirectToggleable } from "./flag-toggle.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { newBatchId } from "./fleet-admin.js";
 import type { FleetAdminAudit } from "./fleet-admin-audit.js";
@@ -53,9 +54,12 @@ export interface FlagStoreCanonical {
 	kind: "flag_store";
 	batchId: string;
 	name: string;
+	scope: string;
+	op: "set" | "clear";
 	rawFrom: string | null;
 	rawTo: string | null;
-	revision: number;
+	revision?: number;
+	expectedChangeSeq?: number;
 	effectiveFrom: boolean | string;
 	effectiveTo: boolean | string;
 	actor: "bridge-local-operator";
@@ -65,20 +69,122 @@ export interface FlagStoreCanonical {
 export type AnyFlagCanonical = FlagCanonical | FlagStoreCanonical;
 
 export interface FlagRouteDeps {
-	envPath: string;
 	readFile: (path: string) => string;
-	writeFile?: (path: string, content: string) => void;
-	env?: Record<string, string | undefined>;
 	tokens: ConfirmTokenStore;
 	audit: FleetAdminAudit;
 	flagStore?: FlagStoreRuntime;
-	/** Critical-section lock (plan §4.3); defaults to the real .env file lock. */
-	lock?: <T>(fn: () => T) => T;
+	/** Current authoritative projectName roster from projects.json. */
+	projectNames: () => readonly string[];
+	/** Resolve the canonical config.yaml path for a rostered project. */
+	projectConfigPath: (projectName: string) => string | undefined;
 }
 
 export interface RouteResult {
 	code: number;
 	body: unknown;
+}
+
+type ScopedFlagChange = Pick<
+	FlagStoreCanonical,
+	"name" | "scope" | "op" | "rawTo"
+>;
+
+type DocFlowMetadataBlocker = {
+	project: string;
+	configPath: string;
+	reason: "missing" | "unreadable";
+	detail?: string;
+};
+
+function docFlowEnabledAfterChange(
+	deps: FlagRouteDeps,
+	change: ScopedFlagChange,
+	projectName: string,
+): boolean {
+	if (!deps.flagStore) return false;
+	const codec = getFlagStoreCodec("doc_flow");
+	if (!codec) throw new Error("missing managed flag codec: doc_flow");
+	const parseRow = (raw: string | null): boolean =>
+		codec.parse({ hasOverride: true, raw }) === true;
+	const projectRow = deps.flagStore.store.getFlagValueRow(
+		"doc_flow",
+		projectName,
+	);
+
+	if (change.scope === projectName) {
+		if (change.op === "set") return parseRow(change.rawTo ?? "");
+		const starRow = deps.flagStore.store.getFlagValueRow("doc_flow", "*");
+		return starRow ? parseRow(starRow.raw) : false;
+	}
+	if (change.scope !== "*") return false;
+	if (projectRow) return parseRow(projectRow.raw);
+	return change.op === "set" ? parseRow(change.rawTo ?? "") : false;
+}
+
+function readDocFlowMetadataBlocker(
+	deps: FlagRouteDeps,
+	projectName: string,
+): DocFlowMetadataBlocker | undefined {
+	const configPath =
+		deps.projectConfigPath(projectName) ??
+		`<project:${projectName}>/.flywheel/config.yaml`;
+	let parsed: unknown;
+	try {
+		parsed = parseYaml(deps.readFile(configPath));
+	} catch (error) {
+		return {
+			project: projectName,
+			configPath,
+			reason: "unreadable",
+			detail: error instanceof Error ? error.message : String(error),
+		};
+	}
+	if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+		return { project: projectName, configPath, reason: "missing" };
+	}
+	const docFlow = (parsed as Record<string, unknown>).doc_flow;
+	if (!docFlow || typeof docFlow !== "object" || Array.isArray(docFlow)) {
+		return { project: projectName, configPath, reason: "missing" };
+	}
+	const department = (docFlow as Record<string, unknown>).default_department;
+	if (typeof department !== "string" || !department.trim()) {
+		return { project: projectName, configPath, reason: "missing" };
+	}
+	return undefined;
+}
+
+/**
+ * FLY-2103: enablement moved to SQLite while its required path metadata stayed
+ * in config.yaml. Reject any scoped write whose resulting doc_flow value would
+ * turn a project on without that metadata. This is re-run at apply time so a
+ * stage token cannot race a config edit.
+ */
+function enforceDocFlowEnablementInvariant(
+	deps: FlagRouteDeps,
+	change: ScopedFlagChange,
+): RouteResult | undefined {
+	if (change.name !== "doc_flow") return undefined;
+	const enabledProjects = deps
+		.projectNames()
+		.filter((projectName) =>
+			docFlowEnabledAfterChange(deps, change, projectName),
+		);
+	const blockers = enabledProjects
+		.map((projectName) => readDocFlowMetadataBlocker(deps, projectName))
+		.filter((blocker): blocker is DocFlowMetadataBlocker => Boolean(blocker));
+	const [first] = blockers;
+	if (!first) return undefined;
+	const detail = first.detail ? ` (${first.detail})` : "";
+	return {
+		code: 409,
+		body: {
+			error: "doc_flow_enablement_requires_default_department",
+			message: `Cannot enable doc_flow for project "${first.project}": doc_flow.default_department is ${first.reason === "missing" ? "missing from" : "not readable in"} ${first.configPath}${detail}. Add a valid doc_flow.default_department to that config.yaml before retrying.`,
+			project: first.project,
+			configPath: first.configPath,
+			blockers,
+		},
+	};
 }
 
 /** Stable SHA the confirmToken binds to (canonical, sans nothing volatile). */
@@ -98,73 +204,88 @@ function computeRawTo(
 	spec: FeatureFlagSpec,
 	to: boolean | string,
 ): string | null {
-	if (spec.valueKind === "enum") return String(to);
+	if (spec.valueKind === "enum" || spec.valueKind === "value")
+		return String(to);
 	if (spec.polarity === "default_on") return to ? null : "0";
 	return to ? "1" : null;
-}
-
-function effectiveOf(
-	spec: FeatureFlagSpec,
-	raw: string | null,
-): boolean | string {
-	if (spec.valueKind === "enum") {
-		// Garbage / empty raw displays as the default (the owning resolver fails
-		// closed the same way — R1#8 display honesty).
-		if (raw !== null && raw !== "" && spec.enumValues?.includes(raw)) {
-			return raw;
-		}
-		return String(spec.default);
-	}
-	return spec.polarity === "default_on" ? raw !== "0" : raw === "1";
 }
 
 export function handleFlagStage(
 	deps: FlagRouteDeps,
 	input: {
 		name: string;
-		to: boolean | string;
+		to?: boolean | string;
+		project?: string;
+		op?: "set" | "clear";
 		reason?: string;
 		actor?: string;
 	},
 	origin: string,
 ): RouteResult {
-	// Validate the JSON boundary — `input` is untyped `req.body`. A non-boolean
-	// `to` (e.g. the string "off", which is truthy) would otherwise stage the
-	// WRONG target via `computeRawTo`'s truthiness. Reject fail-closed.
-	// FLY-1356: enum flags take a STRING `to` that must be one of enumValues.
+	if (typeof input?.name !== "string") {
+		return {
+			code: 400,
+			body: { error: "name (string) is required" },
+		};
+	}
+	const op = input.op ?? "set";
+	if (op !== "set" && op !== "clear") {
+		return { code: 400, body: { error: "op must be set or clear" } };
+	}
 	if (
-		typeof input?.name !== "string" ||
-		(typeof input?.to !== "boolean" && typeof input?.to !== "string")
+		input.project !== undefined &&
+		(typeof input.project !== "string" || !input.project.trim())
+	) {
+		return { code: 400, body: { error: "project must be a non-empty string" } };
+	}
+	const scope = input.project?.trim() || "*";
+	if (
+		op === "set" &&
+		typeof input.to !== "boolean" &&
+		typeof input.to !== "string"
 	) {
 		return {
 			code: 400,
-			body: { error: "name (string) and to (boolean|string) are required" },
+			body: { error: "set requires to (boolean|string)" },
 		};
 	}
 	const spec = FEATURE_FLAGS.find((f) => f.name === input.name);
-	if (!spec || !spec.envVar || !isDirectToggleable(spec)) {
+	if (!spec) {
 		return {
 			code: 400,
-			body: { error: `${input.name} is not direct-toggleable` },
+			body: { error: `unknown feature flag: ${input.name}` },
 		};
 	}
-	if (spec.valueKind === "enum") {
-		if (typeof input.to !== "string" || !spec.enumValues?.includes(input.to)) {
+	if (spec.scope === "bridge_global" && scope !== "*") {
+		return {
+			code: 400,
+			body: { error: `${spec.name} is bridge_global and rejects project rows` },
+		};
+	}
+
+	if (spec.scope === "project") {
+		if (!PROJECT_STORE_MANAGED_FLAGS.has(spec.name)) {
+			return {
+				code: 400,
+				body: { error: `${spec.name} is not project-store-managed` },
+			};
+		}
+		const projectNames = [...deps.projectNames()];
+		if (scope !== "*" && !projectNames.includes(scope)) {
 			return {
 				code: 400,
 				body: {
-					error: `invalid target value for ${spec.name}`,
-					allowed: spec.enumValues ?? [],
+					error: `unknown project scope: ${scope}`,
+					allowed: ["*", ...projectNames],
 				},
 			};
 		}
-	} else if (typeof input.to !== "boolean") {
-		return {
-			code: 400,
-			body: { error: `${spec.name} takes a boolean target` },
-		};
-	}
-	if (STORE_MANAGED_FLAGS.has(spec.name)) {
+		if (op === "set" && typeof input.to !== "boolean") {
+			return {
+				code: 400,
+				body: { error: `${spec.name} takes a boolean target` },
+			};
+		}
 		if (typeof input.reason !== "string" || !input.reason.trim()) {
 			return {
 				code: 400,
@@ -174,31 +295,36 @@ export function handleFlagStage(
 		if (!deps.flagStore) {
 			return { code: 500, body: { error: "flag store unavailable" } };
 		}
-		if (deps.flagStore.mode === "bypass") {
-			return {
-				code: 409,
-				body: {
-					error: "managed flag changes are disabled during store bypass",
-				},
-			};
-		}
-		const row = deps.flagStore.store.getFlagValueRow(spec.name);
+		const row = deps.flagStore.store.getFlagValueRow(spec.name, scope);
 		const codec = getFlagStoreCodec(spec.name);
-		if (!row || !codec) {
-			throw new Error(`missing managed flag row or codec: ${spec.name}`);
+		if (!codec) throw new Error(`missing managed flag codec: ${spec.name}`);
+		if (op === "clear" && !row) {
+			return { code: 409, body: { error: "missing_row" } };
 		}
+		const rawTo = op === "clear" ? null : input.to ? "1" : "0";
+		const invariantFailure = enforceDocFlowEnablementInvariant(deps, {
+			name: spec.name,
+			scope,
+			op,
+			rawTo,
+		});
+		if (invariantFailure) return invariantFailure;
 		const canonical: FlagStoreCanonical = {
 			kind: "flag_store",
 			batchId: newBatchId(),
 			name: spec.name,
-			rawFrom: row.raw,
-			rawTo: computeRawTo(spec, input.to),
-			revision: row.revision,
-			effectiveFrom: codec.parse({
-				hasOverride: row.hasOverride,
-				raw: row.raw,
-			}),
-			effectiveTo: input.to,
+			scope,
+			op,
+			rawFrom: row?.raw ?? null,
+			rawTo,
+			expectedChangeSeq: deps.flagStore.store.getFlagValueChangeSeq(
+				spec.name,
+				scope,
+			),
+			effectiveFrom: row
+				? codec.parse({ hasOverride: true, raw: row.raw })
+				: "inherit",
+			effectiveTo: op === "clear" ? "inherit" : (input.to as boolean),
 			actor: "bridge-local-operator",
 			reason: input.reason.trim(),
 		};
@@ -218,37 +344,103 @@ export function handleFlagStage(
 		const confirmToken = deps.tokens.issue(flagCanonicalSha(canonical));
 		return { code: 200, body: { canonical, confirmToken } };
 	}
-	const env = deps.env ?? process.env;
-	let content: string;
-	try {
-		content = deps.readFile(deps.envPath);
-	} catch (err) {
+
+	if (op === "clear" && !STORE_MANAGED_FLAGS.has(spec.name)) {
 		return {
-			code: 500,
-			body: { error: `read .env: ${(err as Error).message}` },
+			code: 400,
+			body: { error: "clear is supported only for store-managed flags" },
 		};
 	}
-	const rawFrom = env[spec.envVar] ?? null;
-	const rawTo = computeRawTo(spec, input.to);
-	const canonical: FlagCanonical = {
-		kind: "flag",
-		batchId: newBatchId(),
-		name: spec.name,
-		envVar: spec.envVar,
-		rawFrom,
-		rawTo,
-		fileSha: computeEnvSha(content),
-		effectiveFrom: effectiveOf(spec, rawFrom),
-		effectiveTo: input.to,
+	if (!spec.envVar || !isDirectToggleable(spec)) {
+		return {
+			code: 400,
+			body: { error: `${input.name} is not direct-toggleable` },
+		};
+	}
+	if (op === "set" && spec.valueKind === "enum") {
+		if (typeof input.to !== "string" || !spec.enumValues?.includes(input.to)) {
+			return {
+				code: 400,
+				body: {
+					error: `invalid target value for ${spec.name}`,
+					allowed: spec.enumValues ?? [],
+				},
+			};
+		}
+	} else if (op === "set" && spec.valueKind === "value") {
+		if (typeof input.to !== "string") {
+			return {
+				code: 400,
+				body: { error: `${spec.name} takes a string target` },
+			};
+		}
+		try {
+			getFlagStoreCodec(spec.name)?.parse({ hasOverride: true, raw: input.to });
+		} catch (error) {
+			return {
+				code: 400,
+				body: { error: error instanceof Error ? error.message : String(error) },
+			};
+		}
+	} else if (op === "set" && typeof input.to !== "boolean") {
+		return {
+			code: 400,
+			body: { error: `${spec.name} takes a boolean target` },
+		};
+	}
+	if (STORE_MANAGED_FLAGS.has(spec.name)) {
+		if (typeof input.reason !== "string" || !input.reason.trim()) {
+			return {
+				code: 400,
+				body: { error: `${spec.name} requires a non-empty reason` },
+			};
+		}
+		if (!deps.flagStore) {
+			return { code: 500, body: { error: "flag store unavailable" } };
+		}
+		const row = deps.flagStore.store.getFlagValueRow(spec.name);
+		const codec = getFlagStoreCodec(spec.name);
+		if (!row || !codec) {
+			throw new Error(`missing managed flag row or codec: ${spec.name}`);
+		}
+		const effectiveTo = op === "clear" ? spec.default : input.to;
+		const canonical: FlagStoreCanonical = {
+			kind: "flag_store",
+			batchId: newBatchId(),
+			name: spec.name,
+			scope: "*",
+			op,
+			rawFrom: row.raw,
+			rawTo: op === "clear" ? null : computeRawTo(spec, input.to as never),
+			revision: row.revision,
+			effectiveFrom: codec.parse({
+				hasOverride: row.hasOverride,
+				raw: row.raw,
+			}),
+			effectiveTo: effectiveTo as boolean | string,
+			actor: "bridge-local-operator",
+			reason: input.reason.trim(),
+		};
+		if (
+			!deps.audit.record({
+				batchId: canonical.batchId,
+				event: "staged",
+				canonicalRequest: JSON.stringify(canonical),
+				origin,
+			})
+		) {
+			return {
+				code: 500,
+				body: { error: "could not record staged flag change" },
+			};
+		}
+		const confirmToken = deps.tokens.issue(flagCanonicalSha(canonical));
+		return { code: 200, body: { canonical, confirmToken } };
+	}
+	return {
+		code: 500,
+		body: { error: `${spec.name}: registry/store invariant violated` },
 	};
-	deps.audit.record({
-		batchId: canonical.batchId,
-		event: "staged",
-		canonicalRequest: JSON.stringify(canonical),
-		origin,
-	});
-	const confirmToken = deps.tokens.issue(flagCanonicalSha(canonical));
-	return { code: 200, body: { canonical, confirmToken } };
 }
 
 export function handleFlagApply(
@@ -271,23 +463,61 @@ export function handleFlagApply(
 		return { code: 401, body: { error: verdict.reason } };
 	}
 	if (canonical.kind === "flag_store") {
+		const spec = FEATURE_FLAGS.find(
+			(candidate) => candidate.name === canonical.name,
+		);
 		if (
-			!STORE_MANAGED_FLAGS.has(canonical.name) ||
+			!spec ||
 			canonical.actor !== "bridge-local-operator" ||
-			!canonical.reason.trim()
+			typeof canonical.reason !== "string" ||
+			!canonical.reason.trim() ||
+			typeof canonical.scope !== "string" ||
+			!canonical.scope.trim() ||
+			(canonical.op !== "set" && canonical.op !== "clear")
 		) {
 			return { code: 400, body: { error: "invalid managed flag canonical" } };
+		}
+		if (spec.scope === "project") {
+			const projectNames = [...deps.projectNames()];
+			if (
+				!PROJECT_STORE_MANAGED_FLAGS.has(canonical.name) ||
+				(canonical.scope !== "*" && !projectNames.includes(canonical.scope)) ||
+				!Number.isInteger(canonical.expectedChangeSeq) ||
+				(canonical.expectedChangeSeq ?? -1) < 0 ||
+				(canonical.op === "set" &&
+					canonical.rawTo !== "0" &&
+					canonical.rawTo !== "1") ||
+				(canonical.op === "clear" && canonical.rawTo !== null)
+			) {
+				return {
+					code: 400,
+					body: {
+						error: "invalid project flag canonical",
+						allowed: ["*", ...projectNames],
+					},
+				};
+			}
+		} else if (
+			!STORE_MANAGED_FLAGS.has(canonical.name) ||
+			canonical.scope !== "*" ||
+			!Number.isInteger(canonical.revision) ||
+			(canonical.revision ?? 0) < 1
+		) {
+			return { code: 400, body: { error: "invalid global flag canonical" } };
 		}
 		if (!deps.flagStore) {
 			return { code: 500, body: { error: "flag store unavailable" } };
 		}
-		if (deps.flagStore.mode === "bypass") {
-			return {
-				code: 409,
-				body: {
-					error: "managed flag changes are disabled during store bypass",
-				},
-			};
+		const invariantFailure = enforceDocFlowEnablementInvariant(deps, canonical);
+		if (invariantFailure) {
+			deps.audit.record({
+				batchId: canonical.batchId,
+				event: "denied",
+				attemptId,
+				reason: "doc_flow_enablement_requires_default_department",
+				origin,
+			});
+			return invariantFailure;
 		}
 		if (
 			!deps.audit.record({
@@ -302,13 +532,24 @@ export function handleFlagApply(
 				body: { error: "could not record apply-requested flag change" },
 			};
 		}
-		const result = deps.flagStore.store.applyFlagValueChange({
-			name: canonical.name,
-			rawTo: canonical.rawTo,
-			expectedRevision: canonical.revision,
-			actor: canonical.actor,
-			reason: canonical.reason,
-		});
+		const result =
+			spec.scope === "project"
+				? deps.flagStore.store.applyScopedFlagValueChange({
+						name: canonical.name,
+						scope: canonical.scope,
+						op: canonical.op,
+						rawTo: canonical.rawTo,
+						expectedChangeSeq: canonical.expectedChangeSeq as number,
+						actor: canonical.actor,
+						reason: canonical.reason,
+					})
+				: deps.flagStore.store.applyFlagValueChange({
+						name: canonical.name,
+						rawTo: canonical.rawTo,
+						expectedRevision: canonical.revision as number,
+						actor: canonical.actor,
+						reason: canonical.reason,
+					});
 		if (!result.ok) {
 			deps.audit.record({
 				batchId: canonical.batchId,
@@ -329,43 +570,17 @@ export function handleFlagApply(
 		if (warn) console.warn(`[flag-store] ${warn}: ${canonical.batchId}`);
 		return { code: 200, body: { ok: true, warn } };
 	}
-	if (STORE_MANAGED_FLAGS.has(canonical.name)) {
-		return {
-			code: 409,
-			body: { error: `${canonical.name} must use the flag store route` },
-		};
-	}
-	const result = applyFlagToggle(
-		{
-			envPath: deps.envPath,
-			readFile: deps.readFile,
-			writeFile: deps.writeFile,
-			env: deps.env,
-			lock: deps.lock,
-		},
-		{
-			name: canonical.name,
-			rawFrom: canonical.rawFrom,
-			rawTo: canonical.rawTo,
-			fileSha: canonical.fileSha,
-		},
-	);
-	if (!result.ok) {
-		deps.audit.record({
-			batchId: canonical.batchId,
-			event: "denied",
-			attemptId,
-			reason: result.reason,
-			origin,
-		});
-		return { code: result.code, body: { error: result.reason } };
-	}
 	deps.audit.record({
 		batchId: canonical.batchId,
-		event: "apply-result",
-		result: result.warn ? `applied-with-warning` : "applied",
-		reason: result.warn,
+		event: "denied",
+		attemptId,
+		reason: "legacy env flag canonical is retired",
 		origin,
 	});
-	return { code: 200, body: { ok: true, warn: result.warn } };
+	return {
+		code: 409,
+		body: {
+			error: `${canonical.name}: legacy env flag canonical is retired; use flag store`,
+		},
+	};
 }

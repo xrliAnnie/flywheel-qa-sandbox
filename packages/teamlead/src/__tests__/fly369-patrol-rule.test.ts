@@ -57,7 +57,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(patrol).toMatch(/不采信.*Bridge|Bridge.*不是事实/);
 	});
 
-	it("FLY-1855: patrol_tick has an executable fleet scope, six-step artifact, and explicit UNAVAILABLE exit", () => {
+	it("FLY-2118: patrol_tick has an executable owner scope, orphan fallback, six-step artifact, and explicit UNAVAILABLE exit", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),
 			patrol.indexOf("## 1."),
@@ -65,7 +65,11 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		for (const anchor of [
 			"范围合同",
 			"检测范围",
-			"整机",
+			"只巡检自己名下",
+			"comm.sessions.lead_id",
+			"Bridge orphan sweeper",
+			"claude-infra-bot-lead",
+			"orphan_pane",
 			"处置权限",
 			"产出物合同",
 			"UNAVAILABLE",
@@ -78,6 +82,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		]) {
 			expect(section0).toContain(anchor);
 		}
+		expect(section0).not.toMatch(/检测范围\s*=\s*\*\*整机\*\*/);
 		for (let step = 1; step <= 6; step += 1) {
 			expect(section0).toMatch(new RegExp(`(?:^|\\n)${step}\\.\\s+\\*\\*`));
 		}
@@ -85,19 +90,17 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toMatch(/跳过.*不留痕.*违约|禁止静默跳过/);
 	});
 
-	it("FLY-1855: Discord truth and cross-boundary disposition have exact addresses", () => {
+	it("FLY-2118: Discord truth remains, while cross-boundary roundtable routing is outside the patrol surface", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),
 			patrol.indexOf("## 1."),
 		);
 		expect(section0).toContain("/api/chat-threads?issueId=");
 		expect(section0).toContain("fetch_messages");
-		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
-		expect(section0).toContain("FLYWHEEL_ROUNDTABLE_CONFIG_FILE");
-		expect(section0).toContain("roundtable.json");
-		expect(section0).not.toContain('reply(chat_id="1512578695468941333"');
-		expect(section0).toContain("flywheel-eng-lead");
-		expect(section0).toContain("reply(chat_id=");
+		expect(section0).not.toContain("FLYWHEEL_ROUNDTABLE_CHANNEL_ID");
+		expect(section0).not.toContain("FLYWHEEL_ROUNDTABLE_CONFIG_FILE");
+		expect(section0).not.toContain("[patrol cross-boundary]");
+		expect(section0).not.toContain("owner=cross-boundary");
 		expect(section0).toContain("--config -");
 		expect(section0).not.toMatch(/Authorization:\s*Bearer\s+\$\{/);
 	});
@@ -111,6 +114,7 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"list-panes -a",
 			"session_name",
 			"runner-",
+			"OWNED_RUNNER_PANES",
 			"capture-pane -p -S -",
 			"PANE_EVIDENCE",
 			"pane_count",
@@ -119,8 +123,10 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 			"INTERACTIVE_MENU",
 			"action=REQUIRED",
 			"result=UNSET",
-			"foreign-registry",
+			"owner=owned",
+			"MISSING_PANE",
 			"owner_index_incomplete",
+			"owner_attribution_incomplete",
 			"comm.sessions",
 			"patrol-continuity",
 			"ship_parked",
@@ -159,6 +165,85 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		});
 		expect(result.status).toBe(0);
 		expect(result.stdout.trim()).toBe("6");
+	});
+
+	it("FLY-2152: the named sixth dimension audits durable verdict delivery inside STEP 4", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const step4 = section0.slice(
+			section0.indexOf("4. **"),
+			section0.indexOf("5. **"),
+		);
+		for (const anchor of [
+			"第六维度“判决层”",
+			"workflow_claims",
+			"claim_written",
+			"leadEventRequired",
+			"decision_kind",
+			"predicate",
+			"issued_at",
+			"CLAIM_DELIVERY_MISSING",
+			"CLAIM_DELIVERY_PENDING",
+			"CLAIM_DELIVERY_OWNER_MISMATCH",
+			"CLAIM_ATTRIBUTION_INCOMPLETE",
+		]) {
+			expect(step4).toContain(anchor);
+		}
+		expect(step4).toMatch(/evidence.*summary|summary.*evidence/);
+		expect(step4).toMatch(/禁止|不得/);
+		expect(step4).toMatch(/Step 4|STEP 4/);
+		expect(section0).not.toMatch(/(?:^|\n)7\.\s+\*\*/);
+	});
+
+	it("FLY-2152: the six-step consumers accept the new report and reject a seven-step mutant", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const completionPattern = section0.match(
+			/grep -Ec '([^']+)' "\$REPORT_PATH"/,
+		)?.[1];
+		const findingProgram = section0.match(
+			/# FLY-2080-FINDING-GATE-BEGIN\nawk '\n([\s\S]*?)\n' "\$REPORT_PATH"\n# FLY-2080-FINDING-GATE-END/,
+		)?.[1];
+		expect(completionPattern).toBeDefined();
+		expect(findingProgram).toBeDefined();
+
+		const marker = "a".repeat(64);
+		const receipt = "5914cef5-05bf-45a3-be14-edbc858147a2";
+		const finalized = [
+			"STEP 1: OK",
+			"STEP 2: OK",
+			"STEP 3: OK",
+			"STEP 4: FINDING",
+			`FINDING step=4 bridge_problem=yes result=escalated-with-plan evidence=claim:402 owner=agent:flywheel-eng-lead next=repair:claim-delivery epic=FLY-2072#${receipt} epic_marker=${marker}`,
+			"STEP 5: OK",
+			"STEP 6: OK",
+		];
+		const completion = spawnSync("grep", ["-Ec", completionPattern ?? ""], {
+			input: `${finalized.join("\n")}\n`,
+			encoding: "utf8",
+		});
+		const finding = spawnSync("awk", [findingProgram ?? ""], {
+			input: `${finalized.join("\n")}\n`,
+			encoding: "utf8",
+		});
+		expect(completion.stdout.trim()).toBe("6");
+		expect(finding.status).toBe(0);
+
+		const mutant = [
+			...finalized,
+			"STEP 7: FINDING",
+			"FINDING step=7 bridge_problem=no result=escalated-with-plan evidence=claim:extra owner=agent:flywheel-eng-lead next=inspect:extra epic=n/a epic_marker=n/a",
+		];
+		expect(
+			spawnSync("awk", [findingProgram ?? ""], {
+				input: `${mutant.join("\n")}\n`,
+				encoding: "utf8",
+			}).status,
+		).not.toBe(0);
 	});
 
 	it("FLY-1855: the documented dedupe parser accepts a healthy non-truncated response", () => {
@@ -243,7 +328,79 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		expect(section0).toMatch(/引擎.*接力|Bridge.*接力/);
 		// A repair-authored event proves only that sqlite committed, never that
 		// Bridge reconciled the run. Handoff evidence must exclude those rows.
-		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:FLY-2080:%'");
+		expect(section0).toContain("e.event_uid NOT LIKE 'patrol:%'");
+	});
+
+	it("FLY-2111: repair handoff is event-first while pane evidence stays bounded and non-fingerprinted", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const repairAppendices = section0.slice(
+			section0.indexOf("### FLY-2080 附录 A"),
+		);
+
+		for (const retiredShape of [
+			"BEFORE_PANE_SHA",
+			"AFTER_PANE_SHA",
+			"full-scrollback state hash",
+			"pane hash",
+		]) {
+			expect(section0).not.toContain(retiredShape);
+		}
+		expect(section0).not.toMatch(/接力 pane\/event|<pane\/event receipt>/);
+		expect(repairAppendices).not.toMatch(/capture-pane -p -S -(?=\s|$)/);
+		for (const anchor of [
+			"BASELINE_SEQ",
+			"AFTER_EVENTS",
+			"e.seq>$BASELINE_SEQ",
+			"e.event_uid NOT LIKE 'patrol:%'",
+			"capture-pane -p -S -40",
+			"tail -40",
+			"pane_marker",
+			"observed_at",
+			"preferred_actor_execution_id` 已完成这次 rework",
+			"伪造 receipt",
+		]) {
+			expect(repairAppendices).toContain(anchor);
+		}
+		expect(repairAppendices).toMatch(/不落原文.*不.*哈希.*不.*前后比较/s);
+		expect(repairAppendices).toMatch(
+			/pane_marker.*不能单独.*`fixed\|advanced`/s,
+		);
+		const handoffPrint = repairAppendices.indexOf(
+			"printf 'engine_handoff events=%s\\n'",
+		);
+		const handoffGate = repairAppendices.indexOf('test -n "$AFTER_EVENTS"');
+		expect(handoffPrint).toBeGreaterThanOrEqual(0);
+		expect(handoffGate).toBeGreaterThan(handoffPrint);
+	});
+
+	it("FLY-2111: Step A diagnoses from reproducible Bridge evidence without copying implementation guards", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const stepA = section0.slice(
+			section0.lastIndexOf("**步骤 A — 发现即补账推进**"),
+			section0.lastIndexOf("**步骤 B — 记录进病根 Epic**"),
+		);
+
+		for (const anchor of [
+			"Bridge 的结构化诊断",
+			"稳定错误码",
+			"run/request/execution id",
+			"state/revision",
+			"可复跑的只读 query",
+			"workflow_run_event seq/kind",
+			"source symbol/path",
+			"UNAVAILABLE",
+			"owner + 下一动作",
+		]) {
+			expect(stepA).toContain(anchor);
+		}
+		expect(stepA).not.toContain("打开抛出该错误的源码");
+		expect(stepA).not.toMatch(/把每个.*WHERE.*if.*逐条抄进报告/s);
 	});
 
 	it("FLY-2094: predecessor repair omits maxIterations for an unbounded loop", () => {

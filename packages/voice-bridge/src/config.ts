@@ -372,12 +372,6 @@ export function resolveHuddleBridgeConfig(
 		geminiModel: env.FLYWHEEL_HUDDLE_GEMINI_MODEL || DEFAULT_GEMINI_MODEL,
 		claudeBin: env.FLYWHEEL_VOICE_CLAUDE_BIN || "claude",
 		brainTimeoutMs: numericEnv(env, "FLYWHEEL_HUDDLE_BRAIN_TIMEOUT_MS", 30_000),
-		...(env.FLYWHEEL_HUDDLE_EARCON
-			? { earconPath: env.FLYWHEEL_HUDDLE_EARCON }
-			: {}),
-		...(env.FLYWHEEL_HUDDLE_FILLER
-			? { fillerPath: env.FLYWHEEL_HUDDLE_FILLER }
-			: {}),
 	};
 }
 

@@ -41,6 +41,8 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				pid === process.pid && start === writerStart,
 		};
 		env = {
+			HOME: dir,
+			FLYWHEEL_STATE_DIR: join(dir, ".flywheel"),
 			FLYWHEEL_LEAD_LEASE_DB: join(dir, "lease.db"),
 			FLYWHEEL_LEAD_EPISODE_DB: join(dir, "lease-episodes.db"),
 			FLYWHEEL_LEAD_LEASE_MODE_FILE: join(dir, "mode.json"),
@@ -51,6 +53,15 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			FLYWHEEL_LEAD_LEASE_AUDIT_LOG: join(dir, "lead-lease-audit.log"),
 			FLYWHEEL_LEAD_ID: "eng-lead",
 		};
+		mkdirSync(join(dir, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(dir, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
 		writeProjects("claude-code");
 		vi.spyOn(console, "warn").mockImplementation(() => {});
 	});
@@ -63,6 +74,7 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 	function writeProjects(
 		backend: "claude-code" | "codex-app-server",
 		carrier?: "v1" | "v2",
+		identityHome = dir,
 	): void {
 		writeFileSync(
 			env.FLYWHEEL_PROJECTS_FILE!,
@@ -70,7 +82,12 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 				{
 					projectName: "flywheel",
 					leads: [
-						{ agentId: "eng-lead", backend, ...(carrier ? { carrier } : {}) },
+						{
+							agentId: "eng-lead",
+							summaryRole: "producer",
+							backend,
+							...(carrier ? { carrier } : {}),
+						},
 					],
 				},
 			]),
@@ -79,34 +96,36 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			projectsPath: env.FLYWHEEL_PROJECTS_FILE!,
 			projectName: "flywheel",
 			leadId: "eng-lead",
+			homeDir: identityHome,
 		});
 		env.FLYWHEEL_PROJECT_NAME = identity.projectName;
 		env.FLYWHEEL_LEAD_KEY = identity.leadKey;
 		env.FLYWHEEL_LEAD_ROLE = identity.role;
 		env.FLYWHEEL_LEAD_BACKEND = identity.backend;
+		env.FLYWHEEL_LEAD_SUMMARY_ROLE = identity.summaryRole;
+		env.FLYWHEEL_LEAD_HAS_SUMMARY_DUTY = identity.hasSummaryDuty ? "1" : "0";
+		env.FLYWHEEL_SUMMARY_GRANULARITY = identity.summaryGranularity ?? "";
+		env.FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST =
+			identity.summaryAssignmentDigest ?? "";
 		env.FLYWHEEL_LEAD_IDENTITY_DIGEST = identity.identityDigest;
 		env.FLYWHEEL_LEAD_PROJECTS_DIGEST = identity.projectsDigest;
 		env.DISCORD_STATE_DIR = identity.discordStateDir;
 		env.DISCORD_EXPECTED_BOT_USER_ID = identity.botUserId ?? "";
 	}
 
-	it.each([
-		["off", false],
-		["audit_only", false],
-		["enforce", false],
-		["enforce", true],
-	] as const)(
-		"hard-rejects registry identity drift in %s mode (bypass=%s)",
-		async (mode, bypass) => {
+	it.each(["off", "audit_only", "enforce"] as const)(
+		"hard-rejects registry identity drift in %s mode",
+		async (mode) => {
 			setMode(mode);
 			if (mode !== "off") bindLease();
-			if (bypass) env.FLYWHEEL_LEAD_LEASE_BYPASS = "1";
 			writeFileSync(
 				env.FLYWHEEL_PROJECTS_FILE!,
 				JSON.stringify([
 					{
 						projectName: "flywheel",
-						leads: [{ agentId: "eng-lead", companion: true }],
+						leads: [
+							{ agentId: "eng-lead", summaryRole: "producer", companion: true },
+						],
 					},
 				]),
 			);
@@ -136,6 +155,77 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 			lease.close();
 		},
 	);
+
+	it.each([
+		["FLYWHEEL_LEAD_SUMMARY_ROLE", "recipient"],
+		["FLYWHEEL_LEAD_HAS_SUMMARY_DUTY", "0"],
+		["FLYWHEEL_SUMMARY_GRANULARITY", "per-project"],
+		["FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST", "f".repeat(64)],
+	] as const)(
+		"hard-rejects stale summary identity carrier %s",
+		async (name, staleValue) => {
+			setMode("off");
+			env[name] = staleValue;
+
+			await expect(
+				send({
+					fromAgent: "eng-lead",
+					toAgent: "runner-1",
+					content: "stale summary identity",
+					dbPath,
+					env,
+					authorizationDeps,
+				}),
+			).rejects.toMatchObject({ reason: "identity_env_conflict" });
+			expect(instructions()).toEqual([]);
+		},
+	);
+
+	it("uses HOME for canonical identity when FLYWHEEL_STATE_DIR is an isolated slot", async () => {
+		env.HOME = dir;
+		env.FLYWHEEL_STATE_DIR = join(dir, "qa", "slot-1");
+		writeProjects("claude-code");
+		setMode("off");
+
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "isolated state root",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+
+		expect(instructions()).toHaveLength(1);
+	});
+
+	it("uses the launcher's summary config home at the write enforcer", async () => {
+		const summaryHome = join(dir, "qa-summary-home");
+		mkdirSync(join(summaryHome, ".flywheel"), { recursive: true });
+		writeFileSync(
+			join(summaryHome, ".flywheel", "summary-config.json"),
+			JSON.stringify({
+				granularity: "per-lead",
+				setBy: "test-deploy",
+				setAt: "2026-08-28T00:00:00.000Z",
+			}),
+		);
+		rmSync(join(dir, ".flywheel", "summary-config.json"));
+		env.FLYWHEEL_SUMMARY_CONFIG_HOME = summaryHome;
+		writeProjects("claude-code", undefined, summaryHome);
+		setMode("off");
+
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "slot-local summary identity",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+
+		expect(instructions()).toHaveLength(1);
+	});
 
 	it("requires a bound lease even for a canonically configured v2 Claude carrier", async () => {
 		writeProjects("claude-code", "v2");
@@ -508,28 +598,21 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		expect(existsSync(env.FLYWHEEL_LEAD_EPISODE_DB!)).toBe(false);
 	});
 
-	it("a loud BYPASS allows the write and emits independent queue + log evidence", async () => {
+	it("the retired bypass env cannot authorize a write", async () => {
 		setMode("enforce");
 		env.FLYWHEEL_LEAD_LEASE_BYPASS = "1";
-		await send({
-			fromAgent: "eng-lead",
-			toAgent: "runner-1",
-			content: "emergency",
-			dbPath,
-			env,
-			authorizationDeps,
-		});
-		expect(instructions()).toHaveLength(1);
-		const queued = readdirSync(env.FLYWHEEL_ALERT_QUEUE_DIR!);
-		expect(queued).toHaveLength(1);
-		expect(
-			JSON.parse(
-				readFileSync(join(env.FLYWHEEL_ALERT_QUEUE_DIR!, queued[0]!), "utf8"),
-			),
-		).toMatchObject({ eventType: "lead_lease_bypass_used" });
-		expect(readFileSync(env.FLYWHEEL_LEAD_LEASE_AUDIT_LOG!, "utf8")).toContain(
-			"lead_lease_bypass_used",
-		);
+		await expect(
+			send({
+				fromAgent: "eng-lead",
+				toAgent: "runner-1",
+				content: "must not bypass",
+				dbPath,
+				env,
+				authorizationDeps,
+			}),
+		).rejects.toBeInstanceOf(LeadLeaseDeniedError);
+		expect(instructions()).toEqual([]);
+		expect(existsSync(env.FLYWHEEL_ALERT_QUEUE_DIR!)).toBe(false);
 	});
 
 	it("source_error with a Lead marker fails closed and leaves CommDB empty", async () => {

@@ -1,15 +1,17 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { WORKFLOW_MENU_BINDINGS } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import { StateStore } from "../StateStore.js";
-import { importWorkflowMenuSeeds } from "../workflow-menu.js";
+import {
+	importWorkflowMenuSeeds,
+	workflowMenuBindings,
+} from "../workflow-menu.js";
 import { importLegacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const BASELINE = [{ taskCategory: "*", templateId: "tpl_eng_heavy" }] as const;
 
-const TARGET = WORKFLOW_MENU_BINDINGS;
+const TARGET = workflowMenuBindings();
 const TARGET_SORTED = [...TARGET].sort((a, b) =>
 	a.taskCategory.localeCompare(b.taskCategory),
 );

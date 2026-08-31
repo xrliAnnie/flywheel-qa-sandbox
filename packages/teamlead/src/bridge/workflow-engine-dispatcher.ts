@@ -18,6 +18,8 @@ import {
 	type WorkflowDeadExecutionWatchRow,
 	type WorkflowEngineAlertIdentity,
 	type WorkflowLaunchWindowIdentity,
+	type WorkflowReplacementLeadIntent,
+	type WorkflowRunRow,
 	type WorkflowSideEffectRow,
 } from "../StateStore.js";
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
@@ -68,6 +70,8 @@ interface WorkflowEngineDispatcherOptions {
 	store: StateStore;
 	startDispatcher: IStartDispatcher;
 	workflowReworkReentryEnabled?: () => boolean;
+	/** FLY-2076: hot master switch; false preserves durable alert attempts. */
+	alertsEnabled?: () => boolean;
 	env?: Record<string, string | undefined>;
 	stateRoot?: string;
 	log?: (message: string) => void;
@@ -77,6 +81,10 @@ interface WorkflowEngineDispatcherOptions {
 		projectName: string,
 	) => Promise<string>;
 	resolveLeadId?: (executionId: string) => string | undefined;
+	resolveReplacementLeadIntent?: (
+		run: WorkflowRunRow,
+		sourceExecutionId: string | undefined,
+	) => WorkflowReplacementLeadIntent | undefined;
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	probeLaunchLiveness?: (
 		executionId: string,
@@ -141,6 +149,7 @@ const SHIP_READY_FOUNDER_BUDGET_MS = 45 * 60_000;
 export class WorkflowEngineDispatcher {
 	private readonly env: Record<string, string | undefined>;
 	private readonly workflowReworkReentryEnabled: () => boolean;
+	private readonly alertsEnabled: () => boolean;
 	private readonly stateRoot: string;
 	private readonly log: (message: string) => void;
 	private readonly now: () => Date;
@@ -149,6 +158,9 @@ export class WorkflowEngineDispatcher {
 		projectName: string,
 	) => Promise<string>;
 	private readonly resolveLeadId: (executionId: string) => string | undefined;
+	private readonly resolveReplacementLeadIntent: NonNullable<
+		WorkflowEngineDispatcherOptions["resolveReplacementLeadIntent"]
+	>;
 	private readonly materializedHeadAuthority: MaterializedHeadAuthority;
 	private readonly probeLaunchLiveness: (
 		executionId: string,
@@ -221,6 +233,7 @@ export class WorkflowEngineDispatcher {
 		this.env = options.env ?? process.env;
 		this.workflowReworkReentryEnabled =
 			options.workflowReworkReentryEnabled ?? (() => true);
+		this.alertsEnabled = options.alertsEnabled ?? (() => true);
 		this.stateRoot =
 			options.stateRoot ??
 			join(homedir(), ".flywheel", "state", "launch-commits");
@@ -233,6 +246,8 @@ export class WorkflowEngineDispatcher {
 					(authority) => authority.prHeadSha,
 				));
 		this.resolveLeadId = options.resolveLeadId ?? (() => undefined);
+		this.resolveReplacementLeadIntent =
+			options.resolveReplacementLeadIntent ?? (() => undefined);
 		this.materializedHeadAuthority =
 			options.materializedHeadAuthority ?? unavailableMaterializedHeadAuthority;
 		this.probeLaunchLiveness =
@@ -357,6 +372,7 @@ export class WorkflowEngineDispatcher {
 	}
 
 	private async reconcileAdmissionPauseAlert(): Promise<void> {
+		if (!this.alertsEnabled()) return;
 		const sink = this.alertSink?.current;
 		if (!sink) return;
 		const now = this.now();
@@ -1213,6 +1229,14 @@ export class WorkflowEngineDispatcher {
 			if (sourceMs == null || nowMs < sourceMs) continue;
 			const ageMs = nowMs - sourceMs;
 			const reason = delivery.last_error ?? `delivery_${delivery.state}`;
+			const aliveEvidenceExpiresMs = delivery.next_retry_at
+				? parseSqliteUtcMs(delivery.next_retry_at)
+				: null;
+			const hasFreshActorAliveEvidence =
+				delivery.state === "wake_delivered" &&
+				delivery.last_error === "actor_alive_after_receipt" &&
+				aliveEvidenceExpiresMs != null &&
+				aliveEvidenceExpiresMs > nowMs;
 			const escalate = (action: "alert" | "hold") => {
 				const escalated = this.options.store.escalateWorkflowReworkStall({
 					requestId: delivery.request_id,
@@ -1234,7 +1258,7 @@ export class WorkflowEngineDispatcher {
 				}
 			};
 			if (ageMs >= alertMs) escalate("alert");
-			if (ageMs >= holdMs) escalate("hold");
+			if (ageMs >= holdMs && !hasFreshActorAliveEvidence) escalate("hold");
 		}
 	}
 
@@ -1620,6 +1644,10 @@ export class WorkflowEngineDispatcher {
 	}
 
 	async reconcileWorkflowEngineAlerts(max = 20): Promise<number> {
+		// Do not claim either workflow or legacy-land outbox rows while the alert
+		// system is OFF: claiming increments their bounded attempt counters. The
+		// existing durable rows are the ledger and resume on the first ON tick.
+		if (!this.alertsEnabled()) return 0;
 		const sink = this.alertSink?.current;
 		if (!sink) return 0;
 		let finalized = await this.reconcileLegacyLandAlerts(sink, max);
@@ -2435,9 +2463,20 @@ export class WorkflowEngineDispatcher {
 		const predecessor = predecessorExecutionId
 			? store.getSession(predecessorExecutionId)
 			: undefined;
-		const leadId = predecessorExecutionId
+		const predecessorLeadId = predecessorExecutionId
 			? this.resolveLeadId(predecessorExecutionId)
 			: undefined;
+		const replacementLeadIntent =
+			replacementContext && !predecessorLeadId
+				? this.resolveReplacementLeadIntent(run, predecessorExecutionId)
+				: undefined;
+		const replacementLeadId =
+			replacementLeadIntent?.projectName === run.project_name &&
+			replacementLeadIntent.leadId !== "unassigned" &&
+			replacementLeadIntent.leadId.trim()
+				? replacementLeadIntent.leadId
+				: undefined;
+		const leadId = predecessorLeadId ?? replacementLeadId;
 		const loopIteration = Number(transitionPayload?.loopIteration);
 		const phaseFixContext =
 			node.type === "implement" &&

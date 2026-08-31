@@ -6,19 +6,12 @@ import type { AgentConfig } from "flywheel-config";
  * 3-step chain (Haiku classify step dropped in v1.27.1; dept-awareness added in v1.27.2):
  *   1. Override via `dispatchByName(name)` — used by Lead when an explicit `agentName`
  *      arrives in `POST /api/runs/start`.
- *   2. Label match in `dispatch({ issueLabels, owningDept })`, broken into:
- *      2a. Try to match within the issue's owning-dept subdir first
- *          (entries whose agent_file is under `.flywheel/agents/<owningDept>/`).
- *      2b. Fall through to top-level catch-all entries
- *          (agent_file directly under `.flywheel/agents/<file>.md`, no dept subdir).
- *   3. Shipped-generic fallback: synthesize an AgentConfig pointing to
- *      `agents/generic-executor.md` at the Flywheel repo root.
+ *   2. Label match in `dispatch({ issueLabels, owningDept })`, using registry-owned
+ *      department membership before registry-owned top-level catch-all entries.
+ *   3. Shipped-generic fallback: use the bundled registry's resolved `general` node.
  *      If a `default_agent` is configured AND its name exists in the agents map,
  *      that wins over the shipped-generic synthesized fallback.
  */
-
-/** v1.27.2: discriminates whether agent_file resolves against project cwd or Flywheel repo root. */
-export type AgentFileRoot = "project" | "flywheel";
 
 /** v1.27.2: how the dispatcher arrived at this result. */
 export type AgentMatchMethod =
@@ -32,9 +25,7 @@ export interface AgentDispatchResult {
 	agentName: string;
 	agentConfig: AgentConfig;
 	matchMethod: AgentMatchMethod;
-	/** Project agent files relative to cwd; shipped generic relative to Flywheel repo. */
-	agentFileRoot: AgentFileRoot;
-	/** v1.27.2: resolved department (auto-derived from agent_file path if not explicit on config). */
+	/** Owning department selected for this dispatch, if any. */
 	department?: string;
 }
 
@@ -67,141 +58,34 @@ export class InvalidAgentNameError extends Error {
 	}
 }
 
-/** Thrown by `parsedDept` (and surfaced through ConfigLoader) when an agent_file path is malformed. */
-export class InvalidAgentFilePathError extends Error {
-	constructor(
-		public readonly agentFile: string,
-		message: string,
-	) {
-		super(`Invalid agent_file "${agentFile}": ${message}`);
-		this.name = "InvalidAgentFilePathError";
-	}
-}
-
-const AGENTS_PREFIX = ".flywheel/agents/";
-
-/**
- * FLY-137 v1.27.2: extract the dept (first path segment) from an agent_file under
- * `.flywheel/agents/`. Strict contract:
- *   - Returns `null` when file is directly under `.flywheel/agents/<file>.md`
- *     (depth 0 → top-level cross-dept catch-all).
- *   - Returns the dept name when file is at `.flywheel/agents/<dept>/<file>.md`
- *     (depth 1 → dept-owned).
- *   - Throws `InvalidAgentFilePathError` on:
- *       - paths not starting with `.flywheel/agents/` (e.g. legacy `.claude/agents/...`)
- *       - depth ≥ 2 (nested subdirs; v1.27.2 supports only flat dept dirs)
- */
-export function parsedDept(agentFile: string): string | null {
-	if (!agentFile.startsWith(AGENTS_PREFIX)) {
-		throw new InvalidAgentFilePathError(
-			agentFile,
-			`expected path to start with "${AGENTS_PREFIX}"`,
-		);
-	}
-	const rest = agentFile.slice(AGENTS_PREFIX.length);
-	if (rest.length === 0) {
-		throw new InvalidAgentFilePathError(
-			agentFile,
-			"agent_file cannot be the agents/ directory itself",
-		);
-	}
-	const segments = rest.split("/");
-	if (segments.length === 1) {
-		// e.g. ".flywheel/agents/general-executor.md" — top-level catch-all
-		return null;
-	}
-	if (segments.length === 2) {
-		// e.g. ".flywheel/agents/product/backend-executor.md" — dept-owned
-		const dept = segments[0]!;
-		if (dept.length === 0) {
-			throw new InvalidAgentFilePathError(
-				agentFile,
-				"empty dept segment (leading slash?)",
-			);
-		}
-		return dept;
-	}
-	throw new InvalidAgentFilePathError(
-		agentFile,
-		`nested subdirs not supported (depth ${segments.length - 1}); v1.27.2 allows only flat .flywheel/agents/<dept>/<file>.md`,
-	);
-}
-
-/**
- * FLY-901: the set of owning-departments an agent is registered under for
- * label-based dispatch (step-2a). Returns:
- *   - `null` for top-level (catch-all) agents — they never participate in step-2a
- *     (and ConfigLoader rejects a `departments` field on them).
- *   - the explicit `departments` array when declared (dual-register).
- *   - `[home]` (the single path-derived dept) when `departments` is omitted —
- *     byte-compatible with the pre-FLY-901 single-dept behavior.
- */
-export function registeredDepts(cfg: AgentConfig): string[] | null {
-	const home = parsedDept(cfg.agent_file);
-	if (home === null) return null;
-	return cfg.departments ?? [home];
-}
-
 /** Reserved dept-config key (clashes with shipped-generic synthesized result). */
 const RESERVED_GENERIC_AGENT_NAME = "generic";
 
 /**
  * Reserved QA agent name for explicit DAG or manual QA dispatch. A
- * project-declared `agents.qa` (e.g. Flywheel's
- * `.flywheel/agents/engineering/qa-executor.md`) takes precedence; otherwise
- * the shipped project-agnostic `agents/qa-executor.md` is used.
+ * project-declared `agents.qa` takes precedence; otherwise the bundled registry's
+ * resolved QA node is used.
  */
 const RESERVED_QA_AGENT_NAME = "qa";
 
-/**
- * Synthesize the shipped-generic AgentConfig. The `agent_file` is relative to the
- * Flywheel repo root; Blueprint resolves it via the `agentFileRoot: "flywheel"` discriminant.
- */
-function shippedGenericResult(): AgentDispatchResult {
-	return {
-		agentName: RESERVED_GENERIC_AGENT_NAME,
-		agentConfig: {
-			agent_file: "agents/generic-executor.md",
-			match: { labels: [] },
-		},
-		matchMethod: "shipped-generic",
-		agentFileRoot: "flywheel",
-		department: undefined,
-	};
-}
-
-/**
- * FLY-579: synthesize the shipped project-agnostic QA AgentConfig. `agent_file`
- * is relative to the Flywheel repo root (resolved via `agentFileRoot: "flywheel"`).
- */
-function shippedQaResult(): AgentDispatchResult {
-	return {
-		agentName: RESERVED_QA_AGENT_NAME,
-		agentConfig: {
-			agent_file: "agents/qa-executor.md",
-			match: { labels: [] },
-		},
-		matchMethod: "shipped-qa",
-		agentFileRoot: "flywheel",
-		department: undefined,
-	};
+export interface AgentFallbacks {
+	generic: AgentConfig;
+	qa: AgentConfig;
 }
 
 export class AgentDispatcher {
 	private readonly entries: Array<[string, AgentConfig]>;
 
 	constructor(
-		private readonly agents: Record<string, AgentConfig>,
+		private readonly agents: Readonly<Record<string, AgentConfig>>,
 		private readonly defaultAgent: string | undefined,
-		flywheelRepoRoot: string,
+		private readonly fallbacks: AgentFallbacks,
 	) {
-		if (!flywheelRepoRoot || flywheelRepoRoot.length === 0) {
-			throw new Error(
-				"AgentDispatcher: flywheelRepoRoot is required (caller should resolve via setupRunInfrastructure)",
-			);
+		for (const [name, fallback] of Object.entries(fallbacks)) {
+			if (!fallback.agentFile || !fallback.agentFileRoot) {
+				throw new Error(`AgentDispatcher: ${name} fallback must be resolved`);
+			}
 		}
-		// flywheelRepoRoot is validated at construction but consumed by Blueprint via the
-		// `agentFileRoot: "flywheel"` discriminant — no need to retain on the instance.
 		this.entries = Object.entries(agents);
 	}
 
@@ -219,14 +103,12 @@ export class AgentDispatcher {
 				// FLY-901: an agent participates in this dept's scope iff owningDept is a
 				// member of its registered dept SET (dual-register). Top-level agents
 				// (registeredDepts === null) never match here — they're handled in step-2b.
-				const depts = registeredDepts(cfg);
-				if (!depts || !depts.includes(owningDept)) continue;
+				if (!cfg.departments.includes(owningDept)) continue;
 				if (this.labelsMatch(cfg, issueLabels)) {
 					return {
 						agentName: name,
 						agentConfig: cfg,
 						matchMethod: "label",
-						agentFileRoot: "project",
 						department: owningDept,
 					};
 				}
@@ -235,13 +117,12 @@ export class AgentDispatcher {
 
 		// Step 2b — top-level catch-all (always evaluated)
 		for (const [name, cfg] of this.entries) {
-			if (parsedDept(cfg.agent_file) !== null) continue;
+			if (cfg.departments.length !== 0) continue;
 			if (this.labelsMatch(cfg, issueLabels)) {
 				return {
 					agentName: name,
 					agentConfig: cfg,
 					matchMethod: "label",
-					agentFileRoot: "project",
 					department: undefined,
 				};
 			}
@@ -255,14 +136,18 @@ export class AgentDispatcher {
 					agentName: this.defaultAgent,
 					agentConfig: cfg,
 					matchMethod: "default",
-					agentFileRoot: "project",
-					department: parsedDept(cfg.agent_file) ?? undefined,
+					department: cfg.department,
 				};
 			}
 		}
 
 		// Step 3b — shipped-generic absolute fallback
-		return shippedGenericResult();
+		return {
+			agentName: RESERVED_GENERIC_AGENT_NAME,
+			agentConfig: this.fallbacks.generic,
+			matchMethod: "shipped-generic",
+			department: undefined,
+		};
 	}
 
 	/**
@@ -273,13 +158,23 @@ export class AgentDispatcher {
 	 */
 	dispatchByName(name: string): AgentDispatchResult {
 		if (name === RESERVED_GENERIC_AGENT_NAME) {
-			return shippedGenericResult();
+			return {
+				agentName: name,
+				agentConfig: this.fallbacks.generic,
+				matchMethod: "shipped-generic",
+				department: undefined,
+			};
 		}
 		// FLY-579: reserved "qa" resolves to a project override when declared,
 		// else the shipped project-agnostic QA executor — so every project gets
 		// an independent QA runner without declaring one.
 		if (name === RESERVED_QA_AGENT_NAME && !this.agents[name]) {
-			return shippedQaResult();
+			return {
+				agentName: name,
+				agentConfig: this.fallbacks.qa,
+				matchMethod: "shipped-qa",
+				department: undefined,
+			};
 		}
 		const cfg = this.agents[name];
 		if (!cfg) {
@@ -289,8 +184,7 @@ export class AgentDispatcher {
 			agentName: name,
 			agentConfig: cfg,
 			matchMethod: "override",
-			agentFileRoot: "project",
-			department: parsedDept(cfg.agent_file) ?? undefined,
+			department: cfg.department,
 		};
 	}
 

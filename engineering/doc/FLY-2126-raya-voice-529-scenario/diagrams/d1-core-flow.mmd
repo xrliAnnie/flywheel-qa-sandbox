@@ -1,0 +1,11 @@
+flowchart LR
+  CMD["一条命令<br/>qa-raya-voice.sh --raya-root …"] --> LOCK["拿锁 + 前置校验<br/>(房间不许指向生产)"]
+  LOCK --> C0["C0 指令腿对照<br/>(英文-only 探针)"]
+  C0 -->|"对照通过"| SEM["语义场次逐场跑<br/>C1 退出 · C2 误退 · C3 静默<br/>C4 委托 · C5 身份"]
+  C0 -->|"对照失败"| DEAD["整场判 INSTRUMENT_FAIL<br/>(仪器问题,不是产品问题)<br/>语义场次一个不跑"]
+  SEM --> JUDGE["判据脚本离线读证据<br/>(纯代码判,不靠人眼)"]
+  JUDGE --> OUT["证据包 + verdict.json<br/>+ summary.md"]
+  DEAD --> OUT
+  style C0 fill:#fff3e0,stroke:#ff9500
+  style DEAD fill:#ffebee,stroke:#ff3b30
+  style OUT fill:#e8f5e9,stroke:#34c759

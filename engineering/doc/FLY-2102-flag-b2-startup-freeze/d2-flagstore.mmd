@@ -1,0 +1,24 @@
+flowchart TB
+  subgraph NOW["删除前:flag store 有一条 env 逃生旁路"]
+    direction TB
+    env0[".env 里写 FLYWHEEL_FLAG_STORE=0"] --> byp["bypass 模式:整个 SQLite flag store 停用<br/>Bridge 回头读 legacy .env 的值"]
+    byp --> fence["往数据库写一个 bypass_seen 标记<br/>(fence,栅栏标记)"]
+    fence --> rec["下次正常启动:recovery 重播<br/>用 .env 的值重新灌回 SQLite,再自清标记"]
+    def0["不设(生产实际状态)"] --> rdy["ready 模式:SQLite flag store 是唯一权威"]
+    rec --> rdy
+  end
+  subgraph AFTER["删除后:只剩一条路"]
+    direction TB
+    boot["Bridge 启动"] --> rdy2["SQLite flag store 常开<br/>唯一权威,无旁路、无 fence、无 recovery"]
+  end
+  NOW --> AFTER
+  style NOW fill:#fff8f7,stroke:#ff3b30,color:#1d1d1f
+  style AFTER fill:#f0faf2,stroke:#34c759,color:#1d1d1f
+  style env0 fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style byp fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style fence fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style rec fill:#ffebee,stroke:#ff3b30,color:#1d1d1f
+  style def0 fill:#e8f5e9,stroke:#34c759,color:#1d1d1f
+  style rdy fill:#e8f5e9,stroke:#34c759,color:#1d1d1f
+  style boot fill:#e8f5e9,stroke:#34c759,color:#1d1d1f
+  style rdy2 fill:#e8f5e9,stroke:#34c759,color:#1d1d1f

@@ -69,6 +69,7 @@ function makeDeps(
 	return {
 		projects: PROJECTS,
 		loadProjectConfig: () => cfg,
+		learningEnabled: () => true,
 		readState: (p: string, c: string): XiaohongshuState => ({
 			...emptyState(p, c, NOW),
 			...state,
@@ -117,7 +118,7 @@ describe("planLearningRuns", () => {
 		}
 	});
 
-	it("carries explicit FLY-286 post-hoc params (first_run_cap / auto_create / first_run_analyze_limit)", () => {
+	it("carries post-hoc params while fixing auto_create true", () => {
 		const cfg = cfgWith([
 			{
 				...ONE_COLLECTION[0],
@@ -130,7 +131,7 @@ describe("planLearningRuns", () => {
 		if (d.action === "spawn") {
 			expect(d.plan.firstRunCap).toBe(3);
 			expect(d.plan.firstRunAnalyzeLimit).toBe(50);
-			expect(d.plan.autoCreate).toBe(false);
+			expect(d.plan.autoCreate).toBe(true);
 			expect(d.plan.reviewChannel).toBe("web-local");
 		}
 	});
@@ -170,12 +171,42 @@ describe("planLearningRuns", () => {
 		if (d.action === "skip") expect(d.detail).toMatch(/corrupt state file/);
 	});
 
-	it("emits nothing when config is disabled / absent / has no collections", () => {
+	it("emits nothing when the store gate is off, config is absent, or collections are empty", () => {
 		expect(planLearningRuns(makeDeps(null))).toEqual([]);
 		expect(
-			planLearningRuns(makeDeps(cfgWith(ONE_COLLECTION, { enabled: false }))),
+			planLearningRuns({
+				...makeDeps(cfgWith(ONE_COLLECTION)),
+				learningEnabled: () => false,
+			}),
 		).toEqual([]);
 		expect(planLearningRuns(makeDeps(cfgWith([])))).toEqual([]);
+	});
+
+	it("isolates a store failure to one project and continues planning others", () => {
+		const projects = [
+			project("broken", [lead("sub-lead", ["Sub"])]),
+			project("sub", [lead("sub-lead", ["Sub"])]),
+		];
+		const warn = vi.fn();
+		const decisions = planLearningRuns({
+			...makeDeps(cfgWith(ONE_COLLECTION)),
+			projects,
+			learningEnabled: (name) => {
+				if (name === "broken") throw new Error("store unavailable");
+				return true;
+			},
+			warn,
+		});
+		expect(decisions).toHaveLength(2);
+		expect(decisions[0]).toMatchObject({
+			action: "skip",
+			project: "broken",
+			reason: "flag_error",
+		});
+		expect(decisions[1]).toMatchObject({ action: "spawn" });
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("store unavailable"),
+		);
 	});
 
 	it("processes multiple collections independently (one bad, one good)", () => {

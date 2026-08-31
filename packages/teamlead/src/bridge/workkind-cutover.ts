@@ -3,17 +3,17 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import express from "express";
-import { WORKFLOW_MENU_BINDINGS, WORKFLOW_MENU_SHAPES } from "flywheel-config";
 import { parse } from "yaml";
 import type {
 	StateStore,
 	WorkflowBindingCutoverBinding,
 	WorkflowBindingCutoverReceipt,
 } from "../StateStore.js";
+import { workflowMenuBindings } from "../workflow-menu.js";
 import { validateWorkflowManifest } from "../workflow-template.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { loopbackSelfOrigin } from "./loopback-origin.js";
-import { loadWorkKindConfigStrict } from "./pipeline-config-source.js";
+import type { WorkKindConfigResult } from "./pipeline-config-source.js";
 
 const ACTIVATION_ID = "FLY-1436";
 const PROJECT = "flywheel";
@@ -22,18 +22,18 @@ const SAFE_OPERATION_ID = /^fly-1436-(activate|restore)-[A-Za-z0-9._-]+$/;
 const SAFE_ACTIVATION_OPERATION_ID = /^fly-1436-activate-[A-Za-z0-9._-]+$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const GIT_SHA = /^[0-9a-f]{40}$/;
-const REQUIRED_MENU_ROLES = [
-	"design",
+const REQUIRED_MENU_NODES = [
+	"eng_design",
 	"implement",
 	"qa",
 	"pm",
-	"designer",
+	"product_design",
 	"proto",
-	"generic",
+	"general",
 ] as const;
 const REQUIRED_MENU_ADOPTION = {
 	"flywheel-eng-lead": ["code", "generic"],
-	"flywheel-product-lead": ["prd", "design", "prototype"],
+	"flywheel-product-lead": ["prd", "product_design_flow", "prototype"],
 } as const;
 
 export const FLY1436_BASELINE_BINDINGS = [
@@ -41,7 +41,10 @@ export const FLY1436_BASELINE_BINDINGS = [
 ] as const satisfies readonly WorkflowBindingCutoverBinding[];
 
 export const FLY1436_TARGET_BINDINGS =
-	WORKFLOW_MENU_BINDINGS satisfies readonly WorkflowBindingCutoverBinding[];
+	workflowMenuBindings() satisfies readonly WorkflowBindingCutoverBinding[];
+const WORKFLOW_MENU_SHAPES = FLY1436_TARGET_BINDINGS.map(
+	(binding) => binding.taskCategory,
+);
 
 export interface Fly1436ActivationEvidence {
 	templateDispatch: boolean;
@@ -84,6 +87,7 @@ export interface WorkKindCutoverRouteDeps {
 
 export interface Fly1436ActivationEvidenceOptions {
 	projectRoot: string;
+	pipelineEnrollment?: () => WorkKindConfigResult;
 	readFile?: (path: string) => string;
 	gitHead?: (projectRoot: string) => string;
 }
@@ -112,16 +116,37 @@ function parsedYamlRecord(source: string): Record<string, unknown> | undefined {
 }
 
 function menuAssetsReady(
-	rosterSource: string,
+	registrySource: string,
 	adoptionSource: string,
-	shapeSources: readonly string[],
 ): boolean {
-	const roster = parsedYamlRecord(rosterSource);
+	const registry = parsedYamlRecord(registrySource);
 	const adoption = parsedYamlRecord(adoptionSource);
-	if (!roster || !adoption) return false;
-	const rosterReady = REQUIRED_MENU_ROLES.every((role) => {
-		const value = roster[role];
-		return typeof value === "string" && value.trim() !== "";
+	if (!registry || !adoption) return false;
+	const nodes = registry.nodes;
+	const graphs = registry.graphs;
+	if (
+		!nodes ||
+		typeof nodes !== "object" ||
+		Array.isArray(nodes) ||
+		!graphs ||
+		typeof graphs !== "object" ||
+		Array.isArray(graphs)
+	) {
+		return false;
+	}
+	const nodeRecord = nodes as Record<string, unknown>;
+	const graphRecord = graphs as Record<string, unknown>;
+	const nodesReady = REQUIRED_MENU_NODES.every((node) => {
+		const value = nodeRecord[node];
+		if (!value || typeof value !== "object" || Array.isArray(value))
+			return false;
+		const entry = value as Record<string, unknown>;
+		return (
+			typeof entry.file === "string" &&
+			entry.file.trim() !== "" &&
+			typeof entry.label === "string" &&
+			entry.label.trim() !== ""
+		);
 	});
 	const adoptionReady = Object.entries(REQUIRED_MENU_ADOPTION).every(
 		([leadId, expected]) => {
@@ -131,11 +156,14 @@ function menuAssetsReady(
 			);
 		},
 	);
-	const shapesReady = WORKFLOW_MENU_SHAPES.every(
-		(shape, index) =>
-			parsedYamlRecord(shapeSources[index] ?? "")?.shape === shape,
-	);
-	return rosterReady && adoptionReady && shapesReady;
+	const graphsReady = WORKFLOW_MENU_SHAPES.every((graph) => {
+		const value = graphRecord[graph];
+		if (!value || typeof value !== "object" || Array.isArray(value))
+			return false;
+		const templateId = (value as Record<string, unknown>).templateId;
+		return typeof templateId === "string" && templateId.trim() !== "";
+	});
+	return nodesReady && adoptionReady && graphsReady;
 }
 
 function sha256(value: unknown): string {
@@ -336,8 +364,7 @@ function activationReceiptForRestore(
 		receipt.activationId !== ACTIVATION_ID ||
 		receipt.kind !== "activate" ||
 		receipt.project !== PROJECT ||
-		!sameBindings(receipt.before, FLY1436_BASELINE_BINDINGS) ||
-		!sameBindings(receipt.after, FLY1436_TARGET_BINDINGS)
+		!sameBindings(receipt.before, FLY1436_BASELINE_BINDINGS)
 	) {
 		return undefined;
 	}
@@ -571,8 +598,16 @@ function handleStage(
 	if (!sameBindings(snapshot.bindings, receipt.before)) {
 		causes.push("SNAPSHOT_BINDINGS_MISMATCH");
 	}
-	if (!sameBindings(exactBindings(deps.store), receipt.after)) {
+	// FLY-2121-history: a pre-cutover activation receipt can contain the retired
+	// `design` category. It remains auditable, but is never accepted as a restore
+	// target or translated through an alias.
+	if (!sameBindings(receipt.after, FLY1436_TARGET_BINDINGS)) {
 		causes.push("BINDING_TARGET_DRIFT");
+	}
+	if (!sameBindings(exactBindings(deps.store), receipt.after)) {
+		if (!causes.includes("BINDING_TARGET_DRIFT")) {
+			causes.push("BINDING_TARGET_DRIFT");
+		}
 	}
 	if (causes.length > 0) {
 		return {
@@ -691,8 +726,13 @@ function handleApply(
 		if (!sameBindings(canonical.after, receipt.before)) {
 			causes.push("RESTORE_TARGET_BINDINGS_MISMATCH");
 		}
-		if (!sameBindings(exactBindings(deps.store), receipt.after)) {
+		if (!sameBindings(receipt.after, FLY1436_TARGET_BINDINGS)) {
 			causes.push("BINDING_TARGET_DRIFT");
+		}
+		if (!sameBindings(exactBindings(deps.store), receipt.after)) {
+			if (!causes.includes("BINDING_TARGET_DRIFT")) {
+				causes.push("BINDING_TARGET_DRIFT");
+			}
 		}
 		for (const templateId of validTargetTemplates(deps.store, receipt.before)) {
 			causes.push(`RESTORE_TARGET_INVALID:${templateId}`);
@@ -776,19 +816,15 @@ export function readFly1436ActivationEvidence(
 ): Fly1436ActivationEvidence {
 	const read =
 		options.readFile ?? ((path: string) => readFileSync(path, "utf8"));
-	const project = {
-		projectName: PROJECT,
-		projectRoot: options.projectRoot,
-		leads: [],
+	const strict = options.pipelineEnrollment?.() ?? {
+		ok: true,
+		workKind: false,
+		dag: false,
 	};
-	const strict = loadWorkKindConfigStrict(project, read);
 	const workKind = strict.ok && strict.workKind;
 	const assetPaths = [
-		join(options.projectRoot, ".flywheel", "menus", "ic-roster.yaml"),
+		join(options.projectRoot, ".flywheel", "agents", "registry.yaml"),
 		join(options.projectRoot, ".flywheel", "menus", "adoption.yaml"),
-		...WORKFLOW_MENU_SHAPES.map((shape) =>
-			join(options.projectRoot, "menus", "shapes", `${shape}.yaml`),
-		),
 		join(
 			options.projectRoot,
 			"packages",
@@ -809,10 +845,8 @@ export function readFly1436ActivationEvidence(
 		);
 		contents = [];
 	}
-	const [roster = "", adoption = "", ...shapeAndGemini] = contents;
-	const gemini = shapeAndGemini.at(-1) ?? "";
-	const shapeContents = shapeAndGemini.slice(0, -1);
-	const menuReady = menuAssetsReady(roster, adoption, shapeContents);
+	const [registry = "", adoption = "", gemini = ""] = contents;
+	const menuReady = menuAssetsReady(registry, adoption);
 	const geminiReady =
 		gemini.includes("taskCategory") &&
 		WORKFLOW_MENU_SHAPES.every((shape) => gemini.includes(shape)) &&

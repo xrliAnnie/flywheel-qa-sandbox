@@ -14,6 +14,11 @@ import { resolveWorkflowDecisionContract } from "../workflow-run-snapshot.js";
 import { workflowApprovalGate } from "../workflow-template.js";
 import type { ConfirmTokenStore } from "./fleet-admin.js";
 import { resolveWorkflowHeadAuthority } from "./head-authority.js";
+import type { LeadEventEnvelope } from "./lead-runtime.js";
+import {
+	leadEventEnvelopeFromJournalRow,
+	REDRIVABLE_LEAD_EVENT_PRIORITY,
+} from "./legacy-lead-event-reconciler.js";
 import { isSameOrigin, loopbackSelfOrigin } from "./loopback-origin.js";
 import {
 	type MaterializedHeadAuthority,
@@ -53,6 +58,7 @@ export interface WorkflowDecisionRouterDeps {
 		probeRepoSlug: string;
 	}) => Promise<WorkflowPrProbeResult>;
 	now?: () => string;
+	nodeReuseEnabled?: () => boolean;
 	reQa?: {
 		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
 		respawn(
@@ -66,11 +72,44 @@ export interface WorkflowDecisionRouterDeps {
 	gateCarrierRebind?: {
 		tokens: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
 	};
-	resolveAlertIdentity?: (
+	resolveAlertIdentity: (
 		projectName: string,
 		issueId: string,
 		runId: string,
 	) => WorkflowEngineAlertIdentity;
+	enqueueLeadEvent: (envelope: LeadEventEnvelope) => void;
+}
+
+function enqueueCommittedWorkflowClaim(
+	deps: WorkflowDecisionRouterDeps,
+	result: { claimId: number; leadEventSeq: number },
+): void {
+	const row = deps.store.getLeadEventBySeq(result.leadEventSeq);
+	if (!row) {
+		console.warn("[workflow-decision] committed claim event row missing", {
+			claimId: result.claimId,
+			leadEventSeq: result.leadEventSeq,
+		});
+		return;
+	}
+	try {
+		deps.enqueueLeadEvent(
+			leadEventEnvelopeFromJournalRow(row, REDRIVABLE_LEAD_EVENT_PRIORITY),
+		);
+	} catch (error) {
+		console.warn("[workflow-decision] committed claim event enqueue failed", {
+			claimId: result.claimId,
+			leadEventSeq: result.leadEventSeq,
+			leadId: row.lead_id,
+			error: error instanceof Error ? error.message : String(error),
+		});
+	}
+}
+
+function decisionRejectionStatus(reason: string): number {
+	if (reason === "credential_not_found") return 401;
+	if (reason === "alert_identity_invalid") return 503;
+	return 409;
 }
 
 type SubmissionCredential = NonNullable<
@@ -694,6 +733,7 @@ export function createWorkflowDecisionRouter(
 				return;
 			}
 			const result = deps.store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
 				credential,
 				clientRequestId,
 				predicate: engineCanonical.predicate,
@@ -705,7 +745,7 @@ export function createWorkflowDecisionRouter(
 				claimExpiresAt: credentialRow.expires_at,
 				evidence: summary ? { summary } : undefined,
 				...(gateEntryBinding ? { gateEntryBinding } : {}),
-				alertIdentity: deps.resolveAlertIdentity?.(
+				alertIdentity: deps.resolveAlertIdentity(
 					engineCanonical.reporting.project_name,
 					engineCanonical.reporting.issue_id,
 					credentialRow.run_id,
@@ -713,11 +753,10 @@ export function createWorkflowDecisionRouter(
 				now: deps.now?.(),
 			});
 			if (!result.ok) {
-				res
-					.status(result.reason === "credential_not_found" ? 401 : 409)
-					.json(result);
+				res.status(decisionRejectionStatus(result.reason)).json(result);
 				return;
 			}
+			enqueueCommittedWorkflowClaim(deps, result);
 			deps.store.insertEvent({
 				event_id: `workflow-decision:${credentialRow.id}:${clientRequestId}`,
 				execution_id: engineCanonical.reporting.execution_id,
@@ -799,6 +838,7 @@ export function createWorkflowDecisionRouter(
 			return;
 		}
 		const result = deps.store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
 			credential,
 			clientRequestId,
 			predicate: status === "pass" ? "qa_passed" : "qa_failed",
@@ -816,7 +856,7 @@ export function createWorkflowDecisionRouter(
 			// differently even when the client payload is exact.
 			claimExpiresAt: credentialRow.expires_at,
 			evidence: summary ? { summary } : undefined,
-			alertIdentity: deps.resolveAlertIdentity?.(
+			alertIdentity: deps.resolveAlertIdentity(
 				reporting.project_name,
 				reporting.issue_id,
 				credentialRow.run_id,
@@ -824,11 +864,10 @@ export function createWorkflowDecisionRouter(
 			now,
 		});
 		if (!result.ok) {
-			res
-				.status(result.reason === "credential_not_found" ? 401 : 409)
-				.json(result);
+			res.status(decisionRejectionStatus(result.reason)).json(result);
 			return;
 		}
+		enqueueCommittedWorkflowClaim(deps, result);
 
 		const eventId = `workflow-decision:${credentialRow.id}:${clientRequestId}`;
 		deps.store.insertEvent({
@@ -1101,6 +1140,7 @@ export function createWorkflowDecisionRouter(
 			return;
 		}
 		const result = deps.store.commitWorkflowLoopReentryRequest({
+			nodeReuseEnabled: deps.nodeReuseEnabled?.() ?? false,
 			canonical,
 			canonicalDigest,
 			tokenIdentity: canonicalSubmissionDigest(confirmToken),

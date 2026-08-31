@@ -33,17 +33,21 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
+	readFileSync,
 	realpathSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { homedir, tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = join(HERE, "..");
 const RUNNER = join(REPO, "packages/claude-runner/dist/index.js");
-const EVID = join(REPO, "engineering/doc/FLY-1239-tui-rollout-race/qa");
+const EVID = process.env.FLYWHEEL_QA_EVID_DIR
+	? resolve(process.env.FLYWHEEL_QA_EVID_DIR)
+	: join(REPO, "engineering/doc/FLY-1239-tui-rollout-race/qa");
 
 const {
 	CodexTmuxAdapter,
@@ -53,9 +57,11 @@ const {
 	TUI_OPEN_MAX_ATTEMPTS,
 } = await import(RUNNER);
 
-const TMUX_SESSION = "qa-fly1239";
-const WINDOW = "FLY-1239"; // = sanitizeTmuxName(ctx.label)
-const EXEC_ID = `qa-fly1239-${process.pid}`;
+const QA_ISSUE = process.env.FLYWHEEL_QA_ISSUE ?? "FLY-1239";
+const QA_SLUG = QA_ISSUE.toLowerCase().replace(/[^a-z0-9]+/g, "");
+const TMUX_SESSION = `qa-${QA_SLUG}`;
+const WINDOW = QA_ISSUE; // = sanitizeTmuxName(ctx.label)
+const EXEC_ID = `qa-${QA_SLUG}-${process.pid}`;
 
 const log = (m) => console.log(`[qa-1239] ${m}`);
 const sh = (c, a, cwd) => execFileSync(c, a, { cwd, encoding: "utf8" }).trim();
@@ -97,17 +103,18 @@ const adapter = new CodexTmuxAdapter(TMUX_SESSION);
 // task size — a cheap task still exercises the exact open-window timing.
 const prompt = `You are in the git worktree at ${sandboxCwd}. Do EXACTLY this, unattended:
 create ok.txt whose only content is the word: ready
-then run: git add ok.txt && git commit -m "qa 1239"
+then run: git add ok.txt && git commit -m "qa ${QA_ISSUE}"
 The objective is COMPLETE once ok.txt is committed. Use real shell commands; do not ask questions.`;
 
 const ctx = {
 	executionId: EXEC_ID,
-	issueId: "FLY-1239",
+	issueId: QA_ISSUE,
 	prompt,
 	cwd: sandboxCwd,
 	leadId: "flywheel-eng-lead",
 	projectName: "flywheel",
 	label: WINDOW,
+	pretrustWorkspace: true,
 	timeoutMs: 8 * 60_000,
 };
 
@@ -116,6 +123,7 @@ let richestPane = "";
 let aliveSamples = 0;
 let maxSameNameWindows = 0;
 let sawNoRollout = false;
+let richestPaneCommand = "";
 const countWindows = () => {
 	const out =
 		tmux("list-windows", "-t", `=${TMUX_SESSION}`, "-F", "#{window_name}")
@@ -133,6 +141,24 @@ const sampler = setInterval(() => {
 	const pane =
 		tmux("capture-pane", "-p", "-t", `=${TMUX_SESSION}:=${WINDOW}`).stdout ??
 		"";
+	const panePid = (
+		tmux(
+			"display-message",
+			"-p",
+			"-t",
+			`=${TMUX_SESSION}:=${WINDOW}`,
+			"#{pane_pid}",
+		).stdout ?? ""
+	).trim();
+	if (panePid) {
+		const paneCommand = (
+			spawnSync("ps", ["-o", "command=", "-p", panePid], {
+				encoding: "utf8",
+			}).stdout ?? ""
+		).trim();
+		if (paneCommand.length > richestPaneCommand.length)
+			richestPaneCommand = paneCommand;
+	}
 	if (/no rollout found/i.test(pane)) sawNoRollout = true;
 	if (pane.trim().length > richestPane.trim().length) richestPane = pane;
 }, 2000);
@@ -149,6 +175,7 @@ try {
 clearInterval(sampler);
 const elapsed = Math.round((Date.now() - t0) / 1000);
 writeFileSync(join(EVID, "tui-pane-capture.txt"), richestPane);
+writeFileSync(join(EVID, "tui-pane-command.txt"), `${richestPaneCommand}\n`);
 
 // ── A3: the founder TUI ended up ALIVE and rendering the thread (race recovered) ──
 // The bug's terminal state is a dead pane / a `no rollout found` corpse. The fix's
@@ -167,6 +194,12 @@ record(
 	tuiRecovered
 		? `founder TUI reached a LIVE, rendering state after the rollout race (${aliveSamples} live samples, ${richestPane.trim().split("\n").length} lines)`
 		: `founder TUI never rendered a live pane (aliveSamples=${aliveSamples}, ${richestPane.trim().length} bytes) — see qa/tui-pane-capture.txt`,
+);
+record(
+	"A3-native-tui-command",
+	/codex(?:\s|$).*resume.*--remote/.test(richestPaneCommand) &&
+		!/tail\s+-F/.test(richestPaneCommand),
+	`pane command=${JSON.stringify(richestPaneCommand)}`,
 );
 
 // ── NP: no pile-up — SAMPLED evidence, never more than ONE FLY-1239 window ──
@@ -206,14 +239,99 @@ try {
 }
 record(
 	"H4-worktree-commit",
-	/qa 1239/.test(gitLog),
+	gitLog.includes(`qa ${QA_ISSUE}`),
 	`worktree commits: ${JSON.stringify(gitLog.split("\n"))}`,
 );
 
-// ── teardown ──
-killRunnerTuiWindow({ tmuxSession: TMUX_SESSION, windowName: WINDOW }, {});
-tmux("kill-session", "-t", TMUX_SESSION);
-await new Promise((r) => setTimeout(r, 2000));
+const runnerHome = join(
+	process.env.FLYWHEEL_CODEX_HOMES_ROOT ??
+		join(homedir(), ".flywheel", "codex-homes"),
+	EXEC_ID,
+);
+const generatedConfig = existsSync(join(runnerHome, "config.toml"))
+	? readFileSync(join(runnerHome, "config.toml"), "utf8")
+	: "";
+record(
+	"P-managed-runner-policy",
+	/sandbox_mode\s*=\s*"workspace-write"/.test(generatedConfig) &&
+		/approval_policy\s*=\s*"never"/.test(generatedConfig),
+	`generated config has workspace-write=${/sandbox_mode\s*=\s*"workspace-write"/.test(generatedConfig)} never=${/approval_policy\s*=\s*"never"/.test(generatedConfig)}`,
+);
+
+const findRollouts = (directory) => {
+	if (!existsSync(directory)) return [];
+	return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+		const path = join(directory, entry.name);
+		return entry.isDirectory()
+			? findRollouts(path)
+			: entry.name.startsWith("rollout-") && entry.name.endsWith(".jsonl")
+				? [path]
+				: [];
+	});
+};
+const readRolloutMeta = (path) => {
+	for (const line of readFileSync(path, "utf8").split("\n")) {
+		if (!line.includes('"type":"session_meta"')) continue;
+		const parsed = JSON.parse(line);
+		return parsed.payload;
+	}
+	return undefined;
+};
+const classifyRollouts = (metadata, rootId) => {
+	const parentId = (meta) =>
+		meta.parent_thread_id ??
+		meta.forked_from_id ??
+		meta.source?.subagent?.thread_spawn?.parent_thread_id;
+	const isSubagent = (meta) =>
+		meta.thread_source === "subagent" || Boolean(meta.source?.subagent);
+	return {
+		roots: metadata.filter(
+			(meta) => (meta.id ?? meta.session_id) === rootId && !isSubagent(meta),
+		),
+		allowedSubagents: metadata.filter(
+			(meta) => isSubagent(meta) && parentId(meta) === rootId,
+		),
+		unexpected: metadata.filter(
+			(meta) =>
+				!((meta.id ?? meta.session_id) === rootId && !isSubagent(meta)) &&
+				!(isSubagent(meta) && parentId(meta) === rootId),
+		),
+	};
+};
+const classifierFixture = classifyRollouts(
+	[
+		{ id: "root" },
+		{ id: "sub", thread_source: "subagent", parent_thread_id: "root" },
+		{ id: "fork", forked_from_id: "root" },
+	],
+	"root",
+);
+record(
+	"NF-classifier-self-check",
+	classifierFixture.roots.length === 1 &&
+		classifierFixture.allowedSubagents.length === 1 &&
+		classifierFixture.unexpected.map((meta) => meta.id).join(",") === "fork",
+	"classifier accepts the intended root + native subagent and rejects a synthetic non-subagent fork",
+);
+const rolloutMetadata = findRollouts(join(runnerHome, "sessions"))
+	.map(readRolloutMeta)
+	.filter(Boolean);
+const rolloutClassification = classifyRollouts(
+	rolloutMetadata,
+	result?.sessionId,
+);
+writeFileSync(
+	join(EVID, "rollout-classification.json"),
+	JSON.stringify(rolloutClassification, null, 2),
+);
+record(
+	"NF-no-unexpected-root-or-fork",
+	rolloutClassification.roots.length === 1 &&
+		rolloutClassification.unexpected.length === 0,
+	`root=${result?.sessionId}; roots=${rolloutClassification.roots.length}; allowed native subagents=${rolloutClassification.allowedSubagents.length}; unexpected=${rolloutClassification.unexpected.map((meta) => meta.id ?? meta.session_id).join(",") || "none"}`,
+);
+
+// ── teardown proof BEFORE fallback cleanup ──
 
 const classifyHolders = () => {
 	const pids = (
@@ -244,11 +362,19 @@ for (
 	holders = classifyHolders();
 }
 const socketGone = !existsSync(socketPath);
+const terminalWindowCount = countWindows();
 record(
 	"T-clean-teardown",
-	socketGone && holders.daemons.length === 0 && holders.tuis.length === 0,
-	`socket removed=${socketGone}; orphan daemons=${JSON.stringify(holders.daemons)}; lingering TUIs=${JSON.stringify(holders.tuis)}`,
+	socketGone &&
+		terminalWindowCount === 0 &&
+		holders.daemons.length === 0 &&
+		holders.tuis.length === 0,
+	`before fallback cleanup: window count=${terminalWindowCount}; socket removed=${socketGone}; orphan daemons=${JSON.stringify(holders.daemons)}; lingering TUIs=${JSON.stringify(holders.tuis)}`,
 );
+
+// Fallback cleanup only after the teardown assertion above has sampled reality.
+killRunnerTuiWindow({ tmuxSession: TMUX_SESSION, windowName: WINDOW }, {});
+tmux("kill-session", "-t", TMUX_SESSION);
 for (const p of [...holders.daemons, ...holders.tuis]) {
 	try {
 		process.kill(Number(p), "SIGKILL");
@@ -256,7 +382,7 @@ for (const p of [...holders.daemons, ...holders.tuis]) {
 }
 
 const summary = {
-	issue: "FLY-1239",
+	issue: QA_ISSUE,
 	when: new Date().toISOString(),
 	elapsedSeconds: elapsed,
 	maxSameNameWindows,

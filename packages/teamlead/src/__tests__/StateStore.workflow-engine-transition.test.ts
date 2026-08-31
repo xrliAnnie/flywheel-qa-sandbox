@@ -105,7 +105,7 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 		startReservation: {
 			idempotencyKey: "start-1",
 			selectionDigest: "selection-1",
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			createdAt: "2026-08-14T00:00:00.000Z",
@@ -113,7 +113,7 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-1",
-		nodeId: "design",
+		nodeId: "eng_design",
 		attempt: 1,
 		state: "running",
 		executionId: "design-1",
@@ -123,7 +123,7 @@ async function compiledCodeEngineRun(): Promise<StateStore> {
 		issue_id: "FLY-1765",
 		project_name: "flywheel",
 		status: "running",
-		workflow_node_id: "design",
+		workflow_node_id: "eng_design",
 	});
 	return store;
 }
@@ -149,7 +149,7 @@ async function compiledGenericEngineRun(): Promise<StateStore> {
 		startReservation: {
 			idempotencyKey: "start-generic",
 			selectionDigest: "selection-generic",
-			nodeId: "execute",
+			nodeId: "general",
 			attempt: 1,
 			executionId: "generic-1",
 			createdAt: "2026-08-24T00:00:00.000Z",
@@ -157,14 +157,14 @@ async function compiledGenericEngineRun(): Promise<StateStore> {
 	});
 	store.upsertWorkflowRunNode({
 		runId: "run-1",
-		nodeId: "execute",
+		nodeId: "general",
 		attempt: 1,
 		state: "running",
 		executionId: "generic-1",
 	});
 	const admission = store.admitGeneralizedWorkflowExecution({
 		runId: "run-1",
-		nodeId: "execute",
+		nodeId: "general",
 		executionId: "generic-1",
 		attempt: 1,
 		expiresAt: "2026-08-24T02:00:00.000Z",
@@ -179,14 +179,14 @@ async function compiledGenericEngineRun(): Promise<StateStore> {
 		issue_id: "FLY-2027",
 		project_name: "flywheel",
 		status: "running",
-		workflow_node_id: "execute",
+		workflow_node_id: "general",
 	});
 	return store;
 }
 
 function completeCompiledCodeImplement(store: StateStore) {
 	advance(store, {
-		nodeId: "design",
+		nodeId: "eng_design",
 		attempt: 1,
 		executionId: "design-1",
 		outcome: "design_done",
@@ -213,6 +213,7 @@ function completeCompiledCodeImplement(store: StateStore) {
 	});
 	const beforeCompletion = store.getSession("implement-1");
 	const completion = store.commitEnrolledCompletion({
+		nodeReuseEnabled: false,
 		executionId: "implement-1",
 		route: "needs_review",
 		sourceEventId: "complete-implement-1",
@@ -241,6 +242,7 @@ function prepareCompiledReworkReplacement(store: StateStore) {
 		executionId: "qa-1",
 	});
 	const failed = store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		nodeId: "qa",
 		attempt: 1,
@@ -294,6 +296,7 @@ function advance(
 	},
 ) {
 	return store.commitWorkflowTransitionTx({
+		nodeReuseEnabled: false,
 		runId: "run-1",
 		...input,
 		now: "2026-07-16T01:00:00.000Z",
@@ -340,6 +343,7 @@ async function openRunnerShipGate(
 	});
 	expect(
 		store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "implement-1",
 			route: "needs_review",
 			sourceEventId: "complete-implement-for-helper",
@@ -401,6 +405,7 @@ async function openRunnerShipGate(
 		});
 	}
 	const submission = store.submitWorkflowDecisionByCredential({
+		nodeReuseEnabled: false,
 		credential: qaAdmission.submissionCredential,
 		clientRequestId: "qa-pass-helper",
 		predicate: "qa_passed",
@@ -740,6 +745,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		const store = await engineRun();
 		const head = "b".repeat(40);
 		const transition = store.commitWorkflowTransitionTx({
+			nodeReuseEnabled: false,
 			runId: "run-1",
 			nodeId: "design",
 			attempt: 1,
@@ -879,6 +885,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(admitted).toMatchObject({ ok: true, idempotentReplay: false });
 
 		const completed = store.commitEnrolledCompletion({
+			nodeReuseEnabled: false,
 			executionId: "design-1",
 			route: "phase_design_complete",
 			sourceEventId: "complete-design-1",
@@ -918,6 +925,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "design-1",
 				route: "phase_design_complete",
 				sourceEventId: "complete-design-retry",
@@ -1014,6 +1022,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "complete-implement-1",
@@ -1106,7 +1115,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			subjectKind: "git_head",
 		});
 		expect(
-			snapshot.resolved.nodes.find((node) => node.id === "execute"),
+			snapshot.resolved.nodes.find((node) => node.id === "general"),
 		).toMatchObject({
 			type: "generic",
 			capabilities: { creates_pr: true, keepalive_park: true },
@@ -1114,6 +1123,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "generic-1",
 				route: "needs_review",
 				sourceEventId: "complete-generic-1",
@@ -1140,7 +1150,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			event: "park_opened",
 			reason: "rework_reachable_wait",
 			run_id: "run-1",
-			node_id: "execute",
+			node_id: "general",
 		});
 		store.close();
 	});
@@ -1159,6 +1169,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "generic-1",
 				route: "no_code",
 				sourceEventId: "complete-generic-no-code",
@@ -1205,6 +1216,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			workflow_node_id: "qa",
 		});
 		const passed = store.submitWorkflowDecisionByCredential({
+			nodeReuseEnabled: false,
 			credential: qaAdmission.submissionCredential,
 			clientRequestId: "qa-pass-land-authority",
 			predicate: "qa_passed",
@@ -1224,6 +1236,7 @@ describe("engine-owned snapshot transition transaction", () => {
 				worktreeBindingGeneration: "generation-1",
 				expectedProducerMirrorHead: "a".repeat(40),
 			},
+			alertIdentity: carrierAlertIdentity,
 			now: "2026-08-14T01:18:00.000Z",
 		});
 		expect(passed).toMatchObject({ ok: true });
@@ -1511,7 +1524,7 @@ describe("engine-owned snapshot transition transaction", () => {
 						event.event_uid === replacementAttachments.at(-1)?.transition_uid,
 				),
 		).toMatchObject({ kind: "rework_replacement" });
-		expect(store.getSession("implement-1")?.status).toBe("completed");
+		expect(store.getSession("implement-1")?.status).toBe("failed");
 		expect(
 			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
 		).toBeUndefined();
@@ -1529,6 +1542,31 @@ describe("engine-owned snapshot transition transaction", () => {
 		).toMatchObject({
 			ok: true,
 			idempotentReplay: true,
+		});
+		store.close();
+	});
+
+	it("terminalizes a proven-dead nonterminal actor before exposing its replacement", async () => {
+		const store = await compiledCodeEngineRun();
+		completeCompiledCodeImplement(store);
+		const { replacement } = prepareCompiledReworkReplacement(store);
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1765",
+			project_name: "flywheel",
+			status: "running",
+			workflow_node_id: "implement",
+		});
+		const beforeRevision = store.getLifecycleRevision("implement-1");
+
+		expect(
+			store.materializeWorkflowReworkReplacement(replacement),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+
+		expect(store.getSession("implement-1")).toMatchObject({
+			status: "failed",
+			lifecycle_revision: beforeRevision + 1,
+			terminal_at: expect.any(String),
 		});
 		store.close();
 	});
@@ -1553,7 +1591,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(
 			store.materializeWorkflowReworkReplacement(replacement),
 		).toMatchObject({ ok: true, idempotentReplay: false });
-		expect(store.getSession("implement-1")?.status).toBe("ship_parked");
+		expect(store.getSession("implement-1")?.status).toBe("failed");
 		expect(
 			store.getCurrentWorkflowEngineParkEvidence("implement-1"),
 		).toBeUndefined();
@@ -1660,6 +1698,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "complete-implement-for-gate",
@@ -1713,6 +1752,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "qa-pass-opens-gate",
 				predicate: "qa_passed",
@@ -1732,6 +1772,7 @@ describe("engine-owned snapshot transition transaction", () => {
 					worktreeBindingGeneration: "generation-1",
 					expectedProducerMirrorHead: "a".repeat(40),
 				},
+				alertIdentity: carrierAlertIdentity,
 				now: "2026-07-16T01:15:00.000Z",
 			}),
 		).toMatchObject({ ok: true });
@@ -2241,6 +2282,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-2",
 				route: "needs_review",
 				sourceEventId: "complete-implement-new-head",
@@ -2302,6 +2344,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		expect(
 			store.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "complete-implement-1",
@@ -2322,7 +2365,7 @@ describe("engine-owned snapshot transition transaction", () => {
 
 		const revived = await compiledCodeEngineRun();
 		advance(revived, {
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			outcome: "design_done",
@@ -2349,6 +2392,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			revived.commitEnrolledCompletion({
+				nodeReuseEnabled: false,
 				executionId: "implement-1",
 				route: "needs_review",
 				sourceEventId: "revived-completion",
@@ -2412,6 +2456,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			claimStore.submitWorkflowDecisionByCredential({
+				nodeReuseEnabled: false,
 				credential: qaAdmission.submissionCredential,
 				clientRequestId: "revived-qa-claim",
 				predicate: "qa_failed",
@@ -4472,7 +4517,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			);
 		};
 		advance(store, {
-			nodeId: "design",
+			nodeId: "eng_design",
 			attempt: 1,
 			executionId: "design-1",
 			outcome: "design_done",
@@ -4778,6 +4823,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		if (!canonical) throw new Error("loop canonical missing");
 		const canonicalDigest = canonicalSubmissionDigest(canonical);
 		const first = store.commitWorkflowLoopReentryRequest({
+			nodeReuseEnabled: false,
 			canonical,
 			canonicalDigest,
 			tokenIdentity: "b".repeat(64),
@@ -4801,6 +4847,7 @@ describe("engine-owned snapshot transition transaction", () => {
 		});
 		expect(
 			store.commitWorkflowLoopReentryRequest({
+				nodeReuseEnabled: false,
 				canonical,
 				canonicalDigest,
 				tokenIdentity: "c".repeat(64),
@@ -4870,12 +4917,17 @@ describe("engine-owned snapshot transition transaction", () => {
 			subjectProducerExecutionId: "implement-1",
 			subjectProducerVendor: "codex",
 			claimExpiresAt: "2026-07-16T02:00:00.000Z",
+			alertIdentity: carrierAlertIdentity,
 			now: "2026-07-16T01:05:00.000Z",
 		};
 		expect(store.submitWorkflowDecisionByCredential(submission)).toMatchObject({
 			ok: true,
 			idempotentReplay: false,
 		});
+		// FLY-2152: the verdict transaction may advance engine ledgers, but it
+		// does not synchronously terminate the reporting shell. The prompt's
+		// following `ask --report` half therefore remains executable.
+		expect(store.getSession("qa-1")?.status).toBe("running");
 		expect(store.getWorkflowRunNode("run-1", "implement", 2)).toMatchObject({
 			state: "pending",
 			execution_id: "implement-1",

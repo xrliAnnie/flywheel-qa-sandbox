@@ -3,7 +3,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { describe, expect, it } from "vitest";
-import { FLAG_EXEMPTIONS } from "../feature-flags/exemptions.js";
+import {
+	FLAG_EXEMPTIONS,
+	LEGACY_FLAG_EXEMPTION_BASELINE,
+} from "../feature-flags/exemptions.js";
 import { FEATURE_FLAGS } from "../feature-flags/registry.js";
 import {
 	LEGACY_UNMANAGED_BASELINE,
@@ -20,6 +23,10 @@ import {
 	type ScanSource,
 	scanSources,
 } from "./drift-scan/index.js";
+import {
+	auditFly1981LegacyLedger,
+	FLY1981_LEGACY_SNAPSHOT,
+} from "./fly1981-legacy-snapshot.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "..", "..", "..", "..");
@@ -178,6 +185,11 @@ function retiredSpecTokenOccurrences(input: readonly ScanSource[]): string[] {
 	const retired = new Set<string>(DELETED_SPECS);
 	const hits = new Set<string>();
 	for (const source of input) {
+		// Most production files contain none of the retired identities. Avoid a
+		// full TypeScript parse (or line-by-line shell walk) unless the cheap exact
+		// token prefilter finds a possible hit; the AST pass below remains the
+		// authority that distinguishes code from comments.
+		if (exactRetiredTokens(source.text).length === 0) continue;
 		if (source.file.endsWith(".sh")) {
 			for (const line of source.text.split(/\r?\n/)) {
 				for (const token of exactRetiredTokens(shellCode(line))) {
@@ -278,13 +290,27 @@ describe("FLY-1981 final governance ledgers", () => {
 	}, 15_000);
 
 	it("keeps the post-verdict snapshot historical while allowing managed growth and legacy shrink", () => {
-		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. This equation is
-		// historical evidence, not a permanent assertion on FEATURE_FLAGS.length.
-		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(31);
+		// FLY-1981 landed at 31 legacy + 4 then-managed = 35. The 31-row
+		// source-identity snapshot is historical evidence; the live baseline may
+		// only shrink into managed, retired, or explicitly exempt accounting.
+		expect(FLY1981_LEGACY_SNAPSHOT).toHaveLength(31);
 		expect(FLY1981_MANAGED_SNAPSHOT).toHaveLength(4);
 		expect(
-			LEGACY_UNMANAGED_BASELINE.length + FLY1981_MANAGED_SNAPSHOT.length,
+			FLY1981_LEGACY_SNAPSHOT.length + FLY1981_MANAGED_SNAPSHOT.length,
 		).toBe(35);
+		expect(
+			auditFly1981LegacyLedger({
+				baseline: LEGACY_UNMANAGED_BASELINE,
+				flags: FEATURE_FLAGS,
+				storeManagedFlags: STORE_MANAGED_FLAGS,
+				retiredFlags: RETIRED_FLAGS,
+				retiredConfigPaths: RETIRED_CONFIG_PATHS,
+				exemptions: FLAG_EXEMPTIONS,
+			}),
+		).toEqual([]);
+		// FLY-2101/2102/2103/2105 closed all 31 historical unmanaged controls.
+		expect(LEGACY_UNMANAGED_BASELINE).toHaveLength(0);
+		expect(STORE_MANAGED_FLAGS.size).toBe(FEATURE_FLAGS.length);
 		const currentNames = new Set(FEATURE_FLAGS.map((spec) => spec.name));
 		const outsidePartition = FEATURE_FLAGS.filter(
 			(spec) =>
@@ -295,6 +321,35 @@ describe("FLY-1981 final governance ledgers", () => {
 		expect(
 			[...STORE_MANAGED_FLAGS].filter((name) => !currentNames.has(name)),
 		).toEqual([]);
+	});
+
+	it("rejects a historical entry with no source identity at runtime", () => {
+		const mutatedArgs = {
+			baseline: LEGACY_UNMANAGED_BASELINE,
+			flags: FEATURE_FLAGS,
+			storeManagedFlags: STORE_MANAGED_FLAGS,
+			retiredFlags: RETIRED_FLAGS,
+			retiredConfigPaths: RETIRED_CONFIG_PATHS,
+			exemptions: FLAG_EXEMPTIONS,
+			snapshot: [
+				...FLY1981_LEGACY_SNAPSHOT,
+				{ name: "missing_source_identity_mutation", source: "env" },
+			],
+		} as Parameters<typeof auditFly1981LegacyLedger>[0];
+		expect(auditFly1981LegacyLedger(mutatedArgs)).toContain(
+			"missing_source_identity_mutation: historical source identity is missing",
+		);
+	});
+
+	it("closes the exemption baseline and bounds every remaining seam", () => {
+		expect(LEGACY_FLAG_EXEMPTION_BASELINE).toEqual([]);
+		expect(Object.isFrozen(LEGACY_FLAG_EXEMPTION_BASELINE)).toBe(true);
+		expect(FLAG_EXEMPTIONS).toHaveLength(29);
+		for (const exemption of FLAG_EXEMPTIONS) {
+			expect(exemption.persistentEnvAllowed, exemption.name).toBe(false);
+			expect(exemption.reason, exemption.name).toMatch(/\S/);
+			expect(exemption.retireWhen, exemption.name).toMatch(/\S/);
+		}
 	});
 
 	it("finds no retired lowercase identity in production code tokens", () => {
@@ -497,14 +552,32 @@ describe("FLY-1981 final governance ledgers", () => {
 		if (!existsSync(RUNBOOK)) return;
 		const runbook = readFileSync(RUNBOOK, "utf8");
 		for (const contract of [
-			"registry → STORE_MANAGED_FLAGS + codec → seed row → named store wrapper → management route test → guard green",
-			"豁免名单只许缩小",
+			"新 flag = registry 条目 + store codec + scope 声明，别无他路",
+			"PROJECT_STORE_MANAGED_FLAGS",
+			"process.env.FLYWHEEL_*",
+			"config.yaml` 也不承载 flag key",
+			"`*` global row",
+			"project row",
+			"stage/apply",
+			"reason 必填",
 			"非产品 ledger",
 			"已合并 / 已 staged ≠ 已部署",
 			"no-old-binary-restart",
 		]) {
 			expect(runbook, contract).toContain(contract);
 		}
+		const exemptionPolicy = runbook
+			.split("## 豁免不是新通道")[1]
+			?.split("\n## ")[0];
+		expect(exemptionPolicy).toBeDefined();
+		expect(exemptionPolicy).toMatch(/默认只许缩小/);
+		expect(exemptionPolicy).toMatch(/founder.*具体 issue/);
+		expect(exemptionPolicy).toMatch(
+			/baseline、exemption、reason、owner、issue 和机械守卫必须在同一 PR 原子更新/,
+		);
+		expect(exemptionPolicy).toMatch(
+			/补齐字段或伪造生产 read site 都不能自行获得授权/,
+		);
 		const deployment = runbook
 			.split("## 生产 `.env` 移除与部署顺序")[1]
 			?.split("\n## ")[0];

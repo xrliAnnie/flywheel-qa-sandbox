@@ -31,11 +31,11 @@ pass_n=0; fail_n=0
 seed() {
   local d="$1"
   mkdir -p "$d/scripts/__tests__" "$d/$MS_REL" \
-           "$d/.flywheel/agents/engineering" "$d/.claude/commands"
+           "$d/.flywheel/agents/nodes" "$d/.claude/commands"
   cp "$ROOT/CLAUDE.md" "$d/CLAUDE.md"
   cp "$ROOT/$GUARD_REL" "$d/$GUARD_REL"
   cp "$ROOT/$MS_REL"/*.md "$d/$MS_REL/"
-  cp "$ROOT/.flywheel/agents/engineering/engineer-executor.md" "$d/.flywheel/agents/engineering/"
+  cp "$ROOT/.flywheel/agents/nodes/engineer.md" "$d/.flywheel/agents/nodes/"
   cp "$ROOT/.claude/commands/spin.md" "$d/.claude/commands/"
   cp "$ROOT/.claude/commands/orchestrator.md" "$d/.claude/commands/"
 }
@@ -117,7 +117,7 @@ expect_red N6b-placeholder  "sed 's/#947/#NNN/' $MS_REL/FLY-2045.md > t && mv t 
 
 echo
 echo "=== every Flywheel writer points at the new home, and the generic one is protected ==="
-expect_red N7-executor      "grep -v 'engineering/doc/milestones/' .flywheel/agents/engineering/engineer-executor.md > t && mv t .flywheel/agents/engineering/engineer-executor.md"
+expect_red N7-executor      "grep -v 'engineering/doc/milestones/' .flywheel/agents/nodes/engineer.md > t && mv t .flywheel/agents/nodes/engineer.md"
 expect_red N8-generic-rule  "grep -v 'Update CLAUDE.md: add milestone to table' .claude/commands/spin.md > t && mv t .claude/commands/spin.md"
 # These delete the REAL shell, not the tag comments. Deleting only a tag used to leave the
 # guard green, which meant it was proving a comment exists rather than that the check runs.

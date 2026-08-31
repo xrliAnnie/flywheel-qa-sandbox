@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-1969 PRD v2.3 逐节审 — 你看不懂的那两格,重写了</title>
+<style>
+:root{--bg:#f5f5f7;--card:#fff;--ink:#1d1d1f;--dim:#86868b;--line:#e5e5ea;
+--red:#ff3b30;--amber:#ff9500;--blue:#007aff;--green:#34c759;--purple:#af52de;--navy:#1a365d;}
+*{box-sizing:border-box}
+body{margin:0;padding:20px 14px 60px;background:var(--bg);color:var(--ink);
+font-family:-apple-system,system-ui,"PingFang SC",sans-serif;line-height:1.58;font-size:14px;}
+.wrap{max-width:880px;margin:0 auto}
+h1{font-size:23px;margin:0 0 4px;letter-spacing:-.02em}
+.sub{color:var(--dim);font-size:13px;margin:0 0 16px}
+.card{background:var(--card);border-radius:12px;padding:14px 16px;margin:0 0 12px;
+box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid var(--line)}
+.card.green{border-left-color:var(--green)}.card.blue{border-left-color:var(--blue)}
+.card.amber{border-left-color:var(--amber)}.card.red{border-left-color:var(--red)}
+.card.purple{border-left-color:var(--purple)}.card.gray{border-left-color:#c7c7cc}
+.sec{font-size:16px;font-weight:650;margin:24px 0 10px;letter-spacing:-.01em}
+h3{font-size:14.5px;margin:0 0 6px;font-weight:650}
+h3 .tag{font-size:11px;font-weight:600;color:var(--dim);margin-left:6px;
+border:1px solid var(--line);border-radius:5px;padding:1px 5px;vertical-align:1px}
+p{margin:0 0 7px}
+.dim{color:var(--dim);font-size:12.5px}
+.gist{background:#f0f6ff;border:1px solid #cfe2ff;border-radius:9px;padding:9px 12px;
+margin:2px 0 9px;font-size:14px;color:#0b3d80}
+.q0{background:#fff;border:2px solid var(--navy);border-radius:14px;padding:18px 18px 16px;margin:0 0 14px;
+box-shadow:0 2px 10px rgba(0,0,0,.07)}
+.q0 h2{font-size:19px;margin:0 0 4px;letter-spacing:-.02em}
+.forks{display:flex;flex-direction:column;gap:9px;margin:13px 0 4px}
+.fork{display:block;width:100%;text-align:left;border:1.5px solid var(--line);background:#fcfcfd;
+border-radius:11px;padding:12px 14px;font:inherit;cursor:pointer;color:var(--ink)}
+.fork:hover{border-color:#b8b8bd}
+.fork .k{font-size:15px;font-weight:650;display:block;margin-bottom:3px}
+.fork .d{font-size:12.5px;color:var(--dim);display:block}
+.q0 .fork[aria-pressed="true"]{border-color:var(--navy);background:#eef3fb;color:var(--ink)}
+.q0 .fork[aria-pressed="true"] .k{color:var(--navy)}
+.q0 .fork[aria-pressed="true"] .d{color:var(--dim)}
+.verdict{display:none;margin:12px 0 0;border-radius:10px;padding:12px 14px;font-size:14px}
+.verdict.on{display:block}
+.verdict.a{background:#fff1f0;border:1px solid #ffc9c4;color:#8c1d16}
+.verdict.b{background:#e6f9ed;border:1px solid #a7e5bf;color:#136c37}
+.verdict.c{background:#fff8e6;border:1px solid #ffdf99;color:#7a5200}
+#body{display:none}#body.on{display:block}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 6px}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:5px 15px;
+font:inherit;font-size:13px;cursor:pointer;color:var(--ink)}
+.chip[aria-pressed="true"]{background:var(--navy);border-color:var(--navy);color:#fff}
+textarea{width:100%;border:1px solid var(--line);border-radius:8px;padding:8px 10px;
+font:inherit;font-size:13px;resize:vertical;background:#fcfcfd;color:var(--ink);min-height:42px}
+details{margin:8px 0 2px;border-top:1px dashed var(--line);padding-top:8px}
+summary{cursor:pointer;font-size:12.5px;color:var(--blue);outline:none}
+details[open] summary{margin-bottom:7px}
+details .inner{font-size:13px}
+table{width:100%;border-collapse:collapse;font-size:12.5px;margin:6px 0}
+th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:11.5px}
+pre{background:#f6f6f8;border:1px solid var(--line);border-radius:8px;padding:9px 11px;margin:7px 0;
+font-family:"SF Mono",ui-monospace,monospace;font-size:12px;overflow-x:auto;line-height:1.5;white-space:pre}
+code{font-family:"SF Mono",ui-monospace,monospace;font-size:12.5px;background:#f0f0f3;padding:1px 4px;border-radius:4px}
+ul{margin:5px 0 7px;padding-left:19px}li{margin:3px 0}
+.bar{position:sticky;top:0;z-index:9;background:rgba(245,245,247,.94);backdrop-filter:blur(8px);
+margin:0 -14px 14px;padding:10px 14px;border-bottom:1px solid var(--line);
+display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{border:0;border-radius:9px;padding:8px 16px;font:inherit;font-size:13.5px;font-weight:600;cursor:pointer}
+.btn.p{background:var(--navy);color:#fff}.btn.s{background:#e8e8ed;color:var(--ink)}
+#status{font-size:12.5px;color:var(--navy);flex:1;min-width:180px}
+#exportOut{display:none;margin:10px 0 0;min-height:120px;
+font-family:"SF Mono",ui-monospace,monospace;font-size:12px}
+.foot{color:var(--dim);font-size:12px;margin:26px 0 0;text-align:center;line-height:1.7}
+.warn{background:#fff8e6;border:1px solid #ffdf99;border-radius:8px;padding:8px 11px;margin:8px 0;font-size:12.5px;color:#7a5200}
+</style></head>
+<body>
+<div class="wrap">
+
+<div class="bar">
+  <button class="btn p" id="exportBtn" type="button">一键汇总复制</button>
+  <button class="btn s" id="clearBtn" type="button">清空</button>
+  <span id="status">写完点「一键汇总复制」,再粘回给我 —— 我才收得到。</span>
+</div>
+<textarea id="exportOut" readonly></textarea>
+
+<h1>PRD v2.3 逐节审</h1>
+<p class="sub">FLY-1969 · 2026-08-27 · <strong>给一个 Lead 一份 Epic 页面,他到底该怎么做</strong><br>
+你上一轮勾了<strong>十四格「对」</strong>、两格看不懂。<strong>那十四格我一个字都没动</strong> —— 只重写了看不懂的两格,外加补一句漏写的。</p>
+
+<div class="card red">
+<h3>这一版只动了三处</h3>
+<div class="gist">
+🔴 <strong>「问题是什么」那格重写了</strong> —— 你说「就是你在说啥呀?我完全看不懂你在说什么」。<strong>你是对的:</strong>我用了我们内部的编号来指代东西,你得先翻译一次才能读;而且我写成了「我们缺哪几个零件」,那是给我们自己看的清单。<strong>现在改成:你今天实际会撞到什么。</strong><br>
+🔴 <strong>「还开着的问题」那格重写了</strong> —— 你说「我看不懂你问的问题是什么,但是我猜也不重要」。<strong>「猜也不重要」比「看不懂」更糟</strong>:说明它写得像内部备忘,你就整段跳过了 —— 而里面有两条是真重要的。<strong>现在用大白话问,而且从六条砍到四条。</strong><br>
+✅ <strong>你提的那个「会不会不灵活」,是个好挑战,而且暴露我漏写了一句</strong> —— 补上了,见下面那格。
+</div>
+<div class="warn"><strong>⚠️ 那两格看不懂,是 Lead 写的时候写砸的。</strong>你已经勾「对」的其余十四格,<strong>一个字都没改</strong>。</div>
+<div class="warn">下面每一节的<strong>「一句话」是我写的摘要</strong>,原文折在「展开原文」里。<strong>摘要写歪了也算「不对」</strong>。</div>
+</div>
+
+<div class="sec">零、这份 PRD 到底在回答什么</div>
+
+<div class="card purple">
+<h3>§0 那一个问题<span class="tag">PRD §0</span></h3>
+<div class="gist"><strong>你的原话:「如果现在给一个 lead 一份 epic 的 HTML,他到底该怎么去做。」</strong><br>
+⇒ 主语 = <strong>任意一个 Lead + 任意一份 Epic 页面</strong>。工程线只是现在的主要用户,<strong>不是范围</strong>。<br>
+<strong>上游那段不在本单:</strong>PRD 怎么定、PRD 怎么转 Epic —— 你说「继续按现有方式 follow 就可以」,我没给它造流程。本单<strong>从「一份 Epic 页面已经在那儿了」开始</strong>。</div>
+<div class="chips" data-chips="s0"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s0" placeholder="这个范围对了吗?"></textarea>
+</div>
+
+<div class="card purple">
+<h3>§1 这不是新建一套编排系统<span class="tag">PRD §1</span></h3>
+<div class="gist">我核了代码:每小时那一下今天已经在扫在跑的活、返工、收尾、开着的门、现场存活 —— <strong>那就是第一层,已经在跑</strong>。但<strong>「Epic」这个词在整个 bridge 目录里一次都没出现</strong>(同一把 grep 量 roster 得 19,所以那个零是真零)。<br>
+⇒ 这一单 = <strong>补上第二层 + 定义那份 Epic 页面</strong>,不是从零造。<br>
+📌 <strong>第一层按你说的降成一句话背景了</strong>,PRD 主体只写第二层。</div>
+<div class="chips" data-chips="s1"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s1" placeholder="这个定性对吗?"></textarea>
+</div>
+
+<div class="card red">
+<h3>§1.2 🔴 你问的那个:巡检和下发,分开还是放一起?<span class="tag">PRD §1.2</span></h3>
+<div class="gist"><strong>我的答案:合并【看】,分开【判】。</strong><br>
+<strong>一次扫描</strong> → 产出一份事实:谁在跑 / 谁完了 / 空几个位 / 谁卡了<br>
+<strong>两个判断</strong> → 「有没有卡住要报你」读这份事实;「该派哪几个」也读这份事实</div>
+<div class="gist" style="background:#e6f9ed;border-color:#a7e5bf;color:#136c37">
+🔴 <strong>你问的「做成一层会不会变得不灵活」—— 你是对的,而且它暴露了我漏写一句。</strong><br>
+你的担心:巡检每小时合适,但看 Epic 拉新活也许 3 小时或 6 小时才要一次。<br><br>
+<strong>漏写的那句是:</strong><br>
+<strong>看</strong>(扫一遍现状)= <strong>每小时</strong> —— 巡检本来就在跑,顺手多读一格,<strong>不额外花钱</strong><br>
+<strong>判</strong>(要不要放新活)= <strong>3 小时 / 6 小时,随便定</strong> —— <strong>⛔ 不必每次扫描都跑</strong><br><br>
+⇒ <strong>扫描频率 和 判断频率 是两个独立参数,不是一个。合并的是「扫描」,不是「节奏」。</strong><br>
+⇒ 所以想让「放新活」六小时一次,就六小时判一次;<strong>而现状照样每小时被看一眼</strong>(卡住了仍然当小时就能发现)。</div>
+<div class="warn"><strong>⚠️ 这是我的建议,你还没拍 —— 我在 PRD 里也是这么标的,没写成已定。</strong></div>
+<details><summary>展开原文(四条理由)</summary><div class="inner">
+<table><tr><th>#</th><th>理由</th></tr>
+<tr><td>①</td><td><strong>两者要用的事实是同一份</strong> —— 都要知道谁在跑、谁完了、空几个位</td></tr>
+<tr><td>②</td><td>分成两套要<strong>扫两遍</strong>,而且可能对同一件事<strong>给出不同说法</strong> —— 那正是<strong>你自己担心过的 multiple sources of truth</strong></td></tr>
+<tr><td>③</td><td>两个<strong>判断</strong>的失败模式不同(报错了 vs 派错了),<strong>不能合成一个</strong>;但<strong>共用事实不会自相矛盾</strong></td></tr>
+<tr><td>④</td><td>符合你的刀法:<strong>不是造第二个扫描器,是给现有那一遍多读一格</strong></td></tr>
+</table>
+</div></details>
+<div class="chips" data-chips="s12"><button class="chip" type="button" aria-pressed="false">就这么办</button><button class="chip" type="button" aria-pressed="false">应该分开</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s12" placeholder="这个答案你认吗?不认的话你想怎么分?"></textarea>
+</div>
+
+<div class="sec">一、问题 / 谁做什么 / 明确不做</div>
+
+<div class="card blue">
+<h3>§2 今天你会撞到什么<span class="tag">PRD §2</span></h3>
+<div class="gist">🔴 <strong>这一格上一版你说看不懂,我重写了 —— 用大白话,零代号。</strong><br><br>
+<strong>今天 Epic 定完之后,会发生三件事:</strong><br>
+① <strong>Lead 手上没有一份东西告诉他先做哪件、后做哪件。</strong>顺序只在当初讨论时存在过,没有落在任何地方 ⇒ 他要么凭记忆,要么来问你。<br>
+② <strong>没有人定期回头看「哪几件做完了、该放哪几件出去」。</strong>一件做完、位子空出来了,这件事<strong>不会自己变成「那就再放一件进去」</strong> —— 除非有人想起来。<br>
+③ <strong>你想知道做到哪了,只能开口问。</strong><br><br>
+⇒ <strong>于是这三件事今天靠什么撑着?靠你随时说「该做这个了」。而这正是你说不该由你做的那件事。</strong></div>
+<div class="warn"><strong>上一版为什么看不懂 —— 我认:</strong>① 我用了我们内部的编号来指代东西,<strong>你得先把它翻译成人话才能往下读</strong> ② 我把它写成了「我们缺哪几个零件」,那是给我们自己看的清单。<strong>你要读的是你会撞到的那堵墙。</strong></div>
+<div class="chips" data-chips="s2"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s2" placeholder="这一节哪里不对?"></textarea>
+</div>
+
+<div class="card blue">
+<h3>§3 谁做什么<span class="tag">PRD §3</span></h3>
+<div class="gist"><strong>你:</strong>和 Lead 当面把 Epic 定出来,之后<strong>只在必要时被找去 review 和提意见</strong>。<strong>任意一个 Lead:</strong>拿着 Epic 页面自主往前推,按 dependency + 资源容量决定这一波做谁。<strong>IC/Runner:</strong>执行、到节点汇报、卡住说一声。<strong>总 lead:现阶段不做。</strong><br>
+⛔ <strong>这里不写死「哪个部门用、哪个不用」</strong> —— 按你说的。</div>
+<div class="chips" data-chips="s3"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s3" placeholder="这一节哪里不对?"></textarea>
+</div>
+
+<div class="card gray">
+<h3>§4 明确不做的<span class="tag">PRD §4</span></h3>
+<div class="gist"><strong>🔴 第一条就是你说的那句:不写死谁要用谁不用</strong> —— 并且我把你的说法原样写进去了:<strong>「进度看板更像是一个每个项目和 Lead 都有的功能,但是可以选择去用,也可以选择去不用。」</strong><br>
+其余:PRD 怎么定 / 怎么转 Epic(按现有方式)· 多项目 quota 统管 · 总 lead · <strong>「什么时候该找她」那一节(你否掉了,没写)</strong>· 任何工程实现方案 · 加新 flag。</div>
+<div class="chips" data-chips="s4"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="s4" placeholder="有该做却被划到「不做」里的吗?"></textarea>
+</div>
+
+<div class="sec">二、八条需求</div>
+
+<div class="card green">
+<h3>R1 · Epic 页面:说清「具体该怎么做」<span class="tag">PRD §5 R1</span></h3>
+<div class="gist">你的原话:「我们只要<strong>定义好这个 epic 的 HTML</strong>,然后<strong>告诉 lead 去 follow 这个 epic HTML,他就知道该怎么做</strong>。」<br>
+🔴 <strong>验收标准(已按你说的去掉「一周」):</strong><br>
+<strong>这份页面建好之后,Lead 能不能在「不问你现在该做哪件」的前提下,连续推进到整个 Epic 做完。只要中途还需要问,这份页面就是不合格的。</strong><br>
+⇒ 由这个标准<strong>反推</strong>它必须回答四件事,见展开。</div>
+<details><summary>展开原文(那四件事 + 时长为什么去掉)</summary><div class="inner">
+<p><strong>你否掉那个数的原话:</strong>「连着推一周这个东西,好像并不需要去写死吧?<strong>小的 IP 也许两天,大的也许两周。</strong>更多的是说,<strong>能不能够连续推进到把这整个 Epic 都做完。</strong>」<br>⇒ ✅ <strong>可证伪这个性质保留了</strong> —— 你只否掉了那个时长,没否掉这个形状。</p>
+<table><tr><th>必须回答</th><th>不回答会怎样</th></tr>
+<tr><td><strong>要做的事有哪些</strong></td><td>他不知道范围到哪儿为止</td></tr>
+<tr><td><strong>它们的先后</strong></td><td>他每次都要重推一遍顺序 —— 这正是 R2</td></tr>
+<tr><td><strong>每件事做完算什么样</strong></td><td>他不知道什么时候可以往下一件走</td></tr>
+<tr><td><strong>哪些是必须回来找你的</strong></td><td>他要么全问(打扰你)要么全不问(踩你的红线)</td></tr></table>
+<p>⚠️ 最后一条 ⛔ <strong>不是</strong>「什么时候该找她」那一节(那节你否掉了)。这里说的是<strong>这个具体 Epic 里</strong>你点过名的那几件 —— 是<strong>这一份页面的内容</strong>,不是通用规则。</p>
+</div></details>
+<div class="chips" data-chips="r1"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r1" placeholder="验收标准这样对吗?四件事够不够?"></textarea>
+</div>
+
+<div class="card green">
+<h3>R2 · dependency:先划批次 + 执行中动态更新<span class="tag">PRD §5 R2</span></h3>
+<div class="gist">你选的 hybrid:<strong>拆 Epic 时先初步标定</strong>(先 1、2、3,再 4、5、6)划好批次 —— <strong>它就是 Epic 页面的第一版内容</strong>;<strong>执行中 Lead 动态更新</strong>三类:漏掉的 / 不需要做的 / 新发现的。<br>
+⚠️ 我特意把「<strong>不需要做的</strong>」单独点出来:另两类是<strong>加</strong>,它是<strong>减</strong>;<strong>一个只能加不能减的 dependency 记录会随时间单调变紧,最后没有一件事能被派出去。</strong></div>
+<div class="chips" data-chips="r2"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r2" placeholder="R2 哪里不对?"></textarea>
+</div>
+
+<div class="card green">
+<h3>R3 · 第二层:Epic 级推进 —— <strong>本 PRD 的主体</strong><span class="tag">PRD §5 R3</span></h3>
+<div class="gist">按你说的,PRD 主体只写第二层:<strong>到点扫一遍 → 这个 Epic 还剩什么没做、现在有没有空位 → 有空位就按 dependency 拉一件出来</strong>(你的例子:10 个满载跑完 2 个,空出 2 个 slot 就去拉)。<br>
+🔴 <strong>频率写成参数了,不写死 1 小时</strong> —— 而且你说的那个「比如做一个 feature flag」我去核了,<strong>结论是不用加新 flag</strong>,见展开。</div>
+<details><summary>展开原文(feature flag 那条我核过了)</summary><div class="inner">
+<p><strong>你的原话:</strong>「固定节奏……希望这个东西还是可以做成一个<strong>灵活可以去调节</strong>的,比如做一个 feature flag。我现在想的是每小时检查一次,但也许之后发现<strong>每四个小时检查一次</strong>就行。」</p>
+<p>⚠️ 这句和我们的一条铁律(不加任何新 flag)表面冲突,所以我去核了代码:</p>
+<pre>默认 60 分钟 · 最小 10 · 最大 1440(24 小时)
+可以在【项目级】和【全局】两处配置</pre>
+<p>⇒ <strong>这个频率今天已经是一个可调配置了。</strong>你举例的「每四个小时」= 240 分钟,<strong>在范围内,现在就调得动。</strong></p>
+<p><strong>⇒ 你要的是「可调」,不是「一个新 flag」。现有机制已经满足 ⇒ 不需要新 flag,铁律也不受影响。</strong></p>
+<p>⚠️ <strong>但有一件必须一起说清:</strong>这个数是<strong>项目级共享参数</strong>,<strong>没有 per-需求那一级</strong> ⇒ 改它 = 同一口钟上的<strong>全部</strong>巡检职责一起变。<br>⇒ <strong>「第二层想四小时一次、第一层想一小时一次」在今天的机制下做不到。</strong>你要是想两层各调各的,那是一个新需求 —— 我记进开放问题了,没当成已解决。</p>
+</div></details>
+<div class="chips" data-chips="r3"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r3" placeholder="R3 哪里不对?两层要不要各调各的频率?"></textarea>
+</div>
+
+<div class="card green">
+<h3>R4 · 决定「这一波做谁」的两个输入<span class="tag">PRD §5 R4</span></h3>
+<div class="gist">你说的两件:① <strong>dependency</strong>(做 5 之前必须先做 1)② <strong>资源容量</strong>(quota、机器 memory)。⇒ 要求:<strong>Lead 拍板时拿得到这两样的当前情况</strong>。<br>
+⚠️ 形状变化:容量从<strong>一道闸门</strong>(系统到线自动拒绝 + 排队)变成 <strong>他的一个判断输入</strong>。<strong>花明显资源 → 他按 quota 自己拍,不用问你。</strong></div>
+<div class="chips" data-chips="r4"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r4" placeholder="R4 哪里不对?"></textarea>
+</div>
+
+<div class="card amber">
+<h3>R5 · Epic 页面必须是活的 —— 含你自己点的那个坏处<span class="tag">PRD §5 R5</span></h3>
+<div class="gist">更新机制是 hybrid:<strong>某件事做完就触发更新 + 到点扫描时同步检查状态和 dependency 变动</strong>。<br>
+<strong>你写下的坏处:</strong>multiple sources of truth,页面 outdated 会有负面影响。<strong>好处:</strong>直观清晰,Lead 能快速抓取整体进展,你也能一眼看清做到哪、卡在哪。<br>
+🔴 <strong>那个坏处我没绕过去</strong>,翻成了三条硬要求 —— 见展开。</div>
+<details><summary>展开原文(那三条 + 和 R1 的关系)</summary><div class="inner">
+<p><strong>总要求:这个页面上的每一个数,必须能说出它是从哪儿来的;并且当它可能过期时,页面自己要说出来。</strong></p>
+<ol>
+<li><strong>每一格都有出处。</strong>⛔ 不许有「只存在于这个页面里」的事实 —— 那正是 multiple sources of truth 的定义。</li>
+<li><strong>过期要说出来,不能装作新鲜。</strong>⇒ <strong>一个说不出自己多旧的页面,和一个错的页面,在你眼里长得一模一样。</strong></li>
+<li><strong>两条更新路径都要在。</strong>单靠事件:漏一个就永远停在旧值。单靠扫描:最长一个周期的滞后。<strong>两条都在是为了让任一条失灵时另一条兜住,⛔ 不是冗余。</strong></li>
+</ol>
+<p>⚠️ ⛔ 本节<strong>不写</strong>页面用什么技术做、数据怎么存 —— 那是工程侧的判断。</p>
+<p><strong>⚠️ 和 R1 的关系:</strong>R1 定的是<strong>页面里写什么</strong>,R5 定的是<strong>页面凭什么不过期</strong>。<strong>同一份页面,两条要求。</strong></p>
+<p>📌 <strong>§1.2 那条(合并看、分开判)正是为这一条服务的</strong> —— 一次扫描出一份事实,两个判断读同一份 ⇒ <strong>结构上不可能自相矛盾</strong>。</p>
+</div></details>
+<div class="chips" data-chips="r5"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r5" placeholder="那个坏处答得够不够?"></textarea>
+</div>
+
+<div class="card amber">
+<h3>R6 · 卡住:可见,但不打扰<span class="tag">PRD §5 R6</span></h3>
+<div class="gist">你的原话:「让他自己尝试修,但卡住时要跟我说一声;我能看得到,有需要时再介入。」<br>
+⚠️ 这句里两个不同的词我全文分开写了:<strong>可见 = 你想看的时候看得到</strong>(你要的);<strong>打扰 = 它主动来找你</strong>(你不要的)。<br>
+三段:① IC 自己修,不惊动任何人 → ② 修不动就<strong>说一声</strong>(不是求救,也不是静默重试到死)→ ③ 你能看到,<strong>介入与否是你的选择</strong>。<br>
+📌 「说一声」第一顺位说给<strong>那个 Lead</strong>;这件事<strong>落在 Epic 页面上</strong>,⛔ 不是每次卡住都发一条给你。</div>
+<div class="chips" data-chips="r6"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r6" placeholder="R6 哪里不对?"></textarea>
+</div>
+
+<div class="card green">
+<h3>R7 · 什么会走到你面前<span class="tag">PRD §5 R7</span></h3>
+<div class="gist">⚠️ <strong>这不是「什么时候该找她」那一节 —— 那节你否掉了,我没写。</strong>只登记你说过的四条:<br>
+<strong>要你 review / 提意见</strong> → 在必要的时候找你,直接去对应 thread · <strong>新方向 / 推翻你定过的</strong> → 找你 · <strong>花明显资源</strong> → ⛔ 不找你 · <strong>「当前该做哪件事」</strong> → ⛔ 不找你,<strong>这正是 Epic 页面要消灭的那个提问</strong>。</div>
+<div class="chips" data-chips="r7"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r7" placeholder="R7 哪里不对?"></textarea>
+</div>
+
+<div class="card gray">
+<h3>R8 · dag-resolver 退役<span class="tag">PRD §5 R8</span></h3>
+<div class="gist">你上一轮已勾「对」。纯技术债清理,<strong>你看不到任何东西</strong> —— ship 前后你的一天完全一样,<strong>不阻塞任何一条</strong>。</div>
+<div class="chips" data-chips="r8"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="r8" placeholder="不关心就跳过"></textarea>
+</div>
+
+<div class="sec">三、留白 · 台账 · 还开着的问题</div>
+
+<div class="card red">
+<h3>§6 留白:多项目 quota<span class="tag">PRD §6</span></h3>
+<div class="gist">你上一轮已勾「对」,并补了理由,我原样写进去了:<strong>「其实最近我只在推进一个项目。虽然手头有多个项目,但事实上在推进的只有一个。」</strong><br>
+🔴 <strong>但那个事实我仍然登记着:额度是全项目共用的一个池子。</strong>今天不痛是因为<strong>同时只在推一个</strong>;<strong>一旦同时推两个</strong>,两个 Lead 各自都做了合理判断,合起来仍然可以把池子抽干,而两边都不知道。<br>
+⇒ 所以我把它写成<strong>触发条件</strong>而不是日期:<strong>它在「开始同时推第二个项目」那一刻生效。</strong></div>
+<div class="chips" data-chips="m1"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="m1" placeholder="这个触发条件写法对吗?"></textarea>
+</div>
+
+<div class="card gray">
+<h3>§7 三张作废台账(⛔ 并排不合并)<span class="tag">PRD §7</span></h3>
+<div class="gist">每改一次方向就留一张,<strong>不让新的盖掉旧的</strong> —— 否则「某条为什么死的」「范围为什么先窄后宽」这些线索会在下一次重写时丢掉。<br>
+<strong>本次(v2.1→v2.2):</strong>范围收窄作废 · 「产品线不适用」整格删 · 那个你不认识的词删掉 · 「一周」删 · 第一层降背景 · 频率改参数。<br>
+⚠️ <strong>我在台账里明确记了:那次收窄错在转述层,不在你的原话层。</strong></div>
+<div class="chips" data-chips="m2"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="m2" placeholder="有该留却被我判死的吗?"></textarea>
+</div>
+
+<div class="card amber">
+<h3>§8 还没定的四件事 —— 我想问你的<span class="tag">PRD §8</span></h3>
+<div class="gist">🔴 <strong>这一格上一版你说「看不懂我在问什么,但猜也不重要」。我认:那说明我写得像内部备忘,你就整段跳过了 —— 而里面有真重要的。</strong>重写了,也从六条砍到四条:<br><br>
+<strong>1. 「一次扫描出一份事实,两个判断各读各的」这个办法,你认不认?</strong><br>
+&nbsp;&nbsp;&nbsp;(就是上面那格。你担心的「会不会不灵活」已经答掉了 —— 扫描和判断是两个参数)<br>
+<strong>2. Epic 里哪些算「还没做、可以往外放」?</strong><br>
+<strong>3. 怎么算一件事做完了、位子空出来了?</strong><br>
+&nbsp;&nbsp;&nbsp;(你举的例子是「10 个满载跑完 2 个」,但那个 10 从哪来还没定)<br>
+<strong>4. 上一版那两条护栏 —— 打回重做的次数、机器崩溃的次数 —— 还要不要留着?</strong><br>
+&nbsp;&nbsp;&nbsp;(⚠️ 我倾向留着,但<strong>这是我的判断,不是你说过的话</strong>)<br><br>
+<strong>四条都不阻塞</strong>,想定几条就定几条,不想定就先放着。</div>
+<div class="warn"><strong>移走了两条,⛔ 不是消失:</strong>「dependency 的三类更新谁来记」<strong>转给工程侧了</strong>(它贴近实现,不该占你的注意力);「两层能不能各调各的频率」<strong>并进上面那格</strong>了。<br>
+✅ <strong>结掉一条:</strong>你说「我猜是一个东西」—— 对,是一份,就叫 <strong>Epic 页面</strong>。而且你顺带告诉了我们:<strong>那两个名字你都不认识</strong>,那是我们造的词。</div>
+<div class="chips" data-chips="m3"><button class="chip" type="button" aria-pressed="false">对</button><button class="chip" type="button" aria-pressed="false">不对</button><button class="chip" type="button" aria-pressed="false">存疑</button></div>
+<textarea data-note="m3" placeholder="这六条里你想现在定哪几条?"></textarea>
+</div>
+
+<div class="card gray">
+<h3>最后:这一版还有哪里不像你要的?</h3>
+<div class="gist">上面十六格如果都没勾中,那问题可能在<strong>它没写的东西</strong>。</div>
+<textarea data-note="miss" placeholder="它漏了什么?或者:哪个更根本的地方还是不对?"></textarea>
+</div>
+
+<p class="foot">写完点上面的「一键汇总复制」,再<strong>粘回给我</strong> —— 这一页的意见<strong>不会自动同步</strong>,不粘我就收不到。<br>
+你写的东西只存在你自己的浏览器里,刷新不会丢。<br>
+FLY-1969 · PRD v2.3 · 内容取自 commit 366099e45</p>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function(){
+  var KEY  = "fly1969-prd-v23-review-v1";
+  var MARK = "【页面意见汇总】FLY-1969";
+  var CHUNK = 1800;
+  var labels = {
+    s0:"§0 范围/这份 PRD 回答什么", s1:"§1 这一单的性质", s12:"§1.2 合并看还是分开判",
+    s2:"§2 今天你会撞到什么", s3:"§3 谁做什么", s4:"§4 明确不做的",
+    r1:"R1 Epic 页面 + 验收标准", r2:"R2 dependency", r3:"R3 第二层 + 频率",
+    r4:"R4 做谁的两个输入", r5:"R5 页面必须是活的", r6:"R6 卡住·可见不打扰",
+    r7:"R7 什么走到你面前", r8:"R8 dag-resolver 退役",
+    m1:"§6 多项目 quota 留白", m2:"§7 作废台账", m3:"§8 还没定的四件事",
+    miss:"还有哪里不像你要的"
+  };
+  var notes = document.querySelectorAll("textarea[data-note]");
+  var chipGroups = document.querySelectorAll("[data-chips]");
+  try {
+    var saved = JSON.parse(localStorage.getItem(KEY) || "{}");
+    notes.forEach(function(t){ var k=t.getAttribute("data-note"); if(saved["n_"+k]) t.value=saved["n_"+k]; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var p=saved["c_"+key];
+      if(p!=null){ g.querySelectorAll(".chip").forEach(function(c,i){
+        c.setAttribute("aria-pressed",(String(i)===String(p))?"true":"false"); }); } });
+  } catch(e){}
+  function persist(){
+    var o={};
+    notes.forEach(function(t){ o["n_"+t.getAttribute("data-note")]=t.value; });
+    chipGroups.forEach(function(g){ var key=g.getAttribute("data-chips"); var s=-1;
+      g.querySelectorAll(".chip").forEach(function(c,i){ if(c.getAttribute("aria-pressed")==="true") s=i; });
+      if(s>=0) o["c_"+key]=s; });
+    try{ localStorage.setItem(KEY, JSON.stringify(o)); }catch(e){}
+  }
+  notes.forEach(function(t){ t.addEventListener("input", persist); });
+  chipGroups.forEach(function(g){ var cs=g.querySelectorAll(".chip");
+    cs.forEach(function(c){ c.addEventListener("click", function(){
+      var was = c.getAttribute("aria-pressed")==="true";
+      cs.forEach(function(x){ x.setAttribute("aria-pressed","false"); });
+      c.setAttribute("aria-pressed", was?"false":"true"); persist(); }); }); });
+  function collect(){
+    var blocks=[], any=false;
+    notes.forEach(function(t){
+      var k=t.getAttribute("data-note");
+      var g=document.querySelector('[data-chips="'+k+'"]');
+      var ct="";
+      if(g){ var on=g.querySelector('.chip[aria-pressed="true"]'); if(on) ct="["+on.textContent.trim()+"] "; }
+      var v=(t.value||"").trim();
+      if(ct||v){ any=true; blocks.push("【"+(labels[k]||k)+"】\n"+ct+v); }
+    });
+    return { any:any, blocks:blocks };
+  }
+  function chunk(blocks){
+    var out=[], cur="";
+    for(var i=0;i<blocks.length;i++){
+      var b=blocks[i];
+      var candidate = cur ? (cur+"\n\n"+b) : b;
+      if((MARK.length+8+candidate.length) > CHUNK && cur){ out.push(cur); cur=b; }
+      else { cur=candidate; }
+    }
+    if(cur) out.push(cur);
+    return out.map(function(bd,i){
+      var head = MARK + (out.length>1 ? (" ("+(i+1)+"/"+out.length+")") : "");
+      return head+"\n"+bd;
+    });
+  }
+  var status=document.getElementById("status"), out=document.getElementById("exportOut");
+  document.getElementById("exportBtn").addEventListener("click", function(){
+    var r=collect();
+    if(!r.any){
+      out.style.display="none"; out.value="";
+      status.textContent="还没勾也还没写 —— 至少勾一格再复制。";
+      return;
+    }
+    var parts=chunk(r.blocks);
+    var text=parts.join("\n\n---- 分段,请分开粘贴 ----\n\n");
+    out.value=text; out.style.display="block"; out.focus(); out.select();
+    var tail = parts.length>1 ? "(共 "+parts.length+" 段,请分开粘贴)" : "";
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(
+        function(){ status.textContent="已汇总并复制到剪贴板,直接粘给我。"+tail; },
+        function(){ status.textContent="已汇总,但复制失败 —— 请手动选中下面的文字复制。"+tail; });
+    } else {
+      status.textContent="已汇总,但这个浏览器不给复制 —— 请手动选中下面的文字复制。"+tail;
+    }
+  });
+  document.getElementById("clearBtn").addEventListener("click", function(){
+    notes.forEach(function(t){ t.value=""; });
+    chipGroups.forEach(function(g){ g.querySelectorAll(".chip").forEach(function(c){ c.setAttribute("aria-pressed","false"); }); });
+    persist(); out.value=""; out.style.display="none"; status.textContent="已清空。";
+  });
+})();
+</script>
+</body>
+</html>

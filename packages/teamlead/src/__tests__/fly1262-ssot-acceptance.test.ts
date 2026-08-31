@@ -151,6 +151,23 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 				"alpha",
 				{
 					config: parse(bytes.toString("utf8")) as FlywheelConfig,
+					resolvedAgents: {
+						alpha: {
+							nodeName: "engineer",
+							label: "Alpha Engineer",
+							agentFile: join(
+								projectRoot,
+								".flywheel",
+								"agents",
+								"nodes",
+								"engineer.md",
+							),
+							agentFileRoot: join(projectRoot, ".flywheel", "agents"),
+							department: "engineering",
+							departments: ["engineering"],
+							match: { labels: ["engineering"] },
+						},
+					},
 					revision: fileSourceRevision(bytes),
 				},
 			],
@@ -237,8 +254,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			"    model: claude-opus-4-8",
 			"agents:",
 			"  alpha:",
-			"    agent_file: .flywheel/agents/engineering/alpha-executor.md",
-			"    department: engineering",
+			"    node: engineer",
 			"    match:",
 			"      labels: [engineering]",
 			"",
@@ -313,8 +329,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			}),
 			createManagementFlagProvider({
 				views: flagViews,
-				revision: () =>
-					managementFlagRevision(readFileSync(envPath, "utf8"), env),
+				revision: () => managementFlagRevision(flagViews()),
 				projectNames: () => projects.map((project) => project.projectName),
 			}),
 			sections.snapshotProvider(),
@@ -350,10 +365,8 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 			applyLeadCanonical: () => ({ status: "applied" }),
 			envPath,
 			readEnvFile: (path) => readFileSync(path, "utf8"),
-			writeEnvFile: (path, content) => writeFileSync(path, content),
 			env,
 			flagViews,
-			flagLock: (operation) => operation(),
 		});
 		const cronAuthority = new ManagementCronWriter({
 			launchAgentsDir,
@@ -427,7 +440,7 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(current.projects[0]).toMatchObject({
 			name: "alpha",
 			leads: [{ leadId: "alpha-lead" }],
-			roles: [{ name: "alpha" }],
+			roles: [{ name: "Alpha Engineer" }],
 			dags: [{ nodes: expect.any(Array) }],
 			crons: [{ label: "org.example.alpha-daily" }],
 		});
@@ -513,17 +526,14 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(removed.unassignedCrons).toHaveLength(before.unassignedCrons.length);
 	});
 
-	it("stages server old-to-new values, writes config/DB/flag/plist, rejects stale sources, and journals partial results", async () => {
+	it("stages server old-to-new values, writes config/DB/plist, rejects stale sources, and journals partial results", async () => {
 		const before = await snapshot();
 		const project = before.projects[0]!;
 		const runner = project.runnerDefault!.dispatch;
 		const dag = project.dags[0]!.nodes.find(
-			(node) => node.name === "design",
+			(node) => node.nodeId === "design",
 		)!.dispatch;
 		const cron = project.crons[0]!.schedule;
-		const flag = before.flags.find(
-			(item) => item.name === "founder_review_orphan_monitor",
-		)!.global;
 		const desiredSchedule = {
 			days: [1, 3],
 			times: [
@@ -555,11 +565,6 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 				targetId: cron.targetId,
 				desiredValue: desiredSchedule,
 				observedRevision: cron.source.revision,
-			},
-			{
-				targetId: flag.targetId,
-				desiredValue: false,
-				observedRevision: flag.source.revision,
 			},
 		];
 		const needsAck = await post("/api/fleet/changes/stage", { changes });
@@ -602,9 +607,6 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(appliedResponse.status).toBe(200);
 		expect(await appliedResponse.json()).toMatchObject({ status: "applied" });
 		expect(readFileSync(configPath, "utf8")).toContain("model: claude-fable-5");
-		expect(readFileSync(envPath, "utf8")).toContain(
-			"FLYWHEEL_FOUNDER_REVIEW_ORPHAN_MONITOR=0",
-		);
 		expect(
 			store.getWorkflowTemplate("tpl_eng_heavy")?.current_published_revision,
 		).toBe(2);
@@ -649,16 +651,18 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		expect(readFileSync(envPath)).toEqual(stableEnv);
 
 		const partialSnapshot = await snapshot();
-		const partialFlag = partialSnapshot.flags.find(
-			(item) => item.name === "mailbox_queue",
-		)!.global;
+		const partialRunner = partialSnapshot.projects[0]!.runnerDefault!.dispatch;
 		const failureField = partialSnapshot.extensions[0]!.fields[0]!.value;
 		const partialStage = await post("/api/fleet/changes/stage", {
 			changes: [
 				{
-					targetId: partialFlag.targetId,
-					desiredValue: false,
-					observedRevision: partialFlag.source.revision,
+					targetId: partialRunner.targetId,
+					desiredValue: {
+						provider: "anthropic",
+						model: "claude-opus-5",
+						effort: null,
+					},
+					observedRevision: partialRunner.source.revision,
 				},
 				{
 					targetId: failureField.targetId,

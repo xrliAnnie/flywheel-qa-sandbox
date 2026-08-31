@@ -50,9 +50,9 @@
 | `type` | enum: `question` / `response` / `instruction` / `progress` |
 | `content` | text |
 | `parent_id` | links response → question |
-| `read_at` | DATETIME — set by `flywheel_inbox_ack` MCP (Lead ack) |
-| `notified_at` | base mailbox transport receipt — set after MCP notification succeeds |
-| `delivered_at` | compatibility projection — appears only after recipient ACK |
+| `read_at` | DATETIME — set when the recipient ACKs the durable batch |
+| `notified_at` | base mailbox transport receipt |
+| `delivered_at` | compatibility projection after recipient ACK |
 | `checkpoint` | text — e.g. `approve_to_ship` |
 | `created_at` / `expires_at` | DATETIME |
 
@@ -126,8 +126,7 @@ Each scenario writes evidence pack to `doc/qa/reports/v1.25.0-FLY-60-evidence/<t
 **G coverage**: regression for FLY-109 (Lead resume must not silently drop flywheel-inbox events)
 
 **CommDB delivery semantics (critical)** — see plan §4.3 V1 for full breakdown:
-- base `notified_at` set by inbox-mcp **after** MCP notification succeeds
-- projection `delivered_at` and `read_at` set by `flywheel_inbox_ack` MCP tool
+- projection `delivered_at` and `read_at` are settled by the durable batch ACK
 - The original gate question (`type='question'`) is **not** the row that tracks delivery; the Bridge-to-Lead push is a separate `type='instruction'` row inserted by `gate-poller.ts:182-204` + `commdb-lead-runtime.ts:38-42`.
 
 **Setup**: HP run to mid-HP-6 (Lead is relaying PR-ready notification; Bridge → Lead instruction row already in CommDB, being processed by inbox-mcp / dialog poller).
