@@ -1,0 +1,22 @@
+flowchart TB
+    subgraph broken["现状:三条腿各断一条"]
+        B1[清理引擎在跑] -->|需要新鲜分类快照放行| F[快照 8-25 起停更 6 天<br/>fence 永远等待]
+        F --> Z1[关掉的 issue tab 挂两周]
+        B2[自愈引擎在跑] -->|重启波让 receipt 过代| R[无当代 receipt 一律拒修]
+        R --> Z2[活工人 tab「等待重连」孤儿]
+        B3[两个引擎都在喊] -->|launchd 环境没有 token| D[1059 封告警全进死信<br/>没人听见]
+    end
+    subgraph fixed["修后"]
+        T6[T6 告警腿:autostart 补上<br/>source ~/.flywheel/.env<br/>与 Lead 启动器同一机制] --> V[拒绝/失败从此有人听见]
+        T7[T7 关单收 tab:修快照管线<br/>+ 卡壳 24h 必发声] --> A1[关单 ≤10 分钟收走 tab]
+        T8[T8 重启波自愈:活工人凭精确<br/>execution 身份重建窗+重连] --> A2[重启后 ≤1 个扫描周期重连<br/>founder 无感]
+    end
+    style F fill:#fdebea,stroke:#ff3b30
+    style R fill:#fdebea,stroke:#ff3b30
+    style D fill:#fdebea,stroke:#ff3b30
+    style T6 fill:#e8f0fe,stroke:#007aff
+    style T7 fill:#e8f0fe,stroke:#007aff
+    style T8 fill:#e8f0fe,stroke:#007aff
+    style A1 fill:#e8f5ec,stroke:#34c759
+    style A2 fill:#e8f5ec,stroke:#34c759
+    style V fill:#e8f5ec,stroke:#34c759
