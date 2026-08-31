@@ -1,13 +1,13 @@
 ---
 issue: FLY-2207
 phase: implement
-phaseCursor: 2/6
-updated: 2026-08-31T20:23:12.763Z
-nextStep: TDD patrol rebuild retries and 10-minute escalation routing
+phaseCursor: 2/8
+updated: 2026-08-31T20:34:45.846Z
+nextStep: Implement patrol escalation and restart-guard guidance with TDD
 chunks: []
 pointers: {}
 ---
 
 # FLY-2207 progress
-**phase**: implement (2/6)
-**next**: TDD patrol rebuild retries and 10-minute escalation routing
+**phase**: implement (2/8)
+**next**: Implement patrol escalation and restart-guard guidance with TDD
