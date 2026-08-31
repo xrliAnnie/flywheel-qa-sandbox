@@ -531,7 +531,7 @@ _tmux_rescue_clean_create() {
   binary="$(command -v "$1" 2>/dev/null)" || return 127
   case "$binary" in /*) ;; *) return 127 ;; esac
   shift
-  canonical_path="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  canonical_path="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
   local -a clean_env=(/usr/bin/env -i "PATH=$canonical_path")
   [ "${HOME+x}" = x ] && clean_env+=("HOME=$HOME")
   [ "${SHELL+x}" = x ] && clean_env+=("SHELL=$SHELL")

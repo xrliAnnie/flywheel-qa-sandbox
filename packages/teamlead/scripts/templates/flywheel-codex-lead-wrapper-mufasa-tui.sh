@@ -34,7 +34,7 @@ if [ "$_wrapper_prev_allexport" = "off" ]; then set +a; fi
 unset _wrapper_prev_allexport
 
 # ── Expand PATH for launchd (node, codex, jq live outside the launchd default) ─
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # ── Pin the Codex runtime to the MAIN repo ────────────────────
 export FLY224_WORKTREE="${MAIN_REPO}"

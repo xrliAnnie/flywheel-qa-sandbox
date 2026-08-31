@@ -27,11 +27,32 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/lib/path-hygiene.sh"
 
 ALERT=0
-case "${1:-}" in
-  --alert) ALERT=1 ;;
-  "") : ;;
-  *) echo "Usage: check-global-path-hygiene.sh [--alert]" >&2; exit 2 ;;
-esac
+MODE="global"
+SOURCE_ROOT=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    "")
+      shift
+      ;;
+    --alert)
+      ALERT=1
+      shift
+      ;;
+    --source-tree)
+      [ -n "${2:-}" ] || {
+        echo "Usage: check-global-path-hygiene.sh [--alert] [--source-tree <repo-root>]" >&2
+        exit 2
+      }
+      MODE="source"
+      SOURCE_ROOT="$2"
+      shift 2
+      ;;
+    *)
+      echo "Usage: check-global-path-hygiene.sh [--alert] [--source-tree <repo-root>]" >&2
+      exit 2
+      ;;
+  esac
+done
 
 ALERT_BIN="${FLYWHEEL_HYGIENE_ALERT_BIN:-${SCRIPT_DIR}/lead-alert.sh}"
 ALERT_LEAD="${FLYWHEEL_HYGIENE_ALERT_LEAD:-flywheel-eng-lead}"
@@ -42,6 +63,32 @@ report() {  # <what> <detail>
   VIOLATIONS=$((VIOLATIONS + 1))
   echo "[path-hygiene] VIOLATION: $1 — $2"
 }
+
+if [ "$MODE" = "source" ]; then
+  SOURCE_FINDINGS=""
+  SOURCE_RC=0
+  SOURCE_FINDINGS="$(path_hygiene_scan_registered_source_tree "$SOURCE_ROOT")" || SOURCE_RC=$?
+  if [ "$SOURCE_RC" -ne 0 ]; then
+    while IFS= read -r finding; do
+      [ -n "$finding" ] || continue
+      report "repository Homebrew precedence drift" "$finding"
+    done <<<"$SOURCE_FINDINGS"
+  fi
+  if [ "$VIOLATIONS" -gt 0 ]; then
+    echo "[path-hygiene] ${VIOLATIONS} violation(s) — repository PATH declarations must prefer native Homebrew"
+    if [ "$ALERT" = "1" ] && [ -x "$ALERT_BIN" ]; then
+      bash "$ALERT_BIN" \
+        --lead "$ALERT_LEAD" --project "$ALERT_PROJECT" \
+        --kind source_path_order_drift --severity severe \
+        --title "repository Homebrew precedence: ${VIOLATIONS} violation(s)" \
+        --body "check-global-path-hygiene.sh --source-tree found ${VIOLATIONS} declaration(s) that are missing, unreadable, or do not prefer /opt/homebrew/bin over /usr/local/bin (FLY-2190)." \
+        --signature "source-path-order|${VIOLATIONS}" || true
+    fi
+    exit 1
+  fi
+  echo "[path-hygiene] clean — repository PATH declarations prefer native Homebrew"
+  exit 0
+fi
 
 # ── 1. ~/.flywheel/bin symlinks ─────────────────────────────────────────────
 BIN_DIR="${HOME}/.flywheel/bin"

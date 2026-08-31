@@ -20,10 +20,10 @@ fi
 #
 # This wrapper is the entry for BOTH the `.zshrc` autostart path AND the launchd
 # plist (com.flywheel.cmux-watcher). launchd gives a process only the minimal
-# PATH `/usr/bin:/bin:/usr/sbin:/sbin`; the watcher shells out to `cmux`
-# (/opt/homebrew/bin) and `tmux` (/usr/local/bin). Prepend Homebrew/local so the
-# launchd-spawned watcher can find them. Idempotent + harmless on the `.zshrc`
-# path (that shell already has a full PATH). Mirrors the Lead launch wrapper.
+# PATH `/usr/bin:/bin:/usr/sbin:/sbin`; the watcher shells out to `cmux` and
+# `tmux`. Prefer native Homebrew and retain Intel Homebrew only as a fallback;
+# until the separately authorized tmux cutover, tmux still resolves from that
+# fallback. Idempotent on the `.zshrc` path and aligned with Lead carriers.
 export PATH="/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # ── Run watcher or guard the launchd job ──

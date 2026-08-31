@@ -11,8 +11,12 @@ fail() { FAILED=$((FAILED+1)); echo "[TEST] ✗ $1"; shift; [ $# -gt 0 ] && echo
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CHECK="${SCRIPT_DIR}/check-global-path-hygiene.sh"
+LIB="${SCRIPT_DIR}/lib/path-hygiene.sh"
 [[ -f "$CHECK" ]] || { echo "FATAL: $CHECK missing" >&2; exit 1; }
+# shellcheck source=../lib/path-hygiene.sh
+source "$LIB"
 
 # Trusted/worktree fixture roots live in-repo (mktemp roots are temp by the
 # predicate under test); the sandbox HOME lives under /tmp on purpose — the
@@ -33,6 +37,27 @@ new_home() {  # <name> → fresh sandbox HOME path on stdout
   local h="$SB/$1"
   mkdir -p "$h/.flywheel/bin" "$h/.claude/plugins"
   echo "$h"
+}
+
+new_clean_source_tree() {  # <name> → minimal registered source fixture
+  local root="$SB/source-$1" rel marker
+  mkdir -p "$root/packages" "$root/scripts"
+  printf '{}\n' > "$root/package.json"
+  while IFS= read -r rel; do
+    [[ -n "$rel" ]] || continue
+    mkdir -p "$(dirname "$root/$rel")"
+    printf 'PATH="/opt/homebrew/bin:/usr/local/bin"\n' > "$root/$rel"
+  done <<EOF
+$(path_hygiene_source_path_registry)
+EOF
+  while IFS='|' read -r rel marker; do
+    [[ -n "$rel" ]] || continue
+    mkdir -p "$(dirname "$root/$rel")"
+    printf '%s\n' "$marker" > "$root/$rel"
+  done <<EOF
+$(path_hygiene_source_priority_registry)
+EOF
+  echo "$root"
 }
 
 run_check() {  # <home> [--alert] → rc; output in $SB/out.log
@@ -182,6 +207,178 @@ if [[ -n "$BEFORE" && "$BEFORE" == "$AFTER" ]]; then
   pass "10: scanner is read-only (no entry/content changes under HOME)"
 else
   fail "10: scanner wrote something" "$(diff <(echo "$BEFORE") <(echo "$AFTER") | head -5)"
+fi
+
+# ── 11. FLY-2190 real tree: the original 10-point RED is now GREEN ──
+# TDD evidence before S1 named all ten §1.1 declarations as violations. Keep
+# that exact baseline list here and prove the same registered real tree is now
+# clean, rather than replacing the test with a smaller synthetic surface.
+H="$(new_home source-real)"
+SOURCE_RC=0
+HOME="$H" bash "$CHECK" --source-tree "$REPO_ROOT" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+SOURCE_EXPECTED=(
+  "packages/claude-runner/src/tmux-server-environment.ts"
+  "scripts/lib/tmux-server-rescue.sh"
+  "scripts/flywheel-lead-wrapper-v2.sh"
+  "scripts/flywheel-bridge-wrapper.sh"
+  "scripts/flywheel-voice-bridge-wrapper.sh"
+  "scripts/flywheel-quota-monitor-wrapper.sh"
+  "scripts/restart-services.sh"
+  "packages/teamlead/scripts/templates/flywheel-codex-lead-wrapper-mufasa-tui.sh"
+  "packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh"
+  "scripts/launchd/com.flywheel.updater.plist"
+)
+SOURCE_MISSING=""
+SOURCE_REGISTRY="$(path_hygiene_source_path_registry)"
+for rel in "${SOURCE_EXPECTED[@]}"; do
+  grep -Fxq "$rel" <<<"$SOURCE_REGISTRY" || SOURCE_MISSING="${SOURCE_MISSING}${SOURCE_MISSING:+, }${rel}"
+done
+if [[ "$SOURCE_RC" -eq 0 && -z "$SOURCE_MISSING" ]]; then
+  pass "11: the same 10-point production registry that proved RED is now GREEN"
+else
+  fail "11: source-tree GREEN coverage (rc=$SOURCE_RC; unregistered=${SOURCE_MISSING:-none})" "$(cat "$SB/out.log")"
+fi
+
+# ── 12. Discovery closure: a new Python PATH declaration cannot bypass S2 ──
+SRC="$(new_clean_source_tree python-discovery)"
+cat > "$SRC/scripts/new-carrier.py" <<'EOF'
+#!/usr/bin/env python3
+PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin"
+EOF
+SOURCE_RC=0
+HOME="$(new_home source-python)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 1 ]] && grep -Fq "scripts/new-carrier.py" "$SB/out.log"; then
+  pass "12: unregistered Python PATH declaration → fail-closed violation"
+else
+  fail "12: Python discovery closure (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 13. Discovery uses the shared JS + extensionless-shebang enumerator ──
+SRC="$(new_clean_source_tree cross-type-discovery)"
+cat > "$SRC/packages/new-carrier.js" <<'EOF'
+export const env = { PATH: "/opt/homebrew/bin:/usr/local/bin:/usr/bin" };
+EOF
+cat > "$SRC/scripts/new-carrier" <<'EOF'
+#!/bin/bash
+export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin"
+EOF
+chmod +x "$SRC/scripts/new-carrier"
+SOURCE_RC=0
+HOME="$(new_home source-cross-type)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 1 ]] \
+   && grep -Fq "packages/new-carrier.js" "$SB/out.log" \
+   && grep -Fq "scripts/new-carrier" "$SB/out.log"; then
+  pass "13: JS and extensionless shebang declarations → fail-closed violations"
+else
+  fail "13: cross-file-type discovery (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 14. Comments and engineering history are outside the candidate set ──
+SRC="$(new_clean_source_tree ignored-text)"
+cat > "$SRC/scripts/comment-only.py" <<'EOF'
+# PATH = "/usr/local/bin:/opt/homebrew/bin" is historical prose, not a declaration.
+EOF
+mkdir -p "$SRC/engineering/doc"
+cat > "$SRC/engineering/doc/history.md" <<'EOF'
+PATH=/usr/local/bin:/opt/homebrew/bin
+EOF
+SOURCE_RC=0
+HOME="$(new_home source-ignored)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 0 ]]; then
+  pass "14: comments and engineering history do not produce false positives"
+else
+  fail "14: ignored text (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 15. Locked fake-bin fixtures are explicit exceptions, not silent skips ──
+SRC="$(new_clean_source_tree fake-bin-exceptions)"
+for rel in \
+  scripts/__tests__/lead-alert-dirs.test.sh \
+  scripts/__tests__/codex-log-guard.test.sh \
+  scripts/__tests__/lead-alert-founder-timezone.test.sh; do
+  mkdir -p "$(dirname "$SRC/$rel")"
+  printf 'PATH="${FAKEBIN}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin"\n' > "$SRC/$rel"
+done
+SOURCE_RC=0
+HOME="$(new_home source-exceptions)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 0 ]]; then
+  pass "15: the three registered fake-bin fixtures are accepted"
+else
+  fail "15: fake-bin exception registry (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 16. qa-result's non-PATH gh list is a first-class guarded priority ──
+SRC="$(new_clean_source_tree qa-result-priority)"
+mkdir -p "$SRC/packages/flywheel-comm/src/commands"
+cat > "$SRC/packages/flywheel-comm/src/commands/qa-result.ts" <<'EOF'
+export const QA_GITHUB_CLI_CANDIDATES = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh",] as const;
+EOF
+SOURCE_RC=0
+HOME="$(new_home source-qa-result)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 0 ]]; then
+  pass "16: registered qa-result native-first gh list is accepted"
+else
+  fail "16: qa-result priority registration (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 17. qa-result cannot silently return to Intel-first resolution ──
+SRC="$(new_clean_source_tree qa-result-reversed)"
+cat > "$SRC/packages/flywheel-comm/src/commands/qa-result.ts" <<'EOF'
+export const QA_GITHUB_CLI_CANDIDATES = ["/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/usr/bin/gh",] as const;
+EOF
+SOURCE_RC=0
+HOME="$(new_home source-qa-result-red)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 1 ]] && grep -Fq "packages/flywheel-comm/src/commands/qa-result.ts" "$SB/out.log"; then
+  pass "17: reversed qa-result gh list → fail-closed violation"
+else
+  fail "17: qa-result reversed priority (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 18. The QA launchd parity declaration is mandatory in the registry ──
+SRC="$(new_clean_source_tree qa-parity-missing)"
+rm -f "$SRC/scripts/lib/qa-launchd-lead.sh"
+SOURCE_RC=0
+HOME="$(new_home source-qa-parity)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 1 ]] && grep -Fq "scripts/lib/qa-launchd-lead.sh" "$SB/out.log"; then
+  pass "18: missing registered QA parity declaration → fail-closed violation"
+else
+  fail "18: QA parity registration (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 19. Both source-managed live Codex Lead carriers are guarded ──
+SRC="$(new_clean_source_tree live-codex-missing)"
+rm -f "$SRC/scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh"
+SOURCE_RC=0
+HOME="$(new_home source-live-codex)" bash "$CHECK" --source-tree "$SRC" > "$SB/out.log" 2>&1 || SOURCE_RC=$?
+if [[ "$SOURCE_RC" -eq 1 ]] && grep -Fq "scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh" "$SB/out.log"; then
+  pass "19: missing live Codex Lead wrapper declaration → fail-closed violation"
+else
+  fail "19: live Codex Lead registry (rc=$SOURCE_RC)" "$(cat "$SB/out.log")"
+fi
+
+# ── 20. Existing native-first production declarations remain registered ──
+SOURCE_NATIVE_EXPECTED=(
+  "scripts/flywheel-cmux-autostart.sh"
+  "scripts/meeting-notes-tick.sh"
+  "scripts/xiaohongshu-learning-tick.sh"
+  "scripts/com.flywheel.log-janitor.plist"
+  "scripts/launchd/com.flywheel.voucher-watch.plist"
+  "scripts/launchd/com.flywheel.daily-digest.plist"
+  "scripts/launchd/com.flywheel.token-usage-daily.plist"
+  "scripts/launchd/com.flywheel.codex-log-guard.plist"
+  "scripts/launchd/com.flywheel.bridge-liveness-probe.plist"
+  "scripts/com.flywheel.calendar-sweep.plist.template"
+  "scripts/host-tmux-selection-gate.sh"
+)
+SOURCE_REGISTRY="$(path_hygiene_source_path_registry)"
+SOURCE_MISSING=""
+for rel in "${SOURCE_NATIVE_EXPECTED[@]}"; do
+  grep -Fxq "$rel" <<<"$SOURCE_REGISTRY" || SOURCE_MISSING="${SOURCE_MISSING}${SOURCE_MISSING:+, }${rel}"
+done
+if [[ -z "$SOURCE_MISSING" ]]; then
+  pass "20: all existing native-first production declarations are registered"
+else
+  fail "20: native-first registry completeness" "missing=$SOURCE_MISSING"
 fi
 
 echo ""

@@ -114,7 +114,7 @@ fi
 #   default = the wrapper's PATH, VERBATIM and IN ORDER (must stay in sync with
 #   flywheel-codex-lead-wrapper-mufasa-tui.sh). Empty result = tmux genuinely not in
 #   that order → no reachable tmux window can exist.
-WRAPPER_TMUX_PATH="${FLYWHEEL_ROLLBACK_TMUX_PATH:-${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}}"
+WRAPPER_TMUX_PATH="${FLYWHEEL_ROLLBACK_TMUX_PATH:-${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}}"
 TMUX_BIN="$(PATH="$WRAPPER_TMUX_PATH" command -v tmux || true)"
 unset TMUX_TMPDIR
 

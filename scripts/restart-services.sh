@@ -30,7 +30,7 @@ DEPLOY_CONSISTENCY_ARMED=false
 # dirs where the toolchain lives so this script resolves them regardless of how
 # it was invoked (launchd, cron, interactive). Belt-and-suspenders with the
 # plist's EnvironmentVariables→PATH.
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # ════════════════════════════════════════════════════════════════
 # Configuration

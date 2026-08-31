@@ -29,6 +29,12 @@ import { currentWorkflowCredentialFromEnv } from "./workflow-activation.js";
 
 const VALID_STATUSES = new Set(["pass", "fail"]);
 
+export const QA_GITHUB_CLI_CANDIDATES = [
+	"/opt/homebrew/bin/gh",
+	"/usr/local/bin/gh",
+	"/usr/bin/gh",
+] as const;
+
 const ATTEMPT_COUNT = 4;
 const ATTEMPT_TIMEOUT_MS = 5000;
 const BACKOFF_MS = [1000, 2000, 4000] as const;
@@ -360,7 +366,7 @@ function createQaGitContext(dependencies: QaResultDependencies): QaGitContext {
 	const cleanHome = join(stagingRoot, "home");
 	const githubCliPath = resolveOptionalTrustedBinary(
 		dependencies.githubCliPath,
-		["/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/usr/bin/gh"],
+		QA_GITHUB_CLI_CANDIDATES,
 		"GitHub CLI",
 	);
 	const runGitHubCredential = githubCliPath

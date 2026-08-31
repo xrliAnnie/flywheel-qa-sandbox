@@ -9,13 +9,13 @@
         <string>/bin/bash</string>
         <string>/Users/xiaorongli/Dev/flywheel/scripts/update-flywheel.sh</string>
     </array>
-    <!-- FLY-299: launchd's default PATH lacks /usr/local/bin, so restart-services.sh's
+    <!-- FLY-299/FLY-2190: launchd's default PATH lacks Homebrew, so restart-services.sh's
          `pnpm install`/`pnpm build` fail with 'pnpm: command not found' during the
-         detached deploy. Pin a PATH that resolves pnpm/node (/usr/local/bin),
-         git/jq (/usr/bin), launchctl (/bin), + homebrew + user bins. Absolute paths. -->
+         detached deploy. Prefer native Homebrew for pnpm/node, retain Intel Homebrew
+         only as fallback, and keep git/jq (/usr/bin) + launchctl (/bin). Absolute paths. -->
     <key>EnvironmentVariables</key>
     <dict>
-        <key>PATH</key><string>/Users/xiaorongli/.local/bin:/Users/xiaorongli/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PATH</key><string>/Users/xiaorongli/.local/bin:/Users/xiaorongli/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     </dict>
     <!-- FLY-1959: only founder-authorized emergency tokens trigger this job.
          Ordinary merges publish nothing and never start updater. A token that

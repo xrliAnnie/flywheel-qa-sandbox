@@ -98,7 +98,7 @@ describe("scrubManagedTmuxEnvironments", () => {
 			expect(first.join("\n")).not.toMatch(
 				/CODEX_HOME|OPENAI_API_KEY|DISCORD_BOT_TOKEN/,
 			);
-			const canonicalPath = `${home}/.local/bin:${home}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
+			const canonicalPath = `${home}/.local/bin:${home}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`;
 			for (const scope of first)
 				expect(scope).toContain(`PATH=${canonicalPath}`);
 
@@ -185,7 +185,7 @@ describe("scrubManagedTmuxEnvironments", () => {
 			expect(args).not.toContain("LANG");
 			expect(args).not.toContain("TERM");
 			expect(args.at(-1)).toBe(
-				"/Users/x/.local/bin:/Users/x/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+				"/Users/x/.local/bin:/Users/x/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
 			);
 		}
 		const observable = JSON.stringify({ calls, log, result });

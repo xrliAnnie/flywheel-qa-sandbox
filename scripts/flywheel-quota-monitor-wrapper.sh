@@ -32,7 +32,7 @@ source "$ENV_SNAPSHOT"
 cleanup_snapshot
 trap - EXIT
 
-export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # FLY-2190: direct launchd KeepAlive births must pass the converged host tmux
 # selection gate before quota-specific validation or daemon exec consumes S1.

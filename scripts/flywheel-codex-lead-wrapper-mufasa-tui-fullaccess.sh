@@ -23,7 +23,7 @@ source "$ENV_FILE"
 if [ "$_wrapper_prev_allexport" = "off" ]; then set +a; fi
 unset _wrapper_prev_allexport
 
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # FLY-2190: this distinct launchd KeepAlive carrier needs its own mount.
 host_tmux_gate_fail_loud() {

@@ -669,7 +669,7 @@ describe("ensureRunnerTuiWindow", () => {
 		expect(birthEnvironments).toHaveLength(2);
 		for (const env of birthEnvironments) {
 			expect(env?.PATH).toBe(
-				`${env?.HOME}/.local/bin:${env?.HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+				`${env?.HOME}/.local/bin:${env?.HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
 			);
 			expect(env).not.toHaveProperty("CODEX_HOME");
 			expect(env).not.toHaveProperty("FLYWHEEL_CODEX_BIN");

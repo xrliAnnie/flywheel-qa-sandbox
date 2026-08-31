@@ -1100,7 +1100,7 @@ OUT="$(tmux_socket_ensure "$REQUEST_SOCKET" \
   --create tmux -S "$TEST_SOCKET" new-session -d -P -F '#{window_id}' -s flywheel)"
 ENSURE_RC=$?
 CREATE_LINE="$(grep 'new-session' "$TMUX_CALL_LOG" | tail -1)"
-EXPECTED_CREATE_PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+EXPECTED_CREATE_PATH="$HOME/.local/bin:$HOME/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 if [ "$ENSURE_RC" -eq 0 ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.action')" = "created" ] \
   && [ "$(printf '%s' "$OUT" | jq -r '.reachablePid')" = "7272" ] \

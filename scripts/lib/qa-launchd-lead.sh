@@ -68,7 +68,7 @@ qa_launchd_render_plist() {
   x_env=$(printf '%s' "$env_file" | qa_launchd_xml_escape)
   x_log=$(printf '%s' "$log_file" | qa_launchd_xml_escape)
   x_summary_config_home=$(printf '%s' "$summary_config_home" | qa_launchd_xml_escape)
-  x_path=$(printf '%s' "${FLYWHEEL_QA_LAUNCHD_PATH:-${home}/.local/bin:${home}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin}" \
+  x_path=$(printf '%s' "${FLYWHEEL_QA_LAUNCHD_PATH:-${home}/.local/bin:${home}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}" \
     | qa_launchd_xml_escape)
   tmp="${plist}.tmp.$$"
   mkdir -p "$(dirname "$plist")" || return 1

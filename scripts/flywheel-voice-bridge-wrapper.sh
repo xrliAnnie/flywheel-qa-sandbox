@@ -42,7 +42,7 @@ source "$ENV_FILE"
 set +a
 
 # ── Expand PATH for launchd minimal env ────────────────────────
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # FLY-2190: direct launchd KeepAlive births bypass updater/restart entry points,
 # so this carrier checks the converged host tmux gate before consuming S1 PATH.

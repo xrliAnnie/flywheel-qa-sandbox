@@ -79,7 +79,7 @@ esac
 # launchd's default PATH omits Homebrew and user-local binaries. Expand the
 # wrapper's own environment before resolving tmux, then pass that same proven
 # search path through the env -i carrier boundary.
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH:-/usr/bin:/bin:/usr/sbin:/sbin}"
 ADDRESS_LIB="$SELF_DIR/lib/lead-address.sh"
 [ -f "$ADDRESS_LIB" ] || fatal "Lead address helper missing: $ADDRESS_LIB"
 # shellcheck source=lib/lead-address.sh

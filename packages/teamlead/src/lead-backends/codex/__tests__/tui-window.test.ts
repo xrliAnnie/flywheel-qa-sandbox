@@ -126,7 +126,7 @@ describe("ensureTuiWindow", () => {
 				.sort(),
 		);
 		expect(birthEnv?.PATH).toBe(
-			`${birthEnv?.HOME}/.local/bin:${birthEnv?.HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
+			`${birthEnv?.HOME}/.local/bin:${birthEnv?.HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin`,
 		);
 		expect(birthEnv).not.toHaveProperty("CODEX_HOME");
 		expect(birthEnv).not.toHaveProperty("FLYWHEEL_CODEX_BIN");

@@ -19,6 +19,7 @@ import {
 	classifyQaResultRejection,
 	createOneShotGitCredentialHelper,
 	parseGitHubCredentialOutput,
+	QA_GITHUB_CLI_CANDIDATES,
 	qaResult,
 	type WorkflowQaDecisionBody,
 } from "../qa-result.js";
@@ -31,6 +32,14 @@ afterEach(() => {
 });
 
 describe("FLY-1686 GitHub credential boundary", () => {
+	it("prefers the native Homebrew GitHub CLI before the Intel fallback", () => {
+		expect(QA_GITHUB_CLI_CANDIDATES).toEqual([
+			"/opt/homebrew/bin/gh",
+			"/usr/local/bin/gh",
+			"/usr/bin/gh",
+		]);
+	});
+
 	it("accepts only the exact bounded Git credential protocol response", () => {
 		expect(
 			parseGitHubCredentialOutput(

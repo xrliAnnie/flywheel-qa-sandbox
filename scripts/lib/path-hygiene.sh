@@ -141,3 +141,256 @@ path_hygiene_target_is_temp_or_worktree() {
   [ -f "$root/.git" ] && return 0
   return 1
 }
+
+# FLY-2190 S2: production PATH declarations whose Homebrew precedence is a
+# repository contract. Keep the registry explicit: discovery (added below)
+# prevents new declarations from bypassing the rule, while this list prevents
+# a known declaration from disappearing or silently changing shape.
+path_hygiene_source_path_registry() {
+  cat <<'EOF'
+packages/claude-runner/src/tmux-server-environment.ts
+scripts/lib/tmux-server-rescue.sh
+scripts/flywheel-lead-wrapper-v2.sh
+scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
+scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
+scripts/flywheel-bridge-wrapper.sh
+scripts/flywheel-voice-bridge-wrapper.sh
+scripts/flywheel-quota-monitor-wrapper.sh
+scripts/restart-services.sh
+packages/teamlead/scripts/templates/flywheel-codex-lead-wrapper-mufasa-tui.sh
+packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh
+scripts/launchd/com.flywheel.updater.plist
+scripts/lib/qa-launchd-lead.sh
+scripts/flywheel-cmux-autostart.sh
+scripts/meeting-notes-tick.sh
+scripts/xiaohongshu-learning-tick.sh
+scripts/com.flywheel.log-janitor.plist
+scripts/launchd/com.flywheel.voucher-watch.plist
+scripts/launchd/com.flywheel.daily-digest.plist
+scripts/launchd/com.flywheel.token-usage-daily.plist
+scripts/launchd/com.flywheel.codex-log-guard.plist
+scripts/launchd/com.flywheel.bridge-liveness-probe.plist
+scripts/com.flywheel.calendar-sweep.plist.template
+scripts/host-tmux-selection-gate.sh
+packages/claude-runner/test/runner-env-isolation.real-tmux.test.ts
+packages/claude-runner/test/codex-runner-tui-window.test.ts
+packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts
+packages/teamlead/src/bridge/__tests__/tmux-environment-scrub.test.ts
+scripts/__tests__/tmux-server-rescue.test.sh
+scripts/__tests__/host-tmux-selection-s0-scope.test.sh
+scripts/test-cmux-sync.sh
+scripts/__tests__/token-usage-daily-channel.test.sh
+scripts/__tests__/token-usage-daily-failloud.test.sh
+EOF
+}
+
+# Non-PATH first-match lists whose Homebrew ordering carries the same Rosetta
+# retirement risk. Format: path|required literal substring.
+path_hygiene_source_priority_registry() {
+  cat <<'EOF'
+packages/flywheel-comm/src/commands/qa-result.ts|QA_GITHUB_CLI_CANDIDATES=["/opt/homebrew/bin/gh","/usr/local/bin/gh","/usr/bin/gh",]asconst
+EOF
+}
+
+path_hygiene_source_priority_matches() {
+  local wanted_rel="${1:-}" wanted_line="${2:-}" rel marker normalized_line
+  normalized_line="$(printf '%s' "$wanted_line" | tr -d '[:space:]')"
+  while IFS='|' read -r rel marker; do
+    [ "$rel" = "$wanted_rel" ] || continue
+    case "$normalized_line" in *"$marker"*) return 0 ;; esac
+  done <<EOF
+$(path_hygiene_source_priority_registry)
+EOF
+  return 1
+}
+
+path_hygiene_source_registry_contains() {
+  local wanted="${1:-}" registered
+  while IFS= read -r registered; do
+    [ "$registered" = "$wanted" ] && return 0
+  done <<EOF
+$(path_hygiene_source_path_registry)
+EOF
+  return 1
+}
+
+# path|required line marker|reason. Exceptions are intentionally exact; there
+# is no blanket __tests__ exclusion because test mirrors can still pin a
+# production PATH contract.
+path_hygiene_source_exception_registry() {
+  cat <<'EOF'
+scripts/__tests__/lead-alert-dirs.test.sh|${FAKEBIN}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin|fake bin is the priority under test; Homebrew entries are inert fallbacks
+scripts/__tests__/codex-log-guard.test.sh|${FAKEBIN}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin|fake bin is the priority under test; Homebrew entries are inert fallbacks
+scripts/__tests__/lead-alert-founder-timezone.test.sh|${FAKEBIN}:/usr/bin:/bin:/usr/local/bin:/opt/homebrew/bin|fake bin is the priority under test; Homebrew entries are inert fallbacks
+packages/flywheel-comm/src/commands/qa-result.ts|["/usr/bin/git", "/usr/local/bin/git", "/opt/homebrew/bin/git"]|system Git is the first choice; Homebrew ordering is never consulted
+packages/teamlead/scripts/codex-lead-tui-home.sh|/opt/homebrew/bin/bash /usr/local/bin/bash|explicit interpreter capability probe, not a PATH declaration
+packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh|/opt/homebrew/bin/bash /usr/local/bin/bash|test-only interpreter capability probe
+scripts/check-global-path-hygiene.sh|do not prefer /opt/homebrew/bin over /usr/local/bin|diagnostic prose emitted by this guard
+scripts/host-terminal-cutover.sh|ls -ld /usr/local/bin/tmux /opt/homebrew/bin/tmux|two-path link inventory, not a first-match declaration
+scripts/qa-fly-1986-load-probe.sh|python3 /usr/local/bin/python3 /opt/homebrew/bin/python3|explicit multi-interpreter QA probe
+scripts/__tests__/fly1577-cmux-bin-closure.test.sh|for d in /opt/homebrew/bin /usr/local/bin|test cleanup visits both roots explicitly
+scripts/qa-fly-153-mirror-smoke.sh|/opt/homebrew/bin/bash (Apple Silicon) or /usr/local/bin/bash|operator diagnostic names two explicit interpreters
+scripts/lib/path-hygiene.sh|*|guard implementation contains the literals and registries it classifies
+scripts/__tests__/check-global-path-hygiene.test.sh|*|guard test generates positive, negative, and exception fixtures deliberately
+EOF
+}
+
+path_hygiene_source_exception_matches() {
+  local wanted_rel="${1:-}" wanted_line="${2:-}" rel marker reason
+  while IFS='|' read -r rel marker reason; do
+    [ "$rel" = "$wanted_rel" ] || continue
+    [ "$marker" = "*" ] && return 0
+    case "$wanted_line" in *"$marker"*) return 0 ;; esac
+  done <<EOF
+$(path_hygiene_source_exception_registry)
+EOF
+  return 1
+}
+
+path_hygiene_source_file_is_scannable() {
+  local file="${1:-}" base first
+  case "$file" in
+    *.sh|*.bash|*.py|*.js|*.cjs|*.mjs|*.ts|*.tsx|*.mts|*.cts|*.plist) return 0 ;;
+  esac
+  base="$(basename "$file")"
+  case "$base" in *.*) return 1 ;; esac
+  [ -x "$file" ] || return 1
+  IFS= read -r first < "$file" || return 1
+  case "$first" in '#!'*) return 0 ;; *) return 1 ;; esac
+}
+
+# Finds mixed-prefix declarations outside the explicit registry. Correctly
+# ordered declarations still fail closed until they are registered: otherwise
+# a new carrier could bypass the known-file half of the guard.
+path_hygiene_discover_unregistered_source_declarations() {
+  local root="${1:-}" source_list file rel line line_no trimmed violations
+  violations=0
+  source_list="$(mktemp "${TMPDIR:-/tmp}/flywheel-path-sources.XXXXXX")" || {
+    echo "repo-root: unable to allocate source discovery list"
+    return 1
+  }
+  find "$root/packages" "$root/scripts" -type f \
+    ! -path '*/node_modules/*' ! -path '*/dist/*' \
+    ! -path '*/.tmp-*/*' -print > "$source_list" || {
+      rm -f "$source_list"
+      echo "repo-root: source discovery failed under $root"
+      return 1
+    }
+  while IFS= read -r file; do
+    path_hygiene_source_file_is_scannable "$file" || continue
+    rel="${file#"$root"/}"
+    path_hygiene_source_registry_contains "$rel" && continue
+    line_no=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      line_no=$((line_no + 1))
+      case "$line" in
+        *'/opt/homebrew/bin'*'/usr/local/bin'*|*'/usr/local/bin'*'/opt/homebrew/bin'*) : ;;
+        *) continue ;;
+      esac
+      trimmed="${line#"${line%%[![:space:]]*}"}"
+      case "$trimmed" in
+        \#*|//*|\**|'<!--'*) continue ;;
+      esac
+      path_hygiene_source_priority_matches "$rel" "$line" && continue
+      path_hygiene_source_exception_matches "$rel" "$line" && continue
+      echo "$rel:$line_no: unregistered mixed-prefix declaration"
+      violations=$((violations + 1))
+    done < "$file"
+  done < "$source_list"
+  rm -f "$source_list"
+  [ "$violations" -eq 0 ]
+}
+
+# path_hygiene_native_homebrew_precedes_intel <text>
+# rc=0 only when both prefixes exist and /opt/homebrew/bin occurs first.
+path_hygiene_native_homebrew_precedes_intel() {
+  local text="${1:-}" native_prefix intel_prefix
+  case "$text" in
+    *'/opt/homebrew/bin'*'/usr/local/bin'*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# path_hygiene_scan_registered_source_tree <repo-root>
+# Prints one relative-path finding per violation and returns 1 when any are
+# found. The root and every registered file are fail-closed.
+path_hygiene_scan_registered_source_tree() {
+  local root="${1:-}" canon rel file line line_no found violations trimmed
+  local marker normalized_source discovery_findings discovery_rc finding
+  violations=0
+  canon="$(path_hygiene_canonicalize "$root")" || {
+    echo "repo-root: unresolvable source root: $root"
+    return 1
+  }
+  if [ ! -d "$canon/packages" ] || [ ! -d "$canon/scripts" ] || [ ! -f "$canon/package.json" ]; then
+    echo "repo-root: invalid Flywheel source root: $canon"
+    return 1
+  fi
+
+  while IFS= read -r rel; do
+    [ -n "$rel" ] || continue
+    file="$canon/$rel"
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      echo "$rel: registered source file is missing or unreadable"
+      violations=$((violations + 1))
+      continue
+    fi
+    found=0
+    line_no=0
+    while IFS= read -r line || [ -n "$line" ]; do
+      line_no=$((line_no + 1))
+      case "$line" in
+        *'/opt/homebrew/bin'*'/usr/local/bin'*|*'/usr/local/bin'*'/opt/homebrew/bin'*) : ;;
+        *) continue ;;
+      esac
+      trimmed="${line#"${line%%[![:space:]]*}"}"
+      case "$trimmed" in
+        \#*|//*|\**|'<!--'*) continue ;;
+      esac
+      found=$((found + 1))
+      if ! path_hygiene_native_homebrew_precedes_intel "$line"; then
+        echo "$rel:$line_no: /opt/homebrew/bin must precede /usr/local/bin"
+        violations=$((violations + 1))
+      fi
+    done < "$file"
+    if [ "$found" -eq 0 ]; then
+      echo "$rel: registered PATH declaration is missing"
+      violations=$((violations + 1))
+    fi
+  done <<EOF
+$(path_hygiene_source_path_registry)
+EOF
+
+  while IFS='|' read -r rel marker; do
+    [ -n "$rel" ] || continue
+    file="$canon/$rel"
+    if [ ! -f "$file" ] || [ ! -r "$file" ]; then
+      echo "$rel: registered priority source file is missing or unreadable"
+      violations=$((violations + 1))
+    else
+      normalized_source="$(tr -d '[:space:]' < "$file")"
+      case "$normalized_source" in
+        *"$marker"*) : ;;
+        *)
+          echo "$rel: registered native-first priority list is missing or reordered"
+          violations=$((violations + 1))
+          ;;
+      esac
+    fi
+  done <<EOF
+$(path_hygiene_source_priority_registry)
+EOF
+
+  discovery_findings=""
+  discovery_rc=0
+  discovery_findings="$(path_hygiene_discover_unregistered_source_declarations "$canon")" || discovery_rc=$?
+  if [ "$discovery_rc" -ne 0 ]; then
+    while IFS= read -r finding; do
+      [ -n "$finding" ] || continue
+      echo "$finding"
+      violations=$((violations + 1))
+    done <<<"$discovery_findings"
+  fi
+
+  [ "$violations" -eq 0 ]
+}

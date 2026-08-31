@@ -51,7 +51,7 @@ set +a
 # ── Expand PATH for launchd minimal env ────────────────────────
 # launchd provides only /usr/bin:/bin:/usr/sbin:/sbin.
 # tsx, npx, node, jq, brew tools live outside that.
-export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/usr/local/bin:/opt/homebrew/bin:${PATH}"
+export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 # FLY-2190: this wrapper can be born directly from launchd KeepAlive, bypassing
 # updater and restart-services. Gate here before a preflight can consume the

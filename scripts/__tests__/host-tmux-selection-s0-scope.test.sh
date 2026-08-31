@@ -1,6 +1,6 @@
 #!/bin/bash
-# FLY-2190 lap boundary: this PR is S0-only. The approved S1 declarations must
-# remain byte-semantically Intel-first until S0 is deployed and A0 is live.
+# FLY-2190 S1 continuation: S0 is deployed and every managed carrier declaration
+# must now be byte-semantically native-Homebrew-first.
 set -uo pipefail
 
 PASSED=0
@@ -29,23 +29,26 @@ scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh
 
 missing=""
 for path in $PATH_DECLARATIONS; do
-  if [ ! -f "$path" ] || ! grep -Fq '/usr/local/bin:/opt/homebrew/bin' "$path"; then
+  if [ ! -f "$path" ] || ! grep -Fq '/opt/homebrew/bin:/usr/local/bin' "$path"; then
     missing="${missing}${missing:+ }$path"
   fi
 done
 if [ -z "$missing" ]; then
-  pass "all deferred S1 PATH declarations remain Intel-first in the S0 lap"
+  pass "all S1 PATH declarations are native-Homebrew-first"
 else
-  fail "S1 PATH bytes changed early: $missing"
+  fail "S1 PATH declarations are missing or not native-first: $missing"
 fi
 
 GH_FILE=packages/flywheel-comm/src/commands/qa-result.ts
-if grep -Fq '["/usr/local/bin/gh", "/opt/homebrew/bin/gh", "/usr/bin/gh"]' \
-  "$GH_FILE"; then
-  pass "the deferred non-PATH gh priority list also remains unchanged"
-else
-  fail "the S1 gh priority list changed in the S0 lap"
-fi
+GH_NORMALIZED=$(tr -d '[:space:]' < "$GH_FILE")
+case "$GH_NORMALIZED" in
+*'QA_GITHUB_CLI_CANDIDATES=["/opt/homebrew/bin/gh","/usr/local/bin/gh","/usr/bin/gh",]asconst'*)
+  pass "the non-PATH gh priority list is native-Homebrew-first"
+  ;;
+*)
+  fail "the S1 gh priority list is missing or not native-first"
+  ;;
+esac
 
 echo ""
 echo "host-tmux-selection-s0-scope: PASSED=$PASSED FAILED=$FAILED"
