@@ -1,0 +1,29 @@
+# Design Review — design-correction.md FLY-2207 cmux-watcher-lifecycle (Round 5)
+
+Date: 2026-08-31
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+Revision R2 materially closes all five Round 4 themes: alert secrets are minimally projected, snapshot freshness and stall alerting match the real fence, terminal teardown is acknowledged as new authority, and rebind now requires both source and exact workspace ownership. Three code-level gaps remain: the proposed live-pane terminal marker cannot pass the current cleanup queue, the existing viewer-construction WAL does not cover the later receipt/attach phases, and source identity is still ambiguous when two distinct executions map to the same mirror title.
+
+## What's Good (Keep)
+
+- Keep the appendix-only process. The updated correction is committed at `818728303db04fb39b2c1c6cfcf38d88228e5b92`, and `plan.md` is not part of the correction delta.
+- T6 now preserves least privilege: no wholesale `.env` inheritance, inherited route values retain precedence, unsafe env files degrade the alert leg without blocking watcher birth, and QA proves that unrelated secrets do not reach the watcher.
+- T7.1 now matches the implementation's actual authority: the complete snapshot header tuple and fence result are asserted, mtime is diagnostic only, and one durable stall-episode alert replaces per-marker fan-out.
+- T8's workspace-side ownership is now sound in principle. Birth-record/UUID adoption is preferred, and the stale-receipt fallback requires a unique UUID match with no competing claim; a founder-created same-title workspace naturally remains unowned and untouched.
+- The mutation-time generation/ref/UUID/window checks, active flag registration, negative takeover cases, race injection, and hermetic production isolation are all appropriate for this founder-facing surface.
+
+## Issues & Recommendations
+
+1. **T7's live-pane bridge still cannot traverse the existing cleanup path.** The ordinary marker written by `mark_for_cleanup` contains only `title|epoch|round`; `process_pending_cleanups` explicitly drops that row when `is_pane_alive` returns live. That is exactly the state T7.2b proposes to mark. Even if the liveness cancellation were bypassed, `cleanup_workspace_for` dismantles the linked view/workspace but does not kill the original live source window, so the next additive scan can create the tab again. No existing watcher cleanup primitive currently turns a still-live source execution into a dead exact window. **Fix:** specify the terminal teardown transaction rather than only “mint a marker.” After N complete terminal observations (and a complete active roster proving the exec absent), persist the exact terminal episode; mutation-time revalidate terminal evidence, tmux generation, session/window id, exact exec option, pane liveness, mirror title, and unique workspace ownership; then issue an exact guarded source-window teardown or invoke an existing exact close authority, verify the source window is gone, and only then enter the ordinary marker/close-request path. Define crash replay between source teardown and marker delivery, plus a hook-drop fallback. QA must prove that the terminal row is not canceled as “pane alive,” the source is actually gone, the workspace closes, and the additive pass does not recreate it.
+
+2. **The existing construction WAL does not own the complete T8 transaction described in the appendix.** `create_or_replace_view_session` records only tmux viewer construction and deletes its WAL before returning. Receipt adoption happens through the separate ledger, and attach/recovery uses separate attach state. Therefore a crash after viewer construction but before receipt/attach is outside that WAL, and “crash replay is owned by the construction WAL” cannot guarantee one attempt for the full durable key. The plan also does not state when the once-per-key intent is durably consumed; a crash before that write can repeat an attempt, while consuming it on a pre-mutation transient can permanently strand a recoverable tab and violate the one-scan acceptance. **Fix:** either extend the existing WAL schema/phases so the full rebind key and receipt/attach outcomes remain recorded until final verification, or explicitly compose the viewer WAL, UUID receipt ledger, and attach-heal state as an idempotent replay protocol. In either form, persist the full-key intent before the first mutation, distinguish “no mutation occurred; retryable” from “mutation attempted; terminally latched,” and persist success/failure before clearing or suppressing the branch. Crash tests must cover the current WAL-removal boundary, receipt prepare/commit, attach send, post-send verification, and episode-state persistence—not only boundaries inside `create_or_replace_view_session`.
+
+3. **T8 proves uniqueness per execution, not uniqueness of the execution selected for a workspace.** `node_registry_valid` makes execution ids and node-summary titles unique, but it does not make the `last_mirror` field unique. Same-title retries can therefore produce two live registry rows with different exec ids, each having exactly one valid `@flywheel_exec_id` window. Both satisfy the stated source-side predicate, so choosing either would be a guess even though the “duplicate windows for one exec id” test passes. **Fix:** require exactly one current candidate across the whole workspace title: one complete active-roster execution, one registry row whose exact `last_mirror` is the workspace title, and one live tmux window carrying that execution id. Recompute that candidate count in the mutation-time guard. Add a negative test with two distinct live exec ids, each on one exact window, both mapped to the same mirror title; the rebind must refuse and emit only the existing alert kind.
+
+## Verdict
+
+CHANGES REQUESTED — address items above

@@ -196,6 +196,15 @@ truth.ts 只是文档面,注册/漂移测试随注册表走;Codex R4 #2)
   `FLYWHEEL_CMUX_REBIND_DISABLED` env 杀开关(登记 truth.ts),
   设置后回到纯 fail-closed 现状。
 
+## 2.5 评审记录与非阻塞 watchpoint
+
+本附录经 Codex 设计评审 3 轮(R4 提 5 条、R5 提 3 条,全部采纳;R6 APPROVED)。
+R6 留一条**非阻塞** implement watchpoint:`cleanup_stale_conservative` 依赖既存
+`cmux-*` linked session,而精确源 window teardown 可能把源与唯一持有 view 一并
+移除 —— hook 丢失且双锚皆失时,权威兜底应是 terminal episode 重放(或既有
+FLY-293 锚独立 orphan-pin reaper),不能只靠 conservative 扫描;hermetic T7
+测试矩阵须含「源 teardown 验证完成后、marker 投递前」的崩溃切点。
+
 ## 3. 验收增补(并入 plan §5 对照表)
 
 | 验收(lead-instruction fdf37f7d) | 证据 |
