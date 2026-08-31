@@ -1,13 +1,13 @@
 ---
 issue: FLY-2207
 phase: implement
-phaseCursor: 1/6
-updated: 2026-08-31T20:12:55.333Z
-nextStep: TDD launchd-safe kickstart and job-absent rebuild
+phaseCursor: 2/6
+updated: 2026-08-31T20:23:12.763Z
+nextStep: TDD patrol rebuild retries and 10-minute escalation routing
 chunks: []
 pointers: {}
 ---
 
 # FLY-2207 progress
-**phase**: implement (1/6)
-**next**: TDD launchd-safe kickstart and job-absent rebuild
+**phase**: implement (2/6)
+**next**: TDD patrol rebuild retries and 10-minute escalation routing
