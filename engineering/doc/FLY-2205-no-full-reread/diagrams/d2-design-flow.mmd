@@ -1,0 +1,14 @@
+flowchart TB
+  subgraph SRC["念读被打断之后"]
+    A["从语音转写记录里算出断点:<br/>三段稿子里哪几段已经完整念过<br/>(你开口之后才到的记录一律不算)"]
+  end
+  A --> M{"founder 选的模式"}
+  M -->|"断点续念(推荐默认)"| R1["下次只念没念完的段落<br/>开头加一句『刚才被打断了,接着说』"]
+  M -->|"直接作废"| R3["这一场不再念<br/>文字区留一条记录<br/>下次进房再完整念"]
+  subgraph SHIP["ship 卡(批准卡)专属"]
+    S1["卡完整念过一遍之后再被打断:<br/>改念短卡一句(标题+编号)"]
+    S2["重复催促有上限:<br/>超过次数就停,这一场不再念"]
+  end
+  style R1 fill:#e8f5e9,stroke:#34c759,stroke-width:2px
+  style S1 fill:#e3f2fd,stroke:#007aff
+  style S2 fill:#e3f2fd,stroke:#007aff

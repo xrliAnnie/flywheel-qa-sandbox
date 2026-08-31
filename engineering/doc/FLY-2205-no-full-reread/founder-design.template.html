@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2205 插嘴后不整篇重念 — 设计</title>
+<style>
+  :root { --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --gray:#86868b; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; color:var(--navy); margin:8px 0 4px; }
+  .meta { color:var(--gray); font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); }
+  .card.green { border-left-color:var(--green); }
+  .card.amber { border-left-color:var(--amber); }
+  .card.purple { border-left-color:var(--purple); }
+  .card h2 { font-size:19px; margin:0 0 10px; color:var(--navy); }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  .lede { font-size:17px; }
+  .term { border-bottom:1px dotted var(--gray); }
+  .note { color:var(--gray); font-size:13px; }
+  .quote { background:#f5f5f7; border-radius:8px; padding:10px 14px; font-size:15px; margin:10px 0; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; }
+  .diagram { overflow-x:auto; margin:12px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .badge { display:inline-block; font-size:12px; padding:2px 8px; border-radius:10px; margin-right:6px; vertical-align:middle; }
+  .badge.rec { background:#e8f5e9; color:#1b5e20; }
+  .badge.warn { background:#fff8e1; color:#8a6d00; }
+  .cmt { margin-top:16px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .cmt label { font-size:13px; color:var(--gray); display:block; margin-bottom:6px; }
+  .cmt textarea { width:100%; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cmt textarea:focus { outline:2px solid var(--blue); border-color:transparent; }
+  #summaryBody { white-space:pre-wrap; font-size:14px; background:#f5f5f7; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { background:var(--blue); color:#fff; border:none; border-radius:8px; padding:10px 18px; font-size:15px; cursor:pointer; margin-top:10px; }
+  .btn:active { opacity:.8; }
+  .copied { color:var(--green); font-size:13px; margin-left:10px; }
+  ol li, ul li { margin:4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>插嘴之后,旧稿不再从头重念</h1>
+  <div class="meta">FLY-2205 · 设计方案(给 Annie 过目) · 2026-08-31 · 改动在 raya 仓 · 默认关着,你点头试过才开</div>
+
+  <div class="card" data-sec="一句话总结">
+    <h2>① 一句话总结</h2>
+    <p class="lede">你插嘴打断 Raya 念稿之后,它现在会把整篇稿子从头再念一遍(你 8-31 那 90 秒里整张卡听了 3 遍)。这个设计让它以后只从断掉的地方接着念;批准卡被打断后改成一句话短卡催促,并且催促有次数上限。</p>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec1" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card red" data-sec="现在的问题">
+    <h2>② 现在的问题:你那 90 秒发生了什么</h2>
+    <p>2026-08-31 你在语音房实测,90 秒里同一张 <span class="term">ship 卡</span>(就是「要不要把这项改动送进发布」的批准确认卡)被整卡念了 3 遍,每遍都带一串编号。事件记录逐秒对上:</p>
+    <table>
+      <tr><th>时刻</th><th>发生了什么</th></tr>
+      <tr><td>02:38:54</td><td>第 1 遍整卡念出</td></tr>
+      <tr><td>02:39:29</td><td>你开口了,但说的不是「确认/不批」→ 等待状态被解除</td></tr>
+      <tr><td>02:39:33</td><td><b>3.4 秒后,第 2 遍整卡从头念</b></td></tr>
+      <tr><td>02:40:11</td><td>你又开口 → 又被解除</td></tr>
+      <tr><td>02:40:12</td><td><b>第 3 遍整卡从头念</b></td></tr>
+    </table>
+    <p>根子在两处,都有代码级定位:</p>
+    <ol>
+      <li><b>批准卡的「催促环」没有刹车</b>:卡念完后进入等待,你一说别的话,等待就被解除——但系统<b>不计次数、不设间隔</b>,1 秒后的下一次轮询就整卡重念。念 100 遍它也不会停。</li>
+      <li><b>普通念读稿的重试永远从头来</b>:你在稿子念到一半时插话,这条稿会在约一分钟后重试——重试时<b>不管你已经听过多少,一律全文重念</b>。</li>
+    </ol>
+    <div class="diagram">{{SVG_D1}}</div>
+    <p class="note">图:今天批准卡催促环的真实流程。红色一步就是「整卡从头再念」,没有任何上限。</p>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec2" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="设计后的做法">
+    <h2>③ 设计后的做法(核心流程)</h2>
+    <p>关键抓手:Raya 每念一段话,系统都留有<span class="term">语音转写记录</span>(它实际念出来的文字)。拿这份记录跟原稿逐段对一遍,就知道<b>断点在哪一段</b>——不用任何新的声学检测,也不用拍脑袋定阈值。</p>
+    <div class="diagram">{{SVG_D2}}</div>
+    <h3>普通念读稿(三段式:什么事 / 为什么 / 接下来)</h3>
+    <ul>
+      <li><span class="badge rec">推荐默认</span><b>断点续念</b>:回来时开头说一句「刚才被打断了,接着说:」,然后只念没念完的段落。</li>
+      <li><b>直接作废</b>:这场不再念,文字区留一条记录;下次进房再完整念。</li>
+      <li class="note">「只补一句要点后作废」这个形态在设计评审里被砍掉了(没被选中的分支不预建,少建比多建稳);你如果就想要它,说一声,走增量补上。</li>
+    </ul>
+    <p><b>一个关键的保守规则</b>:算「你听到哪了」只认<b>你开口之前</b>的转写记录——你一开口,之后才冒出来的记录一律不算数(那部分的声音可能已经被掐掉、根本没进你耳朵)。宁可多念一段,绝不跳过你没听过的内容。</p>
+    <h3>批准卡(ship 卡)</h3>
+    <ul>
+      <li>卡<b>完整念过一遍之后</b>再被打断:重新催促时只念一句短卡——「刚才那张发布确认卡还在等你:『标题』,某某单、PR 几」——再接一句怎么回答。不再整卡三句重来。</li>
+      <li>催促加上<b>次数上限</b>(默认 2 次,可调):超了就停,这场不再念,文字区兜底,下次进房再来。这正是 QA 报告里写的建议:「重复上限或改短提示」——两个都做了。</li>
+      <li>卡如果<b>从来没完整念完过</b>(你在第一遍就打断了),重试仍是全文——因为这张卡是授权核对物,你得完整听过一次才谈得上批;这条重试本来就有上限(2 次、间隔 1 分钟),不是失控点。</li>
+    </ul>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec3" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="数据与结构">
+    <h2>④ 数据与结构:断点是怎么算出来的</h2>
+    <p>三个已有事实拼起来,零新增机制:</p>
+    <table>
+      <tr><th>已有的东西</th><th>它给我们什么</th></tr>
+      <tr><td>念读稿本身分三段,每段都以句号结尾(既有校验规则)</td><td>天然的「段落边界」,断点按段算,不会从半句中间开口</td></tr>
+      <tr><td>语音转写记录(Raya 实际念出的文字,包括被打断时的半截)</td><td>「已经念到哪」的证据</td></tr>
+      <tr><td>既有的文本归一化比对(确认「念没念对」用的同一套)</td><td>逐段按顺序比对:第一个没对上的段 = 断点段</td></tr>
+    </table>
+    <p>断点信息只放在<b>内存里</b>,不落盘:进程崩了或你离房了,下次进房还是全文重念——这是既有的「宁可多念一遍也不能丢」的可靠性合同,本单不动它。</p>
+    <p>新增配置一共 3 个,都可以随时改:总开关(默认<b>关</b>)、模式(续念/要点/作废)、催促上限次数。开关关着时,行为和今天逐字节一样。</p>
+    <div class="diagram">{{SVG_D3}}</div>
+    <p class="note">图:与两张在飞单的分工。FLY-2178 管「停得下来、什么时候回来」;本单只管「回来时念什么」;FLY-2159 管 Raya 突然沉默的恢复。三单互不阻塞,QA 会联测。</p>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec4" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-sec="关键取舍">
+    <h2>⑤ 关键取舍与被否掉的方案</h2>
+    <table>
+      <tr><th>取舍</th><th>选了什么,代价是什么</th></tr>
+      <tr><td>断点按「段」不按「字」</td><td>段内被打断,那一段会整段重念(每段最多约 200 字)。按字续会从半句中间开口,而且转写稍有改写就错位——不取。</td></tr>
+      <tr><td>批准卡首遍被打断仍全文重试</td><td>「你完整听过卡再批」优先于「少重复」。这与本单目标有张力,如实摆出来给你裁。</td></tr>
+      <tr><td>短卡保留标题+编号</td><td>「一串数字」的痛点只缩小、不为零——编号是核对语义(念错单就批错单),不敢删。你可以再裁短。</td></tr>
+      <tr><td>砍掉「要点一句后作废」形态</td><td>只补要点的话,「为什么/接下来」两段你从没听过,不能标成已交付——它的诚实形态就是「作废+一句话」;评审判它不值得单独建一条路径,先不建,你点名要再补。</td></tr>
+      <tr><td>被否:维持现状</td><td>你实录 + 当场追问,已判死。</td></tr>
+      <tr><td>被否:回放被打断时的半截音频</td><td>半截音频不可信,内容恢复只靠重新念(与 FLY-2178 已定原则一致)。</td></tr>
+    </table>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec5" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-sec="诚实边界">
+    <h2>⑥ 诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li><b>不改「什么时候回来念」</b>:重试时机还是今天的样子(约 1 分钟后),它可能还是会赶上你在说话——「等对话空档再回来」归 FLY-2178 的空闲门,两单落齐才完整。</li>
+      <li><b>跨场次仍是全文</b>:你离房/进程重启后,没念完的条目下次进房从头念——这是崩溃恢复的可靠性合同,改它要动存储契约,值得的话另立单。</li>
+      <li><b>Raya 突然不回话的问题不归本单</b>(FLY-2159 在修);转写记录缺失时,本单自动退化成今天的行为,不会更坏。</li>
+      <li><b>动手前的专名念回(readback)不在本单</b>:那段话很短,也没有实录痛点;先不扩散范围。</li>
+      <li><b>「断点续念」的开启押着三样东西,缺一不开</b>:① FLY-2178 正在人工听样确认的一种极端情况(声音被掐断、转写记录却完整)必须被排除——若被证实存在,「按转写判断你听到哪」不可靠,续念不开、回来重议;② 真机试用轮先实测播放积压数据并摆给你看;③ 你在知道上面那个残余面之后的明确选择。合并代码不受这三条影响(开关关着就是零行为)。</li>
+      <li><b>一个要你知情的残余面(评审第二轮把它挖大了,如实说)</b>:「你听到哪了」是按<b>转写记录</b>算的,但转写记录完成 ≠ 声音播完——长稿的转写可能早就齐了,声音还堵在播放队列里。所以「断点续念」是尽力而为:你开口前已"记录在案"但其实还没播到你耳朵的内容,<b>可能不止一段</b>被当成已念过。真机试用轮会先实测这个积压到底有多大,数据摆给你看;你若不接受这个残余面,零风险替代是:FLY-2178 还没开时用本单的「直接作废」;FLY-2178 开了之后用它的「下场再念」选项(那个世界里由它统一管去留,本单只管念多少)。</li>
+      <li><b>批准卡被限次停掉后</b>:同一张卡这场里如果换了 PR 头/换了问题,不会再被念出来(避免又造一个轮询环),要等下次进房;全新的卡不受影响。</li>
+      <li><b>默认关</b>:合并后行为零变化;你在真机上听过、点头,才把开关打开。</li>
+    </ul>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec6" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card" data-sec="要你拍板的三件事">
+    <h2>⑦ 要你拍板的三件事(不阻塞开工,默认值先跑)</h2>
+    <ol>
+      <li><b>默认模式选哪个?</b> 断点续念(推荐)/ 直接作废。同一个开关,随时可换。(「要点一句」形态已按评审移出,你点名要就增量补。)</li>
+      <li><b>批准卡短卡的措辞</b>:「刚才那张发布确认卡还在等你:『标题』,某某单、PR 几。」——保留标题+编号是为了核对不出错;你觉得还是太长可以再裁。</li>
+      <li><b>续念的开场白</b>:「刚才被打断了,接着说:」——措辞你定。</li>
+    </ol>
+    <div class="cmt"><label>这一节的意见(自动保存)</label><textarea data-key="sec7" placeholder="写你的想法…"></textarea></div>
+  </div>
+
+  <div class="card green" data-sec="意见汇总">
+    <h2>⑧ 你的意见汇总</h2>
+    <p class="note">下面自动汇总你在每一节写的意见;点按钮一键复制,贴回给 Lead 就行。</p>
+    <div id="summaryBody">(还没有意见)</div>
+    <div id="chunkArea"></div>
+    <button class="btn" id="copyAllBtn">复制全部意见</button><span class="copied" id="copyHint" hidden>已复制 ✓</span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2205";
+  var PREFIX;
+  try { PREFIX = "fly2205:" + location.pathname + ":"; } catch (e) { PREFIX = "fly2205:unknown:"; }
+
+  function lsGet(k) { try { return localStorage.getItem(PREFIX + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(PREFIX + k, v); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+
+  function sectionTitle(t) {
+    var card = t.closest ? t.closest(".card") : null;
+    if (card) {
+      var sec = card.getAttribute("data-sec");
+      if (sec) return sec;
+      var h = card.querySelector("h2");
+      if (h) return h.textContent;
+    }
+    return t.getAttribute("data-key") || "未命名节";
+  }
+
+  function collect() {
+    var parts = [];
+    for (var i = 0; i < areas.length; i++) {
+      var v = areas[i].value.replace(/^\s+|\s+$/g, "");
+      if (v) parts.push("【" + sectionTitle(areas[i]) + "】" + v);
+    }
+    return parts;
+  }
+
+  function fullText() {
+    var parts = collect();
+    return MARKER + "\n" + (parts.length ? parts.join("\n\n") : "(无意见)");
+  }
+
+  function chunkText(text) {
+    if (text.length <= 1800) return [text];
+    var body = text.slice(MARKER.length + 1);
+    var lines = body.split("\n");
+    var chunks = [];
+    var cur = "";
+    for (var i = 0; i < lines.length; i++) {
+      if ((MARKER.length + 20 + cur.length + lines[i].length) > 1800 && cur) {
+        chunks.push(cur); cur = "";
+      }
+      cur += (cur ? "\n" : "") + lines[i];
+    }
+    if (cur) chunks.push(cur);
+    var out = [];
+    for (var j = 0; j < chunks.length; j++) {
+      out.push(MARKER + "(第 " + (j + 1) + "/" + chunks.length + " 段)\n" + chunks[j]);
+    }
+    return out;
+  }
+
+  var summaryBody = document.getElementById("summaryBody");
+  var chunkArea = document.getElementById("chunkArea");
+
+  function renderSummary() {
+    var parts = collect();
+    summaryBody.textContent = parts.length ? fullText() : "(还没有意见)";
+    while (chunkArea.firstChild) chunkArea.removeChild(chunkArea.firstChild);
+    if (parts.length && fullText().length > 1800) {
+      var pieces = chunkText(fullText());
+      for (var i = 0; i < pieces.length; i++) {
+        (function (piece, idx) {
+          var b = document.createElement("button");
+          b.className = "btn";
+          b.style.marginRight = "8px";
+          b.textContent = "复制第 " + (idx + 1) + " 段";
+          b.addEventListener("click", function () { copyText(piece, b); });
+          chunkArea.appendChild(b);
+        })(pieces[i], i);
+      }
+    }
+  }
+
+  function copyText(text, btnEl) {
+    function ok() {
+      var hint = document.getElementById("copyHint");
+      hint.hidden = false;
+      setTimeout(function () { hint.hidden = true; }, 2000);
+    }
+    function fallback() {
+      var ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.opacity = "0";
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand("copy"); ok(); } catch (e) {}
+      document.body.removeChild(ta);
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(ok, fallback);
+    } else {
+      fallback();
+    }
+  }
+
+  for (var i = 0; i < areas.length; i++) {
+    (function (t) {
+      var saved = lsGet(t.getAttribute("data-key"));
+      if (saved) t.value = saved;
+      t.addEventListener("input", function () {
+        lsSet(t.getAttribute("data-key"), t.value);
+        renderSummary();
+      });
+    })(areas[i]);
+  }
+
+  document.getElementById("copyAllBtn").addEventListener("click", function () {
+    copyText(fullText(), null);
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

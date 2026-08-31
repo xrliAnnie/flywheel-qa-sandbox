@@ -1,0 +1,13 @@
+flowchart LR
+  subgraph F2178["FLY-2178 插嘴即停"]
+    A2178["停得下来<br/>+ 假触发免疫<br/>+ 什么时候回来念"]
+  end
+  subgraph F2205["FLY-2205 本单"]
+    A2205["回来的时候念什么<br/>(不整篇重念)"]
+  end
+  subgraph F2159["FLY-2159 恢复通道"]
+    A2159["Raya 突然沉默时<br/>把回应拉回来"]
+  end
+  A2178 -->|"决定时机与去留"| A2205
+  A2159 -->|"保证转写记录存在<br/>(断点计算的原料)"| A2205
+  style A2205 fill:#e8f5e9,stroke:#34c759,stroke-width:2px

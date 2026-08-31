@@ -1,0 +1,10 @@
+flowchart TB
+  A["Raya 念 ship 卡<br/>(三句话,带单号和 PR 号)"] --> B["卡念完,进入等待批准状态"]
+  B --> C{"Annie 开口说话"}
+  C -->|"说的是「确认」或「不批」"| D["✅ 正常走批准/拒绝流程"]
+  C -->|"说的是别的话<br/>(问问题、聊别的、插嘴)"| E["等待状态被解除<br/>系统只记一笔日志"]
+  E --> F["⚠️ 没有任何计数、没有冷却时间"]
+  F --> G["1 秒后的下一次轮询:<br/>整张卡从头再念一遍"]
+  G --> B
+  style G fill:#ffebe9,stroke:#ff3b30,stroke-width:2px
+  style F fill:#fff8e1,stroke:#ff9500
