@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2159 语音·打断后她不回答 — 修复设计(founder 审阅版)</title>
+<style>
+  :root { --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height:1.65; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 80px; }
+  h1 { font-size:25px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:19px; margin:0 0 10px; color:var(--navy); }
+  h3 { font-size:15px; margin:14px 0 6px; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  .mono { font-family:"SF Mono", Menlo, monospace; font-size:12.5px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:0 0 18px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); } .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); } .card.gray { border-left-color:var(--dim); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#eef; color:var(--blue); margin-right:6px; vertical-align:middle; }
+  .badge.red { background:#ffe5e3; color:var(--red);} .badge.amber { background:#fff1dc; color:#b36b00;} .badge.green { background:#e3f8e9; color:#1f7a3a;} .badge.purple { background:#f3e6fb; color:var(--purple);} .badge.gray { background:#eee; color:#555;}
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 6px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  .tablewrap { overflow-x:auto; }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #eee; border-radius:10px; padding:10px; margin:10px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .term { border-bottom:1px dotted var(--dim); }
+  .note { font-size:13px; color:#444; background:#fafafa; border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .note.warn { background:#fff7e6; } .note.ok { background:#eefbf1; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:var(--navy); color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#e8e8ed; color:var(--text); }
+  .status { font-size:12.5px; color:var(--dim); margin-left:6px; }
+  ul { padding-left:20px; margin:6px 0; } li { margin:3px 0; }
+  @media (max-width:640px) { h1 { font-size:21px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>语音房里你插嘴问了,她却不回答 — 修复设计</h1>
+  <div class="meta">
+    <span class="badge purple">FLY-2159</span><span class="badge gray">设计稿 · 待实现</span><span class="badge gray">2026-08-31</span><br>
+    来源:FLY-2031 十二轮 bot 自测的 R11/R12 对照(同一句话一答一不答)· 代码落点:raya 仓 <span class="mono">apps/voice</span> + codex 补丁二进制 · 详细设计:本文件夹 exploration / research / plan<br>
+    这一页是给你审的:每一节下面都有意见框,写完到页底一键汇总复制。<b>汇总只是修改意见,不代表通过。</b>
+  </div>
+
+  <!-- ===== 1 一句话 ===== -->
+  <section class="card green" data-section="1 一句话">
+    <h2>1 · 一句话</h2>
+    <p>你说完话她偶尔会「人间蒸发」—— 不是她不想答,是上游偶尔忘了让她答,而我们手里连一句「请回答」都发不出去。这个设计补上这句「请回答」:<b>你说完 6 秒她还没动静,系统自动礼貌地催一次;催不动就放手,绝不催出两个回答。</b></p>
+    <div class="comment"><label>这一节的意见(自动保存在你本机)</label><textarea data-k="s1" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 2 问题 ===== -->
+  <section class="card red" data-section="2 问题是什么">
+    <h2>2 · 问题是什么</h2>
+    <p>8 月 29 日的 bot 自测里,QA bot 用<b>同一句中立提问</b>连做两轮:R11 轮 2.6 秒就得到回答;R12 轮同一句话,<b>永远没有回答</b>,直到超时。你的体感就是那句:「我插嘴问了,它把话让给我了,然后就没有然后了」。</p>
+    <div class="tablewrap"><table>
+      <tr><th>轮次</th><th>你(bot)说完话</th><th>她的回答</th><th>结论</th></tr>
+      <tr><td>R11</td><td>20:39:55</td><td>20:39:57(2.6 秒)</td><td>正常</td></tr>
+      <tr><td>R12</td><td>20:45:33</td><td><b>永远没来</b></td><td>沉默到超时</td></tr>
+    </table></div>
+    <p>两轮代码相同、话相同、环境相同 ⇒ 排除「她不知道怎么答」,坐实是<b>响应链路间歇性失灵</b>:上游(OpenAI 的实时语音服务)偶尔忘了发起回答,而且<b>一声不吭</b> —— 我们翻遍那轮的 51 条日志,没有任何报错。</p>
+    <p>更要命的是第二层:她和上游之间隔着一个叫 <span class="term">codex app-server</span> 的中间人(装在这台机器上的程序,负责把语音传给 OpenAI)。这个中间人的<span class="term">接口清单</span>(术语叫 schema,即「客户端被允许说哪几句话」的清单)里只有「开始 / 传声音 / 传文字 / 念稿子 / 停止」五句 —— <b>没有「请回答」这一句</b>。所以上游忘了答的时候,我们在规则内什么都做不了,只能陪着沉默。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s2" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 3 修法流程 ===== -->
+  <section class="card blue" data-section="3 修法:核心流程">
+    <h2>3 · 修法:核心流程</h2>
+    <p>两步:①给中间人的接口清单<b>补上「请回答」这句话</b>(标准做法,OpenAI 官方协议里本来就有这个指令,叫 <span class="mono">response.create</span>,中间人内部其实一直在用,只是没开放给我们);②在她的语音程序里装一个<span class="term">看门狗</span>(watchdog,一个定时器):你说完话 6 秒还没动静,就替你催一次。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p>「6 秒」不是拍脑袋:正常轮 2.6 秒就有答,6 秒 ≈ 正常的两倍多余量;而旧的兜底要等 21 秒才放弃。这个数字(和「每场最多催 3 次」)都是<b>配置项</b>,随时可改,不用改代码。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s3" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 4 动了哪些东西 ===== -->
+  <section class="card purple" data-section="4 动了哪些东西">
+    <h2>4 · 动了哪些东西</h2>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="tablewrap"><table>
+      <tr><th>动的地方</th><th>动什么</th><th>不动谁</th></tr>
+      <tr><td>codex 补丁二进制(中间人)</td><td>接口清单加一句 <span class="mono">createResponse</span>(「请回答」);最终补丁覆盖 11 个生产接线点,沿用现成协议模板</td><td>官方 codex 一个字不动;全机器其他用 codex 的人零影响 —— 补丁版只给 Raya 用,用一个环境变量指过去</td></tr>
+      <tr><td>raya 语音程序(她)</td><td>加看门狗 + 3 个配置项 + 4 种日志事件(留病历,QA 有抓手)</td><td>念稿、文字镜像、ship 批准、静音规矩 —— 全部原样</td></tr>
+      <tr><td>你听到的</td><td><b>唯一变化:本来沉默的地方,她开口回答了。</b>催这个动作本身零出声,她不会说「让我再想想」之类的废话</td><td>—</td></tr>
+    </table></div>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s4" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 5 取舍 ===== -->
+  <section class="card amber" data-section="5 关键取舍与否掉的路">
+    <h2>5 · 关键取舍与被否掉的路</h2>
+    <div class="tablewrap"><table>
+      <tr><th>路</th><th>为什么否</th></tr>
+      <tr><td>把你的话重发一遍冒充催促(appendText 重放)</td><td><b>FLY-2031 已裁定禁止</b>:层错了,可能催出两个回答,还污染对话记录</td></tr>
+      <tr><td>掐断重连(重启语音会话)</td><td>违反你 8-20 定的「进程内重连」禁令;丢上下文;几秒沉默变成几秒断流</td></tr>
+      <tr><td>等 OpenAI 官方自己补</td><td>今天(8-31)查过上游最新代码,还是没有;时间不可控。我们会顺手把补丁提给官方(加分项),但不等它</td></tr>
+      <tr><td>只记日志不救</td><td>你的体感问题原样留着,不解决问题</td></tr>
+    </table></div>
+    <h3>选定路里最关键的一个取舍</h3>
+    <p>催之前先看本地账本:如果账本显示「已经有回答在途」,就<b>不催</b> —— 宁可少救一次,绝不造出两个回答(第二个回答会让她自言自语,比沉默更糟)。中间人内部对念稿有「排队补发」逻辑,我们<b>特意不复用它</b>,新写一个「账本空闲才催、否则跳过」的入口。</p>
+    <p>还有一个独立评审(Codex 设计评审,前两轮各抓出一个致命隐患)修进设计的点:万一本地账本和上游失了同步(账本以为空、上游其实在答),催出去会被上游拒绝,而按现在中间人的代码,<b>这个拒绝会直接杀掉整场语音会话</b> —— 比沉默严重得多。所以每次催都带一个唯一编号,上游的拒绝会引用这个编号;<b>只有编号精确对上的拒绝</b>才被安静吞掉(会话活着),其他一切错误照旧严格 —— 绝不会把别处的报错误当成自己的。实现时还有一道前置探针:先实录上游拒绝的真实报文,确认它真的带编号;不带就停下重审设计,不硬上。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s5" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 6 护栏 ===== -->
+  <section class="card green" data-section="6 安全护栏">
+    <h2>6 · 安全护栏(每条都有对应测试)</h2>
+    <ul>
+      <li><b>正常轮零打扰</b>:她正常回答时,看门狗什么都不做(真房验收硬门:正常轮催促次数必须为 0)。判「有动静」不只听声音:回答的<b>文字流一开始出现</b>就算数,不会在她已经开始答的时候还去催。</li>
+      <li><b>她说话时不催、也不预备催</b>:只要她还在出声,连倒计时都不开始。</li>
+      <li><b>会议模式不催</b>:开会时人跟人说话,不是每句话都该她答 —— 看门狗<b>从一开始就不上岗</b>(不是快到点了才拦)。</li>
+      <li><b>一句话最多催一次,一场最多催三次</b>:防任何形式的催促循环。</li>
+      <li><b>跑回官方版零报错</b>:哪天把她切回官方 codex(没有这句「请回答」),程序自己发现、记一条日志、安静退回今天的行为 —— 不崩、不重试、不骚扰。</li>
+      <li><b>两个独立的回滚杠杆</b>:①配置一行关掉看门狗;②环境变量一行换回官方二进制。任何一个都能瞬间回到今天。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s6" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 7 诚实边界 ===== -->
+  <section class="card gray" data-section="7 诚实边界">
+    <h2>7 · 诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li><b>不修上游为什么会忘</b>:OpenAI 那头是黑盒,我们只能补「忘了就催」的手段。催也可能失败 —— 失败后跟今天一样沉默,但至少留了病历(日志证据)。</li>
+      <li><b>有个很窄的竞态窗口</b>:你打断她之后,被打断那半句话的「尾巴」如果恰好比你的话晚到,会被误认成「她答了」,那一次就不催了。实测这个窗口很窄(R12 里尾巴早到 8 秒),漏催的后果 = 跟今天一样,零额外风险。</li>
+      <li><b>「她卡在说话中」的场景不救</b>:如果被打断那句话的收尾信号一直不来,系统会一直认为她还在说,看门狗按规矩不上岗 —— 这种情况和「她真的还在答」在我们这侧分不清,宁可不救也不冒双回答的险。后果 = 跟今天一样沉默。</li>
+      <li><b>账本失同步时只保命不救答</b>:上面 §5 说的「非致命吞拒绝」只保证会话不死,那一轮的沉默还是沉默。</li>
+      <li><b>碰上播报撞车</b>:如果她刚好要念一条待办,念的声音会让看门狗以为「有动静了」——房里确实有声音,不算沉默,但你插的那句可能还是没答,需要你追问一次。</li>
+      <li><b>本单不部署</b>:设计→实现→测试证据→PR;真正切到补丁二进制要单独走 QA + 你批准的 ship 流程。</li>
+      <li><b>会议模式的恢复策略</b>不在本单(如果将来要,走 FLY-1453 产品裁量)。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s7" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 8 下一步 ===== -->
+  <section class="card blue" data-section="8 下一步">
+    <h2>8 · 下一步</h2>
+    <ul>
+      <li>实现节点按 plan 的 6 个阶段做:codex 补丁(带测试)→ raya 看门狗(21 条行为测试)→ 双二进制集成验证 → 隔离房真机轮 → 三仓 PR。</li>
+      <li>隔离房验收沿用 FLY-2031 的纪律(删旧构建、证据文件带哈希)。</li>
+      <li>codex 补丁只开 fork 内 draft PR 供审阅;未经 founder 单独授权,不向 OpenAI 官方仓提 PR。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s8" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 意见汇总 ===== -->
+  <section class="card navy summary" data-section="意见汇总" style="border-left-color:#1a365d;">
+    <h2>页面意见汇总</h2>
+    <p class="status">下面自动聚合你在各节写的意见(存在你本机浏览器里,刷新不丢)。点按钮复制,贴回给我就行。</p>
+    <pre id="agg">(还没有意见)</pre>
+    <button class="btn" id="copyBtn" type="button">复制全部意见</button>
+    <span class="status" id="copyStatus"></span>
+    <div id="chunks"></div>
+  </section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2159";
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly2159-comment:";
+  try { prefix = (location.pathname || "/") + "#fly2159:"; } catch (e) {}
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+
+  function sectionTitle(ta) {
+    var sec = ta.closest("section[data-section]");
+    return sec ? sec.getAttribute("data-section") : "(未知节)";
+  }
+
+  function aggregate() {
+    var parts = [];
+    for (var i = 0; i < areas.length; i++) {
+      var v = (areas[i].value || "").trim();
+      if (v) parts.push("【" + sectionTitle(areas[i]) + "】\n" + v);
+    }
+    return parts;
+  }
+
+  function fullText() {
+    var parts = aggregate();
+    if (!parts.length) return "";
+    return MARKER + "\n" + parts.join("\n\n");
+  }
+
+  function chunkText(text) {
+    if (text.length <= CHUNK_LIMIT) return [text];
+    var body = text.slice(MARKER.length + 1);
+    var chunks = [];
+    var seg = "";
+    var blocks = body.split("\n\n");
+    for (var i = 0; i < blocks.length; i++) {
+      var candidate = seg ? seg + "\n\n" + blocks[i] : blocks[i];
+      if ((MARKER.length + 20 + candidate.length) > CHUNK_LIMIT && seg) {
+        chunks.push(seg); seg = blocks[i];
+      } else { seg = candidate; }
+    }
+    if (seg) chunks.push(seg);
+    var out = [];
+    for (var j = 0; j < chunks.length; j++) {
+      out.push(MARKER + "\n(第 " + (j + 1) + "/" + chunks.length + " 段)\n" + chunks[j]);
+    }
+    return out;
+  }
+
+  var agg = document.getElementById("agg");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copyStatus");
+
+  function render() {
+    var text = fullText();
+    agg.textContent = text || "(还没有意见)";
+    while (chunksDiv.firstChild) chunksDiv.removeChild(chunksDiv.firstChild);
+    if (text && text.length > CHUNK_LIMIT) {
+      var pieces = chunkText(text);
+      for (var i = 0; i < pieces.length; i++) {
+        (function (piece, idx) {
+          var b = document.createElement("button");
+          b.className = "btn secondary";
+          b.type = "button";
+          b.textContent = "复制第 " + (idx + 1) + "/" + pieces.length + " 段";
+          b.addEventListener("click", function () { copyText(piece, b); });
+          chunksDiv.appendChild(b);
+        })(pieces[i], i);
+      }
+    }
+  }
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text, btn) {
+    function done(ok) {
+      copyStatus.textContent = ok ? "已复制 ✓" : "复制失败,请手动全选上面的文字";
+      if (btn) btn.textContent = ok ? "已复制 ✓" : btn.textContent;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  for (var i = 0; i < areas.length; i++) {
+    (function (ta) {
+      var k = ta.getAttribute("data-k");
+      var saved = lsGet(k);
+      if (saved) ta.value = saved;
+      ta.addEventListener("input", function () { lsSet(k, ta.value); render(); });
+    })(areas[i]);
+  }
+
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    var text = fullText();
+    if (!text) { copyStatus.textContent = "还没有写任何意见"; return; }
+    copyText(text, null);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

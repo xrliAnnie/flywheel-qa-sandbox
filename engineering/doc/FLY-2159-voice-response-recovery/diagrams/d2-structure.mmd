@@ -1,0 +1,23 @@
+flowchart LR
+    subgraph RAYA["raya 仓 · 语音进程(客户端)"]
+        W["新增: 恢复 watchdog<br/>user final 后计时 6 秒<br/>每句话至多催 1 次,每场至多 3 次"]
+        T["RealtimeTransport<br/>新增 createResponse() 一个方法"]
+        CFG["3 个新配置项<br/>(开关 / 等待毫秒 / 每场上限)<br/>都可随时改"]
+    end
+    subgraph CODEX["codex 补丁二进制(服务端,基于装机同版 0.151.0)"]
+        S["schema 新增 experimental 方法<br/>thread/realtime/createResponse"]
+        Q["内部已有的 response.create 通路<br/>(新增 create_once_if_idle:<br/>已有回答在途时放手,绝不排队第二个)"]
+    end
+    subgraph OAI["OpenAI Realtime(上游,黑盒)"]
+        O["间歇性漏发回答的地方<br/>(本单不修它,只补催的手段)"]
+    end
+    W --> T --> S --> Q --> O
+    CFG -.-> W
+    R1["回滚杠杆 1<br/>配置开关一行关掉 watchdog"] -.-> W
+    R2["回滚杠杆 2<br/>RAYA_CODEX_BIN 改回官方二进制<br/>(客户端自动降级,零报错)"] -.-> S
+    style W fill:#fff1dc,stroke:#ff9500
+    style S fill:#fff1dc,stroke:#ff9500
+    style Q fill:#e8f0fe,stroke:#007aff
+    style O fill:#f0f0f2,stroke:#86868b
+    style R1 fill:#e3f8e9,stroke:#34c759
+    style R2 fill:#e3f8e9,stroke:#34c759

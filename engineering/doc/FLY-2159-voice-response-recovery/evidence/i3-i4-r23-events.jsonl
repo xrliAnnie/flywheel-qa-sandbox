@@ -1,0 +1,19 @@
+{"ts":"2026-08-31T13:13:20.402Z","kind":"readback_gate_invalidated","reason":"watcher-stopped"}
+{"ts":"2026-08-31T13:13:20.402Z","kind":"ship_gate_invalidated","reason":"event:HumanLeft"}
+{"ts":"2026-08-31T13:13:20.403Z","kind":"speech_queue_invalidated","reason":"event:HumanLeft","pendingCount":0}
+{"ts":"2026-08-31T13:13:20.787Z","kind":"voice_exit","code":0,"reason":"last-human-left"}
+{"ts":"2026-08-31T13:13:20.790Z","kind":"audio_counters","counts":{"silence":55571,"clock:delay":14,"sent":8982},"clockDelays":[{"scheduledAt":1788181080281,"observedAt":1788181080306,"delayMs":25},{"scheduledAt":1788181127346,"observedAt":1788181127368,"delayMs":22},{"scheduledAt":1788181128128,"observedAt":1788181128170,"delayMs":42},{"scheduledAt":1788181128148,"observedAt":1788181128170,"delayMs":22},{"scheduledAt":1788181128290,"observedAt":1788181128340,"delayMs":50},{"scheduledAt":1788181128310,"observedAt":1788181128340,"delayMs":30},{"scheduledAt":1788181129380,"observedAt":1788181129417,"delayMs":37},{"scheduledAt":1788181129437,"observedAt":1788181129491,"delayMs":54},{"scheduledAt":1788181129457,"observedAt":1788181129494,"delayMs":37},{"scheduledAt":1788181129531,"observedAt":1788181129561,"delayMs":30},{"scheduledAt":1788181663281,"observedAt":1788181663317,"delayMs":36},{"scheduledAt":1788181727277,"observedAt":1788181727308,"delayMs":31},{"scheduledAt":1788181981268,"observedAt":1788181981324,"delayMs":56},{"scheduledAt":1788181981288,"observedAt":1788181981324,"delayMs":36}],"clockStalls":[]}
+{"ts":"2026-08-31T13:23:48.653Z","kind":"readback_gate_invalidated","reason":"watcher-stopped"}
+{"ts":"2026-08-31T13:23:48.654Z","kind":"ship_gate_invalidated","reason":"event:HumanLeft"}
+{"ts":"2026-08-31T13:23:48.654Z","kind":"speech_queue_invalidated","reason":"event:HumanLeft","pendingCount":0}
+{"ts":"2026-08-31T13:23:48.966Z","kind":"voice_exit","code":0,"reason":"last-human-left"}
+{"ts":"2026-08-31T13:23:48.969Z","kind":"audio_counters","counts":{"silence":12592,"sent":9031,"clock:delay":2},"clockDelays":[{"scheduledAt":1788182627303,"observedAt":1788182627352,"delayMs":49},{"scheduledAt":1788182627323,"observedAt":1788182627353,"delayMs":30}],"clockStalls":[]}
+{"ts":"2026-08-31T13:32:01.267Z","kind":"speech_injected","pendingKey":"inbox:fly2159-i3-1788183120268"}
+{"ts":"2026-08-31T13:32:05.388Z","kind":"realtime_transcript","transcriptId":"a-9d407707-4d09-42f6-992e-c3a1edc5bc7f-1","role":"assistant","text":"这是一段正常路径念读，我会把这段话从头到尾清楚地说完。现在连续说明，是为了确认语音会稳定输出，随后也能完整接住你的问题。我说完以后请问一条中立问题，不需要做任何批准决定。","connectionGen":1,"sessionGen":1,"generation":1}
+{"ts":"2026-08-31T13:32:14.134Z","kind":"realtime_transcript","transcriptId":"u-9d407707-4d09-42f6-992e-c3a1edc5bc7f-2","role":"user","text":"Raya F2031QA長開流三分鐘靜默已經結束,請回覆,收到FLY2031。","speakerUserId":"1516207680836866219","connectionGen":1,"sessionGen":1,"generation":1}
+{"ts":"2026-08-31T13:32:15.942Z","kind":"realtime_transcript","transcriptId":"a-9d407707-4d09-42f6-992e-c3a1edc5bc7f-3","role":"assistant","text":"我是 Raya，Annie，刚刚那段念读完成了。现在我们换个中立问题吧。比如，你最近有想尝试的新工具或技术吗？","connectionGen":1,"sessionGen":1,"generation":1}
+{"ts":"2026-08-31T13:33:22.451Z","kind":"readback_gate_invalidated","reason":"watcher-stopped"}
+{"ts":"2026-08-31T13:33:22.451Z","kind":"ship_gate_invalidated","reason":"event:HumanLeft"}
+{"ts":"2026-08-31T13:33:22.451Z","kind":"speech_queue_invalidated","reason":"event:HumanLeft","pendingCount":0}
+{"ts":"2026-08-31T13:33:22.731Z","kind":"voice_exit","code":0,"reason":"last-human-left"}
+{"ts":"2026-08-31T13:33:22.733Z","kind":"audio_counters","counts":{"silence":6284,"sent":4122,"voice":1202},"clockDelays":[],"clockStalls":[]}

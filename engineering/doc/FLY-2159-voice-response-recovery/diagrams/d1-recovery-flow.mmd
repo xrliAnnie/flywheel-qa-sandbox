@@ -1,0 +1,16 @@
+flowchart TD
+    A["你在语音房说完一句话<br/>(语音转成文字,确认是你说的)"] --> B{"6 秒内 Raya 有任何动静吗?<br/>(声音开始播 / 回答文字出现)"}
+    B -- "有(正常,R11 形态)" --> C["正常回答<br/>什么都不用做"]
+    B -- "没有(上游漏发,R12 形态)" --> D["watchdog 触发<br/>调一次新方法 createResponse<br/>= 礼貌地催一句『请回答』"]
+    D --> E{"上游怎么回?"}
+    E -- "开始回答" --> F["Raya 开口回答<br/>后续流程与正常轮完全一样"]
+    E -- "说『已经在答了』" --> G["放手不再催<br/>绝不造出第二个回答"]
+    E -- "还是沉默 / 出错" --> H["记下证据,放手<br/>不重试(和今天一样沉默,<br/>但至少留了病历)"]
+    C --> Z["回答落到语音 + 文字区"]
+    F --> Z
+    style A fill:#e8f0fe,stroke:#007aff
+    style D fill:#fff1dc,stroke:#ff9500
+    style G fill:#ffe5e3,stroke:#ff3b30
+    style H fill:#f0f0f2,stroke:#86868b
+    style C fill:#e3f8e9,stroke:#34c759
+    style F fill:#e3f8e9,stroke:#34c759

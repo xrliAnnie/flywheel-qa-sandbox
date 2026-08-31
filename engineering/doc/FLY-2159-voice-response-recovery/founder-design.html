@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLY-2159 语音·打断后她不回答 — 修复设计(founder 审阅版)</title>
+<style>
+  :root { --bg:#f5f5f7; --text:#1d1d1f; --dim:#86868b; --card:#fff; --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de; --navy:#1a365d; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system, system-ui, "PingFang SC", "Hiragino Sans GB", sans-serif; line-height:1.65; }
+  .wrap { max-width:960px; margin:0 auto; padding:28px 16px 80px; }
+  h1 { font-size:25px; margin:0 0 6px; color:var(--navy); }
+  h2 { font-size:19px; margin:0 0 10px; color:var(--navy); }
+  h3 { font-size:15px; margin:14px 0 6px; }
+  .meta { color:var(--dim); font-size:13px; margin-bottom:22px; }
+  .mono { font-family:"SF Mono", Menlo, monospace; font-size:12.5px; }
+  .card { background:var(--card); border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,.06); padding:18px 20px; margin:0 0 18px; border-left:4px solid var(--blue); }
+  .card.red { border-left-color:var(--red); } .card.amber { border-left-color:var(--amber); } .card.green { border-left-color:var(--green); } .card.purple { border-left-color:var(--purple); } .card.gray { border-left-color:var(--dim); }
+  .badge { display:inline-block; font-size:11px; padding:2px 8px; border-radius:999px; background:#eef; color:var(--blue); margin-right:6px; vertical-align:middle; }
+  .badge.red { background:#ffe5e3; color:var(--red);} .badge.amber { background:#fff1dc; color:#b36b00;} .badge.green { background:#e3f8e9; color:#1f7a3a;} .badge.purple { background:#f3e6fb; color:var(--purple);} .badge.gray { background:#eee; color:#555;}
+  table { width:100%; border-collapse:collapse; font-size:13.5px; margin:8px 0 6px; }
+  th, td { text-align:left; padding:7px 8px; border-bottom:1px solid #eee; vertical-align:top; }
+  th { color:var(--dim); font-weight:600; font-size:12.5px; }
+  .tablewrap { overflow-x:auto; }
+  .diagram { overflow-x:auto; background:#fff; border:1px solid #eee; border-radius:10px; padding:10px; margin:10px 0; }
+  .diagram svg { max-width:100%; height:auto; display:block; margin:0 auto; }
+  .term { border-bottom:1px dotted var(--dim); }
+  .note { font-size:13px; color:#444; background:#fafafa; border-radius:8px; padding:8px 12px; margin:8px 0; }
+  .note.warn { background:#fff7e6; } .note.ok { background:#eefbf1; }
+  .comment { margin-top:14px; border-top:1px dashed #e5e5ea; padding-top:10px; }
+  .comment label { display:block; font-size:12.5px; color:var(--dim); margin-bottom:4px; }
+  .comment textarea { width:100%; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:13.5px; resize:vertical; background:#fbfbfd; }
+  .comment textarea:focus { outline:none; border-color:var(--blue); background:#fff; }
+  .summary pre { white-space:pre-wrap; word-break:break-word; background:#f7f7fa; border-radius:8px; padding:10px 12px; font-size:12.5px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:var(--navy); color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:13.5px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.secondary { background:#e8e8ed; color:var(--text); }
+  .status { font-size:12.5px; color:var(--dim); margin-left:6px; }
+  ul { padding-left:20px; margin:6px 0; } li { margin:3px 0; }
+  @media (max-width:640px) { h1 { font-size:21px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>语音房里你插嘴问了,她却不回答 — 修复设计</h1>
+  <div class="meta">
+    <span class="badge purple">FLY-2159</span><span class="badge gray">设计稿 · 待实现</span><span class="badge gray">2026-08-31</span><br>
+    来源:FLY-2031 十二轮 bot 自测的 R11/R12 对照(同一句话一答一不答)· 代码落点:raya 仓 <span class="mono">apps/voice</span> + codex 补丁二进制 · 详细设计:本文件夹 exploration / research / plan<br>
+    这一页是给你审的:每一节下面都有意见框,写完到页底一键汇总复制。<b>汇总只是修改意见,不代表通过。</b>
+  </div>
+
+  <!-- ===== 1 一句话 ===== -->
+  <section class="card green" data-section="1 一句话">
+    <h2>1 · 一句话</h2>
+    <p>你说完话她偶尔会「人间蒸发」—— 不是她不想答,是上游偶尔忘了让她答,而我们手里连一句「请回答」都发不出去。这个设计补上这句「请回答」:<b>你说完 6 秒她还没动静,系统自动礼貌地催一次;催不动就放手,绝不催出两个回答。</b></p>
+    <div class="comment"><label>这一节的意见(自动保存在你本机)</label><textarea data-k="s1" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 2 问题 ===== -->
+  <section class="card red" data-section="2 问题是什么">
+    <h2>2 · 问题是什么</h2>
+    <p>8 月 29 日的 bot 自测里,QA bot 用<b>同一句中立提问</b>连做两轮:R11 轮 2.6 秒就得到回答;R12 轮同一句话,<b>永远没有回答</b>,直到超时。你的体感就是那句:「我插嘴问了,它把话让给我了,然后就没有然后了」。</p>
+    <div class="tablewrap"><table>
+      <tr><th>轮次</th><th>你(bot)说完话</th><th>她的回答</th><th>结论</th></tr>
+      <tr><td>R11</td><td>20:39:55</td><td>20:39:57(2.6 秒)</td><td>正常</td></tr>
+      <tr><td>R12</td><td>20:45:33</td><td><b>永远没来</b></td><td>沉默到超时</td></tr>
+    </table></div>
+    <p>两轮代码相同、话相同、环境相同 ⇒ 排除「她不知道怎么答」,坐实是<b>响应链路间歇性失灵</b>:上游(OpenAI 的实时语音服务)偶尔忘了发起回答,而且<b>一声不吭</b> —— 我们翻遍那轮的 51 条日志,没有任何报错。</p>
+    <p>更要命的是第二层:她和上游之间隔着一个叫 <span class="term">codex app-server</span> 的中间人(装在这台机器上的程序,负责把语音传给 OpenAI)。这个中间人的<span class="term">接口清单</span>(术语叫 schema,即「客户端被允许说哪几句话」的清单)里只有「开始 / 传声音 / 传文字 / 念稿子 / 停止」五句 —— <b>没有「请回答」这一句</b>。所以上游忘了答的时候,我们在规则内什么都做不了,只能陪着沉默。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s2" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 3 修法流程 ===== -->
+  <section class="card blue" data-section="3 修法:核心流程">
+    <h2>3 · 修法:核心流程</h2>
+    <p>两步:①给中间人的接口清单<b>补上「请回答」这句话</b>(标准做法,OpenAI 官方协议里本来就有这个指令,叫 <span class="mono">response.create</span>,中间人内部其实一直在用,只是没开放给我们);②在她的语音程序里装一个<span class="term">看门狗</span>(watchdog,一个定时器):你说完话 6 秒还没动静,就替你催一次。</p>
+    <div class="diagram"><svg id="fly2159-d1" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 1009.75px; background-color: white;" viewBox="0 0 1009.75 1163.875" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly2159-d1{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly2159-d1 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly2159-d1 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly2159-d1 .error-icon{fill:#552222;}#fly2159-d1 .error-text{fill:#552222;stroke:#552222;}#fly2159-d1 .edge-thickness-normal{stroke-width:1px;}#fly2159-d1 .edge-thickness-thick{stroke-width:3.5px;}#fly2159-d1 .edge-pattern-solid{stroke-dasharray:0;}#fly2159-d1 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly2159-d1 .edge-pattern-dashed{stroke-dasharray:3;}#fly2159-d1 .edge-pattern-dotted{stroke-dasharray:2;}#fly2159-d1 .marker{fill:#333333;stroke:#333333;}#fly2159-d1 .marker.cross{stroke:#333333;}#fly2159-d1 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly2159-d1 p{margin:0;}#fly2159-d1 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly2159-d1 .cluster-label text{fill:#333;}#fly2159-d1 .cluster-label span{color:#333;}#fly2159-d1 .cluster-label span p{background-color:transparent;}#fly2159-d1 .label text,#fly2159-d1 span{fill:#333;color:#333;}#fly2159-d1 .node rect,#fly2159-d1 .node circle,#fly2159-d1 .node ellipse,#fly2159-d1 .node polygon,#fly2159-d1 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly2159-d1 .rough-node .label text,#fly2159-d1 .node .label text,#fly2159-d1 .image-shape .label,#fly2159-d1 .icon-shape .label{text-anchor:middle;}#fly2159-d1 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly2159-d1 .rough-node .label,#fly2159-d1 .node .label,#fly2159-d1 .image-shape .label,#fly2159-d1 .icon-shape .label{text-align:center;}#fly2159-d1 .node.clickable{cursor:pointer;}#fly2159-d1 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly2159-d1 .arrowheadPath{fill:#333333;}#fly2159-d1 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly2159-d1 .flowchart-link{stroke:#333333;fill:none;}#fly2159-d1 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly2159-d1 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly2159-d1 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly2159-d1 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly2159-d1 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly2159-d1 .cluster text{fill:#333;}#fly2159-d1 .cluster span{color:#333;}#fly2159-d1 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly2159-d1 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly2159-d1 rect.text{fill:none;stroke-width:0;}#fly2159-d1 .icon-shape,#fly2159-d1 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly2159-d1 .icon-shape p,#fly2159-d1 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly2159-d1 .icon-shape rect,#fly2159-d1 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly2159-d1 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly2159-d1 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly2159-d1 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly2159-d1_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d1_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d1_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d1_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d1_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d1_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"/><g class="edgePaths"><path d="M352,110L352,114.167C352,118.333,352,126.667,352,134.333C352,142,352,149,352,152.5L352,156" id="L_A_B_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_A_B_0" data-points="W3sieCI6MzUyLCJ5IjoxMTB9LHsieCI6MzUyLCJ5IjoxMzV9LHsieCI6MzUyLCJ5IjoxNjB9XQ==" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M263.529,373.529L233.941,394.441C204.352,415.352,145.176,457.176,115.588,494.755C86,532.333,86,565.667,86,599C86,632.333,86,665.667,86,700.156C86,734.646,86,770.292,86,805.938C86,841.583,86,877.229,86,902.552C86,927.875,86,942.875,86,950.375L86,957.875" id="L_B_C_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_C_0" data-points="W3sieCI6MjYzLjUyODYzNDM2MTIzMzQ2LCJ5IjozNzMuNTI4NjM0MzYxMjMzNDZ9LHsieCI6ODYsInkiOjQ5OX0seyJ4Ijo4NiwieSI6NTk5fSx7IngiOjg2LCJ5Ijo2OTl9LHsieCI6ODYsInkiOjgwNS45Mzc1fSx7IngiOjg2LCJ5Ijo5MTIuODc1fSx7IngiOjg2LCJ5Ijo5NjEuODc1fV0=" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M440.471,373.529L470.059,394.441C499.648,415.352,558.824,457.176,588.412,483.588C618,510,618,521,618,526.5L618,532" id="L_B_D_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_B_D_0" data-points="W3sieCI6NDQwLjQ3MTM2NTYzODc2NjU0LCJ5IjozNzMuNTI4NjM0MzYxMjMzNDZ9LHsieCI6NjE4LCJ5Ijo0OTl9LHsieCI6NjE4LCJ5Ijo1MzZ9XQ==" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M618,662L618,668.167C618,674.333,618,686.667,618,698.333C618,710,618,721,618,726.5L618,732" id="L_D_E_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_D_E_0" data-points="W3sieCI6NjE4LCJ5Ijo2NjJ9LHsieCI6NjE4LCJ5Ijo2OTl9LHsieCI6NjE4LCJ5Ijo3MzZ9XQ==" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M567.491,825.366L529.576,839.951C491.661,854.536,415.83,883.705,377.915,905.79C340,927.875,340,942.875,340,950.375L340,957.875" id="L_E_F_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_F_0" data-points="W3sieCI6NTY3LjQ5MTQ3NTg4ODk0MywieSI6ODI1LjM2NjQ3NTg4ODk0M30seyJ4IjozNDAsInkiOjkxMi44NzV9LHsieCI6MzQwLCJ5Ijo5NjEuODc1fV0=" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M618,875.875L618,882.042C618,888.208,618,900.542,618,914.208C618,927.875,618,942.875,618,950.375L618,957.875" id="L_E_G_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_G_0" data-points="W3sieCI6NjE4LCJ5Ijo4NzUuODc1fSx7IngiOjYxOCwieSI6OTEyLjg3NX0seyJ4Ijo2MTgsInkiOjk2MS44NzV9XQ==" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M667.984,825.891L704.299,840.389C740.614,854.886,813.245,883.88,849.56,903.878C885.875,923.875,885.875,934.875,885.875,940.375L885.875,945.875" id="L_E_H_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_E_H_0" data-points="W3sieCI6NjY3Ljk4MzY3OTMzOTY2OTgsInkiOjgyNS44OTEzMjA2NjAzMzAyfSx7IngiOjg4NS44NzUsInkiOjkxMi44NzV9LHsieCI6ODg1Ljg3NSwieSI6OTQ5Ljg3NX1d" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M86,1039.875L86,1046.042C86,1052.208,86,1064.542,95.559,1074.622C105.119,1084.703,124.237,1092.531,133.797,1096.445L143.356,1100.359" id="L_C_Z_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_C_Z_0" data-points="W3sieCI6ODYsInkiOjEwMzkuODc1fSx7IngiOjg2LCJ5IjoxMDc2Ljg3NX0seyJ4IjoxNDcuMDU3NjkyMzA3NjkyMzIsInkiOjExMDEuODc1fV0=" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/><path d="M340,1039.875L340,1046.042C340,1052.208,340,1064.542,330.441,1074.622C320.881,1084.703,301.763,1092.531,292.203,1096.445L282.644,1100.359" id="L_F_Z_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_F_Z_0" data-points="W3sieCI6MzQwLCJ5IjoxMDM5Ljg3NX0seyJ4IjozNDAsInkiOjEwNzYuODc1fSx7IngiOjI3OC45NDIzMDc2OTIzMDc3LCJ5IjoxMTAxLjg3NX1d" marker-end="url(#fly2159-d1_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_A_B_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(86, 699)"><g class="label" data-id="L_B_C_0" transform="translate(-64.2734375, -12)"><foreignObject width="128.546875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>有(正常,R11 形态)</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(618, 499)"><g class="label" data-id="L_B_D_0" transform="translate(-88.2734375, -12)"><foreignObject width="176.546875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>没有(上游漏发,R12 形态)</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_D_E_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(340, 912.875)"><g class="label" data-id="L_E_F_0" transform="translate(-32, -12)"><foreignObject width="64" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>开始回答</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(618, 912.875)"><g class="label" data-id="L_E_G_0" transform="translate(-64, -12)"><foreignObject width="128" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>说『已经在答了』</p></span></div></foreignObject></g></g><g class="edgeLabel" transform="translate(885.875, 912.875)"><g class="label" data-id="L_E_H_0" transform="translate(-57.015625, -12)"><foreignObject width="114.03125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"><p>还是沉默 / 出错</p></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_C_Z_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_F_Z_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-A-0" transform="translate(352, 59)"><rect class="basic label-container" style="fill:#e8f0fe !important;stroke:#007aff !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>你在语音房说完一句话<br />(语音转成文字,确认是你说的)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-B-1" transform="translate(352, 311)"><polygon points="151,0 302,-151 151,-302 0,-151" class="label-container" transform="translate(-150.5, 151)"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>6 秒内 Raya 有任何动静吗?<br />(声音开始播 / 回答文字出现)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-C-3" transform="translate(86, 1000.875)"><rect class="basic label-container" style="fill:#e3f8e9 !important;stroke:#34c759 !important" x="-78" y="-39" width="156" height="78"/><g class="label" style="" transform="translate(-48, -24)"><rect/><foreignObject width="96" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>正常回答<br />什么都不用做</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-D-5" transform="translate(618, 599)"><rect class="basic label-container" style="fill:#fff1dc !important;stroke:#ff9500 !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>watchdog 触发<br />调一次新方法 createResponse<br />= 礼貌地催一句『请回答』</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-E-7" transform="translate(618, 805.9375)"><polygon points="69.9375,0 139.875,-69.9375 69.9375,-139.875 0,-69.9375" class="label-container" transform="translate(-69.4375, 69.9375)"/><g class="label" style="" transform="translate(-42.9375, -12)"><rect/><foreignObject width="85.875" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>上游怎么回?</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-F-9" transform="translate(340, 1000.875)"><rect class="basic label-container" style="fill:#e3f8e9 !important;stroke:#34c759 !important" x="-126" y="-39" width="252" height="78"/><g class="label" style="" transform="translate(-96, -24)"><rect/><foreignObject width="192" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>Raya 开口回答<br />后续流程与正常轮完全一样</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-G-11" transform="translate(618, 1000.875)"><rect class="basic label-container" style="fill:#ffe5e3 !important;stroke:#ff3b30 !important" x="-102" y="-39" width="204" height="78"/><g class="label" style="" transform="translate(-72, -24)"><rect/><foreignObject width="144" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>放手不再催<br />绝不造出第二个回答</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-H-13" transform="translate(885.875, 1000.875)"><rect class="basic label-container" style="fill:#f0f0f2 !important;stroke:#86868b !important" x="-115.875" y="-51" width="231.75" height="102"/><g class="label" style="" transform="translate(-85.875, -36)"><rect/><foreignObject width="171.75" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>记下证据,放手<br />不重试(和今天一样沉默,<br />但至少留了病历)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Z-15" transform="translate(213, 1128.875)"><rect class="basic label-container" style="" x="-111.015625" y="-27" width="222.03125" height="54"/><g class="label" style="" transform="translate(-81.015625, -12)"><rect/><foreignObject width="162.03125" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>回答落到语音 + 文字区</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <p>「6 秒」不是拍脑袋:正常轮 2.6 秒就有答,6 秒 ≈ 正常的两倍多余量;而旧的兜底要等 21 秒才放弃。这个数字(和「每场最多催 3 次」)都是<b>配置项</b>,随时可改,不用改代码。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s3" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 4 动了哪些东西 ===== -->
+  <section class="card purple" data-section="4 动了哪些东西">
+    <h2>4 · 动了哪些东西</h2>
+    <div class="diagram"><svg id="fly2159-d2" width="100%" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" class="flowchart" style="max-width: 2006.41px; background-color: white;" viewBox="0 0 2006.40625 385" role="graphics-document document" aria-roledescription="flowchart-v2"><style>#fly2159-d2{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;fill:#333;}@keyframes edge-animation-frame{from{stroke-dashoffset:0;}}@keyframes dash{to{stroke-dashoffset:0;}}#fly2159-d2 .edge-animation-slow{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 50s linear infinite;stroke-linecap:round;}#fly2159-d2 .edge-animation-fast{stroke-dasharray:9,5!important;stroke-dashoffset:900;animation:dash 20s linear infinite;stroke-linecap:round;}#fly2159-d2 .error-icon{fill:#552222;}#fly2159-d2 .error-text{fill:#552222;stroke:#552222;}#fly2159-d2 .edge-thickness-normal{stroke-width:1px;}#fly2159-d2 .edge-thickness-thick{stroke-width:3.5px;}#fly2159-d2 .edge-pattern-solid{stroke-dasharray:0;}#fly2159-d2 .edge-thickness-invisible{stroke-width:0;fill:none;}#fly2159-d2 .edge-pattern-dashed{stroke-dasharray:3;}#fly2159-d2 .edge-pattern-dotted{stroke-dasharray:2;}#fly2159-d2 .marker{fill:#333333;stroke:#333333;}#fly2159-d2 .marker.cross{stroke:#333333;}#fly2159-d2 svg{font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:16px;}#fly2159-d2 p{margin:0;}#fly2159-d2 .label{font-family:"trebuchet ms",verdana,arial,sans-serif;color:#333;}#fly2159-d2 .cluster-label text{fill:#333;}#fly2159-d2 .cluster-label span{color:#333;}#fly2159-d2 .cluster-label span p{background-color:transparent;}#fly2159-d2 .label text,#fly2159-d2 span{fill:#333;color:#333;}#fly2159-d2 .node rect,#fly2159-d2 .node circle,#fly2159-d2 .node ellipse,#fly2159-d2 .node polygon,#fly2159-d2 .node path{fill:#ECECFF;stroke:#9370DB;stroke-width:1px;}#fly2159-d2 .rough-node .label text,#fly2159-d2 .node .label text,#fly2159-d2 .image-shape .label,#fly2159-d2 .icon-shape .label{text-anchor:middle;}#fly2159-d2 .node .katex path{fill:#000;stroke:#000;stroke-width:1px;}#fly2159-d2 .rough-node .label,#fly2159-d2 .node .label,#fly2159-d2 .image-shape .label,#fly2159-d2 .icon-shape .label{text-align:center;}#fly2159-d2 .node.clickable{cursor:pointer;}#fly2159-d2 .root .anchor path{fill:#333333!important;stroke-width:0;stroke:#333333;}#fly2159-d2 .arrowheadPath{fill:#333333;}#fly2159-d2 .edgePath .path{stroke:#333333;stroke-width:2.0px;}#fly2159-d2 .flowchart-link{stroke:#333333;fill:none;}#fly2159-d2 .edgeLabel{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly2159-d2 .edgeLabel p{background-color:rgba(232,232,232, 0.8);}#fly2159-d2 .edgeLabel rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly2159-d2 .labelBkg{background-color:rgba(232, 232, 232, 0.5);}#fly2159-d2 .cluster rect{fill:#ffffde;stroke:#aaaa33;stroke-width:1px;}#fly2159-d2 .cluster text{fill:#333;}#fly2159-d2 .cluster span{color:#333;}#fly2159-d2 div.mermaidTooltip{position:absolute;text-align:center;max-width:200px;padding:2px;font-family:"trebuchet ms",verdana,arial,sans-serif;font-size:12px;background:hsl(80, 100%, 96.2745098039%);border:1px solid #aaaa33;border-radius:2px;pointer-events:none;z-index:100;}#fly2159-d2 .flowchartTitleText{text-anchor:middle;font-size:18px;fill:#333;}#fly2159-d2 rect.text{fill:none;stroke-width:0;}#fly2159-d2 .icon-shape,#fly2159-d2 .image-shape{background-color:rgba(232,232,232, 0.8);text-align:center;}#fly2159-d2 .icon-shape p,#fly2159-d2 .image-shape p{background-color:rgba(232,232,232, 0.8);padding:2px;}#fly2159-d2 .icon-shape rect,#fly2159-d2 .image-shape rect{opacity:0.5;background-color:rgba(232,232,232, 0.8);fill:rgba(232,232,232, 0.8);}#fly2159-d2 .label-icon{display:inline-block;height:1em;overflow:visible;vertical-align:-0.125em;}#fly2159-d2 .node .label-icon path{fill:currentColor;stroke:revert;stroke-width:revert;}#fly2159-d2 :root{--mermaid-font-family:"trebuchet ms",verdana,arial,sans-serif;}</style><g><marker id="fly2159-d2_flowchart-v2-pointEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d2_flowchart-v2-pointStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="4.5" refY="5" markerUnits="userSpaceOnUse" markerWidth="8" markerHeight="8" orient="auto"><path d="M 0 5 L 10 10 L 10 0 z" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d2_flowchart-v2-circleEnd" class="marker flowchart-v2" viewBox="0 0 10 10" refX="11" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d2_flowchart-v2-circleStart" class="marker flowchart-v2" viewBox="0 0 10 10" refX="-1" refY="5" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><circle cx="5" cy="5" r="5" class="arrowMarkerPath" style="stroke-width: 1; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d2_flowchart-v2-crossEnd" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="12" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><marker id="fly2159-d2_flowchart-v2-crossStart" class="marker cross flowchart-v2" viewBox="0 0 11 11" refX="-1" refY="5.2" markerUnits="userSpaceOnUse" markerWidth="11" markerHeight="11" orient="auto"><path d="M 1,1 l 9,9 M 10,1 l -9,9" class="arrowMarkerPath" style="stroke-width: 2; stroke-dasharray: 1, 0;"/></marker><g class="root"><g class="clusters"><g class="cluster" id="OAI" data-look="classic"><rect style="" x="1694.78125" y="140" width="303.625" height="148"/><g class="cluster-label" transform="translate(1746.59375, 140)"><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>OpenAI Realtime(上游,黑盒)</p></span></div></foreignObject></g></g><g class="cluster" id="CODEX" data-look="classic"><rect style="" x="988" y="41" width="656.78125" height="336"/><g class="cluster-label" transform="translate(1216.390625, 41)"><foreignObject width="200" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>codex 补丁二进制(服务端,基于装机同版 0.151.0)</p></span></div></foreignObject></g></g><g class="cluster" id="RAYA" data-look="classic"><rect style="" x="8" y="8" width="930" height="206"/><g class="cluster-label" transform="translate(377.4921875, 8)"><foreignObject width="191.015625" height="24"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>raya 仓 · 语音进程(客户端)</p></span></div></foreignObject></g></g></g><g class="edgePaths"><path d="M603,116L607.167,116C611.333,116,619.667,116,627.333,116C635,116,642,116,645.5,116L649,116" id="L_W_T_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_W_T_0" data-points="W3sieCI6NjAzLCJ5IjoxMTZ9LHsieCI6NjI4LCJ5IjoxMTZ9LHsieCI6NjUzLCJ5IjoxMTZ9XQ==" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/><path d="M913,116L917.167,116C921.333,116,929.667,116,938,116C946.333,116,954.667,116,963,116C971.333,116,979.667,116,1000.651,125.505C1021.635,135.011,1055.271,154.021,1072.088,163.527L1088.906,173.032" id="L_T_S_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_T_S_0" data-points="W3sieCI6OTEzLCJ5IjoxMTZ9LHsieCI6OTM4LCJ5IjoxMTZ9LHsieCI6OTYzLCJ5IjoxMTZ9LHsieCI6OTg4LCJ5IjoxMTZ9LHsieCI6MTA5Mi4zODgyMzM0MTgzNjcyLCJ5IjoxNzV9XQ==" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/><path d="M1309.781,214L1313.948,214C1318.115,214,1326.448,214,1334.115,214C1341.781,214,1348.781,214,1352.281,214L1355.781,214" id="L_S_Q_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_S_Q_0" data-points="W3sieCI6MTMwOS43ODEyNSwieSI6MjE0fSx7IngiOjEzMzQuNzgxMjUsInkiOjIxNH0seyJ4IjoxMzU5Ljc4MTI1LCJ5IjoyMTR9XQ==" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/><path d="M1619.781,214L1623.948,214C1628.115,214,1636.448,214,1644.781,214C1653.115,214,1661.448,214,1669.781,214C1678.115,214,1686.448,214,1694.115,214C1701.781,214,1708.781,214,1712.281,214L1715.781,214" id="L_Q_O_0" class="edge-thickness-normal edge-pattern-solid edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_Q_O_0" data-points="W3sieCI6MTYxOS43ODEyNSwieSI6MjE0fSx7IngiOjE2NDQuNzgxMjUsInkiOjIxNH0seyJ4IjoxNjY5Ljc4MTI1LCJ5IjoyMTR9LHsieCI6MTY5NC43ODEyNSwieSI6MjE0fSx7IngiOjE3MTkuNzgxMjUsInkiOjIxNH1d" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/><path d="M293,106L297.167,106C301.333,106,309.667,106,317.335,106.226C325.003,106.452,332.006,106.904,335.507,107.129L339.008,107.355" id="L_CFG_W_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_CFG_W_0" data-points="W3sieCI6MjkzLCJ5IjoxMDZ9LHsieCI6MzE4LCJ5IjoxMDZ9LHsieCI6MzQzLCJ5IjoxMDcuNjEyOTAzMjI1ODA2NDV9XQ==" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/><path d="M217.517,249L234.264,233.333C251.011,217.667,284.506,186.333,304.773,169.781C325.04,153.229,332.081,151.457,335.601,150.571L339.121,149.686" id="L_R1_W_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_R1_W_0" data-points="W3sieCI6MjE3LjUxNzI0MTM3OTMxMDM1LCJ5IjoyNDl9LHsieCI6MzE4LCJ5IjoxNTV9LHsieCI6MzQzLCJ5IjoxNDguNzA5Njc3NDE5MzU0ODV9XQ==" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/><path d="M913,312L917.167,312C921.333,312,929.667,312,938,312C946.333,312,954.667,312,963,312C971.333,312,979.667,312,1000.651,302.495C1021.635,292.989,1055.271,273.979,1072.088,264.473L1088.906,254.968" id="L_R2_S_0" class="edge-thickness-normal edge-pattern-dotted edge-thickness-normal edge-pattern-solid flowchart-link" style=";" data-edge="true" data-et="edge" data-id="L_R2_S_0" data-points="W3sieCI6OTEzLCJ5IjozMTJ9LHsieCI6OTM4LCJ5IjozMTJ9LHsieCI6OTYzLCJ5IjozMTJ9LHsieCI6OTg4LCJ5IjozMTJ9LHsieCI6MTA5Mi4zODgyMzM0MTgzNjcyLCJ5IjoyNTN9XQ==" marker-end="url(#fly2159-d2_flowchart-v2-pointEnd)"/></g><g class="edgeLabels"><g class="edgeLabel"><g class="label" data-id="L_W_T_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_T_S_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_S_Q_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_Q_O_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_CFG_W_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_R1_W_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g><g class="edgeLabel"><g class="label" data-id="L_R2_S_0" transform="translate(0, 0)"><foreignObject width="0" height="0"><div xmlns="http://www.w3.org/1999/xhtml" class="labelBkg" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="edgeLabel"></span></div></foreignObject></g></g></g><g class="nodes"><g class="node default" id="flowchart-W-0" transform="translate(473, 116)"><rect class="basic label-container" style="fill:#fff1dc !important;stroke:#ff9500 !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>新增: 恢复 watchdog<br />user final 后计时 6 秒<br />每句话至多催 1 次,每场至多 3 次</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-T-1" transform="translate(783, 116)"><rect class="basic label-container" style="" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>RealtimeTransport<br />新增 createResponse() 一个方法</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-CFG-2" transform="translate(163, 106)"><rect class="basic label-container" style="" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>3 个新配置项<br />(开关 / 等待毫秒 / 每场上限)<br />都可随时改</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-S-3" transform="translate(1161.390625, 214)"><rect class="basic label-container" style="fill:#fff1dc !important;stroke:#ff9500 !important" x="-148.390625" y="-39" width="296.78125" height="78"/><g class="label" style="" transform="translate(-118.390625, -24)"><rect/><foreignObject width="236.78125" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>schema 新增 experimental 方法<br />thread/realtime/createResponse</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-Q-4" transform="translate(1489.78125, 214)"><rect class="basic label-container" style="fill:#e8f0fe !important;stroke:#007aff !important" x="-130" y="-75" width="260" height="150"/><g class="label" style="" transform="translate(-100, -60)"><rect/><foreignObject width="200" height="120"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>内部已有的 response.create 通路<br />(新增 create_once_if_idle:<br />已有回答在途时放手,绝不排队第二个)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-O-5" transform="translate(1846.59375, 214)"><rect class="basic label-container" style="fill:#f0f0f2 !important;stroke:#86868b !important" x="-126.8125" y="-39" width="253.625" height="78"/><g class="label" style="" transform="translate(-96.8125, -24)"><rect/><foreignObject width="193.625" height="48"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell; white-space: nowrap; line-height: 1.5; max-width: 200px; text-align: center;"><span class="nodeLabel"><p>间歇性漏发回答的地方<br />(本单不修它,只补催的手段)</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-R1-13" transform="translate(163, 300)"><rect class="basic label-container" style="fill:#e3f8e9 !important;stroke:#34c759 !important" x="-130" y="-51" width="260" height="102"/><g class="label" style="" transform="translate(-100, -36)"><rect/><foreignObject width="200" height="72"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>回滚杠杆 1<br />配置开关一行关掉 watchdog</p></span></div></foreignObject></g></g><g class="node default" id="flowchart-R2-15" transform="translate(783, 312)"><rect class="basic label-container" style="fill:#e3f8e9 !important;stroke:#34c759 !important" x="-130" y="-63" width="260" height="126"/><g class="label" style="" transform="translate(-100, -48)"><rect/><foreignObject width="200" height="96"><div xmlns="http://www.w3.org/1999/xhtml" style="display: table; white-space: break-spaces; line-height: 1.5; max-width: 200px; text-align: center; width: 200px;"><span class="nodeLabel"><p>回滚杠杆 2<br />RAYA_CODEX_BIN 改回官方二进制<br />(客户端自动降级,零报错)</p></span></div></foreignObject></g></g></g></g></g></svg></div>
+    <div class="tablewrap"><table>
+      <tr><th>动的地方</th><th>动什么</th><th>不动谁</th></tr>
+      <tr><td>codex 补丁二进制(中间人)</td><td>接口清单加一句 <span class="mono">createResponse</span>(「请回答」);最终补丁覆盖 11 个生产接线点,沿用现成协议模板</td><td>官方 codex 一个字不动;全机器其他用 codex 的人零影响 —— 补丁版只给 Raya 用,用一个环境变量指过去</td></tr>
+      <tr><td>raya 语音程序(她)</td><td>加看门狗 + 3 个配置项 + 4 种日志事件(留病历,QA 有抓手)</td><td>念稿、文字镜像、ship 批准、静音规矩 —— 全部原样</td></tr>
+      <tr><td>你听到的</td><td><b>唯一变化:本来沉默的地方,她开口回答了。</b>催这个动作本身零出声,她不会说「让我再想想」之类的废话</td><td>—</td></tr>
+    </table></div>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s4" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 5 取舍 ===== -->
+  <section class="card amber" data-section="5 关键取舍与否掉的路">
+    <h2>5 · 关键取舍与被否掉的路</h2>
+    <div class="tablewrap"><table>
+      <tr><th>路</th><th>为什么否</th></tr>
+      <tr><td>把你的话重发一遍冒充催促(appendText 重放)</td><td><b>FLY-2031 已裁定禁止</b>:层错了,可能催出两个回答,还污染对话记录</td></tr>
+      <tr><td>掐断重连(重启语音会话)</td><td>违反你 8-20 定的「进程内重连」禁令;丢上下文;几秒沉默变成几秒断流</td></tr>
+      <tr><td>等 OpenAI 官方自己补</td><td>今天(8-31)查过上游最新代码,还是没有;时间不可控。我们会顺手把补丁提给官方(加分项),但不等它</td></tr>
+      <tr><td>只记日志不救</td><td>你的体感问题原样留着,不解决问题</td></tr>
+    </table></div>
+    <h3>选定路里最关键的一个取舍</h3>
+    <p>催之前先看本地账本:如果账本显示「已经有回答在途」,就<b>不催</b> —— 宁可少救一次,绝不造出两个回答(第二个回答会让她自言自语,比沉默更糟)。中间人内部对念稿有「排队补发」逻辑,我们<b>特意不复用它</b>,新写一个「账本空闲才催、否则跳过」的入口。</p>
+    <p>还有一个独立评审(Codex 设计评审,前两轮各抓出一个致命隐患)修进设计的点:万一本地账本和上游失了同步(账本以为空、上游其实在答),催出去会被上游拒绝,而按现在中间人的代码,<b>这个拒绝会直接杀掉整场语音会话</b> —— 比沉默严重得多。所以每次催都带一个唯一编号,上游的拒绝会引用这个编号;<b>只有编号精确对上的拒绝</b>才被安静吞掉(会话活着),其他一切错误照旧严格 —— 绝不会把别处的报错误当成自己的。实现时还有一道前置探针:先实录上游拒绝的真实报文,确认它真的带编号;不带就停下重审设计,不硬上。</p>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s5" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 6 护栏 ===== -->
+  <section class="card green" data-section="6 安全护栏">
+    <h2>6 · 安全护栏(每条都有对应测试)</h2>
+    <ul>
+      <li><b>正常轮零打扰</b>:她正常回答时,看门狗什么都不做(真房验收硬门:正常轮催促次数必须为 0)。判「有动静」不只听声音:回答的<b>文字流一开始出现</b>就算数,不会在她已经开始答的时候还去催。</li>
+      <li><b>她说话时不催、也不预备催</b>:只要她还在出声,连倒计时都不开始。</li>
+      <li><b>会议模式不催</b>:开会时人跟人说话,不是每句话都该她答 —— 看门狗<b>从一开始就不上岗</b>(不是快到点了才拦)。</li>
+      <li><b>一句话最多催一次,一场最多催三次</b>:防任何形式的催促循环。</li>
+      <li><b>跑回官方版零报错</b>:哪天把她切回官方 codex(没有这句「请回答」),程序自己发现、记一条日志、安静退回今天的行为 —— 不崩、不重试、不骚扰。</li>
+      <li><b>两个独立的回滚杠杆</b>:①配置一行关掉看门狗;②环境变量一行换回官方二进制。任何一个都能瞬间回到今天。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s6" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 7 诚实边界 ===== -->
+  <section class="card gray" data-section="7 诚实边界">
+    <h2>7 · 诚实边界:这个设计不做什么</h2>
+    <ul>
+      <li><b>不修上游为什么会忘</b>:OpenAI 那头是黑盒,我们只能补「忘了就催」的手段。催也可能失败 —— 失败后跟今天一样沉默,但至少留了病历(日志证据)。</li>
+      <li><b>有个很窄的竞态窗口</b>:你打断她之后,被打断那半句话的「尾巴」如果恰好比你的话晚到,会被误认成「她答了」,那一次就不催了。实测这个窗口很窄(R12 里尾巴早到 8 秒),漏催的后果 = 跟今天一样,零额外风险。</li>
+      <li><b>「她卡在说话中」的场景不救</b>:如果被打断那句话的收尾信号一直不来,系统会一直认为她还在说,看门狗按规矩不上岗 —— 这种情况和「她真的还在答」在我们这侧分不清,宁可不救也不冒双回答的险。后果 = 跟今天一样沉默。</li>
+      <li><b>账本失同步时只保命不救答</b>:上面 §5 说的「非致命吞拒绝」只保证会话不死,那一轮的沉默还是沉默。</li>
+      <li><b>碰上播报撞车</b>:如果她刚好要念一条待办,念的声音会让看门狗以为「有动静了」——房里确实有声音,不算沉默,但你插的那句可能还是没答,需要你追问一次。</li>
+      <li><b>本单不部署</b>:设计→实现→测试证据→PR;真正切到补丁二进制要单独走 QA + 你批准的 ship 流程。</li>
+      <li><b>会议模式的恢复策略</b>不在本单(如果将来要,走 FLY-1453 产品裁量)。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s7" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 8 下一步 ===== -->
+  <section class="card blue" data-section="8 下一步">
+    <h2>8 · 下一步</h2>
+    <ul>
+      <li>实现节点按 plan 的 6 个阶段做:codex 补丁(带测试)→ raya 看门狗(21 条行为测试)→ 双二进制集成验证 → 隔离房真机轮 → 三仓 PR。</li>
+      <li>隔离房验收沿用 FLY-2031 的纪律(删旧构建、证据文件带哈希)。</li>
+      <li>codex 补丁只开 fork 内 draft PR 供审阅;未经 founder 单独授权,不向 OpenAI 官方仓提 PR。</li>
+    </ul>
+    <div class="comment"><label>这一节的意见</label><textarea data-k="s8" placeholder="写在这里…"></textarea></div>
+  </section>
+
+  <!-- ===== 意见汇总 ===== -->
+  <section class="card navy summary" data-section="意见汇总" style="border-left-color:#1a365d;">
+    <h2>页面意见汇总</h2>
+    <p class="status">下面自动聚合你在各节写的意见(存在你本机浏览器里,刷新不丢)。点按钮复制,贴回给我就行。</p>
+    <pre id="agg">(还没有意见)</pre>
+    <button class="btn" id="copyBtn" type="button">复制全部意见</button>
+    <span class="status" id="copyStatus"></span>
+    <div id="chunks"></div>
+  </section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2159";
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly2159-comment:";
+  try { prefix = (location.pathname || "/") + "#fly2159:"; } catch (e) {}
+
+  function lsGet(k) { try { return localStorage.getItem(prefix + k) || ""; } catch (e) { return ""; } }
+  function lsSet(k, v) { try { localStorage.setItem(prefix + k, v); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-k]"));
+
+  function sectionTitle(ta) {
+    var sec = ta.closest("section[data-section]");
+    return sec ? sec.getAttribute("data-section") : "(未知节)";
+  }
+
+  function aggregate() {
+    var parts = [];
+    for (var i = 0; i < areas.length; i++) {
+      var v = (areas[i].value || "").trim();
+      if (v) parts.push("【" + sectionTitle(areas[i]) + "】\n" + v);
+    }
+    return parts;
+  }
+
+  function fullText() {
+    var parts = aggregate();
+    if (!parts.length) return "";
+    return MARKER + "\n" + parts.join("\n\n");
+  }
+
+  function chunkText(text) {
+    if (text.length <= CHUNK_LIMIT) return [text];
+    var body = text.slice(MARKER.length + 1);
+    var chunks = [];
+    var seg = "";
+    var blocks = body.split("\n\n");
+    for (var i = 0; i < blocks.length; i++) {
+      var candidate = seg ? seg + "\n\n" + blocks[i] : blocks[i];
+      if ((MARKER.length + 20 + candidate.length) > CHUNK_LIMIT && seg) {
+        chunks.push(seg); seg = blocks[i];
+      } else { seg = candidate; }
+    }
+    if (seg) chunks.push(seg);
+    var out = [];
+    for (var j = 0; j < chunks.length; j++) {
+      out.push(MARKER + "\n(第 " + (j + 1) + "/" + chunks.length + " 段)\n" + chunks[j]);
+    }
+    return out;
+  }
+
+  var agg = document.getElementById("agg");
+  var chunksDiv = document.getElementById("chunks");
+  var copyStatus = document.getElementById("copyStatus");
+
+  function render() {
+    var text = fullText();
+    agg.textContent = text || "(还没有意见)";
+    while (chunksDiv.firstChild) chunksDiv.removeChild(chunksDiv.firstChild);
+    if (text && text.length > CHUNK_LIMIT) {
+      var pieces = chunkText(text);
+      for (var i = 0; i < pieces.length; i++) {
+        (function (piece, idx) {
+          var b = document.createElement("button");
+          b.className = "btn secondary";
+          b.type = "button";
+          b.textContent = "复制第 " + (idx + 1) + "/" + pieces.length + " 段";
+          b.addEventListener("click", function () { copyText(piece, b); });
+          chunksDiv.appendChild(b);
+        })(pieces[i], i);
+      }
+    }
+  }
+
+  function fallbackCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function copyText(text, btn) {
+    function done(ok) {
+      copyStatus.textContent = ok ? "已复制 ✓" : "复制失败,请手动全选上面的文字";
+      if (btn) btn.textContent = ok ? "已复制 ✓" : btn.textContent;
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }, function () { done(fallbackCopy(text)); });
+    } else {
+      done(fallbackCopy(text));
+    }
+  }
+
+  for (var i = 0; i < areas.length; i++) {
+    (function (ta) {
+      var k = ta.getAttribute("data-k");
+      var saved = lsGet(k);
+      if (saved) ta.value = saved;
+      ta.addEventListener("input", function () { lsSet(k, ta.value); render(); });
+    })(areas[i]);
+  }
+
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    var text = fullText();
+    if (!text) { copyStatus.textContent = "还没有写任何意见"; return; }
+    copyText(text, null);
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
