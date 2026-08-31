@@ -295,21 +295,23 @@ else
   fail "restart launchd alert paths are duplicated: $(cat "$RESTART_ALERT_CALLS" 2>/dev/null)"
 fi
 
-echo "Test: completion renderer preserves 18-arg bytes and appends healthy arg 19"
+echo "Test: completion renderer fails closed without startup evidence and appends arg 19"
 # shellcheck source=../lib/restart-notify.sh
 source "$NOTIFY"
 old18="$(rn_render_completion_message \
-  0123456789abcdef fedcba9876543210 deploy 2 0 0 '' '' known '' ok 12 7s healthy ready 2 0 0)"
-expected18=$'✅ Flywheel 全量重启完成 (reason=deploy)\n版本: `0123456` → `fedcba9`\nLead: 2/2 supervisor 换代收敛(body 见『本体』行;未单独探测 Discord 可达性)\n本体: 2 新建 / 0 接管(未换) / 0 未知\nBridge: healthy (/health 实测 12ms)\ncmux watcher: healthy (ready)\n总耗时: 7s'
+  0123456789abcdef fedcba9876543210 deploy 2 0 0 '' '' known '' unavailable - 7s healthy ready 2 0 0)"
+expected18=$'⚠️ Flywheel 全量重启结束 — 状态未知 (reason=deploy)\n版本: `0123456` → `fedcba9`\nLead: 2/2 supervisor 换代收敛(body 见『本体』行;未单独探测 Discord 可达性)\n本体: 2 新建 / 0 接管(未换) / 0 未知\nBridge: 启动健康状态未知；Lead 波前延迟观测未取得\ncmux watcher: healthy (ready)\n总耗时: 7s'
 if [[ "$old18" == "$expected18" ]]; then
-  pass "representative old 18-argument message is byte-compatible"
+  pass "representative old 18-argument message defaults startup health to unknown"
 else
-  fail "18-argument renderer bytes changed"
+  fail "18-argument renderer did not fail closed without startup evidence"
 fi
 summary='expected=5 loaded=5 converged=0 skipped_disabled=2 hold=2 drift=0 zombie=0 unverifiable=0 live_failure=0 lead=15/15'
 with19="$(rn_render_completion_message \
-  0123456789abcdef fedcba9876543210 deploy 2 0 0 '' '' known '' ok 12 7s healthy ready 2 0 0 "$summary")"
-if [[ "$with19" == *$'\nlaunchd: expected=5 loaded=5'* && "$with19" == *'lead=15/15'* ]]; then
+  0123456789abcdef fedcba9876543210 deploy 2 0 0 '' '' known '' ok 12 7s healthy ready 2 0 0 "$summary" passed)"
+if [[ "$with19" == *'✅ Flywheel 全量重启完成'* ]] \
+  && [[ "$with19" == *$'\nlaunchd: expected=5 loaded=5'* ]] \
+  && [[ "$with19" == *'lead=15/15'* ]]; then
   pass "healthy routine completion always includes the launchd denominator at arg 19"
 else
   fail "arg-19 launchd summary missing: $with19"

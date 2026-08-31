@@ -61,13 +61,13 @@ else
 
     clean_message=$(rn_render_completion_message \
       "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 3 0 0 "" "" \
-      known "" ok 87 "17m03s" healthy "pid=222" 3 0 0)
+      known "" ok 87 "17m03s" healthy "pid=222" 3 0 0 "" passed)
     if [[ "$clean_message" == *"✅ Flywheel 全量重启完成"* ]] \
       && [[ "$clean_message" == *'版本: `1111111` → `2222222`'* ]] \
       && [[ "$clean_message" == *"Lead: 3/3 supervisor 换代收敛"* ]] \
       && [[ "$clean_message" == *"本体: 3 新建 / 0 接管(未换) / 0 未知"* ]] \
       && [[ "$clean_message" != *"新本体已起、model 一致"* ]] \
-      && [[ "$clean_message" == *"Bridge: healthy (/health 实测 87ms)"* ]] \
+      && [[ "$clean_message" == *"Bridge: healthy (启动健康检查通过；Lead 波前 /health 实测 87ms)"* ]] \
       && [[ "$clean_message" == *"cmux watcher: healthy"* ]] \
       && [[ "$clean_message" == *"总耗时: 17m03s"* ]]; then
         pass "FLY-1603 clean completion includes SHA, Lead evidence, Bridge latency, and duration"
@@ -75,9 +75,58 @@ else
         fail "FLY-1603 clean completion payload mismatch: $clean_message"
     fi
 
+    unavailable_observation=$(rn_render_completion_message \
+      "1111111" "2222222" "updater" 3 0 0 "" "" known "" \
+      unavailable - "8s" healthy "pid=222" 3 0 0 "" passed)
+    unavailable_first_line="${unavailable_observation%%$'\n'*}"
+    if [[ "$unavailable_observation" == *"✅ Flywheel 全量重启完成"* ]] \
+      && [[ "$unavailable_observation" == *"启动健康检查通过"* ]] \
+      && [[ "$unavailable_observation" == *"Lead 波前延迟观测未取得"* ]] \
+      && [[ "$unavailable_first_line" != *"degraded"* ]]; then
+        pass "FLY-1926 unavailable latency observation does not negate proven startup health"
+    else
+        fail "FLY-1926 unavailable observation was misclassified: $unavailable_observation"
+    fi
+
+    unknown_startup=$(rn_render_completion_message \
+      "1111111" "2222222" "updater" 3 0 0 "" "" known "" \
+      unavailable - "8s" healthy "pid=222" 3 0 0 "" unknown)
+    unknown_first_line="${unknown_startup%%$'\n'*}"
+    if [[ "$unknown_first_line" == *"状态未知"* ]] \
+      && [[ "$unknown_first_line" != *"✅"* ]] \
+      && [[ "$unknown_startup" == *"启动健康状态未知"* ]]; then
+        pass "FLY-1926 unknown startup health fails closed without claiming degradation"
+    else
+        fail "FLY-1926 unknown startup health rendered an unsupported verdict: $unknown_startup"
+    fi
+
+    unknown_startup_with_observation=$(rn_render_completion_message \
+      "1111111" "2222222" "updater" 3 0 0 "" "" known "" \
+      ok 23 "8s" healthy "pid=222" 3 0 0 "" unknown)
+    unknown_observation_first_line="${unknown_startup_with_observation%%$'\n'*}"
+    if [[ "$unknown_observation_first_line" == *"状态未知"* ]] \
+      && [[ "$unknown_startup_with_observation" == *"启动健康状态未知"* ]] \
+      && [[ "$unknown_startup_with_observation" == *"Lead 波前 /health 实测 23ms"* ]] \
+      && [[ "$unknown_startup_with_observation" != *"启动健康检查通过"* ]]; then
+        pass "FLY-1926 successful observation never invents missing startup evidence"
+    else
+        fail "FLY-1926 observation invented startup health: $unknown_startup_with_observation"
+    fi
+
+    unavailable_with_lead_failure=$(rn_render_completion_message \
+      "1111111" "2222222" "updater" 3 1 0 "flywheel-eng-lead" "" known "" \
+      unavailable - "8s" healthy "pid=222" 2 0 0 "" passed)
+    unavailable_failure_first_line="${unavailable_with_lead_failure%%$'\n'*}"
+    if [[ "$unavailable_failure_first_line" == *"degraded"* ]] \
+      && [[ "$unavailable_with_lead_failure" == *"1 个失败: flywheel-eng-lead"* ]]; then
+        pass "FLY-1926 observation demotion never hides a real Lead failure"
+    else
+        fail "FLY-1926 unavailable observation hid a Lead failure: $unavailable_with_lead_failure"
+    fi
+
     degraded_message=$(rn_render_completion_message \
       "1111111aaaaaaaa" "2222222bbbbbbbb" "deploy" 4 1 1 \
-      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s" healthy "pid=222" 1 1 0)
+      "flywheel-eng-lead" "growth-lead" known "" ok 91 "42s" healthy "pid=222" 1 1 0 "" passed)
     if [[ "$degraded_message" == *"⚠️ Flywheel 全量重启结束 — degraded"* ]] \
       && [[ "$degraded_message" == *"4 个里 2 个成功、1 个失败: flywheel-eng-lead、1 个跳过(无 manifest): growth-lead"* ]] \
       && [[ "$degraded_message" == *"⚠️ 本体: 1 新建 / 1 接管(未换) / 0 未知"* ]] \
@@ -90,13 +139,14 @@ else
     fi
 
     invalid_body_counts=$(rn_render_completion_message \
-      "1111111" "2222222" "deploy" 3 0 0 "" "" known "" ok 10 "2s" healthy "" 2 0 0)
+      "1111111" "2222222" "deploy" 3 0 0 "" "" known "" ok 10 "2s" healthy "" 2 0 0 "" passed)
     [[ "$invalid_body_counts" == *"本体: 观测失败(未知)"* ]] \
       && pass "FLY-1671 impossible body arithmetic degrades the observation line only" \
       || fail "FLY-1671 impossible body arithmetic was rendered as fact: $invalid_body_counts"
 
     no_candidates=$(rn_render_completion_message \
-      "" "2222222bbbbbbbb" "deploy" 0 0 0 "" "" known "" ok 10 "2s")
+      "" "2222222bbbbbbbb" "deploy" 0 0 0 "" "" known "" ok 10 "2s" \
+      healthy "" 0 0 0 "" passed)
     [[ "$no_candidates" == *"未发现可重启候选(0)"* ]] \
       && [[ "$no_candidates" == *"(首次部署)"* ]] \
       && [[ "$no_candidates" != *"完成"* ]] \
@@ -104,7 +154,7 @@ else
       || fail "FLY-1603 no-candidate output falsely claimed success: $no_candidates"
 
     unreadable_message=$(rn_render_completion_message \
-      "1111111" "2222222" "deploy" 0 0 0 "" "" unreadable "" fail - unknown healthy "" 0 0 0)
+      "1111111" "2222222" "deploy" 0 0 0 "" "" unreadable "" fail - unknown healthy "" 0 0 0 "" passed)
     [[ "$unreadable_message" == *"重启结果无法读取"* ]] \
       && [[ "$unreadable_message" == *"本体: 观测失败(未知)"* ]] \
       && [[ "$unreadable_message" != *"波次未执行"* ]] \
@@ -114,7 +164,7 @@ else
 
     wave_message=$(rn_render_completion_message \
       "1111111" "2222222" "deploy" 0 1 0 "" "" wave_not_run \
-      "清单收敛失败" ok 12 "8s" healthy "" 0 0 0)
+      "清单收敛失败" ok 12 "8s" healthy "" 0 0 0 "" passed)
     [[ "$wave_message" == *"重启波次未执行(清单收敛失败),Lead 总数未知"* ]] \
       && [[ "$wave_message" == *"本体: 观测失败(未知)"* ]] \
       && [[ "$wave_message" != *"重启结果无法读取"* ]] \
@@ -124,7 +174,7 @@ else
 
     watcher_degraded=$(rn_render_completion_message \
       "1111111" "2222222" "deploy" 3 0 0 "" "" known "" ok 12 "8s" \
-      unverifiable "old watcher survived KILL")
+      unverifiable "old watcher survived KILL" 0 0 0 "" passed)
     [[ "$watcher_degraded" == *"⚠️ Flywheel 全量重启结束 — degraded"* ]] \
       && [[ "$watcher_degraded" == *"cmux watcher: ⚠️ unverifiable"* ]] \
       && [[ "$watcher_degraded" == *"old watcher survived KILL"* ]] \
@@ -168,8 +218,8 @@ EOF
       && [[ "$probe_bad_time" == $'fail\t-' ]] \
       && [[ "$probe_curl_fail" == $'fail\t-' ]] \
       && [[ -z "$probe_residue" ]] \
-      && pass "FLY-1603 Bridge completion probe measures latency and cleans every failure path" \
-      || fail "FLY-1603 Bridge completion probe mismatch/residue: ok='$probe_ok' false='$probe_false' bad_json='$probe_bad_json' bad_time='$probe_bad_time' curl='$probe_curl_fail' residue='$probe_residue'"
+      && pass "FLY-1926 Bridge pre-wave observation measures latency and cleans every failure path" \
+      || fail "FLY-1926 Bridge pre-wave observation mismatch/residue: ok='$probe_ok' false='$probe_false' bad_json='$probe_bad_json' bad_time='$probe_bad_time' curl='$probe_curl_fail' residue='$probe_residue'"
 fi
 
 echo "Test: FLY-1603 unexpected-exit finalizer is fail-loud and rc-preserving"
@@ -344,6 +394,41 @@ rn_run_terminal_case rollback-leads-failed rollback-leads-failed
 rn_run_terminal_case rollback-recovered update-rolled-back
 rn_run_terminal_case rollback-voice-failed rollback-voice-bridge-failed
 
+echo "Test: FLY-1926 host-tmux diagnostics never pollute the Lead count channel"
+rn_host_tmux_funcs="$TMPDIR_ROOT/restart-host-tmux-functions.sh"
+awk '
+  /^restart_host_tmux_gate\(\)/ { capture=1 }
+  capture && /^preflight_pull_latest_main\(\)/ { exit }
+  capture { print }
+' "$SCRIPT_DIR/restart-services.sh" > "$rn_host_tmux_funcs"
+# shellcheck disable=SC1090
+source "$rn_host_tmux_funcs"
+rn_host_root="$TMPDIR_ROOT/host-tmux-stdout"
+mkdir -p "$rn_host_root/state/bin" "$rn_host_root/repo"
+cat > "$rn_host_root/state/bin/host-tmux-selection-gate.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'host-tmux-%s\n' "$1"
+EOF
+chmod +x "$rn_host_root/state/bin/host-tmux-selection-gate.sh"
+printf 'candidate\n' > "$rn_host_root/candidates"
+rn_gate_stdout="$(FLYWHEEL_STATE_DIR="$rn_host_root/state" \
+  FLYWHEEL_DIR="$rn_host_root/repo" \
+  restart_host_tmux_gate \
+  1111111111111111111111111111111111111111 restart-lead-wave test-mount \
+  2>"$rn_host_root/gate.err")"
+rn_census_stdout="$(FLYWHEEL_STATE_DIR="$rn_host_root/state" \
+  FLYWHEEL_DIR="$rn_host_root/repo" \
+  restart_host_tmux_census "$rn_host_root/candidates" \
+  2>"$rn_host_root/census.err")"
+if [[ -z "$rn_gate_stdout" && -z "$rn_census_stdout" ]] \
+  && grep -qxF host-tmux-gate "$rn_host_root/gate.err" \
+  && grep -qxF host-tmux-verify "$rn_host_root/gate.err" \
+  && grep -qxF host-tmux-census "$rn_host_root/census.err"; then
+    pass "FLY-1926 host-tmux helpers keep stdout machine-clean"
+else
+    fail "FLY-1926 host-tmux helper stdout polluted: gate='$rn_gate_stdout' census='$rn_census_stdout'"
+fi
+
 echo "Test: FLY-1603 skip-test candidates never inflate the Lead total"
 rn_restart_all_func="$TMPDIR_ROOT/restart-all-leads.sh"
 printf '%s\n' \
@@ -353,6 +438,11 @@ printf '%s\n' \
 awk '/^do_restart_all_leads\(\)/ { capture=1 }
      capture && /^# Build$/ { exit }
      capture { print }' "$SCRIPT_DIR/restart-services.sh" >> "$rn_restart_all_func"
+rn_skip_restart_all_func="$TMPDIR_ROOT/restart-all-leads-with-host-tmux.sh"
+cp "$rn_host_tmux_funcs" "$rn_skip_restart_all_func"
+awk '/^do_restart_all_leads\(\)/ { capture=1 }
+     capture && /^# Build$/ { exit }
+     capture { print }' "$SCRIPT_DIR/restart-services.sh" >> "$rn_skip_restart_all_func"
 rn_skip_root="$TMPDIR_ROOT/skip-test-total"
 mkdir -p "$rn_skip_root"
 rn_skip_manifest="$rn_skip_root/prod.json"
@@ -362,8 +452,9 @@ printf '{}\n' > "$rn_skip_manifest"
 rn_skip_result=$(bash -c '
   set -uo pipefail
   source "$1"
-  root="$2"; manifest="$3"; calls="$4"
+  root="$2"; manifest="$3"; calls="$4"; state="$5"
   bash() { return 0; }
+  git() { printf "%040d\n" 1; }
   log() { :; }
   alert_warning() { :; }
   record_lead_restart_detail() { :; }
@@ -378,6 +469,7 @@ rn_skip_result=$(bash -c '
   }
   HOME="$root/home"
   FLYWHEEL_DIR="$root/repo"
+  FLYWHEEL_STATE_DIR="$state"
   TMPDIR="$root"
   LEAD_RESTART_NAMES_FILE="$root/names"
   LEAD_BODY_OBSERVATIONS_FILE=""
@@ -386,7 +478,8 @@ rn_skip_result=$(bash -c '
   VERIFIED_LEAD_START=""
   VERIFIED_LEAD_ELAPSED_SECONDS=""
   do_restart_all_leads stagger
-' _ "$rn_restart_all_func" "$rn_skip_root" "$rn_skip_manifest" "$rn_skip_calls")
+' _ "$rn_skip_restart_all_func" "$rn_skip_root" "$rn_skip_manifest" "$rn_skip_calls" \
+  "$rn_host_root/state")
 if [[ "$rn_skip_result" == "skipped:0 failed:0 total:1" ]] \
   && [[ "$(wc -l < "$rn_skip_calls" | tr -d ' ')" == "1" ]] \
   && grep -qxF "$rn_skip_manifest" "$rn_skip_calls"; then
@@ -2090,6 +2183,11 @@ elif [[ "\${1:-}" == "print-disabled" ]]; then
 elif [[ "\${1:-}" == "bootout" && "\${2:-}" == *"com.flywheel.cmux-watcher" ]]; then
   :
 elif [[ "\${1:-}" == "kickstart" && "\$*" == *"com.flywheel.lead.flywheel-eng" ]]; then
+  if [[ -f "$BO_CALLS/prewave-probe" ]]; then
+    printf 'probe-before-lead\n' >> "$BO_CALLS/order.calls"
+  else
+    printf 'lead-before-probe\n' >> "$BO_CALLS/order.calls"
+  fi
   if [[ "\${FAKE_SUPERVISOR_STALE:-0}" == "1" ]]; then
     echo 424242 > "$BO_CALLS/lead.pid"
   else
@@ -2235,12 +2333,12 @@ if [[ "\${FAKE_IDLE_BUSY:-0}" == "1" && -z "\$output_file" ]]; then
   body="{\"ok\":true,\"sessions_count\":3,\"buildMode\":\"built\",\"buildSha\":\"\${head_sha}\",\"artifactBuildSha\":\"\${head_sha}\"}"
 fi
 if [[ -n "\$output_file" ]]; then
-  if [[ "\${FAKE_COMPLETION_PROBE_FAIL:-0}" == "1" ]]; then
+  if [[ "\${FAKE_PREWAVE_PROBE_FAIL:-0}" == "1" ]]; then
     printf '%s\n' '{"ok":false}' > "\$output_file"
   else
     printf '%s\n' "\$body" > "\$output_file"
   fi
-  touch "$BO_CALLS/completion-probe"
+  touch "$BO_CALLS/prewave-probe"
 else
   printf '%s\n' "\$body"
 fi
@@ -2250,7 +2348,7 @@ EOF
 cat > "$BO_SHIMS/date" <<EOF
 #!/bin/bash
 if [[ "\${1:-}" == "+%s" ]]; then
-  [[ -f "$BO_CALLS/completion-probe" ]] && echo 1123 || echo 1000
+  [[ -f "$BO_CALLS/prewave-probe" ]] && echo 1123 || echo 1000
   exit 0
 fi
 exec /bin/date "\$@"
@@ -2356,7 +2454,7 @@ bo_run() {
     echo 333 > "$BO_CALLS/watcher.pids"
     mkdir -p "$BO_HOME/.flywheel/state/cmux-watcher.lock"
     echo '333|watcher-old|watch|watcher-old-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
-    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/completion-probe"
+    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/prewave-probe"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
         FLYWHEEL_STATE_DIR="$BO_HOME/.flywheel" \
         BRIDGE_URL="http://127.0.0.1:19876" \
@@ -2370,7 +2468,7 @@ bo_run() {
         FLYWHEEL_SUPERVISOR_BACKEND=launchd \
         FLYWHEEL_RESTART_BOUNDED_RUN_BIN="$BO_SHIMS/bounded-run" \
         FAKE_IDLE_BUSY="${FAKE_IDLE_BUSY:-0}" \
-        FAKE_COMPLETION_PROBE_FAIL="${FAKE_COMPLETION_PROBE_FAIL:-0}" \
+        FAKE_PREWAVE_PROBE_FAIL="${FAKE_PREWAVE_PROBE_FAIL:-0}" \
         FAKE_NO_LEAD_PROCESS="${FAKE_NO_LEAD_PROCESS:-0}" \
         FLYWHEEL_FOUNDER_USER_ID="${BO_FOUNDER_USER_ID:-}" \
         FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$BO_HOME/.flywheel/state/cmux-watcher.lock" \
@@ -2686,7 +2784,7 @@ if (( rc == 0 )) \
    && echo "$discord_calls" | grep -q '✅ Flywheel 全量重启完成' \
    && echo "$discord_calls" | grep -q 'Lead: 1/1 supervisor 换代收敛' \
    && echo "$discord_calls" | grep -q '本体: 0 新建 / 0 接管(未换) / 1 未知' \
-   && echo "$discord_calls" | grep -q 'Bridge: healthy (/health 实测 87ms)' \
+   && echo "$discord_calls" | grep -q 'Bridge: healthy (启动健康检查通过；Lead 波前 /health 实测 87ms)' \
    && echo "$discord_calls" | grep -q '总耗时: 2m03s' \
    && echo "$discord_calls" | grep -q "${BO_HEAD_5:0:7}" \
    && ! echo "$discord_calls" | grep -q '1516209714097291335'; then
@@ -2717,21 +2815,22 @@ else
 fi
 rm -f "$BO_HOME/.flywheel/plugin-restart-pending"
 
-# ── 11) A failed measured Bridge completion probe is degraded: one warning
-#          result in Notification plus one aggregate alerts-channel summary. ──
+# ── 11) An unavailable pre-wave latency observation does not negate the
+#          already-proven Bridge startup health or emit a degradation alert. ──
 out=$(BO_NOTIFY_TOKEN=test-token BO_NOTIFY_CHANNEL=1521630422918758472 \
-    FAKE_COMPLETION_PROBE_FAIL=1 bo_run --reason notify-bridge-probe-failed) && rc=0 || rc=$?
+    FAKE_PREWAVE_PROBE_FAIL=1 bo_run --reason notify-bridge-observation-unavailable) && rc=0 || rc=$?
 discord_calls=$(bo_calls discord)
 tail_alerts=$(bo_calls lead-alert | grep -c -- '--signature bridge-completion-probe-failed-' || true)
-if (( rc == 0 && tail_alerts == 1 )) \
-   && echo "$discord_calls" | grep -q 'Bridge 复测异常' \
-   && echo "$discord_calls" | grep -q '/health 结束时刻探测失败' \
-   && ! echo "$discord_calls" | grep -q '✅' \
+if (( rc == 0 && tail_alerts == 0 )) \
+   && grep -qxF probe-before-lead "$BO_CALLS/order.calls" \
+   && echo "$discord_calls" | grep -q '✅ Flywheel 全量重启完成' \
+   && echo "$discord_calls" | grep -q 'Lead 波前延迟观测未取得' \
+   && ! echo "$discord_calls" | grep -q 'Bridge 复测异常' \
    && ! echo "$discord_calls" | grep -q '1516209714097291335' \
-   && bo_calls lead-alert | grep -q 'Bridge.*health.*探测失败'; then
-    pass "FLY-1603 failed Bridge completion probe is non-successful and summarized once in alerts"
+   && ! bo_calls lead-alert | grep -q 'bridge-completion-probe-failed'; then
+    pass "FLY-1926 unavailable pre-wave observation stays successful and alert-free"
 else
-    fail "FLY-1603 Bridge-probe degraded routing mismatch — rc=$rc tail_alerts=$tail_alerts discord='$discord_calls' alerts='$(bo_calls lead-alert)'"
+    fail "FLY-1926 Bridge observation ordering/routing mismatch — rc=$rc tail_alerts=$tail_alerts order='$(cat "$BO_CALLS/order.calls" 2>/dev/null)' discord='$discord_calls' alerts='$(bo_calls lead-alert)'"
 fi
 
 # ── 12) Zero discovered Lead candidates is also degraded, never a clean

@@ -600,6 +600,8 @@ restart_host_tmux_gate() {
     fi
     [[ -f "$gate_bin" && ! -L "$gate_bin" && -x "$gate_bin" ]] || return 127
     (
+        # do_restart_all_leads owns a single-line stdout contract. Keep every
+        # host-tmux diagnostic on stderr even when the child writes stdout.
         unset FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
           FLYWHEEL_HOST_TMUX_POST_S1_PATH \
           FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH \
@@ -614,13 +616,13 @@ restart_host_tmux_gate() {
         FLYWHEEL_HOST_TMUX_TARGET_SHA="$target_sha" \
         FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="${carrier}:${target_sha}" \
         FLYWHEEL_HOST_TMUX_MOUNT_POINT="$mount_point" \
-          "$gate_bin" gate "$carrier" || rc=$?
+          "$gate_bin" gate "$carrier" 1>&2 || rc=$?
         if (( rc == 0 )); then
             FLYWHEEL_STATE_DIR="$state_dir" \
             FLYWHEEL_HOST_TMUX_TARGET_SHA="$target_sha" \
             FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="${carrier}:${target_sha}" \
             FLYWHEEL_HOST_TMUX_MOUNT_POINT="$mount_point" \
-              "$gate_bin" verify "$carrier" || rc=$?
+              "$gate_bin" verify "$carrier" 1>&2 || rc=$?
         fi
         exit "$rc"
     )
@@ -632,11 +634,13 @@ restart_host_tmux_census() {
     local gate_bin="${state_dir}/bin/host-tmux-selection-gate.sh"
     [[ -x "$gate_bin" ]] || return 127
     (
+        # This helper is called inside do_restart_all_leads; stdout is reserved
+        # for its skipped/failed/total result line.
         unset FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
           FLYWHEEL_HOST_TMUX_CENSUS_PLIST_DIR \
           FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR
         FLYWHEEL_STATE_DIR="$state_dir" FLYWHEEL_DIR="$FLYWHEEL_DIR" \
-          "$gate_bin" census "$candidates_file"
+          "$gate_bin" census "$candidates_file" 1>&2
     )
 }
 
@@ -2718,7 +2722,9 @@ deploy_and_verify() {
         fi
     fi
 
-    # Step 3: Start new Bridge
+    # Step 3: Start new Bridge. The renderer consumes this explicit evidence;
+    # it must never infer startup health from a later best-effort observation.
+    local bridge_startup_state="unknown"
     if [[ "$restart_bridge" == "true" ]]; then
         start_bridge
 
@@ -2776,6 +2782,7 @@ deploy_and_verify() {
             return 1
         fi
         rm -f "${HOME}/.flywheel/state/deploy-build-identity-${CURRENT_HEAD}"
+        bridge_startup_state="passed"
     fi
 
     # Step 3.5: voice-bridge consumes the same freshly-built workspace but has
@@ -2784,6 +2791,22 @@ deploy_and_verify() {
     # old PID+start tree reclamation, and fail before deployed-sha advancement.
     if ! ensure_voice_bridge_for_deploy; then
         return 1
+    fi
+
+    # FLY-1926: sample Bridge latency before the Lead restart wave creates its
+    # load peak. This bounded probe is observational only: startup health and
+    # build identity were proven independently above. Persistent wave/post-wave
+    # downtime is covered by the loaded com.flywheel.bridge-liveness-probe,
+    # which runs every 60s and pages after five consecutive down observations.
+    local bridge_probe="" bridge_state="unavailable" bridge_ms="-"
+    if [[ "$bridge_startup_state" == "passed" ]]; then
+        bridge_probe=$(rn_probe_bridge_health "$BRIDGE_URL")
+        IFS=$'\t' read -r bridge_state bridge_ms <<< "$bridge_probe" || true
+        if [[ "$bridge_state" != "ok" || ! "$bridge_ms" =~ ^[0-9]+$ ]]; then
+            bridge_state="unavailable"
+            bridge_ms="-"
+            log "WARNING: Bridge Lead-wave preflight latency observation unavailable; startup health and build identity already passed"
+        fi
     fi
 
     # Step 4: Restart Leads (after Bridge is confirmed healthy)
@@ -2888,16 +2911,6 @@ deploy_and_verify() {
     failed_names=$(rn_normalize_lead_names "$leads_failed" "$failed_names_raw")
     skipped_names=$(rn_normalize_lead_names "$leads_skipped" "$skipped_names_raw")
 
-    # Probe before taking the end timestamp: total duration includes the
-    # measured end-of-restart Bridge response.
-    local bridge_probe="fail" bridge_state="fail" bridge_ms="-"
-    bridge_probe=$(rn_probe_bridge_health "$BRIDGE_URL")
-    IFS=$'\t' read -r bridge_state bridge_ms <<< "$bridge_probe" || true
-    if [[ "$bridge_state" != "ok" || ! "$bridge_ms" =~ ^[0-9]+$ ]]; then
-        bridge_state="fail"
-        bridge_ms="-"
-    fi
-
     local end_epoch="" duration_str="unknown"
     end_epoch=$(date +%s 2>/dev/null) || end_epoch=""
     if [[ "$SCRIPT_START_EPOCH" =~ ^[0-9]+$ && "$end_epoch" =~ ^[0-9]+$ ]] \
@@ -2919,7 +2932,7 @@ deploy_and_verify() {
         "$failed_names" "$skipped_names" "$lead_result_state" "$lead_result_detail" \
         "$bridge_state" "$bridge_ms" "$duration_str" "$watcher_state" "$watcher_detail" \
         "$body_new" "$body_adopted" "$body_unknown" \
-        "$launchd_summary" \
+        "$launchd_summary" "$bridge_startup_state" \
         2>/dev/null) || completion_msg=""
     if [[ -z "$completion_msg" ]]; then
         completion_msg="⚠️ Flywheel 全量重启结束 (reason=${RESTART_REASON}) — 播报组装失败,数字见部署日志。版本: \`${DEPLOYED_SHA:0:7}\` → \`${CURRENT_HEAD:0:7}\`。Lead: 统计未知。Bridge: 状态未知。cmux watcher: ${watcher_state}。总耗时: ${duration_str}。"
@@ -2959,15 +2972,6 @@ deploy_and_verify() {
             [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
             tail_detail="${tail_detail}跳过(无 manifest): ${skipped_names}"
         fi
-    fi
-    if [[ "$bridge_state" != "ok" ]]; then
-        if [[ -z "$tail_signature" ]]; then
-            tail_signature="bridge-completion-probe-failed"
-            tail_title="Flywheel restart degraded"
-        fi
-        tail_log_subject="full restart result"
-        [[ -n "$tail_detail" ]] && tail_detail="${tail_detail}；"
-        tail_detail="${tail_detail}Bridge /health 结束时刻探测失败，服务可用性需人工确认"
     fi
     if [[ "$watcher_state" != "healthy" ]]; then
         if [[ -z "$tail_signature" ]]; then

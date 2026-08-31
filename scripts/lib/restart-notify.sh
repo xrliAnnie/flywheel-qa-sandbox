@@ -125,6 +125,7 @@ rn_render_completion_message() {
     local watcher_detail="${15:-}"
     local body_new="${16:-}" body_adopted="${17:-}" body_unknown="${18:-}"
     local launchd_summary="${19:-}"
+    local bridge_startup_state="${20:-unknown}"
     local old_display="" new_display="" first_line="" lead_line="" body_line="" bridge_line="" watcher_line=""
     local lead_success=0 clean_leads=false
 
@@ -157,6 +158,20 @@ rn_render_completion_message() {
       healthy|missing_plist|bootstrap_failed|probe_failed|unverifiable) ;;
       *) watcher_state="unverifiable"; watcher_detail="watcher outcome contract unreadable" ;;
     esac
+    case "$bridge_startup_state" in
+      passed|unknown) ;;
+      *) bridge_startup_state="unknown" ;;
+    esac
+    case "$bridge_state" in
+      ok)
+        if ! [[ "$bridge_ms" =~ ^[0-9]+$ ]]; then
+            bridge_state="unavailable"
+            bridge_ms="-"
+        fi
+        ;;
+      unavailable) bridge_ms="-" ;;
+      *) bridge_state="unavailable"; bridge_ms="-" ;;
+    esac
     watcher_detail=$(printf '%s' "$watcher_detail" | tr '\r\n' '  ')
     if [[ "$lead_result_state" == "known" ]] \
       && (( lead_failed + lead_skipped > lead_total )); then
@@ -170,8 +185,8 @@ rn_render_completion_message() {
         fi
     fi
 
-    if [[ "$clean_leads" == "true" && "$bridge_state" == "ok" \
-      && "$bridge_ms" =~ ^[0-9]+$ && "$watcher_state" == "healthy" ]]; then
+    if [[ "$clean_leads" == "true" && "$watcher_state" == "healthy" \
+      && "$bridge_startup_state" == "passed" ]]; then
         first_line="✅ Flywheel 全量重启完成 (reason=${reason})"
     elif [[ "$watcher_state" != "healthy" || "$lead_result_state" != "known" ]] \
       || (( lead_failed > 0 || lead_skipped > 0 )); then
@@ -179,7 +194,7 @@ rn_render_completion_message() {
     elif (( lead_total == 0 )); then
         first_line="⚠️ Flywheel 全量重启结束 — 未发现 Lead 候选 (reason=${reason})"
     else
-        first_line="⚠️ Flywheel 全量重启结束 — Bridge 复测异常 (reason=${reason})"
+        first_line="⚠️ Flywheel 全量重启结束 — 状态未知 (reason=${reason})"
     fi
 
     case "$lead_result_state" in
@@ -222,10 +237,14 @@ rn_render_completion_message() {
         fi
     fi
 
-    if [[ "$bridge_state" == "ok" && "$bridge_ms" =~ ^[0-9]+$ ]]; then
-        bridge_line="Bridge: healthy (/health 实测 ${bridge_ms}ms)"
+    if [[ "$bridge_startup_state" == "passed" && "$bridge_state" == "ok" ]]; then
+        bridge_line="Bridge: healthy (启动健康检查通过；Lead 波前 /health 实测 ${bridge_ms}ms)"
+    elif [[ "$bridge_startup_state" == "passed" ]]; then
+        bridge_line="Bridge: 启动健康检查通过；Lead 波前延迟观测未取得"
+    elif [[ "$bridge_state" == "ok" ]]; then
+        bridge_line="Bridge: 启动健康状态未知；Lead 波前 /health 实测 ${bridge_ms}ms"
     else
-        bridge_line="Bridge: ⚠️ /health 结束时刻探测失败"
+        bridge_line="Bridge: 启动健康状态未知；Lead 波前延迟观测未取得"
     fi
 
     if [[ "$watcher_state" == "healthy" ]]; then
