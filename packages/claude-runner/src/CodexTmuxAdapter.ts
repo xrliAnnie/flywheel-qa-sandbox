@@ -8,7 +8,7 @@
  *         spawn daemon → connect → set the `/goal` → drive it across turns
  *         to a terminal ThreadGoalStatus, transparently restarting+resuming
  *         the SAME thread and account across a daemon transport death;
- *     → founder cmux window (`tail -F` on an execution transcript) opened
+ *     → founder cmux window (native `codex resume --remote` TUI) opened
  *         alongside daemon startup so Annie can WATCH it run live [FLY-2169];
  *     → terminal closeout: stop the daemon, flush the transcript, then apply
  *         the existing success/diagnostic window-retention policy.
@@ -86,6 +86,7 @@ import {
 	assertCodexSourceIdentity,
 	flywheelCodexBin,
 	provisionCodexHome,
+	rawCodexBin,
 	removeCodexHome,
 	scrubCodexHomeCredential,
 	stripInheritedSecretEnv,
@@ -99,25 +100,22 @@ import {
 import {
 	ensureRunnerTuiWindow,
 	killRunnerTuiWindow,
-	type RunnerTailWindowSpec,
 	type RunnerTuiAbortCause,
 	type RunnerTuiWindowFailureEvidence,
+	type RunnerTuiWindowSpec,
 	errMessage as safeErr,
 	scanAndKillSameNameWindows,
+	tmuxEnsureDeadlineMs,
 } from "./codex-runner-tui-window.js";
 import {
 	CodexTranscriptSink,
 	type CodexTranscriptSinkOptions,
 } from "./codex-transcript-sink.js";
 
-/** Bounded, non-blocking retry for transient observer-window IPC failures.
- * The first attempt starts alongside daemon spawn and never gates runGoal. Each
- * retry provably purges its same-named predecessor, preserving ≤1 window. */
-export const TUI_OPEN_MAX_ATTEMPTS = 10;
-export const TUI_OPEN_DEADLINE_MS = 30 * 60_000;
-export const TUI_OPEN_RETRY_DELAYS_MS = [
-	5_000, 15_000, 60_000, 300_000,
-] as const;
+/** Bound protocol-side resume attempts without undercutting tmux rescue. */
+export const TUI_OPEN_MAX_ATTEMPTS = 3;
+export const TUI_OPEN_DEADLINE_MS = 2 * 210_000 + 60_000;
+export const TUI_OPEN_RETRY_DELAYS_MS = [5_000, 15_000] as const;
 /** @deprecated Use the deadline-aware ladder. Retained for package API parity. */
 export const TUI_OPEN_RETRY_GAP_MS = TUI_OPEN_RETRY_DELAYS_MS[0];
 
@@ -506,8 +504,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let stopGateWatcher: () => void = () => {};
 		let stopHeartbeat: () => void = () => {};
 		let tuiOpened = false;
-		let commWindowPinned = false;
-		let commCloseoutSucceeded = false;
+		let tuiThreadId: string | undefined;
 		let transcriptSink: CodexTranscriptSinkLike | undefined;
 		let transcriptClosed = false;
 		// FLY-1239 founder-window retry state (all scoped to this execution).
@@ -519,6 +516,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		let activeTuiAbort: AbortController | undefined;
 		let tuiEpisodeStartedAt: number | undefined;
 		let tuiAttemptCount = 0;
+		const tuiOpenDeadlineMs = 2 * tmuxEnsureDeadlineMs() + 60_000;
 		let lastTuiFailure: RunnerTuiWindowFailureEvidence | undefined;
 		let tuiTerminalReported = false;
 		let emitTuiLost: (trigger: RunnerTuiWindowLostEvidence["trigger"]) => void =
@@ -671,11 +669,22 @@ export class CodexTmuxAdapter implements IAdapter {
 				await phaseLifecycle.start();
 			}
 
-			const buildSpec = (): RunnerTailWindowSpec => ({
-				tmuxSession: this.sessionName,
-				windowName,
-				transcriptPath,
-			});
+			const buildSpec = (): RunnerTuiWindowSpec => {
+				if (!tuiThreadId) {
+					throw new Error("runner-tui-window: thread is not ready");
+				}
+				return {
+					tmuxSession: this.sessionName,
+					windowName,
+					codexHome,
+					socketPath,
+					cwd: sandboxCwd,
+					threadId: tuiThreadId,
+					executionId: ctx.executionId,
+					...(ctx.stateDbPath ? { stateDbPath: ctx.stateDbPath } : {}),
+					codexBin: rawCodexBin(),
+				};
+			};
 
 			// Latch the founder window ON SUCCESS (MEDIUM-1: only on success) +
 			// publish the window id.
@@ -718,7 +727,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				tmuxWindow = `${this.sessionName}:${windowId}`;
 				cancelTuiDeadline?.();
 				this.publishWindowExecutionIdentity(ctx.executionId, `=${tmuxWindow}`);
-				commWindowPinned = this.pinCommDbSessionWindow(ctx, tmuxWindow);
+				this.pinCommDbSessionWindow(ctx, tmuxWindow);
 				this.persistSessionWindowState(ctx.executionId, tmuxWindow);
 				tuiEpisodeStartedAt = undefined;
 				if (this.onTuiWindowRestored) {
@@ -751,7 +760,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				return true;
 			};
 
-			// One bounded observer-open attempt. Transient tmux outcomes are retried;
+			// One bounded TUI-open attempt. Transient tmux outcomes are retried;
 			// `tmux-absent` remains permanent. Retries are scheduled (never awaited
 			// synchronously) so the goal loop keeps advancing. Wrapped in a no-throw boundary:
 			// an async retry callback that threw would be an uncaught exception and
@@ -799,11 +808,18 @@ export class CodexTmuxAdapter implements IAdapter {
 						return;
 					}
 					const startedAt = tuiEpisodeStartedAt ?? this.now();
-					const remaining = TUI_OPEN_DEADLINE_MS - (this.now() - startedAt);
-					if (n < TUI_OPEN_MAX_ATTEMPTS && remaining > 0 && !runEnded) {
+					const remaining = tuiOpenDeadlineMs - (this.now() - startedAt);
+					const beforeResume =
+						lastTuiFailure?.reason === "hold_lock_unavailable" ||
+						lastTuiFailure?.reason === "stale_window_unproven";
+					if (
+						(beforeResume || n < TUI_OPEN_MAX_ATTEMPTS) &&
+						remaining > 0 &&
+						!runEnded
+					) {
 						const delay = Math.min(retryDelay(n), remaining);
 						cancelReopen = this.scheduleReopen(
-							() => launchAttempt(n + 1),
+							() => launchAttempt(beforeResume ? n : n + 1),
 							delay,
 						);
 						return; // still opening — chain continues on the next tick
@@ -827,7 +843,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						return;
 					}
 					const startedAt = tuiEpisodeStartedAt ?? this.now();
-					const remaining = TUI_OPEN_DEADLINE_MS - (this.now() - startedAt);
+					const remaining = tuiOpenDeadlineMs - (this.now() - startedAt);
 					if (!runEnded && n < TUI_OPEN_MAX_ATTEMPTS && remaining > 0) {
 						cancelReopen = this.scheduleReopen(
 							() => launchAttempt(n + 1),
@@ -869,7 +885,7 @@ export class CodexTmuxAdapter implements IAdapter {
 				try {
 					const remainingDeadline = Math.max(
 						0,
-						TUI_OPEN_DEADLINE_MS - (this.now() - tuiEpisodeStartedAt),
+						tuiOpenDeadlineMs - (this.now() - tuiEpisodeStartedAt),
 					);
 					cancelTuiDeadline = this.scheduleTuiDeadline(() => {
 						if (tuiOpened || runEnded) return;
@@ -917,11 +933,12 @@ export class CodexTmuxAdapter implements IAdapter {
 			};
 			stopHeartbeat = this.startHeartbeat(heartbeat, this.pollIntervalMs);
 
-			// AUTHORITATIVE own-thread hook: persist the resume handle and bind the
-			// transcript filter. Window creation does not wait for this hook — the
-			// passive tail observer can be visible while daemon/thread startup runs.
+			// AUTHORITATIVE own-thread hook: persist the resume handle, bind the
+			// transcript filter, and asynchronously attach the native TUI. The 0ms
+			// scheduled attempt keeps goal setup and the machine turn non-blocking.
 			const onThreadReady = (threadId: string, restarts: number): void => {
 				this.persistSessionState(ctx, threadId);
+				tuiThreadId = threadId;
 				try {
 					transcriptSink?.setThreadScope(threadId);
 					if (restarts > 0) {
@@ -932,6 +949,13 @@ export class CodexTmuxAdapter implements IAdapter {
 						`[CodexTmuxAdapter] transcript thread scope failed (ignored): ${safeErr(error)}`,
 					);
 				}
+				if (restarts > 0) {
+					tuiOpened = false;
+					tuiTerminalReported = false;
+					founderWindowId = undefined;
+					tmuxWindow = undefined;
+				}
+				startOpenChain();
 			};
 
 			// FLY-245 launch commit written the INSTANT the goal is actually SET
@@ -969,10 +993,6 @@ export class CodexTmuxAdapter implements IAdapter {
 					? (ctx.previousSession.threadId as string)
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
-			// FLY-2169: open concurrently with daemon spawn. The transcript header is
-			// already queued, so `tail -F` has useful content before thread/start.
-			startOpenChain();
-
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -1176,7 +1196,6 @@ export class CodexTmuxAdapter implements IAdapter {
 							ctx.executionId,
 							controlledShutdownSucceeded() ? "completed" : "timeout",
 						);
-						commCloseoutSucceeded = true;
 					} catch (err) {
 						teardownError ??= err;
 					} finally {
@@ -1188,25 +1207,19 @@ export class CodexTmuxAdapter implements IAdapter {
 				} catch (err) {
 					teardownError ??= err;
 				}
-				if (
-					!commWindowPinned ||
-					!commCloseoutSucceeded ||
-					classifyGoalOutcome({ outcome, caughtError }).timedOut
-				) {
-					try {
-						this.killWindow(
-							{
-								tmuxSession: this.sessionName,
-								windowName,
-								...(founderWindowId ? { windowId: founderWindowId } : {}),
-							},
-							{ log: (m) => this.log(m) },
-						);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] observer cleanup failed (ignored): ${safeErr(error)}`,
-						);
-					}
+				try {
+					this.killWindow(
+						{
+							tmuxSession: this.sessionName,
+							windowName,
+							...(founderWindowId ? { windowId: founderWindowId } : {}),
+						},
+						{ log: (m) => this.log(m) },
+					);
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
+					);
 				}
 				try {
 					phaseLifecycle.ackShutdown(
@@ -1280,31 +1293,24 @@ export class CodexTmuxAdapter implements IAdapter {
 						const commDb = new CommDB(ctx.commDbPath);
 						commDb.updateSessionStatusIfRunning(ctx.executionId, closeStatus);
 						commDb.close();
-						commCloseoutSucceeded = true;
 					} catch {
 						// non-fatal (legacy behavior)
 					}
 				}
 				this.scrubCredential(ctx.executionId);
-				if (
-					closeClassification.timedOut ||
-					!commWindowPinned ||
-					!commCloseoutSucceeded
-				) {
-					try {
-						this.killWindow(
-							{
-								tmuxSession: this.sessionName,
-								windowName,
-								...(founderWindowId ? { windowId: founderWindowId } : {}),
-							},
-							{ log: (m) => this.log(m) },
-						);
-					} catch (error) {
-						this.log(
-							`[CodexTmuxAdapter] observer cleanup failed (ignored): ${safeErr(error)}`,
-						);
-					}
+				try {
+					this.killWindow(
+						{
+							tmuxSession: this.sessionName,
+							windowName,
+							...(founderWindowId ? { windowId: founderWindowId } : {}),
+						},
+						{ log: (m) => this.log(m) },
+					);
+				} catch (error) {
+					this.log(
+						`[CodexTmuxAdapter] TUI cleanup failed (ignored): ${safeErr(error)}`,
+					);
 				}
 			}
 		}
@@ -1827,7 +1833,7 @@ export class CodexTmuxAdapter implements IAdapter {
 
 	/**
 	 * Register the CommDB session (vendor=codex) for send-routing + tracking. The
-	 * initial tmux target is name-based + pending; the passive observer commits
+	 * initial tmux target is name-based + pending; the native TUI commits
 	 * its immutable window id as soon as tmux creates it. Ordinary registration
 	 * remains best-effort. A resident phase consumer is fail-loud because its
 	 * doorbell fence depends on this row.

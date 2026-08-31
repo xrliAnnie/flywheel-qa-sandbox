@@ -1,0 +1,27 @@
+# 529 room (slot 2, generalized, real runner) — buildSha 250d2335 (candidate head)
+2026-08-30T18:40:10Z
+
+## room-info
+{
+  "schemaVersion": 1,
+  "slot": 2,
+  "port": 19872,
+  "projectName": "test-slot-2",
+  "agentId": "flywheel-test-2",
+  "mode": "slot",
+  "generalized": true,
+  "runnerMode": "real",
+  "bridgeUrl": "http://localhost:19872",
+  "dbPath": "/tmp/flywheel-test-slot-2/teamlead.db",
+  "hostRepo": "/tmp/flywheel-test-slot-2/project-slot-2",
+  "flywheelRepo": "/Users/xiaorongli/Dev/flywheel-FLY-2168",
+  "buildSha": "250d233540300fc0a49e084e5464669e57da7078",
+  "flywheelProjectsFile": "/tmp/flywheel-test-slot-2/flywheel-projects.json",
+  "apiTokenPath": "/tmp/flywheel-test-slot-2/state/api-token",
+  "bridgeLog": "/tmp/flywheel-test-slot-2/bridge.log"
+}
+
+## runner windows born in the room
+@2 FLY-2027-design-claude-Fable-engine-generic-ship-s cmd=2.1.251
+
+## observation: the room's FLY-2027 eng_design node bound a CLAUDE (fable) runner, so CodexTmuxAdapter was NOT exercised here.

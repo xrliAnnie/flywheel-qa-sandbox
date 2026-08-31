@@ -512,20 +512,11 @@ async function reapCandidate(
 	const exactHolderAfterTerm = exactAfterTerm.find((row) =>
 		holdersAfterTerm.pids.includes(row.pid),
 	);
-	if (groupRows.length > 0 && !exactHolderAfterTerm) {
+	if (exactAfterTerm.length > 0 && !exactHolderAfterTerm) {
 		result.identityMismatchSkipped++;
 		deps.audit("codex_app_server_orphan_socket_holder_mismatch", {
 			...detail,
 			stage: "after_term",
-			holderPids: holdersAfterTerm.pids,
-		});
-		return;
-	}
-	if (groupRows.length === 0 && holdersAfterTerm.pids.length > 0) {
-		result.identityMismatchSkipped++;
-		deps.audit("codex_app_server_orphan_socket_holder_mismatch", {
-			...detail,
-			stage: "after_term_group_gone",
 			holderPids: holdersAfterTerm.pids,
 		});
 		return;
@@ -580,11 +571,18 @@ async function reapCandidate(
 			return;
 		}
 		groupRows = confirmed.rows.filter((row) => row.pgid === candidate.pgid);
-		if (confirmedHolders.pids.length > 0) {
+		const exactConfirmedHolderPids = matchingGroupRows(
+			confirmed.rows,
+			candidate,
+			deps.env,
+		)
+			.filter((row) => confirmedHolders.pids.includes(row.pid))
+			.map((row) => row.pid);
+		if (exactConfirmedHolderPids.length > 0) {
 			result.survivors++;
 			deps.audit("codex_app_server_orphan_survived", {
 				...detail,
-				holderPids: confirmedHolders.pids,
+				holderPids: exactConfirmedHolderPids,
 			});
 			return;
 		}
@@ -592,6 +590,23 @@ async function reapCandidate(
 	if (groupRows.length > 0) {
 		result.survivors++;
 		deps.audit("codex_app_server_orphan_survived", detail);
+		return;
+	}
+	try {
+		if (deps.isExecutionActive(candidate.executionId)) {
+			deps.audit("codex_app_server_orphan_readopted", {
+				...detail,
+				stage: "before_socket_cleanup",
+			});
+			return;
+		}
+	} catch (error) {
+		result.probeUnknown++;
+		deps.audit("codex_app_server_orphan_probe_unknown", {
+			...detail,
+			stage: "active_runway_before_socket_cleanup",
+			error: error instanceof Error ? error.message : String(error),
+		});
 		return;
 	}
 	try {

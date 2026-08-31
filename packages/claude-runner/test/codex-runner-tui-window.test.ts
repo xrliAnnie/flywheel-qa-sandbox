@@ -3,24 +3,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
-	buildRunnerTailCommand,
+	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
 	ensureSessionWithRetry,
 	ensureSessionWithRetryAsync,
 	isRunnerTuiWindowAlive,
 	killRunnerTuiWindow,
-	type RunnerTailWindowSpec,
+	type RunnerTuiWindowSpec,
 	scanAndKillSameNameWindows,
 	spawnCommandAsync,
+	tmuxEnsureDeadlineMs,
 } from "../src/codex-runner-tui-window.js";
 
-// ── FLY-2169 — founder-facing cmux transcript observer ────────────────────
+// ── FLY-2168 — restore the founder-facing native Codex TUI ────────────────
 
-const spec: RunnerTailWindowSpec = {
+const spec: RunnerTuiWindowSpec = {
 	tmuxSession: "flywheel",
 	windowName: "FLY-1188",
-	transcriptPath:
-		"/home/x/.flywheel/state/codex-sessions/exec-1/transcript.log",
+	codexHome: "/home/x/.flywheel/codex-homes/exec-1",
+	socketPath: "/home/x/.flywheel/cdx-sock/abc.sock",
+	cwd: "/home/x/Dev/flywheel-FLY-1188",
+	threadId: "019f5740-57f6-76e1-9526-7f37de6c997c",
+	codexBin: "/bin/codex",
 };
 
 describe("ensureSessionWithRetry", () => {
@@ -364,28 +368,66 @@ describe("spawnCommandAsync", () => {
 	});
 });
 
-describe("buildRunnerTailCommand", () => {
-	it("runs a passive follow of the execution transcript", () => {
-		const cmd = buildRunnerTailCommand(spec);
-		expect(cmd).toBe(
-			'exec tail -F "/home/x/.flywheel/state/codex-sessions/exec-1/transcript.log"',
+describe("buildRunnerTuiCommand", () => {
+	it("rebuilds the pane environment before applying the isolated CODEX_HOME", () => {
+		const cmd = buildRunnerTuiCommand(spec);
+		expect(cmd).toMatch(/^exec \/usr\/bin\/env -i /);
+		expect(cmd).toContain(`\${PATH+"PATH=$PATH"}`);
+		expect(cmd).not.toContain(`\${CODEX_HOME+"CODEX_HOME=$CODEX_HOME"}`);
+		expect(cmd.indexOf("env -i")).toBeLessThan(cmd.indexOf("CODEX_HOME="));
+	});
+
+	it("resumes the owned thread on its exact short socket with managed policy", () => {
+		const cmd = buildRunnerTuiCommand(spec);
+		expect(cmd).toContain('CODEX_HOME="/home/x/.flywheel/codex-homes/exec-1"');
+		expect(cmd).toContain("/bin/codex resume");
+		expect(cmd).toContain(
+			'--remote "unix:///home/x/.flywheel/cdx-sock/abc.sock"',
+		);
+		expect(cmd).toContain('-C "/home/x/Dev/flywheel-FLY-1188"');
+		expect(cmd).toContain("-s workspace-write");
+		expect(cmd).toContain(`approval_policy="never"`);
+		expect(cmd.trim().endsWith(spec.threadId)).toBe(true);
+	});
+
+	it("injects execution-bound state coordinates", () => {
+		const cmd = buildRunnerTuiCommand({
+			...spec,
+			executionId: "exec-1",
+			stateDbPath: "/tmp/flywheel-test-slot-2/teamlead.db",
+		});
+		expect(cmd).toContain('FLYWHEEL_EXEC_ID="exec-1"');
+		expect(cmd).toContain(
+			'FLYWHEEL_STATE_DB_PATH="/tmp/flywheel-test-slot-2/teamlead.db"',
 		);
 	});
 
-	it("never launches a second Codex client", () => {
-		const cmd = buildRunnerTailCommand(spec);
-		expect(cmd).not.toMatch(/(?:^|\s)codex(?:\s|$)/);
-		expect(cmd).not.toContain("resume");
-		expect(cmd).not.toContain("--remote");
-	});
-
-	it("throws fail-loud on a shell-unsafe transcript path", () => {
+	it("throws fail-loud on shell-unsafe thread and path values", () => {
 		expect(() =>
-			buildRunnerTailCommand({
-				...spec,
-				transcriptPath: '/tmp/transcript"; rm -rf /',
-			}),
+			buildRunnerTuiCommand({ ...spec, threadId: 'x"; rm -rf /' }),
 		).toThrow(/unsafe for the tmux shell/);
+		expect(() =>
+			buildRunnerTuiCommand({ ...spec, socketPath: "/tmp/$(evil).sock" }),
+		).toThrow(/unsafe for the tmux shell/);
+		expect(() =>
+			buildRunnerTuiCommand({ ...spec, cwd: "/a b/with space" }),
+		).toThrow(/unsafe for the tmux shell/);
+	});
+});
+
+describe("tmuxEnsureDeadlineMs", () => {
+	it("shares the production default and reads an env override at call time", () => {
+		const previous = process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+		try {
+			delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+			expect(tmuxEnsureDeadlineMs()).toBe(210_000);
+			process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS = "345000";
+			expect(tmuxEnsureDeadlineMs()).toBe(345_000);
+		} finally {
+			if (previous === undefined)
+				delete process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS;
+			else process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS = previous;
+		}
 	});
 });
 
@@ -622,7 +664,8 @@ describe("ensureRunnerTuiWindow", () => {
 		expect(t.outCalls.filter((c) => c[1] === "list-windows")).toHaveLength(2);
 		const createCall = t.execCalls.find((c) => c[1] === "new-window");
 		expect(createCall).toContain("FLY-1188");
-		expect(createCall?.some((a) => a.includes("tail -F"))).toBe(true);
+		expect(createCall?.some((a) => a.includes("codex resume"))).toBe(true);
+		expect(createCall?.some((a) => a.includes("tail -F"))).toBe(false);
 		expect(birthEnvironments).toHaveLength(2);
 		for (const env of birthEnvironments) {
 			expect(env?.PATH).toBe(

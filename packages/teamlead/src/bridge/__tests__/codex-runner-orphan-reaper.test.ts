@@ -43,6 +43,21 @@ function appServerProcess(input: {
 	};
 }
 
+function tuiClientProcess(input: {
+	executionId: string;
+	env: NodeJS.ProcessEnv;
+	pid: number;
+}): CodexAppServerProcess {
+	const socketPath = resolveDaemonSocketPath(input.executionId, input.env);
+	return {
+		pid: input.pid,
+		ppid: 1,
+		pgid: input.pid,
+		elapsedSeconds: CODEX_APP_SERVER_ORPHAN_MIN_ELAPSED_SECONDS + 1,
+		command: `/Applications/Codex.app/Contents/Resources/codex resume --remote unix://${socketPath} thread-1`,
+	};
+}
+
 function harness(input: {
 	env: NodeJS.ProcessEnv;
 	rows: CodexAppServerProcess[];
@@ -476,6 +491,101 @@ describe("sweepCodexRunnerOrphans", () => {
 		expect(removeSocket).toHaveBeenCalledWith(
 			resolveDaemonSocketPath(executionId, env),
 		);
+	});
+
+	it("reaps the App Server socket when only a native TUI client remains after TERM", async () => {
+		const env = testEnv("/tmp/fly2168-tui-holder");
+		const executionId = "tui-holder-exec";
+		const server = appServerProcess({ executionId, env });
+		const client = tuiClientProcess({
+			executionId,
+			env,
+			pid: server.pid + 1,
+		});
+		const h = harness({
+			env,
+			rows: [server, client],
+			homeExecutionIds: [executionId],
+		});
+		const active = vi.fn(() => false);
+
+		const result = await sweepCodexRunnerOrphans(
+			{ activeExecutionIds: new Set(), isExecutionActive: active },
+			h.deps,
+		);
+
+		expect(result.reaped).toBe(1);
+		expect(result.identityMismatchSkipped).toBe(0);
+		expect(active).toHaveBeenCalledTimes(2);
+		expect(h.removed).toEqual([resolveDaemonSocketPath(executionId, env)]);
+	});
+
+	it("fails closed before unlink when a TUI-held execution is readopted", async () => {
+		const env = testEnv("/tmp/fly2168-tui-readopt");
+		const executionId = "tui-readopt-exec";
+		const server = appServerProcess({ executionId, env });
+		const client = tuiClientProcess({
+			executionId,
+			env,
+			pid: server.pid + 1,
+		});
+		const h = harness({
+			env,
+			rows: [server, client],
+			homeExecutionIds: [executionId],
+		});
+		const active = vi
+			.fn<(candidate: string) => boolean>()
+			.mockReturnValueOnce(false)
+			.mockReturnValueOnce(true);
+
+		const result = await sweepCodexRunnerOrphans(
+			{ activeExecutionIds: new Set(), isExecutionActive: active },
+			h.deps,
+		);
+
+		expect(result.reaped).toBe(0);
+		expect(active).toHaveBeenCalledTimes(2);
+		expect(h.removed).toEqual([]);
+		expect(h.audit).toHaveBeenCalledWith(
+			"codex_app_server_orphan_readopted",
+			expect.objectContaining({
+				executionId,
+				stage: "before_socket_cleanup",
+			}),
+		);
+	});
+
+	it("fails closed before unlink when the final readopt probe throws", async () => {
+		const env = testEnv("/tmp/fly2168-tui-readopt-unknown");
+		const executionId = "tui-readopt-unknown-exec";
+		const server = appServerProcess({ executionId, env });
+		const client = tuiClientProcess({
+			executionId,
+			env,
+			pid: server.pid + 1,
+		});
+		const h = harness({
+			env,
+			rows: [server, client],
+			homeExecutionIds: [executionId],
+		});
+		const active = vi
+			.fn<(candidate: string) => boolean>()
+			.mockReturnValueOnce(false)
+			.mockImplementationOnce(() => {
+				throw new Error("readopt DB unavailable");
+			});
+
+		const result = await sweepCodexRunnerOrphans(
+			{ activeExecutionIds: new Set(), isExecutionActive: active },
+			h.deps,
+		);
+
+		expect(result.reaped).toBe(0);
+		expect(result.probeUnknown).toBe(1);
+		expect(active).toHaveBeenCalledTimes(2);
+		expect(h.removed).toEqual([]);
 	});
 });
 

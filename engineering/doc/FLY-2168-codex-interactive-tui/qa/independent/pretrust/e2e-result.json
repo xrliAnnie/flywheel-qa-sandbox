@@ -1,0 +1,59 @@
+{
+  "issue": "FLY-2168P",
+  "when": "2026-08-30T18:13:57.470Z",
+  "elapsedSeconds": 49,
+  "maxSameNameWindows": 0,
+  "aliveSamples": 0,
+  "results": [
+    {
+      "id": "A3-founder-tui-recovered",
+      "pass": false,
+      "detail": "founder TUI never rendered a live pane (aliveSamples=0, 0 bytes) — see qa/tui-pane-capture.txt"
+    },
+    {
+      "id": "A3-native-tui-command",
+      "pass": false,
+      "detail": "pane command=\"-zsh\""
+    },
+    {
+      "id": "NP-no-pile-up-sampled",
+      "pass": true,
+      "detail": "max simultaneous 'FLY-2168P' windows observed across 25 samples = 0 (<= 1 expected; deterministic proof is the unit multiset-by-id test, this is sampled corroboration)"
+    },
+    {
+      "id": "NP-race-diag",
+      "pass": true,
+      "detail": "transient 'no rollout found' captured mid-race by the sampler: false (informational — retries recovered), TUI_OPEN_MAX_ATTEMPTS=3"
+    },
+    {
+      "id": "G-goal-terminal",
+      "pass": true,
+      "detail": "adapter run success=true timedOut=false in 49s (threw=no)"
+    },
+    {
+      "id": "H4-worktree-commit",
+      "pass": true,
+      "detail": "worktree commits: [\"c0b41c2 qa FLY-2168P\",\"4b5dbea init\"]"
+    },
+    {
+      "id": "P-managed-runner-policy",
+      "pass": true,
+      "detail": "generated config has workspace-write=true never=true"
+    },
+    {
+      "id": "NF-classifier-self-check",
+      "pass": true,
+      "detail": "classifier accepts the intended root + native subagent and rejects a synthetic non-subagent fork"
+    },
+    {
+      "id": "NF-no-unexpected-root-or-fork",
+      "pass": true,
+      "detail": "root=01a053e0-13b1-7f11-91b2-c02940f8ccd7; roots=1; allowed native subagents=0; unexpected=none"
+    },
+    {
+      "id": "T-clean-teardown",
+      "pass": true,
+      "detail": "before fallback cleanup: window count=0; socket removed=true; orphan daemons=[]; lingering TUIs=[]"
+    }
+  ]
+}

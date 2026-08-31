@@ -1,19 +1,18 @@
-/**
- * FLY-2169 — founder-facing cmux/tmux observer for a resident Codex runner.
- * The pane passively follows the execution transcript written by the machine
- * client. It never connects to the App Server, resumes a thread, or mutates the
- * goal. A visibility failure remains fail-open for runner execution.
- */
+/** Founder-facing native Codex TUI for a resident runner. The pane reconnects
+ * to the App Server socket and owned thread while the machine client remains
+ * the automated goal driver. Visibility failures remain fail-open. */
 
 import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { withSyncOpMarker } from "./sync-op-marker.js";
+import { buildRunnerPaneEnvironmentPrefix } from "./TmuxAdapter.js";
 import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { buildTmuxServerBirthEnvironment } from "./tmux-server-environment.js";
 
 const SAFE_PATH = /^[A-Za-z0-9_./-]+$/; // absolute paths, no quotes/spaces/metachars
+const SAFE_ID = /^[A-Za-z0-9-]+$/; // execution/thread ids
 const SAFE_NAME = /^[A-Za-z0-9_.-]+$/; // tmux session/window names
 const SAFE_WINDOW_ID = /^@[0-9]+$/; // immutable tmux window ids
 
@@ -23,7 +22,7 @@ const SAFE_WINDOW_ID = /^@[0-9]+$/; // immutable tmux window ids
 function assertShellSafe(name: string, value: string, re: RegExp): string {
 	if (!re.test(value)) {
 		throw new Error(
-			`runner-tail-window: ${name} contains characters unsafe for the tmux shell command: ${JSON.stringify(value)}`,
+			`runner-tui-window: ${name} contains characters unsafe for the tmux shell command: ${JSON.stringify(value)}`,
 		);
 	}
 	return value;
@@ -63,19 +62,50 @@ export type RunnerTuiWindowOutcome =
 	| { created: true; windowId: string }
 	| ({ created: false } & RunnerTuiWindowFailureEvidence);
 
-export interface RunnerTailWindowSpec {
+export interface RunnerTuiWindowSpec {
 	/** cmux/tmux session the runner's windows live in. */
 	tmuxSession: string;
 	/** Window name — the runner-scoped label (a Linear identifier, FLY-272). */
 	windowName: string;
-	/** Execution-scoped transcript written by CodexTranscriptSink. */
-	transcriptPath: string;
+	/** The runner's isolated CODEX_HOME. */
+	codexHome: string;
+	/** The daemon's short control socket. */
+	socketPath: string;
+	/** TUI working directory. */
+	cwd: string;
+	/** The App Server-owned thread to rejoin. */
+	threadId: string;
+	executionId?: string;
+	stateDbPath?: string;
+	codexBin?: string;
 }
 
-/** Build the passive observer command (pure and shell-boundary validated). */
-export function buildRunnerTailCommand(spec: RunnerTailWindowSpec): string {
-	assertShellSafe("transcriptPath", spec.transcriptPath, SAFE_PATH);
-	return `exec tail -F "${spec.transcriptPath}"`;
+/** Build the native remote TUI command (pure and shell-boundary validated). */
+export function buildRunnerTuiCommand(spec: RunnerTuiWindowSpec): string {
+	assertShellSafe("codexHome", spec.codexHome, SAFE_PATH);
+	assertShellSafe("socketPath", spec.socketPath, SAFE_PATH);
+	assertShellSafe("cwd", spec.cwd, SAFE_PATH);
+	assertShellSafe("threadId", spec.threadId, SAFE_ID);
+	if (spec.executionId)
+		assertShellSafe("executionId", spec.executionId, SAFE_ID);
+	if (spec.stateDbPath)
+		assertShellSafe("stateDbPath", spec.stateDbPath, SAFE_PATH);
+	if (spec.codexBin) assertShellSafe("codexBin", spec.codexBin, SAFE_PATH);
+	return [
+		`exec ${buildRunnerPaneEnvironmentPrefix()}`,
+		`CODEX_HOME="${spec.codexHome}"`,
+		...(spec.executionId ? [`FLYWHEEL_EXEC_ID="${spec.executionId}"`] : []),
+		...(spec.stateDbPath
+			? [`FLYWHEEL_STATE_DB_PATH="${spec.stateDbPath}"`]
+			: []),
+		spec.codexBin ?? "codex",
+		"resume",
+		`--remote "unix://${spec.socketPath}"`,
+		`-C "${spec.cwd}"`,
+		"-s workspace-write",
+		`-c 'approval_policy="never"'`,
+		spec.threadId,
+	].join(" ");
 }
 
 export interface RunnerTuiWindowDeps {
@@ -91,7 +121,7 @@ export interface RunnerTuiWindowDeps {
 	/** Block for `ms` (default: a real synchronous sleep). Injected in tests. */
 	sleep?: (ms: number) => void;
 	/**
-	 * How long to let the observer settle before proving it is still there (default
+	 * How long to let the TUI settle before proving it is still there (default
 	 * 800ms). `tmux new-window` returns success the moment it forks the shell —
 	 * a command that dies 200ms later still "succeeded" — so the liveness proof
 	 * has to happen AFTER the window has had a chance to die.
@@ -369,6 +399,11 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 	return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
+/** Shared runtime accessor so tmux rescue and its outer TUI budget cannot drift. */
+export function tmuxEnsureDeadlineMs(): number {
+	return positiveInt(process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS, 210_000);
+}
+
 type AsyncSpawnOptions = {
 	stdio: ["ignore", "pipe", "ignore"];
 	encoding: "utf8";
@@ -507,10 +542,7 @@ function defaultEnsureSessionAsync(
 		sleep: defaultSleepAsync,
 		now: Date.now,
 		log,
-		deadlineMs: positiveInt(
-			process.env.FLYWHEEL_TMUX_ENSURE_DEADLINE_MS,
-			210_000,
-		),
+		deadlineMs: tmuxEnsureDeadlineMs(),
 		attemptCapMs: positiveInt(
 			process.env.FLYWHEEL_TMUX_ENSURE_ATTEMPT_TIMEOUT_MS,
 			90_000,
@@ -683,7 +715,7 @@ function tuiFailure(
  * session and never creates a scaffold, so it is safe after daemon teardown and
  * as a happens-after cleanup for a late in-flight `new-window`. */
 export async function scanAndKillSameNameWindows(
-	spec: Pick<RunnerTailWindowSpec, "tmuxSession" | "windowName">,
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
 	deps: AsyncWindowExecDeps = {
 		exec: defaultExecAsync,
 		execOut: defaultExecOutAsync,
@@ -717,7 +749,7 @@ export async function scanAndKillSameNameWindows(
 }
 
 async function purgeSameNameWindowsAsync(
-	spec: Pick<RunnerTailWindowSpec, "tmuxSession" | "windowName">,
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
 	deps: AsyncWindowExecDeps & {
 		ensureSession: (session: string, signal?: AbortSignal) => Promise<boolean>;
 	},
@@ -760,19 +792,19 @@ async function purgeSameNameWindowsAsync(
 }
 
 /**
- * Ensure the founder-facing transcript observer. Steps (each fail-open):
+ * Ensure the founder-facing native TUI. Steps (each fail-open):
  *   1. `tmux -V` probe — absent → `{ created:false, reason:"tmux-absent" }`
  *      (headless box: the run continues, only the terminal view is missing).
  *   2. ensure the runner's session (idempotent attach-or-create).
  *   3. FLY-1239 PROVABLE purge: kill every same-named window by immutable id,
  *      re-ensure the session, and verify none remain — else `create-failed`
  *      (never create over a stale/ambiguous same-named window → ≤1 window).
- *   4. create the window running `tail -F` on the execution transcript.
+ *   4. create the window running `codex resume --remote` on the owned thread.
  *   5. settle + liveness probe: a pane gone after settle → `{ reason:"died" }`
  *      (a transient tmux/filesystem failure the caller may retry).
  */
 export function ensureRunnerTuiWindow(
-	spec: RunnerTailWindowSpec,
+	spec: RunnerTuiWindowSpec,
 	deps: RunnerTuiWindowDeps = {},
 ): Promise<RunnerTuiWindowOutcome> {
 	assertShellSafe("tmuxSession", spec.tmuxSession, SAFE_NAME);
@@ -781,7 +813,7 @@ export function ensureRunnerTuiWindow(
 }
 
 async function ensureRunnerTuiWindowAsync(
-	spec: RunnerTailWindowSpec,
+	spec: RunnerTuiWindowSpec,
 	deps: RunnerTuiWindowDeps,
 ): Promise<RunnerTuiWindowOutcome> {
 	const exec: AsyncWindowExecDeps["exec"] =
@@ -880,7 +912,7 @@ async function ensureRunnerTuiWindowAsync(
 				"#{window_id}",
 				"-n",
 				spec.windowName,
-				buildRunnerTailCommand(spec),
+				buildRunnerTuiCommand(spec),
 			],
 			{
 				timeoutMs: 10_000,
@@ -929,7 +961,7 @@ async function ensureRunnerTuiWindowAsync(
 		) {
 			safeLog(
 				deps.log,
-				`runner-tail-window: founder observer died immediately (${spec.windowName}) — the pane is gone right after tmux reported success. The run continues but the founder cannot watch it. Inspect by hand: ${buildRunnerTailCommand(spec)}`,
+				`runner-tui-window: founder TUI died immediately (${spec.windowName}) — the pane is gone right after tmux reported success. The run continues but the founder cannot watch it. Inspect by hand: ${buildRunnerTuiCommand(spec)}`,
 			);
 			if (signal?.aborted) {
 				return tuiFailure("cancellation", "aborted", {
@@ -940,7 +972,7 @@ async function ensureRunnerTuiWindowAsync(
 		}
 		safeLog(
 			deps.log,
-			`runner-tail-window: founder observer up (${spec.windowName}, ${spec.transcriptPath})`,
+			`runner-tui-window: founder TUI up (${spec.windowName}, thread=${spec.threadId})`,
 		);
 		return { created: true, windowId };
 	} catch (err) {
@@ -969,7 +1001,7 @@ async function ensureRunnerTuiWindowAsync(
 /** ID-scoped liveness probe (identity-echo defends against tmux resolving a
  * missing target to the session's current window). */
 export function isRunnerTuiWindowAlive(
-	spec: Pick<RunnerTailWindowSpec, "tmuxSession" | "windowName">,
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName">,
 	deps: Pick<RunnerTuiWindowDeps, "execOut"> = {},
 ): boolean {
 	const execOut = deps.execOut ?? defaultExecOut;
@@ -988,9 +1020,9 @@ export function isRunnerTuiWindowAlive(
 	return out === `${spec.windowName} 0`;
 }
 
-/** Explicitly tear down the founder observer when lifecycle policy requires it. */
+/** Explicitly tear down the founder TUI when lifecycle policy requires it. */
 export function killRunnerTuiWindow(
-	spec: Pick<RunnerTailWindowSpec, "tmuxSession" | "windowName"> & {
+	spec: Pick<RunnerTuiWindowSpec, "tmuxSession" | "windowName"> & {
 		/** Immutable tmux identity captured after creation. Survives pane rename. */
 		windowId?: string;
 	},

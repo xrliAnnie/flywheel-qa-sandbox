@@ -263,6 +263,7 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	// context / ids
 	FLYWHEEL_EXEC_ID: "context: runner execution id",
 	FLYWHEEL_ISSUE_ID: "context: linear issue id",
+	FLYWHEEL_QA_ISSUE: "context: QA evidence issue id (FLY-2168)",
 	FLYWHEEL_PROJECT_NAME: "context: project name",
 	FLYWHEEL_PROJECT_DIR: "context: project dir",
 	FLYWHEEL_TMUX_SESSION: "context: tmux session name",
@@ -298,6 +299,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_COMM_ROOT: "plumbing: comm root path",
 	FLYWHEEL_CLAIMS_DB: "plumbing: claims db path",
 	FLYWHEEL_GATE_MARKER_DIR: "plumbing: gate marker dir",
+	FLYWHEEL_QA_EVID_DIR:
+		"plumbing: QA evidence output directory override (FLY-2168)",
 	FLYWHEEL_CMUX_CLOSE_REQUEST_FILE:
 		"plumbing: cmux close-request marker file path (FLY-685)",
 	FLYWHEEL_CMUX_STOCK_ALLOW_LEGACY_PREPARED:
