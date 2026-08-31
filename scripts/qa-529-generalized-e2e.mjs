@@ -28,7 +28,9 @@ import {
 	classifyStubFatal,
 	generalizedEntryAuthorityIsReady,
 	hasOwnedPrMarker,
+	parseIdentityEnvProjection,
 	parseTmuxTargetIdentity,
+	pollRemotePrAuthority,
 	proveOwnedExecutionSet,
 	reconcileOwnedExecutionSet,
 	resolveOwnedPrEvidence,
@@ -542,26 +544,13 @@ function parseQuestionId(output) {
 	return match[1];
 }
 
-function runComm(
-	commCli,
-	commDbPath,
-	flywheelProjectsFile,
-	leadIdentity,
-	args,
-	env = {},
-) {
+function runComm(commCli, slotComm, identityEnv, args, env = {}) {
 	const result = spawnSync(
 		process.execPath,
-		[commCli, ...args, "--db", commDbPath],
+		[commCli, ...args, "--db", slotComm.commDbPath],
 		{
 			encoding: "utf8",
-			env: buildSlotCommEnv(
-				process.env,
-				commDbPath,
-				flywheelProjectsFile,
-				leadIdentity,
-				env,
-			),
+			env: buildSlotCommEnv(process.env, slotComm, identityEnv, env),
 		},
 	);
 	const output = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
@@ -580,9 +569,8 @@ function openGateDeliveryProbe(context, qaExecutionId, implementExecutionId) {
 	const message = openArgs.at(-1);
 	const output = runComm(
 		context.commCli,
-		context.commDbPath,
-		context.room.flywheelProjectsFile,
-		context.leadIdentity,
+		context.slotComm,
+		context.identityEnv,
 		openArgs,
 	);
 	const questionId = parseQuestionId(output);
@@ -610,9 +598,8 @@ function openGateDeliveryProbe(context, qaExecutionId, implementExecutionId) {
 	}
 	runComm(
 		context.commCli,
-		context.commDbPath,
-		context.room.flywheelProjectsFile,
-		context.leadIdentity,
+		context.slotComm,
+		context.identityEnv,
 		buildGateDeliveryRespondArgs({
 			questionId,
 			leadId: context.room.agentId,
@@ -1097,7 +1084,19 @@ async function runDrillSteps(context) {
 		"SELECT * FROM workflow_node_pr_binding WHERE run_id = ? AND node_id = 'implement' AND attempt = 2",
 		runId,
 	);
-	const remotePr = remotePrFromStub(implement2.stub);
+	const remotePrAuthority = await pollRemotePrAuthority({
+		list: async () => {
+			const pr = remotePrFromStub(implement2.stub);
+			return pr ? [pr] : [];
+		},
+		sleep: (ms) =>
+			new Promise((resolvePromise) => setTimeout(resolvePromise, ms)),
+		expectedHead: qa2.stub.qaReady.expectedHead,
+	});
+	const remotePr =
+		remotePrAuthority.kind === "converged"
+			? remotePrAuthority.pr
+			: (remotePrAuthority.observation?.[0] ?? null);
 	const preflightInput = {
 		qaWorktreeBinding:
 			qaSession?.worktree_binding_path && qaSession?.worktree_binding_generation
@@ -1371,7 +1370,7 @@ async function main() {
 	);
 	if (!existsSync(commCli))
 		throw new Error(`flywheel-comm build missing: ${commCli}`);
-	const leadIdentity = JSON.parse(
+	const identityEnv = parseIdentityEnvProjection(
 		command(process.execPath, [
 			commCli,
 			"lead-identity",
@@ -1383,9 +1382,17 @@ async function main() {
 			"--lead",
 			room.agentId,
 			"--format",
-			"json",
+			"env",
+			"--summary-config-home",
+			room.summaryConfigHome,
 		]),
 	);
+	const slotComm = {
+		commDbPath,
+		flywheelProjectsFile: room.flywheelProjectsFile,
+		summaryConfigHome: room.summaryConfigHome,
+		leaseDbPath: join(slotDir, "lead-lease.db"),
+	};
 	try {
 		const code = await runDrill({
 			...args,
@@ -1395,7 +1402,8 @@ async function main() {
 			commDb,
 			commDbPath,
 			commCli,
-			leadIdentity,
+			identityEnv,
+			slotComm,
 			config,
 			slotDir,
 			evidenceRoot: join(slotDir, "e2e-evidence"),

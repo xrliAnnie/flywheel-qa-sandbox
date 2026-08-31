@@ -13,6 +13,22 @@ function requiredString(value, field, source = "") {
 	return value;
 }
 
+export function parseIdentityEnvProjection(text) {
+	const projection = {};
+	for (const line of text.split(/\r?\n/)) {
+		if (line === "") continue;
+		const separator = line.indexOf("=");
+		if (separator < 0) throw new Error(`invalid identity env line: ${line}`);
+		const key = line.slice(0, separator);
+		if (key === "") throw new Error("identity env line has an empty key");
+		if (Object.hasOwn(projection, key)) {
+			throw new Error(`duplicate identity env key: ${key}`);
+		}
+		projection[key] = line.slice(separator + 1);
+	}
+	return projection;
+}
+
 const WAIT_POLL_MS = 500;
 export const STUB_FATAL_DIAGNOSIS_EXIT = 21;
 
@@ -149,60 +165,136 @@ export function validateRoomInfo(room, expectedRunnerMode) {
 	]) {
 		requiredString(room[field], field, "room-info");
 	}
+	const expectedSummaryConfigHome = `/tmp/flywheel-test-slot-${room.slot}/identity-home`;
+	if (room.summaryConfigHome !== expectedSummaryConfigHome) {
+		throw new Error(
+			`room-info summaryConfigHome must be ${expectedSummaryConfigHome}; teardown and rebuild the room with the current test-deploy.sh`,
+		);
+	}
 	return room;
 }
 
+export const REQUIRED_IDENTITY_ENV_KEYS = [
+	"FLYWHEEL_LEAD_ID",
+	"LEAD_ID",
+	"FLYWHEEL_PROJECT_NAME",
+	"PROJECT_NAME",
+	"FLYWHEEL_LEAD_KEY",
+	"FLYWHEEL_LEAD_ROLE",
+	"FLYWHEEL_LEAD_BACKEND",
+	"FLYWHEEL_LEAD_SUMMARY_ROLE",
+	"FLYWHEEL_LEAD_HAS_SUMMARY_DUTY",
+	"FLYWHEEL_SUMMARY_GRANULARITY",
+	"FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST",
+	"DISCORD_STATE_DIR",
+	"DISCORD_EXPECTED_BOT_USER_ID",
+	"DISCORD_IDENTITY_MODE",
+	"FLYWHEEL_LEAD_IDENTITY_DIGEST",
+	"FLYWHEEL_LEAD_PROJECTS_DIGEST",
+];
+
+const EMPTY_IDENTITY_ENV_KEYS = new Set([
+	"FLYWHEEL_SUMMARY_GRANULARITY",
+	"FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST",
+	"DISCORD_EXPECTED_BOT_USER_ID",
+]);
+
 export function buildSlotCommEnv(
 	baseEnv,
-	commDbPath,
-	flywheelProjectsFile,
-	identity,
+	slotComm,
+	identityEnv,
 	overrides = {},
 ) {
-	if (!identity || identity.schemaVersion !== 1) {
-		throw new Error("slot canonical lead identity schemaVersion=1 is required");
+	for (const key of REQUIRED_IDENTITY_ENV_KEYS) {
+		if (!Object.hasOwn(identityEnv ?? {}, key)) {
+			throw new Error(`slot lead identity env is missing ${key}`);
+		}
+		if (!EMPTY_IDENTITY_ENV_KEYS.has(key)) {
+			requiredString(identityEnv[key], key, "slot lead identity env");
+		}
 	}
-	const identityString = (value, field) =>
-		requiredString(value, field, "slot lead identity");
-	const commString = (value, field) =>
-		requiredString(value, field, "slot comm environment");
+	const commString = (field) =>
+		requiredString(slotComm?.[field], field, "slot comm environment");
 	return {
 		...baseEnv,
 		...overrides,
-		FLYWHEEL_LEAD_ID: identityString(identity.leadId, "identity.leadId"),
-		LEAD_ID: identityString(identity.leadId, "identity.leadId"),
-		FLYWHEEL_PROJECT_NAME: identityString(
-			identity.projectName,
-			"identity.projectName",
-		),
-		PROJECT_NAME: identityString(identity.projectName, "identity.projectName"),
-		FLYWHEEL_LEAD_KEY: identityString(identity.leadKey, "identity.leadKey"),
-		FLYWHEEL_LEAD_ROLE: identityString(identity.role, "identity.role"),
-		FLYWHEEL_LEAD_BACKEND: identityString(identity.backend, "identity.backend"),
-		DISCORD_STATE_DIR: identityString(
-			identity.discordStateDir,
-			"identity.discordStateDir",
-		),
-		DISCORD_EXPECTED_BOT_USER_ID: identity.botUserId ?? "",
-		DISCORD_IDENTITY_MODE: "managed",
-		FLYWHEEL_LEAD_IDENTITY_DIGEST: identityString(
-			identity.identityDigest,
-			"identity.identityDigest",
-		),
-		FLYWHEEL_LEAD_PROJECTS_DIGEST: identityString(
-			identity.projectsDigest,
-			"identity.projectsDigest",
-		),
-		FLYWHEEL_COMM_DB: commString(commDbPath, "commDbPath"),
-		FLYWHEEL_PROJECTS_FILE: commString(
-			flywheelProjectsFile,
-			"flywheelProjectsFile",
-		),
+		...identityEnv,
+		FLYWHEEL_COMM_DB: commString("commDbPath"),
+		FLYWHEEL_PROJECTS_FILE: commString("flywheelProjectsFile"),
+		FLYWHEEL_SUMMARY_CONFIG_HOME: commString("summaryConfigHome"),
+		FLYWHEEL_LEAD_LEASE_DB: commString("leaseDbPath"),
 		// The 529 gate-delivery probe exercises CommDB routing, not the resident
 		// machine's Lead lease. Avoid reading or writing the production lease
 		// control plane after proving the slot-local canonical Lead identity.
 		FLYWHEEL_LEAD_LEASE_MODE: "off",
 	};
+}
+
+export const PR_HEAD_POLL = { attempts: 12, intervalMs: 5_000 };
+
+export function classifyRemotePrObservation({
+	rows,
+	expectedHead,
+	expectedTitle,
+}) {
+	if (rows.length === 0) return { kind: "retry", reason: "PR not visible" };
+	if (rows.length !== 1) {
+		return {
+			kind: "fatal",
+			reason: `expected one PR, observed ${rows.length}`,
+		};
+	}
+	const pr = rows[0];
+	if (pr.isDraft === true) return { kind: "fatal", reason: "PR is draft" };
+	if (expectedTitle !== undefined && pr.title !== expectedTitle) {
+		return { kind: "fatal", reason: "PR title mismatch" };
+	}
+	if (pr.headRefOid !== expectedHead) {
+		return {
+			kind: "retry",
+			reason: `PR head mismatch: expected ${expectedHead}, observed ${pr.headRefOid ?? "missing"}`,
+		};
+	}
+	return { kind: "converged", pr };
+}
+
+export async function pollRemotePrAuthority({
+	list,
+	sleep,
+	expectedHead,
+	expectedTitle,
+	attempts = PR_HEAD_POLL.attempts,
+	intervalMs = PR_HEAD_POLL.intervalMs,
+}) {
+	let observation;
+	let retry;
+	for (let attempt = 1; attempt <= attempts; attempt += 1) {
+		observation = await list();
+		const result = classifyRemotePrObservation({
+			rows: observation,
+			expectedHead,
+			expectedTitle,
+		});
+		if (result.kind === "converged") {
+			return { ...result, attempts: attempt };
+		}
+		if (result.kind === "fatal") {
+			return { ...result, observation, attempts: attempt };
+		}
+		retry = result;
+		if (attempt < attempts) await sleep(intervalMs);
+	}
+	return {
+		kind: "exhausted",
+		observation,
+		reason: retry?.reason ?? "PR authority poll exhausted",
+		attempts,
+	};
+}
+
+export async function convergeRemotePrAuthority(input) {
+	if (!input.knownPr) await input.create();
+	return pollRemotePrAuthority(input);
 }
 
 const GENERALIZED_FIXTURE_BODY =

@@ -14,6 +14,7 @@ import { fileURLToPath } from "node:url";
 
 import {
 	buildDesignFixtureHtml,
+	convergeRemotePrAuthority,
 	generalizedFixtureBranch,
 	nextStubAction,
 	reconcileGeneralizedFixturePrBody,
@@ -299,15 +300,7 @@ function repoIdentity() {
 	]);
 }
 
-function ensurePullRequest(context, head) {
-	const repo = repoIdentity();
-	const branch = run("git", ["branch", "--show-current"]);
-	const issue = issueIdentifier(context);
-	const title = `test(${issue}): generalized 529 e2e fixture`;
-	const body = (
-		priorBody = "Deterministic generalized-DAG room drill; do not merge.",
-	) => reconcileGeneralizedFixturePrBody(priorBody, context.runId, executionId);
-	let rows = [];
+function listOpenPullRequests(repo, branch) {
 	const raw = run("gh", [
 		"pr",
 		"list",
@@ -320,65 +313,83 @@ function ensurePullRequest(context, head) {
 		"--json",
 		"number,url,isDraft,headRefOid,title,body",
 	]);
-	if (raw) rows = JSON.parse(raw);
-	if (rows.length === 0) {
-		run("gh", [
-			"pr",
-			"create",
-			"--repo",
-			repo,
-			"--base",
-			"main",
-			"--head",
-			branch,
-			"--title",
-			title,
-			"--body",
-			body(),
-		]);
-		rows = JSON.parse(
+	return raw ? JSON.parse(raw) : [];
+}
+
+function pullRequestContext(context) {
+	const repo = repoIdentity();
+	const branch = run("git", ["branch", "--show-current"]);
+	const issue = issueIdentifier(context);
+	const title = `test(${issue}): generalized 529 e2e fixture`;
+	const body = (
+		priorBody = "Deterministic generalized-DAG room drill; do not merge.",
+	) => reconcileGeneralizedFixturePrBody(priorBody, context.runId, executionId);
+	const last = state.lastCompletion;
+	const durableKnown =
+		Number.isInteger(last?.prNumber) &&
+		last.repo === repo &&
+		last.branch === branch;
+	const observed = durableKnown ? [] : listOpenPullRequests(repo, branch);
+	return {
+		repo,
+		branch,
+		title,
+		body,
+		knownPr: durableKnown || observed.length > 0,
+	};
+}
+
+async function ensurePullRequest(head, prContext) {
+	const { repo, branch, title, body, knownPr } = prContext;
+	const result = await convergeRemotePrAuthority({
+		knownPr,
+		create: async () =>
 			run("gh", [
 				"pr",
-				"list",
+				"create",
 				"--repo",
 				repo,
+				"--base",
+				"main",
 				"--head",
 				branch,
-				"--state",
-				"open",
-				"--json",
-				"number,url,isDraft,headRefOid,title,body",
+				"--title",
+				title,
+				"--body",
+				body(),
 			]),
+		list: async () => listOpenPullRequests(repo, branch),
+		sleep,
+		expectedHead: head,
+		expectedTitle: title,
+	});
+	if (result.kind !== "converged") {
+		throw new Error(
+			`sandbox PR authority mismatch: expectedHead=${head} attempts=${result.attempts} reason=${result.reason} observed=${JSON.stringify(result.observation)}`,
 		);
 	}
-	if (
-		rows.length !== 1 ||
-		rows[0].isDraft ||
-		rows[0].headRefOid !== head ||
-		rows[0].title !== title
-	) {
-		throw new Error(`sandbox PR authority mismatch: ${JSON.stringify(rows)}`);
-	}
-	const reconciledBody = body(rows[0].body);
-	if (rows[0].body.trim() !== reconciledBody) {
+	const pr = result.pr;
+	const reconciledBody = body(pr.body);
+	if (pr.body.trim() !== reconciledBody) {
 		run("gh", [
 			"pr",
 			"edit",
-			String(rows[0].number),
+			String(pr.number),
 			"--repo",
 			repo,
 			"--body",
 			reconciledBody,
 		]);
-		rows[0].body = reconciledBody;
+		pr.body = reconciledBody;
 	}
-	return { ...rows[0], repo, branch };
+	return { ...pr, repo, branch };
 }
 
-function completeImplement(context) {
+async function completeImplement(context) {
 	configureGit();
 	const issue = issueIdentifier(context);
 	selectFixtureBranch(context, issue);
+	const prContext = pullRequestContext(context);
 	const path = `doc/qa/fixtures/${issue}-generalized-e2e.md`;
 	const prior = existsSync(path)
 		? readFileSync(path, "utf8")
@@ -392,7 +403,7 @@ function completeImplement(context) {
 		content,
 		`test(${issue}): generalized e2e implement attempt ${context.attempt}`,
 	);
-	const pr = ensurePullRequest(context, head);
+	const pr = await ensurePullRequest(head, prContext);
 	state.pending = {
 		action: "complete-implement",
 		attempt: context.attempt,
@@ -590,7 +601,7 @@ async function main() {
 				completeDesign(context);
 				break;
 			case "complete-implement":
-				completeImplement(context);
+				await completeImplement(context);
 				break;
 			case "qa-fail":
 				submitQaFail(context);

@@ -501,12 +501,36 @@ assert_contains "$(<"$ROOT/scripts/test-deploy.sh")" \
 assert_contains "$(<"$ROOT/scripts/test-deploy.sh")" \
 	'--arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE"' \
 	'room handoff publishes the slot canonical projects registry'
+assert_contains "$(<"$ROOT/scripts/test-deploy.sh")" \
+	'--arg summaryConfigHome "$QA_SUMMARY_CONFIG_HOME"' \
+	'room handoff passes the slot-local summary identity home to jq'
+assert_contains "$(<"$ROOT/scripts/test-deploy.sh")" \
+	'summaryConfigHome:$summaryConfigHome' \
+	'room handoff publishes the slot-local summary identity home'
 assert_contains "$(<"$ROOT/scripts/lib/qa-generalized-e2e-lib.mjs")" \
-	'FLYWHEEL_COMM_DB: commString(commDbPath, "commDbPath")' \
+	'FLYWHEEL_COMM_DB: commString("commDbPath")' \
 	'all driver comm calls bind to the slot CommDB'
 assert_contains "$(<"$ROOT/scripts/lib/qa-generalized-e2e-lib.mjs")" \
-	'FLYWHEEL_PROJECTS_FILE: commString(' \
+	'FLYWHEEL_PROJECTS_FILE: commString("flywheelProjectsFile")' \
 	'all driver comm calls bind to the slot canonical projects registry'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'parseIdentityEnvProjection(' \
+	'driver consumes the canonical env projection instead of a JSON identity mirror'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'"--summary-config-home"' \
+	'driver resolves identity from the room summary home'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'leaseDbPath: join(slotDir, "lead-lease.db")' \
+	'driver isolates identity-integrity audit writes in the slot'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-stub.mjs")" \
+	'const prContext = pullRequestContext(context);' \
+	'stub discovers durable or open PR authority before pushing'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-stub.mjs")" \
+	'await convergeRemotePrAuthority({' \
+	'stub waits for the pushed head through the tested convergence helper'
+assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
+	'const remotePrAuthority = await pollRemotePrAuthority({' \
+	'driver waits for the stub PR head before applying the A3 preflight'
 assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \
 	'observedRunExecutionIds(db, runId)' \
 	'driver reconciles ownership from the current run/node execution set'

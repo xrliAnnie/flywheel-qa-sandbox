@@ -1,0 +1,13 @@
+flowchart LR
+  REG["projects.json\n(Lead 身份注册表)"] --> PROJ["identityEnvProjection\n唯一权威投影\n(flywheel-comm 内维护)"]
+  PROJ --> C1["Bridge 转发环境\nforwardedLeadAuthorizationEnv"]
+  PROJ --> C2["CLI 输出\nlead-identity resolve --format env"]
+  PROJ --> C3["测试 helper\ncreateTestLeadIdentityEnvs"]
+  C2 --> C4["529 driver buildSlotCommEnv\n(本次修复: 从手抄改为消费 C2)"]
+  OLD["旧 driver: 手抄 15 个变量\nFLY-2030 加第 16-19 个时漏改\n=> 词表漂移"] -.被删除.-> C4
+  ROOM["room-info.json\n新增 summaryConfigHome 字段\n(房内 summary 配置目录)"] --> C4
+  GUARD2["对照组测试\n真校验器 authorizeLeadWrite\n直接验收 driver 产物"] --> C4
+  style PROJ fill:#e8f1ff,stroke:#007aff,stroke-width:2px
+  style OLD fill:#ffe5e3,stroke:#ff3b30
+  style C4 fill:#e6f9ec,stroke:#34c759
+  style GUARD2 fill:#f3e8ff,stroke:#af52de

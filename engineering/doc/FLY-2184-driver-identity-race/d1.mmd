@@ -1,0 +1,19 @@
+flowchart TB
+  subgraph PANE["生产 runner pane(操作员的终端)"]
+    ENV["pane 环境变量\n带着生产 Lead 的身份值"]
+  end
+  subgraph DRIVER["529 driver(qa-529-generalized-e2e.mjs)"]
+    RESOLVE["启动时解出房内身份\nlead-identity resolve --format env\n(修复: 权威投影, 含全部 17 个变量)"]
+    BUILD["buildSlotCommEnv\n组装 CLI 子进程环境"]
+  end
+  subgraph CLI["flywheel-comm CLI 子进程(respond/send)"]
+    GUARD["authorizeLeadWrite\n身份完整性校验\n(比对 env 与房内注册表)"]
+  end
+  ENV -->|"旧: 4 个 summary 变量原样透传"| BUILD
+  RESOLVE -->|"新: 整套投影 overlay, 生产值全部被压掉"| BUILD
+  BUILD --> CLI
+  GUARD -->|"旧: 值不匹配 → identity_env_conflict 拒绝"| DENY["step5 失败"]
+  GUARD -->|"新: 17 个变量全部一致 → 放行"| OK["step5 通过"]
+  style DENY fill:#ffe5e3,stroke:#ff3b30
+  style OK fill:#e6f9ec,stroke:#34c759
+  style RESOLVE fill:#e8f1ff,stroke:#007aff

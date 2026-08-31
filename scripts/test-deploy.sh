@@ -1915,6 +1915,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     --arg bridgeUrl "http://localhost:${SLOT_PORT}" \
     --arg dbPath "${SLOT_DIR}/teamlead.db" --arg hostRepo "$HOST_REPO" \
     --arg flywheelProjectsFile "$FLYWHEEL_PROJECTS_FILE" \
+	--arg summaryConfigHome "$QA_SUMMARY_CONFIG_HOME" \
     --arg flywheelRepo "$REPO_ROOT" \
     --arg buildSha "$SCRIPT_REPO_HEAD" --arg apiTokenPath "$GENERALIZED_API_TOKEN_PATH" \
     --arg bridgeLog "${SLOT_DIR}/bridge.log" \
@@ -1922,6 +1923,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
       mode:$mode,generalized:true,runnerMode:$runnerMode,bridgeUrl:$bridgeUrl,
       dbPath:$dbPath,hostRepo:$hostRepo,flywheelRepo:$flywheelRepo,buildSha:$buildSha,
       flywheelProjectsFile:$flywheelProjectsFile,
+	  summaryConfigHome:$summaryConfigHome,
       apiTokenPath:$apiTokenPath,
       bridgeLog:$bridgeLog}' > "$_room_tmp" \
     || { rm -f "$_room_tmp"; exit 1; }

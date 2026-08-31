@@ -1,0 +1,18 @@
+sequenceDiagram
+  participant S as stub(模拟实现者)
+  participant G as git 远端
+  participant API as GitHub PR 接口(读模型)
+  S->>G: git push(新提交 head B)
+  Note over G: 远端分支立即变成 B
+  S->>API: gh pr list(旧行为: 只读一次)
+  API-->>S: headRefOid = A(旧值, 读模型还没刷新)
+  Note over S: 旧行为: A != B 立即误报<br/>sandbox PR authority mismatch
+  rect rgb(230,249,236)
+  loop 新行为: 有界轮询(5 秒 x 12 次)
+    S->>API: gh pr list
+    API-->>S: headRefOid 仍是 A → 等 5 秒再读
+    S->>API: gh pr list
+    API-->>S: headRefOid = B(读模型追上了)
+  end
+  Note over S: 一致 → 继续流程<br/>12 次耗尽才报错(带新旧两个值)
+  end

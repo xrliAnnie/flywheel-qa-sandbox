@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import {
@@ -12,13 +16,17 @@ import {
 	buildSlotCommEnv,
 	buildStubFatalAbortError,
 	classifyDurableLaunchDrain,
+	classifyRemotePrObservation,
 	classifyStubFatal,
+	convergeRemotePrAuthority,
 	generalizedEntryAuthorityIsReady,
 	generalizedFixtureBranch,
 	generalizedFixtureMarker,
 	hasOwnedPrMarker,
 	nextStubAction,
+	parseIdentityEnvProjection,
 	parseTmuxTargetIdentity,
+	pollRemotePrAuthority,
 	proveOwnedExecutionSet,
 	reconcileGeneralizedFixturePrBody,
 	reconcileOwnedExecutionSet,
@@ -36,6 +44,140 @@ import {
 	waitFor,
 } from "../lib/qa-generalized-e2e-lib.mjs";
 
+test("identity env projection parsing preserves values and rejects ambiguity", () => {
+	assert.deepEqual(parseIdentityEnvProjection("A=one=two\nEMPTY=\n"), {
+		A: "one=two",
+		EMPTY: "",
+	});
+	assert.throws(() => parseIdentityEnvProjection("BROKEN\n"), /invalid/);
+	assert.throws(() => parseIdentityEnvProjection("=value\n"), /empty key/);
+	assert.throws(() => parseIdentityEnvProjection("A=1\nA=2\n"), /duplicate/);
+});
+
+test("remote PR authority polling distinguishes convergence from fatal structure", async () => {
+	const expectedHead = "a".repeat(40);
+	const stale = {
+		number: 42,
+		isDraft: false,
+		headRefOid: "b".repeat(40),
+		title: "expected",
+	};
+	const fresh = { ...stale, headRefOid: expectedHead };
+	for (const [rows, kind] of [
+		[[], "retry"],
+		[[stale], "retry"],
+		[[fresh, fresh], "fatal"],
+		[[{ ...fresh, isDraft: true }], "fatal"],
+		[[{ ...fresh, title: "wrong" }], "fatal"],
+		[[fresh], "converged"],
+	]) {
+		assert.equal(
+			classifyRemotePrObservation({
+				rows,
+				expectedHead,
+				expectedTitle: "expected",
+			}).kind,
+			kind,
+		);
+	}
+
+	const observations = [[stale], [fresh]];
+	let sleepCalls = 0;
+	assert.deepEqual(
+		await pollRemotePrAuthority({
+			list: async () => observations.shift(),
+			sleep: async () => {
+				sleepCalls += 1;
+			},
+			expectedHead,
+			expectedTitle: "expected",
+			attempts: 3,
+			intervalMs: 0,
+		}),
+		{ kind: "converged", pr: fresh, attempts: 2 },
+	);
+	assert.equal(sleepCalls, 1);
+	assert.equal(
+		(
+			await pollRemotePrAuthority({
+				list: async () => [{ ...fresh, isDraft: true }],
+				sleep: async () => {},
+				expectedHead,
+				expectedTitle: "expected",
+				attempts: 3,
+				intervalMs: 0,
+			})
+		).kind,
+		"fatal",
+	);
+	assert.equal(
+		(
+			await pollRemotePrAuthority({
+				list: async () => [stale],
+				sleep: async () => {},
+				expectedHead,
+				expectedTitle: "expected",
+				attempts: 2,
+				intervalMs: 0,
+			})
+		).kind,
+		"exhausted",
+	);
+	await assert.rejects(
+		pollRemotePrAuthority({
+			list: async () => {
+				throw new Error("gh failed");
+			},
+			sleep: async () => {},
+			expectedHead,
+			attempts: 1,
+			intervalMs: 0,
+		}),
+		/gh failed/,
+	);
+});
+
+test("known PR authority convergence never creates a replacement after push", async () => {
+	const expectedHead = "a".repeat(40);
+	const fresh = {
+		number: 42,
+		isDraft: false,
+		headRefOid: expectedHead,
+		title: "expected",
+	};
+	const observations = [[], [fresh]];
+	let createCalls = 0;
+	assert.deepEqual(
+		await convergeRemotePrAuthority({
+			knownPr: true,
+			create: async () => {
+				createCalls += 1;
+			},
+			list: async () => observations.shift(),
+			sleep: async () => {},
+			expectedHead,
+			expectedTitle: "expected",
+			attempts: 2,
+			intervalMs: 0,
+		}),
+		{ kind: "converged", pr: fresh, attempts: 2 },
+	);
+	assert.equal(createCalls, 0);
+	await convergeRemotePrAuthority({
+		knownPr: false,
+		create: async () => {
+			createCalls += 1;
+		},
+		list: async () => [fresh],
+		sleep: async () => {},
+		expectedHead,
+		expectedTitle: "expected",
+		attempts: 2,
+		intervalMs: 0,
+	});
+	assert.equal(createCalls, 1);
+});
+
 const ROOM = {
 	schemaVersion: 1,
 	slot: 2,
@@ -45,6 +187,7 @@ const ROOM = {
 	bridgeUrl: "http://localhost:19872",
 	dbPath: "/tmp/slot/teamlead.db",
 	flywheelProjectsFile: "/tmp/slot/flywheel-projects.json",
+	summaryConfigHome: "/tmp/flywheel-test-slot-2/identity-home",
 	hostRepo: "/tmp/slot/project-slot-2",
 	flywheelRepo: "/tmp/flywheel-under-test",
 	buildSha: "a".repeat(40),
@@ -67,79 +210,194 @@ test("room contract rejects topology and runner-mode drift", () => {
 		() => validateRoomInfo({ ...ROOM, flywheelRepo: "" }, "stub"),
 		/flywheelRepo/,
 	);
+	for (const summaryConfigHome of [
+		undefined,
+		"relative/identity-home",
+		"/Users/operator/.flywheel",
+	]) {
+		assert.throws(
+			() => validateRoomInfo({ ...ROOM, summaryConfigHome }, "stub"),
+			/summaryConfigHome.*teardown.*rebuild/i,
+		);
+	}
 });
 
 test("slot comm env overrides every ambient or caller registry coordinate", () => {
-	const identity = {
-		schemaVersion: 1,
-		leadId: "flywheel-test-2",
-		projectName: "test-slot-2",
-		leadKey: "test-slot-2:flywheel-test-2",
-		agentTeamName: "flywheel-test-2",
-		botUserId: "123456789012345678",
-		botTokenEnv: "TEST_SLOT_2_BOT_TOKEN",
-		discordStateDir: "/slot/discord",
-		backend: "codex-app-server",
-		role: "dept",
-		projectsDigest: "projects-digest",
-		identityDigest: "identity-digest",
+	const identityEnv = {
+		FLYWHEEL_LEAD_ID: "flywheel-test-2",
+		LEAD_ID: "flywheel-test-2",
+		FLYWHEEL_PROJECT_NAME: "test-slot-2",
+		PROJECT_NAME: "test-slot-2",
+		FLYWHEEL_LEAD_KEY: "test-slot-2:flywheel-test-2",
+		FLYWHEEL_LEAD_ROLE: "dept",
+		FLYWHEEL_LEAD_BACKEND: "codex-app-server",
+		FLYWHEEL_LEAD_SUMMARY_ROLE: "producer",
+		FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: "1",
+		FLYWHEEL_SUMMARY_GRANULARITY: "per-lead",
+		FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: "summary-digest",
+		DISCORD_STATE_DIR: "/slot/discord",
+		DISCORD_EXPECTED_BOT_USER_ID: "123456789012345678",
+		DISCORD_IDENTITY_MODE: "managed",
+		FLYWHEEL_LEAD_IDENTITY_DIGEST: "identity-digest",
+		FLYWHEEL_LEAD_PROJECTS_DIGEST: "projects-digest",
 	};
-	assert.deepEqual(
-		buildSlotCommEnv(
-			{
-				HOME: "/operator",
-				FLYWHEEL_COMM_DB: "/ambient/comm.db",
-				FLYWHEEL_PROJECTS_FILE: "/ambient/projects.json",
-				FLYWHEEL_LEAD_ID: "ambient-lead",
-				LEAD_ID: "ambient-lead",
-				FLYWHEEL_PROJECT_NAME: "ambient-project",
-				PROJECT_NAME: "ambient-project",
-				FLYWHEEL_LEAD_KEY: "ambient-key",
-				FLYWHEEL_LEAD_ROLE: "cos",
-				FLYWHEEL_LEAD_BACKEND: "claude-code",
-				DISCORD_STATE_DIR: "/ambient/discord",
-				DISCORD_EXPECTED_BOT_USER_ID: "999999999999999999",
-				DISCORD_IDENTITY_MODE: "legacy",
-				FLYWHEEL_LEAD_IDENTITY_DIGEST: "ambient-identity",
-				FLYWHEEL_LEAD_PROJECTS_DIGEST: "ambient-projects",
-			},
-			"/slot/comm.db",
-			"/slot/projects.json",
-			identity,
-			{
-				FLYWHEEL_COMM_DB: "/foreign/comm.db",
-				FLYWHEEL_PROJECTS_FILE: "/foreign/projects.json",
-				FLYWHEEL_LEAD_ID: "foreign-lead",
-				EXTRA: "kept",
-			},
-		),
+	const slotComm = {
+		commDbPath: "/slot/comm.db",
+		flywheelProjectsFile: "/slot/projects.json",
+		summaryConfigHome: "/slot/identity-home",
+		leaseDbPath: "/slot/lead-lease.db",
+	};
+	const env = buildSlotCommEnv(
 		{
 			HOME: "/operator",
-			FLYWHEEL_COMM_DB: "/slot/comm.db",
-			FLYWHEEL_PROJECTS_FILE: "/slot/projects.json",
-			FLYWHEEL_LEAD_LEASE_MODE: "off",
-			FLYWHEEL_LEAD_ID: "flywheel-test-2",
-			LEAD_ID: "flywheel-test-2",
-			FLYWHEEL_PROJECT_NAME: "test-slot-2",
-			PROJECT_NAME: "test-slot-2",
-			FLYWHEEL_LEAD_KEY: "test-slot-2:flywheel-test-2",
-			FLYWHEEL_LEAD_ROLE: "dept",
-			FLYWHEEL_LEAD_BACKEND: "codex-app-server",
-			DISCORD_STATE_DIR: "/slot/discord",
-			DISCORD_EXPECTED_BOT_USER_ID: "123456789012345678",
-			DISCORD_IDENTITY_MODE: "managed",
-			FLYWHEEL_LEAD_IDENTITY_DIGEST: "identity-digest",
-			FLYWHEEL_LEAD_PROJECTS_DIGEST: "projects-digest",
+			FLYWHEEL_LEAD_SUMMARY_ROLE: "recipient",
+			FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: "0",
+			FLYWHEEL_SUMMARY_GRANULARITY: "per-project",
+			FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: "ambient-summary-digest",
+		},
+		slotComm,
+		identityEnv,
+		{
+			FLYWHEEL_COMM_DB: "/foreign/comm.db",
+			FLYWHEEL_LEAD_ID: "foreign-lead",
 			EXTRA: "kept",
+		},
+	);
+	assert.deepEqual(
+		{
+			leadId: env.FLYWHEEL_LEAD_ID,
+			commDb: env.FLYWHEEL_COMM_DB,
+			projectsFile: env.FLYWHEEL_PROJECTS_FILE,
+			summaryHome: env.FLYWHEEL_SUMMARY_CONFIG_HOME,
+			leaseDb: env.FLYWHEEL_LEAD_LEASE_DB,
+			summaryRole: env.FLYWHEEL_LEAD_SUMMARY_ROLE,
+			summaryDuty: env.FLYWHEEL_LEAD_HAS_SUMMARY_DUTY,
+			granularity: env.FLYWHEEL_SUMMARY_GRANULARITY,
+			summaryDigest: env.FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST,
+			leaseMode: env.FLYWHEEL_LEAD_LEASE_MODE,
+			extra: env.EXTRA,
+		},
+		{
+			leadId: "flywheel-test-2",
+			commDb: "/slot/comm.db",
+			projectsFile: "/slot/projects.json",
+			summaryHome: "/slot/identity-home",
+			leaseDb: "/slot/lead-lease.db",
+			summaryRole: "producer",
+			summaryDuty: "1",
+			granularity: "per-lead",
+			summaryDigest: "summary-digest",
+			leaseMode: "off",
+			extra: "kept",
 		},
 	);
 	assert.throws(
 		() =>
-			buildSlotCommEnv({}, "/slot/comm.db", "/slot/projects.json", {
-				...identity,
-				identityDigest: "",
+			buildSlotCommEnv({}, slotComm, {
+				...identityEnv,
+				FLYWHEEL_LEAD_IDENTITY_DIGEST: "",
 			}),
-		/slot lead identity identity\.identityDigest is required/,
+		/FLYWHEEL_LEAD_IDENTITY_DIGEST/,
+	);
+	const missingSummaryRole = { ...identityEnv };
+	delete missingSummaryRole.FLYWHEEL_LEAD_SUMMARY_ROLE;
+	assert.throws(
+		() => buildSlotCommEnv({}, slotComm, missingSummaryRole),
+		/FLYWHEEL_LEAD_SUMMARY_ROLE/,
+	);
+	assert.doesNotThrow(() =>
+		buildSlotCommEnv({}, slotComm, {
+			...identityEnv,
+			FLYWHEEL_SUMMARY_GRANULARITY: "",
+			FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: "",
+			DISCORD_EXPECTED_BOT_USER_ID: "",
+		}),
+	);
+});
+
+test("slot comm env satisfies the real canonical identity validator", async (t) => {
+	const root = mkdtempSync(join(tmpdir(), "fly2184-identity-"));
+	t.after(() => rmSync(root, { recursive: true, force: true }));
+	const identityHome = join(root, "identity-home");
+	const projectsFile = join(root, "flywheel-projects.json");
+	mkdirSync(join(identityHome, ".flywheel"), { recursive: true });
+	writeFileSync(
+		join(identityHome, ".flywheel", "summary-config.json"),
+		JSON.stringify({
+			granularity: "per-lead",
+			setBy: "test",
+			setAt: "2026-08-31T00:00:00.000Z",
+		}),
+	);
+	writeFileSync(
+		projectsFile,
+		JSON.stringify([
+			{
+				projectName: "test-slot-2",
+				projectRoot: root,
+				leads: [
+					{
+						agentId: "flywheel-test-2",
+						summaryRole: "producer",
+						discordStateDir: join(root, "discord"),
+					},
+				],
+			},
+		]),
+	);
+	const commCli = resolve("packages/flywheel-comm/dist/index.js");
+	const identityEnv = parseIdentityEnvProjection(
+		execFileSync(
+			process.execPath,
+			[
+				commCli,
+				"lead-identity",
+				"resolve",
+				"--projects-file",
+				projectsFile,
+				"--project",
+				"test-slot-2",
+				"--lead",
+				"flywheel-test-2",
+				"--format",
+				"env",
+				"--summary-config-home",
+				identityHome,
+			],
+			{ encoding: "utf8" },
+		),
+	);
+	const env = buildSlotCommEnv(
+		{
+			HOME: root,
+			FLYWHEEL_LEAD_SUMMARY_ROLE: "recipient",
+			FLYWHEEL_LEAD_HAS_SUMMARY_DUTY: "0",
+			FLYWHEEL_SUMMARY_GRANULARITY: "per-project",
+			FLYWHEEL_SUMMARY_ASSIGNMENT_DIGEST: "wrong",
+			FLYWHEEL_LEAD_LEASE_DB: "/operator/lead-lease.db",
+		},
+		{
+			commDbPath: join(root, "comm.db"),
+			flywheelProjectsFile: projectsFile,
+			summaryConfigHome: identityHome,
+			leaseDbPath: join(root, "lead-lease.db"),
+		},
+		identityEnv,
+	);
+	const { authorizeLeadWrite } = await import(
+		"../../packages/flywheel-comm/dist/lead-lease.js"
+	);
+	assert.equal(
+		authorizeLeadWrite({ claimedLeadId: "flywheel-test-2", env }).disposition,
+		"off",
+	);
+	assert.equal(env.FLYWHEEL_LEAD_LEASE_DB, join(root, "lead-lease.db"));
+	const invalid = { ...env };
+	delete invalid.FLYWHEEL_LEAD_SUMMARY_ROLE;
+	assert.throws(
+		() =>
+			authorizeLeadWrite({ claimedLeadId: "flywheel-test-2", env: invalid }),
+		(error) => error?.reason === "identity_env_conflict",
 	);
 });
 
