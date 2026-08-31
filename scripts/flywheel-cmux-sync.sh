@@ -294,6 +294,14 @@ CMUX_TIMEOUT_KILL_GRACE_SECONDS="${FLYWHEEL_CMUX_TIMEOUT_KILL_GRACE:-1}"
 case "$CMUX_PING_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CMUX_PING_TIMEOUT_SECONDS=10 ;; esac
 case "$CMUX_CALL_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CMUX_CALL_TIMEOUT_SECONDS=20 ;; esac
 case "$CMUX_TIMEOUT_KILL_GRACE_SECONDS" in ''|*[!0-9]*|0) CMUX_TIMEOUT_KILL_GRACE_SECONDS=1 ;; esac
+if (( CMUX_PING_TIMEOUT_SECONDS > 60 )); then
+  log "WARN: FLYWHEEL_CMUX_PING_TIMEOUT=$CMUX_PING_TIMEOUT_SECONDS exceeds 60s; using default 10s"
+  CMUX_PING_TIMEOUT_SECONDS=10
+fi
+if (( CMUX_CALL_TIMEOUT_SECONDS > 60 )); then
+  log "WARN: FLYWHEEL_CMUX_CALL_TIMEOUT=$CMUX_CALL_TIMEOUT_SECONDS exceeds 60s; using default 20s"
+  CMUX_CALL_TIMEOUT_SECONDS=20
+fi
 
 # Usage: _cmux_bounded_spawn <timeout-seconds> <timeout-marker> <cmux args...>
 # The caller MUST create/truncate timeout-marker before entering this helper.
@@ -312,8 +320,10 @@ _cmux_bounded_spawn() {
   # below the seam uses a real fixture process tree.
   if [[ "${FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS:-0}" == "1" ]] \
      && declare -F cmux >/dev/null 2>&1; then
-    cmux "$@"
-    return $?
+    cmux "$@" || rc=$?
+    [[ "${CMUX_WATCH_HEARTBEAT_ACTIVE:-0}" == "1" ]] \
+      && watcher_write_heartbeat call bounded
+    return "$rc"
   fi
   case "$-" in *m*) monitor_was_enabled=1 ;; esac
   set -m
@@ -335,6 +345,8 @@ _cmux_bounded_spawn() {
   wait "$watchdog_pid" 2>/dev/null || true
   [[ $monitor_was_enabled -eq 1 ]] || set +m
 
+  [[ "${CMUX_WATCH_HEARTBEAT_ACTIVE:-0}" == "1" ]] \
+    && watcher_write_heartbeat call bounded
   [[ -s "$timeout_marker" ]] && return 124
   return "$rc"
 }
@@ -12807,6 +12819,7 @@ case "${1:-}" in
     # lease is held, this checkpoint can safely reap a stale claim or yield to
     # a live teardown before watch_main performs any side effect.
     watcher_maintenance_checkpoint
+    CMUX_WATCH_HEARTBEAT_ACTIVE=1
     # FLY-129: full --watch body lives in watch_main() so it can use `local`
     # and so health-check gating can wrap cmux ops cleanly.
     watch_main
