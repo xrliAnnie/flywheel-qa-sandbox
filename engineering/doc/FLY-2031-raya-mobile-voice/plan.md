@@ -588,8 +588,12 @@ publishReceipt: (text) =>
 - [x] **RED:**always-on start instructions 必须禁止拒绝/失败窗口中的自编原因和流程建议，只准复述系统播报事实；旧规则只禁止效果宣称。
 - [x] **GREEN:**ship 播报拆为不含批准口令的上下文段与独立批准提示；批准提示通过 `onBeforeInject` 在 append 前原子 arm。队列等待期间若出现新 transcript，hook fail-closed，批准提示不注入；该提示自己的 injection/final 是唯一窄例外，其他 code speech/assistant final 仍立即解武装。
 - [x] **GREEN:**三条旧 retry 分别留 `prompt_not_confirmed`、`prompt_cursor_missing`、`transcript_during_audible_tail`；新增 cue race 也有独立 reason。
-- [x] **GREEN:**founder decision 与文字回执使用本地窄 matcher：NFKC → 去 Unicode 标点/符号/空白 → 折叠相邻重复 code point → exact compare。非 founder 分支继续使用原 matcher，判定代码不改。
+- [x] **GREEN:**Raya 的窄 matcher 只用于识别候选回答并路由到批准通道：NFKC → 去 Unicode 标点/符号/空白 → 折叠相邻重复 code point → exact compare。它不写批准结果；原始 transcript 不改写地交给 Bridge，由 `voice-approval-source` 作唯一结果判定。非 founder 分支继续使用原 matcher，判定代码不改。
 - [x] **GREEN:**拒绝/失败规则明确禁止「联系管理员」「重新提交」「系统限制」「找 QA 负责人」及同义建议，只能复述系统播报已给事实。
 - [x] **focused 验证:**`Speaker.test.ts` + `ShipGateFlow.test.ts` + `cli.test.ts` 49/49；`runtime.test.ts` 46/46；voice typecheck 通过。
-- [x] **全仓验证:**`pnpm lint`（180 files）、`pnpm -r build`、`pnpm typecheck`、`pnpm test` 全绿；contracts 62 + voice 321 + brain 125 + root QA/probes 94，共 602 tests。
-- [ ] 功能提交、milestone 最后提交、push，并对最终 Raya head 开精确 nested code review；只有 `reviewedHeadSha === HEAD` 且 `reviewVerdict=APPROVED` 才交回 QA。
+- [x] **Raya 单一权威收口:**文字回执只保留 `原样转写`，明确“结果以批准通道为准”，不再写“语音确认 ship”；Bridge unavailable、rebind/card 复核失败、held/unclear/rejected 都播报“没有批/没有发出”事实并留 evidence。`non_founder_final` fail-closed 分支未改。
+- [x] **Bridge 权威 matcher:**在独立 Flywheel worktree 中仅扩 `voice-approval-source` normalization 与测试；保留 exact-match 语义，`不确认`、`确认吗?`、`先别确认` 均保持 unclear。Raya 对 Bridge 的 POST 保留原始 `确认认。`，不做 transport normalization。
+- [x] **错误 review 作废:**gate `566b66ee-1d85-476b-abaa-e3ddb8687393` 错绑 Flywheel `fcf240401`，不是 Raya `e8d7867`，其 verdict 不能计入本轮。Lead 已裁定最终必须分别精确审查 Raya 与 Flywheel Bridge 两个 head。
+- [x] **Raya 全仓验证:**`pnpm lint`（180 files）、`pnpm -r build`、`pnpm typecheck`、`pnpm test` 全绿；contracts 62 + voice 322 + brain 125 + root QA/probes 94，共 603 tests。
+- [x] **Flywheel 验证:**`pnpm lint`、`pnpm -r build`、Bridge matcher 6/6 通过；全包并行中 `tmux-viewer.macos` 因当前 session 无 Terminal.app 服务独立复现失败，排除该 GUI 文件后 core 219/219 通过；其余包共 9,888 tests 中 6 个无关并发失败，四个失败文件串行复跑 59/59 通过。
+- [ ] 两仓功能提交、各自 milestone 最后提交与 push；分别开 exact-head code review，只有两个 `reviewedHeadSha === HEAD` 且 `reviewVerdict=APPROVED` 才交回 QA。
