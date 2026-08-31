@@ -226,11 +226,14 @@ else
   bad "cleanup marker did not preserve the production round identity"
 fi
 
+begin_cmux_additive_round
+snapshot_round="$CMUX_ADDITIVE_ROUND_ID"
+IFS='-' read -r snapshot_round_epoch snapshot_round_sequence <<< "$snapshot_round"
 if node_write_cleanup_snapshot \
-   && grep -q "^snapshot|$round_epoch|$round_sequence|[0-9][0-9]*|complete$" "$CLEANUP_SNAPSHOT"; then
-  ok "cleanup snapshot stores round epoch and sequence separately"
+   && grep -q "^snapshot|$snapshot_round_epoch|$snapshot_round_sequence|[0-9][0-9]*|complete$" "$CLEANUP_SNAPSHOT"; then
+  ok "cleanup snapshot stores and strictly advances the round epoch and sequence"
 else
-  bad "cleanup snapshot rejected the production round identity"
+  bad "cleanup snapshot rejected the next production round identity"
 fi
 
 DISMANTLED=""; DRAIN_FAIL=0
