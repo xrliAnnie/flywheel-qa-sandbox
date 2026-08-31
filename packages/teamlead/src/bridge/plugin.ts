@@ -182,7 +182,10 @@ import {
 	closeRunner,
 	registerLifecycleCloseGuard,
 } from "./close-runner.js";
-import { createHostCmuxWatcherPatrol } from "./cmux-watcher-patrol.js";
+import {
+	createHostCmuxWatcherPatrol,
+	projectCmuxRebindDisabled,
+} from "./cmux-watcher-patrol.js";
 import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
@@ -271,6 +274,7 @@ import {
 	type FlagStoreRuntime,
 	initializeFlagStore,
 	storeAlertSystemEnabled,
+	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -8697,7 +8701,21 @@ export async function startBridge(
 		onSummaryAbsorptionTick: summaryAbsorptionPass,
 		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
 		...(cmuxWatcherPatrol
-			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }
+			? {
+					onCmuxWatcherPatrolTick: async () => {
+						try {
+							await projectCmuxRebindDisabled(
+								homedir(),
+								storeCmuxRebindDisabled(flagStore),
+							);
+						} catch (error) {
+							console.warn(
+								`[cmux-watcher] rebind control projection failed: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+						await cmuxWatcherPatrol.tick();
+					},
+				}
 			: {}),
 		onReconcilePatrolTick: async () => {
 			// First rollout window: inventory historical terminal-run residue but do

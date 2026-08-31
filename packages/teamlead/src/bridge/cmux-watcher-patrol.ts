@@ -8,8 +8,37 @@
  */
 
 import { spawn } from "node:child_process";
-import { lstat, readFile, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
+
+export async function projectCmuxRebindDisabled(
+	homeDir: string,
+	disabled: boolean,
+): Promise<void> {
+	const stateDir = join(homeDir, ".flywheel", "state");
+	const marker = join(stateDir, "cmux-rebind-disabled");
+	if (!disabled) {
+		await rm(marker, { force: true });
+		return;
+	}
+	await mkdir(stateDir, { recursive: true, mode: 0o700 });
+	const temp = `${marker}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temp, "disabled\n", { flag: "wx", mode: 0o600 });
+		await rename(temp, marker);
+	} finally {
+		await rm(temp, { force: true });
+	}
+}
 
 export interface CmuxWatcherOwner {
 	pid: number;

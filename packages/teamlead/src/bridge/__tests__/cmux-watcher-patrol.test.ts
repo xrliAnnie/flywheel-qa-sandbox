@@ -1,9 +1,13 @@
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
 	CmuxWatcherPatrol,
 	type CmuxWatcherSnapshot,
 	classifyCmuxWatcher,
 	parseCmuxWatcherOwner,
+	projectCmuxRebindDisabled,
 } from "../cmux-watcher-patrol.js";
 
 const NOW = 2_000_000;
@@ -14,6 +18,19 @@ const OWNER = {
 	startedAtMs: 1_900_000,
 	tuple: "42|Thu Aug 20 10:00:00 2026|watch|nonce-a",
 };
+
+it("FLY-2207 projects the live rebind flag as a durable watcher control", async () => {
+	const home = mkdtempSync(join(tmpdir(), "fly2207-rebind-control-"));
+	const marker = join(home, ".flywheel", "state", "cmux-rebind-disabled");
+	try {
+		await projectCmuxRebindDisabled(home, true);
+		expect(existsSync(marker)).toBe(true);
+		await projectCmuxRebindDisabled(home, false);
+		expect(existsSync(marker)).toBe(false);
+	} finally {
+		rmSync(home, { recursive: true, force: true });
+	}
+});
 
 function snapshot(
 	overrides: Partial<CmuxWatcherSnapshot> = {},
