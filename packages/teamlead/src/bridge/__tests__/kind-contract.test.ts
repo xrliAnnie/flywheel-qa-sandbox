@@ -92,6 +92,7 @@ const LEAD_IDENTITY_KINDS = [
 const CMUX_SYNC_KINDS = [
 	"cmux_cleanup",
 	"cmux_watcher_stalled",
+	"cmux_watcher_unrecovered",
 	"tmux_rescue_hold",
 ] as const;
 

@@ -9,6 +9,7 @@ import {
 	initializeFlagStore,
 	readScopedBoolean,
 	storeAlertSystemEnabled,
+	storeCmuxWatcherRebuildDisabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
@@ -131,6 +132,25 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 			}),
 		).toMatchObject({ ok: true });
 		expect(storeAlertSystemEnabled(runtime)).toBe(false);
+	});
+
+	it("FLY-2207 observes the opt-in watcher rebuild disable without restart", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeCmuxWatcherRebuildDisabled(runtime)).toBe(false);
+
+		const revision = store.getFlagValueRow(
+			"cmux_watcher_rebuild_disabled",
+		)!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "cmux_watcher_rebuild_disabled",
+				rawTo: "1",
+				expectedRevision: revision,
+				actor: "bridge-local-operator",
+				reason: "pause watcher rebuilds during incident control",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeCmuxWatcherRebuildDisabled(runtime)).toBe(true);
 	});
 
 	it("FLY-2177 keeps quota retry default-on and observes an off write without restart", () => {

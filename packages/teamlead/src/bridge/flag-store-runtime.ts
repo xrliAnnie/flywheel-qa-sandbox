@@ -171,6 +171,12 @@ export function storeAlertSystemEnabled(runtime: FlagStoreRuntime): boolean {
 	return readBoolean(runtime, "alert_system");
 }
 
+export function storeCmuxWatcherRebuildDisabled(
+	runtime: FlagStoreRuntime,
+): boolean {
+	return readBoolean(runtime, "cmux_watcher_rebuild_disabled");
+}
+
 export function storeReviewQuotaAutoRetryEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

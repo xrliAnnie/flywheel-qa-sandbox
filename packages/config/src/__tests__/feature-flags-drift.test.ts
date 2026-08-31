@@ -376,6 +376,10 @@ describe("feature-flag drift guard", () => {
 			),
 		).toEqual([
 			...[
+				[
+					"cmux_watcher_rebuild_disabled",
+					"storeCmuxWatcherRebuildDisabled",
+				],
 				["summary_absorption_cadence_ms", "storeSummaryAbsorptionCadenceMs"],
 				["alert_system", "storeAlertSystemEnabled"],
 				["review_quota_auto_retry", "storeReviewQuotaAutoRetryEnabled"],

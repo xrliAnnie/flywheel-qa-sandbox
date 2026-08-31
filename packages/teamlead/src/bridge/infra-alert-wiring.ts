@@ -45,7 +45,7 @@ export interface InfraAlertRoutingDeps {
 	rawSink: AlertSinkLike;
 	/** One durable alert letter to Claw; the default route for ordinary alerts. */
 	ticketSink: AlertSinkLike;
-	/** Canonical founder id for workflow_engine_escalation. */
+	/** Canonical founder id for explicit founder escalations. */
 	founderUserId?: string;
 	/** Test seams. */
 	alertsEnabled?: () => boolean;

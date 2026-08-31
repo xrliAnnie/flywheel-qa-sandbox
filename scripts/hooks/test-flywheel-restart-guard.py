@@ -147,6 +147,8 @@ MUST_BLOCK = [
     ("launchctl bootout gui/501/com.flywheel.lead.growth-mufasa-lead", "P1 bootout"),
     ("launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.flywheel.bridge.plist",
      "P1 bootstrap"),
+    ("launchctl bootstrap gui/501 ~/Library/LaunchAgents/com.flywheel.cmux-watcher.plist",
+     "P1 cmux watcher bootstrap"),
     ("launchctl kill SIGTERM gui/501/com.flywheel.bridge", "P1 launchctl kill"),
     ("sudo launchctl unload ~/Library/LaunchAgents/com.flywheel.updater.plist",
      "P1 unload updater"),
@@ -303,6 +305,8 @@ MUST_PASS = [
     ("bash ~/Dev/flywheel/scripts/restart-services.sh --reason deploy --force",
      "legit unified forced restart (FLY-1434)"),
     ("bash scripts/update-flywheel.sh", "legit updater"),
+    ("bash ~/.flywheel/bin/flywheel-cmux-autostart", "cmux watcher operator front door"),
+    ("bash scripts/flywheel-cmux-autostart.sh", "cmux watcher repo front door"),
     ("launchctl print gui/501/com.flywheel.bridge", "read-only launchctl print"),
     ("launchctl list | grep flywheel", "read-only launchctl list"),
     ("launchctl submit -l com.test.envprobe -- /usr/bin/env", "unrelated submit probe"),
@@ -414,6 +418,18 @@ def t3_deny_schema():
             ok("T3 deny audit JSON line written (ts/session_id/cwd/command)")
         else:
             bad("T3 deny audit", f"records={lines}")
+
+    _code, out = run_hook(
+        bash_event(
+            "launchctl bootstrap gui/501 "
+            "~/Library/LaunchAgents/com.flywheel.cmux-watcher.plist"
+        )
+    )
+    reason = deny_reason(out)
+    if "bash ~/.flywheel/bin/flywheel-cmux-autostart" in reason:
+        ok("T3 cmux watcher deny points to the operator front door")
+    else:
+        bad("T3 cmux watcher guidance", f"reason={reason!r}")
 
 
 # ── T4: deny-audit invariant — unwritable log still denies (Codex R1 #5) ─────

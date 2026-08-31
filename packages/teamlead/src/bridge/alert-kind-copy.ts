@@ -250,6 +250,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "cmux cleanup needs operator review";
 		case "cmux_watcher_stalled":
 			return "cmux watcher is stalled or unsupervised";
+		case "cmux_watcher_unrecovered":
+			return "cmux watcher recovery did not converge";
 		case "flag_scan_failed":
 			return "Weekly flag scan failed closed";
 		case "flag_scan_handoff":
@@ -270,7 +272,8 @@ export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 		kind === "crash_loop" ||
 		kind === "login_expired" ||
 		kind === "runner_login_expired" ||
-		kind === "cmux_watcher_stalled"
+		kind === "cmux_watcher_stalled" ||
+		kind === "cmux_watcher_unrecovered"
 	)
 		return "severe";
 	if (kind === "permission_blocked") return "warning";
@@ -500,6 +503,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "cmux-sync refused an unsafe cleanup or found authority state requiring manual review. Inspect the supplied generation, ref, and lease evidence; no foreign workspace was closed.";
 		case "cmux_watcher_stalled":
 			return "The resident cmux watcher failed its launchd, owner, heartbeat, or event-backlog health contract. Review the supplied branch and canonical recovery outcome; uncertainty branches intentionally did not signal a process.";
+		case "cmux_watcher_unrecovered":
+			return "The resident cmux watcher stayed unhealthy beyond the bounded recovery window. Inspect the latest branch and recovery evidence before intervening; planned maintenance parks suppress this escalation.";
 		case "flag_scan_failed":
 			return "The weekly flag scan failed closed before publishing governance output. Repair the named source or provenance failure; no flag was deleted.";
 		case "flag_scan_handoff":

@@ -37,24 +37,27 @@ function snapshot(
 describe("FLY-1944 cmux watcher judgement matrix", () => {
 	it.each([
 		{
-			name: "job absent outranks stale owner evidence and never recovers",
+			name: "job absence rebuilds the launchd job",
 			input: snapshot({
 				job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
 				heartbeat: { ageMs: 900_000, key: "hb:old" },
 			}),
 			branch: "job_absent",
 			alert: true,
-			recover: false,
+			recover: true,
+			recovery: "rebuild",
 		},
 		{
-			name: "a maintenance park suppresses recovery",
+			name: "a maintenance park suppresses recovery even when the job is absent",
 			input: snapshot({
+				job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
 				park: { ageMs: 60_000, key: "park:1", path: "maintenance" },
 				heartbeat: { ageMs: 900_000, key: "hb:old" },
 			}),
 			branch: "parked",
 			alert: false,
 			recover: false,
+			recovery: null,
 		},
 		{
 			name: "an expired maintenance park alerts but is never removed or recovered",
@@ -64,6 +67,7 @@ describe("FLY-1944 cmux watcher judgement matrix", () => {
 			branch: "parked_expired",
 			alert: true,
 			recover: false,
+			recovery: null,
 		},
 		{
 			name: "loaded without owner stays silent during startup grace",
@@ -112,6 +116,7 @@ describe("FLY-1944 cmux watcher judgement matrix", () => {
 			branch: "stalled",
 			alert: true,
 			recover: true,
+			recovery: "kickstart",
 		},
 		{
 			name: "stale non-empty event backlog alerts without killing a live watcher",
@@ -127,9 +132,10 @@ describe("FLY-1944 cmux watcher judgement matrix", () => {
 			alert: false,
 			recover: false,
 		},
-	])("$name", ({ input, branch, alert, recover }) => {
+	])("$name", ({ input, branch, alert, recover, recovery }) => {
 		const result = classifyCmuxWatcher(input);
 		expect(result).toMatchObject({ branch, alert, recover });
+		if (recovery !== undefined) expect(result.recovery).toBe(recovery);
 	});
 });
 
@@ -151,6 +157,154 @@ describe("FLY-1944 owner tuple parser", () => {
 });
 
 describe("FLY-1944 cmux watcher patrol episodes", () => {
+	it("retries a failed rebuild, latches success, and re-arms after health", async () => {
+		let current = snapshot({
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		const recover = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false, detail: "bootstrap failed" })
+			.mockResolvedValue({ ok: true, detail: "state=healthy" });
+		const patrol = new CmuxWatcherPatrol({
+			readSnapshot: async () => current,
+			recover,
+			alert: vi.fn().mockResolvedValue(undefined),
+		});
+
+		await patrol.tick();
+		await patrol.tick();
+		await patrol.tick();
+		expect(recover).toHaveBeenCalledTimes(2);
+		expect(recover).toHaveBeenCalledWith("rebuild", undefined);
+
+		current = snapshot();
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 60_000,
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		await patrol.tick();
+		expect(recover).toHaveBeenCalledTimes(3);
+	});
+
+	it("keeps one escalation clock across symptoms and re-arms only after health", async () => {
+		let current = snapshot({ heartbeat: { ageMs: 301_000, key: "hb:a" } });
+		const escalate = vi.fn().mockResolvedValue(undefined);
+		const patrol = new CmuxWatcherPatrol({
+			readSnapshot: async () => current,
+			recover: vi.fn().mockResolvedValue({ ok: false, detail: "still down" }),
+			alert: vi.fn().mockResolvedValue(undefined),
+			escalate,
+			thresholds: {
+				ownerStartupGraceMs: 120_000,
+				parkTtlMs: 1_800_000,
+				heartbeatStaleMs: 300_000,
+				eventStaleMs: 120_000,
+				escalateAfterMs: 600_000,
+			},
+		});
+
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 300_000,
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 600_000,
+			ownerState: "missing",
+			owner: undefined,
+			heartbeat: null,
+			ownerlessAgeMs: 121_000,
+		});
+		await patrol.tick();
+		await patrol.tick();
+		expect(escalate).toHaveBeenCalledTimes(1);
+		const firstKey = escalate.mock.calls[0]?.[2];
+
+		current = snapshot({ nowMs: NOW + 660_000 });
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 720_000,
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 1_320_000,
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		await patrol.tick();
+		expect(escalate).toHaveBeenCalledTimes(2);
+		expect(escalate.mock.calls[1]?.[2]).not.toBe(firstKey);
+	});
+
+	it("preserves the clock through startup grace and clears it on park", async () => {
+		let current = snapshot({
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		const escalate = vi.fn().mockResolvedValue(undefined);
+		const patrol = new CmuxWatcherPatrol({
+			readSnapshot: async () => current,
+			recover: vi.fn().mockResolvedValue({ ok: false, detail: "still down" }),
+			alert: vi.fn().mockResolvedValue(undefined),
+			escalate,
+			thresholds: {
+				ownerStartupGraceMs: 120_000,
+				parkTtlMs: 1_800_000,
+				heartbeatStaleMs: 300_000,
+				eventStaleMs: 120_000,
+				escalateAfterMs: 600_000,
+			},
+		});
+
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 300_000,
+			ownerState: "missing",
+			owner: undefined,
+			heartbeat: null,
+		});
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 600_000,
+			ownerState: "missing",
+			owner: undefined,
+			heartbeat: null,
+		});
+		await patrol.tick();
+		expect(escalate).toHaveBeenCalledTimes(1);
+
+		current = snapshot({
+			nowMs: NOW + 660_000,
+			park: { ageMs: 1_000, key: "park:new", path: "maintenance" },
+		});
+		await patrol.tick();
+		current = snapshot({
+			nowMs: NOW + 1_200_000,
+			job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+		});
+		await patrol.tick();
+		expect(escalate).toHaveBeenCalledTimes(1);
+	});
+
+	it("keeps rebuild alert-only when the kill switch is set", async () => {
+		const recover = vi.fn();
+		const alert = vi.fn().mockResolvedValue(undefined);
+		const patrol = new CmuxWatcherPatrol({
+			readSnapshot: async () =>
+				snapshot({
+					job: { ok: false, identity: "gui/501/com.flywheel.cmux-watcher" },
+				}),
+			recover,
+			alert,
+			rebuildDisabled: () => true,
+		});
+
+		await patrol.tick();
+		expect(recover).not.toHaveBeenCalled();
+		expect(alert).toHaveBeenCalledTimes(1);
+	});
+
 	it("emits and recovers once per episode, then re-arms after true health", async () => {
 		let current = snapshot({ heartbeat: { ageMs: 301_000, key: "hb:a" } });
 		const recover = vi
@@ -221,7 +375,7 @@ describe("FLY-1944 cmux watcher patrol episodes", () => {
 		current = snapshot({ heartbeat: { ageMs: 500_000, key: "hb:a" } });
 		await patrol.tick();
 
-		expect(recover).toHaveBeenCalledTimes(2);
+		expect(recover).toHaveBeenCalledTimes(3);
 		expect(alert).toHaveBeenCalledTimes(2);
 		expect(alert.mock.calls.map(([verdict]) => verdict.branch)).toEqual([
 			"stalled",
@@ -232,7 +386,7 @@ describe("FLY-1944 cmux watcher patrol episodes", () => {
 		await patrol.tick();
 		current = snapshot({ heartbeat: { ageMs: 301_000, key: "hb:a" } });
 		await patrol.tick();
-		expect(recover).toHaveBeenCalledTimes(3);
+		expect(recover).toHaveBeenCalledTimes(4);
 		expect(alert).toHaveBeenCalledTimes(3);
 	});
 
@@ -244,7 +398,7 @@ describe("FLY-1944 cmux watcher patrol episodes", () => {
 		const alert = vi.fn().mockResolvedValue(undefined);
 		const patrol = new CmuxWatcherPatrol({
 			readSnapshot: async () => current,
-			recover: vi.fn(),
+			recover: vi.fn().mockResolvedValue({ ok: true, detail: "healthy" }),
 			alert,
 		});
 

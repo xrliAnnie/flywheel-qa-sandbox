@@ -118,7 +118,10 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 				expect(rawSink.alert).not.toHaveBeenCalled();
 				expect(ticketSink.alert).not.toHaveBeenCalled();
 				expect(result).toEqual({ sent: true });
-			} else if (kind === "workflow_engine_escalation") {
+			} else if (
+				kind === "workflow_engine_escalation" ||
+				kind === "cmux_watcher_unrecovered"
+			) {
 				expect(
 					rawSink.alert,
 					`${kind} should hit the escalation Hub sink`,
@@ -459,21 +462,38 @@ describe("FLY-927 Task 2.3: owner enrichment (🎫 context before the sink)", ()
 		expect(ticketSink.alert).toHaveBeenCalledTimes(3);
 		expect(rootPayloads).toEqual([]);
 
-		const escalation = {
-			...payload("workflow_engine_escalation"),
-			eventId: "e-founder-escalation",
-			sessionKey: undefined,
-		};
-		expect(await sink.alert(escalation)).toMatchObject({ sent: true });
+		const escalations = [
+			{
+				...payload("workflow_engine_escalation"),
+				eventId: "e-founder-escalation",
+				sessionKey: undefined,
+			},
+			{
+				...payload("cmux_watcher_unrecovered"),
+				eventId: "e-cmux-unrecovered",
+				sessionKey: undefined,
+			},
+		];
+		for (const escalation of escalations) {
+			expect(await sink.alert(escalation)).toMatchObject({ sent: true });
+		}
 		expect(rootPayloads).toEqual([
 			expect.objectContaining({
 				eventId: "e-founder-escalation",
 				mentionUserId: "999999999999999999",
 			}),
+			expect.objectContaining({
+				eventId: "e-cmux-unrecovered",
+				mentionUserId: "999999999999999999",
+			}),
 		]);
 		expect(
-			store.getActiveAlertThread(correlationKeyFor(escalation))?.ticket_status,
-		).toBe("NEW");
+			escalations.every(
+				(escalation) =>
+					store.getActiveAlertThread(correlationKeyFor(escalation))
+						?.ticket_status === "NEW",
+			),
+		).toBe(true);
 		expect(
 			threadPosts.every(
 				(post) =>

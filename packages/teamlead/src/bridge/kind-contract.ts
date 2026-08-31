@@ -307,6 +307,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 	},
+	cmux_watcher_unrecovered: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	tmux_rescue_hold: { owner: "claude", arc: "human_by_design" },
 	// Informational routing bypasses owner/ARC; keep an exhaustive inert contract.
 	flag_scan_failed: { owner: "claude", arc: "human_by_design" },
