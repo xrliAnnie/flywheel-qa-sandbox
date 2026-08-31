@@ -153,10 +153,42 @@ SH
 cat > "$ROOT/bin/launchctl" <<'SH'
 #!/usr/bin/env bash
 printf '%s\n' "$1" >> "$CRW_CONTROL/calls"
+printf '%s\n' "$*" >> "$CRW_CONTROL/call-args"
 case "$1" in
   bootout) exit "${CRW_BOOTOUT_RC:-0}" ;;
+  print)
+    if [[ -n "${CRW_PRINT_TOUCH_MARKER:-}" ]]; then
+      touch "$CRW_PRINT_TOUCH_MARKER"
+    fi
+    [[ "$(cat "$CRW_CONTROL/job-present" 2>/dev/null || printf '0')" == "1" ]]
+    ;;
+  kickstart)
+    [[ "${CRW_KICKSTART_RC:-0}" == "0" ]] || exit "$CRW_KICKSTART_RC"
+    printf '%s\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/pids"
+    printf '%s|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/commands"
+    if [[ -n "${CRW_DECOY_PID:-}" ]]; then
+      printf '%s\n' "$CRW_DECOY_PID" >> "$CRW_CONTROL/pids"
+      printf '%s|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' "$CRW_DECOY_PID" >> "$CRW_CONTROL/commands"
+    fi
+    printf '%s|new-incarnation|watch|new-nonce\n' "${CRW_OWNER_PID:-${CRW_NEW_PID:-222}}" > "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner"
+    printf '%s|new-incarnation\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/incarnations"
+    mkdir -p "$(dirname "$FLYWHEEL_CMUX_WATCHER_HEARTBEAT")"
+    printf '%s|bootstrap|scan\n' "${CRW_NEW_PID:-222}" > "$FLYWHEEL_CMUX_WATCHER_HEARTBEAT"
+    ;;
   bootstrap)
-    [[ "${CRW_BOOTSTRAP_RC:-0}" == "0" ]] || exit "$CRW_BOOTSTRAP_RC"
+    if [[ "${CRW_BOOTSTRAP_RC:-0}" != "0" ]]; then
+      if [[ "${CRW_BOOTSTRAP_RACE_PRESENT:-0}" == "1" ]]; then
+        printf '1\n' > "$CRW_CONTROL/job-present"
+        printf '%s\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/pids"
+        printf '%s|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/commands"
+        printf '%s|new-incarnation|watch|new-nonce\n' "${CRW_NEW_PID:-222}" > "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner"
+        printf '%s|new-incarnation\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/incarnations"
+        mkdir -p "$(dirname "$FLYWHEEL_CMUX_WATCHER_HEARTBEAT")"
+        printf '%s|bootstrap|scan\n' "${CRW_NEW_PID:-222}" > "$FLYWHEEL_CMUX_WATCHER_HEARTBEAT"
+      fi
+      exit "$CRW_BOOTSTRAP_RC"
+    fi
+    printf '1\n' > "$CRW_CONTROL/job-present"
     printf '%s\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/pids"
     printf '%s|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' "${CRW_NEW_PID:-222}" > "$CRW_CONTROL/commands"
     if [[ -n "${CRW_DECOY_PID:-}" ]]; then
@@ -201,19 +233,26 @@ chmod +x "$ROOT/bin/pgrep" "$ROOT/bin/ps" "$ROOT/bin/launchctl" "$ROOT/bin/sleep
 
 reset_case() {
   : > "$ROOT/calls"
+  : > "$ROOT/call-args"
   printf '111\n' > "$ROOT/pids"
   printf '111|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' > "$ROOT/commands"
   printf '111|old-incarnation\n' > "$ROOT/incarnations"
   rm -f "$ROOT/lease/owner"
+  rm -f "$ROOT/maintenance" "$ROOT/maintenance.qa-teardown" "$ROOT/maintenance.ops-rebuild"
   CRW_CONTROL="$ROOT"
   FLYWHEEL_DIR="$ROOT/repo"
   HOME="$ROOT/home"
   FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$ROOT/lease"
   FLYWHEEL_CMUX_WATCHER_HEARTBEAT="$ROOT/home/.flywheel/state/cmux-watcher-heartbeat"
+  FLYWHEEL_CMUX_MAINTENANCE_MARKER="$ROOT/maintenance"
   PATH="$ROOT/bin:/usr/bin:/bin"
   CRW_WAIT_MODE=success
   CRW_BOOTOUT_RC=0
   CRW_BOOTSTRAP_RC=0
+  CRW_BOOTSTRAP_RACE_PRESENT=0
+  CRW_JOB_PRESENT=1
+  CRW_KICKSTART_RC=0
+  CRW_PRINT_TOUCH_MARKER=""
   CRW_NEW_PID=222
   CRW_OWNER_PID=222
   CRW_OWNER_MODE=healthy
@@ -222,72 +261,126 @@ reset_case() {
   CRW_DECOY_PID=""
   FLYWHEEL_CMUX_WATCHER_PROBE_TRIES=3
   FLYWHEEL_CMUX_WATCHER_PROBE_INTERVAL=0
-  export CRW_CONTROL FLYWHEEL_DIR HOME FLYWHEEL_CMUX_WATCHER_LOCK_DIR FLYWHEEL_CMUX_WATCHER_HEARTBEAT PATH
+  printf '%s\n' "$CRW_JOB_PRESENT" > "$ROOT/job-present"
+  export CRW_CONTROL FLYWHEEL_DIR HOME FLYWHEEL_CMUX_WATCHER_LOCK_DIR FLYWHEEL_CMUX_WATCHER_HEARTBEAT FLYWHEEL_CMUX_MAINTENANCE_MARKER PATH
   export CRW_WAIT_MODE CRW_BOOTOUT_RC CRW_BOOTSTRAP_RC CRW_NEW_PID CRW_OWNER_PID
   export CRW_OWNER_MODE CRW_PGREP_ERROR FLYWHEEL_CMUX_WATCHER_PROBE_TRIES
   export CRW_PS_ERROR CRW_DECOY_PID FLYWHEEL_CMUX_WATCHER_PROBE_INTERVAL
+  export CRW_BOOTSTRAP_RACE_PRESENT CRW_JOB_PRESENT CRW_KICKSTART_RC CRW_PRINT_TOUCH_MARKER
 }
 
-echo "Test: FLY-1944 every explicit signal revalidates the same owner tuple"
+echo "Test: FLY-1944 restart library exposes the bounded --recover operation"
+if grep -q -- '--recover' "$LIB" && grep -q -- '--rebuild' "$LIB" \
+    && grep -q 'FLYWHEEL_CMUX_WATCHER_RECOVER_DEADLINE' "$LIB"; then
+  pass "rider exposes bounded recover and rebuild operations"
+else
+  fail "canonical --recover/--rebuild entrypoint or internal deadline is missing"
+fi
+
+echo "Test: FLY-2207 stalled recovery keeps the launchd label loaded"
+eval "$(declare -f _crw_expected_owner_is_live | sed '1s/_crw_expected_owner_is_live/_crw_expected_owner_is_live_real/')"
+_crw_expected_owner_is_live() {
+  [[ "$(_crw_read_watch_owner_tuple "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner" 2>/dev/null)" == "$1" ]]
+}
 reset_case
 expected_owner='111|old-incarnation|watch|old-nonce'
 printf '%s\n' "$expected_owner" > "$ROOT/lease/owner"
-CRW_SIGNAL_CALLS=""
-kill() {
-  if [[ "${1:-}" == "-0" ]]; then return 0; fi
-  CRW_SIGNAL_CALLS+="${1:-} ${2:-}"$'\n'
-  return 0
-}
-signal_one_rc=0
-_crw_signal_expected_owner TERM "$expected_owner" || signal_one_rc=$?
-printf '111|replacement-incarnation|watch|replacement-nonce\n' > "$ROOT/lease/owner"
-signal_two_rc=0
-_crw_signal_expected_owner KILL "$expected_owner" || signal_two_rc=$?
-unset -f kill
-if [[ "$signal_one_rc" -eq 0 && "$signal_two_rc" -ne 0 \
-    && "$CRW_SIGNAL_CALLS" == $'-TERM 111\n' ]]; then
-  pass "TERM targets the verified tuple; replacement blocks the later KILL"
+restart_cmux_watcher "$expected_owner"
+if [[ "$CMUX_WATCHER_RESTART_STATE" == "healthy" \
+    && "$(tr '\n' ',' < "$ROOT/calls")" == "kickstart," \
+    && "$(cat "$ROOT/call-args")" == "kickstart -k gui/501/com.flywheel.cmux-watcher" ]]; then
+  pass "tuple-bound recovery uses kickstart -k with no bootout window"
 else
-  fail "tuple signal guard mismatch first=$signal_one_rc second=$signal_two_rc calls=[$CRW_SIGNAL_CALLS]"
+  fail "stalled recovery mutated launchd incorrectly state=$CMUX_WATCHER_RESTART_STATE calls=[$(cat "$ROOT/call-args")]"
 fi
 
-echo "Test: FLY-1944 a SIGSTOP-frozen owner is reaped within the bounded recovery threshold"
+echo "Test: FLY-2207 a valid replacement wins over same-argv process residue"
 reset_case
-stop_result=$(
-  (
-    # The managed sandbox denies the real ps sensor, so keep only that sensor
-    # deterministic while exercising real STOP/TERM/KILL process semantics.
-    _crw_process_incarnation() { printf '%s\n' 'stop-test-incarnation'; }
-    sleep() { /bin/sleep "$@"; }
-    /bin/sleep 30 &
-    stopped_pid=$!
-    trap 'kill -KILL "$stopped_pid" 2>/dev/null || true; wait "$stopped_pid" 2>/dev/null || true' EXIT
-    stopped_tuple="$stopped_pid|stop-test-incarnation|watch|stop-test-nonce"
-    printf '%s\n' "$stopped_tuple" > "$FLYWHEEL_CMUX_WATCHER_LOCK_DIR/owner"
-    kill -STOP "$stopped_pid"
-    stopped_started=$SECONDS
-    stopped_rc=0
-    _crw_wait_for_expected_owner_exit "$stopped_tuple" || stopped_rc=$?
-    stopped_elapsed=$((SECONDS - stopped_started))
-    stopped_alive=0
-    kill -0 "$stopped_pid" 2>/dev/null && stopped_alive=1
-    wait "$stopped_pid" 2>/dev/null || true
-    printf '%s|%s|%s\n' "$stopped_rc" "$stopped_elapsed" "$stopped_alive"
-  )
-)
-IFS='|' read -r stop_rc stop_elapsed stop_alive <<< "$stop_result"
-if [[ "$stop_rc" == "0" && "$stop_alive" == "0" \
-    && "$stop_elapsed" -ge 6 && "$stop_elapsed" -le 10 ]]; then
-  pass "real SIGSTOP survives TERM, then tuple-bound KILL reaps it inside the threshold"
+expected_owner='111|old-incarnation|watch|old-nonce'
+printf '%s\n' "$expected_owner" > "$ROOT/lease/owner"
+printf '111\n333\n' > "$ROOT/pids"
+printf '111|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n333|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' > "$ROOT/commands"
+CRW_DECOY_PID=333; export CRW_DECOY_PID
+restart_cmux_watcher "$expected_owner"
+if [[ "$CMUX_WATCHER_RESTART_STATE" == "healthy" \
+    && "$CMUX_WATCHER_RESTART_DETAIL" == *"census="* ]]; then
+  pass "lease plus heartbeat are authoritative while census remains diagnostic"
 else
-  fail "SIGSTOP recovery mismatch rc=$stop_rc elapsed=$stop_elapsed alive=$stop_alive raw=[$stop_result]"
+  fail "same-argv residue vetoed healthy replacement state=$CMUX_WATCHER_RESTART_STATE detail=$CMUX_WATCHER_RESTART_DETAIL"
+fi
+eval "$(declare -f _crw_expected_owner_is_live_real | sed '1s/_crw_expected_owner_is_live_real/_crw_expected_owner_is_live/')"
+unset -f _crw_expected_owner_is_live_real
+
+echo "Test: FLY-2207 tuple drift refuses kickstart"
+reset_case
+expected_owner='111|old-incarnation|watch|old-nonce'
+printf '111|replacement-incarnation|watch|replacement-nonce\n' > "$ROOT/lease/owner"
+restart_cmux_watcher "$expected_owner"
+if [[ "$CMUX_WATCHER_RESTART_STATE" == "unverifiable" && ! -s "$ROOT/calls" ]]; then
+  pass "stale owner tuple performs zero launchd mutation"
+else
+  fail "tuple drift reached launchctl state=$CMUX_WATCHER_RESTART_STATE calls=[$(cat "$ROOT/calls")]"
 fi
 
-echo "Test: FLY-1944 restart library exposes the bounded --recover operation"
-if grep -q -- '--recover' "$LIB" && grep -q 'FLYWHEEL_CMUX_WATCHER_RECOVER_DEADLINE' "$LIB"; then
-  pass "rider and restart-services can share one bounded recovery operation"
+echo "Test: FLY-2207 absent job rebuilds and an updater race converges"
+rebuild_ok=1
+for mode in absent updater-race; do
+  reset_case
+  CRW_JOB_PRESENT=0
+  printf '0\n' > "$ROOT/job-present"
+  if [[ "$mode" == "updater-race" ]]; then
+    CRW_BOOTSTRAP_RC=5
+    CRW_BOOTSTRAP_RACE_PRESENT=1
+  fi
+  export CRW_JOB_PRESENT CRW_BOOTSTRAP_RC CRW_BOOTSTRAP_RACE_PRESENT
+  rebuild_cmux_watcher
+  [[ "$CMUX_WATCHER_RESTART_STATE" == "healthy" \
+      && "$(cat "$ROOT/calls")" == *"bootstrap"* ]] || rebuild_ok=0
+done
+if [[ "$rebuild_ok" == "1" ]]; then
+  pass "job absence bootstraps; concurrent updater ownership is accepted after print"
 else
-  fail "canonical --recover entrypoint or internal deadline is missing"
+  fail "job-absent rebuild did not converge"
+fi
+
+echo "Test: FLY-2207 rebuild is idempotent when the job is already healthy"
+reset_case
+printf '222\n' > "$ROOT/pids"
+printf '222|/bin/bash /opt/flywheel-cmux-sync.sh --watch\n' > "$ROOT/commands"
+printf '222|new-incarnation\n' > "$ROOT/incarnations"
+printf '222|new-incarnation|watch|new-nonce\n' > "$ROOT/lease/owner"
+mkdir -p "$(dirname "$FLYWHEEL_CMUX_WATCHER_HEARTBEAT")"
+printf '222|bootstrap|scan\n' > "$FLYWHEEL_CMUX_WATCHER_HEARTBEAT"
+rebuild_cmux_watcher
+if [[ "$CMUX_WATCHER_RESTART_STATE" == "healthy" \
+    && "$(tr '\n' ',' < "$ROOT/calls")" == "print," ]]; then
+  pass "queryable healthy job needs no bootstrap mutation"
+else
+  fail "loaded rebuild was not idempotent state=$CMUX_WATCHER_RESTART_STATE calls=[$(cat "$ROOT/call-args")]"
+fi
+
+echo "Test: FLY-2207 all park markers fence rebuild at mutation time"
+park_ok=1
+for suffix in '' '.qa-teardown' '.ops-rebuild'; do
+  reset_case
+  CRW_JOB_PRESENT=0
+  printf '0\n' > "$ROOT/job-present"
+  export CRW_JOB_PRESENT
+  touch "$ROOT/maintenance$suffix"
+  rebuild_cmux_watcher
+  [[ "$CMUX_WATCHER_RESTART_STATE" == "parked" && "$(cat "$ROOT/calls")" != *"bootstrap"* ]] || park_ok=0
+done
+reset_case
+CRW_JOB_PRESENT=0
+printf '0\n' > "$ROOT/job-present"
+CRW_PRINT_TOUCH_MARKER="$ROOT/maintenance"
+export CRW_JOB_PRESENT CRW_PRINT_TOUCH_MARKER
+rebuild_cmux_watcher
+[[ "$CMUX_WATCHER_RESTART_STATE" == "parked" && "$(cat "$ROOT/calls")" != *"bootstrap"* ]] || park_ok=0
+if [[ "$park_ok" == "1" ]]; then
+  pass "maintenance, QA, ops, and sensor-to-mutation races all block bootstrap"
+else
+  fail "a park marker allowed rebuild calls=[$(cat "$ROOT/call-args")] state=$CMUX_WATCHER_RESTART_STATE"
 fi
 
 echo "Test: FLY-1482 production restart probe defaults to the shared /tmp lease"
@@ -355,29 +448,6 @@ for wait_mode in fail stubborn; do
     fail "$wait_mode shutdown state=$CMUX_WATCHER_RESTART_STATE calls=[$(cat "$ROOT/calls")]"
   fi
 done
-
-echo "Test: FLY-1944 tuple drift after successful bootout still restores an empty job"
-reset_case
-expected_owner='111|old-incarnation|watch|old-nonce'
-printf '%s\n' "$expected_owner" > "$ROOT/lease/owner"
-eval "$(declare -f _crw_expected_owner_is_live | sed '1s/_crw_expected_owner_is_live/_crw_expected_owner_is_live_real/')"
-eval "$(declare -f _crw_wait_for_expected_owner_exit | sed '1s/_crw_wait_for_expected_owner_exit/_crw_wait_for_expected_owner_exit_real/')"
-_crw_expected_owner_is_live() { return 0; }
-_crw_wait_for_expected_owner_exit() {
-  : > "$ROOT/pids"
-  : > "$ROOT/commands"
-  return 2
-}
-restart_cmux_watcher "$expected_owner"
-eval "$(declare -f _crw_expected_owner_is_live_real | sed '1s/_crw_expected_owner_is_live_real/_crw_expected_owner_is_live/')"
-eval "$(declare -f _crw_wait_for_expected_owner_exit_real | sed '1s/_crw_wait_for_expected_owner_exit_real/_crw_wait_for_expected_owner_exit/')"
-unset -f _crw_expected_owner_is_live_real _crw_wait_for_expected_owner_exit_real
-if [[ "$CMUX_WATCHER_RESTART_STATE" == "healthy" \
-    && "$(tr '\n' ',' < "$ROOT/calls")" == "bootout,bootstrap," ]]; then
-  pass "an empty post-bootout census is sufficient to bootstrap despite tuple drift"
-else
-  fail "tuple-drift recovery stranded the job state=$CMUX_WATCHER_RESTART_STATE calls=[$(cat "$ROOT/calls")]"
-fi
 
 echo "Test: FLY-1482 missing plist and bootstrap failure are structured outcomes"
 reset_case
