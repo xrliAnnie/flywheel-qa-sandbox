@@ -577,3 +577,19 @@ publishReceipt: (text) =>
 - [x] 自动化：lint 180 files、递归 build、typecheck、contracts 62 + voice 311 + brain 125 + root QA/probe 94，共 592 tests 通过。
 - [x] 实际界面：Discord `voice-test-2` R16 完成长念读（98 audible frames、3314 ms、最大静音间隙 267 ms）、participant final / thinking / Raya final 同路文字、65 秒无 spoken liveness、20 ms 音频时钟零 stall；最终 PASS 与 runtime evidence SHA-256 见 `bot-qa-summary.md`。
 - [ ] 最终 Raya head 的精确 nested code review 与 PR handoff。
+
+## 15. QA FAIL #3 返工（claim 604，2026-08-30）
+
+> **返工边界:**只修 QA 指定的四项：prepare retry 可观测性、批准提示与 gate state 同步、拒绝/失败时禁止模型编造原因和流程建议、口语重复音节容错。`non_founder_final` fail-closed 判定保持原样；不碰 FLY-2178、FLY-2030、条间停顿、文字分流和零效果宣称。
+
+- [x] **RED:**`Speaker` 在实际 append 前需要可失败的同步 hook；旧实现直接注入，无法保证先 arm 后播批准提示。
+- [x] **RED:**三条 prompt prepare retry 必须各写 `ship_gate_prepare_retry` 和稳定 reason；旧实现直接返回 `retry`，第三次真房失败无法从 events 定位。
+- [x] **RED:**`确认认。` 经 NFKC、去标点和相邻重复音节折叠后应精确命中；旧 matcher 不接受。
+- [x] **RED:**always-on start instructions 必须禁止拒绝/失败窗口中的自编原因和流程建议，只准复述系统播报事实；旧规则只禁止效果宣称。
+- [x] **GREEN:**ship 播报拆为不含批准口令的上下文段与独立批准提示；批准提示通过 `onBeforeInject` 在 append 前原子 arm。队列等待期间若出现新 transcript，hook fail-closed，批准提示不注入；该提示自己的 injection/final 是唯一窄例外，其他 code speech/assistant final 仍立即解武装。
+- [x] **GREEN:**三条旧 retry 分别留 `prompt_not_confirmed`、`prompt_cursor_missing`、`transcript_during_audible_tail`；新增 cue race 也有独立 reason。
+- [x] **GREEN:**founder decision 与文字回执使用本地窄 matcher：NFKC → 去 Unicode 标点/符号/空白 → 折叠相邻重复 code point → exact compare。非 founder 分支继续使用原 matcher，判定代码不改。
+- [x] **GREEN:**拒绝/失败规则明确禁止「联系管理员」「重新提交」「系统限制」「找 QA 负责人」及同义建议，只能复述系统播报已给事实。
+- [x] **focused 验证:**`Speaker.test.ts` + `ShipGateFlow.test.ts` + `cli.test.ts` 49/49；`runtime.test.ts` 46/46；voice typecheck 通过。
+- [x] **全仓验证:**`pnpm lint`（180 files）、`pnpm -r build`、`pnpm typecheck`、`pnpm test` 全绿；contracts 62 + voice 321 + brain 125 + root QA/probes 94，共 602 tests。
+- [ ] 功能提交、milestone 最后提交、push，并对最终 Raya head 开精确 nested code review；只有 `reviewedHeadSha === HEAD` 且 `reviewVerdict=APPROVED` 才交回 QA。
