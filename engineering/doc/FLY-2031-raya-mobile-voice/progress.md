@@ -1,13 +1,13 @@
 ---
 issue: FLY-2031
 phase: implement
-phaseCursor: 2/4
-updated: 2026-08-31T00:37:59.779Z
-nextStep: Document the one-clause rework and run full Raya gates
+phaseCursor: 3/4
+updated: 2026-08-31T00:40:33.980Z
+nextStep: Commit and push exact Raya head, then request exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2031 progress
-**phase**: implement (2/4)
-**next**: Document the one-clause rework and run full Raya gates
+**phase**: implement (3/4)
+**next**: Commit and push exact Raya head, then request exact-head code review
