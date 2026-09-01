@@ -1,0 +1,27 @@
+flowchart TB
+  classDef q fill:#fff7e6,stroke:#ff9500,stroke-width:2px,color:#1d1d1f
+  classDef ok fill:#e8f8ed,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef bad fill:#ffeceb,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef n fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+
+  S(["备用信使看到她的一句话"]):::n
+  Q1{"这句话按规矩<br/>本来就该送吗？"}:::q
+  Q2{"发出还不到 5 分钟？"}:::q
+  Q3{"收件箱里已经有了吗？"}:::q
+  Q4{"是谁送进去的？"}:::q
+
+  X1["不该送就不送<br/>规矩读不到也不送"]:::n
+  X2["再等等<br/>主力可能正在重试"]:::n
+  Y1["主力漏了 → 补送<br/>并记一次'主力失灵'"]:::bad
+  Y2["主力送的 → 主力是好的"]:::ok
+  Y3["备用/来路不明送的<br/>既不算好也不算坏"]:::n
+
+  S --> Q1
+  Q1 -->|否| X1
+  Q1 -->|是| Q2
+  Q2 -->|是| X2
+  Q2 -->|否| Q3
+  Q3 -->|没有| Y1
+  Q3 -->|有| Q4
+  Q4 -->|主力| Y2
+  Q4 -->|其它| Y3

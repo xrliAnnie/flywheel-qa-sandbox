@@ -1,0 +1,25 @@
+flowchart LR
+  classDef src fill:#eaf3ff,stroke:#007aff,stroke-width:2px,color:#1d1d1f
+  classDef ok fill:#e8f8ed,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef gap fill:#ffeceb,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef box fill:#f5f5f7,stroke:#86868b,color:#1d1d1f
+
+  D(["她在 Discord 说话"]):::src
+
+  subgraph OLD["出事那天的样子"]
+    P1["信使（插件）<br/>本该送全部"]:::gap
+    B1["备用信使<br/>只覆盖<br/>正在干活的话题串"]:::ok
+  end
+
+  subgraph NEW["修好之后"]
+    P2["信使（插件）<br/>还是主力，不动它"]:::ok
+    B2["备用信使（扩面）<br/>频道顶层 + 全部登记过的话题串<br/>等 5 分钟主力还没送就补送"]:::ok
+  end
+
+  M1["我的收件箱"]:::box
+  M2["我的收件箱"]:::box
+
+  D --> P1 -->|"耳朵坏了<br/>6 句全丢"| M1
+  D --> B1 -->|"只送到一部分<br/>看起来像随机丢"| M1
+  D --> P2 --> M2
+  D --> B2 -->|"主力漏了就补上<br/>同时报警"| M2

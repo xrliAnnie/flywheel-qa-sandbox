@@ -1,0 +1,17 @@
+flowchart TB
+  classDef ok fill:#e8f8ed,stroke:#34c759,stroke-width:2px,color:#1d1d1f
+  classDef bad fill:#ffeceb,stroke:#ff3b30,stroke-width:2px,color:#1d1d1f
+  classDef note fill:#f5f5f7,stroke:#86868b,stroke-width:1px,color:#1d1d1f
+
+  A["00:40 - 00:46<br/>她在频道里说了 3 句<br/>我都秒回了"]:::ok
+  B["00:47:32<br/>信使最后一次送到信"]:::ok
+  C["00:47:33<br/>信使耳朵坏了<br/>人还站着，还能说话<br/>就是听不见了"]:::bad
+  D["00:48:55<br/>2216 话题串建立<br/>比耳朵坏晚 82 秒"]:::note
+  E["00:51 - 03:40<br/>她又说了 6 句<br/>一句都没送到"]:::bad
+  F["03:38 / 03:42<br/>另外两句却送到了<br/>我还秒回了"]:::ok
+  G["03:53<br/>她在终端里直接问我<br/>怎么一直不回"]:::bad
+  H["04:16:48<br/>重启信使"]:::ok
+  I["04:17:58<br/>70 秒后<br/>耳朵恢复正常"]:::ok
+
+  A --> B --> C --> D --> E --> G --> H --> I
+  C -.->|"备用信使还在跑<br/>只覆盖一部分话题串"| F
