@@ -40,10 +40,12 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
       flywheel-bridge-wrapper.sh restart-services.sh \
       host-tmux-selection-gate.sh \
       flywheel-cmux-sync.sh flywheel-cmux-autostart.sh lib/bounded-run.sh \
-      lib/lead-address.sh meta-alert.sh lead-patrol-snapshot.sh; do
+      lib/lead-address.sh meta-alert.sh lead-patrol-snapshot.sh \
+      flywheel-node-dwell-control.mjs; do
     { echo '#!/bin/bash'; i=1; while [ "$i" -le 80 ]; do echo "echo repo-$f-$i >/dev/null"; i=$((i+1)); done; } > "$fr/scripts/$f"
   done
-  chmod 0755 "$fr/scripts/meta-alert.sh" "$fr/scripts/lead-patrol-snapshot.sh"
+  chmod 0755 "$fr/scripts/meta-alert.sh" "$fr/scripts/lead-patrol-snapshot.sh" \
+    "$fr/scripts/flywheel-node-dwell-control.mjs"
   # FLY-1577 widened FILES with the cmux watcher's launch-path dependencies;
   # the gate is Python, so the fixture keeps that shape too.
   { echo '#!/usr/bin/env python3'; echo 'import sys'
@@ -87,6 +89,7 @@ seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
   done
   ln -sfn "$2/scripts/meta-alert.sh" "$1/bin/meta-alert.sh"
   ln -sfn "$2/scripts/lead-patrol-snapshot.sh" "$1/bin/flywheel-patrol-snapshot"
+  ln -sfn "$2/scripts/flywheel-node-dwell-control.mjs" "$1/bin/flywheel-node-dwell-control"
 }
 
 run_conv() {  # <repo> <state-dir> [extra env pairs...] → rc; out in $SB/out.log
@@ -134,6 +137,7 @@ if env ALERT_LOG="$SB/alerts.log" HOME="$GH3" FLYWHEEL_STATE_DIR="$GH3/.flywheel
     bash "$TRUSTED/scripts/converge-flywheel-bin.sh" >"$SB/out.log" 2>&1 \
    && cmp -s "$GH3/.flywheel/bin/flywheel-lead-wrapper-v2.sh" "$TRUSTED/scripts/flywheel-lead-wrapper-v2.sh" \
    && [[ "$(readlink "$GH3/.flywheel/bin/flywheel-patrol-snapshot")" == "$TRUSTED/scripts/lead-patrol-snapshot.sh" ]] \
+   && [[ "$(readlink "$GH3/.flywheel/bin/flywheel-node-dwell-control")" == "$TRUSTED/scripts/flywheel-node-dwell-control.mjs" ]] \
    && grep -q 'managed executable.*flywheel-patrol-snapshot' "$SB/alerts.log" \
    && grep -q "flywheel-patrol-snapshot created to this checkout's .*lead-patrol-snapshot.sh" "$SB/alerts.log" \
    && ! grep -q 'alert-chain.*flywheel-patrol-snapshot' "$SB/alerts.log"; then

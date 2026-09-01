@@ -46,11 +46,11 @@ pad() { local i=1; while [ "$i" -le 60 ]; do echo "$1 line $i padding text >/dev
 FR="$RSB/repo"; mkdir -p "$FR/scripts/lib" "$FR/.git"
 for f in lib/script-sanity.sh lib/path-hygiene.sh lib/bounded-run.sh \
          meta-alert.sh lead-alert.sh lead-patrol-snapshot.sh \
-         converge-flywheel-bin.sh; do
+         flywheel-node-dwell-control.mjs converge-flywheel-bin.sh; do
   cp "$REAL_REPO_ROOT/scripts/$f" "$FR/scripts/$f"
 done
 chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh" \
-  "$FR/scripts/lead-patrol-snapshot.sh"
+  "$FR/scripts/lead-patrol-snapshot.sh" "$FR/scripts/flywheel-node-dwell-control.mjs"
 for f in flywheel-lead-wrapper-v2.sh \
          flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
          flywheel-codex-lead-wrapper-codex-infra-bot.sh \
@@ -202,6 +202,7 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   done
   ln -sfn "$FR/scripts/meta-alert.sh" "$st/bin/meta-alert.sh"
   ln -sfn "$FR/scripts/lead-patrol-snapshot.sh" "$st/bin/flywheel-patrol-snapshot"
+  ln -sfn "$FR/scripts/flywheel-node-dwell-control.mjs" "$st/bin/flywheel-node-dwell-control"
 }
 
 deliveries_in_state() {  # <state> → count

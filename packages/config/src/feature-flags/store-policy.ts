@@ -100,9 +100,29 @@ const summaryAbsorptionCadenceCodec: FlagStoreCodec = {
 	canonicalEffective: (value) => parseSummaryAbsorptionCadence(String(value)),
 };
 
+function parseNodeDwellThresholdHours(raw: string): string {
+	if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(raw)) {
+		throw new Error("node dwell threshold must be positive decimal hours");
+	}
+	const value = Number(raw);
+	if (!Number.isFinite(value) || value <= 0) {
+		throw new Error("node dwell threshold must be positive decimal hours");
+	}
+	return String(value);
+}
+
+const nodeDwellThresholdHoursCodec: FlagStoreCodec = {
+	parse: ({ hasOverride, raw }) =>
+		hasOverride ? parseNodeDwellThresholdHours(raw ?? "") : "3",
+	canonicalEffective: (value) => parseNodeDwellThresholdHours(String(value)),
+};
+
 export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 	if (name === "summary_absorption_cadence_ms") {
 		return summaryAbsorptionCadenceCodec;
+	}
+	if (name === "node_dwell_threshold_hours") {
+		return nodeDwellThresholdHoursCodec;
 	}
 	if (name === "skill_framework_mode") return skillFrameworkCodec;
 	if (
@@ -247,7 +267,7 @@ export function validateFlagAuthoringPolicy(
 		if (spec.scope === "project") {
 			if (
 				spec.source !== "project_config" ||
-				spec.valueKind !== "bool" ||
+				(spec.valueKind !== "bool" && spec.valueKind !== "value") ||
 				spec.category === "governance_gate" ||
 				spec.dormant === true ||
 				spec.toggleable === "readonly" ||
@@ -257,7 +277,7 @@ export function validateFlagAuthoringPolicy(
 			) {
 				issues.push(
 					authoringIssue(
-						`${spec.name}: project-store specs must be non-governance, active, writable project_config booleans with one exact configKey`,
+						`${spec.name}: project-store specs must be non-governance, active, writable project_config booleans or strict scalar values with one exact configKey`,
 					),
 				);
 			}

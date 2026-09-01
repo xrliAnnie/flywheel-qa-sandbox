@@ -440,6 +440,47 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 
 	// ─── project config flags (per-project scope) ───
 	{
+		name: "node_dwell",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "patrol.node_dwell_enabled",
+		polarity: "default_on",
+		valueKind: "bool",
+		default: true,
+		description:
+			"FLY-2210: project-level master switch for workflow node dwell patrol output and actions",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/node-dwell-control.ts",
+				"readNodeDwellEnabled",
+				"storeNodeDwellEnabled",
+			),
+		],
+		toggleable: "conversational",
+	},
+	{
+		name: "node_dwell_threshold_hours",
+		category: "feature",
+		source: "project_config",
+		scope: "project",
+		configKey: "patrol.node_dwell_threshold_hours",
+		polarity: "default_on",
+		valueKind: "value",
+		default: "3",
+		description:
+			"FLY-2210: elapsed hours before an active workflow node requires patrol review",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/node-dwell-control.ts",
+				"readNodeDwellThresholdHours",
+				"storeNodeDwellThresholdHours",
+			),
+		],
+		toggleable: "conversational",
+		note: "Strict positive decimal hours; project override wins over wildcard, then the 3-hour default.",
+	},
+	{
 		name: "pipeline_dag",
 		category: "feature",
 		source: "project_config",

@@ -1168,6 +1168,7 @@ function storeResolverReadsExactFlag(
 			ts.isIdentifier(node.expression) &&
 			(node.expression.text === "readBoolean" ||
 				node.expression.text === "readScopedBoolean" ||
+				node.expression.text === "readScopedValue" ||
 				node.expression.text === "readFlagValue") &&
 			node.arguments.length >= 2 &&
 			ts.isStringLiteralLike(node.arguments[1] as ts.Expression) &&

@@ -59,6 +59,7 @@
 	"loop_owner",
 	"merged_gate_guard_failure",
 	"messages",
+	"node_dwell_review",
 	"patrol_orphan_watch",
 	"phase_chat_threads",
 	"quiet_wake_notified",

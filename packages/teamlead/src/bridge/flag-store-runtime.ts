@@ -101,6 +101,57 @@ export function readScopedBoolean(
 	return effective;
 }
 
+export function readScopedValue(
+	runtime: FlagStoreRuntime,
+	name: string,
+	projectName: string,
+): string {
+	if (!PROJECT_STORE_MANAGED_FLAGS.has(name)) {
+		throw new Error(`flag is not project-store-managed: ${name}`);
+	}
+	const spec = FEATURE_FLAGS.find((candidate) => candidate.name === name);
+	if (!spec) throw new Error(`missing flag registry entry: ${name}`);
+	if (spec.valueKind !== "value" || typeof spec.default !== "string") {
+		throw new Error(`project-store flag is not a scalar value: ${name}`);
+	}
+	const codec = getFlagStoreCodec(name);
+	if (!codec) throw new Error(`missing managed flag codec: ${name}`);
+	const row =
+		runtime.store.getFlagValueRow(name, projectName) ??
+		runtime.store.getFlagValueRow(name, "*");
+	if (!row) return spec.default;
+	const effective = codec.parse({
+		hasOverride: row.hasOverride,
+		raw: row.raw,
+	});
+	if (typeof effective !== "string") {
+		throw new Error(`project-store flag is not a scalar value: ${name}`);
+	}
+	return effective;
+}
+
+export function storeNodeDwellThresholdHours(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): number {
+	const value = Number(
+		readScopedValue(runtime, "node_dwell_threshold_hours", projectName),
+	);
+	if (!Number.isFinite(value) || value <= 0) {
+		throw new Error(
+			"managed node dwell threshold is not positive finite hours",
+		);
+	}
+	return value;
+}
+
+export function storeNodeDwellEnabled(
+	runtime: FlagStoreRuntime,
+	projectName: string,
+): boolean {
+	return readScopedBoolean(runtime, "node_dwell", projectName);
+}
+
 export function storeDocFlowEnabled(
 	runtime: FlagStoreRuntime,
 	projectName: string,

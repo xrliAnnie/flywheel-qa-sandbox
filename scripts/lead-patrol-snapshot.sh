@@ -7,6 +7,11 @@ set -uo pipefail
 umask 077
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BOUNDED_RUN="$SCRIPT_DIR/lib/bounded-run.sh"
+case "$(basename "${BASH_SOURCE[0]}")" in
+  lead-patrol-snapshot.sh) DWELL_CONTROL="$SCRIPT_DIR/flywheel-node-dwell-control.mjs" ;;
+  flywheel-patrol-snapshot) DWELL_CONTROL="$SCRIPT_DIR/flywheel-node-dwell-control" ;;
+  *) DWELL_CONTROL="" ;;
+esac
 WORK_TMP="$(mktemp -d "${TMPDIR:-/tmp}/flywheel-patrol.XXXXXX")" || {
   echo "[patrol-snapshot] ERROR: temp_directory_unavailable" >&2
   exit 1
@@ -22,15 +27,17 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 usage() {
-  echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>]" >&2
+  echo "Usage: lead-patrol-snapshot.sh --project <project> [--lead <lead-id>] [--tick-seq <n>] [--record-dwell-receipts <verdict> [--note <text>]]" >&2
 }
 
 PROJECT_NAME=""
 LEAD_ID="${FLYWHEEL_LEAD_ID:-}"
 TICK_SEQ="NA"
+RECORD_DWELL_VERDICT=""
+RECORD_DWELL_NOTE=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
-    --project|--lead|--tick-seq)
+    --project|--lead|--tick-seq|--record-dwell-receipts|--note)
       if [ "$#" -lt 2 ]; then
         echo "[patrol-snapshot] ERROR: $1 requires a value" >&2
         usage
@@ -40,6 +47,8 @@ while [ "$#" -gt 0 ]; do
         --project) PROJECT_NAME="$2" ;;
         --lead) LEAD_ID="$2" ;;
         --tick-seq) TICK_SEQ="$2" ;;
+        --record-dwell-receipts) RECORD_DWELL_VERDICT="$2" ;;
+        --note) RECORD_DWELL_NOTE="$2" ;;
       esac
       shift 2
       ;;
@@ -82,6 +91,19 @@ if [ "${#TICK_SEQ}" -gt 16 ]; then
   echo "[patrol-snapshot] ERROR: tick sequence is too long" >&2
   exit 2
 fi
+if [ -n "$RECORD_DWELL_VERDICT" ]; then
+  case "$RECORD_DWELL_VERDICT" in
+    normal|cleared|fixed|waiting_founder) ;;
+    *) echo "[patrol-snapshot] ERROR: invalid dwell receipt verdict" >&2; exit 2 ;;
+  esac
+elif [ -n "$RECORD_DWELL_NOTE" ]; then
+  echo "[patrol-snapshot] ERROR: --note requires --record-dwell-receipts" >&2
+  exit 2
+fi
+if [ "${#RECORD_DWELL_NOTE}" -gt 1000 ]; then
+  echo "[patrol-snapshot] ERROR: dwell receipt note is too long" >&2
+  exit 2
+fi
 
 STATE_DIR="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}"
 STATE_DB="${FLYWHEEL_STATE_DB_PATH:-${TEAMLEAD_DB_PATH:-$HOME/.flywheel/teamlead.db}}"
@@ -106,6 +128,20 @@ safe_sqlite_path() {
 if ! safe_sqlite_path "$STATE_DB" || ! safe_sqlite_path "$COMM_DB"; then
   echo "[patrol-snapshot] ERROR: database path contains URI/SQL control characters" >&2
   exit 2
+fi
+
+if [ -n "$RECORD_DWELL_VERDICT" ]; then
+  if [ ! -x "$DWELL_CONTROL" ]; then
+    echo "RECEIPT_REJECTED helper_unavailable" >&2
+    exit 70
+  fi
+  if [ -n "$RECORD_DWELL_NOTE" ]; then
+    exec "$DWELL_CONTROL" receipt-batch --db "$STATE_DB" --comm-db "$COMM_DB" \
+      --project "$PROJECT_NAME" --lead "$LEAD_ID" --verdict "$RECORD_DWELL_VERDICT" \
+      --note "$RECORD_DWELL_NOTE"
+  fi
+  exec "$DWELL_CONTROL" receipt-batch --db "$STATE_DB" --comm-db "$COMM_DB" \
+    --project "$PROJECT_NAME" --lead "$LEAD_ID" --verdict "$RECORD_DWELL_VERDICT"
 fi
 
 readonly_sqlite_uri() { # <db> — immutable is safe only for a closed WAL DB
@@ -491,7 +527,28 @@ STEP2_FACTS="pane_count=$PANE_COUNT${STEP2_FACTS:+$'\n'}${STEP2_FACTS}"
 # Resolve a patrol fact's owner from the execution row first, then the current
 # issue cohort, then only the latest historical cohort. Every caller defines an
 # attribution_subjects(execution_id, issue_id) CTE before expanding this block.
-OWNER_ATTRIBUTION_CTES=$(cat <<SQL
+# Existing patrol steps stay live-session-only; STEP DWELL alone supplies its
+# durable identity relation so pruned founder gates remain attributable without
+# widening STEP 3/4/5 ownership.
+owner_attribution_ctes() {
+  local exact_relation="$1"
+  local issue_fallback_relation="${2:-}"
+  local latest_issue_fallback_sql=""
+  if [ -n "$issue_fallback_relation" ]; then
+    latest_issue_fallback_sql=$(cat <<SQL
+  UNION ALL
+  SELECT lineage.execution_id, lineage.project_name, lineage.issue_id,
+         lineage.lead_id, '' AS started_at
+  FROM $issue_fallback_relation lineage
+  WHERE NOT EXISTS (
+    SELECT 1 FROM comm.sessions historical
+    WHERE historical.project_name = lineage.project_name
+      AND historical.issue_id = lineage.issue_id
+  )
+SQL
+)
+  fi
+  cat <<SQL
 exact_resolution AS (
   SELECT x.execution_id, x.issue_id,
          count(cs.execution_id) AS row_count,
@@ -499,9 +556,14 @@ exact_resolution AS (
          count(DISTINCT nullif(trim(cs.lead_id),'')) AS distinct_owner_count,
          min(nullif(trim(cs.lead_id),'')) AS owner
   FROM attribution_subjects x
-  LEFT JOIN comm.sessions cs ON cs.execution_id = x.execution_id
+  LEFT JOIN $exact_relation cs ON cs.execution_id = x.execution_id
     AND cs.project_name = '$PROJECT_NAME'
   GROUP BY x.execution_id, x.issue_id
+),
+current_identity AS (
+  SELECT execution_id, project_name, issue_id, lead_id
+  FROM comm.sessions
+  WHERE status IN ('running','blocked')
 ),
 current_resolution AS (
   SELECT x.execution_id, x.issue_id,
@@ -510,15 +572,19 @@ current_resolution AS (
          count(DISTINCT nullif(trim(cs.lead_id),'')) AS distinct_owner_count,
          min(nullif(trim(cs.lead_id),'')) AS owner
   FROM attribution_subjects x
-  LEFT JOIN comm.sessions cs ON cs.issue_id = x.issue_id
+  LEFT JOIN current_identity cs ON cs.issue_id = x.issue_id
     AND cs.project_name = '$PROJECT_NAME'
-    AND cs.status IN ('running','blocked')
   GROUP BY x.execution_id, x.issue_id
+),
+latest_identity AS (
+  SELECT execution_id, project_name, issue_id, lead_id, started_at
+  FROM comm.sessions
+$latest_issue_fallback_sql
 ),
 latest_cohort AS (
   SELECT x.execution_id, x.issue_id, max(cs.started_at) AS latest_started_at
   FROM attribution_subjects x
-  LEFT JOIN comm.sessions cs ON cs.issue_id = x.issue_id
+  LEFT JOIN latest_identity cs ON cs.issue_id = x.issue_id
     AND cs.project_name = '$PROJECT_NAME'
   GROUP BY x.execution_id, x.issue_id
 ),
@@ -530,7 +596,7 @@ latest_resolution AS (
          min(nullif(trim(cs.lead_id),'')) AS owner
   FROM attribution_subjects x
   JOIN latest_cohort lc ON lc.execution_id IS x.execution_id AND lc.issue_id = x.issue_id
-  LEFT JOIN comm.sessions cs ON cs.issue_id = x.issue_id
+  LEFT JOIN latest_identity cs ON cs.issue_id = x.issue_id
     AND cs.project_name = '$PROJECT_NAME'
     AND cs.started_at = lc.latest_started_at
   GROUP BY x.execution_id, x.issue_id
@@ -562,7 +628,9 @@ owner_resolution AS (
   JOIN latest_resolution l ON l.execution_id IS e.execution_id AND l.issue_id = e.issue_id
 )
 SQL
-)
+}
+OWNER_ATTRIBUTION_CTES="$(owner_attribution_ctes comm.sessions)"
+DWELL_OWNER_ATTRIBUTION_CTES="$(owner_attribution_ctes dwell_owner_execution_identity comm.session_receipt_lineage)"
 
 STEP3_FACTS=""
 STEP3_SQL=$(cat <<SQL
@@ -949,6 +1017,441 @@ fi
 STEP6_STATUS="LEAD-JUDGMENT-REQUIRED"
 STEP6_FACTS='Finalize every STEP status; route UNAVAILABLE per runner-patrol-rules.md.'
 
+# FLY-2210: independent workflow-node dwell dimension. Keep this outside the
+# numeric STEP 1-6 sequence so existing extractors retain their exact contract.
+STEP_DWELL_STATUS="OK"
+STEP_DWELL_FACTS=""
+DWELL_THRESHOLD_OUTPUT=""
+DWELL_THRESHOLD_HOURS=""
+DWELL_THRESHOLD_SECONDS=""
+DWELL_OPEN_GATE_ROWS_SQL=""
+DWELL_ENABLED=""
+if [ ! -x "$DWELL_CONTROL" ]; then
+  STEP_DWELL_STATUS="UNAVAILABLE(structural: helper_unavailable)"
+  STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=helper_unavailable"
+else
+  DWELL_ENABLED_OUTPUT="$("$DWELL_CONTROL" enabled --db "$STATE_DB" --project "$PROJECT_NAME" 2>&1)"
+  DWELL_ENABLED_RC=$?
+  if [ "$DWELL_ENABLED_RC" -ne 0 ]; then
+    DWELL_TOKEN="$(printf '%s\n' "$DWELL_ENABLED_OUTPUT" | awk '/^NODE_DWELL_UNAVAILABLE [A-Za-z0-9_]+/{print $2; exit}')"
+    [ -n "$DWELL_TOKEN" ] || DWELL_TOKEN="flag_unavailable"
+    STEP_DWELL_STATUS="UNAVAILABLE(structural: $DWELL_TOKEN)"
+    STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=$DWELL_TOKEN"
+  elif [ "$DWELL_ENABLED_OUTPUT" = "NODE_DWELL_ENABLED project=$PROJECT_NAME enabled=yes" ]; then
+    DWELL_ENABLED="yes"
+  elif [ "$DWELL_ENABLED_OUTPUT" = "NODE_DWELL_ENABLED project=$PROJECT_NAME enabled=no" ]; then
+    DWELL_ENABLED="no"
+  else
+    STEP_DWELL_STATUS="UNAVAILABLE(structural: flag_invalid)"
+    STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=flag_invalid"
+  fi
+  if [ "$DWELL_ENABLED" = "yes" ]; then
+  DWELL_GATE_OUTPUT="$("$DWELL_CONTROL" open-approve-gates --comm-db "$COMM_DB" 2>&1)"
+  DWELL_GATE_RC=$?
+  if [ "$DWELL_GATE_RC" -ne 0 ]; then
+    DWELL_TOKEN="$(printf '%s\n' "$DWELL_GATE_OUTPUT" | awk '/^NODE_DWELL_UNAVAILABLE [A-Za-z0-9_]+/{print $2; exit}')"
+    [ -n "$DWELL_TOKEN" ] || DWELL_TOKEN="question_domain_unavailable"
+    STEP_DWELL_STATUS="UNAVAILABLE(structural: $DWELL_TOKEN)"
+    STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=$DWELL_TOKEN"
+  else
+    DWELL_OPEN_GATE_ROWS_SQL="$(printf '%s\n' "$DWELL_GATE_OUTPUT" | awk '
+      function valid_hex(value) { return value ~ /^([0-9a-f][0-9a-f])+$/ }
+      BEGIN { rows=0; summaries=0; expected=-1; quote=sprintf("%c",39); bad=0 }
+      $1 == "NODE_DWELL_OPEN_APPROVE_GATE" {
+        id=$2; sender=$3
+        sub(/^id_hex=/,"",id); sub(/^from_hex=/,"",sender)
+        if (NF != 3 || !valid_hex(id) || !valid_hex(sender)) { bad=1; next }
+        if (rows > 0) print " UNION ALL"
+        printf "SELECT CAST(X%s%s%s AS TEXT) AS id, CAST(X%s%s%s AS TEXT) AS from_agent", quote,id,quote,quote,sender,quote
+        rows++
+        next
+      }
+      $1 == "NODE_DWELL_OPEN_APPROVE_GATES" {
+        count=$2; sub(/^count=/,"",count)
+        if (NF != 2 || count !~ /^[0-9]+$/) { bad=1; next }
+        summaries++; expected=count + 0
+        next
+      }
+      NF > 0 { bad=1 }
+      END {
+        if (bad || summaries != 1 || expected != rows) exit 2
+        if (rows == 0) print "SELECT NULL AS id, NULL AS from_agent WHERE 0"
+        else print ""
+      }
+    ')"
+    DWELL_GATE_PARSE_RC=$?
+    if [ "$DWELL_GATE_PARSE_RC" -ne 0 ]; then
+      STEP_DWELL_STATUS="UNAVAILABLE(structural: question_domain_invalid)"
+      STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=question_domain_invalid"
+    fi
+  fi
+  if [ "$STEP_DWELL_STATUS" = "OK" ]; then
+  DWELL_THRESHOLD_OUTPUT="$("$DWELL_CONTROL" threshold --db "$STATE_DB" --project "$PROJECT_NAME" 2>&1)"
+  DWELL_THRESHOLD_RC=$?
+  if [ "$DWELL_THRESHOLD_RC" -ne 0 ]; then
+    DWELL_TOKEN="$(printf '%s\n' "$DWELL_THRESHOLD_OUTPUT" | awk '/^NODE_DWELL_UNAVAILABLE [A-Za-z0-9_]+/{print $2; exit}')"
+    [ -n "$DWELL_TOKEN" ] || DWELL_TOKEN="threshold_unavailable"
+    STEP_DWELL_STATUS="UNAVAILABLE(structural: $DWELL_TOKEN)"
+    STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=$DWELL_TOKEN"
+  else
+    DWELL_THRESHOLD_HOURS="$(printf '%s\n' "$DWELL_THRESHOLD_OUTPUT" | awk '
+      /^NODE_DWELL_THRESHOLD / {
+        for (i=1; i<=NF; i++) if ($i ~ /^hours=/) {sub(/^hours=/,"",$i); print $i; exit}
+      }')"
+    if ! printf '%s\n' "$DWELL_THRESHOLD_HOURS" | grep -Eq '^(0|[1-9][0-9]*)(\.[0-9]+)?$'; then
+      STEP_DWELL_STATUS="UNAVAILABLE(structural: threshold_invalid)"
+      STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=threshold_invalid"
+    else
+      DWELL_THRESHOLD_SECONDS="$(awk -v hours="$DWELL_THRESHOLD_HOURS" 'BEGIN {
+        seconds = hours * 3600
+        if (hours <= 0 || seconds < 1) exit 1
+        printf "%.0f", seconds
+      }')"
+      if [ -z "$DWELL_THRESHOLD_SECONDS" ]; then
+        STEP_DWELL_STATUS="UNAVAILABLE(structural: threshold_invalid)"
+        STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=threshold_invalid"
+      else
+        STEP_DWELL_SQL=$(cat <<SQL
+WITH active_nodes AS (
+  SELECT wr.run_id, wr.issue_id, wr.project_name, n.node_id, n.attempt,
+         n.state, n.execution_id, n.started_at
+  FROM workflow_run wr
+  JOIN workflow_run_node n ON n.run_id = wr.run_id
+  WHERE wr.project_name = '$PROJECT_NAME'
+    AND wr.status = 'active'
+    AND n.ended_at IS NULL
+    AND n.state IN ('running','review','admitted')
+),
+dwell_execution_identity AS (
+  SELECT execution_id, project_name, issue_id, lead_id
+  FROM comm.sessions
+  UNION ALL
+  SELECT lineage.execution_id, lineage.project_name, lineage.issue_id, lineage.lead_id
+  FROM comm.session_receipt_lineage lineage
+  WHERE NOT EXISTS (
+    SELECT 1 FROM comm.sessions live
+    WHERE live.execution_id = lineage.execution_id
+  )
+),
+dwell_owner_execution_identity AS (
+  SELECT execution_id, project_name, issue_id, lead_id
+  FROM comm.sessions
+  UNION ALL
+  SELECT lineage.execution_id, lineage.project_name, lineage.issue_id, lineage.lead_id
+  FROM comm.session_receipt_lineage lineage
+  WHERE NOT EXISTS (
+    SELECT 1 FROM comm.sessions live
+    WHERE live.execution_id = lineage.execution_id
+  )
+    AND EXISTS (
+      SELECT 1 FROM active_nodes target
+      WHERE target.execution_id = lineage.execution_id
+        AND target.project_name = lineage.project_name
+        AND target.issue_id = lineage.issue_id
+    )
+    AND NOT EXISTS (
+      SELECT 1 FROM comm.sessions historical
+      WHERE historical.project_name = lineage.project_name
+        AND historical.issue_id = lineage.issue_id
+    )
+),
+latest_receipt AS (
+  SELECT run_id, node_id, attempt, max(examined_at) AS examined_at
+  FROM node_dwell_review
+  GROUP BY run_id, node_id, attempt
+),
+latest_waiting_receipt AS (
+  SELECT run_id, node_id, attempt, max(examined_at) AS examined_at
+  FROM node_dwell_review
+  WHERE verdict = 'waiting_founder'
+  GROUP BY run_id, node_id, attempt
+),
+dwell AS (
+  SELECT a.*, waiting.examined_at AS waiting_examined_at,
+         CASE
+           WHEN r.examined_at IS NOT NULL
+             AND julianday(r.examined_at) > julianday(a.started_at)
+           THEN r.examined_at ELSE a.started_at
+         END AS baseline_at
+  FROM active_nodes a
+  LEFT JOIN latest_receipt r ON r.run_id = a.run_id
+    AND r.node_id = a.node_id AND r.attempt = a.attempt
+  LEFT JOIN latest_waiting_receipt waiting ON waiting.run_id = a.run_id
+    AND waiting.node_id = a.node_id AND waiting.attempt = a.attempt
+),
+attribution_subjects AS (
+  SELECT DISTINCT execution_id, issue_id FROM active_nodes
+),
+$DWELL_OWNER_ATTRIBUTION_CTES,
+open_approve_questions AS (
+$DWELL_OPEN_GATE_ROWS_SQL
+),
+historical_approve_questions AS (
+  SELECT q.id, q.from_agent,
+         count(s.execution_id) AS mapping_count,
+         count(DISTINCT s.project_name || char(0) || coalesce(s.issue_id,'')) AS distinct_mapping_count,
+         min(s.project_name) AS project_name,
+         min(s.issue_id) AS issue_id
+  FROM open_approve_questions q
+  LEFT JOIN dwell_execution_identity s ON s.execution_id = q.from_agent
+  GROUP BY q.id
+),
+founder_chat_envelopes AS (
+  SELECT created_at,
+         substr(content, instr(content,'{'),
+                instr(content,char(10)) - instr(content,'{')) AS envelope
+  FROM comm.mailbox
+  WHERE from_agent = 'founder' AND type = 'discord_chat'
+    AND source_kind = 'discord_chat'
+    AND instr(content,'{') > 0
+    AND instr(content,char(10)) > instr(content,'{')
+  UNION ALL
+  SELECT json_extract(row_json,'$.created_at') AS created_at,
+         substr(json_extract(row_json,'$.content'),
+                instr(json_extract(row_json,'$.content'),'{'),
+                instr(json_extract(row_json,'$.content'),char(10))
+                  - instr(json_extract(row_json,'$.content'),'{')) AS envelope
+  FROM comm.mailbox_log
+  WHERE event = 'archived' AND json_valid(row_json)
+    AND json_extract(row_json,'$.from_agent') = 'founder'
+    AND json_extract(row_json,'$.type') = 'discord_chat'
+    AND json_extract(row_json,'$.source_kind') = 'discord_chat'
+    AND instr(json_extract(row_json,'$.content'),'{') > 0
+    AND instr(json_extract(row_json,'$.content'),char(10))
+          > instr(json_extract(row_json,'$.content'),'{')
+),
+founder_thread_activity AS (
+  SELECT threads.issue_id, max(messages.created_at) AS episode_at
+  FROM chat_threads threads
+  JOIN founder_chat_envelopes messages
+    ON json_extract(
+         CASE WHEN json_valid(messages.envelope)
+              THEN messages.envelope ELSE '{}' END,
+         '$.chatId'
+       ) = threads.thread_id
+  WHERE threads.issue_id IS NOT NULL
+  GROUP BY threads.issue_id
+),
+founder_gate_activity AS (
+  SELECT run_id,
+         max(CASE WHEN state IN ('approved','superseded')
+                  THEN updated_at ELSE created_at END) AS episode_at
+  FROM workflow_gate_holder
+  WHERE gate_node_id = 'founder_gate'
+  GROUP BY run_id
+),
+classified AS (
+  SELECT d.*, o.attributed_lead, o.attribution_error,
+         CASE
+         WHEN (d.node_id = 'founder_gate' AND d.state = 'review')
+           OR EXISTS (
+             SELECT 1
+             FROM workflow_gate_holder h
+             JOIN open_approve_questions q ON q.id = h.question_id
+             WHERE h.run_id = d.run_id
+               AND h.state IN ('materializing','awaiting_review')
+           )
+           OR (
+             NOT EXISTS (
+               SELECT 1 FROM workflow_gate_holder any_holder
+               WHERE any_holder.run_id = d.run_id
+             )
+             AND EXISTS (
+               SELECT 1 FROM historical_approve_questions historical
+               WHERE historical.mapping_count = 1
+                 AND historical.distinct_mapping_count = 1
+                 AND historical.project_name = d.project_name
+                 AND historical.issue_id = d.issue_id
+             )
+           )
+         THEN 'founder_reminder'
+         WHEN NOT EXISTS (
+                SELECT 1 FROM workflow_gate_holder any_holder
+                WHERE any_holder.run_id = d.run_id
+              )
+           AND EXISTS (
+             SELECT 1 FROM historical_approve_questions historical
+             WHERE historical.from_agent IS d.execution_id
+               AND (historical.mapping_count != 1
+                 OR historical.distinct_mapping_count != 1)
+           )
+         THEN 'unavailable_gate_mapping'
+         ELSE 'deep_dive' END AS route
+  FROM dwell d
+  JOIN owner_resolution o
+    ON o.execution_id IS d.execution_id AND o.issue_id = d.issue_id
+),
+routed_with_episode AS (
+  SELECT classified.*,
+         CASE WHEN route = 'founder_reminder'
+              THEN max(
+                strftime('%Y-%m-%dT%H:%M:%fZ', started_at),
+                coalesce(
+                  strftime('%Y-%m-%dT%H:%M:%fZ', gate_activity.episode_at),
+                  strftime('%Y-%m-%dT%H:%M:%fZ', started_at)
+                ),
+                coalesce(
+                  strftime('%Y-%m-%dT%H:%M:%fZ', thread_activity.episode_at),
+                  strftime('%Y-%m-%dT%H:%M:%fZ', started_at)
+                )
+              )
+              ELSE strftime('%Y-%m-%dT%H:%M:%fZ', started_at)
+          END AS episode_started_at
+  FROM classified
+  LEFT JOIN founder_gate_activity gate_activity
+    ON gate_activity.run_id = classified.run_id
+  LEFT JOIN founder_thread_activity thread_activity
+    ON thread_activity.issue_id = classified.issue_id
+),
+routed_with_baseline AS (
+  SELECT routed_with_episode.*,
+         max(
+           strftime('%Y-%m-%dT%H:%M:%fZ', baseline_at),
+           strftime('%Y-%m-%dT%H:%M:%fZ', episode_started_at)
+         ) AS effective_baseline_at,
+         CASE WHEN route = 'founder_reminder'
+                   AND waiting_examined_at IS NOT NULL
+                   AND julianday(waiting_examined_at) >= julianday(episode_started_at)
+              THEN 1 ELSE 0 END AS waiting_episode_reminded
+  FROM routed_with_episode
+),
+routed AS (
+  SELECT routed_with_baseline.*,
+         unixepoch('now') - unixepoch(effective_baseline_at) AS dwell_seconds
+  FROM routed_with_baseline
+),
+mismatch AS (
+  SELECT count(*) AS count
+  FROM workflow_run wr
+  JOIN workflow_run_node n ON n.run_id = wr.run_id
+  WHERE wr.project_name = '$PROJECT_NAME'
+    AND wr.status = 'active'
+    AND n.state IN ('running','review','admitted')
+    AND n.ended_at IS NOT NULL
+),
+gate_mapping_incomplete AS (
+  SELECT count(DISTINCT historical.id) AS count
+  FROM routed
+  JOIN historical_approve_questions historical
+    ON historical.from_agent IS routed.execution_id
+      AND (historical.mapping_count != 1
+        OR historical.distinct_mapping_count != 1)
+  WHERE routed.route = 'unavailable_gate_mapping'
+),
+owned_dwell AS (
+  SELECT routed.*,
+         row_number() OVER (ORDER BY issue_id,run_id,node_id,attempt) AS output_row
+  FROM routed
+  WHERE attributed_lead = '$LEAD_ID' AND attribution_error IS NULL
+),
+owned_truncation AS (
+  SELECT CASE WHEN count(*) > 500 THEN count(*) - 500 ELSE 0 END AS count
+  FROM owned_dwell
+)
+SELECT 'NODE_DWELL issue=' || issue_id || ' run=' || run_id ||
+       ' node=' || node_id || ' attempt=' || attempt || ' state=' || state ||
+       ' baseline=' || coalesce(strftime('%Y-%m-%dT%H:%M:%fZ',effective_baseline_at),'invalid') ||
+       ' dwell_hours=' || coalesce(printf('%.2f', dwell_seconds / 3600.0),'invalid') ||
+       ' threshold_hours=$DWELL_THRESHOLD_HOURS' ||
+       ' waiting_episode_reminded=' || CASE WHEN waiting_episode_reminded = 1 THEN 'yes' ELSE 'no' END ||
+       ' over_threshold=' || CASE
+         WHEN dwell_seconds >= $DWELL_THRESHOLD_SECONDS
+           AND NOT (route = 'founder_reminder' AND waiting_episode_reminded = 1)
+         THEN 'yes' ELSE 'no' END ||
+       ' route=' || CASE
+         WHEN dwell_seconds >= $DWELL_THRESHOLD_SECONDS
+           AND NOT (route = 'founder_reminder' AND waiting_episode_reminded = 1)
+         THEN route ELSE 'none' END
+FROM owned_dwell
+WHERE output_row <= 500
+UNION ALL
+SELECT 'NODE_DWELL_ATTRIBUTION_INCOMPLETE reason=' || attribution_error || ' count=' || count(*)
+FROM owner_resolution
+WHERE attribution_error IS NOT NULL
+GROUP BY attribution_error
+UNION ALL
+SELECT 'NODE_DWELL_STATE_END_MISMATCH count=' || count
+FROM mismatch WHERE count > 0
+UNION ALL
+SELECT 'NODE_DWELL_BASELINE_INVALID count=' || count(*)
+FROM routed WHERE effective_baseline_at IS NULL OR dwell_seconds IS NULL
+HAVING count(*) > 0
+UNION ALL
+SELECT 'NODE_DWELL_GATE_MAPPING_INCOMPLETE count=' || count
+FROM gate_mapping_incomplete WHERE count > 0
+UNION ALL
+SELECT 'NODE_DWELL_TRUNCATED count=' || count
+FROM owned_truncation WHERE count > 0
+ORDER BY 1
+;
+SQL
+)
+        if run_sql STEP_DWELL_FACTS "$STEP_DWELL_SQL"; then
+          DWELL_DEGRADED=0
+          if printf '%s\n' "$STEP_DWELL_FACTS" | grep -Eq '^NODE_DWELL_(ATTRIBUTION_INCOMPLETE|STATE_END_MISMATCH|BASELINE_INVALID|GATE_MAPPING_INCOMPLETE|TRUNCATED) '; then
+            DWELL_DEGRADED=1
+            if printf '%s\n' "$STEP_DWELL_FACTS" | grep -q '^NODE_DWELL_ATTRIBUTION_INCOMPLETE '; then
+              STEP_DWELL_FACTS="$STEP_DWELL_FACTS
+UNAVAILABLE_CAUSE step=DWELL class=structural token=owner_attribution_incomplete
+DWELL_ACTION step=DWELL issue=aggregate route=repair_owner_attribution action=REQUIRED result=UNSET evidence=node_dwell_aggregate"
+            fi
+            if printf '%s\n' "$STEP_DWELL_FACTS" | grep -q '^NODE_DWELL_STATE_END_MISMATCH '; then
+              STEP_DWELL_FACTS="$STEP_DWELL_FACTS
+UNAVAILABLE_CAUSE step=DWELL class=structural token=state_end_mismatch
+DWELL_ACTION step=DWELL issue=aggregate route=repair_node_state action=REQUIRED result=UNSET evidence=node_dwell_aggregate"
+            fi
+            if printf '%s\n' "$STEP_DWELL_FACTS" | grep -q '^NODE_DWELL_BASELINE_INVALID '; then
+              STEP_DWELL_FACTS="$STEP_DWELL_FACTS
+UNAVAILABLE_CAUSE step=DWELL class=structural token=baseline_invalid
+DWELL_ACTION step=DWELL issue=aggregate route=repair_dwell_baseline action=REQUIRED result=UNSET evidence=node_dwell_aggregate"
+            fi
+            if printf '%s\n' "$STEP_DWELL_FACTS" | grep -q '^NODE_DWELL_GATE_MAPPING_INCOMPLETE '; then
+              STEP_DWELL_FACTS="$STEP_DWELL_FACTS
+UNAVAILABLE_CAUSE step=DWELL class=structural token=gate_mapping_incomplete
+DWELL_ACTION step=DWELL issue=aggregate route=repair_gate_mapping action=REQUIRED result=UNSET evidence=node_dwell_aggregate"
+            fi
+            if printf '%s\n' "$STEP_DWELL_FACTS" | grep -q '^NODE_DWELL_TRUNCATED '; then
+              STEP_DWELL_FACTS="$STEP_DWELL_FACTS
+UNAVAILABLE_CAUSE step=DWELL class=structural token=output_truncated
+DWELL_ACTION step=DWELL issue=aggregate route=repair_output_truncation action=REQUIRED result=UNSET evidence=node_dwell_aggregate"
+            fi
+          fi
+          DWELL_ROUTE_ACTIONS="$(printf '%s\n' "$STEP_DWELL_FACTS" | awk '
+            /^NODE_DWELL / && / over_threshold=yes / {
+              issue=""; route=""
+              for (i=1; i<=NF; i++) {
+                if ($i ~ /^issue=/) { issue=$i; sub(/^issue=/,"",issue) }
+                if ($i ~ /^route=/) { route=$i; sub(/^route=/,"",route) }
+              }
+              if (issue != "" && (route == "deep_dive" || route == "founder_reminder")) {
+                key=issue SUBSEP route
+                if (!seen[key]++)
+                  print "DWELL_ACTION step=DWELL issue=" issue " route=" route " action=REQUIRED result=UNSET evidence=node_dwell_table"
+              }
+            }
+          ')"
+          if [ -n "$DWELL_ROUTE_ACTIONS" ]; then
+            STEP_DWELL_FACTS="$STEP_DWELL_FACTS
+$DWELL_ROUTE_ACTIONS"
+          fi
+          if printf '%s\n' "$STEP_DWELL_FACTS" | grep -q '^NODE_DWELL .* over_threshold=yes '; then
+            STEP_DWELL_STATUS="FINDING"
+          elif [ "$DWELL_DEGRADED" -eq 1 ]; then
+            STEP_DWELL_STATUS="UNAVAILABLE(structural: node_dwell_incomplete)"
+          else
+            STEP_DWELL_STATUS="OK"
+          fi
+        else
+          STEP_DWELL_STATUS="UNAVAILABLE($SQL_ERROR_TOKEN)"
+          STEP_DWELL_FACTS="UNAVAILABLE_CAUSE step=DWELL class=structural token=$(printf '%s' "$SQL_ERROR_TOKEN" | tr ' :' '__')"
+        fi
+      fi
+    fi
+  fi
+  fi
+  fi
+fi
+
 REPORT_CONTENT="# Lead Patrol Snapshot
 project: $PROJECT_NAME
 lead: $LEAD_ID
@@ -976,7 +1479,11 @@ ${STEP5_FACTS:-(none)}
 
 ## STEP 6
 STEP 6: $STEP6_STATUS
-${STEP6_FACTS:-(none)}"
+${STEP6_FACTS:-(none)}
+
+## STEP DWELL
+STEP DWELL: $STEP_DWELL_STATUS
+${STEP_DWELL_FACTS:-(none)}"
 
 printf '%s\n' "$REPORT_CONTENT"
 

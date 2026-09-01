@@ -22,6 +22,17 @@ count_is() {
   [ "$actual" -eq "$expected" ] && pass "$label" || fail "$label (expected $expected, got $actual: $needle)"
 }
 
+WRAPPER="$ROOT/scripts/flywheel-node-dwell-control.mjs"
+WRAPPER_INDEX_MODE="$(git -C "$ROOT" ls-files -s scripts/flywheel-node-dwell-control.mjs | awk '{print $1; exit}')"
+WRAPPER_SIZE="$(wc -c < "$WRAPPER" | tr -d ' ')"
+SANITY_FLOOR="$(awk -F= '$1 == "FLYWHEEL_SCRIPT_MIN_BYTES" {print $2; exit}' "$ROOT/scripts/lib/script-sanity.sh")"
+[ "$WRAPPER_INDEX_MODE" = "100755" ] && pass "node dwell wrapper is committed mode 100755" \
+  || fail "node dwell wrapper must be committed mode 100755 (got ${WRAPPER_INDEX_MODE:-missing})"
+[ -x "$WRAPPER" ] && pass "node dwell wrapper is executable in the checkout" \
+  || fail "node dwell wrapper is executable in the checkout"
+[ "$WRAPPER_SIZE" -gt "$SANITY_FLOOR" ] && pass "node dwell wrapper clears the script sanity floor" \
+  || fail "node dwell wrapper must exceed $SANITY_FLOOR bytes (got $WRAPPER_SIZE)"
+
 if [ ! -f "$ROOT/packages/teamlead/dist/StateStore.js" ] \
   || [ ! -f "$ROOT/packages/flywheel-comm/dist/lib.js" ]; then
   echo "FAIL: build artifacts missing; run pnpm -r build before this suite" >&2
@@ -97,7 +108,7 @@ SH
 }
 
 run_snapshot() {
-  local dir="$1" out="$2" lead_id="${3:-flywheel-eng-lead}"
+  local dir="$1" out="$2" lead_id="${3:-flywheel-eng-lead}" executable="${4:-$SCRIPT}"
   HOME="$dir/home" \
   PATH="$dir/bin:$PATH" \
   FLYWHEEL_STATE_DIR="$dir/state" \
@@ -109,7 +120,7 @@ run_snapshot() {
   GH_EMPTY="${GH_EMPTY:-0}" \
   TMUX_CALL_LOG="${TMUX_CALL_LOG:-$dir/tmux-calls.log}" \
   TMUX_CAPTURE_FAIL="${TMUX_CAPTURE_FAIL:-}" \
-    bash "$SCRIPT" --project flywheel --lead "$lead_id" > "$out" 2>&1
+    bash "$executable" --project flywheel --lead "$lead_id" > "$out" 2>&1
 }
 
 MAIN="$TMP/main"
@@ -255,6 +266,17 @@ if run_snapshot "$MAIN" "$MAIN_OUT"; then
   pass "main snapshot exits zero"
 else
   fail "main snapshot exits zero"
+fi
+mkdir -p "$MAIN/bin/lib"
+ln -sfn "$SCRIPT" "$MAIN/bin/flywheel-patrol-snapshot"
+ln -sfn "$WRAPPER" "$MAIN/bin/flywheel-node-dwell-control"
+ln -sfn "$ROOT/scripts/lib/bounded-run.sh" "$MAIN/bin/lib/bounded-run.sh"
+DEPLOYED_OUT="$MAIN/deployed-out.txt"
+if run_snapshot "$MAIN" "$DEPLOYED_OUT" flywheel-eng-lead "$MAIN/bin/flywheel-patrol-snapshot" \
+  && grep -Eq '^STEP DWELL: (OK|FINDING)$' "$DEPLOYED_OUT"; then
+  pass "deployed extensionless snapshot and helper symlinks execute together"
+else
+  fail "deployed extensionless snapshot and helper symlinks execute together"
 fi
 contains "$MAIN_OUT" "TURN_MISSING issue=FLY-100" "active issue without TURN is visible"
 contains "$MAIN_OUT" "TURN_HOLDER_NOT_LIVE issue=FLY-101" "dead TURN holder is visible"
@@ -477,6 +499,63 @@ contains "$ATTRIB3_OUT" "OWNER_ATTRIBUTION_INCOMPLETE reason=execution_owner_inv
 for hidden in FLY-300 FLY-302 FLY-303 FLY-304 exec-blank honey-lemon-lead; do
   not_contains "$ATTRIB3_OUT" "$hidden" "STEP 3 aggregate hides foreign identifier $hidden"
 done
+
+# FLY-2210 review regression: durable receipt lineage is a DWELL-only fallback.
+# It must not override the live issue cohort or poison the shared STEP 3 owner
+# resolver when the exact execution's live session has already been pruned.
+LINEAGE_SCOPE="$TMP/lineage-scope"
+make_case "$LINEAGE_SCOPE"
+sqlite3 "$LINEAGE_SCOPE/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-8000','FLY-8000','flywheel','active',datetime('now')),
+ ('run-8001','FLY-8001','flywheel','active',datetime('now'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-8000','implement',1,'running','exec-stale-lineage',datetime('now','-5 hours')),
+ ('run-8001','implement',1,'running','exec-blank-lineage',datetime('now','-5 hours'));
+SQL
+sqlite3 "$LINEAGE_SCOPE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-current-8000','runner-flywheel:pending','flywheel','FLY-8000','flywheel-eng-lead',datetime('now','-1 hour'),'running'),
+ ('exec-current-8001','runner-flywheel:pending','flywheel','FLY-8001','flywheel-eng-lead',datetime('now','-1 hour'),'running');
+INSERT INTO session_receipt_lineage(execution_id,project_name,issue_id,lead_id) VALUES
+ ('exec-stale-lineage','flywheel','FLY-8000','retired-old-lead'),
+ ('exec-blank-lineage','flywheel','FLY-8001',NULL);
+SQL
+LINEAGE_SCOPE_OUT="$LINEAGE_SCOPE/out.txt"
+run_snapshot "$LINEAGE_SCOPE" "$LINEAGE_SCOPE_OUT" || fail "lineage scope snapshot exits zero"
+contains "$LINEAGE_SCOPE_OUT" "NODE_SESSION_NOT_LIVE issue=FLY-8000 exec=exec-sta" "stale lineage cannot steal STEP 3 from the live issue cohort"
+contains "$LINEAGE_SCOPE_OUT" "NODE_SESSION_NOT_LIVE issue=FLY-8001 exec=exec-bla" "blank lineage cannot poison STEP 3 owner attribution"
+not_contains "$LINEAGE_SCOPE_OUT" "STEP 3: UNAVAILABLE(structural: owner_attribution_incomplete)" "DWELL lineage fallback does not alter shared STEP 3 attribution"
+contains "$LINEAGE_SCOPE_OUT" "NODE_DWELL issue=FLY-8000" "stale lineage cannot hide an overdue node from STEP DWELL"
+contains "$LINEAGE_SCOPE_OUT" "NODE_DWELL issue=FLY-8001" "blank lineage yields to the live issue cohort in STEP DWELL"
+count_is "$LINEAGE_SCOPE_OUT" "over_threshold=yes route=deep_dive" 2 "both live-cohort overdue nodes remain actionable"
+
+HISTORICAL_LINEAGE="$TMP/historical-lineage-precedence"
+make_case "$HISTORICAL_LINEAGE"
+sqlite3 "$HISTORICAL_LINEAGE/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-8100','FLY-8100','flywheel','active',datetime('now','-5 hours')),
+ ('run-8101','FLY-8101','flywheel','active',datetime('now','-5 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-8100','founder_gate',1,'review',NULL,datetime('now','-5 hours')),
+ ('run-8101','implement',1,'running','exec-stale-exact',datetime('now','-5 hours'));
+SQL
+sqlite3 "$HISTORICAL_LINEAGE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-historical-8100','runner-flywheel:closed','flywheel','FLY-8100','flywheel-eng-lead',datetime('now','-2 hours'),'completed'),
+ ('exec-historical-8101','runner-flywheel:closed','flywheel','FLY-8101','flywheel-eng-lead',datetime('now','-2 hours'),'completed');
+INSERT INTO session_receipt_lineage(execution_id,project_name,issue_id,lead_id) VALUES
+ ('exec-stale-null','flywheel','FLY-8100','retired-old-lead'),
+ ('exec-stale-exact','flywheel','FLY-8101','retired-old-lead');
+SQL
+HISTORICAL_LINEAGE_OUT="$HISTORICAL_LINEAGE/out.txt"
+run_snapshot "$HISTORICAL_LINEAGE" "$HISTORICAL_LINEAGE_OUT" || fail "historical lineage precedence snapshot exits zero"
+contains "$HISTORICAL_LINEAGE_OUT" "NODE_DWELL issue=FLY-8100" "historical cohort keeps a NULL-exec founder gate visible"
+contains "$HISTORICAL_LINEAGE_OUT" "NODE_DWELL issue=FLY-8100 run=run-8100 node=founder_gate attempt=1 state=review" "historical cohort owns the NULL-exec founder gate"
+contains "$HISTORICAL_LINEAGE_OUT" "NODE_DWELL issue=FLY-8101 run=run-8101 node=implement attempt=1 state=running" "historical cohort outranks exact stale lineage"
+count_is "$HISTORICAL_LINEAGE_OUT" "over_threshold=yes route=founder_reminder" 1 "historical NULL-exec founder gate still routes to reminder"
+count_is "$HISTORICAL_LINEAGE_OUT" "over_threshold=yes route=deep_dive" 1 "historical cohort keeps exact-exec overdue work actionable"
+not_contains "$HISTORICAL_LINEAGE_OUT" "NODE_DWELL_ATTRIBUTION_INCOMPLETE" "stale lineage cannot poison a usable historical cohort"
 
 ATTRIB4="$TMP/owner-attribution-step4"
 make_case "$ATTRIB4"
@@ -746,6 +825,395 @@ NO_SERVER_OUT="$NO_SERVER/out.txt"
 run_snapshot "$NO_SERVER" "$NO_SERVER_OUT" || fail "absent tmux server still publishes report"
 contains "$NO_SERVER_OUT" "STEP 1: UNAVAILABLE(transient: tmux_server_absent)" "absent tmux server is not mislabeled structural"
 contains "$NO_SERVER_OUT" "STEP 2: UNAVAILABLE(transient: tmux_server_absent)" "pane step carries the accurate tmux absence token"
+
+DWELL="$TMP/dwell"
+make_case "$DWELL"
+sqlite3 "$DWELL/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at)
+VALUES ('run-dwell','FLY-2210','flywheel','active',datetime('now','-4 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+VALUES ('run-dwell','implement',1,'running','exec-dwell',datetime('now','-4 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status)
+VALUES ('exec-dwell','FLY-2210','FLY-2210','dwell fixture','flywheel','running');
+SQL
+sqlite3 "$DWELL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status)
+VALUES ('exec-dwell','runner-flywheel:pending','flywheel','FLY-2210','flywheel-eng-lead',datetime('now','-4 hours'),'running');
+SQL
+DWELL_OUT="$DWELL/out.txt"
+run_snapshot "$DWELL" "$DWELL_OUT" || fail "four-hour dwell snapshot exits zero"
+contains "$DWELL_OUT" "STEP DWELL: FINDING" "four-hour active node forces a dwell finding"
+contains "$DWELL_OUT" "NODE_DWELL issue=FLY-2210 run=run-dwell node=implement attempt=1" "owned overdue node is listed"
+contains "$DWELL_OUT" "route=deep_dive" "ordinary overdue node routes to deep dive"
+if grep -Eq '^NODE_DWELL .* baseline=[^ ]+ dwell_hours=' "$DWELL_OUT"; then
+  pass "dwell baseline is a single parse-safe field"
+else
+  fail "dwell baseline must be normalized without spaces"
+fi
+contains "$DWELL_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=deep_dive action=REQUIRED result=UNSET" "snapshot emits an explicit deep-dive action placeholder"
+not_contains "$DWELL_OUT" "FINDING step=DWELL owner=flywheel-eng-lead" "snapshot never emits a malformed finalized DWELL finding"
+count_is "$DWELL_OUT" "STEP DWELL:" 1 "snapshot emits one independent dwell status"
+numeric_step_count="$(grep -Ec '^STEP [1-6]:' "$DWELL_OUT" || true)"
+[ "$numeric_step_count" -eq 6 ] && pass "dwell step preserves exactly six numeric statuses" \
+  || fail "dwell step preserves exactly six numeric statuses (got $numeric_step_count)"
+
+DB_PATH="$DWELL/teamlead.db" RAW_TO=0 node --input-type=module -e '
+  import { StateStore } from "./packages/teamlead/dist/StateStore.js";
+  const store = await StateStore.create(process.env.DB_PATH);
+  const result = store.applyScopedFlagValueChange({
+    name: "node_dwell", scope: "flywheel", op: "set",
+    rawTo: process.env.RAW_TO,
+    expectedChangeSeq: store.getFlagValueChangeSeq("node_dwell", "flywheel"),
+    actor: "fixture", reason: "exercise the node dwell patrol kill switch",
+  });
+  store.close();
+  if (!result.ok) throw new Error(JSON.stringify(result));'
+DWELL_OFF_OUT="$DWELL/off.txt"
+run_snapshot "$DWELL" "$DWELL_OFF_OUT" || fail "disabled dwell snapshot exits zero"
+contains "$DWELL_OFF_OUT" "STEP DWELL: OK" "disabled dwell mechanism is not a forced finding"
+count_is "$DWELL_OFF_OUT" "NODE_DWELL " 0 "disabled dwell mechanism emits no node rows"
+count_is "$DWELL_OFF_OUT" "DWELL_ACTION step=DWELL" 0 "disabled dwell mechanism emits no action placeholders"
+
+DB_PATH="$DWELL/teamlead.db" RAW_TO=1 node --input-type=module -e '
+  import { StateStore } from "./packages/teamlead/dist/StateStore.js";
+  const store = await StateStore.create(process.env.DB_PATH);
+  const result = store.applyScopedFlagValueChange({
+    name: "node_dwell", scope: "flywheel", op: "set",
+    rawTo: process.env.RAW_TO,
+    expectedChangeSeq: store.getFlagValueChangeSeq("node_dwell", "flywheel"),
+    actor: "fixture", reason: "resume node dwell patrol without restart",
+  });
+  store.close();
+  if (!result.ok) throw new Error(JSON.stringify(result));'
+DWELL_REENABLED_OUT="$DWELL/re-enabled.txt"
+run_snapshot "$DWELL" "$DWELL_REENABLED_OUT" || fail "re-enabled dwell snapshot exits zero"
+contains "$DWELL_REENABLED_OUT" "STEP DWELL: FINDING" "re-enabled dwell mechanism takes effect on the next tick"
+contains "$DWELL_REENABLED_OUT" "NODE_DWELL issue=FLY-2210" "re-enabled dwell mechanism restores node rows"
+
+DWELL_FLAG_FAILURE="$TMP/dwell-flag-failure"
+make_case "$DWELL_FLAG_FAILURE"
+sqlite3 "$DWELL_FLAG_FAILURE/teamlead.db" "DROP TABLE flag_values;"
+DWELL_FLAG_FAILURE_OUT="$DWELL_FLAG_FAILURE/out.txt"
+run_snapshot "$DWELL_FLAG_FAILURE" "$DWELL_FLAG_FAILURE_OUT" || fail "unreadable dwell flag snapshot exits zero"
+contains "$DWELL_FLAG_FAILURE_OUT" "STEP DWELL: UNAVAILABLE(structural: maintenance_schema_mismatch)" "unreadable dwell flag is fail-visible"
+contains "$DWELL_FLAG_FAILURE_OUT" "UNAVAILABLE_CAUSE step=DWELL class=structural token=maintenance_schema_mismatch" "unreadable dwell flag preserves its stable cause"
+count_is "$DWELL_FLAG_FAILURE_OUT" "NODE_DWELL " 0 "unreadable dwell flag never masquerades as enabled output"
+
+DWELL_RECEIPT_OUT="$DWELL/receipt.txt"
+if printf '%s\n' '{"items":[{"runId":"run-dwell","nodeId":"implement","attempt":1}]}' | \
+  HOME="$DWELL/home" PATH="$DWELL/bin:$PATH" \
+  FLYWHEEL_STATE_DIR="$DWELL/state" \
+  FLYWHEEL_STATE_DB_PATH="$DWELL/teamlead.db" \
+  FLYWHEEL_PROJECTS_FILE="$DWELL/state/projects.json" \
+  FLYWHEEL_COMM_DB="$DWELL/comm/flywheel/comm.db" \
+  FLYWHEEL_LEAD_ID="flywheel-eng-lead" \
+  bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead \
+    --record-dwell-receipts normal --note "deep dive completed" \
+    > "$DWELL_RECEIPT_OUT" 2>&1; then
+  pass "explicit dwell receipt batch exits zero"
+else
+  fail "explicit dwell receipt batch exits zero"
+fi
+contains "$DWELL_RECEIPT_OUT" "RECEIPT_BATCH_OK issue=FLY-2210 written=1" "receipt frontend reports the committed batch"
+
+DWELL_RESET_OUT="$DWELL/reset.txt"
+run_snapshot "$DWELL" "$DWELL_RESET_OUT" || fail "receipt-reset snapshot exits zero"
+contains "$DWELL_RESET_OUT" "STEP DWELL: OK" "new receipt resets the dwell baseline"
+contains "$DWELL_RESET_OUT" "over_threshold=no route=none" "same-round node is no longer overdue"
+not_contains "$DWELL_RESET_OUT" "route=deep_dive" "same-round receipt suppresses duplicate deep dive"
+
+sqlite3 "$DWELL/teamlead.db" \
+  "UPDATE node_dwell_review SET examined_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-4 hours') WHERE run_id='run-dwell';"
+DWELL_REAGED_OUT="$DWELL/reaged.txt"
+run_snapshot "$DWELL" "$DWELL_REAGED_OUT" || fail "re-aged receipt snapshot exits zero"
+contains "$DWELL_REAGED_OUT" "STEP DWELL: FINDING" "node reports again after another threshold window"
+contains "$DWELL_REAGED_OUT" "over_threshold=yes route=deep_dive" "re-aged receipt restores deep-dive route"
+
+FOUNDER_DWELL="$TMP/founder-dwell"
+make_case "$FOUNDER_DWELL"
+sqlite3 "$FOUNDER_DWELL/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-founder','FLY-2210','flywheel','active',datetime('now','-11 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at) VALUES
+ ('run-founder','founder_gate',1,'review','exec-founder-direct',datetime('now','-11 hours')),
+ ('run-founder','implement',1,'running','exec-founder-approve',datetime('now','-11 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status) VALUES
+ ('exec-founder-direct','FLY-2210','FLY-2210','founder direct','flywheel','running'),
+ ('exec-founder-approve','FLY-2210','FLY-2210','founder approve','flywheel','running');
+INSERT INTO workflow_gate_holder(
+ run_id,gate_node_id,attempt,head_sha,source_execution_id,question_id,
+ state,materialization_stage,created_at,updated_at
+) VALUES (
+ 'run-founder','founder_gate',1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+ 'exec-founder-approve','q-approve-dwell','awaiting_review','completed',
+ datetime('now','-11 hours'),datetime('now','-11 hours')
+);
+SQL
+sqlite3 "$FOUNDER_DWELL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status) VALUES
+ ('exec-founder-direct','runner-flywheel:pending','flywheel','FLY-2210','flywheel-eng-lead',datetime('now','-4 hours'),'running'),
+ ('exec-founder-approve','runner-flywheel:pending','flywheel','FLY-2210','flywheel-eng-lead',datetime('now','-4 hours'),'running');
+SQL
+COMM_DB_PATH="$FOUNDER_DWELL/comm/flywheel/comm.db" node --input-type=module -e \
+  'import { CommDB } from "./packages/flywheel-comm/dist/lib.js"; const db = new CommDB(process.env.COMM_DB_PATH); db.insertQuestion("exec-founder-approve","flywheel-eng-lead","approve",{id:"q-approve-dwell",checkpoint:"approve_to_ship"}); db.close();'
+FOUNDER_DWELL_OUT="$FOUNDER_DWELL/out.txt"
+run_snapshot "$FOUNDER_DWELL" "$FOUNDER_DWELL_OUT" || fail "founder-wait dwell snapshot exits zero"
+contains "$FOUNDER_DWELL_OUT" "node=founder_gate attempt=1 state=review" "founder_gate review is included"
+contains "$FOUNDER_DWELL_OUT" "run=run-founder node=implement" "unanswered approve-to-ship holder is included"
+count_is "$FOUNDER_DWELL_OUT" "over_threshold=yes route=founder_reminder" 2 "both founder-wait OR branches route to reminders"
+not_contains "$FOUNDER_DWELL_OUT" "over_threshold=yes route=deep_dive" "founder-wait nodes never route to deep dive"
+count_is "$FOUNDER_DWELL_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder action=REQUIRED result=UNSET" 1 "same-issue founder waits produce one reminder action"
+
+MIXED_TIMESTAMP_DWELL="$TMP/mixed-timestamp-dwell"
+make_case "$MIXED_TIMESTAMP_DWELL"
+sqlite3 "$MIXED_TIMESTAMP_DWELL/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at)
+VALUES ('run-mixed-time','FLY-9600','flywheel','active','2026-08-31T03:40:00.000Z');
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+VALUES ('run-mixed-time','founder_gate',1,'review','exec-mixed-time','2026-08-31 04:01:25');
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status)
+VALUES ('exec-mixed-time','FLY-9600','FLY-9600','mixed timestamp founder episode','flywheel','running');
+INSERT INTO workflow_gate_holder(
+ run_id,gate_node_id,attempt,head_sha,source_execution_id,question_id,
+ state,materialization_stage,created_at,updated_at
+) VALUES (
+ 'run-mixed-time','founder_gate',1,'cccccccccccccccccccccccccccccccccccccccc',
+ 'exec-mixed-time','q-mixed-time','awaiting_review','completed',
+ '2026-08-31T03:51:25.000Z','2026-08-31T03:51:25.000Z'
+);
+INSERT INTO node_dwell_review(
+ run_id,node_id,attempt,cycle_no,verdict,examined_at,examined_by,note
+) VALUES (
+ 'run-mixed-time','founder_gate',1,1,'waiting_founder',
+ '2026-08-31T03:56:25.000Z','flywheel-eng-lead','previous episode reminder delivered'
+);
+SQL
+sqlite3 "$MIXED_TIMESTAMP_DWELL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status)
+VALUES (
+ 'exec-mixed-time','runner-flywheel:pending','flywheel','FLY-9600',
+ 'flywheel-eng-lead','2026-08-31T03:40:00.000Z','running'
+);
+SQL
+MIXED_TIMESTAMP_DWELL_OUT="$MIXED_TIMESTAMP_DWELL/out.txt"
+run_snapshot "$MIXED_TIMESTAMP_DWELL" "$MIXED_TIMESTAMP_DWELL_OUT" || fail "mixed timestamp dwell snapshot exits zero"
+contains "$MIXED_TIMESTAMP_DWELL_OUT" "baseline=2026-08-31T04:01:25.000Z" "same-date episode ordering chooses the chronologically latest node admission"
+contains "$MIXED_TIMESTAMP_DWELL_OUT" "waiting_episode_reminded=no over_threshold=yes route=founder_reminder" "new admission rearms a mixed-format founder episode"
+count_is "$MIXED_TIMESTAMP_DWELL_OUT" "DWELL_ACTION step=DWELL issue=FLY-9600 route=founder_reminder action=REQUIRED result=UNSET" 1 "mixed-format rearmed episode produces one founder reminder"
+
+FOUNDER_RECEIPT_OUT="$FOUNDER_DWELL/receipt.txt"
+if printf '%s\n' '{"items":[{"runId":"run-founder","nodeId":"founder_gate","attempt":1},{"runId":"run-founder","nodeId":"implement","attempt":1}]}' | \
+  HOME="$FOUNDER_DWELL/home" PATH="$FOUNDER_DWELL/bin:$PATH" \
+  FLYWHEEL_STATE_DIR="$FOUNDER_DWELL/state" \
+  FLYWHEEL_STATE_DB_PATH="$FOUNDER_DWELL/teamlead.db" \
+  FLYWHEEL_PROJECTS_FILE="$FOUNDER_DWELL/state/projects.json" \
+  FLYWHEEL_COMM_DB="$FOUNDER_DWELL/comm/flywheel/comm.db" \
+  FLYWHEEL_LEAD_ID="flywheel-eng-lead" \
+  bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead \
+    --record-dwell-receipts waiting_founder --note "founder reminder delivered" \
+    > "$FOUNDER_RECEIPT_OUT" 2>&1; then
+  pass "founder reminder receipt batch exits zero"
+else
+  fail "founder reminder receipt batch exits zero"
+fi
+sqlite3 "$FOUNDER_DWELL/teamlead.db" \
+  "UPDATE node_dwell_review SET examined_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 hours') WHERE run_id='run-founder';"
+FOUNDER_SILENT_OUT="$FOUNDER_DWELL/silent.txt"
+run_snapshot "$FOUNDER_DWELL" "$FOUNDER_SILENT_OUT" || fail "silent founder wait snapshot exits zero"
+contains "$FOUNDER_SILENT_OUT" "STEP DWELL: OK" "silent founder wait stays non-actionable across two threshold windows"
+count_is "$FOUNDER_SILENT_OUT" "waiting_episode_reminded=yes" 2 "durable receipts mark both nodes reminded in the current episode"
+count_is "$FOUNDER_SILENT_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder" 0 "pure time never emits a second founder reminder"
+
+FOUNDER_RESTART_OUT="$FOUNDER_DWELL/restart.txt"
+run_snapshot "$FOUNDER_DWELL" "$FOUNDER_RESTART_OUT" || fail "restarted silent founder wait snapshot exits zero"
+count_is "$FOUNDER_RESTART_OUT" "waiting_episode_reminded=yes" 2 "restart preserves the durable waiting episode"
+count_is "$FOUNDER_RESTART_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder" 0 "restart does not re-notify the same waiting episode"
+
+sqlite3 "$FOUNDER_DWELL/teamlead.db" <<'SQL'
+INSERT INTO chat_threads(thread_id,channel_id,issue_id,lead_id,created_at)
+VALUES ('1544067592115720253','1516209714097291335','FLY-2210','flywheel-eng-lead',datetime('now','-1 day'));
+SQL
+COMM_DB_PATH="$FOUNDER_DWELL/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  const ts = new Date(Date.now() - 4 * 60 * 60 * 1000).toISOString();
+  db.ingestDiscordChat({
+    leadId: "flywheel-eng-lead", chatId: "1544067592115720253",
+    originChannelId: "1516209714097291335", messageId: "1544190576554147963",
+    authorId: "1138241636057481306", founderId: "1138241636057481306", authorName: "Founder",
+    ts, msgKind: "guild", attachments: [], text: "following up",
+  });
+  db.close();'
+FOUNDER_REARMED_OUT="$FOUNDER_DWELL/rearmed.txt"
+run_snapshot "$FOUNDER_DWELL" "$FOUNDER_REARMED_OUT" || fail "founder-message rearmed snapshot exits zero"
+count_is "$FOUNDER_REARMED_OUT" "over_threshold=yes route=founder_reminder" 2 "founder thread activity rearms both waiting nodes after a fresh threshold"
+count_is "$FOUNDER_REARMED_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder action=REQUIRED result=UNSET" 1 "founder thread activity permits one new grouped reminder"
+
+if printf '%s\n' '{"items":[{"runId":"run-founder","nodeId":"founder_gate","attempt":1},{"runId":"run-founder","nodeId":"implement","attempt":1}]}' | \
+  HOME="$FOUNDER_DWELL/home" PATH="$FOUNDER_DWELL/bin:$PATH" \
+  FLYWHEEL_STATE_DIR="$FOUNDER_DWELL/state" \
+  FLYWHEEL_STATE_DB_PATH="$FOUNDER_DWELL/teamlead.db" \
+  FLYWHEEL_PROJECTS_FILE="$FOUNDER_DWELL/state/projects.json" \
+  FLYWHEEL_COMM_DB="$FOUNDER_DWELL/comm/flywheel/comm.db" \
+  FLYWHEEL_LEAD_ID="flywheel-eng-lead" \
+  bash "$SCRIPT" --project flywheel --lead flywheel-eng-lead \
+    --record-dwell-receipts waiting_founder --note "second founder reminder delivered" \
+    > "$FOUNDER_DWELL/second-receipt.txt" 2>&1; then
+  pass "rearmed founder reminder receipt batch exits zero"
+else
+  fail "rearmed founder reminder receipt batch exits zero"
+fi
+
+sqlite3 "$FOUNDER_DWELL/teamlead.db" <<'SQL'
+UPDATE node_dwell_review
+SET examined_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-7 hours')
+WHERE run_id='run-founder';
+UPDATE workflow_gate_holder
+SET state='superseded', updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now','-4 hours')
+WHERE run_id='run-founder' AND question_id='q-approve-dwell';
+INSERT INTO workflow_gate_holder(
+ run_id,gate_node_id,attempt,head_sha,source_execution_id,question_id,
+ state,materialization_stage,created_at,updated_at
+) VALUES (
+ 'run-founder','founder_gate',2,'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+ 'exec-founder-approve','q-approve-dwell-2','awaiting_review','completed',
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-4 hours'),
+ strftime('%Y-%m-%dT%H:%M:%fZ','now','-4 hours')
+);
+SQL
+COMM_DB_PATH="$FOUNDER_DWELL/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  db.insertQuestion("exec-founder-approve", "flywheel-eng-lead", "approve new head", {
+    id: "q-approve-dwell-2", checkpoint: "approve_to_ship",
+  });
+  db.close();'
+FOUNDER_GATE_REARMED_OUT="$FOUNDER_DWELL/gate-rearmed.txt"
+run_snapshot "$FOUNDER_DWELL" "$FOUNDER_GATE_REARMED_OUT" || fail "gate-state rearmed snapshot exits zero"
+count_is "$FOUNDER_GATE_REARMED_OUT" "over_threshold=yes route=founder_reminder" 2 "persisted gate-state activity rearms the waiting episode"
+count_is "$FOUNDER_GATE_REARMED_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder action=REQUIRED result=UNSET" 1 "gate-state activity permits one new grouped reminder"
+
+sqlite3 "$FOUNDER_DWELL/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at)
+VALUES ('run-founder-second','FLY-2211','flywheel','active',datetime('now','-4 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+VALUES ('run-founder-second','founder_gate',1,'review','exec-founder-second',datetime('now','-4 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status)
+VALUES ('exec-founder-second','FLY-2211','FLY-2211','founder second','flywheel','running');
+SQL
+sqlite3 "$FOUNDER_DWELL/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status)
+VALUES ('exec-founder-second','runner-flywheel:pending','flywheel','FLY-2211','flywheel-eng-lead',datetime('now','-4 hours'),'running');
+SQL
+FOUNDER_MULTI_OUT="$FOUNDER_DWELL/multi-out.txt"
+run_snapshot "$FOUNDER_DWELL" "$FOUNDER_MULTI_OUT" || fail "multi-issue founder-wait snapshot exits zero"
+count_is "$FOUNDER_MULTI_OUT" "route=founder_reminder action=REQUIRED result=UNSET" 2 "two waiting issues produce two reminder actions"
+contains "$FOUNDER_MULTI_OUT" "DWELL_ACTION step=DWELL issue=FLY-2210 route=founder_reminder" "first waiting issue keeps its reminder action"
+contains "$FOUNDER_MULTI_OUT" "DWELL_ACTION step=DWELL issue=FLY-2211 route=founder_reminder" "second waiting issue keeps its reminder action"
+
+PRUNED_FOUNDER="$TMP/pruned-founder"
+make_case "$PRUNED_FOUNDER"
+sqlite3 "$PRUNED_FOUNDER/teamlead.db" <<'SQL'
+WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 9)
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at)
+SELECT 'run-pruned-' || n, 'FLY-' || (3000 + n), 'flywheel', 'active', datetime('now','-4 hours') FROM seq;
+WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 9)
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+SELECT 'run-pruned-' || n, 'founder_gate', 1, 'review', NULL, datetime('now','-4 hours') FROM seq;
+SQL
+COMM_DB_PATH="$PRUNED_FOUNDER/comm/flywheel/comm.db" node --input-type=module -e '
+  import { CommDB } from "./packages/flywheel-comm/dist/lib.js";
+  const db = new CommDB(process.env.COMM_DB_PATH);
+  for (let n = 1; n <= 9; n += 1) db.registerSession(`exec-pruned-${n}`, "runner-flywheel:pending", "flywheel", `FLY-${3000 + n}`, "flywheel-eng-lead");
+  db.close();'
+sqlite3 "$PRUNED_FOUNDER/comm/flywheel/comm.db" "DELETE FROM sessions WHERE execution_id LIKE 'exec-pruned-%';"
+PRUNED_FOUNDER_OUT="$PRUNED_FOUNDER/out.txt"
+run_snapshot "$PRUNED_FOUNDER" "$PRUNED_FOUNDER_OUT" || fail "pruned founder snapshot exits zero"
+count_is "$PRUNED_FOUNDER_OUT" "over_threshold=yes route=founder_reminder" 9 "all nine pruned founder gates route to reminders"
+not_contains "$PRUNED_FOUNDER_OUT" "NODE_DWELL_ATTRIBUTION_INCOMPLETE" "pruned founder gates retain durable owner attribution"
+
+LEGACY_GATE="$TMP/legacy-gate"
+make_case "$LEGACY_GATE"
+sqlite3 "$LEGACY_GATE/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at)
+VALUES ('run-legacy-gate','FLY-2210','flywheel','active',datetime('now','-4 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+VALUES ('run-legacy-gate','implement',1,'running','exec-legacy-gate',datetime('now','-4 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status)
+VALUES ('exec-legacy-gate','FLY-2210','FLY-2210','legacy gate','flywheel','running');
+SQL
+sqlite3 "$LEGACY_GATE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status)
+VALUES ('exec-legacy-gate','runner-flywheel:pending','flywheel','FLY-2210','flywheel-eng-lead',datetime('now','-4 hours'),'running');
+SQL
+COMM_DB_PATH="$LEGACY_GATE/comm/flywheel/comm.db" node --input-type=module -e \
+  'import { CommDB } from "./packages/flywheel-comm/dist/lib.js"; const db = new CommDB(process.env.COMM_DB_PATH); db.insertQuestion("exec-legacy-gate","flywheel-eng-lead","legacy approve",{id:"q-legacy-approve",checkpoint:"approve_to_ship"}); db.close();'
+LEGACY_GATE_OUT="$LEGACY_GATE/out.txt"
+run_snapshot "$LEGACY_GATE" "$LEGACY_GATE_OUT" || fail "legacy approve gate snapshot exits zero"
+contains "$LEGACY_GATE_OUT" "over_threshold=yes route=founder_reminder" "pre-holder approve gate uses unique historical mapping"
+not_contains "$LEGACY_GATE_OUT" "over_threshold=yes route=deep_dive" "pre-holder approve gate never guesses deep dive"
+
+AMBIGUOUS_GATE="$TMP/ambiguous-gate"
+make_case "$AMBIGUOUS_GATE"
+sqlite3 "$AMBIGUOUS_GATE/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at)
+VALUES
+ ('run-ambiguous-gate','FLY-2210','flywheel','active',datetime('now','-4 hours')),
+ ('run-unrelated-deep-dive','FLY-2211','flywheel','active',datetime('now','-4 hours'));
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+VALUES
+ ('run-ambiguous-gate','implement',1,'running','exec-unmapped-founder-gate',datetime('now','-4 hours')),
+ ('run-unrelated-deep-dive','implement',1,'running','exec-unrelated-deep-dive',datetime('now','-4 hours'));
+INSERT INTO sessions(execution_id,issue_id,issue_identifier,issue_title,project_name,status)
+VALUES
+ ('exec-ambiguous-gate','FLY-2210','FLY-2210','ambiguous gate','flywheel','running'),
+ ('exec-unrelated-deep-dive','FLY-2211','FLY-2211','unrelated deep dive','flywheel','running');
+SQL
+sqlite3 "$AMBIGUOUS_GATE/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status)
+VALUES
+ ('exec-ambiguous-gate','runner-flywheel:pending','flywheel','FLY-2210','flywheel-eng-lead',datetime('now','-4 hours'),'running'),
+ ('exec-unrelated-deep-dive','runner-flywheel:pending','flywheel','FLY-2211','flywheel-eng-lead',datetime('now','-4 hours'),'running');
+SQL
+COMM_DB_PATH="$AMBIGUOUS_GATE/comm/flywheel/comm.db" node --input-type=module -e \
+  'import { CommDB } from "./packages/flywheel-comm/dist/lib.js"; const db = new CommDB(process.env.COMM_DB_PATH); db.insertQuestion("exec-unmapped-founder-gate","flywheel-eng-lead","ambiguous approve",{id:"q-ambiguous-approve",checkpoint:"approve_to_ship"}); db.close();'
+AMBIGUOUS_GATE_OUT="$AMBIGUOUS_GATE/out.txt"
+run_snapshot "$AMBIGUOUS_GATE" "$AMBIGUOUS_GATE_OUT" || fail "ambiguous approve gate snapshot exits zero"
+contains "$AMBIGUOUS_GATE_OUT" "STEP DWELL: FINDING" "overdue node remains a finding when gate mapping is incomplete"
+contains "$AMBIGUOUS_GATE_OUT" "NODE_DWELL_GATE_MAPPING_INCOMPLETE count=1" "incomplete historical gate mapping is explicit"
+contains "$AMBIGUOUS_GATE_OUT" "over_threshold=yes route=unavailable_gate_mapping" "incomplete mapping fails closed"
+contains "$AMBIGUOUS_GATE_OUT" "issue=FLY-2211 run=run-unrelated-deep-dive node=implement" "unrelated overdue node remains visible"
+contains "$AMBIGUOUS_GATE_OUT" "issue=FLY-2211 run=run-unrelated-deep-dive node=implement attempt=1 state=running" "unrelated overdue node keeps exact identity"
+contains "$AMBIGUOUS_GATE_OUT" "issue=FLY-2211 run=run-unrelated-deep-dive node=implement attempt=1 state=running baseline=" "unrelated overdue node has a dwell baseline"
+contains "$AMBIGUOUS_GATE_OUT" "over_threshold=yes route=deep_dive" "unmapped historical gate does not suppress an unrelated deep dive"
+count_is "$AMBIGUOUS_GATE_OUT" "DWELL_ACTION step=DWELL issue=aggregate route=repair_gate_mapping action=REQUIRED result=UNSET" 1 "incomplete mapping has one accountability action"
+
+DWELL_TRUNCATED="$TMP/dwell-truncated"
+make_case "$DWELL_TRUNCATED"
+sqlite3 "$DWELL_TRUNCATED/teamlead.db" <<'SQL'
+INSERT INTO workflow_run(run_id,issue_id,project_name,status,created_at) VALUES
+ ('run-many','FLY-2300','flywheel','active',datetime('now','-1 hour')),
+ ('run-ownerless','FLY-2301','flywheel','active',datetime('now','-1 hour'));
+WITH RECURSIVE nodes(n) AS (
+ SELECT 1 UNION ALL SELECT n + 1 FROM nodes WHERE n < 501
+)
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+SELECT 'run-many',printf('node-%03d',n),1,'running','exec-many',datetime('now','-1 hour')
+FROM nodes;
+INSERT INTO workflow_run_node(run_id,node_id,attempt,state,execution_id,started_at)
+VALUES ('run-ownerless','implement',1,'running','exec-ownerless',datetime('now','-1 hour'));
+SQL
+sqlite3 "$DWELL_TRUNCATED/comm/flywheel/comm.db" <<'SQL'
+INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,started_at,status)
+VALUES ('exec-many','runner-flywheel:pending','flywheel','FLY-2300','flywheel-eng-lead',datetime('now','-1 hour'),'running');
+SQL
+DWELL_TRUNCATED_OUT="$DWELL_TRUNCATED/out.txt"
+run_snapshot "$DWELL_TRUNCATED" "$DWELL_TRUNCATED_OUT" || fail "bounded dwell snapshot exits zero"
+count_is "$DWELL_TRUNCATED_OUT" "NODE_DWELL issue=FLY-2300" 500 "bounded dwell output keeps the first 500 owned rows"
+contains "$DWELL_TRUNCATED_OUT" "NODE_DWELL_TRUNCATED count=1" "bounded dwell output reports omitted owned rows"
+contains "$DWELL_TRUNCATED_OUT" "NODE_DWELL_ATTRIBUTION_INCOMPLETE reason=owner_missing count=1" "bounded dwell output never truncates degradation aggregates"
+contains "$DWELL_TRUNCATED_OUT" "STEP DWELL: UNAVAILABLE(structural: node_dwell_incomplete)" "dwell truncation stays fail-visible"
+contains "$DWELL_TRUNCATED_OUT" "DWELL_ACTION step=DWELL issue=aggregate route=repair_output_truncation action=REQUIRED result=UNSET" "dwell truncation has an accountability action"
 
 EMPTY="$TMP/empty"
 make_case "$EMPTY"

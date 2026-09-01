@@ -280,10 +280,41 @@ export function handleFlagStage(
 				},
 			};
 		}
-		if (op === "set" && typeof input.to !== "boolean") {
+		const codec = getFlagStoreCodec(spec.name);
+		if (!codec) throw new Error(`missing managed flag codec: ${spec.name}`);
+		let rawTo: string | null = null;
+		let effectiveTo: boolean | string = "inherit";
+		if (op === "set" && spec.valueKind === "bool") {
+			if (typeof input.to !== "boolean") {
+				return {
+					code: 400,
+					body: { error: `${spec.name} takes a boolean target` },
+				};
+			}
+			rawTo = input.to ? "1" : "0";
+			effectiveTo = input.to;
+		} else if (op === "set" && spec.valueKind === "value") {
+			if (typeof input.to !== "string") {
+				return {
+					code: 400,
+					body: { error: `${spec.name} takes a string target` },
+				};
+			}
+			try {
+				effectiveTo = codec.parse({ hasOverride: true, raw: input.to });
+				rawTo = input.to;
+			} catch (error) {
+				return {
+					code: 400,
+					body: {
+						error: error instanceof Error ? error.message : String(error),
+					},
+				};
+			}
+		} else if (op === "set") {
 			return {
 				code: 400,
-				body: { error: `${spec.name} takes a boolean target` },
+				body: { error: `${spec.name} has unsupported project value kind` },
 			};
 		}
 		if (typeof input.reason !== "string" || !input.reason.trim()) {
@@ -296,12 +327,9 @@ export function handleFlagStage(
 			return { code: 500, body: { error: "flag store unavailable" } };
 		}
 		const row = deps.flagStore.store.getFlagValueRow(spec.name, scope);
-		const codec = getFlagStoreCodec(spec.name);
-		if (!codec) throw new Error(`missing managed flag codec: ${spec.name}`);
 		if (op === "clear" && !row) {
 			return { code: 409, body: { error: "missing_row" } };
 		}
-		const rawTo = op === "clear" ? null : input.to ? "1" : "0";
 		const invariantFailure = enforceDocFlowEnablementInvariant(deps, {
 			name: spec.name,
 			scope,
@@ -324,7 +352,7 @@ export function handleFlagStage(
 			effectiveFrom: row
 				? codec.parse({ hasOverride: true, raw: row.raw })
 				: "inherit",
-			effectiveTo: op === "clear" ? "inherit" : (input.to as boolean),
+			effectiveTo,
 			actor: "bridge-local-operator",
 			reason: input.reason.trim(),
 		};
@@ -479,15 +507,43 @@ export function handleFlagApply(
 		}
 		if (spec.scope === "project") {
 			const projectNames = [...deps.projectNames()];
+			let projectRawInvalid = false;
+			if (canonical.op === "set") {
+				if (typeof canonical.rawTo !== "string") {
+					projectRawInvalid = true;
+				} else if (spec.valueKind === "bool") {
+					projectRawInvalid =
+						canonical.rawTo !== "0" || canonical.effectiveTo !== false
+							? canonical.rawTo !== "1" || canonical.effectiveTo !== true
+							: false;
+				} else if (spec.valueKind === "value") {
+					try {
+						const codec = getFlagStoreCodec(spec.name);
+						if (!codec) {
+							projectRawInvalid = true;
+						} else {
+							const parsed = codec.parse({
+								hasOverride: true,
+								raw: canonical.rawTo,
+							});
+							projectRawInvalid = parsed !== canonical.effectiveTo;
+						}
+					} catch {
+						projectRawInvalid = true;
+					}
+				} else {
+					projectRawInvalid = true;
+				}
+			} else {
+				projectRawInvalid =
+					canonical.rawTo !== null || canonical.effectiveTo !== "inherit";
+			}
 			if (
 				!PROJECT_STORE_MANAGED_FLAGS.has(canonical.name) ||
 				(canonical.scope !== "*" && !projectNames.includes(canonical.scope)) ||
 				!Number.isInteger(canonical.expectedChangeSeq) ||
 				(canonical.expectedChangeSeq ?? -1) < 0 ||
-				(canonical.op === "set" &&
-					canonical.rawTo !== "0" &&
-					canonical.rawTo !== "1") ||
-				(canonical.op === "clear" && canonical.rawTo !== null)
+				projectRawInvalid
 			) {
 				return {
 					code: 400,

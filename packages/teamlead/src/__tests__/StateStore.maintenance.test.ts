@@ -67,6 +67,36 @@ describe("StateStore maintenance boundary", () => {
 		}
 	});
 
+	it("keeps feature-specific dwell migration out of the shared maintenance boundary", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2210-maint-pre-migration-"));
+		const dbPath = join(root, "teamlead.db");
+		let maintenance: StateStore | undefined;
+		try {
+			const writer = await StateStore.create(dbPath);
+			writer.close();
+			const raw = new Database(dbPath);
+			raw.exec("DROP TABLE node_dwell_review");
+			raw.close();
+
+			maintenance = await StateStore.openForMaintenance(dbPath, {
+				readonly: true,
+			});
+			expect(maintenance.maintenanceDiagnostics().readonly).toBe(true);
+			const proof = new Database(dbPath, { readonly: true });
+			expect(
+				proof
+					.prepare(
+						"SELECT 1 FROM sqlite_master WHERE type='table' AND name='node_dwell_review'",
+					)
+					.get(),
+			).toBeUndefined();
+			proof.close();
+		} finally {
+			maintenance?.close();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("enables apply-connection safety and creates a verified online backup", async () => {
 		const root = mkdtempSync(join(tmpdir(), "fly1648-maint-apply-"));
 		const dbPath = join(root, "teamlead.db");

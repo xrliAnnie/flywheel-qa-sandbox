@@ -382,6 +382,124 @@ describe("handleFlagApply", () => {
 		});
 	});
 
+	it("stages and reapplies a strict project scalar without weakening booleans", async () => {
+		const { deps, store } = await makeManagedDeps();
+		const staged = handleFlagStage(
+			deps,
+			{
+				name: "node_dwell_threshold_hours",
+				to: "1.5",
+				project: "flywheel",
+				reason: "tighten dwell patrol",
+			},
+			"o",
+		);
+		expect(staged.code).toBe(200);
+		const body = staged.body as {
+			canonical: FlagStoreCanonical;
+			confirmToken: string;
+		};
+		expect(body.canonical).toMatchObject({
+			name: "node_dwell_threshold_hours",
+			scope: "flywheel",
+			rawTo: "1.5",
+			effectiveTo: "1.5",
+		});
+		expect(
+			handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+		).toBe(200);
+		expect(
+			store.getFlagValueRow("node_dwell_threshold_hours", "flywheel"),
+		).toMatchObject({ raw: "1.5", lastEffective: "1.5" });
+
+		for (const to of [true, "0", "three hours"] as const) {
+			expect(
+				handleFlagStage(
+					deps,
+					{
+						name: "node_dwell_threshold_hours",
+						to,
+						project: "flywheel",
+						reason: "reject invalid scalar",
+					},
+					"o",
+				).code,
+				String(to),
+			).toBe(400);
+		}
+
+		const restaged = handleFlagStage(
+			deps,
+			{
+				name: "node_dwell_threshold_hours",
+				to: "2",
+				project: "flywheel",
+				reason: "prove apply revalidation",
+			},
+			"o",
+		).body as { canonical: FlagStoreCanonical };
+		const tampered = {
+			...restaged.canonical,
+			rawTo: "invalid",
+			effectiveTo: "invalid",
+		};
+		const tamperedToken = deps.tokens.issue(flagCanonicalSha(tampered));
+		expect(handleFlagApply(deps, tampered, tamperedToken, "o").code).toBe(400);
+		expect(
+			store.getFlagValueRow("node_dwell_threshold_hours", "flywheel")?.raw,
+		).toBe("1.5");
+
+		expect(
+			handleFlagStage(
+				deps,
+				{
+					name: "doc_flow",
+					to: "1",
+					project: "flywheel",
+					reason: "booleans stay typed",
+				},
+				"o",
+			).code,
+		).toBe(400);
+	});
+
+	it("hot-toggles the project-scoped node dwell master switch", async () => {
+		const { deps, store } = await makeManagedDeps();
+		for (const [to, raw, effective] of [
+			[false, "0", false],
+			[true, "1", true],
+		] as const) {
+			const staged = handleFlagStage(
+				deps,
+				{
+					name: "node_dwell",
+					to,
+					project: "flywheel",
+					reason: `node dwell ${effective ? "on" : "off"}`,
+				},
+				"o",
+			);
+			expect(staged.code).toBe(200);
+			const body = staged.body as {
+				canonical: FlagStoreCanonical;
+				confirmToken: string;
+			};
+			expect(body.canonical).toMatchObject({
+				name: "node_dwell",
+				scope: "flywheel",
+				rawTo: raw,
+				effectiveTo: effective,
+			});
+			expect(
+				handleFlagApply(deps, body.canonical, body.confirmToken, "o").code,
+			).toBe(200);
+		}
+		expect(store.getFlagValueRow("node_dwell", "flywheel")).toMatchObject({
+			raw: "1",
+			lastEffective: "true",
+		});
+	});
+
 	it("clears a project row to inheritance and keeps the scoped audit", async () => {
 		const { deps, store } = await makeManagedDeps();
 		const seeded = store.applyScopedFlagValueChange({

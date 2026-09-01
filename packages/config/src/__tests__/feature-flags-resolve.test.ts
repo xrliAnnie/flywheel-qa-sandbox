@@ -108,6 +108,40 @@ describe("resolveScopedEffective — project store precedence", () => {
 			via: "default",
 		});
 	});
+
+	it("applies the same project, star, default precedence to strict scalar values", () => {
+		const threshold = spec("node_dwell_threshold_hours");
+		const thresholdCodec = getFlagStoreCodec(threshold.name);
+		if (!thresholdCodec) throw new Error("threshold must have a store codec");
+
+		expect(
+			resolveScopedEffective({
+				spec: threshold,
+				projectName: "flywheel",
+				rows: [
+					{ scope: "*", raw: "4" },
+					{ scope: "flywheel", raw: "1.5" },
+				],
+				codec: thresholdCodec,
+			}),
+		).toMatchObject({ value: "1.5", via: "project_row" });
+		expect(
+			resolveScopedEffective({
+				spec: threshold,
+				projectName: "geoforge3d",
+				rows: [{ scope: "*", raw: "4" }],
+				codec: thresholdCodec,
+			}),
+		).toMatchObject({ value: "4", via: "star_row" });
+		expect(
+			resolveScopedEffective({
+				spec: threshold,
+				projectName: "defaulted",
+				rows: [],
+				codec: thresholdCodec,
+			}),
+		).toMatchObject({ value: "3", via: "default" });
+	});
 });
 
 describe("resolveAllFlags", () => {

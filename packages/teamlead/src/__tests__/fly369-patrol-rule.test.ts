@@ -246,6 +246,160 @@ describe("runner-patrol Lead rule (FLY-369 follow-up)", () => {
 		).not.toBe(0);
 	});
 
+	it("FLY-2210: STEP DWELL pins the three-hour deep-dive and founder-reminder discipline", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		for (const anchor of [
+			"STEP DWELL",
+			"node_dwell",
+			"node_dwell_threshold_hours",
+			"default-on",
+			"无需重启",
+			"同一 waiting episode 只提醒一次",
+			"纯时间流逝",
+			"waiting_episode_reminded=yes",
+			"founder 在该 issue thread 发言",
+			"gate state/head",
+			"node_id='founder_gate'",
+			"state='review'",
+			"checkpoint='approve_to_ship'",
+			"同一 issue",
+			"waiting_founder",
+			"提醒投递成功后",
+			"最新 workflow transition",
+			"终端内容",
+			"工作日志",
+			"推进中",
+			"原地空转",
+			"禁止只看画面刷不刷",
+			"FLY-2178",
+			"03:25",
+			"06:25",
+			"今天实际 11:55 才解开",
+			"normal|cleared|fixed|waiting_founder",
+			"same-attempt re-admission",
+			"multiple_unavailable 只允许 STEP 6",
+			"DWELL_ACTION",
+			'{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>}]}',
+		]) {
+			expect(section0).toContain(anchor);
+		}
+		expect(section0).toMatch(/examined_at.*下轮.*基线/s);
+		expect(section0).toMatch(/投递成功后.*收据/s);
+		expect(section0).toMatch(/同一 issue.*一条.*提醒/s);
+		expect(section0).toMatch(/node_dwell.*off.*NODE_DWELL.*提醒.*FINDING/s);
+		expect(section0).toMatch(/waiting_founder.*持久.*重启/s);
+		expect(section0).toMatch(/每个.*DWELL_ACTION.*替换.*FINDING step=DWELL/s);
+		expect(section0).toMatch(
+			/\$\{FLYWHEEL_STATE_DIR:-\$HOME\/\.flywheel\}\/bin\/flywheel-patrol-snapshot[^`\n]*--record-dwell-receipts/,
+		);
+		expect(section0).not.toContain("epic_receipt=required");
+	});
+
+	it("FLY-2210: the final gate validates DWELL by name and fails closed on overdue or unavailable contradictions", () => {
+		const section0 = patrol.slice(
+			patrol.indexOf("## 0."),
+			patrol.indexOf("## 1."),
+		);
+		const numericPattern = section0.match(
+			/FINAL_STEP_COUNT="\$\(grep -Ec '([^']+)'/,
+		)?.[1];
+		const dwellPattern = section0.match(
+			/DWELL_STEP_COUNT="\$\(grep -Ec '([^']+)'/,
+		)?.[1];
+		const findingProgram = section0.match(
+			/# FLY-2080-FINDING-GATE-BEGIN\nawk '\n([\s\S]*?)\n' "\$REPORT_PATH"\n# FLY-2080-FINDING-GATE-END/,
+		)?.[1];
+		expect(numericPattern).toBeDefined();
+		expect(dwellPattern).toBeDefined();
+		expect(findingProgram).toBeDefined();
+
+		const marker = "a".repeat(64);
+		const receipt = "5914cef5-05bf-45a3-be14-edbc858147a2";
+		const base = [
+			"STEP 1: OK",
+			"STEP 2: OK",
+			"STEP 3: OK",
+			"STEP 4: OK",
+			"STEP 5: OK",
+			"STEP 6: OK",
+		];
+		const accountability = `FINDING step=DWELL bridge_problem=no result=advanced evidence=node_dwell:run-1 owner=n/a next=n/a epic=n/a epic_marker=n/a`;
+		const secondAccountability = `FINDING step=DWELL bridge_problem=no result=advanced evidence=node_dwell:run-2 owner=n/a next=n/a epic=n/a epic_marker=n/a`;
+		const run = (lines: string[]) =>
+			spawnSync("awk", [findingProgram ?? ""], {
+				input: `${lines.join("\n")}\n`,
+				encoding: "utf8",
+			});
+		const valid = [
+			...base,
+			"STEP DWELL: FINDING",
+			"NODE_DWELL issue=FLY-2210 over_threshold=yes route=deep_dive",
+			accountability,
+		];
+		const numeric = spawnSync("grep", ["-Ec", numericPattern ?? ""], {
+			input: `${valid.join("\n")}\n`,
+			encoding: "utf8",
+		});
+		const dwell = spawnSync("grep", ["-Ec", dwellPattern ?? ""], {
+			input: `${valid.join("\n")}\n`,
+			encoding: "utf8",
+		});
+		expect(numeric.stdout.trim()).toBe("6");
+		expect(dwell.stdout.trim()).toBe("1");
+		expect(run(valid).status).toBe(0);
+		expect(
+			run(valid.filter((line) => line !== accountability)).status,
+		).not.toBe(0);
+		const twoIssues = [
+			...base,
+			"STEP DWELL: FINDING",
+			"NODE_DWELL issue=FLY-2210 over_threshold=yes route=founder_reminder",
+			"NODE_DWELL issue=FLY-2211 over_threshold=yes route=founder_reminder",
+			accountability,
+		];
+		expect(run(twoIssues).status).not.toBe(0);
+		expect(run([...twoIssues, secondAccountability]).status).toBe(0);
+		expect(
+			run([
+				...base,
+				"STEP DWELL: OK",
+				"NODE_DWELL issue=FLY-2210 over_threshold=yes route=deep_dive",
+			]).status,
+		).not.toBe(0);
+
+		const unavailable = [
+			...base,
+			"STEP DWELL: UNAVAILABLE(structural: helper_unavailable)",
+			"UNAVAILABLE_CAUSE step=DWELL class=structural token=helper_unavailable",
+		];
+		expect(run(unavailable).status).not.toBe(0);
+		expect(
+			run([
+				...unavailable,
+				`FINDING step=DWELL bridge_problem=yes result=escalated-with-plan evidence=helper:unavailable owner=agent:flywheel-eng-lead next=repair:helper epic=FLY-2072#${receipt} epic_marker=${marker}`,
+			]).status,
+		).toBe(0);
+		expect(
+			run([
+				...unavailable,
+				"NODE_DWELL issue=FLY-2210 over_threshold=yes route=unavailable_gate_mapping",
+				accountability,
+			]).status,
+		).not.toBe(0);
+		expect(
+			run([
+				...base,
+				"STEP DWELL: UNAVAILABLE(structural: multiple_unavailable)",
+				"UNAVAILABLE_CAUSE step=DWELL class=structural token=helper_unavailable",
+				`FINDING step=DWELL bridge_problem=yes result=escalated-with-plan evidence=helper:unavailable owner=agent:flywheel-eng-lead next=repair:helper epic=FLY-2072#${receipt} epic_marker=${marker}`,
+			]).status,
+		).not.toBe(0);
+		expect(run([...valid, "STEP 7: OK"]).status).not.toBe(0);
+	});
+
 	it("FLY-1855: the documented dedupe parser accepts a healthy non-truncated response", () => {
 		const section0 = patrol.slice(
 			patrol.indexOf("## 0."),

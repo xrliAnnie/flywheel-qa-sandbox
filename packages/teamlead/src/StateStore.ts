@@ -5261,11 +5261,29 @@ export class StateStore {
 			return { ok: false, reason: "not_project_store_managed" };
 		}
 		if (!args.scope.trim()) return { ok: false, reason: "invalid_scope" };
-		if (
-			(args.op === "set" && args.rawTo !== "0" && args.rawTo !== "1") ||
-			(args.op === "clear" && args.rawTo !== null)
-		) {
+		const spec = FEATURE_FLAGS.find(({ name }) => name === args.name);
+		if (args.op === "clear" && args.rawTo !== null) {
 			return { ok: false, reason: "invalid_raw" };
+		}
+		if (args.op === "set") {
+			if (args.rawTo === null) return { ok: false, reason: "invalid_raw" };
+			if (spec?.valueKind === "bool") {
+				if (args.rawTo !== "0" && args.rawTo !== "1") {
+					return { ok: false, reason: "invalid_raw" };
+				}
+			} else if (spec?.valueKind === "value") {
+				try {
+					const codec = getFlagStoreCodec(args.name);
+					if (!codec) return { ok: false, reason: "invalid_raw" };
+					codec.canonicalEffective(
+						codec.parse({ hasOverride: true, raw: args.rawTo }),
+					);
+				} catch {
+					return { ok: false, reason: "invalid_raw" };
+				}
+			} else {
+				return { ok: false, reason: "invalid_raw" };
+			}
 		}
 		if (!args.actor.trim() || !args.reason.trim()) {
 			throw new Error("flag value changes require actor and reason");
@@ -18728,6 +18746,20 @@ export class StateStore {
 				started_at TEXT NOT NULL DEFAULT (datetime('now')),
 				ended_at TEXT,
 				PRIMARY KEY (run_id, node_id, attempt)
+			)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS node_dwell_review (
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL,
+				cycle_no INTEGER NOT NULL,
+				verdict TEXT NOT NULL CHECK (verdict IN
+					('normal','cleared','fixed','waiting_founder')),
+				examined_at TEXT NOT NULL,
+				examined_by TEXT NOT NULL,
+				note TEXT,
+				PRIMARY KEY (run_id,node_id,attempt,cycle_no)
 			)
 		`);
 		this.db.run(`

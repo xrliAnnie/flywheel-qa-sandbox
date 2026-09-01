@@ -452,6 +452,29 @@ describe("FLY-1778 flag store policy", () => {
 			/future_dynamic_flag.*value codec.*reject invalid writes/i,
 		);
 
+		const permissiveProjectValue = validateFlagAuthoringPolicy({
+			flags: [
+				...FEATURE_FLAGS,
+				futureProjectSpec({
+					valueKind: "value",
+					default: "3",
+					polarity: "default_on",
+				}),
+			],
+			storeManagedFlags: withFutureManaged(),
+			projectStoreManagedFlags: withFutureProjectManaged(),
+			codecForName: (name) =>
+				name === "future_dynamic_flag"
+					? {
+							parse: () => "3",
+							canonicalEffective: String,
+						}
+					: getFlagStoreCodec(name),
+		});
+		expect(permissiveProjectValue.join("\n")).toMatch(
+			/future_dynamic_flag.*value codec.*reject invalid writes/i,
+		);
+
 		const degenerateEnum = validateFlagAuthoringPolicy({
 			codecForName: (name) =>
 				name === "skill_framework_mode"
@@ -510,6 +533,48 @@ describe("FLY-1778 flag store policy", () => {
 		for (const raw of ["", "0", "59999", "1.5", "2592000001", "Infinity"]) {
 			expect(() => codec.parse({ hasOverride: true, raw }), raw).toThrow(
 				/summary absorption cadence/i,
+			);
+		}
+	});
+
+	it("registers node dwell threshold hours as a strict project scalar", () => {
+		const enabled = FEATURE_FLAGS.find(({ name }) => name === "node_dwell");
+		expect(enabled).toMatchObject({
+			source: "project_config",
+			scope: "project",
+			configKey: "patrol.node_dwell_enabled",
+			polarity: "default_on",
+			valueKind: "bool",
+			default: true,
+			toggleable: "conversational",
+		});
+		expect(
+			getFlagStoreCodec("node_dwell")?.parse({
+				hasOverride: false,
+				raw: null,
+			}),
+		).toBe(true);
+
+		const threshold = FEATURE_FLAGS.find(
+			({ name }) => name === "node_dwell_threshold_hours",
+		);
+		expect(threshold).toMatchObject({
+			source: "project_config",
+			scope: "project",
+			configKey: "patrol.node_dwell_threshold_hours",
+			valueKind: "value",
+			default: "3",
+		});
+
+		const codec = getFlagStoreCodec("node_dwell_threshold_hours")!;
+		expect(codec.parse({ hasOverride: false, raw: null })).toBe("3");
+		for (const raw of ["0.25", "3", "12.5"]) {
+			expect(codec.parse({ hasOverride: true, raw }), raw).toBe(raw);
+			expect(codec.canonicalEffective(raw), raw).toBe(raw);
+		}
+		for (const raw of ["", "0", "-1", "Infinity", "NaN", "3 hours"]) {
+			expect(() => codec.parse({ hasOverride: true, raw }), raw).toThrow(
+				/node dwell threshold/i,
 			);
 		}
 	});

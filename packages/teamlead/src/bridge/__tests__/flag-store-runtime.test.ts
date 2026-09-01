@@ -8,12 +8,15 @@ import {
 	enrichFlagViewsWithStore,
 	initializeFlagStore,
 	readScopedBoolean,
+	readScopedValue,
 	storeAlertSystemEnabled,
 	storeCmuxRebindDisabled,
 	storeCmuxWatcherRebuildDisabled,
 	storeDocFlowEnabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
+	storeNodeDwellEnabled,
+	storeNodeDwellThresholdHours,
 	storePipelineDagEnabled,
 	storePipelineWorkKindEnabled,
 	storePonytailEnabled,
@@ -225,6 +228,77 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		).toMatchObject({ ok: true });
 		expect(storeDocFlowEnabled(runtime, "flywheel")).toBe(false);
 		expect(storeDocFlowEnabled(runtime, "geoforge3d")).toBe(true);
+	});
+
+	it("reads the node dwell scalar at call time with project, star, default precedence", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeNodeDwellThresholdHours(runtime, "flywheel")).toBe(3);
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "node_dwell_threshold_hours",
+				scope: "*",
+				op: "set",
+				rawTo: "4",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "raise wildcard dwell threshold",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeNodeDwellThresholdHours(runtime, "geoforge3d")).toBe(4);
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "node_dwell_threshold_hours",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "1.5",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "lower the flywheel dwell threshold",
+			}),
+		).toMatchObject({ ok: true });
+		expect(
+			readScopedValue(runtime, "node_dwell_threshold_hours", "flywheel"),
+		).toBe("1.5");
+		expect(storeNodeDwellThresholdHours(runtime, "flywheel")).toBe(1.5);
+		expect(() => readScopedValue(runtime, "doc_flow", "flywheel")).toThrow(
+			/project-store flag is not a scalar value: doc_flow/,
+		);
+	});
+
+	it("keeps node dwell default-on and observes project toggles without restart", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeNodeDwellEnabled(runtime, "flywheel")).toBe(true);
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "node_dwell",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "0",
+				expectedChangeSeq: 0,
+				actor: "fixture",
+				reason: "pause node dwell patrol",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeNodeDwellEnabled(runtime, "flywheel")).toBe(false);
+
+		expect(
+			store.applyScopedFlagValueChange({
+				name: "node_dwell",
+				scope: "flywheel",
+				op: "set",
+				rawTo: "1",
+				expectedChangeSeq: store.getFlagValueChangeSeq(
+					"node_dwell",
+					"flywheel",
+				),
+				actor: "fixture",
+				reason: "resume node dwell patrol",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeNodeDwellEnabled(runtime, "flywheel")).toBe(true);
 	});
 
 	it("rejects unmanaged project identities and propagates store failures", () => {

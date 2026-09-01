@@ -290,6 +290,7 @@ symlink_source_for() {
     flywheel-cmux-autostart) echo "$REPO_ROOT/scripts/flywheel-cmux-autostart.sh" ;;
     meta-alert.sh) echo "$REPO_ROOT/scripts/meta-alert.sh" ;;
     flywheel-patrol-snapshot) echo "$REPO_ROOT/scripts/lead-patrol-snapshot.sh" ;;
+    flywheel-node-dwell-control) echo "$REPO_ROOT/scripts/flywheel-node-dwell-control.mjs" ;;
     *) echo "" ;;
   esac
 }
@@ -310,7 +311,7 @@ symlink_source_for() {
 # verbatim (absence is the installer's business, and their rc contract is
 # unchanged) — widening the regime to them is a far larger blast radius than
 # this incident justifies.
-symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot) return 0 ;; *) return 1 ;; esac; }
+symlink_strict_name() { case "$1" in meta-alert.sh|flywheel-patrol-snapshot|flywheel-node-dwell-control) return 0 ;; *) return 1 ;; esac; }
 
 # Keep every existing meta-alert.sh title/body byte-for-byte. The patrol
 # snapshot shares the strict mechanics but is a generic managed executable,
@@ -356,12 +357,15 @@ strict_publish_link() {
   return 1
 }
 
-symlink_source_ready() { # <source> — sane, shebang-bearing, executable
-  local src="$1"
+symlink_source_ready() { # <name> <source> — sane, shebang-bearing, executable
+  local name="$1" src="$2"
   [ -n "$src" ] || return 1
   assert_sane_script_source "$src" 2>/dev/null || return 1
   head -c 2 "$src" 2>/dev/null | grep -q '^#!' || return 1
   if [ ! -x "$src" ]; then
+    # FLY-2210's wrapper is committed mode 100755. Converge must not mutate a
+    # trusted checkout to disguise an index-mode regression.
+    [ "$name" != "flywheel-node-dwell-control" ] || return 1
     if chmod 0755 "$src" 2>/dev/null; then
       echo "[converge-bin] chmod 0755 on repair source $src (exec bit was missing; tsc default 0644)" >&2
     else
@@ -372,7 +376,7 @@ symlink_source_ready() { # <source> — sane, shebang-bearing, executable
 }
 
 if ! is_temp_or_worktree_root "$REPO_ROOT"; then
-  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot; do
+  for name in agent-team-transport tmux-server-rescue flywheel-cmux-sync flywheel-cmux-autostart meta-alert.sh flywheel-patrol-snapshot flywheel-node-dwell-control; do
     link="$BIN_DIR/$name"
     src="$(symlink_source_for "$name")"
 
@@ -393,7 +397,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
             rc=1
             continue
           fi
-          if ! symlink_source_ready "$src"; then
+          if ! symlink_source_ready "$name" "$src"; then
             echo "[converge-bin] WARNING: $name is a regular-file copy but this checkout has no SANE executable source at ${src:-<none>} — NOT replacing" >&2
             alert "bin copy shape unhealthy: $name (no sane executable source)" \
               "$link is a regular-file deployment copy, but this checkout has no sane executable ${src:-<none>} to link (missing, failed source sanity, no shebang, or un-chmod-able). The deployed copy was preserved; repair the checkout first." \
@@ -461,7 +465,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
     # silent as an absent one.
     if symlink_strict_name "$name" && [ ! -L "$link" ]; then
       if [ ! -e "$link" ]; then
-        if symlink_source_ready "$src"; then
+        if symlink_source_ready "$name" "$src"; then
           strict_publish_link "$name" "$src" "$link" created || rc=1
         else
           echo "[converge-bin] ERROR: $name is absent and this checkout has no sane executable source at ${src:-<none>}" >&2
@@ -476,7 +480,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
         # is a separate path from the cmux block above, so it carries its own
         # failure handling and its own test (M13); the existing C2 case does not
         # reach here.
-        if ! symlink_source_ready "$src"; then
+        if ! symlink_source_ready "$name" "$src"; then
           echo "[converge-bin] WARNING: $name is a regular-file copy but this checkout has no sane executable source at ${src:-<none>}" >&2
           strict_alert "$name" "bin alert-chain copy unhealthy: $name (no sane source)" \
             "$link is a regular-file deployment copy and this checkout has no sane executable ${src:-<none>} to link. The deployed copy was preserved; repair the checkout first (FLY-1577)." \
@@ -654,7 +658,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
       # broken chain, so it is loud instead of silent. 0644 is the normal fresh
       # -checkout shape and is auto-chmod'd inside symlink_source_ready without
       # rebuilding the link.
-      if symlink_strict_name "$name" && ! symlink_source_ready "$src"; then
+      if symlink_strict_name "$name" && ! symlink_source_ready "$name" "$src"; then
         echo "[converge-bin] ERROR: $name links to ${src} but that source is not usable" >&2
         strict_alert "$name" "bin alert-chain source unusable: $name" \
           "$link points at the canonical ${src}, but that source failed FLY-954 sanity / has no shebang / could not be made executable. The link was left untouched. The cmux watcher's failure report cannot be delivered until the source is repaired (FLY-1577)." \
@@ -671,7 +675,7 @@ if ! is_temp_or_worktree_root "$REPO_ROOT"; then
     #   • missing owner-exec bit is AUTO-REPAIRED with chmod 0755, mirroring
     #     syncFlywheelCliBin (FLY-142 R5: tsc emits dist at 0644 — refusing
     #     would make every fresh-build repair fail).
-    if symlink_source_ready "$src"; then
+    if symlink_source_ready "$name" "$src"; then
       tmp="${link}.tmp.$$"
       if ln -s "$src" "$tmp" 2>/dev/null && mv -f "$tmp" "$link"; then
         echo "[converge-bin] symlink repaired: $name was ${unhealthy} -> now $src" >&2

@@ -46,12 +46,12 @@ Bridge 对「你名下」的**待核声明**,两账不一致是 finding，但它
 `orphan_pane` 工单；`claude-infra-bot-lead`(Claw)是唯一责任席位。任何 Department
 Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
 
-**产出物合同**:每条 tick 必产一份六步报告:
+**产出物合同**:每条 tick 必产一份六个 numeric STEP + 一个命名 `STEP DWELL` 的报告:
 `~/.flywheel/patrol-reports/<leadId>/<UTC>-tickNA.md`。先运行快照;它会原子
 落下含六段的候选骨架并在最后打印 `REPORT_PATH=<absolute path>`。骨架里的
 `LEAD-JUDGMENT-REQUIRED` / `*-CANDIDATE` 不是完成;每一行都定稿为
-`OK | FINDING | UNAVAILABLE(<稳定原因>)` 才算巡完。「全部健康」也必须六行
-齐全。第 2 步还必须无条件含 `pane_count=N` 和恰好 N 行 `PANE_EVIDENCE`;
+`OK | FINDING | UNAVAILABLE(<稳定原因>)` 才算巡完。「全部健康」也必须六个 numeric
+状态行加一条 `STEP DWELL` 状态行齐全。第 2 步还必须无条件含 `pane_count=N` 和恰好 N 行 `PANE_EVIDENCE`;
 零 pane 或 tmux unavailable 也写 `pane_count=0`。自动骨架本身不是巡检完成证据。
 
 **UNAVAILABLE 出口**:命令失败、对象不存在、或无法理解要求时,该步必须写
@@ -165,6 +165,78 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    `IDENTIFIER='<FLY-XX>'; THREAD_JSON="$(printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS "${BRIDGE_URL:?BRIDGE_URL required}/api/chat-threads?issueId=$IDENTIFIER&channelId=$CHAT_CHANNEL_ID")"; THREAD_ID="$(printf '%s' "$THREAD_JSON" | jq -r '.threadId // empty')"; test -n "$THREAD_ID"`;
    最后 run: Discord MCP `fetch_messages(chat_id=$THREAD_ID, limit=20)`。消息与
    archive 状态以 Discord 为真,`chat_threads` 不是状态 oracle。
+
+**STEP DWELL — 节点停留处置维度(FLY-2210)** — run:
+`awk '/^## STEP DWELL$/{show=1; next} show' "$REPORT_PATH"`。这是独立命名维度，
+不是 numeric STEP 7；六个 numeric STEP 的既有编号、提取器和含义不变。快照只读
+`workflow_run.status='active'` JOIN `workflow_run_node`，只取 `ended_at IS NULL` 且
+`state IN ('running','review','admitted')` 的节点；停留基线是
+`max(started_at, node_dwell_review 最新 examined_at)`。整体机制先读取项目级布尔
+flag `node_dwell`：它是 `default-on`、conversational toggleable，并在每个 tick
+call-time 重读，开关生效无需重启。`node_dwell=off` 时 `STEP DWELL` 直接为 `OK`，
+不得产生任何 `NODE_DWELL` 行、提醒、`DWELL_ACTION` 或强制 `FINDING`；flag 读取失败
+仍须 fail closed 为 UNAVAILABLE，禁止静默降级成永远 off。阈值来自 `flag_values` 的
+`node_dwell_threshold_hours`，项目 scope 优先、`*` 次之、默认 3 小时。任何阈值、
+schema、owner 或历史 gate 映射不可读/不唯一都 fail closed 为 UNAVAILABLE，禁止
+偷偷回退到默认值或猜 deep dive。
+
+超阈后按以下唯一顺序处置：
+
+1. **先判是否等待 founder(两个判据取或)**：① `node_id='founder_gate'` 且
+   `state='review'`；② canonical CommDB question 的
+   `checkpoint='approve_to_ship'` 尚无 response 子消息，且以当前
+   `workflow_gate_holder.run_id -> question_id` 精确绑定；仅旧数据缺 holder 时才准用
+   `question.from_agent -> comm.sessions.execution_id -> issue_id` 的唯一映射，缺失或歧义
+   写 `gate_mapping_incomplete`，绝不误走 deep dive。命中等待 founder 时，对**同一 issue**
+   的所有超阈节点合并成该单 thread **一条提醒**，不得逐节点刷屏；仍复用现有 patrol
+   tick 与 thread 通道，禁止新增 daemon、timer 或独立告警器。更重要的是：
+   **同一 waiting episode 只提醒一次**。提醒投递成功后写下的 `waiting_founder`
+   收据是持久抑制证据；机器在重启后仍必须恢复同一 episode，输出
+   `waiting_episode_reminded=yes`，且不生成第二条提醒或强制 finding。纯时间流逝
+   永远不能重新武装提醒，也不再采用“每 3 小时再催一次”的旧语义。
+
+   waiting episode 的持久起点取当前 node admission、canonical `gate state/head`
+   活动以及 founder 在该 issue thread 发言三类 durable 事实的最新值。只有 founder
+   已有动作后才重新武装：批准/打回造成 gate state 变化、新 head 再次进入等待，或
+   founder 在该 issue thread 发言；该动作先重置阈值计时，节点从新起点再次超阈后，
+   才允许新 episode 的一条 grouped reminder。live `mailbox` 与 append-only
+   `mailbox_log` 同时覆盖消息在进程重启或归档后的证据。
+2. **非 founder 等待必须强制 deep dive**：先读该 run 的**最新 workflow transition**，
+   再读目标 Runner 的**终端内容**与该节点的**工作日志**，把内容证据判成「推进中」或
+   「原地空转」。**禁止只看画面刷不刷**、最后一行或 pane 指纹是否变化，或
+   不读内容就以“还在刷新”封口。FLY-2178 在 2026-08-31 的原文教训必须保留：
+   「03:25 2178 实现节点进场；06:25 巡检本应读终端发现『原地轮询等门』=空转有问题
+   并当场解，今天实际 11:55 才解开；规则在的话 06:25 就抓到了。」这就是三小时阈值
+   强制读内容而不是看刷新动画的原因。
+3. `started_at` 不因同 attempt 重入而重写；若最新 transition 证明 threshold 窗内刚发生
+   **same-attempt re-admission**，这是 v2 已知的首轮 false positive。仍须完成终端内容与
+   工作日志核验，然后写 `normal` 收据重置基线；不得借“预期误报”跳过检查，也不得无界
+   重复下钻。
+4. verdict domain 只有 `normal|cleared|fixed|waiting_founder`：deep dive 结论只用
+   `normal|cleared|fixed`；提醒分支只用 `waiting_founder`。把同一
+   issue 本轮所有节点组成一个 JSON batch，stdin 的唯一 schema 是
+   `{"items":[{"runId":"<run>","nodeId":"<node>","attempt":<n>}]}`；字段名和
+   camelCase 逐字固定，禁止从报告字段自行猜 `nodes/run_id/node_id` 变体。经
+   `${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/bin/flywheel-patrol-snapshot --project "$PROJECT_NAME" --lead "$LEAD_ID" --record-dwell-receipts <verdict> --note '<bounded conclusion>'`
+   从 stdin 提交。只有内容核验完成，或 founder **提醒投递成功后**，才可 INSERT 收据；
+   发送失败不得先写 `waiting_founder`。收据的 DB-generated `examined_at` 是下轮计时基线；
+   `normal|cleared|fixed` 在下一阈值窗后可再次 deep dive，而 `waiting_founder` 还作为
+   当前 waiting episode 的持久去重凭据，纯时间流逝不再触发 founder 重报。
+
+快照按每个 distinct `issue + route` 生成一条
+`DWELL_ACTION step=DWELL issue=<FLY-N> route=<deep_dive|founder_reminder> action=REQUIRED result=UNSET evidence=node_dwell_table`；
+同一 issue 的多个 founder-wait 节点必须只出现一条，多 issue 必须各有一条。结构性
+cause 使用 `issue=aggregate route=repair_<cause>`，每个 cause 一条。它们是待办占位，
+不是完成账：处理后必须把**每个 `DWELL_ACTION` 原位替换**为合法的
+`FINDING step=DWELL bridge_problem=... result=... evidence=... owner=... next=... epic=... epic_marker=...`；
+不得保留 `action=REQUIRED/result=UNSET`，也不得让快照预先伪造 finalized finding。
+
+机器表中任何 `NODE_DWELL ... over_threshold=yes` 都强制 `STEP DWELL: FINDING`，并须有
+合法 `FINDING step=DWELL` accountability 行；不能把超阈行藏在 `OK` 或
+`UNAVAILABLE`。`UNAVAILABLE_CAUSE step=DWELL` 每一条也必须有对应 accountability，
+但 UNAVAILABLE 报告中禁止同时出现 overdue row。`multiple_unavailable 只允许 STEP 6`；
+STEP DWELL 多 cause 统一使用稳定 `node_dwell_incomplete` token，逐 cause 留账。
+
 6. **处置 + 完成报告** — 打开 `"$REPORT_PATH"`,逐行定稿并写证据。名下
    finding 按上面的唯一命令或对应 emergency procedure 有界修复。然后对每个
    distinct finding 强制执行下面 A/B；不允许跳过后只写观察结果。
@@ -295,7 +367,7 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    structural 则 structural，否则 transient）。
 
    每个 distinct finding 最后追加一行，字段和值不得含空格：
-   `FINDING step=<1-6> bridge_problem=<yes|no> result=<fixed|advanced|escalated-with-plan> evidence=<stable-token> owner=<agent:agent-id|founder|n/a> next=<inspect:token|repair:token|authorize:token|route:token|file:token|retry:token|n/a> epic=<FLY-2072#comment-uuid|n/a|unavailable> epic_marker=<64hex|n/a>`。
+   `FINDING step=<1-6|DWELL> bridge_problem=<yes|no> result=<fixed|advanced|escalated-with-plan> evidence=<stable-token> owner=<agent:agent-id|founder|n/a> next=<inspect:token|repair:token|authorize:token|route:token|file:token|retry:token|n/a> epic=<FLY-2072#comment-uuid|n/a|unavailable> epic_marker=<64hex|n/a>`。
    `fixed|advanced` 必须 `owner=n/a next=n/a`；`escalated-with-plan` 必须有
    `owner=founder|agent:<registered-id>` 与有限动词下一步。`bridge_problem=no` 必须
    `epic=n/a epic_marker=n/a`。
@@ -309,7 +381,7 @@ Lead 都不得为了 orphan 兜底扫描或 capture 别人的 pane。
    transient 连续 2 tick 时 run:
    `PAYLOAD="$(jq -n --arg title "$TITLE" --arg description "patrol report: $REPORT_PATH" '{title:$title, description:$description, team:"FLY", project:"Flywheel", labels:["Flywheel"]}')"; printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?TEAMLEAD_API_TOKEN required}" | curl --config - -fsS -X POST -H 'Content-Type: application/json' "$BRIDGE_URL/api/linear/create-issue" -d "$PAYLOAD"`。
    最后 run(完成门):
-   `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; WELL_FORMED_EVIDENCE="$(awk '/^PANE_EVIDENCE / && / pane=[^ ]+/ && / target=[^ ]+/ && / capture_sha256=[^ ]+/ && / state_sha256=[^ ]+/ && / last_change_epoch=[0-9]+/ && / findings=[^ ]+/ && / action=[^ ]+/ && / result=[^ ]+/{n++} END{print n+0}' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && test "$PANE_COUNT" -eq "$WELL_FORMED_EVIDENCE" && ! grep -Eq 'LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
+   `FINAL_STEP_COUNT="$(grep -Ec '^STEP [1-6]: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; DWELL_STEP_COUNT="$(grep -Ec '^STEP DWELL: (OK|FINDING|UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\))$' "$REPORT_PATH")"; PANE_COUNT="$(sed -n 's/^pane_count=//p' "$REPORT_PATH" | tail -1)"; EVIDENCE_COUNT="$(grep -c '^PANE_EVIDENCE ' "$REPORT_PATH")"; WELL_FORMED_EVIDENCE="$(awk '/^PANE_EVIDENCE / && / pane=[^ ]+/ && / target=[^ ]+/ && / capture_sha256=[^ ]+/ && / state_sha256=[^ ]+/ && / last_change_epoch=[0-9]+/ && / findings=[^ ]+/ && / action=[^ ]+/ && / result=[^ ]+/{n++} END{print n+0}' "$REPORT_PATH")"; case "$PANE_COUNT" in ''|*[!0-9]*) false;; esac && test "$FINAL_STEP_COUNT" -eq 6 && test "$DWELL_STEP_COUNT" -eq 1 && test "$PANE_COUNT" -eq "$EVIDENCE_COUNT" && test "$PANE_COUNT" -eq "$WELL_FORMED_EVIDENCE" && ! grep -Eq '^STEP (0|[7-9]|[1-9][0-9]+): |LEAD-JUDGMENT-REQUIRED|-CANDIDATE$|action=REQUIRED|result=UNSET' "$REPORT_PATH"`。
    再 run 以下 finding validator；非零同样没有完成：
 
 # FLY-2080-FINDING-GATE-BEGIN
@@ -325,9 +397,33 @@ function uuid(v,    body,n,a) {
   return n==5 && length(a[1])==8 && length(a[2])==4 && length(a[3])==4 && length(a[4])==4 && length(a[5])==12 && body !~ /[^0-9a-f-]/
 }
 function hex64(v) { return length(v)==64 && v !~ /[^0-9a-f]/ }
-/^STEP [1-6]: FINDING$/ { step=substr($2,1,1); required[step]=1; next }
+function normalized_step(v) { sub(/:$/, "", v); return v }
+/^STEP ([1-6]|DWELL): OK$/ {
+  step=normalized_step($2); status[step]="OK"; status_seen[step]++; next
+}
+/^STEP ([1-6]|DWELL): FINDING$/ {
+  step=normalized_step($2); status[step]="FINDING"; status_seen[step]++; required[step]=1; next
+}
+/^STEP ([1-6]|DWELL): UNAVAILABLE\((transient|structural): [A-Za-z0-9._-]+\)$/ {
+  step=normalized_step($2); status[step]="UNAVAILABLE"; status_seen[step]++
+  if ($0 ~ /: multiple_unavailable\)$/ && step!="6") bad=1
+  next
+}
+/^STEP / { bad=1; next }
+/^NODE_DWELL / {
+  if ($0 ~ / over_threshold=yes( |$)/) {
+    dwell_overdue=1; issue=value("issue"); route=value("route")
+    if (route=="deep_dive" || route=="founder_reminder") {
+      if (issue=="") bad=1
+      key=issue SUBSEP route
+      if (!dwell_action_seen[key]++) dwell_action_required++
+    }
+  }
+  next
+}
 /^UNAVAILABLE_CAUSE / {
   step=value("step"); class=value("class"); token=value("token")
+  if (step !~ /^([1-6]|DWELL)$/) bad=1; else unavailable_cause[step]++
   if (step=="6" && class=="transient" && token=="linear_epic_unavailable") linear_unavailable=1
   next
 }
@@ -335,7 +431,7 @@ function hex64(v) { return length(v)==64 && v !~ /[^0-9a-f]/ }
   step=value("step"); bridge=value("bridge_problem"); result=value("result")
   evidence=value("evidence"); owner=value("owner"); next_action=value("next")
   epic=value("epic"); marker=value("epic_marker")
-  if (step !~ /^[1-6]$/ || !required[step]) bad=1; else detail[step]++
+  if (step !~ /^([1-6]|DWELL)$/) bad=1; else detail[step]++
   if (bridge!="yes" && bridge!="no") bad=1
   if (result!="fixed" && result!="advanced" && result!="escalated-with-plan") bad=1
   if (evidence !~ /^[A-Za-z0-9][A-Za-z0-9._:-]*$/) bad=1
@@ -351,7 +447,11 @@ function hex64(v) { return length(v)==64 && v !~ /[^0-9a-f]/ }
   } else if (epic!="n/a" || marker!="n/a") bad=1
 }
 END {
+  for (step in status_seen) if (status_seen[step]!=1) bad=1
   for (step in required) if (!detail[step]) bad=1
+  for (step in detail) if (!required[step] && !(step=="DWELL" && unavailable_cause[step]>0)) bad=1
+  if (dwell_action_required + unavailable_cause["DWELL"] > detail["DWELL"]) bad=1
+  if (dwell_overdue && status["DWELL"]!="FINDING") bad=1
   if (needs_linear_unavailable && !linear_unavailable) bad=1
   exit bad
 }
