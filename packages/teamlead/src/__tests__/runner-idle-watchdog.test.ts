@@ -211,6 +211,61 @@ describe("RunnerIdleWatchdog", () => {
 		vi.useRealTimers();
 	});
 
+	it("health distinguishes an armed idle loop from an in-flight poll", async () => {
+		vi.setSystemTime(new Date("2026-08-30T10:00:00.000Z"));
+		const { watchdog, store, mockQuery } = createTestWatchdog({ sessions: [] });
+
+		expect(watchdog.health()).toEqual({
+			timerRunning: false,
+			pollIntervalMs: 30_000,
+			pollInProgress: false,
+			lastPollAt: null,
+			lastPollResult: null,
+			activeRunningSessions: null,
+		});
+
+		watchdog.start();
+		expect(watchdog.health().timerRunning).toBe(true);
+
+		await watchdog.pollOnce();
+		expect(watchdog.health()).toEqual({
+			timerRunning: true,
+			pollIntervalMs: 30_000,
+			pollInProgress: false,
+			lastPollAt: "2026-08-30T10:00:00.000Z",
+			lastPollResult: "ok",
+			activeRunningSessions: 0,
+		});
+
+		store.getActiveSessions.mockReturnValue([makeSession()]);
+		let resolveQuery: (() => void) | undefined;
+		mockQuery.mockImplementationOnce(
+			() =>
+				new Promise<StatusResponse>((resolve) => {
+					resolveQuery = () =>
+						resolve({ result: { status: "executing", reason: "active" } });
+				}),
+		);
+		vi.setSystemTime(new Date("2026-08-30T10:01:00.000Z"));
+		const inFlight = watchdog.pollOnce();
+		expect(watchdog.health().pollInProgress).toBe(true);
+		expect(watchdog.health().lastPollAt).toBe("2026-08-30T10:00:00.000Z");
+		await watchdog.pollOnce();
+		expect(mockQuery).toHaveBeenCalledTimes(1);
+
+		resolveQuery?.();
+		await inFlight;
+		expect(watchdog.health()).toMatchObject({
+			pollInProgress: false,
+			lastPollAt: "2026-08-30T10:01:00.000Z",
+			lastPollResult: "ok",
+			activeRunningSessions: 1,
+		});
+
+		watchdog.stop();
+		expect(watchdog.health().timerRunning).toBe(false);
+	});
+
 	describe("state transitions", () => {
 		it("executing→waiting→waiting triggers notification after 2 cycles", async () => {
 			const { watchdog, store } = createTestWatchdog({
@@ -940,10 +995,20 @@ describe("RunnerIdleWatchdog FLY-639 crash containment", () => {
 		expect(store.recoverFromCorruption.mock.calls[0]![0]).toBeInstanceOf(Error);
 		// No idle event emitted on a failed poll.
 		expect(store.appendLeadEvent).not.toHaveBeenCalled();
+		expect(watchdog.health()).toMatchObject({
+			pollInProgress: false,
+			lastPollResult: "error",
+			activeRunningSessions: null,
+		});
+		expect(watchdog.health().lastPollAt).not.toBeNull();
 
 		// polling flag is released so the next cycle can run.
 		store.getActiveSessions.mockReturnValue([]);
 		await expect(watchdog.pollOnce()).resolves.toBeUndefined();
+		expect(watchdog.health()).toMatchObject({
+			lastPollResult: "ok",
+			activeRunningSessions: 0,
+		});
 
 		warnSpy.mockRestore();
 		watchdog.stop();
