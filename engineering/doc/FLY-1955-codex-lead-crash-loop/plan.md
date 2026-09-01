@@ -1,201 +1,230 @@
-# FLY-1955 Codex Lead 81 秒崩溃循环 — 实施计划
+# FLY-1955 Codex Lead 崩溃循环(第二轮:auth-dead)— 实施计划
 
 Issue: FLY-1955 (https://linear.app/geoforge3d/issue/FLY-1955/infra活跃-两个-codex-lead-持续崩溃循环-235-小时精确每-81-秒已跨越两次全舰重启未自愈-remote-control)
-日期: 2026-08-21
-基于: research.md
+日期: 2026-08-31
+基于: research.md §R2(exploration.md §R2 → research.md §R2 → 本计划)
 版本: vNEXT(ship 时取当前空号)
-Status: codex-approved(design review 4 轮,R4 APPROVED 2026-08-21)
+Status: draft(Codex design review R1/R2/R3 findings 已全数吸收,待 R4)
 
-实施期证据勘误(15:20-15:22 PDT):阶段 0 尚未发生,两个 Lead 仍在 81 秒循环;14:02 的 global codex stopgap 先被生产 updater 踩回 infra-bot home,随后又被本单设计实验遗留的 updater 踩到 scratchpad。Tadashi 15:22 再次恢复中立轴,并要求修复必须从源头保证 Lead/实验 updater 永不写真实全局轴。依该 Lead 指令,C2 增加 Codex 原生 `CODEX_INSTALL_DIR` 隔离;完整归因见 research.md §8。
-
-QA 返工勘误(17:10 PDT):独立 QA 证明 zombie 回收主路径在 macOS 真机有效,同时发现 full-access 正向 allowlist 会洗掉统一告警路由,导致 G3 只能本机 dead-letter。依 Lead 裁决,G3 改为 runtime 投影现有 `FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID`,并将 `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 固定为已有的 `DISCORD_BOT_TOKEN`;不引入第二份 secret,成功输出写回 Lead 日志。告警频道缺失时保留 Lead 可用性并沿用脚本的 skip + log 语义。
+> **第一轮(zombie 死锁)已交付**:PR #915(2026-08-21 merge),其 plan 全文见本文件 git 历史
+> (commit 2928785f8)。mufasa lead 已由该修复救活。本计划只覆盖第二轮:infra-bot lead
+> 因 ChatGPT refresh token 被吊销而持续崩溃循环 ≥4.7 天,且该失败路径零告警。
+> Lead 增量输入(2026-08-31 22:44-23:29Z 指令与回复):孤儿 broker pid 819 清除实验已证伪
+> 「孤儿占注册位」假设;主攻方向确认为「连接为何 errored + recovery 为何收不敛」——即本计划
+> 根因(凭据死亡);FLY-2211 互查约束见 §8。
 
 ## 0. 一句话
 
-`codex remote-control start` 的存活判定被「挂在不 reap 的 updater 名下的 zombie daemon」骗过而永不 spawn(四格实验 E3 100% 复现);修法 = 止血 runbook(证明后杀 updater 让 zombie 被 reap,分钟级恢复)+ `ensure_daemon` 证据驱动的 zombie 回收(让未来任何 daemon 死因都在一轮内自愈),外加 FLY-513 守卫从「刷日志」升级为「真告警」。
+infra-bot 的 Codex 账号 refresh token 被 server 吊销(daemon stderr 401 `refresh_token_invalidated`/`token_revoked` 实证),`remote-control start` 每 ~30-37 秒失败一次且走的 `race_self_healed` 重试失败路径不发告警;修法 = auth-dead 证据驱动分类(发 `login_expired` 告警 + 15 分钟级 parking,token 修好自动恢复)+ ensure_daemon 全 die 路径连败计数安全网告警(终结「按失败类别挂告警必有缝隙」),外加执行第一轮遗留的 FLY-513 operator 收口与账号重登录 runbook。
 
 ## 1. 目标 / 非目标
 
 **目标**
-- G1(止血,operator):两个 Lead 在不等代码 merge 的前提下恢复,含验收判据。
-- G2(根治,代码):`ensure_daemon` 遇到 E3 形态(stale pid → zombie)时证据驱动回收并自愈;证据不齐保持现状 fail-loud。健康路径 byte-compat(golden 对照,见 §5)。
-- G3(可见性):回收路径按**结果**经 `lead-alert.sh` 发告警(recovered / stuck 两形态,episode 级),终结「静默烧 23.5h」。
-- G4(FLY-513 收尾):所有 managed updater 的 installer 写目标固定在各自 Lead home(`CODEX_INSTALL_DIR="$HOME_DIR/.local/bin"`),从源头不再写真实全局轴;warn-only 升级为 warn + 告警;中立全局布局经**既有 reviewed 工具** `fly-513-repoint-global-codex.sh` 固化(operator 步骤)。
-- G5(验证):部署后跑 FLY-1892 双向通路验证,通则并单、不通则回报其独立继续。
+- G1(止血,operator):infra-bot 的 Codex 账号按 Lead/founder 对 Q-R2 的裁决处置(救回=按 §6 阶段 0 的 quiesce→重登录→restore 序列,退役=另单);救回后 Lead 在一个循环内自愈,含验收判据。runbook 双线并存(A 救回主线 + B 退役支线),不阻塞代码交付。
+- G2(分类,代码):`ensure_daemon` 首次 start 失败后按**增量证据合同**(§3.1:文件身份快照 + 本轮新增字节 + 吊销签名集)分类 `auth_dead`:发 `login_expired` 告警(天级去重,body 只携带命中的固定 code 名),有界 hold(固定 900s,分片 + 父进程存活探测)后 die。热循环 ~37s/轮 → ~15.5min/轮;auth 修复后下一轮自动满血恢复。
+- G3(安全网,代码):`ensure_daemon` **任何** die 路径推进连败计数(原子写),连败 ≥3 发 kind=`crash_loop` severity=severe 告警(天级去重),任一成功路径清零;**计数持久化自身失败立即发状态故障告警**——安全网不允许再有静默失效形态。
+- G4(FLY-513 收口,operator):执行第一轮 plan 阶段 3(`packages/teamlead/scripts/fly-513-repoint-global-codex.sh` 中立化全局轴)——前置条件 2026-08-31 现读为真;保留工具自带「无 Codex review 进行中」前置门;>65 分钟跨 updater 周期观察窗验收。
+- G5(验证):账号救回后跑 FLY-1892 双向通路验证,通则并单、不通则回报其独立继续(沿用第一轮合同)。
 
 **非目标**
-- 不修 codex 上游的 zombie 误判(另行报 bug,与本修复幂等不冲突);
-- 不禁/不钉 standalone updater 的自动升级(research Q2 未找到旋钮;列 follow-up);
-- 不做通用 Lead crash-loop 检测(FLY-1687 巡检 / launchd 层职责);
-- 不覆盖 8-21 早上的 30 秒周期循环(失败形态不同,非同病);
-- 不动 Claude Lead 路径、不动 `remote-control` 之外的任何 codex 调用面;
-- **不做宽泛的 stale 文件/socket 清理**:非 zombie 的 missing-socket 形态(daemon+updater 双亡、pid 死透)由第一次 `remote-control start` 按 E2 自愈;若它仍失败且 zombie 证明不完整,fail-loud 交还 launchd 重试就是正确行为——实现者不得追加任何超出 §3 证据链的清理动作。
+- 不自动重登录(浏览器 OAuth + 人持凭据;重登录是 operator 流程,不进本脚本);
+- 不做 runtime 层 parked 状态机、不改 TS(research §R2.3.1 选项 B 已弃;R1 #3 后放弃 hold 可配置 env,连带免去 TS env 投影改动);
+- 不 `launchctl unload` / 不改 launchd plist / 不动 Lead 生命周期(退役属 Lead 管理,另单);
+- 不动 zombie 回收机制及其专用告警(第一轮交付物原样保留);
+- 不动 updater 升级策略(第一轮 follow-up 不变);
+- 不做舰队级通用 crash-loop 检测(FLY-1687 / launchd 层职责);
+- 不新增 alert kind、不新增 secret、不新增 env、不新增常驻进程/timer。
 
 ## 2. 改动清单
 
 | # | 文件 | 改动 | 性质 |
 |---|---|---|---|
-| C1 | `packages/teamlead/scripts/codex-lead-tui-home.sh` | `ensure_daemon` 加 start 失败后的 zombie 回收 + 恰一次重试;新增 `reap_zombie_daemon_if_proven` | 代码(主修复) |
-| C2 | 同上 | ①每次 `remote-control start` 传原生 `CODEX_INSTALL_DIR="$HOME_DIR/.local/bin"`,隔离 updater 的 installer 可见命令目标;②`ensure_home` 的 FLY-513 warning 分支追加 `lead-alert.sh` 调用(既有 kind `bin_integrity_drift`,见 §4) | 代码 |
-| C3 | `packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh` | 新 bash harness,与 SUT 既有邻位 harness(`codex-lead-tui-home.test.sh`)同目录同约定 | 测试 |
-| C4 | `.github/workflows/ci.yml` + `scripts/__tests__/ci-structure.test.sh` | ①ci.yml 字面添加 C3 的执行 step(enumeration 只扫根 `scripts/__tests__`,对 package-local harness 不可见,必须手登);②ci-structure.test.sh(always-on quick gate 恰跑一次、own exact script-step inventory)的 inventory 断言扩展这条新 step,把「登记被移除」变 CI 红 | 测试基建 |
-| C5 | 本文件夹 runbook 段(§6)+ CLAUDE.md 里程碑 | 止血/固化 operator 步骤留档 | 文档 |
+| C1 | `packages/teamlead/scripts/codex-lead-tui-home.sh` | 新增 `classify_auth_dead`(快照+增量扫描)+ auth-dead 处置分支(告警→分片 hold→die);`ensure_daemon` 在首次 start **前**采文件身份快照,失败后、`reap_zombie_daemon_if_proven` 前分类 | 代码(主修复) |
+| C2 | 同上 | 新增 `daemon_die`(原子连败计数 + ≥3 触发安全网告警 + 计数 I/O 失败即时告警 + 转 `die`);`ensure_daemon` 内所有 die 站点换用;两个成功 return 点前受控清计数 | 代码 |
+| C3 | `packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh` | 追加 A1-A11 场景(§5);复跑既有 T2 golden 断言健康路径 byte-compat | 测试 |
+| C4 | 本文件夹 runbook 段(§6) | 重登录 quiesce 序列/收口 operator 步骤留档 | 文档 |
 
-无 TS 改动、无 schema、无新 Flywheel 配置 env(只给 Codex 子进程设置 installer 已有原生 `CODEX_INSTALL_DIR`;告警 seam 复用已治理的 `FLYWHEEL_LEAD_ALERT_SH`)、无新 kind、无新常驻进程/timer。按 FLY-1959,merge 不部署;后续 updater 班车部署后,循环中的两个 Lead 下一轮吃到新脚本。其他存量 Codex updater 须按 §6 受控换代一次,才能继承安全 installer 目标。
+CI 无需改:C3 位于第一轮已登记进 `.github/workflows/ci.yml` 的同一 harness 文件(ci-structure inventory 已守卫该 step)。无 TS 改动、无 schema、无新 kind(`login_expired`、`crash_loop` 均已在 allowlist)、**无新 env**(R1 #3:hold 固定 900s,测试经 source 后覆写 `fly1955_sleep` seam,不开生产接口)、告警 seam 复用既有 `emit_lead_alert`。
 
-## 3. C1 详细设计 — `ensure_daemon` zombie 回收
+## 3. C1 详细设计 — auth-dead 分类与 parking
 
-### 3.1 控制流(改动后)
+### 3.1 `classify_auth_dead`(增量证据合同;R1 #1 修正)
 
-`reap_zombie_daemon_if_proven` 返回**四态 outcome**(经全局变量或 stdout 单词,穷举、无缺省分支):
+**快照点**:`ensure_daemon` 在首次 `remote-control start` 之前,对 `$HOME_DIR/app-server-daemon/app-server.stderr.log` 采身份快照 `(存在性, st_ino, st_size, 旧内容 digest)`——digest 为旧 `[0, st_size)` 前缀的哈希(经 `python3 os.stat` + hashlib,与既有 pid 文件读取同工具链)。start 成功则快照弃用,零行为差异。
 
-| outcome | 含义 | 调用方行为 |
-|---|---|---|
-| `not_proven` | 证据链任一步不满足 / 探针错误(未发任何信号) | die(原文案 + " (stale-daemon evidence incomplete)"),**无告警**(非本病,不制造噪音) |
-| `race_self_healed` | P2 复检发现 socket 已出现(他愈竞态,未发任何信号) | 直接重试 start 一次;成功**且 socket 复验仍在** → return(零告警);exit 0 但 socket 已消失、或重试失败 → die(fail-loud,不得按成功返回) |
-| `reaped` | 证据齐、信号完成、zombie 已被 init reap | 重试 start 一次 → 成功且 socket 在 → §3.4 恢复断言 → 过:发 recovered、return;断言败:发 stuck、仍 return(socket 已在,Lead 可跑,告警留人查) → 重试失败**或 exit 0 但 socket 缺失**:发 stuck、die |
-| `action_stuck` | 已发信号后的一切不确定:reap 超时 / kill 失败且目标仍逐字匹配 / TERM 后 KILL 前身份漂移或探针错误 | 发 stuck 告警 → die(不重试;绝不无控升级) |
-
-```
-ensure_daemon:
-  codex_bin 校验(不变)
-  full-access → remote-control stop || true(不变;companion/read-only 无 stop,不变)
-  CODEX_INSTALL_DIR="$HOME_DIR/.local/bin" remote-control start --json
-    ├─ 成功 → 校验 socket → return          ← 健康路径,与现状一致(golden 对照,§5)
-    └─ 失败 → reap_zombie_daemon_if_proven → 按上表四态穷举处置
-```
-
-设计原则:回收**只挂在失败路径**(零预防性动作、零新 timer);证据驱动、sensor 不确定即 hold(FLY-1634/1659);重试恰一次,再败回落 launchd 循环(fail-loud 不变);告警按**结果**发(recovered 只在 socket 验证 + 恢复断言之后;动手前不发,防「宣布修好但没修好」)。`set -e` 纪律:所有 `kill`/`ps` 调用显式捕获返回值(`if kill …; then / else`),失败后**复探目标**——确认 absent = 良性(计入当前流程继续),仍逐字匹配 + 信号错误 = `action_stuck`;绝不让未检查的非零中途 abort 掉 stuck 告警。
-
-### 3.2 `reap_zombie_daemon_if_proven` 证据链(单次 fresh proof,全部满足才授权动手)
+**分类点**:首次 start 非零退出后立即执行(先于 zombie 机制——auth-dead 时 reap/重试必然再败,还多杀一次 daemon)。
 
 | 步 | 证据 | 读法 | 不满足时 |
 |---|---|---|---|
-| P1 | pid 文件是 regular file、可解析 JSON;`pid` 为 int 且 >1;`processStartTime` 为非空 string | `python3` 读 `$HOME_DIR/app-server-daemon/app-server.pid` | return `not_proven` |
-| P2 | control socket **此刻仍缺失** | `[ ! -S "$sock" ]`(动手前重验,不复用 start 之前的观察) | return `race_self_healed` |
-| P3 | 该 pid 处于 **Z 态** | `/bin/ps -o state= -p $pid`,`case` 匹配 `Z*` | return `not_proven`(活/死透/不存在都不是本病;死透→E2 已证 start 自愈) |
-| P4 | zombie 的启动时间与 pid 文件**逐字相等** | 定义**唯一 canonical lstart 归一化**(`LC_ALL=C /bin/ps -o lstart=`,仅剥 ps 显示 padding 的前后空白,不做其他变换),P4 与 P6 所有复核共用同一函数;归一化后与 `processStartTime` 字符串全等 | return `not_proven`(pid 已被复用) |
-| P5 | zombie 的父是**本 home** 的 pid-update-loop | `ppid=$(/bin/ps -o ppid= -p $pid)`;`ppid > 1`;`LC_ALL=C /bin/ps -o command= -p $ppid` 判定**禁用 ERE 拼接**(home 路径含 `.` 等元字符,`^${HOME_DIR}/…` 形态会把 `.codex-mufasa` 的 `.` 当通配,近邻路径可穿透):改为**结构化字面比较**——①整串必须恰以固定尾串 ` app-server daemon pid-update-loop` 结尾(quoted `case`/`[[ == ]]` literal 匹配);②剥掉尾串后剩余为可执行路径,须**不含空白**;③该路径经 quoted 字面前缀比较必须以 `"$HOME_DIR/packages/standalone/"` 开头(shell 字符串比较,零正则语义) | return `not_proven`(父身份不明,绝不杀) |
-| P6 | 身份栅栏快照 | 记录 updater 的 `pid + LC_ALL=C lstart + command` 三元组 **以及** child 关系(`ps -o ppid= -p $daemon_pid` 仍 == updater pid) | — |
+| A-P1 | stderr log 现在是 regular file | `python3 os.stat` 复读 | 返回未分类 |
+| A-P2 | **确定本轮新写的字节范围**(R2 #1 三态取证) | 与快照对比:①快照时不存在、或 inode 变了(新文件)→ 扫**整个当前文件**;②inode 同、size ≥ 旧 size 且旧 `[0, 旧size)` 前缀 digest **不变**(纯追加)→ 只扫 append suffix `[旧size, 新size)`;③inode 同但 size 变小、或同 size 内容变化、或旧前缀 digest 不同(**truncate/rewrite**——0.151.0 生产实测形态:inode 恒定、size 3758→0→2348→…循环)→ 扫**本轮整份当前文件**;④inode 同、size 同、digest 同(本轮未写)→ **返回未分类**(旧 `token_revoked` 残行不作数);任何 open/fstat/digest/read 竞态或异常 → 返回未分类 | 返回未分类 |
+| A-P3 | A-P2 界定的本轮字节命中吊销签名集 | `grep -F` fixed-string,任一命中:`refresh_token_invalidated` / `refresh_token_reused` / `token_revoked` / `token_expired` / `Your access token could not be refreshed` | 返回未分类(纯网络断只有 "connection is errored",不含吊销 code,走既有路径) |
 
-**匹配合同不为 harness 放松**(R1 #2):fixture updater 必须以生产 argv 形态呈现——在 fixture home 的 `packages/standalone/…` 下由宿主 `cc` 编译一个名为 `codex` 的最小程序,fixture 控制量全部走环境变量,进程只带 `app-server daemon pid-update-loop` 三个生产参数;程序 fork 即死子进程且不 wait,造出真 zombie + 真 PPID。macOS/Linux 走同一合同;仅执行器 sandbox 明确拒绝 `/bin/ps` 时本地 skip,CI 强制执行,**绝不以放宽 P5 判定代偿**。
+- stderr log 的生命周期(重建/追加/原地重写)是 Codex 侧行为而非本脚本可控合同——R2 实测(55s 只读采样)证明当前形态是**同 inode 原地 truncate+重写**;三态取证对「新文件」「纯追加」「truncate/rewrite」「未写」四形态都给出正确判定,不依赖任何单一观察;
+- 分类结果携带**命中的 code 名**(签名集内固定字符串,如 `token_revoked`),供告警 body 使用;**不携带任何原始日志行**(日志内容不受本方净化控制,不得进入告警面);
+- 签名集为 0.151.0 现场逐字采集 + `/codex-relogin` 既有触发词,全部凭据死亡专属;探针只读本地文件,不 spawn codex 进程,不采 `codex login status` rc(memory 在案:该 rc 会因 config 载入期冲突假报)。
 
-### 3.3 动手序列(TERM→KILL tri-state,FLY-1759 语义;所有 kill/ps 显式捕获返回值)
+### 3.2 分类命中后的处置(顺序固定;R1 #3/#4 修正)
 
-1. **TERM 前**:逐字复核 P6 三元组 + child 关系;任何漂移/探针错误 → return `not_proven`(**零信号零告警**——尚未动手,按未证处理);
-2. `kill -TERM $ppid`(显式 if 捕获);失败 → 复探穷举:目标 confirmed absent = 视作已死继续步 4;仍逐字匹配 / 身份漂移 / 探针错误 = return `action_stuck`(**已尝试信号后的一切不确定都不再发信号**);
-3. 有界等待 2s(200ms 轮询)→ **KILL 决策(tri-state)**:
-   - updater **absent** → 成功,不 KILL;
-   - updater 存在且三元组+child 关系**逐字复核通过** → `kill -KILL`(显式捕获,失败同步骤 2 的复探穷举语义);
-   - 探针错误 / 三元组漂移 / child 关系漂移 → **不 KILL**,return `action_stuck`(TERM 已发出,不能再按 not_proven 静默);
-4. 有界等待 zombie 被 init reap:`/bin/ps -p $daemon_pid` 轮询,200ms 间隔、10s 上限(真机验证该值;E 系列实验中 reap 均 <1s);
-5. 超时未消失 → return `action_stuck`(绝不无界等待);
-6. 消失 → return `reaped`(调用方重试 start)。
+```
+ensure_daemon:
+  快照 stderr log 身份 (§3.1)
+  …
+  start 失败
+    ├─ classify_auth_dead 命中(得 $matched_code)→
+    │    emit_lead_alert login_expired severe "fly1955-codex-auth-dead|$(LC_ALL=C date -u +%Y%m%d)" \
+    │      "Codex Lead auth revoked — re-login required" \
+    │      "<home 路径 + matched code 名 + 指向 FLY-1955 runbook §6 阶段 0>"
+    │    auth_dead_hold        # 30 × { fly1955_sleep 30; 父进程存活探测 },见下
+    │    daemon_die "remote-control start failed (home: $HOME_DIR) (codex auth revoked — re-login required)"
+    └─ 未分类 → reap_zombie_daemon_if_proven → 既有四态处置(逐字不变)
+```
 
-### 3.4 恢复后断言(重试 start 成功 + socket 验证之后、发 recovered 之前)
+**`auth_dead_hold`(分片 + 父身份探测;不新增 env)**:总时长固定 900s,实现为 30 次循环,每次 `fly1955_sleep 30` 后探测父进程。**探针合同(R2 #2)**:hold 进入时捕获原始 `orig_ppid=$(fly1955_ps -o ppid= -p $$)`;每片后复读,要求与 `orig_ppid` **逐字相等**——任何变化(含 reparent 到 1)或探针错误 → **立即 `exit 1`**(告警已在 hold 前发出,不重复;不再走 daemon_die——孤儿进程不该再写计数/发告警)。这使**父进程退出后**本 shell 的最坏遗留时间 ≤30s,不依赖任何未经证明的信号传播假设(R1 #4:runtime 经 promisified execFile 启动本脚本,无显式信号转发)。
 
-- 老 updater 三元组不复存在;
-- **恰一个**新的本 home updater(P5 同款**结构化字面 matcher** 扫全进程表)+ pid 文件指向**存活非 Z** 的新 daemon;
-- 任一断言失败 → 不发 recovered,发 stuck(带实测形态),仍 return 成功(socket 已在,Lead 可跑;告警留给人查)。
+- 告警先于 hold(值守第一时间看到,而非 15 分钟后);
+- die 文案为新文案(新失败类,不与既有 golden 冲突);
+- 恢复路径零特殊逻辑:token 修好 → 下一轮 start exit 0 → 健康路径 → 计数清零。
 
-### 3.5 兼容性
+### 3.3 runtime 生命周期建模(R1 #4;两条路径都成立,均不改 TS)
 
-- 脚本已有 FLY-694 re-exec 到 modern bash(≥4);`python3`/`ps`/`kill`/`perl(仅测试)` 均为既有依赖或系统自带;
-- companion(read-only)与 full-access 两 profile 同受益:回收逻辑在 start 失败分支,与 profile 无关;profile 差异(stop-before-start 仅 full-access)保持不变并进 golden(§5)。健康路径的 stdout/stderr/命令序列不变;唯一刻意变化是 Codex 子进程多继承 home-scoped `CODEX_INSTALL_DIR`。
-
-## 4. C2/G3 详细设计 — 告警(钉死 lead-alert.sh 真实合同)
-
-### 4.1 updater 写目标隔离
-
-Codex 0.149.0 的 `pid-update-loop` 会继承 `remote-control start` 的环境,周期性以 `/bin/sh -s` 执行 installer;installer 的 `BIN_DIR` 原生选择为 `${CODEX_INSTALL_DIR:-$HOME/.local/bin}`(research §8)。因此两个 start 点(首次 + zombie 回收后的唯一重试)都内联设置 `CODEX_INSTALL_DIR="$HOME_DIR/.local/bin"`。这只改变 installer 的 visible-command symlink 目的地;`CODEX_HOME`、真实 `HOME`、daemon state 与 standalone `current` 布局不变。无需 helper、timer、额外依赖或自动修链逻辑。
-
-### 4.2 告警合同
-
-`scripts/lead-alert.sh` 实测合同(2026-08-21 现读):必填 `--lead --project --kind --severity --title --body`,可选 `--signature`;kind 走 **allowlist**(lead-alert.sh:190),无 `--message` flag。**不加新 kind**,复用:
-
-| 场景 | kind(allowlist 内) | signature(episode 去重) | severity(合法值仅 info\|warning\|severe) |
+| 路径 | 现行为(源码现读) | 加入 hold 后 | 验收口径 |
 |---|---|---|---|
-| 回收成功(§3.1 recovered) | `crash_loop` | `fly1955-zombie-recovered\|YYYYMMDD` | warning |
-| 回收失败/超时/恢复断言失败(stuck) | `crash_loop` | `fly1955-zombie-stuck\|YYYYMMDD` | **severe**(`critical` 会被 parser exit 1 拒收) |
-| FLY-513 检出(C2) | `bin_integrity_drift`(FLY-954 先例即全局 bin 漂移) | `fly513-global-codex\|YYYYMMDD` | warning |
+| **initial-boot 失败** | `DaemonConnectionSupervisor.start()` 首次 `ensureDaemon()` 失败 → main fatal → exit 1 → launchd(Throttle 30s)重拉 | 每轮 ≈900+37s,launchd 驱动 | 循环节奏 ~37s → ~15.6min |
+| **post-start-loss** | 连接丢失后 supervisor rebuild loop(`DaemonConnectionSupervisor.ts:227`)反复调 `ensureDaemon()`,失败**被捕获不 fatal**,backoff 1/2/5/15s(cap 15s) | 每次 rebuild 内嵌 hold ⇒ 同一存活 runtime 内每 ≈900+15s 试一次;launchd 不参与 | runtime 进程 pid 不换,但 ensure-daemon 尝试节奏同为 15min 级 |
 
-- signature 日期用 **UTC**(`LC_ALL=C date -u +%Y%m%d`),与 lead-alert.sh 内建默认签名同一约定;
-- 脚本路径解析(镜像 `tui-window-alert.ts:274-296` 先例):`ALERT_SH="${FLYWHEEL_LEAD_ALERT_SH:-<repo-root>/scripts/lead-alert.sh}"`,repo-root 由**定义文件路径 `${BASH_SOURCE[0]}`** 上溯三级派生(`packages/teamlead/scripts/` → repo 根;不用 `$0`——sourced 时 `$0` 是 harness);`FLYWHEEL_LEAD_ALERT_SH` 仅作 harness seam,生产走 repo-root default;
-- full-access runtime 从 launcher 原始 env 投影既有 unified channel,将 sender env 名固定为本来就供 lead_actions 使用的 `DISCORD_BOT_TOKEN`;频道缺失时省略 route 而不阻断 Lead 启动,不增加 secret 或共享 allowlist;健康/自愈成功 stderr 由 runtime 写入 Lead log;
-- `--lead "$FLYWHEEL_LEAD_ID" --project "$FLYWHEEL_PROJECT_NAME"`;两 env 任一为空 → 跳过告警只 log(告警是增强,非正确性依赖);
-- 调用 `|| log "alert emit failed (non-fatal)"`,不阻塞主流程;
-- title/body:一行事实 + home 路径 + 指向 FLY-1955(便于值守直达 runbook)。
+两条路径的恢复语义一致:重登录后下一次 ensure-daemon 尝试(≤ 一个 hold 周期)满血恢复。**部署验收两条都采**:若观察到 runtime 常驻但循环停了,按 post-start-loss 口径读数,不误判为「已修好/已卡死」。
 
-## 5. C3/C4 测试计划(TDD,bash harness)
+**stop 语义上界(R2 #2,两条分开写)**:
+- **initial-boot 路径**:`launchctl stop` → runtime 的 `supervisor.stop()` 会等待含 `ensureDaemon()` 的 in-flight promise,不假设子进程收到信号时 node 可存活到 plist `ExitTimeOut=30` 被 SIGKILL;父死后本 shell 可能刚进入一片 30s sleep ⇒ **保守上界 ≈60s**(30s ExitTimeOut + 30s 分片);
+- **post-start-loss 路径**:runtime 主进程退出即父消失 ⇒ **上界 ≤30s**。
+产品无「stop 起算 ≤30s」硬要求;若未来出现该要求,需显式 child cancellation(TS 改动),当前分片方案单独做不到——如实记为边界。stop/kickstart 语义由 §3.2 的父身份探测兜底,并纳入 A8 测试 + 部署后一次真机 stop drill(§6 阶段 2)。
 
-位置:`packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh`(SUT 邻位,随 `codex-lead-tui-home.test.sh` 同约定)。**C4 接线如实合同**:`ci-shell-suite-enumeration.test.sh` 只扫根 `scripts/__tests__/*.test.sh`,**不会**自动发现 package-local harness——因此 ①C3 必须**字面**添加进 `.github/workflows/ci.yml`;②在 always-run 的结构守卫(enumeration/structure 测试族)里**显式断言该 ci.yml entry 存在**(把「漏登记」从静默变 CI 红);两个文件都列入改动清单。不靠 `pnpm test:packages:run` 兜。
+### 3.4 兼容性
 
-测试架构(R2 #4 / R3 #3):SUT 脚本改为 **sourceable 无副作用**——dispatch 包进 direct-execution guard(`if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then case "${1:-}" in … esac; fi`),harness `source` 后单独调函数(与既有 FLY-694 re-exec 兼容);repo-root 派生一律用 `${BASH_SOURCE[0]}`(**不用 `$0`**——sourced 时 `$0` 是 harness 自己);`ps`/`kill`/`sleep` 收进**可覆写 shell 函数**(生产默认体 = 绝对路径真工具 `/bin/ps` 等,零行为变化;harness 对 T8b/T11 覆写注入确定性故障),真进程覆盖保留给 T1/T3/T6/T7/T10。
+- companion(read-only)与 full-access 同受益:分类在 start 失败分支,与 profile 无关;
+- 健康路径 stdout/stderr/命令序列零变化(golden T2′ 复验);唯一 fs 变化 = 快照读(只读)+ 成功时受控清计数文件(§4.1,无输出);
+- 分类未命中时行为与现状逐字一致(A2/A2b/A3 阴性测试锚定)。
 
-fixture 通用件:mktemp 短路径 CODEX_HOME;假 codex bin =shell stub 按场景脚本化 start/stop(打印生产同款文案);真 updater fixture 用宿主 `cc` 编译成 fixture home standalone 路径下名为 `codex` 的小程序,仅以环境变量接收 fixture 控制量,故 `ps` argv 保持生产形态并造出真 zombie + 真 PPID(macOS/Linux 同合同;仅 runner sandbox 明确拒绝 process-table inspection 时本地 skip,CI 仍强制);假 alert 经 `FLYWHEEL_LEAD_ALERT_SH` 注入并记录全部 argv(另有一条 case 盖 env 未设时 repo-root default 解析);**每个真进程 fixture 注册 trap,断言失败也回收全部记录的父进程**。
+## 4. C2 详细设计 — 连败计数安全网(R1 #5 修正)
+
+### 4.1 `daemon_die`
+
+```
+daemon_die(msg):
+  io_fault = none                             # R3 #1:每次 daemon_die 至多一个 I/O 故障出口
+  读态四分(R2 #3):
+    counter 不存在 → count=0
+    counter 是 regular file 且内容为合法数字 → count=该值
+    counter 是 regular file 但内容损坏/截断 → count=0(容忍,不告警)
+    counter 存在但【非 regular file】(目录/symlink,lstat 判定、不跟随)、或真正的 read I/O 错误
+      → io_fault=read_state,count=0,**跳过下面的写入步骤**(不对已知坏目标再试 os.replace)
+  count += 1
+  if io_fault == none:
+    原子写回(经 python3,单工具链):同目录 mktemp 写入 → os.replace(tmp, counter)
+      (os.replace 对「目标是目录」直接报错,不会把临时文件挪进目录里假成功)
+      → 成功后复验:目标是 regular file 且内容 == count
+      → 任一步失败/复验不符:清理临时文件,io_fault=write
+  if io_fault != none:                         # 统一单出口:恰一次告警
+    emit_lead_alert crash_loop severe "fly1955-failcount-io|$(LC_ALL=C date -u +%Y%m%d)" \
+      "ensure-daemon failcount persistence broken" <home + io_fault 类别>
+    (安全网的状态存储坏了本身就是必须可见的故障;天级去重兜投递噪音)
+  if count >= 3:
+    emit_lead_alert crash_loop severe "fly1955-ensure-daemon-failing|$(LC_ALL=C date -u +%Y%m%d)" \
+      "Codex Lead ensure-daemon failing repeatedly" \
+      "<msg + consecutive=count + home 路径 + 指向 FLY-1955>"
+  die "$msg"
+```
+
+- **不可写目标下的跨轮语义(如实)**:counter 为目录/symlink 期间,每轮读态都判 read_state 故障 → count 恒为 1、连败阈值**不可能**经计数达到——可见性由每轮的 failcount-io 告警(天级去重实发)承担,而非计数推进;原子失败(write)情形下,既有合法 numeric counter 保持旧值(或原本缺失保持缺失),不产生半写状态。
+
+- `ensure_daemon` 内**全部** die 站点(codex_bin 校验、not_proven、action_stuck、race/reaped 重试失败、socket 缺失、auth-dead、unknown outcome)换 `daemon_die`;die 文案逐字不变(golden 与既有测试不受扰);
+- **成功路径清零受控**:`if ! rm -f <counter> 2>/dev/null; then log + 尝试同款 fly1955-failcount-io 告警(非阻塞); fi` —— `set -e` 下不允许清零失败把健康 daemon 变成启动失败(R1 #5);清零失败**不阻断**健康 return;
+- 计数文件放 Lead home 根(**不放** `app-server-daemon/`——那是 codex 管理目录,不塞外来文件);
+- ≥3 后每轮都会尝试 emit,**天级去重由 lead-alert.sh claims 承担**(与 FLY-513 warn 告警同模式);
+- 阈值固定 3(37s 节奏 ≈2min、81s 节奏 ≈4min 触发;单次瞬态 blip 下一轮自愈不响),不加配置面;
+- zombie 专用告警(recovered/stuck)原样保留;auth-dead 停机日实发上界 = login_expired + crash_loop(+ 仅在存储坏时的 failcount-io)。
+
+### 4.2 与既有告警语义的关系
+
+第一轮把「要不要告警」逐失败类别决定,auth-dead 整层漏过 4.7 天(race_self_healed 重试失败路径零告警)⇒ 本轮方法论转向:**具体类别告警(zombie、auth)负责携带证据上下文;连败安全网负责穷尽性**——且安全网自身的持久化失败也有告警形态(R1 #5),不存在「安全网静默失效」的第二层缝隙。
+
+## 5. C3 测试计划(TDD,追加进既有 harness)
+
+既有基建复用:sourceable SUT、stub codex bin、`FLYWHEEL_LEAD_ALERT_SH` 假告警记录 argv、`fly1955_*` 可覆写 seams、trap 清理。新增场景:
 
 | # | 场景 | 断言 |
 |---|---|---|
-| T0 | fake `HOME` 下的中立 global link + fake Lead standalone 执行 `ensure-daemon` | stub 观察到 `CODEX_INSTALL_DIR=<Lead home>/.local/bin` 与 `CODEX_HOME=<Lead home>`;调用前后 fake global link 目标逐字不变;测试不读取/改写真实 `~/.local/bin` |
-| T1 | **RED→GREEN 主场景**(E3 复刻):zombie+匹配 pid 文件,stub start 首败、回收后二次成功 | 旧代码 die;新代码:updater 被杀、zombie 消失、恰一次重试成功、恢复后断言过、alert 恰一次且为 recovered 签名 |
-| T2 | **golden byte-compat**:pre-change 捕获 companion 与 full-access 两形态的 golden(exit code/stdout/stderr/stub 收到的命令序列与次数),change 后逐字对比 | 健康路径零漂移;回收函数零调用;alert 零调用 |
-| T3 | 阴性:pid 活着(真活进程)且 start 失败 | 不杀、die evidence-incomplete;进程存活断言 |
-| T4 | 正例 E2-a:pid 死透 + stub start 一次成功 | 零回收零告警零二次 start |
-| T5 | 正例 E2-b:无 pid 文件/无 updater + stub start 一次成功 | 同 T4 |
-| T6 | 阴性:processStartTime 与 zombie lstart 不符(pid 复用形态) | P4 拒,不杀 |
-| T7 | 阴性:父 argv 带前导杂词(如 `bash <path> …`)或非本 home 路径 | P5 拒,不杀 |
-| T8a | 阴性:**TERM 前**最终栅栏检出漂移(注入确定性漂移) | 返 `not_proven`,零信号零告警 |
-| T8b | 阴性:TERM 成功后、KILL 前检出身份/child/探针漂移(注入,含 barrier) | 返 `action_stuck`,不 KILL,stuck 告警 |
-| T9 | 竞态:动手前 socket 已出现 | P2 返 `race_self_healed`,不杀,直接重试 |
-| T10 | 另一 home 的 updater 同机存活,**且路径为含 `.`/`[`/`+` 元字符的近邻 home**(如 `.codex-mufasa` vs `Xcodex-mufasa` 穿透形态) | 全程不被触碰(P5 字面比较,零正则穿透) |
-| T11 | 回收失败:zombie 10s 未消失(经可覆写 `ps`/`kill` 函数注入「杀不死」形态——真 SIGKILL 杀得死自有进程,故必须 scripted) | `action_stuck` → die + stuck 告警,无二次 start |
-| T12 | governed unified route 三元组到达 alert bin,且 alert bin exit 1 | 三元组逐字可见;回收与重试照常,恰一次重试 |
-| T13 | 恰一次重试:二次 start 仍失败 | die + stuck,无第三次 |
-| T14 | full-access stop→start→(失败)→reap→start 命令序列;companion 无 stop | stub 序列逐字断言 |
-| T15 | FLY-513 分支:全局 codex 指进 fixture home / 不指进 | alert 恰一次 kind=`bin_integrity_drift` 签名 `fly513-global-codex|…` / 零调用 |
-| T16 | resolver default 路径:unset `FLYWHEEL_LEAD_ALERT_SH`,source SUT 调解析函数 | 断言派生出的**确切路径** = `<repo-root>/scripts/lead-alert.sh`(经 `${BASH_SOURCE[0]}` 上溯;不真调投递脚本) |
-| T17 | race_self_healed 分支:P2 检出 socket 已在 → 重试;含「重试 exit 0 但 socket 又消失」变体 | 前者零告警 return;后者 die(不得按成功返回) |
-| T18 | socket 恢复但 `assert_recovery_shape` 失败 | service return 0,发 stuck 而非 recovered |
-| T19 | hostile inherited Codex/alert env + runtime unified route | harness 隔离 inherited override;runtime 将 sender 固定为 `DISCORD_BOT_TOKEN`,缺 channel 时保留启动并记录成功 stderr |
+| A1 | **RED→GREEN 主场景**(生产复刻,R2 #1 修正):stub start 失败并在失败前对 stderr log 做**同 inode truncate+重写**(`: > log` 后写 `token_revoked`) | 旧代码走 race_self_healed 重试失败静默 die;新代码:三态取证判 truncate/rewrite → 扫整份当前文件 → login_expired 告警恰一次(argv 三元组逐字,body 含 `token_revoked` 且**不含**日志原文行)、覆写的 `fly1955_sleep` 收到 30×30 分片序列、die 文案含 `auth revoked`、零 reap 动作(无 kill/无二次 start)、计数文件=1 |
+| A1b | 正向变体:同 inode **纯追加** `token_revoked`(旧前缀 digest 不变) | 只扫 append suffix 命中 ⇒ 分类成立;与 A1 同断言 |
+| A1c | 正向变体:快照时文件不存在/新 inode 重建后写 `token_revoked` | 扫整个新文件命中 ⇒ 分类成立 |
+| A2 | 阴性:stderr log 与快照完全未动(同 inode 同 size 同 digest,含**陈旧**吊销行) | 四态之「本轮未写」⇒ 不分类;走既有 zombie 机制路径;零 login_expired |
+| A2b | 阴性(R1 #1 专项):同 inode 纯**追加**非 auth 行(如 connection errored),快照**前**已有旧 `token_revoked` | append suffix 不含吊销签名 ⇒ 不分类(mtime/全文 grep 方案会在此误判,增量合同不会) |
+| A3 | 阴性:本轮重建的 stderr log 只有 `connection is errored` 无吊销签名(网络断形态) | 不分类 |
+| A4 | 连败计数:连续 3 轮 die(任意混合失败类) | 第 1、2 轮零 crash_loop emit;第 3 轮 emit 恰一次且 body 含 consecutive=3;第 4 轮再 emit(去重属 lead-alert,harness 只断言尝试) |
+| A5 | 计数复位:die、die、成功、die、die | 成功轮后计数文件消失;后两轮不触发(计数 1、2) |
+| A6 | 计数文件损坏(fixture 写非数字/截断) | 按 0 处理原子写回 1,不 crash,die 正常 |
+| A7 | auth-dead 轮推进计数:A1 场景连续 3 轮 | 第 3 轮 login_expired + crash_loop 双 emit |
+| A8 | **hold 中父身份变化**(R1 #4 / R2 #2):覆写 `fly1955_ps` 使第 N 片后 ppid 探测返回与 `orig_ppid` 不同的值(含 1 与非 1 两种);另一变体探针报错 | hold 提前退出,`exit 1`,无 daemon_die、无第二条告警、无计数推进;分片计数 = N |
+| A9 | 计数持久化故障(R1 #5 / R2 #3 / R3 #1):三变体——①写/replace 注入失败;②counter 路径预置为**目录**;③counter 为 symlink | 三者均:**本次 daemon_die 恰一次** `fly1955-failcount-io` emit(统一单出口)、die 正常携带原文案;目录/symlink 变体另断言:目标未被跟随或改写、无临时文件遗留(含未被挪入目录);①变体另断言:既有合法 numeric counter 保持旧值(或缺失保持缺失)。**不**断言不可写目标的跨轮计数推进(§4.1 如实语义:该情形可见性靠每轮告警,不靠计数) |
+| A10 | 清零失败(R1 #5):成功路径上 rm 被注入失败 | 健康 return **不被阻断**;log + failcount-io 告警尝试恰一次 |
+| A11 | stat/read 竞态(R1 #1):覆写探针使 A-P2 复读抛错 | 返回未分类,走既有路径 |
+| T2′ | 复跑既有 golden(companion + full-access 健康路径) | byte-compat 保持;计数文件不存在;快照只读不落盘 |
 
-真机 E2E(独立 QA 节点,529 房不需要):隔离 CODEX_HOME + 真 0.149.0 binary,按 research §1 E3 配方造死锁 → 跑新 `ensure_daemon` → 断言 socket 出现、daemon 活、pid 文件更新、老 updater 换代;并复跑 E2/T3 阴性对照 + §3.3 reap 等待值实测。**验收采样窗一律 >81s。**
+真机 E2E 边界(如实):**refresh token 吊销无法在台架伪造**(server 侧状态)。真机验收改挂部署后生产观察(§6 阶段 2,含一次 stop drill)+ 账号重登录后的恢复观察(§6 阶段 0),判据明确。QA 节点不得为造「假吊销」而篡改生产 auth.json(不可逆风险)。
 
 全仓门:`pnpm lint` + `pnpm -r build` + `pnpm test:packages:run` + C3 harness + CI enumeration 绿。
 
 ## 6. 部署顺序与 operator runbook
 
-**阶段 0 — 止血(不等 merge;若设计评审期间已被执行则跳过,验收判据不变)**
-逐 home(`~/.codex-infra-bot`、`~/.codex-mufasa`)独立执行,**全部目标现读现证,禁用本文或任何历史记录里的字面 pid**:
-1. 读该 home `app-server-daemon/app-server.pid` → 得 daemon pid;
-2. 完整证明(= §3.2 P1-P6 手工版):pid 为 Z 态、`LC_ALL=C ps lstart` 与 pid 文件逐字相等、PPID>1、父 command 从 byte 1 匹配本 home standalone pid-update-loop、socket 缺失;
-3. TERM 前**再次**逐字复核父三元组+child 关系 → `kill -TERM <父>`;若两次检查之间目标消失(他人/代码修复已 reap)→ **视为良性 no-op**,不追杀任何 pid;
-4. 等 ≤81s 下一轮 KeepAlive;
-5. 验收:`app-server-control.sock` 存在(srw)、`app-server.pid` mtime 更新且指向存活非 Z 进程、**旧 updater/zombie 元组消失且恰一个新 home-scoped updater 在跑**、Lead pid 采样窗 **≥5 分钟(>3 个 81s 周期)** 稳定、`/tmp/flywheel-lead-*.log` 无新 ENOENT、Discord @ 回话。
+**阶段 0 — 账号处置(operator,不等 merge;依 Lead/founder 对 Q-R2 裁决;R1 #2 修正)**
 
-**阶段 1 — 代码(C1-C4)**:先捕获 T2 golden(改前)→ TDD → 全仓门 → codex code review → PR。
-**阶段 2 — 部署**:按 FLY-1959 merge/deploy 解耦合同,merge 本身不触发 `git pull`、部署或重启;后续常规 updater 班车部署到生产 checkout 后,若阶段 0 仍未执行,Lead 下一轮 81s 循环才会自动吃到新脚本并各发一条 recovered 告警。部署窗口内还须对每个既有 Codex Lead updater 做一次**现读身份栅栏后的受控换代**,再由新脚本启动/确认 updater;验收新 updater 继承 home-scoped `CODEX_INSTALL_DIR`,真实 `~/.local/bin/codex` 在 **>65 分钟**(跨过 5 分钟首检 + 一次 60 分钟周期)观察窗内仍解析到 Lead/实验 home 之外的中立稳定路径。任何真实实验同时隔离 `HOME/CODEX_HOME/CODEX_INSTALL_DIR/PATH`,退出前按 pid 文件清 daemon 与 updater。只有 founder 单次明确授权才走紧急部署票,本 implement 节点不投票、不重启。
-**阶段 3 — FLY-513 固化(operator,一次性,用既有 reviewed 工具,禁手写 cp/ln、禁 PATH trick)**:
-0. **显式前置条件(现读现判)**:`command -v codex` 的 realpath 解析到一棵**完整 standalone release 树**(`*/releases/*/bin/codex` 形态)——工具的 `resolve_source` 只认这个;14:02 时的 stopgap(`~/.local/opt/codex-stable` 单文件拷贝)不满足该形态,但 15:20 live recheck 已显示它被踩回 infra-bot 的完整 release 树,所以 operator 必须再次现读,不可引用任一历史点态;工具的 `install` 子命令同样从 `resolve_source` 起步,不是独立安装器;
-1. 前置条件为**真** → `packages/teamlead/scripts/fly-513-repoint-global-codex.sh all`(默认 dry-run)审读 → `all --apply` → `verify`;`codex --version` + 任一 runner review gate 冒烟;`codex-stable` 保留一个观察期后再清(工具自带 backup/rollback);
-2. 前置条件为**假** → **安全停止并回报 Lead 决策**(选项:操作员按 FLY-513 spike notes 先恢复一个合规 managed release 作 source;或另开小单给工具加 tested fail-closed 的显式 source 模式)。15:20 已证明旧 stopgap 不耐下一次 updater flip;仍然**宁可显式升级优先级并交还 operator,不可绕过工具的 source-stability 检查**;
-3. FLY-1892 双向验证(入站 core @ + 出站 `flywheel-comm ask`,均落库可查)→ 通则在 FLY-1892 留证并单;不通则把新证据回报 FLY-1892。
-**阶段 4 — 上游**:给 codex 报 bug(remote-control start 把 zombie 判活;updater 不 reap 子进程),附 E1-E3 复现配方。
+- **救回(裁决 A)— 严格按 FLY-1071 quiesce 合同执行,禁止在 crash-loop 活跃时并发写 auth.json**:
+  1. `launchctl bootout gui/501/com.flywheel.lead.flywheel-codex-infra-bot-lead`(停掉 KeepAlive 循环;这是 operator 授权动作,非本 design 节点执行);
+  2. **证明该 home 无残留**:进程表零个 argv 含 `/Users/xiaorongli/.codex-infra-bot/` 的 `app-server`/`pid-update-loop`/`remote-control` 进程(身份栅栏按 argv 字面前缀,不按进程名);有则按第一轮 §3.3 tri-state 语义收敛后再继续;
+  3. **home-scoped 重登录**:显式 `CODEX_HOME=/Users/xiaorongli/.codex-infra-bot` + 该 home 的 standalone binary 执行 login 流程;可复用 `/codex-relogin` 的**浏览器 OAuth 部分**,但**跳过其全局 `codex-profile` 切换/保存步骤**(该 skill 原样调用会动全局登录态,与本步骤的 home 隔离目标冲突;R1 #2);
+  4. 同一 `CODEX_HOME` 语境下验证登录态(status 类只读命令;rc 异常按 memory 前科用输出判,不用 rc 判);
+  5. `launchctl bootstrap gui/501 <plist>` 恢复服务;
+  6. 验收:`auth.json` mtime 更新 → 下一轮 `daemon OK` → TUI up → runtime started → Discord @ 回话 → 采样窗 ≥5 分钟 pid 稳定(>3 个循环周期)。
+- **退役(裁决 B)**:本单只部署代码(舰队级防复发),Lead 下架另单;parked 节奏(15.6min/轮 + 每天 ≤2 条去重告警)是可接受的过渡态。
+- 裁决未到时:代码照常推进(两者兼容),runbook 双轨留档。
+
+**阶段 1 — 代码(C1-C3)**:先复跑既有 golden(改前基线)→ TDD(A1 RED→GREEN)→ 全仓门 → codex code review → PR。
+
+**阶段 2 — 部署(R1 #6 修正验收口径)**:FLY-1959 merge/deploy 解耦,updater 班车部署生产 checkout;脚本被 runtime 每轮现读 ⇒ 自动送达,无需任何人碰该 Lead。部署后验收(若账号尚未救回):
+- 循环节奏 ~37s → ~15.6min(采样窗 ≥3 个 hold 周期,>47min;若 runtime 常驻按 §3.3 post-start-loss 口径读数);
+- **告警验收查投递不查 claim**:当日 `login_expired` 与 `crash_loop` 事件在 `alert_deliveries` 中状态为 `sent` 或 durable `queued` 才算过;`dead_lettered` 单列为**失败**(裸 `alert_claims` 存在不构成投递证据);
+- `/tmp` 日志新轮次含 `auth revoked` die 文案;
+- **一次 stop drill(R2 #2 修正判据)**:stop 前记录当前 ensure-daemon shell 的 `pid+lstart+argv` 三元组 → `launchctl stop` → 断言**该旧三元组**在保守上界内消失(initial-boot 形态 ≤60s = ExitTimeOut 30s + 一片 30s;post-start-loss 形态 ≤30s);**允许** KeepAlive 已产生的新一代 managed ensure shell 存在(按三元组区分新旧,不按进程名清点——「零 ensure-daemon/sleep」的裸判据会把合法新一轮误判为残留)。随后服务自行回归 parked 节奏。
+若账号已救回:验收 = 健康路径持续 + 计数文件不存在。
+
+**阶段 3 — FLY-513 收口(operator,第一轮阶段 3 原样执行;R1 #6 修正)**:工具固定为 `packages/teamlead/scripts/fly-513-repoint-global-codex.sh`;执行时**再次现读**前置条件(全局链 realpath 解析到完整 standalone release 树;不引用本文点态)且**保留工具自带的「确认无 Codex review 正在进行」前置门**(全局轴 repoint 会中途影响正在跑的 review gate,冒烟不能替代该门)→ `all`(dry-run 审读)→ `all --apply` → `verify` → `codex --version` + 任一 runner review gate 冒烟 → **>65 分钟**跨 updater 周期观察窗内全局链仍解析到中立布局。前置条件为假 → 安全停止回报 Lead(沿用第一轮合同)。
+
+**阶段 4 — FLY-1892 验证(仅账号救回后)**:入站 core @ + 出站 `flywheel-comm ask` 双向落库验证;通则在 FLY-1892 留证并单,不通则回报其独立继续。
 
 ## 7. 风险与回滚
 
 | 风险 | 缓解 |
 |---|---|
-| 回收误杀非目标进程 | P1-P6 单次 fresh proof + byte-1 argv 锚定 + tri-state 复核;T3/T6/T7/T8a/T8b/T10 阴性对照;证据不齐一律不动手 |
-| 二次 start 引入新失败形态 | 重试恰一次(T13),失败回落原 die(行为=现状循环,不更坏) |
-| 健康路径被扰动 | 回收只挂失败分支;T2 golden 逐字对照(companion+full-access 双形态) |
-| updater 继续踩全局轴 | 两个 start 点均传 Codex 原生 `CODEX_INSTALL_DIR`;T0 fake-HOME 断言;部署时换代全部存量 updater并跨 updater 周期观察 |
-| 告警误报「已修好」 | recovered 只在 socket 验证 + §3.4 恢复断言之后;其余一律 stuck |
-| lead-alert 通路故障 | `\|\| log` 非阻塞;T12 |
-| 阶段 0 与代码修复竞态 | 双侧 absence=benign no-op(§3.3 tri-state / §6 步 3);幂等 |
-| 回滚 | C1/C2 单文件加性改动,`git revert` 即回现状(循环重现但不更坏);无状态迁移;阶段 3 用工具自带 rollback |
+| 误分类(网络断/其他 401 被判 auth-dead) | 三态取证合同(§3.1)只认**本轮新写字节**里的凭据吊销专属 code,覆盖新建/追加/truncate-rewrite/未写四形态;A2/A2b/A3/A11 阴性锚定。即便误判,后果=15min 节奏 + 一条天级去重告警,系统仍每轮重试,诱因消失后下一轮自愈——不比现状更坏 |
+| hold 阻塞 stop / 遗留孤儿 shell | 分片 hold + 每 30s 父**身份**探测(orig_ppid 逐字比对);父死后遗留 ≤30s,launchctl stop 起算保守上界 60s(initial-boot)/30s(post-start-loss),§3.3 如实分开;A8 + 阶段 2 真机 stop drill 双面验证;不依赖未经证明的信号传播 |
+| 计数存储失败让安全网静默失效 | 读态四分(lstat 不跟随)+ python3 os.replace 原子替换(目录目标必报错)+ 写后复验;I/O 故障收敛为每次 die 恰一个统一告警出口(R3 #1);清零失败不阻断健康 return;A6/A9(三变体)/A10 覆盖 |
+| 告警尝试每轮发(≥3 后) | claims 天级去重(既有机制);验收按 `alert_deliveries` 投递状态判,dead_lettered 单列失败 |
+| 健康路径被扰动 | 分类/计数只挂失败分支;快照为只读;清零受控非裸 rm;T2′ golden 逐字对照 |
+| 重登录与 crash-loop 并发写 auth.json | 阶段 0 强制 FLY-1071 quiesce 序列(bootout→证明无残留→登录→bootstrap),禁止带病写入 |
+| auth 修好后 15min 内不恢复被误读为「没修好」 | runbook 写明恢复延迟上界 = hold 值;立即恢复路径 = `launchctl kickstart -k` |
+| 回滚 | 单文件加性改动,`git revert` 即回现状(37s 循环、零告警;不更坏);无状态迁移(计数文件残留无消费者,可手删) |
 
-## 8. Follow-ups(不在本单)
+## 8. 与 FLY-2211 / FLY-2090 的互查(Lead 指令 ce0b9f5c;证据由 Lead 代读 2211 评论区)
 
-- 评估禁用/钉版本 standalone updater(research Q2;0.149 无预告升级是诱因源头);
-- codex 上游 bug 修复跟踪;
-- 通用 Lead crash-loop 检测归 FLY-1687 / launchd 层。
+- **事实基线**(Aunt Cass 实测,经 Lead 转述):孤儿 broker pid 819 连穿四次全舰重启波(08-30 12:00 / 08-31 00:00 / 01:19 / 12:00)——重启波对 broker **既不保护也不回收,生命周期无归属人**;其「孤儿占注册位致 1955 boot 失败」假设已被 Lead 22:44Z kill 实验证伪(收掉后循环照旧),本单真根因 = 凭据死亡。
+- **互查约束(写死)**:FLY-2211 若采「broker 不杀名单」方案,**豁免必须按身份栅栏(pid+lstart+argv 的 home 锚定三元组)而非进程名**——无条件豁免 `pid-update-loop`/`app-server` 进程名会:①让穿波孤儿更难收(Aunt Cass 已告诫);②直接废掉第一轮已 ship 的 zombie reap(它在 P1-P6 证据链完备后必须能杀 updater)。反向亦成立:本单第二轮**零新增杀进程逻辑**(只加分类+告警+分片 hold),不给 2211 增加新的误杀面。
+- **间接增益**:parking 把 auth-dead Lead 的 daemon 换代频率降 ~25 倍,重启波撞上换代中间态的概率同步下降。
+- FLY-2090(Retro)分析材料不在本仓库、本会话 Linear MCP 401 不可读;以上互查基于 Lead 转述证据完成,若 2211 评论区有推翻性证据,以 issue 为准并按增量修订本节。
+
+## 9. Follow-ups(不在本单)
+
+- updater 升级策略(禁用/钉版本)评估——第一轮 follow-up 原样顺延;
+- codex 上游 bug(zombie 判活)跟踪——第一轮 follow-up 原样顺延;
+- 舰队级 Lead crash-loop 检测归 FLY-1687 / launchd 层;broker 生命周期归属人问题归 FLY-2211;
+- 若裁决退役 infra-bot:Lead 下架/账号清理另单。

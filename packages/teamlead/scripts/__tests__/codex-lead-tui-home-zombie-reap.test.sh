@@ -151,7 +151,8 @@ MOCK
   fi
   if [ "$(cat "$out")" = '{"status":"connected"}' ] \
     && [ "$(cat "$err")" = "$expected_stderr" ] \
-    && [ "$(cat "$log")" = "$expected_commands" ]; then
+    && [ "$(cat "$log")" = "$expected_commands" ] \
+    && [ ! -e "$home/.flywheel-ensure-daemon-failcount" ]; then
     pass "healthy $profile path remains byte-for-byte compatible"
   else
     fail "healthy $profile golden drifted"
@@ -159,6 +160,398 @@ MOCK
 }
 golden_case companion
 golden_case full-access
+
+# Rework RED: an unreadable auth snapshot cannot justify an auth or zombie
+# diagnosis, but it must still park the hot loop and explain the uncertainty in
+# the third-failure safety-net alert without changing the integer counter.
+SNAPSHOT_HOME="$TMP/snapshot-unavailable-home"
+SNAPSHOT_ALERT_LOG="$TMP/snapshot-unavailable-alert.log"
+SNAPSHOT_SLEEP_LOG="$TMP/snapshot-unavailable-sleep.log"
+SNAPSHOT_ERR="$TMP/snapshot-unavailable.err"
+mkdir -p "$SNAPSHOT_HOME/packages/standalone/current" \
+  "$SNAPSHOT_HOME/app-server-daemon/app-server.stderr.log"
+printf '%s\n' 2 > "$SNAPSHOT_HOME/.flywheel-ensure-daemon-failcount"
+cat > "$SNAPSHOT_HOME/packages/standalone/current/codex" <<'MOCK'
+#!/bin/bash
+exit 1
+MOCK
+chmod +x "$SNAPSHOT_HOME/packages/standalone/current/codex"
+: > "$SNAPSHOT_ALERT_LOG"
+: > "$SNAPSHOT_SLEEP_LOG"
+if FLYWHEEL_CODEX_TUI_HOME="$SNAPSHOT_HOME" SNAPSHOT_ALERT_LOG="$SNAPSHOT_ALERT_LOG" \
+  SNAPSHOT_SLEEP_LOG="$SNAPSHOT_SLEEP_LOG" "$MODERN_BASH" -c '
+    source "$1"
+    emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$SNAPSHOT_ALERT_LOG"; }
+    fly1955_sleep() { echo "$1" >> "$SNAPSHOT_SLEEP_LOG"; }
+    fly1955_ps() { echo 4242; }
+    ensure_daemon
+  ' _ "$SUT" >/dev/null 2> "$SNAPSHOT_ERR"; then
+  fail "snapshot-unavailable ensure must fail loud after bounded parking"
+else
+  snapshot_slices="$(grep -c '^30$' "$SNAPSHOT_SLEEP_LOG" || true)"
+  if [ "$snapshot_slices" -eq 30 ] \
+    && [ "$(cat "$SNAPSHOT_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 3 ] \
+    && [ "$(grep -c '^crash_loop|severe|fly1955-ensure-daemon-failing|' "$SNAPSHOT_ALERT_LOG" || true)" -eq 1 ] \
+    && grep -q 'reason=snapshot_unavailable' "$SNAPSHOT_ALERT_LOG" \
+    && ! grep -q 'stale-daemon' "$SNAPSHOT_ALERT_LOG" \
+    && ! grep -q '^login_expired|' "$SNAPSHOT_ALERT_LOG" \
+    && grep -q 'snapshot unavailable' "$SNAPSHOT_ERR"; then
+    pass "snapshot-unavailable failure parks and reports an honest third-failure reason"
+  else
+    fail "snapshot-unavailable failure must park and avoid a stale-daemon diagnosis"
+  fi
+fi
+
+# A1 RED: production auth-dead rewrites app-server.stderr.log in place. Only
+# bytes written by this start attempt may classify the failure, and the alert
+# must carry the fixed matched code rather than the untrusted log line.
+AUTH_HOME="$TMP/auth-truncate-home"
+AUTH_START_LOG="$TMP/auth-truncate-start.log"
+AUTH_ALERT_LOG="$TMP/auth-truncate-alert.log"
+AUTH_SLEEP_LOG="$TMP/auth-truncate-sleep.log"
+AUTH_KILL_LOG="$TMP/auth-truncate-kill.log"
+AUTH_ERR="$TMP/auth-truncate.err"
+mkdir -p "$AUTH_HOME/packages/standalone/current" "$AUTH_HOME/app-server-daemon"
+printf '%s\n' 'old daemon stderr' > "$AUTH_HOME/app-server-daemon/app-server.stderr.log"
+cat > "$AUTH_HOME/packages/standalone/current/codex" <<'MOCK'
+#!/bin/bash
+echo "$@" >> "$AUTH_START_LOG"
+if [ "$1 $2 $3" = "remote-control start --json" ]; then
+  : > "$CODEX_HOME/app-server-daemon/app-server.stderr.log"
+  printf '%s\n' 'token_revoked sensitive-log-context' \
+    > "$CODEX_HOME/app-server-daemon/app-server.stderr.log"
+  mkdir -p "$CODEX_HOME/app-server-control"
+  if [ ! -S "$CODEX_HOME/app-server-control/app-server-control.sock" ]; then
+    python3 - "$CODEX_HOME/app-server-control/app-server-control.sock" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+PY
+  fi
+fi
+exit 1
+MOCK
+chmod +x "$AUTH_HOME/packages/standalone/current/codex"
+: > "$AUTH_START_LOG"
+: > "$AUTH_ALERT_LOG"
+: > "$AUTH_SLEEP_LOG"
+: > "$AUTH_KILL_LOG"
+if FLYWHEEL_CODEX_TUI_HOME="$AUTH_HOME" AUTH_START_LOG="$AUTH_START_LOG" \
+  AUTH_ALERT_LOG="$AUTH_ALERT_LOG" AUTH_SLEEP_LOG="$AUTH_SLEEP_LOG" \
+  AUTH_KILL_LOG="$AUTH_KILL_LOG" "$MODERN_BASH" -c '
+    source "$1"
+    emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$AUTH_ALERT_LOG"; }
+    fly1955_sleep() { echo "$1" >> "$AUTH_SLEEP_LOG"; }
+    fly1955_ps() { echo 4242; }
+    fly1955_kill() { echo "$*" >> "$AUTH_KILL_LOG"; }
+    ensure_daemon
+  ' _ "$SUT" >/dev/null 2> "$AUTH_ERR"; then
+  fail "auth-dead ensure must fail loud after bounded parking"
+else
+  auth_starts="$(grep -c '^remote-control start --json$' "$AUTH_START_LOG" || true)"
+  auth_slices="$(grep -c '^30$' "$AUTH_SLEEP_LOG" || true)"
+  if [ "$auth_starts" -eq 1 ] \
+    && [ "$auth_slices" -eq 30 ] \
+    && grep -q '^login_expired|severe|fly1955-codex-auth-dead|' "$AUTH_ALERT_LOG" \
+    && grep -q 'token_revoked' "$AUTH_ALERT_LOG" \
+    && ! grep -q 'sensitive-log-context' "$AUTH_ALERT_LOG" \
+    && grep -q 'auth revoked' "$AUTH_ERR" \
+    && [ ! -s "$AUTH_KILL_LOG" ] \
+    && [ "$(cat "$AUTH_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 1 ]; then
+    pass "fresh truncate-rewrite auth evidence alerts, parks, and records one failure"
+  else
+    fail "fresh truncate-rewrite auth evidence must take the bounded auth-dead path"
+  fi
+fi
+
+# A1b/A1c/A2/A2b/A3/A11: direct, parameterized checks pin the evidence
+# boundary independently of the integrated parking path above.
+auth_classifier_case() {
+  local scenario="$1" expected="$2" description="$3"
+  local home="$TMP/auth-classifier-$1-home" actual
+  mkdir -p "$home/app-server-daemon"
+  case "$scenario" in
+    append-auth|read-race) printf '%s\n' 'old daemon stderr' > "$home/app-server-daemon/app-server.stderr.log" ;;
+    unchanged-stale|append-nonauth-stale) printf '%s\n' 'token_revoked old evidence' > "$home/app-server-daemon/app-server.stderr.log" ;;
+  esac
+  actual="$(FLYWHEEL_CODEX_TUI_HOME="$home" AUTH_SCENARIO="$scenario" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      snapshot_auth_log
+      case "$AUTH_SCENARIO" in
+        append-auth) printf "%s\n" token_revoked >> "$HOME_DIR/app-server-daemon/app-server.stderr.log" ;;
+        new-auth) printf "%s\n" token_revoked > "$HOME_DIR/app-server-daemon/app-server.stderr.log" ;;
+        append-nonauth-stale) printf "%s\n" "connection is errored" >> "$HOME_DIR/app-server-daemon/app-server.stderr.log" ;;
+        new-network) printf "%s\n" "connection is errored" > "$HOME_DIR/app-server-daemon/app-server.stderr.log" ;;
+        read-race) rm -f "$HOME_DIR/app-server-daemon/app-server.stderr.log"; mkdir "$HOME_DIR/app-server-daemon/app-server.stderr.log" ;;
+      esac
+      if classify_auth_dead; then printf "matched:%s" "$AUTH_DEAD_CODE"; else printf unclassified; fi
+    ' _ "$SUT")"
+  [ "$actual" = "$expected" ] && pass "$description" || fail "$description (got '$actual')"
+}
+auth_classifier_case append-auth matched:token_revoked "pure append scans only fresh auth evidence"
+auth_classifier_case new-auth matched:token_revoked "new stderr file scans its current auth evidence"
+auth_classifier_case unchanged-stale unclassified "unchanged stale auth evidence is ignored"
+auth_classifier_case append-nonauth-stale unclassified "non-auth append cannot revive stale auth evidence"
+auth_classifier_case new-network unclassified "fresh network-only failure is not auth-dead"
+auth_classifier_case read-race unclassified "stderr stat/read drift fails classification closed"
+
+# A7: auth-dead failures participate in the same consecutive-failure episode.
+AUTH_REPEAT_HOME="$TMP/auth-repeat-home"
+AUTH_REPEAT_ALERT_LOG="$TMP/auth-repeat-alert.log"
+AUTH_REPEAT_SEQ="$TMP/auth-repeat-seq"
+mkdir -p "$AUTH_REPEAT_HOME/packages/standalone/current" "$AUTH_REPEAT_HOME/app-server-daemon"
+printf '%s\n' 'old stderr' > "$AUTH_REPEAT_HOME/app-server-daemon/app-server.stderr.log"
+printf '%s\n' 0 > "$AUTH_REPEAT_SEQ"
+cat > "$AUTH_REPEAT_HOME/packages/standalone/current/codex" <<'MOCK'
+#!/bin/bash
+round=$(cat "$AUTH_REPEAT_SEQ")
+round=$((round + 1))
+echo "$round" > "$AUTH_REPEAT_SEQ"
+printf 'token_revoked round=%s\n' "$round" > "$CODEX_HOME/app-server-daemon/app-server.stderr.log"
+exit 1
+MOCK
+chmod +x "$AUTH_REPEAT_HOME/packages/standalone/current/codex"
+: > "$AUTH_REPEAT_ALERT_LOG"
+for _ in 1 2 3; do
+  FLYWHEEL_CODEX_TUI_HOME="$AUTH_REPEAT_HOME" AUTH_REPEAT_ALERT_LOG="$AUTH_REPEAT_ALERT_LOG" \
+    AUTH_REPEAT_SEQ="$AUTH_REPEAT_SEQ" "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$AUTH_REPEAT_ALERT_LOG"; }
+      fly1955_sleep() { :; }
+      fly1955_ps() { echo 4242; }
+      ensure_daemon
+    ' _ "$SUT" >/dev/null 2>&1 || true
+done
+if [ "$(cat "$AUTH_REPEAT_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 3 ] \
+  && [ "$(grep -c '^login_expired|severe|fly1955-codex-auth-dead|' "$AUTH_REPEAT_ALERT_LOG" || true)" -eq 3 ] \
+  && [ "$(grep -c '^crash_loop|severe|fly1955-ensure-daemon-failing|' "$AUTH_REPEAT_ALERT_LOG" || true)" -eq 1 ]; then
+  pass "third auth-dead failure emits both specific and safety-net alerts"
+else
+  fail "auth-dead failures must advance the shared safety-net counter"
+fi
+
+# A8: parking exits as soon as the original parent identity disappears,
+# including reparent-to-init, another parent, or a failed probe.
+auth_hold_parent_case() {
+  local mode="$1" slices="$TMP/auth-hold-$1-slices" probes="$TMP/auth-hold-$1-probes"
+  : > "$slices"
+  printf '%s\n' 0 > "$probes"
+  if FLYWHEEL_CODEX_TUI_HOME="$TMP/auth-hold-$1-home" HOLD_MODE="$mode" \
+    HOLD_SLICES="$slices" HOLD_PROBES="$probes" "$MODERN_BASH" -c '
+      source "$1"
+      fly1955_sleep() { echo "$1" >> "$HOLD_SLICES"; }
+      fly1955_ps() {
+        local n
+        n=$(cat "$HOLD_PROBES"); n=$((n + 1)); echo "$n" > "$HOLD_PROBES"
+        if [ "$n" -ge 4 ]; then
+          case "$HOLD_MODE" in init) echo 1 ;; changed) echo 999 ;; error) return 2 ;; esac
+        else
+          echo 4242
+        fi
+      }
+      auth_dead_hold
+    ' _ "$SUT" >/dev/null 2>&1; then
+    fail "$mode parent drift must stop auth parking"
+  elif [ "$(wc -l < "$slices" | tr -d ' ')" -eq 3 ]; then
+    pass "$mode parent drift stops parking after the current slice"
+  else
+    fail "$mode parent drift must stop within one 30-second slice"
+  fi
+}
+auth_hold_parent_case init
+auth_hold_parent_case changed
+auth_hold_parent_case error
+
+# A4 RED: every daemon failure advances one shared counter. The third and all
+# later failures attempt the day-deduplicated crash-loop safety-net alert.
+COUNT_HOME="$TMP/failcount-threshold-home"
+COUNT_ALERT_LOG="$TMP/failcount-threshold-alert.log"
+mkdir -p "$COUNT_HOME"
+: > "$COUNT_ALERT_LOG"
+for round in 1 2 3 4; do
+  FLYWHEEL_CODEX_TUI_HOME="$COUNT_HOME" COUNT_ALERT_LOG="$COUNT_ALERT_LOG" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$COUNT_ALERT_LOG"; }
+      daemon_die "fixture failure"
+    ' _ "$SUT" >/dev/null 2>&1 || true
+  count_alerts="$(grep -c '^crash_loop|severe|fly1955-ensure-daemon-failing|' "$COUNT_ALERT_LOG" || true)"
+  case "$round:$count_alerts" in
+    1:0|2:0|3:1|4:2) : ;;
+    *) fail "failure-count alert threshold drifted at round $round" ;;
+  esac
+done
+if [ "$(cat "$COUNT_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 4 ] \
+  && grep -q 'consecutive=3' "$COUNT_ALERT_LOG" \
+  && grep -q 'consecutive=4' "$COUNT_ALERT_LOG"; then
+  pass "third and later daemon failures attempt the crash-loop safety-net alert"
+else
+  fail "daemon failure count must persist and surface at the third failure"
+fi
+
+# A5 RED: any healthy ensure result breaks the consecutive-failure episode.
+RESET_HOME="$TMP/failcount-reset-home"
+RESET_ALERT_LOG="$TMP/failcount-reset-alert.log"
+mkdir -p "$RESET_HOME/packages/standalone/current"
+cat > "$RESET_HOME/packages/standalone/current/codex" <<'MOCK'
+#!/bin/bash
+mkdir -p "$CODEX_HOME/app-server-control"
+if [ ! -S "$CODEX_HOME/app-server-control/app-server-control.sock" ]; then
+  python3 - "$CODEX_HOME/app-server-control/app-server-control.sock" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+PY
+fi
+exit 0
+MOCK
+chmod +x "$RESET_HOME/packages/standalone/current/codex"
+: > "$RESET_ALERT_LOG"
+for _ in 1 2; do
+  FLYWHEEL_CODEX_TUI_HOME="$RESET_HOME" RESET_ALERT_LOG="$RESET_ALERT_LOG" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$RESET_ALERT_LOG"; }
+      daemon_die "fixture failure"
+    ' _ "$SUT" >/dev/null 2>&1 || true
+done
+FLYWHEEL_CODEX_TUI_HOME="$RESET_HOME" "$MODERN_BASH" "$SUT" ensure-daemon \
+  >/dev/null 2>&1 || fail "healthy ensure must succeed while clearing failure count"
+for _ in 1 2; do
+  FLYWHEEL_CODEX_TUI_HOME="$RESET_HOME" RESET_ALERT_LOG="$RESET_ALERT_LOG" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$RESET_ALERT_LOG"; }
+      daemon_die "fixture failure"
+    ' _ "$SUT" >/dev/null 2>&1 || true
+done
+if [ "$(cat "$RESET_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 2 ] \
+  && ! grep -q '^crash_loop|severe|fly1955-ensure-daemon-failing|' "$RESET_ALERT_LOG"; then
+  pass "a healthy ensure resets the consecutive daemon-failure count"
+else
+  fail "healthy ensure must reset the failure episode before later failures"
+fi
+
+# A6: a corrupt or truncated regular counter restarts the episode at one.
+for corrupt_value in bad ''; do
+  CORRUPT_HOME="$TMP/failcount-corrupt-${corrupt_value:-empty}-home"
+  CORRUPT_ALERT_LOG="$TMP/failcount-corrupt-${corrupt_value:-empty}-alert.log"
+  mkdir -p "$CORRUPT_HOME"
+  printf '%s' "$corrupt_value" > "$CORRUPT_HOME/.flywheel-ensure-daemon-failcount"
+  : > "$CORRUPT_ALERT_LOG"
+  FLYWHEEL_CODEX_TUI_HOME="$CORRUPT_HOME" CORRUPT_ALERT_LOG="$CORRUPT_ALERT_LOG" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$CORRUPT_ALERT_LOG"; }
+      daemon_die "fixture corrupt counter"
+    ' _ "$SUT" >/dev/null 2>&1 || true
+  if [ "$(cat "$CORRUPT_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 1 ] \
+    && [ ! -s "$CORRUPT_ALERT_LOG" ]; then
+    pass "${corrupt_value:-truncated} regular counter restarts safely at one"
+  else
+    fail "corrupt regular counter must be tolerated without an I/O alert"
+  fi
+done
+
+# A4b RED: the safety net wraps ensure_daemon's existing failure exits too,
+# rather than only the new auth-dead branch.
+ALL_DIE_HOME="$TMP/all-die-home"
+ALL_DIE_ALERT_LOG="$TMP/all-die-alert.log"
+mkdir -p "$ALL_DIE_HOME/packages/standalone/current"
+printf '#!/bin/bash\nexit 1\n' > "$ALL_DIE_HOME/packages/standalone/current/codex"
+chmod +x "$ALL_DIE_HOME/packages/standalone/current/codex"
+: > "$ALL_DIE_ALERT_LOG"
+for _ in 1 2 3; do
+  FLYWHEEL_CODEX_TUI_HOME="$ALL_DIE_HOME" ALL_DIE_ALERT_LOG="$ALL_DIE_ALERT_LOG" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$ALL_DIE_ALERT_LOG"; }
+      ensure_daemon
+    ' _ "$SUT" >/dev/null 2>&1 || true
+done
+if [ "$(cat "$ALL_DIE_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 3 ] \
+  && [ "$(grep -c '^crash_loop|severe|fly1955-ensure-daemon-failing|' "$ALL_DIE_ALERT_LOG" || true)" -eq 1 ]; then
+  pass "existing ensure-daemon failure exits share the consecutive-failure safety net"
+else
+  fail "every ensure-daemon failure exit must advance the safety-net counter"
+fi
+
+# A9 RED: the failure-count safety net must fail visibly without following or
+# replacing a hostile target, and every daemon_die has one I/O-alert exit.
+failcount_io_case() {
+  local mode="$1" home="$TMP/failcount-io-$1-home"
+  local counter="$home/.flywheel-ensure-daemon-failcount"
+  local alerts="$TMP/failcount-io-$1-alert.log" err="$TMP/failcount-io-$1.err"
+  local target="$home/symlink-target"
+  mkdir -p "$home"
+  : > "$alerts"
+  case "$mode" in
+    write) printf '%s\n' 7 > "$counter" ;;
+    directory) mkdir "$counter"; printf '%s\n' keep > "$counter/sentinel" ;;
+    symlink) printf '%s\n' 9 > "$target"; ln -s "$target" "$counter" ;;
+  esac
+  if FLYWHEEL_CODEX_TUI_HOME="$home" IO_ALERT_LOG="$alerts" \
+    "$MODERN_BASH" -c '
+      source "$1"
+      emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$IO_ALERT_LOG"; }
+      [ "$2" != write ] || fly1955_write_failcount() { return 1; }
+      daemon_die "fixture io failure"
+    ' _ "$SUT" "$mode" >/dev/null 2> "$err"; then
+    fail "$mode failcount fault must still die"
+    return
+  fi
+  io_alerts="$(grep -c '^crash_loop|severe|fly1955-failcount-io|' "$alerts" || true)"
+  temps="$(find "$home" -maxdepth 1 -name '.flywheel-ensure-daemon-failcount.*' -print | wc -l | tr -d ' ')"
+  preserved=0
+  case "$mode" in
+    write) [ "$(cat "$counter" 2>/dev/null)" = 7 ] && preserved=1 ;;
+    directory) [ -d "$counter" ] && [ "$(cat "$counter/sentinel" 2>/dev/null)" = keep ] && preserved=1 ;;
+    symlink) [ -L "$counter" ] && [ "$(cat "$target" 2>/dev/null)" = 9 ] && preserved=1 ;;
+  esac
+  if [ "$io_alerts" -eq 1 ] && [ "$temps" -eq 0 ] && [ "$preserved" -eq 1 ] \
+    && grep -q 'fixture io failure' "$err"; then
+    pass "$mode failcount fault emits once, preserves its target, and still dies"
+  else
+    fail "$mode failcount fault must converge on one preserving I/O-alert path"
+  fi
+}
+failcount_io_case write
+failcount_io_case directory
+failcount_io_case symlink
+
+# A10 RED: clearing stale episode state is best-effort on a healthy daemon.
+CLEAR_HOME="$TMP/failcount-clear-home"
+CLEAR_ALERT_LOG="$TMP/failcount-clear-alert.log"
+CLEAR_ERR="$TMP/failcount-clear.err"
+mkdir -p "$CLEAR_HOME/packages/standalone/current"
+printf '%s\n' 2 > "$CLEAR_HOME/.flywheel-ensure-daemon-failcount"
+cat > "$CLEAR_HOME/packages/standalone/current/codex" <<'MOCK'
+#!/bin/bash
+mkdir -p "$CODEX_HOME/app-server-control"
+python3 - "$CODEX_HOME/app-server-control/app-server-control.sock" <<'PY'
+import socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.bind(sys.argv[1])
+PY
+exit 0
+MOCK
+chmod +x "$CLEAR_HOME/packages/standalone/current/codex"
+: > "$CLEAR_ALERT_LOG"
+if FLYWHEEL_CODEX_TUI_HOME="$CLEAR_HOME" CLEAR_ALERT_LOG="$CLEAR_ALERT_LOG" \
+  "$MODERN_BASH" -c '
+    source "$1"
+    fly1955_remove_failcount() { return 1; }
+    emit_lead_alert() { printf "%s|%s|%s|%s|%s\n" "$@" >> "$CLEAR_ALERT_LOG"; }
+    ensure_daemon
+  ' _ "$SUT" >/dev/null 2> "$CLEAR_ERR" \
+  && [ "$(cat "$CLEAR_HOME/.flywheel-ensure-daemon-failcount" 2>/dev/null)" = 2 ] \
+  && [ "$(grep -c '^crash_loop|severe|fly1955-failcount-io|' "$CLEAR_ALERT_LOG" || true)" -eq 1 ] \
+  && grep -q 'failed to clear daemon failcount' "$CLEAR_ERR"; then
+  pass "failcount clear failure alerts without breaking a healthy daemon"
+else
+  fail "failcount clear failure must stay visible and non-blocking"
+fi
 
 # RED 2: a proven reap must trigger exactly one retry, verify the new socket,
 # and report recovery. The process-evidence function is replaced here so this

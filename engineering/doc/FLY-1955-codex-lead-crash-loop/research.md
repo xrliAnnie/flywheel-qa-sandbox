@@ -1,8 +1,10 @@
 # FLY-1955 Codex Lead 81 秒崩溃循环 — 调研
 
 Issue: FLY-1955 (https://linear.app/geoforge3d/issue/FLY-1955/infra活跃-两个-codex-lead-持续崩溃循环-235-小时精确每-81-秒已跨越两次全舰重启未自愈-remote-control)
-日期: 2026-08-21
-基于: exploration.md
+日期: 2026-08-21(第一轮);2026-08-31(第二轮,见 §R2)
+基于: exploration.md(含 §R2)
+
+> 追加式文档:§1-§8 为第一轮(zombie,已随 PR #915 交付);§R2 起为第二轮。
 
 ## 1. 决定性实验:四格复现(2026-08-21 14:08-14:12 PDT 实测)
 
@@ -116,3 +118,81 @@ Tadashi 报告全局 link 一度解析到设计会话 scratchpad 的 `codex-home
 - 生产 wrapper 的每一次 `remote-control start` 都传 `CODEX_INSTALL_DIR="$HOME_DIR/.local/bin"`;不改变 daemon 的真实 `HOME`,只使用 installer 已有原生开关隔离可见命令写目标;
 - 所有真实 Codex 实验同时隔离 `HOME`、`CODEX_HOME`、`CODEX_INSTALL_DIR` 与 `PATH`,并在退出前按 pid 文件身份栅栏清掉 daemon **和 updater**;不得仅靠 scratchpad 路径声称隔离;
 - harness 使用 fake `HOME` + fake standalone,并在前后断言 fake global symlink 未变;不再让实验碰真实全局轴。
+
+---
+
+## R2. 第二轮调研(2026-08-31,基于 exploration.md §R2)
+
+### R2.1 现行代码合同(现读,worktree 与生产 checkout 同源)
+
+- `ensure_daemon`(`codex-lead-tui-home.sh:713-778`):start 成功 → `daemon OK` return;失败 → `reap_zombie_daemon_if_proven` 四态分派。**告警只挂在 `reaped`(recovered/stuck)与 `action_stuck` 分支**;`race_self_healed` 重试失败与 `not_proven` 两条 die 路径零告警——auth-dead 每轮走的正是 `race_self_healed` 重试失败(新 spawn 的 daemon 已建出 socket,P2 判「他愈」)。
+- 告警 seam 已泛化:`emit_lead_alert kind severity signature title body`(:148-166),经 `FLYWHEEL_LEAD_ALERT_SH`(harness)或 repo-root 派生的 `scripts/lead-alert.sh`;`FLYWHEEL_LEAD_ID`/`FLYWHEEL_PROJECT_NAME` 缺失时 skip+log。**通路已实证可达**:8-31 03:16:22 一条 kind=crash_loop 实发 HTTP 200(整个 4.7 天日志里仅此一条,即偶发走到 reaped 路径的那一轮)。
+- 故障注入 seams 已存在:`fly1955_ps`/`fly1955_kill`/`fly1955_sleep`(:134-136)。
+- `scripts/lead-alert.sh` kind allowlist 含 **`login_expired`**(且不在 INFORMATIONAL_KINDS ⇒ 渲染完整 unified ticket header,正常分级投递);severity 合法值 info|warning|severe。
+- runtime 侧:`DaemonConnectionSupervisor.start()` 启动时恰调一次 `ensureDaemon()`,失败 → main fatal → exit 1 → launchd(KeepAlive=true, ThrottleInterval=30)重拉 ⇒ **脚本内的有界 hold 可直接节流整个循环,无需动 TS**。
+
+### R2.2 auth-dead 判据实测
+
+| 证据面 | 实测 | 作为判据的资格 |
+|---|---|---|
+| `remote-control start` exit code | 1(runtime execFileP `code: 1`) | 必要非充分(任何失败都退 1) |
+| start stderr | `Remote control is enabled on <host> but the connection is errored.` ×2 | **有歧义**:第一轮 E1(干净无 auth home)也见过同文案;网络断时同样可能出现 ⇒ 不能单独定罪 |
+| daemon stderr(`$HOME_DIR/app-server-daemon/app-server.stderr.log`) | 每轮 daemon spawn **重建**(两次现读内容均为当轮时间戳起头);持续输出 `refresh_token_invalidated` / `token_revoked` / `Your access token could not be refreshed because your refresh token was revoked` | **判别性证据**:codex_login::auth::manager 的 401 吊销签名只在凭据死亡时出现 |
+| `codex login status` rc | 未采用 | memory 在案:该命令 rc 会因 config 载入期冲突假报非 0(companion false-unauth 先例);且每轮多 spawn 一个 codex 进程 |
+
+**⇒ 分类合同(两证并举,evidence-driven,对齐第一轮 P1-P6 哲学)**:
+1. `remote-control start` 非零退出;
+2. daemon stderr log 存在、**mtime ≥ 本轮 start 调用时刻 - 1s**(防拿 zombie 事故那种 0 字节/陈旧日志定罪——第一轮现场该文件冻结 0 字节,此条会拒绝分类,正确回落 zombie 机制);
+3. tail 内容命中吊销签名集(fixed-string grep,不用 ERE):`refresh_token_invalidated`、`refresh_token_reused`、`token_revoked`、`token_expired`、`Your access token could not be refreshed`。
+三条全满足 → `auth_dead`;任一不满足 → 走既有路径,行为零变化。
+
+签名集来源:前四个是 Codex CLI/后端的机读 error code(本次现场 + `/codex-relogin` skill 的既有触发词);第五个是 auth manager 的稳定人读文案。均为 0.151.0 现场逐字采集。
+
+### R2.3 修复选项对比
+
+#### R2.3.1 分类后的处置(parking)
+
+| 选项 | 内容 | 评估 |
+|---|---|---|
+| **A. 脚本内有界 hold 后 die(选定)** | 分类 `auth_dead` → 发 login_expired 告警 → `fly1955_sleep $HOLD`(默认 900s,`FLYWHEEL_CODEX_AUTH_DEAD_HOLD_SECONDS` 可覆写)→ die(带分类文案)。循环从 ~37s/轮 → ~15.5min/轮(降 ~25×);token 修好后**下一轮自动满血恢复**,零人工 kickstart 依赖(要快可 `launchctl kickstart -k`) | 单文件单函数;不动 launchd/TS;KeepAlive 语义原样;SIGTERM 杀得掉 sleep(launchd stop 不受阻)。缺点:恢复延迟上界 = HOLD,人工修 auth 本就是分钟级动作,可接受 |
+| B. runtime 驻留 parked-loop,周期 recheck | exit code/marker 跨层合同 + TS 状态机 + TUI 呈现 | 体验更好但引入新跨层合同与新状态;违背「enforce simplicity」;收益(恢复延迟 0 vs ≤15min)不值复杂度 |
+| C. `launchctl unload` 自停 | 循环归零 | ❌ 自身不可自愈(修好 auth 也不回来);服务自改生命周期越权(memory 红线:未经许可不 shutdown);弃 |
+
+#### R2.3.2 静默烧缺口的修法
+
+| 选项 | 内容 | 评估 |
+|---|---|---|
+| 按失败类别逐条补告警 | 给 race_self_healed 重试失败、not_proven 各补一条 | ❌ 第一轮就是按类别挂告警,auth-dead 整层从缝隙漏过 4.7 天 ⇒ 该方法论已被证伪:未来任何新失败类别默认继续漏 |
+| **通用连败计数 + 天级去重(选定)** | `ensure_daemon` 每次 die 前:计数文件(`$HOME_DIR/.flywheel-ensure-daemon-failcount`)+1;**达到 3 次连败**时发 kind=crash_loop severity=severe signature=`fly1955-ensure-daemon-failing\|YYYYMMDD`(天级去重,body 带当轮 die 文案与连败数);任一成功路径删计数文件 | fail-open 安全网:**任何**(含未来未知)失败类别连败 ≈2-4 分钟内必有当日告警;单次瞬态 blip(下一轮自愈)不响;claims.db 天级去重兜底噪音上界 1 条/天/Lead |
+
+阈值=3 论证:1 次瞬态(如 boot 竞态)自愈常见,不该响;3 连败在 37s 节奏下 ≈2min、81s 节奏下 ≈4min,发现延迟从 4.7 天压到分钟级。计数文件放 Lead home 根(不放 `app-server-daemon/`——那是 codex 管理的目录,不塞外来文件)。
+
+zombie 专用告警(recovered/stuck)原样保留——它们带证据链上下文,与通用安全网互补;auth_dead 轮同时会推进连败计数,一个 auth-dead 停机日最多 login_expired + crash_loop 两条,可接受且互为佐证。
+
+#### R2.3.3 分类点位置
+
+选**首次 start 失败后、zombie 机制之前**:探针零成本(读一个本地文件),且 auth-dead 时跳过无意义的 reap/重试(重试必然再败,还多杀一次 daemon)。不在重试失败点重复分类——若首败非 auth(如真 zombie),reap 后重试再败于 auth 的组合形态罕见,下一轮 37s 后就会在首败点被正确分类,无需多一个分支。
+
+### R2.4 FLY-513 残留复核(证伪「隔离失效」)
+
+| 证据 | 值 | 结论 |
+|---|---|---|
+| 全局 `~/.local/bin/codex` | → mufasa home standalone current,**mtime 8-21 23:43:27** | 翻写发生在 PR #915(8-21 22:33 merge)与部署生效之间的窗口,是旧 updater 最后一次作案 |
+| 两个 home 的 `.local/bin/` | 8-22 00:08/00:09 创建,8-31 15:26/15:49 仍在被 updater 刷新 | **`CODEX_INSTALL_DIR` 隔离生效**:updater 换代后 9 天只写 home-scoped 轴 |
+| 两个 updater 进程 env(`ps eww`) | 均带 `CODEX_INSTALL_DIR=<home>/.local/bin` + `CODEX_HOME=<home>` | 同上 |
+| 中立布局 `~/.local/share/flywheel-codex/` | 仅 0.142.0 残留 | 第一轮 plan **阶段 3(operator 收口)从未执行** |
+| 阶段 3 前置条件(现读) | 全局链 realpath = mufasa home 完整 release 树(`releases/0.151.0-*/bin/codex`) | **为真** ⇒ `fly-513-repoint-global-codex.sh` 可直接走 |
+
+⇒ 第二轮**无需新代码**处理 FLY-513;交付物 = runbook 里把阶段 3 排进执行并留验收证据(>65min 跨 updater 周期观察窗,沿用第一轮判据)。
+
+### R2.5 部署链路(沿用第一轮 §3,自动送达)
+
+`codex-lead-tui-home.sh` 由 runtime 每轮**现读**生产 checkout ⇒ merge 后 updater 班车部署到生产 checkout 的下一个 37s 循环,infra-bot 自动吃到新脚本:分类命中 → 发一条 login_expired → 进入 15min 节奏 parking。**修复部署本身不依赖任何人碰这个 Lead。**账号重登录(独立 operator 动作)完成后的下一轮自动满血恢复。
+
+### R2.6 Open questions
+
+| # | 问题 | 状态 | 对设计的影响 |
+|---|---|---|---|
+| Q-R1 | refresh token 为何被吊销(8-23~8-26 窗口内 OpenAI 侧动作/别处登录挤掉/舰队事件) | 本机不可考(无归档日志;Linear MCP 本会话 401 连不上,无法翻 issue 评论) | 无:分类+parking 对任意吊销原因有效,且为未来所有 Lead 的同类死亡建立自愈告警路径 |
+| Q-R2 | infra-bot 账号救回 vs 退役 | **已非阻塞上报 Lead**(question id e95aa0d3),等待裁决 | 只影响 runbook 主线(重登录 vs 长期 parked);代码设计两者兼容——退役情形下 parked Lead 每 15.5min 一轮、每天 2 条去重告警,直到正式下架(下架属 Lead 生命周期管理,超出本单) |
+| Q-R3 | FLY-1892 双向断路与本单同根? | 账号死亡窗口(8-23起)仍晚于其入站断(8-13) ⇒ 同根性仍存疑 | 沿用第一轮 G5:账号救回后跑双向验证,通则并单、不通则回报 |

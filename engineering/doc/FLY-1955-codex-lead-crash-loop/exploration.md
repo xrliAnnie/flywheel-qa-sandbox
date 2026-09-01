@@ -1,8 +1,11 @@
 # FLY-1955 Codex Lead 81 秒崩溃循环 — 探索
 
 Issue: FLY-1955 (https://linear.app/geoforge3d/issue/FLY-1955/infra活跃-两个-codex-lead-持续崩溃循环-235-小时精确每-81-秒已跨越两次全舰重启未自愈-remote-control)
-日期: 2026-08-21
+日期: 2026-08-21(第一轮);2026-08-31(第二轮,见 §R2)
 基于: 无
+
+> **本文档为追加式**:§1-§7 是第一轮(zombie 死锁,已由 PR #915 交付);§R2 起是第二轮
+> (2026-08-31 重派发)。两轮结论互不改写,第二轮以 §R2 为准。
 
 ## 1. 问题陈述
 
@@ -110,3 +113,76 @@ launchd (KeepAlive=true, ThrottleInterval=30)
 3. updater 自动升级要不要禁(0.149 事故根源是无预告升级;今天 13:35 它还在活跃)→ research 查可行性。
 4. 崩溃循环静默烧 23.5h 的告警缺口 → 最小 episode 告警或 follow-up,research 里定。
 5. FLY-513 布局固化 + 防再踩。
+
+---
+
+## R2. 第二轮探索(2026-08-31,design 节点重派发)
+
+### R2.1 为什么重开
+
+PR #915(2026-08-21 merge)交付了第一轮的 zombie 回收修复。实测复核(2026-08-31 15:4x PDT):
+
+- **mufasa lead 已健康**:daemon OK、TUI up、runtime started(12:04 起稳定)⇒ 第一轮修复对 zombie 死锁有效。
+- **infra-bot lead 仍在崩溃循环**,但失败签名已换层:
+
+```
+[codex-lead-tui-home] stopped any running daemon so it re-reads the full-access config
+Error: Remote control is enabled on MacBook-Pro.local but the connection is errored.
+Error: Remote control is enabled on MacBook-Pro.local but the connection is errored.
+[codex-lead-tui-home] ERROR: remote-control start failed after stale-daemon recovery (home: /Users/xiaorongli/.codex-infra-bot)
+```
+
+不再是 socket ENOENT。zombie 机制工作正常(daemon 每轮都能 spawn、socket 每轮都能创建、pid 文件每轮更新)。
+
+### R2.2 新根因(证据链闭合)
+
+`~/.codex-infra-bot/app-server-daemon/app-server.stderr.log`(每轮 daemon spawn 重建,内容新鲜)持续输出:
+
+```
+ERROR codex_login::auth::manager: Failed to refresh token: 401 Unauthorized: {
+  "code": "refresh_token_invalidated" ... "Your session has ended. Please log in again."
+ERROR codex_models_manager::manager: ... 401 Unauthorized: Encountered invalidated oauth token
+  for user ... auth error code: token_revoked
+```
+
+⇒ **该 home 的 ChatGPT 账号 refresh token 已被吊销(server 侧)**。daemon 能起、control socket 能建,但与 ChatGPT 后端的 remote-control 配对连接因 auth 死亡而 errored;`codex remote-control start` 检出「enabled 但 connection errored」退 1 → ensure_daemon die → runtime fatal → launchd 重拉 → 循环。
+
+> **术语**:refresh token 是 OAuth 登录后长期保存在本机、用来续签短期 access token 的凭据;
+> 它被 server 吊销后,本机无论重试多少次都不可能自愈,唯一出路是人工重新登录。
+
+时间线锚点:
+- `auth.json` mtime = **8-23 07:30**(最后一次成功写入登录态);
+- 当前 `/tmp` 日志由 codex-log-guard 于 **8-26 23:05** 轮转重建,**第一行起就是本失败签名**,无归档可回溯;
+- ⇒ auth 死亡窗口 = 8-23 07:30 ~ 8-26 23:05,精确时刻不可考(open question,不阻塞设计)。
+
+### R2.3 当前循环形态(与第一轮不同)
+
+| 维度 | 第一轮(zombie) | 第二轮(auth-dead) |
+|---|---|---|
+| 周期 | 81 秒(等 socket 超时 ~51s + Throttle 30s) | **~37 秒**(start 快速失败 ~7s + Throttle 30s) |
+| 已烧时长 | 23.5h 被人工发现 | **≥4.7 天**(8-26 23:05 起 ~11,000 轮,实际更早) |
+| daemon | 永不 spawn(被 zombie 骗) | 每轮 spawn + 被 stop 杀 + 再 spawn(churn) |
+| 告警 | 无(第一轮补的 G3 只盖 zombie 路径) | **4.7 天仅 1 条**(今日 03:16 kind=crash_loop,即偶发走到 reaped 路径那一次) |
+
+**静默烧复现的机制**:auth-dead 时 start 失败 → `reap_zombie_daemon_if_proven` 里 P2 发现 socket 已存在(新 spawn 的 daemon 建的)→ 判 `race_self_healed` → 恰一次重试又失败 → **该路径按第一轮设计不发告警**(只有 `reaped` 分支发)→ die。第一轮把告警恰好只挂在 zombie 证据链上,auth-dead 从缝隙里整层漏过。
+
+### R2.4 排除项与对照
+
+- **非 zombie 复发**:pid 文件每轮更新、指向存活非 Z 进程、socket 每轮创建 ⇒ 第一轮修复正常工作。
+- **非全舰/网络问题**:mufasa 同机同版本(0.151.0)同脚本健康运行 ⇒ 只有 infra-bot 的账号凭据死了。
+- **updater 隔离已验证有效**:两个 home 的 updater 进程 env 均带 home-scoped `CODEX_INSTALL_DIR`(实测 `ps eww`),两个 home 的 `.local/bin/` 自 8-22 起被 updater 持续正确维护。
+- **FLY-513 全局轴现状**:`~/.local/bin/codex` 指向 **mufasa home** 的 standalone current,mtime = **8-21 23:43**(隔离部署生效前的最后一次翻写残留,merge 与部署之间的窗口)。此后 9 天无再翻写 ⇒ 不是隔离失效,是第一轮 plan 阶段 3(operator 用 `fly-513-repoint-global-codex.sh` 收口中立轴)**从未执行**。前置条件现读为真(链指向完整 release 树)。
+
+### R2.5 第二轮问题空间
+
+1. **止血(operator,不等代码)**:infra-bot 的 Codex 账号重新登录(`/codex-relogin` 流程)→ 下一轮循环自愈。前置决策:该账号救回还是退役(已非阻塞上报 Lead,question id e95aa0d3)。
+2. **结构修复(代码)**:`ensure_daemon` 增加 **auth-dead 分类**——start 失败 + daemon stderr 有新鲜的 token 吊销证据 ⇒ 发 `login_expired` 告警(kind 已在 allowlist)+ **长间隔 parking**(把 ~37s 热循环降为分钟级),token 修好后自动恢复。
+3. **补静默烧缺口(代码)**:ensure_daemon 任何 die 路径连续 N 次后发天级去重告警,不再按失败类别逐条决定「要不要告警」——第一轮按类别挂告警被证明有整层漏过的缝隙。
+4. **operator 收口**:执行第一轮 plan 阶段 3 的全局轴中立化(工具已 reviewed,前置条件已满足)。
+5. **FLY-1892 双向验证**:账号救回后按第一轮 G5 执行;若账号退役则回报 FLY-1892 独立处理。
+
+### R2.6 Open questions(进入 research)
+
+- Q-R1:refresh token 为何被吊销(OpenAI 侧安全动作?账号被别处登录挤掉?與 8-23~8-26 的舰队事件相关?)——本机不可考,设计不依赖:分类+parking 对**任意**吊销原因有效,且未来任何 Lead 的 token 再被吊销都会走同一条自愈告警路径。
+- Q-R2:parking 的实现层(脚本 sleep vs runtime 驻留 recheck)与时长 → research 对比。
+- Q-R3:`codex login status` 能否作为分类探针(memory 记载其 rc 在 config 冲突时不可靠)→ research 定证据驱动方案。

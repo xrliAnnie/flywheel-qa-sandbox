@@ -135,6 +135,234 @@ fly1955_ps() { /bin/ps "$@"; }
 fly1955_kill() { /bin/kill "$@"; }
 fly1955_sleep() { /bin/sleep "$@"; }
 
+AUTH_LOG_SNAPSHOT_VALID=0
+AUTH_LOG_SNAPSHOT_EXISTS=0
+AUTH_LOG_SNAPSHOT_INO=""
+AUTH_LOG_SNAPSHOT_SIZE=""
+AUTH_LOG_SNAPSHOT_DIGEST=""
+AUTH_DEAD_CODE=""
+
+snapshot_auth_log() {
+  local log_file="$HOME_DIR/app-server-daemon/app-server.stderr.log" snapshot
+  AUTH_LOG_SNAPSHOT_VALID=0
+  AUTH_LOG_SNAPSHOT_EXISTS=0
+  AUTH_LOG_SNAPSHOT_INO=""
+  AUTH_LOG_SNAPSHOT_SIZE=""
+  AUTH_LOG_SNAPSHOT_DIGEST=""
+  if ! snapshot="$(python3 - "$log_file" <<'PY' 2>/dev/null
+import hashlib
+import os
+import stat
+import sys
+
+try:
+    before = os.lstat(sys.argv[1])
+except FileNotFoundError:
+    print("0\t0\t0\t-")
+    sys.exit(0)
+except OSError:
+    sys.exit(1)
+if not stat.S_ISREG(before.st_mode):
+    sys.exit(1)
+try:
+    with open(sys.argv[1], "rb") as f:
+        opened = os.fstat(f.fileno())
+        data = f.read()
+        after = os.fstat(f.fileno())
+except OSError:
+    sys.exit(1)
+if ((before.st_dev, before.st_ino, before.st_size) !=
+        (opened.st_dev, opened.st_ino, opened.st_size) or
+    (opened.st_dev, opened.st_ino, opened.st_size) !=
+        (after.st_dev, after.st_ino, after.st_size)):
+    sys.exit(1)
+print(f"1\t{after.st_ino}\t{after.st_size}\t{hashlib.sha256(data).hexdigest()}")
+PY
+)"; then
+    return 0
+  fi
+  IFS=$'\t' read -r AUTH_LOG_SNAPSHOT_EXISTS AUTH_LOG_SNAPSHOT_INO \
+    AUTH_LOG_SNAPSHOT_SIZE AUTH_LOG_SNAPSHOT_DIGEST <<< "$snapshot"
+  AUTH_LOG_SNAPSHOT_VALID=1
+}
+
+classify_auth_dead() {
+  local log_file="$HOME_DIR/app-server-daemon/app-server.stderr.log" matched
+  AUTH_DEAD_CODE=""
+  [ "$AUTH_LOG_SNAPSHOT_VALID" -eq 1 ] || return 1
+  if ! matched="$(python3 - "$log_file" "$AUTH_LOG_SNAPSHOT_EXISTS" \
+    "$AUTH_LOG_SNAPSHOT_INO" "$AUTH_LOG_SNAPSHOT_SIZE" \
+    "$AUTH_LOG_SNAPSHOT_DIGEST" <<'PY' 2>/dev/null
+import hashlib
+import os
+import stat
+import sys
+
+path, existed, old_ino, old_size, old_digest = sys.argv[1:]
+try:
+    before = os.lstat(path)
+    if not stat.S_ISREG(before.st_mode):
+        sys.exit(1)
+    with open(path, "rb") as f:
+        opened = os.fstat(f.fileno())
+        data = f.read()
+        after = os.fstat(f.fileno())
+except OSError:
+    sys.exit(1)
+if ((before.st_dev, before.st_ino, before.st_size) !=
+        (opened.st_dev, opened.st_ino, opened.st_size) or
+    (opened.st_dev, opened.st_ino, opened.st_size) !=
+        (after.st_dev, after.st_ino, after.st_size)):
+    sys.exit(1)
+
+if existed == "0" or after.st_ino != int(old_ino):
+    candidate = data
+else:
+    size = int(old_size)
+    prefix_matches = len(data) >= size and hashlib.sha256(data[:size]).hexdigest() == old_digest
+    if prefix_matches and len(data) == size:
+        sys.exit(1)
+    candidate = data[size:] if prefix_matches else data
+
+for code in (
+    b"refresh_token_invalidated",
+    b"refresh_token_reused",
+    b"token_revoked",
+    b"token_expired",
+    b"Your access token could not be refreshed",
+):
+    if code in candidate:
+        print(code.decode("ascii"))
+        sys.exit(0)
+sys.exit(1)
+PY
+)"; then
+    return 1
+  fi
+  AUTH_DEAD_CODE="$matched"
+}
+
+auth_dead_hold() {
+  local orig_ppid current_ppid i
+  orig_ppid="$(fly1955_ps -o ppid= -p $$ 2>/dev/null)" || exit 1
+  orig_ppid="$(trim "$orig_ppid")"
+  [ -n "$orig_ppid" ] || exit 1
+  for ((i = 0; i < 30; i++)); do
+    fly1955_sleep 30
+    current_ppid="$(fly1955_ps -o ppid= -p $$ 2>/dev/null)" || exit 1
+    current_ppid="$(trim "$current_ppid")"
+    [ "$current_ppid" = "$orig_ppid" ] || exit 1
+  done
+}
+
+fly1955_read_failcount() {
+  python3 - "$1" <<'PY'
+import os
+import stat
+import sys
+
+try:
+    entry = os.lstat(sys.argv[1])
+except FileNotFoundError:
+    print("missing")
+    sys.exit(0)
+except OSError:
+    print("read_state")
+    sys.exit(0)
+if not stat.S_ISREG(entry.st_mode):
+    print("read_state")
+    sys.exit(0)
+try:
+    with open(sys.argv[1], encoding="ascii") as f:
+        raw = f.read().strip()
+    value = int(raw)
+except (OSError, UnicodeError):
+    print("read_state")
+    sys.exit(0)
+except ValueError:
+    print("corrupt")
+    sys.exit(0)
+if not raw.isdigit() or value < 0 or value >= 2147483647:
+    print("corrupt")
+else:
+    print(f"numeric\t{value}")
+PY
+}
+
+fly1955_write_failcount() {
+  python3 - "$1" "$2" <<'PY'
+import os
+import stat
+import tempfile
+import sys
+
+path, value = sys.argv[1:]
+fd, tmp = tempfile.mkstemp(prefix=".flywheel-ensure-daemon-failcount.", dir=os.path.dirname(path))
+try:
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(value + "\n")
+    os.replace(tmp, path)
+finally:
+    try:
+        os.unlink(tmp)
+    except FileNotFoundError:
+        pass
+try:
+    entry = os.lstat(path)
+    with open(path, encoding="ascii") as f:
+        stored = f.read().strip()
+except (OSError, UnicodeError):
+    sys.exit(1)
+if not stat.S_ISREG(entry.st_mode) or stored != value:
+    sys.exit(1)
+PY
+}
+
+fly1955_remove_failcount() { rm -f "$1"; }
+
+emit_failcount_io_alert() {
+  local io_fault="$1" day
+  day="$(LC_ALL=C date -u +%Y%m%d)"
+  emit_lead_alert \
+    crash_loop severe "fly1955-failcount-io|$day" \
+    "Codex Lead ensure-daemon failcount persistence broken" \
+    "FLY-1955: home=$HOME_DIR io_fault=$io_fault"
+}
+
+daemon_die() {
+  local message="$1" reason="${2:-}" counter="$HOME_DIR/.flywheel-ensure-daemon-failcount"
+  local read_state count=0 io_fault="" day
+  read_state="$(fly1955_read_failcount "$counter" 2>/dev/null)" || read_state=read_state
+  case "$read_state" in
+    missing|corrupt) count=0 ;;
+    numeric$'\t'*) count="${read_state#*$'\t'}" ;;
+    *) io_fault=read_state; count=0 ;;
+  esac
+  count=$((count + 1))
+  if [ -z "$io_fault" ] && ! fly1955_write_failcount "$counter" "$count" 2>/dev/null; then
+    io_fault="write"
+  fi
+  if [ -n "$io_fault" ]; then
+    emit_failcount_io_alert "$io_fault"
+  fi
+  if [ "$count" -ge 3 ]; then
+    day="$(LC_ALL=C date -u +%Y%m%d)"
+    emit_lead_alert \
+      crash_loop severe "fly1955-ensure-daemon-failing|$day" \
+      "Codex Lead ensure-daemon failing repeatedly" \
+      "FLY-1955: consecutive=$count home=$HOME_DIR failure=$message${reason:+ reason=$reason}"
+  fi
+  die "$message"
+}
+
+clear_daemon_failcount() {
+  if ! fly1955_remove_failcount "$HOME_DIR/.flywheel-ensure-daemon-failcount" 2>/dev/null; then
+    log "failed to clear daemon failcount (non-fatal): $HOME_DIR"
+    emit_failcount_io_alert clear
+  fi
+  return 0
+}
+
 resolve_lead_alert_sh() {
   if [ -n "${FLYWHEEL_LEAD_ALERT_SH:-}" ]; then
     printf '%s' "$FLYWHEEL_LEAD_ALERT_SH"
@@ -715,7 +943,7 @@ ensure_daemon() {
   # the daemon requires it, and a PATH `codex` (npm install) would fail forever
   # even on a correctly provisioned home. Explicit override stays possible.
   local codex_bin="${FLYWHEEL_CODEX_BIN:-$HOME_DIR/packages/standalone/current/codex}"
-  [ -x "$codex_bin" ] || die "codex binary not executable: $codex_bin (standalone install missing? see ensure-home)"
+  [ -x "$codex_bin" ] || daemon_die "codex binary not executable: $codex_bin (standalone install missing? see ensure-home)"
   # FLY-398 (pin ⑤): full-access needs stop-before-start — a stale read-only
   # daemon would keep its old read-only sandbox/config/MCP and never re-read the
   # rewritten workspace-write config (a flip would silently keep Mufasa read-only).
@@ -726,24 +954,44 @@ ensure_daemon() {
   # `remote-control start` is idempotent (spike-verified: already-running →
   # status connected). Fail-loud otherwise — the supervisor retries with backoff.
   local sock="$HOME_DIR/app-server-control/app-server-control.sock"
+  snapshot_auth_log
   # Codex's updater runs install.sh, whose default BIN_DIR is the real
   # $HOME/.local/bin. Keep its visible command inside this Lead home so a Lead
   # update (or an isolated experiment) can never rewrite the global Codex axis.
   if CODEX_INSTALL_DIR="$HOME_DIR/.local/bin" CODEX_HOME="$HOME_DIR" \
     "$codex_bin" remote-control start --json; then
-    [ -S "$sock" ] || die "daemon reported started but control socket missing: $sock"
+    [ -S "$sock" ] || daemon_die "daemon reported started but control socket missing: $sock"
+    clear_daemon_failcount
     log "daemon OK: $sock"
     return 0
+  fi
+
+  if [ "$AUTH_LOG_SNAPSHOT_VALID" -ne 1 ]; then
+    auth_dead_hold
+    daemon_die \
+      "remote-control start failed (home: $HOME_DIR) (auth evidence snapshot unavailable; failure unclassified)" \
+      snapshot_unavailable
+  fi
+
+  if classify_auth_dead; then
+    local day
+    day="$(LC_ALL=C date -u +%Y%m%d)"
+    emit_lead_alert \
+      login_expired severe "fly1955-codex-auth-dead|$day" \
+      "Codex Lead auth revoked — re-login required" \
+      "FLY-1955: $HOME_DIR matched $AUTH_DEAD_CODE; follow the account runbook in engineering/doc/FLY-1955-codex-lead-crash-loop/plan.md section 6."
+    auth_dead_hold
+    daemon_die "remote-control start failed (home: $HOME_DIR) (codex auth revoked — re-login required)"
   fi
 
   reap_zombie_daemon_if_proven
   case "$REAP_OUTCOME" in
     not_proven)
-      die "remote-control start failed (home: $HOME_DIR) (stale-daemon evidence incomplete)"
+      daemon_die "remote-control start failed (home: $HOME_DIR) (stale-daemon evidence incomplete)"
       ;;
     action_stuck)
       emit_zombie_alert stuck "Updater identity changed, a signal failed, or the zombie was not reaped within 10s."
-      die "remote-control start failed (home: $HOME_DIR) (stale-daemon recovery stuck)"
+      daemon_die "remote-control start failed (home: $HOME_DIR) (stale-daemon recovery stuck)"
       ;;
     race_self_healed|reaped)
       # The bounded state machine authorizes exactly one retry. Exit 0 from the
@@ -752,12 +1000,12 @@ ensure_daemon() {
         "$codex_bin" remote-control start --json; then
         [ "$REAP_OUTCOME" = reaped ] \
           && emit_zombie_alert stuck "The one authorized remote-control retry failed."
-        die "remote-control start failed after stale-daemon recovery (home: $HOME_DIR)"
+        daemon_die "remote-control start failed after stale-daemon recovery (home: $HOME_DIR)"
       fi
       if [ ! -S "$sock" ]; then
         [ "$REAP_OUTCOME" = reaped ] \
           && emit_zombie_alert stuck "The retry exited 0 but the control socket is absent."
-        die "daemon reported started after stale-daemon recovery but control socket missing: $sock"
+        daemon_die "daemon reported started after stale-daemon recovery but control socket missing: $sock"
       fi
       if [ "$REAP_OUTCOME" = reaped ]; then
         if assert_recovery_shape; then
@@ -769,10 +1017,11 @@ ensure_daemon() {
           emit_zombie_alert stuck "The control socket recovered, but updater/daemon postconditions are incomplete."
         fi
       fi
+      clear_daemon_failcount
       log "daemon OK: $sock"
       return 0
       ;;
-    *) die "internal error: unknown stale-daemon recovery outcome '$REAP_OUTCOME'" ;;
+    *) daemon_die "internal error: unknown stale-daemon recovery outcome '$REAP_OUTCOME'" ;;
   esac
 }
 
