@@ -699,7 +699,22 @@ export class ReviewRequestCoordinator {
 						`retry refused for ${requestId}: gate ${retryGate} (question ${questionId})`,
 					);
 				}
-				this.enqueue(existing.request_id, existing.execution_id);
+				const lineageTip =
+					existing.failure_reason === "head_moved"
+						? this.store.getCodexReviewJobByQuestionId(existing.question_id)
+						: null;
+				if (lineageTip && lineageTip.request_id !== existing.request_id) {
+					if (lineageTip.status === "pending") {
+						this.enqueue(lineageTip.request_id, lineageTip.execution_id);
+					} else if (
+						(lineageTip.status === "done" || lineageTip.status === "skipped") &&
+						!lineageTip.responded_at
+					) {
+						await this.deliverStoredResponse(lineageTip);
+					}
+				} else {
+					this.enqueue(existing.request_id, existing.execution_id);
+				}
 			} else if (
 				(existing.status === "done" || existing.status === "skipped") &&
 				!existing.responded_at
@@ -1076,17 +1091,6 @@ export class ReviewRequestCoordinator {
 			return;
 		}
 
-		// reviewer session: round 1 gets a FRESH uuid at run time (a retried
-		// round-1 must not collide with a half-created claude session);
-		// rerounds resume the persisted prior-round uuid.
-		let sessionUuid = job.reviewer_session_uuid;
-		let resume = true;
-		if (job.round <= 1 || !sessionUuid) {
-			sessionUuid = randomUUID();
-			this.store.setCodexReviewJobReviewerSession(requestId, sessionUuid);
-			resume = false;
-		}
-
 		const cwd =
 			job.target_repo_path ??
 			this.store.getWorktreeBinding(job.execution_id)?.path;
@@ -1096,6 +1100,29 @@ export class ReviewRequestCoordinator {
 				`review job ${requestId} (${job.issue_id ?? job.execution_id}) failed: no persisted worktree`,
 			);
 			return;
+		}
+		if (job.review_type === "code") {
+			const current = await this.tryDeriveHead(job.execution_id, cwd);
+			const frozen = job.frozen_head_sha?.toLowerCase();
+			if (!current || !frozen || current !== frozen) {
+				this.handleHeadMoved(job, current);
+				this.alert(
+					`claude review ${requestId}: head moved before reviewer start (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — no reviewer started.`,
+				);
+				return;
+			}
+		}
+
+		// reviewer session: round 1 gets a FRESH uuid at run time (a retried
+		// round-1 must not collide with a half-created claude session);
+		// rerounds resume the persisted prior-round uuid. Head preflight above
+		// deliberately runs first so a stale request never consumes a UUID.
+		let sessionUuid = job.reviewer_session_uuid;
+		let resume = true;
+		if (job.round <= 1 || !sessionUuid) {
+			sessionUuid = randomUUID();
+			this.store.setCodexReviewJobReviewerSession(requestId, sessionUuid);
+			resume = false;
 		}
 
 		const policyEnabled = this.deps.reviewSeverityPolicyEnabled ?? true;
@@ -1183,11 +1210,7 @@ export class ReviewRequestCoordinator {
 				const current = await this.tryDeriveHead(job.execution_id, cwd);
 				const frozen = job.frozen_head_sha?.toLowerCase();
 				if (!current || !frozen || current !== frozen) {
-					this.failReviewJob(
-						requestId,
-						"head_moved",
-						composeFailureRaw(failedAttempts),
-					);
+					this.handleHeadMoved(job, current, composeFailureRaw(failedAttempts));
 					this.alert(
 						`claude review ${requestId}: head moved before the lost-session fallback (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — no fresh reviewer started.`,
 					);
@@ -1247,9 +1270,9 @@ export class ReviewRequestCoordinator {
 			const current = await this.tryDeriveHead(job.execution_id, cwd);
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
-				this.failReviewJob(requestId, "head_moved");
+				this.handleHeadMoved(job, current);
 				this.alert(
-					`claude review ${requestId}: head moved (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — verdict voided; a new request/round is required.`,
+					`claude review ${requestId}: head moved (frozen ${frozen ?? "?"} vs current ${current ?? "?"}) — verdict voided.`,
 				);
 				return;
 			}
@@ -1400,7 +1423,10 @@ export class ReviewRequestCoordinator {
 		);
 	}
 
-	private emitReviewJobFailureAlert(job: CodexReviewJob): void {
+	private emitReviewJobFailureAlert(
+		job: CodexReviewJob,
+		recoveryOverride?: string,
+	): void {
 		const gate = this.inspectGate(
 			job.project_name,
 			job.question_id,
@@ -1412,7 +1438,7 @@ export class ReviewRequestCoordinator {
 			gate.state === "superseded"
 		) {
 			this.log(
-				`review job ${job.request_id} failed after a same-execution revision supersede; founder-facing failure alert suppressed`,
+				`review job ${job.request_id} failed after a same-execution revision supersede; external failure alert suppressed`,
 			);
 			return;
 		}
@@ -1420,7 +1446,8 @@ export class ReviewRequestCoordinator {
 			job.issue_id ??
 			this.store.getSession(job.execution_id)?.issue_id ??
 			job.execution_id;
-		const recovery = this.reviewFailureRecovery(job, gate.state);
+		const recovery =
+			recoveryOverride ?? this.reviewFailureRecovery(job, gate.state);
 		void this.emitReviewAlert({
 			kind: "review_job_failed",
 			eventId: `review-failed:${job.request_id}:${job.failure_attempt_count}`,
@@ -1429,6 +1456,37 @@ export class ReviewRequestCoordinator {
 			requestId: job.request_id,
 			message: `Review ${job.request_id} (${job.review_type} R${job.round}) failed: ${job.failure_reason ?? "unknown"}. ${recovery}`,
 		});
+	}
+
+	private handleHeadMoved(
+		job: CodexReviewJob,
+		currentHead: string | null,
+		failureRaw?: string,
+	): void {
+		if (!currentHead) {
+			this.failReviewJob(job.request_id, "head_moved_unresolved", failureRaw);
+			return;
+		}
+		const result = this.store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: job.request_id,
+			successorRequestId: randomUUID(),
+			currentHeadSha: currentHead,
+			failureRaw,
+		});
+		if (result.outcome === "exhausted" || !result.successor) {
+			this.emitReviewJobFailureAlert(
+				result.parent,
+				"Automatic head-move retries are exhausted. Open a new review gate and submit a new request for the current head.",
+			);
+			return;
+		}
+		this.emitReviewJobFailureAlert(
+			result.parent,
+			`The stale review was automatically requeued as ${result.successor.request_id} on head ${result.successor.frozen_head_sha}; the original gate remains bound.`,
+		);
+		if (result.successor.status === "pending") {
+			this.enqueue(result.successor.request_id, result.successor.execution_id);
+		}
 	}
 
 	private reviewFailureRecovery(
@@ -1560,7 +1618,7 @@ export class ReviewRequestCoordinator {
 				: null;
 			const frozen = job.frozen_head_sha?.toLowerCase();
 			if (!current || !frozen || current !== frozen) {
-				this.failReviewJob(requestId, "head_moved");
+				this.handleHeadMoved(job, current);
 				return;
 			}
 		}
@@ -1601,6 +1659,7 @@ export class ReviewRequestCoordinator {
 			target_path?: string;
 			target_repo_identity: string;
 			frozen_head_sha?: string;
+			head_move_parent_request_id?: string;
 			issue_id?: string;
 			execution_id: string;
 		},
@@ -1630,6 +1689,12 @@ export class ReviewRequestCoordinator {
 		const governance = governancePrompt ? `\n\n${governancePrompt}` : "";
 		if (job.round <= 1) {
 			return `${contract}\n\n${target}${governance}\n\nThis is round ${job.round}.`;
+		}
+		if (job.head_move_parent_request_id) {
+			return (
+				`${contract}\n\nRound ${job.round} re-review. The reviewed head moved; perform a full review of the current head. ` +
+				`${target}${governance}\n\nDo not assume findings from the stale head were fixed or still apply; inspect the complete current diff.`
+			);
 		}
 		if (resume) {
 			return (

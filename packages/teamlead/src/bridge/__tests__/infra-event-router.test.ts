@@ -21,6 +21,7 @@ import {
 	classifyInfraEvent,
 	createInfraAlertSink,
 	ISSUE_PROGRESS_KINDS,
+	LEAD_INBOX_KINDS,
 	TICKET_KINDS,
 } from "../infra-event-router.js";
 import { createReviewAlertEmitter } from "../review-governance-effects.js";
@@ -88,7 +89,7 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		}
 	});
 
-	it("routes production review failures through session resolution, with wrong keys failing safe to ticket", async () => {
+	it("routes production review failures to the owning Lead without resolving a founder thread", async () => {
 		const store = await StateStore.create(":memory:");
 		store.upsertSession({
 			execution_id: "exec-1",
@@ -117,6 +118,7 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		] as unknown as ProjectEntry[];
 		const rawSink = { alert: vi.fn(async () => ({ sent: true })) };
 		const ticketSink = { alert: vi.fn(async () => ({ queued: true })) };
+		const leadInboxSink = { alert: vi.fn(async () => ({ queued: true })) };
 		const fetchImpl = vi.fn(async () => ({
 			ok: true,
 			status: 200,
@@ -129,6 +131,8 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 			projects,
 			rawSink,
 			ticketSink,
+			leadInboxSink,
+			leadRecipientState: () => "alive",
 			routingEnabled: () => true,
 			ticketsEnabled: () => false,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
@@ -140,7 +144,8 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 			alert: (alert) => sink.alert(alert),
 		});
 
-		expect(ISSUE_PROGRESS_KINDS.has("review_job_failed")).toBe(true);
+		expect(ISSUE_PROGRESS_KINDS.has("review_job_failed")).toBe(false);
+		expect(LEAD_INBOX_KINDS.has("review_job_failed")).toBe(true);
 		await emitReviewAlert({
 			kind: "review_job_failed",
 			eventId: "review-failed:req-1:1",
@@ -149,19 +154,18 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 			requestId: "req-1",
 			message: "Review req-1 failed; the gate remains closed.",
 		});
-		expect(fetchImpl).toHaveBeenCalledTimes(1);
-		expect((fetchImpl.mock.calls[0] as unknown as [string])[0]).toContain(
-			"/channels/t-1/messages",
-		);
+		expect(leadInboxSink.alert).toHaveBeenCalledTimes(1);
+		expect(fetchImpl).not.toHaveBeenCalled();
 		expect(ticketSink.alert).not.toHaveBeenCalled();
 
-		fetchImpl.mockClear();
+		leadInboxSink.alert.mockClear();
 		await sink.alert({
 			...payload("review_job_failed"),
 			sessionKey: "flywheel:FLY-1",
 		});
 		expect(fetchImpl).not.toHaveBeenCalled();
-		expect(ticketSink.alert).toHaveBeenCalledTimes(1);
+		expect(leadInboxSink.alert).toHaveBeenCalledTimes(1);
+		expect(ticketSink.alert).not.toHaveBeenCalled();
 		store.close();
 	});
 
@@ -176,6 +180,10 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 	it("the two kind sets are disjoint and cover the WHOLE AlertEventType union", () => {
 		for (const kind of TICKET_KINDS) {
 			expect(ISSUE_PROGRESS_KINDS.has(kind)).toBe(false);
+			expect(LEAD_INBOX_KINDS.has(kind)).toBe(false);
+		}
+		for (const kind of ISSUE_PROGRESS_KINDS) {
+			expect(LEAD_INBOX_KINDS.has(kind)).toBe(false);
 		}
 		// Every union member classifies deterministically (never throws, never a
 		// silent drop): members in neither set default to "ticket".
@@ -184,7 +192,7 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 				eventType: kind,
 				boundIssueThread: null,
 			});
-			expect(["ticket", "issue_thread"]).toContain(route);
+			expect(["ticket", "issue_thread", "lead_inbox"]).toContain(route);
 			expect(route).not.toBe("issue_thread"); // unbound never goes to a thread
 		}
 	});
@@ -201,7 +209,10 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 
 	it("union members outside both sets fail-safe to ticket", () => {
 		const uncovered = ALERT_EVENT_TYPES.filter(
-			(k) => !TICKET_KINDS.has(k) && !ISSUE_PROGRESS_KINDS.has(k),
+			(k) =>
+				!TICKET_KINDS.has(k) &&
+				!ISSUE_PROGRESS_KINDS.has(k) &&
+				!LEAD_INBOX_KINDS.has(k),
 		);
 		for (const kind of uncovered) {
 			expect(
@@ -232,6 +243,13 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 				}),
 			),
 		};
+		const leadInboxSink = {
+			alert: vi.fn(
+				async (_p: AlertPayload): Promise<AlertResult> => ({
+					queued: true,
+				}),
+			),
+		};
 		const resolve = vi.fn(overrides?.resolve ?? (() => null));
 		const deliver = vi.fn(
 			overrides?.deliver ??
@@ -240,6 +258,7 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 		const sink = createInfraAlertSink({
 			rawSink,
 			ticketSink,
+			leadInboxSink,
 			founderUserId:
 				overrides?.founderUserId === null
 					? undefined
@@ -249,8 +268,41 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 			deliverToIssueThread: deliver,
 			logger: () => {},
 		});
-		return { sink, rawSink, ticketSink, resolve, deliver };
+		return { sink, rawSink, ticketSink, leadInboxSink, resolve, deliver };
 	}
+
+	it("review failures go only to the owning Lead inbox, even with a thread or mention", async () => {
+		const { sink, rawSink, ticketSink, leadInboxSink, resolve, deliver } =
+			makeDeps({ resolve: () => THREAD });
+		const p = {
+			...payload("review_job_failed"),
+			mentionUserId: "222222222222222222",
+		};
+		expect(LEAD_INBOX_KINDS).toContain("review_job_failed");
+
+		await sink.alert(p);
+
+		expect(leadInboxSink.alert).toHaveBeenCalledExactlyOnceWith(p);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).not.toHaveBeenCalled();
+		expect(resolve).not.toHaveBeenCalled();
+		expect(deliver).not.toHaveBeenCalled();
+	});
+
+	it("review failure Lead-inbox errors fall back durably without touching founder", async () => {
+		const { sink, rawSink, ticketSink, leadInboxSink, resolve, deliver } =
+			makeDeps({ resolve: () => THREAD });
+		const p = payload("review_job_failed");
+		leadInboxSink.alert.mockRejectedValueOnce(new Error("Lead mailbox down"));
+
+		await sink.alert(p);
+
+		expect(leadInboxSink.alert).toHaveBeenCalledExactlyOnceWith(p);
+		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(p);
+		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(resolve).not.toHaveBeenCalled();
+		expect(deliver).not.toHaveBeenCalled();
+	});
 
 	it("routing DISABLED (env unset) → pure passthrough; resolver never consulted", async () => {
 		const { sink, rawSink, ticketSink, resolve, deliver } = makeDeps({

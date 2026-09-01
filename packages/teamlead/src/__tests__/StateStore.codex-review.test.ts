@@ -392,6 +392,230 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 	});
 });
 
+describe("StateStore — FLY-2228 moved-head successor", () => {
+	it("migrates and reopens a legacy review-job database with lineage intact", async () => {
+		const fs = await import("node:fs");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const initSqlJs = (await import("sql.js")).default;
+		const dir = fs.mkdtempSync(join(tmpdir(), "fly2228-review-migration-"));
+		const dbPath = join(dir, "state.db");
+		let migrated: StateStore | undefined;
+		try {
+			const SQL = await initSqlJs();
+			const seed = new SQL.Database();
+			seed.run(`CREATE TABLE codex_review_job (
+				request_id TEXT PRIMARY KEY,
+				execution_id TEXT NOT NULL,
+				issue_id TEXT,
+				project_name TEXT NOT NULL,
+				review_type TEXT NOT NULL,
+				round INTEGER NOT NULL DEFAULT 1,
+				question_id TEXT NOT NULL,
+				target_path TEXT,
+				target_repo_path TEXT,
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__',
+				frozen_head_sha TEXT,
+				status TEXT NOT NULL DEFAULT 'pending',
+				reviewer_session_uuid TEXT,
+				verdict TEXT,
+				reviewer_verdict TEXT,
+				findings_json TEXT,
+				advisories_json TEXT,
+				settled_json TEXT,
+				response_json TEXT,
+				payload_version INTEGER,
+				failure_reason TEXT,
+				failure_raw TEXT,
+				retry_at TEXT,
+				auto_retry_count INTEGER NOT NULL DEFAULT 0,
+				failure_attempt_count INTEGER NOT NULL DEFAULT 0,
+				author_family TEXT,
+				created_at TEXT NOT NULL DEFAULT (datetime('now')),
+				updated_at TEXT,
+				responded_at TEXT,
+				delivery_nonce TEXT
+			)`);
+			seed.run(
+				`INSERT INTO codex_review_job
+				 (request_id, execution_id, issue_id, project_name, review_type,
+				  question_id, frozen_head_sha, status, author_family)
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, 'running', 'codex')`,
+				[
+					"legacy-parent",
+					"exec-2228",
+					"FLY-2228",
+					"flywheel",
+					"question-2228",
+					SHA_A,
+				],
+			);
+			fs.writeFileSync(dbPath, Buffer.from(seed.export()));
+			seed.close();
+
+			migrated = await StateStore.create(dbPath);
+			expect(migrated.getCodexReviewJob("legacy-parent")).toMatchObject({
+				head_move_retry_count: 0,
+				head_move_parent_request_id: undefined,
+			});
+			migrated.failAndRequeueCodexReviewJobForHeadMove({
+				requestId: "legacy-parent",
+				successorRequestId: "migrated-child",
+				currentHeadSha: SHA_B,
+			});
+			migrated.close();
+			migrated = undefined;
+			migrated = await StateStore.create(dbPath);
+			expect(
+				migrated.getCodexReviewJobByQuestionId("question-2228"),
+			).toMatchObject({
+				request_id: "migrated-child",
+				head_move_parent_request_id: "legacy-parent",
+				head_move_retry_count: 1,
+			});
+		} finally {
+			migrated?.close();
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	it("atomically fails the stale request and creates a new request on the current head", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "request-old",
+			executionId: "exec-2228",
+			issueId: "FLY-2228",
+			projectName: "flywheel",
+			reviewType: "code",
+			round: 1,
+			questionId: "question-2228",
+			targetRepoPath: "/worktree",
+			targetRepoIdentity: "__main__",
+			frozenHeadSha: SHA_A,
+			reviewerSessionUuid: "review-session",
+			authorFamily: "codex",
+		});
+		expect(store.claimCodexReviewJobRunning("request-old")).toBe(true);
+
+		const result = store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "request-old",
+			successorRequestId: "request-new",
+			currentHeadSha: SHA_B,
+		});
+
+		expect(result.outcome).toBe("requeued");
+		expect(result.parent).toMatchObject({
+			request_id: "request-old",
+			status: "failed",
+			failure_reason: "head_moved",
+			failure_attempt_count: 1,
+		});
+		expect(result.successor).toMatchObject({
+			request_id: "request-new",
+			execution_id: "exec-2228",
+			issue_id: "FLY-2228",
+			project_name: "flywheel",
+			review_type: "code",
+			round: 2,
+			question_id: "question-2228",
+			target_repo_path: "/worktree",
+			target_repo_identity: "__main__",
+			frozen_head_sha: SHA_B,
+			reviewer_session_uuid: "review-session",
+			author_family: "codex",
+			head_move_parent_request_id: "request-old",
+			head_move_retry_count: 1,
+			auto_retry_count: 0,
+			failure_attempt_count: 0,
+			status: "pending",
+		});
+	});
+
+	it("returns the existing child when the same stale parent is replayed", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "request-parent",
+			executionId: "exec-2228-replay",
+			issueId: "FLY-2228",
+			projectName: "flywheel",
+			reviewType: "code",
+			questionId: "question-replay",
+			frozenHeadSha: SHA_A,
+		});
+		store.claimCodexReviewJobRunning("request-parent");
+		store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "request-parent",
+			successorRequestId: "request-child-1",
+			currentHeadSha: SHA_B,
+		});
+
+		const replay = store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "request-parent",
+			successorRequestId: "request-child-2",
+			currentHeadSha: "c".repeat(40),
+		});
+
+		expect(replay).toMatchObject({
+			outcome: "existing",
+			parent: {
+				request_id: "request-parent",
+				failure_attempt_count: 1,
+			},
+			successor: {
+				request_id: "request-child-1",
+				frozen_head_sha: SHA_B,
+			},
+		});
+		expect(store.getCodexReviewJob("request-child-2")).toBeNull();
+	});
+
+	it("stops after two automatically minted successors", async () => {
+		const store = await StateStore.create(":memory:");
+		store.insertCodexReviewJob({
+			requestId: "request-root",
+			executionId: "exec-2228-budget",
+			issueId: "FLY-2228",
+			projectName: "flywheel",
+			reviewType: "code",
+			questionId: "question-budget",
+			frozenHeadSha: SHA_A,
+		});
+		store.claimCodexReviewJobRunning("request-root");
+		const first = store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "request-root",
+			successorRequestId: "request-child-1",
+			currentHeadSha: SHA_B,
+		});
+		expect(first.successor?.head_move_retry_count).toBe(1);
+		store.claimCodexReviewJobRunning("request-child-1");
+		const second = store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "request-child-1",
+			successorRequestId: "request-child-2",
+			currentHeadSha: "c".repeat(40),
+		});
+		expect(second.successor?.head_move_retry_count).toBe(2);
+		store.claimCodexReviewJobRunning("request-child-2");
+
+		const exhausted = store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "request-child-2",
+			successorRequestId: "request-child-3",
+			currentHeadSha: "d".repeat(40),
+		});
+
+		expect(exhausted).toMatchObject({
+			outcome: "exhausted",
+			parent: {
+				request_id: "request-child-2",
+				status: "failed",
+				failure_reason: "head_moved_exhausted",
+				head_move_retry_count: 2,
+				failure_attempt_count: 1,
+			},
+		});
+		expect(store.getCodexReviewJob("request-child-3")).toBeNull();
+	});
+});
+
 describe("StateStore — FLY-1188 family-aware review authority", () => {
 	let store: StateStore;
 	const SHA = "c".repeat(40);

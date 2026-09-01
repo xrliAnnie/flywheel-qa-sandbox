@@ -1,5 +1,5 @@
 /**
- * FLY-927 (W1): the Bridge wiring for the D1 Router — binds the pure
+ * FLY-927 (W1): the Bridge wiring for the responder Router — binds the pure
  * `createInfraAlertSink` to the real resolution chain
  * (sessions → resolveLeadForIssue → chat_threads) and the issue-thread
  * delivery leg. Extracted from plugin.ts so the glue is integration-testable
@@ -16,6 +16,7 @@ import {
 	type BoundIssueThread,
 	createInfraAlertSink,
 	ISSUE_PROGRESS_KINDS,
+	LEAD_INBOX_KINDS,
 } from "./infra-event-router.js";
 import {
 	deriveTicketProvider,
@@ -45,6 +46,12 @@ export interface InfraAlertRoutingDeps {
 	rawSink: AlertSinkLike;
 	/** One durable alert letter to Claw; the default route for ordinary alerts. */
 	ticketSink: AlertSinkLike;
+	/** One durable alert letter to the issue's owning Lead. */
+	leadInboxSink: AlertSinkLike;
+	/** Live recipient guard; unknown/dead recipients fail safe to Claw. */
+	leadRecipientState: (
+		leadId: string,
+	) => "alive" | "terminal_or_missing" | "unknown";
 	/** Canonical founder id for explicit founder escalations. */
 	founderUserId?: string;
 	/** Test seams. */
@@ -166,6 +173,25 @@ export function buildInfraAlertRouting(
 	const routedSink = createInfraAlertSink({
 		rawSink: deps.rawSink,
 		ticketSink: deps.ticketSink,
+		leadInboxSink: {
+			alert: async (payload) => {
+				let state: "alive" | "terminal_or_missing" | "unknown" = "unknown";
+				try {
+					state = deps.leadRecipientState(payload.leadId);
+				} catch (error) {
+					deps.logger?.(
+						`owning-Lead liveness read failed for ${payload.leadId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+				if (state !== "alive") {
+					deps.logger?.(
+						`owning-Lead ${payload.leadId} is ${state}; preserving ${payload.eventId} in Claw mailbox`,
+					);
+					return deps.ticketSink.alert(payload);
+				}
+				return deps.leadInboxSink.alert(payload);
+			},
+		},
 		founderUserId: deps.founderUserId,
 		routingEnabled: deps.routingEnabled,
 		resolveBoundIssueThread,
@@ -173,18 +199,23 @@ export function buildInfraAlertRouting(
 		logger: deps.logger,
 	});
 
-	// FLY-927 (Task 2.3): owner @-target enrichment. The root POST is the ONLY
+	// FLY-927 (Task 2.3): owner enrichment. The root POST is the ONLY
 	// moment the mention can ride atomically (the Hub sees the messageId after
 	// the fact), so the ticket context — owner and first-seen — is computed
-	// HERE, before the sink. Ticket-queue kinds only; issue-progress kinds never
-	// render a 🎫 header. Enrichment failure degrades to the un-enriched payload
+	// HERE, before the sink. Owning-Lead and issue-progress kinds bypass ticket
+	// presentation entirely. Failure degrades to the un-enriched payload
 	// (owner —), never blocks the alert.
 	const ticketsEnabled = deps.ticketsEnabled ?? (() => true);
 	const alertsEnabled = deps.alertsEnabled ?? (() => true);
 	const now = deps.now ?? (() => Date.now());
 	const enrich = (payload: AlertPayload): AlertPayload => {
 		if (!ticketsEnabled() || payload.ticket) return payload;
-		if (ISSUE_PROGRESS_KINDS.has(payload.eventType)) return payload;
+		if (
+			ISSUE_PROGRESS_KINDS.has(payload.eventType) ||
+			LEAD_INBOX_KINDS.has(payload.eventType)
+		) {
+			return payload;
+		}
 		try {
 			const reg = ownerRegistryFromEnv(process.env);
 			const session = payload.sessionKey
@@ -204,7 +235,12 @@ export function buildInfraAlertRouting(
 									?.leads.find((l) => l.agentId === payload.leadId)?.backend ??
 								null,
 						});
-			const owner = resolveTicketOwner(payload.eventType, provider, reg);
+			const owner = resolveTicketOwner(
+				payload.eventType,
+				provider,
+				reg,
+				payload.leadId,
+			);
 			const face = ownerTicketFace(owner);
 			// first-seen: a re-fire of the SAME episode keeps the original stamp.
 			const active = deps.store.getActiveAlertThread(

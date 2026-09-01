@@ -9,6 +9,7 @@
  *    server-side `actorBackend !== provider` enforces it on the action route).
  *  - Provider-agnostic problems (stuck / throttle-stall / infra) default to
  *    the CLAUDE bot (the resident workhorse, CMP-2).
+ *  - Review failures stay with the trusted owning Lead from the payload.
  *
  * Owner env ids unset ⇒ `userId: null` ⇒ the caller renders the label without
  * a ping. The ticket remains NEW for explicit duty handling.
@@ -62,6 +63,10 @@ const ACCOUNT_AUTH_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>(
 const CROSS_PROVIDER_KINDS: ReadonlySet<AlertEventType> =
 	new Set<AlertEventType>([...ACCOUNT_AUTH_KINDS, "infra_bot_down"]);
 
+const OWNING_LEAD_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
+	"review_job_failed",
+]);
+
 /** Kinds with NO bot owner. */
 const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	// Permissions are a HUMAN decision (PRD §4.3 precedent) — straight to
@@ -90,10 +95,6 @@ const NO_OWNER_KINDS: ReadonlySet<AlertEventType> = new Set<AlertEventType>([
 	"tmux_split_brain",
 	// Paid-model choices are intentionally never delegated to an infra bot.
 	"quota_choice",
-	// FLY-2177: this is issue progress owned by the issue's human lane. If its
-	// bound thread cannot be resolved, retain the durable ticket without
-	// assigning an infra bot that cannot decide the review's next action.
-	"review_job_failed",
 ]);
 
 /**
@@ -105,7 +106,13 @@ export function resolveTicketOwner(
 	eventType: AlertEventType,
 	provider: TicketProvider,
 	reg: OwnerRegistry,
+	owningLeadId?: string,
 ): TicketOwner {
+	if (OWNING_LEAD_KINDS.has(eventType)) {
+		return owningLeadId?.trim()
+			? { kind: "lead", leadId: owningLeadId.trim() }
+			: { kind: "none" };
+	}
 	if (NO_OWNER_KINDS.has(eventType)) return { kind: "none" };
 	if (CROSS_PROVIDER_KINDS.has(eventType)) {
 		// Cross assignment; unknown provider defaults to the Claude workhorse.

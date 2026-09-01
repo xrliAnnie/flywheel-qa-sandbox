@@ -10498,25 +10498,36 @@ export async function startBridge(
 	const alertSink: { alert: (p: AlertPayload) => Promise<AlertResult> } =
 		alertHub ? { alert: (p) => alertHub.handle(p) } : leadAlertNotifier;
 
-	// FLY-927 (W1): wrap the raw sink with the welded-on D1 Router. An
-	// issue-progress alert with a bound [FLY-XX] thread is delivered THERE via
-	// the issue-thread infra leg; any resolution/delivery failure fail-safes back
-	// to the raw channel sink — never silent, never recursive.
+	// FLY-927 / FLY-2228: wrap the raw sink with responder routing. Issue
+	// progress goes to its bound thread; review failures go to the owning Lead's
+	// durable inbox; delivery failures fall back to Claw — never silent.
+	const infraTicketSink = {
+		alert: async (payload: AlertPayload): Promise<AlertResult> => {
+			const receipt = leadInboxRuntime.enqueueInfraAlert(
+				INFRA_ALERT_OWNER_LEAD_ID,
+				payload,
+			);
+			return { queued: receipt.queued };
+		},
+	};
 	const routedAlertSinkCore = buildInfraAlertRouting({
 		store,
 		projects,
 		alertsEnabled: () => storeAlertSystemEnabled(flagStore),
 		globalBotToken: config.discordBotToken,
 		rawSink: alertSink,
-		ticketSink: {
+		ticketSink: infraTicketSink,
+		leadInboxSink: {
 			alert: async (payload) => {
 				const receipt = leadInboxRuntime.enqueueInfraAlert(
-					INFRA_ALERT_OWNER_LEAD_ID,
+					payload.leadId,
 					payload,
 				);
 				return { queued: receipt.queued };
 			},
 		},
+		leadRecipientState: (leadId) =>
+			leadInboxRuntime.getLeadRecipientState(leadId),
 		founderUserId: config.discordOwnerUserId,
 	});
 	const routedAlertSink: {

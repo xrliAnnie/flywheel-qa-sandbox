@@ -1,5 +1,5 @@
 /**
- * FLY-927 (W1): infra-event Router — the two-way split for durable Claw alerts.
+ * FLY-927 (W1): infra-event Router — responder-based durable alert routing.
  *
  * D1 (brainstorm gate, Tadashi 2026-07-07): classify by RESPONDER —
  *  - "ticket":       ordinary alerts → durable Claw mailbox (even when the
@@ -10,6 +10,8 @@
  *                    Discord thread, where the responsible party has context.
  *                    ONLY when a thread is actually bound; otherwise fail-safe
  *                    to "ticket" (never silently drop).
+ *  - "lead_inbox":   review-job failures → the owning Lead's durable mailbox;
+ *                    the founder thread is never part of this route.
  *
  * The classification is a PURE function; the routed sink wrapper
  * (`createInfraAlertSink`) is what plugin.ts installs in front of the raw
@@ -23,7 +25,7 @@ import type {
 } from "../LeadAlertNotifier.js";
 import { isDiscordSnowflake } from "./founder-notify-utils.js";
 
-export type AlertRouteClass = "ticket" | "issue_thread";
+export type AlertRouteClass = "ticket" | "issue_thread" | "lead_inbox";
 
 /**
  * Infra process-health kinds — a bot can act on these, so they queue as durable
@@ -83,7 +85,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 	]);
 
 /**
- * Issue-progress kinds — the responder is the issue's Lead/founder, so they
+ * Issue-progress kinds — the responder is in the issue's human lane, so they
  * belong in the issue's own thread WHEN one is bound. Unbound → fail-safe
  * ticket (this is exactly the case the PRD CH-1 whitelist rows cover).
  */
@@ -94,8 +96,11 @@ export const ISSUE_PROGRESS_KINDS: ReadonlySet<AlertEventType> =
 		"workflow_engine_issue_alert",
 		"founder_gate_delivery_failed",
 		"runner_lead_pending_unhandled",
-		"review_job_failed",
 	]);
+
+/** Review failures are actionable by the issue's owning Lead, never founder. */
+export const LEAD_INBOX_KINDS: ReadonlySet<AlertEventType> =
+	new Set<AlertEventType>(["review_job_failed"]);
 
 /** The issue thread an event resolved to (sessions → issue → chat_threads). */
 export interface BoundIssueThread {
@@ -114,6 +119,7 @@ export interface RouteInput {
 
 export function classifyInfraEvent(input: RouteInput): AlertRouteClass {
 	if (TICKET_KINDS.has(input.eventType)) return "ticket";
+	if (LEAD_INBOX_KINDS.has(input.eventType)) return "lead_inbox";
 	if (ISSUE_PROGRESS_KINDS.has(input.eventType) && input.boundIssueThread) {
 		return "issue_thread";
 	}
@@ -133,6 +139,8 @@ export interface InfraAlertSinkDeps {
 	rawSink: AlertSinkLike;
 	/** FLY-1764 Flow 2 primary: one durable alert letter to Claw. */
 	ticketSink: AlertSinkLike;
+	/** One durable alert letter to the issue's owning Lead. */
+	leadInboxSink: AlertSinkLike;
 	/** Canonical founder id added to explicit founder-escalation payloads. */
 	founderUserId?: string;
 	/** Test seam; production routing is welded on by default. */
@@ -153,8 +161,8 @@ export interface InfraAlertSinkDeps {
 }
 
 /**
- * Wrap the raw alert sink with D1 routing. Every failure path inside routing
- * falls back to the durable mailbox — an alert is NEVER lost to a routing bug.
+ * Wrap the raw alert sink with D1 routing. Every delivery failure inside
+ * routing falls back to the Claw mailbox — an alert is NEVER lost to a bug.
  */
 export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 	const routingEnabled = deps.routingEnabled ?? (() => true);
@@ -163,6 +171,16 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 	return {
 		async alert(payload: AlertPayload): Promise<AlertResult> {
 			if (!routingEnabled()) return deps.rawSink.alert(payload);
+			if (LEAD_INBOX_KINDS.has(payload.eventType)) {
+				try {
+					return await deps.leadInboxSink.alert(payload);
+				} catch (err) {
+					logger(
+						`owning-Lead inbox delivery threw for ${payload.eventType}/${payload.eventId}: ${(err as Error).message} — fail-safe to Claw mailbox`,
+					);
+					return deps.ticketSink.alert(payload);
+				}
+			}
 			const explicitMention = isDiscordSnowflake(payload.mentionUserId)
 				? payload.mentionUserId
 				: undefined;

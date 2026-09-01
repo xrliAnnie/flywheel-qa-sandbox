@@ -231,6 +231,7 @@ export class WorkflowEventUidConflictError extends Error {
 /** Option 1 (FLY-1415): one original launch plus at most three blind replacements. */
 export const MAX_BLIND_REPLACEMENTS = 3;
 const MAX_CODEX_REVIEW_AUTO_RETRIES = 3;
+export const MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES = 2;
 export const WORKFLOW_RESUME_FIRST_WINDOW_MS = 10 * 60_000;
 
 /** FLY-1638: uncommitted launch owners heartbeat in short, bounded windows. */
@@ -1447,6 +1448,10 @@ export interface CodexReviewJob {
 	retry_at?: string;
 	/** Number of automatic retry budgets consumed by this durable request. */
 	auto_retry_count: number;
+	/** FLY-2228: direct stale-head parent for an automatically minted request. */
+	head_move_parent_request_id?: string;
+	/** FLY-2228: durable position in the bounded stale-head successor chain. */
+	head_move_retry_count: number;
 	/** Monotonic generation incremented for every persisted failure attempt. */
 	failure_attempt_count: number;
 	author_family?: string;
@@ -4185,6 +4190,8 @@ export class StateStore {
 				failure_raw           TEXT,
 				retry_at              TEXT,
 				auto_retry_count      INTEGER NOT NULL DEFAULT 0,
+				head_move_parent_request_id TEXT,
+				head_move_retry_count  INTEGER NOT NULL DEFAULT 0,
 				failure_attempt_count INTEGER NOT NULL DEFAULT 0,
 				author_family         TEXT,
 				created_at            TEXT NOT NULL DEFAULT (datetime('now')),
@@ -4221,6 +4228,8 @@ export class StateStore {
 			["failure_raw", "TEXT"],
 			["retry_at", "TEXT"],
 			["auto_retry_count", "INTEGER NOT NULL DEFAULT 0"],
+			["head_move_parent_request_id", "TEXT"],
+			["head_move_retry_count", "INTEGER NOT NULL DEFAULT 0"],
 			["failure_attempt_count", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_verdict", "TEXT"],
 			["advisories_json", "TEXT"],
@@ -4244,6 +4253,11 @@ export class StateStore {
 		);
 		this.db.run(
 			"CREATE INDEX IF NOT EXISTS idx_codex_review_job_question ON codex_review_job(question_id)",
+		);
+		this.db.run(
+			`CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_review_job_head_move_parent
+			   ON codex_review_job(head_move_parent_request_id)
+			 WHERE head_move_parent_request_id IS NOT NULL`,
 		);
 
 		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
@@ -9890,6 +9904,9 @@ export class StateStore {
 			failure_raw: (row.failure_raw as string) ?? undefined,
 			retry_at: (row.retry_at as string) ?? undefined,
 			auto_retry_count: Number(row.auto_retry_count ?? 0),
+			head_move_parent_request_id:
+				(row.head_move_parent_request_id as string) ?? undefined,
+			head_move_retry_count: Number(row.head_move_retry_count ?? 0),
 			failure_attempt_count: Number(row.failure_attempt_count ?? 0),
 			author_family: (row.author_family as string) ?? undefined,
 			created_at: row.created_at as string,
@@ -9914,14 +9931,30 @@ export class StateStore {
 		return job;
 	}
 
+	getCodexReviewHeadMoveSuccessor(parentRequestId: string): CodexReviewJob | null {
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_job WHERE head_move_parent_request_id = ? LIMIT 1",
+		);
+		stmt.bind([parentRequestId]);
+		let job: CodexReviewJob | null = null;
+		if (stmt.step()) {
+			job = this.rowToCodexReviewJob(
+				stmt.getAsObject() as Record<string, unknown>,
+			);
+		}
+		stmt.free();
+		return job;
+	}
+
 	/**
 	 * FLY-1314: reverse-map an orphan review gate to its durable review job.
-	 * Exactly one row is required; duplicate bindings are ambiguous and fail open
-	 * (the supersede patrol leaves the gate untouched).
+	 * Independent duplicate bindings are ambiguous and fail open. FLY-2228 moved-
+	 * head successors intentionally share the question, so one complete lineage
+	 * resolves to its newest tip.
 	 */
 	getCodexReviewJobByQuestionId(questionId: string): CodexReviewJob | null {
 		const stmt = this.db.prepare(
-			"SELECT * FROM codex_review_job WHERE question_id = ? ORDER BY request_id LIMIT 2",
+			"SELECT * FROM codex_review_job WHERE question_id = ? ORDER BY request_id",
 		);
 		stmt.bind([questionId]);
 		const jobs: CodexReviewJob[] = [];
@@ -9931,7 +9964,28 @@ export class StateStore {
 			);
 		}
 		stmt.free();
-		return jobs.length === 1 ? jobs[0]! : null;
+		if (jobs.length <= 1) return jobs[0] ?? null;
+		const byId = new Map(jobs.map((job) => [job.request_id, job]));
+		const roots = jobs.filter(
+			(job) =>
+				!job.head_move_parent_request_id ||
+				!byId.has(job.head_move_parent_request_id),
+		);
+		if (roots.length !== 1) return null;
+		const visited = new Set<string>();
+		let tip = roots[0]!;
+		while (!visited.has(tip.request_id)) {
+			visited.add(tip.request_id);
+			const children = jobs.filter(
+				(job) => job.head_move_parent_request_id === tip.request_id,
+			);
+			if (children.length === 0) {
+				return visited.size === jobs.length ? tip : null;
+			}
+			if (children.length !== 1) return null;
+			tip = children[0]!;
+		}
+		return null;
 	}
 
 	/**
@@ -9987,6 +10041,112 @@ export class StateStore {
 		const job = this.getCodexReviewJob(input.requestId);
 		if (!job) throw new Error(`review job ${input.requestId} vanished`);
 		return { inserted, job };
+	}
+
+	/**
+	 * FLY-2228: atomically retire one stale code-review request and mint its
+	 * immutable successor on the trusted current head. The caller supplies the
+	 * server-generated request id; the original request row remains as audit.
+	 */
+	failAndRequeueCodexReviewJobForHeadMove(input: {
+		requestId: string;
+		successorRequestId: string;
+		currentHeadSha: string;
+		failureRaw?: string;
+	}): {
+		outcome: "requeued" | "existing" | "exhausted";
+		parent: CodexReviewJob;
+		successor?: CodexReviewJob;
+	} {
+		const currentHeadSha = input.currentHeadSha.trim().toLowerCase();
+		if (!/^[0-9a-f]{40}$/.test(currentHeadSha)) {
+			throw new Error("head-move successor requires a trusted 40-char SHA");
+		}
+		if (!input.successorRequestId || input.successorRequestId === input.requestId) {
+			throw new Error("head-move successor requires a distinct request id");
+		}
+
+		let exhausted = false;
+		this.db.raw.exec("BEGIN IMMEDIATE");
+		try {
+			const parent = this.getCodexReviewJob(input.requestId);
+			if (!parent) throw new Error(`review job ${input.requestId} is missing`);
+			const existing = this.getCodexReviewHeadMoveSuccessor(input.requestId);
+			if (existing) {
+				this.db.raw.exec("ROLLBACK");
+				return { outcome: "existing", parent, successor: existing };
+			}
+			if (parent.review_type !== "code") {
+				throw new Error("only code review jobs can requeue after a head move");
+			}
+			if (parent.status === "done" || parent.status === "skipped") {
+				throw new Error(`terminal review job ${input.requestId} cannot be requeued`);
+			}
+			exhausted =
+				parent.head_move_retry_count >=
+				MAX_CODEX_REVIEW_HEAD_MOVE_REQUEUES;
+
+			this.db.run(
+				`UPDATE codex_review_job
+				    SET status = 'failed', failure_reason = ?,
+				        failure_raw = ?, retry_at = NULL,
+				        failure_attempt_count = failure_attempt_count + 1,
+				        updated_at = datetime('now')
+				  WHERE request_id = ? AND status NOT IN ('done','skipped')`,
+				[
+					exhausted ? "head_moved_exhausted" : "head_moved",
+					input.failureRaw ?? null,
+					input.requestId,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new Error(`review job ${input.requestId} lost its head-move CAS`);
+			}
+
+			if (!exhausted) {
+				this.db.run(
+					`INSERT INTO codex_review_job
+				 (request_id, execution_id, issue_id, project_name, review_type,
+				  round, question_id, target_path, target_repo_path,
+				  target_repo_identity, frozen_head_sha, reviewer_session_uuid,
+				  author_family, status, delivery_nonce,
+				  head_move_parent_request_id, head_move_retry_count, created_at)
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
+					[
+						input.successorRequestId,
+						parent.execution_id,
+						parent.issue_id ?? null,
+						parent.project_name,
+						parent.round + 1,
+						parent.question_id,
+						parent.target_path ?? null,
+						parent.target_repo_path ?? null,
+						parent.target_repo_identity,
+						currentHeadSha,
+						parent.reviewer_session_uuid ?? null,
+						parent.author_family ?? null,
+						randomUUID(),
+						parent.request_id,
+						parent.head_move_retry_count + 1,
+					],
+				);
+			}
+			this.db.raw.exec("COMMIT");
+		} catch (error) {
+			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
+			throw error;
+		}
+
+		const parent = this.getCodexReviewJob(input.requestId);
+		if (!parent) {
+			throw new Error("head-move successor transaction lost its parent state");
+		}
+		if (exhausted) return { outcome: "exhausted", parent };
+		const successor = this.getCodexReviewJob(input.successorRequestId);
+		if (!successor) {
+			throw new Error("head-move successor transaction committed incomplete state");
+		}
+		return { outcome: "requeued", parent, successor };
 	}
 
 	/**

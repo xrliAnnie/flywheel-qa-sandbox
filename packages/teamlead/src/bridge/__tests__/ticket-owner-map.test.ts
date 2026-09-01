@@ -19,6 +19,17 @@ const FULL: OwnerRegistry = {
 const EMPTY: OwnerRegistry = { claudeBotUserId: null, codexBotUserId: null };
 
 describe("resolveTicketOwner (PRD CH-1 whitelist matrix)", () => {
+	it("review failures resolve to the trusted owning Lead", () => {
+		expect(
+			resolveTicketOwner(
+				"review_job_failed",
+				"unknown",
+				FULL,
+				"flywheel-eng-lead",
+			),
+		).toEqual({ kind: "lead", leadId: "flywheel-eng-lead" });
+	});
+
 	it("CROSS: claude account/auth problems @ the CODEX bot", () => {
 		for (const kind of [
 			"usage_limit",

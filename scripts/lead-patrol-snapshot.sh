@@ -827,7 +827,11 @@ SELECT 'REVIEW_JOB_FAILED issue=' || f.issue_id || ' request=' || f.request_id |
        ' reason=' || coalesce(f.failure_reason,'unknown') ||
        ' updated=' || coalesce(f.updated_at,'-') ||
        ' retry_at=' || coalesce(f.retry_at,'-') ||
-       ' recovery=POST_/review-requests_same_requestId'
+       ' recovery=' || CASE
+         WHEN f.failure_reason = 'head_moved_exhausted'
+           THEN 'open_new_review_gate_current_head'
+         ELSE 'POST_/review-requests_same_requestId'
+       END
 FROM failed_review_candidates f
 JOIN owner_resolution o ON o.execution_id IS f.execution_id AND o.issue_id = f.issue_id
 WHERE o.attributed_lead = '$LEAD_ID'

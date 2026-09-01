@@ -139,6 +139,7 @@ async function makeHarness(
 			prompt: string;
 			effort?: string;
 		}) => Promise<ClaudeReviewOutcome>;
+		deriveHead?: (path: string) => Promise<string | null>;
 		quotaAutoRetryEnabled?: () => boolean;
 		openCommDb?: (comm: FakeCommDb) => ReviewCommDb;
 	} = {},
@@ -180,6 +181,7 @@ async function makeHarness(
 		},
 		deriveHead: async (path) => {
 			derivedHeadPaths.push(path);
+			if (harnessOpts.deriveHead) return harnessOpts.deriveHead(path);
 			return head;
 		},
 		listActiveReviewFindingRulings: ({ projectName, issueId }) =>
@@ -671,6 +673,54 @@ describe("ReviewRequestCoordinator.accept — validation (fail-close)", () => {
 });
 
 describe("ReviewRequestCoordinator — idempotent replay", () => {
+	it("replaying a failed moved-head parent runs only its pending lineage tip", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.store.insertCodexReviewJob({
+			requestId: "r-parent",
+			executionId: "e1",
+			issueId: "FLY-2228",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+			authorFamily: "codex",
+		});
+		h.store.claimCodexReviewJobRunning("r-parent");
+		const nextHead = "b".repeat(40);
+		h.store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "r-parent",
+			successorRequestId: "r-tip",
+			currentHeadSha: nextHead,
+		});
+		h.setHead(nextHead);
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: nextHead,
+			raw: "",
+		});
+
+		const replay = await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "r-parent",
+			reviewType: "code",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(replay).toMatchObject({ accepted: true, duplicate: true });
+		expect(h.store.getCodexReviewJob("r-parent")).toMatchObject({
+			status: "failed",
+			failure_reason: "head_moved",
+			failure_attempt_count: 1,
+		});
+		expect(h.store.getCodexReviewJob("r-tip")?.status).toBe("done");
+		expect(h.invocations).toHaveLength(1);
+	});
+
 	it("same requestId + same question → duplicate accepted, no second job", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -1316,15 +1366,23 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		expect(h.gateAnswers).toEqual([{ questionId: "q1", executionId: "e1" }]);
 	});
 
-	it("code APPROVED but head MOVED between freeze and verdict → job failed, NO response, gate stays closed", async () => {
+	it("code head move automatically requeues the current head and answers the original gate", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
 		openGate(h.comm, "q1");
+		const nextHead = "b".repeat(40);
 		h.outcomes.push({
 			kind: "verdict",
 			verdict: "APPROVED",
 			findings: [],
-			reviewedHeadSha: null,
+			reviewedHeadSha: HEAD,
+			raw: "",
+		});
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: nextHead,
 			raw: "",
 		});
 		const accepted = h.coordinator.accept({
@@ -1334,13 +1392,79 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			questionId: "q1",
 		});
 		await accepted;
-		h.setHead("b".repeat(40)); // head moves while the reviewer runs
+		h.setHead(nextHead); // head moves while the first reviewer runs
 		await settle();
 		expect(h.store.getCodexReviewJob("r1")?.status).toBe("failed");
 		expect(h.store.getCodexReviewJob("r1")?.failure_reason).toBe("head_moved");
-		expect(h.comm.getResponse("q1")).toBeUndefined();
+		const successor = h.store.getCodexReviewHeadMoveSuccessor("r1");
+		expect(successor).toMatchObject({
+			status: "done",
+			question_id: "q1",
+			frozen_head_sha: nextHead,
+			head_move_parent_request_id: "r1",
+			head_move_retry_count: 1,
+			verdict: "APPROVED",
+		});
+		expect(successor?.request_id).not.toBe("r1");
+		const response = h.comm.getResponse("q1");
+		expect(response && JSON.parse(response.content)).toMatchObject({
+			reviewVerdict: "APPROVED",
+			requestId: successor?.request_id,
+			reviewedHeadSha: nextHead,
+		});
 		expect(h.store.isCodexCodeReviewApproved("e1", HEAD)).toBe(false);
-		expect(h.alerts.length).toBeGreaterThan(0);
+		expect(h.store.isCodexCodeReviewApproved("e1", nextHead)).toBe(true);
+		expect(h.invocations).toHaveLength(2);
+		expect(h.invocations[1]?.prompt).toContain(
+			"The reviewed head moved; perform a full review of the current head",
+		);
+		expect(
+			h.reviewAlerts.filter(
+				(event) =>
+					event.kind === "review_job_failed" && event.requestId === "r1",
+			),
+		).toEqual([
+			expect.objectContaining({
+				message: expect.stringContaining(
+					`automatically requeued as ${successor?.request_id}`,
+				),
+			}),
+		]);
+	});
+
+	it("records an underivable runtime head as a distinct terminal failure", async () => {
+		let derivations = 0;
+		const h = await makeHarness({
+			deriveHead: async () => {
+				derivations += 1;
+				return derivations === 1 ? HEAD : null;
+			},
+		});
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+
+		expect(
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId: "r-underivable",
+				reviewType: "code",
+				questionId: "q1",
+			}),
+		).toMatchObject({ accepted: true });
+		await settle();
+
+		expect(h.invocations).toHaveLength(0);
+		expect(h.store.getCodexReviewJob("r-underivable")).toMatchObject({
+			status: "failed",
+			failure_reason: "head_moved_unresolved",
+		});
+		expect(h.store.getCodexReviewHeadMoveSuccessor("r-underivable")).toBeNull();
+		expect(h.reviewAlerts).toContainEqual(
+			expect.objectContaining({
+				requestId: "r-underivable",
+				message: expect.stringContaining("head_moved_unresolved"),
+			}),
+		);
 	});
 
 	it("CHANGES_REQUESTED: findings answered to the bound question, NO approval record", async () => {
@@ -1916,7 +2040,7 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		});
 	});
 
-	it("refuses a scheduled code retry after the trusted head moves", async () => {
+	it("requeues a scheduled code retry when the trusted head moves", async () => {
 		const now = Date.parse("2026-08-30T18:00:00.000Z");
 		vi.useFakeTimers({
 			now,
@@ -1939,6 +2063,14 @@ describe("ReviewRequestCoordinator — job execution", () => {
 					"You've hit your session limit · resets 11:10am (America/Los_Angeles)",
 			}),
 		});
+		const nextHead = "b".repeat(40);
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: nextHead,
+			raw: "",
+		});
 		await h.coordinator.accept({
 			executionId: "e1",
 			requestId: "quota-head-moved",
@@ -1950,24 +2082,33 @@ describe("ReviewRequestCoordinator — job execution", () => {
 			h.store.getCodexReviewJob("quota-head-moved")?.retry_at ?? "",
 		);
 
-		h.setHead("b".repeat(40));
+		h.setHead(nextHead);
 		await vi.advanceTimersByTimeAsync(retryAt - now);
 		await settle();
 
-		expect(h.invocations).toHaveLength(1);
+		expect(h.invocations).toHaveLength(2);
 		expect(h.store.getCodexReviewJob("quota-head-moved")?.failure_reason).toBe(
 			"head_moved",
 		);
 		expect(
 			h.store.getCodexReviewJob("quota-head-moved")?.retry_at,
 		).toBeUndefined();
+		const successor =
+			h.store.getCodexReviewHeadMoveSuccessor("quota-head-moved");
+		expect(successor).toMatchObject({
+			status: "done",
+			frozen_head_sha: nextHead,
+			question_id: "q1",
+		});
+		expect(h.comm.getResponse("q1")).toBeDefined();
 		expect(h.reviewAlerts).toContainEqual(
 			expect.objectContaining({
 				kind: "review_job_failed",
 				eventId: "review-failed:quota-head-moved:2",
 				requestId: "quota-head-moved",
-				message:
-					"Review quota-head-moved (code R1) failed: head_moved. The reviewed head is stale or mismatched. Submit a new requestId to freeze and review the current head.",
+				message: expect.stringContaining(
+					`automatically requeued as ${successor?.request_id}`,
+				),
 			}),
 		);
 	});
@@ -2399,7 +2540,7 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 		);
 	});
 
-	it("does not start the fresh fallback after a code-review head move", async () => {
+	it("requeues the current head instead of starting a stale fresh fallback", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
 		h.store.insertCodexReviewJob({
@@ -2424,6 +2565,15 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 			deriveHead: async () => currentHead,
 			reviewRound: async () => {
 				calls += 1;
+				if (calls > 1) {
+					return {
+						kind: "verdict",
+						verdict: "APPROVED",
+						findings: [],
+						reviewedHeadSha: currentHead,
+						raw: "",
+					};
+				}
 				currentHead = "b".repeat(40);
 				return {
 					kind: "failed",
@@ -2443,15 +2593,112 @@ describe("FLY-1254 — lost reviewer session fallback", () => {
 			questionId: "q2",
 		});
 		await settle();
-		expect(calls).toBe(1);
+		expect(calls).toBe(2);
 		expect(h.store.getCodexReviewJob("r2")?.failure_reason).toBe("head_moved");
+		expect(h.store.getCodexReviewJob("r2")?.failure_raw).toContain("STDERR:");
+		expect(h.store.getCodexReviewJob("r2")?.failure_raw).toContain(
+			"No conversation found with session ID: lost-session",
+		);
 		expect(h.store.getCodexReviewJob("r2")?.reviewer_session_uuid).toBe(
 			"lost-session",
 		);
+		expect(h.store.getCodexReviewHeadMoveSuccessor("r2")).toMatchObject({
+			status: "done",
+			frozen_head_sha: "b".repeat(40),
+			question_id: "q2",
+		});
+		expect(h.comm.getResponse("q2")).toBeDefined();
 	});
 });
 
 describe("ReviewRequestCoordinator — boot redrive", () => {
+	it("stops self-healing after two moved-head successors", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.store.insertCodexReviewJob({
+			requestId: "r-root",
+			executionId: "e1",
+			issueId: "FLY-2228",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+			authorFamily: "codex",
+		});
+		h.store.claimCodexReviewJobRunning("r-root");
+		h.store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "r-root",
+			successorRequestId: "r-child-1",
+			currentHeadSha: "b".repeat(40),
+		});
+		h.store.claimCodexReviewJobRunning("r-child-1");
+		h.store.failAndRequeueCodexReviewJobForHeadMove({
+			requestId: "r-child-1",
+			successorRequestId: "r-child-2",
+			currentHeadSha: "c".repeat(40),
+		});
+		h.setHead("d".repeat(40));
+
+		expect(h.coordinator.redriveOnBoot()).toBe(1);
+		await settle();
+
+		expect(h.invocations).toHaveLength(0);
+		expect(h.store.getCodexReviewJob("r-child-2")).toMatchObject({
+			status: "failed",
+			failure_reason: "head_moved_exhausted",
+			head_move_retry_count: 2,
+		});
+		expect(h.store.getCodexReviewHeadMoveSuccessor("r-child-2")).toBeNull();
+		expect(h.reviewAlerts).toContainEqual(
+			expect.objectContaining({
+				requestId: "r-child-2",
+				message: expect.stringContaining(
+					"Automatic head-move retries are exhausted",
+				),
+			}),
+		);
+	});
+
+	it("requeues a moved code head before allocating a reviewer session", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1");
+		h.store.insertCodexReviewJob({
+			requestId: "r1",
+			executionId: "e1",
+			issueId: "FLY-2228",
+			projectName: "proj",
+			reviewType: "code",
+			questionId: "q1",
+			frozenHeadSha: HEAD,
+			authorFamily: "codex",
+		});
+		const nextHead = "b".repeat(40);
+		h.setHead(nextHead);
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: nextHead,
+			raw: "",
+		});
+
+		expect(h.coordinator.redriveOnBoot()).toBe(1);
+		await settle();
+
+		expect(h.store.getCodexReviewJob("r1")).toMatchObject({
+			status: "failed",
+			failure_reason: "head_moved",
+			reviewer_session_uuid: undefined,
+		});
+		expect(h.store.getCodexReviewHeadMoveSuccessor("r1")).toMatchObject({
+			status: "done",
+			frozen_head_sha: nextHead,
+		});
+		expect(h.invocations).toHaveLength(1);
+	});
+
 	it("running/pending jobs re-enqueue and complete after a restart", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -3558,7 +3805,7 @@ describe("R15 — unforgeable delivery + authority-follows-delivery", () => {
 			}),
 			deriveHead: async () => {
 				derives += 1;
-				if (derives === 2) {
+				if (derives === 3) {
 					// verdict-time head recheck runs AFTER the gate recheck —
 					// inject the external answer inside that exact window
 					h.comm.insertResponse("q1", "lead", "CANCELLED BY LEAD");

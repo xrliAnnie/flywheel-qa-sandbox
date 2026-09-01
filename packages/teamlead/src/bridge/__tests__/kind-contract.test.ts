@@ -108,9 +108,9 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 	});
 
-	it("keeps review job failures owned by the human issue-progress lane", () => {
+	it("assigns review job failures to the issue's owning Lead", () => {
 		expect(KIND_CONTRACTS.review_job_failed).toEqual({
-			owner: "founder_direct",
+			owner: "owning_lead",
 			arc: "human_by_design",
 		});
 	});
@@ -252,7 +252,7 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		for (const kind of REVIEW_GOVERNANCE_KINDS) {
 			expect(ALERT_EVENT_TYPES).toContain(kind);
 			expect(KIND_CONTRACTS[kind]).toEqual({
-				owner: kind === "review_job_failed" ? "founder_direct" : "claude",
+				owner: kind === "review_job_failed" ? "owning_lead" : "claude",
 				arc: "human_by_design",
 			});
 		}
@@ -318,8 +318,8 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		} as NodeJS.ProcessEnv);
 		for (const kind of ALERT_EVENT_TYPES) {
 			const contract = KIND_CONTRACTS[kind];
-			const asClaude = resolveTicketOwner(kind, "claude", reg);
-			const asCodex = resolveTicketOwner(kind, "codex", reg);
+			const asClaude = resolveTicketOwner(kind, "claude", reg, "lead-owner");
+			const asCodex = resolveTicketOwner(kind, "codex", reg, "lead-owner");
 			switch (contract.owner) {
 				case "founder_direct":
 					expect(asClaude.kind, kind).toBe("none");
@@ -333,6 +333,13 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 						kind: "infra_bot",
 						side: "claude",
 					});
+					break;
+				case "owning_lead":
+					expect(asClaude, kind).toEqual({
+						kind: "lead",
+						leadId: "lead-owner",
+					});
+					expect(asCodex, kind).toEqual(asClaude);
 					break;
 				case "claude":
 					expect(asClaude, kind).toMatchObject({

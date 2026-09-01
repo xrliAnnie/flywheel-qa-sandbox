@@ -34,12 +34,14 @@ import {
  * Ticket owner class. `cross_by_provider` = "nobody rescues their own side":
  * the ticket's provider decides the owning bot (claude problem → codex bot and
  * vice versa — the ticket-owner-map cross family). `founder_direct` = no bot
- * owner by design (a human decision); resolveTicketOwner returns `none`.
+ * owner by design (a human decision); `owning_lead` resolves from the alert's
+ * trusted Lead identity.
  */
 export type KindOwner =
 	| "claude"
 	| "codex"
 	| "cross_by_provider"
+	| "owning_lead"
 	| "founder_direct";
 
 export type KindArc = "auto" | "none_escalate" | "human_by_design";
@@ -122,7 +124,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	auto_qa_stuck: { owner: "claude", arc: "human_by_design" },
 	codex_gate_blocked: { owner: "claude", arc: "human_by_design" },
 	review_advisory_pass: { owner: "claude", arc: "human_by_design" },
-	review_job_failed: { owner: "founder_direct", arc: "human_by_design" },
+	review_job_failed: { owner: "owning_lead", arc: "human_by_design" },
 	review_ruling_recorded: { owner: "claude", arc: "human_by_design" },
 	review_ruling_disputed: { owner: "claude", arc: "human_by_design" },
 	review_ruling_notify_failed: { owner: "claude", arc: "human_by_design" },
@@ -359,9 +361,9 @@ export function validateKindContracts(
 			if (!c.remediationRef?.trim()) {
 				problems.push(`${kind}: arc="auto" requires a remediationRef`);
 			}
-			if (c.owner === "founder_direct") {
+			if (c.owner === "founder_direct" || c.owner === "owning_lead") {
 				problems.push(
-					`${kind}: arc="auto" must be bot-owned (founder_direct cannot run an ARC)`,
+					`${kind}: arc="auto" must be bot-owned (${c.owner} cannot run an ARC)`,
 				);
 			}
 		}

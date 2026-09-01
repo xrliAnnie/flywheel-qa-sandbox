@@ -179,6 +179,8 @@ INSERT INTO codex_review_job(
  ('d1d1e9ba-8337-484b-b159-91887e26e987','exec-review-recent','SECRET_STALE_JOB_ISSUE','flywheel','code',2,'review-q-recent','failed','nonzero_exit','SECRET_REVIEW_FAILURE_RAW',NULL,datetime('now','-2 hours')),
  ('scheduled-review-request','exec-review-scheduled',NULL,'flywheel','design',1,'review-q-scheduled','failed','nonzero_exit','SECRET_SCHEDULED_FAILURE_RAW',datetime('now','+2 days'),datetime('now','-2 days')),
  ('terminal-head-moved','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-1','failed','head_moved','SECRET_TERMINAL_HEAD',NULL,datetime('now','-1 hour')),
+ ('terminal-head-moved-exhausted','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-exhausted','failed','head_moved_exhausted','SECRET_TERMINAL_HEAD_EXHAUSTED',NULL,datetime('now','-1 hour')),
+ ('terminal-head-moved-unresolved','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-unresolved','failed','head_moved_unresolved','SECRET_TERMINAL_HEAD_UNRESOLVED',NULL,datetime('now','-1 hour')),
  ('terminal-gate-answered-externally','exec-review-terminal','FLY-114','flywheel','code',3,'terminal-q-2','failed','gate_answered_externally','SECRET_TERMINAL_EXTERNAL',NULL,datetime('now','-1 hour')),
  ('terminal-gate-answered','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-3','failed','gate_answered','SECRET_TERMINAL_ANSWERED',NULL,datetime('now','-1 hour')),
  ('terminal-gate-expired','exec-review-terminal','FLY-114','flywheel','design',2,'terminal-q-4','failed','gate_expired','SECRET_TERMINAL_EXPIRED',NULL,datetime('now','-1 hour')),
@@ -226,6 +228,7 @@ INSERT INTO sessions(execution_id,tmux_window,project_name,issue_id,lead_id,star
  ('exec-foreign','runner-flywheel:pending','flywheel','FLY-109','honey-lemon-lead',datetime('now','-2 hours'),'running'),
 	('exec-review-recent','runner-flywheel:pending','flywheel','FLY-112','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
 	('exec-review-scheduled','runner-flywheel:pending','flywheel','FLY-113','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
+	('exec-review-terminal','runner-flywheel:pending','flywheel','FLY-114','flywheel-eng-lead',datetime('now','-2 hours'),'running'),
 	('exec-review-foreign','runner-flywheel:pending','flywheel','FLY-115','honey-lemon-lead',datetime('now','-2 hours'),'running'),
  ('exec-110-old','runner-flywheel:pending','flywheel','FLY-110','lead-a',datetime('now','-3 hours'),'completed'),
  ('exec-110-current','runner-flywheel:pending','flywheel','FLY-110','flywheel-eng-lead',datetime('now','-1 hour'),'running'),
@@ -302,9 +305,12 @@ not_contains "$MAIN_OUT" "dead-other-project" "other project dead letter is outs
 contains "$MAIN_OUT" "VERDICT_HEAD_MISMATCH issue=FLY-105" "active binding/claim mismatch is visible"
 contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-112 request=d1d1e9ba-8337-484b-b159-91887e26e987 type=code round=2 reason=nonzero_exit" "recent failed review is visible with live-session issue identity"
 contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-113 request=scheduled-review-request type=design round=1 reason=nonzero_exit" "old durable scheduled retry remains patrol-visible"
+contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-114 request=terminal-head-moved-exhausted type=code round=3 reason=head_moved_exhausted" "exhausted head-move lineage remains patrol-visible"
+contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-114 request=terminal-head-moved-unresolved type=code round=3 reason=head_moved_unresolved" "underivable head-move failure remains patrol-visible"
+contains "$MAIN_OUT" "recovery=open_new_review_gate_current_head" "exhausted head-move patrol finding exposes terminal recovery"
 contains "$MAIN_OUT" "STEP 4: FINDING-CANDIDATE" "review without a CommDB owner cannot black out STEP 4"
 contains "$MAIN_OUT" "recovery=POST_/review-requests_same_requestId" "failed review exposes the idempotent replay entrance"
-not_contains "$MAIN_OUT" "REVIEW_JOB_FAILED issue=FLY-114" "terminally invalid review failures are excluded"
+not_contains "$MAIN_OUT" "request=terminal-head-moved type=" "automatically requeued head move remains excluded"
 not_contains "$MAIN_OUT" "request=terminal-superseded" "benign review supersede is excluded"
 not_contains "$MAIN_OUT" "request=terminal-reviewed-wrong-head" "mismatched-head review is not replayable"
 not_contains "$MAIN_OUT" "request=terminal-gate-missing" "missing-gate review is not replayable"
@@ -314,7 +320,7 @@ not_contains "$MAIN_OUT" "dead-runner-review" "failed review without a live sess
 not_contains "$MAIN_OUT" "orphan-comm-review" "failed review without a resolvable CommDB owner is pruned before attribution"
 not_contains "$MAIN_OUT" "historical-review-" "historical rows without sessions are pruned before attribution"
 not_contains "$MAIN_OUT" "SECRET_STALE_JOB_ISSUE" "review issue identity is derived from the live session"
-for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE SECRET_REVIEW_FAILURE_RAW SECRET_SCHEDULED_FAILURE_RAW SECRET_TERMINAL_HEAD SECRET_TERMINAL_EXTERNAL SECRET_TERMINAL_ANSWERED SECRET_TERMINAL_EXPIRED SECRET_TERMINAL_MISMATCH SECRET_TERMINAL_SUPERSEDED SECRET_TERMINAL_WRONG_HEAD SECRET_TERMINAL_MISSING SECRET_TERMINAL_UNKNOWN SECRET_OLD_REVIEW_RAW SECRET_FOREIGN_REVIEW_RAW SECRET_DEAD_REVIEW_RAW SECRET_ORPHAN_REVIEW_RAW SECRET_OTHER_REVIEW_RAW SECRET_HISTORICAL_REVIEW_RAW; do
+for secret in SECRET_MAILBOX_CONTENT SECRET_LIVE_LEASE SECRET_OLD_LEASE SECRET_DEAD_RUNNER SECRET_PARKED_MAIL SECRET_FOREIGN_MAIL SECRET_WAKE_ENVELOPE SECRET_WAKE_TERMINAL SECRET_DEAD_SUMMARY SECRET_OTHER_LEAD_DEAD SECRET_OTHER_PROJECT_DEAD SECRET_ACCEPTED_SUMMARY SECRET_CLAIM_EVIDENCE SECRET_REVIEW_FAILURE_RAW SECRET_SCHEDULED_FAILURE_RAW SECRET_TERMINAL_HEAD SECRET_TERMINAL_HEAD_EXHAUSTED SECRET_TERMINAL_HEAD_UNRESOLVED SECRET_TERMINAL_EXTERNAL SECRET_TERMINAL_ANSWERED SECRET_TERMINAL_EXPIRED SECRET_TERMINAL_MISMATCH SECRET_TERMINAL_SUPERSEDED SECRET_TERMINAL_WRONG_HEAD SECRET_TERMINAL_MISSING SECRET_TERMINAL_UNKNOWN SECRET_OLD_REVIEW_RAW SECRET_FOREIGN_REVIEW_RAW SECRET_DEAD_REVIEW_RAW SECRET_ORPHAN_REVIEW_RAW SECRET_OTHER_REVIEW_RAW SECRET_HISTORICAL_REVIEW_RAW; do
   not_contains "$MAIN_OUT" "$secret" "secret projection excludes $secret"
 done
 

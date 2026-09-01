@@ -18,7 +18,10 @@ import { StateStore } from "../../StateStore.js";
 import { AlertChannelHub, correlationKeyFor } from "../AlertChannelHub.js";
 import { AutoRepairBot } from "../AutoRepairBot.js";
 import { buildInfraAlertRouting } from "../infra-alert-wiring.js";
-import { ISSUE_PROGRESS_KINDS } from "../infra-event-router.js";
+import {
+	ISSUE_PROGRESS_KINDS,
+	LEAD_INBOX_KINDS,
+} from "../infra-event-router.js";
 
 const projects = [
 	{
@@ -55,6 +58,7 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 	let store: StateStore;
 	let rawSink: { alert: ReturnType<typeof vi.fn> };
 	let ticketSink: { alert: ReturnType<typeof vi.fn> };
+	let leadInboxSink: { alert: ReturnType<typeof vi.fn> };
 	let fetchImpl: ReturnType<typeof vi.fn>;
 
 	beforeEach(async () => {
@@ -75,6 +79,9 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		ticketSink = {
 			alert: vi.fn(async (): Promise<AlertResult> => ({ queued: true })),
 		};
+		leadInboxSink = {
+			alert: vi.fn(async (): Promise<AlertResult> => ({ queued: true })),
+		};
 		fetchImpl = vi.fn(async () => ({
 			ok: true,
 			status: 200,
@@ -84,30 +91,68 @@ describe("buildInfraAlertRouting (plugin glue, real StateStore)", () => {
 		}));
 	});
 
-	function makeSink(routing = true) {
+	function makeSink(
+		routing = true,
+		tickets = false,
+		recipientState: "alive" | "terminal_or_missing" | "unknown" = "alive",
+	) {
 		return buildInfraAlertRouting({
 			store,
 			projects,
 			globalBotToken: "global-token",
 			rawSink,
 			ticketSink,
+			leadInboxSink,
+			leadRecipientState: () => recipientState,
 			founderUserId: "123456789012345678",
 			routingEnabled: () => routing,
-			ticketsEnabled: () => false,
+			ticketsEnabled: () => tickets,
 			fetchImpl: fetchImpl as unknown as typeof fetch,
 			sleepFn: async () => {},
 			logger: () => {},
 		});
 	}
 
+	it("routes a review failure to its owning Lead and never posts the founder thread", async () => {
+		const alert = payload("review_job_failed");
+
+		await makeSink(true, true).alert(alert);
+
+		expect(leadInboxSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(rawSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).not.toHaveBeenCalled();
+	});
+
+	it("preserves a review failure in Claw when the owning Lead is not live", async () => {
+		const alert = payload("review_job_failed");
+
+		await makeSink(true, false, "unknown").alert(alert);
+
+		expect(leadInboxSink.alert).not.toHaveBeenCalled();
+		expect(ticketSink.alert).toHaveBeenCalledExactlyOnceWith(alert);
+		expect(fetchImpl).not.toHaveBeenCalled();
+		expect(rawSink.alert).not.toHaveBeenCalled();
+	});
+
 	it("FULL-UNION SWEEP: progress uses its issue thread, escalation uses Hub, everything else uses Claw mailbox", async () => {
 		const sink = makeSink(true);
 		for (const kind of ALERT_EVENT_TYPES) {
 			rawSink.alert.mockClear();
 			ticketSink.alert.mockClear();
+			leadInboxSink.alert.mockClear();
 			fetchImpl.mockClear();
 			const result = await sink.alert(payload(kind));
-			if (ISSUE_PROGRESS_KINDS.has(kind)) {
+			if (LEAD_INBOX_KINDS.has(kind)) {
+				expect(
+					leadInboxSink.alert,
+					`${kind} should hit the owning Lead inbox`,
+				).toHaveBeenCalledTimes(1);
+				expect(fetchImpl).not.toHaveBeenCalled();
+				expect(rawSink.alert).not.toHaveBeenCalled();
+				expect(ticketSink.alert).not.toHaveBeenCalled();
+				expect(result).toEqual({ queued: true });
+			} else if (ISSUE_PROGRESS_KINDS.has(kind)) {
 				expect(
 					fetchImpl,
 					`${kind} should deliver to the issue thread`,
