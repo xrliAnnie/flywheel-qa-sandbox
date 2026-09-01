@@ -100,9 +100,20 @@ When discussing an issue but no `chat_thread_id` is available:
 4. Use the returned `threadId` for all subsequent replies about this issue
 
 When to proactively create a thread:
+- Immediately after creating an ad-hoc Linear issue in chat when the discussion should move into an issue-bound thread; do not wait for a Runner
 - Received a task assignment from Simba/Annie, about to start working
 - Annie is discussing an issue in chat (conversation is getting long enough)
 - Short status updates can go directly to chatChannel — no thread needed
+
+Runner startup is the automatic path: when `TEAMLEAD_CHAT_THREADS_ENABLED=true`,
+Bridge handles `main`, `qa`, `designer`, and custom `sessionRole` values identically.
+Use the returned or event-payload `chat_thread_id`; do not add a role-specific
+manual branch. When automatic creation is off, `/api/chat-threads/create` remains
+available as the authenticated manual path.
+
+For issue-bound replies, `POST /api/chat-threads/send` is independent from the
+automatic flag. A 404 from `/send` means the reply-by-issue capability is off
+(or the project is unknown), not that automatic creation is off.
 
 If `/api/chat-threads/create` fails:
 - Reply in chatChannel top-level instead — do not retry

@@ -108,7 +108,13 @@ describe("chat-thread routes (tools.ts)", () => {
 	function createTestServer(opts: QueryRouterOptions) {
 		const app = express();
 		app.use(express.json());
-		app.use("/api", createQueryRouter(store, [TEST_PROJECT], opts));
+		app.use(
+			"/api",
+			createQueryRouter(store, [TEST_PROJECT], {
+				apiTokenConfigured: true,
+				...opts,
+			}),
+		);
 		server = createServer(app);
 		server.listen(0);
 		return server;
@@ -124,14 +130,14 @@ describe("chat-thread routes (tools.ts)", () => {
 		mockSearchNodes = undefined;
 	});
 
-	// ─── Feature flag OFF ───────────────────────────────────────────
+	// ─── Automatic creation OFF; manual capability remains available ─
 
-	describe("feature flag OFF", () => {
-		beforeEach(() => {
-			createTestServer({ chatThreadsEnabled: false });
-		});
-
-		it("POST /api/chat-threads/register returns 404 when disabled", async () => {
+	describe("automatic creation disabled", () => {
+		it("POST /api/chat-threads/register fails closed without an API token", async () => {
+			createTestServer({
+				chatThreadsEnabled: false,
+				apiTokenConfigured: false,
+			});
 			const res = await request(server, "POST", "/api/chat-threads/register", {
 				threadId: "t-1",
 				channelId: "ch-100",
@@ -139,26 +145,71 @@ describe("chat-thread routes (tools.ts)", () => {
 				leadId: "lead-alpha",
 				projectName: "TestProject",
 			});
-			expect(res.status).toBe(404);
+			expect(res.status).toBe(503);
+			expect((res.body as { error: string }).error).toMatch(
+				/TEAMLEAD_API_TOKEN/,
+			);
 		});
 
-		it("POST /api/chat-threads/create returns 404 when disabled", async () => {
+		it("POST /api/chat-threads/create works when automatic creation is disabled", async () => {
+			const ensure = vi.fn(async () => ({
+				created: true,
+				threadId: "t-manual",
+			}));
+			createTestServer({
+				chatThreadsEnabled: false,
+				chatThreadCreator: createFakeCreator(ensure),
+				globalBotToken: "global-token",
+			});
+			process.env.LINEAR_API_KEY = "test-key";
+
 			const res = await request(server, "POST", "/api/chat-threads/create", {
-				issueId: "issue-1",
+				issueIdentifier: "FLY-91",
 				channelId: "ch-100",
 				leadId: "lead-alpha",
 				projectName: "TestProject",
 			});
-			expect(res.status).toBe(404);
+
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({ threadId: "t-manual", created: true });
+			expect(ensure).toHaveBeenCalledOnce();
 		});
 
-		it("GET /api/chat-threads returns 404 when disabled", async () => {
+		it("POST /api/chat-threads/create fails closed without an API token", async () => {
+			const ensure = vi.fn(async () => ({
+				created: true,
+				threadId: "never",
+			}));
+			createTestServer({
+				chatThreadsEnabled: false,
+				apiTokenConfigured: false,
+				chatThreadCreator: createFakeCreator(ensure),
+			});
+
+			const res = await request(server, "POST", "/api/chat-threads/create", {
+				issueIdentifier: "FLY-91",
+				channelId: "ch-100",
+				leadId: "lead-alpha",
+				projectName: "TestProject",
+			});
+
+			expect(res.status).toBe(503);
+			expect((res.body as { error: string }).error).toMatch(
+				/TEAMLEAD_API_TOKEN/,
+			);
+			expect(ensure).not.toHaveBeenCalled();
+		});
+
+		it("GET /api/chat-threads resolves a row when automatic creation is disabled", async () => {
+			store.upsertChatThread("t-manual", "ch-100", "FLY-91", "lead-alpha");
+			createTestServer({ chatThreadsEnabled: false });
 			const res = await request(
 				server,
 				"GET",
-				"/api/chat-threads?issueId=issue-1&channelId=ch-100",
+				"/api/chat-threads?issueId=FLY-91&channelId=ch-100",
 			);
-			expect(res.status).toBe(404);
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({ threadId: "t-manual" });
 		});
 	});
 
@@ -319,25 +370,6 @@ describe("chat-thread routes (tools.ts)", () => {
 			} finally {
 				if (orig) process.env.LINEAR_API_KEY = orig;
 			}
-		});
-
-		it("returns 503 when chatThreadCreator not initialized", async () => {
-			createTestServer({
-				chatThreadsEnabled: true,
-				globalBotToken: "global-token",
-			});
-			process.env.LINEAR_API_KEY = "test-key";
-
-			const res = await request(server, "POST", "/api/chat-threads/create", {
-				issueId: "uuid-fly-91",
-				channelId: "ch-100",
-				leadId: "lead-alpha",
-				projectName: "TestProject",
-			});
-			expect(res.status).toBe(503);
-			expect((res.body as { error: string }).error).toContain(
-				"ChatThreadCreator",
-			);
 		});
 
 		it("happy path (issueId) — new thread created", async () => {
@@ -556,11 +588,13 @@ describe("chat-thread routes (tools.ts)", () => {
 			);
 		});
 
-		it("returns 404 when chatThreadsEnabled is false (even if replyByIssueEnabled is true) — Codex code-review R1 MED", async () => {
-			// Operator misconfigures: flips reply-by-issue but forgets
-			// (or rolls back) chatThreadsEnabled. Without the combined
-			// gate, the route would still resolve, ensure threads, and
-			// POST as the bot. Must fail closed.
+		it("sends to an existing thread when automatic creation is disabled", async () => {
+			store.upsertChatThread("t-manual", "ch-100", "FLY-147", "lead-alpha");
+			mockFetch.mockResolvedValueOnce({
+				ok: true,
+				status: 200,
+				json: () => Promise.resolve({ id: "msg-manual" }),
+			});
 			createTestServer({
 				chatThreadsEnabled: false,
 				replyByIssueEnabled: true,
@@ -569,18 +603,18 @@ describe("chat-thread routes (tools.ts)", () => {
 			});
 
 			const res = await request(server, "POST", "/api/chat-threads/send", {
-				issueId: "uuid-fly-162",
+				issueId: "FLY-147",
 				channelId: "ch-100",
 				leadId: "lead-alpha",
 				projectName: "TestProject",
-				text: "hello",
+				text: "manual path",
 			});
-			expect(res.status).toBe(404);
-			expect((res.body as { error: string }).error).toMatch(
-				/chat threads not enabled/i,
-			);
-			// No Discord POST attempted
-			expect(mockFetch).not.toHaveBeenCalled();
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-manual",
+				messageIds: ["msg-manual"],
+				created: false,
+			});
 		});
 
 		it("returns 400 when neither issueId nor issueIdentifier provided", async () => {
@@ -1030,20 +1064,25 @@ describe("chat-thread routes (tools.ts)", () => {
 	//   • does NOT call Linear (pure local lookup)
 
 	describe("GET /api/chat-threads/by-thread/:threadId (FLY-162)", () => {
-		it("returns 404 when chatThreadsEnabled=false (AC7)", async () => {
+		it("resolves a row when automatic creation is disabled", async () => {
+			store.upsertChatThread("t-x", "ch-100", "FLY-147", "lead-alpha");
 			createTestServer({
 				chatThreadsEnabled: false,
-				replyByIssueEnabled: true, // doesn't matter — gated on chatThreadsEnabled
 			});
 			const res = await request(
 				server,
 				"GET",
 				"/api/chat-threads/by-thread/t-x",
 			);
-			expect(res.status).toBe(404);
-			expect((res.body as { error: string }).error).toMatch(
-				/chat threads not enabled/i,
-			);
+			expect(res.status).toBe(200);
+			expect(res.body).toEqual({
+				threadId: "t-x",
+				channelId: "ch-100",
+				issueId: "FLY-147",
+				issueIdentifier: null,
+				issueTitle: null,
+				projectName: null,
+			});
 		});
 
 		it("returns 404 when thread not registered (AC6)", async () => {
@@ -1162,20 +1201,33 @@ describe("chat-thread routes (tools.ts)", () => {
 			});
 		});
 
-		it("returns 404 when chatThreadsEnabled is false", async () => {
-			createTestServer({ chatThreadsEnabled: false, apiTokenConfigured: true });
+		it("archives a registered thread when automatic creation is disabled", async () => {
+			store.upsertChatThread("t-manual", "ch-100", "FLY-91", "lead-alpha");
+			createTestServer({
+				chatThreadsEnabled: false,
+				apiTokenConfigured: true,
+				discordFetch: mockFetch,
+			});
 			const res = await request(server, "POST", "/api/chat-threads/archive", {
-				issueIdentifier: "FLY-91",
+				issueId: "FLY-91",
 				channelId: "ch-100",
 				leadId: "lead-alpha",
 				projectName: "TestProject",
 			});
-			expect(res.status).toBe(404);
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({
+				threadId: "t-manual",
+				archived: true,
+			});
+			expect(mockFetch).toHaveBeenCalledOnce();
 		});
 
-		it("fails closed with 503 when no API token is configured (default)", async () => {
-			// apiTokenConfigured omitted → defaults to false → privileged route 503
-			createTestServer({ chatThreadsEnabled: true, discordFetch: mockFetch });
+		it("fails closed with 503 when no API token is configured", async () => {
+			createTestServer({
+				chatThreadsEnabled: true,
+				apiTokenConfigured: false,
+				discordFetch: mockFetch,
+			});
 			const res = await request(server, "POST", "/api/chat-threads/archive", {
 				issueIdentifier: "FLY-91",
 				channelId: "ch-100",
@@ -1393,6 +1445,10 @@ describe("chat-thread routes (tools.ts)", () => {
 				chatThreadsEnabled: true,
 				replyByIssueEnabled: true,
 				globalBotToken: "global-token",
+				chatThreadCreator: createFakeCreator(async () => ({
+					created: true,
+					threadId: "t-alert-test",
+				})),
 			});
 		}
 
