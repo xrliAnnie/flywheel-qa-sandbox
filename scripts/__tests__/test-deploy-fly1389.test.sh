@@ -22,6 +22,7 @@ pass() { PASSED=$((PASSED+1)); echo "[TEST] ✓ $1"; }
 fail() { FAILED=$((FAILED+1)); echo "[TEST] ✗ $1"; shift; [ $# -gt 0 ] && echo "        $*"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+FLY1389_REAL_CURL="$(command -v curl)"
 
 # ── T: timeout resolver unit matrix ─────────────────────────────────────────
 # shellcheck source=../lib/qa-room.sh
@@ -113,6 +114,11 @@ MANIFEST="$1"
 AGENT=$(jq -r '.leadId' "$MANIFEST")
 PROJ=$(jq -r '.projectName' "$MANIFEST")
 PROJECTS_FILE=$(jq -r '.projectsFile' "$MANIFEST")
+MANIFEST_PROJECTS_FILE=$(jq -r '.launchEnvironment.FLYWHEEL_PROJECTS_FILE // empty' "$MANIFEST")
+if [[ "$MANIFEST_PROJECTS_FILE" != "$PROJECTS_FILE" ]]; then
+  echo "identity_launch_env_conflict FLYWHEEL_PROJECTS_FILE expected '$PROJECTS_FILE', got '$MANIFEST_PROJECTS_FILE'" >&2
+  exit 86
+fi
 LEAD_ROW=$(jq -cer --arg project "$PROJ" --arg agent "$AGENT" '
   [.[] | select(.projectName == $project) | .leads[]? | select(.agentId == $agent)]
   | if length == 1 then .[0] else error("expected exactly one canonical Lead row") end
@@ -183,6 +189,19 @@ EOF
 cat > "$STUB_BIN/node" <<'EOF'
 #!/bin/bash
 exit 0
+EOF
+cat > "$STUB_BIN/curl" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+for arg in "$@"; do
+  case "$arg" in
+    https://discord.com/api/v10/channels/*)
+      printf '200'
+      exit 0
+      ;;
+  esac
+done
+exec "${FLY1389_REAL_CURL:?}" "$@"
 EOF
 cat > "$STUB_BIN/npx" <<'EOF'
 #!/bin/bash
@@ -268,6 +287,10 @@ mkdir -p "$FH2/.flywheel/claude-sessions"
 make_slots_json() {  # <file> — slots 30/31/32 carry real fixture values
   jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" '
     { guildId: "g-fixture",
+      alertChannel: {
+        channelId: "alert-fixture",
+        repairBotTokenEnv: "TEST_BOT_TOKEN_31"
+      },
       slots: ( [range(1;30)] | map({
           id: ., bridgePort: (20000 + .), botName: ("dummy-\(.)"),
           tokenEnvVar: ("DUMMY_TOKEN_\(.)"), botAppId: ("d\(.)"),
@@ -309,6 +332,9 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       FLYWHEEL_QA_LEAD_WRAPPER="$FR/scripts/flywheel-lead-wrapper-v2.sh" \
       FLYWHEEL_QA_TMUX="$STUB_BIN/tmux" \
       FLYWHEEL_QA_LAUNCHD_POLL_INTERVAL=0.01 \
+      FLYWHEEL_QA_LEAD_VERIFY_POLLS=100 \
+      FLYWHEEL_QA_LEAD_VERIFY_INTERVAL=0.01 \
+      FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
       FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       LEAD_WORKSPACE="/malicious/prod-workspace" \
@@ -318,6 +344,10 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TEST_LEAD_CLAUDE_CONFIG_DIR="${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" \
       TEST_REPLY_BY_ISSUE="${TEST_REPLY_BY_ISSUE:-}" \
       TEST_API_TOKEN="${TEST_API_TOKEN:-}" \
+      TEAMLEAD_INGEST_TOKEN="${TEAMLEAD_INGEST_TOKEN:-}" \
+      FLYWHEEL_CODEX_HOMES_ROOT="${FLYWHEEL_CODEX_HOMES_ROOT:-}" \
+      FLYWHEEL_CODEX_SESSION_DIR="${FLYWHEEL_CODEX_SESSION_DIR:-}" \
+      FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="${FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT:-}" \
       FLYWHEEL_LEAD_MODEL="malicious-model" \
       FLYWHEEL_LEAD_EFFORT="malicious-effort" \
       bash "$FR/scripts/test-deploy.sh" "$slot" "$@" \
@@ -373,6 +403,45 @@ else
 fi
 mv "$TEARDOWN_CENSUS_SAVED" "$TEARDOWN_CENSUS_LIB"
 
+# ── A: --alerts respects wrapper-v2's single Lead identity source ──────────
+rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
+A_OUT="$SB/a-out.json"; A_ERR="$SB/a-err.log"
+if run_deploy "$FH1" "$LEAD_SLOT" "$A_OUT" "$A_ERR" --alerts --lead-ready-timeout 1; then
+  A_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
+  A_MANIFEST="$A_SLOT_DIR/launchd/flywheel-test-31/manifest.json"
+  A_LE="$A_SLOT_DIR/lead-env.txt"
+  A_EXPECTED_PROJECTS="$A_SLOT_DIR/q/${LEAD_SLOT}/projects.json"
+  A_OK=1
+  jq -e --arg projects "$A_EXPECTED_PROJECTS" '
+    .projectsFile == $projects
+    and .launchEnvironment.FLYWHEEL_PROJECTS_FILE == $projects
+    and (.launchEnvironment | has("TEST_BOT_TOKEN_31") | not)
+  ' "$A_MANIFEST" >/dev/null 2>&1 \
+    || { A_OK=0; fail "A: --alerts manifest drifted from canonical projects/token identity" "$(cat "$A_MANIFEST" 2>/dev/null || true)"; }
+  grep -q "^FLYWHEEL_PROJECTS_FILE=${A_EXPECTED_PROJECTS}$" "$A_LE" \
+    || { A_OK=0; fail "A: carrier did not project the canonical projects registry"; }
+  grep -q '^DISCORD_BOT_TOKEN=tok-31$' "$A_LE" \
+    || { A_OK=0; fail "A: carrier did not resolve the canonical bot token"; }
+  ! grep -q '^TEST_BOT_TOKEN_31=' "$A_LE" \
+    || { A_OK=0; fail "A: named bot token bypassed wrapper-v2 identity ownership"; }
+  grep -q "^FLYWHEEL_CLAIMS_DB=${A_SLOT_DIR}/alerts/claims.db$" "$A_LE" \
+    || { A_OK=0; fail "A: --alerts lost slot-local Lead claims isolation"; }
+  [[ "$A_OK" == "1" ]] \
+    && pass "A: --alerts launchd-v2 Lead starts with one canonical identity source"
+  run_teardown "$FH1" "$LEAD_SLOT"
+else
+  A_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
+  A_LEAD_DIAGNOSTIC="$(cat "$A_SLOT_DIR/lead.log" 2>/dev/null || true)"
+  A_DEPLOY_DIAGNOSTIC="$(cat "$A_ERR" 2>/dev/null || true)"
+  if grep -q 'identity_launch_env_conflict FLYWHEEL_PROJECTS_FILE' <<<"$A_LEAD_DIAGNOSTIC"; then
+    fail "A: --alerts duplicated the wrapper-v2 projects identity" "identity_launch_env_conflict reproduced"
+  else
+    fail "A: --alerts hermetic deploy failed before the identity assertion" \
+      "carrier=[$A_LEAD_DIAGNOSTIC] deploy=[$(tail -30 <<<"$A_DEPLOY_DIAGNOSTIC")]"
+  fi
+  run_teardown "$FH1" "$LEAD_SLOT" || true
+fi
+
 # ── E: Lead-ful hermetic E2E (slot 31) ──────────────────────────────────────
 rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}"
 # P0-d fixture: a stale session-id from a "previous round".
@@ -380,7 +449,11 @@ echo "a13ca2cd-dead-dead-dead-000000000000" \
   > "$FH1/.flywheel/claude-sessions/test-slot-${LEAD_SLOT}-flywheel-test-31.session-id"
 
 E_OUT="$SB/e-out.json"; E_ERR="$SB/e-err.log"
-if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
+if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
+    FLYWHEEL_CODEX_SESSION_DIR="$SB/production-codex-sessions" \
+    FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="$SB/production-cdx-sock" \
+    TEAMLEAD_INGEST_TOKEN='fixture-production-ingest' \
+    run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
   E_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
   E_OK=1
   E_JSON="$(extract_json "$E_OUT")"
@@ -438,6 +511,16 @@ if run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
       || { E_OK=0; fail "E/FLY-1726: default Bridge branch lacks canonical default Lead"; }
     grep -q "^FLYWHEEL_PROJECTS_FILE=${E_SLOT_DIR}/flywheel-projects.json$" "$BE" \
       || { E_OK=0; fail "E/FLY-1726: default Bridge branch lacks slot-local canonical registry"; }
+    ! grep -q '^TEAMLEAD_INGEST_TOKEN=fixture-production-ingest$' "$BE" \
+      || { E_OK=0; fail "E/FLY-2174: default Bridge inherited the ambient production ingest token"; }
+    grep -q "^FLYWHEEL_CODEX_HOMES_ROOT=${E_SLOT_DIR}/state/codex-homes$" "$BE" \
+      || { E_OK=0; fail "E/FLY-2174: default Bridge retained the production Codex home inventory"; }
+    grep -q "^FLYWHEEL_CODEX_SESSION_DIR=${E_SLOT_DIR}/state/codex-sessions$" "$BE" \
+      || { E_OK=0; fail "E/FLY-2174: default Bridge retained the production Codex daemon ledger"; }
+    grep -q "^FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${E_SLOT_DIR}/state/cdx-sock$" "$BE" \
+      || { E_OK=0; fail "E/FLY-2174: default Bridge retained the production Codex socket census"; }
+    ! grep -Fq "$SB/production-" "$BE" \
+      || { E_OK=0; fail "E/FLY-2174: default Bridge can still census production Codex daemons"; }
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi
@@ -463,6 +546,10 @@ mkdir -p "$I_CONFIG/plugins"
 if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     TEST_REPLY_BY_ISSUE=1 \
     TEST_API_TOKEN="fixture-api-token" \
+    TEAMLEAD_INGEST_TOKEN="fixture-production-ingest" \
+    FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
+    FLYWHEEL_CODEX_SESSION_DIR="$SB/production-codex-sessions" \
+    FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="$SB/production-cdx-sock" \
     TEST_LEAD_CLAUDE_CONFIG_DIR="$I_CONFIG" \
     run_deploy "$FH1" "$LEAD_SLOT" "$I_OUT" "$I_ERR"; then
   I_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
@@ -484,6 +571,16 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks canonical default Lead"; }
   grep -q "^FLYWHEEL_PROJECTS_FILE=${I_SLOT_DIR}/flywheel-projects.json$" "$I_SLOT_DIR/bridge-env.txt" \
     || { I_OK=0; fail "I/FLY-1726: reply-by-issue Bridge branch lacks slot-local canonical registry"; }
+  ! grep -q '^TEAMLEAD_INGEST_TOKEN=fixture-production-ingest$' "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2174: reply-by-issue Bridge inherited the ambient production ingest token"; }
+  grep -q "^FLYWHEEL_CODEX_HOMES_ROOT=${I_SLOT_DIR}/state/codex-homes$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2174: reply Bridge retained the production Codex home inventory"; }
+  grep -q "^FLYWHEEL_CODEX_SESSION_DIR=${I_SLOT_DIR}/state/codex-sessions$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2174: reply Bridge retained the production Codex daemon ledger"; }
+  grep -q "^FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${I_SLOT_DIR}/state/cdx-sock$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2174: reply Bridge retained the production Codex socket census"; }
+  ! grep -Fq "$SB/production-" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2174: reply Bridge can still census production Codex daemons"; }
   [[ "$(cat "$I_SLOT_DIR/state/api-token" 2>/dev/null || true)" == "fixture-api-token" ]] \
     || { I_OK=0; fail "I/FLY-1775: reply-by-issue token was not persisted slot-locally"; }
   [[ "$(stat -c '%a' "$I_SLOT_DIR/state/api-token" 2>/dev/null || stat -f '%Lp' "$I_SLOT_DIR/state/api-token")" == "600" ]] \
@@ -559,6 +656,7 @@ if ( cd "$SB" && \
     TMUX_STUB_LOG="$FH2/tmux-calls.log" \
     FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
     FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
+    FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
     GEOFORGE3D_LEAD_RULES_SRC="$SENTINEL" \
     bash "$FR/scripts/test-deploy.sh" "$NOLEAD_SLOT" --no-lead \
     > "$N_OUT" 2> "$N_ERR" ); then

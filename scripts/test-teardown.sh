@@ -955,6 +955,17 @@ teardown_slot() {
   # exact stub argv plus a live socket derived from this slot's executions.
   if [[ -n "$CANONICAL_SLOT_DIR" && "$CANONICAL_SLOT_DIR" != "/" ]]; then
     qa_generalized_reap_codex_stub_orphans "$CANONICAL_SLOT_DIR"
+
+    # FLY-2174: a real codex-tmux app-server is detached from Bridge and can
+    # survive Bridge's bounded shutdown. Reuse claude-runner's hardened
+    # ledger + live socket-holder proof to reap only this slot's process
+    # groups. Unknown/residual live sockets retain the slot and its lock;
+    # deleting their ledger/socket roots would destroy the only safe proof.
+    if ! node "${TEARDOWN_SCRIPT_DIR}/lib/qa-reap-codex-slot-daemons.mjs" \
+      "$SLOT_DIR"; then
+      log "ERROR: slot-owned Codex daemon teardown is unverified; retaining slot ${SLOT}"
+      return 1
+    fi
   fi
 
   # ── Step 5b (FLY-115): Clean FLY-95 Runner worktrees + slot-local branches ──

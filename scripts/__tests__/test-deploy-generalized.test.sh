@@ -34,6 +34,181 @@ source "$ROOT/scripts/lib/qa-multilead.sh"
 source "$ROOT/scripts/lib/qa-generalized.sh"
 
 test_deploy_source="$(<"$ROOT/scripts/test-deploy.sh")"
+qa_generalized_source="$(<"$ROOT/scripts/lib/qa-generalized.sh")"
+
+# FLY-2174: generalized master auth and Runner ingest auth are separate
+# credentials. Invalid bearer shapes fail closed without logging bytes.
+if declare -F qa_generalized_resolve_ingest_token >/dev/null; then
+	resolver_err="$TMP_ROOT/ingest-resolver.err"
+	resolver_out=''
+	if resolver_out="$(qa_generalized_resolve_ingest_token 'fixture-ingest' 'fixture-master' 2>"$resolver_err")"; then
+		assert_eq "$resolver_out" 'fixture-ingest' \
+			'explicit generalized ingest token is preserved byte-for-byte'
+	else
+		echo 'FAIL: explicit generalized ingest token was rejected' >&2
+		failures=$((failures + 1))
+	fi
+	if qa_generalized_resolve_ingest_token 'fixture-master' 'fixture-master' \
+		>/dev/null 2>"$resolver_err"; then
+		echo 'FAIL: generalized ingest token reused the master credential' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: generalized ingest token rejects master-token reuse'
+	fi
+	uuidgen() { printf '01234567-89AB-CDEF-0123-456789ABCDEF\n'; }
+	if resolver_out="$(qa_generalized_resolve_ingest_token '' 'fixture-master' 2>"$resolver_err")"; then
+		assert_eq "$resolver_out" 'fly-2174-ingest-0123456789AB' \
+			'generated generalized ingest token uses an independent namespace'
+	else
+		echo 'FAIL: generalized ingest token generation failed' >&2
+		failures=$((failures + 1))
+	fi
+	unset -f uuidgen
+	uuidgen() { printf 'not-a-uuid\n'; }
+	if qa_generalized_resolve_ingest_token '' 'fixture-master' \
+		>/dev/null 2>"$resolver_err"; then
+		echo 'FAIL: generalized ingest resolver accepted malformed uuidgen output' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: generalized ingest resolver rejects malformed uuidgen output'
+	fi
+	unset -f uuidgen
+
+	outer_whitespace_values=(
+		$' fixture-ingest' $'fixture-ingest '
+		$'\tfixture-ingest' $'fixture-ingest\t'
+		$'\nfixture-ingest' $'fixture-ingest\n'
+		$' \t\n'
+	)
+	for bad_bearer in "${outer_whitespace_values[@]}"; do
+		if qa_generalized_resolve_ingest_token "$bad_bearer" 'fixture-master' \
+			>/dev/null 2>"$resolver_err"; then
+			echo 'FAIL: configured ingest token accepted outer whitespace' >&2
+			failures=$((failures + 1))
+		fi
+		if qa_generalized_resolve_ingest_token 'fixture-ingest' "$bad_bearer" \
+			>/dev/null 2>"$resolver_err"; then
+			echo 'FAIL: master token accepted outer whitespace' >&2
+			failures=$((failures + 1))
+		fi
+	done
+	if qa_generalized_resolve_ingest_token 'fixture-ingest' '' \
+		>/dev/null 2>"$resolver_err"; then
+		echo 'FAIL: generalized ingest resolver accepted an empty master token' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: generalized ingest resolver rejects empty/outer-whitespace bearers'
+	fi
+	internal_bearer=$'fixture internal\tbytes'
+	if resolver_out="$(qa_generalized_resolve_ingest_token "$internal_bearer" 'fixture-master' 2>"$resolver_err")"; then
+		assert_eq "$resolver_out" "$internal_bearer" \
+			'generalized ingest resolver preserves internal bearer bytes'
+	else
+		echo 'FAIL: generalized ingest resolver rejected internal whitespace' >&2
+		failures=$((failures + 1))
+	fi
+	secret_bearer='fly2174-secret-bearer-bytes'
+	qa_generalized_resolve_ingest_token "$secret_bearer" "$secret_bearer" \
+		>/dev/null 2>"$resolver_err" || true
+	if rg -Fq "$secret_bearer" "$resolver_err"; then
+		echo 'FAIL: generalized ingest diagnostics leaked bearer bytes' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: generalized ingest diagnostics redact bearer bytes'
+	fi
+else
+	echo 'FAIL: generalized ingest token resolver is missing' >&2
+	failures=$((failures + 1))
+fi
+
+# The exec helper is intentionally background/subshell-only: exec makes the
+# captured $! the real Bridge PID used by cleanup, room-info, and teardown.
+if declare -F qa_generalized_exec_with_ingest_token >/dev/null; then
+	if (qa_generalized_exec_with_ingest_token '' /usr/bin/true >/dev/null 2>&1); then
+		echo 'FAIL: ingest exec helper accepted an empty token' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: ingest exec helper rejects an empty token before exec'
+	fi
+	if (qa_generalized_exec_with_ingest_token 'fixture-slot-ingest' >/dev/null 2>&1); then
+		echo 'FAIL: ingest exec helper accepted an empty command' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: ingest exec helper rejects an empty command before exec'
+	fi
+	ingest_child_pid_file="$TMP_ROOT/ingest-child.pid"
+	ingest_child_env_file="$TMP_ROOT/ingest-child.env"
+	TEAMLEAD_INGEST_TOKEN='fixture-production-ingest' \
+		qa_generalized_exec_with_ingest_token 'fixture-slot-ingest' \
+		/bin/bash -c 'printf "%s\n" "$$" > "$1"; env | LC_ALL=C sort > "$2"; sleep 30' \
+		_ "$ingest_child_pid_file" "$ingest_child_env_file" &
+	ingest_exec_pid=$!
+	for _ in {1..100}; do
+		[[ -s "$ingest_child_pid_file" && -s "$ingest_child_env_file" ]] && break
+		sleep 0.02
+	done
+	if [[ -s "$ingest_child_pid_file" && -s "$ingest_child_env_file" ]]; then
+		assert_eq "$(<"$ingest_child_pid_file")" "$ingest_exec_pid" \
+			'ingest exec helper keeps $! bound to the real child PID'
+		assert_eq "$(rg -c '^TEAMLEAD_INGEST_TOKEN=' "$ingest_child_env_file")" '1' \
+			'ingest exec helper exposes exactly one ingest coordinate'
+		assert_eq "$(rg '^TEAMLEAD_INGEST_TOKEN=' "$ingest_child_env_file")" \
+			'TEAMLEAD_INGEST_TOKEN=fixture-slot-ingest' \
+			'ingest exec helper replaces ambient production auth with slot auth'
+		if rg -Fq 'fixture-production-ingest' "$ingest_child_env_file"; then
+			echo 'FAIL: ingest exec helper retained ambient production auth' >&2
+			failures=$((failures + 1))
+		else
+			echo 'PASS: ingest exec helper removes ambient production auth'
+		fi
+	else
+		echo 'FAIL: ingest exec helper child did not publish PID/env evidence' >&2
+		failures=$((failures + 1))
+	fi
+	kill "$ingest_exec_pid" 2>/dev/null || true
+	wait "$ingest_exec_pid" 2>/dev/null || true
+else
+	echo 'FAIL: generalized ingest exec helper is missing' >&2
+	failures=$((failures + 1))
+fi
+
+assert_contains "$qa_generalized_source" 'Background/subshell-only:' \
+	'ingest exec helper documents its destructive foreground-call contract'
+assert_contains "$test_deploy_source" \
+	'TEST_TEAMLEAD_INGEST_TOKEN=$(qa_generalized_resolve_ingest_token' \
+	'generalized room resolves ingest auth immediately after master auth'
+ingest_unset_count="$(
+	rg -F -c -- '-u TEAMLEAD_INGEST_TOKEN' "$ROOT/scripts/test-deploy.sh" || true
+)"
+assert_eq "${ingest_unset_count:-0}" '2' \
+	'default and reply Bridge branches scrub ambient ingest auth'
+for codex_root_assignment in \
+	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOMES_ROOT=${SLOT_DIR}/state/codex-homes")' \
+	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SESSION_DIR=${SLOT_DIR}/state/codex-sessions")' \
+	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${SLOT_DIR}/state/cdx-sock")'
+do
+	assignment_count="$(
+		rg -F -x -c "$codex_root_assignment" "$ROOT/scripts/test-deploy.sh" || true
+	)"
+	assert_eq "${assignment_count:-0}" '1' \
+		'QA Bridge binds each destructive Codex reaper root to the slot tree exactly once'
+done
+generalized_bridge_launch="$(awk '
+	/^if \[\[ "\$GENERALIZED" == "1" \]\]; then$/ { block=$0 ORS; capture=1; next }
+	capture { block=block $0 ORS }
+	capture && /^elif \[\[ "\$\{TEST_REPLY_BY_ISSUE:-0\}" == "1" \]\]; then$/ {
+		selected=block; capture=0
+	}
+	END { printf "%s", selected }
+' "$ROOT/scripts/test-deploy.sh")"
+if [[ "$generalized_bridge_launch" == *'qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env'* \
+	&& "$generalized_bridge_launch" == *'> "${SLOT_DIR}/bridge.log" 2>&1 &'* ]]; then
+	echo 'PASS: generalized Bridge invokes the exec helper only in its background launch'
+else
+	echo 'FAIL: generalized Bridge does not couple the exec helper to its background launch' >&2
+	failures=$((failures + 1))
+fi
+
 assert_contains "$test_deploy_source" \
 	'"TEAMLEAD_DB_PATH=${SLOT_DIR}/teamlead.db"' \
 	'QA Lead manifest pins the slot-local StateStore DB'
@@ -586,6 +761,190 @@ if [[ -n "$bridge_stop_line" && -n "$stub_reap_line" \
 	echo 'PASS: generalized teardown stops Bridge before reaping restartable stubs'
 else
 	echo "FAIL: generalized teardown reaps stubs before Bridge shutdown (bridge=${bridge_stop_line:-missing} reap=${stub_reap_line:-missing})" >&2
+	failures=$((failures + 1))
+fi
+
+# FLY-2174: the real codex-tmux daemon is detached from Bridge and can survive
+# its bounded shutdown. Teardown must use the runner's hardened ledger + live
+# socket-holder proof before deleting the slot-local session/socket roots.
+real_reap_script="$ROOT/scripts/lib/qa-reap-codex-slot-daemons.mjs"
+real_reap_line="$(rg -n 'qa-reap-codex-slot-daemons\.mjs' "$teardown_source" \
+	| head -1 | cut -d: -f1 || true)"
+slot_delete_line="$(rg -n 'rm -rf "\$SLOT_DIR"' "$teardown_source" \
+	| tail -1 | cut -d: -f1 || true)"
+if [[ -n "$bridge_stop_line" && -n "$real_reap_line" && -n "$slot_delete_line" \
+	&& "$bridge_stop_line" -lt "$real_reap_line" \
+	&& "$real_reap_line" -lt "$slot_delete_line" ]]; then
+	echo 'PASS: generalized teardown proves real Codex daemons gone before deleting slot state'
+else
+	echo "FAIL: real Codex daemon reap is not ordered bridge-stop -> reap -> slot-delete (bridge=${bridge_stop_line:-missing} reap=${real_reap_line:-missing} delete=${slot_delete_line:-missing})" >&2
+	failures=$((failures + 1))
+fi
+if [[ -f "$real_reap_script" ]]; then
+	real_reap_source="$(<"$real_reap_script")"
+	assert_contains "$real_reap_source" 'reapCodexDaemonForExecution' \
+		'real daemon teardown delegates destructive proof to the hardened runner reaper'
+	assert_contains "$real_reap_source" 'FLYWHEEL_CODEX_SESSION_DIR' \
+		'real daemon teardown binds session authority to the slot-local root'
+	assert_contains "$real_reap_source" 'FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT' \
+		'real daemon teardown binds socket authority to the slot-local root'
+	assert_contains "$real_reap_source" 'residual' \
+		'real daemon teardown fails closed when a proven process group survives'
+	dynamic_import_line="$(rg -n 'reapCodexDaemonForExecution.*await import' \
+		"$real_reap_script" | cut -d: -f1 || true)"
+	empty_room_return_line="$(rg -n 'if \(!sessionRoot && !socketRoot\) return' \
+		"$real_reap_script" | cut -d: -f1 || true)"
+	if [[ -n "$dynamic_import_line" && -n "$empty_room_return_line" \
+		&& "$empty_room_return_line" -lt "$dynamic_import_line" ]]; then
+		echo 'PASS: empty non-Codex rooms do not require a built claude-runner dist'
+	else
+		echo "FAIL: claude-runner dist loads before empty-room teardown can return (return=${empty_room_return_line:-missing} import=${dynamic_import_line:-missing})" >&2
+		failures=$((failures + 1))
+	fi
+
+	empty_real_slot="$TMP_ROOT/empty-real-slot"
+	mkdir -p "$empty_real_slot"
+	if node "$real_reap_script" "$empty_real_slot" >/dev/null 2>&1; then
+		echo 'PASS: real daemon teardown treats an unused slot as already clean'
+	else
+		echo 'FAIL: real daemon teardown rejects an unused slot' >&2
+		failures=$((failures + 1))
+	fi
+	if (
+		cd "$(dirname "$empty_real_slot")"
+		node "$real_reap_script" "$(basename "$empty_real_slot")" >/dev/null 2>&1
+	); then
+		echo 'FAIL: real daemon teardown accepted a relative destructive root' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: real daemon teardown requires an absolute slot root'
+	fi
+
+	# Keep this fixture below macOS sockaddr_un.sun_path while the main test
+	# root intentionally exercises arbitrary TMPDIR lengths elsewhere.
+	live_unowned_root="$(mktemp -d /tmp/fly2174-reap.XXXXXX)"
+	live_unowned_slot="$live_unowned_root/live-slot"
+	live_unowned_socket="$live_unowned_slot/state/cdx-sock/unowned.sock"
+	live_unowned_ready="$live_unowned_slot/socket-ready"
+	mkdir -p "$live_unowned_slot/state/cdx-sock"
+	node -e '
+		const fs = require("node:fs");
+		const net = require("node:net");
+		const server = net.createServer();
+		server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], "ready\n"));
+		process.on("SIGTERM", () => server.close(() => process.exit(0)));
+		setTimeout(() => process.exit(0), 5000).unref();
+	' "$live_unowned_socket" "$live_unowned_ready" &
+	live_unowned_pid=$!
+	for _ in $(seq 1 50); do
+		[[ -f "$live_unowned_ready" ]] && break
+		sleep 0.1
+	done
+	if [[ ! -f "$live_unowned_ready" ]]; then
+		echo 'FAIL: live unowned socket fixture did not start' >&2
+		failures=$((failures + 1))
+	elif node "$real_reap_script" "$live_unowned_slot" >/dev/null 2>&1; then
+		echo 'FAIL: real daemon teardown accepted a live socket without ledger proof' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: real daemon teardown fails closed on a live socket without ledger proof'
+	fi
+	kill "$live_unowned_pid" 2>/dev/null || true
+	wait "$live_unowned_pid" 2>/dev/null || true
+	rm -rf "$live_unowned_root"
+
+	# Positive macOS path contract: Bridge binds the lexical /tmp socket string,
+	# while realpath resolves the same slot beneath /private/tmp. The reaper must
+	# preserve the lexical string for lsof's holder proof and kill the detached
+	# process group before reporting success.
+	owned_real_root="$(mktemp -d /tmp/fly2174-owned.XXXXXX)"
+	owned_real_slot="$owned_real_root/live-slot"
+	owned_execution='implement-owned-real'
+	owned_hash="$(printf '%s' "$owned_execution" | shasum -a 1 | awk '{print substr($1,1,16)}')"
+	owned_socket="$owned_real_slot/state/cdx-sock/${owned_hash}.sock"
+	owned_ready="$owned_real_slot/socket-ready"
+	owned_pid_file="$owned_real_slot/socket-pid"
+	owned_reap_err="$owned_real_slot/reap.err"
+	owned_session_dir="$owned_real_slot/state/codex-sessions/$owned_execution"
+	owned_fake_bin="$owned_real_slot/fake-bin"
+	mkdir -p "$owned_real_slot/state/cdx-sock" "$owned_session_dir" "$owned_fake_bin"
+	printf '%s\n' \
+		'#!/bin/sh' \
+		'last=""' \
+		'for arg do last="$arg"; done' \
+		'case "$last" in ""|*[!0-9]*) exit 1 ;; esac' \
+		'printf "%s\\n" "$last"' \
+		> "$owned_fake_bin/ps"
+	chmod 700 "$owned_fake_bin/ps"
+	node -e '
+		const { spawn } = require("node:child_process");
+		const fs = require("node:fs");
+		const source = `
+			const fs = require("node:fs");
+			const net = require("node:net");
+			const server = net.createServer();
+			server.listen(process.argv[1], () => fs.writeFileSync(process.argv[2], "ready\\n"));
+			process.on("SIGTERM", () => server.close(() => process.exit(0)));
+			setTimeout(() => process.exit(0), 30000).unref();
+		`;
+		const child = spawn(process.execPath, ["-e", source, process.argv[1], process.argv[2]], {
+			detached: true,
+			stdio: "ignore",
+		});
+		if (!Number.isInteger(child.pid)) process.exit(1);
+		fs.writeFileSync(process.argv[3], `${child.pid}\n`);
+		child.unref();
+	' "$owned_socket" "$owned_ready" "$owned_pid_file"
+	for _ in $(seq 1 50); do
+		[[ -f "$owned_ready" && -f "$owned_pid_file" ]] && break
+		sleep 0.1
+	done
+	owned_pid="$(cat "$owned_pid_file" 2>/dev/null || true)"
+	if [[ ! "$owned_pid" =~ ^[1-9][0-9]*$ ]]; then
+		echo 'FAIL: owned real Codex socket fixture did not start' >&2
+		failures=$((failures + 1))
+	else
+		owned_holder_pids="$(lsof -t -- "$owned_socket" 2>/dev/null || true)"
+		assert_contains "$owned_holder_pids" "$owned_pid" \
+			'positive real daemon fixture is the lexical /tmp socket holder'
+		printf '{"executionId":"%s","daemonPgid":%s}\n' \
+			"$owned_execution" "$owned_pid" > "$owned_session_dir/session.json"
+		if PATH="$owned_fake_bin:$PATH" node "$real_reap_script" "$owned_real_slot" \
+			>/dev/null 2>"$owned_reap_err"; then
+			for _ in $(seq 1 50); do
+				kill -0 "$owned_pid" 2>/dev/null || break
+				sleep 0.1
+			done
+			if kill -0 "$owned_pid" 2>/dev/null; then
+				echo 'FAIL: real daemon teardown returned success before its owned process group exited' >&2
+				failures=$((failures + 1))
+			else
+				echo 'PASS: real daemon teardown reaps a ledger-and-socket-proven detached process group'
+			fi
+		else
+			echo 'FAIL: real daemon teardown could not reap a ledger-and-socket-proven detached process group' >&2
+			sed 's/^/  reaper: /' "$owned_reap_err" >&2
+			failures=$((failures + 1))
+		fi
+		if kill -0 "$owned_pid" 2>/dev/null; then
+			node -e 'try { process.kill(-Number(process.argv[1]), "SIGKILL"); } catch {}' \
+				"$owned_pid"
+		fi
+	fi
+	rm -rf "$owned_real_root"
+
+	external_real_sessions="$TMP_ROOT/external-real-sessions"
+	symlinked_real_slot="$TMP_ROOT/symlinked-real-slot"
+	mkdir -p "$external_real_sessions" "$symlinked_real_slot/state"
+	ln -s "$external_real_sessions" "$symlinked_real_slot/state/codex-sessions"
+	if node "$real_reap_script" "$symlinked_real_slot" >/dev/null 2>&1; then
+		echo 'FAIL: real daemon teardown accepted a symlinked session authority root' >&2
+		failures=$((failures + 1))
+	else
+		echo 'PASS: real daemon teardown rejects a symlinked session authority root'
+	fi
+else
+	echo 'FAIL: real Codex daemon teardown helper is missing' >&2
 	failures=$((failures + 1))
 fi
 assert_contains "$(<"$ROOT/scripts/qa-529-generalized-e2e.mjs")" \

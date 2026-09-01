@@ -257,6 +257,12 @@ if [[ "$GENERALIZED" == "1" && -z "$TEST_TEAMLEAD_API_TOKEN" ]]; then
   fi
   log "generalized master auth enabled with TEAMLEAD_API_TOKEN=<redacted len=${#TEST_TEAMLEAD_API_TOKEN}>; reply-by-issue remains ${TEST_REPLY_BY_ISSUE:-0}"
 fi
+TEST_TEAMLEAD_INGEST_TOKEN=""
+if [[ "$GENERALIZED" == "1" ]]; then
+  TEST_TEAMLEAD_INGEST_TOKEN=$(qa_generalized_resolve_ingest_token \
+    "${TEST_INGEST_TOKEN:-}" "$TEST_TEAMLEAD_API_TOKEN") || exit 1
+  log "generalized ingest auth enabled with TEAMLEAD_INGEST_TOKEN=<redacted len=${#TEST_TEAMLEAD_INGEST_TOKEN}>"
+fi
 
 # FLY-1439: fail immediately on a typo'd isolated Claude root instead of
 # materializing an empty config and waiting minutes for an unauthenticated
@@ -764,6 +770,15 @@ BRIDGE_EXTRA_ENV+=("FLYWHEEL_LOOP_DIAGNOSTICS_DIR=${SLOT_DIR}/state/loop-diagnos
 LEAD_EXTRA_ENV+=("FLYWHEEL_IDENTITY_FAILURE_DIR=${SLOT_DIR}/state/lead-identity-failures")
 # FLY-1663 QA must never read, create, or rotate the resident Bridge secret.
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret")
+# FLY-2174: the Bridge's Codex orphan reaper combines its StateStore runway
+# with the daemon homes/session/socket inventories named by these coordinates.
+# A slot-local DB cannot authorize mutations against the resident fleet's
+# default ~/.flywheel inventories: every production execution would look
+# inactive to the slot and old reparented app-servers would be signaled. Bind
+# all three destructive identity axes to one slot tree for every Bridge mode.
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOMES_ROOT=${SLOT_DIR}/state/codex-homes")
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SESSION_DIR=${SLOT_DIR}/state/codex-sessions")
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${SLOT_DIR}/state/cdx-sock")
 # FLY-1999: native tmux routing keeps every unqualified Bridge/adapter/reaper
 # call on the slot server. The launch boundary below also removes inherited
 # TMUX and the explicit override so no call can resolve back to another server.
@@ -904,10 +919,10 @@ if [[ "$ALERTS" == "1" ]]; then
   if [[ -n "$ALERT_REPAIR_BOT_TOKEN_ENV" && "$ALERT_REPAIR_BOT_TOKEN_ENV" != "$BOT_TOKEN_ENV" ]]; then
     BRIDGE_EXTRA_ENV+=("${ALERT_REPAIR_BOT_TOKEN_ENV}=${!ALERT_REPAIR_BOT_TOKEN_ENV:-}")
   fi
-  # Shell path (lead-alert.sh) resolves channel from the slot-local projects
-  # file + dereferences the per-slot token env — both must reach the Lead env.
-  LEAD_EXTRA_ENV+=("FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/flywheel-projects.json")
-  LEAD_EXTRA_ENV+=("${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}")
+  # Shell path identity remains owned by qa_slot_start_lead: its canonical
+  # projects file and mode-0600 wrapper env file carry the projects coordinate
+  # and named bot token. Do not duplicate either in LEAD_EXTRA_ENV; wrapper-v2
+  # rejects the drift, and extra Leads inherit this array.
   log "alerts mode: channel=${ALERT_CHANNEL_ID} repairBotEnv=${ALERT_REPAIR_BOT_TOKEN_ENV} (queue/claims/deadletter isolated to ${SLOT_DIR})"
 fi
 
@@ -1287,9 +1302,9 @@ FLYWHEEL_PROJECTS=$(qa_multilead_build_projects \
 # its channel from FLYWHEEL_PROJECTS_FILE, NOT the unified env) posts to the
 # isolated test channel instead of dead-lettering as unknown config.
 # alertBotTokenEnv = the SLOT's own token env (not the repair env): the shell
-# path posts via the lead's own bot, and ${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN} is
-# the env we guarantee is exported to the Lead (Codex code R1 #3). The repair
-# bot env stays Bridge-only (owner-attributed send chain).
+# path posts via the Lead's own bot, resolved from the canonical mode-0600
+# wrapper env file. It must not be copied into LEAD_EXTRA_ENV. The repair bot
+# env stays Bridge-only (owner-attributed send chain).
 if [[ "$ALERTS" == "1" ]]; then
   FLYWHEEL_PROJECTS=$(printf '%s' "$FLYWHEEL_PROJECTS" \
     | qa_room_inject_alert_into_projects "$AGENT_ID" "$ALERT_CHANNEL_ID" "$BOT_TOKEN_ENV")
@@ -1729,7 +1744,8 @@ if [[ "$GENERALIZED" == "1" ]]; then
     GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true")
     GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
   fi
-  env ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
+  qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env \
+    ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
@@ -1762,6 +1778,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # to slot-local dirs — without them every slot Bridge boot rewrote the
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
   env \
+    -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     TEAMLEAD_PORT="${SLOT_PORT}" \
@@ -1796,6 +1813,7 @@ else
   # FLY-1389 P1-a: same slot-local FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR
   # isolation on the default (reply-by-issue OFF) branch.
   env -u TEAMLEAD_API_TOKEN \
+    -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \

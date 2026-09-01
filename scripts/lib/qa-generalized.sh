@@ -43,6 +43,75 @@ qa_generalized_assert_ambient_scrubbed() {
 	done < <(qa_generalized_ambient_scrub_env_names)
 }
 
+qa_generalized_bearer_has_outer_whitespace() {
+	local value="${1-}"
+	[[ -n "$value" ]] || return 1
+	[[ "$value" == [[:space:]]* || "$value" == *[[:space:]] ]]
+}
+
+qa_generalized_resolve_ingest_token() {
+	local configured="${1-}" master="${2-}" token uuid_value
+	[[ -n "$master" ]] || {
+		echo '[qa-generalized] master token must be non-empty' >&2
+		return 1
+	}
+	if qa_generalized_bearer_has_outer_whitespace "$master"; then
+		echo '[qa-generalized] master token must contain no outer whitespace' >&2
+		return 1
+	fi
+	if [[ -n "$configured" ]]; then
+		if qa_generalized_bearer_has_outer_whitespace "$configured"; then
+			echo '[qa-generalized] configured ingest token must contain no outer whitespace' >&2
+			return 1
+		fi
+		token="$configured"
+	elif command -v uuidgen >/dev/null 2>&1; then
+		uuid_value=$(uuidgen | tr -d '-')
+		[[ "$uuid_value" =~ ^[[:xdigit:]]{32}$ ]] || {
+			echo '[qa-generalized] ingest token generation returned an invalid UUID' >&2
+			return 1
+		}
+		token="fly-2174-ingest-${uuid_value:0:12}"
+	else
+		token="fly-2174-ingest-$(date +%s)-$$"
+	fi
+	[[ -n "$token" ]] || {
+		echo '[qa-generalized] ingest token generation returned empty' >&2
+		return 1
+	}
+	[[ "$token" != "$master" ]] || {
+		echo '[qa-generalized] ingest token must differ from master token' >&2
+		return 1
+	}
+	printf '%s\n' "$token"
+}
+
+# Background/subshell-only: a successful call exec-replaces its caller so the
+# captured $! remains the real Bridge PID. Foreground callers would replace
+# test-deploy itself and bypass its remaining lifecycle/cleanup work.
+qa_generalized_exec_with_ingest_token() {
+	(( $# >= 1 )) || {
+		echo '[qa-generalized] ingest token is required' >&2
+		return 1
+	}
+	local token="$1"
+	shift
+	[[ -n "$token" ]] || {
+		echo '[qa-generalized] ingest token is required' >&2
+		return 1
+	}
+	if qa_generalized_bearer_has_outer_whitespace "$token"; then
+		echo '[qa-generalized] ingest token must contain no outer whitespace' >&2
+		return 1
+	fi
+	(( $# > 0 )) || {
+		echo '[qa-generalized] ingest child command is required' >&2
+		return 1
+	}
+	exec env -u TEAMLEAD_INGEST_TOKEN \
+		TEAMLEAD_INGEST_TOKEN="$token" "$@"
+}
+
 qa_generalized_file_mode() {
 	local path="${1:?file path required}"
 	if stat -c '%a' "$path" 2>/dev/null; then

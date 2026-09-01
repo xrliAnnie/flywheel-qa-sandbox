@@ -48,19 +48,24 @@ LEAD_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed"
 BRIDGE_EXTRA_ENV=("FLYWHEEL_COMPLETE_MARKER_DIR=${SLOT_DIR}/state/complete-failed")
 while IFS= read -r l; do [[ -n "$l" ]] && { BRIDGE_EXTRA_ENV+=("$l"); LEAD_EXTRA_ENV+=("$l"); }; done < <(qa_room_alert_iso_env "$SLOT_DIR")
 while IFS= read -r l; do [[ -n "$l" ]] && BRIDGE_EXTRA_ENV+=("$l"); done < <(qa_room_alert_bridge_env "$ALERT_CHANNEL_ID" "$ALERT_REPAIR_BOT_TOKEN_ENV")
-LEAD_EXTRA_ENV+=("FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/flywheel-projects.json")
-LEAD_EXTRA_ENV+=("${BOT_TOKEN_ENV}=${TEST_BOT_TOKEN}")
+CANONICAL_LEAD_IDENTITY_ENV=(
+  "FLYWHEEL_PROJECTS_FILE=${SLOT_DIR}/q/1/projects.json"
+  "DISCORD_BOT_TOKEN=${TEST_BOT_TOKEN}"
+)
 BJ=$(printf '%s\n' "${BRIDGE_EXTRA_ENV[@]}")
 LJ=$(printf '%s\n' "${LEAD_EXTRA_ENV[@]}")
+RUNTIME_LJ=$(printf '%s\n' "${LEAD_EXTRA_ENV[@]}" "${CANONICAL_LEAD_IDENTITY_ENV[@]}")
 if grep -q '^FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=AL$' <<<"$BJ" \
   && grep -q '^FLYWHEEL_ALERT_THREADS=1$' <<<"$BJ" \
   && grep -q '^FLYWHEEL_ALERT_QUEUE_DIR=/tmp/flywheel-test-slot-1/alert-queue$' <<<"$BJ" \
   && grep -q '^FLYWHEEL_CLAIMS_DB=/tmp/flywheel-test-slot-1/alerts/claims.db$' <<<"$LJ" \
-  && grep -q '^FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-1/flywheel-projects.json$' <<<"$LJ" \
-  && grep -q '^TEST_BOT_TOKEN_1=tok-1$' <<<"$LJ"; then
-  pass "alerts: Bridge gets unified+threads+iso, Lead gets iso+projects-file+token (R3 token)"
+  && ! grep -q '^FLYWHEEL_PROJECTS_FILE=' <<<"$LJ" \
+  && ! grep -q '^TEST_BOT_TOKEN_1=' <<<"$LJ" \
+  && grep -q '^FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-1/q/1/projects.json$' <<<"$RUNTIME_LJ" \
+  && grep -q '^DISCORD_BOT_TOKEN=tok-1$' <<<"$RUNTIME_LJ"; then
+  pass "alerts: extra env carries isolation only; carrier owns canonical projects/token identity"
 else
-  fail "alerts wiring" "BRIDGE=[$BJ] LEAD=[$LJ]"
+  fail "alerts wiring" "BRIDGE=[$BJ] LEAD_EXTRA=[$LJ] RUNTIME=[$RUNTIME_LJ]"
 fi
 
 # Shell-side channel + token resolve together: test-deploy injects the SLOT's
@@ -70,11 +75,13 @@ PROJECTS='[{"projectName":"test-slot-1","leads":[{"agentId":"flywheel-test-1","b
 INJECTED=$(printf '%s' "$PROJECTS" | qa_room_inject_alert_into_projects "$AGENT_ID" "$ALERT_CHANNEL_ID" "$BOT_TOKEN_ENV")
 GOT_CH=$(printf '%s' "$INJECTED" | jq -r '.[0].leads[0].alertChannel')
 GOT_TOK_ENV=$(printf '%s' "$INJECTED" | jq -r '.[0].leads[0].alertBotTokenEnv')
-if [[ "$GOT_CH" == "AL" && "$GOT_TOK_ENV" == "TEST_BOT_TOKEN_1" ]] \
-  && grep -q "^${GOT_TOK_ENV}=" <<<"$LJ"; then
-  pass "alerts shell path: projects.alertChannel + the slot token env it names both reach the Lead"
+PROJECT_BOT_ENV=$(printf '%s' "$INJECTED" | jq -r '.[0].leads[0].botTokenEnv')
+if [[ "$GOT_CH" == "AL" && "$GOT_TOK_ENV" == "$PROJECT_BOT_ENV" ]] \
+  && ! grep -q "^${GOT_TOK_ENV}=" <<<"$LJ" \
+  && grep -q '^FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-1/q/1/projects.json$' <<<"$RUNTIME_LJ"; then
+  pass "alerts shell path: projects names the canonical token env without duplicating it in extra env"
 else
-  fail "alerts shell path together" "ch=$GOT_CH tokEnv=$GOT_TOK_ENV leadEnv=[$LJ]"
+  fail "alerts shell path together" "ch=$GOT_CH tokEnv=$GOT_TOK_ENV projectBotEnv=$PROJECT_BOT_ENV leadExtra=[$LJ]"
 fi
 
 # Divergence case: slot 2 with repairBotTokenEnv (Bridge) != the slot's own
