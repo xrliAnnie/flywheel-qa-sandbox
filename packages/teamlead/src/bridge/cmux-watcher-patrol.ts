@@ -8,8 +8,37 @@
  */
 
 import { spawn } from "node:child_process";
-import { lstat, readFile, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+	lstat,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import { join } from "node:path";
+
+export async function projectCmuxRebindDisabled(
+	homeDir: string,
+	disabled: boolean,
+): Promise<void> {
+	const stateDir = join(homeDir, ".flywheel", "state");
+	const marker = join(stateDir, "cmux-rebind-disabled");
+	if (!disabled) {
+		await rm(marker, { force: true });
+		return;
+	}
+	await mkdir(stateDir, { recursive: true, mode: 0o700 });
+	const temp = `${marker}.${randomUUID()}.tmp`;
+	try {
+		await writeFile(temp, "disabled\n", { flag: "wx", mode: 0o600 });
+		await rename(temp, marker);
+	} finally {
+		await rm(temp, { force: true });
+	}
+}
 
 export interface CmuxWatcherOwner {
 	pid: number;
@@ -57,6 +86,7 @@ export type CmuxWatcherBranch =
 export interface CmuxWatcherDecision {
 	branch: CmuxWatcherBranch;
 	alert: boolean;
+	recovery: "kickstart" | "rebuild" | null;
 	recover: boolean;
 	episodeKey: string | null;
 	detail: string;
@@ -67,6 +97,7 @@ export interface CmuxWatcherThresholds {
 	parkTtlMs: number;
 	heartbeatStaleMs: number;
 	eventStaleMs: number;
+	escalateAfterMs: number;
 }
 
 export const DEFAULT_CMUX_WATCHER_THRESHOLDS: CmuxWatcherThresholds = {
@@ -74,16 +105,24 @@ export const DEFAULT_CMUX_WATCHER_THRESHOLDS: CmuxWatcherThresholds = {
 	parkTtlMs: 1_800_000,
 	heartbeatStaleMs: 300_000,
 	eventStaleMs: 120_000,
+	escalateAfterMs: 600_000,
 };
 
 function decision(
 	branch: CmuxWatcherBranch,
 	alert: boolean,
-	recover: boolean,
+	recovery: CmuxWatcherDecision["recovery"],
 	episodeKey: string | null,
 	detail: string,
 ): CmuxWatcherDecision {
-	return { branch, alert, recover, episodeKey, detail };
+	return {
+		branch,
+		alert,
+		recovery,
+		recover: recovery !== null,
+		episodeKey,
+		detail,
+	};
 }
 
 /**
@@ -97,17 +136,6 @@ export function classifyCmuxWatcher(
 	snapshot: CmuxWatcherSnapshot,
 	thresholds: CmuxWatcherThresholds = DEFAULT_CMUX_WATCHER_THRESHOLDS,
 ): CmuxWatcherDecision {
-	if (!snapshot.job.ok) {
-		const generationStarted = snapshot.nowMs - snapshot.jobAbsentAgeMs;
-		return decision(
-			"job_absent",
-			true,
-			false,
-			`job:${snapshot.job.identity}:${generationStarted}`,
-			`launchd job is not queryable: ${snapshot.job.identity}`,
-		);
-	}
-
 	// Planned teardown wins over missing-owner and stale-heartbeat evidence: the
 	// watcher intentionally releases its lease while parked. Never delete a park
 	// marker or recover through one.
@@ -116,7 +144,7 @@ export function classifyCmuxWatcher(
 			return decision(
 				"parked_expired",
 				true,
-				false,
+				null,
 				`park:${snapshot.park.key}`,
 				`maintenance marker ${snapshot.park.path} is ${snapshot.park.ageMs}ms old`,
 			);
@@ -124,9 +152,20 @@ export function classifyCmuxWatcher(
 		return decision(
 			"parked",
 			false,
-			false,
+			null,
 			null,
 			`maintenance marker is active: ${snapshot.park.path}`,
+		);
+	}
+
+	if (!snapshot.job.ok) {
+		const generationStarted = snapshot.nowMs - snapshot.jobAbsentAgeMs;
+		return decision(
+			"job_absent",
+			true,
+			"rebuild",
+			`job:${snapshot.job.identity}:${generationStarted}`,
+			`launchd job is not queryable: ${snapshot.job.identity}`,
 		);
 	}
 
@@ -136,7 +175,7 @@ export function classifyCmuxWatcher(
 			return decision(
 				"owner_starting",
 				false,
-				false,
+				null,
 				null,
 				`launchd job has no verified owner inside ${thresholds.ownerStartupGraceMs}ms startup grace`,
 			);
@@ -145,7 +184,7 @@ export function classifyCmuxWatcher(
 		return decision(
 			"owner_missing",
 			true,
-			false,
+			null,
 			`ownerless:${snapshot.job.identity}:${generationStarted}`,
 			`launchd job has no verified owner for ${snapshot.ownerlessAgeMs}ms (state=${snapshot.ownerState})`,
 		);
@@ -156,7 +195,7 @@ export function classifyCmuxWatcher(
 			return decision(
 				"legacy_no_heartbeat",
 				false,
-				false,
+				null,
 				null,
 				"pre-rollout watcher has no heartbeat; leaving it untouched",
 			);
@@ -164,7 +203,7 @@ export function classifyCmuxWatcher(
 		return decision(
 			"heartbeat_missing",
 			true,
-			false,
+			null,
 			`heartbeat-missing:${snapshot.owner.tuple}`,
 			"post-rollout watcher owns the lease but has no safe heartbeat; refusing blind recovery",
 		);
@@ -175,7 +214,7 @@ export function classifyCmuxWatcher(
 		return decision(
 			"stalled",
 			true,
-			true,
+			"kickstart",
 			`stalled:${snapshot.owner.incarnation}`,
 			[
 				`owner_pid=${snapshot.owner.pid}`,
@@ -195,7 +234,7 @@ export function classifyCmuxWatcher(
 		return decision(
 			"event_backlog",
 			true,
-			false,
+			null,
 			`event-backlog:${snapshot.job.identity}:${generationStarted}`,
 			[
 				`owner_pid=${snapshot.owner.pid}`,
@@ -209,7 +248,7 @@ export function classifyCmuxWatcher(
 	return decision(
 		"healthy",
 		false,
-		false,
+		null,
 		null,
 		`heartbeat_age_ms=${snapshot.heartbeat.ageMs}`,
 	);
@@ -263,8 +302,10 @@ export interface HostCmuxWatcherPatrolOptions {
 		},
 	) => Promise<HostExecResult>;
 	now?: () => number;
-	recover?: (owner: CmuxWatcherOwner) => Promise<CmuxWatcherRecoveryResult>;
+	recover?: CmuxWatcherPatrolDeps["recover"];
 	alert: CmuxWatcherPatrolDeps["alert"];
+	escalate?: CmuxWatcherPatrolDeps["escalate"];
+	rebuildDisabled?: () => boolean;
 	thresholds?: CmuxWatcherThresholds;
 }
 
@@ -373,6 +414,9 @@ export function cmuxWatcherThresholdsFromEnv(
 		eventStaleMs:
 			secondsEnv(env, "FLYWHEEL_CMUX_WATCHER_EVENT_STALE_SECONDS", 120, 3_600) *
 			1_000,
+		escalateAfterMs:
+			secondsEnv(env, "FLYWHEEL_CMUX_WATCHER_ESCALATE_SECONDS", 600, 86_400) *
+			1_000,
 	};
 }
 
@@ -476,7 +520,8 @@ export async function readHostCmuxWatcherSnapshot(
  * shell operation and all descendants, never just the direct bash child. */
 export function runHostCmuxWatcherRecovery(
 	projectRoot: string,
-	owner: CmuxWatcherOwner,
+	recovery: NonNullable<CmuxWatcherDecision["recovery"]>,
+	owner: CmuxWatcherOwner | undefined,
 	env: NodeJS.ProcessEnv = process.env,
 ): Promise<CmuxWatcherRecoveryResult> {
 	return new Promise((resolve) => {
@@ -486,15 +531,15 @@ export function runHostCmuxWatcherRecovery(
 			"lib",
 			"restart-cmux-watcher.sh",
 		);
-		const child = spawn(
-			"/bin/bash",
-			[script, "--recover", "--expected-owner", owner.tuple],
-			{
-				detached: true,
-				stdio: ["ignore", "pipe", "pipe"],
-				env: { ...env, FLYWHEEL_DIR: projectRoot },
-			},
-		);
+		const args = [script, recovery === "rebuild" ? "--rebuild" : "--recover"];
+		if (recovery === "kickstart" && owner) {
+			args.push("--expected-owner", owner.tuple);
+		}
+		const child = spawn("/bin/bash", args, {
+			detached: true,
+			stdio: ["ignore", "pipe", "pipe"],
+			env: { ...env, FLYWHEEL_DIR: projectRoot },
+		});
 		let output = "";
 		let timedOut = false;
 		const append = (chunk: Buffer) => {
@@ -538,8 +583,11 @@ export function createHostCmuxWatcherPatrol(
 		readSnapshot: () => readHostCmuxWatcherSnapshot(options),
 		recover:
 			options.recover ??
-			((owner) => runHostCmuxWatcherRecovery(options.projectRoot, owner, env)),
+			((recovery, owner) =>
+				runHostCmuxWatcherRecovery(options.projectRoot, recovery, owner, env)),
 		alert: options.alert,
+		escalate: options.escalate,
+		rebuildDisabled: options.rebuildDisabled,
 		thresholds: options.thresholds ?? cmuxWatcherThresholdsFromEnv(env),
 	});
 }
@@ -551,11 +599,20 @@ export interface CmuxWatcherRecoveryResult {
 
 export interface CmuxWatcherPatrolDeps {
 	readSnapshot: () => Promise<CmuxWatcherSnapshot>;
-	recover: (owner: CmuxWatcherOwner) => Promise<CmuxWatcherRecoveryResult>;
+	recover: (
+		recovery: NonNullable<CmuxWatcherDecision["recovery"]>,
+		owner: CmuxWatcherOwner | undefined,
+	) => Promise<CmuxWatcherRecoveryResult>;
 	alert: (
 		decision: CmuxWatcherDecision,
 		recovery: CmuxWatcherRecoveryResult | null,
 	) => Promise<void>;
+	escalate?: (
+		decision: CmuxWatcherDecision,
+		recovery: CmuxWatcherRecoveryResult | null,
+		generationKey: string,
+	) => Promise<void>;
+	rebuildDisabled?: () => boolean;
 	thresholds?: CmuxWatcherThresholds;
 }
 
@@ -578,11 +635,19 @@ export class CmuxWatcherPatrol {
 		jobIdentity: string;
 		firstSeenMs: number;
 	} | null = null;
+	private unhealthyGeneration: {
+		key: string;
+		firstSeenMs: number;
+		ticketed: boolean;
+		escalated: boolean;
+		lastRecovery: CmuxWatcherRecoveryResult | null;
+	} | null = null;
 
 	constructor(private readonly deps: CmuxWatcherPatrolDeps) {}
 
 	private rearmResolvedEpisodes(snapshot: CmuxWatcherSnapshot): void {
 		if (snapshot.job.ok) this.emittedEpisodes.delete("job_absent");
+		if (snapshot.job.ok) this.recoveryEpisodes.delete("job_absent");
 		if (!snapshot.job.ok || snapshot.ownerState === "valid") {
 			this.emittedEpisodes.delete("owner_missing");
 		}
@@ -710,22 +775,64 @@ export class CmuxWatcherPatrol {
 
 		this.rearmResolvedEpisodes(snapshot);
 		const verdict = classifyCmuxWatcher(snapshot, this.deps.thresholds);
-		if (!verdict.alert || !verdict.episodeKey) return;
+		if (verdict.branch === "healthy" || verdict.branch.startsWith("parked")) {
+			this.unhealthyGeneration = null;
+		} else if (
+			!this.unhealthyGeneration &&
+			["job_absent", "stalled", "owner_missing", "heartbeat_missing"].includes(
+				verdict.branch,
+			)
+		) {
+			this.unhealthyGeneration = {
+				key: `unhealthy:${snapshot.job.identity}:${snapshot.nowMs}:${verdict.episodeKey ?? verdict.branch}`,
+				firstSeenMs: snapshot.nowMs,
+				ticketed: false,
+				escalated: false,
+				lastRecovery: null,
+			};
+		}
 
 		let recovery: CmuxWatcherRecoveryResult | null = null;
 		if (
-			verdict.recover &&
-			snapshot.owner &&
+			verdict.recovery &&
+			verdict.episodeKey &&
+			!(verdict.recovery === "rebuild" && this.deps.rebuildDisabled?.()) &&
 			this.recoveryEpisodes.get(verdict.branch) !== verdict.episodeKey
 		) {
-			recovery = await this.deps.recover(snapshot.owner);
+			recovery = await this.deps.recover(
+				verdict.recovery,
+				verdict.recovery === "kickstart" ? snapshot.owner : undefined,
+			);
+			if (this.unhealthyGeneration) {
+				this.unhealthyGeneration.lastRecovery = recovery;
+			}
 			if (recovery.ok) {
 				this.recoveryEpisodes.set(verdict.branch, verdict.episodeKey);
 			}
 		}
-		if (this.emittedEpisodes.get(verdict.branch) !== verdict.episodeKey) {
+		if (
+			verdict.alert &&
+			verdict.episodeKey &&
+			this.emittedEpisodes.get(verdict.branch) !== verdict.episodeKey
+		) {
 			await this.deps.alert(verdict, recovery);
 			this.emittedEpisodes.set(verdict.branch, verdict.episodeKey);
+			if (this.unhealthyGeneration) this.unhealthyGeneration.ticketed = true;
+		}
+
+		const generation = this.unhealthyGeneration;
+		if (
+			generation?.ticketed &&
+			!generation.escalated &&
+			this.deps.escalate &&
+			snapshot.nowMs - generation.firstSeenMs >= thresholds.escalateAfterMs
+		) {
+			await this.deps.escalate(
+				verdict,
+				generation.lastRecovery,
+				generation.key,
+			);
+			generation.escalated = true;
 		}
 	}
 }

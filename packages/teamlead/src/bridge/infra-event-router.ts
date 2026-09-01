@@ -133,7 +133,7 @@ export interface InfraAlertSinkDeps {
 	rawSink: AlertSinkLike;
 	/** FLY-1764 Flow 2 primary: one durable alert letter to Claw. */
 	ticketSink: AlertSinkLike;
-	/** Canonical founder id added to workflow_engine_escalation payloads. */
+	/** Canonical founder id added to explicit founder-escalation payloads. */
 	founderUserId?: string;
 	/** Test seam; production routing is welded on by default. */
 	routingEnabled?: () => boolean;
@@ -166,7 +166,10 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 			const explicitMention = isDiscordSnowflake(payload.mentionUserId)
 				? payload.mentionUserId
 				: undefined;
-			if (payload.eventType === "workflow_engine_escalation") {
+			if (
+				payload.eventType === "workflow_engine_escalation" ||
+				payload.eventType === "cmux_watcher_unrecovered"
+			) {
 				const mentionUserId =
 					explicitMention ??
 					(isDiscordSnowflake(deps.founderUserId)
@@ -176,7 +179,7 @@ export function createInfraAlertSink(deps: InfraAlertSinkDeps): AlertSinkLike {
 					return deps.rawSink.alert({ ...payload, mentionUserId });
 				}
 				logger(
-					`workflow escalation ${payload.eventId} has no valid founder id — fail-safe to Claw mailbox`,
+					`founder escalation ${payload.eventId} has no valid founder id — fail-safe to Claw mailbox`,
 				);
 				return deps.ticketSink.alert(payload);
 			}

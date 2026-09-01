@@ -182,7 +182,10 @@ import {
 	closeRunner,
 	registerLifecycleCloseGuard,
 } from "./close-runner.js";
-import { createHostCmuxWatcherPatrol } from "./cmux-watcher-patrol.js";
+import {
+	createHostCmuxWatcherPatrol,
+	projectCmuxRebindDisabled,
+} from "./cmux-watcher-patrol.js";
 import { reapCodexDaemonForSession } from "./codex-daemon-teardown.js";
 import { reportCodexGlobalHealth } from "./codex-global-health.js";
 import { CodexReviewEffects } from "./codex-review-effects.js";
@@ -271,6 +274,8 @@ import {
 	type FlagStoreRuntime,
 	initializeFlagStore,
 	storeAlertSystemEnabled,
+	storeCmuxRebindDisabled,
+	storeCmuxWatcherRebuildDisabled,
 	storeFlagRetirementScanEnabled,
 	storeLoopProfilerEnabled,
 	storeReviewQuotaAutoRetryEnabled,
@@ -8623,6 +8628,7 @@ export async function startBridge(
 			? createHostCmuxWatcherPatrol({
 					homeDir: homedir(),
 					projectRoot: cmuxWatcherProjectRoot,
+					rebuildDisabled: () => storeCmuxWatcherRebuildDisabled(flagStore),
 					execFile: async (file, args, options) => {
 						const result = await execFileP(file, [...args], {
 							...options,
@@ -8654,6 +8660,28 @@ export async function startBridge(
 							severity: "severe",
 						});
 					},
+					escalate: async (verdict, recovery, generationKey) => {
+						const sink = leadPendingAlertHolder.current;
+						if (!sink) {
+							throw new Error("cmux watcher escalation sink is not ready");
+						}
+						const episode = createHash("sha256")
+							.update(generationKey)
+							.digest("hex")
+							.slice(0, 24);
+						await sink.alert({
+							...cmuxWatcherAlertRoute,
+							eventId: `cmux_watcher_unrecovered:${episode}`,
+							eventType: "cmux_watcher_unrecovered",
+							title: "cmux watcher recovery did not converge",
+							body: `${verdict.detail}; latest_recovery=${
+								recovery
+									? `${recovery.ok ? "healthy" : "failed"}: ${recovery.detail}`
+									: "not attempted"
+							}`,
+							severity: "severe",
+						});
+					},
 				})
 			: null;
 
@@ -8672,7 +8700,21 @@ export async function startBridge(
 		onSummaryAbsorptionTick: summaryAbsorptionPass,
 		onPatrolOrphanSweepTick: patrolOrphanSweepPass,
 		...(cmuxWatcherPatrol
-			? { onCmuxWatcherPatrolTick: () => cmuxWatcherPatrol.tick() }
+			? {
+					onCmuxWatcherPatrolTick: async () => {
+						try {
+							await projectCmuxRebindDisabled(
+								homedir(),
+								storeCmuxRebindDisabled(flagStore),
+							);
+						} catch (error) {
+							console.warn(
+								`[cmux-watcher] rebind control projection failed: ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+						await cmuxWatcherPatrol.tick();
+					},
+				}
 			: {}),
 		onReconcilePatrolTick: async () => {
 			// First rollout window: inventory historical terminal-run residue but do
@@ -10444,7 +10486,7 @@ export async function startBridge(
 	if (alertHub) {
 		alertDutyHubHolder.current = alertHub;
 		console.log(
-			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, ordinary-route=claw-mailbox, escalation-route=channel, founder-auto-mention=workflow_engine_escalation-only, founder-id=${founderEscalationConfigured ? "resolved" : "UNRESOLVED"})`,
+			`[Bridge] FLY-368 AlertChannelHub ON (unified channel=${unifiedAlertChannelId}, ordinary-route=claw-mailbox, escalation-route=channel, founder-auto-mention=workflow_engine_escalation|cmux_watcher_unrecovered, founder-id=${founderEscalationConfigured ? "resolved" : "UNRESOLVED"})`,
 		);
 	}
 	console.log(

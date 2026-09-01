@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant W as watcher 看板同步器
+    participant C as cmux 终端应用
+    participant P as Bridge patrol 巡逻员
+    participant L as launchd 系统保姆
+    participant F as founder
+
+    Note over W,C: 09:10 起 cmux 变慢
+    W->>C: list-workspaces 查询
+    C--xW: 超时(每次最多 20 秒)
+    W->>C: 再查 … 连续超时 5+ 次
+    Note over W: 干活期间不写心跳<br/>心跳停在 09:10:12
+    P->>P: 09:15:26 心跳超 300 秒<br/>误判「watcher 卡死」
+    P->>L: bootout(拆掉 launchd 岗位)
+    L-->>W: watcher 被杀,岗位牌摘除
+    P->>P: 收尾检查撞见同名残影进程<br/>(寿命只有 20 秒的看门狗)
+    P--xL: 拒绝 bootstrap(不重新挂牌)
+    Note over L: 岗位牌从此消失,无人恢复
+    P->>P: 09:16 改判 job_absent<br/>按安全矩阵「只告警不动手」
+    Note over F: 两封告警只进机器人信箱<br/>Discord 上一片安静
+    F->>F: 盲窗 2 小时:新 runner 无标签页<br/>搜 FLY-2190 落空
+    F->>P: 质问 Lead
+    Note over L: 11:08 Lead 手工 bootstrap 被<br/>FLY-913 护栏拦下,改走 autostart 才救活

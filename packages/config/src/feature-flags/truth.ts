@@ -311,6 +311,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: bounded cmux process-tree TERM-to-KILL grace in seconds (FLY-1944)",
 	FLYWHEEL_CMUX_WATCHER_EVENT_STALE_SECONDS:
 		"numeric tuning: cmux watcher event-backlog stale threshold in seconds (FLY-1944)",
+	FLYWHEEL_CMUX_WATCHER_ESCALATE_SECONDS:
+		"numeric tuning: continuous cmux watcher unhealthy escalation threshold in seconds (FLY-2207)",
 	FLYWHEEL_CMUX_WATCHER_HEARTBEAT:
 		"plumbing: cmux watcher heartbeat file path override for isolated recovery QA (FLY-1944)",
 	FLYWHEEL_CMUX_WATCHER_HEARTBEAT_STALE_SECONDS:

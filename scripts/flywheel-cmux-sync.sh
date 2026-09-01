@@ -130,6 +130,10 @@ NODE_LEDGER="${NODE_LEDGER:-$HOME/.flywheel/state/cmux-node-ledger}"
 NODE_REGISTRY="${NODE_REGISTRY:-$HOME/.flywheel/state/cmux-node-registry}"
 NODE_STATUS_DIR="${NODE_STATUS_DIR:-${FLYWHEEL_CMUX_NODE_STATUS_DIR:-$HOME/.flywheel/state/cmux-node-status}}"
 CLEANUP_SNAPSHOT="${CLEANUP_SNAPSHOT:-$HOME/.flywheel/state/cmux-cleanup-snapshot}"
+CLEANUP_SNAPSHOT_EPISODE_STATE="${CLEANUP_SNAPSHOT_EPISODE_STATE:-$HOME/.flywheel/state/cmux-cleanup-snapshot-episode}"
+TERMINAL_TEARDOWN_STATE="${TERMINAL_TEARDOWN_STATE:-$HOME/.flywheel/state/cmux-terminal-teardown}"
+REBIND_EPISODE_STATE="${REBIND_EPISODE_STATE:-$HOME/.flywheel/state/cmux-view-rebind-episodes}"
+REBIND_CONTROL_STATE="${REBIND_CONTROL_STATE:-$HOME/.flywheel/state/cmux-rebind-disabled}"
 FLYWHEEL_ENV_FILE="${FLYWHEEL_ENV_FILE:-$HOME/.flywheel/.env}"
 FLYWHEEL_LEAD_PLIST_DIR="${FLYWHEEL_LEAD_PLIST_DIR:-$HOME/Library/LaunchAgents}"
 FLYWHEEL_MANIFEST_DIR="${FLYWHEEL_MANIFEST_DIR:-$HOME/.flywheel/manifests}"
@@ -294,6 +298,14 @@ CMUX_TIMEOUT_KILL_GRACE_SECONDS="${FLYWHEEL_CMUX_TIMEOUT_KILL_GRACE:-1}"
 case "$CMUX_PING_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CMUX_PING_TIMEOUT_SECONDS=10 ;; esac
 case "$CMUX_CALL_TIMEOUT_SECONDS" in ''|*[!0-9]*|0) CMUX_CALL_TIMEOUT_SECONDS=20 ;; esac
 case "$CMUX_TIMEOUT_KILL_GRACE_SECONDS" in ''|*[!0-9]*|0) CMUX_TIMEOUT_KILL_GRACE_SECONDS=1 ;; esac
+if (( CMUX_PING_TIMEOUT_SECONDS > 60 )); then
+  log "WARN: FLYWHEEL_CMUX_PING_TIMEOUT=$CMUX_PING_TIMEOUT_SECONDS exceeds 60s; using default 10s"
+  CMUX_PING_TIMEOUT_SECONDS=10
+fi
+if (( CMUX_CALL_TIMEOUT_SECONDS > 60 )); then
+  log "WARN: FLYWHEEL_CMUX_CALL_TIMEOUT=$CMUX_CALL_TIMEOUT_SECONDS exceeds 60s; using default 20s"
+  CMUX_CALL_TIMEOUT_SECONDS=20
+fi
 
 # Usage: _cmux_bounded_spawn <timeout-seconds> <timeout-marker> <cmux args...>
 # The caller MUST create/truncate timeout-marker before entering this helper.
@@ -312,8 +324,10 @@ _cmux_bounded_spawn() {
   # below the seam uses a real fixture process tree.
   if [[ "${FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS:-0}" == "1" ]] \
      && declare -F cmux >/dev/null 2>&1; then
-    cmux "$@"
-    return $?
+    cmux "$@" || rc=$?
+    [[ "${CMUX_WATCH_HEARTBEAT_ACTIVE:-0}" == "1" ]] \
+      && watcher_write_heartbeat call bounded
+    return "$rc"
   fi
   case "$-" in *m*) monitor_was_enabled=1 ;; esac
   set -m
@@ -335,6 +349,8 @@ _cmux_bounded_spawn() {
   wait "$watchdog_pid" 2>/dev/null || true
   [[ $monitor_was_enabled -eq 1 ]] || set +m
 
+  [[ "${CMUX_WATCH_HEARTBEAT_ACTIVE:-0}" == "1" ]] \
+    && watcher_write_heartbeat call bounded
   [[ -s "$timeout_marker" ]] && return 124
   return "$rc"
 }
@@ -1077,8 +1093,10 @@ for line in sys.stdin.read().splitlines():
     seen.setdefault(execution_id,[]).append((wid,title,session))
 for execution_id in sorted(seen):
     rows=sorted(set(seen[execution_id]))
-    if len(rows) == 1:
-        wid,title,session=rows[0]
+    sources=[row for row in rows if row[2] == "flywheel" or row[2].startswith("runner-")]
+    identities={(wid,title) for wid,title,_ in rows}
+    if len(sources) == 1 and len(identities) == 1:
+        wid,title,session=sources[0]
         print(f"{execution_id}|present|{wid}|{title}|{session}")
     else:
         print(f"{execution_id}|indeterminate|-|-|-")
@@ -1370,13 +1388,107 @@ PY
   return 0
 }
 
+_cleanup_snapshot_file_valid() {
+  local path="$1"
+  [[ -f "$path" && ! -L "$path" && -r "$path" ]] || return 1
+  python3 - "$path" <<'PY' >/dev/null 2>&1
+import re
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    rows = [line.rstrip("\n") for line in handle]
+if not rows or not re.fullmatch(r"snapshot\|[0-9]{1,12}\|[0-9]{1,6}\|[0-9]{1,18}\|complete", rows[0]):
+    raise SystemExit(1)
+for row in rows[1:]:
+    fields = row.split("|")
+    if (len(fields) != 3 or fields[0] not in {"active", "protected"}
+            or not fields[1] or not fields[2]
+            or any(any(ord(char) < 32 or ord(char) == 127 for char in value) for value in fields)):
+        raise SystemExit(1)
+PY
+}
+
+_cleanup_snapshot_progress_key() {
+  local header
+  _cleanup_snapshot_file_valid "$CLEANUP_SNAPSHOT" || { printf 'invalid\n'; return 0; }
+  header=$(head -1 "$CLEANUP_SNAPSHOT") || { printf 'invalid\n'; return 0; }
+  _cmux_alert_hash "$header"
+}
+
+_cleanup_snapshot_progress_epoch() {
+  local header kind round_epoch round_sequence snapshot_epoch completeness
+  _cleanup_snapshot_file_valid "$CLEANUP_SNAPSHOT" || return 1
+  header=$(head -1 "$CLEANUP_SNAPSHOT") || return 1
+  IFS='|' read -r kind round_epoch round_sequence snapshot_epoch completeness < <(printf '%s\n' "$header")
+  printf '%s\n' "$snapshot_epoch"
+}
+
+_write_cleanup_snapshot_episode() {
+  local row="$1" dir tmp
+  dir=$(dirname "$CLEANUP_SNAPSHOT_EPISODE_STATE")
+  mkdir -p "$dir" || return 1
+  tmp=$(mktemp "${CLEANUP_SNAPSHOT_EPISODE_STATE}.XXXX") || return 1
+  printf '%s\n' "$row" > "$tmp" \
+    && mv "$tmp" "$CLEANUP_SNAPSHOT_EPISODE_STATE" \
+    || { rm -f "$tmp"; return 1; }
+}
+
+cleanup_snapshot_stall_observe() {
+  local blocked_count="$1" oldest_marker_epoch="$2" key now state="" version state_key first_epoch alerted extra
+  local progress_epoch age oldest_age
+  case "$blocked_count$oldest_marker_epoch" in *[!0-9]*) return 1 ;; esac
+  now=$(date +%s)
+  key=$(_cleanup_snapshot_progress_key)
+  if [[ -e "$CLEANUP_SNAPSHOT_EPISODE_STATE" || -L "$CLEANUP_SNAPSHOT_EPISODE_STATE" ]]; then
+    [[ -f "$CLEANUP_SNAPSHOT_EPISODE_STATE" && ! -L "$CLEANUP_SNAPSHOT_EPISODE_STATE" \
+        && -r "$CLEANUP_SNAPSHOT_EPISODE_STATE" ]] || return 1
+    state=$(cat "$CLEANUP_SNAPSHOT_EPISODE_STATE" 2>/dev/null || true)
+    IFS='|' read -r version state_key first_epoch alerted extra < <(printf '%s\n' "$state")
+    if [[ "$version" != snapshotstallv1 || -n "$extra" || -z "$state_key" \
+        || "$first_epoch$alerted" == *[!0-9]* || ${#first_epoch} -gt 18 \
+        || ${#alerted} -gt 1 || "$alerted" -gt 1 ]]; then
+      return 1
+    fi
+  fi
+  if [[ -n "$state" && "$state_key" != "$key" ]]; then
+    rm -f "$CLEANUP_SNAPSHOT_EPISODE_STATE"
+    state=""
+  fi
+  (( blocked_count > 0 )) || return 0
+  if [[ -z "$state" ]]; then
+    progress_epoch=$(_cleanup_snapshot_progress_epoch 2>/dev/null || true)
+    case "$progress_epoch" in ''|*[!0-9]*) first_epoch="$now" ;; *) first_epoch="$progress_epoch" ;; esac
+    (( first_epoch <= now )) || first_epoch="$now"
+    alerted=0
+    _write_cleanup_snapshot_episode "snapshotstallv1|$key|$first_epoch|0" || return 1
+  fi
+  age=$((now - first_epoch))
+  (( age >= 86400 && alerted == 0 )) || return 0
+  oldest_age=$((now - oldest_marker_epoch)); (( oldest_age >= 0 )) || oldest_age=0
+  _alert_cmux_cleanup \
+    "cmux cleanup snapshot progress stalled" \
+    "Cleanup has $blocked_count blocked marker(s), oldest ${oldest_age}s, while the authoritative snapshot tuple has not advanced for ${age}s." \
+    "cmux_cleanup|snapshot-progress-stalled|episode=$key"
+  _write_cleanup_snapshot_episode "snapshotstallv1|$key|$first_epoch|1"
+}
+
 node_write_cleanup_snapshot() {
   local round="${CMUX_ADDITIVE_ROUND_ID:-0-0}" round_epoch round_sequence epoch tmp dir generation bound exec_id title alias state
+  local old_header old_kind old_round_epoch old_round_sequence old_epoch old_completeness
   local last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch ledger_title ledger_exec
   node_registry_valid || return 1
   _additive_round_id_valid "$round" || return 1
   round_epoch="${round%%-*}"; round_sequence="${round#*-}"
   epoch=$(date +%s)
+  if _cleanup_snapshot_file_valid "$CLEANUP_SNAPSHOT"; then
+    old_header=$(head -1 "$CLEANUP_SNAPSHOT") || return 1
+    IFS='|' read -r old_kind old_round_epoch old_round_sequence old_epoch old_completeness < <(printf '%s\n' "$old_header")
+    (( 10#$epoch > 10#$old_epoch \
+       || (10#$epoch == 10#$old_epoch \
+           && (10#$round_epoch > 10#$old_round_epoch \
+               || (10#$round_epoch == 10#$old_round_epoch \
+                   && 10#$round_sequence > 10#$old_round_sequence))) )) || return 1
+  fi
   dir=$(dirname "$CLEANUP_SNAPSHOT"); mkdir -p "$dir" || return 1
   tmp=$(mktemp "${CLEANUP_SNAPSHOT}.XXXX") || return 1
   printf 'snapshot|%s|%s|%s|complete\n' "$round_epoch" "$round_sequence" "$epoch" > "$tmp"
@@ -1407,7 +1519,241 @@ node_write_cleanup_snapshot() {
   sort -u "$tmp" -o "$tmp"
   # sort would move the header; restore a typed header-first snapshot.
   { printf 'snapshot|%s|%s|%s|complete\n' "$round_epoch" "$round_sequence" "$epoch"; grep -v '^snapshot|' "$tmp" || true; } > "${tmp}.ordered"
-  mv "${tmp}.ordered" "$CLEANUP_SNAPSHOT" && rm -f "$tmp"
+  _cleanup_snapshot_file_valid "${tmp}.ordered" \
+    && mv "${tmp}.ordered" "$CLEANUP_SNAPSHOT" \
+    && rm -f "$tmp" \
+    || { rm -f "$tmp" "${tmp}.ordered"; return 1; }
+}
+
+node_publish_cleanup_snapshot() {
+  node_write_cleanup_snapshot && return 0
+  _alert_cmux_cleanup \
+    "cmux cleanup snapshot publish failed" \
+    "The complete node roster was reconciled, but its authoritative cleanup snapshot could not be published; destructive cleanup remains fenced." \
+    "cmux_cleanup|snapshot-publish-failed|round=${CMUX_ADDITIVE_ROUND_ID:-invalid}"
+  return 1
+}
+
+terminal_teardown_state_valid() {
+  [[ -e "$TERMINAL_TEARDOWN_STATE" || -L "$TERMINAL_TEARDOWN_STATE" ]] || return 0
+  [[ -f "$TERMINAL_TEARDOWN_STATE" && ! -L "$TERMINAL_TEARDOWN_STATE" && -r "$TERMINAL_TEARDOWN_STATE" ]] || return 1
+  python3 - "$TERMINAL_TEARDOWN_STATE" <<'PY' >/dev/null 2>&1
+import re
+import sys
+
+seen = set()
+for raw in open(sys.argv[1], encoding="utf-8"):
+    row = raw.rstrip("\n").split("|")
+    if len(row) != 13 or row[0] != "terminalv1" or not row[1] or row[1] in seen:
+        raise SystemExit(1)
+    if not re.fullmatch(r"[0-9a-f]{64}", row[2]) or not re.fullmatch(r"[0-9]{1,2}", row[3]) or int(row[3]) > 10:
+        raise SystemExit(1)
+    if not re.fullmatch(r"[0-9]{1,12}-[0-9]{1,6}", row[4]):
+        raise SystemExit(1)
+    if row[5] not in {"observing", "intent", "source-closed"} or not row[6]:
+        raise SystemExit(1)
+    if row[8] != "-" and not re.fullmatch(r"@[0-9]+", row[8]):
+        raise SystemExit(1)
+    for value in row[9:11]:
+        if value != "-" and not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise SystemExit(1)
+    if row[11] != "-" and not re.fullmatch(r"workspace:[0-9]+", row[11]):
+        raise SystemExit(1)
+    if row[12] != "-" and not re.fullmatch(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}", row[12]):
+        raise SystemExit(1)
+    if any(any(ord(char) < 32 or ord(char) == 127 for char in value) for value in row):
+        raise SystemExit(1)
+    seen.add(row[1])
+PY
+}
+
+terminal_teardown_state_row() {
+  local exec_id="$1"
+  terminal_teardown_state_valid || return 1
+  [[ -f "$TERMINAL_TEARDOWN_STATE" ]] || return 1
+  awk -F'|' -v e="$exec_id" '$2 == e { print; found=1; exit } END { exit(found ? 0 : 1) }' \
+    "$TERMINAL_TEARDOWN_STATE"
+}
+
+terminal_teardown_state_upsert() {
+  local row="$1" exec_id dir tmp
+  exec_id=$(printf '%s\n' "$row" | cut -d'|' -f2)
+  terminal_teardown_state_valid || return 1
+  dir=$(dirname "$TERMINAL_TEARDOWN_STATE"); mkdir -p "$dir" || return 1
+  tmp=$(mktemp "${TERMINAL_TEARDOWN_STATE}.XXXX") || return 1
+  if [[ -f "$TERMINAL_TEARDOWN_STATE" ]]; then
+    awk -F'|' -v e="$exec_id" '$2 != e { print }' "$TERMINAL_TEARDOWN_STATE" > "$tmp" \
+      || { rm -f "$tmp"; return 1; }
+  fi
+  printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  local saved="$TERMINAL_TEARDOWN_STATE"
+  TERMINAL_TEARDOWN_STATE="$tmp"
+  terminal_teardown_state_valid || { TERMINAL_TEARDOWN_STATE="$saved"; rm -f "$tmp"; return 1; }
+  TERMINAL_TEARDOWN_STATE="$saved"
+  mv "$tmp" "$TERMINAL_TEARDOWN_STATE"
+}
+
+terminal_teardown_clear() {
+  local exec_id="$1" tmp
+  terminal_teardown_state_valid || return 1
+  [[ -f "$TERMINAL_TEARDOWN_STATE" ]] || return 0
+  tmp=$(mktemp "${TERMINAL_TEARDOWN_STATE}.XXXX") || return 1
+  awk -F'|' -v e="$exec_id" '$2 != e { print }' "$TERMINAL_TEARDOWN_STATE" > "$tmp" \
+    && mv "$tmp" "$TERMINAL_TEARDOWN_STATE" \
+    || { rm -f "$tmp"; return 1; }
+}
+
+terminal_teardown_finish_source_closed() {
+  local exec_id="$1" mirror_title="$2"
+  is_managed_runner_title "$mirror_title" || return 1
+  printf '%s\n' "$mirror_title" >> "$CLOSE_REQUEST_FILE" || return 1
+  terminal_teardown_clear "$exec_id"
+}
+
+terminal_teardown_roster_still_exact() {
+  local exec_id="$1" terminal_hash="$2" row
+  fetch_active_runner_roster || return 1
+  [[ "$RUNNER_EXPECTED_STATE" == ok ]] || return 1
+  printf '%s\n' "$RUNNER_ACTIVE_ROWS" \
+    | awk -F'|' -v e="$exec_id" '$1 == e { found=1 } END { exit(found ? 0 : 1) }' \
+    && return 1
+  fetch_recent_terminal_runner_roster || return 1
+  [[ "$RUNNER_TERMINAL_STATE" == ok ]] || return 1
+  row=$(printf '%s\n' "$RUNNER_TERMINAL_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e { print; exit }')
+  [[ -n "$row" && "$(_cmux_alert_hash "$row")" == "$terminal_hash" ]]
+}
+
+node_mirror_has_unique_execution_owner() {
+  local exec_id="$1" mirror_title="$2"
+  node_registry_valid || return 1
+  [[ -f "$NODE_REGISTRY" ]] || return 1
+  awk -F'|' -v e="$exec_id" -v t="$mirror_title" \
+    '$11 == t { count++; owner=$1 } END { exit(count == 1 && owner == e ? 0 : 1) }' \
+    "$NODE_REGISTRY"
+}
+
+terminal_teardown_crash_point() {
+  [[ "${FLYWHEEL_CMUX_TERMINAL_CRASH_AT:-}" == "$1" ]] && kill -KILL "$$"
+  return 0
+}
+
+terminal_teardown_source_transaction() {
+  local exec_id="$1" terminal_hash="$2" count="$3" round="$4" mirror_title="$5" prior="${6:-}"
+  local version prior_exec prior_hash prior_count prior_round phase prior_mirror prior_session prior_wid
+  local prior_tmux_hash prior_cmux_hash prior_ref prior_uuid extra
+  local inv session wid observed tmux_generation cmux_generation tmux_hash cmux_hash refs ref receipt uuid
+  local current_inventory global_rows
+  if [[ -n "$prior" ]]; then
+    IFS='|' read -r version prior_exec prior_hash prior_count prior_round phase prior_mirror prior_session prior_wid \
+      prior_tmux_hash prior_cmux_hash prior_ref prior_uuid extra < <(printf '%s\n' "$prior")
+  else
+    phase=observing
+  fi
+  if [[ "$phase" == source-closed ]]; then
+    [[ "$prior_hash" == "$terminal_hash" && "$prior_mirror" == "$mirror_title" ]] || return 1
+    terminal_teardown_finish_source_closed "$exec_id" "$mirror_title"
+    return
+  fi
+  terminal_teardown_roster_still_exact "$exec_id" "$terminal_hash" || return 1
+  node_mirror_has_unique_execution_owner "$exec_id" "$mirror_title" || return 1
+  tmux_generation=$(tmux_server_generation) || return 1
+  cmux_generation=$(cmux_socket_identity) || return 1
+  tmux_hash=$(_cmux_alert_hash "$tmux_generation")
+  cmux_hash=$(_cmux_alert_hash "$cmux_generation")
+  read_runner_tmux_node_inventory || return 1
+  [[ "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 1
+  inv=$(printf '%s\n' "$RUNNER_NODE_TMUX_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e { print; exit }')
+  if [[ -z "$inv" && "$phase" == intent ]]; then
+    [[ "$prior_hash" == "$terminal_hash" && "$prior_mirror" == "$mirror_title" \
+        && "$prior_tmux_hash" == "$tmux_hash" && "$prior_cmux_hash" == "$cmux_hash" ]] || return 1
+    [[ "$(ledger_exact_receipt_state "$cmux_generation" "$prior_ref" "$mirror_title" 2>/dev/null || true)" == committed ]] || return 1
+    [[ "$(ledger_exact_receipt_uuid "$cmux_generation" "$prior_ref" "$mirror_title" 2>/dev/null || true)" == "$prior_uuid" ]] || return 1
+    workspace_identity_matches "$prior_ref" "$mirror_title" "$prior_uuid" || return 1
+    terminal_teardown_state_upsert \
+      "terminalv1|$exec_id|$terminal_hash|$count|$round|source-closed|$mirror_title|$prior_session|$prior_wid|$tmux_hash|$cmux_hash|$prior_ref|$prior_uuid" \
+      || return 1
+    terminal_teardown_crash_point after-source-close
+    terminal_teardown_finish_source_closed "$exec_id" "$mirror_title"
+    return
+  fi
+  [[ -n "$inv" ]] || return 1
+  IFS='|' read -r _ _ wid _ session < <(printf '%s\n' "$inv")
+  [[ "$inv" == "$exec_id|present|$wid|$mirror_title|$session" ]] || return 1
+  if [[ "$phase" == intent ]]; then
+    [[ "$prior_session" == "$session" && "$prior_wid" == "$wid" \
+        && "$prior_tmux_hash" == "$tmux_hash" && "$prior_cmux_hash" == "$cmux_hash" ]] || return 1
+  fi
+  refs=$(ledger_refs_for_title "$cmux_generation" "$mirror_title") || return 1
+  [[ "$(printf '%s\n' "$refs" | grep -c . || true)" == 1 ]] || return 1
+  ref="$refs"
+  receipt=$(ledger_exact_receipt_state "$cmux_generation" "$ref" "$mirror_title") || return 1
+  [[ "$receipt" == committed ]] || return 1
+  uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$mirror_title") || return 1
+  [[ "$uuid" != __LEGACY__ ]] || return 1
+  workspace_identity_matches "$ref" "$mirror_title" "$uuid" || return 1
+  observed=$(tmux display-message -p -t "=${session}:${wid}" \
+    '#{session_name}|#{window_id}|#{window_name}|#{@flywheel_exec_id}|#{pane_dead}' 2>/dev/null) || return 1
+  [[ "$observed" == "$session|$wid|$mirror_title|$exec_id|0" \
+      || "$observed" == "$session|$wid|$mirror_title|$exec_id|1" ]] || return 1
+  terminal_teardown_roster_still_exact "$exec_id" "$terminal_hash" || return 1
+  node_mirror_has_unique_execution_owner "$exec_id" "$mirror_title" || return 1
+  [[ "$(tmux_server_generation 2>/dev/null || true)" == "$tmux_generation" \
+      && "$(cmux_socket_identity 2>/dev/null || true)" == "$cmux_generation" ]] || return 1
+  read_runner_tmux_node_inventory || return 1
+  [[ "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 1
+  current_inventory=$(printf '%s\n' "$RUNNER_NODE_TMUX_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e { print; exit }')
+  [[ "$current_inventory" == "$inv" ]] || return 1
+  [[ "$(ledger_exact_receipt_state "$cmux_generation" "$ref" "$mirror_title" 2>/dev/null || true)" == committed \
+      && "$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$mirror_title" 2>/dev/null || true)" == "$uuid" ]] || return 1
+  workspace_identity_matches "$ref" "$mirror_title" "$uuid" || return 1
+  watcher_mutation_latch_clear || return 1
+  terminal_teardown_state_upsert \
+    "terminalv1|$exec_id|$terminal_hash|$count|$round|intent|$mirror_title|$session|$wid|$tmux_hash|$cmux_hash|$ref|$uuid" \
+    || return 1
+  tmux kill-window -t "=${session}:${wid}" 2>/dev/null || return 1
+  tmux display-message -p -t "=${session}:${wid}" '#{window_id}' >/dev/null 2>&1 && return 1
+  global_rows=$(tmux list-windows -a -F '#{session_name}|#{window_id}|#{window_name}|#{@flywheel_exec_id}' 2>/dev/null) || return 1
+  printf '%s\n' "$global_rows" \
+    | awk -F'|' -v w="$wid" -v e="$exec_id" '$2 == w && $4 == e { found=1 } END { exit(found ? 0 : 1) }' \
+    && return 1
+  terminal_teardown_state_upsert \
+    "terminalv1|$exec_id|$terminal_hash|$count|$round|source-closed|$mirror_title|$session|$wid|$tmux_hash|$cmux_hash|$ref|$uuid" \
+    || return 1
+  terminal_teardown_crash_point after-source-close
+  terminal_teardown_finish_source_closed "$exec_id" "$mirror_title"
+}
+
+terminal_teardown_observe() {
+  local exec_id="$1" terminal_row="$2" mirror_title="$3" round="${CMUX_ADDITIVE_ROUND_ID:-}" threshold
+  local terminal_hash prior="" version prior_exec prior_hash count prior_round phase prior_mirror rest
+  _additive_round_id_valid "$round" || return 1
+  is_managed_runner_title "$mirror_title" || return 1
+  terminal_hash=$(_cmux_alert_hash "$terminal_row")
+  prior=$(terminal_teardown_state_row "$exec_id" 2>/dev/null || true)
+  if [[ -n "$prior" ]]; then
+    IFS='|' read -r version prior_exec prior_hash count prior_round phase prior_mirror rest < <(printf '%s\n' "$prior")
+    if [[ "$phase" == source-closed && "$prior_hash" == "$terminal_hash" && "$prior_mirror" == "$mirror_title" ]]; then
+      terminal_teardown_source_transaction "$exec_id" "$terminal_hash" "$count" "$round" "$mirror_title" "$prior"
+      return
+    fi
+    if [[ "$prior_hash" != "$terminal_hash" || "$prior_mirror" != "$mirror_title" ]]; then
+      prior=""; count=0; prior_round=""
+    fi
+  else
+    count=0; prior_round=""
+  fi
+  if [[ "$prior_round" != "$round" ]]; then count=$((10#${count:-0} + 1)); fi
+  (( count <= 10 )) || count=10
+  threshold="${FLYWHEEL_CMUX_TERMINAL_TEARDOWN_ROUNDS:-3}"
+  case "$threshold" in ''|*[!0-9]*) threshold=3 ;; esac
+  (( threshold >= 1 && threshold <= 10 )) || threshold=3
+  if [[ -z "$prior" || "$phase" == observing ]]; then
+    terminal_teardown_state_upsert \
+      "terminalv1|$exec_id|$terminal_hash|$count|$round|observing|$mirror_title|-|-|-|-|-|-" \
+      || return 1
+  fi
+  (( count >= threshold )) || return 0
+  terminal_teardown_source_transaction "$exec_id" "$terminal_hash" "$count" "$round" "$mirror_title" "$prior"
 }
 
 _node_ledger_transaction() {
@@ -1701,6 +2047,12 @@ reconcile_node_presence() {
   while IFS= read -r row; do
     [[ -n "$row" ]] || continue
     IFS='|' read -r exec_id node_id identifier role status adapter heartbeat issue_title last_activity route pr_number issue_url < <(printf '%s\n' "$row")
+    terminal_teardown_clear "$exec_id" || {
+      _alert_cmux_cleanup \
+        "cmux terminal teardown episode state unavailable" \
+        "An active runner could not clear its prior terminal teardown episode; destructive terminal teardown remains fenced: execution=$exec_id." \
+        "cmux_cleanup|terminal-episode-state-unavailable|execution=$exec_id"
+    }
     old=$(node_registry_row "$exec_id" 2>/dev/null || true)
     if [[ -n "$old" ]]; then
       IFS='|' read -r _ title alias old_state last_seen last_ok windowed windowless missing summary last_mirror classification terminal_epoch < <(printf '%s\n' "$old")
@@ -1748,6 +2100,7 @@ reconcile_node_presence() {
     printf '%s\n' "$RUNNER_ACTIVE_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e {found=1} END {exit(found ? 0 : 1)}' && continue
     [[ "$RUNNER_TERMINAL_STATE" == ok ]] || continue
     terminal_row=$(printf '%s\n' "$RUNNER_TERMINAL_ROWS" | awk -F'|' -v e="$exec_id" '$1 == e {print; exit}')
+    terminal_seen=0; [[ -n "$terminal_row" ]] && terminal_seen=1
     (( 10#${missing:-0} < 2 )) && missing=$((10#${missing:-0} + 1)) || missing=2
     if [[ -z "$terminal_row" && "$missing" -lt 2 ]]; then
       node_registry_upsert_row "$exec_id|$title|$alias|$old_state|$last_seen|$round|$windowed|$windowless|$missing|$summary|$last_mirror|$round|$terminal_epoch" || true
@@ -1774,18 +2127,27 @@ reconcile_node_presence() {
       terminal_row="$exec_id|-|$alias|-|last-known|-|-|最后已知节点状态|$last_seen|-|-|-"
       summary_state=unresolved-summary
       terminal_flag=0
+      terminal_teardown_clear "$exec_id" || true
     fi
     if [[ "$old_state" != "$summary_state" || "${terminal_epoch:-0}" == 0 ]]; then
       terminal_epoch="$now"
     fi
     node_registry_upsert_row "$exec_id|$title|$alias|$summary_state|$last_seen|$round|0|0|$missing|1|$last_mirror|$round|$terminal_epoch" || continue
     node_write_status_file "$terminal_row" "$summary_state" "$terminal_flag" || continue
+    if [[ "$terminal_seen" == 1 && "$last_mirror" != - ]]; then
+      terminal_teardown_observe "$exec_id" "$terminal_row" "$last_mirror" || {
+        _alert_cmux_cleanup \
+          "cmux terminal source teardown deferred" \
+          "Exact terminal evidence was present, but the source-window teardown transaction could not prove every identity fence and was preserved for retry: execution=$exec_id title=$last_mirror." \
+          "cmux_cleanup|terminal-teardown-deferred|execution=$exec_id"
+      }
+    fi
     status_path=$(node_status_path "$exec_id")
     ensure_node_workspace "$exec_id" "$title" "$status_path" || true
   done < <(cat "$NODE_REGISTRY" 2>/dev/null || true)
 
   enforce_node_summary_limits "$now"
-  node_write_cleanup_snapshot || true
+  node_publish_cleanup_snapshot || true
   return 0
 }
 
@@ -3279,6 +3641,9 @@ _GUARD_ATTACH_ACTION=""
 _attach_mutation_guard() {
   local current workspace surface clients
   GUARD_BLOCK_RC=0
+  if [[ "${REBIND_GUARD_ACTIVE:-0}" == 1 ]]; then
+    rebind_mutation_authority_current || { GUARD_BLOCK_RC=1; return 1; }
+  fi
   current=$(cmux_socket_identity) || { GUARD_BLOCK_RC=1; return 1; }
   [[ "$current" == "$_GUARD_ATTACH_GENERATION" ]] || { GUARD_BLOCK_RC=1; return 1; }
   ledger_committed_ref "$current" "$_GUARD_ATTACH_REF" "$_GUARD_ATTACH_TITLE" \
@@ -5743,6 +6108,7 @@ _GUARD_VIEW_BUILD_STAGE_SNAPSHOT=""
 _GUARD_VIEW_BUILD_CANONICAL_ABSENT=""
 _tmux_view_build_guard() {
   local current observed source_name source_dead
+  [[ "${REBIND_GUARD_ACTIVE:-0}" != 1 ]] || rebind_mutation_authority_current || return 1
   current=$(tmux_server_generation) || return 1
   [[ -n "$current" && "$current" == "$_GUARD_VIEW_BUILD_GENERATION" ]] || return 1
   observed=$(_view_session_snapshot "$_GUARD_VIEW_BUILD_SOURCE") || return 1
@@ -7612,6 +7978,7 @@ _GUARD_BIRTH_UUID=""
 _GUARD_BIRTH_RECORD=""
 _birth_adoption_guard() {
   local current receipt receipt_uuid observed
+  [[ "${REBIND_GUARD_ACTIVE:-0}" != 1 ]] || rebind_mutation_authority_current || return 1
   title_source_authorized "$_GUARD_BIRTH_SOURCE" "$_GUARD_BIRTH_WID" \
     "$_GUARD_BIRTH_TITLE" || return 1
   current=$(cmux_socket_identity) || return 1
@@ -9786,6 +10153,333 @@ refresh_linked_sessions_tail() {
   repair_view_invariants
 }
 
+rebind_episode_state_valid() {
+  [[ -e "$REBIND_EPISODE_STATE" || -L "$REBIND_EPISODE_STATE" ]] || return 0
+  [[ -f "$REBIND_EPISODE_STATE" && ! -L "$REBIND_EPISODE_STATE" && -r "$REBIND_EPISODE_STATE" ]] || return 1
+  python3 - "$REBIND_EPISODE_STATE" <<'PY' >/dev/null 2>&1
+import re
+import sys
+
+seen = set()
+uuid = re.compile(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}")
+for raw in open(sys.argv[1], encoding="utf-8"):
+    row = raw.rstrip("\n").split("|")
+    if len(row) != 11 or row[0] != "rebindv1": raise SystemExit(1)
+    if not re.fullmatch(r"[0-9a-f]{64}", row[1]) or not uuid.fullmatch(row[2]): raise SystemExit(1)
+    if not re.fullmatch(r"workspace:[0-9]+", row[3]) or not re.fullmatch(r"[0-9a-f]{64}", row[4]): raise SystemExit(1)
+    if not row[5] or not row[6] or not row[7].startswith("runner-") or not re.fullmatch(r"@[0-9]+", row[8]): raise SystemExit(1)
+    if row[9] not in {"intent", "viewer-ready", "receipt-ready", "attached", "failed"} or row[10] not in {"0", "1"}: raise SystemExit(1)
+    if row[6] in seen or any(any(ord(char) < 32 or ord(char) == 127 for char in value) for value in row): raise SystemExit(1)
+    seen.add(row[6])
+PY
+}
+
+rebind_episode_row() {
+  local title="$1"
+  rebind_episode_state_valid || return 1
+  [[ -f "$REBIND_EPISODE_STATE" ]] || return 1
+  awk -F'|' -v t="$title" '$7 == t { print; found=1; exit } END { exit(found ? 0 : 1) }' \
+    "$REBIND_EPISODE_STATE"
+}
+
+rebind_episode_state_upsert() {
+  local row="$1" title dir tmp source=/dev/null saved
+  title=$(printf '%s\n' "$row" | cut -d'|' -f7)
+  rebind_episode_state_valid || return 1
+  dir=$(dirname "$REBIND_EPISODE_STATE"); mkdir -p "$dir" || return 1
+  [[ -f "$REBIND_EPISODE_STATE" ]] && source="$REBIND_EPISODE_STATE"
+  tmp=$(mktemp "${REBIND_EPISODE_STATE}.XXXX") || return 1
+  awk -F'|' -v t="$title" '$7 != t { print }' "$source" > "$tmp" \
+    || { rm -f "$tmp"; return 1; }
+  printf '%s\n' "$row" >> "$tmp" || { rm -f "$tmp"; return 1; }
+  saved="$REBIND_EPISODE_STATE"; REBIND_EPISODE_STATE="$tmp"
+  rebind_episode_state_valid || { REBIND_EPISODE_STATE="$saved"; rm -f "$tmp"; return 1; }
+  REBIND_EPISODE_STATE="$saved"
+  mv "$tmp" "$REBIND_EPISODE_STATE"
+}
+
+rebind_episode_clear() {
+  local title="$1" tmp
+  rebind_episode_state_valid || return 1
+  [[ -f "$REBIND_EPISODE_STATE" ]] || return 0
+  tmp=$(mktemp "${REBIND_EPISODE_STATE}.XXXX") || return 1
+  awk -F'|' -v t="$title" '$7 != t { print }' "$REBIND_EPISODE_STATE" > "$tmp" \
+    || { rm -f "$tmp"; return 1; }
+  if [[ -s "$tmp" ]]; then mv "$tmp" "$REBIND_EPISODE_STATE"; else rm -f "$tmp" "$REBIND_EPISODE_STATE"; fi
+}
+
+rebind_source_candidate_for_title() {
+  local title="$1" registry_exec active_count source_count source_row exec_id state wid observed_title session
+  fetch_active_runner_roster || return 1
+  [[ "$RUNNER_EXPECTED_STATE" == ok ]] || return 1
+  read_runner_tmux_node_inventory || return 1
+  [[ "$RUNNER_NODE_TMUX_STATE" == ok ]] || return 1
+  node_registry_valid || return 1
+  [[ -f "$NODE_REGISTRY" ]] || return 1
+  registry_exec=$(awk -F'|' -v t="$title" '$11 == t { n++; e=$1 } END { if(n == 1) print e }' "$NODE_REGISTRY")
+  [[ -n "$registry_exec" ]] || return 1
+  active_count=$(printf '%s\n' "$RUNNER_ACTIVE_ROWS" \
+    | awk -F'|' -v e="$registry_exec" '$1 == e { n++ } END { print n+0 }')
+  [[ "$active_count" == 1 ]] || return 1
+  source_count=$(printf '%s\n' "$RUNNER_NODE_TMUX_ROWS" \
+    | awk -F'|' -v t="$title" '$2 == "present" && $4 == t { n++ } END { print n+0 }')
+  [[ "$source_count" == 1 ]] || return 1
+  source_row=$(printf '%s\n' "$RUNNER_NODE_TMUX_ROWS" \
+    | awk -F'|' -v t="$title" '$2 == "present" && $4 == t { print; exit }')
+  IFS='|' read -r exec_id state wid observed_title session < <(printf '%s\n' "$source_row")
+  [[ "$exec_id" == "$registry_exec" && "$state" == present && "$observed_title" == "$title" ]] || return 1
+  case "$session" in runner-*) ;; *) return 1 ;; esac
+  window_source_pane_alive "$session" "$wid" || return 1
+  printf '%s|%s|%s\n' "$exec_id" "$session" "$wid"
+}
+
+rebind_workspace_identity_for_title() {
+  local title="$1" raw
+  raw=$(get_cmux_workspaces_json) || return 1
+  printf '%s' "$raw" | python3 -c '
+import json,re,sys
+title=sys.argv[1]
+rows=[row for row in json.load(sys.stdin).get("workspaces", [])
+      if isinstance(row,dict) and row.get("title") == title]
+if len(rows) != 1: raise SystemExit(1)
+ref=rows[0].get("ref"); uuid=rows[0].get("id")
+if not isinstance(ref,str) or not re.fullmatch(r"workspace:[0-9]+",ref): raise SystemExit(1)
+if not isinstance(uuid,str) or not re.fullmatch(r"[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}",uuid): raise SystemExit(1)
+print(ref,uuid,sep="|")
+' "$title"
+}
+
+rebind_workspace_authority() {
+  local source="$1" wid="$2" title="$3" generation="$4" ref="$5" uuid="$6" allow_recovery="${7:-0}"
+  local birth birth_ref birth_uuid title_b64 _surface kind target_b64 _token expected_target expected_title
+  local claims count current_count old_count old_generation
+  workspace_identity_matches "$ref" "$title" "$uuid" || return 1
+  expected_target=$(printf 'cmux-%s' "$title" | base64 | tr -d '\n') || return 1
+  birth=$(cmux_workspace_birth_record "$ref" "$uuid" 2>/dev/null || true)
+  if [[ -n "$birth" ]]; then
+    IFS='|' read -r birth_ref birth_uuid title_b64 _surface kind target_b64 _token < <(printf '%s\n' "$birth")
+    expected_title=$(_attach_b64_decode "$title_b64" 2>/dev/null || true)
+    [[ "$birth_ref" == "$ref" && "$birth_uuid" == "$uuid" && "$expected_title" == "$title" \
+        && "$kind" == view && "$target_b64" == "$expected_target" ]] || return 1
+    printf 'birth|-\n'
+    return 0
+  fi
+  [[ -f "$VIEW_LEDGER" ]] || return 1
+  claims=$(awk -F'|' -v r="$ref" -v t="$title" \
+    '($1 == "prepared" || $1 == "committed") && ($3 == r || $4 == t) { print }' "$VIEW_LEDGER")
+  count=$(printf '%s\n' "$claims" | grep -c . || true)
+  current_count=$(printf '%s\n' "$claims" | awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" -v u="$uuid" \
+    '$1 == "committed" && $2 == g && $3 == r && $4 == t && NF == 5 && $5 == u { n++ } END { print n+0 }')
+  old_count=$(printf '%s\n' "$claims" | awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" -v u="$uuid" \
+    '$1 == "committed" && $2 != g && $3 == r && $4 == t && NF == 5 && $5 == u { n++ } END { print n+0 }')
+  old_generation=$(printf '%s\n' "$claims" | awk -F'|' -v g="$generation" -v r="$ref" -v t="$title" -v u="$uuid" \
+    '$1 == "committed" && $2 != g && $3 == r && $4 == t && NF == 5 && $5 == u { print $2; exit }')
+  if [[ "$count" == 1 && "$old_count" == 1 && "$current_count" == 0 ]]; then
+    printf 'stale|%s\n' "$old_generation"
+  elif [[ "$allow_recovery" == 1 && "$count" == 1 && "$current_count" == 1 ]]; then
+    printf 'current|-\n'
+  elif [[ "$allow_recovery" == 1 && "$count" == 2 && "$current_count" == 1 && "$old_count" == 1 ]]; then
+    printf 'stale|%s\n' "$old_generation"
+  else
+    return 1
+  fi
+}
+
+REBIND_GUARD_ACTIVE=0
+REBIND_GUARD_CMUX_HASH=""
+REBIND_GUARD_TMUX_HASH=""
+REBIND_GUARD_EXEC=""
+REBIND_GUARD_TITLE=""
+REBIND_GUARD_SESSION=""
+REBIND_GUARD_WID=""
+REBIND_GUARD_REF=""
+REBIND_GUARD_UUID=""
+
+rebind_mutation_authority_current() {
+	[[ ! -e "$REBIND_CONTROL_STATE" && ! -L "$REBIND_CONTROL_STATE" ]] || return 1
+  local candidate current_cmux current_tmux
+  watcher_mutation_latch_clear || return 1
+  candidate=$(rebind_source_candidate_for_title "$REBIND_GUARD_TITLE") || return 1
+  [[ "$candidate" == "$REBIND_GUARD_EXEC|$REBIND_GUARD_SESSION|$REBIND_GUARD_WID" ]] || return 1
+  current_cmux=$(cmux_socket_identity) || return 1
+  current_tmux=$(tmux_server_generation) || return 1
+  [[ "$(_cmux_alert_hash "$current_cmux")" == "$REBIND_GUARD_CMUX_HASH" \
+      && "$(_cmux_alert_hash "$current_tmux")" == "$REBIND_GUARD_TMUX_HASH" ]] || return 1
+  workspace_identity_matches "$REBIND_GUARD_REF" "$REBIND_GUARD_TITLE" "$REBIND_GUARD_UUID"
+}
+
+rebind_guard_arm() {
+  REBIND_GUARD_CMUX_HASH="$1"; REBIND_GUARD_TMUX_HASH="$2"; REBIND_GUARD_EXEC="$3"
+  REBIND_GUARD_TITLE="$4"; REBIND_GUARD_SESSION="$5"; REBIND_GUARD_WID="$6"
+  REBIND_GUARD_REF="$7"; REBIND_GUARD_UUID="$8"; REBIND_GUARD_ACTIVE=1
+}
+
+rebind_guard_disarm() { REBIND_GUARD_ACTIVE=0; }
+
+rebind_crash_point() {
+  [[ "${FLYWHEEL_CMUX_REBIND_CRASH_AT:-}" == "$1" ]] && kill -KILL "$$"
+  return 0
+}
+
+rebind_adopt_stale_receipt() {
+  local generation="$1" old_generation="$2" ref="$3" title="$4" uuid="$5" state receipt_uuid
+  rebind_mutation_authority_current || return 1
+  state=$(ledger_candidate_receipt_state "$generation" "$ref" "$title") || return 1
+  case "$state" in
+    none)
+      _ledger_upsert prepared "$generation" "$ref" "$title" "$uuid" || return 1
+      rebind_crash_point after-receipt-prepare
+      ;;
+    prepared|committed)
+      receipt_uuid=$(ledger_exact_receipt_uuid "$generation" "$ref" "$title") || return 1
+      [[ "$receipt_uuid" == "$uuid" ]] || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  rebind_mutation_authority_current || return 1
+  _ledger_upsert committed "$generation" "$ref" "$title" "$uuid" || return 1
+  rebind_crash_point after-receipt-commit
+  rebind_mutation_authority_current || return 1
+  if [[ -f "$VIEW_LEDGER" ]] && awk -F'|' -v g="$old_generation" -v r="$ref" -v t="$title" \
+      '$2 == g && $3 == r && $4 == t { found=1 } END { exit(found ? 0 : 1) }' "$VIEW_LEDGER"; then
+    _ledger_remove "$old_generation" "$ref" || return 1
+  fi
+}
+
+rebind_refuse() {
+  local title="$1" reason="$2"
+  _alert_cmux_cleanup \
+    "cmux viewer rebind refused" \
+    "A missing runner viewer was preserved because dual positive identity was not complete: title=$title reason=$reason." \
+    "cmux_cleanup|viewer-rebind-refused|title=$title|reason=$reason"
+}
+
+rebind_latch_failure() {
+  local base="$1" title="$2" reason="$3"
+  rebind_episode_state_upsert "$base|failed|1" || true
+  rebind_guard_disarm
+  _alert_cmux_cleanup \
+    "cmux viewer rebind failed after mutation" \
+    "A runner viewer rebind crossed its first mutation and then failed closed; the exact key stays latched until identity changes: title=$title reason=$reason." \
+    "cmux_cleanup|viewer-rebind-failed|key=$(_cmux_alert_hash "$base")|reason=$reason"
+}
+
+rebind_missing_runner_view() {
+  local title="$1" candidate exec_id source wid identity ref uuid cmux_generation tmux_generation cmux_hash tmux_hash
+  local prior="" version prior_cmux prior_uuid prior_ref prior_tmux prior_exec prior_title prior_source prior_wid phase mutated extra
+  local authority mode old_generation base view wal target_b64 receipt receipt_uuid heal_rc=0 clients surface
+	[[ ! -e "$REBIND_CONTROL_STATE" && ! -L "$REBIND_CONTROL_STATE" ]] || return 0
+  is_managed_runner_title "$title" || return 0
+  candidate=$(rebind_source_candidate_for_title "$title") || { rebind_refuse "$title" source-identity; return 0; }
+  IFS='|' read -r exec_id source wid < <(printf '%s\n' "$candidate")
+  identity=$(rebind_workspace_identity_for_title "$title") || { rebind_refuse "$title" workspace-identity; return 0; }
+  IFS='|' read -r ref uuid < <(printf '%s\n' "$identity")
+  cmux_generation=$(cmux_socket_identity) || { rebind_refuse "$title" cmux-generation; return 0; }
+  tmux_generation=$(tmux_server_generation) || { rebind_refuse "$title" tmux-generation; return 0; }
+  cmux_hash=$(_cmux_alert_hash "$cmux_generation"); tmux_hash=$(_cmux_alert_hash "$tmux_generation")
+  base="rebindv1|$cmux_hash|$uuid|$ref|$tmux_hash|$exec_id|$title|$source|$wid"
+  prior=$(rebind_episode_row "$title" 2>/dev/null || true)
+  if [[ -n "$prior" ]]; then
+    IFS='|' read -r version prior_cmux prior_uuid prior_ref prior_tmux prior_exec prior_title prior_source prior_wid phase mutated extra \
+      < <(printf '%s\n' "$prior")
+    if [[ "$prior" != "$base|$phase|$mutated" ]]; then
+      rebind_episode_clear "$title" || { rebind_refuse "$title" episode-state; return 0; }
+      prior=""; phase=""; mutated=0
+    fi
+  else
+    phase=""; mutated=0
+  fi
+  authority=$(rebind_workspace_authority "$source" "$wid" "$title" "$cmux_generation" "$ref" "$uuid" \
+    "$([[ -n "$prior" ]] && printf 1 || printf 0)") \
+    || { rebind_refuse "$title" workspace-authority; return 0; }
+  IFS='|' read -r mode old_generation < <(printf '%s\n' "$authority")
+  if [[ "$phase" == failed ]]; then
+    rebind_latch_failure "$base" "$title" replay
+    return 0
+  fi
+  if [[ -z "$prior" ]]; then
+    rebind_episode_state_upsert "$base|intent|0" || { rebind_refuse "$title" episode-state; return 0; }
+    phase=intent; mutated=0
+  fi
+  rebind_crash_point after-intent
+  rebind_guard_arm "$cmux_hash" "$tmux_hash" "$exec_id" "$title" "$source" "$wid" "$ref" "$uuid"
+  rebind_mutation_authority_current || { rebind_guard_disarm; rebind_refuse "$title" pre-mutation-drift; return 0; }
+  view="${VIEW_PREFIX}${title}"
+  if [[ "$phase" == attached ]]; then
+    _attach_state_write "$cmux_generation" "$ref" "$title" view || true
+    rebind_episode_clear "$title" || true
+    rebind_guard_disarm
+    return 0
+  fi
+  if [[ "$phase" == intent ]]; then
+    if ! _linked_view_matches "$view" "$wid" "$source" "" "$title" "$tmux_generation"; then
+      if ! create_or_replace_view_session "$source" "$wid" "$title"; then
+        wal=$(_view_wal_path "$view")
+        if [[ -e "$wal" ]] || _linked_view_matches "$view" "$wid" "$source" "" "$title" "$tmux_generation"; then
+          rebind_latch_failure "$base" "$title" viewer-build
+        else
+          rebind_guard_disarm
+        fi
+        return 0
+      fi
+    fi
+    rebind_mutation_authority_current \
+      && _linked_view_matches "$view" "$wid" "$source" "" "$title" "$tmux_generation" \
+      || { rebind_latch_failure "$base" "$title" viewer-readback; return 0; }
+    rebind_episode_state_upsert "$base|viewer-ready|1" \
+      || { rebind_latch_failure "$base" "$title" viewer-episode; return 0; }
+    phase=viewer-ready; mutated=1
+    rebind_crash_point after-viewer-ready
+  else
+    _linked_view_matches "$view" "$wid" "$source" "" "$title" "$tmux_generation" \
+      || { rebind_latch_failure "$base" "$title" viewer-drift; return 0; }
+  fi
+  if [[ "$phase" == viewer-ready ]]; then
+    rebind_mutation_authority_current || { rebind_latch_failure "$base" "$title" receipt-preflight; return 0; }
+    target_b64=$(printf '%s' "$view" | base64 | tr -d '\n') || { rebind_latch_failure "$base" "$title" target-encode; return 0; }
+    case "$mode" in
+      birth) adopt_birth_candidate "$source" "$wid" "$title" "$cmux_generation" "$ref" view "$target_b64" \
+        || { rebind_latch_failure "$base" "$title" birth-adoption; return 0; } ;;
+      stale) rebind_adopt_stale_receipt "$cmux_generation" "$old_generation" "$ref" "$title" "$uuid" \
+        || { rebind_latch_failure "$base" "$title" stale-adoption; return 0; } ;;
+      current) ;;
+      *) rebind_latch_failure "$base" "$title" authority-mode; return 0 ;;
+    esac
+    receipt=$(ledger_exact_receipt_state "$cmux_generation" "$ref" "$title" 2>/dev/null || true)
+    receipt_uuid=$(ledger_exact_receipt_uuid "$cmux_generation" "$ref" "$title" 2>/dev/null || true)
+    [[ "$receipt" == committed && "$receipt_uuid" == "$uuid" ]] \
+      || { rebind_latch_failure "$base" "$title" receipt-readback; return 0; }
+    rebind_mutation_authority_current || { rebind_latch_failure "$base" "$title" receipt-drift; return 0; }
+    rebind_episode_state_upsert "$base|receipt-ready|1" \
+      || { rebind_latch_failure "$base" "$title" receipt-episode; return 0; }
+    phase=receipt-ready
+    rebind_crash_point after-receipt-ready
+  fi
+  if [[ "$phase" == receipt-ready ]]; then
+    self_heal_workspace_ref "$title" "$ref" "$cmux_generation" || heal_rc=$?
+    [[ "$heal_rc" != 1 ]] || { rebind_latch_failure "$base" "$title" attach-heal; return 0; }
+    clients=$(view_session_client_count "$view" 2>/dev/null || true)
+    case "$clients" in ''|*[!0-9]*) rebind_latch_failure "$base" "$title" attach-readback; return 0 ;; esac
+    if (( clients == 0 )); then
+      rebind_guard_disarm
+      return 0
+    fi
+    rebind_crash_point after-attach
+    rebind_mutation_authority_current \
+      && _linked_view_matches "$view" "$wid" "$source" "" "$title" "$tmux_generation" \
+      || { rebind_latch_failure "$base" "$title" attach-drift; return 0; }
+    surface=$(workspace_terminal_surface_ref "$ref" 2>/dev/null || true)
+    [[ -n "$surface" ]] || { rebind_latch_failure "$base" "$title" surface-readback; return 0; }
+    rebind_episode_state_upsert "$base|attached|1" \
+      || { rebind_latch_failure "$base" "$title" attach-episode; return 0; }
+    rebind_crash_point after-attached-episode
+  fi
+  _attach_state_write "$cmux_generation" "$ref" "$title" view || true
+  rebind_episode_clear "$title" || true
+  rebind_guard_disarm
+  return 0
+}
+
 reconcile_existing_workspaces() {
   # FLY-129 Phase 3 (R3-1): for workspaces that exist but have no linked
   # session (e.g., after Lead restart or cmux reopen with stale workspace),
@@ -9802,6 +10496,10 @@ reconcile_existing_workspaces() {
     [[ -z "$wname" ]] && continue
     local strict_view="${VIEW_PREFIX}${wname}"
     linked_session_exists "$strict_view" && continue
+    if [[ "$src_sess" == runner-* ]] && is_managed_runner_title "$wname"; then
+      rebind_missing_runner_view "$wname"
+      continue
+    fi
     # Exact-ref ledger authority closes only the Flywheel-owned broken tab;
     # unledgered same-title workspaces remain visible for manual resolution.
     dismantle_view_display "$wname" "reconcile-${wname}-view-dead" || true
@@ -9980,9 +10678,12 @@ process_pending_cleanups() {
   #   - if the source pane is alive again → drop the entry (restart detected)
   #   - else if < CLEANUP_DELAY_SECONDS since exit → keep the entry
   #   - else → cleanup_workspace_for + drop the entry
-  [[ ! -f "$CLEANUP_PENDING" ]] && return 0
+  if [[ ! -f "$CLEANUP_PENDING" ]]; then
+    cleanup_snapshot_stall_observe 0 0 || true
+    return 0
+  fi
 
-  local now remaining="" raw preserve_rest=0
+  local now remaining="" raw preserve_rest=0 blocked_count=0 oldest_blocked_epoch=0
   now=$(date +%s)
 
   while IFS= read -r raw || [[ -n "$raw" ]]; do
@@ -10027,6 +10728,10 @@ process_pending_cleanups() {
     fi
     if ! node_cleanup_freshness_allows "$wname" "$ts" "$marker_round_epoch" "$marker_round_sequence"; then
       remaining+="${raw}"$'\n'
+      blocked_count=$((blocked_count + 1))
+      if (( oldest_blocked_epoch == 0 || ts < oldest_blocked_epoch )); then
+        oldest_blocked_epoch="$ts"
+      fi
       log "Node-presence fence waiting for a newer complete classification: $wname"
       continue
     fi
@@ -10055,6 +10760,12 @@ process_pending_cleanups() {
   else
     rm -f "$CLEANUP_PENDING"
   fi
+  cleanup_snapshot_stall_observe "$blocked_count" "$oldest_blocked_epoch" || {
+    _alert_cmux_cleanup \
+      "cmux cleanup snapshot episode state unavailable" \
+      "The watcher could not persist cleanup snapshot stall state; destructive cleanup remains fenced." \
+      "cmux_cleanup|snapshot-episode-state-unavailable"
+  }
 }
 
 drain_events() {
@@ -12807,6 +13518,7 @@ case "${1:-}" in
     # lease is held, this checkpoint can safely reap a stale claim or yield to
     # a live teardown before watch_main performs any side effect.
     watcher_maintenance_checkpoint
+    CMUX_WATCH_HEARTBEAT_ACTIVE=1
     # FLY-129: full --watch body lives in watch_main() so it can use `local`
     # and so health-check gating can wrap cmux ops cleanly.
     watch_main

@@ -287,6 +287,17 @@ describe("createInfraAlertSink (routing wrapper)", () => {
 		expect(ticketSink.alert).not.toHaveBeenCalled();
 	});
 
+	it("an unrecovered cmux watcher → Hub with the founder mention", async () => {
+		const { sink, rawSink, ticketSink } = makeDeps();
+		const p = payload("cmux_watcher_unrecovered");
+		await sink.alert(p);
+		expect(rawSink.alert).toHaveBeenCalledExactlyOnceWith({
+			...p,
+			mentionUserId: "123456789012345678",
+		});
+		expect(ticketSink.alert).not.toHaveBeenCalled();
+	});
+
 	it("an explicit mention remains an escalation and reaches the Hub unchanged", async () => {
 		const { sink, rawSink, ticketSink } = makeDeps();
 		const p = {

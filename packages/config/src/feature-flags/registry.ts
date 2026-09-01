@@ -192,6 +192,52 @@ function flagStoreSite(
 
 export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 	{
+		name: "cmux_watcher_rebuild_disabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_WATCHER_REBUILD_DISABLED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-2207: emergency alert-only mode that suppresses launchd rebuild attempts while preserving watcher health tickets",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCmuxWatcherRebuildDisabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2207 opt-in disable observes the next store write",
+		note: "Unset/default false keeps bounded rebuild enabled; =1 disables only rebuild, never tickets or escalation.",
+	},
+	{
+		name: "cmux_rebind_disabled",
+		category: "kill_switch",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_CMUX_REBIND_DISABLED",
+		polarity: "opt_in",
+		valueKind: "bool",
+		default: false,
+		description:
+			"FLY-2207: emergency stop for automatic reconstruction and reconnect of missing runner cmux views",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/plugin.ts",
+				"startBridge",
+				"storeCmuxRebindDisabled",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: FLY-2207 opt-in viewer rebind disable observes the next store write",
+		note: "The existing watcher patrol projects the live value to a durable marker; unset/default false permits guarded rebind.",
+	},
+	{
 		name: "summary_absorption_cadence_ms",
 		category: "feature",
 		source: "env",

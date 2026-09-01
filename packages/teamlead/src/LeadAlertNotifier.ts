@@ -339,6 +339,9 @@ export const ALERT_EVENT_TYPES = [
 	// FLY-1944: GatePoller proved the resident watcher unhealthy; only the
 	// fully-verified stale branch attempts tuple-bound recovery.
 	"cmux_watcher_stalled",
+	// FLY-2207: the existing watcher patrol remained unhealthy for its bounded
+	// recovery window. This is the founder-facing face, not an ordinary ticket.
+	"cmux_watcher_unrecovered",
 	"tmux_rescue_hold",
 	// FLY-1781: engineering-only weekly flag-governance health notices. These
 	// are informational (no ticket/ARC/founder DM lifecycle).

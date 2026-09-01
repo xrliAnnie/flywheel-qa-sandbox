@@ -2216,6 +2216,95 @@ test_fly1944_bounded_cmux_timeout_reaps_process_group() {
   fi
 }
 
+test_fly2207_bounded_cmux_refreshes_watch_heartbeat() {
+  echo "▶ test_fly2207_bounded_cmux_refreshes_watch_heartbeat"
+  _save_cmux_mock
+  local writes=0 rc=0
+  watcher_write_heartbeat() { writes=$((writes + 1)); }
+  cmux() { return 23; }
+  FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS=1
+  CMUX_WATCH_HEARTBEAT_ACTIVE=1
+  for rc in 1 2 3; do
+    _cmux_bounded_spawn 1 "$TMPDIR_ROOT/fly2207-heartbeat-$rc.timeout" ping >/dev/null 2>&1 || true
+  done
+  CMUX_WATCH_HEARTBEAT_ACTIVE=0
+  _cmux_bounded_spawn 1 "$TMPDIR_ROOT/fly2207-heartbeat-once.timeout" ping >/dev/null 2>&1 || true
+  unset CMUX_WATCH_HEARTBEAT_ACTIVE
+  eval "$(declare -f watcher_write_heartbeat_real | sed '1s/watcher_write_heartbeat_real/watcher_write_heartbeat/')"
+  _restore_cmux_mock
+  if [[ "$writes" == "3" ]]; then
+    pass "every bounded watch call exit refreshes heartbeat; one-shot calls stay inert"
+  else
+    fail "bounded watch heartbeat writes=$writes expected=3"
+  fi
+}
+
+test_fly2207_cmux_timeout_cap() {
+  echo "▶ test_fly2207_cmux_timeout_cap"
+  local output ok=1
+  output=$(FLYWHEEL_CMUX_PING_TIMEOUT=60 FLYWHEEL_CMUX_CALL_TIMEOUT=60 \
+    /bin/bash -c 'source "$1"; printf "%s|%s\n" "$CMUX_PING_TIMEOUT_SECONDS" "$CMUX_CALL_TIMEOUT_SECONDS"' \
+    _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" 2>&1)
+  [[ "$output" == *$'60|60' ]] || ok=0
+  output=$(FLYWHEEL_CMUX_PING_TIMEOUT=61 FLYWHEEL_CMUX_CALL_TIMEOUT=61 \
+    /bin/bash -c 'source "$1"; printf "%s|%s\n" "$CMUX_PING_TIMEOUT_SECONDS" "$CMUX_CALL_TIMEOUT_SECONDS"' \
+    _ "$SCRIPT_DIR/flywheel-cmux-sync.sh" 2>&1)
+  [[ "$output" == *$'10|20' \
+      && "$output" == *"FLYWHEEL_CMUX_PING_TIMEOUT=61 exceeds 60s"* \
+      && "$output" == *"FLYWHEEL_CMUX_CALL_TIMEOUT=61 exceeds 60s"* ]] || ok=0
+  if [[ "$ok" == "1" ]]; then
+    pass "PING and CALL accept 60s and clamp larger values to their defaults with warnings"
+  else
+    fail "timeout clamp contract mismatch output=[$output]"
+  fi
+}
+
+test_fly2207_watch_heartbeat_covers_cold_start() {
+  echo "▶ test_fly2207_watch_heartbeat_covers_cold_start"
+  local watch_dispatch active_line main_line
+  watch_dispatch=$(awk '/^  --watch\)/,/^    ;;$/' "$SCRIPT_DIR/flywheel-cmux-sync.sh")
+  active_line=$(printf '%s\n' "$watch_dispatch" | grep -n '^    CMUX_WATCH_HEARTBEAT_ACTIVE=1$' | cut -d: -f1)
+  main_line=$(printf '%s\n' "$watch_dispatch" | grep -n '^    watch_main$' | cut -d: -f1)
+  if [[ "$active_line" =~ ^[0-9]+$ && "$main_line" =~ ^[0-9]+$ \
+      && "$active_line" -lt "$main_line" ]]; then
+    pass "watch heartbeat is active before watch_main cold-start reconciliation"
+  else
+    fail "watch dispatcher does not activate bounded-call heartbeat before watch_main"
+  fi
+}
+
+test_fly2207_cold_start_backfills_dead_window_runner() {
+  echo "▶ test_fly2207_cold_start_backfills_dead_window_runner"
+  reset_mocks
+  local HOME="$TMPDIR_ROOT/fly2207-home"
+  local FLYWHEEL_STATE_DIR="$TMPDIR_ROOT/fly2207-state"
+  local title="FLY-2207-dead-window-runner" rc=0 row refs new_count
+  mkdir -p "$HOME" "$FLYWHEEL_STATE_DIR"
+  MOCK_TOPOLOGY_MODE=1
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_NEXT_UUID="00000000-0000-4000-8000-000000002207"
+  MOCK_SOCK_IDENT="generation-fly2207"
+  FLYWHEEL_CMUX_TEST_NONCE="fly2207-cold-start"
+  local BOOTSTRAP_SKIP_HEAL_SWEEP=1
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@2207" "$title" 1 0
+  test_ensure_mutator_lease || { fail "cold-start fixture could not acquire its isolated lease"; return; }
+  sync_additive_bootstrap || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  refs=$(workspace_refs_for "$title" 2>/dev/null || true)
+  new_count=$(grep -c '^new-workspace' <<< "$MOCK_CMUX_OPS" || true)
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$new_count" == "1" && "$refs" == "workspace:100" \
+      && "$row" == "committed|generation-fly2207|workspace:100|$title|00000000-0000-4000-8000-000000002207" ]] \
+      && _linked_view_matches "cmux-$title" "@2207" "runner-flywheel" \
+      && ! grep -Eq '^(select-workspace|send --workspace)' <<< "$MOCK_CMUX_OPS"; then
+    pass "watcher cold start creates the dead-window runner workspace without reopen-sweep help"
+  else
+    fail "cold-start backfill mismatch rc=$rc new=$new_count refs=[$refs] row=[$row] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
 echo ""
 echo "═══ FLY-129: cmux IPC health check + cmux_call ═══"
 test_health_check_no_socket
@@ -2226,6 +2315,12 @@ test_cmux_call_stdout_passthrough
 test_cmux_call_stderr_logged_not_in_stdout
 test_fly1944_bounded_cmux_preserves_stdout_and_rc
 test_fly1944_bounded_cmux_timeout_reaps_process_group
+eval "$(declare -f watcher_write_heartbeat | sed '1s/watcher_write_heartbeat/watcher_write_heartbeat_real/')"
+test_fly2207_bounded_cmux_refreshes_watch_heartbeat
+unset -f watcher_write_heartbeat_real
+test_fly2207_cmux_timeout_cap
+test_fly2207_watch_heartbeat_covers_cold_start
+test_fly2207_cold_start_backfills_dead_window_runner
 
 # ════════════════════════════════════════════════════════════════
 # FLY-129 Phase 1: watcher lock + sync_once watcher detection

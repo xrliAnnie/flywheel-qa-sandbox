@@ -196,6 +196,13 @@ DENY_REASON = (
     "  • 普通 merge 永不即时重启:等待本地 00:00/12:00 班车,不要手动 kickstart。"
 )
 
+CMUX_WATCHER_DENY_GUIDANCE = (
+    "\ncmux watcher(显示层 sidecar)人肉正门:"
+    "bash ~/.flywheel/bin/flywheel-cmux-autostart"
+    "(label 缺失才 bootstrap,幂等;Bridge patrol 通常已自动恢复,先 "
+    "launchctl print gui/$UID/com.flywheel.cmux-watcher 查看)。"
+)
+
 BYPASS_FAIL_REASON = (
     "🚫 Flywheel 部署护栏(FLY-913):bypass 记账失败,拒绝放行。\n"
     "bypass 的放行前置是「审计日志写入成功 + 告警确认送达/入队」缺一不可 —— "
@@ -1211,7 +1218,16 @@ def main() -> int:
 
     # Plain deny: audit is best-effort — its failure never flips the decision.
     audit_write({**base_rec, "decision": "deny"})
-    deny(BREW_DENY_REASON if pattern == "P5" else DENY_REASON)
+    deny(
+        BREW_DENY_REASON
+        if pattern == "P5"
+        else DENY_REASON
+        + (
+            CMUX_WATCHER_DENY_GUIDANCE
+            if pattern == "P1" and "com.flywheel.cmux-watcher" in cmd.lower()
+            else ""
+        )
+    )
     return 0
 
 
