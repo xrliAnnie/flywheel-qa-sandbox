@@ -309,6 +309,10 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 		owner: "claude",
 		arc: "human_by_design",
 	},
+	codex_lead_residency_stalled: {
+		owner: "claude",
+		arc: "human_by_design",
+	},
 	cmux_watcher_unrecovered: {
 		owner: "claude",
 		arc: "human_by_design",

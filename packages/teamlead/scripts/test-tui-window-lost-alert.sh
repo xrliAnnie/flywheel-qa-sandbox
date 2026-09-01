@@ -47,6 +47,20 @@ cat > "$PROJECTS_FILE" <<JSON
         "match": { "labels": ["infra"] }
       }
     ]
+  },
+  {
+    "projectName": "raya",
+    "projectRoot": "${TMPROOT}/raya-repo",
+    "generalChannel": "111111111111111111",
+    "leads": [
+      {
+        "agentId": "raya",
+        "chatChannel": "555555555555555555",
+        "alertChannel": "666666666666666666",
+        "alertBotTokenEnv": "FLYWHEEL_TEST_BOT_TOKEN",
+        "match": { "labels": ["raya"] }
+      }
+    ]
   }
 ]
 JSON
@@ -60,23 +74,23 @@ export FLYWHEEL_ALERT_DEADLETTER_DIR="${TMPROOT}/alert-deadletter"
 mkdir -p "$TMPROOT/.flywheel/alerts"
 
 fire() {
-  # $1 = signature. Never aborts the test (accept 0=posted/claimed, 2=spilled).
+  # $1=project $2=lead $3=title $4=signature. Accept 0=posted, 2=spilled.
   set +e
   "$LEAD_ALERT" \
-    --lead codex-infra-bot-lead \
-    --project flywheel \
+    --lead "$2" \
+    --project "$1" \
     --kind tui_window_lost \
     --severity warning \
-    --title "Infra Bot TUI window not visible" \
+    --title "$3" \
     --body "test body" \
-    --signature "$1" \
+    --signature "$4" \
     >/dev/null 2>"${TMPROOT}/err"
   local rc=$?
   set -e
   case "$rc" in
     0|2) ;;
     *)
-      echo "FAIL: lead-alert.sh exited $rc for signature '$1'" >&2
+      echo "FAIL: lead-alert.sh exited $rc for project '$1' lead '$2' signature '$4'" >&2
       cat "${TMPROOT}/err" >&2
       exit 1
       ;;
@@ -88,27 +102,45 @@ count_claims() { sqlite3 "$CLAIMS_DB" "SELECT COUNT(*) FROM alert_claims;" 2>/de
 errors=0
 
 # Episode 1, first fire → 1 claim.
-fire "tui-window-lost:1000"
+fire flywheel codex-infra-bot-lead "Infra Bot TUI window not visible" "tui-window-lost:1000"
 c1="$(count_claims)"
 if [ "$c1" != "1" ]; then echo "FAIL: expected 1 claim after episode-1 fire, got $c1" >&2; errors=$((errors+1)); fi
 
 # Same signature (recover-mid-episode / KeepAlive restart) → still 1 claim (dedup).
-fire "tui-window-lost:1000"
+fire flywheel codex-infra-bot-lead "Infra Bot TUI window not visible" "tui-window-lost:1000"
 c2="$(count_claims)"
 if [ "$c2" != "1" ]; then echo "FAIL: expected 1 claim after same-signature refire, got $c2" >&2; errors=$((errors+1)); fi
-if ! grep -q "already claimed" "${TMPROOT}/err"; then
-  echo "FAIL: same-signature refire did not log 'already claimed'" >&2; errors=$((errors+1));
+if ! grep -Eq "delivery receipt (already|is)" "${TMPROOT}/err"; then
+  echo "FAIL: same-signature refire did not report its terminal delivery receipt" >&2; errors=$((errors+1));
 fi
 
 # Second episode, SAME DAY, different startedAt → NEW signature → 2 claims (Codex R1#1).
-fire "tui-window-lost:2000"
+fire flywheel codex-infra-bot-lead "Infra Bot TUI window not visible" "tui-window-lost:2000"
 c3="$(count_claims)"
 if [ "$c3" != "2" ]; then
   echo "FAIL: expected 2 claims after a distinct same-day episode (must NOT be swallowed), got $c3" >&2
   errors=$((errors+1))
 fi
 
-echo "claims after e1/e1-dup/e2: $c1 / $c2 / $c3"
+# The exact Raya resident is a separate identity namespace even with the same
+# kind/signature, and its persisted payload keeps a distinct founder-facing title.
+fire raya raya "Raya brain TUI window not visible" "tui-window-lost:2000"
+c4="$(count_claims)"
+if [ "$c4" != "3" ]; then
+  echo "FAIL: expected a distinct third claim for Raya identity, got $c4" >&2
+  errors=$((errors+1))
+fi
+
+find "$FLYWHEEL_ALERT_QUEUE_DIR" "$FLYWHEEL_ALERT_DEADLETTER_DIR" \
+  -type f -name '*.json' -exec jq -r '.title' {} \; > "${TMPROOT}/titles"
+for expected_title in "Infra Bot TUI window not visible" "Raya brain TUI window not visible"; do
+  if ! grep -Fqx "$expected_title" "${TMPROOT}/titles"; then
+    echo "FAIL: persisted alert payload missing distinct title '$expected_title'" >&2
+    errors=$((errors+1))
+  fi
+done
+
+echo "claims after infra e1/e1-dup/e2 + Raya: $c1 / $c2 / $c3 / $c4"
 if [ "$errors" -gt 0 ]; then
   echo "=== ${errors} assertion(s) FAILED ===" >&2
   exit 1

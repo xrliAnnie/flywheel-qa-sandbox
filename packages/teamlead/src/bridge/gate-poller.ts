@@ -143,6 +143,8 @@ export interface GatePollerConfig {
 	onPatrolOrphanSweepTick?: () => void | Promise<void>;
 	/** FLY-1944: cmux watcher liveness/recovery rider on the same 60s cadence. */
 	onCmuxWatcherPatrolTick?: () => void | Promise<void>;
+	/** FLY-2216: rostered resident Codex Lead patrol on the same 60s cadence. */
+	onResidentCodexLeadPatrolTick?: () => void | Promise<void>;
 	/** FLY-513: cadence for `onHealthTick` in poll ticks (default 20 ≈ 60s at 3s). */
 	healthCheckEveryNTicks?: number;
 	/**
@@ -732,6 +734,23 @@ export class GatePoller {
 					.catch((err) =>
 						console.warn(
 							`[GatePoller] cmux watcher patrol error (non-fatal): ${(err as Error).message}`,
+						),
+					);
+			}
+
+			if (
+				this.config.onResidentCodexLeadPatrolTick &&
+				(this.tickCount - 1) % DEFAULT_PATROL_EVERY_N_TICKS === 0
+			) {
+				void Promise.resolve()
+					.then(() =>
+						this.withSpan("gate-poller.resident-codex-lead-patrol", () =>
+							this.config.onResidentCodexLeadPatrolTick?.(),
+						),
+					)
+					.catch((err) =>
+						console.warn(
+							`[GatePoller] resident Codex Lead patrol error (non-fatal): ${(err as Error).message}`,
 						),
 					);
 			}

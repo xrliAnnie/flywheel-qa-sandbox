@@ -96,6 +96,8 @@ const CMUX_SYNC_KINDS = [
 	"tmux_rescue_hold",
 ] as const;
 
+const CODEX_RESIDENCY_KINDS = ["codex_lead_residency_stalled"] as const;
+
 const DISCORD_PLUGIN_KINDS = ["discord_plugin_integrity_failed"] as const;
 
 describe("FLY-1082 kind contract (Task 1.1)", () => {
@@ -235,6 +237,34 @@ describe("FLY-1082 kind contract (Task 1.1)", () => {
 		}
 		expect(INFORMATIONAL_KINDS.has("cmux_cleanup")).toBe(false);
 		expect(INFORMATIONAL_KINDS.has("tmux_rescue_hold")).toBe(false);
+	});
+
+	it("FLY-2216 gives resident Codex Lead failures one actionable alert contract", () => {
+		for (const kind of CODEX_RESIDENCY_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect((KIND_CONTRACTS as Record<string, KindContract>)[kind]).toEqual({
+				owner: "claude",
+				arc: "human_by_design",
+			});
+		}
+		expect(
+			INFORMATIONAL_KINDS.has(
+				"codex_lead_residency_stalled" as Parameters<
+					typeof INFORMATIONAL_KINDS.has
+				>[0],
+			),
+		).toBe(false);
+		expect(
+			titleFor(
+				"codex_lead_residency_stalled" as Parameters<typeof titleFor>[0],
+			),
+		).toMatch(/resident Codex Lead/i);
+		expect(
+			bodyFor(
+				"codex_lead_residency_stalled" as Parameters<typeof bodyFor>[0],
+				"ignored",
+			),
+		).toMatch(/business-liveness/i);
 	});
 
 	it("FLY-1676 routes Discord fork integrity failures to a human-owned ticket", () => {
@@ -426,6 +456,14 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 				allow.has(kind),
 				`FLY-1364 kind "${kind}" missing from shell allowlist`,
 			).toBe(true);
+		}
+	});
+
+	it("the FLY-2216 resident Codex Lead kind exists on both TS and shell faces", () => {
+		const allow = shellAllowlist();
+		for (const kind of CODEX_RESIDENCY_KINDS) {
+			expect(ALERT_EVENT_TYPES).toContain(kind);
+			expect(allow.has(kind)).toBe(true);
 		}
 	});
 

@@ -62,18 +62,29 @@ export interface CodexTurnExecutorOptions {
 	process: CodexProcessLike;
 	threadId: string;
 	logger?: { warn: (m: string, c?: unknown) => void };
+	lifecycle?: CodexTurnLifecycleObserver;
+}
+
+export interface CodexTurnLifecycleObserver {
+	turnStarted(turnId: string): void;
+	turnFinished(
+		turnId: string,
+		status: "completed" | "failed" | "interrupted",
+	): void;
 }
 
 export class CodexTurnExecutor implements TurnExecutor {
 	private readonly proc: CodexProcessLike;
 	private readonly threadId: string;
 	private readonly logger: { warn: (m: string, c?: unknown) => void };
+	private readonly lifecycle?: CodexTurnLifecycleObserver;
 	private active: ActiveTurn | null = null;
 
 	constructor(opts: CodexTurnExecutorOptions) {
 		this.proc = opts.process;
 		this.threadId = opts.threadId;
 		this.logger = opts.logger ?? { warn: () => {} };
+		this.lifecycle = opts.lifecycle;
 
 		this.proc.on("notification", (method, params) => {
 			const a = this.active;
@@ -97,7 +108,11 @@ export class CodexTurnExecutor implements TurnExecutor {
 			// buffer as success (Codex Phase-4b review R3 HIGH).
 			const status = completionStatus(params);
 			if (status !== "completed") {
-				this.settleReject(a, new Error(`turn status ${status ?? "missing"}`));
+				this.settleReject(
+					a,
+					new Error(`turn status ${status ?? "missing"}`),
+					status === "interrupted" ? "interrupted" : "failed",
+				);
 				return;
 			}
 			this.settleResolve(a, { output: a.buffer });
@@ -145,6 +160,7 @@ export class CodexTurnExecutor implements TurnExecutor {
 			});
 			if (!turnId) throw new Error("turn/start returned no turnId");
 			turn.turnId = turnId;
+			this.observe(() => this.lifecycle?.turnStarted(turnId));
 			return turnId;
 		} catch (err) {
 			// Settle the (guarded) completion promise so nothing is left pending,
@@ -218,13 +234,31 @@ export class CodexTurnExecutor implements TurnExecutor {
 	private settleResolve(a: ActiveTurn, r: { output: string }): void {
 		if (a.settled) return;
 		a.settled = true;
+		if (a.turnId)
+			this.observe(() => this.lifecycle?.turnFinished(a.turnId!, "completed"));
 		a.resolve(r);
 	}
 
-	private settleReject(a: ActiveTurn, e: Error): void {
+	private settleReject(
+		a: ActiveTurn,
+		e: Error,
+		status: "failed" | "interrupted" = "failed",
+	): void {
 		if (a.settled) return;
 		a.settled = true;
+		if (a.turnId)
+			this.observe(() => this.lifecycle?.turnFinished(a.turnId!, status));
 		a.reject(e);
+	}
+
+	private observe(fn: () => void): void {
+		try {
+			fn();
+		} catch (error) {
+			this.logger.warn("Raya lifecycle observer failed (turn continues)", {
+				err: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 }
 

@@ -11,12 +11,101 @@ import {
 import type { CodexLeadRuntimeConfig } from "../codex-lead-runtime.js";
 import {
 	buildTuiDaemonEnv,
+	type CodexLeadTuiRuntimeConfig,
+	createResidentCodexLeadLifecycleForGeneration,
 	isTurnlessRolloutError,
+	loadResidentCodexLeadProjectsSafely,
 	parseCodexLeadTuiRuntimeConfig,
 	reportSuccessfulDaemonEnsure,
 	requirePersona,
 	wireDemuxedProcess,
 } from "../codex-lead-tui-runtime.js";
+
+describe("FLY-2216 resident Codex Lead lifecycle assembly", () => {
+	it("fails safe when the residency roster is invalid so an existing Lead still starts", () => {
+		const log = vi.fn();
+		expect(
+			loadResidentCodexLeadProjectsSafely({
+				load: () => {
+					throw new Error('unrelated row has playwrightMcp: "yes"');
+				},
+				log,
+			}),
+		).toEqual([]);
+		expect(log).toHaveBeenCalledWith(
+			"resident Codex Lead residency roster unavailable; observer disabled",
+		);
+	});
+
+	it("constructs the shared observer for two opted targets and not for a non-opted target", () => {
+		const projects = [
+			{
+				projectName: "growth",
+				projectRoot: "/growth",
+				leads: [
+					{
+						agentId: "mufasa-lead",
+						backend: "codex-app-server",
+						companion: true,
+						canSpawnRunners: false,
+						codexResidencyPatrol: true,
+					},
+				],
+			},
+			{
+				projectName: "raya",
+				projectRoot: "/raya",
+				leads: [
+					{
+						agentId: "raya",
+						backend: "codex-app-server",
+						codexProfile: "full-access",
+						canSpawnRunners: false,
+						codexResidencyPatrol: true,
+					},
+				],
+			},
+		] as never;
+		const configs = [
+			{
+				projectName: "growth",
+				leadId: "mufasa-lead",
+				leadKey: "growth-mufasa-lead",
+				stateDir: "/tmp/fly2216-mufasa-state",
+				carrierInstanceId: "carrier-mufasa",
+			},
+			{
+				projectName: "raya",
+				leadId: "raya",
+				leadKey: "raya-raya",
+				stateDir: "/tmp/fly2216-raya-state",
+				carrierInstanceId: "carrier-raya",
+			},
+		] as CodexLeadTuiRuntimeConfig[];
+
+		for (const config of configs) {
+			expect(
+				createResidentCodexLeadLifecycleForGeneration({
+					config,
+					projects,
+					threadId: `thread-${config.leadId}`,
+					generationId: `generation-${config.leadId}`,
+					processPid: 4242,
+				}),
+			).not.toBeNull();
+		}
+
+		expect(
+			createResidentCodexLeadLifecycleForGeneration({
+				config: { ...configs[0]!, projectName: "flywheel", leadId: "infra" },
+				projects,
+				threadId: "thread-infra",
+				generationId: "generation-infra",
+				processPid: 4242,
+			}),
+		).toBeNull();
+	});
+});
 
 describe("buildTuiDaemonEnv — runtime→home daemon-env boundary (FLY-398 Codex R1 HIGH-1)", () => {
 	const base = {

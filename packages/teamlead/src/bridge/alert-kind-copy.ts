@@ -250,6 +250,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "cmux cleanup needs operator review";
 		case "cmux_watcher_stalled":
 			return "cmux watcher is stalled or unsupervised";
+		case "codex_lead_residency_stalled":
+			return "Resident Codex Lead business-liveness stalled";
 		case "cmux_watcher_unrecovered":
 			return "cmux watcher recovery did not converge";
 		case "flag_scan_failed":
@@ -273,6 +275,7 @@ export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
 		kind === "login_expired" ||
 		kind === "runner_login_expired" ||
 		kind === "cmux_watcher_stalled" ||
+		kind === "codex_lead_residency_stalled" ||
 		kind === "cmux_watcher_unrecovered"
 	)
 		return "severe";
@@ -503,6 +506,8 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 			return "cmux-sync refused an unsafe cleanup or found authority state requiring manual review. Inspect the supplied generation, ref, and lease evidence; no foreign workspace was closed.";
 		case "cmux_watcher_stalled":
 			return "The resident cmux watcher failed its launchd, owner, heartbeat, or event-backlog health contract. Review the supplied branch and canonical recovery outcome; uncertainty branches intentionally did not signal a process.";
+		case "codex_lead_residency_stalled":
+			return "An explicitly rostered resident Codex Lead generation failed its business-liveness contract. Review the supplied target, lifecycle, poll, turn, gateway, and tuple-bound recovery evidence; identity uncertainty and controlled replacement waves intentionally suppress mutation.";
 		case "cmux_watcher_unrecovered":
 			return "The resident cmux watcher stayed unhealthy beyond the bounded recovery window. Inspect the latest branch and recovery evidence before intervening; planned maintenance parks suppress this escalation.";
 		case "flag_scan_failed":

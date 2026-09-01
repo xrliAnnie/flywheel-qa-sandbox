@@ -323,6 +323,49 @@ describe("loadProjects validation", () => {
 		expect(() => loadProjects()).toThrow(/playwrightMcp.*boolean/);
 	});
 
+	it("rejects a non-boolean Codex residency patrol opt-in", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "codex-lead",
+						summaryRole: "producer",
+						chatChannel: "456",
+						match: { labels: ["Engineering"] },
+						canSpawnRunners: false,
+						codexProfile: "full-access",
+						backend: "codex-app-server",
+						codexResidencyPatrol: "yes",
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(/codexResidencyPatrol.*boolean/);
+	});
+
+	it("rejects a Codex residency patrol opt-in on a Claude Lead", () => {
+		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
+			{
+				projectName: "test",
+				projectRoot: "/tmp",
+				leads: [
+					{
+						agentId: "claude-lead",
+						summaryRole: "producer",
+						chatChannel: "456",
+						match: { labels: ["Engineering"] },
+						codexResidencyPatrol: true,
+					},
+				],
+			},
+		]);
+		expect(() => loadProjects()).toThrow(
+			/codexResidencyPatrol.*codex-app-server/,
+		);
+	});
+
 	it("rejects a Playwright MCP opt-in on the Codex Lead backend", () => {
 		process.env.FLYWHEEL_PROJECTS = JSON.stringify([
 			{

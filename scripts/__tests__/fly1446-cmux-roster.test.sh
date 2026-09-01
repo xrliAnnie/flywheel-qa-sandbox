@@ -48,6 +48,8 @@ expect_eq "$(classify_lead_carrier flywheel-lead-wrapper-v2.sh codex)" "config-d
   "v2 wrapper + Codex backend is config drift"
 expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh '')" "codex-tui-cmux" \
   "Mufasa dedicated TUI wrapper is allowlisted"
+expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh '')" "codex-tui-cmux" \
+  "Raya dedicated resident TUI wrapper is allowlisted"
 expect_eq "$(classify_lead_carrier flywheel-codex-lead-wrapper-codex-infra-bot.sh '')" "codex-tui-cmux" \
   "infra-bot wrapper is allowlisted despite lacking a tui suffix"
 expect_eq "$(classify_lead_carrier future-wrapper.sh claude-code)" "config-drift" \
@@ -55,24 +57,30 @@ expect_eq "$(classify_lead_carrier future-wrapper.sh claude-code)" "config-drift
 
 touch "$HOME/Library/LaunchAgents/com.flywheel.lead.flywheel-eng-lead.plist"
 touch "$HOME/Library/LaunchAgents/com.flywheel.lead.growth-mufasa-lead.plist"
+touch "$HOME/Library/LaunchAgents/com.flywheel.lead.raya-raya.plist"
 jq -n --arg socket "$(derive_lead_socket "flywheel/eng-lead" "$FLYWHEEL_LEAD_STATE_DIR")" \
   '{projectName:"flywheel",leadId:"eng-lead",socketPath:$socket,leadBackend:{backendId:"claude-code"}}' \
   > "$HOME/.flywheel/manifests/flywheel-eng-lead.json"
 jq -n --arg socket "$(derive_lead_socket "growth/mufasa-lead" "$FLYWHEEL_LEAD_STATE_DIR")" \
   '{projectName:"growth",leadId:"mufasa-lead",socketPath:$socket,leadBackend:{backendId:"codex"}}' \
   > "$HOME/.flywheel/manifests/growth-mufasa-lead.json"
+jq -n --arg socket "$(derive_lead_socket "raya/raya" "$FLYWHEEL_LEAD_STATE_DIR")" \
+  '{projectName:"raya",leadId:"raya",socketPath:$socket,leadBackend:{backendId:"codex"}}' \
+  > "$HOME/.flywheel/manifests/raya-raya.json"
 lead_job_loaded() { return 0; }
 lead_plist_wrapper_basename() {
   case "$1" in
     *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *growth-mufasa-lead.plist) printf '%s\n' flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh ;;
+    *raya-raya.plist) printf '%s\n' flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh ;;
     *) return 1 ;;
   esac
 }
 derive_lead_roster
 expect_eq "$LEAD_ROSTER_STATE" "ok" "valid loaded jobs produce one complete roster snapshot"
 if grep -qE '^claude-private\|com\.flywheel\.lead\.flywheel-eng-lead\|flywheel-eng-lead\|.+\.sock$' <<< "$LEAD_ROSTER_ROWS" \
-    && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead|' <<< "$LEAD_ROSTER_ROWS"; then
+    && grep -qx 'codex-tui-cmux|com.flywheel.lead.growth-mufasa-lead|growth-mufasa-lead|' <<< "$LEAD_ROSTER_ROWS" \
+    && grep -qx 'codex-tui-cmux|com.flywheel.lead.raya-raya|raya-raya|' <<< "$LEAD_ROSTER_ROWS"; then
   pass "derived roster uses manifest projectName/leadId and the TUI label identity"
 else
   fail "derived roster rows mismatch: [$LEAD_ROSTER_ROWS]"
@@ -84,6 +92,7 @@ lead_plist_wrapper_basename() {
   case "$1" in
     *flywheel-eng-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *growth-mufasa-lead.plist) printf '%s\n' flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh ;;
+    *raya-raya.plist) printf '%s\n' flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh ;;
     *bad-lead.plist) printf '%s\n' flywheel-lead-wrapper-v2.sh ;;
     *) return 1 ;;
   esac

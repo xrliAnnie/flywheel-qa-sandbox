@@ -7,6 +7,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TEAMLEAD_ROOT="${FLYWHEEL_TEAMLEAD_ROOT:-/Users/xiaorongli/Dev/flywheel/packages/teamlead}"
+export FLYWHEEL_ROOT="$(cd "${TEAMLEAD_ROOT}/../.." && pwd)"
 TUI_RUNTIME="${TEAMLEAD_ROOT}/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 TUI_HOME_SH="${TEAMLEAD_ROOT}/scripts/codex-lead-tui-home.sh"
 FLYWHEEL_PACKAGES_ROOT="$(cd "${TEAMLEAD_ROOT}/.." && pwd)"

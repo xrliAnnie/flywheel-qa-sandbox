@@ -67,7 +67,7 @@ run_census() {
   local source_dir="${FLYWHEEL_HOST_TMUX_CENSUS_SOURCE_DIR:-${FLYWHEEL_DIR:-${HOME}/Dev/flywheel}/scripts}"
   local temp_root="" plist="" args_file="" argument="" selected=""
   local selected_count=0 basename="" source="" expected_carrier=""
-  local total=0 generic=0 mufasa=0 infra=0
+  local total=0 generic=0 mufasa=0 infra=0 raya=0
   local key="" project="" lead_id="" manifest="" classification="" sources=""
 
   if [ "$test_mode" = "1" ]; then
@@ -113,7 +113,8 @@ run_census() {
       case "$basename" in
         flywheel-lead-wrapper-v2.sh|\
         flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|\
-        flywheel-codex-lead-wrapper-codex-infra-bot.sh)
+        flywheel-codex-lead-wrapper-codex-infra-bot.sh|\
+        flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh)
           selected="$argument"
           selected_count=$((selected_count + 1))
           ;;
@@ -145,6 +146,10 @@ run_census() {
         expected_carrier=codex-infra-bot
         infra=$((infra + 1))
         ;;
+      flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh)
+        expected_carrier=codex-raya
+        raya=$((raya + 1))
+        ;;
       *) die "unregistered Lead carrier: $selected" ;;
     esac
     /usr/bin/grep -Fq 'host-tmux-selection-gate.sh' "$selected" \
@@ -158,7 +163,7 @@ run_census() {
 
   trap - EXIT
   /bin/rm -rf "$temp_root"
-  echo "host-tmux-selection-gate: census pass plists=$total generic=$generic codex-mufasa=$mufasa codex-infra-bot=$infra"
+  echo "host-tmux-selection-gate: census pass plists=$total generic=$generic codex-mufasa=$mufasa codex-infra-bot=$infra codex-raya=$raya"
 }
 
 ACTION="${1:-}"

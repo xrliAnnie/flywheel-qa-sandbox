@@ -174,6 +174,12 @@ export interface LeadConfig {
 	 */
 	codexProfile?: "companion" | "write-capable" | "full-access";
 	/**
+	 * FLY-2216: explicit opt-in for the shared resident Codex Lead business-
+	 * liveness patrol. Absent / false leaves the Lead's runtime byte path
+	 * unchanged; true is valid only for a codex-app-server Lead.
+	 */
+	codexResidencyPatrol?: boolean;
+	/**
 	 * FLY-546: per-agent voice for headphone mode (PRD §17 "换 agent 换声线").
 	 * Consumed by the voice-headphone daemon via `GET /api/voice/scope` /
 	 * VoiceDirectory — the Bridge itself never speaks. rate is "±N%", pitch is
@@ -666,6 +672,14 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 					`Project "${entry.projectName}" leads[${i}].playwrightMcp: must be a boolean, got ${JSON.stringify(lead.playwrightMcp)}`,
 				);
 			}
+			if (
+				lead.codexResidencyPatrol !== undefined &&
+				typeof lead.codexResidencyPatrol !== "boolean"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].codexResidencyPatrol: must be a boolean, got ${JSON.stringify(lead.codexResidencyPatrol)}`,
+				);
+			}
 			if (lead.backend !== undefined) {
 				if (
 					lead.backend !== "claude-code" &&
@@ -675,6 +689,14 @@ export function parseAndValidateProjects(raw: unknown): ProjectEntry[] {
 						`Project "${entry.projectName}" leads[${i}].backend: must be "claude-code" | "codex-app-server" (the Lead backend seam, not the Runner's executor id), got ${JSON.stringify(lead.backend)}`,
 					);
 				}
+			}
+			if (
+				lead.codexResidencyPatrol === true &&
+				lead.backend !== "codex-app-server"
+			) {
+				throw new Error(
+					`Project "${entry.projectName}" leads[${i}].codexResidencyPatrol: true requires backend "codex-app-server"`,
+				);
 			}
 			if (lead.playwrightMcp === true && lead.backend === "codex-app-server") {
 				throw new Error(

@@ -9,10 +9,11 @@ fail() { echo "  ✗ $1"; FAIL=$((FAIL + 1)); }
 SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SUT="$SCRIPT_DIR/raya-activation-preflight.sh"
 REAL_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+REAL_NODE="$(command -v node)"
 T="$(mktemp -d /tmp/raya-activation.XXXXX)" || exit 1
 trap 'rm -rf "$T"' EXIT
 
-RT="$T/teamlead"
+RT="$T/repo/packages/teamlead"
 COMM="$T/flywheel-comm/dist/index.js"
 mkdir -p "$RT/dist/lead-backends/codex/lead-actions" "$RT/scripts/lib" \
 	"$T/flywheel-comm/dist" "$T/code" "$T/workspace/memory" \
@@ -23,7 +24,7 @@ printf '// runtime\n' > "$RT/dist/lead-backends/codex/codex-lead-tui-runtime.js"
 printf '// actions\n' > "$RT/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
 printf '# Raya\n' > "$T/code/IDENTITY.md"
 printf '# Memory\n' > "$T/workspace/memory/MEMORY.md"
-printf '{}\n' > "$T/projects.json"
+printf '%s\n' '[{"projectName":"raya","projectRoot":"Dev/raya","leads":[{"agentId":"raya","backend":"codex-app-server","codexProfile":"full-access","canSpawnRunners":false}]}]' > "$T/projects.json"
 printf '#!/bin/bash\nexit 0\n' > "$RT/scripts/codex-lead-tui-home.sh"
 chmod +x "$RT/scripts/codex-lead-tui-home.sh"
 ln -s "$REAL_ROOT/lead-rules-base" "$RT/lead-rules-base"
@@ -64,6 +65,33 @@ if [ "$happy_rc" -eq 0 ] \
 	pass "installed summary dry-run and Raya launcher both pass"
 else
 	fail "happy activation preflight (rc=$happy_rc output=$happy_output calls=$(cat "$T/node.calls" 2>/dev/null))"
+fi
+
+projected_root="$(awk -F= '$1 == "FLYWHEEL_ROOT" {sub(/^[^=]*=/, ""); print; exit}' "$T/runtime.env")"
+guard_result="$($REAL_NODE --input-type=module - "$REAL_ROOT/dist/lead-backends/codex/tui-window-alert.js" "$T/runtime.env" <<'NODE'
+import { readFileSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+const modulePath = process.argv[2];
+const envPath = process.argv[3];
+const env = Object.fromEntries(readFileSync(envPath, "utf8").split("\n").filter(Boolean).map((line) => {
+  const split = line.indexOf("=");
+  return [line.slice(0, split), line.slice(split + 1)];
+}));
+const { createTuiWindowAlertGuard } = await import(pathToFileURL(modulePath));
+const guard = createTuiWindowAlertGuard({
+  stateDir: "/tmp/raya-guard-state",
+  projectName: env.FLYWHEEL_PROJECT_NAME,
+  leadId: env.FLYWHEEL_LEAD_ID,
+  env,
+  exists: () => true,
+});
+process.stdout.write(guard ? "armed" : "disabled");
+NODE
+)"
+if [ "$projected_root" = "$T/repo" ] && [ "$guard_result" = armed ]; then
+	pass "real repo-shaped launcher env arms the exact Raya pane-loss guard"
+else
+	fail "real launcher projection did not arm guard (root=$projected_root guard=$guard_result)"
 fi
 
 mv "$T/flywheel-comm/dist/summary-pr-merge.js" "$T/flywheel-comm/dist/summary-pr-merge.js.absent"

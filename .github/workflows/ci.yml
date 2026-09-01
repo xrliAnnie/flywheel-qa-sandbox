@@ -458,7 +458,7 @@ jobs:
     # measured ~10.4min (52%) as of 2026-08-17. Rebalance only whole named steps
     # and keep ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
     # Step seconds: 519=2, 2034=1, 1356=0, 1609=1, 648=12, 1023=19, 1189=2+2+21,
-    # 1775=9, 1389=48, npm-seams=13, 1501=104, 1634=10, 1671=2,
+    # 1775=9, 1389=48, 2216=1, npm-seams=13, 1501=104, 1634=10, 1671=2,
     # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1330=6, 1018=0,
     # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
     # 2126=2, 2033=24, 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
@@ -634,6 +634,14 @@ jobs:
           bash scripts/__tests__/v2-retirement-cleanup.test.sh
           bash scripts/__tests__/test-deploy-fly1389.test.sh
           bash scripts/__tests__/test-deploy-preflight-github.test.sh
+
+      # FLY-2216: resident Codex TUI carrier and business-level false-live
+      # recovery are hermetic (fixture HOME, stub launchctl/tmux/ps;
+      # no production process, gateway, cmux workspace, or alert mutation).
+      - name: Test — FLY-2216 Raya resident brain contracts
+        run: |
+          bash scripts/__tests__/raya-resident-carrier.test.sh
+          bash scripts/__tests__/resident-codex-lead-recover.test.sh
 
       # FLY-1062: npm distribution layer — hermetic suites: the packaging
       # pipeline over a fixture mini-monorepo (assembly / dependency union /

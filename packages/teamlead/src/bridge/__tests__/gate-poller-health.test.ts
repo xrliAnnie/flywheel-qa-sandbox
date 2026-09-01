@@ -76,6 +76,17 @@ describe("FLY-1944 GatePoller cmux watcher rider", () => {
 	});
 });
 
+describe("FLY-2216 GatePoller resident Codex Lead patrol rider", () => {
+	it("shares the existing 60s rider cadence and contains failures", async () => {
+		const onResidentCodexLeadPatrolTick = vi
+			.fn()
+			.mockRejectedValue(new Error("resident Codex Lead patrol boom"));
+		const poller = makePoller({ onResidentCodexLeadPatrolTick });
+		await expect(tick(poller, 21)).resolves.toBeUndefined();
+		expect(onResidentCodexLeadPatrolTick).toHaveBeenCalledTimes(2);
+	});
+});
+
 describe("FLY-1314 GatePoller issue-gate supersede piggyback", () => {
 	it("runs on every existing poll tick without adding a timer", async () => {
 		const onIssueGateSupersedeTick = vi.fn();

@@ -236,7 +236,40 @@ else
     "$(tail -20 "$MUFASA_ROOT/out.log" 2>/dev/null)"
 fi
 
-# Slice 6: InfraBot's production plist selects another distinct Codex wrapper.
+# Slice 6: Raya's production plist selects a fixed resident Codex wrapper.
+RAYA_ROOT="$SANDBOX/raya"
+RAYA_HOME="$RAYA_ROOT/home"
+RAYA_REPO="$RAYA_ROOT/repo"
+RAYA_STATE="$RAYA_HOME/.flywheel"
+RAYA_WRAPPER="$REPO_ROOT/scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh"
+mkdir -p "$RAYA_REPO" "$RAYA_STATE/bin"
+install_alert_fixture "$RAYA_ROOT" "$RAYA_REPO"
+: > "$RAYA_STATE/.env"
+printf '%s\n' "$SHA" > "$RAYA_STATE/deployed-sha"
+cp "$BRIDGE_STATE/bin/host-tmux-selection-gate.sh" "$RAYA_STATE/bin/"
+
+RAYA_RC=0
+env -i \
+  HOME="$RAYA_HOME" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_DIR="$RAYA_REPO" \
+  FLYWHEEL_STATE_DIR="$RAYA_STATE" \
+  HOST_TMUX_GATE_CALL="$RAYA_ROOT/gate-call" \
+  HOST_TMUX_ALERT_CALL="$RAYA_ROOT/alert-call" \
+  FLYWHEEL_META_ALERT_BIN="$RAYA_ROOT/meta-alert.sh" \
+  bash "$RAYA_WRAPPER" > "$RAYA_ROOT/out.log" 2>&1 || RAYA_RC=$?
+
+if [ "$RAYA_RC" -eq 0 ] \
+  && grep -Fqx "gate codex-raya|$SHA|keepalive:codex-raya|scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh|$RAYA_STATE" "$RAYA_ROOT/gate-call" \
+  && grep -Fqx "verify codex-raya|$SHA|keepalive:codex-raya|scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh|$RAYA_STATE" "$RAYA_ROOT/gate-call" \
+  && grep -Fq 'host_tmux_selection_gate_unavailable_codex-raya' "$RAYA_ROOT/alert-call"; then
+  pass "Raya resident Codex KeepAlive birth is source-controlled and verifies the receipt"
+else
+  fail "Raya Codex gate mount (rc=$RAYA_RC gate=$(cat "$RAYA_ROOT/gate-call" 2>/dev/null))" \
+    "$(tail -20 "$RAYA_ROOT/out.log" 2>/dev/null)"
+fi
+
+# Slice 7: InfraBot's production plist selects another distinct Codex wrapper.
 INFRA_ROOT="$SANDBOX/infra"
 INFRA_HOME="$INFRA_ROOT/home"
 INFRA_REPO="$INFRA_ROOT/repo"
@@ -269,7 +302,7 @@ else
     "$(tail -20 "$INFRA_ROOT/out.log" 2>/dev/null)"
 fi
 
-# Slice 7: first packaged birth happens before converge has populated state-bin.
+# Slice 8: first packaged birth happens before converge has populated state-bin.
 # A carrier must use the gate in its installed runtime tree, and a prebuilt tree
 # with no .git/deployed-sha must bind the immutable package build identity.
 FALLBACK_ROOT="$SANDBOX/prebuilt-fallback"
@@ -313,12 +346,13 @@ for wrapper in \
   scripts/flywheel-lead-wrapper-v2.sh \
   scripts/flywheel-voice-bridge-wrapper.sh \
   scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+  scripts/flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
   scripts/flywheel-codex-lead-wrapper-codex-infra-bot.sh; do
   grep -Fq '${FLYWHEEL_DIR}/scripts/host-tmux-selection-gate.sh' \
     "$REPO_ROOT/$wrapper" && FALLBACK_DECLARATIONS=$((FALLBACK_DECLARATIONS + 1))
 done
 if [ "$FALLBACK_RC" -eq 0 ] \
-  && [ "$FALLBACK_DECLARATIONS" -eq 6 ] \
+  && [ "$FALLBACK_DECLARATIONS" -eq 7 ] \
   && [ ! -e "$FALLBACK_STATE/bin/host-tmux-selection-gate.sh" ] \
   && grep -Fqx "gate codex-infra-bot|$FALLBACK_SHA|$FALLBACK_STATE" \
     "$FALLBACK_ROOT/gate-call" \

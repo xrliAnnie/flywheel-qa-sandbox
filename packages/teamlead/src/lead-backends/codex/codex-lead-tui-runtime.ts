@@ -33,6 +33,8 @@ import {
 	publishCarrierRuntimeAssertion,
 } from "flywheel-comm/lead-lease";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
+import { loadProjects, type ProjectEntry } from "../../ProjectConfig.js";
+import { findResidentCodexLeadTargets } from "../../resident-codex-lead-roster.js";
 import {
 	CodexDiscordGateway,
 	type DiscordInboundMessage,
@@ -77,6 +79,7 @@ import {
 } from "./lead-actions/mcp-config.js";
 import { buildMentionGate } from "./mention-gate.js";
 import { RestPollDiscordInboundSource } from "./RestPollDiscordInboundSource.js";
+import { ResidentCodexLeadLifecycleObserver } from "./resident-codex-lead-lifecycle.js";
 import { buildReplyInThreadWiring } from "./roundtable-reply-in-thread-wiring.js";
 import { SqliteJournalStore } from "./SqliteJournalStore.js";
 import { extractTurnId, TurnDemux } from "./TurnDemux.js";
@@ -116,6 +119,48 @@ export function parseCodexLeadTuiRuntimeConfig(
 		);
 	}
 	return { ...base, tuiCwd };
+}
+
+export function createResidentCodexLeadLifecycleForGeneration(opts: {
+	config: CodexLeadTuiRuntimeConfig;
+	projects: ReadonlyArray<ProjectEntry>;
+	threadId: string;
+	generationId: string;
+	processPid?: number;
+	log?: (message: string) => void;
+}): ResidentCodexLeadLifecycleObserver | null {
+	const { config } = opts;
+	const target = findResidentCodexLeadTargets(opts.projects).find(
+		(candidate) =>
+			candidate.projectName === config.projectName &&
+			candidate.leadId === config.leadId &&
+			candidate.leadKey === config.leadKey,
+	);
+	if (!target || !config.carrierInstanceId) return null;
+	return new ResidentCodexLeadLifecycleObserver({
+		stateDir: config.stateDir,
+		threadId: opts.threadId,
+		generationId: opts.generationId,
+		processPid: opts.processPid ?? process.pid,
+		carrierInstanceId: config.carrierInstanceId,
+		log: opts.log,
+	});
+}
+
+export function loadResidentCodexLeadProjectsSafely(
+	options: {
+		load?: () => ProjectEntry[];
+		log?: (message: string) => void;
+	} = {},
+): ProjectEntry[] {
+	try {
+		return (options.load ?? loadProjects)();
+	} catch {
+		options.log?.(
+			"resident Codex Lead residency roster unavailable; observer disabled",
+		);
+		return [];
+	}
 }
 
 /**
@@ -419,6 +464,9 @@ function buildTuiGeneration(
 	const journal = new LeadJournal({
 		store: new SqliteJournalStore(config.journalDbPath),
 	});
+	const residentCodexLeadProjects = loadResidentCodexLeadProjectsSafely({
+		log: (message) => logger.warn(message),
+	});
 	// PROCESS-scope (review R2 HIGH-2): the thread id the founder's TUI is bound
 	// to. The first generation, or any generation whose thread CHANGED (turnless
 	// self-heal → fresh thread), must UNCONDITIONALLY ensure the window
@@ -440,6 +488,7 @@ function buildTuiGeneration(
 	return () => {
 		let runtime: CodexLeadRuntime | null = null;
 		let proc: CodexLeadProcess | null = null;
+		let residencyLifecycle: ResidentCodexLeadLifecycleObserver | null = null;
 		let lostCb: (() => void) | undefined;
 		// Generation-owned TUI lifecycle (review HIGH-1): the window is no longer
 		// fire-and-forget — a liveness cadence re-creates it if the founder closes
@@ -575,6 +624,13 @@ function buildTuiGeneration(
 						return id;
 					},
 					wire: async (threadId: string): Promise<RuntimeWiring> => {
+						residencyLifecycle = createResidentCodexLeadLifecycleForGeneration({
+							config,
+							projects: residentCodexLeadProjects,
+							threadId,
+							generationId: randomBytes(16).toString("hex"),
+							log: (message) => logger.warn(message),
+						});
 						const externalReceiptQueue = new MailboxQueue(config.commDbPath);
 						const externalReceiptSaga = new ExternalReceiptSaga({
 							leadId: config.leadId,
@@ -591,6 +647,7 @@ function buildTuiGeneration(
 						const executor = new CodexTurnExecutor({
 							process: facade, // demuxed: foreign turns never arrive
 							threadId,
+							...(residencyLifecycle ? { lifecycle: residencyLifecycle } : {}),
 						});
 						// FLY-1806: Discord typing indicator is fixed on. The TUI sidecar drives
 						// Discord I/O through this SAME router,
@@ -606,6 +663,7 @@ function buildTuiGeneration(
 							botToken: config.botToken,
 							channelIds: config.channelIds,
 							cursorStore: new FileInboundCursorStore(config.inboundCursorPath),
+							...(residencyLifecycle ? { lifecycle: residencyLifecycle } : {}),
 						});
 						// FLY-314 Phase 2: reply-in-thread wiring (default-OFF → undefined).
 						const replyInThread = config.replyInThread
@@ -823,6 +881,7 @@ function buildTuiGeneration(
 								// FLY-1373: open Bridge batch ingress only AFTER journal recovery
 								// (CodexLeadRuntime orders recover() before startGateway()).
 								await ownership.start();
+								residencyLifecycle?.online();
 							},
 							stopGateway: async () => {
 								try {
@@ -850,11 +909,13 @@ function buildTuiGeneration(
 					clearInterval(livenessTimer);
 					livenessTimer = null;
 				}
+				residencyLifecycle?.generationLost();
 				await runtime?.stop(); // gateway first (review-pinned), then process
 				sender?.close?.(); // close the outbox SQLite handle (review MED — no leak per rebuild)
 				runtime = null;
 				proc = null;
 				sender = null;
+				residencyLifecycle = null;
 			},
 			onConnectionLost: (cb: () => void) => {
 				lostCb = cb;

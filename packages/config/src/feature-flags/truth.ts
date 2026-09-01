@@ -440,6 +440,16 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"numeric tuning: restart-storm attempts allowed per window (FLY-1501)",
 	FLYWHEEL_RESTART_STORM_LOCK_DEADLINE_SEC:
 		"numeric tuning: restart-storm fcntl acquisition deadline (FLY-1501)",
+	FLYWHEEL_CODEX_LEAD_RESIDENCY_CONSECUTIVE_FAILURES:
+		"numeric tuning: resident Codex Lead failures required before recovery (FLY-2216)",
+	FLYWHEEL_CODEX_LEAD_RESIDENCY_HEARTBEAT_STALE_MS:
+		"numeric tuning: resident Codex Lead lifecycle heartbeat freshness threshold (FLY-2216)",
+	FLYWHEEL_CODEX_LEAD_RESIDENCY_POLL_STALE_MS:
+		"numeric tuning: resident Codex Lead gateway poll freshness threshold (FLY-2216)",
+	FLYWHEEL_CODEX_LEAD_RESIDENCY_STARTUP_GRACE_MS:
+		"numeric tuning: resident Codex Lead recovery startup grace period (FLY-2216)",
+	FLYWHEEL_CODEX_LEAD_RESIDENCY_TURN_STALE_MS:
+		"numeric tuning: resident Codex Lead rollout turn freshness threshold (FLY-2216)",
 	FLYWHEEL_META_ALERT_TIMEOUT_S:
 		"numeric tuning: bound on the brake-unavailable alert from a launch path (FLY-1501)",
 	FLYWHEEL_RESTART_STORM_FAULT:

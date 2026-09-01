@@ -27,6 +27,17 @@ command -v jq >/dev/null 2>&1 || die "jq is required"
 [[ -r "$RAYA_LEAD_WORKSPACE/memory/MEMORY.md" ]] || die "Raya memory is missing or unreadable"
 [[ "$FIXTURE_PR" =~ ^[1-9][0-9]*$ ]] || die "RAYA_SUMMARY_FIXTURE_PR must be a positive PR number"
 
+if ! jq -e '
+	[.[] | select(.projectName == "raya") | (.leads // [])[] | select(.agentId == "raya")] as $matches |
+	($matches | length) == 1 and
+	$matches[0].backend == "codex-app-server" and
+	$matches[0].codexProfile == "full-access" and
+	$matches[0].canSpawnRunners == false and
+	($matches[0].companion // false) == false
+' "$PROJECTS_FILE" >/dev/null; then
+	die "canonical Raya registry must be full-access, non-companion, and unable to spawn runners"
+fi
+
 identity_json="$(node "$COMM_CLI" lead-identity resolve \
 	--projects-file "$PROJECTS_FILE" --project raya --lead raya --format json)" \
 	|| die "canonical Raya identity did not resolve"

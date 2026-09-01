@@ -354,6 +354,8 @@ phase_flywheel_home() {
   # never install silently; bare cp is banned for <state>/bin).
   local f
   for f in flywheel-lead-wrapper-v2.sh \
+      flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
+      resident-codex-lead-recover.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
       flywheel-bridge-wrapper.sh restart-services.sh host-tmux-selection-gate.sh; do
     if [ -f "$REPO_ROOT/scripts/$f" ]; then

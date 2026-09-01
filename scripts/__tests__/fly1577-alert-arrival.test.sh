@@ -53,6 +53,8 @@ chmod 0755 "$FR/scripts/meta-alert.sh" "$FR/scripts/lead-alert.sh" \
   "$FR/scripts/lead-patrol-snapshot.sh" "$FR/scripts/flywheel-node-dwell-control.mjs"
 for f in flywheel-lead-wrapper-v2.sh \
          flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+         flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
+         resident-codex-lead-recover.sh \
          flywheel-codex-lead-wrapper-codex-infra-bot.sh \
          flywheel-lead-attach.sh \
          flywheel-view-attach.sh flywheel-node-status.sh \
@@ -193,6 +195,8 @@ seed_state() {  # <state-dir> — converged copy lane + healthy meta link
   rm -rf "$st"; mkdir -p "$st/bin/lib"
   for f in flywheel-lead-wrapper-v2.sh \
            flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+           flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
+           resident-codex-lead-recover.sh \
            flywheel-codex-lead-wrapper-codex-infra-bot.sh \
            flywheel-lead-attach.sh \
            flywheel-view-attach.sh flywheel-node-status.sh \

@@ -35,6 +35,8 @@ make_fake_repo() {  # <dir> <gitshape: dir|file>
   local f i
   for f in flywheel-lead-wrapper-v2.sh \
       flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+      flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
+      resident-codex-lead-recover.sh \
       flywheel-codex-lead-wrapper-codex-infra-bot.sh \
       flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
       flywheel-bridge-wrapper.sh restart-services.sh \
@@ -80,6 +82,8 @@ seed_wrappers() {  # <state-dir> <repo> — pre-converge steady state (healthy)
   local f
   for f in flywheel-lead-wrapper-v2.sh \
            flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh \
+           flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh \
+           resident-codex-lead-recover.sh \
            flywheel-codex-lead-wrapper-codex-infra-bot.sh \
            flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh \
            flywheel-bridge-wrapper.sh restart-services.sh \

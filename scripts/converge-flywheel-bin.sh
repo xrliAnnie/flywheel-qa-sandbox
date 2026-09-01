@@ -78,7 +78,7 @@ fi
 # No installer writes either file into bin, and both are plain files — so the
 # copy lane, not the symlink lane (see symlink_strict_name below for the shapes
 # that must NOT be copied).
-FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
+FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-services.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
 # FLY-1062: a PACKAGED tree (root carries .flywheel-prebuilt) never ships
 # restart-services.sh — it is monorepo deploy machinery. There its absence is
 # the EXPECTED shape, not an integrity incident; without this branch every
@@ -89,7 +89,7 @@ FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullac
 # in package-onboard.sh's PO_SCRIPT_FILES whitelist and packaged-seams.test.sh
 # S0 asserts the closure is executable there — so they stay in both branches.)
 if [ -f "$REPO_ROOT/.flywheel-prebuilt" ]; then
-  FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
+  FILES="flywheel-lead-wrapper-v2.sh flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh flywheel-codex-lead-wrapper-codex-infra-bot.sh flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh resident-codex-lead-recover.sh flywheel-lead-attach.sh flywheel-view-attach.sh flywheel-node-status.sh flywheel-bridge-wrapper.sh restart-storm-gate.py host-tmux-selection-gate.sh lib/bounded-run.sh lib/lead-address.sh"
 fi
 
 log() { echo "[converge-bin] $*"; }
@@ -144,15 +144,15 @@ alert() {  # <title> <body> <signature> — best-effort (claims.db dedup inside)
     --title "${ALERT_TITLE_PREFIX}$1" --body "$2" --signature "$3" || true
 }
 
-# FLY-2190: these two wrappers were already live state-bin artifacts before
-# this converger began managing them. Their first successful convergence is an
-# expected adoption, not evidence that an established managed file drifted.
+# FLY-2190/2216: these carrier artifacts either predated converger ownership or
+# enter it as part of an intentional rollout. Their first successful convergence
+# is an expected adoption, not evidence that an established managed file drifted.
 # Record that transition durably and silently exactly once; every later drift
 # takes the ordinary severe-alert path below.
 ADOPTION_DIR="$STATE_DIR/state/converge-adoptions"
 is_first_adoption_name() {
   case "$1" in
-    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh) return 0 ;;
+    flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|flywheel-codex-lead-wrapper-codex-infra-bot.sh|flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh|resident-codex-lead-recover.sh) return 0 ;;
     *) return 1 ;;
   esac
 }

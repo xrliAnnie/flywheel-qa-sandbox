@@ -124,6 +124,29 @@ describe("TuiWindowAlertGuard — episode-latched consecutive-failure state mach
 		);
 	});
 
+	it("uses distinct founder-facing titles for InfraBot and Raya", () => {
+		const infraCalls: string[][] = [];
+		const rayaCalls: string[][] = [];
+		new TuiWindowAlertGuard(CONFIG, {
+			threshold: 1,
+			runAlert: (args) => infraCalls.push(args),
+		}).record(false);
+		new TuiWindowAlertGuard(
+			{
+				projectName: "raya",
+				leadId: "raya",
+				alertScriptPath: "/x/scripts/lead-alert.sh",
+			},
+			{
+				threshold: 1,
+				runAlert: (args) => rayaCalls.push(args),
+			},
+		).record(false);
+		const title = (args: string[]) => args[args.indexOf("--title") + 1];
+		expect(title(infraCalls[0])).toBe("Infra Bot TUI window not visible");
+		expect(title(rayaCalls[0])).toBe("Raya brain TUI window not visible");
+	});
+
 	it("a throwing runAlert never propagates (runtime liveness must not break)", () => {
 		let episode: number | undefined;
 		const guard = new TuiWindowAlertGuard(CONFIG, {
@@ -184,11 +207,38 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env: { FLYWHEEL_ROOT: "/x" },
 			exists: () => true,
 		});
 		expect(guard).not.toBeNull();
+	});
+
+	it("enables only the exact canonical Raya identity", () => {
+		const exact = createTuiWindowAlertGuard({
+			stateDir: stateDir(),
+			leadId: "raya",
+			projectName: "raya",
+			env: { FLYWHEEL_ROOT: "/x" },
+			exists: () => true,
+		});
+		const wrongProject = createTuiWindowAlertGuard({
+			stateDir: stateDir(),
+			leadId: "raya",
+			projectName: "flywheel",
+			env: { FLYWHEEL_ROOT: "/x" },
+			exists: () => true,
+		});
+		const nearbyLead = createTuiWindowAlertGuard({
+			stateDir: stateDir(),
+			leadId: "raya-raya",
+			projectName: "raya",
+			env: { FLYWHEEL_ROOT: "/x" },
+			exists: () => true,
+		});
+		expect(exact).not.toBeNull();
+		expect(wrongProject).toBeNull();
+		expect(nearbyLead).toBeNull();
 	});
 
 	it("does not enable a non-InfraBot Lead even with the retired env", () => {
@@ -207,7 +257,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env: {
 				FLYWHEEL_TUI_WINDOW_ALERT: "1",
 				FLYWHEEL_ROOT: "/Users/x/Dev/flywheel",
@@ -226,7 +276,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		createTuiWindowAlertGuard({
 			stateDir: stateDir(),
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env: {
 				FLYWHEEL_TUI_WINDOW_ALERT: "1",
 				FLYWHEEL_ROOT: "/x",
@@ -244,7 +294,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1" },
 			exists: () => true,
 		});
@@ -255,7 +305,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const guard = createTuiWindowAlertGuard({
 			stateDir: stateDir(),
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
 			exists: () => false,
 		});
@@ -268,7 +318,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const guard = createTuiWindowAlertGuard({
 			stateDir: dir,
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env: { FLYWHEEL_TUI_WINDOW_ALERT: "1", FLYWHEEL_ROOT: "/x" },
 			exists: () => true,
 			threshold: 2,
@@ -297,7 +347,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const g1 = createTuiWindowAlertGuard({
 			stateDir: dir,
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env,
 			exists: () => true,
 			threshold: 2,
@@ -313,7 +363,7 @@ describe("createTuiWindowAlertGuard — env gating + path resolution + fail-soft
 		const g2 = createTuiWindowAlertGuard({
 			stateDir: dir,
 			leadId: "codex-infra-bot-lead",
-			projectName: "p",
+			projectName: "flywheel",
 			env,
 			exists: () => true,
 			threshold: 2,

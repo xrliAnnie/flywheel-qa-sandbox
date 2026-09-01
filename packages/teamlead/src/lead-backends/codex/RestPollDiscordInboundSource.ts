@@ -22,6 +22,7 @@ import type {
 	DiscordInboundSource,
 } from "./CodexDiscordGateway.js";
 import type { InboundCursorStore } from "./InboundCursorStore.js";
+import type { ResidentCodexLeadPollFailureClass } from "./resident-codex-lead-lifecycle.js";
 
 const DISCORD_API = "https://discord.com/api/v10";
 
@@ -58,6 +59,28 @@ export interface RestPollSourceOptions {
 	 * only the FIRST run (no saved cursor) baselines to latest. Omitted → legacy
 	 * baseline-to-latest-every-start behavior (byte-compat). */
 	cursorStore?: InboundCursorStore;
+	/** Optional business-liveness observer. Its failures are telemetry failures and
+	 * must never change Discord delivery/cursor behavior. */
+	lifecycle?: RestPollLifecycleObserver;
+}
+
+export interface RestPollLifecycleObserver {
+	pollAttempt(channelId: string): void;
+	pollResult(
+		result:
+			| { ok: true; channelId: string }
+			| {
+					ok: false;
+					channelId: string;
+					failureClass: ResidentCodexLeadPollFailureClass;
+					status?: number;
+			  },
+	): void;
+	messageConsumed(input: {
+		channelId: string;
+		messageId: string;
+		cursorPersisted: boolean;
+	}): void;
 }
 
 export class RestPollDiscordInboundSource implements DiscordInboundSource {
@@ -72,6 +95,7 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	) => { cancel: () => void };
 	private readonly logger: { warn: (m: string, c?: unknown) => void };
 	private readonly cursorStore?: InboundCursorStore;
+	private readonly lifecycle?: RestPollLifecycleObserver;
 
 	private handler?: (msg: DiscordInboundMessage) => boolean;
 	private readonly lastSeen = new Map<string, string>();
@@ -105,6 +129,7 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 			});
 		this.logger = opts.logger ?? { warn: () => {} };
 		this.cursorStore = opts.cursorStore;
+		this.lifecycle = opts.lifecycle;
 	}
 
 	onMessage(handler: (msg: DiscordInboundMessage) => boolean): void {
@@ -182,7 +207,7 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 	 */
 	private async baselineChannel(channelId: string): Promise<boolean> {
 		try {
-			const latest = await this.fetchMessages(channelId, undefined);
+			const latest = await this.observedFetchMessages(channelId, undefined);
 			const newest = latest[0]; // Discord returns newest-first
 			if (newest) {
 				this.lastSeen.set(channelId, newest.id);
@@ -299,7 +324,7 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 			}
 			let messages: RawDiscordMessage[];
 			try {
-				messages = await this.fetchMessages(
+				messages = await this.observedFetchMessages(
 					channelId,
 					this.lastSeen.get(channelId),
 				);
@@ -317,10 +342,14 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 			// message after it) is re-fetched next poll instead of being skipped.
 			const ordered = [...messages].reverse();
 			let lastDurable: string | undefined;
+			const consumedMessageIds: string[] = [];
 			for (const m of ordered) {
 				if (!this.deliver(m)) break; // durable-accept failed → don't advance past it
 				delivered += 1;
-				if (m.id) lastDurable = m.id;
+				if (m.id) {
+					lastDurable = m.id;
+					consumedMessageIds.push(m.id);
+				}
 			}
 			if (lastDurable) {
 				this.lastSeen.set(channelId, lastDurable);
@@ -328,13 +357,26 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 				// on msg id) rather than skipping. A persist failure must NOT crash the
 				// poll: the in-memory cursor still advances; a restart resumes from the
 				// older persisted cursor → re-delivers → journal dedups (at-least-once).
+				let cursorPersisted = false;
 				try {
-					this.cursorStore?.save(channelId, lastDurable);
+					if (this.cursorStore) {
+						this.cursorStore.save(channelId, lastDurable);
+						cursorPersisted = true;
+					}
 				} catch (err) {
 					this.logger.warn("cursor persist failed (at-least-once preserved)", {
 						channelId,
 						err: (err as Error).message,
 					});
+				}
+				for (const messageId of consumedMessageIds) {
+					this.observe(() =>
+						this.lifecycle?.messageConsumed({
+							channelId,
+							messageId,
+							cursorPersisted,
+						}),
+					);
 				}
 			}
 		}
@@ -396,9 +438,75 @@ export class RestPollDiscordInboundSource implements DiscordInboundSource {
 			headers: { Authorization: `Bot ${this.botToken}` },
 		});
 		if (!res.ok) {
-			throw new Error(`Discord GET messages ${res.status}`);
+			throw new DiscordPollHttpError(res.status);
 		}
 		const body = (await res.json()) as unknown;
 		return Array.isArray(body) ? (body as RawDiscordMessage[]) : [];
 	}
+
+	private async observedFetchMessages(
+		channelId: string,
+		afterId: string | undefined,
+	): Promise<RawDiscordMessage[]> {
+		this.observe(() => this.lifecycle?.pollAttempt(channelId));
+		try {
+			const messages = await this.fetchMessages(channelId, afterId);
+			this.observe(() => this.lifecycle?.pollResult({ ok: true, channelId }));
+			return messages;
+		} catch (error) {
+			const classified = classifyPollFailure(error);
+			this.observe(() =>
+				this.lifecycle?.pollResult({
+					ok: false,
+					channelId,
+					failureClass: classified.failureClass,
+					...(classified.status !== undefined
+						? { status: classified.status }
+						: {}),
+				}),
+			);
+			throw error;
+		}
+	}
+
+	private observe(fn: () => void): void {
+		try {
+			fn();
+		} catch (error) {
+			this.logger.warn("Raya lifecycle observer failed (poll continues)", {
+				err: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+}
+
+class DiscordPollHttpError extends Error {
+	constructor(readonly status: number) {
+		super(`Discord GET messages ${status}`);
+		this.name = "DiscordPollHttpError";
+	}
+}
+
+function classifyPollFailure(error: unknown): {
+	failureClass: ResidentCodexLeadPollFailureClass;
+	status?: number;
+} {
+	if (error instanceof DiscordPollHttpError) {
+		const failureClass: ResidentCodexLeadPollFailureClass =
+			error.status === 401 || error.status === 403
+				? "auth"
+				: error.status === 429
+					? "rate_limit"
+					: error.status >= 500
+						? "server"
+						: "unknown";
+		return { failureClass, status: error.status };
+	}
+	if (
+		error instanceof TypeError ||
+		(error instanceof Error && error.name === "AbortError")
+	) {
+		return { failureClass: "network" };
+	}
+	return { failureClass: "unknown" };
 }

@@ -81,6 +81,7 @@ export const TICKET_KINDS: ReadonlySet<AlertEventType> =
 		"zombie_session_backlog",
 		"cmux_cleanup",
 		"cmux_watcher_stalled",
+		"codex_lead_residency_stalled",
 		"tmux_rescue_hold",
 	]);
 

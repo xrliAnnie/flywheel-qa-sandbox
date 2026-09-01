@@ -407,6 +407,19 @@ describe("FLY-1393 flag truth", () => {
 		);
 	});
 
+	it("FLY-2216 classifies resident Codex Lead health thresholds as numeric tuning", () => {
+		for (const envVar of [
+			"FLYWHEEL_CODEX_LEAD_RESIDENCY_CONSECUTIVE_FAILURES",
+			"FLYWHEEL_CODEX_LEAD_RESIDENCY_HEARTBEAT_STALE_MS",
+			"FLYWHEEL_CODEX_LEAD_RESIDENCY_POLL_STALE_MS",
+			"FLYWHEEL_CODEX_LEAD_RESIDENCY_STARTUP_GRACE_MS",
+			"FLYWHEEL_CODEX_LEAD_RESIDENCY_TURN_STALE_MS",
+		]) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/numeric tuning/i);
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(/FLY-2216/);
+		}
+	});
+
 	it("registers the FLY-1425 submission sentinel as non-flag plumbing", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_WORKFLOW_SUBMISSION_EXPECTED).toMatch(
 			/plumbing/i,

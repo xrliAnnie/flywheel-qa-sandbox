@@ -591,7 +591,8 @@ classify_lead_carrier() {
       ;;
     flywheel-codex-lead-wrapper-mufasa-tui.sh|\
     flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh|\
-    flywheel-codex-lead-wrapper-codex-infra-bot.sh)
+    flywheel-codex-lead-wrapper-codex-infra-bot.sh|\
+    flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh)
       printf 'codex-tui-cmux\n'
       ;;
     *) printf 'config-drift\n' ;;

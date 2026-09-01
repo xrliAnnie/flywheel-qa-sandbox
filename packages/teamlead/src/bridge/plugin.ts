@@ -111,6 +111,7 @@ import {
 	parseAndValidateProjects,
 	resolveLeadForIssue,
 } from "../ProjectConfig.js";
+import { findResidentCodexLeadTargets } from "../resident-codex-lead-roster.js";
 import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
 	type Session,
@@ -485,6 +486,7 @@ import {
 	makeRunnerRevalidate,
 	type RescueRuntime,
 } from "./rescue-runtime.js";
+import { createHostResidentCodexLeadPatrol } from "./resident-codex-lead-patrol.js";
 import {
 	createResidueHarvester,
 	type ResidueHarvester,
@@ -8684,6 +8686,45 @@ export async function startBridge(
 					},
 				})
 			: null;
+	const residentCodexLeadTargets = findResidentCodexLeadTargets(projects);
+	const residentCodexLeadFlywheelRoot =
+		process.env.FLYWHEEL_REPO_ROOT?.trim() ||
+		resolve(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
+	const residentCodexLeadPatrols = residentCodexLeadTargets.map((target) => ({
+		target,
+		patrol: createHostResidentCodexLeadPatrol({
+			homeDir: homedir(),
+			flywheelRoot: residentCodexLeadFlywheelRoot,
+			target,
+			alert: async (event) => {
+				const sink = leadPendingAlertHolder.current;
+				if (!sink) {
+					throw new Error("resident Codex Lead alert sink is not ready");
+				}
+				const episode = createHash("sha256")
+					.update(`${target.leadKey}:${event.identityKey}:${event.phase}`)
+					.digest("hex")
+					.slice(0, 24);
+				await sink.alert({
+					projectName: FLEET_ALERT_PROJECT,
+					leadId: "codex-lead-residency",
+					eventId: `codex_lead_residency_stalled:${target.leadKey}:${event.phase}:${episode}`,
+					eventType: "codex_lead_residency_stalled",
+					title: `${target.projectName}/${target.leadId} resident Codex Lead business-liveness ${event.phase}`,
+					body: [
+						`target=${target.projectName}/${target.leadId}`,
+						`category=${event.decision.branch}`,
+						`identity=${event.identityKey}`,
+						`evidence=${event.decision.detail}`,
+						event.recovery
+							? `recovery=${event.recovery.ok ? "converged" : "failed"}: ${event.recovery.detail}`
+							: "recovery=not attempted",
+					].join("; "),
+					severity: "severe",
+				});
+			},
+		}),
+	}));
 
 	const gatePoller = new GatePoller({
 		pollIntervalMs: 3_000,
@@ -8713,6 +8754,23 @@ export async function startBridge(
 							);
 						}
 						await cmuxWatcherPatrol.tick();
+					},
+				}
+			: {}),
+		...(residentCodexLeadPatrols.length > 0
+			? {
+					onResidentCodexLeadPatrolTick: async () => {
+						await Promise.all(
+							residentCodexLeadPatrols.map(async ({ target, patrol }) => {
+								try {
+									await patrol.tick();
+								} catch (error) {
+									console.warn(
+										`[resident-codex-lead] patrol failed for ${target.projectName}/${target.leadId}: ${error instanceof Error ? error.message : String(error)}`,
+									);
+								}
+							}),
+						);
 					},
 				}
 			: {}),

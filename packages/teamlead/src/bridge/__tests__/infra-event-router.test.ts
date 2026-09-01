@@ -54,6 +54,16 @@ describe("classifyInfraEvent (FLY-927 D1 matrix)", () => {
 		expect(TICKET_KINDS.has("ship_attempt_failed")).toBe(true);
 	});
 
+	it("routes resident Codex Lead business-liveness incidents to tickets", () => {
+		expect(
+			TICKET_KINDS.has(
+				"codex_lead_residency_stalled" as Parameters<
+					typeof TICKET_KINDS.has
+				>[0],
+			),
+		).toBe(true);
+	});
+
 	it.each([
 		"flag_scan_failed",
 		"flag_scan_handoff",

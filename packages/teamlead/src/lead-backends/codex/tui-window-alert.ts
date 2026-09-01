@@ -4,8 +4,8 @@
  *
  * `ensureTuiWindow` is deliberately fail-open (a visibility loss must never take
  * down the Lead's Discord service — tui-window.ts §22). That is right for an
- * ordinary Lead, but for the Codex Infra Bot the founder MUST be able to watch
- * it (FLY-398 hard rule): a silently-missing pane is exactly the FLY-871 incident
+ * ordinary Lead, but the canonical Codex Infra Bot and Raya residents MUST stay
+ * founder-visible: a silently-missing pane is exactly the FLY-871 incident
  * shape, and the runtime had ZERO alert wiring (R-10.4-1). This guard watches the
  * runtime's own liveness cadence and, after K consecutive failures to (re)create
  * the window, fires ONE alert per episode via `scripts/lead-alert.sh` — the
@@ -22,8 +22,8 @@
  *      and clears the in-proc latch → the next episode gets a fresh startedAt =
  *      fresh signature = re-alertable. The file survives a KeepAlive restart so a
  *      new incarnation of the SAME unresolved episode does not double-report.
- *   2. Scoped to the canonical `codex-infra-bot-lead` identity. Other TUI
- *      Leads remain byte-compatible without a mutable runtime flag.
+ *   2. Scoped to the exact canonical `(flywheel,codex-infra-bot-lead)` and
+ *      `(raya,raya)` identities. Other TUI Leads remain byte-compatible.
  *
  * Fail-soft everywhere: an unresolved lead-alert.sh path (no FLYWHEEL_ROOT /
  * missing script) disables the guard with a warning (never throws); an alert
@@ -162,6 +162,10 @@ export class TuiWindowAlertGuard {
 	private fire(startedAt: number): void {
 		const minutes = Math.round((this.threshold * 20) / 60);
 		const signature = `${TUI_WINDOW_ALERT_KIND}:${startedAt}`;
+		const displayName =
+			this.config.projectName === "raya" && this.config.leadId === "raya"
+				? "Raya brain"
+				: "Infra Bot";
 		const args = [
 			"--lead",
 			this.config.leadId,
@@ -172,7 +176,7 @@ export class TuiWindowAlertGuard {
 			"--severity",
 			"warning",
 			"--title",
-			"Infra Bot TUI window not visible",
+			`${displayName} TUI window not visible`,
 			"--body",
 			`The windowed codex resume --remote pane could not be (re)created after ${this.threshold} consecutive liveness checks (~${minutes} min). The founder-visible cmux tab may be missing. Bring-up check: verify-windowed-lead.sh ${this.config.projectName} ${this.config.leadId}`,
 			"--signature",
@@ -265,11 +269,11 @@ export interface CreateTuiWindowAlertGuardOptions {
 }
 
 /**
- * Build the guard for InfraBot, or return null (disabled) — the runtime calls
+ * Build the guard for an exact resident identity, or return null (disabled) — the runtime calls
  * `guard?.record(...)` so null is a no-op.
  *
  * Disabled when:
- *   - leadId is not the canonical InfraBot identity, OR
+ *   - projectName + leadId are not one of the two canonical resident identities, OR
  *   - lead-alert.sh cannot be resolved (no FLYWHEEL_LEAD_ALERT_SH override AND no
  *     FLYWHEEL_ROOT), OR the resolved script does not exist (fail-soft — Codex R1#4).
  *
@@ -284,7 +288,10 @@ export function createTuiWindowAlertGuard(
 	const log = opts.log ?? (() => {});
 	const exists = opts.exists ?? ((p: string) => existsSync(p));
 
-	if (opts.leadId !== "codex-infra-bot-lead") return null;
+	const exactInfraBot =
+		opts.projectName === "flywheel" && opts.leadId === "codex-infra-bot-lead";
+	const exactRaya = opts.projectName === "raya" && opts.leadId === "raya";
+	if (!exactInfraBot && !exactRaya) return null;
 
 	const override = opts.env.FLYWHEEL_LEAD_ALERT_SH?.trim();
 	const root = opts.env.FLYWHEEL_ROOT?.trim();

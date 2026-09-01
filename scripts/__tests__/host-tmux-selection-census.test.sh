@@ -22,6 +22,7 @@ mkdir -p "$PLIST_DIR" "$SOURCE_DIR" "$INSTALLED_DIR"
 REGISTERED_WRAPPERS="
 flywheel-lead-wrapper-v2.sh
 flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
+flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 flywheel-codex-lead-wrapper-codex-infra-bot.sh
 "
 for wrapper in $REGISTERED_WRAPPERS; do
@@ -48,6 +49,8 @@ for index in $(seq 1 14); do
 done
 write_plist com.flywheel.lead.growth-mufasa-lead \
   flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh
+write_plist com.flywheel.lead.raya-raya \
+  flywheel-codex-lead-wrapper-raya-tui-fullaccess.sh
 write_plist com.flywheel.lead.flywheel-codex-infra-bot-lead \
   flywheel-codex-lead-wrapper-codex-infra-bot.sh
 
@@ -57,6 +60,7 @@ for index in $(seq 1 14); do
 done > "$CANDIDATES"
 printf '%s\n' \
   $'growth-mufasa-lead\tfixture\tmufasa\t-\trestart\tplist' \
+  $'raya-raya\tfixture\traya\t-\trestart\tplist' \
   $'flywheel-codex-infra-bot-lead\tfixture\tinfra\t-\trestart\tplist' \
   >> "$CANDIDATES"
 cp "$CANDIDATES" "$SANDBOX/loaded-candidates.base.tsv"
@@ -82,11 +86,11 @@ run_census() {
 run_census healthy
 
 if [ "$CENSUS_RC" -eq 0 ] \
-  && grep -Fq 'census pass plists=16 generic=14 codex-mufasa=1 codex-infra-bot=1' \
+  && grep -Fq 'census pass plists=17 generic=14 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
     "$SANDBOX/healthy.out"; then
-  pass "all 16 positively-loaded Lead plists map to the three registered carriers"
+  pass "all 17 positively-loaded Lead plists map to the four registered carriers"
 else
-  fail "healthy 16-Lead census (rc=$CENSUS_RC)" \
+  fail "healthy 17-Lead census (rc=$CENSUS_RC)" \
     "$(cat "$SANDBOX/healthy.err" 2>/dev/null)"
 fi
 
@@ -97,7 +101,7 @@ write_plist com.flywheel.lead.skipped-unknown flywheel-unknown-lead-wrapper.sh
 printf '%s\n' $'skipped-unknown\t-\t-\t-\tconfig-drift\tplist' >> "$CANDIDATES"
 run_census classified-skip
 if [ "$CENSUS_RC" -eq 0 ] \
-  && grep -Fq 'census pass plists=16 generic=14 codex-mufasa=1 codex-infra-bot=1' \
+  && grep -Fq 'census pass plists=17 generic=14 codex-mufasa=1 codex-infra-bot=1 codex-raya=1' \
     "$SANDBOX/classified-skip.out"; then
   pass "non-restart loaded classifications do not veto healthy production Leads"
 else

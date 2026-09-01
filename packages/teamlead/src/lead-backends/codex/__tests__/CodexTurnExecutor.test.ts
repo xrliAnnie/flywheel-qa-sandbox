@@ -33,7 +33,13 @@ class FakeChild implements ChildTransport {
 	}
 }
 
-async function setup() {
+async function setup(lifecycle?: {
+	turnStarted(turnId: string): void;
+	turnFinished(
+		turnId: string,
+		status: "completed" | "failed" | "interrupted",
+	): void;
+}) {
 	const child = new FakeChild();
 	const proc = new CodexLeadProcess({
 		spawnChild: () => child,
@@ -42,11 +48,118 @@ async function setup() {
 	const startP = proc.start();
 	child.respond(1, {}); // initialize
 	await startP;
-	const exec = new CodexTurnExecutor({ process: proc, threadId: "th-1" });
+	const exec = new CodexTurnExecutor({
+		process: proc,
+		threadId: "th-1",
+		...(lifecycle ? { lifecycle } : {}),
+	});
 	return { child, proc, exec };
 }
 
 describe("CodexTurnExecutor — turn lifecycle", () => {
+	it("emits one started/terminal lifecycle pair after the real turn id is known", async () => {
+		const lifecycle = {
+			turnStarted: vi.fn(),
+			turnFinished: vi.fn(),
+		};
+		const { child, exec } = await setup(lifecycle);
+		const start = exec.startTurn({
+			threadId: "th-1",
+			input: "hi",
+			clientUserMessageId: "c",
+		});
+		child.respond(child.lastId(), { turnId: "t-life" });
+		const turnId = await start;
+		expect(lifecycle.turnStarted).toHaveBeenCalledTimes(1);
+		expect(lifecycle.turnStarted).toHaveBeenCalledWith("t-life");
+		const completion = exec.awaitCompletion(turnId);
+		child.push({
+			jsonrpc: "2.0",
+			method: "turn/completed",
+			params: { turn: { id: "t-life", status: "completed" } },
+		});
+		await completion;
+		expect(lifecycle.turnFinished).toHaveBeenCalledTimes(1);
+		expect(lifecycle.turnFinished).toHaveBeenCalledWith("t-life", "completed");
+	});
+
+	it("maps an interrupted terminal and an app-server exit to closed lifecycle statuses", async () => {
+		const lifecycle = {
+			turnStarted: vi.fn(),
+			turnFinished: vi.fn(),
+		};
+		const first = await setup(lifecycle);
+		const start = first.exec.startTurn({
+			threadId: "th-1",
+			input: "hi",
+			clientUserMessageId: "c",
+		});
+		first.child.respond(first.child.lastId(), { turnId: "t-interrupted" });
+		const completion = first.exec.awaitCompletion(await start);
+		first.child.push({
+			jsonrpc: "2.0",
+			method: "turn/completed",
+			params: { turn: { id: "t-interrupted", status: "interrupted" } },
+		});
+		await expect(completion).rejects.toThrow();
+		expect(lifecycle.turnFinished).toHaveBeenCalledWith(
+			"t-interrupted",
+			"interrupted",
+		);
+
+		const second = await setup(lifecycle);
+		const start2 = second.exec.startTurn({
+			threadId: "th-1",
+			input: "hi",
+			clientUserMessageId: "c2",
+		});
+		second.child.respond(second.child.lastId(), { turnId: "t-exit" });
+		const completion2 = second.exec.awaitCompletion(await start2);
+		second.child.exit(1);
+		await expect(completion2).rejects.toThrow();
+		expect(lifecycle.turnFinished).toHaveBeenCalledWith("t-exit", "failed");
+	});
+
+	it("lifecycle observer exceptions are fail-soft and start failure emits no false turn", async () => {
+		const lifecycle = {
+			turnStarted: vi.fn(() => {
+				throw new Error("observer unavailable");
+			}),
+			turnFinished: vi.fn(() => {
+				throw new Error("observer unavailable");
+			}),
+		};
+		const { child, exec } = await setup(lifecycle);
+		const start = exec.startTurn({
+			threadId: "th-1",
+			input: "hi",
+			clientUserMessageId: "c",
+		});
+		child.respond(child.lastId(), { turnId: "t-soft" });
+		const completion = exec.awaitCompletion(await start);
+		child.push({
+			jsonrpc: "2.0",
+			method: "turn/completed",
+			params: { turn: { id: "t-soft", status: "completed" } },
+		});
+		await expect(completion).resolves.toEqual({ output: "" });
+
+		const failed = await setup(lifecycle);
+		const rejected = failed.exec.startTurn({
+			threadId: "th-1",
+			input: "no",
+			clientUserMessageId: "c2",
+		});
+		failed.child.push({
+			jsonrpc: "2.0",
+			id: failed.child.lastId(),
+			error: { code: -1, message: "start refused" },
+		});
+		await expect(rejected).rejects.toThrow();
+		expect(lifecycle.turnStarted).toHaveBeenCalledTimes(1);
+		expect(lifecycle.turnFinished).toHaveBeenCalledTimes(1);
+	});
+
 	it("startTurn sends turn/start with text input + correlation id, returns turnId", async () => {
 		const { child, exec } = await setup();
 		const p = exec.startTurn({
