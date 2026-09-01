@@ -1,0 +1,363 @@
+<title>日历写凭据隔离</title>
+<style>
+  :root{
+    --bg:#f5f5f7; --card:#ffffff; --ink:#1d1d1f; --dim:#86868b; --navy:#1a365d;
+    --red:#ff3b30; --amber:#ff9500; --blue:#007aff; --green:#34c759; --purple:#af52de;
+    --line:#e5e5ea; --shadow:0 1px 3px rgba(0,0,0,.06);
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.65;margin:0;padding:0 16px 80px}
+  .wrap{max-width:960px;margin:0 auto}
+  header.top{padding:40px 0 8px}
+  .kicker{font-size:13px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+  h1{font-size:30px;line-height:1.25;margin:6px 0 10px;letter-spacing:-.01em}
+  .sub{font-size:18px;color:#333;margin:0 0 4px}
+  .meta{font-size:13px;color:var(--dim);margin-top:10px}
+  .meta code{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px;background:#efeff2;padding:1px 6px;border-radius:5px}
+  .card{background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:22px 24px;margin:18px 0;border-left:4px solid var(--line)}
+  .card.blue{border-left-color:var(--blue)} .card.green{border-left-color:var(--green)}
+  .card.red{border-left-color:var(--red)} .card.amber{border-left-color:var(--amber)}
+  .card.purple{border-left-color:var(--purple)} .card.navy{border-left-color:var(--navy)}
+  h2{font-size:22px;margin:6px 0 12px;letter-spacing:-.01em}
+  h3{font-size:17px;margin:18px 0 6px}
+  p{margin:8px 0}
+  .lead{font-size:17px}
+  ul{margin:8px 0;padding-left:22px} li{margin:5px 0}
+  .term{background:#fff8e6;border:1px solid #ffe4a3;border-radius:8px;padding:2px 8px;font-weight:600}
+  .gloss{color:var(--dim);font-size:14px}
+  .diagram{background:#fff;border:1px solid var(--line);border-radius:12px;padding:14px;margin:14px 0;overflow-x:auto}
+  .diagram svg{max-width:100%;height:auto;display:block;margin:0 auto}
+  .cap{font-size:13px;color:var(--dim);text-align:center;margin-top:6px}
+  table{border-collapse:collapse;width:100%;font-size:14px;margin:12px 0;display:block;overflow-x:auto;white-space:nowrap}
+  @media(min-width:720px){table{white-space:normal}}
+  th,td{border:1px solid var(--line);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:#fafafc;font-weight:600}
+  .yes{color:var(--green);font-weight:600}.no{color:var(--red);font-weight:600}.warn{color:var(--amber);font-weight:600}
+  .pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 10px;border-radius:999px;margin-right:6px}
+  .pill.rec{background:#eefbf1;color:#1a7a3a;border:1px solid #a9e6bd}
+  .pill.fallback{background:#fff6e9;color:#9a5b00;border:1px solid #ffd591}
+  .pill.veto{background:#fff0ef;color:#b3271e;border:1px solid #ffc2bd}
+  .opt{border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+  .opt h3{margin-top:0}
+  .grid2{display:grid;grid-template-columns:1fr;gap:10px}
+  @media(min-width:680px){.grid2{grid-template-columns:1fr 1fr}}
+  .mini{background:#fafafc;border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .mini .h{font-size:13px;color:var(--dim);text-transform:uppercase;letter-spacing:.03em;margin-bottom:4px}
+  .defend .ok{color:#1a7a3a}.defend .bad{color:#b3271e}
+  .callout{background:#eaf3ff;border:1px solid #c9e0ff;border-radius:10px;padding:12px 14px;margin:12px 0}
+  .callout.warn{background:#fff6e9;border-color:#ffd591}
+  .callout.red{background:#fff0ef;border-color:#ffc2bd}
+  code.k{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:13px;background:#eef0f4;padding:1px 5px;border-radius:5px}
+  .cmt{margin-top:16px;border-top:1px dashed var(--line);padding-top:12px}
+  .cmt label{font-size:12px;color:var(--dim);display:block;margin-bottom:5px}
+  .cmt textarea{width:100%;min-height:58px;border:1px solid var(--line);border-radius:9px;padding:9px 11px;
+    font-family:inherit;font-size:14px;resize:vertical;background:#fcfcfd;color:var(--ink)}
+  .cmt textarea:focus{outline:2px solid #bcd7ff;border-color:#bcd7ff}
+  .saved{font-size:11px;color:var(--green);margin-top:3px;height:14px}
+  .summary textarea{min-height:150px;font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:12px}
+  .btn{appearance:none;border:0;border-radius:10px;padding:10px 18px;font-size:14px;font-weight:600;
+    background:var(--blue);color:#fff;cursor:pointer;margin:4px 8px 4px 0}
+  .btn.sec{background:#e9e9ee;color:#1d1d1f}
+  .btnrow{margin:10px 0}
+  .status{font-size:13px;color:var(--dim);margin-left:4px}
+  footer{color:var(--dim);font-size:13px;text-align:center;margin-top:30px}
+</style>
+
+<div class="wrap">
+<header class="top">
+  <div class="kicker">Flywheel · 工程设计 · 决策稿</div>
+  <h1>隔离 founder Google Calendar 写凭据</h1>
+  <p class="sub">让「AI 助理 Raya 是唯一能自动写你日历的程序」这件事由<strong>机器强制</strong>，而不再只靠一层会话劝阻。</p>
+  <p class="meta">Issue <code>FLY-2204</code> ·（为 <code>FLY-2137</code> 补上真正的边界）· 日期 2026-08-31 · 状态：设计已通过独立评审，等你在 A / B 之间拍板</p>
+</header>
+
+<div class="card blue">
+  <h2>一句话</h2>
+  <p class="lead">今天这台机器上，任何一个 AI agent（Claude / Codex / Gemini，或任何拿到命令行的程序）都能绕过 FLY-2137 的护栏，直接写你的 Google 日历——因为写日历的钥匙是「同一个电脑用户下人人可读」的；本设计把这把钥匙<strong>真正隔离出去</strong>，让只有 Raya 排会程序能用它。</p>
+  <div class="cmt" data-sec="一句话">
+    <label>对这段有想法？（自动保存到你本地浏览器）</label>
+    <textarea placeholder="在这里写你的意见…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>1 · 问题：FLY-2137 自己承认漏掉的那半</h2>
+  <p>FLY-2137 上线了一层<span class="term">会话护栏</span><span class="gloss">（在 Claude 会话里敲日历命令时拦一下的钩子）</span>，但它自己在文档里写明：拦不住三条路——① agent 把命令写进脚本再运行；② Codex / Gemini 直接连命令行；③ 直接读出机器里的钥匙、自己调 Google。</p>
+  <p>这三条路有一个共同的根：</p>
+  <div class="callout red"><strong>写你日历的钥匙，在这台电脑上是「同一个登录用户下人人可读」的。</strong></div>
+  <p>实测证实：任何拿到你这个电脑账号（<code class="k">xiaorongli</code>）命令行的 agent，今天就能直接 <code class="k">gog calendar create …</code> 写你的主日历，或者读出钥匙串里的令牌自己调 Google。护栏只挡住了最窄的一条，另外三条它结构上够不着。</p>
+  <div class="cmt" data-sec="问题">
+    <label>对「问题定义」有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card amber">
+  <h2>2 · 一个绕不开的硬事实</h2>
+  <p class="lead">在这台单人 Mac 上，<strong>「同一个电脑用户」根本不是一条边界。</strong></p>
+  <p>同一个用户下的两个程序，可以互相读对方的私密文件、可以读对方在钥匙串里的令牌。任何「换个目录 / 换个名字 / 加个密」的做法，对<strong>同用户</strong>的 agent 都只是<span class="term">障眼法</span><span class="gloss">（obscurity——藏起来，但没锁上）</span>，不是隔离。这正是 FLY-2137 在护栏那层踩过的同一课，只不过下沉了一层。</p>
+  <p>所以真正能用的边界只有两类，必须<strong>同时上</strong>：</p>
+  <ul>
+    <li><strong>权限边界（scope）</strong>：把你电脑用户手里那把「到处在用」的 Google 令牌，重新授权成<strong>不含写日历的权限</strong>。这样就算 agent 把令牌整个偷走，在 Google 那侧也换不出一次日历写。</li>
+    <li><strong>身份边界（POSIX uid）</strong>：能写日历的那把钥匙，放到一个<span class="term">专用系统用户</span><span class="gloss">（一个独立的电脑账号 uid，专给这个程序用）</span>名下。你电脑用户下的 agent（没有管理员密码）就读不到它。</li>
+  </ul>
+  <div class="cmt" data-sec="硬事实">
+    <label>对「同用户不是边界」这个判断有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card green">
+  <h2>3 · 核心机制：把职责拆成三个互不越界的角色</h2>
+  <p>光把钥匙和 agent 分开还不够——因为 Raya 自己会启动一个 Codex（AI）子进程，如果它俩同一个用户，那个 AI 又能读到钥匙。所以最终拆成<strong>三个各司其职的系统用户</strong>：</p>
+  <div class="diagram" role="img" aria-label="三角色 uid 拓扑图：agent 域、排会入口、日历写手，以及被拦住的四条越权路径">
+    <!--SVG_D1-->
+  </div>
+  <p class="cap">图 1 · 三角色隔离：绿色是可信最小程序，红色是被机器挡在四条路之外的 agent 域</p>
+  <ul>
+    <li><strong>uid A（agent 域）</strong>：Raya 的大脑 / 语音 + Codex，跑各种 AI。<strong>它没有日历钥匙，也没有调用写手的权限。</strong></li>
+    <li><strong>uid I（排会入口）</strong>：一个<strong>不跑任何 AI</strong>的最小程序，只认你本人的排会指令，是唯一被允许叫动写手的角色。</li>
+    <li><strong>uid W（日历写手）</strong>：一个<strong>不跑任何 AI</strong>的最小程序，独家持有日历写钥匙，只接受来自 uid I 的请求。</li>
+  </ul>
+  <p class="gloss">四条红色虚线 = agent 想写你日历的四种办法（偷钥匙、直连写手、伪造排会、自己调 Google），每一条都被一个机器机制挡住。</p>
+  <div class="cmt" data-sec="核心机制">
+    <label>对「三角色拆分」有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card navy">
+  <h2>4 · 数据 / 结构模型：谁拿什么钥匙</h2>
+  <p>关键在于「每把钥匙的权限刚好够用、且注销边界互相独立」。凭据按消费者分开：</p>
+  <table>
+    <thead><tr><th>谁</th><th>对日历的权限</th><th>钥匙身份 / 注销域</th></tr></thead>
+    <tbody>
+      <tr><td>你电脑用户下的日常 agent / 生活</td><td class="no">无日历（读写都去掉）</td><td>你的 Google 账号 · 主令牌</td></tr>
+      <tr><td>FLY-2137 每日只读巡检</td><td class="warn">只读</td><td>你的账号 · <strong>独立 OAuth 应用</strong>（独立注销域）</td></tr>
+      <tr><td>日历写手（方案 A）</td><td class="yes">只能写「指定日历」</td><td><strong>独立 bot 账号</strong> · 天然独立注销域</td></tr>
+      <tr><td>日历写手（方案 B）</td><td class="yes">你账号的整域读写</td><td>你的账号 · 须放<strong>独立 OAuth 应用</strong></td></tr>
+      <tr><td>QA 测试</td><td class="yes">只能写「QA 测试日历」</td><td>独立 QA 账号 · 对你主日历无权限</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><strong>为什么在意「注销域」？</strong> 同一个 Google 账号 + 同一个 OAuth 应用，本质只有<strong>一份授权</strong>；撤销它会把这个应用下所有令牌一起作废。所以只读巡检、以及方案 B 的写手，都必须放到<strong>独立的 OAuth 应用</strong>里，否则「注销旧的写权限」会把它们一起误杀。<span class="gloss">（这条是评审第 3、5 轮抓出来的隐藏坑。）</span></div>
+  <div class="cmt" data-sec="数据模型">
+    <label>对「凭据 / 权限分配」有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>5 · 三个方案（这是要你拍的板）</h2>
+  <p>三个方案共用上面的机制，<strong>只在「写手用谁的钥匙」上分叉</strong>。A、B 都需要动系统层（建一个专用系统用户），这是<strong>只有你能决定</strong>的一次性操作。</p>
+
+  <div class="opt">
+    <h3><span class="pill rec">推荐</span>方案 A · 角色用户 + 独立 bot 账号</h3>
+    <p>写手用一个<strong>独立的 bot Google 账号</strong>，你把它加成「指定日历」的协作者（writer）。它就算泄露，也只能碰被你授权的那几个日历，碰不到你的 Gmail / Drive / 其他日历；要收回就删一行协作者，不牵动你本人任何登录。这就是 issue 说的「按服务身份隔离」。</p>
+    <div class="grid2 defend">
+      <div class="mini"><div class="h">防住谁</div><span class="ok">✅ 所有 agent（无写权限 + 读不到钥匙 + 无管理员密码）· ✅ 写手泄露也只限被授权日历 · ✅ agent 伪造排会 / 直连写手</span></div>
+      <div class="mini"><div class="h">防不住谁</div><span class="bad">拿到你交互式管理员密码的人 · 直接攻破那个系统用户的人（但能力被限死在少数日历）· 浏览器 / 人类会话面（见第 8 节）</span></div>
+    </div>
+    <div class="mini" style="margin-top:10px"><div class="h">你要做什么</div>① 一次管理员密码授权（脚本建系统用户，约 1 次输密码）；② 注册 / 授权一个 bot Google 账号（约 3 步）；③ 给 QA 账号授测试日历协作权（约 2 步）。</div>
+  </div>
+
+  <div class="opt">
+    <h3><span class="pill fallback">备选</span>方案 B · 角色用户 + 你本人的独立令牌</h3>
+    <p>写手用<strong>你本人账号的第二把令牌</strong>，<strong>不用建新账号</strong>。但它必须放在一个<strong>独立的 OAuth 应用</strong>里（否则注销旧写权限会连它一起杀）。达标，但权限更大、更粗：</p>
+    <div class="grid2 defend">
+      <div class="mini"><div class="h">防住谁</div><span class="ok">✅ 同 A：agent 无写权限、读不到钥匙、伪造排会被堵</span></div>
+      <div class="mini"><div class="h">弱在哪</div><span class="bad">那个系统用户一旦被攻破，泄露的是你本人日历的整域读写；收回它可能牵动你该账号的其他登录；不是「独立身份」，只是换个地方存你自己的钥匙</span></div>
+    </div>
+    <div class="mini" style="margin-top:10px"><div class="h">你要做什么</div>① 同 A 的管理员密码授权；② <strong>不用建 bot 账号</strong>，但需建 / 指定一个独立 OAuth 应用 + 浏览器授权一次；③ QA 独立身份同 A。</div>
+  </div>
+
+  <div class="opt">
+    <h3><span class="pill veto">不达标 · 否决基线</span>方案 C · 完全不动系统层</h3>
+    <p>不建任何系统用户，Raya 还是照旧跑。这看起来最省事，但<strong>结构上做不到 issue 的核心要求</strong>：凡是 Raya 作为普通程序能读到的钥匙，agent 作为同样的普通程序也能读到（钥匙串的按应用授权绑的是共享的 <code class="k">node</code> 解释器，agent 用同一个 <code class="k">node</code> 就绕过了）；而且 Raya 和它的 Codex 必然同一个用户，前一节的问题无解。</p>
+    <div class="callout red"><strong>结论：C 不达标，仅作否决基线。</strong>若你出于「绝不动系统层」的强约束只能选 C，那这个 issue 的核心目标在本机<strong>无法达成</strong>，应该重新定范围（例如接受「只有护栏 + 审计、机器强制无解」，或把 Raya 搬到一台独立机器）。</div>
+  </div>
+
+  <h3>一张表看清</h3>
+  <table>
+    <thead><tr><th>能力</th><th>A · bot</th><th>B · 本人令牌</th><th>C · 不动系统层</th></tr></thead>
+    <tbody>
+      <tr><td>agent 没有写日历权限</td><td class="yes">✅</td><td class="yes">✅</td><td class="warn">仅一半</td></tr>
+      <tr><td>agent 读不到写钥匙</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌ 同用户可读</td></tr>
+      <tr><td>写手不跑 AI + 调用权与 agent 分开</td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌ 必同用户</td></tr>
+      <tr><td>最小权限</td><td class="yes">✅ 限死少数日历</td><td class="warn">⚠️ 整域读写</td><td>—</td></tr>
+      <tr><td>你需要建 bot 账号</td><td>是</td><td>否（但需独立 OAuth 应用）</td><td>否</td></tr>
+      <tr><td><strong>达标</strong></td><td class="yes">✅</td><td class="yes">✅</td><td class="no">❌ 否决基线</td></tr>
+    </tbody>
+  </table>
+  <div class="cmt" data-sec="三方案">
+    <label>你倾向 A 还是 B？对方案对比有想法？</label>
+    <textarea placeholder="例如：我选 A / 我不想建 bot 账号，走 B / 对某点有疑问…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card purple">
+  <h2>6 · 怎么安全上线、出问题怎么退</h2>
+  <p>上线按「先立后破」：<strong>先</strong>把新写手搭好、实测能正常建 / 删你的排会，<strong>再</strong>去收回旧的写权限——中间任何一步不过就有序退回，绝不出现「Raya 突然写不了日历」的窗口。</p>
+  <div class="diagram" role="img" aria-label="部署与回滚状态机：Provision 到 Cutover 到 Retire 到 Final gate，失败则有序回滚">
+    <!--SVG_D2-->
+  </div>
+  <p class="cap">图 2 · 部署 / 回滚状态机——提交点是「全部安全探针通过」，不是「能写就行」</p>
+  <p class="gloss">一个关键顺序细节（评审抓出来的）：撤销旧写权限和重授只读，在<strong>同一个 Google 应用</strong>下是同一份授权，只能<strong>先撤销、证明旧的失效，再重新授权只读</strong>——不能反过来，否则会把新令牌一起杀掉。</p>
+  <div class="cmt" data-sec="部署回滚">
+    <label>对「上线 / 回滚流程」有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card">
+  <h2>7 · 认真考虑过、但没选的路</h2>
+  <ul>
+    <li><strong>只用钥匙串「按应用授权」，不建系统用户</strong>——不行：真正读钥匙的是 <code class="k">gog</code> / <code class="k">node</code>，是 agent 也在用的<strong>同一个</strong>程序，授权分不清谁是谁。要走通得给 Raya 重写一个签名的原生程序，工作量比建系统用户还大，还堵不住「伪造排会」。</li>
+    <li><strong>把钥匙搬到云上 / 远程代管</strong>——治标不治本：本机总还得留一把能调用云端的钥匙，同样要隔离，绕回原点；且远超本单范围。</li>
+    <li><strong>限制写手只能连 Google 日历的网络</strong>——降级为「加固项」，不作为达标依赖：写手还需要连 Google 的登录服务器等，做一个可靠的按用户网络围栏超出本单，不拿它撑达标声明。</li>
+  </ul>
+  <div class="cmt" data-sec="被否方案">
+    <label>对「被否的替代方案」有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card red">
+  <h2>8 · 诚实边界：这个设计做什么、不做什么</h2>
+  <div class="grid2">
+    <div class="mini"><div class="h">✅ 做到</div>
+      <ul style="margin:4px 0">
+        <li>agent 上下文里既没有写日历权限、也读不到写钥匙、也无法伪造排会去驱动写手</li>
+        <li>唯一自动写入方 = Raya 写手，由机器（权限 + 系统用户 + 日历协作名单）强制</li>
+        <li>QA 只能写测试日历；你本人用网页 / App 完全不受影响</li>
+      </ul>
+    </div>
+    <div class="mini"><div class="h">🚧 不声称防住</div>
+      <ul style="margin:4px 0">
+        <li><strong>已登录的浏览器会话</strong>：如果某个 agent 能操作你已登录 Google 的浏览器，它可以直接在网页上建事件——这属于浏览器 / 人类会话面，本单是「命令行凭据」治理，<strong>不声称</strong>防住它（如需覆盖另立单）</li>
+        <li>拿到你交互式管理员密码的本地攻击者</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout warn">所以「唯一自动写入方」这句话，达标范围<strong>限定在</strong>「机器命令行凭据 + Raya 的自动排会入口」这一面——这一点会写进要给你的决策包，让你知情后再拍。</div>
+  <div class="cmt" data-sec="诚实边界">
+    <label>对「边界 / 不做什么」有想法？</label>
+    <textarea placeholder="…"></textarea><div class="saved"></div>
+  </div>
+</div>
+
+<div class="card navy summary" id="summaryCard">
+  <h2>综合意见汇总</h2>
+  <p class="gloss">下面自动收集你在每一节写的意见（只存在你本地浏览器，不会自动发出）。点按钮复制，粘贴回 Discord 给 Tadashi 即可。</p>
+  <div class="btnrow">
+    <button class="btn" id="copyBtn" type="button">复制全部意见</button>
+    <button class="btn sec" id="refreshBtn" type="button">刷新汇总</button>
+    <span class="status" id="copyStatus"></span>
+  </div>
+  <textarea id="summaryBox" readonly aria-label="意见汇总"></textarea>
+</div>
+
+<footer>
+  FLY-2204 · 工程设计决策稿 · 独立设计评审 6 轮通过 · 待 founder 在 A / B 之间拍板并授权系统层改动<br/>
+  完整技术细节见仓库 <code>engineering/doc/FLY-2204-calendar-cred-isolation/plan.md</code>
+</footer>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function(){
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-2204";
+  var PREFIX = "fly2204-cmt::" + location.pathname + "::";
+  function keyFor(sec){ return PREFIX + sec; }
+  function lsGet(k){ try{ return localStorage.getItem(k); }catch(e){ return null; } }
+  function lsSet(k,v){ try{ localStorage.setItem(k,v); return true; }catch(e){ return false; } }
+
+  var boxes = Array.prototype.slice.call(document.querySelectorAll(".cmt"));
+  boxes.forEach(function(box){
+    var sec = box.getAttribute("data-sec") || "未命名";
+    var ta = box.querySelector("textarea");
+    var saved = box.querySelector(".saved");
+    if(!ta) return;
+    var existing = lsGet(keyFor(sec));
+    if(existing !== null){ ta.value = existing; }
+    var t = null;
+    ta.addEventListener("input", function(){
+      if(t){ clearTimeout(t); }
+      t = setTimeout(function(){
+        var ok = lsSet(keyFor(sec), ta.value);
+        if(saved){ saved.textContent = ok ? "已保存 ✓" : "（本浏览器无法保存）"; }
+        setTimeout(function(){ if(saved){ saved.textContent = ""; } }, 1400);
+      }, 300);
+    });
+  });
+
+  function collect(){
+    var parts = [];
+    boxes.forEach(function(box){
+      var sec = box.getAttribute("data-sec") || "未命名";
+      var ta = box.querySelector("textarea");
+      if(!ta) return;
+      var v = (ta.value || "").trim();
+      if(v){ parts.push("【" + sec + "】\n" + v); }
+    });
+    return parts;
+  }
+  function buildChunks(){
+    var parts = collect();
+    var body = parts.length ? parts.join("\n\n") : "（还没有填写任何意见）";
+    var full = MARKER + "\n\n" + body;
+    if(full.length <= 1800){ return [full]; }
+    var chunks = [], cur = MARKER + "\n\n", i;
+    for(i=0;i<parts.length;i++){
+      var block = parts[i] + "\n\n";
+      if((cur + block).length > 1800 && cur.trim() !== MARKER){
+        chunks.push(cur.trimEnd());
+        cur = MARKER + "（续）\n\n" + block;
+      } else {
+        cur += block;
+      }
+    }
+    if(cur.trim() !== "" ){ chunks.push(cur.trimEnd()); }
+    return chunks;
+  }
+  function render(){
+    var box = document.getElementById("summaryBox");
+    if(box){ box.value = buildChunks().join("\n\n———（下一段，请分开复制）———\n\n"); }
+  }
+
+  function setStatus(msg){
+    var s = document.getElementById("copyStatus");
+    if(s){ s.textContent = msg; setTimeout(function(){ if(s){ s.textContent=""; } }, 2600); }
+  }
+  function fallbackCopy(text){
+    try{
+      var t = document.createElement("textarea");
+      t.value = text; t.style.position="fixed"; t.style.opacity="0";
+      document.body.appendChild(t); t.focus(); t.select();
+      var ok = document.execCommand("copy");
+      document.body.removeChild(t);
+      return ok;
+    }catch(e){ return false; }
+  }
+  function doCopy(){
+    render();
+    var text = buildChunks().join("\n\n———（下一段，请分开复制）———\n\n");
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(function(){
+        setStatus("已复制到剪贴板 ✓");
+      }, function(){
+        setStatus(fallbackCopy(text) ? "已复制 ✓" : "复制失败，请手动选择文本框内容");
+      });
+    } else {
+      setStatus(fallbackCopy(text) ? "已复制 ✓" : "复制失败，请手动选择文本框内容");
+    }
+  }
+
+  var cb = document.getElementById("copyBtn");
+  var rb = document.getElementById("refreshBtn");
+  if(cb){ cb.addEventListener("click", doCopy); }
+  if(rb){ rb.addEventListener("click", function(){ render(); setStatus("已刷新"); }); }
+  render();
+})();
+</script>

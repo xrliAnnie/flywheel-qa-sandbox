@@ -51,6 +51,7 @@ new_case() {
 	mkdir -p "$(dirname "$AUDIT_LOG")" "$(dirname "$STATE")" "$CAPTURE"
 	: > "$AUDIT_LOG"
 	printf '{"events":[]}\n' > "$FIXTURE"
+	printf 'CALENDAR_SWEEP_CLIENT=sweep-readonly\n' > "$CASE_HOME/.flywheel/.env"
 }
 
 run_sweep() {
@@ -77,7 +78,7 @@ if run_sweep "2026-08-31T16:00:00.000Z" >/dev/null 2>&1 \
 	&& [[ "$(alert_count)" == 0 ]] \
 	&& [[ "$(state_eval 's.eventCursorISO')" == "2026-08-31T16:00:00.000Z" ]] \
 	&& [[ "$(state_eval 's.logCursor.offset')" == 0 ]] \
-	&& grep -q -- '--account personal --json calendar events primary' "$GOG_CALLS_FILE" \
+	&& grep -q -- '--account personal --client sweep-readonly --json calendar events primary' "$GOG_CALLS_FILE" \
 	&& grep -q -- '--fields items(id,summary,created,updated,creator,extendedProperties,reminders),nextPageToken' "$GOG_CALLS_FILE"; then
 	pass "S1 zero findings: no output + local cursor checkpoint + read-only gog grammar"
 else fail "S1 zero-finding checkpoint"; fi
@@ -276,6 +277,7 @@ new_case
 cat > "$CASE_HOME/.flywheel/.env" <<'EOF'
 CALENDAR_SWEEP_ACCOUNT=env-account
 CALENDAR_SWEEP_CALENDAR=env-calendar
+CALENDAR_SWEEP_CLIENT=sweep-readonly
 EOF
 run_sweep "2026-08-31T16:00:00.000Z" sent >/dev/null 2>&1
 env_call="$(<"$GOG_CALLS_FILE")"
@@ -283,13 +285,14 @@ new_case
 cat > "$CASE_HOME/.flywheel/.env" <<'EOF'
 CALENDAR_SWEEP_ACCOUNT=env-account
 CALENDAR_SWEEP_CALENDAR=env-calendar
+CALENDAR_SWEEP_CLIENT=sweep-readonly
 EOF
 CALENDAR_SWEEP_ACCOUNT=caller-account CALENDAR_SWEEP_CALENDAR=caller-calendar \
 	run_sweep "2026-08-31T16:00:00.000Z" sent >/dev/null 2>&1
 caller_call="$(<"$GOG_CALLS_FILE")"
-if [[ "$env_call" == *'--account env-account --json calendar events env-calendar'* ]] \
-	&& [[ "$caller_call" == *'--account caller-account --json calendar events caller-calendar'* ]]; then
-	pass "S15 env-file defaults load and caller overrides win"
+if [[ "$env_call" == *'--account env-account --client sweep-readonly --json calendar events env-calendar'* ]] \
+	&& [[ "$caller_call" == *'--account caller-account --client sweep-readonly --json calendar events caller-calendar'* ]]; then
+	pass "S15 env-file loads the isolated OAuth client and caller overrides win"
 else fail "S15 env snapshot/restore contract"; fi
 
 # S16 — a same-day deferred enforce→audit transition is emitted exactly once.
@@ -333,6 +336,22 @@ invalid_lines="$(grep -o 'mode_invalid_with_receipt' "$CAPTURE/body.3" | wc -l |
 if [[ "$invalid_lines" == 1 ]]; then
 	pass "S18 carried invalid-mode finding stays singular"
 else fail "S18 carried invalid-mode duplicate"; fi
+
+# S19 — a sweep without an isolated OAuth client must fail before invoking gog.
+new_case
+rm "$CASE_HOME/.flywheel/.env"
+if ! run_sweep "2026-08-31T16:00:00.000Z" sent >/dev/null 2>&1 \
+	&& [[ ! -s "$GOG_CALLS_FILE" ]]; then
+	pass "S19 missing isolated OAuth client fails before Calendar access"
+else fail "S19 missing isolated OAuth client"; fi
+
+# S20 — option-like client selectors are rejected before invoking gog.
+new_case
+printf 'CALENDAR_SWEEP_CLIENT=--help\n' > "$CASE_HOME/.flywheel/.env"
+if ! run_sweep "2026-08-31T16:00:00.000Z" sent >/dev/null 2>&1 \
+	&& [[ ! -s "$GOG_CALLS_FILE" ]]; then
+	pass "S20 invalid isolated OAuth client fails before Calendar access"
+else fail "S20 invalid isolated OAuth client"; fi
 
 printf '%s passed, %s failed\n' "$PASS" "$FAIL"
 exit "$FAIL"

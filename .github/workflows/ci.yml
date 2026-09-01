@@ -207,14 +207,19 @@ jobs:
     # 1327=1, cmux-hooks=10, 1364=312, 1944=2, 183=11, 1402=4, 1496=10,
     # 1663=97 (test total ~466s). Dependency preflight is ~0s when
     # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
-    # FLY-2030 PR #975 measured this shard at 1045s on 2026-08-28. Moving the
-    # complete 75s FLY-1678 step to shard 2 restores the expected total to ~970s.
+    # FLY-2204 PR #1011 measured this shard at 929s and shard 2 at 1077s on
+    # 2026-08-31. Moving the complete ~20s FLY-913/2204 step and ~57s FLY-2007
+    # step here balances the observed totals at roughly 1006s/1000s.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
         run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
 
       - uses: actions/checkout@v4
+        with:
+          # FLY-2007 resolves a historical freeze commit; shallow clone cannot
+          # see it (deterministic CI-only failure).
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -418,6 +423,25 @@ jobs:
         run: |
           bash scripts/__tests__/voucher-watch.test.sh
 
+      # FLY-913/2137/2204: restart/calendar guard and credential-isolation
+      # deployment guardrails. Hermetic — all credentials, calendar clients,
+      # homes, sockets, and delivery seams are private fixtures.
+      - name: Test — FLY-913/2204 restart + calendar isolation guards
+        run: |
+          python3 scripts/hooks/test-flywheel-restart-guard.py
+          bash scripts/hooks/test-restart-guard-install.sh
+          bash scripts/__tests__/test-calendar-write-sweep.test.sh
+          bash scripts/__tests__/test-install-calendar-sweep.test.sh
+          bash scripts/__tests__/fly2204-calendar-isolation-negative.test.sh
+          bash scripts/__tests__/fly2204-calendar-oauth-probe.test.sh
+          bash scripts/__tests__/fly2204-calendar-peer-proxy.test.sh
+          bash scripts/__tests__/fly2204-calendar-service-installer.test.sh
+          bash scripts/__tests__/fly2204-qa-calendar-config.test.sh
+          bash scripts/__tests__/lead-alert-strict-delivery.test.sh
+
+      - name: Test — FLY-2007 phase-0 analyser contract
+        run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
+
       - name: Enforce FLY-1870 capacity tripwire
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
@@ -441,16 +465,14 @@ jobs:
     # 1678=75 (moved from shard 1 after the 2026-08-28 FLY-2030 PR #975 run),
     # tripwire-test~1 (test total ~712s). Dependency preflight is ~0s when tools verify; the rg
     # fast-install path is normally ~5-15s and is bounded below the job ceiling.
+    # FLY-2204 PR #1011 measured 1077s on 2026-08-31; moving the complete
+    # FLY-913/2204 and FLY-2007 steps to shard 1 removes ~77s.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
         run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
 
       - uses: actions/checkout@v4
-        with:
-          # FLY-2007 analyser contract test resolves a historical freeze commit;
-          # shallow clone cannot see it (deterministic CI-only failure).
-          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -790,20 +812,6 @@ jobs:
       - name: Test — FLY-1981 runtime role auto-QA retirement
         run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
 
-      # FLY-913/2137: restart/calendar guard deployment guardrails. Hermetic —
-      # the hook runs against stdin JSON fixtures with the alert seam stubbed
-      # (plus one integration case through the REAL lead-alert.sh with a fake
-      # curl); install matrices run against fake HOMEs; the calendar sweep uses
-      # fake gog/alert seams and private state; strict delivery uses isolated
-      # FLYWHEEL_* dirs. Needs jq/sqlite3 (installed above) + python3.
-      - name: Test — FLY-913 restart-guard hook + install + strict-delivery
-        run: |
-          python3 scripts/hooks/test-flywheel-restart-guard.py
-          bash scripts/hooks/test-restart-guard-install.sh
-          bash scripts/__tests__/test-calendar-write-sweep.test.sh
-          bash scripts/__tests__/test-install-calendar-sweep.test.sh
-          bash scripts/__tests__/lead-alert-strict-delivery.test.sh
-
       # FLY-1434: the single full-fleet restart contract and quota-monitor
       # env-change caller must stay in CI. Both suites use throwaway HOMEs,
       # repositories, launchctl/restart shims, and local logs only.
@@ -944,9 +952,6 @@ jobs:
       # measured 11m36s. Rebalancing whole named steps is the sanctioned lever.
       - name: Test — FLY-1986 load probe contract
         run: bash scripts/__tests__/qa-fly-1986-load-probe.test.sh
-
-      - name: Test — FLY-2007 phase-0 analyser contract
-        run: bash scripts/__tests__/qa-fly-2007-phase0-analyze.test.sh
 
       # FLY-1678: the statusline renders on every Lead and Runner pane and is
       # re-read every frame, so a bad edit blanks the whole fleet at once. Both

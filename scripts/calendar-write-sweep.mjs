@@ -39,6 +39,7 @@ const SWEEP_ENV_KEYS = [
 	"CALENDAR_SWEEP_GOG",
 	"CALENDAR_SWEEP_ALERT",
 	"CALENDAR_SWEEP_ACCOUNT",
+	"CALENDAR_SWEEP_CLIENT",
 	"CALENDAR_SWEEP_CALENDAR",
 	"CALENDAR_SWEEP_PROJECT",
 	"CALENDAR_SWEEP_FROM",
@@ -108,6 +109,15 @@ const ALERT =
 		"scripts/lead-alert.sh",
 	);
 const ACCOUNT = process.env.CALENDAR_SWEEP_ACCOUNT ?? "personal";
+const CLIENT = process.env.CALENDAR_SWEEP_CLIENT;
+if (!CLIENT) {
+	throw new Error(
+		"CALENDAR_SWEEP_CLIENT is required for the isolated readonly OAuth grant",
+	);
+}
+if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(CLIENT)) {
+	throw new Error("CALENDAR_SWEEP_CLIENT is invalid");
+}
 const CALENDAR = process.env.CALENDAR_SWEEP_CALENDAR ?? "primary";
 // The system route self-loads the delivery token inside lead-alert.sh. A
 // named Lead route would depend on launchd inheriting a shell-only bot token.
@@ -354,6 +364,7 @@ function runGog(now) {
 	const args = [
 		"--account",
 		ACCOUNT,
+		...(CLIENT ? ["--client", CLIENT] : []),
 		"--json",
 		"calendar",
 		"events",

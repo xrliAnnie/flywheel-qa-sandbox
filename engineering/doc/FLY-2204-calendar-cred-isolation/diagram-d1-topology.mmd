@@ -1,0 +1,33 @@
+flowchart TB
+    FOUNDER["founder 本人<br/>(在 Discord / Google 网页)"]
+
+    subgraph A["uid A — agent 域 (Lead / Runner / QA / Claude / Codex / Gemini)"]
+        AGENT["Raya brain / voice + Codex<br/>无 Calendar 凭据 · 无 writer 调用权"]
+    end
+
+    subgraph I["uid I — 排会入口 (LaunchDaemon, 不跑 AI)"]
+        INGRESS["exact-command 解析 + MeetingController<br/>排会/改期/取消 · 只认 founder 本人身份"]
+    end
+
+    subgraph W["uid W — 日历写手 (LaunchDaemon, 不跑 AI)"]
+        WRITER["最小 calendar-writer<br/>持唯一日历写凭据 (0600, 跨 uid 不可读)"]
+    end
+
+    GCAL[("founder Google Calendar<br/>(指定日历 ID)")]
+
+    FOUNDER -->|"排会指令 (本人 Discord)"| INGRESS
+    INGRESS -->|"经认证的单向写请求<br/>(只 uid I 可连 socket)"| WRITER
+    WRITER -->|"create / cancel 事件"| GCAL
+    FOUNDER -->|"本人网页操作 (不经本机凭据)"| GCAL
+
+    AGENT -. "❌ 读写手凭据 → 权限拒绝 (跨 uid)" .-> WRITER
+    AGENT -. "❌ 直连写手 socket → 文件系统层拒绝 (不在组)" .-> WRITER
+    AGENT -. "❌ 伪造入口状态 → 写不进 (0700)" .-> INGRESS
+    AGENT -. "❌ 自己调 Google 写日历 → 无写 scope (403)" .-> GCAL
+
+    classDef blocked stroke:#ff3b30,stroke-width:2px,color:#1d1d1f,fill:#fff0ef;
+    classDef safe stroke:#34c759,stroke-width:2px,color:#1d1d1f,fill:#eefbf1;
+    classDef neutral fill:#ffffff,stroke:#86868b,color:#1d1d1f;
+    class AGENT blocked;
+    class WRITER,INGRESS safe;
+    class FOUNDER,GCAL neutral;

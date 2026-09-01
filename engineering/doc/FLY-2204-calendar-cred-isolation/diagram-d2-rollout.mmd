@@ -1,0 +1,23 @@
+flowchart TB
+    START([开始 · 旧写路径仍在跑]) --> PROV
+
+    subgraph PROV["1 · Provision (可随时回滚)"]
+        P1["建 uid I / uid W + 写凭据 + 指定日历 ID<br/>建 sweep 独立只读凭据"]
+        P2["验证: 冷启动恢复 · 正路建/删 · 凭据读拒(两侧) · 写手只认 uid I"]
+        P1 --> P2
+    end
+
+    PROV --> CUT["2 · Cutover<br/>排会路由切到新写手 · 验证单实例"]
+    CUT --> RET["3 · Retire<br/>先撤销旧可写授权 → 证旧凭据失效<br/>→ 再重授只读 scope (同/分 project)"]
+    RET --> GATE{"4 · Final gate<br/>全部安全探针通过?"}
+
+    GATE -->|"是 (旧凭据失效 + 现凭据有效但不能写 + 只读扫描正常)"| DONE([达标 · 回链 FLY-2137])
+    GATE -->|"否"| RB["有序回滚 (W/I 先不停):<br/>重授并验回滚写路径 → 停新路径 → 起旧路径 → 清理"]
+    RB --> UNSHIP([退回 FLY-2204 前姿态 · 本单 unshipped])
+
+    classDef ok stroke:#34c759,stroke-width:2px,fill:#eefbf1,color:#1d1d1f;
+    classDef warn stroke:#ff9500,stroke-width:2px,fill:#fff6e9,color:#1d1d1f;
+    classDef gate stroke:#007aff,stroke-width:2px,fill:#eaf3ff,color:#1d1d1f;
+    class DONE ok;
+    class RB,UNSHIP warn;
+    class GATE gate;
