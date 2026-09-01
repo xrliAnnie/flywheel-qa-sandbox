@@ -1,13 +1,13 @@
 ---
 issue: FLY-108
 phase: design
-phaseCursor: 3/6
-updated: 2026-09-01T05:03:25.814Z
-nextStep: design_review gate — codex review loop until APPROVED
+phaseCursor: 4/6
+updated: 2026-09-01T05:27:50.315Z
+nextStep: founder HTML — mermaid mmdc SVG + comment layer
 chunks: []
 pointers: {}
 ---
 
 # FLY-108 progress
-**phase**: design (3/6)
-**next**: design_review gate — codex review loop until APPROVED
+**phase**: design (4/6)
+**next**: founder HTML — mermaid mmdc SVG + comment layer
