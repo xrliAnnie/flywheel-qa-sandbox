@@ -1,0 +1,19 @@
+flowchart TB
+    subgraph A["Bug A(GEO-362): 事件发了, 但是空的"]
+        A1["Runner 走完批准发布流程"] --> A2["发出 session_completed<br/>但 payload 为空 ❗"]
+        A2 --> A3["Bridge 猜不出去向<br/>fallback 直接猜 completed"]
+        A3 --> A4["状态机拒绝:<br/>awaiting_review 不能直跳 completed"]
+        A4 --> A5["状态卡死在 awaiting_review<br/>😶 无声无息"]
+    end
+    subgraph B["Bug B(GEO-363): 事件从来没发过"]
+        B1["Lead 自动起的 Runner<br/>走压缩流水线"] --> B2["只上报 stage_changed=completed<br/>(展示信号, 不改状态)"]
+        B2 --> B3["没有任何组件发 session_completed"]
+        B3 --> B4["状态永远停在 running<br/>终端变僵尸 🧟"]
+    end
+    subgraph FIX["修复后"]
+        F1["源头: Runner 用新命令<br/>complete 上报完整凭证"] --> F3["状态正确到达 completed ✅"]
+        F2["兜底: Bridge 看到<br/>stage=completed + 合并凭证<br/>受守卫地补上终态"] --> F3
+        F3 --> F4["🏁 通知 / 关终端 / 归档<br/>全部恢复触发"]
+    end
+    A5 -.修.-> FIX
+    B4 -.修.-> FIX

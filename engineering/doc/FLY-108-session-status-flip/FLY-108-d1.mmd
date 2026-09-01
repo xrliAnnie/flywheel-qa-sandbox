@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant R as Runner<br/>(干活的 AI 工人)
+    participant C as flywheel-comm complete<br/>(新的"完工上报"命令)
+    participant B as Bridge<br/>(中枢服务器)
+    participant F as 状态机<br/>(合法状态流转规则)
+    participant S as 状态库<br/>(sessions 表)
+    R->>C: 干完活: complete --route auto_approve --pr N --merged
+    C->>C: 收集证据(代码改动统计 + 合并凭证)
+    C->>B: 发送 session_completed 事件(带完整凭证, 失败自动重试 4 次)
+    alt 4 次全失败(如 Bridge 恰好在重启)
+        C->>C: 写"待补发"标记文件到磁盘
+        Note over B: Bridge 重启后扫到标记, 自动补发
+    end
+    B->>B: 守卫检查: route 缺失/不认识 → 大声告警 + 拒绝, 绝不静默改状态
+    B->>B: 授权闸: 合并了但没走批准流程 → 拦停并告警, 不改状态
+    B->>F: 请求状态流转 → completed
+    F-->>B: 有合并凭证 → 放行
+    B->>S: 状态落库 status=completed
+    B->>B: 触发完工收尾(🏁 通知 Lead / 关终端 / 归档聊天)

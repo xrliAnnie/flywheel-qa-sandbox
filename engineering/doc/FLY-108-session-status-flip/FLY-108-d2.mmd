@@ -1,0 +1,10 @@
+stateDiagram-v2
+    [*] --> pending: 任务创建
+    pending --> running: Runner 开工
+    running --> awaiting_review: 完工待审(complete --route needs_review)
+    running --> completed: 纯文档/无代码任务直达终点
+    awaiting_review --> approved_to_ship: 创始人批准
+    awaiting_review --> completed: 新增窄边·此前完成已写 route + 合并凭证 + 授权闸放行
+    approved_to_ship --> completed: 发布成功(session_completed)
+    approved_to_ship --> blocked: 发布失败(route=blocked)
+    completed --> [*]: 触发收尾清理

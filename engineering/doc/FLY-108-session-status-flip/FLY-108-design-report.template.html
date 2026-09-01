@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-108 设计报告 — Session 状态不翻转修复</title>
+<style>
+  :root {
+    --bg: #f5f5f7; --text: #1d1d1f; --dim: #86868b; --card: #ffffff;
+    --red: #ff3b30; --amber: #ff9500; --blue: #007aff; --green: #34c759;
+    --purple: #af52de; --navy: #1a365d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; line-height: 1.65;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 32px 20px 80px; }
+  header.hero { padding: 28px 0 8px; }
+  .issue-id { font-family: 'SF Mono', ui-monospace, monospace; color: var(--navy); font-weight: 700; }
+  h1 { font-size: 28px; margin: 6px 0 4px; letter-spacing: -0.02em; }
+  .subtitle { color: var(--dim); font-size: 15px; }
+  .card {
+    background: var(--card); border-radius: 12px; padding: 22px 24px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06); margin: 18px 0;
+    border-left: 4px solid var(--blue);
+  }
+  .card.red { border-left-color: var(--red); }
+  .card.green { border-left-color: var(--green); }
+  .card.amber { border-left-color: var(--amber); }
+  .card.purple { border-left-color: var(--purple); }
+  .card.gray { border-left-color: var(--dim); }
+  h2 { font-size: 20px; margin: 0 0 10px; letter-spacing: -0.01em; }
+  h3 { font-size: 16px; margin: 18px 0 6px; }
+  p { margin: 8px 0; }
+  .lead-sentence { font-size: 17px; font-weight: 600; }
+  .term { border-bottom: 1px dotted var(--dim); }
+  .note { color: var(--dim); font-size: 13px; }
+  .diagram { overflow-x: auto; background: #fff; border: 1px solid #e5e5ea; border-radius: 10px; padding: 12px; margin: 12px 0; }
+  .diagram svg { max-width: 100%; height: auto; }
+  table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #e5e5ea; vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; font-size: 13px; }
+  .table-scroll { overflow-x: auto; }
+  code { font-family: 'SF Mono', ui-monospace, monospace; font-size: 0.88em; background: #f2f2f4; padding: 1px 5px; border-radius: 5px; }
+  ul { padding-left: 22px; margin: 8px 0; }
+  li { margin: 5px 0; }
+  .badge { display: inline-block; font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 20px; margin-right: 6px; vertical-align: 1px; }
+  .badge.keep { background: #e8f8ee; color: #1d7d3f; }
+  .badge.drop { background: #fdeceb; color: #c62d23; }
+  .badge.info { background: #e9f2ff; color: #0b5cc9; }
+  .comment-block { margin-top: 16px; padding-top: 12px; border-top: 1px dashed #e0e0e4; }
+  .comment-block label { display: block; font-size: 13px; color: var(--dim); margin-bottom: 6px; }
+  .comment-block textarea {
+    width: 100%; min-height: 64px; resize: vertical; border: 1px solid #d8d8dd;
+    border-radius: 8px; padding: 10px 12px; font: inherit; font-size: 14px;
+    background: #fbfbfd; color: var(--text);
+  }
+  .comment-block textarea:focus { outline: 2px solid var(--blue); border-color: transparent; }
+  .summary-body { background: #fbfbfd; border: 1px solid #e5e5ea; border-radius: 8px; padding: 12px 14px; }
+  .summary-chunk { white-space: pre-wrap; font-size: 14px; font-family: 'SF Mono', ui-monospace, monospace; margin: 0 0 10px; word-break: break-word; }
+  .btn {
+    display: inline-block; border: none; border-radius: 8px; padding: 8px 16px;
+    background: var(--blue); color: #fff; font: inherit; font-size: 14px;
+    font-weight: 600; cursor: pointer;
+  }
+  .btn:active { opacity: 0.8; }
+  .btn.small { padding: 5px 12px; font-size: 13px; }
+  .empty-hint { color: var(--dim); font-size: 14px; }
+  footer { color: var(--dim); font-size: 13px; margin-top: 30px; text-align: center; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <span class="issue-id">FLY-108</span>
+  <h1>Session 状态不翻转 — 修复设计报告</h1>
+  <div class="subtitle">工程设计节点交付 · 2026-09-01 · Codex 设计评审通过后成稿</div>
+</header>
+
+<!-- S1 -->
+<section class="card green" data-section="一句话总结">
+  <h2>1 · 一句话总结</h2>
+  <p class="lead-sentence">AI 工人干完活以后，系统账本上它的状态经常没有翻成"已完成"，导致后续的完工通知、终端回收、聊天归档全部卡住；本设计让工人在收工时主动上交一份带凭证的"完工报告"，并给服务器加上严格的把关和兜底，让状态可靠地走到终点。</p>
+  <p>涉及的两个具体故障（GEO-362 / GEO-363）症状相同、病根不同，下一节分别解释。</p>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="一句话总结" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- S2 -->
+<section class="card red" data-section="问题是什么">
+  <h2>2 · 问题是什么：同一症状，两个病根</h2>
+  <p>先解释几个词：<strong>Runner</strong>（跑在终端里干活的 AI 工人）、<strong>Bridge</strong>（中枢服务器，记录每个工人的状态）、<strong>session status</strong>（账本上工人任务的状态字段，比如"进行中 running"、"待审核 awaiting_review"、"已完成 completed"）、<strong>session_completed 事件</strong>（工人完工时应该发给服务器的那条"我干完了"的消息）。</p>
+  <ul>
+    <li><strong>Bug A（GEO-362）</strong>：完工消息<em>发了，但内容是空的</em>——像交了一张白卷。服务器猜不出该怎么记账，走了一条兜底逻辑去硬改状态，被状态规则拒绝，最后卡死在"待审核"，而且<em>无声无息</em>。</li>
+    <li><strong>Bug B（GEO-363）</strong>：某类精简流水线里，<em>从来没有任何组件发过完工消息</em>——工人只上报了"阶段变化"（一种仅供展示的信号，设计上不改账本）。状态永远停在"进行中"，终端变成僵尸窗口。</li>
+  </ul>
+  <div class="diagram"><!--SVG_D3--></div>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="问题是什么" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- S3 -->
+<section class="card" data-section="修复后的核心流程">
+  <h2>3 · 修复后的核心流程</h2>
+  <p>修复分四层，源头一层 + 服务器三层：</p>
+  <ul>
+    <li><strong>D1 · 源头上报</strong>：给工人新增一条 <code>flywheel-comm complete</code> 命令（flywheel-comm 是工人和服务器之间的通讯工具），收工时必须调用，带上完整凭证：走哪条路线（route，比如"已批准并合并"还是"待人审核"）、PR 编号（PR = 代码合入请求）、合并证明。这是 Bug B 的<em>唯一</em>正解——消息从没人发，就让该发的人发。</li>
+    <li><strong>D4 · 严格把关</strong>：服务器收到完工消息时，route 缺失或不认识 → <em>大声告警并拒绝</em>，绝不再静默硬改状态。这治 Bug A 的"白卷被瞎猜"。</li>
+    <li><strong>授权闸</strong>：合并了但没走批准流程的，拦停并告警，不自动记"完成"——防止绕过创始人审批。</li>
+    <li><strong>可靠投递</strong>：发送失败自动重试 4 次；全失败就在磁盘写一个"待补发"标记，服务器重启时扫到会自动补账。</li>
+  </ul>
+  <div class="diagram"><!--SVG_D1--></div>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="修复后的核心流程" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- S4 -->
+<section class="card purple" data-section="状态模型与数据契约">
+  <h2>4 · 状态模型与数据契约</h2>
+  <p>状态机（<span class="term">FSM</span>，即"什么状态可以走向什么状态"的规则表）只新开一条<strong>窄边</strong>：从"待审核"直达"已完成"，且仅当三个条件同时成立——此前已有一次真实的完工上报、握有合并凭证、授权闸放行。其余路径一律维持原语义，审批流程不被绕过。</p>
+  <div class="diagram"><!--SVG_D2--></div>
+  <h3>关键数据契约（不可随意变更项）</h3>
+  <div class="table-scroll">
+  <table>
+    <tr><th>标识</th><th>含义</th><th>谁在消费</th></tr>
+    <tr><td><code>session_completed</code> / <code>stage_changed</code></td><td>两种事件类型：前者改账本，后者仅展示</td><td>服务器两个接收面、事件表、重启补账器</td></tr>
+    <tr><td>route 枚举</td><td>完工路线（已批准/待审核/失败等 6 种）</td><td>命令行校验、服务器把关、状态映射</td></tr>
+    <tr><td>待补发标记文件</td><td><code>~/.flywheel/state/complete-failed/</code></td><td>发送端写、服务器重启时读</td></tr>
+    <tr><td>合并凭证键名</td><td>完工事件里叫 <code>landingStatus</code>，阶段事件里叫 <code>landing_status</code>（历史既成契约，两边各自钉死，不强行统一）</td><td>状态映射、兜底守卫</td></tr>
+  </table>
+  </div>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="状态模型与数据契约" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- S5 -->
+<section class="card amber" data-section="关键取舍与被否方案">
+  <h2>5 · 关键取舍与被否方案</h2>
+  <div class="table-scroll">
+  <table>
+    <tr><th></th><th>方案</th><th>结论与理由</th></tr>
+    <tr><td><span class="badge keep">采用</span></td><td>工人源头上报（Option 1）+ 服务器窄面兜底（Option 2 收窄版）</td><td>源头修 Bug B、把关修 Bug A；兜底只救"此前上报过、后来才合并"的一类掉队者，绝不给"从没上报过"的任务开后门（有专门的回归测试钉死这条底线）</td></tr>
+    <tr><td><span class="badge drop">否决</span></td><td>Option 3：靠 GitHub 合并通知（webhook）另起一条独立记账通道</td><td>合并证据已随现有信号上行，无需再引入一个外部依赖和一条新链路</td></tr>
+    <tr><td><span class="badge drop">否决</span></td><td>Option 4：放宽状态规则，允许"待审核"随意跳"已完成"</td><td>破坏审批语义——等于告诉系统"没批准也能算完成"</td></tr>
+    <tr><td><span class="badge drop">否决</span></td><td>把"阶段变化"信号升格为通用记账驱动</td><td>展示信号和账本必须分离，否则任何展示噪音都能改账</td></tr>
+    <tr><td><span class="badge info">刻意不做</span></td><td>为"服务器收到但没记完账就崩溃"的极端缝隙加应用级回执协议</td><td>用重启对账 + 隔离暴露兜住，把交付语义诚实声明为"至少送达一次 + 可对账"，不虚标"绝对必达"；回执协议另立 issue</td></tr>
+  </table>
+  </div>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="关键取舍与被否方案" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- S6 -->
+<section class="card" data-section="评审与验收">
+  <h2>6 · 评审与验收</h2>
+  <p>本设计经 Codex（另一家的代码评审 AI，作为独立第二双眼睛）<strong>4 轮设计评审通过</strong>，评审意见逐轮收敛（7 → 6 → 4 → 0），共 17 项全部吸收，零项拒绝。核心纠偏包括：兜底逻辑的适用范围曾被写得过宽、与代码里钉死的安全边界相反；部署清单漏了两个必须重新构建的组件；若干风险描述与真实故障时序不符——全部对照代码逐条修正后才获批准。</p>
+  <ul>
+    <li>验收 = 三个代码包的定向测试全绿 + 两类 bug 的重放实验（白卷重放 → 大声告警不卡死；精简流水线重放 → 状态正确到达"已完成"并触发收尾）。</li>
+    <li>回归哨兵：正常审批路径、失败路径、"从没上报过"的任务不被误终态化——全部保持原行为。</li>
+  </ul>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="评审与验收" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- S7 -->
+<section class="card gray" data-section="诚实边界">
+  <h2>7 · 诚实边界：这个设计做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>让"带 PR 的正常流水线"完工后状态可靠翻转，完工通知、终端回收、聊天归档恢复触发。</li>
+    <li>把"白卷式"坏消息从静默卡死变成大声告警、可排查。</li>
+    <li>失败时留痕（标记文件 + 重启补账），不静默丢失。</li>
+  </ul>
+  <h3>不做</h3>
+  <ul>
+    <li>不救"从来没上报过完工、又没有 PR"的任务——它们交给心跳巡检暴露给人工，这是刻意的保守设计（宁可人来看一眼，不可系统瞎记账）。</li>
+    <li>不保证百分之百"必达"：服务器在"收到消息"和"记完账"之间崩溃的极窄缝隙依然存在，靠对账机制暴露而非本设计根除。</li>
+    <li>不动数据库结构、不动审批语义、不引入新外部依赖。</li>
+    <li>本沙箱节点只交付设计文档，不改运行时代码；生产上线顺序（先服务器后工人、必须重新构建产物）已写入计划。</li>
+  </ul>
+  <div class="comment-block">
+    <label>对这一节的意见（自动保存在本机浏览器）</label>
+    <textarea class="comment-input" data-section="诚实边界" placeholder="写下你的意见…"></textarea>
+  </div>
+</section>
+
+<!-- Summary card -->
+<section class="card green" id="summary-card">
+  <h2>📋 页面意见汇总</h2>
+  <p class="note">下面实时汇总你在各节留下的所有非空意见；复制后可直接粘贴回复。</p>
+  <div class="summary-body" id="summary-body"><span class="empty-hint">（还没有留下任何意见）</span></div>
+  <p><button class="btn" id="copy-all-btn" type="button">复制全部意见</button></p>
+</section>
+
+<footer>FLY-108 · 工程设计节点 · 本页评论仅保存在你的浏览器本机，不上传</footer>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  "use strict";
+  var MARKER = "【页面意见汇总】FLY-108";
+  var CHUNK_LIMIT = 1800;
+  var prefix;
+  try {
+    prefix = "fly108-comments:" + location.pathname + ":";
+  } catch (e) {
+    prefix = "fly108-comments:unknown:";
+  }
+
+  function lsGet(key) {
+    try { return localStorage.getItem(prefix + key); } catch (e) { return null; }
+  }
+  function lsSet(key, val) {
+    try { localStorage.setItem(prefix + key, val); } catch (e) { /* storage unavailable */ }
+  }
+
+  var inputs = Array.prototype.slice.call(document.querySelectorAll(".comment-input"));
+
+  function collect() {
+    var parts = [];
+    inputs.forEach(function (ta) {
+      var section = ta.getAttribute("data-section") || "未命名小节";
+      var val = (ta.value || "").trim();
+      if (val) parts.push("[" + section + "] " + val);
+    });
+    return parts;
+  }
+
+  function buildChunks() {
+    var parts = collect();
+    if (parts.length === 0) return [];
+    var chunks = [];
+    var cur = "";
+    parts.forEach(function (p) {
+      var candidate = cur ? cur + "\n" + p : p;
+      if (candidate.length > CHUNK_LIMIT && cur) {
+        chunks.push(cur);
+        cur = p;
+      } else {
+        cur = candidate;
+      }
+    });
+    if (cur) chunks.push(cur);
+    if (chunks.length === 1) {
+      return [MARKER + "\n" + chunks[0]];
+    }
+    return chunks.map(function (c, i) {
+      return MARKER + "（第 " + (i + 1) + "/" + chunks.length + " 段）\n" + c;
+    });
+  }
+
+  var summaryBody = document.getElementById("summary-body");
+
+  function renderSummary() {
+    var chunks = buildChunks();
+    while (summaryBody.firstChild) summaryBody.removeChild(summaryBody.firstChild);
+    if (chunks.length === 0) {
+      var hint = document.createElement("span");
+      hint.className = "empty-hint";
+      hint.textContent = "（还没有留下任何意见）";
+      summaryBody.appendChild(hint);
+      return;
+    }
+    chunks.forEach(function (chunk, i) {
+      var pre = document.createElement("div");
+      pre.className = "summary-chunk";
+      pre.textContent = chunk;
+      summaryBody.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn small";
+        btn.textContent = "复制第 " + (i + 1) + " 段";
+        btn.addEventListener("click", function () { copyText(chunk, btn, "复制第 " + (i + 1) + " 段"); });
+        var pWrap = document.createElement("p");
+        pWrap.appendChild(btn);
+        summaryBody.appendChild(pWrap);
+      }
+    });
+  }
+
+  function legacyCopy(text) {
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    ta.setAttribute("readonly", "");
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    document.body.appendChild(ta);
+    ta.select();
+    var ok = false;
+    try { ok = document.execCommand("copy"); } catch (e) { ok = false; }
+    document.body.removeChild(ta);
+    return ok;
+  }
+
+  function flashBtn(btn, original, ok) {
+    btn.textContent = ok ? "✓ 已复制" : "复制失败，请手动全选";
+    setTimeout(function () { btn.textContent = original; }, 1800);
+  }
+
+  function copyText(text, btn, originalLabel) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { flashBtn(btn, originalLabel, true); },
+        function () { flashBtn(btn, originalLabel, legacyCopy(text)); }
+      );
+    } else {
+      flashBtn(btn, originalLabel, legacyCopy(text));
+    }
+  }
+
+  inputs.forEach(function (ta) {
+    var key = ta.getAttribute("data-section") || "unknown";
+    var stored = lsGet(key);
+    if (stored) ta.value = stored;
+    ta.addEventListener("input", function () {
+      lsSet(key, ta.value);
+      renderSummary();
+    });
+  });
+
+  var copyAllBtn = document.getElementById("copy-all-btn");
+  copyAllBtn.addEventListener("click", function () {
+    var chunks = buildChunks();
+    var text = chunks.length ? chunks.join("\n\n") : MARKER + "\n（无意见）";
+    copyText(text, copyAllBtn, "复制全部意见");
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>
