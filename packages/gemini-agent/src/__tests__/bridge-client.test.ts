@@ -252,6 +252,28 @@ describe("contract tests against the ported mock-bridge fixture", () => {
 		);
 	});
 
+	it.each([
+		["missing", undefined],
+		["blank", " \t "],
+	])(
+		"dispatch_runner: %s Lead identity gets the production scope-reject contract",
+		async (_label, leadId) => {
+			const out = await client.request("POST", "/api/runs/start", {
+				issueId: "MOCK-IDENTITY",
+				projectName: "geoforge3d",
+				...(leadId !== undefined && { leadId }),
+			});
+			expect(out.httpStatus).toBe(403);
+			expect(JSON.parse(out.body)).toEqual({
+				success: false,
+				code: "DEPT_SCOPE_REJECT",
+				reason: "lead_identity_required",
+				canonicalLeadId: null,
+				silent: false,
+			});
+		},
+	);
+
 	it("dispatch_runner: INVALID_AGENT_NAME contract body on empty agentName", async () => {
 		// bypass local validateArgs (which treats "" as missing) — direct call
 		const out = await client.request("POST", "/api/runs/start", {

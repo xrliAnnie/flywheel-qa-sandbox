@@ -57,8 +57,8 @@ export function validateArgs(
 
 /**
  * Session binding — the north-star "talk to a SPECIFIC Lead about a
- * SPECIFIC project" anchor. request_ship_approval's target Lead comes
- * explicitly from here (Codex R3-1: never inferred from projectName).
+ * SPECIFIC project" anchor. dispatch_runner and request_ship_approval take
+ * project/Lead identity explicitly from here, outside model-owned arguments.
  */
 export interface SessionBinding {
 	projectName: string;
@@ -111,7 +111,16 @@ export function createToolRegistry(
 			return bridge.request("POST", "/api/linear/create-issue", body, signal);
 		},
 		dispatch_runner: (args, signal) =>
-			bridge.request("POST", "/api/runs/start", args, signal),
+			bridge.request(
+				"POST",
+				"/api/runs/start",
+				{
+					...args,
+					projectName: binding.projectName,
+					leadId: binding.leadId,
+				},
+				signal,
+			),
 		query_status: (args, signal) =>
 			bridge.request(
 				"GET",

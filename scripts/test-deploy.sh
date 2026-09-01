@@ -139,7 +139,7 @@ EXTRA_LEAD_SPECS=()       # FLY-1189: --extra-lead <slotId>:<deptLabel> (repeata
                           # borrow another slot's bot/channel as a SECOND real Lead on
                           # THIS slot's single Bridge (N-to-N routing topology).
 LEAD_LABEL=""             # FLY-1189: --lead-label <deptLabel> narrows the MAIN lead's
-                          # match.labels from ["*"] to the explicit label.
+                          # slot-derived match.labels to the explicit label.
 DETECTION_LEAD_GRACE_MS="" # FLY-1189: --detection-lead-grace-ms <ms> appends
                           # detection.lead_grace_ms to the generated canonical
                           # .flywheel/config.yaml (PR-C per-project override seam).
@@ -994,14 +994,14 @@ fi
 # fail-open). Department slots leave generalChannel unset (no exemption,
 # cross-talk guard intact).
 #
-# FLY-1189: builder extracted to qa_multilead_build_projects — byte-identical
-# with defaults (["*"] labels, no extras; unit-guarded A1/A2). --lead-label
-# narrows the MAIN lead's match.labels; --extra-lead appends additional leads
-# (own bot / channel / token env / dept label) to the SAME single project.
-MAIN_LABELS_JSON='["*"]'
-if [[ -n "$LEAD_LABEL" ]]; then
-  MAIN_LABELS_JSON=$(jq -cn --arg l "$LEAD_LABEL" '[$l]')
-fi
+# FLY-1189: builder extracted to qa_multilead_build_projects (unit-guarded
+# A1/A2). FLY-127: the MAIN lead defaults to its slot deptLabel so standard QA
+# deploys exercise production's fail-closed department scope gate. An explicit
+# --lead-label still overrides that default; --extra-lead appends additional
+# leads (own bot / channel / token env / dept label) to the SAME single project.
+MAIN_LABELS_JSON=$(qa_multilead_main_labels_json \
+  "$SLOTS_FILE" "$SLOT" "$LEAD_LABEL") || exit 1
+EFFECTIVE_LEAD_LABEL=$(jq -r '.[0]' <<<"$MAIN_LABELS_JSON")
 FLYWHEEL_PROJECTS=$(qa_multilead_build_projects \
   "$TEST_PROJECT_NAME" "$HOST_REPO" "$SANDBOX_SLUG" "$AGENT_ID" \
   "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" "$SLOT_ROLE" \
@@ -1497,7 +1497,7 @@ trap - EXIT
 # knob values + dist SHA (macOS SIP blocks reading another process's env, so
 # this record IS the S0 flag evidence). No secrets: token env NAMES only.
 qa_multilead_launch_manifest "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
-  "${CAMPAIGN_ID}" "${LEAD_LABEL}" "${DETECTION_LEAD_GRACE_MS}" "$EXTRA_LEADS_JSON" \
+  "${CAMPAIGN_ID}" "${EFFECTIVE_LEAD_LABEL}" "${DETECTION_LEAD_GRACE_MS}" "$EXTRA_LEADS_JSON" \
   > "${SLOT_DIR}/launch-manifest.json"
 log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
@@ -1545,7 +1545,7 @@ cat <<EOF
   "launchManifest": "${SLOT_DIR}/launch-manifest.json",
   "campaignManifest": "${CAMPAIGN_MANIFEST_FILE:-}",
   "campaignId": "${CAMPAIGN_ID:-}",
-  "leadLabel": "${LEAD_LABEL}",
+  "leadLabel": "${EFFECTIVE_LEAD_LABEL}",
   "detectionLeadGraceConfigMs": "${DETECTION_LEAD_GRACE_MS}",
   "extraLeads": $(jq -c 'map({slotId, agentId, deptLabel, chatChannel, tokenEnvVar})' <<<"$EXTRA_LEADS_JSON")
 }

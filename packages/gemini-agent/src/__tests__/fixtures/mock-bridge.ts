@@ -152,6 +152,15 @@ export async function startMockBridge(
 						silent: false,
 					});
 			}
+			const rawLeadId = body.leadId;
+			if (typeof rawLeadId !== "string" || rawLeadId.trim().length === 0)
+				return json(403, {
+					success: false,
+					code: "DEPT_SCOPE_REJECT",
+					reason: "lead_identity_required",
+					canonicalLeadId: null,
+					silent: false,
+				});
 			const existing = state.runs.find((r) => r.issueId === issueId);
 			if (state.faults.dispatch409 || existing) {
 				const execId = existing?.executionId ?? "exec-mock-preexisting";

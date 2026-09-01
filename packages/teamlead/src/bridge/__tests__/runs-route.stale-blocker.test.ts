@@ -73,6 +73,7 @@ async function post(url: string) {
 		body: JSON.stringify({
 			issueId: "issue-1",
 			projectName: "sub",
+			leadId: "product-lead",
 			sessionRole: "main",
 		}),
 	});
