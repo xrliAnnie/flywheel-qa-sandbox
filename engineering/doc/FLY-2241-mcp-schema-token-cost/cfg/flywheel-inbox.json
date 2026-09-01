@@ -1,0 +1,15 @@
+{
+ "mcpServers": {
+  "flywheel-inbox": {
+   "command": "node",
+   "args": [
+    "/Users/xiaorongli/Dev/flywheel/packages/inbox-mcp/dist/index.js"
+   ],
+   "env": {
+    "FLYWHEEL_COMM_DB": "/Users/xiaorongli/.flywheel/comm/flywheel/comm.db",
+    "FLYWHEEL_LEAD_ID": "flywheel-eng-lead",
+    "FLYWHEEL_PROJECT_NAME": "flywheel"
+   }
+  }
+ }
+}

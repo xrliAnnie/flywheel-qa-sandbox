@@ -1,0 +1,10 @@
+{
+ "mcpServers": {
+  "gbrain": {
+   "command": "/Users/xiaorongli/.bun/bin/gbrain",
+   "args": [
+    "serve"
+   ]
+  }
+ }
+}

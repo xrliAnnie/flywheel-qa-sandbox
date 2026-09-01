@@ -1,0 +1,44 @@
+{
+ "mcpServers": {
+  "linear-api": {
+   "type": "http",
+   "url": "https://mcp.linear.app/mcp",
+   "headers": {
+    "Authorization": "<REDACTED>"
+   }
+  },
+  "xiaohongshu-mcp": {
+   "type": "http",
+   "url": "http://127.0.0.1:18060/mcp"
+  },
+  "flywheel-terminal": {
+   "command": "node",
+   "args": [
+    "/Users/xiaorongli/Dev/flywheel/packages/terminal-mcp/dist/index.js"
+   ],
+   "env": {
+    "FLYWHEEL_PROJECT_NAME": "flywheel",
+    "FLYWHEEL_LEAD_ID": "flywheel-eng-lead",
+    "BRIDGE_URL": "http://localhost:9876",
+    "TEAMLEAD_API_TOKEN": "<REDACTED>"
+   }
+  },
+  "flywheel-inbox": {
+   "command": "node",
+   "args": [
+    "/Users/xiaorongli/Dev/flywheel/packages/inbox-mcp/dist/index.js"
+   ],
+   "env": {
+    "FLYWHEEL_COMM_DB": "/Users/xiaorongli/.flywheel/comm/flywheel/comm.db",
+    "FLYWHEEL_LEAD_ID": "flywheel-eng-lead",
+    "FLYWHEEL_PROJECT_NAME": "flywheel"
+   }
+  },
+  "gbrain": {
+   "command": "/Users/xiaorongli/.bun/bin/gbrain",
+   "args": [
+    "serve"
+   ]
+  }
+ }
+}

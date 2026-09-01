@@ -1,0 +1,36 @@
+label	ts	total_input_tokens	deferred	connected	ts_result	rc
+base	on	25336	0/19	none	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+base	off	40397	none	none	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+gbrain	on	25647	0/49	gbrain,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+gbrain	off	42866	none	gbrain,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+flywheel-terminal	on	25432	0/25	flywheel-terminal,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+flywheel-terminal	off	42301	none	flywheel-terminal,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+flywheel-inbox	on	25384	0/21	flywheel-inbox,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+flywheel-inbox	off	40773	none	flywheel-inbox,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+linear-api	on	25527	0/19	none	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+linear-api	off	40401	none	none	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+xiaohongshu-mcp	on	25628	0/35	xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+xiaohongshu-mcp	off	48606	none	xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+context7	on	25560	0/24	context7,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+context7	off	42352	none	context7,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+playwright	on	25578	0/43	playwright,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+playwright	off	44977	none	playwright,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+lead-all	on	26242	0/73	flywheel-inbox,flywheel-terminal,gbrain,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+lead-all	off	53327	none	flywheel-inbox,flywheel-terminal,gbrain,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+DONE
+base-chrome	on	27028	0/41	claude-in-chrome,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+base-chrome	off	48587	none	claude-in-chrome,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+runner-all	on	26269	0/64	context7,playwright,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+runner-all	off	55129	none	context7,playwright,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+runner-all-chrome	on	27927	0/86	claude-in-chrome,context7,playwright,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+runner-all-chrome	off	63319	none	claude-in-chrome,context7,playwright,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+base2	on	25338	0/19	none	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+base2	off	40399	none	none	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+
+# ---- 补测:linear-api 带 LINEAR_API_KEY(Lead 生产环境真实状态)----
+linear-api-auth	on	26101	0/76	linear-api,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+linear-api-auth	off	61809	none	linear-api,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+lead-all-auth	on	26816	0/130	flywheel-inbox,flywheel-terminal,gbrain,linear-api,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+lead-all-auth	off	74735	none	flywheel-inbox,flywheel-terminal,gbrain,linear-api,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=false, result=false	rc=0
+runner-all-chrome-auth	on	28467	0/143	claude-in-chrome,context7,linear-api,playwright,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=true, result=true	rc=0
+runner-all-chrome-auth	off	84693	none	claude-in-chrome,context7,linear-api,playwright,xiaohongshu-mcp,	ENABLE_TOOL_SEARCH=false, result=false	rc=0

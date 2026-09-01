@@ -1,0 +1,19 @@
+{
+ "mcpServers": {
+  "lead_actions": {
+   "command": "/opt/homebrew/bin/node",
+   "args": [
+    "/Users/xiaorongli/Dev/flywheel/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
+   ],
+   "env": {
+    "DISCORD_BOT_TOKEN": "<REDACTED>",
+    "FLYWHEEL_LEAD_ID": "fly2241-probe-lead",
+    "FLYWHEEL_PROJECT_NAME": "fly2241-probe",
+    "FLYWHEEL_LEAD_CHAT_CHANNEL_ID": "0",
+    "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS": "",
+    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2241/fb460f0c-3752-43b3-b5b1-2a49ae8223d2/scratchpad/iso/state",
+    "FLYWHEEL_COMM_DB": "/private/tmp/claude-501/-Users-xiaorongli-Dev-flywheel-FLY-2241/fb460f0c-3752-43b3-b5b1-2a49ae8223d2/scratchpad/iso/comm/comm.db"
+   }
+  }
+ }
+}

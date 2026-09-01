@@ -1,0 +1,16 @@
+{
+ "mcpServers": {
+  "flywheel-terminal": {
+   "command": "node",
+   "args": [
+    "/Users/xiaorongli/Dev/flywheel/packages/terminal-mcp/dist/index.js"
+   ],
+   "env": {
+    "FLYWHEEL_PROJECT_NAME": "flywheel",
+    "FLYWHEEL_LEAD_ID": "flywheel-eng-lead",
+    "BRIDGE_URL": "http://localhost:9876",
+    "TEAMLEAD_API_TOKEN": "<REDACTED>"
+   }
+  }
+ }
+}

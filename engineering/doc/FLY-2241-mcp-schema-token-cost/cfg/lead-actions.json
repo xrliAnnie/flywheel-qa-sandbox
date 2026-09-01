@@ -1,0 +1,19 @@
+{
+ "mcpServers": {
+  "lead_actions": {
+   "command": "/opt/homebrew/bin/node",
+   "args": [
+    "/Users/xiaorongli/Dev/flywheel/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
+   ],
+   "env": {
+    "FLYWHEEL_LEAD_ID": "mufasa-lead",
+    "FLYWHEEL_PROJECT_NAME": "growth",
+    "FLYWHEEL_LEAD_CHAT_CHANNEL_ID": "1500600400238084307",
+    "FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS": "1512578695468941333",
+    "FLYWHEEL_LEAD_ACTIONS_STATE_DIR": "/Users/xiaorongli/.flywheel/state/codex-lead/mufasa-lead",
+    "FLYWHEEL_COMM_DB": "/Users/xiaorongli/.flywheel/comm/growth/comm.db",
+    "FLYWHEEL_ROUNDTABLE_THREAD_AUTOCONTINUE_EFFECTIVE": "1"
+   }
+  }
+ }
+}
