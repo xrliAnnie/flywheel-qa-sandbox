@@ -248,7 +248,7 @@ trusted_alert_env_valid() {
   [ -e "$path" ] || { log "ERROR: watcher alert env is missing: $path"; return 1; }
   [ ! -L "$path" ] || { log "ERROR: watcher alert env is a symlink: $path"; return 1; }
   [ -f "$path" ] || { log "ERROR: watcher alert env is not a regular file: $path"; return 1; }
-  metadata=$(stat -f '%u %Lp' "$path" 2>/dev/null || stat -c '%u %a' "$path" 2>/dev/null) || {
+  metadata=$(stat -c '%u %a' "$path" 2>/dev/null || stat -f '%u %Lp' "$path" 2>/dev/null) || {
     log "ERROR: watcher alert env metadata is unreadable: $path"
     return 1
   }

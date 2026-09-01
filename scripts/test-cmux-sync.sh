@@ -2273,6 +2273,38 @@ test_fly2207_watch_heartbeat_covers_cold_start() {
   fi
 }
 
+test_fly2207_cold_start_backfills_dead_window_runner() {
+  echo "▶ test_fly2207_cold_start_backfills_dead_window_runner"
+  reset_mocks
+  local HOME="$TMPDIR_ROOT/fly2207-home"
+  local FLYWHEEL_STATE_DIR="$TMPDIR_ROOT/fly2207-state"
+  local title="FLY-2207-dead-window-runner" rc=0 row refs new_count
+  mkdir -p "$HOME" "$FLYWHEEL_STATE_DIR"
+  MOCK_TOPOLOGY_MODE=1
+  FLYWHEEL_CMUX_LINKED_VIEW=1
+  MOCK_CMUX_MUTATE_JSON=1
+  MOCK_CMUX_NEXT_UUID="00000000-0000-4000-8000-000000002207"
+  MOCK_SOCK_IDENT="generation-fly2207"
+  FLYWHEEL_CMUX_TEST_NONCE="fly2207-cold-start"
+  local BOOTSTRAP_SKIP_HEAL_SWEEP=1
+  topo_add_session "runner-flywheel" '$1'
+  topo_add_window "runner-flywheel" "@2207" "$title" 1 0
+  test_ensure_mutator_lease || { fail "cold-start fixture could not acquire its isolated lease"; return; }
+  sync_additive_bootstrap || rc=$?
+  row=$(cat "$VIEW_LEDGER" 2>/dev/null || true)
+  refs=$(workspace_refs_for "$title" 2>/dev/null || true)
+  new_count=$(grep -c '^new-workspace' <<< "$MOCK_CMUX_OPS" || true)
+  release_mutator_lease
+  if [[ "$rc" -eq 0 && "$new_count" == "1" && "$refs" == "workspace:100" \
+      && "$row" == "committed|generation-fly2207|workspace:100|$title|00000000-0000-4000-8000-000000002207" ]] \
+      && _linked_view_matches "cmux-$title" "@2207" "runner-flywheel" \
+      && ! grep -Eq '^(select-workspace|send --workspace)' <<< "$MOCK_CMUX_OPS"; then
+    pass "watcher cold start creates the dead-window runner workspace without reopen-sweep help"
+  else
+    fail "cold-start backfill mismatch rc=$rc new=$new_count refs=[$refs] row=[$row] ops=[$MOCK_CMUX_OPS]"
+  fi
+}
+
 echo ""
 echo "═══ FLY-129: cmux IPC health check + cmux_call ═══"
 test_health_check_no_socket
@@ -2288,6 +2320,7 @@ test_fly2207_bounded_cmux_refreshes_watch_heartbeat
 unset -f watcher_write_heartbeat_real
 test_fly2207_cmux_timeout_cap
 test_fly2207_watch_heartbeat_covers_cold_start
+test_fly2207_cold_start_backfills_dead_window_runner
 
 # ════════════════════════════════════════════════════════════════
 # FLY-129 Phase 1: watcher lock + sync_once watcher detection

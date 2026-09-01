@@ -676,6 +676,13 @@ def t8_real_lead_alert_integration():
             os.chmod(os.path.join(bindir, "curl"), 0o755)
             Path(bindir, "osascript").write_text("#!/bin/bash\nexit 0\n")
             os.chmod(os.path.join(bindir, "osascript"), 0o755)
+            Path(bindir, "stat").write_text(
+                "#!/bin/bash\n"
+                "[[ \"$1\" == \"-f\" ]] && { printf 'gnu-filesystem-stat\\n'; exit 0; }\n"
+                "[[ \"$1\" == \"-c\" ]] && { printf '%s 600\\n' \"$(id -u)\"; exit 0; }\n"
+                "exit 2\n"
+            )
+            os.chmod(os.path.join(bindir, "stat"), 0o755)
             home = Path(tmp, "home")
             state = home / ".flywheel"
             state.mkdir(parents=True)

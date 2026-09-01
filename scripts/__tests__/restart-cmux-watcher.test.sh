@@ -288,7 +288,7 @@ printf '%s\n' "$expected_owner" > "$ROOT/lease/owner"
 restart_cmux_watcher "$expected_owner"
 if [[ "$CMUX_WATCHER_RESTART_STATE" == "healthy" \
     && "$(tr '\n' ',' < "$ROOT/calls")" == "kickstart," \
-    && "$(cat "$ROOT/call-args")" == "kickstart -k gui/501/com.flywheel.cmux-watcher" ]]; then
+    && "$(cat "$ROOT/call-args")" == "kickstart -k gui/$(id -u)/com.flywheel.cmux-watcher" ]]; then
   pass "tuple-bound recovery uses kickstart -k with no bootout window"
 else
   fail "stalled recovery mutated launchd incorrectly state=$CMUX_WATCHER_RESTART_STATE calls=[$(cat "$ROOT/call-args")]"
