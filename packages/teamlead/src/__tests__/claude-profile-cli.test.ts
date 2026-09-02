@@ -234,6 +234,37 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		);
 	});
 
+	it("retains child stderr for an unknown apply failure", async () => {
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error("profile primitive exited 77"), {
+				code: 77,
+				stderr: "synthetic keychain writer rejected apply\nsecond line",
+			});
+		});
+
+		await expect(deps(execFile).applyProfile("school")).rejects.toThrow(
+			"profile primitive exited 77: synthetic keychain writer rejected apply | second line",
+		);
+	});
+
+	it("retains the decisive stderr tail for an oversized unknown apply failure", async () => {
+		const base = "profile primitive exited 77";
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error(base), {
+				code: 77,
+				stderr: `${"synthetic progress noise ".repeat(200)}\nsynthetic decisive apply verdict`,
+			});
+		});
+
+		const error = await deps(execFile)
+			.applyProfile("school")
+			.catch((caught: unknown) => caught as Error);
+
+		expect(error.message).toContain("synthetic decisive apply verdict");
+		expect(error.message).toContain(": …");
+		expect(error.message.length).toBeLessThanOrEqual(`${base}: `.length + 2048);
+	});
+
 	it("exit 39 maps to LockLeaseLostError", async () => {
 		const execFile = vi.fn(async () => {
 			throw Object.assign(new Error("lease lost"), {

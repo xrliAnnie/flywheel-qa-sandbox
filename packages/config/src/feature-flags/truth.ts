@@ -403,8 +403,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: machine claude identity json path (FLY-865; scratch override for FLY-1182 QA)",
 	FLYWHEEL_ACCOUNT_PENDING_PATH:
 		"plumbing: account_switch_pending store path (FLY-696)",
+	FLYWHEEL_AUDIT_ACTOR:
+		"audit context: untrusted actor label written into profile audit records, not an on/off gate (FLY-1182/2265)",
+	FLYWHEEL_PROFILE_AUDIT_LOG:
+		"plumbing: append-only Claude profile audit log path override for isolated QA and runtime placement (FLY-1182/2265)",
 	FLYWHEEL_CLAUDE_PROFILE_BIN:
-		"plumbing: flywheel-claude-profile script path (FLY-696)",
+		"plumbing: flywheel-claude-profile script path for direct Node/daemon launches; public Bash use/next overwrites it with the invoked primitive path (FLY-696/2265)",
 	FLYWHEEL_CLAUDE_SECURITY_BIN:
 		"plumbing: macOS security executable override for scratch-keychain QA (FLY-1256)",
 	FLYWHEEL_CLAUDE_KEYCHAIN:
@@ -425,6 +429,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"diagnostic output marker: one-shot manual account reconciliation failed; emitted to stderr and never read as configuration (FLY-2240)",
 	FLYWHEEL_MANUAL_RECONCILE_RACE:
 		"diagnostic output marker: account drift recurred after reconciliation; emitted to stderr and never read as configuration (FLY-2240)",
+	FLYWHEEL_MANUAL_SWITCH_AUDIT_FAILED:
+		"diagnostic output marker: fallback manual-switch audit append failed; emitted to stderr and never read as configuration (FLY-2265)",
 	FLYWHEEL_LEASE_PROOF:
 		"internal contract: non-secret account-lock ownership proof passed to delegated mutation helpers (FLY-1252)",
 	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:

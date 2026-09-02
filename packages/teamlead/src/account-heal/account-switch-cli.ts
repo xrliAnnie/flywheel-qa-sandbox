@@ -20,6 +20,7 @@ import {
 	reconcileClaudeProfile,
 } from "./claude-profile-cli.js";
 import { verifyPoolCredential } from "./freshness.js";
+import { appendManualSwitchFailureAudit } from "./manual-switch-audit.js";
 import type { QuotaMonitorAlert } from "./quota-monitor.js";
 import {
 	type DeliveryReport,
@@ -43,6 +44,7 @@ import { switchAccount as executeSwitch } from "./switch-executor.js";
 
 const PROFILE_LABEL = /^(?!\.)(?!.*\.\.)[A-Za-z0-9._-]+$/;
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const MAX_MANUAL_FAILURE_DETAIL_LENGTH = 2048;
 
 export interface AccountSwitchCliDeps {
 	now: () => number;
@@ -56,6 +58,12 @@ export interface AccountSwitchCliDeps {
 	readIdentity: (name: string) => Promise<{ email?: string } | null>;
 	sendAlert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
 	reconcile: () => Promise<boolean>;
+	auditFailure?: (input: {
+		command: "use" | "next";
+		profile: string | null;
+		reasonCode: string;
+		reason: string;
+	}) => void | Promise<void>;
 	stdout: (line: string) => void;
 	stderr: (line: string) => void;
 }
@@ -82,6 +90,22 @@ function panoramaSummary(panorama: readonly CandidatePanoramaEntry[]): string {
 		.sort((a, b) => a.name.localeCompare(b.name, "en-US"))
 		.map((entry) => `${entry.name}:${entry.status}`)
 		.join(",");
+}
+
+function manualFailureDetail(reason: string): string {
+	const normalized = Array.from(
+		reason.replace(/[\r\n]+/g, " | "),
+		(character) => {
+			const code = character.charCodeAt(0);
+			return code < 32 || code === 127 ? " " : character;
+		},
+	)
+		.join("")
+		.trim();
+	if (normalized.length === 0) return "unspecified switch failure";
+	return normalized.length > MAX_MANUAL_FAILURE_DETAIL_LENGTH
+		? `…${normalized.slice(-(MAX_MANUAL_FAILURE_DETAIL_LENGTH - 1))}`
+		: normalized;
 }
 
 function manualOverrides(
@@ -233,10 +257,28 @@ export async function runAccountSwitchCli(
 			}
 			continue;
 		}
-		const reason =
-			result.outcome === "failed" ? result.reasonCode : result.reasonCode;
-		deps.stderr(`FLYWHEEL_MANUAL_SWITCH_FAILED reason=${reason}`);
-		if (reason === "notification_outbox_full") {
+		const reasonCode = result.reasonCode;
+		if (result.outcome === "failed") {
+			const detail = manualFailureDetail(result.reason);
+			if (result.applyProfileChildStarted !== true) {
+				try {
+					await deps.auditFailure?.({
+						command: command.mode,
+						profile: command.mode === "use" ? command.target : null,
+						reasonCode,
+						reason: detail,
+					});
+				} catch {
+					deps.stderr("FLYWHEEL_MANUAL_SWITCH_AUDIT_FAILED");
+				}
+			}
+			deps.stderr(
+				`FLYWHEEL_MANUAL_SWITCH_FAILED reason=${reasonCode} details=${detail}`,
+			);
+		} else {
+			deps.stderr(`FLYWHEEL_MANUAL_SWITCH_FAILED reason=${reasonCode}`);
+		}
+		if (reasonCode === "notification_outbox_full") {
 			deps.stderr(
 				"Recovery: restore notification delivery and run the quota monitor once before retrying the switch.",
 			);
@@ -443,6 +485,10 @@ async function makeProductionDeps(): Promise<AccountSwitchCliDeps> {
 		process.env.FLYWHEEL_CLAUDE_TRANSITION_JOURNAL ??
 		join(dirname(paths.storePath), "claude-account-transition.json");
 	const alertEnv = loadAlertIdentityEnv();
+	const auditPath =
+		process.env.FLYWHEEL_PROFILE_AUDIT_LOG ??
+		join(homedir(), ".flywheel", "claude-profile-audit.log");
+	const auditActor = process.env.FLYWHEEL_AUDIT_ACTOR ?? `ppid:${process.ppid}`;
 	const sendAlert = (alert: QuotaMonitorAlert) =>
 		sendQuotaMonitorAlert(alert, { env: alertEnv });
 	const withAccountsLock = async <T>(fn: () => Promise<T>): Promise<T> => {
@@ -535,6 +581,12 @@ async function makeProductionDeps(): Promise<AccountSwitchCliDeps> {
 		},
 		readIdentity: async (name) => readPoolProfileIdentity(paths.poolDir, name),
 		sendAlert,
+		auditFailure: (input) =>
+			appendManualSwitchFailureAudit({
+				path: auditPath,
+				actor: auditActor,
+				...input,
+			}),
 		reconcile: () =>
 			reconcileClaudeProfile({
 				binPath: profileBin,

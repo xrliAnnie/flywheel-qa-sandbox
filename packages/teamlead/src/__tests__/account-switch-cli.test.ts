@@ -230,6 +230,69 @@ describe("runAccountSwitchCli", () => {
 		expect(h.stderr).toContain("FLYWHEEL_MANUAL_RECONCILE_RACE");
 	});
 
+	it("surfaces and audits apply failure details", async () => {
+		const auditFailure = vi.fn();
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reasonCode: "apply_failed" as const,
+				reason: "spawn flywheel-claude-profile ENOENT",
+			})),
+		});
+		Object.assign(h.deps, { auditFailure });
+
+		expect(await runAccountSwitchCli(["use", "school"], h.deps)).toBe(1);
+		expect(h.stderr).toContain(
+			"FLYWHEEL_MANUAL_SWITCH_FAILED reason=apply_failed details=spawn flywheel-claude-profile ENOENT",
+		);
+		expect(auditFailure).toHaveBeenCalledWith({
+			command: "use",
+			profile: "school",
+			reasonCode: "apply_failed",
+			reason: "spawn flywheel-claude-profile ENOENT",
+		});
+	});
+
+	it("does not append a fallback audit after the apply child started", async () => {
+		const auditFailure = vi.fn();
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reasonCode: "apply_failed" as const,
+				reason: "synthetic keychain writer rejected apply",
+				applyProfileChildStarted: true,
+			})),
+		});
+		Object.assign(h.deps, { auditFailure });
+
+		expect(await runAccountSwitchCli(["use", "school"], h.deps)).toBe(1);
+		expect(auditFailure).not.toHaveBeenCalled();
+		expect(h.stderr).toContain(
+			"FLYWHEEL_MANUAL_SWITCH_FAILED reason=apply_failed details=synthetic keychain writer rejected apply",
+		);
+	});
+
+	it("keeps apply failure details when the audit sink fails", async () => {
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reasonCode: "apply_failed" as const,
+				reason: "synthetic keychain writer rejected apply",
+			})),
+		});
+		Object.assign(h.deps, {
+			auditFailure: vi.fn(async () => {
+				throw new Error("audit unavailable");
+			}),
+		});
+
+		expect(await runAccountSwitchCli(["next"], h.deps)).toBe(1);
+		expect(h.stderr).toContain("FLYWHEEL_MANUAL_SWITCH_AUDIT_FAILED");
+		expect(h.stderr).toContain(
+			"FLYWHEEL_MANUAL_SWITCH_FAILED reason=apply_failed details=synthetic keychain writer rejected apply",
+		);
+	});
+
 	it("returns an already-active no-op without selector or alert side effects", async () => {
 		const h = harness();
 

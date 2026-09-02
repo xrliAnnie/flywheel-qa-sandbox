@@ -648,7 +648,7 @@ describe("flywheel-claude-profile", () => {
 		const switchBin = join(tmp, "atomic-switch-sentinel");
 		writeFileSync(
 			switchBin,
-			'#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$ATOMIC_SWITCH_LOG"\n',
+			`#!/usr/bin/env bash\nprintf '%s|%s\\n' "\${FLYWHEEL_CLAUDE_PROFILE_BIN:-<unset>}" "$*" >> "$ATOMIC_SWITCH_LOG"\n`,
 			{ mode: 0o755 },
 		);
 
@@ -657,10 +657,37 @@ describe("flywheel-claude-profile", () => {
 			ATOMIC_SWITCH_LOG: switchLog,
 		});
 
-		expect(readFileSync(switchLog, "utf8")).toBe("use school\n");
+		expect(readFileSync(switchLog, "utf8")).toBe(`${PROFILE_BIN}|use school\n`);
 		expect(existsSync(stateFile)).toBe(false);
 		expect(existsSync(join(pool, ".active"))).toBe(false);
 		expect(existsSync(lockDir)).toBe(false);
+	});
+
+	it("refuses a non-executable profile primitive before launching the atomic switch", () => {
+		const profileFixture = join(tmp, "flywheel-claude-profile-fixture");
+		const switchLog = join(tmp, "atomic-switch.log");
+		const switchBin = join(tmp, "atomic-switch-sentinel");
+		writeFileSync(profileFixture, readFileSync(PROFILE_BIN), { mode: 0o644 });
+		writeFileSync(
+			switchBin,
+			'#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$ATOMIC_SWITCH_LOG"\n',
+			{ mode: 0o755 },
+		);
+
+		const result = spawnSync("/bin/bash", [profileFixture, "use", "school"], {
+			env: env({
+				FLYWHEEL_PROFILE_GROUP_LEADER: "1",
+				FLYWHEEL_CLAUDE_SWITCH_BIN: switchBin,
+				ATOMIC_SWITCH_LOG: switchLog,
+			}),
+			encoding: "utf8",
+		});
+
+		expect(result.status).toBe(31);
+		expect(result.stderr).toContain(
+			"profile primitive is missing or not executable",
+		);
+		expect(existsSync(switchLog)).toBe(false);
 	});
 
 	it("`use` swaps the keychain item to the pool credential + commits .active", () => {

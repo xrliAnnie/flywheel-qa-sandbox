@@ -124,11 +124,25 @@ EOF
   exit 1
 }
 
-fail() { echo "Error: $*" >&2; exit 1; }
+set_failure_audit_details() { # $1=non-secret internal failure reason
+  local reason="$1"
+  [[ "${AUDIT_ENABLED:-0}" -eq 1 ]] || return 0
+  AUDIT_DETAILS_JSON=$(FLYWHEEL_AUDIT_DETAILS_CURRENT="$AUDIT_DETAILS_JSON" FLYWHEEL_AUDIT_FAILURE_REASON="$reason" "$NODE_BIN" -e '
+let details = {};
+try {
+  const parsed = JSON.parse(process.env.FLYWHEEL_AUDIT_DETAILS_CURRENT ?? "null");
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) details = parsed;
+} catch {}
+details.reason = process.env.FLYWHEEL_AUDIT_FAILURE_REASON ?? "unspecified failure";
+process.stdout.write(JSON.stringify(details));
+') || AUDIT_DETAILS_JSON="null"
+}
+
+fail() { local reason="$*"; set_failure_audit_details "$reason"; echo "Error: $reason" >&2; exit 1; }
 # FLY-871 R1/C3: exit with a SPECIFIC code (30 target-stale / 31 freshness-helper
 # unavailable) so the Node switch executor can distinguish freshness failures
 # from other failures and drive the candidate loop / fail-closed accordingly.
-fail_code() { local code="$1"; shift; echo "Error: $*" >&2; exit "$code"; }
+fail_code() { local code="$1" reason; shift; reason="$*"; set_failure_audit_details "$reason"; echo "Error: $reason" >&2; exit "$code"; }
 
 # ------------------------------------------------------- append-only audit (FLY-1182)
 AUDIT_ENABLED=0
@@ -140,7 +154,7 @@ AUDIT_DETAILS_JSON="null"
 audit_append() { # $1=phase $2=exit-code|null $3=summary
   local phase="$1" exit_code="$2" summary="$3" actor="${FLYWHEEL_AUDIT_ACTOR:-ppid:$PPID}"
   node -e '
-const { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, writeSync } = require("node:fs");
+const { closeSync, constants, existsSync, fchmodSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, writeSync } = require("node:fs");
 const { dirname } = require("node:path");
 const [path, phase, exitRaw, cmd, profileRaw, summary, actor, detailsRaw] = process.argv.slice(1);
 const uid = process.getuid?.();
@@ -150,10 +164,13 @@ const validateStat = (stat) => {
   if (!stat.isFile() || stat.isSymbolicLink() || stat.uid !== uid || (stat.mode & 0o777) !== 0o600)
     throw new Error("unsafe audit file (must be same-owner regular 0600 file)");
 };
-if (existsSync(path)) validateStat(lstatSync(path));
-const flags = constants.O_APPEND | constants.O_CREAT | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0);
+const existed = existsSync(path);
+if (existed) validateStat(lstatSync(path));
+const flags = constants.O_APPEND | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0) |
+  (existed ? 0 : constants.O_CREAT | constants.O_EXCL);
 const fd = openSync(path, flags, 0o600);
 try {
+  if (!existed) fchmodSync(fd, 0o600);
   const opened = fstatSync(fd);
   validateStat(opened);
   if (existsSync(path)) {
@@ -2205,11 +2222,18 @@ default_switch_bin() {
 }
 
 trampoline_atomic_switch() { # <use|next> [target]
-	local mode="$1" target="${2:-}" bin="${FLYWHEEL_CLAUDE_SWITCH_BIN:-}"
+	local mode="$1" target="${2:-}" bin="${FLYWHEEL_CLAUDE_SWITCH_BIN:-}" profile_dir profile_bin
 	release_lock
 	unset FLYWHEEL_CLAUDE_LOCK_DELEGATED FLYWHEEL_LEASE_PROOF
 	unset FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED FLYWHEEL_PROFILE_IDENTITY_BYPASS
 	unset FLYWHEEL_ATOMIC_SWITCH_APPLY FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD
+	profile_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || fail "cannot resolve profile runtime directory"
+	profile_bin="$profile_dir/$(basename "${BASH_SOURCE[0]}")"
+	if [[ ! -x "$profile_bin" ]]; then
+		echo "FLYWHEEL_ATOMIC_SWITCH_RUNTIME_UNAVAILABLE: profile primitive is missing or not executable" >&2
+		exit 31
+	fi
+	export FLYWHEEL_CLAUDE_PROFILE_BIN="$profile_bin"
 	[[ -n "$bin" ]] || bin="$(default_switch_bin)"
 	if [[ -z "$bin" || ! -x "$bin" ]]; then
 		echo "FLYWHEEL_ATOMIC_SWITCH_RUNTIME_UNAVAILABLE: switch launcher is missing or not executable" >&2

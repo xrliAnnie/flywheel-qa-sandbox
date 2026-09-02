@@ -20,7 +20,7 @@ import {
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -87,6 +87,7 @@ const ENV_KEYS = [
 	"FLYWHEEL_CLAUDE_JSON_LOCK",
 	"FAKE_SEC_STATE",
 	"FAKE_SEC_ARGV_LOG",
+	"FAKE_SEC_REAL_BIN",
 	// FLY-871 — the real `use` now runs the freshness guard; inject a stub so the
 	// real seam doesn't make a live OAuth call with dummy pool credentials.
 	"FLYWHEEL_CLAUDE_FRESHNESS_BIN",
@@ -535,7 +536,7 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 			}
 			const baseUrl = `http://127.0.0.1:${address.port}`;
 			process.env.FLYWHEEL_CLAUDE_SWITCH_BIN = SWITCH_BIN;
-			process.env.FLYWHEEL_CLAUDE_PROFILE_BIN = PROFILE_BIN;
+			delete process.env.FLYWHEEL_CLAUDE_PROFILE_BIN;
 			process.env.FLYWHEEL_CLAUDE_OAUTH_ENDPOINT = `${baseUrl}/oauth/token`;
 			process.env.FLYWHEEL_QUOTA_API_BASE = baseUrl;
 			process.env.FLYWHEEL_QUOTA_MONITOR_CONFIG = join(
@@ -547,11 +548,27 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 			process.env.FLYWHEEL_STATE_DIR = tmp;
 			process.env.PUBLIC_ALERT_LOG = alertLog;
 
+			const scrubbedPath = (process.env.PATH ?? "")
+				.split(delimiter)
+				.filter(
+					(directory) =>
+						directory.length > 0 &&
+						!existsSync(join(directory, "flywheel-claude-profile")),
+				)
+				.join(delimiter);
+			expect(
+				scrubbedPath
+					.split(delimiter)
+					.some((directory) =>
+						existsSync(join(directory, "flywheel-claude-profile")),
+					),
+			).toBe(false);
+
 			const { stdout, stderr } = await execFileAsync(
 				PROFILE_BIN,
 				["use", "school"],
 				{
-					env: process.env,
+					env: { ...process.env, PATH: scrubbedPath },
 					timeout: 15_000,
 				},
 			);
@@ -577,6 +594,84 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 			await new Promise<void>((resolve, reject) =>
 				server.close((error) => (error ? reject(error) : resolve())),
 			);
+		}
+	}, 20_000);
+
+	it("failed public apply surfaces the writer reason, preserves state, and records one child audit pair", async () => {
+		const probes = await startProbeServer([schoolProbe()]);
+		try {
+			configurePublicRuntime(probes.baseUrl);
+			delete process.env.FLYWHEEL_CLAUDE_PROFILE_BIN;
+			const realSecurity = process.env.FLYWHEEL_CLAUDE_SECURITY_BIN as string;
+			const rejectingSecurity = join(tmp, "rejecting-fake-security");
+			writeFileSync(
+				rejectingSecurity,
+				`#!/usr/bin/env bash
+set -u
+case "\${1:-}" in
+  -i)
+    cat >/dev/null
+    echo "synthetic keychain writer rejected apply" >&2
+    exit 77
+    ;;
+  *) exec "$FAKE_SEC_REAL_BIN" "$@" ;;
+esac
+`,
+				{ mode: 0o755 },
+			);
+			process.env.FAKE_SEC_REAL_BIN = realSecurity;
+			process.env.FLYWHEEL_CLAUDE_SECURITY_BIN = rejectingSecurity;
+
+			const pool = process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string;
+			const statePath = process.env.FAKE_SEC_STATE as string;
+			const activePath = join(pool, ".active");
+			const keychainBefore = readFileSync(statePath);
+			const activeBefore = readFileSync(activePath);
+			const storeBefore = readStore(storePath);
+
+			const failure = await runPublicSwitchFailure(["use", "school"]);
+
+			expect(failure.code).toBe(1);
+			expect(failure.stderr).toContain("reason=apply_failed");
+			expect(failure.stderr).toContain(
+				"synthetic keychain writer rejected apply",
+			);
+			expect(readFileSync(statePath)).toEqual(keychainBefore);
+			expect(readFileSync(activePath)).toEqual(activeBefore);
+			expect(readStore(storePath)).toMatchObject({
+				activeAccount: storeBefore.activeAccount,
+				generation: storeBefore.generation,
+				pendingSwitchNotifications: storeBefore.pendingSwitchNotifications,
+			});
+
+			const auditRaw = readFileSync(
+				process.env.FLYWHEEL_PROFILE_AUDIT_LOG as string,
+				"utf8",
+			);
+			const audit = auditRaw
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line));
+			expect(audit).toHaveLength(2);
+			expect(audit[0]).toMatchObject({
+				cmd: "use",
+				profile: "school",
+				phase: "entry",
+				exitCode: null,
+			});
+			expect(audit[1]).toMatchObject({
+				cmd: "use",
+				profile: "school",
+				phase: "exit",
+				exitCode: 1,
+				details: {
+					reason: expect.stringContaining("Keychain write failed"),
+				},
+			});
+			expect(auditRaw).not.toContain("sk-ant-oat01");
+			expect(auditRaw).not.toContain("accessToken");
+		} finally {
+			await probes.close();
 		}
 	}, 20_000);
 

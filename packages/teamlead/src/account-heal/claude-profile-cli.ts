@@ -80,6 +80,35 @@ const IDENTITY_VERDICTS = new Set([
 	"profile_malformed",
 	"profile_unauthorized",
 ]);
+const MAX_APPLY_FAILURE_DETAIL_LENGTH = 2048;
+
+function applyFailureDiagnostic(error: unknown, stderr: string): Error {
+	const base = error instanceof Error ? error.message : String(error);
+	const profileChildStarted =
+		typeof (error as { profileChildStarted?: unknown })?.profileChildStarted ===
+		"boolean"
+			? (error as { profileChildStarted: boolean }).profileChildStarted
+			: undefined;
+	const normalized = Array.from(
+		stderr.replace(/[\r\n]+/g, " | "),
+		(character) => {
+			const code = character.charCodeAt(0);
+			return code < 32 || code === 127 ? " " : character;
+		},
+	)
+		.join("")
+		.trim();
+	const detail =
+		normalized.length > MAX_APPLY_FAILURE_DETAIL_LENGTH
+			? `…${normalized.slice(-(MAX_APPLY_FAILURE_DETAIL_LENGTH - 1))}`
+			: normalized;
+	const diagnostic = new Error(detail ? `${base}: ${detail}` : base, {
+		cause: error,
+	});
+	return profileChildStarted === undefined
+		? diagnostic
+		: Object.assign(diagnostic, { profileChildStarted });
+}
 
 function hasControlCharacter(value: string): boolean {
 	return Array.from(value, (character) => character.charCodeAt(0)).some(
@@ -213,7 +242,11 @@ export interface ClaudeProfileCliDeps {
 	deliverNotification?: SwitchDeps["deliverNotification"];
 }
 
-/** Default script path (override via FLYWHEEL_CLAUDE_PROFILE_BIN). */
+/**
+ * Default script path for direct Node/daemon launches (override via
+ * FLYWHEEL_CLAUDE_PROFILE_BIN). Public Bash `use|next` treats the invoked
+ * primitive as authoritative and overwrites the ambient value before launch.
+ */
 export function claudeProfileBinPath(): string {
 	return (
 		process.env.FLYWHEEL_CLAUDE_PROFILE_BIN ?? "flywheel-claude-profile" // resolved on PATH as a last resort
@@ -419,7 +452,7 @@ export function makeClaudeProfileSwitchDeps(
 				if (e.code === 39 || /FLYWHEEL_LOCK_LEASE_LOST/.test(errText)) {
 					throw new LockLeaseLostError(errText.trim() || undefined);
 				}
-				throw err;
+				throw applyFailureDiagnostic(err, errText);
 			}
 			const report = readApplyProfileReport(reportPath);
 			rmSync(reportDir, { recursive: true, force: true });
@@ -510,7 +543,7 @@ function runDetachedProfile(
 		child.once("error", (error) => {
 			if (killTimer) clearTimeout(killTimer);
 			signal.removeEventListener("abort", terminateGroup);
-			reject(error);
+			reject(Object.assign(error, { profileChildStarted: false }));
 		});
 		child.once("close", (code, childSignal) => {
 			const deadline = Date.now() + 5_000;
@@ -537,7 +570,12 @@ function runDetachedProfile(
 						new Error(
 							`flywheel-claude-profile exited ${code ?? childSignal ?? "unknown"}`,
 						),
-						{ code: code ?? childSignal, stdout, stderr },
+						{
+							code: code ?? childSignal,
+							stdout,
+							stderr,
+							profileChildStarted: true,
+						},
 					),
 				);
 			};

@@ -210,6 +210,8 @@ type SwitchOutcome =
 export type SwitchResult = SwitchOutcome & {
 	/** Non-secret child facts; consumed only after the account lock is released. */
 	applyReports?: ApplyProfileReport[];
+	/** Whether the profile mutation child reached a running process. */
+	applyProfileChildStarted?: boolean;
 };
 
 export class LockLeaseLostError extends Error {
@@ -463,6 +465,13 @@ function withReports<T extends SwitchOutcome>(
 	return reports.length > 0
 		? { ...result, applyReports: [...reports] }
 		: result;
+}
+
+function profileChildStarted(error: unknown): boolean | undefined {
+	if (typeof error !== "object" || error === null) return undefined;
+	const value = (error as { profileChildStarted?: unknown })
+		.profileChildStarted;
+	return typeof value === "boolean" ? value : undefined;
 }
 
 /** Default lockfile beside the state file. */
@@ -928,7 +937,7 @@ export async function switchAccount(
 						applyReports,
 					);
 				}
-				return withReports(
+				const failed = withReports(
 					{
 						outcome: "failed",
 						reason: err instanceof Error ? err.message : String(err),
@@ -936,6 +945,10 @@ export async function switchAccount(
 					},
 					applyReports,
 				);
+				const childStarted = profileChildStarted(err);
+				return childStarted === undefined
+					? failed
+					: { ...failed, applyProfileChildStarted: childStarted };
 			}
 		}
 		if (applied === null) {
