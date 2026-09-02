@@ -1,0 +1,16 @@
+flowchart LR
+  A["她的声音"] --> B["Discord 能量门<br/>speaking.start"]
+  B --> U["Raya Uplink<br/>24kHz 常开流"]
+  U --> S["OpenAI Realtime<br/>server_vad + near_field<br/>interrupt_response: true"]
+  B --> L["本地检测层<br/>WebRTC VAD mode3<br/>+ 6 组手调常数"]
+  S --> K["服务端已取消生成<br/>(我们否决不了)"]
+  K -->|"speech_started<br/>= itemAdded 通知"| X["Raya RealtimeTransport"]
+  X -.->|"没有对应分支"| DROP["静默丢弃"]
+  L --> F["Downlink.interruptVoice<br/>止声(不可外包)"]
+  K -.->|"truncate 判等为假<br/>⇒ 从不发出"| T["听感上下文<br/>无人纠正"]
+  classDef found fill:#ffe5e5,stroke:#ff3b30,stroke-width:2px,color:#c0392b;
+  classDef ok fill:#e6f9ed,stroke:#34c759,color:#1d7a3d;
+  classDef mine fill:#fff4e0,stroke:#ff9500,color:#8a5200;
+  class DROP,T found;
+  class S,K ok;
+  class L,F mine;

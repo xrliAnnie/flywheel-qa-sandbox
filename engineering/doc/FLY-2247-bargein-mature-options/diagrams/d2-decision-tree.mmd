@@ -1,0 +1,14 @@
+flowchart TD
+  S["BargeGate 只在一件事上竞争:<br/>谁当【触发器】<br/>(止声永远是本地;停生成不归它管)"] --> B{"B:平台事件<br/>可靠且够快吗?"}
+  B -->|"❌ 慢 / 丢"| K["留 —— 它是唯一可用的触发器<br/>这一格才值得投 R3 Silero"]
+  B -->|"✅ 是"| C{"C:平台事件对呼吸的误触<br/>比 BargeGate 少吗?"}
+  C -->|"✅ 少"| DEL["删 —— 触发器用平台事件<br/>留着只多一个不一致的信号源"]
+  C -->|"❌ 更多"| KEEP["留 —— 本地 flush 的第二把关<br/>但它收紧不了服务端取消<br/>真解是 R6a 调 threshold"]
+  DEL --> E
+  KEEP --> E
+  K --> E
+  E["三格共同项 = 现在就能做<br/>① 接上平台信号 R1(它就是探针本身)<br/>② 保留 Downlink.interruptVoice R2<br/>③ 恢复语义 R5(仅覆盖 inbox 条目)"]
+  classDef now fill:#e6f9ed,stroke:#34c759,stroke-width:2px,color:#1d7a3d;
+  classDef del fill:#ffe5e5,stroke:#ff3b30,color:#c0392b;
+  classDef keep fill:#fff2dd,stroke:#ff9500,color:#8a5200;
+  class E now; class DEL del; class KEEP,K keep;
