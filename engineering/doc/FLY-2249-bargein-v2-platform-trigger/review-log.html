@@ -1,0 +1,13 @@
+  <p class="note">每一轮都由独立的 Codex(xhigh)对着 Raya 源码 <code>61b41a1</code> 与 Codex 源码 <code>eb10d91e</code> 逐条核 plan;每条我都回源码复核过才接受。发现条数 <b>11 → 10 → 5 → 4 → 1 → 0(第四轮起为 Lead 授权的复核轮,第六轮 APPROVED)</b>;没有一条要求新增机制,全部是把「同步写成了异步」「帧数算错」「账本算错」「时点选错」「围栏漏了」这类实现正确性问题钉死,第三轮按 Lead 规则只删不增。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:10%">轮</th><th style="width:16%">结论</th><th>抓到了什么(全部接受)</th></tr>
+    <tr><td><b>1</b></td><td><span class="badge no">要改</span>5 BLOCKER / 4 HIGH / 2 MEDIUM</td><td>推理接口是异步的却被写成同步热路径;延迟线按 20ms 帧数算、回填其实会丢起点;「听到哪儿」的算法把静音垫也算成语音;Raya 今天根本没收到过逐字转写(读错了字段);developer 提示发得太晚、且没绑会话代次;重复冲刷没有一次性闩;ship/readback 审批窗里的短词会被门吃掉;附和词表放错了位置;附和臂没有硬门;破坏性事件围栏漏了;依赖放行、探针归属、回滚锚等交付合同没写实。</td></tr>
+    <tr><td><b>2</b></td><td><span class="badge no">要改</span>3 BLOCKER / 4 HIGH / 3 MEDIUM</td><td>延迟线公式只覆盖了分块器从空开始的相位;「跨段拼」和在飞推理、状态所有权互相打架(⇒ 整个删掉);账本的固定长度环覆盖不了播放停滞时的积压、不足一帧的余量也没算;词表守卫会误吞助手的「好的」;fireLocalYield 顺序被我写反了(源码是先注册仲裁、失败不冲);600ms 兜底兑现不了 &lt;1000ms(⇒ 只承诺「最终会停」);「异步 Promise」不等于不占主线程(⇒ 实测门槛);developer 提示的 500ms 余量说法不准;「同 thread 旧代次通知」围栏无法实现(⇒ 删断言);冒烟阳性样本不该用正弦。</td></tr>
+    <tr><td><b>3</b></td><td><span class="badge no">要改</span>2 BLOCKER / 1 HIGH / 1 MEDIUM / 1 LOW</td><td>「听到哪儿」账本把输入的 24k 单声道字节和播放侧的 48k 立体声字节混在一起除、核销量还会重复扣(⇒ 统一按播放侧字节、按增量核销、加不变量,示例重算);停口时如果决定开门的那一块还在计算,整段前缀会被静音而不是只丢最后 32 毫秒(⇒ 删掉无条件的「起点不丢」保证,加精确交错测试,替代做法「多等 ≤20 毫秒」Lead 已裁采纳);不 flush jitter 还会改变下一段的预缓冲位置(⇒ 差分合同收紧);research 残留旧账本文本(⇒ 删);预算数字按新公式更新(门开最坏 ≈276ms,主路径 ≈690–750ms,兜底 ≈1.08s)。全部接受;按 Lead 规则不再开第四轮,剩余项作为实现节点 RED 清单写进 plan §5.1。</td></tr>
+    <tr><td><b>4</b></td><td><span class="badge no">要改</span>1 BLOCKER / 2 MEDIUM / 1 LOW(复核轮)</td><td>第三轮五处修正里:账本单域与算术 ✅、附和守卫 ✅、预算核心数字 ✅、D-BYTES 主合同 ✅;但「多等 ≤20 毫秒」我写进 plan 时没同步干净:旧句「立即丢弃」还在、相邻测试条目互相矛盾、证据字段缺 heldMs、实施步骤漏了新测试、「持有期间又来一段新语音」没定义(⇒ rev 6 重写成唯一合同:新语音到达先强制结清旧链);另有两处 D-BYTES 旧句、research 残句与 `max(0,…)`、预算摘要不一致(⇒ 全部同步)。全部接受;Lead 随后授权第五、六轮只复核这些修正。</td></tr>
+    <tr><td><b>5</b></td><td><span class="badge no">要改</span>1 MEDIUM(复核轮)</td><td>五项范围里四项全过;只剩 research 里一句还写着旧的「三形」(⇒ 改为四形并点明第四形)。</td></tr>
+    <tr><td><b>6</b></td><td><span class="badge do">APPROVED</span>ready to implement</td><td>只复核那一句:与 plan 的唯一合同逐项一致,plan blob 未变(<code>2215c113</code>)。设计评审到此以 APPROVED 收尾。</td></tr>
+  </table>
+  </div>
+  <p class="note">增删清单(第三轮,Lead 规则「机制只减不增」):<b>删</b> —— 跨段拼机制与其旋钮、兜底的 &lt;1000ms 承诺、无法实现的围栏断言、有状态的 Silero 封装、固定长度写入环;<b>改</b> —— 延迟线公式、账本按字节核销、词表守卫、fireLocalYield 顺序写实、失败生命周期、冒烟样本;<b>增</b> —— 没有新机制(只有测试用例与一次性实测)。</p>

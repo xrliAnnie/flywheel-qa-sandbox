@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant A as 她(Discord 麦克风)
+    participant G as 神经门(Silero,本地)
+    participant P as 平台(Codex→OpenAI)
+    participant R as Raya 播放/止声
+    participant M as 会话上下文
+    Note over R: Raya 正在说话
+    A->>G: 呼吸 / 附和声
+    G-->>P: 送静音帧(平台听不到)
+    Note over P: 不判开口,不取消回答
+    A->>G: 真开口「你等一下…」
+    G->>P: 连续 200ms 语音 ⇒ 放行(含起点回填)
+    P->>P: server_vad 判开口 ⇒ 取消 response
+    P-->>R: speech_started 通知(以前被丢弃)
+    R->>R: 冲掉播放队列 + 闩锁(0.55s 链路,保留)
+    R->>M: 记「她听到哪儿」heardMs / 文本前缀
+    A->>P: 她说完 ⇒ user final
+    R->>M: developer 提示:只听到「…」为止,不要接着说
+    Note over R,M: 打断后守静,等她的新问题

@@ -1,0 +1,42 @@
+flowchart TB
+    subgraph L1["L1 声学门(新)"]
+      S[Silero VAD 神经门<br/>决定平台听到什么<br/>连续 200ms 语音才开门]
+    end
+    subgraph L2["L2 平台触发(新)"]
+      E[平台 speech_started 通知<br/>→ 立即止声 fireLocalYield]
+      F[本地兜底<br/>门开 600ms 未见平台事件]
+    end
+    subgraph KEEP["保留资产"]
+      D[Downlink 冲刷 + 闩锁<br/>耳侧 0.55s]
+      I[InboxArbitrator 四值仲裁<br/>被打断条目恢复 9/9]
+      Q[真房测量体系<br/>N=3 指纹 / 呼吸哨兵]
+    end
+    subgraph L3["L3 命运确认"]
+      U[founder user final]
+      B[附和词表 ≤20 词]
+    end
+    subgraph SYNC["S 听感同步(新)"]
+      H[heardMs 估算 → evidence]
+      N[appendText developer 补偿]
+    end
+    subgraph DEL["删除(净删)"]
+      X1[BargeGate 六组常数 / 迟疑模式]
+      X2[WebRtcSpeechDetector + webrtcvad]
+    end
+    S --> E
+    S -.-> F
+    E --> D
+    F --> D
+    D --> I
+    U --> I
+    B --> I
+    D --> H
+    I --> N
+    H --> N
+    Q -.验收判据.-> E
+    classDef del fill:#fde8e8,stroke:#ff3b30,color:#1d1d1f;
+    classDef keep fill:#e8f8ec,stroke:#34c759,color:#1d1d1f;
+    classDef new fill:#e8f0fe,stroke:#007aff,color:#1d1d1f;
+    class X1,X2 del;
+    class D,I,Q,U keep;
+    class S,E,F,B,H,N new;

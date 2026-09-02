@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2249 · Raya 打断 v2:平台触发 + 神经门 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.q { background:#f3e8ff; color:#6b21a8; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2249 · Raya 打断 v2:平台触发 + 神经门</h1>
+<div class="meta">
+  设计交付 · 2026-09-02 · 依据 founder 2026-09-01 20:59 PT 裁定(FLY-2178 自研检测层方向错误,关单重开)<br>
+  证据基线:raya <code>fly-2178-bargein-redesign@61b41a1</code>(实现起点)· raya <code>main 1c71cd2</code> · <code>codex-oss origin/main eb10d91e</code>(2026-09-02 重核)· 装机 <code>codex-cli 0.152.1</code><br>
+  文档:<code>engineering/doc/FLY-2249-bargein-v2-platform-trigger/</code>{exploration, research, plan}.md · 本页只讲结论与取舍,细节在 plan(rev 6:六轮独立评审共 31 条全部吸收,第六轮 APPROVED;round 3 为 Lead 封顶轮,残留 5 条进 plan §5.1「实现节点 RED 清单」;唯一取舍 R-2 已由 Lead 裁定采纳「多等 ≤20 毫秒」;第四至六轮为 Lead 授权的复核轮,只核修正处)
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">你的呼吸和「嗯」不再进平台,所以平台不会再掐 Raya;你真开口时,平台自己发的「开口了」信号(以前被 Raya 扔掉)让 Raya 立刻闭嘴;闭嘴之后 Raya 记下你听到哪儿,并告诉模型「后面那半句她没听到,别接着说」。</p>
+  <p>三句话对应三件事,每件事只有一个负责人:</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:26%">事</th><th style="width:34%">谁负责</th><th>跟上一版(FLY-2178)的区别</th></tr>
+    <tr><td><b>呼吸/附和别误触</b></td><td><span class="badge new">新</span>本地<span class="term" title="语音活动检测:判断一段声音里有没有人在说话的小模型">神经 VAD</span> 门(Silero),放在声音<b>送去平台之前</b></td><td>上一版是六组手调常数(密度、迟疑窗…)在<b>事后</b>判;这次把判别力放进一个开源模型,而且放在<b>源头</b> —— 平台听不到呼吸,就没有「掐了再补救」这一步</td></tr>
+    <tr><td><b>真开口时立刻停</b></td><td><span class="badge new">新接住</span>平台的 <code>speech_started</code> 通知 → 既有 0.55s 冲刷链路</td><td>这条通知一直在推,Raya 只认 5 种消息、一直把它扔掉;现在接住当第一触发器。冲刷链路本身<b>一个字节不动</b></td></tr>
+    <tr><td><b>她听到哪儿</b></td><td><span class="badge new">新</span>止声那一刻按播放侧的真实账本算出「听到哪儿」的<b>区间</b>,并在同一刻给模型一条「系统提示」</td><td>上一版和 FLY-2247 都写成「已知缺口」;这次核到一条今天就能走的路(<code>appendText</code> 只写上下文、不会让 Raya 开口)</td></tr>
+  </table>
+  </div>
+  <p class="note">保留不动的三样资产:耳侧 0.55s 停口冲刷链路、被打断念读条目的恢复(真房 9/9)、真房测量体系。被<b>净删</b>的:自研 <code>BargeGate</code> 六组常数与迟疑模式、WebRTC VAD(Lead 硬约束:删,不是留旋钮、不是禁用)。</p>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card red" data-title="为什么方向要换">
+  <h2>为什么方向要换:一条我们以前没用上的杠杆</h2>
+  <p>FLY-2247 的研究把平台 VAD 当成一个<b>只能被动接收结论</b>的黑盒:「平台一判你开口就掐,我们否决不了,只能推上游改阈值」。这次审计 Raya 的上行代码(<code>Uplink</code>)时核到一件事:</p>
+  <p class="summary-line">平台 VAD 只判我们送上去的字节。我们决定它听到什么。</p>
+  <p>Raya 本来就每 20 毫秒往平台送一帧声音,静音时也送一帧「静音」(这是既有合同)。所以在送出去之前放一个本地神经门:门判「不是人声」的帧,原样换成静音帧送出 —— 平台看到的就是安静,不会发「开口了」,也不会掐回答。<b>误触在源头归零,而不是事后补救。</b></p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:30%">情形</th><th>上一版(本地规则门事后判)</th><th>这一版(神经门在平台之前)</th></tr>
+    <tr><td>你呼吸了一下</td><td>平台可能已经掐了回答;本地门若也误判,就把队列冲掉 —— 两个判官各判各的</td><td>门判「不是人声」⇒ 平台听到静音 ⇒ 什么都不发生,Raya 继续说</td></tr>
+    <tr><td>你真开口</td><td>本地门累计 350ms 才判,耳侧 466–730ms 停</td><td>门约 260–280ms 开 ⇒ 平台 ~200ms 判并掐 ⇒ 通知回来 ⇒ 立刻冲;预计耳侧 ~690–750ms(<b>&lt;1000 ✅</b>,细看下文预算)</td></tr>
+    <tr><td>本地判了、平台没判</td><td>会发生:本地把仍在生成的回答压掉,<b>普通对话轮次的内容就没了</b></td><td><b>结构上不会发生</b>:本地门不再独立止声,只决定平台听不听得到;兜底只在平台缺席 600ms 后才动</td></tr>
+  </table>
+  </div>
+  <div class="callout amber"><b>代价要说清:</b>门判漏了(比如你很轻声地开口),平台就<b>听不见你</b>,这次打断就不会发生 —— 比今天更迟钝。所以真房验收里「软声打断」是和「呼吸零误触」成对报的两个数,不能只看一个。</div>
+  <div class="cbox"><label>给「为什么方向要换」的意见</label><textarea data-key="s02" data-title="为什么方向要换"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:你开口的一秒钟里发生了什么</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 时序图:从你的麦克风到模型的会话上下文。虚线 = 以前被丢弃、现在接住的那条通知</div>
+  <ol>
+    <li><b>①②</b> 你呼吸或「嗯」了一声:神经门判「不是持续人声」,送静音帧上去。平台不判开口、不掐回答。</li>
+    <li><b>③④</b> 你真开口:门看到<b>连续 200 毫秒</b>的人声概率高于阈值就开门,并把它暂存的这 200 毫秒一并放行(所以开头那个字不会丢)。</li>
+    <li><b>⑤⑥</b> 平台自己的 <code>server_vad</code>(服务端语音检测,Codex 写死为「一听到你开口就取消回答」,我们改不了)判开口、取消回答,并推一条 <code>speech_started</code>(开口了)通知 —— 这条通知以前被 Raya 扔掉,现在接住。</li>
+    <li><b>⑦</b> Raya 收到通知立刻走既有的 0.55s 冲刷链路:冲掉本地播放队列 + 上<span class="term" title="闩锁:在一段时间内把后续到达的音频小块直接丢弃,防止残余尾巴又被播出来">闩锁</span>。这段代码一个字节不动。</li>
+    <li><b>⑧</b> 同一刻记账:播放侧只数<b>真正的语音帧</b>(不数静音垫),算出你实际听到的毫秒数 —— 给的是一个<b>区间</b>(Discord 播放链里最后 ~100 毫秒我们看不见),对应到转写文本的哪个位置。</li>
+    <li><b>⑨⑩</b> <b>也是同一刻</b>(不等你说完)Raya 给模型一条 developer 系统提示:「上一段话她只听到『…』为止,后面没听到;不要复述;她接着问新问题就只回答新问题」。为什么要抢在这一刻:平台在你停口 0.5 秒后会自动开始下一轮回答,提示必须赶在那之前进上下文 —— 这是<b>尽力而为</b>,不是保证(真房臂 A′ 记录先后)。这条提示只进上下文,<b>不会触发 Raya 开口</b>(已核 Codex 源码,且 Raya 的会议开场提示走的就是同一条路)。之后你说完(平台给出<span class="term" title="user final:平台对你这句话的最终转写文本">user final</span>),平台自然开始回答你的新问题。</li>
+  </ol>
+  <p class="note">上一版的「被打断念读条目怎么恢复」(真打断 → 排队尾,误触 → 队首重念)全部保留,只是触发它的原因从「本地规则门」换成了「平台通知」。</p>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card purple" data-title="三层架构与删留">
+  <h2>三层架构,以及删了什么、留了什么</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 2 · 蓝 = 新增,绿 = 保留资产(逐字节不动),红 = 净删</div>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:20%">层</th><th style="width:40%">做什么</th><th>状态</th></tr>
+    <tr><td><b>L1 声学门</b></td><td>Silero VAD(<span class="term" title="ONNX:一种跨平台的神经网络模型文件格式,用 onnxruntime 在本机 CPU 上跑">ONNX</span>,MIT 开源,每 32 毫秒一块、单核不到 1 毫秒,推理在后台线程<b>异步</b>跑、绝不卡住 20 毫秒音频时钟)判「持续人声」才让声音进平台;只在 Raya 正在出声、且不在 ship/readback 审批窗内时启用;你正常提问的路径与今天相同(唯一差异:你每句话末尾原本被丢掉的几十毫秒尾音现在会送达)</td><td><span class="badge new">新</span></td></tr>
+    <tr><td><b>L2 平台触发</b></td><td>接住 <code>speech_started</code> → 冲刷;另接住 <code>response.cancelled</code>(若平台真的发)当「旧回答已结束」的精确信号;门开后 600ms 没等到平台通知 ⇒ 本地兜底冲刷(继承 &lt;1000ms 保证)</td><td><span class="badge new">新接住</span></td></tr>
+    <tr><td><b>L3 命运确认</b></td><td>只认你的 user final 判真/假打断(上一版真房 10/10 对齐);新增一张 ≤20 词的附和词表(「嗯 / 对 / 哈哈 / okay…」),单独出现就按误触走恢复路</td><td><span class="badge do">保留</span> + 窄增量</td></tr>
+    <tr><td><b>S 听感同步</b></td><td>止声时估算「听到哪儿」并记证据;真打断后发 developer 系统提示;上游 truncate 透传作为第四台阶请求</td><td><span class="badge new">新</span></td></tr>
+    <tr><td><b>删除</b></td><td><code>BargeGate</code>(密度 7/10、迟疑窗 800ms、连续段 80ms、锚段 240ms、跨 epoch 保留)、<code>WebRtcSpeechDetector</code> + <code>webrtcvad</code> 原生依赖、两个旧配置 key(出现即拒起)、旧证据事件族</td><td><span class="badge no">净删</span></td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「三层架构与删留」的意见</label><textarea data-key="s04" data-title="三层架构与删留"></textarea></div>
+</section>
+
+<section class="card gray" data-title="数据与结构模型">
+  <h2>数据与结构模型:改哪些模块,记哪些证据</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 3 · 模块与它们之间的调用关系;标「保留」的方法不改</div>
+  <h3>稳定标识(实现与 QA 都按这些名字对账)</h3>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:34%">名字</th><th>含义</th></tr>
+    <tr><td><code>serverEvent{speech_started | response_cancelled | item_added}</code></td><td><code>RealtimeTransport</code> 新事件;只解析 <code>item.type</code> 与两个 id,不透传 item 正文</td></tr>
+    <tr><td><code>fireLocalYield(cause)</code> 的 <code>cause</code></td><td><code>platform_speech_started</code> / <code>local_fallback</code>(旧值 <code>sustained_speech</code> 删除)</td></tr>
+    <tr><td><code>bargeInGateMinSpeechMs</code>(默认 200)/ <code>bargeInGateThreshold</code>(默认 0.5)</td><td>神经门仅有的两个旋钮:开门所需连续语音时长(同时派生延迟线长度 L = ⌈(511+512K)/320⌉+1 帧,200ms ⇒ 14 帧 280ms,任意起点相位下起点回填都无损)、语音概率阈值;都有成熟栈同名参数,没有形态规则</td></tr>
+    <tr><td><code>bargeInPlatformFallbackMs</code>(默认 600)</td><td>门开后等平台通知的超时,不是任何形态规则;这条兜底只保证「平台缺席时最终会停」(约 1.08 秒),<b>不承诺 &lt;1000ms</b></td></tr>
+    <tr><td><code>uplink_gate_utterance</code> / <code>uplink_gate_degraded</code></td><td>每次你开口一行:门控还是直通、开没开门、静音了几帧;模型加载失败 ⇒ 直通 + 一行 degraded(进程不会因此起不来)</td></tr>
+    <tr><td><code>barge_platform_event</code></td><td>每条平台通知一行(含「收到但没动作」及原因)—— 呼吸臂「平台 speech_started = 0」就靠它直接数</td></tr>
+    <tr><td><code>barge_heard_position</code></td><td>止声时的 heardLowerMs / heardUpperMs / 接受的语音毫秒 / 冲掉毫秒 / 检查点滞后 / ledgerUnknown;账本在 <code>Downlink</code> 内、只读、只数语音字节、统一按播放侧 48k 立体声计(第三轮评审抓到的字节域混用已改);<b>只记字符数不记正文</b></td></tr>
+    <tr><td><code>barge_yield_local</code> / <code>barge_item_transition</code></td><td>上一版保留的两族事件,字段合同不变(fired 行多 heard 区间字段、换两个 cause 值);<code>fireLocalYield</code> 加了 one-shot 闩:同一次打断里迟到的平台事件或第二段语音不会再冲第二次</td></tr>
+  </table>
+  </div>
+  <p class="note">迁移与回滚:没有持久化状态、不改 contracts、不加环境变量;新增一个 112MB 的 npm 原生依赖(<code>onnxruntime-node</code>,arm64 预编译)+ 2MB 模型文件(SHA-256 写死、启动校验)。回滚 = 回到部署前记录的那个 main 版本(实现时记下来,不假设它是哪个)。实现只在本 issue 自己的 raya worktree 里做,不碰生产目录。</p>
+  <div class="cbox"><label>给「数据与结构模型」的意见</label><textarea data-key="s05" data-title="数据与结构模型"></textarea></div>
+</section>
+
+<section class="card" data-title="神经门怎么判">
+  <h2>神经门怎么判:两个旋钮,没有形态规则</h2>
+  <div class="diagram"><!--DIAGRAM_4--></div>
+  <div class="cap">图 4 · 门的状态机:每次你开口时决定一次「门控」还是「直通」,中途不切换</div>
+  <ul>
+    <li><b>什么时候门控:</b>你开口的那一刻 Raya 正在出声(含 0.5s 尾音窗)。Raya 安静时你说话 = 直通,字节与今天完全相同。</li>
+    <li><b>开门条件:</b>连续 200 毫秒(7 个 32 毫秒块)人声概率高于 0.5。这段声音先放在一条 14 帧(280 毫秒)的延迟线里 —— 长度按「起点可能落在一个 32 毫秒块的任何位置」的最坏情况推导,保证开门那一刻起点那一帧还在线内、一并放行,开头的字不丢;代价是这次打断的声音晚约 280 毫秒到平台。<b>一个已知的边角</b>(第三轮评审抓到,Lead 已裁):如果你恰好在决定开门的那一块还在计算时停口,门会再多等最多 20 毫秒把结果等回来;等不到才按静音送出并记一笔证据。</li>
+    <li><b>关门条件:</b>连续 100 毫秒概率低于 0.35(Silero 官方默认的迟滞),回到静音替换。</li>
+    <li><b>Discord 会把犹豫的一句话切成几段</b>(上一版真房发现的)—— 每一段独立判,<b>不跨段拼</b>(评审第二轮指出「跨段拼」本质上又是一条按时间间隔判语音连续性的形态规则,已删)。代价说清:每段都短于 200 毫秒的犹豫短语开不了门、打不断 Raya,她要连续说够 200 毫秒;这个代价在校准轮和真房 D 臂里单独量。</li>
+    <li><b>ship / readback 审批窗内不门控:</b>你对 Raya 说的「对」「不对」「等等」「取消」都很短,不能被门吃掉 —— 这些窗口里一律直通。</li>
+    <li><b>失败怎么办:</b>模型加载 / 校验失败 ⇒ 本次会话直通(平台听到全部声音 = 今天的行为)并记一行证据;推理出错或跟不上 ⇒ 这一段直通,连续 3 段 ⇒ 本次会话都直通。不会让语音进程起不来。另:推理虽是异步接口,但实际会占主线程,实现前要用真模型和 20 毫秒时钟一起跑一次实测,超预算就停下来报 Lead。</li>
+  </ul>
+  <div class="callout amber">200 和 0.5 是<b>占位默认值</b>(与 Vapi 0.2s / Silero 0.5 同量级),真正的值要靠一套你的真实语料(呼吸、「嗯」、轻声打断、键盘声…)校准 —— 真房臂 B/C/D 就是为此设的,数据出来请你听样带定。</div>
+  <div class="cbox"><label>给「神经门怎么判」的意见</label><textarea data-key="s06" data-title="神经门怎么判"></textarea></div>
+</section>
+
+<section class="card amber" data-title="她听到哪儿">
+  <h2>「她听到哪儿」怎么处理(issue ③)</h2>
+  <p>事实:Codex 自己那条「告诉 OpenAI 截到哪儿」的代码永远走不到(它拿用户条目的 id 去比助手条目的 id,恒不相等),Raya 也发不出 <code>truncate</code>。所以打断后,模型一直以为自己把整段话说完了。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:22%">路</th><th style="width:14%">做不做</th><th>内容</th></tr>
+    <tr><td>S1 记账</td><td><span class="badge do">必做</span></td><td>播放侧(<code>Downlink</code>)内建一本只读账:接受了多少语音、还有多少在队列、多少已写进播放流。止声时算出区间 [heardLower, heardUpper](下界扣掉 Discord 播放链里看不见的 ~100 毫秒),对齐到已到的转写文本前缀;误差约一个转写小块(几个字),<b>不是逐字对齐</b>。附带修一个协议缺口:Raya 今天其实<b>从没收到过</b>逐字转写(读错了字段),修好它 S1 才有文本可对</td></tr>
+    <tr><td>S2 本地补偿</td><td><span class="badge do">本单做</span></td><td>止声那一刻立即发一条 developer 系统提示(内容见上文流程 ⑩),抢在平台自动开始下一轮之前(尽力而为)。路径已核:只建上下文条目、不触发回答;会议开场提示走的就是它。真打断和误触都发(两种情况下「她只听到 X」都是事实);没有未听到的尾巴不发;ship 审批窗内不发;绑定会话代次,重连后不会写错会话</td></tr>
+    <tr><td>S3 上游 truncate</td><td><span class="badge maybe">推,不阻塞</span></td><td>与 FLY-2247 的三个台阶(阈值可配 / cancel 透传 / 自动取消可关)并列为第四台阶;S1 的 heardMs 就是将来的 <code>audio_end_ms</code>。issue 文本已写好在 plan §10</td></tr>
+  </table>
+  </div>
+  <div class="callout red">诚实边界:这条提示能不能赶在下一轮之前、模型会不会理会,都只能在真房观察(臂 A′ 记先后);「打断后守静」本身由平台取消 + 本地闩锁保证,<b>不靠这条提示</b>。</div>
+  <div class="cbox"><label>给「她听到哪儿」的意见</label><textarea data-key="s07" data-title="她听到哪儿"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与被否决的方案">
+  <h2>关键取舍与被否决的方案</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:30%">方案</th><th style="width:12%">裁决</th><th>为什么</th></tr>
+    <tr><td><b>A 只接平台事件</b>,确认层只靠转写</td><td><span class="badge maybe">必要不充分</span></td><td>改动最小,但对呼吸<b>零抑制</b>:平台掐了我们只是冲得更快。「呼吸零误触」它自己达不成,只能等上游改阈值</td></tr>
+    <tr><td><b>B 本地神经 VAD 当快路</b>,平台当佐证(FLY-2247 合成文档 §6 的建议)</td><td><span class="badge no">否决</span></td><td>耳侧最快(~150ms),但本地误判时会把服务端仍在生成的回答压掉 —— 普通对话轮次内容丢失、上下文错;而且和你的裁定「平台 = 第一触发源」相反。它的延迟论证是对的,但没算「判错的代价由谁付」</td></tr>
+    <tr><td><b>C 神经门在平台之前 + 平台触发 + 本地兜底</b></td><td><span class="badge do">采纳</span></td><td>误触源头归零;止声与停生成天然一致;耳侧 ~690–750ms(&lt;1000)。代价:漏检 = 漏打断、门控期 +280ms、停口撞上在算的决定块要多等 ≤20ms、112MB 原生依赖、推理占主线程要实测</td></tr>
+    <tr><td><b>D 可逆本地暂停</b>(门开即暂停播放,平台 400ms 内确认才真冲,否则续播)</td><td><span class="badge q">下一单候选</span></td><td>能把耳侧压到 ~150–250ms 且可逆,但要给播放侧加新原语和一组时序测试,误触时会「顿一下」。等 C 的真房数字再决定 —— 决策点 Q1</td></tr>
+    <tr><td>专用打断分类器(LiveKit adaptive / Krisp)</td><td><span class="badge no">今天接不上</span></td><td>要对齐时间戳的转写或专有模型;Raya 的转写在 Codex 里拿不到时间戳(FLY-2247 §4.1)</td></tr>
+    <tr><td>大模型判意图</td><td><span class="badge no">不进热路径</span></td><td>五家成熟栈没有一家把通用 LLM 放在「让声音停下来」之前(Deep Research 报告)</td></tr>
+    <tr><td>继续调 <code>BargeGate</code> 的常数</td><td><span class="badge no">否决</span></td><td>你 9-01 的裁定;判别力应在模型里不在常数里</td></tr>
+    <tr><td>误触后让 Raya 自动重新生成接着说(普通对话轮次)</td><td><span class="badge q">本单不做</span></td><td>C 把误触压到源头后这是安全网;且它是重新生成不是续接,听感未知 —— 决策点 Q2</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「关键取舍与被否决的方案」的意见</label><textarea data-key="s08" data-title="关键取舍与被否决的方案"></textarea></div>
+</section>
+
+<section class="card green" data-title="真房验收怎么判">
+  <h2>真房验收怎么判(你的三条验收 → 九条臂)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:22%">臂</th><th>硬判据(任一不过 = FAIL)</th><th style="width:22%">对应你的验收</th></tr>
+    <tr><td>A 真语音 ×5</td><td>每轮收到平台 <code>speech_started</code> ≥1;你开口 → 耳侧安静 <b>&lt;1000ms</b> 全部;本地兜底触发 = 0</td><td>打断生效 &lt;1000ms</td></tr>
+    <tr><td>B 呼吸 ×3(哨兵)</td><td>平台 <code>speech_started</code> = <b>0</b>;门开 = 0;零冲刷;播报连续。优先用真人呼吸录音,合成样本只是下限</td><td>呼吸零误触</td></tr>
+    <tr><td>C 附和 ×3</td><td>平台 <code>speech_started</code> = <b>0</b>(硬门;除非你显式接受某个非零预算);同时报误触处置数;条目零永久丢失。默认门槛由真房前的<b>校准轮</b>(真人语料 → 误触率/漏检率表)先定</td><td>附和零误触</td></tr>
+    <tr><td>D 软声 / 犹豫 ×3</td><td>软声:门开、开门不晚于开口后 400ms、平台通知 ≥1(漏检率,与 B/C 成对报)。被切碎的犹豫短语:<b>按你耳朵听到的量</b> —— Raya 到底停没停、多久停(不是 bot 侧事件),同时报开门率;这一臂只量化不设过线,数据交你裁</td><td>(代价的另一半)</td></tr>
+    <tr><td>E 打断后守静</td><td>止声到你下一句之间 Raya 零音频、零回答(由平台取消 + 闩锁保证);developer 补偿项 = 1 条当且仅当确有未听到的尾巴</td><td>打断后守静</td></tr>
+    <tr><td>F 听感位置</td><td>bot 侧录音里最后一个可听词落在记账区间对应的文本范围内(人工核);据此校准那 ~100 毫秒</td><td>issue ③</td></tr>
+    <tr><td>G 恢复回归</td><td>9/9 念读条目最终 spoken</td><td>资产不退化</td></tr>
+    <tr><td>H 仪器活性</td><td>指纹三次全等、门未降级、jitter 零溢出 —— 上两轮真房的教训(死仪器和阴性长得一样)</td><td>—</td></tr>
+    <tr><td>轴 A′</td><td>只记录:<code>response.cancelled</code> / <code>truncate</code> 到底出不出现;developer 提示的发出时刻是否早于你下一句的转写定稿</td><td>—</td></tr>
+  </table>
+  </div>
+  <p class="note">统一尺子:你第一帧真语音 → 最后一帧可听音频(FLY-2247 §3.2),onset 用离线标注真值,不用任何检测器给自己打分。QA 判 PASS 前必须拉 exact head 的 CI。</p>
+  <div class="cbox"><label>给「真房验收怎么判」的意见</label><textarea data-key="s09" data-title="真房验收怎么判"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界:这个设计做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>接住平台通知当第一触发源;神经门挡住呼吸/噪声不进平台;保留三样资产逐字节不动;净删自研规则层;记账「听到哪儿」并给模型补偿提示;上游四台阶请求文本。</li>
+  </ul>
+  <h3>不做 / 做不到</h3>
+  <ul>
+    <li><b>不承诺 &lt;300ms 耳侧停口。</b>Deep Research 的 300ms 目标要靠本地快路或可逆暂停(方案 B/D);在「平台是不可否决的判官」这个约束下,「呼吸零误触」与「&lt;300ms」今天是二选一,你的验收选了前者。平台主路径预计 ~690–750ms,&lt;1000 ✅。</li>
+    <li><b>本地兜底路径不满足 &lt;1000ms。</b>平台完全没反应时,兜底约 1.08 秒才停 —— 它只保证「最终会停」;&lt;1000 只对平台主路径承诺,真房 A 臂要求兜底一次都不触发。</li>
+    <li><b>设计评审经六轮才以 APPROVED 收尾。</b>六轮共 31 条全部接受、没有一条要求新机制;第三轮(Lead 封顶)剩 5 条,4 条是算术/措辞更正已改进文档,1 条(停口撞上在算的决定块)Lead 已裁「多等 ≤20 毫秒」;第四、五轮复核又抓到几处我改动后没同步干净的文本,第六轮确认全部关闭。实现节点仍要把 plan §5.1 的 RED 清单先写成失败测试再动手。</li>
+    <li><b>被切碎的犹豫短语可能打不断 Raya。</b>每段短于 200 毫秒就开不了门;这是删掉「跨段拼」规则的代价,校准轮量它。</li>
+    <li><b>不承诺 Silero 对呼吸绝对零误触。</b>报告原话:Silero v6 也不是 noise-proof,呼吸尤其难。本单能保证的是:误触上界由神经模型 + 200ms 门槛决定,不再由手调常数决定;每一次误触都能被 <code>speech_started</code> 计数直接看见。</li>
+    <li><b>漏检 = 漏打断。</b>你很轻声开口若门没开,平台听不见你 —— 比今天迟钝。要用真语料量漏检率,不能只量误触率。</li>
+    <li><b>「她听到哪儿」只能给区间,不是精确到字。</b>播放侧之后的 Discord 链路我们看不见约 100 毫秒;真房臂 F 校准。</li>
+    <li><b>不修「普通对话轮次被误触掐断就没了」。</b>只有念读条目有恢复路;对话轮次的自动续说是决策点 Q2。</li>
+    <li><b>不动上游。</b>阈值可配 / cancel / 自动取消可关 / truncate 都要 Codex 改;本单只交请求文本。</li>
+    <li><b>没跑过真房。</b>平台往返 150–217ms 是旧版本 n=2 的数;<code>response.cancelled</code> 到不到、developer 提示模型听不听话,都只有静态源码证据,真房臂 A′/E 裁决。</li>
+    <li><b>合并顺序不由本单决定。</b>与 raya#10/#11/#12 先就绪先合;后合者 rebase,<code>runtime.ts</code> / <code>config.ts</code> / <code>InboxReader.ts</code> 冲突是确定会发生的工作量。</li>
+  </ul>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s10" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card purple" data-title="需要你拍板的事">
+  <h2>需要你拍板的 4 件事(不阻塞实施;默认按建议走)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:8%">#</th><th style="width:44%">问题</th><th>我的建议</th></tr>
+    <tr><td><b>Q1</b></td><td>方案 D「可逆本地暂停」(耳侧 ~150–250ms,误触时顿一下)要不要作为下一单?</td><td>等本单真房 A 臂的实测数字再定</td></tr>
+    <tr><td><b>Q2</b></td><td>普通对话轮次被误触掐断后,要不要让 Raya 自动重新生成接着说?</td><td>不做,先看方案 C 把误触压到多少</td></tr>
+    <tr><td><b>Q3</b></td><td>门槛 200ms / 0.5 是占位;定 100 / 200 / 300 哪个?</td><td>真房前先跑校准轮(你的真实语料:呼吸、「嗯」、轻声打断)出误触率/漏检率表,再加你听样带定;附和零误触是硬门,除非你显式放宽</td></tr>
+    <tr><td><b>Q4</b></td><td>上游四台阶要不要以 GeoForge 名义开 Codex issue?</td><td>要;文本已备,任何本地步骤都不等它</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「需要你拍板的事」的意见</label><textarea data-key="s11" data-title="需要你拍板的事"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>独立设计评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s12" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2249";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

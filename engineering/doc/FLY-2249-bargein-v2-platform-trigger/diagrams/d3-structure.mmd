@@ -1,0 +1,66 @@
+classDiagram
+    class RealtimeTransport {
+      +on("serverEvent")
+      speech_started(itemId)
+      response_cancelled(responseId)
+      item_added(itemType)
+    }
+    class UplinkSpeechGate {
+      +begin(mode gated|passthrough)
+      +push(frame48k, atMs) 延迟 L 帧
+      +end() 冲残帧
+      minSpeechMs = 200 → L 14 帧
+      threshold = 0.5
+      链 = 一个 speaking epoch
+      推理异步 / token 匹配才提交
+    }
+    class SileroVad {
+      +score(chunk512, state) 纯函数
+      SHA / 形状失败 ⇒ 会话直通
+      模型 SHA-256 启动校验
+      失败 ⇒ 直通 + evidence
+    }
+    class Uplink {
+      owner / mic 门(保留)
+      jitter 3..24 帧(边界不再 flush)
+      tick() 20ms 常开流(保留)
+    }
+    class VoiceRuntime {
+      fireLocalYield(cause) one-shot 闩
+      顺序: 注册仲裁 → flush → 闩锁
+      cause platform_speech_started
+      cause local_fallback
+      兜底计时器 600ms 唯一归属
+      止声时立即 appendText(developer)
+    }
+    class Downlink {
+      interruptVoice() 保留
+      suppressVoice() 闩锁 保留
+      voice 账本(只读,按字节核销,新)
+    }
+    class HeardPosition {
+      acceptedVoiceMs(来自账本)
+      转写检查点(delta 修好后)
+      +estimate() heardLower..Upper / 前缀
+    }
+    class InboxArbitrator {
+      四值仲裁(保留)
+      +observe(userFinal)
+      附和词表过滤(新)
+    }
+    class Evidence {
+      barge_platform_event
+      uplink_gate_utterance
+      uplink_gate_degraded
+      barge_heard_position
+      barge_backchannel_ignored
+      barge_yield_local(保留)
+      barge_item_transition(保留)
+    }
+    Uplink --> UplinkSpeechGate : 串行门
+    UplinkSpeechGate --> SileroVad
+    RealtimeTransport --> VoiceRuntime : serverEvent
+    VoiceRuntime --> Downlink : 止声
+    VoiceRuntime --> HeardPosition : 落定时估算
+    VoiceRuntime --> InboxArbitrator : cause
+    VoiceRuntime --> Evidence
