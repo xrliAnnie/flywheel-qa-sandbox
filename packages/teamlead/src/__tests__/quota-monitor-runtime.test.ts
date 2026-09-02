@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+	enqueueSwitchNotification,
 	type RecordObservationResult,
 	readStore,
 	writeStore,
@@ -363,9 +364,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		expect(listPanes).toHaveBeenCalledTimes(1);
 		expect(capturePane).toHaveBeenCalledTimes(1);
 		expect(sendContinue).toHaveBeenCalledWith("%7");
-		expect(deliverAlert).toHaveBeenCalledWith(
-			expect.objectContaining({ kind: "model_cap_switched" }),
-		);
+		expect(deliverAlert).not.toHaveBeenCalled();
 		expect(result.state.alertOutbox).toEqual([]);
 		expect(result.state.confirmation).toMatchObject({ generation: 5 });
 
@@ -528,9 +527,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		expect(switchImpl).toHaveBeenCalledWith(
 			expect.objectContaining({ preferredOrder: ["school"] }),
 		);
-		expect(alerts).toEqual([
-			expect.objectContaining({ kind: "account_switched" }),
-		]);
+		expect(alerts).toEqual([]);
 	});
 
 	it("fails closed before usage or switching when machine-account witnesses conflict", async () => {
@@ -586,7 +583,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		);
 	});
 
-	it("recovers a committed model switch, durably finalizes it, and clears outbox only after a receipt", async () => {
+	it("recovers a committed model switch without creating a duplicate success alert", async () => {
 		writeConfig(90);
 		writeFileSync(join(poolDir, ".active"), "school\n", { mode: 0o600 });
 		writeFileSync(
@@ -670,10 +667,74 @@ describe("makeQuotaMonitorRuntime", () => {
 			alertOutbox: [],
 			confirmation: { targetAccount: "school", generation: 5 },
 		});
-		expect(deliverAlert).toHaveBeenCalledWith(
-			expect.objectContaining({ kind: "model_cap_switched" }),
-		);
+		expect(deliverAlert).not.toHaveBeenCalled();
 		expect(fetchUsage).not.toHaveBeenCalled();
+	});
+
+	it("replays a committed switch notification after restart and acknowledges it exactly once", async () => {
+		writeConfig(99);
+		const pending = enqueueSwitchNotification(readStore(storePath), {
+			eventId: "account-switch-g5",
+			generation: 5,
+			createdAt: NOW - 1_000,
+			alert: {
+				kind: "account_switched",
+				severity: "info",
+				title: "Claude account switched: shopping → school",
+				body: "committed switch notification",
+				signature: "account-switch-g5",
+			},
+		});
+		writeStore(pending, storePath);
+		const dormant = emptyQuotaMonitorState(4);
+		dormant.nextUsageDueAt = NOW + 60 * 60_000;
+		dormant.nextPaneScanDueAt = NOW + 60 * 60_000;
+		writeQuotaMonitorState(dormant, statePath);
+		const firstSender = vi.fn(async () => ({
+			primary: "process_error" as const,
+		}));
+		const common = {
+			now: () => NOW,
+			reconcileMachine: noMachineDrift,
+			paths: {
+				poolDir,
+				configPath,
+				statePath,
+				storePath,
+				cachePath,
+				lockPath,
+				claudeJsonPath,
+			},
+			readKeychainCredential: async () => null,
+			tmux: {
+				listPanes: async () => [],
+				capturePane: async () => "",
+				sendContinue: async () => ({ sent: true as const }),
+			},
+		};
+
+		await makeQuotaMonitorRuntime({ ...common, alert: firstSender }).tick();
+		expect(firstSender).toHaveBeenCalledTimes(2);
+		expect(firstSender.mock.calls[0]?.[0]).toMatchObject({
+			kind: "account_switched",
+			signature: "account-switch-g5",
+		});
+		expect(readStore(storePath).pendingSwitchNotifications).toHaveLength(1);
+
+		const restartedSender = vi.fn(async () => ({ primary: "sent" as const }));
+		const restarted = makeQuotaMonitorRuntime({
+			...common,
+			alert: restartedSender,
+		});
+		await restarted.tick();
+		expect(restartedSender).toHaveBeenCalledTimes(1);
+		expect(restartedSender).toHaveBeenCalledWith(
+			expect.objectContaining({ signature: "account-switch-g5" }),
+		);
+		expect(readStore(storePath).pendingSwitchNotifications).toEqual([]);
+
+		await restarted.tick();
+		expect(restartedSender).toHaveBeenCalledTimes(1);
 	});
 
 	it("alerts after three consecutive store projection failures without stopping polls", async () => {

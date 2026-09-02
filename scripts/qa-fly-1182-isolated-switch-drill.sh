@@ -20,16 +20,13 @@ set -uo pipefail
 
 # Codex R1 HIGH-2 + R2 HIGH: neutralize any INHERITED env that would weaken the
 # gates, skip validation, or route to production. The drill does not control its
-# caller's environment, so it must defensively clear every bypass/escape-hatch
+# caller's environment, so it must defensively clear every live escape hatch
 # the real binary honours before invoking it:
-#   QUOTA_BYPASS / QUOTA_PREVERIFIED — skip the fake quota guard, reach real
-#     lead-alert.sh + production .env;
-#   FRESHNESS_BYPASS               — skip the freshness gate;
+#   QUOTA_PREVERIFIED              — skip the fake quota guard;
 #   PROFILE_IDENTITY_BYPASS        — skip the OAuth identity assertions the drill
 #     is verifying (inherited =1 made the drill still report green);
 #   TEST_PAUSE_AFTER_JOURNAL       — writes a `.ready` file and HANGS the switch.
-unset FLYWHEEL_CLAUDE_QUOTA_BYPASS FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED \
-      FLYWHEEL_CLAUDE_FRESHNESS_BYPASS FLYWHEEL_PROFILE_IDENTITY_BYPASS \
+unset FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED FLYWHEEL_PROFILE_IDENTITY_BYPASS \
       FLYWHEEL_TEST_PAUSE_AFTER_JOURNAL
 
 PROFILE_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/packages/claude-runner/bin/flywheel-claude-profile"
@@ -173,6 +170,29 @@ export FAKE_SEC_STATE="$STATE"
 export FAKE_SEC_ARGV_LOG="$ARGV_LOG"
 export FAKE_QUOTA_RC=0   # default healthy; individual scenarios override
 
+# FLY-2240: public `use` now intentionally enters the Node selector/executor.
+# This drill is narrower: it mutates the fake Keychain to prove the Bash
+# primitive's verify/rollback red lines. Invoke that primitive exactly as the
+# atomic executor does — from an authenticated parent-owned lock with the
+# internal apply marker — while retaining the real freshness/quota/identity
+# guards configured above. Public routing + notification have separate E2Es.
+invoke_profile_use() { # <target>
+  local target="$1" holder_pid="${BASHPID:-$$}" token marker rc
+  token="qa1182-${holder_pid}-${RANDOM}"
+  marker="$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK/holder.${holder_pid}.${token}"
+  mkdir "$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK" || return 1
+  printf '{"pid":%d,"at":%d,"token":"%s"}' \
+    "$holder_pid" "$(( $(date +%s) * 1000 ))" "$token" > "$marker"
+  chmod 600 "$marker"
+  FLYWHEEL_CLAUDE_LOCK_DELEGATED="$holder_pid" \
+    FLYWHEEL_ATOMIC_SWITCH_APPLY=1 \
+    "$PROFILE_BIN" use "$target"
+  rc=$?
+  rm -f "$marker"
+  rmdir "$FLYWHEEL_CLAUDE_ACCOUNTS_LOCK" 2>/dev/null || true
+  return "$rc"
+}
+
 # FAIL-CLOSED isolation guard — refuse to run if anything points at production.
 echo "── isolation guard ──"
 guard_fail=0
@@ -210,13 +230,14 @@ PROD_SENTINELS=(
   "$HOME/.flywheel/claude-profiles/.active"
 )
 PROD_HASHES_BEFORE="$ROOT/prod-before.txt"
+: > "$PROD_HASHES_BEFORE"
 for f in "${PROD_SENTINELS[@]}"; do [[ -f "$f" ]] && shasum -a 256 "$f" >> "$PROD_HASHES_BEFORE"; done
 PROD_CLAUDE_JSON_BEFORE=$(shasum -a 256 "$HOME/.claude.json" 2>/dev/null | cut -d' ' -f1)
 SCRATCH_CJ_BEFORE=$(shasum -a 256 "$CLAUDE_JSON" | cut -d' ' -f1)
 
 echo
 echo "── S1: verify + commit (happy path) ──"
-S1_OUT=$("$PROFILE_BIN" use bravo 2>&1); S1_RC=$?
+S1_OUT=$(invoke_profile_use bravo 2>&1); S1_RC=$?
 KC_NOW=$(cat "$STATE"); ACTIVE_NOW=$(cat "$POOL/.active")
 if [[ "$S1_RC" == "0" && "$KC_NOW" == "$SECRET_BRAVO" && "$ACTIVE_NOW" == "bravo" ]]; then
   ok "S1 commit: rc=0, keychain=bravo credential, .active=bravo"
@@ -233,7 +254,7 @@ PRE_KC=$(cat "$STATE"); PRE_ACTIVE=$(cat "$POOL/.active")
 S2_ARGV_BEFORE=$(wc -l < "$ARGV_LOG" | tr -d ' ')
 export FAKE_SEC_CORRUPT_ONCE="$ROOT/corrupt-once"
 : > "$FAKE_SEC_CORRUPT_ONCE"      # armed: the NEXT write corrupts, later ones don't
-S2_OUT=$("$PROFILE_BIN" use bravo 2>&1); S2_RC=$?
+S2_OUT=$(invoke_profile_use bravo 2>&1); S2_RC=$?
 unset FAKE_SEC_CORRUPT_ONCE
 POST_KC=$(cat "$STATE"); POST_ACTIVE=$(cat "$POOL/.active")
 S2_ARGV_AFTER=$(wc -l < "$ARGV_LOG" | tr -d ' ')
@@ -283,6 +304,7 @@ fi
 echo
 echo "── S4: production untouched ──"
 PROD_HASHES_AFTER="$ROOT/prod-after.txt"
+: > "$PROD_HASHES_AFTER"
 for f in "${PROD_SENTINELS[@]}"; do [[ -f "$f" ]] && shasum -a 256 "$f" >> "$PROD_HASHES_AFTER"; done
 if diff -q "$PROD_HASHES_BEFORE" "$PROD_HASHES_AFTER" >/dev/null 2>&1; then
   ok "S4: $(wc -l < "$PROD_HASHES_BEFORE" | tr -d ' ') production sentinels byte-identical (quota-monitor.json / claude-accounts.json / pool .active)"
@@ -318,7 +340,7 @@ echo "── S6: NEW quota gate (#618) — an EXHAUSTED target is refused, keych
 # Reset to a clean alpha baseline, arm the guard to report the target exhausted.
 printf '%s' "$SECRET_ALPHA" > "$STATE"; printf 'alpha' > "$POOL/.active"
 S6_PRE_KC=$(cat "$STATE"); S6_PRE_ACTIVE=$(cat "$POOL/.active")
-S6_OUT=$(FAKE_QUOTA_RC=32 "$PROFILE_BIN" use bravo 2>&1); S6_RC=$?
+S6_OUT=$(FAKE_QUOTA_RC=32 invoke_profile_use bravo 2>&1); S6_RC=$?
 S6_KC=$(cat "$STATE"); S6_ACTIVE=$(cat "$POOL/.active")
 [[ "$S6_RC" != "0" ]] && ok "S6: exhausted target refused with non-zero exit (rc=$S6_RC)" \
                       || bad "S6: exited 0 — switched to an EXHAUSTED account!"
@@ -333,7 +355,7 @@ echo
 echo "── S7: NEW quota gate (#618) — evidence UNAVAILABLE is fail-closed, keychain untouched ──"
 printf '%s' "$SECRET_ALPHA" > "$STATE"; printf 'alpha' > "$POOL/.active"
 S7_PRE_KC=$(cat "$STATE")
-S7_OUT=$(FAKE_QUOTA_RC=33 "$PROFILE_BIN" use bravo 2>&1); S7_RC=$?
+S7_OUT=$(FAKE_QUOTA_RC=33 invoke_profile_use bravo 2>&1); S7_RC=$?
 S7_KC=$(cat "$STATE"); S7_ACTIVE=$(cat "$POOL/.active")
 [[ "$S7_RC" != "0" ]] && ok "S7: evidence-unavailable refused with non-zero exit (rc=$S7_RC) — fail-closed" \
                       || bad "S7: exited 0 — switched WITHOUT live quota evidence (fail-OPEN)!"
@@ -343,7 +365,7 @@ S7_KC=$(cat "$STATE"); S7_ACTIVE=$(cat "$POOL/.active")
 # Positive control for the whole gate: with a HEALTHY guard the SAME switch is
 # allowed — proves S6/S7 refusals come from the verdict, not a blanket block.
 printf '%s' "$SECRET_ALPHA" > "$STATE"; printf 'alpha' > "$POOL/.active"
-FAKE_QUOTA_RC=0 "$PROFILE_BIN" use bravo >/dev/null 2>&1
+FAKE_QUOTA_RC=0 invoke_profile_use bravo >/dev/null 2>&1
 [[ "$(cat "$STATE")" == "$SECRET_BRAVO" ]] \
   && ok "S7 positive control: a HEALTHY guard (rc=0) DOES allow the switch — the gate is not a blanket block" \
   || bad "S7 positive control: healthy guard still blocked — gate is over-blocking or harness broken"

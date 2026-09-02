@@ -72,6 +72,36 @@ export interface AccountStore {
 	/** Recorded fact: the last profile switch could not sync display identity. */
 	identityStale?: boolean;
 	accounts: AccountEntry[];
+	/** Durable success notifications awaiting confirmed sender delivery. */
+	pendingSwitchNotifications?: SwitchNotificationIntent[];
+}
+
+export const MAX_SWITCH_NOTIFICATION_OUTBOX = 64;
+const MAX_SWITCH_NOTIFICATION_EVENT_ID = 256;
+const MAX_SWITCH_NOTIFICATION_TITLE = 256;
+const MAX_SWITCH_NOTIFICATION_BODY = 4_000;
+const MAX_SWITCH_NOTIFICATION_SIGNATURE = 256;
+
+export interface SwitchNotificationIntent {
+	eventId: string;
+	generation: number;
+	createdAt: number;
+	alert: {
+		kind: "account_switched";
+		severity: "info" | "warning" | "severe";
+		title: string;
+		body: string;
+		signature: string;
+	};
+}
+
+export class SwitchNotificationOutboxFullError extends Error {
+	constructor() {
+		super(
+			`switch notification outbox is full (${MAX_SWITCH_NOTIFICATION_OUTBOX})`,
+		);
+		this.name = "SwitchNotificationOutboxFullError";
+	}
 }
 
 export interface SelectInput {
@@ -85,6 +115,13 @@ export interface SelectInput {
 	verifiedAt?: string;
 	/** Attempt-local exclusions; never persisted to the account store. */
 	excludeNames?: ReadonlySet<string>;
+	/** Per-target authority issued only by the manual switch executor. */
+	eligibilityOverrides?: ReadonlyMap<
+		string,
+		{
+			ignoreCooldown: boolean;
+		}
+	>;
 }
 
 export interface AccountQuotaObservation {
@@ -142,6 +179,103 @@ export type ModelSetBenchVerdict =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]) {
+	const allowed = new Set(keys);
+	return Object.keys(value).every((key) => allowed.has(key));
+}
+
+function validBoundedString(
+	value: unknown,
+	maxLength: number,
+): value is string {
+	return (
+		typeof value === "string" && value.length > 0 && value.length <= maxLength
+	);
+}
+
+function isSwitchNotificationIntent(
+	value: unknown,
+): value is SwitchNotificationIntent {
+	if (
+		!isRecord(value) ||
+		!hasOnlyKeys(value, ["eventId", "generation", "createdAt", "alert"]) ||
+		!validBoundedString(value.eventId, MAX_SWITCH_NOTIFICATION_EVENT_ID) ||
+		!Number.isSafeInteger(value.generation) ||
+		(value.generation as number) < 0 ||
+		!Number.isSafeInteger(value.createdAt) ||
+		(value.createdAt as number) < 0 ||
+		!isRecord(value.alert) ||
+		!hasOnlyKeys(value.alert, [
+			"kind",
+			"severity",
+			"title",
+			"body",
+			"signature",
+		])
+	) {
+		return false;
+	}
+	return (
+		value.alert.kind === "account_switched" &&
+		(value.alert.severity === "info" ||
+			value.alert.severity === "warning" ||
+			value.alert.severity === "severe") &&
+		validBoundedString(value.alert.title, MAX_SWITCH_NOTIFICATION_TITLE) &&
+		validBoundedString(value.alert.body, MAX_SWITCH_NOTIFICATION_BODY) &&
+		validBoundedString(value.alert.signature, MAX_SWITCH_NOTIFICATION_SIGNATURE)
+	);
+}
+
+function normalizeSwitchNotificationOutbox(
+	value: unknown,
+): SwitchNotificationIntent[] | null {
+	if (value === undefined) return [];
+	if (
+		!Array.isArray(value) ||
+		value.length > MAX_SWITCH_NOTIFICATION_OUTBOX ||
+		value.some((intent) => !isSwitchNotificationIntent(intent))
+	) {
+		return null;
+	}
+	const eventIds = new Set(value.map((intent) => intent.eventId));
+	return eventIds.size === value.length ? value : null;
+}
+
+export function enqueueSwitchNotification(
+	store: AccountStore,
+	intent: SwitchNotificationIntent,
+): AccountStore {
+	if (!isSwitchNotificationIntent(intent)) {
+		throw new TypeError("invalid switch notification intent");
+	}
+	const pending = store.pendingSwitchNotifications ?? [];
+	if (pending.some((item) => item.eventId === intent.eventId)) return store;
+	if (pending.length >= MAX_SWITCH_NOTIFICATION_OUTBOX) {
+		throw new SwitchNotificationOutboxFullError();
+	}
+	return { ...store, pendingSwitchNotifications: [...pending, intent] };
+}
+
+export function peekSwitchNotification(
+	store: AccountStore,
+): SwitchNotificationIntent | null {
+	return store.pendingSwitchNotifications?.[0] ?? null;
+}
+
+export function ackSwitchNotification(
+	store: AccountStore,
+	eventId: string,
+): AccountStore {
+	const pending = store.pendingSwitchNotifications ?? [];
+	if (!pending.some((intent) => intent.eventId === eventId)) return store;
+	return {
+		...store,
+		pendingSwitchNotifications: pending.filter(
+			(intent) => intent.eventId !== eventId,
+		),
+	};
 }
 
 export function inspectModelSetBench(
@@ -264,6 +398,7 @@ export function selectNextAccount(
 		);
 		const verified = store.accounts
 			.filter((account) => {
+				const override = input.eligibilityOverrides?.get(account.name);
 				if (
 					account.name === input.currentName ||
 					input.excludeNames?.has(account.name) ||
@@ -276,8 +411,17 @@ export function selectNextAccount(
 				// Live verification may invalidate a stale quota fact, but it must never
 				// erase intentional post-switch hysteresis and re-admit the account we
 				// just rotated away from.
-				if (isSwitchCooldownActive(account, nowMs)) return false;
-				if (isQuotaUsable(account, nowMs)) return true;
+				if (
+					isSwitchCooldownActive(account, nowMs) &&
+					override?.ignoreCooldown !== true
+				) {
+					return false;
+				}
+				const quotaUntil =
+					account.quotaExhaustedUntil === null
+						? Number.NEGATIVE_INFINITY
+						: Date.parse(account.quotaExhaustedUntil);
+				if (Number.isNaN(quotaUntil) || quotaUntil <= nowMs) return true;
 				if (Number.isNaN(verifiedAtMs)) return false;
 				if (account.lastObservedAt === undefined) return true;
 				const observedAtMs = Date.parse(account.lastObservedAt);
@@ -324,7 +468,12 @@ export function selectNextAccount(
 
 /** A fresh, empty pool state. */
 export function emptyStore(): AccountStore {
-	return { generation: 0, activeAccount: null, accounts: [] };
+	return {
+		generation: 0,
+		activeAccount: null,
+		accounts: [],
+		pendingSwitchNotifications: [],
+	};
 }
 
 /** Default state-file path (override via FLYWHEEL_CLAUDE_ACCOUNTS_PATH for tests). */
@@ -363,7 +512,12 @@ export function readStore(path: string = defaultStorePath()): AccountStore {
 		) {
 			return emptyStore();
 		}
-		return parsed;
+		const pending = normalizeSwitchNotificationOutbox(
+			parsed.pendingSwitchNotifications,
+		);
+		return pending === null
+			? emptyStore()
+			: { ...parsed, pendingSwitchNotifications: pending };
 	} catch {
 		return emptyStore();
 	}
@@ -436,11 +590,15 @@ export function applyObservation(
 export function readStoreStrict(path: string): AccountStore | null {
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf-8")) as AccountStore;
+		const pending = normalizeSwitchNotificationOutbox(
+			parsed?.pendingSwitchNotifications,
+		);
 		if (
 			typeof parsed?.generation !== "number" ||
 			(parsed.activeAccount !== null &&
 				typeof parsed.activeAccount !== "string") ||
 			!Array.isArray(parsed.accounts) ||
+			pending === null ||
 			parsed.accounts.some(
 				(entry) =>
 					typeof entry?.name !== "string" ||
@@ -454,7 +612,7 @@ export function readStoreStrict(path: string): AccountStore | null {
 		) {
 			return null;
 		}
-		return parsed;
+		return { ...parsed, pendingSwitchNotifications: pending };
 	} catch {
 		return null;
 	}

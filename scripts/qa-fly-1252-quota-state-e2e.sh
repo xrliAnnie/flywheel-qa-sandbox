@@ -3,8 +3,7 @@
 #
 # Exercises production launchers and compiled modules against scratch state:
 #   1. weekly=100% target is refused before Keychain/.active mutation;
-#   2. manual bypass is loud and queues two independently-claimed audit alerts,
-#      loading alert configuration from a scratch ~/.flywheel/.env;
+#   2. retired manual bypass input cannot weaken the live quota refusal;
 #   3. daemon active+sweep observations project both windows into the store;
 #   4. Bridge mode stays permanently cut over to the external quota daemon.
 set -euo pipefail
@@ -15,7 +14,8 @@ TEAMLEAD_DIR="$REPO_DIR/packages/teamlead"
 PROFILE_BIN="$REPO_DIR/packages/claude-runner/bin/flywheel-claude-profile"
 FRESHNESS_BIN="$TEAMLEAD_DIR/bin/flywheel-claude-freshness"
 GUARD_BIN="$TEAMLEAD_DIR/bin/flywheel-claude-quota-guard"
-ROOT="$(mktemp -d "${TMPDIR:-/tmp}/fly1252-e2e.XXXXXX")"
+SCRATCH_PARENT="${TMPDIR:-/tmp}"
+ROOT="$(mktemp -d "${SCRATCH_PARENT%/}/fly1252-e2e.XXXXXX")"
 SERVER_PID=""
 
 log() { echo "[FLY-1252 E2E] $*"; }
@@ -31,7 +31,7 @@ cleanup() {
 }
 on_error() {
   local rc=$?
-  tail -60 "$ROOT/http.log" "$ROOT/incident.log" "$ROOT/bypass.log" 2>/dev/null >&2 || true
+  tail -60 "$ROOT/http.log" "$ROOT/incident.log" "$ROOT/retired-bypass.log" 2>/dev/null >&2 || true
   exit "$rc"
 }
 trap on_error ERR
@@ -113,10 +113,11 @@ printf '500'
 CURL
 chmod +x "$ROOT/bin/security" "$ROOT/bin/curl"
 
-# The bypass path must start without alert env. Its child shell loads these
-# values from .env, while preserving the explicit scratch process environment.
+# Notification delivery starts without alert env. The atomic sender loads these
+# values from .env while preserving the explicit scratch process environment.
 cat > "$HOME_DIR/.flywheel/.env" <<ENV
 FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID=fly1252-e2e-channel
+FLYWHEEL_NOTIFY_CHANNEL=fly1252-e2e-channel
 FLYWHEEL_ALERT_SENDER_TOKEN_ENV=FLY1252_E2E_TOKEN
 FLY1252_E2E_TOKEN=not-a-real-token
 FLYWHEEL_ALERT_QUEUE_DIR=$ROOT/queue
@@ -197,6 +198,7 @@ COMMON_ENV=(
   "FLYWHEEL_CLAUDE_OAUTH_ENDPOINT=http://127.0.0.1:$PORT/v1/oauth/token"
   "FLYWHEEL_PROFILE_IDENTITY_ENDPOINT=http://127.0.0.1:$PORT/v1/oauth/profile"
   "FLYWHEEL_CLAUDE_PROFILES_DIR=$POOL"
+  "FLYWHEEL_CLAUDE_PROFILE_BIN=$PROFILE_BIN"
   "FLYWHEEL_CLAUDE_ACCOUNTS_PATH=$STORE"
   "FLYWHEEL_CLAUDE_ACCOUNTS_LOCK=$LOCK"
   "FLYWHEEL_CLAUDE_SECURITY_BIN=$ROOT/bin/security"
@@ -224,10 +226,8 @@ else
 fi
 printf '%s\n' "$incident_output" > "$ROOT/incident.log"
 [[ "$incident_rc" -eq 32 ]] || fail "weekly-exhausted use returned $incident_rc, expected 32"
-grep -q 'FLYWHEEL_TARGET_QUOTA_EXHAUSTED business' "$ROOT/incident.log" \
-  || fail "refusal marker missing"
-grep -q 'Suggestion: flywheel-claude-profile use shopping' "$ROOT/incident.log" \
-  || fail "refusal did not provide the fresh healthy suggestion"
+grep -q 'FLYWHEEL_MANUAL_NO_TARGET business:quota_exhausted' "$ROOT/incident.log" \
+  || fail "atomic selector refusal marker/panorama missing"
 [[ "$(cat "$KEYCHAIN_STATE")" == "$before_keychain" ]] || fail "refusal mutated Keychain"
 [[ "$(cat "$POOL/.active")" == "$before_active" ]] || fail "refusal mutated .active"
 [[ "$(jq -r '.accounts[] | select(.name=="business") | .observedSevenDPct' "$STORE")" == "100" ]] \
@@ -235,19 +235,24 @@ grep -q 'Suggestion: flywheel-claude-profile use shopping' "$ROOT/incident.log" 
 [[ "$(jq -r '.accounts[] | select(.name=="business") | .quotaExhaustedUntil' "$STORE")" == "2099-01-07T00:00:00.000Z" ]] \
   || fail "business exhaustion/reset was not persisted"
 
-log "verifying the manual bypass is loud and auditable from a clean shell"
-: > "$ROOT/bypass.log"
+log "verifying a retired manual bypass name cannot weaken quota refusal"
+: > "$ROOT/retired-bypass.log"
+retired_quota_bypass="FLY""WHEEL_CLAUDE_QUOTA_BYPASS"
 for _ in 1 2; do
-  env -i "${COMMON_ENV[@]}" FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 \
-    bash "$PROFILE_BIN" use business >> "$ROOT/bypass.log" 2>&1
+	if env -i "${COMMON_ENV[@]}" "${retired_quota_bypass}=1" \
+		bash "$PROFILE_BIN" use business >> "$ROOT/retired-bypass.log" 2>&1; then
+		fail "retired bypass input unexpectedly admitted an exhausted account"
+	else
+		[[ "$?" -eq 32 ]] || fail "retired bypass refusal returned an unexpected status"
+	fi
 done
-grep -q 'BYPASSING live 5h/7d quota guard' "$ROOT/bypass.log" || fail "bypass warning missing"
-queue_count="$(find "$ROOT/queue" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')"
-[[ "$queue_count" == "2" ]] || fail "expected two independently queued bypass alerts, got $queue_count"
-claim_count="$(sqlite3 "$ROOT/claims.db" "select count(*) from alert_claims where event_type='quota_guard_bypassed';")"
-[[ "$claim_count" == "2" ]] || fail "expected two independent bypass claims, got $claim_count"
-[[ "$(cat "$POOL/.active")" == "business" ]] || fail "bypass did not perform the requested switch"
-grep -R -q 'quota_guard_bypassed' "$ROOT/queue" || fail "queued audit kind missing"
+grep -q 'FLYWHEEL_MANUAL_NO_TARGET business:quota_exhausted' "$ROOT/retired-bypass.log" \
+	|| fail "retired bypass input did not preserve the fail-closed panorama"
+[[ "$(cat "$KEYCHAIN_STATE")" == "$before_keychain" ]] || fail "retired bypass input mutated Keychain"
+[[ "$(cat "$POOL/.active")" == "$before_active" ]] || fail "retired bypass input mutated .active"
+if grep -R -q 'quota_guard_bypassed' "$ROOT/queue" 2>/dev/null; then
+	fail "retired bypass input emitted a legacy bypass audit"
+fi
 
 # Compiled-module E2E for daemon projection and the permanent Bridge cutover.
 # All writes stay under the scratch root.
@@ -286,6 +291,13 @@ for (const name of ["shopping", "business", "school"]) {
     emailAddress: `${name}@example.test`,
     organizationUuid: `org-${name}`,
     organizationName: `Org ${name}`,
+  }), { mode: 0o600 });
+  writeFileSync(join(poolDir, name, "identity-anchor.json"), JSON.stringify({
+    accountUuid: `uuid-${name}`,
+    anchoredAt: "2026-07-16T11:00:00.000Z",
+    anchoredBy: "qa-fly-1252",
+    confirmedBy: "oauth-profile",
+    email: `${name}@example.test`,
   }), { mode: 0o600 });
 }
 writeFileSync(join(poolDir, ".active"), "shopping");
@@ -329,6 +341,8 @@ const runtime = makeQuotaMonitorRuntime({
   paths: { poolDir, storePath, configPath, statePath, cachePath, lockPath, claudeJsonPath },
   readKeychainCredential: async () => ({ accessToken: "shopping-token", expiresAt: 4102444800000 }),
   fetchUsage: async (token) => usageFor(token),
+  fetchIdentity: async () => ({ email: "shopping@example.test", uuid: "uuid-shopping" }),
+  verifyCandidate: async () => ({ fresh: "refreshed", expiresAt: 4102444800000 }),
   tmux: { listPanes: async () => [], capturePane: async () => "", sendContinue: async () => undefined },
   alert: async () => undefined,
 });
@@ -359,10 +373,10 @@ TEAMLEAD_DIST="$TEAMLEAD_DIR/dist" node "$ROOT/runtime-replay.mjs" "$ROOT"
 [[ -s "$ROOT/runtime-pass" ]] || fail "compiled runtime replay did not complete"
 
 if grep -E 'shopping-access|business-access|shopping-refresh|business-refresh' \
-    "$SECURITY_LOG" "$ROOT/incident.log" "$ROOT/bypass.log" "$ROOT/http.log" "$ROOT/queue"/*.json >/dev/null; then
+    "$SECURITY_LOG" "$ROOT/incident.log" "$ROOT/retired-bypass.log" "$ROOT/http.log" "$ROOT/queue"/*.json >/dev/null; then
   fail "credential material leaked into argv/log/alert evidence"
 fi
 
 log "PASS: weekly exhaustion refused with actionable suggestion and no Keychain mutation"
-log "PASS: bypass switched only when explicit and queued two independently claimed audit alerts"
+log "PASS: retired bypass input stayed fail-closed without Keychain or marker mutation"
 log "PASS: daemon store projection is authoritative and Bridge account-switch execution stays retired"

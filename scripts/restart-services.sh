@@ -2505,6 +2505,29 @@ build_project() {
     log "Build successful"
 }
 
+# FLY-2240: public profile switching has no bash-only fallback. Prove the
+# freshly built atomic switch runtime is present and loadable before any new
+# Bridge/Lead process is started. A generation predating FLY-2240 has neither
+# artifact and remains restart/rollback compatible; a partial installation is
+# always a hard failure.
+account_switch_runtime_preflight() {
+    local runtime="${FLYWHEEL_DIR}/packages/teamlead/dist/account-heal/account-switch-cli.js"
+    local launcher="${FLYWHEEL_DIR}/packages/teamlead/bin/flywheel-claude-switch"
+    if [[ ! -e "$runtime" && ! -e "$launcher" ]]; then
+        log "Atomic account-switch runtime preflight: not required by this source generation"
+        return 0
+    fi
+    if [[ ! -f "$runtime" || ! -x "$launcher" ]]; then
+        log "ERROR: atomic account-switch runtime is missing after build"
+        return 1
+    fi
+    if ! "$launcher" --runtime-check >/dev/null; then
+        log "ERROR: atomic account-switch runtime failed its load check"
+        return 1
+    fi
+    log "Atomic account-switch runtime preflight: OK"
+}
+
 # ════════════════════════════════════════════════════════════════
 # Rollback
 # ════════════════════════════════════════════════════════════════
@@ -2693,6 +2716,20 @@ deploy_and_verify() {
                 rollback_and_restart "$DEPLOYED_SHA"
             fi
             # rollback_and_restart already handles stop+start of Bridge/Leads
+            return 1
+        fi
+
+        if ! account_switch_runtime_preflight; then
+            if [[ "$RESTART_CODE_ROLLBACK_DISABLED" == "1" ]]; then
+                log "ERROR: atomic account-switch runtime preflight failed; code-only rollback is disabled"
+                alert_severe "deploy-account-switch-runtime-unavailable" \
+                    "Flywheel account switch runtime is unavailable" \
+                    "The freshly built atomic Claude account-switch runtime is missing or unloadable. No new service was started; deployed-sha was not advanced. Use the window rollback procedure."
+                RESTART_TERMINAL_REPORTED=true
+            else
+                log "Atomic account-switch runtime preflight failed, attempting rollback"
+                rollback_and_restart "$DEPLOYED_SHA"
+            fi
             return 1
         fi
     else

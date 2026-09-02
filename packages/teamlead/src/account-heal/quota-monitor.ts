@@ -1,4 +1,8 @@
 import { resolveFounderTimezone } from "flywheel-config";
+import {
+	type CandidatePanoramaEntry,
+	verifyAndRankCandidates as selectLiveCandidates,
+} from "./account-candidate-selector.js";
 import type {
 	ProfileIdentity,
 	ProfileIdentityResult,
@@ -7,10 +11,6 @@ import {
 	type AccountEntry,
 	type AccountQuotaObservation,
 	type AccountStore,
-	inspectModelSetBench,
-	isAuthUnusable,
-	isQuotaUsable,
-	isSwitchCooldownActive,
 	type RecordObservationResult,
 	type SyncActiveAccountResult,
 	summarizeModelBenchPool,
@@ -31,10 +31,9 @@ import type {
 	QuotaMonitorState,
 } from "./quota-monitor-state.js";
 import type { QuotaPaneSnapshot } from "./quota-revive-scan.js";
-import {
-	type AccountUsageResult,
-	findModelScopedQuota,
-	type ValidatedUsagePayload,
+import type {
+	AccountUsageResult,
+	ValidatedUsagePayload,
 } from "./quota-usage-api.js";
 import type { SwitchInput, SwitchResult } from "./switch-executor.js";
 
@@ -79,7 +78,8 @@ export type QuotaMonitorAlertKind =
 	| "model_bench_malformed"
 	| "quota_choice"
 	| "quota_switch_confirmation"
-	| "account_identity_mismatch";
+	| "account_identity_mismatch"
+	| "quota_guard_bypassed";
 
 export interface QuotaMonitorAlert {
 	kind: QuotaMonitorAlertKind;
@@ -179,145 +179,6 @@ export interface PollOnceResult {
 }
 
 type SuccessfulUsage = Extract<AccountUsageResult, { ok: unknown }>["ok"];
-
-export interface AccountSwitchNotificationInput {
-	from: { name: string; email: string | null; usage?: SuccessfulUsage | null };
-	to: { name: string; email: string | null; usage?: SuccessfulUsage | null };
-	revive: ReviveScanSummary;
-	degraded: boolean;
-	nowMs: number;
-	timezone: string;
-}
-
-interface LocalDateTime {
-	year: number;
-	month: number;
-	day: number;
-	hour: number;
-	minute: number;
-}
-
-function localDateTime(ms: number, timezone: string): LocalDateTime | null {
-	if (!Number.isFinite(ms)) return null;
-	try {
-		const parts = new Intl.DateTimeFormat("en-US", {
-			timeZone: timezone,
-			year: "numeric",
-			month: "2-digit",
-			day: "2-digit",
-			hour: "2-digit",
-			minute: "2-digit",
-			hourCycle: "h23",
-		}).formatToParts(new Date(ms));
-		const read = (type: "year" | "month" | "day" | "hour" | "minute"): number =>
-			Number(parts.find((part) => part.type === type)?.value);
-		const value = {
-			year: read("year"),
-			month: read("month"),
-			day: read("day"),
-			hour: read("hour"),
-			minute: read("minute"),
-		};
-		return Object.values(value).every((part) => Number.isFinite(part))
-			? value
-			: null;
-	} catch {
-		return null;
-	}
-}
-
-const ASCII_WEEKDAYS = [
-	"Sun",
-	"Mon",
-	"Tue",
-	"Wed",
-	"Thu",
-	"Fri",
-	"Sat",
-] as const;
-
-function resetTimestamp(resetAt: string | null, timezone: string): string {
-	if (resetAt === null) return "not started";
-	const reset = localDateTime(Date.parse(resetAt), timezone);
-	if (!reset) return "n/a";
-	const weekday =
-		ASCII_WEEKDAYS[
-			new Date(Date.UTC(reset.year, reset.month - 1, reset.day)).getUTCDay()
-		]!;
-	return `${String(reset.month).padStart(2, "0")}-${String(reset.day).padStart(2, "0")} ${weekday} ${String(reset.hour).padStart(2, "0")}:${String(reset.minute).padStart(2, "0")}`;
-}
-
-function formatPct(value: number): string {
-	return Number.isInteger(value)
-		? String(value)
-		: value.toFixed(1).replace(/\.0$/, "");
-}
-
-function quotaTable(
-	usage: SuccessfulUsage | null | undefined,
-	timezone: string,
-): string[] {
-	const fable = usage ? findModelScopedQuota(usage.raw, "Fable") : null;
-	const cells = (
-		pct: number | null,
-		resetsAt: string | null,
-	): [string, string, string] => {
-		if (pct === null) return ["n/a", "n/a", "n/a"];
-		return [
-			`${formatPct(pct)}%`,
-			`${formatPct(Math.max(0, 100 - pct))}%`,
-			resetTimestamp(resetsAt, timezone),
-		];
-	};
-	const rows: Array<[string, string, string, string]> = [
-		["5h", ...cells(usage?.fiveH.pct ?? null, usage?.fiveH.resetsAt ?? null)],
-		["7d", ...cells(usage?.sevenD.pct ?? null, usage?.sevenD.resetsAt ?? null)],
-		["Fable", ...cells(fable?.pct ?? null, fable?.resetsAt ?? null)],
-	];
-	const line = ([window, used, remaining, reset]: [
-		string,
-		string,
-		string,
-		string,
-	]) => `${window.padEnd(7)} ${used.padEnd(6)} ${remaining.padEnd(6)} ${reset}`;
-	return [
-		"```text",
-		line([
-			"window",
-			"used",
-			"left",
-			timezone === "America/Los_Angeles" ? "reset (PT)" : "reset (local)",
-		]),
-		...rows.map(line),
-		"```",
-	];
-}
-
-function accountUsageLines(
-	account: AccountSwitchNotificationInput["from"],
-	timezone: string,
-): string[] {
-	return [
-		account.email ?? "邮箱暂时未读到",
-		...quotaTable(account.usage, timezone),
-	];
-}
-
-/** Founder-selected, glanceable account-switch notification copy. */
-export function formatAccountSwitchNotification(
-	input: AccountSwitchNotificationInput,
-): string {
-	return [
-		`Claude 已自动切号：**${input.from.name} → ${input.to.name}**`,
-		...(input.degraded ? ["", "配额读数不完整，已按备用顺序完成切换。"] : []),
-		"",
-		`原账号 **${input.from.name}**`,
-		...accountUsageLines(input.from, input.timezone),
-		"",
-		`新账号 **${input.to.name}**`,
-		...accountUsageLines(input.to, input.timezone),
-	].join("\n");
-}
 
 function toObservation(
 	usage: SuccessfulUsage,
@@ -532,66 +393,7 @@ async function sweepCandidates(
 	await deps.persistState(state);
 }
 
-type UsageError = Extract<AccountUsageResult, { error: unknown }>["error"];
-type PanoramaStatus =
-	| "qualified"
-	| "qualified_low_headroom"
-	| "identity_unknown"
-	| "identity_mismatch"
-	| "identity_unauthorized"
-	| "quota_exhausted"
-	| "freshness_stale"
-	| `freshness_stale: ${string}`
-	| "credential_missing"
-	| "credential_unavailable"
-	| "became_active"
-	| "not_in_pool"
-	| "not_in_store"
-	| "auth_unusable"
-	| "switch_cooldown"
-	| `model_bench_malformed: ${string}`
-	| `model_benched_until=${string}`
-	| `usage_${UsageError}`;
-type PanoramaClass = "usable" | "exhausted" | "unverifiable" | "ineligible";
-
-const PANORAMA_CLASS = {
-	qualified: "usable",
-	qualified_low_headroom: "usable",
-	identity_unknown: "usable",
-	identity_mismatch: "ineligible",
-	identity_unauthorized: "ineligible",
-	quota_exhausted: "exhausted",
-	freshness_stale: "unverifiable",
-	became_active: "unverifiable",
-	usage_unauthorized: "unverifiable",
-	usage_rate_limited: "unverifiable",
-	usage_network: "unverifiable",
-	usage_malformed: "unverifiable",
-	credential_missing: "ineligible",
-	credential_unavailable: "ineligible",
-	not_in_pool: "ineligible",
-	not_in_store: "ineligible",
-	auth_unusable: "ineligible",
-	switch_cooldown: "ineligible",
-} satisfies Partial<Record<PanoramaStatus, PanoramaClass>>;
-
-function panoramaClass(status: PanoramaStatus): PanoramaClass {
-	if (status.startsWith("model_")) return "ineligible";
-	// `freshness_stale` now carries a reason suffix; match on the prefix so the
-	// class stays `unverifiable` instead of falling through to `ineligible`.
-	if (status.startsWith("freshness_stale")) return "unverifiable";
-	return (
-		(PANORAMA_CLASS as Partial<Record<PanoramaStatus, PanoramaClass>>)[
-			status
-		] ?? "ineligible"
-	);
-}
-
-type PanoramaEntry = {
-	name: string;
-	status: PanoramaStatus;
-	usage?: SuccessfulUsage;
-};
+type PanoramaEntry = CandidatePanoramaEntry;
 
 export function formatModelBenchRetryNote(
 	accounts: readonly AccountEntry[],
@@ -615,188 +417,62 @@ export async function verifyAndRankCandidates(
 	deps: QuotaMonitorDeps,
 	snapshot: AccountSnapshot,
 	models: readonly string[] = [],
-): Promise<{
-	ranked: string[];
-	panorama: PanoramaEntry[];
-	usageByName: Map<string, SuccessfulUsage>;
-	malformedModelBenches: string[];
-	verifiedAt: string;
-}> {
-	const now = deps.now();
-	const verifiedAt = new Date(now).toISOString();
-	const panorama: PanoramaEntry[] = [];
-	const tier0: Array<{
-		name: string;
-		resetMs: number;
-		orderIndex: number;
-	}> = [];
-	const tier1: Array<{
-		name: string;
-		fiveHPct: number;
-		resetMs: number;
-		orderIndex: number;
-	}> = [];
-	const usageByName = new Map<string, SuccessfulUsage>();
-	const malformedModelBenches: string[] = [];
-
-	for (const [orderIndex, name] of deps.config.config.order.entries()) {
-		if (name === snapshot.activeName) continue;
-		if (!snapshot.poolAccounts.includes(name)) {
-			panorama.push({ name, status: "not_in_pool" });
-			continue;
-		}
-		const entry = snapshot.store.accounts.find(
-			(account) => account.name === name,
-		);
-		if (!entry) {
-			panorama.push({ name, status: "not_in_store" });
-			continue;
-		}
-		if (isAuthUnusable(entry)) {
-			panorama.push({ name, status: "auth_unusable" });
-			continue;
-		}
-		if (isSwitchCooldownActive(entry, now)) {
-			panorama.push({ name, status: "switch_cooldown" });
-			continue;
-		}
-		const modelBench = inspectModelSetBench(entry, models, now);
-		if (modelBench.state === "malformed") {
-			malformedModelBenches.push(name);
-			panorama.push({
-				name,
-				status: `model_bench_malformed: ${modelBench.reason}`,
-			});
-			continue;
-		}
-		if (modelBench.state === "benched") {
-			panorama.push({
-				name,
-				status: `model_benched_until=${modelBench.retryAt}`,
-			});
-			continue;
-		}
-		const checked = await readCandidateCredential(deps, snapshot, name, true);
-		if (checked.credential === null) {
-			panorama.push({
-				name,
-				status:
-					(checked.reason as
-						| `freshness_stale: ${string}`
-						| "credential_missing"
-						| "became_active"
-						| undefined) ?? "credential_unavailable",
-			});
-			continue;
-		}
-		const candidateUsage = await deps.fetchUsage(
-			checked.credential.accessToken,
-		);
-		if (!("ok" in candidateUsage)) {
-			panorama.push({ name, status: `usage_${candidateUsage.error}` });
-			continue;
-		}
-		await projectObservation(
-			deps,
-			name,
-			candidateUsage.ok,
-			snapshot.store.generation,
-		);
-		usageByName.set(name, candidateUsage.ok);
-		if (
-			candidateUsage.ok.fiveH.pct >= 100 ||
-			candidateUsage.ok.sevenD.pct >= 100
-		) {
-			panorama.push({
-				name,
-				status: "quota_exhausted",
-				usage: candidateUsage.ok,
-			});
-			continue;
-		}
-		// An unopened weekly window has nothing to wait for, so it sorts ahead of
-		// every dated reset. NaN would poison the comparator instead.
-		const resetMs =
-			candidateUsage.ok.sevenD.resetsAt === null
-				? Number.NEGATIVE_INFINITY
-				: Date.parse(candidateUsage.ok.sevenD.resetsAt);
-		if (candidateUsage.ok.fiveH.pct < deps.config.config.trigger5hPct) {
-			panorama.push({
-				name,
-				status: "qualified",
-				usage: candidateUsage.ok,
-			});
-			tier0.push({ name, resetMs, orderIndex });
-		} else {
-			panorama.push({
-				name,
-				status: "qualified_low_headroom",
-				usage: candidateUsage.ok,
-			});
-			tier1.push({
-				name,
-				fiveHPct: candidateUsage.ok.fiveH.pct,
-				resetMs,
-				orderIndex,
-			});
-		}
-	}
-
-	tier0.sort((a, b) => a.resetMs - b.resetMs || a.orderIndex - b.orderIndex);
-	tier1.sort(
-		(a, b) =>
-			a.fiveHPct - b.fiveHPct ||
-			a.resetMs - b.resetMs ||
-			a.orderIndex - b.orderIndex,
+): ReturnType<typeof selectLiveCandidates> {
+	return selectLiveCandidates(
+		{
+			now: deps.now,
+			withAccountsLock: deps.withAccountsLock,
+			readSnapshot: deps.readSnapshot,
+			verifyCandidate: deps.verifyCandidate,
+			readPoolCredential: deps.readPoolCredential,
+			fetchUsage: deps.fetchUsage,
+			recordObservation: async (name, observation, generation) => {
+				const projection = await deps.recordObservation(
+					name,
+					observation,
+					generation,
+				);
+				if (projection !== "updated") {
+					deps.log(
+						`quota observation projection account=${name} result=${projection}`,
+					);
+				}
+				return projection;
+			},
+		},
+		snapshot,
+		{
+			models,
+			cooldownPolicy: "exclude",
+			headroomPolicy: {
+				kind: "prefer_below_trigger",
+				trigger5hPct: deps.config.config.trigger5hPct,
+			},
+		},
 	);
-	return {
-		ranked: [...tier0, ...tier1].map((entry) => entry.name),
-		panorama,
-		usageByName,
-		malformedModelBenches,
-		verifiedAt,
-	};
-}
-
-function degradedOrder(
-	deps: QuotaMonitorDeps,
-	snapshot: AccountSnapshot,
-	panorama: PanoramaEntry[],
-): string[] {
-	const orderIndex = new Map(
-		deps.config.config.order.map((name, index) => [name, index]),
-	);
-	return panorama
-		.filter((entry) => panoramaClass(entry.status) === "unverifiable")
-		.map((entry) =>
-			snapshot.store.accounts.find((account) => account.name === entry.name),
-		)
-		.filter(
-			(entry): entry is NonNullable<typeof entry> =>
-				entry !== undefined &&
-				!isAuthUnusable(entry) &&
-				isQuotaUsable(entry, deps.now()),
-		)
-		.sort((a, b) => {
-			const aReset = a.weeklyResetAt
-				? Date.parse(a.weeklyResetAt)
-				: Number.POSITIVE_INFINITY;
-			const bReset = b.weeklyResetAt
-				? Date.parse(b.weeklyResetAt)
-				: Number.POSITIVE_INFINITY;
-			return (
-				aReset - bReset ||
-				(orderIndex.get(a.name) ?? Number.POSITIVE_INFINITY) -
-					(orderIndex.get(b.name) ?? Number.POSITIVE_INFINITY)
-			);
-		})
-		.map((entry) => entry.name);
 }
 
 function panoramaBody(panorama: PanoramaEntry[]): string {
 	return panorama.length === 0
 		? "no configured candidates"
 		: panorama.map((entry) => `${entry.name}: ${entry.status}`).join("\n");
+}
+
+function candidateDecisionInputs(
+	snapshot: AccountSnapshot,
+	panorama: readonly PanoramaEntry[],
+): Array<{ name: string; resetsAt: string | null; fiveHPct: number | null }> {
+	const accountsByName = new Map(
+		snapshot.store.accounts.map((entry) => [entry.name, entry]),
+	);
+	return panorama.map((entry) => ({
+		name: entry.name,
+		resetsAt:
+			entry.usage?.sevenD.resetsAt ??
+			accountsByName.get(entry.name)?.weeklyResetAt ??
+			null,
+		fiveHPct: entry.usage?.fiveH.pct ?? null,
+	}));
 }
 
 function deliveryConfirmed(report: DeliveryReport): boolean {
@@ -1712,28 +1388,22 @@ export async function pollOnce(
 		}
 		return finish("no_target");
 	}
-	if (
-		modelDetection !== null &&
-		state.alertOutbox.length >= 64 &&
-		!state.alertOutbox.some(
-			(item) => item.eventId === `${modelDetection.eventId}:switch`,
-		)
-	) {
-		await deps.alert({
-			kind: "quota_monitor_down",
-			severity: "severe",
-			title: "Claude quota monitor durable alert outbox is full",
-			body: `outbox=${state.alertOutbox.length}/64; models=${modelDetection.models.join(",")}; switch refused before candidate or credential mutation`,
-			signature: `quota-alert-outbox-full-g${state.observedGeneration}-${day(now)}`,
-		});
-		return finish("error");
-	}
-
 	const triggerModels = modelDetection?.models ?? [];
 	const candidates = await verifyAndRankCandidates(
 		deps,
 		snapshot,
 		triggerModels,
+	);
+	deps.log(
+		JSON.stringify({
+			event: "quota_switch_decision",
+			trigger:
+				modelDetection === null
+					? { kind: "quota", scope }
+					: { kind: "model", models: modelDetection.models },
+			selected: candidates.ranked[0] ?? null,
+			candidates: candidateDecisionInputs(snapshot, candidates.panorama),
+		}),
 	);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 	panorama = candidates.panorama.map(({ name, status }) => `${name}:${status}`);
@@ -1747,21 +1417,11 @@ export async function pollOnce(
 			signature: `model-bench-malformed-${malformed.join("+")}-${modelDetection.models.join("+")}-${day(now)}`,
 		});
 	}
-	let preferredOrder = candidates.ranked;
-	let degraded = false;
-	if (
-		modelDetection === null &&
-		preferredOrder.length === 0 &&
-		deps.config.config.degradedSwitch
-	) {
-		preferredOrder = degradedOrder(deps, snapshot, candidates.panorama);
-		degraded = preferredOrder.length > 0;
-	}
+	const preferredOrder = candidates.ranked;
 	if (preferredOrder.length === 0) {
 		const candidateAccounts = snapshot.store.accounts.filter(
 			(account) =>
 				account.name !== snapshot.activeName &&
-				deps.config.config.order.includes(account.name) &&
 				snapshot.poolAccounts.includes(account.name),
 		);
 		if (modelDetection === null) {
@@ -1785,31 +1445,68 @@ export async function pollOnce(
 		return finish("no_target");
 	}
 
+	// Notification copy is committed by the switch executor. Fetch every
+	// non-secret rendering fact before entering its account lock so the atomic
+	// commit never performs network or Keychain identity I/O.
+	const usageByName = new Map(candidates.usageByName);
+	usageByName.set(snapshot.activeName, currentUsage.ok);
+	const identityByName = new Map<string, { email?: string }>();
+	const identityNames = [...new Set([snapshot.activeName, ...preferredOrder])];
+	await Promise.all(
+		identityNames.map(async (name) => {
+			const storedEmail = snapshot.store.accounts.find(
+				(account) => account.name === name,
+			)?.identity?.email;
+			let email = storedEmail;
+			if (deps.readPoolIdentity !== undefined) {
+				try {
+					email = (await deps.readPoolIdentity(name))?.email ?? email;
+				} catch (error) {
+					deps.log(
+						`switch notification identity lookup failed account=${name} error=${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			identityByName.set(name, email === undefined ? {} : { email });
+		}),
+	);
+	const notificationContext = {
+		founderTimezone: deps.founderTimezone?.() ?? resolveFounderTimezone(),
+		usageByName,
+		identityByName,
+		panorama: candidates.panorama,
+		headroomDegraded: candidates.headroomDegraded,
+	};
+
 	let switchInput: SwitchInput;
 	if (modelDetection === null) {
 		// Narrowed by the fail-closed guard above rather than cast: an account-level
 		// trigger without a reset instant already returned `error`.
 		if (accountTrigger === null) throw new Error("missing quota trigger scope");
 		switchInput = {
-			scope: accountTrigger.scope,
-			observedAccount: snapshot.activeName,
-			observedGeneration: snapshot.store.generation,
-			resetAt: accountTrigger.resetAt,
-			now: new Date(now),
-			preferredOrder,
-			verifiedAt: candidates.verifiedAt,
-			quotaPreverified: !degraded,
-		};
-	} else {
-		switchInput = {
-			scope: "model",
-			models: modelDetection.models,
+			trigger: {
+				kind: "quota",
+				scope: accountTrigger.scope,
+				resetAt: accountTrigger.resetAt,
+			},
 			observedAccount: snapshot.activeName,
 			observedGeneration: snapshot.store.generation,
 			now: new Date(now),
 			preferredOrder,
 			verifiedAt: candidates.verifiedAt,
 			quotaPreverified: true,
+			notificationContext,
+		};
+	} else {
+		switchInput = {
+			trigger: { kind: "model", models: modelDetection.models },
+			observedAccount: snapshot.activeName,
+			observedGeneration: snapshot.store.generation,
+			now: new Date(now),
+			preferredOrder,
+			verifiedAt: candidates.verifiedAt,
+			quotaPreverified: true,
+			notificationContext,
 		};
 	}
 	const switched = await deps.switchAccount(switchInput);
@@ -1830,16 +1527,6 @@ export async function pollOnce(
 		await deps.persistState(state);
 		return finish("noop_already_switched");
 	}
-	if (degraded && switched.outcome === "no_account" && scope !== null) {
-		await openBlockedEpisode(
-			deps,
-			state,
-			scope,
-			attemptedKinds,
-			`scope=${scope}; degraded=true; reason=${switched.reasonCode}\n${panoramaBody(candidates.panorama)}`,
-		);
-		return finish("no_target");
-	}
 	if (switched.outcome === "no_account" || switched.outcome === "failed") {
 		const reasonCode = switched.reasonCode;
 		if (modelDetection === null) {
@@ -1847,7 +1534,7 @@ export async function pollOnce(
 				deps,
 				state,
 				reasonCode,
-				degraded,
+				false,
 				attemptedKinds,
 			);
 		} else {
@@ -1891,43 +1578,7 @@ export async function pollOnce(
 		panes: {},
 	};
 	await deps.persistState(state);
-	const revived = await processLocalSnapshot();
-
-	const targetUsage = candidates.usageByName.get(switched.to);
-	const fromEntry = snapshot.store.accounts.find(
-		(account) => account.name === switched.from,
-	);
-	const toEntry = snapshot.store.accounts.find(
-		(account) => account.name === switched.to,
-	);
-	const [fromIdentity, toIdentity] = await Promise.all([
-		deps.readPoolIdentity?.(switched.from) ?? null,
-		deps.readPoolIdentity?.(switched.to) ?? null,
-	]);
-	await deps.alert({
-		kind: degraded ? "account_switch_degraded" : "account_switched",
-		severity: degraded ? "severe" : "info",
-		title: degraded
-			? "Claude account switched in degraded verification mode"
-			: "Claude account switched before quota exhaustion",
-		body: formatAccountSwitchNotification({
-			from: {
-				name: switched.from,
-				email: fromIdentity?.email ?? fromEntry?.identity?.email ?? null,
-				usage: currentUsage.ok,
-			},
-			to: {
-				name: switched.to,
-				email: toIdentity?.email ?? toEntry?.identity?.email ?? null,
-				usage: targetUsage,
-			},
-			revive: revived,
-			degraded,
-			nowMs: now,
-			timezone: deps.founderTimezone?.() ?? resolveFounderTimezone(),
-		}),
-		signature: `account-switched-${switched.from}-${switched.to}-${switched.generation}`,
-	});
+	await processLocalSnapshot();
 	await openBlockedRecovery(
 		deps,
 		state,

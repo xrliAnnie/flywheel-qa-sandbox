@@ -63,3 +63,7 @@ scripts/__tests__/script-sanity.test.sh
 scripts/__tests__/setup-mcp-on-demand.test.sh
 scripts/__tests__/test-push-guard-package.test.sh
 scripts/__tests__/test-push-guard.test.sh
+
+# Operator drills outside scripts/__tests__; run manually against an explicit
+# isolated fixture instead of the required Linux shell lane.
+scripts/qa-fly-1182-isolated-switch-drill.sh

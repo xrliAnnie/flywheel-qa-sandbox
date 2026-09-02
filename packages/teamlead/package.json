@@ -33,6 +33,7 @@
 		"flywheel-claude-quota-guard": "bin/flywheel-claude-quota-guard",
 		"flywheel-account-summary": "bin/flywheel-account-summary",
 		"flywheel-claude-pool-rebuild": "bin/flywheel-claude-pool-rebuild",
+		"flywheel-claude-switch": "bin/flywheel-claude-switch",
 		"flywheel-rescue-lead": "bin/flywheel-rescue-lead",
 		"flywheel-quota-monitor": "bin/flywheel-quota-monitor"
 	},

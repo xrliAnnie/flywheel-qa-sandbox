@@ -66,7 +66,7 @@ describe("model-cap incident ledger", () => {
 		).toThrow("pane limit");
 	});
 
-	it("finalizes only the matching next generation and leaves durable alert plus confirmation intents", () => {
+	it("finalizes only the matching next generation and leaves confirmation without a duplicate switch alert", () => {
 		const detection = createModelDetectionIntent({
 			socket: "flywheel",
 			observedGeneration: 7,
@@ -108,16 +108,7 @@ describe("model-cap incident ledger", () => {
 				trigger: { kind: "model", models: ["Fable 5"] },
 			},
 		});
-		expect(finalized.alertOutbox).toEqual([
-			expect.objectContaining({
-				eventId: `${detection.eventId}:switch`,
-				generation: 8,
-				alert: expect.objectContaining({
-					kind: "model_cap_switched",
-					signature: `model-cap-switched-${detection.eventId}-g8`,
-				}),
-			}),
-		]);
+		expect(finalized.alertOutbox).toEqual([]);
 		expect(finalized.reviveEpoch?.expiresAt).toBe(
 			Date.parse(benchUntil) + 30 * 60_000,
 		);
@@ -214,9 +205,7 @@ describe("model-cap incident ledger", () => {
 
 		expect(recovered.recovered).toBe(true);
 		expect(recovered.state.pendingDetection).toBeNull();
-		expect(recovered.state.alertOutbox[0]?.eventId).toBe(
-			`${detection.eventId}:switch`,
-		);
+		expect(recovered.state.alertOutbox).toEqual([]);
 		expect(recovered.state.confirmation?.targetAccount).toBe("school");
 	});
 });

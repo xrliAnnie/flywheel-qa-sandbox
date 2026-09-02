@@ -3504,6 +3504,7 @@ fly1649_run_deploy_case() {
       alert_severe() { printf "%s\n" "$1" >> "$ALERT_FILE"; }
       rollback_and_restart() { printf "rollback\n" >> "$ROLLBACK_FILE"; }
       build_project() { [[ "$MODE" != "build" ]]; }
+      account_switch_runtime_preflight() { :; }
       pause_admission_best_effort() { :; }
       resume_admission_best_effort() { :; }
       stop_bridge() { return 0; }

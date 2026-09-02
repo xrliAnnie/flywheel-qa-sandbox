@@ -17,6 +17,11 @@
 
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 import {
+	type CandidateSelectionDeps,
+	type CandidateSelectionResult,
+	verifyAndRankCandidates,
+} from "./account-candidate-selector.js";
+import {
 	earliestReset,
 	readStore,
 	selectNextAccount,
@@ -40,18 +45,6 @@ export interface RepairDisposition {
 	outcome: "attempted" | "needs_human";
 	action: "account_switch" | "none";
 	detail: string;
-	/**
-	 * FLY-929 W6: structured success payload for the #flywheel-notify digest.
-	 * Filled ONLY on a real `switched` executor outcome — never on
-	 * noop_already_switched / no_account / failed (a "duplicate trigger skipped"
-	 * digest would be noise). Optional ⇒ existing consumers ignore it.
-	 */
-	notifySuccess?: {
-		from?: string;
-		to: string;
-		scope?: "5h" | "weekly" | "both";
-		resetAt?: string;
-	};
 }
 
 export interface AccountSwitchRepairDeps {
@@ -69,6 +62,9 @@ export interface AccountSwitchRepairDeps {
 	switchImpl?: (input: SwitchInput, deps: SwitchDeps) => Promise<SwitchResult>;
 	/** Injectable for tests; defaults to withMkdirLock (pending writes). */
 	withLock?: <T>(lockPath: string, fn: () => Promise<T>) => Promise<T>;
+	/** Live selector shared with quota/manual triggers. Required to execute. */
+	candidateDeps?: CandidateSelectionDeps;
+	trigger5hPct?: number;
 }
 
 export interface AccountSwitchRepair {
@@ -81,6 +77,12 @@ export interface AccountSwitchRepair {
 
 function scopeLabel(scope: "5h" | "weekly" | "both"): string {
 	return scope === "both" ? "5h+weekly" : scope;
+}
+
+function panoramaSummary(selection: CandidateSelectionResult): string {
+	return selection.panorama
+		.map((entry) => `${entry.name}:${entry.status}`)
+		.join(",");
 }
 
 export function makeAccountSwitchRepair(
@@ -96,6 +98,13 @@ export function makeAccountSwitchRepair(
 	const deadlineMs = deps.deadlineMs ?? 20_000;
 	const pendingPath = deps.pendingPath ?? defaultPendingPath();
 	const pendingLockPath = deps.pendingLockPath ?? `${pendingPath}.lock`;
+	const trigger5hPct = deps.trigger5hPct ?? 90;
+
+	const resolve = async (key: string): Promise<void> => {
+		await withLock(pendingLockPath, async () =>
+			resolvePending(key, pendingPath),
+		);
+	};
 
 	function usableLimit(payload: AlertPayload) {
 		const al = payload.metadata?.accountLimit;
@@ -160,20 +169,60 @@ export function makeAccountSwitchRepair(
 		},
 
 		async executeSwitch(pending: PendingSwitch): Promise<RepairDisposition> {
+			if (deps.candidateDeps === undefined) {
+				await resolve(pending.key);
+				return {
+					outcome: "needs_human",
+					action: "none",
+					detail:
+						"Claude repair live-selector runtime unavailable; pending 已结清,未尝试切号。需要 operator 检查 account-heal wiring。",
+				};
+			}
+			const snapshot = await deps.candidateDeps.withAccountsLock(() =>
+				deps.candidateDeps!.readSnapshot(),
+			);
+			const selection = await verifyAndRankCandidates(
+				deps.candidateDeps,
+				snapshot,
+				{
+					cooldownPolicy: "exclude",
+					headroomPolicy: {
+						kind: "prefer_below_trigger",
+						trigger5hPct,
+					},
+				},
+			);
+			if (selection.ranked.length === 0) {
+				await resolve(pending.key);
+				return {
+					outcome: "needs_human",
+					action: "none",
+					detail: `没有 live-verified Claude repair 候选; ${panoramaSummary(selection) || "no candidates"}。pending 已结清,需要 operator 处理。`,
+				};
+			}
 			const result = await doSwitch(
 				{
-					scope: pending.scope,
+					trigger: {
+						kind: "repair",
+						scope: pending.scope,
+						resetAt: pending.resetAt,
+					},
 					observedAccount: pending.observedAccount,
 					observedGeneration: pending.observedGeneration,
-					resetAt: pending.resetAt,
 					now: new Date(now()),
+					preferredOrder: selection.ranked,
+					verifiedAt: selection.verifiedAt,
+					quotaPreverified: true,
+					notificationContext: {
+						usageByName: selection.usageByName,
+						panorama: selection.panorama,
+						headroomDegraded: selection.headroomDegraded,
+					},
 				},
 				deps.switchDeps,
 			);
 			// Best-effort resolve; a double-fire before this is CAS-safe (noop).
-			await withLock(pendingLockPath, async () =>
-				resolvePending(pending.key, pendingPath),
-			);
+			await resolve(pending.key);
 
 			switch (result.outcome) {
 				case "switched":
@@ -181,12 +230,6 @@ export function makeAccountSwitchRepair(
 						outcome: "attempted",
 						action: "account_switch",
 						detail: `🔧 已切机器 Claude 账号 ${result.from}→${result.to}（${scopeLabel(pending.scope)} 到, reset ${pending.resetAt}）。新 spawn 的 runner/lead 用新账号;当前 session 等 reset 或需 founder 重启自愈。`,
-						notifySuccess: {
-							from: result.from,
-							to: result.to,
-							scope: pending.scope,
-							resetAt: pending.resetAt,
-						},
 					};
 				case "noop_already_switched":
 					return {

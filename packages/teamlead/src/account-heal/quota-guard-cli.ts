@@ -565,9 +565,6 @@ function refusalMessage(
 			`No recently observed account can be recommended; earliest reset: ${earliestReset(store) ?? "unknown"}`,
 		);
 	}
-	lines.push(
-		"Emergency override: FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 (logged + alerts the Lead)",
-	);
 	return lines.join("\n");
 }
 

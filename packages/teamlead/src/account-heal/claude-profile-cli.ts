@@ -34,7 +34,7 @@ import {
 	defaultMachinePoolDir,
 	resolveMachineAccount,
 } from "./machine-account.js";
-import { type LeaseProof, renewMkdirLock } from "./mkdir-lock.js";
+import { renewMkdirLock } from "./mkdir-lock.js";
 import {
 	ActiveMarkerDriftError,
 	type ApplyProfileIdentityCheck,
@@ -208,6 +208,9 @@ export interface ClaudeProfileCliDeps {
 	onWarn?: (message: string) => void;
 	poolDir?: string;
 	claudeJsonPath?: string;
+	storePath?: string;
+	lockPath?: string;
+	deliverNotification?: SwitchDeps["deliverNotification"];
 }
 
 /** Default script path (override via FLYWHEEL_CLAUDE_PROFILE_BIN). */
@@ -230,10 +233,18 @@ export async function reconcileClaudeProfile(
 	};
 	delete childEnv.FLYWHEEL_CLAUDE_LOCK_DELEGATED;
 	delete childEnv.FLYWHEEL_LEASE_PROOF;
-	delete childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS;
+	for (const retired of [
+		"FLY" + "WHEEL_CLAUDE_FRESHNESS_BYPASS",
+		"FLY" + "WHEEL_CLAUDE_QUOTA_BYPASS",
+		"FLY" + "WHEEL_ATOMIC_FRESHNESS_BYPASS",
+		"FLY" + "WHEEL_ATOMIC_QUOTA_BYPASS",
+	]) {
+		delete childEnv[retired];
+	}
 	delete childEnv.FLYWHEEL_PROFILE_IDENTITY_BYPASS;
-	delete childEnv.FLYWHEEL_CLAUDE_QUOTA_BYPASS;
 	delete childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED;
+	delete childEnv.FLYWHEEL_ATOMIC_SWITCH_APPLY;
+	delete childEnv.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD;
 	try {
 		const { stdout } = await (deps.execFile ?? (execFileAsync as ExecFileFn))(
 			deps.binPath,
@@ -262,8 +273,11 @@ export function makeClaudeProfileSwitchDeps(
 	const onWarn = deps.onWarn ?? ((m: string) => console.warn(m));
 
 	return {
+		storePath: deps.storePath,
+		lockPath: deps.lockPath,
 		withLock,
 		renewLock: renewMkdirLock,
+		deliverNotification: deps.deliverNotification,
 		resolveMachineAccount: (store: AccountStore) =>
 			resolveMachineAccount({
 				poolDir: deps.poolDir ?? defaultMachinePoolDir(),
@@ -272,7 +286,7 @@ export function makeClaudeProfileSwitchDeps(
 			}),
 		async applyProfile(
 			name: string,
-			context?: { lease: LeaseProof; signal: AbortSignal },
+			context?: Parameters<SwitchDeps["applyProfile"]>[1],
 		): Promise<{ identitySynced: boolean } & ApplyProfileReport> {
 			// FLY-852 (QA-caught self-deadlock): switchAccount calls this INSIDE its
 			// withMkdirLock critical section, and the bash script takes the SAME
@@ -282,12 +296,8 @@ export function makeClaudeProfileSwitchDeps(
 			// through to a normal acquire), and neither takes nor releases the lock.
 			// Throws on non-zero exit (execFile rejects) → executor fails closed.
 			//
-			// FLY-871 R1/C2 (Codex R2#1 HIGH — bypass anti-inheritance): the freshness
-			// bypass is an EMERGENCY HUMAN override only. The automatic path spreads
-			// the whole parent env, so a polluted parent (.env / launchd wrapper /
-			// test parent) could silently carry the bypass into the Bridge auto-switch
-			// path. Scrub it here (layer 1); bash additionally refuses it in
-			// delegated-lock mode (layer 2). Both are test assertions.
+			// The automatic path spreads the parent env, so retired safety-bypass
+			// names are still scrubbed defensively even though no runtime reads them.
 			const childEnv: NodeJS.ProcessEnv = {
 				...process.env,
 				FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
@@ -297,10 +307,22 @@ export function makeClaudeProfileSwitchDeps(
 				childEnv.FLYWHEEL_CLAUDE_ACCOUNTS_LOCK = context.lease.lockPath;
 				childEnv.FLYWHEEL_LEASE_PROOF = JSON.stringify(context.lease);
 			}
-			delete childEnv.FLYWHEEL_CLAUDE_FRESHNESS_BYPASS;
+			for (const retired of [
+				"FLY" + "WHEEL_CLAUDE_FRESHNESS_BYPASS",
+				"FLY" + "WHEEL_CLAUDE_QUOTA_BYPASS",
+				"FLY" + "WHEEL_ATOMIC_FRESHNESS_BYPASS",
+				"FLY" + "WHEEL_ATOMIC_QUOTA_BYPASS",
+			]) {
+				delete childEnv[retired];
+			}
 			delete childEnv.FLYWHEEL_PROFILE_IDENTITY_BYPASS;
-			delete childEnv.FLYWHEEL_CLAUDE_QUOTA_BYPASS;
 			delete childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED;
+			delete childEnv.FLYWHEEL_ATOMIC_SWITCH_APPLY;
+			delete childEnv.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD;
+			childEnv.FLYWHEEL_ATOMIC_SWITCH_APPLY = "1";
+			if (context?.manualMode === "next") {
+				childEnv.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD = "next";
+			}
 			if (deps.quotaPreverified === true) {
 				childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED = "1";
 			}

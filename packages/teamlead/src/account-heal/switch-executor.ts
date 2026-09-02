@@ -19,19 +19,31 @@
  * refuses a double-switch.
  */
 
+import type { CandidatePanoramaEntry } from "./account-candidate-selector.js";
 import {
 	type AccountStore,
 	defaultStorePath,
 	earliestReset,
+	enqueueSwitchNotification,
+	MAX_SWITCH_NOTIFICATION_OUTBOX,
 	readStore,
 	selectNextAccount,
 	writeStore,
 } from "./account-store.js";
+import {
+	drainSwitchNotification,
+	formatSwitchNotification,
+	type SwitchNotificationTrigger,
+} from "./account-switch-notification.js";
 import type { AccountsLock } from "./accounts-lock.js";
 import type { MachineAccountResolution } from "./machine-account.js";
 import { type LeaseProof, validateLeaseProof } from "./mkdir-lock.js";
 import { computeModelCapTtlMs } from "./model-cap.js";
+import type { DeliveryReport } from "./quota-monitor-alert.js";
 import { type CanonicalModels, canonicalizeModels } from "./quota-trigger.js";
+import type { AccountUsageResult } from "./quota-usage-api.js";
+
+type SuccessfulUsage = Extract<AccountUsageResult, { ok: unknown }>["ok"];
 
 interface SwitchInputBase {
 	/** The account observed as capped at detection (CAS key). */
@@ -44,9 +56,41 @@ interface SwitchInputBase {
 	verifiedAt?: string;
 	/** Whether the bash apply may skip its independent live quota guard. */
 	quotaPreverified?: boolean;
+	/** Pre-fetched, non-secret facts used to format the centralized notification. */
+	notificationContext?: SwitchNotificationContext;
 }
 
+export interface SwitchNotificationContext {
+	founderTimezone?: string;
+	usageByName?: ReadonlyMap<string, SuccessfulUsage>;
+	identityByName?: ReadonlyMap<string, { email?: string }>;
+	panorama?: readonly CandidatePanoramaEntry[];
+	headroomDegraded?: boolean;
+}
+
+export type SwitchTrigger =
+	| { kind: "manual"; mode: "use" | "next" }
+	| {
+			kind: "quota" | "repair";
+			scope: "5h" | "weekly" | "both";
+			resetAt: string;
+	  }
+	| { kind: "model"; models: CanonicalModels };
+
+export interface ManualEligibilityOverride {
+	ignoreCooldown: boolean;
+}
+
+export type ManualEligibilityOverrides = ReadonlyMap<
+	string,
+	ManualEligibilityOverride
+>;
+
 export type SwitchInput =
+	| (SwitchInputBase & {
+			trigger: SwitchTrigger;
+			manualOverrides?: ManualEligibilityOverrides;
+	  })
 	| (SwitchInputBase & {
 			scope: "5h" | "weekly" | "both";
 			/** ISO reset instant of the hit account window. */
@@ -58,6 +102,13 @@ export type SwitchInput =
 			models: CanonicalModels;
 	  });
 
+function normalizedTrigger(input: SwitchInput): SwitchTrigger {
+	if ("trigger" in input) return input.trigger;
+	return input.scope === "model"
+		? { kind: "model", models: input.models }
+		: { kind: "quota", scope: input.scope, resetAt: input.resetAt };
+}
+
 export interface SwitchDeps {
 	storePath?: string;
 	lockPath?: string;
@@ -68,7 +119,11 @@ export interface SwitchDeps {
 	/** Write the chosen account into the machine credential source (A: Keychain). Throws on failure → fail-closed. */
 	applyProfile: (
 		name: string,
-		context: { lease: LeaseProof; signal: AbortSignal },
+		context: {
+			lease: LeaseProof;
+			signal: AbortSignal;
+			manualMode?: "use" | "next";
+		},
 		// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters return Promise<void>; identity-sync + reports are additive channels.
 	) => Promise<void | ({ identitySynced: boolean } & ApplyProfileReport)>;
 	/** The account the real profile is currently active on (crash-recovery authority). */
@@ -79,6 +134,12 @@ export interface SwitchDeps {
 	validateLease?: (lease: LeaseProof) => boolean;
 	/** Renewal cadence while the detached mutation process group is alive. */
 	heartbeatMs?: number;
+	/** Send a committed notification intent after releasing the switch lock. */
+	deliverNotification?: (
+		alert: NonNullable<
+			AccountStore["pendingSwitchNotifications"]
+		>[number]["alert"],
+	) => Promise<DeliveryReport>;
 }
 
 export type IdentityCheckpoint = "pre_write" | "capture_back" | "capture";
@@ -112,6 +173,7 @@ type SwitchOutcome =
 			to: string;
 			generation: number;
 			benchUntilByModel?: Record<string, string>;
+			notification?: "delivered" | "pending";
 	  }
 	| { outcome: "noop_already_switched"; activeAccount: string }
 	| { outcome: "noop_reconciled"; activeAccount: string; generation: number }
@@ -135,7 +197,9 @@ type SwitchOutcome =
 				| "keychain_preimage_conflict"
 				| "apply_failed"
 				| "machine_account_conflict"
+				| "notification_outbox_full"
 				| "invalid_model_trigger"
+				| "invalid_manual_overrides"
 				| "keychain_readback_mismatch"
 				| "identity_rollback_failed"
 				| "lock_lease_lost"
@@ -409,13 +473,16 @@ export function defaultLockPath(): string {
 function commitSwitch(
 	store: AccountStore,
 	input: SwitchInput,
+	trigger: SwitchTrigger,
 	to: string,
 	identitySynced: boolean,
 	benchUntilByModel: Record<string, string> | null,
 ): AccountStore {
+	const generation = store.generation + 1;
 	const accounts = store.accounts.map((account) => {
 		if (account.name !== input.observedAccount) return account;
-		if (input.scope === "model") {
+		if (trigger.kind === "manual") return account;
+		if (trigger.kind === "model") {
 			if (benchUntilByModel === null) return account;
 			const modelCaps = { ...account.modelCaps };
 			for (const [model, until] of Object.entries(benchUntilByModel)) {
@@ -426,20 +493,59 @@ function commitSwitch(
 			}
 			return { ...account, modelCaps };
 		}
-		const isWeekly = input.scope === "weekly" || input.scope === "both";
+		const isWeekly = trigger.scope === "weekly" || trigger.scope === "both";
 		return {
 			...account,
-			quotaExhaustedUntil: input.resetAt,
-			switchCooldownUntil: input.resetAt,
-			...(isWeekly ? { weeklyResetAt: input.resetAt } : {}),
+			quotaExhaustedUntil: trigger.resetAt,
+			switchCooldownUntil: trigger.resetAt,
+			...(isWeekly ? { weeklyResetAt: trigger.resetAt } : {}),
 		};
 	});
-	return {
-		generation: store.generation + 1,
+	const notificationTrigger: SwitchNotificationTrigger =
+		trigger.kind === "model"
+			? {
+					kind: "model",
+					models: Object.keys(benchUntilByModel ?? {}).sort(),
+				}
+			: trigger.kind === "manual"
+				? trigger
+				: { kind: trigger.kind, scope: trigger.scope };
+	const context = input.notificationContext;
+	const body = formatSwitchNotification({
+		from: {
+			name: input.observedAccount,
+			email: context?.identityByName?.get(input.observedAccount)?.email ?? null,
+			usage: context?.usageByName?.get(input.observedAccount),
+		},
+		to: {
+			name: to,
+			email: context?.identityByName?.get(to)?.email ?? null,
+			usage: context?.usageByName?.get(to),
+		},
+		trigger: notificationTrigger,
+		timezone: context?.founderTimezone ?? "America/Los_Angeles",
+		panorama: context?.panorama ?? [],
+		headroomDegraded: context?.headroomDegraded,
+	});
+	const switched: AccountStore = {
+		...store,
+		generation,
 		activeAccount: to,
 		identityStale: !identitySynced,
 		accounts,
 	};
+	return enqueueSwitchNotification(switched, {
+		eventId: `account-switch-g${generation}`,
+		generation,
+		createdAt: input.now.getTime(),
+		alert: {
+			kind: "account_switched",
+			severity: "info",
+			title: `Claude account switched: ${input.observedAccount} → ${to}`,
+			body,
+			signature: `account-switch-g${generation}`,
+		},
+	});
 }
 
 export async function switchAccount(
@@ -448,6 +554,30 @@ export async function switchAccount(
 ): Promise<SwitchResult> {
 	const storePath = deps.storePath ?? defaultStorePath();
 	const lockPath = deps.lockPath ?? defaultLockPath();
+	const deliverNotification = deps.deliverNotification;
+	const drainOneNotification = async () => {
+		if (deliverNotification === undefined) return { outcome: "empty" as const };
+		return drainSwitchNotification({
+			withAccountsLock: async (fn) => {
+				const result = await deps.withLock(lockPath, async () => fn());
+				if (result.kind !== "ok") {
+					throw new Error(`notification lock unavailable: ${result.kind}`);
+				}
+				return result.value;
+			},
+			readStore: async () => readStore(storePath),
+			writeStore: async (store) => writeStore(store, storePath),
+			send: deliverNotification,
+		});
+	};
+
+	if (deliverNotification !== undefined) {
+		try {
+			await drainOneNotification();
+		} catch {
+			// Best effort before mutation; a still-full outbox fails closed below.
+		}
+	}
 
 	const locked = await deps.withLock<SwitchResult>(lockPath, async (lease) => {
 		const applyReports: ApplyProfileReport[] = [];
@@ -483,6 +613,11 @@ export async function switchAccount(
 				const result = await deps.applyProfile(name, {
 					lease,
 					signal: controller.signal,
+					...(trigger.kind === "manual"
+						? {
+								manualMode: trigger.mode,
+							}
+						: {}),
 				});
 				return result;
 			} catch (error) {
@@ -496,20 +631,36 @@ export async function switchAccount(
 			if (lost) throw new LockLeaseLostError(lockPath);
 		};
 		let store = readStore(storePath);
+		const trigger = normalizedTrigger(input);
 		const models =
-			input.scope === "model" ? canonicalizeModels(input.models) : null;
-		if (input.scope === "model" && models === null) {
+			trigger.kind === "model" ? canonicalizeModels(trigger.models) : null;
+		if (trigger.kind === "model" && models === null) {
 			return {
 				outcome: "failed",
 				reason: "model trigger must contain at least one non-empty model",
 				reasonCode: "invalid_model_trigger",
 			};
 		}
+		const manualOverrides =
+			"manualOverrides" in input ? input.manualOverrides : undefined;
+		const preferredNames = new Set(input.preferredOrder ?? []);
+		if (
+			(trigger.kind !== "manual" && manualOverrides !== undefined) ||
+			(manualOverrides !== undefined &&
+				[...manualOverrides.keys()].some((name) => !preferredNames.has(name)))
+		) {
+			return {
+				outcome: "failed",
+				reason:
+					"manual eligibility overrides require a manual trigger and keys from preferredOrder",
+				reasonCode: "invalid_manual_overrides",
+			};
+		}
 		const outgoing = store.accounts.find(
 			(account) => account.name === input.observedAccount,
 		);
 		const benchUntilByModel =
-			input.scope === "model" && models !== null
+			trigger.kind === "model" && models !== null
 				? Object.fromEntries(
 						models.map((model) => {
 							const ttl = computeModelCapTtlMs(
@@ -568,6 +719,23 @@ export async function switchAccount(
 				applyReports,
 			);
 		}
+		const nextNotificationEventId = `account-switch-g${store.generation + 1}`;
+		const pendingNotifications = store.pendingSwitchNotifications ?? [];
+		if (
+			pendingNotifications.length >= MAX_SWITCH_NOTIFICATION_OUTBOX &&
+			!pendingNotifications.some(
+				(intent) => intent.eventId === nextNotificationEventId,
+			)
+		) {
+			return withReports(
+				{
+					outcome: "failed",
+					reason: `notification outbox is full (${pendingNotifications.length}/${MAX_SWITCH_NOTIFICATION_OUTBOX}); refusing profile mutation`,
+					reasonCode: "notification_outbox_full",
+				},
+				applyReports,
+			);
+		}
 
 		// FLY-871 R1/C3 — freshness candidate loop. The destructive Keychain write
 		// (inside applyProfile = bash `use`) now probe-refreshes the target's pooled
@@ -621,13 +789,19 @@ export async function switchAccount(
 		for (let attempt = 0; attempt < maxAttempts; attempt++) {
 			if (!fence()) return leaseLost();
 			const next = selectNextAccount(working, {
-				scope: input.scope,
+				scope:
+					trigger.kind === "model"
+						? "model"
+						: trigger.kind === "manual"
+							? null
+							: trigger.scope,
 				models: models ?? undefined,
 				currentName: input.observedAccount,
 				now: input.now,
 				preferredOrder: input.preferredOrder,
 				verifiedAt: input.verifiedAt,
 				excludeNames: attemptedNames,
+				eligibilityOverrides: manualOverrides,
 			});
 			if (next === null) {
 				if (keychainReadbackSeen) {
@@ -797,6 +971,7 @@ export async function switchAccount(
 		const updated = commitSwitch(
 			working,
 			input,
+			trigger,
 			applied,
 			identitySynced,
 			benchUntilByModel,
@@ -820,8 +995,24 @@ export async function switchAccount(
 		);
 	}
 	switch (locked.kind) {
-		case "ok":
-			return locked.value;
+		case "ok": {
+			if (
+				locked.value.outcome !== "switched" ||
+				deps.deliverNotification === undefined
+			) {
+				return locked.value;
+			}
+			try {
+				const delivery = await drainOneNotification();
+				return {
+					...locked.value,
+					notification:
+						delivery.outcome === "acknowledged" ? "delivered" : "pending",
+				};
+			} catch {
+				return { ...locked.value, notification: "pending" };
+			}
+		}
 		case "reconciled":
 			return {
 				outcome: "noop_reconciled",

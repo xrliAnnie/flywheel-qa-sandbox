@@ -152,6 +152,38 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		);
 	});
 
+	it("issues only atomic apply/audit markers and scrubs retired safety bypass names", async () => {
+		const execFile = vi.fn(async () => ({ stdout: "Switched", stderr: "" }));
+		const atomicFreshness = "FLY" + "WHEEL_ATOMIC_FRESHNESS_BYPASS";
+		const atomicQuota = "FLY" + "WHEEL_ATOMIC_QUOTA_BYPASS";
+		const publicFreshness = "FLY" + "WHEEL_CLAUDE_FRESHNESS_BYPASS";
+		const publicQuota = "FLY" + "WHEEL_CLAUDE_QUOTA_BYPASS";
+		process.env.FLYWHEEL_ATOMIC_SWITCH_APPLY = "forged";
+		process.env[atomicFreshness] = "forged";
+		process.env[atomicQuota] = "forged";
+		process.env.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD = "forged";
+		try {
+			await deps(execFile).applyProfile("school", {
+				lease: LEASE,
+				signal: new AbortController().signal,
+				manualMode: "next",
+			});
+
+			const childEnv = execFile.mock.calls[0][2].env as NodeJS.ProcessEnv;
+			expect(childEnv.FLYWHEEL_ATOMIC_SWITCH_APPLY).toBe("1");
+			expect(childEnv[atomicFreshness]).toBeUndefined();
+			expect(childEnv[atomicQuota]).toBeUndefined();
+			expect(childEnv.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD).toBe("next");
+			expect(childEnv[publicFreshness]).toBeUndefined();
+			expect(childEnv[publicQuota]).toBeUndefined();
+		} finally {
+			delete process.env.FLYWHEEL_ATOMIC_SWITCH_APPLY;
+			delete process.env[atomicFreshness];
+			delete process.env[atomicQuota];
+			delete process.env.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD;
+		}
+	});
+
 	it("FLY-865: applyProfile forwards the switch script's stderr (identity warning) via onWarn on a SUCCESSFUL (exit 0) switch", async () => {
 		// `use` exits 0 (token switched) but warned on stderr that the display
 		// identity was not updated — execFile discards it, so onWarn must surface it.

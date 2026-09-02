@@ -122,33 +122,6 @@ export function finalizeModelSwitchIncident(
 		throw new Error("confirmation delay must be non-negative");
 	}
 	const confirmDueAt = input.finalizedAt + input.confirmDelayMs;
-	const switchEventId = `${detection.eventId}:switch`;
-	if (
-		!state.alertOutbox.some((item) => item.eventId === switchEventId) &&
-		state.alertOutbox.length >= 64
-	) {
-		throw new Error("quota monitor alert outbox is full");
-	}
-	const affected = detection.affectedPanes
-		.map(
-			(pane) =>
-				`${affectedPaneInstanceKey(pane)} (${pane.sessionName}/${pane.windowName})`,
-		)
-		.join(", ");
-	if (!state.alertOutbox.some((item) => item.eventId === switchEventId)) {
-		state.alertOutbox.push({
-			eventId: switchEventId,
-			generation: input.switched.generation,
-			createdAt: input.finalizedAt,
-			alert: {
-				kind: "model_cap_switched",
-				severity: "info",
-				title: "Claude model-cap account switched",
-				body: `${input.switched.from}->${input.switched.to}; models=${detection.models.join(",")}; affected=${affected}`,
-				signature: `model-cap-switched-${detection.eventId}-g${input.switched.generation}`,
-			},
-		});
-	}
 	state.observedGeneration = input.switched.generation;
 	state.lastSwitchAt = input.finalizedAt;
 	state.pendingDetection = null;

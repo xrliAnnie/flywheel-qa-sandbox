@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+RUNTIME="${SCRIPT_DIR}/../dist/account-heal/account-switch-cli.js"
+
+if ! command -v node >/dev/null 2>&1 || [[ ! -f "$RUNTIME" ]]; then
+	echo "FLYWHEEL_ATOMIC_SWITCH_RUNTIME_UNAVAILABLE: built account-switch runtime is missing" >&2
+	echo "Recovery: pnpm --filter flywheel-teamlead build" >&2
+	exit 31
+fi
+
+exec node "$RUNTIME" "$@"

@@ -19,7 +19,9 @@ import {
 	readStoreStrict,
 	recordObservationInStore,
 	syncActiveAccountInStore,
+	writeStore,
 } from "./account-store.js";
+import { drainSwitchNotification } from "./account-switch-notification.js";
 import {
 	withAccountsLock as acquireAccountsLock,
 	type LockRunResult,
@@ -224,6 +226,26 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 		if (result.kind === "ok") return result.value;
 		throw new AccountLockInterrupted(result);
 	};
+	const drainCommittedSwitchNotification = async (): Promise<void> => {
+		try {
+			await drainSwitchNotification({
+				withAccountsLock,
+				readStore: async () => {
+					const store = readStoreStrict(paths.storePath);
+					if (store === null) {
+						throw new Error("Claude account store is invalid");
+					}
+					return store;
+				},
+				writeStore: async (store) => writeStore(store, paths.storePath),
+				send: emitAlert,
+			});
+		} catch (error) {
+			(opts.log ?? (() => undefined))(
+				`switch notification retained after delivery error: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
 	const readKeychain =
 		opts.readKeychainCredential ?? (() => readKeychainMonitorCredential());
 	const fetchUsage = opts.fetchUsage ?? ((token) => fetchAccountUsage(token));
@@ -246,7 +268,10 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 					binPath: claudeProfileBinPath(),
 					poolDir: paths.poolDir,
 					claudeJsonPath: paths.claudeJsonPath,
+					storePath: paths.storePath,
+					lockPath: paths.lockPath,
 					quotaPreverified: input.quotaPreverified === true,
+					deliverNotification: emitAlert,
 				}),
 			));
 	const tmux =
@@ -306,6 +331,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 	return {
 		async tick(): Promise<PollOnceResult> {
 			const config = loadQuotaMonitorConfig(paths.configPath);
+			await drainCommittedSwitchNotification();
 			const machineWitness = await runAccountsLock(async () => {
 				const store = readStore(paths.storePath);
 				const authority = resolveMachineAccount({
@@ -588,6 +614,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 					);
 				}
 			}
+			await drainCommittedSwitchNotification();
 			return { ...polled, state };
 		},
 	};

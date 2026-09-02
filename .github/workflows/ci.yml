@@ -820,6 +820,7 @@ jobs:
       - name: Test — FLY-1434 unified restart + quota caller
         run: |
           bash scripts/__tests__/setup-quota-monitor.test.sh
+          bash scripts/__tests__/restart-account-switch-runtime-preflight.test.sh
           bash scripts/test-restart-services.sh
 
       # FLY-1715: runner credential tier and managed voice replacement are

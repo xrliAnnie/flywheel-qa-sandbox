@@ -8,7 +8,6 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	formatAccountCapOwnerAssignment,
 	formatRotationDigest,
-	formatSwitchSuccessDigest,
 	infraSenderTokenOr,
 	postInfraNotifyDigest,
 	resolveAccountCapOwnerId,
@@ -133,26 +132,6 @@ describe("format helpers", () => {
 		expect(s).toContain("<@111>");
 		expect(s).toContain("请认领");
 		expect(s).toContain("所有账号都已用尽。");
-	});
-
-	it("switch digest renders from/to + scope + reset, no @-mention", () => {
-		const s = formatSwitchSuccessDigest({
-			from: "personal",
-			to: "school",
-			scope: "5h",
-			resetAt: "2026-07-08T02:00:00Z",
-		});
-		expect(s).toContain("personal → school");
-		expect(s).toContain("5h 到");
-		expect(s).toContain("reset 2026-07-08T02:00:00Z");
-		expect(s).not.toContain("@");
-	});
-
-	it("switch digest degrades without from/scope/reset", () => {
-		const s = formatSwitchSuccessDigest({ to: "school" });
-		expect(s).toContain("→ school");
-		expect(s).not.toMatch(/reset \d/);
-		expect(s).not.toContain("到）");
 	});
 
 	it("rotation digest is built from the structured payload", () => {

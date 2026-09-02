@@ -202,10 +202,13 @@ const json = (res, status, body) => {
   res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(raw) });
   res.end(raw);
 };
-const future = (hours) => new Date(Date.now() + hours * 60 * 60_000).toISOString();
+const resetBase = Date.now();
+const future = (hours) => new Date(resetBase + hours * 60 * 60_000).toISOString();
 const usage = (account) => ({
   five_hour: { utilization: account === "shopping" ? (mode.includes("model") ? 20 : 92) : account === "school" ? 3 : 4, resets_at: future(2) },
-  seven_day: { utilization: account === "shopping" ? 20 : 10, resets_at: future(72) },
+  // Deliberately invert the legacy configured order: backup is listed after
+  // school but has the earlier weekly reset, so the generic selector must win.
+  seven_day: { utilization: account === "shopping" ? 20 : 10, resets_at: future(account === "backup" ? 48 : 72) },
   limits: [{
     kind: "weekly_scoped",
     percent: account === "shopping" ? 84 : account === "school" ? 11 : 12,
@@ -365,8 +368,8 @@ if [[ "$QA_MODE" == "model" ]]; then
     || fail "concurrent Keychain mutation was overwritten after verification failed"
   [[ "$(cat "$POOL/.active")" == "shopping" ]] \
     || fail "failed profile verification changed .active"
-  grep -q 'FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT' "$ROOT/rollback.log" \
-    || fail "profile failure did not report the fail-closed preimage conflict"
+  grep -q 'FLYWHEEL_MANUAL_SWITCH_FAILED reason=keychain_preimage_conflict' "$ROOT/rollback.log" \
+    || fail "atomic executor did not report the fail-closed preimage conflict"
   # Reset only the scratch fixture after proving the production command refused
   # to overwrite a concurrent mutation; the daemon scenario starts from the
   # original shopping credential.
@@ -423,13 +426,14 @@ if [[ "$QA_MODE" == "rate-limit" || "$QA_MODE" == "unmanaged-model" ]]; then
   exit 0
 fi
 
-if [[ "$QA_MODE" == "model" ]]; then
-  SWITCH_KIND="model_cap_switched"
-else
-  SWITCH_KIND="account_switched"
-fi
+# Every successful account change emits the same durable notification kind;
+# the trigger remains context in the body (quota:5h vs model:Fable 5).
+SWITCH_KIND="account_switched"
+EXPECTED_TARGET="backup"
+EXPECTED_TARGET_EMAIL="backup@example.test"
+EXPECTED_TARGET_FIVE_H="4"
 for _ in $(seq 1 300); do
-  [[ "$(cat "$POOL/.active" 2>/dev/null || true)" == "school" ]] \
+  [[ "$(cat "$POOL/.active" 2>/dev/null || true)" == "$EXPECTED_TARGET" ]] \
     && [[ "$(cat "$ROOT/pane-response" 2>/dev/null || true)" == "continue" ]] \
     && grep -q -- "--kind $SWITCH_KIND" "$ROOT/alerts.log" 2>/dev/null \
     && [[ "$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE" 2>/dev/null || true)" -ge 1 ]] \
@@ -438,22 +442,28 @@ for _ in $(seq 1 300); do
   sleep 0.1
 done
 
-[[ "$(cat "$POOL/.active")" == "school" ]] || fail "profile did not switch shopping -> school"
-[[ "$(jq -r '.activeAccount' "$STORE")" == "school" ]] || fail "CAS store did not commit school"
+[[ "$(cat "$POOL/.active")" == "$EXPECTED_TARGET" ]] \
+  || fail "profile did not select the earliest-reset target ($EXPECTED_TARGET)"
+[[ "$(jq -r '.activeAccount' "$STORE")" == "$EXPECTED_TARGET" ]] \
+  || fail "CAS store did not commit $EXPECTED_TARGET"
 [[ "$(jq -r '.generation' "$STORE")" == "1" ]] || fail "CAS generation did not increment exactly once"
 [[ "$(cat "$ROOT/pane-response")" == "continue" ]] || fail "quota-stuck pane was not revived with literal continue+Enter"
 grep -q -- "--kind $SWITCH_KIND" "$ROOT/alerts.log" || fail "isolated alert sink missed $SWITCH_KIND"
 grep -q -- '--strict-delivery' "$ROOT/alerts.log" || fail "alert did not use strict delivery"
+if [[ "$QA_MODE" == "model" ]]; then
+  grep -q -- '（model:Fable 5）' "$ROOT/alerts.log" \
+    || fail "unified switch notification omitted the model trigger"
+fi
 if [[ "$QA_MODE" != "model" ]]; then
   grep -q -- "channel=$FLYWHEEL_NOTIFY_CHANNEL|.*--kind account_switched" "$ROOT/alerts.log" \
     || fail "account_switched did not inherit the notification-channel override"
   grep -q -- '--plain-message' "$ROOT/alerts.log" \
     || fail "account_switched did not request ordinary-message rendering"
-  grep -q -- 'Claude 已自动切号：\*\*shopping → school\*\*' "$ROOT/alerts.log" \
-    || fail "account_switched omitted the founder-selected summary"
+  grep -q -- "Claude 已切号：\*\*shopping → $EXPECTED_TARGET\*\*" "$ROOT/alerts.log" \
+    || fail "account_switched omitted the unified switch summary"
   grep -q -- 'xrliannie.shopping@gmail.com' "$ROOT/alerts.log" \
     || fail "account_switched omitted the source email"
-  grep -q -- 'xiaorongli2011@u.northwestern.edu' "$ROOT/alerts.log" \
+  grep -q -- "$EXPECTED_TARGET_EMAIL" "$ROOT/alerts.log" \
     || fail "account_switched omitted the target email"
   grep -Eq -- '5h[[:space:]]+92%[[:space:]]+8%' "$ROOT/alerts.log" \
     || fail "account_switched omitted the source five-hour usage/remaining row"
@@ -466,12 +476,13 @@ if [[ "$QA_MODE" != "model" ]]; then
     fail "account_switched leaked the superseded machine-field copy"
   fi
 fi
-[[ "$(jq -r '.five_hour.utilization' "$CACHE")" == "3" ]] || fail "statusline cache was not refreshed from new account"
+[[ "$(jq -r '.five_hour.utilization' "$CACHE")" == "$EXPECTED_TARGET_FIVE_H" ]] \
+  || fail "statusline cache was not refreshed from new account"
 revive_attempts="$(jq -r '[.reviveEpoch.panes[].attempts] | max // 0' "$STATE")"
 [[ "$revive_attempts" -ge 1 && "$revive_attempts" -le 3 ]] \
   || fail "revive attempts were not durably bounded to 1..3 (got $revive_attempts)"
-[[ "$(jq -r '.claudeAiOauth.accessToken | startswith("school-rotated-")' "$KEYCHAIN_STATE")" == "true" ]] \
-  || fail "scratch Keychain was not switched to refreshed school credential"
+[[ "$(jq -r --arg target "$EXPECTED_TARGET" '.claudeAiOauth.accessToken | startswith($target + "-rotated-")' "$KEYCHAIN_STATE")" == "true" ]] \
+  || fail "scratch Keychain was not switched to refreshed $EXPECTED_TARGET credential"
 
 if [[ "$QA_MODE" == "model" ]]; then
   : > "$ROOT/allow-pane-recovery"
@@ -482,10 +493,14 @@ if [[ "$QA_MODE" == "model" ]]; then
   done
 fi
 
-school_line="$(grep -n -m1 '^refresh:school$' "$ROOT/http.log" | cut -d: -f1)"
-backup_line="$(grep -n -m1 '^refresh:backup$' "$ROOT/http.log" | cut -d: -f1)"
-[[ -n "$school_line" && -n "$backup_line" && "$school_line" -lt "$backup_line" ]] \
-  || fail "candidate validation did not follow school before backup"
+grep -q '^refresh:school$' "$ROOT/http.log" \
+  || fail "generic selection did not live-verify school"
+grep -q '^refresh:backup$' "$ROOT/http.log" \
+  || fail "generic selection did not live-verify backup"
+backup_reset="$(jq -r '.accounts[] | select(.name == "backup") | .weeklyResetAt' "$STORE")"
+school_reset="$(jq -r '.accounts[] | select(.name == "school") | .weeklyResetAt' "$STORE")"
+[[ "$backup_reset" < "$school_reset" ]] \
+  || fail "fixture did not preserve backup as the earlier weekly reset"
 
 if [[ "$QA_MODE" == "model" ]]; then
   [[ "$(jq -r '.accounts[] | select(.name == "shopping") | .quotaExhaustedUntil' "$STORE")" == "null" ]] \
@@ -494,8 +509,6 @@ if [[ "$QA_MODE" == "model" ]]; then
     || fail "model bench was not committed with the bounded base backoff"
   [[ "$(jq -r '.confirmation.generation' "$STATE")" == "1" ]] \
     || fail "delayed model confirmation was not durably scheduled"
-  grep -q -- 'FLY-1182-quota-dead' "$ROOT/alerts.log" \
-    || fail "model switch alert omitted the affected pane list"
   if tmux -L "$TMUX_SOCKET" capture-pane -p -t "$PANE_TARGET" | grep -q "$PANE_MATCH"; then
     fail "model-cap pane remained visibly capped after continue"
   fi
@@ -555,6 +568,6 @@ DAEMON_PID=""
 if [[ "$QA_MODE" == "model" ]]; then
   log "PASS: real model-cap fixture detected, scratch Keychain/store switched, affected pane revived, crash/restart confirmation recovered"
 else
-  log "PASS: cache updated, school validated before backup, Keychain/store switched, quota pane revived, alert isolated"
+  log "PASS: full pool live-verified, earliest-reset backup selected over configured-order school, quota pane revived, alert isolated"
 fi
 log "PASS: daemon=$daemon_comm pane=$pane_comm proof=$ps_proof; fake claude invocation count=0"

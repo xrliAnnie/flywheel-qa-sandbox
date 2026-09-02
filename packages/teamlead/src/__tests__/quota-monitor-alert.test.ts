@@ -159,7 +159,11 @@ describe("sendQuotaMonitorAlert", () => {
 		);
 
 		expect(observedChannels).toEqual(["alerts-channel"]);
-		expect(execFile.mock.calls[0]?.[2].env).toBeUndefined();
+		expect(execFile.mock.calls[0]?.[2].env).toEqual(
+			expect.objectContaining({
+				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: "alerts-channel",
+			}),
+		);
 		expect(execFile.mock.calls[0]?.[1]).not.toContain("--plain-message");
 	});
 

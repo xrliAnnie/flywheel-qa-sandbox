@@ -898,20 +898,12 @@ default_freshness_bin() {
 # guard runs unconditionally on `use`/`next` (manual + automatic) — plan §5: the
 # manual stale-interception is part of the fix and is on at all times.
 freshness_check() {
-  local name="$1" active="$2"
-  # Emergency HUMAN override. Honored ONLY on the manual path (NOT delegated-lock,
-  # i.e. not the Bridge auto-switch): Codex R2#1 layer 2 — even if the env leaks
-  # into the automatic path, delegated mode refuses it (the CLI also scrubs it,
-  # layer 1). The name is deliberately alarming; use only with a human at the keys.
-  if [[ -n "${FLYWHEEL_CLAUDE_FRESHNESS_BYPASS:-}" && "$DELEGATED_LOCK_ACCEPTED" -eq 0 ]]; then
-    echo "Warning: FLYWHEEL_CLAUDE_FRESHNESS_BYPASS set — SKIPPING token freshness verification for '$name'. Emergency manual override; the switched-to token is NOT verified fresh and may strand live sessions if stale." >&2
-    return 0
-  fi
+	local name="$1" active="$2"
   local bin="${FLYWHEEL_CLAUDE_FRESHNESS_BIN:-}"
   [[ -z "$bin" ]] && bin="$(default_freshness_bin)"
   if [[ -z "$bin" || ! -x "$bin" ]]; then
     echo "FLYWHEEL_FRESHNESS_UNAVAILABLE $name" >&2
-    echo "Error: token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN, or FLYWHEEL_CLAUDE_FRESHNESS_BYPASS=1 for an emergency manual override." >&2
+    echo "Error: token freshness helper unavailable (looked for '${bin:-<none>}') — refusing to switch to a possibly-stale credential (fail-closed). Set FLYWHEEL_CLAUDE_FRESHNESS_BIN to a working verifier." >&2
     return 31
   fi
   local rc=0
@@ -943,92 +935,13 @@ default_quota_guard_bin() {
   [[ -x "$cand" ]] && printf '%s' "$cand"
 }
 
-default_lead_alert_bin() {
-  local d cand
-  d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
-  cand="$d/../../../scripts/lead-alert.sh"
-  [[ -x "$cand" ]] && printf '%s' "$cand"
-}
-
-# Manual emergency bypasses are never silent. Alert delivery is best-effort so
-# an emergency recovery cannot be blocked by a broken Discord path.
-emit_quota_bypass_alert() {
-  local name="$1" bin="${FLYWHEEL_LEAD_ALERT_BIN:-}" epoch observed_at result="" rc=0
-  [[ -z "$bin" ]] && bin="$(default_lead_alert_bin)"
-  if [[ -z "$bin" || ! -x "$bin" ]]; then
-    echo "Warning: quota bypass alert helper unavailable; bypass remains visible only in this terminal" >&2
-    return 0
-  fi
-  epoch=$(date +%s)
-  observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-  # launchd and other sparse callers may not have alert credentials in their
-  # environment. Load the shared .env inside a child shell, preserving the
-  # small alert-related process-env allowlist in memory. Never serialize the
-  # caller's exported environment (and its secrets) to a temporary file.
-  result=$(
-    env_file="${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/.env"
-    preserve_names=(
-      HOME FLYWHEEL_STATE_DIR FLYWHEEL_ALERT_DEADLETTER_DIR
-      FLYWHEEL_ALERT_QUEUE_DIR FLYWHEEL_ALERT_RATE_PER_MIN
-      FLYWHEEL_ALERT_SENDER_TOKEN_ENV
-      FLYWHEEL_CLAIMS_DB FLYWHEEL_PROJECTS_FILE
-      FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID
-    )
-    sender_name="${FLYWHEEL_ALERT_SENDER_TOKEN_ENV:-}"
-    if [[ "$sender_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
-      preserve_names+=("$sender_name")
-    fi
-    preserve_set=()
-    preserve_values=()
-    for preserve_name in "${preserve_names[@]}"; do
-      if [[ "${!preserve_name+x}" == "x" ]]; then
-        preserve_set+=(1)
-        preserve_values+=("${!preserve_name}")
-      else
-        preserve_set+=(0)
-        preserve_values+=("")
-      fi
-    done
-    if [[ -f "$env_file" ]]; then
-      set -a
-      # shellcheck source=/dev/null
-      source "$env_file" || true
-      set +a
-      for preserve_idx in "${!preserve_names[@]}"; do
-        if [[ "${preserve_set[$preserve_idx]}" -eq 1 ]]; then
-          export "${preserve_names[$preserve_idx]}=${preserve_values[$preserve_idx]}"
-        fi
-      done
-    fi
-    "$bin" \
-      --lead quota-monitor --project flywheel \
-      --kind quota_guard_bypassed --severity warning \
-      --title "Claude quota guard BYPASSED manually" \
-      --body "target=$name; at=$observed_at; pid=$$; manual emergency bypass of quota verification (FLYWHEEL_CLAUDE_QUOTA_BYPASS=1) — target quota NOT verified" \
-      --signature "quota-guard-bypass-$name-$epoch-$$" \
-      --strict-delivery 2>/dev/null
-  ) || rc=$?
-  case "$result" in
-    sent|queued_transient)
-      echo "Warning: quota bypass audit alert accepted ($result)" >&2
-      ;;
-    *) echo "Warning: quota bypass alert delivery was not confirmed (result=${result:-none}, rc=$rc)" >&2 ;;
-  esac
-  return 0
-}
-
 # quota_check <name>: 0 healthy, 32 definitely exhausted, 33 evidence
 # unavailable. Only an AUTHENTICATED delegated child may honor PREVERIFIED;
-# raw ambient env values do not establish trust. Legacy delegated callers that
-# lack PREVERIFIED retain their historical fail-open behavior for 33 only.
+# raw ambient env values do not establish trust. Every authenticated atomic
+# caller must either carry upstream live proof or fail closed here.
 quota_check() {
-  local name="$1" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0
+	local name="$1" bin="${FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN:-}" rc=0
   if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 && "${FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED:-}" == "1" ]]; then
-    return 0
-  fi
-  if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 0 && "${FLYWHEEL_CLAUDE_QUOTA_BYPASS:-}" == "1" ]]; then
-    echo "Warning: FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 — BYPASSING live 5h/7d quota guard for '$name'. Emergency manual override; target quota is NOT verified." >&2
-    emit_quota_bypass_alert "$name"
     return 0
   fi
   [[ -z "$bin" ]] && bin="$(default_quota_guard_bin)"
@@ -1052,14 +965,10 @@ quota_check() {
       echo "Error: target account '$name' is exhausted in its live 5h or 7d quota window — Keychain/.active unchanged" >&2
       return 32
       ;;
-    33)
-      if [[ "$DELEGATED_LOCK_ACCEPTED" -eq 1 ]]; then
-        echo "Warning: live quota evidence unavailable for '$name' in legacy delegated mode; proceeding for backward compatibility (set FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED=1 after an upstream live check)" >&2
-        return 0
-      fi
-      echo "FLYWHEEL_QUOTA_UNAVAILABLE $name" >&2
-      echo "Error: live quota evidence unavailable for '$name' — refusing manual switch (fail-closed). Set FLYWHEEL_CLAUDE_QUOTA_BYPASS=1 only for an emergency manual override." >&2
-      return 33
+	33)
+		echo "FLYWHEEL_QUOTA_UNAVAILABLE $name" >&2
+		echo "Error: live quota evidence unavailable for '$name' — refusing switch (fail-closed). Refresh live quota evidence and retry." >&2
+		return 33
       ;;
   esac
 }
@@ -1306,6 +1215,24 @@ process_group_alive() { # 0 alive; 1 empty; 2 unknown
   ' "$1"
 }
 
+process_identity_alive() { # <pid> <expected-start>; 0 same process alive; 1 dead/reused; 2 unknown
+  local pid="$1" expected_start="$2" live_start="" err=""
+  [[ "$pid" =~ ^[0-9]+$ && "$pid" -gt 0 ]] || return 2
+  if kill -0 "$pid" 2>/dev/null; then
+    live_start=$(process_start_time "$pid")
+    case "$expected_start" in
+      started-before-*) : ;; # ps was unavailable when the journal was written
+      *) [[ -n "$live_start" && "$live_start" != "$expected_start" ]] && return 1 ;;
+    esac
+    return 0
+  fi
+  err=$(kill -0 "$pid" 2>&1 || true)
+  case "$err" in
+    *[Nn]ot\ permitted*) return 0 ;; # EPERM proves that the pid exists
+    *) return 1 ;;                   # ESRCH: the recorded leader is gone
+  esac
+}
+
 read_store_generation_for_active() { # <label>
   "$NODE_BIN" --input-type=module - "$ACCOUNTS_STORE" "$1" <<'NODE'
 import { readFileSync } from "node:fs";
@@ -1413,7 +1340,20 @@ NODE
   local op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_state old_digest target_digest
   IFS=$'\t' read -r op_id writer_uid writer_pgid leader_pid leader_start old_label target_label old_state old_digest target_digest <<<"$fields"
   if [[ "$writer_uid" != "$(id -u)" ]]; then echo '{"outcome":"conflict","reason":"malformed_journal"}'; return 0; fi
-  if process_group_alive "$writer_pgid"; then echo '{"outcome":"writer_alive"}'; return 0; else rc=$?; fi
+  if [[ "$writer_pgid" == "$leader_pid" ]]; then
+    # A detached mutation owns its process group. Descendants may still be
+    # committing after the leader exits, so the whole dedicated group fences
+    # recovery until it is empty.
+    if process_group_alive "$writer_pgid"; then echo '{"outcome":"writer_alive"}'; return 0; else rc=$?; fi
+  else
+    # A non-detached caller can share its shell's long-lived group, so only the
+    # actual mutation leader (PID + start time) is a liveness witness. This
+    # profile waits synchronously for its security(1) and Node helpers; after
+    # the leader exits no commit-capable descendant remains in flight. Fencing
+    # every later member of the shared group mitigates only a low-risk
+    # theoretical orphan while causing a measured fleet-wide retry lockout.
+    if process_identity_alive "$leader_pid" "$leader_start"; then echo '{"outcome":"writer_alive"}'; return 0; else rc=$?; fi
+  fi
   [[ "$rc" -eq 1 ]] || { echo '{"outcome":"writer_alive"}'; return 0; }
   local current="" current_rc=0 current_digest generation marker_write_rc=0
   current=$(kc_read 2>/dev/null) || current_rc=$?
@@ -2257,10 +2197,52 @@ switch_profile_locked() { # <name> <active>; prepare exactly once, then commit
   commit_profile_locked "$name" "$active"
 }
 
+default_switch_bin() {
+	local d cand
+	d="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)" || return 0
+	cand="$d/../../teamlead/bin/flywheel-claude-switch"
+	[[ -x "$cand" ]] && printf '%s' "$cand"
+}
+
+trampoline_atomic_switch() { # <use|next> [target]
+	local mode="$1" target="${2:-}" bin="${FLYWHEEL_CLAUDE_SWITCH_BIN:-}"
+	release_lock
+	unset FLYWHEEL_CLAUDE_LOCK_DELEGATED FLYWHEEL_LEASE_PROOF
+	unset FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED FLYWHEEL_PROFILE_IDENTITY_BYPASS
+	unset FLYWHEEL_ATOMIC_SWITCH_APPLY FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD
+	[[ -n "$bin" ]] || bin="$(default_switch_bin)"
+	if [[ -z "$bin" || ! -x "$bin" ]]; then
+		echo "FLYWHEEL_ATOMIC_SWITCH_RUNTIME_UNAVAILABLE: switch launcher is missing or not executable" >&2
+		echo "Recovery: pnpm --filter flywheel-teamlead build" >&2
+		exit 31
+	fi
+	if [[ "$mode" == "use" ]]; then
+		exec "$bin" use "$target"
+	fi
+	exec "$bin" next
+}
+
+begin_authenticated_switch_audit() { # <requested command> [target]
+	local command="$1" target="${2:-}"
+	if [[ "$DELEGATED_LOCK_ACCEPTED" -ne 1 ]]; then
+		trampoline_atomic_switch "$command" "$target"
+	fi
+	if [[ "${FLYWHEEL_ATOMIC_SWITCH_APPLY:-}" != "1" ]]; then
+		fail_code 46 "delegated profile mutation requires FLYWHEEL_ATOMIC_SWITCH_APPLY=1"
+	fi
+	if [[ "$command" == "use" && "${FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD:-}" == "next" ]]; then
+		AUDIT_DETAILS_JSON='{"selectedBy":"atomic-cli"}'
+		begin_audit next "$target" identity_check_pending
+	else
+		begin_audit "$command" "$target" identity_check_pending
+	fi
+}
+
 use_profile() {
-  local name="$1" active="" rc=0 marker_rc=0
-  acquire_lock
-  active_marker_structural_gate
+	local name="$1" active="" rc=0 marker_rc=0
+	acquire_lock
+	begin_authenticated_switch_audit use "$name"
+	active_marker_structural_gate
   reconcile_after_acquire
   configure_identity_bypass
   lease_fence_or_fail
@@ -2283,8 +2265,9 @@ use_profile() {
 
 next_profile() {
   local active="" profiles=() name rc=0 marker_rc=0
-  acquire_lock
-  active_marker_structural_gate
+	acquire_lock
+	begin_authenticated_switch_audit next ""
+	active_marker_structural_gate
   reconcile_after_acquire
   configure_identity_bypass
   lease_fence_or_fail
@@ -2467,14 +2450,12 @@ trap 'exit 143' TERM
 case "${1:-}" in
   list)    list_profiles ;;
   status)  show_status ;;
-  use)
-    [[ -n "${2:-}" ]] || usage
-    begin_audit use "$2" identity_check_pending
-    use_profile "$2"
-    ;;
-  next)
-    begin_audit next "" identity_check_pending
-    next_profile
+	use)
+		[[ -n "${2:-}" ]] || usage
+		use_profile "$2"
+		;;
+	next)
+		next_profile
     ;;
   capture)
     [[ -n "${2:-}" ]] || usage

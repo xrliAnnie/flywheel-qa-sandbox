@@ -78,29 +78,6 @@ export function formatAccountCapOwnerAssignment(
 	return `<@${ownerId}> 请认领：${reason}`;
 }
 
-/** Structured success payload for the W6 switch digest (see RepairDisposition.notifySuccess). */
-export interface SwitchSuccessNotify {
-	from?: string;
-	to: string;
-	scope?: "5h" | "weekly" | "both";
-	resetAt?: string;
-}
-
-/**
- * W6 success digest — the Annie-facing RESULT line for #flywheel-notify.
- * Deliberately worded differently from the Alerts-channel disposition detail
- * (the bot-facing incident record) so the double-post never reads as a dup.
- * NEVER contains an @-mention.
- */
-export function formatSwitchSuccessDigest(n: SwitchSuccessNotify): string {
-	const arrow = n.from ? `${n.from} → ${n.to}` : `→ ${n.to}`;
-	const parts: string[] = [];
-	if (n.scope) parts.push(`${n.scope === "both" ? "5h+weekly" : n.scope} 到`);
-	if (n.resetAt) parts.push(`reset ${n.resetAt}`);
-	const suffix = parts.length ? `（${parts.join("，")}）` : "";
-	return `🟡 Claude 账号已自动切换 ${arrow}${suffix}。新 session 用新账号；当前卡住的 session 等 reset（v1 不搬）。`;
-}
-
 /**
  * W6 rotation digest — built from the STRUCTURED account_rotation payload the
  * event route forwards (never re-parsed out of the Alerts line — Codex R1#3).

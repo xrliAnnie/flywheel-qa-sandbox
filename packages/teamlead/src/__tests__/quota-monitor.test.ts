@@ -8,8 +8,8 @@ import {
 	type AccountStore,
 	selectNextAccount,
 } from "../account-heal/account-store.js";
+import { formatSwitchNotification } from "../account-heal/account-switch-notification.js";
 import {
-	formatAccountSwitchNotification,
 	formatModelBenchRetryNote,
 	pollOnce,
 	type QuotaMonitorAlert,
@@ -348,8 +348,8 @@ beforeEach(() => {
 });
 
 describe("pollOnce", () => {
-	it("renders the founder-approved copy with emails, every reset, and Fable quota", () => {
-		const body = formatAccountSwitchNotification({
+	it("renders the centralized switch copy with emails, every reset, and Fable quota", () => {
+		const body = formatSwitchNotification({
 			from: {
 				name: "shopping",
 				email: "shopping@example.com",
@@ -368,15 +368,14 @@ describe("pollOnce", () => {
 					fable: { pct: 12, reset: "2026-07-20T15:00:00.000Z" },
 				}).ok,
 			},
-			revive: { revived: 2, pending: 0, loginExpired: 0 },
-			degraded: false,
-			nowMs: NOW,
+			trigger: { kind: "quota", scope: "5h" },
+			panorama: [],
 			timezone: "America/Los_Angeles",
 		});
 
 		expect(body).toBe(
 			[
-				"Claude 已自动切号：**shopping → school**",
+				"Claude 已切号：**shopping → school**（quota:5h）",
 				"",
 				"原账号 **shopping**",
 				"shopping@example.com",
@@ -446,20 +445,20 @@ describe("pollOnce", () => {
 	});
 
 	it("keeps missing quota facts explicit without pane-revive status", () => {
-		const body = formatAccountSwitchNotification({
+		const body = formatSwitchNotification({
 			from: { name: "shopping", email: null, usage: usage(100, 90).ok },
 			to: {
 				name: "school",
 				email: "school@example.com",
 				usage: usage(0, 0, { five: null, seven: null }).ok,
 			},
-			revive: { revived: 2, pending: 1, loginExpired: 1 },
-			degraded: true,
-			nowMs: NOW,
+			trigger: { kind: "quota", scope: "weekly" },
+			panorama: [],
+			headroomDegraded: true,
 			timezone: "America/Los_Angeles",
 		});
 
-		expect(body).toContain("配额读数不完整，已按备用顺序完成切换。");
+		expect(body).toContain("weekly 有粮但 5h 已过 trigger");
 		expect(body).toContain("邮箱暂时未读到");
 		expect(body).toContain("Fable   n/a    n/a    n/a");
 		expect(body).toContain("not started");
@@ -547,12 +546,12 @@ describe("pollOnce", () => {
 		expect(candidates.ranked).toEqual([]);
 		expect(candidates.panorama).toEqual([
 			expect.objectContaining({
-				name: "school",
-				status: expect.stringContaining("model_benched_until"),
-			}),
-			expect.objectContaining({
 				name: "business",
 				status: expect.stringContaining("model_bench_malformed"),
+			}),
+			expect.objectContaining({
+				name: "school",
+				status: expect.stringContaining("model_benched_until"),
 			}),
 		]);
 		expect(candidates.malformedModelBenches).toEqual(["business"]);
@@ -915,11 +914,10 @@ describe("pollOnce", () => {
 		expect(h.scanPanes).toHaveBeenCalledTimes(1);
 		expect(h.switchImpl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				scope: "model",
-				models: ["Fable 5", "Sonnet 5"],
+				trigger: { kind: "model", models: ["Fable 5", "Sonnet 5"] },
 				observedAccount: "shopping",
 				observedGeneration: 4,
-				preferredOrder: ["school", "business"],
+				preferredOrder: ["business", "school"],
 			}),
 		);
 		expect(result.state).toMatchObject({
@@ -935,11 +933,7 @@ describe("pollOnce", () => {
 				trigger: { kind: "model", models: ["Fable 5", "Sonnet 5"] },
 			},
 		});
-		expect(result.state.alertOutbox).toEqual([
-			expect.objectContaining({
-				alert: expect.objectContaining({ kind: "model_cap_switched" }),
-			}),
-		]);
+		expect(result.state.alertOutbox).toEqual([]);
 		expect(h.reviveSnapshot).toHaveBeenCalledTimes(1);
 		expect(h.reviveSnapshot.mock.calls[0]?.[1]).toBe(snapshot);
 		expect(h.reviveSnapshot.mock.calls[0]?.[0].reviveEpoch).toMatchObject({
@@ -1013,14 +1007,20 @@ describe("pollOnce", () => {
 
 		expect(result.outcome).toBe("switched");
 		expect(h.switchImpl).toHaveBeenCalledWith(
-			expect.objectContaining({ scope: "5h", resetAt: FIVE_RESET }),
+			expect.objectContaining({
+				trigger: { kind: "quota", scope: "5h", resetAt: FIVE_RESET },
+			}),
 		);
 		expect(h.switchImpl).not.toHaveBeenCalledWith(
-			expect.objectContaining({ scope: "model" }),
+			expect.objectContaining({
+				trigger: expect.objectContaining({ kind: "model" }),
+			}),
 		);
 		expect(result.state.pendingDetection).toBeNull();
 		expect(result.state.alertOutbox).toEqual([]);
-		expect(h.alerts.at(-1)?.kind).toBe("account_switched");
+		expect(h.alerts.some((alert) => alert.kind === "account_switched")).toBe(
+			false,
+		);
 		expect(h.reviveSnapshot.mock.calls[0]?.[1]).toBe(snapshot);
 	});
 
@@ -1174,8 +1174,17 @@ describe("pollOnce", () => {
 		expect(noTarget?.body).not.toContain("quota recovered");
 	});
 
-	it("fails closed before candidate or switch I/O when the durable model-switch outbox has no capacity", async () => {
+	it("does not let the unrelated quota alert outbox block an atomic model switch notification", async () => {
 		h.scanPanes.mockResolvedValueOnce(paneSnapshot(["Fable 5"]));
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "switched",
+			from: "shopping",
+			to: "school",
+			generation: 5,
+			benchUntilByModel: {
+				"Fable 5": new Date(NOW + 30 * 60_000).toISOString(),
+			},
+		});
 		h.deps.state = {
 			...emptyQuotaMonitorState(4),
 			alertOutbox: Array.from({ length: 64 }, (_, index) => ({
@@ -1194,15 +1203,15 @@ describe("pollOnce", () => {
 
 		const result = await pollOnce(h.deps);
 
-		expect(result.outcome).toBe("error");
-		expect(h.verifyCandidate).not.toHaveBeenCalled();
-		expect(h.switchImpl).not.toHaveBeenCalled();
-		expect(h.alerts.at(-1)).toMatchObject({
-			kind: "quota_monitor_down",
-			severity: "severe",
-			body: expect.stringContaining("outbox=64/64"),
-		});
-		expect(result.state.pendingDetection).not.toBeNull();
+		expect(result.outcome).toBe("switched");
+		expect(h.verifyCandidate).toHaveBeenCalled();
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				trigger: { kind: "model", models: ["Fable 5"] },
+			}),
+		);
+		expect(result.state.pendingDetection).toBeNull();
+		expect(result.state.alertOutbox).toHaveLength(64);
 	});
 
 	it("wakes on confirmation independently and passes the exact same snapshot to revive and confirmation", async () => {
@@ -1360,21 +1369,20 @@ describe("pollOnce", () => {
 
 		expect(result.outcome).toBe("switched");
 		expect(h.verifyCandidate.mock.calls.map(([name]) => name)).toEqual([
-			"school",
 			"business",
+			"school",
 		]);
 		expect(h.switchImpl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				scope: "weekly",
-				resetAt: WEEK_RESET,
-				preferredOrder: ["business", "school"],
+				trigger: { kind: "quota", scope: "weekly", resetAt: WEEK_RESET },
+				preferredOrder: ["business"],
 				verifiedAt: new Date(NOW).toISOString(),
 			}),
 		);
 		expect(h.observations.map(({ name }) => name)).toEqual([
 			"shopping",
-			"school",
 			"business",
+			"school",
 		]);
 		expect(result.state.reviveEpoch).toMatchObject({
 			open: true,
@@ -1382,6 +1390,43 @@ describe("pollOnce", () => {
 			generation: 5,
 			expiresAt: Date.parse(WEEK_RESET) + 30 * 60_000,
 		});
+	});
+
+	it("uses the ledger reset for a null live reset and logs every candidate decision input", async () => {
+		const nextStore = store();
+		nextStore.accounts.find((entry) => entry.name === "school")!.weeklyResetAt =
+			"2026-07-20T14:00:00.000Z";
+		h.setStore(nextStore);
+		h.usages.set("secret-shopping", usage(30, 100));
+		h.usages.set("secret-school", usage(10, 20, { seven: null }));
+		h.usages.set(
+			"secret-business",
+			usage(15, 20, { seven: "2026-07-19T14:00:00.000Z" }),
+		);
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({ preferredOrder: ["business", "school"] }),
+		);
+		const line = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([entry]) => entry)
+			.find((entry) => entry.includes('"event":"quota_switch_decision"'));
+		expect(JSON.parse(line ?? "{}").candidates).toEqual([
+			{
+				name: "business",
+				resetsAt: "2026-07-19T14:00:00.000Z",
+				fiveHPct: 15,
+			},
+			{
+				name: "school",
+				resetsAt: "2026-07-20T14:00:00.000Z",
+				fiveHPct: 10,
+			},
+		]);
+		expect(line).not.toContain("secret-");
 	});
 
 	it("ranks healthy candidates ahead of low-headroom candidates even when the latter reset sooner", async () => {
@@ -1400,13 +1445,13 @@ describe("pollOnce", () => {
 		expect(result.outcome).toBe("switched");
 		expect(h.switchImpl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				preferredOrder: ["business", "school"],
+				preferredOrder: ["business"],
 				quotaPreverified: true,
 			}),
 		);
 	});
 
-	it("uses store-usable unverifiable candidates only when degraded switching is enabled", async () => {
+	it("never promotes unverifiable candidates through the legacy degraded-switch flag", async () => {
 		const nextStore = store();
 		nextStore.accounts.find((entry) => entry.name === "school")!.weeklyResetAt =
 			"2026-07-21T14:00:00.000Z";
@@ -1421,14 +1466,9 @@ describe("pollOnce", () => {
 
 		const result = await pollOnce(h.deps);
 
-		expect(result.outcome).toBe("switched");
-		expect(h.switchImpl).toHaveBeenCalledWith(
-			expect.objectContaining({
-				preferredOrder: ["business", "school"],
-				quotaPreverified: false,
-			}),
-		);
-		expect(h.alerts.at(-1)?.kind).toBe("account_switch_degraded");
+		expect(result.outcome).toBe("no_target");
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts.at(-1)?.kind).toBe("quota_no_target");
 	});
 
 	it("keeps degraded switching disabled by default", async () => {
@@ -1441,7 +1481,7 @@ describe("pollOnce", () => {
 		expect(h.switchImpl).not.toHaveBeenCalled();
 	});
 
-	it("preserves degraded execution failures as account_switch_failed rather than no_target", async () => {
+	it("does not invoke the executor for unverifiable candidates even when degraded switching is configured", async () => {
 		h.usages.set("secret-shopping", usage(95, 20));
 		h.usages.set("secret-school", { error: "network" });
 		h.usages.set("secret-business", { error: "network" });
@@ -1454,12 +1494,9 @@ describe("pollOnce", () => {
 
 		const result = await pollOnce(h.deps);
 
-		expect(result.outcome).toBe("switch_failed");
-		expect(h.alerts.at(-1)?.kind).toBe("account_switch_failed");
-		expect(h.alerts.at(-1)?.body).toContain("degraded=true");
-		expect(h.alerts.some((alert) => alert.kind === "quota_no_target")).toBe(
-			false,
-		);
+		expect(result.outcome).toBe("no_target");
+		expect(h.switchImpl).not.toHaveBeenCalled();
+		expect(h.alerts.at(-1)?.kind).toBe("quota_no_target");
 	});
 
 	it("maps a degraded no-account result back to no_target instead of an execution failure", async () => {
@@ -1657,18 +1694,19 @@ describe("pollOnce", () => {
 		expect(h.switchImpl).not.toHaveBeenCalled();
 	});
 
-	it("persists switch ownership before revive, then alerts and refreshes the new active", async () => {
+	it("persists switch ownership and refreshes the new active without a caller-side success alert", async () => {
 		h.usages.set("secret-shopping", usage(95, 20));
 		h.switchImpl.mockImplementationOnce(async (input) => {
-			h.setIdentity("school", 5);
+			const selected = input.preferredOrder?.[0] ?? "school";
+			h.setIdentity(selected, 5);
 			const next = store();
 			next.generation = 5;
-			next.activeAccount = "school";
+			next.activeAccount = selected;
 			h.setStore(next);
 			return {
 				outcome: "switched",
 				from: "shopping",
-				to: input.preferredOrder?.[0] ?? "school",
+				to: selected,
 				generation: 5,
 			};
 		});
@@ -1678,22 +1716,27 @@ describe("pollOnce", () => {
 		expect(result.outcome).toBe("switched");
 		const firstSwitchPersist = h.events.findIndex((e) => e === "persist:0");
 		const revive = h.events.lastIndexOf("revive");
-		const alert = h.events.indexOf("alert:account_switched");
-		const newPoll = h.events.lastIndexOf("fetch:school");
+		const newPoll = h.events.lastIndexOf("fetch:business");
 		expect(firstSwitchPersist).toBeGreaterThanOrEqual(0);
 		expect(firstSwitchPersist).toBeLessThan(revive);
-		expect(revive).toBeLessThan(alert);
-		expect(alert).toBeLessThan(newPoll);
-		expect(h.alerts.at(-1)?.body).not.toMatch(
-			/切号时|继续指令|仍在等待|已恢复/,
+		expect(revive).toBeLessThan(newPoll);
+		expect(h.alerts.some((alert) => alert.kind === "account_switched")).toBe(
+			false,
 		);
 		expect(h.readPoolIdentity.mock.calls.map(([name]) => name)).toEqual([
 			"shopping",
+			"business",
 			"school",
 		]);
-		expect(h.alerts.at(-1)?.body).toContain("real-shopping@identity.test");
-		expect(h.alerts.at(-1)?.body).toContain("real-school@identity.test");
-		expect(h.alerts.at(-1)?.body).not.toContain("revived=");
+		expect(h.switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				trigger: { kind: "quota", scope: "5h", resetAt: FIVE_RESET },
+				notificationContext: expect.objectContaining({
+					identityByName: expect.any(Map),
+					usageByName: expect.any(Map),
+				}),
+			}),
+		);
 	});
 
 	it("maps typed switch exhaustion and environment failures to account_switch_failed", async () => {
@@ -2029,7 +2072,7 @@ describe("pollOnce", () => {
 		expect(JSON.parse(lines[0] ?? "{}")).toMatchObject({
 			event: "quota_poll",
 			outcome: "no_target",
-			panorama: ["school:quota_exhausted", "business:usage_network"],
+			panorama: ["business:usage_network", "school:quota_exhausted"],
 			delivery: [
 				{
 					kind: "quota_no_target",
@@ -2054,8 +2097,7 @@ describe("pollOnce", () => {
 		expect(result.outcome).toBe("switched");
 		expect(h.switchImpl).toHaveBeenCalledWith(
 			expect.objectContaining({
-				scope: "5h",
-				resetAt: FIVE_RESET,
+				trigger: { kind: "quota", scope: "5h", resetAt: FIVE_RESET },
 				preferredOrder: ["school"],
 				quotaPreverified: true,
 			}),
@@ -2065,8 +2107,8 @@ describe("pollOnce", () => {
 			.mock.calls.map(([entry]) => entry)
 			.find((entry) => entry.includes('"event":"quota_poll"'));
 		expect(JSON.parse(line ?? "{}").panorama).toEqual([
-			"school:qualified",
 			"business:quota_exhausted",
+			"school:qualified",
 		]);
 	});
 
@@ -2093,10 +2135,10 @@ describe("pollOnce", () => {
 		]);
 	});
 
-	it("ranks a candidate whose weekly window has not opened ahead of one that resets soonest", async () => {
+	it("ranks a candidate with an unknown weekly reset after one with a dated reset", async () => {
 		h.usages.set("secret-shopping", usage(95, 20));
-		// `school` sorts first by config order, so only a real -Infinity ranking for
-		// `business` can put the unopened weekly window in front of it.
+		// `business` has neither a live nor ledger reset, so its unknown reset must
+		// remain behind `school`'s dated reset.
 		h.usages.set(
 			"secret-school",
 			usage(10, 20, { seven: "2026-07-19T14:00:00.000Z" }),
@@ -2107,7 +2149,7 @@ describe("pollOnce", () => {
 
 		expect(result.outcome).toBe("switched");
 		expect(h.switchImpl).toHaveBeenCalledWith(
-			expect.objectContaining({ preferredOrder: ["business", "school"] }),
+			expect.objectContaining({ preferredOrder: ["school", "business"] }),
 		);
 	});
 
@@ -2123,19 +2165,12 @@ describe("pollOnce", () => {
 			}
 			return { fresh: "refreshed" as const, expiresAt: NOW + 3_600_000 };
 		});
-		// degradedSwitch consumes the `unverifiable` class; if the reason suffix had
-		// demoted school to `ineligible`, this fallback would find no candidate.
 		h.deps.config = loadedConfig({ degradedSwitch: true });
 
 		const result = await pollOnce(h.deps);
 
-		expect(result.outcome).toBe("switched");
-		expect(h.switchImpl).toHaveBeenCalledWith(
-			expect.objectContaining({
-				preferredOrder: ["school"],
-				quotaPreverified: false,
-			}),
-		);
+		expect(result.outcome).toBe("no_target");
+		expect(h.switchImpl).not.toHaveBeenCalled();
 		const line = vi
 			.mocked(h.deps.log)
 			.mock.calls.map(([entry]) => entry)

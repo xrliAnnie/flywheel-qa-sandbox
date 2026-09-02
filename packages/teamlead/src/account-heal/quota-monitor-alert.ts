@@ -40,6 +40,7 @@ export interface QuotaMonitorAlertOptions {
 	binPath?: string;
 	execFile?: ExecFileFn;
 	project?: string;
+	env?: NodeJS.ProcessEnv;
 }
 
 type RoutingPolicy = {
@@ -81,6 +82,7 @@ const ROUTING = {
 	account_switch_failed: { mention: false, severe: false },
 	quota_revive_stuck: { mention: false, severe: false },
 	quota_monitor_down: { mention: false, severe: false },
+	quota_guard_bypassed: { mention: true, severe: false },
 } satisfies Record<QuotaMonitorAlertKind, RoutingPolicy>;
 
 const STRICT_RESULTS = new Set<StrictDeliveryResult>([
@@ -91,9 +93,11 @@ const STRICT_RESULTS = new Set<StrictDeliveryResult>([
 	"config_error",
 ]);
 
-export function defaultLeadAlertBinPath(): string {
+export function defaultLeadAlertBinPath(
+	env: NodeJS.ProcessEnv = process.env,
+): string {
 	return (
-		process.env.FLYWHEEL_LEAD_ALERT_BIN ??
+		env.FLYWHEEL_LEAD_ALERT_BIN ??
 		resolve(
 			dirname(fileURLToPath(import.meta.url)),
 			"../../../../scripts/lead-alert.sh",
@@ -137,10 +141,10 @@ async function attemptDelivery(
  * or whitespace-only string must not suppress the fallback (and would in turn be
  * dropped by the falsy check in `alertArgs`, mentioning nobody).
  */
-function resolveMentionUser(): string | undefined {
+function resolveMentionUser(env: NodeJS.ProcessEnv): string | undefined {
 	for (const candidate of [
-		process.env.FLYWHEEL_QUOTA_ALERT_MENTION_USER,
-		process.env.FLYWHEEL_FOUNDER_USER_ID,
+		env.FLYWHEEL_QUOTA_ALERT_MENTION_USER,
+		env.FLYWHEEL_FOUNDER_USER_ID,
 	]) {
 		const trimmed = candidate?.trim();
 		if (trimmed) return trimmed;
@@ -182,7 +186,8 @@ export async function sendQuotaMonitorAlert(
 	opts: QuotaMonitorAlertOptions = {},
 ): Promise<DeliveryReport> {
 	const exec = opts.execFile ?? (execFileAsync as ExecFileFn);
-	const binPath = opts.binPath ?? defaultLeadAlertBinPath();
+	const effectiveEnv = { ...process.env, ...opts.env };
+	const binPath = opts.binPath ?? defaultLeadAlertBinPath(effectiveEnv);
 	const project = opts.project ?? "flywheel";
 	const policy =
 		alert.kind === "account_switch_failed" &&
@@ -194,20 +199,22 @@ export async function sendQuotaMonitorAlert(
 					mention: true,
 					severe: true,
 				});
-	const mentionUser = policy.mention ? resolveMentionUser() : undefined;
+	const mentionUser = policy.mention
+		? resolveMentionUser(effectiveEnv)
+		: undefined;
 	const notifyChannel =
 		policy.primaryChannel === "notify"
-			? process.env.FLYWHEEL_NOTIFY_CHANNEL?.trim()
+			? effectiveEnv.FLYWHEEL_NOTIFY_CHANNEL?.trim()
 			: undefined;
 	if (policy.primaryChannel === "notify" && !notifyChannel) {
 		return { primary: "config_error" };
 	}
 	const primaryEnv = notifyChannel
 		? {
-				...process.env,
+				...effectiveEnv,
 				FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: notifyChannel,
 			}
-		: undefined;
+		: effectiveEnv;
 	const primary = await attemptDelivery(
 		exec,
 		binPath,
@@ -221,8 +228,8 @@ export async function sendQuotaMonitorAlert(
 		primaryEnv,
 	);
 
-	const severeChannel = process.env.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
-	const unifiedChannel = process.env.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
+	const severeChannel = effectiveEnv.FLYWHEEL_QUOTA_ALERT_SEVERE_CHANNEL_ID;
+	const unifiedChannel = effectiveEnv.FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID;
 	if (
 		!policy.severe ||
 		!severeChannel ||
@@ -236,7 +243,7 @@ export async function sendQuotaMonitorAlert(
 		exec,
 		binPath,
 		alertArgs(alert, project, mentionUser, `${alert.signature}-core`),
-		{ ...process.env, FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: severeChannel },
+		{ ...effectiveEnv, FLYWHEEL_UNIFIED_ALERT_CHANNEL_ID: severeChannel },
 	);
 	return { primary, secondary };
 }

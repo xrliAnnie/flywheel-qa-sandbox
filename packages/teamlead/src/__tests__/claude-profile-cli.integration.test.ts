@@ -9,6 +9,7 @@
  * The security tool is still faked (state file + argv log) — no Keychain.
  * A short FLYWHEEL_CLAUDE_LOCK_TIMEOUT_MS makes a regression fail in ~2s.
  */
+import { execFile } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -17,9 +18,11 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readStore, writeStore } from "../account-heal/account-store.js";
 import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
@@ -34,6 +37,14 @@ const PROFILE_BIN = join(
 	"bin",
 	"flywheel-claude-profile",
 );
+const SWITCH_BIN = join(
+	dirname(fileURLToPath(import.meta.url)),
+	"..",
+	"..",
+	"bin",
+	"flywheel-claude-switch",
+);
+const execFileAsync = promisify(execFile);
 
 const SECRET_A =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-A","refreshToken":"rA"}}';
@@ -41,6 +52,8 @@ const SECRET_A_REFRESHED =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-A-REFRESHED","refreshToken":"rAR"}}';
 const SECRET_B =
 	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-B","refreshToken":"rB"}}';
+const SECRET_C =
+	'{"claudeAiOauth":{"accessToken":"sk-ant-oat01-INT-C","refreshToken":"rC"}}';
 
 const STUB = `#!/usr/bin/env bash
 set -u
@@ -77,11 +90,24 @@ const ENV_KEYS = [
 	// FLY-871 — the real `use` now runs the freshness guard; inject a stub so the
 	// real seam doesn't make a live OAuth call with dummy pool credentials.
 	"FLYWHEEL_CLAUDE_FRESHNESS_BIN",
+	"FLY" + "WHEEL_CLAUDE_FRESHNESS_BYPASS",
+	"FLY" + "WHEEL_CLAUDE_QUOTA_BYPASS",
 	// FLY-1182 — isolate identity probing + audit from real machine state.
 	"FLYWHEEL_PROFILE_CURL_BIN",
 	"FLYWHEEL_PROFILE_IDENTITY_ENDPOINT",
 	"FLYWHEEL_PROFILE_AUDIT_LOG",
 	"FAKE_IDENTITY_CURL_ARGV_LOG",
+	// FLY-2240 — isolate the real public launcher, selector network probes, and
+	// notification delivery used by the cross-process acceptance test below.
+	"FLYWHEEL_CLAUDE_SWITCH_BIN",
+	"FLYWHEEL_CLAUDE_PROFILE_BIN",
+	"FLYWHEEL_CLAUDE_OAUTH_ENDPOINT",
+	"FLYWHEEL_QUOTA_API_BASE",
+	"FLYWHEEL_QUOTA_MONITOR_CONFIG",
+	"FLYWHEEL_LEAD_ALERT_BIN",
+	"FLYWHEEL_NOTIFY_CHANNEL",
+	"FLYWHEEL_STATE_DIR",
+	"PUBLIC_ALERT_LOG",
 ] as const;
 
 // FLY-865: the target account's display identity, snapshotted in the pool.
@@ -99,12 +125,227 @@ const PERSONAL_IDENTITY = {
 	organizationName: "Personal Org",
 	displayName: "Personal",
 };
+const BUSINESS_IDENTITY = {
+	accountUuid: "uuid-business",
+	emailAddress: "business@example.com",
+	organizationUuid: "org-business",
+	organizationName: "Business Org",
+	displayName: "Business",
+};
+
+interface ProbeAccount {
+	refreshToken: string;
+	accessToken: string;
+	rotatedAccessToken: string;
+	rotatedRefreshToken: string;
+	fiveH: number;
+	sevenD: number;
+	fiveHResetAt: string | null;
+	sevenDResetAt: string | null;
+	fresh?: boolean;
+	usageAvailable?: boolean;
+}
+
+async function startProbeServer(accounts: readonly ProbeAccount[]): Promise<{
+	baseUrl: string;
+	close: () => Promise<void>;
+}> {
+	const server = createServer((request, response) => {
+		response.setHeader("content-type", "application/json");
+		if (request.method === "POST" && request.url === "/oauth/token") {
+			let raw = "";
+			request.setEncoding("utf8");
+			request.on("data", (chunk) => {
+				raw += chunk;
+			});
+			request.on("end", () => {
+				let refreshToken = "";
+				try {
+					refreshToken = String(
+						(JSON.parse(raw) as { refresh_token?: unknown }).refresh_token ??
+							"",
+					);
+				} catch {
+					// malformed requests are refused below
+				}
+				const account = accounts.find(
+					(candidate) =>
+						candidate.refreshToken === refreshToken ||
+						candidate.rotatedRefreshToken === refreshToken,
+				);
+				if (account === undefined || account.fresh === false) {
+					response.statusCode = 400;
+					response.end("{}");
+					return;
+				}
+				response.end(
+					JSON.stringify({
+						access_token: account.rotatedAccessToken,
+						refresh_token: account.rotatedRefreshToken,
+						expires_in: 3600,
+					}),
+				);
+			});
+			return;
+		}
+		if (request.method === "GET" && request.url === "/api/oauth/usage") {
+			const token =
+				request.headers.authorization?.replace(/^Bearer /, "") ?? "";
+			const account = accounts.find(
+				(candidate) =>
+					candidate.accessToken === token ||
+					candidate.rotatedAccessToken === token,
+			);
+			if (account === undefined || account.usageAvailable === false) {
+				response.statusCode = 503;
+				response.end("{}");
+				return;
+			}
+			response.end(
+				JSON.stringify({
+					five_hour: {
+						utilization: account.fiveH,
+						resets_at: account.fiveHResetAt,
+					},
+					seven_day: {
+						utilization: account.sevenD,
+						resets_at: account.sevenDResetAt,
+					},
+				}),
+			);
+			return;
+		}
+		response.statusCode = 404;
+		response.end("{}");
+	});
+	await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+	const address = server.address();
+	if (address === null || typeof address === "string") {
+		throw new Error("test probe server did not bind a TCP port");
+	}
+	return {
+		baseUrl: `http://127.0.0.1:${address.port}`,
+		close: () =>
+			new Promise<void>((resolve, reject) =>
+				server.close((error) => (error ? reject(error) : resolve())),
+			),
+	};
+}
 
 let tmp: string;
 let lockPath: string;
 let storePath: string;
 let claudeJson: string;
 let saved: Record<string, string | undefined>;
+
+function schoolProbe(overrides: Partial<ProbeAccount> = {}): ProbeAccount {
+	return {
+		refreshToken: "rB",
+		accessToken: "sk-ant-oat01-INT-B",
+		rotatedAccessToken: "sk-ant-oat01-INT-B-ROTATED",
+		rotatedRefreshToken: "rB-rotated",
+		fiveH: 12,
+		sevenD: 34,
+		fiveHResetAt: "2026-09-01T22:00:00.000Z",
+		sevenDResetAt: "2026-09-03T20:00:00.000Z",
+		...overrides,
+	};
+}
+
+function configurePublicRuntime(
+	baseUrl: string,
+	opts: { notifyFromEnvFile?: boolean } = {},
+): string {
+	const alertLog = join(tmp, "public-alert.log");
+	const alertBin = join(tmp, "fake-public-lead-alert");
+	writeFileSync(
+		alertBin,
+		"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PUBLIC_ALERT_LOG\"\nprintf 'sent\\n'\n",
+		{ mode: 0o755 },
+	);
+	writeFileSync(alertLog, "");
+	process.env.FLYWHEEL_CLAUDE_SWITCH_BIN = SWITCH_BIN;
+	process.env.FLYWHEEL_CLAUDE_PROFILE_BIN = PROFILE_BIN;
+	process.env.FLYWHEEL_CLAUDE_OAUTH_ENDPOINT = `${baseUrl}/oauth/token`;
+	process.env.FLYWHEEL_QUOTA_API_BASE = baseUrl;
+	process.env.FLYWHEEL_QUOTA_MONITOR_CONFIG = join(tmp, "missing-config.json");
+	process.env.FLYWHEEL_LEAD_ALERT_BIN = alertBin;
+	process.env.FLYWHEEL_STATE_DIR = tmp;
+	process.env.PUBLIC_ALERT_LOG = alertLog;
+	if (opts.notifyFromEnvFile === true) {
+		delete process.env.FLYWHEEL_NOTIFY_CHANNEL;
+		writeFileSync(
+			join(tmp, ".env"),
+			"FLYWHEEL_NOTIFY_CHANNEL=notification-test\n",
+		);
+	} else {
+		process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-test";
+	}
+	return alertLog;
+}
+
+function seedBusiness(): void {
+	const pool = process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string;
+	mkdirSync(join(pool, "business"), { recursive: true });
+	writeFileSync(join(pool, "business", ".credentials.json"), SECRET_C, {
+		mode: 0o600,
+	});
+	writeFileSync(
+		join(pool, "business", "identity-anchor.json"),
+		JSON.stringify({
+			accountUuid: "uuid-business",
+			email: "business@example.com",
+			anchoredAt: "2026-07-16T00:00:00.000Z",
+			anchoredBy: "test",
+			confirmedBy: "test-evidence",
+		}),
+		{ mode: 0o600 },
+	);
+	writeFileSync(
+		join(pool, "business", "oauthAccount.json"),
+		JSON.stringify(BUSINESS_IDENTITY),
+		{ mode: 0o600 },
+	);
+	const store = readStore(storePath);
+	store.accounts.push({
+		name: "business",
+		quotaExhaustedUntil: null,
+		weeklyResetAt: null,
+	});
+	writeStore(store, storePath);
+}
+
+async function runPublicSwitch(args: string[]): Promise<{
+	stdout: string;
+	stderr: string;
+}> {
+	return execFileAsync(PROFILE_BIN, args, {
+		env: process.env,
+		timeout: 25_000,
+	});
+}
+
+async function runPublicSwitchFailure(args: string[]): Promise<{
+	code: number | string | undefined;
+	stdout: string;
+	stderr: string;
+}> {
+	try {
+		await runPublicSwitch(args);
+	} catch (error) {
+		const failure = error as {
+			code?: number | string;
+			stdout?: string;
+			stderr?: string;
+		};
+		return {
+			code: failure.code,
+			stdout: String(failure.stdout ?? ""),
+			stderr: String(failure.stderr ?? ""),
+		};
+	}
+	throw new Error(`expected public switch to fail: ${args.join(" ")}`);
+}
 
 beforeEach(() => {
 	tmp = mkdtempSync(join(tmpdir(), "fly852-seam-"));
@@ -187,6 +428,7 @@ case "$cfg" in
   *sk-ant-oat01-INT-A-REFRESHED*) printf '%s' '{"account":{"uuid":"uuid-personal","email":"personal@example.com"}}' ;;
   *sk-ant-oat01-INT-A*) printf '%s' '{"account":{"uuid":"uuid-personal","email":"personal@example.com"}}' ;;
   *sk-ant-oat01-INT-B*) printf '%s' '{"account":{"uuid":"uuid-school","email":"school@example.com"}}' ;;
+  *sk-ant-oat01-INT-C*) printf '%s' '{"account":{"uuid":"uuid-business","email":"business@example.com"}}' ;;
   *) exit 22 ;;
 esac
 `,
@@ -243,8 +485,270 @@ afterEach(() => {
 });
 
 describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL script)", () => {
+	it("public use routes through the built atomic executor and delivers its switch notification", async () => {
+		const alertLog = join(tmp, "public-alert.log");
+		const alertBin = join(tmp, "fake-public-lead-alert");
+		writeFileSync(
+			alertBin,
+			"#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$PUBLIC_ALERT_LOG\"\nprintf 'sent\\n'\n",
+			{ mode: 0o755 },
+		);
+		writeFileSync(alertLog, "");
+
+		const server = createServer((request, response) => {
+			response.setHeader("content-type", "application/json");
+			if (request.method === "POST" && request.url === "/oauth/token") {
+				response.end(
+					JSON.stringify({
+						access_token: "sk-ant-oat01-INT-B-ROTATED",
+						refresh_token: "rB-rotated",
+						expires_in: 3600,
+					}),
+				);
+				return;
+			}
+			if (request.method === "GET" && request.url === "/api/oauth/usage") {
+				response.end(
+					JSON.stringify({
+						five_hour: {
+							utilization: 12,
+							resets_at: "2026-09-01T22:00:00.000Z",
+						},
+						seven_day: {
+							utilization: 34,
+							resets_at: "2026-09-02T20:00:00.000Z",
+						},
+					}),
+				);
+				return;
+			}
+			response.statusCode = 404;
+			response.end("{}");
+		});
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", resolve),
+		);
+		try {
+			const address = server.address();
+			if (address === null || typeof address === "string") {
+				throw new Error("test probe server did not bind a TCP port");
+			}
+			const baseUrl = `http://127.0.0.1:${address.port}`;
+			process.env.FLYWHEEL_CLAUDE_SWITCH_BIN = SWITCH_BIN;
+			process.env.FLYWHEEL_CLAUDE_PROFILE_BIN = PROFILE_BIN;
+			process.env.FLYWHEEL_CLAUDE_OAUTH_ENDPOINT = `${baseUrl}/oauth/token`;
+			process.env.FLYWHEEL_QUOTA_API_BASE = baseUrl;
+			process.env.FLYWHEEL_QUOTA_MONITOR_CONFIG = join(
+				tmp,
+				"missing-config.json",
+			);
+			process.env.FLYWHEEL_LEAD_ALERT_BIN = alertBin;
+			process.env.FLYWHEEL_NOTIFY_CHANNEL = "notification-test";
+			process.env.FLYWHEEL_STATE_DIR = tmp;
+			process.env.PUBLIC_ALERT_LOG = alertLog;
+
+			const { stdout, stderr } = await execFileAsync(
+				PROFILE_BIN,
+				["use", "school"],
+				{
+					env: process.env,
+					timeout: 15_000,
+				},
+			);
+
+			expect(stdout).toContain(
+				"Switched machine Claude account: personal → school",
+			);
+			expect(stderr).not.toContain("NOTIFICATION_PENDING");
+			expect(
+				readFileSync(process.env.FAKE_SEC_STATE as string, "utf8"),
+			).toContain("INT-B-ROTATED");
+			expect(readStore(storePath)).toMatchObject({
+				activeAccount: "school",
+				generation: 2,
+				pendingSwitchNotifications: [],
+			});
+			const delivered = readFileSync(alertLog, "utf8");
+			expect(delivered).toContain("--kind account_switched");
+			expect(delivered).toContain("manual:use");
+			expect(delivered).toContain("personal");
+			expect(delivered).toContain("school");
+		} finally {
+			await new Promise<void>((resolve, reject) =>
+				server.close((error) => (error ? reject(error) : resolve())),
+			);
+		}
+	}, 20_000);
+
+	it("public next picks the live candidate with the earliest weekly reset", async () => {
+		seedBusiness();
+		const probes = await startProbeServer([
+			schoolProbe(),
+			{
+				refreshToken: "rC",
+				accessToken: "sk-ant-oat01-INT-C",
+				rotatedAccessToken: "sk-ant-oat01-INT-C-ROTATED",
+				rotatedRefreshToken: "rC-rotated",
+				fiveH: 25,
+				sevenD: 40,
+				fiveHResetAt: "2026-09-01T23:00:00.000Z",
+				sevenDResetAt: "2026-09-02T20:00:00.000Z",
+			},
+		]);
+		try {
+			const alertLog = configurePublicRuntime(probes.baseUrl);
+			const { stdout } = await runPublicSwitch(["next"]);
+
+			expect(stdout).toContain(
+				"Switched machine Claude account: personal → business",
+			);
+			expect(
+				readFileSync(process.env.FAKE_SEC_STATE as string, "utf8"),
+			).toContain("INT-C-ROTATED");
+			expect(readStore(storePath).activeAccount).toBe("business");
+			const delivered = readFileSync(alertLog, "utf8");
+			expect(delivered).toContain("--kind account_switched");
+			expect(delivered).toContain("manual:next");
+		} finally {
+			await probes.close();
+		}
+	}, 20_000);
+
+	it("public explicit use bypasses only cooldown while retaining live guards", async () => {
+		const store = readStore(storePath);
+		const school = store.accounts.find((account) => account.name === "school");
+		if (school === undefined) throw new Error("school fixture missing");
+		school.switchCooldownUntil = "2099-01-01T00:00:00.000Z";
+		writeStore(store, storePath);
+		const probes = await startProbeServer([schoolProbe()]);
+		try {
+			configurePublicRuntime(probes.baseUrl);
+			const { stdout } = await runPublicSwitch(["use", "school"]);
+
+			expect(stdout).toContain(
+				"Switched machine Claude account: personal → school",
+			);
+			expect(readStore(storePath).activeAccount).toBe("school");
+		} finally {
+			await probes.close();
+		}
+	}, 20_000);
+
+	it("retired public bypass names cannot admit a stale or quota-unverified target", async () => {
+		const pool = process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string;
+		writeFileSync(
+			join(pool, "school", ".credentials.json"),
+			JSON.stringify({
+				claudeAiOauth: {
+					accessToken: "sk-ant-oat01-INT-B",
+					refreshToken: "rB",
+					expiresAt: Date.now() + 3_600_000,
+				},
+			}),
+			{ mode: 0o600 },
+		);
+		const probes = await startProbeServer([
+			schoolProbe({ fresh: false, usageAvailable: false }),
+		]);
+		try {
+			const alertLog = configurePublicRuntime(probes.baseUrl);
+			process.env["FLY" + "WHEEL_CLAUDE_FRESHNESS_BYPASS"] = "1";
+			process.env["FLY" + "WHEEL_CLAUDE_QUOTA_BYPASS"] = "1";
+			const failure = await runPublicSwitchFailure(["use", "school"]);
+
+			expect(failure.code).toBe(32);
+			expect(failure.stderr).toContain("FLYWHEEL_MANUAL_NO_TARGET");
+			expect(readStore(storePath).activeAccount).toBe("personal");
+			const delivered = readFileSync(alertLog, "utf8");
+			expect(delivered).not.toContain("--kind quota_guard_bypassed");
+			expect(delivered).not.toContain("--kind account_switched");
+		} finally {
+			await probes.close();
+		}
+	}, 20_000);
+
+	it("public stale-marker handling reconciles once and then switches atomically", async () => {
+		seedBusiness();
+		writeFileSync(
+			join(process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string, ".active"),
+			"business",
+			{ mode: 0o600 },
+		);
+		const probes = await startProbeServer([schoolProbe()]);
+		try {
+			configurePublicRuntime(probes.baseUrl);
+			const { stdout } = await runPublicSwitch(["use", "school"]);
+
+			expect(stdout).toContain(
+				"Switched machine Claude account: personal → school",
+			);
+			expect(
+				readFileSync(
+					join(process.env.FLYWHEEL_CLAUDE_PROFILES_DIR as string, ".active"),
+					"utf8",
+				),
+			).toBe("school");
+			const audit = readFileSync(
+				process.env.FLYWHEEL_PROFILE_AUDIT_LOG as string,
+				"utf8",
+			)
+				.trim()
+				.split("\n")
+				.map((line) => JSON.parse(line) as { probeSummary?: string });
+			expect(
+				audit.filter(
+					(record) => record.probeSummary === "reconciled_business_to_personal",
+				),
+			).toHaveLength(1);
+		} finally {
+			await probes.close();
+		}
+	}, 30_000);
+
+	it("public all-dead selection alerts and leaves the machine account untouched", async () => {
+		const probes = await startProbeServer([schoolProbe({ fresh: false })]);
+		try {
+			const alertLog = configurePublicRuntime(probes.baseUrl);
+			const failure = await runPublicSwitchFailure(["next"]);
+
+			expect(failure.code).toBe(32);
+			expect(failure.stderr).toContain("FLYWHEEL_MANUAL_NO_TARGET");
+			expect(readFileSync(process.env.FAKE_SEC_STATE as string, "utf8")).toBe(
+				SECRET_A,
+			);
+			expect(readStore(storePath).activeAccount).toBe("personal");
+			expect(readFileSync(alertLog, "utf8")).toContain(
+				"--kind quota_no_target",
+			);
+		} finally {
+			await probes.close();
+		}
+	}, 20_000);
+
+	it("public sender loads notification routing from the sparse daemon env file", async () => {
+		const probes = await startProbeServer([schoolProbe()]);
+		try {
+			const alertLog = configurePublicRuntime(probes.baseUrl, {
+				notifyFromEnvFile: true,
+			});
+			const { stdout } = await runPublicSwitch(["use", "school"]);
+
+			expect(stdout).toContain(
+				"Switched machine Claude account: personal → school",
+			);
+			expect(readFileSync(alertLog, "utf8")).toContain(
+				"--kind account_switched",
+			);
+		} finally {
+			await probes.close();
+		}
+	}, 20_000);
+
 	it("switches while Node holds the shared lock — the delegated child neither deadlocks nor releases it", async () => {
-		const deps = makeClaudeProfileSwitchDeps({ binPath: PROFILE_BIN });
+		const deps = makeClaudeProfileSwitchDeps({
+			binPath: PROFILE_BIN,
+			quotaPreverified: true,
+		});
 
 		const result = await switchAccount(
 			{
@@ -303,7 +807,10 @@ describe("switchAccount ↔ flywheel-claude-profile seam (REAL lock + REAL scrip
 			}),
 		);
 
-		const baseDeps = makeClaudeProfileSwitchDeps({ binPath: PROFILE_BIN });
+		const baseDeps = makeClaudeProfileSwitchDeps({
+			binPath: PROFILE_BIN,
+			quotaPreverified: true,
+		});
 		const applySnapshots: Array<{
 			before: { activeAccount: string | null; generation: number };
 			after: { activeAccount: string | null; generation: number };

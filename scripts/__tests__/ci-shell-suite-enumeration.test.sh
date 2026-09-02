@@ -37,7 +37,12 @@ grep -Eo 'node[[:space:]]+--test[[:space:]]+scripts/__tests__/qa-generalized-[A-
 LC_ALL=C comm -23 "$TMP/all" <(LC_ALL=C sort -u "$TMP/enumerated" "$TMP/manual-only") >"$TMP/unclassified"
 LC_ALL=C comm -12 "$TMP/enumerated" "$TMP/manual-only" >"$TMP/overlap"
 LC_ALL=C comm -13 "$TMP/all" "$TMP/enumerated" >"$TMP/stale-enumerated"
-LC_ALL=C comm -13 "$TMP/all" "$TMP/manual-only" >"$TMP/stale-manual"
+: >"$TMP/stale-manual"
+while IFS= read -r suite; do
+  if [[ "$suite" != scripts/*.sh || ! -f "$ROOT/$suite" ]]; then
+    printf '%s\n' "$suite" >>"$TMP/stale-manual"
+  fi
+done <"$TMP/manual-only"
 LC_ALL=C comm -23 "$TMP/all-generalized-node" "$TMP/enumerated-generalized-node" >"$TMP/missing-generalized-node"
 LC_ALL=C comm -13 "$TMP/all-generalized-node" "$TMP/enumerated-generalized-node" >"$TMP/stale-generalized-node"
 

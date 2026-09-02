@@ -10,13 +10,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { writeStore } from "../account-heal/account-store.js";
+import type {
+	CandidateSelectionDeps,
+	CandidateSnapshot,
+} from "../account-heal/account-candidate-selector.js";
+import { readStore, writeStore } from "../account-heal/account-store.js";
 import { makeAccountSwitchRepair } from "../account-heal/account-switch-repair.js";
 import {
 	type PendingSwitch,
 	pendingKey,
 	readPending,
 } from "../account-heal/pending-store.js";
+import type { AccountUsageResult } from "../account-heal/quota-usage-api.js";
 import type { SwitchResult } from "../account-heal/switch-executor.js";
 import type { AlertPayload } from "../LeadAlertNotifier.js";
 
@@ -83,6 +88,7 @@ function pending(over: Partial<PendingSwitch> = {}): PendingSwitch {
 function repair(
 	switchImpl: (i: unknown, d: unknown) => Promise<SwitchResult>,
 	enabled = true,
+	candidateDeps = makeCandidateDeps(),
 ) {
 	return makeAccountSwitchRepair({
 		switchDeps: {} as never,
@@ -91,9 +97,51 @@ function repair(
 		pendingPath,
 		isEnabled: () => enabled,
 		switchImpl: switchImpl as never,
+		candidateDeps,
 		// inline lock for tests (no real filesystem lock churn)
 		withLock: async (_l, fn) => fn(),
 	});
+}
+
+function usage(
+	fiveH: number,
+	sevenD: number,
+	reset: string,
+): AccountUsageResult {
+	return {
+		ok: {
+			fiveH: { pct: fiveH, resetsAt: "2026-07-03T22:00:00.000Z" },
+			sevenD: { pct: sevenD, resetsAt: reset },
+		},
+	};
+}
+
+function makeCandidateDeps(): CandidateSelectionDeps {
+	const snapshot = (): CandidateSnapshot => ({
+		activeName: readStore(storePath).activeAccount,
+		activeCredential: {
+			accessToken: "active-secret",
+			expiresAt: NOW.getTime() + 60_000,
+			rawDigest: "active-digest",
+		},
+		store: readStore(storePath),
+		poolAccounts: readStore(storePath).accounts.map((account) => account.name),
+	});
+	return {
+		now: () => NOW.getTime(),
+		withAccountsLock: async (fn) => fn(),
+		readSnapshot: async () => snapshot(),
+		verifyCandidate: async () => ({
+			fresh: "refreshed",
+			expiresAt: NOW.getTime() + 60_000,
+		}),
+		readPoolCredential: async (name) => ({
+			accessToken: `secret-${name}`,
+			expiresAt: NOW.getTime() + 60_000,
+		}),
+		fetchUsage: async () => usage(10, 20, "2026-07-04T01:00:00.000Z"),
+		recordObservation: async () => "updated",
+	};
 }
 
 describe("account-switch-repair · canAttempt", () => {
@@ -246,10 +294,8 @@ describe("account-switch-repair · executeSwitch", () => {
 	});
 });
 
-// FLY-929 A4: `notifySuccess` is the STRUCTURED digest payload — present ONLY
-// on a real `switched` outcome (a noop/no_account/failed digest would be noise).
-describe("account-switch-repair · notifySuccess (FLY-929 digest payload)", () => {
-	it("switched → notifySuccess carries from/to/scope/resetAt", async () => {
+describe("account-switch-repair · live selector + centralized notification", () => {
+	it("switched disposition has no caller-side notification payload", async () => {
 		const switchImpl = vi.fn(
 			async (): Promise<SwitchResult> => ({
 				outcome: "switched",
@@ -258,51 +304,80 @@ describe("account-switch-repair · notifySuccess (FLY-929 digest payload)", () =
 				generation: 4,
 			}),
 		);
-		const p = pending();
-		const r = await repair(switchImpl).executeSwitch(p);
-		expect(r.notifySuccess).toEqual({
-			from: "personal",
-			to: "school",
-			scope: p.scope,
-			resetAt: p.resetAt,
-		});
+		const r = await repair(switchImpl).executeSwitch(pending());
+		expect(Object.keys(r).sort()).toEqual(["action", "detail", "outcome"]);
 	});
 
-	it("noop_already_switched → NO notifySuccess", async () => {
+	it("live-verifies repair candidates and passes only the fresh ranked panorama", async () => {
+		writeStore(
+			{
+				generation: 3,
+				activeAccount: "personal",
+				accounts: ["personal", "school", "business"].map((name) => ({
+					name,
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+				})),
+			},
+			storePath,
+		);
+		const candidateDeps = makeCandidateDeps();
+		candidateDeps.verifyCandidate = vi.fn(async (name) =>
+			name === "business"
+				? { fresh: "stale" as const, reason: "refresh refused" }
+				: {
+						fresh: "refreshed" as const,
+						expiresAt: NOW.getTime() + 60_000,
+					},
+		);
+		candidateDeps.fetchUsage = async (token) =>
+			token === "secret-business"
+				? usage(10, 20, "2026-07-03T21:00:00.000Z")
+				: usage(10, 20, "2026-07-03T23:00:00.000Z");
 		const switchImpl = vi.fn(
 			async (): Promise<SwitchResult> => ({
-				outcome: "noop_already_switched",
-				activeAccount: "school",
+				outcome: "switched",
+				from: "personal",
+				to: "school",
+				generation: 4,
 			}),
 		);
-		const r = await repair(switchImpl).executeSwitch(pending());
-		expect(r.notifySuccess).toBeUndefined();
-	});
-
-	it("no_account → NO notifySuccess", async () => {
-		const switchImpl = vi.fn(
-			async (): Promise<SwitchResult> => ({
-				outcome: "no_account",
-				earliestReset: null,
+		await repair(switchImpl, true, candidateDeps).executeSwitch(pending());
+		expect(switchImpl).toHaveBeenCalledWith(
+			expect.objectContaining({
+				trigger: expect.objectContaining({ kind: "repair", scope: "5h" }),
+				preferredOrder: ["school"],
+				quotaPreverified: true,
+				notificationContext: expect.objectContaining({
+					panorama: expect.arrayContaining([
+						expect.objectContaining({
+							name: "business",
+							excludedBy: "unverifiable",
+						}),
+					]),
+				}),
 			}),
+			expect.anything(),
 		);
-		const r = await repair(switchImpl).executeSwitch(pending());
-		expect(r.notifySuccess).toBeUndefined();
 	});
 
-	it("failed → NO notifySuccess", async () => {
-		const switchImpl = vi.fn(
-			async (): Promise<SwitchResult> => ({
-				outcome: "failed",
-				reason: "keychain locked",
-			}),
-		);
-		const r = await repair(switchImpl).executeSwitch(pending());
-		expect(r.notifySuccess).toBeUndefined();
-	});
+	it("resolves an all-dead pending repair with a loud panorama and no executor call", async () => {
+		const candidateDeps = makeCandidateDeps();
+		candidateDeps.verifyCandidate = vi.fn(async () => ({
+			fresh: "stale" as const,
+			reason: "refresh refused",
+		}));
+		const switchImpl = vi.fn();
+		await repair(vi.fn()).enqueue(payload());
+		const r = await repair(
+			switchImpl as never,
+			true,
+			candidateDeps,
+		).executeSwitch(pending());
 
-	it("enqueue never carries notifySuccess (no switch happened yet)", async () => {
-		const r = await repair(vi.fn()).enqueue(payload());
-		expect(r.notifySuccess).toBeUndefined();
+		expect(r).toMatchObject({ outcome: "needs_human", action: "none" });
+		expect(r.detail).toContain("school:freshness_stale");
+		expect(switchImpl).not.toHaveBeenCalled();
+		expect(readPending(pendingPath)).toEqual([]);
 	});
 });

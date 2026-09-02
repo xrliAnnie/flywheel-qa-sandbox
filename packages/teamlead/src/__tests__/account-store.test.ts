@@ -23,15 +23,22 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	type AccountEntry,
 	type AccountStore,
+	ackSwitchNotification,
 	applyObservation,
 	earliestReset,
 	emptyStore,
+	enqueueSwitchNotification,
 	inspectModelSetBench,
 	isAuthUnusable,
 	isModelSetUsable,
 	isQuotaUsable,
+	MAX_SWITCH_NOTIFICATION_OUTBOX,
+	peekSwitchNotification,
 	readStore,
+	readStoreStrict,
 	recordObservationInStore,
+	type SwitchNotificationIntent,
+	SwitchNotificationOutboxFullError,
 	selectNextAccount,
 	summarizeModelBenchPool,
 	syncActiveAccountInStore,
@@ -42,7 +49,12 @@ import {
 const NOW = new Date("2026-07-03T20:00:00Z");
 
 function store(accounts: AccountEntry[], active: string): AccountStore {
-	return { generation: 1, activeAccount: active, accounts };
+	return {
+		generation: 1,
+		activeAccount: active,
+		accounts,
+		pendingSwitchNotifications: [],
+	};
 }
 const acct = (
 	name: string,
@@ -53,6 +65,19 @@ const acct = (
 	weeklyResetAt: null,
 	authExpired: false,
 	...over,
+});
+
+const switchIntent = (generation: number): SwitchNotificationIntent => ({
+	eventId: `account-switch-g${generation}`,
+	generation,
+	createdAt: NOW.getTime() + generation,
+	alert: {
+		kind: "account_switched",
+		severity: "info",
+		title: `Claude account switched g${generation}`,
+		body: "personal1 → school",
+		signature: `account-switch-g${generation}`,
+	},
 });
 
 describe("selectNextAccount", () => {
@@ -866,5 +891,92 @@ describe("account-store IO", () => {
 		// clobber with garbage
 		writeFileSync(path, "{ not json");
 		expect(readStore(path)).toEqual(emptyStore());
+	});
+});
+
+describe("switch notification outbox", () => {
+	let dir: string;
+	let path: string;
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), "fly2240-switch-outbox-"));
+		path = join(dir, "claude-accounts.json");
+	});
+	afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+	it("normalizes legacy stores and round-trips a valid intent", () => {
+		writeFileSync(
+			path,
+			JSON.stringify({ generation: 1, activeAccount: null, accounts: [] }),
+		);
+		expect(readStore(path).pendingSwitchNotifications).toEqual([]);
+		expect(readStoreStrict(path)?.pendingSwitchNotifications).toEqual([]);
+
+		const next = enqueueSwitchNotification(
+			readStoreStrict(path)!,
+			switchIntent(2),
+		);
+		writeStore(next, path);
+		expect(readStoreStrict(path)?.pendingSwitchNotifications).toEqual([
+			switchIntent(2),
+		]);
+	});
+
+	it("enqueues by event id idempotently and acknowledges only an exact id", () => {
+		const first = enqueueSwitchNotification(emptyStore(), switchIntent(1));
+		const duplicate = enqueueSwitchNotification(first, switchIntent(1));
+		expect(duplicate.pendingSwitchNotifications).toEqual([switchIntent(1)]);
+		expect(peekSwitchNotification(duplicate)).toEqual(switchIntent(1));
+		expect(
+			ackSwitchNotification(duplicate, "account-switch-g999")
+				.pendingSwitchNotifications,
+		).toEqual([switchIntent(1)]);
+		expect(
+			ackSwitchNotification(duplicate, "account-switch-g1")
+				.pendingSwitchNotifications,
+		).toEqual([]);
+	});
+
+	it("throws a typed error before adding the sixty-fifth distinct intent", () => {
+		let current = emptyStore();
+		for (
+			let generation = 1;
+			generation <= MAX_SWITCH_NOTIFICATION_OUTBOX;
+			generation++
+		) {
+			current = enqueueSwitchNotification(current, switchIntent(generation));
+		}
+		expect(() =>
+			enqueueSwitchNotification(
+				current,
+				switchIntent(MAX_SWITCH_NOTIFICATION_OUTBOX + 1),
+			),
+		).toThrow(SwitchNotificationOutboxFullError);
+	});
+
+	it.each([
+		["unknown intent key", { intentExtra: true }],
+		["invalid generation", { generation: -1 }],
+		["long title", { alert: { title: "t".repeat(257) } }],
+		["long body", { alert: { body: "b".repeat(4_001) } }],
+		["long signature", { alert: { signature: "s".repeat(257) } }],
+	])("strictly rejects %s", (_label, mutation) => {
+		const intent = switchIntent(1) as SwitchNotificationIntent &
+			Record<string, unknown>;
+		const rawIntent = {
+			...intent,
+			...(mutation.alert
+				? { alert: { ...intent.alert, ...mutation.alert } }
+				: mutation),
+		};
+		writeFileSync(
+			path,
+			JSON.stringify({
+				generation: 1,
+				activeAccount: null,
+				accounts: [],
+				pendingSwitchNotifications: [rawIntent],
+			}),
+		);
+		expect(readStoreStrict(path)).toBeNull();
 	});
 });

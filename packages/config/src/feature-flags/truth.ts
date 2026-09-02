@@ -409,6 +409,16 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"config value: machine Keychain item service selector (FLY-1256)",
 	FLYWHEEL_CLAUDE_LOCK_DELEGATED:
 		"internal contract: parent lock-holder pid passed to the profile script (FLY-852 anti-deadlock; validated against the live holder marker)",
+	FLYWHEEL_ATOMIC_SWITCH_APPLY:
+		"internal contract: authenticated per-invocation marker issued by the Node account-switch executor after lock delegation; not an operator toggle (FLY-2240)",
+	FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD:
+		"context: manual switch command name carried into the delegated primitive for audit labeling; not an on/off gate (FLY-2240)",
+	FLYWHEEL_MANUAL_NO_TARGET_ALERT_PENDING:
+		"diagnostic output marker: manual no-target alert delivery was not confirmed; emitted to stderr and never read as configuration (FLY-2240)",
+	FLYWHEEL_MANUAL_RECONCILE_FAILED:
+		"diagnostic output marker: one-shot manual account reconciliation failed; emitted to stderr and never read as configuration (FLY-2240)",
+	FLYWHEEL_MANUAL_RECONCILE_RACE:
+		"diagnostic output marker: account drift recurred after reconciliation; emitted to stderr and never read as configuration (FLY-2240)",
 	FLYWHEEL_LEASE_PROOF:
 		"internal contract: non-secret account-lock ownership proof passed to delegated mutation helpers (FLY-1252)",
 	FLYWHEEL_CLAUDE_OAUTH_ENDPOINT:

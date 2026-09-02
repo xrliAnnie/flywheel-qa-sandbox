@@ -592,6 +592,7 @@ describe("runQuotaGuardCli", () => {
 			...before,
 			activeAccount: "business",
 			generation: 8,
+			pendingSwitchNotifications: [],
 		});
 		expect(output).toEqual([
 			"quota guard active-sync: result=synced; name=business",
@@ -755,7 +756,7 @@ describe("runQuotaGuardCli", () => {
 		expect(text).toContain("observed 6m ago");
 		expect(text).toContain("Suggestion: flywheel-claude-profile use shopping");
 		expect(text).toContain("the command will re-verify");
-		expect(text).toContain("FLYWHEEL_CLAUDE_QUOTA_BYPASS=1");
+		expect(text).not.toMatch(/bypass|override/i);
 		expect(text).not.toMatch(/Suggestion:.*(?:school|personal)/);
 		expect(text).not.toContain(TOKEN);
 	});

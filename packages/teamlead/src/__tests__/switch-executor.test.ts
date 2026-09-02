@@ -10,7 +10,9 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	type AccountStore,
+	MAX_SWITCH_NOTIFICATION_OUTBOX,
 	readStore,
+	type SwitchNotificationIntent,
 	writeStore,
 } from "../account-heal/account-store.js";
 import type { LeaseProof } from "../account-heal/mkdir-lock.js";
@@ -72,6 +74,21 @@ const input = {
 	resetAt: "2026-07-04T02:30:00.000Z",
 	now: NOW,
 };
+
+function pendingIntent(generation: number): SwitchNotificationIntent {
+	return {
+		eventId: `old-switch-${generation}`,
+		generation,
+		createdAt: NOW.getTime() - generation,
+		alert: {
+			kind: "account_switched",
+			severity: "info",
+			title: `Old switch ${generation}`,
+			body: "pending",
+			signature: `old-switch-${generation}`,
+		},
+	};
+}
 
 describe("switchAccount", () => {
 	it("model trigger canonicalizes the set, benches every model independently in one commit, and leaves account quota fields untouched", async () => {
@@ -188,12 +205,192 @@ describe("switchAccount", () => {
 		const after = readStore(storePath);
 		expect(after.activeAccount).toBe("school");
 		expect(after.generation).toBe(2);
+		expect(after.pendingSwitchNotifications).toEqual([
+			expect.objectContaining({
+				eventId: "account-switch-g2",
+				generation: 2,
+				alert: expect.objectContaining({ kind: "account_switched" }),
+			}),
+		]);
 		expect(
 			after.accounts.find((a) => a.name === "personal")?.quotaExhaustedUntil,
 		).toBe("2026-07-04T02:30:00.000Z");
 		expect(
 			after.accounts.find((a) => a.name === "personal")?.switchCooldownUntil,
 		).toBe("2026-07-04T02:30:00.000Z");
+	});
+
+	it("manual use commits a notification without marking the outgoing account exhausted", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+
+		const result = await switchAccount(
+			{
+				trigger: { kind: "manual", mode: "use" },
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+				preferredOrder: ["school"],
+				manualOverrides: new Map([
+					[
+						"school",
+						{
+							ignoreCooldown: true,
+						},
+					],
+				]),
+			},
+			deps(),
+		);
+
+		expect(result).toMatchObject({ outcome: "switched", to: "school" });
+		const after = readStore(storePath);
+		expect(
+			after.accounts.find((entry) => entry.name === "personal"),
+		).toMatchObject({
+			quotaExhaustedUntil: null,
+			weeklyResetAt: null,
+		});
+		expect(after.pendingSwitchNotifications?.[0]?.alert.body).toContain(
+			"（manual:use）",
+		);
+	});
+
+	it("applies only the selected account's typed cooldown override", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: null,
+					switchCooldownUntil: "2026-07-04T02:30:00.000Z",
+					weeklyResetAt: null,
+				},
+			],
+		});
+		const applyProfile = vi.fn(async () => ({ identitySynced: true }));
+		const manualOverride = { ignoreCooldown: true };
+
+		const result = await switchAccount(
+			{
+				trigger: { kind: "manual", mode: "use" },
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+				preferredOrder: ["school"],
+				manualOverrides: new Map([["school", manualOverride]]),
+			},
+			deps({ applyProfile }),
+		);
+
+		expect(result).toMatchObject({ outcome: "switched", to: "school" });
+		expect(applyProfile).toHaveBeenCalledWith(
+			"school",
+			expect.objectContaining({ manualMode: "use" }),
+		);
+		expect(applyProfile.mock.calls[0]?.[1]).not.toHaveProperty(
+			"manualOverride",
+		);
+	});
+
+	it("marks a stale manual target unusable instead of bypassing freshness", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: null,
+					weeklyResetAt: null,
+				},
+			],
+		});
+		const result = await switchAccount(
+			{
+				trigger: { kind: "manual", mode: "use" },
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+				preferredOrder: ["school"],
+				manualOverrides: new Map([
+					[
+						"school",
+						{
+							ignoreCooldown: true,
+						},
+					],
+				]),
+			},
+			deps({
+				applyProfile: vi.fn(async () => {
+					throw new TargetStaleError("school");
+				}),
+			}),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "no_account",
+			reasonCode: "target_stale_exhausted",
+		});
+		expect(readStore(storePath).accounts[1]?.authExpired).toBe(true);
+	});
+
+	it("keeps a committed intent pending when notification delivery fails", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+		});
+		const deliverNotification = vi.fn(async () => {
+			throw new Error("sender offline");
+		});
+
+		const result = await switchAccount(input, deps({ deliverNotification }));
+
+		expect(result).toMatchObject({
+			outcome: "switched",
+			notification: "pending",
+		});
+		expect(deliverNotification).toHaveBeenCalledTimes(1);
+		expect(readStore(storePath).pendingSwitchNotifications).toHaveLength(1);
+	});
+
+	it("drains an older intent before switching and acknowledges the new intent afterward", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+			pendingSwitchNotifications: [pendingIntent(1)],
+		});
+		const delivered: string[] = [];
+		const deliverNotification = vi.fn(async (alert) => {
+			delivered.push(alert.signature);
+			return { primary: "sent" as const };
+		});
+
+		const result = await switchAccount(input, deps({ deliverNotification }));
+
+		expect(result).toMatchObject({
+			outcome: "switched",
+			notification: "delivered",
+		});
+		expect(delivered).toEqual(["old-switch-1", "account-switch-g2"]);
+		expect(readStore(storePath).pendingSwitchNotifications).toEqual([]);
 	});
 
 	it("CAS no-op: active already differs from observedAccount → no switch, no apply", async () => {
@@ -256,6 +453,29 @@ describe("switchAccount", () => {
 		expect(res).toMatchObject({
 			outcome: "no_account",
 			reasonCode: "no_eligible_account",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
+		expect(readStore(storePath).generation).toBe(1);
+	});
+
+	it("fails before profile mutation when the notification outbox is full", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{ name: "school", quotaExhaustedUntil: null, weeklyResetAt: null },
+			],
+			pendingSwitchNotifications: Array.from(
+				{ length: MAX_SWITCH_NOTIFICATION_OUTBOX },
+				(_, index) => pendingIntent(index + 1),
+			),
+		});
+		const d = deps();
+
+		await expect(switchAccount(input, d)).resolves.toMatchObject({
+			outcome: "failed",
+			reasonCode: "notification_outbox_full",
 		});
 		expect(d.applyProfile).not.toHaveBeenCalled();
 		expect(readStore(storePath).generation).toBe(1);

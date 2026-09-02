@@ -109,20 +109,6 @@ const ENV_EXEMPTIONS = [
 		"the staged preview command exposes an explicit live option",
 	],
 	[
-		"FLYWHEEL_CLAUDE_FRESHNESS_BYPASS",
-		"FLY-1455",
-		"qa_isolation",
-		"Claude freshness fault injection for deterministic QA",
-		"freshness tests inject the clock directly",
-	],
-	[
-		"FLYWHEEL_CLAUDE_QUOTA_BYPASS",
-		"FLY-1455",
-		"qa_isolation",
-		"Claude quota bypass for isolated failure-path tests",
-		"quota tests inject provider state directly",
-	],
-	[
 		"FLYWHEEL_CMUX_DRY_RUN",
 		"FLY-1455",
 		"dry_run",
