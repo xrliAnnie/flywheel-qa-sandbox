@@ -63,7 +63,7 @@ graphs:
         models:
           - model: fable
             allowedEfforts: [low, medium, high, xhigh, max]
-            defaultEffort: xhigh
+            defaultEffort: high
           - model: codex
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: xhigh
@@ -72,7 +72,7 @@ graphs:
         models:
           - model: fable
             allowedEfforts: [low, medium, high, xhigh, max]
-            defaultEffort: xhigh
+            defaultEffort: high
           - model: codex
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: xhigh
@@ -124,7 +124,7 @@ graphs:
             defaultEffort: high
           - model: fable
             allowedEfforts: [low, medium, high, xhigh, max]
-            defaultEffort: xhigh
+            defaultEffort: high
           - model: codex
             allowedEfforts: [low, medium, high, xhigh, max]
             defaultEffort: xhigh

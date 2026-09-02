@@ -220,7 +220,7 @@ describe("founder-approved workflow menu source", () => {
 					model.model === "opus" ? OPUS_EFFORTS : ALL_EFFORTS,
 				);
 				expect(model.defaultEffort).toBe(
-					model.model === "opus" ? "high" : "xhigh",
+					model.model === "codex" ? "xhigh" : "high",
 				);
 			}
 		}

@@ -101,7 +101,7 @@ describe("GET /api/workflow/menus", () => {
 					resolvedModel: "claude-fable-5-1",
 					receipt: "fable (= claude-fable-5-1)",
 					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
-					defaultEffort: "xhigh",
+					defaultEffort: "high",
 				},
 				{
 					model: "codex",
