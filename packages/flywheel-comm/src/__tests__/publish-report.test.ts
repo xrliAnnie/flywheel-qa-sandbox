@@ -5,7 +5,7 @@
  *   - kill switch: zero network calls, exit 0
  *   - always-one-JSON-envelope semantics (url survives deliver failure)
  *   - screenshot degradation: failure → link-only delivery, exit 0
- *   - proofshot stop ALWAYS runs once start succeeded (R1#5)
+ *   - recording and every report tab are cleaned once start is attempted
  */
 
 import {
@@ -26,6 +26,23 @@ import {
 import type { AcquiredLock } from "../proofshot/lock.js";
 
 const HTML = "<!doctype html><html><head></head><body>r</body></html>";
+const REPORT_URL = "https://fw-reports-abc123.vercel.app/r/tok123/";
+const NO_SESSIONS_JSON = JSON.stringify({
+	success: true,
+	data: { sessions: [] },
+	error: null,
+});
+
+function tabListJson(
+	tabs: Array<{ tabId: string; url: string; active?: boolean }>,
+): string {
+	return JSON.stringify({ success: true, data: { tabs }, error: null });
+}
+
+const OWNED_REPORT_TABS_JSON = tabListJson([
+	{ tabId: "t1", url: REPORT_URL },
+	{ tabId: "t2", url: REPORT_URL, active: true },
+]);
 
 describe("publishReport", () => {
 	let dir: string;
@@ -34,6 +51,7 @@ describe("publishReport", () => {
 	let fetchMock: ReturnType<typeof vi.fn>;
 	let proofShotCalls: string[][];
 	let proofShotCwds: (string | undefined)[];
+	let agentBrowserCalls: string[][];
 	let releaseMock: ReturnType<typeof vi.fn>;
 	let warns: string[];
 
@@ -45,9 +63,19 @@ describe("publishReport", () => {
 		fetchMock = vi.fn();
 		proofShotCalls = [];
 		proofShotCwds = [];
+		agentBrowserCalls = [];
 		releaseMock = vi.fn();
 		warns = [];
 	});
+
+	function runOwnedAgentBrowser(a: string[]): string | undefined {
+		agentBrowserCalls.push(a);
+		if (a[0] === "session" && a[1] === "list") return NO_SESSIONS_JSON;
+		if (a[0] === "tab" && a[1] === "list") {
+			return OWNED_REPORT_TABS_JSON;
+		}
+		return undefined;
+	}
 
 	afterEach(() => {
 		rmSync(dir, { recursive: true, force: true });
@@ -82,6 +110,7 @@ describe("publishReport", () => {
 					writeFileSync(join(sessionDir, "report-preview.png"), "png-bytes");
 				}
 			},
+			runAgentBrowser: runOwnedAgentBrowser,
 			findPort: () => 3005,
 			acquireLock: async () =>
 				({ release: releaseMock }) as unknown as AcquiredLock,
@@ -95,7 +124,7 @@ describe("publishReport", () => {
 		fetchMock.mockResolvedValueOnce(
 			new Response(
 				JSON.stringify({
-					url: "https://fw-reports-abc123.vercel.app/r/tok123/",
+					url: REPORT_URL,
 					reportId: "tok123",
 				}),
 				{ status: 200 },
@@ -148,7 +177,7 @@ describe("publishReport", () => {
 
 		expect(exitCode).toBe(0);
 		expect(envelope).toMatchObject({
-			url: "https://fw-reports-abc123.vercel.app/r/tok123/",
+			url: REPORT_URL,
 			reportId: "tok123",
 			messageId: "msg_1",
 			delivered: true,
@@ -175,15 +204,17 @@ describe("publishReport", () => {
 		expect(deliverBody.screenshotPath).toBe(envelope.screenshot);
 		expect(deliverBody.projectName).toBe("flywheel");
 
-		// proofshot sequence: start --url → set viewport → screenshot --full → stop
+		// no active session → publish-report owns the browser and closes it
+		expect(agentBrowserCalls[0]).toEqual(["session", "list", "--json"]);
 		expect(proofShotCalls[0]?.[0]).toBe("start");
 		expect(proofShotCalls[0]?.[proofShotCalls[0].indexOf("--url") + 1]).toBe(
-			"https://fw-reports-abc123.vercel.app/r/tok123/",
+			REPORT_URL,
 		);
 		// ProofShot v1.3.1 contract (QA R1 Bug A): NO --output — exec/stop
 		// resolve the session from cwd, so all calls share cwd instead.
 		expect(proofShotCalls[0]).not.toContain("--output");
 		// content-width viewport @ deviceScaleFactor 2 before the capture
+		expect(agentBrowserCalls[1]).toEqual(["tab", "list", "--json"]);
 		expect(proofShotCalls[1]).toEqual([
 			"exec",
 			"set",
@@ -201,11 +232,64 @@ describe("publishReport", () => {
 			"--full",
 			"report-preview.png",
 		]);
-		expect(proofShotCalls[3]).toEqual(["stop"]);
-		expect(proofShotCwds).toHaveLength(4);
+		expect(agentBrowserCalls.slice(2)).toEqual([["record", "stop"], ["close"]]);
+		expect(proofShotCalls.filter((a) => a[0] === "stop")).toEqual([]);
+		expect(proofShotCwds).toHaveLength(3);
 		expect(new Set(proofShotCwds).size).toBe(1); // same cwd for all calls
 		expect(proofShotCwds[0]).toBeTruthy();
 		expect(releaseMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("shared browser closes every new report tab by id without closing the browser", async () => {
+		publishOk();
+		deliverOk();
+		let tabLists = 0;
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runProofShot: (a: string[], opts?: { cwd?: string }) => {
+					proofShotCalls.push(a);
+					if (a[0] === "exec" && a[1] === "screenshot") {
+						const sessionDir = join(
+							opts?.cwd ?? "",
+							"proofshot-artifacts",
+							"shared-retries",
+						);
+						mkdirSync(sessionDir, { recursive: true });
+						writeFileSync(join(sessionDir, "report-preview.png"), "p");
+					}
+				},
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session" && a[1] === "list") {
+						return JSON.stringify({ data: { sessions: ["default"] } });
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? tabListJson([{ tabId: "t9", url: "https://example.com/" }])
+							: tabListJson([
+									{ tabId: "t9", url: "https://example.com/" },
+									{ tabId: "t10", url: REPORT_URL },
+									{ tabId: "t11", url: REPORT_URL },
+									{ tabId: "t12", url: REPORT_URL, active: true },
+									{ tabId: "t13", url: "https://other.example/" },
+								]);
+					}
+				},
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls.filter((a) => a[1] === "close")).toEqual([
+			["tab", "close", "t10"],
+			["tab", "close", "t11"],
+			["tab", "close", "t12"],
+		]);
+		expect(agentBrowserCalls).toContainEqual(["record", "stop"]);
+		expect(proofShotCalls.filter((a) => a[0] === "stop")).toEqual([]);
+		expect(agentBrowserCalls).not.toContainEqual(["tab", "close", "t13"]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
 	});
 
 	it("--no-screenshot skips proofshot entirely", async () => {
@@ -419,12 +503,27 @@ describe("publishReport", () => {
 					proofShotCalls.push(a);
 					if (a[0] === "start") throw new Error("browser exploded");
 				},
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session" && a[1] === "list") {
+						return NO_SESSIONS_JSON;
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						return tabListJson([
+							{ tabId: "t1", url: REPORT_URL },
+							{ tabId: "t2", url: REPORT_URL },
+							{ tabId: "t3", url: REPORT_URL },
+						]);
+					}
+				},
 			}),
 		);
 		expect(exitCode).toBe(0);
 		expect(envelope.delivered).toBe(true);
 		expect(envelope.screenshot).toBeNull();
 		expect(warns.some((w) => w.includes("screenshot failed"))).toBe(true);
+		expect(agentBrowserCalls.filter((a) => a[1] === "close")).toEqual([]);
+		expect(agentBrowserCalls).toContainEqual(["close"]);
 		// lock released even on start failure
 		expect(releaseMock).toHaveBeenCalledTimes(1);
 		const deliverBody = JSON.parse(
@@ -433,28 +532,24 @@ describe("publishReport", () => {
 		expect(deliverBody.screenshotPath).toBeUndefined();
 	});
 
-	it("screenshot failure AFTER successful start → stop still runs (R1#5)", async () => {
+	it("screenshot failure after successful start still stops its owned browser", async () => {
 		publishOk();
 		deliverOk();
 		const { exitCode } = await publishReport(
 			makeArgs({
 				runProofShot: (a: string[]) => {
 					proofShotCalls.push(a);
-					if (a[0] === "exec") throw new Error("screenshot exploded");
+					if (a[1] === "set" || a[1] === "screenshot") {
+						throw new Error("screenshot exploded");
+					}
 				},
 			}),
 		);
 		expect(exitCode).toBe(0);
-		// every exec throws → ladder runs both scales (set+screenshot ×2),
-		// then degrades — stop still runs in finally
-		expect(proofShotCalls.map((c) => c[0])).toEqual([
-			"start",
-			"exec",
-			"exec",
-			"exec",
-			"exec",
-			"stop",
-		]);
+		// Whole-browser close reclaims owned tabs without a guaranteed last-tab
+		// failure from redundant per-tab closes.
+		expect(agentBrowserCalls.filter((a) => a[1] === "close")).toEqual([]);
+		expect(agentBrowserCalls).toContainEqual(["close"]);
 		expect(releaseMock).toHaveBeenCalledTimes(1);
 	});
 
@@ -464,7 +559,7 @@ describe("publishReport", () => {
 		const args = makeArgs();
 		(args.env as Record<string, string>).FLYWHEEL_REPORT_SHOT_WIDTH = "1280";
 		await publishReport(args);
-		expect(proofShotCalls[1]).toEqual([
+		expect(proofShotCalls.find((a) => a[1] === "set")).toEqual([
 			"exec",
 			"set",
 			"viewport",
@@ -480,7 +575,7 @@ describe("publishReport", () => {
 		const args = makeArgs();
 		(args.env as Record<string, string>).FLYWHEEL_REPORT_SHOT_WIDTH = "huge";
 		await publishReport(args);
-		expect(proofShotCalls[1]?.[3]).toBe("860");
+		expect(proofShotCalls.find((a) => a[1] === "set")?.[3]).toBe("860");
 	});
 
 	it("set-viewport failure is warned but screenshot still captured", async () => {
@@ -587,9 +682,11 @@ describe("publishReport", () => {
 		);
 	});
 
-	it("stop failure is warned, does not mask a successful screenshot", async () => {
+	it("recording stop retries once on a shared browser", async () => {
 		publishOk();
 		deliverOk();
+		let tabLists = 0;
+		let stopAttempts = 0;
 		const { envelope, exitCode } = await publishReport(
 			makeArgs({
 				runProofShot: (a: string[], opts?: { cwd?: string }) => {
@@ -603,13 +700,251 @@ describe("publishReport", () => {
 						mkdirSync(sessionDir, { recursive: true });
 						writeFileSync(join(sessionDir, "report-preview.png"), "p");
 					}
-					if (a[0] === "stop") throw new Error("stop exploded");
+				},
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session") {
+						return JSON.stringify({ data: { sessions: ["default"] } });
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? tabListJson([{ tabId: "t9", url: "https://example.com/" }])
+							: tabListJson([
+									{ tabId: "t9", url: "https://example.com/" },
+									{ tabId: "t10", url: REPORT_URL },
+								]);
+					}
+					if (a[0] === "record" && a[1] === "stop") {
+						stopAttempts += 1;
+						if (stopAttempts === 1) throw new Error("stop exploded");
+					}
 				},
 			}),
 		);
 		expect(exitCode).toBe(0);
 		expect(envelope.screenshot).not.toBeNull();
-		expect(warns.some((w) => w.includes("stop failed"))).toBe(true);
+		expect(
+			agentBrowserCalls.filter((a) => a[0] === "record" && a[1] === "stop"),
+		).toHaveLength(2);
+		expect(agentBrowserCalls).toContainEqual(["tab", "close", "t10"]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(warns.some((w) => w.includes("retrying"))).toBe(true);
+	});
+
+	it("a shared recording that cannot stop is warned without closing the browser", async () => {
+		publishOk();
+		deliverOk();
+		let tabLists = 0;
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session") {
+						return JSON.stringify({ data: { sessions: ["default"] } });
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? tabListJson([{ tabId: "t9", url: "https://example.com/" }])
+							: tabListJson([
+									{ tabId: "t9", url: "https://example.com/" },
+									{ tabId: "t10", url: REPORT_URL },
+								]);
+					}
+					if (a[0] === "record") throw new Error("stop exploded");
+				},
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(
+			agentBrowserCalls.filter((a) => a[0] === "record" && a[1] === "stop"),
+		).toHaveLength(2);
+		expect(agentBrowserCalls).toContainEqual(["tab", "close", "t10"]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(warns.some((w) => w.includes("recording may remain active"))).toBe(
+			true,
+		);
+	});
+
+	it("owned browser close failure falls back to its identified report tabs", async () => {
+		publishOk();
+		deliverOk();
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runAgentBrowser: (a: string[]) => {
+					const output = runOwnedAgentBrowser(a);
+					if (a[0] === "close") throw new Error("browser close exploded");
+					return output;
+				},
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls.slice(2)).toEqual([
+			["record", "stop"],
+			["close"],
+			["tab", "close", "t1"],
+			["tab", "close", "t2"],
+		]);
+		expect(warns.some((w) => w.includes("falling back to report tabs"))).toBe(
+			true,
+		);
+	});
+
+	it("tab close failure is warned and other shared tabs still close", async () => {
+		publishOk();
+		deliverOk();
+		let tabLists = 0;
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runProofShot: (a: string[], opts?: { cwd?: string }) => {
+					proofShotCalls.push(a);
+					if (a[0] === "exec" && a[1] === "screenshot") {
+						const sessionDir = join(
+							opts?.cwd ?? "",
+							"proofshot-artifacts",
+							"close-failure",
+						);
+						mkdirSync(sessionDir, { recursive: true });
+						writeFileSync(join(sessionDir, "report-preview.png"), "p");
+					}
+				},
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session") {
+						return JSON.stringify({ data: { sessions: ["default"] } });
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? tabListJson([{ tabId: "t9", url: "https://example.com/" }])
+							: tabListJson([
+									{ tabId: "t9", url: "https://example.com/" },
+									{ tabId: "t10", url: REPORT_URL },
+									{ tabId: "t11", url: REPORT_URL },
+								]);
+					}
+					if (a[0] === "tab" && a[1] === "close" && a[2] === "t10") {
+						throw new Error("close exploded");
+					}
+				},
+			}),
+		);
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls).toContainEqual(["tab", "close", "t10"]);
+		expect(agentBrowserCalls).toContainEqual(["tab", "close", "t11"]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(warns.some((w) => w.includes("report tab close failed"))).toBe(true);
+	});
+
+	it("session preflight failure still uses a successful tab baseline", async () => {
+		publishOk();
+		deliverOk();
+		let tabLists = 0;
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session") return "{}";
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? tabListJson([{ tabId: "t9", url: "https://example.com/" }])
+							: tabListJson([
+									{ tabId: "t9", url: REPORT_URL },
+									{ tabId: "t10", url: REPORT_URL },
+								]);
+					}
+				},
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls).toContainEqual(["tab", "close", "t10"]);
+		expect(agentBrowserCalls).not.toContainEqual(["tab", "close", "t9"]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(
+			warns.some((w) => w.includes("browser session preflight failed")),
+		).toBe(true);
+	});
+
+	it("missing shared tab baseline warns and skips every tab close", async () => {
+		publishOk();
+		deliverOk();
+		let tabLists = 0;
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session") {
+						return JSON.stringify({ data: { sessions: ["default"] } });
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? "{}"
+							: tabListJson([{ tabId: "t10", url: REPORT_URL }]);
+					}
+				},
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls.filter((a) => a[1] === "close")).toEqual([]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(warns.some((w) => w.includes("skipping report tab cleanup"))).toBe(
+			true,
+		);
+	});
+
+	it("tab identification failure never closes the ambient active tab", async () => {
+		publishOk();
+		deliverOk();
+		let tabLists = 0;
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runProofShot: (a: string[], opts?: { cwd?: string }) => {
+					proofShotCalls.push(a);
+					if (a[0] === "exec" && a[1] === "screenshot") {
+						const sessionDir = join(
+							opts?.cwd ?? "",
+							"proofshot-artifacts",
+							"missing-tab-id",
+						);
+						mkdirSync(sessionDir, { recursive: true });
+						writeFileSync(join(sessionDir, "report-preview.png"), "p");
+					}
+				},
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session" && a[1] === "list") {
+						return JSON.stringify({ data: { sessions: ["default"] } });
+					}
+					if (a[0] === "tab" && a[1] === "list") {
+						tabLists += 1;
+						return tabLists === 1
+							? tabListJson([{ tabId: "t9", url: "https://example.com/" }])
+							: "{}";
+					}
+				},
+			}),
+		);
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls.filter((a) => a[1] === "close")).toEqual([]);
+		expect(agentBrowserCalls).toContainEqual(["record", "stop"]);
+		expect(proofShotCalls.filter((a) => a[0] === "stop")).toEqual([]);
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(
+			warns.some((w) => w.includes("report tab identification failed")),
+		).toBe(true);
 	});
 
 	it("deliver failure → exit 1 but envelope still carries url", async () => {
@@ -619,7 +954,7 @@ describe("publishReport", () => {
 		);
 		const { envelope, exitCode } = await publishReport(makeArgs());
 		expect(exitCode).toBe(1);
-		expect(envelope.url).toBe("https://fw-reports-abc123.vercel.app/r/tok123/");
+		expect(envelope.url).toBe(REPORT_URL);
 		expect(envelope.delivered).toBe(false);
 		expect(envelope.error).toContain("deliver failed (502)");
 	});

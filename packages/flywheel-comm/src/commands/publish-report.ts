@@ -21,9 +21,10 @@
  * `url` even when a later step fails, so the agent can hand-forward the link.
  *
  * ProofShot sequence (R1#5): lock → temp output dir → free port →
- * `start --url … --port … --output … --description …` → `exec screenshot` →
- * move PNG into the previews contract dir → `stop` ALWAYS runs in finally
- * once start succeeded (no leaked browser/port).
+ * inspect browser ownership/tabs → `start --url … --port … --description …` →
+ * `exec screenshot` → agent-browser stops recording → agent-browser closes
+ * every newly-opened report tab. A browser created here is stopped; a
+ * pre-existing shared browser is preserved.
  */
 
 import { execFileSync } from "node:child_process";
@@ -59,6 +60,10 @@ const SCREENSHOT_FILENAME = "report-preview.png";
  * (see captureReportScreenshot contract note).
  */
 export type RunProofShot = (args: string[], opts?: { cwd?: string }) => void;
+export type RunAgentBrowser = (
+	args: string[],
+	opts?: { cwd?: string },
+) => unknown;
 
 export interface PublishReportArgs {
 	htmlPath: string;
@@ -83,6 +88,7 @@ export interface PublishReportArgs {
 	env?: NodeJS.ProcessEnv;
 	fetchImpl?: typeof fetch;
 	runProofShot?: RunProofShot;
+	runAgentBrowser?: RunAgentBrowser;
 	findPort?: (preferredPort: number) => number | null;
 	acquireLock?: () => Promise<AcquiredLock>;
 	makeTempDir?: () => string;
@@ -239,6 +245,7 @@ export async function publishReport(
 				title: args.title,
 				env,
 				runProofShot: args.runProofShot,
+				runAgentBrowser: args.runAgentBrowser,
 				findPort: args.findPort,
 				acquireLock: args.acquireLock,
 				makeTempDir: args.makeTempDir,
@@ -322,6 +329,7 @@ interface CaptureArgs {
 	title?: string;
 	env: NodeJS.ProcessEnv;
 	runProofShot?: RunProofShot;
+	runAgentBrowser?: RunAgentBrowser;
 	findPort?: (preferredPort: number) => number | null;
 	acquireLock?: () => Promise<AcquiredLock>;
 	makeTempDir?: () => string;
@@ -344,16 +352,20 @@ interface CaptureArgs {
  *     in the caller's cwd and `stop` errors out, leaking the headless
  *     browser (and breaking the NEXT proofshot user with "Recording is
  *     required").
- *   - Fix: run ALL THREE commands with `cwd: outputDir` and NO `--output` —
- *     start/exec/stop then share `{outputDir}/proofshot-artifacts/`.
+ *   - Fix: run every command with `cwd: outputDir` and NO `--output` — the
+ *     lifecycle then shares `{outputDir}/proofshot-artifacts/`.
  *   - The screenshot is saved into a TIMESTAMPED session subdir
  *     (`proofshot-artifacts/<ts>_<description-slug>/report-preview.png`),
  *     so we locate it by recursive filename search, not a fixed path.
- *   - Spike-verified: stop exits cleanly and the browser process tree is
- *     gone afterwards.
+ *   - `start` can create several report pages: `open` creates one and each
+ *     recording retry can create another. Diff stable tab ids before/after
+ *     start and close every new tab whose URL is this report.
+ *   - Ownership is "open what you close": stop a browser created by this
+ *     command, but preserve a browser session that was already active.
  */
 async function captureReportScreenshot(args: CaptureArgs): Promise<string> {
 	const runProofShot = args.runProofShot ?? defaultRunProofShot;
+	const runAgentBrowser = args.runAgentBrowser ?? defaultRunAgentBrowser;
 	const findPort = args.findPort ?? findFreePort;
 	const acquireLock = args.acquireLock ?? acquireProofShotLockWithRetry;
 	const makeTempDir =
@@ -368,7 +380,12 @@ async function captureReportScreenshot(args: CaptureArgs): Promise<string> {
 
 	const lock = await acquireLock();
 	let outputDir: string | undefined;
-	let started = false;
+	let browserWasActive: boolean | undefined;
+	let tabBaselineAvailable = false;
+	let identifyReportTabs: (() => void) | undefined;
+	let reportTabIds: string[] = [];
+	let tabIdentificationError: Error | undefined;
+	let startAttempted = false;
 	try {
 		outputDir = makeTempDir();
 		const port = findPort(DEFAULT_PORT_RANGE_START);
@@ -376,7 +393,71 @@ async function captureReportScreenshot(args: CaptureArgs): Promise<string> {
 			throw new Error("no free port for ProofShot");
 		}
 		const proofShotOpts = { cwd: outputDir };
+		const readJsonList = (command: string[], key: string): unknown[] => {
+			const output = runAgentBrowser(command, proofShotOpts);
+			if (typeof output !== "string") {
+				throw new Error(`${key} list returned non-text output`);
+			}
+			const value = (JSON.parse(output) as { data?: Record<string, unknown> })
+				.data?.[key];
+			if (!Array.isArray(value)) {
+				throw new Error(`${key} list returned invalid JSON`);
+			}
+			return value;
+		};
+		const listSessions = () =>
+			readJsonList(["session", "list", "--json"], "sessions").filter(
+				(session): session is string => typeof session === "string",
+			);
+		const listTabs = () =>
+			readJsonList(["tab", "list", "--json"], "tabs").flatMap((tab) => {
+				if (!tab || typeof tab !== "object") return [];
+				const { tabId, url } = tab as { tabId?: unknown; url?: unknown };
+				return typeof tabId === "string" && typeof url === "string"
+					? [{ tabId, url }]
+					: [];
+			});
+		const targetSession = args.env.AGENT_BROWSER_SESSION?.trim() || "default";
+		let tabIdsBefore = new Set<string>();
+		try {
+			browserWasActive = listSessions().includes(targetSession);
+		} catch (err) {
+			browserWasActive = true;
+			args.warn(
+				`publish-report: browser session preflight failed (${(err as Error).message}) — preserving the browser`,
+			);
+		}
+		if (browserWasActive) {
+			try {
+				tabIdsBefore = new Set(listTabs().map((tab) => tab.tabId));
+				tabBaselineAvailable = true;
+			} catch (err) {
+				args.warn(
+					`publish-report: browser tab preflight failed (${(err as Error).message}) — skipping report tab cleanup`,
+				);
+			}
+		}
+		identifyReportTabs = () => {
+			if (browserWasActive && !tabBaselineAvailable) return;
+			try {
+				reportTabIds = listTabs()
+					.filter(
+						(tab) =>
+							!tabIdsBefore.has(tab.tabId) &&
+							tab.url === args.url &&
+							/^t\d+$/.test(tab.tabId),
+					)
+					.map((tab) => tab.tabId);
+				if (reportTabIds.length === 0) {
+					throw new Error("no new tabs matched the published report URL");
+				}
+				tabIdentificationError = undefined;
+			} catch (err) {
+				tabIdentificationError = err as Error;
+			}
+		};
 
+		startAttempted = true;
 		runProofShot(
 			[
 				"start",
@@ -389,7 +470,7 @@ async function captureReportScreenshot(args: CaptureArgs): Promise<string> {
 			],
 			proofShotOpts,
 		);
-		started = true;
+		identifyReportTabs();
 
 		// Final form (founder-decided after the demo rounds, 2026-06-04):
 		// FULL-PAGE capture at deviceScaleFactor 2 — "图管扫结构,链接管细读".
@@ -465,17 +546,56 @@ async function captureReportScreenshot(args: CaptureArgs): Promise<string> {
 		}
 		return dest;
 	} finally {
-		// stop MUST run once start succeeded — never leak the browser/port
-		// (Codex R1#5). A stop failure is warned, not thrown: it must not
-		// mask the actual screenshot result. Same cwd as start — that is
-		// where the session lives (QA Round 1 Bug B).
-		if (started) {
-			try {
-				runProofShot(["stop"], { cwd: outputDir });
-			} catch (err) {
+		// Stop recording before page/browser cleanup so ProofShot can finalize
+		// the screencast. Shared browsers lose only new stable ids matched to
+		// this report URL; owned browsers close as a tree. Cleanup failures never
+		// mask the screenshot/delivery result.
+		if (startAttempted) {
+			if (reportTabIds.length === 0) identifyReportTabs?.();
+			if (tabIdentificationError) {
 				args.warn(
-					`publish-report: proofshot stop failed: ${(err as Error).message}`,
+					`publish-report: report tab identification failed: ${tabIdentificationError.message}`,
 				);
+			}
+			try {
+				runAgentBrowser(["record", "stop"], { cwd: outputDir });
+			} catch (firstError) {
+				args.warn(
+					`publish-report: proofshot recording stop failed (${(firstError as Error).message}) — retrying once`,
+				);
+				try {
+					runAgentBrowser(["record", "stop"], { cwd: outputDir });
+				} catch (retryError) {
+					args.warn(
+						`publish-report: proofshot recording stop failed after retry (${(retryError as Error).message}) — recording may remain active; preserving any shared browser`,
+					);
+				}
+			}
+			const closeReportTabs = () => {
+				for (const reportTabId of reportTabIds) {
+					try {
+						runAgentBrowser(["tab", "close", reportTabId], {
+							cwd: outputDir,
+						});
+					} catch (err) {
+						args.warn(
+							`publish-report: report tab close failed: ${(err as Error).message}`,
+						);
+					}
+				}
+			};
+			if (browserWasActive && tabBaselineAvailable) {
+				closeReportTabs();
+			}
+			if (browserWasActive === false) {
+				try {
+					runAgentBrowser(["close"], { cwd: outputDir });
+				} catch (err) {
+					args.warn(
+						`publish-report: browser close failed (${(err as Error).message}) — falling back to report tabs`,
+					);
+					closeReportTabs();
+				}
 			}
 		}
 		if (outputDir) {
@@ -513,6 +633,24 @@ function defaultRunProofShot(
 		stdio: ["pipe", "inherit", "inherit"],
 		cwd: opts.cwd,
 	});
+}
+
+function defaultRunAgentBrowser(
+	args: string[],
+	opts: { cwd?: string } = {},
+): string | undefined {
+	if (args.at(-1) === "--json") {
+		return execFileSync("agent-browser", args, {
+			encoding: "utf8",
+			stdio: ["pipe", "pipe", "inherit"],
+			cwd: opts.cwd,
+		});
+	}
+	execFileSync("agent-browser", args, {
+		stdio: ["pipe", "inherit", "inherit"],
+		cwd: opts.cwd,
+	});
+	return undefined;
 }
 
 /** Recursively locate the first file named `name` under `dir` (depth-first). */
