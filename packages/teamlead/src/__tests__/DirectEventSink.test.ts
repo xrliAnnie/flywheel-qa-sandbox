@@ -896,6 +896,27 @@ describe("DirectEventSink — FLY-493: pr_handoff → terminal completed", () =>
 		expect(store.getSession("exec-1")?.adapter_type).toBe("antigravity-tmux");
 	});
 
+	it("FLY-2211: reserves Codex ownership before the running session becomes visible", async () => {
+		const reserve = vi.fn((executionId: string) => {
+			expect(executionId).toBe("exec-1");
+			expect(store.getSession(executionId)).toBeUndefined();
+			return true;
+		});
+		const releaseReservation = vi.fn(() => true);
+		const sink = new DirectEventSink(store, makeConfig(), testProjects);
+		sink.codexExecutionOwners = { reserve, releaseReservation };
+
+		await sink.emitStarted(makeEnvelope({ runnerBackend: "codex-tmux" }));
+
+		expect(reserve).toHaveBeenCalledOnce();
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		await sink.emitFailed(
+			makeEnvelope({ runnerBackend: "codex-tmux" }),
+			"adapter never activated",
+		);
+		expect(releaseReservation).toHaveBeenCalledWith("exec-1");
+	});
+
 	// FLY-728: the PRODUCTION started path must persist the resolved runner model
 	// as runner_model so the dashboard / issue surfaces show which model a
 	// per-issue routed runner is using.

@@ -4,6 +4,24 @@
 # reporter leg finishes. Claude Stop/StopFailure remain reporter-only.
 set -u
 
+runner_stop_repo_dir="${FLYWHEEL_DIR:-}"
+if [ -z "$runner_stop_repo_dir" ] && [ -n "${FLYWHEEL_COMM_CLI:-}" ]; then
+  runner_stop_repo_dir="$(cd "$(dirname "$FLYWHEEL_COMM_CLI")/../../.." 2>/dev/null && pwd)"
+fi
+if [ -z "$runner_stop_repo_dir" ]; then
+  runner_stop_repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd)"
+fi
+runner_stop_kill_ledger_lib="${runner_stop_repo_dir}/scripts/lib/kill-ledger.sh"
+if [ -r "$runner_stop_kill_ledger_lib" ]; then
+  # shellcheck source=scripts/lib/kill-ledger.sh
+  source "$runner_stop_kill_ledger_lib"
+else
+  flywheel_audited_signal() {
+    echo "[runner-stop-notify] kill ledger helper unavailable; signal refused" >&2
+    return 1
+  }
+fi
+
 runner_stop_log_lib="${FLYWHEEL_LOG_LIB:-}"
 if [ -z "$runner_stop_log_lib" ] && [ -n "${FLYWHEEL_DIR:-}" ]; then
   runner_stop_log_lib="$FLYWHEEL_DIR/scripts/lib/flywheel-log.sh"
@@ -39,15 +57,17 @@ run_supervised_leg() {
     sleep 12
     if kill -0 "$child_pid" 2>/dev/null; then
       if [ "$child_pgid" = "$child_pid" ] && [ "$child_pgid" != "$supervisor_pgid" ] && [ "$child_pgid" != "$parent_pgid" ]; then
-        kill -TERM -- "-$child_pgid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+        flywheel_audited_signal "runner_stop_notify" "SIGTERM" "pgid" "$child_pgid" "${FLYWHEEL_EXEC_ID:-}" "supervised_leg_timeout" || \
+          flywheel_audited_signal "runner_stop_notify" "SIGTERM" "pid" "$child_pid" "${FLYWHEEL_EXEC_ID:-}" "supervised_leg_timeout" || true
       else
-        kill -TERM "$child_pid" 2>/dev/null || true
+        flywheel_audited_signal "runner_stop_notify" "SIGTERM" "pid" "$child_pid" "${FLYWHEEL_EXEC_ID:-}" "supervised_leg_timeout" || true
       fi
       sleep 2
       if [ "$child_pgid" = "$child_pid" ] && [ "$child_pgid" != "$supervisor_pgid" ] && [ "$child_pgid" != "$parent_pgid" ]; then
-        kill -KILL -- "-$child_pgid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+        flywheel_audited_signal "runner_stop_notify" "SIGKILL" "pgid" "$child_pgid" "${FLYWHEEL_EXEC_ID:-}" "supervised_leg_timeout_escalation" || \
+          flywheel_audited_signal "runner_stop_notify" "SIGKILL" "pid" "$child_pid" "${FLYWHEEL_EXEC_ID:-}" "supervised_leg_timeout_escalation" || true
       else
-        kill -KILL "$child_pid" 2>/dev/null || true
+        flywheel_audited_signal "runner_stop_notify" "SIGKILL" "pid" "$child_pid" "${FLYWHEEL_EXEC_ID:-}" "supervised_leg_timeout_escalation" || true
       fi
     fi
   ) &
@@ -55,9 +75,10 @@ run_supervised_leg() {
   watchdog_pgid="$(ps -o pgid= -p "$watchdog_pid" 2>/dev/null | tr -d ' ')"
   wait "$child_pid" 2>/dev/null || true
   if [ "$watchdog_pgid" = "$watchdog_pid" ] && [ "$watchdog_pgid" != "$supervisor_pgid" ] && [ "$watchdog_pgid" != "$parent_pgid" ]; then
-    kill -TERM -- "-$watchdog_pgid" 2>/dev/null || kill -TERM "$watchdog_pid" 2>/dev/null || true
+    flywheel_audited_signal "runner_stop_notify" "SIGTERM" "pgid" "$watchdog_pgid" "${FLYWHEEL_EXEC_ID:-}" "watchdog_cleanup" || \
+      flywheel_audited_signal "runner_stop_notify" "SIGTERM" "pid" "$watchdog_pid" "${FLYWHEEL_EXEC_ID:-}" "watchdog_cleanup" || true
   else
-    kill -TERM "$watchdog_pid" 2>/dev/null || true
+    flywheel_audited_signal "runner_stop_notify" "SIGTERM" "pid" "$watchdog_pid" "${FLYWHEEL_EXEC_ID:-}" "watchdog_cleanup" || true
   fi
   wait "$watchdog_pid" 2>/dev/null || true
   return 0

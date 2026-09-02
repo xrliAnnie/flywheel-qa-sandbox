@@ -142,6 +142,7 @@ function makeService(
 	store: MockStore,
 	notifier: MockNotifier,
 	livenessTracker?: { started(): number; completed(token: number): void },
+	onZombieDeclared?: (session: Session, reason: string) => void,
 ): HeartbeatService {
 	return new HeartbeatService(
 		store as never,
@@ -161,6 +162,8 @@ function makeService(
 		undefined,
 		undefined,
 		livenessTracker,
+		undefined,
+		onZombieDeclared,
 	);
 }
 
@@ -314,6 +317,26 @@ describe("M3 declaration", () => {
 			"failed",
 			expect.any(String),
 			expect.stringMatching(/^zombie: tmux window runner-flywheel:@829 dead/),
+		);
+	});
+
+	it("captures a death snapshot after a Codex zombie declaration", async () => {
+		const onZombieDeclared = vi.fn();
+		service.stop();
+		service = makeService(store, notifier, undefined, onZombieDeclared);
+		const codex = sess({ adapter_type: "codex-tmux" });
+		store.getSession.mockReturnValue(codex);
+		primeTwoAbsentPasses(codex);
+
+		await service.reconcileMonitorLoss();
+		await service.reconcileMonitorLoss();
+
+		expect(onZombieDeclared).toHaveBeenCalledWith(
+			expect.objectContaining({
+				execution_id: "exec-z1",
+				adapter_type: "codex-tmux",
+			}),
+			expect.stringMatching(/^zombie: tmux window /),
 		);
 	});
 

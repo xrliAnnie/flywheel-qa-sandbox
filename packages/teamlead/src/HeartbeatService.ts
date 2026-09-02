@@ -519,6 +519,8 @@ export class HeartbeatService implements ReconnectController {
 		private livenessPassTracker?: LivenessPassTracker,
 		/** FLY-1995: wall-clock correlation only; profiler data owns CPU attribution. */
 		private recordSpan?: (name: string, startMs: number, endMs: number) => void,
+		/** FLY-2211: best-effort OS snapshot after a Codex zombie becomes durable. */
+		private onCodexZombieDeclared?: (session: Session, reason: string) => void,
 	) {}
 
 	private maintenanceInFlight = false;
@@ -1212,6 +1214,15 @@ export class HeartbeatService implements ReconnectController {
 				// the transition, so its own last_error is stale; the deterministic
 				// event id makes a wrong first write permanent (backfill dedupes).
 				this.recordUnroutableZombieAudit(fresh, lastError);
+			}
+			if (fresh.adapter_type === "codex-tmux" && this.onCodexZombieDeclared) {
+				try {
+					this.onCodexZombieDeclared(fresh, lastError);
+				} catch (error) {
+					console.warn(
+						`[HeartbeatService] Codex zombie death snapshot failed (ignored): ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 			}
 
 			// 6) Cleanup — declaration owns every suppression it created.

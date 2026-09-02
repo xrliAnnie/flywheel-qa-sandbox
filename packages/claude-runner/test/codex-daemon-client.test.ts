@@ -767,6 +767,7 @@ describe("runGoalToTerminal", () => {
 		let waiting = true;
 		let latched = false;
 		const writes: boolean[] = [];
+		const recoveryCommit = vi.fn(async () => undefined);
 		const result = await runGoalToTerminal(makeClient(d), {
 			threadId: "t",
 			objective: "paused restart fixture",
@@ -781,6 +782,7 @@ describe("runGoalToTerminal", () => {
 				waiting = false;
 			},
 			now: () => 0,
+			onRecoveryOwnershipEstablished: recoveryCommit,
 		});
 		expect(result.status).toBe("complete");
 		const sets = d.sent.filter((frame) => frame.method === "thread/goal/set");
@@ -791,18 +793,26 @@ describe("runGoalToTerminal", () => {
 			status: "active",
 		});
 		expect(writes).toEqual([true, false]);
+		expect(recoveryCommit).toHaveBeenCalledTimes(1);
+		expect(recoveryCommit).toHaveBeenCalledWith({
+			kind: "gate_hold_confirmed",
+			threadId: "t",
+			goalStatus: "paused",
+		});
 	});
 
 	it("FLY-1257: restart preflight reactivates a paused goal whose gate resolved during downtime", async () => {
 		const d = new FakeDaemon();
+		let goalStatus: GoalStatus = "paused";
 		d.responders.set("thread/goal/get", () => ({
 			goal: {
-				status: "paused",
+				status: goalStatus,
 				objective: "resolved while down",
 				tokenBudget: 901,
 			},
 		}));
 		d.responders.set("thread/goal/set", (_params, _id, push) => {
+			goalStatus = "complete";
 			push({
 				method: "goal/updated",
 				params: {
@@ -813,6 +823,7 @@ describe("runGoalToTerminal", () => {
 			return {};
 		});
 		let latched = true;
+		const recoveryCommit = vi.fn(async () => undefined);
 		const result = await runGoalToTerminal(makeClient(d), {
 			threadId: "t",
 			objective: "resolved while down",
@@ -823,16 +834,26 @@ describe("runGoalToTerminal", () => {
 				latched = held;
 			},
 			now: () => 0,
+			onRecoveryOwnershipEstablished: recoveryCommit,
 		});
 		expect(result.status).toBe("complete");
 		expect(latched).toBe(false);
-		expect(d.sentMethods()).toEqual(["thread/goal/get", "thread/goal/set"]);
+		expect(d.sentMethods()).toEqual([
+			"thread/goal/get",
+			"thread/goal/set",
+			"thread/goal/get",
+		]);
 		expect(
 			d.sent.find((frame) => frame.method === "thread/goal/set")?.params,
 		).toMatchObject({
 			objective: "resolved while down",
 			tokenBudget: 901,
 			status: "active",
+		});
+		expect(recoveryCommit).toHaveBeenCalledWith({
+			kind: "terminal_goal_confirmed",
+			threadId: "t",
+			goalStatus: "complete",
 		});
 	});
 
@@ -1315,6 +1336,7 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			kind: "wake",
 			message: { id: "resume-wake", content: "continue" },
 		});
+		const recoveryCommit = vi.fn(async () => undefined);
 
 		const result = await runGoalToTerminal(makeClient(d), {
 			threadId: "t",
@@ -1322,9 +1344,16 @@ describe("runGoalToTerminal — FLY-1269 phase hold", () => {
 			now: () => 100_000,
 			sleep: async () => {},
 			phaseLifecycle: phase,
+			onRecoveryOwnershipEstablished: recoveryCommit,
 		});
 		expect(result.status).toBe("blocked");
 		expect(phase.entered).toHaveLength(0);
+		expect(recoveryCommit).toHaveBeenCalledTimes(1);
+		expect(recoveryCommit).toHaveBeenCalledWith({
+			kind: "phase_hold_confirmed",
+			threadId: "t",
+			goalStatus: "paused",
+		});
 		const starts = d.sent.filter((frame) => frame.method === "turn/start");
 		expect(starts).toHaveLength(1);
 		expect((starts[0]?.params as { input: unknown }).input).toEqual([
@@ -2320,6 +2349,125 @@ describe("CodexDaemonClient — R22 zero-budget fail-close", () => {
 
 describe("runGoalToTerminal — R23 setup-phase ordering", () => {
 	const noSleep = () => Promise.resolve();
+
+	it("FLY-2211: hard recovery commit runs only after turn/start returns its receipt", async () => {
+		const d = new FakeDaemon();
+		const ordering: string[] = [];
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", (_p, _id, push) => {
+			ordering.push("turn-request");
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					objective: "recover owner",
+					goal: { status: "complete", tokensUsed: 1 },
+				},
+			});
+			return { turn: { id: "turn-recovery-1" } };
+		});
+
+		const result = await runGoalToTerminal(makeClient(d), {
+			threadId: "t",
+			objective: "recover owner",
+			sleep: noSleep,
+			now: () => 0,
+			onRecoveryOwnershipEstablished: async (receipt) => {
+				ordering.push(`recovery-commit:${receipt.threadId}:${receipt.turnId}`);
+			},
+		});
+
+		expect(result.status).toBe("complete");
+		expect(ordering).toEqual([
+			"turn-request",
+			"recovery-commit:t:turn-recovery-1",
+		]);
+	});
+
+	it("FLY-2211: recovery commit failure wins over a terminal streamed before the turn receipt", async () => {
+		const d = new FakeDaemon();
+		d.responders.set("thread/goal/set", () => ({}));
+		d.responders.set("turn/start", (_p, _id, push) => {
+			push({
+				method: "goal/updated",
+				params: {
+					threadId: "t",
+					objective: "recover owner",
+					goal: { status: "complete", tokensUsed: 1 },
+				},
+			});
+			return { turn: { id: "turn-recovery-2" } };
+		});
+
+		await expect(
+			runGoalToTerminal(makeClient(d), {
+				threadId: "t",
+				objective: "recover owner",
+				sleep: noSleep,
+				now: () => 0,
+				onRecoveryOwnershipEstablished: async () => {
+					throw new Error("revision fence lost");
+				},
+			}),
+		).rejects.toMatchObject({
+			name: "GoalRunError",
+			kind: "setup_failed",
+			message: "recovery commit failed: revision fence lost",
+		});
+	});
+
+	it.each([
+		{
+			name: "gate-hold confirmation",
+			configure(d: FakeDaemon) {
+				d.responders.set("thread/goal/get", () => ({
+					goal: { status: "active", objective: "recovery confirmation" },
+				}));
+				d.responders.set("thread/goal/set", () => {
+					d.triggerClose("socket died during gate-hold confirmation");
+					return {};
+				});
+			},
+			waiting: true,
+			latched: true,
+		},
+		{
+			name: "resumed-goal confirmation",
+			configure(d: FakeDaemon) {
+				let gets = 0;
+				d.responders.set("thread/goal/get", () => {
+					gets += 1;
+					if (gets === 2) {
+						d.triggerClose("socket died during resumed-goal confirmation");
+					}
+					return {
+						goal: { status: "paused", objective: "recovery confirmation" },
+					};
+				});
+				d.responders.set("thread/goal/set", () => ({}));
+			},
+			waiting: false,
+			latched: false,
+		},
+	])(
+		"FLY-2211: transport death keeps its classification during $name",
+		async ({ configure, waiting, latched }) => {
+			const d = new FakeDaemon();
+			configure(d);
+
+			await expect(
+				runGoalToTerminal(makeClient(d), {
+					threadId: "t",
+					objective: "recovery confirmation",
+					isWaiting: () => waiting,
+					readGateHoldLatch: () => latched,
+					writeGateHoldLatch: () => {},
+					now: () => 0,
+					onRecoveryOwnershipEstablished: async () => undefined,
+				}),
+			).rejects.toMatchObject({ kind: "transport_closed" });
+		},
+	);
 
 	it("HIGH: a terminal streamed during setup (before the turn/start response) wins over a following close", async () => {
 		const d = new FakeDaemon();

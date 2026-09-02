@@ -21,8 +21,16 @@ import {
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
+import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import {
+	CodexExecutionOwnershipRegistry,
+	probeCodexDaemonLiveness,
+	probeCodexRolloutMtime,
 	type RunnerTuiWindowLostEvidence,
+	readCodexGateHoldLatch,
+	readCodexLaunchSnapshot,
+	reapCodexDaemonForExecution,
+	resolveDaemonSocketPath,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
 } from "flywheel-claude-runner";
@@ -193,6 +201,12 @@ import { CodexReviewEffects } from "./codex-review-effects.js";
 import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
 import { sweepCodexRunnerOrphans } from "./codex-runner-orphan-reaper.js";
+import {
+	buildCodexRecoveryContext,
+	CodexSessionReowner,
+	isCodexReownExcluded,
+} from "./codex-session-reown.js";
+import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
@@ -246,6 +260,7 @@ import {
 	type EventLoopHealthSnapshot,
 } from "./event-loop-attribution.js";
 import { createEventRouter } from "./event-route.js";
+import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	checkPrMergeViaGh,
 	createExternalMergeReconciler,
@@ -508,7 +523,10 @@ import { makeChannelArchiveDefaultProvider } from "./roundtable/channel-archive-
 import { RoundtableThreadManager } from "./roundtable/RoundtableThreadManager.js";
 import { loadRoundtableConfig } from "./roundtable/roundtable-config.js";
 import { buildTopicTrigger } from "./roundtable/topic-trigger.js";
-import { setupRunInfrastructure } from "./run-infra.js";
+import {
+	type CodexRecoveryRuntime,
+	setupRunInfrastructure,
+} from "./run-infra.js";
 import {
 	defaultResolveLeadId,
 	makeRunnerAuthScan,
@@ -5952,6 +5970,11 @@ export async function startBridge(
 	const terminalArchiveBuffer = createTerminalArchiveEnqueueBuffer();
 	const terminalArchiveEnqueue = (issueId: string) =>
 		terminalArchiveBuffer.enqueue(issueId);
+	// FLY-2211: one process-local authority shared by first dispatch, rescue,
+	// boot reconciliation, and the adjacent orphan reaper.
+	const codexExecutionOwners = new CodexExecutionOwnershipRegistry();
+	const codexRecoveryRuntimes = new Map<string, CodexRecoveryRuntime>();
+	const codexMaintenanceTicks: string[] = [];
 
 	let startDispatcher = opts?.startDispatcher;
 	let internalDispatcher: IRetryDispatcher | undefined;
@@ -5964,6 +5987,8 @@ export async function startBridge(
 				registry,
 				{
 					flagStore,
+					codexExecutionOwners,
+					codexRecoveryRuntimes,
 					chatThreadCreator,
 					onProjectConfigInvalid: async ({
 						projectName,
@@ -6072,6 +6097,13 @@ export async function startBridge(
 					onTuiWindowLost: (evidence) => tuiWindowAlertHolder.lost?.(evidence),
 					onTuiWindowRestored: (executionId) =>
 						tuiWindowAlertHolder.restored?.(executionId),
+					onCodexTransportClose: async (evidence) => {
+						await recordCodexTransportDeathSnapshot(
+							store,
+							{ ...evidence, trigger: "transport_close" },
+							codexMaintenanceTicks,
+						);
+					},
 				},
 			);
 			startDispatcher = dispatcher;
@@ -6882,6 +6914,172 @@ export async function startBridge(
 	// listener (config.host may be 127.0.0.1 / localhost / ::1), so derive it
 	// from config.host + the real listening port (IPv6 bracketed).
 	const loopbackBaseUrl = buildLoopbackBaseUrl(config.host, port);
+	const codexReownStateDir = process.env.FLYWHEEL_STATE_DIR?.trim();
+	const codexReownRoomInfoPath = codexReownStateDir
+		? join(codexReownStateDir, "room-info.json")
+		: undefined;
+	const readCodexReownRoomInfo = (): unknown => {
+		if (!codexReownRoomInfoPath || !ffExistsSync(codexReownRoomInfoPath)) {
+			return undefined;
+		}
+		try {
+			return JSON.parse(
+				ffReadFileSync(codexReownRoomInfoPath, "utf8"),
+			) as unknown;
+		} catch (error) {
+			throw new Error(
+				`invalid Codex re-owner room-info at ${codexReownRoomInfoPath}: ${
+					error instanceof Error ? error.message : String(error)
+				}`,
+			);
+		}
+	};
+	const codexSessionReowner = new CodexSessionReowner({
+		store,
+		owners: codexExecutionOwners,
+		isCurrentBinding: (session) => {
+			const bound = store.getWorkflowRunNodeForExecution(session.execution_id);
+			if (!bound) return true; // legacy/non-engine session
+			const latest = store
+				.listWorkflowRunNodes(bound.run_id, bound.node_id)
+				.at(-1);
+			return (
+				store.getWorkflowRun(bound.run_id)?.status === "active" &&
+				latest?.attempt === bound.attempt &&
+				latest.execution_id === session.execution_id
+			);
+		},
+		preflightRecovery: (session) => {
+			const snapshot = readCodexLaunchSnapshot(session.execution_id);
+			if (!snapshot.rehydrationContext) {
+				throw new Error(
+					`immutable launch snapshot for ${session.execution_id} lacks rehydration context`,
+				);
+			}
+			if (!codexRecoveryRuntimes.has(session.project_name)) {
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			}
+		},
+		hasOpenGate: (session) => {
+			const latched = readCodexGateHoldLatch(session.execution_id);
+			let db: CommDB | undefined;
+			try {
+				db = CommDB.openReadonly(commDbPathForProject(session.project_name));
+				return (
+					latched || db.getOpenGatesByRunner(session.execution_id).length > 0
+				);
+			} catch (error) {
+				if (latched) return true;
+				throw error;
+			} finally {
+				db?.close();
+			}
+		},
+		probe: (executionId) => probeCodexDaemonLiveness(executionId),
+		probeRolloutMtime: async (executionId) =>
+			probeCodexRolloutMtime(executionId),
+		reap: (executionId) => reapCodexDaemonForExecution(executionId),
+		revive: async (
+			session,
+			{ capabilities, onRecoveryOwnershipEstablished },
+		) => {
+			const runtime = codexRecoveryRuntimes.get(session.project_name);
+			if (!runtime) {
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			}
+			const snapshot = readCodexLaunchSnapshot(session.execution_id);
+			let leadId: string | undefined;
+			try {
+				leadId = resolveLeadForIssue(
+					projects,
+					session.project_name,
+					store.getSessionLabels(session.execution_id),
+				).lead.agentId;
+			} catch {
+				leadId = undefined;
+			}
+			const mailboxIdentity = leadId
+				? deriveRunnerMailboxIdentity(session.execution_id, leadId)
+				: undefined;
+			const progressPath = session.plan_path
+				? pathIsAbsolute(session.plan_path)
+					? join(dirname(session.plan_path), "progress.md")
+					: join(snapshot.cwd, dirname(session.plan_path), "progress.md")
+				: undefined;
+			const stateDbPath = store.getDbPath();
+			const context = buildCodexRecoveryContext({
+				session,
+				snapshot,
+				capabilities,
+				...(leadId ? { leadId } : {}),
+				...(mailboxIdentity
+					? {
+							agentName: mailboxIdentity.agentName,
+							teamName: mailboxIdentity.teamName,
+						}
+					: {}),
+				commDbPath: commDbPathForProject(session.project_name),
+				...(stateDbPath !== ":memory:" ? { stateDbPath } : {}),
+				bridgeUrl: loopbackBaseUrl,
+				...(config.ingestToken
+					? { bridgeIngestToken: config.ingestToken }
+					: {}),
+				...(progressPath ? { progressPath } : {}),
+				onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
+			});
+			return runtime.resume(context, { onRecoveryOwnershipEstablished });
+		},
+		readTurnHolder: async (session) => {
+			const role = session.chat_thread_role ?? session.session_role;
+			if (role !== "design" && role !== "implement" && role !== "qa") {
+				return session.execution_id;
+			}
+			let db: CommDB | undefined;
+			try {
+				db = CommDB.openReadonly(commDbPathForProject(session.project_name));
+				return db.getTurn(session.issue_id)?.holder_exec_id ?? null;
+			} finally {
+				db?.close();
+			}
+		},
+		onRecoveryExhausted: async (session, attempts) => {
+			const runtime = codexRecoveryRuntimes.get(session.project_name);
+			if (!runtime) {
+				throw new Error(
+					`Codex recovery runtime unavailable for ${session.project_name}`,
+				);
+			}
+			await runtime.failExhausted(session, attempts);
+		},
+		record: (event, session, payload) => {
+			store.insertEvent({
+				event_id: String(payload.eventId ?? randomUUID()),
+				execution_id: session.execution_id,
+				issue_id: session.issue_id,
+				project_name: session.project_name,
+				event_type: event,
+				source: "bridge.codex-session-reown",
+				payload,
+			});
+		},
+		alert: async (session, reason) => {
+			console.warn(`[codex-session-reown] ${session.execution_id}: ${reason}`);
+			await metaAlertNotifier.notify({
+				reason: "codex_reown_failed",
+				title: `Codex recovery needs attention (${session.issue_identifier ?? session.issue_id})`,
+				body: `${session.execution_id}: ${reason}`,
+			});
+		},
+		nowMs: () => Date.now(),
+		holderId: `bridge:${process.pid}:${randomUUID()}`,
+		isExcluded: (session) =>
+			isCodexReownExcluded(session, readCodexReownRoomInfo()) ||
+			!codexRecoveryRuntimes.has(session.project_name),
+	});
 
 	// FLY-720: crash-reaper injected deps, permanently enabled. Grace defaults
 	// to the orphan threshold (clean handoff with reapOrphans); a larger
@@ -7089,6 +7287,20 @@ export async function startBridge(
 		// heartbeat interval); single-flight + detached inside HeartbeatService.
 		// Tick 0 = the boot pass (orphan reap + first sweep).
 		async (tick) => {
+			codexMaintenanceTicks.push(new Date().toISOString());
+			if (codexMaintenanceTicks.length > 3) codexMaintenanceTicks.shift();
+			// FLY-2211: recovery is default-on and precedes the orphan mutator. Both
+			// lanes consume this exact candidate snapshot for the whole tick.
+			const codexCandidateSnapshot = store.getReadoptCandidateSessions();
+			try {
+				await codexSessionReowner.runPass(codexCandidateSnapshot);
+			} catch (error) {
+				console.warn(
+					`[codex-session-reown] maintenance pass failed closed: ${
+						error instanceof Error ? error.message : String(error)
+					}`,
+				);
+			}
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.
 			if (residueHarvester) {
@@ -7121,17 +7333,14 @@ export async function startBridge(
 			// requires a fresh argv + socket + CODEX_HOME proof before every signal.
 			try {
 				const activeExecutionIds = new Set(
-					store
-						.getReadoptCandidateSessions()
-						.map((session) => session.execution_id),
+					codexCandidateSnapshot.map((session) => session.execution_id),
 				);
 				await sweepCodexRunnerOrphans(
 					{
 						activeExecutionIds,
 						isExecutionActive: (executionId) =>
-							store
-								.getReadoptCandidateSessions()
-								.some((session) => session.execution_id === executionId),
+							activeExecutionIds.has(executionId) ||
+							codexExecutionOwners.isExecutionOwned(executionId),
 					},
 					{
 						audit: (event, detail) => {
@@ -7226,6 +7435,23 @@ export async function startBridge(
 		livenessTrackers.liveness,
 		(name, startMs, endMs) =>
 			eventLoopAttribution.recordSpan(name, startMs, endMs),
+		(session, reason) => {
+			void recordCodexTransportDeathSnapshot(
+				store,
+				{
+					executionId: session.execution_id,
+					socketPath: resolveDaemonSocketPath(session.execution_id),
+					reason,
+					at: new Date().toISOString(),
+					trigger: "zombie_declaration",
+				},
+				codexMaintenanceTicks,
+			).catch((error) =>
+				console.warn(
+					`[Bridge] Codex zombie death snapshot failed (ignored): ${error instanceof Error ? error.message : String(error)}`,
+				),
+			);
+		},
 	);
 	heartbeatServiceRef.current = heartbeatService;
 	livenessWiring.liveness = true;
@@ -7573,6 +7799,18 @@ export async function startBridge(
 	// false-stuck/idle window and making the in-memory set restart-safe (re-seeded
 	// every boot → survives repeated restarts). No-op on the kill-switch path.
 	// Best-effort: must not block Bridge startup.
+	// FLY-2211: unlike the title seed below, this pass is an authority barrier.
+	// It runs after project runtimes exist and before heartbeat can dispatch its
+	// first maintenance/orphan lane. Individual candidates fail closed.
+	try {
+		await codexSessionReowner.runPass(store.getReadoptCandidateSessions());
+	} catch (err) {
+		console.error(
+			`[Bridge] Codex recovery boot pass failed closed: ${
+				err instanceof Error ? err.message : String(err)
+			}`,
+		);
+	}
 	let bootReconnectExecutionIds: string[] = [];
 	try {
 		bootReconnectExecutionIds = await heartbeatService.seedReconnecting();
@@ -9812,9 +10050,16 @@ export async function startBridge(
 			grantTurn: ({ issueId, execId, phase, projectName, sourceEventId }) => {
 				const db = new CommDB(commDbPathForProject(projectName));
 				try {
-					db.grantTurn(issueId, execId, phase, Date.now(), {
-						project: projectName,
-						sourceEventId,
+					const priorHolder = db.getTurn(issueId)?.holder_exec_id;
+					withExecutionMutationLease({
+						store,
+						executionId: priorHolder,
+						holder: `turn-writer:${sourceEventId}`,
+						mutate: () =>
+							db.grantTurn(issueId, execId, phase, Date.now(), {
+								project: projectName,
+								sourceEventId,
+							}),
 					});
 				} finally {
 					db.close();
@@ -9973,7 +10218,29 @@ export async function startBridge(
 					const grantedAtMs = Date.now();
 					const db = new CommDB(commDbPathForProject(input.projectName));
 					try {
-						return grantWorkflowReworkTurn(db, input, grantedAtMs);
+						const priorHolder = db.getTurn(input.issueId)?.holder_exec_id;
+						return withExecutionMutationLease({
+							store,
+							executionId: priorHolder,
+							holder: `turn-writer:${input.sourceEventId}`,
+							mutate: () => {
+								const turn = grantWorkflowReworkTurn(db, input, grantedAtMs);
+								const projected = store.recordWorkflowActivationTurn({
+									activationId: input.activationId,
+									issueId: input.issueId,
+									executionId: input.executionId,
+									epoch: turn.epoch,
+									sourceEventId: input.sourceEventId,
+									grantedAt: turn.grantedAt,
+								});
+								if (!projected.ok) {
+									throw new Error(
+										`workflow TURN projection failed: ${projected.reason}`,
+									);
+								}
+								return turn;
+							},
+						});
 					} finally {
 						db.close();
 					}
@@ -10039,10 +10306,11 @@ export async function startBridge(
 				},
 			},
 		});
+		const workflowShipCarrierOwnerId = `bridge:${process.pid}:ship-carrier`;
 		workflowShipCarrierDeliveryHolder.current =
 			new WorkflowShipCarrierDeliveryHandler({
 				store,
-				ownerId: `bridge:${process.pid}:ship-carrier`,
+				ownerId: workflowShipCarrierOwnerId,
 				resolveAlertIdentity: (run) =>
 					resolveWorkflowRunAlertIdentity({
 						store,
@@ -10063,7 +10331,50 @@ export async function startBridge(
 					grantTurn: async (input) => {
 						const db = new CommDB(commDbPathForProject(input.projectName));
 						try {
-							return grantWorkflowShipCarrierTurn(db, input, Date.now());
+							const questionId =
+								input.context && typeof input.context === "object"
+									? (input.context as { questionId?: unknown }).questionId
+									: undefined;
+							const delivery =
+								typeof questionId === "string"
+									? store.getWorkflowCarrierDelivery(questionId)
+									: undefined;
+							if (
+								!delivery ||
+								delivery.owner_id !== workflowShipCarrierOwnerId
+							) {
+								throw new Error("carrier TURN mutation authority missing");
+							}
+							const priorHolder = db.getTurn(input.issueId)?.holder_exec_id;
+							return withExecutionMutationLease({
+								store,
+								executionId: priorHolder,
+								holder: `turn-writer:${input.sourceEventId}`,
+								mutate: () => {
+									const turn = grantWorkflowShipCarrierTurn(
+										db,
+										input,
+										Date.now(),
+									);
+									const projected = store.recordWorkflowCarrierActivationTurn({
+										questionId: delivery.question_id,
+										ownerId: workflowShipCarrierOwnerId,
+										generation: delivery.generation,
+										activationId: input.activationId,
+										issueId: input.issueId,
+										executionId: input.executionId,
+										epoch: turn.epoch,
+										sourceEventId: input.sourceEventId,
+										grantedAt: turn.grantedAt,
+									});
+									if (!projected.ok) {
+										throw new Error(
+											`workflow carrier TURN projection failed: ${projected.reason}`,
+										);
+									}
+									return turn;
+								},
+							});
 						} finally {
 							db.close();
 						}

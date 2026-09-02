@@ -18,6 +18,12 @@ vi.mock("flywheel-claude-runner", () => ({
 	buildTmuxServerBirthEnvironment: vi.fn(() => ({
 		PATH: "/usr/bin:/bin",
 	})),
+	CodexExecutionOwnershipRegistry: vi.fn().mockImplementation(() => ({
+		claim: vi.fn(() => ({ release: vi.fn() })),
+		isExecutionOwned: vi.fn(() => false),
+		releaseReservation: vi.fn(() => true),
+		reserve: vi.fn(() => true),
+	})),
 	RUNNER_PANE_BASE_ALLOWLIST: [],
 	sweepStaleSyncOpMarkers: vi.fn(),
 	syncOpMarkerPath: vi.fn((pid: number) => `/tmp/bridge-syncop.${pid}.json`),

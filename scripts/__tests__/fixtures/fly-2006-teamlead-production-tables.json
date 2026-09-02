@@ -69,6 +69,7 @@
 	"receipt_handle_requests",
 	"receipt_resend_deliveries",
 	"receipt_root_lineage",
+	"recovery_claim",
 	"retry_dispatch_intents",
 	"review_finding_ruling",
 	"roundtable_topic_threads",

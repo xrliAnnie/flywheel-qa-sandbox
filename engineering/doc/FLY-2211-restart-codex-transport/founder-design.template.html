@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2211 设计:重启波为什么杀死了 codex 工人,怎么修</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.purple { border-left-color:#af52de; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; line-height:1.75; }
+  .term { color:#007aff; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.reject { background:#fdecea; color:#ff3b30; }
+  .badge.keep { background:#e9f9ef; color:#248a3d; }
+  .badge.research { background:#f2e8fd; color:#af52de; }
+  .comment-box { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; background:#fafafa; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; margin-top:10px; padding:8px 16px; border-radius:8px; border:none; background:#007aff; color:#fff; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#248a3d; }
+  .chunk { margin-top:10px; }
+  .chunk .btn { background:#1a365d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2211:重启波为什么"杀死"了 codex 工人,怎么修</h1>
+  <div class="meta">工程设计说明 · 2026-08-31 · 分支 flywheel-FLY-2211 · Codex 设计评审 5 轮后 APPROVED · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+
+  <div class="card" data-section="一句话总结">
+    <h2>1. 一句话总结</h2>
+    <p><b>查明:8-31 中午那波重启本身一个工人都没杀;</b>四个 codex 工人是在波结束 11–21 分钟后,被一条<b>不留任何痕迹的杀伤路径</b>成对干掉的——而真正的病根是:Bridge(引擎大脑进程)重启之后,<b>没有任何人重新认领还在干活的 codex 工人</b>,它们成了"无主进程":死了没人发现(实测拖了 9–19 分钟)、被杀没人救。修法就是给 Bridge 加一个启动时的"认领器":活着的看护起来,死了的用<b>同一段对话记忆原地复活</b>,并让系统里每一次"杀进程"都必须先记账。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="工人的三件套结构">
+    <h2>2. 结构模型:一个 codex 工人其实是三个进程</h2>
+    <p>founder 看到的"工人窗"只是三件套里最薄的一层。<span class="term">daemon</span>(后台常驻进程)才是真正干活的那个:它跑 AI 循环、把每一步写进 <span class="term">rollout</span>(工作日志文件)。<span class="term">TUI</span>(窗里的文字界面)和 Bridge 都只是通过一条本地<span class="term">套接字</span>(同一台机器上进程之间的专用通话线)连到 daemon 上。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p>所以按设计,<b>重启 Bridge 确实不应该影响工人</b>——daemon 是独立进程组,Bridge 死了它照常干活。你问的"重启不就重启 bridge 吗,跟 worker 有什么关系"在结构上是对的;关系断在下一节。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="取证时间线">
+    <h2>3. 核心流程:8-31 四杀取证时间线(推翻了工单里的原始推断)</h2>
+    <p>我们把四个工人的 rollout 写盘时刻、codex 自己的运行日志(精确到秒)、Bridge 日志、全部清理巡逻的账本逐一对齐,得到的时间线和工单原来的推断不一样:</p>
+    <div class="diagram">__SVG_D2__</div>
+    <h3>三个硬结论</h3>
+    <ul>
+      <li><b>波没杀人。</b>四个 daemon 在波结束后又健康干了 11–21 分钟活,日志写到死亡前 1 秒都毫无异常——然后瞬间静默,是被外部强杀(<span class="term">SIGKILL</span>,操作系统层面"立即处死"信号)的典型死相。</li>
+      <li><b>所有"有账本"的清理机制当时都没动手。</b>重启脚本、孤儿收割巡逻、窗口清理、内存不足杀进程……逐一用它们自己的账本排除。也就是说:系统里存在至少一条<b>杀人不记账</b>的路径。在点名它之前,工单原提的"重启波不杀名单"没有可挂靠的对象。</li>
+      <li><b>无主才是病根。</b>老 Bridge 一死,四个工人就没了监护:被杀后系统拖了 9–19 分钟才宣告死亡;当天靠 Lead 手工抢救未提交的代码树才做到零丢活。哪怕没有这个杀手,无主的工人干完当前目标也会原地搁浅。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="修复设计">
+    <h2>4. 修复设计:re-own 认领器 + 快速死检 + 杀伤记账</h2>
+    <p>核心动作只有一个:Bridge 每次启动,先把机器上所有在飞的 codex 工人<b>重新认领</b>回来。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <ul>
+      <li><b>正常干活的活体:零接触。</b>只登记看护,每 5 分钟确认"套接字还活着 + rollout 还在前进"。不重启、不打扰。两类例外走"有意的、全程记账的换后台"(同一段对话记忆原地续跑):① 停在等待态(parked)的工人——它的"叫醒"通道住在 Bridge 里,必须重建;② 正卡在提问闸口等回答的工人。这是设计评审五轮抠出来的边界,不是含糊话。</li>
+      <li><b>死了的:同记忆复活。</b>复活用的是代码里早已备好、只是没人触发的通路:同一个执行体、同一个对话线程(codex 的 thread 会完整带回之前的上下文)、原地拉起新 daemon、自动重开工人窗。以后<b>无论谁再杀工人,都从"损失半天"降级为"两分钟自愈"</b>。</li>
+      <li><b>杀伤记账(抓凶手的仪表)。</b>flywheel 里每一处会发"杀进程"信号的代码,今后必须先写一行账(时间、谁、杀谁、为什么)再动手;工人死亡瞬间自动拍"现场快照"。下次再出现无痕死亡,要么账本点名,要么证明凶手在 flywheel 之外。</li>
+      <li><b>验收是真机演练:</b>①真实重启波后,正常干活的在场工人 daemon 进程号不变、rollout 持续写 ≥30 分钟(等待态/闸口态工人则断言"恰好一次带账换后台");②"谋杀演练"——手工强杀一个工人,一个巡逻节拍内(≤6 分钟)同记忆复活;后续"无损接管"增强落地后收紧到 ≤2 分钟;③演练窗口内每个信号都有先行账目。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="取舍与被拒方案">
+    <h2>5. 关键取舍与被拒方案</h2>
+    <table>
+      <tr><th>方案</th><th>判定</th><th>原因</th></tr>
+      <tr><td>工单方向 A:重启波"不杀名单"</td><td><span class="badge reject">拒</span></td><td>波本身没杀人;凶手没点名,名单没有挂靠点。其精神保留为"杀伤记账"。</td></tr>
+      <tr><td>工单方向 B:TUI 断线后重连而非退出</td><td><span class="badge reject">拒</span></td><td>实测 TUI 不是超时退出,是和 daemon 同一刻死;且 TUI 行为在上游 codex 二进制里,不是我们的改动面。</td></tr>
+      <tr><td>工单方向 C:波后重建 broker 并重接</td><td><span class="badge keep">采纳并泛化</span></td><td>泛化成本设计主体:启动认领器 + 看护 + 同记忆复活。</td></tr>
+      <tr><td>启动时直接给所有在飞工人换替身</td><td><span class="badge reject">拒</span></td><td>几乎零新代码,但每次波都杀健康工人、丢在飞上下文和未提交代码——正是这次让你生气的损失形态。仅保留为复活连败后的兜底。</td></tr>
+      <tr><td>无损接管活工人(不重启 daemon 直接接上事件流)</td><td><span class="badge research">研究门控</span></td><td>取决于 codex 的 app-server 是否允许后继连接接管进行中的目标;实现期第一步用半天做真机探针,结论只影响增强层,不阻塞主体。</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="诚实边界">
+    <h2>6. 诚实边界:这个设计做什么、不做什么</h2>
+    <ul>
+      <li><b>做:</b>认领器、复活通路、5 分钟级死亡检测、杀伤记账与死亡快照、真机波演练验收;全部带独立开关,可一键回滚到现状。</li>
+      <li><b>不做也做不到:</b>本单<b>不承诺点名 8-31 的凶手</b>——现有证据只够排除所有记账路径;仪表就位后由下一次事件点名(或证明凶手在 flywheel 之外)。</li>
+      <li><b>不做:</b>不改 codex 官方二进制的行为;不动 Claude 侧 codex 插件 broker 的生命周期(取证中顺带发现它会继承工人的 CODEX_HOME 并活过任务生命周期——已建议另立卫生工单);不动 claude 工人(它们的窗即进程,天然重启安全)。</li>
+      <li><b>已知残余风险:</b>复活会丢掉被杀那一刻正在进行的单个 turn(分钟级工作量),且复活时会把开工指令重发一遍(至多一次重复、逐字节相同——这是 codex 现行已验证的恢复合同,评审确认不装"绝不重发"的假保证);若凶手专杀"有主进程"(8-31 的旁证是替身们全存活,倾向它只碰无主进程),自愈 + 账本也能把损失压到单 turn 并留下归因证据。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="意见汇总">
+    <h2>7. 页面意见汇总</h2>
+    <p style="color:#86868b;font-size:13px;">下面实时汇总你在各节写的意见(存在你本机浏览器里,换设备不带走)。点按钮复制全部,发回给 Lead 即可。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2211';
+  var PREFIX;
+  try { PREFIX = 'fly2211-comment:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly2211-comment:unknown:'; }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 私密窗口等场景下静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('【' + sectionTitleFor(area) + '】\n' + v);
+    });
+    return parts;
+  }
+
+  function buildFullText() {
+    var parts = collect();
+    if (parts.length === 0) return '';
+    return MARKER + '\n' + parts.join('\n\n');
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length + 1);
+    var chunks = [];
+    var budget = 1800 - MARKER.length - 20;
+    var pieces = body.split('\n\n');
+    var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > budget) { chunks.push(cur); cur = ''; }
+      while (p.length > budget) { chunks.push(cur ? cur + '\n\n' + p.slice(0, budget - cur.length - 2) : p.slice(0, budget)); p = p.slice(budget); cur = ''; }
+      cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunkArea = document.getElementById('chunk-area');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary() {
+    var full = buildFullText();
+    if (!full) {
+      summaryBody.textContent = '(还没有意见)';
+      chunkArea.textContent = '';
+      return;
+    }
+    summaryBody.textContent = full;
+    chunkArea.textContent = '';
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? ('已复制第 ' + (i + 1) + ' 段') : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    var key = PREFIX + area.getAttribute('data-ckey');
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var full = buildFullText();
+    if (!full) { copyStatus.textContent = '还没有可复制的意见'; return; }
+    copyText(full, function (ok) {
+      copyStatus.textContent = ok ? '已复制' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

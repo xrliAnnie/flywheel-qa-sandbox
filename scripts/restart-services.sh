@@ -40,6 +40,30 @@ FLYWHEEL_DIR="${HOME}/Dev/flywheel"
 DEPLOYED_SHA_FILE="${HOME}/.flywheel/deployed-sha"
 LOCK_DIR="${HOME}/.flywheel/restart.lock.d"
 SCHEDULER_REPAIR_LOCK_DIR="${FLYWHEEL_SCHEDULER_REPAIR_LOCK_DIR:-${HOME}/.flywheel/scheduler-repair.lock.d}"
+# shellcheck source=lib/kill-ledger.sh
+if [[ -r "${FLYWHEEL_DIR}/scripts/lib/kill-ledger.sh" ]]; then
+    source "${FLYWHEEL_DIR}/scripts/lib/kill-ledger.sh"
+else
+    # Bridge restart is an explicit forced-shutdown path. If the helper is
+    # unavailable during a partial deploy, preserve liveness while emitting a
+    # conspicuous unaudited fallback instead of silently skipping the signal.
+    flywheel_audited_signal() {
+        local source="$1" signal="$2" target_kind="$3" target="$4"
+        local exec_id="$5" reason="$6" failure_mode="${7:-fail-closed}"
+        if [[ "$failure_mode" != "forced-shutdown-fail-open" ]]; then
+            echo "[restart] kill ledger helper unavailable; signal refused" >&2
+            return 1
+        fi
+        printf '{"kind":"KILL_LEDGER_FALLBACK","source":"%s","signal":"%s","targetKind":"%s","target":"%s","executionId":"%s","reason":"%s","ledgerError":"helper_unavailable"}\n' \
+            "$source" "$signal" "$target_kind" "$target" "$exec_id" "$reason" >&2
+        case "$target_kind" in
+            pid) kill -s "$signal" -- "$target" ;;
+            pgid) kill -s "$signal" -- "-$target" ;;
+            tmux-window) tmux kill-window -t "$target" ;;
+            *) return 2 ;;
+        esac
+    }
+fi
 # shellcheck source=lib/lead-restart-lifecycle.sh
 # shellcheck disable=SC1091
 source "${FLYWHEEL_DIR}/scripts/lib/lead-restart-lifecycle.sh"
@@ -1824,7 +1848,9 @@ stop_bridge() {
     # shellcheck disable=SC2086
     log "Stopping Bridge (port :$port, PIDs: $(echo $pids | tr '\n' ' '))..."
     local p
-    for p in $pids; do kill -TERM "$p" 2>/dev/null || true; done
+    for p in $pids; do
+        flywheel_audited_signal "restart_services" "SIGTERM" "pid" "$p" "" "bridge_restart" "forced-shutdown-fail-open" || true
+    done
     local wait_count=0 alive
     while (( wait_count < 120 )); do
         alive=0
@@ -1839,7 +1865,7 @@ stop_bridge() {
     for p in $pids; do
         if kill -0 "$p" 2>/dev/null; then
             log "WARNING: Bridge PID $p still alive after 120s, force killing"
-            kill -9 "$p" 2>/dev/null || true
+            flywheel_audited_signal "restart_services" "SIGKILL" "pid" "$p" "" "bridge_restart_escalation" "forced-shutdown-fail-open" || true
         fi
     done
     # shellcheck disable=SC2086

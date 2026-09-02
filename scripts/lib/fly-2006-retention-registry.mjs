@@ -43,6 +43,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		node_dwell_review patrol_orphan_watch
 		receipt_activation_episodes receipt_alert_outbox receipt_exemption_audit
 		receipt_handle_requests receipt_resend_deliveries retry_dispatch_intents
+		recovery_claim
 		runner_declared_states runner_phase_wakes runner_shutdown_controls
 		runner_wake_failure_episode runner_workflow_activation server_loss_episode sessions
 		ship_relevant_diff_snapshot state_store_migration three_stage_turn

@@ -1,0 +1,15 @@
+graph LR
+    subgraph B["Bridge 进程(引擎大脑,重启波重启的就是它)"]
+        GR["goal-runtime<br/>下达任务、盯进度、出事救人"]
+    end
+    subgraph DG["独立后台进程(设计上与 Bridge 生死解耦)"]
+        D["app-server daemon<br/>真正干活:跑 AI 循环、写工作日志 rollout"]
+    end
+    subgraph W["工人窗(founder 在 cmux 里看到的那个窗)"]
+        T["codex TUI<br/>只负责显示,不干活"]
+    end
+    GR -->|"本地套接字连接①"| D
+    T -->|"本地套接字连接②"| D
+    style B fill:#e8f0fe,stroke:#007aff
+    style DG fill:#fff4e5,stroke:#ff9500
+    style W fill:#e9f9ef,stroke:#34c759

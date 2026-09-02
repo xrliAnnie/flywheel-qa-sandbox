@@ -697,15 +697,16 @@ HOME="$INSTALL_HOME" /bin/bash "$INSTALLER" >"$ROOT/install.stdout" 2>"$ROOT/ins
 current="$INSTALL_HOME/.flywheel/libexec/codex-guard/current"
 if [[ "$install_rc" == "0" && -L "$current" \
   && -x "$current/codex-with-fallback.sh" && -r "$current/codex-guard.sh" \
+  && -r "$current/kill-ledger.sh" && -r "$current/kill-ledger-append.mjs" \
   && -r "$current/flywheel-codex-profile.mjs" \
   && -r "$current/codex-account-core.mjs" \
   && -r "$current/codex-account-core.d.mts" \
   && -r "$current/codex-account-registry.json" \
   && -x "$INSTALL_HOME/.local/bin/codex-with-fallback" \
   && -x "$INSTALL_HOME/.local/bin/codex-profile" ]]; then
-  pass "installer publishes the six-file release and both global shims"
+  pass "installer publishes the eight-file release and both global shims"
 else
-  fail "installer publishes the six-file release and both global shims" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
+  fail "installer publishes the eight-file release and both global shims" "rc=$install_rc stderr=$(cat "$ROOT/install.stderr" 2>/dev/null)"
 fi
 if [[ "$(cat "$INSTALL_HOME/.local/bin/codex-with-fallback.bak" 2>/dev/null)" == "legacy-wrapper" ]]; then
   pass "installer preserves the original wrapper once"
@@ -787,6 +788,9 @@ mkdir -p "$UPGRADE_REPO/scripts/lib" \
 cp "$INSTALLER" "$UPGRADE_REPO/scripts/install-codex-guard.sh"
 cp "$REPO_ROOT/scripts/codex-with-fallback.sh" "$UPGRADE_REPO/scripts/codex-with-fallback.sh"
 cp "$REPO_ROOT/scripts/lib/codex-guard.sh" "$UPGRADE_REPO/scripts/lib/codex-guard.sh"
+cp "$REPO_ROOT/scripts/lib/kill-ledger.sh" \
+  "$REPO_ROOT/scripts/lib/kill-ledger-append.mjs" \
+  "$UPGRADE_REPO/scripts/lib/"
 cp "$REPO_ROOT/packages/claude-runner/bin/flywheel-codex-profile.mjs" \
   "$REPO_ROOT/packages/claude-runner/bin/codex-account-core.mjs" \
   "$REPO_ROOT/packages/claude-runner/bin/codex-account-core.d.mts" \

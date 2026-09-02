@@ -16,10 +16,14 @@ export { ClaudeCodeRunner } from "./ClaudeCodeRunner.js";
 export { AbortError, ClaudeRunner } from "./ClaudeRunner.js";
 // Adapter implementations (GEO-157)
 export {
+	type CodexLaunchSnapshot,
+	type CodexRecoveryCommitHooks,
 	type CodexRunnerTransport,
 	CodexTmuxAdapter,
 	type CodexWakeWatcher,
 	type RunnerTuiWindowLostEvidence,
+	readCodexGateHoldLatch,
+	readCodexLaunchSnapshot,
 	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS, // FLY-1239
 	TUI_OPEN_RETRY_DELAYS_MS,
@@ -63,12 +67,14 @@ export {
 	type GoalRunResult,
 	type GoalStatus,
 	isTerminalGoalStatus,
+	type RecoveryOwnershipReceipt,
 	runGoalToTerminal,
 } from "./codex-daemon-client.js"; // FLY-1188 M4
 export {
 	type ApprovalPolicy,
 	CodexDaemonGoalRuntime,
 	type CodexDaemonGoalRuntimeOptions,
+	type CodexTransportCloseEvidence,
 	type RunGoalInput,
 	type RunGoalOutcome,
 	type Sandbox,
@@ -104,6 +110,11 @@ export {
 	WsDaemonTransport,
 	type WsLike,
 } from "./codex-daemon-transport.js"; // FLY-1188 M4b
+export {
+	type CodexExecutionOwnerKind,
+	type CodexExecutionOwnershipLease,
+	CodexExecutionOwnershipRegistry,
+} from "./codex-execution-ownership.js";
 // FLY-123 WS-A/WS-B/WS-C/P5: per-runner CODEX_HOME provisioning + credential
 // lifecycle + repo-owned same-account daemon launcher resolver
 export {
@@ -122,6 +133,10 @@ export {
 	sourceCodexDir,
 	stripSecretEnv,
 } from "./codex-home.js";
+export {
+	type CodexRolloutMtimeProbe,
+	probeCodexRolloutMtime,
+} from "./codex-rollout-probe.js";
 export {
 	buildRunnerTuiCommand,
 	ensureRunnerTuiWindow,
@@ -150,6 +165,16 @@ export {
 	type IMessageFormatter,
 } from "./formatter.js";
 export { KimiTmuxAdapter } from "./KimiTmuxAdapter.js"; // FLY-494
+export {
+	type AuditedSignalAsyncDeps,
+	type AuditedSignalDeps,
+	type AuditedSignalInput,
+	type AuditedSignalResult,
+	auditedSignal,
+	auditedSignalAsync,
+	type KillLedgerEntry,
+	type KillLedgerTargetKind,
+} from "./kill-ledger.js";
 export {
 	clearSyncOp,
 	markSyncOp,

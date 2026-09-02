@@ -1,0 +1,25 @@
+{
+  "issue": "FLY-2211",
+  "mode": "isolated-529-real-daemon",
+  "startedAt": "2026-09-01T00:27:11.461Z",
+  "executionId": "qa529-fly2211-mthxgquh",
+  "codexVersion": "codex-cli 0.151.0",
+  "threadId": null,
+  "turnId": null,
+  "probes": {
+    "threadStart": {
+      "ok": false,
+      "elapsedMs": 768,
+      "error": "{\"code\":-32603,\"message\":\"error creating thread: Fatal error: Failed to initialize session: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 71: sandbox-exec: sandbox_apply: Operation not permitted\"}"
+    }
+  },
+  "observations": {},
+  "assessment": {},
+  "cleanup": {
+    "daemonConfirmedDead": true,
+    "socketGone": true,
+    "codexHomeGone": true
+  },
+  "fatalError": "thread/start failed: {\"code\":-32603,\"message\":\"error creating thread: Fatal error: Failed to initialize session: failed to load AGENTS.md instructions for environment `local`: fs sandbox helper failed with status exit status: 71: sandbox-exec: sandbox_apply: Operation not permitted\"}",
+  "finishedAt": "2026-09-01T00:27:13.098Z"
+}

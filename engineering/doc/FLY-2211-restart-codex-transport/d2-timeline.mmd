@@ -1,0 +1,13 @@
+graph TD
+    A["11:59–12:05 班车重启波<br/>只重启了 Bridge 和各 Lead"] --> B["12:00:30 老 Bridge 退出<br/>四个工人的 daemon 和窗<b>都还活着</b>"]
+    B --> C["12:00–12:12 四个工人继续正常干活<br/>rollout 持续写入(证明波没有杀它们)"]
+    C --> D["⚠️ 但此刻它们已是『无主进程』:<br/>新 Bridge 不认领、不监控、不会救"]
+    D --> E["12:12:29/33/36 三对『窗+daemon』<br/>在干活中被<b>瞬间无声杀死</b>"]
+    D --> F["12:22:32 第四对被杀"]
+    E --> G["12:21–12:35 系统才后知后觉<br/>(死后 9–19 分钟)宣告死亡、补发替身"]
+    F --> G
+    style A fill:#e8f0fe,stroke:#007aff
+    style D fill:#fdecea,stroke:#ff3b30
+    style E fill:#fdecea,stroke:#ff3b30
+    style F fill:#fdecea,stroke:#ff3b30
+    style G fill:#fff4e5,stroke:#ff9500

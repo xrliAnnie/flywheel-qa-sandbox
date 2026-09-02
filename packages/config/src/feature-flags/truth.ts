@@ -360,6 +360,12 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_REPO_ROOT: "plumbing: repo root path",
 	FLYWHEEL_DIR: "plumbing: state dir root",
 	FLYWHEEL_STATE_DIR: "plumbing: state dir",
+	FLYWHEEL_KILL_LEDGER_ROOT:
+		"plumbing: kill-ledger state path override for hermetic tests (FLY-2211), not an on/off gate",
+	FLYWHEEL_KILL_LEDGER_NOW:
+		"test-only clock injection for deterministic kill-ledger records (FLY-2211), not a runtime gate",
+	FLYWHEEL_NODE_BIN:
+		"plumbing: Node executable path used by packaged shell helpers (FLY-2211), not an on/off gate",
 	FLYWHEEL_LOOP_DIAGNOSTICS_DIR:
 		"plumbing: event-loop diagnostics dir override for isolated slot runtimes (FLY-1995)",
 	FLYWHEEL_PROJECTS_FILE:

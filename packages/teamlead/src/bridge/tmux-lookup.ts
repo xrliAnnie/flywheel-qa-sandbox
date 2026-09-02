@@ -14,6 +14,12 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import {
+	type AuditedSignalAsyncDeps,
+	type AuditedSignalInput,
+	type AuditedSignalResult,
+	auditedSignalAsync,
+} from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 
 const execFileAsync = promisify(execFile);
@@ -486,6 +492,10 @@ export type WorkflowTmuxWindowCleanupResult =
 export async function cleanupExactWorkflowTmuxWindow(
 	identity: WorkflowTmuxWindowIdentity,
 	runTmux: TmuxRunner = defaultTmuxRunner,
+	auditSignal: (
+		input: AuditedSignalInput,
+		deps?: AuditedSignalAsyncDeps,
+	) => Promise<AuditedSignalResult> = auditedSignalAsync,
 ): Promise<WorkflowTmuxWindowCleanupResult> {
 	if (
 		!identity.socketPath ||
@@ -547,14 +557,34 @@ export async function cleanupExactWorkflowTmuxWindow(
 		return "present";
 	}
 
-	const killed = await run([
+	const killArgs = [
 		"-S",
 		identity.socketPath,
 		"kill-window",
 		"-t",
 		identity.windowId,
-	]);
-	if (!killed.ok && !killed.absent) return "unknown";
+	];
+	const killed = await auditSignal(
+		{
+			source: "tmux_lookup_workflow_cleanup",
+			signal: "kill-window",
+			targetKind: "tmux-window",
+			target: `${identity.socketPath}:${identity.windowId}`,
+			execId: identity.executionId,
+			reason: "uncommitted_workflow_window_cleanup",
+		},
+		{
+			mutate: async () => {
+				await runTmux(killArgs);
+			},
+		},
+	);
+	if (
+		!killed.ok &&
+		!(killed.kind === "signal_failed" && isTmuxAbsenceMessage(killed.error))
+	) {
+		return "unknown";
+	}
 	const after = await run(inspectArgs);
 	if (!after.ok) return after.absent ? "cleaned" : "unknown";
 	return "present";
@@ -874,17 +904,38 @@ export async function sendEnterToWindow(
  */
 export async function killTmuxWindow(
 	tmuxWindow: string,
+	deps: {
+		auditSignal?: (
+			input: AuditedSignalInput,
+			deps?: AuditedSignalAsyncDeps,
+		) => Promise<AuditedSignalResult>;
+		exec?: () => Promise<void>;
+	} = {},
 ): Promise<{ killed: boolean; error?: string }> {
 	if (tmuxWindow.endsWith(":pending")) {
 		return { killed: false, error: "tmux window identity is still pending" };
 	}
-	try {
-		await execFileAsync("tmux", ["kill-window", "-t", tmuxWindow], {
-			timeout: TMUX_TIMEOUT,
-		});
-		return { killed: true };
-	} catch (err) {
-		const msg = (err as Error).message ?? String(err);
+	const auditSignal = deps.auditSignal ?? auditedSignalAsync;
+	const result = await auditSignal(
+		{
+			source: "tmux_lookup",
+			signal: "kill-window",
+			targetKind: "tmux-window",
+			target: tmuxWindow,
+			reason: "runner_window_close",
+		},
+		{
+			mutate: async () => {
+				if (deps.exec) return deps.exec();
+				await execFileAsync("tmux", ["kill-window", "-t", tmuxWindow], {
+					timeout: TMUX_TIMEOUT,
+				});
+			},
+		},
+	);
+	if (result.ok) return { killed: true };
+	const msg = result.error;
+	if (result.kind === "signal_failed") {
 		if (
 			msg.includes("window not found") ||
 			msg.includes("can't find window") ||
@@ -895,9 +946,11 @@ export async function killTmuxWindow(
 		) {
 			return { killed: true }; // already dead = success
 		}
-		console.error(`[tmux-lookup] kill-window error: ${msg}`);
-		return { killed: false, error: msg };
 	}
+	console.error(
+		`[tmux-lookup] audited kill-window blocked (${result.kind}): ${msg}`,
+	);
+	return { killed: false, error: msg };
 }
 
 /**

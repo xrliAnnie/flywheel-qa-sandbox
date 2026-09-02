@@ -11,6 +11,21 @@ scripts/test-deploy.sh 2 --generalized --stub-runner --no-lead
 scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202
 ```
 
+FLY-2211 的重启杀伤专项必须换成真实 Codex 房型，并且不能同时传
+`--stub-runner`：
+
+```bash
+scripts/test-deploy.sh 2 --generalized --codex-runner --no-lead
+scripts/qa-529-generalized-e2e.mjs 2 --issue FLY-202 --real
+```
+
+这个入口让生成的项目配置同时声明 `runners.default: codex`、可用的
+`codex` runner、`roles.runner.backend: codex-tmux` 和 DAG 的
+`runner: codex`。因此重启波前必须从 slot SQLite / tmux 证明确有
+`adapter_type=codex-tmux` 的活工人；只看到 `runnerMode=real` 不算覆盖。
+波后按专项验收继续采集 pane、rollout 写入、broker PID/启动时刻和 kill
+ledger，至少观察 30 分钟。默认 Quickstart 仍保持原来的双 stub 九步回归。
+
 第一条命令只有在以下 readiness 全部成立后才发布 mode `0600` 的 `/tmp/flywheel-test-slot-2/room-info.json`：
 
 - `/health` 同时报 `ok=true`、`buildMode=built`，且 `buildSha` / `artifactBuildSha` 等于被测 worktree HEAD；

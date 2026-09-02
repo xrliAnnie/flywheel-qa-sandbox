@@ -14,6 +14,7 @@ import { execFile } from "node:child_process";
 import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import {
+	auditedSignal,
 	codexHomeDir,
 	codexHomesRoot,
 	codexSessionStateDir,
@@ -58,7 +59,11 @@ export interface CodexRunnerOrphanSweepDeps {
 	listLedgers?: () => Promise<CodexLedgerProbeResult>;
 	listHomes?: () => Promise<CodexHomeProbeResult>;
 	socketHolderPids?: (socketPath: string) => Promise<SocketHolderProbeResult>;
-	signalGroup?: (pgid: number, signal: NodeJS.Signals) => boolean;
+	signalGroup?: (
+		pgid: number,
+		signal: NodeJS.Signals,
+		executionId?: string,
+	) => boolean;
 	removeSocket?: (path: string) => void;
 	sleep?: (ms: number) => Promise<void>;
 	termGraceMs?: number;
@@ -347,13 +352,19 @@ function isWithinSocketRoot(socketPath: string, socketRoot: string): boolean {
 	return resolve(socketPath).startsWith(`${resolve(socketRoot)}${sep}`);
 }
 
-function defaultSignalGroup(pgid: number, signal: NodeJS.Signals): boolean {
-	try {
-		process.kill(-pgid, signal);
-		return true;
-	} catch {
-		return false;
-	}
+function defaultSignalGroup(
+	pgid: number,
+	signal: NodeJS.Signals,
+	executionId?: string,
+): boolean {
+	return auditedSignal({
+		source: "codex_orphan_reaper",
+		signal,
+		targetKind: "pgid",
+		target: pgid,
+		...(executionId ? { execId: executionId } : {}),
+		reason: "proven_orphan_app_server",
+	}).ok;
 }
 
 function emptyResult(): CodexRunnerOrphanSweepResult {
@@ -476,7 +487,7 @@ async function reapCandidate(
 		});
 		return;
 	}
-	if (!deps.signalGroup(candidate.pgid, "SIGTERM")) {
+	if (!deps.signalGroup(candidate.pgid, "SIGTERM", candidate.executionId)) {
 		result.survivors++;
 		deps.audit("codex_app_server_orphan_signal_failed", {
 			...detail,
@@ -539,7 +550,7 @@ async function reapCandidate(
 			});
 			return;
 		}
-		if (!deps.signalGroup(candidate.pgid, "SIGKILL")) {
+		if (!deps.signalGroup(candidate.pgid, "SIGKILL", candidate.executionId)) {
 			result.survivors++;
 			deps.audit("codex_app_server_orphan_signal_failed", {
 				...detail,

@@ -4,6 +4,30 @@
 
 CODEX_GUARD_TIMEOUT_MARKER="[codex-guard] TIMEOUT"
 
+_codex_guard_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -r "${_codex_guard_lib_dir}/kill-ledger.sh" ]; then
+  # shellcheck source=scripts/lib/kill-ledger.sh
+  source "${_codex_guard_lib_dir}/kill-ledger.sh"
+else
+  flywheel_audited_signal() {
+    echo "[codex-guard] kill ledger helper unavailable; signal refused" >&2
+    return 1
+  }
+fi
+
+_codex_guard_audited_kill() {
+  local signal="$1" target="$2" fallback_pid="$3" reason="$4"
+  if [[ "$target" == -* ]]; then
+    flywheel_audited_signal "codex_guard" "$signal" "pgid" "${target#-}" \
+      "${FLYWHEEL_EXEC_ID:-}" "$reason" || \
+      flywheel_audited_signal "codex_guard" "$signal" "pid" "$fallback_pid" \
+        "${FLYWHEEL_EXEC_ID:-}" "$reason"
+  else
+    flywheel_audited_signal "codex_guard" "$signal" "pid" "$target" \
+      "${FLYWHEEL_EXEC_ID:-}" "$reason"
+  fi
+}
+
 codex_guard_state_dir() {
   printf '%s\n' "${FLYWHEEL_CODEX_GUARD_STATE_DIR:-$HOME/.flywheel/state/codex-oneshot}"
 }
@@ -123,7 +147,7 @@ codex_guard_sweep() {
       if [[ "$pgid" == "$pid" && "$current_pgid" == "$pid" ]]; then
         target="-$pid"
       fi
-      kill -TERM -- "$target" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      _codex_guard_audited_kill "SIGTERM" "$target" "$pid" "expired_guard_entry" || true
       sleep 1
       if _codex_guard_identity_matches "$pid" "$start"; then
         current_pgid="$(_codex_guard_pgid "$pid" 2>/dev/null || true)"
@@ -131,7 +155,7 @@ codex_guard_sweep() {
         if [[ "$pgid" == "$pid" && "$current_pgid" == "$pid" ]]; then
           target="-$pid"
         fi
-        kill -KILL -- "$target" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+        _codex_guard_audited_kill "SIGKILL" "$target" "$pid" "expired_guard_entry_escalation" || true
       fi
     fi
     rm -f "$entry" 2>/dev/null || true
@@ -193,16 +217,16 @@ _codex_guard_run_bash() {
     sleep "$timeout_seconds"
     if kill -0 "$child_pid" 2>/dev/null; then
       printf 'timeout\n' >> "$marker"
-      kill -TERM -- "-$child_pid" 2>/dev/null || kill -TERM "$child_pid" 2>/dev/null || true
+      _codex_guard_audited_kill "SIGTERM" "-$child_pid" "$child_pid" "oneshot_timeout" || true
       sleep 1
-      kill -KILL -- "-$child_pid" 2>/dev/null || kill -KILL "$child_pid" 2>/dev/null || true
+      _codex_guard_audited_kill "SIGKILL" "-$child_pid" "$child_pid" "oneshot_timeout_escalation" || true
     fi
   ) >/dev/null 2>&1 &
   watchdog_pid=$!
 
   wait "$child_pid" 2>/dev/null
   status=$?
-  kill -TERM -- "-$watchdog_pid" 2>/dev/null || kill -TERM "$watchdog_pid" 2>/dev/null || true
+  _codex_guard_audited_kill "SIGTERM" "-$watchdog_pid" "$watchdog_pid" "oneshot_watchdog_cleanup" || true
   wait "$watchdog_pid" 2>/dev/null || true
   set +m
   codex_guard_forget_active

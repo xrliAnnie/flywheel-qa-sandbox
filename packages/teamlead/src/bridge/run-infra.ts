@@ -13,7 +13,10 @@ import { fileURLToPath } from "node:url";
 import {
 	AnthropicLLMClient,
 	AntigravityTmuxAdapter,
+	CodexExecutionOwnershipRegistry,
+	type CodexRecoveryCommitHooks,
 	CodexTmuxAdapter,
+	type CodexTransportCloseEvidence,
 	KimiTmuxAdapter,
 	type RunnerTuiWindowLostEvidence,
 	scrubOrphanedCodexHomes,
@@ -32,7 +35,11 @@ import {
 	resolveProjectRegistry,
 	type SkillsConfig,
 } from "flywheel-config";
-import type { LLMClient } from "flywheel-core";
+import type {
+	AdapterExecutionContext,
+	AdapterExecutionResult,
+	LLMClient,
+} from "flywheel-core";
 import { AdapterRegistry, sanitizeTmuxName } from "flywheel-core";
 import {
 	AgentDispatcher,
@@ -52,12 +59,16 @@ import {
 	SkillInjector,
 	WorktreeManager,
 } from "flywheel-edge-worker";
-import { Blueprint } from "flywheel-edge-worker/dist/Blueprint.js";
+import {
+	Blueprint,
+	type BlueprintResult,
+} from "flywheel-edge-worker/dist/Blueprint.js";
 import { PreHydrator } from "flywheel-edge-worker/dist/PreHydrator.js";
 import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import {
 	isStateStoreIrreversibleTerminalForZombie,
+	type Session,
 	type StateStore,
 } from "../StateStore.js";
 import type { AdmissionCrossingBarrier } from "./admission-crossing-barrier.js";
@@ -70,6 +81,7 @@ import {
 	type OpenPullRequest,
 } from "./continuity-preflight.js";
 import { EventFilter } from "./EventFilter.js";
+import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
 	type FlagStoreRuntime,
 	storeDocFlowEnabled,
@@ -108,8 +120,120 @@ import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import type { BridgeConfig } from "./types.js";
+import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
+
+export interface CodexRecoveryRuntime {
+	resume(
+		context: AdapterExecutionContext,
+		hooks: CodexRecoveryCommitHooks,
+	): Promise<AdapterExecutionResult>;
+	failExhausted(session: Session, attempts: number): Promise<void>;
+}
+
+type CodexRecoveryRuntimeInput = {
+	adapter: Pick<CodexTmuxAdapter, "resumeExistingExecution">;
+	sink: Pick<DirectEventSink, "emitCompleted" | "emitFailed">;
+};
+
+export function createCodexRecoveryRuntime(
+	input: CodexRecoveryRuntimeInput,
+): CodexRecoveryRuntime {
+	return {
+		resume: (context, hooks) =>
+			runCodexRecoveryOwner({
+				adapter: input.adapter,
+				sink: input.sink,
+				context,
+				hooks,
+			}),
+		failExhausted: async (session, attempts) => {
+			const reason = `Codex recovery exhausted after ${attempts} attempts`;
+			await input.sink.emitFailed(
+				{
+					executionId: session.execution_id,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					issueIdentifier: session.issue_identifier ?? session.issue_id,
+					...(session.session_role
+						? {
+								sessionRole: session.session_role,
+								chatThreadRole:
+									session.chat_thread_role ?? session.session_role,
+							}
+						: {}),
+					runnerBackend: "codex-tmux",
+					...(session.runner_model
+						? { runnerModel: session.runner_model }
+						: {}),
+					...(session.skill_framework_mode
+						? { skillFrameworkMode: session.skill_framework_mode }
+						: {}),
+				},
+				reason,
+				undefined,
+				{ failureKind: "reown_exhausted", failureReason: reason },
+			);
+		},
+	};
+}
+
+/**
+ * Run one rescue owner through the same DirectEventSink terminal path as a
+ * first-dispatch Blueprint. A pre-commit recovery failure is deliberately not
+ * terminal: the StateStore episode budget owns the retry decision.
+ */
+export async function runCodexRecoveryOwner(input: {
+	adapter: Pick<CodexTmuxAdapter, "resumeExistingExecution">;
+	sink: Pick<DirectEventSink, "emitCompleted" | "emitFailed">;
+	context: AdapterExecutionContext;
+	hooks: CodexRecoveryCommitHooks;
+}): Promise<AdapterExecutionResult> {
+	let committed = false;
+	const result = await input.adapter.resumeExistingExecution(input.context, {
+		onRecoveryOwnershipEstablished: async (receipt) => {
+			await input.hooks.onRecoveryOwnershipEstablished(receipt);
+			committed = true;
+		},
+	});
+	if (!committed) return result;
+	const env = {
+		executionId: input.context.executionId,
+		issueId: input.context.issueId,
+		projectName: input.context.projectName ?? "",
+		issueIdentifier: input.context.issueId,
+		...(input.context.phaseKeepAlive?.role
+			? {
+					sessionRole: input.context.phaseKeepAlive.role,
+					chatThreadRole: input.context.phaseKeepAlive.role,
+				}
+			: {}),
+		runnerBackend: "codex-tmux",
+		...(input.context.model ? { runnerModel: input.context.model } : {}),
+		...(input.context.skillFrameworkMode
+			? { skillFrameworkMode: input.context.skillFrameworkMode }
+			: {}),
+	};
+	if (result.success) {
+		const blueprintResult: BlueprintResult = {
+			success: true,
+			sessionId: result.sessionId,
+			durationMs: result.durationMs,
+			tmuxWindow: result.tmuxWindow,
+			sessionParams: result.sessionParams,
+		};
+		await input.sink.emitCompleted(env, blueprintResult, undefined);
+	} else {
+		await input.sink.emitFailed(
+			env,
+			result.resultText ?? "Codex recovery owner failed after commit",
+			undefined,
+			result.failure,
+		);
+	}
+	return result;
+}
 
 /** FLY-1718: compute one resume snapshot from one Git ref at a time. */
 export function computeProgressResumeAcrossRefs(input: {
@@ -342,8 +466,16 @@ async function createRunBlueprint(
 		evidence: RunnerTuiWindowLostEvidence,
 	) => void | Promise<void>,
 	onTuiWindowRestored?: (executionId: string) => void | Promise<void>,
+	onCodexTransportClose?: (
+		evidence: CodexTransportCloseEvidence,
+	) => void | Promise<void>,
 	docFlowEnabled?: () => boolean,
-): Promise<{ blueprint: Blueprint; cleanup: () => Promise<void> }> {
+	codexExecutionOwners?: CodexExecutionOwnershipRegistry,
+): Promise<{
+	blueprint: Blueprint;
+	cleanup: () => Promise<void>;
+	codexRecoveryRuntime: CodexRecoveryRuntime;
+}> {
 	// Track resources for cleanup-on-error (mirrored from setup.ts)
 	let hookServer: InstanceType<typeof HookCallbackServer> | undefined;
 	let auditLogger: InstanceType<typeof AuditLogger> | undefined;
@@ -521,8 +653,12 @@ async function createRunBlueprint(
 					// mailbox-message param variance needs the assert.
 					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
 					{
+						executionOwners: codexExecutionOwners,
 						...(onTuiWindowLost ? { onTuiWindowLost } : {}),
 						...(onTuiWindowRestored ? { onTuiWindowRestored } : {}),
+						...(onCodexTransportClose
+							? { onTransportClose: onCodexTransportClose }
+							: {}),
 					},
 				),
 		);
@@ -603,8 +739,12 @@ async function createRunBlueprint(
 			await hookServer!.stop();
 			await auditLogger!.close();
 		};
+		const codexRecoveryRuntime = createCodexRecoveryRuntime({
+			adapter: adapterRegistry.get("codex-tmux") as CodexTmuxAdapter,
+			sink: eventEmitter,
+		});
 
-		return { blueprint, cleanup };
+		return { blueprint, cleanup, codexRecoveryRuntime };
 	} catch (err) {
 		// Cleanup partially initialized resources on setup failure
 		if (auditLogger) {
@@ -634,6 +774,10 @@ async function createRunBlueprint(
 export interface RunInfraOptions {
 	/** FLY-1778: boot-snapshotted authority; values remain read-on-use. */
 	flagStore?: FlagStoreRuntime;
+	/** FLY-2211 owner truth shared with the boot/periodic re-own reconciler. */
+	codexExecutionOwners?: CodexExecutionOwnershipRegistry;
+	/** Filled during setup so Bridge recovery can reuse each project's runtime. */
+	codexRecoveryRuntimes?: Map<string, CodexRecoveryRuntime>;
 	/** Shared ChatThreadCreator — if provided, used instead of per-project creation. */
 	chatThreadCreator?: ChatThreadCreator;
 	/** Founder-visible existing alert path for a ConfigLoader-rejected project. */
@@ -710,6 +854,9 @@ export interface RunInfraOptions {
 		evidence: RunnerTuiWindowLostEvidence,
 	) => void | Promise<void>;
 	onTuiWindowRestored?: (executionId: string) => void | Promise<void>;
+	onCodexTransportClose?: (
+		evidence: CodexTransportCloseEvidence,
+	) => void | Promise<void>;
 	/** FLY-1944: process-local pre-claim quiescence evidence. */
 	admissionCrossingBarrier?: AdmissionCrossingBarrier;
 }
@@ -824,6 +971,17 @@ export function createRunInfraDispatcher(input: {
 			),
 		input.admissionCrossingBarrier,
 		flagStore ? () => storeSkillFrameworkModeControl(flagStore) : undefined,
+		(turnInput) => {
+			const priorHolder = turnInput.db.getTurn(
+				turnInput.issueId,
+			)?.holder_exec_id;
+			return withExecutionMutationLease({
+				store: input.store,
+				executionId: priorHolder,
+				holder: `turn-writer:spawn:${turnInput.executionId}`,
+				mutate: () => grantPrelaunchWorkflowTurn(turnInput),
+			});
+		},
 	);
 }
 
@@ -905,6 +1063,8 @@ export async function setupRunInfrastructure(
 ): Promise<RunDispatcher> {
 	const projectRuntimes = new Map<string, ProjectRuntime>();
 	const cleanupHandles: Array<() => Promise<void>> = [];
+	const codexExecutionOwners =
+		runInfraOpts?.codexExecutionOwners ?? new CodexExecutionOwnershipRegistry();
 
 	// FLY-795: per-project doc-flow default department, captured in the setup loop
 	// so the restart-resilient resume computer can resolve the deterministic
@@ -1117,6 +1277,7 @@ export async function setupRunInfrastructure(
 			// FLY-1282 Part C: targeted terminal-archive enqueue for the
 			// in-process completion path.
 			directSink.terminalArchiveEnqueue = runInfraOpts?.terminalArchiveEnqueue;
+			directSink.codexExecutionOwners = codexExecutionOwners;
 
 			// FLY-137 v1.27.2: construct AgentDispatcher (always — empty agents map is valid,
 			// dispatcher returns shipped-generic for every issue in that case).
@@ -1149,24 +1310,31 @@ export async function setupRunInfrastructure(
 				? () => storeSkillFrameworkModeControl(flagStore)
 				: undefined;
 
-			const { blueprint, cleanup } = await createRunBlueprint(
-				tmuxSessionName,
-				fetchIssue,
-				directSink,
-				undefined, // sessionTimeoutMs — use default
-				checkpointConfig,
-				worktreeManager, // FLY-95
-				agentDispatcher, // FLY-137 v1.27.2
-				flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
-				skillsConfig, // GEO-151: wired into Blueprint slot 7
-				docFlowDept, // FLY-205/2103
-				ponytailProjectLayer, // FLY-615/2103: store-backed project layer
-				store.getDbPath(), // FLY-766: owner marker db-path truth
-				skillFrameworkParticipation, // FLY-1356
-				skillFrameworkModeControl, // FLY-1778
-				runInfraOpts?.onTuiWindowLost,
-				runInfraOpts?.onTuiWindowRestored,
-				docFlowEnabled,
+			const { blueprint, cleanup, codexRecoveryRuntime } =
+				await createRunBlueprint(
+					tmuxSessionName,
+					fetchIssue,
+					directSink,
+					undefined, // sessionTimeoutMs — use default
+					checkpointConfig,
+					worktreeManager, // FLY-95
+					agentDispatcher, // FLY-137 v1.27.2
+					flywheelRepoRoot, // FLY-137 v1.27.2 (Codex Track A #1)
+					skillsConfig, // GEO-151: wired into Blueprint slot 7
+					docFlowDept, // FLY-205/2103
+					ponytailProjectLayer, // FLY-615/2103: store-backed project layer
+					store.getDbPath(), // FLY-766: owner marker db-path truth
+					skillFrameworkParticipation, // FLY-1356
+					skillFrameworkModeControl, // FLY-1778
+					runInfraOpts?.onTuiWindowLost,
+					runInfraOpts?.onTuiWindowRestored,
+					runInfraOpts?.onCodexTransportClose,
+					docFlowEnabled,
+					codexExecutionOwners,
+				);
+			runInfraOpts?.codexRecoveryRuntimes?.set(
+				project.projectName,
+				codexRecoveryRuntime,
 			);
 
 			projectRuntimes.set(project.projectName, {

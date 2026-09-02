@@ -24,6 +24,11 @@ import {
 	SUN_PATH_MAX,
 	spawnCodexDaemon,
 } from "../src/codex-daemon-runtime.js";
+import type {
+	AuditedSignalDeps,
+	AuditedSignalInput,
+	AuditedSignalResult,
+} from "../src/kill-ledger.js";
 
 describe("FLY-1940 codex daemon execution ownership", () => {
 	function ownershipFixture() {
@@ -123,6 +128,62 @@ describe("FLY-1940 codex daemon execution ownership", () => {
 });
 
 describe("daemon group-kill safety", () => {
+	const auditPass = (
+		input: AuditedSignalInput,
+		deps?: AuditedSignalDeps,
+	): AuditedSignalResult => {
+		const target =
+			input.targetKind === "pgid" ? -Number(input.target) : input.target;
+		deps?.mutate?.(target, input.signal);
+		return {
+			ok: true,
+			ledger: "ndjson",
+			entry: {
+				ts: "2026-08-31T20:00:00.000Z",
+				source: input.source,
+				signal: input.signal,
+				targetKind: input.targetKind,
+				target: input.target,
+				...(input.execId ? { execId: input.execId } : {}),
+				reason: input.reason,
+				schemaVersion: 1,
+			},
+		};
+	};
+
+	it("blocks the group signal when the mandatory ledger write fails", () => {
+		const kill = vi.fn();
+		const logger = vi.fn();
+		const killGroup = createDefaultKillGroup({
+			pid: 123,
+			ppid: 12,
+			processGroupOf: () => 321,
+			kill,
+			logger,
+			auditSignal: (_input, _deps) => ({
+				ok: false,
+				kind: "ledger_failed",
+				error: "disk full",
+				entry: {
+					ts: "2026-08-31T20:00:00.000Z",
+					source: "codex_daemon_runtime",
+					signal: "SIGKILL",
+					targetKind: "pgid",
+					target: 777,
+					reason: "daemon_group_signal",
+					schemaVersion: 1,
+				},
+			}),
+		});
+
+		killGroup(777, "SIGKILL");
+
+		expect(kill).not.toHaveBeenCalled();
+		expect(logger).toHaveBeenCalledWith(
+			expect.stringContaining("BLOCKED unaudited group signal"),
+		);
+	});
+
 	it("refuses the Bridge's actual process group and caches the lookup", () => {
 		const kill = vi.fn();
 		const processGroupOf = vi.fn(() => 777);
@@ -133,6 +194,7 @@ describe("daemon group-kill safety", () => {
 			processGroupOf,
 			kill,
 			logger,
+			auditSignal: auditPass,
 		});
 
 		killGroup(777, "SIGKILL");
@@ -152,6 +214,7 @@ describe("daemon group-kill safety", () => {
 			processGroupOf: () => undefined,
 			kill,
 			logger,
+			auditSignal: auditPass,
 		});
 
 		killGroup(777, "SIGKILL");
@@ -169,6 +232,7 @@ describe("daemon group-kill safety", () => {
 			ppid: 12,
 			processGroupOf: () => 321,
 			kill,
+			auditSignal: auditPass,
 		});
 
 		killGroup(777, "SIGTERM");

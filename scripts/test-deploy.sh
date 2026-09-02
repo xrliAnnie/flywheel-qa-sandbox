@@ -2,7 +2,7 @@
 # FLY-96: Deploy a test slot (Bridge + Lead) for Discord E2E testing.
 #
 # Usage: scripts/test-deploy.sh [slot-number] [--digest <channel-id>]
-#        [--generalized [--stub-runner] [--expect-head <full-sha>]]
+#        [--generalized [--codex-runner] [--stub-runner] [--expect-head <full-sha>]]
 #   If slot-number is provided, claims that specific slot.
 #   If omitted, claims the first available slot from the pool.
 #   --digest <id>  FLY-727: mount the daily-digest route on the slot Bridge
@@ -169,6 +169,7 @@ NO_LEAD=0                 # FLY-1389 P2-b: --no-lead skips identity staging + Le
                           # Bridge/API/DB QA suites (Discord-Lead suites must
                           # NOT use it).
 GENERALIZED=0             # FLY-1775: generalized workflow flags/config/bindings/readiness.
+CODEX_RUNNER=0            # FLY-2211: opt-in real codex-tmux worker for restart drills.
 STUB_RUNNER=0             # FLY-1775: deterministic persistent claude stub for the 9-step drill.
 EXPECT_HEAD=""            # FLY-1775: optional script-repository HEAD fence.
 while [[ $# -gt 0 ]]; do
@@ -203,6 +204,8 @@ while [[ $# -gt 0 ]]; do
       NO_LEAD=1; shift ;;
     --generalized)
       GENERALIZED=1; shift ;;
+    --codex-runner)
+      CODEX_RUNNER=1; shift ;;
     --stub-runner)
       STUB_RUNNER=1; shift ;;
     --expect-head)
@@ -236,6 +239,14 @@ if [[ "$GENERALIZED" == "1" ]]; then
 fi
 if [[ "$STUB_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
   echo "ERROR: --stub-runner requires --generalized" >&2
+  exit 1
+fi
+if [[ "$CODEX_RUNNER" == "1" && "$GENERALIZED" != "1" ]]; then
+  echo "ERROR: --codex-runner requires --generalized" >&2
+  exit 1
+fi
+if [[ "$CODEX_RUNNER" == "1" && "$STUB_RUNNER" == "1" ]]; then
+  echo "ERROR: --codex-runner cannot be combined with --stub-runner" >&2
   exit 1
 fi
 if [[ "$GENERALIZED" == "1" ]]; then
@@ -1031,7 +1042,12 @@ if [[ "$GENERALIZED" == "1" ]]; then
 else
   QA_CONFIG_MODE="ordinary"
 fi
-qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" \
+if [[ "$CODEX_RUNNER" == "1" ]]; then
+  QA_CONFIG_RUNNER="codex"
+else
+  QA_CONFIG_RUNNER="claude"
+fi
+qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" "$QA_CONFIG_RUNNER" \
   > "${HOST_REPO}/.flywheel/config.yaml"
 log "Wrote ${HOST_REPO}/.flywheel/config.yaml (approve_to_ship checkpoint enabled)"
 

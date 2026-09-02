@@ -1,0 +1,3314 @@
+[
+	{
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:child.kill(signal);#1",
+		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
+		"code": "child.kill(signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:const killPid = opts.killPid ?? ((pid, sig) => process.kill(pid, sig));#1",
+		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
+		"code": "const killPid = opts.killPid ?? ((pid, sig) => process.kill(pid, sig));",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:if (!child.kill(signal)) {#1",
+		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
+		"code": "if (!child.kill(signal)) {",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:options.kill ?? ((target, signal) => process.kill(target, signal));#1",
+		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
+		"code": "options.kill ?? ((target, signal) => process.kill(target, signal));",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:process.kill(-pgid, 0);#1",
+		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
+		"code": "process.kill(-pgid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-daemon-runtime.ts:process.kill(pid, 0);#1",
+		"path": "packages/claude-runner/src/codex-daemon-runtime.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:: exec(\"tmux\", [\"kill-window\", \"-t\", target]);#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": ": exec(\"tmux\", [\"kill-window\", \"-t\", target]);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:[\"kill-window\", \"-t\", target],#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "[\"kill-window\", \"-t\", target],",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:mutationResult = exec(\"tmux\", [\"kill-window\", \"-t\", target]);#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "mutationResult = exec(\"tmux\", [\"kill-window\", \"-t\", target]);",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:return exec(\"tmux\", [\"kill-window\", \"-t\", target], options);#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "return exec(\"tmux\", [\"kill-window\", \"-t\", target], options);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:signal: \"kill-window\",#1",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/codex-runner-tui-window.ts:signal: \"kill-window\",#2",
+		"path": "packages/claude-runner/src/codex-runner-tui-window.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/kill-ledger.ts:process.kill(target, signal as NodeJS.Signals);#1",
+		"path": "packages/claude-runner/src/kill-ledger.ts",
+		"code": "process.kill(target, signal as NodeJS.Signals);",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/sync-op-marker.ts:process.kill(pid, 0);#1",
+		"path": "packages/claude-runner/src/sync-op-marker.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/claude-runner/src/TmuxAdapter.ts:execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]);#1",
+		"path": "packages/claude-runner/src/TmuxAdapter.ts",
+		"code": "execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/src/TmuxAdapter.ts:mutate: () => execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]),#1",
+		"path": "packages/claude-runner/src/TmuxAdapter.ts",
+		"code": "mutate: () => execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]),",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/TmuxAdapter.ts:signal: \"kill-window\",#1",
+		"path": "packages/claude-runner/src/TmuxAdapter.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/wait-aware-exec.ts:child?.kill(\"SIGTERM\");#1",
+		"path": "packages/claude-runner/src/wait-aware-exec.ts",
+		"code": "child?.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:child.kill(\"SIGTERM\"); // just the shell#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "child.kill(\"SIGTERM\"); // just the shell",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:if (caller.exitCode === null) caller.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "if (caller.exitCode === null) caller.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:if (child.exitCode === null) child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "if (child.exitCode === null) child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:if (sleepPid > 0) process.kill(sleepPid, \"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "if (sleepPid > 0) process.kill(sleepPid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:.filter((c) => c[1] === \"kill-window\")#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": ".filter((c) => c[1] === \"kill-window\")",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:'setTimeout(() => process.kill(process.pid, \"SIGTERM\"), 20); setInterval(() => {}, 1000)',#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "'setTimeout(() => process.kill(process.pid, \"SIGTERM\"), 20); setInterval(() => {}, 1000)',",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:=FLY-1188\"],#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:=FLY-1188\"],",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(calls.some((call) => call.includes(\"kill-window\"))).toBe(false);#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(calls.some((call) => call.includes(\"kill-window\"))).toBe(false);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(r.calls).toEqual([[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:@7\"]]);#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(r.calls).toEqual([[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:@7\"]]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#2",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);#3",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@1\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@2\"]);#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "expect(t.execCalls).toContainEqual([\"tmux\", \"kill-window\", \"-t\", \"@2\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-runner-tui-window.test.ts:if (verb === \"kill-window\") {#1",
+		"path": "packages/claude-runner/test/codex-runner-tui-window.test.ts",
+		"code": "if (verb === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-ledger.test.ts:signal: \"kill-window\",#1",
+		"path": "packages/claude-runner/test/kill-ledger.test.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/kill-path-inventory.ts:(code.startsWith(\"const killPid =\") || code === \"child.kill(signal);\")) ||#1",
+		"path": "packages/claude-runner/test/kill-path-inventory.ts",
+		"code": "(code.startsWith(\"const killPid =\") || code === \"child.kill(signal);\")) ||",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/scaffold-prune.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${probe}`], { stdio: \"ignore\" });#1",
+		"path": "packages/claude-runner/test/scaffold-prune.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${probe}`], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/scaffold-prune.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${s}`], { stdio: \"ignore\" });#1",
+		"path": "packages/claude-runner/test/scaffold-prune.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${s}`], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:.filter((c) => c.cmd === \"tmux\" && c.args[0] === \"kill-window\")#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+		"code": ".filter((c) => c.cmd === \"tmux\" && c.args[0] === \"kill-window\")",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:(c) => c.cmd === \"tmux\" && c.args[0] === \"kill-window\",#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+		"code": "(c) => c.cmd === \"tmux\" && c.args[0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:args[0] === \"kill-window\" &&#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+		"code": "args[0] === \"kill-window\" &&",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:case \"kill-window\":#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+		"code": "case \"kill-window\":",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:if (cmd === \"tmux\" && args[0] === \"kill-window\") killed = true;#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+		"code": "if (cmd === \"tmux\" && args[0] === \"kill-window\") killed = true;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/TmuxAdapter.test.ts:if (subcommand === \"kill-window\") {#1",
+		"path": "packages/claude-runner/test/TmuxAdapter.test.ts",
+		"code": "if (subcommand === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/core/src/tmux-viewer.ts:execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {#1",
+		"path": "packages/core/src/tmux-viewer.ts",
+		"code": "execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/core/src/tmux-viewer.ts:execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {#2",
+		"path": "packages/core/src/tmux-viewer.ts",
+		"code": "execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/core/src/tmux-viewer.ts:execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {#3",
+		"path": "packages/core/src/tmux-viewer.ts",
+		"code": "execFileSync(tmuxPath, [\"kill-session\", \"-t\", `=${viewerSession}`], {",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/core/test/tmux-viewer.test.ts:(c[1] as string[])[0] === \"kill-session\" &&#1",
+		"path": "packages/core/test/tmux-viewer.test.ts",
+		"code": "(c[1] as string[])[0] === \"kill-session\" &&",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/core/test/tmux-viewer.test.ts:[\"kill-session\", \"-t\", \"=viewer-exec_close_001\"],#1",
+		"path": "packages/core/test/tmux-viewer.test.ts",
+		"code": "[\"kill-session\", \"-t\", \"=viewer-exec_close_001\"],",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/core/test/tmux-viewer.test.ts:expect(subcommands).toContain(\"kill-session\");#1",
+		"path": "packages/core/test/tmux-viewer.test.ts",
+		"code": "expect(subcommands).toContain(\"kill-session\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/Blueprint.decision.test.ts:[\"kill-window\", \"-t\", \"flywheel:@42\"],#1",
+		"path": "packages/edge-worker/src/__tests__/Blueprint.decision.test.ts",
+		"code": "[\"kill-window\", \"-t\", \"flywheel:@42\"],",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/Blueprint.test.ts:c[0] === \"tmux\" && c[1][0] === \"kill-window\",#1",
+		"path": "packages/edge-worker/src/__tests__/Blueprint.test.ts",
+		"code": "c[0] === \"tmux\" && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/Blueprint.test.ts:c[0] === \"tmux\" && c[1][0] === \"kill-window\",#2",
+		"path": "packages/edge-worker/src/__tests__/Blueprint.test.ts",
+		"code": "c[0] === \"tmux\" && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/Blueprint.test.ts:c[0] === \"tmux\" && c[1][0] === \"kill-window\",#3",
+		"path": "packages/edge-worker/src/__tests__/Blueprint.test.ts",
+		"code": "c[0] === \"tmux\" && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/Blueprint.test.ts:c[0] === \"tmux\" && c[1][0] === \"kill-window\",#4",
+		"path": "packages/edge-worker/src/__tests__/Blueprint.test.ts",
+		"code": "c[0] === \"tmux\" && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.e2e.test.ts:process.kill(-pgid, \"SIGKILL\");#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.e2e.test.ts",
+		"code": "process.kill(-pgid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.e2e.test.ts:process.kill(pid, \"SIGKILL\");#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.e2e.test.ts",
+		"code": "process.kill(pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.e2e.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.e2e.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts:process.kill(-serverPid, \"SIGKILL\");#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts",
+		"code": "process.kill(-serverPid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts:process.kill(serverPid, \"SIGKILL\");#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts",
+		"code": "process.kill(serverPid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/Blueprint.ts:[\"kill-window\", \"-t\", tmuxWindow],#1",
+		"path": "packages/edge-worker/src/Blueprint.ts",
+		"code": "[\"kill-window\", \"-t\", tmuxWindow],",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/edge-worker/src/Blueprint.ts:signal: \"kill-window\",#1",
+		"path": "packages/edge-worker/src/Blueprint.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/edge-worker/src/worktree-process-reaper.ts:if (deps.kill(pid, 0)) alive.add(pid);#1",
+		"path": "packages/edge-worker/src/worktree-process-reaper.ts",
+		"code": "if (deps.kill(pid, 0)) alive.add(pid);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/edge-worker/src/worktree-process-reaper.ts:if (deps.kill(pid, signal)) signalsStarted = true;#1",
+		"path": "packages/edge-worker/src/worktree-process-reaper.ts",
+		"code": "if (deps.kill(pid, signal)) signalsStarted = true;",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/edge-worker/src/worktree-process-reaper.ts:process.kill(pid, 0);#1",
+		"path": "packages/edge-worker/src/worktree-process-reaper.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:c[0] === \"tmux\" && Array.isArray(c[1]) && c[1][0] === \"kill-window\",#1",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "c[0] === \"tmux\" && Array.isArray(c[1]) && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:c[0] === \"tmux\" && Array.isArray(c[1]) && c[1][0] === \"kill-window\",#2",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "c[0] === \"tmux\" && Array.isArray(c[1]) && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:c[0] === \"tmux\" && Array.isArray(c[1]) && c[1][0] === \"kill-window\",#3",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "c[0] === \"tmux\" && Array.isArray(c[1]) && c[1][0] === \"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:expect(killCalls[0][1]).toEqual([\"kill-window\", \"-t\", \"GEO-1:@0\"]);#1",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "expect(killCalls[0][1]).toEqual([\"kill-window\", \"-t\", \"GEO-1:@0\"]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:if (cmd === \"tmux\" && args[0] === \"kill-window\") {#1",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "if (cmd === \"tmux\" && args[0] === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:if (cmd === \"tmux\" && args[0] === \"kill-window\") {#2",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "if (cmd === \"tmux\" && args[0] === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:if (cmd === \"tmux\" && args[0] === \"kill-window\") {#3",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "if (cmd === \"tmux\" && args[0] === \"kill-window\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:if (cmd === \"tmux\" && args[0] === \"kill-window\") return \"\";#1",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "if (cmd === \"tmux\" && args[0] === \"kill-window\") return \"\";",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/cleanup.test.ts:if (cmd === \"tmux\" && args[0] === \"kill-window\") return \"\";#2",
+		"path": "packages/flywheel-comm/src/__tests__/cleanup.test.ts",
+		"code": "if (cmd === \"tmux\" && args[0] === \"kill-window\") return \"\";",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/db-open-hardening.test.ts:process.kill(process.pid, \"SIGKILL\");`,#1",
+		"path": "packages/flywheel-comm/src/__tests__/db-open-hardening.test.ts",
+		"code": "process.kill(process.pid, \"SIGKILL\");`,",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/lead-lease-supervisor.test.ts:fixture.kill(\"SIGKILL\");#1",
+		"path": "packages/flywheel-comm/src/__tests__/lead-lease-supervisor.test.ts",
+		"code": "fixture.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/__tests__/verify-report.test.ts:expect(() => process.kill(-pgid, 0)).toThrow(#1",
+		"path": "packages/flywheel-comm/src/__tests__/verify-report.test.ts",
+		"code": "expect(() => process.kill(-pgid, 0)).toThrow(",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/flywheel-comm/src/cleanup.ts:execFileSync(\"tmux\", [\"kill-window\", \"-t\", tmuxWindow], {#1",
+		"path": "packages/flywheel-comm/src/cleanup.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-window\", \"-t\", tmuxWindow], {",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/flywheel-comm/src/lead-lease.ts:process.kill(pid, 0);#1",
+		"path": "packages/flywheel-comm/src/lead-lease.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/flywheel-comm/src/lead-lease.ts:process.kill(pid, 0);#2",
+		"path": "packages/flywheel-comm/src/lead-lease.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/flywheel-comm/src/proofshot/lock.ts:process.kill(pid, 0);#1",
+		"path": "packages/flywheel-comm/src/proofshot/lock.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/flywheel-comm/src/xiaohongshu-state.ts:process.kill(pid, 0);#1",
+		"path": "packages/flywheel-comm/src/xiaohongshu-state.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/inbox-mcp/src/__tests__/index.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/inbox-mcp/src/__tests__/index.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-install.test.sh:kill -0 \"$STUB_PID\" 2>/dev/null || break#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-install.test.sh",
+		"code": "kill -0 \"$STUB_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-install.test.sh:PORT4=\"\"; for _ in $(seq 1 40); do PORT4=\"$(sed -n 's/^PORT //p' \"$STUB_OUT4\" 2>/dev/null | head -1)\"; [ -n \"$PORT4\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-install.test.sh",
+		"code": "PORT4=\"\"; for _ in $(seq 1 40); do PORT4=\"$(sed -n 's/^PORT //p' \"$STUB_OUT4\" 2>/dev/null | head -1)\"; [ -n \"$PORT4\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh:kill -0 \"$STUB_PID\" 2>/dev/null || break#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh",
+		"code": "kill -0 \"$STUB_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh:PORT=\"\"; for _ in $(seq 1 40); do PORT=\"$(sed -n 's/^PORT //p' \"$OUT_N5\" 2>/dev/null | head -1)\"; [ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh",
+		"code": "PORT=\"\"; for _ in $(seq 1 40); do PORT=\"$(sed -n 's/^PORT //p' \"$OUT_N5\" 2>/dev/null | head -1)\"; [ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh:PORT=\"\"; for _ in $(seq 1 40); do PORT=\"$(sed -n 's/^PORT //p' \"$OUT_N6\" 2>/dev/null | head -1)\"; [ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh",
+		"code": "PORT=\"\"; for _ in $(seq 1 40); do PORT=\"$(sed -n 's/^PORT //p' \"$OUT_N6\" 2>/dev/null | head -1)\"; [ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh:PORT=\"\"; for _ in $(seq 1 40); do PORT=\"$(sed -n 's/^PORT //p' \"$OUT_N8\" 2>/dev/null | head -1)\"; [ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-negatives.test.sh",
+		"code": "PORT=\"\"; for _ in $(seq 1 40); do PORT=\"$(sed -n 's/^PORT //p' \"$OUT_N8\" 2>/dev/null | head -1)\"; [ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh:kill -0 \"$STUB_PID\" 2>/dev/null || break#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-qa-gaps.test.sh",
+		"code": "kill -0 \"$STUB_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh:kill -0 \"$STUB_PID\" 2>/dev/null || break#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-rotation.test.sh",
+		"code": "kill -0 \"$STUB_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/onboard-shell/__tests__/onboard-shell-secret.test.sh:[ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1#1",
+		"path": "packages/onboard-shell/__tests__/onboard-shell-secret.test.sh",
+		"code": "[ -n \"$PORT\" ] && break; kill -0 \"$STUB_PID\" 2>/dev/null || break; sleep 0.1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/payload-endpoint/__tests__/serve-node.test.mjs:child.kill();#1",
+		"path": "packages/payload-endpoint/__tests__/serve-node.test.mjs",
+		"code": "child.kill();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/payload-endpoint/__tests__/serve-node.test.mjs:child.kill();#2",
+		"path": "packages/payload-endpoint/__tests__/serve-node.test.mjs",
+		"code": "child.kill();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/payload-endpoint/__tests__/serve-node.test.mjs:for (const c of children) c.kill();#1",
+		"path": "packages/payload-endpoint/__tests__/serve-node.test.mjs",
+		"code": "for (const c of children) c.kill();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:elif kill -0 \"$PID6C\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "elif kill -0 \"$PID6C\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:if kill -0 \"$PID10\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "if kill -0 \"$PID10\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:if kill -0 \"$PID14\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "if kill -0 \"$PID14\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:if kill -0 \"$PID2\" 2>/dev/null; then log_fail \"T2 orphan pid=$PID2 still alive after reap\"; else log_pass \"T2 orphan reaped\"; fi#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "if kill -0 \"$PID2\" 2>/dev/null; then log_fail \"T2 orphan pid=$PID2 still alive after reap\"; else log_pass \"T2 orphan reaped\"; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:if kill -0 \"$PID3\" 2>/dev/null; then log_fail \"T3 cwd-probe orphan pid=$PID3 still alive\"; else log_pass \"T3 relative inner reaped via cwd-probe\"; fi#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "if kill -0 \"$PID3\" 2>/dev/null; then log_fail \"T3 cwd-probe orphan pid=$PID3 still alive\"; else log_pass \"T3 relative inner reaped via cwd-probe\"; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:if kill -0 \"$PID5\" 2>/dev/null; then log_pass \"T5 dry-run left orphan alive\"; else log_fail \"T5 dry-run killed pid=$PID5 (must not!)\"; fi#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "if kill -0 \"$PID5\" 2>/dev/null; then log_pass \"T5 dry-run left orphan alive\"; else log_fail \"T5 dry-run killed pid=$PID5 (must not!)\"; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:if kill -0 \"$PID6P\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "if kill -0 \"$PID6P\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh:while read -r p; do [ -n \"$p\" ] && kill -KILL \"$p\" 2>/dev/null || true; done < \"$PIDS_FILE\"#1",
+		"path": "packages/teamlead/scripts/__tests__/adapter-reap.test.sh",
+		"code": "while read -r p; do [ -n \"$p\" ] && kill -KILL \"$p\" 2>/dev/null || true; done < \"$PIDS_FILE\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/claude-lead.sh:if [ -n \"${CLAUDE_CHILD_PID:-}\" ] && kill -0 \"$CLAUDE_CHILD_PID\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/claude-lead.sh",
+		"code": "if [ -n \"${CLAUDE_CHILD_PID:-}\" ] && kill -0 \"$CLAUDE_CHILD_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/scripts/claude-lead.sh:kill -TERM \"$CLAUDE_CHILD_PID\" 2>/dev/null || true#1",
+		"path": "packages/teamlead/scripts/claude-lead.sh",
+		"code": "kill -TERM \"$CLAUDE_CHILD_PID\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/scripts/lib/lead-session-authority.sh:kill -0 \"$pid\" 2>/dev/null && return 1#1",
+		"path": "packages/teamlead/scripts/lib/lead-session-authority.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null && return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/scripts/lib/reap-orphan-adapters.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/lib/reap-orphan-adapters.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh:if ! kill -0 \"$TUI_PID\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh",
+		"code": "if ! kill -0 \"$TUI_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/scripts/test-rotation.sh:assert_eq \"survived\" \"survived\" \"kill -0 guard safe under set -e\"#1",
+		"path": "packages/teamlead/scripts/test-rotation.sh",
+		"code": "assert_eq \"survived\" \"survived\" \"kill -0 guard safe under set -e\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/test-rotation.sh:echo \"=== Test 4: kill -0 guard under set -e ===\"#1",
+		"path": "packages/teamlead/scripts/test-rotation.sh",
+		"code": "echo \"=== Test 4: kill -0 guard under set -e ===\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/scripts/test-rotation.sh:if kill -0 \"$DEAD_PID\" 2>/dev/null; then#1",
+		"path": "packages/teamlead/scripts/test-rotation.sh",
+		"code": "if kill -0 \"$DEAD_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/bridge-event-loop-guard.test.ts:child.kill(\"SIGCONT\");#1",
+		"path": "packages/teamlead/src/__tests__/bridge-event-loop-guard.test.ts",
+		"code": "child.kill(\"SIGCONT\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/bridge-event-loop-guard.test.ts:child.kill(\"SIGSTOP\");#1",
+		"path": "packages/teamlead/src/__tests__/bridge-event-loop-guard.test.ts",
+		"code": "child.kill(\"SIGSTOP\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts:for (const child of children) child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/__tests__/rules-bundle-truth-process.test.ts",
+		"code": "for (const child of children) child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:expect(calls.some((c) => c[0] === \"kill-session\")).toBe(false);#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts",
+		"code": "expect(calls.some((c) => c[0] === \"kill-session\")).toBe(false);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:expect(calls.some((c) => c[0] === \"kill-session\")).toBe(false);#2",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts",
+		"code": "expect(calls.some((c) => c[0] === \"kill-session\")).toBe(false);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts:expect(calls.some((c) => c[0] === \"kill-session\")).toBe(false);#3",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.attach.test.ts",
+		"code": "expect(calls.some((c) => c[0] === \"kill-session\")).toBe(false);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", session], { timeout: 5000 });#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", session], { timeout: 5000 });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:execFileSync(\"tmux\", [\"kill-window\", \"-t\", target], { timeout: 5000 });#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-window\", \"-t\", target], { timeout: 5000 });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", base], { stdio: \"ignore\" });#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", base], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", cmuxName], { stdio: \"ignore\" });#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", cmuxName], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", linked], { stdio: \"ignore\" });#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", linked], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", session], { stdio: \"ignore\" });#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", session], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", session], { stdio: \"ignore\" });#2",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", session], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", session], { stdio: \"ignore\" });#3",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", session], { stdio: \"ignore\" });",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/tmux-lookup.workflow-cleanup.test.ts:\"kill-window\",#1",
+		"path": "packages/teamlead/src/__tests__/tmux-lookup.workflow-cleanup.test.ts",
+		"code": "\"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/viewer-session-reaper.test.ts:.filter((c) => (c[1] as string[])[0] === \"kill-session\")#1",
+		"path": "packages/teamlead/src/__tests__/viewer-session-reaper.test.ts",
+		"code": ".filter((c) => (c[1] as string[])[0] === \"kill-session\")",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/__tests__/viewer-session-reaper.test.ts:if (args[0] === \"kill-session\") {#1",
+		"path": "packages/teamlead/src/__tests__/viewer-session-reaper.test.ts",
+		"code": "if (args[0] === \"kill-session\") {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/claude-profile-cli.ts:process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/claude-profile-cli.ts:process.kill(-child.pid, \"SIGKILL\");#2",
+		"path": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/claude-profile-cli.ts:process.kill(-child.pid, \"SIGTERM\");#1",
+		"path": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
+		"code": "process.kill(-child.pid, \"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/claude-profile-cli.ts:process.kill(-child.pid, 0);#1",
+		"path": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
+		"code": "process.kill(-child.pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/mkdir-lock.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/account-heal/mkdir-lock.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/pidfile.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/account-heal/pidfile.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts:process.kill(current.pid, attempt < 2 ? \"SIGTERM\" : \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts",
+		"code": "process.kill(current.pid, attempt < 2 ? \"SIGTERM\" : \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts:process.kill(old.pid, \"SIGTERM\");#1",
+		"path": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts",
+		"code": "process.kill(old.pid, \"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/bridge-exit-marker.test.ts:it(\"kill -9 shape: marker stays `running` → next boot latches the dirty evidence BEFORE overwriting\", () => {#1",
+		"path": "packages/teamlead/src/bridge/__tests__/bridge-exit-marker.test.ts",
+		"code": "it(\"kill -9 shape: marker stays `running` → next boot latches the dirty evidence BEFORE overwriting\", () => {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts:tmux([\"kill-session\", \"-t\", SESSION]);#1",
+		"path": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts",
+		"code": "tmux([\"kill-session\", \"-t\", SESSION]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts:tmux([\"kill-session\", \"-t\", SESSION]);#2",
+		"path": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts",
+		"code": "tmux([\"kill-session\", \"-t\", SESSION]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts:tmux([\"kill-session\", \"-t\", SESSION]);#3",
+		"path": "packages/teamlead/src/bridge/__tests__/statestore-ghost-realprobe.qa.test.ts",
+		"code": "tmux([\"kill-session\", \"-t\", SESSION]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:\"capture-pane\", \"display-message\", \"has-session\", \"kill-window\",#1",
+		"path": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
+		"code": "\"capture-pane\", \"display-message\", \"has-session\", \"kill-window\",",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts:process.kill(process.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
+		"code": "process.kill(process.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/chrome-session-reaper.ts:process.kill(pid, \"SIGTERM\");#1",
+		"path": "packages/teamlead/src/bridge/chrome-session-reaper.ts",
+		"code": "process.kill(pid, \"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/chrome-session-reaper.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/chrome-session-reaper.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/chrome-session-reaper.ts:process.kill(pid, signal);#1",
+		"path": "packages/teamlead/src/bridge/chrome-session-reaper.ts",
+		"code": "process.kill(pid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/claude-review-runner.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/claude-review-runner.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/claude-review-runner.ts:else child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/claude-review-runner.ts",
+		"code": "else child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/claude-review-runner.ts:if (child.pid) process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/claude-review-runner.ts",
+		"code": "if (child.pid) process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/cmux-watcher-patrol.ts:process.kill(-child.pid, signal);#1",
+		"path": "packages/teamlead/src/bridge/cmux-watcher-patrol.ts",
+		"code": "process.kill(-child.pid, signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/cmux-watcher-patrol.ts:process.kill(owner.pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/cmux-watcher-patrol.ts",
+		"code": "process.kill(owner.pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/fleet-console.ts:process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/fleet-console.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/fleet-console.ts:process.kill(child.pid, \"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/fleet-console.ts",
+		"code": "process.kill(child.pid, \"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/fleet-console.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/fleet-console.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/fleet-data.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/fleet-data.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/lead-alert-helpers.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/teamlead/src/bridge/lead-alert-helpers.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/management-cron-writer.ts:process.kill(pid, 0);#1",
+		"path": "packages/teamlead/src/bridge/management-cron-writer.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/plugin.ts:process.kill(lease.pid, 0); // signal 0 = existence check#1",
+		"path": "packages/teamlead/src/bridge/plugin.ts",
+		"code": "process.kill(lease.pid, 0); // signal 0 = existence check",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/quota-daemon-wake.ts:const kill = deps.kill ?? ((pid, signal) => void process.kill(pid, signal));#1",
+		"path": "packages/teamlead/src/bridge/quota-daemon-wake.ts",
+		"code": "const kill = deps.kill ?? ((pid, signal) => void process.kill(pid, signal));",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/terminal-tab-reaper.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=viewer-${executionId}`], {#1",
+		"path": "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=viewer-${executionId}`], {",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/tmux-lookup.ts:\"kill-window\",#1",
+		"path": "packages/teamlead/src/bridge/tmux-lookup.ts",
+		"code": "\"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/tmux-lookup.ts:await execFileAsync(\"tmux\", [\"kill-window\", \"-t\", tmuxWindow], {#1",
+		"path": "packages/teamlead/src/bridge/tmux-lookup.ts",
+		"code": "await execFileAsync(\"tmux\", [\"kill-window\", \"-t\", tmuxWindow], {",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/tmux-lookup.ts:signal: \"kill-window\",#1",
+		"path": "packages/teamlead/src/bridge/tmux-lookup.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/tmux-lookup.ts:signal: \"kill-window\",#2",
+		"path": "packages/teamlead/src/bridge/tmux-lookup.ts",
+		"code": "signal: \"kill-window\",",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/teamlead/src/bridge/viewer-session-reaper.ts:[\"kill-session\", \"-t\", `=${sessionName}`],#1",
+		"path": "packages/teamlead/src/bridge/viewer-session-reaper.ts",
+		"code": "[\"kill-session\", \"-t\", `=${sessionName}`],",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts:\"kill-window\",#1",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts",
+		"code": "\"kill-window\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts:[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:=growth-mufasa-lead\"],#1",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts",
+		"code": "[\"tmux\", \"kill-window\", \"-t\", \"=flywheel:=growth-mufasa-lead\"],",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/__tests__/WsTransport.test.ts:t.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/__tests__/WsTransport.test.ts",
+		"code": "t.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts:child.kill(signal);#1",
+		"path": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+		"code": "child.kill(signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/teamlead/src/lead-backends/codex/CodexLeadProcess.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/ProcessLifetimeFileLock.ts:child.kill();#1",
+		"path": "packages/teamlead/src/lead-backends/codex/ProcessLifetimeFileLock.ts",
+		"code": "child.kill();",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/tui-window.ts:exec(\"tmux\", [\"kill-window\", \"-t\", `=${TUI_TMUX_SESSION}:=${windowName}`]);#1",
+		"path": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
+		"code": "exec(\"tmux\", [\"kill-window\", \"-t\", `=${TUI_TMUX_SESSION}:=${windowName}`]);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/teamlead/src/lead-backends/codex/tui-window.ts:exec(\"tmux\", [\"kill-window\", \"-t\", `=${TUI_TMUX_SESSION}:=${windowName}`]);#2",
+		"path": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
+		"code": "exec(\"tmux\", [\"kill-window\", \"-t\", `=${TUI_TMUX_SESSION}:=${windowName}`]);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts:[\"-S\", privateSocket, \"kill-session\", \"-t\", \"=lead-seat\"],#1",
+		"path": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts",
+		"code": "[\"-S\", privateSocket, \"kill-session\", \"-t\", \"=lead-seat\"],",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts:const killed = spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${session}`], {#1",
+		"path": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts",
+		"code": "const killed = spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${session}`], {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${session}`], {#1",
+		"path": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${session}`], {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts:spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${session}`], {#2",
+		"path": "packages/terminal-mcp/src/__tests__/tmux-exec.real-tmux.test.ts",
+		"code": "spawnSync(\"tmux\", [\"kill-session\", \"-t\", `=${session}`], {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/__tests__/process-resident.test.ts:handle.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/__tests__/process-resident.test.ts",
+		"code": "handle.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/__tests__/process-resident.test.ts:handle.kill(\"SIGKILL\");#2",
+		"path": "packages/voice-core/src/__tests__/process-resident.test.ts",
+		"code": "handle.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/__tests__/process.test.ts:handle.kill(\"SIGTERM\");#1",
+		"path": "packages/voice-core/src/__tests__/process.test.ts",
+		"code": "handle.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts:() => process.kill(pid1, \"SIGKILL\"),#1",
+		"path": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts",
+		"code": "() => process.kill(pid1, \"SIGKILL\"),",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/voice-core/src/__tests__/resident-brain.smoke.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts:process.kill(pid, 0);#1",
+		"path": "packages/voice-core/src/__tests__/resident-manager.smoke.test.ts",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/voice-core/src/audio/FilePlayer.ts:handle.kill(\"SIGTERM\");#1",
+		"path": "packages/voice-core/src/audio/FilePlayer.ts",
+		"code": "handle.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/audio/MicCapture.ts:this.handle?.kill(\"SIGTERM\");#1",
+		"path": "packages/voice-core/src/audio/MicCapture.ts",
+		"code": "this.handle?.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/audio/StreamPlayer.ts:this.handle?.kill(\"SIGTERM\");#1",
+		"path": "packages/voice-core/src/audio/StreamPlayer.ts",
+		"code": "this.handle?.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts:if (!this.done && this.exitCode === undefined) this.child.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+		"code": "if (!this.done && this.exitCode === undefined) this.child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts:this.child.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+		"code": "this.child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:if (!t.finalized) this.child?.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
+		"code": "if (!t.finalized) this.child?.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:if (this.alive) this.child?.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
+		"code": "if (this.alive) this.child?.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/brain/ResidentClaudeBrain.ts:this.child?.kill(\"SIGKILL\"); // wedged — recovery via exit→respawn#1",
+		"path": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
+		"code": "this.child?.kill(\"SIGKILL\"); // wedged — recovery via exit→respawn",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/process.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/voice-core/src/process.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/process.ts:child.kill(\"SIGKILL\");#2",
+		"path": "packages/voice-core/src/process.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/voice-core/src/process.ts:this.child.kill(signal);#1",
+		"path": "packages/voice-core/src/process.ts",
+		"code": "this.child.kill(signal);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/__tests__/bridge-port.test.sh:[[ \"$(bp_check_dirty_marker \"$MARKER\")\" == \"dirty 111 1000\" ]] && pass \"T9c kill -9 (running marker) → dirty w/ prev evidence\" || fail \"T9c got '$(bp_check_dirty_marker \"$MARKER\")'\"#1",
+		"path": "scripts/__tests__/bridge-port.test.sh",
+		"code": "[[ \"$(bp_check_dirty_marker \"$MARKER\")\" == \"dirty 111 1000\" ]] && pass \"T9c kill -9 (running marker) → dirty w/ prev evidence\" || fail \"T9c got '$(bp_check_dirty_marker \"$MARKER\")'\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:\"child_alive=$(kill -0 \"$interrupted_codex_pid\" 2>/dev/null && echo yes || echo no) entry=$([[ -e \"$interrupted_entry\" ]] && echo yes || echo no)\"#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "\"child_alive=$(kill -0 \"$interrupted_codex_pid\" 2>/dev/null && echo yes || echo no) entry=$([[ -e \"$interrupted_entry\" ]] && echo yes || echo no)\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:\"leader_alive=$(kill -0 \"$group_leader_pid\" 2>/dev/null && echo yes || echo no) child_alive=$(kill -0 \"$group_child_pid\" 2>/dev/null && echo yes || echo no) locale=$(cat \"$ROOT/locale-seen\" 2>/dev/null || echo missing)\"#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "\"leader_alive=$(kill -0 \"$group_leader_pid\" 2>/dev/null && echo yes || echo no) child_alive=$(kill -0 \"$group_child_pid\" 2>/dev/null && echo yes || echo no) locale=$(cat \"$ROOT/locale-seen\" 2>/dev/null || echo missing)\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:\"rc=$rc alive=$(kill -0 \"$registered_pid\" 2>/dev/null && echo yes || echo no) entry=$([[ -e \"$ROOT/state/$registered_pid.json\" ]] && echo yes || echo no)\"#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "\"rc=$rc alive=$(kill -0 \"$registered_pid\" 2>/dev/null && echo yes || echo no) entry=$([[ -e \"$ROOT/state/$registered_pid.json\" ]] && echo yes || echo no)\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:[[ -z \"$interrupted_codex_pid\" ]] || kill -KILL \"$interrupted_codex_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "[[ -z \"$interrupted_codex_pid\" ]] || kill -KILL \"$interrupted_codex_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:&& -n \"$interrupted_codex_pid\" ]] && kill -0 \"$interrupted_codex_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "&& -n \"$interrupted_codex_pid\" ]] && kill -0 \"$interrupted_codex_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:&& [[ -n \"$group_child_pid\" ]] && kill -0 \"$group_child_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "&& [[ -n \"$group_child_pid\" ]] && kill -0 \"$group_child_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:fail \"PID reuse fence removes only the stale registry record\" \"pid=$recycled_pid alive=$(kill -0 \"$recycled_pid\" 2>/dev/null && echo yes || echo no)\"#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "fail \"PID reuse fence removes only the stale registry record\" \"pid=$recycled_pid alive=$(kill -0 \"$recycled_pid\" 2>/dev/null && echo yes || echo no)\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:for pid in \"${survivors[@]}\"; do kill -KILL \"$pid\" 2>/dev/null || true; done#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "for pid in \"${survivors[@]}\"; do kill -KILL \"$pid\" 2>/dev/null || true; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:for pid in \"${survivors[@]}\"; do kill -KILL \"$pid\" 2>/dev/null || true; done#2",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "for pid in \"${survivors[@]}\"; do kill -KILL \"$pid\" 2>/dev/null || true; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if ! kill -0 \"$group_leader_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if ! kill -0 \"$group_leader_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if [[ -n \"$interrupted_codex_pid\" ]] && ! kill -0 \"$interrupted_codex_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if [[ -n \"$interrupted_codex_pid\" ]] && ! kill -0 \"$interrupted_codex_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if [[ -n \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null; then survivors+=(\"$pid\"); fi#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if [[ -n \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null; then survivors+=(\"$pid\"); fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if [[ -n \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if [[ -n \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if [[ \"$rc\" == \"0\" ]] && ! kill -0 \"$registered_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if [[ \"$rc\" == \"0\" ]] && ! kill -0 \"$registered_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if kill -0 \"$interrupted_wrapper_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if kill -0 \"$interrupted_wrapper_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if kill -0 \"$recycled_pid\" 2>/dev/null && [[ ! -e \"$ROOT/state/$recycled_pid.json\" ]]; then#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if kill -0 \"$recycled_pid\" 2>/dev/null && [[ ! -e \"$ROOT/state/$recycled_pid.json\" ]]; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:if kill -0 \"$unregistered_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "if kill -0 \"$unregistered_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:kill -0 \"$interrupted_wrapper_pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "kill -0 \"$interrupted_wrapper_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:kill -KILL \"$group_leader_pid\" \"$group_child_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "kill -KILL \"$group_leader_pid\" \"$group_child_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:kill -KILL \"$interrupted_wrapper_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "kill -KILL \"$interrupted_wrapper_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:kill -KILL \"$recycled_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "kill -KILL \"$recycled_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:kill -KILL \"$registered_pid\" \"$unregistered_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "kill -KILL \"$registered_pid\" \"$unregistered_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/codex-guard.test.sh:kill -TERM \"$interrupted_wrapper_pid\" 2>/dev/null || interrupt_kill_rc=$?#1",
+		"path": "scripts/__tests__/codex-guard.test.sh",
+		"code": "kill -TERM \"$interrupted_wrapper_pid\" 2>/dev/null || interrupt_kill_rc=$?",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/customer-e2e-acceptance.test.sh:kill -0 \"$SERVER_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/customer-e2e-acceptance.test.sh",
+		"code": "kill -0 \"$SERVER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh:child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/fly-1867-legacy-profiles-quarantine.test.sh",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1364-live-e2e.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly1364-live-e2e.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh:if ! kill -0 \"$wrapper_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh",
+		"code": "if ! kill -0 \"$wrapper_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh:if kill -0 \"$wrapper_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh",
+		"code": "if kill -0 \"$wrapper_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh:if kill -0 \"$wrapper_pid\" 2>/dev/null \\#2",
+		"path": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh",
+		"code": "if kill -0 \"$wrapper_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh:kill -0 \"$wrapper_pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/fly1663-lead-v2-runtime.test.sh",
+		"code": "kill -0 \"$wrapper_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1678-install-statusline.test.sh:kill -TERM \"\\$PPID\" 2>/dev/null#1",
+		"path": "scripts/__tests__/fly1678-install-statusline.test.sh",
+		"code": "kill -TERM \"\\$PPID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1678-install-statusline.test.sh:kill -TERM \"\\$PPID\" 2>/dev/null#2",
+		"path": "scripts/__tests__/fly1678-install-statusline.test.sh",
+		"code": "kill -TERM \"\\$PPID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1678-install-statusline.test.sh:kill -TERM \"$PPID\" 2>/dev/null#1",
+		"path": "scripts/__tests__/fly1678-install-statusline.test.sh",
+		"code": "kill -TERM \"$PPID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1679-dev-channels-v2.test.sh:after=no; kill -0 \"$victim\" 2>/dev/null && after=yes#1",
+		"path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+		"code": "after=no; kill -0 \"$victim\" 2>/dev/null && after=yes",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1679-dev-channels-v2.test.sh:alive=no; kill -0 \"$victim\" 2>/dev/null && alive=yes#1",
+		"path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+		"code": "alive=no; kill -0 \"$victim\" 2>/dev/null && alive=yes",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1679-dev-channels-v2.test.sh:before=no; kill -0 \"$victim\" 2>/dev/null && before=yes#1",
+		"path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+		"code": "before=no; kill -0 \"$victim\" 2>/dev/null && before=yes",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1679-dev-channels-v2.test.sh:c_term=\"$(line_of 'kill -TERM \"\\$CLAUDE_CHILD_PID\"' \"$CLEANUP_V2_SRC\")\"#1",
+		"path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+		"code": "c_term=\"$(line_of 'kill -TERM \"\\$CLAUDE_CHILD_PID\"' \"$CLEANUP_V2_SRC\")\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1679-dev-channels-v2.test.sh:if [ -n \"${_V2_DIALOG_POLLER_PID:-}\" ] && kill -0 \"$_V2_DIALOG_POLLER_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/fly1679-dev-channels-v2.test.sh",
+		"code": "if [ -n \"${_V2_DIALOG_POLLER_PID:-}\" ] && kill -0 \"$_V2_DIALOG_POLLER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1697-v2-lease-body.test.sh:kill -0 \"$BODY_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/fly1697-v2-lease-body.test.sh",
+		"code": "kill -0 \"$BODY_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1884-view-attach.test.sh:if kill -0 \"$PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/fly1884-view-attach.test.sh",
+		"code": "if kill -0 \"$PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1884-view-attach.test.sh:kill -0 \"$PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/fly1884-view-attach.test.sh",
+		"code": "kill -0 \"$PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-attach-protocol.test.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/fly1944-attach-protocol.test.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-attach-protocol.test.sh:kill -0 \"$pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/fly1944-attach-protocol.test.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:\"$root|$root_start\"|\"$child|$child_start\") kill -0 \"$1\" 2>/dev/null ;;#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "\"$root|$root_start\"|\"$child|$child_start\") kill -0 \"$1\" 2>/dev/null ;;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:[[ -n \"$child\" ]] && kill -0 \"$child\" 2>/dev/null && break#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "[[ -n \"$child\" ]] && kill -0 \"$child\" 2>/dev/null && break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:[[ -z \"$child\" ]] || kill -KILL \"$child\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "[[ -z \"$child\" ]] || kill -KILL \"$child\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:[[ -z \"$decoy\" ]] || kill -KILL \"$decoy\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "[[ -z \"$decoy\" ]] || kill -KILL \"$decoy\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:[[ -z \"$root\" ]] || kill -KILL \"$root\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "[[ -z \"$root\" ]] || kill -KILL \"$root\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:kill -0 \"$child\" 2>/dev/null || child_dead=1#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "kill -0 \"$child\" 2>/dev/null || child_dead=1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:kill -0 \"$decoy\" 2>/dev/null || exit 18#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "kill -0 \"$decoy\" 2>/dev/null || exit 18",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:kill -0 \"$root\" 2>/dev/null && kill -0 \"$child\" 2>/dev/null || exit 16#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "kill -0 \"$root\" 2>/dev/null && kill -0 \"$child\" 2>/dev/null || exit 16",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1944-helper-reap.test.sh:kill -0 \"$root\" 2>/dev/null || root_dead=1#1",
+		"path": "scripts/__tests__/fly1944-helper-reap.test.sh",
+		"code": "kill -0 \"$root\" 2>/dev/null || root_dead=1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2048-cmux-convergence.test.sh:if ! kill -0 \"$abort_pid\" 2>/dev/null; then abort_prompt=1; break; fi#1",
+		"path": "scripts/__tests__/fly2048-cmux-convergence.test.sh",
+		"code": "if ! kill -0 \"$abort_pid\" 2>/dev/null; then abort_prompt=1; break; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2048-cmux-convergence.test.sh:if [[ \"$abort_prompt\" == 0 ]]; then kill -KILL -- \"-$abort_pid\" 2>/dev/null || true; fi#1",
+		"path": "scripts/__tests__/fly2048-cmux-convergence.test.sh",
+		"code": "if [[ \"$abort_prompt\" == 0 ]]; then kill -KILL -- \"-$abort_pid\" 2>/dev/null || true; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2048-cmux-convergence.test.sh:kill -TERM \"$abort_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/fly2048-cmux-convergence.test.sh",
+		"code": "kill -TERM \"$abort_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:if [[ \"$signal_pid\" =~ ^[0-9]+$ ]] && kill -TERM \"$signal_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/flywheel-log-janitor.test.sh",
+		"code": "if [[ \"$signal_pid\" =~ ^[0-9]+$ ]] && kill -TERM \"$signal_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:kill -KILL \"$signal_pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/flywheel-log-janitor.test.sh",
+		"code": "kill -KILL \"$signal_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/flywheel-log-rotate.test.sh:&& kill -0 \"$PRODUCER_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/flywheel-log-rotate.test.sh",
+		"code": "&& kill -0 \"$PRODUCER_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/flywheel-log-rotate.test.sh:kill -0 \"$PRODUCER_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/flywheel-log-rotate.test.sh",
+		"code": "kill -0 \"$PRODUCER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/package-onboard-smoke.test.sh:kill -0 \"$BRIDGE_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/package-onboard-smoke.test.sh",
+		"code": "kill -0 \"$BRIDGE_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/payload-key-cleanup.test.sh:kill -0 \"$pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/payload-key-cleanup.test.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/payload-release-pipeline.test.sh:kill -TERM \"$PROXY_PID\" 2>/dev/null; wait \"$PROXY_PID\" 2>/dev/null#1",
+		"path": "scripts/__tests__/payload-release-pipeline.test.sh",
+		"code": "kill -TERM \"$PROXY_PID\" 2>/dev/null; wait \"$PROXY_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-fly-1189-driver.test.sh:kill -INT \"$DRV_PID\" 2>/dev/null#1",
+		"path": "scripts/__tests__/qa-fly-1189-driver.test.sh",
+		"code": "kill -INT \"$DRV_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-fly-1189-driver.test.sh:kill -KILL \"$DRV_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/qa-fly-1189-driver.test.sh",
+		"code": "kill -KILL \"$DRV_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-fly-1986-load-probe.test.sh:if ! kill -0 \"$SIG_PARENT\" 2>/dev/null; then EXITED=1; break; fi#1",
+		"path": "scripts/__tests__/qa-fly-1986-load-probe.test.sh",
+		"code": "if ! kill -0 \"$SIG_PARENT\" 2>/dev/null; then EXITED=1; break; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-fly-1986-load-probe.test.sh:kill -TERM \"$SIG_PARENT\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/qa-fly-1986-load-probe.test.sh",
+		"code": "kill -TERM \"$SIG_PARENT\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-fly1501-bounded-run.test.sh:if kill -0 \"$DESC_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/qa-fly1501-bounded-run.test.sh",
+		"code": "if kill -0 \"$DESC_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-generalized-codex-stub.test.mjs:if (child?.exitCode === null) child.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/qa-generalized-codex-stub.test.mjs",
+		"code": "if (child?.exitCode === null) child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-generalized-codex-stub.test.mjs:tui.kill(\"SIGKILL\");#1",
+		"path": "scripts/__tests__/qa-generalized-codex-stub.test.mjs",
+		"code": "tui.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-generalized-codex-stub.test.mjs:tui.kill(\"SIGTERM\");#1",
+		"path": "scripts/__tests__/qa-generalized-codex-stub.test.mjs",
+		"code": "tui.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-raya-voice.test.sh:kill -TERM \"$WRAPPER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/qa-raya-voice.test.sh",
+		"code": "kill -TERM \"$WRAPPER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-raya-voice.test.sh:kill -TERM \"$WRAPPER_PID\"#1",
+		"path": "scripts/__tests__/qa-raya-voice.test.sh",
+		"code": "kill -TERM \"$WRAPPER_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/r4-window.test.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/r4-window.test.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/r4-window.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/r4-window.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/r4-window.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#2",
+		"path": "scripts/__tests__/r4-window.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/restart-deploy-consistency.test.sh:kill -TERM \"$FLY1743_SIGNAL_PID\"#1",
+		"path": "scripts/__tests__/restart-deploy-consistency.test.sh",
+		"code": "kill -TERM \"$FLY1743_SIGNAL_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/restart-self-detach.test.sh:kill -0 \"$pid\" 2>/dev/null || return 0#1",
+		"path": "scripts/__tests__/restart-self-detach.test.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 0",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/setup-quota-monitor.test.sh:fail \"stop-before-rotate ordering\" \"alive=$(kill -0 \"$old_writer\" 2>/dev/null && echo yes || echo no) sizes=$size_before/$size_after\"#1",
+		"path": "scripts/__tests__/setup-quota-monitor.test.sh",
+		"code": "fail \"stop-before-rotate ordering\" \"alive=$(kill -0 \"$old_writer\" 2>/dev/null && echo yes || echo no) sizes=$size_before/$size_after\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/setup-quota-monitor.test.sh:if ! kill -0 \"$old_writer\" 2>/dev/null && [[ \"$size_before\" == \"$size_after\" ]] \\#1",
+		"path": "scripts/__tests__/setup-quota-monitor.test.sh",
+		"code": "if ! kill -0 \"$old_writer\" 2>/dev/null && [[ \"$size_before\" == \"$size_after\" ]] \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:\"$(kill -0 \"$N20_NEW_PID\" 2>/dev/null && echo yes || echo no)\" \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "\"$(kill -0 \"$N20_NEW_PID\" 2>/dev/null && echo yes || echo no)\" \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:[[ \"$PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$PID\" 2>/dev/null || exit 1#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "[[ \"$PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$PID\" 2>/dev/null || exit 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& ! kill -0 \"$N15_NEW_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& ! kill -0 \"$N15_NEW_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& ! kill -0 \"$N19_NEW_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& ! kill -0 \"$N19_NEW_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& ! kill -0 \"$N21_CHILD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& ! kill -0 \"$N21_CHILD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& ! kill -0 \"$N21_LAUNCHER_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& ! kill -0 \"$N21_LAUNCHER_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& ! kill -0 \"$N8_NEW_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& ! kill -0 \"$N8_NEW_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$H1_NEW_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$H1_NEW_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$H2_NEW_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$H2_NEW_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$H3_NEW_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$H3_NEW_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$N10_BLOCKER_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$N10_BLOCKER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$N20_NEW_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$N20_NEW_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$N22_HOLDER_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$N22_HOLDER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$N23_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$N23_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$N27_NEW_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$N27_NEW_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:&& kill -0 \"$N28_NEW_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "&& kill -0 \"$N28_NEW_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N1_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N1_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N2_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N2_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N3_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N3_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N4_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N4_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N5_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N5_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N6_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N6_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:elif kill -0 \"$N7_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "elif kill -0 \"$N7_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:if ! kill -0 \"$N22_OLD_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "if ! kill -0 \"$N22_OLD_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:if ! kill -0 \"$N25_OLD_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "if ! kill -0 \"$N25_OLD_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:if kill -0 \"$N9_OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "if kill -0 \"$N9_OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -0 \"$BRIDGE_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -0 \"$BRIDGE_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -0 \"$BRIDGE_PID\" 2>/dev/null || break#2",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -0 \"$BRIDGE_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -0 \"$BRIDGE_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -0 \"$BRIDGE_PID\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -0 \"$N10_BLOCKER_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -0 \"$N10_BLOCKER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -KILL \"$BRIDGE_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -KILL \"$BRIDGE_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -KILL \"$BRIDGE_PID\" 2>/dev/null || true#2",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -KILL \"$BRIDGE_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -KILL \"$N10_BLOCKER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -KILL \"$N10_BLOCKER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$BRIDGE_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$BRIDGE_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$BRIDGE_PID\" 2>/dev/null || true#2",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$BRIDGE_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$N10_BLOCKER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$N10_BLOCKER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$N21_CHILD_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$N21_CHILD_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$N22_HOLDER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$N22_HOLDER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$N25_HOLDER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$N25_HOLDER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$N9_DRIVER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$N9_DRIVER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$N9_HOLDER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$N9_HOLDER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$PPID\"#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$PPID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:kill -TERM \"$PPID\"#2",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "kill -TERM \"$PPID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 0' TERM#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "trap 'kill -TERM \"$child\" 2>/dev/null || true; wait \"$child\" 2>/dev/null || true; exit 0' TERM",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-cycle-bridge.test.sh:while kill -0 \"$H3_DEAD_PID\" 2>/dev/null; do H3_DEAD_PID=$((H3_DEAD_PID - 1)); done#1",
+		"path": "scripts/__tests__/test-cycle-bridge.test.sh",
+		"code": "while kill -0 \"$H3_DEAD_PID\" 2>/dev/null; do H3_DEAD_PID=$((H3_DEAD_PID - 1)); done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:! kill -0 \"$old_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "! kill -0 \"$old_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:[[ \"$PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$PID\" 2>/dev/null || exit 1#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "[[ \"$PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$PID\" 2>/dev/null || exit 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$E_NEW_INTERMEDIATE\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "&& kill -0 \"$E_NEW_INTERMEDIATE\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$E_NEW_LISTENER\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "&& kill -0 \"$E_NEW_LISTENER\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$E_NEW_WRAPPER\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "&& kill -0 \"$E_NEW_WRAPPER\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$E_OLD_LEAD\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "&& kill -0 \"$E_OLD_LEAD\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$W_NEW_LISTENER\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "&& kill -0 \"$W_NEW_LISTENER\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$W_NEW_WRAPPER\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "&& kill -0 \"$W_NEW_WRAPPER\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 0.05; done#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 0.05; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$dead_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -0 \"$dead_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$dead_pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -0 \"$dead_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$pid\" 2>/dev/null || exit 113#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || exit 113",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$sentinel_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -0 \"$sentinel_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -9 \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -9 \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:if kill -0 \"$owned_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "if kill -0 \"$owned_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:if kill -0 \"$owned_pid\" 2>/dev/null; then#2",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "if kill -0 \"$owned_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:kill -0 \"$owned_pid\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "kill -0 \"$owned_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-generalized.test.sh:node -e 'try { process.kill(-Number(process.argv[1]), \"SIGKILL\"); } catch {}' \\#1",
+		"path": "scripts/__tests__/test-deploy-generalized.test.sh",
+		"code": "node -e 'try { process.kill(-Number(process.argv[1]), \"SIGKILL\"); } catch {}' \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-multilead.test.sh:kill -0 \"$SUP_PID\" 2>/dev/null && { F2_OK=0; fail \"F2: supervisor pid should be killed\"; kill -9 \"$SUP_PID\" 2>/dev/null; }#1",
+		"path": "scripts/__tests__/test-deploy-multilead.test.sh",
+		"code": "kill -0 \"$SUP_PID\" 2>/dev/null && { F2_OK=0; fail \"F2: supervisor pid should be killed\"; kill -9 \"$SUP_PID\" 2>/dev/null; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-multilead.test.sh:while kill -0 \"$DEAD_PID\" 2>/dev/null; do DEAD_PID=$((DEAD_PID - 1)); done#1",
+		"path": "scripts/__tests__/test-deploy-multilead.test.sh",
+		"code": "while kill -0 \"$DEAD_PID\" 2>/dev/null; do DEAD_PID=$((DEAD_PID - 1)); done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-reap-worktree-lib.test.sh:/bin/kill -KILL \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-reap-worktree-lib.test.sh",
+		"code": "/bin/kill -KILL \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-reap-worktree-lib.test.sh:&& ! /bin/kill -0 \"$real_child\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-reap-worktree-lib.test.sh",
+		"code": "&& ! /bin/kill -0 \"$real_child\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-reap-worktree-lib.test.sh:&& ! /bin/kill -0 \"$real_parent\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-reap-worktree-lib.test.sh",
+		"code": "&& ! /bin/kill -0 \"$real_parent\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-lease-contract.test.sh:kill -0 \"$FENCE_CHILD_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-teardown-lease-contract.test.sh",
+		"code": "kill -0 \"$FENCE_CHILD_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-lease-contract.test.sh:kill -KILL \"$FENCE_PARENT_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-teardown-lease-contract.test.sh",
+		"code": "kill -KILL \"$FENCE_PARENT_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-lease-contract.test.sh:kill -KILL \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-teardown-lease-contract.test.sh",
+		"code": "kill -KILL \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-lease-contract.test.sh:kill -TERM \"$HOLDER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-teardown-lease-contract.test.sh",
+		"code": "kill -TERM \"$HOLDER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-lease-contract.test.sh:kill -TERM \"$HOLDER_PID\" 2>/dev/null || true#2",
+		"path": "scripts/__tests__/test-teardown-lease-contract.test.sh",
+		"code": "kill -TERM \"$HOLDER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh:&& kill -0 \"$WATCHER_PID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh",
+		"code": "&& kill -0 \"$WATCHER_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh:kill -0 \"$WATCHER_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh",
+		"code": "kill -0 \"$WATCHER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh:kill -TERM \"$SOCKET_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh",
+		"code": "kill -TERM \"$SOCKET_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh:kill -TERM \"$WATCHER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-teardown-live-watcher-e2e.test.sh",
+		"code": "kill -TERM \"$WATCHER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh:' kill-after-decision-prepare) _tmux_rescue_after_decision_prepare() { kill -KILL $$; } ;;' \\#1",
+		"path": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
+		"code": "' kill-after-decision-prepare) _tmux_rescue_after_decision_prepare() { kill -KILL $$; } ;;' \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh:' kill-after-state-commit) _tmux_rescue_after_state_commit() { kill -KILL $$; } ;;' \\#1",
+		"path": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
+		"code": "' kill-after-state-commit) _tmux_rescue_after_state_commit() { kill -KILL $$; } ;;' \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh:'case \"$4\" in kill) kill -KILL $$ ;; *) sleep \"$3\" ;; esac' \\#1",
+		"path": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
+		"code": "'case \"$4\" in kill) kill -KILL $$ ;; *) sleep \"$3\" ;; esac' \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh:'kill -KILL $$' > \"$OUTER_CRASH\"#1",
+		"path": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
+		"code": "'kill -KILL $$' > \"$OUTER_CRASH\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh:if kill -0 \"$RECORDED_OUTER_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/tmux-server-rescue-instrumentation.test.sh",
+		"code": "if kill -0 \"$RECORDED_OUTER_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-lock.test.sh:kill -9 \"$BOUNDED_OWNER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/tmux-server-rescue-lock.test.sh",
+		"code": "kill -9 \"$BOUNDED_OWNER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-lock.test.sh:kill -9 \"$OWNER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/tmux-server-rescue-lock.test.sh",
+		"code": "kill -9 \"$OWNER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh:kill -0 \"$PID_D\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+		"code": "kill -0 \"$PID_D\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh:kill -9 \"$p\" 2>/dev/null#1",
+		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+		"code": "kill -9 \"$p\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh:kill -9 \"$PID_D\"#1",
+		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+		"code": "kill -9 \"$PID_D\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh:kill -CONT \"$p\" 2>/dev/null#1",
+		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+		"code": "kill -CONT \"$p\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh:kill -CONT \"$PID_S\" 2>/dev/null#1",
+		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+		"code": "kill -CONT \"$PID_S\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh:kill -STOP \"$PID_S\"#1",
+		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
+		"code": "kill -STOP \"$PID_S\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/daily-standup.sh:if ! kill -0 \"$BRIDGE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/daily-standup.sh",
+		"code": "if ! kill -0 \"$BRIDGE_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/discord-e2e.sh:if [[ -n \"$BRIDGE_PID\" ]] && kill -0 \"$BRIDGE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/discord-e2e.sh",
+		"code": "if [[ -n \"$BRIDGE_PID\" ]] && kill -0 \"$BRIDGE_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/e2e-heartbeat.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", \"=flywheel-e2e\"], {#1",
+		"path": "scripts/e2e-heartbeat.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", \"=flywheel-e2e\"], {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/e2e-scan-notify.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${TMUX_SESSION}`]);#1",
+		"path": "scripts/e2e-scan-notify.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${TMUX_SESSION}`]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/flywheel-bridge-wrapper.sh:if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-bridge-wrapper.sh",
+		"code": "if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:[[ \"${FLYWHEEL_CMUX_REBIND_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "[[ \"${FLYWHEEL_CMUX_REBIND_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:[[ \"${FLYWHEEL_CMUX_TERMINAL_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "[[ \"${FLYWHEEL_CMUX_TERMINAL_CRASH_AT:-}\" == \"$1\" ]] && kill -KILL \"$$\"",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:if kill -0 \"$command_pid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "if kill -0 \"$command_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -0 \"$MUTATOR_OWNER_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -0 \"$MUTATOR_OWNER_PID\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -0 \"$OPS_CLAIM_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -0 \"$OPS_CLAIM_PID\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -0 \"$pid\" 2>/dev/null || continue#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || continue",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -0 \"$QA_CLAIM_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -0 \"$QA_CLAIM_PID\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -KILL -- \"-$command_pid\" 2>/dev/null || true#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -KILL -- \"-$command_pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -KILL \"$$\"#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -KILL \"$$\"",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -KILL \"$$\"#2",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -KILL \"$$\"",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -KILL \"$$\"#3",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -KILL \"$$\"",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -KILL \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -KILL \"$pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -TERM -- \"-$command_pid\" 2>/dev/null || true#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -TERM -- \"-$command_pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -TERM -- \"-$watchdog_pid\" 2>/dev/null || true#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -TERM -- \"-$watchdog_pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-cmux-sync.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/flywheel-cmux-sync.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-daemon.sh:|| ! kill -0 \"$old_pid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-daemon.sh",
+		"code": "|| ! kill -0 \"$old_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-daemon.sh:if [ \"$new_pid\" != \"0\" ] && [ -n \"$new_pid\" ] && kill -0 \"$new_pid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-daemon.sh",
+		"code": "if [ \"$new_pid\" != \"0\" ] && [ -n \"$new_pid\" ] && kill -0 \"$new_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-daemon.sh:if [ \"$new_pid\" != \"0\" ] && [ -n \"$new_pid\" ] && kill -0 \"$new_pid\" 2>/dev/null; then#2",
+		"path": "scripts/flywheel-daemon.sh",
+		"code": "if [ \"$new_pid\" != \"0\" ] && [ -n \"$new_pid\" ] && kill -0 \"$new_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-daemon.sh:while kill -0 \"$pid\" 2>/dev/null; do#1",
+		"path": "scripts/flywheel-daemon.sh",
+		"code": "while kill -0 \"$pid\" 2>/dev/null; do",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-fleet.sh:elif [ \"$fresh_pid\" != \"0\" ] && [ -n \"$fresh_pid\" ] && kill -0 \"$fresh_pid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-fleet.sh",
+		"code": "elif [ \"$fresh_pid\" != \"0\" ] && [ -n \"$fresh_pid\" ] && kill -0 \"$fresh_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-fleet.sh:elif [ \"$lpid\" != \"0\" ] && [ -n \"$lpid\" ] && kill -0 \"$lpid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-fleet.sh",
+		"code": "elif [ \"$lpid\" != \"0\" ] && [ -n \"$lpid\" ] && kill -0 \"$lpid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-fleet.sh:if [ \"${rec_probe2%% *}\" = \"loaded\" ] && { [ \"$lpid\" = \"0\" ] || ! kill -0 \"$lpid\" 2>/dev/null; }; then#1",
+		"path": "scripts/flywheel-fleet.sh",
+		"code": "if [ \"${rec_probe2%% *}\" = \"loaded\" ] && { [ \"$lpid\" = \"0\" ] || ! kill -0 \"$lpid\" 2>/dev/null; }; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-fleet.sh:if [ \"$lpid\" != \"$mpid\" ] || ! kill -0 \"$lpid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-fleet.sh",
+		"code": "if [ \"$lpid\" != \"$mpid\" ] || ! kill -0 \"$lpid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-fleet.sh:if [ \"$lpid\" != \"0\" ] && [ -n \"$lpid\" ] && kill -0 \"$lpid\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-fleet.sh",
+		"code": "if [ \"$lpid\" != \"0\" ] && [ -n \"$lpid\" ] && kill -0 \"$lpid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-lead-wrapper-v2.sh:kill -0 \"$server_pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/flywheel-lead-wrapper-v2.sh",
+		"code": "kill -0 \"$server_pid\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-log-janitor.sh:if kill -0 \"$holder\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-log-janitor.sh",
+		"code": "if kill -0 \"$holder\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-voice-bridge-wrapper.sh:if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then#1",
+		"path": "scripts/flywheel-voice-bridge-wrapper.sh",
+		"code": "if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/flywheel-voucher-watch.sh:kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null#1",
+		"path": "scripts/flywheel-voucher-watch.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null; sleep 1; kill -KILL \"$pid\" 2>/dev/null",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/flywheel-voucher-watch.sh:while kill -0 \"$pid\" 2>/dev/null; do#1",
+		"path": "scripts/flywheel-voucher-watch.sh",
+		"code": "while kill -0 \"$pid\" 2>/dev/null; do",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/hooks/flywheel-restart-guard.py:command so a ps|grep|xargs kill pipeline cannot hide its target; command-#1",
+		"path": "scripts/hooks/flywheel-restart-guard.py",
+		"code": "command so a ps|grep|xargs kill pipeline cannot hide its target; command-",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/hooks/runner-stop-notify.sh:if kill -0 \"$child_pid\" 2>/dev/null; then#1",
+		"path": "scripts/hooks/runner-stop-notify.sh",
+		"code": "if kill -0 \"$child_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:\"| xargs kill -9\",#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "\"| xargs kill -9\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:\"ps -ef | grep com.flywheel | awk '{print $2}' | xargs kill\",#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "\"ps -ef | grep com.flywheel | awk '{print $2}' | xargs kill\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:\"ps aux | grep -v grep | grep run-bridge | awk '{print $2}' | xargs kill\",#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "\"ps aux | grep -v grep | grep run-bridge | awk '{print $2}' | xargs kill\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:\"ps aux | grep run-bridge | awk '{print $2}' | xargs kill -9\",#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "\"ps aux | grep run-bridge | awk '{print $2}' | xargs kill -9\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:\"rg run-bridge /tmp/pslist | awk '{print $2}' | xargs kill -9\",#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "\"rg run-bridge /tmp/pslist | awk '{print $2}' | xargs kill -9\",",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/hooks/test-flywheel-restart-guard.py:(\"pgrep -f run-bridge | xargs kill -9\", \"P2 pgrep|xargs kill (FLY-176 form)\"),#1",
+		"path": "scripts/hooks/test-flywheel-restart-guard.py",
+		"code": "(\"pgrep -f run-bridge | xargs kill -9\", \"P2 pgrep|xargs kill (FLY-176 form)\"),",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/agent-cli-providers/claude.sh:( sleep \"$secs\"; kill -TERM \"$child\" 2>/dev/null ) >/dev/null 2>&1 & watcher=$!#1",
+		"path": "scripts/lib/agent-cli-providers/claude.sh",
+		"code": "( sleep \"$secs\"; kill -TERM \"$child\" 2>/dev/null ) >/dev/null 2>&1 & watcher=$!",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/agent-cli-providers/claude.sh:kill -TERM \"$watcher\" 2>/dev/null; wait \"$watcher\" 2>/dev/null#1",
+		"path": "scripts/lib/agent-cli-providers/claude.sh",
+		"code": "kill -TERM \"$watcher\" 2>/dev/null; wait \"$watcher\" 2>/dev/null",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/bounded-run.sh:kill -KILL -- \"-${child_pid}\" 2>/dev/null ||#1",
+		"path": "scripts/lib/bounded-run.sh",
+		"code": "kill -KILL -- \"-${child_pid}\" 2>/dev/null ||",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/bounded-run.sh:kill -KILL \"$child_pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/bounded-run.sh",
+		"code": "kill -KILL \"$child_pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/bounded-run.sh:kill -TERM -- \"-${child_pid}\" 2>/dev/null ||#1",
+		"path": "scripts/lib/bounded-run.sh",
+		"code": "kill -TERM -- \"-${child_pid}\" 2>/dev/null ||",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/bounded-run.sh:kill -TERM -- \"-${watchdog_pid}\" 2>/dev/null ||#1",
+		"path": "scripts/lib/bounded-run.sh",
+		"code": "kill -TERM -- \"-${watchdog_pid}\" 2>/dev/null ||",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/bounded-run.sh:kill -TERM \"$child_pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/bounded-run.sh",
+		"code": "kill -TERM \"$child_pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/bounded-run.sh:kill -TERM \"$watchdog_pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/bounded-run.sh",
+		"code": "kill -TERM \"$watchdog_pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/buddy-captain-preview.sh:if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/buddy-captain-preview.sh",
+		"code": "if [ -n \"$pid\" ] && kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/buddy-captain-preview.sh:kill -0 \"$pid\" 2>/dev/null || { _bcp_log \"preview exited early — see $log\"; rm -f \"$state_dir/captain-preview.pid\"; return 1; }#1",
+		"path": "scripts/lib/buddy-captain-preview.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || { _bcp_log \"preview exited early — see $log\"; rm -f \"$state_dir/captain-preview.pid\"; return 1; }",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/buddy-captain-preview.sh:kill -KILL \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/buddy-captain-preview.sh",
+		"code": "kill -KILL \"$pid\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/buddy-captain-preview.sh:kill -TERM \"$pid\" 2>/dev/null#1",
+		"path": "scripts/lib/buddy-captain-preview.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/codex-guard.sh:if kill -0 \"$child_pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/codex-guard.sh",
+		"code": "if kill -0 \"$child_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/codex-guard.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/lib/codex-guard.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/kill-ledger.sh:pgid) kill -s \"$signal\" -- \"-$target\" ;;#1",
+		"path": "scripts/lib/kill-ledger.sh",
+		"code": "pgid) kill -s \"$signal\" -- \"-$target\" ;;",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/kill-ledger.sh:pid) kill -s \"$signal\" -- \"$target\" ;;#1",
+		"path": "scripts/lib/kill-ledger.sh",
+		"code": "pid) kill -s \"$signal\" -- \"$target\" ;;",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/lead-body-sweep.sh:kill -0 \"$1\" 2>/dev/null#1",
+		"path": "scripts/lib/lead-body-sweep.sh",
+		"code": "kill -0 \"$1\" 2>/dev/null",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/lead-restart-lifecycle.sh:kill -0 \"$1\" 2>/dev/null#1",
+		"path": "scripts/lib/lead-restart-lifecycle.sh",
+		"code": "kill -0 \"$1\" 2>/dev/null",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:for pid in \"${owned[@]}\"; do kill -TERM \"$pid\" 2>/dev/null || true; done#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "for pid in \"${owned[@]}\"; do kill -TERM \"$pid\" 2>/dev/null || true; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:if ! kill -0 \"$pid\" 2>/dev/null; then return 0; fi#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "if ! kill -0 \"$pid\" 2>/dev/null; then return 0; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:if ! kill -0 \"$pid\" 2>/dev/null; then return 0; fi#2",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "if ! kill -0 \"$pid\" 2>/dev/null; then return 0; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:if ! kill -0 \"$pid\" 2>/dev/null; then return 0; fi#3",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "if ! kill -0 \"$pid\" 2>/dev/null; then return 0; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:if kill -0 \"$pid\" 2>/dev/null; then#2",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:kill -0 \"$clone_pid\" 2>/dev/null || break#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "kill -0 \"$clone_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:kill -KILL -- \"-${clone_pid}\" 2>/dev/null || kill -KILL \"$clone_pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "kill -KILL -- \"-${clone_pid}\" 2>/dev/null || kill -KILL \"$clone_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:kill -KILL \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "kill -KILL \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:kill -KILL \"$pid\" 2>/dev/null || true#2",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "kill -KILL \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:kill -TERM -- \"-${clone_pid}\" 2>/dev/null || kill -TERM \"$clone_pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "kill -TERM -- \"-${clone_pid}\" 2>/dev/null || kill -TERM \"$clone_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-generalized.sh:while kill -0 \"$clone_pid\" 2>/dev/null; do#1",
+		"path": "scripts/lib/qa-generalized.sh",
+		"code": "while kill -0 \"$clone_pid\" 2>/dev/null; do",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-multilead.sh:if [[ -n \"$lock_pid\" ]] && ! kill -0 \"$lock_pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/qa-multilead.sh",
+		"code": "if [[ -n \"$lock_pid\" ]] && ! kill -0 \"$lock_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-multilead.sh:if [[ -n \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/qa-multilead.sh",
+		"code": "if [[ -n \"$pid\" ]] && kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-multilead.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/qa-multilead.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-multilead.sh:kill -9 \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/qa-multilead.sh",
+		"code": "kill -9 \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-multilead.sh:while kill -0 \"$pid\" 2>/dev/null && ((waited < 10)); do#1",
+		"path": "scripts/lib/qa-multilead.sh",
+		"code": "while kill -0 \"$pid\" 2>/dev/null && ((waited < 10)); do",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-slot-bridge.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/lib/qa-slot-bridge.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-slot-bridge.sh:kill -0 \"$pid\" 2>/dev/null || return 1#2",
+		"path": "scripts/lib/qa-slot-bridge.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/restart-cmux-watcher.sh:if kill -0 \"$worker\" 2>/dev/null; then#1",
+		"path": "scripts/lib/restart-cmux-watcher.sh",
+		"code": "if kill -0 \"$worker\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/restart-cmux-watcher.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/lib/restart-cmux-watcher.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/restart-cmux-watcher.sh:kill -KILL -- \"-$worker\" 2>/dev/null || true#1",
+		"path": "scripts/lib/restart-cmux-watcher.sh",
+		"code": "kill -KILL -- \"-$worker\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/restart-cmux-watcher.sh:kill -TERM -- \"-$watchdog\" 2>/dev/null || true#1",
+		"path": "scripts/lib/restart-cmux-watcher.sh",
+		"code": "kill -TERM -- \"-$watchdog\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/restart-cmux-watcher.sh:kill -TERM -- \"-$worker\" 2>/dev/null || true#1",
+		"path": "scripts/lib/restart-cmux-watcher.sh",
+		"code": "kill -TERM -- \"-$worker\" 2>/dev/null || true",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/restart-voice-bridge.sh:kill -0 \"$1\" 2>/dev/null#1",
+		"path": "scripts/lib/restart-voice-bridge.sh",
+		"code": "kill -0 \"$1\" 2>/dev/null",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/setup.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${sessionName}`]);#1",
+		"path": "scripts/lib/setup.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${sessionName}`]);",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/tmux-server-rescue.sh:builtin kill -USR1 \"$1\"#1",
+		"path": "scripts/lib/tmux-server-rescue.sh",
+		"code": "builtin kill -USR1 \"$1\"",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/lib/tmux-server-rescue.sh:if [ \"$rc\" -eq 1 ] && kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/lib/tmux-server-rescue.sh",
+		"code": "if [ \"$rc\" -eq 1 ] && kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/tmux-server-rescue.sh:if kill -0 \"$outer_pid\" 2>/dev/null \\#1",
+		"path": "scripts/lib/tmux-server-rescue.sh",
+		"code": "if kill -0 \"$outer_pid\" 2>/dev/null \\",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/tmux-server-rescue.sh:kill -0 \"$pid\" 2>/dev/null || {#1",
+		"path": "scripts/lib/tmux-server-rescue.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || {",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lib/tmux-server-rescue.sh:os.kill(os.getpid(), signal.SIGKILL)#1",
+		"path": "scripts/lib/tmux-server-rescue.sh",
+		"code": "os.kill(os.getpid(), signal.SIGKILL)",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/linux-preflight.sh:( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &#1",
+		"path": "scripts/linux-preflight.sh",
+		"code": "( sleep \"$secs\"; kill -9 \"$p\" 2>/dev/null ) >/dev/null 2>&1 &",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/qa-529-generalized-codex-stub.mjs:if (worker && worker.exitCode === null) worker.kill(signal);#1",
+		"path": "scripts/qa-529-generalized-codex-stub.mjs",
+		"code": "if (worker && worker.exitCode === null) worker.kill(signal);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-529-generalized-e2e.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/qa-529-generalized-e2e.mjs",
+		"code": "process.kill(pid, 0);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1188-e2e.mjs:process.kill(Number(p), \"SIGKILL\");#1",
+		"path": "scripts/qa-fly-1188-e2e.mjs",
+		"code": "process.kill(Number(p), \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1188-e2e.mjs:tmux(\"kill-session\", \"-t\", TMUX_SESSION);#1",
+		"path": "scripts/qa-fly-1188-e2e.mjs",
+		"code": "tmux(\"kill-session\", \"-t\", TMUX_SESSION);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1188-e2e.mjs:tmux(\"kill-session\", \"-t\", TMUX_SESSION);#2",
+		"path": "scripts/qa-fly-1188-e2e.mjs",
+		"code": "tmux(\"kill-session\", \"-t\", TMUX_SESSION);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1189-fault-inject.sh:CONT) kill -CONT \"$1\" ;;#1",
+		"path": "scripts/qa-fly-1189-fault-inject.sh",
+		"code": "CONT) kill -CONT \"$1\" ;;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1189-fault-inject.sh:if kill -0 \"$fpid\" 2>/dev/null; then#1",
+		"path": "scripts/qa-fly-1189-fault-inject.sh",
+		"code": "if kill -0 \"$fpid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1189-fault-inject.sh:STOP) kill -STOP \"$1\" ;;#1",
+		"path": "scripts/qa-fly-1189-fault-inject.sh",
+		"code": "STOP) kill -STOP \"$1\" ;;",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1189-room-smoke.sh:if [[ -f \"$lease\" ]] && kill -0 \"$(jq -r '.pid' \"$lease\" 2>/dev/null)\" 2>/dev/null; then#1",
+		"path": "scripts/qa-fly-1189-room-smoke.sh",
+		"code": "if [[ -f \"$lease\" ]] && kill -0 \"$(jq -r '.pid' \"$lease\" 2>/dev/null)\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1236-e2e.mjs:process.kill(Number(p), \"SIGKILL\");#1",
+		"path": "scripts/qa-fly-1236-e2e.mjs",
+		"code": "process.kill(Number(p), \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1236-e2e.mjs:tmux(\"kill-session\", \"-t\", TMUX_SESSION);#1",
+		"path": "scripts/qa-fly-1236-e2e.mjs",
+		"code": "tmux(\"kill-session\", \"-t\", TMUX_SESSION);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1236-e2e.mjs:tmux(\"kill-session\", \"-t\", TMUX_SESSION);#2",
+		"path": "scripts/qa-fly-1236-e2e.mjs",
+		"code": "tmux(\"kill-session\", \"-t\", TMUX_SESSION);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1239-e2e.mjs:process.kill(Number(p), \"SIGKILL\");#1",
+		"path": "scripts/qa-fly-1239-e2e.mjs",
+		"code": "process.kill(Number(p), \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1239-e2e.mjs:tmux(\"kill-session\", \"-t\", TMUX_SESSION);#1",
+		"path": "scripts/qa-fly-1239-e2e.mjs",
+		"code": "tmux(\"kill-session\", \"-t\", TMUX_SESSION);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1239-e2e.mjs:tmux(\"kill-session\", \"-t\", TMUX_SESSION);#2",
+		"path": "scripts/qa-fly-1239-e2e.mjs",
+		"code": "tmux(\"kill-session\", \"-t\", TMUX_SESSION);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1252-quota-state-e2e.sh:[[ -n \"$SERVER_PID\" ]] && kill -TERM \"$SERVER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/qa-fly-1252-quota-state-e2e.sh",
+		"code": "[[ -n \"$SERVER_PID\" ]] && kill -TERM \"$SERVER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1256-quota-daemon-e2e.sh:[[ -n \"$DAEMON_PID\" ]] && kill -TERM \"$DAEMON_PID\" 2>/dev/null || true#1",
+		"path": "scripts/qa-fly-1256-quota-daemon-e2e.sh",
+		"code": "[[ -n \"$DAEMON_PID\" ]] && kill -TERM \"$DAEMON_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1256-quota-daemon-e2e.sh:[[ -n \"$SERVER_PID\" ]] && kill -TERM \"$SERVER_PID\" 2>/dev/null || true#1",
+		"path": "scripts/qa-fly-1256-quota-daemon-e2e.sh",
+		"code": "[[ -n \"$SERVER_PID\" ]] && kill -TERM \"$SERVER_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1256-quota-daemon-e2e.sh:kill -0 \"$DAEMON_PID\" 2>/dev/null || fail \"daemon exited during startup\"#1",
+		"path": "scripts/qa-fly-1256-quota-daemon-e2e.sh",
+		"code": "kill -0 \"$DAEMON_PID\" 2>/dev/null || fail \"daemon exited during startup\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1256-quota-daemon-e2e.sh:kill -KILL \"$DAEMON_PID\"#1",
+		"path": "scripts/qa-fly-1256-quota-daemon-e2e.sh",
+		"code": "kill -KILL \"$DAEMON_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1256-quota-daemon-e2e.sh:kill -TERM \"$DAEMON_PID\"#1",
+		"path": "scripts/qa-fly-1256-quota-daemon-e2e.sh",
+		"code": "kill -TERM \"$DAEMON_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-1256-quota-daemon-e2e.sh:kill -TERM \"$DAEMON_PID\"#2",
+		"path": "scripts/qa-fly-1256-quota-daemon-e2e.sh",
+		"code": "kill -TERM \"$DAEMON_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-60-driver.sh:if ! kill -0 \"$claude_pid\" 2>/dev/null; then#1",
+		"path": "scripts/qa-fly-60-driver.sh",
+		"code": "if ! kill -0 \"$claude_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/r4-window.sh:for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && alive=1; done#1",
+		"path": "scripts/r4/r4-window.sh",
+		"code": "for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && alive=1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/r4-window.sh:for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && kill -KILL \"$pid\" 2>/dev/null || true; done#1",
+		"path": "scripts/r4/r4-window.sh",
+		"code": "for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && kill -KILL \"$pid\" 2>/dev/null || true; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/r4-window.sh:for pid in $pids; do kill -TERM \"$pid\" 2>/dev/null || true; done#1",
+		"path": "scripts/r4/r4-window.sh",
+		"code": "for pid in $pids; do kill -TERM \"$pid\" 2>/dev/null || true; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/r4-window.sh:kill -0 \"$pid\" 2>/dev/null && {#1",
+		"path": "scripts/r4/r4-window.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null && {",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/r4-window.sh:kill -0 \"$R4_TRIAL_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/r4/r4-window.sh",
+		"code": "kill -0 \"$R4_TRIAL_PID\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/rollback-r4.sh:for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && alive=1; done#1",
+		"path": "scripts/r4/rollback-r4.sh",
+		"code": "for pid in $pids; do kill -0 \"$pid\" 2>/dev/null && alive=1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/rollback-r4.sh:kill -0 \"$pid\" 2>/dev/null && kill -KILL \"$pid\"#1",
+		"path": "scripts/r4/rollback-r4.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null && kill -KILL \"$pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/r4/rollback-r4.sh:kill -TERM \"$pid\"#1",
+		"path": "scripts/r4/rollback-r4.sh",
+		"code": "kill -TERM \"$pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/restart-services.sh:for p in $pids; do kill -0 \"$p\" 2>/dev/null && { alive=1; break; }; done#1",
+		"path": "scripts/restart-services.sh",
+		"code": "for p in $pids; do kill -0 \"$p\" 2>/dev/null && { alive=1; break; }; done",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/restart-services.sh:if kill -0 \"$detach_pid\" 2>/dev/null; then#1",
+		"path": "scripts/restart-services.sh",
+		"code": "if kill -0 \"$detach_pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/restart-services.sh:if kill -0 \"$p\" 2>/dev/null; then#1",
+		"path": "scripts/restart-services.sh",
+		"code": "if kill -0 \"$p\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/restart-services.sh:pgid) kill -s \"$signal\" -- \"-$target\" ;;#1",
+		"path": "scripts/restart-services.sh",
+		"code": "pgid) kill -s \"$signal\" -- \"-$target\" ;;",
+		"classification": "service-mutation"
+	},
+	{
+		"key": "scripts/restart-services.sh:pid) kill -s \"$signal\" -- \"$target\" ;;#1",
+		"path": "scripts/restart-services.sh",
+		"code": "pid) kill -s \"$signal\" -- \"$target\" ;;",
+		"classification": "service-mutation"
+	},
+	{
+		"key": "scripts/setup-quota-monitor.sh:if [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null \\#1",
+		"path": "scripts/setup-quota-monitor.sh",
+		"code": "if [[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null \\",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/setup-quota-monitor.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/setup-quota-monitor.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/test-cmux-sync-hooks-integration.sh:kill -0 \"$PID_A\" 2>/dev/null && ALIVE_A=1#1",
+		"path": "scripts/test-cmux-sync-hooks-integration.sh",
+		"code": "kill -0 \"$PID_A\" 2>/dev/null && ALIVE_A=1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync-hooks-integration.sh:kill -0 \"$PID_B\" 2>/dev/null && ALIVE_B=1#1",
+		"path": "scripts/test-cmux-sync-hooks-integration.sh",
+		"code": "kill -0 \"$PID_B\" 2>/dev/null && ALIVE_B=1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync-hooks-integration.sh:kill -TERM \"$PID_A\" \"$PID_B\" 2>/dev/null || true#1",
+		"path": "scripts/test-cmux-sync-hooks-integration.sh",
+		"code": "kill -TERM \"$PID_A\" \"$PID_B\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:&& { [[ -z \"$descendant\" ]] || ! kill -0 \"$descendant\" 2>/dev/null; }; then#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "&& { [[ -z \"$descendant\" ]] || ! kill -0 \"$descendant\" 2>/dev/null; }; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:alive=\"n\"; kill -0 \"$acq_pid\" 2>/dev/null && alive=\"y\"#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "alive=\"n\"; kill -0 \"$acq_pid\" 2>/dev/null && alive=\"y\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:if ! kill -0 \"$acq_pid\" 2>/dev/null; then took_over=1; break; fi#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "if ! kill -0 \"$acq_pid\" 2>/dev/null; then took_over=1; break; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:if kill -0 \"$acq_pid\" 2>/dev/null && grep -q \"waiting\" \"$sup_err\" && [[ ! -f \"$sup_marker\" ]]; then#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "if kill -0 \"$acq_pid\" 2>/dev/null && grep -q \"waiting\" \"$sup_err\" && [[ ! -f \"$sup_marker\" ]]; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:kill -0 \"$REAP_TEST_HOLDER_PID\" 2>/dev/null || break#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "kill -0 \"$REAP_TEST_HOLDER_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:kill -TERM \"$PROBE_PID\" 2>/dev/null#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "kill -TERM \"$PROBE_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cmux-sync.sh:while [[ -n \"$descendant\" ]] && kill -0 \"$descendant\" 2>/dev/null && (( attempt < 20 )); do#1",
+		"path": "scripts/test-cmux-sync.sh",
+		"code": "while [[ -n \"$descendant\" ]] && kill -0 \"$descendant\" 2>/dev/null && (( attempt < 20 )); do",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:[[ \"$OLD_PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$OLD_PID\" 2>/dev/null \\#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "[[ \"$OLD_PID\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$OLD_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:elif kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "elif kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:for pid in \"$@\"; do kill -0 \"$pid\" 2>/dev/null && still_live=1; done#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "for pid in \"$@\"; do kill -0 \"$pid\" 2>/dev/null && still_live=1; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if ! kill -TERM \"$NEW_PID\"; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if ! kill -TERM \"$NEW_PID\"; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if ! kill -TERM \"$pid\"; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if ! kill -TERM \"$pid\"; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if [[ \"$holder\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$holder\" 2>/dev/null; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if [[ \"$holder\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$holder\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if [[ \"$holder\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$holder\" 2>/dev/null; then#2",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if [[ \"$holder\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$holder\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if kill -0 -- \"-$NEW_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if kill -0 -- \"-$NEW_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if kill -0 \"$NEW_PID\" 2>/dev/null && health_ok \"$BRIDGE_URL\"; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if kill -0 \"$NEW_PID\" 2>/dev/null && health_ok \"$BRIDGE_URL\"; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:if kill -0 \"$NEW_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "if kill -0 \"$NEW_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:kill -0 -- \"-$NEW_PID\" 2>/dev/null || return 0#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "kill -0 -- \"-$NEW_PID\" 2>/dev/null || return 0",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:kill -0 \"$NEW_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "kill -0 \"$NEW_PID\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:kill -0 \"$pid\" 2>/dev/null \\#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-cycle-bridge.sh:kill -TERM -- \"-$NEW_PID\" || return 1#1",
+		"path": "scripts/test-cycle-bridge.sh",
+		"code": "kill -TERM -- \"-$NEW_PID\" || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-deploy.sh:if ! kill -0 \"$BRIDGE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-deploy.sh",
+		"code": "if ! kill -0 \"$BRIDGE_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-deploy.sh:if [[ -n \"$LEASE_PID\" ]] && kill -0 \"$LEASE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-deploy.sh",
+		"code": "if [[ -n \"$LEASE_PID\" ]] && kill -0 \"$LEASE_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-deploy.sh:if [[ -n \"$lock_holder\" ]] && ! kill -0 \"$lock_holder\" 2>/dev/null; then#1",
+		"path": "scripts/test-deploy.sh",
+		"code": "if [[ -n \"$lock_holder\" ]] && ! kill -0 \"$lock_holder\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-deploy.sh:if [[ -n \"$lock_pid\" ]] && ! kill -0 \"$lock_pid\" 2>/dev/null; then#1",
+		"path": "scripts/test-deploy.sh",
+		"code": "if [[ -n \"$lock_pid\" ]] && ! kill -0 \"$lock_pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-deploy.sh:if [[ -n \"$XLEASE_PID\" ]] && kill -0 \"$XLEASE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-deploy.sh",
+		"code": "if [[ -n \"$XLEASE_PID\" ]] && kill -0 \"$XLEASE_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-restart-services.sh:bo_install_finalizer_injection start ' kill -INT \"$$\"'#1",
+		"path": "scripts/test-restart-services.sh",
+		"code": "bo_install_finalizer_injection start ' kill -INT \"$$\"'",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-restart-services.sh:bo_install_finalizer_injection start ' kill -TERM \"$$\"'#1",
+		"path": "scripts/test-restart-services.sh",
+		"code": "bo_install_finalizer_injection start ' kill -TERM \"$$\"'",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-restart-services.sh:for p in $pids; do kill -0 \"$p\" 2>/dev/null && { alive=1; break; }; done#1",
+		"path": "scripts/test-restart-services.sh",
+		"code": "for p in $pids; do kill -0 \"$p\" 2>/dev/null && { alive=1; break; }; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-restart-services.sh:pids=\"999999991 999999992\" # non-existent PIDs → kill -0 fails fast#1",
+		"path": "scripts/test-restart-services.sh",
+		"code": "pids=\"999999991 999999992\" # non-existent PIDs → kill -0 fails fast",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-stale-patrol.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${TMUX_SESSION}`]);#1",
+		"path": "scripts/test-stale-patrol.ts",
+		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${TMUX_SESSION}`]);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:echo \"$STRAGGLERS\" | xargs kill -9 2>/dev/null || true#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "echo \"$STRAGGLERS\" | xargs kill -9 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:echo \"$STRAGGLERS\" | xargs kill 2>/dev/null || true#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "echo \"$STRAGGLERS\" | xargs kill 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:if [[ -n \"$BRIDGE_PID\" ]] && kill -0 \"$BRIDGE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "if [[ -n \"$BRIDGE_PID\" ]] && kill -0 \"$BRIDGE_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:if [[ -n \"$LEAD_PID\" ]] && kill -0 \"$LEAD_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "if [[ -n \"$LEAD_PID\" ]] && kill -0 \"$LEAD_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:if kill -0 \"$BRIDGE_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "if kill -0 \"$BRIDGE_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:if kill -0 \"$LEAD_PID\" 2>/dev/null; then#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "if kill -0 \"$LEAD_PID\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:if kill -0 \"$opid\" 2>/dev/null; then#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "if kill -0 \"$opid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -0 \"$CMUX_CLAIM_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -0 \"$CMUX_CLAIM_PID\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -0 \"$CMUX_OWNER_PID\" 2>/dev/null || return 1#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -0 \"$CMUX_OWNER_PID\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -0 \"$pid\" 2>/dev/null || continue#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || continue",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -9 \"$BRIDGE_PID\" 2>/dev/null || true#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -9 \"$BRIDGE_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -9 \"$LEAD_PID\" 2>/dev/null || true#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -9 \"$LEAD_PID\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -KILL \"$opid\" 2>/dev/null || true#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -KILL \"$opid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:kill -TERM \"$opid\" 2>/dev/null || true#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "kill -TERM \"$opid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/test-teardown.sh:while kill -0 \"$LEAD_PID\" 2>/dev/null && (( waited < 10 )); do#1",
+		"path": "scripts/test-teardown.sh",
+		"code": "while kill -0 \"$LEAD_PID\" 2>/dev/null && (( waited < 10 )); do",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/update-flywheel.sh:updater_pid_alive() { kill -0 \"$1\" 2>/dev/null; }#1",
+		"path": "scripts/update-flywheel.sh",
+		"code": "updater_pid_alive() { kill -0 \"$1\" 2>/dev/null; }",
+		"classification": "signal-0-probe"
+	}
+]

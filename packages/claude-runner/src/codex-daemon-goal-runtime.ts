@@ -20,6 +20,7 @@ import {
 	GoalRunError,
 	type GoalRunResult,
 	type GoalStatus,
+	type RecoveryOwnershipReceipt,
 	runGoalToTerminal,
 } from "./codex-daemon-client.js";
 import {
@@ -97,6 +98,10 @@ export interface CodexDaemonGoalRuntimeOptions {
 	/** Bounded wait for a dying daemon to exit before a restart (default 5s). */
 	exitWaitMs?: number;
 	logger?: (m: string) => void;
+	/** Best-effort forensic hook for an unexpected close of the live transport. */
+	onTransportClose?: (
+		evidence: CodexTransportCloseEvidence,
+	) => void | Promise<void>;
 
 	// ── injected collaborators (default to the real ones) ────────────────
 	spawnDaemon?: (opts: SpawnCodexDaemonOptions) => Promise<DaemonHandle>;
@@ -107,6 +112,13 @@ export interface CodexDaemonGoalRuntimeOptions {
 	/** Injected goal loop (default runGoalToTerminal) — for tests. */
 	runGoalFn?: typeof runGoalToTerminal;
 	sleep?: (ms: number) => Promise<void>;
+}
+
+export interface CodexTransportCloseEvidence {
+	executionId: string;
+	socketPath: string;
+	reason: string;
+	at: string;
 }
 
 export interface RunGoalInput {
@@ -146,6 +158,15 @@ export interface RunGoalInput {
 	 * again on each restart/resume; a throwing handler is swallowed.
 	 */
 	onGoalActive?: () => void;
+	/**
+	 * FLY-2211: awaited, fail-closed ownership commit after a fresh turn receipt
+	 * or a fully confirmed adopted phase/gate posture. Forwarded unchanged across
+	 * daemon restarts; recovery callers make it idempotent with their StateStore
+	 * claim token + lifecycle revision.
+	 */
+	onRecoveryOwnershipEstablished?: (
+		receipt: RecoveryOwnershipReceipt,
+	) => void | Promise<void>;
 	/**
 	 * FLY-1188 HIGH-3: pid of THIS execution's prior daemon (persisted across a
 	 * Bridge restart). Used ONLY for the first spawn of this run — if that prior
@@ -277,6 +298,7 @@ export class CodexDaemonGoalRuntime {
 	): Promise<DaemonSession> {
 		const codexHome = this.selectedCodexHome();
 		const handle = await this.spawnDaemon({
+			executionId: this.opts.executionId,
 			codexBin: this.opts.codexBin,
 			codexHome,
 			socketPath: this.socketPath,
@@ -329,7 +351,33 @@ export class CodexDaemonGoalRuntime {
 
 		let client: CodexDaemonClient | undefined;
 		try {
-			client = this.makeClient(transport);
+			const observedTransport = this.opts.onTransportClose
+				? observeTransportClose(transport, (reason) => {
+						// A deliberate teardown clears the current session before closing
+						// the client. Only a close belonging to the still-live owner is a
+						// transport-death forensic event.
+						if (this.session?.handle !== handle || this.stopped) return;
+						try {
+							void Promise.resolve(
+								this.opts.onTransportClose?.({
+									executionId: this.opts.executionId,
+									socketPath: this.socketPath,
+									reason,
+									at: new Date().toISOString(),
+								}),
+							).catch((error) =>
+								this.safeLog(
+									`transport-close forensic hook rejected (ignored): ${error instanceof Error ? error.message : String(error)}`,
+								),
+							);
+						} catch (error) {
+							this.safeLog(
+								`transport-close forensic hook threw (ignored): ${error instanceof Error ? error.message : String(error)}`,
+							);
+						}
+					})
+				: transport;
+			client = this.makeClient(observedTransport);
 			await client.initialize();
 		} catch (err) {
 			// close each resource best-effort (a throw in one must not skip the
@@ -527,6 +575,12 @@ export class CodexDaemonGoalRuntime {
 							...(input.onGoalActive
 								? { onGoalActive: input.onGoalActive }
 								: {}),
+							...(input.onRecoveryOwnershipEstablished
+								? {
+										onRecoveryOwnershipEstablished:
+											input.onRecoveryOwnershipEstablished,
+									}
+								: {}),
 						},
 						events,
 					);
@@ -630,6 +684,23 @@ function safeClose(closable: { close(): void } | undefined): void {
 	} catch {
 		/* already closed */
 	}
+}
+
+/** Multiplex the transport's single close slot without changing client order. */
+function observeTransportClose(
+	transport: DaemonTransport,
+	observer: (reason: string) => void,
+): DaemonTransport {
+	return {
+		send: (frame) => transport.send(frame),
+		onMessage: (handler) => transport.onMessage(handler),
+		onClose: (handler) =>
+			transport.onClose((reason) => {
+				observer(reason);
+				handler(reason);
+			}),
+		close: () => transport.close(),
+	};
 }
 
 /** QA · FLY-1188 HIGH-2 — socket-verified death (escalates to a group SIGKILL

@@ -97,6 +97,7 @@ import {
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
+	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
 	resolveWorkflowGateAuthority,
@@ -127,6 +128,7 @@ import {
 	engineInvariantFromReason,
 	WorkflowEngineInvariantError,
 } from "./workflow-engine-invariant.js";
+import { credentialWindowForNode } from "./workflow-submission-expiry.js";
 
 export class Fly2121PreservedTemplateUnrunnableError extends Error {
 	readonly code = "FLY2121_PRESERVED_TEMPLATE_UNRUNNABLE" as const;
@@ -1162,6 +1164,86 @@ export interface Session {
 	/** Stable identity for one continuous stay in an operational terminal state. */
 	terminal_lifecycle_id?: string;
 }
+
+export interface CodexRecoveryEpisodeRow {
+	executionId: string;
+	claimToken: string | null;
+	holder: string | null;
+	acquiredAtMs: number | null;
+	expiresAtMs: number | null;
+	episodeId: string;
+	episodeState: "open" | "closed";
+	episodeAttempts: number;
+	expectedLifecycleRevision: number | null;
+}
+
+export type CodexRecoveryClaimResult =
+	| {
+			ok: true;
+			claimToken: string;
+			episodeId: string;
+			attempt: number;
+			expiresAtMs: number;
+		}
+	| {
+			ok: false;
+			reason:
+				| "session_missing"
+				| "ineligible_status"
+				| "stale_revision"
+				| "superseded"
+				| "lease_held"
+				| "episode_exhausted";
+			currentRevision?: number;
+			attempts?: number;
+			holder?: string;
+			expiresAtMs?: number;
+		};
+
+export type CodexRecoveryCommitResult =
+	| { ok: true; lifecycleRevision: number }
+	| {
+			ok: false;
+			reason:
+				| "session_missing"
+				| "claim_lost"
+				| "lease_expired"
+				| "stale_revision"
+				| "superseded"
+				| "turn_holder_changed";
+			currentRevision?: number;
+		};
+
+export type ExecutionMutationLeaseResult =
+	| { ok: true; claimToken: string; expiresAtMs: number }
+	| {
+			ok: false;
+			reason: "session_missing" | "stale_revision" | "lease_held";
+			currentRevision?: number;
+			holder?: string;
+			expiresAtMs?: number;
+	  };
+
+export type CodexRecoveryCapabilitiesResult =
+	| {
+			ok: true;
+			enrolled: boolean;
+			workflowSubmissionExpected: boolean;
+			founderReviewRequired: boolean;
+			workflowOutputCredential?: string;
+			workflowSubmissionCredential?: string;
+	  }
+	| {
+			ok: false;
+			reason:
+				| "session_missing"
+				| "claim_lost"
+				| "lease_expired"
+				| "stale_revision"
+				| "superseded"
+				| "capabilities_already_prepared"
+				| "invalid_expiry";
+	  };
 
 /** FLY-1718 P4: one canonical issue-root + role DOA retry lane. */
 export interface DoaBackoffLedgerRow {
@@ -3410,6 +3492,20 @@ export class StateStore {
 		} catch {
 			/* exists */
 		}
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS recovery_claim (
+				execution_id TEXT PRIMARY KEY,
+				claim_token TEXT,
+				holder TEXT,
+				acquired_at_ms INTEGER,
+				expires_at_ms INTEGER,
+				episode_id TEXT NOT NULL,
+				episode_state TEXT NOT NULL CHECK (episode_state IN ('open','closed')),
+				episode_attempts INTEGER NOT NULL DEFAULT 0 CHECK (episode_attempts >= 0),
+				expected_lifecycle_revision INTEGER,
+				FOREIGN KEY (execution_id) REFERENCES sessions(execution_id)
+			)
+		`);
 
 		// FLY-1257: chronology anchor for zombie-gate hygiene. Existing terminal
 		// rows intentionally remain NULL: without an observed entry timestamp the
@@ -7389,6 +7485,719 @@ export class StateStore {
 	 * the session is absent). */
 	getLifecycleRevision(executionId: string): number {
 		return this.getSession(executionId)?.lifecycle_revision ?? 0;
+	}
+
+	/**
+	 * FLY-2211: acquire the same per-execution mutation lease used by recovery,
+	 * without consuming a recovery attempt. TURN writers hold this across the
+	 * CommDB change and its StateStore projection.
+	 */
+	claimExecutionMutationLease(
+		executionId: string,
+		expectedLifecycleRevision: number,
+		input: { holder: string; nowMs: number; ttlMs: number },
+	): ExecutionMutationLeaseResult {
+		if (!input.holder.trim()) throw new Error("mutation holder is required");
+		if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0) {
+			throw new Error("mutation nowMs must be a non-negative integer");
+		}
+		if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) {
+			throw new Error("mutation ttlMs must be a positive integer");
+		}
+		let result: ExecutionMutationLeaseResult = {
+			ok: false,
+			reason: "session_missing",
+		};
+		this.db.raw.transaction(() => {
+			const session = this.db.raw
+				.prepare(
+					"SELECT lifecycle_revision FROM sessions WHERE execution_id = ?",
+				)
+				.get(executionId) as { lifecycle_revision: number } | undefined;
+			if (!session) return;
+			const currentRevision = Number(session.lifecycle_revision ?? 0);
+			if (currentRevision !== expectedLifecycleRevision) {
+				result = {
+					ok: false,
+					reason: "stale_revision",
+					currentRevision,
+				};
+				return;
+			}
+			const prior = this.db.raw
+				.prepare(
+					"SELECT claim_token, holder, expires_at_ms FROM recovery_claim WHERE execution_id = ?",
+				)
+				.get(executionId) as
+				| {
+						claim_token: string | null;
+						holder: string | null;
+						expires_at_ms: number | null;
+				  }
+				| undefined;
+			if (
+				prior?.claim_token &&
+				prior.expires_at_ms !== null &&
+				Number(prior.expires_at_ms) > input.nowMs
+			) {
+				result = {
+					ok: false,
+					reason: "lease_held",
+					...(prior.holder ? { holder: prior.holder } : {}),
+					expiresAtMs: Number(prior.expires_at_ms),
+				};
+				return;
+			}
+
+			const claimToken = randomUUID();
+			const expiresAtMs = input.nowMs + input.ttlMs;
+			this.db.raw
+				.prepare(
+					`INSERT INTO recovery_claim
+					   (execution_id, claim_token, holder, acquired_at_ms, expires_at_ms,
+					    episode_id, episode_state, episode_attempts,
+					    expected_lifecycle_revision)
+					 VALUES (?, ?, ?, ?, ?, ?, 'closed', 0, ?)
+					 ON CONFLICT(execution_id) DO UPDATE SET
+					   claim_token = excluded.claim_token,
+					   holder = excluded.holder,
+					   acquired_at_ms = excluded.acquired_at_ms,
+					   expires_at_ms = excluded.expires_at_ms,
+					   expected_lifecycle_revision = excluded.expected_lifecycle_revision`,
+				)
+				.run(
+					executionId,
+					claimToken,
+					input.holder,
+					input.nowMs,
+					expiresAtMs,
+					randomUUID(),
+					expectedLifecycleRevision,
+				);
+			result = { ok: true, claimToken, expiresAtMs };
+		}).immediate();
+		this.save();
+		return result;
+	}
+
+	/**
+	 * Commit the writer projection and release its lease.
+	 *
+	 * A TURN writer owns cross-store serialization, not lifecycle authority. The
+	 * recovery path re-reads binding and CommDB TURN after claiming this lease,
+	 * so advancing lifecycle_revision here would only invalidate unrelated
+	 * founder lifecycle and pane-loss CAS consumers.
+	 */
+	commitExecutionMutationLease(
+		executionId: string,
+		claimToken: string,
+		expectedLifecycleRevision: number,
+		nowMs: number,
+	): CodexRecoveryCommitResult {
+		let result: CodexRecoveryCommitResult = {
+			ok: false,
+			reason: "claim_lost",
+		};
+		this.db.raw.transaction(() => {
+			const session = this.db.raw
+				.prepare(
+					"SELECT lifecycle_revision FROM sessions WHERE execution_id = ?",
+				)
+				.get(executionId) as { lifecycle_revision: number } | undefined;
+			if (!session) {
+				result = { ok: false, reason: "session_missing" };
+				return;
+			}
+			const currentRevision = Number(session.lifecycle_revision ?? 0);
+			if (currentRevision !== expectedLifecycleRevision) {
+				result = {
+					ok: false,
+					reason: "stale_revision",
+					currentRevision,
+				};
+				return;
+			}
+			const claim = this.db.raw
+				.prepare(
+					`SELECT claim_token, expires_at_ms, expected_lifecycle_revision
+					   FROM recovery_claim WHERE execution_id = ?`,
+				)
+				.get(executionId) as
+				| {
+						claim_token: string | null;
+						expires_at_ms: number | null;
+						expected_lifecycle_revision: number | null;
+				  }
+				| undefined;
+			if (
+				!claim ||
+				claim.claim_token !== claimToken ||
+				Number(claim.expected_lifecycle_revision) !== expectedLifecycleRevision
+			) {
+				result = { ok: false, reason: "claim_lost" };
+				return;
+			}
+			if (
+				claim.expires_at_ms === null ||
+				Number(claim.expires_at_ms) <= nowMs
+			) {
+				result = { ok: false, reason: "lease_expired" };
+				return;
+			}
+			this.db.raw
+				.prepare(
+					`UPDATE recovery_claim
+					    SET claim_token = NULL, holder = NULL,
+					        acquired_at_ms = NULL, expires_at_ms = NULL,
+					        episode_state = 'closed', episode_attempts = 0,
+					        expected_lifecycle_revision = NULL
+					  WHERE execution_id = ? AND claim_token = ?`,
+				)
+				.run(executionId, claimToken);
+			result = {
+				ok: true,
+				lifecycleRevision: expectedLifecycleRevision,
+			};
+		}).immediate();
+		this.save();
+		return result;
+	}
+
+	/**
+	 * FLY-2211: reserve one recovery attempt before any daemon mutation/spawn.
+	 * The claim and episode budget share one SQLite transaction so a Bridge crash
+	 * cannot reset the budget or leave two recovery owners.
+	 */
+	claimCodexRecovery(
+		executionId: string,
+		expectedLifecycleRevision: number,
+		input: {
+			holder: string;
+			nowMs: number;
+			ttlMs: number;
+			maxAttempts?: number;
+		},
+	): CodexRecoveryClaimResult {
+		if (!input.holder.trim()) throw new Error("recovery holder is required");
+		if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0) {
+			throw new Error("recovery nowMs must be a non-negative integer");
+		}
+		if (!Number.isSafeInteger(input.ttlMs) || input.ttlMs <= 0) {
+			throw new Error("recovery ttlMs must be a positive integer");
+		}
+		const maxAttempts = input.maxAttempts ?? 2;
+		if (!Number.isSafeInteger(maxAttempts) || maxAttempts <= 0) {
+			throw new Error("recovery maxAttempts must be a positive integer");
+		}
+
+		let result: CodexRecoveryClaimResult = {
+			ok: false,
+			reason: "session_missing",
+		};
+		this.db.raw.transaction(() => {
+			const session = this.db.raw
+				.prepare(
+					`SELECT status, lifecycle_revision, retry_successor
+					   FROM sessions WHERE execution_id = ?`,
+				)
+				.get(executionId) as
+				| {
+						status: string;
+						lifecycle_revision: number;
+						retry_successor: string | null;
+				  }
+				| undefined;
+			if (!session) return;
+			const currentRevision = Number(session.lifecycle_revision ?? 0);
+			if (currentRevision !== expectedLifecycleRevision) {
+				result = {
+					ok: false,
+					reason: "stale_revision",
+					currentRevision,
+				};
+				return;
+			}
+			if (session.retry_successor) {
+				result = { ok: false, reason: "superseded" };
+				return;
+			}
+			if (
+				![
+					"running",
+					"ship_parked",
+					"awaiting_review",
+					"design_done",
+					"approved_to_ship",
+				].includes(session.status)
+			) {
+				result = { ok: false, reason: "ineligible_status" };
+				return;
+			}
+
+			const prior = this.db.raw
+				.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+				.get(executionId) as
+				| {
+						claim_token: string | null;
+						holder: string | null;
+						expires_at_ms: number | null;
+						episode_id: string;
+						episode_state: "open" | "closed";
+						episode_attempts: number;
+				  }
+				| undefined;
+			if (
+				prior?.claim_token &&
+				prior.expires_at_ms !== null &&
+				Number(prior.expires_at_ms) > input.nowMs
+			) {
+				result = {
+					ok: false,
+					reason: "lease_held",
+					...(prior.holder ? { holder: prior.holder } : {}),
+					expiresAtMs: Number(prior.expires_at_ms),
+				};
+				return;
+			}
+
+			const episodeId =
+				prior?.episode_state === "open" ? prior.episode_id : randomUUID();
+			const attempts =
+				prior?.episode_state === "open"
+					? Number(prior.episode_attempts)
+					: 0;
+			if (attempts >= maxAttempts) {
+				this.db.raw
+					.prepare(
+						`UPDATE recovery_claim
+						    SET claim_token = NULL, holder = NULL,
+						        acquired_at_ms = NULL, expires_at_ms = NULL
+						  WHERE execution_id = ?`,
+					)
+					.run(executionId);
+				result = {
+					ok: false,
+					reason: "episode_exhausted",
+					attempts,
+				};
+				return;
+			}
+
+			const claimToken = randomUUID();
+			const attempt = attempts + 1;
+			const expiresAtMs = input.nowMs + input.ttlMs;
+			this.db.raw
+				.prepare(
+					`INSERT INTO recovery_claim
+					   (execution_id, claim_token, holder, acquired_at_ms, expires_at_ms,
+					    episode_id, episode_state, episode_attempts,
+					    expected_lifecycle_revision)
+					 VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)
+					 ON CONFLICT(execution_id) DO UPDATE SET
+					   claim_token = excluded.claim_token,
+					   holder = excluded.holder,
+					   acquired_at_ms = excluded.acquired_at_ms,
+					   expires_at_ms = excluded.expires_at_ms,
+					   episode_id = excluded.episode_id,
+					   episode_state = 'open',
+					   episode_attempts = excluded.episode_attempts,
+					   expected_lifecycle_revision = excluded.expected_lifecycle_revision`,
+				)
+				.run(
+					executionId,
+					claimToken,
+					input.holder,
+					input.nowMs,
+					expiresAtMs,
+					episodeId,
+					attempt,
+					expectedLifecycleRevision,
+				);
+			result = { ok: true, claimToken, episodeId, attempt, expiresAtMs };
+		}).immediate();
+		this.save();
+		return result;
+	}
+
+	abortCodexRecovery(
+		executionId: string,
+		claimToken: string,
+		input: { releaseAttempt?: boolean } = {},
+	): boolean {
+		const info = this.db.raw
+			.prepare(
+				`UPDATE recovery_claim
+				    SET claim_token = NULL, holder = NULL,
+				        acquired_at_ms = NULL, expires_at_ms = NULL,
+				        episode_attempts = CASE
+				          WHEN ? = 1 AND episode_attempts > 0
+				            THEN episode_attempts - 1
+				          ELSE episode_attempts
+				        END,
+				        expected_lifecycle_revision = NULL
+				  WHERE execution_id = ? AND claim_token = ?`,
+			)
+			.run(input.releaseAttempt === true ? 1 : 0, executionId, claimToken);
+		if (info.changes > 0) this.save();
+		return info.changes === 1;
+	}
+
+	/**
+	 * Reissue runner-visible generalized-workflow capabilities under the same
+	 * recovery claim that authorizes spawn. StateStore retains hashes only, so a
+	 * Bridge restart cannot recover the old plaintext. Rotation is atomic and
+	 * one-shot per episode attempt; no secret enters the immutable session file.
+	 */
+	prepareCodexRecoveryCapabilities(
+		executionId: string,
+		claimToken: string,
+		expectedLifecycleRevision: number,
+		nowMs: number,
+	): CodexRecoveryCapabilitiesResult {
+		if (!Number.isSafeInteger(nowMs) || nowMs < 0) {
+			throw new Error("recovery capability nowMs must be a non-negative integer");
+		}
+		let result: CodexRecoveryCapabilitiesResult = {
+			ok: false,
+			reason: "claim_lost",
+		};
+		this.db.raw.transaction(() => {
+			const session = this.db.raw
+				.prepare(
+					`SELECT lifecycle_revision, retry_successor
+					   FROM sessions WHERE execution_id = ?`,
+				)
+				.get(executionId) as
+				| { lifecycle_revision: number; retry_successor: string | null }
+				| undefined;
+			if (!session) {
+				result = { ok: false, reason: "session_missing" };
+				return;
+			}
+			if (Number(session.lifecycle_revision ?? 0) !== expectedLifecycleRevision) {
+				result = { ok: false, reason: "stale_revision" };
+				return;
+			}
+			if (session.retry_successor) {
+				result = { ok: false, reason: "superseded" };
+				return;
+			}
+			const claim = this.db.raw
+				.prepare(
+					`SELECT claim_token, expires_at_ms, episode_id, episode_attempts,
+					        expected_lifecycle_revision
+					   FROM recovery_claim WHERE execution_id = ?`,
+				)
+				.get(executionId) as
+				| {
+						claim_token: string | null;
+						expires_at_ms: number | null;
+						episode_id: string;
+						episode_attempts: number;
+						expected_lifecycle_revision: number | null;
+				  }
+				| undefined;
+			if (
+				!claim ||
+				claim.claim_token !== claimToken ||
+				Number(claim.expected_lifecycle_revision) !== expectedLifecycleRevision
+			) {
+				result = { ok: false, reason: "claim_lost" };
+				return;
+			}
+			if (
+				claim.expires_at_ms === null ||
+				Number(claim.expires_at_ms) <= nowMs
+			) {
+				result = { ok: false, reason: "lease_expired" };
+				return;
+			}
+
+			const context = this.generalizedExecutionContext(executionId);
+			if (!context) {
+				result = {
+					ok: true,
+					enrolled: false,
+					workflowSubmissionExpected: false,
+					founderReviewRequired: false,
+				};
+				return;
+			}
+			const eventUid = `codex_recovery_capabilities_prepared:${executionId}:${claim.episode_id}:${claim.episode_attempts}`;
+			if (
+				this.workflowSelectAll(
+					"SELECT 1 AS x FROM workflow_run_event WHERE event_uid = ?",
+					[eventUid],
+				)[0]
+			) {
+				result = { ok: false, reason: "capabilities_already_prepared" };
+				return;
+			}
+
+			const now = new Date(nowMs);
+			const nowIso = now.toISOString();
+			const requestedWindow = credentialWindowForNode(
+				context.snapshot,
+				context.node.id,
+				now,
+			);
+			const decision = resolveWorkflowDecisionContract(
+				context.snapshot,
+				context.node.id,
+			);
+			const outputExpiry = context.node.capabilities.produces_output
+				? this.workflowCredentialRotationExpiryTx(
+						"workflow_output_credential",
+						executionId,
+						nowIso,
+						requestedWindow.expiresAt,
+					)
+				: undefined;
+			const submissionExpiry = decision
+				? this.workflowCredentialRotationExpiryTx(
+						"workflow_submission_credential",
+						executionId,
+						nowIso,
+						requestedWindow.expiresAt,
+					)
+				: undefined;
+			// Validate every requested rotation before the first credential mutation.
+			if (
+				(context.node.capabilities.produces_output && !outputExpiry) ||
+				(decision && !submissionExpiry)
+			) {
+				result = { ok: false, reason: "invalid_expiry" };
+				return;
+			}
+			let workflowOutputCredential: string | undefined;
+			let workflowSubmissionCredential: string | undefined;
+
+			if (context.node.capabilities.produces_output) {
+				this.db.raw
+					.prepare(
+						`UPDATE workflow_output_credential
+						    SET revoked = 1, revoked_reason = 'codex_recovery_rotation'
+						  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					)
+					.run(executionId);
+				workflowOutputCredential = generateCapabilityToken();
+				this.db.raw
+					.prepare(
+						`INSERT INTO workflow_output_credential
+						   (activation_id, credential_hash, run_id, node_id, execution_id,
+						    attempt, issued_at, expires_at, absolute_deadline_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						context.binding.activation_id,
+						hashCapabilityToken(workflowOutputCredential),
+						context.binding.run_id,
+						context.binding.node_id,
+						executionId,
+						context.binding.attempt,
+						nowIso,
+						outputExpiry!.expiresAt,
+						outputExpiry!.absoluteDeadlineAt,
+					);
+			}
+
+			if (decision) {
+				this.db.raw
+					.prepare(
+						`UPDATE workflow_submission_credential
+						    SET revoked = 1, revoked_reason = 'codex_recovery_rotation'
+						  WHERE execution_id = ? AND consumed_at IS NULL AND revoked = 0`,
+					)
+					.run(executionId);
+				workflowSubmissionCredential = generateCapabilityToken();
+				this.db.raw
+					.prepare(
+						`INSERT INTO workflow_submission_credential
+						   (activation_id, credential_hash, run_id, node_id, execution_id,
+						    attempt, family, issued_at, expires_at, absolute_deadline_at, permanent)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						context.binding.activation_id,
+						hashCapabilityToken(workflowSubmissionCredential),
+						context.binding.run_id,
+						context.binding.node_id,
+						executionId,
+						context.binding.attempt,
+						decision.family,
+						nowIso,
+						submissionExpiry!.expiresAt,
+						submissionExpiry!.absoluteDeadlineAt,
+						decision.family === "qa_verdict" ? 1 : 0,
+					);
+			}
+
+			this.appendWorkflowRunEventTx({
+				runId: context.binding.run_id,
+				eventUid,
+				kind: "codex_recovery_capabilities_prepared",
+				nodeId: context.binding.node_id,
+				executionId,
+				payload: {
+					attempt: context.binding.attempt,
+					recoveryEpisodeId: claim.episode_id,
+					recoveryAttempt: claim.episode_attempts,
+					hasOutputCredential: Boolean(workflowOutputCredential),
+					hasSubmissionCredential: Boolean(workflowSubmissionCredential),
+				},
+			});
+			result = {
+				ok: true,
+				enrolled: true,
+				workflowSubmissionExpected: true,
+				founderReviewRequired: nodeRequiresFounderReview(
+					context.snapshot,
+					context.node.id,
+				),
+				...(workflowOutputCredential ? { workflowOutputCredential } : {}),
+				...(workflowSubmissionCredential
+					? { workflowSubmissionCredential }
+					: {}),
+			};
+		}).immediate();
+		this.save();
+		return result;
+	}
+
+	commitCodexRecovery(
+		executionId: string,
+		claimToken: string,
+		expectedLifecycleRevision: number,
+		input: { nowMs: number; observedTurnHolder: string | null },
+	): CodexRecoveryCommitResult {
+		let result: CodexRecoveryCommitResult = {
+			ok: false,
+			reason: "claim_lost",
+		};
+		this.db.raw.transaction(() => {
+			const session = this.db.raw
+				.prepare(
+					`SELECT status, lifecycle_revision, retry_successor
+					   FROM sessions WHERE execution_id = ?`,
+				)
+				.get(executionId) as
+				| {
+						status: string;
+						lifecycle_revision: number;
+						retry_successor: string | null;
+				  }
+				| undefined;
+			if (!session) {
+				result = { ok: false, reason: "session_missing" };
+				return;
+			}
+			const currentRevision = Number(session.lifecycle_revision ?? 0);
+			if (currentRevision !== expectedLifecycleRevision) {
+				result = {
+					ok: false,
+					reason: "stale_revision",
+					currentRevision,
+				};
+				return;
+			}
+			if (session.retry_successor) {
+				result = { ok: false, reason: "superseded" };
+				return;
+			}
+			const claim = this.db.raw
+				.prepare(
+					`SELECT claim_token, expires_at_ms, expected_lifecycle_revision
+					   FROM recovery_claim WHERE execution_id = ?`,
+				)
+				.get(executionId) as
+				| {
+						claim_token: string | null;
+						expires_at_ms: number | null;
+						expected_lifecycle_revision: number | null;
+				  }
+				| undefined;
+			if (
+				!claim ||
+				claim.claim_token !== claimToken ||
+				Number(claim.expected_lifecycle_revision) !== expectedLifecycleRevision
+			) {
+				result = { ok: false, reason: "claim_lost" };
+				return;
+			}
+			if (
+				claim.expires_at_ms === null ||
+				Number(claim.expires_at_ms) <= input.nowMs
+			) {
+				result = { ok: false, reason: "lease_expired" };
+				return;
+			}
+			if (input.observedTurnHolder !== executionId) {
+				result = { ok: false, reason: "turn_holder_changed" };
+				return;
+			}
+
+			const sessionUpdate = this.db.raw
+				.prepare(
+					`UPDATE sessions
+					    SET lifecycle_revision = lifecycle_revision + 1,
+					        heartbeat_at = datetime(? / 1000, 'unixepoch'),
+					        last_activity_at = datetime(? / 1000, 'unixepoch')
+					  WHERE execution_id = ? AND lifecycle_revision = ?
+					    AND retry_successor IS NULL`,
+				)
+				.run(
+					input.nowMs,
+					input.nowMs,
+					executionId,
+					expectedLifecycleRevision,
+				);
+			if (sessionUpdate.changes !== 1) {
+				result = { ok: false, reason: "stale_revision" };
+				return;
+			}
+			this.db.raw
+				.prepare(
+					`UPDATE recovery_claim
+					    SET claim_token = NULL, holder = NULL,
+					        acquired_at_ms = NULL, expires_at_ms = NULL,
+					        episode_state = 'closed', episode_attempts = 0,
+					        expected_lifecycle_revision = NULL
+					  WHERE execution_id = ? AND claim_token = ?`,
+				)
+				.run(executionId, claimToken);
+			result = {
+				ok: true,
+				lifecycleRevision: expectedLifecycleRevision + 1,
+			};
+		}).immediate();
+		this.save();
+		return result;
+	}
+
+	getCodexRecoveryEpisode(
+		executionId: string,
+	): CodexRecoveryEpisodeRow | undefined {
+		const row = this.db.raw
+			.prepare("SELECT * FROM recovery_claim WHERE execution_id = ?")
+			.get(executionId) as Record<string, unknown> | undefined;
+		if (!row) return undefined;
+		return {
+			executionId,
+			claimToken:
+				typeof row.claim_token === "string" ? row.claim_token : null,
+			holder: typeof row.holder === "string" ? row.holder : null,
+			acquiredAtMs:
+				typeof row.acquired_at_ms === "number" ? row.acquired_at_ms : null,
+			expiresAtMs:
+				typeof row.expires_at_ms === "number" ? row.expires_at_ms : null,
+			episodeId: String(row.episode_id),
+			episodeState: row.episode_state as "open" | "closed",
+			episodeAttempts: Number(row.episode_attempts),
+			expectedLifecycleRevision:
+				typeof row.expected_lifecycle_revision === "number"
+					? row.expected_lifecycle_revision
+					: null,
+		};
 	}
 
 	/** Ensure a legacy/corrupt terminal row has an episode identity without

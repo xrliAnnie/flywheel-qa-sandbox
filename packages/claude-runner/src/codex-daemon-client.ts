@@ -33,6 +33,34 @@ export type GoalStatus =
 	| "budgetLimited"
 	| "complete";
 
+/**
+ * Durable evidence that a recovery owner has crossed its hard commit seam.
+ * Fresh work commits on a concrete turn/start receipt; adopted work commits
+ * only after the goal/control posture described by the receipt is confirmed.
+ */
+export type RecoveryOwnershipReceipt =
+	| { kind: "turn_started"; threadId: string; turnId: string }
+	| {
+			kind: "phase_hold_confirmed";
+			threadId: string;
+			goalStatus: "paused";
+	  }
+	| {
+			kind: "gate_hold_confirmed";
+			threadId: string;
+			goalStatus: "paused";
+	  }
+	| {
+			kind: "goal_resumed";
+			threadId: string;
+			goalStatus: "active";
+	  }
+	| {
+			kind: "terminal_goal_confirmed";
+			threadId: string;
+			goalStatus: Exclude<GoalStatus, "active" | "paused">;
+	  };
+
 /** Terminal statuses: the goal run is over (well, or needs intervention). */
 const TERMINAL_STATUSES: ReadonlySet<GoalStatus> = new Set([
 	"complete",
@@ -649,6 +677,15 @@ export async function runGoalToTerminal(
 		 * before this must re-drive, not adopt a goal-less thread). A throwing
 		 * handler is swallowed. */
 		onGoalActive?: () => void;
+		/**
+		 * FLY-2211: hard recovery ownership commit point. Unlike onGoalActive this
+		 * callback is awaited and fail-closed. Fresh activation fires only after a
+		 * concrete turn/start receipt; adopted phase/gate postures fire only after
+		 * their durable control state and daemon goal state are confirmed.
+		 */
+		onRecoveryOwnershipEstablished?: (
+			receipt: RecoveryOwnershipReceipt,
+		) => void | Promise<void>;
 		now?: () => number;
 		sleep?: (ms: number) => Promise<void>;
 	},
@@ -866,6 +903,24 @@ export async function runGoalToTerminal(
 	};
 	const failClose = (msg: string): never => {
 		throw new GoalRunError(msg, "transport_closed");
+	};
+	let recoveryOwnershipEstablished = false;
+	const establishRecoveryOwnership = async (
+		receipt: RecoveryOwnershipReceipt,
+	): Promise<void> => {
+		if (!input.onRecoveryOwnershipEstablished || recoveryOwnershipEstablished) {
+			return;
+		}
+		try {
+			await input.onRecoveryOwnershipEstablished(receipt);
+			recoveryOwnershipEstablished = true;
+		} catch (error) {
+			if (error instanceof GoalRunError) throw error;
+			throw new GoalRunError(
+				`recovery commit failed: ${error instanceof Error ? error.message : String(error)}`,
+				"setup_failed",
+			);
+		}
 	};
 	// ── FLY-1269: resident phase control ──────────────────────────────────────
 	// A phase's own `complete` ends the PHASE, not the issue. With a phase
@@ -1100,6 +1155,77 @@ export async function runGoalToTerminal(
 			);
 		}
 	};
+	const confirmGateHoldForRecovery = async (): Promise<void> => {
+		if (!input.onRecoveryOwnershipEstablished) return;
+		try {
+			const budget = remainingBudget();
+			if (budget <= 0) {
+				throw new Error("no budget before gate-hold pause confirmation");
+			}
+			await setGoalStatus("paused", budget);
+			goalArmed = true;
+			const confirmed = await client.getGoal(input.threadId, remainingBudget());
+			if (confirmed?.status !== "paused" || !objectiveIsOurs(confirmed)) {
+				throw new Error("daemon did not confirm the recovered paused goal");
+			}
+			gatePauseAttempted = true;
+		} catch (error) {
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed confirming recovered gate hold: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			throw new GoalRunError(
+				`recovery commit failed: gate hold was not confirmed: ${error instanceof Error ? error.message : String(error)}`,
+				"setup_failed",
+			);
+		}
+	};
+	const confirmResumedGoalForRecovery = async (): Promise<
+		RecoveryOwnershipReceipt | undefined
+	> => {
+		if (!input.onRecoveryOwnershipEstablished) return undefined;
+		try {
+			const confirmed = await client.getGoal(input.threadId, remainingBudget());
+			if (!confirmed || !objectiveIsOurs(confirmed)) {
+				throw new Error("daemon did not confirm the recovered goal generation");
+			}
+			const confirmedStatus = confirmed.status;
+			if (confirmedStatus === "active") {
+				return {
+					kind: "goal_resumed",
+					threadId: input.threadId,
+					goalStatus: "active",
+				};
+			}
+			if (
+				confirmedStatus === "blocked" ||
+				confirmedStatus === "complete" ||
+				confirmedStatus === "usageLimited" ||
+				confirmedStatus === "budgetLimited"
+			) {
+				terminalSeen = confirmedStatus;
+				return {
+					kind: "terminal_goal_confirmed",
+					threadId: input.threadId,
+					goalStatus: confirmedStatus,
+				};
+			}
+			throw new Error(
+				`daemon confirmed unexpected recovered goal status ${confirmedStatus ?? "missing"}`,
+			);
+		} catch (error) {
+			if (client.isClosed()) {
+				failClose(
+					`daemon transport closed confirming recovered goal: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			throw new GoalRunError(
+				`recovery commit failed: resumed goal was not confirmed: ${error instanceof Error ? error.message : String(error)}`,
+				"setup_failed",
+			);
+		}
+	};
 	const fireGoalActive = (): void => {
 		try {
 			input.onGoalActive?.();
@@ -1124,6 +1250,19 @@ export async function runGoalToTerminal(
 				remainingBudget(),
 			);
 			claimTurnDispatch(turnId);
+			if (input.onRecoveryOwnershipEstablished) {
+				if (!turnId) {
+					throw new GoalRunError(
+						"recovery commit failed: turn/start receipt missing turn id",
+						"setup_failed",
+					);
+				}
+				await establishRecoveryOwnership({
+					kind: "turn_started",
+					threadId: input.threadId,
+					turnId,
+				});
+			}
 		} catch (error) {
 			abortTurnDispatch();
 			throw error;
@@ -1181,6 +1320,11 @@ export async function runGoalToTerminal(
 				// restart) resumes the goal out from under this phase hold.
 				clearGateEpisode();
 				await ensurePhasePaused();
+				await establishRecoveryOwnership({
+					kind: "phase_hold_confirmed",
+					threadId: input.threadId,
+					goalStatus: "paused",
+				});
 				skipInitialActivation = true;
 			} else if (phase?.observeBoundary().kind === "parked") {
 				// `flywheel-comm complete` and the native /goal terminal are separate
@@ -1190,6 +1334,11 @@ export async function runGoalToTerminal(
 				// restarted adapter reconstruct the hold before it starts a generic
 				// continuation turn.
 				await enterPhaseHold();
+				await establishRecoveryOwnership({
+					kind: "phase_hold_confirmed",
+					threadId: input.threadId,
+					goalStatus: "paused",
+				});
 				skipInitialActivation = true;
 			} else {
 				// FLY-1257: no phase hold to adopt — but a phase runner still opens
@@ -1234,6 +1383,11 @@ export async function runGoalToTerminal(
 						goalArmed = true;
 						enterGateHold();
 						gatePauseAttempted = true;
+						await establishRecoveryOwnership({
+							kind: "gate_hold_confirmed",
+							threadId: input.threadId,
+							goalStatus: "paused",
+						});
 						skipInitialActivation = true;
 					} else if (existingGoal.status === "paused") {
 						terminalSeen = null;
@@ -1241,12 +1395,20 @@ export async function runGoalToTerminal(
 						// auto-resume may emit terminal before goal/set replies.
 						goalArmed = true;
 						await resumeHeldGoal();
+						const receipt = await confirmResumedGoalForRecovery();
+						if (receipt) await establishRecoveryOwnership(receipt);
 						skipInitialActivation = true;
 						// A latched active/blocked goal plus a still-open marker means the
 						// daemon died inside the hold window: do not set or kick.
 					} else if (gateHoldLatched && waiting) {
 						goalArmed = true;
 						gateHoldActive = true;
+						await confirmGateHoldForRecovery();
+						await establishRecoveryOwnership({
+							kind: "gate_hold_confirmed",
+							threadId: input.threadId,
+							goalStatus: "paused",
+						});
 						skipInitialActivation = true;
 					} else if (gateHoldLatched) {
 						// The marker resolved while the daemon/Bridge was down (or the
@@ -1254,13 +1416,26 @@ export async function runGoalToTerminal(
 						terminalSeen = null;
 						goalArmed = true;
 						await resumeHeldGoal();
+						const receipt = await confirmResumedGoalForRecovery();
+						if (receipt) await establishRecoveryOwnership(receipt);
 						skipInitialActivation = true;
 					} else if (existingGoal.status === "blocked") {
 						goalArmed = true;
 						if (waiting) {
 							enterGateHold();
+							await confirmGateHoldForRecovery();
+							await establishRecoveryOwnership({
+								kind: "gate_hold_confirmed",
+								threadId: input.threadId,
+								goalStatus: "paused",
+							});
 						} else {
 							terminalSeen = "blocked";
+							await establishRecoveryOwnership({
+								kind: "terminal_goal_confirmed",
+								threadId: input.threadId,
+								goalStatus: "blocked",
+							});
 						}
 						skipInitialActivation = true;
 					}
@@ -1281,7 +1456,8 @@ export async function runGoalToTerminal(
 			if (
 				err instanceof GoalRunError &&
 				err.kind === "setup_failed" &&
-				err.message.startsWith("gate-hold latch")
+				(err.message.startsWith("gate-hold latch") ||
+					err.message.startsWith("recovery commit failed"))
 			) {
 				throw err;
 			}

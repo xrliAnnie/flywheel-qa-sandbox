@@ -8,6 +8,31 @@ import {
 } from "../bridge/tmux-lookup.js";
 
 describe("FLY-1374 tmux execution identity discovery", () => {
+	it("writes the kill receipt before mutating a runner window", async () => {
+		const order: string[] = [];
+		const result = await killTmuxWindow("runner-flywheel:@42", {
+			auditSignal: vi.fn(async (input, deps) => {
+				order.push("ledger");
+				await deps?.mutate?.(input.target, input.signal);
+				return {
+					ok: true as const,
+					ledger: "ndjson" as const,
+					entry: {
+						ts: "2026-08-31T20:00:00.000Z",
+						...input,
+						schemaVersion: 1 as const,
+					},
+				};
+			}),
+			exec: vi.fn(async () => {
+				order.push("tmux");
+			}),
+		});
+
+		expect(result).toEqual({ killed: true });
+		expect(order).toEqual(["ledger", "tmux"]);
+	});
+
 	it("discovers identity when tmux sanitizes control-character separators", async () => {
 		const runTmux = vi.fn(async (args: string[]) => {
 			const format = args.at(-1) ?? "";

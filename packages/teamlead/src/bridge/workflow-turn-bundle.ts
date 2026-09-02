@@ -87,3 +87,5 @@ export function grantPrelaunchWorkflowTurn(input: {
 	}
 	return { epoch, grantedAt };
 }
+
+export type GrantPrelaunchWorkflowTurn = typeof grantPrelaunchWorkflowTurn;

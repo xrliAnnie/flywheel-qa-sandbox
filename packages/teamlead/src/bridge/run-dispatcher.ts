@@ -54,7 +54,10 @@ import {
 	type ResolvedRoleAdapter,
 	resolveRoleAdapter,
 } from "./role-adapter-resolver.js";
-import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
+import {
+	type GrantPrelaunchWorkflowTurn,
+	grantPrelaunchWorkflowTurn,
+} from "./workflow-turn-bundle.js";
 
 export type TmuxGenerationRecorder = (
 	executionId: string,
@@ -617,6 +620,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			hasOverride: false,
 			raw: null,
 		}),
+		protected prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
 	) {}
 
 	/** Typed fleet admission check, deliberately before shutdown semantics. */
@@ -981,7 +985,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 				try {
 					const db = new CommDB(defaultGetCommDbPath(req.projectName));
 					try {
-						grantPrelaunchWorkflowTurn({
+						this.prelaunchWorkflowTurnGrant({
 							db,
 							issueId: req.issueId,
 							projectName: req.projectName,
@@ -1369,6 +1373,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 		inflightSessionTerminal?: InflightSessionTerminalProbe,
 		admissionCrossingBarrier?: AdmissionCrossingBarrier,
 		skillFrameworkModeControl?: () => FlagStoreRawValue,
+		prelaunchWorkflowTurnGrant: GrantPrelaunchWorkflowTurn = grantPrelaunchWorkflowTurn,
 	) {
 		super(
 			blueprintsByProject,
@@ -1386,6 +1391,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 			inflightSessionTerminal,
 			admissionCrossingBarrier,
 			skillFrameworkModeControl,
+			prelaunchWorkflowTurnGrant,
 		);
 	}
 
@@ -1688,7 +1694,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 					const dbPath = defaultGetCommDbPath(req.projectName);
 					const db = new CommDB(dbPath);
 					try {
-						grantPrelaunchWorkflowTurn({
+						this.prelaunchWorkflowTurnGrant({
 							db,
 							issueId: req.issueId,
 							projectName: req.projectName,

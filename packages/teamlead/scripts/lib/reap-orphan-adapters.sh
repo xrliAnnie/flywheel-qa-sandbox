@@ -40,6 +40,17 @@ fi
 # Space-separated case globs; override via FLY183_FLYWHEEL_SLUGS.
 : "${FLY183_FLYWHEEL_SLUGS:=discord-product-lead discord-ops-lead discord-cos-lead discord-cos discord-*test-slot* discord-flywheel-* discord-test-*}"
 
+_fly183_repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
+if [ -r "${_fly183_repo_root}/scripts/lib/kill-ledger.sh" ]; then
+  # shellcheck source=scripts/lib/kill-ledger.sh
+  source "${_fly183_repo_root}/scripts/lib/kill-ledger.sh"
+else
+  flywheel_audited_signal() {
+    log "FLY-183: kill ledger helper unavailable; signal refused"
+    return 1
+  }
+fi
+
 # Process-table seam (overridable for hermetic tests so they never touch the
 # real process table). Emits lines: "<pid> <ppid> <command...>".
 #
@@ -300,8 +311,10 @@ reap_orphan_adapters() {
       log "FLY-183: skip pid=$pid -- not a live ppid==1 adapter at signal time (stale/forged target)"
       continue
     fi
-    for d in $(_collect_descendants "$pid"); do kill -TERM "$d" 2>/dev/null || true; done  # leaves first
-    kill -TERM "$pid" 2>/dev/null || true
+    for d in $(_collect_descendants "$pid"); do
+      flywheel_audited_signal "orphan_adapter_reaper" "SIGTERM" "pid" "$d" "" "discord_adapter_descendant" || true
+    done
+    flywheel_audited_signal "orphan_adapter_reaper" "SIGTERM" "pid" "$pid" "" "discord_adapter_orphan" || true
     case "$label" in
       NONFLYWHEEL:*|UNIDENTIFIED)
         log "WARNING FLY-183: reaped non-Flywheel/unidentified orphan adapter ($label) pid=$pid :: $cmd" ;;
@@ -324,7 +337,7 @@ reap_orphan_adapters() {
     [ -n "$pid" ] || continue
     _reap_target_is_live_orphan "$pid" || continue
     if kill -0 "$pid" 2>/dev/null; then
-      kill -KILL "$pid" 2>/dev/null || true
+      flywheel_audited_signal "orphan_adapter_reaper" "SIGKILL" "pid" "$pid" "" "discord_adapter_orphan_escalation" || true
       log "FLY-183: KILL survivor orphan adapter pid=$pid"
     fi
   done < <(_list_orphan_adapters)

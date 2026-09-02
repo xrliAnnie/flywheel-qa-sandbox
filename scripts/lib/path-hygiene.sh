@@ -149,6 +149,7 @@ path_hygiene_target_is_temp_or_worktree() {
 path_hygiene_source_path_registry() {
   cat <<'EOF'
 packages/claude-runner/src/tmux-server-environment.ts
+scripts/lib/kill-ledger.sh
 scripts/lib/tmux-server-rescue.sh
 scripts/flywheel-lead-wrapper-v2.sh
 scripts/flywheel-codex-lead-wrapper-mufasa-tui-fullaccess.sh

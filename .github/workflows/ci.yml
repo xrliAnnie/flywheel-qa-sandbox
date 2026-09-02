@@ -683,10 +683,14 @@ jobs:
       - name: Test — FLY-513 global-codex repoint apply-path
         run: bash packages/teamlead/scripts/__tests__/fly-513-repoint.test.sh
 
-      # FLY-1955: remote-control's stale zombie pid deadlock. Hermetic process
-      # table model on every host + a real zombie/PPID fixture enforced on Linux.
-      - name: Test — FLY-1955 Codex daemon zombie recovery
-        run: bash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh
+      # FLY-1955/2211: remote-control's stale zombie pid deadlock and every
+      # runner signal's durable audit fence. Both are hermetic: the zombie
+      # suite uses a process-table model plus a Linux fixture; the ledger suite
+      # only targets its private temp root and suppresses the real mutation.
+      - name: Test — FLY-1955/2211 Codex daemon mutation safety
+        run: |
+          bash packages/teamlead/scripts/__tests__/codex-lead-tui-home-zombie-reap.test.sh
+          bash scripts/__tests__/kill-ledger.test.sh
 
       # FLY-697: Codex TRACE-log SSD-wear guard. Hermetic — runs against a
       # throwaway sqlite DB and shims lsof/osascript via PATH, so it never

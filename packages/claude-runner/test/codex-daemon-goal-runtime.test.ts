@@ -149,6 +149,50 @@ describe("CodexDaemonGoalRuntime", () => {
 		rt.stop();
 	});
 
+	it("captures the transport close at the runtime boundary without replacing the client handler", async () => {
+		let closeTransport: ((reason: string) => void) | undefined;
+		let clientCloseReason: string | undefined;
+		const observed: Array<Record<string, unknown>> = [];
+		const transport: DaemonTransport = {
+			send: () => {},
+			onMessage: () => {},
+			onClose: (handler) => {
+				closeTransport = handler;
+			},
+			close: () => {},
+		};
+		const h = makeHarness({ runGoalScript: [COMPLETE] });
+		const rt = new CodexDaemonGoalRuntime({
+			...h.opts,
+			connectTransport: async () => transport,
+			makeClient: (wrapped) => {
+				wrapped.onClose((reason) => {
+					clientCloseReason = reason;
+				});
+				const client = new FakeClient("t-observed");
+				h.clients.push(client);
+				return client as unknown as CodexDaemonClient;
+			},
+			onTransportClose: (evidence) => {
+				observed.push(evidence);
+			},
+		});
+
+		await rt.runGoal({ objective: "x" });
+		closeTransport?.("socket reset");
+		await Promise.resolve();
+
+		expect(clientCloseReason).toBe("socket reset");
+		expect(observed).toEqual([
+			expect.objectContaining({
+				executionId: "exec-1",
+				socketPath: "/tmp/d.sock",
+				reason: "socket reset",
+			}),
+		]);
+		rt.stop();
+	});
+
 	it("passes sandboxWritableRoots + networkAccess through to the daemon spawn (M4d)", async () => {
 		let seen: {
 			sandboxWritableRoots?: string[];
@@ -273,6 +317,40 @@ describe("CodexDaemonGoalRuntime", () => {
 			{ read, write, isWaiting },
 			{ read, write, isWaiting },
 		]);
+		rt.stop();
+	});
+
+	it("FLY-2211: daemon restart preserves the hard recovery ownership callback", async () => {
+		const h = makeHarness({
+			runGoalScript: [
+				new GoalRunError("socket died while recovering", "transport_closed"),
+				COMPLETE,
+			],
+		});
+		const seen: unknown[] = [];
+		const original = h.opts.runGoalFn as NonNullable<
+			CodexDaemonGoalRuntimeOptions["runGoalFn"]
+		>;
+		const rt = new CodexDaemonGoalRuntime({
+			...h.opts,
+			runGoalFn: (async (client, input, events) => {
+				seen.push(input.onRecoveryOwnershipEstablished);
+				return original(client, input, events);
+			}) as CodexDaemonGoalRuntimeOptions["runGoalFn"],
+		});
+		const commit: NonNullable<
+			Parameters<
+				CodexDaemonGoalRuntime["runGoal"]
+			>[0]["onRecoveryOwnershipEstablished"]
+		> = async () => {};
+
+		const out = await rt.runGoal({
+			objective: "recover owner",
+			onRecoveryOwnershipEstablished: commit,
+		});
+
+		expect(out.result.status).toBe("complete");
+		expect(seen).toEqual([commit, commit]);
 		rt.stop();
 	});
 

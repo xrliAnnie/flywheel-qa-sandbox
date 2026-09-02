@@ -105,6 +105,16 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	public terminalArchiveEnqueue?: (issueId: string) => void;
 
 	/**
+	 * FLY-2211 process-local owner reservation. The synchronous reserve call is
+	 * deliberately the first emitStarted action so a newly visible Codex session
+	 * can never be mistaken for an orphan by the boot/periodic reconciler.
+	 */
+	public codexExecutionOwners?: {
+		reserve(executionId: string): boolean;
+		releaseReservation(executionId: string): boolean;
+	};
+
+	/**
 	 * FLY-887: ship-time DAG workflow finalizer (closes the parked design +
 	 * implement sessions before the shared worktree is removed). Set by the
 	 * composition root after construction. Absent → no phase finalization
@@ -194,6 +204,9 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	) {}
 
 	async emitStarted(env: EventEnvelope): Promise<void> {
+		if (env.runnerBackend === "codex-tmux") {
+			this.codexExecutionOwners?.reserve(env.executionId);
+		}
 		const now = sqliteDatetime();
 		const existingSession = this.store.getSession(env.executionId);
 		const startedAt = existingSession?.started_at ?? now;
@@ -528,6 +541,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		result: BlueprintResult,
 		summary?: string,
 	): Promise<void> {
+		this.codexExecutionOwners?.releaseReservation(env.executionId);
 		const now = sqliteDatetime();
 		// FLY-1404: this in-process carrier has no field that can hold the
 		// CLI-minted, git-proven designHtmlEvidence attestation. Never fabricate a
@@ -1198,6 +1212,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 		_lastActivity?: string,
 		failure?: TerminalFailureInfo,
 	): Promise<void> {
+		this.codexExecutionOwners?.releaseReservation(env.executionId);
 		const now = sqliteDatetime();
 		const normalizedFailure = normalizeTerminalFailureInfo(failure);
 		const goalBlocked = normalizedFailure?.failureKind === "goal_blocked";

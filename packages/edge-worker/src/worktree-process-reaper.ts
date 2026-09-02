@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import { auditedSignal } from "flywheel-claude-runner";
 import { canonicalizeWorktreePath } from "./worktree-paths.js";
 
 export interface ReapTarget {
@@ -156,22 +157,41 @@ const defaultDeps: ReapDeps = {
 			}),
 		),
 	kill: (pid, signal) => {
-		try {
-			process.kill(pid, signal);
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-			throw error;
+		if (signal === 0) {
+			try {
+				process.kill(pid, 0);
+				return true;
+			} catch (error) {
+				if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
+				throw error;
+			}
 		}
+		const result = auditedSignal({
+			source: "worktree_process_reaper",
+			signal,
+			targetKind: "pid",
+			target: pid,
+			reason: "worktree_owner_reap",
+		});
+		if (result.ok) return true;
+		if (result.kind === "signal_failed" && result.error.includes("ESRCH")) {
+			return false;
+		}
+		throw new Error(`audited pid signal blocked: ${result.error}`);
 	},
 	killGroup: (pgid, signal) => {
-		try {
-			process.kill(-pgid, signal);
-			return true;
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === "ESRCH") return false;
-			throw error;
+		const result = auditedSignal({
+			source: "worktree_process_reaper",
+			signal,
+			targetKind: "pgid",
+			target: pgid,
+			reason: "worktree_owner_group_reap",
+		});
+		if (result.ok) return true;
+		if (result.kind === "signal_failed" && result.error.includes("ESRCH")) {
+			return false;
 		}
+		throw new Error(`audited group signal blocked: ${result.error}`);
 	},
 	sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 	now: () => performance.now(),

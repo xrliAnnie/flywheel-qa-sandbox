@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNNER_DIR="$SCRIPT_DIR/../packages/claude-runner"
 SOURCE_WRAPPER="$SCRIPT_DIR/codex-with-fallback.sh"
 SOURCE_GUARD="$SCRIPT_DIR/lib/codex-guard.sh"
+SOURCE_KILL_LEDGER="$SCRIPT_DIR/lib/kill-ledger.sh"
+SOURCE_KILL_LEDGER_APPEND="$SCRIPT_DIR/lib/kill-ledger-append.mjs"
 SOURCE_PROFILE="$RUNNER_DIR/bin/flywheel-codex-profile.mjs"
 SOURCE_CORE="$RUNNER_DIR/bin/codex-account-core.mjs"
 SOURCE_CORE_TYPES="$RUNNER_DIR/bin/codex-account-core.d.mts"
@@ -63,13 +65,17 @@ elif ! command -v "$node_bin" >/dev/null 2>&1; then
 fi
 
 for source_file in \
-  "$SOURCE_WRAPPER" "$SOURCE_GUARD" "$SOURCE_PROFILE" \
+  "$SOURCE_WRAPPER" "$SOURCE_GUARD" "$SOURCE_KILL_LEDGER" \
+  "$SOURCE_KILL_LEDGER_APPEND" "$SOURCE_PROFILE" \
   "$SOURCE_CORE" "$SOURCE_CORE_TYPES" "$SOURCE_REGISTRY"; do
   [[ -f "$source_file" && ! -L "$source_file" ]] \
     || die "repo release source is missing or unsafe: $source_file"
 done
 /bin/bash -n "$SOURCE_WRAPPER" || die "wrapper source failed bash -n"
 /bin/bash -n "$SOURCE_GUARD" || die "guard source failed bash -n"
+/bin/bash -n "$SOURCE_KILL_LEDGER" || die "kill-ledger source failed bash -n"
+"$node_bin" --check "$SOURCE_KILL_LEDGER_APPEND" >/dev/null \
+  || die "kill-ledger append source failed node --check"
 "$node_bin" --check "$SOURCE_PROFILE" >/dev/null \
   || die "profile source failed node --check"
 "$node_bin" --check "$SOURCE_CORE" >/dev/null \
@@ -78,6 +84,8 @@ done
 content_hash="$({
   shasum -a 256 "$SOURCE_WRAPPER"
   shasum -a 256 "$SOURCE_GUARD"
+  shasum -a 256 "$SOURCE_KILL_LEDGER"
+  shasum -a 256 "$SOURCE_KILL_LEDGER_APPEND"
   shasum -a 256 "$SOURCE_PROFILE"
   shasum -a 256 "$SOURCE_CORE"
   shasum -a 256 "$SOURCE_CORE_TYPES"
@@ -94,6 +102,8 @@ if [[ ! -d "$release_dir" ]]; then
   mkdir "$stage" || die "cannot create release stage"
   if ! cp "$SOURCE_WRAPPER" "$stage/codex-with-fallback.sh" \
     || ! cp "$SOURCE_GUARD" "$stage/codex-guard.sh" \
+    || ! cp "$SOURCE_KILL_LEDGER" "$stage/kill-ledger.sh" \
+    || ! cp "$SOURCE_KILL_LEDGER_APPEND" "$stage/kill-ledger-append.mjs" \
     || ! cp "$SOURCE_PROFILE" "$stage/flywheel-codex-profile.mjs" \
     || ! cp "$SOURCE_CORE" "$stage/codex-account-core.mjs" \
     || ! cp "$SOURCE_CORE_TYPES" "$stage/codex-account-core.d.mts" \
@@ -102,13 +112,16 @@ if [[ ! -d "$release_dir" ]]; then
     die "cannot stage release"
   fi
   chmod 555 "$stage/codex-with-fallback.sh" "$stage/codex-guard.sh" \
+    "$stage/kill-ledger.sh" \
     "$stage/flywheel-codex-profile.mjs" \
     || { rm -rf "$stage" 2>/dev/null || true; die "cannot lock executable release modes"; }
-  chmod 444 "$stage/codex-account-core.mjs" \
+  chmod 444 "$stage/kill-ledger-append.mjs" "$stage/codex-account-core.mjs" \
     "$stage/codex-account-core.d.mts" "$stage/codex-account-registry.json" \
     || { rm -rf "$stage" 2>/dev/null || true; die "cannot lock data release modes"; }
   /bin/bash -n "$stage/codex-with-fallback.sh" \
     && /bin/bash -n "$stage/codex-guard.sh" \
+    && /bin/bash -n "$stage/kill-ledger.sh" \
+    && "$node_bin" --check "$stage/kill-ledger-append.mjs" >/dev/null \
     && "$node_bin" --check "$stage/flywheel-codex-profile.mjs" >/dev/null \
     && "$node_bin" --check "$stage/codex-account-core.mjs" >/dev/null \
     || { rm -rf "$stage" 2>/dev/null || true; die "staged release failed self-check"; }
@@ -224,12 +237,17 @@ release_shape() {
     printf 'legacy\n'
     return 0
   fi
-  if [[ "$entry_count" == "6" ]]; then
+  if [[ "$entry_count" == "6" || "$entry_count" == "8" ]]; then
     local name
     for name in codex-with-fallback.sh codex-guard.sh flywheel-codex-profile.mjs \
       codex-account-core.mjs codex-account-core.d.mts codex-account-registry.json; do
       [[ -f "$candidate/$name" && ! -L "$candidate/$name" ]] || return 1
     done
+    if [[ "$entry_count" == "8" ]]; then
+      for name in kill-ledger.sh kill-ledger-append.mjs; do
+        [[ -f "$candidate/$name" && ! -L "$candidate/$name" ]] || return 1
+      done
+    fi
     printf 'full\n'
     return 0
   fi
@@ -237,7 +255,7 @@ release_shape() {
 }
 
 # Keep current plus two newest prior release directories. Unknown shapes are
-# never deleted; both the legacy 2-file and current 6-file layouts are safe.
+# never deleted; the legacy 2-file/6-file and current 8-file layouts are safe.
 [[ -d "$CURRENT_LINK" ]] || die "current release is unreadable"
 current_release="$release_dir"
 newest_prior=""
@@ -271,6 +289,7 @@ for old_release in "$RELEASES_DIR"/*; do
   else
     rm -f "$old_release/codex-with-fallback.sh" "$old_release/codex-guard.sh" \
       "$old_release/flywheel-codex-profile.mjs" \
+      "$old_release/kill-ledger.sh" "$old_release/kill-ledger-append.mjs" \
       "$old_release/codex-account-core.mjs" \
       "$old_release/codex-account-core.d.mts" \
       "$old_release/codex-account-registry.json" 2>/dev/null || continue

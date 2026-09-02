@@ -32,6 +32,7 @@ import type {
 } from "../src/CodexTmuxAdapter.js";
 import {
 	CodexTmuxAdapter,
+	readCodexLaunchSnapshot,
 	TUI_OPEN_DEADLINE_MS,
 	TUI_OPEN_MAX_ATTEMPTS,
 } from "../src/CodexTmuxAdapter.js";
@@ -42,6 +43,7 @@ import type {
 	RunGoalInput,
 	RunGoalOutcome,
 } from "../src/codex-daemon-goal-runtime.js";
+import { CodexExecutionOwnershipRegistry } from "../src/codex-execution-ownership.js";
 import type { RunnerTuiWindowOutcome } from "../src/codex-runner-tui-window.js";
 
 const THREAD_ID = "019e9006-0b8e-72b0-bb80-9100d85473cf";
@@ -144,6 +146,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 	let transcriptScopes: string[];
 	let transcriptNotifications: Array<{ method: string; params: unknown }>;
 	let transcriptCloses: Array<string | undefined>;
+	let executionOwners: CodexExecutionOwnershipRegistry;
 	// FLY-1239: the injected reopen scheduler. Default = synchronous-immediate so
 	// policy/outcome tests are deterministic; the ordering test overrides it with a
 	// queued scheduler to prove the "hook returns → goal advances → retry" ordering.
@@ -161,6 +164,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		return {
 			codexAccountRegistryPath: registryPath,
 			codexAccountLedgerRoot: ledgerRoot,
+			executionOwners,
 			runtimeFactory: (opts) => {
 				capturedOpts = opts;
 				return runtime;
@@ -273,6 +277,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		transcriptScopes = [];
 		transcriptNotifications = [];
 		transcriptCloses = [];
+		executionOwners = new CodexExecutionOwnershipRegistry();
 		// synchronous-immediate: the reopen chain runs to completion inside the call
 		// that scheduled it — deterministic for policy tests (the ordering test
 		// overrides this with a queued scheduler).
@@ -1235,6 +1240,9 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			let daemonEnv = (capturedOpts as CodexDaemonGoalRuntimeOptions).env ?? {};
 			for (const name of names) expect(daemonEnv[name]).toBeUndefined();
 
+			// This assertion describes a distinct launch context, not a same-execution
+			// resume. FLY-2211 makes launch capabilities immutable per executionId.
+			execId = `exec-${Math.random().toString(36).slice(2, 10)}`;
 			await makeAdapter().execute(
 				ctx({
 					workflowOutputCredential: "current-output",
@@ -2145,6 +2153,160 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 		await makeAdapter().execute(ctx()); // no previousSession
 		expect(runtime.runGoalInputs[0]?.resumeThreadId).toBe("persisted-thread");
+	});
+
+	it("FLY-2211: persists an immutable, exact launch snapshot before constructing the daemon runtime", async () => {
+		const result = await makeAdapter().execute(
+			ctx({
+				prompt: "exact recovery kick body",
+				appendSystemPrompt: "exact system layer",
+				model: "gpt-5.5",
+				effort: "high",
+				skillFrameworkMode: "bare",
+				allowedTools: ["Read(**)", "Bash"],
+				enablePonytail: true,
+				codexSkillDisableNames: ["superpowers:using-superpowers"],
+				workflowSubmissionExpected: true,
+				founderReviewRequired: true,
+				phaseKeepAlive: { role: "implement" },
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		const snapshot = readCodexLaunchSnapshot(execId);
+		expect(snapshot).toMatchObject({
+			schemaVersion: 1,
+			executionId: execId,
+			objective: runtime.runGoalInputs[0]?.objective,
+			kickText: runtime.runGoalInputs[0]?.kickText,
+			launchContext: {
+				model: "gpt-5.5",
+				effort: "high",
+				appsApprovalMode: "never",
+				skillFrameworkMode: "bare",
+				phaseRole: "implement",
+			},
+			rehydrationContext: {
+				allowedTools: ["Read(**)", "Bash"],
+				enablePonytail: true,
+				codexSkillDisableNames: ["superpowers:using-superpowers"],
+				codexMattSkillsSourceDir: null,
+				workflowSubmissionExpected: true,
+				founderReviewRequired: true,
+			},
+		});
+		expect(snapshot.launchContext.sandboxWritableRoots).toContain(
+			realpathSync(dir),
+		);
+		expect(snapshot.launchContext.capabilityDigest).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it("FLY-2211: refuses to overwrite an existing launch snapshot with drifted instructions", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original kick" }));
+		const before = readCodexLaunchSnapshot(execId);
+		capturedOpts = undefined;
+		runtime = new FakeRuntime(async () => complete());
+
+		const result = await makeAdapter().execute(ctx({ prompt: "drifted kick" }));
+
+		expect(result.success).toBe(false);
+		expect(capturedOpts).toBeUndefined();
+		expect(readCodexLaunchSnapshot(execId)).toEqual(before);
+	});
+
+	it("FLY-2211: strict snapshot reader rejects legacy session state instead of guessing recovery input", () => {
+		const stateDir = join(dir, "codex-sessions", execId);
+		mkdirSync(stateDir, { recursive: true });
+		writeFileSync(
+			join(stateDir, "session.json"),
+			JSON.stringify({
+				executionId: execId,
+				threadId: "legacy-thread",
+				vendor: "codex",
+			}),
+		);
+
+		expect(() => readCodexLaunchSnapshot(execId)).toThrow(
+			/missing immutable launch snapshot/,
+		);
+	});
+
+	it("FLY-2211: shared ownership rejects a parallel adapter for the same execution", async () => {
+		let settleFirst: ((outcome: RunGoalOutcome) => void) | undefined;
+		let calls = 0;
+		runtime = new FakeRuntime(async (input) => {
+			calls += 1;
+			input.onThreadReady?.(THREAD_ID, 0);
+			if (calls > 1) return complete();
+			return new Promise<RunGoalOutcome>((resolve) => {
+				settleFirst = resolve;
+			});
+		});
+
+		const first = makeAdapter().execute(ctx());
+		await vi.waitFor(() => expect(runtime.runGoalInputs).toHaveLength(1));
+		expect(executionOwners.isExecutionOwned(execId)).toBe(true);
+		const duplicate = await makeAdapter().execute(ctx());
+
+		expect(duplicate.success).toBe(false);
+		expect(runtime.runGoalInputs).toHaveLength(1);
+		settleFirst?.(complete());
+		expect((await first).success).toBe(true);
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2211: resumeExistingExecution reuses exact snapshot input and awaits the hard receipt commit", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original recovery kick" }));
+		const snapshot = readCodexLaunchSnapshot(execId);
+		const commit = vi.fn(async () => {});
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			await input.onRecoveryOwnershipEstablished?.({
+				kind: "turn_started",
+				threadId: THREAD_ID,
+				turnId: "turn-rescued",
+			});
+			return complete();
+		});
+
+		const result = await makeAdapter().resumeExistingExecution(
+			ctx({ prompt: "must not reconstruct this kick" }),
+			{ onRecoveryOwnershipEstablished: commit },
+		);
+
+		expect(result.success).toBe(true);
+		expect(runtime.runGoalInputs[0]?.objective).toBe(snapshot.objective);
+		expect(runtime.runGoalInputs[0]?.kickText).toBe(snapshot.kickText);
+		expect(commit).toHaveBeenCalledWith({
+			kind: "turn_started",
+			threadId: THREAD_ID,
+			turnId: "turn-rescued",
+		});
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
+	});
+
+	it("FLY-2211: a failed recovery commit tears down and releases ownership", async () => {
+		await makeAdapter().execute(ctx({ prompt: "original recovery kick" }));
+		runtime = new FakeRuntime(async (input) => {
+			input.onThreadReady?.(THREAD_ID, 0);
+			await input.onRecoveryOwnershipEstablished?.({
+				kind: "turn_started",
+				threadId: THREAD_ID,
+				turnId: "turn-rescued",
+			});
+			return complete();
+		});
+
+		const result = await makeAdapter().resumeExistingExecution(ctx(), {
+			onRecoveryOwnershipEstablished: async () => {
+				throw new Error("revision fence lost");
+			},
+		});
+
+		expect(result.success).toBe(false);
+		expect(runtime.stopped).toBe(1);
+		expect(runtime.drainedCalls).toBe(1);
+		expect(executionOwners.isExecutionOwned(execId)).toBe(false);
 	});
 
 	it("HIGH-3 + HIGH-4: onThreadReady writes the launch commit + persists the resume handle", async () => {

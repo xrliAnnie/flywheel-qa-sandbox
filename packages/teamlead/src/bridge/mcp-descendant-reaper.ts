@@ -9,6 +9,7 @@
 import { execFile } from "node:child_process";
 import { basename } from "node:path";
 import { performance } from "node:perf_hooks";
+import { auditedSignal } from "flywheel-claude-runner";
 import { classifyMcpProcess } from "./mcp-process-classifier.js";
 
 export const MCP_ORPHAN_MIN_ELAPSED_SECONDS = 30 * 60;
@@ -179,12 +180,13 @@ export function defaultKill(
 	pid: number,
 	signal: "SIGTERM" | "SIGKILL",
 ): boolean {
-	try {
-		process.kill(pid, signal);
-		return true;
-	} catch {
-		return false;
-	}
+	return auditedSignal({
+		source: "mcp_descendant_reaper",
+		signal,
+		targetKind: "pid",
+		target: pid,
+		reason: "runner_mcp_descendant_reap",
+	}).ok;
 }
 
 export function collectDescendants(

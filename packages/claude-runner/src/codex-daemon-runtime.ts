@@ -38,6 +38,12 @@ import { connect } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { stripInheritedSecretEnv, stripSecretEnv } from "./codex-home.js";
+import {
+	type AuditedSignalDeps,
+	type AuditedSignalInput,
+	type AuditedSignalResult,
+	auditedSignal,
+} from "./kill-ledger.js";
 import { withSyncOpMarker } from "./sync-op-marker.js";
 
 /** macOS sockaddr_un.sun_path is 104 bytes; keep a byte of headroom. */
@@ -405,6 +411,8 @@ export type DaemonSpawnFn = (
 ) => DaemonChild;
 
 export interface SpawnCodexDaemonOptions {
+	/** Execution identity carried into mandatory signal receipts. */
+	executionId?: string;
 	codexBin: string;
 	/** Per-runner CODEX_HOME (auth/config); NOT where the socket lives. */
 	codexHome: string;
@@ -596,11 +604,14 @@ export async function spawnCodexDaemon(
 	// daemon we really spawned. With an injected (fake) spawnFn and no injected
 	// killGroup there is NO group to signal — a made-up pid must never be able to
 	// reach `process.kill(-pid)` and take out an unrelated group on this machine.
-	const killGroup =
-		opts.killGroup ??
-		(opts.spawnFn
-			? undefined
-			: createDefaultKillGroup({ processGroupOf, logger: log }));
+	const defaultKillGroup = opts.spawnFn
+		? undefined
+		: createDefaultKillGroup({
+				processGroupOf,
+				logger: log,
+				execId: opts.executionId,
+			});
+	const killGroup = opts.killGroup ?? defaultKillGroup;
 	const timeoutMs = opts.socketWaitTimeoutMs ?? 30_000;
 	const pollMs = opts.socketPollMs ?? 200;
 	const childExitWaitMs =
@@ -777,13 +788,43 @@ export async function spawnCodexDaemon(
 			const pid = child.pid;
 			if (killGroup && pid !== undefined) {
 				try {
-					killGroup(pid, signal);
-					return;
+					if (defaultKillGroup && killGroup === defaultKillGroup) {
+						if (defaultKillGroup(pid, signal)) return;
+					} else {
+						killGroup(pid, signal);
+						return;
+					}
 				} catch {
 					/* group gone / not a leader — fall through to the child */
 				}
 			}
+			if (!opts.spawnFn && pid !== undefined) {
+				const result = auditedSignal(
+					{
+						source: "codex_daemon_runtime",
+						signal,
+						targetKind: "pid",
+						target: pid,
+						...(opts.executionId ? { execId: opts.executionId } : {}),
+						reason: "daemon_child_signal_fallback",
+					},
+					{
+						mutate: () => {
+							if (!child.kill(signal)) {
+								throw new Error("child signal returned false");
+							}
+						},
+					},
+				);
+				if (!result.ok) {
+					log(
+						`BLOCKED daemon child fallback signal pid=${pid} signal=${signal} kind=${result.kind}: ${result.error}`,
+					);
+				}
+				return;
+			}
 			try {
+				// Injected spawn seams own their fake child and never reach a real pid.
 				child.kill(signal);
 			} catch {
 				/* already gone */
@@ -959,21 +1000,29 @@ export function createDefaultKillGroup(options: {
 	pid?: number;
 	ppid?: number;
 	logger?: (message: string) => void;
-}): (pgid: number, signal: NodeJS.Signals) => void {
+	auditSignal?: (
+		input: AuditedSignalInput,
+		deps?: AuditedSignalDeps,
+	) => AuditedSignalResult;
+	source?: string;
+	execId?: string;
+	reason?: string;
+}): (pgid: number, signal: NodeJS.Signals) => boolean {
 	const pid = options.pid ?? process.pid;
 	const ppid = options.ppid ?? process.ppid;
 	const kill =
 		options.kill ?? ((target, signal) => process.kill(target, signal));
 	const logger = options.logger ?? (() => {});
+	const auditSignal = options.auditSignal ?? auditedSignal;
 	let ownPgidResolved = false;
 	let ownPgid: number | undefined;
 	return (pgid, signal) => {
-		if (!Number.isInteger(pgid) || pgid <= 1) return;
+		if (!Number.isInteger(pgid) || pgid <= 1) return false;
 		if (pgid === pid || pgid === ppid) {
 			logger(
 				`[CodexDaemon] REFUSING group signal to protected pid-derived PGID ${pgid} (signal=${signal})`,
 			);
-			return;
+			return false;
 		}
 		if (!ownPgidResolved) {
 			ownPgid = options.processGroupOf(pid);
@@ -983,10 +1032,34 @@ export function createDefaultKillGroup(options: {
 			logger(
 				`[CodexDaemon] REFUSING group signal to Bridge process group ${pgid} (signal=${signal})`,
 			);
-			return;
+			return false;
+		}
+		const result = auditSignal(
+			{
+				source: options.source ?? "codex_daemon_runtime",
+				signal,
+				targetKind: "pgid",
+				target: pgid,
+				...(options.execId ? { execId: options.execId } : {}),
+				reason: options.reason ?? "daemon_group_signal",
+			},
+			{
+				mutate: (target, auditedSignalName) => {
+					if (typeof target !== "number") {
+						throw new Error("codex daemon group target must be numeric");
+					}
+					kill(target, auditedSignalName as NodeJS.Signals);
+				},
+			},
+		);
+		if (!result.ok) {
+			logger(
+				`[CodexDaemon] BLOCKED unaudited group signal pgid=${pgid} signal=${signal} kind=${result.kind}: ${result.error}`,
+			);
+			return false;
 		}
 		logger(`[CodexDaemon] group signal pgid=${pgid} signal=${signal}`);
-		kill(-pgid, signal);
+		return true;
 	};
 }
 

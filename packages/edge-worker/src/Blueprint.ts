@@ -3,6 +3,12 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+	type AuditedSignalAsyncDeps,
+	type AuditedSignalInput,
+	type AuditedSignalResult,
+	auditedSignalAsync,
+} from "flywheel-claude-runner";
 import type {
 	CheckpointsConfig,
 	DesignBackend,
@@ -887,6 +893,10 @@ export class Blueprint {
 		// FLY-2103: call-time project-store reader. This stays at the constructor
 		// tail so existing positional call sites cannot shift silently.
 		private docFlowEnabled: () => boolean = () => false,
+		private auditSignal: (
+			input: AuditedSignalInput,
+			deps?: AuditedSignalAsyncDeps,
+		) => Promise<AuditedSignalResult> = auditedSignalAsync,
 	) {}
 
 	async run(
@@ -3086,12 +3096,27 @@ export class Blueprint {
 	}
 
 	private async killTmuxWindow(tmuxWindow: string): Promise<void> {
-		try {
-			await this.shell.execFile("tmux", ["kill-window", "-t", tmuxWindow], "/");
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : String(err);
+		const result = await this.auditSignal(
+			{
+				source: "blueprint",
+				signal: "kill-window",
+				targetKind: "tmux-window",
+				target: tmuxWindow,
+				reason: "runner_blueprint_cleanup",
+			},
+			{
+				mutate: async () => {
+					await this.shell.execFile(
+						"tmux",
+						["kill-window", "-t", tmuxWindow],
+						"/",
+					);
+				},
+			},
+		);
+		if (!result.ok) {
 			console.warn(
-				`[Blueprint] Failed to kill tmux window ${tmuxWindow}: ${msg}`,
+				`[Blueprint] Audited tmux kill blocked for ${tmuxWindow} (${result.kind}): ${result.error}`,
 			);
 		}
 	}

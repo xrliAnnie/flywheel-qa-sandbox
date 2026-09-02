@@ -596,14 +596,20 @@ describe("Bridge maintenance wiring", () => {
 			"utf8",
 		);
 		const guard = source.indexOf("if (!worktreeAutocleanEnabled()) return;");
+		const candidateSnapshot = source.lastIndexOf(
+			"const codexCandidateSnapshot = store.getReadoptCandidateSessions();",
+			guard,
+		);
 		const codexSweep = source.indexOf("await sweepCodexRunnerOrphans(", guard);
 		const mcpSweep = source.indexOf("await reapMcpOrphans(", guard);
 
+		expect(candidateSnapshot).toBeGreaterThan(-1);
+		expect(candidateSnapshot).toBeLessThan(guard);
 		expect(guard).toBeGreaterThan(-1);
 		expect(codexSweep).toBeGreaterThan(guard);
 		expect(mcpSweep).toBeGreaterThan(codexSweep);
-		expect(source.slice(codexSweep, mcpSweep)).toMatch(
-			/store\s*\.getReadoptCandidateSessions\(\)/,
+		expect(source.slice(candidateSnapshot, codexSweep)).toMatch(
+			/codexCandidateSnapshot\.map\(\(session\) => session\.execution_id\)/,
 		);
 		expect(source.slice(codexSweep, mcpSweep)).not.toContain(
 			'event !== "codex_app_server_orphan_reaped"',

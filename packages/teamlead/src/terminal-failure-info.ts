@@ -34,7 +34,8 @@ export function normalizeTerminalFailureInfo(
 			: undefined;
 	if (
 		(failureKind !== "goal_blocked" &&
-			failureKind !== "worktree_takeover_failed") ||
+			failureKind !== "worktree_takeover_failed" &&
+			failureKind !== "reown_exhausted") ||
 		!failureReason
 	) {
 		return undefined;

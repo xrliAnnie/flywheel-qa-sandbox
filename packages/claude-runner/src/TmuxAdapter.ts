@@ -31,6 +31,7 @@ import type {
 	LaunchPrecommitFailure,
 } from "flywheel-core";
 import { FLYWHEEL_MARKER_DIR, sanitizeTmuxName } from "flywheel-core";
+import { auditedSignal } from "./kill-ledger.js";
 import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
 import { pretrustClaudeWorkspace } from "./workspace-trust.js";
 
@@ -861,11 +862,11 @@ export class TmuxAdapter implements IAdapter {
 		) {
 			if (/^@\d+$/.test(windowId)) {
 				try {
-					this.execFileFn("tmux", [
-						"kill-window",
-						"-t",
+					auditedTmuxKillWindow(
+						this.execFileFn,
 						`=${this.sessionName}:${windowId}`,
-					]);
+						"invalid_launch_identity_cleanup",
+					);
 				} catch {
 					// best-effort cleanup
 				}
@@ -937,7 +938,11 @@ export class TmuxAdapter implements IAdapter {
 				]);
 			} catch (err) {
 				try {
-					this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
+					auditedTmuxKillWindow(
+						this.execFileFn,
+						exactWindowTarget,
+						"launch_setup_failed",
+					);
 				} catch {
 					// Best-effort cleanup; the launch still fails closed below.
 				}
@@ -1105,7 +1110,11 @@ export class TmuxAdapter implements IAdapter {
 			// FLY-86: Kill zombie tmux window after timeout
 			if (sessionStatus === "timeout") {
 				try {
-					this.execFileFn("tmux", ["kill-window", "-t", windowId]);
+					auditedTmuxKillWindow(
+						this.execFileFn,
+						windowId,
+						"runner_timeout_cleanup",
+					);
 				} catch {
 					// Window may already be gone — non-fatal
 				}
@@ -1634,7 +1643,15 @@ export class TmuxAdapter implements IAdapter {
 
 	private cleanupExactWindow(exactWindowTarget: string): "cleaned" | "unknown" {
 		try {
-			this.execFileFn("tmux", ["kill-window", "-t", exactWindowTarget]);
+			if (
+				!auditedTmuxKillWindow(
+					this.execFileFn,
+					exactWindowTarget,
+					"exact_window_cleanup",
+				)
+			) {
+				return "unknown";
+			}
 		} catch {
 			// Verification below is authoritative; the window may already be absent.
 		}
@@ -2071,12 +2088,36 @@ export function pruneScaffoldWindow(
 			const windowName = line.slice(sep + 1);
 			if (windowId === keepWindowId) continue; // never the just-created runner window
 			if (!SCAFFOLD_SHELL_NAMES.has(windowName)) continue;
-			execFileFn("tmux", ["kill-window", "-t", windowId]);
+			auditedTmuxKillWindow(execFileFn, windowId, "runner_scaffold_cleanup");
 			return; // at most one scaffold
 		}
 	} catch {
 		// best-effort — never block or fail a spawn on scaffold pruning.
 	}
+}
+
+function auditedTmuxKillWindow(
+	execFileFn: ExecFileFn,
+	target: string,
+	reason: string,
+): boolean {
+	// An injected exec seam is test/QA-owned; production uses defaultExecFile.
+	if (execFileFn !== defaultExecFile) {
+		execFileFn("tmux", ["kill-window", "-t", target]);
+		return true;
+	}
+	return auditedSignal(
+		{
+			source: "tmux_adapter",
+			signal: "kill-window",
+			targetKind: "tmux-window",
+			target,
+			reason,
+		},
+		{
+			mutate: () => execFileFn("tmux", ["kill-window", "-t", target]),
+		},
+	).ok;
 }
 
 /**

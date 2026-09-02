@@ -295,6 +295,23 @@ describe("FLY-1393 flag truth", () => {
 		}
 	});
 
+	it("classifies FLY-2211 kill-ledger inputs as non-flag plumbing", () => {
+		for (const [envVar, reason] of [
+			["FLYWHEEL_KILL_LEDGER_ROOT", /path.*override/i],
+			["FLYWHEEL_KILL_LEDGER_NOW", /test-only.*clock/i],
+			["FLYWHEEL_NODE_BIN", /node.*executable.*path/i],
+		] as const) {
+			expect(NON_FLAG_ALLOWLIST[envVar], envVar).toMatch(reason);
+			expect(
+				FEATURE_FLAGS.some((flag) => flag.envVar === envVar),
+				envVar,
+			).toBe(false);
+		}
+		expect(
+			NON_FLAG_ALLOWLIST.FLYWHEEL_KILL_LEDGER_TEST_NO_MUTATE,
+		).toBeUndefined();
+	});
+
 	it("FLY-1456 tombstones CHECKPOINT_WATCHDOG instead of registering it", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_EXEC_ID).toMatch(/execution id/);
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_CHECKPOINT_WATCHDOG).toBeUndefined();

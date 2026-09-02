@@ -27,7 +27,7 @@
  * acceptance.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	accessSync,
 	existsSync,
@@ -73,6 +73,7 @@ import {
 } from "./codex-daemon-client.js";
 import type {
 	CodexDaemonGoalRuntimeOptions,
+	CodexTransportCloseEvidence,
 	RunGoalInput,
 	RunGoalOutcome,
 } from "./codex-daemon-goal-runtime.js";
@@ -82,6 +83,10 @@ import {
 	codexSessionStateDir,
 	resolveDaemonSocketPath,
 } from "./codex-daemon-runtime.js";
+import type {
+	CodexExecutionOwnerKind,
+	CodexExecutionOwnershipRegistry,
+} from "./codex-execution-ownership.js";
 import {
 	assertCodexSourceIdentity,
 	flywheelCodexBin,
@@ -186,12 +191,230 @@ export interface CodexTranscriptSinkLike {
 	close(finalState?: string): Promise<void>;
 }
 
+export interface CodexLaunchSnapshot {
+	schemaVersion: 1;
+	executionId: string;
+	cwd: string;
+	objective: string;
+	kickText: string;
+	launchContext: {
+		sandboxWritableRoots: string[];
+		model: string | null;
+		effort: string | null;
+		appsApprovalMode: "never";
+		skillFrameworkMode: "superpowers" | "matt" | "bare" | null;
+		phaseRole: "design" | "implement" | "qa" | null;
+		capabilityDigest: string;
+	};
+	/**
+	 * Non-secret raw inputs needed to reproduce capabilityDigest after Bridge
+	 * memory is lost. Older snapshots omit this block and are intentionally not
+	 * production-revivable; the recovery coordinator alerts instead of guessing.
+	 */
+	rehydrationContext?: {
+		allowedTools: string[];
+		enablePonytail: boolean;
+		codexSkillDisableNames: string[];
+		codexMattSkillsSourceDir: string | null;
+		workflowSubmissionExpected: boolean;
+		founderReviewRequired: boolean;
+	};
+}
+
+export interface CodexRecoveryCommitHooks {
+	onRecoveryOwnershipEstablished: NonNullable<
+		RunGoalInput["onRecoveryOwnershipEstablished"]
+	>;
+}
+
+interface CodexRecoveryExecution {
+	snapshot: CodexLaunchSnapshot;
+	hooks: CodexRecoveryCommitHooks;
+}
+
+function requireNullableString(value: unknown, field: string): string | null {
+	if (value === null || typeof value === "string") return value;
+	throw new Error(`invalid immutable launch snapshot field ${field}`);
+}
+
+function parseCodexLaunchSnapshot(
+	value: unknown,
+	executionId: string,
+): CodexLaunchSnapshot {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error(`missing immutable launch snapshot for ${executionId}`);
+	}
+	const snapshot = value as Record<string, unknown>;
+	if (snapshot.schemaVersion !== 1 || snapshot.executionId !== executionId) {
+		throw new Error(
+			`invalid immutable launch snapshot identity for ${executionId}`,
+		);
+	}
+	if (
+		typeof snapshot.cwd !== "string" ||
+		!snapshot.cwd ||
+		typeof snapshot.objective !== "string" ||
+		!snapshot.objective ||
+		typeof snapshot.kickText !== "string"
+	) {
+		throw new Error(
+			`invalid immutable launch snapshot content for ${executionId}`,
+		);
+	}
+	if (
+		typeof snapshot.launchContext !== "object" ||
+		snapshot.launchContext === null ||
+		Array.isArray(snapshot.launchContext)
+	) {
+		throw new Error(
+			`invalid immutable launch snapshot context for ${executionId}`,
+		);
+	}
+	const launchContext = snapshot.launchContext as Record<string, unknown>;
+	if (
+		!Array.isArray(launchContext.sandboxWritableRoots) ||
+		!launchContext.sandboxWritableRoots.every(
+			(root) => typeof root === "string" && root.length > 0,
+		) ||
+		launchContext.appsApprovalMode !== "never" ||
+		typeof launchContext.capabilityDigest !== "string" ||
+		!/^[a-f0-9]{64}$/.test(launchContext.capabilityDigest)
+	) {
+		throw new Error(
+			`invalid immutable launch snapshot context for ${executionId}`,
+		);
+	}
+	const skillFrameworkMode = launchContext.skillFrameworkMode;
+	if (
+		skillFrameworkMode !== null &&
+		skillFrameworkMode !== "superpowers" &&
+		skillFrameworkMode !== "matt" &&
+		skillFrameworkMode !== "bare"
+	) {
+		throw new Error(
+			`invalid immutable launch snapshot field skillFrameworkMode`,
+		);
+	}
+	const phaseRole = launchContext.phaseRole;
+	if (
+		phaseRole !== null &&
+		phaseRole !== "design" &&
+		phaseRole !== "implement" &&
+		phaseRole !== "qa"
+	) {
+		throw new Error(`invalid immutable launch snapshot field phaseRole`);
+	}
+	let rehydrationContext: CodexLaunchSnapshot["rehydrationContext"];
+	if (snapshot.rehydrationContext !== undefined) {
+		if (
+			typeof snapshot.rehydrationContext !== "object" ||
+			snapshot.rehydrationContext === null ||
+			Array.isArray(snapshot.rehydrationContext)
+		) {
+			throw new Error(
+				`invalid immutable launch snapshot rehydration context for ${executionId}`,
+			);
+		}
+		const raw = snapshot.rehydrationContext as Record<string, unknown>;
+		if (
+			!Array.isArray(raw.allowedTools) ||
+			!raw.allowedTools.every((tool) => typeof tool === "string") ||
+			typeof raw.enablePonytail !== "boolean" ||
+			!Array.isArray(raw.codexSkillDisableNames) ||
+			!raw.codexSkillDisableNames.every((name) => typeof name === "string") ||
+			(raw.codexMattSkillsSourceDir !== null &&
+				typeof raw.codexMattSkillsSourceDir !== "string") ||
+			typeof raw.workflowSubmissionExpected !== "boolean" ||
+			typeof raw.founderReviewRequired !== "boolean"
+		) {
+			throw new Error(
+				`invalid immutable launch snapshot rehydration context for ${executionId}`,
+			);
+		}
+		rehydrationContext = {
+			allowedTools: [...raw.allowedTools],
+			enablePonytail: raw.enablePonytail,
+			codexSkillDisableNames: [...raw.codexSkillDisableNames],
+			codexMattSkillsSourceDir: raw.codexMattSkillsSourceDir,
+			workflowSubmissionExpected: raw.workflowSubmissionExpected,
+			founderReviewRequired: raw.founderReviewRequired,
+		};
+	}
+	return {
+		schemaVersion: 1,
+		executionId,
+		cwd: snapshot.cwd,
+		objective: snapshot.objective,
+		kickText: snapshot.kickText,
+		launchContext: {
+			sandboxWritableRoots: [...launchContext.sandboxWritableRoots],
+			model: requireNullableString(launchContext.model, "model"),
+			effort: requireNullableString(launchContext.effort, "effort"),
+			appsApprovalMode: "never",
+			skillFrameworkMode,
+			phaseRole,
+			capabilityDigest: launchContext.capabilityDigest,
+		},
+		...(rehydrationContext ? { rehydrationContext } : {}),
+	};
+}
+
+/** Strict FLY-2211 recovery reader. Legacy/partial/corrupt state fails closed. */
+export function readCodexLaunchSnapshot(
+	executionId: string,
+): CodexLaunchSnapshot {
+	const path = join(codexSessionStateDir(executionId), "session.json");
+	if (!existsSync(path)) {
+		throw new Error(`missing immutable launch snapshot for ${executionId}`);
+	}
+	const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+	if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+		throw new Error(`invalid session state object in ${path}`);
+	}
+	return parseCodexLaunchSnapshot(
+		(parsed as Record<string, unknown>).launchSnapshot,
+		executionId,
+	);
+}
+
+/** Shared durable gate posture for adapter restart and Bridge re-ownership. */
+export function readCodexGateHoldLatch(executionId: string): boolean {
+	const p = join(codexSessionStateDir(executionId), "session.json");
+	if (!existsSync(p)) return false;
+	const state = JSON.parse(readFileSync(p, "utf-8")) as {
+		gateHold?: unknown;
+	};
+	if (state.gateHold === undefined) return false;
+	if (typeof state.gateHold !== "boolean") {
+		throw new Error(`invalid gateHold in ${p}`);
+	}
+	return state.gateHold;
+}
+
+function capabilityDigest(ctx: AdapterExecutionContext): string {
+	const stableCapabilities = {
+		allowedTools: [...(ctx.allowedTools ?? [])].sort(),
+		enablePonytail: ctx.enablePonytail === true,
+		skillFrameworkMode: ctx.skillFrameworkMode ?? null,
+		codexSkillDisableNames: [...(ctx.codexSkillDisableNames ?? [])].sort(),
+		hasMattSkillsSource: Boolean(ctx.codexMattSkillsSourceDir),
+		phaseRole: ctx.phaseKeepAlive?.role ?? null,
+		workflowSubmissionExpected: ctx.workflowSubmissionExpected === true,
+		founderReviewRequired: ctx.founderReviewRequired === true,
+	};
+	return createHash("sha256")
+		.update(JSON.stringify(stableCapabilities))
+		.digest("hex");
+}
+
 /** Injected collaborators for daemon-mode execute() (default to the real ones). */
 export interface CodexDaemonAdapterDeps {
 	/** FLY-2003 test/deployment seam for canonical account identity. */
 	codexAccountRegistryPath?: string;
 	/** FLY-2003 test/slot seam for identity-ledger snapshots. */
 	codexAccountLedgerRoot?: string;
+	/** FLY-2211 process-local registry shared by dispatch and rescue factories. */
+	executionOwners?: CodexExecutionOwnershipRegistry;
 	/** Build the resident-/goal runtime for one execution. */
 	runtimeFactory?: (
 		opts: CodexDaemonGoalRuntimeOptions,
@@ -220,6 +443,9 @@ export interface CodexDaemonAdapterDeps {
 		evidence: RunnerTuiWindowLostEvidence,
 	) => void | Promise<void>;
 	onTuiWindowRestored?: (executionId: string) => void | Promise<void>;
+	onTransportClose?: (
+		evidence: CodexTransportCloseEvidence,
+	) => void | Promise<void>;
 	/** Build the adapter-owned DAG workflow lifecycle controller. */
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
@@ -258,6 +484,9 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly onTuiWindowRestored?: NonNullable<
 		CodexDaemonAdapterDeps["onTuiWindowRestored"]
 	>;
+	private readonly onTransportClose?: NonNullable<
+		CodexDaemonAdapterDeps["onTransportClose"]
+	>;
 	private readonly phaseLifecycleFactory: NonNullable<
 		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
 	>;
@@ -269,6 +498,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	>;
 	private readonly codexAccountRegistryPath?: string;
 	private readonly codexAccountLedgerRoot?: string;
+	private readonly executionOwners?: CodexExecutionOwnershipRegistry;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -310,6 +540,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.now = deps.now ?? Date.now;
 		this.onTuiWindowLost = deps.onTuiWindowLost;
 		this.onTuiWindowRestored = deps.onTuiWindowRestored;
+		this.onTransportClose = deps.onTransportClose;
 		this.phaseLifecycleFactory =
 			deps.phaseLifecycleFactory ??
 			((options) => new CodexPhaseLifecycleController(options));
@@ -323,6 +554,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.scrubCredential = deps.scrubCredential ?? scrubCodexHomeCredential;
 		this.codexAccountRegistryPath = deps.codexAccountRegistryPath;
 		this.codexAccountLedgerRoot = deps.codexAccountLedgerRoot;
+		this.executionOwners = deps.executionOwners;
 	}
 
 	async checkEnvironment(): Promise<AdapterHealthCheck> {
@@ -429,6 +661,65 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	async execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
+		return this.runWithOwnership(ctx, "dispatch");
+	}
+
+	/**
+	 * FLY-2211 rescue entrypoint. It intentionally reuses the complete adapter
+	 * lifecycle while skipping Blueprint/session-start emission. Recovery intent
+	 * comes only from the strict immutable snapshot, and ownership commit is the
+	 * awaited hard-evidence hook supplied by the reconciler.
+	 */
+	async resumeExistingExecution(
+		ctx: AdapterExecutionContext,
+		hooks: CodexRecoveryCommitHooks,
+	): Promise<AdapterExecutionResult> {
+		let snapshot: CodexLaunchSnapshot;
+		try {
+			snapshot = readCodexLaunchSnapshot(ctx.executionId);
+		} catch (error) {
+			return this.ownershipFailureResult(ctx, safeErr(error));
+		}
+		return this.runWithOwnership(ctx, "rescue", { snapshot, hooks });
+	}
+
+	private async runWithOwnership(
+		ctx: AdapterExecutionContext,
+		kind: CodexExecutionOwnerKind,
+		recovery?: CodexRecoveryExecution,
+	): Promise<AdapterExecutionResult> {
+		const lease = this.executionOwners?.claim(ctx.executionId, kind);
+		if (this.executionOwners && !lease) {
+			return this.ownershipFailureResult(
+				ctx,
+				`execution ${ctx.executionId} already has a process-local owner`,
+			);
+		}
+		try {
+			return await this.executeOwned(ctx, recovery);
+		} finally {
+			lease?.release();
+		}
+	}
+
+	private ownershipFailureResult(
+		ctx: AdapterExecutionContext,
+		reason: string,
+	): AdapterExecutionResult {
+		this.log(`[CodexTmuxAdapter] recovery refused: ${reason}`);
+		return {
+			success: false,
+			sessionId: ctx.executionId,
+			durationMs: 0,
+			timedOut: false,
+			resultText: reason,
+		};
+	}
+
+	private async executeOwned(
+		ctx: AdapterExecutionContext,
+		recovery?: CodexRecoveryExecution,
+	): Promise<AdapterExecutionResult> {
 		if (!this.preflightDone) {
 			withSyncOpMarker("codex-adapter:preflight-tmux", () =>
 				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
@@ -582,22 +873,66 @@ export class CodexTmuxAdapter implements IAdapter {
 					? `${PONYTAIL_RULESET}\n\n---\n\n${ctx.appendSystemPrompt}`
 					: PONYTAIL_RULESET
 				: ctx.appendSystemPrompt;
-			// FLY-1236: the durable /goal objective is a bounded phase-neutral
-			// north-star (issueId+label); the FULL working instructions ride the
-			// kick turn (turn/start, not subject to the goal's 4000-char cap). This
-			// removes the setup_failed the old "fold everything into the objective"
-			// form hit at real implement scale. The kick is reconstructed from ctx
-			// on every execute(), so a fresh thread (crash → new execId) is kicked
-			// with the full body again, never left goal-only.
-			const kickText = buildGoalKickText({ systemLayer, prompt: ctx.prompt });
-			const { objective, degraded } = enforceObjectiveLimit(
-				buildGoalObjective({ issueId: ctx.issueId, label: ctx.label }),
-				ctx.issueId,
-			);
-			if (degraded) {
-				this.log(
-					`[CodexTmuxAdapter] goal objective exceeded ${GOAL_OBJECTIVE_MAX_CHARS} chars — degraded to minimal pointer; full instructions ride the kick turn (issue=${ctx.issueId})`,
+			let objective: string;
+			let kickText: string;
+			if (recovery) {
+				const snapshot = recovery.snapshot;
+				const expectedContext = snapshot.launchContext;
+				if (
+					snapshot.cwd !== sandboxCwd ||
+					expectedContext.model !== (ctx.model ?? null) ||
+					expectedContext.effort !== (ctx.effort ?? null) ||
+					expectedContext.skillFrameworkMode !==
+						(ctx.skillFrameworkMode ?? null) ||
+					expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null) ||
+					expectedContext.capabilityDigest !== capabilityDigest(ctx) ||
+					JSON.stringify(expectedContext.sandboxWritableRoots) !==
+						JSON.stringify(writableRoots)
+				) {
+					throw new Error(
+						`immutable launch snapshot does not match rehydrated context for ${ctx.executionId}`,
+					);
+				}
+				objective = snapshot.objective;
+				kickText = snapshot.kickText;
+			} else {
+				// FLY-1236: a fresh dispatch constructs the full kick once; FLY-2211
+				// freezes it so a later owner never guesses from mutable issue context.
+				kickText = buildGoalKickText({ systemLayer, prompt: ctx.prompt });
+				const limited = enforceObjectiveLimit(
+					buildGoalObjective({ issueId: ctx.issueId, label: ctx.label }),
+					ctx.issueId,
 				);
+				objective = limited.objective;
+				if (limited.degraded) {
+					this.log(
+						`[CodexTmuxAdapter] goal objective exceeded ${GOAL_OBJECTIVE_MAX_CHARS} chars — degraded to minimal pointer; full instructions ride the kick turn (issue=${ctx.issueId})`,
+					);
+				}
+				this.persistLaunchSnapshot({
+					schemaVersion: 1,
+					executionId: ctx.executionId,
+					cwd: sandboxCwd,
+					objective,
+					kickText,
+					launchContext: {
+						sandboxWritableRoots: [...writableRoots],
+						model: ctx.model ?? null,
+						effort: ctx.effort ?? null,
+						appsApprovalMode: "never",
+						skillFrameworkMode: ctx.skillFrameworkMode ?? null,
+						phaseRole: ctx.phaseKeepAlive?.role ?? null,
+						capabilityDigest: capabilityDigest(ctx),
+					},
+					rehydrationContext: {
+						allowedTools: [...(ctx.allowedTools ?? [])],
+						enablePonytail: ctx.enablePonytail === true,
+						codexSkillDisableNames: [...(ctx.codexSkillDisableNames ?? [])],
+						codexMattSkillsSourceDir: ctx.codexMattSkillsSourceDir ?? null,
+						workflowSubmissionExpected: ctx.workflowSubmissionExpected === true,
+						founderReviewRequired: ctx.founderReviewRequired === true,
+					},
+				});
 			}
 			const transcriptPath = join(
 				codexSessionStateDir(ctx.executionId),
@@ -639,6 +974,9 @@ export class CodexTmuxAdapter implements IAdapter {
 				sandboxWritableRoots: writableRoots,
 				networkAccess: true,
 				logger: (m) => this.log(m),
+				...(this.onTransportClose
+					? { onTransportClose: this.onTransportClose }
+					: {}),
 			});
 
 			if (ctx.phaseKeepAlive) {
@@ -1043,6 +1381,12 @@ export class CodexTmuxAdapter implements IAdapter {
 						}
 					},
 					onGoalActive,
+					...(recovery
+						? {
+								onRecoveryOwnershipEstablished:
+									recovery.hooks.onRecoveryOwnershipEstablished,
+							}
+						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
 				},
 				{
@@ -1356,6 +1700,41 @@ export class CodexTmuxAdapter implements IAdapter {
 	}
 
 	/**
+	 * Persist the recovery inputs before a daemon runtime is constructed. The
+	 * first dispatch owns this write; every later same-execution entry must prove
+	 * byte-equivalent intent instead of silently replacing the recovery contract.
+	 */
+	private persistLaunchSnapshot(snapshot: CodexLaunchSnapshot): void {
+		const path = join(
+			codexSessionStateDir(snapshot.executionId),
+			"session.json",
+		);
+		if (existsSync(path)) {
+			const parsed = JSON.parse(readFileSync(path, "utf-8")) as unknown;
+			if (
+				typeof parsed !== "object" ||
+				parsed === null ||
+				Array.isArray(parsed)
+			) {
+				throw new Error(`invalid session state object in ${path}`);
+			}
+			const prior = (parsed as Record<string, unknown>).launchSnapshot;
+			if (prior !== undefined) {
+				const validated = parseCodexLaunchSnapshot(prior, snapshot.executionId);
+				if (JSON.stringify(validated) !== JSON.stringify(snapshot)) {
+					throw new Error(
+						`immutable launch snapshot drift for ${snapshot.executionId}`,
+					);
+				}
+				return;
+			}
+		}
+		this.mergeSessionState(snapshot.executionId, {
+			launchSnapshot: snapshot,
+		});
+	}
+
+	/**
 	 * FLY-245: write the durable launch commit the INSTANT the goal is SET on our
 	 * thread (the daemon-mode analog of the exec-cycle's pre-send-keys commit) — so
 	 * a gateway retry's adopt sees a committed Runner only once codex is actually
@@ -1425,16 +1804,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	/** FLY-1257: durable latch reader. Malformed/corrupt state fails closed so
 	 * runGoalToTerminal cannot silently reactivate an ambiguous blocked goal. */
 	private readPersistedGateHold(executionId: string): boolean {
-		const p = join(codexSessionStateDir(executionId), "session.json");
-		if (!existsSync(p)) return false;
-		const state = JSON.parse(readFileSync(p, "utf-8")) as {
-			gateHold?: unknown;
-		};
-		if (state.gateHold === undefined) return false;
-		if (typeof state.gateHold !== "boolean") {
-			throw new Error(`invalid gateHold in ${p}`);
-		}
-		return state.gateHold;
+		return readCodexGateHoldLatch(executionId);
 	}
 
 	/**

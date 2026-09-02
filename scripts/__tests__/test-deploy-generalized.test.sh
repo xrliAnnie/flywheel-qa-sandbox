@@ -446,6 +446,29 @@ else
 	echo 'PASS: generalized config leaves DAG and work-kind in the scoped store'
 fi
 
+codex_generalized="$(qa_multilead_config_yaml test-slot-1 generalized codex)"
+assert_contains "$codex_generalized" $'runners:\n  default: codex' \
+	'Codex generalized room selects the Codex runner'
+assert_contains "$codex_generalized" $'    codex:\n      type: openai' \
+	'Codex generalized room declares Codex as available'
+assert_contains "$codex_generalized" $'roles:\n  runner:\n    backend: codex-tmux' \
+	'Codex generalized room selects the real Codex tmux adapter'
+assert_contains "$codex_generalized" $'      - type: dag\n        runner: codex' \
+	'Codex generalized room routes DAG workers through Codex'
+assert_contains "$test_deploy_source" 'CODEX_RUNNER=0' \
+	'529 deploy defaults the real Codex runner option off'
+assert_contains "$test_deploy_source" '--codex-runner)' \
+	'529 deploy accepts an explicit real Codex runner option'
+assert_contains "$test_deploy_source" \
+	'ERROR: --codex-runner requires --generalized' \
+	'529 deploy rejects the Codex runner option outside an isolated generalized room'
+assert_contains "$test_deploy_source" \
+	'ERROR: --codex-runner cannot be combined with --stub-runner' \
+	'529 deploy refuses to label a stub-backed room as a real Codex drill room'
+assert_contains "$test_deploy_source" \
+	'qa_multilead_config_yaml "${TEST_PROJECT_NAME}" "$QA_CONFIG_MODE" "$QA_CONFIG_RUNNER"' \
+	'529 deploy forwards the selected runner into the generated project config'
+
 retired_workflow_env_names=(
 	FLYWHEEL_WORKFLOW_GENERALIZED_TEMPLATES
 	FLYWHEEL_WORKFLOW_TEMPLATE_DISPATCH
@@ -995,6 +1018,9 @@ assert_eq "$(rg -c '^\| [0-9]+ \|' "$playbook")" '15' \
 assert_contains "$(<"$playbook")" \
 	'无 Runner 演练必须省略 `--from-branch`' \
 	'529 room playbook preserves the no-Runner from-branch rule'
+assert_contains "$(<"$playbook")" \
+	'scripts/test-deploy.sh 2 --generalized --codex-runner --no-lead' \
+	'529 room playbook publishes the real Codex restart-drill room command'
 assert_contains "$(<"$playbook")" \
 	'换 head 孤儿 sandbox PR' \
 	'529 room playbook names the sandbox PR cost of rebuilding on a new head'

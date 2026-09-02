@@ -1,0 +1,11 @@
+graph TD
+    S["新 Bridge 启动"] --> R["re-own 认领器:<br/>找出所有在飞的 codex 工人"]
+    R --> P{"探针:这个工人的<br/>daemon 还活着吗?"}
+    P -->|"活着"| W["watch 看护模式<br/>零接触,每 5 分钟确认活性<br/>+ rollout 是否还在前进"]
+    P -->|"死了"| V["revive 复活:<br/>同一个执行体、同一段对话记忆<br/>原地拉起新 daemon + 重开工人窗"]
+    W -->|"之后任何时刻被杀"| V
+    V -->|"复活连败 2 次才"| F["交给现有替身机制兜底<br/>(8-31 实测 5 秒补发)"]
+    style S fill:#e8f0fe,stroke:#007aff
+    style W fill:#e9f9ef,stroke:#34c759
+    style V fill:#fff4e5,stroke:#ff9500
+    style F fill:#f2e8fd,stroke:#af52de

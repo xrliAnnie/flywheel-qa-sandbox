@@ -6,6 +6,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { auditedSignal, auditedSignalAsync } from "./kill-ledger.js";
 import { withSyncOpMarker } from "./sync-op-marker.js";
 import { buildRunnerPaneEnvironmentPrefix } from "./TmuxAdapter.js";
 import { parseTmuxEnsureSuccess } from "./tmux-ensure-result.js";
@@ -711,6 +712,49 @@ function tuiFailure(
 	return { created: false, category, reason, ...options };
 }
 
+async function auditedAsyncTuiWindowKill(
+	exec: NonNullable<AsyncWindowExecDeps["exec"]>,
+	target: string,
+	reason: string,
+	options: {
+		timeoutMs?: number;
+		signal?: AbortSignal;
+		env?: NodeJS.ProcessEnv;
+	},
+): Promise<{ ok: boolean; stdout?: string }> {
+	if (exec !== defaultExecAsync) {
+		return exec("tmux", ["kill-window", "-t", target], options);
+	}
+	let mutationResult: { ok: boolean; stdout?: string } = { ok: false };
+	const audited = await auditedSignalAsync(
+		{
+			source: "codex_runner_tui",
+			signal: "kill-window",
+			targetKind: "tmux-window",
+			target,
+			reason,
+		},
+		{
+			mutate: async () => {
+				mutationResult = await exec(
+					"tmux",
+					["kill-window", "-t", target],
+					options,
+				);
+				if (!mutationResult.ok) {
+					throw new Error("tmux kill-window returned non-ok");
+				}
+			},
+		},
+	);
+	if (!audited.ok) {
+		throw new Error(
+			`audited TUI window kill blocked (${audited.kind}): ${audited.error}`,
+		);
+	}
+	return mutationResult;
+}
+
 /** Terminal-only cleanup. Unlike the creation-time purge it never ensures a
  * session and never creates a scaffold, so it is safe after daemon teardown and
  * as a happens-after cleanup for a late in-flight `new-window`. */
@@ -741,10 +785,15 @@ export async function scanAndKillSameNameWindows(
 			deps.signal?.aborted
 		)
 			continue;
-		await deps.exec("tmux", ["kill-window", "-t", window.id], {
-			timeoutMs: 10_000,
-			...(deps.signal ? { signal: deps.signal } : {}),
-		});
+		await auditedAsyncTuiWindowKill(
+			deps.exec,
+			window.id,
+			"terminal_same_name_cleanup",
+			{
+				timeoutMs: 10_000,
+				...(deps.signal ? { signal: deps.signal } : {}),
+			},
+		);
 	}
 }
 
@@ -776,10 +825,15 @@ async function purgeSameNameWindowsAsync(
 	for (const window of before) {
 		if (window.name !== spec.windowName || !SAFE_WINDOW_ID.test(window.id))
 			continue;
-		await deps.exec("tmux", ["kill-window", "-t", window.id], {
-			timeoutMs: 10_000,
-			...(deps.signal ? { signal: deps.signal } : {}),
-		});
+		await auditedAsyncTuiWindowKill(
+			deps.exec,
+			window.id,
+			"precreate_same_name_cleanup",
+			{
+				timeoutMs: 10_000,
+				...(deps.signal ? { signal: deps.signal } : {}),
+			},
+		);
 		if (deps.signal?.aborted) return false;
 	}
 	if (!(await deps.ensureSession(spec.tmuxSession, deps.signal))) return false;
@@ -1037,7 +1091,30 @@ export function killRunnerTuiWindow(
 		const target = spec.windowId
 			? `=${spec.tmuxSession}:${spec.windowId}`
 			: `=${spec.tmuxSession}:=${spec.windowName}`;
-		const r = exec("tmux", ["kill-window", "-t", target]);
+		const r =
+			exec === defaultExec
+				? (() => {
+						let mutationResult: { ok: boolean } = { ok: false };
+						const audited = auditedSignal(
+							{
+								source: "codex_runner_tui",
+								signal: "kill-window",
+								targetKind: "tmux-window",
+								target,
+								reason: "runner_tui_close",
+							},
+							{
+								mutate: () => {
+									mutationResult = exec("tmux", ["kill-window", "-t", target]);
+									if (!mutationResult.ok) {
+										throw new Error("tmux kill-window returned non-ok");
+									}
+								},
+							},
+						);
+						return { ok: audited.ok && mutationResult.ok };
+					})()
+				: exec("tmux", ["kill-window", "-t", target]);
 		if (!r.ok) {
 			const execOut = deps.execOut ?? defaultExecOut;
 			let windows: Array<{ id: string; name: string }> | undefined;

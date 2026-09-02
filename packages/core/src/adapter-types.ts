@@ -411,7 +411,10 @@ export interface AdapterExecutionContext {
  * and Bridge boundaries. Unknown failures deliberately remain on the legacy
  * untyped `failed` path.
  */
-export type TerminalFailureKind = "goal_blocked" | "worktree_takeover_failed";
+export type TerminalFailureKind =
+	| "goal_blocked"
+	| "worktree_takeover_failed"
+	| "reown_exhausted";
 
 export interface TerminalFailureInfo {
 	failureKind: TerminalFailureKind;

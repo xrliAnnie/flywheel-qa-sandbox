@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "evidenceKind": "qa-report-attestation",
+  "issue": "FLY-2211",
+  "candidateHead": "3f2259b8cfca431a3c4a1860a74d73502ef7032d",
+  "qaExecutionId": "7f3f5126-1453-4835-bfcb-2778878a3908",
+  "qaReportMailboxId": "f20c9994-eefa-46de-b5ab-d9957566c775",
+  "probeScript": "scripts/qa-fly-2211-attach-probe.mjs",
+  "codexVersion": "codex-cli 0.152.0",
+  "threadId": "01a05af6-803c-73b0-a4ca-864f917d7f3b",
+  "observations": {
+    "fatalError": null,
+    "liveThreadResumeAccepted": true,
+    "liveGoalQueryable": true,
+    "successorObservedFutureGoalEvent": true,
+    "attachCanOwnLiveGoalLoop": true,
+    "durableKickOperationIdVisible": true,
+    "exactlyOnceKickSupported": false
+  },
+  "assessment": {
+    "attachAdoptTechnicallyViable": true,
+    "zeroRekickExactlyOnceViable": false
+  },
+  "cleanup": {
+    "daemonConfirmedDead": true,
+    "socketGone": true,
+    "codexHomeGone": true
+  },
+  "provenance": "Exact booleans and identifiers transcribed from the QA attempt 2 DONE report in the canonical flywheel-comm mailbox; this is an attestation copy, not a claim that the QA runner's raw temporary JSON survived teardown."
+}
