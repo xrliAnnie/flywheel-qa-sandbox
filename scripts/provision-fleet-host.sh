@@ -596,6 +596,7 @@ phase_validate() {
 }
 
 main() {
+  local runtime_path_invalid=0 runtime_kernel=""
   log "mode: $([ "$DRY_RUN" -eq 1 ] && echo DRY-RUN || echo APPLY)  fleet-dir: $FLEET_DIR  home: $HOME_DIR"
   # FLY-650: resolve platform + supervisor backend FIRST (before any phase, so
   # --only/--from also see it). host.json from $FW or the artifact; platform
@@ -613,6 +614,21 @@ main() {
   # Default stateDir == $HOME/.flywheel ⇒ FW unchanged (byte-compat).
   FW="${FLYWHEEL_STATE_DIR:-$HOME_DIR/.flywheel}"
   log "platform: ${FLYWHEEL_PLATFORM} | supervisor: ${FLYWHEEL_SUPERVISOR_BACKEND} | viewer: ${FLYWHEEL_VIEWER_BACKEND} | state: ${FW} | host.json: ${HOST_JSON}"
+  # This is a guard on the process PATH of a physical Apple Silicon host, not
+  # on the logical platform fixture used to exercise launchd rendering in
+  # Linux CI. P12 supplies an explicit Darwin uname fixture so both failure
+  # paths remain executable without making ordinary Linux tests inherit the
+  # runner's PATH ordering.
+  runtime_kernel="$(uname -s 2>/dev/null || true)"
+  if [ "$runtime_kernel" = "Darwin" ] \
+    && ! path_hygiene_runtime_native_homebrew_precedes_intel \
+      "$FLYWHEEL_PLATFORM" "$PATH"; then
+    if [ "$DRY_RUN" -eq 0 ]; then
+      die "native Homebrew PATH must precede Intel Homebrew before provisioning"
+    fi
+    runtime_path_invalid=1
+    warn "native Homebrew PATH must precede Intel Homebrew; rendering the complete dry-run plan before failing"
+  fi
   # FLY-650 (Codex R4 HIGH): host-safety guard runs HERE — before any phase — so
   # destructive --only/--from entrypoints can't bypass it (it was preflight-only).
   _host_safety_guard
@@ -626,6 +642,9 @@ main() {
       die "phase '$ph' failed — aborting (host left partially provisioned; re-run with --from $ph after fixing)"
     fi
   done
+  if [ "$runtime_path_invalid" -eq 1 ]; then
+    die "native Homebrew PATH must precede Intel Homebrew before provisioning"
+  fi
   log "done."
 }
 

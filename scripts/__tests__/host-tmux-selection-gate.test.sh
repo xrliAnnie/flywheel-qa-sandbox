@@ -18,14 +18,14 @@ mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
 
 VALID_ROOT="$SANDBOX/valid"
 VALID_HOME="$VALID_ROOT/home"
-VALID_BIN="$VALID_ROOT/usr-local/Cellar/tmux/3.5a/bin"
+VALID_BIN="$VALID_ROOT/opt-homebrew/Cellar/tmux/3.7c/bin"
 VALID_CANONICAL="$VALID_BIN/tmux"
 mkdir -p "$VALID_HOME" "$VALID_BIN" "$VALID_ROOT/tools"
 
-printf '%s\n' '#!/bin/bash' 'printf "tmux 3.5a\n"' > "$VALID_CANONICAL"
+printf '%s\n' '#!/bin/bash' 'printf "tmux 3.7c\n"' > "$VALID_CANONICAL"
 chmod +x "$VALID_CANONICAL"
 ln -s "$VALID_CANONICAL" "$VALID_ROOT/tools/tmux"
-printf '%s\n' '#!/bin/bash' 'printf "%s: ELF 64-bit executable, x86-64\n" "$1"' \
+printf '%s\n' '#!/bin/bash' 'printf "%s: Mach-O 64-bit executable arm64\n" "$1"' \
   > "$VALID_ROOT/tools/file"
 chmod +x "$VALID_ROOT/tools/file"
 VALID_CANONICAL_RESOLVED="$(readlink -f "$VALID_CANONICAL")"
@@ -35,6 +35,88 @@ VALID_SHA="0123456789abcdef0123456789abcdef01234567"
 VALID_OUT="$VALID_ROOT/out.log"
 VALID_ERR="$VALID_ROOT/err.log"
 VALID_RC=0
+
+LEGACY_ONLY_APPLICABILITY_RC=0
+env -i \
+  HOME="$VALID_HOME" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="$VALID_ROOT/applicability-state" \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1 \
+  bash "$GATE" test-applicability \
+    "$VALID_ROOT/missing-marker" "$VALID_CANONICAL" "$VALID_ROOT/missing-native" \
+    >"$VALID_ROOT/applicability.out" 2>"$VALID_ROOT/applicability.err" \
+    || LEGACY_ONLY_APPLICABILITY_RC=$?
+if [ "$LEGACY_ONLY_APPLICABILITY_RC" -eq 0 ] \
+  && [ "$(cat "$VALID_ROOT/applicability.out")" = "required" ]; then
+  pass "legacy-only unmarked hosts remain subject to the selection gate"
+else
+  fail "legacy-only applicability contract (rc=$LEGACY_ONLY_APPLICABILITY_RC)" \
+    "$(cat "$VALID_ROOT/applicability.err" 2>/dev/null)"
+fi
+
+printf 'required\n' > "$VALID_ROOT/existing-marker"
+APPLICABILITY_MATRIX_RC=0
+for expected_and_paths in \
+  "required|$VALID_ROOT/existing-marker|$VALID_ROOT/missing-legacy|$VALID_ROOT/missing-native" \
+  "required|$VALID_ROOT/missing-marker|$VALID_ROOT/missing-legacy|$VALID_CANONICAL" \
+  "not-applicable|$VALID_ROOT/missing-marker|$VALID_ROOT/missing-legacy|$VALID_ROOT/missing-native"; do
+  IFS='|' read -r expected marker legacy native <<<"$expected_and_paths"
+  actual="$(env -i \
+    HOME="$VALID_HOME" \
+    PATH="/usr/bin:/bin" \
+    FLYWHEEL_STATE_DIR="$VALID_ROOT/applicability-state" \
+    FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1 \
+    bash "$GATE" test-applicability "$marker" "$legacy" "$native" \
+    2>"$VALID_ROOT/applicability-matrix.err")" || APPLICABILITY_MATRIX_RC=$?
+  [ "$actual" = "$expected" ] || APPLICABILITY_MATRIX_RC=1
+done
+if [ "$APPLICABILITY_MATRIX_RC" -eq 0 ]; then
+  pass "applicability resolver covers marker, native, and clean hosts"
+else
+  fail "applicability resolver matrix" \
+    "$(cat "$VALID_ROOT/applicability-matrix.err" 2>/dev/null)"
+fi
+
+PRODUCTION_APPLICABILITY_RC=0
+env -i \
+  HOME="$VALID_HOME" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="$VALID_ROOT/production-applicability-state" \
+  bash "$GATE" test-applicability \
+    "$VALID_ROOT/existing-marker" "$VALID_CANONICAL" "$VALID_CANONICAL" \
+    >"$VALID_ROOT/production-applicability.out" \
+    2>"$VALID_ROOT/production-applicability.err" \
+    || PRODUCTION_APPLICABILITY_RC=$?
+if [ "$PRODUCTION_APPLICABILITY_RC" -ne 0 ] \
+  && grep -Fq "test-applicability is test-only" \
+    "$VALID_ROOT/production-applicability.err" \
+  && [ ! -e "$VALID_ROOT/production-applicability-state" ]; then
+  pass "production mode rejects the applicability fixture action before probing state"
+else
+  fail "production applicability action was reachable (rc=$PRODUCTION_APPLICABILITY_RC)" \
+    "$(cat "$VALID_ROOT/production-applicability.err" 2>/dev/null)"
+fi
+
+NON_TEMP_APPLICABILITY_RC=0
+env -i \
+  HOME="/Users/flywheel-fixture" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="/Users/flywheel-fixture/.flywheel" \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1 \
+  bash "$GATE" test-applicability \
+    "$VALID_ROOT/existing-marker" "$VALID_CANONICAL" "$VALID_CANONICAL" \
+    >"$VALID_ROOT/non-temp-applicability.out" \
+    2>"$VALID_ROOT/non-temp-applicability.err" \
+    || NON_TEMP_APPLICABILITY_RC=$?
+if [ "$NON_TEMP_APPLICABILITY_RC" -ne 0 ] \
+  && grep -Fq "test mode requires a temporary isolated FLYWHEEL_STATE_DIR" \
+    "$VALID_ROOT/non-temp-applicability.err"; then
+  pass "applicability fixtures require a temporary test state root"
+else
+  fail "non-temporary applicability fixture root was accepted (rc=$NON_TEMP_APPLICABILITY_RC)" \
+    "$(cat "$VALID_ROOT/non-temp-applicability.err" 2>/dev/null)"
+fi
+
 env -i \
   HOME="$VALID_HOME" \
   PATH="/usr/bin:/bin" \
@@ -69,16 +151,109 @@ if [ "$VALID_RC" -eq 0 ] \
       and .boundTransaction == "keepalive:bridge"
       and .selectedPath == $path
       and .canonicalPath == $canonical
-      and .tmuxVersion == "tmux 3.5a"
-      and (.architecture | contains("x86-64"))
+      and .tmuxVersion == "tmux 3.7c"
+      and (.architecture | contains("arm64"))
       and .verdict == "pass"
       and .carrier == "bridge"
       and .mountPoint == "scripts/flywheel-bridge-wrapper.sh"' \
     "$VALID_RECEIPT" >/dev/null; then
-  pass "valid 3.5a x86 selection emits a carrier-bound receipt in a private directory"
+  pass "valid 3.7c arm64 selection emits a carrier-bound receipt in a private directory"
 else
   fail "valid selection receipt contract (rc=$VALID_RC mode=$(mode_of "$VALID_RECEIPT" 2>/dev/null || true))" \
     "$(cat "$VALID_ERR" 2>/dev/null)"
+fi
+
+INTEL_ROOT="$SANDBOX/intel"
+INTEL_CANONICAL="$INTEL_ROOT/Cellar/tmux/3.5a/bin/tmux"
+mkdir -p "$(dirname "$INTEL_CANONICAL")" "$INTEL_ROOT/tools"
+printf '%s\n' '#!/bin/bash' 'printf "tmux 3.5a\n"' > "$INTEL_CANONICAL"
+chmod +x "$INTEL_CANONICAL"
+ln -s "$INTEL_CANONICAL" "$INTEL_ROOT/tools/tmux"
+printf '%s\n' '#!/bin/bash' 'printf "%s: Mach-O 64-bit executable x86_64\n" "$1"' \
+  > "$INTEL_ROOT/tools/file"
+chmod +x "$INTEL_ROOT/tools/file"
+INTEL_RC=0
+env -i \
+  HOME="$VALID_HOME" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="$INTEL_ROOT/state" \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1 \
+  FLYWHEEL_HOST_TMUX_POST_S1_PATH="$INTEL_ROOT/tools:/usr/bin:/bin" \
+  FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH="$(readlink -f "$INTEL_CANONICAL")" \
+  FLYWHEEL_HOST_TMUX_FILE_BIN="$INTEL_ROOT/tools/file" \
+  FLYWHEEL_HOST_TMUX_HOST_ID="fixture-host" \
+  FLYWHEEL_HOST_TMUX_TARGET_SHA="$VALID_SHA" \
+  FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="keepalive:bridge" \
+  FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/flywheel-bridge-wrapper.sh" \
+  FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH=1000 \
+  FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS=300 \
+  bash "$GATE" gate bridge >"$INTEL_ROOT/out" 2>"$INTEL_ROOT/err" || INTEL_RC=$?
+if [ "$INTEL_RC" -ne 0 ] \
+  && grep -Fq "selected tmux version is not tmux 3.7c: tmux 3.5a" "$INTEL_ROOT/err"; then
+  pass "Intel tmux 3.5a is a fail-closed positive control"
+else
+  fail "Intel tmux 3.5a was accepted (rc=$INTEL_RC)" \
+    "$(cat "$INTEL_ROOT/err" 2>/dev/null)"
+fi
+
+UNIVERSAL_ROOT="$SANDBOX/universal"
+UNIVERSAL_CANONICAL="$UNIVERSAL_ROOT/Cellar/tmux/3.7c/bin/tmux"
+mkdir -p "$(dirname "$UNIVERSAL_CANONICAL")" "$UNIVERSAL_ROOT/tools"
+printf '%s\n' '#!/bin/bash' 'printf "tmux 3.7c\n"' > "$UNIVERSAL_CANONICAL"
+chmod +x "$UNIVERSAL_CANONICAL"
+ln -s "$UNIVERSAL_CANONICAL" "$UNIVERSAL_ROOT/tools/tmux"
+printf '%s\n' '#!/bin/bash' 'printf "%s: Mach-O universal binary with 2 architectures: [x86_64] [arm64]\n" "$1"' \
+  > "$UNIVERSAL_ROOT/tools/file"
+chmod +x "$UNIVERSAL_ROOT/tools/file"
+UNIVERSAL_RC=0
+env -i \
+  HOME="$VALID_HOME" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="$UNIVERSAL_ROOT/state" \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1 \
+  FLYWHEEL_HOST_TMUX_POST_S1_PATH="$UNIVERSAL_ROOT/tools:/usr/bin:/bin" \
+  FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH="$(readlink -f "$UNIVERSAL_CANONICAL")" \
+  FLYWHEEL_HOST_TMUX_FILE_BIN="$UNIVERSAL_ROOT/tools/file" \
+  FLYWHEEL_HOST_TMUX_HOST_ID="fixture-host" \
+  FLYWHEEL_HOST_TMUX_TARGET_SHA="$VALID_SHA" \
+  FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="keepalive:bridge" \
+  FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/flywheel-bridge-wrapper.sh" \
+  FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH=1000 \
+  FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS=300 \
+  bash "$GATE" gate bridge >"$UNIVERSAL_ROOT/out" \
+    2>"$UNIVERSAL_ROOT/err" || UNIVERSAL_RC=$?
+if [ "$UNIVERSAL_RC" -ne 0 ] \
+  && grep -Fq "selected tmux unexpectedly contains x86_64" \
+    "$UNIVERSAL_ROOT/err"; then
+  pass "universal tmux with an x86_64 slice is rejected fail closed"
+else
+  fail "universal tmux was accepted (rc=$UNIVERSAL_RC)" \
+    "$(cat "$UNIVERSAL_ROOT/err" 2>/dev/null)"
+fi
+
+DEFAULT_CANONICAL_RC=0
+env -i \
+  HOME="$VALID_HOME" \
+  PATH="/usr/bin:/bin" \
+  FLYWHEEL_STATE_DIR="$VALID_ROOT/default-canonical-state" \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE=1 \
+  FLYWHEEL_HOST_TMUX_POST_S1_PATH="$VALID_ROOT/tools:/usr/bin:/bin" \
+  FLYWHEEL_HOST_TMUX_FILE_BIN="$VALID_ROOT/tools/file" \
+  FLYWHEEL_HOST_TMUX_HOST_ID="fixture-host" \
+  FLYWHEEL_HOST_TMUX_TARGET_SHA="$VALID_SHA" \
+  FLYWHEEL_HOST_TMUX_BOUND_TRANSACTION="keepalive:bridge" \
+  FLYWHEEL_HOST_TMUX_MOUNT_POINT="scripts/flywheel-bridge-wrapper.sh" \
+  FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH=1000 \
+  FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS=300 \
+  bash "$GATE" gate bridge >"$VALID_ROOT/default-canonical.out" \
+    2>"$VALID_ROOT/default-canonical.err" || DEFAULT_CANONICAL_RC=$?
+if [ "$DEFAULT_CANONICAL_RC" -ne 0 ] \
+  && grep -Fq "/opt/homebrew/Cellar/tmux/3.7c/bin/tmux" \
+    "$VALID_ROOT/default-canonical.err"; then
+  pass "shipped canonical default is the native tmux 3.7c Cellar path"
+else
+  fail "native canonical default was not enforced (rc=$DEFAULT_CANONICAL_RC)" \
+    "$(cat "$VALID_ROOT/default-canonical.err" 2>/dev/null)"
 fi
 
 CROSS_CARRIER_RC=0

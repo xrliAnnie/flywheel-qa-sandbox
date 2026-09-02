@@ -8,12 +8,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RECEIPT="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-$HOME/.flywheel/state/host-terminal-cutover.json}"
-BRIDGE_URL="${FLYWHEEL_BRIDGE_URL:-http://127.0.0.1:6411}"
+BRIDGE_URL="${FLYWHEEL_BRIDGE_URL:-http://127.0.0.1:9876}"
 CURL_BIN="${CUTOVER_CURL_BIN:-curl}"
+GIT_BIN="${CUTOVER_GIT_BIN:-git}"
 JQ_BIN="${CUTOVER_JQ_BIN:-jq}"
 PYTHON_BIN="${CUTOVER_PYTHON_BIN:-python3}"
 BOUNDED_RUN="${CUTOVER_BOUNDED_RUN_BIN:-$ROOT/scripts/lib/bounded-run.sh}"
 QUIESCENCE_INTERVAL_SECONDS="${CUTOVER_QUIESCENCE_INTERVAL_SECONDS:-2}"
+MAIN_FETCH_TIMEOUT_SECONDS="${CUTOVER_MAIN_FETCH_TIMEOUT_SECONDS:-30}"
 
 ROLLBACK_BUDGET_SECONDS=900
 BRIDGE_BOOT_MIN_SECONDS=180
@@ -35,6 +37,66 @@ monotonic_seconds() {
 
 wall_seconds() {
   date +%s
+}
+
+valid_lease_id() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]
+}
+
+lease_handoff_path() {
+  printf '%s/host-terminal-cutover.admission-lease-id\n' "$(dirname "$RECEIPT")"
+}
+
+cutover_file_mode() {
+  local path="$1" mode=""
+  if stat -c %a "$path" >/dev/null 2>&1; then
+    mode=$(stat -c %a "$path" 2>/dev/null || true)
+    if [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+      printf '%s\n' "$mode"
+      return 0
+    fi
+  fi
+  if stat -f %Lp "$path" >/dev/null 2>&1; then
+    mode=$(stat -f %Lp "$path" 2>/dev/null || true)
+    if [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+      printf '%s\n' "$mode"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+cutover_file_owner() {
+  local path="$1" owner=""
+  if stat -c %u "$path" >/dev/null 2>&1; then
+    owner=$(stat -c %u "$path" 2>/dev/null || true)
+    if [[ "$owner" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$owner"
+      return 0
+    fi
+  fi
+  if stat -f %u "$path" >/dev/null 2>&1; then
+    owner=$(stat -f %u "$path" 2>/dev/null || true)
+    if [[ "$owner" =~ ^[0-9]+$ ]]; then
+      printf '%s\n' "$owner"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+read_lease_handoff() {
+  local handoff mode owner lease_id line_count
+  handoff=$(lease_handoff_path)
+  [[ -f "$handoff" && ! -L "$handoff" ]] || return 1
+  mode=$(cutover_file_mode "$handoff" || true)
+  owner=$(cutover_file_owner "$handoff" || true)
+  [[ "$mode" == "600" && "$owner" == "$(id -u)" ]] || return 1
+  line_count=$(wc -l < "$handoff" | tr -d '[:space:]')
+  [[ "$line_count" == "1" ]] || return 1
+  IFS= read -r lease_id < "$handoff" || return 1
+  valid_lease_id "$lease_id" || return 1
+  printf '%s\n' "$lease_id"
 }
 
 ensure_receipt_parent() {
@@ -172,22 +234,45 @@ pause_admission() {
   (( minimum >= INITIAL_MINIMUM_SECONDS )) \
     || die "minimum must preserve the fixed ${INITIAL_MINIMUM_SECONDS}s initial cutover budget"
   (( duration >= minimum )) || die "requested duration is below the required minimum"
-  local body response remaining monotonic_now monotonic_expiry wall_now wall_expiry
+  initialize_receipt
+  local body response remaining monotonic_now monotonic_expiry wall_now wall_expiry lease_id existing_lease_id="" reacquired_after_lapse prior_reacquired_after_lapse=false
+  if [[ "$("$JQ_BIN" -r '.status // ""' "$RECEIPT")" == "paused" ]]; then
+    prior_reacquired_after_lapse=$("$JQ_BIN" -r '.pause.reacquiredAfterLapse == true' "$RECEIPT")
+    existing_lease_id=$("$JQ_BIN" -r '.pause.leaseId // ""' "$RECEIPT")
+    if [[ -z "$existing_lease_id" ]]; then
+      existing_lease_id=$(read_lease_handoff) \
+        || die "legacy paused receipt has no valid private restart lease handoff"
+    else
+      valid_lease_id "$existing_lease_id" \
+        || die "receipt pause owner is not a valid UUID"
+    fi
+  fi
   body=$("$JQ_BIN" -n --argjson duration "$duration" --arg reason "$reason" \
-    '{durationSeconds:$duration,reason:$reason}')
+    --arg leaseId "$existing_lease_id" \
+    '{durationSeconds:$duration,reason:$reason}
+     + (if $leaseId == "" then {} else {leaseId:$leaseId} end)')
   response=$(api_post /api/admission/pause "$body") || die "pause request failed"
   bounded_json "$response"
   printf '%s' "$response" | "$JQ_BIN" -e \
     --argjson minimum "$minimum" \
-    '.ok == true and .admissionPause.active == true and (.admissionPause.remainingSeconds >= $minimum)' \
+    '.ok == true
+     and .admissionPause.active == true
+     and (.admissionPause.remainingSeconds >= $minimum)
+     and ((.admissionPause.reacquiredAfterLapse | type) == "boolean")' \
     >/dev/null || die "Bridge did not grant the required active pause"
   remaining=$(printf '%s' "$response" | "$JQ_BIN" -r '.admissionPause.remainingSeconds')
+  lease_id=$(printf '%s' "$response" | "$JQ_BIN" -r '.admissionPause.leaseId // ""')
+  reacquired_after_lapse=$(printf '%s' "$response" | "$JQ_BIN" -r '.admissionPause.reacquiredAfterLapse')
+  [[ "$prior_reacquired_after_lapse" != "true" ]] || reacquired_after_lapse=true
+  valid_lease_id "$lease_id" || die "Bridge did not return a valid owner lease id"
   monotonic_now=$(monotonic_seconds)
   monotonic_expiry=$((monotonic_now + remaining))
   wall_now=$(wall_seconds)
   wall_expiry=$((wall_now + remaining))
   receipt_update \
-    '.status="paused" | .pause={startedMonotonicSeconds:$monotonicNow,expiryMonotonicSeconds:$monotonicExpiry,startedWallClockEpochSeconds:$wallNow,expiryWallClockEpochSeconds:$wallExpiry,remainingSeconds:$remaining,minimumSeconds:$minimum,reason:$reason} | .budgets={rollbackSeconds:$rollback,bridgeBootMinimumSeconds:$bridgeBoot,initialNormalSeconds:$initialNormal}' \
+    '.status="paused" | .pause={leaseId:$leaseId,reacquiredAfterLapse:$reacquiredAfterLapse,startedMonotonicSeconds:$monotonicNow,expiryMonotonicSeconds:$monotonicExpiry,startedWallClockEpochSeconds:$wallNow,expiryWallClockEpochSeconds:$wallExpiry,remainingSeconds:$remaining,minimumSeconds:$minimum,reason:$reason} | .budgets={rollbackSeconds:$rollback,bridgeBootMinimumSeconds:$bridgeBoot,initialNormalSeconds:$initialNormal}' \
+    --arg leaseId "$lease_id" \
+    --argjson reacquiredAfterLapse "$reacquired_after_lapse" \
     --argjson monotonicNow "$monotonic_now" --argjson monotonicExpiry "$monotonic_expiry" \
     --argjson wallNow "$wall_now" --argjson wallExpiry "$wall_expiry" --argjson remaining "$remaining" \
     --argjson minimum "$minimum" --arg reason "$reason" \
@@ -195,8 +280,11 @@ pause_admission() {
     --argjson bridgeBoot "$BRIDGE_BOOT_MIN_SECONDS" \
     --argjson initialNormal "$INITIAL_NORMAL_BUDGET_SECONDS"
   append_event "$("$JQ_BIN" -n --argjson at "$monotonic_now" --argjson remaining "$remaining" \
-    '{kind:"pause",atMonotonicSeconds:$at,remainingSeconds:$remaining}')"
-  printf '%s\n' "$response"
+    --argjson reacquiredAfterLapse "$reacquired_after_lapse" \
+    '{kind:"pause",atMonotonicSeconds:$at,remainingSeconds:$remaining,reacquiredAfterLapse:$reacquiredAfterLapse}')"
+  printf '%s' "$response" | "$JQ_BIN" -c --argjson reacquiredAfterLapse "$reacquired_after_lapse" \
+    '{ok,admissionPause:{active:.admissionPause.active,remainingSeconds:.admissionPause.remainingSeconds,reacquiredAfterLapse:$reacquiredAfterLapse}}'
+  [[ "$reacquired_after_lapse" != "true" ]] || return 3
 }
 
 inspect_admission() {
@@ -211,17 +299,87 @@ inspect_admission() {
 
 resume_admission() {
   require_api
-  local response now
-  response=$(api_post /api/admission/resume '{}') || die "resume request failed"
+  initialize_receipt
+  local response now lease_id body handoff handoff_lease="" was_active lease_lapsed
+  [[ "$("$JQ_BIN" -r '.status // ""' "$RECEIPT")" == "paused" ]] \
+    || die "receipt does not prove an owned active pause"
+  lease_id=$("$JQ_BIN" -r '.pause.leaseId // ""' "$RECEIPT")
+  valid_lease_id "$lease_id" || die "receipt has no valid admission lease owner"
+  handoff=$(lease_handoff_path)
+  if [[ -e "$handoff" || -L "$handoff" ]]; then
+    handoff_lease=$(read_lease_handoff) \
+      || die "restart lease handoff is present but invalid"
+    [[ "$handoff_lease" == "$lease_id" ]] \
+      || die "restart lease handoff does not match the receipt owner"
+  fi
+  body=$("$JQ_BIN" -n --arg leaseId "$lease_id" '{leaseId:$leaseId}')
+  response=$(api_post /api/admission/resume "$body") || die "resume request failed"
   bounded_json "$response"
   printf '%s' "$response" | "$JQ_BIN" -e \
-    '.ok == true and .admissionPause.active == false' >/dev/null \
+    '.ok == true
+     and .admissionPause.active == false
+     and ((.admissionPause.wasActive | type) == "boolean")
+     and ((.admissionPause.leaseLapsed | type) == "boolean")' >/dev/null \
     || die "Bridge did not prove active=false"
+  was_active=$(printf '%s' "$response" | "$JQ_BIN" -r '.admissionPause.wasActive')
+  lease_lapsed=$(printf '%s' "$response" | "$JQ_BIN" -r '.admissionPause.leaseLapsed')
   now=$(monotonic_seconds)
-  receipt_update '.status="resumed"'
+  receipt_update '.status="resumed" | .resume={wasActive:$wasActive,leaseLapsed:$leaseLapsed}' \
+    --argjson wasActive "$was_active" --argjson leaseLapsed "$lease_lapsed"
   append_event "$("$JQ_BIN" -n --argjson at "$now" \
-    '{kind:"resume",atMonotonicSeconds:$at,active:false}')"
+    --argjson wasActive "$was_active" --argjson leaseLapsed "$lease_lapsed" \
+    '{kind:"resume",atMonotonicSeconds:$at,active:false,wasActive:$wasActive,leaseLapsed:$leaseLapsed}')"
+  if [[ -n "$handoff_lease" ]]; then
+    rm -f "$handoff" || die "Bridge resumed but restart lease handoff cleanup failed"
+  fi
   printf '%s\n' "$response"
+  [[ "$lease_lapsed" != "true" ]] || return 3
+}
+
+assert_main_sha() {
+  local expected=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --expected) expected="${2:-}"; shift 2 ;;
+      *) die "unknown assert-main-sha argument: $1" ;;
+    esac
+  done
+  [[ "$expected" =~ ^[0-9a-fA-F]{40}$ ]] \
+    || die "assert-main-sha requires --expected with an exact 40-hex SHA"
+  [[ "$MAIN_FETCH_TIMEOUT_SECONDS" =~ ^[1-9][0-9]*$ ]] \
+    && (( MAIN_FETCH_TIMEOUT_SECONDS <= 120 )) \
+    || die "CUTOVER_MAIN_FETCH_TIMEOUT_SECONDS must be an integer between 1 and 120"
+  need_cmd "$GIT_BIN"
+  [[ -x "$BOUNDED_RUN" ]] || die "bounded runner unavailable: $BOUNDED_RUN"
+  initialize_receipt
+
+  local fetch_rc=0 observed="" now event passed=false
+  GIT_TERMINAL_PROMPT=0 "$BOUNDED_RUN" "$MAIN_FETCH_TIMEOUT_SECONDS" \
+    "$GIT_BIN" -C "$ROOT" fetch --quiet origin \
+      refs/heads/main:refs/remotes/origin/main || fetch_rc=$?
+  now=$(monotonic_seconds)
+  if (( fetch_rc != 0 )); then
+    event=$("$JQ_BIN" -n --argjson at "$now" --arg expected "$expected" \
+      --argjson fetchExitCode "$fetch_rc" \
+      '{kind:"assert-main-sha",atMonotonicSeconds:$at,expected:$expected,observed:null,fetchExitCode:$fetchExitCode,passed:false}')
+    append_event "$event"
+    die "bounded origin/main fetch failed (rc=$fetch_rc)"
+  fi
+  if ! observed=$("$GIT_BIN" -C "$ROOT" rev-parse origin/main 2>/dev/null) \
+    || [[ ! "$observed" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    event=$("$JQ_BIN" -n --argjson at "$now" --arg expected "$expected" \
+      '{kind:"assert-main-sha",atMonotonicSeconds:$at,expected:$expected,observed:null,fetchExitCode:0,passed:false}')
+    append_event "$event"
+    die "fresh origin/main SHA is unavailable or invalid"
+  fi
+  [[ "$observed" == "$expected" ]] && passed=true
+  event=$("$JQ_BIN" -n --argjson at "$now" --arg expected "$expected" \
+    --arg observed "$observed" --argjson passed "$passed" \
+    '{kind:"assert-main-sha",atMonotonicSeconds:$at,expected:$expected,observed:$observed,fetchExitCode:0,passed:$passed}')
+  append_event "$event"
+  [[ "$passed" == "true" ]] \
+    || die "fresh origin/main $observed does not match expected $expected"
+  printf '%s\n' "$event"
 }
 
 quiescence() {
@@ -513,6 +671,7 @@ usage: host-terminal-cutover.sh <command> [args]
   pause-admission [--duration S] [--minimum S] [--reason TEXT]
   inspect-admission
   quiescence
+  assert-main-sha --expected 40_HEX_SHA
   verify-receipt --step NAME [--rollback]
   run-step --name NAME --timeout S -- COMMAND [ARGS...]
   resume-admission
@@ -530,6 +689,7 @@ case "$command_name" in
   pause-admission) pause_admission "$@" ;;
   inspect-admission) [[ $# -eq 0 ]] || usage; inspect_admission ;;
   quiescence) [[ $# -eq 0 ]] || usage; quiescence ;;
+  assert-main-sha) assert_main_sha "$@" ;;
   resume-admission) [[ $# -eq 0 ]] || usage; resume_admission ;;
   run-step) run_step "$@" ;;
   verify-receipt)

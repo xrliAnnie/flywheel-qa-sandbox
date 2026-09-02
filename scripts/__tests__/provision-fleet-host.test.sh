@@ -42,7 +42,25 @@ exit 0
 EOF
   chmod +x "$STUB_BIN/$b"
 done
-export PATH="$STUB_BIN:$PATH"
+cat > "$STUB_BIN/uname" <<'EOF'
+#!/bin/bash
+printf 'Linux\n'
+EOF
+chmod +x "$STUB_BIN/uname"
+
+DARWIN_BIN="$SANDBOX/darwinbin"
+mkdir -p "$DARWIN_BIN"
+cat > "$DARWIN_BIN/uname" <<'EOF'
+#!/bin/bash
+printf 'Darwin\n'
+EOF
+chmod +x "$DARWIN_BIN/uname"
+
+# Keep an Intel-first PATH in the ordinary Linux fixture. The provisioner is
+# still configured logically as darwin below so the legacy launchd assertions
+# remain deterministic, but a Linux test process must not be treated as a real
+# Darwin host by the native-Homebrew runtime guard.
+export PATH="$STUB_BIN:/usr/local/bin:/usr/bin:/bin:$PATH"
 # FLY-954/957 (incident-hardening): the provisioner MUST run under a fully clean
 # environment (env -i). The runner process is born with a PRODUCTION
 # FLYWHEEL_STATE_DIR, and host-config gives an inherited FLYWHEEL_STATE_DIR top
@@ -314,6 +332,37 @@ if [ -f "$W11" ] && [ ! -w "$W11" ] && [ -x "$W11" ] \
   pass "P11: installed copy is 555 — bare cp over it fails (incident shape blocked)"
 else
   fail "P11: write protection"; ls -l "$W11" 2>/dev/null
+fi
+
+# ── P12: Darwin runtime PATH must not select Intel Homebrew first ─────────
+NATIVE_RUNTIME_BIN="/opt/homebrew/bin"
+INTEL_RUNTIME_BIN="/usr/local/bin"
+H12A="$SANDBOX/home12a"; mkdir -p "$H12A"
+_iso_prov "$DARWIN_BIN:$STUB_BIN:$INTEL_RUNTIME_BIN:/usr/bin:/bin" "$H12A" \
+  --apply --skip-token-check --only preflight \
+  >"$SANDBOX/prov12a.log" 2>&1
+P12ARC=$?
+if [ "$P12ARC" -ne 0 ] \
+  && grep -Fq 'native Homebrew PATH must precede Intel Homebrew' "$SANDBOX/prov12a.log" \
+  && ! grep -Fq 'phase: preflight' "$SANDBOX/prov12a.log" \
+  && [ ! -e "$H12A/.flywheel" ]; then
+  pass "P12a: apply rejects Intel-only Darwin PATH before every phase and side effect"
+else
+  fail "P12a: Intel-only apply PATH guard (rc=$P12ARC)"; tail -20 "$SANDBOX/prov12a.log"
+fi
+
+H12B="$SANDBOX/home12b"; mkdir -p "$H12B"
+_iso_prov "$DARWIN_BIN:$STUB_BIN:$INTEL_RUNTIME_BIN:$NATIVE_RUNTIME_BIN:/usr/bin:/bin" "$H12B" \
+  --skip-token-check >"$SANDBOX/prov12b.log" 2>&1
+P12BRC=$?
+if [ "$P12BRC" -ne 0 ] \
+  && grep -Fq 'phase: launchd' "$SANDBOX/prov12b.log" \
+  && grep -Fq 'native Homebrew PATH must precede Intel Homebrew' "$SANDBOX/prov12b.log" \
+  && ! grep -Fq '[provision] done.' "$SANDBOX/prov12b.log" \
+  && [ ! -e "$H12B/.flywheel" ]; then
+  pass "P12b: dry-run prints the complete plan, then reports native-first failure nonzero"
+else
+  fail "P12b: Intel-first dry-run PATH guard (rc=$P12BRC)"; tail -30 "$SANDBOX/prov12b.log"
 fi
 
 # ── P5: validate_tokens unit ──────────────────────────────────────────────

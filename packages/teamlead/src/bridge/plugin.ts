@@ -122,6 +122,7 @@ import {
 import { findResidentCodexLeadTargets } from "../resident-codex-lead-roster.js";
 import { resolveSelfIdentity } from "../roundtable-allowbots.js";
 import {
+	AdmissionPauseLeaseConflictError,
 	type Session,
 	StateStore,
 	WorkflowCatalogMigrationIntegrityError,
@@ -1561,28 +1562,119 @@ export function createBridgeApp(
 					typeof req.body?.reason === "string" && req.body.reason.trim()
 						? req.body.reason.trim().slice(0, 200)
 						: "operator maintenance";
-				const pause = store.setAdmissionPause({
-					durationSeconds,
-					setBy: "bridge-admission-api",
-					reason,
-				});
-				res.json({
-					ok: true,
-					admissionPause: {
-						active: pause.active,
-						remainingSeconds: pause.remainingSeconds,
-					},
-				});
+				const leaseId = req.body?.leaseId;
+				const expectedLegacyReason = req.body?.expectedLegacyReason;
+				if (
+					leaseId !== undefined &&
+					(typeof leaseId !== "string" ||
+						!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+							leaseId,
+						))
+				) {
+					res.status(400).json({
+						ok: false,
+						error: "leaseId must be a UUID",
+					});
+					return;
+				}
+				if (
+					expectedLegacyReason !== undefined &&
+					(typeof expectedLegacyReason !== "string" ||
+						!expectedLegacyReason.trim() ||
+						expectedLegacyReason.trim().length > 200 ||
+						leaseId !== undefined)
+				) {
+					res.status(400).json({
+						ok: false,
+						error:
+							"expectedLegacyReason must be 1-200 characters and cannot accompany leaseId",
+					});
+					return;
+				}
+				try {
+					const pause = store.setAdmissionPause({
+						durationSeconds,
+						setBy: "bridge-admission-api",
+						reason,
+						...(leaseId === undefined ? {} : { leaseId }),
+						...(expectedLegacyReason === undefined
+							? {}
+							: { expectedLegacyReason: expectedLegacyReason.trim() }),
+					});
+					res.json({
+						ok: true,
+						admissionPause: {
+							active: pause.active,
+							remainingSeconds: pause.remainingSeconds,
+							reacquiredAfterLapse: pause.reacquiredAfterLapse,
+							leaseId: pause.leaseId,
+						},
+					});
+				} catch (error) {
+					if (error instanceof AdmissionPauseLeaseConflictError) {
+						res.status(409).json({
+							ok: false,
+							error: "admission pause is owned by another lease",
+						});
+						return;
+					}
+					throw error;
+				}
 			},
 		);
 		app.post(
 			"/api/admission/resume",
 			tokenAuthMiddleware(config.apiToken),
-			(_req, res) => {
-				store.clearAdmissionPause();
+			(req, res) => {
+				const leaseId = req.body?.leaseId;
+				if (
+					typeof leaseId !== "string" ||
+					!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+						leaseId,
+					)
+				) {
+					res.status(400).json({
+						ok: false,
+						error: "leaseId must be a UUID",
+					});
+					return;
+				}
+				const currentPause = store.getAdmissionPause();
+				if (!currentPause) {
+					res.json({
+						ok: true,
+						admissionPause: {
+							active: false,
+							remainingSeconds: 0,
+							wasActive: false,
+							leaseLapsed: false,
+						},
+					});
+					return;
+				}
+				if (currentPause.lease_id !== leaseId) {
+					res.status(409).json({
+						ok: false,
+						error: "admission pause is owned by another lease",
+					});
+					return;
+				}
+				const wasActive = currentPause.active;
+				if (!store.clearAdmissionPause(leaseId)) {
+					res.status(409).json({
+						ok: false,
+						error: "admission pause is owned by another lease",
+					});
+					return;
+				}
 				res.json({
 					ok: true,
-					admissionPause: { active: false, remainingSeconds: 0 },
+					admissionPause: {
+						active: false,
+						remainingSeconds: 0,
+						wasActive,
+						leaseLapsed: !wasActive,
+					},
 				});
 			},
 		);

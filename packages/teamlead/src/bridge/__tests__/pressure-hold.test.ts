@@ -3,6 +3,9 @@
  * runner-admission `pressure_hold` deferral, and the per-kind escalation
  * policy (legacy byte-compat + the swap slow-variable window).
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
 import { RunnerAdmissionController } from "../runner-admission.js";
@@ -69,6 +72,226 @@ describe("StateStore admission_pause", () => {
 		});
 	});
 
+	it("legacy NULL-owner pause is atomically replaced by an owned lease", () => {
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`INSERT INTO admission_pause
+				(id, paused_until, set_by, reason, set_at)
+			 VALUES (1, ?, ?, ?, ?)`,
+			[
+				"2026-08-05T13:00:00.000Z",
+				"legacy-bridge",
+				"legacy outer brake",
+				"2026-08-05T12:00:00.000Z",
+			],
+		);
+
+		expect(() =>
+			store.setAdmissionPause({
+				durationSeconds: 600,
+				setBy: "restart-services",
+				reason: "must not adopt foreign pause",
+				now: "2026-08-05T12:05:00.000Z",
+				expectedLegacyReason: "another wave",
+			}),
+		).toThrow("admission pause is owned by another lease");
+		expect(store.getAdmissionPause("2026-08-05T12:05:00.000Z")).toMatchObject({
+			lease_id: null,
+			reason: "legacy outer brake",
+		});
+
+		const replacement = store.setAdmissionPause({
+			durationSeconds: 600,
+			setBy: "host-cutover",
+			reason: "owned takeover",
+			now: "2026-08-05T12:05:00.000Z",
+			expectedLegacyReason: "legacy outer brake",
+		});
+		expect(replacement).toMatchObject({
+			active: true,
+			remainingSeconds: 600,
+			paused_until: "2026-08-05T12:15:00.000Z",
+			set_by: "host-cutover",
+			reason: "owned takeover",
+			leaseId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+		});
+		expect(store.getAdmissionPause("2026-08-05T12:05:00.000Z")).toMatchObject({
+			lease_id: expect.stringMatching(/^[0-9a-f-]{36}$/),
+			paused_until: "2026-08-05T12:15:00.000Z",
+		});
+	});
+
+	it("reports a lapsed legacy NULL-owner brake when the matching wave takes ownership", () => {
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`INSERT INTO admission_pause
+				(id, paused_until, set_by, reason, set_at)
+			 VALUES (1, ?, ?, ?, ?)`,
+			[
+				"2026-08-05T10:10:00.000Z",
+				"legacy-bridge",
+				"restart-services:deploy:pid=123:started=2026-08-05T10:00:00Z",
+				"2026-08-05T10:00:00.000Z",
+			],
+		);
+
+		expect(() =>
+			store.setAdmissionPause({
+				durationSeconds: 600,
+				setBy: "restart-services",
+				reason: "must not adopt foreign pause",
+				now: "2026-08-05T12:00:00.000Z",
+				expectedLegacyReason: "another wave",
+			}),
+		).toThrow("admission pause is owned by another lease");
+
+		const replacement = store.setAdmissionPause({
+			durationSeconds: 600,
+			setBy: "restart-services",
+			reason: "owned takeover",
+			now: "2026-08-05T12:00:00.000Z",
+			expectedLegacyReason:
+				"restart-services:deploy:pid=123:started=2026-08-05T10:00:00Z",
+		});
+		expect(replacement).toMatchObject({
+			active: true,
+			reacquiredAfterLapse: true,
+			paused_until: "2026-08-05T12:10:00.000Z",
+		});
+	});
+
+	it("migrates a legacy schema and preserves the owned lease across reopen", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2264-admission-"));
+		const dbPath = join(root, "teamlead.db");
+		try {
+			const Database = (await import("better-sqlite3")).default;
+			const legacy = new Database(dbPath);
+			legacy.exec(`
+				CREATE TABLE admission_pause (
+					id INTEGER PRIMARY KEY CHECK (id = 1),
+					paused_until TEXT NOT NULL,
+					set_by TEXT NOT NULL,
+					reason TEXT NOT NULL,
+					set_at TEXT NOT NULL,
+					alert_state TEXT NOT NULL DEFAULT 'pending'
+						CHECK (alert_state IN ('pending', 'claimed', 'sent')),
+					alert_attempt_at TEXT,
+					alerted_at TEXT
+				);
+				INSERT INTO admission_pause
+					(id, paused_until, set_by, reason, set_at)
+				VALUES
+					(1, '2026-08-05T13:00:00.000Z', 'legacy-bridge',
+					 'legacy outer brake', '2026-08-05T12:00:00.000Z');
+			`);
+			legacy.close();
+
+			const migrated = await StateStore.create(dbPath);
+			const owned = migrated.setAdmissionPause({
+				durationSeconds: 600,
+				setBy: "host-cutover",
+				reason: "owned takeover",
+				now: "2026-08-05T12:05:00.000Z",
+			});
+			migrated.close();
+
+			const reopened = await StateStore.create(dbPath);
+			expect(
+				reopened.getAdmissionPause("2026-08-05T12:06:00.000Z"),
+			).toMatchObject({
+				active: true,
+				lease_id: owned.leaseId,
+				paused_until: "2026-08-05T12:15:00.000Z",
+			});
+			expect(reopened.clearAdmissionPause(owned.leaseId)).toBe(true);
+			reopened.close();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it("renews only the owning lease and preserves it across foreign conflicts", () => {
+		const first = store.setAdmissionPause({
+			durationSeconds: 600,
+			setBy: "restart-services",
+			reason: "deploy",
+			now: "2026-08-05T12:00:00.000Z",
+		});
+		const renewed = store.setAdmissionPause({
+			durationSeconds: 900,
+			setBy: "restart-services",
+			reason: "deploy renewal",
+			now: "2026-08-05T12:01:00.000Z",
+			leaseId: first.leaseId,
+		});
+		expect(renewed.leaseId).toBe(first.leaseId);
+		expect(renewed.paused_until).toBe("2026-08-05T12:16:00.000Z");
+		expect(renewed.reacquiredAfterLapse).toBe(false);
+
+		expect(() =>
+			store.setAdmissionPause({
+				durationSeconds: 300,
+				setBy: "foreign",
+				reason: "must not overwrite",
+				now: "2026-08-05T12:02:00.000Z",
+				leaseId: "00000000-0000-4000-8000-000000000000",
+			}),
+		).toThrow("admission pause is owned by another lease");
+		expect(() =>
+			store.setAdmissionPause({
+				durationSeconds: 300,
+				setBy: "unowned-caller",
+				reason: "must not mint over active owner",
+				now: "2026-08-05T12:02:00.000Z",
+			}),
+		).toThrow("admission pause is owned by another lease");
+		expect(store.getAdmissionPause("2026-08-05T12:02:00.000Z")).toMatchObject({
+			lease_id: first.leaseId,
+			set_by: "restart-services",
+			reason: "deploy renewal",
+			paused_until: "2026-08-05T12:16:00.000Z",
+		});
+	});
+
+	it("lets the recorded owner re-establish an expired pause without changing ownership", () => {
+		const first = store.setAdmissionPause({
+			durationSeconds: 60,
+			setBy: "restart-services",
+			reason: "deploy",
+			now: "2026-08-05T12:00:00.000Z",
+		});
+		expect(store.getAdmissionPause("2026-08-05T12:01:00.001Z")).toMatchObject({
+			active: false,
+			lease_id: first.leaseId,
+		});
+
+		const reestablished = store.setAdmissionPause({
+			durationSeconds: 600,
+			setBy: "host-cutover",
+			reason: "expired owner recovery",
+			now: "2026-08-05T12:02:00.000Z",
+			leaseId: first.leaseId,
+		});
+		expect(reestablished).toMatchObject({
+			leaseId: first.leaseId,
+			paused_until: "2026-08-05T12:12:00.000Z",
+			reacquiredAfterLapse: true,
+		});
+		expect(store.getAdmissionPause("2026-08-05T12:02:00.000Z")).toMatchObject({
+			active: true,
+			lease_id: first.leaseId,
+			reason: "expired owner recovery",
+		});
+	});
+
 	it("caps the operator lease at one hour and resume is idempotent", () => {
 		expect(() =>
 			store.setAdmissionPause({
@@ -78,15 +301,32 @@ describe("StateStore admission_pause", () => {
 				now: "2026-08-05T12:00:00.000Z",
 			}),
 		).toThrow("durationSeconds");
-		store.setAdmissionPause({
+		const pause = store.setAdmissionPause({
 			durationSeconds: 60,
 			setBy: "operator",
 			reason: "maintenance",
 			now: "2026-08-05T12:00:00.000Z",
 		});
-		expect(store.clearAdmissionPause()).toBe(true);
-		expect(store.clearAdmissionPause()).toBe(false);
+		expect(store.clearAdmissionPause(pause.leaseId)).toBe(true);
+		expect(store.clearAdmissionPause(pause.leaseId)).toBe(false);
 		expect(store.getAdmissionPause()).toBeUndefined();
+	});
+
+	it("foreign resume cannot clear an owned pause", () => {
+		const pause = store.setAdmissionPause({
+			durationSeconds: 600,
+			setBy: "host-cutover",
+			reason: "cutover",
+			now: "2026-08-05T12:00:00.000Z",
+		});
+		expect(
+			store.clearAdmissionPause("00000000-0000-4000-8000-000000000000"),
+		).toBe(false);
+		expect(store.getAdmissionPause("2026-08-05T12:01:00.000Z")).toMatchObject({
+			active: true,
+			lease_id: pause.leaseId,
+		});
+		expect(store.clearAdmissionPause(pause.leaseId)).toBe(true);
 	});
 
 	it("claims one Lead alert after five minutes and retries only failed delivery", () => {

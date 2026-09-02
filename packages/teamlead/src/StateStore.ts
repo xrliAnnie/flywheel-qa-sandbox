@@ -1837,6 +1837,13 @@ export type ApplyScopedFlagValueChangeResult =
 			currentChangeSeq?: number;
 	  };
 
+export class AdmissionPauseLeaseConflictError extends Error {
+	constructor() {
+		super("admission pause is owned by another lease");
+		this.name = "AdmissionPauseLeaseConflictError";
+	}
+}
+
 export class StateStore {
 	private db: CompatDb;
 	private dbPath: string;
@@ -3987,6 +3994,7 @@ export class StateStore {
 		this.db.run(`
 			CREATE TABLE IF NOT EXISTS admission_pause (
 				id INTEGER PRIMARY KEY CHECK (id = 1),
+				lease_id TEXT,
 				paused_until TEXT NOT NULL,
 				set_by TEXT NOT NULL,
 				reason TEXT NOT NULL,
@@ -3997,6 +4005,15 @@ export class StateStore {
 				alerted_at TEXT
 			)
 		`);
+		const admissionPauseLeaseColumn = this.db.exec(
+			"SELECT 1 FROM pragma_table_info('admission_pause') WHERE name='lease_id'",
+		);
+		if (
+			admissionPauseLeaseColumn.length === 0 ||
+			admissionPauseLeaseColumn[0]!.values.length === 0
+		) {
+			this.db.run("ALTER TABLE admission_pause ADD COLUMN lease_id TEXT");
+		}
 
 		// FLY-1082 (Task 2.3, Codex R3/R4/R5): the server-loss episode LEDGER —
 		// a single durable row holding the active episode's signature + full
@@ -12807,9 +12824,13 @@ export class StateStore {
 		setBy: string;
 		reason: string;
 		now?: string;
+		leaseId?: string;
+		expectedLegacyReason?: string;
 	}): {
 		active: true;
 		remainingSeconds: number;
+		reacquiredAfterLapse: boolean;
+		leaseId: string;
 		paused_until: string;
 		set_by: string;
 		reason: string;
@@ -12827,32 +12848,95 @@ export class StateStore {
 		if (!setBy || !reason) {
 			throw new Error("admission pause setBy and reason are required");
 		}
-		const setAt = input.now ?? new Date().toISOString();
-		const setAtMs = Date.parse(setAt);
+		const setAtMs = Date.parse(input.now ?? new Date().toISOString());
 		if (!Number.isFinite(setAtMs)) {
 			throw new Error("admission pause now must be an ISO timestamp");
+		}
+		const setAt = new Date(setAtMs).toISOString();
+		if (
+			input.leaseId !== undefined &&
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+				input.leaseId,
+			)
+		) {
+			throw new Error("admission pause leaseId must be a UUID");
+		}
+		const expectedLegacyReason = input.expectedLegacyReason?.trim();
+		if (
+			input.expectedLegacyReason !== undefined &&
+			(!expectedLegacyReason ||
+				expectedLegacyReason.length > 200 ||
+				input.leaseId !== undefined)
+		) {
+			throw new Error(
+				"expectedLegacyReason must be 1-200 characters and cannot accompany leaseId",
+			);
 		}
 		const pausedUntil = new Date(
 			setAtMs + input.durationSeconds * 1_000,
 		).toISOString();
-		this.db.run(
-			`INSERT INTO admission_pause
-				(id, paused_until, set_by, reason, set_at)
-			 VALUES (1, ?, ?, ?, ?)
-			 ON CONFLICT(id) DO UPDATE SET
-				paused_until = excluded.paused_until,
-				set_by = excluded.set_by,
-				reason = excluded.reason,
-				set_at = excluded.set_at,
-				alert_state = 'pending',
-				alert_attempt_at = NULL,
-				alerted_at = NULL`,
-			[pausedUntil, setBy, reason, setAt],
-		);
+		const leaseId = input.leaseId ?? randomUUID();
+		const previousPause =
+			input.leaseId === undefined && expectedLegacyReason === undefined
+				? undefined
+				: this.getAdmissionPause(setAt);
+		if (input.leaseId !== undefined) {
+			this.db.run(
+				`UPDATE admission_pause
+				    SET paused_until = ?, set_by = ?, reason = ?, set_at = ?,
+				        alert_state = 'pending', alert_attempt_at = NULL, alerted_at = NULL
+				  WHERE id = 1 AND lease_id = ?`,
+				[pausedUntil, setBy, reason, setAt, leaseId],
+			);
+		} else if (expectedLegacyReason !== undefined) {
+			this.db.run(
+				`UPDATE admission_pause
+				    SET lease_id = ?, paused_until = ?, set_by = ?, reason = ?, set_at = ?,
+				        alert_state = 'pending', alert_attempt_at = NULL, alerted_at = NULL
+				  WHERE id = 1 AND lease_id IS NULL AND reason = ?`,
+				[
+					leaseId,
+					pausedUntil,
+					setBy,
+					reason,
+					setAt,
+					expectedLegacyReason,
+				],
+			);
+		} else {
+			this.db.run(
+				`INSERT INTO admission_pause
+					(id, lease_id, paused_until, set_by, reason, set_at)
+				 VALUES (1, ?, ?, ?, ?, ?)
+				 ON CONFLICT(id) DO UPDATE SET
+					lease_id = excluded.lease_id,
+					paused_until = excluded.paused_until,
+					set_by = excluded.set_by,
+					reason = excluded.reason,
+					set_at = excluded.set_at,
+					alert_state = 'pending',
+					alert_attempt_at = NULL,
+					alerted_at = NULL
+				 WHERE admission_pause.lease_id IS NULL
+				    OR admission_pause.paused_until <= ?`,
+				[leaseId, pausedUntil, setBy, reason, setAt, setAt],
+			);
+		}
+		if (this.db.getRowsModified() !== 1) {
+			throw new AdmissionPauseLeaseConflictError();
+		}
 		this.save();
 		return {
 			active: true,
 			remainingSeconds: input.durationSeconds,
+			reacquiredAfterLapse:
+				!previousPause?.active &&
+				((input.leaseId !== undefined &&
+					previousPause?.lease_id === leaseId) ||
+					(expectedLegacyReason !== undefined &&
+						previousPause?.lease_id === null &&
+						previousPause.reason === expectedLegacyReason)),
+			leaseId,
 			paused_until: pausedUntil,
 			set_by: setBy,
 			reason,
@@ -12864,6 +12948,7 @@ export class StateStore {
 		| {
 				active: boolean;
 				remainingSeconds: number;
+				lease_id: string | null;
 				paused_until: string;
 				set_by: string;
 				reason: string;
@@ -12871,7 +12956,7 @@ export class StateStore {
 		  }
 		| undefined {
 		const stmt = this.db.prepare(
-			"SELECT paused_until, set_by, reason, set_at FROM admission_pause WHERE id = 1",
+			"SELECT lease_id, paused_until, set_by, reason, set_at FROM admission_pause WHERE id = 1",
 		);
 		let row: Record<string, unknown> | undefined;
 		if (stmt.step()) row = stmt.getAsObject() as Record<string, unknown>;
@@ -12886,6 +12971,7 @@ export class StateStore {
 		return {
 			active: remainingSeconds > 0,
 			remainingSeconds,
+			lease_id: (row.lease_id as string | null) ?? null,
 			paused_until: row.paused_until as string,
 			set_by: row.set_by as string,
 			reason: row.reason as string,
@@ -12893,8 +12979,18 @@ export class StateStore {
 		};
 	}
 
-	clearAdmissionPause(): boolean {
-		this.db.run("DELETE FROM admission_pause WHERE id = 1", []);
+	clearAdmissionPause(leaseId: string): boolean {
+		if (
+			!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+				leaseId,
+			)
+		) {
+			throw new Error("admission pause leaseId must be a UUID");
+		}
+		this.db.run(
+			"DELETE FROM admission_pause WHERE id = 1 AND lease_id = ?",
+			[leaseId],
+		);
 		const changed = this.db.getRowsModified();
 		if (changed > 0) this.save();
 		return changed > 0;

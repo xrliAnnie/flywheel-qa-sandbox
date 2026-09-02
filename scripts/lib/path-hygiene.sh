@@ -314,6 +314,33 @@ path_hygiene_native_homebrew_precedes_intel() {
   esac
 }
 
+# path_hygiene_runtime_native_homebrew_precedes_intel <platform> <path>
+# On Darwin, an exact /usr/local/bin token requires an earlier exact
+# /opt/homebrew/bin token. Other platforms and PATHs without Intel Homebrew are
+# outside this host-specific guard.
+path_hygiene_runtime_native_homebrew_precedes_intel() {
+  local platform="${1:-}" runtime_path="${2-}" rest token
+  local index=0 native_index=0 intel_index=0
+  case "$platform" in darwin|Darwin) : ;; *) return 0 ;; esac
+
+  rest="$runtime_path"
+  while :; do
+    token="${rest%%:*}"
+    index=$((index + 1))
+    if [ "$token" = "/opt/homebrew/bin" ] && [ "$native_index" -eq 0 ]; then
+      native_index="$index"
+    fi
+    if [ "$token" = "/usr/local/bin" ] && [ "$intel_index" -eq 0 ]; then
+      intel_index="$index"
+    fi
+    [ "$rest" != "$token" ] || break
+    rest="${rest#*:}"
+  done
+
+  [ "$intel_index" -eq 0 ] && return 0
+  [ "$native_index" -gt 0 ] && [ "$native_index" -lt "$intel_index" ]
+}
+
 # path_hygiene_scan_registered_source_tree <repo-root>
 # Prints one relative-path finding per violation and returns 1 when any are
 # found. The root and every registered file are fail-closed.

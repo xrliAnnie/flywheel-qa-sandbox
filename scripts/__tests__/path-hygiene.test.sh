@@ -161,6 +161,41 @@ else
   fail "11: sourcing wrote files" "$(ls -A "$SE")"
 fi
 
+# ── 12. runtime PATH tokens: native Homebrew must lead when Intel exists ──
+NATIVE_HOMEBREW_BIN="/opt/homebrew/bin"
+INTEL_HOMEBREW_BIN="/usr/local/bin"
+RUNTIME_PATH_OK=1
+if ! type path_hygiene_runtime_native_homebrew_precedes_intel >/dev/null 2>&1; then
+  RUNTIME_PATH_OK=0
+  fail "12: runtime native-before-Intel helper is missing"
+else
+  path_hygiene_runtime_native_homebrew_precedes_intel darwin \
+    "$NATIVE_HOMEBREW_BIN:/usr/bin" \
+    || { RUNTIME_PATH_OK=0; fail "12: native-only Darwin PATH should pass"; }
+  path_hygiene_runtime_native_homebrew_precedes_intel darwin \
+    "/usr/bin:/bin" \
+    || { RUNTIME_PATH_OK=0; fail "12: clean Darwin PATH should pass"; }
+  path_hygiene_runtime_native_homebrew_precedes_intel linux \
+    "$INTEL_HOMEBREW_BIN:/usr/bin" \
+    || { RUNTIME_PATH_OK=0; fail "12: non-Darwin PATH should pass"; }
+  path_hygiene_runtime_native_homebrew_precedes_intel darwin \
+    "$NATIVE_HOMEBREW_BIN:$INTEL_HOMEBREW_BIN:/usr/bin" \
+    || { RUNTIME_PATH_OK=0; fail "12: native-first Darwin PATH should pass"; }
+  if path_hygiene_runtime_native_homebrew_precedes_intel darwin \
+    "$INTEL_HOMEBREW_BIN:/usr/bin"; then
+    RUNTIME_PATH_OK=0; fail "12: Intel-only Darwin PATH should fail"
+  fi
+  if path_hygiene_runtime_native_homebrew_precedes_intel darwin \
+    "$INTEL_HOMEBREW_BIN:$NATIVE_HOMEBREW_BIN:/usr/bin"; then
+    RUNTIME_PATH_OK=0; fail "12: Intel-first Darwin PATH should fail"
+  fi
+  path_hygiene_runtime_native_homebrew_precedes_intel darwin \
+    "/usr/local/bin-tools:/usr/bin" \
+    || { RUNTIME_PATH_OK=0; fail "12: substring lookalikes must not count as Intel Homebrew"; }
+fi
+[[ "$RUNTIME_PATH_OK" == "1" ]] \
+  && pass "12: runtime PATH uses exact colon tokens and enforces native-before-Intel on Darwin"
+
 echo ""
 echo "Results: ${PASSED} passed, ${FAILED} failed"
 [[ "$FAILED" -eq 0 ]] || exit 1

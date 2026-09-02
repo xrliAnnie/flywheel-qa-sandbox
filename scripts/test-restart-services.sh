@@ -30,6 +30,56 @@ TMPDIR_ROOT=$(mktemp -d)
 trap 'rm -rf "$TMPDIR_ROOT"' EXIT
 
 # ════════════════════════════════════════════════════════════════
+# FLY-2264: owner-qualified admission brake spans the Lead wave
+# ════════════════════════════════════════════════════════════════
+echo "Test: FLY-2264 restart admission uses durable owner leases"
+
+RS_SOURCE="$SCRIPT_DIR/restart-services.sh"
+fly2264_admission_funcs="$TMPDIR_ROOT/fly2264-admission-functions.sh"
+fly2264_deploy_body="$TMPDIR_ROOT/fly2264-deploy-body.sh"
+awk '
+  /^bridge_admission_request\(\)/,/^}/ { print; next }
+  /^cutover_legacy_pause_pending\(\)/,/^}/ { print; next }
+  /^write_cutover_admission_lease_handoff\(\)/,/^}/ { print; next }
+  /^pause_admission_best_effort\(\)/,/^}/ { print; next }
+  /^takeover_cutover_admission_pause_after_bridge_health\(\)/,/^}/ { print; next }
+  /^resume_admission_best_effort\(\)/,/^}/ { print; next }
+' "$RS_SOURCE" > "$fly2264_admission_funcs"
+sed -n '/^deploy_and_verify()/,/^}/p' "$RS_SOURCE" > "$fly2264_deploy_body"
+
+if grep -qF "lease_id=\$(jq -r '.admissionPause.leaseId // empty'" "$fly2264_admission_funcs" \
+  && grep -qF "{leaseId: \$leaseId}" "$fly2264_admission_funcs" \
+  && grep -qF 'host-terminal-cutover.admission-lease-id' "$fly2264_admission_funcs" \
+  && grep -qF 'ADMISSION_PAUSE_RELEASE_ON_EXIT=false' "$fly2264_admission_funcs"; then
+    pass "FLY-2264 restart captures nested server leases and hands adopted cutover ownership to the host"
+else
+    fail "FLY-2264 owner-qualified admission functions are incomplete"
+fi
+
+if grep -qF 'required host tmux selection contract' "$RS_SOURCE" \
+  && ! grep -qF 'bound tmux 3.5a carrier' "$RS_SOURCE"; then
+    pass "FLY-2264 restart preflight alert describes the active tmux contract without stale Intel guidance"
+else
+    fail "FLY-2264 restart preflight alert still directs operators toward tmux 3.5a"
+fi
+
+fly2264_health_line=$(grep -n 'Bridge health check: OK' "$fly2264_deploy_body" | cut -d: -f1)
+fly2264_takeover_line=$(grep -n 'takeover_cutover_admission_pause_after_bridge_health' "$fly2264_deploy_body" | cut -d: -f1)
+fly2264_wave_line=$(grep -n 'do_restart_all_leads stagger' "$fly2264_deploy_body" | cut -d: -f1)
+fly2264_resume_line=$(grep -n 'resume_admission_best_effort' "$fly2264_deploy_body" | tail -1 | cut -d: -f1)
+if [[ "$fly2264_health_line" =~ ^[0-9]+$ \
+  && "$fly2264_takeover_line" =~ ^[0-9]+$ \
+  && "$fly2264_wave_line" =~ ^[0-9]+$ \
+  && "$fly2264_resume_line" =~ ^[0-9]+$ ]] \
+  && (( fly2264_health_line < fly2264_takeover_line \
+    && fly2264_takeover_line < fly2264_wave_line \
+    && fly2264_wave_line < fly2264_resume_line )); then
+    pass "FLY-2264 deployment adopts legacy admission before and holds it through the Lead restart wave"
+else
+    fail "FLY-2264 legacy admission takeover is outside the Bridge-health/Lead-wave fence"
+fi
+
+# ════════════════════════════════════════════════════════════════
 # FLY-1603: truthful full-restart terminal notification rendering
 # ════════════════════════════════════════════════════════════════
 echo "Test: FLY-1603 restart completion rendering is truthful"
@@ -313,6 +363,8 @@ rn_run_terminal_case() {
         return 0
       }
       pnpm() { [[ "$mode" != "rollback-build-failed" ]]; }
+      pause_admission_best_effort() { :; }
+      resume_admission_best_effort() { :; }
       stop_bridge() { [[ "$mode" != "rollback-port-stuck" ]]; }
       start_bridge() { :; }
       bridge_port() { printf "9876\n"; }
@@ -2327,6 +2379,20 @@ if [[ "\$url" == *"discord.com/api"* ]]; then
   cat >/dev/null || true
   exit 0
 fi
+if [[ "\$url" == *"/api/admission/pause"* ]]; then
+  pause_n=\$(cat "$BO_CALLS/admission-pause.n" 2>/dev/null || echo 0)
+  pause_n=\$((pause_n + 1)); echo "\$pause_n" > "$BO_CALLS/admission-pause.n"
+  if (( pause_n == 1 )); then
+    printf '%s\n' '{"ok":true,"admissionPause":{"active":true,"remainingSeconds":1800}}'
+  else
+    printf '%s\n' '{"ok":true,"admissionPause":{"active":true,"remainingSeconds":1800,"leaseId":"123e4567-e89b-42d3-a456-426614174000"}}'
+  fi
+  exit 0
+fi
+if [[ "\$url" == *"/api/admission/resume"* ]]; then
+  printf '%s\n' '{"ok":true,"admissionPause":{"active":false,"remainingSeconds":0}}'
+  exit 0
+fi
 head_sha="\${FAKE_BUILD_SHA:-\$(git -C "$BO_FLYWHEEL" rev-parse HEAD)}"
 body="{\"ok\":true,\"sessions_count\":0,\"buildMode\":\"built\",\"buildSha\":\"\${head_sha}\",\"artifactBuildSha\":\"\${head_sha}\"}"
 if [[ "\${FAKE_IDLE_BUSY:-0}" == "1" && -z "\$output_file" ]]; then
@@ -2454,10 +2520,12 @@ bo_run() {
     echo 333 > "$BO_CALLS/watcher.pids"
     mkdir -p "$BO_HOME/.flywheel/state/cmux-watcher.lock"
     echo '333|watcher-old|watch|watcher-old-nonce' > "$BO_HOME/.flywheel/state/cmux-watcher.lock/owner"
-    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/prewave-probe"
+    rm -f "$BO_CALLS/tmux-list.n" "$BO_CALLS/prewave-probe" \
+        "$BO_CALLS/admission-pause.n"
     HOME="$BO_HOME" PATH="$BO_SHIMS:$PATH" \
         FLYWHEEL_STATE_DIR="$BO_HOME/.flywheel" \
         BRIDGE_URL="http://127.0.0.1:19876" \
+        TEAMLEAD_API_TOKEN="teamlead-test-token" \
         CLAUDE_INFRA_BOT_TOKEN="${BO_NOTIFY_TOKEN:-}" FLYWHEEL_NOTIFY_CHANNEL="${BO_NOTIFY_CHANNEL:-}" \
         TEST_BOT_TOKEN="test-token" \
         FAKE_FAST_SLEEP="${FAKE_FAST_SLEEP:-0}" \
@@ -2869,6 +2937,24 @@ bo_busy_curl_shim() {
     cat > "$BO_SHIMS/curl" <<EOF
 #!/bin/bash
 echo "\$*" >> "$BO_CALLS/curl.calls"
+url=""
+for arg in "\$@"; do
+  case "\$arg" in http://*|https://*) url="\$arg" ;; esac
+done
+if [[ "\$url" == *"/api/admission/pause"* ]]; then
+  pause_n=\$(cat "$BO_CALLS/admission-pause.n" 2>/dev/null || echo 0)
+  pause_n=\$((pause_n + 1)); echo "\$pause_n" > "$BO_CALLS/admission-pause.n"
+  if (( pause_n == 1 )); then
+    printf '%s\n' '{"ok":true,"admissionPause":{"active":true,"remainingSeconds":1800}}'
+  else
+    printf '%s\n' '{"ok":true,"admissionPause":{"active":true,"remainingSeconds":1800,"leaseId":"123e4567-e89b-42d3-a456-426614174000"}}'
+  fi
+  exit 0
+fi
+if [[ "\$url" == *"/api/admission/resume"* ]]; then
+  printf '%s\n' '{"ok":true,"admissionPause":{"active":false,"remainingSeconds":0}}'
+  exit 0
+fi
 n=\$(cat "$BO_CALLS/health.n" 2>/dev/null || echo 0)
 n=\$((n + 1)); echo "\$n" > "$BO_CALLS/health.n"
 head_sha="\$(git -C "$BO_FLYWHEEL" rev-parse HEAD)"
@@ -2879,7 +2965,7 @@ else
 fi
 EOF
     chmod +x "$BO_SHIMS/curl"
-    rm -f "$BO_CALLS/health.n"
+    rm -f "$BO_CALLS/health.n" "$BO_CALLS/admission-pause.n"
 }
 bo_busy_curl_shim
 out=$(bo_run --bridge-only --wait-idle) && rc=0 || rc=$?

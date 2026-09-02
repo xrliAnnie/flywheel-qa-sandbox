@@ -182,24 +182,298 @@ describe("Bridge scaffold", () => {
 			body: JSON.stringify({ durationSeconds: 1_800, reason: "deploy" }),
 		});
 		expect(paused.status).toBe(200);
-		expect(await paused.json()).toMatchObject({
+		const pausedBody = await paused.json();
+		expect(pausedBody).toMatchObject({
 			ok: true,
-			admissionPause: { active: true },
+			admissionPause: {
+				active: true,
+				leaseId: expect.stringMatching(/^[0-9a-f-]{36}$/),
+				reacquiredAfterLapse: false,
+			},
+		});
+		const leaseId = pausedBody.admissionPause.leaseId as string;
+
+		const foreignPause = await fetch(pauseUrl, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				durationSeconds: 900,
+				reason: "foreign overwrite",
+				leaseId: "00000000-0000-4000-8000-000000000000",
+			}),
+		});
+		expect(foreignPause.status).toBe(409);
+		expect(await foreignPause.json()).toEqual({
+			ok: false,
+			error: "admission pause is owned by another lease",
+		});
+
+		const renewed = await fetch(pauseUrl, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ durationSeconds: 1_800, leaseId }),
+		});
+		expect(renewed.status).toBe(200);
+		expect(await renewed.json()).toMatchObject({
+			admissionPause: {
+				active: true,
+				leaseId,
+				reacquiredAfterLapse: false,
+			},
 		});
 
 		const health = await (await fetch(new URL("/health", pauseUrl))).json();
 		expect(health.admissionPause.active).toBe(true);
 		expect(health.admissionPause.remainingSeconds).toBeGreaterThan(1_790);
 		expect(health.admissionPause.reason).toBeUndefined();
+		expect(health.admissionPause.leaseId).toBeUndefined();
+		const inspected = await fetch(pauseUrl, {
+			headers: { Authorization: "Bearer master-secret" },
+		});
+		expect(inspected.status).toBe(200);
+		expect(await inspected.json()).toEqual({
+			ok: true,
+			admissionPause: {
+				active: true,
+				remainingSeconds: expect.any(Number),
+			},
+		});
+
+		const missingResume = await fetch(
+			new URL("/api/admission/resume", pauseUrl),
+			{
+				method: "POST",
+				headers: { Authorization: "Bearer master-secret" },
+			},
+		);
+		expect(missingResume.status).toBe(400);
+
+		const foreignResume = await fetch(
+			new URL("/api/admission/resume", pauseUrl),
+			{
+				method: "POST",
+				headers: {
+					Authorization: "Bearer master-secret",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({
+					leaseId: "00000000-0000-4000-8000-000000000000",
+				}),
+			},
+		);
+		expect(foreignResume.status).toBe(409);
 
 		const resumed = await fetch(new URL("/api/admission/resume", pauseUrl), {
 			method: "POST",
-			headers: { Authorization: "Bearer master-secret" },
+			headers: {
+				Authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ leaseId }),
 		});
 		expect(resumed.status).toBe(200);
 		expect(await resumed.json()).toEqual({
 			ok: true,
-			admissionPause: { active: false, remainingSeconds: 0 },
+			admissionPause: {
+				active: false,
+				remainingSeconds: 0,
+				wasActive: true,
+				leaseLapsed: false,
+			},
+		});
+
+		const repeatedResume = await fetch(
+			new URL("/api/admission/resume", pauseUrl),
+			{
+				method: "POST",
+				headers: {
+					Authorization: "Bearer master-secret",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify({ leaseId }),
+			},
+		);
+		expect(repeatedResume.status).toBe(200);
+		expect(await repeatedResume.json()).toEqual({
+			ok: true,
+			admissionPause: {
+				active: false,
+				remainingSeconds: 0,
+				wasActive: false,
+				leaseLapsed: false,
+			},
+		});
+
+		const callerMint = await fetch(pauseUrl, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ durationSeconds: 600, leaseId }),
+		});
+		expect(callerMint.status).toBe(409);
+		expect(await callerMint.json()).toEqual({
+			ok: false,
+			error: "admission pause is owned by another lease",
+		});
+
+		const invalidLease = await fetch(pauseUrl, {
+			method: "POST",
+			headers: {
+				Authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ durationSeconds: 600, leaseId: "not-a-uuid" }),
+		});
+		expect(invalidLease.status).toBe(400);
+		store.close();
+	});
+
+	it("reports lease lapses and rejects foreign resume against an expired owner", async () => {
+		const store = await StateStore.create(":memory:");
+		const expired = store.setAdmissionPause({
+			durationSeconds: 60,
+			setBy: "host-cutover",
+			reason: "expired fixture",
+			now: "2020-01-01T00:00:00.000Z",
+		});
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig({ apiToken: "master-secret" }),
+		);
+		const pauseUrl = await startAndGetUrl(app, "/api/admission/pause");
+		const authHeaders = {
+			Authorization: "Bearer master-secret",
+			"content-type": "application/json",
+		};
+
+		const foreignResume = await fetch(
+			new URL("/api/admission/resume", pauseUrl),
+			{
+				method: "POST",
+				headers: authHeaders,
+				body: JSON.stringify({
+					leaseId: "00000000-0000-4000-8000-000000000000",
+				}),
+			},
+		);
+		expect(foreignResume.status).toBe(409);
+
+		const reacquired = await fetch(pauseUrl, {
+			method: "POST",
+			headers: authHeaders,
+			body: JSON.stringify({
+				durationSeconds: 600,
+				reason: "resume founder window",
+				leaseId: expired.leaseId,
+			}),
+		});
+		expect(reacquired.status).toBe(200);
+		expect(await reacquired.json()).toMatchObject({
+			admissionPause: {
+				leaseId: expired.leaseId,
+				reacquiredAfterLapse: true,
+			},
+		});
+
+		const activeResume = await fetch(
+			new URL("/api/admission/resume", pauseUrl),
+			{
+				method: "POST",
+				headers: authHeaders,
+				body: JSON.stringify({ leaseId: expired.leaseId }),
+			},
+		);
+		expect(await activeResume.json()).toMatchObject({
+			admissionPause: { wasActive: true, leaseLapsed: false },
+		});
+
+		const expiredForResume = store.setAdmissionPause({
+			durationSeconds: 60,
+			setBy: "host-cutover",
+			reason: "expired resume fixture",
+			now: "2020-01-01T00:00:00.000Z",
+		});
+		const lapsedResume = await fetch(
+			new URL("/api/admission/resume", pauseUrl),
+			{
+				method: "POST",
+				headers: authHeaders,
+				body: JSON.stringify({ leaseId: expiredForResume.leaseId }),
+			},
+		);
+		expect(lapsedResume.status).toBe(200);
+		expect(await lapsedResume.json()).toMatchObject({
+			admissionPause: { wasActive: false, leaseLapsed: true },
+		});
+		store.close();
+	});
+
+	it("takes over a legacy NULL-owner pause only when its run-local identifier matches", async () => {
+		const store = await StateStore.create(":memory:");
+		const raw = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		raw.run(
+			`INSERT INTO admission_pause
+				(id, paused_until, set_by, reason, set_at)
+			 VALUES (1, ?, ?, ?, ?)`,
+			[
+				"2099-01-01T00:00:00.000Z",
+				"legacy-bridge",
+				"restart-services:deploy:pid=123:started=2026-09-02T12:00:00Z",
+				"2026-09-02T12:00:00.000Z",
+			],
+		);
+		const app = createBridgeApp(
+			store,
+			[],
+			makeConfig({ apiToken: "master-secret" }),
+		);
+		const pauseUrl = await startAndGetUrl(app, "/api/admission/pause");
+		const headers = {
+			Authorization: "Bearer master-secret",
+			"content-type": "application/json",
+		};
+
+		const foreign = await fetch(pauseUrl, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				durationSeconds: 1_800,
+				reason: "restart takeover",
+				expectedLegacyReason: "another wave",
+			}),
+		});
+		expect(foreign.status).toBe(409);
+		expect(store.getAdmissionPause()).toMatchObject({
+			lease_id: null,
+			reason: "restart-services:deploy:pid=123:started=2026-09-02T12:00:00Z",
+		});
+
+		const owned = await fetch(pauseUrl, {
+			method: "POST",
+			headers,
+			body: JSON.stringify({
+				durationSeconds: 1_800,
+				reason: "restart takeover",
+				expectedLegacyReason:
+					"restart-services:deploy:pid=123:started=2026-09-02T12:00:00Z",
+			}),
+		});
+		expect(owned.status).toBe(200);
+		expect(await owned.json()).toMatchObject({
+			admissionPause: { leaseId: expect.stringMatching(/^[0-9a-f-]{36}$/) },
 		});
 		store.close();
 	});

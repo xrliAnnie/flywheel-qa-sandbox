@@ -1,8 +1,7 @@
 #!/bin/bash
-# FLY-2190 S0: fail-closed proof that the PATH which S1 will install still
-# selects the known Intel tmux 3.5a client. This gate ships and becomes live
-# before S1, so a later wrapper birth cannot silently enter an unverified
-# 3.7c-client/3.5a-server mixed state.
+# FLY-2190 S2: fail-closed proof that the host PATH selects the native
+# Homebrew tmux 3.7c client. A wrapper birth must never enter a mixed
+# 3.5a-client/3.7c-server state or fall back to the Intel Homebrew carrier.
 set -uo pipefail
 
 die() {
@@ -13,6 +12,17 @@ die() {
 usage() {
   echo "Usage: host-tmux-selection-gate.sh {gate|verify} <carrier> | census <loaded-candidates.tsv>" >&2
   exit 2
+}
+
+resolve_applicability() {
+  local marker="$1" legacy="$2" native="$3"
+  if [ -e "$marker" ] || [ -L "$marker" ] \
+    || [ -e "$legacy" ] || [ -L "$legacy" ] \
+    || [ -e "$native" ] || [ -L "$native" ]; then
+    printf 'required\n'
+  else
+    printf 'not-applicable\n'
+  fi
 }
 
 file_mode() {
@@ -167,6 +177,18 @@ run_census() {
 }
 
 ACTION="${1:-}"
+if [ "$ACTION" = "test-applicability" ]; then
+  [ "$#" -eq 4 ] || usage
+  [ "${FLYWHEEL_HOST_TMUX_GATE_TEST_MODE:-0}" = "1" ] \
+    || die "test-applicability is test-only"
+  TEST_STATE_DIR="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+  case "$TEST_STATE_DIR" in
+    /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*) : ;;
+    *) die "test mode requires a temporary isolated FLYWHEEL_STATE_DIR" ;;
+  esac
+  resolve_applicability "$2" "$3" "$4"
+  exit 0
+fi
 if [ "$ACTION" = "census" ]; then
   [ "$#" -eq 2 ] || usage
   run_census "$2"
@@ -209,7 +231,9 @@ fi
 case "$NOW_EPOCH" in *[!0-9]*) die "invalid gate clock" ;; esac
 
 POST_S1_PATH="${FLYWHEEL_HOST_TMUX_POST_S1_PATH:-${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin}"
-EXPECTED_CANONICAL="${FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH:-/usr/local/Cellar/tmux/3.5a/bin/tmux}"
+NATIVE_CANONICAL="/opt/homebrew/Cellar/tmux/3.7c/bin/tmux"
+LEGACY_CANONICAL="/usr/local/Cellar/tmux/3.5a/bin/tmux"
+EXPECTED_CANONICAL="${FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH:-$NATIVE_CANONICAL}"
 FILE_BIN="${FLYWHEEL_HOST_TMUX_FILE_BIN:-/usr/bin/file}"
 
 # This repository also ships portable and already-native installations. S0 is
@@ -268,9 +292,11 @@ fi
 if [ "$TEST_MODE" = "1" ]; then
   APPLICABILITY="${FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY:-required}"
 else
-  if [ -f "$REQUIRED_MARKER" ] && [ ! -L "$REQUIRED_MARKER" ]; then
-    APPLICABILITY=required
-  elif [ -f "$EXPECTED_CANONICAL" ] && [ -x "$EXPECTED_CANONICAL" ]; then
+  APPLICABILITY="$(resolve_applicability \
+    "$REQUIRED_MARKER" "$LEGACY_CANONICAL" "$NATIVE_CANONICAL")" \
+    || die "cannot resolve host gate applicability"
+  if [ "$APPLICABILITY" = "required" ] \
+    && { [ ! -e "$REQUIRED_MARKER" ] && [ ! -L "$REQUIRED_MARKER" ]; }; then
     [ ! -L "$RECEIPT_DIR" ] || die "receipt directory must not be a symlink: $RECEIPT_DIR"
     /bin/mkdir -p "$RECEIPT_DIR" || die "cannot create receipt directory: $RECEIPT_DIR"
     [ -d "$RECEIPT_DIR" ] && [ ! -L "$RECEIPT_DIR" ] \
@@ -285,15 +311,12 @@ else
     /bin/mv -f "$MARKER_TMP" "$REQUIRED_MARKER" \
       || die "cannot publish applicability marker"
     trap - EXIT
-    APPLICABILITY=required
-  else
-    APPLICABILITY=not-applicable
   fi
 fi
 case "$APPLICABILITY" in
   required) : ;;
   not-applicable)
-    echo "host-tmux-selection-gate: not applicable carrier=$CARRIER legacy_tmux=$EXPECTED_CANONICAL"
+    echo "host-tmux-selection-gate: not applicable carrier=$CARRIER legacy_tmux=$LEGACY_CANONICAL native_tmux=$NATIVE_CANONICAL"
     exit 0
     ;;
   *) die "invalid gate applicability: $APPLICABILITY" ;;
@@ -306,22 +329,23 @@ SELECTED_PATH="$(PATH="$POST_S1_PATH" command -v tmux 2>/dev/null)" \
 CANONICAL_PATH="$(/usr/bin/readlink -f "$SELECTED_PATH" 2>/dev/null)" \
   || die "cannot canonicalize selected tmux: $SELECTED_PATH"
 [ "$CANONICAL_PATH" = "$EXPECTED_CANONICAL" ] \
-  || die "post-S1 PATH selected unexpected tmux: $SELECTED_PATH -> $CANONICAL_PATH"
+  || die "post-S1 PATH selected unexpected tmux: $SELECTED_PATH -> $CANONICAL_PATH (expected $EXPECTED_CANONICAL)"
 [ -f "$CANONICAL_PATH" ] && [ -x "$CANONICAL_PATH" ] \
   || die "selected tmux is not an executable regular file: $CANONICAL_PATH"
 
 TMUX_VERSION="$("$CANONICAL_PATH" -V 2>/dev/null)" \
   || die "selected tmux version probe failed: $CANONICAL_PATH"
-[ "$TMUX_VERSION" = "tmux 3.5a" ] \
-  || die "selected tmux version is not tmux 3.5a: $TMUX_VERSION"
+[ "$TMUX_VERSION" = "tmux 3.7c" ] \
+  || die "selected tmux version is not tmux 3.7c: $TMUX_VERSION"
 ARCHITECTURE="$(PATH="$POST_S1_PATH" "$FILE_BIN" "$CANONICAL_PATH" 2>/dev/null)" \
   || die "selected tmux architecture probe failed: $CANONICAL_PATH"
 case "$ARCHITECTURE" in
-  *x86_64*|*x86-64*) : ;;
-  *) die "selected tmux is not x86_64: $ARCHITECTURE" ;;
+  *arm64*) : ;;
+  *) die "selected tmux is not arm64: $ARCHITECTURE" ;;
 esac
 case "$ARCHITECTURE" in
-  *arm64*) die "selected tmux unexpectedly contains arm64: $ARCHITECTURE" ;;
+  *x86_64*|*x86-64*) die "selected tmux unexpectedly contains x86_64: $ARCHITECTURE" ;;
+  *) : ;;
 esac
 
 if [ "$TEST_MODE" = "1" ]; then

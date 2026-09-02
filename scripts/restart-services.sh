@@ -219,32 +219,265 @@ bridge_admission_request() {
     [[ -n "$token" ]] || return 1
     curl -sf -X POST "${BRIDGE_URL}/api/admission/${action}" \
         -H "Content-Type: application/json" \
-        -d "$payload" --max-time 5 -K - >/dev/null <<CURLCFG
+        -d "$payload" --max-time 5 -K - <<CURLCFG
 header = "Authorization: Bearer ${token}"
 CURLCFG
 }
 
+restart_admission_file_mode() {
+    local path="$1" mode=""
+    if stat -c %a "$path" >/dev/null 2>&1; then
+        mode="$(stat -c %a "$path" 2>/dev/null || true)"
+        if [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+            printf '%s\n' "$mode"
+            return 0
+        fi
+    fi
+    if stat -f %Lp "$path" >/dev/null 2>&1; then
+        mode="$(stat -f %Lp "$path" 2>/dev/null || true)"
+        if [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+            printf '%s\n' "$mode"
+            return 0
+        fi
+    fi
+    return 1
+}
+
+cutover_legacy_pause_pending() {
+    local receipt="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-${HOME}/.flywheel/state/host-terminal-cutover.json}" mode=""
+    [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+    mode="$(restart_admission_file_mode "$receipt" || true)"
+    [[ "$mode" == "600" ]] || return 1
+    jq -e '.status == "paused" and ((.pause.leaseId // "") == "")' \
+        "$receipt" >/dev/null 2>&1
+}
+
+restart_admission_receipt_path() {
+    printf '%s\n' "${HOME}/.flywheel/state/restart-services-admission-pause-$$.json"
+}
+
+write_restart_admission_receipt() {
+    local pause_identifier="$1" receipt state_dir temporary created_at
+    receipt="$(restart_admission_receipt_path)"
+    state_dir="$(dirname "$receipt")"
+    temporary="${receipt}.tmp.$$"
+    created_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    mkdir -p "$state_dir" || return 1
+    chmod 700 "$state_dir" || return 1
+    (umask 077; jq -n --argjson pid "$$" --arg createdAt "$created_at" \
+        --arg pauseIdentifier "$pause_identifier" \
+        '{pid:$pid,createdAt:$createdAt,pauseIdentifier:$pauseIdentifier}' > "$temporary") \
+        || return 1
+    chmod 600 "$temporary" || return 1
+    mv -f "$temporary" "$receipt" || return 1
+}
+
+read_restart_admission_identifier() {
+    local receipt mode
+    receipt="$(restart_admission_receipt_path)"
+    [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+    mode="$(restart_admission_file_mode "$receipt" || true)"
+    [[ "$mode" == "600" ]] || return 1
+    jq -er --argjson pid "$$" \
+        'select(.pid == $pid and (.createdAt | type == "string"))
+         | .pauseIdentifier
+         | select(type == "string" and startswith("restart-services:"))' \
+        "$receipt" 2>/dev/null
+}
+
+clear_restart_admission_receipt() {
+    local receipt
+    receipt="$(restart_admission_receipt_path)"
+    rm -f "$receipt"
+}
+
+record_admission_takeover_lapse() {
+    local cutover_owner="$1" receipt temporary filter
+    if [[ "$cutover_owner" == "true" ]]; then
+        receipt="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-${HOME}/.flywheel/state/host-terminal-cutover.json}"
+        filter='.pause.reacquiredAfterLapse = true'
+    else
+        receipt="$(restart_admission_receipt_path)"
+        filter='.reacquiredAfterLapse = true'
+    fi
+    [[ -f "$receipt" && ! -L "$receipt" ]] || return 1
+    [[ "$(restart_admission_file_mode "$receipt" || true)" == "600" ]] || return 1
+    temporary="${receipt}.tmp.$$"
+    (umask 077; jq "$filter" "$receipt" > "$temporary") || {
+        rm -f "$temporary"
+        return 1
+    }
+    chmod 600 "$temporary" || { rm -f "$temporary"; return 1; }
+    mv -f "$temporary" "$receipt"
+}
+
+write_cutover_admission_lease_handoff() {
+    local lease_id="$1"
+    local receipt="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-${HOME}/.flywheel/state/host-terminal-cutover.json}"
+    local state_dir
+    state_dir="$(dirname "$receipt")"
+    local handoff="${state_dir}/host-terminal-cutover.admission-lease-id"
+    local temporary="${handoff}.tmp.$$"
+    [[ "$lease_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]] \
+        || return 1
+    mkdir -p "$state_dir" || return 1
+    chmod 700 "$state_dir" || return 1
+    (umask 077; printf '%s\n' "$lease_id" > "$temporary") || return 1
+    chmod 600 "$temporary" || return 1
+    mv -f "$temporary" "$handoff" || return 1
+    return 0
+}
+
 pause_admission_best_effort() {
-    local payload
+    local payload response lease_id="" owned_lease_id="${ADMISSION_PAUSE_LEASE_ID:-}"
+    local cutover_pending=false pause_identifier
+    case "${RESTART_REASON}" in
+        *[!a-zA-Z0-9._-]*) pause_identifier="restart-services:deploy:pid=$$:started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+        *) pause_identifier="restart-services:${RESTART_REASON}:pid=$$:started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" ;;
+    esac
+    if cutover_legacy_pause_pending; then
+        cutover_pending=true
+        ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=true
+        ADMISSION_PAUSE_RELEASE_ON_EXIT=false
+    else
+        ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+        ADMISSION_PAUSE_RELEASE_ON_EXIT=true
+    fi
     payload=$(jq -n \
         --argjson durationSeconds "$ADMISSION_PAUSE_SECONDS" \
-        --arg reason "restart-services:${RESTART_REASON}" \
-        '{durationSeconds: $durationSeconds, reason: $reason}')
-    if bridge_admission_request pause "$payload"; then
-        log "Bridge admission paused for ${ADMISSION_PAUSE_SECONDS}s"
+        --arg reason "$pause_identifier" \
+        --arg leaseId "$owned_lease_id" \
+        '{durationSeconds: $durationSeconds, reason: $reason}
+         + (if $leaseId == "" then {} else {leaseId: $leaseId} end)')
+    if response=$(bridge_admission_request pause "$payload"); then
+        if jq -e '.admissionPause.reacquiredAfterLapse == true' <<<"$response" >/dev/null 2>&1; then
+            log "WARNING: Bridge admission owner lease was reacquired after expiry; admission continuity was broken"
+        fi
+        lease_id=$(jq -r '.admissionPause.leaseId // empty' <<<"$response" 2>/dev/null || true)
+        if [[ "$lease_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
+            ADMISSION_PAUSE_LEASE_ID="$lease_id"
+            if [[ "$cutover_pending" == "true" ]]; then
+                if ! write_cutover_admission_lease_handoff "$lease_id"; then
+                    log "ERROR: cutover admission lease handoff could not be written; refusing to continue"
+                    return 1
+                fi
+                ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+                ADMISSION_PAUSE_RELEASE_ON_EXIT=false
+                log "Bridge admission cutover lease adopted and handed off; restart will not resume it"
+            else
+                ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+                ADMISSION_PAUSE_RELEASE_ON_EXIT=true
+                log "Bridge admission paused for ${ADMISSION_PAUSE_SECONDS}s with owner lease"
+            fi
+        else
+            ADMISSION_PAUSE_LEASE_ID=""
+            if [[ "$cutover_pending" == "true" ]]; then
+                ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=true
+                log "WARNING: Bridge admission paused without an owner lease id; preserving the cutover brake for post-deploy takeover"
+            elif write_restart_admission_receipt "$pause_identifier"; then
+                ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=true
+                log "WARNING: Bridge admission paused without an owner lease id; preserving this wave's brake for post-deploy takeover"
+            else
+                ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+                log "WARNING: Bridge admission paused without an owner lease id but its run-local receipt could not be written; preserving the brake without takeover"
+            fi
+        fi
     else
         # Bootstrap compatibility: the pre-feature Bridge answers 404. Phase 1
         # is intentionally best-effort; TTL protects pause-aware versions.
-        log "WARNING: admission pause unavailable (pre-feature Bridge or control API failure), proceeding without brake"
+        log "WARNING: admission pause unavailable (pre-feature Bridge, foreign owner, or control API failure); no owned admission lease acquired; preserving any existing brake"
+    fi
+    return 0
+}
+
+takeover_cutover_admission_pause_after_bridge_health() {
+    [[ "${ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER:-false}" == "true" ]] || return 0
+    local payload response lease_id="" cutover_owner=false expected_legacy_reason=""
+    [[ "${ADMISSION_PAUSE_RELEASE_ON_EXIT:-true}" == "true" ]] || cutover_owner=true
+    if [[ "$cutover_owner" == "true" ]]; then
+        local receipt="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-${HOME}/.flywheel/state/host-terminal-cutover.json}"
+        expected_legacy_reason=$(jq -er '.pause.reason | select(type == "string" and length > 0 and length <= 200)' "$receipt" 2>/dev/null) || {
+            log "ERROR: cutover receipt has no valid legacy pause identifier"
+            return 1
+        }
+    else
+        expected_legacy_reason=$(read_restart_admission_identifier) || {
+            ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+            log "WARNING: ordinary deploy has no run-local receipt; preserving the foreign NULL-owner brake"
+            return 0
+        }
+    fi
+    payload=$(jq -n \
+        --argjson durationSeconds "$ADMISSION_PAUSE_SECONDS" \
+        --arg reason "restart-services:${RESTART_REASON}:cutover-takeover" \
+        --arg expectedLegacyReason "$expected_legacy_reason" \
+        '{durationSeconds: $durationSeconds, reason: $reason, expectedLegacyReason:$expectedLegacyReason}')
+    if ! response=$(bridge_admission_request pause "$payload"); then
+        if [[ "$cutover_owner" == "true" ]]; then
+            log "ERROR: new Bridge could not take ownership of the legacy cutover pause"
+            return 1
+        fi
+        ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+        clear_restart_admission_receipt || true
+        log "WARNING: ordinary deploy could not take ownership of the legacy NULL-owner pause; preserving the foreign brake and continuing"
+        return 0
+    fi
+    if jq -e '.admissionPause.reacquiredAfterLapse == true' <<<"$response" >/dev/null 2>&1; then
+        log "WARNING: Bridge admission legacy pause was reacquired after expiry; admission continuity was broken"
+        if ! record_admission_takeover_lapse "$cutover_owner"; then
+            log "ERROR: legacy admission lapse evidence could not be written to the owning receipt"
+            return 1
+        fi
+    fi
+    lease_id=$(jq -r '.admissionPause.leaseId // empty' <<<"$response" 2>/dev/null || true)
+    if [[ ! "$lease_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
+        if [[ "$cutover_owner" == "true" ]]; then
+            log "ERROR: new Bridge did not return a valid owner for the legacy cutover pause"
+            return 1
+        fi
+        ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+        clear_restart_admission_receipt || true
+        log "WARNING: ordinary deploy takeover returned no valid owner lease; preserving the brake and continuing"
+        return 0
+    fi
+    if [[ "$cutover_owner" == "true" ]]; then
+        if ! write_cutover_admission_lease_handoff "$lease_id"; then
+            log "ERROR: cutover admission lease handoff could not be written; refusing the Lead wave"
+            return 1
+        fi
+    fi
+    ADMISSION_PAUSE_LEASE_ID="$lease_id"
+    ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=false
+    if [[ "$cutover_owner" == "true" ]]; then
+        ADMISSION_PAUSE_RELEASE_ON_EXIT=false
+        log "Bridge admission legacy pause atomically adopted; owner handoff is durable and restart will not resume it"
+    else
+        ADMISSION_PAUSE_RELEASE_ON_EXIT=true
+        log "Bridge admission legacy pause atomically adopted for release after the Lead wave"
     fi
     return 0
 }
 
 resume_admission_best_effort() {
-    if bridge_admission_request resume '{}'; then
+    local lease_id="${ADMISSION_PAUSE_LEASE_ID:-}" payload response
+    if [[ "${ADMISSION_PAUSE_RELEASE_ON_EXIT:-true}" != "true" ]]; then
+        log "Bridge admission cutover lease belongs to the host transaction; preserving the brake"
+        return 0
+    fi
+    if [[ -z "$lease_id" ]]; then
+        log "WARNING: no owner lease id; preserving the admission brake for post-deploy takeover"
+        return 0
+    fi
+    payload=$(jq -n --arg leaseId "$lease_id" '{leaseId: $leaseId}')
+    if response=$(bridge_admission_request resume "$payload"); then
+        if jq -e '.admissionPause.leaseLapsed == true' <<<"$response" >/dev/null 2>&1; then
+            log "WARNING: admission brake had already expired before resume; admission continuity was broken"
+        fi
+        ADMISSION_PAUSE_LEASE_ID=""
+        clear_restart_admission_receipt || true
         log "Bridge admission resumed"
     else
-        log "WARNING: admission resume unavailable; TTL will release the brake"
+        log "WARNING: owner-qualified admission resume unavailable; preserving the brake until TTL"
     fi
     return 0
 }
@@ -942,7 +1175,7 @@ preflight_pull_latest_main() {
         log "ERROR: host tmux selection gate refused restart target ${target_sha}"
         alert_severe "restart-preflight-host-tmux-gate" \
             "Flywheel restart host tmux gate failed" \
-            "restart-services could not prove the future PATH selects the bound tmux 3.5a carrier for ${target_sha}. No merge, build, or restart was attempted."
+            "restart-services could not prove the required host tmux selection contract for ${target_sha}. No merge, build, or restart was attempted."
         return 1
     fi
 
@@ -1564,6 +1797,7 @@ acquire_lock() {
 acquire_lock
 
 # Temp files are per owned restart run and are covered by restart_on_exit.
+register_restart_transient_file "$(restart_admission_receipt_path)"
 PROJECT_SHA_UPDATES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-project-sha-XXXXXX")
 if ! LEAD_RESTART_NAMES_FILE=$(mktemp "${TMPDIR:-/tmp}/flywheel-lead-results-XXXXXX"); then
     log "ERROR: cannot allocate Lead restart result sidecar; terminal message will report incomplete evidence"
@@ -2603,7 +2837,9 @@ rollback_and_restart() {
     if pnpm -C "$FLYWHEEL_DIR" install --frozen-lockfile && \
        pnpm -C "$FLYWHEEL_DIR" build; then
         if [[ "$restart_bridge" == "true" ]]; then
-            pause_admission_best_effort
+            if ! pause_admission_best_effort; then
+                log "WARNING: rollback admission pause failed; continuing rollback recovery"
+            fi
             # FLY-516 (Codex R1 HIGH): stop_bridge is now fail-closed (returns 1 on
             # a stuck port). Guard the bare call — under `set -e` an unguarded
             # non-zero would abort the rollback silently. If the port can't be
@@ -2616,7 +2852,6 @@ rollback_and_restart() {
                 return 1
             fi
             start_bridge
-            resume_admission_best_effort
         fi
         local rb_leads_failed=0
         if [[ "$restart_all_leads" == "true" ]]; then
@@ -2634,6 +2869,9 @@ rollback_and_restart() {
             fi
             # FLY-98: trigger cmux refresh after rollback restart
             trigger_cmux_refresh
+        fi
+        if [[ "$restart_bridge" == "true" ]]; then
+            resume_admission_best_effort
         fi
         if ! restart_voice_bridge_managed; then
             alert_severe "rollback-voice-bridge-failed" "Flywheel deploy failed" \
@@ -2670,6 +2908,7 @@ ensure_voice_bridge_for_deploy() {
         alert_severe "deploy-voice-bridge-failed-code-rollback-disabled" \
             "Flywheel voice-bridge restart failed; code-only rollback disabled" \
             "voice-bridge 受管重启/健康复验失败 (${detail})。deployed-sha 未推进；未执行不带数据库快照的代码回滚，请走 window rollback。"
+        resume_admission_best_effort
         RESTART_TERMINAL_REPORTED=true
         return 1
     fi
@@ -2698,7 +2937,10 @@ deploy_and_verify() {
     # Step 0: reject new admissions before the Bridge begins draining. This runs
     # inside the detached deploy body, never in the self-detaching parent.
     if [[ "$restart_bridge" == "true" ]]; then
-        pause_admission_best_effort
+        if ! pause_admission_best_effort; then
+            log "ERROR: admission cutover owner handoff failed before Bridge stop"
+            return 1
+        fi
     fi
 
     # Step 1: Stop Bridge FIRST (triggers stopAccepting + drain)
@@ -2830,22 +3072,30 @@ deploy_and_verify() {
             return 1
         fi
         log "Bridge health check: OK"
-        resume_admission_best_effort
         if ! dbi_accept_health_identity "$FLYWHEEL_DIR" "$CURRENT_HEAD" "$BRIDGE_HEALTH_JSON" "$BRIDGE_DEPLOY_MODE"; then
             local identity_marker="${HOME}/.flywheel/state/deploy-build-identity-${CURRENT_HEAD}"
             log "ERROR: Bridge build identity rejected (${DBI_REASON}); deployed-sha NOT advanced."
             if [[ ! -f "$identity_marker" ]]; then
                 alert_warning "deploy-build-identity-${CURRENT_HEAD}" \
                     "Flywheel build identity mismatch" \
-                    "Bridge 健康但运行身份未证明包含 intended ${CURRENT_HEAD:0:7} (${DBI_REASON})。deployed-sha 未推进；请重建并重试。"
+                    "Bridge 健康但运行身份未证明包含 intended ${CURRENT_HEAD:0:7} (${DBI_REASON})。deployed-sha 未推进；已尝试释放本次普通部署拥有的 admission brake，legacy NULL-owner brake 可能保留到 TTL；请重建并重试。"
                 mkdir -p "$(dirname "$identity_marker")" 2>/dev/null || true
                 : > "$identity_marker" 2>/dev/null || true
             fi
+            resume_admission_best_effort
             RESTART_TERMINAL_REPORTED=true
             return 1
         fi
         rm -f "${HOME}/.flywheel/state/deploy-build-identity-${CURRENT_HEAD}"
         bridge_startup_state="passed"
+        if ! takeover_cutover_admission_pause_after_bridge_health; then
+            log "ERROR: legacy cutover admission pause ownership was not transferred; refusing the Lead wave"
+            alert_severe "cutover-admission-takeover-failed" \
+                "Flywheel cutover admission takeover failed" \
+                "The new Bridge is healthy but could not transfer the legacy cutover pause into a durable owner lease. No Lead restart wave was started; keep the fleet paused and inspect the cutover receipt/handoff."
+            RESTART_TERMINAL_REPORTED=true
+            return 1
+        fi
     fi
 
     # Step 3.5: voice-bridge consumes the same freshly-built workspace but has
@@ -3049,6 +3299,10 @@ deploy_and_verify() {
         log "WARNING: code deployed; ${tail_log_subject} is degraded — $tail_detail"
         alert_warning "$tail_signature" "$tail_title" \
             "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\` 且 deployed-sha 已推进；${tail_detail}。"
+    fi
+
+    if [[ "$restart_bridge" == "true" ]]; then
+        resume_admission_best_effort
     fi
 
     RESTART_TERMINAL_REPORTED=true
