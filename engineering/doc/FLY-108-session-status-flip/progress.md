@@ -1,14 +1,14 @@
 ---
 issue: FLY-108
-phase: implement
-phaseCursor: 5/6
-updated: 2026-09-01T18:06:45.255Z
-nextStep: "Bind PR #168 into milestone, keep milestone as last commit, then
-  retry review registration when Bridge recovers"
+phase: design
+phaseCursor: 1/6
+updated: 2026-09-02T05:03:05.592Z
+nextStep: "Re-dispatch audit done: docs + HTML inherited; run research/plan
+  stages then design_review gate"
 chunks: []
 pointers: {}
 ---
 
 # FLY-108 progress
-**phase**: implement (5/6)
-**next**: Bind PR #168 into milestone, keep milestone as last commit, then retry review registration when Bridge recovers
+**phase**: design (1/6)
+**next**: Re-dispatch audit done: docs + HTML inherited; run research/plan stages then design_review gate
