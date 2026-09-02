@@ -446,8 +446,8 @@ export class ConfigLoader {
 				// FLY-241: normalize a set model to its trimmed form. The check
 				// above already rejects null / non-string / whitespace-only, so
 				// here role.model is a non-empty string. A quoted padded value
-				// ("  claude-fable-5  ") otherwise passes validation and reaches
-				// the CLI as `--model "  claude-fable-5  "`, which Claude/Codex
+				// ("  fable  ") otherwise passes validation and reaches the CLI as
+				// `--model "  fable  "`, which Claude/Codex
 				// reject → the Runner never starts. Trim on load so downstream
 				// (resolveRoleAdapter → runnerModel → `--model`) gets the bare id.
 				if (typeof role.model === "string") {

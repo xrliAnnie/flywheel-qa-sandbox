@@ -345,6 +345,7 @@ describe("typed generalized workflow snapshot", () => {
 		const execute = parsed.resolved.nodes.find((node) => node.id === "execute");
 		expect(execute).toMatchObject({
 			type: "generic",
+			dispatchPinned: true,
 			dispatch: { vendor: "codex", model: "gpt-5.6-sol", effort: "low" },
 			capabilities: {
 				shared_branch_writer: true,

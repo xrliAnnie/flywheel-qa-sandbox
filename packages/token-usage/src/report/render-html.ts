@@ -11,7 +11,6 @@ const MODEL_LABEL: Record<string, string> = {
 	"claude-opus-4-8": "Opus 4.8",
 	"claude-opus-4-7": "Opus 4.7",
 	"claude-opus-4-6": "Opus 4.6",
-	"claude-fable-5": "Fable 5",
 	"claude-sonnet-5": "Sonnet 5",
 	"claude-sonnet-4-6": "Sonnet 4.6",
 	"claude-haiku-4-5-20251001": "Haiku 4.5",
@@ -21,11 +20,25 @@ const MODEL_COLOR: Record<string, string> = {
 	"claude-opus-4-8": "#ff3b30",
 	"claude-opus-4-7": "#ff6961",
 	"claude-opus-4-6": "#ff8a80",
-	"claude-fable-5": "#34c759",
 	"claude-sonnet-5": "#0a84ff",
 	"claude-sonnet-4-6": "#5ac8fa",
 	"claude-haiku-4-5-20251001": "#af52de",
 };
+const FABLE_MODEL = /^claude-fable-([0-9]+(?:-[0-9]+)*)(\[1m\])?$/;
+
+function modelLabel(model: string): string {
+	const fable = FABLE_MODEL.exec(model);
+	if (fable) {
+		return `Fable ${fable[1]!.replaceAll("-", ".")}${fable[2] ? " · 1M" : ""}`;
+	}
+	return MODEL_LABEL[model] ?? model;
+}
+
+function modelColor(model: string): string {
+	return FABLE_MODEL.test(model)
+		? "#34c759"
+		: (MODEL_COLOR[model] ?? "#86868b");
+}
 const PROJ_COLORS = [
 	"#007aff",
 	"#34c759",
@@ -345,8 +358,8 @@ export function renderReportHtml(m: ReportModel): string {
 	const modelRows = m.models
 		.slice(0, 6)
 		.map((mm) => {
-			const col = MODEL_COLOR[mm.name] ?? "#86868b";
-			return `<div class="srow"><span class="sk">${esc(MODEL_LABEL[mm.name] ?? mm.name)}</span><span class="sbar"><span style="width:${((mm.tokens / mModelMax) * 100).toFixed(0)}%;background:${col}"></span></span><span class="sv">${fmtTok(mm.tokens)} · ${((mm.tokens / mModelTot) * 100).toFixed(0)}%</span><span class="su">${formatUsd(mm.cost)}</span></div>`;
+			const col = modelColor(mm.name);
+			return `<div class="srow"><span class="sk">${esc(modelLabel(mm.name))}</span><span class="sbar"><span style="width:${((mm.tokens / mModelMax) * 100).toFixed(0)}%;background:${col}"></span></span><span class="sv">${fmtTok(mm.tokens)} · ${((mm.tokens / mModelTot) * 100).toFixed(0)}%</span><span class="su">${formatUsd(mm.cost)}</span></div>`;
 		})
 		.join("");
 	const modelCard = `<div class="card"><h2>按模型 <span>tokens · 成本估算</span></h2>${modelRows}</div>`;

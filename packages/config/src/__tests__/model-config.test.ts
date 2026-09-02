@@ -54,12 +54,25 @@ describe("FLY-1496 model configuration snapshots", () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const snapshot = getModelConfigSnapshot();
 
+		expect(snapshot.normalizeDispatchModel("fable")).toBe("claude-fable-5-1");
+		expect(snapshot.normalizeDispatchModel("fable-1m")).toBe(
+			"claude-fable-5-1[1m]",
+		);
+		expect(snapshot.getModelRegistryEntry("fable")?.contextWindowTokens).toBe(
+			1_000_000,
+		);
+		expect(snapshot.getModelRegistryEntry("fable")?.maxInputTokens).toBe(
+			1_000_000,
+		);
+		expect(
+			snapshot.getModelRegistryEntry("fable-1m")?.contextWindowTokens,
+		).toBe(1_000_000);
 		expect(snapshot.normalizeDispatchModel("opus")).toBe("claude-opus-5");
 		expect(snapshot.normalizeDispatchModel("opus[1m]")).toBe(
 			"claude-opus-5[1m]",
 		);
 		expect(snapshot.tiers).toMatchObject({
-			heavy: { id: "claude-fable-5", code: "F" },
+			heavy: { id: "claude-fable-5-1", code: "F" },
 			medium: { id: "claude-opus-5", code: "O" },
 			light: { id: "claude-opus-5", code: "O" },
 			trivial: { id: "claude-opus-5", code: "O" },
@@ -82,14 +95,15 @@ describe("FLY-1496 model configuration snapshots", () => {
 	});
 
 	it("hot-reloads an atomically replaced same-size binding without code or restart", () => {
-		const first = `${JSON.stringify({
+		const firstRaw = JSON.stringify({
 			version: 1,
 			bindings: { opus: "claude-opus-5" },
-		})} `;
+		});
 		const second = JSON.stringify({
 			version: 1,
-			bindings: { opus: "claude-fable-5" },
+			bindings: { opus: "claude-fable-5-1" },
 		});
+		const first = firstRaw.padEnd(Buffer.byteLength(second), " ");
 		expect(Buffer.byteLength(first)).toBe(Buffer.byteLength(second));
 		writeFileSync(configPath, first);
 
@@ -105,7 +119,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 
 		const after = getModelConfigSnapshot();
 		expect(after.revision).not.toBe(before.revision);
-		expect(after.normalizeDispatchModel("opus")).toBe("claude-fable-5");
+		expect(after.normalizeDispatchModel("opus")).toBe("claude-fable-5-1");
 		// A business decision that already captured a snapshot stays one generation.
 		expect(before.normalizeDispatchModel("opus")).toBe("claude-opus-5");
 	});
@@ -123,6 +137,8 @@ describe("FLY-1496 model configuration snapshots", () => {
 						label: "Fable 6",
 						aliases: ["fable-6"],
 						dispatch: true,
+						maxInputTokens: 1_000_000,
+						contextWindowTokens: 200_000,
 					},
 				],
 				tiers: { heavy: "fable-6" },
@@ -132,6 +148,200 @@ describe("FLY-1496 model configuration snapshots", () => {
 		const snapshot = getModelConfigSnapshot();
 		expect(snapshot.normalizeDispatchModel("fable-6")).toBe("claude-fable-6");
 		expect(snapshot.tiers.heavy.id).toBe("claude-fable-6");
+		expect(snapshot.getModelRegistryEntry("fable-6")?.contextWindowTokens).toBe(
+			200_000,
+		);
+		expect(snapshot.getModelRegistryEntry("fable-6")?.maxInputTokens).toBe(
+			1_000_000,
+		);
+	});
+
+	it("preserves builtin family aliases and window metadata for same-id overlays", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-1",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.1 overlay",
+						aliases: ["fable-5-1"],
+						dispatch: true,
+					},
+					{
+						id: "claude-fable-5-1[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.1 1M overlay",
+						aliases: ["fable-5-1-1m"],
+						dispatch: true,
+					},
+				],
+				tiers: { heavy: "claude-fable-5-1" },
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.getDispatchCanonical("fable")).toBe("claude-fable-5-1");
+		expect(snapshot.getDispatchCanonical("fable-1m")).toBe(
+			"claude-fable-5-1[1m]",
+		);
+		expect(snapshot.getModelRegistryEntry("fable")?.contextWindowTokens).toBe(
+			1_000_000,
+		);
+		expect(
+			snapshot.getModelRegistryEntry("fable-1m")?.contextWindowTokens,
+		).toBe(1_000_000);
+		expect(snapshot.getModelRegistryEntry("fable")?.label).toBe(
+			"Fable 5.1 overlay",
+		);
+	});
+
+	it("moves the complete Fable family alias binding to a future model pair", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-2",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2",
+						aliases: ["fable-5-2"],
+						dispatch: true,
+						contextWindowTokens: 1_000_000,
+					},
+					{
+						id: "claude-fable-5-2[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2 (1M)",
+						aliases: ["fable-5-2-1m"],
+						dispatch: true,
+						contextWindowTokens: 1_000_000,
+					},
+				],
+				bindings: { fable: "claude-fable-5-2" },
+				tiers: { heavy: "fable" },
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.bindings.fable).toBe("claude-fable-5-2");
+		expect(snapshot.getDispatchCanonical("fable")).toBe("claude-fable-5-2");
+		expect(snapshot.getDispatchCanonical("fable-1m")).toBe(
+			"claude-fable-5-2[1m]",
+		);
+		expect(snapshot.getDispatchCanonical("fable[1m]")).toBe(
+			"claude-fable-5-2[1m]",
+		);
+		expect(snapshot.tiers.heavy.id).toBe("claude-fable-5-2");
+		expect(snapshot.getDispatchCanonical("claude-fable-5-1")).toBe(
+			"claude-fable-5-1",
+		);
+	});
+
+	it("moves the builtin heavy tier with bindings.fable when tiers are omitted", () => {
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-2",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2",
+						aliases: ["fable-5-2"],
+						dispatch: true,
+					},
+					{
+						id: "claude-fable-5-2[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2 (1M)",
+						aliases: ["fable-5-2-1m"],
+						dispatch: true,
+					},
+				],
+				bindings: { fable: "claude-fable-5-2" },
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.getDispatchCanonical("fable")).toBe("claude-fable-5-2");
+		expect(snapshot.tiers.heavy).toEqual({
+			id: "claude-fable-5-2",
+			aliases: ["fable"],
+			code: "F",
+		});
+	});
+
+	it("keeps the complete builtin Fable binding when the future 1M partner is absent", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-2",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2",
+						aliases: ["fable-5-2"],
+						dispatch: true,
+						contextWindowTokens: 200_000,
+					},
+				],
+				bindings: { fable: "claude-fable-5-2" },
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.bindings.fable).toBe("claude-fable-5-1");
+		expect(snapshot.getDispatchCanonical("fable")).toBe("claude-fable-5-1");
+		expect(snapshot.getDispatchCanonical("fable-1m")).toBe(
+			"claude-fable-5-1[1m]",
+		);
+		expect(warn.mock.calls.flat().join(" ")).toMatch(/bindings\.fable/);
+	});
+
+	it("rejects a complete non-Fable pair as the Fable family binding", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-opus-6",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Opus 6",
+						aliases: ["opus-6"],
+						dispatch: true,
+					},
+					{
+						id: "claude-opus-6[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Opus 6 (1M)",
+						aliases: ["opus-6-1m"],
+						dispatch: true,
+					},
+				],
+				bindings: { fable: "claude-opus-6" },
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.bindings.fable).toBe("claude-fable-5-1");
+		expect(snapshot.getDispatchCanonical("fable")).toBe("claude-fable-5-1");
+		expect(warn.mock.calls.flat().join(" ")).toMatch(/bindings\.fable/);
 	});
 
 	it("does not mislabel an added model family as Haiku", () => {
@@ -173,7 +383,7 @@ describe("FLY-1496 model configuration snapshots", () => {
 		);
 
 		const snapshot = getModelConfigSnapshot();
-		expect(snapshot.tiers.heavy.id).toBe("claude-fable-5");
+		expect(snapshot.tiers.heavy.id).toBe("claude-fable-5-1");
 		expect(snapshot.tiers.medium.id).toBe("claude-opus-5");
 		expect(snapshot.tiers.light.id).toBe("claude-sonnet-5");
 		expect(warn.mock.calls.flat().join(" ")).toMatch(/tier/i);
@@ -214,11 +424,11 @@ describe("FLY-1496 model configuration snapshots", () => {
 			configPath,
 			JSON.stringify({
 				version: 1,
-				bindings: { opus: "claude-fable-5" },
+				bindings: { opus: "claude-fable-5-1" },
 			}),
 		);
 		expect(getModelConfigSnapshot().normalizeDispatchModel("opus")).toBe(
-			"claude-fable-5",
+			"claude-fable-5-1",
 		);
 	});
 
@@ -252,8 +462,33 @@ describe("FLY-1496 model configuration snapshots", () => {
 		const snapshot = getModelConfigSnapshot();
 		expect(snapshot.getModelRegistryEntry("claude-extra-a")).toBeNull();
 		expect(snapshot.getModelRegistryEntry("claude-extra-b")).toBeNull();
-		expect(snapshot.normalizeDispatchModel("fable")).toBe("claude-fable-5");
+		expect(snapshot.normalizeDispatchModel("fable")).toBe("claude-fable-5-1");
 		expect(warn.mock.calls.flat().join(" ")).toMatch(/models/i);
+	});
+
+	it("discards a models overlay with an unsafe context window", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-unsafe-window",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Unsafe window",
+						aliases: ["unsafe-window"],
+						dispatch: true,
+						contextWindowTokens: 0,
+					},
+				],
+			}),
+		);
+
+		const snapshot = getModelConfigSnapshot();
+		expect(snapshot.getModelRegistryEntry("unsafe-window")).toBeNull();
+		expect(warn.mock.calls.flat().join(" ")).toMatch(/contextWindowTokens/);
 	});
 });
 
@@ -332,6 +567,22 @@ describe("FLY-1496 canonical model resolution", () => {
 		expect(getModelConfigSnapshot().tiers.medium.id).toBe("claude-opus-5");
 	});
 
+	it("keeps pinned Fable 5 identities dispatchable but non-selectable", () => {
+		const snapshot = getModelConfigSnapshot();
+		for (const model of ["claude-fable-5", "claude-fable-5[1m]"]) {
+			expect(snapshot.getDispatchCanonical(model)).toBe(model);
+			expect(snapshot.isModelSelectable({ surface: "workflow", model })).toBe(
+				false,
+			);
+		}
+		expect(snapshot.getModelRegistryEntry("claude-fable-5")?.label).toBe(
+			"Fable 5",
+		);
+		expect(snapshot.getModelRegistryEntry("claude-fable-5[1m]")?.label).toBe(
+			"Fable 5 (1M)",
+		);
+	});
+
 	it("writes the account-default sentinel through untouched", () => {
 		expect(
 			validateModelWrite(null, { surface: "lead", runtimeVendor: "claude" }),
@@ -340,7 +591,7 @@ describe("FLY-1496 canonical model resolution", () => {
 
 	it("substitutes Fable at Lead boot only when the spelling cannot resolve", () => {
 		expect(resolveLeadLaunchSelection("claude-not-a-model", "high")).toEqual({
-			model: "claude-fable-5",
+			model: "claude-fable-5-1",
 			effort: "high",
 			substituted: true,
 			reason: "model_invalid",
@@ -352,10 +603,52 @@ describe("FLY-1496 canonical model resolution", () => {
 			reason: "configured",
 		});
 		expect(resolveLeadLaunchSelection(undefined, undefined)).toEqual({
-			model: "claude-fable-5",
+			model: "claude-fable-5-1",
 			effort: null,
 			substituted: false,
 			reason: "authoritative_absence",
+		});
+	});
+
+	it("resolves Lead absence and invalid fallback from the bound Fable family", () => {
+		const configPath = process.env.FLYWHEEL_MODELS_CONFIG!;
+		writeFileSync(
+			configPath,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-2",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2",
+						aliases: ["fable-5-2"],
+						dispatch: true,
+					},
+					{
+						id: "claude-fable-5-2[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2 (1M)",
+						aliases: ["fable-5-2-1m"],
+						dispatch: true,
+						contextWindowTokens: 1_000_000,
+					},
+				],
+				bindings: { fable: "claude-fable-5-2" },
+				tiers: { heavy: "fable" },
+			}),
+		);
+		const snapshot = getModelConfigSnapshot();
+		expect(
+			resolveLeadLaunchSelection(undefined, undefined, snapshot).model,
+		).toBe("claude-fable-5-2");
+		expect(
+			resolveLeadLaunchSelection("claude-not-a-model", "high", snapshot),
+		).toMatchObject({
+			model: "claude-fable-5-2",
+			effort: "high",
+			substituted: true,
 		});
 	});
 });

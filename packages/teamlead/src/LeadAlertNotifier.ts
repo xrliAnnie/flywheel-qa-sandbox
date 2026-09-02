@@ -235,6 +235,9 @@ export const ALERT_EVENT_TYPES = [
 	"account_switch_degraded",
 	"machine_account_conflict",
 	"model_config",
+	// FLY-2238: updater-only, truthful receipt after the models.json authority
+	// advances and survives a real registry reload. Never opens a ticket.
+	"model_family_updated",
 	"model_cap_switched",
 	"model_cap_unknown",
 	"model_cap_persistent_unknown",
@@ -369,6 +372,7 @@ export type AlertEventType = (typeof ALERT_EVENT_TYPES)[number];
 /** Root-only notices that must never open a ticket/thread/ARC lifecycle. */
 export const INFORMATIONAL_KINDS: ReadonlySet<AlertEventType> = new Set([
 	"account_switched",
+	"model_family_updated",
 	"model_cap_switched",
 	"model_cap_unknown",
 	"quota_switch_confirmation",

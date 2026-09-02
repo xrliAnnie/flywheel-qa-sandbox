@@ -74,6 +74,7 @@ teamlead:scripts/screencapture-l3-skill.md
 teamlead:scripts/lib/lead-identity-preflight.sh
 teamlead:scripts/lib/lead-session-authority.sh
 teamlead:scripts/lib/lead-session-resume-gate.sh
+teamlead:scripts/lib/lead-model-authority-receipt.mjs
 teamlead:scripts/lib/session-ctx-usage.mjs
 teamlead:scripts/lib/mcp-inherit.sh
 teamlead:scripts/lib/reap-orphan-adapters.sh

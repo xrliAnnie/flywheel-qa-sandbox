@@ -51,7 +51,7 @@ describe("buildClaudeReviewArgv", () => {
 			"--resume",
 			"uuid-1",
 		]);
-		expect(reround).toContain("claude-fable-5");
+		expect(reround).toContain("claude-fable-5-1");
 		expect(reround.filter((arg) => arg === "--settings")).toHaveLength(1);
 	});
 

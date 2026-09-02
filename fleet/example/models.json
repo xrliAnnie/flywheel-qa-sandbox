@@ -6,7 +6,7 @@
 	},
 	"models": [],
 	"tiers": {
-		"heavy": "claude-fable-5",
+		"heavy": "fable",
 		"medium": "claude-opus-5",
 		"light": "claude-opus-5",
 		"trivial": "claude-opus-5"

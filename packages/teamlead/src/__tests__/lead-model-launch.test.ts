@@ -50,8 +50,9 @@ describe("resolveLeadModelLaunch", () => {
 			expect(resolveLeadModelLaunch("flywheel", "eng-lead")).toMatchObject({
 				rawModel: null,
 				rawEffort: null,
-				model: "claude-fable-5",
+				model: "claude-fable-5-1",
 				effort: null,
+				contextWindowTokens: 1_000_000,
 				reason: "authoritative_absence",
 			});
 		});
@@ -62,7 +63,8 @@ describe("resolveLeadModelLaunch", () => {
 		withProjects({ model: "claude-not-a-model" }, () => {
 			expect(resolveLeadModelLaunch("flywheel", "eng-lead")).toMatchObject({
 				rawModel: "claude-not-a-model",
-				model: "claude-fable-5",
+				model: "claude-fable-5-1",
+				contextWindowTokens: 1_000_000,
 				substituted: true,
 				reason: "model_invalid",
 			});
@@ -76,6 +78,21 @@ describe("resolveLeadModelLaunch", () => {
 				model: "claude-opus-4-8[1m]",
 				substituted: false,
 				reason: "configured",
+			});
+		});
+	});
+
+	it("carries only registry-trusted context metadata into the frozen launch decision", () => {
+		withProjects({ model: "fable" }, () => {
+			expect(resolveLeadModelLaunch("flywheel", "eng-lead")).toMatchObject({
+				model: "claude-fable-5-1",
+				contextWindowTokens: 1_000_000,
+			});
+		});
+		withProjects({ model: "claude-opus-4-8[1m]" }, () => {
+			expect(resolveLeadModelLaunch("flywheel", "eng-lead")).toMatchObject({
+				model: "claude-opus-4-8[1m]",
+				contextWindowTokens: 1_000_000,
 			});
 		});
 	});

@@ -27,6 +27,74 @@ async function setup() {
 }
 
 describe("management DAG writer", () => {
+	it("retains the alias through the unified management writer adapter", async () => {
+		const { store, dag } = await setup();
+		const writer = createManagementDagWriter({
+			store,
+			projectNames: () => ["flywheel"],
+			actor: "founder",
+		});
+		const targetId = dag.nodes.find((node) => node.nodeId === "design")!
+			.dispatch.targetId;
+		const target = await writer.resolve(targetId);
+		if (!target) throw new Error("target missing");
+		const checked = await writer.preflight(
+			target,
+			{ provider: "anthropic", model: "fable", effort: null },
+			target.sourceRevision,
+		);
+		if (!checked.ok || checked.status === "no_op") {
+			throw new Error("expected an applicable alias change");
+		}
+		expect(await writer.apply(checked.change)).toMatchObject({
+			status: "applied",
+		});
+		const raw = JSON.parse(
+			store.getWorkflowTemplateRevision(dag.templateId, 2)!.manifest,
+		) as { nodes: Array<Record<string, unknown>> };
+		expect(raw.nodes.find((node) => node.id === "design")?.model).toBe("fable");
+		store.close();
+	});
+
+	it("publishes the validated Fable alias spelling instead of freezing its current canonical id", async () => {
+		const { store, dag } = await setup();
+		const before = JSON.parse(
+			store.getWorkflowTemplateRevision(dag.templateId, dag.revision)!.manifest,
+		) as { nodes: Array<Record<string, unknown>> };
+		const target = dag.nodes.find((node) => node.nodeId === "design")!;
+		const currentEffort = target.dispatch.current.effort;
+
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId: target.dispatch.targetId,
+				expectedRevision: dag.revision,
+				expectedDigest: dag.digest,
+				desired: {
+					provider: "anthropic",
+					model: " fable ",
+					effort: currentEffort,
+				},
+				actor: "founder",
+			}),
+		).toEqual({ status: "published", revision: 2 });
+
+		const published = JSON.parse(
+			store.getWorkflowTemplateRevision(dag.templateId, 2)!.manifest,
+		) as { nodes: Array<Record<string, unknown>> };
+		expect(published.nodes.find((node) => node.id === "design")).toMatchObject({
+			vendor: "claude",
+			model: "fable",
+		});
+		expect(published.nodes.filter((node) => node.id !== "design")).toEqual(
+			before.nodes.filter((node) => node.id !== "design"),
+		);
+		expect(store.getWorkflowTemplate(dag.templateId)?.seed_owner).toBe(
+			"founder",
+		);
+		store.close();
+	});
+
 	it("copies the current manifest, mutates only the targeted node, and atomically publishes", async () => {
 		const { store, dag } = await setup();
 		const beforeRow = store.getWorkflowTemplateRevision(dag.templateId, 1)!;
@@ -85,6 +153,7 @@ describe("management DAG writer", () => {
 			revisions: store.listWorkflowTemplateRevisions(dag.templateId).length,
 			publications: store.listWorkflowTemplatePublications(dag.templateId)
 				.length,
+			audit: store.listWorkflowTemplateAudit(dag.templateId).length,
 		};
 		expect(
 			applyManagementDagEdit({
@@ -114,10 +183,39 @@ describe("management DAG writer", () => {
 				actor: "founder",
 			}),
 		).toMatchObject({ status: "invalid" });
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId,
+				expectedRevision: dag.revision,
+				expectedDigest: dag.digest,
+				desired: {
+					provider: "anthropic",
+					model: "unknown-fable-alias",
+					effort: "high",
+				},
+				actor: "founder",
+			}),
+		).toMatchObject({ status: "invalid" });
+		expect(
+			applyManagementDagEdit({
+				store,
+				targetId,
+				expectedRevision: dag.revision,
+				expectedDigest: dag.digest,
+				desired: {
+					provider: "anthropic",
+					model: "fable",
+					effort: "ultra",
+				},
+				actor: "founder",
+			}),
+		).toMatchObject({ status: "invalid" });
 		expect({
 			revisions: store.listWorkflowTemplateRevisions(dag.templateId).length,
 			publications: store.listWorkflowTemplatePublications(dag.templateId)
 				.length,
+			audit: store.listWorkflowTemplateAudit(dag.templateId).length,
 		}).toEqual(before);
 		store.close();
 	});

@@ -22,6 +22,26 @@ export FLYWHEEL_DIR="$HOME/Dev/flywheel"
 mkdir -p "$HOME/.flywheel/fleet-backups/txn-badmodel" "$HOME/.flywheel/manifests"
 jq -n '{changes: [{key: "geo-lead", to: {model: null}}]}' > "$ROOT/safe-clear.json"
 
+FUTURE_MODELS="$ROOT/future-models.json"
+jq -n '{
+  version: 1,
+  models: [
+    {id:"claude-fable-5-2",provider:"anthropic",runtimeVendor:"claude",label:"Fable 5.2",aliases:["fable-5-2"],dispatch:true,maxInputTokens:1000000},
+    {id:"claude-fable-5-2[1m]",provider:"anthropic",runtimeVendor:"claude",label:"Fable 5.2 (1M)",aliases:["fable-5-2-1m"],dispatch:true,maxInputTokens:1000000,contextWindowTokens:1000000}
+  ],
+  bindings: {fable:"claude-fable-5-2"},
+  tiers: {heavy:"fable"}
+}' > "$FUTURE_MODELS"
+future_binding="$(FLYWHEEL_MODELS_CONFIG="$FUTURE_MODELS" node "$POLICY" fable-binding 2>/dev/null)"
+if [ "$(printf '%s' "$future_binding" | jq -r '.model')" = "claude-fable-5-2" ] \
+  && [ "$(printf '%s' "$future_binding" | jq -r '.contextWindowTokens')" = "null" ] \
+  && [ -n "$(printf '%s' "$future_binding" | jq -r '.revision')" ] \
+  && ! rg -n 'claude-fable-5' "$FLEET" >/dev/null; then
+  ok "narrow Fable authority command follows future binding and fleet has no canonical literal"
+else
+  bad "Fable authority command/fleet single-knob contract (binding=$future_binding)"
+fi
+
 if [ "$(node "$POLICY" model claude-fable-5 lead 2>/dev/null)" = "claude-fable-5" ] \
   && [ "$(node "$POLICY" model opus lead 2>/dev/null)" = "claude-opus-5" ] \
   && [ "$(node "$POLICY" model claude-opus-4-8 lead 2>/dev/null)" = "claude-opus-4-8" ] \

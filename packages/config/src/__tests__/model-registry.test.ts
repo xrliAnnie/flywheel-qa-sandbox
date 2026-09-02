@@ -4,12 +4,17 @@ import {
 	buildModelCatalog,
 	getModelRegistryEntry,
 	isModelSelectionSupported,
+	MODEL_ALIASES,
 	MODEL_REGISTRY,
 	resolveCurrentModel,
 } from "../model-registry.js";
 import { MODEL_TIERS } from "../model-tiers.js";
 
 describe("model registry invariants", () => {
+	it("exports the stable current-Fable consumer spelling", () => {
+		expect(MODEL_ALIASES.FABLE).toBe("fable");
+	});
+
 	it("has unique model ids and case-insensitive aliases", () => {
 		expect(() => assertValidModelRegistry(MODEL_REGISTRY)).not.toThrow();
 		const duplicate = [
@@ -31,7 +36,31 @@ describe("model registry invariants", () => {
 			}
 		}
 		expect(getModelRegistryEntry("opus-1m")?.id).toBe("claude-opus-5[1m]");
-		expect(getModelRegistryEntry("fable-1m")?.id).toBe("claude-fable-5[1m]");
+		expect(getModelRegistryEntry("fable-1m")?.id).toBe("claude-fable-5-1[1m]");
+	});
+
+	it("keeps the resume gate's exact compatibility windows in registry metadata", () => {
+		for (const id of [
+			"claude-opus-5",
+			"claude-opus-4-8",
+			"claude-opus-4-6",
+			"claude-sonnet-4-6",
+			"claude-haiku-4-5-20251001",
+		]) {
+			expect(getModelRegistryEntry(id)?.contextWindowTokens, id).toBe(200_000);
+		}
+		for (const id of [
+			"claude-opus-5[1m]",
+			"claude-opus-4-8[1m]",
+			"claude-opus-4-6[1m]",
+			"claude-sonnet-5",
+			"claude-fable-5-1",
+			"claude-fable-5-1[1m]",
+		]) {
+			expect(getModelRegistryEntry(id)?.contextWindowTokens, id).toBe(
+				1_000_000,
+			);
+		}
 	});
 
 	it("registers the standard Codex model once, with its menu alias and CLI efforts", () => {

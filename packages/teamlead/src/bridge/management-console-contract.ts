@@ -177,7 +177,8 @@ export interface ManagementDagNodeView {
 	id: string;
 	nodeId: string;
 	name: string;
-	dispatch: ManagedValue<ModelSelection>;
+	/** Canonical display identity while `current.model` retains source spelling. */
+	dispatch: ManagedValue<ModelSelection> & { canonicalModel: string };
 }
 
 export interface ManagementDagView {
@@ -186,6 +187,7 @@ export interface ManagementDagView {
 	templateId: string;
 	revision: number;
 	digest: string;
+	seedOwner: "system" | "founder" | null;
 	nodes: ManagementDagNodeView[];
 	error?: string;
 }

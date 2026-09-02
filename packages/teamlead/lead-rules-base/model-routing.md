@@ -23,17 +23,18 @@ and pass the configured model on the same `/api/runs/start` call.
 
 | Difficulty | Model | `model` value |
 |------------|-------|---------------|
-| **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Fable 5 | `fable` |
+| **Heavy** — architecture, migration, redesign, gnarly multi-file/cross-system change, deep debugging | Current Fable family | `fable` |
 | **Medium** — a normal feature or bug fix of moderate scope | Opus 5 | `opus` |
 | **Simple** — a small, well-scoped change | Opus 5 | `opus` |
 | **Trivial** — a typo, a rename, a copy tweak, a version bump, a one-liner | Opus 5 | `opus` |
 
-The bare aliases (`fable`/`opus`/`sonnet`/`haiku`) are accepted; so are the full
-ids (`claude-fable-5`, `claude-opus-5`, `claude-sonnet-5`,
-`claude-haiku-4-5-20251001`). The live mappings come from
-`~/.flywheel/models.json`; unknown values are rejected `400 INVALID_MODEL`.
-Sonnet and Haiku remain recognizable for explicit legacy/manual choices but are
-not default difficulty tiers.
+Use the stable aliases (`fable`/`opus`/`sonnet`/`haiku`) for new work. In
+particular, `fable` always means the current Fable family; the live mapping
+comes from `~/.flywheel/models.json` and is canonicalized before spawn. Full
+model ids belong only in immutable run receipts and historical pins, not in new
+routing instructions. Unknown values are rejected `400 INVALID_MODEL`. Sonnet
+and Haiku remain recognizable for explicit legacy/manual choices but are not
+default difficulty tiers.
 
 There is **no model blocklist**. A model is used because config names it, so the
 difficulty table above is the whole routing decision — do not expect the Bridge
@@ -47,7 +48,7 @@ exhaustion when every runner inherited a 1M default — so 1M is now something
 you ask for, not something you get.
 
 - Pass `"model": "opus-1m"` (Opus 5 · 1M) or `"model": "fable-1m"`
-  (Fable 5 · 1M) **only when the task genuinely needs the huge window** — e.g.
+  (current Fable family · 1M) **only when the task genuinely needs the huge window** — e.g.
   it must hold a massive corpus/log/diff in one context and cannot be chunked.
 - The same spellings work as issue labels (`opus-1m` / `fable-1m`) when the
   founder wants to pin 1M on an issue.
@@ -83,7 +84,7 @@ gives the concrete `curl`). Example: a heavy refactor → `"model": "fable"`.
   did, the label wins.)
 - **You genuinely can't tell** how heavy the task is — omit `model`. The run
   falls through to the project default, then the built-in runner default
-  (Fable 5, small context — FLY-751; runs no longer inherit the account
+  (current Fable family, small context — FLY-751; runs no longer inherit the account
   default). Don't guess wildly; a wrong-but-confident tier is worse than the
   default.
 

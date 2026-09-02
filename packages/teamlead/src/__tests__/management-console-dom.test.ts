@@ -27,6 +27,12 @@ function catalog(surface: string) {
 				label: "Anthropic",
 				models: [
 					{
+						id: "claude-fable-5-1",
+						label: "Fable 5.1",
+						runtimeVendor: "claude",
+						efforts,
+					},
+					{
 						id: "claude-fable-5",
 						label: "Fable 5",
 						runtimeVendor: "claude",
@@ -115,11 +121,14 @@ function snapshot() {
 							{
 								id: "implement",
 								name: "Implement",
-								dispatch: managed("dag-target", {
-									provider: "anthropic",
-									model: "claude-fable-5",
-									effort: null,
-								}),
+								dispatch: {
+									...managed("dag-target", {
+										provider: "anthropic",
+										model: "fable",
+										effort: null,
+									}),
+									canonicalModel: "claude-fable-5-1",
+								},
 							},
 						],
 					},
@@ -403,6 +412,41 @@ describe("management console browser interactions", () => {
 			'[data-model-target="cron-model-target"] [data-model-part="effort"]',
 		) as HTMLSelectElement;
 		expect([...cronEffort.options].map((option) => option.value)).toEqual([""]);
+	});
+
+	it("renders a persisted workflow alias as its canonical model and preserves the alias on effort edits", async () => {
+		(document.querySelector('[data-tab="dag"]') as HTMLButtonElement).click();
+		const holder = document.querySelector('[data-model-target="dag-target"]')!;
+		const model = holder.querySelector(
+			'[data-model-part="model"]',
+		) as HTMLSelectElement;
+		expect(model.value).toBe("claude-fable-5-1");
+		expect(
+			[...model.options].map((option) => option.textContent),
+		).not.toContain("已退役 · fable");
+
+		const effort = holder.querySelector(
+			'[data-model-part="effort"]',
+		) as HTMLSelectElement;
+		effort.value = "high";
+		effort.dispatchEvent(new Event("change", { bubbles: true }));
+		(document.getElementById("stage") as HTMLButtonElement).click();
+		await vi.waitFor(() =>
+			expect(
+				requests.some((request) => request.path === "/api/fleet/changes/stage"),
+			).toBe(true),
+		);
+		const stage = requests.find(
+			(request) => request.path === "/api/fleet/changes/stage",
+		)!;
+		expect(stage.body).toMatchObject({
+			changes: [
+				{
+					targetId: "dag-target",
+					desiredValue: { model: "fable", effort: "high" },
+				},
+			],
+		});
 	});
 
 	it("keeps one cron time and adds a distinct row when 09:00 already exists", () => {

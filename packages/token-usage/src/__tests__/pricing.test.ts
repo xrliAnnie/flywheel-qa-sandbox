@@ -54,6 +54,82 @@ describe("costMicroUsd", () => {
 		expect(micro).toBe(73_500_000);
 	});
 
+	it("prices Fable 5.1 exactly and future numeric Fables through the warned family fallback", () => {
+		const counts = {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			cacheReadTokens: 1_000_000,
+			cacheWriteTokens: 1_000_000,
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(costMicroUsd("claude-fable-5-1", counts)).toBe(73_500_000);
+			expect(warn).not.toHaveBeenCalled();
+			expect(costMicroUsd("claude-fable-5-10", counts)).toBe(73_500_000);
+			expect(costMicroUsd("claude-fable-5-10", counts)).toBe(73_500_000);
+			expect(warn).toHaveBeenCalledTimes(1);
+			expect(warn.mock.calls[0]?.join(" ")).toContain("family fallback");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("orders Fable pricing exact override > configured family > builtin family", () => {
+		const counts = {
+			inputTokens: 1_000_000,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheWriteTokens: 0,
+		};
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const configuredFamily: Record<string, ModelRate> = {
+				"claude-fable-*": {
+					input: 12,
+					output: 60,
+					cacheRead: 1.2,
+					cacheWrite: 15,
+				},
+			};
+			expect(
+				costMicroUsd("claude-fable-5-11[1m]", counts, configuredFamily),
+			).toBe(12_000_000);
+			expect(warn).not.toHaveBeenCalled();
+
+			const exactAndFamily: Record<string, ModelRate> = {
+				...configuredFamily,
+				"claude-fable-5-12": {
+					input: 7,
+					output: 35,
+					cacheRead: 0.7,
+					cacheWrite: 8.75,
+				},
+			};
+			expect(costMicroUsd("claude-fable-5-12", counts, exactAndFamily)).toBe(
+				7_000_000,
+			);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it("does not treat malformed near-matches as the Fable family", () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(
+				costMicroUsd("claude-fable-5-10-preview", {
+					inputTokens: 1_000_000,
+					outputTokens: 0,
+					cacheReadTokens: 0,
+					cacheWriteTokens: 0,
+				}),
+			).toBe(0);
+			expect(warn.mock.calls[0]?.join(" ")).toContain("unknown model");
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
 	it("returns 0 for an unknown model (no silent mispricing)", () => {
 		expect(
 			costMicroUsd("<synthetic>", {
@@ -192,6 +268,12 @@ describe("MODEL_RATES default sentinels (claude-api catalog, cached 2026-06-24)"
 			cacheWrite: 3.75,
 		},
 		"claude-fable-5": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+		"claude-fable-5-1": {
+			input: 10,
+			output: 50,
+			cacheRead: 1,
+			cacheWrite: 12.5,
+		},
 		"claude-haiku-4-5-20251001": {
 			input: 1,
 			output: 5,
@@ -204,6 +286,9 @@ describe("MODEL_RATES default sentinels (claude-api catalog, cached 2026-06-24)"
 			expect(MODEL_RATES[model]).toEqual(rate);
 		});
 	}
+	it("contains only concrete model ids, not family selectors", () => {
+		expect(Object.keys(MODEL_RATES)).not.toContain("claude-fable-*");
+	});
 	it("cache rates derive from input (0.1× read, 1.25× write)", () => {
 		for (const r of Object.values(MODEL_RATES)) {
 			expect(r.cacheRead).toBeCloseTo(r.input * 0.1, 6);
@@ -433,6 +518,37 @@ describe("loadPricingConfig", () => {
 		expect(overrides.has("claude-sonnet-5")).toBe(true);
 		expect(overrides.has("claude-opus-4-8")).toBe(false); // invalid, skipped
 		expect(rates["claude-sonnet-5"].input).toBe(5);
+	});
+
+	it("accepts the reserved Fable family override in the existing JSON schema", () => {
+		const file = path.join(dir, "fable-family.json");
+		writeFileSync(
+			file,
+			JSON.stringify({
+				"claude-fable-*": {
+					input: 12,
+					output: 60,
+					cacheRead: 1.2,
+					cacheWrite: 15,
+				},
+			}),
+		);
+		const { rates, overrides } = loadPricingConfigWithMeta({ file });
+		expect(overrides.has("claude-fable-*")).toBe(true);
+		const effective = ratesForDay("2026-09-01", rates, overrides);
+		expect(
+			costMicroUsd(
+				"claude-fable-5-13",
+				{
+					inputTokens: 1_000_000,
+					outputTokens: 0,
+					cacheReadTokens: 0,
+					cacheWriteTokens: 0,
+				},
+				effective,
+			),
+		).toBe(12_000_000);
+		expect(warn).not.toHaveBeenCalled();
 	});
 
 	it("has an empty override set when no config file exists", () => {

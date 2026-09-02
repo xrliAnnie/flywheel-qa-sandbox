@@ -19,6 +19,7 @@ import {
 	type FlagScanState,
 	FEATURE_FLAGS,
 	getFlagStoreCodec,
+	getModelConfigSnapshot,
 	getNodeTypeRegistryEntry,
 	isDesignBackend,
 	isSkillFrameworkMode,
@@ -22420,9 +22421,14 @@ export class StateStore {
 		);
 		if (!revision)
 			throw new Error("published workflow template revision not found");
+		// Capture one immutable registry generation for the whole materialization.
+		// Alias changes may affect the next run, never half of this run.
+		const modelSnapshot = getModelConfigSnapshot();
 		let base: WorkflowManifest;
 		try {
-			base = validateWorkflowManifest(JSON.parse(revision.manifest));
+			base = validateWorkflowManifest(JSON.parse(revision.manifest), {
+				modelSnapshot,
+			});
 		} catch (error) {
 			const diagnostic =
 				this.preservedTemplateUnrunnableDiagnostic(
@@ -22442,7 +22448,7 @@ export class StateStore {
 			throw error;
 		}
 		const applied = input.override
-			? applyWorkflowOverride(base, input.override)
+			? applyWorkflowOverride(base, input.override, modelSnapshot)
 			: { manifest: base, override: undefined };
 		let generalizedSnapshot: ReturnType<
 			typeof buildWorkflowRunSnapshotV2
@@ -22456,6 +22462,7 @@ export class StateStore {
 							revision: template.current_published_revision,
 						},
 						manifest: applied.manifest,
+						modelSnapshot,
 						canonicalRoot:
 							input.canonicalRoot ??
 							(() => {
@@ -22463,11 +22470,6 @@ export class StateStore {
 									"generalized workflow materialization requires canonicalRoot",
 								);
 							})(),
-						...(applied.override?.nodes
-							? {
-									pinnedDispatchNodeIds: Object.keys(applied.override.nodes),
-								}
-							: {}),
 						...(input.categorySource
 							? {
 									workKind: {
@@ -30291,7 +30293,11 @@ export class StateStore {
 				model: string;
 				effort?: "low" | "medium" | "high" | "xhigh" | "max";
 			};
-			source: "current_config" | "live_template" | "snapshot_fallback";
+			source:
+				| "current_config"
+				| "live_template"
+				| "pinned_snapshot"
+				| "snapshot_fallback";
 			audit: boolean;
 		};
 	}): GeneralizedWorkflowAdmissionResult {

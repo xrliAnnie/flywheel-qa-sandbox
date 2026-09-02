@@ -3,6 +3,7 @@
 # provably below the offline context threshold. Defines functions only.
 
 _lead_authority_lib="${FLYWHEEL_LEAD_AUTHORITY_LIB:-${SCRIPT_DIR}/lib/lead-session-authority.sh}"
+_lead_model_authority_lib="${FLYWHEEL_LEAD_MODEL_AUTHORITY_LIB:-${SCRIPT_DIR}/lib/lead-model-authority-receipt.mjs}"
 if [ -f "$_lead_authority_lib" ]; then
   # shellcheck source=lead-session-authority.sh
   # Source path can be overridden by the harness.
@@ -17,44 +18,40 @@ _lead_session_project_slug() {
 
 _lead_session_model_from_decision() {
   local result="${_FLY1496_PRE_RESOLVED_RESULT:-}"
-  if [ -n "$result" ] && jq -e '.ok == true' >/dev/null 2>&1 <<< "$result"; then
+  if [ -n "$result" ] && jq -e '
+    .ok == true and (.decision.model | type == "string") and
+    (.decision.model | length) > 0 and
+    (.decision.configRevision | type == "string") and
+    (.decision.configRevision | length) > 0 and
+    (.decision | has("contextWindowTokens")) and
+    ((.decision.contextWindowTokens == null) or
+      ((.decision.contextWindowTokens | type == "number") and
+       (.decision.contextWindowTokens | floor) == .decision.contextWindowTokens and
+       .decision.contextWindowTokens > 0))
+  ' >/dev/null 2>&1 <<< "$result"; then
     jq -r '.decision.model' <<< "$result"
   else
-    printf '%s\n' 'claude-fable-5'
+    return 1
   fi
 }
 
 _lead_session_model_window() {
-  # Keep this table exact instead of inferring every unmarked model as 200k.
-  # Sources:
-  # - Bare Sonnet 5 and Fable 5: FLY-1716 production QA on 2026-08-15,
-  #   cross-checking transcript usage against Claude Code's same-session
-  #   statusline on four Leads (approximately 1M, under 1% error).
-  # - [1m] and the explicit 200k compatibility ids: canonical model identities
-  #   in packages/config/src/model-builtins.ts and the existing FLY-751 tier
-  #   contract. Unknown ids deliberately have no numeric default: guessing high
-  #   can resume a full session, while guessing low silently discards a healthy
-  #   one. The restart safety guarantee therefore parks them as unknown.
-  case "$1" in
-    claude-fable-5|claude-sonnet-5|*"[1m]"*) printf '%s\n' 1000000 ;;
-    claude-opus-5|claude-opus-4-8|claude-opus-4-6|claude-sonnet-4-6|claude-haiku-4-5-20251001)
-      printf '%s\n' 200000
-      ;;
-    *) return 1 ;;
-  esac
+  local result="$1" receipt="$2"
+  jq -er --argjson receipt "$receipt" '
+    select(.ok == true) |
+    select(.decision.model == $receipt.model) |
+    select(.decision.configRevision == $receipt.configRevision) |
+    select(.decision.contextWindowTokens == $receipt.contextWindowTokens) |
+    .decision.contextWindowTokens |
+    select(type == "number" and floor == . and . > 0)
+  ' <<< "$result"
 }
 
-_lead_session_model_window_source() {
-  case "$1" in
-    claude-fable-5|claude-sonnet-5)
-      printf '%s\n' qa_same_session_measurement_2026_08_15
-      ;;
-    *"[1m]"*) printf '%s\n' canonical_1m_model_id ;;
-    claude-opus-5|claude-opus-4-8|claude-opus-4-6|claude-sonnet-4-6|claude-haiku-4-5-20251001)
-      printf '%s\n' explicit_200k_compatibility_table
-      ;;
-    *) printf '%s\n' unknown_model_fail_closed ;;
-  esac
+_lead_session_read_model_authority_receipt() {
+  local state_root="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+  local receipt_file="${state_root}/state/lead-model-authority.json"
+  [ -f "$_lead_model_authority_lib" ] || return 1
+  node "$_lead_model_authority_lib" read --file "$receipt_file" 2>/dev/null
 }
 
 _lead_session_atomic_write() {
@@ -90,14 +87,36 @@ _lead_session_unknown_context() {
 
 _lead_session_prepare_locked() {
   local gen_file="$1" receipt_file="$2"
-  local model window window_source threshold threshold_json gen gen_tmp gate session_id ctx transcript_root
+  local model window window_source authority_receipt threshold threshold_json gen gen_tmp gate session_id ctx transcript_root
   local project_slug transcript reader verdict action gate_label pct ts parked receipt
 
-  model="$(_lead_session_model_from_decision)"
-  if ! window="$(_lead_session_model_window "$model")"; then
+  model=""
+  window=null
+  window_source=model_decision_invalid
+  if model="$(_lead_session_model_from_decision)"; then
+    if ! authority_receipt="$(_lead_session_read_model_authority_receipt)"; then
+      window_source=authority_receipt_invalid
+    elif window="$(_lead_session_model_window "$_FLY1496_PRE_RESOLVED_RESULT" "$authority_receipt")"; then
+      if jq -e '.authoritySource == "last_good_receipt"' >/dev/null 2>&1 \
+        <<< "$_FLY1496_PRE_RESOLVED_RESULT"; then
+        window_source=last_good_receipt
+      else
+        window_source=registry_context_window
+      fi
+    elif jq -e --argjson receipt "$authority_receipt" '
+      .ok == true and .decision.model == $receipt.model and
+      .decision.configRevision == $receipt.configRevision and
+      .decision.contextWindowTokens == $receipt.contextWindowTokens and
+      .decision.contextWindowTokens == null
+    ' >/dev/null 2>&1 <<< "$_FLY1496_PRE_RESOLVED_RESULT"; then
+      window_source=registry_context_window_missing
+    else
+      window_source=authority_receipt_mismatch
+    fi
+  fi
+  if [ -z "$window" ]; then
     window=null
   fi
-  window_source="$(_lead_session_model_window_source "$model")"
   threshold="${FLYWHEEL_LEAD_CTX_RESUME_MAX:-70}"
   threshold_json=null
   if [[ "$threshold" =~ ^[1-9][0-9]*$ ]] && [ "$threshold" -le 100 ]; then

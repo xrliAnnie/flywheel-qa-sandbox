@@ -42,7 +42,7 @@ PRODUCTION_FETCH_DEFINITION="$(declare -f updater_fetch_origin)"
 required_functions=(
   updater_init_dirs updater_lock_acquire updater_lock_release
   updater_token_shape_valid updater_claim_token updater_urgent_signature
-  updater_scheduled_signature update_main
+  updater_scheduled_signature updater_sync_fable_model update_main
 )
 missing_functions=()
 for fn in "${required_functions[@]}"; do
@@ -102,9 +102,11 @@ DEPLOY_CALLS="$TMP/deploy.calls"
 ALERT_CALLS="$TMP/alert.calls"
 FETCH_MODE=ok
 LAUNCHD_PASS_CALLS="$TMP/launchd-pass.calls"
+MODEL_SYNC_CALLS="$TMP/model-sync.calls"
 : > "$DEPLOY_CALLS"
 : > "$ALERT_CALLS"
 : > "$LAUNCHD_PASS_CALLS"
+: > "$MODEL_SYNC_CALLS"
 
 updater_fetch_origin() {
   case "$FETCH_MODE" in
@@ -115,6 +117,10 @@ updater_fetch_origin() {
 }
 updater_converge_bin() { :; }
 updater_launchd_pass() { printf 'pass\n' >> "$LAUNCHD_PASS_CALLS"; }
+updater_sync_fable_model() {
+  printf 'call\n' >> "$MODEL_SYNC_CALLS"
+  [ "${MODEL_SYNC_MODE:-ok}" = ok ]
+}
 severe_alert() { printf '%s|%s\n' "$1" "$2" >> "$ALERT_CALLS"; }
 stub_deploy_ok() {
   printf 'call\n' >> "$DEPLOY_CALLS"
@@ -154,7 +160,9 @@ reset_case() {
   : > "$DEPLOY_CALLS"
   : > "$ALERT_CALLS"
   : > "$LAUNCHD_PASS_CALLS"
+  : > "$MODEL_SYNC_CALLS"
   FETCH_MODE=ok
+  MODEL_SYNC_MODE=ok
   SELF_SHIP_DEPLOY_CMD=stub_deploy_ok
   UPDATER_UTC_DAY=20260821
 }
@@ -162,10 +170,23 @@ reset_case() {
 reset_case
 printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
 update_main >/dev/null 2>&1; rc=$?
-if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ]; then
-  pass "schedule with deployed SHA at origin/main performs zero deploys"
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
+  && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ]; then
+  pass "schedule runs one model sync inside the singleton and performs zero caught-up deploys"
 else
-  fail "caught-up schedule deployed (rc=$rc calls=$(deploy_count))"
+  fail "caught-up schedule/model sync drifted (rc=$rc deploys=$(deploy_count) syncs=$(cat "$MODEL_SYNC_CALLS"))"
+fi
+
+reset_case
+printf '%s\n' "$SHA1" > "$DEPLOYED_SHA_FILE"
+MODEL_SYNC_MODE=fail
+update_main >/dev/null 2>&1; rc=$?
+if [ "$rc" -eq 0 ] && [ "$(deploy_count)" = 0 ] \
+  && [ "$(grep -c '^call$' "$MODEL_SYNC_CALLS")" = 1 ] \
+  && [ "$(grep -c '^pass$' "$LAUNCHD_PASS_CALLS")" = 1 ]; then
+  pass "model sync failure is non-fatal and does not suppress the existing updater cycle"
+else
+  fail "model sync failure changed updater semantics (rc=$rc deploys=$(deploy_count) syncs=$(cat "$MODEL_SYNC_CALLS") launchd=$(cat "$LAUNCHD_PASS_CALLS"))"
 fi
 
 if declare -F updater_fetch_origin_once >/dev/null 2>&1 \

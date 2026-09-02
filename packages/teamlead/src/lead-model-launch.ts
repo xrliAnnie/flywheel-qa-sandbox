@@ -17,6 +17,8 @@ export interface LeadModelLaunchDecision extends LeadLaunchSelection {
 	rawModel: string | null;
 	rawEffort: string | null;
 	configRevision: string;
+	/** Registry/API-backed window for this exact canonical id; null is unknown. */
+	contextWindowTokens: number | null;
 	/**
 	 * FLY-1650: the FLY-583 companion fallback, narrowed to what the RESOLVED
 	 * model actually accepts on the lead surface — `null` when it accepts none.
@@ -87,6 +89,9 @@ export function resolveLeadModelLaunch(
 		rawModel,
 		rawEffort,
 		configRevision: snapshot.revision,
+		contextWindowTokens:
+			snapshot.getModelRegistryEntry(selection.model)?.contextWindowTokens ??
+			null,
 		companionDefaultEffort: resolveAllowedEffort(
 			selection.model,
 			COMPANION_FALLBACK_EFFORT,

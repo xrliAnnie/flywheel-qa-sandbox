@@ -2,6 +2,14 @@ import { describe, expect, it } from "vitest";
 import { bodyFor, severityFor, titleFor } from "../alert-kind-copy.js";
 
 describe("alert kind copy", () => {
+	it("renders Fable family updates as informational registry receipts", () => {
+		expect(titleFor("model_family_updated")).toBe(
+			"Fable model family authority updated",
+		);
+		expect(bodyFor("model_family_updated", "ignored")).toContain("models.json");
+		expect(severityFor("model_family_updated")).toBe("info");
+	});
+
 	it("describes Discord plugin integrity failures with recovery guidance", () => {
 		expect(titleFor("discord_plugin_integrity_failed")).toBe(
 			"Discord plugin fork integrity failed",

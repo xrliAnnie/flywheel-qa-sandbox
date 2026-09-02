@@ -23,6 +23,40 @@ async function catalog(templateId = "tpl_eng_heavy") {
 }
 
 describe("management DAG source", () => {
+	it("exposes a governed workflow alias as its persisted spelling", async () => {
+		const store = await catalog();
+		const seed = legacyWorkflowSeeds().find(
+			(item) => item.templateId === "tpl_eng_heavy",
+		)!;
+		const aliasManifest = {
+			...seed.manifest,
+			nodes: seed.manifest.nodes.map((node) =>
+				node.id === "design" ? { ...node, model: "fable" } : node,
+			),
+		};
+		expect(
+			store.createAndPublishWorkflowTemplateRevision({
+				templateId: seed.templateId,
+				manifest: aliasManifest,
+				expectedRevision: 1,
+				createdBy: "founder",
+				allowUnsupportedModels: true,
+			}),
+		).toEqual({ status: "published", revision: 2 });
+
+		const dag = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		expect(
+			dag.nodes.find((node) => node.nodeId === "design")?.dispatch,
+		).toMatchObject({
+			canonicalModel: "claude-fable-5-1",
+			current: { provider: "anthropic", model: "fable" },
+		});
+		store.close();
+	});
+
 	it("projects historical bindings with decoded backend display labels", async () => {
 		const store = await catalog();
 		const projection = readManagementDags({

@@ -40,7 +40,8 @@ roles:
     backend: claude-tmux
     # Use a canonical CLI-native id. The final resolver also canonicalizes and
     # checks this value against the live ban policy before launch.
-    model: claude-fable-5
+    # Persist the family alias; RoleAdapterResolver canonicalizes once before spawn.
+    model: fable
 
 teams:
   - name: default

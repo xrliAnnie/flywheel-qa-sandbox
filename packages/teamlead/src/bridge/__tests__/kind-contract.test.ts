@@ -59,6 +59,7 @@ const QUOTA_MONITOR_KINDS = [
 
 const QUOTA_INFORMATIONAL_KINDS = new Set([
 	"account_switched",
+	"model_family_updated",
 	"model_cap_switched",
 	"model_cap_unknown",
 	"quota_switch_confirmation",
@@ -566,5 +567,15 @@ describe("FLY-1082 TS union ↔ lead-alert.sh allowlist drift guard (Task 1.2)",
 			arc: "human_by_design",
 		});
 		expect(INFORMATIONAL_KINDS.has("workflow_route_input_rejected")).toBe(true);
+	});
+
+	it("registers model-family updates on both faces as informational receipts", () => {
+		expect(ALERT_EVENT_TYPES).toContain("model_family_updated");
+		expect(shellAllowlist()).toContain("model_family_updated");
+		expect(KIND_CONTRACTS.model_family_updated).toEqual({
+			owner: "claude",
+			arc: "human_by_design",
+		});
+		expect(INFORMATIONAL_KINDS.has("model_family_updated")).toBe(true);
 	});
 });

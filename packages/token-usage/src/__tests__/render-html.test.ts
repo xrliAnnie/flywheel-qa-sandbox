@@ -156,6 +156,34 @@ describe("renderReportHtml", () => {
 	});
 });
 
+describe("renderReportHtml Fable family labels", () => {
+	it("formats numeric versions and 1M variants without per-version tables", () => {
+		const family = buildReportModel(
+			[
+				r({ scope: "total", totalTokens: 300 }),
+				r({
+					scope: "model",
+					dimKey: "claude-fable-5-1",
+					totalTokens: 100,
+				}),
+				r({
+					scope: "model",
+					dimKey: "claude-fable-5-10[1m]",
+					totalTokens: 200,
+				}),
+			],
+			{
+				reportDay: "2026-06-26",
+				timezone: "UTC",
+				isCompleted: () => false,
+			},
+		);
+		const out = renderReportHtml(family);
+		expect(out).toContain("Fable 5.1");
+		expect(out).toMatch(/Fable 5\.10 · 1M.*background:#34c759/);
+	});
+});
+
 describe("renderReportHtml FLY-713 — links + precision", () => {
 	const linkRows: DailyRow[] = [
 		r({ scope: "total", totalTokens: 1_000, costMicroUsd: 420_000 }),

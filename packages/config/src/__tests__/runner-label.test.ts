@@ -102,14 +102,14 @@ describe("parseRunnerLabels", () => {
 	// explicit id `claude-fable-5` (the string fleet-console / token pricing /
 	// TmuxAdapter `--model` all use). Infers the `claude` runner because the id
 	// starts with "claude".
-	it("resolves fable label to claude-fable-5 (Claude runner), case-insensitive", () => {
+	it("resolves fable label to claude-fable-5-1 (Claude runner), case-insensitive", () => {
 		expect(parseRunnerLabels(["fable"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-fable-5",
+			modelOverride: "claude-fable-5-1",
 		});
 		expect(parseRunnerLabels(["FABLE"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-fable-5",
+			modelOverride: "claude-fable-5-1",
 		});
 	});
 
@@ -117,7 +117,7 @@ describe("parseRunnerLabels", () => {
 		// claude agent + fable model → runner claude, model kept (same runner).
 		expect(parseRunnerLabels(["claude", "fable"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-fable-5",
+			modelOverride: "claude-fable-5-1",
 		});
 	});
 
@@ -165,7 +165,7 @@ describe("parseRunnerLabels", () => {
 		});
 		expect(parseRunnerLabels(["FABLE-1M"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-fable-5[1m]",
+			modelOverride: "claude-fable-5-1[1m]",
 		});
 	});
 
@@ -176,7 +176,7 @@ describe("parseRunnerLabels", () => {
 		});
 		expect(parseRunnerLabels(["fable-1m", "fable"])).toEqual({
 			runnerType: "claude",
-			modelOverride: "claude-fable-5[1m]",
+			modelOverride: "claude-fable-5-1[1m]",
 		});
 	});
 

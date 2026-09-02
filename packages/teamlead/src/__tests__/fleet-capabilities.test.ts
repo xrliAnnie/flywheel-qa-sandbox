@@ -42,8 +42,10 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 
 	it("lists every model plus account-default, legacy ids readonly", () => {
 		expect(CLAUDE_TIER_OPTIONS).toEqual([
-			{ id: "claude-fable-5", label: "Fable 5" },
-			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)" },
+			{ id: "claude-fable-5-1", label: "Fable 5.1" },
+			{ id: "claude-fable-5-1[1m]", label: "Fable 5.1 (1M)" },
+			{ id: "claude-fable-5", label: "Fable 5", readonly: true },
+			{ id: "claude-fable-5[1m]", label: "Fable 5 (1M)", readonly: true },
 			{ id: "claude-opus-5", label: "Opus 5" },
 			{ id: "claude-opus-5[1m]", label: "Opus 5 (1M)" },
 			{ id: "claude-sonnet-4-6", label: "Sonnet 4.6" },
@@ -72,7 +74,8 @@ describe("fleet-capabilities — tier options (FLY-247 inc2a §2.4/§2.6)", () =
 describe("fleet-capabilities — allowedModelTargets (R6 #5)", () => {
 	it("Claude targets contain the selectable ids plus account-default", () => {
 		const targets = computeAllowedModelTargets("claude-code");
-		expect(targets).toContain("claude-fable-5");
+		expect(targets).toContain("claude-fable-5-1");
+		expect(targets).not.toContain("claude-fable-5");
 		expect(targets).not.toContain("claude-opus-4-8[1m]");
 		expect(targets).toContain("claude-sonnet-4-6"); // FLY-671: cheaper tier authorized
 		expect(targets).toContain("claude-haiku-4-5-20251001"); // FLY-671: cheaper tier authorized
@@ -215,12 +218,12 @@ describe("fleet-capabilities — backendOptions (inc2a: all switches disabled)",
 describe("fleet-capabilities — computeLeadCapabilities bundle", () => {
 	it("Claude Lead (explicit backend) → claude tiers + targets", () => {
 		const cap = computeLeadCapabilities(
-			lead({ backend: "claude-code", model: "claude-fable-5" }),
+			lead({ backend: "claude-code", model: "claude-fable-5-1" }),
 		);
 		expect(cap.currentBackend).toBe("claude-code");
 		expect(cap.backendSource).toBe("explicit");
 		expect(cap.tierOptions).toEqual(CLAUDE_TIER_OPTIONS);
-		expect(cap.allowedModelTargets).toContain("claude-fable-5");
+		expect(cap.allowedModelTargets).toContain("claude-fable-5-1");
 	});
 
 	it("Lead with no backend field → default claude (byte-compat)", () => {

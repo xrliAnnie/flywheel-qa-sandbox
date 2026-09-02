@@ -15,7 +15,7 @@ import {
 
 describe("normalizeDispatchModel", () => {
 	it("accepts the 4 canonical tier ids verbatim", () => {
-		expect(normalizeDispatchModel("claude-fable-5")).toBe("claude-fable-5");
+		expect(normalizeDispatchModel("claude-fable-5-1")).toBe("claude-fable-5-1");
 		// FLY-751: medium tier no longer carries [1m] — small context by default.
 		expect(normalizeDispatchModel("claude-opus-5")).toBe("claude-opus-5");
 		expect(normalizeDispatchModel("claude-sonnet-5")).toBe("claude-sonnet-5");
@@ -25,8 +25,8 @@ describe("normalizeDispatchModel", () => {
 	});
 
 	it("maps bare aliases to canonical ids (case-insensitive, trimmed)", () => {
-		expect(normalizeDispatchModel("fable")).toBe("claude-fable-5");
-		expect(normalizeDispatchModel("FABLE")).toBe("claude-fable-5");
+		expect(normalizeDispatchModel("fable")).toBe("claude-fable-5-1");
+		expect(normalizeDispatchModel("FABLE")).toBe("claude-fable-5-1");
 		expect(normalizeDispatchModel("  opus  ")).toBe("claude-opus-5");
 		expect(normalizeDispatchModel("Sonnet")).toBe("claude-sonnet-5");
 		expect(normalizeDispatchModel("haiku")).toBe("claude-haiku-4-5-20251001");
@@ -34,13 +34,13 @@ describe("normalizeDispatchModel", () => {
 
 	it("FLY-751: 1M context is explicit opt-in via -1m aliases / [1m] ids", () => {
 		expect(normalizeDispatchModel("opus-1m")).toBe("claude-opus-5[1m]");
-		expect(normalizeDispatchModel("fable-1m")).toBe("claude-fable-5[1m]");
+		expect(normalizeDispatchModel("fable-1m")).toBe("claude-fable-5-1[1m]");
 		expect(normalizeDispatchModel(" OPUS-1M ")).toBe("claude-opus-5[1m]");
 		expect(normalizeDispatchModel("claude-opus-5[1m]")).toBe(
 			"claude-opus-5[1m]",
 		);
-		expect(normalizeDispatchModel("claude-fable-5[1m]")).toBe(
-			"claude-fable-5[1m]",
+		expect(normalizeDispatchModel("claude-fable-5-1[1m]")).toBe(
+			"claude-fable-5-1[1m]",
 		);
 	});
 
@@ -67,7 +67,7 @@ describe("ACCEPTED_DISPATCH_MODELS (FLY-751 error-payload discoverability)", () 
 		expect(ACCEPTED_DISPATCH_MODELS).toContain("opus");
 		expect(ACCEPTED_DISPATCH_MODELS).toContain("opus-1m");
 		expect(ACCEPTED_DISPATCH_MODELS).toContain("fable-1m");
-		expect(ACCEPTED_DISPATCH_MODELS).toContain("claude-fable-5[1m]");
+		expect(ACCEPTED_DISPATCH_MODELS).toContain("claude-fable-5-1[1m]");
 	});
 });
 
@@ -129,7 +129,7 @@ describe("vendorModelShortCode (FLY-1255 Plan B — non-Claude single letters)",
 
 describe("MODEL_TIERS", () => {
 	it("maps heavy to Fable and every lower difficulty to Opus 5", () => {
-		expect(MODEL_TIERS.heavy.id).toBe("claude-fable-5");
+		expect(MODEL_TIERS.heavy.id).toBe("claude-fable-5-1");
 		expect(MODEL_TIERS.heavy.code).toBe("F");
 		for (const tier of ["medium", "light", "trivial"] as const) {
 			expect(MODEL_TIERS[tier].id).toBe("claude-opus-5");

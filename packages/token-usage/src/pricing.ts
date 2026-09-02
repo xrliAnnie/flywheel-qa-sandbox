@@ -23,6 +23,19 @@ export interface ModelRate {
 	cacheWrite: number;
 }
 
+const FABLE_FAMILY_RATE_KEY = "claude-fable-*";
+const NUMERIC_FABLE_MODEL = /^claude-fable-[0-9]+(?:-[0-9]+)*(?:\[1m\])?$/;
+const BUILTIN_FABLE_FAMILY_RATE: ModelRate = Object.freeze({
+	input: 10,
+	output: 50,
+	cacheRead: 1,
+	cacheWrite: 12.5,
+});
+const configuredRateKeys = new WeakMap<
+	Record<string, ModelRate>,
+	ReadonlySet<string>
+>();
+
 /**
  * Known models in this fleet → public per-1M-token USD rates. Unknown models →
  * 0 cost + a warning (never silently priced).
@@ -47,6 +60,12 @@ export const MODEL_RATES: Record<string, ModelRate> = {
 		cacheWrite: 3.75,
 	},
 	"claude-fable-5": { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+	"claude-fable-5-1": {
+		input: 10,
+		output: 50,
+		cacheRead: 1,
+		cacheWrite: 12.5,
+	},
 	"claude-haiku-4-5-20251001": {
 		input: 1,
 		output: 5,
@@ -54,6 +73,7 @@ export const MODEL_RATES: Record<string, ModelRate> = {
 		cacheWrite: 1.25,
 	},
 };
+configuredRateKeys.set(MODEL_RATES, new Set());
 
 /**
  * Sonnet 5 standard pricing, effective 2026-09-01 (its introductory 2/10 rate in
@@ -86,12 +106,16 @@ export function ratesForDay(
 ): Record<string, ModelRate> {
 	if (pinned?.has("claude-sonnet-5")) return base; // config wins, no date rule
 	if (base["claude-sonnet-5"] && day >= SONNET5_STANDARD_FROM) {
-		return { ...base, "claude-sonnet-5": SONNET5_STANDARD };
+		const effective = { ...base, "claude-sonnet-5": SONNET5_STANDARD };
+		const configured = configuredRateKeys.get(base);
+		if (configured) configuredRateKeys.set(effective, configured);
+		return effective;
 	}
 	return base;
 }
 
 const warnedUnknown = new Set<string>();
+const warnedFableFamilyFallback = new Set<string>();
 
 export interface TokenCounts {
 	inputTokens: number;
@@ -111,7 +135,22 @@ export function costMicroUsd(
 	t: TokenCounts,
 	rates: Record<string, ModelRate> = MODEL_RATES,
 ): number {
-	const r = rates[model];
+	let r = rates[model];
+	if (!r && NUMERIC_FABLE_MODEL.test(model)) {
+		const configured = configuredRateKeys.get(rates);
+		const familyWasConfigured = configured
+			? configured.has(FABLE_FAMILY_RATE_KEY)
+			: rates !== MODEL_RATES && Object.hasOwn(rates, FABLE_FAMILY_RATE_KEY);
+		r = familyWasConfigured
+			? rates[FABLE_FAMILY_RATE_KEY]
+			: BUILTIN_FABLE_FAMILY_RATE;
+		if (!familyWasConfigured && !warnedFableFamilyFallback.has(model)) {
+			warnedFableFamilyFallback.add(model);
+			console.warn(
+				`[token-usage] Fable model "${model}" uses the builtin family fallback — estimated at 10/50 until pricing is configured`,
+			);
+		}
+	}
 	if (!r) {
 		if (!warnedUnknown.has(model)) {
 			warnedUnknown.add(model);
@@ -203,6 +242,7 @@ export function loadPricingConfigWithMeta(
 	const rates: Record<string, ModelRate> = {};
 	for (const [k, v] of Object.entries(MODEL_RATES)) rates[k] = { ...v };
 	const overrides = new Set<string>();
+	configuredRateKeys.set(rates, overrides);
 
 	let raw: string;
 	try {

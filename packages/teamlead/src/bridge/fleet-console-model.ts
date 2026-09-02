@@ -13,7 +13,7 @@
  * listed in `ConsoleLeadView` are exposed.
  */
 
-import { type FlagView, MODEL_IDS } from "flywheel-config";
+import { type FlagView, getModelConfigSnapshot } from "flywheel-config";
 import type { LeadBackendId } from "../lead-backends/lead-backend.js";
 import type { LeadConfig, ProjectEntry } from "../ProjectConfig.js";
 import {
@@ -173,7 +173,9 @@ export function buildConsoleLeadView(
 	const currentModelId = typeof lead.model === "string" ? lead.model : null;
 	const effectiveModelForDisplay =
 		currentModelId ??
-		(cap.currentBackend === "claude-code" ? MODEL_IDS.FABLE : null);
+		(cap.currentBackend === "claude-code"
+			? getModelConfigSnapshot().bindings.fable
+			: null);
 	// FLY-671: effort likewise absent = null = 默认 (companion → xhigh at launch).
 	const currentEffort = typeof lead.effort === "string" ? lead.effort : null;
 	return {

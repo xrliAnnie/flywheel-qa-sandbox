@@ -114,18 +114,22 @@ echo 'throw new Error("QA: simulated unimportable resolver dist");' \
   > "$MIRROR/packages/teamlead/dist/lead-model-launch.js"
 
 H=$(make_home)
-write_projects "$H" "claude-fable-5"
+write_projects "$H" "fable"
+# A healthy generation writes the dependency-free authority receipt. The
+# simulated mid-deploy generation below must use that exact last-good value
+# after both model-resolution dist seams become unavailable.
+NORMAL=$(run_dry "$H" "$LEAD_SH")
 OUT=$(run_dry "$H" "$MIRROR/packages/teamlead/scripts/claude-lead.sh" \
   FLYWHEEL_LEAD_MODEL="claude-opus-4-8[1m]" FLYWHEEL_LEAD_EFFORT="max")
 PLAN=$(printf '%s\n' "$OUT" | plan_of)
-[ "$(arg_value "$PLAN" --model)" = "claude-fable-5" ] \
-  && ok "broken resolver launches literal Fable, never the frozen env" \
+[ "$(arg_value "$PLAN" --model)" = "claude-fable-5-1" ] \
+  && ok "broken resolver launches the last-good canonical Fable, never the frozen env" \
   || bad "broken resolver produced model '$(arg_value "$PLAN" --model)'"
 [ -z "$(arg_value "$PLAN" --effort)" ] \
   && ok "broken resolver drops the stale frozen effort" \
   || bad "stale env effort survived resolver failure"
-printf '%s\n' "$OUT" | grep -q "resolver unavailable" \
-  && ok "resolver failure is loud in the launcher log" \
+printf '%s\n' "$OUT" | grep -q "last-good model authority receipt" \
+  && ok "resolver failure and receipt fallback are loud in the launcher log" \
   || bad "resolver failure was silent"
 
 # 2. The fallback alert must be a kind lead-alert.sh accepts. A rejected kind
@@ -135,7 +139,7 @@ ALERT_FILE=$(find "$H/.flywheel/alert-queue" "$H/.flywheel/alert-deadletter" \
 if [ -n "$ALERT_FILE" ] \
   && [ "$(jq -r '.eventType' "$ALERT_FILE")" = "model_config" ] \
   && [ "$(jq -r '.severity' "$ALERT_FILE")" = "severe" ] \
-  && jq -e '.body | test("resolver_unavailable")' "$ALERT_FILE" >/dev/null; then
+  && jq -e '.body | test("last_good_receipt")' "$ALERT_FILE" >/dev/null; then
   ok "model_config alert is accepted and recorded with the fallback reason"
 else
   bad "model_config alert was dropped or malformed"
@@ -146,7 +150,7 @@ fi
 #    variants a hand-edited projects.json can carry all land on the one
 #    canonical id, and never on some other model.
 # ---------------------------------------------------------------------------
-SPELLINGS=("claude-opus-4-8|claude-opus-4-8" "claude-opus-4-8[1m]|claude-opus-4-8[1m]" "CLAUDE-OPUS-4-8|claude-opus-4-8" "  claude-opus-4-8[1m]  |claude-opus-4-8[1m]" "opus|claude-opus-5" "fable|claude-fable-5")
+SPELLINGS=("claude-opus-4-8|claude-opus-4-8" "claude-opus-4-8[1m]|claude-opus-4-8[1m]" "CLAUDE-OPUS-4-8|claude-opus-4-8" "  claude-opus-4-8[1m]  |claude-opus-4-8[1m]" "opus|claude-opus-5" "fable|claude-fable-5-1")
 SPELL_FAIL=0
 for pair in "${SPELLINGS[@]}"; do
   spelling="${pair%%|*}"
@@ -217,7 +221,7 @@ write_projects "$H" "fable"
 SECOND=$(run_dry "$H" "$LEAD_SH" | plan_of)
 MANIFEST_AFTER_SECOND="$(shasum -a 256 "$MANIFEST" | awk '{print $1}')"
 [ "$(arg_value "$FIRST" --model)" = "claude-opus-5" ] \
-  && [ "$(arg_value "$SECOND" --model)" = "claude-fable-5" ] \
+  && [ "$(arg_value "$SECOND" --model)" = "claude-fable-5-1" ] \
   && ok "a relaunch follows the edited projects.json, not its own manifest" \
   || bad "relaunch carried the previous launch model forward"
 [ -z "$(arg_value "$SECOND" --effort)" ] \

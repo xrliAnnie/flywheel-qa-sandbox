@@ -13,7 +13,7 @@ export interface WorkflowDispatchResolution {
 		model: string;
 		effort?: WorkflowEffort;
 	};
-	source: "live_template" | "snapshot_fallback";
+	source: "live_template" | "pinned_snapshot" | "snapshot_fallback";
 	audit: boolean;
 }
 
@@ -68,7 +68,7 @@ export function resolveNodeDispatchAtLaunch(
 	if (node.dispatchPinned) {
 		return {
 			dispatch: narrowEffort(pinned),
-			source: "snapshot_fallback",
+			source: "pinned_snapshot",
 			audit: true,
 		};
 	}

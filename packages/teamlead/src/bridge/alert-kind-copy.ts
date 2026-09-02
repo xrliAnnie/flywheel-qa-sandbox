@@ -185,6 +185,8 @@ export function titleFor(kind: AlertEventType): string {
 			return "Claude account identity conflict";
 		case "model_config":
 			return "Lead model policy fallback";
+		case "model_family_updated":
+			return "Fable model family authority updated";
 		case "model_cap_switched":
 			return "Claude model-cap account switched";
 		case "model_cap_unknown":
@@ -270,6 +272,7 @@ export function titleFor(kind: AlertEventType): string {
 }
 
 export function severityFor(kind: AlertEventType): AlertPayload["severity"] {
+	if (kind === "model_family_updated") return "info";
 	if (
 		kind === "crash_loop" ||
 		kind === "login_expired" ||
@@ -441,7 +444,9 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		case "machine_account_conflict":
 			return "The external quota monitor found conflicting active-account witnesses and refused all quota actions.";
 		case "model_config":
-			return "The Lead launcher rejected or could not resolve its configured model and used the built-in Fable fallback. Inspect projects.json, models.json, and the launcher log before the next restart.";
+			return "The Lead launcher rejected or could not resolve its configured model and substituted the active Fable family binding. If live registry resolution was unavailable, inspect the last-good authority receipt. Check projects.json, models.json, and the launcher log before the next restart.";
+		case "model_family_updated":
+			return "The existing updater advanced the Fable family binding in models.json after an Anthropic Models API probe and successful registry reload. Future dispatches use the new canonical; pinned runs remain unchanged. Future base-model resume parks fail-closed until contextWindowTokens is independently corroborated.";
 		case "model_cap_switched":
 			return "The external quota monitor switched accounts for a verified model-specific cap and recorded the affected panes.";
 		case "model_cap_unknown":

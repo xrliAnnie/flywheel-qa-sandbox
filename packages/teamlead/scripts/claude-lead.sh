@@ -1800,26 +1800,89 @@ _FLY1496_PRE_RESOLVED_RESULT=""
 _pre_resolve_lead_model_decision() {
   [ "$_FLY1496_PRE_RESOLVED" = true ] && return 0
   local entry="${FLYWHEEL_ROOT}/packages/teamlead/dist/lead-model-launch.js"
+  local helper="${SCRIPT_DIR}/lib/lead-model-authority-receipt.mjs"
+  local state_root="${FLYWHEEL_STATE_DIR:-${HOME}/.flywheel}"
+  local receipt="${state_root}/state/lead-model-authority.json"
   local result=""
-  if command -v jq >/dev/null 2>&1 && [ -f "$entry" ]; then
+  if command -v jq >/dev/null 2>&1 && [ -f "$helper" ]; then
     result="$(
       FLY1496_ENTRY="$entry" \
+      FLY1496_RECEIPT_HELPER="$helper" \
+      FLY1496_RECEIPT="$receipt" \
       FLY1496_PROJECT="$PROJECT_NAME" \
       FLY1496_LEAD="$LEAD_ID" \
       node --input-type=module -e '
+        let receiptModule;
+        try {
+          receiptModule = await import(process.env.FLY1496_RECEIPT_HELPER);
+        } catch (error) {
+          process.stdout.write(JSON.stringify({
+            ok: false,
+            error: `model authority helper unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          }));
+          process.exit(0);
+        }
         try {
           const mod = await import(process.env.FLY1496_ENTRY);
           const decision = mod.resolveLeadModelLaunch(
             process.env.FLY1496_PROJECT ?? "",
             process.env.FLY1496_LEAD ?? "",
           );
-          process.stdout.write(JSON.stringify({ ok: true, decision }));
+          try {
+            const authorityReceipt = receiptModule.writeLeadModelAuthorityReceipt(
+              process.env.FLY1496_RECEIPT,
+              decision,
+            );
+            process.stdout.write(JSON.stringify({
+              ok: true,
+              authoritySource: "registry",
+              authorityReceipt,
+              decision,
+            }));
+          } catch (error) {
+            process.stdout.write(JSON.stringify({
+              ok: true,
+              authoritySource: "registry",
+              receiptFailure: true,
+              error: `model authority receipt write failed: ${error instanceof Error ? error.message : String(error)}`,
+              decision,
+            }));
+          }
         } catch (error) {
-          process.stdout.write(JSON.stringify({
-            ok: false,
-            sourceFailure: error?.code === "MODEL_SOURCE_FAILURE",
-            error: error instanceof Error ? error.message : String(error),
-          }));
+          if (error?.code === "MODEL_SOURCE_FAILURE") {
+            process.stdout.write(JSON.stringify({
+              ok: false,
+              sourceFailure: true,
+              error: error instanceof Error ? error.message : String(error),
+            }));
+          } else {
+            try {
+              const authorityReceipt = receiptModule.readLeadModelAuthorityReceipt(
+                process.env.FLY1496_RECEIPT,
+              );
+              process.stdout.write(JSON.stringify({
+                ok: true,
+                authoritySource: "last_good_receipt",
+                authorityReceipt,
+                decision: {
+                  model: authorityReceipt.model,
+                  effort: null,
+                  substituted: true,
+                  reason: "last_good_receipt",
+                  rawModel: null,
+                  rawEffort: null,
+                  configRevision: authorityReceipt.configRevision,
+                  contextWindowTokens: authorityReceipt.contextWindowTokens,
+                  companionDefaultEffort: null,
+                },
+              }));
+            } catch (receiptError) {
+              process.stdout.write(JSON.stringify({
+                ok: false,
+                error: `model authority unavailable: resolver failed (${error instanceof Error ? error.message : String(error)}); last-good receipt failed (${receiptError instanceof Error ? receiptError.message : String(receiptError)})`,
+              }));
+            }
+          }
         }
       '
     )" || result=""
@@ -1832,16 +1895,15 @@ _pre_resolve_lead_model_decision() {
 _launch_claude() {
   local -a launch_args=("$@")
   local _fly1496_result=""
-  local _fly1496_model="claude-fable-5"
+  local _fly1496_model=""
   local _fly1496_raw_model=""
   local _fly1496_effort=""
   local _fly1496_raw_effort=""
-  # FLY-1650: FLY-583's companion fallback, narrowed by the resolver to what the
-  # RESOLVED model accepts. Seeded with the historical literal for the
-  # resolver-unavailable path below, which launches literal Fable — a model
-  # that accepts xhigh, so that path is provably byte-identical.
-  local _fly1496_companion_effort=xhigh
-  local _fly1496_reason="resolver_unavailable"
+  # FLY-1650: FLY-583's companion fallback is emitted only when the live
+  # resolver proves the canonical model accepts it. A last-good receipt carries
+  # model authority, not effort capabilities, so that degraded path omits it.
+  local _fly1496_companion_effort=""
+  local _fly1496_reason="model_authority_unavailable"
   local _fly1496_substituted=true
   local _fly1496_arg _fly1496_skip
   local -a _fly1496_filtered=()
@@ -1857,6 +1919,9 @@ _launch_claude() {
     _fly1496_effort=$(jq -r '.decision.effort // ""' <<<"$_fly1496_result")
     _fly1496_raw_effort=$(jq -r '.decision.rawEffort // ""' <<<"$_fly1496_result")
     _fly1496_reason=$(jq -r '.decision.reason' <<<"$_fly1496_result")
+    if jq -e '.receiptFailure == true' >/dev/null 2>&1 <<<"$_fly1496_result"; then
+      log "model_config WARNING: authority receipt write failed after verified live model resolution; continuing this launch without a refreshed restart fallback"
+    fi
     # FLY-1650 (Codex R4/R5): ABSENT and explicit null are opposite signals and
     # jq's `//` collapses them, so branch on has() first.
     #
@@ -1889,11 +1954,12 @@ _launch_claude() {
     log "FATAL: $(jq -r '.error // "projects.json model source failure"' <<<"$_fly1496_result")"
     return 1
   else
-    # Resolver/runtime failure must not brick the fleet, but the frozen env is
-    # not a safe fallback: it is a stale carrier that cannot be canonicalized
-    # here, and the incident showed it holding a value the operator had already
-    # moved away from. Literal Fable needs neither dist nor config to be read.
-    log "model_config WARNING: resolver unavailable; using built-in ${_fly1496_model}; frozen env ignored"
+    # Never inherit Claude account defaults and never recreate a version literal
+    # here. The pre-resolver already attempted the owner-only last-good receipt;
+    # if neither authority is valid, spawning without an explicit canonical
+    # --model would be a silent policy change.
+    log "FATAL: $(jq -r '.error // "model authority unavailable"' <<<"${_fly1496_result:-{}}" 2>/dev/null || printf '%s' 'model authority unavailable')"
+    return 1
   fi
 
   # Replace every earlier model/effort token only after all routing has settled.
@@ -1920,8 +1986,8 @@ _launch_claude() {
     log "Companion: no --effort (FLY-1650; ${_fly1496_model} accepts no companion fallback tier)"
   fi
 
-  if [ "$_fly1496_reason" = "resolver_unavailable" ]; then
-    log "model source: resolver unavailable → using built-in ${_fly1496_model}; env=${FLYWHEEL_LEAD_MODEL:-<unset>} ignored"
+  if [ "$_fly1496_reason" = "last_good_receipt" ]; then
+    log "model source: resolver unavailable → using last-good model authority receipt ${_fly1496_model}; env=${FLYWHEEL_LEAD_MODEL:-<unset>} ignored"
   else
     log "model source: projects.json=${_fly1496_raw_model:-<absent>}→${_fly1496_model} env=${FLYWHEEL_LEAD_MODEL:-<unset>} → using projects.json"
   fi
@@ -1933,7 +1999,7 @@ _launch_claude() {
   fi
 
 
-  if [ "$_fly1496_substituted" = true ] || [ "$_fly1496_reason" = "resolver_unavailable" ]; then
+  if [ "$_fly1496_substituted" = true ]; then
     if [ -x "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" ]; then
       "${FLYWHEEL_ROOT}/scripts/lead-alert.sh" \
         --lead "$LEAD_ID" --project "$PROJECT_NAME" \

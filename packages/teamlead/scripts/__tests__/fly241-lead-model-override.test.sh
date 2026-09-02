@@ -103,7 +103,7 @@ jq -n '{model:"claude-opus-4-8[1m]",effort:"max"}' > "$H/.flywheel/manifests/fly
 MANIFEST_BEFORE=$(cat "$H/.flywheel/manifests/flywheel-eng-lead.json")
 OUT=$(run_dry "$H" "$P" FLYWHEEL_LEAD_MODEL="sonnet" FLYWHEEL_LEAD_EFFORT="high")
 PLAN=$(printf '%s\n' "$OUT" | plan_of)
-[ "$(arg_value "$PLAN" --model)" = "claude-fable-5" ] \
+[ "$(arg_value "$PLAN" --model)" = "claude-fable-5-1" ] \
   && [ -z "$(arg_value "$PLAN" --effort)" ] \
   && ok "authoritative absence resets to Fable with no stale effort" \
   || bad "absence did not clear stale carriers"
@@ -134,7 +134,7 @@ H=$(make_home)
 P=$(fixture_projects "$H" "claude-not-a-model")
 OUT=$(run_dry "$H" "$P")
 PLAN=$(printf '%s\n' "$OUT" | plan_of)
-[ "$(arg_value "$PLAN" --model)" = "claude-fable-5" ] \
+[ "$(arg_value "$PLAN" --model)" = "claude-fable-5-1" ] \
   && printf '%s\n' "$OUT" | grep -q "model_config WARNING" \
   && ok "an unresolvable spelling falls back to Fable, loudly" \
   || bad "unresolvable spelling handling"
@@ -155,7 +155,7 @@ rm -rf "$H"
 H=$(make_home)
 P=$(fixture_projects "$H" "" "" true)
 PLAN=$(run_dry "$H" "$P" FLYWHEEL_LEAD_MODEL="claude-opus-4-8" FLYWHEEL_LEAD_EFFORT="medium" | plan_of)
-[ "$(arg_value "$PLAN" --model)" = "claude-fable-5" ] \
+[ "$(arg_value "$PLAN" --model)" = "claude-fable-5-1" ] \
   && [ "$(arg_value "$PLAN" --effort)" = "xhigh" ] \
   && ok "companion gets explicit Fable + xhigh, not stale env" \
   || bad "companion launch policy mismatch"

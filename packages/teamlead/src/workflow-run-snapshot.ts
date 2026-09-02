@@ -3,6 +3,7 @@ import { isAbsolute, relative, resolve } from "node:path";
 import {
 	canonicalSubmissionDigest,
 	getNodeTypeRegistryEntry,
+	type ModelConfigSnapshot,
 	type WorkflowNodeCapabilities,
 } from "flywheel-config";
 import {
@@ -41,7 +42,7 @@ export interface ResolvedWorkflowNode {
 	id: string;
 	type: WorkflowNodeType;
 	capabilities: WorkflowNodeCapabilities;
-	/** True when a per-run menu override must outrank mutable live config. */
+	/** True when immutable run materialization outranks mutable live config. */
 	dispatchPinned?: boolean;
 	dispatch?: {
 		vendor: WorkflowVendor;
@@ -369,9 +370,12 @@ export function buildWorkflowRunSnapshotV2(input: {
 		categorySource: CategorySource;
 		tier?: EngTier;
 	};
-	pinnedDispatchNodeIds?: readonly string[];
+	/** One registry generation for alias validation and canonicalization. */
+	modelSnapshot?: ModelConfigSnapshot;
 }): WorkflowRunSnapshotV2 {
-	const validated = validateWorkflowManifest(input.manifest);
+	const validated = validateWorkflowManifest(input.manifest, {
+		...(input.modelSnapshot ? { modelSnapshot: input.modelSnapshot } : {}),
+	});
 	if (validated.schema_version !== 2) {
 		throw new Error("typed generalized snapshot requires schema_version 2");
 	}
@@ -432,9 +436,7 @@ export function buildWorkflowRunSnapshotV2(input: {
 			id: node.id,
 			type: node.type,
 			capabilities,
-			...(input.pinnedDispatchNodeIds?.includes(node.id)
-				? { dispatchPinned: true }
-				: {}),
+			dispatchPinned: true,
 			dispatch: {
 				vendor: node.vendor,
 				model: node.model,

@@ -265,8 +265,8 @@ const MANAGEMENT_CONSOLE_APP = `
     var id=value&&value.provider;for(var i=0;i<catalog.providers.length;i++){if(catalog.providers[i].id===id){return catalog.providers[i];}}
     return catalog.providers[0]||null;
   }
-  function selectedModel(provider,value){
-    if(!provider){return null;}var id=value&&value.model;for(var i=0;i<provider.models.length;i++){if(provider.models[i].id===id){return provider.models[i];}}
+  function selectedModel(provider,value,canonicalModel){
+    if(!provider){return null;}var id=canonicalModel||(value&&value.model);for(var i=0;i<provider.models.length;i++){if(provider.models[i].id===id){return provider.models[i];}}
     return null;
   }
   function option(id,label,chosen){return '<option value="'+esc(id)+'" '+(id===chosen?'selected':'')+'>'+esc(label)+'</option>';}
@@ -275,7 +275,8 @@ const MANAGEMENT_CONSOLE_APP = `
     if(!catalog.providers.length){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">真实 registry 在此层没有可用型号</div>'+capability(managed)+'</div>';}
     if(!value&&!selectionNullable){return '<div class="field"><label>'+esc(label)+'</label><div class="reason">当前真源没有声明具体模型</div>'+capability(managed)+'</div>';}
     var provider=value?selectedProvider(catalog,value):(providerLocked?catalog.providers[0]:null);
-    var model=value&&provider?selectedModel(provider,value):null;
+    var currentSpelling=managed.current&&managed.current.model;var displayCanonical=value&&value.model===currentSpelling?managed.canonicalModel:null;
+    var model=value&&provider?selectedModel(provider,value,displayCanonical):null;
     var providers=(!providerLocked&&selectionNullable?'<option value="" '+(!provider?'selected':'')+'>账户默认</option>':'')+catalog.providers.map(function(item){return option(item.id,item.label,provider&&provider.id);}).join("");
     var retiredModel=value&&provider&&!model&&value.model?'<option value="'+esc(value.model)+'" selected>已退役 · '+esc(value.model)+'</option>':'';
     var models=(selectionNullable?'<option value="" '+(!value?'selected':'')+'>账户默认</option>':'')+retiredModel+(provider?provider.models.map(function(item){return option(item.id,item.label,model&&model.id);}).join(""):"");
@@ -420,6 +421,7 @@ const MANAGEMENT_CONSOLE_APP = `
     if(part==="provider"){
       var provider=selectedProvider(catalog,value);var model=provider&&provider.models[0];if(!model){return;}value.model=model.id;value.effort=null;
     }else if(part==="model"){
+      if(managed.canonicalModel===select.value&&managed.current&&managed.current.model){value.model=managed.current.model;}
       value.effort=null;
     }
     setDraft(managed,value);
@@ -449,10 +451,11 @@ const MANAGEMENT_CONSOLE_APP = `
 
   function post(path,body){return requestJson(path,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});}
   function canonicalKey(batch){return stableUiValue(batch.changes.map(function(change){return {targetId:change.targetId,oldValue:change.oldValue,newValue:change.newValue,consequence:change.consequence};}));}
+  function consequenceCopy(consequence){return consequence==="new-run"?"仅影响新 run；已物化 run 不变。载体错误需重启或重新物化。":consequence;}
   function showCanonical(result,message,forceAcknowledgement){
     staged=forceAcknowledgement?Object.assign({},result,{confirmationRequired:true,confirmToken:null}):result;result=staged;var batch=result.batch;var html='<h2>提交确认</h2><div class="help">以下内容来自 server canonical 预检；页面草稿不是落盘权威。</div>';
     if(message){html+='<div class="ack">'+esc(message)+'</div>';}
-    batch.changes.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><div class="change-values"><div><div class="help">旧值 oldValue</div><div class="value old">'+esc(textValue(change.oldValue))+'</div></div><span>→</span><div><div class="help">新值 newValue</div><div class="value">'+esc(textValue(change.newValue))+'</div></div></div><div class="consequence">影响 consequence：'+esc(change.consequence)+'</div></div>';});
+    batch.changes.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><div class="change-values"><div><div class="help">旧值 oldValue</div><div class="value old">'+esc(textValue(change.oldValue))+'</div></div><span>→</span><div><div class="help">新值 newValue</div><div class="value">'+esc(textValue(change.newValue))+'</div></div></div><div class="consequence">影响 consequence：'+esc(change.consequence)+' · '+esc(consequenceCopy(change.consequence))+'</div></div>';});
     batch.noOps.forEach(function(change){html+='<div class="change"><strong>'+esc(change.targetId)+'</strong><span class="badge">无变化</span></div>';});
     if(result.confirmationRequired&&!result.confirmToken){html+='<label class="ack"><input type="checkbox" id="ack"> 我理解 reload / restart 等高风险影响</label>';}
     html+='<div class="modal-actions"><button class="secondary" id="modalCancel">返回修改</button><button class="primary" id="modalConfirm">'+(result.confirmationRequired&&!result.confirmToken?'确认影响并重新预检':'确认落盘')+'</button></div>';

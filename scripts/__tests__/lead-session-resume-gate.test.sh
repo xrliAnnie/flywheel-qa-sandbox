@@ -5,6 +5,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GATE_LIB="$ROOT/packages/teamlead/scripts/lib/lead-session-resume-gate.sh"
 AUTHORITY_LIB="$ROOT/packages/teamlead/scripts/lib/lead-session-authority.sh"
+MODEL_AUTHORITY_LIB="$ROOT/packages/teamlead/scripts/lib/lead-model-authority-receipt.mjs"
 READER="$ROOT/packages/teamlead/scripts/lib/session-ctx-usage.mjs"
 TMP="$(mktemp -d /tmp/fly1716-resume-gate.XXXXXX)"
 PASS=0
@@ -15,7 +16,7 @@ ok() { PASS=$((PASS + 1)); printf 'PASS: %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 log() { printf '%s\n' "$*" >> "$TMP/gate.log"; }
 
-if [ ! -f "$GATE_LIB" ] || [ ! -f "$AUTHORITY_LIB" ]; then
+if [ ! -f "$GATE_LIB" ] || [ ! -f "$AUTHORITY_LIB" ] || [ ! -f "$MODEL_AUTHORITY_LIB" ]; then
   bad "resume-gate and shared authority libraries exist"
   printf '%d passed, %d failed\n' "$PASS" "$FAIL"
   exit 1
@@ -41,6 +42,7 @@ assistant_line() {
 
 setup_case() {
   local name="$1" session_id="$2" model="${3:-claude-haiku-4-5-20251001}"
+  local window="${4:-200000}" revision="${5:-fixture-revision}"
   CASE_ROOT="$TMP/$name"
   FLYWHEEL_STATE_DIR="$CASE_ROOT/state-root"
   CLAUDE_CONFIG_DIR="$CASE_ROOT/claude-config"
@@ -51,8 +53,14 @@ setup_case() {
   FLYWHEEL_LEAD_CTX_RESUME_GATE=1
   FLYWHEEL_LEAD_CTX_RESUME_MAX=70
   FLYWHEEL_LEAD_AUTHORITY_TIMEOUT_SEC=1
-  _FLY1496_PRE_RESOLVED_RESULT="$(jq -nc --arg model "$model" '{ok:true,decision:{model:$model}}')"
+  _FLY1496_PRE_RESOLVED_RESULT="$(jq -nc \
+    --arg model "$model" --arg revision "$revision" --argjson window "$window" \
+    '{ok:true,authoritySource:"registry",decision:{model:$model,contextWindowTokens:$window,configRevision:$revision}}')"
   mkdir -p "$(dirname "$SESSION_ID_FILE")" "$LEAD_WORKSPACE" "$CLAUDE_CONFIG_DIR"
+  node "$MODEL_AUTHORITY_LIB" write \
+    --file "$FLYWHEEL_STATE_DIR/state/lead-model-authority.json" \
+    --model "$model" --context-window "$window" --revision "$revision" \
+    >/dev/null 2>&1 || true
   if [ -n "$session_id" ]; then
     printf '%s\n' "$session_id" > "$SESSION_ID_FILE"
   fi
@@ -123,7 +131,7 @@ else
 fi
 
 million_id="10000000-0000-4000-8000-000000000005"
-setup_case million "$million_id" 'claude-opus-5[1m]'
+setup_case million "$million_id" 'claude-opus-5[1m]' 1000000
 assistant_line 700000 0 'claude-opus-5' > "$TRANSCRIPT_FILE"
 if lead_session_prepare \
   && [ "$_v2_is_resume" = false ] \
@@ -137,7 +145,7 @@ fi
 # statusline reported 52% for the same Sonnet 5 session whose last assistant
 # usage was 524,777 tokens. The two independent measurements imply a 1M window.
 measured_id="10000000-0000-4000-8000-000000000014"
-setup_case measured-sonnet "$measured_id" 'claude-sonnet-5'
+setup_case measured-sonnet "$measured_id" 'claude-sonnet-5' 1000000
 cp "$ROOT/scripts/__tests__/fixtures/fly1716/belle-transcript.jsonl" "$TRANSCRIPT_FILE"
 reported_pct="$(jq -r '.context_window.used_percentage' \
   "$ROOT/scripts/__tests__/fixtures/fly1716/belle-statusline.json")"
@@ -146,7 +154,7 @@ if lead_session_prepare \
   && [ "$_v2_session_id" = "$measured_id" ] \
   && jq -e --argjson reported "$reported_pct" '
     .model == "claude-sonnet-5" and .window == 1000000 and
-    .windowSource == "qa_same_session_measurement_2026_08_15" and
+    .windowSource == "registry_context_window" and
     .base == 524777 and .verdict == "safe_resume" and .action == "resumed" and
     ((.base * 100 / .window) | floor) == $reported
   ' "$(receipt_file)" >/dev/null; then
@@ -156,28 +164,85 @@ else
 fi
 
 fable_band_id="10000000-0000-4000-8000-000000000015"
-setup_case fable-failure-band "$fable_band_id" 'claude-fable-5'
-assistant_line 180000 0 'claude-fable-5' > "$TRANSCRIPT_FILE"
+setup_case fable-failure-band "$fable_band_id" 'claude-fable-5-1' 1000000
+assistant_line 180000 0 'claude-fable-5-1' > "$TRANSCRIPT_FILE"
 if lead_session_prepare \
   && [ "$_v2_is_resume" = true ] \
   && jq -e '.window == 1000000 and .verdict == "safe_resume" and
     .estTokens == 180001' "$(receipt_file)" >/dev/null; then
-  ok "a healthy Fable 5 session in the former 140k-200k failure band resumes"
+  ok "a healthy Fable 5.1 session uses its API-derived registry window"
 else
-  bad "Fable 5 still uses the false 200k window in the production failure band"
+  bad "Fable 5.1 did not use its API-derived registry window"
+fi
+
+future_fable_id="10000000-0000-4000-8000-000000000017"
+setup_case future-fable "$future_fable_id" 'claude-fable-5-10' 800000
+assistant_line 180000 0 'claude-fable-5-10' > "$TRANSCRIPT_FILE"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = true ] \
+  && jq -e '.model == "claude-fable-5-10" and .window == 800000 and
+    .windowSource == "registry_context_window" and .verdict == "safe_resume"' \
+    "$(receipt_file)" >/dev/null; then
+  ok "a future numeric Fable uses the exact trusted registry window"
+else
+  bad "a future numeric Fable inherited a family guess"
 fi
 
 unknown_model_id="10000000-0000-4000-8000-000000000016"
-setup_case unknown-model "$unknown_model_id" 'claude-future-unknown'
+setup_case unknown-model "$unknown_model_id" 'claude-fable-5-11' null
 assistant_line 10000 0 'claude-future-unknown' > "$TRANSCRIPT_FILE"
 if lead_session_prepare \
   && [ "$_v2_is_resume" = false ] \
-  && jq -e '.window == null and .windowSource == "unknown_model_fail_closed" and
+  && jq -e '.window == null and .windowSource == "registry_context_window_missing" and
     .verdict == "unknown" and .reason == "unknown_model_window" and
     .action == "parked"' "$(receipt_file)" >/dev/null; then
-  ok "an unknown model window is explicit and fails closed instead of guessing"
+  ok "a future Fable without API window metadata fails closed instead of guessing"
 else
-  bad "an unknown model silently inherited a guessed context window"
+  bad "a future Fable silently inherited a guessed context window"
+fi
+
+missing_receipt_id="10000000-0000-4000-8000-000000000018"
+setup_case missing-authority-receipt "$missing_receipt_id" 'claude-fable-5-1' 1000000
+assistant_line 10000 0 'claude-fable-5-1' > "$TRANSCRIPT_FILE"
+rm -f "$FLYWHEEL_STATE_DIR/state/lead-model-authority.json"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = false ] \
+  && jq -e '.window == null and .windowSource == "authority_receipt_invalid" and
+    .verdict == "unknown" and .action == "parked"' "$(receipt_file)" >/dev/null; then
+  ok "missing model-authority receipt parks instead of trusting in-memory metadata"
+else
+  bad "missing model-authority receipt did not fail closed"
+fi
+
+mismatch_receipt_id="10000000-0000-4000-8000-000000000019"
+setup_case mismatched-authority-receipt "$mismatch_receipt_id" 'claude-fable-5-1' 1000000
+assistant_line 10000 0 'claude-fable-5-1' > "$TRANSCRIPT_FILE"
+node "$MODEL_AUTHORITY_LIB" write \
+  --file "$FLYWHEEL_STATE_DIR/state/lead-model-authority.json" \
+  --model 'claude-fable-5-10' --context-window 800000 --revision fixture-revision \
+  >/dev/null 2>&1 || true
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = false ] \
+  && jq -e '.window == null and .windowSource == "authority_receipt_mismatch" and
+    .verdict == "unknown" and .action == "parked"' "$(receipt_file)" >/dev/null; then
+  ok "model/window receipt mismatch parks the prior session"
+else
+  bad "mismatched authority metadata was trusted"
+fi
+
+malformed_receipt_id="10000000-0000-4000-8000-000000000020"
+setup_case malformed-authority-receipt "$malformed_receipt_id" 'claude-fable-5-1' 1000000
+assistant_line 10000 0 'claude-fable-5-1' > "$TRANSCRIPT_FILE"
+printf '%s\n' '{"schemaVersion":1,"model":"claude-fable-5-10-preview","contextWindowTokens":"1000000","configRevision":"fixture-revision","resolvedAt":"2026-09-01T00:00:00.000Z"}' \
+  > "$FLYWHEEL_STATE_DIR/state/lead-model-authority.json"
+chmod 600 "$FLYWHEEL_STATE_DIR/state/lead-model-authority.json"
+if lead_session_prepare \
+  && [ "$_v2_is_resume" = false ] \
+  && jq -e '.window == null and .windowSource == "authority_receipt_invalid" and
+    .verdict == "unknown" and .action == "parked"' "$(receipt_file)" >/dev/null; then
+  ok "malformed near-match authority receipt fails closed"
+else
+  bad "malformed near-match receipt supplied a guessed window"
 fi
 
 setup_case fresh ""
@@ -274,10 +339,13 @@ setup_case packaged-reader "$packaged_id"
 assistant_line 10000 > "$TRANSCRIPT_FILE"
 source_script_dir="$SCRIPT_DIR"
 source_flywheel_root="$FLYWHEEL_ROOT"
+source_model_authority_lib="$_lead_model_authority_lib"
 SCRIPT_DIR="$CASE_ROOT/node_modules/flywheel-teamlead/scripts"
 FLYWHEEL_ROOT="$CASE_ROOT"
 mkdir -p "$SCRIPT_DIR/lib"
 cp "$READER" "$SCRIPT_DIR/lib/session-ctx-usage.mjs"
+cp "$MODEL_AUTHORITY_LIB" "$SCRIPT_DIR/lib/lead-model-authority-receipt.mjs"
+_lead_model_authority_lib="$SCRIPT_DIR/lib/lead-model-authority-receipt.mjs"
 if lead_session_prepare \
   && [ "$_v2_is_resume" = true ] \
   && jq -e '.verdict == "safe_resume" and .action == "resumed"' \
@@ -288,6 +356,7 @@ else
 fi
 SCRIPT_DIR="$source_script_dir"
 FLYWHEEL_ROOT="$source_flywheel_root"
+_lead_model_authority_lib="$source_model_authority_lib"
 
 receipt_failure_id="10000000-0000-4000-8000-000000000012"
 setup_case receipt-failure "$receipt_failure_id"

@@ -20,10 +20,23 @@ function fail(error) {
 }
 
 async function main() {
-	const { getModelConfigSnapshot, MODEL_IDS, validateModelWrite } =
-		await import(pathToFileURL(configEntry).href);
+	const { getModelConfigSnapshot, validateModelWrite } = await import(
+		pathToFileURL(configEntry).href
+	);
 	const snapshot = getModelConfigSnapshot();
 	const command = process.argv[2];
+	if (command === "fable-binding") {
+		const model = snapshot.bindings.fable;
+		const entry = snapshot.getModelRegistryEntry(model);
+		process.stdout.write(
+			JSON.stringify({
+				model,
+				contextWindowTokens: entry?.contextWindowTokens ?? null,
+				revision: snapshot.revision,
+			}),
+		);
+		return;
+	}
 	if (command === "model") {
 		const raw = process.argv[3];
 		const surface = process.argv[4] ?? "lead";
@@ -50,7 +63,7 @@ async function main() {
 			// In projects.json, null means authoritative absence, whose launch
 			// semantics are the built-in Fable default. It is not the management
 			// console's opaque account-default sentinel.
-			validateModelWrite(raw === null ? MODEL_IDS.FABLE : raw, {
+			validateModelWrite(raw === null ? snapshot.bindings.fable : raw, {
 				surface,
 				snapshot,
 			});
@@ -58,7 +71,9 @@ async function main() {
 		process.stdout.write(snapshot.revision);
 		return;
 	}
-	throw new Error("usage: validate-model-policy.mjs <model|changes-file> ...");
+	throw new Error(
+		"usage: validate-model-policy.mjs <fable-binding|model|changes-file> ...",
+	);
 }
 
 main().catch(fail);

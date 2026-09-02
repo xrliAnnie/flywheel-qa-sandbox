@@ -67,7 +67,7 @@ validate_model_policy_value() {
   # inheritance. Validate the effective launch value while preserving absence
   # in the SSOT itself.
   if [ -z "$value" ] || [ "$value" = "null" ]; then
-    value="claude-fable-5"
+    value="$(node "$MODEL_POLICY_CLI" fable-binding | jq -er '.model')" || return 1
   fi
   node "$MODEL_POLICY_CLI" model "$value" lead >/dev/null
 }
@@ -1279,7 +1279,6 @@ cmd_rollback() {
     # Validate that effective value while preserving the exact absent marker
     # for the later SSOT restore.
     preflight_policy_model="$preflight_original_model"
-    [ "$preflight_policy_model" = "null" ] && preflight_policy_model="claude-fable-5"
     local preflight_policy_message
     if ! preflight_policy_message=$(validate_model_policy_value "$preflight_policy_model" 2>&1); then
       preflight_error="${preflight_key}: rollback pre-image violates current model policy (${preflight_policy_message})"

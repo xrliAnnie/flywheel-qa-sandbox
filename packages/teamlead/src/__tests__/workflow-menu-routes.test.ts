@@ -98,8 +98,8 @@ describe("GET /api/workflow/menus", () => {
 			models: [
 				{
 					model: "fable",
-					resolvedModel: "claude-fable-5",
-					receipt: "fable (= claude-fable-5)",
+					resolvedModel: "claude-fable-5-1",
+					receipt: "fable (= claude-fable-5-1)",
 					allowedEfforts: ["low", "medium", "high", "xhigh", "max"],
 					defaultEffort: "xhigh",
 				},

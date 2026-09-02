@@ -38,6 +38,7 @@ updater_configure_runtime_paths() {
   SELF_SHIP_LOCK_DIR="${FLYWHEEL_HOME}/self-ship-updater.lock.d"
 }
 UPDATER_GIT="${UPDATER_GIT:-git}"
+UPDATER_NODE="${UPDATER_NODE:-node}"
 UPDATER_BOUNDED_RUN="${UPDATER_BOUNDED_RUN:-${SCRIPT_DIR}/lib/bounded-run.sh}"
 # Deliberately shorter than restart-services' one-shot 120s fetch: this periodic
 # updater gets three 20s noninteractive attempts before consuming urgent intent.
@@ -223,6 +224,18 @@ updater_merge_remote() {
     merge --ff-only "$target" --quiet
 }
 updater_converge_bin() { bash "${SCRIPT_DIR}/converge-flywheel-bin.sh" >/dev/null 2>&1; }
+
+# FLY-2238: the existing twice-daily singleton is the only model-family watch.
+# The compiled CLI owns bounded probing, atomic authority mutation, verification,
+# and success notification. Every outcome is advisory to the deploy shuttle.
+updater_sync_fable_model() {
+  local cli="${FLYWHEEL_FABLE_MODEL_SYNC_CLI:-${FLYWHEEL_DIR}/packages/teamlead/dist/account-heal/fable-model-sync-cli.js}"
+  local alert_bin="${FLYWHEEL_LEAD_ALERT_BIN:-${FLYWHEEL_DIR}/scripts/lead-alert.sh}"
+  [[ -f "$cli" && ! -L "$cli" ]] || return 127
+  "$UPDATER_NODE" "$cli" \
+    --authority "${FLYWHEEL_HOME}/models.json" \
+    --alert-bin "$alert_bin"
+}
 
 # FLY-1814: keep the updater's existing daemon convergence/census floor.
 updater_launchd_pass() {
@@ -580,6 +593,9 @@ update_main() {
 
   if ! updater_converge_bin; then
     log "converge-flywheel-bin reported unhealthy state (non-fatal; continuing)"
+  fi
+  if ! updater_sync_fable_model; then
+    log "Fable model authority sync was unavailable (non-fatal; continuing)"
   fi
   updater_run_launchd_then_cycle
   rc=$?

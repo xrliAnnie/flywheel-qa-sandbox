@@ -121,13 +121,15 @@ export function applyManagementDagEdit(
 		return { status: "conflict", currentRevision: target.revision };
 	}
 
-	const registered = modelSnapshot.getModelRegistryEntry(input.desired.model);
+	const desiredModel = input.desired.model.trim();
+	const registered = modelSnapshot.getModelRegistryEntry(desiredModel);
 	if (
+		!desiredModel ||
 		!registered ||
 		registered.provider !== input.desired.provider ||
 		!modelSnapshot.isModelSelectionSupported({
 			surface: "workflow",
-			model: input.desired.model,
+			model: desiredModel,
 			effort: input.desired.effort ?? undefined,
 			runtimeVendor: registered.runtimeVendor,
 		})
@@ -142,7 +144,10 @@ export function applyManagementDagEdit(
 			return { status: "not_found" };
 		}
 		node.vendor = registered.runtimeVendor;
-		node.model = registered.id;
+		// Persist the validated source spelling for workflow templates. Stable
+		// aliases intentionally follow the registry authority for future runs;
+		// materialization canonicalizes once into each immutable run snapshot.
+		node.model = desiredModel;
 		const effort = workflowEffort(input.desired.effort);
 		if (effort) node.effort = effort;
 		else delete node.effort;

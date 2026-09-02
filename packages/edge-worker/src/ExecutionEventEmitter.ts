@@ -41,7 +41,7 @@ export interface EventEnvelope {
 	 */
 	runnerBackend?: string;
 	/**
-	 * FLY-728: the resolved runner model (e.g. "claude-fable-5", "opus"). Persisted
+	 * FLY-728: the resolved runner model (e.g. "fable", "opus"). Persisted
 	 * as `session.runner_model` so the dashboard / issue surfaces show which model a
 	 * per-issue routed runner is using. Absent → no `--model` override was resolved
 	 * (account default), persisted as NULL (byte-compatible).

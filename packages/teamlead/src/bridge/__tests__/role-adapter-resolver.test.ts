@@ -3,6 +3,10 @@
  * task(label) > project > global env > built-in default. Target: full
  * combination coverage (plan §6 row 1).
  */
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resetModelConfigCacheForTests } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	EXECUTOR_TO_TRANSPORT,
@@ -28,7 +32,7 @@ describe("resolveRoleAdapter — built-in default", () => {
 			backend: "claude-tmux",
 			transport: "claude-code",
 			vendor: "claude-code",
-			model: "claude-fable-5",
+			model: "claude-fable-5-1",
 		});
 	});
 
@@ -42,6 +46,51 @@ describe("resolveRoleAdapter — built-in default", () => {
 });
 
 describe("resolveRoleAdapter — FLY-751 runner default model", () => {
+	it("follows a future Fable family binding instead of a pinned canonical", () => {
+		const root = mkdtempSync(join(tmpdir(), "role-fable-binding-"));
+		const path = join(root, "models.json");
+		const previous = process.env.FLYWHEEL_MODELS_CONFIG;
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-2",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2",
+						aliases: ["fable-5-2"],
+						dispatch: true,
+					},
+					{
+						id: "claude-fable-5-2[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2 (1M)",
+						aliases: ["fable-5-2-1m"],
+						dispatch: true,
+						contextWindowTokens: 1_000_000,
+					},
+				],
+				bindings: { fable: "claude-fable-5-2" },
+				tiers: { heavy: "fable" },
+			}),
+		);
+		try {
+			process.env.FLYWHEEL_MODELS_CONFIG = path;
+			resetModelConfigCacheForTests();
+			expect(resolveRoleAdapter({ role: "runner", env: EMPTY_ENV }).model).toBe(
+				"claude-fable-5-2",
+			);
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+			else process.env.FLYWHEEL_MODELS_CONFIG = previous;
+			resetModelConfigCacheForTests();
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
 	it("FLYWHEEL_RUNNER_DEFAULT_MODEL overrides the built-in default", () => {
 		const resolved = resolveRoleAdapter({
 			role: "runner",
@@ -112,7 +161,7 @@ describe("resolveRoleAdapter — FLY-751 runner default model", () => {
 			projectRoles: { runner: { backend: "claude-tmux" } },
 			env: EMPTY_ENV,
 		});
-		expect(resolved.model).toBe("claude-fable-5");
+		expect(resolved.model).toBe("claude-fable-5-1");
 	});
 
 	it("non-claude backends never get the claude default model", () => {
@@ -354,10 +403,10 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 	});
 
 	// FLY-728: per-issue model routing — a `fable` label pins the Claude tmux
-	// backend + the explicit `claude-fable-5` model, overriding the project
+	// backend + the current Fable family model, overriding the project
 	// default model (the label layer sets backend, so the project roles layer is
 	// skipped entirely). This is the "heavy task → Fable" enabler.
-	it("fable label → claude-tmux + claude-fable-5, overriding project model", () => {
+	it("fable label → claude-tmux + current Fable, overriding project model", () => {
 		const resolved = resolveRoleAdapter({
 			role: "runner",
 			issueLabels: ["fable"],
@@ -368,7 +417,7 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 			backend: "claude-tmux",
 			transport: "claude-code",
 			vendor: "claude-code",
-			model: "claude-fable-5",
+			model: "claude-fable-5-1",
 		});
 	});
 
@@ -380,7 +429,7 @@ describe("resolveRoleAdapter — task (label) layer", () => {
 			env: EMPTY_ENV,
 		});
 		expect(resolved.backend).toBe("claude-tmux");
-		expect(resolved.model).toBe("claude-fable-5");
+		expect(resolved.model).toBe("claude-fable-5-1");
 	});
 
 	it("fable does not re-bind the lead role", () => {
@@ -636,7 +685,7 @@ describe("resolveRoleAdapter — dispatch vendor (FLY-1224 T1)", () => {
 			backend: "claude-tmux",
 			transport: "claude-code",
 			vendor: "claude-code",
-			model: "claude-fable-5",
+			model: "claude-fable-5-1",
 		});
 	});
 });

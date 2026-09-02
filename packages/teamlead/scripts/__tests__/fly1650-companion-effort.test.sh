@@ -9,7 +9,7 @@
 #      `xhigh` for every model that accepts it, so today's fleet is unchanged;
 #   3. a companion whose model accepts NO fallback tier gets no --effort at all,
 #      instead of a flag the API would reject;
-#   4. the resolver-unavailable path keeps the historical literal `xhigh`.
+#   4. the last-good receipt path never invents effort capability metadata.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,7 +26,7 @@ log_fail() { echo "  ✗ $*" >&2; FAILED=$((FAILED + 1)); }
 extract_block() {
   awk '
     /Replace every earlier model\/effort token/ { in_block = 1 }
-    in_block && /if \[ "\$_fly1496_reason" = "resolver_unavailable" \]/ { exit }
+    in_block && /if \[ "\$_fly1496_reason" = "last_good_receipt" \]/ { exit }
     in_block { print }
   ' "$LAUNCHER"
 }
@@ -81,16 +81,13 @@ assert_argv "no --effort for a non-companion without config" \
   "--dangerously-skip-permissions --model claude-opus-5" \
   "$(run_block false claude-opus-5 "" xhigh | tr '\n' ' ' | sed 's/ $//')"
 
-# The launcher seeds _fly1496_companion_effort=xhigh at declaration, so a
-# resolver failure (which never populates it) keeps the historical behavior.
-# The resolver-unavailable path never reaches the parse block, launches literal
-# Fable, and must keep its historical xhigh — so the declaration seed still
-# matters for exactly that path.
-log_test "resolver-unavailable path keeps the historical literal"
-if grep -q '^  local _fly1496_companion_effort=xhigh$' "$LAUNCHER"; then
-  log_pass "declaration seeds the FLY-583 literal for the Fable fallback path"
+# A last-good receipt proves only model identity/window/revision. It cannot
+# safely reconstruct an effort capability, so the degraded path starts empty.
+log_test "last-good authority path does not invent effort capability"
+if grep -q '^  local _fly1496_companion_effort=""$' "$LAUNCHER"; then
+  log_pass "declaration leaves the companion fallback empty until resolver proof"
 else
-  log_fail "declaration no longer seeds xhigh — resolver failure would drop the companion effort"
+  log_fail "declaration still seeds an unverified companion effort"
 fi
 
 # ── FLY-1650 (Codex R4): the PARSE step, not just the argv step ──────────────
@@ -113,11 +110,11 @@ run_parse() {
   bash -c "
     set -uo pipefail
     _fly1496_result='$decision_json'
-    _fly1496_model=claude-fable-5
+    _fly1496_model=claude-fable-5-1
     _fly1496_raw_model=''
     _fly1496_effort=''
     _fly1496_raw_effort=''
-    _fly1496_reason=resolver_unavailable
+    _fly1496_reason=model_authority_unavailable
     _fly1496_substituted=true
     _fly1496_companion_effort=xhigh
     FLYWHEEL_LEAD_MODEL=''
@@ -171,7 +168,7 @@ fi
 extract_combined_block() {
   awk '
     /^  if \[ -n "\$_fly1496_result" \] && jq -e/ { in_block = 1 }
-    in_block && /if \[ "\$_fly1496_reason" = "resolver_unavailable" \]/ { exit }
+    in_block && /if \[ "\$_fly1496_reason" = "last_good_receipt" \]/ { exit }
     in_block { print }
   ' "$LAUNCHER"
 }
@@ -184,11 +181,11 @@ run_combined() {
     launch_args=(--dangerously-skip-permissions)
     IS_COMPANION_ROLE=$companion
     _fly1496_result='$decision_json'
-    _fly1496_model=claude-fable-5
+    _fly1496_model=claude-fable-5-1
     _fly1496_raw_model=''
     _fly1496_effort=''
     _fly1496_raw_effort=''
-    _fly1496_reason=resolver_unavailable
+    _fly1496_reason=model_authority_unavailable
     _fly1496_substituted=true
     _fly1496_companion_effort=xhigh
     _fly1496_skip=false

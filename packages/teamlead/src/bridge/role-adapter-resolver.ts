@@ -26,6 +26,7 @@ import type {
 } from "flywheel-config";
 import {
 	getModelConfigSnapshot,
+	MODEL_ALIASES,
 	parseRunnerLabels,
 	resolveAllowedCanonicalModel,
 } from "flywheel-config";
@@ -129,7 +130,7 @@ const BUILTIN_DEFAULT: ExecutorBackend = "claude-tmux";
  * `[1m]` suffix — the whole point is not paying the 1M-context RAM cost on
  * every unlabeled dispatch.
  */
-const RUNNER_DEFAULT_MODEL = "claude-fable-5";
+const RUNNER_DEFAULT_MODEL = MODEL_ALIASES.FABLE;
 
 function parseEnvBackend(
 	raw: string | undefined,

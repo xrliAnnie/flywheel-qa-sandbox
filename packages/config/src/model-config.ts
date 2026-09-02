@@ -6,10 +6,13 @@ import {
 	BUILTIN_MODEL_TIERS,
 	buildModelLookup,
 	buildModelRegistry,
+	DEFAULT_MODEL_BINDINGS,
 	DEFAULT_OPUS_BINDINGS,
-	type DefaultOpusBindings,
+	LEGACY_FABLE_MODEL_IDS,
+	MODEL_ALIASES,
 	MODEL_IDS,
 	MODEL_PROVIDERS,
+	type ModelBindings,
 	type ModelProviderId,
 	type ModelRegistryEntry,
 	type ModelRuntimeVendor,
@@ -74,7 +77,7 @@ export interface ModelConfigSnapshot {
 	readonly revision: string;
 	readonly sourcePath: string;
 	readonly registry: readonly ModelRegistryEntry[];
-	readonly bindings: DefaultOpusBindings;
+	readonly bindings: ModelBindings;
 	readonly tiers: Readonly<Record<ModelTier, ModelTierSpec>>;
 	readonly acceptedDispatchModels: readonly string[];
 	getModelRegistryEntry(raw: string): ModelRegistryEntry | null;
@@ -199,6 +202,24 @@ function parseConfiguredModel(value: unknown): ModelRegistryEntry {
 		throw new Error(`invalid runtimeVendor for ${id}`);
 	}
 	if (!aliases) throw new Error(`invalid aliases for ${id}`);
+	const maxInputTokens = value.maxInputTokens;
+	if (
+		maxInputTokens !== undefined &&
+		(typeof maxInputTokens !== "number" ||
+			!Number.isSafeInteger(maxInputTokens) ||
+			maxInputTokens <= 0)
+	) {
+		throw new Error(`invalid maxInputTokens for ${id}`);
+	}
+	const contextWindowTokens = value.contextWindowTokens;
+	if (
+		contextWindowTokens !== undefined &&
+		(typeof contextWindowTokens !== "number" ||
+			!Number.isSafeInteger(contextWindowTokens) ||
+			contextWindowTokens <= 0)
+	) {
+		throw new Error(`invalid contextWindowTokens for ${id}`);
+	}
 
 	const explicitSurfaces = normalizedStrings(value.surfaces);
 	if (value.surfaces !== undefined && !explicitSurfaces) {
@@ -233,6 +254,8 @@ function parseConfiguredModel(value: unknown): ModelRegistryEntry {
 		runtimeVendor: runtimeVendor as ModelRuntimeVendor,
 		aliases,
 		surfaces,
+		...(maxInputTokens === undefined ? {} : { maxInputTokens }),
+		...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
 		...(selectableSurfaces ? { selectableSurfaces } : {}),
 		effortsBySurface: defaultEfforts(
 			id,
@@ -257,7 +280,33 @@ function mergeModels(
 		const byId = new Map(
 			base.map((entry) => [entry.id.toLowerCase(), entry] as const),
 		);
-		for (const entry of overlays) byId.set(entry.id.toLowerCase(), entry);
+		for (const entry of overlays) {
+			const key = entry.id.toLowerCase();
+			const builtin = byId.get(key);
+			if (!builtin) {
+				byId.set(key, entry);
+				continue;
+			}
+			const seenAliases = new Set<string>();
+			const aliases = [...builtin.aliases, ...entry.aliases].filter((alias) => {
+				const normalized = alias.trim().toLowerCase();
+				if (seenAliases.has(normalized)) return false;
+				seenAliases.add(normalized);
+				return true;
+			});
+			byId.set(key, {
+				...entry,
+				aliases,
+				...(entry.contextWindowTokens === undefined &&
+				builtin.contextWindowTokens !== undefined
+					? { contextWindowTokens: builtin.contextWindowTokens }
+					: {}),
+				...(entry.maxInputTokens === undefined &&
+				builtin.maxInputTokens !== undefined
+					? { maxInputTokens: builtin.maxInputTokens }
+					: {}),
+			});
+		}
 		const merged = [...byId.values()];
 		assertValidModelRegistry(merged);
 		return merged;
@@ -289,13 +338,48 @@ function resolveBindingTarget(
 	return entry.id;
 }
 
+const FABLE_BASE_ID = /^claude-fable-[0-9]+(?:-[0-9]+)*$/;
+
+function resolveFableBinding(
+	value: unknown,
+	lookup: ReadonlyMap<string, ModelRegistryEntry>,
+	warnings: string[],
+): string {
+	if (value === undefined) return DEFAULT_MODEL_BINDINGS.fable;
+	if (typeof value !== "string") {
+		warnings.push("bindings.fable ignored: expected a model string");
+		return DEFAULT_MODEL_BINDINGS.fable;
+	}
+	const entry = lookup.get(value.trim().toLowerCase());
+	const oneM = entry ? lookup.get(`${entry.id}[1m]`.toLowerCase()) : undefined;
+	if (
+		!entry ||
+		!FABLE_BASE_ID.test(entry.id) ||
+		entry.provider !== "anthropic" ||
+		entry.runtimeVendor !== "claude" ||
+		!entry.surfaces.includes("dispatch") ||
+		!entry.surfaces.includes("workflow") ||
+		!oneM ||
+		oneM.provider !== "anthropic" ||
+		oneM.runtimeVendor !== "claude" ||
+		!oneM.surfaces.includes("workflow") ||
+		(!oneM.surfaces.includes("dispatch") && oneM.id !== MODEL_IDS.FABLE_1M)
+	) {
+		warnings.push(
+			`bindings.fable ignored: incomplete or unavailable Fable family ${value}`,
+		);
+		return DEFAULT_MODEL_BINDINGS.fable;
+	}
+	return entry.id;
+}
+
 function applyBindings(
 	registry: readonly ModelRegistryEntry[],
 	value: unknown,
 	warnings: string[],
 ): {
 	registry: readonly ModelRegistryEntry[];
-	bindings: DefaultOpusBindings;
+	bindings: ModelBindings;
 } {
 	if (value !== undefined && !isObject(value)) {
 		warnings.push("bindings segment ignored: expected an object");
@@ -304,6 +388,7 @@ function applyBindings(
 	const configured = (value ?? {}) as Record<string, unknown>;
 	const originalLookup = buildModelLookup(registry);
 	const bindings = Object.freeze({
+		fable: resolveFableBinding(configured.fable, originalLookup, warnings),
 		opus: resolveBindingTarget(
 			configured.opus,
 			DEFAULT_OPUS_BINDINGS.opus,
@@ -320,12 +405,17 @@ function applyBindings(
 		),
 	});
 	const aliasTargets = new Map<string, string>([
+		[MODEL_ALIASES.FABLE, bindings.fable],
+		["fable-1m", `${bindings.fable}[1m]`],
+		["fable[1m]", `${bindings.fable}[1m]`],
 		["opus", bindings.opus],
 		["opus-1m", bindings.opus1m],
 		["opus[1m]", bindings.opus1m],
 	]);
 	const rebound = registry.map((entry) => {
-		const aliases = entry.aliases.filter((alias) => !aliasTargets.has(alias));
+		const aliases = entry.aliases.filter(
+			(alias) => !aliasTargets.has(alias.toLowerCase()),
+		);
 		for (const [alias, target] of aliasTargets) {
 			if (entry.id === target) aliases.push(alias);
 		}
@@ -355,7 +445,11 @@ function buildDispatchLookupForRegistry(
 	// carrier pinned before they were retired keeps dispatching. Pre-existing
 	// back-compat — they are still absent from every tier and picker, so this
 	// only keeps an explicit old pin working, it never routes new work here.
-	for (const id of [MODEL_IDS.OPUS_48, MODEL_IDS.OPUS_48_1M]) {
+	for (const id of [
+		MODEL_IDS.OPUS_48,
+		MODEL_IDS.OPUS_48_1M,
+		...LEGACY_FABLE_MODEL_IDS,
+	]) {
 		lookup.set(id.toLowerCase(), id);
 	}
 	return lookup;
@@ -383,7 +477,15 @@ function createSnapshot(
 		warnings.push("tiers segment ignored: expected an object");
 	}
 	for (const tier of TIER_NAMES) {
-		const fallback = BUILTIN_MODEL_TIERS[tier];
+		const builtinFallback = BUILTIN_MODEL_TIERS[tier];
+		const fallback =
+			tier === "heavy"
+				? Object.freeze({
+						...builtinFallback,
+						id: bindingResult.bindings.fable,
+						code: modelFamilyCode(bindingResult.bindings.fable),
+					})
+				: builtinFallback;
 		const raw = configuredTiers[tier];
 		if (raw === undefined) {
 			tiers[tier] = fallback;
@@ -663,21 +765,22 @@ export interface LeadLaunchSelection {
 
 /**
  * Lead boot is the sole availability exception: bad authoritative model data
- * is loudly substituted with the literal built-in Fable id so the fleet stays
- * operable. Writer/spawn paths use resolveAllowedCanonicalModel and fail loud.
+ * is loudly substituted with the Fable family binding from this exact snapshot
+ * so the fleet stays operable. Writer/spawn paths fail loud instead.
  */
 export function resolveLeadLaunchSelection(
 	rawModel: string | undefined,
 	rawEffort: string | undefined,
 	snapshot: ModelConfigSnapshot = getModelConfigSnapshot(),
 ): LeadLaunchSelection {
+	const fallbackModel = snapshot.bindings.fable;
 	if (!rawModel?.trim()) {
 		return {
-			model: MODEL_IDS.FABLE,
+			model: fallbackModel,
 			// FLY-1650: every branch resolves the effort against the model it
 			// actually returns, so no exit from this function can emit a pair
 			// the returned model does not support.
-			effort: resolveAllowedEffort(MODEL_IDS.FABLE, rawEffort, {
+			effort: resolveAllowedEffort(fallbackModel, rawEffort, {
 				surface: "lead",
 				snapshot,
 			}),
@@ -706,14 +809,14 @@ export function resolveLeadLaunchSelection(
 		// Availability guard, not policy: an unresolvable spelling in the
 		// authoritative source must not leave the Lead unable to start.
 		console.warn(
-			`[model_config] Lead model ${rawModel} is not resolvable; substituting ${MODEL_IDS.FABLE}`,
+			`[model_config] Lead model ${rawModel} is not resolvable; substituting ${fallbackModel}`,
 		);
 		return {
-			model: MODEL_IDS.FABLE,
+			model: fallbackModel,
 			// FLY-1650 (Codex R2): the substitute is a different model, so the
 			// pair must be re-checked against it — not carried over from the
 			// model that failed to resolve.
-			effort: resolveAllowedEffort(MODEL_IDS.FABLE, rawEffort, {
+			effort: resolveAllowedEffort(fallbackModel, rawEffort, {
 				surface: "lead",
 				snapshot,
 			}),

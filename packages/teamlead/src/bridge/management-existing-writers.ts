@@ -118,7 +118,8 @@ function parseSelection(
 	) {
 		return { error: "provider/model strings and optional effort are required" };
 	}
-	const entry = getModelRegistryEntry(record.model);
+	const sourceModel = record.model.trim();
+	const entry = getModelRegistryEntry(sourceModel);
 	if (!entry || !entry.surfaces.includes(surface)) {
 		return { error: `model is not registered for ${surface}: ${record.model}` };
 	}
@@ -134,7 +135,10 @@ function parseSelection(
 	}
 	return {
 		provider: entry.provider,
-		model: entry.id,
+		// Workflow templates deliberately retain a validated stable alias so the
+		// registry remains their version authority. Other config writers keep
+		// their existing canonical-id persistence contract.
+		model: surface === "workflow" ? sourceModel : entry.id,
 		effort: effort ?? null,
 	};
 }

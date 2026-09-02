@@ -1,3 +1,7 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { resetModelConfigCacheForTests } from "flywheel-config";
 import { describe, expect, it } from "vitest";
 import {
 	buildConsoleLeadView,
@@ -72,7 +76,52 @@ describe("fleet-console-model — buildConsoleSnapshot (R5 #1: default-off gate)
 			{ projectName: "geo", projectRoot: "/tmp", leads: [lead()] },
 		]);
 		expect(snap.leads[0]!.currentModelId).toBeNull();
-		expect(snap.leads[0]!.currentModelLabel).toBe("Fable 5");
+		expect(snap.leads[0]!.currentModelLabel).toBe("Fable 5.1");
+	});
+
+	it("Lead with no model displays the current Fable family binding", () => {
+		const root = mkdtempSync(join(tmpdir(), "fleet-console-fable-"));
+		const path = join(root, "models.json");
+		const previous = process.env.FLYWHEEL_MODELS_CONFIG;
+		writeFileSync(
+			path,
+			JSON.stringify({
+				version: 1,
+				models: [
+					{
+						id: "claude-fable-5-2",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2",
+						aliases: ["fable-5-2"],
+						dispatch: true,
+					},
+					{
+						id: "claude-fable-5-2[1m]",
+						provider: "anthropic",
+						runtimeVendor: "claude",
+						label: "Fable 5.2 (1M)",
+						aliases: ["fable-5-2-1m"],
+						dispatch: true,
+						contextWindowTokens: 1_000_000,
+					},
+				],
+				bindings: { fable: "claude-fable-5-2" },
+				tiers: { heavy: "fable" },
+			}),
+		);
+		try {
+			process.env.FLYWHEEL_MODELS_CONFIG = path;
+			resetModelConfigCacheForTests();
+			const view = buildConsoleLeadView("geo", lead());
+			expect(view.currentModelId).toBeNull();
+			expect(view.currentModelLabel).toBe("Fable 5.2");
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_MODELS_CONFIG;
+			else process.env.FLYWHEEL_MODELS_CONFIG = previous;
+			resetModelConfigCacheForTests();
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 
 	it("Lead with model=claude-fable-5 → 'Fable 5' label", () => {

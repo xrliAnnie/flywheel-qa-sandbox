@@ -93,6 +93,7 @@ node_modules/flywheel-teamlead/scripts/inbox-ack-rule.md
 node_modules/flywheel-teamlead/scripts/screencapture-l3-skill.md
 node_modules/flywheel-teamlead/scripts/lib/lead-identity-preflight.sh
 node_modules/flywheel-teamlead/scripts/lib/lead-body-receipt.sh
+node_modules/flywheel-teamlead/scripts/lib/lead-model-authority-receipt.mjs
 node_modules/flywheel-teamlead/scripts/lib/lead-session-authority.sh
 node_modules/flywheel-teamlead/scripts/lib/lead-session-resume-gate.sh
 node_modules/flywheel-teamlead/scripts/lib/session-ctx-usage.mjs

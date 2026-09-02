@@ -48,6 +48,11 @@ describe("management console HTML", () => {
 		expect(html).toContain("部分成功");
 	});
 
+	it("explains that new-run template publications do not mutate existing snapshots", () => {
+		expect(html).toContain("仅影响新 run；已物化 run 不变");
+		expect(html).toContain("载体错误需重启或重新物化");
+	});
+
 	it("does not expose controls for the retired workflow rollout flags", () => {
 		expect(html).not.toContain("snapshot.dagPanel");
 		expect(html).not.toContain("DAG 控制 · 五杆三事实");

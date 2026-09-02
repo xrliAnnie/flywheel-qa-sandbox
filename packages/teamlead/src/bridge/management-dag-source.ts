@@ -55,6 +55,7 @@ function errorDag(
 		templateId: binding.template_id,
 		revision: template?.current_published_revision ?? 0,
 		digest: "",
+		seedOwner: template?.seed_owner ?? null,
 		nodes: [],
 		error: error instanceof Error ? error.message : String(error),
 	};
@@ -111,6 +112,7 @@ function projectDag(
 					nodeId: node.id,
 					name: workflowNodeDisplayLabel(template.template_id, node),
 					dispatch: {
+						canonicalModel: supported ? registered!.id : node.model,
 						targetId: buildTargetId("dag", [
 							template.template_id,
 							node.id,
@@ -120,7 +122,9 @@ function projectDag(
 							provider: supported
 								? registered!.provider
 								: providerForVendor(node.vendor),
-							model: supported ? registered!.id : node.model,
+							// The management writer needs the persisted spelling to
+							// distinguish a stable alias from its current canonical id.
+							model: node.model,
 							effort: node.effort ?? null,
 						},
 						source: {
@@ -142,6 +146,7 @@ function projectDag(
 			templateId: template.template_id,
 			revision: revision.revision,
 			digest: revision.manifest_digest,
+			seedOwner: template.seed_owner,
 			nodes,
 		};
 	} catch (error) {

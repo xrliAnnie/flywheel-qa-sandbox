@@ -19,7 +19,6 @@ import dotenv from "dotenv";
 import {
 	buildNonLeadClaudeSettings,
 	getModelConfigSnapshot,
-	MODEL_IDS,
 	ModelPolicyError,
 	resolveAllowedCanonicalModel,
 } from "flywheel-config";
@@ -418,7 +417,7 @@ export class ClaudeRunner extends EventEmitter implements IAgentRunner {
 			// let the CLI's own table pick the version mid-session.
 			const modelSnapshot = getModelConfigSnapshot();
 			const model = resolveAllowedCanonicalModel(
-				this.config.model || MODEL_IDS.FABLE,
+				this.config.model || modelSnapshot.bindings.fable,
 				{
 					surface: "runner",
 					runtimeVendor: "claude",

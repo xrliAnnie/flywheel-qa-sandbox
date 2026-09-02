@@ -78,6 +78,7 @@ ok=1
 [ -f "$PKG_ROOT/packages/teamlead/scripts/session-start-adopt-inflight.sh" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-session-authority.sh" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-session-resume-gate.sh" ] || ok=0
+[ -f "$PKG_ROOT/packages/teamlead/scripts/lib/lead-model-authority-receipt.mjs" ] || ok=0
 [ -f "$PKG_ROOT/packages/teamlead/scripts/lib/session-ctx-usage.mjs" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-restart-lifecycle.sh" ] || ok=0
 [ -f "$PKG_ROOT/scripts/lib/lead-body-sweep.sh" ] || ok=0

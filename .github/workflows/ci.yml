@@ -323,6 +323,7 @@ jobs:
         run: |
           bash scripts/__tests__/fly1496-model-policy.test.sh
           bash packages/teamlead/scripts/__tests__/fly241-lead-model-override.test.sh
+          bash packages/teamlead/scripts/__tests__/lead-model-authority-receipt.test.sh
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
 

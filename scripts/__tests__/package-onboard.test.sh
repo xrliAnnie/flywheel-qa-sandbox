@@ -408,6 +408,7 @@ if grep -qx 'teamlead:scripts/lib/lead-identity-preflight.sh' <<<"$default_asset
     && grep -qx 'teamlead:scripts/session-start-adopt-inflight.sh' <<<"$default_asset_files" \
     && grep -qx 'teamlead:scripts/lib/lead-session-authority.sh' <<<"$default_asset_files" \
     && grep -qx 'teamlead:scripts/lib/lead-session-resume-gate.sh' <<<"$default_asset_files" \
+    && grep -qx 'teamlead:scripts/lib/lead-model-authority-receipt.mjs' <<<"$default_asset_files" \
     && grep -qx 'teamlead:scripts/lib/session-ctx-usage.mjs' <<<"$default_asset_files" \
     && env PACKAGE_ONBOARD_SOURCED=1 bash -c 'source "$1"; grep -qx "lib/lead-body-evidence.sh" <<<"$PO_SCRIPT_FILES"' _ "$PO"; then
   pass "X0 Lead v2 identity, context gate, clear handoff, body, and evidence assets ship with the launcher runtime closure"

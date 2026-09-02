@@ -1053,16 +1053,6 @@ function validateWorkflowManifestV2(
 		if (model && !vendor) {
 			throw new Error(`node ${id} model requires a vendor intent`);
 		}
-		if (
-			vendor &&
-			model &&
-			!options.allowUnsupportedModels &&
-			!compatibleModel(vendor, model, modelSnapshot)
-		) {
-			throw new Error(
-				`node ${id} vendor ${vendor} is incompatible with model ${model}`,
-			);
-		}
 		const effort =
 			node.effort === undefined
 				? undefined
@@ -1071,6 +1061,18 @@ function validateWorkflowManifestV2(
 						["low", "medium", "high", "xhigh", "max"] as const,
 						`${nodePath}.effort`,
 					);
+		let canonicalModel = model;
+		if (vendor && model && !options.allowUnsupportedModels) {
+			if (!compatibleModel(vendor, model, modelSnapshot)) {
+				throw new Error(
+					`node ${id} vendor ${vendor} is incompatible with model ${model}`,
+				);
+			}
+			// V2 authoring may retain a stable alias, but each run snapshot records
+			// the canonical id from its single captured registry generation. Keep
+			// the historical permissive full-id path for already-pinned templates.
+			canonicalModel = modelSnapshot.getModelRegistryEntry(model)?.id ?? model;
+		}
 		let handoffPointer: WorkflowManifestNode["handoff_pointer"];
 		if (node.handoff_pointer !== undefined) {
 			const pointer = record(
@@ -1095,7 +1097,7 @@ function validateWorkflowManifestV2(
 				...(label ? { label } : {}),
 				type,
 				...(vendor ? { vendor } : {}),
-				...(model ? { model } : {}),
+				...(canonicalModel ? { model: canonicalModel } : {}),
 				...(effort ? { effort } : {}),
 				...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 				...(role ? { role } : {}),
@@ -1148,7 +1150,7 @@ function validateWorkflowManifestV2(
 			...(label ? { label } : {}),
 			type,
 			...(vendor ? { vendor } : {}),
-			...(model ? { model } : {}),
+			...(canonicalModel ? { model: canonicalModel } : {}),
 			...(effort ? { effort } : {}),
 			...(handoffPointer ? { handoff_pointer: handoffPointer } : {}),
 			...(role ? { role } : {}),

@@ -198,6 +198,7 @@ export const KIND_CONTRACTS: Record<AlertEventType, KindContract> = {
 	account_switch_degraded: { owner: "claude", arc: "human_by_design" },
 	machine_account_conflict: { owner: "claude", arc: "human_by_design" },
 	model_config: { owner: "claude", arc: "human_by_design" },
+	model_family_updated: { owner: "claude", arc: "human_by_design" },
 	model_cap_switched: { owner: "claude", arc: "human_by_design" },
 	model_cap_unknown: { owner: "claude", arc: "human_by_design" },
 	model_cap_persistent_unknown: {

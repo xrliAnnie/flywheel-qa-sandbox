@@ -12,14 +12,18 @@ export interface ModelRegistryEntry {
 	aliases: readonly string[];
 	surfaces: readonly ModelSurface[];
 	selectableSurfaces?: readonly ModelSurface[];
+	/** API capability ceiling; not necessarily the launched-session window. */
+	maxInputTokens?: number;
+	/** Trusted launched-session context window when independently corroborated. */
+	contextWindowTokens?: number;
 	effortsBySurface: Partial<
 		Readonly<Record<ModelSurface, readonly RoleEffort[]>>
 	>;
 }
 
 export const MODEL_IDS = {
-	FABLE: "claude-fable-5",
-	FABLE_1M: "claude-fable-5[1m]",
+	FABLE: "claude-fable-5-1",
+	FABLE_1M: "claude-fable-5-1[1m]",
 	OPUS_5: "claude-opus-5",
 	OPUS_5_1M: "claude-opus-5[1m]",
 	OPUS_48: "claude-opus-4-8",
@@ -32,9 +36,17 @@ export const MODEL_IDS = {
 	CODEX_STANDARD: "gpt-5.6-sol",
 } as const;
 
+export const MODEL_ALIASES = {
+	FABLE: "fable",
+} as const;
+
 export interface DefaultOpusBindings {
 	readonly opus: string;
 	readonly opus1m: string;
+}
+
+export interface ModelBindings extends DefaultOpusBindings {
+	readonly fable: string;
 }
 
 export const DEFAULT_OPUS_BINDINGS: DefaultOpusBindings = Object.freeze({
@@ -43,6 +55,16 @@ export const DEFAULT_OPUS_BINDINGS: DefaultOpusBindings = Object.freeze({
 });
 export const DEFAULT_OPUS = DEFAULT_OPUS_BINDINGS.opus;
 export const DEFAULT_OPUS_1M = DEFAULT_OPUS_BINDINGS.opus1m;
+export const DEFAULT_MODEL_BINDINGS: ModelBindings = Object.freeze({
+	...DEFAULT_OPUS_BINDINGS,
+	fable: MODEL_IDS.FABLE,
+});
+
+/** Retired Fable identities accepted only for immutable historical pins. */
+export const LEGACY_FABLE_MODEL_IDS = Object.freeze([
+	"claude-fable-5",
+	"claude-fable-5[1m]",
+] as const);
 
 const ALL_MANAGED_SURFACES: readonly ModelSurface[] = Object.freeze([
 	"lead",
@@ -79,6 +101,30 @@ export function supportedRoleEfforts(modelId: string): readonly RoleEffort[] {
 	return ROLE_EFFORT_LEVELS.filter((effort) => !unsupported.includes(effort));
 }
 
+/**
+ * Exact launched-session windows that were already trusted by the former
+ * resume-gate compatibility table. Keeping them on registry entries makes the
+ * resolver the only authority that can attach a numeric window; future model
+ * ids receive no value unless the registry/API supplies one explicitly.
+ */
+const TRUSTED_CONTEXT_WINDOWS: Readonly<Record<string, number>> = Object.freeze(
+	{
+		[MODEL_IDS.FABLE]: 1_000_000,
+		[MODEL_IDS.FABLE_1M]: 1_000_000,
+		[LEGACY_FABLE_MODEL_IDS[0]]: 1_000_000,
+		[LEGACY_FABLE_MODEL_IDS[1]]: 1_000_000,
+		[MODEL_IDS.OPUS_5]: 200_000,
+		[MODEL_IDS.OPUS_5_1M]: 1_000_000,
+		[MODEL_IDS.OPUS_48]: 200_000,
+		[MODEL_IDS.OPUS_48_1M]: 1_000_000,
+		[MODEL_IDS.OPUS_46]: 200_000,
+		[MODEL_IDS.OPUS_46_1M]: 1_000_000,
+		[MODEL_IDS.SONNET_46]: 200_000,
+		[MODEL_IDS.SONNET_5]: 1_000_000,
+		[MODEL_IDS.HAIKU]: 200_000,
+	},
+);
+
 function claudeEntry(input: {
 	id: string;
 	label: string;
@@ -86,11 +132,15 @@ function claudeEntry(input: {
 	dispatch?: boolean;
 	surfaces?: readonly ModelSurface[];
 	selectableSurfaces?: readonly ModelSurface[];
+	maxInputTokens?: number;
+	contextWindowTokens?: number;
 }): ModelRegistryEntry {
 	const surfaces =
 		input.surfaces ??
 		(input.dispatch ? DISPATCH_AND_MANAGED_SURFACES : ALL_MANAGED_SURFACES);
 	const efforts = supportedRoleEfforts(input.id);
+	const contextWindowTokens =
+		input.contextWindowTokens ?? TRUSTED_CONTEXT_WINDOWS[input.id];
 	// 档位面按实际启用的 surface 派生 —— assertValidModelRegistry 要求
 	// effortsBySurface 的每个键都在 surfaces 里,写死四个键会让缩面条目非法。
 	const effortsBySurface: Partial<Record<ModelSurface, readonly RoleEffort[]>> =
@@ -107,6 +157,10 @@ function claudeEntry(input: {
 		aliases: input.aliases ?? [],
 		surfaces,
 		selectableSurfaces: input.selectableSurfaces ?? surfaces,
+		...(input.maxInputTokens === undefined
+			? {}
+			: { maxInputTokens: input.maxInputTokens }),
+		...(contextWindowTokens === undefined ? {} : { contextWindowTokens }),
 		effortsBySurface,
 	};
 }
@@ -117,6 +171,11 @@ const OPUS_IDENTITIES: readonly string[] = Object.freeze([
 	MODEL_IDS.OPUS_48,
 	MODEL_IDS.OPUS_48_1M,
 ]);
+
+const LEGACY_FABLE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+	[LEGACY_FABLE_MODEL_IDS[0]]: "Fable 5",
+	[LEGACY_FABLE_MODEL_IDS[1]]: "Fable 5 (1M)",
+});
 
 const OPUS_LABELS: Readonly<Record<string, string>> = Object.freeze({
 	[MODEL_IDS.OPUS_5]: "Opus 5",
@@ -187,15 +246,26 @@ export function buildModelRegistry(
 	return [
 		claudeEntry({
 			id: MODEL_IDS.FABLE,
-			label: "Fable 5",
-			aliases: ["fable"],
+			label: "Fable 5.1",
+			aliases: [MODEL_ALIASES.FABLE],
 			dispatch: true,
+			maxInputTokens: 1_000_000,
+			contextWindowTokens: 1_000_000,
 		}),
 		claudeEntry({
 			id: MODEL_IDS.FABLE_1M,
-			label: "Fable 5 (1M)",
+			label: "Fable 5.1 (1M)",
 			aliases: ["fable-1m", "fable[1m]"],
+			maxInputTokens: 1_000_000,
+			contextWindowTokens: 1_000_000,
 		}),
+		...LEGACY_FABLE_MODEL_IDS.map((id) =>
+			claudeEntry({
+				id,
+				label: LEGACY_FABLE_LABELS[id] ?? id,
+				selectableSurfaces: [],
+			}),
+		),
 		bound(bindings.opus, ["opus"]),
 		bound(bindings.opus1m, ["opus-1m", "opus[1m]"]),
 		claudeEntry({ id: MODEL_IDS.SONNET_46, label: "Sonnet 4.6" }),
@@ -242,6 +312,19 @@ export function assertValidModelRegistry(
 		const id = entry.id.trim().toLowerCase();
 		if (!id || ids.has(id)) throw new Error(`duplicate model id: ${entry.id}`);
 		ids.add(id);
+		if (
+			entry.maxInputTokens !== undefined &&
+			(!Number.isSafeInteger(entry.maxInputTokens) || entry.maxInputTokens <= 0)
+		) {
+			throw new Error(`invalid max input tokens: ${entry.id}`);
+		}
+		if (
+			entry.contextWindowTokens !== undefined &&
+			(!Number.isSafeInteger(entry.contextWindowTokens) ||
+				entry.contextWindowTokens <= 0)
+		) {
+			throw new Error(`invalid context window: ${entry.id}`);
+		}
 		for (const spelling of [entry.id, ...entry.aliases]) {
 			const normalized = spelling.trim().toLowerCase();
 			if (!normalized) throw new Error(`empty model alias for ${entry.id}`);
@@ -302,7 +385,9 @@ export function buildDispatchLookup(
 			lookup.set(alias.toLowerCase(), entry.id);
 		}
 	}
-	for (const id of OPUS_IDENTITIES) lookup.set(id.toLowerCase(), id);
+	for (const id of [...OPUS_IDENTITIES, ...LEGACY_FABLE_MODEL_IDS]) {
+		lookup.set(id.toLowerCase(), id);
+	}
 	return lookup;
 }
 
