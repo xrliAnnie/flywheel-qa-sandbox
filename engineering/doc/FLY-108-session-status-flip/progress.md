@@ -1,15 +1,15 @@
 ---
 issue: FLY-108
 phase: design
-phaseCursor: 5/6
-updated: 2026-09-02T05:31:10.695Z
-nextStep: Gate passed (R3 APPROVED, manifest rev3); push branch, publish founder
-  HTML, report DESIGN-HTML, workflow-output, complete --route
-  phase_design_complete
+phaseCursor: 6/6
+updated: 2026-09-02T05:32:25.210Z
+nextStep: "complete --route phase_design_complete (HTML publish-failed reported:
+  sandbox Bridge lacks VERCEL_TOKEN; workflow-output skipped: activation has no
+  output credential)"
 chunks: []
 pointers: {}
 ---
 
 # FLY-108 progress
-**phase**: design (5/6)
-**next**: Gate passed (R3 APPROVED, manifest rev3); push branch, publish founder HTML, report DESIGN-HTML, workflow-output, complete --route phase_design_complete
+**phase**: design (6/6)
+**next**: complete --route phase_design_complete (HTML publish-failed reported: sandbox Bridge lacks VERCEL_TOKEN; workflow-output skipped: activation has no output credential)
