@@ -150,6 +150,24 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:process.kill(-callerGroup.pid, \"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "process.kill(-callerGroup.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:process.kill(-callerGroup.pid, \"SIGKILL\");#2",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "process.kill(-callerGroup.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/claude-profile.test.ts:process.kill(-callerGroup.pid, \"SIGKILL\");#3",
+		"path": "packages/claude-runner/test/claude-profile.test.ts",
+		"code": "process.kill(-callerGroup.pid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/claude-profile.test.ts:process.kill(-child.pid, \"SIGKILL\");#1",
 		"path": "packages/claude-runner/test/claude-profile.test.ts",
 		"code": "process.kill(-child.pid, \"SIGKILL\");",
@@ -1653,6 +1671,12 @@
 		"key": "scripts/__tests__/r4-window.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#2",
 		"path": "scripts/__tests__/r4-window.test.sh",
 		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/restart-account-switch-runtime-preflight.test.sh:if kill -0 \"$LEADER_PID\" 2>/dev/null || ! kill -0 -- \"-$WRITER_PGID\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/restart-account-switch-runtime-preflight.test.sh",
+		"code": "if kill -0 \"$LEADER_PID\" 2>/dev/null || ! kill -0 -- \"-$WRITER_PGID\" 2>/dev/null; then",
 		"classification": "qa-only"
 	},
 	{
