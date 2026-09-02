@@ -148,9 +148,9 @@ sequenceDiagram
 ## 8. Definition of Done
 
 1. Variant B 场景:docs-only pipeline 结束后 status flip 到 `completed`,close_runner 200,🏁 发出,tmux 被 cleanup(集成测试 + 真机验证)。
-2. Variant A 场景:空/foreign route payload → warn 日志 + skip,无 FSM dead-end(guard 单测)。
+2. Variant A 场景(**范围:`flywheel-comm complete → HTTP /events` 产线**):空/foreign route payload → warn 日志 + skip,无 FSM dead-end(guard 单测)。in-process DirectEventSink 对同类 payload 仍宽松 fallback = 缺口 G3(§8.5),**不在本条已满足范围内**。
 3. needs_review → approve → ship 全链:双 completion、finalization 恰好一次(§5 矩阵对应行)。
-4. 现役发射器无法构造空 payload(complete.ts 校验单测)。
+4. 现役 **CLI 发射器(`flywheel-comm complete`)** 无法构造空 payload(complete.ts 校验单测);Blueprint 无 DecisionLayer 的 fallback 仍可发出不带 decision 的 success(→ DirectEventSink,G3),本条不覆盖。
 5. **as-built 核对(本节点)**:§4 六项**骨架**在位,其中 4.1 / 4.2 / 4.3(sink 范围)/ 4.5 带**显式 as-built 缺口 G1-G3**;§5 矩阵中**有测试证据的行**全部在位,
    **显式缺口如实标注**:G1 spin.md needs_review 位点未接 gate/question-id;G2 主路径 `--pr` 无正整数 fail-close(+ 无用例);G3 DirectEventSink 空/foreign route 宽松 fallback(行为分歧 + 无 parity 用例);G4 当前全闸完整链 E2E 回执缺失;
    连同残余缺口(FLY-58 / QA role 消歧)一并显式移交(§9)。**不把缺口写成 ✅**。
@@ -170,3 +170,5 @@ sequenceDiagram
 |------|------|------|------|
 | 首次设计节点(2026-08-31) | R1-R4 | 6→4→1→0,**APPROVED** | FLY-324 无-PR 兜底通道、needs_review 绑 questionId、dist 不入库需 build |
 | 重派设计节点(2026-09-01,fresh Codex 会话) | R1 | CHANGES REQUESTED(3 HIGH + 1 LOW) | D1-01 spin.md needs_review 旧形态 → G1;D1-02 `--pr` 无正整数校验 → G2;D1-03 DirectEventSink 宽松 fallback = 行为分歧 → G3、D3/D5 改 sink 范围;D1-04 approved_to_ship 豁免锚点改到 dual integration Scenario D。四条全部核实采纳 |
+| 重派设计节点(同一 Codex 会话 resume) | R2 | **APPROVED**(1 LOW 非阻塞:D2-01 DoD §8.2/§8.4 的 producer/sink 范围措辞) | D1-01～D1-04 全部 RESOLVED;D2-01 已折入本版本(§8.2/§8.4 限定为 CLI → HTTP `/events` 产线) |
+| 重派设计节点(同一 Codex 会话 resume) | R3 | 确认轮(仅 D2-01 措辞收紧 + §10 本表);最终判定以 `.flywheel/runs/<execId>/codex/design-review.json` 与 founder HTML ⑦ 为准 | — |
