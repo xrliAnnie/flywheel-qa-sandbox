@@ -723,6 +723,7 @@ expected_shard_tests = {
         "Test — FLY-1327 cycle-time report",
         "Integration test — cmux-sync hooks",
         "Test — FLY-1944 host terminal cutover brake",
+        "Test — FLY-2274 cutover window artifacts",
         "Test — Discord adapter orphan reaper (FLY-183)",
         "Test — Lead rules single-bundle load chain (FLY-1402)",
         "Test — FLY-1496 model resolution + Lead derivation",

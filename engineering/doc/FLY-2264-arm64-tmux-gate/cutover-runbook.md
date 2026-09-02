@@ -16,22 +16,24 @@ Issue: FLY-2264 (https://linear.app/geoforge3d/issue/FLY-2264/cutovertmux-fly-21
 3. 窗口避开 00:00/12:00 班车边界；合入到唯一重启票之间不得出现自动 updater 部署。
 4. pause 后两次权威 quiescence 均为零；只看 `/api/runs/active == 0` 不足以证明无 runner，因为还要
    覆盖 dispatcher inflight、durable launch claim 与 admission crossing。
-5. 所有操作者接受 17 个旧 tmux server、全部 Lead pane 与工人窗口会断。任何 receipt/lease/SHA/
+5. 所有操作者接受权威 union 中全部非豁免旧 tmux server、全部 Lead pane 与工人窗口会断。任何 receipt/lease/SHA/
    inventory/预算证据不完整，立即停窗。
 6. 不直接执行 `restart-services.sh`，不手工 `kickstart -k` Bridge/Lead。link 后服务重生只允许一张
-   `bash ~/Dev/flywheel/scripts/request-restart.sh` 票；不调用 `install-bridge-launchd.sh`。
+   `bash ~/Dev/flywheel/scripts/request-restart.sh` 票；不调用 `install-bridge-launchd.sh`。唯一受审例外是
+   §5.5/§8.2 的 `restore-supervisors.sh`：它只按 0600 recovery bootstrap 原 plist，不 kickstart。
 
 Lead ruling `33dc0da4-c6a3-4621-be79-37893a694059` 锁定顺序为“先停旧 server、link/pin/env，后发唯一
 部署票”；ruling `16a390ab-59e9-4357-871b-1dc1fcbe792c` 锁定 lease 交接为“旧 Bridge NULL-owner pause
 → 新 restart 路径接管 → 0600 handoff → host transaction renew/resume”。不得现场改成其它 bootstrap。
 
-## 1. 固定值、私有目录与两份工具
+## 1. 固定值、私有目录与受审窗口件
 
 在宿主 operator shell 中设置非秘密值；token 只从现有受管环境取得，禁止回显：
 
 ```bash
 export LIVE_REPO="$HOME/Dev/flywheel"
 export WINDOW_DIR="$HOME/.flywheel/state/FLY-2264-window"
+export WINDOW_ARTIFACTS="$WINDOW_DIR/artifacts"
 export CUTOVER_SHA='<本 PR 合入后的 40-hex merge commit>'
 export NATIVE_TMUX='/opt/homebrew/Cellar/tmux/3.7c/bin/tmux'
 export OLD_TMUX='/usr/local/Cellar/tmux/3.5a/bin/tmux'
@@ -40,6 +42,7 @@ export PREP_RECEIPT="$WINDOW_DIR/preparation-receipt.json"
 export LEASE_HANDOFF="$HOME/.flywheel/state/host-terminal-cutover.admission-lease-id"
 export FLYWHEEL_HOST_CUTOVER_RECEIPT="$CUTOVER_RECEIPT"
 export FLYWHEEL_BRIDGE_URL='http://127.0.0.1:9876'
+umask 077
 install -d -m 700 "$WINDOW_DIR"
 ```
 
@@ -61,9 +64,23 @@ live checkout，也不重启服务：
 
 ```bash
 git -C "$LIVE_REPO" fetch --quiet origin main
-git -C "$LIVE_REPO" worktree add --detach "$WINDOW_DIR/source" "$CUTOVER_SHA"
+if test ! -e "$WINDOW_DIR/source"; then
+  git -C "$LIVE_REPO" worktree add --detach "$WINDOW_DIR/source" "$CUTOVER_SHA"
+fi
+test "$(git -C "$WINDOW_DIR/source" rev-parse HEAD)" = "$CUTOVER_SHA"
+bash "$WINDOW_DIR/source/scripts/cutover/FLY-2264/install-window-artifacts.sh" "$WINDOW_ARTIFACTS"
+test "$(stat -f %Lp "$WINDOW_ARTIFACTS")" = 700
+test "$(stat -f %u "$WINDOW_ARTIFACTS")" = "$(id -u)"
+(cd "$WINDOW_ARTIFACTS" && shasum -a 256 -c sha256-manifest.txt)
+fresh_labels="$(mktemp "$WINDOW_DIR/supervisor-labels.XXXXXX")"
+"$WINDOW_ARTIFACTS/generate-supervisor-labels.sh" "$HOME/Library/LaunchAgents" > "$fresh_labels"
+cmp "$fresh_labels" "$WINDOW_ARTIFACTS/supervisor-labels.txt"
+rm "$fresh_labels"
 export NEW_TOOL="$WINDOW_DIR/source/scripts/host-terminal-cutover.sh"
 ```
+
+installer 可安全重跑：它只重验 manifest 内受审字节，并原样保留权限正确、名称受限的
+`supervisor-recovery.json`、`tmux-union.json` 与 `verification-artifacts/`；未知额外文件仍 fail closed。
 
 ## 2. Founder ship、freeze 与 main SHA 证明——此时不部署
 
@@ -116,9 +133,10 @@ bash "$WINDOW_DIR/source/scripts/check-global-path-hygiene.sh" \
 - Darwin runtime PATH 中 `/opt/homebrew/bin` 精确 segment 位于 `/usr/local/bin` 前；
 - `brew-upgrade=N/A`：3.7c 已安装，本窗口不升级 Intel Homebrew 或任何依赖。
 
-## 4. 停 supervisor、权威 census、停止 17 个旧 server
+## 4. 停 supervisor、权威 census、停止全部非豁免旧 server
 
-本节的三个窗口脚本必须在开窗前 code review、hash 固定并放在 0700 `WINDOW_DIR`；不得现场改脚本。
+本窗口的全部脚本必须由 §1 installer 从 exact `CUTOVER_SHA` 安装、通过 sha256 manifest 校验并放在
+0700 `WINDOW_DIR`；不得现场改脚本。
 `com.flywheel.updater` 必须保持 loaded+enabled，supervisor manifest 不得包含它。
 
 ### 4.1 bootout-supervisors
@@ -126,10 +144,11 @@ bash "$WINDOW_DIR/source/scripts/check-global-path-hygiene.sh" \
 ```bash
 "$NEW_TOOL" verify-receipt --step bootout-supervisors
 "$NEW_TOOL" run-step --name bootout-supervisors --timeout 120 -- \
-  bash "$WINDOW_DIR/bootout-supervisors.sh" "$WINDOW_DIR/supervisor-labels.txt"
+  bash "$WINDOW_ARTIFACTS/bootout-supervisors.sh" "$WINDOW_ARTIFACTS/supervisor-labels.txt"
 ```
 
-manifest 必须覆盖 Bridge、cmux watcher 与所有 Lead label；每个 loaded label bootout 后都要以
+manifest 必须覆盖 Bridge、bridge-liveness-probe、cmux watcher 与全部 16 个 Lead label（共19项）；每个
+loaded label bootout 后都要以
 `launchctl print gui/$(id -u)/<label>` 证明 absent。parse/transport/absence 不确定均为失败。
 
 ### 4.2 authoritative-census
@@ -144,7 +163,7 @@ export AUTH_RECEIPT="$WINDOW_DIR/authoritative-receipt.json"
   env FLYWHEEL_HOST_CUTOVER_RECEIPT="$AUTH_RECEIPT" "$NEW_TOOL" preflight-receipt
 jq -s '[.[0].preflight.processInventory[], .[1].preflight.processInventory[]]
   | unique_by([.pid,.startIdentity])' \
-  "$PREP_RECEIPT" "$AUTH_RECEIPT" > "$WINDOW_DIR/tmux-union.json"
+  "$PREP_RECEIPT" "$AUTH_RECEIPT" > "$WINDOW_ARTIFACTS/tmux-union.json"
 ```
 
 每个条目必须有 image、architecture、socket 与 supervisor disposition；未知/未归属 server 不能忽略。
@@ -154,13 +173,18 @@ jq -s '[.[0].preflight.processInventory[], .[1].preflight.processInventory[]]
 ```bash
 "$NEW_TOOL" verify-receipt --step stop-old-servers
 "$NEW_TOOL" run-step --name stop-old-servers --timeout 120 -- \
-  bash "$WINDOW_DIR/stop-old-tmux-servers.sh" \
-    "$WINDOW_DIR/tmux-union.json" "$OLD_TMUX"
+  bash "$WINDOW_ARTIFACTS/stop-old-tmux-servers.sh" \
+    "$WINDOW_ARTIFACTS/tmux-union.json" "$OLD_TMUX"
 ```
 
 操作脚本必须在每次 kill 前重证 PID/start tuple，只用版本匹配的绝对旧 client 对精确 socket
 `kill-server`，之后重跑 census，证明旧 tuple 全消失且没有新 tmux server。禁止 `pkill tmux`，禁止只
-清 default/atlas，禁止漏掉 QA/散装 socket。
+清 default/atlas，禁止漏掉 QA/散装 socket。server 的唯一豁免是由 `launchctl print pid/<serverPID>`
+正向证明 resource coalition 为 exact `com.xiaorongli.atlas-growth`；只把其 label/socket/image 写为
+informational，不 bootout、不 kill、不碰其 plist。argv 含 `-D`/`-S`/`-L`/`new-session` 且不含
+`attach-session` 的进程先按 server 形态处理；只有没有 filesystem socket、且 argv 含 `attach-session`
+的 cmux client 才记为 `role=client,socket=n/a`，不进入 stop list，也不阻塞 server census；其它
+socket-less/未知进程与 server 的 owner/socket 任一未知仍须变红。
 
 ## 5. phase-b-link、pin 与唯一 production env
 
@@ -182,7 +206,7 @@ file -b /opt/homebrew/Cellar/tmux/3.7c/bin/tmux | grep -F arm64
 "$NEW_TOOL" assert-main-sha --expected "$CUTOVER_SHA"
 "$NEW_TOOL" verify-receipt --step phase-b-link
 "$NEW_TOOL" run-step --name phase-b-link --timeout 30 -- \
-  bash "$WINDOW_DIR/phase-b-link.sh"
+  bash "$WINDOW_ARTIFACTS/phase-b-link.sh"
 ```
 
 随后用受审 `flywheel-setup.sh` 的 symlink-refused、0600 atomic upsert helper 只写这一项，并只读回该
@@ -198,6 +222,24 @@ grep -Fx 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=/opt/homebrew/Cellar/tmux/3.7c/bin/tmux'
 
 **不要写** `FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH`；它仍是 hermetic test-only seam。也不设置
 `FLYWHEEL_LEAD_V2_TMUX_BIN`，不新增第二个 carrier pin。
+
+### 5.5 supervisor 正向恢复
+
+发唯一 updater 票之前，用 bootout 前已完整写出的 0600 recovery 恢复原来 loaded 的 exact 19 项：
+
+```bash
+bash "$WINDOW_ARTIFACTS/restore-supervisors.sh" "$WINDOW_ARTIFACTS/supervisor-recovery.json"
+while IFS= read -r label; do
+  launchctl print "gui/$(id -u)/$label" >/dev/null
+done < "$WINDOW_ARTIFACTS/supervisor-labels.txt"
+launchctl print "gui/$(id -u)/com.flywheel.updater" >/dev/null
+```
+
+脚本固定按 Bridge → bridge-liveness-probe → cmux watcher → sorted 16 Leads bootstrap original plist，逐项
+证明 loaded，并再次断言 updater loaded+enabled。parse/transport/bootstrap/post-print 任一不确定都在发票前
+失败。old code + native tmux 可能短暂进入 gate fail-closed 循环，这是预期过渡态；不得绕门。唯一
+gate-mounted auxiliary `com.flywheel.quota-monitor` 可能在 monitor binary 启动前因旧 gate 拒绝而退出并产生
+预期 alert；它不在19项 scope，也不能据此加第二张票。
 
 link 与部署票之间若任何 KeepAlive 意外重拉 Lead，旧 gate 会拒绝；supervisor 已 bootout、admission
 已 pause，因此这是预期 fail-closed，不得为“救窗”绕门。
@@ -257,7 +299,7 @@ jq -e '.status == "paused"
 ```bash
 "$CUTOVER_TOOL" verify-receipt --step automated-verification
 "$CUTOVER_TOOL" run-step --name automated-verification --timeout 120 -- \
-  bash "$WINDOW_DIR/verify-native-tmux-cutover.sh" "$CUTOVER_SHA"
+  bash "$WINDOW_ARTIFACTS/verify-native-tmux-cutover.sh" "$CUTOVER_SHA"
 ```
 
 受审 verification artifact 至少证明：
@@ -270,10 +312,15 @@ jq -e '.status == "paused"
   tmux 已 pinned；
 - 所有活 tmux server image 都是 `$NATIVE_TMUX`；`ps`/exact extractor 没有
   `/usr/local/bin/tmux` 或 3.5a server；
-- 16 个 Lead launchd PID/start identity 健康；每个 Lead shell 与代表性实际 child 的
-  `sysctl -n sysctl.proc_translated` 为 `0`；
-- cmux watcher 健康，全部 tab 自动 attach/sidebar 验证通过；版本不再 3.5a↔3.7c 混用；
-- runtime PATH 精确 segment 顺序为 `/opt/homebrew/bin` 在 `/usr/local/bin` 前，且
+- 16 个 Lead launchd PID/start identity 健康；每个 Lead shell 与代表性实际 child 的 macOS hex p_flag
+  均未置 `P_TRANSLATED (0x00020000)`，过滤 AOT/Rosetta runtime/dylib 后唯一 main image 含 arm64 slice；
+  另把固定 `/bin/bash -c '/usr/sbin/sysctl -n sysctl.proc_translated'` 的 `0` 只记为 host native control，
+  不冒充任一 PID 的查询；
+- cmux watcher 健康，全部 tab 自动 attach/sidebar 验证通过；所有 socket-owning server 不再 3.5a↔3.7c 混用，
+  socket-less attach client 以 `role=client,socket=n/a` 留作 informational；
+- 16 个 Lead 的 runtime PATH 由 live `ps eww` 证明 `/opt/homebrew/bin` 在 `/usr/local/bin` 前；Bridge 的 PATH 证据不是 runtime 环境读取，
+  因 Node process-title 不暴露 env，改由 launchd plist 的 `ProgramArguments` 与其指向的受审 wrapper 源码 export 合同证明；
+  `launchctl print` 不提供 default PATH 时 artifact 明记 `unavailable` 而不伪称 process env；另要求
   `bash scripts/check-global-path-hygiene.sh --source-tree "$LIVE_REPO"` 通过。
 
 全部自动证据绿色后才释放自己的 owner：
@@ -299,9 +346,11 @@ founder 的 cmux 全 tab 视觉确认放在自动验收完成、resume 前后紧
 
 1. **bootout 前、link 前失败**：不做 carrier mutation；若旧 Bridge 仍健康且该 legacy receipt 明确
    属于本事务，可用保存的 pre-FF 工具恢复 admission。不得用新工具伪造 owner。
-2. **bootout 后、link 前失败**：保持 merge freeze，使用开窗前已 rehearsal/hash 固定的 supervisor
-   recovery artifact 恢复原 launchd tuple 与 3.5a server；不调用 `install-bridge-launchd.sh`。权威
-   census 恢复后才处理 legacy pause。
+2. **bootout 后、link 前失败**：保持 merge freeze，执行
+   `bash "$WINDOW_ARTIFACTS/restore-supervisors.sh" "$WINDOW_ARTIFACTS/supervisor-recovery.json"`，使用开窗前已
+   rehearsal/hash 固定的 supervisor recovery artifact 恢复原 launchd tuple 与 3.5a server；不调用
+   `install-bridge-launchd.sh`。权威 census 恢复后才处理 legacy pause。恢复到 recovery 记录的原状态后，
+   同一受审 `bootout-supervisors.sh` 可原地重跑；它会先完整校验并原子刷新 recovery，不需手删窗口文件。
 3. **link 后失败**：默认保持 native link、tmux pin 与 absolute cmux pin，保持 brake 并向前收敛；不要
    在新 gate 环境里先 unlink 回 Intel。
 4. **takeover/handoff 失败**：restart 路径在 Lead 波前 fail closed，且永不 resume 已获得的 owner。

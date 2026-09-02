@@ -1554,6 +1554,30 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh:kill -0 \"$control_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh",
+		"code": "kill -0 \"$control_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh:kill -0 \"$pid\" 2>/dev/null && printf '%s\\n' \"$pid\"#1",
+		"path": "scripts/__tests__/fly2264-stop-old-tmux-real.test.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null && printf '%s\\n' \"$pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2264-verify-native-cutover.test.sh:if kill -0 \"$slow_wrapper\" 2>/dev/null; then transport_negative=0; fi#1",
+		"path": "scripts/__tests__/fly2264-verify-native-cutover.test.sh",
+		"code": "if kill -0 \"$slow_wrapper\" 2>/dev/null; then transport_negative=0; fi",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/flywheel-log-janitor.test.sh:if [[ \"$signal_pid\" =~ ^[0-9]+$ ]] && kill -TERM \"$signal_pid\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/flywheel-log-janitor.test.sh",
 		"code": "if [[ \"$signal_pid\" =~ ^[0-9]+$ ]] && kill -TERM \"$signal_pid\" 2>/dev/null; then",
@@ -2242,6 +2266,24 @@
 		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
 		"code": "kill -STOP \"$PID_S\"",
 		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:for item in $FLY2264_WAIT_PENDING; do kill -KILL \"${item%%:*}\" 2>/dev/null || true; done#1",
+		"path": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh",
+		"code": "for item in $FLY2264_WAIT_PENDING; do kill -KILL \"${item%%:*}\" 2>/dev/null || true; done",
+		"classification": "out-of-scope"
+	},
+	{
+		"key": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
+		"path": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh",
+		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:kill -0 \"${item%%:*}\" 2>/dev/null && pids=\"${pids}${pids:+ }${item}\"#1",
+		"path": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh",
+		"code": "kill -0 \"${item%%:*}\" 2>/dev/null && pids=\"${pids}${pids:+ }${item}\"",
+		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/daily-standup.sh:if ! kill -0 \"$BRIDGE_PID\" 2>/dev/null; then#1",

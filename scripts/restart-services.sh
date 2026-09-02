@@ -499,7 +499,7 @@ file_mtime_epoch() {
 # deployed-sha records which code is active; this atomic status record preserves
 # degraded Lead evidence without lying that the code failed to deploy.
 write_leads_restart_status() {
-    local status="$1" failed="$2" skipped="$3"
+    local status="$1" failed="$2" skipped="$3" total="$4"
     local status_dir tmp
     status_dir="$(dirname "$LEADS_RESTART_STATUS_FILE")"
     mkdir -p "$status_dir" || return 1
@@ -511,12 +511,14 @@ write_leads_restart_status() {
         --arg recordedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
         --argjson failed "$failed" \
         --argjson skipped "$skipped" \
+        --argjson total "$total" \
         '{
           schemaVersion: 1,
           codeDeployedSha: $sha,
           leadsRestartStatus: $status,
           failed: $failed,
           skipped: $skipped,
+          total: $total,
           reason: $reason,
           recordedAt: $recordedAt
         }' > "$tmp"; then
@@ -3204,7 +3206,7 @@ deploy_and_verify() {
         if (( leads_failed > 0 || leads_skipped > 0 )); then
             leads_status="degraded"
         fi
-        if ! write_leads_restart_status "$leads_status" "$leads_failed" "$leads_skipped"; then
+        if ! write_leads_restart_status "$leads_status" "$leads_failed" "$leads_skipped" "$leads_total"; then
             log "ERROR: code deployed but failed to persist $LEADS_RESTART_STATUS_FILE"
             alert_severe "restart-status-write-failed" "Lead restart status write failed" \
                 "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\`，但无法写入 Lead restart status。请检查 $LEADS_RESTART_STATUS_FILE。"

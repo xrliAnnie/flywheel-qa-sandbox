@@ -23,6 +23,7 @@ scripts/__tests__/bridge-wrapper-preflight.test.sh
 scripts/__tests__/flywheel-config-lock.test.sh
 scripts/__tests__/flywheel-daemon-plist-env.test.sh
 scripts/__tests__/flywheel-daemon-restart-refusal.test.sh
+scripts/__tests__/fly2264-stop-old-tmux-real.test.sh
 scripts/__tests__/host-config.test.sh
 scripts/__tests__/host-path-allowlist.test.sh
 scripts/__tests__/lead-alert-dirs.test.sh

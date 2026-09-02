@@ -299,6 +299,17 @@ jobs:
       - name: Test — FLY-1944 host terminal cutover brake
         run: bash scripts/__tests__/host-terminal-cutover.test.sh
 
+      # FLY-2274: reviewed window artifacts run only against isolated
+      # LaunchAgents/process/socket/Homebrew fixtures. The real Darwin 3.5a
+      # private-socket drill is classified separately as manual-only.
+      - name: Test — FLY-2274 cutover window artifacts
+        run: |
+          bash scripts/__tests__/fly2264-supervisor-window.test.sh
+          bash scripts/__tests__/fly2264-stop-old-tmux-servers.test.sh
+          bash scripts/__tests__/fly2264-phase-b-link.test.sh
+          bash scripts/__tests__/fly2264-verify-native-cutover.test.sh
+          bash scripts/__tests__/fly2264-install-window-artifacts.test.sh
+
       # FLY-183: Discord adapter orphan reaper tests. Hermetic — the reaper's
       # process-table source is injected (FLY183_PS_OVERRIDE) and all spawned
       # processes are test-owned, so this never touches a real adapter. lsof is

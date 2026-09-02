@@ -2797,7 +2797,7 @@ if (( rc == 0 )) \
    && [[ -z "$(bo_calls tmux)" ]] \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_3" ]] \
    && jq -e --arg sha "$BO_HEAD_3" \
-        '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0' \
+        '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0 and .total == 1' \
         "$bo_status" >/dev/null; then
     pass "FLY-1680 Claude v2 restart bypasses the removed tmux hard-clear path"
 else
@@ -2814,7 +2814,7 @@ out=$(FAKE_FAST_SLEEP=1 FAKE_LEAD_SESSION_DEAD=1 RESTART_LEAD_VERIFY_ATTEMPTS=2 
 if (( rc == 0 )) \
    && [[ "$(cat "$BO_HOME/.flywheel/deployed-sha")" == "$BO_HEAD_4" ]] \
    && jq -e --arg sha "$BO_HEAD_4" \
-        '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0' \
+        '.codeDeployedSha == $sha and .leadsRestartStatus == "healthy" and .failed == 0 and .total == 1' \
         "$bo_status" >/dev/null \
    && [[ -z "$(bo_calls tmux)" ]]; then
     pass "FLY-1680 Claude v2 restart ignores deleted shared-session observations"
@@ -2833,7 +2833,7 @@ out=$(FAKE_FAST_SLEEP=1 FAKE_SUPERVISOR_STALE=1 RESTART_LEAD_VERIFY_ATTEMPTS=2 \
 if (( rc == 0 )) \
    && [[ ! -e "$BO_HOME/.flywheel/state/lead-replacements/flywheel-eng.json" ]] \
    && jq -e --arg sha "$BO_HEAD_5" \
-        '.codeDeployedSha == $sha and .leadsRestartStatus == "degraded" and .failed == 1' \
+        '.codeDeployedSha == $sha and .leadsRestartStatus == "degraded" and .failed == 1 and .total == 1' \
         "$bo_status" >/dev/null; then
     pass "FLY-1634 stale launchd tuple is the sole per-Lead failure verdict"
 else

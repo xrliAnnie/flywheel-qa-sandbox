@@ -175,6 +175,7 @@ scripts/launchd/com.flywheel.codex-log-guard.plist
 scripts/launchd/com.flywheel.bridge-liveness-probe.plist
 scripts/com.flywheel.calendar-sweep.plist.template
 scripts/host-tmux-selection-gate.sh
+scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh
 packages/claude-runner/test/runner-env-isolation.real-tmux.test.ts
 packages/claude-runner/test/codex-runner-tui-window.test.ts
 packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts
@@ -235,6 +236,7 @@ scripts/__tests__/fly1577-cmux-bin-closure.test.sh|for d in /opt/homebrew/bin /u
 scripts/qa-fly-153-mirror-smoke.sh|/opt/homebrew/bin/bash (Apple Silicon) or /usr/local/bin/bash|operator diagnostic names two explicit interpreters
 scripts/lib/path-hygiene.sh|*|guard implementation contains the literals and registries it classifies
 scripts/__tests__/check-global-path-hygiene.test.sh|*|guard test generates positive, negative, and exception fixtures deliberately
+scripts/__tests__/fly2264-verify-native-cutover.test.sh|*|positive and negative native/Intel PATH fixtures
 EOF
 }
 
