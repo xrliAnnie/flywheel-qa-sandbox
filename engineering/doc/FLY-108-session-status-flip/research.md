@@ -25,6 +25,8 @@ Issue: FLY-108 (https://linear.app/geoforge3d/issue/FLY-108/session-status-不-f
 
 **对 Variant A 的意义**:route 必填 + 枚举校验 = 这条产线**发不出空 payload**。
 
+**负面守卫的一处不对称(复审 R1 D1-02 核实)**:`--pr` 在 `index.ts:895` 用 `Number.parseInt` 解析、`complete.ts:107-110` 对 `--merged` 只查 `--pr` 非 null/undefined,正整数严格校验只在 `pr_handoff` 分支(L125-145,FLY-493 Codex R1 加的)。所以 `--route auto_approve --merged --pr abc` 能通过校验并发出 `landingStatus.status="merged"` + `prNumber=NaN`(序列化为 `null`)的终态事件——**空 payload 发不出,但畸形 PR 证据发得出**。记为 plan 缺口 G2。
+
 ### 1.2 Payload 构造(L147-208)
 
 - Env 全用现存注入:`FLYWHEEL_EXEC_ID` / `FLYWHEEL_ISSUE_ID` / `FLYWHEEL_PROJECT_NAME` / `FLYWHEEL_BRIDGE_URL` / `FLYWHEEL_INGEST_TOKEN`(可选 auth)
@@ -50,6 +52,10 @@ Payload shape 与 edge-worker 侧发射器对齐:**接口定义**在 `ExecutionE
 3. 被唤醒后 ship 前必须 `verify-approval --exec-id <id> --pr-head $(git rev-parse HEAD)`,
    只认 `"approved": true`——唤醒消息本身不携带授权。
 
+**as-built 不对称(复审 R1 D1-01 核实)**:上面是生产 Blueprint 指令的形态;手工 `/spin` 路径
+`.claude/commands/spin.md:440-456` 的 needs_review 位点**仍是旧形态**——没有 `gate --no-block`、
+`complete` 不带 `--question-id`(`complete.ts:180-198` 只 warn 不 fail-close)。记为 plan 缺口 G1。
+
 ### 1.3 可靠投递(L215-262)
 
 4 attempts × 5s timeout,backoff 1s/2s/4s;全失败 → **fail-close**:写 marker
@@ -65,7 +71,13 @@ marker 写失败也 loud(L422-431)。**不 fail-open**——丢终态事件 = bu
 2. **FLY-108 Decision 4/5 strict route guard**(L865-895):
    `!isPostApproveShip && (!route || !VALID_ROUTES.has(route))` → **warn + `{ok:true, warning:"invalid route skipped"}` + return**。
    不 upsert、不 silent fallback。旧的 `else status="completed"` fallback 已删,只对
-   `approved_to_ship` pre-state 保留 route=undefined 的自然完成(与 DirectEventSink 行为 parity)。
+   `approved_to_ship` pre-state 保留 route=undefined 的自然完成。
+   **sink 范围(复审 R1 D1-03 核实)**:这套 strict guard 只在 HTTP `/events` sink;in-process
+   `DirectEventSink.ts:626-633` 对缺失/未识别 route 仍走 `else status="completed"`,并经 `upsertSession`
+   直接落库、不过 `applyTransition`——两个 sink 的守卫**不等价**。可达性:`Blueprint.ts:2064-2098`
+   无 DecisionLayer 的 fallback 返回不带 decision 的 success → `emitTerminal` 当 completion 发。
+   缓解:FLY-228 terminal-immunity 只挡 no-out-edge 终态;finalization 仍由 merged landing +
+   ship-eligibility 把守——分歧影响 status / close eligibility,不触发 teardown。记为 plan 缺口 G3。
 3. **running-only 约束**(L903-919):`no_code`/`pr_handoff`/`phase_design_complete` 只允许
    从 `running` 终态化——review-gated session 不能借道清闸。
 4. **status mapping**(L921-1135):顺序敏感(Codex R3 修过)——needs_review → auto_approve → blocked →
@@ -106,7 +118,8 @@ UNIQUE event_id 落库)保证 orchestrator 恰好跑一次——三个竞争调�
 
 1. **主修**:spin.md Step 3.7(`.claude/commands/spin.md:412-474`)硬性要求
    `flywheel-comm complete`;规则原文:「Never exit /spin without a successful flywheel-comm complete」。
-   needs_review 位点(PR 后、approve 前)+ auto_approve 位点(ship + 收尾后)都已接线,
+   needs_review 位点(PR 后、approve 前)+ auto_approve 位点(ship + 收尾后)都已接线
+   (但 needs_review 位点仍是无 gate/question-id 的旧形态,见 §1.2 缺口 G1),
    且 self-ship handoff 失败时 fail-close 不发成功 completion(L387-402)。
 2. **W2 re-finalize**(event-route stage_changed 分支,`stage=completed` 且
    payload 带 `landing_status.status="merged"`):对「session_completed 先到但 landing 当时还是
@@ -133,7 +146,9 @@ replay 走 loopback `/events`(与在线路径同一套 guard/FSM/finalization),
 ## 7. 测试覆盖(现存;锚点经二次核对修正)
 
 - `packages/flywheel-comm/src/__tests__/complete.test.ts` — 发射侧(payload shape / 校验 / retry / marker)
-- `packages/teamlead/src/__tests__/event-route-session-completed-guard.test.ts` — guard 行为
+- `packages/teamlead/src/__tests__/event-route-session-completed-guard.test.ts` — guard 行为(空/foreign
+  route skip;**不含** approved_to_ship 豁免场景——该场景的证据在下一条 dual integration test 的 Scenario D/D2,
+  复审 R1 D1-04 纠正)
 - `packages/teamlead/src/__tests__/event-route-dual-session-completed.integration.test.ts` —
   **HTTP `/events` sink** 的完成事件场景矩阵(Scenario D: undefined route;Scenario E: blocked 等)。
   注意:该测试**只覆盖 HTTP sink**,不实例化 DirectEventSink——不能当「双 sink parity」证据引用;
@@ -143,11 +158,11 @@ replay 走 loopback `/events`(与在线路径同一套 guard/FSM/finalization),
   重试场景下 claim 去重)。
 - `packages/teamlead/src/__tests__/cipher-bridge-e2e.test.ts:204+` — 「FLY-108: Runner-driven emit
   backfills labels from session_started StateStore」(Decision 6 的直接证据)。
-- (勘误 + **as-built 覆盖缺口**:早稿引用的 `DirectEventSink.test.ts:798-841` 锚点已漂移——该行段
+- (勘误 + **as-built 行为分歧 + 覆盖缺口(G3)**:早稿引用的 `DirectEventSink.test.ts:798-841` 锚点已漂移——该行段
   现在测 phase-role preservation;且当前 `DirectEventSink.test.ts` 套件(FLY-191 / terminal-immunity /
-  no-code / phase-role 各族)里**没有**可直接指认的 FLY-108 undefined-route 自然完成豁免 / route
-  mapping parity 用例。DirectEventSink 侧 parity **缺测试证据**,补该用例属实施/QA 域 follow-up——
-  与 plan §5 对应行、DoD §8.5 的缺口记录一致。)
+  no-code / phase-role 各族)里**没有**可直接指认的 FLY-108 parity 用例。更重要的是 §2 核实的
+  **行为本身未对齐**(DirectEventSink 对空/foreign route 仍宽松 fallback),所以这不是单纯「缺用例」,
+  而是「行为分歧 + 缺用例」,补齐属实现域 follow-up——与 plan D5 / §5 对应行 / DoD §8.5 的缺口记录一致。)
 
 ## 8. 调研结论
 
@@ -160,5 +175,7 @@ replay 走 loopback `/events`(与在线路径同一套 guard/FSM/finalization),
    - QA session role 完成信号 → **FLY-108 本体**的 complete 接线只用 `main`(原始 scope 陈述);
      现系统里只报 stage=completed 的 no-PR/QA Runner 已由 FLY-324 live fallback 终态化(§5.3),
      role 级 close_runner 消歧仍由三段式 QA(FLY-859 族)承接
+   - **复审 R1 新核实的三处 as-built 缺口**(plan G1-G3):spin.md needs_review 位点未接 gate/question-id(§1.2);
+     主路径 `--pr` 无正整数 fail-close(§1.1);DirectEventSink 空/foreign route 宽松 fallback = 行为分歧(§2、§7)
 3. plan 阶段的产出物:以归档 plan(v1.23.0,Codex 3 轮 APPROVED)为蓝本的 implementation-ready 设计,
    叠加本 HEAD 的 as-built 核对表与残余缺口清单。

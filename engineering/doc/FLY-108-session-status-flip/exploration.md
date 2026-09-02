@@ -111,8 +111,8 @@ Linear issue 原文推荐 Option 2(「最安全」)。已批设计(v1.23.0 plan,
 | 组件 | 落点 | 状态 |
 |------|------|------|
 | `flywheel-comm complete` 子命令 | `packages/flywheel-comm/src/commands/complete.ts` | ✅ 已实现(retry×4 + backoff + fail-close marker) |
-| spin.md Step 3.7 强制调用 | `.claude/commands/spin.md:412-474` | ✅ 已接线(needs_review + auto_approve 两位点) |
-| Bridge strict route guard | `event-route.ts:865-895`(Decision 4/5) | ✅ 已实现,exempt `approved_to_ship` 自然完成路径 |
+| spin.md Step 3.7 强制调用 | `.claude/commands/spin.md:412-474` | ⚠️ auto_approve 位点 ✅;needs_review 位点(L440-456)仍是 pre-FLY-191 形态(无 gate/question-id,research §1.2 缺口 G1)|
+| Bridge strict route guard | `event-route.ts:865-895`(Decision 4/5) | ✅ 已实现(**仅 HTTP `/events` sink**),exempt `approved_to_ship` 自然完成路径;in-process `DirectEventSink.ts:626-633` 仍保留宽松 fallback(research §2 缺口 G3)|
 | CIPHER labels/projectId backfill | `event-route.ts`(Decision 6) | ✅ 已实现 |
 | stage_changed=completed + merged → W2 re-finalize | `event-route.ts:1764+`(FLY-60 W2) | ✅ 已存在(Option 2 的有限安全形态:只认已发过 session_completed 且 landing 后到 merged 的 case) |
 | stage_changed=completed + **无 PR/无 route** → FLY-324 live fallback | `event-route.ts:1928-1985` + boot sweep(`plugin.ts:4729+`) | ✅ 已存在(第二条有限 stage-driven 通道:`isDoneButRunning` 守卫 = running + stage=completed + 无 decision_route + 无 pr_number,且无 pending complete marker、incoming land-status 不带 prNumber——no-code/QA Runner 只报 stage 也能终态化) |
@@ -130,6 +130,10 @@ Linear issue 原文推荐 Option 2(「最安全」)。已批设计(v1.23.0 plan,
 3. **QA session role**:**FLY-108 本体**的 `complete` 接线只覆盖 `session_role=main`(Decision 4)。
    注意这是「原始 scope」陈述,不是「现系统无 QA/no-code 完成通道」——现 HEAD 的 FLY-324 live fallback
    (§4 表)已让只报 `stage set completed` 的 no-PR/no-code/QA Runner 走 `running → completed` 终态化。
+4. **两个消费 sink 守卫不等价**(复审 R1 核实):HTTP `/events` 是 strict guard,in-process DirectEventSink
+   对空/foreign route 仍 silent fallback 成 `completed`——Variant A 要消除的那类兜底在另一条 sink 上还在(research §2,G3)。
+5. **发射侧两处负面守卫缺口**(复审 R1 核实):手工 `/spin` 的 needs_review 位点没接 approval binding(G1);
+   主路径 `--pr` 无正整数 fail-close,畸形 PR 证据能发出(G2)。
 
 ## 6. 开放问题(带入 research)
 
