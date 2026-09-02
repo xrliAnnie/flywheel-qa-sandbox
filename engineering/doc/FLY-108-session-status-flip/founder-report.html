@@ -50,7 +50,7 @@
   <h1>FLY-108 · Runner 完工后状态不翻转 — 设计报告</h1>
   <div class="meta">
     Issue: FLY-108 · 日期: 2026-08-31 · 节点: eng_design(QA slot-3 设计重放)· 代码快照 <code>1855f7a1</code><br>
-    设计评审: Codex 4 轮收敛(6→4→1→0)· 最终判定 <b style="color:#34c759">APPROVED</b>
+    设计评审: 首轮节点 Codex 4 轮收敛(6→4→1→0)APPROVED · 重派复审(2026-09-01,全新会话)3 轮(4→1→0)· 最终判定 <b style="color:#34c759">APPROVED</b>
   </div>
 
   <div class="card green" data-sec="一句话总结">
@@ -116,7 +116,7 @@
     <h3>不做 / 如实记录的缺口</h3>
     <ul>
       <li>GEO-362 的另一半土壤(批准动作没把状态转到位)→ 划归 FLY-58,不在本 issue</li>
-      <li>两处测试证据缺口如实移交:DirectEventSink 侧缺可指认的 FLY-108 对照用例;「全闸开启的完整链」端到端回执至今缺失(现存回执只证历史链)</li>
+      <li>四处 as-built 缺口如实移交、<b>不写成 ✅</b>(本次重派复审新核实三处):<b>G1</b> 手工 <span class="term">/spin</span> 的「请求审核」位点还是旧写法,没绑定审批问题编号<span class="explain">(审批时无法证明批的就是这个版本)</span>;<b>G2</b> 完工上报的 PR 编号参数在主路径上不做「必须是正整数」校验<span class="explain">(乱填如 abc 也能发出畸形证据)</span>;<b>G3</b> 中枢的第二条进程内接收通道(DirectEventSink)对空/野路子上报仍会「瞎猜成 completed」——是<b>行为分歧</b>而不只是缺测试;<b>G4</b>「全闸开启的完整链」端到端回执至今缺失(现存回执只证历史链)</li>
       <li>本节点是设计重放:<b>零代码改动、零生产动作</b>,交付物 = 设计文档三件套 + 本页</li>
     </ul>
     <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="sec6"></textarea></div>
@@ -125,6 +125,7 @@
   <div class="card" data-sec="评审足迹">
     <h2>⑦ 设计评审足迹</h2>
     <p>Codex 设计评审 4 轮,意见数 <b>6 → 4 → 1 → 0</b> 单调收敛,最终 <span class="badge g">APPROVED</span>。有分量的真发现包括:今日代码里已有 FLY-324 无-PR 兜底通道(推翻了早稿「stage 上报纯情报」的过时断言)、needs_review 必须绑审批问题编号、部署必须重新构建(dist 不入库)——全部核实后并入文档。</p>
+    <p><b>重派复审(2026-09-01,全新 Codex 会话独立评审)</b>:3 轮,意见数 <b>4 → 1 → 0</b>(R1 三高一低 → R2 APPROVED 附 1 条低级措辞建议 → R3 确认无回归),最终 <span class="badge g">APPROVED</span>。真发现:手工 <span class="term">/spin</span> 的「请求审核」位点没绑定审批编号(G1)、PR 编号在主路径不做正整数校验(G2)、中枢第二条进程内接收通道仍会「瞎猜成 completed」(G3)——全部核实采纳,并按<b>写成显式缺口、不写成 ✅</b>的原则改文。评审绑定到已提交的 plan 版本(中枢登记 manifest rev 3,内容指纹 <code>0b0d2dff</code>)。</p>
     <div class="comment-box"><label>对这一节的意见(自动保存)</label><textarea data-key="sec7"></textarea></div>
   </div>
 
