@@ -569,6 +569,11 @@ fi
 DEFAULT_LEAD_ENV_COUNT=$(grep -c 'TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}"' "$DEPLOY" || true)
 [[ "$DEFAULT_LEAD_ENV_COUNT" -eq 3 ]] \
   || { S1_OK=0; fail "FLY-1726 S1: all three QA Bridge launch branches must carry TEAMLEAD_DEFAULT_LEAD_AGENT" "count=${DEFAULT_LEAD_ENV_COUNT}"; }
+OWNERSHIP_ARG_COUNT=$(grep -Fc '${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}' "$DEPLOY" || true)
+[[ "$OWNERSHIP_ARG_COUNT" -eq 3 ]] \
+  || { S1_OK=0; fail "FLY-2237 S1: every Bridge launch branch must capture the complete campaign ownership set"; }
+grep -Fq 'CAMPAIGN_SLOT_IDS[@]' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2237 S1: replay contract does not enumerate campaign owner + borrowed locks"; }
 grep -q 'TEAMLEAD_DEFAULT_LEAD_AGENT requires non-empty AGENT_ID' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-1726 S1: QA Bridge launch must fail loudly when AGENT_ID is empty"; }
 # The old inline builder must be GONE (single source) — its distinctive line:

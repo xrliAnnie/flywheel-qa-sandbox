@@ -519,6 +519,12 @@ jobs:
       - name: Test — FLY-1189 multi-Lead campaign harness
         run: bash scripts/__tests__/test-deploy-multilead.test.sh
 
+      # FLY-2237: slot-only Bridge cycle — hermetic process/listener fixture
+      # covering campaign ownership, validation, TERM-only failure handling,
+      # lsof/bind proofs, interruption, and cycle/teardown exclusion.
+      - name: Test — FLY-2237 slot Bridge cycle
+        run: bash scripts/__tests__/test-cycle-bridge.test.sh
+
       # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
       # seed/verify, deterministic persistent stub, and the nine-step replay
       # state machine. Hermetic: temporary SQLite/clone fixtures and fake

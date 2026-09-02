@@ -24,6 +24,8 @@ source "${TEARDOWN_SCRIPT_DIR}/lib/qa-multilead.sh"
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 # shellcheck source=lib/qa-generalized.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/qa-generalized.sh"
+# shellcheck source=lib/qa-slot-bridge.sh
+source "${TEARDOWN_SCRIPT_DIR}/lib/qa-slot-bridge.sh"
 # shellcheck source=lib/runner-workspace-trust.sh
 source "${TEARDOWN_SCRIPT_DIR}/lib/runner-workspace-trust.sh"
 _CMUX_PROCESS_CENSUS_LIB="${TEARDOWN_SCRIPT_DIR}/lib/cmux-mutator-process-census.sh"
@@ -663,6 +665,35 @@ teardown_slot() {
   local SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
   local SLOT_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
   local LOCK_FILE="/tmp/flywheel-test-slot-${SLOT}.lock"
+  local CYCLE_GUARD_RC=0
+  qa_slot_bridge_guard_acquire "$SLOT" || CYCLE_GUARD_RC=$?
+  case "$CYCLE_GUARD_RC" in
+    0) ;;
+    1)
+      log "ERROR: slot ${SLOT} has a Bridge cycle in progress — refusing concurrent teardown"
+      return 1
+      ;;
+    *)
+      log "ERROR: slot ${SLOT} Bridge cycle guard is unavailable or unsafe — refusing destructive teardown"
+      return 1
+      ;;
+  esac
+
+  local CYCLE_HOLDER="" CYCLE_HOLDER_RC=0
+  CYCLE_HOLDER=$(qa_slot_bridge_live_cycle_holder "$SLOT_DIR") || CYCLE_HOLDER_RC=$?
+  case "$CYCLE_HOLDER_RC" in
+    0)
+      log "ERROR: slot ${SLOT} has a live Bridge cycle (pid ${CYCLE_HOLDER}) — refusing concurrent teardown"
+      qa_slot_bridge_guard_release
+      return 1
+      ;;
+    1) ;;
+    *)
+      log "ERROR: slot ${SLOT} has malformed Bridge cycle ownership — refusing destructive teardown"
+      qa_slot_bridge_guard_release
+      return 1
+      ;;
+  esac
 
   # FLY-1189: a BORROWED lock belongs to another slot's multi-Lead campaign —
   # its Lead resources live in the OWNER slot's SLOT_DIR. Tearing it down here
@@ -672,6 +703,7 @@ teardown_slot() {
   if BORROW_OWNER=$(qa_multilead_lock_is_borrowed "$LOCK_FILE"); then
     log "ERROR: slot ${SLOT} lock is BORROWED by campaign owner slot ${BORROW_OWNER} — refusing."
     log "  Run: scripts/test-teardown.sh ${BORROW_OWNER}   (owner teardown releases this lock)"
+    qa_slot_bridge_guard_release
     return 1
   fi
 
@@ -699,8 +731,11 @@ teardown_slot() {
   # A signal cannot stop a KeepAlive service; launchd would immediately pull
   # it back up. Boot out every slot-owned label before any legacy PID/socket
   # cleanup. Missing registry remains compatible with pre-FLY-1663 slots.
-  qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json" \
-    || { log "ERROR: failed to bootout one or more slot launchd Leads"; return 1; }
+  if ! qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"; then
+    log "ERROR: failed to bootout one or more slot launchd Leads"
+    qa_slot_bridge_guard_release
+    return 1
+  fi
 
   # FLY-1189: owner-slot campaign cleanup — stop the extra Leads + release the
   # borrowed slot locks BEFORE the legacy single-Lead teardown below. Absent
@@ -964,6 +999,7 @@ teardown_slot() {
     if ! node "${TEARDOWN_SCRIPT_DIR}/lib/qa-reap-codex-slot-daemons.mjs" \
       "$SLOT_DIR"; then
       log "ERROR: slot-owned Codex daemon teardown is unverified; retaining slot ${SLOT}"
+      qa_slot_bridge_guard_release
       return 1
     fi
   fi
@@ -1070,6 +1106,7 @@ teardown_slot() {
     log "Slot ${SLOT} released"
   fi
 
+  qa_slot_bridge_guard_release
   log "Slot ${SLOT} teardown complete"
 }
 

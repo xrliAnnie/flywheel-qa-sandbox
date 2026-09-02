@@ -30,6 +30,10 @@ source "${SCRIPT_DIR}/lib/qa-multilead.sh"
 # shellcheck source=lib/qa-generalized.sh
 source "${SCRIPT_DIR}/lib/qa-generalized.sh"
 
+# FLY-2237: declarative, replayable slot-Bridge launch contract.
+# shellcheck source=lib/qa-slot-bridge.sh
+source "${SCRIPT_DIR}/lib/qa-slot-bridge.sh"
+
 # FLY-1663: 529 Room Leads use the same launchd-native v2 topology as the
 # target fleet, with labels and state scoped to the ephemeral QA slot.
 # shellcheck source=lib/qa-launchd-lead.sh
@@ -103,6 +107,10 @@ claim_slot() {
   # Check if existing lock is stale (Bridge PID dead)
   local lock_pid
   lock_pid=$(cat "$lockfile/pid" 2>/dev/null || echo "")
+  if [[ "$lock_pid" == "cycle-failed" ]]; then
+    log "Slot ${slot_num} has cycle-failed ownership — refusing automatic reclaim; run explicit test-teardown.sh ${slot_num}"
+    return 1
+  fi
   if [[ "$lock_pid" == "claiming" ]]; then
     # Another deploy is in-progress — check if lock is old (>5 min = likely crashed deploy)
     local lock_age
@@ -590,6 +598,14 @@ cleanup_on_failure() {
       rm -rf "$xlock"
     fi
   done
+	# A failed readiness transaction must retain bridge.log for diagnosis but
+	# cannot leave a replayable launch contract or captured credentials behind.
+	if [[ -n "${BRIDGE_LAUNCH_SPEC:-}" ]]; then
+		rm -f "$BRIDGE_LAUNCH_SPEC"
+	fi
+	if [[ "${SLOT_DIR:-}" == "/tmp/flywheel-test-slot-${SLOT}" ]]; then
+		rm -rf "${SLOT_DIR}/state/bridge-env-secrets"
+	fi
 }
 trap cleanup_on_failure EXIT
 
@@ -714,7 +730,9 @@ fi
 
 # ── Create temp directories ───────────────────────────
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
+BRIDGE_LAUNCH_SPEC="${SLOT_DIR}/bridge-launch.json"
 mkdir -p "${SLOT_DIR}/discord-state"
+chmod 700 "$SLOT_DIR"
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 # FLY-2030: canonical identity compilation requires the founder-selected
 # summary granularity. QA uses a slot-local selection and summary-exempt Leads,
@@ -1320,6 +1338,12 @@ if [[ "$ALERTS" == "1" ]]; then
   fi
 fi
 
+# Launch specs are intentionally single-line for every environment value.
+# Compact the already-validated JSON once, before both the file and live-env
+# projections, so initial launch and cycle replay remain byte-identical.
+FLYWHEEL_PROJECTS=$(jq -c . <<<"$FLYWHEEL_PROJECTS") \
+  || campaign_abort "failed to compact FLYWHEEL_PROJECTS"
+
 # FLY-153 R2 #3: persist FLYWHEEL_PROJECTS to disk so the smoke test (and any
 # operator) can deterministically inspect the routing config without scraping
 # the live Bridge process env. Bridge still receives FLYWHEEL_PROJECTS via env
@@ -1730,6 +1754,31 @@ BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 [[ -n "${AGENT_ID:-}" ]] \
   || campaign_abort "TEAMLEAD_DEFAULT_LEAD_AGENT requires non-empty AGENT_ID"
+QA_SLOT_BRIDGE_NODE="${FLYWHEEL_QA_NODE:-$(command -v node)}"
+QA_SLOT_BRIDGE_NPX="$(command -v npx)"
+QA_SLOT_BRIDGE_BASH="$(command -v bash)"
+QA_SLOT_BRIDGE_SESSION_LAUNCHER="$(command -v python3)"
+[[ "$QA_SLOT_BRIDGE_NODE" == /* && -x "$QA_SLOT_BRIDGE_NODE" ]] \
+  || campaign_abort "FLYWHEEL_QA_NODE must resolve to an absolute executable"
+[[ "$QA_SLOT_BRIDGE_NPX" == /* && -x "$QA_SLOT_BRIDGE_NPX" ]] \
+  || campaign_abort "npx must resolve to an absolute executable"
+[[ "$QA_SLOT_BRIDGE_BASH" == /* && -x "$QA_SLOT_BRIDGE_BASH" ]] \
+  || campaign_abort "bash must resolve to an absolute executable"
+[[ "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" == /* && -x "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" ]] \
+  || campaign_abort "python3 must resolve to an absolute executable"
+BRIDGE_LAUNCH_CWD="$PWD"
+BRIDGE_OWNERSHIP_CAPTURE_ARGS=()
+if (( ${#CAMPAIGN_SLOT_IDS[@]} > 0 )); then
+  for XSID in "${CAMPAIGN_SLOT_IDS[@]}"; do
+    BRIDGE_OWNERSHIP_CAPTURE_ARGS+=(
+      --ownership-pid-file "/tmp/flywheel-test-slot-${XSID}.lock/pid"
+    )
+  done
+else
+  BRIDGE_OWNERSHIP_CAPTURE_ARGS+=(
+    --ownership-pid-file "/tmp/flywheel-test-slot-${SLOT}.lock/pid"
+  )
+fi
 # FLY-115 v1.24.2 Gap 1 (Codex R1 LOW fix): also pass the per-lead token
 # under the name the ProjectConfig references in `botTokenEnv` (e.g.
 # TEST_BOT_TOKEN_1). Without this, process.env[botTokenEnv] is empty and
@@ -1744,10 +1793,11 @@ if [[ "$GENERALIZED" == "1" ]]; then
     GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true")
     GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
   fi
-  qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env \
+  ( qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env \
     ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
+    -u FLYWHEEL_QA_NODE \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
@@ -1769,9 +1819,15 @@ if [[ "$GENERALIZED" == "1" ]]; then
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
     ${GENERALIZED_REPLY_ENV[@]+"${GENERALIZED_REPLY_ENV[@]}"} \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
-    bash "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
-      npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
-    > "${SLOT_DIR}/bridge.log" 2>&1 &
+    "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
+      --spec "$BRIDGE_LAUNCH_SPEC" --slot "$SLOT" --port "$SLOT_PORT" \
+      --bridge-url "http://localhost:${SLOT_PORT}" --cwd "$BRIDGE_LAUNCH_CWD" \
+      --repo-root "$REPO_ROOT" \
+      --session-launcher "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" \
+      --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
+      "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
+      "$QA_SLOT_BRIDGE_BASH" "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
+      "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts" )
 elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # FLY-1389 P1-a: FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR pin the slot Bridge's
   # runtime deploy (sync-flywheel-hooks.ts seams, "for test slots" by design)
@@ -1781,6 +1837,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
+    -u FLYWHEEL_QA_NODE \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -1800,8 +1857,14 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     TEAMLEAD_REPLY_BY_ISSUE_ENABLED=true \
     TEAMLEAD_REPLY_GUARD_ENABLED=true \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
-    npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
-    > "${SLOT_DIR}/bridge.log" 2>&1 &
+    "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
+      --spec "$BRIDGE_LAUNCH_SPEC" --slot "$SLOT" --port "$SLOT_PORT" \
+      --bridge-url "http://localhost:${SLOT_PORT}" --cwd "$BRIDGE_LAUNCH_CWD" \
+      --repo-root "$REPO_ROOT" \
+      --session-launcher "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" \
+      --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
+      "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
+      "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts"
 else
   # FLY-529: this is the "reply-by-issue OFF" default path. It already clears the
   # inherited TEAMLEAD_API_TOKEN; it MUST also clear the reply-by-issue flags the
@@ -1816,6 +1879,7 @@ else
     -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
+    -u FLYWHEEL_QA_NODE \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
@@ -1834,9 +1898,18 @@ else
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
     FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
-    npx tsx "${REPO_ROOT}/scripts/run-bridge.ts" \
-    > "${SLOT_DIR}/bridge.log" 2>&1 &
+    "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
+      --spec "$BRIDGE_LAUNCH_SPEC" --slot "$SLOT" --port "$SLOT_PORT" \
+      --bridge-url "http://localhost:${SLOT_PORT}" --cwd "$BRIDGE_LAUNCH_CWD" \
+      --repo-root "$REPO_ROOT" \
+      --session-launcher "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" \
+      --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
+      "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
+      "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts"
 fi
+: > "${SLOT_DIR}/bridge.log"
+qa_slot_bridge_exec_spec "$BRIDGE_LAUNCH_SPEC" "$REPO_ROOT" \
+  >> "${SLOT_DIR}/bridge.log" 2>&1 &
 BRIDGE_PID=$!
 echo "$BRIDGE_PID" > "${SLOT_DIR}/bridge.pid"
 # Update slot lock with long-lived Bridge PID (prevents stale-lock misdetection)
@@ -2042,6 +2115,7 @@ cat <<EOF
   "runnerStartPoint": "${RUNNER_START_REF}",
   "dbPath": "${SLOT_DIR}/teamlead.db",
   "bridgeLog": "${SLOT_DIR}/bridge.log",
+  "bridgeLaunchSpec": "${BRIDGE_LAUNCH_SPEC}",
   "leadLog": "${LEAD_LOG}",
   "flywheelProjectsFile": "${FLYWHEEL_PROJECTS_FILE}",
   "launchManifest": "${SLOT_DIR}/launch-manifest.json",

@@ -20,9 +20,11 @@ set -uo pipefail
 PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED+1)); echo "[TEST] ✓ $1"; }
 fail() { FAILED=$((FAILED+1)); echo "[TEST] ✗ $1"; shift; [ $# -gt 0 ] && echo "        $*"; }
+mode_of() { stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1" 2>/dev/null; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 FLY1389_REAL_CURL="$(command -v curl)"
+FLY1389_REAL_NODE="$(command -v node)"
 
 # ── T: timeout resolver unit matrix ─────────────────────────────────────────
 # shellcheck source=../lib/qa-room.sh
@@ -48,7 +50,8 @@ fi
 # ── shared hermetic fixture ─────────────────────────────────────────────────
 export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation"
 SB="$(mktemp -d /tmp/fly1389-deploy-XXXXXX)"
-EXTRA_SLOT=30; LEAD_SLOT=31; NOLEAD_SLOT=32
+EXTRA_SLOT=30; LEAD_SLOT=31; NOLEAD_SLOT=32; WORKTREE_SLOT=33
+WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
 # Per-process high ports keep repeated/parallel hermetic runs independent. A
 # force-stopped prior test must not make a new run accept its orphan listener.
 FIXTURE_PORT_BASE=$((20000 + ($$ % 5000)))
@@ -56,10 +59,13 @@ LEAD_PORT=$FIXTURE_PORT_BASE
 NOLEAD_PORT=$((FIXTURE_PORT_BASE + 1))
 cleanup() {
   # Kill any stub leads / stub bridges we started, release fixture locks.
+  for pid in "$WORKER_SENTINEL_PID" "$DAEMON_SENTINEL_PID" "$TMUX_SENTINEL_PID"; do
+    [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill "$pid" 2>/dev/null || true
+  done
   pkill -f "fly1389-stub-lead-marker" 2>/dev/null || true
   pkill -f "fly1389-stub-bridge-marker" 2>/dev/null || true
-  rm -rf "/tmp/flywheel-test-slot-${EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" \
-    "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "$SB"
+  rm -rf "/tmp/flywheel-test-slot-${EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}.lock" \
+    "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}" "$SB"
 }
 trap cleanup EXIT
 
@@ -69,11 +75,14 @@ mkdir -p "$FR/scripts/lib" "$FR/packages/teamlead/scripts" \
   "$FR/packages/flywheel-comm" "$FR/packages/inbox-mcp" \
   "$FR/packages/edge-worker/dist" \
   "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release"
-cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" "$FR/scripts/"
+cp "${SCRIPT_DIR}/test-deploy.sh" "${SCRIPT_DIR}/test-teardown.sh" \
+  "${SCRIPT_DIR}/test-cycle-bridge.sh" "$FR/scripts/"
 cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-multilead.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
+  "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
   "${SCRIPT_DIR}/lib/runner-workspace-trust.sh" \
   "$FR/scripts/lib/"
@@ -205,18 +214,117 @@ exec "${FLY1389_REAL_CURL:?}" "$@"
 EOF
 cat > "$STUB_BIN/npx" <<'EOF'
 #!/bin/bash
-# fly1389-stub-bridge-marker — stands in for `npx tsx run-bridge.ts`.
+# fly1389-stub-bridge-marker — persistent wrapper for a real three-level tree.
+set -u
 SLOT_DIR="$(dirname "${TEAMLEAD_DB_PATH:?}")"
+STUB_DIR="$(cd "$(dirname "$0")" && pwd)"
+BOOT_FILE="$SLOT_DIR/bridge-boot-count"
+BOOT=$(( $(cat "$BOOT_FILE" 2>/dev/null || echo 0) + 1 ))
+printf '%s\n' "$BOOT" > "$BOOT_FILE"
+printf '%s\n' "$$" > "$SLOT_DIR/bridge-wrapper.pid"
+printf 'fly1389 boot-%s wrapper=%s\n' "$BOOT" "$$"
 env | sort > "$SLOT_DIR/bridge-env.txt"
-exec python3 -c "
-import os
+"${FLY1389_ENV_DUMP_NODE:?}" - "$SLOT_DIR/bridge-env.json" "$SLOT_DIR/bridge-env-${BOOT}.json" <<'NODE'
+const fs = require("node:fs");
+const value = JSON.stringify(process.env);
+fs.writeFileSync(process.argv[2], value);
+fs.writeFileSync(process.argv[3], value);
+NODE
+on_term() {
+  printf '%s\t%s\twrapper\n' "$BOOT" "$$" >> "$SLOT_DIR/bridge-term.log"
+  printf 'fly1389 term-%s wrapper=%s\n' "$BOOT" "$$"
+  exit 0
+}
+trap on_term TERM
+"$STUB_DIR/fly1389-tsx-intermediate" scripts/run-bridge.ts "$BOOT" &
+CHILD=$!
+wait "$CHILD"
+exit $?
+EOF
+cat > "$STUB_BIN/fly1389-tsx-intermediate" <<'EOF'
+#!/bin/bash
+set -u
+# argv intentionally carries only the repo-relative form under test.
+RELATIVE_SCRIPT="${1:?relative script required}"
+BOOT="${2:?boot required}"
+SLOT_DIR="$(dirname "${TEAMLEAD_DB_PATH:?}")"
+STUB_DIR="$(cd "$(dirname "$0")" && pwd)"
+printf '%s\n' "$$" > "$SLOT_DIR/bridge-intermediate.pid"
+printf '%s\n' "$RELATIVE_SCRIPT" > "$SLOT_DIR/bridge-intermediate-argv.txt"
+on_term() {
+  printf '%s\t%s\tintermediate\n' "$BOOT" "$$" >> "$SLOT_DIR/bridge-term.log"
+  exit 0
+}
+trap on_term TERM
+"$STUB_DIR/fly1389-listener" "$BOOT" &
+CHILD=$!
+wait "$CHILD"
+exit $?
+EOF
+cat > "$STUB_BIN/fly1389-listener" <<'EOF'
+#!/bin/bash
+set -u
+BOOT="${1:?boot required}"
+SLOT_DIR="$(dirname "${TEAMLEAD_DB_PATH:?}")"
+# The exec'd listener argv deliberately contains loader flags only and no
+# run-bridge.ts bytes, mirroring the real tsx worker process.
+exec python3 -c '
+import json, os, signal, sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
+boot, slot_dir = sys.argv[1], sys.argv[2]
+with open(os.path.join(slot_dir, "bridge-listener.pid"), "w") as f: f.write(str(os.getpid()) + "\n")
+with open(os.path.join(slot_dir, "bridge-listener.cwd"), "w") as f: f.write(os.getcwd() + "\n")
+with open(os.path.join(slot_dir, "bridge-listener-argv.json"), "w") as f: json.dump(sys.argv, f)
+def term(_sig, _frame):
+    with open(os.path.join(slot_dir, "bridge-term.log"), "a") as f:
+        f.write(f"{boot}\t{os.getpid()}\tlistener\n")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, term)
 class H(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200); self.end_headers(); self.wfile.write(b'ok')
-    def log_message(self, *a): pass
-HTTPServer(('127.0.0.1', int(os.environ['TEAMLEAD_PORT'])), H).serve_forever()
-"
+        self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+    def log_message(self, *args): pass
+HTTPServer(("127.0.0.1", int(os.environ["TEAMLEAD_PORT"])), H).serve_forever()
+' "$BOOT" "$SLOT_DIR" --require preflight.cjs --import loader.mjs
+EOF
+cat > "$STUB_BIN/ps" <<'EOF'
+#!/bin/bash
+# The Codex workspace sandbox denies /bin/ps. Keep the fixture's start-identity
+# seam deterministic, and derive PPIDs from the real process IDs each level
+# publishes. Independent lsof assertions below prove those published edges are
+# the actual live OS parent chain before the public cycle command is invoked.
+set -u
+FORMAT=""
+PID=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) FORMAT="${2:?format required}"; shift 2 ;;
+    -p) PID="${2:?pid required}"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+[[ "$PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$PID" 2>/dev/null || exit 1
+case "$FORMAT" in
+  lstart=)
+    printf 'Thu Jan  1 00:00:00 1970 fixture-pid-%s\n' "$PID"
+    ;;
+  ppid=)
+    for slot_dir in /tmp/flywheel-test-slot-*; do
+      [[ -d "$slot_dir" ]] || continue
+      listener="$(cat "$slot_dir/bridge-listener.pid" 2>/dev/null || true)"
+      intermediate="$(cat "$slot_dir/bridge-intermediate.pid" 2>/dev/null || true)"
+      wrapper="$(cat "$slot_dir/bridge-wrapper.pid" 2>/dev/null || true)"
+      if [[ "$PID" == "$listener" ]]; then printf '%s\n' "$intermediate"; exit 0; fi
+      if [[ "$PID" == "$intermediate" ]]; then printf '%s\n' "$wrapper"; exit 0; fi
+    done
+    exit 1
+    ;;
+  pgid=)
+    # qa-slot-bridge-spec launches every Bridge in a PID-equal isolated group.
+    printf '%s\n' "$PID"
+    ;;
+  *) exit 64 ;;
+esac
 EOF
 cat > "$STUB_BIN/tmux" <<'EOF'
 #!/bin/bash
@@ -273,6 +381,12 @@ esac
 LAUNCHCTL
 chmod +x "$STUB_BIN"/*
 
+# A second real repo layout exercises the path class production intentionally
+# excludes from its restart helper. The slot cycle must own this QA worktree.
+FWR="$SB/worktrees/fly-2237"
+mkdir -p "$(dirname "$FWR")"
+cp -R "$FR" "$FWR"
+
 # Fake HOME #1 (Lead-ful): identity + shared rules present.
 FH1="$SB/home1"
 mkdir -p "$FH1/.flywheel/claude-sessions" \
@@ -284,7 +398,7 @@ echo "# shared rule fixture" > "$FH1/Dev/GeoForge3D/.lead/shared/dept.md"
 FH2="$SB/home2"
 mkdir -p "$FH2/.flywheel/claude-sessions"
 
-make_slots_json() {  # <file> — slots 30/31/32 carry real fixture values
+make_slots_json() {  # <file> — slots 30/31/32/33 carry real fixture values
   jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" '
     { guildId: "g-fixture",
       alertChannel: {
@@ -304,7 +418,10 @@ make_slots_json() {  # <file> — slots 30/31/32 carry real fixture values
               channelId: "chan-31", role: "lead", identitySource: "product-lead" },
             { id: 32, bridgePort: $noLeadPort, botName: "flywheel-test-32",
               tokenEnvVar: "TEST_BOT_TOKEN_32", botAppId: "3232",
-              channelId: "chan-32", role: "lead", identitySource: "product-lead" } ] )
+              channelId: "chan-32", role: "lead", identitySource: "product-lead" },
+            { id: 33, bridgePort: ($leadPort + 3), botName: "flywheel-test-33",
+              tokenEnvVar: "TEST_BOT_TOKEN_33", botAppId: "3333",
+              channelId: "chan-33", role: "lead", identitySource: "product-lead" } ] )
     }'
 }
 for H in "$FH1" "$FH2"; do
@@ -313,6 +430,7 @@ for H in "$FH1" "$FH2"; do
 TEST_BOT_TOKEN_31=tok-31
 TEST_BOT_TOKEN_32=tok-32
 TEST_BOT_TOKEN_30=tok-30
+TEST_BOT_TOKEN_33=tok-33
 LINEAR_API_KEY=fixture-linear-key
 EOF
 done
@@ -320,6 +438,7 @@ done
 run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
   local home="$1" slot="$2" out="$3" err="$4"; shift 4
   local caller_cwd="${FLY1608_DEPLOY_CALLER_CWD:-$SB}"
+  local repo_root="${FLY1389_REPO_ROOT:-$FR}"
   ( cd "$caller_cwd" && \
     env -i \
       HOME="$home" \
@@ -329,12 +448,14 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TMUX_STUB_WINDOW="" \
       FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
-      FLYWHEEL_QA_LEAD_WRAPPER="$FR/scripts/flywheel-lead-wrapper-v2.sh" \
+      FLYWHEEL_QA_LEAD_WRAPPER="$repo_root/scripts/flywheel-lead-wrapper-v2.sh" \
       FLYWHEEL_QA_TMUX="$STUB_BIN/tmux" \
+      FLYWHEEL_QA_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_QA_LAUNCHD_POLL_INTERVAL=0.01 \
       FLYWHEEL_QA_LEAD_VERIFY_POLLS=100 \
       FLYWHEEL_QA_LEAD_VERIFY_INTERVAL=0.01 \
       FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
+      FLY1389_ENV_DUMP_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       LEAD_WORKSPACE="/malicious/prod-workspace" \
@@ -348,9 +469,10 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       FLYWHEEL_CODEX_HOMES_ROOT="${FLYWHEEL_CODEX_HOMES_ROOT:-}" \
       FLYWHEEL_CODEX_SESSION_DIR="${FLYWHEEL_CODEX_SESSION_DIR:-}" \
       FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="${FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT:-}" \
+      FLYWHEEL_NOVEL_WEBHOOK_TOKEN="fixture-novel-webhook-secret" \
       FLYWHEEL_LEAD_MODEL="malicious-model" \
       FLYWHEEL_LEAD_EFFORT="malicious-effort" \
-      bash "$FR/scripts/test-deploy.sh" "$slot" "$@" \
+      bash "$repo_root/scripts/test-deploy.sh" "$slot" "$@" \
       > "$out" 2> "$err" )
 }
 
@@ -360,6 +482,7 @@ extract_json() { sed -n '/^{/,$p' "$1"; }
 
 run_teardown() {  # <home> <slot>
   local home="$1" slot="$2"
+  local repo_root="${FLY1389_REPO_ROOT:-$FR}"
   local out="$SB/teardown-slot-${slot}.stdout.log"
   local err="$SB/teardown-slot-${slot}.stderr.log"
   local rc=0
@@ -374,7 +497,7 @@ run_teardown() {  # <home> <slot>
       FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$home/cmux-mutator.lock" \
       FLYWHEEL_CMUX_MAINTENANCE_MARKER="$home/cmux-maintenance" \
       FLYWHEEL_CMUX_VIEW_WAL_DIR="$home/cmux-view-wal" \
-      bash "$FR/scripts/test-teardown.sh" "$slot" >"$out" 2>"$err" ) || rc=$?
+      bash "$repo_root/scripts/test-teardown.sh" "$slot" >"$out" 2>"$err" ) || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     printf '[TEST] teardown slot %s stdout (%s):\n' "$slot" "$out" >&2
     cat "$out" >&2
@@ -457,6 +580,87 @@ if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
   E_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
   E_OK=1
   E_JSON="$(extract_json "$E_OUT")"
+  jq -e '(.bridgeLaunchSpec | type == "string" and startswith("/"))' <<<"$E_JSON" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2237: deploy JSON lacks an absolute bridgeLaunchSpec"; }
+  E_BRIDGE_SPEC="$(jq -r '.bridgeLaunchSpec // empty' <<<"$E_JSON")"
+  [[ -f "$E_BRIDGE_SPEC" ]] \
+    || { E_OK=0; fail "E/FLY-2237: bridge launch spec is not a regular file" "$E_BRIDGE_SPEC"; }
+  [[ "$(mode_of "$E_BRIDGE_SPEC")" == "600" && "$(mode_of "$E_SLOT_DIR")" == "700" ]] \
+    || { E_OK=0; fail "E/FLY-2237: launch spec/slot modes must be 600/700" \
+      "spec=$(mode_of "$E_BRIDGE_SPEC") slot=$(mode_of "$E_SLOT_DIR")"; }
+  E_CANON_CWD="$(cd "$SB" && pwd -P)"
+  E_CANON_NPX="$(cd "$STUB_BIN" && pwd -P)/npx"
+  E_CANON_SCRIPT="$(cd "$FR/scripts" && pwd -P)/run-bridge.ts"
+  jq -e \
+    --argjson slot "$LEAD_SLOT" --argjson port "$LEAD_PORT" \
+    --arg bridgeUrl "http://localhost:${LEAD_PORT}" --arg cwd "$E_CANON_CWD" \
+    --arg repoRoot "$(cd "$FR" && pwd -P)" \
+    --arg logPath "$E_SLOT_DIR/bridge.log" \
+    --arg command0 "$E_CANON_NPX" --arg script "$E_CANON_SCRIPT" \
+    --arg ownerLock "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock/pid" '
+      .schemaVersion == 1 and .slot == $slot and .port == $port and
+      .bridgeUrl == $bridgeUrl and .cwd == $cwd and .logPath == $logPath and
+      .repoRoot == $repoRoot and .scriptPath == $script and
+      .command == [$command0, "tsx", $script] and
+      .ownershipPidFiles == [$ownerLock] and
+      (.environment | type == "array") and
+      (.secretEnvironment | type == "array")
+    ' "$E_BRIDGE_SPEC" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2237: bridge launch spec schema/coordinates are incomplete"; }
+  jq -e \
+    --arg home "$FH1" --arg cwd "$E_CANON_CWD" \
+    --arg binDir "$E_SLOT_DIR/bin" --arg hooksDir "$E_SLOT_DIR/hooks" \
+    --arg homes "$E_SLOT_DIR/state/codex-homes" \
+    --arg sessions "$E_SLOT_DIR/state/codex-sessions" \
+    --arg sockets "$E_SLOT_DIR/state/cdx-sock" '
+      any(.environment[]; . == "HOME=" + $home) and
+      any(.environment[]; . == "PWD=" + $cwd) and
+      any(.environment[]; startswith("PATH=")) and
+      any(.environment[]; . == "FLYWHEEL_BIN_DIR=" + $binDir) and
+      any(.environment[]; . == "FLYWHEEL_HOOKS_DIR=" + $hooksDir) and
+      any(.environment[]; . == "FLYWHEEL_CODEX_HOMES_ROOT=" + $homes) and
+      any(.environment[]; . == "FLYWHEEL_CODEX_SESSION_DIR=" + $sessions) and
+      any(.environment[]; . == "FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=" + $sockets) and
+      (any(.environment[]; startswith("FLYWHEEL_QA_NODE=")) | not) and
+      ([.secretEnvironment[].name] | index("FLYWHEEL_NOVEL_WEBHOOK_TOKEN") != null) and
+      ([.secretEnvironment[].name] | index("LINEAR_API_KEY") != null) and
+      ([.secretEnvironment[].name] | index("DISCORD_BOT_TOKEN") != null)
+    ' "$E_BRIDGE_SPEC" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2237: full environment/secret classification is incomplete"; }
+  E_NOVEL_SECRET_PATH="$(jq -r '.secretEnvironment[] | select(.name == "FLYWHEEL_NOVEL_WEBHOOK_TOKEN") | .path' "$E_BRIDGE_SPEC")"
+  [[ -f "$E_NOVEL_SECRET_PATH" && ! -L "$E_NOVEL_SECRET_PATH" \
+      && "$(mode_of "$E_NOVEL_SECRET_PATH")" == "600" \
+      && "$(<"$E_NOVEL_SECRET_PATH")" == "fixture-novel-webhook-secret" ]] \
+    || { E_OK=0; fail "E/FLY-2237: novel token was not isolated in a mode-0600 secret file"; }
+  ! grep -Fq "fixture-novel-webhook-secret" "$E_BRIDGE_SPEC" \
+    || { E_OK=0; fail "E/FLY-2237: launch spec contains novel token bytes"; }
+  if ! "$FLY1389_REAL_NODE" - "$E_BRIDGE_SPEC" "$E_SLOT_DIR/bridge-env.json" <<'NODE'
+const fs = require("node:fs");
+const [specPath, livePath] = process.argv.slice(2);
+const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
+const expected = Object.fromEntries(spec.environment.map((assignment) => {
+  const split = assignment.indexOf("=");
+  return [assignment.slice(0, split), assignment.slice(split + 1)];
+}));
+for (const ref of spec.secretEnvironment) {
+  expected[ref.name] = fs.readFileSync(ref.path, "utf8");
+}
+const live = JSON.parse(fs.readFileSync(livePath, "utf8"));
+delete live._;
+delete live.SHLVL;
+const names = [...new Set([...Object.keys(expected), ...Object.keys(live)])].sort();
+const missing = names.filter((name) => !(name in live));
+const extra = names.filter((name) => !(name in expected));
+const changed = names.filter((name) => name in expected && name in live && expected[name] !== live[name])
+  .map((name) => ({ name, expectedBytes: Buffer.byteLength(expected[name]), liveBytes: Buffer.byteLength(live[name]) }));
+if (missing.length || extra.length || changed.length) {
+  console.error(JSON.stringify({ missing, extra, changed }));
+  process.exit(1);
+}
+NODE
+  then
+    E_OK=0; fail "E/FLY-2237: initial live Bridge env differs from the captured full snapshot"
+  fi
   jq -e '.noLead == false' <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: default path must report noLead=false"; }
   jq -e '.leadCarrier == "launchd-v2" and (.leadLaunchdLabel | startswith("com.flywheel.qa.lead.slot-31.")) and (.leadSocket | length > 0)' \
     <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: deploy JSON lacks launchd-v2 topology evidence"; }
@@ -524,6 +728,108 @@ if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi
+  E_CYCLE_OUT="$SB/e-cycle.out"
+  E_CYCLE_ERR="$SB/e-cycle.err"
+  E_OLD_WRAPPER="$(cat "$E_SLOT_DIR/bridge.pid" 2>/dev/null || true)"
+  E_OLD_INTERMEDIATE="$(cat "$E_SLOT_DIR/bridge-intermediate.pid" 2>/dev/null || true)"
+  E_OLD_LISTENER="$(cat "$E_SLOT_DIR/bridge-listener.pid" 2>/dev/null || true)"
+  E_OLD_LEAD="$STUB_LEAD_PID"
+  E_OS_LISTENER_PARENT="$(lsof -a -p "$E_OLD_LISTENER" -FpR 2>/dev/null | sed -n 's/^R//p' | head -1)"
+  E_OS_INTERMEDIATE_PARENT="$(lsof -a -p "$E_OLD_INTERMEDIATE" -FpR 2>/dev/null | sed -n 's/^R//p' | head -1)"
+  [[ "$E_OS_LISTENER_PARENT" == "$E_OLD_INTERMEDIATE" && "$E_OS_INTERMEDIATE_PARENT" == "$E_OLD_WRAPPER" ]] \
+    || { E_OK=0; fail "E/FLY-2237: fixture is not a real listener→intermediate→wrapper PPID chain" \
+      "listener=${E_OLD_LISTENER}/${E_OS_LISTENER_PARENT} intermediate=${E_OLD_INTERMEDIATE}/${E_OS_INTERMEDIATE_PARENT} wrapper=${E_OLD_WRAPPER}"; }
+  [[ "$(cat "$E_SLOT_DIR/bridge-intermediate-argv.txt" 2>/dev/null || true)" == "scripts/run-bridge.ts" ]] \
+    || { E_OK=0; fail "E/FLY-2237: intermediate did not receive the repo-relative script path"; }
+  ! grep -Fq 'run-bridge.ts' "$E_SLOT_DIR/bridge-listener-argv.json" \
+    || { E_OK=0; fail "E/FLY-2237: listener argv unexpectedly carries run-bridge.ts"; }
+  sleep 300 & WORKER_SENTINEL_PID=$!
+  sleep 300 & DAEMON_SENTINEL_PID=$!
+  sleep 300 & TMUX_SENTINEL_PID=$!
+  E_WORKER_START="$("$STUB_BIN/ps" -o lstart= -p "$WORKER_SENTINEL_PID")"
+  E_DAEMON_START="$("$STUB_BIN/ps" -o lstart= -p "$DAEMON_SENTINEL_PID")"
+  E_TMUX_START="$("$STUB_BIN/ps" -o lstart= -p "$TMUX_SENTINEL_PID")"
+  if TEAMLEAD_API_TOKEN="cycle-production-api-token" \
+      TEAMLEAD_INGEST_TOKEN="cycle-production-ingest-token" \
+      FLYWHEEL_CODEX_HOMES_ROOT="/cycle-production-codex-homes" \
+      FLYWHEEL_CODEX_SESSION_DIR="/cycle-production-codex-sessions" \
+      FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="/cycle-production-cdx-sock" \
+      FLYWHEEL_BIN_DIR="/cycle-production-bin" \
+      FLYWHEEL_HOOKS_DIR="/cycle-production-hooks" \
+      FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
+      PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)")" \
+      bash "$FR/scripts/test-cycle-bridge.sh" "$LEAD_SLOT" \
+      >"$E_CYCLE_OUT" 2>"$E_CYCLE_ERR"; then
+    pass "E/FLY-2237: public slot Bridge cycle succeeds"
+  else
+    E_OK=0
+    fail "E/FLY-2237: public slot Bridge cycle failed" "$(tail -20 "$E_CYCLE_ERR")"
+  fi
+  E_NEW_WRAPPER="$(cat "$E_SLOT_DIR/bridge.pid" 2>/dev/null || true)"
+  E_NEW_INTERMEDIATE="$(cat "$E_SLOT_DIR/bridge-intermediate.pid" 2>/dev/null || true)"
+  E_NEW_LISTENER="$(cat "$E_SLOT_DIR/bridge-listener.pid" 2>/dev/null || true)"
+  for old_pid in "$E_OLD_WRAPPER" "$E_OLD_INTERMEDIATE" "$E_OLD_LISTENER"; do
+    ! kill -0 "$old_pid" 2>/dev/null \
+      || { E_OK=0; fail "E/FLY-2237: old Bridge process survived cycle" "$old_pid"; }
+    [[ "$(awk -F '\t' -v pid="$old_pid" '$2 == pid { count++ } END { print count+0 }' "$E_SLOT_DIR/bridge-term.log")" == "1" ]] \
+      || { E_OK=0; fail "E/FLY-2237: old Bridge process did not receive exactly one TERM" "$old_pid"; }
+  done
+  [[ "$E_NEW_WRAPPER" =~ ^[1-9][0-9]*$ && "$E_NEW_WRAPPER" != "$E_OLD_WRAPPER" ]] \
+    && kill -0 "$E_NEW_WRAPPER" 2>/dev/null \
+    || { E_OK=0; fail "E/FLY-2237: replacement wrapper is not a new live PID"; }
+  [[ "$E_NEW_INTERMEDIATE" =~ ^[1-9][0-9]*$ && "$E_NEW_INTERMEDIATE" != "$E_OLD_INTERMEDIATE" ]] \
+    && kill -0 "$E_NEW_INTERMEDIATE" 2>/dev/null \
+    || { E_OK=0; fail "E/FLY-2237: replacement intermediate is not a new live PID"; }
+  [[ "$E_NEW_LISTENER" =~ ^[1-9][0-9]*$ && "$E_NEW_LISTENER" != "$E_OLD_LISTENER" ]] \
+    && kill -0 "$E_NEW_LISTENER" 2>/dev/null \
+    || { E_OK=0; fail "E/FLY-2237: replacement listener is not a new live PID"; }
+  [[ "$(cat "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock/pid" 2>/dev/null || true)" == "$E_NEW_WRAPPER" ]] \
+    || { E_OK=0; fail "E/FLY-2237: owner lock does not name replacement wrapper"; }
+  [[ "$(cat "$E_SLOT_DIR/bridge-boot-count" 2>/dev/null || true)" == "2" ]] \
+    || { E_OK=0; fail "E/FLY-2237: cycle did not execute exactly the second Bridge boot"; }
+  [[ "$(cat "$E_SLOT_DIR/bridge-listener.cwd" 2>/dev/null || true)" == "$(jq -r '.cwd' "$E_SLOT_DIR/bridge-launch.json")" ]] \
+    || { E_OK=0; fail "E/FLY-2237: replacement listener cwd differs from spec cwd"; }
+  "$FLY1389_REAL_CURL" -q -fsS --noproxy '*' --max-time 5 "http://localhost:${LEAD_PORT}/health" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2237: replacement Bridge is not healthy"; }
+  jq -S 'del(._, .SHLVL)' "$E_SLOT_DIR/bridge-env-1.json" > "$SB/e-env-1.normalized.json"
+  jq -S 'del(._, .SHLVL)' "$E_SLOT_DIR/bridge-env-2.json" > "$SB/e-env-2.normalized.json"
+  cmp -s "$SB/e-env-1.normalized.json" "$SB/e-env-2.normalized.json" \
+    || { E_OK=0; fail "E/FLY-2237: replacement Bridge full environment differs from initial boot"; }
+  ! grep -Fq 'cycle-production-' "$E_SLOT_DIR/bridge-env-2.json" \
+    || { E_OK=0; fail "E/FLY-2237: cycle caller production coordinates leaked into replacement Bridge"; }
+  [[ "$E_OLD_LEAD" == "$(cat "$E_SLOT_DIR/lead-shell-pid.txt" 2>/dev/null || true)" ]] \
+    && kill -0 "$E_OLD_LEAD" 2>/dev/null \
+    || { E_OK=0; fail "E/FLY-2237: cycle changed the in-room Lead identity"; }
+  for sentinel_record in \
+      "$WORKER_SENTINEL_PID:$E_WORKER_START" \
+      "$DAEMON_SENTINEL_PID:$E_DAEMON_START" \
+      "$TMUX_SENTINEL_PID:$E_TMUX_START"; do
+    sentinel_pid="${sentinel_record%%:*}"
+    sentinel_start="${sentinel_record#*:}"
+    kill -0 "$sentinel_pid" 2>/dev/null \
+      && [[ "$("$STUB_BIN/ps" -o lstart= -p "$sentinel_pid")" == "$sentinel_start" ]] \
+      || { E_OK=0; fail "E/FLY-2237: cycle changed worker/daemon/tmux sentinel identity" "$sentinel_pid"; }
+  done
+  jq -e --argjson slot "$LEAD_SLOT" --argjson old "$E_OLD_WRAPPER" --argjson new "$E_NEW_WRAPPER" '
+    keys == ["bridgeUrl","launchSpec","newBridgePid","oldBridgePid","slot"] and
+    .slot == $slot and .oldBridgePid == $old and .newBridgePid == $new
+  ' "$E_CYCLE_OUT" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2237: cycle stdout JSON is not the redacted public contract"; }
+  ! grep -Eq 'tok-31|fixture-linear-key|fixture-novel-webhook-secret|cycle-production-.*token' "$E_CYCLE_OUT" "$E_CYCLE_ERR" \
+    || { E_OK=0; fail "E/FLY-2237: cycle output leaked a fixture secret"; }
+  E_BOOT1_LINE="$(grep -n 'fly1389 boot-1' "$E_SLOT_DIR/bridge.log" | head -1 | cut -d: -f1)"
+  E_TERM1_LINE="$(grep -n 'fly1389 term-1' "$E_SLOT_DIR/bridge.log" | head -1 | cut -d: -f1)"
+  E_BOUNDARY_LINE="$(grep -n '\[test-cycle-bridge\] cycle boundary' "$E_SLOT_DIR/bridge.log" | head -1 | cut -d: -f1)"
+  E_BOOT2_LINE="$(grep -n 'fly1389 boot-2' "$E_SLOT_DIR/bridge.log" | head -1 | cut -d: -f1)"
+  [[ -n "$E_BOOT1_LINE" && -n "$E_TERM1_LINE" && -n "$E_BOUNDARY_LINE" && -n "$E_BOOT2_LINE" \
+      && "$E_BOOT1_LINE" -lt "$E_TERM1_LINE" && "$E_TERM1_LINE" -lt "$E_BOUNDARY_LINE" \
+      && "$E_BOUNDARY_LINE" -lt "$E_BOOT2_LINE" ]] \
+    || { E_OK=0; fail "E/FLY-2237: Bridge log is not append-only across boot/TERM/cycle/boot"; }
+  for pid in "$WORKER_SENTINEL_PID" "$DAEMON_SENTINEL_PID" "$TMUX_SENTINEL_PID"; do
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
   [[ "$E_OK" == "1" ]] && pass "E: Lead-ful E2E — sanitize + cwd/PID parity + marker isolation + noLead=false"
   run_teardown "$FH1" "$LEAD_SLOT"
   [[ ! -d "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" ]] \
@@ -532,6 +838,54 @@ if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
 else
   fail "E: Lead-ful hermetic deploy failed" "$(tail -20 "$E_ERR")"
   run_teardown "$FH1" "$LEAD_SLOT" || true
+fi
+
+# ── W: QA cycle owns repos whose real path contains /worktrees/ ────────────
+rm -rf "/tmp/flywheel-test-slot-${WORKTREE_SLOT}.lock" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}"
+W_OUT="$SB/w-out.json"; W_ERR="$SB/w-err.log"; W_CYCLE_OUT="$SB/w-cycle.out"; W_CYCLE_ERR="$SB/w-cycle.err"
+if FLY1389_REPO_ROOT="$FWR" FLY1608_DEPLOY_CALLER_CWD="$FWR" \
+    run_deploy "$FH1" "$WORKTREE_SLOT" "$W_OUT" "$W_ERR"; then
+  W_SLOT_DIR="/tmp/flywheel-test-slot-${WORKTREE_SLOT}"
+  W_OK=1
+  W_OLD_WRAPPER="$(cat "$W_SLOT_DIR/bridge.pid" 2>/dev/null || true)"
+  W_OLD_INTERMEDIATE="$(cat "$W_SLOT_DIR/bridge-intermediate.pid" 2>/dev/null || true)"
+  W_OLD_LISTENER="$(cat "$W_SLOT_DIR/bridge-listener.pid" 2>/dev/null || true)"
+  W_OS_LISTENER_PARENT="$(lsof -a -p "$W_OLD_LISTENER" -FpR 2>/dev/null | sed -n 's/^R//p' | head -1)"
+  W_OS_INTERMEDIATE_PARENT="$(lsof -a -p "$W_OLD_INTERMEDIATE" -FpR 2>/dev/null | sed -n 's/^R//p' | head -1)"
+  [[ "$W_OS_LISTENER_PARENT" == "$W_OLD_INTERMEDIATE" && "$W_OS_INTERMEDIATE_PARENT" == "$W_OLD_WRAPPER" ]] \
+    || { W_OK=0; fail "W/FLY-2237: /worktrees/ fixture lacks the real three-level PPID chain"; }
+  jq -e '.cwd | contains("/worktrees/fly-2237")' "$W_SLOT_DIR/bridge-launch.json" >/dev/null 2>&1 \
+    || { W_OK=0; fail "W/FLY-2237: launch spec does not preserve the /worktrees/ repo path class"; }
+  if FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
+      PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)")" \
+      bash "$FWR/scripts/test-cycle-bridge.sh" "$WORKTREE_SLOT" \
+      >"$W_CYCLE_OUT" 2>"$W_CYCLE_ERR"; then
+    W_NEW_WRAPPER="$(cat "$W_SLOT_DIR/bridge.pid" 2>/dev/null || true)"
+    W_NEW_LISTENER="$(cat "$W_SLOT_DIR/bridge-listener.pid" 2>/dev/null || true)"
+    [[ "$W_NEW_WRAPPER" =~ ^[1-9][0-9]*$ && "$W_NEW_WRAPPER" != "$W_OLD_WRAPPER" ]] \
+      && kill -0 "$W_NEW_WRAPPER" 2>/dev/null \
+      || { W_OK=0; fail "W/FLY-2237: /worktrees/ cycle did not replace the wrapper"; }
+    [[ "$W_NEW_LISTENER" =~ ^[1-9][0-9]*$ && "$W_NEW_LISTENER" != "$W_OLD_LISTENER" ]] \
+      && kill -0 "$W_NEW_LISTENER" 2>/dev/null \
+      || { W_OK=0; fail "W/FLY-2237: /worktrees/ cycle did not replace the listener"; }
+    [[ "$(cat "$W_SLOT_DIR/bridge-boot-count" 2>/dev/null || true)" == "2" ]] \
+      || { W_OK=0; fail "W/FLY-2237: /worktrees/ cycle did not replay the launch contract"; }
+    for old_pid in "$W_OLD_WRAPPER" "$W_OLD_INTERMEDIATE" "$W_OLD_LISTENER"; do
+      [[ "$(awk -F '\t' -v pid="$old_pid" '$2 == pid { count++ } END { print count+0 }' "$W_SLOT_DIR/bridge-term.log")" == "1" ]] \
+        || { W_OK=0; fail "W/FLY-2237: /worktrees/ old process lacked exactly one TERM" "$old_pid"; }
+    done
+    "$FLY1389_REAL_CURL" -q -fsS --noproxy '*' --max-time 5 \
+      "http://localhost:$((LEAD_PORT + 3))/health" >/dev/null 2>&1 \
+      || { W_OK=0; fail "W/FLY-2237: /worktrees/ replacement Bridge is not healthy"; }
+  else
+    W_OK=0
+    fail "W/FLY-2237: /worktrees/ public cycle failed" "$(tail -20 "$W_CYCLE_ERR")"
+  fi
+  [[ "$W_OK" == "1" ]] && pass "W/FLY-2237: /worktrees/ repo uses the slot-owned PPID cycle"
+  FLY1389_REPO_ROOT="$FWR" run_teardown "$FH1" "$WORKTREE_SLOT"
+else
+  fail "W/FLY-2237: /worktrees/ hermetic deploy failed" "$(tail -20 "$W_ERR")"
+  FLY1389_REPO_ROOT="$FWR" run_teardown "$FH1" "$WORKTREE_SLOT" || true
 fi
 
 # ── I: explicit isolated Claude config injection (FLY-1439) ────────────────
@@ -657,6 +1011,8 @@ if ( cd "$SB" && \
     FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
     FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
     FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
+    FLY1389_ENV_DUMP_NODE="$FLY1389_REAL_NODE" \
+    FLYWHEEL_QA_NODE="$FLY1389_REAL_NODE" \
     GEOFORGE3D_LEAD_RULES_SRC="$SENTINEL" \
     bash "$FR/scripts/test-deploy.sh" "$NOLEAD_SLOT" --no-lead \
     > "$N_OUT" 2> "$N_ERR" ); then

@@ -201,11 +201,13 @@ generalized_bridge_launch="$(awk '
 	}
 	END { printf "%s", selected }
 ' "$ROOT/scripts/test-deploy.sh")"
-if [[ "$generalized_bridge_launch" == *'qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env'* \
-	&& "$generalized_bridge_launch" == *'> "${SLOT_DIR}/bridge.log" 2>&1 &'* ]]; then
-	echo 'PASS: generalized Bridge invokes the exec helper only in its background launch'
+if [[ "$generalized_bridge_launch" == *'( qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env'* \
+	&& "$generalized_bridge_launch" == *'qa-slot-bridge-spec.mjs" capture'* \
+	&& "$test_deploy_source" == *'qa_slot_bridge_exec_spec "$BRIDGE_LAUNCH_SPEC"'* \
+	&& "$test_deploy_source" == *'>> "${SLOT_DIR}/bridge.log" 2>&1 &'* ]]; then
+	echo 'PASS: generalized ingest auth is captured in the final child env and the shared spec executor owns background PID identity'
 else
-	echo 'FAIL: generalized Bridge does not couple the exec helper to its background launch' >&2
+	echo 'FAIL: generalized Bridge does not couple final-env capture to the shared background executor' >&2
 	failures=$((failures + 1))
 fi
 
@@ -745,6 +747,10 @@ assert_contains "$cleanup_contract" 'qa_generalized_terminate_pid "$BRIDGE_PID"'
 	'generalized failure cleanup verifies Bridge exit before releasing the room'
 assert_contains "$cleanup_contract" 'generalized_bridge_stopped == 1' \
 	'generalized failure cleanup retains the slot lock after unverified exit'
+assert_contains "$cleanup_contract" 'rm -f "$BRIDGE_LAUNCH_SPEC"' \
+	'failed deploy cleanup removes the replayable Bridge launch spec'
+assert_contains "$cleanup_contract" 'rm -rf "${SLOT_DIR}/state/bridge-env-secrets"' \
+	'failed deploy cleanup removes captured Bridge secret files'
 if [[ "$cleanup_contract" == *'rm -rf "$SLOT_DIR"'* ]]; then
 	echo 'FAIL: generalized failure cleanup destroys bridge.log diagnostics' >&2
 	failures=$((failures + 1))
