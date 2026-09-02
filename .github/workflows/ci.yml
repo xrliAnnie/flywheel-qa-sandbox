@@ -191,25 +191,13 @@ jobs:
         run: pnpm --filter flywheel-teamlead test:stub-hygiene
 
   script-tests:
-    name: Script Tests 1/2 — cmux/session (shell suites)
+    name: Script Tests 1/4 — session/lifecycle (shell suites)
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
-    # FLY-889/1482 keep the 20min capacity floor. FLY-1870 split the 19.3min
-    # serial lane into two independent shards; this cmux/session shard measured
-    # ~10.9min (54%) as of 2026-08-17. Rebalance only whole named steps and keep
-    # ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
-    # ⚠ 2026-08-23: contemporaneous branches measured this shard at 15m51s-15m58s,
-    # NOT the ~10.9min recorded below — roughly 65s of headroom under the 17min
-    # tripwire. That drift is not from any one step and is reported separately;
-    # FLY-1986 was placed on shard 2 rather than here because of it.
-    # Step seconds: 1707=1, 1393=2, 1436=0, 1759=2, 1867=2, 1572=12, 1764=2,
-    # 1327=1, cmux-hooks=10, 1364=312, 1944=2, 183=11, 1402=4, 1496=10,
-    # 1663=97 (test total ~466s). Dependency preflight is ~0s when
-    # tmux/lsof/sqlite3/rg verify; the rg fast-install path is normally ~5-15s.
-    # FLY-2204 PR #1011 measured this shard at 929s and shard 2 at 1077s on
-    # 2026-08-31. Moving the complete ~20s FLY-913/2204 step and ~57s FLY-2007
-    # step here balances the observed totals at roughly 1006s/1000s.
+    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
+    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
+    # 624s (61.2%). Move only complete named steps; see the FLY-2245 research.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -303,42 +291,6 @@ jobs:
       # minutes in production until FLY-110.
       - name: Integration test — cmux-sync hooks
         run: bash scripts/test-cmux-sync-hooks-integration.sh
-
-      # FLY-1364/1482: cmux repair spans the exact-ref authority ledger,
-      # conservative cleanup, rescue-lock instrumentation, and deployed-link
-      # surface. FLY-1482 also keeps a real isolated watcher alive while
-      # teardown claims/yields the lease and verifies observable QA cleanup.
-      # These suites are hermetic on CI (private state roots and tmux
-      # sockets); the instrumentation case uses real kernel locks/processes so
-      # CI records the previously-missing green observation environment.
-      - name: Test — FLY-1364 cmux sync repair
-        env:
-          # The production-compatibility pass remains /bin/bash 3.2 on macOS;
-          # this explicit opt-in adds Linux CI's modern-Bash observation.
-          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
-        run: |
-          bash scripts/test-cmux-sync.sh
-          bash scripts/__tests__/fly1944-attach-protocol.test.sh
-          bash scripts/__tests__/fly1944-birth-adoption.test.sh
-          bash scripts/__tests__/fly1944-dead-view-rebuild.test.sh
-          bash scripts/__tests__/fly1944-helper-reap.test.sh
-          bash scripts/__tests__/cmux-cleanup-lifecycle.test.sh
-          bash scripts/__tests__/cmux-view-rebind.test.sh
-          bash scripts/__tests__/fly2048-cmux-convergence.test.sh
-          bash scripts/__tests__/fly1884-view-attach.test.sh
-          bash scripts/__tests__/fly1884-attach-recovery.test.sh
-          bash scripts/__tests__/fly1884-node-presence.test.sh
-          bash scripts/__tests__/tmux-server-rescue.test.sh
-          bash scripts/__tests__/tmux-server-rescue-lock.test.sh
-          bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh
-          bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
-          bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh
-          bash scripts/__tests__/test-cmux-autostart-flags.test.sh
-          bash scripts/__tests__/test-teardown-cmux-ownership.test.sh
-          bash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh
-          bash scripts/__tests__/test-teardown-lease-contract.test.sh
-          bash scripts/__tests__/qa-teardown-finalize.test.sh
-          bash scripts/__tests__/restart-cmux-watcher.test.sh
 
       # FLY-1944: the founder-gated host cutover is hermetic here: all Homebrew,
       # tmux, process-census, Bridge HTTP, receipt, and clock inputs use private
@@ -449,26 +401,13 @@ jobs:
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
   script-tests-2:
-    name: Script Tests 2/2 — fleet/setup/packaging (shell suites)
+    name: Script Tests 2/4 — fleet/setup/packaging A (shell suites)
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
-    # FLY-889/1482 keep the 20min capacity floor. FLY-1870 split the 19.3min
-    # serial lane into two independent shards; this fleet/setup/packaging shard
-    # measured ~10.4min (52%) as of 2026-08-17. Rebalance only whole named steps
-    # and keep ci-structure in sync; see engineering/doc/FLY-1870-script-tests-timeout-cliff/plan.md §5.
-    # Step seconds: 519=2, 2034=1, 1356=0, 1609=1, 648=12, 1023=19, 1189=2+2+21,
-    # 1775=9, 1389=48, 2216=1, npm-seams=13, 1501=104, 1634=10, 1671=2,
-    # payload-smoke=65, onboard-shell=13, 882=1, 513=1, 697=0, 1330=6, 1018=0,
-    # 880=1, 1787=0, 1461=0, 1463=0, 913=8, 1434=134, 1715=1,
-    # 2126=2, 2033=24, 1726=17, mailbox-adoption=5, 1649=12, 927=1, 957=1, 1729/1743=3,
-    # 1081=2, 1905=25, 1338-structure=0, 1674=0, 1338-parity=2, 1855=5,
-    # 1986=95 (measured 2026-08-23; was 162s before its sleep budget was trimmed),
-    # 1678=75 (moved from shard 1 after the 2026-08-28 FLY-2030 PR #975 run),
-    # tripwire-test~1 (test total ~712s). Dependency preflight is ~0s when tools verify; the rg
-    # fast-install path is normally ~5-15s and is bounded below the job ceiling.
-    # FLY-2204 PR #1011 measured 1077s on 2026-08-31; moving the complete
-    # FLY-913/2204 and FLY-2007 steps to shard 1 removes ~77s.
+    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
+    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
+    # 605s (59.3%). Move only complete named steps; see the FLY-2245 research.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -754,6 +693,52 @@ jobs:
       - name: Test — FLY-1330 log janitor
         run: bash scripts/__tests__/flywheel-log-janitor.test.sh
 
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+  script-tests-3:
+    name: Script Tests 3/4 — fleet/setup/packaging B (shell suites)
+    runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
+    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
+    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
+    # 626s (61.4%). Move only complete named steps; see the FLY-2245 research.
+    timeout-minutes: 20
+    steps:
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
+
+      # FLY-889 dependencies remain fail-closed. FLY-1905 first verifies each
+      # real binary and version; only probe failures enter the bounded installer.
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
       # FLY-2139: stopped-service SQLite backup/checkpoint/VACUUM lifecycle.
       # Hermetic HOME with three temporary databases; never touches host state.
       - name: Test — FLY-2139 database maintenance
@@ -982,6 +967,89 @@ jobs:
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
+  script-tests-4:
+    name: Script Tests 4/4 — cmux repair (shell suites)
+    runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
+    # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
+    # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
+    # 633s (62.1%). Keep this command bundle whole unless PR timing invokes the
+    # reviewed five-shard fallback in the FLY-2245 plan.
+    timeout-minutes: 20
+    steps:
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
+
+      # FLY-889 dependencies remain fail-closed. FLY-1905 first verifies each
+      # real binary and version; only probe failures enter the bounded installer.
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
+      # FLY-1364/1482: cmux repair spans the exact-ref authority ledger,
+      # conservative cleanup, rescue-lock instrumentation, and deployed-link
+      # surface. FLY-1482 also keeps a real isolated watcher alive while
+      # teardown claims/yields the lease and verifies observable QA cleanup.
+      # These suites are hermetic on CI (private state roots and tmux
+      # sockets); the instrumentation case uses real kernel locks/processes so
+      # CI records the previously-missing green observation environment.
+      - name: Test — FLY-1364 cmux sync repair
+        env:
+          # The production-compatibility pass remains /bin/bash 3.2 on macOS;
+          # this explicit opt-in adds Linux CI's modern-Bash observation.
+          FLYWHEEL_CMUX_TEST_ALLOW_MODERN_BASH: "1"
+        run: |
+          bash scripts/test-cmux-sync.sh
+          bash scripts/__tests__/fly1944-attach-protocol.test.sh
+          bash scripts/__tests__/fly1944-birth-adoption.test.sh
+          bash scripts/__tests__/fly1944-dead-view-rebuild.test.sh
+          bash scripts/__tests__/fly1944-helper-reap.test.sh
+          bash scripts/__tests__/cmux-cleanup-lifecycle.test.sh
+          bash scripts/__tests__/cmux-view-rebind.test.sh
+          bash scripts/__tests__/fly2048-cmux-convergence.test.sh
+          bash scripts/__tests__/fly1884-view-attach.test.sh
+          bash scripts/__tests__/fly1884-attach-recovery.test.sh
+          bash scripts/__tests__/fly1884-node-presence.test.sh
+          bash scripts/__tests__/tmux-server-rescue.test.sh
+          bash scripts/__tests__/tmux-server-rescue-lock.test.sh
+          bash scripts/__tests__/tmux-server-rescue-instrumentation.test.sh
+          bash scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
+          bash scripts/__tests__/flywheel-cmux-install-link-only.test.sh
+          bash scripts/__tests__/test-cmux-autostart-flags.test.sh
+          bash scripts/__tests__/test-teardown-cmux-ownership.test.sh
+          bash scripts/__tests__/test-teardown-live-watcher-e2e.test.sh
+          bash scripts/__tests__/test-teardown-lease-contract.test.sh
+          bash scripts/__tests__/qa-teardown-finalize.test.sh
+          bash scripts/__tests__/restart-cmux-watcher.test.sh
+
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+
   # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
   # original Build & Test job above was split by FLY-1338; this payload job
   # mapping remains byte-untouched. Hermetic: the pure endpoint handler + its
@@ -1051,7 +1119,7 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, payload-distribution]
+    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, script-tests-3, script-tests-4, payload-distribution]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all jobs passed
@@ -1064,7 +1132,7 @@ jobs:
             | ($needs["quick-gate"].result == "success")
               and ($needs.classify.result == "success")
               and (
-                ["unit-tests", "script-tests", "script-tests-2", "payload-distribution"]
+                ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "payload-distribution"]
                 | all(
                     . as $job
                     | ($needs[$job].result == "success")

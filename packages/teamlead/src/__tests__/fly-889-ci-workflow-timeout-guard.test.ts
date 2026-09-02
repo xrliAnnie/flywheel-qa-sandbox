@@ -21,7 +21,12 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 
-const scriptShardIds = ["script-tests", "script-tests-2"] as const;
+const scriptShardIds = [
+	"script-tests",
+	"script-tests-2",
+	"script-tests-3",
+	"script-tests-4",
+] as const;
 
 /** Walk up from this test file to the repo root (the dir holding .github). */
 function findRepoRoot(): string | undefined {
@@ -59,6 +64,8 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 			// FLY-1482: main reached 13m42s and the PR replay hit the old 15m cap.
 			["script-tests", 20],
 			["script-tests-2", 20],
+			["script-tests-3", 20],
+			["script-tests-4", 20],
 		]);
 		for (const [jobId, timeoutFloor] of timeoutFloors) {
 			const job = jobs[jobId] as Record<string, unknown> | undefined;
@@ -130,7 +137,7 @@ describe("FLY-889/1905 regression guard — CI timeout headroom + bounded depend
 		expect(guardSteps[0]).not.toHaveProperty("continue-on-error");
 	});
 
-	it("CI OK requires both script shards", () => {
+	it("CI OK requires all script shards", () => {
 		const jobs = loadCiJobs();
 		if (!jobs) {
 			expect(true).toBe(true);

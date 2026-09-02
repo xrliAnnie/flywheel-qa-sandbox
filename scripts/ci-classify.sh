@@ -93,21 +93,29 @@ known_ci_consumed_doc_paths = (
     b"engineering/doc/FLY-1278-review-gate-convergence/plan.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/progress.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/fixtures/README.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json",
     b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round1.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round2.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round3.md",
     b"engineering/doc/FLY-1135-layer1-dag-templates/exploration.md",
     b"engineering/doc/FLY-1135-layer1-dag-templates/research.md",
     b"engineering/doc/FLY-1135-layer1-dag-templates/plan.md",
+    b"engineering/doc/FLY-1458-abc-prompt-three-arm-analysis/scripts/design_compare.py",
+    b"engineering/doc/FLY-2030-raya-brain-inquiry/summary-role-assignments.json",
+    b"engineering/doc/FLY-2054-dashboard-visual-alignment/evidence/capture.mjs",
+    b"engineering/doc/FLY-1269-codex-phase-keepalive/qa/target7-pane-identity.mjs",
 )
 for index in range(0, len(tokens), 2):
     header = tokens[index]
     path = tokens[index + 1]
+    is_engineering_doc = path.startswith(b"engineering/doc/")
+    is_suffix_allowlisted_doc = path.startswith(allowed_prefixes) and path.endswith(
+        allowed_suffixes
+    )
     if (
         not header.startswith(b":")
         or path in known_ci_consumed_doc_paths
-        or not path.startswith(allowed_prefixes)
-        or not path.endswith(allowed_suffixes)
+        or not (is_engineering_doc or is_suffix_allowlisted_doc)
     ):
         raise SystemExit(1)
     fields = header[1:].split()

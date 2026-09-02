@@ -101,14 +101,48 @@ else
     assert_reason "new suffix outside doc prefixes supplies a reason: *.$suffix" diff_not_inert
   done
 
-  excluded_doc_suffixes=(json tsv yaml)
-  for index in "${!excluded_doc_suffixes[@]}"; do
-    suffix="${excluded_doc_suffixes[$index]}"
-    head="$(commit_file_from "excluded-doc-suffix-$index" "$BASE" "engineering/doc/excluded-$index.$suffix")"
+  engineering_doc_inert_paths=(
+    engineering/doc/FLY-2245-fixture/measure.sh
+    engineering/doc/FLY-2245-fixture/reqstats.py
+    engineering/doc/FLY-2245-fixture/tools-list.js
+    engineering/doc/FLY-2245-fixture/cfg/config.json
+    engineering/doc/FLY-2245-fixture/config.yaml
+    engineering/doc/FLY-2245-fixture/snapshot
+  )
+  for index in "${!engineering_doc_inert_paths[@]}"; do
+    path="${engineering_doc_inert_paths[$index]}"
+    head="$(commit_file_from "engineering-doc-inert-$index" "$BASE" "$path")"
     preview_checkout "$head" "$BASE"
     run_classifier "$head" "$BASE"
-    assert_result "excluded suffix inside doc prefixes runs the full suite: *.$suffix" false
-    assert_reason "excluded suffix inside doc prefixes supplies a reason: *.$suffix" diff_not_inert
+    assert_result "engineering/doc ordinary artifact is inert regardless of suffix: $path" true
+  done
+
+  git -C "$REPO" checkout -q -B engineering-doc-executable "$BASE"
+  mkdir -p "$REPO/engineering/doc/FLY-2245-fixture"
+  printf '#!/usr/bin/env bash\nprintf executable\\n\n' >"$REPO/engineering/doc/FLY-2245-fixture/executable.sh"
+  chmod +x "$REPO/engineering/doc/FLY-2245-fixture/executable.sh"
+  git -C "$REPO" add engineering/doc/FLY-2245-fixture/executable.sh
+  git -C "$REPO" commit -qm engineering-doc-executable
+  EXECUTABLE_DOC_HEAD="$(git -C "$REPO" rev-parse HEAD)"
+  preview_checkout "$EXECUTABLE_DOC_HEAD" "$BASE"
+  run_classifier "$EXECUTABLE_DOC_HEAD" "$BASE"
+  assert_result "engineering/doc executable mode 100755 artifact is inert" true
+
+  outside_engineering_doc_paths=(
+    scripts/measure.sh
+    evidence/reqstats.py
+    src/tools-list.js
+    evidence/cfg/config.json
+    evidence/config.yaml
+    evidence/snapshot
+  )
+  for index in "${!outside_engineering_doc_paths[@]}"; do
+    path="${outside_engineering_doc_paths[$index]}"
+    head="$(commit_file_from "outside-engineering-doc-$index" "$BASE" "$path")"
+    preview_checkout "$head" "$BASE"
+    run_classifier "$head" "$BASE"
+    assert_result "ordinary artifact outside engineering/doc runs the full suite: $path" false
+    assert_reason "ordinary artifact outside engineering/doc supplies a reason: $path" diff_not_inert
   done
 
   known_ci_consumed_doc_paths=(
@@ -117,18 +151,24 @@ else
     engineering/doc/FLY-1775-529-generalized-dag-room/plan.md
     engineering/doc/FLY-1062-npm-distribution/packaged-path-audit.md
     engineering/doc/FLY-1648-hot-loop-closeout/runbook.md
+    engineering/doc/FLY-2166-pre-cutover-audit-fix/g2-runbook.md
     doc/engineer/implementation/flag-authoring-runbook.md
     engineering/doc/FLY-1278-review-gate-convergence/exploration.md
     engineering/doc/FLY-1278-review-gate-convergence/research.md
     engineering/doc/FLY-1278-review-gate-convergence/plan.md
     engineering/doc/FLY-1278-review-gate-convergence/progress.md
     engineering/doc/FLY-1278-review-gate-convergence/fixtures/README.md
+    engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json
     engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round1.md
     engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round2.md
     engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round3.md
     engineering/doc/FLY-1135-layer1-dag-templates/exploration.md
     engineering/doc/FLY-1135-layer1-dag-templates/research.md
     engineering/doc/FLY-1135-layer1-dag-templates/plan.md
+    engineering/doc/FLY-1458-abc-prompt-three-arm-analysis/scripts/design_compare.py
+    engineering/doc/FLY-2030-raya-brain-inquiry/summary-role-assignments.json
+    engineering/doc/FLY-2054-dashboard-visual-alignment/evidence/capture.mjs
+    engineering/doc/FLY-1269-codex-phase-keepalive/qa/target7-pane-identity.mjs
   )
   for index in "${!known_ci_consumed_doc_paths[@]}"; do
     path="${known_ci_consumed_doc_paths[$index]}"
@@ -228,6 +268,7 @@ else
     scripts/ci-classify.sh
     packages/teamlead/prompts/runtime.md
     doc/VERSION
+    product/doc/example/evidence/admit.js
     product/doc/example/evidence/admit.mjs
   )
   for index in "${!non_inert_paths[@]}"; do

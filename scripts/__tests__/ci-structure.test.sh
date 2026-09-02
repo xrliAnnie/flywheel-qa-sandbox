@@ -194,12 +194,17 @@ expected_known_ci_consumed_doc_paths = (
     b"engineering/doc/FLY-1278-review-gate-convergence/plan.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/progress.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/fixtures/README.md",
+    b"engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json",
     b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round1.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round2.md",
     b"engineering/doc/FLY-1278-review-gate-convergence/codex-design-review/codex-rescue-design-feedback-flywheel-FLY-1278-plan-round3.md",
     b"engineering/doc/FLY-1135-layer1-dag-templates/exploration.md",
     b"engineering/doc/FLY-1135-layer1-dag-templates/research.md",
     b"engineering/doc/FLY-1135-layer1-dag-templates/plan.md",
+    b"engineering/doc/FLY-1458-abc-prompt-three-arm-analysis/scripts/design_compare.py",
+    b"engineering/doc/FLY-2030-raya-brain-inquiry/summary-role-assignments.json",
+    b"engineering/doc/FLY-2054-dashboard-visual-alignment/evidence/capture.mjs",
+    b"engineering/doc/FLY-1269-codex-phase-keepalive/qa/target7-pane-identity.mjs",
 )
 
 suffix_ledger_source = read_utf8(os.environ["SUFFIX_LEDGER"], "FLY-1987 suffix ledger")
@@ -255,7 +260,6 @@ fly1278_prefix = "engineering/doc/FLY-1278-review-gate-convergence/"
 fly1278_composed = tuple(
     f"{fly1278_prefix}{path}".encode("utf-8")
     for path in fly1278_relative_paths
-    if path.endswith(tuple(item.decode("utf-8") for item in expected_allowed_suffixes))
 )
 expected_fly1278 = tuple(
     path for path in expected_known_ci_consumed_doc_paths if path.startswith(fly1278_prefix.encode())
@@ -314,6 +318,8 @@ expected_job_ids = {
     "unit-tests",
     "script-tests",
     "script-tests-2",
+    "script-tests-3",
+    "script-tests-4",
     "payload-distribution",
     "ci-ok",
 }
@@ -328,6 +334,8 @@ require(
         "unit-tests",
         "script-tests",
         "script-tests-2",
+        "script-tests-3",
+        "script-tests-4",
         "payload-distribution",
         "ci-ok",
     ],
@@ -338,8 +346,10 @@ quick_gate = mapping(jobs["quick-gate"], "quick-gate")
 classify = mapping(jobs["classify"], "classify")
 unit_tests = mapping(jobs["unit-tests"], "unit-tests")
 script_tests = mapping(jobs["script-tests"], "script-tests")
-payload_distribution = mapping(jobs["payload-distribution"], "payload-distribution")
 script_tests_2 = mapping(jobs["script-tests-2"], "script-tests-2")
+script_tests_3 = mapping(jobs["script-tests-3"], "script-tests-3")
+script_tests_4 = mapping(jobs["script-tests-4"], "script-tests-4")
+payload_distribution = mapping(jobs["payload-distribution"], "payload-distribution")
 ci_ok = mapping(jobs["ci-ok"], "ci-ok")
 
 for job_id, job in (
@@ -352,6 +362,8 @@ for job_id, job in (
     ("unit-tests", unit_tests),
     ("script-tests", script_tests),
     ("script-tests-2", script_tests_2),
+    ("script-tests-3", script_tests_3),
+    ("script-tests-4", script_tests_4),
     ("payload-distribution", payload_distribution),
 ):
     require(job.get("needs") == ["classify"], f"{job_id} must depend only on classify")
@@ -478,6 +490,8 @@ expected_needs = {
     "unit-tests",
     "script-tests",
     "script-tests-2",
+    "script-tests-3",
+    "script-tests-4",
     "payload-distribution",
 }
 require(
@@ -511,7 +525,7 @@ for step in ci_ok_steps:
               | ($needs["quick-gate"].result == "success")
                 and ($needs.classify.result == "success")
                 and (
-                  ["unit-tests", "script-tests", "script-tests-2", "payload-distribution"]
+                  ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "payload-distribution"]
                   | all(
                       . as $job
                       | ($needs[$job].result == "success")
@@ -533,6 +547,8 @@ timeout_floors = {
     # for the required real-watcher teardown coverage and ordinary CI variance.
     "script-tests": (script_tests, 20),
     "script-tests-2": (script_tests_2, 20),
+    "script-tests-3": (script_tests_3, 20),
+    "script-tests-4": (script_tests_4, 20),
 }
 for job_id, (job, timeout_floor) in timeout_floors.items():
     timeout = job.get("timeout-minutes")
@@ -543,6 +559,13 @@ for job_id, (job, timeout_floor) in timeout_floors.items():
 
 script_steps = script_tests.get("steps")
 require(isinstance(script_steps, list), "script-tests.steps must be a list")
+script_steps_2 = script_tests_2.get("steps")
+require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
+script_steps_3 = script_tests_3.get("steps")
+require(isinstance(script_steps_3, list), "script-tests-3.steps must be a list")
+script_steps_4 = script_tests_4.get("steps")
+require(isinstance(script_steps_4, list), "script-tests-4.steps must be a list")
+all_script_steps = (script_steps, script_steps_2, script_steps_3, script_steps_4)
 quick_steps = quick_gate.get("steps")
 require(isinstance(quick_steps, list), "quick-gate.steps must be a list")
 ci_structure_in_quick = sum(
@@ -551,14 +574,12 @@ ci_structure_in_quick = sum(
 )
 ci_structure_in_scripts = sum(
     "bash scripts/__tests__/ci-structure.test.sh" in str(step.get("run", ""))
-    for step in script_steps if isinstance(step, dict)
-)
-ci_structure_in_scripts_2 = sum(
-    "bash scripts/__tests__/ci-structure.test.sh" in str(step.get("run", ""))
-    for step in (script_tests_2.get("steps") or []) if isinstance(step, dict)
+    for job_steps in all_script_steps
+    for step in job_steps
+    if isinstance(step, dict)
 )
 require(
-    ci_structure_in_quick == 1 and ci_structure_in_scripts == 0 and ci_structure_in_scripts_2 == 0,
+    ci_structure_in_quick == 1 and ci_structure_in_scripts == 0,
     "ci-structure.test.sh must run exactly once in the always-on quick-gate",
 )
 retention_consumer_steps = [
@@ -579,9 +600,6 @@ require(
     "continue-on-error" not in retention_consumer_steps[0],
     "FLY-2006 retention consumer gate must fail closed",
 )
-
-script_steps_2 = script_tests_2.get("steps")
-require(isinstance(script_steps_2, list), "script-tests-2.steps must be a list")
 
 # FLY-2074: founder-facing acceptance must disclose all measured rounds and keep
 # its machine-readable facts aligned with the rendered page. This is docs-only,
@@ -610,7 +628,7 @@ require(
 )
 fly2074_in_shards = sum(
     1
-    for job_steps in (script_steps, script_steps_2)
+    for job_steps in all_script_steps
     for step in job_steps
     if isinstance(step, dict)
     and "fly2074-founder-disclosure-guard.mjs" in str(step.get("run", ""))
@@ -649,7 +667,7 @@ require(
 )
 fly2045_in_shards = sum(
     1
-    for job_steps in (script_steps, script_steps_2)
+    for job_steps in all_script_steps
     for step in job_steps
     if isinstance(step, dict)
     and "fly2045-milestone-layout.test.sh" in str(step.get("run", ""))
@@ -704,7 +722,6 @@ expected_shard_tests = {
         "Test — FLY-1764 legacy swap broadcast retirement",
         "Test — FLY-1327 cycle-time report",
         "Integration test — cmux-sync hooks",
-        "Test — FLY-1364 cmux sync repair",
         "Test — FLY-1944 host terminal cutover brake",
         "Test — Discord adapter orphan reaper (FLY-183)",
         "Test — Lead rules single-bundle load chain (FLY-1402)",
@@ -742,6 +759,8 @@ expected_shard_tests = {
         "Test — FLY-1955 Codex daemon zombie recovery",
         "Test — FLY-697 codex-log-guard",
         "Test — FLY-1330 log janitor",
+    ],
+    "script-tests-3": [
         "Test — FLY-2139 database maintenance",
         "Test — FLY-1887 one-shot Codex hard timeout",
         "Test — FLY-1887 bounded Flywheel logs",
@@ -774,10 +793,21 @@ expected_shard_tests = {
         "Test — FLY-1678 statusline model-scoped bar + installer",
         "Test — FLY-1870 job elapsed tripwire contract",
     ],
+    "script-tests-4": [
+        "Test — FLY-1364 cmux sync repair",
+    ],
 }
 script_shards = {
     "script-tests": (script_tests, script_steps),
     "script-tests-2": (script_tests_2, script_steps_2),
+    "script-tests-3": (script_tests_3, script_steps_3),
+    "script-tests-4": (script_tests_4, script_steps_4),
+}
+expected_shard_names = {
+    "script-tests": "Script Tests 1/4 — session/lifecycle (shell suites)",
+    "script-tests-2": "Script Tests 2/4 — fleet/setup/packaging A (shell suites)",
+    "script-tests-3": "Script Tests 3/4 — fleet/setup/packaging B (shell suites)",
+    "script-tests-4": "Script Tests 4/4 — cmux repair (shell suites)",
 }
 
 all_expected_tests = [
@@ -789,11 +819,26 @@ require(
 )
 
 for job_id, (job, steps) in script_shards.items():
+    require(
+        job.get("name") == expected_shard_names[job_id],
+        f"{job_id} display name drifted: {job.get('name')!r}",
+    )
     identities = [step_identity(step) for step in steps]
     require(
         identities[: len(expected_setup)] == expected_setup,
         f"{job_id} setup prefix drifted: {identities[:len(expected_setup)]}",
     )
+    checkout = mapping(steps[1], f"{job_id} checkout step")
+    if job_id == "script-tests":
+        require(
+            mapping(checkout.get("with"), f"{job_id} checkout.with").get("fetch-depth") == 0,
+            "script-tests must retain full history for FLY-2007",
+        )
+    else:
+        require(
+            checkout.get("with") is None,
+            f"{job_id} must use the default shallow checkout",
+        )
     actual_tests = identities[len(expected_setup) : -1]
     require(
         actual_tests == expected_shard_tests[job_id],
@@ -878,7 +923,8 @@ require(
 # script-tests intentionally does not glob; pin the exact commands here.
 fly1715_steps = [
     step
-    for step in script_steps_2
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict)
     and step.get("name") == "Test — FLY-1715 runner boundary shell contracts"
 ]
@@ -911,10 +957,11 @@ require(
 # a future workflow edit cannot silently strand one of the constituent suites.
 fly1364_steps = [
     step
-    for step in script_steps
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict) and step.get("name") == "Test — FLY-1364 cmux sync repair"
 ]
-require(len(fly1364_steps) == 1, "script-tests must contain exactly one FLY-1364 cmux sync repair step")
+require(len(fly1364_steps) == 1, "script shards must contain exactly one FLY-1364 cmux sync repair step")
 fly1364_step = fly1364_steps[0]
 require("if" not in fly1364_step, "FLY-1364 shell suites must not be conditional")
 require("continue-on-error" not in fly1364_step, "FLY-1364 shell suites must fail the PR gate")
@@ -962,7 +1009,8 @@ require(
 # of the gate would restore exactly the silence this issue was filed about.
 fly1830_steps = [
     step
-    for step in script_steps
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict)
     and step.get("name") == "Test — FLY-1830 non-Lead daemon convergence"
 ]
@@ -991,7 +1039,8 @@ require(
 # single-suite convergence guard cannot be weakened by future edits.
 fly1814_steps = [
     step
-    for step in script_steps
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict)
     and step.get("name") == "Test — FLY-1814 launchd fleet contracts"
 ]
@@ -1154,7 +1203,8 @@ require(
 
 script_runs = [
     str(step.get("run", ""))
-    for step in script_steps + script_steps_2
+    for job_steps in all_script_steps
+    for step in job_steps
     if isinstance(step, dict)
 ]
 for required_command in (
