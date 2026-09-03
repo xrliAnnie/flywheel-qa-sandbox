@@ -1,13 +1,13 @@
 ---
 issue: FLY-2301
 phase: design
-phaseCursor: 4/8
-updated: 2026-09-03T16:21:03.047Z
-nextStep: write plan.md then design_review
+phaseCursor: 5/8
+updated: 2026-09-03T16:24:43.606Z
+nextStep: codex design review loop
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: design (4/8)
-**next**: write plan.md then design_review
+**phase**: design (5/8)
+**next**: codex design review loop
