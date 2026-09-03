@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 10/12
-updated: 2026-09-03T20:00:35.373Z
-nextStep: Wire CI/path-hygiene docs and the 529 playbook, then run the real
-  slot-2/slot-4 machine acceptance
+phaseCursor: 11/12
+updated: 2026-09-03T20:02:51.387Z
+nextStep: Run the real-machine slot-2 Claude artifact comparison and slot-4
+  Codex deploy/restart/teardown acceptance with outside-room metadata evidence
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (10/12)
-**next**: Wire CI/path-hygiene docs and the 529 playbook, then run the real slot-2/slot-4 machine acceptance
+**phase**: implement (11/12)
+**next**: Run the real-machine slot-2 Claude artifact comparison and slot-4 Codex deploy/restart/teardown acceptance with outside-room metadata evidence
