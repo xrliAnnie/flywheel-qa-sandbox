@@ -1,13 +1,13 @@
 ---
 issue: FLY-2301
 phase: design
-phaseCursor: 2/8
-updated: 2026-09-03T16:04:46.905Z
-nextStep: audit codex residency/TUI runtime, then write exploration.md
+phaseCursor: 3/8
+updated: 2026-09-03T16:10:25.066Z
+nextStep: write exploration.md
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: design (2/8)
-**next**: audit codex residency/TUI runtime, then write exploration.md
+**phase**: design (3/8)
+**next**: write exploration.md
