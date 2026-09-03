@@ -248,7 +248,12 @@ if os.path.commonpath((str(slot_real), os.path.realpath(ancestor))) != str(Path(
     if os.path.commonpath((str(slot_real), os.path.realpath(ancestor))) != str(slot_real):
         raise SystemExit(1)
 
-for part in (home / ".codex-mufasa", home / ".codex-infra-bot", home / ".flywheel/raya/codex-home"):
+for part in (
+    home / ".codex-mufasa",
+    home / ".codex-infra-bot",
+    home / ".codex-242",
+    home / ".flywheel/raya/codex-home",
+):
     if source_real == Path(os.path.realpath(part)):
         print("[qa-launchd] ERROR: refusing production Lead codex home", file=sys.stderr)
         raise SystemExit(1)
@@ -397,7 +402,10 @@ try:
     argv = shlex.split(sys.argv[1])
 except ValueError:
     raise SystemExit(1)
-matches = [index for index, value in enumerate(argv) if value.endswith(suffix)]
+matches = [
+    index for index, value in enumerate(argv)
+    if os.path.normpath(value).endswith(suffix)
+]
 if len(matches) != 1 or matches[0] == 0:
     raise SystemExit(1)
 raise SystemExit(0 if os.path.basename(argv[matches[0] - 1]) == "node" else 1)
@@ -640,7 +648,7 @@ qa_launchd_lead_restart_drill() {
   local tmux_socket="$6" project="$7" lead="$8" evidence_stage="$9"
   local heartbeat_path old new old_pid old_lstart old_generation old_carrier old_state old_hash
   local new_pid new_lstart new_generation new_carrier new_state new_hash domain i
-  local started_at converged_at evidence_tmp
+  local started_at converged_at evidence_tmp hash
   heartbeat_path=$(qa_launchd_validate_restart_drill_args \
     "$label" "$carrier" "$mode" "$codex_home" "$state_dir" "$tmux_socket" \
     "$project" "$lead" "$evidence_stage") || return 1
@@ -688,7 +696,7 @@ PY
   done
   converged_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
   evidence_tmp="${evidence_stage}/restart-drill.json.tmp.$$"
-  jq -n --arg mode "$mode" --arg label "$label" --arg domain "$(qa_launchd_domain)" \
+  if ! jq -n --arg mode "$mode" --arg label "$label" --arg domain "$(qa_launchd_domain)" \
     --arg heartbeatPath "$heartbeat_path" --arg tmuxSocket "$tmux_socket" \
     --arg startedAt "$started_at" --arg convergedAt "$converged_at" \
     --argjson oldPid "$old_pid" --arg oldLstart "$old_lstart" \
@@ -705,8 +713,16 @@ PY
         carrierInstanceId:$newCarrier,state:$newState,heartbeatSha256:$newHash,
         predicates:{launchdPid:true,processShape:true,codexHome:true,heartbeat:true,tuiWindow:true}},
       heartbeatPath:$heartbeatPath,tmuxSocket:$tmuxSocket,
-      startedAt:$startedAt,convergedAt:$convergedAt}' > "$evidence_tmp" || return 1
-  chmod 600 "$evidence_tmp" && mv "$evidence_tmp" "$evidence_stage/restart-drill.json"
+      startedAt:$startedAt,convergedAt:$convergedAt}' > "$evidence_tmp"; then
+    rm -f "$evidence_tmp"
+    return 1
+  fi
+  if chmod 600 "$evidence_tmp" \
+      && mv "$evidence_tmp" "$evidence_stage/restart-drill.json"; then
+    return 0
+  fi
+  rm -f "$evidence_tmp"
+  return 1
 }
 
 # Bootstrap one unique label and print the live launchd job PID.

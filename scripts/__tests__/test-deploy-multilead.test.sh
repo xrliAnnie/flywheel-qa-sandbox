@@ -613,8 +613,17 @@ grep -Fq '"${SLOT_DIR}/discord-state" "$MAIN_LEAD_SHAPE"' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2301 S1: validated main slot shape must reach the projects builder"; }
 grep -Fq 'local base_assignments=(' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2301 S1: Lead launch inputs must share one ordered base assignment vector"; }
-grep -Fq 'python3 "$QA_CODEX_ENV_RENDERER" --check' "$DEPLOY" \
-  || { S1_OK=0; fail "FLY-2301 S1: Codex env must be rejected before carrier artifacts"; }
+grep -Fq 'printf '\''%s\0'\'' "${env_assignments[@]}" \
+      | python3 "$QA_CODEX_ENV_RENDERER" --check' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex env preflight must consume secrets over stdin"; }
+grep -Fq 'printf '\''%s\0'\'' "${env_assignments[@]}" \
+      | python3 "$QA_CODEX_ENV_RENDERER" --output "$env_file"' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex env writer must consume secrets over stdin"; }
+if grep -Fq 'python3 "$QA_CODEX_ENV_RENDERER" --check "${env_assignments[@]}"' "$DEPLOY" \
+    || grep -Fq 'python3 "$QA_CODEX_ENV_RENDERER" --output "$env_file" "${env_assignments[@]}"' "$DEPLOY"; then
+  S1_OK=0
+  fail "FLY-2301 S1: Codex env secrets must never appear in renderer argv"
+fi
 grep -Fq 'qa_launchd_render_codex_plist' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2301 S1: Codex carrier must use its wrapper-only plist renderer"; }
 grep -Fq 'qa_launchd_codex_lead_ready' "$DEPLOY" \

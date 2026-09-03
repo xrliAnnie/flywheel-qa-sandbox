@@ -37,14 +37,25 @@ def die(field: str) -> "NoReturn":
 
 
 def parse_args(argv: list[str]) -> tuple[Path | None, list[str]]:
-    if len(argv) >= 2 and argv[0] == "--check":
+    if argv and argv[0] == "--check":
+        if len(argv) == 1:
+            return None, read_stdin_assignments()
         return None, argv[1:]
-    if len(argv) < 3 or argv[0] != "--output":
+    if len(argv) < 2 or argv[0] != "--output":
         die("arguments")
     output = Path(argv[1])
     if not output.is_absolute():
         die("output")
+    if len(argv) == 2:
+        return output, read_stdin_assignments()
     return output, argv[2:]
+
+
+def read_stdin_assignments() -> list[str]:
+    data = sys.stdin.buffer.read(65537)
+    if not data or len(data) > 65536 or not data.endswith(b"\0"):
+        die("assignments")
+    return [os.fsdecode(item) for item in data[:-1].split(b"\0")]
 
 
 def validate_assignments(raw: list[str]) -> list[tuple[str, str]]:

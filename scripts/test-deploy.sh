@@ -1521,7 +1521,10 @@ qa_slot_start_lead() {
       done <<<"$profile_assignments"
     fi
     env_assignments=("${token_env}=${token_value}" "${base_assignments[@]}" "${codex_assignments[@]}")
-    python3 "$QA_CODEX_ENV_RENDERER" --check "${env_assignments[@]}" || return 1
+    if ! printf '%s\0' "${env_assignments[@]}" \
+        | python3 "$QA_CODEX_ENV_RENDERER" --check; then
+      return 1
+    fi
   elif [[ "$backend" != claude-code ]]; then
     log "ERROR: unsupported QA Lead carrier backend: ${backend}"
     return 1
@@ -1537,8 +1540,10 @@ qa_slot_start_lead() {
   chmod 600 "$projects"
 
   if [[ "$backend" == codex-app-server ]]; then
-    python3 "$QA_CODEX_ENV_RENDERER" --output "$env_file" "${env_assignments[@]}" \
-      || return 1
+    if ! printf '%s\0' "${env_assignments[@]}" \
+        | python3 "$QA_CODEX_ENV_RENDERER" --output "$env_file"; then
+      return 1
+    fi
     python3 "${REPO_ROOT}/scripts/lib/qa-codex-lead-render.py" render \
       --template "${REPO_ROOT}/scripts/lib/qa-codex-lead-wrapper.template.sh" \
       --output "$codex_wrapper" --lead-id "$agent" --project-dir "$workspace" \

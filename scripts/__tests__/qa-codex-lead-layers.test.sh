@@ -110,6 +110,20 @@ else
   fail "Codex env renderer side-effect-free preflight"
 fi
 
+stdin_env="$TMP/stdin.env"
+stdin_hostile="stdin value with spaces and 'quotes'"
+if printf '%s\0' "TEST_BOT_TOKEN_7=$stdin_hostile" 'B=two words' \
+    | python3 "$renderer" --check >/dev/null 2>&1 \
+    && printf '%s\0' "TEST_BOT_TOKEN_7=$stdin_hostile" 'B=two words' \
+      | python3 "$renderer" --output "$stdin_env" \
+    && unset TEST_BOT_TOKEN_7 B \
+    && set -a && source "$stdin_env" && set +a \
+    && [[ "$TEST_BOT_TOKEN_7" == "$stdin_hostile" && "$B" == 'two words' ]]; then
+  pass "Codex env renderer accepts NUL-delimited assignments without argv exposure"
+else
+  fail "Codex env renderer stdin assignment transport"
+fi
+
 # Layer 1: the public identity resolver must consume the generated projects row.
 # The fake HOME intentionally has no default projects.json, so later launcher
 # coverage can prove the explicit slot file is not optional.

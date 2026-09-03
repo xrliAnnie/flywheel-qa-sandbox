@@ -161,7 +161,8 @@ else
   fail "Codex home transactional mint"
 fi
 mint_rejects=0
-for production_home in "$HOME/.codex-mufasa" "$HOME/.codex-infra-bot" "$HOME/.flywheel/raya/codex-home"; do
+for production_home in "$HOME/.codex-mufasa" "$HOME/.codex-infra-bot" \
+    "$HOME/.codex-242" "$HOME/.flywheel/raya/codex-home"; do
   mkdir -p "$production_home/packages/standalone/releases/release-1"
   printf '%s\n' 'production-auth-sentinel' > "$production_home/auth.json"
   cp "$mint_source/packages/standalone/releases/release-1/codex" \
@@ -175,8 +176,8 @@ for production_home in "$HOME/.codex-mufasa" "$HOME/.codex-infra-bot" "$HOME/.fl
     mint_rejects=$((mint_rejects + 1))
   fi
 done
-if [ "$mint_rejects" = 3 ]; then
-  pass "Codex home mint refuses all three production Lead homes before staging"
+if [ "$mint_rejects" = 4 ]; then
+  pass "Codex home mint refuses all four production Lead homes before staging"
 else
   fail "Codex home production-home refusal set"
 fi
@@ -450,7 +451,7 @@ else
 fi
 unset -f ps
 
-QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/scripts/../dist/lead-backends/codex/codex-lead-tui-runtime.js'
 QA_PROCESS_STATUS=S
 ps() {
   case "$*" in
@@ -733,6 +734,25 @@ if qa_launchd_lead_restart_drill \
 else
   fail "Codex restart drill convergent evidence"
 fi
+
+drill_failure_evidence="$TMP/drill-failure-evidence"
+mkdir -p "$drill_failure_evidence"
+printf '%s\n' old > "$drill_phase"
+write_drill_heartbeat
+hash=caller-sentinel
+jq() { return 1; }
+if ! qa_launchd_lead_restart_drill \
+    "com.flywheel.qa.lead.slot-${drill_slot_number}.qa-lead" codex-tui crash \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead \
+    "$drill_failure_evidence" \
+    && [[ "$hash" == caller-sentinel ]] \
+    && ! find "$drill_failure_evidence" -name 'restart-drill.json.tmp.*' -print -quit \
+      | grep -q .; then
+  pass "Codex restart drill cleans failed JSON output without leaking loop state"
+else
+  fail "Codex restart drill failed-render cleanup"
+fi
+unset -f jq
 
 invalid_mutations_before=$(wc -l < "$drill_mutations" | tr -d ' ')
 if ! qa_launchd_lead_restart_drill \
