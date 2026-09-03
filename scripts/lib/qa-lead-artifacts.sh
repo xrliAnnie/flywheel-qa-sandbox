@@ -114,3 +114,28 @@ qa_lead_log_launchd_label() {
 qa_lead_log_extra_pid() {
   printf 'Extra Lead %s background PID: %s\n' "$1" "$2"
 }
+
+qa_codex_profile_assignments() {
+  local profile="$1" repo_root="$2" state_dir="$3" node_bin="$4"
+  local _qa_profile_path
+  case "$profile" in
+    companion)
+      return 0
+      ;;
+    full-access)
+      for _qa_profile_path in "$repo_root" "$state_dir" "$node_bin"; do
+        [[ "$_qa_profile_path" == /* && "$_qa_profile_path" != *$'\n'* \
+          && "$_qa_profile_path" != *$'\r'* ]] || return 1
+      done
+      printf '%s\n' \
+        'FLYWHEEL_CODEX_LEAD_PROFILE=full-access' \
+        'FLYWHEEL_CODEX_LEAD_SANDBOX=workspace-write' \
+        "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=${repo_root}/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js" \
+        "FLYWHEEL_LEAD_ACTIONS_NODE_BIN=${node_bin}" \
+        "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=${state_dir}"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}

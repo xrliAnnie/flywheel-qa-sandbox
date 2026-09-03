@@ -1425,6 +1425,7 @@ qa_slot_start_lead() {
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
   local lead_row mcp_exclude backend codex_source codex_profile lead_chat_channel
   local codex_home codex_bin codex_state codex_wrapper
+  local profile_assignments profile_assignment
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
   local base_assignments=(
     "DISCORD_GUILD_ID=${GUILD_ID}"
@@ -1481,14 +1482,12 @@ qa_slot_start_lead() {
       "FLYWHEEL_CODEX_LEAD_OUTBOUND=direct"
       "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=${identity},${REPO_ROOT}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
     )
-    if [[ "$codex_profile" == full-access ]]; then
-      codex_assignments+=(
-        "FLYWHEEL_CODEX_LEAD_PROFILE=full-access"
-        "FLYWHEEL_CODEX_LEAD_SANDBOX=workspace-write"
-        "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=${REPO_ROOT}/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
-        "FLYWHEEL_LEAD_ACTIONS_NODE_BIN=$(command -v node)"
-        "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=${codex_state}"
-      )
+    profile_assignments=$(qa_codex_profile_assignments "$codex_profile" \
+      "$REPO_ROOT" "$codex_state" "$(command -v node)") || return 1
+    if [[ -n "$profile_assignments" ]]; then
+      while IFS= read -r profile_assignment; do
+        codex_assignments+=("$profile_assignment")
+      done <<<"$profile_assignments"
     fi
     env_assignments=("${token_env}=${token_value}" "${base_assignments[@]}" "${codex_assignments[@]}")
     python3 "$QA_CODEX_ENV_RENDERER" --check "${env_assignments[@]}" || return 1
