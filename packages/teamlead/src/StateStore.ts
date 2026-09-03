@@ -29285,7 +29285,6 @@ export class StateStore {
 	listWorkflowReworkDeliveries(input?: {
 		states?: WorkflowReworkDeliveryRow["state"][];
 		now?: string;
-		includeDeferred?: boolean;
 	}): WorkflowReworkDeliveryRow[] {
 		const states = input?.states ?? [
 			"pending",
@@ -29300,9 +29299,9 @@ export class StateStore {
 		return this.workflowSelectAll(
 			`SELECT request_id FROM workflow_rework_delivery
 			  WHERE state IN (${placeholders})
-			    AND (? = 1 OR next_retry_at IS NULL OR next_retry_at <= ?)
+			    AND (next_retry_at IS NULL OR next_retry_at <= ?)
 			  ORDER BY updated_at, request_id`,
-			[...states, input?.includeDeferred ? 1 : 0, now],
+			[...states, now],
 		)
 			.map((row) => this.getWorkflowReworkDelivery(row.request_id as string))
 			.filter((row): row is WorkflowReworkDeliveryRow => row !== undefined);
@@ -46875,6 +46874,18 @@ export class StateStore {
 							"workflow_rework_delivery_complete_cas_failed",
 						);
 					}
+					this.settleWorkflowDeliveryAttemptIfPresentTx({
+						family: "rework",
+						table: "workflow_rework_delivery",
+						pk: activePath.request_id,
+						version: {
+							routeRevision: this.getWorkflowReworkDelivery(
+								activePath.request_id,
+							)!.route_revision,
+						},
+						reason: "settled",
+						now,
+					});
 					this.appendWorkflowRunEventCheckedTx({
 						runId: input.runId,
 						eventUid: `rework_verification_completed:${activePath.request_id}`,
@@ -46954,6 +46965,18 @@ export class StateStore {
 							"workflow_rework_delivery_chain_cas_failed",
 						);
 					}
+					this.settleWorkflowDeliveryAttemptIfPresentTx({
+						family: "rework",
+						table: "workflow_rework_delivery",
+						pk: activePath.request_id,
+						version: {
+							routeRevision: this.getWorkflowReworkDelivery(
+								activePath.request_id,
+							)!.route_revision,
+						},
+						reason: "settled",
+						now,
+					});
 					this.appendWorkflowRunEventCheckedTx({
 						runId: input.runId,
 						eventUid: `${
