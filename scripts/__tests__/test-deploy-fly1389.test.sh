@@ -51,6 +51,7 @@ fi
 export FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation"
 SB="$(mktemp -d /tmp/fly1389-deploy-XXXXXX)"
 EXTRA_SLOT=30; LEAD_SLOT=31; NOLEAD_SLOT=32; WORKTREE_SLOT=33
+CODEX_SLOT=34; CODEX_EXTRA_SLOT=35
 WORKER_SENTINEL_PID=""; DAEMON_SENTINEL_PID=""; TMUX_SENTINEL_PID=""
 # Per-process high ports keep repeated/parallel hermetic runs independent. A
 # force-stopped prior test must not make a new run accept its orphan listener.
@@ -65,7 +66,9 @@ cleanup() {
   pkill -f "fly1389-stub-lead-marker" 2>/dev/null || true
   pkill -f "fly1389-stub-bridge-marker" 2>/dev/null || true
   rm -rf "/tmp/flywheel-test-slot-${EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}.lock" \
-    "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}" "$SB"
+    "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}.lock" \
+    "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}" \
+    "/tmp/flywheel-test-slot-${CODEX_SLOT}" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}" "$SB"
 }
 trap cleanup EXIT
 
@@ -82,6 +85,10 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
   "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh" \
+  "${SCRIPT_DIR}/lib/qa-launchd-env.py" \
+  "${SCRIPT_DIR}/lib/qa-codex-lead-render.py" \
+  "${SCRIPT_DIR}/lib/qa-codex-lead-wrapper.template.sh" \
+  "${SCRIPT_DIR}/lib/bounded-run.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
@@ -90,6 +97,11 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
 echo "// fixture" > "$FR/scripts/run-bridge.ts"
 echo "FLYWHEEL_RUNNER_START_POINT fixture" > "$FR/packages/edge-worker/dist/WorktreeManager.js"
 echo "fake-binding" > "$FR/node_modules/.pnpm/better-sqlite3@11.0.0/node_modules/better-sqlite3/build/Release/better_sqlite3.node"
+cat > "$FR/scripts/lib/qa-reap-codex-slot-daemons.mjs" <<'REAPSTUB'
+// This fixture starts no Bridge-owned codex-tmux worker daemon. The separate
+// launchd Codex Lead daemon is exercised and reaped through launchd-leads.json.
+process.exit(0);
+REAPSTUB
 
 # Stub claude-lead.sh: dumps its env, writes pid file + a live lease, parks.
 cat > "$FR/packages/teamlead/scripts/claude-lead.sh" <<'STUBLEAD'
@@ -171,6 +183,124 @@ fi
 sleep 300
 STUBCARRIER
 chmod +x "$FR/scripts/flywheel-lead-wrapper-v2.sh"
+
+# Codex carrier fixture: keep the real public launcher + canonical resolver.
+# The home/daemon adapter and final Node runtime are bounded fakes so the E2E
+# can prove launchd, env, tmux, heartbeat, KeepAlive, and teardown without a
+# Codex network session.
+mkdir -p "$FR/packages/teamlead/scripts/lib" \
+  "$FR/packages/teamlead/dist/lead-backends/codex" \
+  "$FR/packages/teamlead/lead-rules-base" \
+  "$FR/packages/flywheel-comm/node_modules" \
+  "$FR/packages/inbox-mcp/node_modules"
+cp "${SCRIPT_DIR}/../packages/teamlead/scripts/codex-lead.sh" \
+  "$FR/packages/teamlead/scripts/codex-lead.sh"
+cp "${SCRIPT_DIR}/../packages/teamlead/scripts/lib/canonical-lead-identity.sh" \
+  "$FR/packages/teamlead/scripts/lib/canonical-lead-identity.sh"
+ln -s "${SCRIPT_DIR}/../packages/flywheel-comm/dist" \
+  "$FR/packages/flywheel-comm/dist"
+ln -s "${SCRIPT_DIR}/../packages/flywheel-comm/node_modules/better-sqlite3" \
+  "$FR/packages/flywheel-comm/node_modules/better-sqlite3"
+ln -s "${SCRIPT_DIR}/../packages/inbox-mcp/node_modules/better-sqlite3" \
+  "$FR/packages/inbox-mcp/node_modules/better-sqlite3"
+cat > "$FR/scripts/host-tmux-selection-gate.sh" <<'HOSTGATE'
+#!/bin/bash
+exit 0
+HOSTGATE
+chmod +x "$FR/scripts/host-tmux-selection-gate.sh"
+cat > "$FR/packages/teamlead/scripts/codex-lead-tui-home.sh" <<'TUIHOME'
+#!/bin/bash
+set -euo pipefail
+home="${FLYWHEEL_CODEX_TUI_HOME:?}"
+case "${1:-}" in
+  ensure-home)
+    [[ -f "$home/auth.json" && -x "$home/packages/standalone/current/codex" ]]
+    ;;
+  ensure-daemon)
+    CODEX_HOME="$home" "${FLYWHEEL_CODEX_BIN:?}" remote-control start --json
+    ;;
+  *) exit 64 ;;
+esac
+TUIHOME
+chmod +x "$FR/packages/teamlead/scripts/codex-lead-tui-home.sh"
+cat > "$FR/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" <<'CODEXRUNTIME'
+const { execFileSync } = require("node:child_process");
+const { mkdirSync, readFileSync, renameSync, writeFileSync } = require("node:fs");
+const { join } = require("node:path");
+const { randomUUID } = require("node:crypto");
+
+const required = [
+  "FLYWHEEL_CANONICAL_IDENTITY_RESOLVED", "FLYWHEEL_LEAD_ID",
+  "FLYWHEEL_PROJECT_NAME", "FLYWHEEL_LEAD_KEY", "FLYWHEEL_LEAD_BACKEND",
+  "FLYWHEEL_PROJECTS_FILE", "FLYWHEEL_CODEX_LEAD_STATE_DIR", "CODEX_HOME",
+  "DISCORD_BOT_TOKEN", "FLYWHEEL_LEAD_CHAT_CHANNEL_ID",
+];
+for (const key of required) {
+  if (!process.env[key]) throw new Error(`missing canonical env ${key}`);
+}
+if (process.env.FLYWHEEL_CANONICAL_IDENTITY_RESOLVED !== "1" ||
+    process.env.FLYWHEEL_LEAD_BACKEND !== "codex-app-server") {
+  throw new Error("canonical identity did not resolve to Codex");
+}
+const project = process.env.FLYWHEEL_PROJECT_NAME;
+const lead = process.env.FLYWHEEL_LEAD_ID;
+const row = JSON.parse(readFileSync(process.env.FLYWHEEL_PROJECTS_FILE, "utf8"))[0]
+  .leads.filter((candidate) => candidate.agentId === lead);
+if (row.length !== 1 || row[0].backend !== "codex-app-server" ||
+    row[0].chatChannel !== process.env.FLYWHEEL_LEAD_CHAT_CHANNEL_ID) {
+  throw new Error("projects row drift");
+}
+
+const tmux = "tmux";
+const session = "=flywheel";
+const window = `${project}-${lead}`;
+const tmuxCall = (...args) => execFileSync(tmux, args, { stdio: "ignore" });
+const tmuxText = (...args) => execFileSync(tmux, args, { encoding: "utf8" });
+try {
+  tmuxCall("has-session", "-t", session);
+  const names = tmuxText("list-windows", "-t", session, "-F", "#{window_name}")
+    .trim().split("\n").filter(Boolean);
+  if (names.includes(window)) {
+    if (names.length === 1) tmuxCall("kill-session", "-t", session);
+    else tmuxCall("kill-window", "-t", `${session}:${window}`);
+  }
+} catch {}
+try {
+  tmuxCall("has-session", "-t", session);
+  tmuxCall("new-window", "-d", "-t", session, "-n", window, "sleep", "300");
+} catch {
+  tmuxCall("new-session", "-d", "-s", "flywheel", "-n", window, "sleep", "300");
+}
+
+const brain = join(process.env.FLYWHEEL_CODEX_LEAD_STATE_DIR, "brain");
+mkdirSync(brain, { recursive: true, mode: 0o700 });
+const heartbeat = join(brain, "heartbeat.json");
+const generationId = randomUUID();
+const carrierInstanceId = randomUUID();
+const publish = (state) => {
+  const tmp = `${heartbeat}.tmp.${process.pid}`;
+  writeFileSync(tmp, JSON.stringify({
+    v: 1, processPid: process.pid, generationId, threadId: `thread-${lead}`,
+    carrierInstanceId, updatedAt: new Date().toISOString(), state,
+  }) + "\n", { mode: 0o600 });
+  renameSync(tmp, heartbeat);
+};
+publish("online");
+const runtimeEvidence = join(process.env.FLYWHEEL_STATE_DIR, "codex-runtime-env.json");
+writeFileSync(runtimeEvidence, JSON.stringify(Object.fromEntries(
+  required.map((key) => [key, key === "DISCORD_BOT_TOKEN" ? "[present]" : process.env[key]])
+) , null, 2) + "\n", { mode: 0o600 });
+
+const stop = () => {
+  try { publish("shutdown"); } catch {}
+  try { tmuxCall("kill-window", "-t", `${session}:${window}`); } catch {}
+  process.exit(0);
+};
+process.on("SIGTERM", stop);
+process.on("SIGINT", stop);
+setInterval(() => publish("online"), 250).unref();
+setInterval(() => {}, 60_000);
+CODEXRUNTIME
 
 # Local bare "sandbox remote" with a main branch.
 SRCREPO="$SB/srcrepo"
@@ -297,10 +427,13 @@ cat > "$STUB_BIN/ps" <<'EOF'
 set -u
 FORMAT=""
 PID=""
+[[ -z "${FLY1389_PS_LOG:-}" ]] || printf 'argv:%q ' "$@" >> "$FLY1389_PS_LOG"
+[[ -z "${FLY1389_PS_LOG:-}" ]] || printf '\n' >> "$FLY1389_PS_LOG"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) FORMAT="${2:?format required}"; shift 2 ;;
     -p) PID="${2:?pid required}"; shift 2 ;;
+    eww) shift ;;
     *) shift ;;
   esac
 done
@@ -324,6 +457,35 @@ case "$FORMAT" in
     # qa-slot-bridge-spec launches every Bridge in a PID-equal isolated group.
     printf '%s\n' "$PID"
     ;;
+  stat=|state=)
+    printf 'S\n'
+    ;;
+  command=)
+    if [[ -n "${FLY1389_CODEX_RUNTIME:-}" ]]; then
+      codex_home=""
+      label=""
+      for pid_file in "${FLY1389_LAUNCHCTL_STATE:-/nonexistent}"/*.pid; do
+        [[ -f "$pid_file" && "$(cat "$pid_file")" == "$PID" ]] || continue
+        label="$(basename "$pid_file" .pid)"
+        break
+      done
+      if [[ -n "$label" ]]; then
+        for registry in /tmp/flywheel-test-slot-*/launchd-leads.json; do
+          [[ -f "$registry" ]] || continue
+          codex_home=$(jq -r --arg label "$label" \
+            '.[] | select(.label == $label) | .codexHome // empty' "$registry" 2>/dev/null | head -1)
+          [[ -z "$codex_home" ]] || break
+        done
+      fi
+      [[ -z "${FLY1389_PS_LOG:-}" ]] \
+        || printf 'pid=%s label=%s home=%s\n' "$PID" "$label" "$codex_home" >> "$FLY1389_PS_LOG"
+      printf '%s %s' "${FLY1389_REAL_NODE:?}" "$FLY1389_CODEX_RUNTIME"
+      [[ -z "$codex_home" ]] || printf ' CODEX_HOME=%s' "$codex_home"
+      printf '\n'
+    else
+      exit 64
+    fi
+    ;;
   *) exit 64 ;;
 esac
 EOF
@@ -343,10 +505,33 @@ cat > "$STUB_BIN/launchctl" <<'LAUNCHCTL'
 set -euo pipefail
 state="${FLY1389_LAUNCHCTL_STATE:?}"
 mkdir -p "$state"
-case "$1" in
-  bootstrap)
-    plist="$3"
-    python3 - "$plist" "$state" <<'PY'
+job_live() {
+  local pid="$1" process_state
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$pid" 2>/dev/null || return 1
+  process_state=$(/bin/ps -o stat= -p "$pid" 2>/dev/null || true)
+  process_state="${process_state#${process_state%%[![:space:]]*}}"
+  [[ -z "$process_state" || "${process_state:0:1}" != Z ]]
+}
+stop_job() {
+  local label="$1" pid_file="$state/$label.pid" pid
+  if [[ -f "$pid_file" ]]; then
+    pid=$(cat "$pid_file" 2>/dev/null || true)
+    if [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      kill -TERM -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+      for _ in $(seq 1 100); do
+        job_live "$pid" || break
+        sleep 0.01
+      done
+      kill -KILL -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file"
+  fi
+}
+spawn_job() {
+  local label="$1" plist_file="$state/$label.plist-path" plist
+  [[ -f "$plist_file" ]] || return 113
+  plist=$(cat "$plist_file")
+  python3 - "$plist" "$state" <<'PY'
 import os, plistlib, subprocess, sys
 plist, state = sys.argv[1:]
 with open(plist, "rb") as f:
@@ -357,36 +542,125 @@ log_path = job.get("StandardOutPath", os.devnull)
 log = open(log_path, "ab", buffering=0)
 p = subprocess.Popen(job["ProgramArguments"], env=env, stdin=subprocess.DEVNULL,
                      stdout=log, stderr=log, start_new_session=True)
-with open(os.path.join(state, job["Label"] + ".pid"), "w") as f: f.write(str(p.pid))
+tmp = os.path.join(state, job["Label"] + ".pid.tmp")
+with open(tmp, "w") as f: f.write(str(p.pid))
+os.replace(tmp, os.path.join(state, job["Label"] + ".pid"))
 PY
+}
+case "$1" in
+  bootstrap)
+    plist="$3"
+    label=$(python3 - "$plist" <<'PY'
+import plistlib, sys
+with open(sys.argv[1], "rb") as stream:
+    print(plistlib.load(stream)["Label"])
+PY
+    )
+    printf '%s\n' "$plist" > "$state/$label.plist-path"
+    spawn_job "$label"
     ;;
   print)
     label="${2##*/}"; pid_file="$state/$label.pid"
-    [ -f "$pid_file" ] || exit 113
-    pid=$(cat "$pid_file")
-    kill -0 "$pid" 2>/dev/null || exit 113
+    if [[ -f "$pid_file" ]]; then pid=$(cat "$pid_file"); else pid=""; fi
+    if ! job_live "$pid"; then
+      rm -f "$pid_file"
+      spawn_job "$label" || exit 113
+      pid=$(cat "$pid_file")
+      job_live "$pid" || exit 113
+    fi
     printf 'pid = %s\n' "$pid"
     ;;
   bootout)
-    label="${2##*/}"; pid_file="$state/$label.pid"
-    if [ -f "$pid_file" ]; then
-      pid=$(cat "$pid_file")
-      kill "$pid" 2>/dev/null || true
-      for _ in 1 2 3 4 5; do kill -0 "$pid" 2>/dev/null || break; sleep 0.05; done
-      kill -9 "$pid" 2>/dev/null || true
-      unlink "$pid_file" 2>/dev/null || true
-    fi
+    label="${2##*/}"
+    rm -f "$state/$label.plist-path"
+    stop_job "$label"
+    ;;
+  kickstart)
+    label="${3##*/}"
+    stop_job "$label"
+    spawn_job "$label"
     ;;
   *) exit 64 ;;
 esac
 LAUNCHCTL
 chmod +x "$STUB_BIN"/*
 
+# Codex E2E tools keep the test stubs for network/build/Bridge work, but expose
+# the real node and tmux so the launcher's argv and private socket are genuine.
+CODEX_TOOL_BIN="$SB/codex-tool-bin"
+mkdir -p "$CODEX_TOOL_BIN"
+for tool in gh pnpm npx curl launchctl ps; do
+  ln -s "$STUB_BIN/$tool" "$CODEX_TOOL_BIN/$tool"
+done
+
 # A second real repo layout exercises the path class production intentionally
 # excludes from its restart helper. The slot cycle must own this QA worktree.
 FWR="$SB/worktrees/fly-2237"
 mkdir -p "$(dirname "$FWR")"
 cp -R "$FR" "$FWR"
+
+# Codex source homes are login-bearing inputs only. The deploy must mint a
+# separate home beneath the slot before any launcher sees one of these paths.
+CODEX_SOURCE_MAIN="$SB/codex-source-main"
+CODEX_SOURCE_EXTRA="$SB/codex-source-extra"
+for source_home in "$CODEX_SOURCE_MAIN" "$CODEX_SOURCE_EXTRA"; do
+  mkdir -p "$source_home/packages/standalone/releases/fixture"
+  printf '%s\n' '{"tokens":{"access_token":"fixture"}}' > "$source_home/auth.json"
+  cat > "$source_home/packages/standalone/releases/fixture/codex" <<'CODEXBIN'
+#!/bin/bash
+set -euo pipefail
+home="${CODEX_HOME:?}"
+socket="$home/app-server-control/app-server-control.sock"
+pid_file="$home/app-server-daemon/app-server.pid"
+case "${1:-} ${2:-}" in
+  "remote-control start")
+    if [[ -f "$pid_file" ]]; then
+      old_pid=$(cat "$pid_file" 2>/dev/null || true)
+      if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$old_pid" 2>/dev/null && [[ -S "$socket" ]]; then
+        printf '%s\n' '{"status":"connected"}'
+        exit 0
+      fi
+    fi
+    mkdir -p "$(dirname "$socket")" "$(dirname "$pid_file")"
+    python3 - "$socket" <<'PY' >/dev/null 2>&1 &
+import os, signal, socket, sys, time
+path = sys.argv[1]
+try: os.unlink(path)
+except FileNotFoundError: pass
+server = socket.socket(socket.AF_UNIX)
+server.bind(path)
+server.listen(1)
+def stop(*_):
+    server.close()
+    try: os.unlink(path)
+    except FileNotFoundError: pass
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+signal.signal(signal.SIGINT, stop)
+while True: time.sleep(1)
+PY
+    daemon_pid=$!
+    printf '%s\n' "$daemon_pid" > "$pid_file"
+    for _ in $(seq 1 100); do [[ -S "$socket" ]] && break; sleep 0.01; done
+    [[ -S "$socket" ]]
+    printf '%s\n' '{"status":"started"}'
+    ;;
+  "remote-control stop")
+    daemon_pid=$(cat "$pid_file" 2>/dev/null || true)
+    if [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]]; then
+      kill "$daemon_pid" 2>/dev/null || true
+      for _ in $(seq 1 100); do kill -0 "$daemon_pid" 2>/dev/null || break; sleep 0.01; done
+      kill -9 "$daemon_pid" 2>/dev/null || true
+    fi
+    rm -f "$pid_file" "$socket"
+    printf '%s\n' '{"status":"stopped"}'
+    ;;
+  *) exit 64 ;;
+esac
+CODEXBIN
+  chmod +x "$source_home/packages/standalone/releases/fixture/codex"
+  ln -s releases/fixture "$source_home/packages/standalone/current"
+done
 
 # Fake HOME #1 (Lead-ful): identity + shared rules present.
 FH1="$SB/home1"
@@ -395,12 +669,15 @@ mkdir -p "$FH1/.flywheel/claude-sessions" \
 echo "# prod identity fixture" > "$FH1/Dev/GeoForge3D/.lead/product-lead/identity.md"
 echo "# ops identity fixture" > "$FH1/Dev/GeoForge3D/.lead/ops-lead/identity.md"
 echo "# shared rule fixture" > "$FH1/Dev/GeoForge3D/.lead/shared/dept.md"
+printf '%s\n' '{"granularity":"per-lead","setBy":"test","setAt":"2026-09-03T00:00:00.000Z"}' \
+  > "$FH1/.flywheel/summary-config.json"
 # Fake HOME #2 (--no-lead): NO ~/Dev/GeoForge3D at all.
 FH2="$SB/home2"
 mkdir -p "$FH2/.flywheel/claude-sessions"
 
-make_slots_json() {  # <file> — slots 30/31/32/33 carry real fixture values
-  jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" '
+make_slots_json() {  # slots 30..35 carry real fixture values
+  jq -n --argjson leadPort "$LEAD_PORT" --argjson noLeadPort "$NOLEAD_PORT" \
+    --arg codexMain "$CODEX_SOURCE_MAIN" --arg codexExtra "$CODEX_SOURCE_EXTRA" '
     { guildId: "g-fixture",
       alertChannel: {
         channelId: "alert-fixture",
@@ -422,7 +699,17 @@ make_slots_json() {  # <file> — slots 30/31/32/33 carry real fixture values
               channelId: "chan-32", role: "lead", identitySource: "product-lead" },
             { id: 33, bridgePort: ($leadPort + 3), botName: "flywheel-test-33",
               tokenEnvVar: "TEST_BOT_TOKEN_33", botAppId: "3333",
-              channelId: "chan-33", role: "lead", identitySource: "product-lead" } ] )
+              channelId: "chan-33", role: "lead", identitySource: "product-lead" },
+            { id: 34, bridgePort: ($leadPort + 4), botName: "flywheel-test-34",
+              tokenEnvVar: "TEST_BOT_TOKEN_34", botAppId: "34343434343434343",
+              channelId: "34343434343434344", role: "lead", identitySource: "product-lead",
+              backend: "codex-app-server", codexSourceHome: $codexMain,
+              codexProfile: "companion" },
+            { id: 35, bridgePort: ($leadPort + 5), botName: "flywheel-test-35",
+              tokenEnvVar: "TEST_BOT_TOKEN_35", botAppId: "35353535353535353",
+              channelId: "35353535353535354", role: "lead", identitySource: "ops-lead",
+              backend: "codex-app-server", codexSourceHome: $codexExtra,
+              codexProfile: "companion" } ] )
     }'
 }
 for H in "$FH1" "$FH2"; do
@@ -432,6 +719,8 @@ TEST_BOT_TOKEN_31=tok-31
 TEST_BOT_TOKEN_32=tok-32
 TEST_BOT_TOKEN_30=tok-30
 TEST_BOT_TOKEN_33=tok-33
+TEST_BOT_TOKEN_34=tok-34
+TEST_BOT_TOKEN_35=tok-35
 LINEAR_API_KEY=fixture-linear-key
 EOF
 done
@@ -440,22 +729,29 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
   local home="$1" slot="$2" out="$3" err="$4"; shift 4
   local caller_cwd="${FLY1608_DEPLOY_CALLER_CWD:-$SB}"
   local repo_root="${FLY1389_REPO_ROOT:-$FR}"
+  local tool_bin="${FLY1389_TOOL_BIN:-$STUB_BIN}"
+  local child_path="${FLY1389_CHILD_PATH:-$tool_bin:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)"):$(dirname "$FLY1389_REAL_NODE"):$(dirname "$(command -v tmux)") }"
+  child_path="${child_path% }"
   ( cd "$caller_cwd" && \
     env -i \
       HOME="$home" \
-      PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)")" \
-      TMPDIR=/tmp \
+      PATH="$child_path" \
+      TMPDIR="${FLY1389_TMPDIR:-/tmp}" \
       TMUX_STUB_LOG="$home/tmux-calls.log" \
       TMUX_STUB_WINDOW="" \
       FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+      FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
+      FLY1389_PS_LOG="$SB/codex-ps.log" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
       FLYWHEEL_QA_LEAD_WRAPPER="$repo_root/scripts/flywheel-lead-wrapper-v2.sh" \
-      FLYWHEEL_QA_TMUX="$STUB_BIN/tmux" \
+      FLYWHEEL_QA_TMUX="${FLY1389_QA_TMUX:-$STUB_BIN/tmux}" \
+      FLYWHEEL_QA_LAUNCHD_PATH="$child_path" \
       FLYWHEEL_QA_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_QA_LAUNCHD_POLL_INTERVAL=0.01 \
       FLYWHEEL_QA_LEAD_VERIFY_POLLS=100 \
       FLYWHEEL_QA_LEAD_VERIFY_INTERVAL=0.01 \
       FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
+      FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
       FLY1389_ENV_DUMP_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
@@ -484,16 +780,24 @@ extract_json() { sed -n '/^{/,$p' "$1"; }
 run_teardown() {  # <home> <slot>
   local home="$1" slot="$2"
   local repo_root="${FLY1389_REPO_ROOT:-$FR}"
+  local tool_bin="${FLY1389_TOOL_BIN:-$STUB_BIN}"
+  local child_path="${FLY1389_CHILD_PATH:-$tool_bin:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$FLY1389_REAL_NODE"):$(dirname "$(command -v tmux)") }"
+  child_path="${child_path% }"
   local out="$SB/teardown-slot-${slot}.stdout.log"
   local err="$SB/teardown-slot-${slot}.stderr.log"
   local rc=0
   ( env -i \
       HOME="$home" \
-      PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)")" \
-      TMPDIR=/tmp \
+      PATH="$child_path" \
+      TMPDIR="${FLY1389_TMPDIR:-/tmp}" \
       TMUX_STUB_LOG="$home/tmux-calls.log" \
       FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+      FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
+      FLY1389_PS_LOG="$SB/codex-ps.log" \
+      FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
+      FLYWHEEL_QA_TMUX="${FLY1389_QA_TMUX:-$STUB_BIN/tmux}" \
+      FLYWHEEL_DIR="$repo_root" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$home/cmux-mutator.lock" \
       FLYWHEEL_CMUX_MAINTENANCE_MARKER="$home/cmux-maintenance" \
@@ -665,6 +969,10 @@ NODE
   jq -e '.noLead == false' <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: default path must report noLead=false"; }
   jq -e '.leadCarrier == "launchd-v2" and (.leadLaunchdLabel | startswith("com.flywheel.qa.lead.slot-31.")) and (.leadSocket | length > 0)' \
     <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: deploy JSON lacks launchd-v2 topology evidence"; }
+  jq -e 'type == "array" and length == 1 and
+      (.[0] | keys | sort) == ["label","manifest","plist"]' \
+    "$E_SLOT_DIR/launchd-leads.json" >/dev/null 2>&1 \
+    || { E_OK=0; fail "E/FLY-2301: pure Claude registry transcript changed shape"; }
   [[ -n "$(jq -r '.leadPidFile' <<<"$E_JSON")" ]] || { E_OK=0; fail "E: leadPidFile must be non-empty on the default path"; }
   # P0-a: caller leak cleared, LEAD_WORKSPACE pinned slot-local.
   LE="$E_SLOT_DIR/lead-env.txt"
@@ -1054,6 +1362,198 @@ else
   fail "N: --no-lead hermetic deploy failed" "$(tail -20 "$N_ERR")"
   run_teardown "$FH2" "$NOLEAD_SLOT" || true
 fi
+
+# ── CX: Codex-shaped launchd Lead (FLY-2301) ──────────────────────────────
+REAL_TMUX="$(command -v tmux)"
+CODEX_CHILD_PATH="$CODEX_TOOL_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$FLY1389_REAL_NODE"):$(dirname "$REAL_TMUX")"
+run_codex_drill() {  # <slot> <crash|kickstart> <evidence-root> <stdout> <stderr>
+  local slot="$1" mode="$2" evidence="$3" out="$4" err="$5"
+  env -i HOME="$FH1" PATH="$CODEX_CHILD_PATH" TMPDIR=/tmp \
+    FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+    FLY1389_CODEX_RUNTIME="$FR/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
+    FLY1389_REAL_NODE="$FLY1389_REAL_NODE" FLY1389_PS_LOG="$SB/codex-ps.log" \
+    FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" FLYWHEEL_QA_TMUX="$REAL_TMUX" \
+    FLYWHEEL_QA_LEAD_VERIFY_POLLS=300 FLYWHEEL_QA_LEAD_VERIFY_INTERVAL=0.01 \
+    bash "$SCRIPT_DIR/qa-fly-2301-codex-lead-drill.sh" "$slot" "$mode" "$evidence" \
+    >"$out" 2>"$err"
+}
+
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
+CX_OUT="$SB/cx-out.json"; CX_ERR="$SB/cx-err.log"
+if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_deploy "$FH1" "$CODEX_SLOT" "$CX_OUT" "$CX_ERR" --lead-ready-timeout 5; then
+  CX_JSON="$(extract_json "$CX_OUT")"
+  CX_SLOT_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
+  CX_STATE="$(jq -r '.codexLead.stateDir' <<<"$CX_JSON")"
+  CX_HOME="$(jq -r '.codexLead.codexHome' <<<"$CX_JSON")"
+  CX_SOCKET="$(jq -r '.codexLead.tmuxSocket' <<<"$CX_JSON")"
+  CX_LABEL="$(jq -r '.codexLead.label' <<<"$CX_JSON")"
+  CX_OK=1
+  jq -e --arg slot "$CX_SLOT_DIR" --arg label "$CX_LABEL" '
+      .leadCarrier == "launchd-codex-tui" and .leadLaunchdLabel == $label and
+      .codexLead.tuiWindow == "present" and .codexLead.agentId == "flywheel-test-34" and
+      .codexLead.projectName == "test-slot-34" and
+      (.codexLead.codexHome | startswith($slot + "/cdxh/")) and
+      (.codexLead.stateDir | startswith($slot + "/q/34/"))
+    ' >/dev/null 2>&1 <<<"$CX_JSON" \
+    || { CX_OK=0; fail "CX: Codex-shaped deploy JSON contract"; }
+  jq -e --arg label "$CX_LABEL" --arg home "$CX_HOME" --arg state "$CX_STATE" '
+      type == "array" and length == 1 and .[0].carrier == "codex-tui" and
+      .[0].label == $label and .[0].codexHome == $home and .[0].stateDir == $state and
+      (.[0].manifest == "") and
+      (.[0] | keys | sort) == ["carrier","codexBin","codexHome","label","manifest","plist","runtimePidFile","stateDir"]
+    ' "$CX_SLOT_DIR/launchd-leads.json" >/dev/null 2>&1 \
+    || { CX_OK=0; fail "CX: Codex registry lacks its lifecycle authority"; }
+  python3 - "$CX_SLOT_DIR/launchd/flywheel-test-34/lead.plist" \
+      "$CX_SLOT_DIR/launchd/flywheel-test-34/codex-lead-wrapper.sh" "$CX_SLOT_DIR" <<'PY' \
+    || { CX_OK=0; fail "CX: Codex plist argv/env/KeepAlive shape"; }
+import plistlib, sys
+plist, wrapper, slot = sys.argv[1:]
+with open(plist, "rb") as stream: value = plistlib.load(stream)
+assert value["ProgramArguments"] == ["/bin/bash", wrapper]
+assert value["EnvironmentVariables"]["TMUX_TMPDIR"] == slot
+assert value["RunAtLoad"] is True and value["KeepAlive"] is True
+assert "FLYWHEEL_PROJECTS_FILE" not in value["EnvironmentVariables"]
+PY
+  CX_PID="$(jq -r '.processPid' "$CX_STATE/brain/heartbeat.json" 2>/dev/null || true)"
+  [[ "$CX_PID" =~ ^[1-9][0-9]*$ \
+      && "$(cat "$CX_SLOT_DIR/launchd/flywheel-test-34/pid")" == "$CX_PID" ]] \
+    || { CX_OK=0; fail "CX: launchd PID and heartbeat PID disagree"; }
+  [[ "$CX_HOME" == "$CX_SLOT_DIR/cdxh/flywheel-test-34" \
+      && "$CX_HOME" != "$CODEX_SOURCE_MAIN" \
+      && -f "$CX_HOME/auth.json" && -S "$CX_HOME/app-server-control/app-server-control.sock" ]] \
+    || { CX_OK=0; fail "CX: Codex home was not minted and daemonized inside the slot"; }
+  [[ "$($REAL_TMUX -S "$CX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}')" == \
+      "test-slot-34-flywheel-test-34" ]] \
+    || { CX_OK=0; fail "CX: main Codex TUI window is not unique on the private socket"; }
+  jq -e '.FLYWHEEL_CANONICAL_IDENTITY_RESOLVED == "1" and
+      .FLYWHEEL_LEAD_BACKEND == "codex-app-server" and
+      .FLYWHEEL_LEAD_ID == "flywheel-test-34" and
+      .FLYWHEEL_PROJECT_NAME == "test-slot-34" and
+      .DISCORD_BOT_TOKEN == "[present]"' \
+    "$CX_SLOT_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
+    || { CX_OK=0; fail "CX: true launcher/canonical resolver did not reach the runtime"; }
+
+  CX_EVIDENCE="$SB/cx-evidence"
+  mkdir -p "$CX_EVIDENCE"
+  for CX_MODE in crash kickstart; do
+    CX_DRILL_OUT="$SB/cx-${CX_MODE}.out"; CX_DRILL_ERR="$SB/cx-${CX_MODE}.err"
+    if run_codex_drill "$CODEX_SLOT" "$CX_MODE" "$CX_EVIDENCE" \
+        "$CX_DRILL_OUT" "$CX_DRILL_ERR"; then
+      CX_DRILL_DIR="$(jq -r '.evidenceDir' "$CX_DRILL_OUT")"
+      jq -e --arg mode "$CX_MODE" '
+          .mode == $mode and .old.pid != .new.pid and
+          .old.generationId != .new.generationId and
+          .old.carrierInstanceId != .new.carrierInstanceId and
+          (.old.predicates | all) and (.new.predicates | all)
+        ' "$CX_DRILL_DIR/restart-drill.json" >/dev/null 2>&1 \
+        || { CX_OK=0; fail "CX: ${CX_MODE} drill did not bind old/new topology evidence"; }
+      [[ -s "$CX_DRILL_DIR/launch-manifest.json" \
+          && -f "$CX_DRILL_DIR/default-tmux-windows.before.tsv" \
+          && -f "$CX_DRILL_DIR/slot-tmux-windows.after.tsv" ]] \
+        || { CX_OK=0; fail "CX: ${CX_MODE} drill evidence bundle incomplete"; }
+    else
+      CX_OK=0
+      fail "CX: ${CX_MODE} restart drill failed" "$(tail -40 "$CX_DRILL_ERR")"
+    fi
+  done
+  [[ "$CX_OK" == 1 ]] \
+    && pass "CX: Codex main launch + canonical env + private TUI + crash/kickstart self-heal"
+  if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+      run_teardown "$FH1" "$CODEX_SLOT"; then
+    if ! "$STUB_BIN/launchctl" print "gui/$(id -u)/$CX_LABEL" >/dev/null 2>&1 \
+        && [[ ! -S "$CX_SOCKET" && ! -e "$CX_HOME/app-server-control/app-server-control.sock" ]]; then
+      pass "CX2: Codex teardown converges launchd, runtime, daemon, and private tmux"
+    else
+      fail "CX2: Codex teardown left a lifecycle coordinate alive" \
+        "tmuxSocket=$([[ -S "$CX_SOCKET" ]] && echo alive || echo gone) daemonSocket=$([[ -e "$CX_HOME/app-server-control/app-server-control.sock" ]] && echo alive || echo gone) teardown=$(cat "$SB/teardown-slot-${CODEX_SLOT}.stderr.log" "$SB/teardown-slot-${CODEX_SLOT}.stdout.log" 2>/dev/null | tail -30)"
+    fi
+  else
+    fail "CX2: Codex main teardown"
+  fi
+else
+  fail "CX: Codex-shaped main Lead deploy failed" \
+    "$(tail -30 "$CX_ERR") | lead-log: $(tail -40 "/tmp/flywheel-test-slot-${CODEX_SLOT}/lead.log" 2>/dev/null || true) | ps-log: $(tail -80 "$SB/codex-ps.log" 2>/dev/null || true)"
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || true
+fi
+
+# Main + extra Codex Leads share one Bridge but retain distinct home/state/window
+# coordinates and a single convergent lifecycle registry.
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}" \
+  "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}"
+CXX_OUT="$SB/cxx-out.json"; CXX_ERR="$SB/cxx-err.log"
+if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_deploy "$FH1" "$CODEX_SLOT" "$CXX_OUT" "$CXX_ERR" \
+      --extra-lead "${CODEX_EXTRA_SLOT}:Ops-Test" --lead-ready-timeout 5; then
+  CXX_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
+  CXX_SOCKET="$CXX_DIR/tmux-$(id -u)/default"
+  CXX_WINDOWS="$($REAL_TMUX -S "$CXX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}' | sort)"
+  if jq -e 'type == "array" and length == 2 and all(.[]; .carrier == "codex-tui") and
+      ([.[].codexHome] | unique | length) == 2 and
+      ([.[].stateDir] | unique | length) == 2 and
+      ([.[].runtimePidFile] | unique | length) == 2' \
+      "$CXX_DIR/launchd-leads.json" >/dev/null 2>&1 \
+      && [[ "$CXX_WINDOWS" == $'test-slot-34-flywheel-test-34\ntest-slot-34-flywheel-test-35' ]] \
+      && [[ -f "$CXX_DIR/q/34/codex-runtime-env.json" \
+          && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]]; then
+    pass "CXX: main + extra Codex Leads retain distinct home/state/window coordinates"
+  else
+    fail "CXX: two-Lead Codex topology collided" "$CXX_WINDOWS"
+  fi
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || fail "CXX: multi-Codex teardown"
+else
+  fail "CXX: multi-Codex deploy failed" \
+    "$(tail -40 "$CXX_ERR") | lead-log: $(tail -40 "/tmp/flywheel-test-slot-${CODEX_SLOT}/lead.log" 2>/dev/null || true)"
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || true
+fi
+
+# A production Lead source home is denied before any per-Lead artifact is made.
+PROD_CODEX_SOURCE="$FH1/.codex-mufasa"
+rm -rf "$PROD_CODEX_SOURCE"
+cp -R "$CODEX_SOURCE_MAIN" "$PROD_CODEX_SOURCE"
+jq --arg source "$PROD_CODEX_SOURCE" '.slots[33].codexSourceHome = $source' \
+  "$FH1/.flywheel/test-slots.json" > "$SB/slots-production-source.json"
+mv "$SB/slots-production-source.json" "$FH1/.flywheel/test-slots.json"
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_SLOT}"
+CXP_OUT="$SB/cxp-out"; CXP_ERR="$SB/cxp-err"
+if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_deploy "$FH1" "$CODEX_SLOT" "$CXP_OUT" "$CXP_ERR" --lead-ready-timeout 1; then
+  fail "CXP: production Codex source home must be rejected"
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || true
+elif grep -q 'refusing production Lead codex home' "$CXP_ERR" \
+    && [[ ! -e "/tmp/flywheel-test-slot-${CODEX_SLOT}/cdxh" \
+        && ! -e "/tmp/flywheel-test-slot-${CODEX_SLOT}/launchd/flywheel-test-34" \
+        && ! -e "/tmp/flywheel-test-slot-${CODEX_SLOT}/q/34" ]]; then
+  pass "CXP: production Codex source home is rejected before Lead artifacts"
+else
+  fail "CXP: production-home rejection was late or ambiguous" "$(tail -30 "$CXP_ERR")"
+fi
+make_slots_json > "$FH1/.flywheel/test-slots.json"
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}"
+
+# Codex is intentionally unsupported in the existing roundtable topology.
+jq '.roundtableChannel = {
+      channelId:"45454545454545454", hostSlot:34, memberSlots:[35],
+      triggerMode:"any_top_level", replyInThread:false, autoContinue:false
+    }' "$FH1/.flywheel/test-slots.json" > "$SB/slots-roundtable.json"
+mv "$SB/slots-roundtable.json" "$FH1/.flywheel/test-slots.json"
+CXR_OUT="$SB/cxr-out"; CXR_ERR="$SB/cxr-err"
+if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_deploy "$FH1" "$CODEX_SLOT" "$CXR_OUT" "$CXR_ERR" --mode roundtable --lead-ready-timeout 1; then
+  fail "CXR: Codex roundtable topology must be rejected"
+  FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
+    run_teardown "$FH1" "$CODEX_SLOT" || true
+elif grep -q 'codex carrier is not supported in roundtable mode' "$CXR_ERR"; then
+  pass "CXR: Codex roundtable topology rejects fail-loud"
+else
+  fail "CXR: Codex roundtable failed at the wrong boundary" "$(tail -30 "$CXR_ERR")"
+fi
+make_slots_json > "$FH1/.flywheel/test-slots.json"
+rm -rf "/tmp/flywheel-test-slot-${CODEX_SLOT}"
 
 # ── X: mutual exclusion + extra-lead sentinels ──────────────────────────────
 X_ERR="$SB/x-err.log"

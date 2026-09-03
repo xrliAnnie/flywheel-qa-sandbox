@@ -959,6 +959,17 @@ teardown_slot() {
   if tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
     log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
     tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
+  elif [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 && -S "$SLOT_TMUX_SOCKET" ]]; then
+    # A Codex runtime can retire its final named window just before this probe.
+    # tmux then reports no session while its server socket is still draining;
+    # the legacy has-session guard skips kill-server and leaves teardown stuck.
+    # This branch is Codex-only, after registry runtime convergence, and the
+    # socket is the exact slot-private coordinate — no resident/default sweep.
+    log "Converging empty Codex slot tmux server: ${SLOT_TMUX_SOCKET}"
+    if ! tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null; then
+      tmux -S "$SLOT_TMUX_SOCKET" list-sessions >/dev/null 2>&1 \
+        || rm -f "$SLOT_TMUX_SOCKET"
+    fi
   fi
   if [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 ]]; then
     local _codex_tmux_converged=0 _codex_tmux_poll
