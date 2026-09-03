@@ -44,7 +44,7 @@
 <body>
 <div class="wrap">
   <h1>529 房台架支持 Codex 形状的常驻 Lead</h1>
-  <div class="meta">FLY-2301 · 设计说明 · 2026-09-03 · 分支 flywheel-FLY-2301 · plan rev3(Codex 设计评审三轮后)</div>
+  <div class="meta">FLY-2301 · 设计说明 · 2026-09-03 · 分支 flywheel-FLY-2301 · plan rev4(Codex 设计评审四轮)</div>
 
   <section class="card green" data-section="一句话总结">
     <h2>一句话总结</h2>
@@ -73,9 +73,9 @@
     <div class="diagram wide">{{SVG_D1}}</div>
     <h3>新链每一步在做什么</h3>
     <ul>
-      <li><b>.env 追加 Codex 一族</b>:Codex 的启动壳(<span class="term">wrapper</span>,launchd 直接运行的那个小脚本)只读 <code>${FLYWHEEL_STATE_DIR}/.env</code>,而 529 房的 <code>.env</code> 恰好就是这个路径,所以把 Codex 需要的变量写进这个文件即可,和生产一样。写之前只做两件事:同名变量出现两次就拒绝(不让后写的悄悄覆盖先写的),身份类变量名(LEAD_ID、PROJECT_NAME 一族)一律拒绝(身份只能由注册表解析,不能由环境冒充)。不设白名单。</li>
+      <li><b>.env 追加 Codex 一族</b>:Codex 的启动壳(<span class="term">wrapper</span>,launchd 直接运行的那个小脚本)只读 <code>${FLYWHEEL_STATE_DIR}/.env</code>,而 529 房的 <code>.env</code> 恰好就是这个路径,所以把 Codex 需要的变量写进这个文件即可,和生产一样。写之前只做两件事:同名变量出现两次就拒绝(不让后写的悄悄覆盖先写的),凡是身份解析器自己负责断言、导出或清理的变量名(LEAD_ID、PROJECT_NAME、模型、摘要职责、Discord 身份、各种 digest 等三十来个)一律拒绝(身份只能由注册表解析,不能由环境冒充);报错只印变量名不印值。不设白名单。写进去的内容 = 今天 Claude 链已有的那份基础环境(含指向房内 projects 文件的坐标,保证它绝不会回落去读生产的 projects.json)+ Codex 一族。</li>
       <li><b>渲染 slot 固定 wrapper</b>:生产的 Codex 壳是每个 Lead 一份、身份写死在里面的(不能靠环境变量冒充身份)。房里用一份模板 + 三个经过校验的标识符渲染出一份同样形状的壳。</li>
-      <li><b>codex-lead.sh</b>:仓库里现成的通用 Codex 启动器,以前 FLY-259 的隔离 QA 就是用它起过 Codex 界面型 Lead。本单只改它一行:状态目录的根从写死的 <code>~/.flywheel</code> 改成先看 <code>FLYWHEEL_STATE_DIR</code>(生产没设这个变量 ⇒ 路径不变,有实测)。</li>
+      <li><b>codex-lead.sh</b>:仓库里现成的通用 Codex 启动器,以前 FLY-259 的隔离 QA 就是用它起过 Codex 界面型 Lead。本单只改它<b>一行</b>(第 81 行那个状态目录赋值):根从写死的 <code>~/.flywheel</code> 改成先看 <code>FLYWHEEL_STATE_DIR</code>(生产没设这个变量 ⇒ 路径不变,用「从新脚本反推出旧脚本、同输入双跑比对」实测)。</li>
       <li><b>slot tmux 窗口</b>:Codex Lead 会在 tmux(终端多窗口工具)里开一个可见窗口。房里必须把它钉在 529 房自己的 tmux 服务器上,否则会开进生产的 <code>flywheel</code> 会话里被 cmux 同步出去。</li>
     </ul>
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="核心流程:两条启动链" placeholder="写下你的意见…"></textarea></div>
@@ -89,7 +89,7 @@
       <div>验活</div><div>launchd 报告的进程号,就是那个 node 运行时进程;它的环境里 <code>CODEX_HOME</code> 等于房里的隔离 home;心跳文件里的 <code>processPid</code> 等于它。</div>
       <div>就绪</div><div>心跳文件 <code>state == "online"</code>(Codex 后端不写 Claude 那种就绪 lease 文件,所以不能沿用),<b>并且</b> 529 房自己的 tmux 服务器上必须出现 <code>&lt;project&gt;-&lt;lead&gt;</code> 窗口 —— 在房里这是硬门(生产运行时对窗口仍是失败不致命),因为窗口开错服务器就等于开进了生产 cmux。</div>
       <div>launchd 演练</div><div>两式:强杀进程(只证明 KeepAlive 会自动拉起)和 <code>launchctl kickstart -k</code>(只证明生产巡逻器判定假死后执行的那个动作能收敛)。收敛判据 = 新进程号、新启动时间,且心跳里的 <code>generationId</code>、<code>carrierInstanceId</code> 都换了。它<b>不</b>证明巡逻器的检测、权威复核或 Bridge 触发 —— 那些明确不在本单(见「诚实边界」)。演练证据是一份不含任何环境变量或凭据的 JSON。</div>
-      <div>拆房</div><div>有序收敛:先 bootout(让 launchd 放手)并等到进程号真的消失,再停掉 Codex 的 <span class="term">remote-control daemon</span>(Codex 常驻在后台的守护进程,它的 socket 藏在 CODEX_HOME 里,Bridge 的孤儿收割器看不见它)并等到它的 pid 和 socket 都消失,最后才随房目录一起删除。任何一步没收敛就报失败并保留房目录,不会「报成功但留下孤儿」。</div>
+      <div>拆房</div><div>有序收敛:先 bootout(让 launchd 放手)并等到进程号真的消失,再停掉 Codex 的 <span class="term">remote-control daemon</span>(Codex 常驻在后台的守护进程,它的 socket 藏在 CODEX_HOME 里,Bridge 的孤儿收割器看不见它)并等到它的 pid 和 socket 都消失,最后才随房目录一起删除。任何一步没收敛就报失败并保留房目录,不会「报成功但留下孤儿」。纯 Claude 房的拆除走与今天逐字节相同的旧循环,不沾这套新逻辑,并有守卫证明。</div>
     </div>
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="验活、就绪与 launchd 演练" placeholder="写下你的意见…"></textarea></div>
   </section>
@@ -140,6 +140,7 @@
     <h3>做</h3>
     <ul>
       <li>529 房台架按载体形状分支;Codex 形状的起、验、就绪、launchd 演练、收敛拆除全链路;Claude 形状字节不变并有带阳性对照的守卫;hermetic 测试分层走真身份解析器、真配置加载器、真常驻名册与真启动器,不靠替身自证。</li>
+      <li>把 test-deploy.sh 里已有的产物渲染逻辑<b>原样搬</b>到一个可被测试直接加载的库文件里(搬运前后五面基线逐字节相同,由守卫证明)——这是让「变异体对照」不必每次起整个房就能跑的必要拆分,不是新机制。</li>
       <li>生产代码只动 <code>codex-lead.sh</code> 一行(状态目录根),并附实测证明生产路径不变。</li>
     </ul>
     <h3>不做(决定,不是遗漏)</h3>
