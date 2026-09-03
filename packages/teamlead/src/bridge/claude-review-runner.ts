@@ -52,6 +52,7 @@ export type ClaudeReviewOutcome =
 			verdict: "APPROVED" | "CHANGES_REQUESTED";
 			findings: ClaudeReviewFinding[];
 			reviewedHeadSha: string | null;
+			repairedTrailingBrace: boolean;
 			/** Raw assistant text the verdict was parsed from (audit copy). */
 			raw: string;
 	  }
@@ -267,6 +268,7 @@ export function parseClaudeReviewOutput(stdout: string): {
 	verdict: "APPROVED" | "CHANGES_REQUESTED";
 	findings: ClaudeReviewFinding[];
 	reviewedHeadSha: string | null;
+	repairedTrailingBrace: boolean;
 	raw: string;
 } | null {
 	let text = stdout.trim();
@@ -308,7 +310,7 @@ export function parseClaudeReviewOutput(stdout: string): {
 	if (!candidate) return null;
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(candidate);
+		parsed = JSON.parse(candidate.json);
 	} catch {
 		return null;
 	}
@@ -328,7 +330,13 @@ export function parseClaudeReviewOutput(stdout: string): {
 		typeof obj.reviewedHeadSha === "string" && obj.reviewedHeadSha.length > 0
 			? obj.reviewedHeadSha.toLowerCase()
 			: null;
-	return { verdict: verdictRaw, findings, reviewedHeadSha, raw: text };
+	return {
+		verdict: verdictRaw,
+		findings,
+		reviewedHeadSha,
+		repairedTrailingBrace: candidate.repairedTrailingBrace,
+		raw: text,
+	};
 }
 
 const VERDICT_ANCHOR_LIMIT = 32;
@@ -347,6 +355,22 @@ function parseVerdictCandidate(candidate: string): boolean {
 			parsed !== null &&
 			!Array.isArray(parsed) &&
 			hasRecognizedVerdict(parsed as Record<string, unknown>)
+		);
+	} catch {
+		return false;
+	}
+}
+
+function parseRepairedVerdictCandidate(candidate: string): boolean {
+	try {
+		const parsed = JSON.parse(candidate) as unknown;
+		return (
+			typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed) &&
+			hasRecognizedVerdict(parsed as Record<string, unknown>) &&
+			Object.hasOwn(parsed, "findings") &&
+			Array.isArray((parsed as Record<string, unknown>).findings)
 		);
 	} catch {
 		return false;
@@ -381,7 +405,10 @@ function findBalancedObjectEnd(text: string, start: number): number | null {
  * First scan balanced top-level object spans in O(n). If prose contains an
  * unmatched opening brace, fall back to at most 32 verdict-key anchors.
  */
-function extractVerdictObject(text: string): string | null {
+function extractVerdictObject(text: string): {
+	json: string;
+	repairedTrailingBrace: boolean;
+} | null {
 	let lastMatch: string | null = null;
 	let depth = 0;
 	let spanStart = -1;
@@ -411,7 +438,7 @@ function extractVerdictObject(text: string): string | null {
 			}
 		}
 	}
-	if (lastMatch) return lastMatch;
+	if (lastMatch) return { json: lastMatch, repairedTrailingBrace: false };
 
 	let anchorFrom = 0;
 	for (let count = 0; count < VERDICT_ANCHOR_LIMIT; count += 1) {
@@ -425,7 +452,16 @@ function extractVerdictObject(text: string): string | null {
 		const candidate = text.slice(start, end + 1);
 		if (parseVerdictCandidate(candidate)) lastMatch = candidate;
 	}
-	return lastMatch;
+	if (lastMatch) return { json: lastMatch, repairedTrailingBrace: false };
+
+	const repairable = text.trim();
+	if (!repairable.startsWith('{"verdict"') || !repairable.endsWith("]")) {
+		return null;
+	}
+	const repaired = `${repairable}}`;
+	return parseRepairedVerdictCandidate(repaired)
+		? { json: repaired, repairedTrailingBrace: true }
+		: null;
 }
 
 export interface RunClaudeReviewDeps {

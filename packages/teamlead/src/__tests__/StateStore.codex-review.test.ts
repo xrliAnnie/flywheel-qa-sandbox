@@ -17,6 +17,42 @@ const SHA_A = "a".repeat(40);
 const SHA_B = "b".repeat(40);
 
 describe("StateStore — FLY-1278 frozen review payload", () => {
+	it("FLY-2291: persists trailing-brace repair audit without mutating terminal rows", async () => {
+		const store = await StateStore.create(":memory:");
+		for (const requestId of ["repaired", "terminal"]) {
+			store.insertCodexReviewJob({
+				requestId,
+				executionId: "e1",
+				projectName: "proj",
+				reviewType: "design",
+				questionId: `q-${requestId}`,
+			});
+			expect(store.getCodexReviewJob(requestId)).toMatchObject({
+				repaired_trailing_brace: false,
+			});
+		}
+
+		expect(store.claimCodexReviewJobRunning("repaired")).toBe(true);
+		expect(store.markCodexReviewJobTrailingBraceRepaired("repaired")).toBe(
+			true,
+		);
+		expect(store.markCodexReviewJobTrailingBraceRepaired("repaired")).toBe(
+			true,
+		);
+		expect(store.getCodexReviewJob("repaired")).toMatchObject({
+			repaired_trailing_brace: true,
+		});
+
+		expect(store.claimCodexReviewJobRunning("terminal")).toBe(true);
+		store.completeCodexReviewJob("terminal", "APPROVED", "[]");
+		expect(store.markCodexReviewJobTrailingBraceRepaired("terminal")).toBe(
+			false,
+		);
+		expect(store.getCodexReviewJob("terminal")).toMatchObject({
+			repaired_trailing_brace: false,
+		});
+	});
+
 	it("persists reviewer/effective verdict split and the exact canonical response", async () => {
 		const store = await StateStore.create(":memory:");
 		store.insertCodexReviewJob({
@@ -243,8 +279,147 @@ describe("StateStore — FLY-1254 review failure evidence", () => {
 		expect(store.getCodexReviewJob("retry-defaults")).toMatchObject({
 			auto_retry_count: 0,
 			failure_attempt_count: 0,
+			reviewer_session_generation: 0,
+			reviewer_session_failure_streak: 0,
 		});
 		expect(store.getCodexReviewJob("retry-defaults")?.retry_at).toBeUndefined();
+	});
+
+	it("FLY-2291: rotates the session generation after two integrity failures", () => {
+		store.insertCodexReviewJob({
+			requestId: "integrity-streak",
+			executionId: "exec-integrity-streak",
+			issueId: "FLY-2291",
+			projectName: "flywheel",
+			reviewType: "code",
+			questionId: "q-integrity-streak",
+			reviewerSessionUuid: "poisoned-session",
+		});
+		expect(store.claimCodexReviewJobRunning("integrity-streak")).toBe(true);
+
+		const first = store.recordCodexReviewJobFailure({
+			requestId: "integrity-streak",
+			reason: "no_verdict",
+		});
+		expect(first.reviewerSessionRotated).toBe(false);
+		expect(first.job).toMatchObject({
+			reviewer_session_generation: 0,
+			reviewer_session_failure_streak: 1,
+			reviewer_session_uuid: "poisoned-session",
+		});
+
+		expect(store.claimCodexReviewJobRunning("integrity-streak")).toBe(true);
+		const second = store.recordCodexReviewJobFailure({
+			requestId: "integrity-streak",
+			reason: "reviewed_wrong_head",
+		});
+		expect(second.reviewerSessionRotated).toBe(true);
+		expect(second.job).toMatchObject({
+			reviewer_session_generation: 1,
+			reviewer_session_failure_streak: 0,
+			retired_reviewer_session_uuid: "poisoned-session",
+		});
+		expect(second.job?.reviewer_session_uuid).toBeUndefined();
+	});
+
+	it("FLY-2291: carries streaks across requests without crossing repo identity or generation", () => {
+		store.insertCodexReviewJob({
+			requestId: "scope-r1",
+			executionId: "exec-scope",
+			projectName: "flywheel",
+			reviewType: "design",
+			questionId: "q-scope-r1",
+			targetRepoIdentity: "acme/main",
+			reviewerSessionUuid: "main-session",
+		});
+		store.claimCodexReviewJobRunning("scope-r1");
+		store.failCodexReviewJob("scope-r1", "no_verdict");
+
+		store.insertCodexReviewJob({
+			requestId: "other-repo",
+			executionId: "exec-scope",
+			projectName: "flywheel",
+			reviewType: "design",
+			questionId: "q-other-repo",
+			targetRepoIdentity: "acme/other",
+			reviewerSessionUuid: "other-session",
+		});
+
+		const inherited = store.latestCodexReviewerSessionState(
+			"exec-scope",
+			"design",
+			"acme/main",
+		);
+		expect(inherited).toEqual({
+			generation: 0,
+			failureStreak: 1,
+			sessionUuid: "main-session",
+		});
+		store.insertCodexReviewJob({
+			requestId: "scope-r2",
+			executionId: "exec-scope",
+			projectName: "flywheel",
+			reviewType: "design",
+			questionId: "q-scope-r2",
+			targetRepoIdentity: "acme/main",
+			reviewerSessionUuid: inherited.sessionUuid,
+			reviewerSessionGeneration: inherited.generation,
+			reviewerSessionFailureStreak: inherited.failureStreak,
+		});
+		store.claimCodexReviewJobRunning("scope-r2");
+		const rotated = store.recordCodexReviewJobFailure({
+			requestId: "scope-r2",
+			reason: "no_verdict",
+		});
+		expect(rotated.reviewerSessionRotated).toBe(true);
+		expect(
+			store.latestCodexReviewerSessionState(
+				"exec-scope",
+				"design",
+				"acme/main",
+			),
+		).toEqual({
+			generation: 1,
+			failureStreak: 0,
+		});
+
+		store.setCodexReviewJobReviewerSession("scope-r2", "fresh-session");
+		expect(
+			store.latestCodexReviewerSessionUuid("exec-scope", "design", "acme/main"),
+		).toBe("fresh-session");
+		expect(
+			store.latestCodexReviewerSessionUuid(
+				"exec-scope",
+				"design",
+				"acme/other",
+			),
+		).toBe("other-session");
+	});
+
+	it("FLY-2291: selects the highest completed round as fresh-session context", () => {
+		for (const [requestId, round, finding] of [
+			["done-r1", 1, "older finding"],
+			["done-r2", 2, "latest finding"],
+		] as const) {
+			store.insertCodexReviewJob({
+				requestId,
+				executionId: "exec-latest-done",
+				projectName: "flywheel",
+				reviewType: "design",
+				round,
+				questionId: `q-${requestId}`,
+			});
+			store.claimCodexReviewJobRunning(requestId);
+			store.completeCodexReviewJob(
+				requestId,
+				"CHANGES_REQUESTED",
+				JSON.stringify([{ title: finding }]),
+			);
+		}
+
+		expect(
+			store.latestDoneCodexReviewJob("exec-latest-done", "design")?.request_id,
+		).toBe("done-r2");
 	});
 
 	it("atomically records a failure generation and schedules one retry", () => {
@@ -457,6 +632,10 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 			expect(migrated.getCodexReviewJob("legacy-parent")).toMatchObject({
 				head_move_retry_count: 0,
 				head_move_parent_request_id: undefined,
+				repaired_trailing_brace: false,
+				reviewer_session_generation: 0,
+				reviewer_session_failure_streak: 0,
+				retired_reviewer_session_uuid: undefined,
 			});
 			migrated.failAndRequeueCodexReviewJobForHeadMove({
 				requestId: "legacy-parent",
@@ -493,6 +672,8 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 			targetRepoIdentity: "__main__",
 			frozenHeadSha: SHA_A,
 			reviewerSessionUuid: "review-session",
+			reviewerSessionGeneration: 2,
+			reviewerSessionFailureStreak: 1,
 			authorFamily: "codex",
 		});
 		expect(store.claimCodexReviewJobRunning("request-old")).toBe(true);
@@ -509,6 +690,8 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 			status: "failed",
 			failure_reason: "head_moved",
 			failure_attempt_count: 1,
+			reviewer_session_generation: 2,
+			reviewer_session_failure_streak: 0,
 		});
 		expect(result.successor).toMatchObject({
 			request_id: "request-new",
@@ -522,6 +705,8 @@ describe("StateStore — FLY-2228 moved-head successor", () => {
 			target_repo_identity: "__main__",
 			frozen_head_sha: SHA_B,
 			reviewer_session_uuid: "review-session",
+			reviewer_session_generation: 2,
+			reviewer_session_failure_streak: 0,
 			author_family: "codex",
 			head_move_parent_request_id: "request-old",
 			head_move_retry_count: 1,

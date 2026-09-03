@@ -828,6 +828,75 @@ describe("ReviewRequestCoordinator — codex-skip lane", () => {
 });
 
 describe("ReviewRequestCoordinator — job execution", () => {
+	it("FLY-2291: persists and surfaces repaired verdict audit before delivery", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+		h.outcomes.push({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			repairedTrailingBrace: true,
+			raw: '{"verdict":"APPROVED","findings":[]',
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "repaired-review",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("repaired-review")).toMatchObject({
+			status: "done",
+			repaired_trailing_brace: true,
+		});
+		expect(
+			JSON.parse(h.comm.getResponse("q1")?.content ?? "null"),
+		).toMatchObject({
+			reviewVerdict: "APPROVED",
+			repairedTrailingBrace: true,
+			reviewAudit: "verdict parsed after trailing-brace repair",
+		});
+	});
+
+	it("FLY-2291: retains repaired audit when the gate closes before verdict delivery", async () => {
+		const round = deferred<ClaudeReviewOutcome>();
+		const h = await makeHarness({ reviewRound: async () => round.promise });
+		registerSession(h.store, "e1");
+		openGate(h.comm, "q1", "e1", "review_design");
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "repaired-closed-gate",
+			reviewType: "design",
+			questionId: "q1",
+		});
+		await settle();
+		h.comm.questions.get("q1")!.resolved_at = new Date().toISOString();
+		round.resolve({
+			kind: "verdict",
+			verdict: "APPROVED",
+			findings: [],
+			reviewedHeadSha: null,
+			repairedTrailingBrace: true,
+			raw: '{"verdict":"APPROVED","findings":[]',
+		});
+		await settle();
+
+		expect(h.store.getCodexReviewJob("repaired-closed-gate")).toMatchObject({
+			status: "failed",
+			failure_reason: "gate_answered_externally",
+			repaired_trailing_brace: true,
+		});
+		expect(h.comm.getResponse("q1")).toBeUndefined();
+		expect(h.reviewAlerts.at(-1)?.message).toContain(
+			"repaired_trailing_brace=true",
+		);
+	});
+
 	it("FLY-1278: policy-off prompt stays byte-identical while policy-on teaches severity and stable ids", async () => {
 		const legacy = await makeHarness({ reviewSeverityPolicyEnabled: false });
 		registerSession(legacy.store, "source");
@@ -2203,6 +2272,178 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		);
 	});
 
+	it("FLY-2291: two no-verdict requests rotate before the next invocation and retain prior findings", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "prior-done",
+			executionId: "e1",
+			issueId: "FLY-2291",
+			projectName: "proj",
+			reviewType: "design",
+			round: 1,
+			questionId: "q-prior",
+			reviewerSessionUuid: "poisoned-session",
+		});
+		h.store.claimCodexReviewJobRunning("prior-done");
+		h.store.completeCodexReviewJob(
+			"prior-done",
+			"CHANGES_REQUESTED",
+			JSON.stringify([{ title: "durable prior finding" }]),
+		);
+
+		for (const questionId of ["q2", "q3", "q4"]) {
+			openGate(h.comm, questionId, "e1", "review_design");
+		}
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "no_verdict",
+				detail: "missing outer brace",
+				exitCode: 0,
+				timedOut: false,
+				raw: "bad-r2",
+			},
+			{
+				kind: "failed",
+				reason: "no_verdict",
+				detail: "missing outer brace again",
+				exitCode: 0,
+				timedOut: false,
+				raw: "bad-r3",
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				repairedTrailingBrace: false,
+				raw: "",
+			},
+		);
+
+		for (const [requestId, questionId] of [
+			["failed-r2", "q2"],
+			["failed-r3", "q3"],
+		] as const) {
+			await h.coordinator.accept({
+				executionId: "e1",
+				requestId,
+				reviewType: "design",
+				questionId,
+			});
+			await settle();
+		}
+		expect(h.store.getCodexReviewJob("failed-r3")).toMatchObject({
+			reviewer_session_generation: 1,
+			reviewer_session_failure_streak: 0,
+			retired_reviewer_session_uuid: "poisoned-session",
+		});
+
+		await h.coordinator.accept({
+			executionId: "e1",
+			requestId: "fresh-r4",
+			reviewType: "design",
+			questionId: "q4",
+		});
+		await settle();
+		expect(h.invocations.map(({ resume }) => resume)).toEqual([
+			true,
+			true,
+			false,
+		]);
+		expect(h.invocations[2]?.sessionId).not.toBe("poisoned-session");
+		expect(h.store.getCodexReviewJob("fresh-r4")).toMatchObject({
+			reviewer_session_generation: 1,
+			reviewer_session_uuid: h.invocations[2]?.sessionId,
+		});
+		expect(h.invocations[2]?.prompt).toContain("durable prior finding");
+		expect(h.invocations[2]?.prompt).toContain("round 1");
+		expect(h.invocations[2]?.prompt).not.toContain("THIS session");
+	});
+
+	it("FLY-2291: a same-request retry uses the replacement session announced by both failure alerts", async () => {
+		const h = await makeHarness();
+		registerSession(h.store, "e1");
+		h.store.insertCodexReviewJob({
+			requestId: "prior",
+			executionId: "e1",
+			issueId: "FLY-2291",
+			projectName: "proj",
+			reviewType: "design",
+			round: 1,
+			questionId: "q-prior",
+			reviewerSessionUuid: "poisoned-session",
+		});
+		h.store.claimCodexReviewJobRunning("prior");
+		h.store.completeCodexReviewJob(
+			"prior",
+			"CHANGES_REQUESTED",
+			JSON.stringify([{ title: "prior finding" }]),
+		);
+		openGate(h.comm, "q2", "e1", "review_design");
+		h.outcomes.push(
+			{
+				kind: "failed",
+				reason: "no_verdict",
+				detail: "first malformed output",
+				exitCode: 0,
+				timedOut: false,
+			},
+			{
+				kind: "failed",
+				reason: "no_verdict",
+				detail: "second malformed output",
+				exitCode: 0,
+				timedOut: false,
+			},
+			{
+				kind: "verdict",
+				verdict: "APPROVED",
+				findings: [],
+				reviewedHeadSha: null,
+				repairedTrailingBrace: false,
+				raw: "",
+			},
+		);
+
+		const retry = () =>
+			h.coordinator.accept({
+				executionId: "e1",
+				requestId: "same-request",
+				reviewType: "design",
+				questionId: "q2",
+			});
+		await retry();
+		await settle();
+		await retry();
+		await settle();
+
+		expect(h.store.getCodexReviewJob("same-request")).toMatchObject({
+			reviewer_session_generation: 1,
+			retired_reviewer_session_uuid: "poisoned-session",
+		});
+		const recovery =
+			"reviewer session has already been replaced; retry this same requestId to start fresh";
+		expect(h.alerts.at(-1)).toContain(recovery);
+		expect(h.reviewAlerts.at(-1)?.message).toContain(recovery);
+
+		await retry();
+		await settle();
+		expect(h.invocations.map(({ resume }) => resume)).toEqual([
+			true,
+			true,
+			false,
+		]);
+		expect(h.invocations[2]?.sessionId).not.toBe("poisoned-session");
+		expect(h.invocations[2]?.prompt).toContain("review round 1");
+		expect(h.store.getCodexReviewJob("same-request")).toMatchObject({
+			status: "done",
+			reviewer_session_generation: 1,
+			reviewer_session_uuid: h.invocations[2]?.sessionId,
+		});
+	});
+
 	it("a fresh reround rebuilds prior findings when available", async () => {
 		const h = await makeHarness();
 		registerSession(h.store, "e1");
@@ -2242,7 +2483,9 @@ describe("ReviewRequestCoordinator — job execution", () => {
 		expect(h.invocations).toHaveLength(1);
 		expect(h.invocations[0]?.resume).toBe(false);
 		expect(h.invocations[0]?.prompt).toContain("preserved finding");
-		expect(h.invocations[0]?.prompt).toContain("previous findings were");
+		expect(h.invocations[0]?.prompt).toContain(
+			"most recent durable findings came from review round 1",
+		);
 	});
 
 	it("a fresh reround without durable findings says so instead of inventing []", async () => {

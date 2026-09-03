@@ -847,7 +847,7 @@ export class ReviewRequestCoordinator {
 				reviewType,
 				reviewTarget.identity,
 			) + 1;
-		const priorUuid = this.store.latestCodexReviewerSessionUuid(
+		const priorSession = this.store.latestCodexReviewerSessionState(
 			executionId,
 			reviewType,
 			reviewTarget.identity,
@@ -864,7 +864,9 @@ export class ReviewRequestCoordinator {
 			targetRepoPath: reviewTarget.path,
 			targetRepoIdentity: reviewTarget.identity,
 			frozenHeadSha,
-			reviewerSessionUuid: priorUuid ?? undefined,
+			reviewerSessionUuid: priorSession.sessionUuid,
+			reviewerSessionGeneration: priorSession.generation,
+			reviewerSessionFailureStreak: priorSession.failureStreak,
 			authorFamily,
 		});
 		if (!insert.inserted) {
@@ -1232,6 +1234,16 @@ export class ReviewRequestCoordinator {
 			this.failReviewerOutcome(job, outcome, failedAttempts);
 			return; // fail-close: no response, gate stays shut
 		}
+		if (
+			outcome.repairedTrailingBrace &&
+			!this.store.markCodexReviewJobTrailingBraceRepaired(requestId)
+		) {
+			this.failReviewJob(requestId, "repair_audit_failed");
+			this.alert(
+				`claude review ${requestId}: repaired verdict audit could not be persisted — verdict refused.`,
+			);
+			return;
+		}
 
 		// R13 MEDIUM-1 + R14 HIGH-2: FULL gate re-validation before any
 		// authority/verdict write — resolved/expired/re-purposed gates and
@@ -1306,9 +1318,18 @@ export class ReviewRequestCoordinator {
 		// `done` is re-driven by the outbox, which re-runs this same
 		// deliver-then-authority sequence from the stored verdict.
 		const findingsJson = JSON.stringify(outcome.findings ?? []);
-		const responsePayload = policyEnabled
+		const baseResponsePayload = policyEnabled
 			? buildVerdictPayload(job, policyResult)
 			: buildLegacyVerdictPayload(job, outcome.verdict, findingsJson);
+		const responsePayload = {
+			...baseResponsePayload,
+			...(outcome.repairedTrailingBrace
+				? {
+						repairedTrailingBrace: true,
+						reviewAudit: "verdict parsed after trailing-brace repair",
+					}
+				: {}),
+		};
 		const responseJson = JSON.stringify(responsePayload);
 		this.store.completeCodexReviewJob(
 			requestId,
@@ -1414,12 +1435,20 @@ export class ReviewRequestCoordinator {
 			this.emitReviewJobFailureAlert(persisted.job);
 		}
 		const summary = sanitizeFailureSummary(failureRaw);
+		const persistedGate = persisted.job
+			? this.inspectGate(
+					persisted.job.project_name,
+					persisted.job.question_id,
+					persisted.job.execution_id,
+					persisted.job.review_type,
+				)
+			: null;
 		const recovery =
-			persisted.scheduled && persisted.job?.retry_at
-				? `automatic same-request retry is scheduled for ${persisted.job.retry_at}; gate stays closed`
-				: "gate stays closed; retry the request or use the codex-skip governance path";
+			persisted.job && persistedGate
+				? this.reviewFailureRecovery(persisted.job, persistedGate.state)
+				: "gate stays closed; inspect the durable review job before retrying.";
 		this.alert(
-			`claude review ${job.request_id} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — ${recovery}.${summary ? ` Evidence: ${summary}` : ""}`,
+			`claude review ${job.request_id} (${job.issue_id ?? job.execution_id}, ${job.review_type} R${job.round}) FAILED: ${outcome.reason} — ${recovery}${summary ? ` Evidence: ${summary}` : ""}`,
 		);
 	}
 
@@ -1448,13 +1477,16 @@ export class ReviewRequestCoordinator {
 			job.execution_id;
 		const recovery =
 			recoveryOverride ?? this.reviewFailureRecovery(job, gate.state);
+		const repairAudit = job.repaired_trailing_brace
+			? " Verdict parsed after trailing-brace repair (repaired_trailing_brace=true)."
+			: "";
 		void this.emitReviewAlert({
 			kind: "review_job_failed",
 			eventId: `review-failed:${job.request_id}:${job.failure_attempt_count}`,
 			issueId,
 			executionId: job.execution_id,
 			requestId: job.request_id,
-			message: `Review ${job.request_id} (${job.review_type} R${job.round}) failed: ${job.failure_reason ?? "unknown"}. ${recovery}`,
+			message: `Review ${job.request_id} (${job.review_type} R${job.round}) failed: ${job.failure_reason ?? "unknown"}. ${recovery}${repairAudit}`,
 		});
 	}
 
@@ -1493,8 +1525,19 @@ export class ReviewRequestCoordinator {
 		job: CodexReviewJob,
 		gateState: ReviewGateState,
 	): string {
+		if (
+			(job.failure_reason === "no_verdict" ||
+				job.failure_reason === "reviewed_wrong_head") &&
+			!job.reviewer_session_uuid &&
+			job.retired_reviewer_session_uuid
+		) {
+			const scheduled = job.retry_at
+				? `automatic same-request retry is scheduled for ${job.retry_at}; `
+				: "";
+			return `${scheduled}reviewer session has already been replaced; retry this same requestId to start fresh. The gate remains closed.`;
+		}
 		if (job.retry_at) {
-			return `Automatic same-request retry is scheduled for ${job.retry_at}; the gate remains closed.`;
+			return `automatic same-request retry is scheduled for ${job.retry_at}; the gate remains closed.`;
 		}
 		if (
 			job.failure_reason === "head_moved" ||
@@ -1711,7 +1754,7 @@ export class ReviewRequestCoordinator {
 			job.target_repo_identity,
 		);
 		const priorContext = prior?.findings_json
-			? `Your previous findings were:\n${prior.findings_json}`
+			? `Your most recent durable findings came from review round ${prior.round}:\n${prior.findings_json}`
 			: "(no reliable record of your prior findings survives — treat this as a fresh, full review)";
 		return (
 			`${contract}\n\nRound ${job.round} fresh re-review (the prior reviewer session was unavailable). ` +

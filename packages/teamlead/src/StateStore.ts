@@ -1524,6 +1524,14 @@ export interface CodexReviewJob {
 	status: "pending" | "running" | "done" | "failed" | "skipped";
 	/** claude reviewer session uuid — resumed across rounds per (exec, type). */
 	reviewer_session_uuid?: string;
+	/** Parser audit: the verdict required one bounded trailing-brace repair. */
+	repaired_trailing_brace: boolean;
+	/** Reviewer-session lineage generation; UUID inheritance never crosses it. */
+	reviewer_session_generation: number;
+	/** Consecutive no_verdict/reviewed_wrong_head outcomes in this generation. */
+	reviewer_session_failure_streak: number;
+	/** Most recently retired poisoned reviewer session, retained for audit. */
+	retired_reviewer_session_uuid?: string;
 	verdict?: string;
 	/** Reviewer-emitted verdict before FLY-1278 policy processing. */
 	reviewer_verdict?: string;
@@ -4301,6 +4309,10 @@ export class StateStore {
 				status                TEXT NOT NULL DEFAULT 'pending'
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
 				reviewer_session_uuid TEXT,
+				repaired_trailing_brace INTEGER NOT NULL DEFAULT 0,
+				reviewer_session_generation INTEGER NOT NULL DEFAULT 0,
+				reviewer_session_failure_streak INTEGER NOT NULL DEFAULT 0,
+				retired_reviewer_session_uuid TEXT,
 				verdict               TEXT,
 				reviewer_verdict      TEXT,
 				findings_json         TEXT,
@@ -4360,6 +4372,10 @@ export class StateStore {
 			["payload_version", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
+			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
+			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
+			["retired_reviewer_session_uuid", "TEXT"],
 		] as const) {
 			if (!reviewJobColumns.includes(column)) {
 				this.db.run(
@@ -10755,6 +10771,16 @@ export class StateStore {
 			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
+			repaired_trailing_brace:
+				Number(row.repaired_trailing_brace ?? 0) === 1,
+			reviewer_session_generation: Number(
+				row.reviewer_session_generation ?? 0,
+			),
+			reviewer_session_failure_streak: Number(
+				row.reviewer_session_failure_streak ?? 0,
+			),
+			retired_reviewer_session_uuid:
+				(row.retired_reviewer_session_uuid as string) ?? undefined,
 			verdict: (row.verdict as string) ?? undefined,
 			reviewer_verdict: (row.reviewer_verdict as string) ?? undefined,
 			findings_json: (row.findings_json as string) ?? undefined,
@@ -10871,6 +10897,8 @@ export class StateStore {
 		targetRepoIdentity?: string;
 		frozenHeadSha?: string;
 		reviewerSessionUuid?: string;
+		reviewerSessionGeneration?: number;
+		reviewerSessionFailureStreak?: number;
 		authorFamily?: string;
 		/** skip lane writes the durable skipped audit row directly. */
 		status?: "pending" | "skipped";
@@ -10880,9 +10908,10 @@ export class StateStore {
 			   (request_id, execution_id, issue_id, project_name, review_type,
 			    round, question_id, target_path, target_repo_path,
 			    target_repo_identity, frozen_head_sha,
-			    reviewer_session_uuid, author_family, status, delivery_nonce,
+			    reviewer_session_uuid, reviewer_session_generation,
+			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
 			    created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -10896,6 +10925,8 @@ export class StateStore {
 				input.targetRepoIdentity ?? "__main__",
 				input.frozenHeadSha ?? null,
 				input.reviewerSessionUuid ?? null,
+				input.reviewerSessionGeneration ?? 0,
+				input.reviewerSessionFailureStreak ?? 0,
 				input.authorFamily ?? null,
 				input.status ?? "pending",
 				randomUUID(), // R17 delivery nonce — server-only
@@ -10955,6 +10986,7 @@ export class StateStore {
 				`UPDATE codex_review_job
 				    SET status = 'failed', failure_reason = ?,
 				        failure_raw = ?, retry_at = NULL,
+				        reviewer_session_failure_streak = 0,
 				        failure_attempt_count = failure_attempt_count + 1,
 				        updated_at = datetime('now')
 				  WHERE request_id = ? AND status NOT IN ('done','skipped')`,
@@ -10974,9 +11006,10 @@ export class StateStore {
 				 (request_id, execution_id, issue_id, project_name, review_type,
 				  round, question_id, target_path, target_repo_path,
 				  target_repo_identity, frozen_head_sha, reviewer_session_uuid,
+				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
 				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -10989,6 +11022,7 @@ export class StateStore {
 						parent.target_repo_identity,
 						currentHeadSha,
 						parent.reviewer_session_uuid ?? null,
+						parent.reviewer_session_generation,
 						parent.author_family ?? null,
 						randomUUID(),
 						parent.request_id,
@@ -11050,6 +11084,7 @@ export class StateStore {
 			   SET status = 'done', verdict = ?, reviewer_verdict = ?,
 			       findings_json = ?, advisories_json = ?, settled_json = ?,
 			       response_json = ?, payload_version = ?,
+			       reviewer_session_failure_streak = 0,
 			       failure_reason = NULL, failure_raw = NULL, retry_at = NULL,
 			       updated_at = datetime('now')
 			 WHERE request_id = ?`,
@@ -11077,7 +11112,15 @@ export class StateStore {
 		reason: string;
 		failureRaw?: string;
 		retryAt?: string;
-	}): { updated: boolean; scheduled: boolean; job: CodexReviewJob | null } {
+	}): {
+		updated: boolean;
+		scheduled: boolean;
+		reviewerSessionRotated: boolean;
+		job: CodexReviewJob | null;
+	} {
+		const before = this.getCodexReviewJob(input.requestId);
+		const sessionIntegrityFailure =
+			input.reason === "no_verdict" || input.reason === "reviewed_wrong_head";
 		let retryAt: string | null = null;
 		if (input.retryAt) {
 			const parsed = Date.parse(input.retryAt);
@@ -11099,6 +11142,24 @@ export class StateStore {
 			         WHEN ? IS NOT NULL AND auto_retry_count < ? THEN 1
 			         ELSE 0
 			       END,
+			       reviewer_session_generation = reviewer_session_generation + CASE
+			         WHEN ? = 1 AND reviewer_session_failure_streak >= 1 THEN 1
+			         ELSE 0
+			       END,
+			       retired_reviewer_session_uuid = CASE
+			         WHEN ? = 1 AND reviewer_session_failure_streak >= 1
+			         THEN reviewer_session_uuid
+			         ELSE retired_reviewer_session_uuid
+			       END,
+			       reviewer_session_uuid = CASE
+			         WHEN ? = 1 AND reviewer_session_failure_streak >= 1 THEN NULL
+			         ELSE reviewer_session_uuid
+			       END,
+			       reviewer_session_failure_streak = CASE
+			         WHEN ? = 0 THEN 0
+			         WHEN reviewer_session_failure_streak >= 1 THEN 0
+			         ELSE reviewer_session_failure_streak + 1
+			       END,
 			       failure_attempt_count = failure_attempt_count + 1,
 			       updated_at = datetime('now')
 			 WHERE request_id = ? AND status NOT IN ('done','skipped')`,
@@ -11110,6 +11171,10 @@ export class StateStore {
 				retryAt,
 				retryAt,
 				MAX_CODEX_REVIEW_AUTO_RETRIES,
+				sessionIntegrityFailure ? 1 : 0,
+				sessionIntegrityFailure ? 1 : 0,
+				sessionIntegrityFailure ? 1 : 0,
+				sessionIntegrityFailure ? 1 : 0,
 				input.requestId,
 			],
 		);
@@ -11120,6 +11185,12 @@ export class StateStore {
 			updated,
 			scheduled:
 				updated && retryAt !== null && job?.retry_at === retryAt,
+			reviewerSessionRotated:
+				updated &&
+				before !== null &&
+				job !== null &&
+				job.reviewer_session_generation >
+					before.reviewer_session_generation,
 			job,
 		};
 	}
@@ -11148,6 +11219,23 @@ export class StateStore {
 			[uuid, requestId],
 		);
 		this.save();
+	}
+
+	/**
+	 * FLY-2291: record parser repair evidence before gate/head validation. This
+	 * is audit-only (never verdict/authority) and may mutate only the actively
+	 * running job; terminal outbox rows remain immutable.
+	 */
+	markCodexReviewJobTrailingBraceRepaired(requestId: string): boolean {
+		this.db.run(
+			`UPDATE codex_review_job
+			   SET repaired_trailing_brace = 1, updated_at = datetime('now')
+			 WHERE request_id = ? AND status = 'running'`,
+			[requestId],
+		);
+		const updated = this.db.getRowsModified() > 0;
+		this.save();
+		return updated;
 	}
 
 	/**
@@ -11255,7 +11343,7 @@ export class StateStore {
 		const stmt = this.db.prepare(
 			`SELECT * FROM codex_review_job
 			  WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ? AND status = 'done'
-			  ORDER BY created_at DESC LIMIT 1`,
+			  ORDER BY round DESC, created_at DESC, request_id DESC LIMIT 1`,
 		);
 		stmt.bind([executionId, reviewType, targetRepoIdentity]);
 		let job: CodexReviewJob | null = null;
@@ -11268,29 +11356,70 @@ export class StateStore {
 		return job;
 	}
 
+	/** Latest generation-scoped reviewer state for one review target. */
+	latestCodexReviewerSessionState(
+		executionId: string,
+		reviewType: "design" | "code",
+		targetRepoIdentity = "__main__",
+	): { generation: number; failureStreak: number; sessionUuid?: string } {
+		const latestStmt = this.db.prepare(
+			`SELECT reviewer_session_generation, reviewer_session_failure_streak
+			   FROM codex_review_job
+			  WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ?
+			  ORDER BY round DESC, created_at DESC, request_id DESC LIMIT 1`,
+		);
+		latestStmt.bind([executionId, reviewType, targetRepoIdentity]);
+		let generation = 0;
+		let failureStreak = 0;
+		if (latestStmt.step()) {
+			const row = latestStmt.getAsObject() as Record<string, unknown>;
+			generation = Number(row.reviewer_session_generation ?? 0);
+			failureStreak = Number(row.reviewer_session_failure_streak ?? 0);
+		}
+		latestStmt.free();
+
+		const uuidStmt = this.db.prepare(
+			`SELECT reviewer_session_uuid FROM codex_review_job
+			  WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ?
+			    AND reviewer_session_generation = ?
+			    AND reviewer_session_uuid IS NOT NULL
+			  ORDER BY round DESC, created_at DESC, request_id DESC LIMIT 1`,
+		);
+		uuidStmt.bind([
+			executionId,
+			reviewType,
+			targetRepoIdentity,
+			generation,
+		]);
+		let sessionUuid: string | undefined;
+		if (uuidStmt.step()) {
+			const row = uuidStmt.getAsObject() as Record<string, unknown>;
+			sessionUuid = (row.reviewer_session_uuid as string) ?? undefined;
+		}
+		uuidStmt.free();
+		return {
+			generation,
+			failureStreak,
+			...(sessionUuid ? { sessionUuid } : {}),
+		};
+	}
+
 	/**
-	 * Latest reviewer session uuid for (execution, review type) — rerounds
-	 * resume the same claude session so the reviewer keeps its codebase read.
+	 * Latest reviewer session uuid in the current generation. Rerounds resume
+	 * it so the reviewer keeps its codebase read; retired generations stay cut.
 	 */
 	latestCodexReviewerSessionUuid(
 		executionId: string,
 		reviewType: "design" | "code",
 		targetRepoIdentity = "__main__",
 	): string | null {
-		const stmt = this.db.prepare(
-			`SELECT reviewer_session_uuid FROM codex_review_job
-			  WHERE execution_id = ? AND review_type = ? AND target_repo_identity = ?
-			    AND reviewer_session_uuid IS NOT NULL
-			  ORDER BY created_at DESC LIMIT 1`,
+		return (
+			this.latestCodexReviewerSessionState(
+				executionId,
+				reviewType,
+				targetRepoIdentity,
+			).sessionUuid ?? null
 		);
-		stmt.bind([executionId, reviewType, targetRepoIdentity]);
-		let uuid: string | null = null;
-		if (stmt.step()) {
-			const row = stmt.getAsObject() as Record<string, unknown>;
-			uuid = (row.reviewer_session_uuid as string) ?? null;
-		}
-		stmt.free();
-		return uuid;
 	}
 
 	// ── FLY-1278: review-finding governance rulings ───────────────────────
