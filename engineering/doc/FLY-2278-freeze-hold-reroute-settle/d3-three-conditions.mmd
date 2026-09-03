@@ -1,0 +1,16 @@
+flowchart LR
+  S[欠条命中冻结形状<br/>槽位耗尽 或 换手两推无回执] --> C1{① 卡住时长<br/>≥ 阈值?<br/>30 分钟 / 20 分钟}
+  C1 -->|否| K1[不冻结<br/>下一 tick 重看]
+  C1 -->|是| C2{② 收件体 session<br/>非终态?<br/>含 ship_parked / awaiting_review / design_done}
+  C2 -->|终态| K2[不冻结<br/>交给 undeliverable 改派线]
+  C2 -->|非终态| C3{③ 10 分钟内活性证据?<br/>心跳 / 状态变化 / 出站消息}
+  C3 -->|alive 任一命中| K3[不冻结<br/>告警写「体仍在动」]
+  C3 -->|absent 都在窗外| H[冻结 run<br/>事件带三条证据]
+  C3 -->|unknown 一条都没有| H2[冻结 run<br/>文案写「无心跳记录」]
+  H --> D[正门 hold list / resume]
+  H2 --> D
+  style H fill:#ffe5e3,stroke:#ff3b30
+  style H2 fill:#fff1e0,stroke:#ff9500
+  style K1 fill:#e8f8ee,stroke:#34c759
+  style K2 fill:#e8f8ee,stroke:#34c759
+  style K3 fill:#e8f8ee,stroke:#34c759

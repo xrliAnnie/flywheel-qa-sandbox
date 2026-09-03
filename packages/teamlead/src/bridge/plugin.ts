@@ -233,6 +233,7 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { DeliveryProjector } from "./delivery-contract/projector.js";
 import { DeliveryContractWatch } from "./delivery-contract/watch.js";
+import { DeliveryOperations } from "./delivery-operations.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
@@ -4261,6 +4262,7 @@ export function createBridgeApp(
 			{
 				masterToken: config.apiToken,
 				scopedToken: config.geminiAgentToken,
+				confirmTokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
 				collectWorkflowRun: workflowRunCollector,
 			},
@@ -7504,6 +7506,7 @@ export async function startBridge(
 					});
 					const deliveryContractWatch = new DeliveryContractWatch({
 						store,
+						commDb: deliveryCommDb,
 						projectName: project.projectName,
 						resolveAlertIdentity: resolveDeliveryAlertIdentity,
 						enqueueUnboundAlert: (payload) => {
@@ -7519,8 +7522,17 @@ export async function startBridge(
 							return { eventId: payload.eventId, state: "sent" };
 						},
 					});
+					const deliveryOperations = new DeliveryOperations({
+						store,
+						commDb: deliveryCommDb,
+						projectName: project.projectName,
+						resolveRecipient: ({ rootId, sourceExecutionId }) =>
+							store.resolveWorkflowDeliveryRecipient(rootId, sourceExecutionId),
+						resolveAlertIdentity: resolveDeliveryAlertIdentity,
+					});
 					deliveryProjector.runPass(deliveryNow);
 					deliveryContractWatch.runPass(deliveryNow);
+					deliveryOperations.runPass(deliveryNow);
 				} catch (error) {
 					console.warn(
 						`[delivery-contract] maintenance pass failed closed for ${project.projectName}: ${

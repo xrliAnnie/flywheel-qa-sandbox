@@ -8,8 +8,13 @@ export const STAGE_DEADLINES_MS = {
 } as const satisfies Partial<Record<DeliveryStage, number>>;
 
 export const SEVERE_MULTIPLIER = 3;
+export const MAX_REROUTES_PER_ROOT = 2;
+export const MAILBOX_SLOT_FREEZE_AFTER_MS = 30 * 60_000;
+export const TURN_WAKE_FREEZE_AFTER_MS = 20 * 60_000;
+export const UNDELIVERABLE_GRACE_MS = STAGE_DEADLINES_MS.sent;
 
 export const RECEIPT_CONSUMPTION_DEADLINE_FAMILIES = new Set<DeliveryFamily>([
 	"launch",
 	"carrier",
+	"rework",
 ]);

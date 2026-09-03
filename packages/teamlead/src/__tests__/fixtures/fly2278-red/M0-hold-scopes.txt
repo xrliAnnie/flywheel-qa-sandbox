@@ -1,0 +1,11 @@
+RUN v3.2.4 packages/teamlead
+
+FAIL src/__tests__/hold-shape-registry.test.ts
+FLY-2248 sanctioned hold-shape registry
+  classifies delivery and run-derived holds without changing the 19-shape inventory
+
+AssertionError: expected carrier_needs_lead scope to be 'delivery'
+Received: undefined
+
+Test Files  1 failed (1)
+Tests       1 failed | 3 passed (4)

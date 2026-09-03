@@ -1,0 +1,17 @@
+flowchart TD
+  A[维护 tick<br/>每 30 秒一次的巡检] --> B[projector<br/>把三本 CommDB 账的交接投影成欠条]
+  B --> C[watch<br/>逐条欠条分类:超时? 冻结形状? 收件体终结?]
+  C -->|阶段超时| D[stalled episode<br/>warning → severe 两级告警<br/>FLY-2248 已交付]
+  C -->|命中冻结形状<br/>槽位耗尽 / 换手两推无回执| E[frozen episode<br/>恰好一次告警]
+  E --> F{三条件<br/>① 超过阈值<br/>② 收件体非终态<br/>③ 无活性证据}
+  F -->|缺任一条| G[不冻结 run<br/>episode 保持可见]
+  F -->|三条全成立| H[run 置 held<br/>事件带三条证据]
+  C -->|收件体已终结且未 ACK| I[undeliverable episode<br/>不告警,进 15 分钟 grace]
+  I --> J[delivery-operations<br/>每 tick 找后继]
+  J -->|找到后继| K[自动改派 saga<br/>新 attempt 指向真实主键]
+  J -->|grace 到期 无后继| L{原收件体<br/>活性证据?}
+  L -->|alive| M[不升级<br/>记 deferred_alive_at]
+  L -->|absent / unknown| N[operator_required<br/>run 置 held + 一次告警]
+  H --> O[正门<br/>GET holds / POST resume]
+  N --> O
+  O --> P[run 回 active<br/>hold_resumed 事件]

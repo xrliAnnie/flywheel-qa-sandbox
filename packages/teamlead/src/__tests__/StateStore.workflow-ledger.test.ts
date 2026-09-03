@@ -22,6 +22,14 @@ async function freshStore(): Promise<StateStore> {
 const PROJECT = "flywheel";
 const ISSUE = "FLY-1232";
 
+function allDeliveryAttempts(
+	store: StateStore,
+): ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]> {
+	return (store as unknown as { db: { raw: Database.Database } }).db.raw
+		.prepare("SELECT * FROM workflow_delivery_attempt")
+		.all() as ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]>;
+}
+
 function dispatchBatch(
 	store: StateStore,
 	executionId: string,
@@ -682,13 +690,11 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 		expect(row?.reason).toContain("pre_commit_failure");
 		expect(row?.abandoned_at).toBeTruthy();
 		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.find(
-					(attempt) =>
-						attempt.family === "launch" &&
-						JSON.parse(attempt.contract_ref_json).pk === "exec-1",
-				),
+			allDeliveryAttempts(store).find(
+				(attempt) =>
+					attempt.family === "launch" &&
+					JSON.parse(attempt.contract_ref_json).pk === "exec-1",
+			),
 		).toMatchObject({ settlement_reason: "source_terminal" });
 
 		// marker already durable ⇒ the row sits at launch_committed and can never abandon

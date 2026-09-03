@@ -30,7 +30,11 @@ export const DELIVERY_STAGES = [
 ] as const;
 
 export type DeliveryStage = (typeof DELIVERY_STAGES)[number];
-export type DeliveryTerminal = "superseded" | "cancelled";
+export type DeliveryTerminal =
+	| "frozen"
+	| "superseded"
+	| "cancelled"
+	| "undeliverable";
 
 export interface WorkflowDeliveryAttemptRow {
 	root_id: string;
@@ -53,6 +57,7 @@ export interface DeliveryContractClassification {
 	stage: DeliveryStage;
 	stageEnteredAt: string;
 	terminal: DeliveryTerminal | null;
+	terminalShape?: string | null;
 	overdue: boolean;
 	severe: boolean;
 }

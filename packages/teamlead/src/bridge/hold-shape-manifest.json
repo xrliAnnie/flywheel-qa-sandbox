@@ -1,0 +1,135 @@
+[
+	{
+		"id": "rework_activation_stalled_held",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_receipt_deadlock"
+	},
+	{
+		"id": "rework_pane_loss_handoff",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "retrigger_replacement"
+	},
+	{
+		"id": "rework_retry_exhausted",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_rework_delivery",
+		"resumeOwner": "resume_rework"
+	},
+	{
+		"id": "unlaunched_admission_rolled_back",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_unlaunched"
+	},
+	{
+		"id": "unlaunched_admission_held",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_unlaunched"
+	},
+	{
+		"id": "completion_receipt_missing",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "reconstruct_completion"
+	},
+	{
+		"id": "retry_limit_escalated",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_retry_limit"
+	},
+	{
+		"id": "environment_failure_escalated",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_retry_limit"
+	},
+	{
+		"id": "loop_limit_escalated",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_loop_limit"
+	},
+	{
+		"id": "rework_suppressed_idle_spin",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_idle_spin"
+	},
+	{
+		"id": "workflow_gate_origin_preflight_terminal",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_gate_origin_preflight"
+	},
+	{
+		"id": "land_held_with_operation",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_land_operation"
+	},
+	{
+		"id": "land_held_without_operation",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_land_without_operation"
+	},
+	{
+		"id": "run_held_by_operator",
+		"authoritativeStore": "state",
+		"scope": "run",
+		"detectOwner": "workflow_run_event",
+		"resumeOwner": "resume_run_held_by_operator"
+	},
+	{
+		"id": "carrier_run_inactive",
+		"authoritativeStore": "state",
+		"scope": "run-derived",
+		"detectOwner": "workflow_carrier_delivery",
+		"resumeOwner": "revive_carrier"
+	},
+	{
+		"id": "carrier_needs_lead",
+		"authoritativeStore": "state",
+		"scope": "delivery",
+		"detectOwner": "workflow_carrier_delivery",
+		"resumeOwner": "redrive_carrier"
+	},
+	{
+		"id": "mailbox_inflight_slots_exhausted",
+		"authoritativeStore": "comm",
+		"scope": "run",
+		"detectOwner": "mailbox",
+		"resumeOwner": "reconcile_mailbox_leases"
+	},
+	{
+		"id": "three_stage_turn_stuck",
+		"authoritativeStore": "comm",
+		"scope": "run",
+		"detectOwner": "turn_wake_outbox",
+		"resumeOwner": "resume_turn_handoff"
+	},
+	{
+		"id": "delivery_undeliverable_no_recipient",
+		"authoritativeStore": "state",
+		"scope": "delivery",
+		"detectOwner": "workflow_delivery_contract_episode",
+		"resumeOwner": "resume_undeliverable"
+	}
+]

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import type Database from "better-sqlite3";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeGateMessageBinding } from "../bridge/approval-signal/gate-message-binding-store.js";
 import {
@@ -12,6 +13,14 @@ import { StateStore } from "../StateStore.js";
 const HEAD_1 = "a".repeat(40);
 const HEAD_2 = "b".repeat(40);
 const stores: StateStore[] = [];
+
+function allDeliveryAttempts(
+	store: StateStore,
+): ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]> {
+	return (store as unknown as { db: { raw: Database.Database } }).db.raw
+		.prepare("SELECT * FROM workflow_delivery_attempt")
+		.all() as ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]>;
+}
 
 async function createStore(): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
@@ -126,13 +135,11 @@ it("projects gate-holder materialization clocks and settlement exactly once", as
 			}),
 		).toMatchObject({ ok: true });
 	}
-	const attempt = store
-		.listLiveWorkflowDeliveryAttempts()
-		.find(
-			(row) =>
-				row.family === "gate_holder" &&
-				JSON.parse(row.contract_ref_json).pk === "question-clock",
-		);
+	const attempt = allDeliveryAttempts(store).find(
+		(row) =>
+			row.family === "gate_holder" &&
+			JSON.parse(row.contract_ref_json).pk === "question-clock",
+	);
 	expect(attempt).toMatchObject({
 		minted_at: "2026-08-14T20:00:00.000Z",
 		granted_at: "2026-08-14T20:01:00.000Z",

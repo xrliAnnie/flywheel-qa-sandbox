@@ -595,6 +595,25 @@ const carrierAlertIdentity = {
 	leadResolution: "resolved" as const,
 };
 
+function workflowDeliveryAttempt(
+	store: StateStore,
+	where: { family?: string; physicalId?: string; attemptId?: string },
+): Record<string, unknown> | undefined {
+	const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+	if (where.attemptId) {
+		return db
+			.prepare("SELECT * FROM workflow_delivery_attempt WHERE attempt_id = ?")
+			.get(where.attemptId) as Record<string, unknown> | undefined;
+	}
+	return db
+		.prepare(
+			`SELECT * FROM workflow_delivery_attempt
+			  WHERE family = ? AND json_extract(contract_ref_json, '$.pk') = ?
+			  ORDER BY generation DESC, attempt DESC LIMIT 1`,
+		)
+		.get(where.family, where.physicalId) as Record<string, unknown> | undefined;
+}
+
 describe("engine-owned snapshot transition transaction", () => {
 	it("replay #6 supersedes an unreceived runner-ship carrier when proven work completes", async () => {
 		const { store, holder, authority } = await completionReadyCarrierRun();
@@ -607,13 +626,10 @@ describe("engine-owned snapshot transition transaction", () => {
 			state: "completed",
 		});
 		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.find(
-					(row) =>
-						row.family === "carrier" &&
-						JSON.parse(row.contract_ref_json).pk === holder.question_id,
-				),
+			workflowDeliveryAttempt(store, {
+				family: "carrier",
+				physicalId: holder.question_id,
+			}),
 		).toMatchObject({ settlement_reason: "superseded_by_completion" });
 		expect(
 			store
@@ -641,13 +657,10 @@ describe("engine-owned snapshot transition transaction", () => {
 			idempotentReplay: false,
 		});
 		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.find(
-					(row) =>
-						row.family === "carrier" &&
-						JSON.parse(row.contract_ref_json).pk === holder.question_id,
-				),
+			workflowDeliveryAttempt(store, {
+				family: "carrier",
+				physicalId: holder.question_id,
+			}),
 		).toMatchObject({ settlement_reason: "settled" });
 		expect(
 			store
@@ -2427,9 +2440,7 @@ describe("engine-owned snapshot transition transaction", () => {
 			},
 		);
 		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.find(({ attempt_id }) => attempt_id === carrierG2!.attempt_id),
+			workflowDeliveryAttempt(store, { attemptId: carrierG2!.attempt_id }),
 		).toMatchObject({ settlement_reason: "settled" });
 		expect(store.listRunnerShipHoldersForMergeProbe()).toEqual([]);
 		store.close();
@@ -3423,6 +3434,20 @@ describe("engine-owned snapshot transition transaction", () => {
 				state: index === 4 ? "needs_lead" : "pending",
 			});
 		}
+		expect(
+			store.getCurrentWorkflowGateHolderByQuestionId(holder.question_id),
+		).toMatchObject({
+			state: "approved",
+			source_execution_id: "implement-1",
+		});
+		expect(store.getWorkflowRun("run-1")).toMatchObject({
+			status: "active",
+			current_node_id: "founder_gate",
+		});
+		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
+			state: "needs_lead",
+			source_execution_id: "implement-1",
+		});
 
 		const redrive = store.resolveWorkflowCarrierRedriveCanonical({
 			runId: "run-1",
@@ -4046,6 +4071,126 @@ describe("engine-owned snapshot transition transaction", () => {
 				alertIdentity,
 			}),
 		).toEqual({ ok: false, reason: "completion_raced" });
+		store.close();
+	});
+
+	it("settles the current carrier delivery generation after reroute", async () => {
+		const { store, holder, authority } = await completionReadyCarrierRun();
+		const original = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find((attempt) => attempt.family === "carrier");
+		if (!original) throw new Error("carrier delivery attempt missing");
+		store.observeWorkflowDeliveryContract({
+			attempt: original,
+			classification: {
+				stage: "sent",
+				stageEnteredAt: original.sent_at ?? original.minted_at,
+				terminal: "undeliverable",
+				overdue: false,
+				severe: false,
+			},
+			runId: "run-1",
+			projectName: "flywheel",
+			issueId: "FLY-1307",
+			now: "2026-07-16T01:17:00.000Z",
+			alertIdentity: carrierAlertIdentity,
+		});
+		const db = (store as unknown as { db: { raw: Database.Database } }).db.raw;
+		const episodeId = (
+			db
+				.prepare(
+					"SELECT episode_id FROM workflow_delivery_contract_episode WHERE attempt_id = ? AND closed_at IS NULL",
+				)
+				.get(original.attempt_id) as { episode_id?: unknown } | undefined
+		)?.episode_id;
+		if (typeof episodeId !== "string") {
+			throw new Error("carrier undeliverable episode missing");
+		}
+
+		store.upsertSession({
+			execution_id: "implement-2",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "awaiting_review",
+			pr_number: 1624,
+			pr_head_sha: "a".repeat(40),
+			review_question_id: holder.question_id,
+			workflow_node_id: "founder_gate",
+		});
+		store.setReviewBinding("implement-2", {
+			questionId: holder.question_id,
+			prHeadSha: "a".repeat(40),
+			shipTarget: {
+				runId: "run-1",
+				targetRepoPath: "/tmp/flywheel",
+				targetRepoIdentity: "__main__",
+				probeRepoSlug: "xrliAnnie/flywheel",
+				worktreeBindingGeneration: "generation-1",
+			},
+		});
+		store.upsertWorkflowRunNode({
+			runId: "run-1",
+			nodeId: "founder_gate",
+			attempt: 2,
+			state: "running",
+			executionId: "implement-2",
+		});
+		expect(
+			store.rerouteWorkflowStateDelivery({
+				episodeId,
+				targetExecutionId: "implement-2",
+				now: "2026-07-16T01:17:30.000Z",
+				allowOverCap: false,
+				alertIdentity: carrierAlertIdentity,
+			}),
+		).toMatchObject({ ok: true, idempotentReplay: false });
+		const child = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find((attempt) => attempt.family === "carrier");
+		if (!child) throw new Error("rerouted carrier child missing");
+		expect(JSON.parse(child.contract_ref_json)).toMatchObject({
+			pk: holder.question_id,
+			redriveGeneration: 1,
+			targetExecutionId: "implement-2",
+		});
+		store.observeWorkflowDeliveryContract({
+			attempt: child,
+			classification: {
+				stage: "sent",
+				stageEnteredAt: child.minted_at,
+				terminal: null,
+				overdue: true,
+				severe: false,
+			},
+			runId: "run-1",
+			projectName: "flywheel",
+			issueId: "FLY-1307",
+			now: "2026-07-16T01:18:00.000Z",
+			alertIdentity: carrierAlertIdentity,
+		});
+		expect(store.getSession("implement-2")).toMatchObject({
+			status: "awaiting_review",
+			pr_head_sha: "a".repeat(40),
+			review_question_id: holder.question_id,
+		});
+
+		expect(completeReadyCarrierRun(store, holder, authority)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.getSession("implement-2")?.status).toBe("completed");
+		const childEpisode = db
+			.prepare(
+				"SELECT closed_at, closed_reason FROM workflow_delivery_contract_episode WHERE attempt_id = ?",
+			)
+			.get(child.attempt_id);
+		expect(childEpisode).toEqual({
+			closed_at: "2026-07-18T01:16:00.000Z",
+			closed_reason: "terminal:settled:superseded_by_completion",
+		});
+		expect(store.listLiveWorkflowDeliveryAttempts()).not.toContainEqual(
+			expect.objectContaining({ attempt_id: child.attempt_id }),
+		);
 		store.close();
 	});
 

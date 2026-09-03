@@ -208,16 +208,6 @@ export class WorkflowEngineDispatcher {
 			: fallback;
 	}
 
-	private reworkThresholdMs(
-		name: "FLYWHEEL_ENGINE_REWORK_ALERT_MS" | "FLYWHEEL_ENGINE_REWORK_HOLD_MS",
-		fallback: number,
-	): number {
-		const configured = Number(this.env[name]);
-		return Number.isFinite(configured) && configured > 0
-			? configured
-			: fallback;
-	}
-
 	private probeTerminalLaunchLiveness(
 		executionId: string,
 		projectName: string,
@@ -317,7 +307,6 @@ export class WorkflowEngineDispatcher {
 			await this.reconcileDeadExecutions();
 			await this.reconcileWorkflowReworks(result);
 			await this.reconcileWorkflowCarriers(result);
-			this.reconcileWorkflowReworkStalls();
 			await this.reconcileUnlaunchedWorkflowStalls();
 			for (const intent of this.options.store.listNonTerminalWorkflowSideEffects()) {
 				if (intent.kind !== "dispatch") continue;
@@ -1124,142 +1113,6 @@ export class WorkflowEngineDispatcher {
 			now,
 		});
 		this.shipReadyFounderRetries.delete(workflowShipReadyUid(notice));
-	}
-
-	private reconcileWorkflowReworkStalls(): void {
-		const reentryPaused = !this.workflowReworkReentryEnabled();
-		const now = this.now();
-		const nowMs = now.getTime();
-		const alertMs = this.reworkThresholdMs(
-			"FLYWHEEL_ENGINE_REWORK_ALERT_MS",
-			30 * 60_000,
-		);
-		const holdMs = this.reworkThresholdMs(
-			"FLYWHEEL_ENGINE_REWORK_HOLD_MS",
-			60 * 60_000,
-		);
-		let deliveries: ReturnType<
-			typeof this.options.store.listWorkflowReworkDeliveries
-		>;
-		try {
-			deliveries = this.options.store.listWorkflowReworkDeliveries({
-				includeDeferred: true,
-			});
-		} catch (error) {
-			this.log(
-				`workflow rework stall scan held: ${error instanceof Error ? error.message : String(error)}`,
-			);
-			return;
-		}
-		for (const delivery of deliveries) {
-			// Retryable failures have their own 1/2/4/8-minute budget and terminal
-			// fifth strike. The legacy stall clock must not race that owner.
-			if (delivery.hold_count > 0) continue;
-			const request = this.options.store.getWorkflowReworkRequest(
-				delivery.request_id,
-			);
-			const run = request
-				? this.options.store.getWorkflowRun(request.run_id)
-				: undefined;
-			if (
-				!request ||
-				!run ||
-				run.engine_owned !== 1 ||
-				run.status !== "active"
-			) {
-				continue;
-			}
-			let pauseClockStartedAt: string | null = null;
-			if (delivery.state === "pending" || delivery.state === "turn_granted") {
-				// Operator-paused original-actor retries own a distinct durable FSM.
-				// Replacement activation stalls remain safety-governed below even
-				// while the original-actor re-entry kill switch is off.
-				if (reentryPaused) continue;
-				const resumed = this.options.store.transitionWorkflowReworkPause({
-					requestId: delivery.request_id,
-					generation: delivery.generation,
-					state: "resumed",
-					alertIdentity: this.resolveRunAlertIdentity(
-						run.project_name,
-						run.issue_id,
-						run.run_id,
-					),
-					now: now.toISOString(),
-				});
-				if (!resumed.ok) {
-					this.log(
-						`workflow re-entry stall clock held for ${delivery.request_id}: ${resumed.reason}`,
-					);
-					continue;
-				}
-				pauseClockStartedAt = resumed.clockStartedAt;
-			}
-			if (delivery.state === "replacement_pending") {
-				const route = this.options.store.getLatestWorkflowReworkRoute(
-					delivery.request_id,
-				);
-				const node = route
-					? this.options.store.getWorkflowRunNode(
-							request.run_id,
-							route.target_node_id,
-							route.target_attempt,
-						)
-					: undefined;
-				// Once the replacement is admitted, the fresh-spawn tripwire owns
-				// cancellation fencing and rollback. Do not let the activation timer
-				// race that stronger evidence path.
-				if (node?.state === "admitted") continue;
-			}
-			const naturalSourceAt =
-				delivery.state === "pending"
-					? request.requested_at
-					: delivery.updated_at;
-			const pauseClockStartedMs = pauseClockStartedAt
-				? parseSqliteUtcMs(pauseClockStartedAt)
-				: null;
-			const naturalSourceMs = parseSqliteUtcMs(naturalSourceAt);
-			const sourceAt =
-				pauseClockStartedAt &&
-				pauseClockStartedMs != null &&
-				naturalSourceMs != null &&
-				pauseClockStartedMs > naturalSourceMs
-					? pauseClockStartedAt
-					: naturalSourceAt;
-			const sourceMs = parseSqliteUtcMs(sourceAt);
-			if (sourceMs == null || nowMs < sourceMs) continue;
-			const ageMs = nowMs - sourceMs;
-			const reason = delivery.last_error ?? `delivery_${delivery.state}`;
-			const aliveEvidenceExpiresMs = delivery.next_retry_at
-				? parseSqliteUtcMs(delivery.next_retry_at)
-				: null;
-			const hasFreshActorAliveEvidence =
-				delivery.state === "wake_delivered" &&
-				delivery.last_error === "actor_alive_after_receipt" &&
-				aliveEvidenceExpiresMs != null &&
-				aliveEvidenceExpiresMs > nowMs;
-			const escalate = (action: "alert" | "hold") => {
-				const escalated = this.options.store.escalateWorkflowReworkStall({
-					requestId: delivery.request_id,
-					generation: delivery.generation,
-					action,
-					sourceAt,
-					reason,
-					now: now.toISOString(),
-					alertIdentity: this.resolveRunAlertIdentity(
-						run.project_name,
-						run.issue_id,
-						run.run_id,
-					),
-				});
-				if (!escalated.ok) {
-					this.log(
-						`workflow rework ${action} held for ${delivery.request_id}: ${escalated.reason}`,
-					);
-				}
-			};
-			if (ageMs >= alertMs) escalate("alert");
-			if (ageMs >= holdMs && !hasFreshActorAliveEvidence) escalate("hold");
-		}
 	}
 
 	private async reconcileDeadExecutionTripwires(): Promise<void> {

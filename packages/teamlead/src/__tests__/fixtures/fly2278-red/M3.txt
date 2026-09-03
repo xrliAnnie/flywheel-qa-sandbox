@@ -1,0 +1,13 @@
+FLY-2278 M3 RED — 2026-09-03
+
+Command:
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/StateStore.workflow-holds.test.ts src/__tests__/fly2278-r4-symmetry.test.ts src/bridge/__tests__/runs-route.run-management.test.ts
+
+Expected failures before implementation:
+- delivery/run-derived holds still incorrectly require run.status='held'
+- carrier_run_inactive is directly resumable instead of derived from a run hold
+- resuming one of two run holds activates the run too early
+- the runHeld:true undeliverable episode does not complete through the official reroute door
+- the canonical hold routes are not mounted on createRunsRouter (404)
+
+Result: 9 failed, 38 passed, 1 skipped.

@@ -1,0 +1,34 @@
+erDiagram
+  WORKFLOW_DELIVERY_ATTEMPT ||--o{ WORKFLOW_DELIVERY_CONTRACT_EPISODE : "一份欠条多次卡住"
+  WORKFLOW_DELIVERY_ATTEMPT ||--o{ WORKFLOW_DELIVERY_OPERATION : "改派 / 恢复动作"
+  WORKFLOW_RUN ||--o{ WORKFLOW_RUN_EVENT : "hold 事件 = 形状证据"
+  WORKFLOW_DELIVERY_ATTEMPT {
+    string attempt_id PK "root:g<代>:a<次>"
+    string family "8 个家族之一"
+    json contract_ref "table + pk 必须真实存在"
+    datetime minted_at "set-once 五时钟"
+    string settlement_reason "settled 是终态"
+    string superseded_by_attempt_id "改派后指向子代"
+  }
+  WORKFLOW_DELIVERY_CONTRACT_EPISODE {
+    string episode_id PK
+    string stage "minted..settled 或 frozen 形状 / undeliverable"
+    datetime opened_at "grace 从这里起算"
+    string closed_reason "advanced / terminal:settled:<why> / rerouted"
+  }
+  WORKFLOW_DELIVERY_OPERATION {
+    string operation_id PK
+    string kind "hold_resume | reroute | resident_expiry"
+    string client_request_id UK "幂等重放键"
+    string canonical_digest "正门单点算"
+    string state "staged→applied→sent→projected | failed"
+  }
+  WORKFLOW_RUN {
+    string run_id PK
+    string status "active | held | completed | terminated"
+  }
+  WORKFLOW_RUN_EVENT {
+    string event_uid PK
+    string kind "19 种 hold 形状之一"
+    json payload "livenessVerdict + 三条证据时间戳"
+  }

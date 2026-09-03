@@ -269,6 +269,11 @@ jobs:
       - name: Test — FLY-1572 mailbox migration CLI
         run: bash scripts/__tests__/migrate-fly1572-mailbox.test.sh
 
+      # FLY-2278: byte-exact attempt-version rollback is hermetic and exercises
+      # a private SQLite fixture, including replay and drift refusal.
+      - name: Test — FLY-2278 attempt-version rollback
+        run: bash scripts/__tests__/fly2278-rollback-attempt-versions.test.sh
+
       # FLY-1764: producer retirement is a deployment fence over real SQLite
       # shards, including legacy schemas and the rollback-on-cleanup-failure
       # path. It must run in the required CI lane, not only on an author host.

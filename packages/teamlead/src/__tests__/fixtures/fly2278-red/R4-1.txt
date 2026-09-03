@@ -1,0 +1,5 @@
+Command: pnpm --filter flywheel-comm exec vitest run src/__tests__/fly2278-mailbox-cancel.test.ts
+Expected RED: FLY-2278 R4#1 mailbox cancellation fence > terminally cancels a real send and removes it from the runner claim/delivery flow
+AssertionError: expected 'undefined' to be 'function'
+Failure site: CommDB.cancelMailboxDelivery is absent.
+

@@ -27,8 +27,10 @@ import {
 	assertUtcIsoTimestamp,
 	ensureMailboxQueueSchema,
 	MailboxQueue,
+	type MailboxRecipientKind,
 	type MailboxRow,
 	type MailboxSettlement,
+	type MailboxState,
 } from "./mailbox-queue.js";
 import {
 	dropReceiptLedgerSchema,
@@ -71,6 +73,8 @@ export interface RunnerDeliveryProjectionRow {
 	state: string;
 	recipient_status: string | null;
 	issue_id: string | null;
+	inflight_batch_count: number;
+	oldest_inflight_delivered_at: string | null;
 }
 
 export interface RunnerPhaseWakeProjectionRow {
@@ -95,7 +99,11 @@ export interface RunnerTurnWakeProjectionRow {
 	acked_at: number | null;
 	state: "pending" | "sent" | "acked" | "cancelled";
 	recipient_status: string | null;
+	last_push_at: number | null;
+	push_count: number;
 }
+
+const RUNNER_DELIVERY_TERMINAL_PROJECTION_MS = 72 * 60 * 60_000;
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
@@ -2614,7 +2622,12 @@ export class CommDB {
 			.get(id) as Message | undefined;
 	}
 
-	listRunnerDeliveryProjectionRows(): RunnerDeliveryProjectionRow[] {
+	listRunnerDeliveryProjectionRows(
+		now = new Date().toISOString(),
+	): RunnerDeliveryProjectionRow[] {
+		const terminalCutoff = new Date(
+			Date.parse(now) - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS,
+		).toISOString();
 		return this.db
 			.prepare(
 				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
@@ -2622,24 +2635,44 @@ export class CommDB {
 				        m.notified_at, m.acked_at, m.superseded_by,
 				        m.dead_reason, m.state,
 				        sessions.status AS recipient_status,
-				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id
+				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id,
+				        (
+				          SELECT COUNT(DISTINCT active.batch_id)
+				            FROM mailbox active
+				           WHERE active.to_agent = m.to_agent
+				             AND active.recipient_kind = 'runner'
+				             AND active.carrier = 'inbox'
+				             AND active.state = 'LEASED'
+				             AND active.delivered_at IS NOT NULL
+				             AND active.claim_expires_at > ?
+				             AND active.batch_id IS NOT NULL
+				        ) AS inflight_batch_count,
+				        (
+				          SELECT MIN(active.delivered_at)
+				            FROM mailbox active
+				           WHERE active.to_agent = m.to_agent
+				             AND active.recipient_kind = 'runner'
+				             AND active.carrier = 'inbox'
+				             AND active.state = 'LEASED'
+				             AND active.delivered_at IS NOT NULL
+				             AND active.claim_expires_at > ?
+				             AND active.batch_id IS NOT NULL
+				        ) AS oldest_inflight_delivered_at
 				   FROM mailbox m
 				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
 				   LEFT JOIN session_receipt_lineage lineage
 				     ON lineage.execution_id = m.to_agent
 				  WHERE m.recipient_kind = 'runner'
 				    AND m.type IN ('instruction','response')
-				    AND m.state IN ('QUEUED','LEASED','ACKED')
-				    AND m.superseded_by IS NULL
-				    AND m.dead_reason IS NULL
 				    AND (
-				      sessions.status = 'running' OR
-				      (sessions.status IN ('blocked','timeout')
-				       AND m.state IN ('QUEUED','LEASED'))
+				      (m.state IN ('QUEUED','LEASED','DEAD')
+				       AND m.acked_at IS NULL AND m.superseded_by IS NULL)
+				      OR ((m.state = 'ACKED' OR m.acked_at IS NOT NULL OR m.superseded_by IS NOT NULL)
+				          AND COALESCE(m.acked_at, m.notified_at, m.delivered_at, m.created_at) >= ?)
 				    )
 				  ORDER BY m.seq`,
 			)
-			.all() as RunnerDeliveryProjectionRow[];
+			.all(now, now, terminalCutoff) as RunnerDeliveryProjectionRow[];
 	}
 
 	getRunnerDeliveryProjectionRow(
@@ -2664,7 +2697,10 @@ export class CommDB {
 			.get(id) as RunnerDeliveryProjectionRow | undefined;
 	}
 
-	listRunnerPhaseWakeProjectionRows(): RunnerPhaseWakeProjectionRow[] {
+	listRunnerPhaseWakeProjectionRows(
+		nowMs = Date.now(),
+	): RunnerPhaseWakeProjectionRow[] {
+		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
 				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
@@ -2677,12 +2713,11 @@ export class CommDB {
 				     ON session.execution_id = wake.execution_id
 				   LEFT JOIN session_receipt_lineage lineage
 				     ON lineage.execution_id = wake.execution_id
-				  WHERE session.status = 'running'
-				     OR (session.status IN ('blocked','timeout')
-				         AND wake.state != 'finished')
+				  WHERE wake.state != 'finished'
+				     OR COALESCE(wake.finished_at, wake.started_at, wake.queued_at) >= ?
 				  ORDER BY wake.queue_seq`,
 			)
-			.all() as RunnerPhaseWakeProjectionRow[];
+			.all(terminalCutoffMs) as RunnerPhaseWakeProjectionRow[];
 	}
 
 	getRunnerPhaseWakeProjectionRow(
@@ -2707,24 +2742,25 @@ export class CommDB {
 			.get(messageId) as RunnerPhaseWakeProjectionRow | undefined;
 	}
 
-	listRunnerTurnWakeProjectionRows(): RunnerTurnWakeProjectionRow[] {
+	listRunnerTurnWakeProjectionRows(
+		nowMs = Date.now(),
+	): RunnerTurnWakeProjectionRow[] {
+		const terminalCutoffMs = nowMs - RUNNER_DELIVERY_TERMINAL_PROJECTION_MS;
 		return this.db
 			.prepare(
 				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
 				        wake.created_at, wake.first_push_at, wake.acked_at,
-				        wake.state, session.status AS recipient_status
+				        wake.last_push_at, wake.push_count, wake.state,
+				        session.status AS recipient_status
 				   FROM turn_wake_outbox wake
-				   JOIN sessions session
+				   LEFT JOIN sessions session
 				     ON session.execution_id = wake.execution_id
-				  WHERE wake.state != 'cancelled'
-				    AND (
-				      session.status = 'running' OR
-				      (session.status IN ('blocked','timeout')
-				       AND wake.state IN ('pending','sent'))
-				    )
+				  WHERE (wake.state IN ('pending','sent') AND wake.acked_at IS NULL)
+				     OR ((wake.state IN ('acked','cancelled') OR wake.acked_at IS NOT NULL)
+				         AND COALESCE(wake.acked_at, wake.last_push_at, wake.created_at) >= ?)
 				  ORDER BY wake.created_at, wake.wake_id`,
 			)
-			.all() as RunnerTurnWakeProjectionRow[];
+			.all(terminalCutoffMs) as RunnerTurnWakeProjectionRow[];
 	}
 
 	getRunnerTurnWakeProjectionRow(
@@ -2734,13 +2770,511 @@ export class CommDB {
 			.prepare(
 				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
 				        wake.created_at, wake.first_push_at, wake.acked_at,
-				        wake.state, session.status AS recipient_status
+				        wake.last_push_at, wake.push_count, wake.state,
+				        session.status AS recipient_status
 				   FROM turn_wake_outbox wake
 				   LEFT JOIN sessions session
 				     ON session.execution_id = wake.execution_id
 				  WHERE wake.wake_id = ?`,
 			)
 			.get(wakeId) as RunnerTurnWakeProjectionRow | undefined;
+	}
+
+	rerouteMailboxDelivery(input: {
+		sourceId: string;
+		childId: string;
+		rootId: string;
+		parentAttemptId: string;
+		targetExecutionId: string;
+		now: string;
+	}): { inserted: boolean } {
+		return this.db
+			.transaction(() => {
+				const source = this.db
+					.prepare("SELECT * FROM mailbox WHERE id = ?")
+					.get(input.sourceId) as MailboxRow | undefined;
+				if (!source)
+					throw new Error(`mailbox source not found: ${input.sourceId}`);
+				const expectedSourceRef = `fly2248:${input.rootId}:${input.parentAttemptId}`;
+				const existing = this.db
+					.prepare("SELECT to_agent, source_ref FROM mailbox WHERE id = ?")
+					.get(input.childId) as
+					| { to_agent: string; source_ref: string | null }
+					| undefined;
+				if (existing) {
+					if (
+						existing.to_agent !== input.targetExecutionId ||
+						existing.source_ref !== expectedSourceRef
+					) {
+						throw new Error(`mailbox reroute id conflict: ${input.childId}`);
+					}
+					return { inserted: false };
+				}
+				const superseded = this.db
+					.prepare(
+						`UPDATE mailbox
+						    SET superseded_at = COALESCE(superseded_at, ?),
+						        superseded_by = COALESCE(superseded_by, ?)
+						  WHERE id = ?
+						    AND (superseded_by IS NULL OR superseded_by = ?)`,
+					)
+					.run(input.now, input.childId, input.sourceId, input.childId);
+				if (superseded.changes !== 1) {
+					throw new Error(`mailbox reroute source conflict: ${input.sourceId}`);
+				}
+				const inserted = new MailboxQueue(this.db).enqueue({
+					id: input.childId,
+					fromAgent: source.from_agent,
+					toAgent: input.targetExecutionId,
+					recipientKind: "runner",
+					sourceKind: "delivery_reroute",
+					sourceRef: expectedSourceRef,
+					type: source.type,
+					msgClass: source.msg_class,
+					content: source.content,
+					deliveryContent: source.delivery_content,
+					contentRef: source.content_ref,
+					contentType: source.content_type,
+					refId: source.ref_id,
+					kind: source.kind,
+					checkpoint: source.checkpoint,
+					deadlineAt: source.deadline_at,
+					expiresAt: source.expires_at,
+					createdAt: input.now,
+					carrier: source.carrier,
+					senderRef: source.sender_ref ?? encodeSenderRef(),
+					priority: source.priority,
+					collapseKey: source.collapse_key,
+				});
+				if (inserted.outcome === "archived") {
+					throw new Error(
+						`mailbox reroute archived unexpectedly: ${input.childId}`,
+					);
+				}
+				return { inserted: inserted.outcome === "inserted" };
+			})
+			.immediate();
+	}
+
+	cancelMailboxDelivery(input: {
+		sourceId: string;
+		operationId: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean; noop: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.sourceId.trim() ||
+			!input.operationId.trim() ||
+			!Number.isFinite(Date.parse(input.now))
+		) {
+			return { ok: false, reason: "invalid_mailbox_cancellation" };
+		}
+		return this.db
+			.transaction(() => {
+				const row = this.db
+					.prepare(
+						`SELECT state, recipient_kind, dead_reason, superseded_by
+						   FROM mailbox WHERE id = ?`,
+					)
+					.get(input.sourceId) as
+					| {
+							state: MailboxState;
+							recipient_kind: MailboxRecipientKind;
+							dead_reason: string | null;
+							superseded_by: string | null;
+					  }
+					| undefined;
+				if (!row || row.recipient_kind !== "runner") {
+					return { ok: false as const, reason: "mailbox_source_missing" };
+				}
+				if (row.state === "ACKED") {
+					return {
+						ok: true as const,
+						idempotentReplay: false,
+						noop: true,
+					};
+				}
+				const deadReason = `cancelled_by_operator:${input.operationId}`;
+				const supersededBy = `cancelled:${input.operationId}`;
+				if (
+					row.state === "DEAD" &&
+					row.dead_reason === deadReason &&
+					row.superseded_by === supersededBy
+				) {
+					return {
+						ok: true as const,
+						idempotentReplay: true,
+						noop: false,
+					};
+				}
+				if (row.state === "DEAD" || row.superseded_by !== null) {
+					return { ok: false as const, reason: "mailbox_source_changed" };
+				}
+				const updated = this.db
+					.prepare(
+						`UPDATE mailbox
+						    SET state = 'DEAD', dead_reason = ?, dead_at = ?,
+						        superseded_by = ?, superseded_at = ?,
+						        claimed_by = NULL, claim_expires_at = NULL,
+						        batch_id = NULL, next_retry_at = NULL, last_error = NULL
+						  WHERE id = ? AND recipient_kind = 'runner'
+						    AND state IN ('QUEUED','LEASED') AND superseded_by IS NULL`,
+					)
+					.run(deadReason, input.now, supersededBy, input.now, input.sourceId);
+				if (updated.changes !== 1) {
+					return { ok: false as const, reason: "mailbox_source_changed" };
+				}
+				return {
+					ok: true as const,
+					idempotentReplay: false,
+					noop: false,
+				};
+			})
+			.immediate();
+	}
+
+	rerouteRunnerPhaseWake(input: {
+		sourceId: string;
+		childId: string;
+		rootId: string;
+		parentAttemptId: string;
+		targetExecutionId: string;
+		now: string;
+	}): { inserted: boolean } {
+		const nowMs = Date.parse(input.now);
+		if (
+			!input.sourceId.trim() ||
+			!input.childId.trim() ||
+			!input.rootId.trim() ||
+			!input.parentAttemptId.trim() ||
+			!input.targetExecutionId.trim() ||
+			!Number.isFinite(nowMs)
+		) {
+			throw new Error("invalid phase wake reroute");
+		}
+		return this.db
+			.transaction(() => {
+				const sources = this.db
+					.prepare(
+						"SELECT * FROM runner_phase_wakes WHERE message_id = ? ORDER BY queue_seq LIMIT 2",
+					)
+					.all(input.sourceId) as RunnerPhaseWake[];
+				if (sources.length !== 1) {
+					throw new Error(
+						`phase wake reroute source conflict: ${input.sourceId}`,
+					);
+				}
+				const source = sources[0]!;
+				const existing = this.db
+					.prepare(
+						"SELECT * FROM runner_phase_wakes WHERE message_id = ? ORDER BY queue_seq LIMIT 1",
+					)
+					.get(input.childId) as RunnerPhaseWake | undefined;
+				if (existing) {
+					const metadata = existing.metadata_json
+						? (JSON.parse(existing.metadata_json) as Record<string, unknown>)
+						: {};
+					if (
+						existing.execution_id !== input.targetExecutionId ||
+						metadata.rootId !== input.rootId ||
+						metadata.parentAttemptId !== input.parentAttemptId
+					) {
+						throw new Error(`phase wake reroute id conflict: ${input.childId}`);
+					}
+					return { inserted: false };
+				}
+				const rerouteResult = `rerouted:${input.parentAttemptId}`;
+				const retired = this.db
+					.prepare(
+						`UPDATE runner_phase_wakes
+						    SET state = 'finished', finished_at = COALESCE(finished_at, ?),
+						        t2_result = COALESCE(t2_result, ?), claim_token = NULL,
+						        claim_expires_at = NULL
+						  WHERE queue_seq = ?
+						    AND (state IN ('pending','started') OR
+						         (state = 'finished' AND t2_result = ?))
+						    AND (t2_result IS NULL OR t2_result = ?)`,
+					)
+					.run(
+						nowMs,
+						rerouteResult,
+						source.queue_seq,
+						rerouteResult,
+						rerouteResult,
+					);
+				if (retired.changes !== 1) {
+					throw new Error(
+						`phase wake reroute source conflict: ${input.sourceId}`,
+					);
+				}
+				const sourceMetadata = source.metadata_json
+					? (JSON.parse(source.metadata_json) as Record<string, unknown>)
+					: {};
+				const childMetadata = {
+					...sourceMetadata,
+					rootId: input.rootId,
+					parentAttemptId: input.parentAttemptId,
+				};
+				let childEnvelope: string | null = null;
+				if (source.envelope_json) {
+					const envelope = JSON.parse(source.envelope_json) as Record<
+						string,
+						unknown
+					>;
+					childEnvelope = canonicalJsonString({
+						...envelope,
+						id: input.childId,
+						to: input.targetExecutionId,
+						metadata: childMetadata,
+					});
+				}
+				this.db
+					.prepare(
+						`INSERT INTO runner_phase_wakes
+						   (execution_id, message_id, content, metadata_json,
+						    source_instruction_id, state, queued_at, admission_state,
+						    envelope_json, purpose)
+						 VALUES (?, ?, ?, ?, NULL, 'pending', ?, 'queued', ?, ?)`,
+					)
+					.run(
+						input.targetExecutionId,
+						input.childId,
+						source.content,
+						JSON.stringify(childMetadata),
+						nowMs,
+						childEnvelope,
+						source.purpose,
+					);
+				return { inserted: true };
+			})
+			.immediate();
+	}
+
+	rerouteTurnWake(input: {
+		sourceId: string;
+		childId: string;
+		rootId: string;
+		parentAttemptId: string;
+		targetExecutionId: string;
+		now: string;
+	}): { inserted: boolean } {
+		const nowMs = Date.parse(input.now);
+		if (
+			!input.sourceId.trim() ||
+			!input.childId.trim() ||
+			!input.rootId.trim() ||
+			!input.parentAttemptId.trim() ||
+			!input.targetExecutionId.trim() ||
+			!Number.isFinite(nowMs)
+		) {
+			throw new Error("invalid TURN wake reroute");
+		}
+		return this.db
+			.transaction(() => {
+				const source = this.getTurnWake(input.sourceId);
+				if (!source) {
+					throw new Error(
+						`TURN wake reroute source not found: ${input.sourceId}`,
+					);
+				}
+				const targetTurn = this.getTurn(source.issue_id);
+				if (
+					!targetTurn ||
+					targetTurn.holder_exec_id !== input.targetExecutionId
+				) {
+					throw new Error(
+						`TURN wake reroute target is not current: ${input.targetExecutionId}`,
+					);
+				}
+				const existing = this.getTurnWake(input.childId);
+				if (existing) {
+					const envelope = JSON.parse(existing.envelope_json) as Record<
+						string,
+						unknown
+					>;
+					if (
+						existing.execution_id !== input.targetExecutionId ||
+						existing.epoch !== targetTurn.epoch ||
+						existing.activation_id !== targetTurn.activation_id ||
+						envelope.rootId !== input.rootId ||
+						envelope.parentAttemptId !== input.parentAttemptId
+					) {
+						throw new Error(`TURN wake reroute id conflict: ${input.childId}`);
+					}
+					return { inserted: false };
+				}
+				const cancelReason = `rerouted:${input.parentAttemptId}`;
+				const cancelled = this.db
+					.prepare(
+						`UPDATE turn_wake_outbox
+						    SET state = 'cancelled', cancel_reason = ?, claim_token = NULL,
+						        claim_expires_at = NULL
+						  WHERE wake_id = ? AND state IN ('pending','sent')`,
+					)
+					.run(cancelReason, input.sourceId);
+				if (cancelled.changes !== 1) {
+					throw new Error(
+						`TURN wake reroute source conflict: ${input.sourceId}`,
+					);
+				}
+				const envelope = {
+					...(JSON.parse(source.envelope_json) as Record<string, unknown>),
+					rootId: input.rootId,
+					parentAttemptId: input.parentAttemptId,
+				};
+				this.db
+					.prepare(
+						`INSERT INTO turn_wake_outbox
+						   (wake_id, execution_id, issue_id, epoch, activation_id, purpose,
+						    envelope_json, backend, episode_id, created_at)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					)
+					.run(
+						input.childId,
+						input.targetExecutionId,
+						source.issue_id,
+						targetTurn.epoch,
+						targetTurn.activation_id,
+						source.purpose,
+						canonicalJsonString(envelope),
+						source.backend,
+						`turn-wake-no-receipt:${input.childId}`,
+						nowMs,
+					);
+				return { inserted: true };
+			})
+			.immediate();
+	}
+
+	resumeMailboxInflightHold(input: {
+		sourceId: string;
+		receiptId: string;
+		now: string;
+	}): { idempotentReplay: boolean; requeued: number; noop?: true } {
+		if (
+			!input.sourceId.trim() ||
+			!input.receiptId.trim() ||
+			!Number.isFinite(Date.parse(input.now))
+		) {
+			throw new Error("invalid mailbox hold recovery");
+		}
+		return this.db
+			.transaction(() => {
+				const source = this.db
+					.prepare("SELECT * FROM mailbox WHERE id = ?")
+					.get(input.sourceId) as MailboxRow | undefined;
+				if (!source) {
+					return {
+						idempotentReplay: false,
+						requeued: 0,
+						noop: true as const,
+					};
+				}
+				if (source.recipient_kind !== "runner") {
+					throw new Error(`mailbox hold source not found: ${input.sourceId}`);
+				}
+				const prior = this.db
+					.prepare("SELECT row_json FROM mailbox_log WHERE event_id = ?")
+					.get(input.receiptId) as { row_json: string } | undefined;
+				if (prior) {
+					const receipt = JSON.parse(prior.row_json) as Record<string, unknown>;
+					if (
+						receipt.sourceId !== input.sourceId ||
+						receipt.toAgent !== source.to_agent ||
+						typeof receipt.requeued !== "number"
+					) {
+						throw new Error(
+							`mailbox hold receipt conflict: ${input.receiptId}`,
+						);
+					}
+					return {
+						idempotentReplay: true,
+						requeued: receipt.requeued,
+						...(receipt.noop === true ? { noop: true as const } : {}),
+					};
+				}
+				const noop = source.state === "ACKED";
+				const requeued = noop
+					? 0
+					: this.db
+							.prepare(
+								`UPDATE mailbox
+						    SET state = 'QUEUED', claimed_by = NULL, claim_expires_at = NULL,
+						        next_retry_at = NULL, batch_id = NULL, notified_at = NULL,
+						        delivered_at = NULL
+						  WHERE to_agent = ? AND recipient_kind = 'runner'
+						    AND carrier = 'inbox' AND state = 'LEASED'`,
+							)
+							.run(source.to_agent).changes;
+				const receipt = {
+					sourceId: input.sourceId,
+					toAgent: source.to_agent,
+					requeued,
+					...(noop ? { noop: true as const } : {}),
+				};
+				this.db
+					.prepare(
+						`INSERT INTO mailbox_log
+						   (event_id, schema_version, message_id, subject_id, event, at,
+						    source_table, row_json)
+						 VALUES (?, 1, ?, ?, 'progress', ?, 'mailbox', ?)`,
+					)
+					.run(
+						input.receiptId,
+						input.sourceId,
+						source.to_agent,
+						input.now,
+						canonicalJsonString(receipt),
+					);
+				return {
+					idempotentReplay: false,
+					requeued,
+					...(noop ? { noop: true as const } : {}),
+				};
+			})
+			.immediate();
+	}
+
+	resumeTurnWakeHold(input: { sourceId: string; receiptId: string }): {
+		idempotentReplay: boolean;
+		noop?: true;
+	} {
+		if (!input.sourceId.trim() || !input.receiptId.trim()) {
+			throw new Error("invalid TURN wake hold recovery");
+		}
+		return this.db
+			.transaction(() => {
+				const source = this.getTurnWake(input.sourceId);
+				if (!source) {
+					return { idempotentReplay: false, noop: true as const };
+				}
+				if (source.state === "acked" || source.state === "cancelled") {
+					return { idempotentReplay: false, noop: true as const };
+				}
+				if (
+					source.state === "pending" &&
+					source.cancel_reason === input.receiptId
+				) {
+					return { idempotentReplay: true };
+				}
+				const updated = this.db
+					.prepare(
+						`UPDATE turn_wake_outbox
+						    SET state = 'pending', push_count = 0, first_push_at = NULL,
+						        last_push_at = NULL, last_push_result = NULL,
+						        claim_token = NULL, claim_expires_at = NULL, acked_at = NULL,
+						        receipt_projected_at = NULL, alerted_at = NULL,
+						        alert_question_id = NULL, cancel_reason = ?
+						  WHERE wake_id = ? AND state IN ('pending','sent')`,
+					)
+					.run(input.receiptId, input.sourceId);
+				if (updated.changes !== 1) {
+					throw new Error(`TURN wake hold source conflict: ${input.sourceId}`);
+				}
+				return { idempotentReplay: false };
+			})
+			.immediate();
 	}
 
 	getQuestionsByCheckpoint(checkpoint: string): Message[] {
@@ -4587,6 +5121,17 @@ export class CommDB {
 		return row !== undefined;
 	}
 
+	hasMessagesFromAfter(execId: string, cutoffIso: string): boolean {
+		if (!execId.trim() || !Number.isFinite(Date.parse(cutoffIso))) return false;
+		const row = this.db
+			.prepare(
+				`SELECT 1 AS hit FROM mailbox_message_projection
+				  WHERE from_agent = ? AND created_at > ? LIMIT 1`,
+			)
+			.get(execId, cutoffIso) as { hit: number } | undefined;
+		return row !== undefined;
+	}
+
 	/**
 	 * Monotonic, execution-bound activity cursor. Dead-execution tripwires take a
 	 * baseline count at replacement time and alert only when this exact sender's
@@ -5747,6 +6292,66 @@ export class CommDB {
 				)
 				.run(reason, wakeId).changes === 1
 		);
+	}
+
+	cancelTurnWakeDelivery(input: {
+		sourceId: string;
+		operationId: string;
+		now: string;
+	}):
+		| { ok: true; idempotentReplay: boolean; noop: boolean }
+		| { ok: false; reason: string } {
+		if (
+			!input.sourceId.trim() ||
+			!input.operationId.trim() ||
+			!Number.isFinite(Date.parse(input.now))
+		) {
+			return { ok: false, reason: "invalid_turn_wake_cancellation" };
+		}
+		return this.db
+			.transaction(() => {
+				const source = this.getTurnWake(input.sourceId);
+				if (!source) {
+					return { ok: false as const, reason: "turn_wake_source_missing" };
+				}
+				if (source.state === "acked") {
+					return {
+						ok: true as const,
+						idempotentReplay: false,
+						noop: true,
+					};
+				}
+				const cancelReason = `cancelled_by_operator:${input.operationId}`;
+				if (
+					source.state === "cancelled" &&
+					source.cancel_reason === cancelReason
+				) {
+					return {
+						ok: true as const,
+						idempotentReplay: true,
+						noop: false,
+					};
+				}
+				if (source.state === "cancelled") {
+					return { ok: false as const, reason: "turn_wake_source_changed" };
+				}
+				const updated = this.db
+					.prepare(
+						`UPDATE turn_wake_outbox
+						    SET state = 'cancelled', cancel_reason = ?,
+						        claim_token = NULL, claim_expires_at = NULL
+						  WHERE wake_id = ? AND state IN ('pending','sent')`,
+					)
+					.run(cancelReason, input.sourceId);
+				return updated.changes === 1
+					? {
+							ok: true as const,
+							idempotentReplay: false,
+							noop: false,
+						}
+					: { ok: false as const, reason: "turn_wake_source_changed" };
+			})
+			.immediate();
 	}
 
 	materializeTurnWakeNoReceiptAlerts(input: {

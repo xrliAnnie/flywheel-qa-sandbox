@@ -1,0 +1,10 @@
+Command:
+  pnpm exec vitest run src/__tests__/fly2278-retirement.test.ts
+
+Expected RED:
+  FAIL src/__tests__/fly2278-retirement.test.ts
+  FLY-2278 legacy rework-stall retirement > removes the retired scanner, mutator, thresholds, and env knobs
+  AssertionError: expected production sources not to match /FLYWHEEL_ENGINE_REWORK_(?:ALERT|HOLD)_MS/
+
+Cause:
+  packages/config/src/feature-flags/truth.ts still declared both retired rework threshold env knobs.

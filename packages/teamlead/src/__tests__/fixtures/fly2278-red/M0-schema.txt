@@ -1,0 +1,11 @@
+RUN v3.2.4 packages/teamlead
+
+FAIL src/__tests__/fly2278-m0-schema.test.ts
+FLY-2278 M0 delivery operation schema migration
+  rebuilds a populated resident-expiry table without changing rows or foreign keys
+
+AssertionError: expected legacy workflow_delivery_operation SQL to contain 'hold_resume'
+Received CHECK: kind IN ('resident_expiry')
+
+Test Files  1 failed (1)
+Tests       1 failed (1)

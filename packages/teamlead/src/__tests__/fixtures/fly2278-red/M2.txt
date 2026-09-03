@@ -1,0 +1,11 @@
+FLY-2278 M2 RED — 2026-09-03
+
+Command:
+pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2278-hold-writers.test.ts
+
+Expected failure before implementation:
+FAIL fly2278-hold-writers.test.ts
+Error: Cannot find module '../bridge/hold-writers.js'
+
+The RED suite defines the 12-cell threshold/status/liveness matrix and the
+terminal-status plus ISO-Z activity race barriers before the hold writer exists.
