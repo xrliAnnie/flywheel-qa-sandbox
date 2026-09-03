@@ -2,13 +2,13 @@
 issue: FLY-2301
 phase: design
 phaseCursor: 6/8
-updated: 2026-09-03T18:10:51.911Z
-nextStep: "Lead ruling on question f1683cd3 (A: R7 / B: leadAcceptance); rev7
-  edits applied in worktree uncommitted"
+updated: 2026-09-03T18:12:15.662Z
+nextStep: "await Codex R7 (Lead: APPROVED→publish; no-HIGH→fix+leadAcceptance no
+  R8; HIGH→stop); rev7 blob 4ef30d7b"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
 **phase**: design (6/8)
-**next**: Lead ruling on question f1683cd3 (A: R7 / B: leadAcceptance); rev7 edits applied in worktree uncommitted
+**next**: await Codex R7 (Lead: APPROVED→publish; no-HIGH→fix+leadAcceptance no R8; HIGH→stop); rev7 blob 4ef30d7b
