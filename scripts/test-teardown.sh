@@ -731,7 +731,15 @@ teardown_slot() {
   # A signal cannot stop a KeepAlive service; launchd would immediately pull
   # it back up. Boot out every slot-owned label before any legacy PID/socket
   # cleanup. Missing registry remains compatible with pre-FLY-1663 slots.
+  local QA_SLOT_HAS_CODEX_LEAD=0
+  if jq -e 'type == "array" and any(.[]; .carrier == "codex-tui")' \
+      "${SLOT_DIR}/launchd-leads.json" >/dev/null 2>&1; then
+    QA_SLOT_HAS_CODEX_LEAD=1
+  fi
   if ! qa_launchd_stop_registry "${SLOT_DIR}/launchd-leads.json"; then
+    if [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 ]]; then
+      log "ERROR: carrier=codex-tui step=registry-stop"
+    fi
     log "ERROR: failed to bootout one or more slot launchd Leads"
     qa_slot_bridge_guard_release
     return 1
@@ -951,6 +959,22 @@ teardown_slot() {
   if tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
     log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
     tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
+  fi
+  if [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 ]]; then
+    local _codex_tmux_converged=0 _codex_tmux_poll
+    for _codex_tmux_poll in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+      if ! tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null \
+          && [[ ! -e "$SLOT_TMUX_SOCKET" && ! -L "$SLOT_TMUX_SOCKET" ]]; then
+        _codex_tmux_converged=1
+        break
+      fi
+      sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+    done
+    if [[ "$_codex_tmux_converged" != 1 ]]; then
+      log "ERROR: carrier=codex-tui step=tmux-converge socket=${SLOT_TMUX_SOCKET}"
+      qa_slot_bridge_guard_release
+      return 1
+    fi
   fi
 
   # ── Step 5c (FLY-115 fix / Defect #3b): Port-based straggler kill ──

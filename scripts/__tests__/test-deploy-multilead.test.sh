@@ -599,6 +599,10 @@ S1_OK=1
 DEPLOY="${SCRIPT_DIR}/test-deploy.sh"
 bash -n "$DEPLOY" 2>/dev/null || { S1_OK=0; fail "S1: test-deploy.sh has syntax errors"; }
 bash -n "${SCRIPT_DIR}/test-teardown.sh" 2>/dev/null || { S1_OK=0; fail "S1: test-teardown.sh has syntax errors"; }
+grep -Fq 'QA_SLOT_HAS_CODEX_LEAD=1' "${SCRIPT_DIR}/test-teardown.sh" \
+  || { S1_OK=0; fail "FLY-2301 S1: teardown must remember Codex carrier ownership before registry stop"; }
+grep -Fq 'carrier=codex-tui step=tmux-converge' "${SCRIPT_DIR}/test-teardown.sh" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex teardown must fail closed on a surviving slot tmux server"; }
 grep -q 'qa-multilead.sh' "$DEPLOY" || { S1_OK=0; fail "S1: test-deploy.sh must source lib/qa-multilead.sh"; }
 grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag not parsed"; }
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }

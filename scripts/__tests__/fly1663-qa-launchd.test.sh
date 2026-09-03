@@ -601,5 +601,172 @@ else
   fail "Codex launchd registry v2 coordinates"
 fi
 
+legacy_stop_registry="$TMP/runtime/legacy-stop.json"
+jq -n '[
+  {label:"legacy-a",plist:"/tmp/a.plist",manifest:"/tmp/a.json"},
+  {label:"legacy-b",plist:"/tmp/b.plist",manifest:"/tmp/b.json"},
+  {label:"legacy-c",plist:"/tmp/c.plist",manifest:"/tmp/c.json"}
+]' > "$legacy_stop_registry"
+legacy_stop_calls="$TMP/legacy-stop.calls"
+: > "$legacy_stop_calls"
+original_stop_definition=$(declare -f qa_launchd_lead_stop)
+qa_launchd_lead_stop() {
+  printf '%s\n' "$1" >> "$legacy_stop_calls"
+  [[ "$1" != legacy-b ]]
+}
+if ! qa_launchd_stop_registry "$legacy_stop_registry" \
+    && [[ "$(cat "$legacy_stop_calls")" == $'legacy-a\nlegacy-b' ]]; then
+  pass "pure Claude registry keeps the legacy ordered fail-fast stop transcript"
+else
+  fail "pure Claude registry stop compatibility"
+fi
+eval "$original_stop_definition"
+
+codex_stop_registry="$MINT_SLOT/launchd-leads.json"
+runtime_pid_file="$MINT_SLOT/launchd/qa-lead/pid"
+stop_state="$MINT_SLOT/q/7/state/codex-lead/test-slot-7__qa-lead"
+daemon_pid_file="$mint_dest/app-server-daemon/app-server.pid"
+daemon_socket="$mint_dest/app-server-control/app-server-control.sock"
+codex_stop_calls="$TMP/codex-stop.calls"
+mkdir -p "$(dirname "$runtime_pid_file")" "$(dirname "$daemon_pid_file")" \
+  "$(dirname "$daemon_socket")"
+printf '%s\n' 4242 > "$runtime_pid_file"
+printf '%s\n' 5252 > "$daemon_pid_file"
+: > "$daemon_socket"
+cat > "$codex_bin" <<'CODEX'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_QA_CODEX_STOP_CALLS"
+rm -f "$CODEX_HOME/app-server-daemon/app-server.pid"
+rm -f "$CODEX_HOME/app-server-control/app-server-control.sock"
+exit 0
+CODEX
+chmod +x "$codex_bin"
+export FLY1663_QA_CODEX_STOP_CALLS="$codex_stop_calls"
+qa_launchd_register "$codex_stop_registry" "$label" "$codex_plist" '' \
+  codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file"
+: > "$launchctl_state"
+ps() {
+  case "$*" in
+    '-o stat= -p 4242') [[ -f "$launchctl_state" ]] && printf 'S\n' ;;
+    '-o lstart= -p 4242') [[ -f "$launchctl_state" ]] && printf 'Wed Sep  3 12:00:00 2026\n' ;;
+    '-o stat= -p 5252') [[ -f "$daemon_pid_file" ]] && printf 'S\n' ;;
+    '-o lstart= -p 5252') [[ -f "$daemon_pid_file" ]] && printf 'Wed Sep  3 12:00:01 2026\n' ;;
+    *) return 1 ;;
+  esac
+}
+if qa_launchd_stop_registry "$codex_stop_registry" \
+    && grep -Fxq 'remote-control stop --json' "$codex_stop_calls" \
+    && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" ]]; then
+  pass "Codex registry stop converges launchd runtime and app-server daemon"
+else
+  fail "Codex registry convergent teardown"
+fi
+unset -f ps
+
+make_stop_home() {
+  local home="$1" behavior="$2" marker="$3"
+  mkdir -p "$home/packages/standalone/releases/r1" \
+    "$home/app-server-daemon" "$home/app-server-control"
+  cat > "$home/packages/standalone/releases/r1/codex" <<CODEX
+#!/bin/bash
+printf '%s\n' '$marker' >> '$TMP/stop-matrix.calls'
+$behavior
+CODEX
+  chmod +x "$home/packages/standalone/releases/r1/codex"
+  ln -s releases/r1 "$home/packages/standalone/current"
+  printf '%s\n' 6001 > "$home/app-server-daemon/app-server.pid"
+  : > "$home/app-server-control/app-server-control.sock"
+}
+
+export FLYWHEEL_QA_STOP_POLLS=1
+export FLYWHEEL_QA_STOP_INTERVAL=0
+stop_matrix_root="/tmp/flywheel-test-slot-$((950000 + $$))"
+stop_matrix_registry="$stop_matrix_root/launchd-leads.json"
+stop_invalid_home="$stop_matrix_root/cdxh/invalid"
+stop_fail_home="$stop_matrix_root/cdxh/fail"
+stop_success_home="$stop_matrix_root/cdxh/success"
+mkdir -p "$stop_invalid_home" "$TMP/outside-codex-bin"
+printf '%s\n' '#!/bin/bash' "printf '%s\\n' invalid-executed >> '$TMP/stop-matrix.calls'" \
+  > "$TMP/outside-codex-bin/codex"
+chmod +x "$TMP/outside-codex-bin/codex"
+make_stop_home "$stop_fail_home" 'exit 7' daemon-stop-failed
+make_stop_home "$stop_success_home" \
+  'rm -f "$CODEX_HOME/app-server-daemon/app-server.pid" "$CODEX_HOME/app-server-control/app-server-control.sock"; exit 0' \
+  later-entry-processed
+: > "$TMP/stop-matrix.calls"
+qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.invalid \
+  /tmp/invalid.plist '' codex-tui "$stop_invalid_home" \
+  "$TMP/outside-codex-bin/codex" "$stop_matrix_root/q/invalid" \
+  "$stop_matrix_root/launchd/invalid/pid"
+qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.fail \
+  /tmp/fail.plist '' codex-tui "$stop_fail_home" \
+  "$stop_fail_home/packages/standalone/current/codex" "$stop_matrix_root/q/fail" \
+  "$stop_matrix_root/launchd/fail/pid"
+qa_launchd_register "$stop_matrix_registry" com.flywheel.qa.lead.slot-95.success \
+  /tmp/success.plist '' codex-tui "$stop_success_home" \
+  "$stop_success_home/packages/standalone/current/codex" "$stop_matrix_root/q/success" \
+  "$stop_matrix_root/launchd/success/pid"
+if ! qa_launchd_stop_registry "$stop_matrix_registry" >/dev/null 2>"$TMP/stop-matrix.err" \
+    && ! grep -Fq invalid-executed "$TMP/stop-matrix.calls" \
+    && grep -Fxq daemon-stop-failed "$TMP/stop-matrix.calls" \
+    && grep -Fxq later-entry-processed "$TMP/stop-matrix.calls" \
+    && [[ ! -e "$stop_success_home/app-server-daemon/app-server.pid" ]] \
+    && grep -Fq 'carrier=codex-tui step=validate' "$TMP/stop-matrix.err" \
+    && grep -Fq 'carrier=codex-tui step=daemon-stop' "$TMP/stop-matrix.err"; then
+  pass "Codex registry rejects escaped binaries and aggregates failures through later entries"
+else
+  fail "Codex registry validation/failure aggregation"
+fi
+
+stop_alive_root="/tmp/flywheel-test-slot-$((960000 + $$))"
+stop_alive_home="$stop_alive_root/cdxh/alive"
+stop_alive_registry="$stop_alive_root/launchd-leads.json"
+make_stop_home "$stop_alive_home" 'exit 0' stop-zero-daemon-live
+qa_launchd_register "$stop_alive_registry" com.flywheel.qa.lead.slot-96.alive \
+  /tmp/alive.plist '' codex-tui "$stop_alive_home" \
+  "$stop_alive_home/packages/standalone/current/codex" "$stop_alive_root/q/alive" \
+  "$stop_alive_root/launchd/alive/pid"
+if ! qa_launchd_stop_registry "$stop_alive_registry" >/dev/null 2>"$TMP/stop-alive.err" \
+    && grep -Fq 'carrier=codex-tui step=daemon-converge' "$TMP/stop-alive.err" \
+    && [[ -e "$stop_alive_home/app-server-daemon/app-server.pid" \
+      && -e "$stop_alive_home/app-server-control/app-server-control.sock" ]]; then
+  pass "Codex registry rejects a successful stop response while daemon state remains live"
+else
+  fail "Codex registry false-success daemon convergence"
+fi
+
+bootout_stub="$TMP/bin/launchctl-bootout-fails"
+cat > "$bootout_stub" <<'LAUNCHCTL'
+#!/bin/bash
+case "$1" in
+  print) printf 'pid = 4242\n' ;;
+  bootout) exit 9 ;;
+  *) exit 64 ;;
+esac
+LAUNCHCTL
+chmod +x "$bootout_stub"
+stop_bootout_root="/tmp/flywheel-test-slot-$((970000 + $$))"
+stop_bootout_home="$stop_bootout_root/cdxh/bootout"
+stop_bootout_registry="$stop_bootout_root/launchd-leads.json"
+make_stop_home "$stop_bootout_home" \
+  'rm -f "$CODEX_HOME/app-server-daemon/app-server.pid" "$CODEX_HOME/app-server-control/app-server-control.sock"; exit 0' \
+  bootout-failure-still-stopped-daemon
+qa_launchd_register "$stop_bootout_registry" com.flywheel.qa.lead.slot-97.bootout \
+  /tmp/bootout.plist '' codex-tui "$stop_bootout_home" \
+  "$stop_bootout_home/packages/standalone/current/codex" "$stop_bootout_root/q/bootout" \
+  "$stop_bootout_root/launchd/bootout/pid"
+saved_launchctl="$FLYWHEEL_QA_LAUNCHCTL"
+export FLYWHEEL_QA_LAUNCHCTL="$bootout_stub"
+if ! qa_launchd_stop_registry "$stop_bootout_registry" >/dev/null 2>"$TMP/stop-bootout.err" \
+    && grep -Fq 'carrier=codex-tui step=bootout' "$TMP/stop-bootout.err" \
+    && grep -Fxq bootout-failure-still-stopped-daemon "$TMP/stop-matrix.calls"; then
+  pass "Codex registry reports bootout non-convergence but still stops the daemon"
+else
+  fail "Codex registry bootout failure handling"
+fi
+export FLYWHEEL_QA_LAUNCHCTL="$saved_launchctl"
+unset FLYWHEEL_QA_STOP_POLLS FLYWHEEL_QA_STOP_INTERVAL
+rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root"
+
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

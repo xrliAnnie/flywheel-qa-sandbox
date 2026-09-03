@@ -664,10 +664,176 @@ qa_launchd_register() {
   return 1
 }
 
+qa_launchd_process_incarnation() {
+  local pid="$1" status started
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  status=$(ps -o stat= -p "$pid" 2>/dev/null) || return 1
+  status="${status#${status%%[![:space:]]*}}"
+  [[ -n "$status" && "${status:0:1}" != Z ]] || return 1
+  started=$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null) || return 1
+  started=$(printf '%s' "$started" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+  [[ -n "$started" ]] || return 1
+  printf '%s\n' "$started"
+}
+
+qa_launchd_wait_process_gone() {
+  local pid="$1" incarnation="$2" i observed
+  [[ -n "$pid" && -n "$incarnation" ]] || return 0
+  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+    observed=$(qa_launchd_process_incarnation "$pid" || true)
+    [[ "$observed" != "$incarnation" ]] && return 0
+    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+  done
+  return 1
+}
+
+qa_launchd_wait_job_gone() {
+  local label="$1" launchctl_bin="${FLYWHEEL_QA_LAUNCHCTL:-launchctl}" domain i
+  domain=$(qa_launchd_domain) || return 1
+  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+    "$launchctl_bin" print "${domain}/${label}" >/dev/null 2>&1 || return 0
+    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+  done
+  return 1
+}
+
+qa_launchd_wait_path_gone() {
+  local path="$1" i
+  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+    [[ ! -e "$path" && ! -L "$path" ]] && return 0
+    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+  done
+  return 1
+}
+
+qa_launchd_validate_codex_stop_entry() {
+  local registry="$1" entry="$2"
+  python3 - "$registry" "$entry" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+registry = Path(sys.argv[1])
+try:
+    row = json.loads(sys.argv[2])
+except (TypeError, ValueError):
+    raise SystemExit(1)
+if not registry.is_absolute() or not registry.is_file() or registry.is_symlink():
+    raise SystemExit(1)
+slot = registry.parent
+slot_real = Path(os.path.realpath(slot))
+if not re.fullmatch(r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*", str(slot_real)):
+    raise SystemExit(1)
+required = ("label", "codexHome", "codexBin", "stateDir", "runtimePidFile")
+if any(not isinstance(row.get(key), str) or not row[key] for key in required):
+    raise SystemExit(1)
+home = Path(row["codexHome"])
+binary = Path(row["codexBin"])
+state = Path(row["stateDir"])
+pid_file = Path(row["runtimePidFile"])
+if any(not path.is_absolute() for path in (home, binary, state, pid_file)):
+    raise SystemExit(1)
+try:
+    home_info = home.lstat()
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISDIR(home_info.st_mode) or home.is_symlink():
+    raise SystemExit(1)
+home_real = Path(os.path.realpath(home))
+binary_real = Path(os.path.realpath(binary))
+try:
+    if os.path.commonpath((str(slot_real), str(home_real))) != str(slot_real):
+        raise SystemExit(1)
+    standalone = home_real / "packages/standalone"
+    if os.path.commonpath((str(standalone), str(binary_real))) != str(standalone):
+        raise SystemExit(1)
+    for path in (state, pid_file):
+        if os.path.commonpath((str(slot_real), os.path.realpath(path))) != str(slot_real):
+            raise SystemExit(1)
+except ValueError:
+    raise SystemExit(1)
+if not binary_real.is_file() or not os.access(binary_real, os.X_OK):
+    raise SystemExit(1)
+print("\t".join((row["label"], str(home), str(binary_real), str(state), str(pid_file))))
+PY
+}
+
+qa_launchd_stop_codex_entry() {
+  local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
+  local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
+  local daemon_pid_file daemon_socket failed=0
+  validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
+    || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
+  IFS=$'\t' read -r label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
+  runtime_pid=$(qa_launchd_lead_pid_exact "$label" || true)
+  if [[ -z "$runtime_pid" && -f "$runtime_pid_file" && ! -L "$runtime_pid_file" ]]; then
+    runtime_pid=$(cat "$runtime_pid_file" 2>/dev/null || true)
+    [[ "$runtime_pid" =~ ^[1-9][0-9]*$ ]] || runtime_pid=""
+  fi
+  runtime_incarnation=$(qa_launchd_process_incarnation "$runtime_pid" || true)
+  if ! qa_launchd_lead_stop "$label"; then
+    qa_launchd_err "carrier=codex-tui step=bootout"
+    failed=1
+  fi
+  if ! qa_launchd_wait_job_gone "$label" \
+      || ! qa_launchd_wait_process_gone "$runtime_pid" "$runtime_incarnation"; then
+    qa_launchd_err "carrier=codex-tui step=runtime-converge"
+    failed=1
+  fi
+
+  daemon_pid_file="${codex_home}/app-server-daemon/app-server.pid"
+  daemon_socket="${codex_home}/app-server-control/app-server-control.sock"
+  if [[ -f "$daemon_pid_file" && ! -L "$daemon_pid_file" ]]; then
+    daemon_pid=$(cat "$daemon_pid_file" 2>/dev/null || true)
+    [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]] || daemon_pid=""
+  fi
+  daemon_incarnation=$(qa_launchd_process_incarnation "$daemon_pid" || true)
+  if ! "${FLYWHEEL_DIR:?}/scripts/lib/bounded-run.sh" 30 env \
+      CODEX_HOME="$codex_home" "$codex_bin" remote-control stop --json \
+      >/dev/null 2>&1; then
+    qa_launchd_err "carrier=codex-tui step=daemon-stop"
+    failed=1
+  fi
+  if ! qa_launchd_wait_process_gone "$daemon_pid" "$daemon_incarnation" \
+      || ! qa_launchd_wait_path_gone "$daemon_socket"; then
+    qa_launchd_err "carrier=codex-tui step=daemon-converge"
+    failed=1
+  fi
+  [[ "$failed" == 0 ]]
+}
+
 qa_launchd_stop_registry() {
-  local registry="$1" label
+  local registry="$1" label entry carrier failed=0
   [ -f "$registry" ] || return 0
-  while IFS= read -r label; do
-    [ -z "$label" ] || qa_launchd_lead_stop "$label" || return 1
-  done < <(jq -r '.[].label' "$registry")
+  if jq -e 'type == "array" and all(.[];
+      ((keys | sort) == ["label","manifest","plist"]))' \
+      "$registry" >/dev/null 2>&1; then
+    # Legacy fast path: keep the original loop and fail-fast return byte-for-byte.
+    while IFS= read -r label; do
+      [ -z "$label" ] || qa_launchd_lead_stop "$label" || return 1
+    done < <(jq -r '.[].label' "$registry")
+    return 0
+  fi
+  jq -e 'type == "array"' "$registry" >/dev/null 2>&1 || return 1
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    carrier=$(jq -r '.carrier // ""' <<<"$entry") || { failed=1; continue; }
+    case "$carrier" in
+      codex-tui)
+        qa_launchd_stop_codex_entry "$registry" "$entry" || failed=1
+        ;;
+      "")
+        label=$(jq -r '.label // ""' <<<"$entry")
+        [[ -n "$label" ]] && qa_launchd_lead_stop "$label" || failed=1
+        ;;
+      *)
+        qa_launchd_err "carrier=${carrier} step=validate"
+        failed=1
+        ;;
+    esac
+  done < <(jq -c '.[]' "$registry")
+  [[ "$failed" == 0 ]]
 }
