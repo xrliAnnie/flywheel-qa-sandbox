@@ -601,6 +601,97 @@ else
   fail "Codex launchd registry v2 coordinates"
 fi
 
+if declare -F qa_launchd_lead_restart_drill >/dev/null 2>&1; then
+  pass "Codex launchd restart drill helper is available"
+else
+  fail "Codex launchd restart drill helper"
+fi
+
+drill_slot_number=$((980000 + $$))
+drill_slot="/tmp/flywheel-test-slot-${drill_slot_number}"
+drill_home="$drill_slot/cdxh/qa-lead"
+drill_state="$drill_slot/q/7/state/codex-lead/test-slot-7__qa-lead"
+drill_socket="$drill_slot/tmux-$(id -u)/default"
+drill_evidence="$TMP/drill-evidence"
+drill_phase="$TMP/drill-phase"
+drill_mutations="$TMP/drill-mutations"
+mkdir -p "$drill_home" "$drill_state/brain" "$(dirname "$drill_socket")" "$drill_evidence"
+python3 - "$drill_socket" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+sock.close()
+PY
+printf '%s\n' old > "$drill_phase"
+: > "$drill_mutations"
+write_drill_heartbeat() {
+  if [[ "$(cat "$drill_phase")" == old ]]; then
+    printf '%s\n' '{"v":1,"generationId":"gen-old","threadId":"thread-old","processPid":4101,"carrierInstanceId":"carrier-old","state":"online","updatedAt":"2026-09-03T00:00:00.000Z"}' > "$drill_state/brain/heartbeat.json"
+  else
+    printf '%s\n' '{"v":1,"generationId":"gen-new","threadId":"thread-new","processPid":4102,"carrierInstanceId":"carrier-new","state":"online","updatedAt":"2026-09-03T00:00:01.000Z"}' > "$drill_state/brain/heartbeat.json"
+  fi
+}
+write_drill_heartbeat
+original_pid_exact_definition=$(declare -f qa_launchd_lead_pid_exact)
+original_incarnation_definition=$(declare -f qa_launchd_process_incarnation)
+original_matches_definition=$(declare -f qa_launchd_codex_process_matches)
+original_env_has_definition=$(declare -f qa_launchd_process_env_has)
+qa_launchd_lead_pid_exact() {
+  [[ "$(cat "$drill_phase")" == old ]] && printf '4101\n' || printf '4102\n'
+}
+qa_launchd_process_incarnation() {
+  [[ "$1" == 4101 ]] && printf 'lstart-old\n' || printf 'lstart-new\n'
+}
+qa_launchd_codex_process_matches() { return 0; }
+qa_launchd_process_env_has() { return 0; }
+kill() {
+  printf '%s\n' "$*" >> "$drill_mutations"
+  if [[ "$1" == -9 && "$2" == 4101 ]]; then
+    printf '%s\n' new > "$drill_phase"
+    write_drill_heartbeat
+    return 0
+  fi
+  return 1
+}
+export FLY1663_QA_TMUX_WINDOWS='test-slot-7-qa-lead'
+export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
+if qa_launchd_lead_restart_drill \
+    "com.flywheel.qa.lead.slot-${drill_slot_number}.qa-lead" codex-tui crash \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead "$drill_evidence" \
+    && jq -e '
+      .mode == "crash" and .old.pid == 4101 and .new.pid == 4102 and
+      .old.generationId == "gen-old" and .new.generationId == "gen-new" and
+      .old.carrierInstanceId == "carrier-old" and .new.carrierInstanceId == "carrier-new" and
+      .old.state == "online" and .new.state == "online" and
+      (.old.predicates | all(.[]; . == true)) and (.new.predicates | all(.[]; . == true))
+    ' "$drill_evidence/restart-drill.json" >/dev/null 2>&1 \
+    && [[ "$(find "$drill_evidence" -name 'heartbeat-*.json' | wc -l | tr -d ' ')" == 2 ]] \
+    && [[ "$(cat "$drill_mutations")" == '-9 4101' ]]; then
+  pass "Codex restart drill binds changed PID/identities to two exact heartbeat snapshots"
+else
+  fail "Codex restart drill convergent evidence"
+fi
+
+invalid_mutations_before=$(wc -l < "$drill_mutations" | tr -d ' ')
+if ! qa_launchd_lead_restart_drill \
+    "com.flywheel.qa.lead.slot-$((drill_slot_number + 1)).qa-lead" codex-tui crash \
+    "$drill_home" "$drill_state" "$drill_socket" test-slot-7 qa-lead "$drill_state" \
+    >/dev/null 2>&1 \
+    && [[ "$(wc -l < "$drill_mutations" | tr -d ' ')" == "$invalid_mutations_before" ]]; then
+  pass "Codex restart drill rejects mismatched/inside-room coordinates before mutation"
+else
+  fail "Codex restart drill pre-mutation coordinate validation"
+fi
+unset -f kill write_drill_heartbeat
+eval "$original_pid_exact_definition"
+eval "$original_incarnation_definition"
+eval "$original_matches_definition"
+eval "$original_env_has_definition"
+unset FLY1663_QA_TMUX_WINDOWS
+rm -rf "$drill_slot"
+
 legacy_stop_registry="$TMP/runtime/legacy-stop.json"
 jq -n '[
   {label:"legacy-a",plist:"/tmp/a.plist",manifest:"/tmp/a.json"},

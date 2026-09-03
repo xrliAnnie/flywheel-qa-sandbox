@@ -558,6 +558,156 @@ qa_launchd_codex_lead_ready() {
   [[ "$count" == 1 ]]
 }
 
+qa_launchd_validate_restart_drill_args() {
+  python3 - "$@" <<'PY'
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+if len(sys.argv) != 10:
+    raise SystemExit(1)
+label, carrier, mode, home_raw, state_raw, socket_raw, project, lead, evidence_raw = sys.argv[1:]
+match = re.fullmatch(r"com\.flywheel\.qa\.lead\.slot-([1-9][0-9]*)\.([a-z0-9][a-z0-9-]*)", label)
+if not match or carrier != "codex-tui" or mode not in {"crash", "kickstart"}:
+    raise SystemExit(1)
+if match.group(2) != lead or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", project):
+    raise SystemExit(1)
+home, state, tmux_socket, evidence = map(Path, (home_raw, state_raw, socket_raw, evidence_raw))
+if any(not path.is_absolute() for path in (home, state, tmux_socket, evidence)):
+    raise SystemExit(1)
+slot = Path(f"/tmp/flywheel-test-slot-{match.group(1)}")
+slot_real = Path(os.path.realpath(slot))
+if not re.fullmatch(r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*", str(slot_real)):
+    raise SystemExit(1)
+try:
+    home_info, state_info, socket_info, evidence_info = (
+        home.lstat(), state.lstat(), tmux_socket.lstat(), evidence.lstat()
+    )
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISDIR(home_info.st_mode) or home.is_symlink():
+    raise SystemExit(1)
+if not stat.S_ISDIR(state_info.st_mode) or state.is_symlink():
+    raise SystemExit(1)
+if not stat.S_ISSOCK(socket_info.st_mode) or tmux_socket.is_symlink():
+    raise SystemExit(1)
+if not stat.S_ISDIR(evidence_info.st_mode) or evidence.is_symlink():
+    raise SystemExit(1)
+try:
+    for path in (home, state):
+        if os.path.commonpath((str(slot_real), os.path.realpath(path))) != str(slot_real):
+            raise SystemExit(1)
+    if os.path.commonpath((str(slot_real), os.path.realpath(evidence))) == str(slot_real):
+        raise SystemExit(1)
+except ValueError:
+    raise SystemExit(1)
+expected_socket = slot / f"tmux-{os.getuid()}" / "default"
+if str(tmux_socket) != str(expected_socket) or any(evidence.iterdir()):
+    raise SystemExit(1)
+print(str(state / "brain/heartbeat.json"))
+PY
+}
+
+qa_launchd_codex_observe_restart() {
+  local label="$1" codex_home="$2" state_dir="$3" tmux_socket="$4"
+  local project="$5" lead="$6" evidence_stage="$7"
+  local pid incarnation heartbeat heartbeat_pid generation carrier state hash
+  local windows expected count
+  pid=$(qa_launchd_lead_pid_exact "$label") || return 1
+  incarnation=$(qa_launchd_process_incarnation "$pid") || return 1
+  qa_launchd_codex_process_matches "$pid" || return 1
+  qa_launchd_process_env_has "$pid" CODEX_HOME "$codex_home" || return 1
+  heartbeat=$(qa_launchd_read_heartbeat "${state_dir}/brain/heartbeat.json" "$evidence_stage") \
+    || return 1
+  IFS=$'\t' read -r heartbeat_pid generation carrier state hash <<<"$heartbeat"
+  [[ "$heartbeat_pid" == "$pid" && "$state" == online ]] || return 1
+  windows=$("${FLYWHEEL_QA_TMUX:-tmux}" -S "$tmux_socket" \
+    list-windows -t '=flywheel' -F '#{window_name}' 2>/dev/null) || return 1
+  expected="${project}-${lead}"
+  count=$(printf '%s\n' "$windows" | grep -Fxc "$expected" || true)
+  [[ "$count" == 1 ]] || return 1
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$pid" "$incarnation" "$generation" "$carrier" "$state" "$hash"
+}
+
+# Exercise launchd KeepAlive or an explicit kickstart and bind both topology
+# observations to the exact heartbeat bytes archived in evidence_stage.
+qa_launchd_lead_restart_drill() {
+  local label="$1" carrier="$2" mode="$3" codex_home="$4" state_dir="$5"
+  local tmux_socket="$6" project="$7" lead="$8" evidence_stage="$9"
+  local heartbeat_path old new old_pid old_lstart old_generation old_carrier old_state old_hash
+  local new_pid new_lstart new_generation new_carrier new_state new_hash domain i
+  local started_at converged_at evidence_tmp
+  heartbeat_path=$(qa_launchd_validate_restart_drill_args \
+    "$label" "$carrier" "$mode" "$codex_home" "$state_dir" "$tmux_socket" \
+    "$project" "$lead" "$evidence_stage") || return 1
+  old=$(qa_launchd_codex_observe_restart "$label" "$codex_home" "$state_dir" \
+    "$tmux_socket" "$project" "$lead" "$evidence_stage") || return 1
+  IFS=$'\t' read -r old_pid old_lstart old_generation old_carrier old_state old_hash <<<"$old"
+  started_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  case "$mode" in
+    crash)
+      kill -9 "$old_pid" || return 1
+      ;;
+    kickstart)
+      domain=$(qa_launchd_domain) || return 1
+      "${FLYWHEEL_QA_LAUNCHCTL:-launchctl}" kickstart -k "${domain}/${label}" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+
+  new=""
+  for i in $(seq 1 "${FLYWHEEL_QA_LEAD_VERIFY_POLLS:-$QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT}"); do
+    new=$(qa_launchd_codex_observe_restart "$label" "$codex_home" "$state_dir" \
+      "$tmux_socket" "$project" "$lead" "$evidence_stage" || true)
+    if [[ -n "$new" ]]; then
+      IFS=$'\t' read -r new_pid new_lstart new_generation new_carrier new_state new_hash <<<"$new"
+      if [[ ( "$new_pid" != "$old_pid" || "$new_lstart" != "$old_lstart" ) \
+          && "$new_generation" != "$old_generation" \
+          && "$new_carrier" != "$old_carrier" ]]; then
+        break
+      fi
+      new=""
+    fi
+    sleep "${FLYWHEEL_QA_LEAD_VERIFY_INTERVAL:-$QA_LAUNCHD_LEAD_VERIFY_INTERVAL_DEFAULT}"
+  done
+  [[ -n "$new" ]] || { qa_launchd_err "Codex Lead restart did not converge: $label"; return 1; }
+  for hash in "$old_hash" "$new_hash"; do
+    python3 - "$evidence_stage/heartbeat-${hash}.json" "$hash" <<'PY' || return 1
+import hashlib
+from pathlib import Path
+import sys
+
+path, expected = Path(sys.argv[1]), sys.argv[2]
+if hashlib.sha256(path.read_bytes()).hexdigest() != expected:
+    raise SystemExit(1)
+PY
+  done
+  converged_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  evidence_tmp="${evidence_stage}/restart-drill.json.tmp.$$"
+  jq -n --arg mode "$mode" --arg label "$label" --arg domain "$(qa_launchd_domain)" \
+    --arg heartbeatPath "$heartbeat_path" --arg tmuxSocket "$tmux_socket" \
+    --arg startedAt "$started_at" --arg convergedAt "$converged_at" \
+    --argjson oldPid "$old_pid" --arg oldLstart "$old_lstart" \
+    --arg oldGeneration "$old_generation" --arg oldCarrier "$old_carrier" \
+    --arg oldState "$old_state" --arg oldHash "$old_hash" \
+    --argjson newPid "$new_pid" --arg newLstart "$new_lstart" \
+    --arg newGeneration "$new_generation" --arg newCarrier "$new_carrier" \
+    --arg newState "$new_state" --arg newHash "$new_hash" \
+    '{mode:$mode,label:$label,domain:$domain,
+      old:{pid:$oldPid,lstart:$oldLstart,generationId:$oldGeneration,
+        carrierInstanceId:$oldCarrier,state:$oldState,heartbeatSha256:$oldHash,
+        predicates:{launchdPid:true,processShape:true,codexHome:true,heartbeat:true,tuiWindow:true}},
+      new:{pid:$newPid,lstart:$newLstart,generationId:$newGeneration,
+        carrierInstanceId:$newCarrier,state:$newState,heartbeatSha256:$newHash,
+        predicates:{launchdPid:true,processShape:true,codexHome:true,heartbeat:true,tuiWindow:true}},
+      heartbeatPath:$heartbeatPath,tmuxSocket:$tmuxSocket,
+      startedAt:$startedAt,convergedAt:$convergedAt}' > "$evidence_tmp" || return 1
+  chmod 600 "$evidence_tmp" && mv "$evidence_tmp" "$evidence_stage/restart-drill.json"
+}
+
 # Bootstrap one unique label and print the live launchd job PID.
 qa_launchd_lead_start() {
   local label="$1" plist="$2" launchctl_bin="${FLYWHEEL_QA_LAUNCHCTL:-launchctl}"
