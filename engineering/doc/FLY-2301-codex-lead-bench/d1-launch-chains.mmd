@@ -1,0 +1,7 @@
+flowchart LR
+  subgraph bench["529 台架:唯一分派点"]
+    R["Lead 行 backend"] -->|"缺省 / claude-code"| C0["claude-v2 分支<br/>(逐字节不变)"]
+    R -->|"codex-app-server"| X0["codex-tui 分支<br/>(新增)"]
+  end
+  C0 --> C1["manifest.json<br/>launchEnvironment"] --> C2["plist argv:<br/>wrapper-v2 + manifest"] --> C3["launchd"] --> C4["wrapper-v2<br/>env -i 私有 tmux"] --> C5["claude-lead.sh<br/>=main + 就绪 lease"]
+  X0 --> X1[".env 追加 Codex 一族<br/>+ 同一环境图"] --> X2["渲染 slot 固定 wrapper<br/>模板 + 3 个选择器"] --> X3["plist argv:<br/>/bin/bash + wrapper"] --> X4["launchd"] --> X5["wrapper: source .env<br/>gate codex-tui"] --> X6["codex-lead.sh tui 模式"] --> X7["node codex-lead-tui-runtime.js<br/>heartbeat + slot tmux 窗口"]
