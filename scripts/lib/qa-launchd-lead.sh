@@ -873,6 +873,162 @@ qa_launchd_wait_path_gone() {
   return 1
 }
 
+qa_launchd_read_codex_daemon_pid() {
+  local codex_home="$1" qa_lib_dir tui_home_script bash_bin="" candidate
+  qa_lib_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  tui_home_script="${qa_lib_dir}/../../packages/teamlead/scripts/codex-lead-tui-home.sh"
+  [[ -r "$tui_home_script" ]] || return 2
+  for candidate in /opt/homebrew/bin/bash /usr/local/bin/bash /usr/bin/bash /bin/bash; do
+    [[ -x "$candidate" ]] || continue
+    if "$candidate" -c 'exit $(( ${BASH_VERSINFO:-0} < 4 ))' 2>/dev/null; then
+      bash_bin="$candidate"
+      break
+    fi
+  done
+  [[ -n "$bash_bin" ]] || return 2
+  FLYWHEEL_CODEX_TUI_HOME="$codex_home" "$bash_bin" -c '
+    source "$1"
+    read_daemon_pid_record || exit 2
+    printf "%s\n" "$PID_RECORD_PID"
+  ' _ "$tui_home_script"
+}
+
+qa_launchd_codex_updater_pids() {
+  local codex_bin="$1" processes
+  processes=$(LC_ALL=C ps -ww -axo pid=,command= 2>/dev/null) || return 1
+  python3 -c '
+import os
+from pathlib import Path
+import re
+import sys
+
+try:
+    expected = Path(sys.argv[1]).resolve(strict=True)
+except OSError:
+    raise SystemExit(1)
+suffix = " app-server daemon pid-update-loop"
+for raw in sys.stdin:
+    match = re.fullmatch(r"\s*([1-9][0-9]*)\s+(.+)", raw.rstrip("\n"))
+    if not match:
+        continue
+    command = match.group(2)
+    if not command.endswith(suffix):
+        continue
+    executable = command[:-len(suffix)]
+    if not executable or any(char.isspace() for char in executable):
+        continue
+    try:
+        actual = Path(executable).resolve(strict=True)
+    except OSError:
+        continue
+    if actual == expected:
+        print(match.group(1))
+' "$codex_bin" <<<"$processes"
+}
+
+qa_launchd_codex_updater_matches() {
+  local pid="$1" codex_bin="$2" command
+  [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  command=$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null) || return 1
+  python3 -c '
+from pathlib import Path
+import sys
+
+suffix = " app-server daemon pid-update-loop"
+command = sys.stdin.read().rstrip("\n")
+if not command.endswith(suffix):
+    raise SystemExit(1)
+executable = command[:-len(suffix)]
+if not executable or any(char.isspace() for char in executable):
+    raise SystemExit(1)
+try:
+    actual = Path(executable).resolve(strict=True)
+    expected = Path(sys.argv[1]).resolve(strict=True)
+except OSError:
+    raise SystemExit(1)
+raise SystemExit(0 if actual == expected else 1)
+' "$codex_bin" <<<"$command"
+}
+
+qa_launchd_stop_codex_updaters() {
+  local codex_bin="$1" pids pid incarnation observed remaining failed=0
+  pids=$(qa_launchd_codex_updater_pids "$codex_bin") || return 1
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    incarnation=$(qa_launchd_process_incarnation "$pid") || { failed=1; continue; }
+    qa_launchd_codex_updater_matches "$pid" "$codex_bin" || { failed=1; continue; }
+    observed=$(qa_launchd_process_incarnation "$pid") || { failed=1; continue; }
+    [[ "$observed" == "$incarnation" ]] || { failed=1; continue; }
+    qa_launchd_codex_updater_matches "$pid" "$codex_bin" || { failed=1; continue; }
+    kill -TERM -- "$pid" 2>/dev/null || true
+    if ! qa_launchd_wait_process_gone "$pid" "$incarnation"; then
+      observed=$(qa_launchd_process_incarnation "$pid" || true)
+      if [[ "$observed" != "$incarnation" ]] \
+          || ! qa_launchd_codex_updater_matches "$pid" "$codex_bin"; then
+        failed=1
+        continue
+      fi
+      kill -KILL -- "$pid" 2>/dev/null || { failed=1; continue; }
+      qa_launchd_wait_process_gone "$pid" "$incarnation" || failed=1
+    fi
+  done <<<"$pids"
+  remaining=$(qa_launchd_codex_updater_pids "$codex_bin") || return 1
+  [[ -z "$remaining" ]] || failed=1
+  [[ "$failed" == 0 ]]
+}
+
+qa_launchd_validate_codex_tmux_socket() {
+  local socket_path="$1"
+  python3 - "$socket_path" <<'PY'
+from pathlib import Path
+import re
+import stat
+import sys
+
+path = Path(sys.argv[1])
+if not path.is_absolute() or not re.fullmatch(
+    r"/tmp/flywheel-test-slot-[1-9][0-9]*/tmux-[0-9]+/default", str(path)
+):
+    raise SystemExit(1)
+for parent in (path.parent, path.parent.parent):
+    try:
+        info = parent.lstat()
+    except OSError:
+        raise SystemExit(1)
+    if not stat.S_ISDIR(info.st_mode) or parent.is_symlink():
+        raise SystemExit(1)
+try:
+    info = path.lstat()
+except FileNotFoundError:
+    raise SystemExit(0)
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISSOCK(info.st_mode) or path.is_symlink():
+    raise SystemExit(1)
+PY
+}
+
+qa_launchd_converge_codex_tmux_socket() {
+  local socket_path="$1" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}" i
+  qa_launchd_validate_codex_tmux_socket "$socket_path" || return 1
+  if "$tmux_bin" -S "$socket_path" has-session >/dev/null 2>&1; then
+    "$tmux_bin" -S "$socket_path" kill-server >/dev/null 2>&1 || true
+  fi
+  for i in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
+    if ! "$tmux_bin" -S "$socket_path" has-session >/dev/null 2>&1; then
+      if [[ -e "$socket_path" || -L "$socket_path" ]]; then
+        qa_launchd_validate_codex_tmux_socket "$socket_path" || return 1
+        if ! "$tmux_bin" -S "$socket_path" list-sessions >/dev/null 2>&1; then
+          rm -f -- "$socket_path" || return 1
+        fi
+      fi
+      [[ ! -e "$socket_path" && ! -L "$socket_path" ]] && return 0
+    fi
+    sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
+  done
+  return 1
+}
+
 qa_launchd_validate_codex_stop_entry() {
   local registry="$1" entry="$2"
   python3 - "$registry" "$entry" <<'PY'
@@ -931,7 +1087,7 @@ PY
 qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
-  local daemon_pid_file daemon_socket failed=0
+  local daemon_pid_file daemon_pid_rc daemon_socket bounded_run failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
@@ -953,12 +1109,20 @@ qa_launchd_stop_codex_entry() {
 
   daemon_pid_file="${codex_home}/app-server-daemon/app-server.pid"
   daemon_socket="${codex_home}/app-server-control/app-server-control.sock"
-  if [[ -f "$daemon_pid_file" && ! -L "$daemon_pid_file" ]]; then
-    daemon_pid=$(cat "$daemon_pid_file" 2>/dev/null || true)
-    [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]] || daemon_pid=""
+  if [[ ! -e "$daemon_pid_file" && ! -L "$daemon_pid_file" ]]; then
+    daemon_pid=""
+  elif daemon_pid=$(qa_launchd_read_codex_daemon_pid "$codex_home"); then
+    daemon_incarnation=$(qa_launchd_process_incarnation "$daemon_pid" || true)
+  else
+    daemon_pid_rc=$?
+    daemon_pid=""
+    if [[ "$daemon_pid_rc" != 1 ]]; then
+      qa_launchd_err "carrier=codex-tui step=daemon-pid"
+      failed=1
+    fi
   fi
-  daemon_incarnation=$(qa_launchd_process_incarnation "$daemon_pid" || true)
-  if ! "${FLYWHEEL_DIR:?}/scripts/lib/bounded-run.sh" 30 env \
+  bounded_run="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
+  if [[ ! -x "$bounded_run" ]] || ! "$bounded_run" 30 env \
       CODEX_HOME="$codex_home" "$codex_bin" remote-control stop --json \
       >/dev/null 2>&1; then
     qa_launchd_err "carrier=codex-tui step=daemon-stop"
@@ -967,6 +1131,10 @@ qa_launchd_stop_codex_entry() {
   if ! qa_launchd_wait_process_gone "$daemon_pid" "$daemon_incarnation" \
       || ! qa_launchd_wait_path_gone "$daemon_socket"; then
     qa_launchd_err "carrier=codex-tui step=daemon-converge"
+    failed=1
+  fi
+  if ! qa_launchd_stop_codex_updaters "$codex_bin"; then
+    qa_launchd_err "carrier=codex-tui step=updater-converge"
     failed=1
   fi
   [[ "$failed" == 0 ]]

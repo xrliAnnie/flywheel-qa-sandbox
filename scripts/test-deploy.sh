@@ -1455,7 +1455,7 @@ qa_slot_start_lead() {
   local manifest="${runtime}/manifest.json" plist="${runtime}/lead.plist"
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
   local lead_row mcp_exclude backend codex_source codex_profile lead_chat_channel
-  local codex_home codex_bin codex_state codex_wrapper
+  local codex_home codex_bin codex_state codex_wrapper codex_comm_db
   local profile_assignments profile_assignment
   local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
   local base_assignments=(
@@ -1502,9 +1502,10 @@ qa_slot_start_lead() {
     codex_state=$(qa_launchd_codex_state_dir "$state" "$TEST_PROJECT_NAME" "$agent") \
       || return 1
     codex_wrapper="${runtime}/codex-lead-wrapper.sh"
+    codex_comm_db="${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db"
     codex_assignments=(
       "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=${lead_chat_channel}"
-      "FLYWHEEL_COMM_DB=${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}/comm.db"
+      "FLYWHEEL_COMM_DB=${codex_comm_db}"
       "FLYWHEEL_COMM_CLI=${REPO_ROOT}/packages/flywheel-comm/dist/index.js"
       "CODEX_HOME=${codex_home}"
       "FLYWHEEL_CODEX_BIN=${codex_bin}"
@@ -1533,6 +1534,8 @@ qa_slot_start_lead() {
   label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
   if [[ "$backend" == codex-app-server ]]; then
     qa_launchd_mint_codex_home "$codex_source" "$codex_home" "$SLOT_DIR" || return 1
+    mkdir -p "$(dirname "$codex_comm_db")" || return 1
+    chmod 700 "$(dirname "$codex_comm_db")" || return 1
   fi
   mkdir -p "$runtime" "$state" "$workspace" || return 1
   chmod 700 "$runtime" "$state"
@@ -2220,6 +2223,7 @@ trap - EXIT
 # No secrets: token env NAMES only. Codex coordinates are lifecycle authority;
 # codexSourceHome is deliberately excluded.
 CODEX_LEAD_JSON=null
+CODEX_LEAD_OUTPUT_JSON=null
 if [[ "$NO_LEAD" == "1" ]]; then
   LEAD_CARRIER="none"
 elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
@@ -2230,6 +2234,9 @@ elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
     --arg codexHome "$LEAD_CODEX_HOME" --arg tmuxSocket "$LEAD_TMUX_SOCKET" \
     '{label:$label,projectName:$projectName,agentId:$agentId,stateDir:$stateDir,
       codexHome:$codexHome,tmuxSocket:$tmuxSocket,tuiWindow:"present"}')
+  CODEX_LEAD_OUTPUT_JSON=$(jq -cn --argjson lead "$CODEX_LEAD_JSON" \
+    --arg commDb "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db" \
+    '$lead + {commDb:$commDb}')
 else
   LEAD_CARRIER="launchd-v2"
 fi
@@ -2293,7 +2300,7 @@ fi
 if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
   GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF
 ,
-  "codexLead": ${CODEX_LEAD_JSON}
+  "codexLead": ${CODEX_LEAD_OUTPUT_JSON}
 EOF
 )"
 fi

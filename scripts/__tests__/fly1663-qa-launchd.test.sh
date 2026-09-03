@@ -15,6 +15,17 @@ export FLYWHEEL_QA_LEAD_VERIFY_POLLS=1
 passed=0; failed=0
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
+qa_test_file_mode() {
+  local path="$1" mode=""
+  if mode="$(stat -c %a "$path" 2>/dev/null)" \
+      && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  mode="$(stat -f %Lp "$path" 2>/dev/null)" \
+    && [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  printf '%s\n' "$mode"
+}
 
 # shellcheck source=../lib/qa-launchd-lead.sh
 source "$ROOT/scripts/lib/qa-launchd-lead.sh"
@@ -113,7 +124,7 @@ if python3 "$renderer" render --template "$template" --output "$rendered_wrapper
     && python3 "$renderer" check --path "$rendered_wrapper" \
       --lead-id qa-lead --project-dir "$workspace" --project-name test-slot-7 \
     && bash -n "$rendered_wrapper" \
-    && [ "$(stat -f '%Lp' "$rendered_wrapper" 2>/dev/null || stat -c '%a' "$rendered_wrapper")" = 700 ]; then
+    && [ "$(qa_test_file_mode "$rendered_wrapper")" = 700 ]; then
   pass "Codex slot wrapper renders validated launcher argv as mode 700"
 else
   fail "Codex slot wrapper renderer"
@@ -153,7 +164,7 @@ ln -s releases/release-1 "$mint_source/packages/standalone/current"
 if qa_launchd_mint_codex_home "$mint_source" "$mint_dest" "$MINT_SLOT" \
     && [ -x "$mint_dest/packages/standalone/current/codex" ] \
     && [ "$(cat "$mint_dest/auth.json")" = fixture-auth-secret ] \
-    && [ "$(stat -f '%Lp' "$mint_dest/auth.json" 2>/dev/null || stat -c '%a' "$mint_dest/auth.json")" = 600 ] \
+    && [ "$(qa_test_file_mode "$mint_dest/auth.json")" = 600 ] \
     && [ ! -e "$mint_dest/history.jsonl" ] \
     && [ -z "$(find "$MINT_SLOT/cdxh" -maxdepth 1 -name '.cdxh-stage.*' -print -quit)" ]; then
   pass "Codex home mint clones only standalone plus auth into the slot atomically"
@@ -501,7 +512,7 @@ if [[ "$heartbeat_one" == $'4242\tgen-1\tcarrier-1\tonline\t'"$heartbeat_hash" ]
     && [[ "$heartbeat_two" == "$heartbeat_one" ]] \
     && [ "$single_snapshot_count" = 0 ] \
     && cmp -s "$heartbeat" "$snapshot" \
-    && [ "$(stat -f '%Lp' "$snapshot" 2>/dev/null || stat -c '%a' "$snapshot")" = 600 ]; then
+    && [ "$(qa_test_file_mode "$snapshot")" = 600 ]; then
   pass "heartbeat reader validates one snapshot and archives those exact bytes on request"
 else
   fail "Codex heartbeat reader and evidence snapshot"
@@ -802,8 +813,13 @@ codex_stop_calls="$TMP/codex-stop.calls"
 mkdir -p "$(dirname "$runtime_pid_file")" "$(dirname "$daemon_pid_file")" \
   "$(dirname "$daemon_socket")"
 printf '%s\n' 4242 > "$runtime_pid_file"
-printf '%s\n' 5252 > "$daemon_pid_file"
+printf '%s\n' '{"pid":5252,"processStartTime":"Wed Sep  3 12:00:01 2026"}' \
+  > "$daemon_pid_file"
 : > "$daemon_socket"
+updater_state="$TMP/codex-updater.alive"
+updater_kills="$TMP/codex-updater.kills"
+: > "$updater_state"
+: > "$updater_kills"
 cat > "$codex_bin" <<'CODEX'
 #!/bin/bash
 printf '%s\n' "$*" >> "$FLY1663_QA_CODEX_STOP_CALLS"
@@ -822,17 +838,37 @@ ps() {
     '-o lstart= -p 4242') [[ -f "$launchctl_state" ]] && printf 'Wed Sep  3 12:00:00 2026\n' ;;
     '-o stat= -p 5252') [[ -f "$daemon_pid_file" ]] && printf 'S\n' ;;
     '-o lstart= -p 5252') [[ -f "$daemon_pid_file" ]] && printf 'Wed Sep  3 12:00:01 2026\n' ;;
+    '-ww -axo pid=,command=')
+      [[ -f "$updater_state" ]] \
+        && printf ' 6262 %s app-server daemon pid-update-loop\n' "$codex_bin"
+      return 0
+      ;;
+    '-ww -o command= -p 6262')
+      [[ -f "$updater_state" ]] \
+        && printf '%s app-server daemon pid-update-loop\n' "$codex_bin"
+      ;;
+    '-o stat= -p 6262') [[ -f "$updater_state" ]] && printf 'S\n' ;;
+    '-o lstart= -p 6262') [[ -f "$updater_state" ]] && printf 'Wed Sep  3 12:00:02 2026\n' ;;
     *) return 1 ;;
   esac
 }
-if qa_launchd_stop_registry "$codex_stop_registry" \
+kill() {
+  printf '%s\n' "$*" >> "$updater_kills"
+  case "$*" in
+    '-TERM 6262'|'-TERM -- 6262') rm -f "$updater_state"; return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if (unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
     && grep -Fxq 'remote-control stop --json' "$codex_stop_calls" \
-    && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" ]]; then
-  pass "Codex registry stop converges launchd runtime and app-server daemon"
+    && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" \
+      && ! -e "$updater_state" ]] \
+    && grep -Eq '^-TERM( --)? 6262$' "$updater_kills"; then
+  pass "Codex registry stop is standalone and converges runtime, daemon, and updater"
 else
   fail "Codex registry convergent teardown"
 fi
-unset -f ps
+unset -f ps kill
 
 make_stop_home() {
   local home="$1" behavior="$2" marker="$3"
@@ -845,7 +881,8 @@ $behavior
 CODEX
   chmod +x "$home/packages/standalone/releases/r1/codex"
   ln -s releases/r1 "$home/packages/standalone/current"
-  printf '%s\n' 6001 > "$home/app-server-daemon/app-server.pid"
+  printf '%s\n' '{"pid":6001,"processStartTime":"Wed Sep  3 12:00:03 2026"}' \
+    > "$home/app-server-daemon/app-server.pid"
   : > "$home/app-server-control/app-server-control.sock"
 }
 
@@ -892,19 +929,30 @@ fi
 stop_alive_root="/tmp/flywheel-test-slot-$((960000 + $$))"
 stop_alive_home="$stop_alive_root/cdxh/alive"
 stop_alive_registry="$stop_alive_root/launchd-leads.json"
-make_stop_home "$stop_alive_home" 'exit 0' stop-zero-daemon-live
+make_stop_home "$stop_alive_home" \
+  'rm -f "$CODEX_HOME/app-server-control/app-server-control.sock"; exit 0' \
+  stop-zero-daemon-live
 qa_launchd_register "$stop_alive_registry" com.flywheel.qa.lead.slot-96.alive \
   /tmp/alive.plist '' codex-tui "$stop_alive_home" \
   "$stop_alive_home/packages/standalone/current/codex" "$stop_alive_root/q/alive" \
   "$stop_alive_root/launchd/alive/pid"
+ps() {
+  case "$*" in
+    '-o stat= -p 6001') printf 'S\n' ;;
+    '-o lstart= -p 6001') printf 'Wed Sep  3 12:00:03 2026\n' ;;
+    '-axo pid=,command=') return 0 ;;
+    *) return 1 ;;
+  esac
+}
 if ! qa_launchd_stop_registry "$stop_alive_registry" >/dev/null 2>"$TMP/stop-alive.err" \
     && grep -Fq 'carrier=codex-tui step=daemon-converge' "$TMP/stop-alive.err" \
     && [[ -e "$stop_alive_home/app-server-daemon/app-server.pid" \
-      && -e "$stop_alive_home/app-server-control/app-server-control.sock" ]]; then
-  pass "Codex registry rejects a successful stop response while daemon state remains live"
+      && ! -e "$stop_alive_home/app-server-control/app-server-control.sock" ]]; then
+  pass "Codex registry parses the production JSON pid record and rejects a live daemon"
 else
   fail "Codex registry false-success daemon convergence"
 fi
+unset -f ps
 
 bootout_stub="$TMP/bin/launchctl-bootout-fails"
 cat > "$bootout_stub" <<'LAUNCHCTL'
@@ -936,6 +984,47 @@ else
   fail "Codex registry bootout failure handling"
 fi
 export FLYWHEEL_QA_LAUNCHCTL="$saved_launchctl"
+
+saved_qa_tmux="$FLYWHEEL_QA_TMUX"
+stale_tmux_socket="$MINT_SLOT/tmux-$(id -u)/default"
+stale_tmux_state="$TMP/stale-tmux-server.alive"
+stale_tmux_calls="$TMP/stale-tmux.calls"
+mkdir -p "$(dirname "$stale_tmux_socket")"
+python3 - "$stale_tmux_socket" <<'PY'
+import socket
+import sys
+
+sock = socket.socket(socket.AF_UNIX)
+sock.bind(sys.argv[1])
+sock.close()
+PY
+: > "$stale_tmux_state"
+: > "$stale_tmux_calls"
+tmux_cleanup_stub="$TMP/bin/tmux-cleanup"
+cat > "$tmux_cleanup_stub" <<'TMUX'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_QA_STALE_TMUX_CALLS"
+case "$3" in
+  has-session) [[ -f "$FLY1663_QA_STALE_TMUX_STATE" ]] ;;
+  kill-server) rm -f "$FLY1663_QA_STALE_TMUX_STATE"; exit 0 ;;
+  list-sessions) [[ -f "$FLY1663_QA_STALE_TMUX_STATE" ]] ;;
+  *) exit 64 ;;
+esac
+TMUX
+chmod +x "$tmux_cleanup_stub"
+export FLY1663_QA_STALE_TMUX_STATE="$stale_tmux_state"
+export FLY1663_QA_STALE_TMUX_CALLS="$stale_tmux_calls"
+export FLYWHEEL_QA_TMUX="$tmux_cleanup_stub"
+if qa_launchd_converge_codex_tmux_socket "$stale_tmux_socket" \
+    && [[ ! -e "$stale_tmux_socket" && ! -L "$stale_tmux_socket" ]] \
+    && grep -Fq -- "-S $stale_tmux_socket kill-server" "$stale_tmux_calls"; then
+  pass "Codex tmux convergence removes the exact stale socket after kill-server succeeds"
+else
+  fail "Codex tmux stale socket convergence"
+fi
+export FLYWHEEL_QA_TMUX="$saved_qa_tmux"
+unset FLY1663_QA_STALE_TMUX_STATE FLY1663_QA_STALE_TMUX_CALLS
+
 unset FLYWHEEL_QA_STOP_POLLS FLYWHEEL_QA_STOP_INTERVAL
 rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root"
 

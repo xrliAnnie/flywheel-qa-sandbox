@@ -210,9 +210,15 @@ cat > "$FR/scripts/host-tmux-selection-gate.sh" <<'HOSTGATE'
 exit 0
 HOSTGATE
 chmod +x "$FR/scripts/host-tmux-selection-gate.sh"
+cp "${SCRIPT_DIR}/../packages/teamlead/scripts/codex-lead-tui-home.sh" \
+  "$FR/packages/teamlead/scripts/codex-lead-tui-home-real.sh"
 cat > "$FR/packages/teamlead/scripts/codex-lead-tui-home.sh" <<'TUIHOME'
 #!/bin/bash
 set -euo pipefail
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
+  source "$(dirname "${BASH_SOURCE[0]}")/codex-lead-tui-home-real.sh"
+  return
+fi
 home="${FLYWHEEL_CODEX_TUI_HOME:?}"
 case "${1:-}" in
   ensure-home)
@@ -431,6 +437,9 @@ FORMAT=""
 PID=""
 [[ -z "${FLY1389_PS_LOG:-}" ]] || printf 'argv:%q ' "$@" >> "$FLY1389_PS_LOG"
 [[ -z "${FLY1389_PS_LOG:-}" ]] || printf '\n' >> "$FLY1389_PS_LOG"
+if [[ "$*" == "-ww -axo pid=,command=" ]]; then
+  exit 0
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) FORMAT="${2:?format required}"; shift 2 ;;
@@ -614,10 +623,23 @@ set -euo pipefail
 home="${CODEX_HOME:?}"
 socket="$home/app-server-control/app-server-control.sock"
 pid_file="$home/app-server-daemon/app-server.pid"
+read_pid_record() {
+  python3 - "$pid_file" <<'PY' 2>/dev/null
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    value = json.load(stream)
+pid = value.get("pid") if isinstance(value, dict) else None
+if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+    raise SystemExit(1)
+print(pid)
+PY
+}
 case "${1:-} ${2:-}" in
   "remote-control start")
     if [[ -f "$pid_file" ]]; then
-      old_pid=$(cat "$pid_file" 2>/dev/null || true)
+      old_pid=$(read_pid_record || true)
       if [[ "$old_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$old_pid" 2>/dev/null && [[ -S "$socket" ]]; then
         printf '%s\n' '{"status":"connected"}'
         exit 0
@@ -642,13 +664,13 @@ signal.signal(signal.SIGINT, stop)
 while True: time.sleep(1)
 PY
     daemon_pid=$!
-    printf '%s\n' "$daemon_pid" > "$pid_file"
+    printf '{"pid":%s,"processStartTime":"fixture"}\n' "$daemon_pid" > "$pid_file"
     for _ in $(seq 1 100); do [[ -S "$socket" ]] && break; sleep 0.01; done
     [[ -S "$socket" ]]
     printf '%s\n' '{"status":"started"}'
     ;;
   "remote-control stop")
-    daemon_pid=$(cat "$pid_file" 2>/dev/null || true)
+    daemon_pid=$(read_pid_record || true)
     if [[ "$daemon_pid" =~ ^[1-9][0-9]*$ ]]; then
       kill "$daemon_pid" 2>/dev/null || true
       for _ in $(seq 1 100); do kill -0 "$daemon_pid" 2>/dev/null || break; sleep 0.01; done
@@ -801,7 +823,6 @@ run_teardown() {  # <home> <slot>
       FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
       FLYWHEEL_QA_TMUX="${FLY1389_QA_TMUX:-$STUB_BIN/tmux}" \
-      FLYWHEEL_DIR="$repo_root" \
       FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
       FLYWHEEL_CMUX_WATCHER_LOCK_DIR="$home/cmux-mutator.lock" \
       FLYWHEEL_CMUX_MAINTENANCE_MARKER="$home/cmux-maintenance" \
@@ -1515,7 +1536,8 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       .codexLead.tuiWindow == "present" and .codexLead.agentId == "flywheel-test-34" and
       .codexLead.projectName == "test-slot-34" and
       (.codexLead.codexHome | startswith($slot + "/cdxh/")) and
-      (.codexLead.stateDir | startswith($slot + "/q/34/"))
+      (.codexLead.stateDir | startswith($slot + "/q/34/")) and
+      .codexLead.commDb == ($slot + "/state/comm/test-slot-34/comm.db")
     ' >/dev/null 2>&1 <<<"$CX_JSON" \
     || { CX_OK=0; fail "CX: Codex-shaped deploy JSON contract"; }
   jq -e --arg label "$CX_LABEL" --arg home "$CX_HOME" --arg state "$CX_STATE" '

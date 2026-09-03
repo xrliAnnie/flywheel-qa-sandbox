@@ -8,6 +8,17 @@ passed=0
 failed=0
 pass() { printf 'PASS: %s\n' "$1"; passed=$((passed + 1)); }
 fail() { printf 'FAIL: %s\n' "$1"; failed=$((failed + 1)); }
+qa_test_file_mode() {
+  local path="$1" mode=""
+  if mode="$(stat -c %a "$path" 2>/dev/null)" \
+      && [[ "$mode" =~ ^[0-7]{3,4}$ ]]; then
+    printf '%s\n' "$mode"
+    return 0
+  fi
+  mode="$(stat -f %Lp "$path" 2>/dev/null)" \
+    && [[ "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  printf '%s\n' "$mode"
+}
 
 renderer="$ROOT/scripts/lib/qa-launchd-env.py"
 env_file="$TMP/lead.env"
@@ -17,7 +28,7 @@ if python3 "$renderer" --output "$env_file" \
     'FLYWHEEL_PROJECTS_FILE=/tmp/flywheel-test-slot-7/q/7/projects.json' \
     'CODEX_HOME=/tmp/flywheel-test-slot-7/cdxh/flywheel-test-7' \
     'QA_SENTINEL_SECRET=projected-arbitrary-value' \
-    && [ "$(stat -f '%Lp' "$env_file" 2>/dev/null || stat -c '%a' "$env_file")" = 600 ]; then
+    && [ "$(qa_test_file_mode "$env_file")" = 600 ]; then
   unset TEST_BOT_TOKEN_7 FLYWHEEL_PROJECTS_FILE CODEX_HOME QA_SENTINEL_SECRET
   # shellcheck disable=SC1090
   set -a; source "$env_file"; set +a

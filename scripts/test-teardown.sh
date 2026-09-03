@@ -956,35 +956,17 @@ teardown_slot() {
   # FLY-1999: test-deploy binds its Bridge and runners to this native per-slot
   # default socket. Retire that server after the Bridge is down; never sweep by
   # name on the resident default server.
-  if tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
-    log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
-    tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
-  elif [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 && -S "$SLOT_TMUX_SOCKET" ]]; then
-    # A Codex runtime can retire its final named window just before this probe.
-    # tmux then reports no session while its server socket is still draining;
-    # the legacy has-session guard skips kill-server and leaves teardown stuck.
-    # This branch is Codex-only, after registry runtime convergence, and the
-    # socket is the exact slot-private coordinate — no resident/default sweep.
-    log "Converging empty Codex slot tmux server: ${SLOT_TMUX_SOCKET}"
-    if ! tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null; then
-      tmux -S "$SLOT_TMUX_SOCKET" list-sessions >/dev/null 2>&1 \
-        || rm -f "$SLOT_TMUX_SOCKET"
-    fi
-  fi
   if [[ "$QA_SLOT_HAS_CODEX_LEAD" == 1 ]]; then
-    local _codex_tmux_converged=0 _codex_tmux_poll
-    for _codex_tmux_poll in $(seq 1 "${FLYWHEEL_QA_STOP_POLLS:-150}"); do
-      if ! tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null \
-          && [[ ! -e "$SLOT_TMUX_SOCKET" && ! -L "$SLOT_TMUX_SOCKET" ]]; then
-        _codex_tmux_converged=1
-        break
-      fi
-      sleep "${FLYWHEEL_QA_STOP_INTERVAL:-0.2}"
-    done
-    if [[ "$_codex_tmux_converged" != 1 ]]; then
+    log "Converging Codex slot tmux server: ${SLOT_TMUX_SOCKET}"
+    if ! qa_launchd_converge_codex_tmux_socket "$SLOT_TMUX_SOCKET"; then
       log "ERROR: carrier=codex-tui step=tmux-converge socket=${SLOT_TMUX_SOCKET}"
       qa_slot_bridge_guard_release
       return 1
+    fi
+  else
+    if tmux -S "$SLOT_TMUX_SOCKET" has-session 2>/dev/null; then
+      log "Killing slot tmux server: ${SLOT_TMUX_SOCKET}"
+      tmux -S "$SLOT_TMUX_SOCKET" kill-server 2>/dev/null || true
     fi
   fi
 

@@ -1404,6 +1404,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/fly1663-qa-launchd.test.sh:os.kill(inner_pid, 0)#1",
+		"path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
+		"code": "os.kill(inner_pid, 0)",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly1663-qa-launchd.test.sh:os.kill(inner_pid, getattr(signal, signal_name))#1",
+		"path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
+		"code": "os.kill(inner_pid, getattr(signal, signal_name))",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/fly1678-install-statusline.test.sh:kill -TERM \"\\$PPID\" 2>/dev/null#1",
 		"path": "scripts/__tests__/fly1678-install-statusline.test.sh",
 		"code": "kill -TERM \"\\$PPID\" 2>/dev/null",
@@ -1617,6 +1629,12 @@
 		"key": "scripts/__tests__/payload-release-pipeline.test.sh:kill -TERM \"$PROXY_PID\" 2>/dev/null; wait \"$PROXY_PID\" 2>/dev/null#1",
 		"path": "scripts/__tests__/payload-release-pipeline.test.sh",
 		"code": "kill -TERM \"$PROXY_PID\" 2>/dev/null; wait \"$PROXY_PID\" 2>/dev/null",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-codex-tmux-isolation.test.sh:grep -v 'kill-window' \"$runtime\" > \"$runtime_no_kill\"#1",
+		"path": "scripts/__tests__/qa-codex-tmux-isolation.test.sh",
+		"code": "grep -v 'kill-window' \"$runtime\" > \"$runtime_no_kill\"",
 		"classification": "qa-only"
 	},
 	{
@@ -2088,6 +2106,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:[[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "[[ \"$pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$E_NEW_INTERMEDIATE\" 2>/dev/null \\#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
 		"code": "&& kill -0 \"$E_NEW_INTERMEDIATE\" 2>/dev/null \\",
@@ -2124,9 +2148,27 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 0.05; done#1",
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:else tmuxCall(\"kill-window\", \"-t\", `${session}:${window}`);#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
-		"code": "for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 0.05; done",
+		"code": "else tmuxCall(\"kill-window\", \"-t\", `${session}:${window}`);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:for _ in $(seq 1 100); do kill -0 \"$daemon_pid\" 2>/dev/null || break; sleep 0.01; done#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "for _ in $(seq 1 100); do kill -0 \"$daemon_pid\" 2>/dev/null || break; sleep 0.01; done",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:if (names.length === 1) tmuxCall(\"kill-session\", \"-t\", session);#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "if (names.length === 1) tmuxCall(\"kill-session\", \"-t\", session);",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:if [[ \"$old_pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$old_pid\" 2>/dev/null && [[ -S \"$socket\" ]]; then#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "if [[ \"$old_pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$old_pid\" 2>/dev/null && [[ -S \"$socket\" ]]; then",
 		"classification": "qa-only"
 	},
 	{
@@ -2154,21 +2196,33 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$pid\" 2>/dev/null || exit 113#1",
-		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
-		"code": "kill -0 \"$pid\" 2>/dev/null || exit 113",
-		"classification": "qa-only"
-	},
-	{
 		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$sentinel_pid\" 2>/dev/null \\#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
 		"code": "kill -0 \"$sentinel_pid\" 2>/dev/null \\",
 		"classification": "qa-only"
 	},
 	{
-		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -9 \"$pid\" 2>/dev/null || true#1",
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -9 \"$daemon_pid\" 2>/dev/null || true#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
-		"code": "kill -9 \"$pid\" 2>/dev/null || true",
+		"code": "kill -9 \"$daemon_pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -KILL -- \"-$pid\" 2>/dev/null || kill -9 \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -KILL -- \"-$pid\" 2>/dev/null || kill -9 \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -TERM -- \"-$pid\" 2>/dev/null || kill \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -TERM -- \"-$pid\" 2>/dev/null || kill \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:try { tmuxCall(\"kill-window\", \"-t\", `${session}:${window}`); } catch {}#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "try { tmuxCall(\"kill-window\", \"-t\", `${session}:${window}`); } catch {}",
 		"classification": "qa-only"
 	},
 	{
@@ -2811,6 +2865,24 @@
 		"key": "scripts/lib/qa-generalized.sh:while kill -0 \"$clone_pid\" 2>/dev/null; do#1",
 		"path": "scripts/lib/qa-generalized.sh",
 		"code": "while kill -0 \"$clone_pid\" 2>/dev/null; do",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-launchd-lead.sh:kill -9 \"$old_pid\" || return 1#1",
+		"path": "scripts/lib/qa-launchd-lead.sh",
+		"code": "kill -9 \"$old_pid\" || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-launchd-lead.sh:kill -KILL -- \"$pid\" 2>/dev/null || { failed=1; continue; }#1",
+		"path": "scripts/lib/qa-launchd-lead.sh",
+		"code": "kill -KILL -- \"$pid\" 2>/dev/null || { failed=1; continue; }",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-launchd-lead.sh:kill -TERM -- \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/lib/qa-launchd-lead.sh",
+		"code": "kill -TERM -- \"$pid\" 2>/dev/null || true",
 		"classification": "qa-only"
 	},
 	{
