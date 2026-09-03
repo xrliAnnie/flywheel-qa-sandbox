@@ -29,6 +29,7 @@ import { finalizeRecoveredMerge } from "../merge-ship-gate.js";
 import { makeFinalizeWorkflowPhaseRoles } from "../post-ship-finalization.js";
 import { reviewHoldReason } from "../review-hold.js";
 import { sendRunnerWake } from "../runner-wake.js";
+import type { TerminalArchiveAdmission } from "../terminal-thread-archive.js";
 import { type BridgeConfig, sqliteDatetime } from "../types.js";
 import {
 	type FounderConsentAuditStore,
@@ -132,6 +133,7 @@ export function buildGateResponsePostWriteHook(deps: {
 		current?: { refresh(issueId: string): Promise<void> };
 	};
 	materializedHeadAuthority?: MaterializedHeadAuthority;
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
 }): (info: {
 	executionId: string;
 	questionId: string;
@@ -218,6 +220,8 @@ export function buildGateResponsePostWriteHook(deps: {
 							)
 						: undefined,
 					deps.materializedHeadAuthority,
+					undefined,
+					deps.terminalArchiveEnqueue,
 				);
 				if (completed) {
 					log.warn(
@@ -272,6 +276,7 @@ export function buildFounderConsentWiring(
 		current?: { refresh(issueId: string): Promise<void> };
 	},
 	materializedHeadAuthority?: MaterializedHeadAuthority,
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
 ): FounderConsentWiring | null {
 	const fc = config.founderConsent;
 	if (!fc) return null; // Track 2 not compiled into this config at all.
@@ -457,6 +462,7 @@ export function buildFounderConsentWiring(
 		// FLY-907: terminal-state display refresh on the recovered-merge path.
 		issueDisplayRefresh,
 		materializedHeadAuthority,
+		terminalArchiveEnqueue,
 	});
 
 	// FLY-191 Phase 2 (Codex PR R1 CRITICAL): the gate router rejects answers

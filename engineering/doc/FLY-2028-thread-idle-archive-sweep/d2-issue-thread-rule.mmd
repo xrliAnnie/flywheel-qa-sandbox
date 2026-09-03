@@ -1,0 +1,16 @@
+stateDiagram-v2
+    [*] --> 开着: issue 还在做
+    开着 --> 开着: 有人说话
+    开着 --> 等静默: issue 已 Done / 已 ship
+    等静默 --> 等静默: 一小时内又有人说话<br/>(Lead 收尾话、founder 提问)
+    等静默 --> 归档: 满 60 分钟没人说话<br/>且没有活着的 runner
+    归档 --> 等静默: 任何人再发言<br/>Discord 自动打开
+    归档 --> [*]
+    note right of 等静默
+        不再问「是谁说的」
+        只问「还有人在说吗」
+    end note
+    note right of 归档
+        ship 当刻不再立即归档
+        收尾话说完再收
+    end note

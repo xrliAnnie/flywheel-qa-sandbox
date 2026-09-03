@@ -4,6 +4,8 @@ Issue: FLY-1709 (https://linear.app/geoforge3d/issue/FLY-1709/archive-once-死�
 日期: 2026-08-12
 基于: research.md(Codex design review R1-R6,R6 APPROVED,见 §9)
 
+> 2026-09-02 · FLY-2028 后续语义：本计划的「founder 手动重开不抢」仍适用于非终态 authority；当调用方以 fresh Linear Done/Canceled 证明 `authority: "terminal"` 时，静默满 1 小时的 reopened issue thread 会重新归档，窗口内的新活动继续 fail-closed 延后。首次归档和再次归档都使用 frontier fence、补偿 receipt 与 Discord 结果核验。
+
 ## 0. 目标与不变量
 
 修 4 个正交缺陷(exploration §2),使「bot 弹开的归档 thread 永远关不上 + 假成功返回 + 状态贴弹开归档 thread + 清账 terminate 渲染成受阻」整条链收敛。

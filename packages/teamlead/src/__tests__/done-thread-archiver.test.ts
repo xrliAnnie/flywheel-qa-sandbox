@@ -47,6 +47,13 @@ const FAIL_ARCHIVE: ArchiveChatThreadResult = {
 	reason: "exhausted",
 };
 
+const DISCORD_EPOCH_MS = 1_420_070_400_000;
+const NOW = Date.UTC(2026, 8, 3, 4, 0, 0);
+
+function snowflakeAt(ms: number): string {
+	return (BigInt(ms - DISCORD_EPOCH_MS) << 22n).toString();
+}
+
 describe("resolveBotTokenForThread", () => {
 	it("prefers the thread's recorded lead_id", () => {
 		expect(
@@ -101,7 +108,7 @@ describe("archiveThreadAndRecord", () => {
 				executionId: "exec-1",
 			},
 			"tok-tadashi",
-			{ archiveFn },
+			{ archiveFn, quietWindowMs: 0 },
 		);
 		expect(res.archived).toBe(true);
 		expect(archiveFn).toHaveBeenCalledWith(
@@ -128,7 +135,7 @@ describe("archiveThreadAndRecord", () => {
 				executionId: "exec-1",
 			},
 			"tok-tadashi",
-			{ archiveFn },
+			{ archiveFn, quietWindowMs: 0 },
 		);
 		expect(res.archived).toBe(false);
 		// not archived → archived_at stays null
@@ -151,7 +158,12 @@ describe("archiveThreadAndRecord", () => {
 				executionId: "exec-1",
 			},
 			"tok-tadashi",
-			{ archiveFn, removeUserFn, discordOwnerUserId: "owner-9" },
+			{
+				archiveFn,
+				removeUserFn,
+				discordOwnerUserId: "owner-9",
+				quietWindowMs: 0,
+			},
 		);
 		expect(removeUserFn).toHaveBeenCalledWith(
 			"t-1",
@@ -211,6 +223,415 @@ describe("archiveThreadAndRecord", () => {
 		expect(archiveFn).not.toHaveBeenCalled();
 	});
 
+	it("FLY-2028: terminal authority re-archives a quiet human-reopened thread", async () => {
+		store.markChatThreadArchived("t-1");
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+		const classifyFn = vi.fn().mockResolvedValue({ kind: "human" });
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => NOW,
+			archiveFn,
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true }),
+			frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId: frontier }),
+			classifyFn,
+		});
+
+		expect(result).toMatchObject({ archived: true, reason: "ok" });
+		expect(classifyFn).not.toHaveBeenCalled();
+		expect(archiveFn).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-2028: terminal authority defers a recently active reopened thread without audit noise", async () => {
+		store.markChatThreadArchived("t-1");
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => NOW,
+			archiveFn,
+			probeFn: vi.fn().mockResolvedValue({
+				ok: true,
+				name: "thread",
+				archived: false,
+				archiveTimestamp: new Date(NOW - 5 * 60_000).toISOString(),
+			}),
+			frontierFn: vi.fn().mockResolvedValue({
+				ok: true,
+				messageId: snowflakeAt(NOW - 2 * 60 * 60_000),
+			}),
+		});
+
+		expect(result).toMatchObject({
+			archived: false,
+			reason: "deferred_quiet_window",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getEventsByExecution("exec-1")).toEqual([]);
+	});
+
+	it("FLY-2028: first automatic archive defers inside the quiet window", async () => {
+		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+		const removeUserFn = vi.fn();
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => NOW,
+			archiveFn,
+			removeUserFn,
+			discordOwnerUserId: "owner-9",
+			probeFn: vi
+				.fn()
+				.mockResolvedValue({ ok: true, name: "thread", archived: false }),
+			frontierFn: vi.fn().mockResolvedValue({
+				ok: true,
+				messageId: snowflakeAt(NOW - 5 * 60_000),
+			}),
+		});
+
+		expect(result.reason).toBe("deferred_quiet_window");
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(removeUserFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+		expect(store.getEventsByExecution("exec-1")).toEqual([]);
+	});
+
+	it("FLY-2028: first automatic archive fences and commits atomically after a quiet hour", async () => {
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const archiveFn = vi.fn(async () => {
+			expect(store.getChatThreadCompensationPending("t-1")).toMatchObject({
+				version: 1,
+				frontier,
+			});
+			return OK_ARCHIVE;
+		});
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => NOW,
+			archiveFn,
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true }),
+			frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId: frontier }),
+		});
+
+		expect(result).toMatchObject({ archived: true, reason: "ok" });
+		expect(store.getChatThreadArchivedAt("t-1")).not.toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+		const events = store.getEventsByExecution("exec-1");
+		expect(events).toHaveLength(1);
+		expect(events[0]?.event_id).toContain("chat-thread-archived-fly2028-t-1-");
+	});
+
+	it("FLY-2028: retries transient preflight reads before the first archive", async () => {
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const sleepImpl = vi.fn(async () => {});
+		const probeFn = vi
+			.fn()
+			.mockResolvedValueOnce({
+				ok: false,
+				status: 429,
+				retryAfterMs: 17,
+				error: "rate limited",
+			})
+			.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+			.mockResolvedValueOnce({ ok: true, name: "thread", archived: true });
+		const frontierFn = vi
+			.fn()
+			.mockResolvedValueOnce({ ok: false, status: 503, error: "unavailable" })
+			.mockResolvedValue({ ok: true, messageId: frontier });
+
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				quietWindowMs: 60 * 60_000,
+				nowMs: () => NOW,
+				archiveFn: vi.fn().mockResolvedValue(OK_ARCHIVE),
+				probeFn,
+				frontierFn,
+				sleepImpl,
+			}),
+		).resolves.toMatchObject({ archived: true, reason: "ok" });
+		expect(sleepImpl).toHaveBeenNthCalledWith(1, 17);
+		expect(sleepImpl).toHaveBeenNthCalledWith(2, 200);
+	});
+
+	it("FLY-2028: archives again after a new session reactivates the thread", async () => {
+		let current = NOW;
+		let discordArchived = false;
+		let frontier = snowflakeAt(current - 2 * 60 * 60_000);
+		const archiveFn = vi.fn(async () => {
+			discordArchived = true;
+			return OK_ARCHIVE;
+		});
+		const deps = {
+			authority: "terminal" as const,
+			quietWindowMs: 60 * 60_000,
+			nowMs: () => current,
+			archiveFn,
+			probeFn: vi.fn(async () => ({
+				ok: true as const,
+				name: "thread",
+				archived: discordArchived,
+			})),
+			frontierFn: vi.fn(async () => ({
+				ok: true as const,
+				messageId: frontier,
+			})),
+		};
+
+		await expect(
+			archiveThreadAndRecord(store, INPUT, "tok-tadashi", deps),
+		).resolves.toMatchObject({ archived: true, reason: "ok" });
+		expect(store.getChatThreadArchivedAt("t-1")).not.toBeNull();
+
+		discordArchived = false;
+		await expect(
+			reactivateChatThreadForStartedSession(
+				store,
+				{ ...INPUT, executionId: "exec-2" },
+				"tok-tadashi",
+			),
+		).resolves.toBe(true);
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+
+		current += 4 * 60 * 60_000;
+		frontier = snowflakeAt(current - 2 * 60 * 60_000);
+		await expect(
+			archiveThreadAndRecord(
+				store,
+				{ ...INPUT, executionId: "exec-2" },
+				"tok-tadashi",
+				deps,
+			),
+		).resolves.toMatchObject({ archived: true, reason: "ok" });
+
+		expect(archiveFn).toHaveBeenCalledTimes(2);
+		const archivedEvents = [
+			...store.getEventsByExecution("exec-1"),
+			...store.getEventsByExecution("exec-2"),
+		].filter((event) => event.event_type === "chat_thread_archived");
+		expect(archivedEvents).toHaveLength(2);
+		expect(new Set(archivedEvents.map(({ event_id }) => event_id)).size).toBe(
+			2,
+		);
+	});
+
+	it("FLY-2028: first-archive probe converges a Discord 404 as missing", async () => {
+		const archiveFn = vi.fn();
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			archiveFn,
+			probeFn: vi.fn().mockResolvedValue({
+				ok: false,
+				status: 404,
+				error: "Discord 404",
+			}),
+		});
+
+		expect(result).toMatchObject({
+			archived: false,
+			status: 404,
+			reason: "missing",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getUnarchivedIssueChatThreads()).toEqual([]);
+	});
+
+	it("FLY-2028: first-archive probe atomically records an externally archived thread", async () => {
+		const archiveFn = vi.fn();
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			archiveFn,
+			probeFn: vi
+				.fn()
+				.mockResolvedValue({ ok: true, name: "thread", archived: true }),
+		});
+
+		expect(result).toEqual({
+			archived: true,
+			attempts: 0,
+			reason: "already_archived",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).not.toBeNull();
+		const events = store.getEventsByExecution("exec-1");
+		expect(events).toHaveLength(1);
+		expect(events[0]?.event_id).toContain("chat-thread-archive-skip-fly1709-");
+	});
+
+	it("FLY-2028: first-archive probe fails closed when archive state is absent", async () => {
+		const archiveFn = vi.fn();
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			archiveFn,
+			probeFn: vi.fn().mockResolvedValue({ ok: true, name: "thread" }),
+		});
+
+		expect(result).toMatchObject({
+			archived: false,
+			reason: "reopen_check_failed",
+			error: "Discord archive state is missing",
+		});
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+	});
+
+	it("FLY-2028: an uncertain first-archive failure compensates when Discord is archived", async () => {
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const unarchiveFn = vi
+			.fn()
+			.mockResolvedValue({ unarchived: true, attempts: 1, status: 200 });
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			nowMs: () => NOW,
+			archiveFn: vi.fn().mockResolvedValue({
+				archived: false,
+				attempts: 3,
+				status: 500,
+				reason: "exhausted",
+			}),
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false }),
+			frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId: frontier }),
+			unarchiveFn,
+		});
+
+		expect(result.reason).toBe("reopen_check_failed");
+		expect(unarchiveFn).toHaveBeenCalledOnce();
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+	});
+
+	it("FLY-2028: a 400 already-archived race commits when the frontier is unchanged", async () => {
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const unarchiveFn = vi.fn();
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			nowMs: () => NOW,
+			archiveFn: vi.fn().mockResolvedValue({
+				archived: false,
+				attempts: 1,
+				status: 400,
+				reason: "client_error",
+			}),
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true }),
+			frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId: frontier }),
+			unarchiveFn,
+		});
+
+		expect(result).toMatchObject({
+			archived: true,
+			status: 400,
+			reason: "already_archived",
+		});
+		expect(unarchiveFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).not.toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+	});
+
+	it("FLY-2028: a 400 race with a changed frontier compensates and defers", async () => {
+		const before = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const after = snowflakeAt(NOW - 30 * 60_000);
+		const unarchiveFn = vi
+			.fn()
+			.mockResolvedValue({ unarchived: true, attempts: 1, status: 200 });
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			nowMs: () => NOW,
+			archiveFn: vi.fn().mockResolvedValue({
+				archived: false,
+				attempts: 1,
+				status: 400,
+				reason: "client_error",
+			}),
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false }),
+			frontierFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, messageId: before })
+				.mockResolvedValueOnce({ ok: true, messageId: after }),
+			unarchiveFn,
+		});
+
+		expect(result).toEqual({
+			archived: false,
+			attempts: 0,
+			reason: "deferred_quiet_window",
+		});
+		expect(unarchiveFn).toHaveBeenCalledOnce();
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+		expect(store.getEventsByExecution("exec-1")).toEqual([]);
+	});
+
+	it("FLY-2028: first automatic archive fails closed without a usable clock", async () => {
+		const archiveFn = vi.fn();
+		const probeFn = vi
+			.fn()
+			.mockResolvedValue({ ok: true, name: "thread", archived: false });
+
+		for (const messageId of [null, "not-a-snowflake", snowflakeAt(NOW + 1)]) {
+			const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+				authority: "terminal",
+				nowMs: () => NOW,
+				archiveFn,
+				probeFn,
+				frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId }),
+			});
+			expect(result.archived).toBe(false);
+			expect(result.reason).toBe(
+				messageId === snowflakeAt(NOW + 1)
+					? "deferred_quiet_window"
+					: "reopen_check_failed",
+			);
+		}
+		expect(archiveFn).not.toHaveBeenCalled();
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+	});
+
+	it("FLY-2028: keeps the first-archive receipt when verification is unavailable", async () => {
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			nowMs: () => NOW,
+			archiveFn: vi.fn().mockResolvedValue(OK_ARCHIVE),
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: false, status: 503, error: "down" }),
+			frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId: frontier }),
+		});
+
+		expect(result).toMatchObject({
+			archived: false,
+			reason: "reopen_check_failed",
+			error: "down",
+		});
+		expect(store.getChatThreadArchivedAt("t-1")).toBeNull();
+		expect(store.getChatThreadCompensationPending("t-1")).toMatchObject({
+			frontier,
+			cause: "unknown",
+		});
+	});
+
 	it("FLY-1709: fails closed when reopened-thread authorship cannot be proven", async () => {
 		store.markChatThreadArchived("t-1");
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
@@ -232,6 +653,7 @@ describe("archiveThreadAndRecord", () => {
 
 	it("FLY-1709: re-archives a bot-only reopen only after the quiet-window double check", async () => {
 		store.markChatThreadArchived("t-1");
+		const frontier = snowflakeAt(NOW - 2 * 60 * 60_000);
 		const previousEpoch = store.getChatThreadArchivedAt("t-1");
 		await new Promise((resolve) => setTimeout(resolve, 2));
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
@@ -241,7 +663,7 @@ describe("archiveThreadAndRecord", () => {
 			.mockResolvedValueOnce({ ok: true, name: "thread", archived: true });
 		const frontierFn = vi
 			.fn()
-			.mockResolvedValue({ ok: true, messageId: "frontier-1" });
+			.mockResolvedValue({ ok: true, messageId: frontier });
 		const removeUserFn = vi.fn();
 
 		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
@@ -251,9 +673,10 @@ describe("archiveThreadAndRecord", () => {
 			probeFn,
 			classifyFn: vi.fn().mockResolvedValue({
 				kind: "bot_only",
-				frontierMessageId: "frontier-1",
+				frontierMessageId: frontier,
 			}),
 			frontierFn,
+			nowMs: () => NOW,
 		});
 
 		expect(res).toMatchObject({ archived: true, reason: "ok" });
@@ -271,6 +694,8 @@ describe("archiveThreadAndRecord", () => {
 
 	it("FLY-1709: restores verified-open when a human arrives after the re-archive PATCH", async () => {
 		store.markChatThreadArchived("t-1");
+		const before = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const after = snowflakeAt(NOW - 30 * 60_000);
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
 		const probeFn = vi
 			.fn()
@@ -279,8 +704,8 @@ describe("archiveThreadAndRecord", () => {
 			.mockResolvedValueOnce({ ok: true, name: "thread", archived: false });
 		const frontierFn = vi
 			.fn()
-			.mockResolvedValueOnce({ ok: true, messageId: "frontier-1" })
-			.mockResolvedValueOnce({ ok: true, messageId: "frontier-2" });
+			.mockResolvedValueOnce({ ok: true, messageId: before })
+			.mockResolvedValueOnce({ ok: true, messageId: after });
 		const unarchiveFn = vi
 			.fn()
 			.mockResolvedValue({ unarchived: true, attempts: 1, status: 200 });
@@ -288,7 +713,7 @@ describe("archiveThreadAndRecord", () => {
 			.fn()
 			.mockResolvedValueOnce({
 				kind: "bot_only",
-				frontierMessageId: "frontier-1",
+				frontierMessageId: before,
 			})
 			.mockResolvedValueOnce({ kind: "human" });
 
@@ -298,6 +723,7 @@ describe("archiveThreadAndRecord", () => {
 			frontierFn,
 			unarchiveFn,
 			classifyFn,
+			nowMs: () => NOW,
 		});
 
 		expect(res).toMatchObject({
@@ -308,8 +734,46 @@ describe("archiveThreadAndRecord", () => {
 		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
 	});
 
+	it("FLY-2028: terminal authority defers a human message racing the re-archive PATCH without audit noise", async () => {
+		store.markChatThreadArchived("t-1");
+		const before = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const after = snowflakeAt(NOW - 30 * 60_000);
+		const unarchiveFn = vi
+			.fn()
+			.mockResolvedValue({ unarchived: true, attempts: 1, status: 200 });
+
+		const result = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
+			authority: "terminal",
+			nowMs: () => NOW,
+			archiveFn: vi.fn().mockResolvedValue(OK_ARCHIVE),
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false }),
+			frontierFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, messageId: before })
+				.mockResolvedValueOnce({ ok: true, messageId: before })
+				.mockResolvedValueOnce({ ok: true, messageId: after }),
+			classifyFn: vi.fn().mockResolvedValue({ kind: "human" }),
+			unarchiveFn,
+		});
+
+		expect(result).toEqual({
+			archived: false,
+			attempts: 0,
+			reason: "deferred_quiet_window",
+		});
+		expect(unarchiveFn).toHaveBeenCalledOnce();
+		expect(store.getChatThreadCompensationPending("t-1")).toBeNull();
+		expect(store.getEventsByExecution("exec-1")).toEqual([]);
+	});
+
 	it("FLY-1709: keeps a durable compensation receipt when restoring open fails", async () => {
 		store.markChatThreadArchived("t-1");
+		const before = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const after = snowflakeAt(NOW - 30 * 60_000);
 		const probeFn = vi
 			.fn()
 			.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
@@ -320,15 +784,16 @@ describe("archiveThreadAndRecord", () => {
 			probeFn,
 			frontierFn: vi
 				.fn()
-				.mockResolvedValueOnce({ ok: true, messageId: "frontier-1" })
-				.mockResolvedValueOnce({ ok: true, messageId: "frontier-2" }),
+				.mockResolvedValueOnce({ ok: true, messageId: before })
+				.mockResolvedValueOnce({ ok: true, messageId: after }),
 			unarchiveFn: vi
 				.fn()
 				.mockResolvedValue({ unarchived: false, attempts: 2 }),
 			classifyFn: vi.fn().mockResolvedValue({
 				kind: "bot_only",
-				frontierMessageId: "frontier-1",
+				frontierMessageId: before,
 			}),
+			nowMs: () => NOW,
 		});
 		expect(res).toMatchObject({
 			archived: false,
@@ -371,6 +836,8 @@ describe("archiveThreadAndRecord", () => {
 
 	it("FLY-1709: a changed pre-PATCH frontier fails closed without archiving", async () => {
 		store.markChatThreadArchived("t-1");
+		const before = snowflakeAt(NOW - 2 * 60 * 60_000);
+		const after = snowflakeAt(NOW - 90 * 60_000);
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
 		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
@@ -379,11 +846,10 @@ describe("archiveThreadAndRecord", () => {
 				.mockResolvedValue({ ok: true, name: "thread", archived: false }),
 			classifyFn: vi.fn().mockResolvedValue({
 				kind: "bot_only",
-				frontierMessageId: "frontier-1",
+				frontierMessageId: before,
 			}),
-			frontierFn: vi
-				.fn()
-				.mockResolvedValue({ ok: true, messageId: "frontier-2" }),
+			frontierFn: vi.fn().mockResolvedValue({ ok: true, messageId: after }),
+			nowMs: () => NOW,
 		});
 
 		expect(res.reason).toBe("reopen_check_failed");
@@ -399,6 +865,7 @@ describe("archiveThreadAndRecord", () => {
 		const archiveFn = vi.fn().mockImplementation(() => gate);
 		const p1 = archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
+			quietWindowMs: 0,
 		});
 		const p2 = archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
@@ -425,10 +892,12 @@ describe("archiveThreadAndRecord", () => {
 			.mockResolvedValueOnce(OK_ARCHIVE);
 		const r1 = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
+			quietWindowMs: 0,
 		});
 		expect(r1.archived).toBe(false); // never-throws: exception → structured failure
 		const r2 = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
+			quietWindowMs: 0,
 		});
 		expect(r2.archived).toBe(true);
 		expect(archiveFn).toHaveBeenCalledTimes(2);
@@ -438,6 +907,7 @@ describe("archiveThreadAndRecord", () => {
 		const archiveFn = vi.fn().mockRejectedValue(null);
 		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
+			quietWindowMs: 0,
 		});
 		expect(res.archived).toBe(false);
 		expect(res.reason).toBe("error");
@@ -447,6 +917,7 @@ describe("archiveThreadAndRecord", () => {
 		const archiveFn = vi.fn().mockRejectedValue(new Error("store exploded"));
 		const res = await archiveThreadAndRecord(store, INPUT, "tok-tadashi", {
 			archiveFn,
+			quietWindowMs: 0,
 		});
 		expect(res.archived).toBe(false);
 		expect(res.error).toContain("store exploded");
@@ -646,16 +1117,15 @@ describe("maybeArchiveThreadOnClose (central close cascade)", () => {
 		await maybeArchiveThreadOnClose(store, store.getSession("exec-1")!, {
 			projects: [PROJECT],
 			archiveFn,
-			fetchImpl: vi.fn(
-				async () =>
-					new Response(
-						JSON.stringify({
-							name: "thread",
-							thread_metadata: { archived: true },
-						}),
-						{ status: 200 },
-					),
-			),
+			nowMs: () => NOW,
+			probeFn: vi
+				.fn()
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: false })
+				.mockResolvedValueOnce({ ok: true, name: "thread", archived: true }),
+			frontierFn: vi.fn().mockResolvedValue({
+				ok: true,
+				messageId: snowflakeAt(NOW - 2 * 60 * 60_000),
+			}),
 		});
 
 		expect(archiveFn).toHaveBeenCalledWith(
@@ -663,6 +1133,29 @@ describe("maybeArchiveThreadOnClose (central close cascade)", () => {
 			"tok-tadashi",
 			expect.any(Object),
 		);
+	});
+
+	it("logs a quiet-window deferral from the close cascade", async () => {
+		seedCompleted("exec-1", "FLY-100");
+		store.upsertChatThread("t-1", "ch-eng", "FLY-100", "tadashi");
+		const info = vi.spyOn(console, "info").mockImplementation(() => {});
+
+		await maybeArchiveThreadOnClose(store, store.getSession("exec-1")!, {
+			projects: [PROJECT],
+			nowMs: () => NOW,
+			probeFn: vi
+				.fn()
+				.mockResolvedValue({ ok: true, name: "thread", archived: false }),
+			frontierFn: vi.fn().mockResolvedValue({
+				ok: true,
+				messageId: snowflakeAt(NOW - 5 * 60_000),
+			}),
+		});
+
+		expect(info).toHaveBeenCalledWith(
+			expect.stringContaining("archive deferred for FLY-100 (quiet window)"),
+		);
+		info.mockRestore();
 	});
 
 	it("does NOT archive a non-completed close (e.g. rejected/terminated)", async () => {
@@ -721,13 +1214,20 @@ describe("maybeArchiveThreadOnClose (central close cascade)", () => {
 		seedCompleted("exec-1", "FLY-100");
 		store.upsertChatThread("t-1", "ch-eng", "FLY-100", "tadashi");
 		// Archived once already; Annie may have re-opened it in Discord since
-		// (auto-unarchive on message) — the cascade must NOT fight her.
+		// (auto-unarchive on message) — this non-authoritative cascade must not
+		// fight her. Fresh terminal evidence is owned by targeted/reconcile paths.
 		store.markChatThreadArchived("t-1");
 		const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
 
 		await maybeArchiveThreadOnClose(store, store.getSession("exec-1")!, {
 			projects: [PROJECT],
 			archiveFn,
+			probeFn: vi.fn().mockResolvedValue({
+				ok: true,
+				name: "thread",
+				archived: false,
+			}),
+			classifyFn: vi.fn().mockResolvedValue({ kind: "human" }),
 		});
 
 		expect(archiveFn).not.toHaveBeenCalled();

@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2028 · 线程到期真的会自己收起来 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+  .kv { display:grid; grid-template-columns: 160px 1fr; gap:6px 12px; font-size:14px; }
+  .kv b { color:#1a365d; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2028 · 线程到期真的会自己收起来</h1>
+<div class="meta">设计文档(founder 版) · 2026-09-02 · 仓内正文:<code>engineering/doc/FLY-2028-thread-idle-archive-sweep/</code>(exploration / research / plan)· Codex 设计评审 4 轮 APPROVED + 1 轮确认</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>1. 一句话结论</h2>
+  <p class="summary-line">Discord 从来不会替我们把线程归档,它只会把「已读」的线程从侧栏收起;你看到的线程几乎全是未读的,所以永远堆着。这次改成一条规则:<strong>「这条线程的事已经办完、且满一小时没人说话 ⇒ 我们自己把它归档」</strong>。issue 线程按「单子已 Done / 已 ship」算办完,圆桌和告警线程按频道性质算办完。有人再说话 Discord 会自动打开,再满一小时再收。</p>
+  <div class="callout amber"><strong>先说清一件事:ship 之后线程不是立刻归档,最快也要 60 分钟</strong>——要等 Lead 把收尾话说完、再满一小时没人说话才收。你 ship 完一小时内还看到它在侧栏,是设计如此,不是又坏了。</div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s1" data-title="一句话结论" placeholder="写在这里,自动保存在你这台浏览器里"></textarea></div>
+</section>
+
+<section class="card red" data-title="为什么三次修好都又堆起来">
+  <h2>2. 为什么「修好」三次还是堆着</h2>
+  <p>先解释两个词。<strong>aad</strong>(auto_archive_duration,自动归档时长)是 Discord 每条线程上的一个设置,圆桌是 1 小时、告警是 24 小时——这个值现在<strong>是对的</strong>(前几次修的就是它)。<strong>归档</strong>(archived)是线程的另一个开关,归档了的线程会从侧栏消失,消息还在、可搜索。</p>
+  <div class="diagram">
+    <!--SVG:d1-->
+  </div>
+  <div class="cap">图 1 · 设置是对的,但 Discord 不照着执行;人工大扫除只能维持一小时</div>
+  <ul>
+    <li>Discord 在 2022 年改过规则:aad 只决定「已读线程在侧栏停多久」,<strong>不再</strong>决定服务器什么时候归档。服务器自己的归档计时器在我们这种安静服务器上实测 28 天都不动。</li>
+    <li>圆桌线程你几乎都是未读的(Lead 会 @ 你),Discord 会把未读线程钉在侧栏——aad 对它们完全不起作用。</li>
+    <li>本次只读探针(9-03 早上):圆桌活跃 9 条,<strong>9/9</strong> 都早已超过 1 小时;圆桌的归档记录只在 08-24、08-27、08-28、08-29 这几天成批出现——都是 Lead 手扫的。</li>
+    <li>issue 线程(ship 后)是另一种病:ship 当刻程序把线程归档了,Lead 随后在里面发收尾话,Discord 自动打开;之后程序看到「有人在归档后说过话」就永远不再碰它(这是 8 月中为了「别关掉你手动打开的线程」加的保护)。FLY-2264、2094、2074、2164、1944、2032、2030 全是这个形状。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s2" data-title="为什么三次修好都又堆起来" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card" data-title="方案:一条规则两段">
+  <h2>3. 方案:一条规则,两段执行</h2>
+  <div class="scroll"><table>
+    <tr><th>哪种线程</th><th>「事办完了」怎么判</th><th>「一小时」从哪来</th><th>谁来收</th></tr>
+    <tr><td><strong>issue 线程</strong>(每个单子一条,#flywheel-engineer 等频道)</td><td>Linear 里单子已 Done / 已取消(每次都现查),或 ship 已合并</td><td>固定 60 分钟</td><td>现有的归档链路(ship 收尾 / 按单重试 / 6 小时对账 / Lead 手动端点),用项目机器人</td></tr>
+    <tr><td><strong>圆桌话题线程、告警线程</strong></td><td>频道性质本身就是临时讨论 / 告警</td><td>线程自己的 aad(圆桌 60 分钟、告警 24 小时)——你改 Discord 频道设置就能改,零代码</td><td><span class="badge new">新增</span>Bridge 里一个每 10 分钟跑一次的清扫器,用基础设施机器人 claw-infra-bot(它在这两个频道有「管理线程」权限,已实测)</td></tr>
+  </table></div>
+  <p class="note">不加任何新的开关、不加数据库表、不加新接口、不加新机器人账号。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s3" data-title="方案:一条规则两段" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="第一段:issue 线程 ship 后怎么收">
+  <h2>4. 第一段(主验收):issue 线程 ship 后怎么收</h2>
+  <div class="diagram">
+    <!--SVG:d2-->
+  </div>
+  <div class="cap">图 2 · issue 线程的生命周期:办完 → 等一小时静默 → 归档;再说话就打开,再静默再收</div>
+  <h3>和今天的差别</h3>
+  <div class="scroll"><table>
+    <tr><th>场景</th><th>今天</th><th>改后</th></tr>
+    <tr><td>你 ✅ → ship → Lead 发收尾话</td><td>ship 当刻归档 → 收尾话把线程顶开 → 永远开着</td><td>ship 当刻<strong>不归档</strong>,等收尾话说完、满 60 分钟没人说话再收(这是你 8-31 的原话)</td></tr>
+    <tr><td>Done 单的线程被你的一句提问/授权顶开</td><td>程序看到「人说过话」就永远不收</td><td>你说完、满 60 分钟没人说话就收;你再说话它再打开(Lead 9-03 已确认可接受)</td></tr>
+    <tr><td>你在归档线程里说「你去 archive 吧」</td><td>这句话本身被当成「你要打开」,Lead 只能手动改</td><td>单子已 Done ⇒ Lead 调端点立刻归档(不用等一小时)</td></tr>
+    <tr><td>单子还没 Done,你手动打开线程聊</td><td>程序不碰</td><td><strong>不变</strong>:单子没办完,你打开的线程不碰</td></tr>
+    <tr><td>线程里还有活着的 runner</td><td>不归档</td><td><strong>不变</strong>:不归档</td></tr>
+    <tr><td>顶开的线程 6 小时对账时看不见(数据库记的是「已归档」)</td><td>看不见,永远漏</td><td>对账改成看 Discord 的真实状态:数据库说归档了、Discord 说开着 ⇒ 也纳入</td></tr>
+  </table></div>
+  <p class="note">「60 分钟」和你给圆桌定的一小时是同一个口径:一小时没人说话,就当这个话题结束了。所以 <strong>ship 后最快 60 分钟归档</strong>,通常在 60~90 分钟之间(按单重试队列每次最多隔 30 分钟再看一眼)。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s4" data-title="第一段:issue 线程 ship 后怎么收" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="第二段:圆桌与告警线程清扫器">
+  <h2>5. 第二段:圆桌与告警线程的清扫器</h2>
+  <div class="diagram">
+    <!--SVG:d3-->
+  </div>
+  <div class="cap">图 3 · 清扫器每 10 分钟一轮:只看两个频道,只做一件事——超时的线程标记为已归档</div>
+  <ul>
+    <li><strong>只管两个频道</strong>:#leads-roundtable 和 #flywheel-alerts(Bridge 本来就知道这两个频道的 id)。其他频道、测试频道一律不碰。</li>
+    <li><strong>只做一件事</strong>:向 Discord 发一条「把这条线程设为已归档」的请求。不改名、不改设置、不发消息、不删东西。</li>
+    <li><strong>「静置多久」按最后一条消息算</strong>,不按线程创建时间算(你 8-24 自己手扫时踩过这个坑:一条 4 分钟前还有人说话的线程被提前砍了)。</li>
+    <li>每轮最多收 25 条、每条间隔半秒;被 Discord 拒绝(权限被改)只告警一次;被限流就按 Discord 说的时间等。</li>
+    <li>上线后第一轮就会把圆桌现在堆着的 9 条一次收掉,不需要再人工扫一次。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s5" data-title="第二段:圆桌与告警线程清扫器" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="数据与结构模型">
+  <h2>6. 数据与结构模型</h2>
+  <h3>用到的三个 Discord 字段</h3>
+  <div class="scroll"><table>
+    <tr><th>字段</th><th>白话</th><th>怎么用</th></tr>
+    <tr><td><code>last_message_id</code></td><td>最后一条消息的编号(编号里自带发送时间)</td><td><strong>唯一</strong>的「最后活动」时钟;没有它就不归档</td></tr>
+    <tr><td><code>archive_timestamp</code></td><td>归档状态上次变化的时间(创建、归档、手动打开都会变)</td><td>只用来「往后推」:你手动打开过,就从打开那一刻重新数一小时</td></tr>
+    <tr><td><code>auto_archive_duration</code></td><td>线程自己的自动归档时长(aad)</td><td>圆桌 / 告警线程的「一小时」「24 小时」就取它</td></tr>
+  </table></div>
+  <h3>issue 线程归档前的三道闸</h3>
+  <ol>
+    <li><strong>办完了吗</strong>:调用方必须带着证据来(Linear 现查为 Done,或 ship 已合并)。没证据的路径保持今天的保护:你打开的线程不碰。</li>
+    <li><strong>静默满一小时了吗</strong>:按最后一条消息算;程序自动路径都要等,Lead 手动调用不等。</li>
+    <li><strong>还有活着的 runner 吗</strong>:有就不碰(和今天一样)。</li>
+  </ol>
+  <h3>动了哪些部件</h3>
+  <div class="kv">
+    <b>新增</b><span>guild 活跃线程读取器(两段共用)、圆桌/告警清扫器</span>
+    <b>改动</b><span>归档总入口(加「办完证据」与「静默窗」)、ship 收尾、按单重试队列、6 小时对账、Lead 手动端点</span>
+    <b>不动</b><span>数据库表结构、Discord 频道设置、机器人权限、告警产生量</span>
+  </div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s6" data-title="数据与结构模型" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card" data-title="取舍与否决的方案">
+  <h2>7. 取舍与否决的方案</h2>
+  <div class="scroll"><table>
+    <tr><th>方案</th><th>判定</th><th>为什么</th></tr>
+    <tr><td>再改一次 Discord 设置 / 权限</td><td><span class="badge no">否</span></td><td>设置已经是对的;问题是 Discord 的行为,不是我们的配置</td></tr>
+    <tr><td>复活 7 月被你否掉的那个「按频道默认值扫全服务器」的巡检员</td><td><span class="badge no">否</span></td><td>它扫不到 #flywheel-alerts(那个频道没设默认值);而且任何频道一设默认值就会被静默纳入,issue 线程会被误扫</td></tr>
+    <tr><td>建线程时不 @ 你,让 Discord 原生的「已读收起」生效</td><td><span class="badge no">否</span></td><td>违反「你永远是线程成员」的既定合同;未读钉住是 Discord 全平台行为</td></tr>
+    <tr><td>Bridge 外挂一个定时脚本(像三次人工大扫除那样)</td><td><span class="badge no">否</span></td><td>又一个要人盯的进程;Bridge 已有调度、关机排空、告警通道</td></tr>
+    <tr><td>ship 后立刻归档 + 顶开后再收(不等静默)</td><td><span class="badge no">否</span></td><td>会在你或 Lead 说话当中把线程关掉;你 8-31 明确要「说完再收」</td></tr>
+    <tr><td>issue 线程按「谁说的」区分(bot 说的可收、人说的不收)</td><td><span class="badge no">否</span></td><td>这就是今天的规则,你 8-29、8-31 的提问都被当成「不许收」;单子办完后只问「还有人在说吗」</td></tr>
+    <tr><td>加运行时开关 / 可调间隔</td><td><span class="badge no">否</span></td><td>你 8-27 刚拍板固化删 flag;全部写成常量(10 分钟、25 条、60 分钟)</td></tr>
+    <tr><td><strong>本方案</strong>:一条规则两段执行</td><td><span class="badge do">采纳</span></td><td>Codex 设计评审 4 轮、20 条意见全部采纳后 APPROVED</td></tr>
+  </table></div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s7" data-title="取舍与否决的方案" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card green" data-title="验收怎么验">
+  <h2>8. 验收怎么验(行为级,不是看字段)</h2>
+  <ul>
+    <li><strong>不许人工代跑一轮</strong>:测试线程必须真等「过期窗 + 一个扫描周期」自己消失(你 8-24 的要求)。</li>
+    <li>在隔离的测试 Discord 频道 + 测试 Bridge(529 房)里真跑,两段都要:</li>
+    <li>issue 线程:ship 后立刻由机器人发一条「收尾话」→ 线程<strong>没有</strong>被归档过再打开 → 收尾话 60 分钟后自动归档;归档后再有人说话 → 打开 → 60 分钟后再收;单子没 Done 时你说过话的线程保持打开;有活 runner 不收;Lead 调端点立即收。</li>
+    <li>圆桌线程:建一条、发一条消息、不 @ 任何人 → 60 分钟内不收 → 60~70 分钟内自动归档,侧栏截图证明它不见了;对照:窗内又发了一条的不收;不在两个频道里的不收;测试告警频道现存 60 条超时线程三轮内收完。</li>
+    <li>把权限故意换成一个没有「管理线程」权限的机器人 → 只告警一次、零归档、不重试风暴。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s8" data-title="验收怎么验" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>9. 诚实边界:这次做什么、不做什么</h2>
+  <ul>
+    <li>圆桌线程最坏要等「1 小时 + 10 分钟 + 一轮耗时」才消失,不是整点;告警线程最坏 24 小时 10 分钟。</li>
+    <li>ship 后的 issue 线程会在侧栏<strong>多留一小时</strong>(等收尾话说完);这是为了不在说话当中关掉它。</li>
+    <li>单子已 Done 的线程,你提问后 60 分钟没人回就会被收;你再说一句它就打开。想长期留着,把单子在 Linear 重新打开就行。</li>
+    <li>只管两个频道;测试频道、其他 Lead 的频道不动。要扩频道是改配置指向,不改代码。</li>
+    <li>不减少告警数量(那是 FLY-1386 的事)。</li>
+    <li>「Lead 在归档后追话会把线程顶开」这次不做防呆,后果只是「打开 → 一小时后再收」。</li>
+    <li>Bridge 重启会丢掉内存里的按单重试队列;丢了由 6 小时对账兜底(最坏晚 6 小时)。</li>
+    <li>「已归档但未读」的线程会不会真的从你侧栏消失——三次人工大扫除的效果就是证据,QA 再用你侧栏的截图钉死。</li>
+    <li>单子没 Done 时你要求归档的情况这次不做(现有实例全是 Done 单),真需要再开单。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s9" data-title="诚实边界" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>10. 评审记录</h2>
+  <p class="note">Codex 设计评审(xhigh):第 1 轮 8 条 → 第 2 轮 8 条 → 第 3 轮 4 条 → 第 4 轮 APPROVED(2 条文字澄清)→ 第 5 轮在最终提交版本上确认。20 条意见全部采纳、零条驳回;抓到的最重的三条:对账时数据库里已记归档的线程会被短路跳过、首次归档时「刚到的一句话会被埋进归档」的竞态、以及归档记录编号在线程第二次生命周期会撞唯一键。Lead 9-03 追加的「ship 后必须归档」作为主验收纳入。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s10" data-title="评审记录" placeholder="写在这里"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2028";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

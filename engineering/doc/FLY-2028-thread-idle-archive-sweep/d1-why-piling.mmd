@@ -1,0 +1,11 @@
+flowchart TD
+    A["Discord 线程设了<br/>自动归档时长(aad)<br/>圆桌 1h · 告警 24h"] --> B{"Discord 服务器<br/>到点会归档吗?"}
+    B -- "不会:2022 年起 aad<br/>只管侧栏,不管归档" --> C["服务端 archived 标志<br/>安静服务器上 28 天都不翻"]
+    A --> D{"线程在 founder<br/>侧栏里是已读吗?"}
+    D -- "已读" --> E["到点从侧栏收起 ✅"]
+    D -- "未读(被 @ 到)" --> F["被未读保护钉在侧栏<br/>aad 完全不起作用 ❌"]
+    F --> G["Lead 手动批量归档<br/>07-31 · 08-14 · 08-24 · 08-27 · 08-28"]
+    G --> H["一小时后又堆起来<br/>必然复发"]
+    style F fill:#ffe5e5,stroke:#ff3b30
+    style H fill:#ffe5e5,stroke:#ff3b30
+    style E fill:#e6f9ed,stroke:#34c759

@@ -56,6 +56,8 @@ export type ArchiveReason =
 	| "error"
 	/** A human reopened the thread; automation deliberately leaves it open. */
 	| "founder_reopened"
+	/** The thread has not yet satisfied the caller's quiet window. */
+	| "deferred_quiet_window"
 	/** Reopen authorship or the compensation end state could not be verified. */
 	| "reopen_check_failed"
 	/** A current runner owns the reopened thread. */
@@ -849,7 +851,7 @@ async function getThreadMessages(
 	deps: DisplayRestDeps,
 ): Promise<
 	| { ok: true; messages: DiscordThreadMessage[] }
-	| { ok: false; status?: number; error: string }
+	| { ok: false; status?: number; retryAfterMs?: number; error: string }
 > {
 	const fetchImpl = deps.fetchImpl ?? fetch;
 	const controller = new AbortController();
@@ -863,10 +865,13 @@ async function getThreadMessages(
 			signal: controller.signal,
 		});
 		if (!res.ok) {
+			const retryAfterMs =
+				res.status === 429 ? await readRetryAfterMs(res) : undefined;
 			const body = await res.text().catch(() => "");
 			return {
 				ok: false,
 				status: res.status,
+				...(retryAfterMs === undefined ? {} : { retryAfterMs }),
 				error: `Discord ${res.status}: ${body.slice(0, 200)}`,
 			};
 		}
@@ -946,7 +951,7 @@ export async function classifyThreadReopener(
 
 export type LatestThreadMessageResult =
 	| { ok: true; messageId: string | null }
-	| { ok: false; status?: number; error: string };
+	| { ok: false; status?: number; retryAfterMs?: number; error: string };
 
 /** Fetch the current message frontier for the quiet-window fence. */
 export async function getLatestThreadMessageId(
@@ -969,7 +974,12 @@ export async function getLatestThreadMessageId(
 }
 
 export type GetChannelNameResult =
-	| { ok: true; name: string; archived?: boolean }
+	| {
+			ok: true;
+			name: string;
+			archived?: boolean;
+			archiveTimestamp?: string;
+	  }
 	| { ok: false; status?: number; retryAfterMs?: number; error: string };
 
 /** GET the channel object and return its current name (+ archived flag). */
@@ -1007,16 +1017,21 @@ export async function getChannelName(
 		}
 		const data = (await res.json()) as {
 			name?: unknown;
-			thread_metadata?: { archived?: unknown };
+			thread_metadata?: {
+				archived?: unknown;
+				archive_timestamp?: unknown;
+			};
 		};
 		if (typeof data.name !== "string") {
 			return { ok: false, error: "no channel name in response" };
 		}
 		const archived = data.thread_metadata?.archived;
+		const archiveTimestamp = data.thread_metadata?.archive_timestamp;
 		return {
 			ok: true,
 			name: data.name,
 			...(typeof archived === "boolean" ? { archived } : {}),
+			...(typeof archiveTimestamp === "string" ? { archiveTimestamp } : {}),
 		};
 	} catch (err) {
 		if ((err as Error).name === "AbortError") {

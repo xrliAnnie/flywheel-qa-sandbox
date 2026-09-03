@@ -28,10 +28,11 @@
  *   - `resolveBotTokenForThread` — pick the bot token from the thread's
  *     creation-time `lead_id` (falling back to labels, then a global token).
  *
- * Safety net for an over-eager close: Discord's own auto-unarchive (posting in
- * an archived thread reopens it). "Archive once": a thread already marked
- * `archived_at` is not re-archived by the endpoint, so a re-open is not fought.
- * A Discord 404 is handled inside `archiveChatThread` (→ markChatThreadMissing).
+ * Discord's own auto-unarchive can reopen a thread after a new message. Local
+ * `archived_at` is therefore history, not proof of current Discord state:
+ * nonterminal callers preserve a human reopen, while a fresh terminal caller
+ * may re-archive after the quiet window and frontier checks. A Discord 404 is
+ * handled inside `archiveChatThread` (→ markChatThreadMissing).
  */
 
 import { randomUUID } from "node:crypto";
@@ -51,6 +52,7 @@ import {
 	removeUserFromChatThread,
 	unarchiveChatThread,
 } from "./chat-thread-utils.js";
+import { snowflakeToMs } from "./discord-guild-active-threads.js";
 import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
@@ -61,6 +63,10 @@ import {
 // ── Shared archive sink (single token-bearing path) ─────────────────────────
 
 export interface ArchiveThreadDeps {
+	/** Caller-proven terminal issue state overrides the human-reopen veto. */
+	authority?: ArchiveAuthority;
+	/** Minimum inactivity before an automatic archive. */
+	quietWindowMs?: number;
 	/** Test seam — defaults to the hardened `archiveChatThread`. */
 	archiveFn?: typeof archiveChatThread;
 	/** Test seam — defaults to `removeUserFromChatThread`. */
@@ -85,7 +91,11 @@ export interface ArchiveThreadDeps {
 	) => TmuxTargetLookup;
 	livenessProbeFn?: (tmuxWindow: string) => Promise<RunnerLiveness>;
 	nowMs?: () => number;
+	sleepImpl?: (ms: number) => Promise<void>;
 }
+
+export type ArchiveAuthority = "terminal" | "none";
+export const ISSUE_THREAD_QUIET_WINDOW_MS = 60 * 60_000;
 
 export interface ArchiveThreadInput {
 	threadId: string;
@@ -291,6 +301,52 @@ export async function archiveThreadAndRecord(
 	const frontierFn = deps.frontierFn ?? getLatestThreadMessageId;
 	const unarchiveFn = deps.unarchiveFn ?? unarchiveChatThread;
 	const displayDeps = { fetchImpl: deps.fetchImpl };
+	const authority = deps.authority ?? "none";
+	const quietWindowMs = deps.quietWindowMs ?? ISSUE_THREAD_QUIET_WINDOW_MS;
+	const nowMs = deps.nowMs ?? Date.now;
+	const sleepImpl =
+		deps.sleepImpl ??
+		((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+	const retryDiscordRead = async <
+		T extends { ok: boolean; status?: number; retryAfterMs?: number },
+	>(
+		read: () => Promise<T>,
+	): Promise<T> => {
+		let result = await read();
+		for (let attempt = 1; attempt < 3; attempt += 1) {
+			const transient =
+				!result.ok &&
+				(result.status === undefined ||
+					result.status === 429 ||
+					result.status >= 500);
+			if (!transient) break;
+			await sleepImpl(
+				Math.min(result.retryAfterMs ?? 200 * 2 ** (attempt - 1), 5_000),
+			);
+			result = await read();
+		}
+		return result;
+	};
+
+	const isQuiet = (
+		frontierMessageId: string | null,
+		archiveTimestamp?: string,
+	): boolean | null => {
+		const messageAt = snowflakeToMs(frontierMessageId);
+		if (messageAt === null) return null;
+		const parsedArchiveAt = Date.parse(archiveTimestamp ?? "");
+		const lastActivity = Number.isFinite(parsedArchiveAt)
+			? Math.max(messageAt, parsedArchiveAt)
+			: messageAt;
+		const current = nowMs();
+		return lastActivity <= current && current - lastActivity >= quietWindowMs;
+	};
+
+	const deferredQuietWindow = (): ArchiveChatThreadResult => ({
+		archived: false,
+		attempts: 0,
+		reason: "deferred_quiet_window",
+	});
 
 	const audit = (
 		result: ArchiveChatThreadResult,
@@ -448,7 +504,7 @@ export async function archiveThreadAndRecord(
 				...patchResult,
 				archived: true,
 			};
-			store.commitReArchive(input.threadId, {
+			store.commitThreadArchive(input.threadId, {
 				event_id: `chat-thread-rearchived-fly1709-${randomUUID()}`,
 				execution_id: input.executionId,
 				issue_id: input.issueId,
@@ -469,6 +525,7 @@ export async function archiveThreadAndRecord(
 		if (metadata.ok && metadata.archived === false) {
 			store.clearChatThreadCompensationPending(input.threadId);
 			if (after.ok && after.messageId === frontier) {
+				if (authority === "terminal") return deferredQuietWindow();
 				return audit(
 					{ archived: false, attempts: 0, reason: "founder_reopened" },
 					{ skip: true },
@@ -480,12 +537,13 @@ export async function archiveThreadAndRecord(
 				afterMs,
 				displayDeps,
 			);
-			return incremental.kind === "human"
-				? audit(
+			if (incremental.kind !== "human") return audit(reopenFailure());
+			return authority === "terminal"
+				? deferredQuietWindow()
+				: audit(
 						{ archived: false, attempts: 0, reason: "founder_reopened" },
 						{ skip: true },
-					)
-				: audit(reopenFailure());
+					);
 		}
 
 		let cause: ThreadArchiveCompensationCause = "verify_failed";
@@ -498,9 +556,17 @@ export async function archiveThreadAndRecord(
 			);
 			if (incremental.kind === "human") cause = "human";
 		}
+		const compensated = await compensateKnownArchived(cause);
+		if (
+			cause === "human" &&
+			authority === "terminal" &&
+			!store.getChatThreadCompensationPending(input.threadId)
+		) {
+			return deferredQuietWindow();
+		}
 		return cause === "human"
-			? audit(await compensateKnownArchived(cause), { skip: true })
-			: audit(await compensateKnownArchived(cause));
+			? audit(compensated, { skip: true })
+			: audit(compensated);
 	};
 
 	const run = async (): Promise<ArchiveChatThreadResult> => {
@@ -510,7 +576,9 @@ export async function archiveThreadAndRecord(
 
 		const archivedAtRaw = store.getChatThreadArchivedAt(input.threadId);
 		if (archivedAtRaw) {
-			const probe = await probeFn(input.threadId, botToken, displayDeps);
+			const probe = await retryDiscordRead(() =>
+				probeFn(input.threadId, botToken, displayDeps),
+			);
 			if (!probe.ok) {
 				if (probe.status === 404) {
 					store.markChatThreadMissing(input.threadId);
@@ -551,6 +619,28 @@ export async function archiveThreadAndRecord(
 				);
 			}
 			const afterMs = epoch.startMs - 2_000;
+			if (authority === "terminal") {
+				const frontier = await frontierFn(
+					input.threadId,
+					botToken,
+					displayDeps,
+				);
+				if (!frontier.ok || frontier.messageId === null) {
+					return audit(
+						reopenFailure(frontier.ok ? "no message clock" : frontier.error),
+					);
+				}
+				const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
+				if (quiet === null) {
+					return audit(reopenFailure("invalid message clock"));
+				}
+				if (!quiet) return deferredQuietWindow();
+				return reArchiveWithQuietWindow(
+					archivedAtRaw,
+					afterMs,
+					frontier.messageId,
+				);
+			}
 			const classification = await classifyFn(
 				input.threadId,
 				botToken,
@@ -566,6 +656,14 @@ export async function archiveThreadAndRecord(
 			if (classification.kind === "unknown") {
 				return audit(reopenFailure(classification.detail));
 			}
+			const quiet = isQuiet(
+				classification.frontierMessageId,
+				probe.archiveTimestamp,
+			);
+			if (quiet === null) {
+				return audit(reopenFailure("invalid message clock"));
+			}
+			if (!quiet) return deferredQuietWindow();
 			return reArchiveWithQuietWindow(
 				archivedAtRaw,
 				afterMs,
@@ -575,6 +673,185 @@ export async function archiveThreadAndRecord(
 
 		const archiveFn = deps.archiveFn ?? archiveChatThread;
 		const removeUserFn = deps.removeUserFn ?? removeUserFromChatThread;
+		if (quietWindowMs > 0) {
+			const probe = await retryDiscordRead(() =>
+				probeFn(input.threadId, botToken, displayDeps),
+			);
+			if (!probe.ok && probe.status === 404) {
+				store.markChatThreadMissing(input.threadId);
+				return audit({
+					archived: false,
+					attempts: 0,
+					status: 404,
+					reason: "missing",
+				});
+			}
+			if (probe.ok && probe.archived === true) {
+				const result: ArchiveChatThreadResult = {
+					archived: true,
+					attempts: 0,
+					reason: "already_archived",
+				};
+				store.commitThreadArchive(input.threadId, {
+					event_id: `chat-thread-archive-skip-fly1709-${randomUUID()}`,
+					execution_id: input.executionId,
+					issue_id: input.issueId,
+					project_name: input.projectName,
+					event_type: "chat_thread_archived",
+					source: auditSource,
+					payload: {
+						threadId: input.threadId,
+						attempts: 0,
+						status: null,
+						reason: "already_archived",
+					},
+				});
+				return result;
+			}
+			if (!probe.ok || probe.archived !== false) {
+				return audit(
+					reopenFailure(
+						probe.ok ? "Discord archive state is missing" : probe.error,
+					),
+				);
+			}
+			const frontier = await retryDiscordRead(() =>
+				frontierFn(input.threadId, botToken, displayDeps),
+			);
+			if (!frontier.ok || frontier.messageId === null) {
+				return audit(
+					reopenFailure(frontier.ok ? "no message clock" : frontier.error),
+				);
+			}
+			const quiet = isQuiet(frontier.messageId, probe.archiveTimestamp);
+			if (quiet === null) return audit(reopenFailure("invalid message clock"));
+			if (!quiet) return deferredQuietWindow();
+
+			if (deps.discordOwnerUserId) {
+				await removeUserFn(input.threadId, deps.discordOwnerUserId, botToken, {
+					fetchImpl: deps.fetchImpl,
+				});
+			}
+			const archiveEpoch = new Date(nowMs()).toISOString();
+			const commitAutomaticArchive = (
+				result: ArchiveChatThreadResult,
+			): ArchiveChatThreadResult => {
+				store.commitThreadArchive(input.threadId, {
+					event_id: `chat-thread-archived-fly2028-${input.threadId}-${archiveEpoch}`,
+					execution_id: input.executionId,
+					issue_id: input.issueId,
+					project_name: input.projectName,
+					event_type: "chat_thread_archived",
+					source: auditSource,
+					payload: {
+						threadId: input.threadId,
+						attempts: result.attempts,
+						status: result.status ?? null,
+						reason: result.reason,
+					},
+				});
+				return result;
+			};
+			store.setChatThreadCompensationPending(input.threadId, {
+				version: 1,
+				state: "prepared",
+				archiveEpoch,
+				frontier: frontier.messageId,
+				cause: "unknown",
+				at: archiveEpoch,
+			});
+			const patchResult = await archiveFn(input.threadId, botToken, {
+				markDiscordMissing: (id) => store.markChatThreadMissing(id),
+				fetchImpl: deps.fetchImpl,
+			});
+			if (!patchResult.archived) {
+				const status = patchResult.status;
+				const definitelyNotArchived =
+					status === 401 ||
+					status === 403 ||
+					status === 404 ||
+					(status !== undefined &&
+						status >= 400 &&
+						status < 500 &&
+						status !== 400 &&
+						status !== 429);
+				if (definitelyNotArchived) {
+					store.clearChatThreadCompensationPending(input.threadId);
+					return audit(patchResult);
+				}
+				const current = await probeFn(input.threadId, botToken, displayDeps);
+				if (!current.ok && current.status === 404) {
+					store.markChatThreadMissing(input.threadId);
+					store.clearChatThreadCompensationPending(input.threadId);
+					return audit({ ...patchResult, status: 404, reason: "missing" });
+				}
+				if (current.ok && current.archived === false) {
+					store.clearChatThreadCompensationPending(input.threadId);
+					return audit(patchResult);
+				}
+				if (current.ok && current.archived === true) {
+					if (status === 400) {
+						const after = await frontierFn(
+							input.threadId,
+							botToken,
+							displayDeps,
+						);
+						if (after.ok && after.messageId === frontier.messageId) {
+							return commitAutomaticArchive({
+								...patchResult,
+								archived: true,
+								reason: "already_archived",
+							});
+						}
+						if (after.ok) {
+							const compensated =
+								await compensateKnownArchived("verify_failed");
+							return store.getChatThreadCompensationPending(input.threadId)
+								? audit(compensated)
+								: deferredQuietWindow();
+						}
+					}
+					return audit(await compensateKnownArchived("verify_failed"));
+				}
+				return audit(reopenFailure(current.ok ? undefined : current.error));
+			}
+			const [verification, after] = await Promise.all([
+				probeFn(input.threadId, botToken, displayDeps),
+				frontierFn(input.threadId, botToken, displayDeps),
+			]);
+			if (
+				verification.ok &&
+				verification.archived === true &&
+				after.ok &&
+				after.messageId === frontier.messageId
+			) {
+				return commitAutomaticArchive(patchResult);
+			}
+			if (verification.ok && verification.archived === false) {
+				store.clearChatThreadCompensationPending(input.threadId);
+				return deferredQuietWindow();
+			}
+			if (
+				verification.ok &&
+				verification.archived === true &&
+				after.ok &&
+				after.messageId !== frontier.messageId
+			) {
+				const compensated = await compensateKnownArchived("verify_failed");
+				return store.getChatThreadCompensationPending(input.threadId)
+					? audit(compensated)
+					: deferredQuietWindow();
+			}
+			return audit(
+				reopenFailure(
+					verification.ok
+						? after.ok
+							? "archive verification failed"
+							: after.error
+						: verification.error,
+				),
+			);
+		}
 
 		if (deps.discordOwnerUserId) {
 			await removeUserFn(input.threadId, deps.discordOwnerUserId, botToken, {
@@ -668,7 +945,8 @@ export async function archiveThreadAndRecord(
 
 // ── Central close→archive cascade ───────────────────────────────────────────
 
-export interface CloseArchiveDeps {
+export interface CloseArchiveDeps
+	extends Pick<ArchiveThreadDeps, "frontierFn" | "nowMs" | "probeFn"> {
 	projects: ProjectEntry[];
 	/** Global bot token fallback when the lead config has none. */
 	globalBotToken?: string;
@@ -757,7 +1035,7 @@ export async function archiveIssueThreadIfNoOtherActive(
 		});
 		if (!botToken) return;
 
-		await archiveThreadAndRecord(
+		const result = await archiveThreadAndRecord(
 			store,
 			{
 				threadId: thread.thread_id,
@@ -767,12 +1045,21 @@ export async function archiveIssueThreadIfNoOtherActive(
 			},
 			botToken,
 			{
+				authority: "none",
 				archiveFn: deps.archiveFn,
 				removeUserFn: deps.removeUserFn,
 				discordOwnerUserId: deps.discordOwnerUserId,
 				fetchImpl: deps.fetchImpl,
+				frontierFn: deps.frontierFn,
+				nowMs: deps.nowMs,
+				probeFn: deps.probeFn,
 			},
 		);
+		if (result.reason === "deferred_quiet_window") {
+			console.info(
+				`[done-thread-archiver] archive deferred for ${session.issue_id} (quiet window)`,
+			);
+		}
 	} catch (err) {
 		// Never let archive cascade break the close/reap path.
 		console.warn(

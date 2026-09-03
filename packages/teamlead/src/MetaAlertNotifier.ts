@@ -42,6 +42,7 @@ export type MetaAlertReason =
 	// missing MANAGE_THREADS). This must not be mistaken for successful repair.
 	| "roundtable_patch_permanent_failure"
 	| "roundtable_archive_default_unresolved"
+	| "idle_thread_sweep_denied"
 	// FLY-2103: a project runtime was dropped because ConfigLoader rejected its
 	// config. Reuse the independent desktop + state-file founder channel.
 	| "project_config_invalid"

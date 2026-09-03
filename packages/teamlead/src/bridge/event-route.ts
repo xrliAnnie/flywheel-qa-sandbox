@@ -95,6 +95,7 @@ import type { ReviewAuthorizationAlerts } from "./review-authorization-alerts.js
 import { isReviewHeld } from "./review-hold.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
+import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import {
@@ -556,7 +557,7 @@ export function createEventRouter(
 	// FLY-1282 Part C: targeted terminal-archive enqueue (pre-binding buffer →
 	// FLY-1165 scheduler consumer). Production always injects it; absent remains a
 	// compatibility no-op for embedding/tests.
-	terminalArchiveEnqueue?: (issueId: string) => void,
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
 	// FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews.
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	// FLY-2155: live store-backed decision switch, read for every completion.
@@ -2219,6 +2220,7 @@ export function createEventRouter(
 							refreshIssueDisplay: (issueId) =>
 								issueDisplayRefresh?.current?.refresh(issueId) ??
 								Promise.resolve(),
+							enqueueTerminalArchive: terminalArchiveEnqueue,
 							// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
 							...lifecycleInfra,
 						},
@@ -2636,6 +2638,7 @@ export function createEventRouter(
 										refreshIssueDisplay: (issueId) =>
 											issueDisplayRefresh?.current?.refresh(issueId) ??
 											Promise.resolve(),
+										enqueueTerminalArchive: terminalArchiveEnqueue,
 										// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
 										...lifecycleInfra,
 									},

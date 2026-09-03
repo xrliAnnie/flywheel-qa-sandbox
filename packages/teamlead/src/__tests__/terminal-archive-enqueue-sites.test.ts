@@ -12,6 +12,8 @@
  * (covered by the FLY-102 suites) — its enqueue-exclusion flag lives on the
  * exact branch those tests pin, so it is not re-driven end-to-end here.
  */
+
+import { readFileSync } from "node:fs";
 import type http from "node:http";
 import { WORKFLOW_TRANSITIONS, WorkflowFSM } from "flywheel-core";
 import type { EventEnvelope } from "flywheel-edge-worker";
@@ -38,6 +40,53 @@ const testProjects: ProjectEntry[] = [
 		],
 	},
 ] as unknown as ProjectEntry[];
+
+describe("FLY-2028 post-ship retry wiring", () => {
+	it("routes all six finalization entries through the one terminal archive buffer", () => {
+		const source = (path: string) =>
+			readFileSync(new URL(path, import.meta.url), "utf8");
+		const count = (text: string, needle: string) =>
+			text.split(needle).length - 1;
+
+		expect(
+			count(
+				source("../DirectEventSink.ts"),
+				"enqueueTerminalArchive: this.terminalArchiveEnqueue",
+			),
+		).toBe(1);
+		expect(
+			count(
+				source("../bridge/event-route.ts"),
+				"enqueueTerminalArchive: terminalArchiveEnqueue",
+			),
+		).toBe(2);
+		expect(
+			count(
+				source("../bridge/merge-ship-gate.ts"),
+				"enqueueTerminalArchive: terminalArchiveEnqueue",
+			),
+		).toBe(1);
+		expect(
+			count(
+				source("../bridge/external-merge-reconcile.ts"),
+				"enqueueTerminalArchive: deps.terminalArchiveEnqueue",
+			),
+		).toBe(1);
+		expect(
+			count(
+				source("../bridge/plugin.ts"),
+				"enqueueTerminalArchive: terminalArchiveEnqueue",
+			),
+		).toBeGreaterThanOrEqual(1);
+		expect(source("../bridge/actions.ts")).toContain("terminalArchiveEnqueue,");
+		expect(source("../bridge/founder-consent/wiring.ts")).toContain(
+			"deps.terminalArchiveEnqueue,",
+		);
+		expect(source("../bridge/plugin.ts")).toContain(
+			"terminalArchiveBuffer.enqueue(issueId)",
+		);
+	});
+});
 
 function makeConfig(overrides: Partial<BridgeConfig> = {}): BridgeConfig {
 	return {

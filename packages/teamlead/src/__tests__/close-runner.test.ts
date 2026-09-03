@@ -867,7 +867,26 @@ describe("closeRunner", () => {
 			makeOpts({
 				finalizeDone: true,
 				transitionOpts: transitionOpts(),
-				archive: { projects: [project], archiveFn },
+				archive: {
+					projects: [project],
+					archiveFn,
+					probeFn: vi
+						.fn()
+						.mockResolvedValueOnce({
+							ok: true,
+							name: "thread",
+							archived: false,
+						})
+						.mockResolvedValueOnce({
+							ok: true,
+							name: "thread",
+							archived: true,
+						}),
+					frontierFn: vi.fn().mockResolvedValue({
+						ok: true,
+						messageId: "100000000000000000",
+					}),
+				},
 			}),
 			store,
 		);

@@ -1,0 +1,16 @@
+sequenceDiagram
+    autonumber
+    participant S as 清扫器<br/>(Bridge 内,每 10 分钟)
+    participant D as Discord
+    S->>D: 列出全服务器活跃线程(1 次调用)
+    D-->>S: 328 条,含 parent 频道、最后一条消息 id、aad
+    S->>S: 只留圆桌 + 告警两个频道的线程
+    S->>S: 静置 = 现在 − 最后一条消息时间<br/>静置 ≥ 线程自己的 aad 才是候选
+    loop 每条候选(每轮最多 25 条,条间 0.5s)
+        S->>D: 再读一次这条线程(防竞态)
+        D-->>S: 仍然开着、仍然静置
+        S->>D: PATCH archived:true
+        D-->>S: 回读 archived === true 才算成功
+    end
+    S->>S: 一行日志:扫了几条 / 归档几条 / 跳过原因
+    Note over S,D: 被拒(401/403)只告警一次<br/>限流(429)按 Retry-After 等

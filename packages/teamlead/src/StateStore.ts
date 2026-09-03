@@ -12168,7 +12168,7 @@ export class StateStore {
 	}
 
 	/** Atomic archive commit: epoch + receipt clear + audit event. */
-	commitReArchive(threadId: string, event: SessionEvent): void {
+	commitThreadArchive(threadId: string, event: SessionEvent): void {
 		const archivedAt = new Date().toISOString();
 		this.db.transaction(() => {
 			this.db.run(

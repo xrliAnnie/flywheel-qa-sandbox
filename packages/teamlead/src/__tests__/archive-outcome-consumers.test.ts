@@ -17,7 +17,7 @@ const result = (
 });
 
 describe("FLY-1709 archive outcome consumers", () => {
-	it.each(["already_archived", "founder_reopened", "in_active_use"] as const)(
+	it.each(["already_archived", "in_active_use"] as const)(
 		"treats %s as a settled finalization obligation",
 		(reason) => {
 			expect(isArchiveObligationSettled(result(reason))).toBe(true);
@@ -30,13 +30,25 @@ describe("FLY-1709 archive outcome consumers", () => {
 		);
 	});
 
-	it("maps founder reopen to a non-retryable terminal outcome", () => {
+	it("keeps founder reopen retryable for terminal authority", () => {
 		const outcome = mapArchiveSinkResult(
 			result("founder_reopened"),
 			"thread-1",
 		);
-		expect(outcome).toEqual({ kind: "founder_reopened" });
-		expect(isRetryableOutcome(outcome)).toBe(false);
+		expect(outcome).toEqual({
+			kind: "transient_error",
+			error: "archive sink: founder_reopened",
+		});
+		expect(isRetryableOutcome(outcome)).toBe(true);
+	});
+
+	it("maps quiet-window deferral to a retryable terminal outcome", () => {
+		const outcome = mapArchiveSinkResult(
+			result("deferred_quiet_window"),
+			"thread-1",
+		);
+		expect(outcome).toEqual({ kind: "deferred_quiet_window" });
+		expect(isRetryableOutcome(outcome)).toBe(true);
 	});
 
 	it("preserves an already_archived outcome when Discord verification is true", () => {

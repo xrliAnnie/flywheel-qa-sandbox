@@ -1263,6 +1263,84 @@ describe("chat-thread routes (tools.ts)", () => {
 			});
 		});
 
+		it.each([
+			["completed", "terminal"],
+			["canceled", "terminal"],
+			["started", "none"],
+		] as const)(
+			"returns %s Linear authority as %s while preserving immediate archive",
+			async (stateType, expectedAuthority) => {
+				const originalKey = process.env.LINEAR_API_KEY;
+				process.env.LINEAR_API_KEY = "test-key";
+				try {
+					store.upsertChatThread(
+						"t-authority",
+						"ch-100",
+						"FLY-2028",
+						"lead-alpha",
+					);
+					const lookupIssueForArchive = vi.fn(async () => ({
+						id: "uuid-2028",
+						identifier: "FLY-2028",
+						stateType,
+					}));
+					createTestServer({
+						chatThreadsEnabled: true,
+						apiTokenConfigured: true,
+						discordFetch: mockFetch,
+						lookupIssueForArchive,
+					});
+
+					const res = await request(
+						server,
+						"POST",
+						"/api/chat-threads/archive",
+						{
+							issueIdentifier: "FLY-2028",
+							channelId: "ch-100",
+							leadId: "lead-alpha",
+							projectName: "TestProject",
+						},
+					);
+
+					expect(res.status).toBe(200);
+					expect(res.body).toMatchObject({
+						authority: expectedAuthority,
+						archived: true,
+					});
+					expect(mockFetch.mock.calls[0]?.[1]?.method).toBe("PATCH");
+				} finally {
+					if (originalKey === undefined) delete process.env.LINEAR_API_KEY;
+					else process.env.LINEAR_API_KEY = originalKey;
+				}
+			},
+		);
+
+		it("falls back to none on lookup failure and still returns 200", async () => {
+			const originalKey = process.env.LINEAR_API_KEY;
+			process.env.LINEAR_API_KEY = "test-key";
+			try {
+				store.upsertChatThread("t-failure", "ch-100", "FLY-2028", "lead-alpha");
+				createTestServer({
+					chatThreadsEnabled: true,
+					apiTokenConfigured: true,
+					discordFetch: mockFetch,
+					lookupIssueForArchive: vi.fn().mockRejectedValue(new Error("down")),
+				});
+				const res = await request(server, "POST", "/api/chat-threads/archive", {
+					issueIdentifier: "FLY-2028",
+					channelId: "ch-100",
+					leadId: "lead-alpha",
+					projectName: "TestProject",
+				});
+				expect(res.status).toBe(200);
+				expect(res.body).toMatchObject({ authority: "none", archived: true });
+			} finally {
+				if (originalKey === undefined) delete process.env.LINEAR_API_KEY;
+				else process.env.LINEAR_API_KEY = originalKey;
+			}
+		});
+
 		it("returns 404 when chatThreadsEnabled is false", async () => {
 			createTestServer({ chatThreadsEnabled: false, apiTokenConfigured: true });
 			const res = await request(server, "POST", "/api/chat-threads/archive", {

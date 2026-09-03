@@ -118,6 +118,7 @@ import {
 } from "./run-dispatcher.js";
 import type { RuntimeRegistry } from "./runtime-registry.js";
 import type { TerminalCommDbSync } from "./terminal-commdb-sync.js";
+import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import type { BridgeConfig } from "./types.js";
 import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
@@ -833,7 +834,7 @@ export interface RunInfraOptions {
 	 * FLY-1165 scheduler consumer), set on the DirectEventSink completion path.
 	 * Production always passes it; optionality is retained for embedding/tests.
 	 */
-	terminalArchiveEnqueue?: (issueId: string) => void;
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
 	/** FLY-1307 PR-7.5: trusted receipt-backed head for output-backed reviews. */
 	materializedHeadAuthority?: MaterializedHeadAuthority;
 	/**

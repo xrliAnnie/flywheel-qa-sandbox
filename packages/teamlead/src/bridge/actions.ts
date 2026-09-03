@@ -73,6 +73,7 @@ import {
 	checkStartedEvidence,
 	type StartedEvidence,
 } from "./started-evidence.js";
+import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
 	killCmuxLinkedSession,
@@ -242,6 +243,7 @@ export async function approveExecution(
 	cardAuthority?: FounderApprovalCardAuthority,
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
 ): Promise<ActionResult> {
 	const session = store.getSession(executionId);
 	const engineAuthority = gateAuthorityView?.resolveForExecution?.(executionId);
@@ -460,6 +462,8 @@ export async function approveExecution(
 					)
 				: undefined,
 			materializedHeadAuthority,
+			undefined,
+			terminalArchiveEnqueue,
 		);
 		if (completed) {
 			console.log(
@@ -1839,6 +1843,7 @@ export function createActionRouter(
 	cardAuthority?: FounderApprovalCardAuthority,
 	materializedHeadAuthority?: MaterializedHeadAuthority,
 	gateAuthorityView?: GateAuthorityView,
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
 ): Router {
 	const router = Router();
 
@@ -1897,6 +1902,7 @@ export function createActionRouter(
 					cardAuthority,
 					materializedHeadAuthority,
 					gateAuthorityView,
+					terminalArchiveEnqueue,
 				);
 				if (result.success) {
 					res.json({

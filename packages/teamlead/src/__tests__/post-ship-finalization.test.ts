@@ -41,6 +41,8 @@ vi.mock("../bridge/commdb-session-prune.js", () => ({
 const callOrder: string[] = [];
 
 let fetchImpl: ReturnType<typeof vi.fn>;
+let discordArchived = false;
+let discordFrontierId = "";
 
 const PROJECTS: ProjectEntry[] = [
 	{
@@ -68,6 +70,10 @@ function seedSession(store: StateStore, status = "completed"): void {
 
 function seedThread(store: StateStore): void {
 	store.upsertChatThread("thread-1", "chan-1", "FLY-102");
+}
+
+function snowflakeAt(ms: number): string {
+	return ((BigInt(ms) - 1420070400000n) << 22n).toString();
 }
 
 function seedCompletedFinalization(store: StateStore): void {
@@ -403,6 +409,8 @@ describe("runPostShipFinalization", () => {
 		seedSession(store);
 		seedThread(store);
 		callOrder.length = 0;
+		discordArchived = false;
+		discordFrontierId = snowflakeAt(Date.now() - 2 * 60 * 60_000);
 		mockGetTmuxTarget.mockReset();
 		mockKillTmuxSession.mockReset();
 		mockFinalizeCommDbSession.mockReset();
@@ -428,12 +436,31 @@ describe("runPostShipFinalization", () => {
 				const method = (init as { method?: string }).method ?? "GET";
 				if (method === "POST" && String(url).includes("/messages")) {
 					callOrder.push("discord:post-message");
-				} else if (method === "PATCH") {
-					callOrder.push("discord:archive");
-				} else if (method === "DELETE") {
-					callOrder.push("discord:remove-user");
+					return new Response(JSON.stringify({ id: "message-1" }), {
+						status: 200,
+					});
 				}
-				return new Response("{}", { status: 200 });
+				if (method === "PATCH") {
+					callOrder.push("discord:archive");
+					discordArchived = true;
+					return new Response("{}", { status: 200 });
+				}
+				if (method === "DELETE") {
+					callOrder.push("discord:remove-user");
+					return new Response("{}", { status: 200 });
+				}
+				if (String(url).includes("/messages?")) {
+					return new Response(JSON.stringify([{ id: discordFrontierId }]), {
+						status: 200,
+					});
+				}
+				return new Response(
+					JSON.stringify({
+						name: "thread",
+						thread_metadata: { archived: discordArchived },
+					}),
+					{ status: 200 },
+				);
 			});
 		vi.stubGlobal("fetch", fetchImpl);
 	});
@@ -446,6 +473,7 @@ describe("runPostShipFinalization", () => {
 		const fakeBase = Date.now() + 400 * 24 * 60 * 60 * 1_000;
 		vi.useFakeTimers({ toFake: ["Date"], now: fakeBase });
 		try {
+			let archived = false;
 			const landOperation = seedLandOperationClaim(store);
 			const operation = store.getLandOperation(landOperation.operationId);
 
@@ -478,17 +506,37 @@ describe("runPostShipFinalization", () => {
 						ok: true,
 						idempotentReplay: false,
 					}),
-					archiveFn: vi.fn().mockResolvedValue({
-						archived: true,
-						attempts: 1,
-						status: 200,
-						reason: "ok" as const,
-					}),
-					fetchImpl: vi.fn().mockResolvedValue(
-						new Response(JSON.stringify({ id: "message-1" }), {
+					archiveFn: vi.fn().mockImplementation(async () => {
+						archived = true;
+						return {
+							archived: true,
+							attempts: 1,
 							status: 200,
-						}),
-					) as unknown as typeof fetch,
+							reason: "ok" as const,
+						};
+					}),
+					fetchImpl: vi.fn(async (url: string, init: RequestInit) => {
+						if (init.method === "POST") {
+							return new Response(JSON.stringify({ id: "message-1" }), {
+								status: 200,
+							});
+						}
+						if (url.includes("/messages?")) {
+							return new Response(
+								JSON.stringify([
+									{ id: snowflakeAt(fakeBase - 2 * 60 * 60_000) },
+								]),
+								{ status: 200 },
+							);
+						}
+						return new Response(
+							JSON.stringify({
+								name: "thread",
+								thread_metadata: { archived },
+							}),
+							{ status: 200 },
+						);
+					}) as unknown as typeof fetch,
 				},
 			);
 
@@ -644,10 +692,23 @@ describe("runPostShipFinalization", () => {
 				}
 			} else if (method === "PATCH") {
 				callOrder.push("discord:archive");
+				discordArchived = true;
 			} else if (method === "DELETE") {
 				callOrder.push("discord:remove-user");
 			}
-			return new Response("{}", { status: 200 });
+			if (String(url).includes("/messages?")) {
+				return new Response(JSON.stringify([{ id: discordFrontierId }]), {
+					status: 200,
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					id: "message-1",
+					name: "thread",
+					thread_metadata: { archived: discordArchived },
+				}),
+				{ status: 200 },
+			);
 		});
 
 		const opts = {
@@ -761,7 +822,19 @@ describe("runPostShipFinalization", () => {
 			if (method === "PATCH") {
 				return new Response('{"message":"Unknown Channel"}', { status: 404 });
 			}
-			return new Response("{}", { status: 200 });
+			if (String(url).includes("/messages?")) {
+				return new Response(
+					JSON.stringify([{ id: snowflakeAt(Date.now() - 2 * 60 * 60_000) }]),
+					{ status: 200 },
+				);
+			}
+			return new Response(
+				JSON.stringify({
+					name: "thread",
+					thread_metadata: { archived: false },
+				}),
+				{ status: 200 },
+			);
 		});
 
 		await runPostShipFinalization(
@@ -1098,7 +1171,9 @@ describe("runPostShipFinalization", () => {
 		const landOperation = seedLandOperationClaim(store);
 		const order: string[] = [];
 		const postedBodies: string[] = [];
-		const fetchForThread = vi.fn(async (_url: string, init: RequestInit) => {
+		let archived = false;
+		const frontier = snowflakeAt(Date.now() - 2 * 60 * 60_000);
+		const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
 			if (init.method === "POST") {
 				const body = JSON.parse(init.body as string) as { content: string };
 				postedBodies.push(body.content);
@@ -1107,13 +1182,26 @@ describe("runPostShipFinalization", () => {
 						? "terminal"
 						: "ready-to-close",
 				);
+				return new Response(JSON.stringify({ id: `message-${order.length}` }), {
+					status: 200,
+				});
 			}
-			return new Response(JSON.stringify({ id: `message-${order.length}` }), {
-				status: 200,
-			});
+			if (url.includes("/messages?")) {
+				return new Response(JSON.stringify([{ id: frontier }]), {
+					status: 200,
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					name: "thread",
+					thread_metadata: { archived },
+				}),
+				{ status: 200 },
+			);
 		});
 		const archiveFn = vi.fn(async () => {
 			order.push("archive");
+			archived = true;
 			return {
 				archived: true,
 				attempts: 1,
@@ -1214,66 +1302,126 @@ describe("runPostShipFinalization", () => {
 		expect(markIssueDone).not.toHaveBeenCalled();
 	});
 
-	it("explains an archive policy waiver and settles one generation-fenced receipt", async () => {
-		const landOperation = seedLandOperationClaim(store);
-		const postedBodies: string[] = [];
-		const fetchForThread = vi.fn(async (_url: string, init: RequestInit) => {
-			if (init.method === "POST") {
-				postedBodies.push(
-					(JSON.parse(init.body as string) as { content: string }).content,
+	it.each(["accepted", "deduped"] as const)(
+		"settles a quiet-window deferral only after targeted enqueue is %s",
+		async (admission) => {
+			const landOperation = seedLandOperationClaim(store);
+			const enqueueTerminalArchive = vi.fn(() => admission);
+			const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
+				if (init.method === "POST") {
+					return new Response(JSON.stringify({ id: "message" }), {
+						status: 200,
+					});
+				}
+				if (String(url).includes("/messages?")) {
+					return new Response(
+						JSON.stringify([{ id: snowflakeAt(Date.now()) }]),
+						{ status: 200 },
+					);
+				}
+				return new Response(
+					JSON.stringify({
+						name: "thread",
+						thread_metadata: { archived: false },
+					}),
+					{ status: 200 },
 				);
-			}
-			return new Response(
-				JSON.stringify({ id: `message-${postedBodies.length}` }),
+			});
+
+			const result = await runResumablePostShipFinalization(
 				{
-					status: 200,
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+					landOperation,
+				},
+				{
+					store,
+					projects: PROJECTS,
+					removeCleanWorktree: vi.fn().mockResolvedValue({
+						removed: true,
+						bindingVerified: true,
+					}),
+					markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+					recordLinearDoneDisposition: vi.fn().mockReturnValue({
+						ok: true,
+						idempotentReplay: false,
+					}),
+					enqueueTerminalArchive,
+					fetchImpl: fetchForThread as unknown as typeof fetch,
 				},
 			);
-		});
-		const archiveFn = vi.fn(async () => ({
-			archived: false,
-			attempts: 0,
-			reason: "founder_reopened" as const,
-		}));
 
-		const result = await runResumablePostShipFinalization(
-			{
-				executionId: "exec-1",
-				issueId: "FLY-102",
-				issueIdentifier: "FLY-102",
-				projectName: "flywheel",
-				sessionStatus: "completed",
-				landOperation,
-			},
-			{
-				store,
-				projects: PROJECTS,
-				removeCleanWorktree: vi.fn().mockResolvedValue({
-					removed: true,
-					bindingVerified: true,
-				}),
-				markIssueDone: vi.fn().mockResolvedValue({ done: true }),
-				recordLinearDoneDisposition: vi.fn().mockReturnValue({
-					ok: true,
-					idempotentReplay: false,
-				}),
-				archiveFn,
-				fetchImpl: fetchForThread as unknown as typeof fetch,
-			},
-		);
+			expect(result).toMatchObject({ complete: true, outcome: "completed" });
+			expect(enqueueTerminalArchive).toHaveBeenCalledOnce();
+			expect(enqueueTerminalArchive).toHaveBeenCalledWith("FLY-102");
+		},
+	);
 
-		expect(result).toMatchObject({ complete: true, outcome: "completed" });
-		expect(
-			postedBodies.filter((body) => body.includes("本 thread 未自动归档")),
-		).toHaveLength(1);
-		expect(postedBodies.join("\n")).toContain("不会自动重试归档");
-		expect(postedBodies.join("\n")).toContain("Lead 确认后手动归档");
-		expect(
-			store
-				.listLandOperationSteps(landOperation.operationId)
-				.filter((step) => step.step === "archive_waiver_notified"),
-		).toHaveLength(1);
-	});
+	it.each([
+		["refused", vi.fn(() => "refused" as const)],
+		["missing", undefined],
+	] as const)(
+		"keeps land partial when a quiet-window deferral is %s from the targeted queue",
+		async (_case, enqueueTerminalArchive) => {
+			const landOperation = seedLandOperationClaim(store);
+			const fetchForThread = vi.fn(async (url: string, init: RequestInit) => {
+				if (init.method === "POST") {
+					return new Response(JSON.stringify({ id: "message" }), {
+						status: 200,
+					});
+				}
+				if (String(url).includes("/messages?")) {
+					return new Response(
+						JSON.stringify([{ id: snowflakeAt(Date.now()) }]),
+						{ status: 200 },
+					);
+				}
+				return new Response(
+					JSON.stringify({
+						name: "thread",
+						thread_metadata: { archived: false },
+					}),
+					{ status: 200 },
+				);
+			});
+
+			const result = await runResumablePostShipFinalization(
+				{
+					executionId: "exec-1",
+					issueId: "FLY-102",
+					issueIdentifier: "FLY-102",
+					projectName: "flywheel",
+					sessionStatus: "completed",
+					landOperation,
+				},
+				{
+					store,
+					projects: PROJECTS,
+					removeCleanWorktree: vi.fn().mockResolvedValue({
+						removed: true,
+						bindingVerified: true,
+					}),
+					markIssueDone: vi.fn().mockResolvedValue({ done: true }),
+					recordLinearDoneDisposition: vi.fn().mockReturnValue({
+						ok: true,
+						idempotentReplay: false,
+					}),
+					enqueueTerminalArchive,
+					fetchImpl: fetchForThread as unknown as typeof fetch,
+				},
+			);
+
+			expect(result).toMatchObject({
+				complete: false,
+				outcome: "partial",
+				reason: "land_archive_deferred_unqueued",
+				details: { threadArchived: false },
+			});
+		},
+	);
 
 	it("maps a thrown pre-arbitration read to retryable partial for resumable land", async () => {
 		const result = await runResumablePostShipFinalization(

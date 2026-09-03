@@ -134,10 +134,22 @@ describe("FLY-1709 StateStore archive epoch and compensation", () => {
 		store.setChatThreadCompensationPending("thread-1", RECEIPT);
 		await new Promise((resolve) => setTimeout(resolve, 2));
 
-		store.commitReArchive("thread-1", auditEvent());
+		store.commitThreadArchive("thread-1", auditEvent());
 
 		expect(store.getChatThreadCompensationPending("thread-1")).toBeNull();
 		expect(store.getChatThreadArchivedAt("thread-1")).not.toBe(previousEpoch);
+		expect(store.getEventsByExecution("exec-1")).toHaveLength(1);
+	});
+
+	it("atomically commits a first archive without an existing epoch", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("thread-1", "channel-1", "FLY-2028", "lead-1");
+		store.setChatThreadCompensationPending("thread-1", RECEIPT);
+
+		store.commitThreadArchive("thread-1", auditEvent("fly2028-first-archive"));
+
+		expect(store.getChatThreadArchivedAt("thread-1")).not.toBeNull();
+		expect(store.getChatThreadCompensationPending("thread-1")).toBeNull();
 		expect(store.getEventsByExecution("exec-1")).toHaveLength(1);
 	});
 
@@ -152,7 +164,7 @@ describe("FLY-1709 StateStore archive epoch and compensation", () => {
 			event_id: null,
 		} as unknown as SessionEvent;
 
-		expect(() => store.commitReArchive("thread-1", invalid)).toThrow();
+		expect(() => store.commitThreadArchive("thread-1", invalid)).toThrow();
 
 		expect(store.getChatThreadArchivedAt("thread-1")).toBe(previousEpoch);
 		expect(store.getChatThreadCompensationPending("thread-1")).toEqual(RECEIPT);

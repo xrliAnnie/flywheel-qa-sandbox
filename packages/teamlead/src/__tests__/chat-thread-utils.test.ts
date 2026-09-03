@@ -8,6 +8,7 @@ import {
 	addThreadMember,
 	archiveChatThread,
 	classifyThreadReopener,
+	getChannelName,
 	getLatestThreadMessageId,
 	pinThreadMessage,
 	removeUserFromChatThread,
@@ -39,6 +40,27 @@ function hangingFetch() {
 			}),
 	) as unknown as typeof fetch;
 }
+
+describe("getChannelName", () => {
+	it("returns the archive timestamp with the archived flag", async () => {
+		const archiveTimestamp = "2026-09-03T04:00:00.000Z";
+		const fetchImpl = vi.fn(async () =>
+			jsonResponse(200, {
+				name: "thread",
+				thread_metadata: {
+					archived: false,
+					archive_timestamp: archiveTimestamp,
+				},
+			}),
+		);
+		expect(await getChannelName("thread-1", "token", { fetchImpl })).toEqual({
+			ok: true,
+			name: "thread",
+			archived: false,
+			archiveTimestamp,
+		});
+	});
+});
 
 describe("archiveChatThread", () => {
 	it("archives on first 2xx (single attempt, PATCH archived:true)", async () => {
@@ -295,6 +317,14 @@ describe("FLY-1709 reopener inspection helpers", () => {
 				fetchImpl: vi.fn(async () => jsonResponse(200, [{}])),
 			}),
 		).resolves.toMatchObject({ ok: false });
+	});
+
+	it("returns Discord retry timing when the latest-message read is rate limited", async () => {
+		await expect(
+			getLatestThreadMessageId("thread-1", "token", {
+				fetchImpl: vi.fn(async () => jsonResponse(429, { retry_after: 0.25 })),
+			}),
+		).resolves.toMatchObject({ ok: false, status: 429, retryAfterMs: 250 });
 	});
 
 	it("unarchives with one retry and reports the actual attempt count", async () => {

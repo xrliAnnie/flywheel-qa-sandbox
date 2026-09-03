@@ -113,6 +113,23 @@ describe("MetaAlertNotifier", () => {
 		expect(exec).toHaveBeenCalledTimes(1);
 	});
 
+	it("accepts the idle thread sweep permission-denied reason", async () => {
+		const n = new MetaAlertNotifier({
+			stateDir,
+			execFileFn: vi.fn().mockResolvedValue({ stdout: "", stderr: "" }),
+			logger: () => {},
+		});
+		const result = await n.notify({
+			reason: "idle_thread_sweep_denied",
+			title: "Idle thread sweep denied",
+			body: "Discord returned 403",
+		});
+		expect(result.file).toBe(true);
+		expect(await readdir(join(stateDir, "meta-alert"))).toContain(
+			"idle_thread_sweep_denied.txt",
+		);
+	});
+
 	it("never throws when osascript fails — file channel still used", async () => {
 		const exec = vi.fn().mockRejectedValue(new Error("no aqua session"));
 		const n = new MetaAlertNotifier({

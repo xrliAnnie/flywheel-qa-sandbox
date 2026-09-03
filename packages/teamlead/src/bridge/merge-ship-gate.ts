@@ -30,6 +30,7 @@ import {
 	unavailableMaterializedHeadAuthority,
 } from "./materialized-head-authority.js";
 import { runPostShipFinalization } from "./post-ship-finalization.js";
+import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
@@ -499,6 +500,7 @@ export async function finalizeRecoveredMerge(
 	) => Promise<void>,
 	materializedHeadAuthority: MaterializedHeadAuthority = unavailableMaterializedHeadAuthority,
 	ciProbe?: ShipEligibilityArgs["ciProbe"],
+	terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission,
 ): Promise<boolean> {
 	const s = store.getSession(execId);
 	// Only a still-parked row (marker present) whose founder approval just landed.
@@ -572,6 +574,7 @@ export async function finalizeRecoveredMerge(
 				// terminal display refresh (runPostShipFinalization orders them).
 				finalizeWorkflowPhaseRoles,
 				refreshIssueDisplay,
+				enqueueTerminalArchive: terminalArchiveEnqueue,
 			},
 		);
 	} catch (err) {

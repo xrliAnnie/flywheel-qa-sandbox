@@ -59,6 +59,7 @@ import {
 } from "./bridge/runtime-registry.js";
 import { STAGE_ORDER } from "./bridge/stage-utils.js";
 import type { TerminalCommDbSync } from "./bridge/terminal-commdb-sync.js";
+import type { TerminalArchiveAdmission } from "./bridge/terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./bridge/turn-belt-reconcile.js";
 import type { BridgeConfig } from "./bridge/types.js";
 import {
@@ -102,7 +103,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 	 * FLY-1165 scheduler consumer). Production always wires it; optionality is
 	 * retained for embedding/test callers.
 	 */
-	public terminalArchiveEnqueue?: (issueId: string) => void;
+	public terminalArchiveEnqueue?: (issueId: string) => TerminalArchiveAdmission;
 
 	/**
 	 * FLY-2211 process-local owner reservation. The synchronous reserve call is
@@ -1179,6 +1180,7 @@ export class DirectEventSink implements ExecutionEventEmitter {
 						refreshIssueDisplay: (issueId) =>
 							this.issueDisplayRefresh?.current?.refresh(issueId) ??
 							Promise.resolve(),
+						enqueueTerminalArchive: this.terminalArchiveEnqueue,
 						// FLY-1185 entry A: remote branch CAS + issue closeout + sweep.
 						...this.lifecycleInfra,
 					},

@@ -56,7 +56,7 @@ const DONE_STATE_TYPES = new Set(["completed", "canceled"]);
 export type TargetedArchiveOutcome =
 	| { kind: "archived"; threadId: string }
 	| { kind: "already_archived" }
-	| { kind: "founder_reopened" }
+	| { kind: "deferred_quiet_window" }
 	| { kind: "thread_missing" }
 	| { kind: "vetoed_active"; executionId: string }
 	| { kind: "vetoed_status"; executionId: string; status: string }
@@ -70,6 +70,7 @@ export type TargetedArchiveOutcome =
 export function isRetryableOutcome(o: TargetedArchiveOutcome): boolean {
 	return (
 		o.kind === "vetoed_active" ||
+		o.kind === "deferred_quiet_window" ||
 		o.kind === "vetoed_status" ||
 		o.kind === "vetoed_claim" ||
 		o.kind === "vetoed_evidence_gap" ||
@@ -86,8 +87,8 @@ export function mapArchiveSinkResult(
 ): TargetedArchiveOutcome {
 	if (result.reason === "already_archived") return { kind: "already_archived" };
 	if (result.archived) return { kind: "archived", threadId };
-	if (result.reason === "founder_reopened") {
-		return { kind: "founder_reopened" };
+	if (result.reason === "deferred_quiet_window") {
+		return { kind: "deferred_quiet_window" };
 	}
 	if (result.reason === "in_active_use") {
 		return result.activeExecutionId
@@ -289,6 +290,7 @@ async function runInsideLock(
 		},
 		botToken,
 		{
+			authority: "terminal",
 			archiveFn: deps.archiveFn,
 			discordOwnerUserId: deps.discordOwnerUserId,
 			fetchImpl: deps.fetchImpl,
@@ -370,9 +372,11 @@ const checkStatePreconditions2 = checkStateVeto;
  * before the bind are retained (bounded) and flushed on bind — completion
  * events during boot are not lost.
  */
+export type TerminalArchiveAdmission = "accepted" | "deduped" | "refused";
+
 export interface TerminalArchiveEnqueue {
-	enqueue(issueId: string): void;
-	bind(consumer: (issueId: string) => void): void;
+	enqueue(issueId: string): TerminalArchiveAdmission;
+	bind(consumer: (issueId: string) => TerminalArchiveAdmission): void;
 }
 
 export function createTerminalArchiveEnqueueBuffer(
@@ -381,23 +385,23 @@ export function createTerminalArchiveEnqueueBuffer(
 		console.log(`[terminal-archive-enqueue] ${m}`),
 ): TerminalArchiveEnqueue {
 	const pending: string[] = [];
-	let consumer: ((issueId: string) => void) | null = null;
+	let consumer: ((issueId: string) => TerminalArchiveAdmission) | null = null;
 	return {
 		enqueue(issueId: string) {
 			if (consumer) {
-				consumer(issueId);
-				return;
+				return consumer(issueId);
 			}
-			if (pending.includes(issueId)) return; // dedup while buffered
+			if (pending.includes(issueId)) return "deduped"; // dedup while buffered
 			if (pending.length >= capacity) {
 				log(
 					`buffer full (${capacity}) — REFUSING enqueue for ${issueId}; periodic sweep is the backstop when enabled`,
 				);
-				return;
+				return "refused";
 			}
 			pending.push(issueId);
+			return "accepted";
 		},
-		bind(c: (issueId: string) => void) {
+		bind(c: (issueId: string) => TerminalArchiveAdmission) {
 			consumer = c;
 			for (const issueId of pending.splice(0)) c(issueId);
 		},

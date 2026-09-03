@@ -339,24 +339,42 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 		});
 	}
 
-	const okFetch = () =>
-		vi
-			.fn()
-			.mockResolvedValue(
-				new Response(JSON.stringify({ id: "m-1" }), { status: 200 }),
-			) as unknown as typeof fetch;
-
 	it("archives a fresh thread through the sink — one PATCH, archived_at set, post-ship audit source", async () => {
 		const { store } = await makeStore();
 		seedShipped(store, "exec-s1", "FLY-10");
 		store.upsertChatThread("t-s1", "ch-eng", "FLY-10", "tadashi");
-		const archiveFn = vi.fn().mockResolvedValue({
-			archived: true,
-			attempts: 1,
-			status: 200,
-			reason: "ok",
+		let archived = false;
+		const frontier = (
+			(BigInt(Date.now() - 2 * 60 * 60_000) - 1420070400000n) <<
+			22n
+		).toString();
+		const archiveFn = vi.fn().mockImplementation(async () => {
+			archived = true;
+			return {
+				archived: true,
+				attempts: 1,
+				status: 200,
+				reason: "ok",
+			};
 		});
 		const removeUserFn = vi.fn().mockResolvedValue(undefined);
+		const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+			if (init.method === "POST") {
+				return new Response(JSON.stringify({ id: "m-1" }), { status: 200 });
+			}
+			if (url.includes("/messages?")) {
+				return new Response(JSON.stringify([{ id: frontier }]), {
+					status: 200,
+				});
+			}
+			return new Response(
+				JSON.stringify({
+					name: "thread",
+					thread_metadata: { archived },
+				}),
+				{ status: 200 },
+			);
+		}) as unknown as typeof fetch;
 
 		await runPostShipFinalization(
 			{
@@ -371,7 +389,7 @@ describe("runPostShipFinalization thread teardown via shared sink (FLY-1165)", (
 				projects: [PROJECT],
 				archiveFn,
 				removeUserFn,
-				fetchImpl: okFetch(),
+				fetchImpl,
 			},
 		);
 

@@ -11,10 +11,13 @@ import {
 	validateChatThreadParams,
 } from "./chat-thread-register.js";
 import {
+	type ArchiveAuthority,
 	archiveThreadAndRecord,
 	resolveBotTokenForThread,
 } from "./done-thread-archiver.js";
+import type { ReconcileLinearLookup } from "./done-thread-reconcile.js";
 import { filterSessionsByLead } from "./lead-scope.js";
+import { lookupLinearIssueByIdentifier } from "./linear-query.js";
 import {
 	type ChatClassification,
 	evaluateReplyGuard,
@@ -83,6 +86,8 @@ export interface QueryRouterOptions {
 	 * router tests are unaffected.
 	 */
 	apiTokenConfigured?: boolean;
+	/** Test seam for fresh terminal authority on explicit archive requests. */
+	lookupIssueForArchive?: ReconcileLinearLookup;
 	/** FLY-2076: late-bound alert dispatcher identity for Claw startup. */
 	dispatcherBotUserId?: () => string | null;
 }
@@ -1212,6 +1217,23 @@ export function createQueryRouter(
 
 		const executionId =
 			session?.execution_id ?? `fly369-archive-${canonicalKey}`;
+		let authority: ArchiveAuthority = "none";
+		const linearApiKey = process.env.LINEAR_API_KEY;
+		if (linearApiKey) {
+			try {
+				const linear = await (
+					opts?.lookupIssueForArchive ?? lookupLinearIssueByIdentifier
+				)(linearApiKey, canonicalKey);
+				if (
+					linear?.stateType === "completed" ||
+					linear?.stateType === "canceled"
+				) {
+					authority = "terminal";
+				}
+			} catch {
+				// Explicit archive stays available with legacy non-terminal authority.
+			}
+		}
 
 		const result = await archiveThreadAndRecord(
 			store,
@@ -1223,12 +1245,14 @@ export function createQueryRouter(
 			},
 			botToken,
 			{
+				authority,
+				quietWindowMs: 0,
 				discordOwnerUserId: opts?.discordOwnerUserId,
 				fetchImpl: opts?.discordFetch,
 			},
 		);
 
-		res.json({ threadId: thread.thread_id, ...result });
+		res.json({ threadId: thread.thread_id, authority, ...result });
 	});
 
 	// FLY-162 Layer 2: preventive reply-guard. The forked Discord plugin calls

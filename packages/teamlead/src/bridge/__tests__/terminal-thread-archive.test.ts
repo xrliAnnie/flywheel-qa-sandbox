@@ -18,6 +18,7 @@ import { StateStore } from "../../StateStore.js";
 import type { ArchiveChatThreadResult } from "../chat-thread-utils.js";
 import { startDoneThreadReconcileScheduler } from "../done-thread-reconcile.js";
 import {
+	createTerminalArchiveEnqueueBuffer,
 	isRetryableOutcome,
 	runTargetedArchiveCheck,
 	type TargetedArchiveDeps,
@@ -71,6 +72,11 @@ function makeDeps(
 	over: Partial<TargetedArchiveDeps> = {},
 ): TargetedArchiveDeps & { archiveFn: ReturnType<typeof vi.fn> } {
 	const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+	const archiveSinkFn = vi.fn(async () => {
+		const result = await archiveFn();
+		if (result.archived) store.markChatThreadArchived("thread-1");
+		return result;
+	});
 	return {
 		store,
 		projects: PROJECT,
@@ -83,6 +89,7 @@ function makeDeps(
 			stateType: "completed",
 		})),
 		archiveFn,
+		archiveSinkFn,
 		fetchImpl: (() => {
 			throw new Error("no network in tests");
 		}) as unknown as typeof fetch,
@@ -95,6 +102,30 @@ function makeDeps(
 }
 
 describe("M9 targeted mode — happy path + archive-once", () => {
+	it("FLY-2028: terminal sink authority defers a quiet-window retry", async () => {
+		seedSession("exec-a");
+		store.upsertChatThread("thread-1", "ch-eng", UUID, "tadashi");
+		const archiveSinkFn = vi.fn().mockResolvedValue({
+			archived: false,
+			attempts: 0,
+			reason: "deferred_quiet_window",
+		});
+
+		const outcome = await runTargetedArchiveCheck(
+			IDENT,
+			makeDeps({ archiveSinkFn }),
+		);
+
+		expect(outcome).toEqual({ kind: "deferred_quiet_window" });
+		expect(isRetryableOutcome(outcome)).toBe(true);
+		expect(archiveSinkFn).toHaveBeenCalledWith(
+			store,
+			expect.objectContaining({ threadId: "thread-1" }),
+			"tok-tadashi",
+			expect.objectContaining({ authority: "terminal" }),
+		);
+	});
+
 	it("all-terminal + Linear Done + panes gone → archived exactly once; re-run → thread_missing", async () => {
 		seedSession("exec-a", "completed");
 		seedSession("exec-b", "terminated");
@@ -126,6 +157,20 @@ describe("M9 targeted mode — happy path + archive-once", () => {
 		expect(deps.archiveFn).not.toHaveBeenCalled();
 		const live = await runTargetedArchiveCheck(IDENT, makeDeps());
 		expect(live.kind).toBe("archived");
+	});
+});
+
+describe("FLY-2028 pre-binding admission", () => {
+	it("returns accepted, deduped, refused, then forwards the consumer receipt", () => {
+		const buffer = createTerminalArchiveEnqueueBuffer(1, () => {});
+		expect(buffer.enqueue("FLY-1")).toBe("accepted");
+		expect(buffer.enqueue("FLY-1")).toBe("deduped");
+		expect(buffer.enqueue("FLY-2")).toBe("refused");
+
+		const consumer = vi.fn(() => "deduped" as const);
+		buffer.bind(consumer);
+		expect(consumer).toHaveBeenCalledWith("FLY-1");
+		expect(buffer.enqueue("FLY-3")).toBe("deduped");
 	});
 });
 
@@ -422,7 +467,7 @@ describe("M9 scheduler — targeted queue lifecycle", () => {
 					runDeadlineMs: 1000,
 				}) as never,
 			bootDelayMs: 10_000_000,
-			tickMs: 1_000,
+			tickMs: 60_000,
 			log: (m) => logs.push(m),
 			runTargeted,
 		});

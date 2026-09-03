@@ -74,6 +74,13 @@ function makeDeps(
 	lookupIssue: ReturnType<typeof vi.fn>;
 } {
 	const archiveFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+	const archiveSinkFn = vi.fn(
+		async (sinkStore: StateStore, input: { threadId: string }) => {
+			const result = await archiveFn();
+			if (result.archived) sinkStore.markChatThreadArchived(input.threadId);
+			return result;
+		},
+	);
 	const closeRunnerFn = vi
 		.fn()
 		.mockResolvedValue({ closed: true, alreadyGone: false });
@@ -89,6 +96,7 @@ function makeDeps(
 		transitionOpts: {} as DoneThreadReconcileDeps["transitionOpts"],
 		lookupIssue,
 		archiveFn,
+		archiveSinkFn,
 		closeRunnerFn,
 		lookupTarget: () => ({ kind: "gone" }) as const,
 		probeLiveness: async () => "absent" as const,
@@ -424,26 +432,21 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 		expect(r.failed).toBe(0);
 	});
 
-	it.each(["founder_reopened", "in_active_use"] as const)(
-		"15b. sink returns %s → counted skippedReopenProtected, NOT failed",
-		async (reason) => {
-			const store = await freshStore();
-			store.upsertChatThread("t-1", "ch-eng", "FLY-18b", "tadashi");
-			const deps = makeDeps(store, {
-				archiveSinkFn: vi.fn().mockResolvedValue({
-					archived: false,
-					attempts: 0,
-					reason,
-					...(reason === "in_active_use"
-						? { activeExecutionId: "exec-live" }
-						: {}),
-				}),
-			});
-			const r = await reconcileDoneThreads(deps);
-			expect(r.skippedReopenProtected).toBe(1);
-			expect(r.failed).toBe(0);
-		},
-	);
+	it("15b. sink returns in_active_use → counted skippedReopenProtected, NOT failed", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-1", "ch-eng", "FLY-18b", "tadashi");
+		const deps = makeDeps(store, {
+			archiveSinkFn: vi.fn().mockResolvedValue({
+				archived: false,
+				attempts: 0,
+				reason: "in_active_use",
+				activeExecutionId: "exec-live",
+			}),
+		});
+		const r = await reconcileDoneThreads(deps);
+		expect(r.skippedReopenProtected).toBe(1);
+		expect(r.failed).toBe(0);
+	});
 
 	it("16. maxArchivesPerRun=1 with two Done candidates → archives 1, capped:true", async () => {
 		const store = await freshStore();
@@ -593,6 +596,129 @@ describe("reconcileDoneThreads (FLY-1165)", () => {
 			"running",
 			"ship_parked",
 		]);
+	});
+});
+
+describe("FLY-2028 Discord-open discovery pass", () => {
+	it("archives only DB-recorded reopened rows with terminal authority and no lifecycle mutators", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-reopened", "ch-eng", "FLY-40", "tadashi");
+		store.markChatThreadArchived("t-reopened");
+		store.upsertChatThread("t-main", "ch-eng", "FLY-41", "tadashi");
+		const archiveSinkFn = vi.fn().mockResolvedValue(OK_ARCHIVE);
+		const closeRunnerFn = vi.fn();
+		const lifecycleCloseout = vi.fn();
+		const retireIssueGates = vi.fn();
+
+		const result = await reconcileDoneThreads(
+			makeDeps(store, {
+				archiveSinkFn,
+				closeRunnerFn,
+				lifecycleCloseout,
+				retireIssueGates,
+				listDiscordOpenThreadIds: vi.fn().mockResolvedValue({
+					ok: true,
+					ids: new Set(["t-reopened", "t-main", "not-in-db"]),
+				}),
+			}),
+		);
+
+		expect(result.discoveredReopened).toBe(1);
+		expect(result.openDiscovery).toBe("ok");
+		expect(archiveSinkFn).toHaveBeenCalledTimes(2);
+		expect(
+			archiveSinkFn.mock.calls.find(
+				(call) => call[1].threadId === "t-reopened",
+			)?.[3],
+		).toMatchObject({ authority: "terminal" });
+		expect(closeRunnerFn).not.toHaveBeenCalled();
+		expect(lifecycleCloseout).not.toHaveBeenCalled();
+		expect(retireIssueGates).not.toHaveBeenCalled();
+	});
+
+	it("freshly re-reads Linear after liveness and lets a reopen win", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-reopened", "ch-eng", "FLY-42", "tadashi");
+		store.markChatThreadArchived("t-reopened");
+		const archiveSinkFn = vi.fn();
+		let calls = 0;
+
+		const result = await reconcileDoneThreads(
+			makeDeps(store, {
+				archiveSinkFn,
+				lookupIssue: vi.fn(async (_key: string, id: string) => ({
+					id: `uuid-${id}`,
+					identifier: id,
+					stateType: ++calls === 1 ? "completed" : "started",
+				})),
+				listDiscordOpenThreadIds: vi.fn().mockResolvedValue({
+					ok: true,
+					ids: new Set(["t-reopened"]),
+				}),
+			}),
+		);
+
+		expect(result.skippedNotDone).toBe(1);
+		expect(archiveSinkFn).not.toHaveBeenCalled();
+	});
+
+	it("ignores Discord-open registry rows without an issue id", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-malformed", "ch-eng", "", "tadashi");
+		store.markChatThreadArchived("t-malformed");
+		const lookupIssue = vi.fn();
+
+		const result = await reconcileDoneThreads(
+			makeDeps(store, {
+				lookupIssue,
+				listDiscordOpenThreadIds: vi.fn().mockResolvedValue({
+					ok: true,
+					ids: new Set(["t-malformed"]),
+				}),
+			}),
+		);
+
+		expect(result.discoveredReopened).toBe(0);
+		expect(lookupIssue).not.toHaveBeenCalled();
+	});
+
+	it("reports discovery unavailability and keeps the DB-only pass non-throwing", async () => {
+		const store = await freshStore();
+		const logs: string[] = [];
+		const result = await reconcileDoneThreads(
+			makeDeps(store, {
+				log: (message) => logs.push(message),
+				listDiscordOpenThreadIds: vi.fn().mockResolvedValue({
+					ok: false,
+					error: "Discord 503",
+				}),
+			}),
+		);
+
+		expect(result.openDiscovery).toBe("unavailable(Discord 503)");
+		expect(logs.at(-1)).toContain("openDiscovery=unavailable(Discord 503)");
+	});
+
+	it("does not start discovery after the primary pass consumes the deadline", async () => {
+		const store = await freshStore();
+		store.upsertChatThread("t-main", "ch-eng", "FLY-43", "tadashi");
+		let clock = 0;
+		const listDiscordOpenThreadIds = vi.fn();
+
+		const result = await reconcileDoneThreads(
+			makeDeps(store, {
+				now: () => clock,
+				runDeadlineMs: 50,
+				sleepImpl: async () => {
+					clock = 50;
+				},
+				listDiscordOpenThreadIds,
+			}),
+		);
+
+		expect(result.deadlineHit).toBe(true);
+		expect(result.openDiscovery).toBe("skipped");
+		expect(listDiscordOpenThreadIds).not.toHaveBeenCalled();
 	});
 });
 

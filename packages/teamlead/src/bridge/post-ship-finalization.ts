@@ -50,6 +50,7 @@ import {
 	type ForceShippedHusksResult,
 	forceShippedHusks,
 } from "./shipped-husk-escalation.js";
+import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 
 /** No-op policy outcomes that deliberately discharge finalization's archive duty. */
@@ -59,7 +60,6 @@ export function isArchiveObligationSettled(
 	return (
 		result.archived ||
 		result.reason === "already_archived" ||
-		result.reason === "founder_reopened" ||
 		result.reason === "in_active_use"
 	);
 }
@@ -459,6 +459,8 @@ export interface PostShipDeps {
 	archiveFn?: typeof archiveChatThread;
 	removeUserFn?: typeof removeUserFromChatThread;
 	fetchImpl?: typeof fetch;
+	/** Queue a quiet-window deferral for minute-scale retry. */
+	enqueueTerminalArchive?: (issueId: string) => TerminalArchiveAdmission;
 	/** FLY-1992: evidence-gated cleanup for shipped workflow-node husks. */
 	forceShippedHusks?: typeof forceShippedHusks;
 }
@@ -1211,18 +1213,17 @@ async function runPostShipFinalizationInner(
 	// closeout confirmed every related node gone (Codex R1#3: an archive over
 	// a blocked closeout would hide a still-live runner). ──
 	let threadArchived = !resumable || !thread;
+	let archiveDeferredUnqueued = false;
 	if (
 		thread &&
 		botToken &&
 		!closeoutBlocked &&
 		(!landManaged || (landReady && terminalNotified))
 	) {
-		// FLY-1165: route through the shared archive sink — per-thread
-		// serialization + the sink-level archive-once guard (a founder re-open
-		// is never fought; matches the cascade + endpoint paths). The owner
-		// removal is folded into the sink (no double removal), the audit event
-		// keeps this path's source, and `reason: "already_archived"` is an
-		// idempotent no-op success — NEVER a chat_thread_archive_failed.
+		// FLY-1165/2028: route through the shared archive sink. Terminal authority,
+		// per-thread serialization, the quiet-window frontier fence, and reopen
+		// compensation live there. Owner removal is folded into the sink (no double
+		// removal), and `already_archived` is an idempotent verified success.
 		const archive = await archiveThreadAndRecord(
 			store,
 			{
@@ -1233,6 +1234,7 @@ async function runPostShipFinalizationInner(
 			},
 			botToken,
 			{
+				authority: "terminal",
 				discordOwnerUserId: opts.discordOwnerUserId,
 				auditSource: "bridge.post-ship-finalization",
 				archiveFn: deps.archiveFn,
@@ -1240,11 +1242,18 @@ async function runPostShipFinalizationInner(
 				fetchImpl: deps.fetchImpl,
 			},
 		);
-		threadArchived = isArchiveObligationSettled(archive);
-		if (
-			archive.reason === "founder_reopened" ||
-			archive.reason === "in_active_use"
-		) {
+		if (archive.reason === "deferred_quiet_window") {
+			const admission =
+				deps.enqueueTerminalArchive?.(opts.issueId) ?? "refused";
+			threadArchived = admission !== "refused";
+			archiveDeferredUnqueued = admission === "refused";
+			console.log(
+				`[post-ship] thread archive deferred (quiet window) → targeted queue (${admission}) for ${opts.issueId}`,
+			);
+		} else {
+			threadArchived = isArchiveObligationSettled(archive);
+		}
+		if (archive.reason === "in_active_use") {
 			console.log(
 				`[post-ship] thread archive waived for ${opts.issueId}: ${archive.reason}`,
 			);
@@ -1266,9 +1275,7 @@ async function runPostShipFinalizationInner(
 							projectName: opts.projectName,
 							kind: "land_archive_waiver",
 							content:
-								archive.reason === "founder_reopened"
-									? "ℹ️ 本 thread 未自动归档:founder 已重新打开；系统会保持 thread 开放且不会自动重试归档，请 Lead 确认后手动归档。"
-									: "ℹ️ 本 thread 未自动归档:仍有活跃使用者；原因解除后会由清理流程重试。",
+								"ℹ️ 本 thread 未自动归档:仍有活跃使用者；原因解除后会由清理流程重试。",
 							thread,
 							botToken,
 							onUndeliverable: (reason) =>
@@ -1395,6 +1402,27 @@ async function runPostShipFinalizationInner(
 				tmuxClosed: cleanup.tmuxClosed,
 				commDbFinalized: cleanup.commDbFinalized,
 				closeoutBlocked: true,
+			},
+		};
+	}
+	if (resumable && archiveDeferredUnqueued) {
+		if (declaredFinalization && opts.runId) {
+			store.setWorkflowPrFinalizationOutcome({
+				runId: opts.runId,
+				completed: false,
+				error: "land_archive_deferred_unqueued",
+			});
+		}
+		return {
+			complete: false,
+			outcome: "partial",
+			reason: "land_archive_deferred_unqueued",
+			details: {
+				tmuxClosed: cleanup.tmuxClosed,
+				commDbFinalized: cleanup.commDbFinalized,
+				closeoutBlocked: false,
+				worktreeRemoved,
+				threadArchived: false,
 			},
 		};
 	}

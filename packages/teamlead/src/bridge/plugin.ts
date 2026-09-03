@@ -235,6 +235,10 @@ import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
 import { validateDesignReviewProjection } from "./design-review-validation.js";
 import { createDigestRouter } from "./digest-route.js";
 import { DigestService } from "./digest-service.js";
+import {
+	listGuildActiveThreads,
+	resolveInfraDiscordIdentity,
+} from "./discord-guild-active-threads.js";
 import { createDispositionReceiptPass } from "./disposition-receipt.js";
 import {
 	createDoaBackoffAdmission,
@@ -352,6 +356,11 @@ import {
 	type HolderWakeCause,
 } from "./holder-wake-activation.js";
 import { buildSessionKey } from "./hook-payload.js";
+import {
+	IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
+	makeIdleThreadArchiveSweep,
+	resolveIdleThreadSweepChannelIds,
+} from "./idle-thread-archive-sweep.js";
 import { INFRA_ALERT_OWNER_LEAD_ID } from "./infra-alert-mailbox.js";
 import { buildInfraAlertRouting } from "./infra-alert-wiring.js";
 import {
@@ -1298,7 +1307,7 @@ export interface BridgeAppOptions {
 	 * FLY-1282 Part C: targeted terminal-archive enqueue for the /events
 	 * completion sites. Production always wires it in startBridge.
 	 */
-	terminalArchiveEnqueue?: (issueId: string) => void;
+	terminalArchiveEnqueue?: import("./terminal-thread-archive.js").TerminalArchiveEnqueue["enqueue"];
 	/** FLY-1066: shared boot/maintenance/targeted residue single-flight. */
 	residueHarvester?: ResidueHarvester;
 	/** FLY-1066: shared non-blocking failed/blocked CommDB sync queue. */
@@ -1934,6 +1943,7 @@ export function createBridgeApp(
 		// FLY-907: recovered-merge finalization display refresh (late-bound).
 		opts?.issueDisplayRefresh,
 		opts?.materializedHeadAuthority,
+		opts?.terminalArchiveEnqueue,
 	);
 	const fcNoop: express.RequestHandler = (_q, _s, next) => next();
 	const fcMw = (
@@ -2124,6 +2134,7 @@ export function createBridgeApp(
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
+			opts?.terminalArchiveEnqueue,
 		),
 	);
 
@@ -2697,6 +2708,7 @@ export function createBridgeApp(
 			undefined, // cardAuthority
 			opts?.materializedHeadAuthority,
 			actionGateAuthorityView,
+			opts?.terminalArchiveEnqueue,
 		),
 	);
 
@@ -6072,6 +6084,19 @@ export async function startBridge(
 	const terminalArchiveBuffer = createTerminalArchiveEnqueueBuffer();
 	const terminalArchiveEnqueue = (issueId: string) =>
 		terminalArchiveBuffer.enqueue(issueId);
+	const infraDiscordIdentity = resolveInfraDiscordIdentity();
+	const idleThreadSweepChannelIds = resolveIdleThreadSweepChannelIds();
+	const listDiscordOpenThreadIds = infraDiscordIdentity
+		? async () => {
+				const listed = await listGuildActiveThreads(infraDiscordIdentity);
+				return listed.ok
+					? {
+							ok: true as const,
+							ids: new Set(listed.threads.map(({ id }) => id)),
+						}
+					: { ok: false as const, error: listed.error };
+			}
+		: undefined;
 	// FLY-2211: one process-local authority shared by first dispatch, rescue,
 	// boot reconciliation, and the adjacent orphan reaper.
 	const codexExecutionOwners = new CodexExecutionOwnershipRegistry();
@@ -6358,6 +6383,7 @@ export async function startBridge(
 						refreshIssueDisplay: (issueId) =>
 							issueDisplayRefreshHolder.current?.refresh(issueId) ??
 							Promise.resolve(),
+						enqueueTerminalArchive: terminalArchiveEnqueue,
 						...lifecycleInfra,
 					},
 				);
@@ -7748,6 +7774,7 @@ export async function startBridge(
 						revalidate: input.revalidate,
 					}) ?? Promise.resolve(),
 				newMutatorsEnabled: worktreeAutocleanEnabled(),
+				listDiscordOpenThreadIds,
 			});
 		},
 		// FLY-1282 Part C: archive-only targeted consumption — same scheduler,
@@ -7779,6 +7806,33 @@ export async function startBridge(
 	// targeted queue — completion enqueues that arrived before this point
 	// (bounded 64) flush now.
 	terminalArchiveBuffer.bind((issueId) => doneThreadReconcile.enqueue(issueId));
+	const idleThreadSweep =
+		infraDiscordIdentity && idleThreadSweepChannelIds.length > 0
+			? makeIdleThreadArchiveSweep({
+					identity: infraDiscordIdentity,
+					channelIds: idleThreadSweepChannelIds,
+					log: (message) => console.log(`[idle-thread-sweep] ${message}`),
+					onDenied: ({ status, context }) => {
+						void metaAlertNotifier.notify({
+							reason: "idle_thread_sweep_denied",
+							title: "Discord idle-thread sweep denied",
+							body: `Discord HTTP ${status} during ${context}; check claw-infra-bot VIEW_CHANNEL and MANAGE_THREADS permissions.`,
+						});
+					},
+				})
+			: undefined;
+	const idleThreadSweepScheduler = idleThreadSweep
+		? startDoneThreadReconcileScheduler({
+				runOnce: (shouldAbort) => idleThreadSweep.runOnce(shouldAbort),
+				resolveConfig: () => IDLE_THREAD_SWEEP_SCHEDULER_CONFIG,
+				log: (message) => console.log(`[idle-thread-sweep] ${message}`),
+			})
+		: undefined;
+	if (idleThreadSweepScheduler) {
+		console.log(
+			`[Bridge] idle-thread sweep ready — channels=${idleThreadSweepChannelIds.join(",")}`,
+		);
+	}
 
 	// FLY-754: boot sweep — kill leaked `viewer-<execId>` tmux sessions (the
 	// FLY-116 Terminal.app viewer's linked sessions that were never destroyed).
@@ -8362,6 +8416,7 @@ export async function startBridge(
 		materializedHeadAuthority,
 		config,
 		projects,
+		terminalArchiveEnqueue,
 		removeCleanWorktree: makeBridgeWorktreeCleanup(store, projects),
 		probeTurnHolderLiveness: async (session) => {
 			if (!session.tmux_session) return "indeterminate";
@@ -11744,6 +11799,7 @@ export async function startBridge(
 		// FLY-1165: drain the done-thread reconcile (cooperative abort + await
 		// the in-flight pass) BEFORE store.close() below — a pass writing
 		// archived_at into a closed store would throw.
+		await idleThreadSweepScheduler?.stop();
 		await doneThreadReconcile.stop();
 		leadInboxRuntime.close();
 		await registry.shutdownAll();

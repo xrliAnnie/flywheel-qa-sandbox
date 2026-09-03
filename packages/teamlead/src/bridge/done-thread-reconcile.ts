@@ -29,8 +29,8 @@
  *     provably gone AND whose status is FSM-finalizable.
  *
  * Archiving goes through `archiveThreadAndRecord` (the single token-bearing
- * sink; per-thread serialization + archive-once live there — a founder
- * re-open is never fought).
+ * sink); terminal authority, per-thread serialization, quiet-window fencing,
+ * and re-open compensation all live there.
  */
 
 import { existsSync } from "node:fs";
@@ -47,6 +47,7 @@ import {
 	resolveBotTokenForThread,
 } from "./done-thread-archiver.js";
 import { lookupLinearIssueByIdentifier } from "./linear-query.js";
+import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import {
 	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
@@ -108,6 +109,10 @@ export type ReconcileLinearLookup = (
 	stateType: string;
 	updatedAt?: string;
 } | null>;
+
+export type DiscordOpenThreadDiscovery =
+	| { ok: true; ids: Set<string> }
+	| { ok: false; error: string };
 
 // ── FLY-1185 §2.12 (R9#4): hardcoded per-run budgets for the D entry's NEW
 // mutator surface (issue closeouts). NOT env-configurable by contract. ──
@@ -188,6 +193,8 @@ export interface DoneThreadReconcileDeps {
 	 * integration tests.
 	 */
 	newMutatorsEnabled?: boolean;
+	/** Discord-active thread ids used to recover DB-recorded reopened threads. */
+	listDiscordOpenThreadIds?: () => Promise<DiscordOpenThreadDiscovery>;
 }
 
 export interface DoneThreadReconcileResult {
@@ -213,6 +220,10 @@ export interface DoneThreadReconcileResult {
 	legacyManualCandidates: number;
 	/** Codex R1#1 residue union: extra thread-less issues D examined. */
 	residueScanned: number;
+	/** FLY-2028 reopened-thread recovery counters. */
+	discoveredReopened: number;
+	deferredQuiet: number;
+	openDiscovery: "absent" | "skipped" | "ok" | `unavailable(${string})`;
 }
 
 type SessionAliasRow = ReturnType<StateStore["getSessionsForIssueAliases"]>[0];
@@ -271,6 +282,9 @@ export async function reconcileDoneThreads(
 		closeoutMutators: 0,
 		legacyManualCandidates: 0,
 		residueScanned: 0,
+		discoveredReopened: 0,
+		deferredQuiet: 0,
+		openDiscovery: deps.listDiscordOpenThreadIds ? "skipped" : "absent",
 	};
 	const log =
 		deps.log ??
@@ -350,6 +364,7 @@ export async function reconcileDoneThreads(
 		};
 
 		const candidates = store.getUnarchivedIssueChatThreads();
+		const candidateThreadIds = new Set(candidates.map((row) => row.thread_id));
 		for (const thread of candidates) {
 			if (shouldAbort()) {
 				result.aborted = true;
@@ -683,6 +698,7 @@ export async function reconcileDoneThreads(
 						},
 						botToken,
 						{
+							authority: "terminal",
 							archiveFn: deps.archiveFn,
 							removeUserFn: deps.removeUserFn,
 							fetchImpl: deps.fetchImpl,
@@ -692,10 +708,9 @@ export async function reconcileDoneThreads(
 					);
 					if (sinkResult.reason === "already_archived") {
 						result.skippedAlreadyArchived++;
-					} else if (
-						sinkResult.reason === "founder_reopened" ||
-						sinkResult.reason === "in_active_use"
-					) {
+					} else if (sinkResult.reason === "deferred_quiet_window") {
+						result.deferredQuiet++;
+					} else if (sinkResult.reason === "in_active_use") {
 						result.skippedReopenProtected++;
 					} else if (sinkResult.archived) {
 						result.archived++;
@@ -719,6 +734,184 @@ export async function reconcileDoneThreads(
 				log(
 					`${thread.issue_id}: ${err instanceof Error ? err.message : String(err)}`,
 				);
+			}
+		}
+
+		// FLY-2028: DB `archived_at` is historical state, not proof that Discord
+		// stayed archived. Active-thread discovery recovers rows reopened by a new
+		// message after Bridge restart. This pass is archive-only: no observation,
+		// gate retirement, husk finalization, or lifecycle closeout.
+		if (!result.aborted && shouldAbort()) result.aborted = true;
+		if (!result.deadlineHit && now() - startedAt >= runDeadlineMs) {
+			result.deadlineHit = true;
+		}
+		if (
+			deps.listDiscordOpenThreadIds &&
+			!result.aborted &&
+			!result.deadlineHit &&
+			!result.capped &&
+			result.scanned < maxCandidates &&
+			result.archived + result.dryRunWouldArchive < maxArchives
+		) {
+			let discovery: DiscordOpenThreadDiscovery;
+			try {
+				discovery = await deps.listDiscordOpenThreadIds();
+			} catch (err) {
+				discovery = {
+					ok: false,
+					error: err instanceof Error ? err.message : String(err),
+				};
+			}
+			if (!discovery.ok) {
+				result.openDiscovery = `unavailable(${discovery.error})`;
+			} else {
+				result.openDiscovery = "ok";
+				const reopened = [...discovery.ids]
+					.filter((threadId) => !candidateThreadIds.has(threadId))
+					.filter(
+						(threadId) => store.getChatThreadArchivedAt(threadId) !== null,
+					)
+					.map((threadId) => store.getChatThreadByThreadId(threadId))
+					.filter((row): row is NonNullable<typeof row> =>
+						Boolean(row?.issue_id?.trim()),
+					);
+				result.discoveredReopened = reopened.length;
+
+				for (const thread of reopened) {
+					if (shouldAbort()) {
+						result.aborted = true;
+						break;
+					}
+					if (now() - startedAt >= runDeadlineMs) {
+						result.deadlineHit = true;
+						break;
+					}
+					if (result.scanned >= maxCandidates) {
+						result.capped = true;
+						break;
+					}
+					if (result.archived + result.dryRunWouldArchive >= maxArchives) {
+						result.capped = true;
+						break;
+					}
+					result.scanned++;
+
+					try {
+						let linear: Awaited<ReturnType<ReconcileLinearLookup>>;
+						try {
+							linear = await lookupIssue(linearApiKey, thread.issue_id);
+						} catch {
+							result.skippedUnresolved++;
+							continue;
+						}
+						if (!linear) {
+							result.skippedUnresolved++;
+							continue;
+						}
+						if (!DONE_STATE_TYPES.has(linear.stateType)) {
+							result.skippedNotDone++;
+							continue;
+						}
+						const aliasKeys = [
+							...new Set(
+								[thread.issue_id, linear.id, linear.identifier].filter(Boolean),
+							),
+						];
+						const liveness = await checkLiveness(aliasKeys);
+						if (liveness.live) {
+							result.skippedActive++;
+							continue;
+						}
+
+						try {
+							const fresh = await lookupIssue(linearApiKey, thread.issue_id);
+							if (!fresh || !DONE_STATE_TYPES.has(fresh.stateType)) {
+								result.skippedNotDone++;
+								continue;
+							}
+						} catch {
+							result.skippedUnresolved++;
+							continue;
+						}
+
+						const projectNames = [
+							...new Set(
+								liveness.rows.map((row) => row.project_name).filter(Boolean),
+							),
+						];
+						let projectName =
+							projectNames.length === 1 ? projectNames[0] : undefined;
+						if (projectNames.length === 0) {
+							const matches = projects.filter((project) =>
+								project.leads?.some(
+									(lead) =>
+										lead.agentId === thread.lead_id &&
+										lead.chatChannel === thread.channel_id,
+								),
+							);
+							if (matches.length === 1) projectName = matches[0]?.projectName;
+						}
+						if (!projectName) {
+							result.skippedNoProject++;
+							continue;
+						}
+						const session = liveness.rows[0];
+						const botToken = resolveBotTokenForThread(projects, {
+							projectName,
+							leadId: thread.lead_id,
+							labels: session
+								? store.getSessionLabels(session.execution_id)
+								: [],
+							fallbackBotToken: deps.globalBotToken,
+						});
+						if (!botToken) {
+							result.skippedNoToken++;
+							continue;
+						}
+
+						if (dryRun) {
+							result.dryRunWouldArchive++;
+						} else {
+							const sinkResult = await archiveSink(
+								store,
+								{
+									threadId: thread.thread_id,
+									issueId: thread.issue_id,
+									projectName,
+									executionId:
+										session?.execution_id ??
+										`fly2028-reconcile-${thread.issue_id}`,
+								},
+								botToken,
+								{
+									authority: "terminal",
+									archiveFn: deps.archiveFn,
+									removeUserFn: deps.removeUserFn,
+									fetchImpl: deps.fetchImpl,
+									discordOwnerUserId: deps.discordOwnerUserId,
+									auditSource: "bridge.done-thread-reconcile",
+								},
+							);
+							if (sinkResult.reason === "already_archived") {
+								result.skippedAlreadyArchived++;
+							} else if (sinkResult.reason === "deferred_quiet_window") {
+								result.deferredQuiet++;
+							} else if (sinkResult.reason === "in_active_use") {
+								result.skippedReopenProtected++;
+							} else if (sinkResult.archived) {
+								result.archived++;
+							} else {
+								result.failed++;
+							}
+							await sleepImpl(spacingMs);
+						}
+					} catch (err) {
+						result.failed++;
+						log(
+							`${thread.issue_id}: ${err instanceof Error ? err.message : String(err)}`,
+						);
+					}
+				}
 			}
 		}
 
@@ -889,7 +1082,7 @@ export async function reconcileDoneThreads(
 		}
 
 		log(
-			`pass done: scanned=${result.scanned} archived=${result.archived} huskFinalized=${result.huskFinalized} huskFinalizeFailed=${result.huskFinalizeFailed} skippedActive=${result.skippedActive} skippedNotDone=${result.skippedNotDone} skippedUnresolved=${result.skippedUnresolved} skippedNoToken=${result.skippedNoToken} skippedNoProject=${result.skippedNoProject} skippedAlreadyArchived=${result.skippedAlreadyArchived} skippedReopenProtected=${result.skippedReopenProtected} failed=${result.failed} dryRunWouldArchive=${result.dryRunWouldArchive} capped=${result.capped} deadlineHit=${result.deadlineHit} aborted=${result.aborted}`,
+			`pass done: scanned=${result.scanned} archived=${result.archived} discoveredReopened=${result.discoveredReopened} deferredQuiet=${result.deferredQuiet} openDiscovery=${result.openDiscovery} huskFinalized=${result.huskFinalized} huskFinalizeFailed=${result.huskFinalizeFailed} skippedActive=${result.skippedActive} skippedNotDone=${result.skippedNotDone} skippedUnresolved=${result.skippedUnresolved} skippedNoToken=${result.skippedNoToken} skippedNoProject=${result.skippedNoProject} skippedAlreadyArchived=${result.skippedAlreadyArchived} skippedReopenProtected=${result.skippedReopenProtected} failed=${result.failed} dryRunWouldArchive=${result.dryRunWouldArchive} capped=${result.capped} deadlineHit=${result.deadlineHit} aborted=${result.aborted}`,
 		);
 	} catch (err) {
 		// Never let the sweep break its caller (boot chain / scheduler tick).
@@ -901,9 +1094,7 @@ export async function reconcileDoneThreads(
 // ── Scheduler (boot pass + periodic tick; direct toggle; drainable stop) ────
 
 export interface DoneThreadReconcileSchedulerOpts {
-	runOnce: (
-		shouldAbort: () => boolean,
-	) => Promise<DoneThreadReconcileResult | undefined>;
+	runOnce: (shouldAbort: () => boolean) => Promise<unknown>;
 	/** Re-resolved EVERY tick — off→on / on→off needs no restart. */
 	resolveConfig?: () => DoneThreadReconcileConfig;
 	/** Boot pass delay — the boot chain itself never awaits the sweep. */
@@ -931,7 +1122,10 @@ const TARGETED_SLOW_INTERVAL_MS = 3_600_000;
 
 export function startDoneThreadReconcileScheduler(
 	opts: DoneThreadReconcileSchedulerOpts,
-): { enqueue: (issueId: string) => void; stop: () => Promise<void> } {
+): {
+	enqueue: (issueId: string) => TerminalArchiveAdmission;
+	stop: () => Promise<void>;
+} {
 	const resolveConfig =
 		opts.resolveConfig ?? (() => resolveDoneThreadReconcileConfig());
 	const bootDelayMs = opts.bootDelayMs ?? 15_000;
@@ -1060,15 +1254,15 @@ export function startDoneThreadReconcileScheduler(
 		enqueue: (issueId: string) => {
 			if (!opts.runTargeted) {
 				log(`enqueue(${issueId}) ignored — no targeted runner wired`);
-				return;
+				return "refused";
 			}
-			if (stopped) return;
-			if (targetedMembers.has(issueId)) return; // queued OR in flight
+			if (stopped) return "refused";
+			if (targetedMembers.has(issueId)) return "deduped"; // queued OR in flight
 			if (targetedQueue.length >= TARGETED_QUEUE_CAP) {
 				log(
 					`targeted queue full (${TARGETED_QUEUE_CAP}) — REFUSING enqueue for ${issueId}; periodic sweep is the backstop when enabled`,
 				);
-				return;
+				return "refused";
 			}
 			targetedMembers.add(issueId);
 			targetedQueue.push({
@@ -1077,6 +1271,7 @@ export function startDoneThreadReconcileScheduler(
 				enqueuedAt: now(),
 				nextEligibleAt: now(),
 			});
+			return "accepted";
 		},
 		// Cooperative drain: new runs stop immediately; an in-flight pass exits
 		// between candidates via shouldAbort and is awaited before returning —
