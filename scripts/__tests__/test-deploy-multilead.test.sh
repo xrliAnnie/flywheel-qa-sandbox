@@ -607,6 +607,18 @@ grep -Fq 'MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2301 S1: main slot carrier tuple must be validated"; }
 grep -Fq '"${SLOT_DIR}/discord-state" "$MAIN_LEAD_SHAPE"' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2301 S1: validated main slot shape must reach the projects builder"; }
+grep -Fq 'local base_assignments=(' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Lead launch inputs must share one ordered base assignment vector"; }
+grep -Fq 'python3 "$QA_CODEX_ENV_RENDERER" --check' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex env must be rejected before carrier artifacts"; }
+grep -Fq 'qa_launchd_render_codex_plist' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex carrier must use its wrapper-only plist renderer"; }
+grep -Fq 'qa_launchd_codex_lead_ready' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex readiness must use heartbeat plus the slot TUI window"; }
+grep -Fq 'LEAD_CARRIER="launchd-codex-tui"' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex output must declare its carrier shape"; }
+grep -Fq '"codexLead":' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: Codex output must bind its lifecycle coordinates"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
 grep -q 'seed-project-flags' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2103 S1: generalized QA must seed scoped pipeline rows"; }

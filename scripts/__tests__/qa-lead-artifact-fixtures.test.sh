@@ -64,6 +64,21 @@ else
   fail "Claude launch manifest byte baseline"
 fi
 
+codex_launch_manifest="$TMP/codex-launch-manifest.json"
+codex_lead='{"label":"com.flywheel.qa.lead.slot-7.flywheel-test-7","projectName":"test-slot-7","agentId":"flywheel-test-7","stateDir":"/tmp/flywheel-test-slot-7/q/7/state/codex-lead/key","codexHome":"/tmp/flywheel-test-slot-7/cdxh/flywheel-test-7","tmuxSocket":"/tmp/flywheel-test-slot-7/tmux-501/default","tuiWindow":"present"}'
+if qa_lead_write_launch_manifest "$codex_launch_manifest" 1234 deadbeef main slot \
+    '' '' '[]' launchd-codex-tui \
+    /tmp/flywheel-test-slot-7/launchd-leads.json \
+    com.flywheel.qa.lead.slot-7.flywheel-test-7 '' "$codex_lead" \
+    && jq -e --argjson expected "$codex_lead" \
+      '.leadCarrier == "launchd-codex-tui" and .mainLeadSocket == "" and .codexLead == $expected' \
+      "$codex_launch_manifest" >/dev/null 2>&1 \
+    && [[ "$(jq -r 'keys_unsorted[-1]' "$codex_launch_manifest")" == codexLead ]]; then
+  pass "Codex launch manifest conditionally appends the carrier coordinates"
+else
+  fail "Codex launch manifest carrier coordinates"
+fi
+
 stdout_json="$TMP/stdout.json"
 if qa_lead_render_stdout_json \
     7 slot false '' 4242 flywheel-test-7 test-slot-7 channel-7 TEST_BOT_TOKEN_7 \

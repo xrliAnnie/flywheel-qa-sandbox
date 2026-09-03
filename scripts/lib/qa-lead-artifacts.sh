@@ -45,11 +45,14 @@ qa_lead_write_launch_manifest() {
   local out="$1" bridge_pid="$2" dist_sha="$3" from_branch="$4" mode="$5"
   local campaign_id="$6" lead_label="$7" extra_leads_json="$8" carrier="$9"
   local registry="${10}" label="${11}" socket="${12}"
+  local codex_lead_json="${13:-null}"
   qa_multilead_launch_manifest "$bridge_pid" "$dist_sha" "$from_branch" "$mode" \
     "$campaign_id" "$lead_label" "$extra_leads_json" > "$out" || return 1
   jq --arg carrier "$carrier" --arg registry "$registry" \
     --arg label "$label" --arg socket "$socket" \
-    '. + {leadCarrier:$carrier,launchdRegistry:$registry,mainLeadLabel:$label,mainLeadSocket:$socket}' \
+    --argjson codexLead "$codex_lead_json" \
+    '. + {leadCarrier:$carrier,launchdRegistry:$registry,mainLeadLabel:$label,mainLeadSocket:$socket}
+      | if $codexLead != null then . + {codexLead:$codexLead} else . end' \
     "$out" > "${out}.tmp" && mv "${out}.tmp" "$out"
 }
 

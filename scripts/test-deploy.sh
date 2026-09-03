@@ -1413,8 +1413,8 @@ if [[ "$GENERALIZED" == "1" && "$ALERTS" == "1" ]]; then
   log "generalized alert preflight: every sender-capable slot bot passed POST+DELETE"
 fi
 
-# Start one slot-scoped Lead as launchd -> wrapper-v2 -> private tmux -> body.
-# stdout: launchdPid<TAB>socket<TAB>label<TAB>manifest<TAB>pidFile
+# Start one slot-scoped Lead using the carrier declared by its projects row.
+# stdout: launchdPid<TAB>socket-or-state<TAB>label<TAB>manifest-or-home<TAB>pidFile
 qa_slot_start_lead() {
   local carrier_slot="$1" agent="$2" token_env="$3" token_value="$4"
   local role="$5" discord_state="$6" identity="$7" workspace="$8" lead_log="$9"
@@ -1423,31 +1423,114 @@ qa_slot_start_lead() {
   local projects="${state}/projects.json" env_file="${state}/.env"
   local manifest="${runtime}/manifest.json" plist="${runtime}/lead.plist"
   local pid_file="${runtime}/pid" label wrapper launch_env topology launch_pid socket
-  local lead_row mcp_exclude
-  label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
-  wrapper="${FLYWHEEL_QA_LEAD_WRAPPER:-${REPO_ROOT}/scripts/flywheel-lead-wrapper-v2.sh}"
-  mkdir -p "$runtime" "$state" "$workspace" || return 1
-  chmod 700 "$runtime" "$state"
-  printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects"
-  qa_lead_write_env "$env_file" "$token_env" "$token_value" || return 1
-  chmod 600 "$projects"
+  local lead_row mcp_exclude backend codex_source codex_profile lead_chat_channel
+  local codex_home codex_bin codex_state codex_wrapper
+  local QA_CODEX_ENV_RENDERER="${REPO_ROOT}/scripts/lib/qa-launchd-env.py"
+  local base_assignments=(
+    "DISCORD_GUILD_ID=${GUILD_ID}"
+    "BRIDGE_URL=http://localhost:${SLOT_PORT}"
+    "AGENT_SOURCE=${identity}"
+    "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}"
+    "FLYWHEEL_PROJECTS_FILE=${projects}"
+    "TEAMLEAD_DB_PATH=${SLOT_DIR}/teamlead.db"
+    "FLYWHEEL_STATE_DIR=${state}"
+    "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}"
+    "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret"
+    "LEAD_WORKSPACE=${workspace}"
+  )
+  local codex_assignments=() env_assignments=()
+  base_assignments+=("$@")
 
+  # Resolve and validate the carrier before creating any per-Lead artifact.
   lead_row=$(jq -cer --arg agent "$agent" \
     '[.[].leads[]? | select(.agentId == $agent)] | if length == 1 then .[0] else error("expected one Lead") end' \
     <<<"$FLYWHEEL_PROJECTS") || return 1
-  mcp_exclude=$(jq -r '.mcpExclude // ""' <<<"$lead_row")
-  launch_env=$(qa_slot_launch_env_json \
-    "DISCORD_GUILD_ID=${GUILD_ID}" \
-    "BRIDGE_URL=http://localhost:${SLOT_PORT}" \
-    "AGENT_SOURCE=${identity}" \
-    "TEAMLEAD_API_TOKEN=${TEST_TEAMLEAD_API_TOKEN}" \
-    "FLYWHEEL_PROJECTS_FILE=${projects}" \
-    "TEAMLEAD_DB_PATH=${SLOT_DIR}/teamlead.db" \
-    "FLYWHEEL_STATE_DIR=${state}" \
-    "FLYWHEEL_WRAPPER_ENV_FILE=${env_file}" \
-    "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret" \
-    "LEAD_WORKSPACE=${workspace}" \
-    "$@") || return 1
+  backend=$(jq -r '.backend // "claude-code"' <<<"$lead_row") || return 1
+  mcp_exclude=$(jq -r '.mcpExclude // ""' <<<"$lead_row") || return 1
+
+  if [[ "$backend" == codex-app-server ]]; then
+    if [[ "$MODE" == mirror || -n "${ROUNDTABLE_CHANNEL_ID:-}" ]]; then
+      log "ERROR: codex carrier is not supported in roundtable mode"
+      return 1
+    fi
+    if [[ "$carrier_slot" == "$SLOT" && "$agent" == "$AGENT_ID" ]]; then
+      codex_source=$(jq -r '.codexSourceHome' <<<"$MAIN_LEAD_SHAPE") || return 1
+      codex_profile=$(jq -r '.codexProfile' <<<"$MAIN_LEAD_SHAPE") || return 1
+    else
+      codex_source=$(jq -cer --arg agent "$agent" \
+        '[.[] | select(.agentId == $agent)] | if length == 1 then .[0].codexSourceHome else error("expected one Codex source") end' \
+        <<<"$EXTRA_LEADS_JSON") || return 1
+      codex_profile=$(jq -cer --arg agent "$agent" \
+        '[.[] | select(.agentId == $agent)] | if length == 1 then .[0].codexProfile else error("expected one Codex profile") end' \
+        <<<"$EXTRA_LEADS_JSON") || return 1
+    fi
+    lead_chat_channel=$(jq -r '.chatChannel' <<<"$lead_row") || return 1
+    codex_home="${SLOT_DIR}/cdxh/${agent}"
+    codex_bin="${codex_home}/packages/standalone/current/codex"
+    codex_state=$(qa_launchd_codex_state_dir "$state" "$TEST_PROJECT_NAME" "$agent") \
+      || return 1
+    codex_wrapper="${runtime}/codex-lead-wrapper.sh"
+    codex_assignments=(
+      "FLYWHEEL_LEAD_CHAT_CHANNEL_ID=${lead_chat_channel}"
+      "FLYWHEEL_COMM_DB=${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}/comm.db"
+      "FLYWHEEL_COMM_CLI=${REPO_ROOT}/packages/flywheel-comm/dist/index.js"
+      "CODEX_HOME=${codex_home}"
+      "FLYWHEEL_CODEX_BIN=${codex_bin}"
+      "FLYWHEEL_CODEX_LEAD_MODE=tui"
+      "FLYWHEEL_CODEX_TUI_CWD=${workspace}"
+      "FLYWHEEL_CODEX_LEAD_OUTBOUND=direct"
+      "FLYWHEEL_LEAD_SYSTEM_PROMPT_FILES=${identity},${REPO_ROOT}/packages/teamlead/lead-rules-base/companion-safety-contract.md"
+    )
+    if [[ "$codex_profile" == full-access ]]; then
+      codex_assignments+=(
+        "FLYWHEEL_CODEX_LEAD_PROFILE=full-access"
+        "FLYWHEEL_CODEX_LEAD_SANDBOX=workspace-write"
+        "FLYWHEEL_LEAD_ACTIONS_MAIN_JS=${REPO_ROOT}/packages/teamlead/dist/lead-backends/codex/lead-actions/lead-actions-main.js"
+        "FLYWHEEL_LEAD_ACTIONS_NODE_BIN=$(command -v node)"
+        "FLYWHEEL_LEAD_ACTIONS_STATE_DIR=${codex_state}"
+      )
+    fi
+    env_assignments=("${token_env}=${token_value}" "${base_assignments[@]}" "${codex_assignments[@]}")
+    python3 "$QA_CODEX_ENV_RENDERER" --check "${env_assignments[@]}" || return 1
+  elif [[ "$backend" != claude-code ]]; then
+    log "ERROR: unsupported QA Lead carrier backend: ${backend}"
+    return 1
+  fi
+
+  label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
+  if [[ "$backend" == codex-app-server ]]; then
+    qa_launchd_mint_codex_home "$codex_source" "$codex_home" "$SLOT_DIR" || return 1
+  fi
+  mkdir -p "$runtime" "$state" "$workspace" || return 1
+  chmod 700 "$runtime" "$state"
+  printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects"
+  chmod 600 "$projects"
+
+  if [[ "$backend" == codex-app-server ]]; then
+    python3 "$QA_CODEX_ENV_RENDERER" --output "$env_file" "${env_assignments[@]}" \
+      || return 1
+    python3 "${REPO_ROOT}/scripts/lib/qa-codex-lead-render.py" render \
+      --template "${REPO_ROOT}/scripts/lib/qa-codex-lead-wrapper.template.sh" \
+      --output "$codex_wrapper" --lead-id "$agent" --project-dir "$workspace" \
+      --project-name "$TEST_PROJECT_NAME" || return 1
+    FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_codex_plist \
+      "$plist" "$label" "$codex_wrapper" "$HOME" "$state" "$lead_log" \
+      "$SLOT_DIR" || return 1
+    qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "" \
+      codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file" || return 1
+    launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
+    topology=$(qa_launchd_codex_lead_verify "$label" "$codex_home" "$codex_state") \
+      || { qa_launchd_lead_stop "$label" || true; return 1; }
+    IFS=$'\t' read -r launch_pid socket <<<"$topology"
+    printf '%s\n' "$launch_pid" > "$pid_file"
+    printf '%s\t%s\t%s\t%s\t%s\n' \
+      "$launch_pid" "$socket" "$label" "$codex_home" "$pid_file"
+    return 0
+  fi
+
+  wrapper="${FLYWHEEL_QA_LEAD_WRAPPER:-${REPO_ROOT}/scripts/flywheel-lead-wrapper-v2.sh}"
+  qa_lead_write_env "$env_file" "$token_env" "$token_value" || return 1
+  launch_env=$(qa_slot_launch_env_json "${base_assignments[@]}") || return 1
   qa_lead_write_manifest "$manifest" "$agent" "$HOST_REPO" \
     "$TEST_PROJECT_NAME" "$projects" "$workspace" "$mcp_exclude" \
     "$launch_env" || return 1
@@ -1479,6 +1562,8 @@ LEAD_LOG=""
 LEAD_SOCKET=""
 LEAD_LAUNCHD_LABEL=""
 LEAD_PID_FILE=""
+LEAD_STATE_DIR=""
+LEAD_CODEX_HOME=""
 
 if [[ "$NO_LEAD" == "1" ]]; then
   log "--no-lead: skipping Lead startup + dev-channels confirm + lease wait (Bridge-only deploy)"
@@ -1523,32 +1608,56 @@ LEAD_LAUNCH_RECORD=$(qa_slot_start_lead \
   "${SLOT_DIR}/lead-workspace" "$LEAD_LOG" \
   ${LEAD_EXTRA_ENV[@]+"${LEAD_EXTRA_ENV[@]}"}) \
   || { log "ERROR: launchd-v2 Lead bootstrap failed"; exit 1; }
-IFS=$'\t' read -r LEAD_BG_PID LEAD_SOCKET LEAD_LAUNCHD_LABEL _lead_manifest LEAD_PID_FILE \
+IFS=$'\t' read -r LEAD_BG_PID _lead_coordinate LEAD_LAUNCHD_LABEL _lead_carrier_home LEAD_PID_FILE \
   <<<"$LEAD_LAUNCH_RECORD"
 log "Lead background PID: ${LEAD_BG_PID}"
-log "$(qa_lead_log_launchd_label "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET")"
-confirm_dev_channels_prompt "$LEAD_SOCKET" "$AGENT_ID"
+if [[ "$SLOT_BACKEND" == codex-app-server ]]; then
+  LEAD_STATE_DIR="$_lead_coordinate"
+  LEAD_CODEX_HOME="$_lead_carrier_home"
+  LEAD_SOCKET=""
+  log "Lead state dir: ${LEAD_STATE_DIR}; codex home: ${LEAD_CODEX_HOME}"
+else
+  LEAD_SOCKET="$_lead_coordinate"
+  _lead_manifest="$_lead_carrier_home"
+  log "$(qa_lead_log_launchd_label "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET")"
+  confirm_dev_channels_prompt "$LEAD_SOCKET" "$AGENT_ID"
+fi
 
 # ── Step 2: Wait for Lead inbox-ready lease ───────────
 # FLY-1389 P2-a: budget is LEAD_READY_TIMEOUT_SEC (default 120s; flag/env
 # knob resolved before preflight) — 2s poll → LEAD_READY_POLL_ITERS.
 LEASE_DIR="${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}"
-LEASE_FILE="${LEASE_DIR}/.inbox-ready-${AGENT_ID}"
-log "Waiting for lease: ${LEASE_FILE} (budget ${LEAD_READY_TIMEOUT_SEC}s)"
-
 LEAD_READY=false
-for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
-  if [[ -f "$LEASE_FILE" ]]; then
-    LEASE_PID=$(jq -r '.pid' "$LEASE_FILE" 2>/dev/null || echo "")
-    if [[ -n "$LEASE_PID" ]] && kill -0 "$LEASE_PID" 2>/dev/null; then
-      log "Lead ${AGENT_ID} ready (lease alive, PID ${LEASE_PID})"
+if [[ "$SLOT_BACKEND" == codex-app-server ]]; then
+  LEAD_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
+  log "Waiting for Codex heartbeat + TUI window (budget ${LEAD_READY_TIMEOUT_SEC}s)"
+  for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
+    LEAD_BG_PID=$(qa_launchd_lead_pid_exact "$LEAD_LAUNCHD_LABEL" || true)
+    if [[ -n "$LEAD_BG_PID" ]] \
+        && qa_launchd_codex_lead_ready "$LEAD_STATE_DIR" "$LEAD_BG_PID" \
+          "$TEST_PROJECT_NAME" "$AGENT_ID" "$LEAD_TMUX_SOCKET"; then
+      log "Lead ${AGENT_ID} ready (Codex heartbeat online; TUI window present)"
       LEAD_READY=true
       break
     fi
-  fi
-  LEAD_BG_PID=$(qa_launchd_lead_pid "$LEAD_LAUNCHD_LABEL" || true)
-  sleep 2
-done
+    sleep 2
+  done
+else
+  LEASE_FILE="${LEASE_DIR}/.inbox-ready-${AGENT_ID}"
+  log "Waiting for lease: ${LEASE_FILE} (budget ${LEAD_READY_TIMEOUT_SEC}s)"
+  for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
+    if [[ -f "$LEASE_FILE" ]]; then
+      LEASE_PID=$(jq -r '.pid' "$LEASE_FILE" 2>/dev/null || echo "")
+      if [[ -n "$LEASE_PID" ]] && kill -0 "$LEASE_PID" 2>/dev/null; then
+        log "Lead ${AGENT_ID} ready (lease alive, PID ${LEASE_PID})"
+        LEAD_READY=true
+        break
+      fi
+    fi
+    LEAD_BG_PID=$(qa_launchd_lead_pid "$LEAD_LAUNCHD_LABEL" || true)
+    sleep 2
+  done
+fi
 
 if [[ "$LEAD_READY" != "true" ]]; then
   log "ERROR: Lead did not become ready within ${LEAD_READY_TIMEOUT_SEC} seconds"
@@ -1621,6 +1730,7 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
     XCHANNEL=$(jq -r '.chatChannel' <<<"$XLEAD")
     XTOKEN_ENV_NAME=$(jq -r '.tokenEnvVar' <<<"$XLEAD")
     XROLE=$(jq -r '.role' <<<"$XLEAD")
+    XBACKEND=$(jq -r '.backend // "claude-code"' <<<"$XLEAD")
     XIDENTITY_SOURCE=$(jq -r '.identitySource // empty' <<<"$XLEAD")
     XLABEL=$(jq -r '.deptLabel' <<<"$XLEAD")
     XTOKEN="${!XTOKEN_ENV_NAME:-}"
@@ -1707,27 +1817,48 @@ EOF
       "${XDIR}/discord-state" "${XDIR}/test-identity.md" \
       "${XDIR}/lead-workspace" "$XLEAD_LOG" "${XLEAD_ENV[@]}") \
       || campaign_abort "extra Lead ${XAGENT} launchd-v2 bootstrap failed"
-    IFS=$'\t' read -r XLEAD_BG_PID XLEAD_SOCKET _xlead_label _xlead_manifest _xlead_pid_file \
+    IFS=$'\t' read -r XLEAD_BG_PID _xlead_coordinate _xlead_label _xlead_carrier_home _xlead_pid_file \
       <<<"$XLEAD_LAUNCH_RECORD"
     EXTRA_LEAD_BG_PIDS+=("$XLEAD_BG_PID")
     log "$(qa_lead_log_extra_pid "$XAGENT" "$XLEAD_BG_PID")"
-
-    confirm_dev_channels_prompt "$XLEAD_SOCKET" "$XAGENT"
-
-    XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
     XLEAD_READY=false
-    for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
-      if [[ -f "$XLEASE_FILE" ]]; then
-        XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
-        if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
+    if [[ "$XBACKEND" == codex-app-server ]]; then
+      XLEAD_STATE_DIR="$_xlead_coordinate"
+      XLEAD_CODEX_HOME="$_xlead_carrier_home"
+      XLEAD_SOCKET=""
+      XLEAD_TMUX_SOCKET="${SLOT_DIR}/tmux-$(id -u)/default"
+      for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
+        XLEAD_BG_PID=$(qa_launchd_lead_pid_exact "$_xlead_label" || true)
+        if [[ -n "$XLEAD_BG_PID" ]] \
+            && qa_launchd_codex_lead_ready "$XLEAD_STATE_DIR" "$XLEAD_BG_PID" \
+              "$TEST_PROJECT_NAME" "$XAGENT" "$XLEAD_TMUX_SOCKET"; then
           XLEAD_READY=true
           break
         fi
-      fi
-      sleep 2
-    done
-    [[ "$XLEAD_READY" == "true" ]] || campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
-    log "Extra Lead ${XAGENT} ready (lease alive)"
+        sleep 2
+      done
+      [[ "$XLEAD_READY" == true ]] \
+        || campaign_abort "extra Lead ${XAGENT} Codex heartbeat/TUI did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
+      log "Extra Lead ${XAGENT} ready (Codex heartbeat online; TUI window present)"
+    else
+      XLEAD_SOCKET="$_xlead_coordinate"
+      _xlead_manifest="$_xlead_carrier_home"
+      confirm_dev_channels_prompt "$XLEAD_SOCKET" "$XAGENT"
+      XLEASE_FILE="${LEASE_DIR}/.inbox-ready-${XAGENT}"
+      for i in $(seq 1 "$LEAD_READY_POLL_ITERS"); do
+        if [[ -f "$XLEASE_FILE" ]]; then
+          XLEASE_PID=$(jq -r '.pid' "$XLEASE_FILE" 2>/dev/null || echo "")
+          if [[ -n "$XLEASE_PID" ]] && kill -0 "$XLEASE_PID" 2>/dev/null; then
+            XLEAD_READY=true
+            break
+          fi
+        fi
+        sleep 2
+      done
+      [[ "$XLEAD_READY" == "true" ]] \
+        || campaign_abort "extra Lead ${XAGENT} did not become ready within ${LEAD_READY_TIMEOUT_SEC}s (log: ${XLEAD_LOG})"
+      log "Extra Lead ${XAGENT} ready (lease alive)"
+    fi
   done < <(jq -c '.[]' <<<"$EXTRA_LEADS_JSON")
 
   # Bridge must resolve EVERY lead's botTokenEnv by name (ProjectConfig
@@ -2049,12 +2180,26 @@ GENERALIZED_READINESS_PENDING=0
 trap - EXIT
 
 # FLY-1189: launch manifest — deploy-time ground truth and dist SHA.
-# No secrets: token env NAMES only.
-if [[ "$NO_LEAD" == "1" ]]; then LEAD_CARRIER="none"; else LEAD_CARRIER="launchd-v2"; fi
+# No secrets: token env NAMES only. Codex coordinates are lifecycle authority;
+# codexSourceHome is deliberately excluded.
+CODEX_LEAD_JSON=null
+if [[ "$NO_LEAD" == "1" ]]; then
+  LEAD_CARRIER="none"
+elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
+  LEAD_CARRIER="launchd-codex-tui"
+  CODEX_LEAD_JSON=$(jq -cn \
+    --arg label "$LEAD_LAUNCHD_LABEL" --arg projectName "$TEST_PROJECT_NAME" \
+    --arg agentId "$AGENT_ID" --arg stateDir "$LEAD_STATE_DIR" \
+    --arg codexHome "$LEAD_CODEX_HOME" --arg tmuxSocket "$LEAD_TMUX_SOCKET" \
+    '{label:$label,projectName:$projectName,agentId:$agentId,stateDir:$stateDir,
+      codexHome:$codexHome,tmuxSocket:$tmuxSocket,tuiWindow:"present"}')
+else
+  LEAD_CARRIER="launchd-v2"
+fi
 qa_lead_write_launch_manifest "${SLOT_DIR}/launch-manifest.json" \
   "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
   "${CAMPAIGN_ID}" "${LEAD_LABEL}" "$EXTRA_LEADS_JSON" "$LEAD_CARRIER" \
-  "$QA_LEAD_REGISTRY" "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET"
+  "$QA_LEAD_REGISTRY" "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET" "$CODEX_LEAD_JSON"
 log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
 # ── Step 5: Record PIDs ──────────────────────────────
@@ -2090,6 +2235,13 @@ if [[ "$GENERALIZED" == "1" ]]; then
   "roomInfo": "${GENERALIZED_ROOM_INFO}"
 EOF
 )
+fi
+if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
+  GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF
+,
+  "codexLead": ${CODEX_LEAD_JSON}
+EOF
+)"
 fi
 qa_lead_render_stdout_json \
   "$SLOT" "$MODE" "$NO_LEAD_JSON" "$MIRROR_CHANNEL_ID" "$SLOT_PORT" \
