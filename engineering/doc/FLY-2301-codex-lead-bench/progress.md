@@ -1,14 +1,17 @@
 ---
 issue: FLY-2301
 phase: design
-phaseCursor: 6/8
-updated: 2026-09-03T18:12:15.662Z
-nextStep: "await Codex R7 (Lead: APPROVED→publish; no-HIGH→fix+leadAcceptance no
-  R8; HIGH→stop); rev7 blob 4ef30d7b"
+phaseCursor: 7/8
+updated: 2026-09-03T18:16:54.127Z
+nextStep: await Lead leadAcceptance instruction; then write design-review.json
+  (rev8 requestId 08e93819, blob ed8eb2d8, rounds 7, thread
+  01a06818-d486-7801-817b-a91a27daf5cc) + await-codex-gate design; finalize HTML
+  meta; publish-report --publish-only; ask --report DESIGN-HTML ready; DONE
+  quoting manifest ids 1-8; complete --route phase_design_complete
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: design (6/8)
-**next**: await Codex R7 (Lead: APPROVED→publish; no-HIGH→fix+leadAcceptance no R8; HIGH→stop); rev7 blob 4ef30d7b
+**phase**: design (7/8)
+**next**: await Lead leadAcceptance instruction; then write design-review.json (rev8 requestId 08e93819, blob ed8eb2d8, rounds 7, thread 01a06818-d486-7801-817b-a91a27daf5cc) + await-codex-gate design; finalize HTML meta; publish-report --publish-only; ask --report DESIGN-HTML ready; DONE quoting manifest ids 1-8; complete --route phase_design_complete
