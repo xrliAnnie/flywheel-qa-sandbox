@@ -1,4 +1,4 @@
-import type { DagNode } from "flywheel-dag-resolver";
+import type { DagNode } from "./dag-node.js";
 
 /** Hydrated context — issue data from Linear */
 export interface HydratedContext {

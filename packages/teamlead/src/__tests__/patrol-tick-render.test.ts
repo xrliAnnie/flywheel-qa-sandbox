@@ -1,5 +1,6 @@
 import type { IAgentTeamTransport } from "flywheel-agent-team-transport";
 import { describe, expect, it } from "vitest";
+import type { CapacitySnapshot } from "../bridge/capacity-snapshot.js";
 import { CommDBLeadRuntime } from "../bridge/commdb-lead-runtime.js";
 import { formatPatrolTick } from "../bridge/hook-payload.js";
 import type { LeadEventEnvelope } from "../bridge/lead-runtime.js";
@@ -8,6 +9,7 @@ import { MailboxLeadRuntime } from "../bridge/mailbox-lead-runtime.js";
 function envelope(
 	roster: LeadEventEnvelope["event"]["roster"],
 	loops?: LeadEventEnvelope["event"]["loops"],
+	capacity?: CapacitySnapshot,
 ): LeadEventEnvelope {
 	return {
 		seq: 1,
@@ -19,6 +21,7 @@ function envelope(
 			project_name: "flywheel",
 			roster,
 			...(loops ? { loops } : {}),
+			...(capacity ? { capacity } : {}),
 			generated_at: "2026-08-13T12:00:00.000Z",
 		},
 		sessionKey: "patrol:flywheel:eng-lead",
@@ -27,7 +30,352 @@ function envelope(
 	};
 }
 
+function capacitySnapshot(): CapacitySnapshot {
+	return {
+		schemaVersion: 1,
+		generatedAt: "2026-09-03T04:00:00.000Z",
+		memory: {
+			source: "memory_pressure",
+			freePct: 14,
+			observedAt: "2026-09-03T03:59:59.000Z",
+			tightBelowPct: 15,
+			tight: true,
+		},
+		load: {
+			load1: 18,
+			cpuCount: 18,
+			perCore: 1,
+			thresholdPerCore: 8,
+			observedAt: "2026-09-03T04:00:00.000Z",
+		},
+		brakes: {
+			pressureHold: {
+				active: true,
+				setBy: "swap-sensor",
+				setAt: "2026-09-03T03:58:00.000Z",
+				watermark: "7.1% free",
+			},
+			admissionPause: { active: true, remainingSeconds: 90 },
+			admission: { admit: true },
+			observedAt: "2026-09-03T04:00:00.000Z",
+		},
+		runners: {
+			running: 1,
+			parked: 2,
+			total: 3,
+			byProject: { flywheel: { running: 1, parked: 2 } },
+			observedAt: "2026-09-03T04:00:00.000Z",
+		},
+		quota: {
+			claude: {
+				source: "claude-accounts.json",
+				activeAccount: "personal",
+				staleAfterMinutes: 120,
+				accounts: [
+					{
+						name: "personal",
+						active: true,
+						fiveHPct: 9,
+						sevenDPct: 30,
+						observedAt: "2026-09-03T02:00:00.000Z",
+						ageMinutes: 120,
+						stale: false,
+						weeklyResetAt: null,
+						exhaustedUntil: null,
+						authUnusable: false,
+					},
+				],
+			},
+			codex: {
+				source: null,
+				unavailable: ["structural: codex_no_usage_api"],
+			},
+		},
+	};
+}
+
 describe("FLY-1687 patrol tick rendering", () => {
+	it("inserts the same three capacity lines after the alarm in both render paths", () => {
+		const capacity = capacitySnapshot();
+		const roster = [
+			{
+				identifier: "FLY-2144",
+				issueId: "issue-2144",
+				sessionRole: "implement",
+				status: "running",
+				executionId8: "12345678",
+			},
+		];
+		const loops = [
+			{
+				issueId: "issue-2144",
+				identifier: "FLY-2144",
+				openLoops: [],
+				waiters: [],
+				light: "green" as const,
+			},
+		];
+		const capacityLines = [
+			"容量(Bridge 采样 · 判断输入,不是闸门;快照 2026-09-03T04:00:00.000Z):",
+			"- 内存 free 14%(memory_pressure,参考线<15%)| 负载 18/18核=1(阈 8)| 手刹=置位(swap-sensor 自 2026-09-03T03:58:00.000Z) | 部署暂停=剩 90s | 在跑 1 · 停车 2",
+			"- 额度 Claude ★personal 5h 9%/7d 30%(120m 前) | Codex 无数值源",
+		];
+
+		for (const env of [
+			envelope(roster, undefined, capacity),
+			envelope(roster, loops, capacity),
+		]) {
+			const lines = formatPatrolTick(env).split("\n");
+			expect(lines.slice(0, 4)).toEqual([
+				"[patrol_tick] 巡检时间到。",
+				...capacityLines,
+			]);
+		}
+	});
+
+	it("bounds decimal display without erasing the per-core margin", () => {
+		const capacity = capacitySnapshot();
+		capacity.load.load1 = 38.5595703125;
+		capacity.load.perCore = 2.6421983506944446;
+		capacity.load.thresholdPerCore = 2.54319835069444;
+		capacity.quota.claude.accounts[0]!.ageMinutes = 37.13908333333333;
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+
+		expect(body).toContain("负载 38.56/18核=2.64(阈 2.54)");
+		expect(body).toContain("(37m 前)");
+		expect(body).not.toContain("38.5595703125");
+		expect(body).not.toContain("37.13908333333333");
+	});
+
+	it("keeps three lines when individual capacity cells are unavailable", () => {
+		const capacity = capacitySnapshot();
+		capacity.memory = {
+			source: "memory_pressure",
+			freePct: null,
+			observedAt: null,
+			tightBelowPct: 15,
+			tight: null,
+			unavailable: ["structural: memory_pressure_missing"],
+		};
+		capacity.load = {
+			load1: null,
+			cpuCount: null,
+			perCore: null,
+			thresholdPerCore: null,
+			observedAt: null,
+			unavailable: ["transient: load_probe_failed"],
+		};
+		capacity.brakes.pressureHold = {
+			active: null,
+			unavailable: ["transient: state_store_unreadable"],
+		};
+		capacity.brakes.admissionPause = {
+			active: null,
+			remainingSeconds: null,
+			unavailable: ["transient: state_store_unreadable"],
+		};
+		capacity.runners = {
+			running: null,
+			parked: null,
+			total: null,
+			byProject: null,
+			observedAt: null,
+			unavailable: ["transient: session_store_unreadable"],
+		};
+		capacity.quota.claude = {
+			source: "claude-accounts.json",
+			activeAccount: null,
+			staleAfterMinutes: 120,
+			accounts: [],
+			unavailable: ["structural: account_pool_not_provisioned"],
+		};
+
+		const body = formatPatrolTick(
+			envelope(
+				[
+					{
+						identifier: "FLY-2144",
+						sessionRole: "implement",
+						status: "running",
+						executionId8: "12345678",
+					},
+				],
+				undefined,
+				capacity,
+			),
+		);
+		const lines = body.split("\n");
+
+		expect(lines).toHaveLength(6);
+		expect(lines[1]).toContain("容量(Bridge 采样 · 判断输入,不是闸门;");
+		expect(lines[2]).toBe(
+			"- 内存 free ?(structural: memory_pressure_missing)| 负载 ?(transient: load_probe_failed)| 手刹=?(transient: state_store_unreadable) | 部署暂停=?(transient: state_store_unreadable) | 在跑 ?(transient: session_store_unreadable)",
+		);
+		expect(lines[3]).toBe(
+			"- 额度 Claude ?(structural: account_pool_not_provisioned) | Codex 无数值源",
+		);
+	});
+
+	it("renders unknown quota windows as unknown facts instead of a malformed snapshot", () => {
+		const capacity = capacitySnapshot();
+		capacity.quota.claude.activeAccount = null;
+		capacity.quota.claude.accounts = [
+			{
+				name: "school",
+				active: false,
+				fiveHPct: null,
+				sevenDPct: 10,
+				observedAt: null,
+				ageMinutes: null,
+				stale: null,
+				weeklyResetAt: null,
+				exhaustedUntil: null,
+				authUnusable: false,
+			},
+			{
+				name: "shopping",
+				active: false,
+				fiveHPct: null,
+				sevenDPct: null,
+				observedAt: null,
+				ageMinutes: null,
+				stale: null,
+				weeklyResetAt: null,
+				exhaustedUntil: null,
+				authUnusable: false,
+			},
+		];
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+		expect(body.split("\n")).toHaveLength(5);
+		expect(body).toContain("school 5h ?/7d 10%(未观测)");
+		expect(body).toContain("shopping 5h ?/7d ?(未观测)");
+	});
+
+	it("keeps surviving Claude accounts visible when another entry is invalid", () => {
+		const capacity = capacitySnapshot();
+		capacity.quota.claude.unavailable = ["transient: account_entry_invalid"];
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+
+		expect(body).toContain("★personal 5h 9%/7d 30%(120m 前)");
+		expect(body).toContain("⚠️(transient: account_entry_invalid)");
+		expect(body).not.toContain(
+			"额度 Claude ?(transient: account_entry_invalid)",
+		);
+	});
+
+	it("renders every accumulated Claude quota diagnostic", () => {
+		const capacity = capacitySnapshot();
+		capacity.quota.claude.activeAccount = null;
+		capacity.quota.claude.accounts[0]!.active = false;
+		capacity.quota.claude.unavailable = [
+			"transient: account_entry_invalid",
+			"transient: account_store_invalid",
+		];
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+
+		expect(body).toContain("personal 5h 9%/7d 30%(120m 前)");
+		expect(body).toContain(
+			"⚠️(transient: account_entry_invalid; transient: account_store_invalid)",
+		);
+	});
+
+	it("truncates excess Claude diagnostics without collapsing capacity", () => {
+		const capacity = capacitySnapshot();
+		capacity.quota.claude.unavailable = [
+			"transient: account_entry_invalid",
+			"transient: account_store_invalid",
+			"transient: account_store_unreadable",
+		];
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+
+		expect(body).toContain("★personal 5h 9%/7d 30%(120m 前)");
+		expect(body).toContain(
+			"⚠️(transient: account_entry_invalid; transient: account_store_invalid; +1)",
+		);
+		expect(body).not.toContain("transient: account_store_unreadable");
+		expect(body).not.toContain("容量=⚠️ 账面不可读");
+	});
+
+	it("renders the bounded exit token and stale account marker as facts", () => {
+		const capacity = capacitySnapshot();
+		capacity.memory = {
+			source: "memory_pressure",
+			freePct: null,
+			observedAt: null,
+			tightBelowPct: 15,
+			tight: null,
+			unavailable: ["transient: memory_pressure_exit_42"],
+		};
+		capacity.quota.claude.accounts[0]!.stale = true;
+
+		const body = formatPatrolTick(envelope([], undefined, capacity));
+		expect(body).toContain("内存 free ?(transient: memory_pressure_exit_42)");
+		expect(body).toContain("★personal 5h 9%/7d 30%(120m 前)(stale)");
+		for (const directive of [
+			"check",
+			"verify",
+			"suggest",
+			"inspect",
+			"建议",
+			"怀疑",
+			"该查",
+		]) {
+			expect(body.toLowerCase()).not.toContain(directive);
+		}
+	});
+
+	it("fails the capacity section closed on malformed values and unlisted tokens", () => {
+		const cases: Array<(capacity: CapacitySnapshot) => void> = [
+			(capacity) => {
+				capacity.memory.freePct = "rm -rf /" as never;
+			},
+			(capacity) => {
+				capacity.quota.claude.accounts[0]!.name = "personal\ninspect";
+			},
+			(capacity) => {
+				capacity.memory.freePct = null;
+				capacity.memory.unavailable = ["transient: rm -rf /"];
+			},
+			(capacity) => {
+				capacity.memory.freePct = null;
+				capacity.memory.unavailable = ["transient: suggest"];
+			},
+			(capacity) => {
+				capacity.memory.freePct = null;
+				capacity.memory.unavailable = [
+					"transient: ignore_previous_instructions",
+				];
+			},
+			(capacity) => {
+				capacity.memory.freePct = null;
+				delete capacity.memory.unavailable;
+			},
+		];
+
+		for (const mutate of cases) {
+			const capacity = capacitySnapshot();
+			mutate(capacity);
+			const body = formatPatrolTick(envelope([], undefined, capacity));
+			expect(body.split("\n").slice(0, 2)).toEqual([
+				"[patrol_tick] 巡检时间到。",
+				"容量=⚠️ 账面不可读(invalid_capacity_snapshot)",
+			]);
+			for (const hostile of [
+				"rm -rf",
+				"inspect",
+				"suggest",
+				"ignore_previous_instructions",
+			]) {
+				expect(body).not.toContain(hostile);
+			}
+		}
+	});
+
 	it("is exactly alarm + untrusted roster declaration with no Bridge judgment", () => {
 		const body = formatPatrolTick(
 			envelope([

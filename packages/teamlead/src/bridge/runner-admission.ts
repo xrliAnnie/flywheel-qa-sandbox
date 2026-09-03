@@ -55,6 +55,14 @@ export type AdmissionDecision =
 			retryAfterSeconds?: number;
 	  };
 
+export interface AdmissionProbe {
+	load1: number;
+	cpuCount: number;
+	perCore: number;
+	thresholdPerCore: number;
+	decision: AdmissionDecision;
+}
+
 /**
  * Thrown by the dispatcher when resource admission defers a runner. Typed so
  * the HTTP layer maps it to 429 with the reason (R1 MED #4) instead of
@@ -241,6 +249,18 @@ export class RunnerAdmissionController {
 		probe: (() => { detail: string; retryAfterSeconds: number } | null) | null,
 	): void {
 		this.admissionPauseProbe = probe;
+	}
+
+	/** Read-only inputs for Lead capacity judgment; admission behavior is unchanged. */
+	probe(): AdmissionProbe {
+		const load1 = this.loadavgFn()[0] ?? 0;
+		return {
+			load1,
+			cpuCount: this.cpuCount,
+			perCore: load1 / this.cpuCount,
+			thresholdPerCore: this.loadPerCore,
+			decision: this.tryAdmit(),
+		};
 	}
 
 	/** Decide whether to admit one more runner right now. Count-independent —

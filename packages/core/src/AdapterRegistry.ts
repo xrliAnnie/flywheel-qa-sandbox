@@ -3,7 +3,7 @@ import type { IAdapter } from "./adapter-types.js";
 /**
  * Registry for IAdapter implementations.
  *
- * Blueprint/DagDispatcher uses this to get the right adapter for a task.
+ * Blueprint uses this to get the right adapter for a task.
  * Replaces FlywheelRunnerRegistry (GEO-157).
  */
 export class AdapterRegistry {

@@ -120,8 +120,6 @@ node_modules/flywheel-claude-runner/dist/*
 node_modules/flywheel-claude-runner/agents/codex-runner-contract.md
 node_modules/flywheel-claude-runner/agents/codex-account-registry.json
 node_modules/flywheel-claude-runner/bin/*
-node_modules/flywheel-dag-resolver/package.json
-node_modules/flywheel-dag-resolver/dist/*
 node_modules/flywheel-agent-team-transport/package.json
 node_modules/flywheel-agent-team-transport/dist/*
 node_modules/flywheel-inbox-mcp/package.json

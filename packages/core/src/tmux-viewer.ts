@@ -257,8 +257,7 @@ export function openTmuxViewer(opts: TmuxViewerOpts): void {
 	// macOS Terminal.app/osascript opener. On cmux hosts cmux-sync owns viewing
 	// (skipping here is what stops `viewer-<execId>` sessions from ever being
 	// created — the FLY-754 leak source); on Linux/WSL2 the operator attaches
-	// with `tmux attach`. Gating here covers every dispatch call site
-	// (run-dispatcher x2, DagDispatcher) at once.
+	// with `tmux attach`. Gating here covers every run-dispatcher call site.
 	if (!viewerUsesTerminalApp()) {
 		const backend = resolveViewerBackend();
 		console.log(

@@ -4,6 +4,7 @@ import {
 } from "flywheel-comm/db";
 import { MailboxQueue } from "flywheel-comm/mailbox-queue";
 import { describe, expect, it, vi } from "vitest";
+import type { CapacitySnapshot } from "../bridge/capacity-snapshot.js";
 import { formatPatrolTick, type HookPayload } from "../bridge/hook-payload.js";
 import { enqueueLeadEvent as enqueueDurableLeadEvent } from "../bridge/lead-event-queue.js";
 import { leadEventEnvelopeFromJournalRow } from "../bridge/legacy-lead-event-reconciler.js";
@@ -137,6 +138,10 @@ function deliveryId(row: LeadEventRow): string {
 	return `lead_event:${row.lead_id}:${row.event_id}`;
 }
 
+function capacitySnapshot(generatedAt: string): CapacitySnapshot {
+	return { schemaVersion: 1, generatedAt } as CapacitySnapshot;
+}
+
 function scheduledAtOrBefore(
 	nowMs: number,
 	leadId: string,
@@ -187,6 +192,88 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 		const quiet = harness({ roster: [] });
 		await createLeadPatrolTickPass(quiet.deps)();
 		expect(quiet.rows).toHaveLength(0);
+	});
+
+	it("attaches an injected capacity snapshot to a newly emitted tick", async () => {
+		const h = harness();
+		const capacity = capacitySnapshot("2026-08-13T11:59:59.000Z");
+		h.deps.capacity = vi.fn(async () => capacity);
+
+		await createLeadPatrolTickPass(h.deps)();
+
+		expect(h.deps.capacity).toHaveBeenCalledTimes(1);
+		expect(payload(h.rows[0]!)).toMatchObject({
+			capacity: {
+				schemaVersion: 1,
+				generatedAt: "2026-08-13T11:59:59.000Z",
+			},
+		});
+	});
+
+	it("samples capacity lazily and once when two Leads mint ticks in one pass", async () => {
+		const twoLeadProject: ProjectEntry = {
+			...project,
+			leads: [
+				...project.leads,
+				{
+					agentId: "ops-lead",
+					chatChannel: "ops",
+					match: { labels: ["Operations"] },
+				},
+			],
+		};
+		const h = harness({
+			roster: [
+				session(),
+				session({
+					execution_id: "87654321-bbbb",
+					issue_id: "issue-2",
+					issue_identifier: "FLY-2",
+					issue_labels: '["Operations"]',
+				}),
+			],
+		});
+		h.deps.projects = [twoLeadProject];
+		const capacity = vi.fn(async () =>
+			capacitySnapshot("2026-08-13T11:59:59.000Z"),
+		);
+		h.deps.capacity = capacity;
+
+		await createLeadPatrolTickPass(h.deps)();
+
+		expect(h.rows).toHaveLength(2);
+		expect(capacity).toHaveBeenCalledTimes(1);
+		expect(h.rows.map((row) => payload(row).capacity?.generatedAt)).toEqual([
+			"2026-08-13T11:59:59.000Z",
+			"2026-08-13T11:59:59.000Z",
+		]);
+
+		const quiet = harness({ roster: [] });
+		const quietCapacity = vi.fn(async () =>
+			capacitySnapshot("2026-08-13T11:59:59.000Z"),
+		);
+		quiet.deps.capacity = quietCapacity;
+		await createLeadPatrolTickPass(quiet.deps)();
+		expect(quietCapacity).not.toHaveBeenCalled();
+	});
+
+	it("mints the tick without capacity when the probe is absent or throws synchronously", async () => {
+		for (const capacity of [
+			undefined,
+			() => {
+				throw new Error("probe crashed");
+			},
+		]) {
+			const h = harness();
+			h.deps.capacity = capacity;
+
+			await createLeadPatrolTickPass(h.deps)();
+
+			expect(h.rows).toHaveLength(1);
+			expect(h.enqueued).toHaveLength(1);
+			expect(payload(h.rows[0]!)).not.toHaveProperty("capacity");
+			expect(h.alerts).toEqual([]);
+		}
 	});
 
 	it("keeps every steady-state tick on the wall-clock slot with no missed or duplicate slot", async () => {

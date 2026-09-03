@@ -1,0 +1,20 @@
+sequenceDiagram
+  autonumber
+  participant Clock as 巡检钟(既有,60 分钟)
+  participant B as Bridge:buildCapacitySnapshot
+  participant MP as memory_pressure 命令
+  participant ST as StateStore / 账号文件
+  participant L as Lead
+  Clock->>B: 到点,采一次(所有 Lead 共用)
+  B->>MP: 空参数调用(只读,5ms)
+  MP-->>B: free 75%
+  B->>ST: 活跃 runner · 手刹 · 暂停 · 五账号额度
+  ST-->>B: 各自带时间戳
+  B-->>Clock: 一份快照
+  Clock->>L: patrol_tick 正文:名册 + 容量三行
+  Note over L: 某个 runner 提前跑完,想立刻补位
+  L->>B: GET /api/capacity(带 token)
+  B->>MP: 再现采一次
+  B-->>L: 新鲜快照(JSON)
+  L->>L: 综合依赖账本 + 容量,自己拍
+  L->>B: POST /api/runs/start(既有,一行不动)

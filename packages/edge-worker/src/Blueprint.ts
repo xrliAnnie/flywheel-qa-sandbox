@@ -52,8 +52,8 @@ import type {
 	TerminalFailureInfo,
 } from "flywheel-core";
 import { buildWindowLabel, cleanIssueTitle } from "flywheel-core";
-import type { DagNode } from "flywheel-dag-resolver";
 import type { AgentDispatcher } from "./AgentDispatcher.js";
+import type { DagNode } from "./dag-node.js";
 import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 import type {
 	EventEnvelope,
@@ -436,7 +436,7 @@ export interface BlueprintContext {
 	// v0.2 — optional for backward compat
 	projectName?: string;
 	sessionTimeoutMs?: number;
-	// v0.2 Step 2b — tracked by caller (DagDispatcher)
+	// v0.2 Step 2b — tracked by the caller
 	consecutiveFailures?: number;
 	// v0.4 — optional; Blueprint fallback to randomUUID()
 	executionId?: string;

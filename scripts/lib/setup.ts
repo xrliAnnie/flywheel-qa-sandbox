@@ -1,6 +1,6 @@
 /**
  * Shared component initialization for Flywheel entry-point scripts.
- * Used by run-issue.ts and run-project.ts.
+ * Used by run-issue.ts.
  */
 
 import { execFileSync } from "node:child_process";
@@ -61,8 +61,6 @@ export type {
 } from "../../packages/edge-worker/dist/Blueprint.js";
 // Re-export for convenience
 export { Blueprint } from "../../packages/edge-worker/dist/Blueprint.js";
-export type { DispatchResult } from "../../packages/edge-worker/dist/DagDispatcher.js";
-export { DagDispatcher } from "../../packages/edge-worker/dist/DagDispatcher.js";
 
 export interface FlywheelComponents {
 	hookServer: HookCallbackServer;
@@ -647,8 +645,8 @@ export async function teardownComponents(c: FlywheelComponents): Promise<void> {
 }
 
 /**
- * FLY-137 v1.27.2: resolve Flywheel repo root for the scripts/run-issue.ts /
- * scripts/run-project.ts CLI entrypoints. Mirrors `resolveFlywheelRepoRoot` in
+ * FLY-137 v1.27.2: resolve Flywheel repo root for the scripts/run-issue.ts CLI
+ * entrypoint. Mirrors `resolveFlywheelRepoRoot` in
  * `packages/teamlead/src/bridge/run-infra.ts` (different module = inline copy
  * to avoid a circular import; both helpers have identical behavior).
  *

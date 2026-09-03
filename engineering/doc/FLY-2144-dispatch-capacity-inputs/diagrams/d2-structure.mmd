@@ -1,0 +1,49 @@
+classDiagram
+  direction LR
+  class CapacitySnapshot {
+    schemaVersion = 1
+    generatedAt : 时间戳
+    memory : 内存
+    load : 负载
+    brakes : 两道既有手刹
+    runners : 在跑 / 停车
+    quota : 额度
+  }
+  class 内存 {
+    source = memory_pressure 命令
+    freePct : 0..100 或 null
+    observedAt : 采样时刻
+    tightBelowPct = 15(参考线)
+    unavailable? : 读不到的原因
+  }
+  class 负载 {
+    load1 / cpuCount / perCore
+    thresholdPerCore : 现行阈值
+    observedAt
+  }
+  class 两道既有手刹 {
+    pressureHold : 内存传感器手刹
+    admissionPause : 部署暂停
+    admission : 此刻准入判定(只读)
+  }
+  class 在跑停车 {
+    running / parked / total
+    byProject
+    observedAt
+  }
+  class 额度 {
+    claude.activeAccount
+    claude.accounts[] : 5h% 7d% observedAt ageMinutes stale
+    claude.staleAfterMinutes : 尺子写在里面
+    codex : 无数值源(如实)
+  }
+  CapacitySnapshot --> 内存
+  CapacitySnapshot --> 负载
+  CapacitySnapshot --> 两道既有手刹
+  CapacitySnapshot --> 在跑停车
+  CapacitySnapshot --> 额度
+  内存 ..> memory_pressure命令 : 现采 5ms
+  负载 ..> RunnerAdmission : probe() 只读
+  两道既有手刹 ..> StateStore : 只读
+  在跑停车 ..> StateStore : getActiveSessions
+  额度 ..> claude_accounts_json : quota-monitor 每 20 分钟写

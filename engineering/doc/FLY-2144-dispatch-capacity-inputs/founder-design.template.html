@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2144 · 派发前看得见的容量 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  pre { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:10px 12px; border-radius:8px; overflow-x:auto; white-space:pre; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  blockquote { margin:10px 0; padding:8px 14px; border-left:3px solid #d2d2d7; color:#515154; background:#fbfbfd; border-radius:0 8px 8px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2144 · 派发前看得见的容量</h1>
+<div class="meta">
+  设计交付 · 2026-09-02 · 依据 FLY-1969 PRD v2.4 的 R4 与 R8(你逐节勾过)· 属于 Epic FLY-2108「Lead 拿到一份 Epic 页面之后,自己把它推到完」的第 E 张单<br/>
+  文档:<code>engineering/doc/FLY-2144-dispatch-capacity-inputs/</code>{exploration, research, plan}.md · 本页只讲结论与取舍,细节在 plan
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">Lead(替你带队的那个 AI 主管)决定「这一波放几件活出去」时,以后手上会多一张写着「机器内存现在剩多少、账号额度现在用了多少、这些数是几分钟前的」的小卡;它只是给他看的,不是拦他的闸门。顺手把一个早就没人用的旧零件(dag-resolver)从仓库里删掉。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s1" data-title="一句话结论" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-title="你说过什么,今天缺什么">
+  <h2>你说过什么,今天缺什么</h2>
+  <p>PRD 里你定的两条:</p>
+  <blockquote>R4:Lead 定时检查推进,综合两件事决定这一波派哪几个:① dependency(做 5 之前必须先做 1)② 资源容量(quota、机器 memory)。<br/>形状 = Lead 的一个判断输入,不是「系统自动拒绝 + 排队」那套。花明显资源 → Lead 按 quota 自己拍,不用问你。</blockquote>
+  <blockquote>R8:<code>dag-resolver</code> 退役 —— 纯清理债务,没有你能看见的变化。</blockquote>
+  <p><b>今天的情况</b>(本单自己核了代码,不是转述):</p>
+  <ul>
+    <li><b>账号额度</b>(<span class="term">quota</span>,就是每个 Claude 账号在 5 小时窗和 7 天窗里用掉的百分比)—— 后台有个守护进程每 20 分钟去问一次官方接口,把结果写在本机一个文件里。<b>数已经有了,但 Lead 读不到。</b></li>
+    <li><b>机器内存</b> —— 你 8 月 13 日定过口径:只认 macOS 自带命令 <code>memory_pressure</code> 打出来的那一个数「System-wide memory free percentage」(系统整体空闲内存百分比)。这个命令 5 毫秒返回、只读。<b>今天没有任何代码去读它。</b></li>
+    <li><b>Lead 每小时收到的巡检提醒</b>(<span class="term">patrol_tick</span>,就是那口每小时响一次、告诉他名下有哪些活在跑的钟)—— 里面只有名册,<b>没有一个字提到容量</b>。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s2" data-title="你说过什么,今天缺什么" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程:改了什么">
+  <h2>核心流程:改了什么</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <p class="cap">图 1 · 左边是今天,右边是本单之后。虚线是「凭感觉」,实线是「有数可看」。</p>
+  <p>要点只有三个:</p>
+  <ol>
+    <li><b>巡检钟响的时候,顺手把容量一起送到</b> —— 一次扫描出一份事实,巡检和放新活读同一份(这是 PRD §1.2 里 Lead 定的那条)。</li>
+    <li><b>钟与钟之间想补位,Lead 再读一次</b> —— 比如某个 runner(干活的 AI 工人)提前跑完、空出一个位子。规矩按时刻分:在巡检那一轮里决定放活,用巡检信里那三行(就是那一轮采的);在巡检之外的时刻决定,先读一次新的。每份数都写着自己是几点采的,超过一个巡检周期(默认 60 分钟)的不引用。</li>
+    <li><b>派发那条路一行代码不动</b> —— 读到内存紧、额度高,是少放还是照放,由 Lead 自己拍。系统不替他拒绝,也不排队。</li>
+  </ol>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s3" data-title="核心流程:改了什么" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card purple" data-title="那张小卡上有什么">
+  <h2>那张小卡上有什么</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <p class="cap">图 2 · 快照(<span class="term">snapshot</span>,就是某一刻的一张照片)的结构:五个格子,每个格子都写着自己是几点几分采的、从哪儿来的。</p>
+  <div class="scroll">
+  <table>
+    <tr><th>格子</th><th>写什么</th><th>数从哪儿来</th><th>多新鲜</th></tr>
+    <tr><td>内存</td><td>空闲百分比一个数;低于 15% 标一句「紧」(只是标注)</td><td>macOS 自带 <code>memory_pressure</code> 命令,读的那一刻现采</td><td>当下</td></tr>
+    <tr><td>负载</td><td>机器有多忙(每核负载)与现行的放行线</td><td>派发准入器已有的读数,只是露出来</td><td>当下</td></tr>
+    <tr><td>两道既有手刹</td><td>内存传感器的手刹 / 部署暂停 是否拉着;此刻准入判定是「放」还是「缓」</td><td>Bridge(总调度服务)自己的账本</td><td>当下</td></tr>
+    <tr><td>在跑 / 停车</td><td>正在干活的 runner 数、停在那儿等你 review 的 runner 数(它们也占内存)</td><td>Bridge 的会话表</td><td>当下</td></tr>
+    <tr><td>额度</td><td>五个 Claude 账号各自的 5 小时 / 7 天用量、哪个是当前账号、每条观测是几分钟前的、超过多久算过期(尺子也写在卡上)</td><td>额度守护进程写的本机文件</td><td>最长 20 分钟前;过期会标 <code>stale</code></td></tr>
+  </table>
+  </div>
+  <div class="callout amber">Codex 账号<b>没有</b>数值额度可读(它只在撞上限时从屏幕文字里被发现)。卡上会如实写「无数值源」,不会编一个数。</div>
+  <p class="note">卡上有两种「不知道」,长得不一样:一整格读不到(比如内存命令没跑成、额度文件坏了)会写「?」并带上原因;某一个账号的某个数还没观测到(比如这个账号最近没用过)只在那个账号那一格写「?」或「未观测」,其它账号照常显示。前者是出了问题,后者是正常情况。</p>
+  <p>Lead 在巡检正文里看到的样子(示例,数字是 9 月 2 日晚的真值):</p>
+  <pre>容量(Bridge 采样 · 判断输入,不是闸门;快照 2026-09-03T02:16:41Z):
+- 内存 free 75%(memory_pressure,参考线&lt;15%)| 负载 6.35/18核=0.35(阈 8.0)| 手刹=无 | 部署暂停=无 | 在跑 7 · 停车 3
+- 额度 Claude ★personal 5h 9%/7d 30%(16m 前)· business 11/0(17m 前)· school 0/10 · shopping 0/1 · personal1 0/0 | Codex 无数值源</pre>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s4" data-title="那张小卡上有什么" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card" data-title="它怎么到 Lead 手上">
+  <h2>它怎么到 Lead 手上</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <p class="cap">图 3 · 时序:钟响一次采一次、所有 Lead 共用;钟与钟之间 Lead 可以自己再读一次;最后那一步派发是既有的路。</p>
+  <ul>
+    <li><b>出口一:巡检正文</b> —— 上面那三行,直接进 Lead 的邮箱,和名册同一封。这是 PRD §1.2 里 Lead 定的「放新活直接读巡检那一次的结果」的落点;巡检钟本身仍只是闹钟,名册仍要 Lead 自己核,这三行是 Bridge 采的读数、Lead 核的是它几点采的。</li>
+    <li><b>出口二:一个内部接口</b>(<span class="term">/api/capacity</span>,Lead 用带口令的方式向 Bridge 要一份最新快照)—— 只给带口令的 Lead,不对外。巡检之外的时刻要拍板,先走这一步。</li>
+    <li>两个出口跑的是<b>同一段代码</b>,每次都是现采,所以是同一把尺子量出来的两次读数;每次读数都带自己的采样时间,不会有「巡检说 75%、接口说 40%」却分不清谁新谁旧的情况。</li>
+    <li>一个既有的边界:<b>手上一个 runner 都没有的 Lead,巡检钟不会给他发信</b>(今天就是这样,本单不改)。他要放第一件活,只能走出口二。</li>
+  </ul>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s5" data-title="它怎么到 Lead 手上" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card amber" data-title="关键取舍与否决的做法">
+  <h2>关键取舍与否决的做法</h2>
+  <div class="scroll">
+  <table>
+    <tr><th>问题</th><th>采纳</th><th>否决了什么</th><th>为什么</th></tr>
+    <tr><td>内存用哪个数</td><td><code>memory_pressure</code> 命令末行那一个数</td><td>另一台内存传感器用的 vm_stat 口径;或让 Lead 自己在机器上跑命令</td><td>你 8 月 13 日的裁定(Lead 转述);vm_stat 的「空闲页」在 macOS 上永远接近零、没意义;Lead 自己跑会和巡检里的数两账</td></tr>
+    <tr><td>数要不要缓存</td><td>读的时候现采,不缓存、不加定时器</td><td>后台定时采一次存起来</td><td>命令 5 毫秒、只读;存起来只会让「几点采的」变旧。仓库惯例:不加新定时器</td></tr>
+    <tr><td>放在哪里让 Lead 看</td><td>巡检正文 + 一个内部接口</td><td>只加接口 / 只进巡检 / 塞进 Lead 每次巡检跑的六步报告 / 塞进无口令的健康检查页 / 新加一条命令行</td><td>要「一次扫描一份事实」也要能随时补位;六步报告的格式被测试钉死;额度百分比不该无口令外露;少一个要维护的命令</td></tr>
+    <tr><td>Codex 额度</td><td>如实写「无数值源」</td><td>读账号名单凑一个 / 从屏幕猜</td><td>没有数就不造数;那个名单文件里有邮箱,不该带出来</td></tr>
+    <tr><td>算不算闸门</td><td>只读、不拒绝、派发路径零改动</td><td>内存紧就自动不派</td><td>你在 PRD 里把闸门改成了判断输入;这一版就是这个形状</td></tr>
+    <tr><td>删旧零件删到哪</td><td>整包删,连带两个 2026 年 4 月后没人碰的手动脚本</td><td>只删包、留一个永远没人跑的类</td><td>Lead 9 月 2 日裁定:同一个 PR 删干净,不留兼容层</td></tr>
+    <tr><td>巡检里那三行算什么</td><td>按时刻分:巡检那一轮里放活,用这三行;巡检之外的时刻,先读一次新的;超过一个巡检周期的不引用</td><td>只留按需读、不进巡检信;或把三行写成「不作拍板依据」;或等兄弟单 B 改完巡检规则再交付</td><td>PRD §1.2「放新活直接读巡检那一次」是 Lead 定过的合同;Lead 现有巡检规则里「Bridge 的单方陈述要核」管的是 runner 状态,容量是 Bridge 自己采的读数,要核的是它几点采的</td></tr>
+    <tr><td>删旧零件后怎么防它回来</td><td>一条持续集成守卫,按路径和内容两层扫,守卫自己是唯一例外;编译后顺手清掉旧产物,并用一个假文件验证真的清了</td><td>不清旧产物(「反正没人加载」)</td><td>独立评审抓到:客户打包脚本会把整个编译目录原样拷走,曾经编译过的机器会把已删的类继续打进去;所以必须清,而且要证明清了</td></tr>
+  </table>
+  </div>
+  <div class="callout green">安全上盯住的一条:<code>memory_pressure</code> 这个命令<b>带参数会真的给机器施加内存压力</b>(它本来是压力测试工具)。设计把「永远不带参数」写成常量,并有两条专门的测试守着。</div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s6" data-title="关键取舍与否决的做法" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card gray" data-title="顺手清理:dag-resolver 退役">
+  <h2>顺手清理:<code>dag-resolver</code> 退役</h2>
+  <div class="diagram"><!--DIAGRAM_4--></div>
+  <p class="cap">图 4 · 退役前后谁在用它。<span class="term">dag-resolver</span> 是 2 月做第一版时写的「按依赖顺序排任务」的零件;现在真正的排程走别的路,它只剩一个类型定义还在被引用。</p>
+  <ul>
+    <li><b>删</b>:整个包、<code>DagDispatcher</code>(一个没人实例化的调度类)、两个 4-5 月后没人碰的手动脚本、只测这些东西的三个测试文件;打包清单和贡献指南同步改。</li>
+    <li><b>留</b>:那一个类型定义(叫 <code>DagNode</code>)搬到用它的地方,名字和形状不变,22 个测试只改一行引用路径。</li>
+    <li><b>守</b>:加一条持续集成(<span class="term">CI</span>,每次提交自动跑的检查)守卫,以后谁把这个名字再写回来就红。</li>
+  </ul>
+  <p class="note">PRD 说它「没有 founder 可见面」—— 这句在本单核实后仍然成立;唯一的偏差是 PRD 只数了 <code>packages/</code> 目录,漏了 <code>scripts/</code> 下两个旧脚本,已由 Lead 裁定一并删。</p>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s7" data-title="顺手清理:dag-resolver 退役" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界:这一版做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>Lead 派发前看得见内存、负载、手刹、在跑数、Claude 五账号额度,每格带时间。</li>
+    <li>两个出口读同一份快照。</li>
+    <li>删掉 <code>dag-resolver</code> 整包与它的死消费者。</li>
+  </ul>
+  <h3>不做</h3>
+  <ul>
+    <li><span class="badge no">不做</span>自动拒绝、排队、任何新的「不准派」理由 —— 派发那条路零改动。</li>
+    <li><span class="badge no">不做</span>多项目共用一个额度池的统管(PRD §6 你留的白;卡按整机报,不按项目分摊)。</li>
+    <li><span class="badge no">不做</span>Codex 额度数值 —— 没有源。</li>
+    <li><span class="badge no">不做</span>内存的第二个维度(没有 swap、没有绝对 MB),只有那一个百分比。</li>
+    <li><span class="badge no">不做</span>改负载放行线、接内存闸、加任何开关或 flag。</li>
+    <li><span class="badge no">不做</span>Epic 页面本身、「回头看 Epic 还剩什么」的扫描、依赖账本 —— 那是兄弟单 A/B/C/D。</li>
+    <li><span class="badge no">不改</span>「手上没有 runner 的 Lead 收不到巡检信」这条既有行为 —— 空闲起步只有按需读那一个出口。</li>
+    <li><span class="badge no">不做</span>额度文件坏了时编一个空池 —— 文件不存在、文件坏了、里面的值不像话(账号名长得像邮箱、观测时间在未来),卡上各自写清原因,不会显示成「五个账号都是 0%」或「刚刚观测过」。</li>
+  </ul>
+  <h3>你会看到的变化</h3>
+  <p><b>零。</b>R4 的可见面是 Lead(他的巡检邮件多三行、多一个内部接口);R8 没有可见面。你的一天和今天一样。</p>
+  <div class="callout amber">一处出处要说明:「只认 memory_pressure」这条 8 月 13 日的裁定,仓库和记忆库里都没找到原文,本单以 Lead 9 月 2 日的转述为准,文档里注明了出处。如果你的口径不是这个,请在这里留言。</div>
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s8" data-title="诚实边界" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card gray" data-title="独立设计评审记录">
+  <h2>独立设计评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>这一节的意见</label><textarea data-key="s9" data-title="独立设计评审记录" placeholder="留空表示没有意见"></textarea></div>
+</section>
+
+<section class="card green" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的留言会自动汇总到这里(存在你这台浏览器里,不会上传)。点「复制全部意见」后直接贴回给 Lead 即可。第一行固定是 <code>【页面意见汇总】FLY-2144</code>,这是修订反馈的标记,不是「通过」的信号。</p>
+  <button class="btn" id="copy-all" type="button">复制全部意见</button>
+  <button class="btn sec" id="clear-all" type="button">清空本页所有留言</button>
+  <div class="status" id="copy-status"></div>
+  <div class="chunks" id="summary-chunks"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2144";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

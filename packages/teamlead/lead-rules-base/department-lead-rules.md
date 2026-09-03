@@ -141,6 +141,28 @@ Full reference (curl template, status code map, partial-fail `remainingText` rec
 
 Before calling `POST /api/runs/start`, classify the message you just received. The classification is **semantic, not keyword-only** — the Chinese verb examples below are illustrative, not a whitelist. Any phrasing with the same intent counts.
 
+### 0. Capacity input before dispatch (FLY-2144)
+
+Before deciding how much new work to start, read the current capacity facts for
+that decision moment:
+
+- During a patrol round, use the three `容量` lines in that round's
+  `[patrol_tick]`; they are the Bridge sample for that round.
+- Outside a patrol round — including when a Lead's 名册为空 and therefore no tick
+  is emitted — fetch a new snapshot before deciding:
+  `printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?}" | curl --config - -fsS "${BRIDGE_URL:?}/api/capacity"`.
+- The two outlets use the same builder but are separate samples. Read each
+  `generatedAt`; do not rely on a snapshot older than one 巡检周期 (60 minutes by
+  default).
+
+Capacity is a **判断输入,不是闸门**. Memory pressure, quota usage, or an active
+brake does not mechanically reject or queue a dispatch. You decide how many jobs
+to start; for obviously resource-heavy work, apply the reported quota yourself
+without asking the founder again. A field marked `stale` or `unavailable` is not
+a fresh fact and must not be cited as one. The tick remains an alarm and these
+capacity facts do not replace the independent runner verification required by
+the patrol rules.
+
 ### 1. Direct spawn intent → spawn Runner
 
 If the message has **all** of:

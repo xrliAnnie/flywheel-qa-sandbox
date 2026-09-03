@@ -953,6 +953,9 @@ jobs:
       - name: Test — FLY-1674 legacy-path residue guard
         run: bash scripts/__tests__/fly1674-residue.test.sh
 
+      - name: Test — FLY-2144 retired dispatch residue guard
+        run: bash scripts/__tests__/fly2144-retired-dispatch-residue.test.sh
+
       - name: Test — FLY-2102 startup flag freeze residue guard
         run: bash scripts/__tests__/fly2102-flag-freeze.test.sh
 

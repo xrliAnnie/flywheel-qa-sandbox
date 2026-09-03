@@ -23,7 +23,7 @@ Archived docs are in `doc/*/archive/` — read only if you need historical conte
 TypeScript orchestrator (forked from [Cyrus](https://github.com/ceedaragents/cyrus)):
 
 ```
-Linear issues → DAG resolver → Claude Code sessions (tmux) → auto PR
+Linear issues → Bridge run-dispatcher → Claude Code sessions (tmux) → auto PR
                                         ↓ (completed/failed)
                               Decision Layer → Bridge API → Discord Lead → CEO
 ```

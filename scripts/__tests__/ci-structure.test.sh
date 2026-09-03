@@ -788,6 +788,7 @@ expected_shard_tests = {
         "Test — FLY-1081 notify-path migration",
         "Test — FLY-1861 CI cancellation and classification contracts",
         "Test — FLY-1674 legacy-path residue guard",
+        "Test — FLY-2144 retired dispatch residue guard",
         "Test — FLY-2102 startup flag freeze residue guard",
         "Test — FLY-1338 matrix coverage parity (QA)",
         "Test — FLY-1855 executable Lead patrol snapshot",

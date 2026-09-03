@@ -44,7 +44,7 @@ po_die() { po_err "$*"; exit 1; }
 # closure of the customer MVP runtime (Bridge + Lead + Buddy + comm CLIs +
 # MCP servers) — see research.md §1/§2. qa-framework / flywheel-cli / voice-*
 # are deliberately NOT customer runtime.
-PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claude-runner dag-resolver agent-team-transport inbox-mcp terminal-mcp token-usage github-event-transport linear-event-transport slack-event-transport"}
+PO_PACKAGES=${PO_PACKAGES:-"teamlead edge-worker core config flywheel-comm claude-runner agent-team-transport inbox-mcp terminal-mcp token-usage github-event-transport linear-event-transport slack-event-transport"}
 
 # Extra runtime asset dirs per package (beyond package.json + dist/), colon
 # separated as <pkg-dir>:<asset-dir>. claude-lead.sh + Lead runtime read these

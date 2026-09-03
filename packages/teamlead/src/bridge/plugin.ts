@@ -185,6 +185,10 @@ import {
 import { resolveBridgeBuildIdentity } from "./build-identity.js";
 import { ChatThreadCreator } from "./ChatThreadCreator.js";
 import { makeCanceledPrDisposal } from "./canceled-pr-close.js";
+import {
+	buildCapacitySnapshot,
+	type CapacitySnapshotDeps,
+} from "./capacity-snapshot.js";
 import { killAllClaudeReviewChildren } from "./claude-review-runner.js";
 import { buildCleanupPolicies } from "./cleanup-policy.js";
 import {
@@ -446,6 +450,7 @@ import {
 	qaStallInboxLoopLead,
 } from "./liveness-manifest.js";
 import { isSameOrigin as ffIsSameOrigin } from "./loopback-origin.js";
+import { readMemoryFreePct } from "./machine-free-pct.js";
 import { ManagementChangeCoordinator } from "./management-change-coordinator.js";
 import {
 	createManagementCronProvider,
@@ -1481,6 +1486,20 @@ function createWorkflowRunCollector(
 		});
 }
 
+function makeCapacitySnapshotDeps(
+	store: StateStore,
+	config: BridgeConfig,
+): CapacitySnapshotDeps {
+	return {
+		store,
+		admission: config.runnerAdmission ?? undefined,
+		readMemoryFreePct:
+			config.capacityProbes?.readMemoryFreePct ?? readMemoryFreePct,
+		accountStorePath: config.capacityProbes?.accountStorePath,
+		quotaConfigPath: config.capacityProbes?.quotaConfigPath,
+	};
+}
+
 export function createBridgeApp(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -1503,6 +1522,7 @@ export function createBridgeApp(
 	opts?: BridgeAppOptions,
 ): express.Application {
 	const app = express();
+	const capacityDeps = makeCapacitySnapshotDeps(store, config);
 	const flagStore = opts?.flagStore;
 	const eventRouterWorkflowCompletion = () =>
 		flagStore ? storeWorkflowNodeReuseEnabled(flagStore) : false;
@@ -1529,6 +1549,20 @@ export function createBridgeApp(
 	}
 
 	app.use(express.json({ limit: "512kb" }));
+
+	if (config.apiToken) {
+		app.get(
+			"/api/capacity",
+			tokenAuthMiddleware(config.apiToken),
+			async (_req, res) => res.json(await buildCapacitySnapshot(capacityDeps)),
+		);
+	} else {
+		app.use("/api/capacity", (_req, res) => {
+			res.status(503).json({
+				error: "capacity API requires TEAMLEAD_API_TOKEN",
+			});
+		});
+	}
 
 	// FLY-2076: capability-scoped duty mutations. This is intentionally outside
 	// `/api`: the shared Bridge bearer must not grant Claw ticket write access.
@@ -4579,6 +4613,7 @@ export async function startBridge(
 	const admissionCrossingBarrier = new AdmissionCrossingBarrier();
 
 	const store = opts?.store ?? (await StateStore.create(config.dbPath));
+	const capacityDeps = makeCapacitySnapshotDeps(store, config);
 	// FLY-2121: schema first, then a pure registry compile + DB-aware preflight,
 	// then verified backup and one catalog transaction. This runs before any
 	// listener, timer, CommDB warmup, or dispatch admission can create new work.
@@ -8986,6 +9021,7 @@ export async function startBridge(
 	const leadPatrolTickPass = createLeadPatrolTickPass({
 		projects,
 		store,
+		capacity: () => buildCapacitySnapshot(capacityDeps),
 		openCommReadonly: (projectName) => {
 			try {
 				return CommDB.openReadonly(commDbPathForProject(projectName));

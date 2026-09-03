@@ -8,7 +8,7 @@
 Linear issues
      |
      v
-DAG Resolver (topological sort)
+Bridge run-dispatcher
      |
      v
 Edge Worker (Blueprint + Decision Layer + Reactions)

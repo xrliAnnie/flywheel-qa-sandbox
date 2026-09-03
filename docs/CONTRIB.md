@@ -7,7 +7,7 @@
 Flywheel is a TypeScript orchestrator (forked from [Cyrus](https://github.com/ceedaragents/cyrus)) that automates developer workflow:
 
 ```
-Linear issues -> DAG resolver -> Claude Code sessions (tmux) -> auto PR -> Decision Layer -> Slack notifications
+Linear issues -> Bridge run-dispatcher -> Claude Code sessions (tmux) -> auto PR -> Decision Layer -> Slack notifications
 ```
 
 The goal is autonomous dev execution where human attention is the bottleneck, not AI capability. CEO sets direction, Flywheel executes continuously, only escalating when it genuinely needs a human decision.
@@ -53,13 +53,12 @@ pnpm --filter flywheel-edge-worker build
 
 ## Packages
 
-The monorepo contains 9 packages under `packages/`:
+Core packages (selected):
 
 | Package | npm Name | Description |
 |---------|----------|-------------|
 | `core` | `flywheel-core` | Shared types, interfaces, and Zod schemas used across all packages |
 | `config` | `flywheel-config` | Configuration loader for `.flywheel/config.yaml` project files |
-| `dag-resolver` | `flywheel-dag-resolver` | Dependency DAG resolution using Kahn's topological sort for Linear issues |
 | `claude-runner` | `flywheel-claude-runner` | Claude Code CLI execution wrapper (tmux/cmux session management) |
 | `edge-worker` | `flywheel-edge-worker` | Main orchestrator: Blueprint generation, Decision Layer, Reactions engine |
 | `linear-event-transport` | `flywheel-linear-event-transport` | Linear webhook receiving and signature verification |
@@ -75,7 +74,6 @@ teamlead
        -> claude-runner -> core
        -> config
        -> core
-       -> dag-resolver
        -> linear-event-transport -> core
        -> github-event-transport -> core
        -> slack-event-transport  -> core
@@ -180,7 +178,6 @@ flywheel/
   packages/
     core/                # Shared types
     config/              # Config loader
-    dag-resolver/        # DAG resolution
     claude-runner/       # Claude CLI wrapper
     edge-worker/         # Main orchestrator
     linear-event-transport/

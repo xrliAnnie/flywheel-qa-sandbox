@@ -8,10 +8,10 @@ import type {
 	AdapterExecutionResult,
 	IAdapter,
 } from "flywheel-core";
-import type { DagNode } from "flywheel-dag-resolver";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { BlueprintContext, ShellRunner } from "../Blueprint.js";
 import { Blueprint } from "../Blueprint.js";
+import type { DagNode } from "../dag-node.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
 import type { WorktreeManager } from "../WorktreeManager.js";

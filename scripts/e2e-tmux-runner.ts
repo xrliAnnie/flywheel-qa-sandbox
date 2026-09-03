@@ -4,7 +4,7 @@
  *
  * Tests the REAL TmuxRunner flow:
  *   1. Creates a temp git repo with a buggy file
- *   2. Sets up FLYWHEEL_MARKER_DIR (normally DagDispatcher does this)
+ *   2. Sets up FLYWHEEL_MARKER_DIR (normally run-dispatcher does this)
  *   3. Installs SessionEnd hook (if not already installed)
  *   4. Launches TmuxRunner → Claude Code opens in a visible tmux window
  *   5. Waits for completion via SessionEnd hook or pane_dead polling

@@ -8,6 +8,7 @@ import {
 } from "flywheel-config";
 import { type ProjectEntry, resolveLeadForIssue } from "../ProjectConfig.js";
 import type { Session, StateStore } from "../StateStore.js";
+import type { CapacitySnapshot } from "./capacity-snapshot.js";
 import { parseSqliteUtcMs } from "./founder-notify-utils.js";
 import type { HookPayload, PatrolRosterEntry } from "./hook-payload.js";
 import { canonicalLeadEventDeliveryId } from "./lead-event-queue.js";
@@ -51,6 +52,7 @@ export interface PatrolTickDeps {
 	): DurableQueueReceipt;
 	getGlobalConfig?: () => Readonly<PatrolConfig>;
 	getProjectConfig?: (projectRoot: string) => Readonly<PatrolConfig>;
+	capacity?: () => Promise<CapacitySnapshot>;
 	now?: () => number;
 	alertFailure?: (failure: PatrolFailure) => Promise<void>;
 	log?: (message: string) => void;
@@ -173,6 +175,15 @@ async function runLeadPatrolTickPass(
 	const nowMs = deps.now?.() ?? Date.now();
 	const globalConfig =
 		deps.getGlobalConfig?.() ?? getGlobalPatrolConfigSnapshot().config;
+	let capacityPromise: Promise<CapacitySnapshot | undefined> | undefined;
+	const capacityOnce = () => {
+		if (!capacityPromise) {
+			capacityPromise = Promise.resolve()
+				.then(() => deps.capacity?.())
+				.catch(() => undefined);
+		}
+		return capacityPromise;
+	};
 	for (const project of deps.projects) {
 		let sessions: Session[];
 		let projectConfig: Readonly<PatrolConfig>;
@@ -355,6 +366,7 @@ async function runLeadPatrolTickPass(
 				}
 
 				const eventId = `patrol_tick:${project.projectName}:${lead.agentId}:after-${previous?.seq ?? "genesis"}`;
+				const capacity = await capacityOnce();
 				const payload: HookPayload = {
 					event_type: "patrol_tick",
 					execution_id: sessionKey,
@@ -362,6 +374,7 @@ async function runLeadPatrolTickPass(
 					project_name: project.projectName,
 					roster: roster.map(rosterEntry),
 					...(loops ? { loops } : {}),
+					...(capacity ? { capacity } : {}),
 					generated_at: new Date(nowMs).toISOString(),
 					scheduled_at: new Date(currentScheduledAt).toISOString(),
 				};

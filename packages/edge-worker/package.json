@@ -14,7 +14,7 @@
 		"assets"
 	],
 	"scripts": {
-		"build": "tsc && npm run copy-prompts",
+		"build": "tsc && rm -f dist/DagDisp* && npm run copy-prompts",
 		"copy-prompts": "mkdir -p dist/prompts/subroutines && cp -r src/prompts/subroutines/*.md dist/prompts/subroutines/ && cp label-prompt-template.md dist/ && cp -r prompts dist/",
 		"dev": "tsc --watch",
 		"test": "vitest run",
@@ -35,7 +35,6 @@
 		"flywheel-claude-runner": "workspace:*",
 		"flywheel-config": "workspace:*",
 		"flywheel-core": "workspace:*",
-		"flywheel-dag-resolver": "workspace:*",
 		"flywheel-github-event-transport": "workspace:*",
 		"flywheel-linear-event-transport": "workspace:*",
 		"flywheel-slack-event-transport": "workspace:*",

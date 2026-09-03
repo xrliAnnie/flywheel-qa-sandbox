@@ -35,7 +35,7 @@ export type { AgentMessage, IMessageFormatter, OnAskUserQuestion };
  * Unified adapter interface for Flywheel agent execution.
  *
  * Supports two execution modes:
- * - **Fire-and-forget** (`execute`): Used by Blueprint/DagDispatcher for autonomous
+ * - **Fire-and-forget** (`execute`): Used by Blueprint for autonomous
  *   task execution. All adapters must implement this.
  * - **Interactive streaming** (`startSession`): Used by EdgeWorker for Linear agent
  *   sessions with real-time message exchange. Only adapters with

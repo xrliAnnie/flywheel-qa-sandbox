@@ -15,6 +15,26 @@ import {
 const GB = 1024 * 1024 * 1024;
 
 describe("RunnerAdmissionController (P4 — pure resource admission)", () => {
+	it("exposes a read-only load probe with the current admission decision", () => {
+		const c = new RunnerAdmissionController({
+			loadPerCore: 2,
+			loadavgFn: () => [24, 12, 6],
+			cpuCount: 8,
+		});
+
+		expect(c.probe()).toEqual({
+			load1: 24,
+			cpuCount: 8,
+			perCore: 3,
+			thresholdPerCore: 2,
+			decision: {
+				admit: false,
+				reason: "load_pressure",
+				detail: "load/core 3.00 > 2 (load1 24.00, cores 8)",
+			},
+		});
+	});
+
 	it("admits when load and memory are healthy, regardless of how many already run", () => {
 		const c = new RunnerAdmissionController({
 			loadPerCore: 8,

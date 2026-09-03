@@ -1,4 +1,5 @@
 import type { FounderConsentConfig } from "./founder-consent/config.js";
+import type { MemoryFreePctReading } from "./machine-free-pct.js";
 import type { RunnerAdmissionController } from "./runner-admission.js";
 
 export function sqliteDatetime(): string {
@@ -34,6 +35,12 @@ export interface BridgeConfig {
 	 * load/memory pressure, never because of a count.
 	 */
 	runnerAdmission: RunnerAdmissionController;
+	/** FLY-2144: test/scaffold overrides for read-only capacity inputs. */
+	capacityProbes?: {
+		readMemoryFreePct?: () => Promise<MemoryFreePctReading>;
+		accountStorePath?: string;
+		quotaConfigPath?: string;
+	};
 	/** FLY-91: Enable per-issue chat thread creation in chatChannel. */
 	chatThreadsEnabled?: boolean;
 	/** FLY-91: Discord user ID to auto-add as thread member (e.g., server owner). */

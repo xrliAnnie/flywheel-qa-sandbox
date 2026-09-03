@@ -26,7 +26,7 @@ export function isRetryable(err: FlywheelError): boolean {
 /**
  * Retry policy — from Conductor retry pattern (external-repo-survey.md §1.2).
  * Claude sessions are expensive, so defaults are conservative.
- * NOTE: Step 2b defines types only. Actual retry loop is Step 3 (DagDispatcher).
+ * NOTE: Step 2b defines types only. The runtime retry loop lives in the Bridge.
  */
 export interface RetryPolicy {
 	maxRetries: number;

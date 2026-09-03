@@ -24,8 +24,8 @@ export const DEFAULT_CONFIG_FILENAME = "config.json";
 
 /**
  * Marker directory for SessionEnd hook completion files.
- * Shared between TmuxRunner (watches), DagDispatcher (manages lifecycle),
- * and flywheel-session-end.sh (writes marker files).
+ * Shared between TmuxRunner (watches), run-dispatcher (manages lifecycle), and
+ * flywheel-session-end.sh (writes marker files).
  */
 export const FLYWHEEL_MARKER_DIR =
 	process.env.FLYWHEEL_MARKER_DIR ?? "/tmp/flywheel/sessions";

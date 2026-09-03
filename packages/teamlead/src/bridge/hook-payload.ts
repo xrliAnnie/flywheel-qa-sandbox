@@ -6,6 +6,11 @@ import {
 } from "flywheel-comm/text-truncate";
 import type { DesignBackend } from "flywheel-config";
 import { WORKFLOW_RUN_NODE_STATES } from "../workflow-ledger-states.js";
+import {
+	type CapacitySnapshot,
+	canonicalCapacityToken,
+} from "./capacity-snapshot.js";
+import { isCapacityUnavailableToken } from "./machine-free-pct.js";
 import type { PatrolLoopEntry } from "./patrol-loop-ledger.js";
 
 export interface HookPayload {
@@ -28,6 +33,8 @@ export interface HookPayload {
 	roster?: PatrolRosterEntry[];
 	/** FLY-1925: issue-scoped loop ledger projection; absent on legacy replays. */
 	loops?: PatrolLoopEntry[];
+	/** FLY-2144: Bridge-sampled dispatch inputs; facts only, never an admission gate. */
+	capacity?: CapacitySnapshot;
 	generated_at?: string;
 	/** FLY-2018: stable informational outbox identity and retry projection. */
 	workflow_event_id?: string;
@@ -456,15 +463,301 @@ function legacyPatrolBody(
 		status: string;
 		executionId8: string;
 	}>,
+	capacityLines: string[],
 ): string {
 	return [
 		"[patrol_tick] 巡检时间到。",
+		...capacityLines,
 		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
 		...roster.map(
 			(item) =>
 				`- ${item.identifier} [${item.executionId8}] (${item.sessionRole}, ${item.status})`,
 		),
 	].join("\n");
+}
+
+function capacityNumber(
+	value: unknown,
+	opts: { max?: number; integer?: boolean } = {},
+): number {
+	if (
+		typeof value !== "number" ||
+		!Number.isFinite(value) ||
+		value < 0 ||
+		(opts.max !== undefined && value > opts.max) ||
+		(opts.integer === true && !Number.isSafeInteger(value))
+	) {
+		throw new Error("invalid capacity number");
+	}
+	return value;
+}
+
+function capacityPct(value: unknown): number | null {
+	return value === null
+		? null
+		: Math.round(capacityNumber(value, { max: 100 }));
+}
+
+function roundedCapacityNumber(
+	value: unknown,
+	opts: { max?: number; integer?: boolean } = {},
+): number {
+	return Math.round(capacityNumber(value, opts));
+}
+
+function boundedDecimalCapacityNumber(value: unknown): number {
+	return Number(capacityNumber(value).toFixed(2));
+}
+
+function capacityInstant(value: unknown): string {
+	if (typeof value !== "string") throw new Error("invalid capacity instant");
+	const instant = Date.parse(value);
+	if (!Number.isFinite(instant)) throw new Error("invalid capacity instant");
+	return new Date(instant).toISOString();
+}
+
+function capacityNullableInstant(value: unknown): string | null {
+	return value === null ? null : capacityInstant(value);
+}
+
+function capacityUnavailableToken(value: unknown): string {
+	if (!isCapacityUnavailableToken(value)) {
+		throw new Error("invalid capacity unavailable token");
+	}
+	return value;
+}
+
+function capacityUnavailableList(value: unknown): string[] {
+	if (!Array.isArray(value) || value.length === 0) {
+		throw new Error("invalid capacity unavailable list");
+	}
+	const tokens = value.map(capacityUnavailableToken);
+	if (new Set(tokens).size !== tokens.length) {
+		throw new Error("duplicate capacity unavailable token");
+	}
+	return tokens;
+}
+
+function capacityUnavailableSummary(value: unknown): string {
+	const tokens = capacityUnavailableList(value);
+	const hidden = tokens.length - 2;
+	return `${tokens.slice(0, 2).join("; ")}${hidden > 0 ? `; +${hidden}` : ""}`;
+}
+
+function capacityUnavailable(value: unknown): string {
+	const tokens = capacityUnavailableList(value);
+	if (tokens.length !== 1) {
+		throw new Error("invalid single capacity unavailable list");
+	}
+	return tokens[0]!;
+}
+
+function renderValidCapacityLines(capacity: CapacitySnapshot): string[] {
+	if (capacity.schemaVersion !== 1) throw new Error("invalid capacity schema");
+	const generatedAt = capacityInstant(capacity.generatedAt);
+	const tightBelowPct = roundedCapacityNumber(capacity.memory.tightBelowPct, {
+		max: 100,
+	});
+	let memory: string;
+	if (capacity.memory.freePct === null) {
+		if (capacity.memory.tight !== null || capacity.memory.observedAt !== null) {
+			throw new Error("invalid unavailable memory cell");
+		}
+		memory = `?(${capacityUnavailable(capacity.memory.unavailable)})`;
+	} else {
+		const freePct = roundedCapacityNumber(capacity.memory.freePct, {
+			max: 100,
+		});
+		capacityInstant(capacity.memory.observedAt);
+		if (typeof capacity.memory.tight !== "boolean") {
+			throw new Error("invalid memory tight marker");
+		}
+		memory = `${freePct}%(memory_pressure,参考线<${tightBelowPct}%)`;
+	}
+
+	let load: string;
+	if (capacity.load.load1 === null) {
+		if (
+			capacity.load.cpuCount !== null ||
+			capacity.load.perCore !== null ||
+			capacity.load.thresholdPerCore !== null ||
+			capacity.load.observedAt !== null
+		) {
+			throw new Error("invalid unavailable load cell");
+		}
+		load = `?(${capacityUnavailable(capacity.load.unavailable)})`;
+	} else {
+		const load1 = boundedDecimalCapacityNumber(capacity.load.load1);
+		const cpuCount = capacityNumber(capacity.load.cpuCount, { integer: true });
+		if (cpuCount === 0) throw new Error("invalid cpu count");
+		const perCore = boundedDecimalCapacityNumber(capacity.load.perCore);
+		const threshold = boundedDecimalCapacityNumber(
+			capacity.load.thresholdPerCore,
+		);
+		capacityInstant(capacity.load.observedAt);
+		load = `${load1}/${cpuCount}核=${perCore}(阈 ${threshold})`;
+	}
+
+	const hold = capacity.brakes.pressureHold;
+	let pressureHold: string;
+	if (hold.active === null) {
+		pressureHold = `?(${capacityUnavailable(hold.unavailable)})`;
+	} else if (hold.active === true) {
+		if (typeof hold.setBy !== "string") {
+			throw new Error("invalid pressure hold setter");
+		}
+		pressureHold = `置位(${canonicalCapacityToken(hold.setBy)} 自 ${capacityInstant(hold.setAt)})`;
+	} else if (hold.active === false) {
+		pressureHold = "无";
+	} else {
+		throw new Error("invalid pressure hold state");
+	}
+
+	const pause = capacity.brakes.admissionPause;
+	let admissionPause: string;
+	if (pause.active === null) {
+		if (pause.remainingSeconds !== null) {
+			throw new Error("invalid unavailable admission pause");
+		}
+		admissionPause = `?(${capacityUnavailable(pause.unavailable)})`;
+	} else if (pause.active === true) {
+		admissionPause = `剩 ${capacityNumber(pause.remainingSeconds, {
+			integer: true,
+		})}s`;
+	} else if (pause.active === false) {
+		capacityNumber(pause.remainingSeconds, { integer: true });
+		admissionPause = "无";
+	} else {
+		throw new Error("invalid admission pause state");
+	}
+
+	const admission = capacity.brakes.admission;
+	if (admission.admit === null) {
+		capacityUnavailable(admission.unavailable);
+	} else if (typeof admission.admit !== "boolean") {
+		throw new Error("invalid admission decision");
+	}
+	capacityInstant(capacity.brakes.observedAt);
+
+	let runners: string;
+	if (capacity.runners.running === null) {
+		if (
+			capacity.runners.parked !== null ||
+			capacity.runners.total !== null ||
+			capacity.runners.byProject !== null ||
+			capacity.runners.observedAt !== null
+		) {
+			throw new Error("invalid unavailable runner cell");
+		}
+		runners = `?(${capacityUnavailable(capacity.runners.unavailable)})`;
+	} else {
+		const running = capacityNumber(capacity.runners.running, { integer: true });
+		const parked = capacityNumber(capacity.runners.parked, { integer: true });
+		const total = capacityNumber(capacity.runners.total, { integer: true });
+		if (running + parked !== total) throw new Error("invalid runner total");
+		if (
+			typeof capacity.runners.byProject !== "object" ||
+			capacity.runners.byProject === null ||
+			Array.isArray(capacity.runners.byProject)
+		) {
+			throw new Error("invalid runner project counts");
+		}
+		capacityInstant(capacity.runners.observedAt);
+		runners = `${running} · 停车 ${parked}`;
+	}
+
+	const claudeQuota = capacity.quota.claude;
+	if (
+		claudeQuota.source !== "claude-accounts.json" ||
+		!Array.isArray(claudeQuota.accounts)
+	) {
+		throw new Error("invalid Claude quota cell");
+	}
+	capacityNumber(claudeQuota.staleAfterMinutes);
+	const claudeUnavailable =
+		claudeQuota.unavailable === undefined
+			? undefined
+			: capacityUnavailableSummary(claudeQuota.unavailable);
+	let claude: string;
+	if (claudeUnavailable !== undefined && claudeQuota.accounts.length === 0) {
+		claude = `?(${claudeUnavailable})`;
+	} else {
+		const names = new Set<string>();
+		let activeName: string | null = null;
+		const accounts = claudeQuota.accounts.map((account) => {
+			if (
+				typeof account.name !== "string" ||
+				!PATROL_TOKEN_GRAMMAR.test(account.name) ||
+				names.has(account.name) ||
+				typeof account.active !== "boolean" ||
+				typeof account.authUnusable !== "boolean"
+			) {
+				throw new Error("invalid Claude account");
+			}
+			names.add(account.name);
+			if (account.active) {
+				if (activeName !== null) throw new Error("multiple active accounts");
+				activeName = account.name;
+			}
+			const fiveHPct = capacityPct(account.fiveHPct);
+			const sevenDPct = capacityPct(account.sevenDPct);
+			capacityNullableInstant(account.weeklyResetAt);
+			capacityNullableInstant(account.exhaustedUntil);
+			let age: string;
+			if (account.observedAt === null) {
+				if (account.ageMinutes !== null || account.stale !== null) {
+					throw new Error("invalid unobserved account");
+				}
+				age = "未观测";
+			} else {
+				capacityInstant(account.observedAt);
+				const ageMinutes = roundedCapacityNumber(account.ageMinutes);
+				if (typeof account.stale !== "boolean") {
+					throw new Error("invalid account staleness");
+				}
+				age = `${ageMinutes}m 前`;
+			}
+			return `${account.active ? "★" : ""}${canonicalPatrolToken(account.name)} 5h ${fiveHPct ?? "?"}${fiveHPct === null ? "" : "%"}/7d ${sevenDPct ?? "?"}${sevenDPct === null ? "" : "%"}(${age})${account.stale ? "(stale)" : ""}`;
+		});
+		if (
+			(claudeQuota.activeAccount !== null &&
+				typeof claudeQuota.activeAccount !== "string") ||
+			claudeQuota.activeAccount !== activeName
+		) {
+			throw new Error("invalid active account");
+		}
+		claude = accounts.length === 0 ? "无账号" : accounts.join(" · ");
+		if (claudeUnavailable !== undefined) {
+			claude += ` · ⚠️(${claudeUnavailable})`;
+		}
+	}
+	if (capacity.quota.codex.source !== null) {
+		throw new Error("invalid Codex quota cell");
+	}
+	const codexUnavailable = capacityUnavailableList(
+		capacity.quota.codex.unavailable,
+	);
+	if (
+		codexUnavailable.length !== 1 ||
+		codexUnavailable[0] !== "structural: codex_no_usage_api"
+	) {
+		throw new Error("invalid Codex quota cell");
+	}
+
+	return [
+		`容量(Bridge 采样 · 判断输入,不是闸门;快照 ${generatedAt}):`,
+		`- 内存 free ${memory}| 负载 ${load}| 手刹=${pressureHold} | 部署暂停=${admissionPause} | 在跑 ${runners}`,
+		`- 额度 Claude ${claude} | Codex 无数值源`,
+	];
+}
+
+function renderCapacityLines(capacity: CapacitySnapshot | undefined): string[] {
+	if (capacity === undefined) return [];
+	try {
+		return renderValidCapacityLines(capacity);
+	} catch {
+		return ["容量=⚠️ 账面不可读(invalid_capacity_snapshot)"];
+	}
 }
 
 function renderOpenLoop(loop: PatrolLoopEntry["openLoops"][number]): string {
@@ -583,6 +876,7 @@ function renderLoopGroup(
 
 /** Founder-fixed body: alarm + Bridge roster claim, with zero judgment/action. */
 export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
+	const capacityLines = renderCapacityLines(env.event.capacity);
 	const rawRoster = Array.isArray(env.event.roster) ? env.event.roster : [];
 	const roster = rawRoster.map((item) => ({
 		issueId: typeof item?.issueId === "string" ? item.issueId : undefined,
@@ -606,7 +900,7 @@ export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
 			(session) => !session.issueId || !loopsByIssue.has(session.issueId),
 		)
 	) {
-		return legacyPatrolBody(roster);
+		return legacyPatrolBody(roster, capacityLines);
 	}
 
 	const redLoops = loops.filter((loop) => loop.light === "red");
@@ -722,6 +1016,7 @@ export function formatPatrolTick(env: StuckEscalationEnvelopeLike): string {
 	});
 	return [
 		"[patrol_tick] 巡检时间到。",
+		...capacityLines,
 		...summary,
 		`按 Bridge 的账,你名下有 ${roster.length} 个未终结 runner(此名册是待核声明,不是结论):`,
 		...groupLines,

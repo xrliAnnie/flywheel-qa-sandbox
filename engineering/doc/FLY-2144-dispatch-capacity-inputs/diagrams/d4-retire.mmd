@@ -1,0 +1,22 @@
+flowchart TB
+  subgraph BEFORE["退役前:谁还在用 dag-resolver"]
+    PKG["packages/dag-resolver<br/>DagResolver 类 · LinearGraphBuilder · DagNode 类型"]
+    DD["edge-worker/<br/>DagDispatcher.ts<br/>(生产里无人实例化)"]
+    S1["scripts/run-project.ts<br/>scripts/smoke-test.ts<br/>(v0.1 手动入口,4-5 月后无实质改动)"]
+    BP["edge-worker/Blueprint.ts · PreHydrator.ts<br/>只用 DagNode 类型(只读 id)"]
+    T["25 个测试文件<br/>只用 DagNode 类型"]
+    PKG --> DD
+    PKG --> S1
+    PKG --> BP
+    PKG --> T
+    DD --> S1
+  end
+  subgraph AFTER["退役后"]
+    DN["edge-worker/src/<br/>dag-node.ts<br/>DagNode 类型(名字形状不变)"]
+    BP2["Blueprint.ts · PreHydrator.ts"]
+    T2["22 个测试(只改 import 路径)"]
+    G["CI 残留守卫<br/>零豁免"]
+    DN --> BP2
+    DN --> T2
+  end
+  BEFORE -->|"删:整包 · DagDispatcher · 2 个脚本 · 3 个测试"| AFTER
