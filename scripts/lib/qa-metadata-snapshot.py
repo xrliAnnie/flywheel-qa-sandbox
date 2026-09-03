@@ -41,7 +41,24 @@ def snapshot_root(raw_root: str) -> dict[str, object]:
     if not stat.S_ISDIR(root_info.st_mode) or stat.S_ISLNK(root_info.st_mode):
         raise ValueError("root must be a non-symlink directory")
 
-    entries: list[dict[str, object]] = []
+    def row_for(path: bytes, relative: bytes, info: os.stat_result) -> dict[str, object]:
+        kind = entry_type(info.st_mode)
+        row: dict[str, object] = {
+            "pathB64": encoded(relative),
+            "type": kind,
+            "mode": format(stat.S_IMODE(info.st_mode), "04o"),
+            "size": info.st_size,
+            "inode": info.st_ino,
+            "nlink": info.st_nlink,
+            "mtimeNs": info.st_mtime_ns,
+            "uid": info.st_uid,
+            "gid": info.st_gid,
+        }
+        if kind == "symlink":
+            row["linkTargetB64"] = encoded(os.readlink(path))
+        return row
+
+    entries: list[dict[str, object]] = [row_for(root, b".", root_info)]
     pending = [root]
     while pending:
         directory = pending.pop()
@@ -51,18 +68,8 @@ def snapshot_root(raw_root: str) -> dict[str, object]:
             info = os.lstat(child)
             relative = os.path.relpath(child, root)
             kind = entry_type(info.st_mode)
-            row: dict[str, object] = {
-                "pathB64": encoded(relative),
-                "type": kind,
-                "mode": format(stat.S_IMODE(info.st_mode), "04o"),
-                "size": info.st_size,
-                "mtimeNs": info.st_mtime_ns,
-                "uid": info.st_uid,
-                "gid": info.st_gid,
-            }
-            if kind == "symlink":
-                row["linkTargetB64"] = encoded(os.readlink(child))
-            elif kind == "directory":
+            row = row_for(child, relative, info)
+            if kind == "directory":
                 pending.append(child)
             entries.append(row)
     entries.sort(key=lambda row: base64.b64decode(str(row["pathB64"])))
@@ -85,7 +92,7 @@ def main(argv: list[str]) -> int:
     manifest = {"schemaVersion": 1, "roots": roots}
     canonical = json.dumps(
         manifest, ensure_ascii=True, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
+    ).encode("utf-8") + b"\n"
     output = {
         "schemaVersion": 1,
         "sha256": hashlib.sha256(canonical).hexdigest(),

@@ -21,17 +21,29 @@ chmod 000 "$TMP/home/000-secret"
 if snapshot_json=$(python3 "$snapshotter" "$TMP/home" 2>/dev/null) \
     && python3 - "$snapshot_json" <<'PY'
 import base64
+import hashlib
 import json
 import sys
 
 value = json.loads(sys.argv[1])
 assert value["schemaVersion"] == 1
-assert len(value["sha256"]) == 64
+canonical = json.dumps(
+    {"schemaVersion": value["schemaVersion"], "roots": value["roots"]},
+    ensure_ascii=True,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode("utf-8") + b"\n"
+assert value["sha256"] == hashlib.sha256(canonical).hexdigest()
 entries = value["roots"][0]["entries"]
 paths = [base64.b64decode(row["pathB64"]).decode() for row in entries]
 assert paths == sorted(paths, key=lambda path: path.encode())
+root = next(row for row, path in zip(entries, paths) if path == ".")
+assert root["type"] == "directory"
+assert all(field in root for field in ("mode", "size", "inode", "nlink", "mtimeNs"))
 secret = next(row for row, path in zip(entries, paths) if path == "000-secret")
 assert secret["type"] == "file" and secret["mode"] == "0000"
+assert isinstance(secret["inode"], int) and secret["inode"] > 0
+assert isinstance(secret["nlink"], int) and secret["nlink"] > 0
 link = next(row for row, path in zip(entries, paths) if path == "link")
 assert link["type"] == "symlink"
 assert base64.b64decode(link["linkTargetB64"]).decode() == "sub/nested"
@@ -40,6 +52,13 @@ then
   pass "metadata snapshot enumerates sorted lstat/readlink records without reading mode-000 files"
 else
   fail "metadata snapshot canonical manifest"
+fi
+
+if snapshot_again=$(python3 "$snapshotter" "$TMP/home" 2>/dev/null) \
+    && [[ "$snapshot_again" == "$snapshot_json" ]]; then
+  pass "metadata snapshot serialization is byte-stable across repeated enumeration"
+else
+  fail "metadata snapshot canonical serialization changed without a metadata mutation"
 fi
 
 mutant="$TMP/qa-metadata-snapshot-mutant.py"
