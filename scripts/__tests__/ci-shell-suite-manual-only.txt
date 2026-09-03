@@ -32,7 +32,6 @@ scripts/__tests__/lead-alert-notify-digest-kind.test.sh
 scripts/__tests__/platform-deps.test.sh
 scripts/__tests__/quota-monitor-wrapper.test.sh
 scripts/__tests__/restart-discord-plugin.test.sh
-scripts/__tests__/restart-services-admission-pause.test.sh
 scripts/__tests__/restart-stop-bridge-portfree.test.sh
 scripts/__tests__/supervisor.test.sh
 scripts/__tests__/test-auto-approve-identity.test.sh

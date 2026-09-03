@@ -1,0 +1,23 @@
+flowchart TD
+    A[部署票开始<br/>Step 0,旧 Bridge 还在跑] --> B{有 legacy cutover receipt?<br/>status=paused 且无 leaseId}
+    B -- 否 --> C[普通部署路径<br/>reason = restart-services:…:pid=…<br/>行为不变]
+    B -- 是 --> D[读 receipt 的 pause.reason<br/>校验: 非空 / ≤200 / 首尾无空白 / 无换行]
+    D -- 不合法 --> E[停下: 不碰刹车、不停旧 Bridge<br/>日志点名原因,操作者修 receipt 后重发票]
+    D -- 合法 --> F[phase-1 pause<br/>reason = receipt 的 reason 逐字<br/>expectedLegacyReason = 同一句]
+    F --> G{哪个 Bridge 应答?}
+    G -- 旧 Bridge --> H[忽略 expected 字段<br/>覆盖成同一串 = 幂等<br/>TTL 刷成 1800s,无 leaseId]
+    G -- 新 Bridge,行无主且标签匹配 --> I[直接分配 owner lease<br/>写 0600 handoff,标记不 resume]
+    G -- 新 Bridge 拒绝,或超时/断连<br/>结果不明 --> P[停下: 不停 Bridge<br/>日志指向 runbook §8.3 按观测状态恢复]
+    G -- 连接被拒 rc=7<br/>旧 Bridge 已 bootout --> J[保留既有刹车<br/>等健康后接管]
+    H --> K[停旧 Bridge → 构建 → 起新 Bridge → health + build identity]
+    J --> K
+    K --> L[takeover: expectedLegacyReason<br/>= 同一个 helper 读到的 receipt reason]
+    L -- 匹配,得到 leaseId --> M[写 0600 handoff<br/>Lead 波开始]
+    L -- 409 --> N[拒绝 Lead 波<br/>行为不变]
+    I --> K
+    style E fill:#ffe5e5,stroke:#ff3b30
+    style P fill:#ffe5e5,stroke:#ff3b30
+    style N fill:#ffe5e5,stroke:#ff3b30
+    style M fill:#e6f9ed,stroke:#34c759
+    style F fill:#e8f0fe,stroke:#007aff
+    style D fill:#e8f0fe,stroke:#007aff

@@ -1,0 +1,27 @@
+classDiagram
+    class admission_pause_row {
+        Bridge 数据库里唯一一行
+        lease_id : 空 或 UUID
+        reason : 文本 ≤200
+        paused_until : 到期时间
+    }
+    class cutover_receipt {
+        host-terminal-cutover.json 0600
+        status : paused / resumed
+        pause.reason : 唯一事实来源
+        pause.leaseId : 空 = legacy 形态
+    }
+    class lease_handoff {
+        host-terminal-cutover.admission-lease-id 0600
+        一行 UUID
+        由部署脚本 takeover 写出
+        host 工具续期/resume 前必须导入
+    }
+    class run_local_receipt {
+        restart-services-admission-pause-PID.json 0600
+        pauseIdentifier : restart-services:…:pid=…
+        只用于普通部署路径
+    }
+    cutover_receipt "pause.reason" --> admission_pause_row : phase-1 逐字写入(新)<br/>takeover 逐字匹配(不变)
+    admission_pause_row "lease_id" --> lease_handoff : takeover 成功后写出
+    run_local_receipt "pauseIdentifier" --> admission_pause_row : 普通路径 phase-1 写入 + takeover 匹配(不变)

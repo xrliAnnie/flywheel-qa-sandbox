@@ -252,6 +252,14 @@ cutover_legacy_pause_pending() {
         "$receipt" >/dev/null 2>&1
 }
 
+cutover_legacy_pause_reason() {
+    local receipt="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-${HOME}/.flywheel/state/host-terminal-cutover.json}"
+    jq -er '.pause.reason
+            | select(type == "string" and length > 0 and length <= 200
+                     and test("^\\S") and test("\\S$") and (test("[\\r\\n]") | not))' \
+        "$receipt" 2>/dev/null
+}
+
 restart_admission_receipt_path() {
     printf '%s\n' "${HOME}/.flywheel/state/restart-services-admission-pause-$$.json"
 }
@@ -337,6 +345,10 @@ pause_admission_best_effort() {
     esac
     if cutover_legacy_pause_pending; then
         cutover_pending=true
+        pause_identifier=$(cutover_legacy_pause_reason) || {
+            log "ERROR: cutover receipt has no valid legacy pause identifier; refusing to touch the brake before Bridge stop"
+            return 1
+        }
         ADMISSION_PAUSE_NEEDS_CUTOVER_TAKEOVER=true
         ADMISSION_PAUSE_RELEASE_ON_EXIT=false
     else
@@ -347,11 +359,20 @@ pause_admission_best_effort() {
         --argjson durationSeconds "$ADMISSION_PAUSE_SECONDS" \
         --arg reason "$pause_identifier" \
         --arg leaseId "$owned_lease_id" \
+        --argjson cutoverPending "$cutover_pending" \
         '{durationSeconds: $durationSeconds, reason: $reason}
-         + (if $leaseId == "" then {} else {leaseId: $leaseId} end)')
-    if response=$(bridge_admission_request pause "$payload"); then
+         + (if $leaseId != "" then {leaseId: $leaseId}
+            elif $cutoverPending then {expectedLegacyReason: $reason}
+            else {} end)')
+    local request_rc=0
+    response=$(bridge_admission_request pause "$payload") || request_rc=$?
+    if (( request_rc == 0 )); then
         if jq -e '.admissionPause.reacquiredAfterLapse == true' <<<"$response" >/dev/null 2>&1; then
             log "WARNING: Bridge admission owner lease was reacquired after expiry; admission continuity was broken"
+            if [[ "$cutover_pending" == "true" ]] && ! record_admission_takeover_lapse true; then
+                log "ERROR: legacy admission lapse evidence could not be written to the owning receipt"
+                return 1
+            fi
         fi
         lease_id=$(jq -r '.admissionPause.leaseId // empty' <<<"$response" 2>/dev/null || true)
         if [[ "$lease_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$ ]]; then
@@ -382,9 +403,20 @@ pause_admission_best_effort() {
                 log "WARNING: Bridge admission paused without an owner lease id but its run-local receipt could not be written; preserving the brake without takeover"
             fi
         fi
+    elif [[ "$cutover_pending" == "true" && "$owned_lease_id" == "" ]] && (( request_rc != 7 )); then
+        # Fresh cutover acquisition: only a connection refusal (curl rc=7)
+        # proves no request reached the Bridge (the booted-out legacy case).
+        # Any HTTP rejection or an ambiguous transport failure may mean the
+        # legacy row is owned, mismatched, or already mutated; the post-health
+        # takeover would then fail deterministically, so refuse before stop.
+        log "ERROR: legacy cutover admission acquisition was rejected or its outcome is unknown (curl rc=${request_rc}); refusing to stop the Bridge. Establish the brake state (receipt, 0600 handoff, host-terminal-cutover.sh inspect-admission/pause-admission) and follow runbook §8.3 before re-ticketing"
+        return 1
     else
-        # Bootstrap compatibility: the pre-feature Bridge answers 404. Phase 1
-        # is intentionally best-effort; TTL protects pause-aware versions.
+        # A fresh cutover acquisition reaches this fallback only for rc=7 (the
+        # booted-out legacy Bridge). Ordinary deployments and owned-lease
+        # renewals keep the best-effort contract for every other failure
+        # (pre-feature 404, foreign owner, transport error); TTL protects
+        # pause-aware versions.
         log "WARNING: admission pause unavailable (pre-feature Bridge, foreign owner, or control API failure); no owned admission lease acquired; preserving any existing brake"
     fi
     return 0
@@ -395,8 +427,7 @@ takeover_cutover_admission_pause_after_bridge_health() {
     local payload response lease_id="" cutover_owner=false expected_legacy_reason=""
     [[ "${ADMISSION_PAUSE_RELEASE_ON_EXIT:-true}" == "true" ]] || cutover_owner=true
     if [[ "$cutover_owner" == "true" ]]; then
-        local receipt="${FLYWHEEL_HOST_CUTOVER_RECEIPT:-${HOME}/.flywheel/state/host-terminal-cutover.json}"
-        expected_legacy_reason=$(jq -er '.pause.reason | select(type == "string" and length > 0 and length <= 200)' "$receipt" 2>/dev/null) || {
+        expected_legacy_reason=$(cutover_legacy_pause_reason) || {
             log "ERROR: cutover receipt has no valid legacy pause identifier"
             return 1
         }

@@ -1,0 +1,17 @@
+sequenceDiagram
+    autonumber
+    participant R as 部署脚本 restart-services
+    participant O as 旧 Bridge 4e77a39<br/>(不认 lease)
+    participant DB as admission_pause 行<br/>(同一个数据库)
+    participant N as 新 Bridge 63154c2<br/>(认 lease)
+    Note over DB: reason = "FLY-2264 arm64 tmux destructive window"<br/>lease_id = 空(host 工具用旧 Bridge 设的刹车)
+    R->>O: 15:25:04 phase-1 pause<br/>reason = "restart-services:updater:pid=…"
+    O->>DB: 无条件覆盖 reason
+    O-->>R: 200,但没有 leaseId
+    R->>O: 停止旧 Bridge,构建新版本
+    R->>N: 启动,15:26:17 health OK
+    R->>N: takeover: expectedLegacyReason =<br/>receipt 里的 "FLY-2264 arm64 …"
+    N->>DB: UPDATE … WHERE lease_id IS NULL<br/>AND reason = "FLY-2264 arm64 …"
+    DB-->>N: 0 行(reason 已被第 2 步改掉)
+    N-->>R: 409 owned by another lease
+    Note over R: refusing the Lead wave<br/>deployed-sha 不推进,票作废

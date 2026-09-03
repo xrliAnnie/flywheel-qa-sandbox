@@ -830,13 +830,16 @@ jobs:
         run: bash scripts/__tests__/runtime-role-auto-qa-retirement.test.sh
 
       # FLY-1434: the single full-fleet restart contract and quota-monitor
-      # env-change caller must stay in CI. Both suites use throwaway HOMEs,
+      # env-change caller must stay in CI. These suites use throwaway HOMEs,
       # repositories, launchctl/restart shims, and local logs only.
+      # FLY-2280: the admission-pause contract suite (hermetic fake HOME/curl)
+      # guards the cross-version cutover bootstrap.
       - name: Test — FLY-1434 unified restart + quota caller
         run: |
           bash scripts/__tests__/setup-quota-monitor.test.sh
           bash scripts/__tests__/restart-account-switch-runtime-preflight.test.sh
           bash scripts/test-restart-services.sh
+          bash scripts/__tests__/restart-services-admission-pause.test.sh
 
       # FLY-1715: runner credential tier and managed voice replacement are
       # deployment boundaries. Explicitly registered because script-tests

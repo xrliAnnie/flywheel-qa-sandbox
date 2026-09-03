@@ -113,6 +113,8 @@ installer 可安全重跑：它只重验 manifest 内受审字节，并原样保
 通过条件：旧 API 返回 active，receipt 为 `status=paused`，但没有 `pause.leaseId`；quiescence event
 证明连续两次 total=0。这个 NULL-owner row 是预期 bootstrap 形态；此时不得用新工具调用
 `pause-admission`，也不得无主 resume。
+`--reason` 会被部署票逐字当作接管匹配键：≤200 字符、首尾无空白、无换行，建议只用 ASCII；
+不满足时新脚本会在停止旧 Bridge 之前拒绝该票。
 
 ### 3.2 单独的 preparation receipt
 
@@ -260,8 +262,11 @@ link 与部署票之间若任何 KeepAlive 意外重拉 Lead，旧 gate 会拒�
 
 新 `restart-services.sh` 的强制时序：
 
-1. 发现 0600 legacy transaction receipt，记为待接管；旧 Bridge 已 bootout 时，第一次 pause API
-   不可达仍保持此状态。
+1. 发现 0600 legacy transaction receipt，记为待接管；phase-1 以 receipt 中的 exact pause reason
+   同时作为 `reason` 与 `expectedLegacyReason` 向当前 Bridge 续 1800s 的 pause（旧 Bridge 会以同一
+   reason 覆盖该行；lease-aware Bridge 精确匹配后直接分配 owner 并写 handoff）；只有连接被拒
+   （旧 Bridge 已 bootout）才保持待接管状态继续，任何 HTTP 拒绝或结果不明的传输失败都在停止
+   Bridge 之前拒绝该票。
 2. 新 Bridge health 与 build identity 通过。
 3. 在任何 Lead 波之前，以 receipt 中的 exact pause reason 为 expected identifier，原子接管 legacy
    NULL row；identifier 不匹配即 409，绝不接管外部 brake。常规部署另写 0600 run-local receipt
@@ -358,6 +363,34 @@ founder 的 cmux 全 tab 视觉确认放在自动验收完成、resume 前后紧
 5. **确需恢复 3.5a**：另取 founder 明确 rollback 授权，先把接受 3.5a+x86_64 的代码通过 freeze +
    SHA proof + 唯一正门实际部署；只有旧 gate 已出生后，才可停 3.7c server、`brew unpin/unlink tmux`、
    移除 cmux pin并使用已演练 closure 恢复。不得用 test-only canonical env 绕门。
+
+### 8.3 部署票在 Step 0 被拒后的恢复
+
+日志出现 `rejected or its outcome is unknown` 只说明 restart 没有收到权威的成功租约回包；请求是否
+送达、行是否已被改写、是否已经有 owner 都未知。操作者必须另行建立行的真实状态，再按下表恢复：
+
+| 已建立的状态 | 恢复动作 |
+|---|---|
+| 0600 handoff 存在，当前是 lease-aware Bridge | 用新工具 `pause-admission` 导入。成功判据是退出码 0，且 0600 receipt 被改写为 owned 形态（`.pause.leaseId` 等于 handoff 内容）；stdout 刻意不暴露 owner capability，不要在 stdout 找 `leaseId`。退出码 3 表示工具已把 continuity breach 写入 receipt/event，先保全证据且不得宣告成功。成功后立即再发票，走 ordinary owned-receipt 路径。 |
+| 0600 handoff 存在，当前是旧 Bridge | 旧 Bridge 不返回 `leaseId`，新工具无法导入。发一张过渡票：phase-1 对旧 Bridge 幂等续期；新 Bridge 出生后 takeover 对已有主的行返回 409，并按设计在 Lead 波前拒绝。随后按上一行导入 handoff，再发 owned-receipt 票完成 Lead 波。 |
+| 没有可用 handoff（不存在或导入返回 409），当前是 lease-aware Bridge | 不做固定等待。取得 founder 授权后，以裸 curl 发一次**无限定** `pause`（body 只有 `durationSeconds` 与 `reason: R`，不带 `leaseId` / `expectedLegacyReason`）作原子探测兼获取。200 且返回 `admissionPause.leaseId` 表示行原本无主或 owner 已过期：把 id 写成目录 0700、文件 0600 的 handoff，再按第一行导入。409 表示仍有活跃 owner：用 `inspect-admission` 权威观测到 `active == false`，把 admission 重开记为 continuity breach，再重复获取。 |
+| row reason 与 receipt 不匹配且无主，当前是旧 Bridge | 用保存的 pre-FF 旧工具对旧 Bridge 重跑 `pause-admission --reason <receipt 中同一 reason>`，覆盖回匹配键后再发票。 |
+
+owned receipt 再发票前必须先用新工具成功续期一次（成功判据同表第一行），确保 lease 仍 active；否则
+ordinary path 的过期行可能被无限定接管。代码回滚回旧 Bridge 后的过渡票预期会在 Lead 波前失败，不能
+当作事故重试。这里不新增自动接管机制；所有无限定获取均需 founder 明确授权。
+
+### 8.4 代码回滚回旧 Bridge 后的前向转换
+
+若代码 rollback 重新拉起旧 Bridge，而数据库行仍带新 Bridge 铸出的 owner，按固定四步前向转换：
+
+1. 保留 legacy receipt 与 0600 handoff，发一张过渡票，让旧 Bridge 以 receipt reason 幂等续期；
+2. 新 Bridge 出生后，预期 takeover 因行已有 owner 而拒绝，并在任何 Lead 波前结束该票；
+3. 用新工具从 handoff 导入 owner，并成功续期，得到 owned receipt；
+4. 再发 owned-receipt 票，走 ordinary path 完成 Lead 波。
+
+窗口策略可由 founder 预先选择 `FLYWHEEL_RESTART_DISABLE_CODE_ROLLBACK=1`，避免部署失败时自动把代码
+rollback 到旧 Bridge；这是既有选项，本流程不改变其默认值。
 
 ## 9. 本单明确不做
 
