@@ -1,14 +1,13 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 12/12
-updated: 2026-09-03T21:29:48.904Z
-nextStep: Commit engineering/doc/milestones/FLY-2301.md as the last commit, pass
-  exact-head code review, create the PR, and complete needs_review
+phaseCursor: 1/8
+updated: 2026-09-03T21:43:15.276Z
+nextStep: "QA: onboard done; read plan/diff; probe launchctl capability"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (12/12)
-**next**: Commit engineering/doc/milestones/FLY-2301.md as the last commit, pass exact-head code review, create the PR, and complete needs_review
+**phase**: implement (1/8)
+**next**: QA: onboard done; read plan/diff; probe launchctl capability
