@@ -1,13 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 7/12
-updated: 2026-09-03T18:56:42.505Z
-nextStep: "按 T9 先实现拒绝集 .env 投影器及表驱动测试，再接 qa_slot_start_lead Codex 分支；偏离点: 无"
+phaseCursor: 8/12
+updated: 2026-09-03T19:05:17.881Z
+nextStep: "实现 T6 registry v2 收敛拆除与 restart drill（严格保留纯 Claude 快路径），再补 T9/T10
+  Codex hermetic E2E；偏离点: 无"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (7/12)
-**next**: 按 T9 先实现拒绝集 .env 投影器及表驱动测试，再接 qa_slot_start_lead Codex 分支；偏离点: 无
+**phase**: implement (8/12)
+**next**: 实现 T6 registry v2 收敛拆除与 restart drill（严格保留纯 Claude 快路径），再补 T9/T10 Codex hermetic E2E；偏离点: 无
