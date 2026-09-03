@@ -44,7 +44,7 @@
 <body>
 <div class="wrap">
   <h1>529 房台架支持 Codex 形状的常驻 Lead</h1>
-  <div class="meta">FLY-2301 · 设计说明 · 2026-09-03 · 分支 flywheel-FLY-2301 · plan rev4(Codex 设计评审四轮)</div>
+  <div class="meta">FLY-2301 · 设计说明 · 2026-09-03 · 分支 flywheel-FLY-2301 · plan rev5(Codex 设计评审五轮)</div>
 
   <section class="card green" data-section="一句话总结">
     <h2>一句话总结</h2>
@@ -89,7 +89,7 @@
       <div>验活</div><div>launchd 报告的进程号,就是那个 node 运行时进程;它的环境里 <code>CODEX_HOME</code> 等于房里的隔离 home;心跳文件里的 <code>processPid</code> 等于它。</div>
       <div>就绪</div><div>心跳文件 <code>state == "online"</code>(Codex 后端不写 Claude 那种就绪 lease 文件,所以不能沿用),<b>并且</b> 529 房自己的 tmux 服务器上必须出现 <code>&lt;project&gt;-&lt;lead&gt;</code> 窗口 —— 在房里这是硬门(生产运行时对窗口仍是失败不致命),因为窗口开错服务器就等于开进了生产 cmux。</div>
       <div>launchd 演练</div><div>两式:强杀进程(只证明 KeepAlive 会自动拉起)和 <code>launchctl kickstart -k</code>(只证明生产巡逻器判定假死后执行的那个动作能收敛)。收敛判据 = 新进程号、新启动时间,且心跳里的 <code>generationId</code>、<code>carrierInstanceId</code> 都换了。它<b>不</b>证明巡逻器的检测、权威复核或 Bridge 触发 —— 那些明确不在本单(见「诚实边界」)。演练证据是一份不含任何环境变量或凭据的 JSON。</div>
-      <div>拆房</div><div>有序收敛:先 bootout(让 launchd 放手)并等到进程号真的消失,再停掉 Codex 的 <span class="term">remote-control daemon</span>(Codex 常驻在后台的守护进程,它的 socket 藏在 CODEX_HOME 里,Bridge 的孤儿收割器看不见它)并等到它的 pid 和 socket 都消失,最后才随房目录一起删除。任何一步没收敛就报失败并保留房目录,不会「报成功但留下孤儿」。纯 Claude 房的拆除走与今天逐字节相同的旧循环,不沾这套新逻辑,并有守卫证明。</div>
+      <div>拆房</div><div>有序收敛:先 bootout(让 launchd 放手)并等到进程号真的消失,再停掉 Codex 的 <span class="term">remote-control daemon</span>(Codex 常驻在后台的守护进程,它的 socket 藏在 CODEX_HOME 里,Bridge 的孤儿收割器看不见它)并等到它的 pid 和 socket 都消失,最后才随房目录一起删除。最后还要等 529 房自己的 tmux 服务器真正退役(会话查不到、socket 文件消失,窗口自然随之消失)。任何一步没收敛就报失败并保留房目录,不会「报成功但留下孤儿」。纯 Claude 房的拆除走与今天逐字节相同的旧循环,不沾这套新逻辑,并有守卫证明。</div>
     </div>
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="验活、就绪与 launchd 演练" placeholder="写下你的意见…"></textarea></div>
   </section>
@@ -127,7 +127,7 @@
       <li><span class="badge new">A1–A3</span>在 529 房起出一个 Codex 形状的受管常驻 Lead:plist 两参、RunAtLoad + KeepAlive 生效、验活与就绪判据通过。</li>
       <li><span class="badge new">A2</span>隔离:home / 状态 / tmux 窗口全在房目录;生产的 Codex 状态目录、生产 tmux 会话、三个生产 Codex home 零写入(前后对照)。</li>
       <li><span class="badge new">A4</span>两式 launchd 演练收敛(强杀证 KeepAlive,kickstart 证执行器与共同后置条件),证据 JSON 可独立复核。</li>
-      <li><span class="badge new">A5</span>拆房收敛:label 不在 launchd、运行时与 daemon 进程都不在、socket 不在、窗口不在、目录已删;任一步失败即非零并保留目录。</li>
+      <li><span class="badge new">A5</span>拆房收敛:label 不在 launchd、运行时与 daemon 进程都不在、daemon socket 不在、房的 tmux 服务器已退役(窗口随之不在)、目录已删;任一步失败即非零并保留目录。</li>
       <li><span class="badge keep">A6</span>守卫:Claude 的五面产物(plist / .env / manifest / 全局 launch-manifest / 命令输出 JSON)各有逐字节黄金基线和专属「变异体对照」——把对应产物的生成代码故意改坏一处,先证明它确实改变了字节,再证明只有那一份基线变红(不然守卫不算存在);Codex plist、「去掉 tmux 路由」、「去掉旧窗口清理」也各有必红变异;来源 home 命中拒绝名单必须被拒。</li>
       <li><span class="badge keep">A7</span>既有 Claude Lead 房回归全绿:四个 shell 测试套件 + 真 529 房 Claude slot 启动 / 验活 / 拆除,其五面产物与改动前逐字节相同(用哈希比对,不把含令牌的文件打印出来)。</li>
       <li><span class="badge keep">A8</span><code>codex-lead.sh</code> 那一行改动:同一输入下改前改后的状态路径逐字节相同(拿 git 里的旧版本和工作副本双跑比对,不靠推理)。</li>
