@@ -4,14 +4,14 @@ import {
 	buildCronTargetId,
 	buildTargetId,
 	fileSourceRevision,
-	type ManagementSnapshotV1,
+	type ManagementSnapshot,
 	makeManagedValue,
 	parseTargetId,
 } from "../bridge/management-console-contract.js";
 
-function snapshot(): ManagementSnapshotV1 {
+function snapshot(): ManagementSnapshot {
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		generatedAt: "2026-07-14T00:00:00.000Z",
 		snapshotRevision: "snapshot:test",
 		sources: [],
@@ -26,10 +26,10 @@ function snapshot(): ManagementSnapshotV1 {
 
 describe("management console contract", () => {
 	it("requires a versioned aggregate snapshot with every top-level section", () => {
-		const value = snapshot();
+		const value = { ...snapshot(), schemaVersion: 2 };
 		expect(() => assertManagementSnapshot(value)).not.toThrow();
 		expect(value).toMatchObject({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			projects: [],
 			presentationGroups: [],
 			unassignedCrons: [],
@@ -37,6 +37,15 @@ describe("management console contract", () => {
 			extensions: [],
 		});
 	});
+
+	it.each([1, 3])(
+		"rejects management snapshot schema version %i",
+		(version) => {
+			expect(() =>
+				assertManagementSnapshot({ ...snapshot(), schemaVersion: version }),
+			).toThrow(/schema version/i);
+		},
+	);
 
 	it("represents value, revision, capability, consequence and source error", () => {
 		const managed = makeManagedValue({

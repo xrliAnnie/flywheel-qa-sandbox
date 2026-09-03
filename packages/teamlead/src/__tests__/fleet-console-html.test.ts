@@ -59,10 +59,45 @@ describe("management console HTML", () => {
 		expect(html).not.toContain("data-dag-command");
 	});
 
-	it("renders workflow names exclusively from backend DAG fields", () => {
+	it("renders graph names and connections exclusively from backend DAG fields", () => {
 		expect(html).not.toContain("QA 失败 → 回实现");
-		expect(html).toContain("esc(qaNode.name)");
-		expect(html).toContain("esc(implementNode.name)");
+		expect(html).toContain("esc(node.name)");
+		expect(html).toContain("graph.edges.forEach");
+		expect(html).toContain("graph.loops.forEach");
+		expect(html).not.toContain("for(var i=0;i<n.length-1;i++)");
+	});
+
+	it("keeps DAG classification and roster links source-driven", () => {
+		for (const forbidden of [
+			"/api/console-next",
+			"FLY2071_LAYOUT",
+			"_disabled",
+			"跑过",
+			"governance",
+			'"https://github.com/"+',
+			"renderRoles(",
+			"role-link",
+			".squad:after",
+		]) {
+			expect(html).not.toContain(forbidden);
+		}
+		expect(html).toContain('data-kind="product"');
+		expect(html).toContain('data-kind="engineering"');
+		expect(html).toContain("ENG_NODE_TYPES");
+		expect(html).toContain("lay-note");
+	});
+
+	it("uses one aligned four-column Flag list and one data-tone contract", () => {
+		expect(html).toContain(
+			".flag-head,.flag-row{display:grid;grid-template-columns:224px minmax(0,1fr) 232px 116px",
+		);
+		expect(html).toMatch(
+			/\.flag-head\{[^}]*border-left:3px solid transparent[^}]*\}/,
+		);
+		expect(html).not.toContain(".flag-columns");
+		expect(html).toContain('.flag-read[data-tone="changed"]');
+		expect(html).toContain('.flag-read[data-tone="unknown"]');
+		expect(html).toContain("data-tone=\"'+rd.tone+'\"");
 	});
 
 	it("ships syntactically valid dependency-free browser JavaScript", () => {

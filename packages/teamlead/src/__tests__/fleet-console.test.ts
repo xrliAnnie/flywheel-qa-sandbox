@@ -117,7 +117,7 @@ describe("FleetConsole — read model", () => {
 		const c = makeConsole(dir, {
 			managementSnapshotProviders: () => providers,
 		});
-		expect(c.buildManagementSnapshot().schemaVersion).toBe(1);
+		expect(c.buildManagementSnapshot().schemaVersion).toBe(2);
 		expect(reads).toBe(1);
 		c.close();
 	});

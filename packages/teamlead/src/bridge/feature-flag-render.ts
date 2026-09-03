@@ -5,7 +5,7 @@
  * localhost Fleet Console (which fetches the card fragment + wires toggles) and
  * the phone report — so the two never drift. Apple-light cards (html-report-style):
  * white card, 12px radius, subtle shadow, 4px LEFT-BORDER color-coding by category
- * (feature=blue / kill-switch=amber / governance=purple). Read-only by itself;
+ * (feature=blue / kill-switch=amber). Read-only by itself;
  * an interactive `control` slot (console button / phone checkbox) is injected per
  * surface for the `direct`-toggleable flags only.
  */
@@ -44,16 +44,13 @@ export function effectLabel(flag: FlagView): string {
 /** Human category label (clearer bilingual labels — Annie found the raw terms confusing). */
 export function categoryLabel(cat: FlagView["category"]): string {
 	if (cat === "kill_switch") return "紧急开关 kill-switch";
-	if (cat === "governance_gate") return "治理门 governance";
 	return "功能开关 feature";
 }
 
-/** One-line definition of each category (⑤ — Annie was confused by the 3 types). */
+/** One-line definition of each remaining category. */
 export function categoryDefinition(cat: FlagView["category"]): string {
 	if (cat === "kill_switch")
 		return "出问题时一键关停某个子系统的「保护/急停」开关。多为默认开着(保护生效),紧急时设 =0 关停。";
-	if (cat === "governance_gate")
-		return "安全 / 审批红线(如 founder 同意门、写权限门)。永远只读 —— 绝不能在这个面板上改。";
 	return "打开 / 关闭一个产品功能。默认多为开着,关掉 = 停用这个功能。";
 }
 
@@ -64,8 +61,6 @@ export function categoryDefinition(cat: FlagView["category"]): string {
  */
 export function effectSentence(flag: FlagView): string {
 	if (flag.dormant) return "已登记但 runtime 暂不加载(预留项),只读。";
-	if (flag.category === "governance_gate")
-		return "治理门:安全/审批红线,永远只读、绝不在此改。";
 	const proj =
 		flag.scope === "project" ? "每个项目单独设,改后对新 run 生效。" : "";
 	if (flag.valueKind !== "bool") {
@@ -84,13 +79,9 @@ export function effectSentence(flag: FlagView): string {
 	return `${base}${proj ? ` ${proj}` : ""}`;
 }
 
-/** The category legend — 3 cards explaining the difference (⑤). */
+/** The category legend for legacy report consumers. */
 export function renderCategoryLegend(): string {
-	const cats: FlagView["category"][] = [
-		"feature",
-		"kill_switch",
-		"governance_gate",
-	];
+	const cats: FlagView["category"][] = ["feature", "kill_switch"];
 	const cards = cats
 		.map(
 			(c) =>
@@ -102,16 +93,12 @@ export function renderCategoryLegend(): string {
 
 /** CSS class suffix for a category (drives the left-border color). */
 export function categoryClass(cat: FlagView["category"]): string {
-	return cat === "governance_gate"
-		? "ffc-gov"
-		: cat === "kill_switch"
-			? "ffc-kill"
-			: "ffc-feat";
+	return cat === "kill_switch" ? "ffc-kill" : "ffc-feat";
 }
 
 /**
  * A flag is offered a direct toggle only when it is an env, bridge-global,
- * call-time, non-governance, non-dormant `direct` flag (registry invariant). The
+ * call-time, non-dormant `direct` flag (registry invariant). The
  * server re-checks on stage/apply — this is only which cards show a control.
  */
 export function isFlagViewDirectToggleable(flag: FlagView): boolean {
@@ -308,12 +295,7 @@ export function renderFlagCard(
 ): string {
 	const name = esc(flag.envVar ?? flag.configKey ?? flag.name);
 	const cat = categoryLabel(flag.category);
-	const catClass =
-		flag.category === "governance_gate"
-			? "ff-gov"
-			: flag.category === "kill_switch"
-				? "ff-kill"
-				: "ff-feat";
+	const catClass = flag.category === "kill_switch" ? "ff-kill" : "ff-feat";
 	const control = renderFlagControl(flag, mode);
 	const ignoredManagedEnv =
 		flag.storeManaged && flag.fileConfigured && flag.clockReadiness === "ready"
@@ -348,7 +330,6 @@ export const FEATURE_FLAG_CSS = `
   border-left:4px solid #86868b}
 .ffc-feat{border-left-color:#007aff}
 .ffc-kill{border-left-color:#ff9500}
-.ffc-gov{border-left-color:#af52de}
 .ffc-head{display:flex;align-items:center;gap:8px}
 .ffc-name{font-family:'SF Mono',monospace;font-size:12px;color:#1a365d;font-weight:600}
 .ffc-state{margin-left:auto;text-align:right}
@@ -359,7 +340,6 @@ export const FEATURE_FLAG_CSS = `
 .ffleg{background:#fff;border-radius:12px;padding:11px 14px;box-shadow:0 1px 3px rgba(0,0,0,.06);border-left:4px solid #86868b}
 .ffleg.ffc-feat{border-left-color:#007aff}
 .ffleg.ffc-kill{border-left-color:#ff9500}
-.ffleg.ffc-gov{border-left-color:#af52de}
 .ffleg-t{font-weight:650;font-size:12.5px;margin-bottom:3px}
 .ffleg-d{color:#86868b;font-size:11.5px;line-height:1.5}
 .ffc-btn{margin-left:auto;border:1px solid #007aff;background:#007aff;color:#fff;border-radius:8px;
@@ -378,7 +358,6 @@ export const FEATURE_FLAG_CSS = `
 .ff-val{background:#e8f0fe;color:#1a365d;font-family:'SF Mono',monospace}
 .ff-feat{background:#e8f0fe;color:#007aff}
 .ff-kill{background:#fff3e0;color:#c66a00}
-.ff-gov{background:#f3e8fe;color:#8944ab}
 .ff-eff{background:#f5f5f7;color:#48484a}
 .ff-warn{background:#fff3e0;color:#9a5b00}
 .ff-via{background:#eef2f7;color:#59636e}
@@ -389,10 +368,9 @@ export const FEATURE_FLAG_CSS = `
 
 /**
  * Render the whole feature-flags view as ONE flat list of Apple cards (Annie:
- * "别分三类,一个 feature flag 够了" — don't split into 3 categories). Each card
- * keeps its left-border color + governance stays locked (non-toggleable), but
- * there is no category grouping/legend to confuse the founder. `opts.legend` is
- * retained for byte-compat but ignored (the 3-type legend was removed).
+ * "别分三类,一个 feature flag 够了" — don't split into categories). Each card
+ * keeps its left-border color, but there is no category grouping/legend to
+ * confuse the founder. `opts.legend` is retained for byte-compat but ignored.
  */
 export function renderFeatureFlagsHtml(
 	flags: FlagView[],

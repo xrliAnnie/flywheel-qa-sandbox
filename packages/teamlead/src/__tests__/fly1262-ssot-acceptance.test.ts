@@ -27,7 +27,7 @@ import { FleetConsole } from "../bridge/fleet-console.js";
 import { ManagementChangeCoordinator } from "../bridge/management-change-coordinator.js";
 import {
 	fileSourceRevision,
-	type ManagementSnapshotV1,
+	type ManagementSnapshot,
 } from "../bridge/management-console-contract.js";
 import {
 	createManagementCronProvider,
@@ -211,10 +211,10 @@ describe("FLY-1262 PRD section 6 acceptance", () => {
 		return path;
 	}
 
-	async function snapshot(): Promise<ManagementSnapshotV1> {
+	async function snapshot(): Promise<ManagementSnapshot> {
 		const response = await fetch(`${baseUrl}/api/fleet/snapshot`);
 		expect(response.status).toBe(200);
-		return (await response.json()) as ManagementSnapshotV1;
+		return (await response.json()) as ManagementSnapshot;
 	}
 
 	async function post(path: string, body: unknown) {

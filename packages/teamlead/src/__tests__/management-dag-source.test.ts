@@ -88,6 +88,7 @@ describe("management DAG source", () => {
 				},
 			],
 		});
+		expect(flywheel.dags[0]!.graph?.loops[0]?.maxIterations).toBe(3);
 		expect(
 			projection.projectDags.find(
 				(item) => item.projectName === "personal-assistant",
@@ -96,7 +97,7 @@ describe("management DAG source", () => {
 		store.close();
 	});
 
-	it("projects current manifest labels without exposing graph or node ids", async () => {
+	it("projects the complete current manifest graph with raw node ids", async () => {
 		const store = await StateStore.create(":memory:");
 		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
 		importWorkflowMenuSeeds(store);
@@ -116,6 +117,104 @@ describe("management DAG source", () => {
 			["implement", "实现"],
 			["qa", "QA 验证"],
 		]);
+		expect(dag.graph).toEqual({
+			nodes: [
+				{
+					id: "eng_design",
+					name: "设计(工程)",
+					type: "design",
+					execution: "agent",
+				},
+				{
+					id: "implement",
+					name: "实现",
+					type: "implement",
+					execution: "agent",
+				},
+				{
+					id: "qa",
+					name: "QA 验证",
+					type: "qa",
+					execution: "agent",
+				},
+				{
+					id: "founder_gate",
+					name: "创始人门",
+					type: "gate",
+					execution: "gate",
+				},
+				{
+					id: "land",
+					name: "合入",
+					type: "land",
+					execution: "engine",
+				},
+			],
+			edges: [
+				{ id: "design_done", from: "eng_design", to: "implement" },
+				{ id: "implement_done", from: "implement", to: "qa" },
+				{ id: "qa_pass", from: "qa", to: "founder_gate" },
+				{ id: "founder_gate_approved", from: "founder_gate", to: "land" },
+			],
+			loops: [
+				{
+					id: "qa_retry",
+					from: "qa",
+					to: "implement",
+					maxIterations: null,
+				},
+				{
+					id: "founder_rework",
+					from: "founder_gate",
+					to: "implement",
+					maxIterations: null,
+				},
+			],
+		});
+		store.close();
+	});
+
+	it("preserves manifest node order while edges retain their declared endpoints", async () => {
+		const store = await StateStore.create(":memory:");
+		const { importWorkflowMenuSeeds } = await import("../workflow-menu.js");
+		importWorkflowMenuSeeds(store);
+		store.bindWorkflowCategory({
+			project: "flywheel",
+			taskCategory: "code",
+			templateId: "tpl_code",
+			updatedBy: "test",
+		});
+		const original = store.getWorkflowTemplateRevision("tpl_code", 1)!;
+		const manifest = JSON.parse(original.manifest) as {
+			nodes: Array<{ id: string }>;
+		};
+		manifest.nodes = [
+			manifest.nodes.find((node) => node.id === "land")!,
+			...manifest.nodes.filter((node) => node.id !== "land"),
+		];
+		const revision = store.createWorkflowTemplateRevision({
+			templateId: "tpl_code",
+			manifest,
+			schemaVersion: 2,
+			createdBy: "test",
+		});
+		store.publishWorkflowTemplate({
+			templateId: "tpl_code",
+			revision,
+			expectedRevision: 1,
+			publishedBy: "test",
+		});
+
+		const graph = readManagementDags({
+			reader: store,
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!.graph;
+		expect(graph?.nodes[0]?.id).toBe("land");
+		expect(graph?.edges).toContainEqual({
+			id: "founder_gate_approved",
+			from: "founder_gate",
+			to: "land",
+		});
 		store.close();
 	});
 
@@ -216,6 +315,7 @@ describe("management DAG source", () => {
 			projectNames: ["flywheel"],
 		}).projectDags[0]!.dags[0]!;
 		expect(dag.error).toMatch(/workflow node design has no model binding/);
+		expect(dag.graph).toBeNull();
 		store.close();
 	});
 
@@ -247,6 +347,7 @@ describe("management DAG source", () => {
 			projectNames: ["flywheel"],
 		});
 		expect(missing.projectDags[0]!.dags[0]!.error).toMatch(/revision/i);
+		expect(missing.projectDags[0]!.dags[0]!.graph).toBeNull();
 
 		const invalidManifest = {
 			...base.manifest,
@@ -278,6 +379,30 @@ describe("management DAG source", () => {
 			current: { provider: "anthropic", model: "claude-invented" },
 			writeCapability: { writable: true },
 		});
+
+		const badEndpointManifest = structuredClone(base.manifest);
+		badEndpointManifest.edges[0] = {
+			...badEndpointManifest.edges[0]!,
+			to: "missing_node",
+		};
+		const badEndpoint = readManagementDags({
+			reader: {
+				listWorkflowCategoryBindings: () => [binding],
+				getWorkflowTemplate: () => template,
+				getWorkflowTemplateRevision: () => ({
+					template_id: base.templateId,
+					revision: 9,
+					manifest: JSON.stringify(badEndpointManifest),
+					manifest_digest: "bad-endpoint",
+					schema_version: 1,
+					created_by: "test",
+					created_at: "now",
+				}),
+			},
+			projectNames: ["flywheel"],
+		}).projectDags[0]!.dags[0]!;
+		expect(badEndpoint.graph).toBeNull();
+		expect(badEndpoint.error).toMatch(/unknown node|missing_node/i);
 	});
 
 	it("exposes a data provider for snapshot orchestration", async () => {

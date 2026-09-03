@@ -57,6 +57,7 @@ function errorDag(
 		digest: "",
 		seedOwner: template?.seed_owner ?? null,
 		nodes: [],
+		graph: null,
 		error: error instanceof Error ? error.message : String(error),
 	};
 }
@@ -91,6 +92,30 @@ function projectDag(
 			revision.revision,
 			revision.manifest_digest,
 		);
+		const graph: ManagementDagView["graph"] = {
+			nodes: manifest.nodes.map((node) => ({
+				id: node.id,
+				name: workflowNodeDisplayLabel(template.template_id, node),
+				type: node.type,
+				execution:
+					node.type === "gate"
+						? "gate"
+						: node.execution === "engine"
+							? "engine"
+							: "agent",
+			})),
+			edges: manifest.edges.map((edge) => ({
+				id: edge.id,
+				from: edge.from,
+				to: edge.to,
+			})),
+			loops: manifest.loops.map((loop) => ({
+				id: loop.id,
+				from: loop.from,
+				to: loop.to,
+				maxIterations: loop.max_iterations ?? null,
+			})),
+		};
 		const nodes: ManagementDagView["nodes"] = manifest.nodes
 			.filter((node) => node.type !== "gate" && node.execution !== "engine")
 			.map((node) => {
@@ -148,6 +173,7 @@ function projectDag(
 			digest: revision.manifest_digest,
 			seedOwner: template.seed_owner,
 			nodes,
+			graph,
 		};
 	} catch (error) {
 		return errorDag(projectName, binding, template, error);

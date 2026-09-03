@@ -1,7 +1,13 @@
 import { createHash } from "node:crypto";
-import type { ModelCatalog, ModelSurface } from "flywheel-config";
+import type {
+	FlagPolarity,
+	FlagValueKind,
+	ModelCatalog,
+	ModelSurface,
+} from "flywheel-config";
+import type { WorkflowNodeType } from "../workflow-template.js";
 
-export const MANAGEMENT_SCHEMA_VERSION = 1 as const;
+export const MANAGEMENT_SCHEMA_VERSION = 2 as const;
 
 export type ManagementSourceKind =
 	| "projects_json"
@@ -181,6 +187,29 @@ export interface ManagementDagNodeView {
 	dispatch: ManagedValue<ModelSelection> & { canonicalModel: string };
 }
 
+export interface ManagementDagGraphNode {
+	id: string;
+	name: string;
+	type: WorkflowNodeType;
+	execution: "agent" | "gate" | "engine";
+}
+
+export interface ManagementDagGraphEdge {
+	id: string;
+	from: string;
+	to: string;
+}
+
+export interface ManagementDagGraphLoop extends ManagementDagGraphEdge {
+	maxIterations: number | null;
+}
+
+export interface ManagementDagGraph {
+	nodes: ManagementDagGraphNode[];
+	edges: ManagementDagGraphEdge[];
+	loops: ManagementDagGraphLoop[];
+}
+
 export interface ManagementDagView {
 	id: string;
 	title: string;
@@ -189,6 +218,7 @@ export interface ManagementDagView {
 	digest: string;
 	seedOwner: "system" | "founder" | null;
 	nodes: ManagementDagNodeView[];
+	graph: ManagementDagGraph | null;
 	error?: string;
 }
 
@@ -236,10 +266,15 @@ export interface ManagementFlagView {
 	id: string;
 	name: string;
 	description: string;
-	category: string;
+	polarity: FlagPolarity;
+	default: boolean | string;
+	valueKind: FlagValueKind;
+	onMeans: "enables" | "disables" | null;
 	global: ManagedValue<unknown>;
 	projectOverrides: Array<{
 		projectName: string;
+		via: "project_row" | "star_row" | "default" | null;
+		isDefault: boolean | null;
 		value: ManagedValue<unknown>;
 	}>;
 }
@@ -261,7 +296,7 @@ export interface ManagementExtensionSection {
 	fields: ManagementExtensionField[];
 }
 
-export interface ManagementSnapshotV1 {
+export interface ManagementSnapshot {
 	schemaVersion: typeof MANAGEMENT_SCHEMA_VERSION;
 	generatedAt: string;
 	snapshotRevision: string;
@@ -295,7 +330,7 @@ function assertNoForbiddenKeys(value: unknown): void {
 /** Runtime assertion at the HTTP serialization boundary. */
 export function assertManagementSnapshot(
 	value: unknown,
-): asserts value is ManagementSnapshotV1 {
+): asserts value is ManagementSnapshot {
 	if (!isRecord(value) || value.schemaVersion !== MANAGEMENT_SCHEMA_VERSION) {
 		throw new Error("unsupported management snapshot schema version");
 	}

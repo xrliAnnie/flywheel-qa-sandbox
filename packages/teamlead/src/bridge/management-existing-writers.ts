@@ -244,9 +244,6 @@ function registryPolicyReason(view: FlagView): string {
 		return "flag value is owned by the SQLite flag store";
 	}
 	if (view.dormant) return "flag registry: dormant runtime path";
-	if (view.category === "governance_gate") {
-		return "flag registry: governance flag is readonly";
-	}
 	if (view.toggleable === "conversational") {
 		return "flag registry: conversational change requires a separate workflow";
 	}
@@ -312,6 +309,8 @@ function buildFlagView(
 		const row = effectiveByProject.get(projectName);
 		return {
 			projectName,
+			via: row?.via ?? null,
+			isDefault: row?.isDefault ?? null,
 			value: flagManagedValue({
 				view,
 				current: row?.value ?? null,
@@ -329,7 +328,10 @@ function buildFlagView(
 		id: `flag/${encodeURIComponent(view.name)}`,
 		name: view.name,
 		description: view.description,
-		category: view.category,
+		polarity: view.polarity,
+		default: view.default,
+		valueKind: view.valueKind,
+		onMeans: view.onMeans ?? null,
 		global,
 		projectOverrides,
 	};

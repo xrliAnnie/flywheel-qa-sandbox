@@ -250,7 +250,6 @@ describe("FLY-1778 flag store policy", () => {
 	});
 
 	it.each([
-		["governance", { category: "governance_gate" }],
 		["dormant", { dormant: true }],
 		["readonly", { toggleable: "readonly" }],
 		["array key", { configKey: "future.items[].enabled" }],
@@ -292,13 +291,6 @@ describe("FLY-1778 flag store policy", () => {
 		expect(issues.join("\n")).toContain(
 			"doc/engineer/implementation/flag-authoring-runbook.md",
 		);
-	});
-
-	it("does not let a new spec self-exempt by claiming governance_gate", () => {
-		const issues = validateFlagAuthoringPolicy({
-			flags: [...FEATURE_FLAGS, futureSpec({ category: "governance_gate" })],
-		});
-		expect(issues.join("\n")).toMatch(/future_dynamic_flag.*store-managed/i);
 	});
 
 	it("rejects missing codec, missing delegated wrapper, and project_config growth", () => {
@@ -497,14 +489,6 @@ describe("FLY-1778 flag store policy", () => {
 						? futureCodec
 						: getFlagStoreCodec(name),
 			}),
-		).toEqual([]);
-	});
-
-	it("keeps retired governance env flags out of the registry", () => {
-		expect(
-			FEATURE_FLAGS.filter(
-				(spec) => spec.category === "governance_gate" && spec.source === "env",
-			),
 		).toEqual([]);
 	});
 

@@ -5,15 +5,55 @@ import type { FeatureFlagSpec } from "../feature-flags/registry.js";
 import {
 	FEATURE_FLAGS,
 	validateKeepFieldContract,
+	validateOnMeansContract,
 } from "../feature-flags/registry.js";
 import { RETIRED_CONFIG_PATHS, RETIRED_FLAGS } from "../feature-flags/truth.js";
 import { auditFly1981LegacyLedger } from "./fly1981-legacy-snapshot.js";
 
-// FLY-709: the registry's hard invariants — these are the safety rails that keep
-// a governance gate from ever being web-toggleable and keep `direct` toggles
-// restricted to flags the running Bridge will actually observe live.
+// FLY-709: registry hard invariants keep `direct` toggles restricted to flags
+// the running Bridge will actually observe live.
 
 describe("feature-flag registry invariants", () => {
+	it("FLY-2257 exports the on-means authoring guard", () => {
+		expect(validateOnMeansContract).toBeTypeOf("function");
+	});
+
+	it("FLY-2257 gives every current flag a valid explicit on-means contract", () => {
+		for (const flag of FEATURE_FLAGS) {
+			expect(validateOnMeansContract(flag), flag.name).toEqual([]);
+		}
+	});
+
+	it("FLY-2257 rejects reversed, missing, and non-boolean on-means metadata", () => {
+		const disabled = FEATURE_FLAGS.find(
+			(flag) => flag.name === "cmux_rebind_disabled",
+		);
+		const enabled = FEATURE_FLAGS.find((flag) => flag.name === "alert_system");
+		const scalar = FEATURE_FLAGS.find(
+			(flag) => flag.name === "skill_framework_mode",
+		);
+		expect(disabled).toBeDefined();
+		expect(enabled).toBeDefined();
+		expect(scalar).toBeDefined();
+
+		const reversed = {
+			...disabled,
+			onMeans: "enables",
+		} as FeatureFlagSpec & { onMeans: "enables" };
+		const missing = { ...enabled } as FeatureFlagSpec & {
+			onMeans?: "enables" | "disables";
+		};
+		delete missing.onMeans;
+		const nonBoolean = {
+			...scalar,
+			onMeans: "enables",
+		} as FeatureFlagSpec & { onMeans: "enables" };
+
+		expect(validateOnMeansContract(reversed).join(" ")).toContain("_disabled");
+		expect(validateOnMeansContract(missing).join(" ")).toContain("bool");
+		expect(validateOnMeansContract(nonBoolean).join(" ")).toContain("non-bool");
+	});
+
 	it("exports the FLY-1981 authoring guard through the public feature-flags surface", () => {
 		expect(
 			auditFly1981LegacyLedger({
@@ -167,14 +207,6 @@ describe("feature-flag registry invariants", () => {
 		}
 	});
 
-	it("governance gates are ALWAYS readonly (never web-toggleable)", () => {
-		for (const f of FEATURE_FLAGS) {
-			if (f.category === "governance_gate") {
-				expect(f.toggleable, f.name).toBe("readonly");
-			}
-		}
-	});
-
 	it("dormant flags are readonly", () => {
 		for (const f of FEATURE_FLAGS) {
 			if (f.dormant) expect(f.toggleable, f.name).toBe("readonly");
@@ -198,7 +230,6 @@ describe("feature-flag registry invariants", () => {
 			).toBeTruthy();
 			// direct toggles are Bridge-global env flags (in-proc process.env mutate)
 			expect(f.scope, f.name).toBe("bridge_global");
-			expect(f.category, f.name).not.toBe("governance_gate");
 		}
 	});
 

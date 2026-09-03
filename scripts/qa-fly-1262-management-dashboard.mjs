@@ -123,7 +123,7 @@ function assertLoopback(rawUrl) {
 }
 
 function assertSnapshot(snapshot) {
-	if (!snapshot || snapshot.schemaVersion !== 1) {
+	if (!snapshot || snapshot.schemaVersion !== 2) {
 		throw new Error("Bridge returned an unsupported management schema");
 	}
 	for (const key of [

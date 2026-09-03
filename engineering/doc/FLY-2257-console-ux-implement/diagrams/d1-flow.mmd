@@ -1,0 +1,11 @@
+flowchart LR
+  A[founder 打开管理台 /] --> B[页面只发一次请求<br/>/api/fleet/snapshot]
+  B --> C{snapshot 里已经有}
+  C --> D[角色 + sourceLink<br/>后端生成的 GitHub 链接]
+  C --> E[模板 graph<br/>全部节点 + 类型 + 回环]
+  C --> F[flag 值 + polarity + default + onMeans]
+  D --> G[花名册<br/>每项可点 → 角色 .md]
+  E --> H[产品 / 工程 切换<br/>规则:节点类型里有 design/implement/qa ⇒ 工程]
+  E --> I[全局一个框尺寸<br/>按最长链路 + 容器宽度]
+  F --> J[Flag 一个列表<br/>每行一句「现在是什么状态」]
+  H --> I

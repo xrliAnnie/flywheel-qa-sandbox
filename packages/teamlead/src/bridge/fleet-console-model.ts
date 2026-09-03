@@ -21,7 +21,7 @@ import {
 	computeLeadCapabilities,
 	type TierOption,
 } from "./fleet-capabilities.js";
-import type { ManagementSnapshotV1 } from "./management-console-contract.js";
+import type { ManagementSnapshot } from "./management-console-contract.js";
 
 /** Online presentation for the card dot (derived from the fleet evidence). */
 export type ConsoleLeadOnline = "online" | "offline" | "degraded" | "unknown";
@@ -144,7 +144,7 @@ export interface ConsoleSnapshot {
 }
 
 /** Versioned replacement used while the old flat DTO remains route-compatible. */
-export type VersionedConsoleSnapshot = ManagementSnapshotV1;
+export type VersionedConsoleSnapshot = ManagementSnapshot;
 
 /** Resolve the display label for a Lead's active model under its backend. */
 function modelLabelFor(

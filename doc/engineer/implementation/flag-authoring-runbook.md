@@ -23,6 +23,10 @@
 
 未来新增单次调用、测试注入或运维调试 seam，仍必须建立与产品 flag 分开的非产品 ledger，先定义权威、生命周期和机械守卫；没有上述 founder 重分类裁定，不得把新名字追加到 `FLAG_EXEMPTIONS`。
 
+## 治理性策略不是 flag
+
+**治理性策略不做成 flag,写死在代码里,要改走 PR。** `governance_gate` 类别已于 FLY-2257 删除;凡是「打开就限制或阻断 pipeline」的东西(founder 同意门、合入门、写权限门)不进 registry,不进 store,不出现在管理台。
+
 ## 生产 `.env` 移除与部署顺序
 
 必须区分代码状态和运行状态：已合并 / 已 staged ≠ 已部署。删除旧 env 后，旧 Bridge 二进制仍可能读取它；因此必须严格执行以下七步：

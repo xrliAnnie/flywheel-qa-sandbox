@@ -1,0 +1,632 @@
+[
+ {
+  "name": "alert_system",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "cmux_rebind_disabled",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "cmux_watcher_rebuild_disabled",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "doc_flow",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    true
+   ],
+   [
+    "geoforge3d",
+    false
+   ],
+   [
+    "growth",
+    false
+   ],
+   [
+    "joycon-typeless",
+    true
+   ],
+   [
+    "personal-assistant",
+    true
+   ],
+   [
+    "tidal-echo",
+    true
+   ]
+  ]
+ },
+ {
+  "name": "flag_retirement_scan",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "loop_profiler",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "node_dwell",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    true
+   ],
+   [
+    "geoforge3d",
+    true
+   ],
+   [
+    "growth",
+    true
+   ],
+   [
+    "joycon-typeless",
+    true
+   ],
+   [
+    "personal-assistant",
+    true
+   ],
+   [
+    "tidal-echo",
+    true
+   ]
+  ]
+ },
+ {
+  "name": "node_dwell_threshold_hours",
+  "global": "3",
+  "overrides": [
+   [
+    "flywheel",
+    "3"
+   ],
+   [
+    "geoforge3d",
+    "3"
+   ],
+   [
+    "growth",
+    "3"
+   ],
+   [
+    "joycon-typeless",
+    "3"
+   ],
+   [
+    "personal-assistant",
+    "3"
+   ],
+   [
+    "tidal-echo",
+    "3"
+   ]
+  ]
+ },
+ {
+  "name": "pipeline_dag",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    true
+   ],
+   [
+    "geoforge3d",
+    true
+   ],
+   [
+    "growth",
+    true
+   ],
+   [
+    "joycon-typeless",
+    true
+   ],
+   [
+    "personal-assistant",
+    true
+   ],
+   [
+    "tidal-echo",
+    true
+   ]
+  ]
+ },
+ {
+  "name": "pipeline_work_kind",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    true
+   ],
+   [
+    "geoforge3d",
+    false
+   ],
+   [
+    "growth",
+    false
+   ],
+   [
+    "joycon-typeless",
+    false
+   ],
+   [
+    "personal-assistant",
+    false
+   ],
+   [
+    "tidal-echo",
+    false
+   ]
+  ]
+ },
+ {
+  "name": "ponytail",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    false
+   ],
+   [
+    "geoforge3d",
+    false
+   ],
+   [
+    "growth",
+    false
+   ],
+   [
+    "joycon-typeless",
+    false
+   ],
+   [
+    "personal-assistant",
+    false
+   ],
+   [
+    "tidal-echo",
+    false
+   ]
+  ]
+ },
+ {
+  "name": "proofshot",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    false
+   ],
+   [
+    "geoforge3d",
+    false
+   ],
+   [
+    "growth",
+    false
+   ],
+   [
+    "joycon-typeless",
+    false
+   ],
+   [
+    "personal-assistant",
+    false
+   ],
+   [
+    "tidal-echo",
+    false
+   ]
+  ]
+ },
+ {
+  "name": "review_quota_auto_retry",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "shipped_husk_force",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "skill_framework_mode",
+  "global": "split",
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "skill_framework_split_participation",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    true
+   ],
+   [
+    "geoforge3d",
+    true
+   ],
+   [
+    "growth",
+    true
+   ],
+   [
+    "joycon-typeless",
+    true
+   ],
+   [
+    "personal-assistant",
+    true
+   ],
+   [
+    "tidal-echo",
+    true
+   ]
+  ]
+ },
+ {
+  "name": "summary_absorption_cadence_ms",
+  "global": "21600000",
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "workflow_node_reuse",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "workflow_rework_reentry",
+  "global": true,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "workflow_turn_divergence_alerts",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    null
+   ],
+   [
+    "geoforge3d",
+    null
+   ],
+   [
+    "growth",
+    null
+   ],
+   [
+    "joycon-typeless",
+    null
+   ],
+   [
+    "personal-assistant",
+    null
+   ],
+   [
+    "tidal-echo",
+    null
+   ]
+  ]
+ },
+ {
+  "name": "xiaohongshu_learning",
+  "global": false,
+  "overrides": [
+   [
+    "flywheel",
+    false
+   ],
+   [
+    "geoforge3d",
+    false
+   ],
+   [
+    "growth",
+    false
+   ],
+   [
+    "joycon-typeless",
+    false
+   ],
+   [
+    "personal-assistant",
+    false
+   ],
+   [
+    "tidal-echo",
+    false
+   ]
+  ]
+ }
+]

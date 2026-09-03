@@ -13,7 +13,7 @@ import {
 	type ManagementFlagView,
 	type ManagementProjectView,
 	type ManagementRunnerDefaultView,
-	type ManagementSnapshotV1,
+	type ManagementSnapshot,
 	type ManagementSourceKind,
 	type PresentationGroupView,
 } from "./management-console-contract.js";
@@ -47,7 +47,7 @@ export interface ManagementSnapshotProvider {
 }
 
 function revisionOf(
-	snapshot: Omit<ManagementSnapshotV1, "generatedAt" | "snapshotRevision">,
+	snapshot: Omit<ManagementSnapshot, "generatedAt" | "snapshotRevision">,
 ): string {
 	return `snapshot:${createHash("sha256")
 		.update(canonicalJsonString(snapshot))
@@ -57,13 +57,13 @@ function revisionOf(
 export function composeManagementSnapshot(input: {
 	providers: readonly ManagementSnapshotProvider[];
 	now?: () => Date;
-}): ManagementSnapshotV1 {
-	const sources: ManagementSnapshotV1["sources"] = [];
+}): ManagementSnapshot {
+	const sources: ManagementSnapshot["sources"] = [];
 	const projects: ManagementProjectView[] = [];
 	const presentationGroups: PresentationGroupView[] = [];
 	const flags: ManagementFlagView[] = [];
 	const extensions: ManagementExtensionSection[] = [];
-	const modelCatalog: ManagementSnapshotV1["modelCatalog"] = {};
+	const modelCatalog: ManagementSnapshot["modelCatalog"] = {};
 	const projectDags: Array<{ projectName: string; dags: ManagementDagView[] }> =
 		[];
 	const projectCrons: Array<{
@@ -142,7 +142,7 @@ export function composeManagementSnapshot(input: {
 		flags,
 		extensions,
 	};
-	const snapshot: ManagementSnapshotV1 = {
+	const snapshot: ManagementSnapshot = {
 		...revisionInput,
 		generatedAt: (input.now ?? (() => new Date()))().toISOString(),
 		snapshotRevision: revisionOf(revisionInput),

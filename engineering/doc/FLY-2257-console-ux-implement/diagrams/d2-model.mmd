@@ -1,0 +1,34 @@
+classDiagram
+  class ManagementDagView {
+    +string templateId
+    +string title
+    +nodes  可写的调度节点(带模型下拉)
+    +graph  只读画图数据 ← 新增
+  }
+  class ManagementDagGraph {
+    +nodes: id, name, type, execution
+    +edges: id, from, to  连线只按这个画
+    +loops: id, from, to, maxIterations
+  }
+  class ManagementRoleView {
+    +string name
+    +string agentFile
+    +sourceLink 后端生成 ← 已有,直接用
+    +error 生成失败原因
+  }
+  class ManagementFlagView {
+    +string name
+    +global / projectOverrides 值(不变)
+    +polarity ← 新增
+    +default ← 新增
+    +valueKind ← 新增
+    +onMeans ← 新增(来自 registry)
+    -category 删除(界面不再读)
+  }
+  class FeatureFlagSpec_registry {
+    +polarity / default / valueKind (不变)
+    +onMeans enables|disables ← 新增,纯展示
+    -governance_gate 类别删除
+  }
+  ManagementDagView --> ManagementDagGraph
+  FeatureFlagSpec_registry --> ManagementFlagView : resolveFlag 透传
