@@ -1010,6 +1010,11 @@ PY
 
 qa_launchd_converge_codex_tmux_socket() {
   local socket_path="$1" tmux_bin="${FLYWHEEL_QA_TMUX:-tmux}" i
+  [[ "$socket_path" =~ ^/tmp/flywheel-test-slot-[1-9][0-9]*/tmux-[0-9]+/default$ ]] \
+    || return 1
+  if [[ ! -e "$socket_path" && ! -L "$socket_path" ]]; then
+    return 0
+  fi
   qa_launchd_validate_codex_tmux_socket "$socket_path" || return 1
   if "$tmux_bin" -S "$socket_path" has-session >/dev/null 2>&1; then
     "$tmux_bin" -S "$socket_path" kill-server >/dev/null 2>&1 || true

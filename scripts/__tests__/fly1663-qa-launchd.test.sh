@@ -986,6 +986,28 @@ fi
 export FLYWHEEL_QA_LAUNCHCTL="$saved_launchctl"
 
 saved_qa_tmux="$FLYWHEEL_QA_TMUX"
+absent_tmux_root="/tmp/flywheel-test-slot-$((980000 + $$))"
+absent_tmux_socket="$absent_tmux_root/tmux-$(id -u)/default"
+absent_tmux_calls="$TMP/absent-tmux.calls"
+tmux_absent_stub="$TMP/bin/tmux-absent"
+cat > "$tmux_absent_stub" <<'TMUX'
+#!/bin/bash
+printf '%s\n' "$*" >> "$FLY1663_QA_ABSENT_TMUX_CALLS"
+exit 99
+TMUX
+chmod +x "$tmux_absent_stub"
+: > "$absent_tmux_calls"
+export FLY1663_QA_ABSENT_TMUX_CALLS="$absent_tmux_calls"
+export FLYWHEEL_QA_TMUX="$tmux_absent_stub"
+if qa_launchd_converge_codex_tmux_socket "$absent_tmux_socket" \
+    && [[ ! -s "$absent_tmux_calls" ]]; then
+  pass "Codex tmux convergence accepts an already-absent socket and parent"
+else
+  fail "Codex tmux absent socket convergence"
+fi
+rm -rf "$absent_tmux_root"
+unset FLY1663_QA_ABSENT_TMUX_CALLS
+
 stale_tmux_socket="$MINT_SLOT/tmux-$(id -u)/default"
 stale_tmux_state="$TMP/stale-tmux-server.alive"
 stale_tmux_calls="$TMP/stale-tmux.calls"
