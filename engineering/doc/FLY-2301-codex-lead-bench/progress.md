@@ -1,13 +1,13 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 4/8
-updated: 2026-09-03T21:57:57.586Z
-nextStep: Deploy Codex-shaped slot 4, verify A1-A3
+phaseCursor: 6/8
+updated: 2026-09-03T22:01:24.334Z
+nextStep: Codex A1-A4 pass; teardown A5 + prod-home zero-write check
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (4/8)
-**next**: Deploy Codex-shaped slot 4, verify A1-A3
+**phase**: implement (6/8)
+**next**: Codex A1-A4 pass; teardown A5 + prod-home zero-write check
