@@ -21,7 +21,7 @@ trap 'rm -rf "$tmp"' EXIT
 "$SELF_DIR/generate-supervisor-labels.sh" "$agents_dir" >"$tmp/fresh-labels"
 cmp -s "$labels_file" "$tmp/fresh-labels" || die "reviewed supervisor manifest differs from fresh live census"
 [ "$(wc -l <"$tmp/fresh-labels" | tr -d ' ')" -eq 19 ] || die "fresh supervisor census is not 19 labels"
-fly2264_assert_updater_safe "$uid" || die "updater must remain loaded and enabled"
+fly2264_assert_updater_safe "$uid" || die "updater window state or queue safety check failed"
 
 entries='[]'
 unloaded=""
@@ -101,12 +101,34 @@ EOF
   exit 1
 fi
 
-fly2264_assert_updater_safe "$uid" || die "updater became unsafe before bootout"
+fly2264_assert_updater_safe "$uid" || die "updater window state or queue safety check failed before bootout"
 while IFS= read -r label; do
   launchctl bootout "gui/${uid}/${label}" || die "bootout failed for $label"
-  state="$(fly2264_launchd_state "$label" "$uid")" || die "post-bootout state unknown for $label"
-  [ "$state" = absent ] || die "label still loaded after bootout: $label"
 done <"$tmp/fresh-labels"
+cp "$tmp/fresh-labels" "$tmp/pending-labels" || die "cannot stage convergence census"
+started_at="$(date +%s)" || die "cannot read convergence clock"
+[[ "$started_at" =~ ^[0-9]+$ ]] || die "invalid convergence clock"
+deadline=$((started_at + 90))
+while [ -s "$tmp/pending-labels" ]; do
+  : >"$tmp/next-pending-labels"
+  while IFS= read -r label; do
+    state="$(fly2264_launchd_state "$label" "$uid")" || die "post-bootout state unknown for $label"
+    [ "$state" = absent ] || printf '%s\n' "$label" >>"$tmp/next-pending-labels"
+  done <"$tmp/pending-labels"
+  mv "$tmp/next-pending-labels" "$tmp/pending-labels" \
+    || die "cannot update convergence census"
+  [ -s "$tmp/pending-labels" ] || break
+  now="$(date +%s)" || die "cannot read convergence clock"
+  [[ "$now" =~ ^[0-9]+$ ]] || die "invalid convergence clock"
+  if [ "$now" -ge "$deadline" ]; then
+    while IFS= read -r label; do
+      printf 'bootout-supervisors: label did not become absent within shared 90-second convergence deadline: %s\n' \
+        "$label" >&2
+    done <"$tmp/pending-labels"
+    exit 1
+  fi
+  sleep 1
+done
 
 "$SELF_DIR/generate-supervisor-labels.sh" "$agents_dir" >"$tmp/post-labels"
 cmp -s "$labels_file" "$tmp/post-labels" || die "supervisor plist scope drifted during bootout"
@@ -114,5 +136,5 @@ while IFS= read -r label; do
   state="$(fly2264_launchd_state "$label" "$uid")" || die "final launchd state unknown for $label"
   [ "$state" = absent ] || die "final census found loaded label: $label"
 done <"$tmp/post-labels"
-fly2264_assert_updater_safe "$uid" || die "updater did not remain loaded and enabled"
+fly2264_assert_updater_safe "$uid" || die "updater window state or queue safety check failed after bootout"
 jq -n --arg recovery "$recovery" --argjson count 19 '{status:"pass",recovery:$recovery,absent:$count}'

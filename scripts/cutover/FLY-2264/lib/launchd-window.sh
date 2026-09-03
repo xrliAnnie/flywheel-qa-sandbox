@@ -58,12 +58,33 @@ fly2264_launchd_state() {
   return 1
 }
 
-fly2264_assert_updater_safe() {
-  local uid="$1" label="com.flywheel.updater" out="" rc=0 lines=""
-  if ! launchctl print "gui/${uid}/${label}" >/dev/null 2>&1; then
-    printf 'updater is not loaded: %s\n' "$label" >&2
-    return 1
+fly2264_assert_empty_updater_queue() {
+  local path="$1" entry=""
+  if [ ! -e "$path" ] && [ ! -L "$path" ]; then
+    return 0
   fi
+  [ -d "$path" ] && [ ! -L "$path" ] || {
+    printf 'updater queue path is not a real directory: %s\n' "$path" >&2
+    return 1
+  }
+  entry="$(find "$path" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" || {
+    printf 'cannot inspect updater queue: %s\n' "$path" >&2
+    return 1
+  }
+  [ -z "$entry" ] || {
+    printf 'updater queue is not empty: %s\n' "$path" >&2
+    return 1
+  }
+}
+
+fly2264_assert_updater_queues_empty() {
+  fly2264_assert_empty_updater_queue "${HOME}/.flywheel/self-ship-urgent.d"
+}
+
+fly2264_assert_updater_state_safe() {
+  local uid="$1" label="com.flywheel.updater" state="" out="" rc=0 lines=""
+  state="$(fly2264_launchd_state "$label" "$uid")" || return 1
+  [ "$state" = loaded ] || return 0
   out="$(launchctl print-disabled "gui/${uid}" 2>&1)" || rc=$?
   if [ "$rc" -ne 0 ]; then
     printf 'cannot determine updater enabled state (rc=%s)\n' "$rc" >&2
@@ -82,6 +103,10 @@ fly2264_assert_updater_safe() {
     *'=> true'*|*'=> disabled'*) printf 'updater is disabled\n' >&2; return 1 ;;
     *) printf 'updater enabled state is unparseable\n' >&2; return 1 ;;
   esac
+}
+
+fly2264_assert_updater_safe() {
+  fly2264_assert_updater_queues_empty && fly2264_assert_updater_state_safe "$1"
 }
 
 fly2264_validate_plist() {

@@ -14,6 +14,14 @@ fly2264_artifact_names() {
     07-path.json
 }
 
+fly2264_process_lstart() {
+  local pid="$1" raw="" normalized=""
+  raw="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null)" || return 1
+  normalized="$(printf '%s\n' "$raw" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || return 1
+  [ -n "$normalized" ] || return 1
+  printf '%s\n' "$normalized"
+}
+
 fly2264_verify_process_native() {
   local pid="$1" start_before identity flags flags_value txt line path
   local main_image="" main_count=0 architecture="" candidate_architecture start_after
@@ -22,7 +30,7 @@ fly2264_verify_process_native() {
     printf 'invalid pid: %s\n' "$pid" >&2
     return 1
   }
-  start_before="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')" || return 1
+  start_before="$(fly2264_process_lstart "$pid")" || return 1
   [ -n "$start_before" ] || {
     printf 'missing start identity for pid %s\n' "$pid" >&2
     return 1
@@ -76,7 +84,7 @@ fly2264_verify_process_native() {
     printf 'main image is not arm64-capable for pid %s: %s\n' "$pid" "$architecture" >&2
     return 1
   esac
-  start_after="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')" || return 1
+  start_after="$(fly2264_process_lstart "$pid")" || return 1
   [ "$start_after" = "$start_before" ] || {
     printf 'process identity changed during verification for pid %s\n' "$pid" >&2
     return 1
@@ -391,6 +399,16 @@ fly2264_verify_tmux_servers() {
     '{nativeTmux:$nativeTmux,inScope:$inScope,atlasExempt:$atlasExempt,clients:$clients}'
 }
 
+fly2264_direct_child_pid() {
+  local parent="$1" snapshot="" child=""
+  [[ "$parent" =~ ^[1-9][0-9]*$ ]] || return 1
+  snapshot="$(ps -axo pid=,ppid= 2>/dev/null)" || return 1
+  child="$(printf '%s\n' "$snapshot" | awk -v parent="$parent" \
+    '$1 ~ /^[1-9][0-9]*$/ && $2 == parent {print $1}' | LC_ALL=C sort -n | head -1)" || return 1
+  [[ "$child" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$child"
+}
+
 fly2264_verify_lead_health() {
   local labels label pid child parent again evidence='[]' lead_json child_json control
   labels="$(fly2264_expected_supervisors)" || return 1
@@ -398,7 +416,7 @@ fly2264_verify_lead_health() {
     case "$label" in com.flywheel.lead.*) ;; *) continue ;; esac
     pid="$(fly2264_launchd_pid "$label")" || return 1
     lead_json="$(fly2264_verify_process_native "$pid")" || return 1
-    child="$(pgrep -P "$pid" 2>/dev/null | LC_ALL=C sort -n | head -1)" || return 1
+    child="$(fly2264_direct_child_pid "$pid")" || return 1
     [[ "$child" =~ ^[1-9][0-9]*$ ]] || return 1
     parent="$(ps -o ppid= -p "$child" 2>/dev/null | tr -d ' ')" || return 1
     [ "$parent" = "$pid" ] || return 1
@@ -435,28 +453,88 @@ fly2264_file_age_seconds() {
 
 fly2264_verify_cmux() {
   local watcher_pid owner_file owner_before owner_after owner_pid owner_start owner_mode owner_nonce
-  local actual_start heartbeat_file heartbeat heartbeat_pid age sidebar
-  watcher_pid="$(fly2264_launchd_pid com.flywheel.cmux-watcher)" || return 1
+  local actual_start final_start heartbeat_file heartbeat heartbeat_pid age sidebar
+  local sidebar_rc=0 sidebar_excerpt=""
+  watcher_pid="$(fly2264_launchd_pid com.flywheel.cmux-watcher)" || {
+    printf 'cmux launchd pid unavailable\n' >&2
+    return 1
+  }
   owner_file="$FLY2264_VERIFY_CMUX_OWNER_FILE"
   heartbeat_file="$FLY2264_VERIFY_CMUX_HEARTBEAT_FILE"
-  [ -f "$owner_file" ] && [ ! -L "$owner_file" ] || return 1
-  [ -f "$heartbeat_file" ] && [ ! -L "$heartbeat_file" ] || return 1
-  owner_before="$(cat "$owner_file")" || return 1
+  [ -f "$owner_file" ] && [ ! -L "$owner_file" ] || {
+    printf 'cmux owner file is missing or unsafe: %s\n' "$owner_file" >&2
+    return 1
+  }
+  [ -f "$heartbeat_file" ] && [ ! -L "$heartbeat_file" ] || {
+    printf 'cmux heartbeat file is missing or unsafe: %s\n' "$heartbeat_file" >&2
+    return 1
+  }
+  owner_before="$(cat "$owner_file")" || {
+    printf 'cmux owner file read failed: %s\n' "$owner_file" >&2
+    return 1
+  }
   IFS='|' read -r owner_pid owner_start owner_mode owner_nonce <<<"$owner_before"
   [ "$owner_pid" = "$watcher_pid" ] && [ "$owner_mode" = watch ] \
-    && [ -n "$owner_start" ] && [ -n "$owner_nonce" ] || return 1
-  actual_start="$(TZ=UTC LC_ALL=C ps -o lstart= -p "$watcher_pid" 2>/dev/null | sed 's/^ *//')" || return 1
-  [ "$actual_start" = "$owner_start" ] || return 1
-  heartbeat="$(cat "$heartbeat_file")" || return 1
+    && [ -n "$owner_start" ] && [ -n "$owner_nonce" ] || {
+      printf 'cmux owner identity mismatch: expected watcher pid=%s mode=watch\n' "$watcher_pid" >&2
+      return 1
+    }
+  actual_start="$(fly2264_process_lstart "$watcher_pid")" || {
+    printf 'cmux watcher start identity unavailable: pid=%s\n' "$watcher_pid" >&2
+    return 1
+  }
+  [ "$actual_start" = "$owner_start" ] || {
+    printf 'cmux owner start identity mismatch: pid=%s\n' "$watcher_pid" >&2
+    return 1
+  }
+  heartbeat="$(cat "$heartbeat_file")" || {
+    printf 'cmux heartbeat read failed: %s\n' "$heartbeat_file" >&2
+    return 1
+  }
   heartbeat_pid="${heartbeat%%|*}"
-  [ "$heartbeat_pid" = "$watcher_pid" ] || return 1
-  age="$(fly2264_file_age_seconds "$heartbeat_file")" || return 1
-  [ "$age" -le 120 ] || return 1
-  sidebar="$("$FLY2264_VERIFY_LIVE_REPO/scripts/flywheel-cmux-sync.sh" --verify-sidebar --json)" || return 1
-  printf '%s' "$sidebar" | jq -e '.status == "pass" and .exit_code == 0' >/dev/null || return 1
-  owner_after="$(cat "$owner_file")" || return 1
-  [ "$owner_after" = "$owner_before" ] || return 1
-  [ "$(TZ=UTC LC_ALL=C ps -o lstart= -p "$watcher_pid" 2>/dev/null | sed 's/^ *//')" = "$actual_start" ] || return 1
+  [ "$heartbeat_pid" = "$watcher_pid" ] || {
+    printf 'cmux heartbeat pid mismatch: expected=%s observed=%s\n' "$watcher_pid" "$heartbeat_pid" >&2
+    return 1
+  }
+  age="$(fly2264_file_age_seconds "$heartbeat_file")" || {
+    printf 'cmux heartbeat age unavailable: %s\n' "$heartbeat_file" >&2
+    return 1
+  }
+  [ "$age" -le 120 ] || {
+    printf 'cmux heartbeat is stale: age=%s max=120\n' "$age" >&2
+    return 1
+  }
+  sidebar="$("$FLY2264_VERIFY_LIVE_REPO/scripts/flywheel-cmux-sync.sh" --verify-sidebar --json)" \
+    || sidebar_rc=$?
+  sidebar_excerpt="$(fly2264_bound_text <(printf '%s' "$sidebar"))"
+  if [ "$sidebar_rc" -ne 0 ]; then
+    printf 'cmux sidebar verification failed (rc=%s): %s\n' "$sidebar_rc" "$sidebar_excerpt" >&2
+    return 1
+  fi
+  printf '%s' "$sidebar" | jq -e 'type == "object"' >/dev/null 2>&1 || {
+    printf 'cmux sidebar returned invalid JSON: %s\n' "$sidebar_excerpt" >&2
+    return 1
+  }
+  printf '%s' "$sidebar" | jq -e '.status == "pass" and .exit_code == 0' >/dev/null || {
+    printf 'cmux sidebar verdict is not pass: %s\n' "$sidebar_excerpt" >&2
+    return 1
+  }
+  owner_after="$(cat "$owner_file")" || {
+    printf 'cmux owner re-read failed: %s\n' "$owner_file" >&2
+    return 1
+  }
+  [ "$owner_after" = "$owner_before" ] || {
+    printf 'cmux owner changed during sidebar verification\n' >&2
+    return 1
+  }
+  final_start="$(fly2264_process_lstart "$watcher_pid")" || {
+    printf 'cmux watcher final start identity unavailable: pid=%s\n' "$watcher_pid" >&2
+    return 1
+  }
+  [ "$final_start" = "$actual_start" ] || {
+    printf 'cmux watcher identity changed during verification: pid=%s\n' "$watcher_pid" >&2
+    return 1
+  }
   jq -n --argjson pid "$watcher_pid" --arg startIdentity "$actual_start" \
     --argjson heartbeatAgeSeconds "$age" --argjson sidebar "$sidebar" \
     '{watcherPid:$pid,startIdentity:$startIdentity,heartbeatAgeSeconds:$heartbeatAgeSeconds,sidebar:$sidebar}'

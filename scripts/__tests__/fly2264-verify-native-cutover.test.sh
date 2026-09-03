@@ -114,7 +114,7 @@ fi
 write_state() {
   local pid="$1" flags="$2" main="$3" extra="${4:-0}" second="${5:-}"
   printf 'START=%q\nFLAGS=%q\nMAIN=%q\nEXTRA_MAIN=%q\nSECOND_MAIN=%q\n' \
-    'Mon Sep  2 15:00:00 2026' "$flags" "$main" "$extra" "$second" >"$TMP/state/$pid"
+    'Mon Sep  2 15:00:00 2026   ' "$flags" "$main" "$extra" "$second" >"$TMP/state/$pid"
 }
 
 echo "Test: P_TRANSLATED is execution authority and universal arm64 capability passes"
@@ -122,7 +122,9 @@ write_state 101 4004 "$TMP/native-universal"
 touch "$TMP/native-universal"
 if declare -F fly2264_verify_process_native >/dev/null \
     && native_json="$(fly2264_verify_process_native 101)" \
-    && printf '%s' "$native_json" | jq -e '.pid == 101 and .translated == false and .arm64Capable == true' >/dev/null; then
+    && printf '%s' "$native_json" | jq -e \
+      '.pid == 101 and .translated == false and .arm64Capable == true
+       and .startIdentity == "Mon Sep  2 15:00:00 2026"' >/dev/null; then
   pass "native P_TRANSLATED=0 plus universal arm64 slice passes"
 else
   fail "native universal process did not pass"
@@ -248,6 +250,10 @@ printf '901|com.flywheel.runtime\n902|com.xiaorongli.atlas-growth\n' >"$STATE/co
 cat >"$FIX/bin/ps" <<'STUB'
 #!/usr/bin/env bash
 set -u
+if [ "$*" = '-axo pid=,ppid=' ]; then
+  awk -F'|' '{print $2, $1}' "${FLY2264_VERIFY_TEST_STATE:?}/children"
+  exit 0
+fi
 pid=""
 prev=""
 for arg in "$@"; do
@@ -290,7 +296,7 @@ source "$state"
 case "$*" in
   *' -U '*)
     printf 'p%s\n' "$pid"
-    case "$pid" in 901|902) printf 'n%s\n' "$SOCKET" ;; esac
+    case "$pid" in 901|902|906) printf 'n%s\n' "$SOCKET" ;; esac
     printf 'n->0x%s\n' "$pid"
     ;;
   *'-d txt'*)
@@ -313,9 +319,16 @@ fi
 STUB
 cat >"$FIX/bin/pgrep" <<'STUB'
 #!/usr/bin/env bash
-if [ "${1:-}" = -x ] && [ "${2:-}" = tmux ]; then
+if [ "$*" = '-a -x tmux' ]; then
+  cat "${FLY2264_VERIFY_TEST_STATE:?}/tmux-pids"
+  [ ! -f "${FLY2264_VERIFY_TEST_STATE:?}/tmux-ancestor-pids" ] \
+    || cat "${FLY2264_VERIFY_TEST_STATE:?}/tmux-ancestor-pids"
+elif [ "$*" = '-x tmux' ]; then
   cat "${FLY2264_VERIFY_TEST_STATE:?}/tmux-pids"
 elif [ "${1:-}" = -P ]; then
+  if [ -e "${FLY2264_VERIFY_TEST_STATE:?}/lead-seat" ] && [ "${2:-}" = 300 ]; then
+    exit 1
+  fi
   awk -F'|' -v pid="$2" '$1 == pid {print $2; found=1} END {exit(found ? 0 : 1)}' \
     "${FLY2264_VERIFY_TEST_STATE:?}/children"
 else
@@ -372,6 +385,16 @@ cat >"$LIVE/scripts/flywheel-cmux-sync.sh" <<'STUB'
 #!/usr/bin/env bash
 [ "$*" = '--verify-sidebar --json' ] || exit 64
 cat "${FLY2264_VERIFY_TEST_STATE:?}/sidebar-json"
+if [ -e "${FLY2264_VERIFY_TEST_STATE:?}/mutate-owner-on-sidebar" ]; then
+  printf '201|Mon Sep  2 15:00:00 2026|watch|changed-nonce\n' \
+    >"${FLY2264_VERIFY_CMUX_OWNER_FILE:?}"
+fi
+if [ -e "${FLY2264_VERIFY_TEST_STATE:?}/remove-owner-on-sidebar" ]; then
+  rm -f "${FLY2264_VERIFY_CMUX_OWNER_FILE:?}"
+fi
+if [ -e "${FLY2264_VERIFY_TEST_STATE:?}/remove-watcher-on-sidebar" ]; then
+  rm -f "${FLY2264_VERIFY_TEST_STATE:?}/proc/201"
+fi
 exit "$(cat "${FLY2264_VERIFY_TEST_STATE:?}/sidebar-rc")"
 STUB
 cat >"$LIVE/scripts/check-global-path-hygiene.sh" <<'STUB'
@@ -387,15 +410,16 @@ X86_IMAGE="$FIX/x86-main"
 touch "$MAIN_IMAGE" "$X86_IMAGE"
 write_proc() {
   local pid="$1" ppid="$2" main="$3" command="$4" path_value="$5" socket="${6:-}"
+  local start="${7:-Mon Sep  2 15:00:00 2026}"
   printf 'START=%q\nFLAGS=%q\nMAIN=%q\nPPID_VALUE=%q\nCOMMAND=%q\nPATH_VALUE=%q\nSOCKET=%q\nPATH_UNREADABLE=0\nDRIFT=0\n' \
-    'Mon Sep  2 15:00:00 2026' 4004 "$main" "$ppid" "$command" "$path_value" "$socket" >"$PROC/$pid"
+    "$start" 4004 "$main" "$ppid" "$command" "$path_value" "$socket" >"$PROC/$pid"
 }
 GOOD_PATH='/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin'
 write_proc 1 0 "$MAIN_IMAGE" launchd "$GOOD_PATH"
 write_proc 200 1 "$MAIN_IMAGE" bridge "$GOOD_PATH"
 sed -i.bak 's/PATH_UNREADABLE=0/PATH_UNREADABLE=1/' "$PROC/200"
 rm -f "$PROC/200.bak"
-write_proc 201 1 "$MAIN_IMAGE" watcher "$GOOD_PATH"
+write_proc 201 1 "$MAIN_IMAGE" watcher "$GOOD_PATH" '' 'Mon Sep  2 15:00:00 2026   '
 write_proc 202 1 "$MAIN_IMAGE" liveness "$GOOD_PATH"
 : >"$STATE/launchd"
 printf 'com.flywheel.bridge|200\ncom.flywheel.bridge-liveness-probe|202\ncom.flywheel.cmux-watcher|201\n' >>"$STATE/launchd"
@@ -494,7 +518,9 @@ if [ "$golden_rc" -eq 0 ] && [ "$golden_ok" -eq 1 ] \
     && jq -e '.status == "pass" and (.artifacts | length == 7) and all(.artifacts[]; (.sha256 | length) == 64)' \
       "$WINDOW/artifacts/verification-summary.json" >/dev/null \
     && jq -e '.evidence.processes[] | select(.label == "com.flywheel.bridge") | .authority == "launchd-wrapper-contract" and .launchdDefaultPathStatus == "available"' \
-      "$WINDOW/artifacts/07-path.json" >/dev/null; then
+      "$WINDOW/artifacts/07-path.json" >/dev/null \
+    && jq -e '.evidence.startIdentity == "Mon Sep  2 15:00:00 2026"' \
+      "$WINDOW/artifacts/06-cmux.json" >/dev/null; then
   pass "golden fixture produces seven 0600 pass artifacts plus hashes"
 else
   golden_diagnostics="$(for artifact in $(fly2264_artifact_names); do
@@ -567,6 +593,39 @@ producer_fails 03-native-tmux.json fly2264_verify_native_tmux || native_negative
 printf 'tmux\n' >"$STATE/pinned"
 if [ "$native_negative" -eq 1 ]; then pass "link/version/arch/pin controls turn 03 red"; else fail "native tmux negative matrix"; fi
 
+echo "Test: Lead health uses a complete process table when pgrep hides an ancestor"
+touch "$STATE/lead-seat"
+lead_seat_rc=0
+fly2264_run_producer 05-lead-health.json fly2264_verify_lead_health >/dev/null 2>&1 || lead_seat_rc=$?
+rm -f "$STATE/lead-seat"
+if [ "$lead_seat_rc" -eq 0 ] \
+    && jq -e '.status == "pass" and .evidence.leadCount == 16' \
+      "$WINDOW/artifacts/05-lead-health.json" >/dev/null; then
+  pass "Lead-seat ancestor suppression cannot hide a representative child"
+else
+  fail "Lead-seat child census rc=$lead_seat_rc artifact=$(jq -c '{status,exitCode,error}' "$WINDOW/artifacts/05-lead-health.json" 2>/dev/null)"
+fi
+
+echo "Test: tmux server census includes a server in the caller ancestry"
+write_proc 906 1 "$NATIVE" "$NATIVE -S /tmp/fly2264-ancestor.sock new-session" "$GOOD_PATH" /tmp/fly2264-ancestor.sock
+printf '/tmp/fly2264-ancestor.sock|906\n' >>"$STATE/socket-map"
+printf '906|com.flywheel.ancestor\n' >>"$STATE/coalitions"
+printf '906\n' >"$STATE/tmux-ancestor-pids"
+tmux_seat_rc=0
+fly2264_run_producer 04-tmux-servers.json fly2264_verify_tmux_servers >/dev/null 2>&1 || tmux_seat_rc=$?
+if [ "$tmux_seat_rc" -eq 0 ] \
+    && jq -e '.status == "pass" and (.evidence.inScope[] | select(.pid == 906 and .role == "server"))' \
+      "$WINDOW/artifacts/04-tmux-servers.json" >/dev/null; then
+  pass "ancestor-inclusive pgrep keeps the caller's tmux server in 04 evidence"
+else
+  fail "ancestor tmux missing from verifier rc=$tmux_seat_rc artifact=$(jq -c '{status,exitCode,error,evidence}' "$WINDOW/artifacts/04-tmux-servers.json" 2>/dev/null)"
+fi
+rm -f "$PROC/906" "$STATE/tmux-ancestor-pids"
+grep -v '^/tmp/fly2264-ancestor.sock|' "$STATE/socket-map" >"$FIX/socket.no-ancestor" \
+  && mv "$FIX/socket.no-ancestor" "$STATE/socket-map"
+grep -v '^906|' "$STATE/coalitions" >"$FIX/coalitions.no-ancestor" \
+  && mv "$FIX/coalitions.no-ancestor" "$STATE/coalitions"
+
 echo "Test: a socket-owning server remains a server when argv contains attach"
 cp "$PROC/901" "$FIX/proc901.good"
 write_proc 901 1 "$NATIVE" "$NATIVE -S /tmp/fly2264-native.sock new-session -d -s fixture 'sleep 60 attach foo'" "$GOOD_PATH" /tmp/fly2264-native.sock
@@ -618,13 +677,17 @@ producer_fails 04-tmux-servers.json fly2264_verify_tmux_servers || tmux_negative
 rm -f "$STATE/unknown-coalition-901"
 if [ "$tmux_negative" -eq 1 ]; then pass "server closure controls turn 04 red and attach clients remain informational"; else fail "tmux closure negative matrix"; fi
 
-echo "Test: Lead lstart drift, P_TRANSLATED, and x86-only image fail closed"
+echo "Test: Lead lstart drift, missing child, P_TRANSLATED, and x86-only image fail closed"
 lead_negative=1
 cp "$PROC/300" "$FIX/proc300.good"
+cp "$STATE/children" "$FIX/children.good"
 sed 's/^DRIFT=.*/DRIFT=1/' "$FIX/proc300.good" >"$PROC/300"
 rm -f "$STATE/drift-300"
 producer_fails 05-lead-health.json fly2264_verify_lead_health || lead_negative=0
 cp "$FIX/proc300.good" "$PROC/300"
+grep -v '^300|' "$FIX/children.good" >"$STATE/children"
+producer_fails 05-lead-health.json fly2264_verify_lead_health || lead_negative=0
+cp "$FIX/children.good" "$STATE/children"
 sed 's/^FLAGS=.*/FLAGS=34004/' "$FIX/proc300.good" >"$PROC/300"
 producer_fails 05-lead-health.json fly2264_verify_lead_health || lead_negative=0
 cp "$FIX/proc300.good" "$PROC/300"
@@ -638,21 +701,79 @@ if [ "$lead_negative" -eq 1 ]; then pass "Lead identity/translation/image contro
 echo "Test: watcher owner, heartbeat freshness, and sidebar verdict fail closed"
 cmux_negative=1
 cp "$FIX/watcher.lock/owner" "$FIX/owner.good"
+mv "$FIX/watcher.lock/owner" "$FIX/owner.missing"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux owner file is missing or unsafe")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
+mv "$FIX/owner.missing" "$FIX/watcher.lock/owner"
 printf '999|Mon Sep  2 15:00:00 2026|watch|fixture-nonce\n' >"$FIX/watcher.lock/owner"
 producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux owner identity mismatch")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
+printf '201|Tue Sep  3 15:00:00 2026|watch|fixture-nonce\n' >"$FIX/watcher.lock/owner"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux owner start identity mismatch")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
 cp "$FIX/owner.good" "$FIX/watcher.lock/owner"
+mv "$HOME_DIR/.flywheel/state/cmux-watcher-heartbeat" "$FIX/heartbeat.missing"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux heartbeat file is missing or unsafe")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
+mv "$FIX/heartbeat.missing" "$HOME_DIR/.flywheel/state/cmux-watcher-heartbeat"
+printf '999|1|scan\n' >"$HOME_DIR/.flywheel/state/cmux-watcher-heartbeat"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux heartbeat pid mismatch")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
+printf '201|1|scan\n' >"$HOME_DIR/.flywheel/state/cmux-watcher-heartbeat"
 python3 - "$HOME_DIR/.flywheel/state/cmux-watcher-heartbeat" <<'PY'
 import os,sys,time
 old=time.time()-300
 os.utime(sys.argv[1],(old,old))
 PY
 producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux heartbeat is stale")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
 touch "$HOME_DIR/.flywheel/state/cmux-watcher-heartbeat"
+printf 'not-json\n' >"$STATE/sidebar-json"
+printf '0\n' >"$STATE/sidebar-rc"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux sidebar returned invalid JSON") and contains("not-json")' \
+  "$WINDOW/artifacts/06-cmux.json" >/dev/null || cmux_negative=0
 printf '{"status":"fail","exit_code":1,"report":[],"reasons":["fixture"],"caveats":[]}\n' >"$STATE/sidebar-json"
 printf '1\n' >"$STATE/sidebar-rc"
 producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
-printf '{"status":"pass","exit_code":0,"report":["PASS fixture"],"reasons":[],"caveats":[]}\n' >"$STATE/sidebar-json"
+jq -e '.error | contains("cmux sidebar verification failed") and contains("fixture")' \
+  "$WINDOW/artifacts/06-cmux.json" >/dev/null || cmux_negative=0
 printf '0\n' >"$STATE/sidebar-rc"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux sidebar verdict is not pass") and contains("fixture")' \
+  "$WINDOW/artifacts/06-cmux.json" >/dev/null || cmux_negative=0
+printf '{"status":"pass","exit_code":0,"report":["PASS fixture"],"reasons":[],"caveats":[]}\n' >"$STATE/sidebar-json"
+touch "$STATE/mutate-owner-on-sidebar"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux owner changed during sidebar verification")' \
+  "$WINDOW/artifacts/06-cmux.json" >/dev/null || cmux_negative=0
+rm -f "$STATE/mutate-owner-on-sidebar"
+cp "$FIX/owner.good" "$FIX/watcher.lock/owner"
+touch "$STATE/remove-owner-on-sidebar"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux owner re-read failed")' "$WINDOW/artifacts/06-cmux.json" >/dev/null \
+  || cmux_negative=0
+rm -f "$STATE/remove-owner-on-sidebar"
+cp "$FIX/owner.good" "$FIX/watcher.lock/owner"
+cp "$PROC/201" "$FIX/proc201.good"
+touch "$STATE/remove-watcher-on-sidebar"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux watcher final start identity unavailable")' \
+  "$WINDOW/artifacts/06-cmux.json" >/dev/null || cmux_negative=0
+rm -f "$STATE/remove-watcher-on-sidebar"
+cp "$FIX/proc201.good" "$PROC/201"
+sed 's/^DRIFT=.*/DRIFT=1/' "$FIX/proc201.good" >"$PROC/201"
+rm -f "$STATE/drift-201"
+producer_fails 06-cmux.json fly2264_verify_cmux || cmux_negative=0
+jq -e '.error | contains("cmux watcher identity changed during verification")' \
+  "$WINDOW/artifacts/06-cmux.json" >/dev/null || cmux_negative=0
+cp "$FIX/proc201.good" "$PROC/201"
 if [ "$cmux_negative" -eq 1 ]; then pass "watcher owner/heartbeat/sidebar controls turn 06 red"; else fail "cmux negative matrix"; fi
 
 echo "Test: reversed runtime PATH and hygiene transport each fail closed without persisting PATH"

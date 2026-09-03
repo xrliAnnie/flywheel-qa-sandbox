@@ -130,6 +130,28 @@ case "$verb" in
       printf 'launchctl transport unavailable for %s\n' "$label" >&2
       exit 5
     fi
+    if [[ "${FLY2264_TEST_UNKNOWN_AFTER_BOOTOUT_LABEL:-}" == "$label" ]] \
+        && [[ -f "${FLY2264_TEST_STATE:?}/booted-out/$label" ]]; then
+      printf 'launchctl transport unavailable after bootout for %s\n' "$label" >&2
+      exit 5
+    fi
+    if [[ "${FLY2264_TEST_SLOW_LABEL:-}" == "$label" \
+        || "${FLY2264_TEST_SECOND_SLOW_LABEL:-}" == "$label" ]] \
+        && [[ -f "${FLY2264_TEST_STATE:?}/pending/$label" ]]; then
+      polls_file="${FLY2264_TEST_STATE:?}/slow-polls-$label"
+      polls=0
+      [[ ! -f "$polls_file" ]] || polls="$(cat "$polls_file")"
+      polls=$((polls + 1))
+      printf '%s\n' "$polls" >"$polls_file"
+      if [[ "$polls" -eq 1 ]]; then
+        grep -c '^bootout ' "${FLY2264_TEST_CALLS:?}" \
+          >"${FLY2264_TEST_STATE:?}/bootouts-at-first-slow-poll"
+      fi
+      exit_after="${FLY2264_TEST_SLOW_EXIT_AFTER_POLLS:-3}"
+      if [[ "$exit_after" =~ ^[0-9]+$ ]] && [[ "$polls" -ge "$exit_after" ]]; then
+        rm -f "${FLY2264_TEST_STATE:?}/loaded/$label" "${FLY2264_TEST_STATE:?}/pending/$label"
+      fi
+    fi
     if [[ -f "${FLY2264_TEST_STATE:?}/loaded/$label" ]]; then
       printf 'gui service = {\n\tpid = 4242\n}\n'
       exit 0
@@ -155,7 +177,15 @@ case "$verb" in
     fi
     printf 'bootout %s\n' "$target" >>"${FLY2264_TEST_CALLS:?}"
     [[ "${FLY2264_TEST_BOOTOUT_FAIL_LABEL:-}" != "$label" ]] || exit 9
-    rm -f "${FLY2264_TEST_STATE:?}/loaded/$label"
+    mkdir -p "${FLY2264_TEST_STATE:?}/booted-out"
+    : >"${FLY2264_TEST_STATE:?}/booted-out/$label"
+    if [[ "${FLY2264_TEST_SLOW_LABEL:-}" == "$label" \
+        || "${FLY2264_TEST_SECOND_SLOW_LABEL:-}" == "$label" ]]; then
+      mkdir -p "${FLY2264_TEST_STATE:?}/pending"
+      : >"${FLY2264_TEST_STATE:?}/pending/$label"
+    else
+      rm -f "${FLY2264_TEST_STATE:?}/loaded/$label"
+    fi
     ;;
   bootstrap)
     domain="${1:-}"
@@ -168,22 +198,50 @@ case "$verb" in
   *) printf 'unexpected launchctl verb: %s\n' "$verb" >&2; exit 64 ;;
 esac
 STUB
-chmod +x "$TMP/bin/launchctl"
+cat >"$TMP/bin/date" <<'STUB'
+#!/usr/bin/env bash
+set -u
+if [ "$*" = '+%s' ] && [ -n "${FLY2264_TEST_FAKE_EPOCH_FILE:-}" ]; then
+  value="$(cat "$FLY2264_TEST_FAKE_EPOCH_FILE")"
+  printf '%s\n' "$value"
+  printf '%s\n' "$((value + ${FLY2264_TEST_FAKE_EPOCH_STEP:-1}))" \
+    >"$FLY2264_TEST_FAKE_EPOCH_FILE"
+  exit 0
+fi
+exec /bin/date "$@"
+STUB
+cat >"$TMP/bin/sleep" <<'STUB'
+#!/usr/bin/env bash
+set -u
+if [ "${FLY2264_TEST_NO_SLEEP:-0}" = 1 ]; then
+  printf 'sleep %s\n' "$*" >>"${FLY2264_TEST_CALLS:?}"
+  exit 0
+fi
+exec /bin/sleep "$@"
+STUB
+chmod +x "$TMP/bin/launchctl" "$TMP/bin/date" "$TMP/bin/sleep"
 
 export PATH="$TMP/bin:$PATH"
 export FLY2264_TEST_STATE="$STATE"
 export FLY2264_TEST_CALLS="$CALLS"
 export FLY2264_TEST_RECOVERY="$RECOVERY"
 
+reset_updater_queues() {
+  rm -rf "$WINDOW_HOME/.flywheel/self-ship-urgent.d"
+  mkdir -p "$WINDOW_HOME/.flywheel/self-ship-urgent.d"
+}
+
 load_all_supervisors() {
-  rm -rf "$STATE/loaded"
-  mkdir -p "$STATE/loaded"
+  rm -rf "$STATE/loaded" "$STATE/pending" "$STATE/booted-out"
+  rm -f "$STATE"/slow-polls-* "$STATE/bootouts-at-first-slow-poll"
+  mkdir -p "$STATE/loaded" "$STATE/pending" "$STATE/booted-out"
   while IFS= read -r label; do
     [ -n "$label" ] && : >"$STATE/loaded/$label"
   done <"$SAMPLE"
   : >"$STATE/loaded/com.flywheel.updater"
   : >"$CALLS"
   rm -f "$RECOVERY"
+  reset_updater_queues
 }
 
 echo "Test: bootout publishes complete recovery before mutation and preserves updater"
@@ -224,6 +282,28 @@ else
   fail "restore contract rc=$rc count=$bootstrap_count loaded=$loaded_count first=$first_bootstrap"
 fi
 
+echo "Test: a safely pre-unloaded updater permits the complete supervisor cycle"
+load_all_supervisors
+rm "$STATE/loaded/com.flywheel.updater"
+preunloaded_bootout_rc=0
+HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+  >"$TMP/preunloaded-bootout.out" 2>"$TMP/preunloaded-bootout.err" || preunloaded_bootout_rc=$?
+preunloaded_bootouts=$(grep -c '^bootout ' "$CALLS" || true)
+: >"$CALLS"
+preunloaded_restore_rc=0
+HOME="$WINDOW_HOME" "$RESTORE" "$RECOVERY" \
+  >"$TMP/preunloaded-restore.out" 2>"$TMP/preunloaded-restore.err" || preunloaded_restore_rc=$?
+preunloaded_bootstraps=$(grep -c '^bootstrap ' "$CALLS" || true)
+if [ "$preunloaded_bootout_rc" -eq 0 ] && [ "$preunloaded_restore_rc" -eq 0 ] \
+    && [ "$preunloaded_bootouts" -eq 19 ] && [ "$preunloaded_bootstraps" -eq 19 ] \
+    && [ ! -e "$STATE/loaded/com.flywheel.updater" ] \
+    && ! grep -Eq '^(bootout|bootstrap).*com\.flywheel\.updater' "$CALLS"; then
+  pass "pre-unloaded updater remains absent while all 19 supervisors cycle"
+else
+  fail "pre-unloaded updater cycle bootout=$preunloaded_bootout_rc/$preunloaded_bootouts restore=$preunloaded_restore_rc/$preunloaded_bootstraps bootout_err=$(tr '\n' ' ' <"$TMP/preunloaded-bootout.err" 2>/dev/null) restore_err=$(tr '\n' ' ' <"$TMP/preunloaded-restore.err" 2>/dev/null)"
+fi
+: >"$STATE/loaded/com.flywheel.updater"
+
 echo "Test: restored recovery can drive a fresh bootout retry without hand deletion"
 : >"$CALLS"
 retry_rc=0
@@ -234,6 +314,106 @@ if [ "$retry_rc" -eq 0 ] && [ "$retry_bootouts" -eq 19 ] \
   pass "validated recovery is atomically refreshed and bootout is re-runnable"
 else
   fail "bootout retry rc=$retry_rc count=$retry_bootouts err=$(tr '\n' ' ' <"$TMP/retry.err")"
+fi
+
+echo "Test: all supervisor bootouts are issued before a slow exit is polled"
+load_all_supervisors
+slow_rc=0
+FLY2264_TEST_SLOW_LABEL=com.flywheel.bridge \
+  FLY2264_TEST_SLOW_EXIT_AFTER_POLLS=3 \
+  HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+  >"$TMP/slow.out" 2>"$TMP/slow.err" || slow_rc=$?
+slow_bootouts=$(grep -c '^bootout ' "$CALLS" || true)
+slow_polls=$(cat "$STATE/slow-polls-com.flywheel.bridge" 2>/dev/null || printf '0\n')
+bootouts_at_first_slow_poll=$(cat "$STATE/bootouts-at-first-slow-poll" 2>/dev/null || printf '0\n')
+if [ "$slow_rc" -eq 0 ] && [ "$slow_bootouts" -eq 19 ] \
+    && [ "$slow_polls" -ge 3 ] && [ "$bootouts_at_first_slow_poll" -eq 19 ]; then
+  pass "all 19 bootouts precede bounded convergence polling"
+else
+  fail "slow-exit ordering rc=$slow_rc bootouts=$slow_bootouts polls=$slow_polls first_poll_after=$bootouts_at_first_slow_poll err=$(tr '\n' ' ' <"$TMP/slow.err")"
+fi
+
+echo "Test: a never-exiting supervisor stops at the shared 90-second convergence deadline"
+load_all_supervisors
+FAKE_EPOCH="$STATE/fake-epoch"
+printf '100\n' >"$FAKE_EPOCH"
+timeout_rc=0
+FLY2264_TEST_SLOW_LABEL=com.flywheel.bridge \
+  FLY2264_TEST_SLOW_EXIT_AFTER_POLLS=never \
+  FLY2264_TEST_FAKE_EPOCH_FILE="$FAKE_EPOCH" \
+  FLY2264_TEST_FAKE_EPOCH_STEP=20 \
+  FLY2264_TEST_NO_SLEEP=1 \
+  HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+  >"$TMP/timeout.out" 2>"$TMP/timeout.err" || timeout_rc=$?
+timeout_bootouts=$(grep -c '^bootout ' "$CALLS" || true)
+timeout_polls=$(cat "$STATE/slow-polls-com.flywheel.bridge" 2>/dev/null || printf '0\n')
+if [ "$timeout_rc" -ne 0 ] && [ "$timeout_bootouts" -eq 19 ] && [ "$timeout_polls" -eq 5 ] \
+    && grep -qF 'label did not become absent within shared 90-second convergence deadline: com.flywheel.bridge' \
+      "$TMP/timeout.err" \
+    && [ ! -s "$TMP/timeout.out" ]; then
+  pass "deadline exhaustion names the slow label without a wall-clock sleep"
+else
+  fail "slow-exit deadline rc=$timeout_rc bootouts=$timeout_bootouts polls=$timeout_polls out=$(tr '\n' ' ' <"$TMP/timeout.out") err=$(tr '\n' ' ' <"$TMP/timeout.err")"
+fi
+
+echo "Test: multiple slow supervisors share one 90-second convergence deadline"
+load_all_supervisors
+SHARED_FAKE_EPOCH="$STATE/shared-fake-epoch"
+printf '100\n' >"$SHARED_FAKE_EPOCH"
+shared_timeout_rc=0
+FLY2264_TEST_SLOW_LABEL=com.flywheel.bridge \
+  FLY2264_TEST_SECOND_SLOW_LABEL=com.flywheel.bridge-liveness-probe \
+  FLY2264_TEST_SLOW_EXIT_AFTER_POLLS=never \
+  FLY2264_TEST_FAKE_EPOCH_FILE="$SHARED_FAKE_EPOCH" \
+  FLY2264_TEST_FAKE_EPOCH_STEP=45 \
+  FLY2264_TEST_NO_SLEEP=1 \
+  HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+  >"$TMP/shared-timeout.out" 2>"$TMP/shared-timeout.err" || shared_timeout_rc=$?
+shared_timeout_bootouts=$(grep -c '^bootout ' "$CALLS" || true)
+shared_bridge_polls=$(cat "$STATE/slow-polls-com.flywheel.bridge" 2>/dev/null || printf '0\n')
+shared_probe_polls=$(cat "$STATE/slow-polls-com.flywheel.bridge-liveness-probe" 2>/dev/null || printf '0\n')
+if [ "$shared_timeout_rc" -ne 0 ] && [ "$shared_timeout_bootouts" -eq 19 ] \
+    && [ "$shared_bridge_polls" -eq 2 ] && [ "$shared_probe_polls" -eq 2 ] \
+    && grep -qF 'label did not become absent within shared 90-second convergence deadline: com.flywheel.bridge' \
+      "$TMP/shared-timeout.err" \
+    && grep -qF 'label did not become absent within shared 90-second convergence deadline: com.flywheel.bridge-liveness-probe' \
+      "$TMP/shared-timeout.err" \
+    && [ ! -s "$TMP/shared-timeout.out" ]; then
+  pass "all pending labels consume one bounded convergence budget"
+else
+  fail "shared deadline rc=$shared_timeout_rc bootouts=$shared_timeout_bootouts bridge_polls=$shared_bridge_polls probe_polls=$shared_probe_polls out=$(tr '\n' ' ' <"$TMP/shared-timeout.out") err=$(tr '\n' ' ' <"$TMP/shared-timeout.err")"
+fi
+
+echo "Test: an unknown convergence state fails after the complete bootout round"
+load_all_supervisors
+unknown_rc=0
+FLY2264_TEST_UNKNOWN_AFTER_BOOTOUT_LABEL=com.flywheel.bridge \
+  HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+  >"$TMP/unknown-after.out" 2>"$TMP/unknown-after.err" || unknown_rc=$?
+unknown_bootouts=$(grep -c '^bootout ' "$CALLS" || true)
+if [ "$unknown_rc" -ne 0 ] && [ "$unknown_bootouts" -eq 19 ] \
+    && grep -qF 'post-bootout state unknown for com.flywheel.bridge' "$TMP/unknown-after.err" \
+    && [ ! -s "$TMP/unknown-after.out" ]; then
+  pass "unknown convergence state fails closed after all bootout requests"
+else
+  fail "unknown convergence rc=$unknown_rc bootouts=$unknown_bootouts out=$(tr '\n' ' ' <"$TMP/unknown-after.out") err=$(tr '\n' ' ' <"$TMP/unknown-after.err")"
+fi
+
+echo "Test: a queued updater ticket cannot block emergency supervisor restore"
+load_all_supervisors
+HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+  >"$TMP/queued-setup.out" 2>"$TMP/queued-setup.err"
+: >"$WINDOW_HOME/.flywheel/self-ship-urgent.d/retry.urgent.json"
+: >"$CALLS"
+queued_restore_rc=0
+HOME="$WINDOW_HOME" "$RESTORE" "$RECOVERY" \
+  >"$TMP/queued-restore.out" 2>"$TMP/queued-restore.err" || queued_restore_rc=$?
+queued_restore_bootstraps=$(grep -c '^bootstrap ' "$CALLS" || true)
+if [ "$queued_restore_rc" -eq 0 ] && [ "$queued_restore_bootstraps" -eq 19 ] \
+    && [ -f "$WINDOW_HOME/.flywheel/self-ship-urgent.d/retry.urgent.json" ]; then
+  pass "supervisor recovery ignores but never consumes queued updater tickets"
+else
+  fail "queued-ticket restore rc=$queued_restore_rc count=$queued_restore_bootstraps err=$(tr '\n' ' ' <"$TMP/queued-restore.err")"
 fi
 
 echo "Test: pre-existing unloaded drift publishes recovery then fails before mutation"
@@ -248,6 +428,49 @@ elif jq -e '.entries[] | select(.label == "com.flywheel.lead.geoforge3d-ops-lead
   pass "unloaded drift is durable and fails before the first bootout"
 else
   fail "unloaded drift recovery/diagnostic missing"
+fi
+
+echo "Test: updater queue entries and unsafe queue path shapes fail before mutation"
+queue_negative=1
+for state_name in loaded absent; do
+  for queue_name in self-ship-urgent.d; do
+    load_all_supervisors
+    [ "$state_name" = loaded ] || rm "$STATE/loaded/com.flywheel.updater"
+    : >"$WINDOW_HOME/.flywheel/$queue_name/token.json"
+    if HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+        >"$TMP/queue-${state_name}-${queue_name}.out" 2>"$TMP/queue-${state_name}-${queue_name}.err"; then
+      queue_negative=0
+    elif grep -q '^bootout ' "$CALLS" \
+        || grep -qF 'updater must remain loaded and enabled' "$TMP/queue-${state_name}-${queue_name}.err" \
+        || ! grep -qF "updater queue is not empty: $WINDOW_HOME/.flywheel/$queue_name" \
+          "$TMP/queue-${state_name}-${queue_name}.err"; then
+      queue_negative=0
+    fi
+  done
+done
+for shape in symlink file; do
+  load_all_supervisors
+  queue_path="$WINDOW_HOME/.flywheel/self-ship-urgent.d"
+  rm -rf "$queue_path"
+  if [ "$shape" = symlink ]; then
+    queue_target="$WINDOW_HOME/.flywheel/updater-queue-target"
+    mkdir -p "$queue_target"
+    ln -s "$queue_target" "$queue_path"
+  else
+    : >"$queue_path"
+  fi
+  if HOME="$WINDOW_HOME" "$BOOTOUT" "$TMP/supervisor-labels.txt" \
+      >"$TMP/queue-$shape.out" 2>"$TMP/queue-$shape.err"; then
+    queue_negative=0
+  elif grep -q '^bootout ' "$CALLS" \
+      || ! grep -qF "updater queue path is not a real directory: $queue_path" "$TMP/queue-$shape.err"; then
+    queue_negative=0
+  fi
+done
+if [ "$queue_negative" -eq 1 ]; then
+  pass "both updater states require an empty real urgent queue before mutation"
+else
+  fail "updater queue safety matrix"
 fi
 
 echo "Test: disabled updater and manifest drift both fail before mutation"

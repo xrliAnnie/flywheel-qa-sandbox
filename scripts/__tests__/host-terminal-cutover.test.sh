@@ -413,6 +413,7 @@ printf 'n%s\n' "${FLYWHEEL_TMUX_3_5A_BIN:?}"
 MOCK_LSOF
 cat > "$TMP/bin/pgrep" <<'MOCK_PGREP'
 #!/usr/bin/env bash
+printf '%s\n' "$*" >"${CUTOVER_TEST_PGREP_ARGS:?}"
 exit 1
 MOCK_PGREP
 cat > "$TMP/bin/file" <<'MOCK_FILE'
@@ -438,11 +439,14 @@ export FLYWHEEL_INTEL_BREW_BIN="$TMP/bin/brew"
 export FLYWHEEL_ARM_BREW_BIN="$TMP/bin/brew"
 export CUTOVER_TEST_BREW_PREFIX="$TMP/brew-prefix"
 export CUTOVER_TEST_CACHE_DIR="$TMP/cache"
+CUTOVER_TEST_PGREP_ARGS="$TMP/pgrep.args"
+export CUTOVER_TEST_PGREP_ARGS
 if "$SCRIPT" preflight-receipt >/dev/null \
   && jq -e '.status == "preparatory"
     and .preflight.extractorPositiveControl.passed == true
     and .preflight.processInventory == []
-    and .preflight.missingBottleCount == 0' "$FLYWHEEL_HOST_CUTOVER_RECEIPT" >/dev/null; then
+    and .preflight.missingBottleCount == 0' "$FLYWHEEL_HOST_CUTOVER_RECEIPT" >/dev/null \
+  && [ "$(cat "$CUTOVER_TEST_PGREP_ARGS")" = '-a -x tmux' ]; then
   pass "preflight records exact extractor proof and complete cached dependencies"
 else
   fail "preflight extractor and bottle receipt"

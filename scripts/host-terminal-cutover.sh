@@ -484,7 +484,7 @@ prove_image_extractor() {
 inventory_tmux_servers() {
   local pids rc pid incarnation image architecture sockets ppid parent_command entry inventory='[]'
   set +e
-  pids=$(pgrep -x tmux 2>/dev/null)
+  pids=$(pgrep -a -x tmux 2>/dev/null)
   rc=$?
   set -e
   (( rc == 0 || rc == 1 )) || die "cannot enumerate live tmux server processes"

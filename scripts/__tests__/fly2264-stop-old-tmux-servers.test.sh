@@ -33,9 +33,18 @@ write_union() {
 cat >"$BIN/pgrep" <<'STUB'
 #!/usr/bin/env bash
 set -u
+include_ancestors=0
+[ "$*" != '-a -x tmux' ] || include_ancestors=1
 files=("${FLY2264_STOP_STATE:?}"/[0-9]*.json)
 [[ -e "${files[0]}" ]] || exit 1
-for file in "${files[@]}"; do basename "$file" .json; done | sort -n
+for file in "${files[@]}"; do
+  pid="$(basename "$file" .json)"
+  if [ "$include_ancestors" -ne 1 ] && [ -f "${FLY2264_STOP_STATE:?}/ancestor-pids" ] \
+      && grep -Fxq "$pid" "${FLY2264_STOP_STATE:?}/ancestor-pids"; then
+    continue
+  fi
+  printf '%s\n' "$pid"
+done | sort -n
 STUB
 cat >"$BIN/ps" <<'STUB'
 #!/usr/bin/env bash
@@ -153,7 +162,7 @@ export FLY2264_STOP_STATE="$STATE"
 export FLY2264_STOP_LEDGER="$LEDGER"
 
 make_base() {
-  rm -f "$STATE"/*.json "$LEDGER"
+  rm -f "$STATE"/*.json "$STATE/ancestor-pids" "$LEDGER"
   : >"$LEDGER"
   add_process 101 'Mon Sep  2 15:00:00 2026' "$TMP/default.sock" "$OLD -S $TMP/default.sock" com.flywheel.bridge server 101
   add_process 102 'Mon Sep  2 15:00:01 2026' "$TMP/fly1869.sock" "$OLD -S $TMP/fly1869.sock" com.flywheel.lead.geoforge3d-ops-lead server 102
@@ -177,6 +186,19 @@ if [ "$rc" -eq 0 ] \
   pass "only servers are stopped and the socket-less attach client does not block"
 else
   fail "golden stop rc=$rc ledger=$(tr '\n' ';' <"$LEDGER") err=$(tr '\n' ' ' <"$TMP/golden.err") union=$(jq -c . "$TMP/union.json")"
+fi
+
+echo "Test: a tmux server in the caller ancestry remains in the exact stop census"
+make_base
+add_process 104 'Mon Sep  2 15:00:04 2026' "$TMP/ancestor.sock" "$OLD -S $TMP/ancestor.sock" com.flywheel.bridge server 104
+write_union
+printf '104\n' >"$STATE/ancestor-pids"
+ancestor_rc=0
+"$SCRIPT" "$TMP/union.json" "$OLD" >"$TMP/ancestor.out" 2>"$TMP/ancestor.err" || ancestor_rc=$?
+if [ "$ancestor_rc" -eq 0 ] && grep -qF "kill 104 $TMP/ancestor.sock" "$LEDGER"; then
+  pass "ancestor-inclusive pgrep keeps the caller's tmux server in scope"
+else
+  fail "ancestor tmux escaped stop census rc=$ancestor_rc ledger=$(tr '\n' ';' <"$LEDGER") err=$(tr '\n' ' ' <"$TMP/ancestor.err")"
 fi
 
 echo "Test: unknown ownership and union-external in-scope servers fail before mutation"
@@ -274,6 +296,38 @@ if [ -f "$SCRIPT" ] && ! grep -Eq '\bpkill[[:space:]]+tmux\b' "$SCRIPT"; then
   pass "production stop script never uses pkill tmux"
 else
   fail "production stop script is missing or uses pkill tmux"
+fi
+
+echo "Test: runbook pins a neutral operator seat and the updater park/reload lifecycle"
+RUNBOOK="$ROOT/engineering/doc/FLY-2264-arm64-tmux-gate/cutover-runbook.md"
+pre_ship_line="$(grep -nF '### 1.1 ship 前 park updater' "$RUNBOOK" | cut -d: -f1)"
+ship_line="$(grep -nF '## 2. Founder ship' "$RUNBOOK" | cut -d: -f1)"
+restore_section="$(sed -n '/^### 5\.5 /,/^## 6\./p' "$RUNBOOK")"
+ticket_section="$(sed -n '/^## 6\./,/^## 7\./p' "$RUNBOOK")"
+if [ -f "$RUNBOOK" ] \
+    && grep -Fq 'founder 必须从普通 macOS Terminal.app 窗口执行' "$RUNBOOK" \
+    && grep -Fq '不得从 cmux、Lead pane 或任何 tmux session 执行' "$RUNBOOK" \
+    && grep -Fq '开窗前先退出 founder 自己通过 `tmux new -s ...` 创建的会话' "$RUNBOOK" \
+    && grep -Fq 'export WINDOW_DIR="$HOME/.flywheel/state/FLY-2264-window-FLY-2279"' "$RUNBOOK" \
+    && grep -Fq '原 `$HOME/.flywheel/state/FLY-2264-window` 仅作为只读历史证据保留' "$RUNBOOK" \
+    && [[ "$pre_ship_line" =~ ^[0-9]+$ && "$ship_line" =~ ^[0-9]+$ ]] \
+    && [ "$pre_ship_line" -lt "$ship_line" ] \
+    && grep -Fq '$HOME/.flywheel/self-ship-urgent.d' "$RUNBOOK" \
+    && grep -Fq 'launchctl bootout "gui/${window_uid}/com.flywheel.updater"' "$RUNBOOK" \
+    && grep -Fq 'launchctl bootstrap "gui/${window_uid}" "$HOME/Library/LaunchAgents/com.flywheel.updater.plist"' "$RUNBOOK" \
+    && grep -Fq 'fly2264_assert_updater_safe "$window_uid"' "$RUNBOOK" \
+    && grep -Fq 'fly2264_assert_updater_state_safe "$window_uid"' "$RUNBOOK" \
+    && grep -Fq '先发完全部 19 个 `launchctl bootout`' "$RUNBOOK" \
+    && grep -Fq '共用一个最多 90 秒的截止时间' "$RUNBOOK" \
+    && grep -Fq '120 秒的 run-step 预算覆盖整个脚本' "$RUNBOOK" \
+    && grep -Fq "bash -euo pipefail <<'BASH'" <<<"$restore_section" \
+    && grep -Fxq 'BASH' <<<"$restore_section" \
+    && grep -Fq "bash -euo pipefail <<'BASH'" <<<"$ticket_section" \
+    && grep -Fxq 'BASH' <<<"$ticket_section" \
+    && ! grep -Fq '`com.flywheel.updater` 必须保持 loaded+enabled' "$RUNBOOK"; then
+  pass "runbook fixes operator ancestry, durable evidence isolation, and updater sequencing"
+else
+  fail "runbook is missing one or more FLY-2279 window invariants"
 fi
 
 printf '\nResults: %d passed, %d failed\n' "$PASS" "$FAIL"

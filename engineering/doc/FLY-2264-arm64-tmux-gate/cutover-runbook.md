@@ -8,6 +8,10 @@ Issue: FLY-2264 (https://linear.app/geoforge3d/issue/FLY-2264/cutovertmux-fly-21
 本文件只供 founder 明确批准的破坏性窗口使用。实现/PR 节点不得执行这里的 production mutation；
 本 PR 本身不 link、不改 `~/.flywheel/.env`、不重启、不 merge、不 deploy。
 
+founder 必须从普通 macOS Terminal.app 窗口执行本手册的全部命令；
+不得从 cmux、Lead pane 或任何 tmux session 执行。开窗前先退出 founder 自己通过 `tmux new -s ...` 创建的会话，不得为了保住
+operator shell 而给权威 census 制造临时 tmux 豁免。服务自身的旧 tmux 仍由 §4 权威枚举和关闭。
+
 开窗必须同时满足：
 
 1. founder 对**本次具体时段**给出明确批准，工单保存原话、时间与消息链接；2026-08-30 的“派给
@@ -19,8 +23,9 @@ Issue: FLY-2264 (https://linear.app/geoforge3d/issue/FLY-2264/cutovertmux-fly-21
 5. 所有操作者接受权威 union 中全部非豁免旧 tmux server、全部 Lead pane 与工人窗口会断。任何 receipt/lease/SHA/
    inventory/预算证据不完整，立即停窗。
 6. 不直接执行 `restart-services.sh`，不手工 `kickstart -k` Bridge/Lead。link 后服务重生只允许一张
-   `bash ~/Dev/flywheel/scripts/request-restart.sh` 票；不调用 `install-bridge-launchd.sh`。唯一受审例外是
-   §5.5/§8.2 的 `restore-supervisors.sh`：它只按 0600 recovery bootstrap 原 plist，不 kickstart。
+   `bash ~/Dev/flywheel/scripts/request-restart.sh` 票；不调用 `install-bridge-launchd.sh`。受审的 launchd
+   例外只有三处：§1.1 pre-ship bootout updater、§5.5/§8.2 按 0600 recovery bootstrap 原 supervisor
+   plist、§6 在唯一票前 bootstrap updater；任何一处都不 kickstart Bridge/Lead。
 
 Lead ruling `33dc0da4-c6a3-4621-be79-37893a694059` 锁定顺序为“先停旧 server、link/pin/env，后发唯一
 部署票”；ruling `16a390ab-59e9-4357-871b-1dc1fcbe792c` 锁定 lease 交接为“旧 Bridge NULL-owner pause
@@ -32,7 +37,7 @@ Lead ruling `33dc0da4-c6a3-4621-be79-37893a694059` 锁定顺序为“先停旧 s
 
 ```bash
 export LIVE_REPO="$HOME/Dev/flywheel"
-export WINDOW_DIR="$HOME/.flywheel/state/FLY-2264-window"
+export WINDOW_DIR="$HOME/.flywheel/state/FLY-2264-window-FLY-2279"
 export WINDOW_ARTIFACTS="$WINDOW_DIR/artifacts"
 export CUTOVER_SHA='<本 PR 合入后的 40-hex merge commit>'
 export NATIVE_TMUX='/opt/homebrew/Cellar/tmux/3.7c/bin/tmux'
@@ -48,6 +53,8 @@ install -d -m 700 "$WINDOW_DIR"
 
 `TEAMLEAD_API_TOKEN` 必须已存在。`CUTOVER_RECEIPT` 与 `LEASE_HANDOFF` 都是 capability；不得贴入工单、
 聊天或日志摘要。
+原 `$HOME/.flywheel/state/FLY-2264-window` 仅作为只读历史证据保留；本次 installer、receipt、worktree
+和 verification artifact 一律写入带 `-FLY-2279` 后缀的新目录，禁止覆盖或清理旧窗口证据。
 
 在 ship 前、live checkout 仍是旧代码时，保存旧工具并记录 hash：
 
@@ -58,6 +65,67 @@ shasum -a 256 "$WINDOW_DIR/host-terminal-cutover.pre-ff.sh" \
   > "$WINDOW_DIR/host-terminal-cutover.pre-ff.sha256"
 export OLD_TOOL="$WINDOW_DIR/host-terminal-cutover.pre-ff.sh"
 ```
+
+### 1.1 ship 前 park updater
+
+这一步必须在 ship 前、live checkout 仍是旧代码时完成，因此不能调用尚未部署的受审 helper。下面的
+固定检查只接受唯一受支持的 urgent queue 不存在或为真实空目录，先证明 updater loaded+enabled，再 bootout，并在
+60 秒内证明 exact label absent。任何 symlink、普通文件、非空 urgent queue、launchctl transport/parse 不确定
+都立即停窗；不得先 ship 再补做 pre-unload。
+
+```bash
+bash -euo pipefail <<'BASH'
+window_uid="$(id -u)"
+die() { printf 'updater pre-unload: %s\n' "$*" >&2; exit 1; }
+assert_empty_updater_queue() {
+  local queue="$1" entry=""
+  if [ ! -e "$queue" ] && [ ! -L "$queue" ]; then return 0; fi
+  [ -d "$queue" ] && [ ! -L "$queue" ] || die "queue is not a real directory: $queue"
+  entry="$(find "$queue" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" \
+    || die "cannot inspect queue: $queue"
+  [ -z "$entry" ] || die "queue is not empty: $queue"
+}
+assert_updater_queues_empty() {
+  assert_empty_updater_queue "$HOME/.flywheel/self-ship-urgent.d"
+}
+updater_state() {
+  local out="" rc=0
+  out="$(launchctl print "gui/${window_uid}/com.flywheel.updater" 2>&1)" || rc=$?
+  if [ "$rc" -eq 0 ]; then printf 'loaded\n'; return 0; fi
+  case "$out" in
+    *'Could not find service "com.flywheel.updater"'*|*'No such process: com.flywheel.updater'*)
+      printf 'absent\n' ;;
+    *) die "launchctl state is unknown (rc=$rc)" ;;
+  esac
+}
+assert_updater_enabled() {
+  local out="" lines=""
+  out="$(launchctl print-disabled "gui/${window_uid}" 2>&1)" \
+    || die "cannot determine updater enabled state"
+  lines="$(printf '%s\n' "$out" | grep -F '"com.flywheel.updater"' || true)"
+  [ "$(printf '%s\n' "$lines" | awk 'NF {n++} END {print n+0}')" -le 1 ] \
+    || die "updater enabled state is ambiguous"
+  case "$lines" in
+    ''|*'=> false'*|*'=> enabled'*) ;;
+    *'=> true'*|*'=> disabled'*) die "updater is disabled" ;;
+    *) die "updater enabled state is unparseable" ;;
+  esac
+}
+assert_updater_queues_empty
+[ "$(updater_state)" = loaded ] || die "updater is not loaded before pre-unload"
+assert_updater_enabled
+launchctl bootout "gui/${window_uid}/com.flywheel.updater"
+updater_deadline=$(( $(date +%s) + 60 ))
+while [ "$(updater_state)" = loaded ]; do
+  [ "$(date +%s)" -lt "$updater_deadline" ] || die "updater did not become absent within 60 seconds"
+  sleep 1
+done
+[ "$(updater_state)" = absent ] || die "updater absence was not proven"
+assert_updater_queues_empty
+BASH
+```
+
+从这里到 §6 bootstrap 之前，updater 必须保持 absent，urgent queue 必须保持空；发现任何新 ticket 就停窗。
 
 ship 后从 `CUTOVER_SHA` 建 detached 的受审源码 worktree，供新工具做 SHA/receipt/run-step；这不更新
 live checkout，也不重启服务：
@@ -139,7 +207,8 @@ bash "$WINDOW_DIR/source/scripts/check-global-path-hygiene.sh" \
 
 本窗口的全部脚本必须由 §1 installer 从 exact `CUTOVER_SHA` 安装、通过 sha256 manifest 校验并放在
 0700 `WINDOW_DIR`；不得现场改脚本。
-`com.flywheel.updater` 必须保持 loaded+enabled，supervisor manifest 不得包含它。
+`com.flywheel.updater` 应按 §1.1 保持 absent，supervisor manifest 不得包含它。受审脚本在 updater
+loaded+enabled 或 absent 两种状态下都可继续，但只要 urgent queue 非空或状态不确定就失败。
 
 ### 4.1 bootout-supervisors
 
@@ -150,8 +219,10 @@ bash "$WINDOW_DIR/source/scripts/check-global-path-hygiene.sh" \
 ```
 
 manifest 必须覆盖 Bridge、bridge-liveness-probe、cmux watcher 与全部 16 个 Lead label（共19项）；每个
-loaded label bootout 后都要以
-`launchctl print gui/$(id -u)/<label>` 证明 absent。parse/transport/absence 不确定均为失败。
+loaded label bootout 后都要以 `launchctl print gui/$(id -u)/<label>` 证明 absent。
+脚本先发完全部 19 个 `launchctl bootout`，再让所有尚未 absent 的 label 共用一个最多 90 秒的截止时间，
+按轮次轮询直到全体收敛；120 秒的 run-step 预算覆盖整个脚本而不是逐 label 重新计时。任一 deadline、
+parse/transport/absence 不确定均为失败。
 
 ### 4.2 authoritative-census
 
@@ -230,16 +301,22 @@ grep -Fx 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=/opt/homebrew/Cellar/tmux/3.7c/bin/tmux'
 发唯一 updater 票之前，用 bootout 前已完整写出的 0600 recovery 恢复原来 loaded 的 exact 19 项：
 
 ```bash
+bash -euo pipefail <<'BASH'
+window_uid="$(id -u)"
+source "$WINDOW_ARTIFACTS/lib/launchd-window.sh"
+fly2264_assert_updater_state_safe "$window_uid"
 bash "$WINDOW_ARTIFACTS/restore-supervisors.sh" "$WINDOW_ARTIFACTS/supervisor-recovery.json"
 while IFS= read -r label; do
   launchctl print "gui/$(id -u)/$label" >/dev/null
 done < "$WINDOW_ARTIFACTS/supervisor-labels.txt"
-launchctl print "gui/$(id -u)/com.flywheel.updater" >/dev/null
+fly2264_assert_updater_state_safe "$window_uid"
+BASH
 ```
 
 脚本固定按 Bridge → bridge-liveness-probe → cmux watcher → sorted 16 Leads bootstrap original plist，逐项
-证明 loaded，并再次断言 updater loaded+enabled。parse/transport/bootstrap/post-print 任一不确定都在发票前
-失败。old code + native tmux 可能短暂进入 gate fail-closed 循环，这是预期过渡态；不得绕门。唯一
+证明 loaded，并在恢复前后只断言 updater 状态安全（loaded 时须 enabled，absent 也安全）。这里故意不以
+queue 非空阻断 emergency restore，也绝不读取或消费 queue ticket；parse/transport/bootstrap/post-print
+任一不确定都在发票前失败。old code + native tmux 可能短暂进入 gate fail-closed 循环，这是预期过渡态；不得绕门。唯一
 gate-mounted auxiliary `com.flywheel.quota-monitor` 可能在 monitor binary 启动前因旧 gate 拒绝而退出并产生
 预期 alert；它不在19项 scope，也不能据此加第二张票。
 
@@ -248,13 +325,23 @@ link 与部署票之间若任何 KeepAlive 意外重拉 Lead，旧 gate 会拒�
 
 ## 6. 唯一 updater 票与 owner handoff
 
-发票前再次证明 frozen main：
+发票前再次证明 frozen main，然后重验 urgent queue 仍为空、updater 仍 absent，才 bootstrap exact updater
+plist。bootstrap 后必须证明 updater loaded+enabled；这只是恢复已 park 的 updater，不是第二张部署票。
 
 ```bash
+bash -euo pipefail <<'BASH'
 "$NEW_TOOL" assert-main-sha --expected "$CUTOVER_SHA"
+window_uid="$(id -u)"
+source "$WINDOW_ARTIFACTS/lib/launchd-window.sh"
+fly2264_assert_updater_queues_empty
+test "$(fly2264_launchd_state com.flywheel.updater "$window_uid")" = absent
+launchctl bootstrap "gui/${window_uid}" "$HOME/Library/LaunchAgents/com.flywheel.updater.plist"
+test "$(fly2264_launchd_state com.flywheel.updater "$window_uid")" = loaded
+fly2264_assert_updater_safe "$window_uid"
 "$NEW_TOOL" verify-receipt --step services-bootstrap
 "$NEW_TOOL" run-step --name services-bootstrap --timeout 30 -- \
   bash "$LIVE_REPO/scripts/request-restart.sh"
+BASH
 ```
 
 这是全窗唯一一张票。票据受理不等于部署结束；等待 updater 拉取/构建 `CUTOVER_SHA`、启动新 Bridge、
@@ -300,6 +387,9 @@ jq -e '.status == "paused"
 结束；这证明窗口中 admission 曾重新开放，不能继续验收或把本次 cutover 记为成功。
 
 ### 7.1 自动验收
+
+继续只在 §0 指定的普通 Terminal.app operator shell 中执行。verifier 与 stop 脚本的 tmux census 使用
+ancestor-inclusive `pgrep -a -x tmux`；不要另开临时 tmux 来绕过 operator 断线，也不要添加 operator 豁免。
 
 ```bash
 "$CUTOVER_TOOL" verify-receipt --step automated-verification

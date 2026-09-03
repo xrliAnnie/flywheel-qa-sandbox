@@ -34,7 +34,7 @@ ordered="$({
 } | awk 'NF')"
 [ "$(printf '%s\n' "$ordered" | wc -l | tr -d ' ')" -eq 19 ] || die "recovery does not contain the exact supervisor scope"
 
-fly2264_assert_updater_safe "$uid" || die "updater must remain loaded and enabled"
+fly2264_assert_updater_state_safe "$uid" || die "updater state is unsafe before supervisor restore"
 while IFS= read -r label; do
   fly2264_allowed_label "$label" || die "out-of-scope recovery label: $label"
   row="$(jq -erc --arg label "$label" '.entries[] | select(.label == $label)' "$recovery")" \
@@ -57,5 +57,5 @@ while IFS= read -r label; do
 done <<EOF
 $ordered
 EOF
-fly2264_assert_updater_safe "$uid" || die "updater did not remain loaded and enabled"
+fly2264_assert_updater_state_safe "$uid" || die "updater state became unsafe during supervisor restore"
 jq -n --argjson count 19 '{status:"pass",restoredScope:$count}'
