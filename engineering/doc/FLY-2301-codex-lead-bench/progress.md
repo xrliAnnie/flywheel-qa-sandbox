@@ -1,13 +1,13 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 5/12
-updated: 2026-09-03T18:51:36.451Z
-nextStep: "按 plan rev8 完成 T1 mutation controls 与 T5 失败/信号矩阵，然后 T9 先红后绿接线；偏离点: 无"
+phaseCursor: 6/12
+updated: 2026-09-03T18:53:48.751Z
+nextStep: "完成 T5 home 铸造失败/INT/TERM 矩阵，再按 T9 .env 投影器先红后绿；偏离点: 无"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (5/12)
-**next**: 按 plan rev8 完成 T1 mutation controls 与 T5 失败/信号矩阵，然后 T9 先红后绿接线；偏离点: 无
+**phase**: implement (6/12)
+**next**: 完成 T5 home 铸造失败/INT/TERM 矩阵，再按 T9 .env 投影器先红后绿；偏离点: 无
