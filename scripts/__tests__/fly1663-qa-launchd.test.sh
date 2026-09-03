@@ -33,6 +33,7 @@ log_file="$TMP/runtime/lead.log"
 plist="$TMP/runtime/lead.plist"
 registry="$TMP/runtime/launchd-leads.json"
 summary_home="$TMP/runtime/identity-home"
+fixture_dir="$ROOT/scripts/__tests__/fixtures/fly2301"
 printf '%s\n' '{"leadId":"qa-lead","projectDir":"/tmp/project","projectName":"test-slot-7"}' > "$manifest"
 printf '%s\n' '[]' > "$projects"
 : > "$env_file"
@@ -57,6 +58,13 @@ if qa_launchd_render_plist "$plist" "$label" "$ROOT/scripts/flywheel-lead-wrappe
   pass "ephemeral plist owns one v2 wrapper with slot-local state"
 else
   fail "QA launchd plist render"
+fi
+
+sed -e "s#${TMP}#@TMP@#g" -e "s#${ROOT}#@ROOT@#g" "$plist" > "$TMP/claude-lead.normalized.plist"
+if cmp -s "$fixture_dir/claude-lead.plist" "$TMP/claude-lead.normalized.plist"; then
+  pass "Claude launchd plist remains byte-identical to the frozen baseline"
+else
+  fail "Claude launchd plist byte baseline"
 fi
 
 launchctl_state="$TMP/launchctl-state"

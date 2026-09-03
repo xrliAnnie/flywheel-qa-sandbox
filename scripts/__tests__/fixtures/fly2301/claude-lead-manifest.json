@@ -1,0 +1,20 @@
+{
+  "leadId": "flywheel-test-7",
+  "projectDir": "/tmp/flywheel-test-slot-7/project-slot-7",
+  "projectName": "test-slot-7",
+  "projectsFile": "/tmp/flywheel-test-slot-7/q/7/projects.json",
+  "workspace": "/tmp/flywheel-test-slot-7/lead-workspace",
+  "mcpExclude": "",
+  "launchEnvironment": {
+    "DISCORD_GUILD_ID": "guild-1",
+    "BRIDGE_URL": "http://localhost:4242",
+    "AGENT_SOURCE": "/tmp/flywheel-test-slot-7/test-identity.md",
+    "TEAMLEAD_API_TOKEN": "",
+    "FLYWHEEL_PROJECTS_FILE": "/tmp/flywheel-test-slot-7/q/7/projects.json",
+    "TEAMLEAD_DB_PATH": "/tmp/flywheel-test-slot-7/teamlead.db",
+    "FLYWHEEL_STATE_DIR": "/tmp/flywheel-test-slot-7/q/7",
+    "FLYWHEEL_WRAPPER_ENV_FILE": "/tmp/flywheel-test-slot-7/q/7/.env",
+    "FLYWHEEL_DELIVERY_SECRET_PATH": "/tmp/flywheel-test-slot-7/state/delivery-secret",
+    "LEAD_WORKSPACE": "/tmp/flywheel-test-slot-7/lead-workspace"
+  }
+}

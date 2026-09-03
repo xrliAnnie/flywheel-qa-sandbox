@@ -81,6 +81,7 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-multilead.sh" \
   "${SCRIPT_DIR}/lib/qa-generalized.sh" \
   "${SCRIPT_DIR}/lib/qa-launchd-lead.sh" \
+  "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \

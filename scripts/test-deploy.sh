@@ -40,6 +40,10 @@ source "${SCRIPT_DIR}/lib/qa-slot-bridge.sh"
 source "${SCRIPT_DIR}/lib/qa-launchd-lead.sh"
 QA_LEAD_REGISTRY=""
 
+# FLY-2301: byte-stable Lead artifact renderers shared with regression fixtures.
+# shellcheck source=lib/qa-lead-artifacts.sh
+source "${SCRIPT_DIR}/lib/qa-lead-artifacts.sh"
+
 # ── Load environment ──────────────────────────────────
 ENV_FILE="${HOME}/.flywheel/.env"
 if [[ ! -f "$ENV_FILE" ]]; then
@@ -1400,21 +1404,6 @@ if [[ "$GENERALIZED" == "1" && "$ALERTS" == "1" ]]; then
   log "generalized alert preflight: every sender-capable slot bot passed POST+DELETE"
 fi
 
-# Build the launch environment captured in a v2 manifest from NAME=value
-# arguments. Values stay data (jq --arg), never shell syntax.
-qa_slot_launch_env_json() {
-  local json='{}' assignment name value
-  for assignment in "$@"; do
-    name="${assignment%%=*}"
-    value="${assignment#*=}"
-    [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
-      || { log "ERROR: invalid QA Lead environment key: ${name}"; return 1; }
-    json=$(jq -c --arg name "$name" --arg value "$value" \
-      '. + {($name): $value}' <<<"$json") || return 1
-  done
-  printf '%s\n' "$json"
-}
-
 # Start one slot-scoped Lead as launchd -> wrapper-v2 -> private tmux -> body.
 # stdout: launchdPid<TAB>socket<TAB>label<TAB>manifest<TAB>pidFile
 qa_slot_start_lead() {
@@ -1431,8 +1420,8 @@ qa_slot_start_lead() {
   mkdir -p "$runtime" "$state" "$workspace" || return 1
   chmod 700 "$runtime" "$state"
   printf '%s\n' "$FLYWHEEL_PROJECTS" > "$projects"
-  printf '%s=%q\n' "$token_env" "$token_value" > "$env_file"
-  chmod 600 "$projects" "$env_file"
+  qa_lead_write_env "$env_file" "$token_env" "$token_value" || return 1
+  chmod 600 "$projects"
 
   lead_row=$(jq -cer --arg agent "$agent" \
     '[.[].leads[]? | select(.agentId == $agent)] | if length == 1 then .[0] else error("expected one Lead") end' \
@@ -1450,16 +1439,9 @@ qa_slot_start_lead() {
     "FLYWHEEL_DELIVERY_SECRET_PATH=${SLOT_DIR}/state/delivery-secret" \
     "LEAD_WORKSPACE=${workspace}" \
     "$@") || return 1
-  jq -n \
-    --arg leadId "$agent" --arg projectDir "$HOST_REPO" \
-    --arg projectName "$TEST_PROJECT_NAME" --arg projectsFile "$projects" \
-    --arg workspace "$workspace" --arg mcpExclude "$mcp_exclude" \
-    --argjson launchEnvironment "$launch_env" \
-    '{leadId:$leadId,projectDir:$projectDir,projectName:$projectName,
-      projectsFile:$projectsFile,workspace:$workspace,mcpExclude:$mcpExclude,
-      launchEnvironment:$launchEnvironment}' \
-    > "$manifest" || return 1
-  chmod 600 "$manifest"
+  qa_lead_write_manifest "$manifest" "$agent" "$HOST_REPO" \
+    "$TEST_PROJECT_NAME" "$projects" "$workspace" "$mcp_exclude" \
+    "$launch_env" || return 1
   FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_plist \
     "$plist" "$label" "$wrapper" "$manifest" "$HOME" "$state" \
     "$projects" "$env_file" "$lead_log" "$QA_SUMMARY_CONFIG_HOME" || return 1
@@ -1535,7 +1517,7 @@ LEAD_LAUNCH_RECORD=$(qa_slot_start_lead \
 IFS=$'\t' read -r LEAD_BG_PID LEAD_SOCKET LEAD_LAUNCHD_LABEL _lead_manifest LEAD_PID_FILE \
   <<<"$LEAD_LAUNCH_RECORD"
 log "Lead background PID: ${LEAD_BG_PID}"
-log "Lead launchd label: ${LEAD_LAUNCHD_LABEL}; private socket: ${LEAD_SOCKET}"
+log "$(qa_lead_log_launchd_label "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET")"
 confirm_dev_channels_prompt "$LEAD_SOCKET" "$AGENT_ID"
 
 # ── Step 2: Wait for Lead inbox-ready lease ───────────
@@ -1719,7 +1701,7 @@ EOF
     IFS=$'\t' read -r XLEAD_BG_PID XLEAD_SOCKET _xlead_label _xlead_manifest _xlead_pid_file \
       <<<"$XLEAD_LAUNCH_RECORD"
     EXTRA_LEAD_BG_PIDS+=("$XLEAD_BG_PID")
-    log "Extra Lead ${XAGENT} background PID: ${XLEAD_BG_PID}"
+    log "$(qa_lead_log_extra_pid "$XAGENT" "$XLEAD_BG_PID")"
 
     confirm_dev_channels_prompt "$XLEAD_SOCKET" "$XAGENT"
 
@@ -2060,14 +2042,10 @@ trap - EXIT
 # FLY-1189: launch manifest — deploy-time ground truth and dist SHA.
 # No secrets: token env NAMES only.
 if [[ "$NO_LEAD" == "1" ]]; then LEAD_CARRIER="none"; else LEAD_CARRIER="launchd-v2"; fi
-qa_multilead_launch_manifest "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
-  "${CAMPAIGN_ID}" "${LEAD_LABEL}" "$EXTRA_LEADS_JSON" \
-  > "${SLOT_DIR}/launch-manifest.json"
-jq --arg carrier "$LEAD_CARRIER" --arg registry "$QA_LEAD_REGISTRY" \
-  --arg label "$LEAD_LAUNCHD_LABEL" --arg socket "$LEAD_SOCKET" \
-  '. + {leadCarrier:$carrier,launchdRegistry:$registry,mainLeadLabel:$label,mainLeadSocket:$socket}' \
-  "${SLOT_DIR}/launch-manifest.json" > "${SLOT_DIR}/launch-manifest.json.tmp" \
-  && mv "${SLOT_DIR}/launch-manifest.json.tmp" "${SLOT_DIR}/launch-manifest.json"
+qa_lead_write_launch_manifest "${SLOT_DIR}/launch-manifest.json" \
+  "$BRIDGE_PID" "$BRANCH_SHA" "$FROM_BRANCH" "$MODE" \
+  "${CAMPAIGN_ID}" "${LEAD_LABEL}" "$EXTRA_LEADS_JSON" "$LEAD_CARRIER" \
+  "$QA_LEAD_REGISTRY" "$LEAD_LAUNCHD_LABEL" "$LEAD_SOCKET"
 log "Wrote ${SLOT_DIR}/launch-manifest.json"
 
 # ── Step 5: Record PIDs ──────────────────────────────
@@ -2104,40 +2082,14 @@ if [[ "$GENERALIZED" == "1" ]]; then
 EOF
 )
 fi
-cat <<EOF
-{
-  "slot": ${SLOT},
-  "mode": "${MODE}",
-  "noLead": ${NO_LEAD_JSON},
-  "mirrorChannelId": "${MIRROR_CHANNEL_ID}",
-  "port": ${SLOT_PORT},
-  "agentId": "${AGENT_ID}",
-  "projectName": "${TEST_PROJECT_NAME}",
-  "chatChannelId": "${CHAT_CHANNEL_ID}",
-  "botTokenEnv": "${BOT_TOKEN_ENV}",
-  "bridgePid": ${BRIDGE_PID},
-  "leadPidFile": "${LEAD_PID_FILE}",
-  "leadCarrier": "${LEAD_CARRIER}",
-  "leadLaunchdLabel": "${LEAD_LAUNCHD_LABEL}",
-  "leadSocket": "${LEAD_SOCKET}",
-  "launchdRegistry": "${QA_LEAD_REGISTRY}",
-  "slotDir": "${SLOT_DIR}",
-  "bridgeUrl": "http://localhost:${SLOT_PORT}",
-  "fromBranch": "${FROM_BRANCH}",
-  "sandbox": "${SANDBOX_SLUG}",
-  "hostRepo": "${HOST_REPO}",
-  "tempBranch": "${QA_TEMP_BRANCH}",
-  "branchSha": "${BRANCH_SHA}",
-  "runnerStartPoint": "${RUNNER_START_REF}",
-  "dbPath": "${SLOT_DIR}/teamlead.db",
-  "bridgeLog": "${SLOT_DIR}/bridge.log",
-  "bridgeLaunchSpec": "${BRIDGE_LAUNCH_SPEC}",
-  "leadLog": "${LEAD_LOG}",
-  "flywheelProjectsFile": "${FLYWHEEL_PROJECTS_FILE}",
-  "launchManifest": "${SLOT_DIR}/launch-manifest.json",
-  "campaignManifest": "${CAMPAIGN_MANIFEST_FILE:-}",
-  "campaignId": "${CAMPAIGN_ID:-}",
-  "leadLabel": "${LEAD_LABEL}",
-  "extraLeads": $(jq -c 'map({slotId, agentId, deptLabel, chatChannel, tokenEnvVar})' <<<"$EXTRA_LEADS_JSON")${GENERALIZED_OUTPUT_FIELDS}
-}
-EOF
+qa_lead_render_stdout_json \
+  "$SLOT" "$MODE" "$NO_LEAD_JSON" "$MIRROR_CHANNEL_ID" "$SLOT_PORT" \
+  "$AGENT_ID" "$TEST_PROJECT_NAME" "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" \
+  "$BRIDGE_PID" "$LEAD_PID_FILE" "$LEAD_CARRIER" "$LEAD_LAUNCHD_LABEL" \
+  "$LEAD_SOCKET" "$QA_LEAD_REGISTRY" "$SLOT_DIR" "$FROM_BRANCH" \
+  "$SANDBOX_SLUG" "$HOST_REPO" "$QA_TEMP_BRANCH" "$BRANCH_SHA" \
+  "$RUNNER_START_REF" "${SLOT_DIR}/teamlead.db" "${SLOT_DIR}/bridge.log" \
+  "$BRIDGE_LAUNCH_SPEC" "$LEAD_LOG" "$FLYWHEEL_PROJECTS_FILE" \
+  "${SLOT_DIR}/launch-manifest.json" "${CAMPAIGN_MANIFEST_FILE:-}" \
+  "${CAMPAIGN_ID:-}" "$LEAD_LABEL" "$EXTRA_LEADS_JSON" \
+  "$GENERALIZED_OUTPUT_FIELDS"
