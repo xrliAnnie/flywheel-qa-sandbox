@@ -36,6 +36,42 @@ qa_launchd_require_absolute() {
   esac
 }
 
+qa_launchd_plist_open() {
+  printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
+  printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
+  printf '%s\n' '<plist version="1.0"><dict>'
+  printf '<key>Label</key><string>%s</string>\n' "$1"
+}
+
+qa_launchd_plist_argv_claude() {
+  printf '<key>ProgramArguments</key><array><string>%s</string><string>%s</string></array>\n' "$1" "$2"
+}
+
+qa_launchd_plist_env_claude() {
+  local x_home="$1" x_path="$2" x_state="$3" x_projects="$4"
+  local x_env="$5" x_summary_config_home="$6"
+  printf '%s\n' '<key>EnvironmentVariables</key><dict>'
+  printf '<key>HOME</key><string>%s</string>\n' "$x_home"
+  printf '<key>PATH</key><string>%s</string>\n' "$x_path"
+  printf '<key>FLYWHEEL_DIR</key><string>%s</string>\n' "$(printf '%s' "${FLYWHEEL_DIR:?}" | qa_launchd_xml_escape)"
+  printf '<key>FLYWHEEL_STATE_DIR</key><string>%s</string>\n' "$x_state"
+  printf '<key>FLYWHEEL_PROJECTS_FILE</key><string>%s</string>\n' "$x_projects"
+  printf '<key>FLYWHEEL_WRAPPER_ENV_FILE</key><string>%s</string>\n' "$x_env"
+  if [ -n "$x_summary_config_home" ]; then
+    printf '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>%s</string>\n' "$x_summary_config_home"
+  fi
+  printf '%s\n' '</dict>'
+}
+
+qa_launchd_plist_close() {
+  local x_log="$1"
+  printf '%s\n' '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>'
+  printf '%s\n' '<key>ThrottleInterval</key><integer>3</integer>'
+  printf '<key>StandardOutPath</key><string>%s</string>\n' "$x_log"
+  printf '<key>StandardErrorPath</key><string>%s</string>\n' "$x_log"
+  printf '%s\n' '</dict></plist>'
+}
+
 # Args: plist label wrapper manifest home state projects env log [summaryConfigHome]
 qa_launchd_render_plist() {
   local plist="$1" label="$2" wrapper="$3" manifest="$4" home="$5"
@@ -74,27 +110,11 @@ qa_launchd_render_plist() {
   mkdir -p "$(dirname "$plist")" || return 1
   umask 077
   if ! {
-    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>'
-    printf '%s\n' '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">'
-    printf '%s\n' '<plist version="1.0"><dict>'
-    printf '<key>Label</key><string>%s</string>\n' "$x_label"
-    printf '<key>ProgramArguments</key><array><string>%s</string><string>%s</string></array>\n' "$x_wrapper" "$x_manifest"
-    printf '%s\n' '<key>EnvironmentVariables</key><dict>'
-    printf '<key>HOME</key><string>%s</string>\n' "$x_home"
-    printf '<key>PATH</key><string>%s</string>\n' "$x_path"
-    printf '<key>FLYWHEEL_DIR</key><string>%s</string>\n' "$(printf '%s' "${FLYWHEEL_DIR:?}" | qa_launchd_xml_escape)"
-    printf '<key>FLYWHEEL_STATE_DIR</key><string>%s</string>\n' "$x_state"
-    printf '<key>FLYWHEEL_PROJECTS_FILE</key><string>%s</string>\n' "$x_projects"
-    printf '<key>FLYWHEEL_WRAPPER_ENV_FILE</key><string>%s</string>\n' "$x_env"
-    if [ -n "$x_summary_config_home" ]; then
-      printf '<key>FLYWHEEL_SUMMARY_CONFIG_HOME</key><string>%s</string>\n' "$x_summary_config_home"
-    fi
-    printf '%s\n' '</dict>'
-    printf '%s\n' '<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>'
-    printf '%s\n' '<key>ThrottleInterval</key><integer>3</integer>'
-    printf '<key>StandardOutPath</key><string>%s</string>\n' "$x_log"
-    printf '<key>StandardErrorPath</key><string>%s</string>\n' "$x_log"
-    printf '%s\n' '</dict></plist>'
+    qa_launchd_plist_open "$x_label"
+    qa_launchd_plist_argv_claude "$x_wrapper" "$x_manifest"
+    qa_launchd_plist_env_claude "$x_home" "$x_path" "$x_state" \
+      "$x_projects" "$x_env" "$x_summary_config_home"
+    qa_launchd_plist_close "$x_log"
   } > "$tmp"; then
     rm -f "$tmp"
     qa_launchd_err "failed to render plist: $plist"
