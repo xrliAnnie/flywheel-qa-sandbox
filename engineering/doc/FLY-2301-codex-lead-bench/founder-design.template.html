@@ -44,7 +44,7 @@
 <body>
 <div class="wrap">
   <h1>529 房台架支持 Codex 形状的常驻 Lead</h1>
-  <div class="meta">FLY-2301 · 设计说明 · 2026-09-03 · 分支 flywheel-FLY-2301</div>
+  <div class="meta">FLY-2301 · 设计说明 · 2026-09-03 · 分支 flywheel-FLY-2301 · plan rev3(Codex 设计评审三轮后)</div>
 
   <section class="card green" data-section="一句话总结">
     <h2>一句话总结</h2>
@@ -73,7 +73,7 @@
     <div class="diagram wide">{{SVG_D1}}</div>
     <h3>新链每一步在做什么</h3>
     <ul>
-      <li><b>.env 追加 Codex 一族</b>:Codex 的启动壳(<span class="term">wrapper</span>,launchd 直接运行的那个小脚本)只读 <code>${FLYWHEEL_STATE_DIR}/.env</code>,而 529 房的 <code>.env</code> 恰好就是这个路径,所以把 Codex 需要的变量写进这个文件即可,和生产一样。</li>
+      <li><b>.env 追加 Codex 一族</b>:Codex 的启动壳(<span class="term">wrapper</span>,launchd 直接运行的那个小脚本)只读 <code>${FLYWHEEL_STATE_DIR}/.env</code>,而 529 房的 <code>.env</code> 恰好就是这个路径,所以把 Codex 需要的变量写进这个文件即可,和生产一样。写之前只做两件事:同名变量出现两次就拒绝(不让后写的悄悄覆盖先写的),身份类变量名(LEAD_ID、PROJECT_NAME 一族)一律拒绝(身份只能由注册表解析,不能由环境冒充)。不设白名单。</li>
       <li><b>渲染 slot 固定 wrapper</b>:生产的 Codex 壳是每个 Lead 一份、身份写死在里面的(不能靠环境变量冒充身份)。房里用一份模板 + 三个经过校验的标识符渲染出一份同样形状的壳。</li>
       <li><b>codex-lead.sh</b>:仓库里现成的通用 Codex 启动器,以前 FLY-259 的隔离 QA 就是用它起过 Codex 界面型 Lead。本单只改它一行:状态目录的根从写死的 <code>~/.flywheel</code> 改成先看 <code>FLYWHEEL_STATE_DIR</code>(生产没设这个变量 ⇒ 路径不变,有实测)。</li>
       <li><b>slot tmux 窗口</b>:Codex Lead 会在 tmux(终端多窗口工具)里开一个可见窗口。房里必须把它钉在 529 房自己的 tmux 服务器上,否则会开进生产的 <code>flywheel</code> 会话里被 cmux 同步出去。</li>
@@ -128,8 +128,8 @@
       <li><span class="badge new">A2</span>隔离:home / 状态 / tmux 窗口全在房目录;生产的 Codex 状态目录、生产 tmux 会话、三个生产 Codex home 零写入(前后对照)。</li>
       <li><span class="badge new">A4</span>两式 launchd 演练收敛(强杀证 KeepAlive,kickstart 证执行器与共同后置条件),证据 JSON 可独立复核。</li>
       <li><span class="badge new">A5</span>拆房收敛:label 不在 launchd、运行时与 daemon 进程都不在、socket 不在、窗口不在、目录已删;任一步失败即非零并保留目录。</li>
-      <li><span class="badge keep">A6</span>守卫:Claude 的 plist / .env / manifest 三份逐字节黄金基线,每份各有专属「变异体对照」必须变红(把对应产物的生成代码故意改坏一处,只有那一份测试变红——不然守卫不算存在);Codex plist 与「去掉 tmux 路由」也各有必红变异;来源 home 命中拒绝名单必须被拒。</li>
-      <li><span class="badge keep">A7</span>既有 Claude Lead 房回归全绿:四个 shell 测试套件 + 真 529 房 Claude slot 启动 / 验活 / 拆除,其 plist、.env、manifest 与改动前逐字节相同。</li>
+      <li><span class="badge keep">A6</span>守卫:Claude 的五面产物(plist / .env / manifest / 全局 launch-manifest / 命令输出 JSON)各有逐字节黄金基线和专属「变异体对照」——把对应产物的生成代码故意改坏一处,先证明它确实改变了字节,再证明只有那一份基线变红(不然守卫不算存在);Codex plist、「去掉 tmux 路由」、「去掉旧窗口清理」也各有必红变异;来源 home 命中拒绝名单必须被拒。</li>
+      <li><span class="badge keep">A7</span>既有 Claude Lead 房回归全绿:四个 shell 测试套件 + 真 529 房 Claude slot 启动 / 验活 / 拆除,其五面产物与改动前逐字节相同(用哈希比对,不把含令牌的文件打印出来)。</li>
       <li><span class="badge keep">A8</span><code>codex-lead.sh</code> 那一行改动:同一输入下改前改后的状态路径逐字节相同(拿 git 里的旧版本和工作副本双跑比对,不靠推理)。</li>
     </ul>
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="怎么算验收通过" placeholder="写下你的意见…"></textarea></div>
@@ -147,7 +147,9 @@
       <li><span class="badge no">不做</span>退旧脑 / 生产单实例切换 —— FLY-2259 B 路线。</li>
       <li><span class="badge no">不做</span>让 Bridge 侧 RayaBrainPatrol / <code>resident-codex-lead-recover.sh</code> 对房里的 Lead 生效 —— 它们的权威绑在真 HOME 与固定 wrapper,改它等于给生产自愈开口子。承接:FLY-2259 QA 用已有的 fixture 测试覆盖巡逻分类;若要真机演练巡逻本身,另立 issue 讨论。</li>
       <li><span class="badge no">不做</span>529 房造 Codex 工人(FLY-2224 域)。</li>
-      <li><span class="badge no">不做</span>full-access 层级的真机验收(只做环境投影的 hermetic 断言)。</li>
+      <li><span class="badge no">不做</span>full-access 层级的真机验收(hermetic 里过真解析器与真启动器的门,但不在房里真起)。</li>
+      <li><span class="badge no">不做</span>圆桌模式(<span class="term">roundtable</span>,多个 Lead 共用一个讨论频道的测试模式)下的 Codex 形状:台架在写任何产物之前明确拒绝并说明原因;Codex 常驻 Lead 参不参加圆桌是 Raya 侧行为,不是台架形状问题。</li>
+      <li><span class="badge no">不做</span>收紧既有 Claude 分支的 launchd 进程号解析器(它比生产恢复脚本宽松一点):Claude 分支受「行为与字节逐位不变」合同约束,且已有 manifest 里的进程号二次校验兜底;Codex 分支用新的严格解析器。若要收紧,另立小单。</li>
     </ul>
     <h3>风险</h3>
     <ul>
