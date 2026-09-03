@@ -37,6 +37,14 @@ import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import { truncateCodePoints } from "flywheel-comm/text-truncate";
 import type { ClaudeReviewFinding } from "./bridge/claude-review-runner.js";
 import type {
+	DeliveryContractClassification,
+	WorkflowDeliveryAttemptRow,
+} from "./bridge/delivery-contract/types.js";
+import {
+	DELIVERY_STAGES,
+	deliveryRootId,
+} from "./bridge/delivery-contract/types.js";
+import type {
 	HookPayload,
 	WorkflowClaimRecordedPayload,
 } from "./bridge/hook-payload.js";
@@ -361,7 +369,7 @@ class CompatStatement {
 		this.bound = params;
 		this.rows = null;
 		this.cursor = 0;
-		return true;
+		return false;
 	}
 	/** sql.js `step` — lazily run the query on first call, then advance one row. */
 	step(): boolean {
@@ -6934,20 +6942,50 @@ export class StateStore {
 
 	insertEvent(event: SessionEvent): boolean {
 		try {
-			this.db.run(
-				`INSERT INTO session_events (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-				[
-					event.event_id,
-					event.execution_id,
-					event.issue_id,
-					event.project_name,
-					event.event_type,
-					event.severity ?? "info",
-					event.payload ? JSON.stringify(event.payload) : null,
-					event.source,
-				],
-			);
+			this.db.transaction(() => {
+				this.db.run(
+					`INSERT INTO session_events (event_id, execution_id, issue_id, project_name, event_type, severity, payload, source)
+					 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						event.event_id,
+						event.execution_id,
+						event.issue_id,
+						event.project_name,
+						event.event_type,
+						event.severity ?? "info",
+						event.payload ? JSON.stringify(event.payload) : null,
+						event.source,
+					],
+				);
+				if (
+					!["session_started", "stage_changed", "heartbeat"].includes(
+						event.event_type,
+					) ||
+					!this.hasWorkflowDeliveryAttemptTx({
+						family: "launch",
+						table: "workflow_execution_binding",
+						pk: event.execution_id,
+					})
+				) {
+					return;
+				}
+				const inserted = this.workflowSelectAll(
+					"SELECT strftime('%Y-%m-%dT%H:%M:%fZ', ts) AS ts FROM session_events WHERE event_id = ?",
+					[event.event_id],
+				)[0];
+				if (!inserted?.ts) {
+					throw new WorkflowEngineInvariantError(
+						`workflow_launch_consumption_event_missing:${event.event_id}`,
+					);
+				}
+				this.projectWorkflowDeliveryClockTx({
+					family: "launch",
+					table: "workflow_execution_binding",
+					pk: event.execution_id,
+					clock: "consumed_at",
+					at: String(inserted.ts),
+				});
+			});
 			this.save();
 			return true;
 		} catch (err: unknown) {
@@ -19920,6 +19958,82 @@ export class StateStore {
 				UNIQUE (run_id, seq)
 			)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_delivery_attempt (
+				root_id TEXT NOT NULL,
+				generation INTEGER NOT NULL CHECK (generation > 0),
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				attempt_id TEXT NOT NULL UNIQUE,
+				family TEXT NOT NULL CHECK (family IN (
+				  'rework','carrier','turn_wake','phase_wake',
+				  'mailbox','launch','land','gate_holder'
+				)),
+				contract_ref_json TEXT NOT NULL,
+				parent_attempt_id TEXT REFERENCES workflow_delivery_attempt(attempt_id),
+				minted_at TEXT NOT NULL,
+				granted_at TEXT,
+				sent_at TEXT,
+				received_at TEXT,
+				consumed_at TEXT,
+				settlement_reason TEXT,
+				superseded_by_attempt_id TEXT REFERENCES workflow_delivery_attempt(attempt_id),
+				PRIMARY KEY (root_id, generation, attempt)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wda_live_by_root
+			ON workflow_delivery_attempt(root_id)
+			WHERE superseded_by_attempt_id IS NULL AND settlement_reason IS NULL
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_delivery_contract_episode (
+				episode_id TEXT PRIMARY KEY,
+				family TEXT NOT NULL,
+				root_id TEXT NOT NULL,
+				attempt_id TEXT NOT NULL,
+				/* NULL means this episode used the durable unbound Lead-inbox route. */
+				run_id TEXT,
+				stage TEXT NOT NULL,
+				stage_entered_at TEXT NOT NULL,
+				opened_at TEXT NOT NULL,
+				alerted_at TEXT,
+				severe_alerted_at TEXT,
+				closed_at TEXT,
+				closed_reason TEXT,
+				escalation_uid TEXT NOT NULL,
+				FOREIGN KEY (attempt_id) REFERENCES workflow_delivery_attempt(attempt_id)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdce_open_by_root
+			ON workflow_delivery_contract_episode(family, root_id)
+			WHERE closed_at IS NULL
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_delivery_operation (
+				operation_id TEXT PRIMARY KEY,
+				kind TEXT NOT NULL CHECK (kind = 'resident_expiry'),
+				run_id TEXT NOT NULL,
+				family TEXT,
+				root_id TEXT,
+				generation INTEGER,
+				shape_id TEXT,
+				hold_event_uid TEXT,
+				source_attempt_id TEXT,
+				target_activation_id TEXT,
+				client_request_id TEXT NOT NULL UNIQUE,
+				canonical_digest TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN ('staged','applied','sent','projected','failed')),
+				last_error TEXT,
+				created_at TEXT NOT NULL,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (source_attempt_id) REFERENCES workflow_delivery_attempt(attempt_id)
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdo_client_request
+			ON workflow_delivery_operation(client_request_id)
+		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
 		// approval advance this first-class holder row.
@@ -26463,6 +26577,12 @@ export class StateStore {
 				result = { ok: false, reason: "launch_intent_race" };
 				return;
 			}
+			this.settleWorkflowDeliveryAttemptIfPresentTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: input.executionId,
+				reason: "source_terminal",
+			});
 			this.db.run(
 				"UPDATE workflow_run SET status = 'held' WHERE run_id = ? AND status = 'active'",
 				[input.runId],
@@ -28316,6 +28436,14 @@ export class StateStore {
 						nowIso,
 					],
 				);
+				this.mintWorkflowStateDeliveryAttemptTx({
+					family: "launch",
+					table: "workflow_execution_binding",
+					pk: input.executionId,
+					runId: input.runId,
+					mintedAt: nowIso,
+					grantedAt: nowIso,
+				});
 			}
 			this.db.run(
 				`UPDATE workflow_run
@@ -28765,6 +28893,13 @@ export class StateStore {
 				result = { ok: false, reason: "rework_wake_receipt_race" };
 				return;
 			}
+			this.projectWorkflowDeliveryClockTx({
+				family: "rework",
+				table: "workflow_rework_delivery",
+				pk: requestId,
+				clock: "received_at",
+				at: input.ackedAt,
+			});
 			this.db.run(
 				`UPDATE workflow_run_node SET state = 'running'
 				  WHERE run_id = ? AND node_id = ? AND attempt = ?
@@ -29796,6 +29931,20 @@ export class StateStore {
 				result = { ok: false, reason: "rework_replacement_launch_race" };
 				return;
 			}
+			this.projectWorkflowDeliveryClockTx({
+				family: "rework",
+				table: "workflow_rework_delivery",
+				pk: requestId,
+				clock: "sent_at",
+				at: input.now,
+			});
+			this.projectWorkflowDeliveryClockTx({
+				family: "rework",
+				table: "workflow_rework_delivery",
+				pk: requestId,
+				clock: "received_at",
+				at: input.now,
+			});
 			this.db.run(
 				`UPDATE workflow_rework_verification_path
 				    SET state = 'active', updated_at = ?
@@ -30684,6 +30833,23 @@ export class StateStore {
 			);
 			advanced = this.db.getRowsModified() === 1;
 			if (!advanced) return;
+			if (input.to === "turn_granted") {
+				this.projectWorkflowDeliveryClockTx({
+					family: "rework",
+					table: "workflow_rework_delivery",
+					pk: input.requestId,
+					clock: "granted_at",
+					at: input.now,
+				});
+			} else if (input.to === "awaiting_receipt") {
+				this.projectWorkflowDeliveryClockTx({
+					family: "rework",
+					table: "workflow_rework_delivery",
+					pk: input.requestId,
+					clock: "sent_at",
+					at: input.now,
+				});
+			}
 			const request = this.getWorkflowReworkRequest(input.requestId);
 			const route = this.getLatestWorkflowReworkRoute(input.requestId);
 			if (!request || !route) {
@@ -31410,6 +31576,14 @@ export class StateStore {
 					now,
 				],
 			);
+			this.mintWorkflowStateDeliveryAttemptTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: input.executionId,
+				runId: input.runId,
+				mintedAt: now,
+				grantedAt: now,
+			});
 			if (!this.getWorkflowExecutionRuntime(input.executionId)) {
 				this.db.run(
 					`INSERT INTO workflow_execution_runtime
@@ -33779,12 +33953,16 @@ export class StateStore {
 				return;
 			}
 			const openDelivery = this.workflowSelectAll(
-				`SELECT d.request_id FROM workflow_rework_delivery d
-				  JOIN workflow_rework_request r ON r.request_id = d.request_id
-				 WHERE r.run_id = ?
-				   AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
-				 LIMIT 1`,
-				[input.runId],
+				`SELECT request_id FROM (
+				   SELECT d.request_id FROM workflow_rework_delivery d
+				   JOIN workflow_rework_request r ON r.request_id = d.request_id
+				  WHERE r.run_id = ?
+				    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+				   UNION ALL
+				   SELECT p.request_id FROM workflow_rework_verification_path p
+				    WHERE p.run_id = ? AND p.state IN ('pending','active')
+				 ) LIMIT 1`,
+				[input.runId, input.runId],
 			)[0];
 			if (openDelivery) {
 				result = { ok: false, reason: "engine_land_rework_already_open" };
@@ -33878,6 +34056,11 @@ export class StateStore {
 				 VALUES (?, 1, 'pending', ?)`,
 				[requestId, input.now],
 			);
+			this.mintWorkflowReworkDeliveryAttemptTx({
+				requestId,
+				runId: input.runId,
+				now: input.now,
+			});
 			this.db.run(
 				`INSERT INTO workflow_rework_verification_path
 				   (request_id, run_id, route_revision, state,
@@ -34616,12 +34799,16 @@ export class StateStore {
 				}
 			}
 			const openDelivery = this.workflowSelectAll(
-				`SELECT d.request_id FROM workflow_rework_delivery d
-				  JOIN workflow_rework_request r ON r.request_id = d.request_id
-				 WHERE r.run_id = ?
-				   AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
-				 LIMIT 1`,
-				[input.runId],
+				`SELECT request_id FROM (
+				   SELECT d.request_id FROM workflow_rework_delivery d
+				   JOIN workflow_rework_request r ON r.request_id = d.request_id
+				  WHERE r.run_id = ?
+				    AND d.state IN ('pending','turn_granted','awaiting_receipt','wake_delivered','replacement_pending')
+				   UNION ALL
+				   SELECT p.request_id FROM workflow_rework_verification_path p
+				    WHERE p.run_id = ? AND p.state IN ('pending','active')
+				 ) LIMIT 1`,
+				[input.runId, input.runId],
 			)[0];
 			if (openDelivery) {
 				result = { ok: false, reason: "rework_already_open" };
@@ -34786,6 +34973,11 @@ export class StateStore {
 				 VALUES (?, 1, 'pending', ?)`,
 				[requestId, input.now],
 			);
+			this.mintWorkflowReworkDeliveryAttemptTx({
+				requestId,
+				runId: input.runId,
+				now: input.now,
+			});
 			this.db.run(
 				`INSERT INTO workflow_rework_verification_path
 				   (request_id, run_id, route_revision, state,
@@ -34974,6 +35166,932 @@ export class StateStore {
 		});
 		if (result.ok) this.save();
 		return result;
+	}
+
+	listLiveWorkflowDeliveryAttempts(): WorkflowDeliveryAttemptRow[] {
+		return this.workflowSelectAll(
+			`SELECT root_id, generation, attempt, attempt_id, family,
+			        contract_ref_json, parent_attempt_id, minted_at, granted_at,
+			        sent_at, received_at, consumed_at, settlement_reason,
+			        superseded_by_attempt_id
+			   FROM workflow_delivery_attempt
+			  WHERE superseded_by_attempt_id IS NULL`,
+			[],
+		) as unknown as WorkflowDeliveryAttemptRow[];
+	}
+
+	listUnsettledWorkflowDeliveryAttempts(): WorkflowDeliveryAttemptRow[] {
+		return this.workflowSelectAll(
+			`SELECT root_id, generation, attempt, attempt_id, family,
+			        contract_ref_json, parent_attempt_id, minted_at, granted_at,
+			        sent_at, received_at, consumed_at, settlement_reason,
+			        superseded_by_attempt_id
+			   FROM workflow_delivery_attempt
+			  WHERE superseded_by_attempt_id IS NULL
+			    AND settlement_reason IS NULL`,
+			[],
+		) as unknown as WorkflowDeliveryAttemptRow[];
+	}
+
+	baselineWorkflowDeliveryContracts(now: string): {
+		examined: number;
+		minted: number;
+	} {
+		if (!StateStore.workflowFiniteTimestamp(now)) {
+			throw new Error("invalid_delivery_baseline_time");
+		}
+		const candidates = this.workflowSelectAll(
+			`SELECT 'rework' AS family, 'workflow_rework_delivery' AS table_name,
+			        delivery.request_id AS pk, request.run_id,
+			        run.project_name, run.issue_id, delivery.state,
+			        0 AS has_receipt, 0 AS has_business_event
+			   FROM workflow_rework_delivery delivery
+			   JOIN workflow_rework_request request ON request.request_id = delivery.request_id
+			   JOIN workflow_run run ON run.run_id = request.run_id
+			  WHERE delivery.state <> 'completed'
+			    AND run.status IN ('active','held')
+			 UNION ALL
+			 SELECT 'carrier', 'workflow_carrier_delivery', delivery.question_id,
+			        delivery.run_id, run.project_name, run.issue_id, delivery.state,
+			        0, 0
+			   FROM workflow_carrier_delivery delivery
+			   JOIN workflow_run run ON run.run_id = delivery.run_id
+			  WHERE delivery.state <> 'completed'
+			    AND run.status IN ('active','held')
+			 UNION ALL
+			 SELECT 'launch', 'workflow_execution_binding', binding.execution_id,
+			        binding.run_id, run.project_name, run.issue_id,
+			        COALESCE(effect.state, 'intent_recorded'), 0,
+			        EXISTS(SELECT 1 FROM session_events event
+			                WHERE event.execution_id = binding.execution_id)
+			   FROM workflow_execution_binding binding
+			   JOIN workflow_run run ON run.run_id = binding.run_id
+			   LEFT JOIN workflow_side_effect_ledger effect
+			     ON effect.run_id = binding.run_id AND effect.execution_id = binding.execution_id
+			    AND effect.kind = 'dispatch'
+			  WHERE run.status IN ('active','held')
+			    AND NOT EXISTS(SELECT 1 FROM session_events event
+			                    WHERE event.execution_id = binding.execution_id)
+			 UNION ALL
+			 SELECT 'land', 'land_operation', operation.operation_id,
+			        operation.run_id, operation.project_name, operation.issue_id,
+			        operation.state,
+			        EXISTS(SELECT 1 FROM land_operation_step step
+			                WHERE step.operation_id = operation.operation_id), 0
+			   FROM land_operation operation
+			   JOIN workflow_run run ON run.run_id = operation.run_id
+			  WHERE operation.state <> 'completed'
+			    AND operation.superseded_at IS NULL
+			    AND run.status IN ('active','held')
+			 UNION ALL
+			 SELECT 'gate_holder', 'workflow_gate_holder', holder.question_id,
+			        holder.run_id, run.project_name, run.issue_id,
+			        holder.materialization_stage, 0, 0
+			   FROM workflow_gate_holder holder
+			   JOIN workflow_run run ON run.run_id = holder.run_id
+			  WHERE holder.state <> 'superseded'
+			    AND holder.materialization_stage <> 'completed'
+			    AND run.status IN ('active','held')`,
+			[],
+		);
+		let minted = 0;
+		this.db.transaction(() => {
+			for (const row of candidates) {
+				const family = String(row.family) as WorkflowDeliveryAttemptRow["family"];
+				const table = String(row.table_name);
+				const pk = String(row.pk);
+				const created = this.mintWorkflowStateDeliveryAttemptTx({
+					family,
+					table,
+					pk,
+					...(row.run_id && family !== "land"
+						? { runId: String(row.run_id) }
+						: {}),
+					projectName: String(row.project_name),
+					issueId: String(row.issue_id),
+					mintedAt: now,
+				});
+				if (!created) continue;
+				minted++;
+				const state = String(row.state);
+				const clocks: Array<
+					"granted_at" | "sent_at" | "received_at" | "consumed_at"
+				> = [];
+				if (
+					(family === "rework" && state !== "pending") ||
+					(family === "carrier" && state !== "pending") ||
+					family === "launch" ||
+					(family === "gate_holder" && state !== "question_intent")
+				) {
+					clocks.push("granted_at");
+				}
+				if (
+					(family === "rework" &&
+						["awaiting_receipt", "wake_delivered", "completed"].includes(state)) ||
+					(family === "carrier" &&
+						["awaiting_receipt", "receipt_started", "completed"].includes(state)) ||
+					(family === "launch" && state === "started") ||
+					family === "land" ||
+					(family === "gate_holder" &&
+						["session_bound", "card_posted", "card_bound", "completed"].includes(
+							state,
+						))
+				) {
+					clocks.push("sent_at");
+				}
+				if (
+					(family === "rework" && ["wake_delivered", "completed"].includes(state)) ||
+					(family === "carrier" && ["receipt_started", "completed"].includes(state)) ||
+					(family === "launch" && ["launch_committed", "started"].includes(state)) ||
+					(family === "land" && Number(row.has_receipt) === 1) ||
+					(family === "gate_holder" && ["card_bound", "completed"].includes(state))
+				) {
+					clocks.push("received_at");
+				}
+				if (
+					(family === "carrier" && ["receipt_started", "completed"].includes(state)) ||
+					(family === "launch" && Number(row.has_business_event) === 1)
+				) {
+					clocks.push("consumed_at");
+				}
+				for (const clock of clocks) {
+					this.projectWorkflowDeliveryClockTx({ family, table, pk, clock, at: now });
+				}
+				if (
+					state === "completed" &&
+					["rework", "carrier", "land", "gate_holder"].includes(family)
+				) {
+					this.settleWorkflowDeliveryAttemptTx({
+						family,
+						table,
+						pk,
+						reason: "settled",
+					});
+				}
+				if (row.run_id && this.getWorkflowRun(String(row.run_id))) {
+					const rootId = deliveryRootId({
+						projectName: String(row.project_name),
+						issueId: String(row.issue_id),
+						family,
+						physicalId: pk,
+					});
+					this.appendWorkflowRunEventCheckedTx({
+						runId: String(row.run_id),
+						eventUid: `delivery_contract_baseline:${rootId}:g1:a1`,
+						kind: "delivery_contract_baseline",
+						payload: { family, rootId, state, at: now },
+					});
+				}
+			}
+		});
+		if (minted > 0) this.save();
+		return { examined: candidates.length, minted };
+	}
+
+	private mintWorkflowReworkDeliveryAttemptTx(input: {
+		requestId: string;
+		runId: string;
+		now: string;
+	}): void {
+		const run = this.workflowSelectAll(
+			"SELECT project_name, issue_id FROM workflow_run WHERE run_id = ?",
+			[input.runId],
+		)[0];
+		if (!run) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_delivery_run_missing:${input.runId}`,
+			);
+		}
+		const rootId = deliveryRootId({
+			projectName: String(run.project_name),
+			issueId: String(run.issue_id),
+			family: "rework",
+			physicalId: input.requestId,
+		});
+		const attemptId = `${rootId}:g1:a1`;
+		const contractRef = JSON.stringify({
+			table: "workflow_rework_delivery",
+			pk: input.requestId,
+			runId: input.runId,
+		});
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_delivery_attempt (
+			   root_id, generation, attempt, attempt_id, family,
+			   contract_ref_json, minted_at
+			 ) VALUES (?, 1, 1, ?, 'rework', ?, ?)`,
+			[rootId, attemptId, contractRef, input.now],
+		);
+		const attempt = this.workflowSelectAll(
+			`SELECT root_id, family, contract_ref_json, minted_at
+			   FROM workflow_delivery_attempt WHERE attempt_id = ?`,
+			[attemptId],
+		)[0];
+		if (
+			!attempt ||
+			attempt.root_id !== rootId ||
+			attempt.family !== "rework" ||
+			attempt.contract_ref_json !== contractRef ||
+			attempt.minted_at !== input.now
+		) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_delivery_attempt_identity_conflict:${attemptId}`,
+			);
+		}
+	}
+
+	private mintWorkflowCarrierDeliveryAttemptTx(input: {
+		questionId: string;
+		runId: string;
+		generation: number;
+		now: string;
+	}): void {
+		const run = this.workflowSelectAll(
+			"SELECT project_name, issue_id FROM workflow_run WHERE run_id = ?",
+			[input.runId],
+		)[0];
+		if (!run) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_delivery_run_missing:${input.runId}`,
+			);
+		}
+		const rootId = deliveryRootId({
+			projectName: String(run.project_name),
+			issueId: String(run.issue_id),
+			family: "carrier",
+			physicalId: input.questionId,
+		});
+		const attemptId = `${rootId}:g${input.generation}:a1`;
+		const contractRef = JSON.stringify({
+			table: "workflow_carrier_delivery",
+			pk: input.questionId,
+			runId: input.runId,
+		});
+		let parentAttemptId: string | null = null;
+		if (input.generation > 1) {
+			const parent = this.workflowSelectAll(
+				`SELECT attempt_id
+				   FROM workflow_delivery_attempt
+				  WHERE root_id = ? AND superseded_by_attempt_id IS NULL
+				    AND settlement_reason IS NULL`,
+				[rootId],
+			)[0];
+			if (!parent) {
+				throw new WorkflowEngineInvariantError(
+					`workflow_delivery_parent_missing:carrier:${input.questionId}`,
+				);
+			}
+			parentAttemptId = String(parent.attempt_id);
+			this.db.run("PRAGMA defer_foreign_keys = ON");
+			this.db.run(
+				`UPDATE workflow_delivery_attempt
+				    SET superseded_by_attempt_id = ?
+				  WHERE attempt_id = ? AND superseded_by_attempt_id IS NULL
+				    AND settlement_reason IS NULL`,
+				[attemptId, parentAttemptId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`workflow_delivery_parent_cas_failed:carrier:${input.questionId}`,
+				);
+			}
+		}
+		this.db.run(
+			`INSERT INTO workflow_delivery_attempt (
+			   root_id, generation, attempt, attempt_id, family,
+			   contract_ref_json, parent_attempt_id, minted_at
+			 ) VALUES (?, ?, 1, ?, 'carrier', ?, ?, ?)`,
+			[
+				rootId,
+				input.generation,
+				attemptId,
+				contractRef,
+				parentAttemptId,
+				input.now,
+			],
+		);
+	}
+
+	private mintWorkflowStateDeliveryAttemptTx(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+		mintedAt: string;
+		runId?: string;
+		projectName?: string;
+		issueId?: string;
+		grantedAt?: string;
+		sentAt?: string;
+	}): boolean {
+		const run = input.runId
+			? this.workflowSelectAll(
+					"SELECT project_name, issue_id FROM workflow_run WHERE run_id = ?",
+					[input.runId],
+				)[0]
+			: undefined;
+		const projectName = String(run?.project_name ?? input.projectName ?? "");
+		const issueId = String(run?.issue_id ?? input.issueId ?? "");
+		if (!projectName || !issueId) {
+			return false;
+		}
+		const rootId = deliveryRootId({
+			projectName,
+			issueId,
+			family: input.family,
+			physicalId: input.pk,
+		});
+		const attemptId = `${rootId}:g1:a1`;
+		const contractRef = JSON.stringify({
+			table: input.table,
+			pk: input.pk,
+			...(input.runId ? { runId: input.runId } : {}),
+		});
+		this.db.run(
+			`INSERT OR IGNORE INTO workflow_delivery_attempt (
+			   root_id, generation, attempt, attempt_id, family,
+			   contract_ref_json, minted_at, granted_at, sent_at
+			 ) VALUES (?, 1, 1, ?, ?, ?, ?, ?, ?)`,
+			[
+				rootId,
+				attemptId,
+				input.family,
+				contractRef,
+				input.mintedAt,
+				input.grantedAt ?? null,
+				input.sentAt ?? null,
+			],
+		);
+		if (this.db.getRowsModified() === 1) return true;
+		const existing = this.workflowSelectAll(
+			`SELECT root_id, family, contract_ref_json
+			   FROM workflow_delivery_attempt WHERE attempt_id = ?`,
+			[attemptId],
+		)[0];
+		if (
+			!existing ||
+			existing.root_id !== rootId ||
+			existing.family !== input.family ||
+			existing.contract_ref_json !== contractRef
+		) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_delivery_attempt_identity_conflict:${attemptId}`,
+			);
+		}
+		return false;
+	}
+
+	private hasWorkflowDeliveryAttemptTx(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+	}): boolean {
+		return Boolean(
+			this.workflowSelectAll(
+				`SELECT 1 AS present FROM workflow_delivery_attempt
+				  WHERE family = ?
+				    AND json_extract(contract_ref_json, '$.table') = ?
+				    AND json_extract(contract_ref_json, '$.pk') = ?
+				    AND superseded_by_attempt_id IS NULL
+				  LIMIT 1`,
+				[input.family, input.table, input.pk],
+			)[0],
+		);
+	}
+
+	private projectWorkflowDeliveryClockTx(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+		clock: "granted_at" | "sent_at" | "received_at" | "consumed_at";
+		at: string;
+	}): void {
+		this.db.run(
+			`UPDATE workflow_delivery_attempt
+			    SET ${input.clock} = COALESCE(${input.clock}, ?)
+			  WHERE family = ?
+			    AND json_extract(contract_ref_json, '$.table') = ?
+			    AND json_extract(contract_ref_json, '$.pk') = ?
+			    AND superseded_by_attempt_id IS NULL
+			    AND settlement_reason IS NULL`,
+			[input.at, input.family, input.table, input.pk],
+		);
+		if (this.db.getRowsModified() === 1) return;
+		const existing = this.workflowSelectAll(
+			`SELECT ${input.clock} AS clock
+			   FROM workflow_delivery_attempt
+			  WHERE family = ?
+			    AND json_extract(contract_ref_json, '$.table') = ?
+			    AND json_extract(contract_ref_json, '$.pk') = ?
+			    AND superseded_by_attempt_id IS NULL
+			    AND settlement_reason IS NULL`,
+			[input.family, input.table, input.pk],
+		)[0];
+		if (!existing) {
+			// Physical rows created before the delivery-contract migration do not
+			// necessarily have an attempt. Their authoritative state transition
+			// must still commit; the boot baseline mints only rows it can identify
+			// safely, so a missing projection target is an additive-rollout no-op.
+			return;
+		}
+		if (existing.clock === null) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_delivery_clock_cas_failed:${input.family}:${input.pk}:${input.clock}`,
+			);
+		}
+	}
+
+	private settleWorkflowDeliveryAttemptTx(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+		reason: string;
+	}): void {
+		this.db.run(
+			`UPDATE workflow_delivery_attempt
+			    SET settlement_reason = ?
+			  WHERE family = ?
+			    AND json_extract(contract_ref_json, '$.table') = ?
+			    AND json_extract(contract_ref_json, '$.pk') = ?
+			    AND superseded_by_attempt_id IS NULL
+			    AND settlement_reason IS NULL`,
+			[input.reason, input.family, input.table, input.pk],
+		);
+		if (this.db.getRowsModified() === 1) return;
+		const existing = this.workflowSelectAll(
+			`SELECT settlement_reason
+			   FROM workflow_delivery_attempt
+			  WHERE family = ?
+			    AND json_extract(contract_ref_json, '$.table') = ?
+			    AND json_extract(contract_ref_json, '$.pk') = ?
+			    AND superseded_by_attempt_id IS NULL`,
+			[input.family, input.table, input.pk],
+		)[0];
+		if (!existing || existing.settlement_reason !== input.reason) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_delivery_settlement_cas_failed:${input.family}:${input.pk}`,
+			);
+		}
+	}
+
+	private settleWorkflowDeliveryAttemptIfPresentTx(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+		reason: string;
+	}): void {
+		if (!this.hasWorkflowDeliveryAttemptTx(input)) return;
+		this.settleWorkflowDeliveryAttemptTx(input);
+	}
+
+	private settleWorkflowCarrierDeliveryOnCompletionTx(input: {
+		questionId: string;
+		runId: string;
+		nodeId: string;
+		executionId: string;
+		completionEventUid: string;
+		now: string;
+	}): void {
+		const delivery = this.workflowSelectAll(
+			`SELECT run_id, gate_node_id, source_execution_id, state
+			   FROM workflow_carrier_delivery
+			  WHERE question_id = ?`,
+			[input.questionId],
+		)[0];
+		if (!delivery) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_carrier_delivery_not_found:${input.questionId}`,
+			);
+		}
+		if (
+			delivery.run_id !== input.runId ||
+			delivery.gate_node_id !== input.nodeId ||
+			delivery.source_execution_id !== input.executionId
+		) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_carrier_delivery_completion_binding_mismatch:${input.questionId}`,
+			);
+		}
+		if (
+			delivery.state === "completed" ||
+			delivery.state === "held" ||
+			delivery.state === "needs_lead"
+		) {
+			return;
+		}
+		const settlementReason =
+			delivery.state === "receipt_started"
+				? "settled"
+				: "superseded_by_completion";
+		this.db.run(
+			`UPDATE workflow_carrier_delivery
+			    SET state = 'completed', owner_id = NULL, lease_expires_at = NULL,
+			        next_retry_at = NULL, last_error = NULL, updated_at = ?
+			  WHERE question_id = ? AND run_id = ? AND state = ?`,
+			[input.now, input.questionId, input.runId, delivery.state],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			throw new WorkflowEngineInvariantError(
+				`workflow_carrier_delivery_settlement_cas_failed:${input.questionId}`,
+			);
+		}
+		this.settleWorkflowDeliveryAttemptTx({
+			family: "carrier",
+			table: "workflow_carrier_delivery",
+			pk: input.questionId,
+			reason: settlementReason,
+		});
+		this.db.run(
+			`UPDATE workflow_delivery_contract_episode
+			    SET closed_at = ?, closed_reason = ?
+			  WHERE closed_at IS NULL
+			    AND attempt_id IN (
+			      SELECT attempt_id FROM workflow_delivery_attempt
+			       WHERE family = 'carrier'
+			         AND json_extract(contract_ref_json, '$.pk') = ?
+			    )`,
+			[input.now, settlementReason, input.questionId],
+		);
+		this.appendWorkflowRunEventCheckedTx({
+			runId: input.runId,
+			eventUid: `carrier_delivery_settlement:${input.questionId}:${input.completionEventUid}`,
+			kind:
+				settlementReason === "settled"
+					? "carrier_delivery_settled"
+					: "carrier_delivery_superseded_by_completion",
+			nodeId: input.nodeId,
+			executionId: input.executionId,
+			payload: {
+				questionId: input.questionId,
+				completionEventUid: input.completionEventUid,
+				settlementReason,
+			},
+		});
+	}
+
+	projectWorkflowDeliveryAttempt(input: {
+		rootId: string;
+		attemptId: string;
+		family: WorkflowDeliveryAttemptRow["family"];
+		contractRef: Record<string, unknown>;
+		mintedAt: string;
+		sentAt?: string | null;
+		receivedAt?: string | null;
+		consumedAt?: string | null;
+	}): { minted: number; advanced: number } {
+		const result = { minted: 0, advanced: 0 };
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_delivery_attempt (
+				   root_id, generation, attempt, attempt_id, family,
+				   contract_ref_json, minted_at
+				 ) VALUES (?, 1, 1, ?, ?, ?, ?)`,
+				[
+					input.rootId,
+					input.attemptId,
+					input.family,
+					JSON.stringify(input.contractRef),
+					input.mintedAt,
+				],
+			);
+			result.minted = this.db.getRowsModified();
+			const existing = this.workflowSelectAll(
+				`SELECT root_id, family, minted_at, contract_ref_json
+				   FROM workflow_delivery_attempt WHERE attempt_id = ?`,
+				[input.attemptId],
+			)[0];
+			if (
+				!existing ||
+				existing.root_id !== input.rootId ||
+				existing.family !== input.family ||
+				existing.minted_at !== input.mintedAt
+			) {
+				throw new Error(`delivery_attempt_identity_conflict:${input.attemptId}`);
+			}
+			const contractRefJson = JSON.stringify(input.contractRef);
+			if (existing.contract_ref_json !== contractRefJson) {
+				this.db.run(
+					`UPDATE workflow_delivery_attempt SET contract_ref_json = ?
+					  WHERE attempt_id = ? AND contract_ref_json = ?`,
+					[contractRefJson, input.attemptId, existing.contract_ref_json],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error(
+						`delivery_attempt_projection_conflict:${input.attemptId}`,
+					);
+				}
+			}
+			for (const [column, value] of [
+				["sent_at", input.sentAt],
+				["received_at", input.receivedAt],
+				["consumed_at", input.consumedAt],
+			] as const) {
+				if (!value) continue;
+				this.db.run(
+					`UPDATE workflow_delivery_attempt SET ${column} = ?
+					  WHERE attempt_id = ? AND ${column} IS NULL`,
+					[value, input.attemptId],
+				);
+				result.advanced += this.db.getRowsModified();
+			}
+		});
+		this.save();
+		return result;
+	}
+
+	settleProjectedWorkflowDeliveryAttempt(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+		reason: string;
+	}): boolean {
+		if (!input.table.trim() || !input.pk.trim() || !input.reason.trim()) {
+			throw new Error("invalid_projected_delivery_settlement");
+		}
+		let settled = false;
+		this.db.transaction(() => {
+			if (!this.hasWorkflowDeliveryAttemptTx(input)) return;
+			this.settleWorkflowDeliveryAttemptTx(input);
+			settled = true;
+		});
+		if (settled) this.save();
+		return settled;
+	}
+
+	getWorkflowStateDeliverySourceRun(input: {
+		family: WorkflowDeliveryAttemptRow["family"];
+		table: string;
+		pk: string;
+	}): WorkflowRunRow | undefined {
+		let row: Record<string, unknown> | undefined;
+		if (
+			input.family === "rework" &&
+			input.table === "workflow_rework_delivery"
+		) {
+			row = this.workflowSelectAll(
+				`SELECT request.run_id
+				   FROM workflow_rework_delivery delivery
+				   JOIN workflow_rework_request request
+				     ON request.request_id = delivery.request_id
+				  WHERE delivery.request_id = ?`,
+				[input.pk],
+			)[0];
+		} else if (
+			input.family === "carrier" &&
+			input.table === "workflow_carrier_delivery"
+		) {
+			row = this.workflowSelectAll(
+				"SELECT run_id FROM workflow_carrier_delivery WHERE question_id = ?",
+				[input.pk],
+			)[0];
+		} else if (
+			input.family === "launch" &&
+			input.table === "workflow_execution_binding"
+		) {
+			row = this.workflowSelectAll(
+				"SELECT run_id FROM workflow_execution_binding WHERE execution_id = ?",
+				[input.pk],
+			)[0];
+		} else if (
+			input.family === "land" &&
+			input.table === "land_operation"
+		) {
+			row = this.workflowSelectAll(
+				"SELECT run_id FROM land_operation WHERE operation_id = ?",
+				[input.pk],
+			)[0];
+		} else if (
+			input.family === "gate_holder" &&
+			input.table === "workflow_gate_holder"
+		) {
+			row = this.workflowSelectAll(
+				"SELECT run_id FROM workflow_gate_holder WHERE question_id = ?",
+				[input.pk],
+			)[0];
+		}
+		return row?.run_id ? this.getWorkflowRun(String(row.run_id)) : undefined;
+	}
+
+	observeWorkflowDeliveryContract(input: {
+		attempt: WorkflowDeliveryAttemptRow;
+		classification: DeliveryContractClassification;
+		runId: string | null;
+		projectName: string;
+		issueId: string;
+		now: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+		enqueueUnboundAlert?: (
+			payload: WorkflowDeliveryContractUnboundAlertPayload,
+		) => WorkflowDeliveryContractUnboundAlertReceipt;
+	}): { opened: number; closed: number; alerted: number } {
+		const result = { opened: 0, closed: 0, alerted: 0 };
+		this.db.transaction(() => {
+			const open = this.workflowSelectAll(
+				`SELECT episode_id, attempt_id, stage, severe_alerted_at
+				   FROM workflow_delivery_contract_episode
+				  WHERE family = ? AND root_id = ? AND closed_at IS NULL`,
+				[input.attempt.family, input.attempt.root_id],
+			)[0];
+			const { classification } = input;
+			const episodeId = `${input.attempt.attempt_id}:${classification.stage}:${classification.stageEnteredAt}`;
+			if (classification.terminal || !classification.overdue) {
+				if (
+					open &&
+					(classification.terminal || open.episode_id !== episodeId)
+				) {
+					this.db.run(
+						`UPDATE workflow_delivery_contract_episode
+						    SET closed_at = ?, closed_reason = ?
+						  WHERE episode_id = ? AND closed_at IS NULL`,
+						[
+							input.now,
+							classification.terminal
+								? `terminal:${classification.terminal}`
+								: "advanced",
+							open.episode_id,
+						],
+					);
+					result.closed += this.db.getRowsModified();
+				}
+				return;
+			}
+
+			const escalationUid = `delivery_contract_stalled:${episodeId}`;
+			if (open && open.episode_id !== episodeId) {
+				const priorStageIndex = DELIVERY_STAGES.indexOf(
+					open.stage as (typeof DELIVERY_STAGES)[number],
+				);
+				const currentStageIndex = DELIVERY_STAGES.indexOf(
+					classification.stage,
+				);
+				this.db.run(
+					`UPDATE workflow_delivery_contract_episode
+					    SET closed_at = ?, closed_reason = ?
+					  WHERE episode_id = ? AND closed_at IS NULL`,
+					[
+						input.now,
+						open.attempt_id !== input.attempt.attempt_id
+							? "reminted"
+							: priorStageIndex >= 0 && currentStageIndex < priorStageIndex
+								? "regressed"
+								: "advanced",
+						open.episode_id,
+					],
+				);
+				result.closed += this.db.getRowsModified();
+			}
+			if (!open || open.episode_id !== episodeId) {
+				this.db.run(
+					`INSERT INTO workflow_delivery_contract_episode (
+					   episode_id, family, root_id, attempt_id, run_id, stage,
+					   stage_entered_at, opened_at, alerted_at, escalation_uid
+					 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+					[
+						episodeId,
+						input.attempt.family,
+						input.attempt.root_id,
+						input.attempt.attempt_id,
+						input.runId,
+						classification.stage,
+						classification.stageEnteredAt,
+						input.now,
+						input.now,
+						escalationUid,
+					],
+				);
+				result.opened++;
+				this.deliverWorkflowDeliveryContractAlert({
+					input,
+					escalationUid,
+					severity: "warning",
+				});
+				result.alerted++;
+			}
+			if (
+				classification.severe &&
+				open?.episode_id === episodeId &&
+				!open.severe_alerted_at
+			) {
+				const severeUid = `${escalationUid}:severe`;
+				this.deliverWorkflowDeliveryContractAlert({
+					input,
+					escalationUid: severeUid,
+					severity: "severe",
+				});
+				this.db.run(
+					`UPDATE workflow_delivery_contract_episode
+					    SET severe_alerted_at = ?
+					  WHERE episode_id = ? AND severe_alerted_at IS NULL`,
+					[input.now, episodeId],
+				);
+				result.alerted++;
+			}
+		});
+		this.save();
+		return result;
+	}
+
+	private deliverWorkflowDeliveryContractAlert(input: {
+		input: {
+			attempt: WorkflowDeliveryAttemptRow;
+			classification: DeliveryContractClassification;
+			runId: string | null;
+			projectName: string;
+			issueId: string;
+			now: string;
+			alertIdentity: WorkflowEngineAlertIdentity;
+			enqueueUnboundAlert?: (
+				payload: WorkflowDeliveryContractUnboundAlertPayload,
+			) => WorkflowDeliveryContractUnboundAlertReceipt;
+		};
+		escalationUid: string;
+		severity: "warning" | "severe";
+	}): void {
+		if (input.input.runId) {
+			this.enqueueWorkflowEngineAlertTx({
+				escalationUid: input.escalationUid,
+				runId: input.input.runId,
+				now: input.input.now,
+				payload: this.deliveryContractAlertPayload({
+					input: { ...input.input, runId: input.input.runId },
+					escalationUid: input.escalationUid,
+					severity: input.severity,
+				}),
+			});
+			return;
+		}
+		if (!input.input.enqueueUnboundAlert) {
+			throw new WorkflowEngineInvariantError(
+				`delivery_contract_unbound_alert_route_missing:${input.escalationUid}`,
+			);
+		}
+		const receipt = input.input.enqueueUnboundAlert(
+			this.deliveryContractUnboundAlertPayload(input),
+		);
+		if (
+			receipt.eventId !== input.escalationUid ||
+			receipt.state !== "sent"
+		) {
+			throw new WorkflowEngineInvariantError(
+				`delivery_contract_unbound_alert_not_sent:${input.escalationUid}`,
+			);
+		}
+	}
+
+	private deliveryContractAlertPayload(input: {
+		input: {
+			attempt: WorkflowDeliveryAttemptRow;
+			classification: DeliveryContractClassification;
+			runId: string;
+			projectName: string;
+			issueId: string;
+			alertIdentity: WorkflowEngineAlertIdentity;
+		};
+		escalationUid: string;
+		severity: "warning" | "severe";
+	}): WorkflowEngineAlertPayload {
+		return {
+			leadId: input.input.alertIdentity.leadId,
+			projectName: input.input.alertIdentity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_escalation",
+			severity: input.severity,
+			sessionKey: `wf:${input.input.runId}`,
+			title: `${input.input.issueId} delivery contract stalled`,
+			body: `A ${input.input.attempt.family} handoff has not advanced from ${input.input.classification.stage}.`,
+			metadata: {
+				workflowEngine: {
+					runId: input.input.runId,
+					issueId: input.input.issueId,
+					nodeId: "delivery-contract",
+					executionId: input.input.attempt.attempt_id,
+					disposition: "delivery_contract_stalled",
+					leadResolution: input.input.alertIdentity.leadResolution,
+				},
+			},
+		};
+	}
+
+	private deliveryContractUnboundAlertPayload(input: {
+		input: {
+			attempt: WorkflowDeliveryAttemptRow;
+			classification: DeliveryContractClassification;
+			projectName: string;
+			issueId: string;
+			alertIdentity: WorkflowEngineAlertIdentity;
+		};
+		escalationUid: string;
+		severity: "warning" | "severe";
+	}): WorkflowDeliveryContractUnboundAlertPayload {
+		return {
+			leadId: input.input.alertIdentity.leadId,
+			projectName: input.input.alertIdentity.projectName,
+			eventId: input.escalationUid,
+			eventType: "workflow_engine_escalation",
+			severity: input.severity,
+			sessionKey: `delivery-contract:${input.input.attempt.root_id}`,
+			episodeId: input.escalationUid,
+			title: `${input.input.issueId} delivery contract stalled`,
+			body: `A ${input.input.attempt.family} handoff has not advanced from ${input.input.classification.stage}.`,
+		};
 	}
 
 	private enqueueWorkflowEngineAlertTx(input: {
@@ -35587,8 +36705,9 @@ export class StateStore {
 			);
 			if (this.db.getRowsModified() !== 1) return;
 			if (state === "sent") {
+				const runId = row.run_id as string;
 				this.appendWorkflowRunEventCheckedTx({
-					runId: row.run_id as string,
+					runId,
 					eventUid: `alert_posted:${input.escalationUid}`,
 					kind: "workflow_engine_alert_posted",
 					payload: {
@@ -41434,6 +42553,11 @@ export class StateStore {
 					 VALUES (?, 1, 'pending', ?)`,
 					[reworkRequestId, now],
 				);
+				this.mintWorkflowReworkDeliveryAttemptTx({
+					requestId: reworkRequestId,
+					runId: input.runId,
+					now,
+				});
 				this.db.run(
 					`INSERT INTO workflow_rework_verification_path
 					   (request_id, run_id, route_revision, state,
@@ -41576,6 +42700,13 @@ export class StateStore {
 							now,
 						],
 					);
+					this.mintWorkflowStateDeliveryAttemptTx({
+						family: "gate_holder",
+						table: "workflow_gate_holder",
+						pk: questionId,
+						runId: input.runId,
+						mintedAt: now,
+					});
 					this.bindWorkflowShipTargetForGateTx({
 						runId: input.runId,
 						questionId,
@@ -42755,6 +43886,11 @@ export class StateStore {
 			 VALUES (?, 1, 'pending', ?)`,
 			[requestId, input.now],
 		);
+		this.mintWorkflowReworkDeliveryAttemptTx({
+			requestId,
+			runId: input.run.run_id,
+			now: input.now,
+		});
 		this.db.run(
 			`INSERT INTO workflow_rework_verification_path
 			   (request_id, run_id, route_revision, state,
@@ -43728,6 +44864,12 @@ export class StateStore {
 								now,
 							],
 						);
+						this.mintWorkflowCarrierDeliveryAttemptTx({
+							questionId,
+							runId,
+							generation: 1,
+							now,
+						});
 						this.appendWorkflowRunEventTx({
 							runId,
 							eventUid: `runner_ship_approved:${input.project}:${input.sourceEventId}`,
@@ -44345,6 +45487,13 @@ export class StateStore {
 				input.now,
 			],
 		);
+		this.mintWorkflowStateDeliveryAttemptTx({
+			family: "gate_holder",
+			table: "workflow_gate_holder",
+			pk: questionId,
+			runId: input.runId,
+			mintedAt: input.now,
+		});
 		for (const entry of proof.evidence) {
 			this.db.run(
 				`INSERT INTO workflow_gate_holder_evidence
@@ -46425,6 +47574,13 @@ export class StateStore {
 					input.now,
 				],
 			);
+			this.mintWorkflowStateDeliveryAttemptTx({
+				family: "gate_holder",
+				table: "workflow_gate_holder",
+				pk: input.questionId,
+				runId: input.runId,
+				mintedAt: input.now,
+			});
 			holder = this.workflowSelectAll(
 				"SELECT * FROM workflow_gate_holder WHERE question_id = ?",
 				[input.questionId],
@@ -46480,20 +47636,55 @@ export class StateStore {
 			order[input.stage] >= order.card_bound
 				? "awaiting_review"
 				: "materializing";
-		this.db.run(
-			`UPDATE workflow_gate_holder
-			    SET materialization_stage = ?, state = ?,
-			        card_message_id = COALESCE(?, card_message_id), updated_at = ?
-			  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
-			[
-				input.stage,
-				state,
-				input.cardMessageId ?? null,
-				input.now,
-				input.questionId,
-			],
-		);
-		if (this.db.getRowsModified() !== 1) {
+		let advanced = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_gate_holder
+				    SET materialization_stage = ?, state = ?,
+				        card_message_id = COALESCE(?, card_message_id), updated_at = ?
+				  WHERE question_id = ? AND state IN ('materializing','awaiting_review')`,
+				[
+					input.stage,
+					state,
+					input.cardMessageId ?? null,
+					input.now,
+					input.questionId,
+				],
+			);
+			advanced = this.db.getRowsModified() === 1;
+			if (!advanced) return;
+			const tracked = this.hasWorkflowDeliveryAttemptTx({
+				family: "gate_holder",
+				table: "workflow_gate_holder",
+				pk: input.questionId,
+			});
+			const clock =
+				input.stage === "question_written"
+					? "granted_at"
+					: input.stage === "session_bound" || input.stage === "card_posted"
+						? "sent_at"
+						: input.stage === "card_bound"
+							? "received_at"
+							: null;
+			if (clock && tracked) {
+				this.projectWorkflowDeliveryClockTx({
+					family: "gate_holder",
+					table: "workflow_gate_holder",
+					pk: input.questionId,
+					clock,
+					at: input.now,
+				});
+			}
+			if (input.stage === "completed" && tracked) {
+				this.settleWorkflowDeliveryAttemptTx({
+					family: "gate_holder",
+					table: "workflow_gate_holder",
+					pk: input.questionId,
+					reason: "settled",
+				});
+			}
+		});
+		if (!advanced) {
 			return { ok: false, reason: "workflow_gate_materialization_raced" };
 		}
 		this.save();
@@ -47445,6 +48636,9 @@ export class StateStore {
 				return;
 			}
 			const delivery = this.getWorkflowCarrierDelivery(input.questionId);
+			const attemptGeneration = delivery
+				? delivery.redrive_generation + 2
+				: 1;
 			if (delivery) {
 				this.db.run(
 					`UPDATE workflow_carrier_delivery
@@ -47485,6 +48679,12 @@ export class StateStore {
 					],
 				);
 			}
+			this.mintWorkflowCarrierDeliveryAttemptTx({
+				questionId: canonical.questionId,
+				runId: canonical.runId,
+				generation: attemptGeneration,
+				now: input.now,
+			});
 			this.db.run(
 				`INSERT INTO workflow_carrier_redrive_receipt
 				   (request_id, canonical_digest, run_id, question_id, principal,
@@ -47711,28 +48911,41 @@ export class StateStore {
 		) {
 			return { ok: false, reason: "invalid_carrier_delivery_advance" };
 		}
-		this.db.run(
-			`UPDATE workflow_carrier_delivery
-			    SET state = ?, owner_id = ?, lease_expires_at = ?,
-			        next_retry_at = ?, last_error = ?, updated_at = ?
-			  WHERE question_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
-			[
-				input.to,
-				input.releaseOwner ? null : input.ownerId,
-				input.releaseOwner
-					? null
-					: (this.getWorkflowCarrierDelivery(input.questionId)
-							?.lease_expires_at ?? null),
-				nextRetryAt,
-				input.error ?? null,
-				input.now,
-				input.questionId,
-				input.ownerId,
-				input.generation,
-				input.from,
-			],
-		);
-		if (this.db.getRowsModified() !== 1) {
+		let advanced = false;
+		this.db.transaction(() => {
+			this.db.run(
+				`UPDATE workflow_carrier_delivery
+				    SET state = ?, owner_id = ?, lease_expires_at = ?,
+				        next_retry_at = ?, last_error = ?, updated_at = ?
+				  WHERE question_id = ? AND owner_id = ? AND generation = ? AND state = ?`,
+				[
+					input.to,
+					input.releaseOwner ? null : input.ownerId,
+					input.releaseOwner
+						? null
+						: (this.getWorkflowCarrierDelivery(input.questionId)
+								?.lease_expires_at ?? null),
+					nextRetryAt,
+					input.error ?? null,
+					input.now,
+					input.questionId,
+					input.ownerId,
+					input.generation,
+					input.from,
+				],
+			);
+			advanced = this.db.getRowsModified() === 1;
+			if (!advanced) return;
+			this.projectWorkflowDeliveryClockTx({
+				family: "carrier",
+				table: "workflow_carrier_delivery",
+				pk: input.questionId,
+				clock:
+					input.to === "grant_started" ? "granted_at" : "sent_at",
+				at: input.now,
+			});
+		});
+		if (!advanced) {
 			return { ok: false, reason: "stale_delivery_owner" };
 		}
 		this.save();
@@ -47812,6 +49025,13 @@ export class StateStore {
 				result = { ok: false, reason: "stale_delivery_owner" };
 				return;
 			}
+			this.projectWorkflowDeliveryClockTx({
+				family: "carrier",
+				table: "workflow_carrier_delivery",
+				pk: input.questionId,
+				clock: "granted_at",
+				at: input.grantedAt,
+			});
 			this.appendWorkflowRunEventCheckedTx({
 				runId: delivery.run_id,
 				eventUid: `carrier_turn_granted:${input.sourceEventId}`,
@@ -47906,6 +49126,15 @@ export class StateStore {
 			if (this.db.getRowsModified() !== 1) {
 				result = { ok: false, reason: "carrier_wake_receipt_not_ready" };
 				return;
+			}
+			for (const clock of ["received_at", "consumed_at"] as const) {
+				this.projectWorkflowDeliveryClockTx({
+					family: "carrier",
+					table: "workflow_carrier_delivery",
+					pk: String(row.question_id),
+					clock,
+					at: input.ackedAt,
+				});
 			}
 			this.appendWorkflowRunEventCheckedTx({
 				runId: String(row.run_id),
@@ -51032,6 +52261,14 @@ export class StateStore {
 					return;
 				}
 			}
+			this.settleWorkflowCarrierDeliveryOnCompletionTx({
+				questionId: input.questionId,
+				runId: String(holder.run_id),
+				nodeId: String(holder.gate_node_id),
+				executionId: String(holder.source_execution_id),
+				completionEventUid: eventUid,
+				now: input.now,
+			});
 			this.db.run(
 				`UPDATE workflow_run SET status = 'completed'
 				  WHERE run_id = ? AND status = 'active' AND current_node_id = ?`,
@@ -52122,40 +53359,52 @@ export class StateStore {
 			prNumber: input.prNumber,
 			approvedHead,
 		})}`;
-		this.db.run(
-			`INSERT OR IGNORE INTO land_operation
-			   (operation_id, run_id, issue_id, project_name, pr_number,
-			    approved_head, state, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
-			[
-				operationId,
-				input.runId ?? null,
-				input.issueId,
-				input.projectName,
-				input.prNumber,
-				approvedHead,
-				input.now,
-				input.now,
-			],
-		);
-		const row = this.workflowSelectAll(
-			"SELECT * FROM land_operation WHERE operation_id = ?",
-			[operationId],
-		)[0];
-		if (!row) throw new Error("land_operation_not_created");
-		if (input.runId && row.run_id && row.run_id !== input.runId) {
-			throw new Error("land_operation_run_conflict");
-		}
-		if (input.runId && !row.run_id) {
+		let row: Record<string, unknown> | undefined;
+		this.db.transaction(() => {
 			this.db.run(
-				"UPDATE land_operation SET run_id = ?, updated_at = ? WHERE operation_id = ? AND run_id IS NULL AND superseded_at IS NULL",
-				[input.runId, input.now, operationId],
+				`INSERT OR IGNORE INTO land_operation
+				   (operation_id, run_id, issue_id, project_name, pr_number,
+				    approved_head, state, created_at, updated_at)
+				 VALUES (?, ?, ?, ?, ?, ?, 'intent', ?, ?)`,
+				[
+					operationId,
+					input.runId ?? null,
+					input.issueId,
+					input.projectName,
+					input.prNumber,
+					approvedHead,
+					input.now,
+					input.now,
+				],
 			);
-			if (this.db.getRowsModified() === 1) {
-				row.run_id = input.runId;
-				row.updated_at = input.now;
+			row = this.workflowSelectAll(
+				"SELECT * FROM land_operation WHERE operation_id = ?",
+				[operationId],
+			)[0];
+			if (!row) throw new Error("land_operation_not_created");
+			if (input.runId && row.run_id && row.run_id !== input.runId) {
+				throw new Error("land_operation_run_conflict");
 			}
-		}
+			if (input.runId && !row.run_id) {
+				this.db.run(
+					"UPDATE land_operation SET run_id = ?, updated_at = ? WHERE operation_id = ? AND run_id IS NULL AND superseded_at IS NULL",
+					[input.runId, input.now, operationId],
+				);
+				if (this.db.getRowsModified() === 1) {
+					row.run_id = input.runId;
+					row.updated_at = input.now;
+				}
+			}
+			this.mintWorkflowStateDeliveryAttemptTx({
+				family: "land",
+				table: "land_operation",
+				pk: operationId,
+				projectName: input.projectName,
+				issueId: input.issueId,
+				mintedAt: String(row.created_at),
+				sentAt: String(row.created_at),
+			});
+		});
 		this.save();
 		return row as unknown as LandOperationRow;
 	}
@@ -53931,6 +55180,13 @@ export class StateStore {
 					input.now,
 				],
 			);
+			this.projectWorkflowDeliveryClockTx({
+				family: "land",
+				table: "land_operation",
+				pk: input.operationId,
+				clock: "received_at",
+				at: input.now,
+			});
 			const completed = input.step === "finalization_completed";
 			const auxiliary = input.step.startsWith("aux:");
 			this.db.run(
@@ -53957,6 +55213,12 @@ export class StateStore {
 				],
 			);
 			if (completed) {
+				this.settleWorkflowDeliveryAttemptTx({
+					family: "land",
+					table: "land_operation",
+					pk: input.operationId,
+					reason: "settled",
+				});
 				this.db.run(
 					"DELETE FROM land_repo_admission WHERE owner_operation_id = ?",
 					[input.operationId],
@@ -54902,12 +56164,22 @@ export class StateStore {
 		if (mine) return Number(mine.launch_ordinal);
 		const next =
 			rows.reduce((max, r) => Math.max(max, Number(r.launch_ordinal)), 0) + 1;
+		const now = new Date().toISOString();
 		this.db.run(
 			`INSERT INTO workflow_side_effect_ledger
-			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state)
-			 VALUES (?, ?, ?, 'dispatch', ?, ?, 'intent_recorded')`,
-			[runId, nodeId, attempt, next, executionId],
+			   (run_id, node_id, attempt, kind, launch_ordinal, execution_id, state,
+			    created_at, updated_at)
+			 VALUES (?, ?, ?, 'dispatch', ?, ?, 'intent_recorded', ?, ?)`,
+			[runId, nodeId, attempt, next, executionId, now, now],
 		);
+		this.mintWorkflowStateDeliveryAttemptTx({
+			family: "launch",
+			table: "workflow_execution_binding",
+			pk: executionId,
+			runId,
+			mintedAt: now,
+			grantedAt: now,
+		});
 		return next;
 	}
 
@@ -54954,6 +56226,12 @@ export class StateStore {
 				  WHERE id = ?`,
 				[op.reason, nowIso, nowIso, Number(row.id)],
 			);
+			this.settleWorkflowDeliveryAttemptIfPresentTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: op.executionId,
+				reason: "source_terminal",
+			});
 			return;
 		}
 		const ORDER: Record<string, number> = {
@@ -54976,6 +56254,22 @@ export class StateStore {
 			  WHERE id = ?`,
 			[op.to, nowIso, nowIso, op.to, nowIso, Number(row.id)],
 		);
+		this.projectWorkflowDeliveryClockTx({
+			family: "launch",
+			table: "workflow_execution_binding",
+			pk: op.executionId,
+			clock: "received_at",
+			at: nowIso,
+		});
+		if (op.to === "started") {
+			this.projectWorkflowDeliveryClockTx({
+				family: "launch",
+				table: "workflow_execution_binding",
+				pk: op.executionId,
+				clock: "sent_at",
+				at: nowIso,
+			});
+		}
 	}
 
 	/** Transaction-internal node projection upsert (shared with the public API). */
@@ -56956,6 +58250,7 @@ export interface WorkflowEngineAlertPayload {
 				| "runner_ship_authority_conflict"
 				| "resume_first_available"
 				| "linear_done_deferred"
+				| "delivery_contract_stalled"
 				| "observation_corrupt";
 			launchCount?: number;
 			maxBlindReplacements?: number;
@@ -56983,6 +58278,18 @@ export interface WorkflowEngineAlertPayload {
 			leadResolution: "resolved" | "fallback";
 		};
 	};
+}
+
+export type WorkflowDeliveryContractUnboundAlertPayload = Omit<
+	WorkflowEngineAlertPayload,
+	"metadata"
+> & {
+	episodeId: string;
+};
+
+export interface WorkflowDeliveryContractUnboundAlertReceipt {
+	eventId: string;
+	state: "sent";
 }
 
 export interface WorkflowAlertOutboxRow {

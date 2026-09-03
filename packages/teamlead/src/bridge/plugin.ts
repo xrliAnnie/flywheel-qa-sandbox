@@ -227,6 +227,8 @@ import {
 import type { CrashReaperInjectedDeps } from "./crash-reaper.js";
 import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
+import { DeliveryProjector } from "./delivery-contract/projector.js";
+import { DeliveryContractWatch } from "./delivery-contract/watch.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
@@ -707,7 +709,7 @@ export function resolveWorkflowRunAlertIdentity(input: {
 	defaultLeadAgentId: string;
 	projectName: string;
 	issueId: string;
-	runId: string;
+	runId: string | null;
 	log?: (message: string) => void;
 }): WorkflowEngineAlertIdentity {
 	const project = input.projects.find(
@@ -717,7 +719,7 @@ export function resolveWorkflowRunAlertIdentity(input: {
 		!!leadId &&
 		leadId !== "unassigned" &&
 		!!project?.leads.some((lead) => lead.agentId === leadId);
-	const run = input.store.getWorkflowRun(input.runId);
+	const run = input.runId ? input.store.getWorkflowRun(input.runId) : undefined;
 	if (
 		run?.project_name === input.projectName &&
 		run.issue_id === input.issueId &&
@@ -751,8 +753,16 @@ export function resolveWorkflowRunAlertIdentity(input: {
 		}
 	}
 
+	if (input.runId === null && project?.leads[0]) {
+		return {
+			leadId: project.leads[0].agentId,
+			projectName: input.projectName,
+			leadResolution: "resolved",
+		};
+	}
+
 	(input.log ?? console.warn)(
-		`workflow engine alert routing fell back for ${input.runId}/${input.issueId}: no configured run owner or session-label owner`,
+		`workflow engine alert routing fell back for ${input.runId ?? "unbound"}/${input.issueId}: no configured run owner or session-label owner`,
 	);
 	return {
 		leadId: input.defaultLeadAgentId,
@@ -7255,6 +7265,7 @@ export async function startBridge(
 	};
 
 	let paneLossInitialDebt = true;
+	let deliveryBaselineComplete = false;
 	const heartbeatService = new HeartbeatService(
 		store,
 		notifier,
@@ -7392,6 +7403,72 @@ export async function startBridge(
 						error instanceof Error ? error.message : String(error)
 					}`,
 				);
+			}
+			const deliveryNow = new Date().toISOString();
+			if (!deliveryBaselineComplete) {
+				try {
+					store.baselineWorkflowDeliveryContracts(deliveryNow);
+					deliveryBaselineComplete = true;
+				} catch (error) {
+					console.warn(
+						`[delivery-contract] baseline failed closed: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				}
+			}
+			for (const project of projects) {
+				let deliveryCommDb: CommDB | undefined;
+				try {
+					deliveryCommDb = new CommDB(
+						commDbPathForProject(project.projectName),
+						false,
+					);
+					const resolveDeliveryAlertIdentity = (input: {
+						projectName: string;
+						issueId: string;
+						runId: string | null;
+					}) =>
+						resolveWorkflowRunAlertIdentity({
+							store,
+							projects,
+							defaultLeadAgentId: config.defaultLeadAgentId,
+							...input,
+							log: (message) => console.warn(`[delivery-contract] ${message}`),
+						});
+					const deliveryProjector = new DeliveryProjector({
+						store,
+						commDb: deliveryCommDb,
+						projectName: project.projectName,
+					});
+					const deliveryContractWatch = new DeliveryContractWatch({
+						store,
+						projectName: project.projectName,
+						resolveAlertIdentity: resolveDeliveryAlertIdentity,
+						enqueueUnboundAlert: (payload) => {
+							const receipt = leadInboxRuntime.enqueueInfraAlert(
+								payload.leadId,
+								payload,
+							);
+							if (!receipt.queued) {
+								throw new Error(
+									`delivery_contract_unbound_alert_not_queued:${payload.eventId}`,
+								);
+							}
+							return { eventId: payload.eventId, state: "sent" };
+						},
+					});
+					deliveryProjector.runPass(deliveryNow);
+					deliveryContractWatch.runPass(deliveryNow);
+				} catch (error) {
+					console.warn(
+						`[delivery-contract] maintenance pass failed closed for ${project.projectName}: ${
+							error instanceof Error ? error.message : String(error)
+						}`,
+					);
+				} finally {
+					deliveryCommDb?.close();
+				}
 			}
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.

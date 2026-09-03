@@ -540,6 +540,55 @@ async function approvedCarrierRun() {
 	return { store, holder };
 }
 
+async function completionReadyCarrierRun() {
+	const store = await engineRun({ gateCarrier: true });
+	const holder = await openRunnerShipGate(store);
+	const authority = bindRunnerShipAuthority(store, holder);
+	expect(
+		store.recordRunnerShipMergedObserved({
+			questionId: holder.question_id,
+			expectedHolderState: "materializing",
+			expectedHolderHead: "a".repeat(40),
+			expectedAuthority: authority,
+			mergedHead: "a".repeat(40),
+			alertIdentity: carrierAlertIdentity,
+			now: "2026-07-16T01:15:20.000Z",
+		}),
+	).toEqual({ status: "persisted" });
+	approveRunnerShipGate(store, holder);
+	store.upsertSession({
+		execution_id: "implement-1",
+		issue_id: "FLY-1307",
+		project_name: "flywheel",
+		status: "awaiting_review",
+		pr_number: 1624,
+		pr_head_sha: "a".repeat(40),
+		review_question_id: holder.question_id,
+	});
+	return { store, holder, authority };
+}
+
+function completeReadyCarrierRun(
+	store: StateStore,
+	holder: { question_id: string },
+	authority: {
+		repoIdentity: string;
+		probeRepoSlug: string;
+		prNumber: number;
+	},
+) {
+	return store.completeWorkflowGateRunAfterShip({
+		questionId: holder.question_id,
+		mergedHead: "a".repeat(40),
+		now: "2026-07-18T01:16:00.000Z",
+		expectedHolderState: "approved",
+		expectedHolderHead: "a".repeat(40),
+		expectedObservationHead: "a".repeat(40),
+		observedAuthority: authority,
+		alertIdentity: carrierAlertIdentity,
+	});
+}
+
 const carrierAlertIdentity = {
 	leadId: "flywheel-eng-lead",
 	projectName: "flywheel",
@@ -547,6 +596,123 @@ const carrierAlertIdentity = {
 };
 
 describe("engine-owned snapshot transition transaction", () => {
+	it("replay #6 supersedes an unreceived runner-ship carrier when proven work completes", async () => {
+		const { store, holder, authority } = await completionReadyCarrierRun();
+
+		expect(completeReadyCarrierRun(store, holder, authority)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(store.getWorkflowCarrierDelivery(holder.question_id)).toMatchObject({
+			state: "completed",
+		});
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(row) =>
+						row.family === "carrier" &&
+						JSON.parse(row.contract_ref_json).pk === holder.question_id,
+				),
+		).toMatchObject({ settlement_reason: "superseded_by_completion" });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind.startsWith("carrier_delivery_"))
+				.map((event) => event.kind),
+		).toContain("carrier_delivery_superseded_by_completion");
+		store.close();
+	});
+
+	it("replay #6 settles a received runner-ship carrier when proven work completes", async () => {
+		const { store, holder, authority } = await completionReadyCarrierRun();
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run(
+			"UPDATE workflow_carrier_delivery SET state = 'receipt_started' WHERE question_id = ?",
+			[holder.question_id],
+		);
+
+		expect(completeReadyCarrierRun(store, holder, authority)).toEqual({
+			ok: true,
+			idempotentReplay: false,
+		});
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(row) =>
+						row.family === "carrier" &&
+						JSON.parse(row.contract_ref_json).pk === holder.question_id,
+				),
+		).toMatchObject({ settlement_reason: "settled" });
+		expect(
+			store
+				.listWorkflowRunEvents("run-1")
+				.filter((event) => event.kind.startsWith("carrier_delivery_"))
+				.map((event) => event.kind),
+		).toContain("carrier_delivery_settled");
+		store.close();
+	});
+
+	it("replay #6 fails closed on a missing runner-ship carrier and rolls back completion", async () => {
+		const { store, holder, authority } = await completionReadyCarrierRun();
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("DELETE FROM workflow_carrier_delivery WHERE question_id = ?", [
+			holder.question_id,
+		]);
+
+		expect(() =>
+			completeReadyCarrierRun(store, holder, authority),
+		).toThrowError(`workflow_carrier_delivery_not_found:${holder.question_id}`);
+		expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+		expect(store.getSession("implement-1")?.status).toBe("awaiting_review");
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(row) =>
+						row.family === "carrier" &&
+						JSON.parse(row.contract_ref_json).pk === holder.question_id,
+				),
+		).toMatchObject({ settlement_reason: null });
+		store.close();
+	});
+
+	it.each(["land", "engine_terminal"] as const)(
+		"replay #6 does not apply runner-ship carrier settlement to %s authority",
+		async (authorityMode) => {
+			const { store, holder, authority } = await completionReadyCarrierRun();
+			const db = (
+				store as unknown as {
+					db: { run(sql: string, params?: unknown[]): void };
+				}
+			).db;
+			db.run(
+				"UPDATE workflow_gate_holder SET authority_mode = ? WHERE question_id = ?",
+				[authorityMode, holder.question_id],
+			);
+			db.run("DELETE FROM workflow_carrier_delivery WHERE question_id = ?", [
+				holder.question_id,
+			]);
+
+			expect(completeReadyCarrierRun(store, holder, authority)).toEqual({
+				ok: false,
+				reason: "holder_unavailable",
+			});
+			expect(store.getWorkflowRun("run-1")?.status).toBe("active");
+			expect(store.getSession("implement-1")?.status).toBe("awaiting_review");
+			store.close();
+		},
+	);
+
 	it("co-writes the W1 start attachment and immutable typed receipt", async () => {
 		const store = await engineRun();
 		const attachment = store.listWorkflowResumeAttachments({
@@ -1947,6 +2113,43 @@ describe("engine-owned snapshot transition transaction", () => {
 				state: "pending",
 			},
 		);
+		const carrierG1 = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(
+				(row) =>
+					row.family === "carrier" &&
+					JSON.parse(row.contract_ref_json).pk === holder!.question_id,
+			);
+		expect(carrierG1).toMatchObject({ generation: 1, attempt: 1 });
+		expect(JSON.parse(carrierG1!.contract_ref_json)).toMatchObject({
+			table: "workflow_carrier_delivery",
+			pk: holder!.question_id,
+			runId: "run-1",
+		});
+		const holderAndCarrierAttempts = (
+			store as unknown as { db: { raw: Database.Database } }
+		).db.raw
+			.prepare(
+				`SELECT family, root_id, generation, attempt
+				   FROM workflow_delivery_attempt
+				  WHERE json_extract(contract_ref_json, '$.pk') = ?
+				  ORDER BY family`,
+			)
+			.all(holder!.question_id);
+		expect(holderAndCarrierAttempts).toEqual([
+			{
+				family: "carrier",
+				root_id: `flywheel:FLY-1307:carrier:${holder!.question_id}`,
+				generation: 1,
+				attempt: 1,
+			},
+			{
+				family: "gate_holder",
+				root_id: `flywheel:FLY-1307:gate_holder:${holder!.question_id}`,
+				generation: 1,
+				attempt: 1,
+			},
+		]);
 		const redrive = store.resolveWorkflowCarrierRedriveCanonical({
 			runId: "run-1",
 			questionId: holder!.question_id,
@@ -1981,6 +2184,19 @@ describe("engine-owned snapshot transition transaction", () => {
 				turn_epoch: null,
 			},
 		);
+		const carrierG2 = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(
+				(row) =>
+					row.family === "carrier" &&
+					JSON.parse(row.contract_ref_json).pk === holder!.question_id,
+			);
+		expect(carrierG2).toMatchObject({
+			generation: 2,
+			attempt: 1,
+			parent_attempt_id: carrierG1!.attempt_id,
+			minted_at: "2026-07-16T01:16:30.000Z",
+		});
 		const carrier = store.getWorkflowCarrierDelivery(holder!.question_id)!;
 		const carrierClaim = store.claimWorkflowCarrierDelivery({
 			questionId: holder!.question_id,
@@ -2074,6 +2290,16 @@ describe("engine-owned snapshot transition transaction", () => {
 		expect(store.getWorkflowCarrierDelivery(holder!.question_id)?.state).toBe(
 			"receipt_started",
 		);
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(({ attempt_id }) => attempt_id === carrierG2!.attempt_id),
+		).toMatchObject({
+			granted_at: "2026-07-16T01:17:01.000Z",
+			sent_at: "2026-07-16T01:17:03.000Z",
+			received_at: "2026-07-16T01:17:04.000Z",
+			consumed_at: "2026-07-16T01:17:04.000Z",
+		});
 		expect(
 			store.inspectWorkflowTurnWakeRetry({
 				wakeId: "carrier-wake:receipt-test",
@@ -2195,6 +2421,16 @@ describe("engine-owned snapshot transition transaction", () => {
 			state: "done",
 		});
 		expect(store.getSession("implement-1")?.status).toBe("completed");
+		expect(store.getWorkflowCarrierDelivery(holder!.question_id)).toMatchObject(
+			{
+				state: "completed",
+			},
+		);
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(({ attempt_id }) => attempt_id === carrierG2!.attempt_id),
+		).toMatchObject({ settlement_reason: "settled" });
 		expect(store.listRunnerShipHoldersForMergeProbe()).toEqual([]);
 		store.close();
 	});

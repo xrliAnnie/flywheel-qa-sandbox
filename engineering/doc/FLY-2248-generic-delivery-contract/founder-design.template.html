@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2248 设计:通用投递合同——让每一份交接都有人盯、每个工人随时能收信、每种冻结都有正门</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; line-height:1.75; }
+  .term { color:#007aff; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  .caption { color:#86868b; font-size:12.5px; margin:4px 0 10px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.reject { background:#fdecea; color:#ff3b30; }
+  .badge.keep { background:#e9f9ef; color:#248a3d; }
+  .badge.research { background:#f2e8fd; color:#af52de; }
+  .badge.fix { background:#fff4e5; color:#c25e00; }
+  .comment-box { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; background:#fafafa; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; margin-top:10px; padding:8px 16px; border-radius:8px; border:none; background:#007aff; color:#fff; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#248a3d; }
+  .chunk { margin-top:10px; }
+  .chunk .btn { background:#1a365d; }
+  .tbl-wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2248:通用投递合同——让每一份交接都有人盯、每个工人随时能收信、每种冻结都有正门</h1>
+  <div class="meta">工程设计说明 · 2026-09-02 · 分支 flywheel-FLY-2248 · __REVIEW_META__ · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+
+  <div class="card" data-section="一句话总结">
+    <h2>1. 一句话总结</h2>
+    <p><b>09-01 那 8 起事故不是 8 个 bug,而是同一个结构洞的 8 个截面:</b>引擎把「送出去了」当成「送到了」,把「没动静」当成「人死了」,把「旧欠条没销」当成「新交付无效」,把「冻住」当成「处理完」。修法把这四件事各自抽成一个<b>通用对象</b>——<span class="term">欠条</span>(一份跨节点交接的「送活义务」记录)、<span class="term">工人</span>(执行任务的 AI 会话)、<span class="term">转移</span>(引擎判定「该换人 / 该冻结 / 该继续」的规则)、<span class="term">冻结形状</span>(整单被停住时的具体样子)——全部挂在通用层,不挂在任何一对节点上。账本证据显示 8 起里至少 3 起发生在 QA↔implement 之外的边(founder 审批恢复 → general 节点、合入 → 清理、design 节点上线),与你「必须 general」的要求一致。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="核心流程:欠条的一生与巡检">
+    <h2>2. 核心流程:一份欠条的一生,以及谁在盯它</h2>
+    <p>今天引擎里其实有 <b>8 种</b>「送活欠条」(返工欠条、上线 carrier、唤醒 outbox、派活铃、信箱行、新派工、合入作业、审批卡),各说各的话,只有两种带闹钟。设计把它们统一成 <b>6 个通用阶段</b>:铸出 → 已授棒(拿到改代码的权)→ 已发出 → 已签收 → 已开工 → 核销。一个<span class="term">巡检</span>(每 5 分钟跑一次的只读检查,不改任何账)看每张欠条在当前阶段停了多久;停留超过上限就<b>升级给 Lead</b>——走的是现有的 Lead 收件箱事件 → issue thread 通路,<b>不新增告警层</b>。阶段一前进,episode(一次「卡住」的记录)自动关闭,只记账不打扰。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <div class="caption">图 1 · 欠条通用一生与巡检(阶段停留上限写死为常量:铸出 10 分、授棒 5 分、发出 15 分、签收 30 分;不留旋钮)</div>
+    <p>「已签收」和「已开工」是两回事——09-01 有一张欠条在「工人活着、也签收了、但没开工」的状态里空转了 <b>11.5 小时、209 轮</b>,期间派活铃从未响,而现有机制既不冻结也不升级。新合同第一次把这两步分开,所以这种「活着但没在干」会在 30 分钟后被看见。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="数据与结构模型">
+    <h2>3. 数据 / 结构模型:投影,不是第二本账</h2>
+    <p>最重要的取舍:合同<b>不是一张新的总表</b>。8 个家族各自的表一行不改;合同只是把它们的状态词<b>只读映射</b>到 6 个通用阶段,本单新增的持久化只有 3 张小表:「episode 表」(记录某张欠条在某阶段卡住了、告警过没有、什么时候恢复的)、「attempt 台账」(每张欠条每一代的血统与五个阶段时间戳,每格只能写一次、不许改不许删)、改派/正门恢复共用的分步记账表;工人层子单再加 2 张(常驻宽限、清信挑战)。新家族出现时,加一张映射表就被覆盖,不用改巡检逻辑。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <div class="caption">图 2 · 8 个家族 → 只读映射 → 快照 → 纯分类器 → episode 表 → 现有告警 outbox</div>
+    <div class="tbl-wrap"><table>
+      <tr><th>家族(人话)</th><th>覆盖的交接</th><th>今天的闹钟</th><th>设计后</th></tr>
+      <tr><td>返工欠条</td><td>QA 打回、founder 审批打回、引擎自愈返工——任何节点对</td><td>30 分钟告警、60 分钟整单冻结;工人「活着」时永不冻结也永不升级</td><td>按阶段升级;冻结动作移除(冻结只能由独立死证据触发)</td></tr>
+      <tr><td>上线 carrier</td><td>founder 批准 → 工人去合入</td><td>5 次失败后需人工</td><td>同一合同</td></tr>
+      <tr><td>唤醒 outbox / 派活铃</td><td>叫醒已停下的工人</td><td>outbox 20 分钟;派活铃<b>无</b></td><td>同一合同(09-01 那只没响的铃会在 15 分钟被看见)</td></tr>
+      <tr><td>信箱行</td><td>Lead 给工人的每一条指令 / 回复</td><td>重试 6 次后死信;排队多久都不响</td><td>发出 15 分钟未签收即升级;「信箱槽位占满」变成可见的卡住原因</td></tr>
+      <tr><td>新派工</td><td>design → implement、implement → QA 这类<b>普通边</b>(今天完全没有欠条)</td><td>无</td><td>纳入同一合同——这是「凡有 loop 的边都覆盖」的关键一步</td></tr>
+      <tr><td>合入作业 / 审批卡</td><td>land、founder 审批卡的铸造</td><td>land 重试 9 次(约 4 小时)后冻结,原因写 unknown</td><td>同一合同;冻结形状进正门</td></tr>
+    </table></div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="工人层:随时能收信">
+    <h2>4. 工人层:从「只在收工时读信」到「全程有人收信」——<span class="badge research">已拆至子单 FLY-2268</span></h2>
+    <p><b>Lead 2026-09-02 裁定:</b>Codex 五轮评审把这一层的协议洞逐个补齐后仍未收敛(常驻到期、turn 边界、清信回执三处都要跨两本账),为了不让整单被拖住,工人层(founder 四点修法中的第②点)整体拆到子单 <b>FLY-2268「工人常驻收信与完成前清信」</b>,设计原文原样搬过去、不重做;本单交付第①③④点。下面这一节保留的是拆分时的设计,供子单继续。</p>
+    <p>查证结果先更正诊断页的一处画法:Codex 工人的「通信管家」<b>不是一个独立进程</b>,而是<span class="term">Bridge</span>(引擎常驻进程)里的一个收信员,而且它<b>只在工人停在阶段边界时才开</b>——工人干活途中、以及干完之后,没人读信。09-01「三道令排队未消费导致硬要求漏交付」「返工唤醒打不醒已完成的工人、只能换体」都由此而来。Claude 工人则是进程一退出就再也收不到。</p>
+    <p>设计(已按 Lead 裁定):收信员仍在 Bridge 内(「体外」的含义是<b>在工人的 goal 循环之外、不随收工开关</b>),但改为<b>从派工那一刻武装到终结</b>;Bridge 重启后由 FLY-2211 的认领分支重新武装。干活途中收到的信,真实语义是「<b>入队 + 下一个 turn 边界必读 + 欠条超时兜底</b>」——不是实时插话;是否能实时插话要拿到阳性证据才算。另外两条通用规则:</p>
+    <ul>
+      <li><b>完成前先清信</b>:工人喊「完成」时,若还有没读的交接,引擎不收工,先让它读(只拦一次,不会无限饿死)。</li>
+      <li><b>有 loop 入边的节点收工后保留 30 分钟</b>(常量,两家工人一视同仁):这期间的返工直接原地叫醒,不换体;换体只允许「宽限已过」或「独立死证据」两种情况。</li>
+    </ul>
+    <div class="diagram">__SVG_D3__</div>
+    <div class="caption">图 3 · 工人生命周期(收信员全程武装;收工后按 loop 入边决定是否常驻)</div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="转移层:判死先问送达,核销不看旧欠条">
+    <h2>5. 转移层:判「工人失联」前先问「信送到了吗」;交货不看旧欠条</h2>
+    <ul>
+      <li><b>判死先问送达。</b>今天「一段时间没动静」就可能被译成「工人失联」并冻结整单;09-01 两次换体就是把活体判死。设计规定:欠条阶段还没到「已签收」时,任何「没动静」只能判「投递未确认」,交给巡检升级,<b>永远不能判死、不能冻结</b>;判死只接受独立证据(进程 / 套接字 / 工作日志三探针)。</li>
+      <li><b>核销与旧欠条解耦。</b>今天的代码在节点完成时要求上一张欠条必须处于「已签收」,否则整个完成事务回滚——真活干完了也被拒收(09-01 FLY-2241 那单:founder 审批恢复 → general 节点,信没送到但活交了,结果整单冻结、只能人工 SQL 解冻)。设计改为:完成只看代码头 + 验证结论,把仍开着的旧欠条一律标成「被完成取代」,并记事件。</li>
+      <li><b>冻结理由只准三种词</b>:「工人已死:证据」「投递未确认:阶段」「策略:种类」——不再允许拿「delivery_awaiting_receipt」这种投递状态当冻结理由。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="冻结正门">
+    <h2>6. 每种冻结形状配一扇官方正门</h2>
+    <p>盘点结果:整单冻结有 <b>14 个写入点、只有 2 个解冻点</b>;通用恢复入口只认其中 4 种形状;有 2 种连诊断都看不见;操作员能冻结却不能解冻。于是 Lead 只剩手工 SQL(带备份的「手术」)。设计建一个<span class="term">冻结形状注册表</span>(22 种形状,每种登记:怎么检测、恢复前要满足什么、恢复动作是什么、写什么审计事件;每种都要有「能恢复」和「拒绝恢复」两条测试),再开<b>一扇门</b>:先列出这单有哪些冻结、能不能恢复、缺什么;再两步确认恢复。恢复失败也要<b>把拒绝原因落账</b>——不再吞掉。两种要跨两本账的形状(信箱槽位、TURN 交接棒)不再假装「一个事务」,而是分四步记账(登记 → 通信账本落地 → 发信 → 回填),每一步断电都能重放。权限沿用现有的 master token + 本机回环 + 一次性确认令牌。</p>
+    <div class="diagram">__SVG_D4__</div>
+    <div class="caption">图 4 · 正门时序:列出冻结 → 两步确认 → 注册表在一个事务里恢复,成功与拒绝都记事件</div>
+    <p>配套:golden 清单测试——代码里任何新增的「冻结写入点」若没在注册表登记形状,CI 直接失败(与 FLY-2211 的 kill-path 清单同一手法);Lead 巡检手册里的 SQL 段全部换成正门命令。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card gray" data-section="09-01 八起事故回放">
+    <h2>7. 09-01 八起事故:账本里找到了什么,各由哪一层堵住</h2>
+    <p>证据来自主账本与通信账本 09-02 01:15 PT 的只读副本(时间为 UTC)。每一起都对应至少一条回放测试,fixture 用真实账本形状。</p>
+    <div class="tbl-wrap"><table>
+      <tr><th>#</th><th>事故</th><th>账本证据(摘要)</th><th>堵住它的层</th></tr>
+      <tr><td>1</td><td>裁定令排队 3 小时</td><td>4 条 Lead → 工人的回复 09:23 发、13:40 才签收(208–257 分钟);当天签收延迟超 90 分钟的有 10 条</td><td>欠条层(信箱家族 15 分钟升级)</td></tr>
+      <tr><td>2</td><td>清理令双死信</td><td>合入后的清理指令同时发给 3 个工人,2 个收件人已终结 → 立即死信,不改派不告警</td><td>欠条层「无法送达」+ 改派</td></tr>
+      <tr><td>3</td><td>verdict 秒死信 <span class="badge research">子单</span></td><td>发给同一个 Codex 工人的 15 条回复(含 6 条评审判决):9 条租约到期未签收、4 条收件人已终结、2 条重试耗尽</td><td>工人层(全程收信员)</td></tr>
+      <tr><td>4</td><td>管道孤儿铃不响</td><td>一条派活铃排队 17:31 后从未推送(push 0 次);同一工人的欠条 209 轮「活着但没开工」持续 11.5 小时</td><td>欠条层 + 转移层</td></tr>
+      <tr><td>5</td><td>run 双假死</td><td>当天 2 次「执行体判死 → 换体」,其中一个当时 goal 已完成、窗口在场</td><td>转移层(判死先问送达)</td></tr>
+      <tr><td>6</td><td>交货被欠条拒收</td><td>FLY-2241:<b>founder 审批恢复 → general 节点</b>的欠条停在「等签收」,活交了却在同一秒被冻结(欠条 held + 合入 held)</td><td>转移层(核销解耦)+ 正门</td></tr>
+      <tr><td>7</td><td>2237 三道令排队未消费 <span class="badge research">清信半边→子单</span></td><td>Lead 三条回复(第三条原文「你信箱里有我两道未消费指令」)在 70–101 分钟后因收件人已终结而死信</td><td>工人层(完成前清信)+ 信箱槽位可见</td></tr>
+      <tr><td>8</td><td>2237 返工唤醒打不醒,换体 <span class="badge research">子单</span></td><td>返工欠条铸出 9 分钟后判原工人死、换新体;新体又落回「活着但没开工」21 轮</td><td>工人层(收工后常驻 30 分钟)+ 转移层</td></tr>
+    </table></div>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s7" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="关键取舍与被拒方案">
+    <h2>8. 关键取舍与被拒方案</h2>
+    <table>
+      <tr><th>方案</th><th>判定</th><th>原因</th></tr>
+      <tr><td>建一张新的「投递合同总表」,所有铸造/推进点都写它</td><td><span class="badge reject">拒</span></td><td>8 个家族已各有租约、代数、CAS 语义;再加一张镜像表就是第二本账,漂移是必然。合同做成<b>只读投影</b>,只持久化 episode。</td></tr>
+      <tr><td>逐家族各加一个超时 timer</td><td><span class="badge reject">拒</span></td><td>这正是现状:两家有钟、六家没有,阈值/去重各一套;下一个新家族又会漏。</td></tr>
+      <tr><td>收信员做成独立 OS 进程(诊断页原画法)</td><td><span class="badge fix">改</span></td><td>真正的单点是 app-server 套接字,而套接字死 = 工人后台死,FLY-2211 已负责复活;独立进程要新造 plist / wrapper 闭包(FLY-2216 证明很重)。Lead 裁定:Bridge 内、全生命周期武装、重启后重武装。</td></tr>
+      <tr><td>「信到即注入」写成实时</td><td><span class="badge reject">拒</span></td><td>没有阳性证据之前只能写「入队 + 下一 turn 边界必读 + 超时兜底」;实现期探测 turn/steer,有证据再升级。</td></tr>
+      <tr><td>期限、宽限做成 env / feature flag 可调</td><td><span class="badge reject">拒</span></td><td>founder 红线「不留旋钮」;全部写死为常量,零新 flag。</td></tr>
+      <tr><td>保留「30 分钟告警 / 60 分钟冻结」的旧 stall 钟</td><td><span class="badge reject">拒</span></td><td>它把「没送到」译成「人死了」;告警并入合同,冻结动作删除。</td></tr>
+      <tr><td>给欠条表加一个新的状态值「被完成取代」</td><td><span class="badge reject">拒</span></td><td>改状态值要在 454MB 的主账本上重建整张表,而且旧代码会把新值误读成「还开着」。改为终态不变、只加一列记「核销原因」——纯加列,零重建。(Codex 评审第 1 轮抓出)</td></tr>
+      <tr><td>为「工人正在 turn 中吗」另造一张状态表</td><td><span class="badge reject">拒</span></td><td>Lead 收口裁定:复用通信账本里已有的「交接棒」那一行,加两列做原子比较交换;不另造表。(第 3 轮)</td></tr>
+      <tr><td>改派、正门恢复、常驻到期各建自己的记账</td><td><span class="badge reject">拒</span></td><td>三种动作都是「登记 → 权威账本落地 → 发信 → 回填」四步,共用一张分步记账表,断电可重放。(第 2、3 轮合并)</td></tr>
+      <tr><td>用「代数 / 更新时间」当作欠条的进度信号</td><td><span class="badge reject">拒</span></td><td>这两个数在同一阶段内每次重试都会变,永远「在动」所以永不超时。改为只认各家族<b>不可变的阶段时间戳</b>。(Codex 第 1 轮抓出)</td></tr>
+      <tr><td>FLY-2211 的认领器 + FLY-2216 的常驻巡检骨架</td><td><span class="badge keep">复用</span></td><td>纯分类器 + episode 状态机 + 骑现有节拍不加 timer + 身份不确定只告警不动手,原样搬。</td></tr>
+      <tr><td>Codex app-server 是否支持 turn/steer</td><td><span class="badge research">研究项</span></td><td>实现期第一件事探测;结论不影响本设计成立。</td></tr>
+    </table>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s8" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="诚实边界">
+    <h2>9. 诚实边界:这个设计做什么、不做什么</h2>
+    <ul>
+      <li><b>本单做:</b>8 家族统一合同、attempt 台账与巡检升级;判死先问送达、核销解耦、无法送达时自动改派(最多两次)、冻结理由三族词;22 种冻结形状的注册表与一扇正门;09-01 八起事故中的 #1/#2/#4/#5/#6 与 #7 的槽位半边各一条回放测试;通用性由源码扫描测试强制。</li>
+      <li><b>子单 FLY-2268 做:</b>工人全生命周期收信、turn 边界、完成前清信(带一次性挑战回执)、loop 目标节点收工后常驻 30 分钟(到期有明确执行者);事故 #3、#7 清信半边、#8 的回放测试。founder「每起事故至少一条测试」在两单合计满足。</li>
+      <li><b>不做:</b>不改 codex 官方二进制;不重设计信箱的关系/新鲜度模型(FLY-1792 另议);不改 FLY-2211 的判死判据,只在其认领分支挂钩;不给 Lead↔Lead 的信件加合同;不新增 feature flag、env 旋钮、告警层。</li>
+      <li><b>不在本单修:</b>合入执行器内部吞错的两处(FLY-2246 子单),本单只保证合入家族的卡住与冻结通过合同/正门<b>可见</b>。</li>
+      <li><b>已知残余:</b>Claude 工人没有「读到了」的回执,信箱家族对它的「已开工」是推断值(告警文案会注明);巡检骑 5 分钟节拍,期限有 ±5 分钟抖动;删除旧 stall 冻结后,「活着但永远不读信」的 Claude 工人只会被告警、不会被冻结——这是有意的;工人干活途中收到的信是「入队 + 下一 turn 边界必读」,不是实时插话(除非实现期拿到阳性证据)。</li>
+      <li><b>本 session 的取证限制:</b>Linear MCP 鉴权失败(HTTP 401),FLY-2107 / 2120 / 2246 三张子单正文未拉到,对它们的描述来自代码与账本。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s9" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="意见汇总">
+    <h2>10. 页面意见汇总</h2>
+    <p style="color:#86868b;font-size:13px;">下面实时汇总你在各节写的意见(存在你本机浏览器里,换设备不带走)。点按钮复制全部,发回给 Lead 即可。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2248';
+  var PREFIX;
+  try { PREFIX = 'fly2248-comment:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly2248-comment:unknown:'; }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 私密窗口等场景下静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('【' + sectionTitleFor(area) + '】\n' + v);
+    });
+    return parts;
+  }
+
+  function buildFullText() {
+    var parts = collect();
+    if (parts.length === 0) return '';
+    return MARKER + '\n' + parts.join('\n\n');
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length + 1);
+    var chunks = [];
+    var budget = 1800 - MARKER.length - 20;
+    var pieces = body.split('\n\n');
+    var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > budget) { chunks.push(cur); cur = ''; }
+      while (p.length > budget) { chunks.push(cur ? cur + '\n\n' + p.slice(0, budget - cur.length - 2) : p.slice(0, budget)); p = p.slice(budget); cur = ''; }
+      cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunkArea = document.getElementById('chunk-area');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary() {
+    var full = buildFullText();
+    if (!full) {
+      summaryBody.textContent = '(还没有意见)';
+      chunkArea.textContent = '';
+      return;
+    }
+    summaryBody.textContent = full;
+    chunkArea.textContent = '';
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? ('已复制第 ' + (i + 1) + ' 段') : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    var key = PREFIX + area.getAttribute('data-ckey');
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var full = buildFullText();
+    if (!full) { copyStatus.textContent = '还没有可复制的意见'; return; }
+    copyText(full, function (ok) {
+      copyStatus.textContent = ok ? '已复制' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+flowchart LR
+  subgraph FAM["8 个现存欠条家族"]
+    direction TB
+    F1["返工欠条<br/>workflow_rework_delivery"]
+    F2["上线 carrier<br/>workflow_carrier_delivery"]
+    F3["唤醒 outbox<br/>turn_wake_outbox"]
+    F4["派活铃<br/>runner_phase_wakes"]
+    F5["信箱行<br/>mailbox"]
+    F6["新派工<br/>workflow_launch_owner"]
+    F7["合入作业<br/>land_operation"]
+    F8["审批卡<br/>workflow_gate_holder"]
+  end
+  F1 & F2 & F3 & F4 & F5 & F6 & F7 & F8 --> MAP["只读映射表<br/>(数据,不是 if/else)<br/>各家状态词 → 6 个通用阶段"]
+  MAP --> SNAP["合同快照<br/>家族 · 合同 id · 阶段<br/>进入时刻 · 进度令牌 · 边"]
+  SNAP --> CLS["纯分类器<br/>healthy / stalled / severe<br/>recovered / undeliverable / frozen"]
+  CLS --> EP[("episode 表(本单 3 张新表之一)<br/>workflow_delivery_contract_episode<br/>一张合同至多一个开着的 episode")]
+  EP --> AL["现有 workflow_alert_outbox<br/>escalation_uid =<br/>delivery_contract_stalled:家族:合同:阶段:令牌"]
+  classDef fam fill:#f5f5f7,stroke:#86868b,color:#1d1d1f;
+  classDef core fill:#e9f2ff,stroke:#007aff,color:#1d1d1f;
+  classDef store fill:#f2e8fd,stroke:#af52de,color:#1d1d1f;
+  class F1,F2,F3,F4,F5,F6,F7,F8 fam;
+  class MAP,SNAP,CLS core;
+  class EP,AL store;

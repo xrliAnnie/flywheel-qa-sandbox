@@ -584,16 +584,58 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 	it("advances intent_recorded → launch_committed → started with per-state timestamps", async () => {
 		const store = await freshStore();
 		seedDispatch(store);
+		const launchAttempt = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(
+				(row) =>
+					row.family === "launch" &&
+					JSON.parse(row.contract_ref_json).pk === "exec-1",
+			);
+		expect(launchAttempt).toMatchObject({
+			granted_at: expect.any(String),
+			sent_at: null,
+			received_at: null,
+		});
 		transition(store, "launch_committed");
 		let row = store.listWorkflowSideEffects("run-shadow-1")[0];
 		expect(row?.state).toBe("launch_committed");
 		expect(row?.committed_at).toBeTruthy();
 		expect(row?.started_at).toBeNull();
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(({ attempt_id }) => attempt_id === launchAttempt!.attempt_id),
+		).toMatchObject({ received_at: row!.committed_at, sent_at: null });
 
 		transition(store, "started");
 		row = store.listWorkflowSideEffects("run-shadow-1")[0];
 		expect(row?.state).toBe("started");
 		expect(row?.started_at).toBeTruthy();
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(({ attempt_id }) => attempt_id === launchAttempt!.attempt_id),
+		).toMatchObject({
+			sent_at: row!.started_at,
+			received_at: row!.committed_at,
+		});
+	});
+
+	it("keeps a pre-contract launch progressing when its delivery attempt is absent", async () => {
+		const store = await freshStore();
+		seedDispatch(store);
+		const db = (
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db;
+		db.run("DELETE FROM workflow_delivery_attempt WHERE family = 'launch'");
+
+		expect(() => transition(store, "launch_committed")).not.toThrow();
+		expect(store.listWorkflowSideEffects("run-shadow-1")[0]).toMatchObject({
+			state: "launch_committed",
+			committed_at: expect.any(String),
+		});
 	});
 
 	it("a forward skip (intent_recorded → started, both evidences proven at once) stamps committed_at too", async () => {
@@ -639,6 +681,15 @@ describe("workflow_side_effect_ledger — dispatch outbox state machine (②b)",
 		expect(row?.state).toBe("abandoned");
 		expect(row?.reason).toContain("pre_commit_failure");
 		expect(row?.abandoned_at).toBeTruthy();
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(attempt) =>
+						attempt.family === "launch" &&
+						JSON.parse(attempt.contract_ref_json).pk === "exec-1",
+				),
+		).toMatchObject({ settlement_reason: "source_terminal" });
 
 		// marker already durable ⇒ the row sits at launch_committed and can never abandon
 		const store2 = await freshStore();

@@ -62,6 +62,23 @@ describe("CommDB", () => {
 				db.insertResponse(questionId, "product-lead", "Answer 2"),
 			).toThrow();
 		});
+
+		it("keeps response uniqueness unconditional when legacy metadata marks a response superseded", () => {
+			const questionId = db.insertQuestion(
+				"runner-1",
+				"product-lead",
+				"Question?",
+			);
+			db.insertResponse(questionId, "product-lead", "Answer 1");
+			const response = db.getResponse(questionId)!;
+			(db as any).db
+				.prepare("UPDATE mailbox SET superseded_by = ? WHERE id = ?")
+				.run("legacy-repair-marker", response.id);
+
+			expect(() =>
+				db.insertResponse(questionId, "product-lead", "Answer 2"),
+			).toThrow();
+		});
 	});
 
 	describe("event ACK receipts", () => {

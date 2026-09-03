@@ -1183,6 +1183,15 @@ describe("generalized execution admission and terminal contracts", () => {
 		});
 		expect(
 			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(attempt) =>
+						attempt.family === "launch" &&
+						JSON.parse(attempt.contract_ref_json).pk === "exec-1",
+				),
+		).toMatchObject({ settlement_reason: "source_terminal" });
+		expect(
+			store
 				.listWorkflowRunEvents("run-1")
 				.filter((event) => event.kind === "unlaunched_admission_rolled_back"),
 		).toHaveLength(1);

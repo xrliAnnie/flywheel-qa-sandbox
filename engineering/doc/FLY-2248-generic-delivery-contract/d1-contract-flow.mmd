@@ -1,0 +1,20 @@
+flowchart LR
+  subgraph IOU["一份「送活欠条」的通用一生(8 个家族共用同一条线)"]
+    direction LR
+    M["铸出<br/>minted"] --> G["已授棒<br/>granted"] --> S["已发出<br/>sent"] --> R["已签收<br/>received"] --> C["已开工<br/>consumed"] --> T["核销<br/>settled"]
+  end
+  M -.-> W
+  G -.-> W
+  S -.-> W
+  R -.-> W
+  W["欠条巡检 Watch(每 5 分钟,只读,不改账)<br/>各阶段停留上限:铸出 10 分 · 授棒 5 分 · 发出 15 分 · 签收 30 分"] --> E["超期 → 升级给 Lead<br/>(现有 Lead 收件箱事件 → issue thread)"]
+  W --> OK["阶段前进 → 关闭 episode<br/>(只记账,不打扰)"]
+  S -- "收件人已终结" --> U["判「无法送达」<br/>改派 / 走正门"]
+  classDef stage fill:#e9f2ff,stroke:#007aff,color:#1d1d1f;
+  classDef watch fill:#fff4e5,stroke:#ff9500,color:#1d1d1f;
+  classDef alert fill:#fdecea,stroke:#ff3b30,color:#1d1d1f;
+  classDef ok fill:#e9f9ef,stroke:#34c759,color:#1d1d1f;
+  class M,G,S,R,C,T stage;
+  class W watch;
+  class E,U alert;
+  class OK ok;

@@ -69,6 +69,29 @@ async function runSelectedBy(selectedBy: string): Promise<StateStore> {
 }
 
 describe("workflow-engine alert owning-Lead routing", () => {
+	it("resolves an unbound alert to the owning project without fallback logging", async () => {
+		const store = await StateStore.create(":memory:");
+		stores.push(store);
+		const log = vi.fn();
+
+		expect(
+			resolveWorkflowRunAlertIdentity({
+				store,
+				projects,
+				defaultLeadAgentId: "fleet-default-lead",
+				projectName: "flywheel",
+				issueId: "FLY-2248",
+				runId: null,
+				log,
+			}),
+		).toEqual({
+			leadId: "default-lead",
+			projectName: "flywheel",
+			leadResolution: "resolved",
+		});
+		expect(log).not.toHaveBeenCalled();
+	});
+
 	it("uses the durable run owner when the dead execution has no session row", async () => {
 		const store = await runSelectedBy("owning-lead");
 

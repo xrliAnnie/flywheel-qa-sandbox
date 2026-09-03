@@ -458,6 +458,7 @@ export interface AlertMetadata {
 			| "runner_ship_authority_conflict"
 			| "resume_first_available"
 			| "linear_done_deferred"
+			| "delivery_contract_stalled"
 			| "observation_corrupt";
 		launchCount?: number;
 		maxBlindReplacements?: number;

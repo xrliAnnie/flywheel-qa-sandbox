@@ -1,0 +1,40 @@
+# Design Review — plan.md (Round 3)
+
+Date: 2026-09-02
+Author: Codex
+Status: CHANGES REQUESTED
+
+## Summary
+
+Round 2 的 8 项意见均已实质吸收，14 行 episode 转移表、resident revision、真实 `turn/completed` seam、business digest、统一 delivery-operation saga、set-once 时钟与 `VACUUM INTO` 验收方向都正确。但把新契约落到现有表和调用链后，仍有四个会造成漏投、永不唤醒或错误计时的协议缺口；A7 与 research 也还未成为无歧义、可机器判的单一事实源，因此本轮继续请求修改。
+
+## What's Good (Keep)
+
+- 14 行 classifier 已覆盖首次即 undeliverable、terminal/frozen 无 open episode、rerouted 收口和 superseded 不重开，关闭了 Round 2 #1。
+- loop residency 继续只认 pinned snapshot 的 loop target；`loopTarget` 的 dispatch/reown/vendor 贯穿没有回退到 role 或节点名判断。
+- `workflow_resident_hold` 现在有 revision、第二轮 re-enter、closed 状态和明确的 Codex Bridge seam；wake/expiry 均带 revision fence。
+- turn boundary 已从 `observeBoundary()` 移到 daemon 的 owned `turn/completed`，A3(c) 也改为真实通知顺序，而不是 mock 分类器。
+- drain challenge 采用剔除 `drainReceipt` 的 `completionBusinessDigest`，相同业务提交复用同一 challenge，且 CommDB 权威读取只留在 event route。
+- hold resume 与 reroute 共用一张 saga 表，carrier 自动改派使用 system primitive，不伪装 master/operator；max reroute 也绑定 root contract。
+- settlement 仍精确绑定 active request/question、activation 和 route revision，终态保持 `completed`，区别只写 `settlement_reason`。
+- 生产副本改用仓库已有的 `VACUUM INTO`，不再复制活动 WAL 文件集。
+
+## Issues & Recommendations
+
+1. **[BLOCKER] Round 3 的 stage-clock 表仍有不存在、可变或落错阶段的时间源。** `turn_wake_outbox` 没有 `sent_at`，已有的不可变发送时间是 `first_push_at`；`runner_phase_wakes.last_push_at` 每次 push claim 都会重写，因此不能作为 set-once `sent` 时钟。rework 的 `markWorkflowReworkGrantStarted` 发生在异步 `grantTurn` 之前、行仍是 `pending`，却被列为 `granted_at` 写点，会把“开始尝试授棒”误报成“已授棒”；`markWorkflowReworkReplacementLaunched` 实际把 `replacement_pending` 直接改为 `wake_delivered`，应写 `received_at`，plan 却只把它列在 sent。carrier 的 `recordWorkflowCarrierWakeReceipt` 又是 `awaiting_receipt → receipt_started`，当前根本没有经过 `wake_delivered`，所以 plan/research 声称的 received/consumed 两步无法按现有状态机实现。请把逐 family 映射改成真实状态转移：turn_wake 用 `first_push_at`；phase_wake 新增 set-once `first_push_at`（`last_push_at` 继续只管 retry）；rework 仅在 `pending → turn_granted` 成功时写 granted，并让 replacement launch 写 received；carrier 明确同一 receipt 是否同时写 received+consumed，或增加真实的两步证据。相应更新 CommDB DDL、A7 allowlist 和“retry 不动时钟”测试。证据：`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:35,66-78`；`engineering/doc/FLY-2248-generic-delivery-contract/research.md:29-32`；`packages/flywheel-comm/src/db.ts:114-138,175-199,3612-3628,5451-5466`；`packages/teamlead/src/StateStore.ts:29677-29712,30492-30518,47699-47730,47787-47827`；`packages/teamlead/src/bridge/workflow-rework-coordinator.ts:638-672`。
+
+2. **[BLOCKER] reroute 的“旧合同 superseded、新合同 reminted”在五个 family 上没有统一、可落库的身份模型。** mailbox 已有 `ref_id/superseded_by`，但 `turn_wake_outbox` 和 `runner_phase_wakes` 两列都没有，Round 3 migration 也只给 phase wake 加 `turn_generation`；计划写“原行 `superseded_by`、新行 `ref_id`”无法执行。更深一层，rework/carrier 的 contract id 分别由 `request_id/question_id` 主键固定，system reroute 又复用同一行并重置为 pending：同一行不能一边标成 superseded、一边代表新合同；它的 set-once stage columns 也会让新一轮继承旧轮时间，立即产生陈旧 stall。`workflow_delivery_operation.receipts_json` 位于 StateStore，不能充当与 CommDB CAS 同事务的 receipt；若 CommDB 已重投但 Bridge 在回写 applied 前崩溃，重放仍缺少权威判据。请定义每 family 的 child-contract identity（建议 append-only delivery-attempt/lineage 行，包含 namespaced `family:root`、contract generation、per-attempt stage timestamps、superseded target），或逐表增加等价的 root/generation/superseded 字段；CommDB barrier 必须以确定性新 row id 或 CommDB 内 receipt 作为原子回放证据。`client_request_id` 也应包含 family，避免不同 family 的同值 root 冲突。补 rework/carrier 第二轮时钟重置、turn/phase schema 实测、以及“CommDB applied 后 StateStore 未回写”的 crash replay。证据：`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:79-80,100,113-119,167-170`；`packages/flywheel-comm/src/db.ts:114-138,175-199`；`packages/flywheel-comm/src/mailbox-schema.ts:79-124`；`packages/teamlead/src/StateStore.ts:19969-19995,20756-20771`。
+
+3. **[BLOCKER] mid-turn 判定仍缺少 durable active-turn 账本，且 completion CAS 与并发到件没有原子边界。** M3 说 runtime 通过 `onTurnStarted/onTurnCompleted` 维护 durable `turn_generation`，但稳定接口只列 `onTurnCompleted`，schema 只在每条 wake 上增加 `turn_generation`，没有保存 execution 当前 `{turnId,generation,active}` 的权威行。Bridge 在进行中的 turn 内重启后，supervisor 无法知道该把新到件写成 deferred 还是 queued。另有一个竞态：若 `turn/completed` 先提升已有 deferred 行、随后一个已观察到旧 active generation 的 callback 才插入 deferred(g)，该行再也等不到 generation g 的 completion。请在 CommDB 增加 execution 级 turn-boundary row（或等价 durable 字段），由 owned `turn/started` CAS 为 active(g)，并在同一个 CommDB transaction 中完成 `active(g) → idle(g)` 与 `deferred_midturn(turn_generation<=g) → queued`；到件分类也必须在读取 active generation 与插行的同一 transaction 内。稳定接口补齐 `onTurnStarted`，测试增加“Bridge mid-turn 重启后到件”和“completion 与 delivery 两种交错顺序”。证据：`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:21,51,133-134,170,197`；`engineering/doc/FLY-2248-generic-delivery-contract/research.md:84-90`；`packages/claude-runner/src/codex-daemon-client.ts:743-781,813-814`；`packages/flywheel-comm/src/db.ts:175-199`。
+
+4. **[BLOCKER] resident entry/expiry 仍跨越未记账的 StateStore→本地文件/CommDB barrier，崩溃后不能保证收口。** 进入时先把 StateStore 行写成 resident，再写本地 PhaseHoldState；若进程在两者之间崩溃，或 `enterPhaseHold()` 写盘/暂停失败，计划没有规定同 revision 的 `enter()` 幂等 adopt 或补偿 close，可能留下一个其实已 terminal 的 resident 行。到期时问题更严重：tick 先 CAS `resident→expired`，再调用 CommDB `requestRunnerShutdown`；若在两步之间崩溃或 CommDB 暂时不可读，下一 tick 只扫描 resident，已 expired 的行不会再次发 shutdown，worker 可以永久留在 hold。请规定 `enter()` 对同 execution/activation、同 goal boundary 的现存 resident 行返回原 revision/deadline，reown 随后补齐本地 hold；本地 hold 失败则走明确的 close/terminal 补偿。expiry 使用确定性 request id，并持续 reconcile `expired AND shutdown未ACK`（或把该 effect 纳入现有 `workflow_delivery_operation`），直到 CommDB request durable、adapter ACK、再 closed。A3 增加“enter commit 后、本地 hold 前崩溃”和“expiry CAS 后、shutdown request 前崩溃/CommDB 不可读”的 barrier tests。证据：`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:124-131,165`；`packages/claude-runner/src/codex-daemon-client.ts:981-1006,1486-1500`；`packages/flywheel-comm/src/db.ts:230-237,4240-4307`；`packages/claude-runner/src/CodexTmuxAdapter.ts:1405-1433,1517-1588`。
+
+5. **[HIGH] undeliverable episode 的告警 owner 与 outcome copy 仍不一致。** Watch 在首次 undeliverable 时开 episode，并按通用路径调用 `enqueueWorkflowEngineAlert`；rerouter 随后才决定 rerouted 或 operator-required。显示文案却只定义后两种 outcome，而 M2 的 `delivery_rerouted`/`delivery_reroute_operator_required` 目前只是 run event，没有明确由谁进入 Lead inbox。按字面实现会先发一条没有最终事实的 raw undeliverable 告警，随后可能不发 outcome，或产生两条。请指定单一用户可见 owner：watch 只持久化 undeliverable episode，reroute saga 在 projected/operator-required 后以稳定 uid 恰好一次 enqueue outcome；若 operation 自身卡住，再通过同一既有 Lead inbox path 报 operation stall。测试断言成功改派与需人工两条路径各只有一条、且文案与最终结果一致。证据：`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:37-38,91-101,113-119,199-204`。
+
+6. **[HIGH] A7 仍不是可执行的 schema-diff 断言，也没有覆盖 CommDB migration。** `sqlite_master` 中列不是独立对象；`ALTER TABLE ADD COLUMN` 会改变同名 table 的 SQL 定义，所以“sqlite_master 差集 = 4 表+索引+列”不能按集合差实现。A7 顶部还写总共“7 个新列”，而 §3 实际是 StateStore `2×7` 加 CommDB 1 列；生产副本步骤只描述 StateStore 的 `VACUUM INTO`，没有对每项目 CommDB 的首次/二次启动做验证。请把验收分为：`sqlite_master` 新对象 allowlist；既有 table 的 `PRAGMA table_info` 精确列 delta；first-start→second-start 的 canonical schema snapshot 相同；StateStore 与至少一个真实大小/真实版本 CommDB 分别跑两次 integrity/FK/idempotence。完成 #1/#2/#3 所需的 CommDB 字段也必须进入同一 allowlist。证据：`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:25,160-176,185-197`；`packages/teamlead/src/StateStore.ts:2965-2971,4883-4894`。
+
+7. **[HIGH] research 仍保留数处与 Round 3 plan 相反的规范文本。** §1.2 的 rework/carrier 两行仍要求从 `workflow_run_event` 挖阶段时间，而 plan 已改为 stage columns；turn_wake 仍写不存在的 `sent_at`，phase_wake 仍写可变 `last_push_at`。§1.5 的 escalation uid 仍以 `progressToken` 结尾，不是 `stageEnteredAt`。§4.1 仍只有 21 行、没有第 22 个 `delivery_undeliverable_no_recipient`；§4.2 最后一条又回到单一 `hold-write-site-inventory.json`，与 plan 的 `hold-mutation-inventory.json` + `hold-shape-manifest.json` 双清单冲突。由于 plan 明确让 M0/A2/A6 从 research 生成 fixture 和清单，这些不是纯文案问题。请把 research 的 stage source、uid、22nd shape、inventory 文件名和 rerouter 文件名一次性同步为 Round 3 canonical contract。证据：`engineering/doc/FLY-2248-generic-delivery-contract/research.md:25-36,55-73,137-169,175-184`；`engineering/doc/FLY-2248-generic-delivery-contract/plan.md:20,35-49,57-61,146-153`。
+
+## Verdict
+
+CHANGES REQUESTED — address items above

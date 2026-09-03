@@ -1,0 +1,26 @@
+sequenceDiagram
+  autonumber
+  participant L as Lead(人或 Lead agent)
+  participant CLI as flywheel-comm hold
+  participant B as Bridge 正门<br/>/api/runs/:id/holds · /resume
+  participant REG as 冻结形状注册表<br/>(22 种形状,各配 resume)
+  participant DB as 主账本 StateStore
+  L->>CLI: hold list --run X
+  CLI->>B: GET /holds(loopback + master token)
+  B->>REG: 逐形状 detect(run X)
+  REG->>DB: 只读查询
+  DB-->>REG: 命中的形状 + 前置条件结果
+  REG-->>B: [{shape, 可恢复?, 缺什么}]
+  B-->>CLI: 列表
+  CLI-->>L: 人话展示
+  L->>CLI: hold resume --run X --shape S --reason R
+  CLI->>B: POST /resume/stage → confirmToken
+  CLI->>B: POST /resume(带一次性 confirmToken)
+  B->>REG: resume(S)
+  REG->>DB: 一个事务:前置条件全绿 → 动作 → 写 hold_resumed 事件
+  alt 前置条件不满足
+    REG->>DB: 写 hold_resume_refused 事件(错误落账,不吞)
+    DB-->>L: resume_refused:<原因>
+  else 成功
+    DB-->>L: run 恢复 active,欠条/carrier 一并复活
+  end

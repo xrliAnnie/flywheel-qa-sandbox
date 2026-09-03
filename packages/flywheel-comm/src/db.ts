@@ -54,6 +54,49 @@ export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
    AND datetime(p.expires_at) > datetime('now')
  ORDER BY p.created_at ASC`;
 
+export interface RunnerDeliveryProjectionRow {
+	id: string;
+	from_agent: string;
+	to_agent: string;
+	type: string;
+	content: string;
+	ref_id: string | null;
+	source_ref: string | null;
+	created_at: string;
+	delivered_at: string | null;
+	notified_at: string | null;
+	acked_at: string | null;
+	superseded_by: string | null;
+	dead_reason: string | null;
+	state: string;
+	recipient_status: string | null;
+	issue_id: string | null;
+}
+
+export interface RunnerPhaseWakeProjectionRow {
+	execution_id: string;
+	message_id: string;
+	metadata_json: string | null;
+	queued_at: number;
+	first_push_at: string | null;
+	started_at: number | null;
+	finished_at: number | null;
+	state: "pending" | "started" | "finished";
+	recipient_status: string | null;
+	issue_id: string | null;
+}
+
+export interface RunnerTurnWakeProjectionRow {
+	wake_id: string;
+	execution_id: string;
+	issue_id: string;
+	created_at: number;
+	first_push_at: number | null;
+	acked_at: number | null;
+	state: "pending" | "sent" | "acked" | "cancelled";
+	recipient_status: string | null;
+}
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS sessions (
   execution_id  TEXT PRIMARY KEY,
@@ -186,6 +229,7 @@ CREATE TABLE IF NOT EXISTS runner_phase_wakes (
 	admission_state         TEXT,
 	envelope_json           TEXT,
 	push_attempts           INTEGER NOT NULL DEFAULT 0,
+	first_push_at           TEXT,
 	last_push_at            TEXT,
 	last_push_result        TEXT,
 	claim_token             TEXT,
@@ -547,6 +591,7 @@ export interface RunnerPhaseWake {
 		| null;
 	envelope_json: string | null;
 	push_attempts: number;
+	first_push_at: string | null;
 	last_push_at: string | null;
 	last_push_result: string | null;
 	claim_token: string | null;
@@ -1209,6 +1254,14 @@ export class CommDB {
 		if (!wakeColumns.some((column) => column.name === "receipt_projected_at")) {
 			this.db.exec(
 				"ALTER TABLE turn_wake_outbox ADD COLUMN receipt_projected_at INTEGER",
+			);
+		}
+		const phaseWakeColumns = this.db
+			.prepare("PRAGMA table_info(runner_phase_wakes)")
+			.all() as Array<{ name: string }>;
+		if (!phaseWakeColumns.some((column) => column.name === "first_push_at")) {
+			this.db.exec(
+				"ALTER TABLE runner_phase_wakes ADD COLUMN first_push_at TEXT",
 			);
 		}
 		const waitColumns = this.db
@@ -2561,6 +2614,135 @@ export class CommDB {
 			.get(id) as Message | undefined;
 	}
 
+	listRunnerDeliveryProjectionRows(): RunnerDeliveryProjectionRow[] {
+		return this.db
+			.prepare(
+				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
+				        m.ref_id, m.source_ref, m.created_at, m.delivered_at,
+				        m.notified_at, m.acked_at, m.superseded_by,
+				        m.dead_reason, m.state,
+				        sessions.status AS recipient_status,
+				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id
+				   FROM mailbox m
+				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
+				   LEFT JOIN session_receipt_lineage lineage
+				     ON lineage.execution_id = m.to_agent
+				  WHERE m.recipient_kind = 'runner'
+				    AND m.type IN ('instruction','response')
+				    AND m.state IN ('QUEUED','LEASED','ACKED')
+				    AND m.superseded_by IS NULL
+				    AND m.dead_reason IS NULL
+				    AND (
+				      sessions.status = 'running' OR
+				      (sessions.status IN ('blocked','timeout')
+				       AND m.state IN ('QUEUED','LEASED'))
+				    )
+				  ORDER BY m.seq`,
+			)
+			.all() as RunnerDeliveryProjectionRow[];
+	}
+
+	getRunnerDeliveryProjectionRow(
+		id: string,
+	): RunnerDeliveryProjectionRow | undefined {
+		return this.db
+			.prepare(
+				`SELECT m.id, m.from_agent, m.to_agent, m.type, m.content,
+				        m.ref_id, m.source_ref, m.created_at, m.delivered_at,
+				        m.notified_at, m.acked_at, m.superseded_by,
+				        m.dead_reason, m.state,
+				        sessions.status AS recipient_status,
+				        COALESCE(sessions.issue_id, lineage.issue_id) AS issue_id
+				   FROM mailbox m
+				   LEFT JOIN sessions ON sessions.execution_id = m.to_agent
+				   LEFT JOIN session_receipt_lineage lineage
+				     ON lineage.execution_id = m.to_agent
+				  WHERE m.id = ?
+				    AND m.recipient_kind = 'runner'
+				    AND m.type IN ('instruction','response')`,
+			)
+			.get(id) as RunnerDeliveryProjectionRow | undefined;
+	}
+
+	listRunnerPhaseWakeProjectionRows(): RunnerPhaseWakeProjectionRow[] {
+		return this.db
+			.prepare(
+				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
+				        wake.queued_at, wake.first_push_at, wake.started_at,
+				        wake.finished_at, wake.state,
+				        session.status AS recipient_status,
+				        COALESCE(session.issue_id, lineage.issue_id) AS issue_id
+				   FROM runner_phase_wakes wake
+				   LEFT JOIN sessions session
+				     ON session.execution_id = wake.execution_id
+				   LEFT JOIN session_receipt_lineage lineage
+				     ON lineage.execution_id = wake.execution_id
+				  WHERE session.status = 'running'
+				     OR (session.status IN ('blocked','timeout')
+				         AND wake.state != 'finished')
+				  ORDER BY wake.queue_seq`,
+			)
+			.all() as RunnerPhaseWakeProjectionRow[];
+	}
+
+	getRunnerPhaseWakeProjectionRow(
+		messageId: string,
+	): RunnerPhaseWakeProjectionRow | undefined {
+		return this.db
+			.prepare(
+				`SELECT wake.execution_id, wake.message_id, wake.metadata_json,
+				        wake.queued_at, wake.first_push_at, wake.started_at,
+				        wake.finished_at, wake.state,
+				        session.status AS recipient_status,
+				        COALESCE(session.issue_id, lineage.issue_id) AS issue_id
+				   FROM runner_phase_wakes wake
+				   LEFT JOIN sessions session
+				     ON session.execution_id = wake.execution_id
+				   LEFT JOIN session_receipt_lineage lineage
+				     ON lineage.execution_id = wake.execution_id
+				  WHERE wake.message_id = ?
+				  ORDER BY wake.queue_seq DESC
+				  LIMIT 1`,
+			)
+			.get(messageId) as RunnerPhaseWakeProjectionRow | undefined;
+	}
+
+	listRunnerTurnWakeProjectionRows(): RunnerTurnWakeProjectionRow[] {
+		return this.db
+			.prepare(
+				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
+				        wake.created_at, wake.first_push_at, wake.acked_at,
+				        wake.state, session.status AS recipient_status
+				   FROM turn_wake_outbox wake
+				   JOIN sessions session
+				     ON session.execution_id = wake.execution_id
+				  WHERE wake.state != 'cancelled'
+				    AND (
+				      session.status = 'running' OR
+				      (session.status IN ('blocked','timeout')
+				       AND wake.state IN ('pending','sent'))
+				    )
+				  ORDER BY wake.created_at, wake.wake_id`,
+			)
+			.all() as RunnerTurnWakeProjectionRow[];
+	}
+
+	getRunnerTurnWakeProjectionRow(
+		wakeId: string,
+	): RunnerTurnWakeProjectionRow | undefined {
+		return this.db
+			.prepare(
+				`SELECT wake.wake_id, wake.execution_id, wake.issue_id,
+				        wake.created_at, wake.first_push_at, wake.acked_at,
+				        wake.state, session.status AS recipient_status
+				   FROM turn_wake_outbox wake
+				   LEFT JOIN sessions session
+				     ON session.execution_id = wake.execution_id
+				  WHERE wake.wake_id = ?`,
+			)
+			.get(wakeId) as RunnerTurnWakeProjectionRow | undefined;
+	}
+
 	getQuestionsByCheckpoint(checkpoint: string): Message[] {
 		return this.db
 			.prepare(
@@ -3655,15 +3837,21 @@ export class CommDB {
 		nowMs: number;
 	}): boolean {
 		if (!input.result.trim()) throw new Error("push result is required");
+		const successful =
+			input.result === "verified" || input.result === "delivered";
 		const updated = this.db
 			.prepare(
 				`UPDATE runner_phase_wakes
-					 SET last_push_result = ?, claim_token = NULL, claim_expires_at = NULL
+					 SET last_push_result = ?, claim_token = NULL, claim_expires_at = NULL,
+					     first_push_at = CASE WHEN ? = 1
+					       THEN COALESCE(first_push_at, ?) ELSE first_push_at END
 					 WHERE execution_id = ? AND message_id = ?
 					   AND claim_token = ? AND push_attempts = ?`,
 			)
 			.run(
 				`attempt:${input.attempt}:${input.result}`,
+				successful ? 1 : 0,
+				new Date(input.nowMs).toISOString(),
 				input.executionId,
 				input.messageId,
 				input.claimToken,

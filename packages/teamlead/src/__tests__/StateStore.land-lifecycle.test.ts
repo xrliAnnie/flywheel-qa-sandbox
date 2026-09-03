@@ -1382,6 +1382,19 @@ describe("StateStore land lifecycle ledger", () => {
 			approvedHead: "b".repeat(40),
 			now: "2026-07-21T20:00:00.000Z",
 		});
+		const deliveryAttempt = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(
+				(row) =>
+					row.family === "land" &&
+					JSON.parse(row.contract_ref_json).pk === operation.operation_id,
+			);
+		expect(deliveryAttempt).toMatchObject({
+			minted_at: "2026-07-21T20:00:00.000Z",
+			sent_at: "2026-07-21T20:00:00.000Z",
+			received_at: null,
+			settlement_reason: null,
+		});
 		expect(
 			store.ensureLandOperation({
 				runId: "run-1",
@@ -1445,6 +1458,11 @@ describe("StateStore land lifecycle ledger", () => {
 		expect(store.listLandOperationSteps(operation.operation_id)).toMatchObject([
 			{ step: "merge_confirmed", receipt: { mergeSha: "c".repeat(40) } },
 		]);
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(({ attempt_id }) => attempt_id === deliveryAttempt!.attempt_id),
+		).toMatchObject({ received_at: "2026-07-21T20:02:02.000Z" });
 		store.close();
 	});
 

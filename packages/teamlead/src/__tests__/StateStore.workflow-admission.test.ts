@@ -72,6 +72,21 @@ describe("workflow claims admission — fail-closed enrollment + immutable bindi
 			node_id: "qa",
 			attempt: 1,
 		});
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(attempt) =>
+						attempt.family === "launch" &&
+						JSON.parse(attempt.contract_ref_json).pk === "qa-exec-1",
+				),
+		).toMatchObject({
+			root_id: "flywheel:FLY-1244:launch:qa-exec-1",
+			generation: 1,
+			attempt: 1,
+			minted_at: T0,
+			granted_at: T0,
+		});
 		const credential = store.getWorkflowSubmissionCredential(
 			result.credentialId,
 		);
@@ -80,6 +95,54 @@ describe("workflow claims admission — fail-closed enrollment + immutable bindi
 		);
 		expect(credential?.credential_hash).not.toBe(result.credential);
 		expect(credential?.permanent).toBe(1);
+	});
+
+	it("consumes launch delivery exactly once on the execution's first session event", async () => {
+		const store = await storeWithRun();
+		expect(admit(store).ok).toBe(true);
+
+		expect(
+			store.insertEvent({
+				event_id: "launch-business-event-1",
+				execution_id: "qa-exec-1",
+				issue_id: "FLY-1244",
+				project_name: "flywheel",
+				event_type: "stage_changed",
+				source: "test",
+			}),
+		).toBe(true);
+		const firstEvent = store.getEventsByExecution("qa-exec-1")[0]!;
+		const firstAttempt = store
+			.listLiveWorkflowDeliveryAttempts()
+			.find(
+				(row) =>
+					row.family === "launch" &&
+					JSON.parse(row.contract_ref_json).pk === "qa-exec-1",
+			);
+		const firstEventUtc = new Date(
+			`${firstEvent.ts.replace(" ", "T")}Z`,
+		).toISOString();
+		expect(firstAttempt).toMatchObject({
+			consumed_at: firstEventUtc,
+		});
+
+		expect(
+			store.insertEvent({
+				event_id: "launch-business-event-2",
+				execution_id: "qa-exec-1",
+				issue_id: "FLY-1244",
+				project_name: "flywheel",
+				event_type: "heartbeat",
+				source: "test",
+			}),
+		).toBe(true);
+		expect(
+			store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(({ attempt_id }) => attempt_id === firstAttempt!.attempt_id),
+		).toMatchObject({
+			consumed_at: firstEventUtc,
+		});
 	});
 
 	it("a conflicting physical execution for the same logical attempt refuses with no partial enrollment", async () => {

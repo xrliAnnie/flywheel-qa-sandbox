@@ -99,6 +99,49 @@ afterEach(() => {
 	for (const store of stores.splice(0)) store.close();
 });
 
+it("projects gate-holder materialization clocks and settlement exactly once", async () => {
+	const store = await createStore();
+	store.ensureWorkflowGateHolder({
+		runId: "run-1",
+		gateNodeId: "approval",
+		attempt: 1,
+		headSha: HEAD_1,
+		sourceExecutionId: "producer-1",
+		questionId: "question-clock",
+		now: "2026-08-14T20:00:00.000Z",
+	});
+	for (const [stage, now] of [
+		["question_written", "2026-08-14T20:01:00.000Z"],
+		["session_bound", "2026-08-14T20:02:00.000Z"],
+		["card_posted", "2026-08-14T20:03:00.000Z"],
+		["card_bound", "2026-08-14T20:04:00.000Z"],
+		["completed", "2026-08-14T20:05:00.000Z"],
+	] as const) {
+		expect(
+			store.advanceWorkflowGateHolderMaterialization({
+				questionId: "question-clock",
+				stage,
+				...(stage === "card_posted" ? { cardMessageId: "card-clock" } : {}),
+				now,
+			}),
+		).toMatchObject({ ok: true });
+	}
+	const attempt = store
+		.listLiveWorkflowDeliveryAttempts()
+		.find(
+			(row) =>
+				row.family === "gate_holder" &&
+				JSON.parse(row.contract_ref_json).pk === "question-clock",
+		);
+	expect(attempt).toMatchObject({
+		minted_at: "2026-08-14T20:00:00.000Z",
+		granted_at: "2026-08-14T20:01:00.000Z",
+		sent_at: "2026-08-14T20:02:00.000Z",
+		received_at: "2026-08-14T20:04:00.000Z",
+		settlement_reason: "settled",
+	});
+});
+
 describe("workflow gate card lifecycle", () => {
 	it("explains equivalent head carryover without asking founder to approve a nonexistent card", async () => {
 		const store = await createStore();

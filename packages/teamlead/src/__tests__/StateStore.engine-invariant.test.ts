@@ -268,6 +268,28 @@ function ignoreFreshAdvance(store: StateStore): void {
 }
 
 describe("FLY-1912 workflow engine invariants", () => {
+	it("projects rework grant, send, and receipt from the native delivery transitions", async () => {
+		const fixture = await createActiveOperatorRework();
+		try {
+			const attempt = fixture.store
+				.listLiveWorkflowDeliveryAttempts()
+				.find(
+					(row) =>
+						row.family === "rework" &&
+						JSON.parse(row.contract_ref_json).pk === fixture.requestId,
+				);
+			expect(attempt).toMatchObject({
+				minted_at: "2026-08-20T00:03:00.000Z",
+				granted_at: "2026-08-20T00:05:00.000Z",
+				sent_at: "2026-08-20T00:05:00.000Z",
+				received_at: "2026-08-20T00:05:01.000Z",
+				consumed_at: null,
+			});
+		} finally {
+			fixture.store.close();
+		}
+	});
+
 	it("returns a named refusal and atomically queues one alert at the decision boundary", async () => {
 		const fixture = await createFreshQa();
 		try {
