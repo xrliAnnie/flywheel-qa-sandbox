@@ -11,6 +11,9 @@ export FLYWHEEL_CMUX_VIEW_HELPER_BIN="$ROOT/scripts/flywheel-view-attach.sh"
 export FLYWHEEL_CMUX_LEAD_ATTACH_BIN="$ROOT/scripts/flywheel-lead-attach.sh"
 export VIEW_LEDGER="$TMP/ledger"
 export CMUX_ADOPT_CAP_STATE="$TMP/adopt-cap"
+export FLYWHEEL_CMUX_SESSION_STATE="$TMP/cmux-session.json"
+export FLYWHEEL_ENV_FILE="$TMP/flywheel.env"
+: > "$FLYWHEEL_ENV_FILE"
 # shellcheck source=../flywheel-cmux-sync.sh
 source "$ROOT/scripts/flywheel-cmux-sync.sh"
 set +e
@@ -19,6 +22,56 @@ pass=0; fail=0
 ok() { pass=$((pass + 1)); printf 'PASS: %s\n' "$1"; }
 bad() { fail=$((fail + 1)); printf 'FAIL: %s\n' "$1" >&2; }
 b64() { printf '%s' "$1" | base64 | tr -d '\n'; }
+
+test_fly2281_pinned_process_title_restores_birth_authority() {
+  local tmux_bin="$TMP/fly2281-tmux" title="FLY-2281-implement"
+  local target="cmux-FLY-2281-implement" token="fwtok1-22812281228122812281228122812281"
+  local workspace_uuid="00000000-0000-4000-8000-000000002281"
+  local surface_uuid="00000000-0000-4000-8000-000000012281"
+  local raw command rows expected saved_cmux_call
+  cp /usr/bin/true "$tmux_bin"
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$tmux_bin" > "$FLYWHEEL_ENV_FILE"
+  unset FLYWHEEL_CMUX_ATTACH_TMUX_BIN
+  cmux_attach_tmux_bin_cache_prime || {
+    bad "persisted attach tmux pin did not prime for birth fixture"
+    return
+  }
+  command=$(build_attach_command "$target" "$token") || {
+    bad "pinned birth fixture command did not build"
+    return
+  }
+  python3 - "$CMUX_SESSION_STATE" "$surface_uuid" "$command" <<'PY'
+import json,sys
+path,surface,command=sys.argv[1:]
+with open(path,"w",encoding="utf-8") as out:
+    json.dump({"windows":[{"tabManager":{"workspaces":[{
+        "focusedPanelId":surface,
+        "processTitle":command,
+        "panels":[{"type":"terminal","id":surface}],
+    }]}}]},out)
+PY
+  raw=$(python3 - "$workspace_uuid" "$title" <<'PY'
+import json,sys
+uuid,title=sys.argv[1:]
+print(json.dumps({"workspaces":[{"ref":"workspace:2281","id":uuid,"title":title}]}))
+PY
+  )
+  saved_cmux_call=$(declare -f cmux_call)
+  cmux_call() {
+    printf '{"workspace_id":"%s","surfaces":[{"id":"%s","type":"terminal"}]}\n' \
+      "$workspace_uuid" "$surface_uuid"
+  }
+  rows=$(_cmux_attach_birth_records_uncached "$raw")
+  eval "$saved_cmux_call"
+  expected="workspace:2281|$workspace_uuid|$(b64 "$title")|$surface_uuid|view|$(b64 "$target")|$token"
+  if [[ "$rows" == "$expected" ]]; then
+    ok "persisted pinned processTitle reconstructs the exact workspace/surface birth row"
+  else
+    bad "pinned processTitle birth row mismatch expected=[$expected] actual=[$rows]"
+  fi
+}
+
+test_fly2281_pinned_process_title_restores_birth_authority
 
 printf '1\n' > "$CMUX_ADOPT_CAP_STATE"
 CMUX_ADOPTION_COUNT=0

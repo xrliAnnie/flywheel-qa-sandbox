@@ -71,6 +71,7 @@ export FLYWHEEL_CMUX_WATCHER_HEARTBEAT="$TMPDIR_ROOT/cmux-watcher-heartbeat"  # 
 export FLYWHEEL_CMUX_REBUILD_REPORT_DIR="$TMPDIR_ROOT/cmux-rebuild-reports"  # FLY-1596
 export FLYWHEEL_CMUX_SESSION_STATE="$TMPDIR_ROOT/cmux-session.json"  # FLY-1944 birth evidence
 export CMUX_ADOPT_CAP_STATE="$TMPDIR_ROOT/cmux-adopt-cap"  # FLY-1944 bounded birth adoption
+export FLYWHEEL_ENV_FILE="$TMPDIR_ROOT/flywheel.env"  # FLY-2281 persisted attach configuration
 export LEDGER_CONFLICT_STATE="$TMPDIR_ROOT/ledger-conflict.state"  # FLY-1446
 export ROSTER_EPISODE_STATE="$TMPDIR_ROOT/roster-episodes.state"  # FLY-1446
 export CMUX_LOG_EPISODE_STATE="$TMPDIR_ROOT/cmux-log-episodes.state"  # FLY-1596
@@ -94,6 +95,7 @@ export FLYWHEEL_CMUX_ALERT_BIN="/usr/bin/true"
 # keep that explicit seam synchronous. FLY-1944 timeout coverage below unsets
 # the function and exercises a real fixture process group.
 export FLYWHEEL_CMUX_TEST_SYNC_FUNCTIONS=1
+: > "$FLYWHEEL_ENV_FILE"
 
 # ════════════════════════════════════════════════════════════════
 # Mocks for tmux and cmux
@@ -1131,6 +1133,12 @@ reset_mocks() {
   FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="test-incarnation"
   FLYWHEEL_CMUX_VIEW_HELPER=1
   FLYWHEEL_CMUX_VIEW_HELPER_BIN="$SCRIPT_DIR/flywheel-view-attach.sh"
+  unset FLYWHEEL_CMUX_ATTACH_TMUX_BIN
+  : > "$FLYWHEEL_ENV_FILE"
+  CMUX_ATTACH_TMUX_BIN_CACHE_READY=0
+  CMUX_ATTACH_TMUX_BIN_CACHE_VALUE=""
+  CMUX_ATTACH_TMUX_BIN_ERROR_SIG=""
+  CMUX_ATTACH_TMUX_BIN_EPISODE=0
   CMUX_ATTACH_BIRTH_CACHE_READY=0
   CMUX_ATTACH_BIRTH_CACHE_ROUND=""
   CMUX_ATTACH_BIRTH_CACHE_ROWS=""
@@ -6614,6 +6622,154 @@ test_fly1884_managed_view_command_variants_are_upgrade_safe() {
   fi
 }
 
+test_fly2281_persisted_attach_tmux_bin_reaches_command_consumers() {
+  echo "Test: FLY-2281 — persisted attach tmux pin is one validated per-pass command identity"
+  reset_mocks
+  local view="cmux-FLY-2281-implement" token="fwtok1-22812281228122812281228122812281"
+  local helper="$SCRIPT_DIR/flywheel-view-attach.sh"
+  local tmux_a="$TMPDIR_ROOT/fly2281-tmux-a" tmux_b="$TMPDIR_ROOT/fly2281-tmux-b"
+  local nonexec="$TMPDIR_ROOT/fly2281-not-executable" unsafe="$TMPDIR_ROOT/fly2281-bad'tmux"
+  local command variants record stock_json stock first_after_change first_variants first_record
+  local second_after_prime second_variants second_record inherited legacy env_next
+  local relative_prime_rc relative_repeat_rc relative_build_rc relative_variants_rc
+  local nonexec_rc unsafe_rc recovered_rc rearmed_rc lead_kind warning_count alert_count
+  local log_capture="$TMPDIR_ROOT/fly2281-warnings" alert_capture="$TMPDIR_ROOT/fly2281-alerts"
+  local saved_log saved_flywheel_alert ok=1
+
+  cp /usr/bin/true "$tmux_a"
+  cp /usr/bin/true "$tmux_b"
+  : > "$nonexec"
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$tmux_a" > "$FLYWHEEL_ENV_FILE"
+
+  cmux_attach_tmux_bin_cache_prime || ok=0
+  command=$(build_attach_command "$view" "$token" 2>/dev/null || true)
+  variants=$(managed_view_command_variants "$view" 2>/dev/null || true)
+  record=$(managed_view_command_parse "$command" record 2>/dev/null || true)
+  stock_json=$(printf '{"workspaces":[{"ref":"workspace:2281","title":"%s"}]}' "$command")
+  stock=$(printf '%s' "$stock_json" | _cmux_carrier_classify stock 2>/dev/null || true)
+  [[ "$command" == "env -u TMUX FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_a' '$helper' '$view' '$token'" ]] || ok=0
+  printf '%s\n' "$variants" | grep -qxF "env -u TMUX '$tmux_a' attach -t '=$view'" || ok=0
+  printf '%s\n' "$variants" | grep -qxF \
+    "env -u TMUX FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_a' '$helper' '$view'" || ok=0
+  [[ "$record" == "view|$view|$token" ]] || ok=0
+  [[ "$stock" == C$'\t'workspace:2281$'\t'*$'\t'FLY-2281-implement$'\t'* ]] || ok=0
+
+  env_next="$TMPDIR_ROOT/fly2281.env.next"
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$tmux_b" > "$env_next"
+  mv "$env_next" "$FLYWHEEL_ENV_FILE"
+  first_after_change=$(build_attach_command "$view" 2>/dev/null || true)
+  first_variants=$(managed_view_command_variants "$view" 2>/dev/null || true)
+  first_record=$(managed_view_command_parse "$first_after_change" record 2>/dev/null || true)
+  cmux_attach_tmux_bin_cache_prime || ok=0
+  second_after_prime=$(build_attach_command "$view" 2>/dev/null || true)
+  second_variants=$(managed_view_command_variants "$view" 2>/dev/null || true)
+  second_record=$(managed_view_command_parse "$second_after_prime" record 2>/dev/null || true)
+  [[ "$first_after_change" == *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_a'"* ]] || ok=0
+  [[ "$first_variants" == *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_a'"* \
+      && "$first_variants" != *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_b'"* \
+      && "$first_record" == "view|$view|" ]] || ok=0
+  [[ "$second_after_prime" == *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_b'"* ]] || ok=0
+  [[ "$second_variants" == *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_b'"* \
+      && "$second_variants" != *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_a'"* \
+      && "$second_record" == "view|$view|" ]] || ok=0
+
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$tmux_a" > "$FLYWHEEL_ENV_FILE"
+  FLYWHEEL_CMUX_ATTACH_TMUX_BIN="$tmux_b"
+  cmux_attach_tmux_bin_cache_prime || ok=0
+  inherited=$(build_attach_command "$view" 2>/dev/null || true)
+  [[ "$inherited" == *"FLYWHEEL_CMUX_ATTACH_TMUX_BIN='$tmux_b'"* ]] || ok=0
+  unset FLYWHEEL_CMUX_ATTACH_TMUX_BIN
+
+  : > "$FLYWHEEL_ENV_FILE"
+  cmux_attach_tmux_bin_cache_prime || ok=0
+  legacy=$(build_attach_command "$view" 2>/dev/null || true)
+  [[ "$legacy" == "env -u TMUX '$helper' '$view'" ]] || ok=0
+
+  saved_log=$(declare -f log)
+  saved_flywheel_alert=$(declare -f flywheel_alert)
+  : > "$log_capture"
+  : > "$alert_capture"
+  log() { printf '%s\n' "$*" >> "$log_capture"; }
+  flywheel_alert() { printf '%s\n' "${5:-missing-signature}" >> "$alert_capture"; }
+
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=relative/tmux\n' > "$FLYWHEEL_ENV_FILE"
+  cmux_attach_tmux_bin_cache_prime; relative_prime_rc=$?
+  command=$(build_attach_command "$view" 2>/dev/null); relative_build_rc=$?
+  variants=$(managed_view_command_variants "$view" 2>/dev/null); relative_variants_rc=$?
+  command=$(build_attach_command "$view" 2>/dev/null || true)
+  variants=$(managed_view_command_variants "$view" 2>/dev/null || true)
+  lead_kind=$(managed_view_command_parse \
+    "$(build_lead_attach_command /tmp/fly2281.sock "$token")" kind 2>/dev/null || true)
+  cmux_attach_tmux_bin_cache_prime; relative_repeat_rc=$?
+
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$tmux_a" > "$FLYWHEEL_ENV_FILE"
+  cmux_attach_tmux_bin_cache_prime; recovered_rc=$?
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=relative/tmux\n' > "$FLYWHEEL_ENV_FILE"
+  cmux_attach_tmux_bin_cache_prime; rearmed_rc=$?
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$nonexec" > "$FLYWHEEL_ENV_FILE"
+  cmux_attach_tmux_bin_cache_prime; nonexec_rc=$?
+  printf 'FLYWHEEL_CMUX_ATTACH_TMUX_BIN=%s\n' "$unsafe" > "$FLYWHEEL_ENV_FILE"
+  cmux_attach_tmux_bin_cache_prime; unsafe_rc=$?
+
+  warning_count=$(wc -l < "$log_capture" | tr -d ' ')
+  alert_count=$(wc -l < "$alert_capture" | tr -d ' ')
+  eval "$saved_log"
+  eval "$saved_flywheel_alert"
+
+  [[ "$relative_prime_rc" -ne 0 && "$relative_repeat_rc" -ne 0 \
+      && "$relative_build_rc" -ne 0 && "$relative_variants_rc" -ne 0 \
+      && "$recovered_rc" -eq 0 && "$rearmed_rc" -ne 0 \
+      && "$nonexec_rc" -ne 0 && "$unsafe_rc" -ne 0 ]] || ok=0
+  [[ "$lead_kind" == lead ]] || ok=0
+  [[ "$warning_count" == 4 && "$alert_count" == 4 ]] || ok=0
+
+  if [[ "$ok" == "1" ]]; then
+    pass "persisted attach pin is validated, snapshotted, parsed, and episode-deduplicated"
+  else
+    fail "persisted attach pin mismatch command=[$command] variants=[$variants] record=[$record] stock=[$stock] warnings=$warning_count alerts=$alert_count rc=$relative_prime_rc/$relative_repeat_rc/$relative_build_rc/$relative_variants_rc/$recovered_rc/$rearmed_rc/$nonexec_rc/$unsafe_rc lead=$lead_kind"
+  fi
+}
+
+test_fly2281_passes_prime_attach_pin_before_command_consumers() {
+  echo "Test: FLY-2281 — every command-producing pass primes the attach pin before consumers"
+  reset_mocks
+  local source="$SCRIPT_DIR/flywheel-cmux-sync.sh" block prime_line consumer_line loop_line ok=1
+
+  block=$(sed -n '/^sync_additive_bootstrap()/,/^sync_additive()/p' "$source")
+  prime_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_tmux_bin_cache_prime' | head -1 | cut -d: -f1)
+  consumer_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_birth_cache_prime' | head -1 | cut -d: -f1)
+  [[ -n "$prime_line" && -n "$consumer_line" && "$prime_line" -lt "$consumer_line" ]] || ok=0
+
+  block=$(sed -n '/^sync_additive()/,/^verify_sidebar_targets()/p' "$source")
+  prime_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_tmux_bin_cache_prime' | head -1 | cut -d: -f1)
+  consumer_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_birth_cache_prime' | head -1 | cut -d: -f1)
+  [[ -n "$prime_line" && -n "$consumer_line" && "$prime_line" -lt "$consumer_line" ]] || ok=0
+
+  block=$(sed -n '/^run_converge_runners()/,/^sync_once()/p' "$source")
+  loop_line=$(printf '%s\n' "$block" | grep -n 'for round in 1 2' | head -1 | cut -d: -f1)
+  prime_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_tmux_bin_cache_prime' | head -1 | cut -d: -f1)
+  consumer_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_birth_cache_prime' | head -1 | cut -d: -f1)
+  [[ -n "$loop_line" && -n "$prime_line" && -n "$consumer_line" \
+      && "$loop_line" -lt "$prime_line" && "$prime_line" -lt "$consumer_line" ]] || ok=0
+
+  block=$(sed -n '/^sync_once()/,/^watch_main()/p' "$source")
+  prime_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_tmux_bin_cache_prime' | head -1 | cut -d: -f1)
+  consumer_line=$(printf '%s\n' "$block" | grep -n 'reconcile_roster_read_phase' | head -1 | cut -d: -f1)
+  [[ -n "$prime_line" && -n "$consumer_line" && "$prime_line" -lt "$consumer_line" ]] || ok=0
+
+  block=$(sed -n '/^verify_sidebar_targets()/,/^_ops_adopt_restored_candidate()/p' "$source")
+  prime_line=$(printf '%s\n' "$block" | grep -n 'cmux_attach_tmux_bin_cache_prime' | head -1 | cut -d: -f1)
+  consumer_line=$(printf '%s\n' "$block" | grep -n '_verify_sidebar_once' | head -1 | cut -d: -f1)
+  [[ -n "$prime_line" && -n "$consumer_line" && "$prime_line" -lt "$consumer_line" \
+      && "$(printf '%s\n' "$block" | grep -c 'cmux_attach_tmux_bin_cache_prime' || true)" == 1 ]] || ok=0
+
+  if [[ "$ok" == 1 ]]; then
+    pass "bootstrap/additive/once/converge/verify pin one snapshot before command consumers"
+  else
+    fail "attach pin prime wiring is missing or ordered after a command consumer"
+  fi
+}
+
 test_fly1944_inventory_carrier_classification_is_batched() {
   echo "Test: FLY-1944 round-5 — inventory carrier classification uses one Python process per snapshot"
   reset_mocks
@@ -10709,6 +10865,8 @@ test_fly1884_committed_uuid_mismatch_blocks_close
 test_fly1884_uuid_is_rechecked_before_tab_rename
 test_fly1884_unreceipted_default_rollback_requires_exact_uuid
 test_fly1884_managed_view_command_variants_are_upgrade_safe
+test_fly2281_persisted_attach_tmux_bin_reaches_command_consumers
+test_fly2281_passes_prime_attach_pin_before_command_consumers
 test_fly1944_inventory_carrier_classification_is_batched
 test_fly1944_v2_adoption_cap_still_heals_deferred_lead
 test_fly1944_failed_v2_adoption_refunds_shared_slot

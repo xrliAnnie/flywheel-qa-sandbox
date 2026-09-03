@@ -914,6 +914,90 @@ load_flywheel_env_value() {
   FLYWHEEL_ENV_VALUE="$raw"
 }
 
+# FLY-2281: cmux persists processTitle as immutable birth evidence, so the
+# attach helper's tmux executable choice is part of the command identity. The
+# watcher is launched with a minimal environment; resolve the same inherited-
+# first .env contract as the helper and pin one validated value per pass.
+CMUX_ATTACH_TMUX_BIN_CACHE_READY=0
+CMUX_ATTACH_TMUX_BIN_CACHE_VALUE=""
+CMUX_ATTACH_TMUX_BIN_READ_VALUE=""
+CMUX_ATTACH_TMUX_BIN_READ_REASON=""
+CMUX_ATTACH_TMUX_BIN_READ_RAW=""
+CMUX_ATTACH_TMUX_BIN_ERROR_SIG=""
+CMUX_ATTACH_TMUX_BIN_EPISODE=0
+
+_read_cmux_attach_tmux_bin() {
+  local value
+  CMUX_ATTACH_TMUX_BIN_READ_VALUE=""
+  CMUX_ATTACH_TMUX_BIN_READ_REASON=""
+  CMUX_ATTACH_TMUX_BIN_READ_RAW=""
+  if ! load_flywheel_env_value FLYWHEEL_CMUX_ATTACH_TMUX_BIN 1; then
+    CMUX_ATTACH_TMUX_BIN_READ_REASON=env-read-failed
+    return 1
+  fi
+  value="$FLYWHEEL_ENV_VALUE"
+  FLYWHEEL_ENV_VALUE=""
+  CMUX_ATTACH_TMUX_BIN_READ_RAW="$value"
+  [[ -n "$value" ]] || return 0
+  case "$value" in
+    *"'"*|*$'\n'*|*$'\r'*)
+      CMUX_ATTACH_TMUX_BIN_READ_REASON=unsafe-bytes
+      return 1
+      ;;
+  esac
+  case "$value" in
+    /*) ;;
+    *)
+      CMUX_ATTACH_TMUX_BIN_READ_REASON=not-absolute
+      return 1
+      ;;
+  esac
+  if [[ ! -x "$value" ]]; then
+    CMUX_ATTACH_TMUX_BIN_READ_REASON=not-executable
+    return 1
+  fi
+  CMUX_ATTACH_TMUX_BIN_READ_VALUE="$value"
+}
+
+cmux_attach_tmux_bin_cache_prime() {
+  local reason value_hash signature
+  CMUX_ATTACH_TMUX_BIN_CACHE_READY=0
+  CMUX_ATTACH_TMUX_BIN_CACHE_VALUE=""
+  if _read_cmux_attach_tmux_bin; then
+    CMUX_ATTACH_TMUX_BIN_CACHE_READY=1
+    CMUX_ATTACH_TMUX_BIN_CACHE_VALUE="$CMUX_ATTACH_TMUX_BIN_READ_VALUE"
+    CMUX_ATTACH_TMUX_BIN_ERROR_SIG=""
+    return 0
+  fi
+
+  CMUX_ATTACH_TMUX_BIN_CACHE_READY=2
+  reason="${CMUX_ATTACH_TMUX_BIN_READ_REASON:-unknown}"
+  value_hash=$(_cmux_alert_hash "$CMUX_ATTACH_TMUX_BIN_READ_RAW")
+  signature="$reason|$value_hash"
+  if [[ "$CMUX_ATTACH_TMUX_BIN_ERROR_SIG" != "$signature" ]]; then
+    CMUX_ATTACH_TMUX_BIN_EPISODE=$((CMUX_ATTACH_TMUX_BIN_EPISODE + 1))
+    CMUX_ATTACH_TMUX_BIN_ERROR_SIG="$signature"
+    log "WARN: invalid FLYWHEEL_CMUX_ATTACH_TMUX_BIN refused reason=$reason value_sha256=$value_hash"
+    _alert_cmux_cleanup \
+      "cmux attach tmux configuration refused" \
+      "cmux-sync refused an invalid FLYWHEEL_CMUX_ATTACH_TMUX_BIN value; view creation is deferred until the configuration is repaired. reason=$reason value_sha256=$value_hash" \
+      "cmux_cleanup|attach-tmux-bin-invalid|reason=$reason|value_sha256=$value_hash|episode=$CMUX_ATTACH_TMUX_BIN_EPISODE"
+  fi
+  return 1
+}
+
+resolve_cmux_attach_tmux_bin() {
+  case "$CMUX_ATTACH_TMUX_BIN_CACHE_READY" in
+    1)
+      printf '%s' "$CMUX_ATTACH_TMUX_BIN_CACHE_VALUE"
+      return 0
+      ;;
+    2) return 1 ;;
+  esac
+  _read_cmux_attach_tmux_bin || return 1
+  printf '%s' "$CMUX_ATTACH_TMUX_BIN_READ_VALUE"
+}
+
 validate_loopback_bridge_url() {
   python3 - "$1" <<'PY' >/dev/null 2>&1
 import sys,urllib.parse
@@ -3932,8 +4016,9 @@ cmux_adoption_slot_claim() {
 }
 
 managed_view_command_variants() {
-  local view_session="$1" attach_tmux_bin="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-}"
+  local view_session="$1" attach_tmux_bin
   local helper="${FLYWHEEL_CMUX_VIEW_HELPER_BIN:-$HOME/.flywheel/bin/flywheel-view-attach.sh}"
+  attach_tmux_bin=$(resolve_cmux_attach_tmux_bin) || return 1
   _managed_view_session_safe "$view_session" || return 1
   case "$helper" in /*) ;; *) return 1 ;; esac
   case "$helper$attach_tmux_bin" in *"'"*|*$'\n'*|*$'\r'*) return 1 ;; esac
@@ -3952,7 +4037,8 @@ _cmux_carrier_classify() {
   shift
   local helper="${FLYWHEEL_CMUX_VIEW_HELPER_BIN:-$HOME/.flywheel/bin/flywheel-view-attach.sh}"
   local lead_helper="${FLYWHEEL_CMUX_LEAD_ATTACH_BIN:-$HOME/.flywheel/bin/flywheel-lead-attach.sh}"
-  local attach_tmux_bin="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-}"
+  local attach_tmux_bin
+  attach_tmux_bin=$(resolve_cmux_attach_tmux_bin) || attach_tmux_bin=""
   python3 -c '
 import base64, hashlib, json, re, shlex, sys
 
@@ -4109,15 +4195,11 @@ _managed_view_command_in_variants() {
 }
 
 build_attach_command() {
-  local view_session="$1" token="${2:-}" attach_tmux_bin="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-}"
+  local view_session="$1" token="${2:-}" attach_tmux_bin
   local helper="${FLYWHEEL_CMUX_VIEW_HELPER_BIN:-$HOME/.flywheel/bin/flywheel-view-attach.sh}"
+  attach_tmux_bin=$(resolve_cmux_attach_tmux_bin) || return 1
   _managed_view_session_safe "$view_session" || return 1
   [[ -z "$token" ]] || managed_attach_token_valid "$token" || return 1
-  if [[ -n "$attach_tmux_bin" ]]; then
-    case "$attach_tmux_bin" in /*) ;; *) log "WARN: FLYWHEEL_CMUX_ATTACH_TMUX_BIN must be an absolute executable path"; return 1 ;; esac
-    case "$attach_tmux_bin" in *"'"*|*$'\n'*|*$'\r'*) log "WARN: unsafe FLYWHEEL_CMUX_ATTACH_TMUX_BIN refused"; return 1 ;; esac
-    [[ -x "$attach_tmux_bin" ]] || { log "WARN: FLYWHEEL_CMUX_ATTACH_TMUX_BIN is not executable: $attach_tmux_bin"; return 1; }
-  fi
   case "$helper" in /*) ;; *) log "WARN: FLYWHEEL_CMUX_VIEW_HELPER_BIN must be absolute"; return 1 ;; esac
   case "$helper" in *"'"*|*$'\n'*|*$'\r'*) log "WARN: unsafe FLYWHEEL_CMUX_VIEW_HELPER_BIN refused"; return 1 ;; esac
   if [[ ! -x "$helper" ]]; then
@@ -4161,7 +4243,8 @@ _cmux_attach_birth_records_uncached() {
   local raw="${1:-}" current_rows ref workspace_uuid surface_json surface_b64 surface_rows=""
   local helper="${FLYWHEEL_CMUX_VIEW_HELPER_BIN:-$HOME/.flywheel/bin/flywheel-view-attach.sh}"
   local lead_helper="${FLYWHEEL_CMUX_LEAD_ATTACH_BIN:-$HOME/.flywheel/bin/flywheel-lead-attach.sh}"
-  local attach_tmux_bin="${FLYWHEEL_CMUX_ATTACH_TMUX_BIN:-}"
+  local attach_tmux_bin
+  attach_tmux_bin=$(resolve_cmux_attach_tmux_bin) || attach_tmux_bin=""
   [[ -f "$CMUX_SESSION_STATE" && ! -L "$CMUX_SESSION_STATE" ]] || return 2
   [[ -n "$raw" ]] || raw=$(get_cmux_workspaces_json) || return 2
   current_rows=$(printf '%s' "$raw" | python3 -c '
@@ -10963,6 +11046,7 @@ sync_additive_bootstrap() {
   CMUX_ADOPTION_COUNT=0
   begin_cmux_additive_round \
     || log "WARN: additive round state unavailable; prepared stall counters frozen"
+  cmux_attach_tmux_bin_cache_prime || :
   reconcile_roster_read_phase
   cmux_attach_birth_cache_prime \
     || log "WARN: additive birth-authority snapshot unavailable; birth-owned actions frozen"
@@ -11058,6 +11142,7 @@ sync_additive() {
   CMUX_ADOPTION_COUNT=0
   begin_cmux_additive_round \
     || log "WARN: additive round state unavailable; prepared stall counters frozen"
+  cmux_attach_tmux_bin_cache_prime || :
   reconcile_roster_read_phase
   cmux_attach_birth_cache_prime \
     || log "WARN: additive birth-authority snapshot unavailable; birth-owned actions frozen"
@@ -11762,6 +11847,8 @@ verify_sidebar_targets() {
   local first_evidence second_report second_evidence
   VERIFY_SIDEBAR_REPORT=""
   VERIFY_SIDEBAR_EVIDENCE=""
+  # Both stability samples must parse the same immutable processTitle grammar.
+  cmux_attach_tmux_bin_cache_prime || :
   _verify_sidebar_once "$targets" "$authority_mode" || first_rc=$?
   first_evidence="$VERIFY_SIDEBAR_EVIDENCE"
   if [[ "$first_rc" -eq 2 ]]; then
@@ -12048,6 +12135,7 @@ run_converge_runners() {
     CMUX_ADDITIVE_ROUND_ID=""
     CMUX_ADOPTION_COUNT=0
     begin_cmux_additive_round || { rc=2; break; }
+    cmux_attach_tmux_bin_cache_prime || :
     cmux_attach_birth_cache_prime || { rc=2; break; }
     prepare_linked_view_state pre || { rc=2; break; }
     reap_orphan_pins_oneshot || { rc=$?; break; }
@@ -12371,6 +12459,7 @@ sync_once() {
   begin_cmux_additive_round \
     || log "WARN: additive round state unavailable; prepared stall counters frozen"
 
+  cmux_attach_tmux_bin_cache_prime || :
   reconcile_roster_read_phase
 
   if ! prepare_linked_view_state pre; then
