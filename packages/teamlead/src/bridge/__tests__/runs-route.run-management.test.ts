@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import express from "express";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../../StateStore.js";
+import { ConfirmTokenStore } from "../fleet-admin.js";
 import { createRunsRouter } from "../runs-route.js";
 
 const HEAD = "a".repeat(40);
@@ -86,6 +87,142 @@ async function post(
 }
 
 describe("runs-route run management", () => {
+	it("mounts the canonical hold door with master, loopback, path, digest, and replay fences", async () => {
+		const store = await StateStore.create(":memory:");
+		store.createWorkflowRun({
+			runId: "run-1",
+			issueId: "FLY-2278",
+			projectName: "flywheel",
+			claimsReadEnrolled: true,
+		});
+		(
+			store as unknown as {
+				db: { run(sql: string, params?: unknown[]): void };
+			}
+		).db.run("UPDATE workflow_run SET status = 'held' WHERE run_id = ?", [
+			"run-1",
+		]);
+		store.appendWorkflowRunEvent({
+			runId: "run-1",
+			eventUid: "hold:canonical-door",
+			kind: "run_held_by_operator",
+			payload: { reason: "operator recovery required" },
+		});
+		const baseUrl = await startApp(store, {
+			masterToken: "master-secret",
+			scopedToken: "scoped-secret",
+			confirmTokens: new ConfirmTokenStore(),
+		});
+		const url = `${baseUrl}/api/runs/run-1`;
+		expect((await fetch(`${url}/holds`)).status).toBe(401);
+		expect(
+			(
+				await fetch(`${url}/holds`, {
+					headers: { authorization: "Bearer wrong-secret" },
+				})
+			).status,
+		).toBe(401);
+		const target = new URL(`${url}/holds`);
+		const foreignHostStatus = await new Promise<number>((resolve, reject) => {
+			const request = httpRequest(
+				{
+					hostname: target.hostname,
+					port: target.port,
+					path: target.pathname,
+					headers: {
+						authorization: "Bearer master-secret",
+						host: "example.invalid",
+					},
+				},
+				(response) => {
+					response.resume();
+					response.on("end", () => resolve(response.statusCode ?? 0));
+				},
+			);
+			request.on("error", reject);
+			request.end();
+		});
+		expect(foreignHostStatus).toBe(403);
+		const listed = await fetch(`${url}/holds`, {
+			headers: { authorization: "Bearer master-secret" },
+		});
+		expect(listed.status).toBe(200);
+		expect(await listed.json()).toMatchObject({
+			ok: true,
+			holds: [
+				{
+					shape: "run_held_by_operator",
+					holdEventUid: "hold:canonical-door",
+					resumable: true,
+				},
+			],
+		});
+		const canonical = {
+			runId: "run-1",
+			shape: "run_held_by_operator",
+			holdEventUid: "hold:canonical-door",
+			reason: "operator confirmed recovery",
+			principal: "master" as const,
+			clientRequestId: "resume:canonical-door",
+		};
+		const mismatch = await fetch(`${url}/resume/stage`, {
+			method: "POST",
+			headers: {
+				authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({ ...canonical, runId: "run-other" }),
+		});
+		expect(mismatch.status).toBe(400);
+		expect(await mismatch.json()).toMatchObject({ reason: "run_id_mismatch" });
+		const staged = await fetch(`${url}/resume/stage`, {
+			method: "POST",
+			headers: {
+				authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify(canonical),
+		});
+		expect(staged.status).toBe(200);
+		const stagedPayload = (await staged.json()) as {
+			canonical: typeof canonical;
+			confirmToken: string;
+		};
+		const stageBody = {
+			canonical: stagedPayload.canonical,
+			confirmToken: stagedPayload.confirmToken,
+		};
+		const apply = () =>
+			fetch(`${url}/resume`, {
+				method: "POST",
+				headers: {
+					authorization: "Bearer master-secret",
+					"content-type": "application/json",
+				},
+				body: JSON.stringify(stageBody),
+			});
+		const applied = await apply();
+		expect(applied.status).toBe(200);
+		expect(await applied.json()).toMatchObject({ idempotentReplay: false });
+		const replayed = await apply();
+		expect(replayed.status).toBe(200);
+		expect(await replayed.json()).toMatchObject({ idempotentReplay: true });
+		const conflict = await fetch(`${url}/resume`, {
+			method: "POST",
+			headers: {
+				authorization: "Bearer master-secret",
+				"content-type": "application/json",
+			},
+			body: JSON.stringify({
+				...stageBody,
+				canonical: { ...stageBody.canonical, reason: "digest drift" },
+			}),
+		});
+		expect(conflict.status).toBe(409);
+		expect(await conflict.json()).toMatchObject({ reason: "request_conflict" });
+		store.close();
+	});
+
 	it("serves the versioned read-only diagnostic only to loopback master callers", async () => {
 		const store = await StateStore.create(":memory:");
 		store.createWorkflowRun({

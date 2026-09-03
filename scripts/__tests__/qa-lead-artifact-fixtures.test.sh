@@ -88,6 +88,7 @@ if qa_lead_render_stdout_json \
     xrliAnnie/flywheel-qa-sandbox /tmp/flywheel-test-slot-7/project-slot-7 \
     qa-slot-7 deadbeef origin/main /tmp/flywheel-test-slot-7/teamlead.db \
     /tmp/flywheel-test-slot-7/bridge.log /tmp/flywheel-test-slot-7/bridge-launch.json \
+    /tmp/flywheel-test-slot-7/tmp /tmp/flywheel-test-slot-7/state/reports null \
     /tmp/flywheel-test-slot-7/lead.log /tmp/flywheel-test-slot-7/flywheel-projects.json \
     /tmp/flywheel-test-slot-7/launch-manifest.json '' '' '' '[]' '' \
     > "$stdout_json" \

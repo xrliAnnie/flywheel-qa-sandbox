@@ -1,0 +1,46 @@
+classDiagram
+  class test_deploy_sh {
+    GENERALIZED_CHILD_TMPDIR = SLOT_DIR/tmp(所有模式)
+    BRIDGE_EXTRA_ENV += TMPDIR, FLYWHEEL_REPORTS_DIR
+    LEAD_EXTRA_ENV += FLYWHEEL_REPORTS_DIR
+    有 API token 时铸 token 文件,注入 VERCEL_TOKEN
+    三条 launch 边界 env -u VERCEL_TOKEN
+    Bridge 命令前缀:包装脚本(三分支共用一个数组)
+    输出 JSON reportHost / reportsDir / bridgeTmpDir
+  }
+  class wrapper_sh {
+    起 stub(env -i,只带 HOME PATH)
+    等就绪文件 port,最多 10 秒,否则 exit 70
+    导出 FLYWHEEL_REPORT_HOST_OVERRIDE_URL
+    exec_Bridge(同一个进程号)
+  }
+  class qa_report_host_mjs {
+    root = SLOT_DIR/state/report-host
+    只认 slot token,只绑 127.0.0.1,16 MiB 上限
+    自探活成功后才写 port(唯一元数据)
+    每 500 毫秒看父进程,父进程没了就自退
+    POST_v13_deployments(校验后串行换目录)
+    GET_v13_deployments_id()
+    GET_name_r_token(静态页面,path.relative 围栏)
+  }
+  class Bridge_plugin_ts {
+    未设 → undefined,生产路径不变
+    只接受 http://127.0.0.1:端口,否则 throw 拒绝启动
+    parseReportHostOverride(env) 在 startBridge 最早处
+    override 时 publish-html 返回 503 并指向 publish-report
+  }
+  class reports_route_ts {
+    hostOverride 可选(apiBaseUrl, publicBaseUrl)
+    publicReportUrl() override 时本机 URL,否则 vercel.app
+  }
+  class vercel_deploy_ts {
+    deployFilesToVercel(apiBaseUrl 默认 api.vercel.com)
+    override 时 fetch 拒绝重定向
+  }
+  test_deploy_sh --> wrapper_sh : launch spec 的 command
+  wrapper_sh --> qa_report_host_mjs : 起(子进程)
+  wrapper_sh --> Bridge_plugin_ts : exec
+  qa_report_host_mjs ..> Bridge_plugin_ts : 监视父进程
+  Bridge_plugin_ts --> reports_route_ts : hostOverride
+  reports_route_ts --> vercel_deploy_ts : apiBaseUrl
+  vercel_deploy_ts --> qa_report_host_mjs : override 时

@@ -65,7 +65,7 @@ import {
 } from "./fleet-progress.js";
 import type { FleetRouteDeps } from "./fleet-routes.js";
 import type { ManagementChangeCoordinator } from "./management-change-coordinator.js";
-import type { ManagementSnapshotV1 } from "./management-console-contract.js";
+import type { ManagementSnapshot } from "./management-console-contract.js";
 import {
 	composeManagementSnapshot,
 	type ManagementSnapshotProvider,
@@ -236,7 +236,7 @@ export class FleetConsole {
 	}
 
 	/** Versioned SSOT projection. The legacy flat snapshot remains during UI migration. */
-	buildManagementSnapshot(): ManagementSnapshotV1 {
+	buildManagementSnapshot(): ManagementSnapshot {
 		return composeManagementSnapshot({
 			providers: this.o.managementSnapshotProviders?.() ?? [],
 			now: () => new Date(this.o.now()),

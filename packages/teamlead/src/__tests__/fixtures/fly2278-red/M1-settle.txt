@@ -1,0 +1,10 @@
+RUN v3.2.4 packages/teamlead
+
+FAIL src/__tests__/fly2278-settle.test.ts (3 tests | 3 failed)
+
+1. expected episode closed_at/reason, received null/null
+2. expected injected episode-close failure to roll settlement back, no error thrown
+3. expected production source to contain no 'disappeared' fallback
+
+Test Files  1 failed (1)
+Tests       3 failed (3)

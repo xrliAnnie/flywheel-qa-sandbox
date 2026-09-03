@@ -53,12 +53,11 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 		expect(html).not.toMatch(/type="checkbox"/i);
 	});
 
-	it("console mode gives direct flags a toggle button (never governance/project)", () => {
+	it("console mode gives direct flags a toggle button (never project-scoped)", () => {
 		const html = renderFeatureFlagsHtml(FLAGS, "console");
 		expect(html).toContain('data-ff-name="loop_profiler"');
 		expect(html).toContain("data-ff-apply");
-		// governance gate + project flag never get a control
-		expect(html).not.toContain('data-ff-name="founder_consent_decision_mode"');
+		// Project flags never get the Bridge-global direct control.
 		expect(html).not.toContain('data-ff-name="doc_flow"');
 	});
 
@@ -218,7 +217,7 @@ describe("feature-flag renderer (Apple cards, read-only)", () => {
 	it("renders a bridge-global malformed value as a visible error, not blank", () => {
 		const html = renderFlagCard({
 			name: "enum_fixture",
-			category: "governance_gate",
+			category: "feature",
 			description: "issue gate supersede mode",
 			toggleable: "readonly",
 			valueKind: "enum",

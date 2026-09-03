@@ -1,0 +1,5 @@
+Command: pnpm --filter flywheel-teamlead exec vitest run src/__tests__/fly2278-r4-symmetry.test.ts
+Expected RED: FLY-2278 R4#2 operator-required symmetry > keeps a runHeld:true episode behind the official door when a successor appears
+AssertionError: expected 'undefined' to be 'function'
+Failure site: StateStore.recordWorkflowDeliveryRerouteOperatorRequired is absent.
+

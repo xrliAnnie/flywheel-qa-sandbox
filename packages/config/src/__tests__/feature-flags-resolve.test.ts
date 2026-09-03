@@ -18,13 +18,24 @@ describe("resolveFlag — env (bridge_global) byte-compat", () => {
 	const loopProfiler = () => spec("loop_profiler");
 
 	it("resolves a default-on flag from env", () => {
-		expect(resolveFlag(loopProfiler(), { env: {} }).effective).toBe(true);
+		const view = resolveFlag(loopProfiler(), { env: {} });
+		expect(view.effective).toBe(true);
+		expect(view).toMatchObject({ polarity: "default_on", onMeans: "enables" });
 		expect(
 			resolveFlag(loopProfiler(), { env: { [envVar]: "0" } }).effective,
 		).toBe(false);
 		expect(
 			resolveFlag(loopProfiler(), { env: { [envVar]: "1" } }).effective,
 		).toBe(true);
+	});
+
+	it("projects disable-switch meaning without inferring it from the name", () => {
+		expect(
+			resolveFlag(spec("cmux_rebind_disabled"), { env: {} }),
+		).toMatchObject({
+			polarity: "opt_in",
+			onMeans: "disables",
+		});
 	});
 
 	it("reports dual-source agreement and source unavailability", () => {

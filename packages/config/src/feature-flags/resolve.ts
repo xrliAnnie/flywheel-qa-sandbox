@@ -16,6 +16,8 @@ import {
 	FEATURE_FLAGS,
 	type FeatureFlagSpec,
 	type FlagCategory,
+	type FlagOnMeans,
+	type FlagPolarity,
 	type FlagScope,
 	type FlagSource,
 	type FlagToggleability,
@@ -67,6 +69,8 @@ export interface FlagView {
 	description: string;
 	toggleable: FlagToggleability;
 	valueKind: FlagValueKind;
+	polarity: FlagPolarity;
+	onMeans?: FlagOnMeans;
 	scope: FlagScope;
 	source: FlagSource;
 	envVar?: string;
@@ -263,6 +267,8 @@ export function resolveFlag(
 		description: spec.description,
 		toggleable: spec.toggleable,
 		valueKind: spec.valueKind,
+		polarity: spec.polarity,
+		onMeans: spec.onMeans,
 		scope: spec.scope,
 		source: spec.source,
 		envVar: spec.envVar,

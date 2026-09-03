@@ -1,0 +1,13 @@
+RUN v3.2.4 packages/teamlead
+
+FAIL src/__tests__/fly2278-m0-schema.test.ts (3 tests | 2 failed)
+
+FLY-2278 M0 delivery operation schema migration
+  mints current rework and carrier versions at the baseline boundary
+AssertionError: expected rework contract_ref_json to contain routeRevision: 3
+
+  upgrades live legacy attempt JSON once and preserves byte-exact rollback evidence
+AssertionError: expected legacy rework contract_ref_json to contain routeRevision: 4
+
+Test Files  1 failed (1)
+Tests       2 failed | 1 passed (3)

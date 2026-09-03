@@ -2,6 +2,7 @@
 
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { MANAGEMENT_SCHEMA_VERSION } from "../bridge/management-console-contract.js";
 
 const SNAPSHOT_PATH = "/api/fleet/snapshot";
 const STAGE_PATH = "/api/fleet/changes/stage";
@@ -184,7 +185,7 @@ function resolveDagTarget(
 	const snapshot = record(snapshotValue);
 	if (
 		!snapshot ||
-		snapshot.schemaVersion !== 1 ||
+		snapshot.schemaVersion !== MANAGEMENT_SCHEMA_VERSION ||
 		!Array.isArray(snapshot.projects)
 	) {
 		throw new Error("management snapshot schema is unsupported");

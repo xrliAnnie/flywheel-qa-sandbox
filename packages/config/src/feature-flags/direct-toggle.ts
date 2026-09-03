@@ -40,7 +40,6 @@ export function isDirectToggleMetadata(
 		metadata.scope === "bridge_global" &&
 		valueKindOk &&
 		metadata.toggleable === "direct" &&
-		metadata.category !== "governance_gate" &&
 		!metadata.dormant &&
 		metadata.readTimings.length > 0 &&
 		metadata.readTimings.every(

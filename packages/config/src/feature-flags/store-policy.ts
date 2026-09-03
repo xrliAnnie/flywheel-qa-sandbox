@@ -160,9 +160,6 @@ function getStoreEligibilityAgainst(
 	spec: FeatureFlagSpec,
 	managedFlags: ReadonlySet<string>,
 ): { eligible: true } | { eligible: false; reason: string } {
-	if (spec.category === "governance_gate") {
-		return { eligible: false, reason: "governance_gate" };
-	}
 	if (spec.scope === "project") {
 		return { eligible: false, reason: "project_scope" };
 	}
@@ -268,7 +265,6 @@ export function validateFlagAuthoringPolicy(
 			if (
 				spec.source !== "project_config" ||
 				(spec.valueKind !== "bool" && spec.valueKind !== "value") ||
-				spec.category === "governance_gate" ||
 				spec.dormant === true ||
 				spec.toggleable === "readonly" ||
 				!spec.configKey ||
@@ -277,7 +273,7 @@ export function validateFlagAuthoringPolicy(
 			) {
 				issues.push(
 					authoringIssue(
-						`${spec.name}: project-store specs must be non-governance, active, writable project_config booleans or strict scalar values with one exact configKey`,
+						`${spec.name}: project-store specs must be active, writable project_config booleans or strict scalar values with one exact configKey`,
 					),
 				);
 			}

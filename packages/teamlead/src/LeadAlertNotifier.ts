@@ -459,6 +459,9 @@ export interface AlertMetadata {
 			| "resume_first_available"
 			| "linear_done_deferred"
 			| "delivery_contract_stalled"
+			| "delivery_contract_frozen"
+			| "delivery_reroute_outcome"
+			| "delivery_operation_stalled"
 			| "observation_corrupt";
 		launchCount?: number;
 		maxBlindReplacements?: number;

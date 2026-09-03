@@ -18,6 +18,14 @@ const ALERT_IDENTITY = {
 	leadResolution: "resolved" as const,
 };
 
+function allDeliveryAttempts(
+	store: StateStore,
+): ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]> {
+	return (store as unknown as { db: { raw: Database.Database } }).db.raw
+		.prepare("SELECT * FROM workflow_delivery_attempt")
+		.all() as ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]>;
+}
+
 async function storeWithRun(): Promise<StateStore> {
 	const store = await StateStore.create(":memory:");
 	store.createWorkflowRun({
@@ -112,13 +120,11 @@ describe("workflow claims admission — fail-closed enrollment + immutable bindi
 			}),
 		).toBe(true);
 		const firstEvent = store.getEventsByExecution("qa-exec-1")[0]!;
-		const firstAttempt = store
-			.listLiveWorkflowDeliveryAttempts()
-			.find(
-				(row) =>
-					row.family === "launch" &&
-					JSON.parse(row.contract_ref_json).pk === "qa-exec-1",
-			);
+		const firstAttempt = allDeliveryAttempts(store).find(
+			(row) =>
+				row.family === "launch" &&
+				JSON.parse(row.contract_ref_json).pk === "qa-exec-1",
+		);
 		const firstEventUtc = new Date(
 			`${firstEvent.ts.replace(" ", "T")}Z`,
 		).toISOString();
@@ -137,9 +143,9 @@ describe("workflow claims admission — fail-closed enrollment + immutable bindi
 			}),
 		).toBe(true);
 		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.find(({ attempt_id }) => attempt_id === firstAttempt!.attempt_id),
+			allDeliveryAttempts(store).find(
+				({ attempt_id }) => attempt_id === firstAttempt!.attempt_id,
+			),
 		).toMatchObject({
 			consumed_at: firstEventUtc,
 		});

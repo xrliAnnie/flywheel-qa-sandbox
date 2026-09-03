@@ -2,6 +2,170 @@
 
 import { createHash } from "node:crypto";
 import type { AlertEventType, AlertPayload } from "../LeadAlertNotifier.js";
+import type { LivenessVerdict } from "./delivery-contract/liveness.js";
+import { deliveryUndeliverableRequiredDecisions } from "./hold-shape-registry.js";
+
+const DELIVERY_SHAPE_LABELS: Readonly<Record<string, string>> = Object.freeze({
+	mailbox_inflight_slots_exhausted: "收件箱三批未读",
+	three_stage_turn_stuck: "换手唤醒两次无回执",
+	delivery_undeliverable_no_recipient: "收件体已终结且无人接手",
+});
+
+function deliveryElapsedMinutes(ageMs: number): number {
+	return Math.max(0, Math.floor(ageMs / 60_000));
+}
+
+function shortExecutionId(executionId: string): string {
+	return executionId.slice(0, 8);
+}
+
+function deliveryEvidenceFooter(input: {
+	runId: string;
+	evidenceAt: string;
+}): string {
+	return `runId ${input.runId}；证据戳 ${input.evidenceAt}；正门：\`flywheel-comm hold list --run ${input.runId}\``;
+}
+
+export function deliveryContractFrozenCopy(input: {
+	issueId: string;
+	shape: string;
+	ageMs: number;
+	recipientExecutionId: string;
+	sessionStatus: string | null | undefined;
+	liveness: LivenessVerdict;
+	heartbeatAt: string | null;
+	lastActivityAt: string | null;
+	recentOutboundInWindow: boolean;
+	runId: string;
+	evidenceAt: string;
+}): { title: string; body: string } {
+	const shape = DELIVERY_SHAPE_LABELS[input.shape] ?? input.shape;
+	const liveness = input.liveness === "unknown" ? "无心跳记录" : input.liveness;
+	return {
+		title: `${input.issueId} delivery contract frozen`,
+		body: `${input.issueId} 一份交接在「${shape}」卡了 ${deliveryElapsedMinutes(input.ageMs)} 分钟；收件体 ${shortExecutionId(input.recipientExecutionId)} 状态 ${input.sessionStatus ?? "unknown"}，活性 ${liveness}（心跳 ${input.heartbeatAt ?? "无"}、状态变化 ${input.lastActivityAt ?? "无"}、最近出站 ${input.recentOutboundInWindow ? "有" : "无"}）；run 已冻结。${deliveryEvidenceFooter(input)}`,
+	};
+}
+
+type DeliveryRerouteOutcomeCopyInput = {
+	issueId: string;
+	runId: string;
+	evidenceAt: string;
+} & (
+	| {
+			outcome: "rerouted";
+			targetExecutionId: string;
+			rerouteCount: number;
+	  }
+	| {
+			outcome: "operator_required";
+			family: string;
+			runHeld: true;
+			liveness: LivenessVerdict;
+			holdEventUid: string;
+	  }
+	| {
+			outcome: "operator_required";
+			family: string;
+			runHeld: false;
+			rerouteCount: number;
+			holdEventUid: string;
+			reason?: string;
+	  }
+	| { outcome: "failed"; reason: string }
+);
+
+function deliveryUndeliverableResumeCommand(input: {
+	family: string;
+	runId: string;
+	holdEventUid: string;
+}): string {
+	const choices = deliveryUndeliverableRequiredDecisions(input.family)
+		.map((decision) =>
+			decision === "reroute_to" ? "reroute_to <exec>" : decision,
+		)
+		.join(" | ");
+	return `flywheel-comm hold resume --shape delivery_undeliverable_no_recipient --decision '<${choices}>' --run ${input.runId} --hold-event ${input.holdEventUid} --reason 'operator-confirmed'`;
+}
+
+export function deliveryRerouteOutcomeCopy(
+	input: DeliveryRerouteOutcomeCopyInput,
+): { title: string; body: string } {
+	if (input.outcome === "rerouted") {
+		return {
+			title: `${input.issueId} delivery rerouted`,
+			body: `${input.issueId} 收件体已终结，已改派给 ${shortExecutionId(input.targetExecutionId)}（第 ${input.rerouteCount} 次）。${deliveryEvidenceFooter(input)}`,
+		};
+	}
+	if (input.outcome === "failed") {
+		return {
+			title: `${input.issueId} delivery reroute retrying`,
+			body: `${input.issueId} 改派未能自动完成(${input.reason})，run 未冻结，下一轮重试。${deliveryEvidenceFooter(input)}`,
+		};
+	}
+	const command = deliveryUndeliverableResumeCommand(input);
+	const title = `${input.issueId} delivery reroute needs an operator`;
+	if (input.runHeld) {
+		const liveness =
+			input.liveness === "unknown" ? "无心跳记录" : input.liveness;
+		return {
+			title,
+			body: `${input.issueId} 收件体已终结且 15 分钟内无后继、无活性证据(${liveness})，run 已冻结。${deliveryEvidenceFooter(input)}；恢复：\`${command}\``,
+		};
+	}
+	const canCancel = deliveryUndeliverableRequiredDecisions(
+		input.family,
+	).includes("cancel");
+	const outcome =
+		input.reason === "delivery_reroute_retry_requires_operator"
+			? "自动改派失败，下一轮已把决定权交到正门"
+			: `已自动改派 ${input.rerouteCount} 次仍未送达`;
+	return {
+		title,
+		body: `${input.issueId} ${outcome}，run 未冻结，需要你确认再改派一次${canCancel ? "或取消" : ""}。${deliveryEvidenceFooter(input)}；恢复：\`${command}\``,
+	};
+}
+
+export function deliveryOperationStalledCopy(input: {
+	issueId: string;
+	operationKind: string;
+	state: string;
+	ageMs: number;
+	runId: string;
+	evidenceAt: string;
+}): { title: string; body: string } {
+	const operation =
+		input.operationKind === "reroute"
+			? "自动改派"
+			: input.operationKind === "hold_resume"
+				? "恢复"
+				: input.operationKind;
+	return {
+		title: `${input.issueId} delivery operation stalled`,
+		body: `${input.issueId} 一次${operation}卡在 ${input.state} 超过 ${deliveryElapsedMinutes(input.ageMs)} 分钟，run 未冻结。${deliveryEvidenceFooter(input)}。`,
+	};
+}
+
+export function deliveryContractStalledCopy(input: {
+	issueId: string;
+	family: string;
+	stage: string;
+	recipientLiveness?: LivenessVerdict;
+	runId: string;
+	evidenceAt: string;
+}): { title: string; body: string } {
+	const base = `A ${input.family} handoff has not advanced from ${input.stage}.`;
+	return {
+		title: `${input.issueId} delivery contract stalled`,
+		body: `${
+			input.family === "rework" &&
+			input.stage === "received" &&
+			input.recipientLiveness
+				? `${base} 收件体活性 ${input.recipientLiveness}。`
+				: base
+		}${deliveryEvidenceFooter(input)}`,
+	};
+}
 
 export function computeEventId(
 	projectName: string,

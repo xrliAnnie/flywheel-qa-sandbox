@@ -8,7 +8,9 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
+import { CommDB } from "flywheel-comm/db";
 import { afterEach, describe, expect, it } from "vitest";
+import { DeliveryContractWatch } from "../bridge/delivery-contract/watch.js";
 import { StateStore } from "../StateStore.js";
 import { buildWorkflowRunSnapshotV2 } from "../workflow-run-snapshot.js";
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
@@ -502,6 +504,96 @@ function deliverOperatorRework(store: StateStore, requestId: string): void {
 	});
 	if (!receipt.ok) throw new Error(receipt.reason);
 }
+
+describe("FLY-2278 rework receipt liveness escalation", () => {
+	it.each([
+		["alive throughout", "alive", "alive", [0, 0]],
+		["absent throughout", "absent", "absent", [1, 2]],
+		["unknown throughout", "unknown", "unknown", [1, 2]],
+		["absent then alive", "absent", "alive", [1, 1]],
+	] as const)(
+		"uses the real wake receipt and remains alert-only when the actor is %s",
+		async (_case, atThirty, atNinety, expectedAlertCounts) => {
+			const { store, requestId } = await createActiveOperatorRework();
+			const commDb = new CommDB(":memory:");
+			try {
+				deliverOperatorRework(store, requestId);
+				const attempt = store
+					.listLiveWorkflowDeliveryAttempts()
+					.find((candidate) => candidate.family === "rework");
+				expect(attempt?.received_at).toBe("2026-07-23T00:12:01.000Z");
+				const recipientExecutionId =
+					store.getLatestWorkflowReworkRoute(
+						requestId,
+					)?.preferred_actor_execution_id;
+				if (!recipientExecutionId) throw new Error("rework recipient missing");
+				const raw = (store as unknown as { db: { raw: Database.Database } }).db
+					.raw;
+				const setLiveness = (
+					verdict: "alive" | "absent" | "unknown",
+					recentAt: string,
+				) => {
+					const stamp =
+						verdict === "alive"
+							? recentAt
+							: verdict === "absent"
+								? "2026-07-22T00:00:00.000Z"
+								: null;
+					raw
+						.prepare(
+							`UPDATE sessions SET status = 'ship_parked',
+							        heartbeat_at = ?, last_activity_at = ?
+							  WHERE execution_id = ?`,
+						)
+						.run(stamp, stamp, recipientExecutionId);
+				};
+				const watch = new DeliveryContractWatch({
+					store,
+					commDb,
+					projectName: "flywheel",
+					resolveAlertIdentity: () => ({
+						leadId: "flywheel-eng-lead",
+						projectName: "flywheel",
+						leadResolution: "resolved",
+					}),
+				});
+				const contractAlerts = () =>
+					store
+						.listWorkflowAlertOutbox()
+						.filter((row) =>
+							row.escalation_uid.startsWith("delivery_contract_stalled:"),
+						);
+
+				setLiveness(atThirty, "2026-07-23T00:42:00.000Z");
+				watch.runPass("2026-07-23T00:42:01.000Z");
+				expect(contractAlerts()).toHaveLength(expectedAlertCounts[0]);
+				if (expectedAlertCounts[0] > 0) {
+					const body = contractAlerts().at(-1)?.payload.body;
+					expect(body).toContain(`收件体活性 ${atThirty}`);
+					expect(body).toContain("runId run-heavy");
+					expect(body).toContain("证据戳 2026-07-23T00:42:01.000Z");
+					expect(body).toContain("flywheel-comm hold list --run run-heavy");
+				}
+
+				setLiveness(atNinety, "2026-07-23T01:42:00.000Z");
+				watch.runPass("2026-07-23T01:42:01.000Z");
+				expect(contractAlerts()).toHaveLength(expectedAlertCounts[1]);
+				if (expectedAlertCounts[1] > expectedAlertCounts[0]) {
+					const body = contractAlerts().at(-1)?.payload.body;
+					expect(body).toContain(`收件体活性 ${atNinety}`);
+					expect(body).toContain("runId run-heavy");
+					expect(body).toContain("证据戳 2026-07-23T01:42:01.000Z");
+					expect(body).toContain("flywheel-comm hold list --run run-heavy");
+				}
+				expect(store.getWorkflowRun("run-heavy")?.status).toBe("active");
+				expect(store.listWorkflowHolds("run-heavy")).toEqual([]);
+			} finally {
+				commDb.close();
+				store.close();
+			}
+		},
+	);
+});
 
 async function freshDispatchOperatorRework(): Promise<{
 	store: StateStore;
@@ -2631,233 +2723,6 @@ describe("FLY-1423 durable unified rework request", () => {
 		}
 	});
 
-	it("deduplicates stall alerts by frozen route revision across claim churn without colliding with legacy keys", async () => {
-		const { store, requestId } = await createPendingHeavyRework();
-		try {
-			const route = store.getLatestWorkflowReworkRoute(requestId)!;
-			for (const generation of [1, 2]) {
-				const now = `2026-07-23T00:${10 + generation}:00.000Z`;
-				const claim = store.claimWorkflowReworkDelivery({
-					requestId,
-					ownerId: "coordinator",
-					now,
-					leaseExpiresAt: new Date(Date.parse(now) + 30_000).toISOString(),
-				});
-				expect(claim).toMatchObject({ ok: true, generation });
-				if (!claim.ok) throw new Error(claim.reason);
-				expect(
-					store.releaseWorkflowReworkDelivery({
-						requestId,
-						ownerId: "coordinator",
-						generation: claim.generation,
-						error: "still_stalled",
-						now,
-					}),
-				).toEqual({ ok: true });
-			}
-			const third = store.claimWorkflowReworkDelivery({
-				requestId,
-				ownerId: "coordinator",
-				now: "2026-07-23T00:13:00.000Z",
-				leaseExpiresAt: "2026-07-23T00:13:30.000Z",
-			});
-			if (!third.ok) throw new Error(third.reason);
-			expect(third.generation).toBe(3);
-			expect(store.getLatestWorkflowReworkRoute(requestId)?.revision).toBe(
-				route.revision,
-			);
-			store.appendWorkflowRunEventChecked({
-				runId: "run-heavy",
-				eventUid: `rework_stalled_alert:${requestId}:3:${route.preferred_actor_execution_id}`,
-				kind: "rework_activation_stalled_alerted",
-				nodeId: route.target_node_id,
-				executionId: route.preferred_actor_execution_id,
-				payload: { legacy: true },
-			});
-			const first = store.escalateWorkflowReworkStall({
-				requestId,
-				generation: third.generation,
-				action: "alert",
-				sourceAt: "2026-07-23T00:10:00.000Z",
-				reason: "holder_activation_failed:transient",
-				now: "2026-07-23T00:13:00.000Z",
-				alertIdentity: {
-					leadId: "flywheel-eng-lead",
-					projectName: "flywheel",
-					leadResolution: "resolved",
-				},
-			});
-			expect(first).toEqual({
-				ok: true,
-				eventUid: `rework_stalled_alert:${requestId}:rev${route.revision}:${route.preferred_actor_execution_id}`,
-				idempotentReplay: false,
-			});
-			expect(
-				store.releaseWorkflowReworkDelivery({
-					requestId,
-					ownerId: "coordinator",
-					generation: third.generation,
-					error: "still_stalled",
-					now: "2026-07-23T00:13:01.000Z",
-				}),
-			).toEqual({ ok: true });
-			const fourth = store.claimWorkflowReworkDelivery({
-				requestId,
-				ownerId: "coordinator",
-				now: "2026-07-23T00:14:00.000Z",
-				leaseExpiresAt: "2026-07-23T00:14:30.000Z",
-			});
-			if (!fourth.ok) throw new Error(fourth.reason);
-			const replay = store.escalateWorkflowReworkStall({
-				requestId,
-				generation: fourth.generation,
-				action: "alert",
-				sourceAt: "2026-07-23T00:10:00.000Z",
-				reason: "reason_text_changed_but_same_episode",
-				now: "2026-07-23T00:14:00.000Z",
-				alertIdentity: {
-					leadId: "flywheel-eng-lead",
-					projectName: "flywheel",
-					leadResolution: "resolved",
-				},
-			});
-			expect(replay).toEqual({ ...first, idempotentReplay: true });
-			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
-			expect(store.listWorkflowAlertOutbox()[0]?.payload.body).toContain(
-				"first stalled at 2026-07-23T00:10:00.000Z (3 minutes ago)",
-			);
-		} finally {
-			store.close();
-		}
-	});
-
-	it("emits one warning when an alerted original actor reaches wake_delivered", async () => {
-		const { store, requestId } = await createPendingHeavyRework();
-		try {
-			const identity = {
-				leadId: "flywheel-eng-lead",
-				projectName: "flywheel",
-				leadResolution: "resolved" as const,
-			};
-			const claim = store.claimWorkflowReworkDelivery({
-				requestId,
-				ownerId: "coordinator",
-				now: "2026-07-23T00:11:00.000Z",
-				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
-			});
-			if (!claim.ok) throw new Error(claim.reason);
-			store.appendWorkflowRunEventChecked({
-				runId: "run-heavy",
-				eventUid: `rework_pane_loss_handoff:${requestId}`,
-				kind: "rework_pane_loss_handoff",
-				nodeId: "implement",
-				executionId: "implement-exec",
-				payload: { requestId, at: "2026-07-23T00:05:00.000Z" },
-			});
-			expect(
-				store.escalateWorkflowReworkStall({
-					requestId,
-					generation: claim.generation,
-					action: "alert",
-					sourceAt: "2026-07-23T00:10:00.000Z",
-					reason: "worktree_not_ready:worktree_dirty",
-					now: "2026-07-23T00:40:00.000Z",
-					alertIdentity: identity,
-				}),
-			).toMatchObject({ ok: true, idempotentReplay: false });
-			expect(
-				store.admitGeneralizedWorkflowExecution({
-					runId: "run-heavy",
-					nodeId: "implement",
-					executionId: "implement-exec",
-					attempt: 2,
-					activationId: "activation-recovered-original",
-					activationMode: "wake",
-					reworkRequestId: requestId,
-					expiresAt: "2026-07-23T02:00:00.000Z",
-					absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
-					now: "2026-07-23T00:41:00.000Z",
-					env: enabled,
-				}),
-			).toMatchObject({ ok: true });
-			expect(
-				store.advanceWorkflowReworkDelivery({
-					requestId,
-					ownerId: "coordinator",
-					generation: claim.generation,
-					from: "pending",
-					to: "turn_granted",
-					now: "2026-07-23T00:41:01.000Z",
-				}),
-			).toEqual({ ok: true });
-			expect(
-				store.recordWorkflowActivationTurn({
-					activationId: "activation-recovered-original",
-					issueId: "FLY-1423",
-					executionId: "implement-exec",
-					epoch: 7,
-					sourceEventId: `rework-turn:${requestId}:activation-recovered-original`,
-					grantedAt: "2026-07-23T00:41:01.000Z",
-				}),
-			).toMatchObject({ ok: true });
-			expect(
-				store.advanceWorkflowReworkDelivery({
-					requestId,
-					ownerId: "coordinator",
-					generation: claim.generation,
-					from: "turn_granted",
-					to: "awaiting_receipt",
-					now: "2026-07-23T00:42:00.000Z",
-					releaseOwner: true,
-				}),
-			).toEqual({ ok: true });
-			expect(
-				store.recordWorkflowReworkWakeReceipt({
-					activationId: "activation-recovered-original",
-					executionId: "implement-exec",
-					epoch: 7,
-					ackedAt: "2026-07-23T00:42:01.000Z",
-					alertIdentity: identity,
-				}),
-			).toEqual({ ok: true, idempotentReplay: false });
-
-			const recovered = store
-				.listWorkflowAlertOutbox()
-				.filter(
-					(row) =>
-						row.payload.metadata.workflowEngine.disposition ===
-						"rework_stall_recovered",
-				);
-			expect(recovered).toHaveLength(1);
-			expect(recovered[0]?.payload).toMatchObject({
-				eventType: "workflow_engine_escalation",
-				severity: "warning",
-				title: "Stalled rework for FLY-1423 recovered",
-			});
-			expect(recovered[0]?.payload.body).toContain("37 minutes");
-			expect(
-				store.recordWorkflowReworkWakeReceipt({
-					activationId: "activation-recovered-original",
-					executionId: "implement-exec",
-					epoch: 7,
-					ackedAt: "2026-07-23T00:43:00.000Z",
-					alertIdentity: identity,
-				}),
-			).toEqual({ ok: true, idempotentReplay: true });
-			expect(
-				store
-					.listWorkflowAlertOutbox()
-					.filter(
-						(row) =>
-							row.payload.metadata.workflowEngine.disposition ===
-							"rework_stall_recovered",
-					),
-			).toHaveLength(1);
-		} finally {
-			store.close();
-		}
-	});
-
 	it("does not emit a recovery alert when the episode never alerted", async () => {
 		const { store, requestId } = await createPendingHeavyRework();
 		try {
@@ -3037,96 +2902,6 @@ describe("FLY-1423 durable unified rework request", () => {
 					alertIdentity: undefined,
 				} as never),
 			).toEqual({ ok: true, updated: false });
-		} finally {
-			store.close();
-		}
-	});
-
-	it("rolls back wake_delivered when the recovery receipt conflicts", async () => {
-		const { store, requestId } = await createPendingHeavyRework();
-		try {
-			const identity = {
-				leadId: "flywheel-eng-lead",
-				projectName: "flywheel",
-				leadResolution: "resolved" as const,
-			};
-			const claim = store.claimWorkflowReworkDelivery({
-				requestId,
-				ownerId: "coordinator",
-				now: "2026-07-23T00:11:00.000Z",
-				leaseExpiresAt: "2026-07-23T00:11:30.000Z",
-			});
-			if (!claim.ok) throw new Error(claim.reason);
-			store.escalateWorkflowReworkStall({
-				requestId,
-				generation: claim.generation,
-				action: "alert",
-				sourceAt: "2026-07-23T00:10:00.000Z",
-				reason: "worktree_not_ready:worktree_dirty",
-				now: "2026-07-23T00:40:00.000Z",
-				alertIdentity: identity,
-			});
-			store.admitGeneralizedWorkflowExecution({
-				runId: "run-heavy",
-				nodeId: "implement",
-				executionId: "implement-exec",
-				attempt: 2,
-				activationId: "activation-recovered-conflict",
-				activationMode: "wake",
-				reworkRequestId: requestId,
-				expiresAt: "2026-07-23T02:00:00.000Z",
-				absoluteDeadlineAt: "2026-07-24T00:00:00.000Z",
-				now: "2026-07-23T00:41:00.000Z",
-				env: enabled,
-			});
-			store.advanceWorkflowReworkDelivery({
-				requestId,
-				ownerId: "coordinator",
-				generation: claim.generation,
-				from: "pending",
-				to: "turn_granted",
-				now: "2026-07-23T00:41:01.000Z",
-			});
-			store.recordWorkflowActivationTurn({
-				activationId: "activation-recovered-conflict",
-				issueId: "FLY-1423",
-				executionId: "implement-exec",
-				epoch: 10,
-				sourceEventId: `rework-turn:${requestId}:activation-recovered-conflict`,
-				grantedAt: "2026-07-23T00:41:01.000Z",
-			});
-			store.advanceWorkflowReworkDelivery({
-				requestId,
-				ownerId: "coordinator",
-				generation: claim.generation,
-				from: "turn_granted",
-				to: "awaiting_receipt",
-				now: "2026-07-23T00:41:02.000Z",
-				releaseOwner: true,
-			});
-			store.appendWorkflowRunEventChecked({
-				runId: "run-heavy",
-				eventUid: `rework_stall_recovered:${requestId}`,
-				kind: "conflicting_kind",
-			});
-
-			expect(() =>
-				store.recordWorkflowReworkWakeReceipt({
-					activationId: "activation-recovered-conflict",
-					executionId: "implement-exec",
-					epoch: 10,
-					ackedAt: "2026-07-23T00:42:00.000Z",
-					alertIdentity: identity,
-				}),
-			).toThrow("rework_stall_recovered_receipt_conflict");
-			expect(store.getWorkflowReworkDelivery(requestId)).toMatchObject({
-				state: "awaiting_receipt",
-				owner_id: null,
-			});
-			expect(
-				store.getWorkflowRunNode("run-heavy", "implement", 2),
-			).toMatchObject({ state: "admitted" });
-			expect(store.listWorkflowAlertOutbox()).toHaveLength(1);
 		} finally {
 			store.close();
 		}
@@ -4201,6 +3976,7 @@ describe("FLY-1423 durable unified rework request", () => {
 				   (request_id, route_revision, state, updated_at)
 				 VALUES ('founder-request', 1, 'pending', '2026-07-23T00:10:00.000Z')`,
 			);
+			store.baselineWorkflowDeliveryContracts("2026-07-23T00:10:30.000Z");
 
 			expect(
 				store.appendWorkflowReworkRouteRevision({

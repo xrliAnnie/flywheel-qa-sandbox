@@ -59,7 +59,10 @@ function flag(): ManagementFlagView {
 		id: "flag/example",
 		name: "FLYWHEEL_EXAMPLE",
 		description: "说明",
-		category: "runtime",
+		polarity: "default_on",
+		default: true,
+		valueKind: "bool",
+		onMeans: "enables",
 		global: {
 			targetId: buildTargetId("flag", ["FLYWHEEL_EXAMPLE", "global"]),
 			current: true,
@@ -115,7 +118,7 @@ describe("management snapshot composer", () => {
 		expect(flags.read).toHaveBeenCalledTimes(1);
 		expect(models.read).toHaveBeenCalledTimes(1);
 		expect(snapshot).toMatchObject({
-			schemaVersion: 1,
+			schemaVersion: 2,
 			projects: [{ name: "example" }],
 			flags: [{ name: "FLYWHEEL_EXAMPLE" }],
 		});

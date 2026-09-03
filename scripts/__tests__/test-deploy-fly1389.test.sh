@@ -89,6 +89,8 @@ cp "${SCRIPT_DIR}/lib/qa-room.sh" \
   "${SCRIPT_DIR}/lib/qa-codex-lead-render.py" \
   "${SCRIPT_DIR}/lib/qa-codex-lead-wrapper.template.sh" \
   "${SCRIPT_DIR}/lib/bounded-run.sh" \
+  "${SCRIPT_DIR}/lib/qa-report-host.mjs" \
+  "${SCRIPT_DIR}/lib/qa-report-host-bridge-wrapper.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge.sh" \
   "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" \
   "${SCRIPT_DIR}/lib/cmux-mutator-process-census.sh" \
@@ -762,6 +764,8 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TEST_LEAD_CLAUDE_CONFIG_DIR="${TEST_LEAD_CLAUDE_CONFIG_DIR:-}" \
       TEST_REPLY_BY_ISSUE="${TEST_REPLY_BY_ISSUE:-}" \
       TEST_API_TOKEN="${TEST_API_TOKEN:-}" \
+      VERCEL_TOKEN="${VERCEL_TOKEN:-}" \
+      FLYWHEEL_REPORT_HOST_OVERRIDE_URL="${FLYWHEEL_REPORT_HOST_OVERRIDE_URL:-}" \
       TEAMLEAD_INGEST_TOKEN="${TEAMLEAD_INGEST_TOKEN:-}" \
       FLYWHEEL_CODEX_HOMES_ROOT="${FLYWHEEL_CODEX_HOMES_ROOT:-}" \
       FLYWHEEL_CODEX_SESSION_DIR="${FLYWHEEL_CODEX_SESSION_DIR:-}" \
@@ -1206,9 +1210,16 @@ rm -rf "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${LE
 I_OUT="$SB/i-out.json"; I_ERR="$SB/i-err.log"
 I_CONFIG="$SB/isolated-claude-config"
 mkdir -p "$I_CONFIG/plugins"
+I_PRESEEDED_TOKEN='fixture-stale-report-token'
+mkdir -p "/tmp/flywheel-test-slot-${LEAD_SLOT}/state/report-host"
+printf '%s\n' "$I_PRESEEDED_TOKEN" \
+  > "/tmp/flywheel-test-slot-${LEAD_SLOT}/state/report-host/token"
+chmod 600 "/tmp/flywheel-test-slot-${LEAD_SLOT}/state/report-host/token"
 if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     TEST_REPLY_BY_ISSUE=1 \
     TEST_API_TOKEN="fixture-api-token" \
+    VERCEL_TOKEN="fixture-production-vercel-token" \
+    FLYWHEEL_REPORT_HOST_OVERRIDE_URL="http://127.0.0.1:51234" \
     TEAMLEAD_INGEST_TOKEN="fixture-production-ingest" \
     FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
     FLYWHEEL_CODEX_SESSION_DIR="$SB/production-codex-sessions" \
@@ -1218,6 +1229,54 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
   I_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
   I_LE="$I_SLOT_DIR/lead-env.txt"
   I_OK=1
+  I_JSON="$(extract_json "$I_OUT")"
+  I_REPORT_URL="$(jq -r '.reportHost.url // empty' <<<"$I_JSON")"
+  I_REPORT_TOKEN_PATH="$(jq -r '.reportHost.tokenPath // empty' <<<"$I_JSON")"
+  I_REPORT_SITES_DIR="$(jq -r '.reportHost.sitesDir // empty' <<<"$I_JSON")"
+  I_REPORT_PORT="${I_REPORT_URL##*:}"
+  [[ "$I_REPORT_URL" =~ ^http://127\.0\.0\.1:[1-9][0-9]*$ \
+      && "$I_REPORT_TOKEN_PATH" == "$I_SLOT_DIR/state/report-host/token" \
+      && "$I_REPORT_SITES_DIR" == "$I_SLOT_DIR/state/report-host/sites" ]] \
+    || { I_OK=0; fail "I/FLY-2270: reply-mode output lacks the ready slot report host"; }
+  I_BRIDGE_SPEC="$I_SLOT_DIR/bridge-launch.json"
+  I_CANON_BASH="$(PATH="$STUB_BIN:/usr/bin:/bin" command -v bash)"
+  I_CANON_NPX="$STUB_BIN/npx"
+  I_CANON_SCRIPT="$(cd "$FR/scripts" && pwd -P)/run-bridge.ts"
+  jq -e \
+    --arg bash "$I_CANON_BASH" --arg wrapper "$FR/scripts/lib/qa-report-host-bridge-wrapper.sh" \
+    --arg root "$I_SLOT_DIR/state/report-host" --arg node "$FLY1389_REAL_NODE" \
+    --arg npx "$I_CANON_NPX" --arg script "$I_CANON_SCRIPT" '
+      .command == [$bash,$wrapper,$root,$node,"--",$npx,"tsx",$script] and
+      (any(.environment[]; startswith("FLYWHEEL_REPORT_HOST_OVERRIDE_URL=")) | not) and
+      ([.secretEnvironment[].name] | index("VERCEL_TOKEN") != null)
+    ' "$I_BRIDGE_SPEC" >/dev/null 2>&1 \
+    || { I_OK=0; fail "I/FLY-2270: report wrapper command/secret boundary is incomplete" \
+      "command=$(jq -c '.command' "$I_BRIDGE_SPEC") secrets=$(jq -c '[.secretEnvironment[].name]' "$I_BRIDGE_SPEC")"; }
+  I_SPEC_TOKEN_PATH="$(jq -r '.secretEnvironment[] | select(.name == "VERCEL_TOKEN") | .path' "$I_BRIDGE_SPEC")"
+  I_REPORT_TOKEN="$(<"$I_REPORT_TOKEN_PATH")"
+  [[ -f "$I_SPEC_TOKEN_PATH" && "$(<"$I_SPEC_TOKEN_PATH")" == "$I_REPORT_TOKEN" \
+      && "$I_REPORT_TOKEN" != "$I_PRESEEDED_TOKEN" \
+      && "$I_REPORT_TOKEN" != "fixture-production-vercel-token" ]] \
+    || { I_OK=0; fail "I/FLY-2270: report token was not freshly isolated into the launch spec"; }
+  grep -q "^FLYWHEEL_REPORTS_DIR=${I_SLOT_DIR}/state/reports$" "$I_LE" \
+    || { I_OK=0; fail "I/FLY-2270: Lead reports directory is not slot-local"; }
+  grep -q "^TMPDIR=${I_SLOT_DIR}/tmp$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2270: reply Bridge did not receive the short slot TMPDIR"; }
+  grep -q "^FLYWHEEL_REPORTS_DIR=${I_SLOT_DIR}/state/reports$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2270: reply Bridge reports directory is not slot-local"; }
+  grep -q "^FLYWHEEL_REPORT_HOST_OVERRIDE_URL=${I_REPORT_URL}$" "$I_SLOT_DIR/bridge-env.txt" \
+    || { I_OK=0; fail "I/FLY-2270: wrapper did not inject the loopback report URL"; }
+  I_REPORT_STUB_PID="$(lsof -nP -iTCP:"$I_REPORT_PORT" -sTCP:LISTEN -t 2>/dev/null || true)"
+  I_REPORT_STUB_PARENT="$(lsof -a -p "$I_REPORT_STUB_PID" -FpR 2>/dev/null | sed -n 's/^R//p' | head -1)"
+  [[ "$I_REPORT_STUB_PID" =~ ^[1-9][0-9]*$ \
+      && "$I_REPORT_STUB_PARENT" == "$(<"$I_SLOT_DIR/bridge.pid")" ]] \
+    || { I_OK=0; fail "I/FLY-2270: report host is not the sole direct Bridge child"; }
+  [[ "$($FLY1389_REAL_CURL -q -sS -o /dev/null -w '%{http_code}' \
+      -H "Authorization: Bearer ${I_REPORT_TOKEN}" \
+      "${I_REPORT_URL}/v13/deployments/self-check")" == "200" \
+      && "$($FLY1389_REAL_CURL -q -sS -o /dev/null -w '%{http_code}' \
+      "${I_REPORT_URL}/v13/deployments/self-check")" == "401" ]] \
+    || { I_OK=0; fail "I/FLY-2270: report host bearer self-check failed"; }
   grep -q "^CLAUDE_CONFIG_DIR=${I_CONFIG}$" "$I_LE" \
     || { I_OK=0; fail "I: opt-in CLAUDE_CONFIG_DIR did not reach Lead"; }
   grep -q "^TEST_SKIP_PLUGIN_FORK_CHECK_EXPECTED_CONFIG_DIR=${I_CONFIG}$" "$I_LE" \
@@ -1250,9 +1309,44 @@ if FLY1608_DEPLOY_CALLER_CWD="$FR/packages/teamlead" \
     || { I_OK=0; fail "I/FLY-1775: reply-by-issue token file is not mode 0600"; }
   [[ "$(cat "$I_SLOT_DIR/lead-cwd.txt" 2>/dev/null || true)" == "$FR/packages/teamlead" ]] \
     || { I_OK=0; fail "I: package-cwd invocation did not keep production-aligned Lead cwd"; }
+  I_OLD_REPORT_URL="$I_REPORT_URL"
+  I_OLD_REPORT_STUB_PID="$I_REPORT_STUB_PID"
+  I_CYCLE_OUT="$SB/i-cycle.out"; I_CYCLE_ERR="$SB/i-cycle.err"
+  if FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
+      PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)")" \
+      bash "$FR/scripts/test-cycle-bridge.sh" "$LEAD_SLOT" \
+      >"$I_CYCLE_OUT" 2>"$I_CYCLE_ERR"; then
+    I_NEW_REPORT_PORT="$(<"$I_SLOT_DIR/state/report-host/port")"
+    I_NEW_REPORT_URL="http://127.0.0.1:${I_NEW_REPORT_PORT}"
+    I_NEW_REPORT_STUB_PID="$(lsof -nP -iTCP:"$I_NEW_REPORT_PORT" -sTCP:LISTEN -t 2>/dev/null || true)"
+    I_NEW_REPORT_STUB_PARENT="$(lsof -a -p "$I_NEW_REPORT_STUB_PID" -FpR 2>/dev/null | sed -n 's/^R//p' | head -1)"
+    kill -0 "$I_OLD_REPORT_STUB_PID" 2>/dev/null \
+      && { I_OK=0; fail "I/FLY-2270: old report host survived the Bridge cycle"; }
+    "$FLY1389_REAL_CURL" -q -fsS --max-time 1 "$I_OLD_REPORT_URL/v13/deployments/self-check" >/dev/null 2>&1 \
+      && { I_OK=0; fail "I/FLY-2270: old report URL still accepts connections after cycle"; }
+    [[ "$I_NEW_REPORT_URL" != "$I_OLD_REPORT_URL" \
+        && "$I_NEW_REPORT_STUB_PID" =~ ^[1-9][0-9]*$ \
+        && "$I_NEW_REPORT_STUB_PARENT" == "$(<"$I_SLOT_DIR/bridge.pid")" \
+        && "$($FLY1389_REAL_CURL -q -sS -o /dev/null -w '%{http_code}' \
+          -H "Authorization: Bearer ${I_REPORT_TOKEN}" \
+          "$I_NEW_REPORT_URL/v13/deployments/self-check")" == "200" ]] \
+      || { I_OK=0; fail "I/FLY-2270: replacement report host is not fresh, parented, and authenticated"; }
+  else
+    I_OK=0; fail "I/FLY-2270: Bridge cycle with report host failed" "$(tail -20 "$I_CYCLE_ERR")"
+  fi
   [[ "$I_OK" == "1" ]] \
-    && pass "I: package-cwd deploy starts Lead + reply-by-issue Bridge stays marker-isolated"
+    && pass "I: reply Bridge uses a fresh slot report host and cycles it with parent ownership"
+  I_FINAL_REPORT_STUB_PID="${I_NEW_REPORT_STUB_PID:-$I_REPORT_STUB_PID}"
+  I_FINAL_REPORT_PORT="${I_NEW_REPORT_PORT:-$I_REPORT_PORT}"
   run_teardown "$FH1" "$LEAD_SLOT"
+  for _poll in $(seq 1 30); do
+    kill -0 "$I_FINAL_REPORT_STUB_PID" 2>/dev/null || break
+    sleep 0.1
+  done
+  ! kill -0 "$I_FINAL_REPORT_STUB_PID" 2>/dev/null \
+    && [[ -z "$(lsof -nP -iTCP:"$I_FINAL_REPORT_PORT" -sTCP:LISTEN -t 2>/dev/null || true)" \
+        && ! -e "$I_SLOT_DIR/state/report-host/port" ]] \
+    || fail "I/FLY-2270: teardown left the report host or port file behind"
 else
   fail "I: isolated config deploy failed" "$(tail -20 "$I_ERR")"
   run_teardown "$FH1" "$LEAD_SLOT" || true
@@ -1311,17 +1405,21 @@ echo "b13ca2cd-dead-dead-dead-000000000000" \
   > "$FH2/.flywheel/claude-sessions/test-slot-${NOLEAD_SLOT}-flywheel-test-32.session-id"
 
 N_OUT="$SB/n-out.json"; N_ERR="$SB/n-err.log"
+N_LONG_CALLER_TMP="$SB/$(printf 'runner-tmp-x%.0s' {1..12})"
+mkdir -p "$N_LONG_CALLER_TMP"
 if ( cd "$SB" && \
   env -i \
     HOME="$FH2" \
     PATH="$STUB_BIN:/usr/bin:/bin:/usr/sbin:/sbin:$(dirname "$(command -v git)"):$(dirname "$(command -v jq)"):$(dirname "$(command -v python3)"):$(dirname "$(command -v curl)")" \
-    TMPDIR=/tmp \
+    TMPDIR="$N_LONG_CALLER_TMP" \
     TMUX_STUB_LOG="$FH2/tmux-calls.log" \
     FLYWHEEL_SANDBOX_REMOTE_URL="$BARE" \
     FLYWHEEL_CMUX_PROCESS_INCARNATION_OVERRIDE="fly1389-test-incarnation" \
     FLY1389_REAL_CURL="$FLY1389_REAL_CURL" \
     FLY1389_ENV_DUMP_NODE="$FLY1389_REAL_NODE" \
     FLYWHEEL_QA_NODE="$FLY1389_REAL_NODE" \
+    VERCEL_TOKEN="fixture-production-vercel-token" \
+    FLYWHEEL_REPORT_HOST_OVERRIDE_URL="http://127.0.0.1:51234" \
     GEOFORGE3D_LEAD_RULES_SRC="$SENTINEL" \
     bash "$FR/scripts/test-deploy.sh" "$NOLEAD_SLOT" --no-lead \
     > "$N_OUT" 2> "$N_ERR" ); then
@@ -1330,6 +1428,15 @@ if ( cd "$SB" && \
   N_JSON="$(extract_json "$N_OUT")"
   jq -e '.noLead == true' <<<"$N_JSON" >/dev/null 2>&1 || { N_OK=0; fail "N: JSON noLead must be true"; }
   jq -e '.leadCarrier == "none"' <<<"$N_JSON" >/dev/null 2>&1 || { N_OK=0; fail "N: no-lead carrier must be none"; }
+  jq -e --arg slotDir "$N_SLOT_DIR" '
+    .reportHost == null and
+    .reportsDir == ($slotDir + "/state/reports") and
+    .bridgeTmpDir == ($slotDir + "/tmp")
+  ' <<<"$N_JSON" >/dev/null 2>&1 \
+    || { N_OK=0; fail "N/FLY-2270: default output lacks isolated reports/TMPDIR coordinates"; }
+  [[ -d "$N_SLOT_DIR/state/reports" && "$(mode_of "$N_SLOT_DIR/state/reports")" == "700" \
+      && -d "$N_SLOT_DIR/tmp" && "$(mode_of "$N_SLOT_DIR/tmp")" == "700" ]] \
+    || { N_OK=0; fail "N/FLY-2270: default isolated reports/TMPDIR directories are missing or unsafe"; }
   [[ "$(jq -r '.leadPidFile' <<<"$N_JSON")" == "" ]] || { N_OK=0; fail "N: leadPidFile must be empty"; }
   [[ "$(jq -r '.leadLog' <<<"$N_JSON")" == "" ]] || { N_OK=0; fail "N: leadLog must be empty"; }
   # No Lead started: no lease, no stub-lead env dump, no 'Starting test Lead'.
@@ -1350,6 +1457,20 @@ if ( cd "$SB" && \
   grep -q "Bridge ready on port" "$N_ERR" || { N_OK=0; fail "N: Bridge /health never answered"; }
   grep -q "^FLYWHEEL_DELIVERY_SECRET_PATH=${N_SLOT_DIR}/state/delivery-secret$" "$N_SLOT_DIR/bridge-env.txt" \
     || { N_OK=0; fail "N/FLY-1663: no-lead Bridge secret path not slot-local"; }
+  grep -q "^TMPDIR=${N_SLOT_DIR}/tmp$" "$N_SLOT_DIR/bridge-env.txt" \
+    || { N_OK=0; fail "N/FLY-2270: no-lead Bridge did not receive the short slot TMPDIR"; }
+  grep -q "^FLYWHEEL_REPORTS_DIR=${N_SLOT_DIR}/state/reports$" "$N_SLOT_DIR/bridge-env.txt" \
+    || { N_OK=0; fail "N/FLY-2270: no-lead Bridge reports directory is not slot-local"; }
+  ! grep -q '^VERCEL_TOKEN=' "$N_SLOT_DIR/bridge-env.txt" \
+    || { N_OK=0; fail "N/FLY-2270: default Bridge inherited the production Vercel token"; }
+  ! grep -q '^FLYWHEEL_REPORT_HOST_OVERRIDE_URL=' "$N_SLOT_DIR/bridge-env.txt" \
+    || { N_OK=0; fail "N/FLY-2270: default Bridge inherited a foreign report-host override"; }
+  N_BRIDGE_SPEC="$N_SLOT_DIR/bridge-launch.json"
+  jq -e --arg npx "$(cd "$STUB_BIN" && pwd -P)/npx" '
+    .command[0] == $npx and
+    ([.secretEnvironment[].name] | index("VERCEL_TOKEN") == null)
+  ' "$N_BRIDGE_SPEC" >/dev/null 2>&1 \
+    || { N_OK=0; fail "N/FLY-2270: default launch spec retained report-host wrapper or VERCEL_TOKEN"; }
   [[ "$N_OK" == "1" ]] && pass "N: --no-lead E2E — Bridge /health on a GeoForge3D-less HOME, rules sentinel not staged, zero Lead artifacts"
   if run_teardown "$FH2" "$NOLEAD_SLOT"; then
     [[ ! -d "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" ]] \

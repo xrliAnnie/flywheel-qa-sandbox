@@ -117,14 +117,7 @@ describe("shared direct-toggle metadata predicate", () => {
 		).toBe(false);
 	});
 
-	it("still structurally rejects governance, value-kind, dormant, and non-direct flags", () => {
-		expect(
-			isDirectToggleMetadata({
-				...base,
-				category: "governance_gate",
-				readTimings: ["call_time"],
-			}),
-		).toBe(false);
+	it("still structurally rejects value-kind, dormant, and non-direct flags", () => {
 		expect(
 			isDirectToggleMetadata({
 				...base,

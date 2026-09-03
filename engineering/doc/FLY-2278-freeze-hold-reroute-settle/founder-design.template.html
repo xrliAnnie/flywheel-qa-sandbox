@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2278 设计:冻结要有证据、每种冻结有正门、改派不指空、核销是终态</title>
+<style>
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,sans-serif; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:26px; margin:8px 0 4px; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.green { border-left-color:#34c759; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; }
+  p, li { font-size:14.5px; line-height:1.75; }
+  .term { color:#007aff; }
+  .diagram { overflow-x:auto; background:#fff; padding:8px 0; }
+  .diagram svg { max-width:100%; height:auto; }
+  .caption { color:#86868b; font-size:12.5px; margin:4px 0 10px; }
+  table { border-collapse:collapse; width:100%; font-size:13.5px; margin:10px 0; }
+  th, td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; line-height:1.6; }
+  th { background:#f5f5f7; color:#1a365d; }
+  .mono { font-family:'SF Mono',monospace; font-size:12.5px; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:6px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.reject { background:#fdecea; color:#ff3b30; }
+  .badge.keep { background:#e9f9ef; color:#248a3d; }
+  .badge.fix { background:#fff4e5; color:#c25e00; }
+  .comment-box { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .comment-box label { font-size:12.5px; color:#86868b; display:block; margin-bottom:6px; }
+  .comment-box textarea { width:100%; box-sizing:border-box; min-height:60px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font-family:inherit; font-size:13.5px; resize:vertical; background:#fafafa; }
+  .comment-box textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  #summary-body { white-space:pre-wrap; font-size:13.5px; background:#fafafa; border:1px solid #e5e5ea; border-radius:8px; padding:12px; min-height:40px; }
+  .btn { display:inline-block; margin-top:10px; padding:8px 16px; border-radius:8px; border:none; background:#007aff; color:#fff; font-size:14px; cursor:pointer; }
+  .btn:active { opacity:.8; }
+  #copy-status { margin-left:10px; font-size:13px; color:#248a3d; }
+  .chunk { margin-top:10px; }
+  .chunk .btn { background:#1a365d; }
+  .tbl-wrap { overflow-x:auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLY-2278:冻结要有证据、每种冻结有正门、改派不指空、核销是终态</h1>
+  <div class="meta">工程设计说明 · 2026-09-03 · 分支 flywheel-FLY-2278 · __REVIEW_META__ · 每个卡片下方都可以留意见,页底一键汇总复制</div>
+
+  <div class="card" data-section="一句话总结">
+    <h2>一句话总结</h2>
+    <p>FLY-2248 那份「通用投递合同」的后半(自动改派 + 冻结正门)在四轮代码评审里被砍掉了;这一单把评审点名的六个缺陷<strong>修正后重做</strong>:以后系统要冻住一条 run,必须同时拿出三样证据(等得够久、收件的工人不是已经退场、十分钟内确实没动静),每一种冻结都有一扇官方的「解冻门」,改派出去的交接永远指向一条真实存在的记录,核销就是终点。</p>
+    <p class="caption">名词:<span class="term">run</span> = 一张 issue 在自动流水线里的一次完整执行;<span class="term">欠条</span> = 系统对「这份交接必须送到并被消费」的承诺记录;<span class="term">冻结 / hold</span> = 系统把一条 run 暂停、等人来决定。</p>
+    <div class="comment-box"><label>对这一节的意见(自动保存在你本机)</label><textarea data-ckey="s1" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="核心流程:一次巡检里发生什么">
+    <h2>核心流程:一次巡检里发生什么</h2>
+    <p>Bridge(总调度进程)每 30 秒巡检一次。左边那条线是 FLY-2248 已经交付的「超时告警」;中间那条线是本单新增的「冻结要三条证据」;右边那条线是本单新增的「收件工人已退场 → 先等 15 分钟找接班人 → 找不到再问人」。三条线最后都汇到同一扇正门。</p>
+    <div class="diagram">__SVG_D1__</div>
+    <p class="caption">图 1 · 维护巡检的三条线。<span class="term">projector</span> = 把信箱、唤醒、换手三本账投影成统一欠条的组件;<span class="term">watch</span> = 只读不写的巡检器;<span class="term">episode</span> = 「某张欠条在某个阶段的一次卡住」的记录。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s2" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card red" data-section="第一件:冻结判定要带阈值和活性证据">
+    <h2>第一件:冻结判定要带阈值和活性证据</h2>
+    <p>被砍掉的旧实现只看「等了多久」,活性证据是一个恒为假的布尔(缺陷 ⑥ 的 NaN 就在这里),所以只要等够时间就冻。新规则:三条缺一不冻,而且「不知道」是一个明确的第三态——没有心跳记录不等于死了,但也不能当活的。活性证据读的是<strong>内容与进度</strong>(心跳、状态变化、工人自己发出的消息),不看画面刷不刷。</p>
+    <div class="diagram">__SVG_D3__</div>
+    <p class="caption">图 2 · 三条件决策。<span class="term">阈值</span>写死在代码常量里(信箱三批未读 30 分钟、换手两次推送无回执 20 分钟),不留环境变量旋钮;<span class="term">活性证据</span> = 十分钟窗口内的心跳、状态变化或工人自己发出的消息,三者任一命中即算活;ship_parked / awaiting_review / design_done 这三种「停车等人」的工人一律按活的算。</p>
+    <p>三条证据在<strong>同一个数据库事务里重读、重算</strong>后才落笔:检测到冻结形状之后、真正写入之前,只要工人状态变了或出现了新动静,这次冻结就作废,并且<strong>什么都不写</strong>(不发「差点冻」的告警)。一份欠条同一时刻只有一条「卡住」记录:先关旧的阶段记录、再开冻结记录,同一个事务完成。时间戳解析用仓库里已带测试的全格式解析器,ISO 格式的活动时间不会被误读成「无记录」。工人已经退场的情形不走这条线,走第三件的「找接班人」线。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s3" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="第二件:每种冻结配一扇恢复正门">
+    <h2>第二件:每种冻结配一扇恢复正门</h2>
+    <p>今天生产里有 9 条 run 处在 held 状态,能自动解的只有两种,其余要人手写 SQL。本单把 19 种冻结形状登记成一张注册表,每种配一个解冻动作和明确的作用范围(run 级 / 单条交接级),并把「解冻」做成与既有「暂停 / 终止」<strong>同一个文件、同一套认证、同一条路径规则</strong>的接口——这就是缺陷 ③ 的修法:不再另起炉灶。一条 run 同时有两种冻结时,解掉一种不会误把 run 放行;「携带因 run 停了而暂停」这种派生形状不单独解,跟着 run 一起恢复。</p>
+    <div class="diagram">__SVG_D4__</div>
+    <p class="caption">图 3 · 解冻两步走。<span class="term">confirmToken</span> = 第一步发给你的一次性确认码,第二步必须带回来,防止误触;<span class="term">digest</span> = 请求内容的指纹,旧实现在两处各算一次、算法不同导致合法重放被拒,新实现只在一处算。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s4" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="第三件:工人换址后欠条重绑">
+    <h2>第三件:工人换址后欠条重绑</h2>
+    <p>收件的工人退场了(替换体、无头体、或者干脆挂了),它手里那份没读的交接不能跟着消失,也不能当场把整条 run 冻住(缺陷 ②)。新做法:先开一条<strong>不告警</strong>的「送不到」记录,给 15 分钟 grace 找接班人;找到就自动改派;到期后在同一个事务里再找一次接班人、再查一次原工人有没有动静,两样都没有才升级问人。改派失败只告警、下一轮重试;自动改派用完两次后不再自动来,而是把这条交接摆进同一扇正门的列表里,由人确认再改派一次或取消——run 全程不冻结(取消只对真有「取消」状态的家族提供,唤醒信没有就只能改派;一旦走到「请人确认」,这条记录就不会再反过来把 run 冻住)。改派前在事务里再核一次接班人还是不是现任、还活着,不是就留着下一轮重试,不消耗次数。</p>
+    <p>改派后的新欠条<strong>必须指向一条真实存在的记录</strong>(缺陷 ④):信箱 / 唤醒 / 换手三家族指向确定性 id 的真实新行;返工 / 携带两家族在一个事务里改派、指向原主键加版本号,旧版本的回执推不动新欠条。</p>
+    <div class="diagram">__SVG_D2__</div>
+    <p class="caption">图 4 · 五张表的关系。<span class="term">contract_ref.pk</span> 是欠条指向的物理记录主键——硬规矩是「它必须真实存在」;<span class="term">superseded_by_attempt_id</span> 让父欠条指向改派后的子代,谱系只追加不改写。本单不加表、不加列,只把动作表允许的种类从 1 种放宽到 3 种(改派、解冻、常驻到期)。</p>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s5" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card green" data-section="第四件:欠条什么时候算结清、超时升级到谁">
+    <h2>第四件:欠条什么时候算结清、超时升级到谁</h2>
+    <ul>
+      <li><strong>结清 = 终态。</strong>只有交接被真正消费(信被 ACK、唤醒已启动、换手已回执)或被显式替代,欠条才算结清;操作员取消也先把权威记录本身置成终态再结账,两本账不会打架;结清的那个写点自己在同一事务里把对应的「卡住」记录关掉,理由写「terminal:settled:原因」。旧实现把结清当成「记录凭空消失」(缺陷 ⑤),新实现里这个词不再出现。</li>
+      <li><strong>工人退场但信没读,不算结清。</strong>那是「送不到」,走第三件的改派线,直到改派成功或人工裁决。</li>
+      <li><strong>超时升级到谁:</strong>沿用 FLY-2248 已交付的两级(warning → severe)发给 issue 所属项目的 Lead;本单唯一新增的告警种类是「冻结」,同样发给 Lead,不新增告警层。返工家族「已送达 30 分钟未消费」的告警从旧扫描器搬进同一套合同(常量写死)并<strong>过同一道活性门</strong>:工人还在动就一个字都不写,升级到 severe 前再看一次;旧扫描器和两个环境变量旋钮同一个 PR 删掉。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s6" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card amber" data-section="关键取舍与被拒方案">
+    <h2>关键取舍与被拒方案</h2>
+    <ul>
+      <li><span class="badge reject">拒</span><strong>检测即冻结(旧做法)</strong>——评审否决:会把活着的工人连同整条 run 一起冻住。</li>
+      <li><span class="badge reject">拒</span><strong>永不冻结、只告警</strong>——founder 要求「每种冻结配正门」,正门的前提是冻结存在;只告警等于把 #2 事故(接班人没收到信)留给人工。</li>
+      <li><span class="badge keep">选</span><strong>三条件冻结</strong>——阈值 + 非终态 + 无活性证据,任一不满足只留可见记录。</li>
+      <li><span class="badge reject">拒</span><strong>新增一个 grace 常量</strong>——多一个数字要记;改用已有的「送出阶段 15 分钟」常量。</li>
+      <li><span class="badge reject">拒</span><strong>独立的解冻路由文件(旧做法)</strong>——与兄弟接口两套认证、两处指纹。</li>
+      <li><span class="badge keep">选</span><strong>并入既有 run 管理接口</strong>——暂停 / 终止 / 解冻三个动作一处、一套认证。</li>
+      <li><span class="badge reject">拒</span><strong>为返工 / 携带家族铸合成记录</strong>——就是缺陷 ④;改为指向原主键 + 代际字段。</li>
+      <li><span class="badge fix">删</span><strong>砍范围时复活的旧返工定时器与两个环境变量旋钮</strong>——Lead 已裁定:开新路必须同一个 PR 删老路,三条件冻结是唯一路径。</li>
+      <li><span class="badge reject">拒</span><strong>把 FLY-2268 的心跳 rider 当依赖</strong>——那单一行代码都还没写;本单只用现有的三种证据,把 pane 变化留作将来的第四种。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s7x" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card purple" data-section="诚实边界">
+    <h2>诚实边界:这个设计做什么、不做什么</h2>
+    <h3>做</h3>
+    <ul>
+      <li>六个被点名的缺陷各一个可机器验证的修法;每条修法的「应当触发」臂都经真实写点(发信、唤醒、返工推进)而不是直接往表里插行。</li>
+      <li>19 种冻结形状的注册表、一扇正门、一条命令行 <span class="mono">flywheel-comm hold list | resume</span>;运维手册里的手写 SQL 段换成这条命令。</li>
+      <li>删掉砍范围时复活的旧定时器与两个旋钮(阈值写死)。</li>
+    </ul>
+    <h3>不做</h3>
+    <ul>
+      <li>不做 FLY-2268 的任何东西(工人常驻收信、心跳 rider、换手账本);pane 画面变化不采样落库。</li>
+      <li>不加表、不加列、不加旋钮、不加告警层级;本单唯一新增的告警前缀是「冻结」这一种。</li>
+      <li>不去覆盖存量 9 条 held run 里可能匹配不上任何形状的历史事件——QA 用生产只读快照跑一遍列表,匹配不上的作为发现物另开单。</li>
+      <li>「活性证据」只回答「十分钟内动没动」,不回答「它在干正事还是在空转」;那是 FLY-2211 判死判据的地盘。</li>
+    </ul>
+    <div class="comment-box"><label>对这一节的意见</label><textarea data-ckey="s8x" placeholder="写下你的意见…"></textarea></div>
+  </div>
+
+  <div class="card" data-section="意见汇总">
+    <h2>意见汇总</h2>
+    <p class="caption">下面实时汇总你在各卡片留下的意见。复制后贴到 Discord 即可;这是修订反馈,不是通过信号。</p>
+    <div id="summary-body">(还没有意见)</div>
+    <div id="chunk-area"></div>
+    <button class="btn" id="copy-all">复制全部意见</button><span id="copy-status"></span>
+  </div>
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var MARKER = '【页面意见汇总】FLY-2278';
+  var PREFIX;
+  try { PREFIX = 'fly2278-comment:' + location.pathname + ':'; }
+  catch (e) { PREFIX = 'fly2278-comment:unknown:'; }
+
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* 私密窗口等场景下静默降级 */ } }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll('textarea[data-ckey]'));
+
+  function sectionTitleFor(area) {
+    var card = area.closest('.card');
+    return (card && card.getAttribute('data-section')) || '未命名小节';
+  }
+
+  function collect() {
+    var parts = [];
+    areas.forEach(function (area) {
+      var v = area.value.trim();
+      if (v) parts.push('【' + sectionTitleFor(area) + '】\n' + v);
+    });
+    return parts;
+  }
+
+  function buildFullText() {
+    var parts = collect();
+    if (parts.length === 0) return '';
+    return MARKER + '\n' + parts.join('\n\n');
+  }
+
+  function chunkText(full) {
+    if (full.length <= 1800) return [full];
+    var body = full.slice(MARKER.length + 1);
+    var chunks = [];
+    var budget = 1800 - MARKER.length - 20;
+    var pieces = body.split('\n\n');
+    var cur = '';
+    pieces.forEach(function (p) {
+      if (cur && (cur.length + p.length + 2) > budget) { chunks.push(cur); cur = ''; }
+      while (p.length > budget) { chunks.push(cur ? cur + '\n\n' + p.slice(0, budget - cur.length - 2) : p.slice(0, budget)); p = p.slice(budget); cur = ''; }
+      cur = cur ? cur + '\n\n' + p : p;
+    });
+    if (cur) chunks.push(cur);
+    return chunks.map(function (c, i) {
+      return MARKER + '(' + (i + 1) + '/' + chunks.length + ')\n' + c;
+    });
+  }
+
+  var summaryBody = document.getElementById('summary-body');
+  var chunkArea = document.getElementById('chunk-area');
+  var copyStatus = document.getElementById('copy-status');
+
+  function copyText(text, onDone) {
+    function fallback() {
+      try {
+        var ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed'; ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        var ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        onDone(ok);
+      } catch (e) { onDone(false); }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, fallback);
+    } else { fallback(); }
+  }
+
+  function renderSummary() {
+    var full = buildFullText();
+    if (!full) {
+      summaryBody.textContent = '(还没有意见)';
+      chunkArea.textContent = '';
+      return;
+    }
+    summaryBody.textContent = full;
+    chunkArea.textContent = '';
+    var chunks = chunkText(full);
+    if (chunks.length > 1) {
+      chunks.forEach(function (c, i) {
+        var div = document.createElement('div');
+        div.className = 'chunk';
+        var btn = document.createElement('button');
+        btn.className = 'btn';
+        btn.textContent = '复制第 ' + (i + 1) + '/' + chunks.length + ' 段';
+        btn.addEventListener('click', function () {
+          copyText(c, function (ok) {
+            copyStatus.textContent = ok ? ('已复制第 ' + (i + 1) + ' 段') : '复制失败,请手动选择文本';
+          });
+        });
+        div.appendChild(btn);
+        chunkArea.appendChild(div);
+      });
+    }
+  }
+
+  areas.forEach(function (area) {
+    var key = PREFIX + area.getAttribute('data-ckey');
+    var saved = lsGet(key);
+    if (saved) area.value = saved;
+    area.addEventListener('input', function () {
+      lsSet(key, area.value);
+      renderSummary();
+    });
+  });
+
+  document.getElementById('copy-all').addEventListener('click', function () {
+    var full = buildFullText();
+    if (!full) { copyStatus.textContent = '还没有可复制的意见'; return; }
+    copyText(full, function (ok) {
+      copyStatus.textContent = ok ? '已复制' : '复制失败,请手动选择文本';
+    });
+  });
+
+  renderSummary();
+})();
+</script>
+</body>
+</html>

@@ -139,6 +139,41 @@ describe("deployFilesToVercel (FLY-203)", () => {
 			encoding: "utf-8",
 		});
 		expect(result.deploymentId).toBe("dpl_9");
+		expect(
+			(fetchMock.mock.calls[0] as [string, RequestInit])[1].redirect,
+		).toBeUndefined();
+	});
+
+	it("uses a QA API base for create and polling without following redirects", async () => {
+		vi.useFakeTimers();
+		fetchMock
+			.mockResolvedValueOnce(
+				jsonResponse({ url: "x", id: "dpl_qa", readyState: "QUEUED" }),
+			)
+			.mockResolvedValueOnce(jsonResponse({ readyState: "READY" }));
+
+		const promise = deployFilesToVercel(
+			"tok",
+			"fw-reports-qa",
+			[{ file: "r/token/index.html", data: "<html></html>" }],
+			undefined,
+			"http://127.0.0.1:4321/",
+		);
+		await vi.advanceTimersByTimeAsync(2000);
+		await promise;
+
+		expect(fetchMock.mock.calls[0]?.[0]).toBe(
+			"http://127.0.0.1:4321/v13/deployments",
+		);
+		expect(fetchMock.mock.calls[1]?.[0]).toBe(
+			"http://127.0.0.1:4321/v13/deployments/dpl_qa",
+		);
+		expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].redirect).toBe(
+			"error",
+		);
+		expect((fetchMock.mock.calls[1] as [string, RequestInit])[1].redirect).toBe(
+			"error",
+		);
 	});
 
 	it("rejects empty file list", async () => {

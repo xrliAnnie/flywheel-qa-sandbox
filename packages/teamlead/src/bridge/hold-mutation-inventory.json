@@ -1,0 +1,57 @@
+[
+	{
+		"store": "state",
+		"table": "workflow_run_event",
+		"file": "StateStore.ts",
+		"symbol": "resumeWorkflowHold",
+		"mutationKind": "held",
+		"shapeIds": [
+			"rework_activation_stalled_held",
+			"rework_pane_loss_handoff",
+			"rework_retry_exhausted",
+			"unlaunched_admission_rolled_back",
+			"unlaunched_admission_held",
+			"completion_receipt_missing",
+			"retry_limit_escalated",
+			"environment_failure_escalated",
+			"loop_limit_escalated",
+			"rework_suppressed_idle_spin",
+			"workflow_gate_origin_preflight_terminal",
+			"land_held_with_operation",
+			"land_held_without_operation",
+			"run_held_by_operator"
+		]
+	},
+	{
+		"store": "state",
+		"table": "workflow_carrier_delivery",
+		"file": "StateStore.ts",
+		"symbol": "resumeWorkflowHold",
+		"mutationKind": "held",
+		"shapeIds": ["carrier_run_inactive", "carrier_needs_lead"]
+	},
+	{
+		"store": "comm",
+		"table": "mailbox",
+		"file": "delivery-operations.ts",
+		"symbol": "DeliveryOperations.runPass",
+		"mutationKind": "frozen",
+		"shapeIds": ["mailbox_inflight_slots_exhausted"]
+	},
+	{
+		"store": "comm",
+		"table": "turn_wake_outbox",
+		"file": "delivery-operations.ts",
+		"symbol": "DeliveryOperations.runPass",
+		"mutationKind": "held",
+		"shapeIds": ["three_stage_turn_stuck"]
+	},
+	{
+		"store": "state",
+		"table": "workflow_delivery_contract_episode",
+		"file": "StateStore.ts",
+		"symbol": "resumeWorkflowHold",
+		"mutationKind": "undeliverable",
+		"shapeIds": ["delivery_undeliverable_no_recipient"]
+	}
+]

@@ -16,7 +16,7 @@ import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { homedir } from "node:os";
 import { join, isAbsolute as pathIsAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
-import { Router } from "express";
+import { type RequestHandler, Router } from "express";
 import type { PonytailInput, SkillFrameworkMode } from "flywheel-config";
 import {
 	canonicalSubmissionDigest,
@@ -41,7 +41,7 @@ import {
 import {
 	Fly2121PreservedTemplateUnrunnableError,
 	type Session,
-	type StateStore,
+	StateStore,
 	WORKFLOW_LAUNCH_SOFT_LEASE_MS,
 	type WorkflowResumeAttachmentRow,
 	type WorkflowRunCollectReceiptRow,
@@ -85,6 +85,7 @@ import {
 	WorkKindRouteError,
 } from "../workflow-template-selection.js";
 import { validateAndRegisterChatThread } from "./chat-thread-register.js";
+import type { ConfirmTokenStore } from "./fleet-admin.js";
 import {
 	getGeneralizedLaunchDelivery,
 	probeGeneralizedLaunchLiveness,
@@ -295,6 +296,7 @@ export function createRunsRouter(
 	auth?: {
 		masterToken?: string;
 		scopedToken?: string;
+		confirmTokens?: Pick<ConfirmTokenStore, "issue" | "verifyAndConsume">;
 		authorizeRework?: (input: {
 			runId: string;
 			requestedReason: string;
@@ -346,6 +348,141 @@ export function createRunsRouter(
 	// request through the same `projects` reference. Bridge restart picks up
 	// new project config; runtime toggles use the env-var flag instead.
 	const departmentRegistry = new DepartmentRegistry(projects);
+	const requireMaster: RequestHandler = (req, res, next) => {
+		if (!auth?.masterToken || !auth.confirmTokens) {
+			res.status(503).json({ ok: false, reason: "master_auth_not_configured" });
+			return;
+		}
+		const bearer =
+			typeof req.headers.authorization === "string" &&
+			req.headers.authorization.startsWith("Bearer ")
+				? req.headers.authorization.slice("Bearer ".length)
+				: undefined;
+		if (!secureTokenEqual(bearer, auth.masterToken)) {
+			res.status(401).json({ ok: false, reason: "unauthorized" });
+			return;
+		}
+		if (!loopbackSelfOrigin(req.headers.host)) {
+			res.status(403).json({ ok: false, reason: "loopback_required" });
+			return;
+		}
+		next();
+	};
+	const currentHold = (canonical: {
+		runId: string;
+		shape: string;
+		holdEventUid: string;
+		decision: string | null;
+	}): boolean =>
+		store
+			.listWorkflowHolds(canonical.runId)
+			.some(
+				(hold) =>
+					hold.shape === canonical.shape &&
+					hold.holdEventUid === canonical.holdEventUid &&
+					hold.resumable &&
+					(!hold.requiredDecision ||
+						hold.requiredDecision.some((candidate) =>
+							candidate === "reroute_to"
+								? canonical.decision?.startsWith("reroute_to ")
+								: canonical.decision === candidate,
+						)) &&
+					hold.preconditions.every(({ ok }) => ok),
+			);
+
+	router.get("/:runId/holds", requireMaster, (req, res) => {
+		res.status(200).json({
+			ok: true,
+			holds: store.listWorkflowHolds(String(req.params.runId ?? "")),
+		});
+	});
+	router.post("/:runId/resume/stage", requireMaster, (req, res) => {
+		const runId = String(req.params.runId ?? "");
+		if (
+			!req.body ||
+			typeof req.body !== "object" ||
+			Array.isArray(req.body) ||
+			req.body.runId !== runId
+		) {
+			res.status(400).json({ ok: false, reason: "run_id_mismatch" });
+			return;
+		}
+		const normalized = StateStore.canonicalizeHoldResume(req.body);
+		if (!normalized) {
+			res.status(400).json({ ok: false, reason: "invalid_request" });
+			return;
+		}
+		if (!currentHold(normalized.canonical)) {
+			res.status(409).json({ ok: false, reason: "hold_changed" });
+			return;
+		}
+		res.status(200).json({
+			ok: true,
+			canonical: normalized.canonical,
+			confirmToken: auth!.confirmTokens!.issue(normalized.digest),
+		});
+	});
+	router.post("/:runId/resume", requireMaster, (req, res) => {
+		const runId = String(req.params.runId ?? "");
+		if (
+			!req.body ||
+			typeof req.body !== "object" ||
+			Array.isArray(req.body) ||
+			Object.keys(req.body).length !== 2 ||
+			!Object.hasOwn(req.body, "canonical") ||
+			!Object.hasOwn(req.body, "confirmToken") ||
+			!req.body.canonical ||
+			typeof req.body.canonical !== "object" ||
+			Array.isArray(req.body.canonical) ||
+			(req.body.canonical as Record<string, unknown>).runId !== runId
+		) {
+			res.status(400).json({ ok: false, reason: "run_id_mismatch" });
+			return;
+		}
+		const normalized = StateStore.canonicalizeHoldResume(req.body.canonical);
+		const confirmToken =
+			typeof req.body.confirmToken === "string" && req.body.confirmToken.trim()
+				? req.body.confirmToken.trim()
+				: undefined;
+		if (!normalized || !confirmToken) {
+			res.status(400).json({ ok: false, reason: "invalid_request" });
+			return;
+		}
+		const prior = store.getWorkflowHoldResumeReceipt(
+			normalized.canonical.clientRequestId,
+		);
+		if (prior) {
+			if (prior.canonicalDigest !== normalized.digest) {
+				res.status(409).json({ ok: false, reason: "request_conflict" });
+				return;
+			}
+			res.status(200).json({
+				ok: true,
+				idempotentReplay: true,
+				operationId: prior.operationId,
+				state: prior.state,
+			});
+			return;
+		}
+		if (!currentHold(normalized.canonical)) {
+			res.status(409).json({ ok: false, reason: "hold_changed" });
+			return;
+		}
+		const verified = auth!.confirmTokens!.verifyAndConsume(
+			confirmToken,
+			normalized.digest,
+		);
+		if (!verified.ok) {
+			res.status(403).json({ ok: false, reason: verified.reason });
+			return;
+		}
+		const result = store.resumeWorkflowHold({
+			canonical: normalized.canonical,
+			digest: normalized.digest,
+			now: new Date().toISOString(),
+		});
+		res.status(result.ok ? 200 : 409).json(result);
+	});
 
 	const registerRunManagementRoute = (action: "hold" | "terminate") => {
 		router.post(`/:runId/${action}`, async (req, res) => {

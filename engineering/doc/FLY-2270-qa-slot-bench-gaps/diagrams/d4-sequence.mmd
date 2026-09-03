@@ -1,0 +1,28 @@
+sequenceDiagram
+  autonumber
+  participant Q as QA 操作者
+  participant TD as test-deploy.sh
+  participant W as 包装脚本
+  participant RH as 假 Vercel(stub)
+  participant BR as slot Bridge
+  participant CLI as publish-report
+  participant DC as Discord 529 频道
+  Q->>TD: 在 runner 环境直接运行(不改 env)
+  TD->>TD: 铸 slot token,固定 TMPDIR
+  TD->>W: 按 launch spec 启动(env -u VERCEL_TOKEN 后再注入 slot 的)
+  W->>RH: 起 stub(env -i)
+  RH-->>W: 自探活成功,写 port
+  W->>BR: 导出 OVERRIDE_URL,exec(同一个进程号)
+  BR-->>TD: /health 200,日志「report host override active (QA only)」
+  TD-->>Q: JSON:reportHost.url、apiTokenPath、验收配方
+  Q->>CLI: publish-report --html … --channel <slot 频道>
+  CLI->>BR: POST /api/reports/publish
+  BR->>RH: POST /v13/deployments(Bearer slot token)
+  RH-->>BR: id、readyState READY
+  BR-->>CLI: url = http://127.0.0.1:端口/<name>/r/<token>/
+  CLI->>RH: 截图打开该 URL(失败可降级为纯链接)
+  CLI->>BR: POST /api/reports/deliver
+  BR->>DC: 一条消息(截图 + 链接)
+  Q->>Q: 负向对照:~/.flywheel/reports 的 registry.json mtime、previews 计数不变
+  Q->>BR: teardown(既有 Step 5 杀 Bridge)
+  RH->>RH: 父进程没了,500 毫秒内自退

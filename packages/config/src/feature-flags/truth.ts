@@ -64,8 +64,6 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_DISCORD_CUTOVER_PREFLIGHT_CMD",
 	"FLYWHEEL_DISCORD_CUTOVER_ROOT_PROOF_CMD",
 	"FLYWHEEL_DISCORD_PLUGIN_REPO",
-	"FLYWHEEL_ENGINE_REWORK_ALERT_MS",
-	"FLYWHEEL_ENGINE_REWORK_HOLD_MS",
 	"FLYWHEEL_ENGINE_UNLAUNCHED_ALERT_MS",
 	"FLYWHEEL_ENGINE_UNLAUNCHED_ROLLBACK_MS",
 	"FLYWHEEL_ENV_FILE",
@@ -372,6 +370,8 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 		"plumbing: canonical Lead identity registry path selector (FLY-1726), not a rollout gate",
 	FLYWHEEL_SUMMARY_CONFIG_HOME:
 		"plumbing: absolute home root for canonical summary config in isolated QA runtimes (FLY-2030), not a rollout gate",
+	FLYWHEEL_REPORT_HOST_OVERRIDE_URL:
+		"plumbing: QA slot report endpoint exported internally by its wrapper script (FLY-2270), not an operator-tunable switch",
 	FLYWHEEL_REPORTS_DIR: "plumbing: reports dir",
 	FLYWHEEL_COMPLETE_MARKER_DIR:
 		"plumbing: complete-failed marker dir override for isolated slot runtimes (FLY-1608)",

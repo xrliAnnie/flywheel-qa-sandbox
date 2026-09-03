@@ -14,14 +14,14 @@
  * flag's real in-line semantics (byte-compat). It does NOT replace compound
  * policy functions; the registry lists each independently controllable layer.
  *
- * Read `packages/teamlead/lead-rules-base/default-enable-policy.md` for the two
- * idioms (`!== "0"` default-on kill-switch vs `=== "1"` opt-in) and the
- * governance-gate hard exemptions (never web-toggleable).
+ * Read `doc/engineer/implementation/flag-authoring-runbook.md` for the authoring
+ * contract, including why governance policy belongs in code and changes by PR.
  */
 
-export type FlagCategory = "feature" | "kill_switch" | "governance_gate";
+export type FlagCategory = "feature" | "kill_switch";
 export type FlagSource = "env" | "project_config" | "code_default";
 export type FlagPolarity = "default_on" | "opt_in";
+export type FlagOnMeans = "enables" | "disables";
 /** env flags are Bridge-global; project_config flags are per-project. */
 export type FlagScope = "bridge_global" | "project";
 export type FlagValueKind = "bool" | "enum" | "value";
@@ -71,6 +71,8 @@ export interface FeatureFlagSpec {
 	configKey?: string;
 	polarity: FlagPolarity;
 	valueKind: FlagValueKind;
+	/** What `true` means for a bool flag. Display-only; never affects resolution. */
+	onMeans?: FlagOnMeans;
 	/** For valueKind === "enum": the allowed values. */
 	enumValues?: string[];
 	/** The effective value when nothing overrides it. */
@@ -175,6 +177,23 @@ export function validateKeepFieldContract(spec: FeatureFlagSpec): string[] {
 	return violations;
 }
 
+/** FLY-2257: keep display semantics explicit and independent of flag names. */
+export function validateOnMeansContract(spec: FeatureFlagSpec): string[] {
+	const violations: string[] = [];
+	if (spec.valueKind === "bool" && spec.onMeans === undefined) {
+		violations.push(`${spec.name}: bool flags must declare onMeans`);
+	}
+	if (spec.valueKind !== "bool" && spec.onMeans !== undefined) {
+		violations.push(`${spec.name}: non-bool flags must not declare onMeans`);
+	}
+	if (spec.name.endsWith("_disabled") && spec.onMeans !== "disables") {
+		violations.push(
+			`${spec.name}: names ending in _disabled must declare onMeans as disables`,
+		);
+	}
+	return violations;
+}
+
 function flagStoreSite(
 	file: string,
 	symbol: string,
@@ -199,6 +218,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_CMUX_WATCHER_REBUILD_DISABLED",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "disables",
 		default: false,
 		description:
 			"FLY-2207: emergency alert-only mode that suppresses launchd rebuild attempts while preserving watcher health tickets",
@@ -222,6 +242,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_CMUX_REBIND_DISABLED",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "disables",
 		default: false,
 		description:
 			"FLY-2207: emergency stop for automatic reconstruction and reconnect of missing runner cmux views",
@@ -268,6 +289,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_ALERT_SYSTEM",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-2076: gate alert delivery into Discord, ticket dispatch, and the Claw duty seat while preserving the intake ledger",
@@ -290,6 +312,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_REVIEW_QUOTA_AUTO_RETRY",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-2177: automatically retry failed cross-family reviews after a proven Claude subscription reset while the bound gate remains valid",
@@ -312,6 +335,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_LOOP_PROFILER",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-1995: capture bounded Node CPU profiles for Bridge event-loop delay episodes",
@@ -335,6 +359,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_SHIPPED_HUSK_FORCE",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-1992: after one failed post-merge closeout, force-reap an evidence-proven stale workflow-node husk before thread archive; =0 restores cooperative-only shutdown",
@@ -359,6 +384,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_FLAG_RETIREMENT_SCAN",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"每周日 08:00 America/Los_Angeles 扫描解析后生效值稳定满 7 天的 flag，生成一批留/清候选；扫描本身永不删除 flag",
@@ -384,6 +410,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_WORKFLOW_REWORK_REENTRY",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-1423: re-enter the original workflow actor for QA/founder rework; =0 holds and alerts without evicting or spawning",
@@ -411,6 +438,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_WORKFLOW_NODE_REUSE",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description:
 			"FLY-2155: turn a later QA verification round into a same-actor rework request; dead actors still materialize replacements",
@@ -447,6 +475,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "patrol.node_dwell_enabled",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-2210: project-level master switch for workflow node dwell patrol output and actions",
@@ -488,6 +517,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "pipeline.dag",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description: "项目级 DAG dispatch enrollment",
 		readSites: [
@@ -507,6 +537,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "pipeline.work_kind",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description: "项目级 dispatch work-kind enforcement",
 		readSites: [
@@ -526,6 +557,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "doc_flow.enabled",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description: "DOC-FLOW 提示词块：Runner 写部门优先过程文档（per-project）",
 		readSites: [
@@ -592,6 +624,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "skill_framework.split",
 		polarity: "default_on",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: true,
 		description:
 			"FLY-1356: split 分流下该项目是否参与实验臂（false = 项目钉回 A/superpowers，via 记 project_opt_out；这是退出杠杆，不是启用开关）",
@@ -612,6 +645,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "skills.proofshot.enabled",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description: "ProofShot 视觉验证 auto-trigger（per-project）",
 		readSites: [
@@ -631,6 +665,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "xiaohongshu_learning.enabled",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description: "定期小红书收藏学习管线（per-project）",
 		readSites: [
@@ -650,6 +685,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		configKey: "ponytail.enabled",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description:
 			"代码极简 ponytail 逐项目 rollout（Annie-exception：默认 OFF）",
@@ -671,6 +707,7 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 		envVar: "FLYWHEEL_WORKFLOW_TURN_DIVERGENCE_ALERTS",
 		polarity: "opt_in",
 		valueKind: "bool",
+		onMeans: "enables",
 		default: false,
 		description:
 			"FLY-1614: emit severe Lead alerts for durable engine/CommDB TURN divergence. Default off keeps detection and episode recording in shadow mode.",

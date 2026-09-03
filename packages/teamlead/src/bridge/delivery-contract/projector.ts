@@ -6,10 +6,6 @@ function sourceKey(table: string, pk: string): string {
 	return `${table}\u0000${pk}`;
 }
 
-function recipientIsTerminal(status: string | null): boolean {
-	return status === "completed" || status === "failed";
-}
-
 function workflowRunIsTerminal(status: string): boolean {
 	return status === "completed" || status === "terminated";
 }
@@ -32,7 +28,9 @@ export class DeliveryProjector {
 		const activeSources = new Set<string>();
 		for (const row of this.deps.commDb.listRunnerDeliveryProjectionRows()) {
 			result.examined++;
-			activeSources.add(sourceKey("mailbox", row.id));
+			if (row.state !== "ACKED" && row.superseded_by === null) {
+				activeSources.add(sourceKey("mailbox", row.id));
+			}
 			const issueId = row.issue_id?.trim() || "unknown";
 			const rootId = deliveryRootId({
 				projectName: this.deps.projectName,
@@ -40,9 +38,16 @@ export class DeliveryProjector {
 				family: "mailbox",
 				physicalId: row.id,
 			});
+			const identity =
+				this.deps.store.resolveWorkflowDeliveryProjectionIdentity({
+					family: "mailbox",
+					table: "mailbox",
+					physicalId: row.id,
+					fallbackRootId: rootId,
+				});
 			const projected = this.deps.store.projectWorkflowDeliveryAttempt({
-				rootId,
-				attemptId: `${rootId}:g1:a1`,
+				rootId: identity.rootId,
+				attemptId: identity.attemptId,
 				family: "mailbox",
 				contractRef: { table: "mailbox", pk: row.id },
 				mintedAt: row.created_at,
@@ -53,9 +58,13 @@ export class DeliveryProjector {
 			result.minted += projected.minted;
 			result.advanced += projected.advanced;
 		}
-		for (const row of this.deps.commDb.listRunnerPhaseWakeProjectionRows()) {
+		for (const row of this.deps.commDb.listRunnerPhaseWakeProjectionRows(
+			Date.parse(_now),
+		)) {
 			result.examined++;
-			activeSources.add(sourceKey("runner_phase_wakes", row.message_id));
+			if (row.state !== "finished") {
+				activeSources.add(sourceKey("runner_phase_wakes", row.message_id));
+			}
 			const issueId = row.issue_id?.trim() || "unknown";
 			const metadata = row.metadata_json
 				? (JSON.parse(row.metadata_json) as { rootId?: unknown })
@@ -71,9 +80,16 @@ export class DeliveryProjector {
 						});
 			const startedAt =
 				row.started_at === null ? null : new Date(row.started_at).toISOString();
+			const identity =
+				this.deps.store.resolveWorkflowDeliveryProjectionIdentity({
+					family: "phase_wake",
+					table: "runner_phase_wakes",
+					physicalId: row.message_id,
+					fallbackRootId: rootId,
+				});
 			const projected = this.deps.store.projectWorkflowDeliveryAttempt({
-				rootId,
-				attemptId: `${rootId}:g1:a1`,
+				rootId: identity.rootId,
+				attemptId: identity.attemptId,
 				family: "phase_wake",
 				contractRef: { table: "runner_phase_wakes", pk: row.message_id },
 				mintedAt: new Date(row.queued_at).toISOString(),
@@ -84,9 +100,13 @@ export class DeliveryProjector {
 			result.minted += projected.minted;
 			result.advanced += projected.advanced;
 		}
-		for (const row of this.deps.commDb.listRunnerTurnWakeProjectionRows()) {
+		for (const row of this.deps.commDb.listRunnerTurnWakeProjectionRows(
+			Date.parse(_now),
+		)) {
 			result.examined++;
-			activeSources.add(sourceKey("turn_wake_outbox", row.wake_id));
+			if (row.state !== "acked" && row.state !== "cancelled") {
+				activeSources.add(sourceKey("turn_wake_outbox", row.wake_id));
+			}
 			const rootId = deliveryRootId({
 				projectName: this.deps.projectName,
 				issueId: row.issue_id,
@@ -95,9 +115,16 @@ export class DeliveryProjector {
 			});
 			const receivedAt =
 				row.acked_at === null ? null : new Date(row.acked_at).toISOString();
+			const identity =
+				this.deps.store.resolveWorkflowDeliveryProjectionIdentity({
+					family: "turn_wake",
+					table: "turn_wake_outbox",
+					physicalId: row.wake_id,
+					fallbackRootId: rootId,
+				});
 			const projected = this.deps.store.projectWorkflowDeliveryAttempt({
-				rootId,
-				attemptId: `${rootId}:g1:a1`,
+				rootId: identity.rootId,
+				attemptId: identity.attemptId,
 				family: "turn_wake",
 				contractRef: { table: "turn_wake_outbox", pk: row.wake_id },
 				mintedAt: new Date(row.created_at).toISOString(),
@@ -116,58 +143,85 @@ export class DeliveryProjector {
 			const ref = JSON.parse(attempt.contract_ref_json) as {
 				table?: unknown;
 				pk?: unknown;
+				runId?: unknown;
+				routeRevision?: unknown;
+				redriveGeneration?: unknown;
 			};
 			if (typeof ref.table !== "string" || typeof ref.pk !== "string") continue;
+			const version =
+				attempt.family === "rework" && Number.isSafeInteger(ref.routeRevision)
+					? { routeRevision: Number(ref.routeRevision) }
+					: attempt.family === "carrier" &&
+							Number.isSafeInteger(ref.redriveGeneration)
+						? { redriveGeneration: Number(ref.redriveGeneration) }
+						: undefined;
 			if (activeSources.has(sourceKey(ref.table, ref.pk))) continue;
 			let settlementReason: string | undefined;
+			let commSourceMissing = false;
 			if (attempt.family === "mailbox" && ref.table === "mailbox") {
 				const row = this.deps.commDb.getRunnerDeliveryProjectionRow(ref.pk);
-				if (
-					row &&
-					(row.state === "ACKED" ||
-						row.state === "DEAD" ||
-						row.superseded_by !== null ||
-						row.dead_reason !== null ||
-						recipientIsTerminal(row.recipient_status))
-				) {
+				if (row && (row.state === "ACKED" || row.superseded_by !== null)) {
 					settlementReason = "source_terminal";
 				}
+				commSourceMissing = !row;
 			} else if (
 				attempt.family === "phase_wake" &&
 				ref.table === "runner_phase_wakes"
 			) {
 				const row = this.deps.commDb.getRunnerPhaseWakeProjectionRow(ref.pk);
-				if (
-					row &&
-					(row.state === "finished" ||
-						recipientIsTerminal(row.recipient_status))
-				) {
+				if (row?.state === "finished") {
 					settlementReason = "source_terminal";
 				}
+				commSourceMissing = !row;
 			} else if (
 				attempt.family === "turn_wake" &&
 				ref.table === "turn_wake_outbox"
 			) {
 				const row = this.deps.commDb.getRunnerTurnWakeProjectionRow(ref.pk);
-				if (
-					row &&
-					(row.state === "acked" ||
-						row.state === "cancelled" ||
-						recipientIsTerminal(row.recipient_status))
-				) {
+				if (row && (row.state === "acked" || row.state === "cancelled")) {
 					settlementReason = "source_terminal";
 				}
+				commSourceMissing = !row;
 			} else {
-				const run = this.deps.store.getWorkflowStateDeliverySourceRun({
-					family: attempt.family,
-					table: ref.table,
-					pk: ref.pk,
-				});
+				const authoritativeRun =
+					this.deps.store.getWorkflowStateDeliverySourceRun({
+						family: attempt.family,
+						table: ref.table,
+						pk: ref.pk,
+					});
+				const run =
+					authoritativeRun ??
+					(typeof ref.runId === "string"
+						? this.deps.store.getWorkflowRun(ref.runId)
+						: undefined) ??
+					this.deps.store.getWorkflowDeliveryAttemptRun(attempt.attempt_id);
 				if (
 					run?.project_name === this.deps.projectName &&
 					workflowRunIsTerminal(run.status)
 				) {
 					settlementReason = "run_terminal";
+				}
+			}
+			if (commSourceMissing) {
+				if (
+					this.deps.store.hasInFlightWorkflowDeliveryReroute({
+						operationId: ref.pk,
+						childAttemptId: attempt.attempt_id,
+						family: attempt.family,
+					})
+				) {
+					continue;
+				}
+				const run = this.deps.store.getWorkflowDeliveryAttemptRun(
+					attempt.attempt_id,
+				);
+				if (
+					run?.project_name === this.deps.projectName &&
+					workflowRunIsTerminal(run.status)
+				) {
+					settlementReason = "run_terminal";
+				} else {
+					settlementReason = "source_pruned";
 				}
 			}
 			if (
@@ -177,6 +231,8 @@ export class DeliveryProjector {
 					table: ref.table,
 					pk: ref.pk,
 					reason: settlementReason,
+					now: _now,
+					...(version ? { version } : {}),
 				})
 			) {
 				result.advanced++;

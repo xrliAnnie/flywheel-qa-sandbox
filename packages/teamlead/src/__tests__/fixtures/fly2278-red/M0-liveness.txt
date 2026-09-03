@@ -1,0 +1,7 @@
+RUN v3.2.4 packages/teamlead
+
+FAIL src/__tests__/fly2278-liveness.test.ts
+Error: Cannot find module '../bridge/delivery-contract/liveness.js'
+
+Test Files  1 failed (1)
+Tests       no tests

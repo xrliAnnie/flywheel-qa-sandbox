@@ -755,8 +755,31 @@ fi
 # ── Create temp directories ───────────────────────────
 SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 BRIDGE_LAUNCH_SPEC="${SLOT_DIR}/bridge-launch.json"
+LEAD_EXTRA_ENV=()
+BRIDGE_EXTRA_ENV=()
+GENERALIZED_ENV_UNSET_ARGS=()
+REPORT_HOST_WRAPPER_ARGS=()
+QA_SLOT_BRIDGE_NODE="${FLYWHEEL_QA_NODE:-$(command -v node)}"
+QA_SLOT_BRIDGE_BASH="$(command -v bash)"
+[[ "$QA_SLOT_BRIDGE_NODE" == /* && -x "$QA_SLOT_BRIDGE_NODE" ]] \
+  || campaign_abort "FLYWHEEL_QA_NODE must resolve to an absolute executable"
+[[ "$QA_SLOT_BRIDGE_BASH" == /* && -x "$QA_SLOT_BRIDGE_BASH" ]] \
+  || campaign_abort "bash must resolve to an absolute executable"
 mkdir -p "${SLOT_DIR}/discord-state"
 chmod 700 "$SLOT_DIR"
+GENERALIZED_CHILD_TMPDIR=$(qa_slot_child_tmpdir "$SLOT_DIR")
+mkdir -p "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state/reports" \
+  "${SLOT_DIR}/state/report-host"
+REPORT_HOST_DIR="${SLOT_DIR}/state/report-host"
+SLOT_DIR_CANONICAL=$(cd "$SLOT_DIR" && pwd -P)
+REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
+[[ "$REPORT_HOST_DIR_CANONICAL" == "${SLOT_DIR_CANONICAL}/state/report-host" ]] \
+  || campaign_abort "report host directory escaped the slot tree"
+chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
+  "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host"
+BRIDGE_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
+LEAD_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
 QA_LEAD_REGISTRY="${SLOT_DIR}/launchd-leads.json"
 # FLY-2030: canonical identity compilation requires the founder-selected
 # summary granularity. QA uses a slot-local selection and summary-exempt Leads,
@@ -769,7 +792,6 @@ printf '%s\n' \
   > "${QA_SUMMARY_CONFIG_HOME}/.flywheel/summary-config.json"
 chmod 600 "${QA_SUMMARY_CONFIG_HOME}/.flywheel/summary-config.json"
 GENERALIZED_READINESS_PENDING=0
-GENERALIZED_CHILD_TMPDIR="${TMPDIR:-/tmp}"
 GENERALIZED_API_TOKEN_PATH=""
 GENERALIZED_ROOM_INFO=""
 # FLY-1775 pit 9 intentionally extends the ordinary reply-by-issue opt-in:
@@ -780,25 +802,35 @@ if [[ "$GENERALIZED" == "1" || "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   mkdir -p "${SLOT_DIR}/state"
   printf '%s\n' "$TEST_TEAMLEAD_API_TOKEN" > "$GENERALIZED_API_TOKEN_PATH"
   chmod 600 "$GENERALIZED_API_TOKEN_PATH"
+  REPORT_HOST_TOKEN_PATH="${REPORT_HOST_DIR}/token"
+  if [[ -e "$REPORT_HOST_TOKEN_PATH" && ( ! -f "$REPORT_HOST_TOKEN_PATH" || -L "$REPORT_HOST_TOKEN_PATH" ) ]]; then
+    campaign_abort "report host token path must be a regular non-symlink file"
+  fi
+  REPORT_HOST_TOKEN=$(env -i HOME="$HOME" PATH="$PATH" "$QA_SLOT_BRIDGE_NODE" \
+    -e 'process.stdout.write(require("node:crypto").randomBytes(16).toString("hex"))')
+  [[ "$REPORT_HOST_TOKEN" =~ ^[0-9a-f]{32}$ ]] \
+    || campaign_abort "report host token generation failed"
+  REPORT_HOST_TOKEN_TMP="${REPORT_HOST_TOKEN_PATH}.tmp.$$"
+  (umask 077; set -o noclobber; printf '%s\n' "$REPORT_HOST_TOKEN" > "$REPORT_HOST_TOKEN_TMP")
+  mv -f "$REPORT_HOST_TOKEN_TMP" "$REPORT_HOST_TOKEN_PATH"
+  [[ ! -L "$REPORT_HOST_TOKEN_PATH" \
+      && "$(<"$REPORT_HOST_TOKEN_PATH")" == "$REPORT_HOST_TOKEN" \
+      && "$(qa_generalized_file_mode "$REPORT_HOST_TOKEN_PATH")" == "600" ]] \
+    || campaign_abort "report host token installation failed"
+  BRIDGE_EXTRA_ENV+=("VERCEL_TOKEN=${REPORT_HOST_TOKEN}")
+  REPORT_HOST_WRAPPER_ARGS=(
+    "$QA_SLOT_BRIDGE_BASH" "${SCRIPT_DIR}/lib/qa-report-host-bridge-wrapper.sh"
+    "$REPORT_HOST_DIR" "$QA_SLOT_BRIDGE_NODE" --
+  )
 fi
 if [[ "$GENERALIZED" == "1" ]]; then
   GENERALIZED_READINESS_PENDING=1
-  GENERALIZED_CHILD_TMPDIR=$(qa_generalized_safe_tmpdir "${TMPDIR:-/tmp}" "$(id -u)")
-  if [[ "$GENERALIZED_CHILD_TMPDIR" != "${TMPDIR:-/tmp}" ]]; then
-    log "generalized preflight: TMPDIR socket path is too long; child processes use TMPDIR=/tmp (sun_path safety)"
-  fi
   GENERALIZED_ROOM_INFO="${SLOT_DIR}/room-info.json"
 fi
 
 # ── FLY-529: QA Room roundtable + alert mirror config + env arrays ─────────
-# Resolved here (after SLOT/SLOT_DIR, before access.json / FLYWHEEL_PROJECTS /
-# env blocks) so the values weave into all of them. LEAD_EXTRA_ENV /
-# BRIDGE_EXTRA_ENV start empty and are injected into the env invocations later
-# with the bash-3.2-safe `${arr[@]+"${arr[@]}"}` expansion (empty array under
-# `set -u` would otherwise abort).
-LEAD_EXTRA_ENV=()
-BRIDGE_EXTRA_ENV=()
-GENERALIZED_ENV_UNSET_ARGS=()
+# Resolved after SLOT/SLOT_DIR so the values weave into access.json,
+# FLYWHEEL_PROJECTS, and the env invocations below.
 # FLY-1608: isolate both sides of the fail-close complete marker protocol.
 # Bridge reads/drains this directory; spawned Runners write to it via adapter
 # passthrough. Without both injections a QA slot can consume production markers
@@ -831,7 +863,6 @@ BRIDGE_EXTRA_ENV+=("TMUX_TMPDIR=${SLOT_DIR}")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_FOUNDER_CONSENT_AUDIT_DB_PATH=${SLOT_DIR}/state/founder-consent-audit.db")
 if [[ "$GENERALIZED" == "1" ]]; then
   BRIDGE_EXTRA_ENV+=("BRIDGE_DEPT_SCOPE_REJECT=${TEST_BRIDGE_DEPT_SCOPE_REJECT:-off}")
-  LEAD_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
   # launchd manifests are explicit env maps rather than `env -u`; empty values
   # are the v2 carrier's scrubbed representation for ambient-only coordinates.
   # The same centralized list becomes repeated `env -u` flags at the Bridge
@@ -1891,16 +1922,10 @@ BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 log "Starting test Bridge on port ${SLOT_PORT} (from-branch=${FROM_BRANCH})"
 [[ -n "${AGENT_ID:-}" ]] \
   || campaign_abort "TEAMLEAD_DEFAULT_LEAD_AGENT requires non-empty AGENT_ID"
-QA_SLOT_BRIDGE_NODE="${FLYWHEEL_QA_NODE:-$(command -v node)}"
 QA_SLOT_BRIDGE_NPX="$(command -v npx)"
-QA_SLOT_BRIDGE_BASH="$(command -v bash)"
 QA_SLOT_BRIDGE_SESSION_LAUNCHER="$(command -v python3)"
-[[ "$QA_SLOT_BRIDGE_NODE" == /* && -x "$QA_SLOT_BRIDGE_NODE" ]] \
-  || campaign_abort "FLYWHEEL_QA_NODE must resolve to an absolute executable"
 [[ "$QA_SLOT_BRIDGE_NPX" == /* && -x "$QA_SLOT_BRIDGE_NPX" ]] \
   || campaign_abort "npx must resolve to an absolute executable"
-[[ "$QA_SLOT_BRIDGE_BASH" == /* && -x "$QA_SLOT_BRIDGE_BASH" ]] \
-  || campaign_abort "bash must resolve to an absolute executable"
 [[ "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" == /* && -x "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" ]] \
   || campaign_abort "python3 must resolve to an absolute executable"
 BRIDGE_LAUNCH_CWD="$PWD"
@@ -1935,10 +1960,11 @@ if [[ "$GENERALIZED" == "1" ]]; then
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u FLYWHEEL_QA_NODE \
+    -u VERCEL_TOKEN \
+    -u FLYWHEEL_REPORT_HOST_OVERRIDE_URL \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
-    TMPDIR="${GENERALIZED_CHILD_TMPDIR}" \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -1964,6 +1990,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
       --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
       "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
       "$QA_SLOT_BRIDGE_BASH" "${SCRIPT_DIR}/lib/qa-generalized-bridge-wrapper.sh" \
+      ${REPORT_HOST_WRAPPER_ARGS[@]+"${REPORT_HOST_WRAPPER_ARGS[@]}"} \
       "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts" )
 elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # FLY-1389 P1-a: FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR pin the slot Bridge's
@@ -1975,6 +2002,8 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u FLYWHEEL_QA_NODE \
+    -u VERCEL_TOKEN \
+    -u FLYWHEEL_REPORT_HOST_OVERRIDE_URL \
     TEAMLEAD_PORT="${SLOT_PORT}" \
     TEAMLEAD_DEFAULT_LEAD_AGENT="${AGENT_ID}" \
     DISCORD_OWNER_USER_ID="${QA1189_OWNER_OVERRIDE:-${DISCORD_OWNER_USER_ID:-}}" \
@@ -2001,6 +2030,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
       --session-launcher "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" \
       --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
       "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
+      ${REPORT_HOST_WRAPPER_ARGS[@]+"${REPORT_HOST_WRAPPER_ARGS[@]}"} \
       "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts"
 else
   # FLY-529: this is the "reply-by-issue OFF" default path. It already clears the
@@ -2017,6 +2047,8 @@ else
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u FLYWHEEL_QA_NODE \
+    -u VERCEL_TOKEN \
+    -u FLYWHEEL_REPORT_HOST_OVERRIDE_URL \
     -u TEAMLEAD_REPLY_BY_ISSUE_ENABLED \
     -u TEAMLEAD_REPLY_GUARD_ENABLED \
     -u TEAMLEAD_CHAT_THREADS_ENABLED \
@@ -2042,6 +2074,7 @@ else
       --session-launcher "$QA_SLOT_BRIDGE_SESSION_LAUNCHER" \
       --log "${SLOT_DIR}/bridge.log" --script "${REPO_ROOT}/scripts/run-bridge.ts" \
       "${BRIDGE_OWNERSHIP_CAPTURE_ARGS[@]}" -- \
+      ${REPORT_HOST_WRAPPER_ARGS[@]+"${REPORT_HOST_WRAPPER_ARGS[@]}"} \
       "$QA_SLOT_BRIDGE_NPX" tsx "${REPO_ROOT}/scripts/run-bridge.ts"
 fi
 : > "${SLOT_DIR}/bridge.log"
@@ -2220,6 +2253,23 @@ log "  Channel: ${CHAT_CHANNEL_ID}"
 log "  Bridge PID: ${BRIDGE_PID}"
 log "  Lead PID file: ${LEAD_PID_FILE}"
 
+REPORT_HOST_JSON=null
+if [[ -n "${REPORT_HOST_TOKEN_PATH:-}" ]]; then
+  REPORT_HOST_PORT_PATH="${SLOT_DIR}/state/report-host/port"
+  [[ -s "$REPORT_HOST_PORT_PATH" ]] \
+    || campaign_abort "report host port file is missing after Bridge readiness"
+  REPORT_HOST_PORT="$(<"$REPORT_HOST_PORT_PATH")"
+  [[ "$REPORT_HOST_PORT" =~ ^[1-9][0-9]*$ && "$REPORT_HOST_PORT" -le 65535 ]] \
+    || campaign_abort "report host port file is invalid"
+  REPORT_HOST_URL="http://127.0.0.1:${REPORT_HOST_PORT}"
+  REPORT_HOST_JSON=$(jq -cn \
+    --arg url "$REPORT_HOST_URL" \
+    --arg tokenPath "$REPORT_HOST_TOKEN_PATH" \
+    --arg sitesDir "${SLOT_DIR}/state/report-host/sites" \
+    '{url:$url,tokenPath:$tokenPath,sitesDir:$sitesDir}')
+  log "  Report host: ${REPORT_HOST_URL} (publish with flywheel-comm publish-report against this slot Bridge)"
+fi
+
 # Output JSON for downstream scripts.
 # FLY-153: also surface mode + mirrorChannelId + flywheelProjectsFile so smoke
 # tests and qa-fly-60-driver can branch on mode without re-reading config.
@@ -2249,7 +2299,8 @@ qa_lead_render_stdout_json \
   "$LEAD_SOCKET" "$QA_LEAD_REGISTRY" "$SLOT_DIR" "$FROM_BRANCH" \
   "$SANDBOX_SLUG" "$HOST_REPO" "$QA_TEMP_BRANCH" "$BRANCH_SHA" \
   "$RUNNER_START_REF" "${SLOT_DIR}/teamlead.db" "${SLOT_DIR}/bridge.log" \
-  "$BRIDGE_LAUNCH_SPEC" "$LEAD_LOG" "$FLYWHEEL_PROJECTS_FILE" \
+  "$BRIDGE_LAUNCH_SPEC" "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state/reports" \
+  "$REPORT_HOST_JSON" "$LEAD_LOG" "$FLYWHEEL_PROJECTS_FILE" \
   "${SLOT_DIR}/launch-manifest.json" "${CAMPAIGN_MANIFEST_FILE:-}" \
   "${CAMPAIGN_ID:-}" "$LEAD_LABEL" "$EXTRA_LEADS_JSON" \
   "$GENERALIZED_OUTPUT_FIELDS"

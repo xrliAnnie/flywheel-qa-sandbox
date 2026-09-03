@@ -272,9 +272,15 @@ describe("existing management writer adapters", () => {
 			projectNames: () => ["flywheel"],
 		});
 		const flags = flagProvider.read().fragment.flags ?? [];
-		expect(
-			flags.find((flag) => flag.name === "loop_profiler")?.global,
-		).toMatchObject({
+		const loopProfiler = flags.find((flag) => flag.name === "loop_profiler");
+		expect(loopProfiler).toMatchObject({
+			polarity: "default_on",
+			default: true,
+			valueKind: "bool",
+			onMeans: "enables",
+		});
+		expect(loopProfiler).not.toHaveProperty("category");
+		expect(loopProfiler?.global).toMatchObject({
 			current: false,
 			writeCapability: {
 				writable: false,
@@ -333,11 +339,13 @@ describe("existing management writer adapters", () => {
 							{
 								projectName: "flywheel",
 								value: false,
+								isDefault: true,
 								via: "project_row",
 							},
 							{
 								projectName: "geoforge3d",
 								value: true,
+								isDefault: false,
 								via: "star_row",
 							},
 						],
@@ -353,8 +361,18 @@ describe("existing management writer adapters", () => {
 		]);
 		expect(withStar?.global.current).toBe(true);
 		expect(withStar?.projectOverrides).toMatchObject([
-			{ projectName: "flywheel", value: { current: false } },
-			{ projectName: "geoforge3d", value: { current: true } },
+			{
+				projectName: "flywheel",
+				via: "project_row",
+				isDefault: true,
+				value: { current: false },
+			},
+			{
+				projectName: "geoforge3d",
+				via: "star_row",
+				isDefault: false,
+				value: { current: true },
+			},
 		]);
 		expect(withStar?.global.writeCapability).toMatchObject({ writable: false });
 		expect(withStar?.global.writeCapability.reason).toContain(

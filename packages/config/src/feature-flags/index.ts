@@ -3,6 +3,7 @@ export { isDirectToggleMetadata } from "./direct-toggle.js";
 export type {
 	FeatureFlagSpec,
 	FlagCategory,
+	FlagOnMeans,
 	FlagPolarity,
 	FlagReadSite,
 	FlagScope,
@@ -11,7 +12,11 @@ export type {
 	FlagValueKind,
 	ReadTiming,
 } from "./registry.js";
-export { FEATURE_FLAGS, validateKeepFieldContract } from "./registry.js";
+export {
+	FEATURE_FLAGS,
+	validateKeepFieldContract,
+	validateOnMeansContract,
+} from "./registry.js";
 export type {
 	FlagEffectiveByProject,
 	FlagResolveCtx,

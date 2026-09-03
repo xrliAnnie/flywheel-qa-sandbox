@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import type Database from "better-sqlite3";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { StateStore } from "../StateStore.js";
@@ -25,6 +26,15 @@ import { installSelfHostedWorkflowAgentProject } from "./fixtures/workflow-agent
 
 const cleanups: string[] = [];
 const REPO_ROOT = fileURLToPath(new URL("../../../../", import.meta.url));
+
+function allDeliveryAttempts(
+	store: StateStore,
+): ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]> {
+	return (store as unknown as { db: { raw: Database.Database } }).db.raw
+		.prepare("SELECT * FROM workflow_delivery_attempt")
+		.all() as ReturnType<StateStore["listLiveWorkflowDeliveryAttempts"]>;
+}
+
 afterEach(() => {
 	for (const root of cleanups.splice(0))
 		rmSync(root, { recursive: true, force: true });
@@ -1182,13 +1192,11 @@ describe("generalized execution admission and terminal contracts", () => {
 			reason: "unlaunched_admission_rolled_back",
 		});
 		expect(
-			store
-				.listLiveWorkflowDeliveryAttempts()
-				.find(
-					(attempt) =>
-						attempt.family === "launch" &&
-						JSON.parse(attempt.contract_ref_json).pk === "exec-1",
-				),
+			allDeliveryAttempts(store).find(
+				(attempt) =>
+					attempt.family === "launch" &&
+					JSON.parse(attempt.contract_ref_json).pk === "exec-1",
+			),
 		).toMatchObject({ settlement_reason: "source_terminal" });
 		expect(
 			store

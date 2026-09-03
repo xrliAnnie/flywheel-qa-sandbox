@@ -64,10 +64,11 @@ qa_lead_render_stdout_json() {
   local launchd_registry="${15}" slot_dir="${16}" from_branch="${17}"
   local sandbox="${18}" host_repo="${19}" temp_branch="${20}"
   local branch_sha="${21}" runner_start_ref="${22}" db_path="${23}"
-  local bridge_log="${24}" bridge_launch_spec="${25}" lead_log="${26}"
-  local flywheel_projects_file="${27}" launch_manifest="${28}"
-  local campaign_manifest="${29}" campaign_id="${30}" lead_label="${31}"
-  local extra_leads_json="${32}" generalized_output_fields="${33}"
+  local bridge_log="${24}" bridge_launch_spec="${25}" bridge_tmp_dir="${26}"
+  local reports_dir="${27}" report_host_json="${28}" lead_log="${29}"
+  local flywheel_projects_file="${30}" launch_manifest="${31}"
+  local campaign_manifest="${32}" campaign_id="${33}" lead_label="${34}"
+  local extra_leads_json="${35}" generalized_output_fields="${36}"
   cat <<EOF
 {
   "slot": ${slot},
@@ -96,6 +97,9 @@ qa_lead_render_stdout_json() {
   "dbPath": "${db_path}",
   "bridgeLog": "${bridge_log}",
   "bridgeLaunchSpec": "${bridge_launch_spec}",
+  "bridgeTmpDir": "${bridge_tmp_dir}",
+  "reportsDir": "${reports_dir}",
+  "reportHost": ${report_host_json},
   "leadLog": "${lead_log}",
   "flywheelProjectsFile": "${flywheel_projects_file}",
   "launchManifest": "${launch_manifest}",

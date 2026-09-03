@@ -1,0 +1,24 @@
+sequenceDiagram
+  autonumber
+  participant L as Lead(人或 Lead agent)
+  participant CLI as flywheel-comm hold
+  participant R as runs-route.ts<br/>与 /hold /terminate 同一扇门
+  participant S as StateStore<br/>canonicalizeHoldResume 单点算 digest
+  participant REG as 19 种 hold 形状注册表
+  L->>CLI: hold list --run X
+  CLI->>R: GET /api/runs/X/holds(master token + loopback)
+  R->>REG: 逐形状 detect(run X 的事件)
+  REG-->>R: [{shape, resumable, 前置条件}]
+  R-->>L: 列表
+  L->>CLI: hold resume --run X --shape S --reason R
+  CLI->>R: POST /resume/stage(body 不带 runId,路径为准)
+  R->>S: canonicalizeHoldResume → {canonical, digest}
+  R-->>CLI: confirmToken(绑 digest)
+  CLI->>R: POST /resume(canonical + confirmToken)
+  R->>S: 同一函数再算 digest,verifyAndConsume
+  S->>REG: resume(S):前置条件重读 → 动作 → hold_resumed
+  alt 前置不满足 / hold 已变
+    S-->>L: 409 hold_changed(写 hold_resume_refused)
+  else 成功
+    S-->>L: run 回 active,同 clientRequestId 重放返回 idempotentReplay
+  end

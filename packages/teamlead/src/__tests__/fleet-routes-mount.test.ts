@@ -237,7 +237,7 @@ describe("FLY-247 inc2a — fleet console route mounting", () => {
 			schemaVersion: number;
 			projects: Array<{ leads: Array<Record<string, unknown>> }>;
 		};
-		expect(body.schemaVersion).toBe(1);
+		expect(body.schemaVersion).toBe(2);
 		expect(
 			body.projects
 				.flatMap((project) => project.leads)

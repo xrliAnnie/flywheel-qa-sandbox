@@ -1,0 +1,7 @@
+RUN v3.2.4 packages/teamlead
+
+FAIL fly2278-m0-schema.test.ts > mints current rework and carrier versions
+AssertionError: expected stale routeRevision 2 settlement to be false
+Received: true
+
+Tests 1 failed | 2 skipped (3)

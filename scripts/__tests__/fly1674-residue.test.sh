@@ -39,6 +39,19 @@ allowed_hits=(
   'scripts/__tests__/lead-patrol-snapshot.test.sh|three_stage_turn'
   'packages/teamlead/src/__tests__/patrol-tick-loop.integration.test.ts|three_stage_turn'
   'packages/teamlead/src/bridge/hook-payload.ts|three_stage_turn'
+  # FLY-2278 keeps its approved turn-wake hold/event identifier stable while
+  # leaving the old dispatcher implementation retired. Keep this exception exact by
+  # path and token so no other live three-stage surface is admitted.
+  'packages/teamlead/src/StateStore.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/StateStore.workflow-holds.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/fly2278-hold-writers.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/__tests__/hold-shape-registry.test.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/bridge/alert-kind-copy.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/bridge/delivery-contract/sources/turn-wake.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/bridge/delivery-operations.ts|three_stage_turn_stuck'
+  'packages/teamlead/src/bridge/hold-mutation-inventory.json|three_stage_turn_stuck'
+  'packages/teamlead/src/bridge/hold-shape-manifest.json|three_stage_turn_stuck'
+  'packages/teamlead/src/bridge/hold-shape-registry.ts|three_stage_turn_stuck'
   # FLY-2045 removed these three. The keywords only ever appeared inside the milestone
   # table (lines 45 and 146 of the old CLAUDE.md), which now lives in
   # engineering/doc/milestones/ARCHIVE-pre-FLY-2045.md, so they are zero-hit in CLAUDE.md

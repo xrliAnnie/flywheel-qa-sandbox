@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -111,6 +112,120 @@ describe("parseClaudeReviewOutput", () => {
 		verdict: "APPROVED",
 		findings: [],
 		reviewedHeadSha: "A".repeat(40),
+	});
+	const successEnvelope = (result: string) =>
+		JSON.stringify({
+			type: "result",
+			subtype: "success",
+			is_error: false,
+			api_error_status: null,
+			result,
+		});
+
+	it("FLY-2291: bounds trailing repair to one missing outer brace", () => {
+		const complete = parseClaudeReviewOutput(
+			'{"verdict":"APPROVED","reviewedHeadSha":null,"findings":[]}',
+		);
+		expect(complete).toMatchObject({
+			verdict: "APPROVED",
+			repairedTrailingBrace: false,
+		});
+
+		const missingOuterBrace = parseClaudeReviewOutput(
+			'{"verdict":"APPROVED","reviewedHeadSha":null,"findings":[]',
+		);
+		expect(missingOuterBrace).toMatchObject({
+			verdict: "APPROVED",
+			findings: [],
+			repairedTrailingBrace: true,
+		});
+
+		const missingArrayAndOuterBrace = parseClaudeReviewOutput(
+			'{"verdict":"APPROVED","findings":["complete"',
+		);
+		expect(missingArrayAndOuterBrace).toBeNull();
+
+		const genuinelyTruncated = parseClaudeReviewOutput(
+			'{"verdict":"APPROVED","findings":[{"title":"half',
+		);
+		expect(genuinelyTruncated).toBeNull();
+
+		const fencedTruncated = parseClaudeReviewOutput(
+			'```json\n{"verdict":"APPROVED","findings":[]\n```',
+		);
+		expect(fencedTruncated).toBeNull();
+
+		for (const incomplete of [
+			'{"verdict":"APPROVED","findings":[],"reviewedHeadSha":"abc"',
+			'{"verdict":"APPROVED","findings":[],"score":1',
+			'{"verdict":"APPROVED","findings":[],',
+			'{"verdict":"APPROVED","findings":[]:',
+		]) {
+			expect(parseClaudeReviewOutput(incomplete), incomplete).toBeNull();
+		}
+	});
+
+	it("FLY-2291: replays the FLY-2269 reviewer outputs through the real CLI envelope", () => {
+		const expected = [
+			[
+				"fly2269-r1-reviewer-raw.txt",
+				"CHANGES_REQUESTED",
+				false,
+				8,
+				"9fe6949b460f0ca6a0a65e022f31293f237e7f3a4c825d3e472b7f6f6b1b6627",
+			],
+			[
+				"fly2269-r2-reviewer-raw.txt",
+				"CHANGES_REQUESTED",
+				true,
+				6,
+				"86752ee3b7e8b813f4968f129dbedeb36a755879745c49330dca22a179098480",
+			],
+			[
+				"fly2269-r3-reviewer-raw.txt",
+				"CHANGES_REQUESTED",
+				true,
+				6,
+				"9b53df8c18471ee835fdc0d3a183a3600ecc31a2e13a7b06d229e42c7ba5cd38",
+			],
+			[
+				"fly2269-r4-reviewer-raw.txt",
+				"CHANGES_REQUESTED",
+				true,
+				5,
+				"4f4b4d178512d0ce5712560133befc365914b47862647d4029b0e717fce600d9",
+			],
+			[
+				"fly2269-r5-reviewer-raw.txt",
+				"APPROVED",
+				true,
+				2,
+				"19ce779dd53cb6330116eeed049fe0b37834986db63f29bbab435dbb6c32f9bc",
+			],
+		] as const;
+
+		for (const [
+			fixture,
+			verdict,
+			repairedTrailingBrace,
+			findings,
+			hash,
+		] of expected) {
+			const assistantText = readFileSync(
+				new URL(`./fixtures/${fixture}`, import.meta.url),
+				"utf8",
+			);
+			expect(
+				createHash("sha256").update(assistantText).digest("hex"),
+				fixture,
+			).toBe(hash);
+			const parsed = parseClaudeReviewOutput(successEnvelope(assistantText));
+			expect(parsed, fixture).toMatchObject({
+				verdict,
+				repairedTrailingBrace,
+			});
+			expect(parsed?.findings, fixture).toHaveLength(findings);
+		}
 	});
 
 	it("unwraps the --output-format json envelope and lowercases the head sha", () => {

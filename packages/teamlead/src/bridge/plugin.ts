@@ -233,6 +233,7 @@ import { buildDashboardPayload } from "./dashboard-data.js";
 import { getDashboardHtml } from "./dashboard-html.js";
 import { DeliveryProjector } from "./delivery-contract/projector.js";
 import { DeliveryContractWatch } from "./delivery-contract/watch.js";
+import { DeliveryOperations } from "./delivery-operations.js";
 import { FileDeliverySecretProvider } from "./delivery-secret.js";
 import { createDeploymentsRouter } from "./deployments-route.js";
 import { reconcileDesignReviewInstructions } from "./design-review-manifest.js";
@@ -502,6 +503,10 @@ import { resolveQuotaDaemonBridgeMode } from "./quota-daemon-cutover.js";
 import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
+import {
+	parseReportHostOverride,
+	type ReportHostOverride,
+} from "./report-host-override.js";
 import { resolveProjectIssueThread } from "./report-issue-thread-resolver.js";
 import {
 	DEFAULT_RETENTION_MAX_AGE_MS,
@@ -1278,6 +1283,7 @@ export interface BridgeAppOptions {
 		snapshot(): unknown;
 	};
 	vercelToken?: string;
+	reportHostOverride?: ReportHostOverride;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
 	/** FLY-2100: hot projects.json roster used to authorize scoped flag writes. */
@@ -4261,6 +4267,7 @@ export function createBridgeApp(
 			{
 				masterToken: config.apiToken,
 				scopedToken: config.geminiAgentToken,
+				confirmTokens: opts?.fleetConsole?.tokens ?? new ConfirmTokenStore(),
 				authorizeRework: fcWiring?.authorizeWorkflowRework,
 				collectWorkflowRun: workflowRunCollector,
 			},
@@ -4295,7 +4302,9 @@ export function createBridgeApp(
 	}
 
 	// GEO-294: /api/publish-html — generic HTML publishing (Vercel deploy)
-	const publishHtmlRouter = createPublishHtmlRouter(opts?.vercelToken);
+	const publishHtmlRouter = createPublishHtmlRouter(opts?.vercelToken, {
+		disabledByReportHostOverride: Boolean(opts?.reportHostOverride),
+	});
 	if (config.apiToken) {
 		app.use(
 			"/api/publish-html",
@@ -4315,6 +4324,7 @@ export function createBridgeApp(
 		resolve(homedir(), ".flywheel", "reports");
 	const reportsRouter = createReportsRouter({
 		vercelToken: opts?.vercelToken,
+		hostOverride: opts?.reportHostOverride,
 		// FLY-929 W3b ① + FLY-2104: resolve the sender for every delivery so a
 		// founder-approved Infra identity change takes effect without a Bridge
 		// restart. Incomplete P-identity still falls back to the legacy global bot.
@@ -4509,6 +4519,17 @@ export async function startBridge(
 	// failed Bridge start cannot leave them available to later process spawns.
 	delete process.env.FW_CUSTOMER_RELEASE_TOKEN;
 	delete process.env.FW_NPM_GAT_TOKEN;
+	const reportHostOverride = parseReportHostOverride(
+		process.env.FLYWHEEL_REPORT_HOST_OVERRIDE_URL,
+	);
+	if (reportHostOverride) {
+		console.log(
+			`[Bridge] report host override active (QA only): ${reportHostOverride.apiBaseUrl}`,
+		);
+		console.log(
+			"[Bridge] /api/publish-html disabled while FLYWHEEL_REPORT_HOST_OVERRIDE_URL is set (QA slot); use flywheel-comm publish-report",
+		);
+	}
 
 	if (projects.length === 0) {
 		throw new Error(
@@ -6733,6 +6754,7 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			reportHostOverride,
 			flagStore,
 			flagProjectNames,
 			flagProjectConfigPath,
@@ -7504,6 +7526,7 @@ export async function startBridge(
 					});
 					const deliveryContractWatch = new DeliveryContractWatch({
 						store,
+						commDb: deliveryCommDb,
 						projectName: project.projectName,
 						resolveAlertIdentity: resolveDeliveryAlertIdentity,
 						enqueueUnboundAlert: (payload) => {
@@ -7519,8 +7542,17 @@ export async function startBridge(
 							return { eventId: payload.eventId, state: "sent" };
 						},
 					});
+					const deliveryOperations = new DeliveryOperations({
+						store,
+						commDb: deliveryCommDb,
+						projectName: project.projectName,
+						resolveRecipient: ({ rootId, sourceExecutionId }) =>
+							store.resolveWorkflowDeliveryRecipient(rootId, sourceExecutionId),
+						resolveAlertIdentity: resolveDeliveryAlertIdentity,
+					});
 					deliveryProjector.runPass(deliveryNow);
 					deliveryContractWatch.runPass(deliveryNow);
+					deliveryOperations.runPass(deliveryNow);
 				} catch (error) {
 					console.warn(
 						`[delivery-contract] maintenance pass failed closed for ${project.projectName}: ${

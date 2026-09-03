@@ -1680,6 +1680,78 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -0 \"$pid\" 2>/dev/null || return 0#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 0",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -0 \"$STUB_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -0 \"$STUB_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -KILL \"$PARENT_PID\"#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -KILL \"$PARENT_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -KILL \"$PARENT_PID\"#2",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -KILL \"$PARENT_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -KILL \"$wrapper_pid\"#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -KILL \"$wrapper_pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -KILL \"$wrapper_pid\"#2",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -KILL \"$wrapper_pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -TERM \"$stub_pid\"#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -TERM \"$stub_pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -TERM \"$STUB_PID\"#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -TERM \"$STUB_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -TERM \"$stub_pid\"#2",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -TERM \"$stub_pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -TERM \"$wrapper_pid\"#1",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -TERM \"$wrapper_pid\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/qa-report-host.test.sh:kill -TERM \"$wrapper_pid\"#2",
+		"path": "scripts/__tests__/qa-report-host.test.sh",
+		"code": "kill -TERM \"$wrapper_pid\"",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/r4-window.test.sh:if kill -0 \"$pid\" 2>/dev/null; then#1",
 		"path": "scripts/__tests__/r4-window.test.sh",
 		"code": "if kill -0 \"$pid\" 2>/dev/null; then",
@@ -1998,6 +2070,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:! kill -0 \"$I_FINAL_REPORT_STUB_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "! kill -0 \"$I_FINAL_REPORT_STUB_PID\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:! kill -0 \"$old_pid\" 2>/dev/null \\#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
 		"code": "! kill -0 \"$old_pid\" 2>/dev/null \\",
@@ -2061,6 +2139,18 @@
 		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$dead_pid\" 2>/dev/null || break#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
 		"code": "kill -0 \"$dead_pid\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$I_FINAL_REPORT_STUB_PID\" 2>/dev/null || break#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -0 \"$I_FINAL_REPORT_STUB_PID\" 2>/dev/null || break",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:kill -0 \"$I_OLD_REPORT_STUB_PID\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "kill -0 \"$I_OLD_REPORT_STUB_PID\" 2>/dev/null \\",
 		"classification": "qa-only"
 	},
 	{
@@ -2751,6 +2841,12 @@
 		"key": "scripts/lib/qa-multilead.sh:while kill -0 \"$pid\" 2>/dev/null && ((waited < 10)); do#1",
 		"path": "scripts/lib/qa-multilead.sh",
 		"code": "while kill -0 \"$pid\" 2>/dev/null && ((waited < 10)); do",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lib/qa-report-host-bridge-wrapper.sh:kill -0 \"$stub\" 2>/dev/null || break#1",
+		"path": "scripts/lib/qa-report-host-bridge-wrapper.sh",
+		"code": "kill -0 \"$stub\" 2>/dev/null || break",
 		"classification": "qa-only"
 	},
 	{
