@@ -18,17 +18,17 @@ Issue: FLY-2301 (https://linear.app/geoforge3d/issue/FLY-2301/529-房台架能�
 | ⑥(d57af923)净删除优先于给机制打补丁;每个变异体先自证改变字节否则自身判失败;Claude 键集与顺序进 T2 前基线并配变异 | §0.2 R2-H1、T1 |
 
 ### 0.2 Codex 三轮处置摘要
-R1(13)与 R2(10)全部纳入(见 git 历史 rev2 / rev3 的 §0.2)。**R3(9,全部纳入,两处收窄)**:H1 生产改动回到**一行**(T7);H2 Codex `.env` 漏了固定基础赋值(含 `FLYWHEEL_PROJECTS_FILE`)→ 先建 `base_assignments` 向量再双投影,并断言进程只解析 slot projects 文件(T9/T10);H3 身份拒绝集扩为 canonical resolver 所有/断言/清理的全部变量(T9);H4 真房比对对全局 manifest / stdout 走命名叶子规范化(A7/T12),**收窄**:不做日志全文基线,只对既有 Claude 日志两行做逐字基数断言 + 一处变异(T1);H5 纯 Claude registry 走**逐字节相同的旧循环**,新收敛路径只在含 Codex 条目时启用(T6);M6 生产者接缝 = 纯搬运的 `scripts/lib/qa-lead-artifacts.sh`(T1);M7 形状元组校验器同时服务主 slot 与 extra(T8);M8 铸造事务子 shell 化、父目录与顺序写死(T5);M9 输出 / registry / 演练三方合同冻结(T9/T12)。
+R1(13)与 R2(10)全部纳入(见 git 历史 rev2 / rev3 的 §0.2)。**R3(9,全部纳入,两处收窄)**:H1 生产改动回到**一行**(T7);H2 Codex `.env` 漏了固定基础赋值(含 `FLYWHEEL_PROJECTS_FILE`)→ 先建 `base_assignments` 向量再双投影,并断言进程只解析 slot projects 文件(T9/T10);H3 身份拒绝集扩为 canonical resolver 所有/断言/清理的全部变量(T9);H4 真房比对对全局 manifest / stdout 走命名叶子规范化(A7/T12),**收窄**:不做日志全文基线,只对既有 Claude 日志两行做逐字基数断言 + 一处变异(T1);H5 纯 Claude registry 走**逐字节相同的旧循环**,新收敛路径只在含 Codex 条目时启用(T6);M6 生产者接缝 = 纯搬运的 `scripts/lib/qa-lead-artifacts.sh`(T1);M7 形状元组校验器同时服务主 slot 与 extra(T8);M8 铸造事务子 shell 化、父目录与顺序写死(T5);M9 输出 / registry / 演练三方合同冻结(T9/T12)。**R4(6,全部纳入)**:H1 `codexLead` 补 `projectName/agentId`,T12 校验与交叉核对(T9/T12);H2 Codex 拆房把 slot tmux server 退役改为收敛式,Claude 段逐字节不动(T6);M3 铸造强制失败变异改为 `mv`→`false`,INT/TERM 以 130/143 退出(T5);M4 日志两行的格式化搬进产物库供 fixture 捕获(T1);M5 A2 改为可执行边界(零写入 + 不读内容 + resolver 不回落),atime 不作证据(A2/T12);M6 心跳读取器加 `state` 枚举,每次判定一份快照(T4)。
 
 ## 1. 目标与验收标准
 
 **Goal:** 529 slot 常驻台架按 Lead 载体形状分支(`claude-v2` 既有 / `codex-tui` 新增),plist argv、env 注入集、验活、就绪、拆除、launchd 演练各自成立;新增形状只加分支,不改既有分支语义与字节。
 
 - A1 slot 条目声明 `backend:"codex-app-server"` + `codexSourceHome` 后,`test-deploy.sh <slot> --mode slot` 起出 Codex 形状受管常驻 Lead:plist argv 恰 `/bin/bash <slot wrapper>`,`RunAtLoad`+`KeepAlive` 生效。
-- A2 隔离:CODEX_HOME 在 `${SLOT_DIR}/cdxh/<agent>`,state 在 `${SLOT_DIR}/q/<slot>/state/codex-lead/<key>`;TUI 窗口只在 slot tmux server;默认 server `flywheel` 窗口清单前后 `cmp` 相同;生产 `~/.flywheel/state/codex-lead/`、`~/.flywheel/projects.json`(不被读取)、三个生产 Codex home 零写入 / 零读取。
+- A2 隔离:CODEX_HOME 在 `${SLOT_DIR}/cdxh/<agent>`,state 在 `${SLOT_DIR}/q/<slot>/state/codex-lead/<key>`;TUI 窗口只在 slot tmux server;默认 server `flywheel` 窗口清单前后 `cmp` 相同;**可执行边界**:生产 `~/.flywheel/state/codex-lead/` 与三个生产 Codex home **零写入**(mtime + 内容 hash 快照对照),不读取生产 home 的凭据 / 会话 / 内容(拒绝名单的 realpath/lstat 元数据查询允许),resolver **不回落**生产 `~/.flywheel/projects.json`(用活进程 `FLYWHEEL_PROJECTS_FILE` 实际值 + T10 去键阳性对照证明;atime 不作证据)。
 - A3 验活:恰一行 launchd pid = `node …codex-lead-tui-runtime.js`,进程环境 `CODEX_HOME` 精确等于 slot home,心跳 `processPid` 一致;就绪 = 心跳 `state=="online"` 且字段有界,且 slot server 上恰一个该窗口。
 - A4 launchd 演练:`crash` 与 `kickstart` 两式后新 pid/lstart、心跳两 id 均变、A3 重新成立、窗口恰一个;证据 JSON 含 T6 字段。
-- A5 拆房收敛(Codex):label 不在域、runtime 与 daemon 进程消失、控制 socket 消失、窗口消失、SLOT_DIR 已删;失败 → 非零并保留 SLOT_DIR 与 registry。纯 Claude registry 的 teardown 行为、日志与返回码与今日逐字节相同。
+- A5 拆房收敛(Codex):label 不在域、runtime 与 daemon 进程消失、控制 socket 消失、slot tmux server 已退役(`has-session` 失败且 socket 消失,窗口随之消失)、SLOT_DIR 已删;任一步失败 → 非零并保留 SLOT_DIR 与 registry。纯 Claude registry 的 teardown 行为、日志与返回码与今日逐字节相同。
 - A6 守卫:Claude 五面基线各有专属变异体,且每个变异先自证改变字节;Claude 既有两行日志逐字基数断言 + 变异;Codex plist、去 `TMUX_TMPDIR`、去 stale-kill 各有必红变异;三个生产 home 拒绝各一负例;身份拒绝集表驱动负例。
 - A7 Claude 回归全绿:四个既有 shell 套件 + 真 529 Claude slot 起 / 验 / 拆;plist / `.env` / per-Lead manifest 原始 `cmp -s` 相同;全局 manifest / stdout 经命名叶子规范化后 `cmp` 相同(原始 sha256 留档);产物在拆房前拷到外部目录。
 - A8 `codex-lead.sh`:legacy 变体 vs 新脚本,`FLYWHEEL_STATE_DIR` 未设时逐字节相同;设了只有新脚本移动。
@@ -73,7 +73,7 @@ classDiagram
   class SlotEntry { +backend? +codexSourceHome? +codexProfile? }
   class ProjectsLeadRow { +backend codex-app-server +canSpawnRunners false +codexResidencyPatrol true +companion true 或 codexProfile }
   class RegistryEntry { +label, plist, manifest 空串 +carrier codex-tui +codexHome, codexBin, stateDir, runtimePidFile }
-  class LaunchManifest { +既有 Claude 键原样 +leadCarrier launchd-codex-tui +codexLead{label,stateDir,codexHome,tmuxSocket,tuiWindow} }
+  class LaunchManifest { +既有 Claude 键原样 +leadCarrier launchd-codex-tui +codexLead{label,projectName,agentId,stateDir,codexHome,tmuxSocket,tuiWindow} }
   SlotEntry --> ProjectsLeadRow
   ProjectsLeadRow --> RegistryEntry
   RegistryEntry --> LaunchManifest
@@ -84,13 +84,13 @@ classDiagram
 | 文件 | 动作 | 责任 |
 |---|---|---|
 | `scripts/lib/qa-launchd-lead.sh` | 修改 | plist 外壳 + 形状片段;codex 探针 / 验活 / 就绪 / 心跳读取器 / home 铸造 / registry v2 / 收敛拆除(仅 Codex 路径) / 演练 |
-| `scripts/lib/qa-lead-artifacts.sh` | 新增(纯搬运) | 从 `test-deploy.sh` 搬出:`qa_slot_launch_env_json`、per-Lead manifest jq、`.env` 写者、launch-manifest 组装、stdout JSON 渲染;`test-deploy.sh` source 后调用;搬运零字节漂移由 T1 基线守卫 |
+| `scripts/lib/qa-lead-artifacts.sh` | 新增(纯搬运) | 从 `test-deploy.sh` 搬出:`qa_slot_launch_env_json`、per-Lead manifest jq、`.env` 写者、launch-manifest 组装、stdout JSON 渲染、两行 Claude 日志格式化函数;`test-deploy.sh` source 后调用;搬运零字节漂移由 T1 基线守卫 |
 | `scripts/lib/qa-codex-lead-wrapper.template.sh` | 新增 | slot 固定 Codex wrapper 模板 |
 | `scripts/lib/qa-codex-lead-render.py` | 新增 | 精确占位符渲染 + 静态 exec 行校验 |
 | `scripts/lib/qa-launchd-env.py` | 新增 | `.env` 赋值向量校验 / 投影(重名、resolver 拒绝集) |
 | `scripts/lib/qa-multilead.sh` | 修改 | 形状元组校验器(主 slot 与 extra 共用);slot 字段;projects 行按形状渲染 |
 | `scripts/test-deploy.sh` | 修改 | source 产物库;主 slot 形状校验;`base_assignments`;`lead_row` 分派;两个调用方形状感知解包;就绪 + 窗口硬门;Codex-only 输出字段 |
-| `scripts/test-teardown.sh` | 修改 | 仅在 Codex 路径失败时补 `carrier= step=` 日志;Claude 路径日志不变 |
+| `scripts/test-teardown.sh` | 修改 | 仅在 registry 含 Codex 条目时:失败补 `carrier= step=` 日志、slot tmux server 收敛退役;Claude 路径逐字节不变 |
 | `packages/teamlead/scripts/codex-lead.sh` | 修改 **1 行** | `:81` state 路径赋值 |
 | `scripts/__tests__/fly1663-qa-launchd.test.sh` | 修改 | 基线 P + codex 单元断言 |
 | `scripts/__tests__/qa-lead-artifact-fixtures.test.sh` | 新增 | source 产物库,不起房,渲染五面产物并比对基线;既有日志两行基数断言 |
@@ -110,10 +110,10 @@ classDiagram
 
 ### T1 — 五面 Claude 基线 + 生产者接缝 + 镜像变异体
 **顺序:先冻结基线,再搬运,再加变异。**
-1. **基线冻结**(未改动 main 上生成一次固化):P(`fly1663-qa-launchd.test.sh` 固定输入 → `qa_launchd_render_plist` 全文 `cmp`);P'/E/M/L/S 由一次既有 `LEAD_SLOT` hermetic 部署产物固化(per-Lead plist、`.env`、manifest.json、全局 `launch-manifest.json`、stdout JSON)。规范化只替换**命名易变叶子**:token 值、`TEAMLEAD_API_TOKEN`、端口、`SLOT_DIR` 前缀、`bridgePid`、`distSha`、`branchSha`、`runnerStartPoint`、`tempBranch`、时间戳;比对前断言键集合、键序与类型未变。`.env` fixture token 用含 `'` 与空格的敌意值,脱敏前先断言其 `%q` 原始编码。同时固化既有 Claude 日志两行的逐字形态:`Lead launchd label: <label>; private socket: <socket>` 与 extra Lead 的 `Extra Lead <agent> background PID:`(基数恰 1)。
+1. **基线冻结**(未改动 main 上生成一次固化):P(`fly1663-qa-launchd.test.sh` 固定输入 → `qa_launchd_render_plist` 全文 `cmp`);P'/E/M/L/S 由一次既有 `LEAD_SLOT` hermetic 部署产物固化(per-Lead plist、`.env`、manifest.json、全局 `launch-manifest.json`、stdout JSON)。规范化只替换**命名易变叶子**:token 值、`TEAMLEAD_API_TOKEN`、端口、`SLOT_DIR` 前缀、`bridgePid`、`distSha`、`branchSha`、`runnerStartPoint`、`tempBranch`、时间戳;比对前断言键集合、键序与类型未变。`.env` fixture token 用含 `'` 与空格的敌意值,脱敏前先断言其 `%q` 原始编码。同时固化既有 Claude 日志两行的逐字形态:`Lead launchd label: <label>; private socket: <socket>` 与 extra Lead 的 `Extra Lead <agent> background PID:`(基数恰 1)—— 这两行的**格式化**(不含时间戳前缀)搬成 `qa-lead-artifacts.sh` 里的两个纯函数 `qa_lead_log_launchd_label label socket` / `qa_lead_log_extra_pid agent pid`,主 / extra 调用点经 `log "$(…)"` 使用,fixture 以固定输入直接捕获其输出。
 2. **纯搬运**:把 `qa_slot_launch_env_json`、per-Lead manifest jq、`.env` 写者、launch-manifest 组装(现有 `qa_multilead_launch_manifest` + 追加 jq)、stdout JSON heredoc 提炼进 `scripts/lib/qa-lead-artifacts.sh`(函数签名 = 现有实参),`test-deploy.sh` source 后调用;搬运后五面基线与两行日志必须仍绿(这就是零漂移证明)。
 3. **生产者级 fixture**(`qa-lead-artifact-fixtures.test.sh`):source 产物库,以固定输入渲染五面产物并 `cmp`;不起房、不需 built packages。
-4. **变异体**(`fly1663-qa-launchd-mutants.test.sh`):镜像 `scripts/lib` + `scripts/__tests__` + `scripts/test-deploy.sh`;每个变异:替换计数恰 1 → **在镜像里生成产物并与基线比对,必须不同(否则该变异测试自身失败 `non-discriminating mutant`)** → 运行镜像 fixture,断言恰好对应基线失败、其余仍绿。变异集:Claude-only argv 行、Claude-only env 行、`.env` 写者(`%q`→`%s`)、manifest 写者(`launchEnvironment` 键名)、launch-manifest(`mainLeadLabel` 键名)、stdout JSON(`leadSocket` 键名)、Claude 日志行(`private socket:` 文案);T3 后追加 Codex argv;T10 后追加去 `TMUX_TMPDIR`、去 stale-kill(在真 tmux 测试里)。**E2E 只保留一条未变异。** CI 预算:fixture + 变异 < 60s;新 E2E 用例 ≈ 1–2 分钟;层测试 < 60s。
+4. **变异体**(`fly1663-qa-launchd-mutants.test.sh`):镜像 `scripts/lib` + `scripts/__tests__` + `scripts/test-deploy.sh`;每个变异:替换计数恰 1 → **在镜像里生成产物并与基线比对,必须不同(否则该变异测试自身失败 `non-discriminating mutant`)** → 运行镜像 fixture,断言恰好对应基线失败、其余仍绿。变异集:Claude-only argv 行、Claude-only env 行、`.env` 写者(`%q`→`%s`)、manifest 写者(`launchEnvironment` 键名)、launch-manifest(`mainLeadLabel` 键名)、stdout JSON(`leadSocket` 键名)、Claude 日志行(产物库里 `private socket:` 文案,fixture 捕获字节先变再红);T3 后追加 Codex argv;T10 后追加去 `TMUX_TMPDIR`、去 stale-kill(在真 tmux 测试里)。**E2E 只保留一条未变异。** CI 预算:fixture + 变异 < 60s;新 E2E 用例 ≈ 1–2 分钟;层测试 < 60s。
 
 ### T2 — plist 渲染拆分(行为不变)
 `qa_launchd_render_plist` 签名与校验不变;内部拆为 open / argv_claude / env_claude / close。基线 P/P' 仍绿。
@@ -127,27 +127,27 @@ classDiagram
 - `qa_launchd_lead_pid_exact label`:`^[[:space:]]*pid = [0-9]+[[:space:]]*$` 恰一行(同 `resident-codex-lead-recover.sh:115-122`);仅 Codex 路径。
 - `qa_launchd_process_env_has pid name expected` → 0/1/2;`/proc` 存在且可读则 NUL 分词,否则 `ps eww -p pid -o command=`;≤64KB;不打印 env;诊断仅 `probe=<proc|ps|unavailable> match=<0|1>`。
 - `qa_launchd_codex_process_matches pid`:python `shlex.split`;恰一 token 以 `/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js` 结尾、非 index 0、前一 token basename `node`;`ps -o stat=` 首字母 `Z` 视为不存活。
-- `qa_launchd_read_heartbeat path`:lstat 拒 symlink、≤64KB、object、`v==1`、`processPid` 正整数、三个 id 非空 ≤256、`updatedAt` 非空 ≤64 → TSV;三处共用。
+- `qa_launchd_read_heartbeat path`:lstat 拒 symlink、≤64KB、object、`v==1`、`processPid` 正整数、三个 id 非空 ≤256、`updatedAt` 非空 ≤64、`state` ∈ `running|online|generation_lost|shutdown`(`resident-codex-lead-lifecycle.ts` 生产枚举)→ TSV `pid gen carrier state sha256`(hash 取自同一次读入的字节);verify / ready / drill **每次判定只读一次、只用这一份快照**;负例:缺 state、非法 state、状态转换 fixture。
 - `qa_launchd_codex_lead_verify label codex_home state_dir` → `pid<TAB>state_dir`。
-- `qa_launchd_codex_lead_ready state_dir pid project lead tmux_socket`:心跳 online ∧ pid 一致 ∧ `tmux -S $tmux_socket list-windows -t =flywheel -F '#{window_name}'` 中 `${project}-${lead}` 恰一行。
+- `qa_launchd_codex_lead_ready state_dir pid project lead tmux_socket`:一份心跳快照的 `state==online` ∧ pid 一致 ∧ `tmux -S $tmux_socket list-windows -t =flywheel -F '#{window_name}'` 中 `${project}-${lead}` 恰一行。
 - `qa_launchd_codex_state_dir state_root project lead`:同 `codex-lead.sh:78-81`。
 - 负例:双 pid 行、node 前驱错、CODEX_HOME 异、symlink / 超大心跳、zombie、窗口 0 或 2 个。`qa_launchd_lead_verify` 一字不动。
 
 ### T5 — CODEX_HOME 铸造(事务在子 shell 内)
-`qa_launchd_mint_codex_home source dest slot_root`(函数体 = `( set -e; trap cleanup EXIT INT TERM; … )` 子 shell,trap 只在子 shell 内,不触碰调用方 trap 表):
+`qa_launchd_mint_codex_home source dest slot_root`(函数体 = 子 shell:先 `stage=""` 再 `trap cleanup EXIT`、`trap 'cleanup; exit 130' INT`、`trap 'cleanup; exit 143' TERM`,信号处理器必定退出不返回;trap 只在子 shell 内,不触碰调用方 trap 表):
 1. 词法与 canonical 校验:`slot_root` ∈ `/tmp/flywheel-test-slot-<n>` 或 `/private/tmp` 拼写;`dest` 已存在最近祖先 realpath 在 `realpath(slot_root)` 边界内;`dest` 不存在;source/dest realpath 互不包含;`source/auth.json` 非 symlink 常规文件;`source/packages/standalone/current` 解析为 `source/packages/standalone/releases/<name>` 的一个直接子目录(`<name>` ~ `^[A-Za-z0-9][A-Za-z0-9._-]*$`),其中 `codex` 可执行;拒绝名单(realpath)`$HOME/.codex-mufasa`、`$HOME/.codex-infra-bot`、`$HOME/.flywheel/raya/codex-home` → 1,stderr `refusing production Lead codex home`(fixture 结构完整;拒绝时 dest / stage 均不存在)。
 2. `umask 077`;`mkdir -p "$(dirname dest)"`(即 `${SLOT_DIR}/cdxh`,由本函数创建,mode 700),创建后**复核**其 realpath 仍在 slot 边界内且非 symlink。
 3. `stage=$(mktemp -d "$(dirname dest)/.cdxh-stage.XXXXXX")`(700);trap 在非成功退出时 `rm -rf "$stage"`。
 4. 先克隆 release:`cp -Rc` 失败 → 清空 stage 内容后 `cp -R`;写 `current` 相对 symlink;校验 `stage/packages/standalone/current/codex` realpath 以 `stage/` 开头且可执行;`LC_ALL=C` 字节数 `len("$dest/app-server-control/app-server-control.sock") ≤ 100`。
 5. **最后**拷 `auth.json`(600)。
 6. `mv "$stage" "$dest"`(原子 rename)后清空 `stage` 变量使 trap 成为空操作;子 shell 正常退出。不拷 `history.jsonl / sessions / goals_* / logs_* / app-server-*`。
-- 负例:dest 已存在、symlink 祖先逃逸、`current` 指向 releases 外、auth.json 为 symlink、socket 过长、**镜像变异删除 rename 行**(auth 已拷)→ 无 stage 残留、无 dest;成功与全部失败路径在 `/bin/bash`(3.2)与 CI bash 各跑一遍。
+- 负例:dest 已存在、symlink 祖先逃逸、`current` 指向 releases 外、auth.json 为 symlink、socket 过长、**镜像变异把 `mv "$stage" "$dest"` 精确替换为 `false # forced post-auth/pre-rename failure`**(替换计数恰 1)→ 非零、无 dest、无 stage、父目录下无 sentinel 凭据字节;INT 与 TERM 在 auth 已拷后送达 → 退出码 130/143 且无残留;成功与全部失败路径在 `/bin/bash`(3.2)与 CI bash 各跑一遍。
 
 ### T6 — registry v2、拆除(Claude 路径不变)、launchd 演练
 - `qa_launchd_register registry label plist manifest [carrier codexHome codexBin stateDir runtimePidFile]`:4 参逐字节同今日;9 参写新键(Codex 条目 `manifest` 为**显式空串**)。
 - `qa_launchd_stop_registry registry`:
   - **legacy 快路径**:registry 中**每个**条目都只有今日三键(`label/plist/manifest`)且无 `carrier` 键 → 执行**与今日逐字节相同的循环**(`qa-launchd-lead.sh:198-204`:逐 label `qa_launchd_lead_stop`,首个失败即 `return 1`),既有 `test-teardown.sh` 日志文案与返回码不变。测试:纯 Claude registry 的 stop 调用序列、日志、返回码转录与今日相同 + 一处变异。
-  - **v2 路径**(存在任一 `carrier=codex-tui` 条目):逐条、聚合失败、末尾非零。Claude 条目仍只做既有 `qa_launchd_lead_stop`;Codex 条目:校验(`codexHome` realpath 在 registry 所在 slot 根内;`codexBin` realpath 以 `codexHome/packages/standalone/` 开头且可执行;否则记失败且不执行二进制)→ 记 launchd pid+lstart(label 已不在域时改读 `runtimePidFile` 的 pid 并以 `ps -o lstart=` 取 lstart,取不到则视为已消失)→ `bootout` → 等 `launchctl print` 不存在且 pid+lstart 消失(`Z` 视为消失)→ 读 `codexHome/app-server-daemon/app-server.pid` → `${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh 30 env CODEX_HOME=<home> <codexBin> remote-control stop --json` → 等 daemon pid+lstart 消失且 `app-server-control/app-server-control.sock` 不存在 → 任一步超时/非零记失败继续下一条。`test-teardown.sh:734-738` 既有分支保留 SLOT_DIR 与 registry;仅 Codex 失败时追加 `carrier=codex-tui step=<…>` 日志行。
+  - **v2 路径**(存在任一 `carrier=codex-tui` 条目):逐条、聚合失败、末尾非零。Claude 条目仍只做既有 `qa_launchd_lead_stop`;Codex 条目:校验(`codexHome` realpath 在 registry 所在 slot 根内;`codexBin` realpath 以 `codexHome/packages/standalone/` 开头且可执行;否则记失败且不执行二进制)→ 记 launchd pid+lstart(label 已不在域时改读 `runtimePidFile` 的 pid 并以 `ps -o lstart=` 取 lstart,取不到则视为已消失)→ `bootout` → 等 `launchctl print` 不存在且 pid+lstart 消失(`Z` 视为消失)→ 读 `codexHome/app-server-daemon/app-server.pid` → `${FLYWHEEL_DIR}/scripts/lib/bounded-run.sh 30 env CODEX_HOME=<home> <codexBin> remote-control stop --json` → 等 daemon pid+lstart 消失且 `app-server-control/app-server-control.sock` 不存在 → 任一步超时/非零记失败继续下一条。`test-teardown.sh:734-738` 既有分支保留 SLOT_DIR 与 registry;仅 Codex 失败时追加 `carrier=codex-tui step=<…>` 日志行。**slot tmux server 退役(仅 Codex)**:`test-teardown.sh` 在停 registry 前记录「registry 是否含 `codex-tui` 条目」;既有 Claude 段(`:949-953` 的 `kill-server … || true`)逐字节不动;含 Codex 条目时,在 Bridge / runner 已停之后对 `${SLOT_DIR}/tmux-$(id -u)/default` 做收敛退役:存在则 `kill-server`,轮询直到 `tmux -S <socket> has-session` 失败且 socket 文件消失(有界 30s),否则在 `rm -rf "$SLOT_DIR"` 之前返回非零并保留目录与 registry。用例:runtime 遗留窗口、`kill-server` 返 0 但 server/socket 仍在。
 - `qa_launchd_lead_restart_drill label carrier mode(crash|kickstart) codex_home state_dir tmux_socket project lead`(Codex 形状全部必填;调用前逐个校验:label 匹配 `com.flywheel.qa.lead.slot-<n>.<agent>`,`codex_home`/`state_dir` 为 slot 内绝对路径,`tmux_socket` == `${SLOT_DIR}/tmux-$(id -u)/default` 且为 socket;任一缺失/畸形 → 在任何 `kill`/`launchctl` 之前返回 1):记旧 pid/lstart/两 id/心跳 sha256;`crash` → `kill -9`;`kickstart` → `launchctl kickstart -k <domain>/<label>`;重验 verify + ready(恰一窗);断言 pid 或 lstart 变化且两 id 均变;证据 JSON `{mode,label,domain,old:{pid,lstart,generationId,carrierInstanceId},new:{…},heartbeatPath,heartbeatSha256,tmuxSocket,predicates:{pidExact,processMatches,envHas,heartbeatPid,tuiWindowExactlyOne},startedAt,convergedAt}`,无 env / 凭据。
 - 替身:`launchctl` 增 `kickstart -k`;`codex` 替身可配置「返回 0 但 pid 文件仍活」「非零」;用例:bootout 失败、stop 非零、stop 0 但 daemon 活、runtime 延迟退出、后续条目仍处理、`codexBin` 越界拒执行、label 已消失走 `runtimePidFile`。
 
@@ -165,7 +165,7 @@ classDiagram
 - Codex 分支流程:`codex_home` ← T5;`state_dir` ← T4;`.env`;渲染 wrapper(`project_dir=$workspace`)→ codex plist → registry 9 参(`manifest=""`,`runtimePidFile=${runtime}/pid`)→ start → verify;输出 `pid<TAB>state_dir<TAB>label<TAB>codex_home<TAB>pid_file`。
 - **五列形状感知解包**(两个调用方):Claude:`LEAD_SOCKET=$raw2`、`_lead_manifest=$raw4`,既有日志 / `confirm_dev_channels_prompt` / 输出字节不变;Codex:`LEAD_STATE_DIR=$raw2`、`LEAD_CODEX_HOME=$raw4`,`LEAD_SOCKET=""`,打印 `Lead state dir: … ; codex home: …` 而非 `private socket` 行;extra 同理。
 - 就绪:Codex 轮询 `qa_launchd_codex_lead_ready`(`tmux_socket=${SLOT_DIR}/tmux-$(id -u)/default`,同 `LEAD_READY_TIMEOUT_SEC`);失败走既有 stop + exit 1。`confirm_dev_channels_prompt` 只在 Claude。
-- **输出合同(冻结)**:`launch-manifest.json` / stdout JSON 既有键、键序、值逐字节不变(Codex 时 `mainLeadSocket`/`leadSocket` 为空串,与 `--no-lead` 同形);顶层 `leadCarrier` 取 `launchd-codex-tui`;仿 `GENERALIZED_OUTPUT_FIELDS` 先例**条件追加** `codexLead:{label,stateDir,codexHome,tmuxSocket,tuiWindow:"present"}`;不出 `n/a`。
+- **输出合同(冻结)**:`launch-manifest.json` / stdout JSON 既有键、键序、值逐字节不变(Codex 时 `mainLeadSocket`/`leadSocket` 为空串,与 `--no-lead` 同形);顶层 `leadCarrier` 取 `launchd-codex-tui`;仿 `GENERALIZED_OUTPUT_FIELDS` 先例**条件追加** `codexLead:{label,projectName,agentId,stateDir,codexHome,tmuxSocket,tuiWindow:"present"}`;不出 `n/a`。
 - sentinel:向量塞入 `QA_SENTINEL_SECRET=<随机>`(非拒绝集名,会被投影)与合法 token;断言二者的值不出现在 stdout、`launch-manifest.json`、`lead.log`、`bridge.log`、演练 JSON、测试自身输出中;`codexSourceHome` 也不得出现在 projects / manifests / stdout / 日志。
 
 ### T10 — hermetic 真实性(分层 + 一条 E2E + 隔离)
@@ -182,8 +182,8 @@ classDiagram
 `ci.yml:352` 步骤追加 `qa-lead-artifact-fixtures.test.sh`、`fly1663-qa-launchd-mutants.test.sh`、`codex-lead-state-root.test.sh`、`qa-codex-lead-layers.test.sh`、`qa-codex-tmux-isolation.test.sh`;`path-hygiene.sh` 与 s0-scope 清单加模板;playbook:slot 字段、`codexSourceHome` 前置(`CODEX_HOME=<home> codex login`)、roundtable 不支持、演练命令与外部证据目录、双 server 清单对照法。
 
 ### T12 — 真机验收
-- `scripts/qa-fly-2301-codex-lead-drill.sh <slot> <crash|kickstart> <evidence-dir>`:`evidence-dir` 必填且在 SLOT_DIR 外;读 `${SLOT_DIR}/launch-manifest.json`,要求 `leadCarrier == launchd-codex-tui` 且 `codexLead.{label,stateDir,codexHome,tmuxSocket}` 齐全,校验 `tmuxSocket == ${SLOT_DIR}/tmux-$(id -u)/default`、`stateDir`/`codexHome` 在 SLOT_DIR 内(缺失/畸形 → 在任何信号或 `launchctl` 前拒绝);调用 `qa_launchd_lead_restart_drill "$label" codex-tui "$mode" "$codexHome" "$stateDir" "$tmuxSocket" "$projectName" "$agentId"`(project/agent 来自同一 manifest);证据 JSON + 当时 `launch-manifest.json` + 心跳快照 + 两个 tmux server 窗口清单原子写入 `evidence-dir`。
-- 顺序:① 全部 shell 测试;② 真 529 Claude slot(`test-deploy.sh 2 --mode slot`)起 / 验 / 拆:plist / `.env` / per-Lead manifest 与 main 同命令产物原始 `cmp -s`;全局 manifest / stdout 先断言键序类型再做 T1 同一规范化后 `cmp`;原始 sha256 留档;全部产物拆房前拷到外部目录;③ slot 4 声明 codex 形状(`codexSourceHome=~/.codex-259-qa`,先 `codex login` 校验),记录默认 tmux server 清单、`~/.flywheel/projects.json` atime/mtime、生产目录 mtime 基线;`test-deploy.sh 4 --mode slot`;A1–A3;两式演练(A4);拆房(A5);对照 A2 基线;④ 证据已在外部目录;⑤ 恢复 slot 4 条目。
+- `scripts/qa-fly-2301-codex-lead-drill.sh <slot> <crash|kickstart> <evidence-dir>`:`evidence-dir` 必填且在 SLOT_DIR 外;读 `${SLOT_DIR}/launch-manifest.json`,要求 `leadCarrier == launchd-codex-tui` 且 `codexLead.{label,projectName,agentId,stateDir,codexHome,tmuxSocket}` 齐全;`projectName` ~ `^[A-Za-z0-9][A-Za-z0-9._-]*$`,`agentId` ~ `^[a-z0-9][a-z0-9-]*$`,`label == com.flywheel.qa.lead.slot-<n>.${agentId}`,期望窗口名 `${projectName}-${agentId}`,`tmuxSocket == ${SLOT_DIR}/tmux-$(id -u)/default`,`stateDir`/`codexHome` 在 SLOT_DIR 内(任一缺失 / 畸形 / 错配 → 在任何信号或 `launchctl` 前拒绝;每个字段各一缺失与错配变异,断言零信号零 launchctl 调用);调用 `qa_launchd_lead_restart_drill "$label" codex-tui "$mode" "$codexHome" "$stateDir" "$tmuxSocket" "$projectName" "$agentId"`;证据 JSON + 当时 `launch-manifest.json` + 心跳快照 + 两个 tmux server 窗口清单原子写入 `evidence-dir`。
+- 顺序:① 全部 shell 测试;② 真 529 Claude slot(`test-deploy.sh 2 --mode slot`)起 / 验 / 拆:plist / `.env` / per-Lead manifest 与 main 同命令产物原始 `cmp -s`;全局 manifest / stdout 先断言键序类型再做 T1 同一规范化后 `cmp`;原始 sha256 留档;全部产物拆房前拷到外部目录;③ slot 4 声明 codex 形状(`codexSourceHome=~/.codex-259-qa`,先 `codex login` 校验),记录默认 tmux server 清单、生产 state 目录与三个生产 Codex home 的 mtime + 内容 hash 基线(零写入证据);`test-deploy.sh 4 --mode slot`;A1–A3;两式演练(A4);拆房(A5);对照 A2 基线;④ 证据已在外部目录;⑤ 恢复 slot 4 条目。
 
 ## 6. 回滚边界
 台架侧全部在 `scripts/lib/*`、`scripts/test-deploy.sh`、`scripts/test-teardown.sh`、测试与文档;不声明 `backend` 时五面产物、日志两行、teardown 行为逐字节相同(T1/T6 守卫)。生产侧唯一改动 `codex-lead.sh` 一行(T7)。拆房失败时 SLOT_DIR、registry、`cdxh/<agent>` 保留。
