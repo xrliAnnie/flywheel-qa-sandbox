@@ -745,6 +745,8 @@ expected_shard_tests = {
         "Test — FLY-1023 Buddy onboarding (step CLI + provider contract)",
         "Test — FLY-1189 multi-Lead campaign harness",
         "Test — FLY-2237 slot Bridge cycle",
+        "Test — FLY-2270 QA report host stub",
+        "Test — FLY-2270 slot Bridge launch boundary",
         "Test — FLY-1775 generalized-DAG 529 room",
         "Test — FLY-1189 fault injector safety lock",
         "Test — FLY-1189 assert library + driver trap owner",

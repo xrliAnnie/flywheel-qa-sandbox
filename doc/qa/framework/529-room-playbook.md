@@ -65,7 +65,7 @@ exact-head 闸会在被测 HEAD 变化后要求拆房重建。teardown 为了保
 | # | 现象 | 根因 | 现在的闸 | 非 generalized 房 |
 |---:|---|---|---|---|
 | 1 | 从主仓起房，改动明明在被测分支却没生效 | slot 脚本和 build 字节来自命令所在 worktree | **自动**：从当前 worktree 起房；`--expect-head <40-sha>` 可在任何 mutation 前锁 HEAD；readiness 再核 `/health` 双 SHA | 仍要自己确认 cwd / HEAD |
-| 2 | tmux/codex socket 报 `sun_path` 过长 | macOS Unix socket 上限约 104 bytes，长 worktree `TMPDIR` 会把路径推爆 | **自动**：generalized 子进程选短 TMPDIR；Codex stub 协议测试也固定 `/tmp` 并断言 socket bytes `<104`；安全的短 TMPDIR 原样保留 | 仍沿调用者 TMPDIR |
+| 2 | tsx/tmux/codex socket 报 `EINVAL` 或 `sun_path` 过长，Bridge 起不来 | macOS Unix socket 上限约 104 bytes，runner worktree 的长 `TMPDIR` 会把 IPC 路径推爆 | **自动**：所有 slot Bridge 固定使用 mode `0700` 的 `${SLOT_DIR}/tmp`；不读取调用者 `TMPDIR`，最坏 `tsx-65535/99999.pipe` 仍 `<104` bytes | 同样固定到各自 slot，不再继承调用者 `TMPDIR` |
 | 3 | slot 偷带 roundtable / cross-dept 行为 | shell 从调用环境继承 `FLYWHEEL_LEAD_CROSS_DEPT_CHANNEL_IDS` 与 `FLYWHEEL_ROUNDTABLE_*` 全族变量 | **自动**：单一 scrub 清单同时驱动 Bridge `env -u` 与 Lead launchd-v2 manifest 空值覆盖；生产 `.env` 新增的已知 roundtable 坐标不会只漏进一侧 | 仍按原房语义继承 |
 | 4 | `set -a; source .env` 后告警全部 403 / 死信 | ambient `FLYWHEEL_ALERT_SENDER_TOKEN_ENV` 把发送链塌缩到错误 token identity | **自动**：generalized Bridge / Lead exec boundary 明确 unset；不会把生产 `.env` 热改写成修复手段 | 仍需操作者避免污染 env |
 | 5 | slot 1 bot 可发告警，slot 2 bot 403 | bot 看得到频道不等于有 POST + DELETE 权限；频道邀请矩阵不完整 | **预检**：对每个配置 sender 发唯一 marker，再 DELETE；POST/DELETE 任一非 2xx 都在 readiness 前报 bot identity，且不打印 token | 仍需手工确认每个 bot 的邀请与发送/删除权 |
@@ -104,6 +104,17 @@ menu / roster / adoption 一并由装房脚本落盘，readiness 从 HTTP 端点
 - `stub-control/`：tuple-bound QA FAIL release、QA PASS release、exit fence；
 - `e2e-evidence/`：按 run 分层的九步证据与 `owner.json`。
 
+slot Bridge 的报告链另用独立的随机 token；它不会复用调用者或生产环境的
+`VERCEL_TOKEN`。`test-deploy.sh` 的 JSON 会给出：
+
+- `bridgeTmpDir`: `${SLOT_DIR}/tmp`；
+- `reportsDir`: `${SLOT_DIR}/state/reports`；
+- `reportHost`: 有 API token 的房型为 `{url, tokenPath, sitesDir}`，默认无 token 房型为 `null`。
+
+报告 token 与 Bridge launch spec 中的 secret copy 都是 mode `0600`；JSON
+只暴露路径。`registry.json`、`previews/` 与 stub 页面全部留在 slot tree，不能写
+`~/.flywheel/reports`。
+
 ## 4. 九步驱动的真实边界
 
 默认 `--stub-runner` 不是 mock Bridge。stub 只替换模型推理，并保留：
@@ -123,6 +134,50 @@ stub 会在 QA attempt 1 先发布 ready tuple；driver 完成 step 4 四子断�
 默认 Quickstart 故意不设置 `TEST_REPLY_BY_ISSUE`：A1 要证明 generalized master token 可用，同时 reply-by-issue 路由保持关闭。九步 step 5 用 DB 级 `question` gate 验证投递与 holder attribution，不冒充需要 committed HTML + HTTPS URL 的 `founder_review`；step 8 的真实 `approve_to_ship` holder 仍覆盖 founder approval / land 链，不依赖 Discord 卡片。
 
 如果 QA 目标本身包含 Discord founder card 或 reply-by-issue，另开对应消息房并配置 slot bot。该房必须通过第 5 条 sender POST + DELETE 预检，并用 slot-local API token；不要把那条消息腿混写成 generalized DAG 基线已经覆盖。
+
+### 5.1 报告卡片链验收
+
+有 API token 的房型会随 Bridge 起一个仅监听 `127.0.0.1` 的 slot-local
+托管服务。不要给 `test-deploy.sh` 临时塞 `VERCEL_TOKEN` 或改 `TMPDIR`；先保存
+它的 JSON，再用 slot master token 走真实 `publish-report → 截图 → Discord`
+链：
+
+```bash
+scripts/test-deploy.sh 2 --generalized --stub-runner --no-lead > /tmp/slot-2-deploy.out
+sed -n '/^{/,$p' /tmp/slot-2-deploy.out > /tmp/slot-2.json
+
+BRIDGE_URL=$(jq -r '.bridgeUrl' /tmp/slot-2.json)
+PROJECT=$(jq -r '.projectName' /tmp/slot-2.json)
+CHANNEL=$(jq -r '.chatChannelId' /tmp/slot-2.json)
+MASTER_TOKEN_PATH=$(jq -r '.apiTokenPath' /tmp/slot-2.json)
+REPORTS_DIR=$(jq -r '.reportsDir' /tmp/slot-2.json)
+
+FLYWHEEL_BRIDGE_URL="$BRIDGE_URL" \
+TEAMLEAD_API_TOKEN="$(<"$MASTER_TOKEN_PATH")" \
+FLYWHEEL_REPORTS_DIR="$REPORTS_DIR" \
+flywheel-comm publish-report \
+  --html /absolute/path/to/report.html \
+  --project "$PROJECT" \
+  --channel "$CHANNEL" \
+  --title "529 slot report-chain acceptance"
+```
+
+通过判据：命令 exit `0`；stdout 的 `delivered=true`；返回 URL `curl -fsS`
+为 `200`；卡片出现在该 slot 的 529 频道；`bridge.log` 含
+`report host override active (QA only)`。截图若按既有策略降级为纯链接不算发布
+失败，但消息与可访问 URL 两项都必须成立。
+
+负向对照也要记录：起房前后 `~/.flywheel/reports/registry.json` 的存在性/mtime
+和 `~/.flywheel/reports/previews/` 计数不变；无 bearer 请求 report host 的
+`/v13/deployments/self-check` 返回 `401`；slot override 生效时旧
+`/api/publish-html` 返回 `503` 并指向 `flywheel-comm publish-report`，不得把它
+当作第二条发布路径。
+
+report host 的生命期等于 Bridge：`test-cycle-bridge.sh 2` 会停止旧 host、释放
+旧端口，并在新 Bridge PID 下起一个新端口；原先投到 Discord 的 loopback URL
+随即失效。`state/reports` 与 `state/report-host/sites` 仍保留，但验收应从新 URL
+重新 publish。`test-teardown.sh 2` 只需停止 Bridge；host 通过父进程监视自退，
+没有独立 stop 命令或 pid 元数据。
 
 ## 6. Go / No-Go
 

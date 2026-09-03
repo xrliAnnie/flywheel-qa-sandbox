@@ -136,16 +136,10 @@ qa_generalized_validate_expected_head() {
 	}
 }
 
-# tmux's Unix socket is rooted below TMPDIR. macOS sockaddr_un.sun_path is
-# 104 bytes including the NUL terminator, so keep four bytes of margin.
-qa_generalized_safe_tmpdir() {
-	local candidate="${1:-/tmp}" uid="${2:-$(id -u)}" socket_path
-	socket_path="${candidate%/}/tmux-${uid}/default"
-	if (( ${#socket_path} > 100 )); then
-		printf '/tmp\n'
-	else
-		printf '%s\n' "$candidate"
-	fi
+# Slot children always use a short, owner-only directory, independent of the
+# caller's TMPDIR and of other 529 rooms.
+qa_slot_child_tmpdir() {
+	printf '%s/tmp\n' "${1:?slot directory required}"
 }
 
 qa_generalized_install_stub() {

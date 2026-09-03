@@ -3,9 +3,11 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
+import { createServer, type Server } from "node:http";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AdmissionCrossingBarrier } from "../bridge/admission-crossing-barrier.js";
@@ -15,6 +17,7 @@ import {
 } from "../bridge/liveness-manifest.js";
 import { createBridgeApp, startBridge } from "../bridge/plugin.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
+import * as tmuxEnvironmentScrub from "../bridge/tmux-environment-scrub.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import { loadConfig } from "../config.js";
 import { MetaAlertNotifier } from "../MetaAlertNotifier.js";
@@ -1162,6 +1165,141 @@ describe("Bridge scaffold", () => {
 
 		expect(process.env.FW_CUSTOMER_RELEASE_TOKEN).toBeUndefined();
 		expect(process.env.FW_NPM_GAT_TOKEN).toBeUndefined();
+	});
+
+	it("rejects a non-loopback report host before tmux scrub or StateStore open", async () => {
+		vi.stubEnv("FLYWHEEL_REPORT_HOST_OVERRIDE_URL", "http://10.0.0.5:1");
+		const scrub = vi.spyOn(
+			tmuxEnvironmentScrub,
+			"scrubManagedTmuxEnvironments",
+		);
+		const createStore = vi.spyOn(StateStore, "create");
+
+		await expect(
+			startBridge(makeConfig(), [
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [],
+				},
+			]),
+		).rejects.toThrow("FLYWHEEL_REPORT_HOST_OVERRIDE_URL");
+		expect(scrub).not.toHaveBeenCalled();
+		expect(createStore).not.toHaveBeenCalled();
+	});
+
+	it("routes QA report publishing to the isolated loopback host and report root", async () => {
+		const reportsRoot = mkdtempSync(join(tmpdir(), "fly2270-reports-"));
+		const productionRegistry = join(
+			homedir(),
+			".flywheel",
+			"reports",
+			"registry.json",
+		);
+		const productionBefore = existsSync(productionRegistry)
+			? statSync(productionRegistry).mtimeMs
+			: undefined;
+		const vercelServer = createServer((_req, res) => {
+			res.writeHead(200, { "content-type": "application/json" });
+			res.end(
+				JSON.stringify({
+					id: "dpl_qa",
+					url: "unused",
+					readyState: "READY",
+				}),
+			);
+		});
+		await new Promise<void>((resolve) =>
+			vercelServer.listen(0, "127.0.0.1", resolve),
+		);
+		const vercelAddress = vercelServer.address();
+		const vercelPort =
+			typeof vercelAddress === "object" && vercelAddress
+				? vercelAddress.port
+				: 0;
+		vi.stubEnv("FLYWHEEL_REPORTS_DIR", reportsRoot);
+		vi.stubEnv(
+			"FLYWHEEL_REPORT_HOST_OVERRIDE_URL",
+			`http://127.0.0.1:${vercelPort}`,
+		);
+		vi.stubEnv("VERCEL_TOKEN", "qa-token");
+
+		let appServer: Server | undefined;
+		try {
+			const result = await startBridge(makeConfig({ apiToken: "master" }), [
+				{
+					projectName: "test",
+					projectRoot: "/tmp",
+					leads: [
+						{
+							agentId: "product-lead",
+							summaryRole: "producer",
+							forumChannel: "test-channel",
+							chatChannel: "test-chat",
+							match: { labels: ["Product"] },
+						},
+					],
+				},
+			]);
+			closeFn = result.close;
+			appServer = result.app.listen(0, "127.0.0.1");
+			await new Promise<void>((resolve) =>
+				appServer.once("listening", resolve),
+			);
+			const appAddress = appServer.address();
+			const appPort =
+				typeof appAddress === "object" && appAddress ? appAddress.port : 0;
+			const headers = {
+				Authorization: "Bearer master",
+				"content-type": "application/json",
+			};
+
+			const publish = await fetch(
+				`http://127.0.0.1:${appPort}/api/reports/publish`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({
+						projectName: "test",
+						html: "<html><head></head><body>QA</body></html>",
+					}),
+				},
+			);
+			expect(publish.status).toBe(200);
+			expect((await publish.json()).url).toMatch(
+				new RegExp(`^http://127\\.0\\.0\\.1:${vercelPort}/fw-reports-`),
+			);
+			expect(existsSync(join(reportsRoot, "registry.json"))).toBe(true);
+			expect(existsSync(join(reportsRoot, "files"))).toBe(true);
+
+			const publishHtml = await fetch(
+				`http://127.0.0.1:${appPort}/api/publish-html`,
+				{
+					method: "POST",
+					headers,
+					body: JSON.stringify({ projectName: "test", html: "<html></html>" }),
+				},
+			);
+			expect(publishHtml.status).toBe(503);
+			expect(String((await publishHtml.json()).error)).toContain(
+				"publish-report",
+			);
+		} finally {
+			if (appServer)
+				await new Promise<void>((resolve) => appServer.close(resolve));
+			if (closeFn) {
+				await closeFn();
+				closeFn = undefined;
+			}
+			await new Promise<void>((resolve) => vercelServer.close(resolve));
+			rmSync(reportsRoot, { recursive: true, force: true });
+		}
+
+		expect(
+			existsSync(productionRegistry)
+				? statSync(productionRegistry).mtimeMs
+				: undefined,
+		).toBe(productionBefore);
 	});
 
 	it("startBridge starts and closes cleanly", async () => {

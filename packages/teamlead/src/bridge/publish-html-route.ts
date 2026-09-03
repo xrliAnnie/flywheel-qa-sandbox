@@ -11,10 +11,18 @@ const MAX_HTML_SIZE = 512 * 1024; // 512 KB
 
 export function createPublishHtmlRouter(
 	vercelToken: string | undefined,
+	opts?: { disabledByReportHostOverride?: boolean },
 ): Router {
 	const router = Router();
 
 	router.post("/", async (req, res) => {
+		if (opts?.disabledByReportHostOverride) {
+			res.status(503).json({
+				error:
+					"HTML publishing is disabled while FLYWHEEL_REPORT_HOST_OVERRIDE_URL is active (QA slot report host). Use `flywheel-comm publish-report` (POST /api/reports/publish) instead.",
+			});
+			return;
+		}
 		if (!vercelToken) {
 			res.status(501).json({
 				error: "HTML publishing not available — VERCEL_TOKEN not configured",

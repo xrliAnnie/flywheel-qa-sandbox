@@ -265,6 +265,26 @@ describe("reports-route", () => {
 		// committed
 		expect(registry.list()).toHaveLength(1);
 		expect(registry.vercelProjectName()).toBe(name);
+		expect(deployMock.mock.calls[0]?.[4]).toBeUndefined();
+	});
+
+	it("publish: uses the loopback report host for deploy and public URL", async () => {
+		await startApp({
+			hostOverride: {
+				apiBaseUrl: "http://127.0.0.1:4321",
+				publicBaseUrl: "http://127.0.0.1:4321",
+			},
+		});
+		const result = await post("/api/reports/publish", {
+			projectName: "flywheel",
+			html: HTML,
+		});
+
+		expect(result.status).toBe(200);
+		expect(String(result.json.url)).toMatch(
+			/^http:\/\/127\.0\.0\.1:4321\/fw-reports-[0-9a-f]{6}\/r\/[0-9a-f]{32}\/$/,
+		);
+		expect(deployMock.mock.calls[0]?.[4]).toBe("http://127.0.0.1:4321");
 	});
 
 	it("publish: deploy failure → 502, zero disk change on first publish", async () => {

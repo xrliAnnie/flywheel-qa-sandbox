@@ -2,8 +2,10 @@
  * GEO-294: POST /api/publish-html integration tests.
  */
 
+import express from "express";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createBridgeApp } from "../bridge/plugin.js";
+import { createPublishHtmlRouter } from "../bridge/publish-html-route.js";
 import { RunnerAdmissionController } from "../bridge/runner-admission.js";
 import type { BridgeConfig } from "../bridge/types.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
@@ -150,6 +152,31 @@ describe("POST /api/publish-html", () => {
 		const body = JSON.parse(res.body);
 		expect(body.error).toContain("VERCEL_TOKEN");
 	});
+
+	it.each([undefined, "fake-token"])(
+		"returns 503 before token handling when the QA report host disables this route (token=%s)",
+		async (vercelToken) => {
+			const app = express();
+			app.use(express.json());
+			app.use(
+				"/api/publish-html",
+				createPublishHtmlRouter(vercelToken, {
+					disabledByReportHostOverride: true,
+				}),
+			);
+
+			const res = await makeRequest(app, {
+				projectName: "TestProject",
+				html: "<html>test</html>",
+			});
+
+			expect(res.status).toBe(503);
+			const body = JSON.parse(res.body);
+			expect(body.error).toContain("FLYWHEEL_REPORT_HOST_OVERRIDE_URL");
+			expect(body.error).toContain("publish-report");
+			expect(fetchMock).not.toHaveBeenCalled();
+		},
+	);
 
 	it("returns 400 when projectName missing", async () => {
 		const app = makeApp("fake-token");

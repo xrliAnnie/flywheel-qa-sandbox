@@ -541,6 +541,14 @@ jobs:
       - name: Test — FLY-2237 slot Bridge cycle
         run: bash scripts/__tests__/test-cycle-bridge.test.sh
 
+      # FLY-2270: slot-local report host API, containment, lifecycle, and
+      # mutation controls. Hermetic: loopback sockets and /tmp slot fixtures.
+      - name: Test — FLY-2270 QA report host stub
+        run: bash scripts/__tests__/qa-report-host.test.sh
+
+      - name: Test — FLY-2270 slot Bridge launch boundary
+        run: bash scripts/__tests__/test-deploy-launch-boundary.test.sh
+
       # FLY-1775: generalized-DAG 529 room provisioning, canonical binding
       # seed/verify, deterministic persistent stub, and the nine-step replay
       # state machine. Hermetic: temporary SQLite/clone fixtures and fake

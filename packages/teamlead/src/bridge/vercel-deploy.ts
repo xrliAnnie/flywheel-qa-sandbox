@@ -15,6 +15,7 @@
 const DEFAULT_TIMEOUT_MS = 60_000;
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ATTEMPTS = 15; // 30s max polling
+export const VERCEL_API_BASE_URL = "https://api.vercel.com";
 
 export interface VercelDeployResult {
 	url: string;
@@ -37,6 +38,7 @@ export async function deployFilesToVercel(
 	deploymentName: string,
 	files: VercelDeployFile[],
 	timeoutMs: number = DEFAULT_TIMEOUT_MS,
+	apiBaseUrl: string = VERCEL_API_BASE_URL,
 ): Promise<{ deploymentId: string }> {
 	if (files.length === 0) {
 		throw new Error("deployFilesToVercel: files must be non-empty");
@@ -56,9 +58,10 @@ export async function deployFilesToVercel(
 
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), timeoutMs);
+	const normalizedApiBaseUrl = apiBaseUrl.replace(/\/+$/, "");
 
 	try {
-		const res = await fetch("https://api.vercel.com/v13/deployments", {
+		const res = await fetch(`${normalizedApiBaseUrl}/v13/deployments`, {
 			method: "POST",
 			headers: {
 				Authorization: `Bearer ${vercelToken}`,
@@ -77,6 +80,9 @@ export async function deployFilesToVercel(
 				},
 			}),
 			signal: controller.signal,
+			...(normalizedApiBaseUrl !== VERCEL_API_BASE_URL
+				? { redirect: "error" as const }
+				: {}),
 		});
 
 		if (!res.ok) {
@@ -94,7 +100,12 @@ export async function deployFilesToVercel(
 
 		// Poll until deployment is ready (static files are usually instant)
 		if (data.readyState !== "READY") {
-			await waitForReady(vercelToken, data.id, controller.signal);
+			await waitForReady(
+				vercelToken,
+				data.id,
+				controller.signal,
+				normalizedApiBaseUrl,
+			);
 		}
 
 		return { deploymentId: data.id };
@@ -133,17 +144,18 @@ async function waitForReady(
 	token: string,
 	deploymentId: string,
 	signal: AbortSignal,
+	apiBaseUrl: string,
 ): Promise<void> {
 	for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
 		await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
 
-		const res = await fetch(
-			`https://api.vercel.com/v13/deployments/${deploymentId}`,
-			{
-				headers: { Authorization: `Bearer ${token}` },
-				signal,
-			},
-		);
+		const res = await fetch(`${apiBaseUrl}/v13/deployments/${deploymentId}`, {
+			headers: { Authorization: `Bearer ${token}` },
+			signal,
+			...(apiBaseUrl !== VERCEL_API_BASE_URL
+				? { redirect: "error" as const }
+				: {}),
+		});
 
 		if (!res.ok) {
 			throw new Error(`Vercel deployment status check failed (${res.status})`);

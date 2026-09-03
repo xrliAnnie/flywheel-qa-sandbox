@@ -1,0 +1,22 @@
+flowchart LR
+  CLI["publish-report 命令<br/>(QA 操作者运行)"]
+  subgraph slot["slot 树 /tmp/flywheel-test-slot-N:以下全部落在这里"]
+    direction TB
+    B["slot Bridge<br/>VERCEL_TOKEN = slot 随机 token<br/>FLYWHEEL_REPORT_HOST_OVERRIDE_URL = http://127.0.0.1:端口<br/>FLYWHEEL_REPORTS_DIR = state/reports"]
+    RH["假 Vercel(qa-report-host)<br/>只听 127.0.0.1"]
+    REG[("state/reports<br/>registry.json · files · previews")]
+    SITES[("state/report-host/sites<br/>name/r/token/index.html")]
+    B -->|"② 带 slot token 部署"| RH
+    RH --> SITES
+    B -->|"登记"| REG
+  end
+  CLI -->|"① 发布请求 ⑤ 投递请求"| B
+  B -->|"③ 返回本机 URL"| CLI
+  CLI -->|"④ 截图存 previews"| REG
+  B -->|"⑥ 一条消息(截图 + 链接)"| D["Discord 529 slot 频道"]
+  PROD["生产:~/.flywheel/reports<br/>与 api.vercel.com"]
+  B -. "零写入(结构性保证)" .- PROD
+  classDef prod fill:#fff5f5,stroke:#ff3b30,color:#c0392b;
+  classDef ok fill:#f0fbf3,stroke:#34c759,color:#1d7a3d;
+  class PROD prod;
+  class D ok;

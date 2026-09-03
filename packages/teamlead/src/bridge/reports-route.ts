@@ -42,6 +42,7 @@ import {
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
 import { writeTokenReportReceipt } from "./notify-receipts.js";
+import type { ReportHostOverride } from "./report-host-override.js";
 import {
 	ReportHtmlInvalidError,
 	type ReportRegistry,
@@ -68,6 +69,7 @@ export interface ReportsRouterOptions {
 	resolveDiscordBotToken?: () => string | undefined;
 	projects: ProjectEntry[];
 	registry: ReportRegistry;
+	hostOverride?: ReportHostOverride;
 	/** Resolve an issue identifier to its existing Lead-owned Discord thread. */
 	resolveIssueThread: (
 		issueIdentifier: string,
@@ -79,6 +81,16 @@ export interface ReportsRouterOptions {
 	postText?: ReportPostTextFn;
 	/** FLY-929 B1 test seam — the receipt writer (P-expect gated internally). */
 	writeReceipt?: typeof writeTokenReportReceipt;
+}
+
+function publicReportUrl(
+	hostOverride: ReportHostOverride | undefined,
+	vercelProjectName: string,
+	token: string,
+): string {
+	return hostOverride
+		? `${hostOverride.publicBaseUrl}/${vercelProjectName}/r/${token}/`
+		: `https://${vercelProjectName}.vercel.app/r/${token}/`;
 }
 
 export type PreviewFileRead =
@@ -285,6 +297,8 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 					opts.vercelToken,
 					staged.vercelProjectName,
 					staged.deployFiles,
+					undefined,
+					opts.hostOverride?.apiBaseUrl,
 				);
 				deploymentId = result.deploymentId;
 			} catch (err) {
@@ -312,7 +326,11 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 			);
 
 			res.json({
-				url: `https://${staged.vercelProjectName}.vercel.app/r/${staged.entry.token}/`,
+				url: publicReportUrl(
+					opts.hostOverride,
+					staged.vercelProjectName,
+					staged.entry.token,
+				),
 				reportId: staged.entry.token,
 			});
 		};

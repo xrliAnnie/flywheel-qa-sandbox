@@ -561,12 +561,17 @@ assert_contains "$(<"$wrapper_err")" 'FLYWHEEL_ROUNDTABLE_CHANNEL_ID' \
 env "${scrub_args[@]}" bash "$wrapper" /usr/bin/true
 echo 'PASS: Bridge wrapper accepts a clean generalized exec boundary without retired flag attestation'
 
-short_tmp="$(qa_generalized_safe_tmpdir '/tmp' 501)"
-assert_eq "$short_tmp" '/tmp' 'short TMPDIR is preserved'
-long_tmp="${TMP_ROOT}/$(printf 'x%.0s' {1..95})"
-mkdir -p "$long_tmp"
-safe_tmp="$(qa_generalized_safe_tmpdir "$long_tmp" 501)"
-assert_eq "$safe_tmp" '/tmp' 'long tmux socket path falls back to /tmp'
+slot_tmp="$(qa_slot_child_tmpdir '/tmp/flywheel-test-slot-501')"
+assert_eq "$slot_tmp" '/tmp/flywheel-test-slot-501/tmp' \
+	'slot children use a deterministic room-local TMPDIR'
+long_caller_tmp="${TMP_ROOT}/$(printf 'x%.0s' {1..95})"
+slot_tmp_with_long_caller="$(TMPDIR="$long_caller_tmp" qa_slot_child_tmpdir '/tmp/flywheel-test-slot-501')"
+assert_eq "$slot_tmp_with_long_caller" "$slot_tmp" \
+	'slot child TMPDIR is independent of the caller environment'
+socket_path="${slot_tmp}/tsx-65535/99999.pipe"
+(( ${#socket_path} < 104 )) \
+	|| { echo "FAIL: slot child IPC socket path is ${#socket_path} bytes" >&2; failures=$((failures + 1)); }
+(( ${#socket_path} < 104 )) && echo 'PASS: worst-case slot child IPC socket path fits macOS sun_path'
 
 head_sha='0123456789abcdef0123456789abcdef01234567'
 qa_generalized_validate_expected_head "$head_sha" "$head_sha"

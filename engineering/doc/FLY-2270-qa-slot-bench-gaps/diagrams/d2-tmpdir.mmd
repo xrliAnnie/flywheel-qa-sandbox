@@ -1,0 +1,21 @@
+flowchart LR
+  subgraph before["今天:默认 / reply-by-issue 两条分支"]
+    direction TB
+    R1["runner 环境 TMPDIR<br/>~/.flywheel/runner-state/&lt;36 位 id&gt;/browser-tmp<br/>= 89 字符"]
+    C1["test-deploy 快照整个环境<br/>写进 bridge-launch.json"]
+    T1["tsx 建 IPC 管道<br/>TMPDIR + /tsx-501/ + pid.pipe<br/>= 108 字符"]
+    E1["macOS Unix socket 路径上限 104 字节<br/>EINVAL,Bridge 起不来"]
+    R1 --> C1 --> T1 --> E1
+  end
+  subgraph after["本设计:三条分支同一来源"]
+    direction TB
+    S2["BRIDGE_EXTRA_ENV 注入<br/>TMPDIR = /tmp/flywheel-test-slot-N/tmp<br/>约 30 字节,与调用方环境无关"]
+    T2["tsx 管道最长约 51 字节 < 104"]
+    K2["teardown 删 slot 树时顺手清掉"]
+    S2 --> T2 --> K2
+  end
+  E1 -. "删掉启发式 qa_generalized_safe_tmpdir,换成固定目录" .-> S2
+  classDef bad fill:#fff5f5,stroke:#ff3b30,color:#c0392b;
+  classDef good fill:#f0fbf3,stroke:#34c759,color:#1d7a3d;
+  class E1 bad;
+  class T2,K2 good;
