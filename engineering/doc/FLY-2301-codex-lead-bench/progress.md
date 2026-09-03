@@ -1,13 +1,13 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 6/8
-updated: 2026-09-03T22:01:24.334Z
-nextStep: Codex A1-A4 pass; teardown A5 + prod-home zero-write check
+phaseCursor: 8/8
+updated: 2026-09-03T22:11:28.746Z
+nextStep: Submit FAIL verdict + Lead report
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (6/8)
-**next**: Codex A1-A4 pass; teardown A5 + prod-home zero-write check
+**phase**: implement (8/8)
+**next**: Submit FAIL verdict + Lead report
