@@ -2223,7 +2223,6 @@ trap - EXIT
 # No secrets: token env NAMES only. Codex coordinates are lifecycle authority;
 # codexSourceHome is deliberately excluded.
 CODEX_LEAD_JSON=null
-CODEX_LEAD_OUTPUT_JSON=null
 if [[ "$NO_LEAD" == "1" ]]; then
   LEAD_CARRIER="none"
 elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
@@ -2234,9 +2233,6 @@ elif [[ "$SLOT_BACKEND" == codex-app-server ]]; then
     --arg codexHome "$LEAD_CODEX_HOME" --arg tmuxSocket "$LEAD_TMUX_SOCKET" \
     '{label:$label,projectName:$projectName,agentId:$agentId,stateDir:$stateDir,
       codexHome:$codexHome,tmuxSocket:$tmuxSocket,tuiWindow:"present"}')
-  CODEX_LEAD_OUTPUT_JSON=$(jq -cn --argjson lead "$CODEX_LEAD_JSON" \
-    --arg commDb "${SLOT_DIR}/state/comm/${TEST_PROJECT_NAME}/comm.db" \
-    '$lead + {commDb:$commDb}')
 else
   LEAD_CARRIER="launchd-v2"
 fi
@@ -2300,7 +2296,7 @@ fi
 if [[ "$LEAD_CARRIER" == launchd-codex-tui ]]; then
   GENERALIZED_OUTPUT_FIELDS="${GENERALIZED_OUTPUT_FIELDS}$(cat <<EOF
 ,
-  "codexLead": ${CODEX_LEAD_OUTPUT_JSON}
+  "codexLead": ${CODEX_LEAD_JSON}
 EOF
 )"
 fi

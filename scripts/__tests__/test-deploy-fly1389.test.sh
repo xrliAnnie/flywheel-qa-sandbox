@@ -1536,8 +1536,7 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
       .codexLead.tuiWindow == "present" and .codexLead.agentId == "flywheel-test-34" and
       .codexLead.projectName == "test-slot-34" and
       (.codexLead.codexHome | startswith($slot + "/cdxh/")) and
-      (.codexLead.stateDir | startswith($slot + "/q/34/")) and
-      .codexLead.commDb == ($slot + "/state/comm/test-slot-34/comm.db")
+      (.codexLead.stateDir | startswith($slot + "/q/34/"))
     ' >/dev/null 2>&1 <<<"$CX_JSON" \
     || { CX_OK=0; fail "CX: Codex-shaped deploy JSON contract"; }
   jq -e --arg label "$CX_LABEL" --arg home "$CX_HOME" --arg state "$CX_STATE" '
@@ -1576,6 +1575,14 @@ PY
       .DISCORD_BOT_TOKEN == "[present]"' \
     "$CX_SLOT_DIR/q/34/codex-runtime-env.json" >/dev/null 2>&1 \
     || { CX_OK=0; fail "CX: true launcher/canonical resolver did not reach the runtime"; }
+  if ! (unset FLYWHEEL_COMM_DB
+      # shellcheck disable=SC1090
+      source "$CX_SLOT_DIR/q/34/.env"
+      [[ "$FLYWHEEL_COMM_DB" == "$CX_SLOT_DIR/state/comm/test-slot-34/comm.db" \
+        && "$FLYWHEEL_COMM_DB" != "$FH1/.flywheel/comm/"* ]]); then
+    CX_OK=0
+    fail "CX: Codex CommDB is not isolated beneath the slot"
+  fi
 
   CX_EVIDENCE="$SB/cx-evidence"
   mkdir -p "$CX_EVIDENCE"
