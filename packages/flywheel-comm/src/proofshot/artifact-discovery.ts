@@ -10,7 +10,7 @@
  * the wrong thing, etc.) and skip anything unreadable.
  */
 
-import { readdirSync, statSync } from "node:fs";
+import { type Dirent, readdirSync, statSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { ArtifactFile } from "../select-vision-artifacts.js";
 
@@ -31,8 +31,9 @@ const DEFAULT_ERROR_PATTERN = /error|fail|exception/i;
 const DEFAULT_KEY_PATTERN = /\bkey\b|\bcritical\b/i;
 
 /**
- * Walk one level deep (non-recursive) and return categorized artifacts.
- * Files are sorted by name for deterministic first/last ranking.
+ * Recursively walk real directories and return categorized artifacts. Symlinks
+ * to regular files remain valid artifacts, while symlink directories are never
+ * traversed. Entries are sorted at every level for deterministic ranking.
  */
 export function discoverArtifacts(
 	outputDir: string,
@@ -41,33 +42,40 @@ export function discoverArtifacts(
 	const errorPattern = options.errorPattern ?? DEFAULT_ERROR_PATTERN;
 	const keyPattern = options.keyPattern ?? DEFAULT_KEY_PATTERN;
 
-	let entries: string[];
-	try {
-		entries = readdirSync(outputDir);
-	} catch {
-		return [];
-	}
-	entries.sort();
-
 	const out: ArtifactFile[] = [];
-	for (const entry of entries) {
-		const full = join(outputDir, entry);
-		let bytes: number;
+	const walk = (dir: string): void => {
+		let entries: Dirent[];
 		try {
-			const st = statSync(full);
-			if (!st.isFile()) continue;
-			bytes = st.size;
+			entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+				a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+			);
 		} catch {
-			continue;
+			return;
 		}
-		const kind = categorize(entry);
-		const file: ArtifactFile = { path: full, bytes, kind };
-		if (kind === "png") {
-			if (errorPattern.test(entry)) file.isError = true;
-			else if (keyPattern.test(entry)) file.isKey = true;
+		for (const entry of entries) {
+			const full = join(dir, entry.name);
+			if (entry.isDirectory()) {
+				walk(full);
+				continue;
+			}
+			let bytes: number;
+			try {
+				const stat = statSync(full);
+				if (!stat.isFile()) continue;
+				bytes = stat.size;
+			} catch {
+				continue;
+			}
+			const kind = categorize(entry.name);
+			const file: ArtifactFile = { path: full, bytes, kind };
+			if (kind === "png") {
+				if (errorPattern.test(entry.name)) file.isError = true;
+				else if (keyPattern.test(entry.name)) file.isKey = true;
+			}
+			out.push(file);
 		}
-		out.push(file);
-	}
+	};
+	walk(outputDir);
 	return out;
 }
 

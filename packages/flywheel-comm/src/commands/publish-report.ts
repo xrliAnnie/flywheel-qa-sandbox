@@ -42,6 +42,10 @@ import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { normalizeOptionalBearer } from "flywheel-config";
 import {
+	defaultRunAgentBrowser,
+	type RunAgentBrowser as SharedRunAgentBrowser,
+} from "../agent-browser-runner.js";
+import {
 	DEFAULT_PORT_RANGE_START,
 	findFreePort,
 } from "../proofshot/free-port.js";
@@ -60,10 +64,7 @@ const SCREENSHOT_FILENAME = "report-preview.png";
  * (see captureReportScreenshot contract note).
  */
 export type RunProofShot = (args: string[], opts?: { cwd?: string }) => void;
-export type RunAgentBrowser = (
-	args: string[],
-	opts?: { cwd?: string },
-) => unknown;
+export type RunAgentBrowser = SharedRunAgentBrowser;
 
 export interface PublishReportArgs {
 	htmlPath: string;
@@ -633,24 +634,6 @@ function defaultRunProofShot(
 		stdio: ["pipe", "inherit", "inherit"],
 		cwd: opts.cwd,
 	});
-}
-
-function defaultRunAgentBrowser(
-	args: string[],
-	opts: { cwd?: string } = {},
-): string | undefined {
-	if (args.at(-1) === "--json") {
-		return execFileSync("agent-browser", args, {
-			encoding: "utf8",
-			stdio: ["pipe", "pipe", "inherit"],
-			cwd: opts.cwd,
-		});
-	}
-	execFileSync("agent-browser", args, {
-		stdio: ["pipe", "inherit", "inherit"],
-		cwd: opts.cwd,
-	});
-	return undefined;
 }
 
 /** Recursively locate the first file named `name` under `dir` (depth-first). */

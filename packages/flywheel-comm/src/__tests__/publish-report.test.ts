@@ -874,6 +874,34 @@ describe("publishReport", () => {
 		).toBe(true);
 	});
 
+	it("agent-browser timeout in session preflight degrades and preserves the shared browser", async () => {
+		publishOk();
+		deliverOk();
+		const timeoutError = Object.assign(
+			new Error("spawnSync agent-browser ETIMEDOUT"),
+			{
+				code: "ETIMEDOUT",
+			},
+		);
+		const { envelope, exitCode } = await publishReport(
+			makeArgs({
+				runAgentBrowser: (a: string[]) => {
+					agentBrowserCalls.push(a);
+					if (a[0] === "session") throw timeoutError;
+					if (a[0] === "tab" && a[1] === "list") {
+						return tabListJson([]);
+					}
+					return undefined;
+				},
+			}),
+		);
+
+		expect(exitCode).toBe(0);
+		expect(envelope.screenshot).not.toBeNull();
+		expect(agentBrowserCalls).not.toContainEqual(["close"]);
+		expect(warns.some((w) => w.includes("ETIMEDOUT"))).toBe(true);
+	});
+
 	it("missing shared tab baseline warns and skips every tab close", async () => {
 		publishOk();
 		deliverOk();
