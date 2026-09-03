@@ -1,9 +1,9 @@
 flowchart TD
-  A["launchctl print → 进程号 P"] --> B{"载体形状"}
+  A["launchctl print → 恰一行进程号 P"] --> B{"载体形状"}
   B -->|"claude-v2"| C["manifest.pid == P<br/>tmux -S socket has-session =main"]
-  B -->|"codex-tui"| D["ps -o command=:<br/>末 token 是 codex-lead-tui-runtime.js<br/>前一 token 是 node"]
-  D --> E["进程环境探针<br/>/proc/P/environ 或 ps eww:<br/>CODEX_HOME == slot home"]
-  E --> F["heartbeat.json<br/>processPid == P"]
-  F --> G["就绪:state == online"]
-  G --> H["演练:强杀 或<br/>launchd 强制重启"]
-  H --> I["新 pid/lstart 且<br/>generationId、carrierInstanceId 变化<br/>→ 重跑 D→F"]
+  B -->|"codex-tui"| D["ps -o command= 分词:<br/>恰一个 token 是 codex-lead-tui-runtime.js<br/>前一个 token 是 node"]
+  D --> E["进程环境谓词探针(不打印内容)<br/>/proc/P/environ 或 ps eww:<br/>CODEX_HOME == slot home"]
+  E --> F["统一心跳读取器<br/>heartbeat.json processPid == P<br/>四个 id/时间字段非空有界"]
+  F --> G["就绪:state == online<br/>且 slot tmux server 上有<br/>project-lead 窗口(QA 硬门)"]
+  G --> H["launchd 演练:强杀 或<br/>launchd 强制重启"]
+  H --> I["新 pid/lstart 且<br/>generationId、carrierInstanceId 变化<br/>→ 重跑 D→G"]

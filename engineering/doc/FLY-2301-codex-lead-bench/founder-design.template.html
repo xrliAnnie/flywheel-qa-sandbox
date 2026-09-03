@@ -81,17 +81,17 @@
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="核心流程:两条启动链" placeholder="写下你的意见…"></textarea></div>
   </section>
 
-  <section class="card" data-section="验活、就绪与自愈演练">
-    <h2>验活、就绪与自愈演练</h2>
+  <section class="card" data-section="验活、就绪与 launchd 演练">
+    <h2>验活、就绪与 launchd 重生 / 重启演练</h2>
     <p class="note">Codex 形状的判据和生产上的恢复脚本 <code>resident-codex-lead-recover.sh</code> 用同一套「精确身份」检查,不另造一套。</p>
     <div class="diagram">{{SVG_D2}}</div>
     <div class="kv">
       <div>验活</div><div>launchd 报告的进程号,就是那个 node 运行时进程;它的环境里 <code>CODEX_HOME</code> 等于房里的隔离 home;心跳文件里的 <code>processPid</code> 等于它。</div>
-      <div>就绪</div><div>心跳文件 <code>state == "online"</code>(Codex 后端不写 Claude 那种就绪 lease 文件,所以不能沿用)。</div>
-      <div>自愈演练</div><div>两式:强杀进程(考 KeepAlive 自动拉起)和 <code>launchctl kickstart -k</code>(生产巡逻器判定假死后执行的正是这一步)。收敛判据 = 新进程号、新启动时间,且心跳里的 <code>generationId</code>、<code>carrierInstanceId</code> 都换了。</div>
-      <div>拆房</div><div>先 bootout(让 launchd 放手),再停掉 Codex 的 <span class="term">remote-control daemon</span>(Codex 常驻在后台的守护进程,它的 socket 藏在 CODEX_HOME 里,Bridge 的孤儿收割器看不见它),最后随房目录一起删除。</div>
+      <div>就绪</div><div>心跳文件 <code>state == "online"</code>(Codex 后端不写 Claude 那种就绪 lease 文件,所以不能沿用),<b>并且</b> 529 房自己的 tmux 服务器上必须出现 <code>&lt;project&gt;-&lt;lead&gt;</code> 窗口 —— 在房里这是硬门(生产运行时对窗口仍是失败不致命),因为窗口开错服务器就等于开进了生产 cmux。</div>
+      <div>launchd 演练</div><div>两式:强杀进程(只证明 KeepAlive 会自动拉起)和 <code>launchctl kickstart -k</code>(只证明生产巡逻器判定假死后执行的那个动作能收敛)。收敛判据 = 新进程号、新启动时间,且心跳里的 <code>generationId</code>、<code>carrierInstanceId</code> 都换了。它<b>不</b>证明巡逻器的检测、权威复核或 Bridge 触发 —— 那些明确不在本单(见「诚实边界」)。演练证据是一份不含任何环境变量或凭据的 JSON。</div>
+      <div>拆房</div><div>有序收敛:先 bootout(让 launchd 放手)并等到进程号真的消失,再停掉 Codex 的 <span class="term">remote-control daemon</span>(Codex 常驻在后台的守护进程,它的 socket 藏在 CODEX_HOME 里,Bridge 的孤儿收割器看不见它)并等到它的 pid 和 socket 都消失,最后才随房目录一起删除。任何一步没收敛就报失败并保留房目录,不会「报成功但留下孤儿」。</div>
     </div>
-    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="验活、就绪与自愈演练" placeholder="写下你的意见…"></textarea></div>
+    <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="验活、就绪与 launchd 演练" placeholder="写下你的意见…"></textarea></div>
   </section>
 
   <section class="card purple" data-section="数据模型">
@@ -100,7 +100,7 @@
     <div class="diagram">{{SVG_D3}}</div>
     <ul>
       <li><b>CODEX_HOME 铸造</b>:从来源 home 只拷 <code>auth.json</code>(登录凭据,600 权限)和 standalone 二进制目录(APFS <span class="term">clonefile</span>:同一磁盘卷上的零拷贝克隆,436M 秒级完成),放在 <code>${SLOT_DIR}/cdxh/&lt;agent&gt;</code>。路径刻意短,因为 Unix socket 路径上限 103 字节。</li>
-      <li><b>registry</b>(拆房唯一权威的登记簿)加三个可选键,旧条目没有这些键 ⇒ 走原路径。</li>
+      <li><b>registry</b>(拆房唯一权威的登记簿)加 <code>carrier / codexHome / codexBin / stateDir / runtimePidFile</code> 五个可选键,旧条目没有这些键 ⇒ 走原路径;停 daemon 前会核对 codexBin 确实在登记的 home 之内。</li>
     </ul>
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="数据模型" placeholder="写下你的意见…"></textarea></div>
   </section>
@@ -114,7 +114,7 @@
         <tr><td>房里跑哪个 Codex 启动器</td><td><span class="badge new">选</span>通用 <code>codex-lead.sh</code></td><td>唯一不绑死具体 Lead 的生产启动器;有隔离 QA 前例</td></tr>
         <tr><td>直接复用 Raya 生产 wrapper + launcher</td><td><span class="badge no">否决</span></td><td>它把状态目录写死在生产路径、跨部门频道缺省是生产圆桌频道、还要 Raya 的人设文件;要么在生产启动器上开一串「仅测试可覆盖」的口子(和 FLY-2216「路径不可注入」的安全决策对撞),要么房里冒出一个叫 raya 的假身份和房自己的身份打架</td></tr>
         <tr><td>把 Codex 变量塞进 plist</td><td><span class="badge no">否决</span></td><td>生产 Codex plist 几乎零变量,一切走 .env;那样测的就不是生产链</td></tr>
-        <tr><td>自愈边界</td><td><span class="badge new">选</span>launchd 层(强杀 + kickstart -k)+ 生产同式收敛判据</td><td>Bridge 侧的 RayaBrainPatrol 巡逻链权威绑在真 HOME 和三个固定 wrapper 上,进本单等于改生产自愈边界(见下一节「决定不做」)</td></tr>
+        <tr><td>演练边界</td><td><span class="badge new">选</span>launchd 层(强杀 + kickstart -k)+ 生产同式收敛判据,明确叫「重生 / 重启演练」而不叫「自愈」</td><td>Bridge 侧的 RayaBrainPatrol 巡逻链权威绑在真 HOME 和三个固定 wrapper 上,进本单等于改生产自愈边界(见下一节「决定不做」)</td></tr>
         <tr><td>Codex 能力层级</td><td><span class="badge new">选</span>缺省 companion(只读陪伴层,Mufasa 同形),full-access 作为数据选项</td><td>真机验收跑最少依赖的生产形状;full-access 的额外部件(lead-actions MCP、治理规则包)属于启动器 / 运行时,已有自己的测试,与载体形状无关</td></tr>
       </tbody>
     </table>
@@ -126,9 +126,9 @@
     <ul>
       <li><span class="badge new">A1–A3</span>在 529 房起出一个 Codex 形状的受管常驻 Lead:plist 两参、RunAtLoad + KeepAlive 生效、验活与就绪判据通过。</li>
       <li><span class="badge new">A2</span>隔离:home / 状态 / tmux 窗口全在房目录;生产的 Codex 状态目录、生产 tmux 会话、三个生产 Codex home 零写入(前后对照)。</li>
-      <li><span class="badge new">A4</span>两式自愈演练收敛。</li>
-      <li><span class="badge new">A5</span>拆房干净:label 不在 launchd、进程不在、窗口不在、目录已删。</li>
-      <li><span class="badge keep">A6</span>守卫:Claude plist 逐字节黄金快照测试,且它的「变异体对照」必须变红(把缺省分支故意改坏一处,测试要能抓到——不然守卫不算存在);来源 home 命中拒绝名单必须被拒。</li>
+      <li><span class="badge new">A4</span>两式 launchd 演练收敛(强杀证 KeepAlive,kickstart 证执行器与共同后置条件),证据 JSON 可独立复核。</li>
+      <li><span class="badge new">A5</span>拆房收敛:label 不在 launchd、运行时与 daemon 进程都不在、socket 不在、窗口不在、目录已删;任一步失败即非零并保留目录。</li>
+      <li><span class="badge keep">A6</span>守卫:Claude 的 plist / .env / manifest 三份逐字节黄金基线,每份各有专属「变异体对照」必须变红(把对应产物的生成代码故意改坏一处,只有那一份测试变红——不然守卫不算存在);Codex plist 与「去掉 tmux 路由」也各有必红变异;来源 home 命中拒绝名单必须被拒。</li>
       <li><span class="badge keep">A7</span>既有 Claude Lead 房回归全绿:四个 shell 测试套件 + 真 529 房 Claude slot 启动 / 验活 / 拆除,其 plist、.env、manifest 与改动前逐字节相同。</li>
       <li><span class="badge keep">A8</span><code>codex-lead.sh</code> 那一行改动:同一输入下改前改后的状态路径逐字节相同(拿 git 里的旧版本和工作副本双跑比对,不靠推理)。</li>
     </ul>
@@ -139,7 +139,7 @@
     <h2>诚实边界:这个设计做什么、不做什么</h2>
     <h3>做</h3>
     <ul>
-      <li>529 房台架按载体形状分支;Codex 形状的起、验、就绪、演练、拆全链路;Claude 形状字节不变并有带阳性对照的守卫。</li>
+      <li>529 房台架按载体形状分支;Codex 形状的起、验、就绪、launchd 演练、收敛拆除全链路;Claude 形状字节不变并有带阳性对照的守卫;hermetic 测试分层走真身份解析器、真配置加载器、真常驻名册与真启动器,不靠替身自证。</li>
       <li>生产代码只动 <code>codex-lead.sh</code> 一行(状态目录根),并附实测证明生产路径不变。</li>
     </ul>
     <h3>不做(决定,不是遗漏)</h3>
@@ -152,7 +152,7 @@
     <h3>风险</h3>
     <ul>
       <li><span class="badge risk">前置</span>现成的隔离 home <code>~/.codex-259-qa</code> 登录凭据可能过期,验收前需操作者重新登录;台架遇到会大声失败,不会代劳。</li>
-      <li><span class="badge risk">环境</span>进程环境探针在被沙箱的 shell 里读不到子进程环境(本会话实测),在 launchd 起的进程上可以(对生产 Mufasa 实测可读);hermetic 测试在 Linux CI 走 <code>/proc</code>。探针不可用时显式报错,不静默降级。</li>
+      <li><span class="badge risk">环境</span>进程环境探针在被沙箱的 shell 里读不到子进程环境(本会话实测),在 launchd 起的进程上可以(对生产 Mufasa 实测可读);hermetic 测试在 Linux CI 走 <code>/proc</code>。探针只回答「是 / 否 / 不可用」,不打印环境内容(里面有机器人令牌);不可用时显式报错,不静默降级。</li>
     </ul>
     <div class="comment"><label>对这一节的意见</label><textarea data-comment-for="诚实边界" placeholder="写下你的意见…"></textarea></div>
   </section>
