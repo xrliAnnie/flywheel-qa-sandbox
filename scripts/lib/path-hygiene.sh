@@ -164,6 +164,7 @@ packages/teamlead/scripts/templates/flywheel-codex-lead-wrapper-mufasa-tui.sh
 packages/teamlead/scripts/rollback-codex-lead-mufasa-tui.sh
 scripts/launchd/com.flywheel.updater.plist
 scripts/lib/qa-launchd-lead.sh
+scripts/lib/qa-codex-lead-wrapper.template.sh
 scripts/flywheel-cmux-autostart.sh
 scripts/meeting-notes-tick.sh
 scripts/xiaohongshu-learning-tick.sh
@@ -182,6 +183,8 @@ packages/teamlead/src/lead-backends/codex/__tests__/tui-window.test.ts
 packages/teamlead/src/bridge/__tests__/tmux-environment-scrub.test.ts
 scripts/__tests__/tmux-server-rescue.test.sh
 scripts/__tests__/host-tmux-selection-s0-scope.test.sh
+scripts/__tests__/fixtures/fly2301/claude-lead.plist
+scripts/__tests__/fixtures/fly2301/codex-lead.plist
 scripts/test-cmux-sync.sh
 scripts/__tests__/token-usage-daily-channel.test.sh
 scripts/__tests__/token-usage-daily-failloud.test.sh

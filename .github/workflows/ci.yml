@@ -338,11 +338,9 @@ jobs:
           bash scripts/__tests__/fly1496-qa-acceptance.test.sh
           bash packages/teamlead/scripts/__tests__/fly1650-companion-effort.test.sh
 
-      # FLY-1663: launchd-native lifecycle contracts are root shell suites and
-      # are not discovered by package Vitest jobs. Keep all four migration
-      # seams explicit: carrier foundation, body runtime, cmux, and Bridge.
-      # FLY-1679 rides here as a fifth seam: the dev-channels auto-confirm the
-      # carrier migration dropped, whose absence parks every Lead cold start.
+      # FLY-1663/FLY-2301: launchd-native lifecycle contracts are root shell
+      # suites and are not discovered by package Vitest jobs. Keep the carrier,
+      # artifact, topology, home, tmux-isolation, and Bridge seams explicit.
       - name: Test — FLY-1663 launchd-native Lead lifecycle
         run: |
           bash scripts/__tests__/fly1663-launchd-foundation.test.sh
@@ -350,6 +348,13 @@ jobs:
           bash scripts/__tests__/fly1663-cmux-v2.test.sh
           bash scripts/__tests__/fly1663-bridge-launchd.test.sh
           bash scripts/__tests__/fly1663-qa-launchd.test.sh
+          bash scripts/__tests__/qa-lead-artifact-fixtures.test.sh
+          bash scripts/__tests__/fly1663-qa-launchd-mutants.test.sh
+          bash scripts/__tests__/codex-lead-state-root.test.sh
+          bash scripts/__tests__/qa-codex-lead-layers.test.sh
+          bash scripts/__tests__/qa-codex-tmux-isolation.test.sh
+          bash scripts/__tests__/qa-metadata-snapshot.test.sh
+          bash scripts/__tests__/qa-fly-2301-codex-lead-drill.test.sh
           bash scripts/__tests__/fly1679-dev-channels-v2.test.sh
           bash scripts/__tests__/fly1680-v1-extinction.test.sh
           bash scripts/__tests__/flywheel-daemon-install-verify.test.sh

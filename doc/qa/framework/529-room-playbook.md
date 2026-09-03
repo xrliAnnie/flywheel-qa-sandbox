@@ -52,6 +52,68 @@ FLY-1808 已退役的 5 个 workflow env flag 不属于 readiness：装房脚本
 scripts/test-teardown.sh 2
 ```
 
+### 常驻 Lead 载体：Claude / Codex-converged
+
+slot 的常驻 Lead 不再假定只有 Claude 形状。`~/.flywheel/test-slots.json`
+里没有 `backend` 的旧行仍按 `claude-code` 运行，生成原有的 wrapper +
+manifest 双参数 plist，并用 manifest PID + 私有 tmux socket 的 `=main`
+session 验活。这个旧分支的 plist、env、manifest、registry 和 stdout
+字节由 fixture + mutation suite 固定。
+
+Codex-converged 行由载体字段直接声明，不另加命令行开关：
+
+```json
+{
+  "id": 4,
+  "backend": "codex-app-server",
+  "codexSourceHome": "/Users/<you>/.codex-259-qa",
+  "codexProfile": "companion"
+}
+```
+
+`codexSourceHome` 只提供已登录的 `auth.json` 和 standalone release；起房会
+把它们事务性复制到 `/tmp/flywheel-test-slot-4/cdxh/<agentId>`。运行中的
+`CODEX_HOME`、state、daemon socket、projects、wrapper env 和 tmux socket
+必须全部留在 slot 内，生产的 `.codex-mufasa`、`.codex-infra-bot` 与
+`.flywheel/raya/codex-home` 会在创建 Lead artifact 前被拒绝。起房前先验证
+source home 本身：
+
+```bash
+test -f ~/.codex-259-qa/auth.json
+test -x ~/.codex-259-qa/packages/standalone/current/codex
+CODEX_HOME="$HOME/.codex-259-qa" \
+  ~/.codex-259-qa/packages/standalone/current/codex login status
+```
+
+Codex plist 的 argv 固定为 `/bin/bash <slot-wrapper>`，不带 Claude manifest
+参数。验活同时要求 launchd PID、Node TUI runtime argv、精确 `CODEX_HOME`、
+heartbeat PID/state，以及 slot 私有 `=flywheel` session 中恰好一个
+`test-slot-N-<agentId>` window。排障时要同时看 resident/default 与 slot
+socket，不能把 resident 窗口误认成房内窗口：
+
+```bash
+tmux list-windows -a -F '#{session_name}\t#{window_name}'
+tmux -S /tmp/flywheel-test-slot-4/tmux-$(id -u)/default \
+  list-windows -a -F '#{session_name}\t#{window_name}'
+```
+
+RunAtLoad / KeepAlive 的两种可执行自愈 drill 会把旧/新 PID、进程启动身份、
+generation、carrier instance、heartbeat 原字节 SHA、两个 tmux census 和
+launch manifest 写到 slot 外的 evidence 根：
+
+```bash
+mkdir -p /tmp/fly-2301-slot-4-evidence
+scripts/qa-fly-2301-codex-lead-drill.sh 4 crash \
+  /tmp/fly-2301-slot-4-evidence
+scripts/qa-fly-2301-codex-lead-drill.sh 4 kickstart \
+  /tmp/fly-2301-slot-4-evidence
+```
+
+同一 Bridge 的 `--extra-lead` 可以是另一条 Codex 行；每条 Lead 必须有独立
+home/state/window，teardown 按 `launchd-leads.json` 聚合收敛 runtime、daemon
+和私有 tmux。Codex Lead 不支持 `mirror` / `roundtable`，会 fail-loud；这些
+既有拓扑继续使用 Claude carrier。
+
 teardown 不负责删 sandbox remote PR / branch；同一房内下一次 driver 启动时会先用上一轮 `owner.json` 证明 exact run。stub 的 design、implement 与 fixture PR 从第一笔 commit 起都使用 `qa529-<issue>-<runId>` run-scoped branch，不复用 WorktreeManager 的稳定 issue branch，因此不会接管或改写历史人工 PR；同一 run 的 implement attempt / replacement 才复用该 branch。dead-exec recovery 若在这个已证明的 run 内换体，driver 会从 `workflow_run_node` / run-scoped binding 动态吸收 replacement execution，同时保留全部历史 execution；已证明 execution 消失仍 fail-closed。active / held 轮先 terminate，已 completed / terminated 轮直接进入收敛，随后等待进程与 durable launch 全部 settled，再关闭 marker-owned、expected-head 未漂移的 PR。GitHub REST 没有 ref delete CAS；driver 不伪装 `If-Match`，而是在 durable drain 后重读 exact head、漂移即停手，再删除该 run-scoped sandbox branch。
 
 `flywheel-comm progress` 会单独产生 progress-ledger commit。若在 `--expect-head` 锁定或房已启动后更新 ledger，`room-checkout-drift` 要求重建房是正确行为：先取最新 exact HEAD，再用新 SHA 重跑起房命令；不要跳过 drift 闸继续沿旧 checkout 演练。
