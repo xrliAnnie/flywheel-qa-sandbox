@@ -43,6 +43,7 @@ fi
 # shellcheck source=/dev/null
 source "$LIB"
 for fn in qa_multilead_build_projects qa_multilead_config_yaml \
+  qa_multilead_validate_lead_shape \
   qa_multilead_parse_spec qa_multilead_slot_fields \
   qa_multilead_validate_campaign_args qa_multilead_claim_one qa_multilead_claim_set \
   qa_multilead_finalize_locks qa_multilead_lock_is_borrowed \
@@ -67,10 +68,38 @@ cat >"$SLOTS" <<'JSON'
     {"id":1,"bridgePort":19871,"botName":"flywheel-test-1","tokenEnvVar":"TEST_BOT_TOKEN_1","botAppId":"111","channelId":"chan-1","role":"cos"},
     {"id":2,"bridgePort":19872,"botName":"flywheel-test-2","tokenEnvVar":"TEST_BOT_TOKEN_2","botAppId":"222","channelId":"chan-2","role":"lead","identitySource":"product-lead"},
     {"id":3,"bridgePort":19873,"botName":"flywheel-test-3","tokenEnvVar":"TEST_BOT_TOKEN_3","botAppId":"333","channelId":"chan-3","role":"lead","identitySource":"ops-lead"},
-    {"id":4,"bridgePort":19874,"botName":"flywheel-test-4","tokenEnvVar":"TEST_BOT_TOKEN_4","botAppId":"","channelId":"chan-4","role":"lead"}
+    {"id":4,"bridgePort":19874,"botName":"flywheel-test-4","tokenEnvVar":"TEST_BOT_TOKEN_4","botAppId":"","channelId":"chan-4","role":"lead"},
+    {"id":5,"bridgePort":19875,"botName":"flywheel-test-5","tokenEnvVar":"TEST_BOT_TOKEN_5","botAppId":"555","channelId":"chan-5","role":"lead","backend":"codex-app-server","codexSourceHome":"/tmp/codex-qa","codexProfile":"full-access"}
   ]
 }
 JSON
+
+# ── FLY-2301: Lead carrier shape tuple validation ──
+SHAPE_OK=1
+for tuple in \
+  '|||{}' \
+  'claude-code|||{}' \
+  'codex-app-server|/tmp/codex-qa||{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-qa","codexProfile":"companion"}' \
+  'codex-app-server|/tmp/codex-qa|full-access|{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-qa","codexProfile":"full-access"}'; do
+  IFS='|' read -r backend source_home profile expected <<<"$tuple"
+  actual=$(qa_multilead_validate_lead_shape "$backend" "$source_home" "$profile" 2>"$TMP/shape.err") \
+    || { SHAPE_OK=0; fail "shape validator rejected a valid ${backend:-default} tuple"; continue; }
+  [[ "$actual" == "$expected" ]] \
+    || { SHAPE_OK=0; fail "shape validator normalized ${backend:-default} incorrectly: $actual"; }
+done
+for tuple in \
+  'claude-code|/tmp/orphan|' \
+  '||companion' \
+  'codex-app-server||companion' \
+  'codex-app-server|/tmp/codex-qa|write-capable' \
+  'unknown||'; do
+  IFS='|' read -r backend source_home profile <<<"$tuple"
+  if qa_multilead_validate_lead_shape "$backend" "$source_home" "$profile" \
+      >"$TMP/shape.out" 2>"$TMP/shape.err"; then
+    SHAPE_OK=0; fail "shape validator accepted invalid ${backend:-default} tuple"
+  fi
+done
+[[ "$SHAPE_OK" == 1 ]] && pass "FLY-2301: Lead carrier shape tuples normalize and fail closed"
 
 # ── Reference implementations for the canonical QA registry/config baseline.
 # If the closed registry contract legitimately changes, update these fixtures
@@ -198,6 +227,30 @@ for c in "${checks[@]}"; do
 done
 [[ "$B1_OK" == "1" ]] && pass "B1: --extra-lead → exactly 2 leads, all fields correct"
 
+# ── FLY-2301 B1c: carrier shape projects projection ──
+CODEX_MAIN_SHAPE='{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-main","codexProfile":"full-access"}'
+CODEX_EXTRAS='[{"slotId":5,"agentId":"flywheel-test-5","botAppId":"555","tokenEnvVar":"TEST_BOT_TOKEN_5","chatChannel":"chan-5","role":"lead","identitySource":"product-lead","deptLabel":"Cloud-Test","labels":["Cloud-Test"],"backend":"codex-app-server","codexSourceHome":"/tmp/codex-extra","codexProfile":"companion"}]'
+codex_out=$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 \
+  TEST_BOT_TOKEN_2 lead '["Product-Test"]' "$CODEX_EXTRAS" 222 /tmp/qa/discord-state \
+  "$CODEX_MAIN_SHAPE")
+if jq -e '
+  .[0].leads[0] | .backend == "codex-app-server" and
+    .canSpawnRunners == false and .codexResidencyPatrol == true and
+    .codexProfile == "full-access" and (has("companion") | not) and
+    (has("codexSourceHome") | not)
+' >/dev/null 2>&1 <<<"$codex_out" \
+    && jq -e '
+      .[0].leads[1] | .backend == "codex-app-server" and
+        .canSpawnRunners == false and .codexResidencyPatrol == true and
+        .companion == true and (has("codexProfile") | not) and
+        (has("codexSourceHome") | not)
+    ' >/dev/null 2>&1 <<<"$codex_out" \
+    && ! grep -Fq '/tmp/codex-' <<<"$codex_out"; then
+  pass "FLY-2301: projects rows project Codex capability without source-home provenance"
+else
+  fail "FLY-2301: Codex projects row projection"
+fi
+
 # ── FLY-1726: the QA registry, not the manifest, owns Discord identity ──
 IDENTITY_EXTRAS='[{"slotId":3,"agentId":"flywheel-test-3","botAppId":"33333333333333333","tokenEnvVar":"TEST_BOT_TOKEN_3","chatChannel":"chan-3","role":"lead","identitySource":"ops-lead","deptLabel":"Ops-Test","labels":["Ops-Test"],"discordStateDir":"/tmp/qa/extra-leads/slot-3/discord-state"}]'
 identity_out="$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 TEST_BOT_TOKEN_2 lead '["Product-Test"]' "$IDENTITY_EXTRAS" "22222222222222222" "/tmp/qa/discord-state")"
@@ -282,6 +335,12 @@ if f="$(qa_multilead_slot_fields "$SLOTS" 3 2>/dev/null)"; then
     >/dev/null 2>&1 <<<"$f" || { C2_OK=0; fail "C2: slot 3 fields wrong: $f"; }
 else
   C2_OK=0; fail "C2: valid slot 3 should resolve"
+fi
+if f="$(qa_multilead_slot_fields "$SLOTS" 5 2>/dev/null)"; then
+  jq -e '.backend == "codex-app-server" and .codexSourceHome == "/tmp/codex-qa" and .codexProfile == "full-access"' \
+    >/dev/null 2>&1 <<<"$f" || { C2_OK=0; fail "C2: Codex slot shape fields wrong: $f"; }
+else
+  C2_OK=0; fail "C2: valid Codex slot should resolve"
 fi
 [[ "$C2_OK" == "1" ]] && pass "C2: slot fields validation"
 
@@ -544,6 +603,10 @@ grep -q 'qa-multilead.sh' "$DEPLOY" || { S1_OK=0; fail "S1: test-deploy.sh must 
 grep -q -- '--extra-lead' "$DEPLOY" || { S1_OK=0; fail "S1: --extra-lead flag not parsed"; }
 grep -q -- '--lead-label' "$DEPLOY" || { S1_OK=0; fail "S1: --lead-label flag not parsed"; }
 grep -q 'qa_multilead_build_projects' "$DEPLOY" || { S1_OK=0; fail "S1: FLYWHEEL_PROJECTS must be built via qa_multilead_build_projects"; }
+grep -Fq 'MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: main slot carrier tuple must be validated"; }
+grep -Fq '"${SLOT_DIR}/discord-state" "$MAIN_LEAD_SHAPE"' "$DEPLOY" \
+  || { S1_OK=0; fail "FLY-2301 S1: validated main slot shape must reach the projects builder"; }
 grep -q 'qa_multilead_config_yaml' "$DEPLOY" || { S1_OK=0; fail "S1: config.yaml must be generated via qa_multilead_config_yaml"; }
 grep -q 'seed-project-flags' "$DEPLOY" \
   || { S1_OK=0; fail "FLY-2103 S1: generalized QA must seed scoped pipeline rows"; }

@@ -643,6 +643,15 @@ BOT_TOKEN_ENV=$(jq -r ".slots[${SLOT_IDX}].tokenEnvVar" "$SLOTS_FILE")
 BOT_ID=$(jq -r ".slots[${SLOT_IDX}].botAppId" "$SLOTS_FILE")
 CHAT_CHANNEL_ID=$(jq -r ".slots[${SLOT_IDX}].channelId" "$SLOTS_FILE")
 SLOT_ROLE=$(jq -r ".slots[${SLOT_IDX}].role" "$SLOTS_FILE")
+SLOT_BACKEND=$(jq -r ".slots[${SLOT_IDX}].backend // empty" "$SLOTS_FILE")
+SLOT_CODEX_SOURCE_HOME=$(jq -r ".slots[${SLOT_IDX}].codexSourceHome // empty" "$SLOTS_FILE")
+SLOT_CODEX_PROFILE=$(jq -r ".slots[${SLOT_IDX}].codexProfile // empty" "$SLOTS_FILE")
+if ! MAIN_LEAD_SHAPE=$(qa_multilead_validate_lead_shape \
+    "$SLOT_BACKEND" "$SLOT_CODEX_SOURCE_HOME" "$SLOT_CODEX_PROFILE"); then
+  echo "ERROR: slots[${SLOT_IDX}] has an invalid Lead carrier shape" >&2
+  rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  exit 1
+fi
 # FLY-163: forum concept removed. forumChannelId field (if still present in
 # legacy test-slots.json) is ignored. No FORUM_CHANNEL_ID extraction needed.
 
@@ -1333,7 +1342,7 @@ FLYWHEEL_PROJECTS=$(qa_multilead_build_projects \
   "$TEST_PROJECT_NAME" "$HOST_REPO" "$SANDBOX_SLUG" "$AGENT_ID" \
   "$CHAT_CHANNEL_ID" "$BOT_TOKEN_ENV" "$SLOT_ROLE" \
   "$MAIN_LABELS_JSON" "$EXTRA_LEADS_JSON" "$BOT_ID" \
-  "${SLOT_DIR}/discord-state")
+  "${SLOT_DIR}/discord-state" "$MAIN_LEAD_SHAPE")
 
 # FLY-529: when --alerts is on, inject the test alert channel + token env into
 # the test lead's projects entry so the SHELL-side lead-alert.sh (which resolves

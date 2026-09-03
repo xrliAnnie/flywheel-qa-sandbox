@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.flywheel.qa.lead.slot-7.qa-lead</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>@TMP@/runtime/codex-wrapper.sh</string></array>
+<key>EnvironmentVariables</key><dict>
+<key>HOME</key><string>@TMP@/home</string>
+<key>PATH</key><string>@TMP@/home/.local/bin:@TMP@/home/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+<key>FLYWHEEL_DIR</key><string>@ROOT@</string>
+<key>FLYWHEEL_STATE_DIR</key><string>@TMP@/state</string>
+<key>TMUX_TMPDIR</key><string>@TMP@</string>
+</dict>
+<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>3</integer>
+<key>StandardOutPath</key><string>@TMP@/runtime/lead.log</string>
+<key>StandardErrorPath</key><string>@TMP@/runtime/lead.log</string>
+</dict></plist>

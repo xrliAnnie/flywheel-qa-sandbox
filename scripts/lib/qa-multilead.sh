@@ -10,9 +10,44 @@
 # target behavior without creating Raya summary PRs. Guarded by
 # scripts/__tests__/test-deploy-multilead.test.sh (A1-A3 + FLY-2030 B1).
 
+# Normalize the slot-owned carrier tuple. Claude is represented by the legacy
+# empty object so an explicit claude-code declaration is byte-equivalent to an
+# omitted backend.
+qa_multilead_validate_lead_shape() {
+	local backend="${1:-}" codex_source_home="${2:-}" codex_profile="${3:-}"
+	case "$backend" in
+		""|claude-code)
+			if [[ -n "$codex_source_home" || -n "$codex_profile" ]]; then
+				echo "[qa-multilead] orphan codex metadata" >&2
+				return 1
+			fi
+			printf '{}\n'
+			;;
+		codex-app-server)
+			if [[ -z "$codex_source_home" ]]; then
+				echo "[qa-multilead] codexSourceHome" >&2
+				return 1
+			fi
+			codex_profile="${codex_profile:-companion}"
+			case "$codex_profile" in
+				companion|full-access) ;;
+				*) echo "[qa-multilead] codexProfile" >&2; return 1 ;;
+			esac
+			jq -cn --arg backend "$backend" --arg source "$codex_source_home" \
+				--arg profile "$codex_profile" \
+				'{backend:$backend,codexSourceHome:$source,codexProfile:$profile}'
+			;;
+		*)
+			echo "[qa-multilead] backend" >&2
+			return 1
+			;;
+	esac
+}
+
 # ── FLYWHEEL_PROJECTS builder ──────────────────────────────────────────────
 # Args: projectName projectRoot projectRepo agentId chatChannel botTokenEnv
-#       slotRole mainLabelsJson extraLeadsJson [botUserId discordStateDir]
+#       slotRole mainLabelsJson extraLeadsJson [botUserId discordStateDir
+#       mainLeadShapeJson]
 # mainLabelsJson defaults to ["*"] (legacy); extraLeadsJson is an array of
 # {agentId, chatChannel|chatChannel-bearing fields, botTokenEnv/tokenEnvVar,
 #  labels:[...]} entries produced by qa_multilead_validate_campaign_args.
@@ -21,6 +56,8 @@ qa_multilead_build_projects() {
 	local chat_channel="$5" bot_token_env="$6" slot_role="$7"
 	local main_labels_json="${8:-[\"*\"]}" extra_leads_json="${9:-[]}"
 	local bot_user_id="${10:-}" discord_state_dir="${11:-}"
+	local main_lead_shape_json="${12:-}"
+	[[ -n "$main_lead_shape_json" ]] || main_lead_shape_json='{}'
 	jq -n \
 		--arg projectName "$project_name" \
 		--arg projectRoot "$project_root" \
@@ -33,7 +70,22 @@ qa_multilead_build_projects() {
 		--arg discordStateDir "$discord_state_dir" \
 		--argjson mainLabels "$main_labels_json" \
 		--argjson extraLeads "$extra_leads_json" \
+		--argjson mainShape "$main_lead_shape_json" \
 		'
+  def codex_projection($shape):
+    if $shape.backend == "codex-app-server" then
+      {
+        backend: "codex-app-server",
+        canSpawnRunners: false,
+        codexResidencyPatrol: true
+      } + (if $shape.codexProfile == "full-access" then
+        {codexProfile: "full-access"}
+      else
+        {companion: true}
+      end)
+    else
+      {}
+    end;
   [
     ({
       projectName: $projectName,
@@ -49,7 +101,8 @@ qa_multilead_build_projects() {
         } | if $botUserId != "" then . + {
           botUserId: $botUserId,
           discordStateDir: $discordStateDir
-        } else . end)
+        } else . end
+          | . + codex_projection($mainShape))
       ] + ($extraLeads | map(. as $lead |
         ({
           agentId: $lead.agentId,
@@ -60,7 +113,8 @@ qa_multilead_build_projects() {
         } | if $botUserId != "" then . + {
           botUserId: $lead.botAppId,
           discordStateDir: $lead.discordStateDir
-        } else . end)
+        } else . end
+          | . + codex_projection($lead))
       )))
     })
     | if $slotRole == "cos" then . + { generalChannel: $chatChannel } else . end
@@ -180,7 +234,11 @@ qa_multilead_parse_spec() {
 qa_multilead_slot_fields() {
 	local slots_file="$1" slot="$2"
 	local idx=$((slot - 1))
-	local json
+	local json backend codex_source_home codex_profile shape
+	backend=$(jq -r ".slots[${idx}].backend // empty" "$slots_file" 2>/dev/null) || return 1
+	codex_source_home=$(jq -r ".slots[${idx}].codexSourceHome // empty" "$slots_file" 2>/dev/null) || return 1
+	codex_profile=$(jq -r ".slots[${idx}].codexProfile // empty" "$slots_file" 2>/dev/null) || return 1
+	shape=$(qa_multilead_validate_lead_shape "$backend" "$codex_source_home" "$codex_profile") || return 1
 	json=$(jq -e ".slots[${idx}] // empty | {agentId: .botName, botAppId: .botAppId, tokenEnvVar: .tokenEnvVar, chatChannel: .channelId, role: .role, identitySource: (.identitySource // \"\")}" "$slots_file" 2>/dev/null) || {
 		echo "[qa-multilead] slot ${slot} not found in ${slots_file}" >&2
 		return 1
@@ -193,6 +251,9 @@ qa_multilead_slot_fields() {
 			return 1
 		fi
 	done
+	if [[ "$shape" != '{}' ]]; then
+		json=$(jq --argjson shape "$shape" '. + $shape' <<<"$json") || return 1
+	fi
 	echo "$json"
 }
 
