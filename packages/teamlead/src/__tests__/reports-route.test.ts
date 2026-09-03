@@ -227,6 +227,20 @@ describe("reports-route", () => {
 		expect(deployMock).not.toHaveBeenCalled();
 	});
 
+	it("publish: inline event handlers fail loud before deploy", async () => {
+		await startApp();
+		const result = await post("/api/reports/publish", {
+			projectName: "withGeneral",
+			html: '<html><head></head><body><button onclick="go()">Go</button></body></html>',
+		});
+
+		expect(result.status).toBe(400);
+		expect(String(result.json.error)).toMatch(
+			/inline event handler.*addEventListener/i,
+		);
+		expect(deployMock).not.toHaveBeenCalled();
+	});
+
 	it("publish: happy path deploys staged files and commits", async () => {
 		await startApp();
 		const r = await post("/api/reports/publish", {

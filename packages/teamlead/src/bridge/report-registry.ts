@@ -37,6 +37,16 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import {
+	EXTERNAL_SCRIPT_REJECTION_MESSAGE,
+	type HtmlOpeningTag,
+	type HtmlTagScan,
+	htmlAttribute,
+	htmlHeadRange,
+	isCspGovernedInlineScript,
+	isExternalScript,
+	scanHtmlTags,
+} from "flywheel-comm/report-html";
 
 export const DEFAULT_RETENTION_MAX = 100;
 // Leave headroom for the JSON envelope beneath Vercel's 10 MB body cap.
@@ -50,18 +60,149 @@ const CSP_META =
 	"<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:;\">";
 
 /**
- * Opt-in marker for interactive reports. A report generator that needs its OWN inline
- * `<script>` to run on the hosted page emits `<script nonce="__CSP_NONCE__">…</script>`.
- * injectHeadMeta then mints a real per-report nonce, swaps every placeholder for it, and
- * serves a CSP that allows exactly that nonce (`script-src 'nonce-…'`).
+ * Compatibility marker for interactive reports. A report generator may emit
+ * `<script nonce="__CSP_NONCE__">…</script>`; injectHeadMeta mints a real per-report
+ * nonce, swaps every placeholder for it, and serves a CSP that allows that nonce.
+ * Reports without their own CSP no longer need this marker: every executable inline
+ * script already present at publish time receives the same nonce automatically.
  *
- * SECURITY contract: this only gates the GENERATOR's own scripts. It is safe ONLY because
- * report generators HTML-escape untrusted content — an injected `<script>` in report content
- * is escaped to text and can never execute, regardless of the nonce. Inline event-handler
- * attributes (onclick=…) are NOT covered by a script nonce, so interactive reports must bind
- * handlers via addEventListener inside the nonced <script>.
+ * SECURITY contract: publish-report accepts a trusted HTML artifact, not untrusted HTML.
+ * Automatic nonce injection authorizes every executable inline script already present in
+ * that artifact, including a script accidentally interpolated from unescaped input. Every
+ * generator MUST HTML-escape untrusted values before composing the document. Inline event
+ * handler attributes are not covered by script nonces, so default-CSP reports reject them
+ * and require addEventListener inside a nonced script instead.
  */
 const NONCE_PLACEHOLDER = "__CSP_NONCE__";
+
+// HTML event-handler content attributes. Keep this explicit: treating every
+// `on*` attribute as executable rejects ordinary attributes such as `once` and
+// `only`, while the browser only executes the standardized handler names.
+const INLINE_EVENT_HANDLER_ATTRIBUTES = new Set([
+	"onabort",
+	"onafterprint",
+	"onanimationcancel",
+	"onanimationend",
+	"onanimationiteration",
+	"onanimationstart",
+	"onauxclick",
+	"onbeforeinput",
+	"onbeforematch",
+	"onbeforeprint",
+	"onbeforetoggle",
+	"onbeforeunload",
+	"onblur",
+	"oncancel",
+	"oncanplay",
+	"oncanplaythrough",
+	"onchange",
+	"onclick",
+	"onclose",
+	"oncommand",
+	"oncontextlost",
+	"oncontextmenu",
+	"oncontextrestored",
+	"oncopy",
+	"oncuechange",
+	"oncut",
+	"ondblclick",
+	"ondrag",
+	"ondragend",
+	"ondragenter",
+	"ondragleave",
+	"ondragover",
+	"ondragstart",
+	"ondrop",
+	"ondurationchange",
+	"onemptied",
+	"onended",
+	"onerror",
+	"onfocus",
+	"onfocusin",
+	"onfocusout",
+	"onformdata",
+	"onfullscreenchange",
+	"onfullscreenerror",
+	"ongotpointercapture",
+	"onhashchange",
+	"oninput",
+	"oninvalid",
+	"onkeydown",
+	"onkeypress",
+	"onkeyup",
+	"onlanguagechange",
+	"onload",
+	"onloadeddata",
+	"onloadedmetadata",
+	"onloadstart",
+	"onlostpointercapture",
+	"onmessage",
+	"onmessageerror",
+	"onmousedown",
+	"onmouseenter",
+	"onmouseleave",
+	"onmousemove",
+	"onmouseout",
+	"onmouseover",
+	"onmouseup",
+	"onoffline",
+	"ononline",
+	"onpagehide",
+	"onpagereveal",
+	"onpageshow",
+	"onpageswap",
+	"onpaste",
+	"onpause",
+	"onplay",
+	"onplaying",
+	"onpointercancel",
+	"onpointerdown",
+	"onpointerenter",
+	"onpointerleave",
+	"onpointermove",
+	"onpointerout",
+	"onpointerover",
+	"onpointerrawupdate",
+	"onpointerup",
+	"onpopstate",
+	"onprogress",
+	"onratechange",
+	"onrejectionhandled",
+	"onreset",
+	"onresize",
+	"onscroll",
+	"onscrollend",
+	"onsecuritypolicyviolation",
+	"onseeked",
+	"onseeking",
+	"onselect",
+	"onselectionchange",
+	"onselectstart",
+	"onslotchange",
+	"onstalled",
+	"onstorage",
+	"onsubmit",
+	"onsuspend",
+	"ontimeupdate",
+	"ontoggle",
+	"ontouchcancel",
+	"ontouchend",
+	"ontouchmove",
+	"ontouchstart",
+	"ontransitioncancel",
+	"ontransitionend",
+	"ontransitionrun",
+	"ontransitionstart",
+	"onunhandledrejection",
+	"onunload",
+	"onvolumechange",
+	"onwaiting",
+	"onwebkitanimationend",
+	"onwebkitanimationiteration",
+	"onwebkitanimationstart",
+	"onwebkittransitionend",
+	"onwheel",
+]);
 
 /** CSP for reports that opt into scripts via the nonce placeholder (adds script-src). */
 function cspMetaWithScriptNonce(nonce: string): string {
@@ -74,6 +215,67 @@ export class ReportHtmlInvalidError extends Error {
 		super(message);
 		this.name = "ReportHtmlInvalidError";
 	}
+}
+
+function openingTagWithNonce(
+	html: string,
+	tag: HtmlOpeningTag,
+	nonce: string,
+): string {
+	const opening = html.slice(tag.start, tag.end + 1);
+	const nonceAttribute = htmlAttribute(tag, "nonce");
+	if (
+		nonceAttribute?.valueStart !== undefined &&
+		nonceAttribute.valueEnd !== undefined
+	) {
+		return `${html.slice(tag.start, nonceAttribute.valueStart)}${nonce}${html.slice(nonceAttribute.valueEnd, tag.end + 1)}`;
+	}
+	if (nonceAttribute) {
+		const relativeNameEnd = nonceAttribute.nameEnd - tag.start;
+		return `${opening.slice(0, relativeNameEnd)}="${nonce}"${opening.slice(relativeNameEnd)}`;
+	}
+	return `${opening.slice(0, -1)} nonce="${nonce}">`;
+}
+
+function replaceOpeningTags(
+	html: string,
+	replacements: Array<{ tag: HtmlOpeningTag; value: string }>,
+): string {
+	let working = html;
+	for (const replacement of replacements.sort(
+		(a, b) => b.tag.start - a.tag.start,
+	)) {
+		working = `${working.slice(0, replacement.tag.start)}${replacement.value}${working.slice(replacement.tag.end + 1)}`;
+	}
+	return working;
+}
+
+function headBounds(scan: HtmlTagScan): { start: number; end: number } {
+	const bounds = htmlHeadRange(scan);
+	if (!bounds) {
+		throw new ReportHtmlInvalidError(
+			"report HTML must be a complete document with a <head> element",
+		);
+	}
+	return bounds;
+}
+
+function hasMetaAttribute(
+	tags: HtmlOpeningTag[],
+	head: { start: number; end: number },
+	name: string,
+	value: string,
+): boolean {
+	return tags.some((tag) => {
+		if (
+			tag.name !== "meta" ||
+			tag.start < head.start ||
+			tag.start >= head.end
+		) {
+			return false;
+		}
+		return htmlAttribute(tag, name)?.value?.trim().toLowerCase() === value;
+	});
 }
 
 export interface ReportEntry {
@@ -346,53 +548,81 @@ export function injectHeadMeta(
 	html: string,
 	nonceGen: () => string = () => randomBytes(16).toString("hex"),
 ): string {
-	// Opt-in script execution (interactive reports): if the report embedded the nonce
-	// placeholder, mint a real per-report nonce, stamp it onto the report's own
-	// `<script nonce="…">` tags, and pick a CSP that allows exactly that nonce. Reports
-	// WITHOUT the placeholder keep the strict no-script CSP — byte-for-byte unchanged.
+	const originalScan = scanHtmlTags(html);
+	const originalTags = originalScan.openings;
+	if (originalTags.some(isExternalScript)) {
+		throw new ReportHtmlInvalidError(EXTERNAL_SCRIPT_REJECTION_MESSAGE);
+	}
+	const originalHead = headBounds(originalScan);
+	const hasOriginalCsp = hasMetaAttribute(
+		originalTags,
+		originalHead,
+		"http-equiv",
+		"content-security-policy",
+	);
+
+	if (!hasOriginalCsp) {
+		const eventHandler = originalTags
+			.flatMap((tag) => tag.attributes)
+			.find((candidate) => INLINE_EVENT_HANDLER_ATTRIBUTES.has(candidate.name));
+		if (eventHandler) {
+			throw new ReportHtmlInvalidError(
+				`report HTML contains inline event handler "${eventHandler.name}"; move it into a nonced script and bind it with addEventListener`,
+			);
+		}
+	}
+
 	let working = html;
 	let cspMeta = CSP_META;
-	if (working.includes(NONCE_PLACEHOLDER)) {
-		const nonce = nonceGen();
+	const hadNoncePlaceholder = html.includes(NONCE_PLACEHOLDER);
+	let nonce: string | undefined;
+	if (hadNoncePlaceholder) {
+		nonce = nonceGen();
 		working = working.split(NONCE_PLACEHOLDER).join(nonce);
 		cspMeta = cspMetaWithScriptNonce(nonce);
 	}
-
-	const headMatch = /<head[^>]*>/i.exec(working);
-	if (!headMatch) {
-		throw new ReportHtmlInvalidError(
-			"report HTML must be a complete document with a <head> element",
-		);
+	if (!hasOriginalCsp) {
+		const scriptScan = hadNoncePlaceholder
+			? scanHtmlTags(working)
+			: originalScan;
+		const replacements: Array<{ tag: HtmlOpeningTag; value: string }> = [];
+		for (const tag of scriptScan.openings) {
+			if (!isCspGovernedInlineScript(tag)) continue;
+			if (
+				hadNoncePlaceholder &&
+				(htmlAttribute(tag, "nonce")?.value ?? "") !== ""
+			) {
+				continue;
+			}
+			nonce ??= nonceGen();
+			replacements.push({
+				tag,
+				value: openingTagWithNonce(working, tag, nonce),
+			});
+		}
+		if (nonce !== undefined) {
+			working = replaceOpeningTags(working, replacements);
+			cspMeta = cspMetaWithScriptNonce(nonce);
+		}
 	}
-	const headStart = headMatch.index + headMatch[0].length;
-	// Head content ends at </head>; for malformed docs fall back to <body>
-	// (head implicitly ends there), else treat the head as empty — injecting
-	// a duplicate meta is harmless, skipping a needed one is not.
-	const headClose = /<\/head>/i.exec(working.slice(headStart));
-	const bodyOpen = /<body[\s>]/i.exec(working.slice(headStart));
-	const headEnd =
-		headClose !== null
-			? headStart + headClose.index
-			: bodyOpen !== null
-				? headStart + bodyOpen.index
-				: headStart;
-	const headContent = working.slice(headStart, headEnd);
 
-	// Attribute-order/whitespace-insensitive: match any <meta …> tag inside
-	// the head whose attributes include the marker, wherever it appears.
-	const hasRobots = /<meta[^>]*\bname\s*=\s*["']?robots["'\s>]/i.test(
-		headContent,
+	// Nonce insertion shifts offsets, so rescan before injecting into <head>.
+	const scan = scanHtmlTags(working);
+	const tags = scan.openings;
+	const head = headBounds(scan);
+	const hasRobots = hasMetaAttribute(tags, head, "name", "robots");
+	const hasCsp = hasMetaAttribute(
+		tags,
+		head,
+		"http-equiv",
+		"content-security-policy",
 	);
-	const hasCsp =
-		/<meta[^>]*\bhttp-equiv\s*=\s*["']?content-security-policy["'\s>]/i.test(
-			headContent,
-		);
 
 	const inject: string[] = [];
 	if (!hasRobots) inject.push(NOINDEX_META);
 	if (!hasCsp) inject.push(cspMeta);
 	if (inject.length === 0) return working;
-	return `${working.slice(0, headStart)}\n${inject.join("\n")}${working.slice(headStart)}`;
+	return `${working.slice(0, head.start)}\n${inject.join("\n")}${working.slice(head.start)}`;
 }
 
 /** Exposed for tests/docs. */

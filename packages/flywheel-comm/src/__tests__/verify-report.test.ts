@@ -58,6 +58,13 @@ function response(body: string, status = 200): Response {
 	});
 }
 
+function interactivePage(
+	scripts: string,
+	policy = "default-src 'none'; script-src 'nonce-abc'",
+): string {
+	return `<html><head><meta http-equiv="Content-Security-Policy" content="${policy}"></head><body>${scripts}</body></html>`;
+}
+
 describe("verifyReport — lightweight hosted-page checks", () => {
 	it("passes a clean hosted page without spawning a browser", async () => {
 		let spawned = false;
@@ -66,7 +73,9 @@ describe("verifyReport — lightweight hosted-page checks", () => {
 			expect: "Founder report",
 			fetchImpl: async () =>
 				response(
-					'<h1>Founder report</h1><svg></svg><img src="x"><script nonce="abc">ok()</script>',
+					interactivePage(
+						'<h1>Founder report</h1><svg></svg><img src="x"><script nonce="abc">ok()</script>',
+					),
 				),
 			screenshotDeps: {
 				spawnImpl: (() => {
@@ -83,6 +92,7 @@ describe("verifyReport — lightweight hosted-page checks", () => {
 			checks: {
 				http: "pass",
 				noncePlaceholder: "pass",
+				scriptCsp: "pass",
 				scriptNonce: "pass",
 				expect: "pass",
 			},
@@ -97,6 +107,7 @@ describe("verifyReport — lightweight hosted-page checks", () => {
 			url: "https://reports.example/r/static/",
 			fetchImpl: async () => response("<h1>Static</h1>"),
 		});
+		expect(result.envelope.checks.scriptCsp).toBe("skipped");
 		expect(result.envelope.checks.scriptNonce).toBe("skipped");
 		expect(result.envelope.checks.expect).toBe("skipped");
 	});
@@ -108,7 +119,11 @@ describe("verifyReport — lightweight hosted-page checks", () => {
 			response('<script nonce="__CSP_NONCE__"></script>'),
 			"__CSP_NONCE__",
 		],
-		["script without nonce", response("<script>broken()</script>"), "nonce"],
+		[
+			"script without nonce",
+			response(interactivePage("<script>broken()</script>")),
+			"nonce",
+		],
 	])("fails %s", async (_name, fetchResponse, error) => {
 		const result = await verifyReport({
 			url: "https://reports.example/r/bad/",
@@ -123,10 +138,228 @@ describe("verifyReport — lightweight hosted-page checks", () => {
 		const result = await verifyReport({
 			url: "https://reports.example/r/mixed-nonces/",
 			fetchImpl: async () =>
-				response('<script nonce="abc">ok()</script><script>blocked()</script>'),
+				response(
+					interactivePage(
+						'<script nonce="abc">ok()</script><script>blocked()</script>',
+					),
+				),
 		});
 		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("pass");
+		expect(result.envelope.checks.scriptNonce).toBe("fail");
 		expect(result.envelope.error).toContain("nonce");
+	});
+
+	it("fails loud when inline script nonce is not authorized by script-src", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/missing-script-src/",
+			fetchImpl: async () =>
+				response(
+					'<html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'"></head><body><script nonce="abc">interactive()</script></body></html>',
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks).toMatchObject({ scriptCsp: "fail" });
+		expect(result.envelope.error).toContain("script-src");
+		expect(result.envelope.error).toContain("publish-report");
+	});
+
+	it.each([
+		"application/ecmascript",
+		"application/javascript",
+		"application/x-ecmascript",
+		"application/x-javascript",
+		"text/ecmascript",
+		"text/javascript",
+		"text/javascript1.0",
+		"text/javascript1.1",
+		"text/javascript1.2",
+		"text/javascript1.3",
+		"text/javascript1.4",
+		"text/javascript1.5",
+		"text/jscript",
+		"text/livescript",
+		"text/x-ecmascript",
+		"text/x-javascript",
+		"APPLICATION/JAVASCRIPT; charset=utf-8",
+		"importmap",
+		"speculationrules",
+	])("fails a missing script-src for CSP-governed type: %s", async (type) => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/governed-type/",
+			fetchImpl: async () =>
+				response(
+					`<html><head></head><body><script type="${type}" nonce="abc">governed()</script></body></html>`,
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
+		expect(result.envelope.error).toContain("script-src");
+	});
+
+	it.each([
+		["a different nonce", "default-src 'none'; script-src 'nonce-def'"],
+		["a non-nonce source", "default-src 'none'; script-src 'self'"],
+		["unsafe-inline", "default-src 'none'; script-src 'unsafe-inline'"],
+	])("rejects a CSP with %s", async (_name, policy) => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/csp-mismatch/",
+			fetchImpl: async () =>
+				response(interactivePage('<script nonce="abc">run()</script>', policy)),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
+		expect(result.envelope.error).toContain("script-src");
+	});
+
+	it("compares script nonces exactly without trimming attribute whitespace", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/nonce-whitespace/",
+			fetchImpl: async () =>
+				response(interactivePage('<script nonce=" abc ">run()</script>')),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
+	});
+
+	it("requires every head CSP policy to authorize every inline nonce", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/multiple-policies/",
+			fetchImpl: async () =>
+				response(
+					'<html><head><meta http-equiv="Content-Security-Policy" content="script-src \'nonce-abc\'">' +
+						'<meta content="script-src \'nonce-other\'" http-equiv="Content-Security-Policy"></head>' +
+						'<body><script data-x="foo>" nonce="abc">run()</script></body></html>',
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
+	});
+
+	it("ignores fake tags and non-executable data blocks", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/data-blocks/",
+			fetchImpl: async () =>
+				response(
+					"<html><head></head><body><!-- <script>comment()</script> -->" +
+						"<noscript><script>fallback()</script></noscript>" +
+						'<script type="application/ld+json">{"html":"<script>fake()</script>"}</script>' +
+						'<script type="text/template"><button>template</button></script></body></html>',
+				),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.envelope.checks.scriptCsp).toBe("skipped");
+		expect(result.envelope.checks.scriptNonce).toBe("skipped");
+	});
+
+	it("rejects external scripts even when they carry a nonce", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/external/",
+			fetchImpl: async () =>
+				response(
+					interactivePage(
+						'<script src="https://example.invalid/x.js" nonce="abc"></script>',
+					),
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("skipped");
+		expect(result.envelope.checks.scriptNonce).toBe("fail");
+		expect(result.envelope.error).toContain("external script");
+	});
+
+	it("recognizes external src after a stray self-closing slash", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/external-stray-slash/",
+			fetchImpl: async () =>
+				response(
+					interactivePage(
+						'<script / src="https://example.invalid/x.js" nonce="abc"></script>',
+					),
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptNonce).toBe("fail");
+		expect(result.envelope.error).toContain("external script");
+	});
+
+	it("rejects an external script with a boolean src attribute", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/external-boolean-src/",
+			fetchImpl: async () =>
+				response(interactivePage('<script src nonce="abc">blocked()</script>')),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptNonce).toBe("fail");
+		expect(result.envelope.error).toContain("external script");
+	});
+
+	it("does not scan handler-looking markup inside slash-ended script raw text", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/slash-script-raw-text/",
+			fetchImpl: async () =>
+				response(
+					interactivePage(
+						'<script/ nonce="abc">const sample = "<script src=evil>";</script>',
+					),
+				),
+		});
+
+		expect(result.exitCode).toBe(0);
+		expect(result.envelope.checks.scriptNonce).toBe("pass");
+	});
+
+	it("does not accept a body CSP meta as the page policy", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/body-csp/",
+			fetchImpl: async () =>
+				response(
+					'<html><head></head><body><meta http-equiv="Content-Security-Policy" content="script-src \'nonce-abc\'">' +
+						'<script nonce="abc">run()</script></body></html>',
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
+	});
+
+	it("does not accept a CSP meta after a closed head when body is omitted", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/no-body-head-boundary/",
+			fetchImpl: async () =>
+				response(
+					'<html><head></head><meta http-equiv="Content-Security-Policy" content="script-src \'nonce-abc\'">' +
+						'<script nonce="abc">run()</script></html>',
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
+	});
+
+	it("honors script-src-elem when it overrides script-src for script elements", async () => {
+		const result = await verifyReport({
+			url: "https://reports.example/r/script-src-elem/",
+			fetchImpl: async () =>
+				response(
+					interactivePage(
+						'<script nonce="abc">run()</script>',
+						"default-src 'none'; script-src 'nonce-abc'; script-src-elem 'none'",
+					),
+				),
+		});
+
+		expect(result.exitCode).toBe(1);
+		expect(result.envelope.checks.scriptCsp).toBe("fail");
 	});
 
 	it("fails when --expect is absent from the body", async () => {

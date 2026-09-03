@@ -32,7 +32,7 @@ These are compatibility disclosures carried with the installed skill. They do no
 This is a code-audit finding from FLY-2015, not a fifth FLY-2004 measured limit.
 
 <!-- FLY-2015-AUDIT-MOTION-CSP-NONCE -->
-The upstream motion controller does not carry Flywheel's `__CSP_NONCE__` placeholder. An animated diagram published unchanged through `publish-report` therefore has its controller script blocked and falls back to the complete static end state in `<noscript>`. Do not claim hosted motion works unless the generated output uses the exact nonce placeholder, and do not add an author-supplied CSP meta tag to evade the registry's protective injection.
+`publish-report` now automatically adds a nonce to CSP-governed inline controller scripts and injects a matching default CSP when the source has no CSP meta, so the upstream motion controller works without an `__CSP_NONCE__` placeholder. Treat the generated page as a trusted artifact: HTML-escape untrusted values before composition, and do not add an author-supplied CSP meta tag to bypass the registry's protective injection.
 
 # Diagram Design
 

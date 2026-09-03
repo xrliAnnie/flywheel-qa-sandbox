@@ -20,8 +20,10 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { verifyReport } from "../../../flywheel-comm/src/commands/verify-report.js";
 import {
 	DEFAULT_RETENTION_BYTES,
 	DEFAULT_RETENTION_MAX,
@@ -34,6 +36,9 @@ import {
 
 const HTML =
 	"<!doctype html><html><head><title>t</title></head><body>r</body></html>";
+const REPO_ROOT = resolve(
+	fileURLToPath(new URL("../../../..", import.meta.url)),
+);
 
 function seqRandomHex(): (n: number) => string {
 	let i = 0;
@@ -81,6 +86,35 @@ describe("ReportRegistry", () => {
 	}
 
 	// ── transaction boundaries ──────────────────────────────────────────
+
+	it("publishes and verifies the two interactive design templates", async () => {
+		const templates = [
+			"engineering/doc/FLY-2190-rosetta-tmux-arm64/design-report.template.html",
+			"engineering/doc/FLY-2204-calendar-cred-isolation/founder-design.template.html",
+		];
+
+		for (const template of templates) {
+			const source = readFileSync(join(REPO_ROOT, template), "utf-8");
+			const staged = makeRegistry().stagePublish("flywheel", source, template);
+			const published = staged.deployFiles.find(
+				(file) => file.file === `r/${staged.entry.token}/index.html`,
+			);
+			expect(published, template).toBeDefined();
+
+			const verification = await verifyReport({
+				url: `https://reports.example/r/${staged.entry.token}/`,
+				fetchImpl: async () =>
+					new Response(published?.data, {
+						status: 200,
+						headers: { "content-type": "text/html" },
+					}),
+			});
+			expect(verification.exitCode, template).toBe(0);
+			expect(verification.envelope.checks.scriptCsp, template).toBe("pass");
+			expect(verification.envelope.checks.scriptNonce, template).toBe("pass");
+			staged.abort();
+		}
+	});
 
 	it("stagePublish performs zero fs mutation", () => {
 		const reg = makeRegistry();
@@ -545,6 +579,43 @@ describe("ReportRegistry", () => {
 		const reg = makeRegistry();
 		expect(reg.previewsDir()).toBe(join(dir, "previews"));
 	});
+
+	it("rejects external scripts consistently at publish and verification", async () => {
+		const expectedError =
+			"hosted reports must not contain external script src tags; bundle the code into an inline script and republish so publish-report can add matching nonces automatically, or use the __CSP_NONCE__ inline-script convention";
+		const externalHtmlDocuments = [
+			'<html><head></head><body><script data-x="foo>" src="external.js"></script></body></html>',
+			'<html><head></head><body><script / src="external.js"></script></body></html>',
+			'<html><body><script src="external.js"></script></body></html>',
+		];
+
+		for (const html of externalHtmlDocuments) {
+			let publishError: string | undefined;
+			try {
+				makeRegistry().stagePublish("flywheel", html).abort();
+			} catch (error) {
+				publishError = (error as Error).message;
+			}
+			const verification = await verifyReport({
+				url: "https://reports.example/external-script/",
+				fetchImpl: async () =>
+					new Response(html, {
+						status: 200,
+						headers: { "content-type": "text/html" },
+					}),
+			});
+
+			expect({
+				publishError,
+				verifyExitCode: verification.exitCode,
+				verifyError: verification.envelope.error,
+			}).toEqual({
+				publishError: expectedError,
+				verifyExitCode: 1,
+				verifyError: expectedError,
+			});
+		}
+	});
 });
 
 describe("injectHeadMeta", () => {
@@ -596,6 +667,15 @@ describe("injectHeadMeta", () => {
 		expect(injectHeadMeta(html)).toBe(html);
 	});
 
+	it("does not treat a raw-text </head> string as the head boundary", () => {
+		const html =
+			'<html><head><script type="application/json">{"sample":"</head>"}</script>' +
+			'<meta http-equiv="Content-Security-Policy" content="default-src *">' +
+			'<meta name="robots" content="all"></head><body></body></html>';
+
+		expect(injectHeadMeta(html)).toBe(html);
+	});
+
 	it("malformed doc without </head>: body fake meta still does not count as head", () => {
 		const html =
 			'<html><head><body><meta name="robots" content="all"></body></html>';
@@ -633,6 +713,127 @@ describe("injectHeadMeta", () => {
 		expect(out).toContain("style-src 'unsafe-inline'");
 	});
 
+	it("auto-nonces executable inline scripts when the default CSP is injected", () => {
+		const html =
+			"<html><head><title>t</title></head><body>" +
+			"<pre>&lt;script&gt;injected()&lt;/script&gt;</pre>" +
+			"<script>first()</script>" +
+			'<script data-x="foo>" type="module" nonce="old">second()</script>' +
+			"</body></html>";
+		let generated = 0;
+
+		const out = injectHeadMeta(html, () => {
+			generated += 1;
+			return "AUTO123";
+		});
+
+		expect(generated).toBe(1);
+		expect(out).toContain('<script nonce="AUTO123">first()</script>');
+		expect(out).toContain(
+			'<script data-x="foo>" type="module" nonce="AUTO123">second()</script>',
+		);
+		expect(out).toContain("script-src 'nonce-AUTO123'");
+		expect(out).toContain("default-src 'none'");
+		expect(out).toContain("&lt;script&gt;injected()&lt;/script&gt;");
+		expect(out.match(/<script\b/gi)).toHaveLength(2);
+	});
+
+	it.each([
+		"application/ecmascript",
+		"application/javascript",
+		"application/x-ecmascript",
+		"application/x-javascript",
+		"text/ecmascript",
+		"text/javascript",
+		"text/javascript1.0",
+		"text/javascript1.1",
+		"text/javascript1.2",
+		"text/javascript1.3",
+		"text/javascript1.4",
+		"text/javascript1.5",
+		"text/jscript",
+		"text/livescript",
+		"text/x-ecmascript",
+		"text/x-javascript",
+		"APPLICATION/JAVASCRIPT; charset=utf-8",
+		"importmap",
+		"speculationrules",
+	])("auto-nonces every CSP-governed inline script type: %s", (type) => {
+		const html =
+			`<html><head></head><body><script type="${type}">` +
+			"governed()</script></body></html>";
+		const out = injectHeadMeta(html, () => "TYPE123");
+
+		expect(out).toContain(`type="${type}" nonce="TYPE123"`);
+		expect(out).toContain("script-src 'nonce-TYPE123'");
+	});
+
+	it("rejects inline event handlers before injecting the default CSP", () => {
+		const html =
+			'<html><head></head><body><button onClick="go()">Go</button></body></html>';
+
+		expect(() => injectHeadMeta(html)).toThrow(
+			/inline event handler.*addEventListener/i,
+		);
+	});
+
+	it("does not mistake ordinary once/only attributes for event handlers", () => {
+		const html =
+			'<html><head></head><body><section once only="yes">Safe</section></body></html>';
+
+		expect(() => injectHeadMeta(html)).not.toThrow();
+	});
+
+	it("preserves an author CSP, its inline script, and its event-handler policy", () => {
+		const html =
+			'<html><head><meta content="default-src *" http-equiv="Content-Security-Policy"></head>' +
+			'<body onload="boot()"><script nonce="author">boot()</script></body></html>';
+
+		expect(injectHeadMeta(html, () => "unused")).toBe(
+			html.replace("<head>", '<head>\n<meta name="robots" content="noindex">'),
+		);
+	});
+
+	it("ignores script-like text in raw elements, comments, and script bodies", () => {
+		const html =
+			"<html><head></head><body><!-- <script>comment()</script> -->" +
+			"<noscript><script>fallback()</script></noscript>" +
+			'<script>const sample = "<script>fake()</script>";</script></body></html>';
+		const out = injectHeadMeta(html, () => "RAW123");
+
+		expect(out).toContain(
+			'<script nonce="RAW123">const sample = "<script>fake()</script>";</script>',
+		);
+		expect(out.match(/nonce="RAW123"/g)).toHaveLength(1);
+	});
+
+	it("treats slash-ended script openings as raw text until their closing tag", () => {
+		const html =
+			"<html><head></head><body><script/>const sample = \"<button onclick='fake()'>\";</script></body></html>";
+		const out = injectHeadMeta(html, () => "SLASH123");
+
+		expect(out).toContain('<script/ nonce="SLASH123">');
+		expect(out).toContain("<button onclick='fake()'>");
+	});
+
+	it("nonces data-src scripts but leaves data blocks non-executable", () => {
+		const html =
+			'<html><head></head><body><script data-src="not-external.js">run()</script>' +
+			'<script type="application/ld+json">{"name":"report"}</script>' +
+			'<script type="text/template"><button onclick="shown-as-text()"></button></script>' +
+			"</body></html>";
+		const out = injectHeadMeta(html, () => "DATA123");
+
+		expect(out).toContain(
+			'<script data-src="not-external.js" nonce="DATA123">run()</script>',
+		);
+		expect(out).toContain(
+			'<script type="application/ld+json">{"name":"report"}</script>',
+		);
+		expect(out).toContain("script-src 'nonce-DATA123'");
+		expect(out.match(/nonce="DATA123"/g)).toHaveLength(1);
+	});
+
 	it("each publish mints a fresh nonce (CSP + script tag agree)", () => {
 		const html = `<html><head></head><body><script nonce="${NONCE}">1;</script></body></html>`;
 		let n = 0;
@@ -648,5 +849,25 @@ describe("injectHeadMeta", () => {
 		const out = injectHeadMeta(html, () => "XYZ");
 		expect(out).not.toContain(NONCE); // replaced as text
 		expect(out).not.toContain("<script"); // no real script tag exists → nothing executes
+	});
+
+	it("text mentioning the placeholder does not leave real inline scripts nonce-less", () => {
+		const html =
+			`<html><head></head><body><pre>docs mention ${NONCE}</pre>` +
+			"<script>interactive()</script></body></html>";
+		const out = injectHeadMeta(html, () => "TEXT123");
+
+		expect(out).not.toContain(NONCE);
+		expect(out).toContain('<script nonce="TEXT123">interactive()</script>');
+		expect(out).toContain("script-src 'nonce-TEXT123'");
+	});
+
+	it("trims http-equiv values when preserving an author CSP", () => {
+		const html =
+			'<html><head><meta http-equiv=" Content-Security-Policy " content="default-src *"></head><body></body></html>';
+		const out = injectHeadMeta(html);
+
+		expect(out.match(/Content-Security-Policy/gi)).toHaveLength(1);
+		expect(out).toContain('content="default-src *"');
 	});
 });

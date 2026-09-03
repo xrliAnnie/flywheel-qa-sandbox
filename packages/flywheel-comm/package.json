@@ -42,7 +42,8 @@
 		"./lead-inbox-nudge": "./dist/lead-inbox-nudge.js",
 		"./discord-chat-ingest": "./dist/discord-chat-ingest.js",
 		"./approval-intent": "./dist/approval-intent.js",
-		"./design-html-evidence": "./dist/design-html-evidence.js"
+		"./design-html-evidence": "./dist/design-html-evidence.js",
+		"./report-html": "./dist/report-html.js"
 	},
 	"bin": {
 		"flywheel-comm": "dist/index.js"

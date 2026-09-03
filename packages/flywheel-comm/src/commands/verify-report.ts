@@ -16,6 +16,14 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join } from "node:path";
+import {
+	EXTERNAL_SCRIPT_REJECTION_MESSAGE,
+	htmlAttribute,
+	htmlHeadRange,
+	isCspGovernedInlineScript,
+	isExternalScript,
+	scanHtmlTags,
+} from "../report-html.js";
 
 export const DEFAULT_CHROME_BIN =
 	"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -33,6 +41,7 @@ type CheckResult = "pass" | "fail" | "skipped";
 export interface VerifyReportChecks {
 	http: CheckResult;
 	noncePlaceholder: CheckResult;
+	scriptCsp: CheckResult;
 	scriptNonce: CheckResult;
 	expect: CheckResult;
 }
@@ -76,9 +85,43 @@ export interface VerifyReportArgs {
 const emptyChecks = (): VerifyReportChecks => ({
 	http: "skipped",
 	noncePlaceholder: "skipped",
+	scriptCsp: "skipped",
 	scriptNonce: "skipped",
 	expect: "skipped",
 });
+
+const SCRIPT_CSP_REPAIR =
+	"republish with publish-report so it can add matching nonces automatically; if authoring the policy manually, add script-src 'nonce-__CSP_NONCE__' to the CSP and nonce=\"__CSP_NONCE__\" to every inline script";
+
+interface ScriptCspDirective {
+	nonces: Set<string>;
+	unsafeInline: boolean;
+}
+
+function scriptCspDirective(content: string): ScriptCspDirective | undefined {
+	const directives = content.split(";").map((directive) => directive.trim());
+	const scriptSrc = directives.find((directive) =>
+		/^script-src(?:\s|$)/i.test(directive),
+	);
+	if (!scriptSrc) return undefined;
+	const effectiveDirective =
+		directives.find((directive) =>
+			/^script-src-elem(?:\s|$)/i.test(directive),
+		) ?? scriptSrc;
+	const nonces = new Set<string>();
+	const sources = effectiveDirective.split(/\s+/).slice(1);
+	for (const token of sources) {
+		const match = /^'nonce-([^']+)'$/i.exec(token);
+		const nonce = match?.[1];
+		if (nonce) nonces.add(nonce);
+	}
+	return {
+		nonces,
+		unsafeInline: sources.some(
+			(source) => source.toLowerCase() === "'unsafe-inline'",
+		),
+	};
+}
 
 function result(
 	envelope: VerifyReportEnvelope,
@@ -208,16 +251,73 @@ export async function verifyReport(
 	}
 	checks.noncePlaceholder = "pass";
 
-	const scriptTags = body.match(/<script\b[^>]*>/gi) ?? [];
-	if (scriptTags.length > 0) {
-		if (scriptTags.some((tag) => !/\bnonce=(?:"[^"]+"|'[^']+')/i.test(tag))) {
-			checks.scriptNonce = "fail";
-			return fail("hosted page has a script without a nonce");
-		}
-		checks.scriptNonce = "pass";
-	} else {
-		checks.scriptNonce = "skipped";
+	const scan = scanHtmlTags(body);
+	const tags = scan.openings;
+	const scripts = tags.filter((tag) => tag.name === "script");
+	const externalScript = scripts.find(isExternalScript);
+	if (externalScript) {
+		checks.scriptNonce = "fail";
+		return fail(EXTERNAL_SCRIPT_REJECTION_MESSAGE);
 	}
+	const inlineScripts = scripts.filter(isCspGovernedInlineScript);
+	if (inlineScripts.length > 0) {
+		const head = htmlHeadRange(scan);
+		const policies =
+			head === undefined
+				? []
+				: tags.filter(
+						(tag) =>
+							tag.name === "meta" &&
+							tag.start >= head.start &&
+							tag.start < head.end &&
+							htmlAttribute(tag, "http-equiv")?.value?.trim().toLowerCase() ===
+								"content-security-policy",
+					);
+		const scriptNonces = inlineScripts
+			.map((tag) => htmlAttribute(tag, "nonce")?.value)
+			.filter((nonce): nonce is string => nonce !== undefined && nonce !== "");
+		if (policies.length === 0) {
+			checks.scriptCsp = "fail";
+			return fail(
+				`hosted page has executable inline script but no CSP meta in <head>; ${SCRIPT_CSP_REPAIR}`,
+			);
+		}
+		for (const policy of policies) {
+			const content = htmlAttribute(policy, "content")?.value ?? "";
+			const directive = scriptCspDirective(content);
+			if (directive === undefined || directive.nonces.size === 0) {
+				checks.scriptCsp = "fail";
+				return fail(
+					`hosted page CSP ${
+						directive?.unsafeInline
+							? "permits 'unsafe-inline' but has no nonce-isolated script-src"
+							: "has no nonce source in script-src"
+					}; ${SCRIPT_CSP_REPAIR}`,
+				);
+			}
+			const rejectedNonce = scriptNonces.find(
+				(nonce) => !directive.nonces.has(nonce),
+			);
+			if (rejectedNonce !== undefined) {
+				checks.scriptCsp = "fail";
+				return fail(
+					`hosted page inline script nonce is not authorized by every CSP script-src; ${SCRIPT_CSP_REPAIR}`,
+				);
+			}
+		}
+		checks.scriptCsp = "pass";
+	} else {
+		checks.scriptCsp = "skipped";
+	}
+
+	const missingNonce = inlineScripts.find(
+		(tag) => (htmlAttribute(tag, "nonce")?.value ?? "") === "",
+	);
+	if (missingNonce) {
+		checks.scriptNonce = "fail";
+		return fail("hosted page has an executable inline script without a nonce");
+	}
+	checks.scriptNonce = inlineScripts.length > 0 ? "pass" : "skipped";
 
 	if (args.expect !== undefined) {
 		if (!body.includes(args.expect)) {
