@@ -188,7 +188,7 @@ qa_launchd_render_codex_plist() {
 
 qa_launchd_mint_codex_home() (
   local source="$1" dest="$2" slot_root="$3" stage="" validation
-  local source_real slot_real release_real release_name parent socket_path_bytes
+  local source_real slot_real release_real release_name parent socket_path_bytes move_rc
   cleanup() {
     if [ -n "$stage" ] && [ -d "$stage" ]; then
       rm -rf "$stage"
@@ -315,7 +315,9 @@ PY
     || { qa_launchd_err "Codex daemon socket path exceeds 100 bytes"; return 1; }
   cp "$source_real/auth.json" "$stage/auth.json" || return 1
   chmod 600 "$stage/auth.json" || return 1
-  mv "$stage" "$dest" || return 1
+  mv "$stage" "$dest"
+  move_rc=$?
+  [ "$move_rc" -eq 0 ] || return "$move_rc"
   stage=""
 )
 

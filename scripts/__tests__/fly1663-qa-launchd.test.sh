@@ -181,6 +181,216 @@ else
   fail "Codex home production-home refusal set"
 fi
 
+make_mint_source() {
+  local target="$1" auth_kind="${2:-file}" current_target="${3:-releases/release-1}"
+  mkdir -p "$target/packages/standalone/releases/release-1"
+  printf '%s\n' '#!/bin/bash' 'exit 0' > "$target/packages/standalone/releases/release-1/codex"
+  chmod +x "$target/packages/standalone/releases/release-1/codex"
+  ln -s "$current_target" "$target/packages/standalone/current"
+  if [ "$auth_kind" = symlink ]; then
+    printf '%s\n' 'fixture-auth-secret' > "$target/auth-target.json"
+    ln -s auth-target.json "$target/auth.json"
+  else
+    printf '%s\n' 'fixture-auth-secret' > "$target/auth.json"
+  fi
+}
+
+mint_shells=(/bin/bash)
+ci_bash=$(command -v bash)
+if [ "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$ci_bash")" != \
+    "$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' /bin/bash)" ]; then
+  mint_shells+=("$ci_bash")
+fi
+mint_matrix_ok=1
+for mint_shell in "${mint_shells[@]}"; do
+  shell_tag=$(printf '%s' "$mint_shell" | tr '/' '_')
+  shell_root="/tmp/flywheel-test-slot-$((920000 + $$ + ${#shell_tag}))"
+  rm -rf "$shell_root"
+
+  matrix_source="$TMP/matrix-source-${shell_tag}"
+  make_mint_source "$matrix_source"
+  if ! HOME="$HOME" "$mint_shell" -c \
+      'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+      "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
+      "$shell_root/cdxh/success" "$shell_root" \
+      || [ ! -x "$shell_root/cdxh/success/packages/standalone/current/codex" ]; then
+    mint_matrix_ok=0
+  fi
+
+  mkdir -p "$shell_root/cdxh/existing"
+  HOME="$HOME" "$mint_shell" -c \
+    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
+    "$shell_root/cdxh/existing" "$shell_root" >/dev/null 2>&1 \
+    && mint_matrix_ok=0
+
+  outside_parent="$TMP/outside-${shell_tag}"
+  mkdir -p "$outside_parent"
+  ln -s "$outside_parent" "$shell_root/escape"
+  HOME="$HOME" "$mint_shell" -c \
+    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
+    "$shell_root/escape/escaped" "$shell_root" >/dev/null 2>&1 \
+    && mint_matrix_ok=0
+
+  outside_release="$TMP/outside-release-${shell_tag}"
+  mkdir -p "$outside_release"
+  cp "$matrix_source/packages/standalone/releases/release-1/codex" "$outside_release/codex"
+  bad_current="$TMP/bad-current-${shell_tag}"
+  make_mint_source "$bad_current" file "$outside_release"
+  HOME="$HOME" "$mint_shell" -c \
+    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$bad_current" \
+    "$shell_root/cdxh/bad-current" "$shell_root" >/dev/null 2>&1 \
+    && mint_matrix_ok=0
+
+  symlink_auth="$TMP/symlink-auth-${shell_tag}"
+  make_mint_source "$symlink_auth" symlink
+  HOME="$HOME" "$mint_shell" -c \
+    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$symlink_auth" \
+    "$shell_root/cdxh/symlink-auth" "$shell_root" >/dev/null 2>&1 \
+    && mint_matrix_ok=0
+
+  long_name=$(printf '%0110d' 0)
+  HOME="$HOME" "$mint_shell" -c \
+    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+    "$ROOT/scripts/lib/qa-launchd-lead.sh" "$matrix_source" \
+    "$shell_root/cdxh/$long_name" "$shell_root" >/dev/null 2>&1 \
+    && mint_matrix_ok=0
+
+  if find "$shell_root" -name '.cdxh-stage.*' -print -quit | grep -q .; then
+    mint_matrix_ok=0
+  fi
+  rm -rf "$shell_root"
+done
+if [ "$mint_matrix_ok" = 1 ]; then
+  pass "Codex home mint success and negative matrix is portable across Bash 3.2 and CI Bash"
+else
+  fail "Codex home mint portable success/negative matrix"
+fi
+
+false_lib="$TMP/qa-launchd-lead-false.sh"
+python3 - "$ROOT/scripts/lib/qa-launchd-lead.sh" "$false_lib" <<'PY'
+from pathlib import Path
+import sys
+
+source, target = map(Path, sys.argv[1:])
+body = source.read_text()
+old = '  mv "$stage" "$dest"'
+new = '  false # forced post-auth/pre-rename failure'
+if body.count(old) != 1:
+    raise SystemExit(f"mv mutation count was {body.count(old)}, expected 1")
+target.write_text(body.replace(old, new))
+PY
+false_root="/tmp/flywheel-test-slot-$((930000 + $$))"
+false_dest="$false_root/cdxh/post-auth"
+if ! HOME="$HOME" /bin/bash -c \
+    'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
+    "$false_lib" "$mint_source" "$false_dest" "$false_root" >/dev/null 2>&1 \
+    && [ ! -e "$false_dest" ] \
+    && ! find "$false_root" -name '.cdxh-stage.*' -print -quit | grep -q . \
+    && ! grep -R -Fq 'fixture-auth-secret' "$false_root" 2>/dev/null; then
+  pass "Codex home mint scrubs staged credentials after a post-auth failure"
+else
+  fail "Codex home post-auth failure cleanup"
+fi
+rm -rf "$false_root"
+
+signal_lib="$TMP/qa-launchd-lead-signal.sh"
+python3 - "$ROOT/scripts/lib/qa-launchd-lead.sh" "$signal_lib" <<'PY'
+from pathlib import Path
+import sys
+
+source, target = map(Path, sys.argv[1:])
+body = source.read_text()
+old = '  mv "$stage" "$dest"'
+new = '''  /bin/sh -c 'printf "%s\\n" "$PPID"' > "$(dirname "$dest")/.fly2301-barrier"
+  while :; do sleep 0.2; done'''
+if body.count(old) != 1:
+    raise SystemExit(f"signal mutation count was {body.count(old)}, expected 1")
+target.write_text(body.replace(old, new))
+PY
+signal_driver="$TMP/mint-signal-driver.py"
+cat > "$signal_driver" <<'PY'
+import os
+from pathlib import Path
+import signal
+import subprocess
+import sys
+import time
+
+shell, library, source, dest, slot_root, signal_name = sys.argv[1:]
+proc = subprocess.Popen(
+    [shell, "-c", 'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"',
+     "_", library, source, dest, slot_root],
+    start_new_session=True,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+)
+pgid = os.getpgid(proc.pid)
+barrier = Path(dest).parent / ".fly2301-barrier"
+deadline = time.monotonic() + 30
+inner_pid = None
+try:
+    while time.monotonic() < deadline:
+        if barrier.is_file() and list(Path(dest).parent.glob(".cdxh-stage.*/auth.json")):
+            try:
+                inner_pid = int(barrier.read_text().strip())
+            except (OSError, ValueError):
+                pass
+            if inner_pid:
+                break
+        if proc.poll() is not None:
+            raise RuntimeError(f"harness exited before barrier: {proc.returncode}")
+        time.sleep(0.02)
+    if inner_pid is None:
+        raise RuntimeError("timed out waiting for staged credential barrier")
+
+    os.kill(inner_pid, 0)
+    if inner_pid == proc.pid or os.getpgid(inner_pid) != pgid:
+        raise RuntimeError(f"published pid {inner_pid} is outside the harness process group")
+
+    os.kill(inner_pid, getattr(signal, signal_name))
+    rc = proc.wait(timeout=30)
+    expected = 130 if signal_name == "SIGINT" else 143
+    if rc != expected:
+        raise RuntimeError(f"wrong harness exit: {rc}, expected {expected}")
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        pass
+    else:
+        raise RuntimeError("signal harness process group still has survivors")
+    parent = Path(dest).parent
+    if Path(dest).exists() or list(parent.glob(".cdxh-stage.*")):
+        raise RuntimeError("signal cleanup left destination or stage")
+    for path in parent.rglob("*"):
+        if path.is_file() and b"fixture-auth-secret" in path.read_bytes():
+            raise RuntimeError("signal cleanup left staged credential bytes")
+finally:
+    if proc.poll() is None:
+        os.killpg(pgid, signal.SIGKILL)
+        proc.wait()
+PY
+signal_matrix_ok=1
+for mint_shell in "${mint_shells[@]}"; do
+  for signal_name in SIGINT SIGTERM; do
+    signal_root="/tmp/flywheel-test-slot-$((940000 + $$ + ${#signal_name} + ${#mint_shell}))"
+    rm -rf "$signal_root"
+    if ! HOME="$HOME" python3 "$signal_driver" "$mint_shell" "$signal_lib" \
+        "$mint_source" "$signal_root/cdxh/signaled" "$signal_root" "$signal_name"; then
+      signal_matrix_ok=0
+    fi
+    rm -rf "$signal_root"
+  done
+done
+if [ "$signal_matrix_ok" = 1 ]; then
+  pass "Codex home mint INT/TERM traps exit 130/143 and scrub credentials on both Bash families"
+else
+  fail "Codex home mint signal cleanup matrix"
+fi
+
 launchctl_state="$TMP/launchctl-state"
 launchctl_calls="$TMP/launchctl-calls"
 launchctl_stub="$TMP/bin/launchctl"
