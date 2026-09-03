@@ -4,6 +4,7 @@
 # projects file, state root, socket, or delivery secret is shared.
 
 qa_launchd_err() { printf '[qa-launchd] ERROR: %s\n' "$*" >&2; }
+qa_launchd_diag() { printf '[qa-launchd] %s\n' "$*" >&2; }
 
 # Cold real-Lead starts measured about 20-30 seconds in the 529 room. Preserve
 # a 60-second observation envelope without hammering the machine that is also
@@ -372,7 +373,7 @@ PY
     rc=$?
   fi
   case "$rc" in
-    0) qa_launchd_err "probe=${probe} match=1"; return 0 ;;
+    0) qa_launchd_diag "probe=${probe} match=1"; return 0 ;;
     1) qa_launchd_err "probe=${probe} match=0"; return 1 ;;
     *) qa_launchd_err "probe=${probe} match=0"; return 2 ;;
   esac

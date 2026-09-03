@@ -442,7 +442,8 @@ if qa_launchd_process_env_has 987654 CODEX_HOME /tmp/flywheel-test-slot-7/cdxh/q
     >/dev/null 2>"$TMP/env-probe.err" \
     && ! qa_launchd_process_env_has 987654 CODEX_HOME /wrong >/dev/null 2>&1 \
     && [ "$(qa_launchd_process_env_has 987654 'BAD-NAME' value >/dev/null 2>&1; printf '%s' "$?")" = 2 ] \
-    && ! grep -Fq '/tmp/flywheel-test-slot-7/cdxh/qa-lead' "$TMP/env-probe.err"; then
+    && ! grep -Fq '/tmp/flywheel-test-slot-7/cdxh/qa-lead' "$TMP/env-probe.err" \
+    && ! grep -Fq 'ERROR:' "$TMP/env-probe.err"; then
   pass "Codex process environment probe matches one exact key without leaking values"
 else
   fail "Codex process environment probe"
@@ -450,25 +451,35 @@ fi
 unset -f ps
 
 QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+QA_PROCESS_STATUS=S
 ps() {
   case "$*" in
-    '-o stat= -p 987654') printf 'S\n' ;;
+    '-o stat= -p 987654') printf '%s\n' "$QA_PROCESS_STATUS" ;;
     '-p 987654 -o command=') printf '%s\n' "$QA_PROCESS_COMMAND" ;;
     *) return 1 ;;
   esac
 }
 if qa_launchd_codex_process_matches 987654; then
+  matcher_negatives=0
   QA_PROCESS_COMMAND='/usr/bin/python3 /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
-  if qa_launchd_codex_process_matches 987654 >/dev/null 2>&1; then
-    fail "Codex process matcher accepted a non-node runtime predecessor"
-  else
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js /other/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  QA_PROCESS_COMMAND='/repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js'
+  QA_PROCESS_STATUS=Z
+  qa_launchd_codex_process_matches 987654 >/dev/null 2>&1 || matcher_negatives=$((matcher_negatives + 1))
+  if [[ "$matcher_negatives" == 4 ]]; then
     pass "Codex process matcher requires one live node runtime entrypoint"
+  else
+    fail "Codex process matcher accepted a wrong predecessor, duplicate/index-0 runtime, or zombie"
   fi
 else
   fail "Codex process matcher"
 fi
 unset -f ps
-unset QA_PROCESS_COMMAND
+unset QA_PROCESS_COMMAND QA_PROCESS_STATUS
 
 heartbeat_dir="$TMP/flywheel-test-slot-7/q/7/state/codex-lead/demo/brain"
 heartbeat="$heartbeat_dir/heartbeat.json"
@@ -493,6 +504,36 @@ if [[ "$heartbeat_one" == $'4242\tgen-1\tcarrier-1\tonline\t'"$heartbeat_hash" ]
   pass "heartbeat reader validates one snapshot and archives those exact bytes on request"
 else
   fail "Codex heartbeat reader and evidence snapshot"
+fi
+
+heartbeat_negatives=0
+printf '%s\n' '{"v":1,"generationId":"gen","threadId":"thread","processPid":4242,"carrierInstanceId":"carrier","updatedAt":"now"}' > "$TMP/missing-state.json"
+qa_launchd_read_heartbeat "$TMP/missing-state.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+printf '%s\n' '{"v":1,"generationId":"gen","threadId":"thread","processPid":4242,"carrierInstanceId":"carrier","state":"starting","updatedAt":"now"}' > "$TMP/invalid-state.json"
+qa_launchd_read_heartbeat "$TMP/invalid-state.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+ln -s "$heartbeat" "$TMP/heartbeat-link.json"
+qa_launchd_read_heartbeat "$TMP/heartbeat-link.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+python3 - "$TMP/oversized-heartbeat.json" <<'PY'
+from pathlib import Path
+import json
+import sys
+Path(sys.argv[1]).write_text(json.dumps({"padding": "x" * 65537}))
+PY
+qa_launchd_read_heartbeat "$TMP/oversized-heartbeat.json" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+mkdir -p "$heartbeat_dir/inside-evidence" "$TMP/real-evidence"
+ln -s "$TMP/real-evidence" "$TMP/evidence-link"
+qa_launchd_read_heartbeat "$heartbeat" "$heartbeat_dir/inside-evidence" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+qa_launchd_read_heartbeat "$heartbeat" "$TMP/evidence-link" >/dev/null 2>&1 \
+  || heartbeat_negatives=$((heartbeat_negatives + 1))
+if [[ "$heartbeat_negatives" == 6 ]]; then
+  pass "heartbeat reader rejects missing/invalid state, symlinks, oversized input, and unsafe evidence roots"
+else
+  fail "Codex heartbeat adversarial matrix (${heartbeat_negatives}/6 rejected)"
 fi
 
 state_path=$(qa_launchd_codex_state_dir /tmp/flywheel-test-slot-7/q/7 test-slot-7 qa-lead)
@@ -545,12 +586,31 @@ ps() {
 export FLY1663_QA_TMUX_WINDOWS='test-slot-7-qa-lead'
 if [[ "$(qa_launchd_codex_lead_verify "$label" "$codex_home" "$codex_state")" == $'4242\t'"$codex_state" ]] \
     && qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead /tmp/slot-tmux.sock; then
-  pass "Codex topology verification binds launchd, runtime, environment, heartbeat, and one TUI window"
+  export FLY1663_QA_TMUX_WINDOWS=''
+  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead /tmp/slot-tmux.sock \
+    >/dev/null 2>&1 || no_window_rejected=1
+  export FLY1663_QA_TMUX_WINDOWS=$'test-slot-7-qa-lead\ntest-slot-7-qa-lead'
+  qa_launchd_codex_lead_ready "$codex_state" 4242 test-slot-7 qa-lead /tmp/slot-tmux.sock \
+    >/dev/null 2>&1 || duplicate_window_rejected=1
+  if [[ "${no_window_rejected:-0}" == 1 && "${duplicate_window_rejected:-0}" == 1 ]]; then
+    pass "Codex topology verification binds launchd, runtime, environment, heartbeat, and exactly one TUI window"
+  else
+    fail "Codex readiness accepted zero or duplicate TUI windows"
+  fi
 else
   fail "Codex topology verification and readiness"
 fi
+verify_definition=$(declare -f qa_launchd_codex_lead_verify)
+ready_definition=$(declare -f qa_launchd_codex_lead_ready)
+if [[ "$(grep -c 'qa_launchd_read_heartbeat.*heartbeat.json"' <<<"$verify_definition")" == 1 ]] \
+    && [[ "$(grep -c 'qa_launchd_read_heartbeat.*heartbeat.json"' <<<"$ready_definition")" == 1 ]] \
+    && ! grep -q 'evidence\|snapshot' <<<"$verify_definition$ready_definition"; then
+  pass "normal Codex verify/ready paths read one heartbeat and expose no snapshot output argument"
+else
+  fail "normal Codex verify/ready heartbeat call shape"
+fi
 unset -f ps
-unset QA_PROCESS_COMMAND FLY1663_QA_TMUX_WINDOWS
+unset QA_PROCESS_COMMAND FLY1663_QA_TMUX_WINDOWS no_window_rejected duplicate_window_rejected
 
 # A pending cold start must not inherit the 100ms PID-discovery cadence. The
 # old verifier ran launchctl + two jq processes ten times per second and could
