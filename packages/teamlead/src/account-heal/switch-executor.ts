@@ -36,6 +36,7 @@ import {
 	type SwitchNotificationTrigger,
 } from "./account-switch-notification.js";
 import type { AccountsLock } from "./accounts-lock.js";
+import type { ApplyChildEvidence } from "./apply-child-evidence.js";
 import type { MachineAccountResolution } from "./machine-account.js";
 import { type LeaseProof, validateLeaseProof } from "./mkdir-lock.js";
 import { computeModelCapTtlMs } from "./model-cap.js";
@@ -124,8 +125,7 @@ export interface SwitchDeps {
 			signal: AbortSignal;
 			manualMode?: "use" | "next";
 		},
-		// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters return Promise<void>; identity-sync + reports are additive channels.
-	) => Promise<void | ({ identitySynced: boolean } & ApplyProfileReport)>;
+	) => Promise<ApplyProfileInvocation>;
 	/** The account the real profile is currently active on (crash-recovery authority). */
 	readActiveProfile: () => Promise<string | null>;
 	/** Shared fail-closed authority. Production always supplies this. */
@@ -141,6 +141,14 @@ export interface SwitchDeps {
 		>[number]["alert"],
 	) => Promise<DeliveryReport>;
 }
+
+type ApplyProfileInvocation =
+	// biome-ignore lint/suspicious/noConfusingVoidType: existing adapters return Promise<void>; identity-sync + reports are additive channels.
+	| void
+	| (ApplyProfileReport & {
+			identitySynced: boolean;
+			evidence?: ApplyChildEvidence;
+	  });
 
 export type IdentityCheckpoint = "pre_write" | "capture_back" | "capture";
 
@@ -192,6 +200,7 @@ type SwitchOutcome =
 			reason: string;
 			reasonCode:
 				| "freshness_unavailable"
+				| "apply_contract_mismatch"
 				| "active_marker_drift"
 				| "live_identity_unavailable"
 				| "keychain_preimage_conflict"
@@ -212,12 +221,31 @@ export type SwitchResult = SwitchOutcome & {
 	applyReports?: ApplyProfileReport[];
 	/** Whether the profile mutation child reached a running process. */
 	applyProfileChildStarted?: boolean;
+	/** Sanitized evidence from the last profile mutation child. */
+	applyEvidence?: ApplyChildEvidence;
 };
 
 export class LockLeaseLostError extends Error {
-	constructor(detail?: string) {
+	constructor(
+		detail?: string,
+		public readonly evidence?: ApplyChildEvidence,
+	) {
 		super(`account lock lease lost${detail ? `: ${detail}` : ""}`);
 		this.name = "LockLeaseLostError";
+	}
+}
+
+export class ApplyContractMismatchError extends Error {
+	constructor(
+		detail: string | undefined,
+		public readonly evidence: ApplyChildEvidence,
+	) {
+		super(
+			`profile child rejected the atomic-apply contract (daemon runtime predates the switch script)${
+				detail ? `: ${detail}` : ""
+			}`,
+		);
+		this.name = "ApplyContractMismatchError";
 	}
 }
 
@@ -231,6 +259,7 @@ export class TargetStaleError extends Error {
 	constructor(
 		public readonly account: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(
 			`target account '${account}' has a stale pooled credential (freshness refresh refused)`,
@@ -249,6 +278,7 @@ export class FreshnessUnavailableError extends Error {
 	constructor(
 		detail?: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(
 			`token freshness helper unavailable — refusing to switch (fail-closed)${
@@ -265,7 +295,10 @@ export class FreshnessUnavailableError extends Error {
  * state/environmental, never evidence that the selected target account is bad.
  */
 export class ActiveMarkerDriftError extends Error {
-	constructor(detail?: string) {
+	constructor(
+		detail?: string,
+		public readonly evidence?: ApplyChildEvidence,
+	) {
 		super(
 			`active Claude profile marker could not be safely reconciled${
 				detail ? `: ${detail}` : ""
@@ -279,6 +312,7 @@ export class TargetQuotaExhaustedError extends Error {
 	constructor(
 		public readonly account: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(`target account '${account}' has exhausted Claude quota`);
 		this.name = "TargetQuotaExhaustedError";
@@ -292,6 +326,7 @@ export class LiveIdentityUnavailableError
 	constructor(
 		detail?: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(`live Claude identity is unavailable${detail ? `: ${detail}` : ""}`);
 		this.name = "LiveIdentityUnavailableError";
@@ -305,6 +340,7 @@ export class KeychainPreimageConflictError
 	constructor(
 		detail?: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(
 			`live Keychain credential changed concurrently${detail ? `: ${detail}` : ""}`,
@@ -361,6 +397,7 @@ export class TargetIdentityMismatchError
 		public readonly account: string,
 		public readonly actualDigest: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(`target account '${account}' does not match its trusted identity`);
 		this.name = "TargetIdentityMismatchError";
@@ -374,6 +411,7 @@ export class TargetIdentityRolledBackError
 	constructor(
 		public readonly account: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(
 			`target account '${account}' failed Keychain read-back; previous credential restored`,
@@ -389,6 +427,7 @@ export class IdentityRollbackFailedError
 	constructor(
 		public readonly account: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(
 			`target account '${account}' failed Keychain read-back and verified rollback`,
@@ -404,6 +443,7 @@ export class TargetIdentityUnverifiableError
 	constructor(
 		public readonly account: string,
 		public readonly report?: ApplyProfileReport,
+		public readonly evidence?: ApplyChildEvidence,
 	) {
 		super(`target account '${account}' identity endpoint rejected its token`);
 		this.name = "TargetIdentityUnverifiableError";
@@ -461,17 +501,50 @@ function appendReport(
 function withReports<T extends SwitchOutcome>(
 	result: T,
 	reports: ApplyProfileReport[],
+	evidence?: ApplyChildEvidence,
+	childStarted: boolean | null | undefined = evidence?.childStarted,
 ): SwitchResult {
-	return reports.length > 0
-		? { ...result, applyReports: [...reports] }
-		: result;
+	const reported: SwitchResult =
+		reports.length > 0 ? { ...result, applyReports: [...reports] } : result;
+	if (
+		evidence === undefined ||
+		(result.outcome !== "failed" && result.outcome !== "no_account")
+	) {
+		return reported;
+	}
+	return {
+		...reported,
+		applyEvidence: evidence,
+		...(childStarted === null || childStarted === undefined
+			? {}
+			: { applyProfileChildStarted: childStarted }),
+	};
 }
 
-function profileChildStarted(error: unknown): boolean | undefined {
-	if (typeof error !== "object" || error === null) return undefined;
-	const value = (error as { profileChildStarted?: unknown })
-		.profileChildStarted;
-	return typeof value === "boolean" ? value : undefined;
+function evidenceOf(value: unknown): ApplyChildEvidence | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	const evidence = (value as { evidence?: unknown }).evidence;
+	if (typeof evidence !== "object" || evidence === null) return undefined;
+	const candidate = evidence as Record<string, unknown>;
+	if (
+		candidate.exitCode !== null &&
+		(typeof candidate.exitCode !== "number" ||
+			!Number.isInteger(candidate.exitCode))
+	) {
+		return undefined;
+	}
+	if (
+		candidate.childStarted !== null &&
+		typeof candidate.childStarted !== "boolean"
+	) {
+		return undefined;
+	}
+	if (typeof candidate.detail !== "string") return undefined;
+	return {
+		exitCode: candidate.exitCode as number | null,
+		childStarted: candidate.childStarted as boolean | null,
+		detail: candidate.detail,
+	};
 }
 
 /** Default lockfile beside the state file. */
@@ -590,6 +663,7 @@ export async function switchAccount(
 
 	const locked = await deps.withLock<SwitchResult>(lockPath, async (lease) => {
 		const applyReports: ApplyProfileReport[] = [];
+		let lastEvidence: ApplyChildEvidence | undefined;
 		const validate = deps.validateLease ?? validateLeaseProof;
 		const fence = (): boolean => {
 			try {
@@ -606,11 +680,11 @@ export async function switchAccount(
 					reasonCode: "lock_lease_lost",
 				},
 				applyReports,
+				lastEvidence,
 			);
 		const applyWithHeartbeat = async (
 			name: string,
-			// biome-ignore lint/suspicious/noConfusingVoidType: the injected apply contract remains backward-compatible; identity-sync + reports are additive.
-		): Promise<void | ({ identitySynced: boolean } & ApplyProfileReport)> => {
+		): Promise<ApplyProfileInvocation> => {
 			const controller = new AbortController();
 			let lost = false;
 			const timer = setInterval(() => {
@@ -631,7 +705,9 @@ export async function switchAccount(
 				return result;
 			} catch (error) {
 				if (lost || error instanceof LockLeaseLostError) {
-					throw new LockLeaseLostError(lockPath);
+					const evidence = evidenceOf(error);
+					if (error instanceof LockLeaseLostError && evidence) throw error;
+					throw new LockLeaseLostError(lockPath, evidence);
 				}
 				throw error;
 			} finally {
@@ -822,6 +898,7 @@ export async function switchAccount(
 							reasonCode: "keychain_readback_mismatch",
 						},
 						applyReports,
+						lastEvidence,
 					);
 				}
 				return withReports(
@@ -839,11 +916,14 @@ export async function switchAccount(
 										: "no_eligible_account",
 					},
 					applyReports,
+					lastEvidence,
 				);
 			}
 			attemptedNames.add(next);
 			try {
 				const applyResult = await applyWithHeartbeat(next);
+				const applyEvidence = evidenceOf(applyResult);
+				if (applyEvidence) lastEvidence = applyEvidence;
 				identitySynced = applyResult?.identitySynced ?? true;
 				consumeReport(applyResult);
 				// The child may settle in the gap before the next heartbeat. Re-proof
@@ -852,6 +932,8 @@ export async function switchAccount(
 				applied = next;
 				break;
 			} catch (err) {
+				const applyEvidence = evidenceOf(err);
+				if (applyEvidence) lastEvidence = applyEvidence;
 				if (err instanceof LockLeaseLostError || !fence()) return leaseLost();
 				if (err instanceof KeychainPreimageConflictError) {
 					consumeReport(err, true);
@@ -862,6 +944,7 @@ export async function switchAccount(
 							reasonCode: "keychain_preimage_conflict",
 						},
 						applyReports,
+						lastEvidence,
 					);
 				}
 				if (err instanceof Error) consumeReport(err);
@@ -873,6 +956,7 @@ export async function switchAccount(
 							reasonCode: "live_identity_unavailable",
 						},
 						applyReports,
+						lastEvidence,
 					);
 				}
 				if (err instanceof TargetQuotaExhaustedError) {
@@ -915,6 +999,7 @@ export async function switchAccount(
 							reasonCode: "identity_rollback_failed",
 						},
 						applyReports,
+						lastEvidence,
 					);
 				}
 				if (err instanceof FreshnessUnavailableError) {
@@ -925,6 +1010,7 @@ export async function switchAccount(
 							reasonCode: "freshness_unavailable",
 						},
 						applyReports,
+						lastEvidence,
 					);
 				}
 				if (err instanceof ActiveMarkerDriftError) {
@@ -935,20 +1021,30 @@ export async function switchAccount(
 							reasonCode: "active_marker_drift",
 						},
 						applyReports,
+						lastEvidence,
 					);
 				}
-				const failed = withReports(
+				if (err instanceof ApplyContractMismatchError) {
+					return withReports(
+						{
+							outcome: "failed",
+							reason: err.message,
+							reasonCode: "apply_contract_mismatch",
+						},
+						applyReports,
+						lastEvidence,
+					);
+				}
+				return withReports(
 					{
 						outcome: "failed",
 						reason: err instanceof Error ? err.message : String(err),
 						reasonCode: "apply_failed",
 					},
 					applyReports,
+					lastEvidence,
+					applyEvidence?.childStarted ?? null,
 				);
-				const childStarted = profileChildStarted(err);
-				return childStarted === undefined
-					? failed
-					: { ...failed, applyProfileChildStarted: childStarted };
 			}
 		}
 		if (applied === null) {
@@ -961,6 +1057,7 @@ export async function switchAccount(
 						reasonCode: "keychain_readback_mismatch",
 					},
 					applyReports,
+					lastEvidence,
 				);
 			}
 			return withReports(
@@ -978,6 +1075,7 @@ export async function switchAccount(
 									: "no_eligible_account",
 				},
 				applyReports,
+				lastEvidence,
 			);
 		}
 

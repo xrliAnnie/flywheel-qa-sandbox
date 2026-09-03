@@ -137,6 +137,14 @@ export async function runQuotaMonitorLoop(
 	}
 }
 
+export function runtimeTreeShaCommand(
+	argv: readonly string[],
+	hash: () => string = () =>
+		runtimeTreeSha256(dirname(fileURLToPath(import.meta.url))),
+): string | null {
+	return argv.length === 1 && argv[0] === "--runtime-tree-sha" ? hash() : null;
+}
+
 function structuredLog(level: "info" | "error", message: string): void {
 	let fields: Record<string, unknown> = { message };
 	try {
@@ -316,11 +324,15 @@ export async function main(): Promise<void> {
 
 const invokedPath = process.argv[1];
 if (invokedPath && import.meta.url === pathToFileURL(invokedPath).href) {
-	main().catch((error) => {
-		structuredLog(
-			"error",
-			`fatal=${error instanceof Error ? error.name : "unknown"}`,
-		);
-		process.exitCode = 1;
-	});
+	const runtimeSha = runtimeTreeShaCommand(process.argv.slice(2));
+	if (runtimeSha !== null) process.stdout.write(`${runtimeSha}\n`);
+	else {
+		main().catch((error) => {
+			structuredLog(
+				"error",
+				`fatal=${error instanceof Error ? error.name : "unknown"}`,
+			);
+			process.exitCode = 1;
+		});
+	}
 }

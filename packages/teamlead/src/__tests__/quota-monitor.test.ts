@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
 	ProfileIdentity,
@@ -7,8 +10,10 @@ import {
 	type AccountQuotaObservation,
 	type AccountStore,
 	selectNextAccount,
+	writeStore,
 } from "../account-heal/account-store.js";
 import { formatSwitchNotification } from "../account-heal/account-switch-notification.js";
+import { makeClaudeProfileSwitchDeps } from "../account-heal/claude-profile-cli.js";
 import {
 	formatModelBenchRetryNote,
 	pollOnce,
@@ -27,7 +32,10 @@ import type {
 	QuotaPaneSnapshot,
 } from "../account-heal/quota-revive-scan.js";
 import type { AccountUsageResult } from "../account-heal/quota-usage-api.js";
-import type { SwitchResult } from "../account-heal/switch-executor.js";
+import {
+	type SwitchResult,
+	switchAccount,
+} from "../account-heal/switch-executor.js";
 
 const NOW = Date.parse("2026-07-14T20:00:00Z");
 const FIVE_RESET = "2026-07-14T23:00:00.000Z";
@@ -242,6 +250,12 @@ function harness() {
 			generation,
 		}),
 	);
+	const reconcileMachine = vi.fn(async () => ({
+		ok: true as const,
+		outcome: "already_consistent" as const,
+		exitCode: 0,
+		detail: "",
+	}));
 	const readSnapshot = vi.fn(async () => {
 		expect(lockDepth).toBe(1);
 		return {
@@ -257,6 +271,7 @@ function harness() {
 		config: loadedConfig(),
 		state: emptyQuotaMonitorState(4),
 		reconcileActive,
+		reconcileMachine,
 		withAccountsLock: async (fn) => {
 			expect(lockDepth).toBe(0);
 			lockDepth++;
@@ -326,7 +341,9 @@ function harness() {
 		reviveSnapshot,
 		confirmSnapshot,
 		reconcileActive,
+		reconcileMachine,
 		alertImpl,
+		getLockDepth: () => lockDepth,
 		setIdentity(name: string, nextGeneration = generation) {
 			activeName = name;
 			generation = nextGeneration;
@@ -1759,7 +1776,432 @@ describe("pollOnce", () => {
 		});
 		result = await pollOnce(h.deps);
 		expect(result.outcome).toBe("switch_failed");
-		expect(h.alerts.at(-1)?.body).toContain("freshness_unavailable");
+		expect(h.alerts.at(-1)?.body).toContain(
+			"reason=freshness_unavailable; degraded=false; exit=none; child=unknown; detail=",
+		);
+	});
+
+	it("persists and reports atomic-apply contract evidence without attempting reconcile", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		const detail =
+			"FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH | Error: delegated profile mutation requires marker";
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "failed",
+			reason: "must not reach operator output sk-ant-oat01-FAKETOKEN",
+			reasonCode: "apply_contract_mismatch",
+			applyEvidence: { exitCode: 48, childStarted: true, detail },
+			applyProfileChildStarted: true,
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switch_failed");
+		expect(h.reconcileMachine).not.toHaveBeenCalled();
+		expect(result.state.pendingSwitchFailure).toMatchObject({
+			reasonCode: "apply_contract_mismatch",
+			applyExitCode: 48,
+			childStarted: true,
+			detail,
+		});
+		const failureLog = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([line]) => line)
+			.find((line) => line.includes('"event":"account_switch_failed"'));
+		expect(JSON.parse(failureLog ?? "{}")).toEqual({
+			event: "account_switch_failed",
+			trigger: { kind: "quota", scope: "5h" },
+			reasonCode: "apply_contract_mismatch",
+			exitCode: 48,
+			childStarted: true,
+			detail,
+		});
+		expect(h.alerts.at(-1)?.body).toBe(
+			[
+				"daemon runtime predates the switch script; restart quota-monitor or re-run the deploy wave",
+				`reason=apply_contract_mismatch; degraded=false; exit=48; child=started; detail=${detail}`,
+			].join("\n"),
+		);
+		expect(JSON.stringify(result.state)).not.toContain("FAKETOKEN");
+		expect(h.alerts.at(-1)?.body).not.toContain("FAKETOKEN");
+		expect(failureLog).not.toContain("FAKETOKEN");
+	});
+
+	it("carries real adapter and executor exit-48 evidence into daemon logs, state, and alert", async () => {
+		const fixture = mkdtempSync(join(tmpdir(), "fly2271-quota-integration-"));
+		try {
+			const storePath = join(fixture, "accounts.json");
+			const lockPath = join(fixture, "accounts.lock");
+			writeStore(store(), storePath);
+			const lease = {
+				lockPath,
+				markerPath: join(lockPath, "holder.1.fixture"),
+				ownershipToken: "fixture",
+			};
+			const profileDeps = makeClaudeProfileSwitchDeps({
+				binPath: "/fixture/flywheel-claude-profile",
+				storePath,
+				lockPath,
+				execFile: vi.fn(async () => {
+					throw Object.assign(new Error("delegated mutation refused"), {
+						code: 48,
+						stderr:
+							"FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH\nError: delegated profile mutation requires marker",
+						profileChildStarted: true,
+					});
+				}) as never,
+				withLock: async (_path, fn) => ({
+					kind: "ok",
+					value: await fn(lease),
+				}),
+			});
+			h.deps.switchAccount = (input) =>
+				switchAccount(input, {
+					...profileDeps,
+					renewLock: () => true,
+					validateLease: () => true,
+					resolveMachineAccount: () => ({
+						kind: "resolved",
+						name: "shopping",
+					}),
+				});
+			h.usages.set("secret-shopping", usage(95, 20));
+
+			const result = await pollOnce(h.deps);
+			const failureLog = vi
+				.mocked(h.deps.log)
+				.mock.calls.map(([line]) => line)
+				.find((line) => line.includes('"event":"account_switch_failed"'));
+			const marker = "FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH";
+
+			expect(result.outcome).toBe("switch_failed");
+			expect(failureLog).toContain(marker);
+			expect(result.state.pendingSwitchFailure).toMatchObject({
+				applyExitCode: 48,
+				childStarted: true,
+				detail: expect.stringContaining(marker),
+			});
+			expect(h.alerts.at(-1)?.body).toContain(marker);
+		} finally {
+			rmSync(fixture, { recursive: true, force: true });
+		}
+	});
+
+	it("strictly reconciles active-marker drift outside the lock and retries from a fresh snapshot once", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.switchImpl
+			.mockResolvedValueOnce({
+				outcome: "failed",
+				reason: "drift",
+				reasonCode: "active_marker_drift",
+				applyEvidence: {
+					exitCode: 46,
+					childStarted: true,
+					detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping",
+				},
+			})
+			.mockResolvedValueOnce({
+				outcome: "switched",
+				from: "school",
+				to: "business",
+				generation: 6,
+			});
+		h.reconcileMachine.mockImplementationOnce(async () => {
+			expect(h.getLockDepth()).toBe(0);
+			const next = store();
+			next.generation = 5;
+			next.activeAccount = "school";
+			h.setIdentity("school", 5);
+			h.setStore(next);
+			return {
+				ok: true,
+				outcome: "repaired",
+				from: "shopping",
+				to: "school",
+				exitCode: 0,
+				detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED shopping school",
+			};
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switched");
+		expect(h.reconcileMachine).toHaveBeenCalledTimes(1);
+		expect(h.switchImpl).toHaveBeenCalledTimes(2);
+		expect(h.switchImpl.mock.calls[1]?.[0]).toMatchObject({
+			observedAccount: "school",
+			observedGeneration: 5,
+			preferredOrder: ["business"],
+		});
+		expect(h.deps.log).toHaveBeenCalledWith(
+			JSON.stringify({
+				event: "account_switch_reconcile",
+				trigger: "drift_recovery",
+				ok: true,
+				outcome: "repaired",
+				from: "shopping",
+				to: "school",
+				exitCode: 0,
+				detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED shopping school",
+			}),
+		);
+		expect(
+			h.alerts.some((alert) => alert.kind === "account_switch_failed"),
+		).toBe(false);
+	});
+
+	it("does not retry when reconcile makes the sole preferred target active", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.deps.config = loadedConfig({ order: ["shopping", "school"] });
+		delete h.credentials.business;
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "failed",
+			reason: "drift",
+			reasonCode: "active_marker_drift",
+			applyEvidence: {
+				exitCode: 46,
+				childStarted: true,
+				detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping",
+			},
+		});
+		h.reconcileMachine.mockImplementationOnce(async () => {
+			const next = store();
+			next.generation = 5;
+			next.activeAccount = "school";
+			h.setIdentity("school", 5);
+			h.setStore(next);
+			return {
+				ok: true,
+				outcome: "repaired",
+				from: "shopping",
+				to: "school",
+				exitCode: 0,
+				detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED shopping school",
+			};
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("noop_already_switched");
+		expect(h.switchImpl).toHaveBeenCalledTimes(1);
+		expect(result.state.pendingSwitchFailure).toBeNull();
+	});
+
+	it("reconciles and retries active-marker drift at most once", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		const drift = (detail: string) => ({
+			outcome: "failed" as const,
+			reason: "drift",
+			reasonCode: "active_marker_drift" as const,
+			applyEvidence: { exitCode: 46, childStarted: true, detail },
+		});
+		h.switchImpl
+			.mockResolvedValueOnce(drift("FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE first"))
+			.mockResolvedValueOnce(
+				drift("FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE second"),
+			);
+		h.reconcileMachine.mockImplementationOnce(async () => {
+			const next = store();
+			next.generation = 5;
+			next.activeAccount = "school";
+			h.setIdentity("school", 5);
+			h.setStore(next);
+			return {
+				ok: true,
+				outcome: "repaired",
+				from: "shopping",
+				to: "school",
+				exitCode: 0,
+				detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED shopping school",
+			};
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switch_failed");
+		expect(h.switchImpl).toHaveBeenCalledTimes(2);
+		expect(h.reconcileMachine).toHaveBeenCalledTimes(1);
+		expect(result.state.pendingSwitchFailure?.detail).toBe(
+			"drift persisted after reconcile: FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE second",
+		);
+	});
+
+	it("records a failed strict reconcile and does not retry the switch", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "failed",
+			reason: "drift",
+			reasonCode: "active_marker_drift",
+			applyEvidence: {
+				exitCode: 46,
+				childStarted: true,
+				detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping",
+			},
+		});
+		h.reconcileMachine.mockResolvedValueOnce({
+			ok: false,
+			outcome: "unresolvable",
+			reason: "anchor_ambiguous",
+			exitCode: 20,
+			detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping",
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(h.switchImpl).toHaveBeenCalledTimes(1);
+		expect(result.state.pendingSwitchFailure?.detail).toBe(
+			"reconcile unresolvable: anchor_ambiguous: FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping: FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping",
+		);
+	});
+
+	it.each(["retry", "noop"] as const)(
+		"keeps first-attempt identity reports when drift recovery ends in %s",
+		async (ending) => {
+			h.usages.set("secret-shopping", usage(95, 20));
+			if (ending === "noop") {
+				h.deps.config = loadedConfig({ order: ["shopping", "school"] });
+				delete h.credentials.business;
+			}
+			const identityCheck = {
+				label: "school",
+				checkpoint: "pre_write" as const,
+				verdict: "mismatch" as const,
+				expectedKey: "b".repeat(64),
+				actualDigest: "a".repeat(64),
+			};
+			h.switchImpl.mockResolvedValueOnce({
+				outcome: "failed",
+				reason: "drift",
+				reasonCode: "active_marker_drift",
+				applyReports: [
+					{
+						identityChecks: [identityCheck],
+						freshened: {
+							name: "business",
+							identityProof: {
+								email: "business@example.com",
+								uuid: "uuid-business",
+							},
+						},
+					},
+				],
+				applyEvidence: {
+					exitCode: 46,
+					childStarted: true,
+					detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE shopping",
+				},
+			});
+			if (ending === "retry") {
+				h.switchImpl.mockResolvedValueOnce({
+					outcome: "switched",
+					from: "school",
+					to: "business",
+					generation: 6,
+					applyReports: [{ identityChecks: [identityCheck] }],
+				});
+			}
+			h.reconcileMachine.mockImplementationOnce(async () => {
+				const next = store();
+				next.generation = 5;
+				next.activeAccount = "school";
+				h.setIdentity("school", 5);
+				h.setStore(next);
+				return {
+					ok: true,
+					outcome: "repaired",
+					from: "shopping",
+					to: "school",
+					exitCode: 0,
+					detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED shopping school",
+				};
+			});
+
+			const result = await pollOnce(h.deps);
+
+			expect(result.outcome).toBe(
+				ending === "retry" ? "switched" : "noop_already_switched",
+			);
+			expect(result.state.identityMismatchEpisodes?.school).toMatchObject({
+				checkpoint: "pre_write",
+				expectedKey: "b".repeat(64),
+				actualDigest: "a".repeat(64),
+			});
+			expect(
+				h.alerts.filter((alert) => alert.kind === "account_identity_mismatch"),
+			).toHaveLength(1);
+		},
+	);
+
+	it("updates child evidence without reopening the same failure episode", async () => {
+		h.usages.set("secret-shopping", usage(95, 20));
+		const failure = (exitCode: number, detail: string): SwitchResult => ({
+			outcome: "failed",
+			reason: "safe",
+			reasonCode: "apply_failed",
+			applyEvidence: { exitCode, childStarted: true, detail },
+		});
+		h.switchImpl.mockResolvedValue(failure(31, "first"));
+
+		let result = await pollOnce(h.deps);
+		const startedAt = result.state.pendingSwitchFailure?.startedAt;
+		h.deps.state = result.state;
+		h.switchImpl.mockResolvedValue(failure(31, "second"));
+		h.setNow(result.state.nextUsageDueAt);
+		result = await pollOnce(h.deps);
+		expect(result.state.pendingSwitchFailure).toMatchObject({
+			startedAt,
+			detail: "second",
+			alertCount: 1,
+		});
+		expect(h.persisted).toContainEqual(
+			expect.objectContaining({
+				pendingSwitchFailure: expect.objectContaining({ detail: "second" }),
+			}),
+		);
+
+		h.deps.state = result.state;
+		h.switchImpl.mockResolvedValue(failure(32, "third"));
+		h.setNow(result.state.nextUsageDueAt);
+		result = await pollOnce(h.deps);
+		expect(result.state.pendingSwitchFailure).toMatchObject({
+			applyExitCode: 32,
+			detail: "third",
+			alertCount: 1,
+		});
+		expect(result.state.pendingSwitchFailure?.startedAt).toBe(startedAt);
+		expect(
+			h.alerts.filter((alert) => alert.kind === "account_switch_failed"),
+		).toHaveLength(1);
+	});
+
+	it("keeps model-cap failure evidence immediate and out of the durable quota episode", async () => {
+		h.scanPanes.mockResolvedValueOnce(paneSnapshot(["Fable 5"]));
+		h.switchImpl.mockResolvedValueOnce({
+			outcome: "failed",
+			reason: "stale runtime",
+			reasonCode: "apply_contract_mismatch",
+			applyEvidence: {
+				exitCode: 48,
+				childStarted: true,
+				detail: "FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
+			},
+		});
+
+		const result = await pollOnce(h.deps);
+
+		expect(result.outcome).toBe("switch_failed");
+		expect(result.state.pendingSwitchFailure).toBeNull();
+		expect(h.alerts.at(-1)?.body).toContain(
+			"reason=apply_contract_mismatch; degraded=false; exit=48; child=started; detail=FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
+		);
+		const failureLog = vi
+			.mocked(h.deps.log)
+			.mock.calls.map(([line]) => line)
+			.find((line) => line.includes('"event":"account_switch_failed"'));
+		expect(JSON.parse(failureLog ?? "{}")).toMatchObject({
+			trigger: { kind: "model", models: ["Fable 5"] },
+			exitCode: 48,
+			childStarted: true,
+		});
 	});
 
 	it("alerts quota_monitor_down after six consecutive current-usage errors", async () => {

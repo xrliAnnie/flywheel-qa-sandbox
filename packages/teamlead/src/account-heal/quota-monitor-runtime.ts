@@ -27,6 +27,7 @@ import {
 	type LockRunResult,
 	reconcileTransitionJournal,
 } from "./accounts-lock.js";
+import type { ReconcileMachineResult } from "./apply-child-evidence.js";
 import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
@@ -114,7 +115,7 @@ export interface TmuxReviveDeps {
 export interface QuotaMonitorRuntimeOptions {
 	now?: () => number;
 	paths?: Partial<QuotaMonitorPaths>;
-	reconcileMachine?: () => Promise<boolean>;
+	reconcileMachine?: () => Promise<ReconcileMachineResult>;
 	readKeychainCredential?: () => Promise<MonitorCredential | null>;
 	fetchUsage?: (accessToken: string) => Promise<AccountUsageResult>;
 	fetchIdentity?: (accessToken: string) => Promise<ProfileIdentityResult>;
@@ -373,7 +374,15 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				) {
 					lastReconcileAttempt = { ...witness, at: now() };
 					try {
-						if (!(await reconcileMachine())) {
+						const result = await reconcileMachine();
+						(opts.log ?? (() => undefined))(
+							JSON.stringify({
+								event: "account_switch_reconcile",
+								trigger: "witness",
+								...result,
+							}),
+						);
+						if (!result.ok) {
 							(opts.log ?? (() => undefined))(
 								"quota monitor could not reconcile the live Claude identity",
 							);
@@ -466,6 +475,7 @@ export function makeQuotaMonitorRuntime(opts: QuotaMonitorRuntimeOptions): {
 				now,
 				config,
 				state,
+				reconcileMachine,
 				reconcileActive: async (): Promise<ReconcileActiveResult> => {
 					if (initialLock.kind !== "ok") {
 						return lockInterruptionResult(initialLock);

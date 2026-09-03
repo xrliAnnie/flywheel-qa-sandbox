@@ -130,6 +130,12 @@ function harness(bodies: Record<string, unknown>) {
 		},
 		state: emptyQuotaMonitorState(4),
 		reconcileActive: async () => ({ result: "noop", generation: 4 }),
+		reconcileMachine: async () => ({
+			ok: true,
+			outcome: "already_consistent",
+			exitCode: 0,
+			detail: "",
+		}),
 		withAccountsLock: async (fn) => fn(),
 		readSnapshot: async () => ({
 			activeName: "shopping",

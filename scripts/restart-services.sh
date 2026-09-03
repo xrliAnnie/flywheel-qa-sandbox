@@ -74,6 +74,8 @@ source "${FLYWHEEL_DIR}/scripts/lib/restart-notify.sh"
 source "${FLYWHEEL_DIR}/scripts/lib/restart-cmux-watcher.sh"
 # shellcheck source=lib/converge-nonlead-daemons.sh
 source "${FLYWHEEL_DIR}/scripts/lib/converge-nonlead-daemons.sh"
+# shellcheck source=lib/restart-quota-monitor.sh
+source "${FLYWHEEL_DIR}/scripts/lib/restart-quota-monitor.sh"
 LAUNCHD_CENSUS_SOURCED=1
 # shellcheck source=launchd-census.sh
 source "${FLYWHEEL_DIR}/scripts/launchd-census.sh"
@@ -3224,6 +3226,16 @@ deploy_and_verify() {
     converge_nonlead_daemons
     local nonlead_state="$NONLEAD_DAEMON_CONVERGE_STATE"
     local nonlead_detail="$NONLEAD_DAEMON_CONVERGE_DETAIL"
+    restart_quota_monitor
+    local quota_restart_state="$QUOTA_MONITOR_RESTART_STATE"
+    local quota_restart_detail="$QUOTA_MONITOR_RESTART_DETAIL"
+    log "quota-monitor restart: ${quota_restart_state} ${quota_restart_detail}"
+    if [[ "$quota_restart_state" != current && "$quota_restart_state" != restarted && "$quota_restart_state" != planned && "$quota_restart_state" != not_loaded ]]; then
+        log "WARNING: quota-monitor restart=${quota_restart_state}: ${quota_restart_detail}"
+        alert_warning "quota-monitor-restart-${quota_restart_state}" \
+            "Quota monitor restart degraded" \
+            "Flywheel 代码已部署到 \`${CURRENT_HEAD:0:7}\`，但 quota-monitor restart=${quota_restart_state}: ${quota_restart_detail}。"
+    fi
     census_launchd_fleet
     local launchd_census_state="$LAUNCHD_CENSUS_STATE"
     local launchd_summary="$LAUNCHD_CENSUS_SUMMARY"

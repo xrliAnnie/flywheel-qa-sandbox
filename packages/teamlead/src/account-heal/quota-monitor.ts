@@ -15,6 +15,10 @@ import {
 	type SyncActiveAccountResult,
 	summarizeModelBenchPool,
 } from "./account-store.js";
+import {
+	formatFailureDetail,
+	type ReconcileMachineResult,
+} from "./apply-child-evidence.js";
 import type { FreshnessVerdict } from "./freshness.js";
 import type { MachineAccountResolution } from "./machine-account.js";
 import {
@@ -35,7 +39,11 @@ import type {
 	AccountUsageResult,
 	ValidatedUsagePayload,
 } from "./quota-usage-api.js";
-import type { SwitchInput, SwitchResult } from "./switch-executor.js";
+import type {
+	ApplyProfileReport,
+	SwitchInput,
+	SwitchResult,
+} from "./switch-executor.js";
 
 const REVIVE_GRACE_MS = 30 * 60_000;
 const MONITOR_DOWN_STREAK = 6;
@@ -112,6 +120,8 @@ export interface QuotaMonitorDeps {
 	state: QuotaMonitorState;
 	/** Acquires the account lock internally and reconciles marker -> store. */
 	reconcileActive: () => Promise<ReconcileActiveResult>;
+	/** Strict live-identity reconciliation, always called outside the account lock. */
+	reconcileMachine: () => Promise<ReconcileMachineResult>;
 	withAccountsLock: <T>(fn: () => Promise<T>) => Promise<T>;
 	/** Called only while withAccountsLock is held. */
 	readSnapshot: () => Promise<AccountSnapshot>;
@@ -852,7 +862,7 @@ async function attemptSwitchFailureDelivery(
 		kind,
 		severity: "severe",
 		title: "Claude account switch failed",
-		body: `reason=${episode.reasonCode}; degraded=${episode.degraded}`,
+		body: switchFailureBody(episode),
 		signature: `account-switch-failed-${episode.reasonCode}-${episode.degraded}-${episode.startedAt}-r${delivery.round}-a${delivery.attempts}`,
 	});
 	if (deliveryConfirmed(report)) {
@@ -871,6 +881,10 @@ async function openSwitchFailureEpisode(
 	reasonCode: string,
 	degraded: boolean,
 	attemptedKinds: Set<QuotaMonitorAlertKind>,
+	evidence: Pick<
+		PendingSwitchFailure,
+		"applyExitCode" | "childStarted" | "detail"
+	> = {},
 ): Promise<void> {
 	const now = deps.now();
 	const current = state.pendingSwitchFailure;
@@ -883,6 +897,7 @@ async function openSwitchFailureEpisode(
 		episode = {
 			reasonCode,
 			degraded,
+			...evidence,
 			startedAt: new Date(now).toISOString(),
 			lastConfirmedAlertAt: null,
 			alertCount: 0,
@@ -893,10 +908,16 @@ async function openSwitchFailureEpisode(
 			},
 		};
 		state.pendingSwitchFailure = episode;
-	} else if (current.activeDelivery !== null) {
-		return;
 	} else {
 		episode = current;
+		if (evidence.applyExitCode === undefined) delete episode.applyExitCode;
+		else episode.applyExitCode = evidence.applyExitCode;
+		if (evidence.childStarted === undefined) delete episode.childStarted;
+		else episode.childStarted = evidence.childStarted;
+		if (evidence.detail === undefined) delete episode.detail;
+		else episode.detail = evidence.detail;
+		await deps.persistState(state);
+		if (episode.activeDelivery !== null) return;
 		if (episode.alertCount >= 10) return;
 		const confirmedAt =
 			episode.lastConfirmedAlertAt === null
@@ -916,6 +937,117 @@ async function openSwitchFailureEpisode(
 	}
 	await deps.persistState(state);
 	await attemptSwitchFailureDelivery(deps, state, attemptedKinds);
+}
+
+function switchFailureBody(episode: PendingSwitchFailure): string {
+	const prefix =
+		episode.reasonCode === "apply_contract_mismatch"
+			? "daemon runtime predates the switch script; restart quota-monitor or re-run the deploy wave"
+			: "";
+	const child =
+		episode.childStarted === true
+			? "started"
+			: episode.childStarted === false
+				? "not_started"
+				: "unknown";
+	return [
+		prefix,
+		`reason=${episode.reasonCode}; degraded=${episode.degraded}; exit=${episode.applyExitCode ?? "none"}; child=${child}; detail=${episode.detail ?? ""}`,
+	]
+		.filter(Boolean)
+		.join("\n");
+}
+
+function mergeApplyReports(
+	...groups: Array<SwitchResult["applyReports"]>
+): ApplyProfileReport[] | undefined {
+	const seen = new Set<string>();
+	const merged: ApplyProfileReport[] = [];
+	for (const report of groups.flatMap((group) => group ?? [])) {
+		const identityChecks = report.identityChecks.filter((check) => {
+			const key = JSON.stringify([
+				check.label,
+				check.checkpoint,
+				check.verdict,
+				check.expectedKey ?? null,
+				check.actualDigest ?? null,
+			]);
+			if (seen.has(key)) return false;
+			seen.add(key);
+			return true;
+		});
+		if (identityChecks.length > 0 || report.freshened !== undefined) {
+			merged.push({
+				identityChecks,
+				...(report.freshened === undefined
+					? {}
+					: { freshened: report.freshened }),
+			});
+		}
+	}
+	return merged.length === 0 ? undefined : merged;
+}
+
+async function attemptSwitchWithDriftRecovery(
+	deps: QuotaMonitorDeps,
+	input: SwitchInput,
+): Promise<{ switched: SwitchResult; detailPrefix: string }> {
+	const first = await deps.switchAccount(input);
+	let switched = first;
+	let retried: SwitchResult | undefined;
+	let detailPrefix = "";
+	if (
+		first.outcome === "failed" &&
+		first.reasonCode === "active_marker_drift"
+	) {
+		const reconciled = await deps.reconcileMachine();
+		deps.log(
+			JSON.stringify({
+				event: "account_switch_reconcile",
+				trigger: "drift_recovery",
+				...reconciled,
+			}),
+		);
+		if (reconciled.ok) {
+			const snapshot = await deps.withAccountsLock(() => deps.readSnapshot());
+			const preferredOrder = (input.preferredOrder ?? []).filter(
+				(name) => name !== snapshot.activeName,
+			);
+			if (snapshot.activeName !== null && preferredOrder.length === 0) {
+				retried = {
+					outcome: "noop_already_switched",
+					activeAccount: snapshot.activeName,
+				};
+			} else {
+				retried = await deps.switchAccount({
+					...input,
+					observedAccount: snapshot.activeName ?? "",
+					observedGeneration: snapshot.store.generation,
+					preferredOrder,
+				});
+			}
+			switched = retried;
+			if (
+				switched.outcome === "failed" &&
+				switched.reasonCode === "active_marker_drift"
+			) {
+				detailPrefix = "drift persisted after reconcile: ";
+			}
+		} else {
+			detailPrefix = `reconcile ${reconciled.outcome}${
+				reconciled.reason ? `: ${reconciled.reason}` : ""
+			}${reconciled.detail ? `: ${reconciled.detail}` : ""}: `;
+		}
+	}
+	const applyReports = mergeApplyReports(
+		first.applyReports,
+		retried?.applyReports,
+	);
+	return {
+		switched:
+			applyReports === undefined ? switched : { ...switched, applyReports },
+		detailPrefix,
+	};
 }
 
 async function refreshNewActive(
@@ -1509,7 +1641,8 @@ export async function pollOnce(
 			notificationContext,
 		};
 	}
-	const switched = await deps.switchAccount(switchInput);
+	const switchAttempt = await attemptSwitchWithDriftRecovery(deps, switchInput);
+	const switched = switchAttempt.switched;
 	await consumeApplyIdentityReports(deps, state, switched.applyReports);
 	await attemptIdentityDeliveries(deps, state, attemptedIdentityLabels);
 
@@ -1529,6 +1662,32 @@ export async function pollOnce(
 	}
 	if (switched.outcome === "no_account" || switched.outcome === "failed") {
 		const reasonCode = switched.reasonCode;
+		const evidence = switched.applyEvidence;
+		const detail = formatFailureDetail(
+			switchAttempt.detailPrefix,
+			evidence?.detail ?? "",
+		);
+		const episodeEvidence = {
+			applyExitCode: evidence?.exitCode ?? null,
+			childStarted: evidence?.childStarted ?? null,
+			detail,
+		};
+		deps.log(
+			JSON.stringify({
+				event: "account_switch_failed",
+				trigger:
+					switchInput.trigger.kind === "quota"
+						? {
+								kind: "quota",
+								scope: switchInput.trigger.scope,
+							}
+						: switchInput.trigger,
+				reasonCode,
+				exitCode: episodeEvidence.applyExitCode,
+				childStarted: episodeEvidence.childStarted,
+				detail,
+			}),
+		);
 		if (modelDetection === null) {
 			await openSwitchFailureEpisode(
 				deps,
@@ -1536,13 +1695,24 @@ export async function pollOnce(
 				reasonCode,
 				false,
 				attemptedKinds,
+				episodeEvidence,
 			);
 		} else {
 			await deps.alert({
 				kind: "account_switch_failed",
 				severity: "severe",
 				title: "Claude model-cap account switch failed",
-				body: `account=${snapshot.activeName}; trigger=models:${modelDetection.models.join(",")}; reason=${reasonCode}`,
+				body: `account=${snapshot.activeName}; trigger=models:${modelDetection.models.join(",")}\n${switchFailureBody(
+					{
+						...episodeEvidence,
+						reasonCode,
+						degraded: false,
+						startedAt: new Date(now).toISOString(),
+						lastConfirmedAlertAt: null,
+						alertCount: 0,
+						activeDelivery: null,
+					},
+				)}`,
 				signature: `account-switch-failed-${reasonCode}-${day(now)}`,
 			});
 		}

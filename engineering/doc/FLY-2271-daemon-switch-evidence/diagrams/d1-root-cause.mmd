@@ -1,0 +1,15 @@
+sequenceDiagram
+    autonumber
+    participant U as 自动更新器<br/>(updater, 06:51Z)
+    participant D as quota-monitor daemon<br/>(pid 45051, 01:53Z 启动的旧代码)
+    participant S as 切号脚本<br/>flywheel-claude-profile(磁盘上的新版本)
+    participant A as 审计日志<br/>claude-profile-audit.log
+    participant L as daemon 日志与告警频道
+    U->>S: 拉取 FLY-2240:脚本开始要求<br/>FLYWHEEL_ATOMIC_SWITCH_APPLY=1
+    Note over U,D: 部署波次只把「掉出 launchd 的 job」拉回来,<br/>从不重启一个还在跑的 daemon
+    D->>S: 12:46Z 触发切号:spawn use school<br/>(旧代码,不带 APPLY marker)
+    S->>S: 校验委托身份 ✔ → 检查 APPLY marker ✘<br/>→ exit 46(此时还没写审计 entry)
+    S-->>A: (什么都没写)
+    S-->>D: exit 46 + stderr 一行 Error
+    D->>D: 46 一律当作 active_marker_drift
+    D->>L: outcome=switch_failed<br/>reason=active_marker_drift(exit/stderr 被丢弃)

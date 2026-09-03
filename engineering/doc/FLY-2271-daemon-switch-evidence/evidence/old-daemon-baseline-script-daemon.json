@@ -1,0 +1,1 @@
+{"rc":0,"auditLines":[],"events":[{"event":"quota_poll","outcome":"switch_failed","trigger":null,"reasonCode":null,"exitCode":null,"childStarted":null,"detail":null,"from":null,"to":null,"ok":null}],"alertBodies":["reason=active_marker_drift; degraded=false"]}

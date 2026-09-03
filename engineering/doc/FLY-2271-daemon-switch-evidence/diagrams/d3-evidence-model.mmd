@@ -1,0 +1,49 @@
+classDiagram
+    class BashExit {
+      +46 stale marker 无法证明 · 零改动
+      +47 修复中途失败
+      +48 契约错配 缺 APPLY marker · 零改动 · 新
+      +stderr 标记行 以 FLYWHEEL_ 开头
+      +审计 entry 与 exit · 48 也有 · 新
+    }
+    class TypedError {
+      +ActiveMarkerDriftError detail, exitCode 新
+      +ApplyContractMismatchError detail, exitCode 新
+    }
+    class SwitchResult {
+      +outcome failed
+      +reasonCode active_marker_drift 或 apply_contract_mismatch 新
+      +reason 脱敏后的 stderr
+      +applyExitCode 新
+      +applyProfileChildStarted
+    }
+    class DaemonLog {
+      +event account_switch_failed 新
+      +字段 reasonCode, exitCode, childStarted, detail
+      +event account_switch_reconcile 新
+      +字段 trigger, outcome, from, to, exitCode, detail
+    }
+    class Alert {
+      +body reason; degraded; exit; child; detail ≤600B 新
+      +signature 不变
+    }
+    class State {
+      +pendingSwitchFailure.detail 可选 新
+      +version 2 不升
+    }
+    class HealthMarker {
+      +runtimeTreeSha256 已有
+      +pid, processStartTime 已有
+    }
+    class DeployLib {
+      +restart_quota_monitor 新
+      +比对 marker.sha 与磁盘 dist 哈希
+      +state 五档 current restarted not_loaded
+      +state 五档 degraded unverifiable
+    }
+    BashExit --> TypedError : Node adapter 分类
+    TypedError --> SwitchResult : executor 透传
+    SwitchResult --> DaemonLog : 每次失败必写
+    SwitchResult --> Alert : body 带证据
+    SwitchResult --> State : 再告警沿用 detail
+    HealthMarker --> DeployLib : 部署波次读取

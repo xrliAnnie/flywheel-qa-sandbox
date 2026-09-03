@@ -140,8 +140,9 @@ process.stdout.write(JSON.stringify(details));
 
 fail() { local reason="$*"; set_failure_audit_details "$reason"; echo "Error: $reason" >&2; exit 1; }
 # FLY-871 R1/C3: exit with a SPECIFIC code (30 target-stale / 31 freshness-helper
-# unavailable) so the Node switch executor can distinguish freshness failures
-# from other failures and drive the candidate loop / fail-closed accordingly.
+# unavailable / 48 atomic-apply contract mismatch) so the Node switch executor
+# can distinguish freshness and runtime-contract failures from other failures
+# and drive the candidate loop / fail-closed accordingly.
 fail_code() { local code="$1" reason; shift; reason="$*"; set_failure_audit_details "$reason"; echo "Error: $reason" >&2; exit "$code"; }
 
 # ------------------------------------------------------- append-only audit (FLY-1182)
@@ -2251,14 +2252,16 @@ begin_authenticated_switch_audit() { # <requested command> [target]
 	if [[ "$DELEGATED_LOCK_ACCEPTED" -ne 1 ]]; then
 		trampoline_atomic_switch "$command" "$target"
 	fi
-	if [[ "${FLYWHEEL_ATOMIC_SWITCH_APPLY:-}" != "1" ]]; then
-		fail_code 46 "delegated profile mutation requires FLYWHEEL_ATOMIC_SWITCH_APPLY=1"
-	fi
 	if [[ "$command" == "use" && "${FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD:-}" == "next" ]]; then
 		AUDIT_DETAILS_JSON='{"selectedBy":"atomic-cli"}'
 		begin_audit next "$target" identity_check_pending
 	else
 		begin_audit "$command" "$target" identity_check_pending
+	fi
+	if [[ "${FLYWHEEL_ATOMIC_SWITCH_APPLY:-}" != "1" ]]; then
+		AUDIT_SUMMARY="atomic_apply_contract_mismatch"
+		echo "FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH" >&2
+		fail_code 48 "delegated profile mutation requires FLYWHEEL_ATOMIC_SWITCH_APPLY=1; the parent runtime predates the atomic-apply contract — restart the quota-monitor daemon"
 	fi
 }
 

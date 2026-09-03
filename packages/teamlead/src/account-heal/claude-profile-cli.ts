@@ -30,6 +30,12 @@ import {
 	withAccountsLock,
 } from "./accounts-lock.js";
 import {
+	type ApplyChildEvidence,
+	childEvidenceFromError,
+	type ReconcileMachineResult,
+	summarizeApplyFailure,
+} from "./apply-child-evidence.js";
+import {
 	defaultClaudeJsonPath,
 	defaultMachinePoolDir,
 	resolveMachineAccount,
@@ -37,6 +43,7 @@ import {
 import { renewMkdirLock } from "./mkdir-lock.js";
 import {
 	ActiveMarkerDriftError,
+	ApplyContractMismatchError,
 	type ApplyProfileIdentityCheck,
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
@@ -257,7 +264,7 @@ export async function reconcileClaudeProfile(
 	deps: Pick<ClaudeProfileCliDeps, "binPath" | "execFile"> & {
 		env?: NodeJS.ProcessEnv;
 	},
-): Promise<boolean> {
+): Promise<ReconcileMachineResult> {
 	const childEnv: NodeJS.ProcessEnv = {
 		...process.env,
 		...deps.env,
@@ -278,18 +285,93 @@ export async function reconcileClaudeProfile(
 	delete childEnv.FLYWHEEL_CLAUDE_QUOTA_PREVERIFIED;
 	delete childEnv.FLYWHEEL_ATOMIC_SWITCH_APPLY;
 	delete childEnv.FLYWHEEL_ATOMIC_SWITCH_AUDIT_CMD;
+	let stdout = "";
+	let stderr = "";
+	let exitCode: number | null = 0;
+	let message: string | undefined;
 	try {
-		const { stdout } = await (deps.execFile ?? (execFileAsync as ExecFileFn))(
-			deps.binPath,
-			["reconcile"],
-			{ env: childEnv, timeout: 60_000, maxBuffer: 65_536 },
-		);
-		const outcome = (JSON.parse(stdout.trim()) as { outcome?: unknown })
-			.outcome;
-		return outcome === "already_consistent" || outcome === "repaired";
-	} catch {
-		return false;
+		({ stdout, stderr } = await (
+			deps.execFile ?? (execFileAsync as ExecFileFn)
+		)(deps.binPath, ["reconcile"], {
+			env: childEnv,
+			timeout: 60_000,
+			maxBuffer: 65_536,
+		}));
+	} catch (error) {
+		const failure = error as {
+			code?: unknown;
+			stdout?: unknown;
+			stderr?: unknown;
+			message?: unknown;
+		};
+		stdout = typeof failure.stdout === "string" ? failure.stdout : "";
+		stderr = typeof failure.stderr === "string" ? failure.stderr : "";
+		exitCode =
+			typeof failure.code === "number" && Number.isInteger(failure.code)
+				? failure.code
+				: null;
+		message = typeof failure.message === "string" ? failure.message : undefined;
 	}
+	const detail = summarizeApplyFailure(stderr, message);
+	if (exitCode !== 0 && exitCode !== 10 && exitCode !== 20) {
+		return { ok: false, outcome: "execution_failed", exitCode, detail };
+	}
+	let parsed: Record<string, unknown>;
+	try {
+		const value = JSON.parse(stdout.trim());
+		if (typeof value !== "object" || value === null || Array.isArray(value)) {
+			throw new Error("reconcile result is not an object");
+		}
+		parsed = value as Record<string, unknown>;
+	} catch {
+		return { ok: false, outcome: "malformed", exitCode, detail };
+	}
+	const validLabel = (value: unknown): value is string =>
+		typeof value === "string" &&
+		value.length <= 256 &&
+		PROFILE_LABEL.test(value);
+	if (exitCode === 0 && parsed.outcome === "already_consistent") {
+		return { ok: true, outcome: "already_consistent", exitCode, detail };
+	}
+	if (
+		exitCode === 0 &&
+		parsed.outcome === "repaired" &&
+		validLabel(parsed.from) &&
+		validLabel(parsed.to)
+	) {
+		return {
+			ok: true,
+			outcome: "repaired",
+			from: parsed.from,
+			to: parsed.to,
+			exitCode,
+			detail,
+		};
+	}
+	if (exitCode === 10 && parsed.outcome === "no_credential") {
+		return { ok: false, outcome: "no_credential", exitCode, detail };
+	}
+	const reasons = new Set([
+		"keychain_unreadable",
+		"probe_unavailable",
+		"anchor_ambiguous",
+	]);
+	if (
+		exitCode === 20 &&
+		parsed.outcome === "unresolvable" &&
+		typeof parsed.reason === "string" &&
+		parsed.reason.length <= 256 &&
+		reasons.has(parsed.reason)
+	) {
+		return {
+			ok: false,
+			outcome: "unresolvable",
+			reason: parsed.reason,
+			exitCode,
+			detail,
+		};
+	}
+	return { ok: false, outcome: "malformed", exitCode, detail };
 }
 
 export function makeClaudeProfileSwitchDeps(
@@ -320,7 +402,12 @@ export function makeClaudeProfileSwitchDeps(
 		async applyProfile(
 			name: string,
 			context?: Parameters<SwitchDeps["applyProfile"]>[1],
-		): Promise<{ identitySynced: boolean } & ApplyProfileReport> {
+		): Promise<
+			{
+				identitySynced: boolean;
+				evidence: ApplyChildEvidence;
+			} & ApplyProfileReport
+		> {
 			// FLY-852 (QA-caught self-deadlock): switchAccount calls this INSIDE its
 			// withMkdirLock critical section, and the bash script takes the SAME
 			// lock — the child would wait on its own parent until timeout. Delegate:
@@ -388,11 +475,29 @@ export function makeClaudeProfileSwitchDeps(
 				// failure rethrows unchanged (existing fail-closed behavior).
 				const e = err as { code?: number | string; stderr?: string };
 				const errText = String(e.stderr ?? "");
+				const evidence = childEvidenceFromError(err, errText);
+				if (
+					e.code === 48 ||
+					/FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH/.test(errText)
+				) {
+					throw new ApplyContractMismatchError(
+						evidence.detail || undefined,
+						evidence,
+					);
+				}
 				if (/FLYWHEEL_KEYCHAIN_PREIMAGE_CONFLICT/.test(errText)) {
-					throw new KeychainPreimageConflictError(errText.trim(), report);
+					throw new KeychainPreimageConflictError(
+						errText.trim(),
+						report,
+						evidence,
+					);
 				}
 				if (/FLYWHEEL_LIVE_IDENTITY_UNAVAILABLE/.test(errText)) {
-					throw new LiveIdentityUnavailableError(errText.trim(), report);
+					throw new LiveIdentityUnavailableError(
+						errText.trim(),
+						report,
+						evidence,
+					);
 				}
 				// FLY-1201: classify active-marker reconciliation before the older
 				// account-specific identity markers. Strict capture may emit an inner
@@ -405,7 +510,10 @@ export function makeClaudeProfileSwitchDeps(
 						errText,
 					)
 				) {
-					throw new ActiveMarkerDriftError(errText.trim() || undefined);
+					throw new ActiveMarkerDriftError(
+						errText.trim() || undefined,
+						evidence,
+					);
 				}
 				if (
 					e.code === 34 ||
@@ -420,39 +528,45 @@ export function makeClaudeProfileSwitchDeps(
 						)?.actualDigest ??
 						errText.match(/actualDigest=([a-f0-9]{64})/)?.[1] ??
 						UNAVAILABLE_IDENTITY_DIGEST;
-					throw new TargetIdentityMismatchError(name, actualDigest, report);
+					throw new TargetIdentityMismatchError(
+						name,
+						actualDigest,
+						report,
+						evidence,
+					);
 				}
 				if (e.code === 36 || /FLYWHEEL_IDENTITY_ROLLED_BACK/.test(errText)) {
-					throw new TargetIdentityRolledBackError(name, report);
+					throw new TargetIdentityRolledBackError(name, report, evidence);
 				}
 				if (
 					e.code === 37 ||
 					/FLYWHEEL_IDENTITY_ROLLBACK_FAILED/.test(errText)
 				) {
-					throw new IdentityRollbackFailedError(name, report);
+					throw new IdentityRollbackFailedError(name, report, evidence);
 				}
 				if (
 					e.code === 38 ||
 					/FLYWHEEL_TARGET_IDENTITY_UNVERIFIABLE/.test(errText)
 				) {
-					throw new TargetIdentityUnverifiableError(name, report);
+					throw new TargetIdentityUnverifiableError(name, report, evidence);
 				}
 				if (e.code === 32 || /FLYWHEEL_TARGET_QUOTA_EXHAUSTED/.test(errText)) {
-					throw new TargetQuotaExhaustedError(name, report);
+					throw new TargetQuotaExhaustedError(name, report, evidence);
 				}
 				if (e.code === 30 || /FLYWHEEL_TARGET_STALE/.test(errText)) {
-					throw new TargetStaleError(name, report);
+					throw new TargetStaleError(name, report, evidence);
 				}
 				if (e.code === 31 || /FLYWHEEL_FRESHNESS_UNAVAILABLE/.test(errText)) {
 					throw new FreshnessUnavailableError(
 						errText.trim() || undefined,
 						report,
+						evidence,
 					);
 				}
 				if (e.code === 39 || /FLYWHEEL_LOCK_LEASE_LOST/.test(errText)) {
-					throw new LockLeaseLostError(errText.trim() || undefined);
+					throw new LockLeaseLostError(errText.trim() || undefined, evidence);
 				}
-				throw applyFailureDiagnostic(err, errText);
+				throw Object.assign(applyFailureDiagnostic(err, errText), { evidence });
 			}
 			const report = readApplyProfileReport(reportPath);
 			rmSync(reportDir, { recursive: true, force: true });
@@ -473,6 +587,7 @@ export function makeClaudeProfileSwitchDeps(
 				identitySynced: !/display identity/i.test(warning),
 				identityChecks: report?.identityChecks ?? [],
 				...(report?.freshened ? { freshened: report.freshened } : {}),
+				evidence: { exitCode: 0, childStarted: true, detail: "" },
 			};
 		},
 		async readActiveProfile(): Promise<string | null> {

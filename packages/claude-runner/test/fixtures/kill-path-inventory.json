@@ -2976,6 +2976,36 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:echo \"old-daemon barrier: shell_pid=$DAEMON_PID pidfile_pid=${pidfile_pid:-missing} alive=$(kill -0 \"$DAEMON_PID\" 2>/dev/null && echo yes || echo no) health=$([[ -s \"$fixture/home/.flywheel/quota-monitor.health.json\" ]] && echo yes || echo no)\" >&2#1",
+		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
+		"code": "echo \"old-daemon barrier: shell_pid=$DAEMON_PID pidfile_pid=${pidfile_pid:-missing} alive=$(kill -0 \"$DAEMON_PID\" 2>/dev/null && echo yes || echo no) health=$([[ -s \"$fixture/home/.flywheel/quota-monitor.health.json\" ]] && echo yes || echo no)\" >&2",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:kill -0 \"$pid\" 2>/dev/null || return 1#1",
+		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
+		"code": "kill -0 \"$pid\" 2>/dev/null || return 1",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:kill -TERM \"$pid\" 2>/dev/null || true#1",
+		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
+		"code": "kill -TERM \"$pid\" 2>/dev/null || true",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:kill -USR1 \"$DAEMON_PID\"#1",
+		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
+		"code": "kill -USR1 \"$DAEMON_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/qa-fly-2271-switch-evidence-e2e.sh:print) kill -0 \"$DAEMON_PID\" 2>/dev/null ;;#1",
+		"path": "scripts/qa-fly-2271-switch-evidence-e2e.sh",
+		"code": "print) kill -0 \"$DAEMON_PID\" 2>/dev/null ;;",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/qa-fly-60-driver.sh:if ! kill -0 \"$claude_pid\" 2>/dev/null; then#1",
 		"path": "scripts/qa-fly-60-driver.sh",
 		"code": "if ! kill -0 \"$claude_pid\" 2>/dev/null; then",

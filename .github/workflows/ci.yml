@@ -838,6 +838,7 @@ jobs:
         run: |
           bash scripts/__tests__/setup-quota-monitor.test.sh
           bash scripts/__tests__/restart-account-switch-runtime-preflight.test.sh
+          bash scripts/__tests__/restart-quota-monitor.test.sh
           bash scripts/test-restart-services.sh
           bash scripts/__tests__/restart-services-admission-pause.test.sh
 

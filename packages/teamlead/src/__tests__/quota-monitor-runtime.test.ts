@@ -110,13 +110,25 @@ function writeConfig(trigger5hPct: number): void {
 	);
 }
 
-const noMachineDrift = async (): Promise<boolean> => true;
+const noMachineDrift = async () => ({
+	ok: true as const,
+	outcome: "already_consistent" as const,
+	exitCode: 0,
+	detail: "",
+});
 
 describe("makeQuotaMonitorRuntime", () => {
 	it("skips healthy reconcile and throttles repeated attempts for one drift witness", async () => {
 		writeConfig(99);
 		let accessToken = "active-secret";
-		const reconcileMachine = vi.fn(async () => false);
+		const log = vi.fn();
+		const reconcileMachine = vi.fn(async () => ({
+			ok: false as const,
+			outcome: "unresolvable" as const,
+			reason: "anchor_ambiguous",
+			exitCode: 20,
+			detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE",
+		}));
 		const runtime = makeQuotaMonitorRuntime({
 			now: () => NOW,
 			paths: {
@@ -144,6 +156,7 @@ describe("makeQuotaMonitorRuntime", () => {
 				sendContinue: async () => ({ sent: true }),
 			},
 			alert: async () => ({ primary: "sent" }),
+			log,
 		});
 
 		await runtime.tick();
@@ -154,6 +167,20 @@ describe("makeQuotaMonitorRuntime", () => {
 		await runtime.tick();
 
 		expect(reconcileMachine).toHaveBeenCalledTimes(1);
+		expect(log).toHaveBeenCalledWith(
+			JSON.stringify({
+				event: "account_switch_reconcile",
+				trigger: "witness",
+				ok: false,
+				outcome: "unresolvable",
+				reason: "anchor_ambiguous",
+				exitCode: 20,
+				detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE",
+			}),
+		);
+		expect(log).toHaveBeenCalledWith(
+			"quota monitor could not reconcile the live Claude identity",
+		);
 	});
 
 	it("captures manual login drift before refreshing every non-active slot", async () => {
@@ -178,6 +205,7 @@ describe("makeQuotaMonitorRuntime", () => {
 		due.lastCandidateSweepAt = 0;
 		writeQuotaMonitorState(due, statePath);
 		const order: string[] = [];
+		const log = vi.fn();
 		const verifyCandidate = vi.fn(async () => ({
 			fresh: "refreshed" as const,
 			expiresAt: NOW + 3_600_000,
@@ -211,7 +239,14 @@ describe("makeQuotaMonitorRuntime", () => {
 					},
 					storePath,
 				);
-				return true;
+				return {
+					ok: true,
+					outcome: "repaired",
+					from: "shopping",
+					to: "school",
+					exitCode: 0,
+					detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED shopping school",
+				};
 			},
 			readKeychainCredential: async () => {
 				order.push("keychain");
@@ -232,6 +267,7 @@ describe("makeQuotaMonitorRuntime", () => {
 				sendContinue: async () => ({ sent: true }),
 			},
 			alert: async () => ({ primary: "sent" }),
+			log,
 		});
 
 		await expect(runtime.tick()).resolves.toMatchObject({
@@ -247,6 +283,11 @@ describe("makeQuotaMonitorRuntime", () => {
 			lastCandidateSweepAt: NOW,
 			observedGeneration: 5,
 		});
+		expect(log).toHaveBeenCalledWith(
+			expect.stringContaining(
+				'"event":"account_switch_reconcile","trigger":"witness","ok":true,"outcome":"repaired"',
+			),
+		);
 	});
 
 	it("captures each pane once for model detection, switch, revive, and delayed confirmation", async () => {

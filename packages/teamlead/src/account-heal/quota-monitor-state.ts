@@ -1,3 +1,4 @@
+import { Buffer } from "node:buffer";
 import {
 	closeSync,
 	fsyncSync,
@@ -114,6 +115,9 @@ export interface SwitchFailureDelivery {
 export interface PendingSwitchFailure {
 	reasonCode: string;
 	degraded: boolean;
+	applyExitCode?: number | null;
+	childStarted?: boolean | null;
+	detail?: string;
 	startedAt: string;
 	lastConfirmedAlertAt: string | null;
 	alertCount: number;
@@ -263,6 +267,9 @@ const EPISODE_DELIVERY_KEYS = new Set([
 const SWITCH_FAILURE_KEYS = new Set([
 	"reasonCode",
 	"degraded",
+	"applyExitCode",
+	"childStarted",
+	"detail",
 	"startedAt",
 	"lastConfirmedAlertAt",
 	"alertCount",
@@ -490,6 +497,18 @@ function parsePendingSwitchFailure(
 		typeof value.reasonCode !== "string" ||
 		value.reasonCode.length === 0 ||
 		typeof value.degraded !== "boolean" ||
+		(value.applyExitCode !== undefined &&
+			value.applyExitCode !== null &&
+			(typeof value.applyExitCode !== "number" ||
+				!Number.isInteger(value.applyExitCode))) ||
+		(value.childStarted !== undefined &&
+			value.childStarted !== null &&
+			typeof value.childStarted !== "boolean") ||
+		(value.detail !== undefined &&
+			(typeof value.detail !== "string" ||
+				Buffer.byteLength(value.detail, "utf8") > 600 ||
+				/\p{Cc}/u.test(value.detail) ||
+				Buffer.from(value.detail, "utf8").toString("utf8") !== value.detail)) ||
 		!isIsoInstant(value.startedAt) ||
 		!isNullableIsoInstant(value.lastConfirmedAlertAt) ||
 		!isGeneration(value.alertCount) ||
@@ -502,6 +521,13 @@ function parsePendingSwitchFailure(
 	return {
 		reasonCode: value.reasonCode,
 		degraded: value.degraded,
+		...(value.applyExitCode === undefined
+			? {}
+			: { applyExitCode: value.applyExitCode }),
+		...(value.childStarted === undefined
+			? {}
+			: { childStarted: value.childStarted }),
+		...(value.detail === undefined ? {} : { detail: value.detail }),
 		startedAt: value.startedAt,
 		lastConfirmedAlertAt: value.lastConfirmedAlertAt,
 		alertCount: value.alertCount,

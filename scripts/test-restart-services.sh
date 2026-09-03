@@ -2182,6 +2182,7 @@ cp "$REAL_REPO_ROOT/scripts/lib/bridge-port.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-notify.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-cmux-watcher.sh" \
    "$REAL_REPO_ROOT/scripts/lib/converge-nonlead-daemons.sh" \
+   "$REAL_REPO_ROOT/scripts/lib/restart-quota-monitor.sh" \
    "$REAL_REPO_ROOT/scripts/lib/restart-voice-bridge.sh" \
    "$REAL_REPO_ROOT/scripts/lib/deploy-build-identity.sh" \
    "$REAL_REPO_ROOT/scripts/lib/discord-pointer-guard.sh" \
@@ -2305,6 +2306,7 @@ case "\$args" in
   *"-p 424242 -o lstart="*) echo "Mon Jul 27 08:00:00 2026" ;;
   *"-p 424243 -o lstart="*) echo "Mon Jul 27 09:00:00 2026" ;;
   *"-p 55555 -o lstart="*) echo "Mon Jul 27 09:00:01 2026" ;;
+  *"-o lstart= -p 434343"*) echo "Mon Jul 27 09:00:02 2026" ;;
   *"-p 55555 -o command="*)
     echo "claude --agent eng --append-system-prompt-file /tmp/lead-rules-bundles/flywheel-eng.424243-lstart-x.md --model claude-fable-5"
     ;;
@@ -2357,6 +2359,10 @@ case "\$*" in
     ;;
   *) echo -n ok ;;
 esac
+EOF
+cat > "$BO_SHIMS/quota-runtime-sha" <<'EOF'
+#!/bin/bash
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'
 EOF
 cat > "$BO_SHIMS/bounded-run" <<'EOF'
 #!/bin/bash
@@ -2424,6 +2430,12 @@ cat > "$BO_SHIMS/lsof" <<'EOF'
 exit 0
 EOF
 chmod +x "$BO_SHIMS"/*
+BO_REAL_NODE="$(command -v node)"
+printf '{"pid":434343,"uid":%s,"processStartTime":"Mon Jul 27 09:00:02 2026","wakeProtocol":1}\n' "$(id -u)" \
+  > "$BO_HOME/.flywheel/quota-monitor.pid"
+printf '{"version":1,"pid":434343,"processStartTime":"Mon Jul 27 09:00:02 2026","runtimeTreeSha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","completedAt":1700000000500,"outcome":"observed"}\n' \
+  > "$BO_HOME/.flywheel/quota-monitor.health.json"
+chmod 600 "$BO_HOME/.flywheel/quota-monitor.pid" "$BO_HOME/.flywheel/quota-monitor.health.json"
 cat > "$BO_FLYWHEEL/scripts/flywheel-cmux-sync.sh" <<EOF
 #!/bin/bash
 echo wait-for-watcher-exit >> "$BO_CALLS/watcher.calls"
@@ -2535,6 +2547,9 @@ bo_run() {
         FAKE_SUPERVISOR_STALE="${FAKE_SUPERVISOR_STALE:-0}" \
         FLYWHEEL_SUPERVISOR_BACKEND=launchd \
         FLYWHEEL_RESTART_BOUNDED_RUN_BIN="$BO_SHIMS/bounded-run" \
+        FLYWHEEL_RQM_RUNTIME_SHA_BIN="$BO_SHIMS/quota-runtime-sha" \
+        FLYWHEEL_RQM_PS_BIN="$BO_SHIMS/ps" \
+        FLYWHEEL_NODE_BIN="$BO_REAL_NODE" \
         FAKE_IDLE_BUSY="${FAKE_IDLE_BUSY:-0}" \
         FAKE_PREWAVE_PROBE_FAIL="${FAKE_PREWAVE_PROBE_FAIL:-0}" \
         FAKE_NO_LEAD_PROCESS="${FAKE_NO_LEAD_PROCESS:-0}" \
@@ -2679,14 +2694,42 @@ fi
 bo_reset_finalizer_state
 bo_restore_restart_script
 
+# A missing quota-monitor job is owned by the adjacent non-Lead convergence
+# report and must not create a second warning from the restart helper.
+echo "Test: FLY-2271 delegated quota-monitor absence does not double-alert"
+quota_lib="$BO_FLYWHEEL/scripts/lib/restart-quota-monitor.sh"
+quota_lib_backup="$TMPDIR_ROOT/restart-quota-monitor.sh"
+cp "$quota_lib" "$quota_lib_backup"
+git -C "$BO_FLYWHEEL" update-index --assume-unchanged scripts/lib/restart-quota-monitor.sh
+cat > "$quota_lib" <<'EOF'
+QUOTA_MONITOR_RESTART_STATE=unverifiable
+QUOTA_MONITOR_RESTART_DETAIL="not checked"
+restart_quota_monitor() {
+  QUOTA_MONITOR_RESTART_STATE=not_loaded
+  QUOTA_MONITOR_RESTART_DETAIL="job not in domain; left to convergence"
+}
+EOF
+echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
+out=$(bo_run) && rc=0 || rc=$?
+alerts=$(bo_calls lead-alert)
+cp "$quota_lib_backup" "$quota_lib"
+if (( rc == 0 )) && echo "$out" | grep -Fq "quota-monitor restart: not_loaded" \
+   && ! echo "$alerts" | grep -q "quota-monitor-restart-not_loaded"; then
+    pass "FLY-2271 not_loaded remains delegated to the fleet census"
+else
+    fail "FLY-2271 not_loaded emitted a duplicate alert: rc=$rc alerts='$alerts'"
+fi
+
 # ── 1) SHA match skips build but still performs the one full restart ──
 echo "$BO_HEAD_1" > "$BO_HOME/.flywheel/deployed-sha"
 out=$(bo_run) && rc=0 || rc=$?
 if (( rc == 0 )) && echo "$out" | grep -q "skipping build, continuing full restart" \
    && echo "$out" | grep -Fq "Lead eng restarted via native launchd carrier v2 (PID 424243)" \
+   && echo "$out" | grep -Fq "quota-monitor restart: current" \
    && [[ -z "$(bo_calls pnpm)" ]] \
    && bo_calls launchctl | grep -q "com.flywheel.bridge" \
    && bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.lead.flywheel-eng" \
+   && ! bo_calls launchctl | grep -q "kickstart -k gui/$(id -u)/com.flywheel.quota-monitor" \
    && ! bo_calls launchctl | grep -Eq "(bootout .*com\.flywheel\.lead\.flywheel-eng|bootstrap .*com\.flywheel\.lead\.flywheel-eng)"; then
     pass "FLY-1434 order: SHA match skips build and restarts Bridge + Leads"
 else

@@ -61,7 +61,12 @@ function harness(overrides: Partial<AccountSwitchCliDeps> = {}) {
 		notification: "delivered" as const,
 	}));
 	const sendAlert = vi.fn(async () => ({ primary: "sent" as const }));
-	const reconcile = vi.fn(async () => true);
+	const reconcile = vi.fn(async () => ({
+		ok: true,
+		outcome: "already_consistent" as const,
+		exitCode: 0,
+		detail: "",
+	}));
 	const deps: AccountSwitchCliDeps = {
 		now: () => NOW,
 		trigger5hPct: 90,
@@ -230,6 +235,110 @@ describe("runAccountSwitchCli", () => {
 		expect(h.stderr).toContain("FLYWHEEL_MANUAL_RECONCILE_RACE");
 	});
 
+	it("stops when strict reconcile cannot prove a unique live identity", async () => {
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reason: "stale marker",
+				reasonCode: "active_marker_drift" as const,
+			})),
+			reconcile: vi.fn(async () => ({
+				ok: false,
+				outcome: "unresolvable" as const,
+				reason: "anchor_ambiguous",
+				exitCode: 20,
+				detail: "",
+			})),
+		});
+
+		expect(await runAccountSwitchCli(["next"], h.deps)).toBe(1);
+		expect(h.deps.switchAccount).toHaveBeenCalledTimes(1);
+		expect(h.stderr).toContain("FLYWHEEL_MANUAL_RECONCILE_FAILED");
+	});
+
+	it("surfaces an atomic-apply contract mismatch without reconciling or duplicating its audit", async () => {
+		const auditFailure = vi.fn();
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reasonCode: "apply_contract_mismatch" as const,
+				reason: "daemon runtime predates the switch script",
+				applyEvidence: {
+					exitCode: 48,
+					childStarted: true,
+					detail: "FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
+				},
+				applyProfileChildStarted: true,
+			})),
+			auditFailure,
+		});
+
+		expect(await runAccountSwitchCli(["use", "school"], h.deps)).toBe(1);
+		expect(h.reconcile).not.toHaveBeenCalled();
+		expect(auditFailure).not.toHaveBeenCalled();
+		expect(h.stderr).toContain(
+			"FLYWHEEL_MANUAL_SWITCH_FAILED reason=apply_contract_mismatch exit=48 details=daemon runtime predates the switch script",
+		);
+	});
+
+	it("includes the last child exit on exhausted-candidate results", async () => {
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "no_account" as const,
+				reasonCode: "target_quota_exhausted" as const,
+				earliestReset: null,
+				applyEvidence: {
+					exitCode: 32,
+					childStarted: true,
+					detail: "FLYWHEEL_TARGET_QUOTA_EXHAUSTED school",
+				},
+			})),
+		});
+
+		expect(await runAccountSwitchCli(["next"], h.deps)).toBe(32);
+		expect(h.stderr).toContain(
+			"FLYWHEEL_MANUAL_SWITCH_FAILED reason=target_quota_exhausted exit=32",
+		);
+	});
+
+	it("redacts operator-facing and fallback-audit failure details before truncation", async () => {
+		const auditFailure = vi.fn();
+		const secretTail = "token-tail-must-not-survive";
+		const reason = [
+			"sk-ant-oat01-FAKETOKEN",
+			"Bearer abc.def",
+			'"accessToken":"json-secret"',
+			"token=query-secret",
+			"x".repeat(2100),
+			`Bearer ${secretTail}`,
+		].join(" ");
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reasonCode: "apply_failed" as const,
+				reason,
+				applyProfileChildStarted: false,
+			})),
+			auditFailure,
+		});
+
+		expect(await runAccountSwitchCli(["use", "school"], h.deps)).toBe(1);
+		const operatorText = h.stderr.join("\n");
+		const audited = String(auditFailure.mock.calls[0]?.[0]?.reason ?? "");
+		for (const secret of [
+			"sk-ant-oat01-FAKETOKEN",
+			"abc.def",
+			"json-secret",
+			"query-secret",
+			secretTail,
+		]) {
+			expect(operatorText).not.toContain(secret);
+			expect(audited).not.toContain(secret);
+		}
+		expect(operatorText).toContain("<redacted>");
+		expect(audited).toContain("<redacted>");
+	});
+
 	it("surfaces and audits apply failure details", async () => {
 		const auditFailure = vi.fn();
 		const h = harness({
@@ -237,6 +346,12 @@ describe("runAccountSwitchCli", () => {
 				outcome: "failed" as const,
 				reasonCode: "apply_failed" as const,
 				reason: "spawn flywheel-claude-profile ENOENT",
+				applyEvidence: {
+					exitCode: null,
+					childStarted: false,
+					detail: "Error: spawn flywheel-claude-profile ENOENT",
+				},
+				applyProfileChildStarted: false,
 			})),
 		});
 		Object.assign(h.deps, { auditFailure });
@@ -270,6 +385,26 @@ describe("runAccountSwitchCli", () => {
 		expect(h.stderr).toContain(
 			"FLYWHEEL_MANUAL_SWITCH_FAILED reason=apply_failed details=synthetic keychain writer rejected apply",
 		);
+	});
+
+	it("audits the terminal failure when evidence came from an earlier child", async () => {
+		const auditFailure = vi.fn();
+		const h = harness({
+			switchAccount: vi.fn(async () => ({
+				outcome: "failed" as const,
+				reasonCode: "apply_failed" as const,
+				reason: "later failure before child start",
+				applyEvidence: {
+					exitCode: 30,
+					childStarted: true,
+					detail: "FLYWHEEL_TARGET_STALE business",
+				},
+			})),
+			auditFailure,
+		});
+
+		expect(await runAccountSwitchCli(["use", "school"], h.deps)).toBe(1);
+		expect(auditFailure).toHaveBeenCalledTimes(1);
 	});
 
 	it("keeps apply failure details when the audit sink fails", async () => {

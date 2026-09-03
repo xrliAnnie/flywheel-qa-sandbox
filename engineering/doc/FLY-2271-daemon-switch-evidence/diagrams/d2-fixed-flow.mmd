@@ -1,0 +1,20 @@
+flowchart TD
+    T[quota 到 90% 触发切号] --> X[executor: 持锁 spawn 委托 bash use]
+    X --> R{bash 结果}
+    R -- 成功 --> OK[switched + 通知]
+    R -- exit 48<br/>FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH --> CM[reasonCode=apply_contract_mismatch<br/>日志+告警: exit=48, detail=标记行<br/>文案: daemon 运行旧构建,需重启]
+    R -- exit 46/47<br/>FLYWHEEL_STALE_ACTIVE_* --> DR[reasonCode=active_marker_drift<br/>exit 与 detail 保留]
+    DR --> RC[锁外调用 flywheel-claude-profile reconcile<br/>identity probe + anchor 唯一匹配<br/>strict capture + strict store sync + 原子改 marker]
+    RC --> RCL[日志 account_switch_reconcile<br/>trigger=drift_recovery, outcome, from→to]
+    RCL --> RQ{reconcile 成功?}
+    RQ -- 否 --> F1[switch_failed<br/>detail=reconcile unresolvable: ...]
+    RQ -- 是 --> SN[重读 snapshot<br/>observedAccount / generation 更新]
+    SN --> X2[executor 再试恰好一次]
+    X2 --> R2{结果}
+    R2 -- 成功 --> OK
+    R2 -- 再次 drift --> F2[switch_failed<br/>detail=drift persisted after reconcile: ...<br/>不再循环]
+    R2 -- 其他失败 --> F3[switch_failed<br/>exit + detail 进日志与告警]
+    classDef good fill:#e8f8ee,stroke:#34c759,color:#1d1d1f;
+    classDef bad fill:#fff1f0,stroke:#ff3b30,color:#1d1d1f;
+    classDef info fill:#eef4ff,stroke:#007aff,color:#1d1d1f;
+    class OK good; class CM,F1,F2,F3 bad; class RC,RCL,SN,X2 info;

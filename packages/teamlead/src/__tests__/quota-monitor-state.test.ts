@@ -69,6 +69,9 @@ function populatedState(): QuotaMonitorState {
 		pendingSwitchFailure: {
 			reasonCode: "lock_lease_lost",
 			degraded: true,
+			applyExitCode: 48,
+			childStarted: true,
+			detail: "FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
 			startedAt: "2026-07-14T19:10:00.000Z",
 			lastConfirmedAlertAt: null,
 			alertCount: 0,
@@ -121,6 +124,44 @@ describe("quota monitor persistent state", () => {
 		expect(statSync(path).mode & 0o777).toBe(0o600);
 		expect(readdirSync(dir)).toEqual(["quota-monitor-state.json"]);
 		expect(readFileSync(path, "utf8").toLowerCase()).not.toContain("token");
+	});
+
+	it("accepts null or absent switch-child evidence without changing the state version", () => {
+		const state = populatedState();
+		if (state.pendingSwitchFailure === null) throw new Error("missing fixture");
+		state.pendingSwitchFailure.applyExitCode = null;
+		state.pendingSwitchFailure.childStarted = null;
+		delete state.pendingSwitchFailure.detail;
+		writeQuotaMonitorState(state, path);
+
+		const loaded = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		}).state;
+		expect(loaded.version).toBe(2);
+		expect(loaded.pendingSwitchFailure).toMatchObject({
+			applyExitCode: null,
+			childStarted: null,
+		});
+		expect(loaded.pendingSwitchFailure?.detail).toBeUndefined();
+	});
+
+	it.each([
+		["oversized detail", "x".repeat(601)],
+		["control characters", "marker\nforged"],
+		["invalid unicode", "\ud800"],
+	] as const)("rejects switch evidence with %s", (_label, detail) => {
+		const state = populatedState();
+		if (state.pendingSwitchFailure === null) throw new Error("missing fixture");
+		state.pendingSwitchFailure.detail = detail;
+		writeFileSync(path, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+
+		const loaded = loadQuotaMonitorState(path, {
+			nowMs: NOW,
+			storeGeneration: 7,
+		});
+		expect(loaded.recovery).toBe("corrupt");
+		expect(loaded.state.pendingSwitchFailure).toBeNull();
 	});
 
 	it("round-trips the v2 detection, outbox, confirmation, and bounded unknown ledger", () => {

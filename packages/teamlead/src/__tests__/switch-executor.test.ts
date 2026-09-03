@@ -18,11 +18,13 @@ import {
 import type { LeaseProof } from "../account-heal/mkdir-lock.js";
 import {
 	ActiveMarkerDriftError,
+	ApplyContractMismatchError,
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
 	KeychainPreimageConflictError,
 	LiveIdentityUnavailableError,
+	LockLeaseLostError,
 	type SwitchDeps,
 	switchAccount,
 	TargetIdentityMismatchError,
@@ -972,8 +974,16 @@ describe("switchAccount", () => {
 
 	it("active marker drift is environmental: fail closed without flagging or trying another candidate", async () => {
 		seed(threeAccountStore());
+		const evidence = {
+			exitCode: 46,
+			childStarted: true,
+			detail: "FLYWHEEL_STALE_ACTIVE_UNRESOLVABLE personal",
+		};
 		const applyProfile = vi.fn(async () => {
-			throw new ActiveMarkerDriftError("marker/token witnesses disagree");
+			throw new ActiveMarkerDriftError(
+				"marker/token witnesses disagree",
+				evidence,
+			);
 		});
 
 		const result = await switchAccount(input, deps({ applyProfile }));
@@ -981,6 +991,8 @@ describe("switchAccount", () => {
 		expect(result).toMatchObject({
 			outcome: "failed",
 			reasonCode: "active_marker_drift",
+			applyEvidence: evidence,
+			applyProfileChildStarted: true,
 		});
 		expect(applyProfile).toHaveBeenCalledTimes(1);
 		const after = readStore(storePath);
@@ -990,6 +1002,95 @@ describe("switchAccount", () => {
 		expect(after.accounts.every((account) => !account.identityMismatch)).toBe(
 			true,
 		);
+	});
+
+	it("classifies an atomic-apply contract mismatch with child evidence and no candidate loop", async () => {
+		seed(threeAccountStore());
+		const evidence = {
+			exitCode: 48,
+			childStarted: true,
+			detail:
+				"FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH | Error: delegated apply refused",
+		};
+		const applyProfile = vi.fn(async () => {
+			throw new ApplyContractMismatchError(evidence.detail, evidence);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "apply_contract_mismatch",
+			applyEvidence: evidence,
+			applyProfileChildStarted: true,
+		});
+		expect(applyProfile).toHaveBeenCalledTimes(1);
+		const after = readStore(storePath);
+		expect(after.activeAccount).toBe("personal");
+		expect(after.generation).toBe(1);
+		expect(after.accounts.every((account) => !account.authExpired)).toBe(true);
+		expect(after.accounts.every((account) => !account.identityMismatch)).toBe(
+			true,
+		);
+	});
+
+	it("keeps the last real candidate evidence on a no-account result", async () => {
+		seed(threeAccountStore());
+		const staleEvidence = {
+			exitCode: 30,
+			childStarted: true,
+			detail: "FLYWHEEL_TARGET_STALE business",
+		};
+		const quotaEvidence = {
+			exitCode: 32,
+			childStarted: true,
+			detail: "FLYWHEEL_TARGET_QUOTA_EXHAUSTED school",
+		};
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") {
+				throw new TargetStaleError(name, undefined, staleEvidence);
+			}
+			throw new TargetQuotaExhaustedError(name, undefined, quotaEvidence);
+		});
+
+		const result = await switchAccount(
+			{ ...input, preferredOrder: ["business", "school"] },
+			deps({ applyProfile }),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "no_account",
+			reasonCode: "target_quota_exhausted",
+			applyEvidence: quotaEvidence,
+			applyProfileChildStarted: true,
+		});
+	});
+
+	it("does not replace prior real child evidence with a later plain error", async () => {
+		seed(threeAccountStore());
+		const evidence = {
+			exitCode: 30,
+			childStarted: true,
+			detail: "FLYWHEEL_TARGET_STALE business",
+		};
+		const applyProfile = vi.fn(async (name: string) => {
+			if (name === "business") {
+				throw new TargetStaleError(name, undefined, evidence);
+			}
+			throw new Error("keychain locked");
+		});
+
+		const result = await switchAccount(
+			{ ...input, preferredOrder: ["business", "school"] },
+			deps({ applyProfile }),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "apply_failed",
+			applyEvidence: evidence,
+		});
+		expect(result.applyProfileChildStarted).toBeUndefined();
 	});
 
 	it("non-stale, non-freshness error keeps the current single fail-closed behavior", async () => {
@@ -1331,6 +1432,26 @@ describe("switchAccount", () => {
 		expect(readStore(storePath).generation).toBe(1);
 	});
 
+	it("preserves child evidence when a typed apply failure races with lease loss", async () => {
+		seed(threeAccountStore());
+		const evidence = {
+			exitCode: 39,
+			childStarted: true,
+			detail: "FLYWHEEL_LOCK_LEASE_LOST",
+		};
+		const applyProfile = vi.fn(async () => {
+			throw new LockLeaseLostError("child fence", evidence);
+		});
+
+		const result = await switchAccount(input, deps({ applyProfile }));
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "lock_lease_lost",
+			applyEvidence: evidence,
+		});
+	});
+
 	it("re-proofs after child settle and refuses the parent commit on ownership change", async () => {
 		seed(threeAccountStore());
 		const validateLease = vi
@@ -1348,5 +1469,31 @@ describe("switchAccount", () => {
 		});
 		expect(readStore(storePath).generation).toBe(1);
 		expect(readStore(storePath).activeAccount).toBe("personal");
+	});
+
+	it("keeps successful child evidence when the post-child fence fails", async () => {
+		seed(threeAccountStore());
+		const evidence = { exitCode: 0, childStarted: true, detail: "" };
+		const validateLease = vi
+			.fn<(proof: LeaseProof) => boolean>()
+			.mockReturnValueOnce(true)
+			.mockReturnValue(false);
+		const applyProfile = vi.fn(async () => ({
+			identitySynced: true,
+			identityChecks: [],
+			evidence,
+		}));
+
+		const result = await switchAccount(
+			input,
+			deps({ applyProfile, validateLease, heartbeatMs: 60_000 }),
+		);
+
+		expect(result).toMatchObject({
+			outcome: "failed",
+			reasonCode: "lock_lease_lost",
+			applyEvidence: evidence,
+		});
+		expect(readStore(storePath).generation).toBe(1);
 	});
 });

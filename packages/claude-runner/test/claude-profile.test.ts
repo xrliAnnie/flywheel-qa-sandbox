@@ -2732,6 +2732,52 @@ exit 0
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
 	});
 
+	it("audits and classifies a delegated atomic-apply contract mismatch", () => {
+		seedCoherentActive("personal");
+		mkdirSync(lockDir, { recursive: true });
+		writeFileSync(
+			join(lockDir, "holder"),
+			JSON.stringify({ pid: process.pid, at: Date.now() }),
+		);
+		const beforeCredential = readFileSync(stateFile);
+		const beforeMarker = readFileSync(join(pool, ".active"));
+		const beforeStore = readFileSync(accountsStore);
+
+		const result = spawnAuthenticatedPrimitiveSync(["use", "school"], {
+			FLYWHEEL_CLAUDE_LOCK_DELEGATED: String(process.pid),
+			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
+		});
+
+		expect(result.status, String(result.stderr)).toBe(48);
+		expect(String(result.stderr)).toContain(
+			"FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
+		);
+		expect(String(result.stderr)).toContain("restart the quota-monitor daemon");
+		expect(String(result.stderr)).not.toContain("FLYWHEEL_STALE_ACTIVE");
+		const lines = readFileSync(auditLog, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(
+			lines.map(({ cmd, phase, exitCode, probeSummary }) => [
+				cmd,
+				phase,
+				exitCode,
+				probeSummary,
+			]),
+		).toEqual([
+			["use", "entry", null, "identity_check_pending"],
+			["use", "exit", 48, "atomic_apply_contract_mismatch"],
+		]);
+		expect(lines[1].details.reason).toMatch(/FLYWHEEL_ATOMIC_SWITCH_APPLY=1/);
+		expect(readFileSync(stateFile)).toEqual(beforeCredential);
+		expect(readFileSync(join(pool, ".active"))).toEqual(beforeMarker);
+		expect(readFileSync(accountsStore)).toEqual(beforeStore);
+		expect(String(result.stderr)).not.toContain(SECRET_A);
+		expect(readFileSync(auditLog, "utf8")).not.toContain(SECRET_A);
+		rmSync(lockDir, { recursive: true, force: true });
+	});
+
 	it("delegated mode detects true marker drift but performs zero repair mutation", () => {
 		seedShoppingMachine("business");
 		mkdirSync(lockDir, { recursive: true });
@@ -2749,6 +2795,22 @@ exit 0
 			FLYWHEEL_CLAUDE_QUOTA_GUARD_BIN: syncingQuotaStub(),
 		});
 		expect(result.status, String(result.stderr)).toBe(46);
+		const audit = readFileSync(auditLog, "utf8")
+			.trim()
+			.split("\n")
+			.map((line) => JSON.parse(line));
+		expect(
+			audit.map(({ phase, exitCode, probeSummary }) => [
+				phase,
+				exitCode,
+				probeSummary,
+			]),
+		).toEqual([
+			["entry", null, "identity_check_pending"],
+			["exit", 46, "stale_active_unresolvable"],
+		]);
+		expect(String(result.stderr)).not.toContain(SECRET_SHOPPING_LIVE);
+		expect(readFileSync(auditLog, "utf8")).not.toContain(SECRET_SHOPPING_LIVE);
 		expect(readFileSync(stateFile, "utf-8")).toBe(SECRET_SHOPPING_LIVE);
 		expect(readFileSync(join(pool, ".active"), "utf-8")).toBe("business");
 		expect(readFileSync(join(pool, "shopping", ".credentials.json"))).toEqual(

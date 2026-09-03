@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdtempSync,
@@ -17,6 +18,7 @@ import {
 	installWakeCapability,
 	resolveOwnProcessStartTime,
 	runQuotaMonitorLoop,
+	runtimeTreeShaCommand,
 	writeCompletedTickMarker,
 } from "../account-heal/quota-monitor-cli.js";
 import { DEFAULT_QUOTA_MONITOR_CONFIG } from "../account-heal/quota-monitor-config.js";
@@ -173,6 +175,47 @@ describe("atomic singleton pidfile", () => {
 });
 
 describe("daemon scheduler", () => {
+	it("returns the injected runtime tree sha only for the exact inspection command", () => {
+		expect(runtimeTreeShaCommand(["--runtime-tree-sha"], () => "abc")).toBe(
+			"abc",
+		);
+		expect(runtimeTreeShaCommand([], () => "must-not-run")).toBeNull();
+		expect(
+			runtimeTreeShaCommand(
+				["--runtime-tree-sha", "extra"],
+				() => "must-not-run",
+			),
+		).toBeNull();
+	});
+
+	it("prints the built runtime tree sha without creating daemon capabilities", () => {
+		const pidfile = join(dir, "inspect.pid");
+		const runMarker = join(dir, "inspect.running");
+		const healthMarker = join(dir, "inspect.health.json");
+		const cli = join(
+			import.meta.dirname,
+			"..",
+			"..",
+			"dist",
+			"account-heal",
+			"quota-monitor-cli.js",
+		);
+		const result = spawnSync(process.execPath, [cli, "--runtime-tree-sha"], {
+			encoding: "utf8",
+			env: {
+				...process.env,
+				FLYWHEEL_QUOTA_PIDFILE: pidfile,
+				FLYWHEEL_QUOTA_RUN_MARKER: runMarker,
+				FLYWHEEL_QUOTA_HEALTH_MARKER: healthMarker,
+			},
+		});
+
+		expect(result.status).toBe(0);
+		expect(result.stdout.trim()).toMatch(/^[a-f0-9]{64}$/);
+		expect(result.stderr).toBe("");
+		expect([pidfile, runMarker, healthMarker].some(existsSync)).toBe(false);
+	});
+
 	it("publishes an owner-only marker only after a tick has completed", () => {
 		const marker = join(dir, "quota.health.json");
 		writeCompletedTickMarker(marker, {

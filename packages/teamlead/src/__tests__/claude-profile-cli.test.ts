@@ -15,6 +15,7 @@ import {
 } from "../account-heal/claude-profile-cli.js";
 import {
 	ActiveMarkerDriftError,
+	ApplyContractMismatchError,
 	type ApplyProfileReport,
 	FreshnessUnavailableError,
 	IdentityRollbackFailedError,
@@ -73,7 +74,14 @@ describe("reconcileClaudeProfile", () => {
 					FLYWHEEL_CLAUDE_FRESHNESS_BYPASS: "1",
 				},
 			}),
-		).resolves.toBe(true);
+		).resolves.toEqual({
+			ok: true,
+			outcome: "repaired",
+			from: "personal1",
+			to: "personal",
+			exitCode: 0,
+			detail: "",
+		});
 		expect(execFile).toHaveBeenCalledWith(
 			BIN,
 			["reconcile"],
@@ -102,21 +110,132 @@ describe("reconcileClaudeProfile", () => {
 
 		await expect(
 			reconcileClaudeProfile({ binPath: BIN, execFile: execFile as never }),
-		).resolves.toBe(true);
+		).resolves.toEqual({
+			ok: true,
+			outcome: "already_consistent",
+			exitCode: 0,
+			detail: "",
+		});
 	});
 
 	it("fails closed when reconcile cannot prove a unique live identity", async () => {
-		const execFile = vi.fn(async () => ({
-			stdout: JSON.stringify({
-				outcome: "unresolvable",
-				reason: "anchor_ambiguous",
-			}),
-			stderr: "",
-		}));
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error("unresolvable"), {
+				code: 20,
+				stdout: JSON.stringify({
+					outcome: "unresolvable",
+					reason: "anchor_ambiguous",
+				}),
+				stderr: "FLYWHEEL_LIVE_IDENTITY_UNRESOLVABLE",
+			});
+		});
 
 		await expect(
 			reconcileClaudeProfile({ binPath: BIN, execFile: execFile as never }),
-		).resolves.toBe(false);
+		).resolves.toEqual({
+			ok: false,
+			outcome: "unresolvable",
+			reason: "anchor_ambiguous",
+			exitCode: 20,
+			detail: "FLYWHEEL_LIVE_IDENTITY_UNRESOLVABLE",
+		});
+	});
+
+	it("pairs reconcile stdout with its process exit and keeps stderr evidence", async () => {
+		const repaired = await reconcileClaudeProfile({
+			binPath: BIN,
+			execFile: vi.fn(async () => ({
+				stdout: '{"outcome":"repaired","from":"personal","to":"school"}',
+				stderr: "FLYWHEEL_STALE_ACTIVE_RECONCILED personal school",
+			})) as never,
+		});
+		expect(repaired).toEqual({
+			ok: true,
+			outcome: "repaired",
+			from: "personal",
+			to: "school",
+			exitCode: 0,
+			detail: "FLYWHEEL_STALE_ACTIVE_RECONCILED personal school",
+		});
+
+		const noCredential = await reconcileClaudeProfile({
+			binPath: BIN,
+			execFile: vi.fn(async () => {
+				throw Object.assign(new Error("empty keychain"), {
+					code: 10,
+					stdout: '{"outcome":"no_credential"}',
+					stderr: "",
+				});
+			}) as never,
+		});
+		expect(noCredential).toEqual({
+			ok: false,
+			outcome: "no_credential",
+			exitCode: 10,
+			detail: "Error: empty keychain",
+		});
+	});
+
+	it.each([
+		{
+			name: "invalid JSON on exit zero",
+			failure: { code: 0, stdout: "not-json", stderr: "" },
+			outcome: "malformed",
+			exitCode: 0,
+		},
+		{
+			name: "exit/outcome mismatch",
+			failure: {
+				code: 20,
+				stdout: '{"outcome":"repaired","from":"a","to":"b"}',
+				stderr: "",
+			},
+			outcome: "malformed",
+			exitCode: 20,
+		},
+		{
+			name: "signal termination",
+			failure: { code: "SIGTERM", stdout: "", stderr: "" },
+			outcome: "execution_failed",
+			exitCode: null,
+		},
+		{
+			name: "unexpected exit",
+			failure: { code: 1, stdout: "", stderr: "" },
+			outcome: "execution_failed",
+			exitCode: 1,
+		},
+	])("classifies $name", async ({ failure, outcome, exitCode }) => {
+		const execFile = vi.fn(async () => {
+			throw Object.assign(new Error("reconcile failed"), failure);
+		});
+		await expect(
+			reconcileClaudeProfile({ binPath: BIN, execFile: execFile as never }),
+		).resolves.toMatchObject({ ok: false, outcome, exitCode });
+	});
+
+	it.each([
+		'{"outcome":"unknown"}',
+		`{"outcome":"repaired","from":"${"a".repeat(257)}","to":"b"}`,
+		'{"outcome":"unresolvable","reason":"secret-value"}',
+	])("rejects malformed reconcile payload %s", async (stdout) => {
+		const declared = JSON.parse(stdout) as { outcome: string };
+		const code = declared.outcome === "unresolvable" ? 20 : 0;
+		const execFile = vi.fn(async () => {
+			if (code === 0) return { stdout, stderr: "" };
+			throw Object.assign(new Error("unresolvable"), {
+				code,
+				stdout,
+				stderr: "",
+			});
+		});
+		await expect(
+			reconcileClaudeProfile({ binPath: BIN, execFile: execFile as never }),
+		).resolves.toMatchObject({
+			ok: false,
+			outcome: "malformed",
+			exitCode: code,
+		});
 	});
 });
 
@@ -196,7 +315,11 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		const result = await deps(execFile, (m) => warns.push(m)).applyProfile(
 			"school",
 		);
-		expect(result).toEqual({ identitySynced: false, identityChecks: [] });
+		expect(result).toEqual({
+			identitySynced: false,
+			identityChecks: [],
+			evidence: { exitCode: 0, childStarted: true, detail: "" },
+		});
 		expect(warns).toHaveLength(1);
 		expect(warns[0]).toContain("use school");
 		expect(warns[0]).toContain("no captured display identity");
@@ -221,7 +344,11 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		const result = await deps(execFile, (m) => warns.push(m)).applyProfile(
 			"school",
 		);
-		expect(result).toEqual({ identitySynced: true, identityChecks: [] });
+		expect(result).toEqual({
+			identitySynced: true,
+			identityChecks: [],
+			evidence: { exitCode: 0, childStarted: true, detail: "" },
+		});
 		expect(warns).toHaveLength(0);
 	});
 
@@ -245,6 +372,13 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		await expect(deps(execFile).applyProfile("school")).rejects.toThrow(
 			"profile primitive exited 77: synthetic keychain writer rejected apply | second line",
 		);
+		await expect(deps(execFile).applyProfile("school")).rejects.toMatchObject({
+			evidence: {
+				exitCode: 77,
+				childStarted: null,
+				detail: "Error: profile primitive exited 77",
+			},
+		});
 	});
 
 	it("retains the decisive stderr tail for an oversized unknown apply failure", async () => {
@@ -301,6 +435,9 @@ describe("makeClaudeProfileSwitchDeps", () => {
 
 			expect(rejected).toBeInstanceOf(ErrorType);
 			expect(rejected).toMatchObject({ report: REPORT });
+			expect(rejected).toMatchObject({
+				evidence: { exitCode: exit, childStarted: null },
+			});
 			if (exit === 34) {
 				expect(rejected).toMatchObject({ actualDigest: DIGEST });
 			}
@@ -342,6 +479,7 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
 			...REPORT,
 			identitySynced: true,
+			evidence: { exitCode: 0, childStarted: true, detail: "" },
 		});
 	});
 
@@ -363,6 +501,7 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			identitySynced: true,
 			identityChecks: [],
 			freshened,
+			evidence: { exitCode: 0, childStarted: true, detail: "" },
 		});
 	});
 
@@ -428,6 +567,7 @@ describe("makeClaudeProfileSwitchDeps", () => {
 			await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
 				identitySynced: true,
 				identityChecks: [],
+				evidence: { exitCode: 0, childStarted: true, detail: "" },
 			});
 		},
 	);
@@ -443,6 +583,7 @@ describe("makeClaudeProfileSwitchDeps", () => {
 		await expect(deps(execFile).applyProfile("school")).resolves.toEqual({
 			identitySynced: true,
 			identityChecks: [],
+			evidence: { exitCode: 0, childStarted: true, detail: "" },
 		});
 	});
 
@@ -479,6 +620,37 @@ describe("makeClaudeProfileSwitchDeps", () => {
 				}),
 			}),
 		);
+	});
+
+	it("records that a production apply child never started on spawn ENOENT", async () => {
+		const child = new EventEmitter();
+		const spawn = vi.fn(() => child);
+		const apply = makeClaudeProfileSwitchDeps({
+			binPath: BIN,
+			spawn: spawn as never,
+			withLock: async (lockPath, fn) => ({
+				kind: "ok",
+				value: await fn({ ...LEASE, lockPath }),
+			}),
+		}).applyProfile("school", {
+			lease: LEASE,
+			signal: new AbortController().signal,
+		});
+		child.emit(
+			"error",
+			Object.assign(new Error("spawn flywheel-claude-profile ENOENT"), {
+				code: "ENOENT",
+			}),
+		);
+
+		await expect(apply).rejects.toMatchObject({
+			profileChildStarted: false,
+			evidence: {
+				exitCode: null,
+				childStarted: false,
+				detail: "Error: spawn flywheel-claude-profile ENOENT",
+			},
+		});
 	});
 
 	it("readActiveProfile parses `Active profile: X`", async () => {
@@ -618,6 +790,44 @@ describe("makeClaudeProfileSwitchDeps", () => {
 	});
 
 	describe("FLY-1201 stale active marker exit-code mapping", () => {
+		it.each([
+			{
+				code: 48,
+				stderr:
+					"FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH\nError: delegated profile mutation requires marker",
+				exitCode: 48,
+			},
+			{
+				code: "SIGTERM",
+				stderr: "FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
+				exitCode: null,
+			},
+		])(
+			"maps atomic-apply contract mismatch $code before drift and identity errors",
+			async ({ code, stderr, exitCode }) => {
+				const execFile = vi.fn(async () => {
+					throw Object.assign(new Error("atomic apply refused"), {
+						code,
+						stderr: `${stderr}\nFLYWHEEL_TARGET_IDENTITY_MISMATCH school`,
+						profileChildStarted: true,
+					});
+				});
+				const rejected = await deps(execFile)
+					.applyProfile("school")
+					.catch((error: unknown) => error);
+				expect(rejected).toBeInstanceOf(ApplyContractMismatchError);
+				expect(rejected).toMatchObject({
+					evidence: {
+						exitCode,
+						childStarted: true,
+						detail: expect.stringContaining(
+							"FLYWHEEL_ATOMIC_APPLY_CONTRACT_MISMATCH",
+						),
+					},
+				});
+			},
+		);
+
 		it.each([46, 47])(
 			"exit %s maps to ActiveMarkerDriftError before account-specific identity errors",
 			async (code) => {
@@ -628,9 +838,13 @@ describe("makeClaudeProfileSwitchDeps", () => {
 							"FLYWHEEL_TARGET_IDENTITY_MISMATCH school\nFLYWHEEL_STALE_ACTIVE_REPAIR_FAILED personal\n",
 					});
 				});
-				await expect(
-					deps(execFile).applyProfile("school"),
-				).rejects.toBeInstanceOf(ActiveMarkerDriftError);
+				const rejected = await deps(execFile)
+					.applyProfile("school")
+					.catch((error: unknown) => error);
+				expect(rejected).toBeInstanceOf(ActiveMarkerDriftError);
+				expect(rejected).toMatchObject({
+					evidence: { exitCode: code, childStarted: null },
+				});
 			},
 		);
 

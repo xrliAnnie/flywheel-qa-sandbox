@@ -15,6 +15,10 @@ import {
 	reconcileTransitionJournal,
 } from "./accounts-lock.js";
 import {
+	type ReconcileMachineResult,
+	redactSecrets,
+} from "./apply-child-evidence.js";
+import {
 	claudeProfileBinPath,
 	makeClaudeProfileSwitchDeps,
 	reconcileClaudeProfile,
@@ -57,7 +61,7 @@ export interface AccountSwitchCliDeps {
 	switchAccount: (input: SwitchInput) => Promise<SwitchResult>;
 	readIdentity: (name: string) => Promise<{ email?: string } | null>;
 	sendAlert: (alert: QuotaMonitorAlert) => Promise<DeliveryReport>;
-	reconcile: () => Promise<boolean>;
+	reconcile: () => Promise<ReconcileMachineResult>;
 	auditFailure?: (input: {
 		command: "use" | "next";
 		profile: string | null;
@@ -251,15 +255,16 @@ export async function runAccountSwitchCli(
 				deps.stderr("FLYWHEEL_MANUAL_RECONCILE_RACE");
 				return 1;
 			}
-			if (!(await deps.reconcile())) {
+			if (!(await deps.reconcile()).ok) {
 				deps.stderr("FLYWHEEL_MANUAL_RECONCILE_FAILED");
 				return 1;
 			}
 			continue;
 		}
 		const reasonCode = result.reasonCode;
+		let detail = "";
 		if (result.outcome === "failed") {
-			const detail = manualFailureDetail(result.reason);
+			detail = manualFailureDetail(redactSecrets(result.reason));
 			if (result.applyProfileChildStarted !== true) {
 				try {
 					await deps.auditFailure?.({
@@ -272,12 +277,13 @@ export async function runAccountSwitchCli(
 					deps.stderr("FLYWHEEL_MANUAL_SWITCH_AUDIT_FAILED");
 				}
 			}
-			deps.stderr(
-				`FLYWHEEL_MANUAL_SWITCH_FAILED reason=${reasonCode} details=${detail}`,
-			);
-		} else {
-			deps.stderr(`FLYWHEEL_MANUAL_SWITCH_FAILED reason=${reasonCode}`);
 		}
+		const exit = result.applyEvidence?.exitCode;
+		deps.stderr(
+			`FLYWHEEL_MANUAL_SWITCH_FAILED reason=${reasonCode}${
+				typeof exit === "number" ? ` exit=${exit}` : ""
+			}${detail ? ` details=${detail}` : ""}`,
+		);
 		if (reasonCode === "notification_outbox_full") {
 			deps.stderr(
 				"Recovery: restore notification delivery and run the quota monitor once before retrying the switch.",
