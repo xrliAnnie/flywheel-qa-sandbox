@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 0/3
-updated: 2026-09-04T06:47:57.021Z
-nextStep: Reproduce normal profile-archive birth gap at the test-deploy seam;
-  add one RED guard before implementation
+phaseCursor: 1/3
+updated: 2026-09-04T07:14:03.039Z
+nextStep: Drive test-deploy through production provisionCodexHome with a fake
+  active-hub credential; remove source lease/writeback lifecycle
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (0/3)
-**next**: Reproduce normal profile-archive birth gap at the test-deploy seam; add one RED guard before implementation
+**phase**: implement (1/3)
+**next**: Drive test-deploy through production provisionCodexHome with a fake active-hub credential; remove source lease/writeback lifecycle
