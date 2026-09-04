@@ -608,6 +608,9 @@ ensure_home() {
   if [ "${FLYWHEEL_CODEX_LEAD_PROFILE:-}" = "full-access" ]; then
     write_full_access_config "$cwd"
     append_full_access_lead_actions_mcp
+    # FLY-2296: production Leads take this rewrite-and-return branch, so pin
+    # here or every ensure would erase a prior manual never-show-again choice.
+    ensure_notice_pin "$CONFIG"
     log "home OK (full-access): $HOME_DIR"
     return 0
   fi
@@ -691,6 +694,9 @@ EOF
     drift) die "config.toml has an explicit non-trusted entry for $cwd — the boot trust menu would block an unattended TUI. Fix $CONFIG manually." ;;
     *) die "trust-state TOML inspection failed for $CONFIG (parser missing or unparseable config) — fail closed" ;;
   esac
+
+  # FLY-2296: the read-only path has a separate final assembly endpoint.
+  ensure_notice_pin "$CONFIG"
 
   log "home OK: $HOME_DIR"
 }
@@ -1022,6 +1028,56 @@ ensure_daemon() {
       return 0
       ;;
     *) daemon_die "internal error: unknown stale-daemon recovery outcome '$REAP_OUTCOME'" ;;
+  esac
+}
+
+ensure_notice_pin() {
+  local config="$1" notice_state
+  notice_state=$(python3 - "$config" <<'PYNOTICE'
+import sys
+try:
+    import tomllib
+except ImportError:
+    print("error"); sys.exit(0)
+try:
+    with open(sys.argv[1], "rb") as f:
+        cfg = tomllib.load(f)
+except Exception:
+    print("error"); sys.exit(0)
+if "notice" not in cfg:
+    print("absent")
+else:
+    notice = cfg["notice"]
+    if not isinstance(notice, dict):
+        print("error")
+    elif notice.get("hide_rate_limit_model_nudge") is True:
+        print("pinned")
+    elif notice.get("hide_rate_limit_model_nudge") is False:
+        print("drift")
+    elif "hide_rate_limit_model_nudge" not in notice:
+        print("present_unpinned")
+    else:
+        print("error")
+PYNOTICE
+)
+  case "$notice_state" in
+    pinned) : ;;
+    absent)
+      cat >> "$config" <<'EOF'
+
+[notice]
+hide_rate_limit_model_nudge = true
+EOF
+      python3 - "$config" <<'PYVERIFY' || die "config.toml notice pin write verification failed — fail closed"
+import sys, tomllib
+with open(sys.argv[1], "rb") as f:
+    cfg = tomllib.load(f)
+sys.exit(0 if cfg.get("notice", {}).get("hide_rate_limit_model_nudge") is True else 1)
+PYVERIFY
+      ;;
+    drift) die "Rate-limit model-switch menu is explicitly enabled in $config — an unattended TUI would wedge on it. Fix: open $config, find the [notice] table, change hide_rate_limit_model_nudge = false to hide_rate_limit_model_nudge = true, then re-run this launcher." ;;
+    present_unpinned) die "$config already has a [notice] table without hide_rate_limit_model_nudge; appending a second [notice] table would be invalid TOML. Fix: open $config, inside the existing [notice] table add the line hide_rate_limit_model_nudge = true, then re-run this launcher." ;;
+    *) die "Cannot parse $config (or python3 tomllib is missing) — refusing to guess the [notice] state. Fix: run python3 -c 'import tomllib,sys; tomllib.load(open(sys.argv[1],\"rb\"))' \"$config\" to see the parse error, repair the file, ensure [notice] contains hide_rate_limit_model_nudge = true, then re-run this launcher." ;;
   esac
 }
 

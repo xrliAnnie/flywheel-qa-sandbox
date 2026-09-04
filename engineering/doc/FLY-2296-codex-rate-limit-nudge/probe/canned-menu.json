@@ -1,0 +1,170 @@
+{
+ "config/read": {
+  "config": {
+   "model": "gpt-5.6-sol",
+   "projects": {
+    "/private/tmp/fly2296/run-menu/cwd": {
+     "trust_level": "trusted"
+    }
+   }
+  },
+  "origins": {},
+  "layers": null
+ },
+ "account/read": {
+  "account": {
+   "type": "chatgpt",
+   "email": "probe@example.test",
+   "planType": "pro"
+  },
+  "requiresOpenaiAuth": true
+ },
+ "thread/resume": {
+  "approvalPolicy": "never",
+  "approvalsReviewer": "user",
+  "cwd": "/private/tmp/fly2296/run-menu/cwd",
+  "model": "gpt-5.6-sol",
+  "modelProvider": "openai",
+  "reasoningEffort": "medium",
+  "sandbox": {
+   "type": "workspaceWrite",
+   "writableRoots": [],
+   "networkAccess": false,
+   "excludeSlashTmp": false,
+   "excludeTmpdirEnvVar": false
+  },
+  "serviceTier": null,
+  "turnsBackwardsCursor": null,
+  "itemsBackwardsCursor": null,
+  "instructionSources": [],
+  "thread": {
+   "id": "1e6b2f6e-2d8c-4b13-9f0c-2296aaaa0001",
+   "sessionId": "1e6b2f6e-2d8c-4b13-9f0c-2296aaaa0001",
+   "cliVersion": "0.153.0",
+   "createdAt": 1788467338,
+   "updatedAt": 1788467338,
+   "cwd": "/private/tmp/fly2296/run-menu/cwd",
+   "ephemeral": false,
+   "modelProvider": "openai",
+   "model": "gpt-5.6-sol",
+   "preview": "",
+   "projectId": "probe",
+   "source": "cli",
+   "status": {
+    "type": "idle"
+   },
+   "turns": []
+  }
+ },
+ "model/list": {
+  "data": [
+   {
+    "id": "gpt-5.6-sol",
+    "model": "gpt-5.6-sol",
+    "displayName": "gpt-5.6-sol",
+    "description": "probe",
+    "hidden": false,
+    "isDefault": true,
+    "defaultReasoningEffort": "medium",
+    "supportedReasoningEfforts": [
+     {
+      "reasoningEffort": "medium",
+      "description": "m"
+     }
+    ]
+   },
+   {
+    "id": "gpt-5.6-luna",
+    "model": "gpt-5.6-luna",
+    "displayName": "gpt-5.6-luna",
+    "description": "probe",
+    "hidden": false,
+    "isDefault": false,
+    "defaultReasoningEffort": "medium",
+    "supportedReasoningEfforts": [
+     {
+      "reasoningEffort": "medium",
+      "description": "m"
+     }
+    ]
+   }
+  ],
+  "nextCursor": null
+ },
+ "skills/list": {
+  "data": []
+ },
+ "account/rateLimits/read": {
+  "rateLimits": {
+   "limitId": "codex",
+   "limitName": "Codex",
+   "planType": "pro",
+   "primary": {
+    "usedPercent": 95,
+    "windowDurationMins": 300,
+    "resetsAt": 1788470938
+   },
+   "secondary": {
+    "usedPercent": 40,
+    "windowDurationMins": 10080,
+    "resetsAt": 1788553738
+   },
+   "rateLimitReachedType": null,
+   "credits": null,
+   "spendControlReached": false
+  },
+  "ordinaryUsageAllowed": true,
+  "rateLimitsByLimitId": null,
+  "accountId": "acct-probe",
+  "rateLimitResetCredits": null
+ },
+ "thread/read": {
+  "thread": {
+   "id": "1e6b2f6e-2d8c-4b13-9f0c-2296aaaa0001",
+   "sessionId": "1e6b2f6e-2d8c-4b13-9f0c-2296aaaa0001",
+   "cliVersion": "0.153.0",
+   "createdAt": 1788467338,
+   "updatedAt": 1788467338,
+   "cwd": "/private/tmp/fly2296/run-menu/cwd",
+   "ephemeral": false,
+   "modelProvider": "openai",
+   "model": "gpt-5.6-sol",
+   "preview": "",
+   "projectId": "probe",
+   "source": "cli",
+   "status": {
+    "type": "idle"
+   },
+   "turns": []
+  }
+ },
+ "__after__account/rateLimits/read": [
+  {
+   "method": "turn/started",
+   "params": {
+    "threadId": "1e6b2f6e-2d8c-4b13-9f0c-2296aaaa0001",
+    "turn": {
+     "id": "turn-probe-1",
+     "items": [],
+     "status": "inProgress",
+     "startedAt": 1788467508
+    }
+   }
+  },
+  {
+   "method": "turn/completed",
+   "params": {
+    "threadId": "1e6b2f6e-2d8c-4b13-9f0c-2296aaaa0001",
+    "turn": {
+     "id": "turn-probe-1",
+     "items": [],
+     "status": "completed",
+     "startedAt": 1788467508,
+     "completedAt": 1788467509,
+     "durationMs": 1000,
+     "error": null
+    }
+   }
+  }
+ ]
+}

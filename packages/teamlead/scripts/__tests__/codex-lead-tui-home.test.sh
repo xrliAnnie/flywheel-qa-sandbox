@@ -51,6 +51,9 @@ fi
 command grep -q 'sandbox_mode = "read-only"' "$H/config.toml" && pass "sandbox pin written" || fail "sandbox pin missing"
 command grep -q 'approval_policy = "never"' "$H/config.toml" && pass "approval pin written" || fail "approval pin missing"
 command grep -q 'projects."/work/dir"' "$H/config.toml" && pass "cwd trusted" || fail "cwd trust missing"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('notice',{}).get('hide_rate_limit_model_nudge') is True else 1)" "$H/config.toml" \
+  && pass "FLY-2296: read-only home hides the rate-limit model nudge" \
+  || fail "FLY-2296: read-only home notice pin missing"
 BEFORE=$(cat "$H/config.toml")
 FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/work/dir" /bin/bash "$SUT" ensure-home >/dev/null 2>&1
 [ "$BEFORE" = "$(cat "$H/config.toml")" ] && pass "idempotent re-run (config unchanged)" || fail "re-run mutated config"
@@ -180,6 +183,84 @@ if FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ens
 else
   pass "R4 MED-1: scalar projects fails closed"
 fi
+
+# ── FLY-2296: explicit notice drift fails loud; never silently changes choice ──
+H=$(fresh_home 11)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "read-only"
+approval_policy = "never"
+[notice]
+hide_rate_limit_model_nudge = false
+TOML
+OUT=$(FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -q "Rate-limit model-switch menu is explicitly enabled" <<< "$OUT" \
+  && command grep -Fq "$H/config.toml" <<< "$OUT" \
+  && command grep -q "hide_rate_limit_model_nudge = true" <<< "$OUT" \
+  && pass "FLY-2296: explicit false notice pin fails loud with repair guidance" \
+  || fail "FLY-2296: explicit false notice pin should fail with repair guidance; got: $OUT"
+
+# ── FLY-2296: an existing true pin is accepted byte-for-byte ──────────────
+H=$(fresh_home 12)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "read-only"
+approval_policy = "never"
+[projects."/w"]
+trust_level = "trusted"
+[notice]
+hide_rate_limit_model_nudge = true
+TOML
+BEFORE=$(cat "$H/config.toml")
+if FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ensure-home >/dev/null 2>&1 \
+   && [ "$BEFORE" = "$(cat "$H/config.toml")" ]; then
+  pass "FLY-2296: existing true notice pin is accepted unchanged"
+else
+  fail "FLY-2296: existing true notice pin should be unchanged"
+fi
+
+# ── FLY-2296: existing notice shapes that cannot be appended fail loud ────
+H=$(fresh_home 13)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "read-only"
+approval_policy = "never"
+[notice]
+hide_full_access_warning = true
+TOML
+OUT=$(FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -q "already has a \[notice\] table without" <<< "$OUT" \
+  && command grep -Fq "$H/config.toml" <<< "$OUT" \
+  && command grep -q "hide_rate_limit_model_nudge = true" <<< "$OUT" \
+  && pass "FLY-2296: existing unpinned notice table fails loud" \
+  || fail "FLY-2296: existing unpinned notice table should fail loud; got: $OUT"
+
+H=$(fresh_home 14)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "read-only"
+approval_policy = "never"
+notice = {}
+TOML
+OUT=$(FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -q "already has a \[notice\] table without" <<< "$OUT" \
+  && command grep -Fq "$H/config.toml" <<< "$OUT" \
+  && command grep -q "hide_rate_limit_model_nudge = true" <<< "$OUT" \
+  && pass "FLY-2296: inline notice table fails loud instead of appending" \
+  || fail "FLY-2296: inline notice table should fail loud; got: $OUT"
+
+H=$(fresh_home 15)
+cat > "$H/config.toml" <<'TOML'
+sandbox_mode = "read-only"
+approval_policy = "never"
+notice = "invalid-schema"
+TOML
+OUT=$(FLYWHEEL_CODEX_TUI_HOME="$H" FLYWHEEL_CODEX_TUI_CWD="/w" /bin/bash "$SUT" ensure-home 2>&1; echo "rc=$?")
+command grep -q "rc=1" <<< "$OUT" \
+  && command grep -q "Cannot parse" <<< "$OUT" \
+  && command grep -Fq "$H/config.toml" <<< "$OUT" \
+  && command grep -q "hide_rate_limit_model_nudge = true" <<< "$OUT" \
+  && pass "FLY-2296: invalid notice schema fails loud with parse and repair guidance" \
+  || fail "FLY-2296: invalid notice schema should fail with guidance; got: $OUT"
 # ── companion ensure-daemon: start only, NO stop (byte-compat) ─────────────
 H=$(fresh_home 23); : > "$MOCK_LOG"
 FLYWHEEL_CODEX_BIN="$T/bin/codex" FLYWHEEL_CODEX_TUI_HOME="$H" /bin/bash "$SUT" ensure-daemon >/dev/null 2>&1
@@ -274,6 +355,9 @@ python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit
 command grep -q 'default_tools_approval_mode = "approve"' "$H/config.toml" && pass "full-access: lead_actions approve mode written" || fail "full-access: approve mode missing"
 command grep -q 'env_vars = \["DISCORD_BOT_TOKEN"\]' "$H/config.toml" && pass "full-access: token forwarded by NAME (env_vars)" || fail "full-access: env_vars missing"
 ! command grep -q "BROKER_SOCKET" "$H/config.toml" && pass "full-access: NO broker socket in config (token by name)" || fail "full-access: broker socket must not appear"
+python3 -c "import tomllib,sys; c=tomllib.load(open(sys.argv[1],'rb')); sys.exit(0 if c.get('notice',{}).get('hide_rate_limit_model_nudge') is True else 1)" "$H/config.toml" \
+  && pass "FLY-2296: full-access home hides the rate-limit model nudge" \
+  || fail "FLY-2296: full-access home notice pin missing"
 
 # ── full-access ensure-daemon: STOP then START (pin ⑤ — daemon re-reads; no stale read-only daemon) ──
 H=$(fresh_home 31); : > "$MOCK_LOG"

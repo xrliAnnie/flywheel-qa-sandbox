@@ -12,6 +12,7 @@ import {
 	rmSync,
 	statSync,
 	symlinkSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -24,6 +25,7 @@ import {
 	codexHomeDir,
 	codexHomesRoot,
 	discoverAccountPool as discoverAccountPoolProduction,
+	pinRunnerNotice,
 	provisionCodexHome as provisionCodexHomeProduction,
 	rawCodexBin,
 	removeCodexHome,
@@ -726,6 +728,113 @@ note = "${PLACEHOLDER}"
 	});
 });
 
+describe("pinRunnerNotice (FLY-2296)", () => {
+	it("pins the rate-limit model nudge off in an empty runner seed", () => {
+		const parsed = parseToml(pinRunnerNotice("")) as Record<
+			string,
+			Record<string, unknown>
+		>;
+
+		expect(parsed.notice.hide_rate_limit_model_nudge).toBe(true);
+	});
+
+	it("adds the pin to an existing notice table without duplicating it", () => {
+		const out = pinRunnerNotice("[notice]\nhide_full_access_warning = true\n");
+		const parsed = parseToml(out) as Record<string, Record<string, unknown>>;
+
+		expect(parsed.notice).toEqual({
+			hide_full_access_warning: true,
+			hide_rate_limit_model_nudge: true,
+		});
+		expect(out.match(/^\[notice\]$/gm)).toHaveLength(1);
+	});
+
+	it("overrides an explicit false nudge setting without duplicating the key", () => {
+		const out = pinRunnerNotice(
+			"[notice]\nhide_rate_limit_model_nudge = false\n",
+		);
+		const parsed = parseToml(out) as Record<string, Record<string, unknown>>;
+
+		expect(parsed.notice.hide_rate_limit_model_nudge).toBe(true);
+		expect(out.match(/^hide_rate_limit_model_nudge\s*=/gm)).toHaveLength(1);
+	});
+
+	it("rejects an inline root notice table without echoing config contents", () => {
+		const base =
+			'notice = { hide_full_access_warning = true, canary = "private-value" }';
+
+		expect(() => pinRunnerNotice(base)).toThrow(
+			/seed config \(~\/\.codex\/config\.toml\).*literal \[notice\] table header/,
+		);
+		try {
+			pinRunnerNotice(base);
+		} catch (error) {
+			expect(String(error)).not.toContain("private-value");
+		}
+	});
+
+	it("rejects a quoted root notice scalar", () => {
+		expect(() => pinRunnerNotice('"notice" = 1\n')).toThrow(
+			/notice.*refusing to pin/,
+		);
+	});
+
+	it("fails closed when an existing pin uses a quoted key", () => {
+		expect(() =>
+			pinRunnerNotice('[notice]\n"hide_rate_limit_model_nudge" = false\n'),
+		).toThrow(/rendered config\.toml would not be valid TOML/);
+	});
+
+	it("preserves a notice model-migrations subtable while adding the parent pin", () => {
+		const parsed = parseToml(
+			pinRunnerNotice('[notice.model_migrations]\n"a" = "b"\n'),
+		) as Record<string, Record<string, unknown>>;
+
+		expect(parsed.notice.hide_rate_limit_model_nudge).toBe(true);
+		expect(parsed.notice.model_migrations).toEqual({ a: "b" });
+	});
+
+	it("keeps an already-true pin as one equivalent assignment", () => {
+		const base = "[notice]\nhide_rate_limit_model_nudge = true\n";
+		const out = pinRunnerNotice(base);
+
+		expect(parseToml(out)).toEqual(parseToml(base));
+		expect(out.match(/^hide_rate_limit_model_nudge\s*=/gm)).toHaveLength(1);
+	});
+
+	it("limits assignment matching to the literal notice table span", () => {
+		const base = `[notice]
+[projects."/x"]
+trust_level = "trusted"
+[notice.model_migrations]
+"a" = "b"
+`;
+		const parsed = parseToml(pinRunnerNotice(base)) as Record<
+			string,
+			Record<string, unknown>
+		>;
+
+		expect(parsed.notice.hide_rate_limit_model_nudge).toBe(true);
+		expect(parsed.notice.model_migrations).toEqual({ a: "b" });
+		expect(parsed.projects).toEqual({ "/x": { trust_level: "trusted" } });
+	});
+
+	it("rejects a root dotted notice definition", () => {
+		expect(() =>
+			pinRunnerNotice("notice.hide_rate_limit_model_nudge = false\n"),
+		).toThrow(/literal \[notice\] table header before dispatching/);
+	});
+
+	it("does not confuse a relative notice key under another table with root notice", () => {
+		const parsed = parseToml(
+			pinRunnerNotice('[other]\nnotice.foo = "x"\n'),
+		) as Record<string, Record<string, unknown>>;
+
+		expect(parsed.other).toEqual({ notice: { foo: "x" } });
+		expect(parsed.notice.hide_rate_limit_model_nudge).toBe(true);
+	});
+});
+
 describe("provisionCodexHome (WS-A)", () => {
 	function makeMattSkillsSource(): string {
 		const source = join(tmp, "matt-skills-source");
@@ -760,6 +869,12 @@ describe("provisionCodexHome (WS-A)", () => {
 			`sandbox_mode = "danger-full-access"
 approval_policy = "never"
 model = "gpt-5-codex"
+
+[projects."/Users/x/Dev/flywheel"]
+trust_level = "trusted"
+
+[notice.model_migrations]
+"gpt-5-codex" = "gpt-5.6-codex"
 `,
 		);
 
@@ -774,6 +889,77 @@ model = "gpt-5-codex"
 		expect(parsed.sandbox_mode).toBe("workspace-write");
 		expect(parsed.approval_policy).toBe("never");
 		expect(parsed.model).toBe("gpt-5-codex");
+		expect(
+			(parsed.notice as Record<string, unknown>).hide_rate_limit_model_nudge,
+		).toBe(true);
+		expect(
+			(parsed.notice as Record<string, Record<string, unknown>>)
+				.model_migrations,
+		).toEqual({ "gpt-5-codex": "gpt-5.6-codex" });
+	});
+
+	it("scrubs a prior live token and does not rewrite identity files when the notice pin rejects", () => {
+		const sourceConfig = join(sourceCodexDir(env), "config.toml");
+		const executionId = "exec-notice-pin-reject";
+		const home = provisionCodexHome({ executionId, ghToken: TOKEN, env });
+		const authPath = join(home, "auth.json");
+		const activePath = join(home, ".active");
+		const fixedTime = new Date("2020-01-02T03:04:05.000Z");
+		utimesSync(authPath, fixedTime, fixedTime);
+		utimesSync(activePath, fixedTime, fixedTime);
+		const authBefore = readFileSync(authPath);
+		const activeBefore = readFileSync(activePath);
+		const authMtimeBefore = statSync(authPath).mtimeMs;
+		const activeMtimeBefore = statSync(activePath).mtimeMs;
+
+		writeFileSync(
+			sourceConfig,
+			"notice = { hide_rate_limit_model_nudge = false }\n",
+		);
+
+		expect(() =>
+			provisionCodexHome({ executionId, ghToken: TOKEN, env }),
+		).toThrow(/literal \[notice\] table header before dispatching/);
+		expect(readFileSync(join(home, "config.toml"), "utf8")).not.toContain(
+			"GH_TOKEN",
+		);
+		expect(readFileSync(authPath)).toEqual(authBefore);
+		expect(readFileSync(activePath)).toEqual(activeBefore);
+		expect(statSync(authPath).mtimeMs).toBe(authMtimeBefore);
+		expect(statSync(activePath).mtimeMs).toBe(activeMtimeBefore);
+	});
+
+	it("coexists with existing shell-environment and notice tables", () => {
+		writeFileSync(
+			join(sourceCodexDir(env), "config.toml"),
+			`sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[shell_environment_policy.set]
+EXISTING = "kept"
+
+[notice]
+hide_full_access_warning = true
+`,
+		);
+
+		const home = provisionCodexHome({
+			executionId: "exec-notice-shell-env",
+			ghToken: TOKEN,
+			env,
+		});
+		const parsed = parseToml(
+			readFileSync(join(home, "config.toml"), "utf8"),
+		) as Record<string, Record<string, unknown>>;
+
+		expect(parsed.shell_environment_policy.set).toEqual({
+			EXISTING: "kept",
+			GH_TOKEN: TOKEN,
+		});
+		expect(parsed.notice).toEqual({
+			hide_full_access_warning: true,
+			hide_rate_limit_model_nudge: true,
+		});
 	});
 
 	it.each([
@@ -915,13 +1101,20 @@ model = "gpt-5-codex"
 	});
 
 	it("is idempotent — re-provisioning overwrites in place", () => {
+		const home = provisionCodexHome({
+			executionId: "exec-2",
+			ghToken: TOKEN,
+			env,
+		});
+		const first = readFileSync(join(home, "config.toml"), "utf-8");
 		provisionCodexHome({ executionId: "exec-2", ghToken: TOKEN, env });
-		provisionCodexHome({ executionId: "exec-2", ghToken: TOKEN, env });
-		const cfg = readFileSync(
+		const second = readFileSync(
 			join(tmp, "homes", "exec-2", "config.toml"),
 			"utf-8",
 		);
-		expect(cfg.match(/shell_environment_policy/g)?.length).toBe(1);
+		expect(second).toBe(first);
+		expect(second.match(/shell_environment_policy/g)?.length).toBe(1);
+		expect(second.match(/^\[notice\]$/gm)).toHaveLength(1);
 	});
 
 	it("provisions without a token (no credential block)", () => {

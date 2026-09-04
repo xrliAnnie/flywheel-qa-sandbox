@@ -1,0 +1,17 @@
+%%{init: {"flowchart": {"htmlLabels": false, "wrappingWidth": 600}}}%%
+flowchart TB
+  subgraph R[runner 配置生成链]
+    direction TB
+    S[种子<br/>~/.codex/config.toml<br/>founder 自己的 Codex 配置] --> P1[pinRunnerPolicy · 已有<br/>钉 sandbox_mode / approval_policy]
+    P1 --> P2[pinRunnerNotice · 本单新增<br/>钉 notice 开关 = true<br/>有表头注入 · 无则追加 · 其它拒绝]
+    P2 --> Rn[renderCodexHomeConfig · 已有<br/>追加四个 managed 块]
+    Rn --> H[(runner 的 config.toml<br/>权限 0600)]
+    H --> T[codex resume --remote TUI<br/>启动时读一次 notices]
+    H --> Dm[codex app-server daemon<br/>machine client 驱动 goal]
+  end
+  subgraph L[Lead 配置 · 同一个键]
+    direction TB
+    LS[codex-lead-tui-home.sh<br/>缺则追加 · 显式 false 则拒起]
+    LS --> LH[(Lead 的 config.toml<br/>mufasa · honeylemon · infra-bot)]
+    LH --> LT[Lead 的 TUI]
+  end

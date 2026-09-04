@@ -258,6 +258,18 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "packages/claude-runner/test/codex-tui-nudge-support.test.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/codex-tui-nudge-support.test.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/codex-tui-nudge-support.test.ts:child.kill(\"SIGTERM\");#1",
+		"path": "packages/claude-runner/test/codex-tui-nudge-support.test.ts",
+		"code": "child.kill(\"SIGTERM\");",
+		"classification": "qa-only"
+	},
+	{
 		"key": "packages/claude-runner/test/kill-ledger.test.ts:signal: \"kill-window\",#1",
 		"path": "packages/claude-runner/test/kill-ledger.test.ts",
 		"code": "signal: \"kill-window\",",
@@ -2380,6 +2392,12 @@
 		"path": "scripts/__tests__/tmux-server-rescue-real-tmux.test.sh",
 		"code": "kill -STOP \"$PID_S\"",
 		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/codex-tui-nudge-probe.sh:kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\#1",
+		"path": "scripts/codex-tui-nudge-probe.sh",
+		"code": "kill -0 \"$SERVER_PID\" >/dev/null 2>&1 \\",
+		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh:for item in $FLY2264_WAIT_PENDING; do kill -KILL \"${item%%:*}\" 2>/dev/null || true; done#1",

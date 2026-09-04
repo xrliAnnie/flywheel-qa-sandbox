@@ -1,0 +1,5 @@
+[projects."/private/tmp/fly2296/run-nomenu/cwd"]
+trust_level = "trusted"
+
+[notice]
+hide_rate_limit_model_nudge = true
