@@ -20,6 +20,18 @@ import { DirectEventSink } from "../DirectEventSink.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import { StateStore } from "../StateStore.js";
 
+const linearSdk = vi.hoisted(() => ({
+	issue: vi.fn(),
+	updateIssue: vi.fn(),
+}));
+
+vi.mock("@linear/sdk", () => ({
+	LinearClient: class {
+		issue = linearSdk.issue;
+		updateIssue = linearSdk.updateIssue;
+	},
+}));
+
 const testProjects: ProjectEntry[] = [
 	{
 		projectName: "geoforge3d",
@@ -1302,6 +1314,225 @@ describe("DirectEventSink — FLY-579 QA-held founder suppression (Codex R1 HIGH
 		});
 		await sink.emitCompleted(makeEnvelope(), needsReviewResult());
 		expect(delivered).toContain("session_completed");
+	});
+});
+
+describe("DirectEventSink — FLY-2293 Linear started-state sync", () => {
+	let store: StateStore;
+
+	function captureRegistry(): {
+		registry: RuntimeRegistry;
+		delivered: string[];
+	} {
+		const delivered: string[] = [];
+		return {
+			registry: {
+				resolveWithLead: () => ({
+					runtime: {
+						deliver: async (env: { event: { event_type: string } }) => {
+							delivered.push(env.event.event_type);
+							return { delivered: true };
+						},
+					},
+					lead: { agentId: "product-lead", chatChannel: "chat-ch-1" },
+				}),
+			} as unknown as RuntimeRegistry,
+			delivered,
+		};
+	}
+
+	function mockBacklogIssue(): void {
+		const states = [
+			{ id: "backlog", name: "Backlog", type: "backlog", position: 0 },
+			{ id: "review", name: "In Review", type: "started", position: 3 },
+			{ id: "progress", name: "In Progress", type: "started", position: 2 },
+		];
+		let current = states[0]!;
+		linearSdk.issue.mockImplementation(async () => {
+			expect(store.getSession("exec-1")?.status).toBe("running");
+			return {
+				startedAt:
+					current.type === "started"
+						? new Date("2026-09-04T19:00:00.000Z")
+						: null,
+				state: Promise.resolve(current),
+				team: Promise.resolve({
+					states: vi.fn(async () => ({ nodes: states })),
+				}),
+			};
+		});
+		linearSdk.updateIssue.mockImplementation(
+			async (_issueId: string, input: { stateId: string }) => {
+				current = states.find((state) => state.id === input.stateId)!;
+				return { success: true };
+			},
+		);
+	}
+
+	function startOutcomes() {
+		return store
+			.getEventsByExecution("exec-1")
+			.filter((event) => event.event_type === "linear_issue_start_outcome");
+	}
+
+	beforeEach(async () => {
+		delete process.env.FLYWHEEL_LINEAR_STARTED_SYNC;
+		linearSdk.issue.mockReset();
+		linearSdk.updateIssue.mockReset();
+		store = await StateStore.create(":memory:");
+	});
+
+	afterEach(() => {
+		delete process.env.FLYWHEEL_LINEAR_STARTED_SYNC;
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+		store.close();
+	});
+
+	it.each([
+		["implement", "codex-tmux"],
+		["design", "claude-tmux"],
+	] as const)(
+		"moves a real backlog issue after the %s/%s session row is running",
+		async (sessionRole, runnerBackend) => {
+			mockBacklogIssue();
+			const { registry, delivered } = captureRegistry();
+			const sink = new DirectEventSink(
+				store,
+				makeConfig({ linearApiKey: "k" }),
+				testProjects,
+				undefined,
+				registry,
+			);
+
+			await sink.emitStarted(
+				makeEnvelope({
+					sessionRole,
+					chatThreadRole: sessionRole,
+					runnerBackend,
+				}),
+			);
+			await sink.flush();
+
+			expect(linearSdk.updateIssue).toHaveBeenCalledOnce();
+			expect(startOutcomes()).toMatchObject([
+				{
+					source: "direct-event-sink",
+					payload: {
+						issueId: "issue-1",
+						executionId: "exec-1",
+						outcome: "started",
+					},
+				},
+			]);
+			expect(delivered).toEqual(["session_started"]);
+		},
+	);
+
+	it.each([
+		["started", "2026-09-04T19:00:00.000Z", "started"],
+		["completed", null, "skipped_terminal"],
+		["triage", null, "skipped_triage"],
+	] as const)(
+		"persists one %s outcome without writing Linear",
+		async (stateType, startedAt, outcome) => {
+			linearSdk.issue.mockResolvedValue({
+				startedAt,
+				state: Promise.resolve({
+					id: stateType,
+					name: stateType,
+					type: stateType,
+				}),
+				team: Promise.resolve(undefined),
+			});
+			const sink = new DirectEventSink(
+				store,
+				makeConfig({ linearApiKey: "k" }),
+				testProjects,
+			);
+
+			await sink.emitStarted(makeEnvelope());
+
+			expect(linearSdk.updateIssue).not.toHaveBeenCalled();
+			expect(startOutcomes()).toHaveLength(1);
+			expect(startOutcomes()[0]?.payload).toEqual({
+				issueId: "issue-1",
+				executionId: "exec-1",
+				outcome,
+			});
+		},
+	);
+
+	it("persists only a stable error class when the Linear SDK fails", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		linearSdk.issue.mockRejectedValue(
+			new TypeError("secret GraphQL body from https://linear.example"),
+		);
+		const sink = new DirectEventSink(
+			store,
+			makeConfig({ linearApiKey: "k" }),
+			testProjects,
+		);
+
+		await expect(sink.emitStarted(makeEnvelope())).resolves.toBeUndefined();
+
+		expect(startOutcomes()).toHaveLength(1);
+		expect(startOutcomes()[0]?.payload).toEqual({
+			issueId: "issue-1",
+			executionId: "exec-1",
+			outcome: "failed",
+			errorClass: "TypeError",
+		});
+		expect(JSON.stringify(startOutcomes()[0]?.payload)).not.toContain("secret");
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("secret GraphQL"),
+		);
+	});
+
+	it("times out without failing the already-running session", async () => {
+		vi.useFakeTimers();
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+		linearSdk.issue.mockReturnValue(new Promise(() => undefined));
+		const sink = new DirectEventSink(
+			store,
+			makeConfig({ linearApiKey: "k" }),
+			testProjects,
+		);
+
+		const emitted = sink.emitStarted(makeEnvelope());
+		await vi.advanceTimersByTimeAsync(15_000);
+		await expect(emitted).resolves.toBeUndefined();
+
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(startOutcomes()[0]?.payload).toMatchObject({
+			outcome: "failed",
+			errorClass: "linear_start_timeout",
+		});
+	});
+
+	it("still notifies and starts exactly once when a post-upsert tail step throws", async () => {
+		mockBacklogIssue();
+		const { registry, delivered } = captureRegistry();
+		vi.spyOn(store, "getSessionParams").mockImplementation(() => {
+			throw new Error("post-upsert tail failed");
+		});
+		const sink = new DirectEventSink(
+			store,
+			makeConfig({ linearApiKey: "k" }),
+			testProjects,
+			undefined,
+			registry,
+		);
+
+		await expect(sink.emitStarted(makeEnvelope())).rejects.toThrow(
+			"post-upsert tail failed",
+		);
+		await sink.flush();
+
+		expect(store.getSession("exec-1")?.status).toBe("running");
+		expect(delivered).toEqual(["session_started"]);
+		expect(linearSdk.updateIssue).toHaveBeenCalledOnce();
+		expect(startOutcomes()).toHaveLength(1);
 	});
 });
 

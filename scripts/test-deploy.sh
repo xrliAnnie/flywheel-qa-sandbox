@@ -1778,6 +1778,7 @@ EOF
     BRIDGE_EXTRA_ENV+=("${XTOKEN_ENV_NAME}=${!XTOKEN_ENV_NAME}")
   done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
 fi
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 
 # ── Step 3: Start test Bridge (file-backed DB, real-Runner env) ──

@@ -46,6 +46,13 @@ const ENV_EXEMPTIONS = [
 		"the reconciliation harness accepts an injected policy",
 	],
 	[
+		"FLYWHEEL_LINEAR_STARTED_SYNC",
+		"FLY-2293",
+		"qa_isolation",
+		"isolated Bridge seam for disabling Linear started-state writes",
+		"the Bridge starter accepts an injected policy",
+	],
+	[
 		"FLYWHEEL_VOICE_QA_PRESENCE_OVERRIDE",
 		"FLY-2102",
 		"qa_isolation",

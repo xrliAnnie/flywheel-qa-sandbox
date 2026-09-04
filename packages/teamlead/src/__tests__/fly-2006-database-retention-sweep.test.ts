@@ -288,13 +288,13 @@ describe("FLY-2006 retention registry", () => {
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(167);
+		expect(new Set(teamleadNames).size).toBe(168);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(27);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 167,
+			total: 168,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -303,7 +303,7 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 164 });
+		).toMatchObject({ total: 165 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 27,
 		});
