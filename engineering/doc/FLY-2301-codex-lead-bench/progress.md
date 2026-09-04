@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 1/3
-updated: 2026-09-04T00:14:55.243Z
-nextStep: Add CAS conflict, exclusive lease, positive source allowlist, and
-  production-home negative guards
+phaseCursor: 2/3
+updated: 2026-09-04T00:43:37.671Z
+nextStep: Update playbook and PR boundaries; rerun hermetic lifecycle, exact
+  gates, fresh code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (1/3)
-**next**: Add CAS conflict, exclusive lease, positive source allowlist, and production-home negative guards
+**phase**: implement (2/3)
+**next**: Update playbook and PR boundaries; rerun hermetic lifecycle, exact gates, fresh code review
