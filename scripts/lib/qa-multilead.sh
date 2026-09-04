@@ -24,7 +24,7 @@ qa_multilead_validate_lead_shape() {
 			printf '{}\n'
 			;;
 		codex-app-server)
-			if [[ -z "$codex_source_home" ]]; then
+			if [[ -n "$codex_source_home" ]]; then
 				echo "[qa-multilead] codexSourceHome" >&2
 				return 1
 			fi
@@ -33,9 +33,8 @@ qa_multilead_validate_lead_shape() {
 				companion|full-access) ;;
 				*) echo "[qa-multilead] codexProfile" >&2; return 1 ;;
 			esac
-			jq -cn --arg backend "$backend" --arg source "$codex_source_home" \
-				--arg profile "$codex_profile" \
-				'{backend:$backend,codexSourceHome:$source,codexProfile:$profile}'
+			jq -cn --arg backend "$backend" --arg profile "$codex_profile" \
+				'{backend:$backend,codexProfile:$profile}'
 			;;
 		*)
 			echo "[qa-multilead] backend" >&2

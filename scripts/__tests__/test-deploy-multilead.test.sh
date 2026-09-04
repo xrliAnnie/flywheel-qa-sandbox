@@ -69,7 +69,7 @@ cat >"$SLOTS" <<'JSON'
     {"id":2,"bridgePort":19872,"botName":"flywheel-test-2","tokenEnvVar":"TEST_BOT_TOKEN_2","botAppId":"222","channelId":"chan-2","role":"lead","identitySource":"product-lead"},
     {"id":3,"bridgePort":19873,"botName":"flywheel-test-3","tokenEnvVar":"TEST_BOT_TOKEN_3","botAppId":"333","channelId":"chan-3","role":"lead","identitySource":"ops-lead"},
     {"id":4,"bridgePort":19874,"botName":"flywheel-test-4","tokenEnvVar":"TEST_BOT_TOKEN_4","botAppId":"","channelId":"chan-4","role":"lead"},
-    {"id":5,"bridgePort":19875,"botName":"flywheel-test-5","tokenEnvVar":"TEST_BOT_TOKEN_5","botAppId":"555","channelId":"chan-5","role":"lead","backend":"codex-app-server","codexSourceHome":"/tmp/codex-qa","codexProfile":"full-access"}
+    {"id":5,"bridgePort":19875,"botName":"flywheel-test-5","tokenEnvVar":"TEST_BOT_TOKEN_5","botAppId":"555","channelId":"chan-5","role":"lead","backend":"codex-app-server","codexProfile":"full-access"}
   ]
 }
 JSON
@@ -79,8 +79,8 @@ SHAPE_OK=1
 for tuple in \
   '|||{}' \
   'claude-code|||{}' \
-  'codex-app-server|/tmp/codex-qa||{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-qa","codexProfile":"companion"}' \
-  'codex-app-server|/tmp/codex-qa|full-access|{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-qa","codexProfile":"full-access"}'; do
+  'codex-app-server|||{"backend":"codex-app-server","codexProfile":"companion"}' \
+  'codex-app-server||full-access|{"backend":"codex-app-server","codexProfile":"full-access"}'; do
   IFS='|' read -r backend source_home profile expected <<<"$tuple"
   actual=$(qa_multilead_validate_lead_shape "$backend" "$source_home" "$profile" 2>"$TMP/shape.err") \
     || { SHAPE_OK=0; fail "shape validator rejected a valid ${backend:-default} tuple"; continue; }
@@ -90,7 +90,7 @@ done
 for tuple in \
   'claude-code|/tmp/orphan|' \
   '||companion' \
-  'codex-app-server||companion' \
+  'codex-app-server|/tmp/codex-qa|companion' \
   'codex-app-server|/tmp/codex-qa|write-capable' \
   'unknown||'; do
   IFS='|' read -r backend source_home profile <<<"$tuple"
@@ -228,8 +228,8 @@ done
 [[ "$B1_OK" == "1" ]] && pass "B1: --extra-lead → exactly 2 leads, all fields correct"
 
 # ── FLY-2301 B1c: carrier shape projects projection ──
-CODEX_MAIN_SHAPE='{"backend":"codex-app-server","codexSourceHome":"/tmp/codex-main","codexProfile":"full-access"}'
-CODEX_EXTRAS='[{"slotId":5,"agentId":"flywheel-test-5","botAppId":"555","tokenEnvVar":"TEST_BOT_TOKEN_5","chatChannel":"chan-5","role":"lead","identitySource":"product-lead","deptLabel":"Cloud-Test","labels":["Cloud-Test"],"backend":"codex-app-server","codexSourceHome":"/tmp/codex-extra","codexProfile":"companion"}]'
+CODEX_MAIN_SHAPE='{"backend":"codex-app-server","codexProfile":"full-access"}'
+CODEX_EXTRAS='[{"slotId":5,"agentId":"flywheel-test-5","botAppId":"555","tokenEnvVar":"TEST_BOT_TOKEN_5","chatChannel":"chan-5","role":"lead","identitySource":"product-lead","deptLabel":"Cloud-Test","labels":["Cloud-Test"],"backend":"codex-app-server","codexProfile":"companion"}]'
 codex_out=$(qa_multilead_build_projects test-slot-2 /tmp/hr repo flywheel-test-2 chan-2 \
   TEST_BOT_TOKEN_2 lead '["Product-Test"]' "$CODEX_EXTRAS" 222 /tmp/qa/discord-state \
   "$CODEX_MAIN_SHAPE")
@@ -337,7 +337,7 @@ else
   C2_OK=0; fail "C2: valid slot 3 should resolve"
 fi
 if f="$(qa_multilead_slot_fields "$SLOTS" 5 2>/dev/null)"; then
-  jq -e '.backend == "codex-app-server" and .codexSourceHome == "/tmp/codex-qa" and .codexProfile == "full-access"' \
+  jq -e '.backend == "codex-app-server" and (has("codexSourceHome") | not) and .codexProfile == "full-access"' \
     >/dev/null 2>&1 <<<"$f" || { C2_OK=0; fail "C2: Codex slot shape fields wrong: $f"; }
 else
   C2_OK=0; fail "C2: valid Codex slot should resolve"
