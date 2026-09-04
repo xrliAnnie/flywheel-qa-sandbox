@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 3/3
-updated: 2026-09-04T08:44:07.117Z
-nextStep: Update milestone as literal last commit, push review fixes, and
-  request a fresh exact-head code review
+phaseCursor: 0/3
+updated: 2026-09-04T10:27:31.251Z
+nextStep: Add a public-CLI regression for relative standalone symlink
+  preservation and capture RED against the 0ba338cc implementation
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (3/3)
-**next**: Update milestone as literal last commit, push review fixes, and request a fresh exact-head code review
+**phase**: implement (0/3)
+**next**: Add a public-CLI regression for relative standalone symlink preservation and capture RED against the 0ba338cc implementation
