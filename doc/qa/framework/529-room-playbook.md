@@ -74,16 +74,36 @@ Codex-converged 行由载体字段直接声明，不另加命令行开关：
 `codexSourceHome` 只提供已登录的 `auth.json` 和 standalone release；起房会
 把它们事务性复制到 `/tmp/flywheel-test-slot-4/cdxh/<agentId>`。运行中的
 `CODEX_HOME`、state、daemon socket、projects、wrapper env 和 tmux socket
-必须全部留在 slot 内，生产的 `.codex-mufasa`、`.codex-infra-bot` 与
-`.flywheel/raya/codex-home` 会在创建 Lead artifact 前被拒绝。起房前先验证
-source home 本身：
+必须全部留在 slot 内。真实用户目录只允许精确的 `~/.codex-259-qa`；所有
+其它 home（包括 `.codex-mufasa-med3`）都会在创建 Lead artifact 前被拒绝。
+测试代码另有一条精确命名的 `/tmp/flywheel-test-codex-fixture-N/.codex-259-qa`
+fixture 路径类。
+
+起房会先独占 source credential lease，再执行有界的真实 daemon start/stop；
+`codex login status` 只检查本地形状，无法识别已经消费过的 refresh token，
+不能作为前置验收。手工诊断时也必须实际 start/stop（确认没有房持有该
+source lease）：
 
 ```bash
 test -f ~/.codex-259-qa/auth.json
 test -x ~/.codex-259-qa/packages/standalone/current/codex
 CODEX_HOME="$HOME/.codex-259-qa" \
-  ~/.codex-259-qa/packages/standalone/current/codex login status
+  ~/.codex-259-qa/packages/standalone/current/codex remote-control start --json
+CODEX_HOME="$HOME/.codex-259-qa" \
+  ~/.codex-259-qa/packages/standalone/current/codex remote-control stop --json
+test ! -S ~/.codex-259-qa/app-server-control/app-server-control.sock
 ```
+
+daemon 预检可能刷新 `auth.json`，因此铸造快照发生在预检收敛之后。拆房必须
+先收敛 launchd runtime、daemon 与精确 argv 的 updater，再以原始 auth
+快照做 compare-and-swap，把 slot 中刷新的凭据原子写回 source 并释放 lease；
+source 被外部改动时保留现值与 lease、报错且不重试。日志只报告步骤和结果，
+不打印 source 路径或 token 片段。这样同一 source 可以连续起第二间房。
+
+Codex daemon PID 的生产 JSON reader 依赖 Bash >= 4（macOS 需可用的 Homebrew
+Bash，如 `/opt/homebrew/bin/bash`）。只剩系统 Bash 3.2 时 reader 返回 2，
+teardown 会 fail-closed 为 `carrier=codex-tui step=daemon-pid` 并保留房间，
+不会把未证明的收敛当成功。
 
 Codex plist 的 argv 固定为 `/bin/bash <slot-wrapper>`，不带 Claude manifest
 参数。验活同时要求 launchd PID、Node TUI runtime argv、精确 `CODEX_HOME`、
