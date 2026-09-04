@@ -30,6 +30,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LeadConfig } from "../ProjectConfig.js";
 
+// This integration imports the full Bridge plugin graph on its first assertion.
+// Keep the budget above a cold transform so a timed-out import cannot leak into
+// the following assertion and replace its mocked preflight result.
+vi.setConfig({ testTimeout: 15_000 });
+
 // createLeadRuntime mailbox branch only reads `lead.agentId` — keep the
 // fixture minimal and cast through unknown to LeadConfig.
 const baseLeadInput = {

@@ -26,6 +26,7 @@ import {
 	declareState,
 	parseDuration,
 } from "./commands/declare-state.js";
+import { runEpicPage } from "./commands/epic-page.js";
 import { runFeatureFlags } from "./commands/feature-flags.js";
 import { founderTime } from "./commands/founder-time.js";
 import { gate } from "./commands/gate.js";
@@ -171,6 +172,9 @@ Commands:
 	            [--bridge-url <url>]  — copy/paste stage→apply commands. set/clear
 	            --project selects flag scope; report --project selects publishing.
 	            apply remains a set alias. clear is limited to SQLite-managed flags.
+	  epic-page  Generate, inspect, or render an Epic page. Subcommands:
+	            generate | show [--format json|md] | render --out <file>.
+	            Every command recomputes the active Linear scope live.
   founder-time   Print Annie's current local time and timezone. Uses the host
             device timezone by default; --json emits {iso,tz,abbrev,offsetMinutes}.
   runner-config   Per-project runner defaults + cron model (FLY-709). Subcommand:
@@ -362,6 +366,9 @@ async function main(): Promise<void> {
 			break;
 		case "feature-flags":
 			await runFeatureFlags(commandArgs);
+			break;
+		case "epic-page":
+			process.exitCode = await runEpicPage(commandArgs);
 			break;
 		case "founder-time":
 			founderTime(commandArgs);

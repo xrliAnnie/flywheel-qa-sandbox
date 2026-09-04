@@ -261,7 +261,7 @@ describe("FLY-2006 retention registry", () => {
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(36);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(110);
+		).toHaveLength(111);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
 			"flag_scan_scope_state",
 		);
@@ -282,16 +282,19 @@ describe("FLY-2006 retention registry", () => {
 		expect(COMM_TABLE_CLASSIFICATION.protectedCurrentOrAuthority).toEqual(
 			expect.arrayContaining(["mailbox_archive", "runner_stop_declarations"]),
 		);
+		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
+			"epic_page",
+		);
 
 		const teamleadNames = Object.values(TEAMLEAD_TABLE_CLASSIFICATION).flat();
 		const commNames = Object.values(COMM_TABLE_CLASSIFICATION).flat();
-		expect(new Set(teamleadNames).size).toBe(165);
+		expect(new Set(teamleadNames).size).toBe(166);
 		expect(TEAMLEAD_PRODUCTION_TABLES).toEqual([...teamleadNames].sort());
 		expect(new Set(commNames).size).toBe(27);
 		expect(
 			assertClassifiedSchema("teamlead", TEAMLEAD_PRODUCTION_TABLES),
 		).toMatchObject({
-			total: 165,
+			total: 166,
 		});
 		expect(
 			assertClassifiedSchema(
@@ -300,7 +303,7 @@ describe("FLY-2006 retention registry", () => {
 					(name) => !retiredNames.includes(name),
 				),
 			),
-		).toMatchObject({ total: 162 });
+		).toMatchObject({ total: 163 });
 		expect(assertClassifiedSchema("comm", commNames)).toMatchObject({
 			total: 27,
 		});

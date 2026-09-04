@@ -92,6 +92,13 @@ import type {
 } from "./bridge/patrol-loop-ledger.js";
 import { findingKey as deriveReviewFindingKey } from "./bridge/review-verdict-policy.js";
 import {
+	assertEpicPageRenderReceipt,
+	buildEpicPageRenderReceipt,
+	epicPageReceiptSourceDigest,
+	type EpicPageRenderReceipt,
+} from "./epic-page/receipt.js";
+import type { EpicPage } from "./epic-page/model.js";
+import {
 	CMUX_LIVE_SESSION_STATUSES,
 	isOperationalTerminalStatus,
 	OPERATIONAL_TERMINAL_STATUSES,
@@ -125,6 +132,7 @@ import {
 	type WorkflowRunNodeState,
 	ZOMBIE_IRREVERSIBLE_TERMINAL_STATUSES,
 } from "./workflow-ledger-states.js";
+import { workflowNodeDisplayLabel } from "./workflow-display-labels.js";
 import {
 	type WorkflowReplacementNextCheckDisposition,
 	WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS,
@@ -1912,6 +1920,64 @@ export class AdmissionPauseLeaseConflictError extends Error {
 		super("admission pause is owned by another lease");
 		this.name = "AdmissionPauseLeaseConflictError";
 	}
+}
+
+export type EpicPageTrigger = "manual" | "event" | "scan";
+
+export interface EpicPageRenderReceiptRow {
+	version: number;
+	generated_at: string;
+	trigger: EpicPageTrigger;
+	source_digest: string;
+}
+
+export interface EpicPageSessionValue {
+	latest: Array<{
+		status: string;
+		role: string | null;
+		branch: string | null;
+		execution_id8: string;
+	}>;
+	ledger_live_count: number;
+}
+
+export interface EpicPageRunValue {
+	run_id: string;
+	status: "active" | "held";
+	current_node_id: string;
+	current_node_label: string;
+	label_source: "manifest" | "legacy" | "id";
+	template_id: string;
+}
+
+export interface EpicPageAttemptValue {
+	state: string;
+	attempt: number;
+	ledger_open: boolean;
+}
+
+export interface EpicPageLandValue {
+	pr_number: number;
+	state: string;
+	current_step: string | null;
+}
+
+export interface EpicPageFactProjection<T> {
+	value: T;
+	source_updated_at?: string;
+}
+
+export type EpicPageFactRead<T> =
+	| ({ ok: true } & EpicPageFactProjection<T>)
+	| { ok: false; table: string };
+
+export interface EpicItemFacts {
+	session: EpicPageFactRead<EpicPageSessionValue>;
+	run: EpicPageFactRead<EpicPageRunValue[]>;
+	attempt: EpicPageFactRead<EpicPageAttemptValue[]>;
+	gates: EpicPageFactRead<Array<{ state: string }>>;
+	carriers: EpicPageFactRead<Array<{ state: string }>>;
+	land: EpicPageFactRead<EpicPageLandValue[]>;
 }
 
 export class StateStore {
@@ -5006,6 +5072,74 @@ export class StateStore {
 		this.migrateFlagValueStore();
 		this.migrateFlagRetirementScan();
 		this.migrateFly1427TerminalStatusCorrections();
+		this.migrateEpicPage();
+	}
+
+	private migrateEpicPage(): void {
+		const existing = this.workflowTableColumns("epic_page");
+		const legacyRows =
+			existing.size > 0 && !existing.has("receipt")
+				? (this.db.raw
+						.prepare(
+							`SELECT project_name, generated_at, trigger, document
+							   FROM epic_page
+							  ORDER BY project_name, version`,
+						)
+						.all() as Array<{
+						project_name: string;
+						generated_at: string;
+						trigger: EpicPageTrigger;
+						document: string;
+					}>)
+				: [];
+
+		this.db.transaction(() => {
+			if (legacyRows.length > 0 || (existing.size > 0 && !existing.has("receipt"))) {
+				this.db.run("DROP INDEX IF EXISTS idx_epic_page_latest");
+				this.db.run("DROP INDEX IF EXISTS idx_epic_page_project_version");
+				this.db.run("ALTER TABLE epic_page RENAME TO epic_page_fly2140_legacy");
+			}
+			this.db.run(`
+				CREATE TABLE IF NOT EXISTS epic_page (
+					project_name TEXT NOT NULL,
+					version INTEGER NOT NULL CHECK (version > 0),
+					generated_at TEXT NOT NULL,
+					trigger TEXT NOT NULL CHECK (trigger IN ('manual','event','scan')),
+					source_digest TEXT NOT NULL,
+					receipt TEXT NOT NULL,
+					created_at TEXT NOT NULL DEFAULT (datetime('now')),
+					PRIMARY KEY (project_name, version)
+				)
+			`);
+			this.db.run(`
+				CREATE INDEX IF NOT EXISTS idx_epic_page_project_version
+				ON epic_page(project_name, version DESC)
+			`);
+
+			const nextVersion = new Map<string, number>();
+			for (const row of legacyRows) {
+				const document = JSON.parse(row.document) as EpicPage;
+				const receipt = buildEpicPageRenderReceipt(document);
+				const version = (nextVersion.get(row.project_name) ?? 0) + 1;
+				nextVersion.set(row.project_name, version);
+				this.db.run(
+					`INSERT INTO epic_page
+					 (project_name, version, generated_at, trigger, source_digest, receipt)
+					 VALUES (?, ?, ?, ?, ?, ?)`,
+					[
+						row.project_name,
+						version,
+						row.generated_at,
+						row.trigger,
+						epicPageReceiptSourceDigest(receipt),
+						canonicalJsonString(receipt),
+					],
+				);
+			}
+			if (existing.size > 0 && !existing.has("receipt")) {
+				this.db.run("DROP TABLE epic_page_fly2140_legacy");
+			}
+		});
 	}
 
 	/** FLY-1778/2100: scoped current-value rows plus append-only operator audit. */
@@ -9146,6 +9280,240 @@ export class StateStore {
 			kind: row.kind as PatrolLoopGateAuthority["kind"],
 			state: String(row.state),
 		}));
+	}
+
+	insertEpicPageRenderReceipt(input: {
+		projectName: string;
+		trigger: EpicPageTrigger;
+		receipt: EpicPageRenderReceipt;
+	}): { version: number; generated_at: string; source_digest: string } {
+		assertEpicPageRenderReceipt(input.receipt);
+		if (input.receipt.project_name !== input.projectName) {
+			throw new Error("render receipt project does not match storage key");
+		}
+		if (input.receipt.trigger !== input.trigger) {
+			throw new Error("render receipt trigger does not match storage trigger");
+		}
+		const receipt = canonicalJsonString(input.receipt);
+		const digest = epicPageReceiptSourceDigest(input.receipt);
+		let version = 0;
+		this.db.transaction(() => {
+			const allocated = this.workflowSelectAll(
+				`SELECT COALESCE(MAX(version), 0) + 1 AS version
+				   FROM epic_page
+				  WHERE project_name = ?`,
+				[input.projectName],
+			)[0];
+			version = Number(allocated?.version ?? 1);
+			this.db.run(
+				`INSERT INTO epic_page
+				 (project_name, version, generated_at, trigger, source_digest, receipt)
+				 VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					input.projectName,
+					version,
+					input.receipt.generated_at,
+					input.trigger,
+					digest,
+					receipt,
+				],
+			);
+			this.db.run(
+				`DELETE FROM epic_page
+				  WHERE project_name = ? AND version <= ?`,
+				[input.projectName, version - 20],
+			);
+		});
+		this.save();
+		return {
+			version,
+			generated_at: input.receipt.generated_at,
+			source_digest: digest,
+		};
+	}
+
+	getEpicPageSessionFact(
+		projectName: string,
+		keys: string[],
+	): EpicPageFactProjection<EpicPageSessionValue> {
+		const aliases = normalizeIssueKeys(keys);
+		if (aliases.length === 0) {
+			return { value: { latest: [], ledger_live_count: 0 } };
+		}
+		const aliasPlaceholders = aliases.map(() => "?").join(", ");
+		const liveStatuses = [...CMUX_LIVE_SESSION_STATUSES];
+		const livePlaceholders = liveStatuses.map(() => "?").join(", ");
+		const row = this.workflowSelectAll(
+			`WITH matched AS (
+			   SELECT execution_id, status, session_role, branch,
+			          COALESCE(last_activity_at, started_at) AS source_time
+			     FROM sessions
+			    WHERE project_name = ?
+			      AND (issue_id IN (${aliasPlaceholders})
+			           OR issue_identifier IN (${aliasPlaceholders}))
+			 ), latest AS (
+			   SELECT execution_id, status, session_role, branch, source_time
+			     FROM matched
+			    ORDER BY julianday(source_time) DESC, execution_id ASC
+			    LIMIT 1
+			 ), aggregate_fact AS (
+			   SELECT COUNT(*) AS ledger_live_count
+			     FROM matched
+			    WHERE status IN (${livePlaceholders})
+			 )
+			 SELECT latest.execution_id, latest.status, latest.session_role,
+			        latest.branch,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', latest.source_time)
+			          AS source_updated_at,
+			        aggregate_fact.ledger_live_count
+			   FROM aggregate_fact LEFT JOIN latest ON 1 = 1`,
+			[projectName, ...aliases, ...aliases, ...liveStatuses],
+		)[0];
+		const latest =
+			typeof row?.execution_id === "string"
+				? [
+						{
+							status: String(row.status),
+							role:
+								typeof row.session_role === "string"
+									? row.session_role
+									: null,
+							branch: typeof row.branch === "string" ? row.branch : null,
+							execution_id8: row.execution_id.slice(0, 8),
+						},
+					]
+				: [];
+		return {
+			value: {
+				latest,
+				ledger_live_count: Number(row?.ledger_live_count ?? 0),
+			},
+			...(typeof row?.source_updated_at === "string"
+				? { source_updated_at: row.source_updated_at }
+				: {}),
+		};
+	}
+
+	getEpicPageRunFact(
+		projectName: string,
+		keys: string[],
+	): EpicPageFactProjection<EpicPageRunValue[]> {
+		const aliases = normalizeIssueKeys(keys);
+		if (aliases.length === 0) return { value: [] };
+		const placeholders = aliases.map(() => "?").join(", ");
+		const row = this.workflowSelectAll(
+			`SELECT run_id, status, current_node_id, template_id, snapshot,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', created_at) AS source_updated_at
+			   FROM workflow_run
+			  WHERE project_name = ? AND issue_id IN (${placeholders})
+			    AND status IN ('active','held')
+			  ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END,
+			           julianday(created_at) DESC, run_id ASC
+			  LIMIT 1`,
+			[projectName, ...aliases],
+		)[0];
+		if (!row) return { value: [] };
+		const currentNodeId = typeof row.current_node_id === "string" ? row.current_node_id : "";
+		const templateId = typeof row.template_id === "string" ? row.template_id : "";
+		let currentNodeLabel = currentNodeId;
+		let labelSource: EpicPageRunValue["label_source"] = "id";
+		if (typeof row.snapshot === "string") {
+			try {
+				const snapshot = parseWorkflowRunSnapshot(row.snapshot);
+				const node = snapshot.manifest.nodes.find(
+					(candidate) => candidate.id === currentNodeId,
+				);
+				if (node) {
+					currentNodeLabel = workflowNodeDisplayLabel(templateId, node);
+					labelSource = node.label?.trim()
+						? "manifest"
+						: currentNodeLabel === currentNodeId
+							? "id"
+							: "legacy";
+				}
+			} catch {
+				// Corrupt historical snapshots remain visible by stable node id.
+			}
+		}
+		return {
+			value: [
+				{
+					run_id: String(row.run_id),
+					status: row.status as "active" | "held",
+					current_node_id: currentNodeId,
+					current_node_label: currentNodeLabel,
+					label_source: labelSource,
+					template_id: templateId,
+				},
+			],
+			...(typeof row.source_updated_at === "string"
+				? { source_updated_at: row.source_updated_at }
+				: {}),
+		};
+	}
+
+	getEpicPageAttemptFact(
+		runId: string,
+		nodeId: string,
+	): EpicPageFactProjection<EpicPageAttemptValue[]> {
+		const row = this.workflowSelectAll(
+			`SELECT state, attempt,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', COALESCE(ended_at, started_at))
+			          AS source_updated_at
+			   FROM workflow_run_node
+			  WHERE run_id = ? AND node_id = ?
+			  ORDER BY attempt DESC
+			  LIMIT 1`,
+			[runId, nodeId],
+		)[0];
+		if (!row) return { value: [] };
+		const state = String(row.state);
+		return {
+			value: [
+				{
+					state,
+					attempt: Number(row.attempt),
+					ledger_open:
+						state === "pending" ||
+						state === "admitted" ||
+						state === "running" ||
+						state === "review",
+				},
+			],
+			...(typeof row.source_updated_at === "string"
+				? { source_updated_at: row.source_updated_at }
+				: {}),
+		};
+	}
+
+	getEpicPageLandFact(
+		projectName: string,
+		keys: string[],
+	): EpicPageFactProjection<EpicPageLandValue[]> {
+		const aliases = normalizeIssueKeys(keys);
+		if (aliases.length === 0) return { value: [] };
+		const placeholders = aliases.map(() => "?").join(", ");
+		const rows = this.workflowSelectAll(
+			`SELECT pr_number, state, current_step,
+			        strftime('%Y-%m-%dT%H:%M:%SZ', updated_at) AS source_updated_at
+			   FROM land_operation
+			  WHERE project_name = ? AND issue_id IN (${placeholders})
+			    AND state != 'completed' AND superseded_at IS NULL
+			  ORDER BY julianday(updated_at) DESC, operation_id ASC`,
+			[projectName, ...aliases],
+		);
+		if (rows.length === 0) return { value: [] };
+		return {
+			value: rows.map((row) => ({
+					pr_number: Number(row.pr_number),
+					state: String(row.state),
+					current_step:
+						typeof row.current_step === "string" ? row.current_step : null,
+				})),
+			...(typeof rows[0]?.source_updated_at === "string"
+				? { source_updated_at: rows[0].source_updated_at }
+				: {}),
+		};
 	}
 
 	getActivePhaseSessionForIssue(issueId: string): Session | undefined {
@@ -62876,6 +63244,107 @@ function mapPatrolOrphanWatch(
 		intervalMs: Number(row.interval_ms),
 		lastAlertAt:
 			row.last_alert_at == null ? null : Number(row.last_alert_at),
+	};
+}
+
+export function readEpicItemFacts(
+	store: StateStore,
+	projectName: string,
+	child: { uuid: string; identifier: string },
+): EpicItemFacts {
+	const keys = [child.uuid, child.identifier];
+	const failed = (table: string): { ok: false; table: string } => ({
+		ok: false,
+		table,
+	});
+	const read = <T>(
+		table: string,
+		operation: () => EpicPageFactProjection<T>,
+	): EpicPageFactRead<T> => {
+		try {
+			return { ok: true, ...operation() };
+		} catch (error) {
+			console.error(
+				`[EpicPage] StateStore projection failed (${table}):`,
+				error instanceof Error ? error.message : String(error),
+			);
+			return failed(table);
+		}
+	};
+
+	const session = read("sessions", () =>
+		store.getEpicPageSessionFact(projectName, keys),
+	);
+	const land = read("land_operation", () =>
+		store.getEpicPageLandFact(projectName, keys),
+	);
+	const run = read("workflow_run", () =>
+		store.getEpicPageRunFact(projectName, keys),
+	);
+	if (!run.ok) {
+		return {
+			session,
+			run,
+			attempt: failed("workflow_run_node"),
+			gates: failed("workflow_gate_holder"),
+			carriers: failed("workflow_carrier_delivery"),
+			land,
+		};
+	}
+
+	const activeRun = run.value[0];
+	if (!activeRun) {
+		return {
+			session,
+			run,
+			attempt: { ok: true, value: [] },
+			gates: { ok: true, value: [] },
+			carriers: { ok: true, value: [] },
+			land,
+		};
+	}
+
+	const attempt = read("workflow_run_node", () =>
+		store.getEpicPageAttemptFact(
+			activeRun.run_id,
+			activeRun.current_node_id,
+		),
+	);
+	let authorities: PatrolLoopGateAuthority[];
+	try {
+		authorities = store.listOpenGateAuthorities(activeRun.run_id);
+	} catch (error) {
+		console.error(
+			"[EpicPage] StateStore projection failed (workflow gate authorities):",
+			error instanceof Error ? error.message : String(error),
+		);
+		return {
+			session,
+			run,
+			attempt,
+			gates: failed("workflow_gate_holder"),
+			carriers: failed("workflow_carrier_delivery"),
+			land,
+		};
+	}
+
+	return {
+		session,
+		run,
+		attempt,
+		gates: {
+			ok: true,
+			value: authorities
+				.filter((authority) => authority.kind === "gate")
+				.map((authority) => ({ state: authority.state })),
+		},
+		carriers: {
+			ok: true,
+			value: authorities
+				.filter((authority) => authority.kind === "carrier")
+				.map((authority) => ({ state: authority.state })),
+		},
+		land,
 	};
 }
 

@@ -1,0 +1,11 @@
+  <p class="note">五轮均由独立的 Codex(xhigh)对着本仓库源码与 PRD 逐条核 plan/research;每条我都回源码复核后才接受或反驳。发现条数 <b>11 → 9 → 9 → 2 → 0</b>(第四、五轮为 Lead 授权的范围写死复核轮,第五轮 APPROVED)。全程没有为了过审新增机制:多数修正是删掉派生字段、统一表达、把「独立失败」这类过强承诺写实。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:8%">轮</th><th style="width:18%">结论</th><th>抓到了什么 / 我怎么处置</th></tr>
+    <tr><td><b>1</b></td><td><span class="badge no">要改</span>3 BLOCKER / 5 HIGH / 3 MEDIUM</td><td>执行事实混在一格、digest 自指、Linear 嵌套连接会静默截断、项目边界只核前缀、not-found 被当成上游故障、「现在可以开始的」在信息缺失时会放行、中文「验收」标题的正则实测匹配不到、存储层读法与真实接口不符、持久化叙述过时、环的下游被误点成环、文档超限没有状态码。<b>10 条采纳;1 条部分采纳</b>——它断言单次查询必超 Linear 的 10,000 复杂度上限,我对真 API 实测两种形状都返回 200、成本 187 / 104,所以只采纳「嵌套连接要带分页信息」这一半。</td></tr>
+    <tr><td><b>2</b></td><td><span class="badge no">要改</span>1 BLOCKER / 3 HIGH / 5 MEDIUM</td><td>空集合没有出处与时间、只看最新一行会漏掉旧的活执行体、标签超过一页会误拒合法 Epic、缺项目名时不报错、库里的时间格式过不了守卫、「纯函数」与回调自相矛盾、真数据验收写死了答案、按编号查版本的键域不闭合、Markdown 表格没转义。<b>9 条全部采纳</b>,其中两处按「只删不加」收:删掉派生的「已解除」字段与合成的「做完」格。</td></tr>
+    <tr><td><b>3</b></td><td><span class="badge no">要改</span>2 BLOCKER / 3 HIGH / 3 MEDIUM / 1 LOW</td><td><code>null</code> 一词两义、「做完的定义」只活在渲染层、嵌套时间键绕过守卫又污染 digest、<code>last_error</code> 会把本机路径带上页面、六格「独立失败」是过强承诺、混合时间格式排序会选错行、渲染测试证不到四问都在页上、256KB 冻结又可调、缺一条零写入测试。<b>9 条全部采纳</b>:删嵌套时间、删 <code>last_error</code>、加唯一的「做完定义」格、失败传播写实、常量改由实测选定。</td></tr>
+    <tr><td><b>4</b></td><td><span class="badge maybe">复核轮</span>7 项已解决 / 2 项残留</td><td>Lead 授权只复核上一轮 9 处修正。残留:失败载荷在两份文档里一处写 <code>error</code> 一处写 <code>table</code>;渲染测试没有枚举全部格路径。两处均为文本一致性,已统一。</td></tr>
+    <tr><td><b>5</b></td><td><span class="badge do">APPROVED</span>ready to implement</td><td>只复核那两处:载荷统一为 <code>{ok:false, table}</code>、渲染门枚举 9 + 14 条格路径。plan blob <code>76d17168</code>,与 Bridge 第 5 版 manifest 一致,<code>await-codex-gate design</code> 已过。</td></tr>
+  </table>
+  </div>

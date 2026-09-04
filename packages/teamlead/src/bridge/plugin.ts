@@ -269,6 +269,7 @@ import {
 	shouldReportDeadLetteredDrain,
 } from "./drained-alert-routing.js";
 import { EventFilter } from "./EventFilter.js";
+import { createEpicPageRouter } from "./epic-page-route.js";
 import {
 	EventLoopAttribution,
 	type EventLoopHealthSnapshot,
@@ -4139,6 +4140,18 @@ export function createBridgeApp(
 			}
 		},
 	);
+
+	if (config.apiToken) {
+		app.use(
+			"/api/epic-page",
+			tokenAuthMiddleware(config.apiToken, config.geminiAgentToken),
+			createEpicPageRouter({
+				store,
+				projects,
+				linearApiKey: config.linearApiKey,
+			}),
+		);
+	}
 
 	const workflowRunCollector = transitionOpts
 		? createWorkflowRunCollector(store, transitionOpts)
