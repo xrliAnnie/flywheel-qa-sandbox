@@ -15,6 +15,13 @@ set -a
 source "$ENV_FILE"
 set +a
 
+while IFS= read -r host_tmux_env_name; do
+  case "$host_tmux_env_name" in
+    FLYWHEEL_HOST_TMUX_*) unset "$host_tmux_env_name" ;;
+  esac
+done < <(compgen -v)
+unset host_tmux_env_name
+
 export PATH="${HOME}/.local/bin:${HOME}/.npm-global/bin:/opt/homebrew/bin:/usr/local/bin:${PATH}"
 
 HOST_TMUX_TARGET_SHA="$(/usr/bin/git -C "$FLYWHEEL_DIR" rev-parse --verify HEAD 2>/dev/null || true)"

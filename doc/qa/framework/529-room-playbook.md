@@ -110,6 +110,13 @@ lease 保留表示收敛或凭据一致性尚未证明，不是可忽略的脏�
 daemon、精确 argv updater 与私有 tmux 都被独立证明不存在时，才能删除 lease 的
 `owner` 后 `rmdir ~/.codex-259-qa/.flywheel-qa-auth-lease`。任一证据不确定就保留。
 
+**明示决定：**一旦 slot 写入 launch-attempt marker，teardown 的 updater census
+为零也必须保留 lease 并 fail-closed。零匹配不能证明「从未启动」：runtime 可能
+在 updater 发布身份前退出，或现存 updater 的 argv / `CODEX_HOME` 已漂移而未被
+安全归属。此时释放 lease 会向下一间房错误宣告 credential source 已空闲，使两个
+未收敛生命周期共享同一 source。只有没有 launch-attempt marker 的已铸造条目，才
+可在其它缺席证据全部成立后走未启动回收路径释放 lease。
+
 Codex daemon PID 的生产 JSON reader 依赖 Bash >= 4（macOS 需可用的 Homebrew
 Bash，如 `/opt/homebrew/bin/bash`）。只剩系统 Bash 3.2 时 reader 返回 2，
 teardown 会 fail-closed 为 `carrier=codex-tui step=daemon-pid` 并保留房间，

@@ -129,6 +129,63 @@ if python3 "$renderer" render --template "$template" --output "$rendered_wrapper
 else
   fail "Codex slot wrapper renderer"
 fi
+
+wrapper_scrub_root="$TMP/wrapper-scrub-root"
+wrapper_scrub_state="$TMP/wrapper-scrub-state"
+wrapper_scrub_calls="$TMP/wrapper-scrub.calls"
+mkdir -p "$wrapper_scrub_root/scripts" \
+  "$wrapper_scrub_root/packages/teamlead/scripts" "$wrapper_scrub_state"
+cat > "$wrapper_scrub_root/scripts/host-tmux-selection-gate.sh" <<'SCRUB_GATE'
+#!/bin/bash
+set -euo pipefail
+for name in \
+  FLYWHEEL_HOST_TMUX_GATE_TEST_MODE \
+  FLYWHEEL_HOST_TMUX_POST_S1_PATH \
+  FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH \
+  FLYWHEEL_HOST_TMUX_FILE_BIN \
+  FLYWHEEL_HOST_TMUX_HOST_ID \
+  FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY \
+  FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH \
+  FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS \
+  FLYWHEEL_HOST_TMUX_FUTURE_FIXTURE; do
+  if /usr/bin/env | /usr/bin/grep -q "^${name}="; then
+    printf 'leaked:%s\n' "$name" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
+    exit 91
+  fi
+done
+printf '%s:%s\n' "$1" "$2" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
+SCRUB_GATE
+cat > "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh" <<'SCRUB_LEAD'
+#!/bin/bash
+printf 'lead:%s:%s:%s\n' "$1" "$2" "$3" >> "$FLY1663_WRAPPER_SCRUB_CALLS"
+SCRUB_LEAD
+chmod +x "$wrapper_scrub_root/scripts/host-tmux-selection-gate.sh" \
+  "$wrapper_scrub_root/packages/teamlead/scripts/codex-lead.sh"
+cat > "$wrapper_scrub_state/.env" <<SCRUB_ENV
+FLYWHEEL_DIR='$wrapper_scrub_root'
+FLYWHEEL_STATE_DIR='$wrapper_scrub_state'
+FLYWHEEL_HOST_TMUX_GATE_TEST_MODE='1'
+FLYWHEEL_HOST_TMUX_POST_S1_PATH='/tmp/host-fixture'
+FLYWHEEL_HOST_TMUX_EXPECTED_CANONICAL_PATH='/tmp/host-tmux'
+FLYWHEEL_HOST_TMUX_FILE_BIN='/tmp/file-fixture'
+FLYWHEEL_HOST_TMUX_HOST_ID='host-fixture'
+FLYWHEEL_HOST_TMUX_GATE_APPLICABILITY='applicable'
+FLYWHEEL_HOST_TMUX_GATE_NOW_EPOCH='1'
+FLYWHEEL_HOST_TMUX_GATE_TTL_SECONDS='999999'
+FLYWHEEL_HOST_TMUX_FUTURE_FIXTURE='must-not-leak'
+SCRUB_ENV
+if FLYWHEEL_DIR="$wrapper_scrub_root" \
+    FLYWHEEL_STATE_DIR="$wrapper_scrub_state" \
+    FLY1663_WRAPPER_SCRUB_CALLS="$wrapper_scrub_calls" \
+    /bin/bash "$rendered_wrapper" \
+    && printf '%s\n' 'gate:codex-tui' 'verify:codex-tui' \
+      "lead:qa-lead:$workspace:test-slot-7" \
+      | cmp -s - "$wrapper_scrub_calls"; then
+  pass "Codex slot wrapper scrubs inherited host-tmux fixture controls before its gate"
+else
+  fail "Codex slot wrapper host-tmux environment scrub"
+fi
+
 mkdir -p "$TMP/space dir"
 ln -s "$workspace" "$TMP/workspace-link"
 renderer_negatives=0
