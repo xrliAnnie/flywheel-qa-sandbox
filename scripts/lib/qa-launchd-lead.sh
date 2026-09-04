@@ -220,7 +220,7 @@ qa_launchd_codex_source_preflight() {
   qa_launchd_wait_process_gone "$daemon_pid" "$daemon_incarnation" \
     || cleanup_failed=1
   qa_launchd_wait_path_gone "$daemon_socket" || cleanup_failed=1
-  qa_launchd_stop_codex_updaters "$codex_bin"
+  qa_launchd_stop_codex_updaters "$codex_bin" "$source"
   updater_rc=$?
   case "$updater_rc" in
     0|"$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND") ;;
@@ -1126,9 +1126,10 @@ qa_launchd_read_codex_daemon_pid() {
 }
 
 qa_launchd_codex_updater_pids() {
-  local codex_bin="$1" processes
+  local codex_bin="$1" codex_home="$2" processes candidates pid probe_rc failed=0
+  qa_launchd_require_absolute "$codex_home" || return 1
   processes=$(LC_ALL=C ps -ww -axo pid=,command= 2>/dev/null) || return 1
-  python3 -c '
+  candidates=$(python3 -c '
 import os
 from pathlib import Path
 import re
@@ -1155,11 +1156,27 @@ for raw in sys.stdin:
         continue
     if actual == expected:
         print(match.group(1))
-' "$codex_bin" <<<"$processes"
+' "$codex_bin" <<<"$processes") || return 1
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    if qa_launchd_process_env_has "$pid" CODEX_HOME "$codex_home" \
+        >/dev/null 2>&1; then
+      probe_rc=0
+    else
+      probe_rc=$?
+    fi
+    case "$probe_rc" in
+      0) printf '%s\n' "$pid" ;;
+      1) ;;
+      *) failed=1 ;;
+    esac
+  done <<<"$candidates"
+  [[ "$failed" == 0 ]]
 }
 
 qa_launchd_codex_updater_matches() {
-  local pid="$1" codex_bin="$2" command
+  local pid="$1" codex_bin="$2" codex_home="$3" command
+  qa_launchd_require_absolute "$codex_home" || return 1
   [[ "$pid" =~ ^[1-9][0-9]*$ ]] || return 1
   command=$(LC_ALL=C ps -ww -o command= -p "$pid" 2>/dev/null) || return 1
   python3 -c '
@@ -1179,25 +1196,28 @@ try:
 except OSError:
     raise SystemExit(1)
 raise SystemExit(0 if actual == expected else 1)
-' "$codex_bin" <<<"$command"
+' "$codex_bin" <<<"$command" \
+    && qa_launchd_process_env_has "$pid" CODEX_HOME "$codex_home"
 }
 
 qa_launchd_stop_codex_updaters() {
-  local codex_bin="$1" pids pid incarnation observed remaining failed=0
-  pids=$(qa_launchd_codex_updater_pids "$codex_bin") || return 1
+  local codex_bin="$1" codex_home="$2" pids pid incarnation observed remaining failed=0
+  pids=$(qa_launchd_codex_updater_pids "$codex_bin" "$codex_home") || return 1
   [[ -n "$pids" ]] || return "$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND"
   while IFS= read -r pid; do
     [[ -n "$pid" ]] || continue
     incarnation=$(qa_launchd_process_incarnation "$pid") || { failed=1; continue; }
-    qa_launchd_codex_updater_matches "$pid" "$codex_bin" || { failed=1; continue; }
+    qa_launchd_codex_updater_matches "$pid" "$codex_bin" "$codex_home" \
+      || { failed=1; continue; }
     observed=$(qa_launchd_process_incarnation "$pid") || { failed=1; continue; }
     [[ "$observed" == "$incarnation" ]] || { failed=1; continue; }
-    qa_launchd_codex_updater_matches "$pid" "$codex_bin" || { failed=1; continue; }
+    qa_launchd_codex_updater_matches "$pid" "$codex_bin" "$codex_home" \
+      || { failed=1; continue; }
     kill -TERM -- "$pid" 2>/dev/null || true
     if ! qa_launchd_wait_process_gone "$pid" "$incarnation"; then
       observed=$(qa_launchd_process_incarnation "$pid" || true)
       if [[ "$observed" != "$incarnation" ]] \
-          || ! qa_launchd_codex_updater_matches "$pid" "$codex_bin"; then
+          || ! qa_launchd_codex_updater_matches "$pid" "$codex_bin" "$codex_home"; then
         failed=1
         continue
       fi
@@ -1205,7 +1225,7 @@ qa_launchd_stop_codex_updaters() {
       qa_launchd_wait_process_gone "$pid" "$incarnation" || failed=1
     fi
   done <<<"$pids"
-  remaining=$(qa_launchd_codex_updater_pids "$codex_bin") || return 1
+  remaining=$(qa_launchd_codex_updater_pids "$codex_bin" "$codex_home") || return 1
   [[ -z "$remaining" ]] || failed=1
   [[ "$failed" == 0 ]]
 }
@@ -1383,7 +1403,7 @@ qa_launchd_stop_codex_entry() {
     qa_launchd_err "carrier=codex-tui step=daemon-converge"
     failed=1
   fi
-  qa_launchd_stop_codex_updaters "$codex_bin"
+  qa_launchd_stop_codex_updaters "$codex_bin" "$codex_home"
   updater_rc=$?
   case "$updater_rc" in
     0) ;;

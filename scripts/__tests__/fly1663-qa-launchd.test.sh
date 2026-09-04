@@ -1033,7 +1033,7 @@ kill() {
   printf '%s\n' "$*" >> "$updater_drift_kills"
   return 1
 }
-qa_launchd_stop_codex_updaters "$codex_bin"
+qa_launchd_stop_codex_updaters "$codex_bin" "$mint_dest"
 updater_drift_rc=$?
 if [[ "$updater_drift_rc" == 3 && ! -s "$updater_drift_kills" ]]; then
   pass "Codex updater cleanup distinguishes argv drift from successful convergence"
@@ -1041,6 +1041,34 @@ else
   fail "Codex updater cleanup zero-match vacuity"
 fi
 unset -f ps kill
+
+shared_binary_candidates="$TMP/shared-binary-candidates"
+shared_binary_rc=0
+/bin/bash -e -c '
+  source "$1"
+  codex_bin="$2"
+  codex_home="$3"
+  ps() {
+    case "$*" in
+      "-ww -axo pid=,command=")
+        printf " 7373 %s app-server daemon pid-update-loop\\n" "$codex_bin"
+        printf " 7474 %s app-server daemon pid-update-loop\\n" "$codex_bin"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  qa_launchd_process_env_has() {
+    [[ "$1" == 7373 && "$2" == CODEX_HOME && "$3" == "$codex_home" ]]
+  }
+  qa_launchd_codex_updater_pids "$codex_bin" "$codex_home"
+' _ "$ROOT/scripts/lib/qa-launchd-lead.sh" "$codex_bin" "$mint_dest" \
+  > "$shared_binary_candidates" || shared_binary_rc=$?
+if [[ "$shared_binary_rc" == 0 \
+    && "$(cat "$shared_binary_candidates")" == 7373 ]]; then
+  pass "Codex updater census binds a shared executable to the exact CODEX_HOME"
+else
+  fail "Codex updater census can select an unrelated home sharing the binary"
+fi
 
 codex_stop_registry="$MINT_SLOT/launchd-leads.json"
 runtime_pid_file="$MINT_SLOT/launchd/qa-lead/pid"
@@ -1095,6 +1123,11 @@ ps() {
     '-ww -o command= -p 6262')
       [[ -f "$updater_state" ]] \
         && printf '%s app-server daemon pid-update-loop\n' "$codex_bin"
+      ;;
+    'eww -p 6262 -o command=')
+      [[ -f "$updater_state" ]] \
+        && printf '%s app-server daemon pid-update-loop CODEX_HOME=%s\n' \
+          "$codex_bin" "$mint_dest"
       ;;
     '-o stat= -p 6262') [[ -f "$updater_state" ]] && printf 'S\n' ;;
     '-o lstart= -p 6262') [[ -f "$updater_state" ]] && printf 'Wed Sep  3 12:00:02 2026\n' ;;

@@ -436,6 +436,7 @@ cat > "$STUB_BIN/ps" <<'EOF'
 set -u
 FORMAT=""
 PID=""
+ENV_WIDE=0
 [[ -z "${FLY1389_PS_LOG:-}" ]] || printf 'argv:%q ' "$@" >> "$FLY1389_PS_LOG"
 [[ -z "${FLY1389_PS_LOG:-}" ]] || printf '\n' >> "$FLY1389_PS_LOG"
 if [[ "$*" == "-ww -axo pid=,command=" ]]; then
@@ -457,7 +458,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -o) FORMAT="${2:?format required}"; shift 2 ;;
     -p) PID="${2:?pid required}"; shift 2 ;;
-    eww) shift ;;
+    eww) ENV_WIDE=1; shift ;;
     *) shift ;;
   esac
 done
@@ -492,8 +493,10 @@ case "$FORMAT" in
       [[ -f "$updater_file" && "$(cat "$updater_file" 2>/dev/null || true)" == "$PID" ]] \
         || continue
       updater_home="${updater_file%/app-server-daemon/updater.pid}"
-      printf '%s app-server daemon pid-update-loop\n' \
+      printf '%s app-server daemon pid-update-loop' \
         "$updater_home/packages/standalone/current/codex"
+      [[ "$ENV_WIDE" == 0 ]] || printf ' CODEX_HOME=%s' "$updater_home"
+      printf '\n'
       exit 0
     done
     if [[ -n "${FLY1389_CODEX_RUNTIME:-}" ]]; then
@@ -1727,11 +1730,11 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
   CXX_UPDATER_CENSUS="$(PATH="$CODEX_CHILD_PATH" FLY1389_CODEX_RUNTIME="$FR/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
     FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
     "$STUB_BIN/ps" -ww -axo pid=,command=)"
-  CXX_MATCHED_UPDATERS="$(while IFS= read -r cxx_bin; do
+  CXX_MATCHED_UPDATERS="$(while IFS=$'\t' read -r cxx_bin cxx_home; do
     PATH="$CODEX_CHILD_PATH" bash -c \
-      'source "$1"; qa_launchd_codex_updater_pids "$2"' _ \
-      "$FR/scripts/lib/qa-launchd-lead.sh" "$cxx_bin"
-  done < <(jq -r '.[].codexBin' "$CXX_DIR/launchd-leads.json"))"
+      'source "$1"; qa_launchd_codex_updater_pids "$2" "$3"' _ \
+      "$FR/scripts/lib/qa-launchd-lead.sh" "$cxx_bin" "$cxx_home"
+  done < <(jq -r '.[] | [.codexBin,.codexHome] | @tsv' "$CXX_DIR/launchd-leads.json"))"
   if jq -e 'type == "array" and length == 2 and all(.[]; .carrier == "codex-tui") and
       ([.[].codexHome] | unique | length) == 2 and
       ([.[].stateDir] | unique | length) == 2 and
