@@ -1,14 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 0/3
-updated: 2026-09-04T00:03:35.563Z
-nextStep: Add F5 second-run RED; resolve safe QA credential lease/CAS write-back
-  shape; implement and reverify
+phaseCursor: 1/3
+updated: 2026-09-04T00:14:55.243Z
+nextStep: Add CAS conflict, exclusive lease, positive source allowlist, and
+  production-home negative guards
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (0/3)
-**next**: Add F5 second-run RED; resolve safe QA credential lease/CAS write-back shape; implement and reverify
+**phase**: implement (1/3)
+**next**: Add CAS conflict, exclusive lease, positive source allowlist, and production-home negative guards
