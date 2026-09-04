@@ -1305,6 +1305,9 @@ async function runRunnerStopped(args: string[]): Promise<void> {
 			turnId: values["turn-id"],
 		});
 		console.log(result.questionId);
+		console.error(
+			`[runner-stopped] status=${result.status} questionId=${result.questionId}`,
+		);
 	} catch (error) {
 		console.error(
 			`runner-stopped: ${error instanceof Error ? error.message : String(error)}`,

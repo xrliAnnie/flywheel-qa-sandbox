@@ -463,15 +463,20 @@ export async function runnerStopped(
 		let reasonDetail:
 			| { reason: RunnerStopReason; detail: string; route?: string }
 			| undefined;
+		let stateKey: string | undefined;
 		if (args.source === "claude-stop-failure" && args.stopFailure) {
 			reasonDetail = failureReason(args.stopFailure);
+			stateKey = `stop_failure\0${args.stopFailure.error.trim() || "unknown"}\0${reasonDetail.reason}`;
 		} else if (breadcrumb) {
 			reasonDetail = completionReason(breadcrumb);
+			stateKey = `completion\0${breadcrumb.completionEventId}\0${breadcrumb.route}\0${breadcrumb.pr ?? "-"}`;
 			usedCompletionBreadcrumb = true;
 		} else if (identity.session?.status === "completed") {
 			reasonDetail = { reason: "done", detail: "session terminal" };
+			stateKey = "session\0completed";
 		} else if (identity.session?.status === "blocked") {
 			reasonDetail = { reason: "blocked", detail: "session blocked" };
+			stateKey = "session\0blocked";
 		} else if (
 			identity.session?.status === "failed" ||
 			identity.session?.status === "timeout"
@@ -480,6 +485,7 @@ export async function runnerStopped(
 				reason: "error",
 				detail: `session ${identity.session.status}`,
 			};
+			stateKey = `session\0${identity.session.status}`;
 		}
 
 		if (!reasonDetail) {
@@ -499,15 +505,19 @@ export async function runnerStopped(
 				lowerBound,
 			);
 			if (pending) {
-				reasonDetail = pending.checkpoint
-					? {
-							reason: "awaiting_approval",
-							detail: `waiting on gate ${pending.id}`,
-						}
-					: {
-							reason: "blocked",
-							detail: `waiting on answer to ${pending.id}`,
-						};
+				if (pending.checkpoint) {
+					reasonDetail = {
+						reason: "awaiting_approval",
+						detail: `waiting on gate ${pending.id}`,
+					};
+					stateKey = `pending_gate\0${pending.id}\0${pending.checkpoint}`;
+				} else {
+					reasonDetail = {
+						reason: "blocked",
+						detail: `waiting on answer to ${pending.id}`,
+					};
+					stateKey = `pending_question\0${pending.id}`;
+				}
 			}
 		}
 
@@ -521,6 +531,7 @@ export async function runnerStopped(
 					reason: "done",
 					detail: `parked${declared.reason ? `: ${declared.reason}` : ""}`,
 				};
+				stateKey = "declared\0parked";
 			}
 		}
 
@@ -528,14 +539,25 @@ export async function runnerStopped(
 			args.lastMessage ??
 			args.stopFailure?.lastAssistantMessage ??
 			transcript.lastAssistantMessage;
-		reasonDetail ??= (args.source === "codex-notify"
-			? codexMessageReason(lastMessage)
-			: undefined) ?? {
-			reason: "blocked",
-			detail: lastMessage
-				? `idle without declared completion: ${lastMessage}`
-				: "idle without declared completion",
-		};
+		if (!reasonDetail) {
+			const classified =
+				args.source === "codex-notify"
+					? codexMessageReason(lastMessage)
+					: undefined;
+			if (classified) {
+				reasonDetail = classified;
+				stateKey = `codex_classification\0${classified.reason}`;
+			} else {
+				reasonDetail = {
+					reason: "blocked",
+					detail: lastMessage
+						? `idle without declared completion: ${lastMessage}`
+						: "idle without declared completion",
+				};
+				stateKey = "fallback\0idle_without_declared_completion";
+			}
+		}
+		if (!stateKey) throw new Error("runner-stopped state key unavailable");
 		const detail = sanitizeDetail(reasonDetail.detail);
 		const route = reasonDetail.route;
 		const content =
@@ -549,6 +571,7 @@ export async function runnerStopped(
 			const declaration = db.recordRunnerStopDeclaration({
 				executionId: args.execId,
 				leadId: identity.leadId,
+				stateKey,
 				content,
 				questionId,
 				derivedAtMs: args.derivedAtMs ?? Date.now(),

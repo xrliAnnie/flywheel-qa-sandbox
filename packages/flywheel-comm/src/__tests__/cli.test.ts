@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -62,6 +62,21 @@ function runCliSafe(
 			exitCode: e.status ?? 1,
 		};
 	}
+}
+
+function runCliCaptured(
+	args: string[],
+	env?: Record<string, string | undefined>,
+): { stdout: string; stderr: string; exitCode: number } {
+	const result = spawnSync("node", [CLI_PATH, ...args], {
+		encoding: "utf-8",
+		env: cliEnv(env),
+	});
+	return {
+		stdout: result.stdout.trim(),
+		stderr: result.stderr.trim(),
+		exitCode: result.status ?? 1,
+	};
 }
 
 describe("CLI", () => {
@@ -149,6 +164,60 @@ describe("CLI", () => {
 		);
 		db.close();
 	}
+
+	describe("runner-stopped", () => {
+		it("keeps qid on stdout and reports sent, duplicate, and stale on stderr", () => {
+			bindDefaultRunner();
+			const runStop = (turnId: string, lastMessage: string) =>
+				runCliCaptured([
+					"runner-stopped",
+					"--db",
+					dbPath,
+					"--exec-id",
+					"runner",
+					"--issue-id",
+					"issue-runner",
+					"--source",
+					"codex-notify",
+					"--ingress-ts",
+					"2026-08-04T12:00:10.000Z",
+					"--turn-id",
+					turnId,
+					"--last-message",
+					lastMessage,
+				]);
+
+			const sent = runStop("status-sent", "wording A");
+			const duplicate = runStop("status-duplicate", "wording B");
+			const db = new CommDB(dbPath);
+			db.recordRunnerStopDeclaration({
+				executionId: "runner",
+				leadId: "product-lead",
+				stateKey: "fallback\0idle_without_declared_completion",
+				content: "future observation",
+				questionId: `rstop-${"f".repeat(32)}`,
+				derivedAtMs: Date.now() + 60_000,
+			});
+			db.close();
+			const stale = runStop("status-stale", "wording C");
+
+			expect([sent.exitCode, duplicate.exitCode, stale.exitCode]).toEqual([
+				0, 0, 0,
+			]);
+			expect(sent.stdout).toMatch(/^rstop-[0-9a-f]{32}$/);
+			expect(duplicate.stdout).toBe(sent.stdout);
+			expect(stale.stdout).toBe(sent.stdout);
+			expect(sent.stderr).toBe(
+				`[runner-stopped] status=sent questionId=${sent.stdout}`,
+			);
+			expect(duplicate.stderr).toBe(
+				`[runner-stopped] status=duplicate questionId=${sent.stdout}`,
+			);
+			expect(stale.stderr).toBe(
+				`[runner-stopped] status=stale questionId=${sent.stdout}`,
+			);
+		});
+	});
 
 	describe("ask", () => {
 		it("should output question ID", () => {
