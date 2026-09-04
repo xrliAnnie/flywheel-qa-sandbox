@@ -1518,6 +1518,15 @@ function makeCapacitySnapshotDeps(
 	};
 }
 
+const LINEAR_ISSUES_QUERY_KEYS = new Set([
+	"project",
+	"state",
+	"labels",
+	"limit",
+	"slim",
+	"projectName",
+]);
+
 export function createBridgeApp(
 	store: StateStore,
 	projects: ProjectEntry[],
@@ -3724,6 +3733,18 @@ export function createBridgeApp(
 		async (req, res) => {
 			if (!config.linearApiKey) {
 				res.status(501).json({ error: "LINEAR_API_KEY not configured" });
+				return;
+			}
+
+			const unsupportedParams = Object.keys(req.query)
+				.filter((key) => !LINEAR_ISSUES_QUERY_KEYS.has(key))
+				.sort();
+			if (unsupportedParams.length > 0) {
+				const noun =
+					unsupportedParams.length === 1 ? "parameter" : "parameters";
+				res.status(400).json({
+					error: `Unsupported query ${noun}: ${unsupportedParams.join(", ")}`,
+				});
 				return;
 			}
 

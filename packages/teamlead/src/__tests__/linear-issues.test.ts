@@ -175,6 +175,75 @@ describe("GET /api/linear/issues (GEO-276)", () => {
 		expect(body.issues[0].assignee).toBe("Alice");
 	});
 
+	it.each([
+		["identifier=FLY-2140", "identifier"],
+		["identifier=FLY-999999", "identifier"],
+		["team=FLY", "team"],
+	])(
+		"rejects unsupported query %s without calling Linear",
+		async (query, unsupportedKey) => {
+			mockRawRequest.mockResolvedValueOnce(
+				mockLinearResponse([sampleIssue], false),
+			);
+
+			const res = await fetch(`${baseUrl}/api/linear/issues?${query}`, {
+				headers: { Authorization: "Bearer test-token" },
+			});
+
+			expect(res.status).toBe(400);
+			expect(await res.json()).toEqual({
+				error: `Unsupported query parameter: ${unsupportedKey}`,
+			});
+			expect(mockRawRequest).not.toHaveBeenCalled();
+		},
+	);
+
+	it("rejects an unsupported key before resolving known query parameters", async () => {
+		mockRawRequest.mockResolvedValueOnce(
+			mockLinearResponse([sampleIssue], false),
+		);
+
+		const res = await fetch(
+			`${baseUrl}/api/linear/issues?projectName=ghost&identifier=FLY-2140`,
+			{ headers: { Authorization: "Bearer test-token" } },
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({
+			error: "Unsupported query parameter: identifier",
+		});
+		expect(mockRawRequest).not.toHaveBeenCalled();
+	});
+
+	it("sorts multiple unsupported query keys in the error", async () => {
+		mockRawRequest.mockResolvedValueOnce(
+			mockLinearResponse([sampleIssue], false),
+		);
+
+		const res = await fetch(
+			`${baseUrl}/api/linear/issues?zeta=1&identifier=FLY-2140&alpha=2`,
+			{ headers: { Authorization: "Bearer test-token" } },
+		);
+
+		expect(res.status).toBe(400);
+		expect(await res.json()).toEqual({
+			error: "Unsupported query parameters: alpha, identifier, zeta",
+		});
+		expect(mockRawRequest).not.toHaveBeenCalled();
+	});
+
+	it("accepts all supported query keys together", async () => {
+		mockRawRequest.mockResolvedValueOnce(mockLinearResponse([sampleIssue]));
+
+		const res = await fetch(
+			`${baseUrl}/api/linear/issues?project=Flywheel&state=backlog&labels=Product&limit=10&slim=true&projectName=flywheel`,
+			{ headers: { Authorization: "Bearer test-token" } },
+		);
+
+		expect(res.status).toBe(200);
+		expect(mockRawRequest).toHaveBeenCalledTimes(1);
+	});
+
 	// 3. project param → filter contains project name eq
 	it("passes project filter to rawRequest", async () => {
 		mockRawRequest.mockResolvedValueOnce(mockLinearResponse());
