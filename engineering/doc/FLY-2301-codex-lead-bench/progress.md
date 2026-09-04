@@ -2,13 +2,13 @@
 issue: FLY-2301
 phase: implement
 phaseCursor: 3/3
-updated: 2026-09-04T07:48:27.206Z
-nextStep: "Update FLY-2301 milestone as the literal last commit, push PR #1057,
-  and request exact-head code review"
+updated: 2026-09-04T08:44:07.117Z
+nextStep: Update milestone as literal last commit, push review fixes, and
+  request a fresh exact-head code review
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
 **phase**: implement (3/3)
-**next**: Update FLY-2301 milestone as the literal last commit, push PR #1057, and request exact-head code review
+**next**: Update milestone as literal last commit, push review fixes, and request a fresh exact-head code review
