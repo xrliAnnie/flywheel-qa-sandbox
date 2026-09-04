@@ -1440,18 +1440,6 @@
 		"classification": "qa-only"
 	},
 	{
-		"key": "scripts/__tests__/fly1663-qa-launchd.test.sh:os.kill(inner_pid, 0)#1",
-		"path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
-		"code": "os.kill(inner_pid, 0)",
-		"classification": "qa-only"
-	},
-	{
-		"key": "scripts/__tests__/fly1663-qa-launchd.test.sh:os.kill(inner_pid, getattr(signal, signal_name))#1",
-		"path": "scripts/__tests__/fly1663-qa-launchd.test.sh",
-		"code": "os.kill(inner_pid, getattr(signal, signal_name))",
-		"classification": "qa-only"
-	},
-	{
 		"key": "scripts/__tests__/fly1678-install-statusline.test.sh:kill -TERM \"\\$PPID\" 2>/dev/null#1",
 		"path": "scripts/__tests__/fly1678-install-statusline.test.sh",
 		"code": "kill -TERM \"\\$PPID\" 2>/dev/null",
