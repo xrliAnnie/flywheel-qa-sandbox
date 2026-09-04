@@ -9238,6 +9238,38 @@ export class StateStore {
 		}));
 	}
 
+	/** FLY-2324-only run lookup. Durable aliases protect legacy deliveries after
+	 * their source session rows have been pruned without changing dispatch,
+	 * resume, template-selection, or patrol identity semantics. */
+	getWorkflowDeliveryReachabilityRuns(
+		projectName: string,
+		issueAliases: string[],
+	): PatrolLoopRun[] {
+		const aliases = [...new Set(issueAliases.map((alias) => alias.trim()))].filter(
+			Boolean,
+		);
+		if (aliases.length === 0) return [];
+		const placeholders = aliases.map(() => "?").join(", ");
+		return this.workflowSelectAll(
+			`SELECT DISTINCT run.run_id, run.status, run.current_node_id
+			   FROM workflow_run run
+			  WHERE run.project_name = ?
+			    AND run.status IN ('active','held')
+			    AND (run.issue_id IN (${placeholders}) OR EXISTS (
+			      SELECT 1 FROM workflow_run_issue_alias alias
+			       WHERE alias.run_id = run.run_id
+			         AND alias.issue_alias IN (${placeholders})
+			    ))
+			  ORDER BY CASE run.status WHEN 'active' THEN 0 ELSE 1 END, run.rowid`,
+			[projectName, ...aliases, ...aliases],
+		).map((row) => ({
+			runId: String(row.run_id),
+			status: row.status as PatrolLoopRun["status"],
+			currentNodeId:
+				typeof row.current_node_id === "string" ? row.current_node_id : null,
+		}));
+	}
+
 	/** FLY-1925: active attempt/reservation rows for the selected run. */
 	listActiveNodeAttempts(runId: string): PatrolLoopAttempt[] {
 		return this.workflowSelectAll(
@@ -20899,6 +20931,51 @@ export class StateStore {
 			)
 		`);
 		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_run_issue_alias (
+				run_id TEXT NOT NULL,
+				issue_alias TEXT NOT NULL,
+				PRIMARY KEY (run_id, issue_alias),
+				FOREIGN KEY (run_id) REFERENCES workflow_run(run_id)
+			)
+		`);
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_workflow_run_issue_alias ON workflow_run_issue_alias(issue_alias, run_id)",
+		);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS state_store_migration (
+				migration_id TEXT PRIMARY KEY,
+				applied_at TEXT NOT NULL
+			)
+		`);
+		this.db.raw.transaction(() => {
+			this.db.run(
+				"INSERT OR IGNORE INTO state_store_migration (migration_id, applied_at) VALUES (?, datetime('now'))",
+				["fly-2324-workflow-run-issue-alias-v1"],
+			);
+			if (this.db.getRowsModified() !== 1) return;
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 SELECT run_id, issue_id FROM workflow_run`,
+			);
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 SELECT run.run_id, session.issue_id
+				   FROM workflow_run run
+				   JOIN sessions session
+				     ON session.project_name = run.project_name
+				    AND (session.issue_id = run.issue_id OR session.issue_identifier = run.issue_id)`,
+			);
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 SELECT run.run_id, session.issue_identifier
+				   FROM workflow_run run
+				   JOIN sessions session
+				     ON session.project_name = run.project_name
+				    AND (session.issue_id = run.issue_id OR session.issue_identifier = run.issue_id)
+				  WHERE session.issue_identifier IS NOT NULL`,
+			);
+		})();
+		this.db.run(`
 			CREATE TABLE IF NOT EXISTS founder_review_card_binding (
 				question_id TEXT PRIMARY KEY,
 				message_id TEXT NOT NULL UNIQUE,
@@ -24845,6 +24922,15 @@ export class StateStore {
 					input.startReservation ? 1 : 0,
 				],
 			);
+			this.captureWorkflowRunIssueAliasesTx(
+				input.runId,
+				input.projectName,
+				input.issueId,
+				[
+					...(input.entryIssueAliases ?? []),
+					...(input.entryRootKey ? [input.entryRootKey] : []),
+				],
+			);
 			if (input.startReservation) {
 				const startReservation = input.startReservation;
 				this.db.run(
@@ -25001,6 +25087,33 @@ export class StateStore {
 		return this.getWorkflowRun(input.runId)!;
 	}
 
+	private captureWorkflowRunIssueAliasesTx(
+		runId: string,
+		projectName: string,
+		issueId: string,
+		explicitAliases: string[] = [],
+	): void {
+		const aliases = new Set(
+			[issueId, ...explicitAliases]
+				.map((alias) => alias.trim())
+				.filter(Boolean),
+		);
+		for (const session of this.getSessionsForIssueAliases([...aliases])) {
+			if (session.project_name !== projectName) continue;
+			for (const alias of [session.issue_id, session.issue_identifier]) {
+				const normalized = alias?.trim();
+				if (normalized) aliases.add(normalized);
+			}
+		}
+		for (const alias of aliases) {
+			this.db.run(
+				`INSERT OR IGNORE INTO workflow_run_issue_alias (run_id, issue_alias)
+				 VALUES (?, ?)`,
+				[runId, alias],
+			);
+		}
+	}
+
 	/**
 	 * Create a workflow run with its TYPED enrollment marker (plan §3.2):
 	 * whether this run's gates read the claims ledger is an explicit per-run
@@ -25016,22 +25129,29 @@ export class StateStore {
 		claimsReadEnrolled: boolean;
 		gateCarrierEpoch?: 0 | 1;
 	}): void {
-		this.db.run(
-			`INSERT INTO workflow_run
-			   (run_id, issue_id, project_name, template_id, template_revision, snapshot,
-			    claims_read_enrolled, gate_carrier_epoch)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			[
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO workflow_run
+				   (run_id, issue_id, project_name, template_id, template_revision, snapshot,
+				    claims_read_enrolled, gate_carrier_epoch)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				[
+					input.runId,
+					input.issueId,
+					input.projectName,
+					input.templateId ?? null,
+					input.templateRevision ?? null,
+					input.snapshotJson ?? null,
+					input.claimsReadEnrolled ? 1 : 0,
+					input.gateCarrierEpoch ?? 0,
+				],
+			);
+			this.captureWorkflowRunIssueAliasesTx(
 				input.runId,
-				input.issueId,
 				input.projectName,
-				input.templateId ?? null,
-				input.templateRevision ?? null,
-				input.snapshotJson ?? null,
-				input.claimsReadEnrolled ? 1 : 0,
-				input.gateCarrierEpoch ?? 0,
-			],
-		);
+				input.issueId,
+			);
+		});
 		this.save();
 	}
 
@@ -36276,7 +36396,7 @@ export class StateStore {
 			`SELECT root_id, attempt_id, contract_ref_json
 			   FROM workflow_delivery_attempt
 			  WHERE family = ? AND superseded_by_attempt_id IS NULL
-			    AND settlement_reason IS NULL
+			    AND (settlement_reason IS NULL OR settlement_reason = 'legacy_unreachable')
 			  ORDER BY generation DESC, attempt DESC`,
 			[input.family],
 		).filter((row) => {
@@ -37033,7 +37153,9 @@ export class StateStore {
 			  WHERE attempt_id = ? AND closed_at IS NULL`,
 			[
 				input.now,
-				`terminal:settled:${input.reason}`,
+				input.reason === "legacy_unreachable"
+					? "legacy_unreachable"
+					: `terminal:settled:${input.reason}`,
 				attempt.attempt_id,
 			],
 		);
@@ -37134,62 +37256,127 @@ export class StateStore {
 		family: WorkflowDeliveryAttemptRow["family"];
 		contractRef: Record<string, unknown>;
 		mintedAt: string;
+		legacyRearmAt?: string;
 		sentAt?: string | null;
 		receivedAt?: string | null;
 		consumedAt?: string | null;
 	}): { minted: number; advanced: number } {
 		const result = { minted: 0, advanced: 0 };
 		this.db.transaction(() => {
-			this.db.run(
-				`INSERT OR IGNORE INTO workflow_delivery_attempt (
-				   root_id, generation, attempt, attempt_id, family,
-				   contract_ref_json, minted_at
-				 ) VALUES (?, 1, 1, ?, ?, ?, ?)`,
-				[
-					input.rootId,
-					input.attemptId,
-					input.family,
-					JSON.stringify(input.contractRef),
-					input.mintedAt,
-				],
-			);
-			result.minted = this.db.getRowsModified();
+			const contractRefJson = JSON.stringify(input.contractRef);
+			let effectiveAttemptId = input.attemptId;
+			let effectiveMintedAt = input.mintedAt;
+			const legacy = this.workflowSelectAll(
+				`SELECT root_id, generation, family, minted_at
+				   FROM workflow_delivery_attempt
+				  WHERE attempt_id = ? AND settlement_reason = 'legacy_unreachable'
+				    AND superseded_by_attempt_id IS NULL`,
+				[input.attemptId],
+			)[0];
+			if (legacy && input.legacyRearmAt) {
+				if (
+					legacy.root_id !== input.rootId ||
+					legacy.family !== input.family ||
+					(Number(legacy.generation) === 1 &&
+						legacy.minted_at !== input.mintedAt)
+				) {
+					throw new Error(`delivery_attempt_identity_conflict:${input.attemptId}`);
+				}
+				const generation = Number(legacy.generation) + 1;
+				effectiveAttemptId = `${input.rootId}:g${generation}:a1`;
+				effectiveMintedAt = input.legacyRearmAt;
+				this.db.run(
+					`INSERT INTO workflow_delivery_attempt (
+					   root_id, generation, attempt, attempt_id, family,
+					   contract_ref_json, minted_at
+					 ) VALUES (?, ?, 1, ?, ?, ?, ?)`,
+					[
+						input.rootId,
+						generation,
+						effectiveAttemptId,
+						input.family,
+						contractRefJson,
+						effectiveMintedAt,
+					],
+				);
+				this.db.run(
+					`UPDATE workflow_delivery_attempt
+					    SET superseded_by_attempt_id = ?
+					  WHERE attempt_id = ? AND settlement_reason = 'legacy_unreachable'
+					    AND superseded_by_attempt_id IS NULL`,
+					[effectiveAttemptId, input.attemptId],
+				);
+				if (this.db.getRowsModified() !== 1) {
+					throw new Error(`delivery_attempt_rearm_conflict:${input.attemptId}`);
+				}
+				result.minted = 1;
+			} else {
+				const current = this.workflowSelectAll(
+					`SELECT generation, minted_at
+					   FROM workflow_delivery_attempt
+					  WHERE attempt_id = ?`,
+					[input.attemptId],
+				)[0];
+				if (current && Number(current.generation) > 1) {
+					effectiveMintedAt = String(current.minted_at);
+				}
+				this.db.run(
+					`INSERT OR IGNORE INTO workflow_delivery_attempt (
+					   root_id, generation, attempt, attempt_id, family,
+					   contract_ref_json, minted_at
+					 ) VALUES (?, 1, 1, ?, ?, ?, ?)`,
+					[
+						input.rootId,
+						input.attemptId,
+						input.family,
+						contractRefJson,
+						input.mintedAt,
+					],
+				);
+				result.minted = this.db.getRowsModified();
+			}
 			const existing = this.workflowSelectAll(
 				`SELECT root_id, family, minted_at, contract_ref_json
 				   FROM workflow_delivery_attempt WHERE attempt_id = ?`,
-				[input.attemptId],
+				[effectiveAttemptId],
 			)[0];
 			if (
 				!existing ||
 				existing.root_id !== input.rootId ||
 				existing.family !== input.family ||
-				existing.minted_at !== input.mintedAt
+				existing.minted_at !== effectiveMintedAt
 			) {
 				throw new Error(`delivery_attempt_identity_conflict:${input.attemptId}`);
 			}
-			const contractRefJson = JSON.stringify(input.contractRef);
 			if (existing.contract_ref_json !== contractRefJson) {
 				this.db.run(
 					`UPDATE workflow_delivery_attempt SET contract_ref_json = ?
 					  WHERE attempt_id = ? AND contract_ref_json = ?`,
-					[contractRefJson, input.attemptId, existing.contract_ref_json],
+					[contractRefJson, effectiveAttemptId, existing.contract_ref_json],
 				);
 				if (this.db.getRowsModified() !== 1) {
 					throw new Error(
-						`delivery_attempt_projection_conflict:${input.attemptId}`,
+						`delivery_attempt_projection_conflict:${effectiveAttemptId}`,
 					);
 				}
 			}
+			if (legacy && !input.legacyRearmAt) return;
 			for (const [column, value] of [
 				["sent_at", input.sentAt],
 				["received_at", input.receivedAt],
 				["consumed_at", input.consumedAt],
 			] as const) {
 				if (!value) continue;
+				const effectiveValue =
+					legacy &&
+					input.legacyRearmAt &&
+					Date.parse(value) < Date.parse(input.legacyRearmAt)
+						? input.legacyRearmAt
+						: value;
 				this.db.run(
 					`UPDATE workflow_delivery_attempt SET ${column} = ?
 					  WHERE attempt_id = ? AND ${column} IS NULL`,
-					[value, input.attemptId],
+					[effectiveValue, effectiveAttemptId],
 				);
 				result.advanced += this.db.getRowsModified();
 			}
@@ -40566,7 +40753,8 @@ export class StateStore {
 		}
 		let settled = false;
 		const allowVersionless =
-			input.reason === "run_terminal" &&
+			(input.reason === "run_terminal" ||
+				input.reason === "legacy_unreachable") &&
 			input.version === undefined &&
 			(input.family === "rework" || input.family === "carrier");
 		const settlementInput = {
@@ -41611,6 +41799,7 @@ export class StateStore {
 			   LEFT JOIN workflow_divergence_check c
 			     ON c.execution_id = n.execution_id
 			  WHERE n.state = 'done'
+			    AND r.status IN ('active','held')
 			    AND s.status IN (${statuses})
 			    AND s.lifecycle_revision > COALESCE(c.checked_lifecycle_revision, -1)
 			  ORDER BY s.lifecycle_revision, n.execution_id
@@ -41662,19 +41851,45 @@ export class StateStore {
 			}
 			let deduped = false;
 			if (session.status !== "completed") {
-				const appended = this.appendWorkflowRunEventCheckedTx({
-					runId: input.runId,
-					eventUid: `divergence:${input.runId}:${input.nodeId}:${input.attempt}`,
-					kind: "workflow_node_session_divergence",
-					nodeId: input.nodeId,
-					executionId: input.executionId,
-					payload: {
-						nodeState: "done",
-						sessionStatus: session.status,
-						lifecycleRevision: session.lifecycle_revision,
-					},
-				});
-				deduped = appended.deduped;
+				const divergenceEventUid = `divergence:${input.runId}:${input.nodeId}:${input.attempt}:${input.observedLifecycleRevision}`;
+				try {
+					const appended = this.appendWorkflowRunEventCheckedTx({
+						runId: input.runId,
+						eventUid: divergenceEventUid,
+						kind: "workflow_node_session_divergence",
+						nodeId: input.nodeId,
+						executionId: input.executionId,
+						payload: {
+							nodeState: "done",
+							sessionStatus: session.status,
+							lifecycleRevision: session.lifecycle_revision,
+						},
+					});
+					deduped = appended.deduped;
+				} catch (error) {
+					if (!(error instanceof WorkflowEventUidConflictError)) throw error;
+					try {
+						const conflict = this.appendWorkflowRunEventCheckedTx({
+							runId: input.runId,
+							eventUid: `divergence_conflict:${input.runId}:${input.nodeId}:${input.attempt}:${input.observedLifecycleRevision}`,
+							kind: "workflow_node_session_divergence_conflict",
+							nodeId: input.nodeId,
+							executionId: input.executionId,
+							payload: {
+								conflictedEventUid: divergenceEventUid,
+								nodeState: "done",
+								sessionStatus: session.status,
+								lifecycleRevision: session.lifecycle_revision,
+							},
+						});
+						deduped = conflict.deduped;
+					} catch (conflictError) {
+						if (!(conflictError instanceof WorkflowEventUidConflictError)) {
+							throw conflictError;
+						}
+						deduped = true;
+					}
+				}
 			}
 			this.db.run(
 				`INSERT INTO workflow_divergence_check
@@ -52172,6 +52387,11 @@ export class StateStore {
 						`INSERT INTO workflow_run (run_id, issue_id, project_name, claims_read_enrolled)
 						 VALUES (?, ?, ?, 0)`,
 						[runId, input.issueId, input.projectName],
+					);
+					this.captureWorkflowRunIssueAliasesTx(
+						runId,
+						input.projectName,
+						input.issueId,
 					);
 					created = true;
 				}

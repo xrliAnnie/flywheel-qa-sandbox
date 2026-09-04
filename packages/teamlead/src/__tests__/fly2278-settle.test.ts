@@ -67,7 +67,7 @@ async function setupOpenEpisode(suffix: string): Promise<{
 }
 
 describe("FLY-2278 M1 terminal settlement", () => {
-	it("keeps terminal-unacked mailbox work live and atomically settles only ACKED work", async () => {
+	it("closes unbound terminal-recipient mailbox work and atomically settles ACKED work", async () => {
 		const commDb = new CommDB(":memory:");
 		commDbs.push(commDb);
 		commDb.registerSession(
@@ -145,8 +145,23 @@ describe("FLY-2278 M1 terminal settlement", () => {
 		const livePhysicalIds = store
 			.listLiveWorkflowDeliveryAttempts()
 			.map((row) => JSON.parse(row.contract_ref_json).pk);
-		expect(livePhysicalIds).toContain("mailbox-terminal-unacked");
+		expect(livePhysicalIds).not.toContain("mailbox-terminal-unacked");
 		expect(livePhysicalIds).not.toContain("mailbox-acked");
+		expect(
+			rawDb(store)
+				.prepare(
+					`SELECT attempt.settlement_reason, episode.closed_at, episode.closed_reason
+					   FROM workflow_delivery_attempt attempt
+					   JOIN workflow_delivery_contract_episode episode
+					     ON episode.attempt_id = attempt.attempt_id
+					  WHERE json_extract(attempt.contract_ref_json, '$.pk') = ?`,
+				)
+				.get("mailbox-terminal-unacked"),
+		).toEqual({
+			settlement_reason: "legacy_unreachable",
+			closed_at: "2026-09-03T14:21:00.000Z",
+			closed_reason: "legacy_unreachable",
+		});
 		expect(
 			rawDb(store)
 				.prepare(

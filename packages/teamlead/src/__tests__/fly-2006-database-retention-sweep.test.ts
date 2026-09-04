@@ -261,7 +261,7 @@ describe("FLY-2006 retention registry", () => {
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedAuthority).toHaveLength(37);
 		expect(
 			TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference,
-		).toHaveLength(111);
+		).toHaveLength(112);
 		expect(TEAMLEAD_TABLE_CLASSIFICATION.protectedCurrentOrReference).toContain(
 			"flag_scan_scope_state",
 		);

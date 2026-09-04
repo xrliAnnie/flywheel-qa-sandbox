@@ -14,6 +14,7 @@ import type {
 	WorkflowEngineAlertIdentity,
 } from "../../StateStore.js";
 import { classifyDeliveryAttempt } from "./classify.js";
+import { LegacyDeliveryReachabilityGuard } from "./legacy-reachability.js";
 import {
 	classifyRecipientLiveness,
 	collectRecipientLivenessEvidence,
@@ -57,6 +58,9 @@ export class DeliveryContractWatch {
 		alerted: number;
 	} {
 		const result = { observed: 0, opened: 0, closed: 0, alerted: 0 };
+		const legacyReachability = new LegacyDeliveryReachabilityGuard(
+			this.deps.store,
+		);
 		const mailboxRows = new Map<string, RunnerDeliveryProjectionRow>(
 			(this.deps.commDb?.listRunnerDeliveryProjectionRows(_now) ?? []).map(
 				(row) => [row.id, row],
@@ -76,6 +80,8 @@ export class DeliveryContractWatch {
 					table?: string;
 					pk?: string;
 					terminal?: string | null;
+					routeRevision?: number;
+					redriveGeneration?: number;
 				};
 				const projectName =
 					ref.projectName ?? attempt.root_id.split(":")[0] ?? "unknown";
@@ -116,6 +122,64 @@ export class DeliveryContractWatch {
 				const stateRecipientExecutionId =
 					reworkRoute?.preferred_actor_execution_id ??
 					carrierDelivery?.source_execution_id;
+				const issueId =
+					ref.issueId ?? attempt.root_id.split(":")[1] ?? "unknown";
+				const recipientExecutionId =
+					mailboxRow?.to_agent ??
+					turnWakeRow?.execution_id ??
+					phaseWakeRow?.execution_id ??
+					stateRecipientExecutionId;
+				const fallbackRecipientStatus =
+					mailboxRow?.recipient_status ??
+					turnWakeRow?.recipient_status ??
+					phaseWakeRow?.recipient_status;
+				const sourceIsActive =
+					(mailboxRow &&
+						mailboxRow.state !== "ACKED" &&
+						mailboxRow.superseded_by === null) ||
+					(phaseWakeRow && phaseWakeRow.state !== "finished") ||
+					(turnWakeRow &&
+						turnWakeRow.state !== "acked" &&
+						turnWakeRow.state !== "cancelled") ||
+					Boolean(stateRecipientExecutionId);
+				if (
+					sourceIsActive &&
+					recipientExecutionId &&
+					typeof ref.table === "string" &&
+					typeof ref.pk === "string" &&
+					legacyReachability.isLegacyUnreachable({
+						recipientExecutionId,
+						fallbackRecipientStatus,
+						projectName,
+						issueId,
+						mintedAt: attempt.minted_at,
+						now: _now,
+						attemptId: attempt.attempt_id,
+						runId: ref.runId,
+					})
+				) {
+					const version =
+						attempt.family === "rework" &&
+						Number.isSafeInteger(ref.routeRevision)
+							? { routeRevision: Number(ref.routeRevision) }
+							: attempt.family === "carrier" &&
+									Number.isSafeInteger(ref.redriveGeneration)
+								? { redriveGeneration: Number(ref.redriveGeneration) }
+								: undefined;
+					const settled =
+						this.deps.store.settleProjectedWorkflowDeliveryAttempt({
+							family: attempt.family,
+							table: ref.table,
+							pk: ref.pk,
+							reason: "legacy_unreachable",
+							now: _now,
+							...(version ? { version } : {}),
+						});
+					if (settled) {
+						result.closed++;
+						continue;
+					}
+				}
 				const stateRecipientLive = stateRecipientExecutionId
 					? CMUX_LIVE_SESSION_STATUSES.has(
 							this.deps.store.getSession(stateRecipientExecutionId)?.status ??
@@ -145,8 +209,6 @@ export class DeliveryContractWatch {
 					classification.overdue = false;
 					classification.severe = false;
 				}
-				const issueId =
-					ref.issueId ?? attempt.root_id.split(":")[1] ?? "unknown";
 				const candidateRun = ref.runId
 					? this.deps.store.getWorkflowRun(ref.runId)
 					: this.deps.store.getActiveWorkflowRunForIssue(issueId);

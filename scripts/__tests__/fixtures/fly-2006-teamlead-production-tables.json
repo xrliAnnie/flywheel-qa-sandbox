@@ -149,6 +149,7 @@
 	"workflow_run_collect_alias",
 	"workflow_run_collect_receipt",
 	"workflow_run_event",
+	"workflow_run_issue_alias",
 	"workflow_run_node",
 	"workflow_ship_target_binding",
 	"workflow_side_effect_ledger",

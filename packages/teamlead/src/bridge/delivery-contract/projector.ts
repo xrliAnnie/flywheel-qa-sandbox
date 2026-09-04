@@ -1,5 +1,6 @@
 import type { CommDB } from "flywheel-comm/db";
 import type { StateStore } from "../../StateStore.js";
+import { LegacyDeliveryReachabilityGuard } from "./legacy-reachability.js";
 import { deliveryRootId } from "./types.js";
 
 function sourceKey(table: string, pk: string): string {
@@ -26,11 +27,13 @@ export class DeliveryProjector {
 	} {
 		const result = { examined: 0, minted: 0, advanced: 0 };
 		const activeSources = new Set<string>();
+		const legacyReachability = new LegacyDeliveryReachabilityGuard(
+			this.deps.store,
+		);
 		for (const row of this.deps.commDb.listRunnerDeliveryProjectionRows()) {
 			result.examined++;
-			if (row.state !== "ACKED" && row.superseded_by === null) {
-				activeSources.add(sourceKey("mailbox", row.id));
-			}
+			const sourceIsActive =
+				row.state !== "ACKED" && row.superseded_by === null;
 			const issueId = row.issue_id?.trim() || "unknown";
 			const rootId = deliveryRootId({
 				projectName: this.deps.projectName,
@@ -45,12 +48,41 @@ export class DeliveryProjector {
 					physicalId: row.id,
 					fallbackRootId: rootId,
 				});
+			if (
+				sourceIsActive &&
+				legacyReachability.isLegacyUnreachable({
+					recipientExecutionId: row.to_agent,
+					fallbackRecipientStatus: row.recipient_status,
+					projectName: this.deps.projectName,
+					issueId,
+					mintedAt: row.created_at,
+					now: _now,
+					attemptId: identity.attemptId,
+				})
+			) {
+				if (
+					this.deps.store.settleProjectedWorkflowDeliveryAttempt({
+						family: "mailbox",
+						table: "mailbox",
+						pk: row.id,
+						reason: "legacy_unreachable",
+						now: _now,
+					})
+				) {
+					result.advanced++;
+				}
+				continue;
+			}
+			if (sourceIsActive) {
+				activeSources.add(sourceKey("mailbox", row.id));
+			}
 			const projected = this.deps.store.projectWorkflowDeliveryAttempt({
 				rootId: identity.rootId,
 				attemptId: identity.attemptId,
 				family: "mailbox",
 				contractRef: { table: "mailbox", pk: row.id },
 				mintedAt: row.created_at,
+				...(sourceIsActive ? { legacyRearmAt: _now } : {}),
 				sentAt: row.notified_at ?? row.delivered_at,
 				receivedAt: row.acked_at,
 				consumedAt: row.acked_at,
@@ -62,9 +94,7 @@ export class DeliveryProjector {
 			Date.parse(_now),
 		)) {
 			result.examined++;
-			if (row.state !== "finished") {
-				activeSources.add(sourceKey("runner_phase_wakes", row.message_id));
-			}
+			const sourceIsActive = row.state !== "finished";
 			const issueId = row.issue_id?.trim() || "unknown";
 			const metadata = row.metadata_json
 				? (JSON.parse(row.metadata_json) as { rootId?: unknown })
@@ -78,8 +108,6 @@ export class DeliveryProjector {
 							family: "phase_wake",
 							physicalId: row.message_id,
 						});
-			const startedAt =
-				row.started_at === null ? null : new Date(row.started_at).toISOString();
 			const identity =
 				this.deps.store.resolveWorkflowDeliveryProjectionIdentity({
 					family: "phase_wake",
@@ -87,12 +115,43 @@ export class DeliveryProjector {
 					physicalId: row.message_id,
 					fallbackRootId: rootId,
 				});
+			if (
+				sourceIsActive &&
+				legacyReachability.isLegacyUnreachable({
+					recipientExecutionId: row.execution_id,
+					fallbackRecipientStatus: row.recipient_status,
+					projectName: this.deps.projectName,
+					issueId,
+					mintedAt: new Date(row.queued_at).toISOString(),
+					now: _now,
+					attemptId: identity.attemptId,
+				})
+			) {
+				if (
+					this.deps.store.settleProjectedWorkflowDeliveryAttempt({
+						family: "phase_wake",
+						table: "runner_phase_wakes",
+						pk: row.message_id,
+						reason: "legacy_unreachable",
+						now: _now,
+					})
+				) {
+					result.advanced++;
+				}
+				continue;
+			}
+			if (sourceIsActive) {
+				activeSources.add(sourceKey("runner_phase_wakes", row.message_id));
+			}
+			const startedAt =
+				row.started_at === null ? null : new Date(row.started_at).toISOString();
 			const projected = this.deps.store.projectWorkflowDeliveryAttempt({
 				rootId: identity.rootId,
 				attemptId: identity.attemptId,
 				family: "phase_wake",
 				contractRef: { table: "runner_phase_wakes", pk: row.message_id },
 				mintedAt: new Date(row.queued_at).toISOString(),
+				...(sourceIsActive ? { legacyRearmAt: _now } : {}),
 				sentAt: row.first_push_at,
 				receivedAt: startedAt,
 				consumedAt: startedAt,
@@ -104,9 +163,7 @@ export class DeliveryProjector {
 			Date.parse(_now),
 		)) {
 			result.examined++;
-			if (row.state !== "acked" && row.state !== "cancelled") {
-				activeSources.add(sourceKey("turn_wake_outbox", row.wake_id));
-			}
+			const sourceIsActive = row.state !== "acked" && row.state !== "cancelled";
 			const rootId = deliveryRootId({
 				projectName: this.deps.projectName,
 				issueId: row.issue_id,
@@ -122,12 +179,41 @@ export class DeliveryProjector {
 					physicalId: row.wake_id,
 					fallbackRootId: rootId,
 				});
+			if (
+				sourceIsActive &&
+				legacyReachability.isLegacyUnreachable({
+					recipientExecutionId: row.execution_id,
+					fallbackRecipientStatus: row.recipient_status,
+					projectName: this.deps.projectName,
+					issueId: row.issue_id,
+					mintedAt: new Date(row.created_at).toISOString(),
+					now: _now,
+					attemptId: identity.attemptId,
+				})
+			) {
+				if (
+					this.deps.store.settleProjectedWorkflowDeliveryAttempt({
+						family: "turn_wake",
+						table: "turn_wake_outbox",
+						pk: row.wake_id,
+						reason: "legacy_unreachable",
+						now: _now,
+					})
+				) {
+					result.advanced++;
+				}
+				continue;
+			}
+			if (sourceIsActive) {
+				activeSources.add(sourceKey("turn_wake_outbox", row.wake_id));
+			}
 			const projected = this.deps.store.projectWorkflowDeliveryAttempt({
 				rootId: identity.rootId,
 				attemptId: identity.attemptId,
 				family: "turn_wake",
 				contractRef: { table: "turn_wake_outbox", pk: row.wake_id },
 				mintedAt: new Date(row.created_at).toISOString(),
+				...(sourceIsActive ? { legacyRearmAt: _now } : {}),
 				sentAt:
 					row.first_push_at === null
 						? null
