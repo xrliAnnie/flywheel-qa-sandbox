@@ -1,15 +1,14 @@
 ---
 issue: FLY-2301
 phase: implement
-phaseCursor: 2/3
-updated: 2026-09-04T07:38:00.954Z
-nextStep: Run focused shell matrix and exact full-repository gates; update
-  milestone as literal last commit, push, and request fresh exact-head code
-  review
+phaseCursor: 3/3
+updated: 2026-09-04T07:48:27.206Z
+nextStep: "Update FLY-2301 milestone as the literal last commit, push PR #1057,
+  and request exact-head code review"
 chunks: []
 pointers: {}
 ---
 
 # FLY-2301 progress
-**phase**: implement (2/3)
-**next**: Run focused shell matrix and exact full-repository gates; update milestone as literal last commit, push, and request fresh exact-head code review
+**phase**: implement (3/3)
+**next**: Update FLY-2301 milestone as the literal last commit, push PR #1057, and request exact-head code review
