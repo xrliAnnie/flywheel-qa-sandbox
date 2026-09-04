@@ -786,6 +786,29 @@ else
 	echo 'PASS: generalized failure cleanup preserves bridge.log diagnostics'
 fi
 
+campaign_abort_definition_line="$(rg -n '^campaign_abort\(\)' "$ROOT/scripts/test-deploy.sh" \
+	| head -1 | cut -d: -f1 || true)"
+campaign_abort_first_call_line="$(rg -n 'campaign_abort "' "$ROOT/scripts/test-deploy.sh" \
+	| head -1 | cut -d: -f1 || true)"
+trap_disarm_line="$(rg -n '^trap - EXIT$' "$ROOT/scripts/test-deploy.sh" \
+	| tail -1 | cut -d: -f1 || true)"
+stdout_render_line="$(rg -n '^qa_lead_render_stdout_json ' "$ROOT/scripts/test-deploy.sh" \
+	| tail -1 | cut -d: -f1 || true)"
+if [[ -n "$campaign_abort_definition_line" && -n "$campaign_abort_first_call_line" \
+	&& "$campaign_abort_definition_line" -lt "$campaign_abort_first_call_line" ]]; then
+	echo 'PASS: deploy abort helper exists before every campaign and non-campaign failure path'
+else
+	echo "FAIL: deploy abort helper is not globally available (definition=${campaign_abort_definition_line:-missing} first-call=${campaign_abort_first_call_line:-missing})" >&2
+	failures=$((failures + 1))
+fi
+if [[ -n "$trap_disarm_line" && -n "$stdout_render_line" \
+	&& "$trap_disarm_line" -gt "$stdout_render_line" ]]; then
+	echo 'PASS: deploy failure trap remains armed through final manifest/report/stdout publication'
+else
+	echo "FAIL: deploy failure trap is disarmed before publication completes (trap=${trap_disarm_line:-missing} stdout=${stdout_render_line:-missing})" >&2
+	failures=$((failures + 1))
+fi
+
 teardown_source="$ROOT/scripts/test-teardown.sh"
 bridge_stop_line="$(rg -n 'log "Killing Bridge PID' "$teardown_source" | cut -d: -f1)"
 stub_reap_line="$(rg -n 'qa_generalized_reap_codex_stub_orphans "\$CANONICAL_SLOT_DIR"' \

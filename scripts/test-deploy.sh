@@ -63,6 +63,10 @@ GUILD_ID=$(jq -r '.guildId' "$SLOTS_FILE")
 TOTAL_SLOTS=$(jq '.slots | length' "$SLOTS_FILE")
 
 log() { echo "[test-deploy] $(date +%H:%M:%S) $*" >&2; }
+campaign_abort() {
+  log "ERROR: $1 — aborting deploy"
+  exit 1
+}
 
 # ── FLY-162: reply-by-issue opt-in for test slot ──────
 # When `TEST_REPLY_BY_ISSUE=1`, the test Bridge starts with the
@@ -1748,13 +1752,6 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
   CAMPAIGN_MANIFEST_FILE="${SLOT_DIR}/campaign-manifest.json"
   EXTRA_LEAD_BG_PIDS=()
 
-  campaign_abort() {
-    log "ERROR: $1 — aborting campaign deploy"
-    # The still-armed EXIT transaction owns registry, manifest, and every
-    # campaign lock. Keeping one cleanup path avoids a second credential CAS.
-    exit 1
-  }
-
   # Write the campaign manifest BEFORE starting anything — every resource path
   # is deterministic, so failure paths (campaign_abort, cleanup_on_failure,
   # test-teardown.sh) can always clean by manifest even mid-startup.
@@ -2231,7 +2228,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
   log "generalized readiness: bindings 5/5 · pipeline+work_kind on · menu on"
 fi
 
-# ── Bridge confirmed up → NOW finalize campaign locks + disarm the failure trap ──
+# ── Bridge confirmed up → NOW finalize campaign locks ────────────────────────
 # FLY-1189: write the SAME live Bridge PID + campaign sidecar into EVERY
 # campaign lock (owner + borrowed). The live PID protects borrowed locks from
 # other deploys' stale reclaim for the whole campaign; the sidecar routes any
@@ -2245,9 +2242,6 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
   fi
   log "Campaign locks finalized (Bridge PID ${BRIDGE_PID}, campaign ${CAMPAIGN_ID}, slots: ${CAMPAIGN_SLOT_IDS[*]})"
 fi
-# Bridge ready + locks finalized — disable the failure cleanup trap.
-GENERALIZED_READINESS_PENDING=0
-trap - EXIT
 
 # FLY-1189: launch manifest — deploy-time ground truth and dist SHA.
 # No secrets: token env NAMES only. Codex coordinates are lifecycle authority;
@@ -2342,3 +2336,9 @@ qa_lead_render_stdout_json \
   "${SLOT_DIR}/launch-manifest.json" "${CAMPAIGN_MANIFEST_FILE:-}" \
   "${CAMPAIGN_ID:-}" "$LEAD_LABEL" "$EXTRA_LEADS_JSON" \
   "$GENERALIZED_OUTPUT_FIELDS"
+
+# Every fallible publication step is now complete. Only a successful deploy
+# may disarm the transaction that owns Bridge, Lead, credential-home, and lock
+# convergence.
+GENERALIZED_READINESS_PENDING=0
+trap - EXIT

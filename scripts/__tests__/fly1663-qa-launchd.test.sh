@@ -376,9 +376,16 @@ else
 fi
 rm -f "$launchctl_state"
 
+FLY1663_REAL_PYTHON3="$(command -v python3)"
+env_probe_python_argv="$TMP/env-probe-python.argv"
+: > "$env_probe_python_argv"
+python3() {
+  printf '<%s>\n' "$@" >> "$env_probe_python_argv"
+  command "$FLY1663_REAL_PYTHON3" "$@"
+}
 ps() {
   if [[ "$*" == 'eww -p 987654 -o command=' ]]; then
-    printf 'node runtime.js CODEX_HOME=/tmp/flywheel-test-slot-7/cdxh/qa-lead OTHER=value\n'
+    printf 'node runtime.js CODEX_HOME=/tmp/flywheel-test-slot-7/cdxh/qa-lead OTHER=value DISCORD_BOT_TOKEN=fixture-secret-not-in-argv\n'
     return 0
   fi
   return 1
@@ -388,12 +395,13 @@ if qa_launchd_process_env_has 987654 CODEX_HOME /tmp/flywheel-test-slot-7/cdxh/q
     && ! qa_launchd_process_env_has 987654 CODEX_HOME /wrong >/dev/null 2>&1 \
     && [ "$(qa_launchd_process_env_has 987654 'BAD-NAME' value >/dev/null 2>&1; printf '%s' "$?")" = 2 ] \
     && ! grep -Fq '/tmp/flywheel-test-slot-7/cdxh/qa-lead' "$TMP/env-probe.err" \
+    && ! grep -Fq 'fixture-secret-not-in-argv' "$env_probe_python_argv" \
     && ! grep -Fq 'ERROR:' "$TMP/env-probe.err"; then
-  pass "Codex process environment probe matches one exact key without leaking values"
+  pass "Codex process environment probe matches one exact key without leaking values through diagnostics or argv"
 else
   fail "Codex process environment probe"
 fi
-unset -f ps
+unset -f ps python3
 
 QA_PROCESS_COMMAND='/usr/local/bin/node /repo/packages/teamlead/scripts/../dist/lead-backends/codex/codex-lead-tui-runtime.js'
 QA_PROCESS_STATUS=S
@@ -1018,6 +1026,44 @@ else
 fi
 export FLYWHEEL_QA_LAUNCHCTL="$saved_launchctl"
 
+stop_unstarted_root="/tmp/flywheel-test-slot-$((980000 + $$))"
+stop_unstarted_home="$stop_unstarted_root/cdxh/unstarted"
+stop_unstarted_registry="$stop_unstarted_root/launchd-leads.json"
+stop_unstarted_call="$TMP/stop-unstarted.called"
+mkdir -p "$stop_unstarted_home/packages/standalone/releases/r1"
+cat > "$stop_unstarted_home/packages/standalone/releases/r1/codex" <<CODEX
+#!/bin/bash
+: > '$stop_unstarted_call'
+exit 7
+CODEX
+chmod +x "$stop_unstarted_home/packages/standalone/releases/r1/codex"
+ln -s releases/r1 "$stop_unstarted_home/packages/standalone/current"
+printf '%s\n' '{"tokens":{"refresh_token":"fixture-unstarted"}}' \
+  > "$stop_unstarted_home/auth.json"
+qa_launchd_register "$stop_unstarted_registry" \
+  com.flywheel.qa.lead.slot-98.unstarted /tmp/unstarted.plist '' codex-tui \
+  "$stop_unstarted_home" "$stop_unstarted_home/packages/standalone/current/codex" \
+  "$stop_unstarted_root/q/unstarted" "$stop_unstarted_root/launchd/unstarted/pid"
+ps() {
+  case "$*" in
+    '-ww -axo pid=,command=') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+if qa_launchd_stop_registry "$stop_unstarted_registry" \
+    >/dev/null 2>"$TMP/stop-unstarted.err" \
+    && [[ -f "$stop_unstarted_call" && ! -e "$stop_unstarted_home" ]] \
+    && ! grep -Fq 'carrier=codex-tui step=daemon-stop' "$TMP/stop-unstarted.err"; then
+  pass "Codex registry retires a provisioned home when no runtime ever started and daemon stop reports absent"
+else
+  printf 'unstarted diagnostics: %s home=%s stop-called=%s\n' \
+    "$(tr '\n' ';' < "$TMP/stop-unstarted.err")" \
+    "$([[ -e "$stop_unstarted_home" ]] && printf yes || printf no)" \
+    "$([[ -f "$stop_unstarted_call" ]] && printf yes || printf no)" >&2
+  fail "Codex unstarted-home credential retirement"
+fi
+unset -f ps
+
 saved_qa_tmux="$FLYWHEEL_QA_TMUX"
 absent_tmux_root="/tmp/flywheel-test-slot-$((980000 + $$))"
 absent_tmux_socket="$absent_tmux_root/tmux-$(id -u)/default"
@@ -1081,7 +1127,8 @@ export FLYWHEEL_QA_TMUX="$saved_qa_tmux"
 unset FLY1663_QA_STALE_TMUX_STATE FLY1663_QA_STALE_TMUX_CALLS
 
 unset -f sleep
-rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root"
+rm -rf "$stop_matrix_root" "$stop_alive_root" "$stop_bootout_root" \
+  "$stop_unstarted_root"
 
 printf '\n%d passed, %d failed\n' "$passed" "$failed"
 [ "$failed" -eq 0 ]

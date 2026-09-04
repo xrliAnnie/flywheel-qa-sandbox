@@ -288,13 +288,14 @@ PY
       || { qa_launchd_err "probe=unavailable match=0"; return 2; }
     [ "$(printf '%s' "$out" | wc -c | tr -d ' ')" -le 65536 ] \
       || { qa_launchd_err "probe=${probe} match=0"; return 2; }
-    python3 - "$name" "$expected" "$out" <<'PY'
+    python3 -c '
 import sys
 
-name, expected, text = sys.argv[1:]
+name, expected = sys.argv[1:]
+text = sys.stdin.read()
 wanted = name + "=" + expected
 raise SystemExit(0 if sum(item == wanted for item in text.split()) == 1 else 1)
-PY
+' "$name" "$expected" <<<"$out"
     rc=$?
   fi
   case "$rc" in
@@ -1083,8 +1084,10 @@ qa_launchd_stop_codex_entry() {
   if [[ ! -x "$bounded_run" ]] || ! "$bounded_run" 30 env \
       CODEX_HOME="$codex_home" "$codex_bin" remote-control stop --json \
       >/dev/null 2>&1; then
-    qa_launchd_err "carrier=codex-tui step=daemon-stop"
-    failed=1
+    if [[ "$runtime_started" == 1 ]]; then
+      qa_launchd_err "carrier=codex-tui step=daemon-stop"
+      failed=1
+    fi
   fi
   if ! qa_launchd_wait_process_gone "$daemon_pid" "$daemon_incarnation" \
       || ! qa_launchd_wait_path_gone "$daemon_socket"; then
