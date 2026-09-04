@@ -507,14 +507,15 @@ import { shouldWakeQuotaDaemon, wakeQuotaDaemon } from "./quota-daemon-wake.js";
 import { settleReconnectTitlesAndRefresh } from "./reconnect-title-restore.js";
 import { createRepoMutationLock } from "./repo-mutation-lock.js";
 import {
+	type ReportBlobStore,
+	VercelBlobReportStore,
+} from "./report-blob-store.js";
+import {
 	parseReportHostOverride,
 	type ReportHostOverride,
 } from "./report-host-override.js";
 import { resolveProjectIssueThread } from "./report-issue-thread-resolver.js";
-import {
-	DEFAULT_RETENTION_MAX_AGE_MS,
-	ReportRegistry,
-} from "./report-registry.js";
+import { ReportRegistry } from "./report-registry.js";
 import { createReportsRouter } from "./reports-route.js";
 import { isSafeResumeMenuForEnter } from "./rescue.js";
 import { createRescueRouter, type RescueRouteRuntime } from "./rescue-route.js";
@@ -1288,6 +1289,10 @@ export interface BridgeAppOptions {
 		snapshot(): unknown;
 	};
 	vercelToken?: string;
+	/** Private object storage used by hosted reports after the gateway cutover. */
+	reportBlobStore?: Pick<ReportBlobStore, "putReport" | "deleteReports">;
+	/** Shared registry seam used by the migration and route integration tests. */
+	reportRegistry?: ReportRegistry;
 	reportHostOverride?: ReportHostOverride;
 	/** FLY-1778: boot-snapshotted authority for managed call-time readers. */
 	flagStore?: FlagStoreRuntime;
@@ -4340,6 +4345,7 @@ export function createBridgeApp(
 		process.env.FLYWHEEL_REPORTS_DIR ??
 		resolve(homedir(), ".flywheel", "reports");
 	const reportsRouter = createReportsRouter({
+		blobStore: opts?.reportBlobStore,
 		vercelToken: opts?.vercelToken,
 		hostOverride: opts?.reportHostOverride,
 		// FLY-929 W3b ① + FLY-2104: resolve the sender for every delivery so a
@@ -4350,10 +4356,7 @@ export function createBridgeApp(
 		projects,
 		resolveIssueThread: (issueIdentifier, projectName) =>
 			resolveProjectIssueThread(store, projects, issueIdentifier, projectName),
-		registry: new ReportRegistry(reportsBaseDir, {
-			// FLY-203 follow-up (founder): report links expire after 7 days.
-			retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS,
-		}),
+		registry: opts?.reportRegistry ?? new ReportRegistry(reportsBaseDir),
 	});
 	app.use(
 		"/api/reports",
@@ -5681,6 +5684,41 @@ export async function startBridge(
 	if (vercelToken) {
 		console.log("[Bridge] HTML publishing configured (Vercel)");
 	}
+	const reportBlobToken = process.env.BLOB_READ_WRITE_TOKEN?.trim();
+	const hostedReportRegistry = new ReportRegistry(
+		process.env.FLYWHEEL_REPORTS_DIR ??
+			resolve(homedir(), ".flywheel", "reports"),
+	);
+	const reportBlobStore = reportBlobToken
+		? new VercelBlobReportStore(reportBlobToken)
+		: undefined;
+	let reportBlobSweepTimer: ReturnType<typeof setInterval> | undefined;
+	if (reportBlobStore) {
+		console.log("[Bridge] Report publishing configured (private Vercel Blob)");
+		const sweep = async (): Promise<void> => {
+			try {
+				const createdAtByToken = Object.fromEntries(
+					hostedReportRegistry
+						.list()
+						.map((entry) => [entry.token, entry.createdAt]),
+				);
+				const removed = await reportBlobStore.sweepExpiredReports(
+					Date.now(),
+					createdAtByToken,
+				);
+				if (removed > 0) {
+					console.log(
+						`[reports] removed ${removed} Blob object(s) at the fixed 14-day boundary`,
+					);
+				}
+			} catch {
+				console.warn("[reports] Blob retention sweep failed");
+			}
+		};
+		void sweep();
+		reportBlobSweepTimer = setInterval(() => void sweep(), 60 * 60 * 1000);
+		reportBlobSweepTimer.unref?.();
+	}
 
 	// FLY-91 Round 3: Create shared ChatThreadCreator at Bridge level (before run infra).
 	// Single instance shared by both DirectEventSink (via run-infra) and query router.
@@ -6788,6 +6826,8 @@ export async function startBridge(
 		standupProjectName,
 		{
 			vercelToken,
+			reportBlobStore,
+			reportRegistry: hostedReportRegistry,
 			reportHostOverride,
 			flagStore,
 			flagProjectNames,
@@ -11906,6 +11946,7 @@ export async function startBridge(
 		clearInterval(leadAlertDrainTimer);
 		clearInterval(doaBackoffMaintenanceTimer);
 		clearInterval(designReviewManifestTimer);
+		if (reportBlobSweepTimer) clearInterval(reportBlobSweepTimer);
 		if (chromeReaperTimer) clearInterval(chromeReaperTimer); // FLY-766
 		// FLY-50: Clean up dispatchers. If retryDispatcher and internalDispatcher
 		// are the same instance, only tear down once. If they differ (caller

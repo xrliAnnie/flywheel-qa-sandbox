@@ -119,7 +119,10 @@ describe("/api/reports mount (plugin layer)", () => {
 		}
 	});
 
-	function makeApp(configOverrides: Partial<BridgeConfig> = {}) {
+	function makeApp(
+		configOverrides: Partial<BridgeConfig> = {},
+		bridgeOptions: Record<string, unknown> = {},
+	) {
 		return createBridgeApp(
 			store,
 			testProjects,
@@ -137,7 +140,7 @@ describe("/api/reports mount (plugin layer)", () => {
 			undefined, // startDispatcher
 			undefined, // standupService
 			undefined, // standupProjectName
-			{ vercelToken: undefined },
+			{ vercelToken: undefined, ...bridgeOptions },
 		);
 	}
 
@@ -162,7 +165,7 @@ describe("/api/reports mount (plugin layer)", () => {
 		expect(res.status).toBe(401);
 	});
 
-	it("apiToken configured + good token → reaches router (501 without VERCEL_TOKEN)", async () => {
+	it("apiToken configured + good token → reaches router (501 without BLOB_READ_WRITE_TOKEN)", async () => {
 		const app = makeApp({ apiToken: "secret" });
 		const res = await makeRequest(
 			app,
@@ -171,7 +174,30 @@ describe("/api/reports mount (plugin layer)", () => {
 			{ Authorization: "Bearer secret" },
 		);
 		expect(res.status).toBe(501);
-		expect(JSON.parse(res.body).error).toContain("VERCEL_TOKEN");
+		expect(JSON.parse(res.body).error).toContain("BLOB_READ_WRITE_TOKEN");
+	});
+
+	it("FLY-2283: plugin injects private Blob storage into the publish route", async () => {
+		const putReport = vi.fn();
+		const app = makeApp(
+			{ apiToken: "secret" },
+			{
+				reportBlobStore: {
+					putReport,
+					deleteReports: vi.fn(),
+				},
+			},
+		);
+		const res = await makeRequest(
+			app,
+			"/api/reports/publish",
+			{ projectName: "p", html: "<html><head></head></html>" },
+			{ Authorization: "Bearer secret" },
+		);
+
+		expect(res.status).toBe(503);
+		expect(JSON.parse(res.body).error).toContain("hosting migration");
+		expect(putReport).not.toHaveBeenCalled();
 	});
 
 	it("FLY-1715: master reaches publish and deliver; ingest reaches publish but gets 403 on deliver", async () => {

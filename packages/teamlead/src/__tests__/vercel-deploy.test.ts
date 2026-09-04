@@ -96,6 +96,82 @@ describe("deployToVercel (GEO-294 reverse-compat sentinel)", () => {
 		await assertion;
 	});
 
+	it("keeps polling a function deployment beyond 30 seconds until READY", async () => {
+		vi.useFakeTimers();
+		fetchMock.mockResolvedValueOnce(
+			jsonResponse({ url: "x", id: "dpl_slow", readyState: "QUEUED" }),
+		);
+		for (let attempt = 0; attempt < 15; attempt += 1) {
+			fetchMock.mockResolvedValueOnce(jsonResponse({ readyState: "BUILDING" }));
+		}
+		fetchMock.mockResolvedValueOnce(jsonResponse({ readyState: "READY" }));
+
+		const promise = deployFilesToVercel(
+			"tok",
+			"fw-reports-abc123",
+			[{ file: "api/report.js", data: "export default () => {}" }],
+			40_000,
+		);
+		const assertion = expect(promise).resolves.toEqual({
+			deploymentId: "dpl_slow",
+		});
+		await vi.advanceTimersByTimeAsync(32_000);
+		await assertion;
+		expect(fetchMock).toHaveBeenCalledTimes(17);
+	});
+
+	it("fails loudly at the deployment timeout when Vercel never reaches a terminal state", async () => {
+		vi.useFakeTimers();
+		fetchMock
+			.mockResolvedValueOnce(
+				jsonResponse({ url: "x", id: "dpl_stuck", readyState: "QUEUED" }),
+			)
+			.mockImplementation(() =>
+				Promise.resolve(jsonResponse({ readyState: "BUILDING" })),
+			);
+
+		const promise = deployFilesToVercel(
+			"tok",
+			"fw-reports-abc123",
+			[{ file: "api/report.js", data: "export default () => {}" }],
+			5_000,
+		);
+		const assertion = expect(promise).rejects.toThrow(
+			"Vercel deployment not ready before 5s timeout",
+		);
+		await vi.advanceTimersByTimeAsync(6_000);
+		await assertion;
+	});
+
+	it("normalizes an in-flight fetch abort to the loud deployment timeout", async () => {
+		vi.useFakeTimers();
+		fetchMock
+			.mockResolvedValueOnce(
+				jsonResponse({ url: "x", id: "dpl_hung", readyState: "QUEUED" }),
+			)
+			.mockImplementation((_url: string, init: RequestInit) => {
+				return new Promise<Response>((_resolve, reject) => {
+					init.signal?.addEventListener("abort", () => {
+						reject(
+							new DOMException("This operation was aborted", "AbortError"),
+						);
+					});
+				});
+			});
+
+		const promise = deployFilesToVercel(
+			"tok",
+			"fw-reports-abc123",
+			[{ file: "api/report.js", data: "export default () => {}" }],
+			5_000,
+		);
+		const assertion = expect(promise).rejects.toThrow(
+			"Vercel deployment not ready before 5s timeout",
+		);
+		await vi.advanceTimersByTimeAsync(5_000);
+		await assertion;
+	});
+
 	it("throws with status on non-ok create response", async () => {
 		fetchMock.mockResolvedValueOnce(new Response("nope", { status: 403 }));
 		await expect(deployToVercel("tok", "p", "<html></html>")).rejects.toThrow(

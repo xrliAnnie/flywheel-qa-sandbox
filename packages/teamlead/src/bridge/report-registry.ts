@@ -2,25 +2,21 @@
  * FLY-203: ReportRegistry — local source of truth for the remote report
  * pipeline's hosted set.
  *
- * The hosting model (validated by a real spike, see
- * doc/engineer/research/new/FLY-203-remote-report-pipeline.md §2.2) is a
- * single Vercel project where every report lives at an unguessable
- * `r/<128-bit-token>/index.html` path. Vercel production deploys REPLACE the
- * previous file set — any report omitted from a deploy dies. So the registry
- * keeps every retained report locally and each publish redeploys the full
- * retained set.
+ * Reports are stored as independent private Blob objects and served through a
+ * stable Vercel gateway at the existing unguessable
+ * `r/<128-bit-token>/index.html` path. Normal publishes never deploy Vercel.
  *
  * Transaction contract (Codex design review R1#3 + R2#2 + R3#1):
- *   stagePublish() builds a pure in-memory staged view — token, the Vercel
- *   project name (existing committed value or a freshly generated one), the
- *   prune computation and the full deploy file list. ZERO fs mutation.
- *   - deploy fails  → abort(): disk untouched. On a first publish this means
+ *   stagePublish() builds a pure in-memory staged view — token, hardened HTML,
+ *   the stable gateway project name, and the age-only prune computation. ZERO
+ *   fs mutation.
+ *   - upload fails  → abort(): disk untouched. On a first publish this means
  *     not even registry.json exists.
- *   - deploy works  → commit() in a FIXED order: ① write the new report file
+ *   - upload works  → commit() in a FIXED order: ① write the new report file
  *     → ② atomically write registry.json (tmp + rename = the commit point)
  *     → ③ best-effort delete pruned files (failure = warn only).
  *     A failure before ② leaves the old registry + all pruned files intact;
- *     the orphan new file is harmless because deploys are registry-driven.
+ *     the route best-effort deletes an orphan uploaded object.
  *
  * Content hardening (R1#4 + R2#1): every staged report gets `noindex` and a
  * restrictive CSP meta injected into <head> when missing. HTML without a
@@ -43,18 +39,17 @@ import {
 	type HtmlTagScan,
 	htmlAttribute,
 	htmlHeadRange,
+	htmlMetaHttpEquivContent,
 	isCspGovernedInlineScript,
 	isExternalScript,
 	scanHtmlTags,
 } from "flywheel-comm/report-html";
+import { isReportExpired, REPORT_RETENTION_MS } from "./report-retention.js";
 
-export const DEFAULT_RETENTION_MAX = 100;
-// Leave headroom for the JSON envelope beneath Vercel's 10 MB body cap.
-export const DEFAULT_RETENTION_BYTES = 8.5 * 1024 * 1024; // 8.5 MiB
-/** Founder requirement (2026-06-04): report links expire after 7 days. */
-export const DEFAULT_RETENTION_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** Founder requirement (FLY-2283, 2026-09-02): retain report links for 14 days. */
+export const DEFAULT_RETENTION_MAX_AGE_MS = REPORT_RETENTION_MS;
+const REPORT_TOKEN_RE = /^[0-9a-f]{32}$/;
 
-const ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
 const NOINDEX_META = '<meta name="robots" content="noindex">';
 const CSP_META =
 	"<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'; img-src data:;\">";
@@ -283,36 +278,41 @@ export interface ReportEntry {
 	projectName: string;
 	title?: string;
 	createdAt: string;
-	/** Byte size of the hardened HTML — used for the bytes retention cap. */
+	/** Byte size of the hardened HTML — retained for audit/observability. */
 	bytes: number;
+}
+
+export interface ReportHostingState {
+	provider: "vercel-blob";
+	migratedAt: string;
+	gatewayDeploymentId: string;
 }
 
 interface ReportRegistryData {
 	vercelProjectName?: string;
+	hosting?: ReportHostingState;
 	reports: ReportEntry[];
 }
 
 export interface StagedPublish {
 	entry: ReportEntry;
+	/** Hardened HTML for the single-object hosting upload. */
+	html: string;
 	/**
-	 * Vercel project name for this deploy (R3#1: part of the transaction).
+	 * Stable Vercel gateway project name (R3#1: part of the transaction).
 	 * Existing committed value, or a new in-memory `fw-reports-<6hex>` on a
 	 * first publish. Persisted ONLY by commit().
 	 */
 	vercelProjectName: string;
-	/** robots.txt + every retained report (incl. the new one) — pure memory. */
-	deployFiles: { file: string; data: string }[];
-	/** Call after deploy success. Fixed order: file → registry rename → prune. */
+	/** Reports that reached the fixed 14-day boundary in this staged view. */
+	expired: readonly ReportEntry[];
+	/** Call after Blob upload success. Fixed order: file → registry rename → prune. */
 	commit(): void;
-	/** Call after deploy failure. Disk stays untouched. */
+	/** Call after Blob upload failure. Disk stays untouched. */
 	abort(): void;
 }
 
 export interface ReportRegistryOptions {
-	retentionMax?: number;
-	retentionBytes?: number;
-	/** Max report age in ms (default 7 days). 0 disables age-based expiry. */
-	retentionMaxAgeMs?: number;
 	/** Clock seam for tests. Defaults to Date.now. */
 	now?: () => number;
 	/** Test seam — defaults to crypto.randomBytes hex. */
@@ -325,9 +325,6 @@ export class ReportRegistry {
 	private readonly baseDir: string;
 	private readonly filesDir: string;
 	private readonly registryPath: string;
-	private readonly retentionMax: number;
-	private readonly retentionBytes: number;
-	private readonly retentionMaxAgeMs: number;
 	private readonly now: () => number;
 	private readonly randomHex: (bytes: number) => string;
 	private readonly warn: (msg: string) => void;
@@ -336,10 +333,6 @@ export class ReportRegistry {
 		this.baseDir = baseDir;
 		this.filesDir = join(baseDir, "files");
 		this.registryPath = join(baseDir, "registry.json");
-		this.retentionMax = opts.retentionMax ?? DEFAULT_RETENTION_MAX;
-		this.retentionBytes = opts.retentionBytes ?? DEFAULT_RETENTION_BYTES;
-		this.retentionMaxAgeMs =
-			opts.retentionMaxAgeMs ?? DEFAULT_RETENTION_MAX_AGE_MS;
 		this.now = opts.now ?? (() => Date.now());
 		this.randomHex =
 			opts.randomHex ?? ((n: number) => randomBytes(n).toString("hex"));
@@ -351,14 +344,49 @@ export class ReportRegistry {
 		return join(this.baseDir, "previews");
 	}
 
-	/** Committed Vercel project name (undefined before the first successful publish). */
+	/** Committed Vercel project name (undefined before publish/migration bootstrap). */
 	vercelProjectName(): string | undefined {
 		return this.load().vercelProjectName;
+	}
+
+	/** Persist a stable gateway name so an empty reports directory can migrate. */
+	ensureVercelProjectName(): string {
+		const committed = this.load();
+		if (committed.vercelProjectName) return committed.vercelProjectName;
+		const vercelProjectName = `fw-reports-${this.randomHex(3)}`;
+		this.saveAtomic({ ...committed, vercelProjectName });
+		return vercelProjectName;
 	}
 
 	/** Committed retained entries, oldest first. */
 	list(): ReportEntry[] {
 		return this.load().reports;
+	}
+
+	/** Durable cutover marker written only after the gateway deployment is ready. */
+	hosting(): ReportHostingState | undefined {
+		return this.load().hosting;
+	}
+
+	/** Read a committed hardened report for the one-time Blob migration. */
+	readReportHtml(token: string): string {
+		if (!REPORT_TOKEN_RE.test(token)) {
+			throw new Error("[report-registry] invalid report token");
+		}
+		if (!this.load().reports.some((entry) => entry.token === token)) {
+			throw new Error(`[report-registry] unknown report token=${token}`);
+		}
+		return readFileSync(join(this.filesDir, `${token}.html`), "utf8");
+	}
+
+	markHostingMigrated(hosting: ReportHostingState): void {
+		const committed = this.load();
+		if (!committed.vercelProjectName) {
+			throw new Error(
+				"[report-registry] cannot mark Blob hosting before a gateway project exists",
+			);
+		}
+		this.saveAtomic({ ...committed, hosting });
 	}
 
 	/**
@@ -384,76 +412,32 @@ export class ReportRegistry {
 			bytes: Buffer.byteLength(hardened, "utf-8"),
 		};
 
-		// Prune in two passes; whichever rule hits first wins, they coexist.
+		// TTL is the only retention rule (founder requirement: links expire after
+		// 14 days). Aggregate count and byte limits would evict valid reports
+		// early and are intentionally absent with per-report object storage.
+		// The public gateway enforces the same boundary from Blob metadata on
+		// every request. This local pass only compacts registry/files after the
+		// boundary; the fixed background Blob sweep reclaims remote objects.
 		//
-		// Pass 1 — TTL (founder requirement: links expire after 7 days).
-		// Enforced LAZILY at publish time, hooked on this existing action per
-		// the no-new-periodic-timer discipline (FLY-169): an expired link
-		// dies at the NEXT publish, which redeploys without it. No publishes
-		// → no redeploy → an expired link may outlive its TTL until one
-		// happens; with normal report cadence that window is small.
-		//
-		// Pass 2 — count/bytes caps, oldest-first. The new entry is newest
-		// so it always survives (single report ≤512KB ≪ bytes cap).
 		const nowMs = this.now();
 		const all: ReportEntry[] = [];
 		const pruned: ReportEntry[] = [];
+		const expired: ReportEntry[] = [];
 		for (const e of [...committed.reports, entry]) {
-			const age = nowMs - Date.parse(e.createdAt);
 			// >= : the expiry instant itself counts as expired (Codex R1 — with
 			// lazy enforcement and an aligned publish cadence, a `>` here would
-			// stretch an exactly-7-day-old link a full extra cycle).
-			if (
-				this.retentionMaxAgeMs > 0 &&
-				Number.isFinite(age) &&
-				age >= this.retentionMaxAgeMs
-			) {
+			// stretch an exactly-14-day-old link a full extra cycle).
+			const createdAt = Date.parse(e.createdAt);
+			if (!Number.isFinite(createdAt)) {
 				pruned.push(e);
+			} else if (isReportExpired(nowMs, createdAt)) {
+				pruned.push(e);
+				expired.push(e);
 			} else {
 				all.push(e);
 			}
 		}
-		let totalBytes = all.reduce((s, e) => s + e.bytes, 0);
-		while (
-			all.length > this.retentionMax ||
-			(totalBytes > this.retentionBytes && all.length > 1)
-		) {
-			const oldest = all.shift();
-			if (!oldest) break;
-			pruned.push(oldest);
-			totalBytes -= oldest.bytes;
-		}
 		const retained = all;
-
-		// Deploy file list: robots.txt + every retained report. The new
-		// report's content comes from memory; committed ones from disk.
-		const deployFiles: { file: string; data: string }[] = [
-			{ file: "robots.txt", data: ROBOTS_TXT },
-		];
-		const missing: ReportEntry[] = [];
-		for (const r of retained) {
-			if (r.token === entry.token) {
-				deployFiles.push({ file: `r/${r.token}/index.html`, data: hardened });
-				continue;
-			}
-			try {
-				const data = readFileSync(
-					join(this.filesDir, `${r.token}.html`),
-					"utf-8",
-				);
-				deployFiles.push({ file: `r/${r.token}/index.html`, data });
-			} catch {
-				// Local file vanished (disk damage). The link is dead at the next
-				// deploy regardless — surface it loudly and drop the entry at
-				// commit so the registry matches reality.
-				this.warn(
-					`[report-registry] retained report file missing for token=${r.token} — dropping entry at commit`,
-				);
-				missing.push(r);
-			}
-		}
-		const finalRetained = retained.filter((r) => !missing.includes(r));
-
 		let done = false;
 		const commit = (): void => {
 			if (done)
@@ -469,7 +453,8 @@ export class ReportRegistry {
 			// ② registry.json atomic rename — THE commit point
 			this.saveAtomic({
 				vercelProjectName,
-				reports: finalRetained,
+				hosting: committed.hosting,
+				reports: retained,
 			});
 			// ③ best-effort prune deletion (after the rename, warn-only)
 			for (const p of pruned) {
@@ -490,7 +475,14 @@ export class ReportRegistry {
 			// Nothing was written — staged view simply gets dropped.
 		};
 
-		return { entry, vercelProjectName, deployFiles, commit, abort };
+		return {
+			entry,
+			html: hardened,
+			vercelProjectName,
+			expired,
+			commit,
+			abort,
+		};
 	}
 
 	// ── internals ─────────────────────────────────────────────────────────
@@ -505,8 +497,8 @@ export class ReportRegistry {
 			}
 			throw err;
 		}
-		// A corrupted registry must NOT be silently rebuilt — that would make
-		// the next deploy omit (= kill) every retained report. Fail loudly.
+		// A corrupted registry must NOT be silently rebuilt because it carries
+		// the stable gateway name and the durable hosting-cutover marker.
 		let data: unknown;
 		try {
 			data = JSON.parse(raw);
@@ -521,7 +513,11 @@ export class ReportRegistry {
 				`[report-registry] registry.json has invalid shape — refusing to silently rebuild; fix or remove ${this.registryPath} manually`,
 			);
 		}
-		return { vercelProjectName: d.vercelProjectName, reports: d.reports };
+		return {
+			vercelProjectName: d.vercelProjectName,
+			hosting: d.hosting,
+			reports: d.reports,
+		};
 	}
 
 	private saveAtomic(data: ReportRegistryData): void {
@@ -621,13 +617,26 @@ export function injectHeadMeta(
 	const inject: string[] = [];
 	if (!hasRobots) inject.push(NOINDEX_META);
 	if (!hasCsp) inject.push(cspMeta);
-	if (inject.length === 0) return working;
-	return `${working.slice(0, head.start)}\n${inject.join("\n")}${working.slice(head.start)}`;
+	const hardened =
+		inject.length === 0
+			? working
+			: `${working.slice(0, head.start)}\n${inject.join("\n")}${working.slice(head.start)}`;
+	const csp = htmlMetaHttpEquivContent(hardened, "content-security-policy");
+	if (!csp?.trim()) {
+		throw new ReportHtmlInvalidError(
+			"report HTML must contain a non-empty Content-Security-Policy in a complete <head>",
+		);
+	}
+	if (/[\r\n]/.test(csp)) {
+		throw new ReportHtmlInvalidError(
+			"report HTML Content-Security-Policy must be a single line without CR or LF characters",
+		);
+	}
+	return hardened;
 }
 
 /** Exposed for tests/docs. */
 export const REPORT_REGISTRY_INTERNALS = {
-	ROBOTS_TXT,
 	NOINDEX_META,
 	CSP_META,
 	NONCE_PLACEHOLDER,

@@ -283,3 +283,26 @@ export function htmlHeadRange(
 		end: candidates.length > 0 ? Math.min(...candidates) : head.end + 1,
 	};
 }
+
+/** Returns a head-scoped meta policy using the canonical report HTML scan. */
+export function htmlMetaHttpEquivContent(
+	html: string,
+	httpEquiv: string,
+): string | undefined {
+	const scan = scanHtmlTags(html);
+	const head = htmlHeadRange(scan);
+	if (!head) return undefined;
+	const normalized = httpEquiv.trim().toLowerCase();
+	for (const tag of scan.openings) {
+		if (
+			tag.name === "meta" &&
+			tag.start >= head.start &&
+			tag.start < head.end &&
+			htmlAttribute(tag, "http-equiv")?.value?.trim().toLowerCase() ===
+				normalized
+		) {
+			return htmlAttribute(tag, "content")?.value;
+		}
+	}
+	return undefined;
+}

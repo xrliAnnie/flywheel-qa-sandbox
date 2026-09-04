@@ -2,7 +2,7 @@
  * FLY-203: /api/reports — remote report pipeline Bridge endpoints.
  *
  *   POST /publish  {projectName, html, title?}
- *     → stage (zero fs) → Vercel deploy (full retained set) → commit
+ *     → stage (zero fs) → one private Blob upload → commit
  *     → { url: https://<fw-reports-xxxx>.vercel.app/r/<token>/, reportId }
  *
  *   POST /deliver  {url, projectName, title?, channelId?, screenshotPath?}
@@ -14,8 +14,8 @@
  * the plugin mount layer.
  *
  * Transaction semantics are documented in report-registry.ts. Publishes are
- * serialized through an in-process promise-chain mutex: the registry
- * read-modify-write plus the full-set redeploy must never interleave.
+ * serialized through an in-process promise-chain mutex so registry
+ * read-modify-write operations never interleave.
  */
 
 import {
@@ -42,17 +42,19 @@ import {
 	postDiscordMessageToChannel,
 } from "./discord-utils.js";
 import { writeTokenReportReceipt } from "./notify-receipts.js";
+import type { ReportBlobStore } from "./report-blob-store.js";
 import type { ReportHostOverride } from "./report-host-override.js";
 import {
 	ReportHtmlInvalidError,
 	type ReportRegistry,
 } from "./report-registry.js";
-import { deployFilesToVercel } from "./vercel-deploy.js";
+import { deployFilesToVercel, type VercelDeployFile } from "./vercel-deploy.js";
 
 const MAX_HTML_SIZE = 512 * 1024; // 512 KB — same cap as /api/publish-html
 const MAX_TITLE_LENGTH = 200;
 const MAX_SCREENSHOT_BYTES = 25 * 1024 * 1024; // Discord verified cap
 const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+const REPORT_ROBOTS_TXT = "User-agent: *\nDisallow: /\n";
 export const MAX_OUTSTANDING_REPORT_PUBLISHES = 8;
 type ReportCredentialTier = "master" | "ingest";
 
@@ -63,7 +65,8 @@ export type ReportPostTextFn = (
 ) => Promise<PostDiscordResult>;
 
 export interface ReportsRouterOptions {
-	vercelToken: string | undefined;
+	blobStore?: Pick<ReportBlobStore, "putReport" | "deleteReports">;
+	vercelToken?: string;
 	discordBotToken: string | undefined;
 	/** Call-time sender resolution for identities that can change after boot. */
 	resolveDiscordBotToken?: () => string | undefined;
@@ -91,6 +94,29 @@ function publicReportUrl(
 	return hostOverride
 		? `${hostOverride.publicBaseUrl}/${vercelProjectName}/r/${token}/`
 		: `https://${vercelProjectName}.vercel.app/r/${token}/`;
+}
+
+function buildLoopbackDeployFiles(
+	registry: ReportRegistry,
+	staged: ReturnType<ReportRegistry["stagePublish"]>,
+): VercelDeployFile[] {
+	const expiredTokens = new Set(staged.expired.map((entry) => entry.token));
+	const retained = registry
+		.list()
+		.filter(
+			(entry) =>
+				Number.isFinite(Date.parse(entry.createdAt)) &&
+				!expiredTokens.has(entry.token),
+		)
+		.map((entry) => ({
+			file: `r/${entry.token}/index.html`,
+			data: registry.readReportHtml(entry.token),
+		}));
+	return [
+		{ file: "robots.txt", data: REPORT_ROBOTS_TXT },
+		...retained,
+		{ file: `r/${staged.entry.token}/index.html`, data: staged.html },
+	];
 }
 
 export type PreviewFileRead =
@@ -200,6 +226,8 @@ export function buildReportMessage(
 
 export function createReportsRouter(opts: ReportsRouterOptions): Router {
 	const router = Router();
+	const blobStore = opts.blobStore;
+	const hostOverride = opts.hostOverride;
 	const deployFiles = opts.deployFiles ?? deployFilesToVercel;
 	const postWithFile = opts.postWithFile ?? postDiscordMessageWithFile;
 	const postText =
@@ -239,12 +267,29 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 					return;
 				}
 			}
-			if (!opts.vercelToken) {
-				res.status(501).json({
-					error:
-						"report publishing not available — VERCEL_TOKEN not configured",
-				});
-				return;
+			if (hostOverride) {
+				if (!opts.vercelToken) {
+					res.status(501).json({
+						error:
+							"report publishing not available — VERCEL_TOKEN not configured",
+					});
+					return;
+				}
+			} else {
+				if (!blobStore) {
+					res.status(501).json({
+						error:
+							"report publishing not available — BLOB_READ_WRITE_TOKEN not configured",
+					});
+					return;
+				}
+				if (opts.registry.hosting()?.provider !== "vercel-blob") {
+					res.status(503).json({
+						error:
+							"report publishing unavailable — hosting migration is not complete",
+					});
+					return;
+				}
 			}
 
 			if (typeof projectName !== "string" || projectName.trim().length === 0) {
@@ -286,40 +331,54 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 					res.status(400).json({ error: err.message });
 					return;
 				}
-				console.error("[reports] stagePublish failed:", (err as Error).message);
+				console.error("[reports] stagePublish failed");
 				res.status(500).json({ error: "report staging failed" });
 				return;
 			}
 
-			let deploymentId: string;
 			try {
-				const result = await deployFiles(
-					opts.vercelToken,
-					staged.vercelProjectName,
-					staged.deployFiles,
-					undefined,
-					opts.hostOverride?.apiBaseUrl,
-				);
-				deploymentId = result.deploymentId;
-			} catch (err) {
+				if (hostOverride) {
+					await deployFiles(
+						opts.vercelToken as string,
+						staged.vercelProjectName,
+						buildLoopbackDeployFiles(opts.registry, staged),
+						undefined,
+						hostOverride.apiBaseUrl,
+					);
+				} else {
+					await blobStore!.putReport(staged.entry.token, staged.html);
+				}
+			} catch {
 				staged.abort();
-				console.error("[reports] deploy failed:", (err as Error).message);
+				console.error(
+					hostOverride
+						? "[reports] loopback report deploy failed"
+						: "[reports] blob upload failed",
+				);
 				res.status(502).json({ error: "report publishing failed" });
 				return;
 			}
 
 			try {
 				staged.commit();
-			} catch (err) {
-				// Vercel cannot be rolled back; local registry stays old. The
-				// hosted set temporarily contains a report the registry doesn't
-				// know about — the next successful publish realigns. Log token +
-				// deployment id (NOT the full private URL) for operator recovery.
-				console.error(
-					`[reports] commit failed after successful deploy (token=${staged.entry.token}, deploymentId=${deploymentId}): ${(err as Error).message}`,
-				);
+			} catch {
+				if (!hostOverride && blobStore) {
+					await blobStore.deleteReports([staged.entry.token]).catch(() => {
+						console.warn(
+							"[reports] failed to delete orphan Blob after registry commit failure",
+						);
+					});
+				}
+				console.error("[reports] commit failed after successful Blob upload");
 				res.status(502).json({ error: "report publish commit failed" });
 				return;
+			}
+			if (!hostOverride && blobStore && staged.expired.length > 0) {
+				await blobStore
+					.deleteReports(staged.expired.map((entry) => entry.token))
+					.catch(() => {
+						console.warn("[reports] expired Blob cleanup deferred");
+					});
 			}
 			console.info(
 				`[reports] publish succeeded credentialTier=${credentialTier} project=${JSON.stringify(projectName.trim())}`,
@@ -327,7 +386,7 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 
 			res.json({
 				url: publicReportUrl(
-					opts.hostOverride,
+					hostOverride,
 					staged.vercelProjectName,
 					staged.entry.token,
 				),
@@ -344,8 +403,8 @@ export function createReportsRouter(opts: ReportsRouterOptions): Router {
 		// run(), but guard the chain against unexpected rejections anyway.
 		publishChain = publishChain
 			.then(run)
-			.catch((err) => {
-				console.error("[reports] publish handler error:", err);
+			.catch(() => {
+				console.error("[reports] publish handler error");
 				if (!res.headersSent) {
 					res.status(500).json({ error: "internal error" });
 				}

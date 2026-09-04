@@ -1,13 +1,6 @@
 /**
- * FLY-203: ReportRegistry unit tests — real fs in a tmp dir.
- *
- * The critical properties under test are the transaction boundaries
- * (Codex design review R1#3 + R2#2 + R3#1):
- *   - stagePublish() never touches disk
- *   - abort() leaves disk untouched (first publish: not even registry.json)
- *   - commit() order: new file → atomic registry rename → best-effort prune
- *   - prune deletion failure after the rename is warn-only
- *   - vercelProjectName persists only via commit
+ * ReportRegistry tests use a real temporary filesystem. The registry is local
+ * transaction metadata; hosted bytes live as independent private Blob objects.
  */
 
 import {
@@ -25,8 +18,6 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { verifyReport } from "../../../flywheel-comm/src/commands/verify-report.js";
 import {
-	DEFAULT_RETENTION_BYTES,
-	DEFAULT_RETENTION_MAX,
 	DEFAULT_RETENTION_MAX_AGE_MS,
 	injectHeadMeta,
 	REPORT_REGISTRY_INTERNALS,
@@ -36,16 +27,14 @@ import {
 
 const HTML =
 	"<!doctype html><html><head><title>t</title></head><body>r</body></html>";
+const DAY_MS = 24 * 60 * 60 * 1000;
 const REPO_ROOT = resolve(
 	fileURLToPath(new URL("../../../..", import.meta.url)),
 );
 
-function seqRandomHex(): (n: number) => string {
-	let i = 0;
-	return (n: number) => {
-		i += 1;
-		return String(i).padStart(n * 2, "0");
-	};
+function seqRandomHex(): (bytes: number) => string {
+	let sequence = 0;
+	return (bytes) => String(++sequence).padStart(bytes * 2, "0");
 }
 
 describe("ReportRegistry", () => {
@@ -61,26 +50,21 @@ describe("ReportRegistry", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	function makeRegistry(
-		opts: {
-			retentionMax?: number;
-			retentionBytes?: number;
-			retentionMaxAgeMs?: number;
-			now?: () => number;
-		} = {},
-	) {
+	function makeRegistry(now: () => number = () => Date.now()): ReportRegistry {
 		return new ReportRegistry(dir, {
-			...opts,
+			now,
 			randomHex: seqRandomHex(),
-			warn: (m) => warns.push(m),
+			warn: (message) => warns.push(message),
 		});
 	}
 
 	function diskSnapshot(): string[] {
 		if (!existsSync(dir)) return [];
-		const walk = (d: string): string[] =>
-			readdirSync(d, { withFileTypes: true }).flatMap((e) =>
-				e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)],
+		const walk = (path: string): string[] =>
+			readdirSync(path, { withFileTypes: true }).flatMap((entry) =>
+				entry.isDirectory()
+					? walk(join(path, entry.name))
+					: [join(path, entry.name)],
 			);
 		return walk(dir).sort();
 	}
@@ -96,15 +80,10 @@ describe("ReportRegistry", () => {
 		for (const template of templates) {
 			const source = readFileSync(join(REPO_ROOT, template), "utf-8");
 			const staged = makeRegistry().stagePublish("flywheel", source, template);
-			const published = staged.deployFiles.find(
-				(file) => file.file === `r/${staged.entry.token}/index.html`,
-			);
-			expect(published, template).toBeDefined();
-
 			const verification = await verifyReport({
 				url: `https://reports.example/r/${staged.entry.token}/`,
 				fetchImpl: async () =>
-					new Response(published?.data, {
+					new Response(staged.html, {
 						status: 200,
 						headers: { "content-type": "text/html" },
 					}),
@@ -116,468 +95,286 @@ describe("ReportRegistry", () => {
 		}
 	});
 
-	it("stagePublish performs zero fs mutation", () => {
-		const reg = makeRegistry();
+	it("stagePublish performs zero filesystem mutation", () => {
+		const registry = makeRegistry();
 		const before = diskSnapshot();
-		const staged = reg.stagePublish("flywheel", HTML, "Title");
+		const staged = registry.stagePublish("flywheel", HTML, "Title");
+
 		expect(diskSnapshot()).toEqual(before);
 		expect(staged.entry.token).toHaveLength(32);
+		expect(staged.html).toContain("Content-Security-Policy");
 		staged.abort();
 	});
 
-	it("first-publish deploy failure → abort → no registry.json, zero files", () => {
-		const reg = makeRegistry();
-		const staged = reg.stagePublish("flywheel", HTML);
-		staged.abort();
-		expect(existsSync(join(dir, "registry.json"))).toBe(false);
-		expect(diskSnapshot()).toEqual([]);
-		expect(reg.vercelProjectName()).toBeUndefined();
-		expect(reg.list()).toEqual([]);
-	});
+	it("rejects a multiline Content-Security-Policy before staging a report", () => {
+		const registry = makeRegistry();
+		const before = diskSnapshot();
+		const html =
+			"<html><head><meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none';\r\nstyle-src 'unsafe-inline'\"></head><body></body></html>";
 
-	it("commit writes report file, registry, and the project name", () => {
-		const reg = makeRegistry();
-		const staged = reg.stagePublish("flywheel", HTML, "T1");
-		staged.commit();
-		expect(
-			readFileSync(join(dir, "files", `${staged.entry.token}.html`), "utf-8"),
-		).toContain("<body>r</body>");
-		expect(reg.vercelProjectName()).toBe(staged.vercelProjectName);
-		expect(reg.list()).toHaveLength(1);
-		expect(reg.list()[0]?.token).toBe(staged.entry.token);
-	});
-
-	it("vercelProjectName: new in-memory on first stage, reused after commit", () => {
-		const reg = makeRegistry();
-		const s1 = reg.stagePublish("flywheel", HTML);
-		expect(s1.vercelProjectName).toMatch(/^fw-reports-[0-9a-f]{6}$/);
-		// not persisted before commit
-		expect(reg.vercelProjectName()).toBeUndefined();
-		s1.commit();
-		const s2 = reg.stagePublish("flywheel", HTML);
-		expect(s2.vercelProjectName).toBe(s1.vercelProjectName);
-		s2.abort();
-	});
-
-	it("second publish keeps prior report in deployFiles (persistence)", () => {
-		const reg = makeRegistry();
-		const s1 = reg.stagePublish("flywheel", HTML, "first");
-		s1.commit();
-		const s2 = reg.stagePublish("flywheel", HTML, "second");
-		const paths = s2.deployFiles.map((f) => f.file);
-		expect(paths).toContain("robots.txt");
-		expect(paths).toContain(`r/${s1.entry.token}/index.html`);
-		expect(paths).toContain(`r/${s2.entry.token}/index.html`);
-		s2.commit();
-	});
-
-	it("commit/abort are single-shot", () => {
-		const reg = makeRegistry();
-		const s = reg.stagePublish("flywheel", HTML);
-		s.commit();
-		expect(() => s.commit()).toThrow(/already called/);
-		const s2 = reg.stagePublish("flywheel", HTML);
-		s2.abort();
-		expect(() => s2.commit()).toThrow(/already called/);
-	});
-
-	// ── retention ───────────────────────────────────────────────────────
-
-	it("count cap prunes oldest; pruned file deleted at commit", () => {
-		const reg = makeRegistry({ retentionMax: 2 });
-		const s1 = reg.stagePublish("p", HTML, "a");
-		s1.commit();
-		const s2 = reg.stagePublish("p", HTML, "b");
-		s2.commit();
-		const s3 = reg.stagePublish("p", HTML, "c");
-		// staged view already excludes the pruned oldest
-		const paths = s3.deployFiles.map((f) => f.file);
-		expect(paths).not.toContain(`r/${s1.entry.token}/index.html`);
-		expect(paths).toContain(`r/${s2.entry.token}/index.html`);
-		s3.commit();
-		expect(existsSync(join(dir, "files", `${s1.entry.token}.html`))).toBe(
-			false,
+		expect(() =>
+			registry.stagePublish("flywheel", html, "multiline CSP"),
+		).toThrow(
+			/Content-Security-Policy must be a single line without CR or LF characters/,
 		);
-		expect(reg.list().map((e) => e.token)).toEqual([
-			s2.entry.token,
-			s3.entry.token,
+		expect(diskSnapshot()).toEqual(before);
+	});
+
+	it("upload failure followed by abort leaves no registry or report file", () => {
+		const registry = makeRegistry();
+		registry.stagePublish("flywheel", HTML).abort();
+
+		expect(diskSnapshot()).toEqual([]);
+		expect(registry.vercelProjectName()).toBeUndefined();
+		expect(registry.list()).toEqual([]);
+	});
+
+	it("commit writes the hardened report, registry entry, and stable gateway name", () => {
+		const registry = makeRegistry();
+		const staged = registry.stagePublish("flywheel", HTML, "T1");
+		staged.commit();
+
+		expect(
+			readFileSync(join(dir, "files", `${staged.entry.token}.html`), "utf8"),
+		).toContain("<body>r</body>");
+		expect(registry.vercelProjectName()).toBe(staged.vercelProjectName);
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			staged.entry.token,
 		]);
 	});
 
-	it("bytes cap prunes oldest until total fits", () => {
-		// hardened size per report ≈ 815 B (655 B doc + injected noindex/CSP
-		// metas) → two fit under 2000 B, a third pushes past → oldest pruned.
-		const bigHtml = `<!doctype html><html><head></head><body>${"x".repeat(600)}</body></html>`;
-		const reg = makeRegistry({ retentionBytes: 2000 });
-		const s1 = reg.stagePublish("p", bigHtml);
-		s1.commit();
-		const s2 = reg.stagePublish("p", bigHtml);
-		s2.commit();
-		expect(reg.list()).toHaveLength(2); // two fit
-		const s3 = reg.stagePublish("p", bigHtml);
-		const paths = s3.deployFiles.map((f) => f.file);
-		expect(paths).not.toContain(`r/${s1.entry.token}/index.html`);
-		s3.commit();
-		expect(reg.list()).toHaveLength(2);
+	it("rejects a malformed registry token before resolving a local migration path", () => {
+		writeFileSync(
+			join(dir, "registry.json"),
+			JSON.stringify({
+				vercelProjectName: "fw-reports-seeded",
+				reports: [
+					{
+						token: "../outside",
+						projectName: "flywheel",
+						createdAt: "2026-09-03T16:00:00.000Z",
+						bytes: 1,
+					},
+				],
+			}),
+			"utf8",
+		);
+		writeFileSync(join(dir, "outside.html"), "must-not-be-read", "utf8");
+		const registry = makeRegistry();
+
+		expect(() => registry.readReportHtml("../outside")).toThrow(
+			"invalid report token",
+		);
 	});
 
-	it("default caps are 100 entries / 8.5 MiB", () => {
-		expect(DEFAULT_RETENTION_MAX).toBe(100);
-		expect(DEFAULT_RETENTION_BYTES).toBe(8.5 * 1024 * 1024);
+	it("second publish stages one object and preserves the prior registry entry", () => {
+		const registry = makeRegistry();
+		const first = registry.stagePublish("flywheel", HTML, "first");
+		first.commit();
+		const second = registry.stagePublish("flywheel", HTML, "second");
+
+		expect(second).not.toHaveProperty("deployFiles");
+		expect(second.vercelProjectName).toBe(first.vercelProjectName);
+		second.commit();
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			first.entry.token,
+			second.entry.token,
+		]);
 	});
 
-	it("default byte cap prunes an incident-shaped 21-report body below Vercel's 10 MB cap", () => {
-		const reportBytes = 480 * 1024;
-		const now = Date.parse("2026-08-21T21:00:00.000Z");
-		const prefix = `<!doctype html><html><head>${REPORT_REGISTRY_INTERNALS.NOINDEX_META}${REPORT_REGISTRY_INTERNALS.CSP_META}</head><body>`;
-		const suffix = "</body></html>";
-		// Exactly 100 raw bytes with 5 JSON-escaped bytes (quotes, newline,
-		// backslash, tab). A plain x.repeat fixture would not distinguish the
-		// old 10 MiB raw cap from the Vercel JSON-body cap that caused FLY-1728.
-		const escapeChunk = `${"x".repeat(95)}""\n\\\t`;
-		const contentBytes = reportBytes - Buffer.byteLength(prefix + suffix);
-		const content = escapeChunk
-			.repeat(Math.ceil(contentBytes / Buffer.byteLength(escapeChunk)))
-			.slice(0, contentBytes);
-		const reportHtml = `${prefix}${content}${suffix}`;
-		expect(Buffer.byteLength(reportHtml)).toBe(reportBytes);
+	it("commit and abort are single-shot", () => {
+		const registry = makeRegistry();
+		const committed = registry.stagePublish("flywheel", HTML);
+		committed.commit();
+		expect(() => committed.commit()).toThrow(/already called/);
+		const aborted = registry.stagePublish("flywheel", HTML);
+		aborted.abort();
+		expect(() => aborted.commit()).toThrow(/already called/);
+	});
 
-		const reports = Array.from({ length: 20 }, (_, i) => ({
-			token: `f${String(i).padStart(31, "0")}`,
+	it("FLY-2283: aggregate count and bytes never evict a report before 14 days", () => {
+		const now = Date.parse("2026-09-03T16:00:00.000Z");
+		const reports = Array.from({ length: 2500 }, (_, index) => ({
+			token: index.toString(16).padStart(32, "0"),
 			projectName: "flywheel",
-			title: `heavy-${i}`,
-			createdAt: new Date(now - (20 - i) * 1000).toISOString(),
-			bytes: reportBytes,
+			createdAt: new Date(now - (2500 - index) * 1000).toISOString(),
+			bytes: 512 * 1024,
 		}));
-		mkdirSync(join(dir, "files"), { recursive: true });
-		for (const report of reports) {
-			writeFileSync(
-				join(dir, "files", `${report.token}.html`),
-				reportHtml,
-				"utf-8",
-			);
-		}
 		writeFileSync(
 			join(dir, "registry.json"),
 			JSON.stringify({
 				vercelProjectName: "fw-reports-seeded",
 				reports,
 			}),
-			"utf-8",
+			"utf8",
 		);
 
-		const reg = makeRegistry({ now: () => now });
-		const staged = reg.stagePublish("flywheel", reportHtml, "heavy-20");
-		const prePruneFiles = [
-			{
-				file: "robots.txt",
-				data: REPORT_REGISTRY_INTERNALS.ROBOTS_TXT,
-			},
-			...reports.map((report) => ({
-				file: `r/${report.token}/index.html`,
-				data: reportHtml,
-			})),
-			{
-				file: `r/${staged.entry.token}/index.html`,
-				data: reportHtml,
-			},
-		];
-		const serializeDeployBody = (
-			files: Array<{ file: string; data: string }>,
-		) =>
-			Buffer.byteLength(
-				JSON.stringify({
-					name: staged.vercelProjectName,
-					target: "production",
-					files: files.map((file) => ({ ...file, encoding: "utf-8" })),
-					projectSettings: { framework: null },
-				}),
-			);
+		const registry = makeRegistry(() => now);
+		const staged = registry.stagePublish(
+			"personal-assistant",
+			HTML,
+			"weekly-menu",
+		);
+		staged.commit();
 
-		const prePruneHtmlBytes = 21 * reportBytes;
-		expect(prePruneHtmlBytes).toBeLessThan(10 * 1024 * 1024);
-		expect(serializeDeployBody(prePruneFiles)).toBeGreaterThan(10_000_000);
-
-		const deployedPaths = staged.deployFiles.map((file) => file.file);
-		expect(staged.deployFiles).toHaveLength(19); // robots.txt + 18 reports
-		expect(deployedPaths).not.toContain(`r/${reports[0]?.token}/index.html`);
-		expect(deployedPaths).not.toContain(`r/${reports[1]?.token}/index.html`);
-		expect(deployedPaths).not.toContain(`r/${reports[2]?.token}/index.html`);
-		expect(deployedPaths).toContain(`r/${reports[3]?.token}/index.html`);
-		expect(deployedPaths).toContain(`r/${staged.entry.token}/index.html`);
-		expect(
-			staged.deployFiles
-				.filter((file) => file.file !== "robots.txt")
-				.reduce((sum, file) => sum + Buffer.byteLength(file.data), 0),
-		).toBeLessThanOrEqual(DEFAULT_RETENTION_BYTES);
-		expect(serializeDeployBody(staged.deployFiles)).toBeLessThan(10_000_000);
-		staged.abort();
-	}, 10_000);
-
-	// ── TTL expiry (founder requirement: links die after 7 days) ────────
-
-	it("default TTL is 7 days", () => {
-		expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+		expect(registry.list()).toHaveLength(2501);
+		expect(registry.list()[0]?.token).toBe(reports[0]?.token);
+		expect(registry.list().at(-1)?.token).toBe(staged.entry.token);
 	});
 
-	it.each(["0", "30"])(
-		"FLY-1981 keeps the Bridge report TTL at seven days when the retired env is %s",
-		(raw) => {
-			const previous = process.env.FLYWHEEL_REPORTS_TTL_DAYS;
-			process.env.FLYWHEEL_REPORTS_TTL_DAYS = raw;
-			try {
-				let clock = Date.parse("2026-06-04T00:00:00Z");
-				const reg = makeRegistry({ now: () => clock });
-				const old = reg.stagePublish("p", HTML, "old");
-				old.commit();
-				clock += 7 * 24 * 60 * 60 * 1000;
-				const current = reg.stagePublish("p", HTML, "current");
-				expect(current.deployFiles.map((file) => file.file)).not.toContain(
-					`r/${old.entry.token}/index.html`,
-				);
-				current.abort();
+	it("uses one fixed 14-day TTL even when the retired env is present", () => {
+		const previous = process.env.FLYWHEEL_REPORTS_TTL_DAYS;
+		process.env.FLYWHEEL_REPORTS_TTL_DAYS = "0";
+		try {
+			let now = Date.parse("2026-06-04T00:00:00.000Z");
+			const registry = makeRegistry(() => now);
+			const old = registry.stagePublish("p", HTML, "old");
+			old.commit();
+			now += 13 * DAY_MS;
+			expect(registry.stagePublish("p", HTML).expired).toEqual([]);
+			now += DAY_MS;
+			expect(
+				registry.stagePublish("p", HTML).expired.map((entry) => entry.token),
+			).toContain(old.entry.token);
+			expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(14 * DAY_MS);
+		} finally {
+			if (previous === undefined) delete process.env.FLYWHEEL_REPORTS_TTL_DAYS;
+			else process.env.FLYWHEEL_REPORTS_TTL_DAYS = previous;
+		}
+	});
 
-				const pluginSource = readFileSync(
-					new URL("../bridge/plugin.ts", import.meta.url),
-					"utf8",
-				);
-				expect(DEFAULT_RETENTION_MAX_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
-				expect(pluginSource).toContain(
-					"retentionMaxAgeMs: DEFAULT_RETENTION_MAX_AGE_MS",
-				);
-				expect(pluginSource).not.toContain("FLYWHEEL_REPORTS_TTL_DAYS");
-			} finally {
-				if (previous === undefined) {
-					delete process.env.FLYWHEEL_REPORTS_TTL_DAYS;
-				} else {
-					process.env.FLYWHEEL_REPORTS_TTL_DAYS = previous;
-				}
-			}
-		},
-	);
+	it("expires a report at the exact 14-day boundary and deletes its local copy on commit", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const old = registry.stagePublish("p", HTML, "old");
+		old.commit();
+		now += 14 * DAY_MS;
+		const next = registry.stagePublish("p", HTML, "new");
 
-	it("entries older than the TTL are pruned at the next publish", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ now: () => clock });
-		const s1 = reg.stagePublish("p", HTML, "old");
-		s1.commit();
-		// 8 days later: a new publish must drop the expired entry
-		clock += 8 * 24 * 60 * 60 * 1000;
-		const s2 = reg.stagePublish("p", HTML, "new");
-		expect(s2.deployFiles.map((f) => f.file)).not.toContain(
-			`r/${s1.entry.token}/index.html`,
-		);
-		s2.commit();
-		expect(reg.list().map((e) => e.token)).toEqual([s2.entry.token]);
-		expect(existsSync(join(dir, "files", `${s1.entry.token}.html`))).toBe(
+		expect(next.expired.map((entry) => entry.token)).toEqual([old.entry.token]);
+		next.commit();
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			next.entry.token,
+		]);
+		expect(existsSync(join(dir, "files", `${old.entry.token}.html`))).toBe(
 			false,
 		);
 	});
 
-	it("entries younger than the TTL survive (boundary)", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ now: () => clock });
-		const s1 = reg.stagePublish("p", HTML, "young");
-		s1.commit();
-		clock += 6 * 24 * 60 * 60 * 1000; // 6 days — inside TTL
-		const s2 = reg.stagePublish("p", HTML, "new");
-		expect(s2.deployFiles.map((f) => f.file)).toContain(
-			`r/${s1.entry.token}/index.html`,
-		);
-		s2.abort();
+	it("keeps a report for the complete interval before 14 days", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const old = registry.stagePublish("p", HTML, "young");
+		old.commit();
+		now += 14 * DAY_MS - 1;
+
+		const staged = registry.stagePublish("p", HTML, "new");
+		expect(staged.expired).toEqual([]);
+		staged.abort();
 	});
 
-	it("an entry EXACTLY at the TTL boundary is pruned (>= semantics)", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ now: () => clock });
-		const s1 = reg.stagePublish("p", HTML, "boundary");
-		s1.commit();
-		clock += 7 * 24 * 60 * 60 * 1000; // exactly 7 days
-		const s2 = reg.stagePublish("p", HTML, "new");
-		expect(s2.deployFiles.map((f) => f.file)).not.toContain(
-			`r/${s1.entry.token}/index.html`,
-		);
-		s2.abort();
-	});
-
-	it("malformed createdAt is never TTL-pruned (NaN age guard)", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ now: () => clock });
-		const s1 = reg.stagePublish("p", HTML);
-		s1.commit();
-		// corrupt the committed createdAt
-		const regPath = join(dir, "registry.json");
-		const data = JSON.parse(readFileSync(regPath, "utf-8"));
+	it("prunes malformed timestamps from accounting without marking them safe for remote deletion", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const old = registry.stagePublish("p", HTML);
+		old.commit();
+		const registryPath = join(dir, "registry.json");
+		const data = JSON.parse(readFileSync(registryPath, "utf8"));
 		data.reports[0].createdAt = "not-a-date";
-		writeFileSync(regPath, JSON.stringify(data), "utf-8");
-		clock += 30 * 24 * 60 * 60 * 1000;
-		const s2 = reg.stagePublish("p", HTML);
-		// guard keeps it (conservative: unknown age ≠ expired)
-		expect(s2.deployFiles.map((f) => f.file)).toContain(
-			`r/${s1.entry.token}/index.html`,
+		writeFileSync(registryPath, JSON.stringify(data), "utf8");
+		now += 30 * DAY_MS;
+
+		const staged = registry.stagePublish("p", HTML);
+		expect(staged.expired).toEqual([]);
+		staged.commit();
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			staged.entry.token,
+		]);
+	});
+
+	it("abort after expiry staging leaves the prior registry and file untouched", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const old = registry.stagePublish("p", HTML);
+		old.commit();
+		now += 15 * DAY_MS;
+		registry.stagePublish("p", HTML).abort();
+
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			old.entry.token,
+		]);
+		expect(existsSync(join(dir, "files", `${old.entry.token}.html`))).toBe(
+			true,
 		);
-		s2.abort();
 	});
 
-	it("retentionMaxAgeMs: 0 disables age-based expiry", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ retentionMaxAgeMs: 0, now: () => clock });
-		const s1 = reg.stagePublish("p", HTML);
-		s1.commit();
-		clock += 365 * 24 * 60 * 60 * 1000; // a year
-		const s2 = reg.stagePublish("p", HTML);
-		expect(s2.deployFiles.map((f) => f.file)).toContain(
-			`r/${s1.entry.token}/index.html`,
-		);
-		s2.abort();
-	});
+	it("commit failure before registry rename preserves the old entry and file", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const old = registry.stagePublish("p", HTML, "old");
+		old.commit();
+		const registryBefore = readFileSync(join(dir, "registry.json"), "utf8");
+		mkdirSync(join(dir, "registry.json.tmp"));
+		now += 15 * DAY_MS;
 
-	it("an extremely large TTL behaves as never-expiring without overflow surprises", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({
-			retentionMaxAgeMs: 99999999 * 24 * 60 * 60 * 1000,
-			now: () => clock,
-		});
-		const s1 = reg.stagePublish("p", HTML);
-		s1.commit();
-		clock += 3650 * 24 * 60 * 60 * 1000; // 10 years
-		const s2 = reg.stagePublish("p", HTML);
-		expect(s2.deployFiles.map((f) => f.file)).toContain(
-			`r/${s1.entry.token}/index.html`,
-		);
-		s2.abort();
-	});
-
-	it("TTL coexists with count cap — whichever hits first wins", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ retentionMax: 2, now: () => clock });
-		const s1 = reg.stagePublish("p", HTML, "a");
-		s1.commit();
-		clock += 1000;
-		const s2 = reg.stagePublish("p", HTML, "b");
-		s2.commit();
-		// count cap prunes s1 (TTL not reached)
-		clock += 1000;
-		const s3 = reg.stagePublish("p", HTML, "c");
-		expect(s3.deployFiles.map((f) => f.file)).not.toContain(
-			`r/${s1.entry.token}/index.html`,
-		);
-		s3.commit();
-		// TTL prunes everything older than 7d regardless of count
-		clock += 8 * 24 * 60 * 60 * 1000;
-		const s4 = reg.stagePublish("p", HTML, "d");
-		const paths = s4.deployFiles.map((f) => f.file);
-		expect(paths).not.toContain(`r/${s2.entry.token}/index.html`);
-		expect(paths).not.toContain(`r/${s3.entry.token}/index.html`);
-		expect(paths).toContain(`r/${s4.entry.token}/index.html`);
-		s4.abort();
-	});
-
-	it("abort after TTL staging leaves expired entries on disk untouched", () => {
-		let clock = Date.parse("2026-06-04T00:00:00Z");
-		const reg = makeRegistry({ now: () => clock });
-		const s1 = reg.stagePublish("p", HTML);
-		s1.commit();
-		clock += 8 * 24 * 60 * 60 * 1000;
-		const s2 = reg.stagePublish("p", HTML);
-		s2.abort();
-		// abort = zero fs change: the expired entry is still committed state
-		expect(reg.list().map((e) => e.token)).toEqual([s1.entry.token]);
-		expect(existsSync(join(dir, "files", `${s1.entry.token}.html`))).toBe(true);
-	});
-
-	// ── commit failure boundaries (R2#2) ────────────────────────────────
-
-	it("commit failure before registry rename leaves old registry + pruned files intact", () => {
-		const reg = makeRegistry({ retentionMax: 1 });
-		const s1 = reg.stagePublish("p", HTML, "old");
-		s1.commit();
-		const registryBefore = readFileSync(join(dir, "registry.json"), "utf-8");
-
-		// Sabotage the rename step: make registry.json.tmp unwritable by
-		// turning baseDir's registry.json.tmp path into a directory.
-		mkdirSync(join(dir, "registry.json.tmp"), { recursive: true });
-
-		const s2 = reg.stagePublish("p", HTML, "new");
-		expect(() => s2.commit()).toThrow();
-		// registry unchanged (= old state), pruned old report file still there
-		expect(readFileSync(join(dir, "registry.json"), "utf-8")).toBe(
+		expect(() => registry.stagePublish("p", HTML, "new").commit()).toThrow();
+		expect(readFileSync(join(dir, "registry.json"), "utf8")).toBe(
 			registryBefore,
 		);
-		expect(existsSync(join(dir, "files", `${s1.entry.token}.html`))).toBe(true);
-		// orphan new file may exist — acceptable; registry-driven deploys ignore it
+		expect(existsSync(join(dir, "files", `${old.entry.token}.html`))).toBe(
+			true,
+		);
 	});
 
-	it("prune deletion failure after rename warns but commit succeeds", () => {
-		const reg = makeRegistry({ retentionMax: 1 });
-		const s1 = reg.stagePublish("p", HTML, "old");
-		s1.commit();
-		// Replace the old report file with a non-empty directory so rmSync
-		// (non-recursive) fails for it.
-		const oldPath = join(dir, "files", `${s1.entry.token}.html`);
+	it("local expired-file deletion failure is warn-only after the registry commit", () => {
+		let now = Date.parse("2026-06-04T00:00:00.000Z");
+		const registry = makeRegistry(() => now);
+		const old = registry.stagePublish("p", HTML, "old");
+		old.commit();
+		const oldPath = join(dir, "files", `${old.entry.token}.html`);
 		rmSync(oldPath);
 		mkdirSync(oldPath);
 		writeFileSync(join(oldPath, "block"), "x");
+		now += 15 * DAY_MS;
+		const next = registry.stagePublish("p", HTML, "new");
 
-		const s2 = reg.stagePublish("p", HTML, "new");
-		expect(() => s2.commit()).not.toThrow();
-		expect(warns.some((w) => w.includes("failed to delete pruned"))).toBe(true);
-		// registry IS the new state (rename happened)
-		expect(reg.list().map((e) => e.token)).toEqual([s2.entry.token]);
-	});
-
-	// ── deployFiles content ─────────────────────────────────────────────
-
-	it("deployFiles include robots.txt with Disallow all", () => {
-		const reg = makeRegistry();
-		const s = reg.stagePublish("p", HTML);
-		const robots = s.deployFiles.find((f) => f.file === "robots.txt");
-		expect(robots?.data).toBe(REPORT_REGISTRY_INTERNALS.ROBOTS_TXT);
-		expect(robots?.data).toContain("Disallow: /");
-		s.abort();
-	});
-
-	it("retained entry with a missing local file is warned + dropped at commit", () => {
-		const reg = makeRegistry();
-		const s1 = reg.stagePublish("p", HTML);
-		s1.commit();
-		rmSync(join(dir, "files", `${s1.entry.token}.html`));
-		const s2 = reg.stagePublish("p", HTML);
-		expect(warns.some((w) => w.includes("file missing"))).toBe(true);
-		expect(s2.deployFiles.map((f) => f.file)).not.toContain(
-			`r/${s1.entry.token}/index.html`,
+		expect(() => next.commit()).not.toThrow();
+		expect(warns.some((message) => message.includes("failed to delete"))).toBe(
+			true,
 		);
-		s2.commit();
-		expect(reg.list().map((e) => e.token)).toEqual([s2.entry.token]);
+		expect(registry.list().map((entry) => entry.token)).toEqual([
+			next.entry.token,
+		]);
 	});
 
-	// ── registry corruption ─────────────────────────────────────────────
+	it("preserves the durable Blob-hosting cutover marker across publishes", () => {
+		const registry = makeRegistry();
+		registry.stagePublish("p", HTML).commit();
+		const hosting = {
+			provider: "vercel-blob" as const,
+			migratedAt: "2026-09-03T16:00:00.000Z",
+			gatewayDeploymentId: "dpl_gateway",
+		};
+		registry.markHostingMigrated(hosting);
+		registry.stagePublish("p", HTML).commit();
 
-	it("corrupted registry.json → loud error, no silent rebuild", () => {
-		const reg = makeRegistry();
-		reg.stagePublish("p", HTML).commit();
-		writeFileSync(join(dir, "registry.json"), "{not json", "utf-8");
-		expect(() => reg.list()).toThrow(/refusing to silently rebuild/);
-		expect(() => reg.stagePublish("p", HTML)).toThrow(
-			/refusing to silently rebuild/,
-		);
+		expect(registry.hosting()).toEqual(hosting);
 	});
 
-	it("invalid-shape registry.json → loud error", () => {
-		writeFileSync(join(dir, "registry.json"), '{"reports": "nope"}', "utf-8");
-		const reg = makeRegistry();
-		expect(() => reg.list()).toThrow(/invalid shape/);
+	it("corrupted or invalid registry data fails loudly", () => {
+		const registry = makeRegistry();
+		registry.stagePublish("p", HTML).commit();
+		writeFileSync(join(dir, "registry.json"), "{not json", "utf8");
+		expect(() => registry.list()).toThrow(/refusing to silently rebuild/);
+		writeFileSync(join(dir, "registry.json"), '{"reports":"nope"}', "utf8");
+		expect(() => registry.list()).toThrow(/invalid shape/);
 	});
 
-	it("atomic write leaves no .tmp residue after commit", () => {
-		const reg = makeRegistry();
-		reg.stagePublish("p", HTML).commit();
+	it("atomic writes leave no temporary residue", () => {
+		const registry = makeRegistry();
+		registry.stagePublish("p", HTML).commit();
 		expect(existsSync(join(dir, "registry.json.tmp"))).toBe(false);
-	});
-
-	it("previewsDir is under baseDir", () => {
-		const reg = makeRegistry();
-		expect(reg.previewsDir()).toBe(join(dir, "previews"));
+		expect(registry.previewsDir()).toBe(join(dir, "previews"));
 	});
 
 	it("rejects external scripts consistently at publish and verification", async () => {
@@ -619,52 +416,54 @@ describe("ReportRegistry", () => {
 });
 
 describe("injectHeadMeta", () => {
-	it("injects noindex + CSP when absent", () => {
-		const out = injectHeadMeta(HTML);
-		expect(out).toContain('name="robots" content="noindex"');
-		expect(out).toContain("Content-Security-Policy");
-		expect(out).toContain("default-src 'none'");
-		// injected right after <head>
-		expect(out.indexOf("noindex")).toBeGreaterThan(out.indexOf("<head>"));
-		expect(out.indexOf("noindex")).toBeLessThan(out.indexOf("<title>"));
+	it("injects noindex and strict CSP into a complete document", () => {
+		const output = injectHeadMeta(HTML);
+		expect(output).toContain('name="robots" content="noindex"');
+		expect(output).toContain("default-src 'none'");
+		expect(output.indexOf("noindex")).toBeGreaterThan(output.indexOf("<head>"));
+		expect(output.indexOf("noindex")).toBeLessThan(output.indexOf("<title>"));
 	});
 
-	it("leaves existing robots meta and CSP untouched", () => {
-		const html =
+	it("keeps existing head policies and injects only a missing policy", () => {
+		const complete =
 			'<html><head><meta name="robots" content="all"><meta http-equiv="Content-Security-Policy" content="default-src *"></head><body></body></html>';
-		expect(injectHeadMeta(html)).toBe(html);
-	});
-
-	it("injects only the missing one", () => {
-		const html =
+		expect(injectHeadMeta(complete)).toBe(complete);
+		const robotsOnly =
 			'<html><head><meta name="robots" content="noindex"></head><body></body></html>';
-		const out = injectHeadMeta(html);
-		expect(out.match(/name=["']?robots/gi)).toHaveLength(1);
-		expect(out).toContain("Content-Security-Policy");
+		const output = injectHeadMeta(robotsOnly);
+		expect(output.match(/name=["']?robots/gi)).toHaveLength(1);
+		expect(output).toContain("Content-Security-Policy");
 	});
 
-	it("rejects HTML without <head> (ReportHtmlInvalidError)", () => {
+	it("rejects HTML without a head", () => {
 		expect(() => injectHeadMeta("<p>fragment</p>")).toThrow(
 			ReportHtmlInvalidError,
 		);
 	});
 
-	it("body fake meta must NOT suppress injection (code review R1#1)", () => {
-		// A report that merely SHOWS a CSP/robots meta tag in its body (e.g.
-		// a <pre> code sample) still needs the real head injection.
-		const html =
-			'<html><head><title>t</title></head><body><pre>&lt;example&gt;<meta http-equiv="Content-Security-Policy" content="default-src *"><meta name="robots" content="all"></pre></body></html>';
-		const out = injectHeadMeta(html);
-		// injected INTO the head, before <title>
-		const headPart = out.slice(0, out.indexOf("</head>"));
-		expect(headPart).toContain('name="robots" content="noindex"');
-		expect(headPart).toContain("default-src 'none'");
+	it.each([
+		'<html><head><meta http-equiv="Content-Security-Policy"></head><body></body></html>',
+		'<html><head><meta http-equiv="Content-Security-Policy" content=""></head><body></body></html>',
+		"<html><head><title>unterminated head",
+	])("rejects HTML that the fixed gateway cannot serve: %s", (html) => {
+		expect(() => injectHeadMeta(html)).toThrow(ReportHtmlInvalidError);
 	});
 
-	it("reversed attribute order inside head is detected", () => {
+	it("body text that looks like policy metadata cannot suppress head injection", () => {
 		const html =
+			'<html><head><title>t</title></head><body><pre><meta http-equiv="Content-Security-Policy" content="default-src *"><meta name="robots" content="all"></pre></body></html>';
+		const head = injectHeadMeta(html).split("</head>")[0];
+		expect(head).toContain('name="robots" content="noindex"');
+		expect(head).toContain("default-src 'none'");
+	});
+
+	it("detects reversed attribute order and accepts head attributes", () => {
+		const complete =
 			'<html><head><meta content="default-src *" http-equiv="Content-Security-Policy"><meta content="all" name="robots"></head><body></body></html>';
-		expect(injectHeadMeta(html)).toBe(html);
+		expect(injectHeadMeta(complete)).toBe(complete);
+		expect(
+			injectHeadMeta('<html><head lang="en"></head><body></body></html>'),
+		).toContain("noindex");
 	});
 
 	it("does not treat a raw-text </head> string as the head boundary", () => {
@@ -676,29 +475,21 @@ describe("injectHeadMeta", () => {
 		expect(injectHeadMeta(html)).toBe(html);
 	});
 
-	it("malformed doc without </head>: body fake meta still does not count as head", () => {
-		const html =
-			'<html><head><body><meta name="robots" content="all"></body></html>';
-		const out = injectHeadMeta(html);
-		expect(out).toContain("noindex");
-		expect(out).toContain("Content-Security-Policy");
-	});
-
-	it("accepts <head> with attributes", () => {
-		const out = injectHeadMeta(
-			'<html><head lang="en"></head><body></body></html>',
+	it("malformed document body metadata still cannot suppress injection", () => {
+		const output = injectHeadMeta(
+			'<html><head><body><meta name="robots" content="all"></body></html>',
 		);
-		expect(out).toContain("noindex");
+		expect(output).toContain("noindex");
+		expect(output).toContain("Content-Security-Policy");
 	});
 
-	// --- interactive reports: opt-in script nonce (P1 hosted copy-button fix) ---
 	const NONCE = REPORT_REGISTRY_INTERNALS.NONCE_PLACEHOLDER;
 
-	it("non-interactive report keeps the strict no-script CSP (byte-compat)", () => {
-		const out = injectHeadMeta(HTML, () => "deadbeef");
-		expect(out).toContain("default-src 'none'");
-		expect(out).not.toContain("script-src");
-		expect(out).not.toContain("nonce-");
+	it("non-interactive reports retain the no-script policy", () => {
+		const output = injectHeadMeta(HTML, () => "deadbeef");
+		expect(output).toContain("default-src 'none'");
+		expect(output).not.toContain("script-src");
+		expect(output).not.toContain("nonce-");
 	});
 
 	it("opt-in placeholder → mints nonce, stamps <script>, relaxes CSP to script-src nonce", () => {
@@ -836,19 +627,18 @@ describe("injectHeadMeta", () => {
 
 	it("each publish mints a fresh nonce (CSP + script tag agree)", () => {
 		const html = `<html><head></head><body><script nonce="${NONCE}">1;</script></body></html>`;
-		let n = 0;
-		const out = injectHeadMeta(html, () => `nonce${n++}`);
-		expect(out).toContain('<script nonce="nonce0">');
-		expect(out).toContain("script-src 'nonce-nonce0'");
+		const output = injectHeadMeta(html, () => "N0NCE123");
+		expect(output).not.toContain(NONCE);
+		expect(output).toContain('<script nonce="N0NCE123">');
+		expect(output).toContain("script-src 'nonce-N0NCE123'");
+		expect(output).toContain("style-src 'unsafe-inline'");
 	});
 
-	it("placeholder appearing in (escaped) report TEXT cannot create an executable script", () => {
-		// Untrusted content is HTML-escaped by generators, so a literal placeholder in text is
-		// just text. It may flip the CSP to nonce mode, but there is no real <script> to run.
-		const html = `<html><head></head><body><pre>note text mentions ${NONCE} here</pre></body></html>`;
-		const out = injectHeadMeta(html, () => "XYZ");
-		expect(out).not.toContain(NONCE); // replaced as text
-		expect(out).not.toContain("<script"); // no real script tag exists → nothing executes
+	it("a placeholder in escaped text cannot create executable script", () => {
+		const html = `<html><head></head><body><pre>${NONCE}</pre></body></html>`;
+		const output = injectHeadMeta(html, () => "XYZ");
+		expect(output).not.toContain(NONCE);
+		expect(output).not.toContain("<script");
 	});
 
 	it("text mentioning the placeholder does not leave real inline scripts nonce-less", () => {

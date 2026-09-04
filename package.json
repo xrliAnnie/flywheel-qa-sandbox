@@ -16,6 +16,7 @@
 		"test:apps": "pnpm --filter './apps/*' test",
 		"test:cycle-time": "node --test scripts/cycle-time/__tests__/*.test.mjs",
 		"verify:workflow-seeds": "node scripts/verify-workflow-seeds.mjs",
+		"migrate:report-hosting": "tsx scripts/migrate-report-hosting.ts",
 		"typecheck": "pnpm -r typecheck",
 		"prepare": "husky"
 	},
