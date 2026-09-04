@@ -42,12 +42,17 @@ async function main() {
 	if (!repoRoot || !slotRoot || !agentId || !codexCommand) {
 		fail("usage: <repo-root> <slot-root> <agent-id> <codex-command>");
 	}
-	if (!isAbsolute(repoRoot) || !isAbsolute(slotRoot) || !SLOT_RE.test(slotRoot)) {
+	if (
+		!isAbsolute(repoRoot) ||
+		!isAbsolute(slotRoot) ||
+		!SLOT_RE.test(slotRoot)
+	) {
 		fail("repository and slot roots must be absolute QA paths");
 	}
 	if (!AGENT_RE.test(agentId)) fail("agent id is invalid");
 	const slotReal = realpathSync(slotRoot);
-	if (!SLOT_RE.test(slotReal)) fail("slot root resolves outside the QA namespace");
+	if (!SLOT_RE.test(slotReal))
+		fail("slot root resolves outside the QA namespace");
 	const homesRoot = join(slotReal, "cdxh");
 	mkdirSync(homesRoot, { recursive: true, mode: 0o700 });
 	const homesInfo = lstatSync(homesRoot);
@@ -113,7 +118,8 @@ async function main() {
 		const relativeTarget = join("releases", releaseName);
 		symlinkSync(relativeTarget, current, "dir");
 		const installed = realpathSync(join(current, "codex"));
-		if (!lstatSync(installed).isFile()) fail("installed Codex command is invalid");
+		if (!lstatSync(installed).isFile())
+			fail("installed Codex command is invalid");
 		accessSync(installed, constants.X_OK);
 	} catch (error) {
 		if (provisioned || existsSync(home)) {
@@ -124,6 +130,8 @@ async function main() {
 }
 
 main().catch((error) => {
-	console.error(error instanceof Error ? error.message : "[qa-codex-home] failed");
+	console.error(
+		error instanceof Error ? error.message : "[qa-codex-home] failed",
+	);
 	process.exitCode = 1;
 });
