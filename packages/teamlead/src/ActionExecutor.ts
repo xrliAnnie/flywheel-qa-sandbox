@@ -1,3 +1,4 @@
+import { defaultAsyncExecFile } from "flywheel-claude-runner";
 import type {
 	ActionHandler,
 	ActionResult,
@@ -17,6 +18,8 @@ type ExecFn = (
 	args: string[],
 	cwd: string,
 ) => Promise<{ stdout: string }>;
+
+export const ACTION_EXECUTOR_TIMEOUT_MS = 120_000;
 
 /**
  * Project-aware ApproveHandler that resolves projectRoot from the session.
@@ -81,9 +84,11 @@ export function createReactionsEngine(
 	const exec: ExecFn =
 		execFn ??
 		(async (cmd, args, cwd) => {
-			const { execFileSync } = await import("node:child_process");
-			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-			return { stdout: result };
+			const { stdout } = await defaultAsyncExecFile(cmd, args, {
+				cwd,
+				timeoutMs: ACTION_EXECUTOR_TIMEOUT_MS,
+			});
+			return { stdout };
 		});
 
 	return new ReactionsEngine({

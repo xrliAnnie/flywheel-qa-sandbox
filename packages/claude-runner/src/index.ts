@@ -186,6 +186,9 @@ export {
 	withSyncOpMarker,
 } from "./sync-op-marker.js";
 export {
+	type AsyncExecFileFn,
+	defaultAsyncExecFile,
+	type ExecFileOpts,
 	RUNNER_PANE_BASE_ALLOWLIST,
 	TmuxAdapter,
 } from "./TmuxAdapter.js";

@@ -33,6 +33,7 @@ import {
 	resolveDaemonSocketPath,
 	sweepStaleSyncOpMarkers,
 	syncOpMarkerPath,
+	withSyncOpMarker,
 } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import {
@@ -274,6 +275,7 @@ import {
 	EventLoopAttribution,
 	type EventLoopHealthSnapshot,
 } from "./event-loop-attribution.js";
+import { runSequentialChunks, yieldToEventLoop } from "./event-loop-yield.js";
 import { createEventRouter } from "./event-route.js";
 import { withExecutionMutationLease } from "./execution-mutation-lease.js";
 import {
@@ -5281,7 +5283,11 @@ export async function startBridge(
 			void managementCoordinator.reconcileProgress();
 			// R8 #2: on boot, reconcile any interrupted batch by engine liveness
 			// (live → observe; dead → engine's own recover) + apply-result audit.
-			fleetConsole.reconcileOnStartup();
+			void fleetConsole.reconcileOnStartup().catch((error) => {
+				console.warn(
+					`[Bridge] fleet startup reconcile failed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			});
 			// Codex R2 MEDIUM-1/MEDIUM-2: reconciliation must NOT depend on an open
 			// SSE client. A periodic tick (idempotent: live→observe, terminal→audit
 			// no-op-if-present, dead→recover-once) recovers a stranded launching
@@ -5289,13 +5295,11 @@ export async function startBridge(
 			// without waiting for a Bridge restart or a console connection.
 			const fc = fleetConsole;
 			fleetReconcileTimer = setInterval(() => {
-				try {
-					fc.reconcileOnStartup();
-				} catch (e) {
+				void fc.reconcileOnStartup().catch((e) => {
 					console.warn(
-						`[Bridge] fleet reconcile tick failed: ${(e as Error).message}`,
+						`[Bridge] fleet reconcile tick failed: ${e instanceof Error ? e.message : String(e)}`,
 					);
-				}
+				});
 				void managementCoordinator.reconcileProgress().catch((error) => {
 					console.warn(
 						`[Bridge] management reconcile tick failed: ${error.message}`,
@@ -5793,7 +5797,10 @@ export async function startBridge(
 		receiptBackedMaterializedHeadAuthority(store);
 	const workflowDocsMaterializer = new WorkflowDocsMaterializer({
 		store,
-		git: new GitWorkflowDocsGit(),
+		git: new GitWorkflowDocsGit({
+			recordSpan: (name, startMs, endMs) =>
+				eventLoopAttribution.recordSpan(name, startMs, endMs),
+		}),
 		projects,
 		withRepoLock: repoMutationLock.withRepoLock,
 		log: (message) => console.warn(`[workflow-materializer] ${message}`),
@@ -7589,7 +7596,10 @@ export async function startBridge(
 			if (codexMaintenanceTicks.length > 3) codexMaintenanceTicks.shift();
 			// FLY-2211: recovery is default-on and precedes the orphan mutator. Both
 			// lanes consume this exact candidate snapshot for the whole tick.
-			const codexCandidateSnapshot = store.getReadoptCandidateSessions();
+			const codexCandidateSnapshot = withSyncOpMarker(
+				"maintenance:readopt-candidates",
+				() => store.getReadoptCandidateSessions(),
+			);
 			try {
 				await codexSessionReowner.runPass(codexCandidateSnapshot);
 			} catch (error) {
@@ -7602,7 +7612,9 @@ export async function startBridge(
 			const deliveryNow = new Date().toISOString();
 			if (!deliveryBaselineComplete) {
 				try {
-					store.baselineWorkflowDeliveryContracts(deliveryNow);
+					withSyncOpMarker("delivery-contract:baseline", () =>
+						store.baselineWorkflowDeliveryContracts(deliveryNow),
+					);
 					deliveryBaselineComplete = true;
 				} catch (error) {
 					console.warn(
@@ -7611,8 +7623,9 @@ export async function startBridge(
 						}`,
 					);
 				}
+				await yieldToEventLoop();
 			}
-			for (const project of projects) {
+			await runSequentialChunks(projects, (project) => {
 				let deliveryCommDb: CommDB | undefined;
 				try {
 					deliveryCommDb = new CommDB(
@@ -7662,9 +7675,15 @@ export async function startBridge(
 							store.resolveWorkflowDeliveryRecipient(rootId, sourceExecutionId),
 						resolveAlertIdentity: resolveDeliveryAlertIdentity,
 					});
-					deliveryProjector.runPass(deliveryNow);
-					deliveryContractWatch.runPass(deliveryNow);
-					deliveryOperations.runPass(deliveryNow);
+					withSyncOpMarker("delivery-contract:projector", () =>
+						deliveryProjector.runPass(deliveryNow),
+					);
+					withSyncOpMarker("delivery-contract:watch", () =>
+						deliveryContractWatch.runPass(deliveryNow),
+					);
+					withSyncOpMarker("delivery-contract:operations", () =>
+						deliveryOperations.runPass(deliveryNow),
+					);
 				} catch (error) {
 					console.warn(
 						`[delivery-contract] maintenance pass failed closed for ${project.projectName}: ${
@@ -7674,7 +7693,7 @@ export async function startBridge(
 				} finally {
 					deliveryCommDb?.close();
 				}
-			}
+			});
 			// FLY-1066: ~hourly residue convergence rides this existing tick and is
 			// deliberately independent of the worktree-autoclean kill-switch.
 			if (residueHarvester) {
@@ -8205,7 +8224,11 @@ export async function startBridge(
 	// It runs after project runtimes exist and before heartbeat can dispatch its
 	// first maintenance/orphan lane. Individual candidates fail closed.
 	try {
-		await codexSessionReowner.runPass(store.getReadoptCandidateSessions());
+		await codexSessionReowner.runPass(
+			withSyncOpMarker("boot:readopt-candidates", () =>
+				store.getReadoptCandidateSessions(),
+			),
+		);
 	} catch (err) {
 		console.error(
 			`[Bridge] Codex recovery boot pass failed closed: ${

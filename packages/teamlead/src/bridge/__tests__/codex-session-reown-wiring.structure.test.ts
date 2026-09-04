@@ -19,27 +19,48 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 	});
 
 	it("runs the boot recovery barrier before heartbeat and its orphan lane", () => {
-		const boot = source.lastIndexOf(
-			"await codexSessionReowner.runPass(store.getReadoptCandidateSessions())",
+		const boot = source.lastIndexOf("await codexSessionReowner.runPass(");
+		const marker = source.indexOf(
+			'withSyncOpMarker("boot:readopt-candidates"',
+			boot,
 		);
-		const seed = source.indexOf("heartbeatService.seedReconnecting()", boot);
-		const start = source.indexOf("heartbeatService.start()", boot);
+		const candidates = source.indexOf(
+			"store.getReadoptCandidateSessions()",
+			marker,
+		);
+		const seed = source.indexOf(
+			"heartbeatService.seedReconnecting()",
+			candidates,
+		);
+		const start = source.indexOf("heartbeatService.start()", seed);
 		expect(boot).toBeGreaterThan(0);
-		expect(seed).toBeGreaterThan(boot);
+		expect(marker).toBeGreaterThan(boot);
+		expect(candidates).toBeGreaterThan(marker);
+		expect(seed).toBeGreaterThan(candidates);
 		expect(start).toBeGreaterThan(seed);
 	});
 
 	it("uses one periodic candidate snapshot and recovers before orphan mutation", () => {
 		const maintenance = source.indexOf(
-			"const codexCandidateSnapshot = store.getReadoptCandidateSessions()",
+			"const codexCandidateSnapshot = withSyncOpMarker(",
+		);
+		const marker = source.indexOf(
+			'"maintenance:readopt-candidates"',
+			maintenance,
+		);
+		const candidates = source.indexOf(
+			"store.getReadoptCandidateSessions()",
+			marker,
 		);
 		const recover = source.indexOf(
 			"await codexSessionReowner.runPass(codexCandidateSnapshot)",
-			maintenance,
+			candidates,
 		);
 		const orphan = source.indexOf("await sweepCodexRunnerOrphans(", recover);
 		expect(maintenance).toBeGreaterThan(0);
-		expect(recover).toBeGreaterThan(maintenance);
+		expect(marker).toBeGreaterThan(maintenance);
+		expect(candidates).toBeGreaterThan(marker);
+		expect(recover).toBeGreaterThan(candidates);
 		expect(orphan).toBeGreaterThan(recover);
 		const lane = source.slice(maintenance, orphan + 2000);
 		expect(lane).toContain(

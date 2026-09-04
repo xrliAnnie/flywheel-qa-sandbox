@@ -140,8 +140,8 @@ export interface RunnerTuiWindowLostEvidence {
 }
 
 import { withSyncOpMarker } from "./sync-op-marker.js";
-import type { ExecFileFn } from "./TmuxAdapter.js";
-import { defaultExecFile } from "./TmuxAdapter.js";
+import type { AsyncExecFileFn, ExecFileFn } from "./TmuxAdapter.js";
+import { defaultAsyncExecFile, defaultExecFile } from "./TmuxAdapter.js";
 
 /**
  * Structural surface of the codex transport this executor needs. Kept
@@ -518,6 +518,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly codexAccountRegistryPath?: string;
 	private readonly codexAccountLedgerRoot?: string;
 	private readonly executionOwners?: CodexExecutionOwnershipRegistry;
+	private readonly asyncExecFileFn: AsyncExecFileFn;
 
 	constructor(
 		private sessionName: string = "flywheel",
@@ -533,6 +534,17 @@ export class CodexTmuxAdapter implements IAdapter {
 		private transport?: CodexRunnerTransport,
 		deps: CodexDaemonAdapterDeps = {},
 	) {
+		this.asyncExecFileFn =
+			execFileFn === defaultExecFile
+				? defaultAsyncExecFile
+				: async (cmd, args, opts) => {
+						const result = await Promise.resolve(
+							execFileFn(cmd, args, opts) as
+								| { stdout: string }
+								| Promise<{ stdout: string }>,
+						);
+						return { stdout: result.stdout, stderr: "" };
+					};
 		this.runtimeFactory =
 			deps.runtimeFactory ?? ((opts) => new CodexDaemonGoalRuntime(opts));
 		this.ensureWindow = deps.ensureWindow ?? ensureRunnerTuiWindow;
@@ -583,11 +595,13 @@ export class CodexTmuxAdapter implements IAdapter {
 		// in a git worktree (WorktreeManager) or the project root (git repo),
 		// so this holds; any future non-git execution path must address it.
 		try {
-			const tmux = withSyncOpMarker("codex-adapter:health-tmux", () =>
-				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
+			const tmux = (
+				await this.asyncExecFileFn("tmux", ["-V"], { timeoutMs: 10_000 })
 			).stdout.trim();
-			const codex = withSyncOpMarker("codex-adapter:health-codex", () =>
-				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
+			const codex = (
+				await this.asyncExecFileFn("codex", ["--version"], {
+					timeoutMs: 10_000,
+				})
 			).stdout.trim();
 			// FLY-2003: runners use the repo-owned, CODEX_HOME-aware direct daemon
 			// launcher (via FLYWHEEL_CODEX_BIN), not the global one-shot guard.
@@ -619,13 +633,15 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * a corrupted value never reaches the codex `-c` TOML string (the helper
 	 * re-validates with the same charset, defense in depth).
 	 */
-	private provisionGitHubCredential(
+	private async provisionGitHubCredential(
 		ctx: AdapterExecutionContext,
-	): string | undefined {
+	): Promise<string | undefined> {
 		let token: string;
 		try {
-			token = withSyncOpMarker("codex-adapter:gh-token", () =>
-				this.execFileFn("gh", ["auth", "token"], { timeoutMs: 10_000 }),
+			token = (
+				await this.asyncExecFileFn("gh", ["auth", "token"], {
+					timeoutMs: 10_000,
+				})
 			).stdout.trim();
 		} catch {
 			console.warn(
@@ -645,31 +661,27 @@ export class CodexTmuxAdapter implements IAdapter {
 		// is an ssh remote — the ssh agent socket is sandbox-blocked, so ssh
 		// can never work for a Codex runner. Scoped to github.com; best-effort.
 		try {
-			withSyncOpMarker("codex-adapter:git-credential", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						ctx.cwd,
-						"config",
-						"credential.https://github.com.helper",
-						"!gh auth git-credential",
-					],
-					{ timeoutMs: 10_000 },
-				),
+			await this.asyncExecFileFn(
+				"git",
+				[
+					"-C",
+					ctx.cwd,
+					"config",
+					"credential.https://github.com.helper",
+					"!gh auth git-credential",
+				],
+				{ timeoutMs: 10_000 },
 			);
-			withSyncOpMarker("codex-adapter:git-url-rewrite", () =>
-				this.execFileFn(
-					"git",
-					[
-						"-C",
-						ctx.cwd,
-						"config",
-						"url.https://github.com/.insteadOf",
-						"git@github.com:",
-					],
-					{ timeoutMs: 10_000 },
-				),
+			await this.asyncExecFileFn(
+				"git",
+				[
+					"-C",
+					ctx.cwd,
+					"config",
+					"url.https://github.com/.insteadOf",
+					"git@github.com:",
+				],
+				{ timeoutMs: 10_000 },
 			);
 		} catch (err) {
 			console.warn(
@@ -748,12 +760,10 @@ export class CodexTmuxAdapter implements IAdapter {
 		recovery?: CodexRecoveryExecution,
 	): Promise<AdapterExecutionResult> {
 		if (!this.preflightDone) {
-			withSyncOpMarker("codex-adapter:preflight-tmux", () =>
-				this.execFileFn("tmux", ["-V"], { timeoutMs: 10_000 }),
-			);
-			withSyncOpMarker("codex-adapter:preflight-codex", () =>
-				this.execFileFn("codex", ["--version"], { timeoutMs: 10_000 }),
-			);
+			await this.asyncExecFileFn("tmux", ["-V"], { timeoutMs: 10_000 });
+			await this.asyncExecFileFn("codex", ["--version"], {
+				timeoutMs: 10_000,
+			});
 			this.preflightDone = true;
 		}
 
@@ -763,7 +773,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		// metadata dirs FIRST (fail-loud — a runner that cannot commit is
 		// crippled; see resolveGitWritableDirs for the FLY-793 detail).
 		const sandboxCwd = realpathSync(ctx.cwd);
-		const gitWritableDirs = this.resolveGitWritableDirs(sandboxCwd);
+		const gitWritableDirs = await this.resolveGitWritableDirs(sandboxCwd);
 		// Build and validate in the fail-loud zone. This must stay before GitHub
 		// credential/CODEX_HOME provisioning so a rejection cannot leak a live token.
 		const gateMarkerDir = defaultGateMarkerDir();
@@ -795,7 +805,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		});
 
 		// FLY-209 (credentials): host gh token + worktree git credential helper.
-		const ghToken = this.provisionGitHubCredential(ctx);
+		const ghToken = await this.provisionGitHubCredential(ctx);
 
 		// FLY-123 (isolation): per-runner CODEX_HOME. From this point the home
 		// holds a LIVE GH_TOKEN, so EVERY exit must scrub it (P5) — the whole rest
@@ -2364,11 +2374,11 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * (mirrors GitService.getGitMetadataDirectories, which the legacy
 	 * EdgeWorker path already feeds into allowedDirectories).
 	 */
-	private resolveGitWritableDirs(cwd: string): string[] {
+	private async resolveGitWritableDirs(cwd: string): Promise<string[]> {
 		let stdout: string;
 		try {
-			stdout = withSyncOpMarker("codex-adapter:resolve-git-dirs", () =>
-				this.execFileFn(
+			stdout = (
+				await this.asyncExecFileFn(
 					"git",
 					[
 						"-C",
@@ -2379,7 +2389,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						"--git-common-dir",
 					],
 					{ timeoutMs: 10_000 },
-				),
+				)
 			).stdout;
 		} catch (err) {
 			throw new Error(

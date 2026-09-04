@@ -105,13 +105,18 @@ interface RunOpts {
 	envValue?: string;
 	ctxExtra?: Partial<BlueprintContext>;
 	participation?: (projectName: string | undefined) => boolean;
-	readiness?: (backend: string) => boolean;
-	ponytailReadiness?: (backend: string) => boolean;
+	readiness?: (backend: string) => boolean | Promise<boolean>;
+	ponytailReadiness?: (backend: string) => boolean | Promise<boolean>;
 	ponytailConfig?: PonytailConfig;
 	ponytailProjectLayer?: () => PonytailConfig | undefined;
 	codexProbe?: CodexSkillAssemblyProbe;
 	agentDispatcher?: AgentDispatcher;
 	projectRoot?: string;
+	inspectPending?: (state: {
+		pending: Promise<unknown>;
+		startedCalls: () => number;
+		executeCalls: () => number;
+	}) => Promise<void>;
 }
 
 interface RunResult {
@@ -176,9 +181,9 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		undefined, // docFlowConfig
 		opts.ponytailProjectLayer ??
 			(opts.ponytailConfig ? () => opts.ponytailConfig : undefined),
-		opts.ponytailReadiness ?? (() => true),
+		(opts.ponytailReadiness ?? (() => true)) as never,
 		opts.participation, // FLY-1356 participation reader
-		opts.readiness ?? (() => true), // FLY-1356 matt readiness (default ready)
+		(opts.readiness ?? (() => true)) as never, // FLY-1356 matt readiness (default ready)
 		opts.codexProbe,
 		() => ({
 			hasOverride: opts.envValue !== undefined,
@@ -192,11 +197,18 @@ async function runBlueprint(opts: RunOpts = {}): Promise<RunResult> {
 		issueIdentifier: ID,
 		...opts.ctxExtra,
 	};
-	await blueprint.run(
+	const pending = blueprint.run(
 		makeNode(),
 		projectRoot ?? "/tmp/fly1356-blueprint-test",
 		ctx,
 	);
+	await opts.inspectPending?.({
+		pending,
+		startedCalls: () => eventEmitter.emitStarted.mock.calls.length,
+		executeCalls: () =>
+			(adapter.execute as ReturnType<typeof vi.fn>).mock.calls.length,
+	});
+	await pending;
 	const execArgs = (adapter.execute as ReturnType<typeof vi.fn>).mock
 		.calls[0]![0] as AdapterExecutionContext;
 	return { envelope: envelopes[0] as EventEnvelope, execArgs };
@@ -333,6 +345,58 @@ describe("FLY-1395 default Codex skill assembly probe", () => {
 });
 
 describe("FLY-1356 Blueprint — envelope + plugin layer", () => {
+	it("awaits matt readiness before emitting started or launching the adapter", async () => {
+		let resolveReadiness!: (ready: boolean) => void;
+		const readiness = vi.fn(
+			() =>
+				new Promise<boolean>((resolve) => {
+					resolveReadiness = resolve;
+				}),
+		);
+
+		const result = runBlueprint({
+			envValue: "matt",
+			readiness,
+			inspectPending: async ({ startedCalls, executeCalls }) => {
+				await vi.waitFor(() => expect(readiness).toHaveBeenCalledOnce());
+				expect(startedCalls()).toBe(0);
+				expect(executeCalls()).toBe(0);
+				resolveReadiness(true);
+			},
+		});
+
+		await expect(result).resolves.toMatchObject({
+			envelope: { skillFrameworkMode: "matt" },
+		});
+	});
+
+	it("awaits ponytail readiness before emitting started or launching the adapter", async () => {
+		let resolveReadiness!: (ready: boolean) => void;
+		const ponytailReadiness = vi.fn(
+			() =>
+				new Promise<boolean>((resolve) => {
+					resolveReadiness = resolve;
+				}),
+		);
+
+		const result = runBlueprint({
+			envValue: "bare-ponytail",
+			ponytailReadiness,
+			inspectPending: async ({ startedCalls, executeCalls }) => {
+				await vi.waitFor(() =>
+					expect(ponytailReadiness).toHaveBeenCalledOnce(),
+				);
+				expect(startedCalls()).toBe(0);
+				expect(executeCalls()).toBe(0);
+				resolveReadiness(true);
+			},
+		});
+
+		await expect(result).resolves.toMatchObject({
+			envelope: { ponytailCondition: "on:arm" },
+		});
+	});
+
 	it("default env: envelope has no skill-framework fields, args have no plugin fields", async () => {
 		const { envelope, execArgs } = await runBlueprint();
 		expect("skillFrameworkMode" in envelope).toBe(false);

@@ -5,6 +5,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { ClaudeCodeAdapter } from "flywheel-agent-team-transport";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import {
 	type CanonicalLeadIdentity,
@@ -200,7 +201,11 @@ export class LeadInboxRuntime {
 		this.leadLeaseReader =
 			opts.leadLeaseReader ?? openLeadLeaseReader(opts.leadLeaseDbPath);
 		this.processLeadTupleState =
-			opts.processLeadTupleState ?? processTupleStateWithStart;
+			opts.processLeadTupleState ??
+			((pid, start) =>
+				withSyncOpMarker("lead-inbox:process-tuple", () =>
+					processTupleStateWithStart(pid, start),
+				));
 		const adapterForLead = opts.adapterForLead ?? createProductionAdapter;
 		const runnerAdapterForProject =
 			opts.runnerAdapterForProject ??

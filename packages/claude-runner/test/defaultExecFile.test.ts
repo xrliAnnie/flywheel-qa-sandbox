@@ -1,5 +1,12 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { defaultExecFile } from "../src/TmuxAdapter.js";
+import { syncOpMarkerPath } from "../src/sync-op-marker.js";
+import {
+	DEFAULT_SYNC_EXEC_TIMEOUT_MS,
+	defaultExecFile,
+} from "../src/TmuxAdapter.js";
 
 /**
  * FLY-154 hotfix — Bug 4 (visibility): `defaultExecFile` previously bubbled
@@ -41,6 +48,33 @@ describe("defaultExecFile stderr capture (FLY-154 hotfix)", () => {
 	it("returns stdout normally on success (no regression in happy path)", () => {
 		const result = defaultExecFile("/bin/sh", ["-c", "echo GREETING"]);
 		expect(result.stdout.trim()).toBe("GREETING");
+	});
+
+	it("FLY-2331: keeps the legacy sync seam on its documented 20s ceiling", () => {
+		expect(DEFAULT_SYNC_EXEC_TIMEOUT_MS).toBe(20_000);
+	});
+
+	it("FLY-2331: publishes a command-family marker and clears it afterward", () => {
+		const dir = mkdtempSync(join(tmpdir(), "fly2331-default-exec-"));
+		const oldDir = process.env.FLYWHEEL_BRIDGE_SYNCOP_DIR;
+		process.env.FLYWHEEL_BRIDGE_SYNCOP_DIR = dir;
+		try {
+			const markerPath = syncOpMarkerPath();
+			const result = defaultExecFile(
+				process.execPath,
+				[
+					"-e",
+					"const fs=require('node:fs'); const m=JSON.parse(fs.readFileSync(process.env.MARKER_PATH,'utf8')); process.stdout.write(m.label)",
+				],
+				{ env: { MARKER_PATH: markerPath } },
+			);
+			expect(result.stdout).toBe("tmux-adapter:other");
+			expect(() => rmSync(markerPath)).toThrow();
+		} finally {
+			if (oldDir === undefined) delete process.env.FLYWHEEL_BRIDGE_SYNCOP_DIR;
+			else process.env.FLYWHEEL_BRIDGE_SYNCOP_DIR = oldDir;
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	it("surfaces tmux-style 'command too long' stderr (the actual qa-fly-372 scenario)", () => {

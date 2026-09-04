@@ -191,7 +191,7 @@ export type PhaseRetryStartPointComputer = (
 	issueId: string,
 	role: string,
 	projectName: string,
-) => PhaseRetryStartPoint;
+) => PhaseRetryStartPoint | Promise<PhaseRetryStartPoint>;
 
 import {
 	AdmissionDeferredError,
@@ -941,15 +941,17 @@ export class RetryDispatcher implements IRetryDispatcher {
 				req.shareParentBranch === true && isWorkflowPhaseRole(role);
 			const engineOwnedRetry = req.generalizedExecution?.engineOwned === true;
 			let retryStartPoint: string | undefined;
-			const computeRetryStartPoint = (): string | undefined => {
-				const computed = this.phaseRetryStartPointComputer?.(
-					req.issueId,
-					role,
-					req.projectName,
-				) ?? {
-					kind: "indeterminate" as const,
-					error: "phase retry startPoint computer unavailable",
-				};
+			const computeRetryStartPoint = async (): Promise<string | undefined> => {
+				const computed = this.phaseRetryStartPointComputer
+					? await this.phaseRetryStartPointComputer(
+							req.issueId,
+							role,
+							req.projectName,
+						)
+					: {
+							kind: "indeterminate" as const,
+							error: "phase retry startPoint computer unavailable",
+						};
 				if (computed.kind === "indeterminate") {
 					throw new Error(
 						`phase retry startPoint is indeterminate for ${role} on ${req.issueId}: ${computed.error}`,
@@ -966,7 +968,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			};
 			if (isPhaseRetry) {
 				try {
-					retryStartPoint = computeRetryStartPoint();
+					retryStartPoint = await computeRetryStartPoint();
 				} catch (error) {
 					this.abortPreLaunch(key, newExecutionId, req.projectName);
 					throw error;
@@ -1010,7 +1012,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 			// the normal dead-holder reconciler and never launches with a stale SHA.
 			if (isPhaseRetry) {
 				try {
-					retryStartPoint = computeRetryStartPoint();
+					retryStartPoint = await computeRetryStartPoint();
 				} catch (error) {
 					this.abortPreLaunch(key, newExecutionId, req.projectName);
 					throw error;

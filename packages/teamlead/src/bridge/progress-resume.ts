@@ -48,6 +48,8 @@ export interface PriorSessionRow {
 	session_stage?: string;
 }
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface ProgressResumeDeps {
 	docBaseDir: string;
 	issueIdentifier: string;
@@ -56,9 +58,9 @@ export interface ProgressResumeDeps {
 	/** the most recent prior session for this issue/role (running/terminated), if any. */
 	priorSession: (issueId: string, role: string) => PriorSessionRow | undefined;
 	/** `git show <branch>:<path>` — the committed blob, or null if absent. */
-	readBranchFile: (branch: string, path: string) => string | null;
+	readBranchFile: (branch: string, path: string) => MaybePromise<string | null>;
 	/** `git rev-parse <branch>` — the branch tip SHA, or null. */
-	branchTip: (branch: string) => string | null;
+	branchTip: (branch: string) => MaybePromise<string | null>;
 	/**
 	 * FLY-795 (code-review MED-4): discover the doc dir that actually carries a
 	 * committed `progress.md` for this issue on the branch (e.g. via
@@ -67,7 +69,7 @@ export interface ProgressResumeDeps {
 	 * died before design_review) so a co-located, slug-named progress.md is still
 	 * found instead of falling through to the deterministic default and missing it.
 	 */
-	discoverDocDir?: (branch: string) => string | null;
+	discoverDocDir?: (branch: string) => MaybePromise<string | null>;
 }
 
 // FLY-795: `stageToPhase` moved to flywheel-config (progress-schema.ts) so the
@@ -80,12 +82,12 @@ export { stageToPhase };
  * Compute the resume decision, or null when the runner should start fresh (no
  * prior execution, or no committed progress.md on branch B).
  */
-export function computeProgressResume(
+export async function computeProgressResume(
 	issueId: string,
 	role: string,
 	resumeKind: ResumeKind,
 	deps: ProgressResumeDeps,
-): ProgressResumeInfo | null {
+): Promise<ProgressResumeInfo | null> {
 	const prior = deps.priorSession(issueId, role);
 	if (!prior) return null;
 
@@ -96,7 +98,7 @@ export function computeProgressResume(
 	// found) → deterministic default (③). Discovery only when no plan_path.
 	const discoveredDocDir = prior.plan_path
 		? undefined
-		: (deps.discoverDocDir?.(branch) ?? undefined);
+		: ((await deps.discoverDocDir?.(branch)) ?? undefined);
 	const progressPath = resolveProgressPath({
 		docBaseDir: deps.docBaseDir,
 		issueIdentifier: deps.issueIdentifier,
@@ -105,7 +107,7 @@ export function computeProgressResume(
 	});
 
 	// Read the BRANCH blob — never the worktree fs (it may be gone on reboot).
-	const blob = deps.readBranchFile(branch, progressPath);
+	const blob = await deps.readBranchFile(branch, progressPath);
 	if (blob == null) return null;
 
 	let ledgerPhase: WorkflowPhaseRole;
@@ -116,7 +118,7 @@ export function computeProgressResume(
 		return null;
 	}
 
-	const tip = deps.branchTip(branch);
+	const tip = await deps.branchTip(branch);
 	if (!tip) return null;
 
 	// effectiveStage authority = StateStore stage; suppress only when it AGREES

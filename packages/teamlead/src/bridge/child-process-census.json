@@ -1,0 +1,382 @@
+{
+	"version": 1,
+	"issue": "FLY-2331",
+	"scope": "production TypeScript below packages/*/src",
+	"entries": [
+		{
+			"file": "packages/agent-team-transport/src/codex/CodexAdapter.ts",
+			"sync_child": 1,
+			"disposition": "legacy_unreachable"
+		},
+		{
+			"file": "packages/agent-team-transport/src/path-helpers.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/claude-runner/src/CodexTmuxAdapter.ts",
+			"sync_marker": 1,
+			"raw_spawn": 1,
+			"disposition": "runner_bounded_or_observed"
+		},
+		{
+			"file": "packages/claude-runner/src/TmuxAdapter.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"raw_spawn": 2,
+			"disposition": "runner_bounded_or_observed"
+		},
+		{
+			"file": "packages/claude-runner/src/codex-daemon-runtime.ts",
+			"sync_child": 2,
+			"sync_marker": 2,
+			"raw_spawn": 3,
+			"disposition": "runner_bounded_or_observed"
+		},
+		{
+			"file": "packages/claude-runner/src/codex-runner-tui-window.ts",
+			"sync_child": 2,
+			"sync_marker": 2,
+			"raw_spawn": 3,
+			"disposition": "runner_bounded_or_observed"
+		},
+		{
+			"file": "packages/claude-runner/src/sync-op-marker.ts",
+			"sync_marker": 2,
+			"disposition": "marker_implementation"
+		},
+		{
+			"file": "packages/config/src/repository-baseline.ts",
+			"sync_child": 1,
+			"disposition": "bridge_sync_marker_timeout_at_caller"
+		},
+		{
+			"file": "packages/core/src/tmux-viewer.ts",
+			"sync_child": 6,
+			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/edge-worker/src/Blueprint.ts",
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/edge-worker/src/GitService.ts",
+			"sync_child": 12,
+			"disposition": "legacy_unreachable"
+		},
+		{
+			"file": "packages/edge-worker/src/WorktreeManager.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/flywheel-cli/src/commands/migrate-agent-registry.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/agent-browser-runner.ts",
+			"sync_child": 2,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/cleanup.ts",
+			"sync_child": 3,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/await-codex-gate.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/capture.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/codex-resume.ts",
+			"raw_spawn": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/codex-review-result.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/complete.ts",
+			"sync_child": 3,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/progress.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/publish-report.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/qa-result.ts",
+			"sync_child": 2,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/summary-registry.ts",
+			"sync_child": 2,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/commands/visual-capture.ts",
+			"sync_child": 2,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/founder-review.ts",
+			"sync_child": 6,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/lead-lease.ts",
+			"sync_child": 3,
+			"disposition": "bridge_sync_marker_timeout_at_callers"
+		},
+		{
+			"file": "packages/flywheel-comm/src/proofshot/free-port.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/ship-ci-guard.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/summary-delivery.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/summary-pr-merge.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/flywheel-comm/src/summary-pr-verifier.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/teamlead/src/HeartbeatService.ts",
+			"sync_marker": 3,
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/account-heal/claude-profile-cli.ts",
+			"raw_spawn": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/teamlead/src/account-heal/pidfile.ts",
+			"sync_child": 1,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/teamlead/src/account-heal/quota-pool-rebuild-cli.ts",
+			"sync_child": 12,
+			"disposition": "one_shot_cli"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/BridgeEventLoopGuard.ts",
+			"sync_child": 2,
+			"disposition": "guard_worker_forensic"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/claude-review-runner.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/cmux-watcher-patrol.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/codex-global-health.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/design-review-manifest.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/fleet-console.ts",
+			"raw_spawn": 3,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/fleet-data.ts",
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/fleet-routes.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-alert-helpers.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-inbox-runtime.ts",
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-lease-diagnostics.ts",
+			"sync_marker": 2,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/lead-lease-self-check.ts",
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/management-cron-source.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/management-cron-writer.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/plugin.ts",
+			"sync_marker": 6,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/runner-admission.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"raw_spawn": 1,
+			"disposition": "bridge_bounded_or_observed"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/runs-route.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/tmux-environment-scrub.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/workflow-engine-dispatcher.ts",
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/workflow-menu-routes.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/workflow-resume-checkpoint.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/bridge/workkind-cutover.ts",
+			"sync_child": 1,
+			"sync_marker": 1,
+			"disposition": "bridge_sync_marker_timeout"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/ProcessLifetimeFileLock.ts",
+			"raw_spawn": 1,
+			"disposition": "observed_async_lifecycle"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/codex-lead-runtime.ts",
+			"sync_marker": 1,
+			"raw_spawn": 1,
+			"disposition": "lead_runtime_bounded_or_observed"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/codex-lead-tui-runtime.ts",
+			"sync_marker": 1,
+			"disposition": "lead_runtime_bounded"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/gateway/GitPushRunner.ts",
+			"sync_child": 1,
+			"disposition": "separate_gateway"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/gateway/ship-preflight.ts",
+			"sync_child": 1,
+			"disposition": "separate_gateway"
+		},
+		{
+			"file": "packages/teamlead/src/lead-backends/codex/tui-window.ts",
+			"sync_child": 2,
+			"sync_marker": 2,
+			"disposition": "lead_runtime_bounded"
+		},
+		{
+			"file": "packages/voice-core/src/audio/FilePlayer.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/voice-core/src/audio/MicCapture.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/voice-core/src/audio/StreamPlayer.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/voice-core/src/brain/HeadlessClaudeBrain.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/voice-core/src/brain/ResidentClaudeBrain.ts",
+			"raw_spawn": 1,
+			"disposition": "standalone_runtime"
+		},
+		{
+			"file": "packages/voice-core/src/process.ts",
+			"raw_spawn": 3,
+			"disposition": "standalone_runtime"
+		}
+	]
+}

@@ -21,6 +21,7 @@ import {
 	LeadLeaseEpisodeStore,
 	LeadLeaseStore,
 	type LeadWriteAuthorizationDeps,
+	ProcessProbeTimeoutError,
 } from "../lead-lease.js";
 import { LeadLeaseModeStore } from "../lead-lease-mode.js";
 
@@ -868,6 +869,53 @@ describe("FLY-1309 Lead write-boundary enforcement", () => {
 		expect(
 			readFileSync(env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!, "utf8"),
 		).not.toContain(rawClaim);
+	});
+
+	it("FLY-2331: audit-allows fresh matching carrier evidence when ps is indeterminate", async () => {
+		writeProjects("codex-app-server");
+		setMode("enforce");
+		const rawClaim = "timeout-carrier-instance";
+		env.FLYWHEEL_LEAD_CARRIER_INSTANCE_ID = rawClaim;
+		writeFileSync(
+			env.FLYWHEEL_LEAD_CARRIER_EVIDENCE_FILE!,
+			JSON.stringify({
+				schemaVersion: 1,
+				collectedAt: new Date().toISOString(),
+				leads: {
+					"flywheel-eng-lead": {
+						leadKey: "flywheel-eng-lead",
+						backend: "codex-app-server",
+						identityDigest: env.FLYWHEEL_LEAD_IDENTITY_DIGEST!,
+						pid: process.pid,
+						lstart: writerStart,
+						instanceDigest: hashCarrierInstanceId(rawClaim),
+					},
+				},
+			}),
+		);
+		authorizationDeps.processAliveWithStart = () => {
+			throw new ProcessProbeTimeoutError(process.pid, "lstart");
+		};
+
+		await send({
+			fromAgent: "eng-lead",
+			toAgent: "runner-1",
+			content: "fresh carrier with indeterminate ps",
+			dbPath,
+			env,
+			authorizationDeps,
+		});
+
+		expect(instructions()).toHaveLength(1);
+		const lease = new LeadLeaseStore(env.FLYWHEEL_LEAD_LEASE_DB!);
+		expect(lease.listPendingAudit()).toEqual([
+			expect.objectContaining({
+				event: "would_block",
+				detail: expect.stringContaining("carrier_process_indeterminate"),
+			}),
+		]);
+		lease.close();
+		expect(existsSync(env.FLYWHEEL_ALERT_QUEUE_DIR!)).toBe(false);
 	});
 
 	it.each(["missing", "wrong", "stale"] as const)(

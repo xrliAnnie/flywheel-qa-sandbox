@@ -1,3 +1,4 @@
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
 import { phaseThreadBadge } from "flywheel-config";
 import {
@@ -1349,7 +1350,9 @@ export class HeartbeatService implements ReconnectController {
 		// design→design_done, implement→awaiting_review), so a `running`-only filter
 		// saw exactly the roles that never park. That is why the FLY-1319 restart
 		// re-adopted the QA session and left the parked implement unmonitored.
-		const candidates = this.store.getReadoptCandidateSessions();
+		const candidates = withSyncOpMarker("heartbeat:readopt-candidates", () =>
+			this.store.getReadoptCandidateSessions(),
+		);
 		// FLY-1282 (R3 #1): the public Promise<string[]> contract (FLY-1264 boot
 		// title ids) is unchanged. The boot pass uses the same aggregated V2
 		// consumption; its held-set is deliberately DISCARDED
@@ -1616,21 +1619,12 @@ export class HeartbeatService implements ReconnectController {
 		if (now - this.lastParkedCheckAt < this.staleCheckIntervalMs) return;
 		this.parkedSweepRunning = true;
 		try {
-			const candidates = [
+			const candidates = withSyncOpMarker("heartbeat:parked-candidates", () => [
 				...this.store.getParkedPhaseCandidates(),
 				...this.store.getWorkflowManagedParkedCandidates(),
-			];
+			]);
 			const total = candidates.length;
 			if (total === 0) return;
-
-			// Group by issue — the verdict needs the WHOLE issue group, not just the
-			// candidates that fall in this sweep's window.
-			const byIssue = new Map<string, Session[]>();
-			for (const s of candidates) {
-				const g = byIssue.get(s.issue_id);
-				if (g) g.push(s);
-				else byIssue.set(s.issue_id, [s]);
-			}
 
 			// STABLE global order by execution_id (a random UUID — stable across
 			// sweeps, independent of the mutable last_activity_at). A single
@@ -1640,12 +1634,28 @@ export class HeartbeatService implements ReconnectController {
 			// the candidate set changes between sweeps — there is no per-sweep issue
 			// window whose varying length could thrash a modulo cursor and starve a
 			// live leak spread across many issues (FLY-1210 root-fix / Codex R4).
-			const ordered = [...candidates].sort((a, b) =>
-				a.execution_id < b.execution_id
-					? -1
-					: a.execution_id > b.execution_id
-						? 1
-						: 0,
+			const { byIssue, ordered } = withSyncOpMarker(
+				"heartbeat:parked-materialization",
+				() => {
+					// Group by issue — the verdict needs the WHOLE issue group, not just
+					// the candidates that fall in this sweep's window.
+					const grouped = new Map<string, Session[]>();
+					for (const session of candidates) {
+						const group = grouped.get(session.issue_id);
+						if (group) group.push(session);
+						else grouped.set(session.issue_id, [session]);
+					}
+					return {
+						byIssue: grouped,
+						ordered: [...candidates].sort((a, b) =>
+							a.execution_id < b.execution_id
+								? -1
+								: a.execution_id > b.execution_id
+									? 1
+									: 0,
+						),
+					};
+				},
 			);
 			let cstart = 0;
 			if (this.parkedCleanupWatermark) {

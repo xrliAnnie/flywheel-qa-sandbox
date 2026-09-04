@@ -96,6 +96,12 @@
 		"classification": "signal-0-probe"
 	},
 	{
+		"key": "packages/claude-runner/src/TmuxAdapter.ts:child.kill(\"SIGKILL\");#1",
+		"path": "packages/claude-runner/src/TmuxAdapter.ts",
+		"code": "child.kill(\"SIGKILL\");",
+		"classification": "runner-affecting-mutation"
+	},
+	{
 		"key": "packages/claude-runner/src/TmuxAdapter.ts:execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]);#1",
 		"path": "packages/claude-runner/src/TmuxAdapter.ts",
 		"code": "execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]);",
@@ -105,6 +111,12 @@
 		"key": "packages/claude-runner/src/TmuxAdapter.ts:mutate: () => execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]),#1",
 		"path": "packages/claude-runner/src/TmuxAdapter.ts",
 		"code": "mutate: () => execFileFn(\"tmux\", [\"kill-window\", \"-t\", target]),",
+		"classification": "runner-affecting-mutation"
+	},
+	{
+		"key": "packages/claude-runner/src/TmuxAdapter.ts:process.kill(-child.pid, \"SIGKILL\");#1",
+		"path": "packages/claude-runner/src/TmuxAdapter.ts",
+		"code": "process.kill(-child.pid, \"SIGKILL\");",
 		"classification": "runner-affecting-mutation"
 	},
 	{
@@ -118,6 +130,18 @@
 		"path": "packages/claude-runner/src/wait-aware-exec.ts",
 		"code": "child?.kill(\"SIGTERM\");",
 		"classification": "out-of-scope"
+	},
+	{
+		"key": "packages/claude-runner/test/async-exec-file.test.ts:expect(() => process.kill(grandchildPid, 0)).toThrow();#1",
+		"path": "packages/claude-runner/test/async-exec-file.test.ts",
+		"code": "expect(() => process.kill(grandchildPid, 0)).toThrow();",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/claude-runner/test/async-exec-file.test.ts:process.kill(grandchildPid, \"SIGKILL\");#1",
+		"path": "packages/claude-runner/test/async-exec-file.test.ts",
+		"code": "process.kill(grandchildPid, \"SIGKILL\");",
+		"classification": "qa-only"
 	},
 	{
 		"key": "packages/claude-runner/test/claude-profile.test.ts:child.kill(\"SIGKILL\");#1",
@@ -429,6 +453,12 @@
 		"key": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts:process.kill(serverPid, \"SIGKILL\");#1",
 		"path": "packages/edge-worker/src/__tests__/WorktreeManager.reap.real-tmux.test.ts",
 		"code": "process.kill(serverPid, \"SIGKILL\");",
+		"classification": "qa-only"
+	},
+	{
+		"key": "packages/edge-worker/src/__tests__/WorktreeManager.test.ts:() => expect(() => process.kill(grandchildPid, 0)).toThrow(),#1",
+		"path": "packages/edge-worker/src/__tests__/WorktreeManager.test.ts",
+		"code": "() => expect(() => process.kill(grandchildPid, 0)).toThrow(),",
 		"classification": "qa-only"
 	},
 	{
@@ -1026,9 +1056,9 @@
 		"classification": "out-of-scope"
 	},
 	{
-		"key": "packages/teamlead/src/bridge/terminal-tab-reaper.ts:execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=viewer-${executionId}`], {#1",
+		"key": "packages/teamlead/src/bridge/terminal-tab-reaper.ts:[\"kill-session\", \"-t\", `=viewer-${executionId}`],#1",
 		"path": "packages/teamlead/src/bridge/terminal-tab-reaper.ts",
-		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=viewer-${executionId}`], {",
+		"code": "[\"kill-session\", \"-t\", `=viewer-${executionId}`],",
 		"classification": "out-of-scope"
 	},
 	{
@@ -1611,6 +1641,18 @@
 		"key": "scripts/__tests__/fly2264-verify-native-cutover.test.sh:if kill -0 \"$slow_wrapper\" 2>/dev/null; then transport_negative=0; fi#1",
 		"path": "scripts/__tests__/fly2264-verify-native-cutover.test.sh",
 		"code": "if kill -0 \"$slow_wrapper\" 2>/dev/null; then transport_negative=0; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2331-bridge-async-child.test.sh:if [[ -n \"${ARM_PID:-}\" ]]; then kill -KILL \"$ARM_PID\" 2>/dev/null || true; fi#1",
+		"path": "scripts/__tests__/fly2331-bridge-async-child.test.sh",
+		"code": "if [[ -n \"${ARM_PID:-}\" ]]; then kill -KILL \"$ARM_PID\" 2>/dev/null || true; fi",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/fly2331-bridge-async-child.test.sh:try { process.kill(pid, \"SIGKILL\"); } catch {}#1",
+		"path": "scripts/__tests__/fly2331-bridge-async-child.test.sh",
+		"code": "try { process.kill(pid, \"SIGKILL\"); } catch {}",
 		"classification": "qa-only"
 	},
 	{
@@ -2440,6 +2482,12 @@
 		"path": "scripts/e2e-scan-notify.ts",
 		"code": "execFileSync(\"tmux\", [\"kill-session\", \"-t\", `=${TMUX_SESSION}`]);",
 		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/fixtures/fly2331-guard-arm.mjs:process.kill(pid, 0);#1",
+		"path": "scripts/fixtures/fly2331-guard-arm.mjs",
+		"code": "process.kill(pid, 0);",
+		"classification": "signal-0-probe"
 	},
 	{
 		"key": "scripts/flywheel-bridge-wrapper.sh:if [[ -n \"${EXISTING_PID:-}\" ]] && kill -0 \"$EXISTING_PID\" 2>/dev/null; then#1",

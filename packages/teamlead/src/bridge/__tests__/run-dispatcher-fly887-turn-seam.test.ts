@@ -77,7 +77,12 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		) =>
 			| { kind: "found"; sha: string }
 			| { kind: "missing" }
-			| { kind: "indeterminate"; error: string },
+			| { kind: "indeterminate"; error: string }
+			| Promise<
+					| { kind: "found"; sha: string }
+					| { kind: "missing" }
+					| { kind: "indeterminate"; error: string }
+			  >,
 	): RunDispatcher {
 		return new RunDispatcher(
 			new Map([["proj", makeRuntime()]]),
@@ -377,6 +382,57 @@ describe("RunDispatcher pre-launch TURN grant seam (FLY-887)", () => {
 		await dispatcher.dispatch(retryRequest({ sessionRole: "implement" }));
 		await dispatcher.drain();
 		expect(compute).toHaveBeenCalledTimes(2);
+		expect(startPointAtLaunch).toBe("b".repeat(40));
+	});
+
+	it("FLY-2331: awaits both retry probes on their respective sides of the TURN fence", async () => {
+		const seed = new CommDB(commDbPathForProject("proj"));
+		seed.grantTurn("issue-1", "old-exec", "design", 100);
+		seed.close();
+		let resolveFirst!: (value: { kind: "found"; sha: string }) => void;
+		let resolveSecond!: (value: { kind: "found"; sha: string }) => void;
+		let announceSecond!: () => void;
+		const secondStarted = new Promise<void>((resolve) => {
+			announceSecond = resolve;
+		});
+		const compute = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveFirst = resolve;
+					}),
+			)
+			.mockImplementationOnce(
+				() =>
+					new Promise((resolve) => {
+						resolveSecond = resolve;
+						announceSecond();
+					}),
+			);
+		const dispatcher = makeDispatcher(compute);
+		const successorExecutionId = "async-probe-successor";
+		const dispatched = dispatcher.dispatch(
+			retryRequest({ successorExecutionId, sessionRole: "implement" }),
+		);
+
+		await vi.waitFor(() => expect(compute).toHaveBeenCalledTimes(1));
+		const beforeTurn = new CommDB(commDbPathForProject("proj"));
+		expect(beforeTurn.getTurn("issue-1")?.holder_exec_id).toBe("old-exec");
+		beforeTurn.close();
+
+		resolveFirst({ kind: "found", sha: "a".repeat(40) });
+		await secondStarted;
+		const afterTurn = new CommDB(commDbPathForProject("proj"));
+		expect(afterTurn.getTurn("issue-1")?.holder_exec_id).toBe(
+			successorExecutionId,
+		);
+		afterTurn.close();
+		expect(startPointAtLaunch).toBeUndefined();
+
+		resolveSecond({ kind: "found", sha: "b".repeat(40) });
+		await dispatched;
+		await dispatcher.drain();
 		expect(startPointAtLaunch).toBe("b".repeat(40));
 	});
 

@@ -52,16 +52,19 @@ afterEach(() => {
 });
 
 describe("Bridge synchronous operation marker coverage", () => {
-	it("marks workflow docs local and network git without URL/path material", async () => {
+	it("records workflow docs async spans without URL/path material", async () => {
 		const sha = "a".repeat(40);
 		const fake = makeCaptureExecutable({ stdout: `${sha}\trefs/heads/main\n` });
+		const spans: Array<{ name: string; startMs: number; endMs: number }> = [];
 		const docs = new GitWorkflowDocsGit({
 			gitPath: fake.executable,
 			remoteUrl: () => "https://token@example.test/private.git",
+			recordSpan: (name, startMs, endMs) =>
+				spans.push({ name, startMs, endMs }),
 		});
-		(
+		await (
 			docs as unknown as {
-				run(args: string[], cwd: string): unknown;
+				run(args: string[], cwd: string): Promise<unknown>;
 			}
 		).run(["status", "--porcelain", "/private/repo"], fake.root);
 		await docs.readRemoteHead({
@@ -70,15 +73,91 @@ describe("Bridge synchronous operation marker coverage", () => {
 			ref: "refs/heads/flywheel/docs/flywheel/FLY-2058",
 		});
 
-		expect(labels(fake.capture)).toEqual([
+		expect(spans.map(({ name }) => name)).toEqual([
 			"workflow-docs-git:status",
 			"workflow-docs-git:ls-remote",
 		]);
-		expect(readFileSync(fake.capture, "utf8")).not.toContain(
-			"token@example.test",
-		);
-		expect(readFileSync(fake.capture, "utf8")).not.toContain("/private");
+		expect(spans.every(({ startMs, endMs }) => endMs >= startMs)).toBe(true);
+		expect(JSON.stringify(spans)).not.toContain("token@example.test");
+		expect(JSON.stringify(spans)).not.toContain("/private");
 		expect(existsSync(fake.marker)).toBe(false);
+	});
+
+	it("replaces the parent environment for workflow docs git children", async () => {
+		const root = mkdtempSync(join(tmpdir(), "fly2331-doc-env-"));
+		roots.push(root);
+		const executable = join(root, "env.cjs");
+		writeFileSync(
+			executable,
+			`#!${process.execPath}\nprocess.stdout.write(JSON.stringify(process.env));\n`,
+			{ mode: 0o755 },
+		);
+		const poisoned = [
+			"HOME",
+			"GIT_DIR",
+			"GIT_WORK_TREE",
+			"GIT_INDEX_FILE",
+			"GIT_SSH_COMMAND",
+			"GIT_CREDENTIAL_HELPER",
+		] as const;
+		const before = Object.fromEntries(
+			poisoned.map((name) => [name, process.env[name]]),
+		);
+		for (const name of poisoned) process.env[name] = `poison-${name}`;
+		try {
+			const docs = new GitWorkflowDocsGit({
+				gitPath: executable,
+				token: "test-token",
+			});
+			const result = await (
+				docs as unknown as {
+					run(args: string[], cwd: string): Promise<{ stdout: string }>;
+				}
+			).run(["status", "--porcelain"], root);
+			const childEnv = JSON.parse(result.stdout) as Record<string, string>;
+
+			const expectedKeys = [
+				"PATH",
+				"LC_ALL",
+				"GIT_CONFIG_GLOBAL",
+				"GIT_CONFIG_SYSTEM",
+				"GIT_TERMINAL_PROMPT",
+				"GIT_OPTIONAL_LOCKS",
+				"GIT_ASKPASS",
+				"FLYWHEEL_GIT_TOKEN",
+			];
+			// macOS injects this locale identity into launched binaries even when
+			// spawn receives an explicit replacement environment.
+			if (process.platform === "darwin")
+				expectedKeys.push("__CF_USER_TEXT_ENCODING");
+			expect(Object.keys(childEnv).sort()).toEqual(expectedKeys.sort());
+			expect(childEnv.FLYWHEEL_GIT_TOKEN).toBe("test-token");
+			expect(childEnv.PATH).toBe(`${root}:/usr/bin:/bin`);
+			for (const name of poisoned) expect(childEnv[name]).toBeUndefined();
+		} finally {
+			for (const name of poisoned) {
+				const value = before[name];
+				if (value === undefined) delete process.env[name];
+				else process.env[name] = value;
+			}
+		}
+	});
+
+	it("wires the workflow docs span recorder at the production construction", () => {
+		const source = readFileSync(
+			new URL("../bridge/plugin.ts", import.meta.url),
+			"utf8",
+		);
+		const materializerStart = source.indexOf(
+			"const workflowDocsMaterializer = new WorkflowDocsMaterializer",
+		);
+		const construction = source.slice(
+			materializerStart,
+			materializerStart + 800,
+		);
+		expect(materializerStart).toBeGreaterThanOrEqual(0);
+		expect(construction).toContain("git: new GitWorkflowDocsGit({");
+		expect(construction).toContain("eventLoopAttribution.recordSpan");
 	});
 
 	it("marks the resume-checkpoint git funnel with only the subcommand", () => {

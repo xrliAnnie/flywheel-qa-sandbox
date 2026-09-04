@@ -5,7 +5,6 @@
  * Previously duplicated in scripts/lib/retry-runtime.ts (deleted in FLY-50).
  */
 
-import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -13,11 +12,13 @@ import { fileURLToPath } from "node:url";
 import {
 	AnthropicLLMClient,
 	AntigravityTmuxAdapter,
+	type AsyncExecFileFn,
 	CodexExecutionOwnershipRegistry,
 	type CodexRecoveryCommitHooks,
 	type CodexRecoveryOptions,
 	CodexTmuxAdapter,
 	type CodexTransportCloseEvidence,
+	defaultAsyncExecFile,
 	KimiTmuxAdapter,
 	type RunnerTuiWindowLostEvidence,
 	scrubOrphanedCodexHomes,
@@ -127,6 +128,70 @@ import type { BridgeConfig } from "./types.js";
 import { grantPrelaunchWorkflowTurn } from "./workflow-turn-bundle.js";
 import type { WorktreeCleanupFn } from "./worktree-cleanup.js";
 import { reconcileProjectWorktrees } from "./worktree-reconciler.js";
+
+export const BRIDGE_CHILD_TIMEOUT_MS = 120_000;
+export const BRIDGE_GIT_PROBE_TIMEOUT_MS = 20_000;
+
+export async function runInfraEvidenceCommand(
+	cmd: string,
+	args: string[],
+	cwd: string,
+	execFile: AsyncExecFileFn = defaultAsyncExecFile,
+): Promise<{ stdout: string }> {
+	const { stdout } = await execFile(cmd, args, {
+		cwd,
+		timeoutMs: BRIDGE_CHILD_TIMEOUT_MS,
+	});
+	return { stdout };
+}
+
+export async function runInfraShellCommand(
+	cmd: string,
+	args: string[],
+	cwd: string,
+	execFile: AsyncExecFileFn = defaultAsyncExecFile,
+): Promise<{ stdout: string; exitCode: number }> {
+	try {
+		const { stdout } = await execFile(cmd, args, {
+			cwd,
+			timeoutMs: BRIDGE_CHILD_TIMEOUT_MS,
+		});
+		return { stdout, exitCode: 0 };
+	} catch (error) {
+		const failure = error as {
+			stdout?: unknown;
+			status?: unknown;
+			code?: unknown;
+		};
+		const exitCode =
+			typeof failure.status === "number"
+				? failure.status
+				: typeof failure.code === "number"
+					? failure.code
+					: 1;
+		return {
+			stdout: typeof failure.stdout === "string" ? failure.stdout : "",
+			exitCode,
+		};
+	}
+}
+
+export async function runInfraResumeGitRead(
+	projectRoot: string,
+	args: string[],
+	execFile: AsyncExecFileFn = defaultAsyncExecFile,
+): Promise<string | null> {
+	try {
+		return (
+			await execFile("git", args, {
+				cwd: projectRoot,
+				timeoutMs: BRIDGE_GIT_PROBE_TIMEOUT_MS,
+			})
+		).stdout;
+	} catch {
+		return null;
+	}
+}
 
 export interface CodexRecoveryRuntime {
 	resume(
@@ -247,7 +312,7 @@ export async function runCodexRecoveryOwner(input: {
 }
 
 /** FLY-1718: compute one resume snapshot from one Git ref at a time. */
-export function computeProgressResumeAcrossRefs(input: {
+export async function computeProgressResumeAcrossRefs(input: {
 	issueId: string;
 	role: string;
 	docBaseDir: string;
@@ -259,20 +324,20 @@ export function computeProgressResumeAcrossRefs(input: {
 		plan_path?: string;
 		session_stage?: string;
 	};
-	git: (args: string[]) => string | null;
-}): ProgressResumeInfo | null {
+	git: (args: string[]) => string | null | Promise<string | null>;
+}): Promise<ProgressResumeInfo | null> {
 	for (const ref of input.refs) {
-		const tip = input.git(["rev-parse", `${ref}^{commit}`])?.trim();
+		const tip = (await input.git(["rev-parse", `${ref}^{commit}`]))?.trim();
 		if (!tip) continue;
 		const deps: ProgressResumeDeps = {
 			docBaseDir: input.docBaseDir,
 			issueIdentifier: input.issueIdentifier,
 			branchName: () => input.branch,
 			priorSession: () => input.prior,
-			readBranchFile: (_branch, path) => input.git(["show", `${ref}:${path}`]),
+			readBranchFile: (_branch, path) => input.git(["show", `${tip}:${path}`]),
 			branchTip: () => tip,
-			discoverDocDir: () => {
-				const out = input.git(["ls-tree", "-r", "--name-only", ref]);
+			discoverDocDir: async () => {
+				const out = await input.git(["ls-tree", "-r", "--name-only", tip]);
 				if (!out) return null;
 				const prefix = `${input.docBaseDir}/${input.issueIdentifier}-`;
 				const hit = out
@@ -283,7 +348,7 @@ export function computeProgressResumeAcrossRefs(input: {
 				return hit ? hit.slice(0, hit.length - "/progress.md".length) : null;
 			},
 		};
-		const resume = computeProgressResume(
+		const resume = await computeProgressResume(
 			input.issueId,
 			input.role,
 			"restart",
@@ -315,12 +380,13 @@ export function liveCodexHomeExecutionIds(
  * machine-readable three-state exit contract. Exit 1 from `--verify --quiet`
  * is the only confirmed-missing result; every other failure is indeterminate.
  */
-export function probePhaseRetryBranchTip(
+export async function probePhaseRetryBranchTip(
 	projectRoot: string,
 	branch: string,
-): PhaseRetryStartPoint {
+	execFile: AsyncExecFileFn = defaultAsyncExecFile,
+): Promise<PhaseRetryStartPoint> {
 	try {
-		const stdout = execFileSync(
+		const { stdout } = await execFile(
 			"git",
 			[
 				"-C",
@@ -331,28 +397,29 @@ export function probePhaseRetryBranchTip(
 				`refs/heads/${branch}^{commit}`,
 			],
 			{
-				encoding: "utf-8",
-				stdio: ["ignore", "pipe", "pipe"],
-				timeout: 20_000,
+				cwd: projectRoot,
+				timeoutMs: BRIDGE_GIT_PROBE_TIMEOUT_MS,
 			},
-		).trim();
-		if (!stdout) {
+		);
+		const sha = stdout.trim();
+		if (!sha) {
 			return {
 				kind: "indeterminate",
 				error: `git rev-parse returned an empty sha for refs/heads/${branch}`,
 			};
 		}
-		return { kind: "found", sha: stdout };
+		return { kind: "found", sha };
 	} catch (error) {
 		const failure = error as {
+			code?: unknown;
 			status?: unknown;
 			signal?: unknown;
 			message?: unknown;
 			stderr?: unknown;
 		};
-		if (failure.status === 1) return { kind: "missing" };
+		if ((failure.status ?? failure.code) === 1) return { kind: "missing" };
 		const detail = [
-			`exit=${String(failure.status ?? "spawn-error")}`,
+			`exit=${String(failure.status ?? failure.code ?? "spawn-error")}`,
 			failure.signal ? `signal=${String(failure.signal)}` : "",
 			failure.message ? String(failure.message) : "",
 		]
@@ -502,10 +569,7 @@ async function createRunBlueprint(
 		auditLogger = new AuditLogger(join(flywheelDir, "audit.db"));
 		await auditLogger.init();
 
-		const execFn = async (cmd: string, args: string[], cwd: string) => {
-			const result = execFileSync(cmd, args, { cwd, encoding: "utf-8" });
-			return { stdout: result };
-		};
+		const execFn = runInfraEvidenceCommand;
 
 		const evidenceCollector = new ExecutionEvidenceCollector(execFn);
 		const skillInjector = new SkillInjector();
@@ -709,18 +773,7 @@ async function createRunBlueprint(
 		adapterRegistry.setDefault("claude-tmux");
 		const makeAdapter = (name: string) => adapterRegistry.get(name);
 		const shell = {
-			execFile: async (cmd: string, args: string[], cwd: string) => {
-				try {
-					const stdout = execFileSync(cmd, args, {
-						cwd,
-						encoding: "utf-8",
-					});
-					return { stdout, exitCode: 0 };
-				} catch (e: unknown) {
-					const err = e as { stdout?: string; status?: number };
-					return { stdout: err.stdout ?? "", exitCode: err.status ?? 1 };
-				}
-			},
+			execFile: runInfraShellCommand,
 		};
 
 		const blueprint = new Blueprint(
@@ -1449,21 +1502,14 @@ export async function setupRunInfrastructure(
 		// still resume a surviving local branch with unpushed progress.
 		const remoteDecision = await materializeRemoteBranch(
 			{ repoPath: projectRoot, branch: branchB },
-			{ withRepoLock: runInfraOpts?.withRepoLock },
+			{
+				runGit: (args, cwd) => runInfraEvidenceCommand("git", args, cwd),
+				withRepoLock: runInfraOpts?.withRepoLock,
+			},
 		);
 		if (remoteDecision.kind === "indeterminate") return null;
 
-		const git = (args: string[]): string | null => {
-			try {
-				return execFileSync("git", args, {
-					cwd: projectRoot,
-					encoding: "utf8",
-					stdio: ["ignore", "pipe", "ignore"],
-				});
-			} catch {
-				return null; // branch/file absent or git error → fail-safe (fresh)
-			}
-		};
+		const git = (args: string[]) => runInfraResumeGitRead(projectRoot, args);
 
 		const branchRefs = (branch: string) => [
 			`refs/heads/${branch}`,
@@ -1471,7 +1517,7 @@ export async function setupRunInfrastructure(
 		];
 		// Resolve one ref for the entire snapshot: tip, doc discovery, and ledger
 		// bytes may never independently fall through to different histories.
-		return computeProgressResumeAcrossRefs({
+		return await computeProgressResumeAcrossRefs({
 			issueId,
 			role,
 			docBaseDir,
@@ -1493,7 +1539,7 @@ export async function setupRunInfrastructure(
 	// WorktreeManager path/branch authority as Blueprint. This runs for every
 	// phase retry even when DAG workflow keep-alive is disabled: the recreate path
 	// still needs to rebuild from branch B rather than silently reset to main.
-	const phaseRetryStartPointComputer: PhaseRetryStartPointComputer = (
+	const phaseRetryStartPointComputer: PhaseRetryStartPointComputer = async (
 		issueId,
 		role,
 		projectName,
@@ -1515,7 +1561,7 @@ export async function setupRunInfrastructure(
 				projectName,
 				key,
 			);
-			return probePhaseRetryBranchTip(runtime.projectRoot, branch);
+			return await probePhaseRetryBranchTip(runtime.projectRoot, branch);
 		} catch (error) {
 			return {
 				kind: "indeterminate",
@@ -1529,6 +1575,7 @@ export async function setupRunInfrastructure(
 		worktreeManager,
 		materialize: (args) =>
 			materializeRemoteBranch(args, {
+				runGit: (gitArgs, cwd) => runInfraEvidenceCommand("git", gitArgs, cwd),
 				withRepoLock: runInfraOpts?.withRepoLock,
 			}),
 		lookupOpenPrs: (args) => lookupOpenPullRequests(args),

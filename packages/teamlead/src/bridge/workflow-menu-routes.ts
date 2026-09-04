@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { Router } from "express";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { getModelRegistryEntry } from "flywheel-config";
 import {
 	loadProjectMenuConfig,
@@ -14,10 +15,14 @@ interface WorkflowMenuProject {
 }
 
 function defaultGitHead(projectRoot: string): string {
-	return execFileSync("git", ["rev-parse", "HEAD"], {
-		cwd: projectRoot,
-		encoding: "utf8",
-	}).trim();
+	return withSyncOpMarker("workflow-menu:git-head", () =>
+		execFileSync("git", ["rev-parse", "HEAD"], {
+			cwd: projectRoot,
+			encoding: "utf8",
+			timeout: 10_000,
+			killSignal: "SIGKILL",
+		}),
+	).trim();
 }
 
 export function createWorkflowMenuRouter(

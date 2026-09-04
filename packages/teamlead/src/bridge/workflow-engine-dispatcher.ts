@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { withSyncOpMarker } from "flywheel-claude-runner";
 import { isWorkflowPhaseRole } from "flywheel-config";
 import type {
 	WorkflowIssueDeliveryInput,
@@ -1732,23 +1733,25 @@ export class WorkflowEngineDispatcher {
 		) {
 			return;
 		}
-		for (const candidate of this.options.store.listWorkflowDivergenceCandidates()) {
-			try {
-				this.options.store.commitWorkflowDivergenceObservation({
-					runId: candidate.runId,
-					nodeId: candidate.nodeId,
-					attempt: candidate.attempt,
-					executionId: candidate.executionId,
-					observedStatus: candidate.sessionStatus,
-					observedLifecycleRevision: candidate.lifecycleRevision,
-					now: this.now().toISOString(),
-				});
-			} catch (error) {
-				this.log(
-					`workflow divergence observation held for ${candidate.executionId}: ${error instanceof Error ? error.message : String(error)}`,
-				);
+		withSyncOpMarker("workflow-engine:divergence-observation", () => {
+			for (const candidate of this.options.store.listWorkflowDivergenceCandidates()) {
+				try {
+					this.options.store.commitWorkflowDivergenceObservation({
+						runId: candidate.runId,
+						nodeId: candidate.nodeId,
+						attempt: candidate.attempt,
+						executionId: candidate.executionId,
+						observedStatus: candidate.sessionStatus,
+						observedLifecycleRevision: candidate.lifecycleRevision,
+						now: this.now().toISOString(),
+					});
+				} catch (error) {
+					this.log(
+						`workflow divergence observation held for ${candidate.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
 			}
-		}
+		});
 	}
 
 	private deferDeadExecutionForReadyResume(input: {

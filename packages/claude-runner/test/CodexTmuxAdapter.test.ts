@@ -209,6 +209,34 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	}
 
+	it("FLY-2331: awaits injected child probes instead of blocking the event loop", async () => {
+		let releaseTmux!: (value: { stdout: string }) => void;
+		const calls: string[] = [];
+		const injectedExec = ((cmd: string) => {
+			calls.push(cmd);
+			if (cmd === "tmux") {
+				return new Promise<{ stdout: string }>((resolve) => {
+					releaseTmux = resolve;
+				});
+			}
+			return Promise.resolve({ stdout: "codex-cli 0.144.1" });
+		}) as unknown as ConstructorParameters<typeof CodexTmuxAdapter>[1];
+		const adapter = new CodexTmuxAdapter("testsess", injectedExec);
+		let settled = false;
+
+		const healthPromise = adapter.checkEnvironment().then((health) => {
+			settled = true;
+			return health;
+		});
+		await Promise.resolve();
+
+		expect(calls).toEqual(["tmux"]);
+		expect(settled).toBe(false);
+		releaseTmux({ stdout: "tmux 3.4" });
+		await expect(healthPromise).resolves.toMatchObject({ healthy: true });
+		expect(calls).toEqual(["tmux", "codex"]);
+	});
+
 	beforeEach(() => {
 		dir = mkdtempSync(join(tmpdir(), "fly1188-codex-adapter-"));
 		markerDir = join(dir, "codex-gates");

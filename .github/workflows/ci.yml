@@ -198,6 +198,8 @@ jobs:
     # FLY-2245 rebalanced six 2026-09-01 runs against the unchanged FLY-1870
     # 1020s tripwire budget. Per-step maxima + 149s setup project this shard at
     # 624s (61.2%). Move only complete named steps; see the FLY-2245 research.
+    # FLY-2331 adds one ~150s real-time guard regression, projecting 774s
+    # (75.9%) while remaining below the unchanged 85% tripwire.
     timeout-minutes: 20
     steps:
       - name: Record job start (FLY-1870 tripwire)
@@ -235,6 +237,13 @@ jobs:
       - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
         timeout-minutes: 8
         run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
+      # FLY-2331: run the real 70s nonblocking child arm and the same fixture's
+      # 61s sync mutant under the production EventLoopGuard. The harness owns
+      # isolated HOME/state/process groups and has independent hard deadlines.
+      - name: Test — FLY-2331 Bridge async-child guard regression
+        timeout-minutes: 4
+        run: bash scripts/__tests__/fly2331-bridge-async-child.test.sh
 
       - name: Test — FLY-1707 incident replay
         run: bash scripts/__tests__/qa-fly-1707-incident-replay.test.sh

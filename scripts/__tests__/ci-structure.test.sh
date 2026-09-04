@@ -13,13 +13,14 @@ REAL_TMUX_E2E="$REPO_ROOT/scripts/__tests__/tmux-server-rescue-real-tmux.test.sh
 CMUX_TEST="$REPO_ROOT/scripts/test-cmux-sync.sh"
 HOOKS_E2E="$REPO_ROOT/scripts/test-cmux-sync-hooks-integration.sh"
 LIVE_E2E="$REPO_ROOT/scripts/__tests__/fly1364-live-e2e.test.sh"
+FLY2331_GUARD_TEST="$REPO_ROOT/scripts/__tests__/fly2331-bridge-async-child.test.sh"
 
 if grep -Fq -- ' -- --shard' "$WORKFLOW"; then
   echo "FAIL: ci.yml contains the swallowed pnpm shard form: -- --shard" >&2
   exit 1
 fi
 
-WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" python3 <<'PY'
+WORKFLOW="$WORKFLOW" CLASSIFIER="$CLASSIFIER" SUFFIX_LEDGER="$SUFFIX_LEDGER" REVIEW_GOVERNANCE_DOCS="$REVIEW_GOVERNANCE_DOCS" FLY1135_DOC_SENTINEL="$FLY1135_DOC_SENTINEL" DISCORD_E2E="$DISCORD_E2E" REAL_TMUX_E2E="$REAL_TMUX_E2E" CMUX_TEST="$CMUX_TEST" HOOKS_E2E="$HOOKS_E2E" LIVE_E2E="$LIVE_E2E" FLY2331_GUARD_TEST="$FLY2331_GUARD_TEST" python3 <<'PY'
 import ast
 import os
 import re
@@ -146,6 +147,20 @@ workflow_path = os.environ["WORKFLOW"]
 repo_root = os.path.dirname(os.path.dirname(os.path.dirname(workflow_path)))
 classifier_source = read_utf8(os.environ["CLASSIFIER"], "ci-classify.sh")
 classifier_python = extract_classifier_python(classifier_source)
+fly2331_guard_source = read_utf8(
+    os.environ["FLY2331_GUARD_TEST"], "FLY-2331 guard regression"
+)
+fly2331_claude_build = fly2331_guard_source.find(
+    "pnpm --filter flywheel-claude-runner build"
+)
+fly2331_teamlead_build = fly2331_guard_source.find(
+    "pnpm --filter flywheel-teamlead build"
+)
+fly2331_fake_path = fly2331_guard_source.find('export PATH="$FAKE_BIN:$PATH"')
+require(
+    0 <= fly2331_claude_build < fly2331_teamlead_build < fly2331_fake_path,
+    "FLY-2331 fake git PATH must be installed only after both package builds",
+)
 
 expected_allowed_prefixes = (
     b"doc/",
@@ -713,6 +728,7 @@ expected_setup = [
 ]
 expected_shard_tests = {
     "script-tests": [
+        "Test — FLY-2331 Bridge async-child guard regression",
         "Test — FLY-1707 incident replay",
         "Test — FLY-1393 flag truth CLI",
         "Test — FLY-1436 work-kind cutover CLI",
