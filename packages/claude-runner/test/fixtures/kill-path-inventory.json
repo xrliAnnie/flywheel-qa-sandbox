@@ -2112,6 +2112,12 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:[[ \"$updater_pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$updater_pid\" 2>/dev/null \\#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "[[ \"$updater_pid\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$updater_pid\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$E_NEW_INTERMEDIATE\" 2>/dev/null \\#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
 		"code": "&& kill -0 \"$E_NEW_INTERMEDIATE\" 2>/dev/null \\",
@@ -2145,6 +2151,12 @@
 		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:&& kill -0 \"$W_NEW_WRAPPER\" 2>/dev/null \\#1",
 		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
 		"code": "&& kill -0 \"$W_NEW_WRAPPER\" 2>/dev/null \\",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-deploy-fly1389.test.sh:|| ! kill -0 \"$updater_pid\" 2>/dev/null; then#1",
+		"path": "scripts/__tests__/test-deploy-fly1389.test.sh",
+		"code": "|| ! kill -0 \"$updater_pid\" 2>/dev/null; then",
 		"classification": "qa-only"
 	},
 	{
