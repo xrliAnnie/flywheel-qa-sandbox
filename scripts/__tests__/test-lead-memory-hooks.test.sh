@@ -87,12 +87,28 @@ for installed in \
   .githooks/prepare-commit-msg \
   .githooks/pre-push \
   .githooks/lib/guard.sh \
-  bootstrap.sh \
+  bootstrap.sh write-memory.sh \
   README.md .gitleaks.toml .gitleaksignore .gitignore \
-  .github/workflows/guard.yml; do
+  .github/workflows/guard.yml \
+  .github/workflows/remote-observe.yml; do
   test -f "$REPO/$installed" || fail "template sync installs $installed"
 done
+test -x "$REPO/write-memory.sh" || fail "template sync does not install executable write-memory.sh"
 pass "template sync installs the exact repository surface"
+grep -Fq './write-memory.sh' "$REPO/README.md" || fail "ordinary write documentation does not use the shared writer"
+if grep -Fq 'git pull --rebase origin main' "$REPO/README.md"; then
+  fail "ordinary write documentation still teaches an unlocked multi-command write"
+fi
+for required_text in \
+  'A2 automation (FLY-2146)' \
+  'arrival-check.sh' \
+  'freshness-report.sh' \
+  'remote-observe.yml' \
+  'retire-units.sh' \
+  'interrupted_recovery_failed'; do
+  grep -Fq "$required_text" "$REPO/README.md" || fail "A2 implementation documentation omits $required_text"
+done
+pass "repository README documents the implemented A2 writer, observer, proof, and recovery"
 
 find "$REPO" -type f ! -path '*/.git/*' ! -name SCAN-LEDGER.md -print0 |
   sort -z | xargs -0 shasum -a 256 >"$TASK_TMP_DIR/manifest-before"
@@ -258,5 +274,117 @@ if [ -n "${FLY2145_REAL_GITLEAKS_BIN:-}" ]; then
     git -C "$REAL_REPO" commit -q -m real-admin-import
   pass "real gitleaks accepts the scanner config during an admin import"
 fi
+
+# Rehearse the post-merge three-file admin publication without touching the
+# real memory remote. An unstaged Lead edit is allowed; any staged Lead edit or
+# fourth staged path fails closed before the admin commit.
+cat >"$BIN/gitleaks" <<'STUB'
+#!/bin/sh
+if [ "${1:-}" = version ]; then printf '8.30.1\n'; fi
+exit 0
+STUB
+chmod 755 "$BIN/gitleaks"
+PUBLISH_REPO="$TASK_TMP_DIR/publish-repo"
+PUBLISH_ORIGIN="$TASK_TMP_DIR/publish-origin.git"
+PUBLISH_STATE="$TASK_TMP_DIR/publish-state"
+git init -q --bare --initial-branch=main "$PUBLISH_ORIGIN"
+git init -q -b main "$PUBLISH_REPO"
+git -C "$PUBLISH_REPO" config user.name "FLY-2146 Publish Test"
+git -C "$PUBLISH_REPO" config user.email "fly2146-publish@example.test"
+git -C "$PUBLISH_REPO" remote add origin "$PUBLISH_ORIGIN"
+"$SYNC" "$PUBLISH_REPO" >/dev/null
+git -C "$PUBLISH_REPO" config core.hooksPath .githooks
+rm -f -- "$PUBLISH_REPO/.github/workflows/remote-observe.yml" "$PUBLISH_REPO/write-memory.sh"
+printf 'pre-A2 README\n' >"$PUBLISH_REPO/README.md"
+mkdir -p "$PUBLISH_REPO/alpha-lead"
+printf 'baseline memory\n' >"$PUBLISH_REPO/alpha-lead/MEMORY.md"
+git -C "$PUBLISH_REPO" add -A
+env PATH="$BIN:$PATH" FLYWHEEL_STATE_DIR="$PUBLISH_STATE" FLYWHEEL_MEMORY_ACTOR=admin \
+  git -C "$PUBLISH_REPO" commit -q -m baseline
+env PATH="$BIN:$PATH" FLYWHEEL_STATE_DIR="$PUBLISH_STATE" FLYWHEEL_MEMORY_ACTOR=admin \
+  git -C "$PUBLISH_REPO" push -q -u origin main
+BASELINE_SHA="$(git -C "$PUBLISH_REPO" rev-parse HEAD)"
+printf 'unstaged memory remains local\n' >>"$PUBLISH_REPO/alpha-lead/MEMORY.md"
+git -C "$PUBLISH_REPO" diff --cached --quiet || fail "clean-index publication precondition rejects unstaged Lead work"
+test ! -e "$PUBLISH_REPO/.git/rebase-merge" && test ! -e "$PUBLISH_REPO/.git/rebase-apply" ||
+  fail "publication rehearsal unexpectedly enters a rebase"
+test "$(git -C "$PUBLISH_REPO" ls-remote --exit-code origin refs/heads/main | cut -f1)" = "$BASELINE_SHA" ||
+  fail "publication rehearsal baseline is not remote-equal"
+"$SYNC" "$PUBLISH_REPO" >/dev/null
+git -C "$PUBLISH_REPO" status --porcelain=v1 -z -- \
+  README.md .github/workflows/remote-observe.yml write-memory.sh >"$TASK_TMP_DIR/publish-porcelain.bin"
+python3 - "$TASK_TMP_DIR/publish-porcelain.bin" <<'PY' || fail "template publication does not produce exactly three top-level changes"
+import pathlib
+import sys
+actual = sorted(item for item in pathlib.Path(sys.argv[1]).read_bytes().split(b"\0") if item)
+expected = sorted([
+    b" M README.md",
+    b"?? .github/workflows/remote-observe.yml",
+    b"?? write-memory.sh",
+])
+if actual != expected:
+    raise SystemExit(f"unexpected publication surface: {actual!r}")
+PY
+git -C "$PUBLISH_REPO" add -- README.md .github/workflows/remote-observe.yml write-memory.sh
+git -C "$PUBLISH_REPO" diff --cached --name-only -z >"$TASK_TMP_DIR/publish-index.bin"
+python3 - "$TASK_TMP_DIR/publish-index.bin" <<'PY' || fail "admin staged scope is not exactly three files"
+import pathlib
+import sys
+actual = sorted(item for item in pathlib.Path(sys.argv[1]).read_bytes().split(b"\0") if item)
+expected = sorted([b"README.md", b".github/workflows/remote-observe.yml", b"write-memory.sh"])
+if actual != expected:
+    raise SystemExit(f"unexpected staged surface: {actual!r}")
+PY
+env PATH="$BIN:$PATH" FLYWHEEL_STATE_DIR="$PUBLISH_STATE" FLYWHEEL_MEMORY_ACTOR=admin \
+  git -C "$PUBLISH_REPO" commit -q -m "chore: publish A2 automation (FLY-2146)"
+PUBLISH_SHA="$(git -C "$PUBLISH_REPO" rev-parse HEAD)"
+test "$(git -C "$PUBLISH_REPO" show --format= --name-only "$PUBLISH_SHA" | LC_ALL=C sort)" = \
+  $'.github/workflows/remote-observe.yml\nREADME.md\nwrite-memory.sh' ||
+  fail "admin publication commit includes a Lead path or omits an A2 file"
+test "$(git -C "$PUBLISH_REPO" ls-tree "$PUBLISH_SHA" -- write-memory.sh | awk '{print $1}')" = 100755 ||
+  fail "published write-memory.sh is not executable"
+env PATH="$BIN:$PATH" FLYWHEEL_STATE_DIR="$PUBLISH_STATE" FLYWHEEL_MEMORY_ACTOR=admin \
+  git -C "$PUBLISH_REPO" push -q origin main
+test "$(git --git-dir="$PUBLISH_ORIGIN" rev-parse refs/heads/main)" = "$PUBLISH_SHA" ||
+  fail "admin publication is not present on fixture remote main"
+test "$(git -C "$PUBLISH_REPO" rev-parse "$PUBLISH_SHA:.github/workflows/remote-observe.yml")" = \
+  "$(git hash-object "$SOURCE/repo-template/.github/workflows/remote-observe.yml")" ||
+  fail "published remote-observe workflow bytes differ from the template"
+test "$(git -C "$PUBLISH_REPO" rev-parse "$PUBLISH_SHA:write-memory.sh")" = \
+  "$(git hash-object "$SOURCE/repo-template/write-memory.sh")" ||
+  fail "published ordinary writer bytes differ from the template"
+pass "three-file admin publication succeeds with an unstaged Lead edit present"
+
+git -C "$PUBLISH_REPO" add alpha-lead/MEMORY.md
+HEAD_BEFORE="$(git -C "$PUBLISH_REPO" rev-parse HEAD)"
+if git -C "$PUBLISH_REPO" diff --cached --quiet; then
+  fail "pre-staged Lead path is not rejected by publication step one"
+fi
+test "$(git -C "$PUBLISH_REPO" rev-parse HEAD)" = "$HEAD_BEFORE" ||
+  fail "pre-staged Lead rejection creates an admin commit"
+git -C "$PUBLISH_REPO" reset -q -- alpha-lead/MEMORY.md
+pass "publication stops before commit when a Lead path is already staged"
+
+git -C "$PUBLISH_REPO" reset -q --hard "$BASELINE_SHA"
+"$SYNC" "$PUBLISH_REPO" >/dev/null
+printf 'fourth staged path\n' >>"$PUBLISH_REPO/alpha-lead/MEMORY.md"
+git -C "$PUBLISH_REPO" add -- README.md .github/workflows/remote-observe.yml write-memory.sh alpha-lead/MEMORY.md
+HEAD_BEFORE="$(git -C "$PUBLISH_REPO" rev-parse HEAD)"
+git -C "$PUBLISH_REPO" diff --cached --name-only -z >"$TASK_TMP_DIR/publish-extra-index.bin"
+if python3 - "$TASK_TMP_DIR/publish-extra-index.bin" <<'PY'
+import pathlib
+import sys
+actual = sorted(item for item in pathlib.Path(sys.argv[1]).read_bytes().split(b"\0") if item)
+expected = sorted([b"README.md", b".github/workflows/remote-observe.yml", b"write-memory.sh"])
+raise SystemExit(0 if actual == expected else 1)
+PY
+then
+  fail "publication staged-scope guard accepts a fourth path"
+fi
+git -C "$PUBLISH_REPO" reset -q
+test -z "$(git -C "$PUBLISH_REPO" diff --cached --name-only)" &&
+  test "$(git -C "$PUBLISH_REPO" rev-parse HEAD)" = "$HEAD_BEFORE" ||
+  fail "fourth-path rejection does not reset the candidate index without committing"
+pass "publication resets and stops when staged scope contains a fourth path"
 
 printf 'RESULTS: %d passed\n' "$PASSED"

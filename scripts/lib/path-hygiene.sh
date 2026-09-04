@@ -173,6 +173,8 @@ scripts/launchd/com.flywheel.daily-digest.plist
 scripts/launchd/com.flywheel.token-usage-daily.plist
 scripts/launchd/com.flywheel.codex-log-guard.plist
 scripts/launchd/com.flywheel.bridge-liveness-probe.plist
+scripts/launchd/com.flywheel.lead-memory-sync.plist
+scripts/launchd/com.flywheel.lead-memory-arrival-check.plist
 scripts/com.flywheel.calendar-sweep.plist.template
 scripts/host-tmux-selection-gate.sh
 scripts/cutover/FLY-2264/verify-native-tmux-cutover.sh
@@ -185,6 +187,7 @@ scripts/__tests__/host-tmux-selection-s0-scope.test.sh
 scripts/test-cmux-sync.sh
 scripts/__tests__/token-usage-daily-channel.test.sh
 scripts/__tests__/token-usage-daily-failloud.test.sh
+scripts/__tests__/launchd-units-manifest.test.sh
 EOF
 }
 

@@ -54,11 +54,13 @@ for managed_file in \
 	"$target/.githooks/pre-push" \
 	"$target/.githooks/lib/guard.sh" \
 	"$target/bootstrap.sh" \
+	"$target/write-memory.sh" \
 	"$target/README.md" \
 	"$target/.gitleaks.toml" \
 	"$target/.gitleaksignore" \
 	"$target/.gitignore" \
-	"$target/.github/workflows/guard.yml"; do
+	"$target/.github/workflows/guard.yml" \
+	"$target/.github/workflows/remote-observe.yml"; do
 	preflight_file "$managed_file"
 done
 
@@ -78,17 +80,20 @@ copy_file "$script_dir/hooks/prepare-commit-msg" "$target/.githooks/prepare-comm
 copy_file "$script_dir/hooks/pre-push" "$target/.githooks/pre-push"
 copy_file "$script_dir/lib/guard.sh" "$target/.githooks/lib/guard.sh"
 copy_file "$script_dir/bootstrap.sh" "$target/bootstrap.sh"
+copy_file "$script_dir/repo-template/write-memory.sh" "$target/write-memory.sh"
 copy_file "$script_dir/repo-template/README.md" "$target/README.md"
 copy_file "$script_dir/repo-template/.gitleaks.toml" "$target/.gitleaks.toml"
 copy_file "$script_dir/repo-template/.gitleaksignore" "$target/.gitleaksignore"
 copy_file "$script_dir/repo-template/.gitignore" "$target/.gitignore"
 copy_file "$script_dir/repo-template/.github/workflows/guard.yml" "$target/.github/workflows/guard.yml"
+copy_file "$script_dir/repo-template/.github/workflows/remote-observe.yml" "$target/.github/workflows/remote-observe.yml"
 
 chmod 755 \
 	"$target/.githooks/pre-commit" \
 	"$target/.githooks/prepare-commit-msg" \
 	"$target/.githooks/pre-push" \
 	"$target/.githooks/lib/guard.sh" \
-	"$target/bootstrap.sh"
+	"$target/bootstrap.sh" \
+	"$target/write-memory.sh"
 
 printf 'lead-memory-sync: repository template synchronized\n'

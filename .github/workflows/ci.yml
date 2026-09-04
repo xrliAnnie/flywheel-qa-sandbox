@@ -191,7 +191,7 @@ jobs:
         run: pnpm --filter flywheel-teamlead test:stub-hygiene
 
   script-tests:
-    name: Script Tests 1/4 — session/lifecycle (shell suites)
+    name: Script Tests 1/5 — session/lifecycle (shell suites)
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
@@ -427,7 +427,7 @@ jobs:
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
   script-tests-2:
-    name: Script Tests 2/4 — fleet/setup/packaging A (shell suites)
+    name: Script Tests 2/5 — fleet/setup/packaging A (shell suites)
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
@@ -742,7 +742,7 @@ jobs:
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
   script-tests-3:
-    name: Script Tests 3/4 — fleet/setup/packaging B (shell suites)
+    name: Script Tests 3/5 — fleet/setup/packaging B (shell suites)
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
@@ -1020,7 +1020,7 @@ jobs:
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
   script-tests-4:
-    name: Script Tests 4/4 — cmux repair + Lead memory (shell suites)
+    name: Script Tests 4/5 — cmux repair + Lead memory (shell suites)
     runs-on: ubuntu-latest
     needs: [classify]
     if: ${{ needs.classify.outputs.no_code != 'true' }}
@@ -1125,6 +1125,69 @@ jobs:
         if: always()
         run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
 
+  script-tests-5:
+    name: Script Tests 5/5 — Lead memory remote sync
+    runs-on: ubuntu-latest
+    needs: [classify]
+    if: ${{ needs.classify.outputs.no_code != 'true' }}
+    # FLY-2146 uses the FLY-2245 approved fifth-shard fallback. The five new
+    # suites run serially and keep the unchanged FLY-1870 20m/85% tripwire.
+    timeout-minutes: 20
+    steps:
+      - name: Record job start (FLY-1870 tripwire)
+        run: date +%s > "$RUNNER_TEMP/flywheel-job-start-epoch"
+
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+
+      - name: Configure git for tests
+        run: |
+          git config --global user.email "ci@flywheel.dev"
+          git config --global user.name "Flywheel CI"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install better-sqlite3 prebuilt binary
+        run: cd node_modules/.pnpm/better-sqlite3@*/node_modules/better-sqlite3 && npx --yes prebuild-install || npm run build-release
+
+      - name: Build
+        run: pnpm build
+
+      - name: Ensure tmux/lsof/sqlite3/ripgrep (FLY-1905 hardened)
+        timeout-minutes: 8
+        run: bash scripts/ci-apt-install.sh tmux lsof sqlite3 ripgrep
+
+      - name: Test — FLY-2146 Lead memory remote sync
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          install_dir="$RUNNER_TEMP/fly2146-gitleaks"
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          mkdir -p "$install_dir"
+          curl -fsSLo "$install_dir/$archive" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          printf '%s  %s\n' "$GITLEAKS_LINUX_X64_SHA256" "$install_dir/$archive" | sha256sum -c -
+          tar -xzf "$install_dir/$archive" -C "$install_dir" gitleaks
+          test "$($install_dir/gitleaks version)" = "$GITLEAKS_VERSION"
+
+          FLY2145_REAL_GITLEAKS_BIN="$install_dir/gitleaks" bash scripts/__tests__/test-lead-memory-sync.test.sh
+          bash scripts/__tests__/test-lead-memory-arrival-check.test.sh
+          bash scripts/__tests__/test-lead-memory-freshness-report.test.sh
+          bash scripts/__tests__/test-lead-memory-observe-workflow.test.sh
+          bash scripts/__tests__/test-lead-memory-retire.test.sh
+
+      - name: Enforce FLY-1870 capacity tripwire
+        if: always()
+        run: bash scripts/ci-job-elapsed-tripwire.sh --cap-minutes 20 --threshold-pct 85 --start-file "$RUNNER_TEMP/flywheel-job-start-epoch"
+
   # FLY-1062 PR3/PR4: the gated distribution layer — ISOLATED job (the
   # original Build & Test job above was split by FLY-1338; this payload job
   # mapping remains byte-untouched. Hermetic: the pure endpoint handler + its
@@ -1194,7 +1257,7 @@ jobs:
   ci-ok:
     name: CI OK
     runs-on: ubuntu-latest
-    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, script-tests-3, script-tests-4, payload-distribution]
+    needs: [classify, quick-gate, unit-tests, script-tests, script-tests-2, script-tests-3, script-tests-4, script-tests-5, payload-distribution]
     if: ${{ always() && !cancelled() }}
     steps:
       - name: Verify all jobs passed
@@ -1207,7 +1270,7 @@ jobs:
             | ($needs["quick-gate"].result == "success")
               and ($needs.classify.result == "success")
               and (
-                ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "payload-distribution"]
+                ["unit-tests", "script-tests", "script-tests-2", "script-tests-3", "script-tests-4", "script-tests-5", "payload-distribution"]
                 | all(
                     . as $job
                     | ($needs[$job].result == "success")

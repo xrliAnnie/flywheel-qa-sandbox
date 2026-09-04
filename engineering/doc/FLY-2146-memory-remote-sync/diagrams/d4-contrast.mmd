@@ -1,0 +1,14 @@
+flowchart TB
+  subgraph OLD["旧的那套 · 不碰"]
+    direction TB
+    O0[chezmoi 自动同步<br/>管 46 项 .claude 条目<br/>记忆不在其中] --> O1[每日 02:00 跑]
+    O1 --> O2[push 失败 HTTP 500<br/>9.76 GiB 包体]
+    O2 --> O3[日志照写「Sync completed」]
+    O3 --> O4[没人读远端<br/>六个月 123 次提交没到]
+  end
+  subgraph NEW["本单的形状"]
+    direction TB
+    N1[写者:推完只认 ls-remote] --> N2[receipt.arrived 只有一个输入]
+    N3[看者:另一个进程<br/>只读远端 + 本地脏龄] --> N4[超 26h 没到 → 告警<br/>每天一行远端派生台账]
+    N5[远端每天自己记一笔 main 的 sha<br/>报告只读它 + 比对前一天写的文件] --> N6[连续多日 / 新机器最新<br/>用它验,是 ship 硬门]
+  end

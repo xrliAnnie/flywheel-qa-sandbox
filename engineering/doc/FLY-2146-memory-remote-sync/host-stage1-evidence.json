@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "issue": "FLY-2146",
+  "recorded_at": "2026-09-04T10:24:49Z",
+  "status": "partial_pass_pending_founder_execution",
+  "preflight": {
+    "status": "passed",
+    "dry_run": "read_only_preflight_passed",
+    "checks_passed": 8,
+    "checks_total": 8,
+    "branch": "main",
+    "hooks_path": ".githooks",
+    "origin": "https://github.com/xrliAnnie/lead-memory.git",
+    "staged_count": 0,
+    "local_head_before": "f39602a8b59115fd7e5514f85e89e2cc9cc0bad7",
+    "remote_head_before": "f39602a8b59115fd7e5514f85e89e2cc9cc0bad7",
+    "gitleaks_version": "8.30.1",
+    "writer_lock_backend": "lockf"
+  },
+  "manual_sync": {
+    "status": "passed",
+    "schema": 1,
+    "started_at": "2026-09-04T10:23:21Z",
+    "finished_at": "2026-09-04T10:23:31Z",
+    "trigger": "manual",
+    "exit_code": 0,
+    "reason": "arrived",
+    "arrived": true,
+    "arrival_observation": "observed",
+    "expected_local_sha": "86020cbf12c9e099bbcd0f68118d440aec015c7a",
+    "remote_head_before": "f39602a8b59115fd7e5514f85e89e2cc9cc0bad7",
+    "remote_head_after": "86020cbf12c9e099bbcd0f68118d440aec015c7a",
+    "fresh_ls_remote_after": "86020cbf12c9e099bbcd0f68118d440aec015c7a",
+    "github_committer_date": "2026-09-04T10:23:26Z",
+    "committed_n": 5,
+    "failed_n": 0,
+    "ignored_n": 0,
+    "preserved_staged_n": 0,
+    "fetch_rc": 0,
+    "push_rc": 0,
+    "porcelain_count_after": 0
+  },
+  "launchd_writer_smoke": {
+    "status": "pending_founder_execution",
+    "label": "com.flywheel.lead-memory-sync.fly2146-verify",
+    "keep_alive": false,
+    "reason": "FLY-913 deploy guard rejected launchctl before any command ran"
+  },
+  "launchd_observer_smoke": {
+    "status": "pending_founder_execution",
+    "label": "com.flywheel.lead-memory-arrival-check.fly2146-verify",
+    "keep_alive": false,
+    "reason": "FLY-913 deploy guard rejected launchctl before any command ran"
+  },
+  "cleanup": {
+    "status": "not_needed_no_launchd_mutation",
+    "temporary_plists_installed": 0,
+    "launchd_mutations": 0
+  },
+  "remaining_gate": "Founder executes the exact one-shot create/delete and observer block before merge, including identity-safe retirement."
+}

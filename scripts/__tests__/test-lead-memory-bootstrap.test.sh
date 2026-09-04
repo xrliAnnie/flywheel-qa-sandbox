@@ -485,6 +485,11 @@ pass "first-import commit carries the admin ownership trailer"
 test "$(git -C "$HOME_IMPORT/.claude/agent-memory" show HEAD:SCAN-LEDGER.md | grep -c 'reviewed: no credential material')" = 36 ||
   fail "publish applies all matching private review-receipt rows"
 pass "publish applies blob-matched private review evidence"
+test "$(git -C "$HOME_IMPORT/.claude/agent-memory" ls-tree HEAD -- .github/workflows/remote-observe.yml | awk '{print $1}')" = 100644 ||
+  fail "first-import root commit does not contain remote-observe.yml"
+test "$(git -C "$HOME_IMPORT/.claude/agent-memory" ls-tree HEAD -- write-memory.sh | awk '{print $1}')" = 100755 ||
+  fail "first-import root commit does not contain executable write-memory.sh"
+pass "first-import root commit contains the complete A2 automation surface"
 grep -Fq "IMPORT_SHA=$IMPORT_SHA" "$TASK_TMP_DIR/import-receipt-output" ||
   fail "publish emits copyable before/after evidence"
 pass "publish emits copyable before/after evidence"

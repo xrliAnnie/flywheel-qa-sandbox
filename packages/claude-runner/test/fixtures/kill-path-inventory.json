@@ -2286,6 +2286,30 @@
 		"classification": "qa-only"
 	},
 	{
+		"key": "scripts/__tests__/test-lead-memory-sync.test.sh:kill -9 \"$HOLDER_PID\"#1",
+		"path": "scripts/__tests__/test-lead-memory-sync.test.sh",
+		"code": "kill -9 \"$HOLDER_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-lead-memory-sync.test.sh:kill -9 \"$LOCK_HOLDER_PID\"#1",
+		"path": "scripts/__tests__/test-lead-memory-sync.test.sh",
+		"code": "kill -9 \"$LOCK_HOLDER_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-lead-memory-sync.test.sh:kill -9 \"$PYTHON_HOLDER_PID\"#1",
+		"path": "scripts/__tests__/test-lead-memory-sync.test.sh",
+		"code": "kill -9 \"$PYTHON_HOLDER_PID\"",
+		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/__tests__/test-lead-memory-sync.test.sh:kill -TERM \"$TERM_PID\"#1",
+		"path": "scripts/__tests__/test-lead-memory-sync.test.sh",
+		"code": "kill -TERM \"$TERM_PID\"",
+		"classification": "qa-only"
+	},
+	{
 		"key": "scripts/__tests__/test-reap-worktree-lib.test.sh:/bin/kill -KILL \"$pid\" 2>/dev/null || true#1",
 		"path": "scripts/__tests__/test-reap-worktree-lib.test.sh",
 		"code": "/bin/kill -KILL \"$pid\" 2>/dev/null || true",
@@ -2716,6 +2740,18 @@
 		"path": "scripts/hooks/test-flywheel-restart-guard.py",
 		"code": "(\"pgrep -f run-bridge | xargs kill -9\", \"P2 pgrep|xargs kill (FLY-176 form)\"),",
 		"classification": "qa-only"
+	},
+	{
+		"key": "scripts/lead-memory/lib/sync-common.sh:if [[ \"$owner\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$owner\" 2>/dev/null; then#1",
+		"path": "scripts/lead-memory/lib/sync-common.sh",
+		"code": "if [[ \"$owner\" =~ ^[1-9][0-9]*$ ]] && kill -0 \"$owner\" 2>/dev/null; then",
+		"classification": "signal-0-probe"
+	},
+	{
+		"key": "scripts/lead-memory/sync.sh:os.kill(int(sys.argv[2]), signal.SIGTERM)#1",
+		"path": "scripts/lead-memory/sync.sh",
+		"code": "os.kill(int(sys.argv[2]), signal.SIGTERM)",
+		"classification": "out-of-scope"
 	},
 	{
 		"key": "scripts/lib/agent-cli-providers/claude.sh:( sleep \"$secs\"; kill -TERM \"$child\" 2>/dev/null ) >/dev/null 2>&1 & watcher=$!#1",

@@ -1,1 +1,4 @@
 # Scanner reports and immutable snapshots live outside this repository.
+
+# Finder metadata is not memory and must not block a remote-ahead rebase.
+/.DS_Store

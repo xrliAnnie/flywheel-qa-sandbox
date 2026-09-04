@@ -298,12 +298,14 @@ required_top = {
     ".githooks/pre-push",
     ".githooks/prepare-commit-msg",
     ".github/workflows/guard.yml",
+    ".github/workflows/remote-observe.yml",
     ".gitleaks.toml",
     ".gitleaksignore",
     ".gitignore",
     "README.md",
     "SCAN-LEDGER.md",
     "bootstrap.sh",
+    "write-memory.sh",
 }
 seen_top = set()
 seen_leads = set()
@@ -346,12 +348,14 @@ required_top = {
     ".githooks/pre-push",
     ".githooks/prepare-commit-msg",
     ".github/workflows/guard.yml",
+    ".github/workflows/remote-observe.yml",
     ".gitleaks.toml",
     ".gitleaksignore",
     ".gitignore",
     "README.md",
     "SCAN-LEDGER.md",
     "bootstrap.sh",
+    "write-memory.sh",
 }
 seen_top = set()
 seen_leads = set()
@@ -518,8 +522,9 @@ git -C "$target" add -- $lead_names \
 	.githooks/pre-push \
 	.githooks/prepare-commit-msg \
 	.github/workflows/guard.yml \
+	.github/workflows/remote-observe.yml \
 	.gitleaks.toml .gitleaksignore .gitignore \
-	README.md SCAN-LEDGER.md bootstrap.sh
+	README.md SCAN-LEDGER.md bootstrap.sh write-memory.sh
 verify_staged_scope || fail 'staged first-import scope is invalid'
 candidate_tree=$(git -C "$target" write-tree) || fail 'cannot write candidate import tree'
 extract_ledger_tree "$ledger" "$work_dir/expected-tree"

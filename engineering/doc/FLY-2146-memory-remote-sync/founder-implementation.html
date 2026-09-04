@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>FLY-2146 · 记忆真正到达远端</title>
+  <style>
+    :root { color-scheme: light; --ink:#18202a; --muted:#637083; --line:#dbe2ea; --blue:#1267d6; --green:#16784a; --amber:#a65b00; --red:#b42318; --paper:#fff; --wash:#f4f7fb; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:var(--wash); color:var(--ink); font:15px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    main { width:min(1100px,calc(100% - 32px)); margin:32px auto 64px; }
+    header { padding:36px; border-radius:20px; color:#fff; background:linear-gradient(135deg,#123b73,#1570c9 62%,#43a8d8); box-shadow:0 18px 46px #1747772b; }
+    h1 { margin:0 0 8px; font-size:clamp(28px,5vw,48px); line-height:1.12; letter-spacing:-.03em; }
+    header p { margin:7px 0 0; max-width:790px; color:#e8f3ff; font-size:17px; }
+    .status { display:inline-flex; gap:8px; align-items:center; margin-bottom:18px; padding:6px 12px; border:1px solid #ffffff66; border-radius:999px; background:#ffffff18; font-weight:700; }
+    .dot { width:9px; height:9px; border-radius:50%; background:#ffd166; box-shadow:0 0 0 4px #ffd16630; }
+    section { margin-top:22px; padding:28px; border:1px solid var(--line); border-radius:18px; background:var(--paper); box-shadow:0 8px 24px #16314d0b; }
+    h2 { margin:0 0 16px; font-size:23px; letter-spacing:-.015em; }
+    h3 { margin:0 0 6px; font-size:16px; }
+    p { margin:8px 0; }
+    .lede { font-size:18px; }
+    .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; }
+    .card { padding:18px; border:1px solid var(--line); border-radius:14px; background:#fbfcfe; }
+    .card strong { display:block; margin-bottom:4px; font-size:22px; }
+    .ok strong { color:var(--green); } .wait strong { color:var(--amber); } .guard strong { color:var(--blue); }
+    .flow { display:grid; grid-template-columns:1fr 50px 1fr 50px 1fr; align-items:stretch; }
+    .node { padding:20px; border-radius:15px; border:1px solid #cfd9e5; background:#f8fbff; }
+    .arrow { display:grid; place-items:center; color:var(--blue); font-size:28px; font-weight:800; }
+    .tag { display:inline-block; margin:2px 5px 2px 0; padding:3px 9px; border-radius:999px; background:#edf4ff; color:#225ea8; font-size:12px; font-weight:700; }
+    table { width:100%; border-collapse:collapse; }
+    th,td { padding:11px 12px; border-bottom:1px solid var(--line); text-align:left; vertical-align:top; }
+    th { color:#425269; font-size:13px; background:#f7f9fc; }
+    tr:last-child td { border-bottom:0; }
+    code { padding:2px 5px; border-radius:5px; background:#edf1f6; font:13px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .callout { padding:16px 18px; border-left:4px solid var(--amber); border-radius:8px; background:#fff8eb; }
+    .danger { border-color:var(--red); background:#fff3f2; }
+    .timeline { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; }
+    .day { padding:18px; border-top:4px solid var(--blue); border-radius:10px; background:#f6f9fd; }
+    .day b { font-size:20px; }
+    a { color:var(--blue); }
+    footer { padding:20px 4px; color:var(--muted); font-size:13px; }
+    @media (max-width:760px) { .grid,.timeline { grid-template-columns:1fr; } .flow { grid-template-columns:1fr; gap:8px; } .arrow { transform:rotate(90deg); } section,header { padding:22px; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="status"><span class="dot"></span>代码/隔离/manual sync 通过 · launchd smoke 待 Founder · 三日观察待开始</div>
+    <h1>“同步完成”不算数。<br>远端真的有，才算。</h1>
+    <p>FLY-2146 绕开已积压 124 次提交的 chezmoi 链路，直接把 Lead 记忆送进独立私有仓；写者、看者和每日远端见证互不替对方作证。</p>
+  </header>
+
+  <section>
+    <h2>交付形状</h2>
+    <div class="flow" aria-label="本地记忆经过写者到达远端，再由独立看者和远端日检验证">
+      <div class="node"><h3>① 一个共享写锁</h3><p>自动 sync 与普通 <code>./write-memory.sh</code> 用同一把内核锁。一个 Lead 夹一个提交，不夹带别人已 staged 的内容。</p><span class="tag">lockf / flock / fcntl</span><span class="tag">600s hard cap</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><h3>② 到达只看远端</h3><p>push 之后重新执行 <code>ls-remote</code>。返回码 0、日志“完成”、本地 commit 都不能制造 <code>arrived=true</code>。</p><span class="tag">remote SHA oracle</span><span class="tag">no force</span></div>
+      <div class="arrow">→</div>
+      <div class="node"><h3>③ 两个独立见证</h3><p>本机看者只读远端并报 stale/silent；GitHub 每日自然 schedule 保存服务端 SHA，D+1 用两棵远端树验证内容出现。</p><span class="tag">hourly observer</span><span class="tag">daily witness</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>当前证据</h2>
+    <div class="grid">
+      <div class="card ok"><strong>40</strong>sync 合同测试：远端真值、两向争锁、全写序列 deadline、post-commit 实校验、remote-ahead rebase。</div>
+      <div class="card ok"><strong>15</strong>observer 合同测试：五本独立 episode、日期 API 降级、临时目录清理、失败发帖不伪装成功。</div>
+      <div class="card guard"><strong>3 文件</strong>README、远端日检、普通 writer 的 admin 发布闭包已隔离演练。</div>
+      <div class="card ok"><strong>lockf</strong>macOS 实际后端；CI 强制 Linux 实际跑 flock；Python fcntl 另跑真 FD。</div>
+      <div class="card ok"><strong>真实到达</strong>manual sync 已把远端推进到 <code>86020cbf…</code>；fresh ls-remote 相等，receipt 为 arrived/observed。</div>
+      <div class="card wait"><strong>launchd 待 Founder</strong>FLY-913 guard 在执行前拒绝 Lead 的 launchctl；没有绕过，也没有发生 launchd mutation。</div>
+      <div class="card wait"><strong>D1 → D3</strong>合并部署后才开始的连续两次“次日可见”硬门，不能用 dispatch/rerun 补数。</div>
+    </div>
+  </section>
+
+  <section>
+    <h2>最关键的反例已经被锁住</h2>
+    <table>
+      <thead><tr><th>反例</th><th>系统现在怎样回答</th></tr></thead>
+      <tbody>
+        <tr><td>push 显示成功，但远端没动</td><td><code>arrived=false</code>，退出 5；只信新的远端 SHA。</td></tr>
+        <tr><td>push 返回失败，但远端其实已到</td><td><code>arrived=true</code>，退出 7；保留命令失败，不抹掉到达事实。</td></tr>
+        <tr><td>自动 writer 卡住</td><td>600 秒总持锁上限；普通 writer 等待预算 660 秒；争锁方 75/deferred，不交错写 index。</td></tr>
+        <tr><td>另一个 Lead 已 staged</td><td><code>commit --only</code> 只提交当前夹，进入时的 path/blob/mode 集合逐字保持。</td></tr>
+        <tr><td>hooks 被禁用，提交缺 owner trailer</td><td>post-commit Python 校验真的执行并返回 6；远端 SHA 不动。</td></tr>
+        <tr><td>删掉 launchd plist 以为退役了</td><td>测试证明 converge 会复活 enabled 单元；所以必须先 disable，再 bootout、归档、identity-safe unlink。</td></tr>
+        <tr><td>本机自己说连续几天都好</td><td>不采信。只认 GitHub 上自然首跑 schedule 的 SHA 和 D/D+1 内容树。</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>为什么现在仍标“观察中”</h2>
+    <div class="timeline">
+      <div class="day"><b>D1</b><p>09:05 UTC 自然观察之后，创建当天专用 marker 并 freeze；先证 D1 树里没有。</p></div>
+      <div class="day"><b>D2</b><p>自然观察之后，证 D1 marker 已出现；删除它；再创建并 freeze D2 marker。</p></div>
+      <div class="day"><b>D3</b><p>自然观察之后，证 D2 marker 已出现。两次连续“次日可见”齐，才完成 PRD 验收。</p></div>
+    </div>
+    <p class="callout"><strong>不能提前盖章：</strong>宿主 one-shot smoke、post-merge 三文件发布、两个正式 launchd 单元自然运行、新机器同时刻 clone/remote 相等，以及 D1–D3，任何一项缺失都不是完整验收。</p>
+  </section>
+
+  <section>
+    <h2>边界没有偷偷变大</h2>
+    <p>本单没有修 chezmoi/dotfiles 的 124 次积压，没有改 <code>~/.claude</code> 外层仓，没有 force push、没有 secret、没有给同步加绕过扫描的开关，也没有把 FLY-2134 的“监控监控者”扩进来。</p>
+    <p class="callout danger"><strong>runner 沙箱不是产品故障：</strong>runner 内手动 sync 在创建锁文件时被权限策略拒绝，安全退出 6；Lead 在可写宿主执行相同产品入口后已经远端到达。剩余 launchd one-shot 被 FLY-913 guard 在执行前拒绝，留给 Founder merge 前按原 runbook 验收，不绕过 guard。</p>
+  </section>
+
+  <section>
+    <h2>可审计文档</h2>
+    <p><a href="plan.md">锁定实施计划</a> · <a href="design-correction.md">并发/冻结/CI 设计修正</a> · <a href="design-addendum-2.md">可移植锁与发布闭包补遗</a> · <a href="acceptance.md">逐项验收记录</a></p>
+  </section>
+
+  <footer>FLY-2146 · 2026-09-04 · 状态必须保持“观察中”，直到 D1–D3 远端证据齐全。</footer>
+</main>
+</body>
+</html>

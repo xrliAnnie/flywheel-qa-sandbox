@@ -143,31 +143,103 @@ twelve-folder synthetic tree still equals the terminal scan tree.
 
 ```sh
 cd "$HOME/.claude/agent-memory"
-git pull --rebase origin main
-git add -- "$FLYWHEEL_LEAD_ID"
-git commit -m "memory: update $FLYWHEEL_LEAD_ID"
-git push origin main
+./write-memory.sh
 ```
 
-The Lead environment supplies `FLYWHEEL_LEAD_ID`. Do not set another Lead's ID
-and do not use `--no-verify`.
+The Lead environment supplies `FLYWHEEL_LEAD_ID`. `write-memory.sh` is the only
+ordinary write entry point. It takes the repository's retained kernel writer
+lock, waits up to 660 seconds for an automated writer, and bounds its own Git
+sequence to 600 seconds. It uses non-interactive Git, commits only that Lead's
+folder, preserves another actor's staged paths, runs every hook and scan, and
+returns success only when a fresh remote read says `main` contains the current
+commit. Before mutation it also requires the canonical private origin, branch
+`main`, and no in-progress rebase. A noncanonical origin is status 10; an unsafe
+branch/rebase state is fail-closed status 6. Status 75 means deferred: leave the
+local memory in place and retry. Do not set another Lead's ID and do not use
+`--no-verify`.
 
-## Contract for FLY-2132 A2 automation
+## A2 automation (FLY-2146)
 
-The automatic writer must:
+The Flywheel checkout implements the A2 contract in
+`scripts/lead-memory/sync.sh`:
 
-1. pull and rebase before publishing;
-2. create one commit per changed Lead folder, never a merge or a multi-folder
-   commit;
-3. set `FLYWHEEL_MEMORY_ACTOR=sync` on every hook-bearing commit and push;
-4. never create or publish a `Memory-Owner: admin` commit; the sync pre-push
-   guard rejects admin-owned history even when it was created outside hooks;
-5. treat a failed audit write, hook, scan, rebase, or push as failure;
-6. verify arrival from the remote branch, rather than treating a local commit
-   or success log as delivery.
+1. Its first remote mutation is a bounded fetch. A failed fetch forbids rebase
+   and push in that run.
+2. It scans only valid top-level Lead folders and performs one explicit-path
+   `commit --only` per changed folder. Commit verification rejects merges,
+   cross-folder paths, or a wrong `Memory-Owner` trailer.
+3. Each hook-bearing automated commit and push declares
+   `FLYWHEEL_MEMORY_ACTOR=sync`; the hooks and gitleaks still run.
+4. The sync actor cannot create or publish an admin-owned commit.
+5. Audit, hook, scan, rebase, fetch, and push results stay distinct. In
+   particular, status 7 means the bytes arrived remotely even though a remote
+   command returned nonzero; that command failure is not hidden as success.
+6. The terminal verdict always executes a new bounded `git ls-remote` and
+   compares remote `main` with the frozen expected local SHA. Push output and
+   local logs never set `arrived=true`.
+7. Before rebase, staged or tracked-dirty paths anywhere in the repository
+   defer publication with status 3. Pure untracked structural residue remains
+   ignored because it does not prevent Git from rebasing.
 
-This repository does not implement the timer or remote-arrival monitor; those
-belong to A2.
+The writer runs hourly at minute 17 under
+`com.flywheel.lead-memory-sync`. It shares the same retained kernel lock with
+`write-memory.sh`, waits 60 seconds, and caps the complete held-lock sequence at
+600 seconds. Each non-contentious result writes a private
+`last-receipt.json` and one `runs.tsv` row under
+`${FLYWHEEL_STATE_DIR:-$HOME/.flywheel}/state/lead-memory/sync/`.
+
+`scripts/lead-memory/arrival-check.sh` runs independently at minute 40 under
+`com.flywheel.lead-memory-arrival-check`. It never trusts the writer's
+`arrived` field or logs and never fetches. It reads remote `main` itself, ages
+pending Lead memory, and maintains separate `stale`, `writer_silent`,
+`unfetched`, `remote_unreachable`, and `structural` episodes. Notifications
+contain no memory text or paths. A failed notification is persisted as
+`post_status=failed` and returns status 10 so launchd can distinguish alert
+delivery failure from a healthy observation.
+
+The repository's `.github/workflows/remote-observe.yml` is the off-machine
+daily witness. Only natural first-attempt `schedule` runs on `main` count.
+From the Flywheel checkout, `freshness-report.sh --remote-observations` lists
+those runs, `--freeze` binds a dedicated daily marker after day D's
+observation, and `--check-visible` proves the marker absent in D's remote tree
+and present in D+1's. Manual dispatch is only a workflow smoke test and never
+counts toward the multi-day acceptance window.
+
+## Deployment and retirement
+
+After an approved Flywheel change is deployed, synchronize the repository
+template and publish exactly `README.md`, `.github/workflows/remote-observe.yml`,
+and executable `write-memory.sh` in one admin-owned commit. The two launchd
+plists are byte-owned by the Flywheel launch-unit manifest and are installed by
+the existing daemon convergence path.
+
+Retirement is operator-only, audited, interactive, and limited to the two exact
+production labels. From the Flywheel checkout run, once per label:
+
+```sh
+scripts/lead-memory/retire-units.sh --apply --i-am-operator \
+  com.flywheel.lead-memory-sync
+scripts/lead-memory/retire-units.sh --apply --i-am-operator \
+  com.flywheel.lead-memory-arrival-check
+```
+
+The command proves byte identity, then disables, boots out, hard-link archives,
+and identity-safely removes the installed plist. Disable must happen first:
+otherwise normal convergence will copy and launch the unit again. To restore a
+unit, first restore its source plist and manifest row, then run `--enable` for
+the exact label and execute `scripts/lib/converge-nonlead-daemons.sh` through
+the normal deployment convergence path.
+
+## A2 recovery
+
+If the scheduled receipt reports status 8, stop automated writes and inspect
+the repository index and rebase state before retrying. A reason of
+`interrupted_recovery_failed` means the interrupted writer could not remove
+only its own staged paths; preserve the worktree and index for an operator.
+Status 4 means a rebase failed but was aborted and restored. Status 5 means the
+fresh remote observation did not contain the expected SHA. Status 6 is a
+fail-closed preflight, while status 9 means the outcome evidence itself could
+not be persisted. Never clear these by disabling hooks or rewriting history.
 
 ## Recovery
 

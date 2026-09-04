@@ -1,0 +1,27 @@
+flowchart LR
+  subgraph M[这台机器]
+    direction TB
+    MEM[(~/.claude/agent-memory<br/>A1 记忆仓 · 12 夹)]
+    W[写者<br/>com.flywheel.lead-memory-sync<br/>每小时 :17]
+    C[看者<br/>com.flywheel.lead-memory-arrival-check<br/>每小时 :40 · 写者之后]
+    RP[报告 freshness-report.sh<br/>人手 / QA 随时跑]
+    ST[(状态目录<br/>~/.flywheel/state/lead-memory/)]
+    RC[sync/last-receipt.json<br/>sync/runs.tsv]
+    FT[arrival/checks.tsv 每次观察一行<br/>arrival/state.json 四本 episode 账]
+    ST --- RC
+    ST --- FT
+  end
+  GH[(远端 GitHub<br/>xrliAnnie/lead-memory · 私有)]
+  OBS[远端每日观察 remote-observe.yml<br/>GitHub 自己每天 09:05 UTC 跑<br/>记 headSha + 服务端时间]
+  GH --- OBS
+  AL[#flywheel-alerts<br/>Discord 告警频道]
+  MEM -->|add / commit / push| W
+  W -->|ls-remote 核到达| GH
+  W -->|写| RC
+  C -->|ls-remote + API 读提交日期| GH
+  C -->|status / rev-list 读脏龄| MEM
+  C -.->|只看新鲜度<br/>不信 arrived| RC
+  C -->|写| FT
+  C -->|超 26h 未到达 / 写者连续静默 / 远端读不到 / 未 fetch| AL
+  RP -->|只读| GH
+  RP -->|--remote-observations<br/>--check-visible| OBS

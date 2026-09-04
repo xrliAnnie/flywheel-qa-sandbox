@@ -9,6 +9,8 @@ com.flywheel.daily-standup	com.flywheel.daily-standup.plist	copy	0,1	exit 1 is t
 com.flywheel.token-usage-daily	com.flywheel.token-usage-daily.plist	copy	0	repo plist is byte authority
 com.flywheel.bridge-liveness-probe	com.flywheel.bridge-liveness-probe.plist	copy	0	repo plist is byte authority
 com.flywheel.codex-log-guard	com.flywheel.codex-log-guard.plist	copy	0	approved never-installed-copy-exception
+com.flywheel.lead-memory-sync	com.flywheel.lead-memory-sync.plist	copy	0,2,3,4,5,7,75	remote arrival writer; lock contention is retryable
+com.flywheel.lead-memory-arrival-check	com.flywheel.lead-memory-arrival-check.plist	copy	0	remote observer reports incidents independently
 com.flywheel.daily-digest	com.flywheel.daily-digest.plist	hold	0	pending-founder-optin
 com.flywheel.xiaohongshu-learning	com.flywheel.xiaohongshu-learning.plist	hold	0	founder-gated-pilot
 com.flywheel.meeting-notes	com.flywheel.meeting-notes.plist	hold	0	pre-ship-live-pilot-hard-gate-before-install
