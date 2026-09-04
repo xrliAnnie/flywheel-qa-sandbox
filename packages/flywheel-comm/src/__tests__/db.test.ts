@@ -3,7 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CommDB, UNREAD_INSTRUCTIONS_SQL } from "../db.js";
+import {
+	CommDB,
+	PENDING_RUNNER_MAILBOX_SQL,
+	UNREAD_INSTRUCTIONS_SQL,
+} from "../db.js";
 
 describe("CommDB", () => {
 	let db: CommDB;
@@ -918,6 +922,54 @@ describe("CommDB", () => {
 	});
 
 	describe("instruction pull path", () => {
+		it("summarizes every live runner mailbox row without expiry false negatives", () => {
+			const firstQuestionId = db.insertQuestion(
+				"exec-pending",
+				"product-lead",
+				"First?",
+			);
+			db.insertResponse(firstQuestionId, "product-lead", "First answer");
+			const firstResponseId = db.getResponse(firstQuestionId)!.id;
+			const expiredQuestionId = db.insertQuestion(
+				"exec-pending",
+				"product-lead",
+				"Expired?",
+			);
+			db.insertResponse(expiredQuestionId, "product-lead", "Expired answer");
+			const expiredResponseId = db.getResponse(expiredQuestionId)!.id;
+			const expiredInstructionId = db.insertInstruction(
+				"product-lead",
+				"exec-pending",
+				"Expired instruction",
+			);
+			(db as any).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id IN (?, ?)",
+				)
+				.run(expiredResponseId, expiredInstructionId);
+			(db as any).db
+				.prepare("UPDATE mailbox SET state = 'LEASED' WHERE id = ?")
+				.run(firstResponseId);
+
+			expect(db.getUnreadInstructions("exec-pending")).toEqual([]);
+			expect(db.getPendingRunnerMailboxSnapshot("exec-pending")).toEqual({
+				queued: 2,
+				leased: 1,
+				unpullableInstructions: 1,
+				questionIds: [firstQuestionId, expiredQuestionId],
+			});
+
+			const plan = (db as any).db
+				.prepare(`EXPLAIN QUERY PLAN ${PENDING_RUNNER_MAILBOX_SQL}`)
+				.all("exec-pending") as Array<{ detail: string }>;
+			expect(plan.some(({ detail }) => detail.includes("mailbox_live"))).toBe(
+				true,
+			);
+			expect(plan.every(({ detail }) => !detail.includes("SCAN mailbox"))).toBe(
+				true,
+			);
+		});
+
 		it("hides DEAD messages", () => {
 			const id = db.insertInstruction("bridge", "test-lead", "dead pull");
 			(db as any).db

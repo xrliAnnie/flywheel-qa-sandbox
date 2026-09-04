@@ -56,6 +56,23 @@ export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
    AND datetime(p.expires_at) > datetime('now')
  ORDER BY p.created_at ASC`;
 
+export interface PendingRunnerMailboxSnapshot {
+	queued: number;
+	leased: number;
+	unpullableInstructions: number;
+	questionIds: string[];
+}
+
+export const PENDING_RUNNER_MAILBOX_SQL = `SELECT state, type, ref_id,
+       CASE WHEN type = 'instruction'
+                  AND COALESCE(datetime(expires_at) > datetime('now'), 0) = 0
+            THEN 1 ELSE 0 END AS unpullable_instruction
+  FROM mailbox
+ WHERE to_agent = ? AND recipient_kind = 'runner' AND carrier = 'inbox'
+   AND type IN ('instruction','response')
+   AND state IN ('QUEUED','LEASED')
+ ORDER BY seq`;
+
 export interface RunnerDeliveryProjectionRow {
 	id: string;
 	from_agent: string;
@@ -3853,6 +3870,36 @@ export class CommDB {
 
 	getUnreadInstructions(agentId: string): Message[] {
 		return this.db.prepare(UNREAD_INSTRUCTIONS_SQL).all(agentId) as Message[];
+	}
+
+	getPendingRunnerMailboxSnapshot(
+		agentId: string,
+	): PendingRunnerMailboxSnapshot {
+		const snapshot: PendingRunnerMailboxSnapshot = {
+			queued: 0,
+			leased: 0,
+			unpullableInstructions: 0,
+			questionIds: [],
+		};
+		const rows = this.db
+			.prepare(PENDING_RUNNER_MAILBOX_SQL)
+			.all(agentId) as Array<{
+			state: "QUEUED" | "LEASED";
+			type: "instruction" | "response";
+			ref_id: string | null;
+			unpullable_instruction: 0 | 1;
+		}>;
+		const questionIds = new Set<string>();
+		for (const row of rows) {
+			if (row.state === "QUEUED") snapshot.queued += 1;
+			else snapshot.leased += 1;
+			snapshot.unpullableInstructions += row.unpullable_instruction;
+			if (row.type === "response" && row.ref_id) {
+				questionIds.add(row.ref_id);
+			}
+		}
+		snapshot.questionIds = [...questionIds];
+		return snapshot;
 	}
 
 	markInstructionRead(id: string): void {

@@ -410,6 +410,28 @@ describe("FLY-1188 M2 — role-file ENVIRONMENT TRANSLATION header (codex only)"
 	});
 });
 
+describe("FLY-2222 — inbox pending verdict hygiene", () => {
+	it.each(["claude", "codex"] as const)(
+		"%s runner checks every question id in a pending mailbox summary",
+		async (vendor) => {
+			const prompt =
+				vendor === "codex" ? await buildCodexPrompt() : await buildPrompt({});
+			expect(prompt).toContain(
+				"Pending runner mailbox items may include answers to outstanding questions.",
+			);
+			expect(prompt).toContain("check <question-id>");
+			expect(prompt).toContain("for every question id shown");
+		},
+	);
+
+	it("does not inject Lead mailbox guidance without a Lead", async () => {
+		const prompt = await buildPrompt({ ctxOverrides: { leadId: undefined } });
+		expect(prompt).not.toContain(
+			"Pending runner mailbox items may include answers to outstanding questions.",
+		);
+	});
+});
+
 describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {
 	it("FLY-2147 only inserts the deterministic fail-closed section", async () => {
 		const { prompt, adapterContext } = await buildPromptWithContext({

@@ -852,12 +852,33 @@ function runInbox(args: string[]): void {
 
 	if (values.json) {
 		console.log(JSON.stringify(result.instructions));
-	} else if (result.instructions.length === 0) {
-		console.log("No instructions.");
 	} else {
 		const renderedAtMs = Date.now();
 		for (const inst of result.instructions) {
 			console.log(renderInboxInstruction(inst, renderedAtMs));
+		}
+		const pendingCount =
+			result.pendingMailbox.queued + result.pendingMailbox.leased;
+		if (pendingCount > 0) {
+			console.log(
+				`Runner mailbox pending: ${result.pendingMailbox.queued} queued, ${result.pendingMailbox.leased} leased.`,
+			);
+			console.log(
+				`Pending actionable question responses: ${result.pendingMailbox.questionIds.length}.`,
+			);
+			if (result.pendingMailbox.unpullableInstructions > 0) {
+				console.log(
+					`Pending instructions not pullable by legacy inbox (expired or undated): ${result.pendingMailbox.unpullableInstructions}.`,
+				);
+			}
+			for (const questionId of result.pendingMailbox.questionIds) {
+				console.log(
+					`Pending question response: run flywheel-comm check ${questionId}.`,
+				);
+			}
+		}
+		if (result.instructions.length === 0 && pendingCount === 0) {
+			console.log("No instructions.");
 		}
 	}
 }

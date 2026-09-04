@@ -890,6 +890,72 @@ globalThis.fetch = async () => {
 			expect(result).toBe("No instructions.");
 		});
 
+		it("surfaces queued response backlog with its actionable question id", () => {
+			const db = new CommDB(dbPath);
+			const questionId = db.insertQuestion(
+				"exec-pending",
+				"product-lead",
+				"Question",
+			);
+			db.insertResponse(questionId, "product-lead", "Answer");
+			db.close();
+
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"exec-pending",
+				"--db",
+				dbPath,
+			]);
+			expect(result).toContain("Runner mailbox pending: 1 queued, 0 leased.");
+			expect(result).toContain(
+				`Pending question response: run flywheel-comm check ${questionId}.`,
+			);
+			expect(result).not.toContain("No instructions.");
+		});
+
+		it("distinguishes an expired instruction from actionable pending responses", () => {
+			const db = new CommDB(dbPath);
+			const instructionId = db.insertInstruction(
+				"product-lead",
+				"exec-expired",
+				"Expired instruction",
+			);
+			(db as any).db
+				.prepare(
+					"UPDATE mailbox SET expires_at = datetime('now', '-1 hour') WHERE id = ?",
+				)
+				.run(instructionId);
+			db.close();
+
+			const result = runCli([
+				"inbox",
+				"--exec-id",
+				"exec-expired",
+				"--db",
+				dbPath,
+			]);
+			expect(result).toContain("Runner mailbox pending: 1 queued, 0 leased.");
+			expect(result).toContain("Pending actionable question responses: 0.");
+			expect(result).toContain(
+				"Pending instructions not pullable by legacy inbox (expired or undated): 1.",
+			);
+		});
+
+		it("keeps the true-empty output byte-identical after an instruction is ACKED", () => {
+			const db = new CommDB(dbPath);
+			db.insertInstruction(
+				"product-lead",
+				"exec-acked",
+				"Delivered instruction",
+			);
+			db.close();
+
+			const args = ["inbox", "--exec-id", "exec-acked", "--db", dbPath];
+			expect(runCli(args)).toContain("Delivered instruction");
+			expect(runCli(args)).toBe("No instructions.");
+		});
+
 		it("should use FLYWHEEL_EXEC_ID when --exec-id is omitted", () => {
 			runCli([
 				"send",

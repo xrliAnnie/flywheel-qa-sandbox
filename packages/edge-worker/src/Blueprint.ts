@@ -2303,6 +2303,12 @@ export class Blueprint {
 							`When you receive a Lead instruction, evaluate urgency and act accordingly. ` +
 							`Always briefly acknowledge received instructions.`,
 			);
+			systemPromptLines.push(
+				`Treat an inbox pending summary as unread runner-mailbox traffic, not as an empty inbox. ` +
+					`Pending runner mailbox items may include answers to outstanding questions. ` +
+					`Run \`node ${commCliPath} check <question-id>\` for every question id shown before proceeding; ` +
+					`inbox does not consume response bodies.`,
+			);
 
 			// FLY-208 A1: LEAD REPORT-BACK + MERGE AUTHORITY hard rules.
 			//
