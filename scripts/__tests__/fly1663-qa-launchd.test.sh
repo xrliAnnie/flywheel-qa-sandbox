@@ -256,7 +256,7 @@ mint_source="$HOME/.codex"
 mint_dest="$MINT_SLOT/cdxh/qa-lead"
 mint_release="$TMP/codex-release"
 mint_bin="$TMP/mint-bin"
-mkdir -p "$mint_source" "$mint_release" "$mint_bin" "$MINT_SLOT"
+mkdir -p "$mint_source" "$mint_release/bin" "$mint_bin" "$MINT_SLOT"
 python3 - "$mint_source/auth.json" <<'PY'
 import base64
 import json
@@ -285,7 +285,8 @@ Path(sys.argv[1]).write_text(json.dumps({"tokens": {
 PY
 chmod 600 "$mint_source/auth.json"
 mint_source_hash=$(shasum -a 256 "$mint_source/auth.json" | awk '{print $1}')
-write_mint_codex_fixture "$mint_release/codex"
+write_mint_codex_fixture "$mint_release/bin/codex"
+ln -s bin/codex "$mint_release/codex"
 ln -s "$mint_release/codex" "$mint_bin/codex"
 export PATH="$mint_bin:$PATH"
 if qa_launchd_provision_codex_home "$ROOT" "$mint_dest" "$MINT_SLOT" \
@@ -302,6 +303,64 @@ if qa_launchd_provision_codex_home "$ROOT" "$mint_dest" "$MINT_SLOT" \
   pass "Codex home birth delegates credential selection to the production provisioner"
 else
   fail "Codex home production birth adapter"
+fi
+
+mint_installed_link="$mint_dest/packages/standalone/releases/$(basename "$mint_release")/codex"
+if [ -L "$mint_installed_link" ] \
+    && [ "$(readlink "$mint_installed_link")" = bin/codex ] \
+    && python3 - "$mint_dest/packages/standalone" \
+      "$mint_dest/packages/standalone/current/codex" <<'PY'
+import os
+import sys
+
+standalone, installed = map(os.path.realpath, sys.argv[1:])
+if os.path.commonpath((standalone, installed)) != standalone:
+    raise SystemExit(1)
+PY
+then
+  pass "Codex home birth preserves the release-relative binary inside the slot"
+else
+  fail "Codex home standalone symlink containment"
+fi
+
+escape_repo="$TMP/escape-repo"
+escape_release="$TMP/escape-release"
+escape_bin="$TMP/escape-bin"
+escape_target="$TMP/outside-codex"
+escape_dest="$MINT_SLOT/cdxh/escape-agent"
+mkdir -p "$escape_repo/packages/claude-runner/dist" "$escape_release/bin" "$escape_bin"
+printf '%s\n' '{"type":"module"}' > "$escape_repo/package.json"
+cat > "$escape_repo/packages/claude-runner/dist/index.js" <<'JS'
+import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+export function provisionCodexHome({ executionId, env }) {
+	const home = join(env.FLYWHEEL_CODEX_HOMES_ROOT, executionId);
+	mkdirSync(home, { recursive: true });
+	writeFileSync(join(home, "auth.json"), "{}\n", { mode: 0o600 });
+	rmSync(join(process.env.FLY1663_ESCAPE_RELEASE, "codex"));
+	symlinkSync(
+		process.env.FLY1663_ESCAPE_TARGET,
+		join(process.env.FLY1663_ESCAPE_RELEASE, "codex"),
+	);
+	return home;
+}
+JS
+write_mint_codex_fixture "$escape_release/bin/codex"
+ln -s bin/codex "$escape_release/codex"
+ln -s "$escape_release/codex" "$escape_bin/codex"
+write_mint_codex_fixture "$escape_target"
+if ! FLY1663_ESCAPE_RELEASE="$escape_release" \
+      FLY1663_ESCAPE_TARGET="$escape_target" \
+      node "$ROOT/scripts/lib/qa-codex-home-provision.mjs" \
+        "$escape_repo" "$MINT_SLOT" escape-agent "$escape_bin/codex" \
+        >/dev/null 2>"$TMP/escape-install.err" \
+    && [ ! -e "$escape_dest" ] \
+    && grep -Fq 'installed Codex command resolves outside slot standalone' \
+      "$TMP/escape-install.err"; then
+  pass "Codex home birth rejects an installed binary outside slot standalone"
+else
+  fail "Codex home post-install containment assertion"
 fi
 
 bad_source="$TMP/bad-source"

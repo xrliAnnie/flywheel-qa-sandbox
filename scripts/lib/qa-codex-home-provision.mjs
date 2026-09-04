@@ -12,7 +12,7 @@ import {
 	rmSync,
 	symlinkSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [repoRoot, slotRoot, agentId, codexCommand] = process.argv.slice(2);
@@ -113,11 +113,24 @@ async function main() {
 			recursive: true,
 			force: false,
 			mode: constants.COPYFILE_FICLONE,
+			verbatimSymlinks: true,
 		});
 		const current = join(home, "packages", "standalone", "current");
 		const relativeTarget = join("releases", releaseName);
 		symlinkSync(relativeTarget, current, "dir");
 		const installed = realpathSync(join(current, "codex"));
+		const installedRelative = relative(
+			join(home, "packages", "standalone"),
+			installed,
+		);
+		if (
+			installedRelative === "" ||
+			installedRelative === ".." ||
+			installedRelative.startsWith(`..${sep}`) ||
+			isAbsolute(installedRelative)
+		) {
+			fail("installed Codex command resolves outside slot standalone");
+		}
 		if (!lstatSync(installed).isFile())
 			fail("installed Codex command is invalid");
 		accessSync(installed, constants.X_OK);
