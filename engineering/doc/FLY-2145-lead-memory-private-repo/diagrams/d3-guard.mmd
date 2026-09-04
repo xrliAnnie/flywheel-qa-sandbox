@@ -1,0 +1,17 @@
+flowchart TB
+  S[git commit / git push] --> M{模式<br/>FLYWHEEL_MEMORY_ACTOR}
+  M -->|未设 = Lead 模式| R3{FLYWHEEL_LEAD_ID 已设?}
+  R3 -->|否| X1[拒绝 · 不猜身份]
+  R3 -->|是| R1{改动只在一个夹里?}
+  M -->|sync = A2 定时同步| R1
+  M -->|admin = 仓维护| A[允许多夹与顶层<br/>归属标记 = admin]
+  R1 -->|否 · 跨夹或顶层| X2[拒绝]
+  R1 -->|是| R2{夹 = 我的 LEAD_ID?<br/>sync 模式跳过}
+  R2 -->|否| X3[拒绝 · 只写自家]
+  R2 -->|是| P[通过 · 自动写<br/>Memory-Owner 归属标记]
+  A --> AU[审计日志 +1 行]
+  P --> AU
+  X1 --> AU
+  X2 --> AU
+  X3 --> AU
+  AU --> CI[推送后 CI 再查一遍<br/>trailer 与路径不符 = 红]

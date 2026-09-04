@@ -64,6 +64,10 @@ scripts/__tests__/setup-mcp-on-demand.test.sh
 scripts/__tests__/test-push-guard-package.test.sh
 scripts/__tests__/test-push-guard.test.sh
 
+# Requires both exact host-installed scanners; the CI-capable scan suite runs
+# real pinned gitleaks plus a hermetic TruffleHog double.
+scripts/__tests__/test-lead-memory-scan-real.test.sh
+
 # Operator drills outside scripts/__tests__; run manually against an explicit
 # isolated fixture instead of the required Linux shell lane.
 scripts/qa-fly-1182-isolated-switch-drill.sh

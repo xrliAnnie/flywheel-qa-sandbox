@@ -1,0 +1,23 @@
+title = "Lead memory secret scanning"
+
+[extend]
+useDefault = true
+
+# Gitleaks 8.30.1's long bounded Anthropic rule is unreliable in the macOS
+# ARM64 Homebrew build. Override the same rule ID with a fail-loud prefix rule;
+# TruffleHog independently validates the complete key shape during first import.
+[[rules]]
+id = "anthropic-api-key"
+description = "Anthropic API key prefix (portable 8.30.1 override)"
+regex = '''\b(sk-ant-api03-)'''
+secretGroup = 1
+keywords = ["sk-ant-api03-"]
+
+  [[rules.allowlists]]
+  description = "The repository scanner config necessarily contains the rule prefix"
+  paths = ['''(^|/)\.gitleaks\.toml$''']
+
+[[rules]]
+id = "discord-bot-token"
+description = "Discord bot token"
+regex = '''[MN][A-Za-z\d]{23,}\.[\w-]{6}\.[\w-]{27,}'''

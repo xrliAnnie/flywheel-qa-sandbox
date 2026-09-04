@@ -1,0 +1,61 @@
+name: Lead memory guard
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install pinned gitleaks
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_LINUX_X64_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          destination="$RUNNER_TEMP/$archive"
+          curl -fsSLo "$destination" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$archive"
+          printf '%s  %s\n' "$GITLEAKS_LINUX_X64_SHA256" "$destination" | sha256sum -c -
+          tar -xzf "$destination" -C "$RUNNER_TEMP" gitleaks
+          sudo install -m 0755 "$RUNNER_TEMP/gitleaks" /usr/local/bin/gitleaks
+          test "$(gitleaks version)" = "$GITLEAKS_VERSION"
+
+      - name: Audit pushed commits and secrets
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
+        run: |
+          zero=0000000000000000000000000000000000000000
+          if test "$BEFORE_SHA" = "$zero"; then
+            range="$AFTER_SHA"
+          else
+            range="$BEFORE_SHA..$AFTER_SHA"
+          fi
+
+          .githooks/lib/guard.sh check-range "$range"
+          gitleaks git \
+            --log-opts="$range" \
+            --config .gitleaks.toml \
+            --gitleaks-ignore-path .gitleaksignore \
+            --no-banner
+
+          printf '## Lead memory ownership audit\n\n' >>"$GITHUB_STEP_SUMMARY"
+          admin_count=0
+          for sha in $(git rev-list --reverse "$range"); do
+            if git show -s --format=%B "$sha" | grep -Fxq 'Memory-Owner: admin'; then
+              printf -- '- admin commit `%s`\n' "$sha" >>"$GITHUB_STEP_SUMMARY"
+              admin_count=$((admin_count + 1))
+            fi
+          done
+          if test "$admin_count" -eq 0; then
+            printf '%s\n' '- no admin commits in this push' >>"$GITHUB_STEP_SUMMARY"
+          fi

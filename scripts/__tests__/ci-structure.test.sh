@@ -800,6 +800,7 @@ expected_shard_tests = {
         "Test — FLY-1870 job elapsed tripwire contract",
     ],
     "script-tests-4": [
+        "Test — FLY-2145 Lead memory private repository",
         "Test — FLY-1364 cmux sync repair",
     ],
 }
@@ -813,7 +814,7 @@ expected_shard_names = {
     "script-tests": "Script Tests 1/4 — session/lifecycle (shell suites)",
     "script-tests-2": "Script Tests 2/4 — fleet/setup/packaging A (shell suites)",
     "script-tests-3": "Script Tests 3/4 — fleet/setup/packaging B (shell suites)",
-    "script-tests-4": "Script Tests 4/4 — cmux repair (shell suites)",
+    "script-tests-4": "Script Tests 4/4 — cmux repair + Lead memory (shell suites)",
 }
 
 all_expected_tests = [

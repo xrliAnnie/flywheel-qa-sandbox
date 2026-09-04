@@ -1,0 +1,14 @@
+flowchart TB
+  A[盘上现状<br/>~/.claude/agent-memory<br/>12 夹 · 1137 文件 · 29MB] --> B[密钥扫描<br/>gitleaks + trufflehog<br/>先跑阳性对照]
+  B --> C{每条命中<br/>逐条处置}
+  C -->|真密钥| C1[先轮换<br/>再脱敏]
+  C -->|假阳性| C2[写理由进<br/>忽略清单]
+  C -->|非密钥| C3[保留并注明]
+  C1 --> L[台账 SCAN-LEDGER.md<br/>不写值]
+  C2 --> L
+  C3 --> L
+  L --> D[原地 git init<br/>文件一个不动]
+  D --> E[建私有仓<br/>xrliAnnie/lead-memory]
+  E --> F[首搬提交<br/>admin 模式 · 带归属标记]
+  F --> G[推送到 GitHub<br/>CI 审计通过]
+  G --> H[验收五格<br/>clone 对比 · 读别家 · 写别家被拒<br/>匿名 404 · 台账齐]
