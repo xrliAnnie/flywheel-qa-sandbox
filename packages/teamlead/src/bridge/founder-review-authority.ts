@@ -7,6 +7,7 @@ import {
 	resolveFounderReviewVerdictAtCommit,
 } from "flywheel-comm/founder-review";
 import { ConfigLoader } from "flywheel-config";
+import { loadProjects } from "../ProjectConfig.js";
 import type { StateStore } from "../StateStore.js";
 import {
 	nodeRequiresFounderReview,
@@ -102,35 +103,67 @@ export async function evaluateWorkflowFounderReviewPrecondition(input: {
 		runId: input.runId,
 		headSha: input.head,
 	});
-	const binding = exactHeadAuthority.valid
-		? exactHeadAuthority.binding
-		: undefined;
-	if (!binding || binding.node_id !== producerIds[0]) {
+	if (
+		!exactHeadAuthority.valid ||
+		exactHeadAuthority.binding.node_id !== producerIds[0]
+	) {
 		return {
 			eligible: false,
 			reason: "founder_review_artifact_binding_missing",
 		};
 	}
-	let authority: FounderReviewAuthorityResult;
-	try {
-		authority = evaluateFounderReviewAuthority({
-			// The manifest capability is sealed by the engine. Never let the
-			// artifact-producing checkout disable its own land/finalization gate.
-			enabled: true,
-			store: input.store,
-			commDbPath: commDbPathForProject(input.projectName),
-			runId: input.runId,
-			nodeId: binding.node_id,
-			snapshot: input.snapshot,
-			repoRoot: binding.target_repo_path,
-			head: exactHeadAuthority.valid
-				? exactHeadAuthority.authorityHead
-				: input.head,
-			founderId: resolveFounderId({
-				processEnv: input.processEnv ?? process.env,
-			}),
-		});
-	} catch {
+	const binding = exactHeadAuthority.binding;
+	const failures: Array<{ repoRoot: string; error: unknown }> = [];
+	let projectRoot: string | undefined;
+	if (binding.target_repo_identity === "__main__") {
+		try {
+			projectRoot = loadProjects().find(
+				(project) => project.projectName === input.projectName,
+			)?.projectRoot;
+		} catch (error) {
+			failures.push({ repoRoot: "(project registry)", error });
+		}
+	}
+	const repoRoots = [projectRoot, binding.target_repo_path].filter(
+		(root, index, roots): root is string =>
+			Boolean(root) && roots.indexOf(root) === index,
+	);
+	let authority: FounderReviewAuthorityResult | undefined;
+	for (const repoRoot of repoRoots) {
+		try {
+			authority = evaluateFounderReviewAuthority({
+				// The manifest capability is sealed by the engine. Never let the
+				// artifact-producing checkout disable its own land/finalization gate.
+				enabled: true,
+				store: input.store,
+				commDbPath: commDbPathForProject(input.projectName),
+				runId: input.runId,
+				nodeId: binding.node_id,
+				snapshot: input.snapshot,
+				repoRoot,
+				head: exactHeadAuthority.authorityHead,
+				founderId: resolveFounderId({
+					processEnv: input.processEnv ?? process.env,
+				}),
+			});
+			break;
+		} catch (error) {
+			failures.push({ repoRoot, error });
+		}
+	}
+	if (!authority) {
+		console.error(
+			`[founder-review-authority] authority unavailable ${JSON.stringify({
+				projectName: input.projectName,
+				runId: input.runId,
+				bindingRepoPath: binding.target_repo_path,
+				failures: failures.map(({ repoRoot, error }) => ({
+					repoRoot,
+					errorType: error instanceof Error ? error.name : typeof error,
+					error: error instanceof Error ? error.message : String(error),
+				})),
+			})}`,
+		);
 		return {
 			eligible: false,
 			reason: "founder_review_authority_unavailable",

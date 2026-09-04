@@ -40,6 +40,7 @@ const TERMINAL_REASONS = new Set([
 	"pr_closed_unmerged",
 	"cool_trigger_receipt_corrupt",
 	"land_step_receipt_conflict",
+	"founder_review_authority_unavailable",
 	"policy_blocked",
 	"ambiguous_cool_effect",
 ]);
