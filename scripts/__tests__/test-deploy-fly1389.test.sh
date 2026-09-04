@@ -68,7 +68,8 @@ cleanup() {
   rm -rf "/tmp/flywheel-test-slot-${EXTRA_SLOT}.lock" "/tmp/flywheel-test-slot-${LEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}.lock" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}.lock" \
     "/tmp/flywheel-test-slot-${CODEX_SLOT}.lock" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}.lock" \
     "/tmp/flywheel-test-slot-${EXTRA_SLOT}" "/tmp/flywheel-test-slot-${LEAD_SLOT}" "/tmp/flywheel-test-slot-${NOLEAD_SLOT}" "/tmp/flywheel-test-slot-${WORKTREE_SLOT}" \
-    "/tmp/flywheel-test-slot-${CODEX_SLOT}" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}" "$SB"
+    "/tmp/flywheel-test-slot-${CODEX_SLOT}" "/tmp/flywheel-test-slot-${CODEX_EXTRA_SLOT}" \
+    "/tmp/flywheel-test-codex-fixture-${$}" "$SB"
 }
 trap cleanup EXIT
 
@@ -438,6 +439,18 @@ PID=""
 [[ -z "${FLY1389_PS_LOG:-}" ]] || printf 'argv:%q ' "$@" >> "$FLY1389_PS_LOG"
 [[ -z "${FLY1389_PS_LOG:-}" ]] || printf '\n' >> "$FLY1389_PS_LOG"
 if [[ "$*" == "-ww -axo pid=,command=" ]]; then
+  for updater_file in /tmp/flywheel-test-slot-*/cdxh/*/app-server-daemon/updater.pid; do
+    [[ -f "$updater_file" ]] || continue
+    updater_pid=$(cat "$updater_file" 2>/dev/null || true)
+    [[ "$updater_pid" =~ ^[1-9][0-9]*$ ]] && kill -0 "$updater_pid" 2>/dev/null \
+      || continue
+    updater_state=$(/bin/ps -o stat= -p "$updater_pid" 2>/dev/null || true)
+    updater_state="${updater_state#${updater_state%%[![:space:]]*}}"
+    [[ -z "$updater_state" || "${updater_state:0:1}" != Z ]] || continue
+    updater_home="${updater_file%/app-server-daemon/updater.pid}"
+    printf '%s %s app-server daemon pid-update-loop\n' "$updater_pid" \
+      "$updater_home/packages/standalone/current/codex"
+  done
   exit 0
 fi
 while [[ $# -gt 0 ]]; do
@@ -449,6 +462,9 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ "$PID" =~ ^[1-9][0-9]*$ ]] && kill -0 "$PID" 2>/dev/null || exit 1
+actual_state=$(/bin/ps -o stat= -p "$PID" 2>/dev/null || true)
+actual_state="${actual_state#${actual_state%%[![:space:]]*}}"
+[[ -z "$actual_state" || "${actual_state:0:1}" != Z ]] || exit 1
 case "$FORMAT" in
   lstart=)
     printf 'Thu Jan  1 00:00:00 1970 fixture-pid-%s\n' "$PID"
@@ -472,6 +488,14 @@ case "$FORMAT" in
     printf 'S\n'
     ;;
   command=)
+    for updater_file in /tmp/flywheel-test-slot-*/cdxh/*/app-server-daemon/updater.pid; do
+      [[ -f "$updater_file" && "$(cat "$updater_file" 2>/dev/null || true)" == "$PID" ]] \
+        || continue
+      updater_home="${updater_file%/app-server-daemon/updater.pid}"
+      printf '%s app-server daemon pid-update-loop\n' \
+        "$updater_home/packages/standalone/current/codex"
+      exit 0
+    done
     if [[ -n "${FLY1389_CODEX_RUNTIME:-}" ]]; then
       codex_home=""
       label=""
@@ -548,6 +572,8 @@ plist, state = sys.argv[1:]
 with open(plist, "rb") as f:
     job = plistlib.load(f)
 env = {"PATH": os.environ["PATH"], "TMPDIR": os.environ.get("TMPDIR", "/tmp")}
+if os.environ.get("FLY1389_AUTH_LEDGER"):
+    env["FLY1389_AUTH_LEDGER"] = os.environ["FLY1389_AUTH_LEDGER"]
 env.update(job.get("EnvironmentVariables", {}))
 log_path = job.get("StandardOutPath", os.devnull)
 log = open(log_path, "ab", buffering=0)
@@ -610,13 +636,20 @@ FWR="$SB/worktrees/fly-2237"
 mkdir -p "$(dirname "$FWR")"
 cp -R "$FR" "$FWR"
 
-# Codex source homes are login-bearing inputs only. The deploy must mint a
-# separate home beneath the slot before any launcher sees one of these paths.
-CODEX_SOURCE_MAIN="$SB/codex-source-main"
-CODEX_SOURCE_EXTRA="$SB/codex-source-extra"
+# Codex source homes are login-bearing inputs only. The real-home positive
+# control is the exact documented QA source; the extra Lead uses the explicit
+# /tmp fixture path class accepted only by the hermetic harness.
+FH1="$SB/home1"
+CODEX_SOURCE_MAIN="$FH1/.codex-259-qa"
+CODEX_SOURCE_EXTRA="/tmp/flywheel-test-codex-fixture-${$}/.codex-259-qa"
+FLY1389_AUTH_LEDGER="$SB/codex-auth-ledger"
+: > "$FLY1389_AUTH_LEDGER"
+source_index=0
 for source_home in "$CODEX_SOURCE_MAIN" "$CODEX_SOURCE_EXTRA"; do
+  source_index=$((source_index + 1))
   mkdir -p "$source_home/packages/standalone/releases/fixture"
-  printf '%s\n' '{"tokens":{"access_token":"fixture"}}' > "$source_home/auth.json"
+  printf '{"tokens":{"refresh_token":"fixture-refresh-%s-1"}}\n' "$source_index" \
+    > "$source_home/auth.json"
   cat > "$source_home/packages/standalone/releases/fixture/codex" <<'CODEXBIN'
 #!/bin/bash
 set -euo pipefail
@@ -645,6 +678,33 @@ case "${1:-} ${2:-}" in
         exit 0
       fi
     fi
+    python3 - "$home/auth.json" "${FLY1389_AUTH_LEDGER:?}" <<'PY'
+import fcntl
+import json
+import os
+from pathlib import Path
+import sys
+import uuid
+
+auth_path, ledger_path = map(Path, sys.argv[1:])
+with ledger_path.open("a+", encoding="utf-8") as ledger:
+    fcntl.flock(ledger, fcntl.LOCK_EX)
+    value = json.loads(auth_path.read_text(encoding="utf-8"))
+    token = value.get("tokens", {}).get("refresh_token")
+    if not isinstance(token, str) or not token:
+        raise SystemExit(2)
+    ledger.seek(0)
+    if token in set(ledger.read().splitlines()):
+        raise SystemExit(3)
+    ledger.write(token + "\n")
+    ledger.flush()
+    os.fsync(ledger.fileno())
+    value["tokens"]["refresh_token"] = "fixture-rotated-" + uuid.uuid4().hex
+    temp = auth_path.with_name("auth.json.tmp")
+    temp.write_text(json.dumps(value, separators=(",", ":")) + "\n", encoding="utf-8")
+    os.chmod(temp, 0o600)
+    os.replace(temp, auth_path)
+PY
     mkdir -p "$(dirname "$socket")" "$(dirname "$pid_file")"
     python3 - "$socket" <<'PY' >/dev/null 2>&1 &
 import os, signal, socket, sys, time
@@ -665,6 +725,29 @@ while True: time.sleep(1)
 PY
     daemon_pid=$!
     printf '{"pid":%s,"processStartTime":"fixture"}\n' "$daemon_pid" > "$pid_file"
+    case "$home" in
+      /tmp/flywheel-test-slot-*/cdxh/*)
+        updater_pid_file="$home/app-server-daemon/updater.pid"
+        updater_pid=$(cat "$updater_pid_file" 2>/dev/null || true)
+        if ! [[ "$updater_pid" =~ ^[1-9][0-9]*$ ]] \
+            || ! kill -0 "$updater_pid" 2>/dev/null; then
+          python3 - "$updater_pid_file" <<'PY'
+import subprocess
+import sys
+
+process = subprocess.Popen(
+    ["/bin/sleep", "300"],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    start_new_session=True,
+)
+with open(sys.argv[1], "w", encoding="utf-8") as stream:
+    stream.write(str(process.pid) + "\n")
+PY
+        fi
+        ;;
+    esac
     for _ in $(seq 1 100); do [[ -S "$socket" ]] && break; sleep 0.01; done
     [[ -S "$socket" ]]
     printf '%s\n' '{"status":"started"}'
@@ -687,7 +770,6 @@ CODEXBIN
 done
 
 # Fake HOME #1 (Lead-ful): identity + shared rules present.
-FH1="$SB/home1"
 mkdir -p "$FH1/.flywheel/claude-sessions" \
   "$FH1/Dev/GeoForge3D/.lead/product-lead" "$FH1/Dev/GeoForge3D/.lead/ops-lead" "$FH1/Dev/GeoForge3D/.lead/shared"
 echo "# prod identity fixture" > "$FH1/Dev/GeoForge3D/.lead/product-lead/identity.md"
@@ -764,6 +846,7 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       TMUX_STUB_LOG="$home/tmux-calls.log" \
       TMUX_STUB_WINDOW="" \
       FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+      FLY1389_AUTH_LEDGER="$FLY1389_AUTH_LEDGER" \
       FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
       FLY1389_PS_LOG="$SB/codex-ps.log" \
       FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" \
@@ -818,6 +901,7 @@ run_teardown() {  # <home> <slot>
       TMPDIR="${FLY1389_TMPDIR:-/tmp}" \
       TMUX_STUB_LOG="$home/tmux-calls.log" \
       FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+      FLY1389_AUTH_LEDGER="$FLY1389_AUTH_LEDGER" \
       FLY1389_CODEX_RUNTIME="$repo_root/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
       FLY1389_PS_LOG="$SB/codex-ps.log" \
       FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
@@ -1512,6 +1596,7 @@ run_codex_drill() {  # <slot> <crash|kickstart> <evidence-root> <stdout> <stderr
   local slot="$1" mode="$2" evidence="$3" out="$4" err="$5"
   env -i HOME="$FH1" PATH="$CODEX_CHILD_PATH" TMPDIR=/tmp \
     FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" \
+    FLY1389_AUTH_LEDGER="$FLY1389_AUTH_LEDGER" \
     FLY1389_CODEX_RUNTIME="$FR/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
     FLY1389_REAL_NODE="$FLY1389_REAL_NODE" FLY1389_PS_LOG="$SB/codex-ps.log" \
     FLYWHEEL_QA_LAUNCHCTL="$STUB_BIN/launchctl" FLYWHEEL_QA_TMUX="$REAL_TMUX" \
@@ -1639,17 +1724,28 @@ if FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
   CXX_DIR="/tmp/flywheel-test-slot-${CODEX_SLOT}"
   CXX_SOCKET="$CXX_DIR/tmux-$(id -u)/default"
   CXX_WINDOWS="$($REAL_TMUX -S "$CXX_SOCKET" list-windows -t '=flywheel' -F '#{window_name}' | sort)"
+  CXX_UPDATER_CENSUS="$(PATH="$CODEX_CHILD_PATH" FLY1389_CODEX_RUNTIME="$FR/packages/teamlead/dist/lead-backends/codex/codex-lead-tui-runtime.js" \
+    FLY1389_LAUNCHCTL_STATE="$SB/launchctl-state" FLY1389_REAL_NODE="$FLY1389_REAL_NODE" \
+    "$STUB_BIN/ps" -ww -axo pid=,command=)"
+  CXX_MATCHED_UPDATERS="$(while IFS= read -r cxx_bin; do
+    PATH="$CODEX_CHILD_PATH" bash -c \
+      'source "$1"; qa_launchd_codex_updater_pids "$2"' _ \
+      "$FR/scripts/lib/qa-launchd-lead.sh" "$cxx_bin"
+  done < <(jq -r '.[].codexBin' "$CXX_DIR/launchd-leads.json"))"
   if jq -e 'type == "array" and length == 2 and all(.[]; .carrier == "codex-tui") and
       ([.[].codexHome] | unique | length) == 2 and
       ([.[].stateDir] | unique | length) == 2 and
       ([.[].runtimePidFile] | unique | length) == 2' \
       "$CXX_DIR/launchd-leads.json" >/dev/null 2>&1 \
       && [[ "$CXX_WINDOWS" == $'test-slot-34-flywheel-test-34\ntest-slot-34-flywheel-test-35' ]] \
+      && [[ "$(grep -c ' app-server daemon pid-update-loop$' <<<"$CXX_UPDATER_CENSUS")" == 2 ]] \
+      && [[ "$(wc -l <<<"$CXX_MATCHED_UPDATERS" | tr -d ' ')" == 2 ]] \
       && [[ -f "$CXX_DIR/q/34/codex-runtime-env.json" \
           && -f "$CXX_DIR/q/35/codex-runtime-env.json" ]]; then
-    pass "CXX: main + extra Codex Leads retain distinct home/state/window coordinates"
+    pass "CXX: main + extra Codex Leads retain distinct home/state/window/updater coordinates"
   else
-    fail "CXX: two-Lead Codex topology collided" "$CXX_WINDOWS"
+    fail "CXX: two-Lead Codex topology collided" \
+      "windows=$CXX_WINDOWS updater-census=$CXX_UPDATER_CENSUS matched=$CXX_MATCHED_UPDATERS"
   fi
   FLY1389_TOOL_BIN="$CODEX_TOOL_BIN" FLY1389_QA_TMUX="$REAL_TMUX" \
     run_teardown "$FH1" "$CODEX_SLOT" || fail "CXX: multi-Codex teardown"

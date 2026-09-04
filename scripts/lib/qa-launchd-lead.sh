@@ -187,6 +187,41 @@ qa_launchd_render_codex_plist() {
   return 1
 }
 
+qa_launchd_codex_source_preflight() {
+  local source="$1" codex_bin="$2" bounded_run updater_rc cleanup_failed=0
+  local start_ok=0 observed_runtime=0 daemon_pid_file daemon_socket
+  bounded_run="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
+  daemon_pid_file="${source}/app-server-daemon/app-server.pid"
+  daemon_socket="${source}/app-server-control/app-server-control.sock"
+  if [[ -x "$bounded_run" ]] && "$bounded_run" 30 env \
+      CODEX_HOME="$source" "$codex_bin" remote-control start --json \
+      >/dev/null 2>&1; then
+    start_ok=1
+  fi
+  if [[ -e "$daemon_pid_file" || -L "$daemon_pid_file" \
+      || -e "$daemon_socket" || -L "$daemon_socket" ]]; then
+    observed_runtime=1
+  fi
+  if [[ ! -x "$bounded_run" ]] || ! "$bounded_run" 30 env \
+      CODEX_HOME="$source" "$codex_bin" remote-control stop --json \
+      >/dev/null 2>&1; then
+    cleanup_failed=1
+  fi
+  qa_launchd_wait_path_gone "$daemon_socket" || cleanup_failed=1
+  if [[ "$observed_runtime" == 1 ]]; then
+    qa_launchd_stop_codex_updaters "$codex_bin"
+    updater_rc=$?
+    case "$updater_rc" in
+      0|3) ;;
+      *) cleanup_failed=1 ;;
+    esac
+  fi
+  if [[ "$start_ok" != 1 || "$cleanup_failed" != 0 ]]; then
+    qa_launchd_err "Codex QA credential daemon preflight failed"
+    return 1
+  fi
+}
+
 qa_launchd_mint_codex_home() (
   local source="$1" dest="$2" slot_root="$3" stage="" validation
   local source_real slot_real release_real release_name parent socket_path_bytes move_rc
@@ -253,15 +288,14 @@ if os.path.commonpath((str(slot_real), os.path.realpath(ancestor))) != str(Path(
     if os.path.commonpath((str(slot_real), os.path.realpath(ancestor))) != str(slot_real):
         raise SystemExit(1)
 
-for part in (
-    home / ".codex-mufasa",
-    home / ".codex-infra-bot",
-    home / ".codex-242",
-    home / ".flywheel/raya/codex-home",
-):
-    if source_real == Path(os.path.realpath(part)):
-        print("[qa-launchd] ERROR: refusing production Lead codex home", file=sys.stderr)
-        raise SystemExit(1)
+documented_qa_source = Path(os.path.realpath(home / ".codex-259-qa"))
+test_fixture = re.fullmatch(
+    r"/(?:private/)?tmp/flywheel-test-codex-fixture-[1-9][0-9]*/\.codex-259-qa",
+    str(source_real),
+)
+if source_real != documented_qa_source and test_fixture is None:
+    print("[qa-launchd] ERROR: refusing production Lead codex home", file=sys.stderr)
+    raise SystemExit(1)
 
 auth = source / "auth.json"
 try:
@@ -333,6 +367,7 @@ PY
   chmod 700 "$lease_dir" || return 1
   printf '%s\n' "$dest" > "$lease_dir/owner" || return 1
   chmod 600 "$lease_dir/owner" || return 1
+  qa_launchd_codex_source_preflight "$source_real" "$release_real/codex" || return 1
   cp "$source_real/auth.json" "$stage/auth.json" || return 1
   cp "$source_real/auth.json" "$stage/.flywheel-qa-source-auth-baseline" || return 1
   printf '%s\n' "$source_real" > "$stage/.flywheel-qa-source-home" || return 1
@@ -347,7 +382,7 @@ PY
 
 qa_launchd_writeback_codex_auth() {
   local codex_home="$1"
-  python3 - "$codex_home" <<'PY'
+  python3 - "$codex_home" "$HOME" <<'PY'
 import os
 from pathlib import Path
 import re
@@ -355,6 +390,7 @@ import stat
 import sys
 
 home = Path(sys.argv[1])
+runtime_home = Path(sys.argv[2])
 try:
     home_info = home.lstat()
 except OSError:
@@ -396,6 +432,13 @@ if not stat.S_ISDIR(source_info.st_mode) or source.is_symlink():
     raise SystemExit(1)
 source_real = Path(os.path.realpath(source))
 if source_real != source:
+    raise SystemExit(1)
+documented_qa_source = Path(os.path.realpath(runtime_home / ".codex-259-qa"))
+test_fixture = re.fullmatch(
+    r"/(?:private/)?tmp/flywheel-test-codex-fixture-[1-9][0-9]*/\.codex-259-qa",
+    str(source_real),
+)
+if source_real != documented_qa_source and test_fixture is None:
     raise SystemExit(1)
 
 source_auth = source / "auth.json"
@@ -1090,6 +1133,7 @@ raise SystemExit(0 if actual == expected else 1)
 qa_launchd_stop_codex_updaters() {
   local codex_bin="$1" pids pid incarnation observed remaining failed=0
   pids=$(qa_launchd_codex_updater_pids "$codex_bin") || return 1
+  [[ -n "$pids" ]] || return 3
   while IFS= read -r pid; do
     [[ -n "$pid" ]] || continue
     incarnation=$(qa_launchd_process_incarnation "$pid") || { failed=1; continue; }
@@ -1229,7 +1273,8 @@ PY
 qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
-  local daemon_pid_file daemon_pid_rc daemon_socket bounded_run writeback_rc failed=0
+  local daemon_pid_file daemon_pid_rc daemon_socket launch_marker bounded_run updater_rc
+  local writeback_rc runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
@@ -1239,6 +1284,16 @@ qa_launchd_stop_codex_entry() {
     [[ "$runtime_pid" =~ ^[1-9][0-9]*$ ]] || runtime_pid=""
   fi
   runtime_incarnation=$(qa_launchd_process_incarnation "$runtime_pid" || true)
+  launch_marker="${codex_home}/.flywheel-qa-launch-started"
+  if [[ -e "$launch_marker" || -L "$launch_marker" ]]; then
+    if [[ -f "$launch_marker" && ! -L "$launch_marker" ]]; then
+      runtime_started=1
+    else
+      qa_launchd_err "carrier=codex-tui step=validate"
+      failed=1
+    fi
+  fi
+  [[ -z "$runtime_pid" ]] || runtime_started=1
   if ! qa_launchd_lead_stop "$label"; then
     qa_launchd_err "carrier=codex-tui step=bootout"
     failed=1
@@ -1251,6 +1306,10 @@ qa_launchd_stop_codex_entry() {
 
   daemon_pid_file="${codex_home}/app-server-daemon/app-server.pid"
   daemon_socket="${codex_home}/app-server-control/app-server-control.sock"
+  if [[ -e "$daemon_pid_file" || -L "$daemon_pid_file" \
+      || -e "$daemon_socket" || -L "$daemon_socket" ]]; then
+    runtime_started=1
+  fi
   if [[ ! -e "$daemon_pid_file" && ! -L "$daemon_pid_file" ]]; then
     daemon_pid=""
   elif daemon_pid=$(qa_launchd_read_codex_daemon_pid "$codex_home"); then
@@ -1275,10 +1334,23 @@ qa_launchd_stop_codex_entry() {
     qa_launchd_err "carrier=codex-tui step=daemon-converge"
     failed=1
   fi
-  if ! qa_launchd_stop_codex_updaters "$codex_bin"; then
-    qa_launchd_err "carrier=codex-tui step=updater-converge"
-    failed=1
-  fi
+  qa_launchd_stop_codex_updaters "$codex_bin"
+  updater_rc=$?
+  case "$updater_rc" in
+    0) ;;
+    3)
+      if [[ "$runtime_started" == 0 ]]; then
+        :
+      else
+      qa_launchd_err "carrier=codex-tui step=updater-converge result=not-found"
+      failed=1
+      fi
+      ;;
+    *)
+      qa_launchd_err "carrier=codex-tui step=updater-converge result=failed"
+      failed=1
+      ;;
+  esac
   if [[ "$failed" == 0 ]]; then
     if qa_launchd_writeback_codex_auth "$codex_home"; then
       :

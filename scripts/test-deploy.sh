@@ -1534,6 +1534,11 @@ qa_slot_start_lead() {
   label=$(qa_launchd_label "$carrier_slot" "$agent") || return 1
   if [[ "$backend" == codex-app-server ]]; then
     qa_launchd_mint_codex_home "$codex_source" "$codex_home" "$SLOT_DIR" || return 1
+    if ! qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "" \
+        codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file"; then
+      qa_launchd_writeback_codex_auth "$codex_home" >/dev/null 2>&1 || true
+      return 1
+    fi
     mkdir -p "$(dirname "$codex_comm_db")" || return 1
     chmod 700 "$(dirname "$codex_comm_db")" || return 1
   fi
@@ -1554,8 +1559,8 @@ qa_slot_start_lead() {
     FLYWHEEL_DIR="$REPO_ROOT" qa_launchd_render_codex_plist \
       "$plist" "$label" "$codex_wrapper" "$HOME" "$state" "$lead_log" \
       "$SLOT_DIR" || return 1
-    qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "" \
-      codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file" || return 1
+    : > "$codex_home/.flywheel-qa-launch-started" || return 1
+    chmod 600 "$codex_home/.flywheel-qa-launch-started" || return 1
     launch_pid=$(qa_launchd_lead_start "$label" "$plist") || return 1
     topology=$(qa_launchd_codex_lead_verify "$label" "$codex_home" "$codex_state") \
       || { qa_launchd_lead_stop "$label" || true; return 1; }
