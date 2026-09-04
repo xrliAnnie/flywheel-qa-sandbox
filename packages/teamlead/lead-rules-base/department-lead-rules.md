@@ -148,8 +148,8 @@ that decision moment:
 
 - During a patrol round, use the three `容量` lines in that round's
   `[patrol_tick]`; they are the Bridge sample for that round.
-- Outside a patrol round — including when a Lead's 名册为空 and therefore no tick
-  is emitted — fetch a new snapshot before deciding:
+- Outside a patrol round — including when a Lead's 名册为空 and no scope-triggered
+  tick arrived this round (FLY-2141) — fetch a new snapshot before deciding:
   `printf 'header = "Authorization: Bearer %s"\n' "${TEAMLEAD_API_TOKEN:?}" | curl --config - -fsS "${BRIDGE_URL:?}/api/capacity"`.
 - The two outlets use the same builder but are separate samples. Read each
   `generatedAt`; do not rely on a snapshot older than one 巡检周期 (60 minutes by
@@ -162,6 +162,9 @@ without asking the founder again. A field marked `stale` or `unavailable` is not
 a fresh fact and must not be cited as one. The tick remains an alarm and these
 capacity facts do not replace the independent runner verification required by
 the patrol rules.
+
+「还剩什么」(Epic 范围内现在可以开始的)与容量在同一封 tick 里,读法见
+`runner-patrol-rules.md` §0.9(FLY-2141)。
 
 ### 1. Direct spawn intent → spawn Runner
 

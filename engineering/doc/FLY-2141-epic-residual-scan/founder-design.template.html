@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2141 · 巡检钟上补「回头看 Epic 还剩什么」+ 空位拉活 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  .badge.q { background:#f3e8ff; color:#6b21a8; }
+  .badge.new { background:#e8f0fe; color:#1d4ed8; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+  .mock { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#fbfbfd; border:1px solid #e5e5ea; border-radius:8px; padding:12px; white-space:pre-wrap; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2141 · 巡检钟上补「回头看 Epic 还剩什么」+ 空位拉活</h1>
+<div class="meta">
+  设计交付 · 2026-09-03 · Epic FLY-2108 的第二张子单(B)· 依据 FLY-1969 PRD v2.4 的 R3(本 PRD 主体)<br/>
+  证据基线:仓库 <code>main e85eec9a8</code>(已含 A · FLY-2140 与 E · FLY-2144)· 生产 Bridge build <code>31da17817</code>(含 E,不含 A)· 巡检邮件实读 2026-09-04 03:44Z<br/>
+  文档:<code>engineering/doc/FLY-2141-epic-residual-scan/</code>{exploration, research, plan}.md · 本页只讲结论与取舍,细节在 plan
+</div>
+
+<section class="card green" data-title="一句话结论">
+  <h2>一句话结论</h2>
+  <p class="summary-line">每小时那一次巡检,除了看「谁在跑」,再多看一眼「这个 <span class="term" title="Epic:一组相关子任务的母单;这里指 Linear 里状态为 In Progress、带子单的那张 issue">Epic</span> 还剩什么没做、哪几件现在就能开始」,和「在跑几个、停车几个、额度还剩多少」一起写进<b>同一封巡检邮件</b>;Lead 读完自己决定这一轮拉不拉、拉几张。</p>
+  <p>你在 PRD 里写的那句话「到点扫一遍 → 这个 Epic 还剩什么没做 · 现在有没有空位 → 有空位就按 dependency 拉一件出来」,本单把前两问变成 <span class="term" title="Bridge:Flywheel 的后台服务,巡检钟和所有账本都在它里面">Bridge</span> 每轮给出的<b>事实</b>,第三问留给 Lead 的<b>判断</b>。Bridge 不自动派单。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:32%">你的要求(PRD 原文)</th><th>本设计怎么落</th></tr>
+    <tr><td>R3:到点扫一遍,还剩什么、有没有空位、有就拉一件</td><td>「还剩什么」三行 + 已有的「容量」三行,同一封信;「拉一件」= Lead 自己下 <code>POST /api/runs/start</code></td></tr>
+    <tr><td>§1.2:巡检和放新活共用同一次检查</td><td>两块事实在同一轮、同一时刻采,各带时间戳;Lead 的两个判断读同一封信</td></tr>
+    <tr><td>频率可调,但不加新 flag</td><td>沿用今天就能调的 <code>interval_minutes</code>(10–1440 分钟);零新开关、零新钟</td></tr>
+    <tr><td>不是从零造编排系统</td><td>「还剩什么」直接用 A(FLY-2140)已合入的 Epic 页面生成器,规则 <code>ready.v1</code> 是你 09-03 裁过的那条</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「一句话结论」的意见</label><textarea data-key="s01" data-title="一句话结论"></textarea></div>
+</section>
+
+<section class="card red" data-title="今天缺的那一块">
+  <h2>今天缺的那一块,以及为什么恰好在这里补</h2>
+  <p>巡检钟今天真的在跳(生产库里 24 小时内工程 Lead 收到 22 封、产品 Lead 24 封),每封信里已经有「谁在跑、谁卡了、内存额度」。但它的名册是从「已经起了 <span class="term" title="session / runner:一个正在干活的 AI 执行体,对应 tmux 里的一个窗口">runner</span> 的 issue」来的 —— <b>还没开始的那些,结构上根本进不了名册</b>。所以「一件做完、位子空出来了」这件事,今天不会自己变成「那就再放一件进去」。</p>
+  <p><b>一个反直觉的发现:</b>今天的规则是「名册为空的 Lead 不发巡检邮件」。可是名册为空,恰恰是空位最多、最该去 Epic 里拉活的时候。Lead 已批准:名册为空<b>但</b> Epic 范围内还有归他的活 ⇒ 也发这封信,并在信里写明「本轮由 Epic 范围触发」;范围里也没活 ⇒ 仍然不发。</p>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:22%">子单</th><th>做什么</th><th style="width:14%">本单?</th></tr>
+    <tr><td>A · FLY-2140</td><td>Epic 页面装什么、首版怎么生成(已合入 main)</td><td><span class="badge no">复用</span></td></tr>
+    <tr><td><b>B · FLY-2141</b></td><td>巡检时回头看 Epic 还剩什么、有空位就拉一件</td><td><span class="badge do">本单</span></td></tr>
+    <tr><td>C · FLY-2142</td><td>依赖账本:初始批次 + 执行中三类更新</td><td><span class="badge no">不做</span></td></tr>
+    <tr><td>D · FLY-2143</td><td>页面活化:做完就更新 + 到点扫描;过期自报</td><td><span class="badge no">不做</span></td></tr>
+    <tr><td>E · FLY-2144</td><td>派发判断的容量输入(已合入并上线)</td><td><span class="badge no">复用</span></td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「今天缺的那一块」的意见</label><textarea data-key="s02" data-title="今天缺的那一块"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:到点之后发生了什么</h2>
+  <div class="diagram"><!--DIAGRAM_1--></div>
+  <div class="cap">图 1 · 一次巡检:名册与容量是今天已有的;第 4–8 步是本单新增;最后两步是 Lead 的判断与动作</div>
+  <ol>
+    <li>巡检钟到点(每个 Lead 每小时固定那一分钟,今天已有)。</li>
+    <li>Bridge 照旧读名册和容量读数。</li>
+    <li><b>新增</b>:Bridge 去 <span class="term" title="Linear:我们记任务、拆单、连依赖线的那个工具;它是 issue 状态与依赖的唯一真相">Linear</span> 读一遍范围(所有 In Progress 的父单的子单 + 常驻「日常」筐,去掉 Backlog),再对照自己账本看谁在跑,用你裁过的规则算出「现在可以开始的」。</li>
+    <li>三行事实写进<b>同一封</b>巡检邮件:范围内还剩多少、其中现在能开始的几张(归这个 Lead 的最多列 5 张 issue 号和优先级)、等前置的几张、账面在跑的几张;并写清「Linear 是几点看的」。</li>
+    <li>Lead 读「可开始且归我」+「在跑 N · 停车 M · 额度」,自己拍这一轮拉几张;拉一张就是给 Bridge 发一次 <code>POST /api/runs/start</code>,任务类别(<span class="term" title="taskCategory:告诉 Bridge 这张单走哪条流水线(要不要设计阶段、要不要 QA);这是需要理解任务内容的判断">taskCategory</span>)由 Lead 判。</li>
+  </ol>
+  <div class="callout green">Linear 读不到、范围太大、没有 In Progress 的父单 —— 这封信照样发出去,只是那三行变成一行「还剩什么 = ?(原因)」;别的内容一个字不变。</div>
+  <div class="cbox"><label>给「核心流程」的意见</label><textarea data-key="s03" data-title="核心流程"></textarea></div>
+</section>
+
+<section class="card amber" data-title="那封信长什么样">
+  <h2>那封信长什么样(示意,数字是编的)</h2>
+  <div class="mock">[patrol_tick] 巡检时间到。
+容量(Bridge 采样 · 判断输入,不是闸门;快照 2026-09-04T03:44:37Z):
+- 内存 free 59% | 负载 22.6/18核=1.26 | 手刹=无 | 部署暂停=无 | 在跑 13 · 停车 4
+- 额度 Claude …(五个账号)| Codex 无数值源
+还剩什么(Bridge 按 Linear 扫 · 规则 ready.v1 已获 founder 裁定 · 判断输入,不是派单;Linear 观测 2026-09-04T03:44:36Z;生成 2026-09-04T03:44:37Z;范围=3 个 active 父单):
+- 范围内 27 张未完成:现在可以开始的 6(已剔除账面在跑)· 等前置的 12 · 账面在跑的 9 · 未命中 Lead label 0
+- 现在可以开始且归你(按 Lead 归属规则)5 张:FLY-2142(P2) FLY-2143(P2) FLY-2310(P3) FLY-2311(P3) FLY-2299(P4,general)(+1 more,见 flywheel-comm epic-page show)
+按 Bridge 的账,你名下有 14 个未终结 runner(此名册是待核声明,不是结论):
+…(今天已有的名册,一字不变)</div>
+  <p class="note">名册为空而被触发时,首行之后多一行:「(本轮由 Epic 范围触发:你名下账面没有未终结 runner,但范围内还有 5 件归你。)」—— 这样收信的人不会以为名册统计坏了。</p>
+  <ul>
+    <li><b>只给 issue 号和优先级,不给标题。</b>标题是 Linear 里任何人都能改的自由文本,直接进 Lead 的提示词就是一个可以被塞话的口子;标题、验收、依赖全文都在 Epic 页面里(<code>flywheel-comm epic-page show</code>),那一层已做转义。</li>
+    <li><b>零判断词。</b>信里没有「建议拉」「空位 N 个」;「位子够不够」是 Lead 看「在跑/停车」和「可开始」之后自己下的判断 —— 你 PRD §8-3 里「10 个满载」那个 10 从哪来还没定,本单不替你定。</li>
+    <li><b>两个时间戳。</b>「Linear 观测」和「生成」各自写在信里;Lead 规则要求不引用超过一个巡检周期的读数。任一个时间坏了、任一个数对不上,整块变成固定的一行「账面不可读」,不会把坏值透出来。</li>
+  </ul>
+  <div class="cbox"><label>给「那封信长什么样」的意见</label><textarea data-key="s04" data-title="那封信长什么样"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数从哪来">
+  <h2>数从哪来:三个来源,一份文档,一封信</h2>
+  <div class="diagram"><!--DIAGRAM_2--></div>
+  <div class="cap">图 2 · 每个数都有出处和时间;「还剩什么」是从 A 单的 Epic 页面文档算出来的,不是另起一套账</div>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:26%">信里的这一格</th><th>从哪来</th><th style="width:22%">谁定的规则</th></tr>
+    <tr><td>范围(哪些父单算 active)</td><td>Linear:状态 In Progress 且有子单的父单 + 标题带「日常」的常驻筐;子单里去掉 Backlog</td><td>你(09-03,A 单 §11.4)</td></tr>
+    <tr><td>现在可以开始的</td><td>规则 <code>ready.v1</code>:范围内、未完成、每一条「等谁」的对方都已完成;按优先级再单号排</td><td>你(09-03,A 单 §11.5)</td></tr>
+    <tr><td>账面在跑的</td><td>Bridge 账本里该 issue 的活会话数(账面,不代表进程一定活着)</td><td>A 单既有</td></tr>
+    <tr><td>归你的</td><td>issue 的 label 对上哪个 Lead(和名册分 Lead 用同一把尺子);没命中任何 Lead label 的落到项目第一个 Lead,并在信里标 <code>general</code> 让他看得出;若那个 Lead 不能派单,只计数不归人</td><td>既有规则</td></tr>
+    <tr><td>读不到「它是否在跑」时</td><td>只要有一张未完成子单的账面读不到,这三行整块变成一行「?(原因)」—— 不把「不知道」当成「空着」</td><td>本单(评审后收紧)</td></tr>
+    <tr><td>在跑 / 停车 / 额度</td><td>E 单已经在信里的「容量」三行</td><td>E 单(你勾过)</td></tr>
+  </table>
+  </div>
+  <p class="note">同一轮里两个 Lead 到点,Bridge 对这个项目只扫一次,两人拿到同一时刻的快照,各自只看到「归自己的」那几张;不同分钟到点的各扫各的,各带各的时间。</p>
+  <div class="cbox"><label>给「数从哪来」的意见</label><textarea data-key="s05" data-title="数从哪来"></textarea></div>
+</section>
+
+<section class="card" data-title="谁做事实、谁做判断">
+  <h2>谁做事实、谁做判断、本单不做什么</h2>
+  <div class="diagram"><!--DIAGRAM_3--></div>
+  <div class="cap">图 3 · 上:Bridge 只给事实;中:Lead 才做判断与动作;下:本单明确不做的</div>
+  <p>这条线是 PRD R4 定的:容量从「一道自动闸门」变成「Lead 的判断输入」。同一口径套到 R3:<b>Bridge 扫、算、送;Lead 判、拉。</b>「拉一件」需要判断任务类别、需要判断位子够不够 —— 这两件事 Bridge 不该猜,所以 Bridge 不自动派单。</p>
+  <div class="cbox"><label>给「谁做事实、谁做判断」的意见</label><textarea data-key="s06" data-title="谁做事实、谁做判断"></textarea></div>
+</section>
+
+<section class="card gray" data-title="关键取舍与被否掉的做法">
+  <h2>关键取舍与被否掉的做法</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:28%">选了</th><th style="width:26%">没选</th><th>为什么</th></tr>
+    <tr><td>巡检邮件里加三行事实</td><td>Bridge 有空位就自动派单</td><td>PRD R4:决定权归 Lead;任务类别要人判;§8-3「多少算满」没定;一轮拉满是不可逆的失控</td></tr>
+    <tr><td>用同一口巡检钟</td><td>单独一口「Epic 钟」</td><td>§1.2:两次扫描 ⇒ 两边数对不上(你点名的坏处);零新钟;分层调频是 §8-3 的新需求</td></tr>
+    <tr><td>只给单号 + 优先级</td><td>带标题</td><td>标题是外部自由文本,进 Lead 提示词 = 可被塞话;标题去页面看</td></tr>
+    <tr><td>名册空但范围有活 ⇒ 也发信</td><td>保持「名册空不发」</td><td>空闲起步唯一的信号;Lead 已批;范围也空 ⇒ 仍不发,闲置项目不会多收噪音</td></tr>
+    <tr><td>「可开始」里剔掉账面在跑的</td><td>照规则原样列</td><td>防止 Lead 对一张已经在跑的单再拉一次;规则本身一字不改,信里写明「已剔除账面在跑」;Bridge 那边同 issue 再起也会拒(409)</td></tr>
+    <tr><td>配置缺席时:信一字不变 + 启动时说一行</td><td>每封信里提醒 / 发告警</td><td>Lead 裁定:信是别人当判据读的,不许因配置缺失悄悄变形;缺了要有人看得见,但只说一次、不 fail、不加告警层</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「关键取舍与被否掉的做法」的意见</label><textarea data-key="s07" data-title="关键取舍与被否掉的做法"></textarea></div>
+</section>
+
+<section class="card amber" data-title="需要你拍的四件事">
+  <h2>需要你拍的四件事(不阻塞实施;默认按本设计走)</h2>
+  <div class="scroll">
+  <table>
+    <tr><th style="width:6%">#</th><th style="width:44%">问题</th><th>本单默认</th><th style="width:22%">你若反对</th></tr>
+    <tr><td>1</td><td>PRD §8-1:「一次扫描出一份事实,两个判断各读各的」这个办法,你认不认?</td><td>认(Lead 08-28 已定);并留了余地:事实块与判断分离、生成器不认识巡检、Bridge 不记「上次拉活时间」</td><td>拆成两口钟 = 多一个调用者,不重写</td></tr>
+    <tr><td>2</td><td>PRD §8-3:怎么算「位子空出来了」?信里给的是「在跑 13 · 停车 4」和「可开始 6」,多少算满由 Lead 自己判,可以吗?</td><td>可以;不写死一个 N</td><td>要一个 N 的话,那是 Lead 规则里的一句话,不是本单代码</td></tr>
+    <tr><td>3</td><td>名册为空的 Lead,只要 Epic 里还有归他的活,要不要也收到这封巡检邮件?</td><td>要(Lead 已批);范围也空 ⇒ 不发</td><td>退回既有行为,规则改成「自己去看」</td></tr>
+    <tr><td>4</td><td>信里只给 issue 号和优先级,标题去页面看,可以吗?</td><td>可以(安全口子)</td><td>加标题要先过转义与长度合同,是新的安全面</td></tr>
+  </table>
+  </div>
+  <div class="cbox"><label>给「需要你拍的四件事」的意见</label><textarea data-key="s08" data-title="需要你拍的四件事"></textarea></div>
+</section>
+
+<section class="card red" data-title="诚实边界">
+  <h2>诚实边界:这个设计做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>每封巡检邮件多三行「还剩什么」事实,与容量并排,同一时刻采;缺席时信逐字节不变。</li>
+    <li>名册为空但范围有活也发信,并写明触发原因。</li>
+    <li>Lead 规则多一小节:怎么读这三行、怎么拉一件、拉多少自己判。</li>
+    <li>每次扫描在 Bridge 账本里落一条「什么时候扫的」回执,给 D 单(过期自报)留地基。</li>
+  </ul>
+  <h3>不做</h3>
+  <ul>
+    <li>不自动派单、不排队、不算「位子数」(§8-3 开着)。</li>
+    <li>不加 flag、不加钟、不加配置项、不加接口、不加命令、不加表、不加告警通道。</li>
+    <li>不改你裁过的 <code>ready.v1</code> 与范围规则;不改 Epic 页面模型;不改巡检报告的六步合同。</li>
+    <li>不做分层调频(扫描一小时一次、放活六小时一次)—— 那是 §8-3 登记的新需求。</li>
+    <li>不把 issue 标题或正文放进信里。</li>
+  </ul>
+  <h3>两个上线前提(不在本单代码里)</h3>
+  <ul>
+    <li><b>配置:</b>生产的项目配置里六个项目的 Linear 绑定今天全是空的 —— 这意味着 A 单(FLY-2140)合入后在生产其实一次都生成不了,本单同样依赖这个绑定。Lead 已核实并认领:补绑定是运维动作,归 Lead,并要验证真的生效。绑定没补之前,本单上线后信一字不变。</li>
+    <li><b>版本:</b>生产 Bridge 当前的 build 还不含 A 单;本单要 A 单一起到生产才有效果。部署由独立更新器负责,与合并是两件事。</li>
+  </ul>
+  <p class="note">回滚 = 撤销本单一个 PR。没有迁移、没有配置、没有开关需要回退。</p>
+  <div class="cbox"><label>给「诚实边界」的意见</label><textarea data-key="s09" data-title="诚实边界"></textarea></div>
+</section>
+
+<section class="card purple" data-title="与 C、D 两单的关系">
+  <h2>与 C、D 两单的关系</h2>
+  <ul>
+    <li><b>C · FLY-2142(依赖账本):</b>A 单已定 Linear 上的「A 挡着 B」连线是唯一持久化的先后关系。C 的三类更新(漏掉的 / 不需要做的 / 新发现的)若落在 Linear 连线上,本单的扫描自动读到,零改动。</li>
+    <li><b>D · FLY-2143(页面活化):</b>本单每次扫描落的回执,就是 D 需要的「这页多旧」的锚;D 的「扫描路」= 本单已经在跳的这口钟;D 的「事件路」与本单无关。</li>
+  </ul>
+  <div class="cbox"><label>给「与 C、D 两单的关系」的意见</label><textarea data-key="s10" data-title="与 C、D 两单的关系"></textarea></div>
+</section>
+
+<section class="card gray" data-title="评审记录">
+  <h2>评审记录</h2>
+  <!--REVIEW_LOG-->
+  <div class="cbox"><label>给「评审记录」的意见</label><textarea data-key="s11" data-title="评审记录"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页意见</button>
+  </div>
+  <div class="status" id="copy-status"></div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2141";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

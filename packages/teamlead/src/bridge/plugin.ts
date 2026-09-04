@@ -9206,12 +9206,40 @@ export async function startBridge(
 	const { createLeadPatrolTickPass, patrolSessionKey } = await import(
 		"./patrol-tick.js"
 	);
+	const { createEpicResidualScan, epicResidualBootWarnings } = await import(
+		"./epic-residual-scan.js"
+	);
 	const { probePatrolProcessLiveness } = await import(
 		"./patrol-process-liveness.js"
 	);
+	const epicResidual = createEpicResidualScan({
+		store,
+		projects,
+		linearApiKey: config.linearApiKey,
+		resolveOwner: (projectName, labels) => {
+			const { lead, matchMethod } = resolveLeadForIssue(
+				projects,
+				projectName,
+				labels,
+			);
+			return {
+				agentId: lead.agentId,
+				matchMethod,
+				canSpawn: lead.canSpawnRunners !== false,
+			};
+		},
+		log: (message) => console.warn(message),
+	});
+	for (const line of epicResidualBootWarnings(
+		projects,
+		Boolean(config.linearApiKey),
+	)) {
+		console.warn(line);
+	}
 	const leadPatrolTickPass = createLeadPatrolTickPass({
 		projects,
 		store,
+		epicResidual,
 		capacity: () => buildCapacitySnapshot(capacityDeps),
 		openCommReadonly: (projectName) => {
 			try {

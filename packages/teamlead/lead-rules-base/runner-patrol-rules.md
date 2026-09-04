@@ -877,6 +877,28 @@ system view only;不采信 Bridge 单方转述. It must be crossed with `TMUX= t
 is the scheduled trigger; the existing inbox-batch and task-boundary cadence
 remains an event-driven supplement. The Lead must not create another timer.
 
+### 0.9 回头看 Epic 还剩什么,有位就拉一件(FLY-2141)
+
+tick 里「还剩什么」三行是 Bridge 在**这一轮**按 Linear 扫出的读数(规则
+`ready.v1`,已获 founder 裁定),与同一封里的「容量」三行同一时刻采样。放新活的判断读
+这两块,不另外查一遍(PRD §1.2)。这些读数是判断输入,不是派单。
+
+- 巡检轮:读「现在可以开始且归你」+ 容量的「在跑 N · 停车 M」+ 额度,
+  **自己拍这一轮拉几张**。拉一张 = `POST /api/runs/start` 按 FLY-1436 合同
+  (`taskCategory` 由你判);`409` = 已有人在跑,不是错。
+- 轮外,或该格显示 `?` / `账面不可读`:先
+  `flywheel-comm epic-page show --project "$PROJECT_NAME" --format md` 再拍;它是
+  同一个生成器的另一次采样,各带自己的时间,⛔ 不当同一份。
+- 标题、验收、依赖全文都在 epic-page 页面里,tick 只给 issue 号和优先级。
+- 「还剩什么」是 Bridge 按 Linear 扫的读数,不是转述;你核的是它的两个时间戳的
+  新鲜度,⛔ 不引用超过一个巡检周期的读数;`?` 的格不得当事实。多少算「位子满了」
+  由你判(PRD §8-3 未定),Bridge 不给数。
+- 第三行「归你(按 Lead 归属规则)」里带 `general` 标记的子单没有命中任何 Lead 的
+  label,只是按项目默认落到你;拉之前看一眼它该不该归你。
+- `[patrol_tick]` 仍是纯闹钟;这三行不替代 STEP 1–6 与 STEP DWELL 的任何一步。
+- 收到「本轮由 Epic 范围触发」的 tick:名册为空是真的,不是统计坏了;照常做
+  STEP 1–6(会是 0 pane),然后按上面拉活。
+
 ---
 
 ## 1. Proactive patrol — sweep your Runners, don't wait to be paged (RC-3)

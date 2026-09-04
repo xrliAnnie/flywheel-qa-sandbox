@@ -1,0 +1,20 @@
+sequenceDiagram
+    autonumber
+    participant 钟 as 巡检钟(Bridge,每小时)
+    participant L as Linear(issue 与依赖的唯一真相)
+    participant S as 账本(StateStore:谁在跑)
+    participant 信 as 那一封巡检邮件
+    participant Lead as Lead(判断与动作)
+    钟->>钟: 到点:这个 Lead 这一小时的那一分钟
+    钟->>S: 名册:名下有哪些 runner(今天已有)
+    钟->>钟: 容量读数:内存/负载/在跑/停车/额度(FLY-2144 已有)
+    钟->>L: 新增:范围内还剩什么(started 父单子树 + 日常筐,去掉 backlog)
+    L-->>钟: 每张子单的状态、优先级、等谁(blocked_by)
+    钟->>S: 新增:这些子单账面上谁在跑
+    S-->>钟: ledger_live_count
+    钟->>钟: 用 founder 已裁的规则 ready.v1 算「现在可以开始的」
+    钟->>信: 一封信:名册 + 容量三行 + 还剩什么三行(同一时刻)
+    信->>Lead: 送到 Lead 邮箱
+    Lead->>Lead: 读「可开始且归我」与「在跑/停车」,自己拍拉几张
+    Lead->>钟: POST /api/runs/start(拉一张,taskCategory 由 Lead 判)
+    Note over 钟,Lead: Bridge 只给事实。拉不拉、拉几张,永远是 Lead 的判断

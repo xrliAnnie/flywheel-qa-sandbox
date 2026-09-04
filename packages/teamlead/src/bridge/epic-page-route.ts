@@ -3,11 +3,8 @@ import {
 	type GenerateEpicPageInput,
 	generateEpicPage,
 } from "../epic-page/generate.js";
-import {
-	assertEpicPage,
-	type EpicPage,
-	EpicPageSchemaError,
-} from "../epic-page/model.js";
+import { materializeEpicPage } from "../epic-page/materialize.js";
+import { type EpicPage, EpicPageSchemaError } from "../epic-page/model.js";
 import {
 	buildEpicPageRenderReceipt,
 	type EpicPageRenderReceipt,
@@ -26,7 +23,6 @@ import { LinearUpstreamError } from "./linear-query.js";
 import { resolveProjectNameParam } from "./linear-scope.js";
 
 type EpicPageFormat = "json" | "md" | "html";
-const MAX_SCOPE_ITEMS = 500;
 
 export interface EpicPageRouterDeps {
 	store: StateStore;
@@ -142,25 +138,22 @@ export function createEpicPageRouter(deps: EpicPageRouterDeps): express.Router {
 		const key = project.projectName;
 		const prior = generationTails.get(key) ?? Promise.resolve();
 		const operation = prior.then(async () => {
-			const snapshot = await fetchSnapshot(deps.linearApiKey!, project.binding);
-			if (snapshot.items.length > MAX_SCOPE_ITEMS) {
-				throw new EpicTooLargeError("Active scope exceeds 500 issues");
-			}
-			const itemFacts = snapshot.items.map((item) =>
-				readEpicItemFacts(deps.store, project.projectName, {
-					uuid: item.id,
-					identifier: item.identifier,
-				}),
+			const { page: document, receipt } = await materializeEpicPage(
+				{
+					fetchSnapshot,
+					readItemFacts: (projectName, item) =>
+						readEpicItemFacts(deps.store, projectName, item),
+					generatePage,
+					buildReceipt,
+					now,
+				},
+				{
+					projectName: project.projectName,
+					binding: project.binding,
+					apiKey: deps.linearApiKey!,
+					trigger: "manual",
+				},
 			);
-			const document = generatePage({
-				snapshot,
-				itemFacts,
-				now: now(),
-				projectName: project.projectName,
-				trigger: "manual",
-			});
-			assertEpicPage(document);
-			const receipt = buildReceipt(document);
 			const inserted = deps.store.insertEpicPageRenderReceipt({
 				projectName: project.projectName,
 				trigger: "manual",

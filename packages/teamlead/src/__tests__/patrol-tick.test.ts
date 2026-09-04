@@ -14,6 +14,7 @@ import {
 	patrolSessionKey,
 	patrolTickOffsetMs,
 } from "../bridge/patrol-tick.js";
+import type { EpicResidualFact } from "../epic-page/residual.js";
 import type { ProjectEntry } from "../ProjectConfig.js";
 import type { LeadEventRow, Session, StateStore } from "../StateStore.js";
 
@@ -142,6 +143,29 @@ function capacitySnapshot(generatedAt: string): CapacitySnapshot {
 	return { schemaVersion: 1, generatedAt } as CapacitySnapshot;
 }
 
+function epicFact(
+	overrides: Partial<Extract<EpicResidualFact, { kind: "available" }>> = {},
+): Extract<EpicResidualFact, { kind: "available" }> {
+	return {
+		schemaVersion: 1,
+		kind: "available",
+		generatedAt: "2026-08-13T11:59:58.000Z",
+		linearObservedAt: "2026-08-13T11:59:57.000Z",
+		rule: "ready.v1",
+		trigger: "roster",
+		roots: 1,
+		remaining: 2,
+		ready: 1,
+		running: 0,
+		blocked: 1,
+		readyForLead: [{ identifier: "FLY-2141", priority: 1, ownership: "label" }],
+		readyForLeadTotal: 1,
+		remainingForLead: 2,
+		generalCount: 0,
+		...overrides,
+	};
+}
+
 function scheduledAtOrBefore(
 	nowMs: number,
 	leadId: string,
@@ -208,6 +232,144 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 				generatedAt: "2026-08-13T11:59:59.000Z",
 			},
 		});
+	});
+
+	it("attaches a roster-scoped Epic residual fact to a newly emitted tick", async () => {
+		const h = harness();
+		const materialized = { kind: "materialized" };
+		const fact = epicFact();
+		const materializeForScan = vi.fn(async () => materialized);
+		const summarizeForLead = vi.fn(() => fact);
+
+		await createLeadPatrolTickPass({
+			...h.deps,
+			epicResidual: { materializeForScan, summarizeForLead },
+		} as PatrolTickDeps)();
+
+		expect(materializeForScan).toHaveBeenCalledWith(project);
+		expect(summarizeForLead).toHaveBeenCalledWith(
+			materialized,
+			"eng-lead",
+			"roster",
+		);
+		expect(payload(h.rows[0]!)).toMatchObject({ epic: fact });
+	});
+
+	it("keeps minting without an Epic key through every optional builder failure", async () => {
+		const unavailable = {
+			kind: "unavailable" as const,
+			token: "transient: linear_unavailable",
+		};
+		const builders = [
+			undefined,
+			{
+				materializeForScan: vi.fn(async () => undefined),
+				summarizeForLead: vi.fn(() => undefined),
+			},
+			{
+				materializeForScan: vi.fn(() => {
+					throw new Error("sync materialize failure");
+				}),
+				summarizeForLead: vi.fn(() => undefined),
+			},
+			{
+				materializeForScan: vi.fn(async () => {
+					throw new Error("async materialize failure");
+				}),
+				summarizeForLead: vi.fn(() => undefined),
+			},
+			{
+				materializeForScan: vi.fn(async () => unavailable),
+				summarizeForLead: vi.fn(() => undefined),
+			},
+			{
+				materializeForScan: vi.fn(async () => unavailable),
+				summarizeForLead: vi.fn(() => {
+					throw new Error("summary failure");
+				}),
+			},
+		];
+
+		for (const epicResidual of builders) {
+			const h = harness();
+			await createLeadPatrolTickPass({
+				...h.deps,
+				...(epicResidual ? { epicResidual } : {}),
+			} as PatrolTickDeps)();
+
+			expect(h.rows).toHaveLength(1);
+			expect(h.enqueued).toHaveLength(1);
+			expect(payload(h.rows[0]!)).not.toHaveProperty("epic");
+			expect(h.alerts).toEqual([]);
+		}
+	});
+
+	it("materializes an Epic once per project and summarizes it once per Lead", async () => {
+		const twoLeadProject: ProjectEntry = {
+			...project,
+			leads: [
+				...project.leads,
+				{
+					agentId: "ops-lead",
+					chatChannel: "ops",
+					match: { labels: ["Operations"] },
+				},
+			],
+		};
+		const h = harness({
+			roster: [
+				session(),
+				session({
+					execution_id: "87654321-bbbb",
+					issue_id: "issue-2",
+					issue_identifier: "FLY-2",
+					issue_labels: '["Operations"]',
+				}),
+			],
+		});
+		h.deps.projects = [twoLeadProject];
+		const materialized = { kind: "materialized" };
+		const materializeForScan = vi.fn(async () => materialized);
+		const summarizeForLead = vi.fn((_materialized: unknown, leadId: string) =>
+			epicFact({
+				readyForLead: [
+					{
+						identifier: leadId === "eng-lead" ? "FLY-2141" : "FLY-2142",
+						priority: 1,
+						ownership: "label",
+					},
+				],
+				readyForLeadTotal: 1,
+				remainingForLead: 1,
+			}),
+		);
+
+		await createLeadPatrolTickPass({
+			...h.deps,
+			epicResidual: { materializeForScan, summarizeForLead },
+		} as PatrolTickDeps)();
+
+		expect(materializeForScan).toHaveBeenCalledTimes(1);
+		expect(summarizeForLead).toHaveBeenCalledTimes(2);
+		expect(summarizeForLead.mock.calls.map((call) => call[1])).toEqual([
+			"eng-lead",
+			"ops-lead",
+		]);
+		expect(h.rows.map((row) => payload(row).epic?.generatedAt)).toEqual([
+			"2026-08-13T11:59:58.000Z",
+			"2026-08-13T11:59:58.000Z",
+		]);
+		expect(
+			h.rows.map(
+				(row) =>
+					(
+						payload(row).epic as Extract<
+							EpicResidualFact,
+							{ kind: "available" }
+						>
+					).readyForLead[0]?.identifier,
+			),
+		).toEqual(["FLY-2141", "FLY-2142"]);
 	});
 
 	it("samples capacity lazily and once when two Leads mint ticks in one pass", async () => {
@@ -388,6 +550,211 @@ describe("FLY-1687/FLY-1771 Lead patrol tick pass", () => {
 		await createLeadPatrolTickPass(h.deps)();
 
 		expect(h.rows.map((row) => row.lead_id)).toEqual(["eng-lead"]);
+	});
+
+	it("mints a scope tick with capacity when an empty roster still owns Epic work", async () => {
+		const h = harness({ roster: [] });
+		const materialized = { kind: "materialized" };
+		const materializeForScan = vi.fn(async () => materialized);
+		const fact = epicFact({ trigger: "scope" });
+		const summarizeForLead = vi.fn(() => fact);
+		const capacity = vi.fn(async () =>
+			capacitySnapshot("2026-08-13T11:59:59.000Z"),
+		);
+		const openCommReadonly = vi.fn();
+
+		await createLeadPatrolTickPass({
+			...h.deps,
+			capacity,
+			openCommReadonly,
+			epicResidual: { materializeForScan, summarizeForLead },
+		} as PatrolTickDeps)();
+
+		expect(h.rows).toHaveLength(1);
+		expect(h.enqueued).toHaveLength(1);
+		expect(payload(h.rows[0]!)).toMatchObject({
+			roster: [],
+			epic: { kind: "available", trigger: "scope", remainingForLead: 2 },
+			capacity: { generatedAt: "2026-08-13T11:59:59.000Z" },
+		});
+		expect(payload(h.rows[0]!)).not.toHaveProperty("loops");
+		expect(materializeForScan).toHaveBeenCalledTimes(1);
+		expect(summarizeForLead).toHaveBeenCalledWith(
+			materialized,
+			"eng-lead",
+			"scope",
+		);
+		expect(capacity).toHaveBeenCalledTimes(1);
+		expect(openCommReadonly).not.toHaveBeenCalled();
+	});
+
+	it("scans each silent empty-roster outcome once per slot and retries next slot", async () => {
+		const silentFacts: Array<EpicResidualFact | undefined> = [
+			epicFact({
+				trigger: "scope",
+				readyForLead: [],
+				readyForLeadTotal: 0,
+				remainingForLead: 0,
+			}),
+			{
+				schemaVersion: 1,
+				kind: "unavailable",
+				token: "transient: session_ledger_unreadable",
+				trigger: "scope",
+				generatedAt: "2026-08-13T11:59:58.000Z",
+				linearObservedAt: "2026-08-13T11:59:57.000Z",
+			},
+			undefined,
+		];
+
+		for (const fact of silentFacts) {
+			const h = harness({ roster: [] });
+			const materializeForScan = vi.fn(async () => ({
+				kind: "materialized",
+			}));
+			const summarizeForLead = vi.fn(() => fact);
+			const capacity = vi.fn(async () =>
+				capacitySnapshot("2026-08-13T11:59:59.000Z"),
+			);
+			const pass = createLeadPatrolTickPass({
+				...h.deps,
+				capacity,
+				epicResidual: { materializeForScan, summarizeForLead },
+			} as PatrolTickDeps);
+
+			await pass();
+			await pass();
+			expect(h.rows).toHaveLength(0);
+			expect(materializeForScan).toHaveBeenCalledTimes(1);
+			expect(summarizeForLead).toHaveBeenCalledTimes(1);
+			expect(capacity).not.toHaveBeenCalled();
+
+			h.setNow(Date.parse("2026-08-13T12:10:00.000Z"));
+			await pass();
+			expect(materializeForScan).toHaveBeenCalledTimes(2);
+			expect(summarizeForLead).toHaveBeenCalledTimes(2);
+		}
+	});
+
+	it("keeps empty-slot suppression isolated by project when Lead ids match", async () => {
+		const h = harness({ roster: [] });
+		const projectA: ProjectEntry = { ...project, projectName: "project-a" };
+		const projectB: ProjectEntry = { ...project, projectName: "project-b" };
+		h.deps.projects = [projectA, projectB];
+		const materializeForScan = vi.fn(async (entry: ProjectEntry) => ({
+			projectName: entry.projectName,
+		}));
+		const summarizeForLead = vi.fn((materialized: { projectName: string }) =>
+			materialized.projectName === "project-a"
+				? epicFact({
+						trigger: "scope",
+						readyForLead: [],
+						readyForLeadTotal: 0,
+						remainingForLead: 0,
+					})
+				: epicFact({ trigger: "scope" }),
+		);
+
+		await createLeadPatrolTickPass({
+			...h.deps,
+			epicResidual: { materializeForScan, summarizeForLead },
+		} as PatrolTickDeps)();
+
+		expect(
+			materializeForScan.mock.calls.map(([entry]) => entry.projectName),
+		).toEqual(["project-a", "project-b"]);
+		expect(h.rows).toHaveLength(1);
+		expect(payload(h.rows[0]!)).toMatchObject({
+			project_name: "project-b",
+			epic: { trigger: "scope", remainingForLead: 2 },
+		});
+	});
+
+	it("settles and redrives scope ticks on the existing wall-clock chain", async () => {
+		const h = harness({ roster: [] });
+		const materializeForScan = vi.fn(async () => ({ kind: "materialized" }));
+		const summarizeForLead = vi.fn(() => epicFact({ trigger: "scope" }));
+		const pass = createLeadPatrolTickPass({
+			...h.deps,
+			epicResidual: { materializeForScan, summarizeForLead },
+		} as PatrolTickDeps);
+
+		await pass();
+		const first = h.rows[0]!;
+		await pass();
+		expect(h.rows).toEqual([first]);
+		expect(h.enqueued).toEqual([first, first]);
+		expect(materializeForScan).toHaveBeenCalledTimes(1);
+
+		const firstGeneratedAt = Date.parse(payload(first).generated_at!);
+		h.settlements.set(deliveryId(first), {
+			kind: "live",
+			state: "ACKED",
+			settledAt: new Date(firstGeneratedAt + 60_000).toISOString(),
+		});
+		h.setNow(firstGeneratedAt + 10 * 60_000);
+		await pass();
+		expect(h.rows).toHaveLength(2);
+		expect(materializeForScan).toHaveBeenCalledTimes(2);
+		expect(Date.parse(payload(h.rows[1]!).scheduled_at!)).toBeGreaterThan(
+			Date.parse(payload(first).scheduled_at!),
+		);
+	});
+
+	it("rescans a silent empty slot at most once after a pass-factory restart", async () => {
+		const h = harness({ roster: [] });
+		const materializeForScan = vi.fn(async () => ({ kind: "materialized" }));
+		const summarizeForLead = vi.fn(() =>
+			epicFact({
+				trigger: "scope",
+				readyForLead: [],
+				readyForLeadTotal: 0,
+				remainingForLead: 0,
+			}),
+		);
+		const deps = {
+			...h.deps,
+			epicResidual: { materializeForScan, summarizeForLead },
+		} as PatrolTickDeps;
+		const beforeRestart = createLeadPatrolTickPass(deps);
+
+		await beforeRestart();
+		await beforeRestart();
+		expect(materializeForScan).toHaveBeenCalledTimes(1);
+
+		const afterRestart = createLeadPatrolTickPass(deps);
+		await afterRestart();
+		await afterRestart();
+		expect(materializeForScan).toHaveBeenCalledTimes(2);
+		expect(h.rows).toHaveLength(0);
+	});
+
+	it("renders a session-ledger unavailable fact without dropping a roster tick", async () => {
+		const h = harness();
+		const unavailable: EpicResidualFact = {
+			schemaVersion: 1,
+			kind: "unavailable",
+			token: "transient: session_ledger_unreadable",
+			trigger: "roster",
+			generatedAt: "2026-08-13T11:59:58.000Z",
+			linearObservedAt: "2026-08-13T11:59:57.000Z",
+		};
+		await createLeadPatrolTickPass({
+			...h.deps,
+			epicResidual: {
+				materializeForScan: vi.fn(async () => ({ kind: "materialized" })),
+				summarizeForLead: vi.fn(() => unavailable),
+			},
+		} as PatrolTickDeps)();
+
+		expect(h.rows).toHaveLength(1);
+		const body = formatPatrolTick(
+			leadEventEnvelopeFromJournalRow(h.rows[0]!, 2),
+		);
+		expect(body).toContain("还剩什么=?(transient: session_ledger_unreadable)");
+		expect(body).toContain(
+			"按 Bridge 的账,你名下有 1 个未终结 runner(此名册是待核声明,不是结论):",
+		);
 	});
 
 	it("alerts instead of silently losing fallback sessions owned by a non-spawning Lead", async () => {
