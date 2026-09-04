@@ -1168,19 +1168,44 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 	it("FLY-2147: exports mounted memory only, without Claude settings", async () => {
 		const dir = "/tmp/runner-memory/flywheel/qa";
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 112,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
 		await makeAdapter().execute(
-			ctx({ runnerMemory: { status: "mounted", dir } }),
+			ctx({ runnerMemory: { status: "mounted", dir, snapshot } }),
 		);
 		const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
 		expect(options.env?.FLYWHEEL_RUNNER_MEMORY_DIR).toBe(dir);
+		expect(
+			JSON.parse(options.env?.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT ?? "null"),
+		).toEqual(snapshot);
 		expect(JSON.stringify(options)).not.toContain("autoMemoryDirectory");
 		expect(JSON.stringify(options)).not.toContain("autoMemoryEnabled");
 	});
 
+	it("FLY-2148: mounted memory without a snapshot preserves the B0 env shape", async () => {
+		await makeAdapter().execute(
+			ctx({
+				runnerMemory: {
+					status: "mounted",
+					dir: "/tmp/runner-memory/flywheel/qa",
+				},
+			}),
+		);
+		const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
+		expect(options.env?.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT).toBeUndefined();
+	});
+
 	it("FLY-2147: disabled memory exports no directory and scrubs an inherited stale value", async () => {
 		const prior = process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
+		const priorSnapshot = process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT;
 		try {
 			process.env.FLYWHEEL_RUNNER_MEMORY_DIR = "/stale/shared-memory";
+			process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = "stale-snapshot";
 			await makeAdapter().execute(
 				ctx({
 					runnerMemory: { status: "disabled", reason: "policy_conflict" },
@@ -1188,11 +1213,15 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			);
 			const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
 			expect(options.env?.FLYWHEEL_RUNNER_MEMORY_DIR).toBeUndefined();
+			expect(options.env?.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT).toBeUndefined();
 			expect(JSON.stringify(options)).not.toContain("autoMemoryDirectory");
 			expect(JSON.stringify(options)).not.toContain("autoMemoryEnabled");
 		} finally {
 			if (prior === undefined) delete process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
 			else process.env.FLYWHEEL_RUNNER_MEMORY_DIR = prior;
+			if (priorSnapshot === undefined)
+				delete process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT;
+			else process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = priorSnapshot;
 		}
 	});
 
@@ -1247,6 +1276,13 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				runnerMemory: {
 					status: "mounted",
 					dir: "/runner-memory/flywheel/qa",
+					snapshot: {
+						lines: 3,
+						linesExact: true,
+						bytes: 112,
+						sha16: "0123456789abcdef",
+						topicFiles: 0,
+					},
 				},
 				sentinelPath: "/land.json",
 				workflowSubmissionCredential: "decision-ticket",
@@ -1277,6 +1313,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				"FLYWHEEL_PROGRESS_PATH",
 				"FLYWHEEL_PROJECT_NAME",
 				"FLYWHEEL_RUNNER_MEMORY_DIR",
+				"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
 				"FLYWHEEL_RUNNER_BACKEND_ID",
 				"FLYWHEEL_RUNNER_VENDOR_ID",
 				"FLYWHEEL_STATE_DB_PATH",

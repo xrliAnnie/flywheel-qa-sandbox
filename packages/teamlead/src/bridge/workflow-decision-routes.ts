@@ -2,6 +2,9 @@ import express from "express";
 import {
 	adapterTypeToFamily,
 	canonicalSubmissionDigest,
+	formatRunnerMemoryCloseoutLine,
+	parseRunnerMemoryCloseoutReceipt,
+	sanitizeOneLine,
 } from "flywheel-config";
 import type {
 	StateStore,
@@ -48,6 +51,37 @@ interface WorkflowDecisionBody {
 	status?: unknown;
 	summary?: unknown;
 	client_pr_head_sha?: unknown;
+	runner_memory_closeout?: unknown;
+}
+
+/** Persist optional runner closeout evidence without affecting decision acceptance. */
+export function persistRunnerMemoryCloseout(
+	store: Pick<StateStore, "patchSessionMetadata">,
+	executionId: string,
+	raw: unknown,
+	logPrefix: "[workflow-decision]" | "[event-route]",
+): void {
+	if (raw === undefined) return;
+	const receipt = parseRunnerMemoryCloseoutReceipt(raw);
+	if (!receipt) {
+		console.warn(
+			`${logPrefix} runner-memory closeout receipt rejected exec=${executionId} reason=malformed`,
+		);
+		return;
+	}
+	try {
+		store.patchSessionMetadata(executionId, {
+			runner_memory_closeout: receipt.state,
+			runner_memory_receipt: JSON.stringify(receipt),
+		});
+		console.info(
+			`${formatRunnerMemoryCloseoutLine(logPrefix, receipt)} exec=${executionId}`,
+		);
+	} catch (error) {
+		console.warn(
+			`${logPrefix} runner-memory closeout persist failed exec=${executionId}: ${sanitizeOneLine(error instanceof Error ? error.message : String(error), 200)}`,
+		);
+	}
 }
 
 export interface WorkflowDecisionRouterDeps {
@@ -772,6 +806,12 @@ export function createWorkflowDecisionRouter(
 					...(summary ? { summary } : {}),
 				},
 			});
+			persistRunnerMemoryCloseout(
+				deps.store,
+				credentialRow.execution_id,
+				body.runner_memory_closeout,
+				"[workflow-decision]",
+			);
 			res.json({
 				ok: true,
 				claimId: result.claimId,
@@ -885,6 +925,12 @@ export function createWorkflowDecisionRouter(
 				...(summary ? { summary } : {}),
 			},
 		});
+		persistRunnerMemoryCloseout(
+			deps.store,
+			credentialRow.execution_id,
+			body.runner_memory_closeout,
+			"[workflow-decision]",
+		);
 		res.json({
 			ok: true,
 			claimId: result.claimId,

@@ -69,6 +69,50 @@ function paneEnvValues(args: string[]): string[] {
 	return args.filter((_arg, index) => args[index - 1] === "-e");
 }
 
+function fly2148AdapterGolden(name: string): {
+	argv: string[];
+	paneEnv: string[];
+	settingsJson: unknown;
+} {
+	return JSON.parse(
+		readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8"),
+	) as {
+		argv: string[];
+		paneEnv: string[];
+		settingsJson: unknown;
+	};
+}
+
+function normalizeFly2148AdapterProjection(args: string[]): {
+	argv: string[];
+	paneEnv: string[];
+	settingsJson: unknown;
+} {
+	const runnerStateEntry = paneEnvValues(args).find((value) =>
+		value.startsWith("FLYWHEEL_RUNNER_STATE_DIR="),
+	);
+	const runnerStateDir = runnerStateEntry?.slice(
+		"FLYWHEEL_RUNNER_STATE_DIR=".length,
+	);
+	const normalizeArg = (arg: string): string => {
+		if (arg.includes("/flywheel-launch-gates/")) return "<LAUNCH_GATE>";
+		if (arg.includes("/flywheel-runner-prompts/")) return "<PROMPT_FILE>";
+		if (/^[0-9a-f]{8}-[0-9a-f-]{27}$/.test(arg)) return "<UUID>";
+		if (/^issue-\d+$/.test(arg)) return "issue-<TIME>";
+		return runnerStateDir
+			? arg.replaceAll(runnerStateDir, "<RUNNER_STATE_DIR>")
+			: arg;
+	};
+	const settingsIndex = args.indexOf("--settings");
+	return {
+		argv: args.map(normalizeArg),
+		paneEnv: paneEnvValues(args)
+			.filter((value) => value.startsWith("FLYWHEEL_"))
+			.map(normalizeArg),
+		settingsJson: JSON.parse(args[settingsIndex + 1] as string),
+	};
+}
+
 describe("FLY-1999 runner pane environment boundary", () => {
 	it.each([
 		{ shape: "direct", gated: false, prompt: undefined },
@@ -295,6 +339,7 @@ describe("FLY-1869 launch command budget", () => {
 			"FLYWHEEL_PROGRESS_PATH",
 			"FLYWHEEL_PROJECT_NAME",
 			"FLYWHEEL_RUNNER_MEMORY_DIR",
+			"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
 			"FLYWHEEL_RUNNER_STATE_DIR",
 			"FLYWHEEL_STATE_DB_PATH",
 			"FLYWHEEL_WORKFLOW_SUBMISSION_CREDENTIAL",
@@ -501,6 +546,24 @@ describe("TmuxAdapter", () => {
 		const adapter = new TmuxAdapter("flywheel", fn);
 		expect(adapter.type).toBe("claude-tmux");
 	});
+
+	it.each([
+		{ mode: "off", fixture: "fly2148-adapter-off.json" },
+		{ mode: "shared", fixture: "fly2148-adapter-shared.json" },
+		{ mode: "unsupported", fixture: "fly2148-adapter-unsupported.json" },
+	] as const)(
+		"FLY-2148: keeps the $mode adapter surface byte-identical to its pre-change golden",
+		async ({ fixture }) => {
+			const { fn, calls } = makeMockExec({ paneDead: true });
+			await new TmuxAdapter("flywheel", fn, 10).execute(makeCtx());
+			const newWindow = calls.find(
+				(call) => call.cmd === "tmux" && call.args[0] === "new-window",
+			);
+			expect(normalizeFly2148AdapterProjection(newWindow!.args)).toEqual(
+				fly2148AdapterGolden(fixture),
+			);
+		},
+	);
 
 	it("FLY-1961 writes Claude trust before the first tmux launch", async () => {
 		const trustDir = mkdtempSync(join(tmpdir(), "fly1961-tmux-trust-"));
@@ -1089,8 +1152,15 @@ describe("TmuxAdapter", () => {
 	it("FLY-2147: mounted memory sets the explicit directory, enables auto memory, and exports pane env", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const dir = "/tmp/runner-memory/flywheel/qa";
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 112,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
 		await new TmuxAdapter("flywheel", fn, 10).execute(
-			makeCtx({ runnerMemory: { status: "mounted", dir } }),
+			makeCtx({ runnerMemory: { status: "mounted", dir, snapshot } }),
 		);
 		const newWindow = calls.find((call) => call.args[0] === "new-window");
 		const settingsIndex = newWindow!.args.indexOf("--settings");
@@ -1108,6 +1178,28 @@ describe("TmuxAdapter", () => {
 		expect(paneEnvValues(newWindow!.args)).toContain(
 			`FLYWHEEL_RUNNER_MEMORY_DIR=${dir}`,
 		);
+		expect(paneEnvValues(newWindow!.args)).toContain(
+			`FLYWHEEL_RUNNER_MEMORY_SNAPSHOT=${JSON.stringify(snapshot)}`,
+		);
+		expect(newWindow!.args[settingsIndex + 1]).not.toContain(snapshot.sha16);
+	});
+
+	it("FLY-2148: mounted memory without a snapshot preserves the B0 env shape", async () => {
+		const { fn, calls } = makeMockExec({ paneDead: true });
+		await new TmuxAdapter("flywheel", fn, 10).execute(
+			makeCtx({
+				runnerMemory: {
+					status: "mounted",
+					dir: "/tmp/runner-memory/flywheel/qa",
+				},
+			}),
+		);
+		const newWindow = calls.find((call) => call.args[0] === "new-window");
+		expect(paneEnvValues(newWindow!.args)).not.toEqual(
+			expect.arrayContaining([
+				expect.stringMatching(/^FLYWHEEL_RUNNER_MEMORY_SNAPSHOT=/),
+			]),
+		);
 	});
 
 	it("FLY-2147: disabled memory fails closed without a directory or pane env", async () => {
@@ -1124,11 +1216,16 @@ describe("TmuxAdapter", () => {
 		) as Record<string, unknown>;
 		expect(settings.autoMemoryEnabled).toBe(false);
 		expect(settings).not.toHaveProperty("autoMemoryDirectory");
-		expect(paneEnvValues(newWindow!.args)).not.toEqual(
-			expect.arrayContaining([
-				expect.stringMatching(/^FLYWHEEL_RUNNER_MEMORY_DIR=/),
-			]),
-		);
+		for (const name of [
+			"FLYWHEEL_RUNNER_MEMORY_DIR",
+			"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
+		]) {
+			expect(paneEnvValues(newWindow!.args)).not.toEqual(
+				expect.arrayContaining([
+					expect.stringMatching(new RegExp(`^${name}=`)),
+				]),
+			);
+		}
 	});
 
 	it("FLY-2147: absent memory disposition preserves settings and pane env", async () => {
@@ -1141,21 +1238,33 @@ describe("TmuxAdapter", () => {
 		) as Record<string, unknown>;
 		expect(settings).not.toHaveProperty("autoMemoryDirectory");
 		expect(settings).not.toHaveProperty("autoMemoryEnabled");
-		expect(paneEnvValues(newWindow!.args)).not.toEqual(
-			expect.arrayContaining([
-				expect.stringMatching(/^FLYWHEEL_RUNNER_MEMORY_DIR=/),
-			]),
-		);
+		for (const name of [
+			"FLYWHEEL_RUNNER_MEMORY_DIR",
+			"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
+		]) {
+			expect(paneEnvValues(newWindow!.args)).not.toEqual(
+				expect.arrayContaining([
+					expect.stringMatching(new RegExp(`^${name}=`)),
+				]),
+			);
+		}
 	});
 
 	it("FLY-2147: worst-case encoded memory path stays inside launch budget", async () => {
 		const { fn, calls } = makeMockExec({ paneDead: true });
 		const component = `${"p".repeat(128)}--${"f".repeat(32)}`;
 		const dir = `/${"r".repeat(119)}/${component}/${component}`;
+		const snapshot = {
+			lines: 10_000,
+			linesExact: false,
+			bytes: 99_999_999,
+			sha16: "fedcba9876543210",
+			topicFiles: 10_000,
+		};
 		expect(dir).toHaveLength(446);
 		await expect(
 			new TmuxAdapter("flywheel", fn, 10).execute(
-				makeCtx({ runnerMemory: { status: "mounted", dir } }),
+				makeCtx({ runnerMemory: { status: "mounted", dir, snapshot } }),
 			),
 		).resolves.toMatchObject({ success: true });
 		const newWindow = calls.find((call) => call.args[0] === "new-window");
@@ -1163,6 +1272,9 @@ describe("TmuxAdapter", () => {
 		expect(newWindow!.args[settingsIndex + 1]).toContain(dir);
 		expect(paneEnvValues(newWindow!.args)).toContain(
 			`FLYWHEEL_RUNNER_MEMORY_DIR=${dir}`,
+		);
+		expect(paneEnvValues(newWindow!.args)).toContain(
+			`FLYWHEEL_RUNNER_MEMORY_SNAPSHOT=${JSON.stringify(snapshot)}`,
 		);
 	});
 

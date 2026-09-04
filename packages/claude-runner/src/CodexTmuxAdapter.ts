@@ -2211,6 +2211,11 @@ export class CodexTmuxAdapter implements IAdapter {
 		if (ctx.projectName) env.FLYWHEEL_PROJECT_NAME = ctx.projectName;
 		if (ctx.runnerMemory?.status === "mounted") {
 			env.FLYWHEEL_RUNNER_MEMORY_DIR = ctx.runnerMemory.dir;
+			if (ctx.runnerMemory.snapshot) {
+				env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = JSON.stringify(
+					ctx.runnerMemory.snapshot,
+				);
+			}
 		}
 		if (ctx.leadId) env.FLYWHEEL_LEAD_ID = ctx.leadId;
 		if (ctx.sentinelPath) env.FLYWHEEL_LAND_STATUS_PATH = ctx.sentinelPath;

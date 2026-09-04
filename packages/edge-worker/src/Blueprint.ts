@@ -64,6 +64,7 @@ import type { IDecisionLayer } from "./decision/DecisionLayer.js";
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
+	RunnerMemorySelectionRecord,
 } from "./ExecutionEventEmitter.js";
 import type {
 	ExecutionEvidence,
@@ -2743,6 +2744,23 @@ export class Blueprint {
 			const memoryLog = formatRunnerMemoryLogLine(memoryMount);
 			if (memoryLog.level === "warn") console.warn(memoryLog.line);
 			else console.info(memoryLog.line);
+		}
+		if (backend === "claude-tmux" || backend === "codex-tmux") {
+			const memoryRecord: RunnerMemorySelectionRecord =
+				memoryMount?.status === "mounted"
+					? {
+							arm: memorySelection,
+							dir: memoryMount.dir,
+							spawn: memoryMount.snapshot,
+						}
+					: { arm: memorySelection };
+			try {
+				await this.eventEmitter?.emitRunnerMemorySelection?.(env, memoryRecord);
+			} catch (error) {
+				console.warn(
+					`[Blueprint] runner-memory selection attribution failed exec=${env.executionId}: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 		}
 		const home = memoryMount ? process.env.HOME?.trim() : undefined;
 		const legacyProjectMemoryDir =

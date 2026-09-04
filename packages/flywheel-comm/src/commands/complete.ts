@@ -24,7 +24,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { normalizeOptionalBearer } from "flywheel-config";
+import {
+	formatRunnerMemoryCloseoutLine,
+	normalizeOptionalBearer,
+	type RunnerMemoryCloseoutReceipt,
+	sanitizeOneLine,
+} from "flywheel-config";
 import { CommDB } from "../db.js";
 import {
 	type DesignHtmlEvidence,
@@ -36,6 +41,7 @@ import {
 	resolveFounderReviewVerdictAtCommit,
 } from "../founder-review.js";
 import { createReadonlySqliteFounderReviewStateReader } from "../founder-review-sqlite.js";
+import { collectRunnerMemoryCloseout } from "../runner-memory-closeout.js";
 import { resolveRunnerStateDir } from "../runner-state.js";
 import { truncateCodePoints } from "../text-truncate.js";
 import { resolveStateDbPath } from "./verify-approval.js";
@@ -121,6 +127,8 @@ type Payload = {
 		attempt: number;
 		turnEpoch: number;
 	};
+	/** FLY-2148: non-blocking runner-reported closeout measurement. */
+	runnerMemoryCloseout?: RunnerMemoryCloseoutReceipt;
 };
 
 export interface CompleteOpts {
@@ -374,11 +382,29 @@ export async function complete(opts: CompleteOpts): Promise<void> {
 		}
 	}
 
+	let memoryReceipt: RunnerMemoryCloseoutReceipt | undefined;
+	try {
+		memoryReceipt = collectRunnerMemoryCloseout(process.env, {
+			prefix: "[complete]",
+		});
+		if (memoryReceipt) {
+			console.error(
+				formatRunnerMemoryCloseoutLine("[complete]", memoryReceipt),
+			);
+		}
+	} catch (error) {
+		console.error(
+			`[complete] runner-memory closeout skipped: ${sanitizeOneLine(error instanceof Error ? error.message : String(error), 200)}`,
+		);
+		memoryReceipt = undefined;
+	}
+
 	const payload: Payload = {
 		decision: { route: opts.route },
 		evidence,
 		sessionRole,
 		exitReason,
+		...(memoryReceipt ? { runnerMemoryCloseout: memoryReceipt } : {}),
 	};
 	if (summary) payload.summary = summary;
 	if (issueIdentifier) payload.issueIdentifier = issueIdentifier;

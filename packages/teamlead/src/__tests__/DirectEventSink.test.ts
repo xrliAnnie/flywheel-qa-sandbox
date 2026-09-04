@@ -86,6 +86,61 @@ describe("DirectEventSink — FLY-1609 D-arm attribution", () => {
 	});
 });
 
+describe("DirectEventSink — FLY-2148 runner-memory attribution", () => {
+	it("persists one bounded selection and clears stale role evidence on off replay", async () => {
+		const store = await StateStore.create(":memory:");
+		try {
+			const sink = new DirectEventSink(store, makeConfig(), testProjects);
+			const env = makeEnvelope();
+			await sink.emitStarted(env);
+			const spawn = {
+				lines: 3,
+				linesExact: true,
+				bytes: 113,
+				sha16: "0123456789abcdef",
+				topicFiles: 0,
+			};
+			await sink.emitRunnerMemorySelection(env, {
+				arm: "role",
+				dir: "/tmp/flywheel/qa",
+				spawn,
+			});
+			expect(store.getSession("exec-1")).toMatchObject({
+				runner_memory_arm: "role",
+				runner_memory_dir: "/tmp/flywheel/qa",
+			});
+			expect(
+				JSON.parse(store.getSession("exec-1")!.runner_memory_spawn!),
+			).toEqual(spawn);
+
+			await sink.emitRunnerMemorySelection(env, { arm: "off" });
+			expect(store.getSession("exec-1")).toMatchObject({
+				runner_memory_arm: "off",
+				runner_memory_dir: undefined,
+				runner_memory_spawn: undefined,
+			});
+		} finally {
+			store.close();
+		}
+	});
+
+	it("drops pre-start attribution visibly without throwing", async () => {
+		const store = await StateStore.create(":memory:");
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const sink = new DirectEventSink(store, makeConfig(), testProjects);
+			await expect(
+				sink.emitRunnerMemorySelection(makeEnvelope(), { arm: "role" }),
+			).resolves.toBeUndefined();
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("runner-memory selection dropped exec=exec-1"),
+			);
+		} finally {
+			store.close();
+		}
+	});
+});
+
 describe("DirectEventSink — FLY-1709 archived-thread reactivation", () => {
 	let store: StateStore;
 	const creator = {

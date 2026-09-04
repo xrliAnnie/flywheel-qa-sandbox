@@ -7,6 +7,11 @@
 			"!**/.cursor",
 			"!engineering/doc/**",
 			"!engineering/doc/FLY-1278-review-gate-convergence/fixtures/fly-1251-rounds-6-9.json",
+			"!packages/claude-runner/test/fixtures/fly2148-adapter-off.json",
+			"!packages/claude-runner/test/fixtures/fly2148-adapter-shared.json",
+			"!packages/claude-runner/test/fixtures/fly2148-adapter-unsupported.json",
+			"!packages/flywheel-comm/src/__tests__/fixtures/fly2148-complete-payload-no-memory.json",
+			"!packages/flywheel-comm/src/commands/__tests__/fixtures/fly2148-decision-body-no-memory.json",
 			"!product/doc/**/evidence/**"
 		]
 	},

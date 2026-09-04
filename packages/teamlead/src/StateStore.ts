@@ -1139,6 +1139,16 @@ export interface SessionUpsert {
 	merge_block_head?: string;
 	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
 	merge_block_at?: string;
+	/** FLY-2148: runner-memory experiment arm and bounded evidence. */
+	runner_memory_arm?: "off" | "role" | "shared";
+	runner_memory_dir?: string;
+	runner_memory_spawn?: string;
+	runner_memory_closeout?:
+		| "written"
+		| "unchanged"
+		| "over_budget"
+		| "unmeasurable";
+	runner_memory_receipt?: string;
 }
 
 export interface Session {
@@ -1227,6 +1237,16 @@ export interface Session {
 	merge_block_head?: string;
 	/** FLY-869 B-3: ISO timestamp the merge_block marker was written. */
 	merge_block_at?: string;
+	/** FLY-2148: runner-memory experiment arm and bounded evidence. */
+	runner_memory_arm?: "off" | "role" | "shared";
+	runner_memory_dir?: string;
+	runner_memory_spawn?: string;
+	runner_memory_closeout?:
+		| "written"
+		| "unchanged"
+		| "over_budget"
+		| "unmeasurable";
+	runner_memory_receipt?: string;
 	/** FLY-245 D-a: monotonic revision incremented on every status transition.
 	 * The runner-lifecycle founder credential snapshots this; a stale confirmation
 	 * is rejected once it changes (plan §5.1). Defaults 0. */
@@ -3757,6 +3777,22 @@ export class StateStore {
 			"worktree_binding_locked_at",
 			"repo_baseline_set_json",
 			"repo_baseline_set_digest",
+		]) {
+			try {
+				this.db.run(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
+			} catch {
+				/* exists */
+			}
+		}
+
+		// FLY-2148: nullable attribution + closeout columns. Keeping the state in
+		// its own TEXT column makes over-budget sessions directly queryable.
+		for (const col of [
+			"runner_memory_arm",
+			"runner_memory_dir",
+			"runner_memory_spawn",
+			"runner_memory_closeout",
+			"runner_memory_receipt",
 		]) {
 			try {
 				this.db.run(`ALTER TABLE sessions ADD COLUMN ${col} TEXT`);
@@ -7629,8 +7665,9 @@ export class StateStore {
 				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, skill_framework_mode, skill_framework_mode_via, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
-				doc_tier, issue_url, chat_thread_role, workflow_node_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				doc_tier, issue_url, chat_thread_role, workflow_node_id,
+				runner_memory_arm, runner_memory_dir, runner_memory_spawn, runner_memory_closeout, runner_memory_receipt
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				issue_id = COALESCE(excluded.issue_id, issue_id),
 				project_name = COALESCE(excluded.project_name, project_name),
@@ -7676,7 +7713,12 @@ export class StateStore {
 					workflow_node_id = CASE
 						WHEN workflow_node_id IS NULL THEN excluded.workflow_node_id
 						ELSE workflow_node_id
-					END
+					END,
+				runner_memory_arm = COALESCE(excluded.runner_memory_arm, runner_memory_arm),
+				runner_memory_dir = COALESCE(excluded.runner_memory_dir, runner_memory_dir),
+				runner_memory_spawn = COALESCE(excluded.runner_memory_spawn, runner_memory_spawn),
+				runner_memory_closeout = COALESCE(excluded.runner_memory_closeout, runner_memory_closeout),
+				runner_memory_receipt = COALESCE(excluded.runner_memory_receipt, runner_memory_receipt)
 			`,
 				[
 					session.execution_id,
@@ -7726,6 +7768,11 @@ export class StateStore {
 					// fixed at dispatch). `?? "main"` keeps the NOT NULL column satisfied.
 					session.chat_thread_role ?? "main",
 					session.workflow_node_id ?? null,
+					session.runner_memory_arm ?? null,
+					session.runner_memory_dir ?? null,
+					session.runner_memory_spawn ?? null,
+					session.runner_memory_closeout ?? null,
+					session.runner_memory_receipt ?? null,
 				],
 			);
 			// FLY-1372 (Codex design R4-1): the two NOT NULL DEFAULT 0 behavior
@@ -8699,8 +8746,9 @@ export class StateStore {
 				session_params, heartbeat_at, adapter_type, runner_model, dispatch_model, design_backend, ponytail_condition, skill_framework_mode, skill_framework_mode_via, run_attempt,
 				retry_predecessor, retry_successor, issue_labels,
 				pr_number, session_stage, stage_updated_at, session_role,
-				doc_tier, issue_url, chat_thread_role, workflow_node_id
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				doc_tier, issue_url, chat_thread_role, workflow_node_id,
+				runner_memory_arm, runner_memory_dir, runner_memory_spawn, runner_memory_closeout, runner_memory_receipt
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(execution_id) DO UPDATE SET
 				status = excluded.status,
 				issue_id = COALESCE(excluded.issue_id, issue_id),
@@ -8746,7 +8794,12 @@ export class StateStore {
 					workflow_node_id = CASE
 						WHEN workflow_node_id IS NULL THEN excluded.workflow_node_id
 						ELSE workflow_node_id
-					END
+					END,
+				runner_memory_arm = COALESCE(excluded.runner_memory_arm, runner_memory_arm),
+				runner_memory_dir = COALESCE(excluded.runner_memory_dir, runner_memory_dir),
+				runner_memory_spawn = COALESCE(excluded.runner_memory_spawn, runner_memory_spawn),
+				runner_memory_closeout = COALESCE(excluded.runner_memory_closeout, runner_memory_closeout),
+				runner_memory_receipt = COALESCE(excluded.runner_memory_receipt, runner_memory_receipt)
 			`,
 				[
 					executionId,
@@ -8795,6 +8848,11 @@ export class StateStore {
 					// the ON CONFLICT update (see the sibling upsert above).
 					fields.chat_thread_role ?? "main",
 					fields.workflow_node_id ?? null,
+					fields.runner_memory_arm ?? null,
+					fields.runner_memory_dir ?? null,
+					fields.runner_memory_spawn ?? null,
+					fields.runner_memory_closeout ?? null,
+					fields.runner_memory_receipt ?? null,
 				],
 			);
 			this.applyTerminalTimestamp(executionId, preStatus, status);
@@ -8920,6 +8978,11 @@ export class StateStore {
 			merge_block_reason: "merge_block_reason",
 			merge_block_head: "merge_block_head",
 			merge_block_at: "merge_block_at",
+			runner_memory_arm: "runner_memory_arm",
+			runner_memory_dir: "runner_memory_dir",
+			runner_memory_spawn: "runner_memory_spawn",
+			runner_memory_closeout: "runner_memory_closeout",
+			runner_memory_receipt: "runner_memory_receipt",
 		};
 
 		for (const [col, key] of Object.entries(fieldMap)) {
@@ -8937,6 +9000,26 @@ export class StateStore {
 			values,
 		);
 		this.save();
+	}
+
+	/** FLY-2148: atomically replace all spawn-attribution fields, including NULL clears. */
+	patchRunnerMemorySelection(
+		executionId: string,
+		selection: {
+			arm: "off" | "role" | "shared";
+			dir: string | null;
+			spawn: string | null;
+		},
+	): boolean {
+		this.db.run(
+			`UPDATE sessions
+			 SET runner_memory_arm = ?, runner_memory_dir = ?, runner_memory_spawn = ?
+			 WHERE execution_id = ?`,
+			[selection.arm, selection.dir, selection.spawn, executionId],
+		);
+		const changed = this.db.getRowsModified() > 0;
+		if (changed) this.save();
+		return changed;
 	}
 
 	/**
@@ -14764,6 +14847,23 @@ export class StateStore {
 			merge_block_reason: (row.merge_block_reason as string) ?? undefined,
 			merge_block_head: (row.merge_block_head as string) ?? undefined,
 			merge_block_at: (row.merge_block_at as string) ?? undefined,
+			runner_memory_arm:
+				row.runner_memory_arm === "off" ||
+				row.runner_memory_arm === "role" ||
+				row.runner_memory_arm === "shared"
+					? row.runner_memory_arm
+					: undefined,
+			runner_memory_dir: (row.runner_memory_dir as string) ?? undefined,
+			runner_memory_spawn: (row.runner_memory_spawn as string) ?? undefined,
+			runner_memory_closeout:
+				row.runner_memory_closeout === "written" ||
+				row.runner_memory_closeout === "unchanged" ||
+				row.runner_memory_closeout === "over_budget" ||
+				row.runner_memory_closeout === "unmeasurable"
+					? row.runner_memory_closeout
+					: undefined,
+			runner_memory_receipt:
+				(row.runner_memory_receipt as string) ?? undefined,
 			// FLY-245 D-a: monotonic lifecycle revision (defaults 0).
 			lifecycle_revision:
 				typeof row.lifecycle_revision === "number" ? row.lifecycle_revision : 0,

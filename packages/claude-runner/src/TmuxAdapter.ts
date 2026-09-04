@@ -733,6 +733,12 @@ export class TmuxAdapter implements IAdapter {
 		}
 		if (ctx.runnerMemory?.status === "mounted") {
 			appendPaneEnv("FLYWHEEL_RUNNER_MEMORY_DIR", ctx.runnerMemory.dir);
+			if (ctx.runnerMemory.snapshot) {
+				appendPaneEnv(
+					"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
+					JSON.stringify(ctx.runnerMemory.snapshot),
+				);
+			}
 		}
 		// FLY-1726: tmux inherits its server-global environment unless each key is
 		// explicitly replaced. A Runner owns a Lead lane (FLYWHEEL_LEAD_ID) but is

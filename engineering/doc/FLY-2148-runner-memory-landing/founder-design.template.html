@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FLY-2148 · runner 记忆落地:写入时机 · 收口回执 · 分流归因 — 设计</title>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:#f5f5f7; color:#1d1d1f; font-family:-apple-system,system-ui,"PingFang SC","Hiragino Sans GB",sans-serif; line-height:1.7; }
+  .wrap { max-width:960px; margin:0 auto; padding:24px 16px 80px; }
+  h1 { font-size:26px; margin:8px 0 4px; color:#1a365d; }
+  .meta { color:#86868b; font-size:13px; margin-bottom:20px; }
+  .meta code { font-family:'SF Mono',Menlo,monospace; font-size:12px; }
+  .card { background:#fff; border-radius:12px; box-shadow:0 1px 3px rgba(0,0,0,0.06); padding:20px 22px; margin:18px 0; border-left:4px solid #007aff; }
+  .card.green { border-left-color:#34c759; }
+  .card.red { border-left-color:#ff3b30; }
+  .card.amber { border-left-color:#ff9500; }
+  .card.purple { border-left-color:#af52de; }
+  .card.gray { border-left-color:#86868b; }
+  .card h2 { font-size:19px; margin:0 0 10px; color:#1a365d; }
+  .card h3 { font-size:15px; margin:16px 0 6px; color:#1a365d; }
+  .summary-line { font-size:17px; font-weight:600; line-height:1.6; }
+  .note { color:#515154; font-size:14px; }
+  .term { border-bottom:1px dotted #86868b; }
+  .diagram { overflow-x:auto; padding:10px 0; text-align:center; }
+  .diagram svg { max-width:100%; height:auto; }
+  .diagram.tall svg { max-width:600px; }
+  .cap { color:#86868b; font-size:12px; text-align:center; margin-top:4px; }
+  .scroll { overflow-x:auto; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin:10px 0; }
+  th,td { border:1px solid #e5e5ea; padding:8px 10px; text-align:left; vertical-align:top; }
+  th { background:#fafafa; color:#1a365d; }
+  code { font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; padding:1px 5px; border-radius:4px; }
+  pre { background:#f2f2f5; border-radius:8px; padding:10px 12px; overflow-x:auto; font-size:12.5px; line-height:1.5; }
+  .badge { display:inline-block; padding:1px 8px; border-radius:8px; font-size:12px; font-weight:600; margin-right:6px; }
+  .badge.do { background:#e6f9ed; color:#1d7a3d; }
+  .badge.no { background:#ffe5e5; color:#c0392b; }
+  .badge.maybe { background:#fff2dd; color:#8a5200; }
+  ul, ol { margin:8px 0; padding-left:22px; }
+  li { margin:5px 0; }
+  .callout { padding:10px 14px; margin:12px 0; border-radius:8px; font-size:14px; }
+  .callout.red { background:#fff5f5; border-left:3px solid #ff3b30; color:#c0392b; }
+  .callout.amber { background:#fff8ec; border-left:3px solid #ff9500; color:#8a5200; }
+  .callout.green { background:#f0fbf3; border-left:3px solid #34c759; color:#1d7a3d; }
+  .cbox { margin-top:16px; padding-top:12px; border-top:1px dashed #e5e5ea; }
+  .cbox label { display:block; font-size:12px; color:#86868b; margin-bottom:4px; }
+  .cbox textarea { width:100%; min-height:64px; border:1px solid #d2d2d7; border-radius:8px; padding:8px 10px; font:inherit; font-size:14px; resize:vertical; background:#fbfbfd; }
+  .cbox textarea:focus { outline:none; border-color:#007aff; background:#fff; }
+  .summary-box { white-space:pre-wrap; font-family:'SF Mono',Menlo,monospace; font-size:12.5px; background:#f2f2f5; border-radius:8px; padding:12px; min-height:60px; max-height:360px; overflow:auto; }
+  .btn { display:inline-block; background:#007aff; color:#fff; border:none; border-radius:8px; padding:8px 14px; font:inherit; font-size:14px; cursor:pointer; margin:6px 8px 6px 0; }
+  .btn.sec { background:#e5e5ea; color:#1d1d1f; }
+  .btn:active { opacity:.8; }
+  .status { font-size:13px; color:#1d7a3d; min-height:20px; }
+  .chunks { margin-top:8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FLY-2148 · runner 记忆落地:写入时机 · 收口回执 · 分流归因</h1>
+<div class="meta">设计稿 · 2026-09-04 · 上游:FLY-1984 Epic PRD §B「runner 也要有记忆」(B1 + B2)· 前置:FLY-2147(B0,PR #1056 已于 2026-09-04 合入)· 文档:<code>engineering/doc/FLY-2148-runner-memory-landing/</code>(exploration / research / plan)· Codex 设计评审 6 轮后 APPROVED(R1 6 条 / R2 5 条 / R3 2 条 / R4 1 条 / R5 1 条,全部接受:单次读度量原语、回执逐字段校验与双向不变量、/decision 两个接受点、sessions 行映射与 NULL 清空、实现前金样本基线、收口函数全函数化)· Tadashi 裁定 4 条 + 硬要求 2 条已写进 plan</div>
+
+<section class="card green" data-title="一句话">
+  <h2>一句话</h2>
+  <p class="summary-line">上一单(B0)已经把「每个 runner 按『项目 + 角色』挂一个记忆文件夹、启动时自动读短索引」做进了引擎;这一单把它<b>落地</b>:定下「什么时候写」的规矩(每个节点收工前写一次,不强迫),让「写没写、写了多少、索引超没超」在收工那一刻变成一行看得见的回执并存进数据库(能直接查),再把「这次跑在实验的哪一臂」也一并记下来——这样你以后要拍板「role 还是 shared」时,手里有数,而不是靠感觉。</p>
+  <p class="note">术语:<span class="term">runner</span> = 干活的 AI 执行体(一个 Claude Code 或 Codex 命令行会话);<span class="term">Bridge</span> = 调度进程,负责派工、起 runner、收结果;<span class="term">DAG 节点</span> = 一张 issue 被拆成的「设计 → 实现 → QA」三个阶段,每个阶段一个 runner、一个角色。</p>
+  <div class="cbox"><label for="c-summary">对「一句话」的意见</label><textarea id="c-summary" data-key="summary" data-title="一句话" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="B0 之后到底还缺什么">
+  <h2>B0 之后到底还缺什么(2026-09-04 读代码 + 本机实测)</h2>
+  <div class="scroll"><table>
+    <tr><th>issue 要的</th><th>B0 已经做了</th><th>还缺(本单要补)</th></tr>
+    <tr><td>① 记忆目录读写机制:短索引自动送到眼前,正文按需翻,照 Lead 侧形状</td><td><span class="badge do">已做</span> 起 runner 时算出 <code>~/.flywheel/runner-memory/&lt;项目&gt;/&lt;角色&gt;/</code>,交给 Claude Code 原生装载;Codex runner 拿到目录路径与说明</td><td><b>默认没开。</b>B0 收尾时按你的「split run」原话改成了一个四态实验开关 <span class="term">runner_memory_mode</span>(off / split / role / shared),默认 <code>off</code>——我这个 runner 自己的环境里就没有那个目录变量。本单<b>不动这个默认值</b>(何时翻、翻成什么由 Tadashi 操作),只保证「翻开之后落得下、看得见、能归因」</td></tr>
+    <tr><td>② 什么时候写(你倾向「一个 issue 写一次」,留给 Tadashi 判断)</td><td><span class="badge maybe">只有一句建议</span> 提示词里写着「最好在收工时写」;plan 明说「引擎不做写入回执」</td><td>没有时机合同、没有任何地方知道「这次到底写没写」。Claude Code 官方对它自己的记忆功能的描述是「不是每次会话都会存」——靠它自觉,满足不了「第二次跑读得到第一次写的」</td></tr>
+    <tr><td>③ 截断防护:索引注入有界、超界可见</td><td><span class="badge do">读侧已做</span> 起 runner 前最多读 64KB,超预算时日志和提示词两面说「约从第几行起没进来」</td><td><b>写侧只有 Claude 有。</b>Claude Code 自己写完索引会量一次、超了立刻报错要求重写;<b>Codex runner 是手写的,没有任何写侧守卫</b>,写超了要等下一个 runner 起来才发现</td></tr>
+    <tr><td>(B0 留下、本单必须补)实验分流归因</td><td>每次起 runner 打一行日志「这次在哪一臂」</td><td><b>只在日志里,不在任何表里。</b>这个开关的退役条件写的是「founder 根据 split 对比选定 role 或 shared」——可今天没有一张表能回答「这个会话跑在哪一臂、写没写记忆」,你拿不到对比数据,它就永远退不了役</td></tr>
+  </table></div>
+  <div class="callout amber">所以本单的真实范围 = 写入时机合同 + 收口回执 + 分流归因入库 + Codex 写侧截断守卫 + 在 role 臂下把 PRD 那四条验收真机跑通。①的机制本身不重做。</div>
+  <div class="cbox"><label for="c-gap">对「B0 之后到底还缺什么」的意见</label><textarea id="c-gap" data-key="gap" data-title="B0 之后到底还缺什么" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="核心流程">
+  <h2>核心流程:从派工到第二次读到记忆</h2>
+  <div class="diagram tall">__SVG_D1__</div>
+  <p class="cap">图 1 · 一次 DAG 节点执行的完整链路;蓝色是 B0 已有的,本单加的是「拍快照 → 收口合同 → 收口回执 → 落库」这一串(Mermaid 本地渲染)</p>
+  <p class="note">术语:<span class="term">快照</span> = 起 runner 那一刻给索引拍的一张「体检单」(行数、字节数、内容指纹、正文文件数),收工时再拍一张,两张一比就知道写没写;<span class="term">收口</span> = runner 跑「我做完了」那条命令(<code>complete</code> 或 QA 的 <code>qa-result</code>)的那一刻。</p>
+  <div class="cbox"><label for="c-flow">对「核心流程」的意见</label><textarea id="c-flow" data-key="flow" data-title="核心流程" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="写入时机怎么定">
+  <h2>写入时机怎么定:「一个 issue 写一次」落到角色粒度</h2>
+  <p>你的原话是「一个 issue 写一次会比较好,但不要写死,让 Tadashi 判断」。先把「一个 issue」落到正确的粒度:一张 issue 在 DAG 里是<b>设计 → 实现 → QA 三个不同角色的 runner</b>,而记忆按角色分文件夹。所以「一个 issue 写一次」在角色文件夹上的自然形状就是:<b>每个节点的 runner 在收工前写一次</b>——每个角色的文件夹里,这张 issue 恰好留一次痕。</p>
+  <div class="scroll"><table>
+    <tr><th>方案</th><th>处理</th><th>理由</th></tr>
+    <tr><td><b>A · runner 自己写 + 收工时出回执,不强迫</b></td><td><span class="badge do">采用</span>(Tadashi 裁定:「非阻塞是对的,没学到东西硬写 = 制造噪音记忆」)</td><td>写的内容只有 runner 自己知道,只能它写。提示词把「最好收工时写」改成明确合同:「跑完成命令<b>之前</b>,写下这次学到的 ≤5 条可复用判断;没学到就不写,并在最后报告里说一句」。回执让「没写」从「不知道」变成「看得见」</td></tr>
+    <tr><td>B · 阻塞式:没写就不许收工</td><td><span class="badge no">先不做</span></td><td>会逼 runner 写废话;重启续跑的 runner 会被误判;失败退出(blocked)这条路绝不能拦;而且要加一个「我真的没学到」的例外口子——和这个 Epic 两次「不加旋钮」的直令气质相反。回执数据攒一阵子,若「没写」占比高,再由 Tadashi 决定升级——那时只改一处</td></tr>
+    <tr><td>C · 收口时另起一个 AI 步骤读对话记录替 runner 写</td><td><span class="badge no">否决</span></td><td>多一次模型调用、多一套「记忆生成器」,写进去的是二手转述;违背「一个真相源」</td></tr>
+    <tr><td>D · 用 Claude Code 的会话结束钩子写</td><td><span class="badge no">否决</span></td><td>钩子触发时模型已经走了,没有内容可写;量索引的最好时点是 runner 还活着的收口命令里——它看得见提示、还能补写</td></tr>
+  </table></div>
+  <div class="callout green">对 Lead 那边的对齐:Lead 的记忆也是「模型自觉写」,从来没有时机合同。本单是第一个给「什么时候写」立规矩的,形状(一事一文件 + 短索引一行指针)与 Lead 完全同形。</div>
+  <div class="cbox"><label for="c-timing">对「写入时机怎么定」的意见</label><textarea id="c-timing" data-key="timing" data-title="写入时机怎么定" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="收口回执时序">
+  <h2>收口回执:runner 说「我做完了」那一刻发生什么</h2>
+  <div class="diagram">__SVG_D3__</div>
+  <p class="cap">图 2 · 收口时序:量一次、比一次、终端一行、随既有完成事件送到 Bridge、落成可查的列(Mermaid 本地渲染)</p>
+  <div class="scroll"><table>
+    <tr><th>三态(外加一个兜底)</th><th>什么意思</th><th>runner 终端上看到的那一行</th></tr>
+    <tr><td><code>written</code></td><td>索引指纹变了,或正文文件数变了</td><td><code>runner-memory closeout state=written … delta=+2L/+1files</code></td></tr>
+    <tr><td><code>unchanged</code></td><td>和起跑时一模一样</td><td>同上 + 一句提示「这次什么都没写;如果学到了可复用的判断,现在写,再退出」——这一句是给「收工后、退出前」那个窗口的</td></tr>
+    <tr><td><code>over_budget</code></td><td>索引超过预算(160 行 / 20,000 字节)——<b>优先级高于 written</b>,哪怕这次也写了</td><td>同上 + 「先整理再收工;超硬上限时:下一个 runner 从约第 K 行起读不到」</td></tr>
+    <tr><td><code>unmeasurable</code></td><td>量不到(目录没了 / 索引不是常规文件 / 起跑快照丢了)</td><td><code>state=unmeasurable error=…</code>——「挂载了但量不到」必须可见,不能悄悄退化成「没有回执」</td></tr>
+  </table></div>
+  <p class="note">这条回执<b>不阻塞</b>完成:四种状态都不改变完成命令的退出码和路由。它是 runner 自报的证据,Bridge 只校验形状(版本、枚举、路径、大小 ≤4KB),不复量——和今天的「改了几行 / 提交了几次」同一级别。</p>
+  <div class="cbox"><label for="c-receipt">对「收口回执时序」的意见</label><textarea id="c-receipt" data-key="receipt" data-title="收口回执时序" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card purple" data-title="数据与结构模型">
+  <h2>数据与结构模型:盘上一份、环境变量两个、数据库五列</h2>
+  <div class="diagram">__SVG_D2__</div>
+  <p class="cap">图 3 · 三处数据怎么对上:盘上的角色目录(B0)、随 runner 下发的两个环境变量、Bridge 数据库 sessions 表新增的五列(Mermaid 本地渲染)</p>
+  <div class="scroll"><table>
+    <tr><th>项</th><th>定案</th><th>为什么</th></tr>
+    <tr><td>臂怎么记</td><td><code>sessions.runner_memory_arm</code> ∈ off / role / shared;本单没碰的 runner 类型(antigravity / kimi)留空</td><td>照已有的 <code>skill_framework_mode</code> 先例(上一次 A/B 实验就是这么归因的);「空」和「off」严格区分</td></tr>
+    <tr><td>臂 / 目录 / 快照怎么进库</td><td>只走 Bridge 进程内的通道(<span class="term">DirectEventSink</span>,Bridge 自己给自己记账的那条线);HTTP 那条线是空操作,HTTP 入口也不接受同名字段</td><td>runner 拿得到 HTTP 的 token,谁都能往里塞;Bridge 权威的字段不能走 runner 可见的通道——这是 FLY-1185 / FLY-1372 已经立过的红线,本单照抄</td></tr>
+    <tr><td>快照怎么从起跑传到收口</td><td>一个环境变量 <code>FLYWHEEL_RUNNER_MEMORY_SNAPSHOT</code>(≈90 字节的 JSON);与入库的是<b>同一份对象</b>,不量两次</td><td>B0 已经立了「目录路径走环境变量」的边界,顺着走;不往记忆目录里塞我们的运行时文件(那是它们的地盘);两次度量之间文件可能变,回执会算错</td></tr>
+    <tr><td>三态怎么存</td><td><b>独立一列</b> <code>runner_memory_closeout</code>,值只有四个词;细节另存一列 JSON</td><td>Tadashi 硬要求 ①:三态必须能<b>单独查询</b>,不能只在日志里。<code>WHERE runner_memory_closeout = 'over_budget'</code> 一条 SQL 就是截断风险清单</td></tr>
+    <tr><td>度量函数放哪</td><td>从引擎包搬到 <code>flywheel-config</code> 这个最底层的包,引擎包只转发</td><td>收口命令所在的包只依赖这个底层包;不搬就得复制一份「第 K 行怎么算」,迟早分叉。B0 的测试一个字不改</td></tr>
+    <tr><td>回滚</td><td>代码回滚;五列留着(全部可空)</td><td>与上一次实验列同策略;Bridge 与 runner 命令行任一方是旧版,结果只是回执缺席,不报错——<b>不需要同时部署</b></td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-model">对「数据与结构模型」的意见</label><textarea id="c-model" data-key="model" data-title="数据与结构模型" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card red" data-title="截断防护两面夹">
+  <h2>截断防护:起跑面(B0)+ 收口面(B1),两面夹住,不静默</h2>
+  <div class="diagram">__SVG_D4__</div>
+  <p class="cap">图 4 · 读侧守卫在起 runner 时,写侧守卫在收口时;任一面漏了另一面兜(Mermaid 本地渲染)</p>
+  <ul>
+    <li><b>Claude runner</b>:Claude Code 自己有写侧守卫(写完索引立刻量,超了报错要求重写);本单的收口回执是第二道。</li>
+    <li><b>Codex runner</b>:没有原生守卫,<b>收口回执是唯一一道</b>。「实现」节点默认走 Codex,所以这一道主要是给它的。</li>
+    <li>超软预算(160 行 / 20KB):回执说「先整理再收工」;超硬上限(200 行 / 25KB):再加一句「下一个 runner 从约第 K 行起读不到」。K 的算法沿用 B0,不另造。</li>
+    <li>Tadashi 硬要求 ②「截断要有可见标记,⛔ 不许静默」:起跑面(日志 + 提示词)与收口面(终端 + 日志 + 数据库列)共五处,任何一处单独看都能看出来。</li>
+  </ul>
+  <div class="cbox"><label for="c-guard">对「截断防护两面夹」的意见</label><textarea id="c-guard" data-key="guard" data-title="截断防护两面夹" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card amber" data-title="Tadashi 的四条裁定与两条硬要求">
+  <h2>Tadashi 的四条裁定与两条硬要求(2026-09-04)</h2>
+  <div class="scroll"><table>
+    <tr><th>#</th><th>问题</th><th>裁定</th></tr>
+    <tr><td>Q1</td><td>要不要改实验开关的默认值</td><td>不改(仍 off);验收在 role / split 下跑;生产什么时候翻由他操作</td></tr>
+    <tr><td>Q2</td><td>写入时机</td><td>每节点收口前 runner 自写一次,<b>非阻塞</b>,但回执必须可见</td></tr>
+    <tr><td>Q3</td><td>分流臂 + 回执要不要入库</td><td>算本单范围——它是开关退役条件的数据来源,不落库永远退不了役</td></tr>
+    <tr><td>Q4</td><td>一个角色写的,别的角色该不该读</td><td>不做,只记进设计,留你拍</td></tr>
+    <tr><td>硬 ①</td><td>回执三态</td><td>必须能单独查询(独立列),不能只在日志里</td></tr>
+    <tr><td>硬 ②</td><td>短索引截断</td><td>必须有可见标记,不许静默</td></tr>
+  </table></div>
+  <div class="cbox"><label for="c-rulings">对「Tadashi 的四条裁定与两条硬要求」的意见</label><textarea id="c-rulings" data-key="rulings" data-title="Tadashi 的四条裁定与两条硬要求" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" data-title="怎么验收">
+  <h2>怎么验收(PRD §B 四条 + 两条硬要求,全在隔离测试位里跑,生产零触碰)</h2>
+  <div class="scroll"><table>
+    <tr><th>要求</th><th>怎么验</th></tr>
+    <tr><td>runner 起来能读到它这个角色 + 这个项目的记忆,不是空的</td><td>在隔离测试位把开关设成 role;注入 issue A,让 QA runner 按合同写一条带一次性随机码的记忆并收工 ⇒ 终端出现 <code>state=written</code>,数据库里那一行 = <code>role | written</code>。再注入 issue B(同项目、同样经过 QA 角色)⇒ 第二个 QA runner 的提示词报「索引 4 行」,并且不看任何提示就能复述出那个随机码</td></tr>
+    <tr><td>第二次跑读得到第一次写的</td><td>同上(随机码逐字匹配才算)</td></tr>
+    <tr><td>换 issue、换工作目录,读到的还是同一份</td><td>issue A 与 issue B 两行的 <code>runner_memory_dir</code> 相等</td></tr>
+    <tr><td>工作目录清掉之后写下的东西还在</td><td>删掉 issue A 的工作目录 ⇒ 记忆目录里文件仍在,索引指纹与 issue A 回执里记的一致</td></tr>
+    <tr><td>硬 ① 三态可单独查询</td><td><code>SELECT runner_memory_arm, runner_memory_closeout, COUNT(*) … GROUP BY 1,2</code> 直接出表</td></tr>
+    <tr><td>硬 ② 截断可见</td><td>往索引灌 218 行短指针再注入 issue C ⇒ 起跑面:提示词「约从第 201 行起没被加载」+ 日志 OVER BUDGET;让 runner 不整理直接收工 ⇒ 收口面:<code>state=over_budget first_dropped_line=201</code> + 「下一个 runner 从约第 201 行起读不到」,列 = over_budget</td></tr>
+    <tr><td>阴性对照:开关 off 时逐字节不变</td><td>设回 off 注入 issue D ⇒ runner 环境里没有那两个变量、提示词没有记忆段、完成事件没有回执;但那一行仍记着 <code>arm = off</code>(归因照落)</td></tr>
+  </table></div>
+  <p class="note">每条判据先证明会红(灌 218 行之前先拍一张预算内的),再看它绿。</p>
+  <div class="cbox"><label for="c-accept">对「怎么验收」的意见</label><textarea id="c-accept" data-key="accept" data-title="怎么验收" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card gray" data-title="诚实边界">
+  <h2>诚实边界:这个设计做什么、不做什么</h2>
+  <h3>做</h3>
+  <ul>
+    <li>写入时机合同(每节点收工前 runner 自写一次;提示词逐字合同,Claude / Codex 各一版)。</li>
+    <li>收口回执:三态 + 变化量 + 超预算指令,终端、日志、数据库列三面可见;不阻塞完成。</li>
+    <li>分流臂 + 目录 + 起跑快照入库;Codex 收口面的写侧截断守卫。</li>
+    <li>off / shared / 本单没碰的 runner 类型:提示词、启动参数、完成事件逐字节不变;五列幂等迁移;真机验收覆盖 PRD 四条与两条硬要求。</li>
+  </ul>
+  <h3>不做 / 不能保证</h3>
+  <ul>
+    <li><b>写不写仍由 runner 遵守提示词决定</b>——非阻塞是 Tadashi 的裁定。回执让「没写」可见、可统计;要升级成阻塞只改一处,但那是他看过数据后的另一次裁定。</li>
+    <li><b>回执是 runner 自报</b>:Bridge 校验形状、不复量;一个 runner 可以谎报。这与今天的「改了几行」同级,本单不给它加权威。</li>
+    <li><b>回执记的是收工那一刻</b>:收工后、退出前再写的不进回执(那句「现在写」的提示就是给这个窗口的);重启续跑各算各的;同角色两个 runner 同时在跑时,「写了」可能是对方写的(B0 不加锁,本单不变)。</li>
+    <li><b>shared 臂没有目录、没有回执</b>,只记臂;你对比的是「role 臂的写入率与内容」对「shared 臂什么都不留」,不是两个对称指标。</li>
+    <li><b>第一次起某个「项目 + 角色」读到的仍是 3 行空索引头</b>,从第二次起非空;不从存量 573 条项目记忆里抽种子(混味、质量未审、B0 已给只读指针)。</li>
+    <li><b>不改开关默认值</b>:合入后生产仍是 off;要让记忆真的开始攒,Tadashi 得设 role 或 split。</li>
+    <li><b>不做 founder 对比页</b>:数据已在五列里,页面是后续单。<b>不做</b>跨角色互读策略(留你拍)、Codex 原生挂载(C1)、记忆迁移、远端备份(A 线)、记忆质量审计。</li>
+  </ul>
+  <div class="cbox"><label for="c-boundary">对「诚实边界」的意见</label><textarea id="c-boundary" data-key="boundary" data-title="诚实边界" placeholder="写在这里,自动保存在你的浏览器里"></textarea></div>
+</section>
+
+<section class="card" id="summary-card" data-title="页面意见汇总">
+  <h2>页面意见汇总</h2>
+  <p class="note">上面每一节的意见框会自动保存在你这台浏览器里;这里实时汇总所有非空意见。点「复制全部意见」把汇总贴回给 Lead 即可。这是修订反馈,不是通过信号。</p>
+  <div id="summary-chunks" class="chunks"></div>
+  <div>
+    <button type="button" class="btn" id="copy-all">复制全部意见</button>
+    <button type="button" class="btn sec" id="clear-all">清空本页所有意见</button>
+    <span class="status" id="copy-status"></span>
+  </div>
+</section>
+
+</div>
+<script nonce="__CSP_NONCE__">
+(function () {
+  var ISSUE = "FLY-2148";
+  var MARKER = "【页面意见汇总】" + ISSUE;
+  var CHUNK_LIMIT = 1800;
+  var prefix = "fly-comments:" + ISSUE + ":" + String(window.location.pathname || "/") + ":";
+
+  function storageGet(key) { try { return window.localStorage.getItem(prefix + key) || ""; } catch (e) { return ""; } }
+  function storageSet(key, value) { try { window.localStorage.setItem(prefix + key, value); } catch (e) {} }
+  function storageDel(key) { try { window.localStorage.removeItem(prefix + key); } catch (e) {} }
+
+  var areas = Array.prototype.slice.call(document.querySelectorAll("textarea[data-key]"));
+  var chunksEl = document.getElementById("summary-chunks");
+  var statusEl = document.getElementById("copy-status");
+
+  function collect() {
+    var lines = [];
+    areas.forEach(function (ta) {
+      var text = (ta.value || "").trim();
+      if (!text) return;
+      lines.push("【" + (ta.getAttribute("data-title") || ta.getAttribute("data-key")) + "】" + text);
+    });
+    return lines;
+  }
+
+  function buildChunks(lines) {
+    var chunks = [];
+    if (lines.length === 0) return [MARKER + "\n(暂无意见)"];
+    var current = MARKER;
+    lines.forEach(function (line) {
+      var candidate = current + "\n" + line;
+      if (candidate.length > CHUNK_LIMIT && current !== MARKER) {
+        chunks.push(current);
+        current = MARKER + "\n" + line;
+      } else {
+        current = candidate;
+      }
+    });
+    chunks.push(current);
+    return chunks;
+  }
+
+  function copyText(text, onDone) {
+    function fallback() {
+      var ok = false;
+      try {
+        var ta = document.createElement("textarea");
+        ta.value = text;
+        ta.setAttribute("readonly", "");
+        ta.style.position = "fixed";
+        ta.style.top = "-1000px";
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch (e) { ok = false; }
+      onDone(ok);
+    }
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+      navigator.clipboard.writeText(text).then(function () { onDone(true); }, function () { fallback(); });
+    } else {
+      fallback();
+    }
+  }
+
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+    window.setTimeout(function () { if (statusEl.textContent === msg) statusEl.textContent = ""; }, 4000);
+  }
+
+  function render() {
+    var chunks = buildChunks(collect());
+    while (chunksEl.firstChild) chunksEl.removeChild(chunksEl.firstChild);
+    chunks.forEach(function (chunk, index) {
+      var box = document.createElement("div");
+      var pre = document.createElement("div");
+      pre.className = "summary-box";
+      pre.textContent = chunk;
+      box.appendChild(pre);
+      if (chunks.length > 1) {
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn sec";
+        btn.textContent = "复制第 " + (index + 1) + " / " + chunks.length + " 段";
+        btn.addEventListener("click", function () {
+          copyText(chunk, function (ok) { setStatus(ok ? "已复制第 " + (index + 1) + " 段" : "复制失败,请手动全选复制"); });
+        });
+        box.appendChild(btn);
+      }
+      chunksEl.appendChild(box);
+    });
+  }
+
+  areas.forEach(function (ta) {
+    var key = ta.getAttribute("data-key");
+    ta.value = storageGet(key);
+    ta.addEventListener("input", function () {
+      storageSet(key, ta.value);
+      render();
+    });
+  });
+
+  document.getElementById("copy-all").addEventListener("click", function () {
+    var text = buildChunks(collect()).join("\n\n");
+    copyText(text, function (ok) { setStatus(ok ? "已复制全部意见" : "复制失败,请手动全选复制"); });
+  });
+
+  document.getElementById("clear-all").addEventListener("click", function () {
+    areas.forEach(function (ta) { ta.value = ""; storageDel(ta.getAttribute("data-key")); });
+    render();
+    setStatus("已清空");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>

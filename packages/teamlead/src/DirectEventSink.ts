@@ -19,6 +19,7 @@ import {
 import type {
 	EventEnvelope,
 	ExecutionEventEmitter,
+	RunnerMemorySelectionRecord,
 } from "flywheel-edge-worker";
 import type { BlueprintResult } from "flywheel-edge-worker/dist/Blueprint.js";
 import type { ChatThreadCreator } from "./bridge/ChatThreadCreator.js";
@@ -409,6 +410,27 @@ export class DirectEventSink implements ExecutionEventEmitter {
 
 		// Notify agent
 		this.pushNotification(env, "session_started");
+	}
+
+	/** FLY-2148: persist Bridge-local arm attribution; never trust the HTTP lane. */
+	async emitRunnerMemorySelection(
+		env: EventEnvelope,
+		selection: RunnerMemorySelectionRecord,
+	): Promise<void> {
+		const persisted = this.store.patchRunnerMemorySelection(env.executionId, {
+			arm: selection.arm,
+			dir: selection.dir ?? null,
+			spawn: selection.spawn ? JSON.stringify(selection.spawn) : null,
+		});
+		if (!persisted) {
+			console.warn(
+				`[DirectEventSink] runner-memory selection dropped exec=${env.executionId} arm=${selection.arm} reason=session_missing`,
+			);
+			return;
+		}
+		console.info(
+			`[DirectEventSink] runner-memory selection persisted exec=${env.executionId} arm=${selection.arm}`,
+		);
 	}
 
 	/**

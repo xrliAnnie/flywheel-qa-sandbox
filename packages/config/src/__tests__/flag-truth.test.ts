@@ -460,15 +460,19 @@ describe("FLY-1393 flag truth", () => {
 		).toEqual({ ok: true, errors: [] });
 	});
 
-	it("registers FLY-2147 runner-memory paths without creating runtime switches", () => {
+	it("registers FLY-2147/FLY-2148 runner-memory plumbing without creating runtime switches", () => {
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RUNNER_MEMORY_DIR).toMatch(
 			/FLY-2147.*mount.*output.*not.*switch/i,
+		);
+		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT).toMatch(
+			/FLY-2148.*snapshot.*output.*not.*switch/i,
 		);
 		expect(NON_FLAG_ALLOWLIST.FLYWHEEL_RUNNER_MEMORY_ROOT).toMatch(
 			/FLY-2147.*test-only.*path.*not.*switch/i,
 		);
 		for (const envVar of [
 			"FLYWHEEL_RUNNER_MEMORY_DIR",
+			"FLYWHEEL_RUNNER_MEMORY_SNAPSHOT",
 			"FLYWHEEL_RUNNER_MEMORY_ROOT",
 		]) {
 			expect(
@@ -479,6 +483,7 @@ describe("FLY-1393 flag truth", () => {
 		expect(
 			validateFlagTruthEnvironment([
 				"FLYWHEEL_RUNNER_MEMORY_DIR=/tmp/mounted-memory",
+				'FLYWHEEL_RUNNER_MEMORY_SNAPSHOT={"lines":3}',
 				"FLYWHEEL_RUNNER_MEMORY_ROOT=/tmp/test-memory-root",
 			]),
 		).toEqual({ ok: true, errors: [] });

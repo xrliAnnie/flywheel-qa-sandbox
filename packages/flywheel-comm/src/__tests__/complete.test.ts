@@ -11,6 +11,7 @@
 
 import {
 	existsSync,
+	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
@@ -18,6 +19,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { measureRunnerMemoryIndex } from "flywheel-config";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Mock node:child_process so we can control git output
@@ -93,6 +95,8 @@ describe("complete command", () => {
 		delete process.env.FLYWHEEL_RUNNER_STATE_DIR;
 		delete process.env.FLYWHEEL_COMM_DB;
 		delete process.env.FLYWHEEL_DESIGN_HTML_GATE;
+		delete process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
+		delete process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT;
 
 		mockFetch = vi
 			.fn()
@@ -161,6 +165,18 @@ describe("complete command", () => {
 		expect(opts.method).toBe("POST");
 
 		const body = JSON.parse(opts.body);
+		body.event_id = "<EVENT_ID>";
+		expect(body).toEqual(
+			JSON.parse(
+				readFileSync(
+					new URL(
+						"./fixtures/fly2148-complete-payload-no-memory.json",
+						import.meta.url,
+					),
+					"utf8",
+				),
+			),
+		);
 		expect(body.event_type).toBe("session_completed");
 		expect(body.source).toBe("flywheel-comm");
 		expect(body.execution_id).toBe("exec-108");
@@ -203,6 +219,31 @@ describe("complete command", () => {
 		// FLY-191 Phase 2 (§5.5.2): completion binds the exact worktree HEAD —
 		// the Bridge persists it as pr_head_sha for verify-approval.
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
+	});
+
+	it("attaches a non-blocking runner-memory closeout receipt to session_completed", async () => {
+		const dir = join(tmpHome, "runner-memory");
+		mkdirSync(dir);
+		writeFileSync(join(dir, "MEMORY.md"), "# Memory\n\nIndex.\n");
+		const spawn = measureRunnerMemoryIndex(dir).snapshot;
+		process.env.FLYWHEEL_RUNNER_MEMORY_DIR = dir;
+		process.env.FLYWHEEL_RUNNER_MEMORY_SNAPSHOT = JSON.stringify(spawn);
+
+		await complete({ route: "auto_approve", merged: false });
+
+		const [, request] = mockFetch.mock.calls[0] as [string, { body: string }];
+		const body = JSON.parse(request.body);
+		expect(body.payload.runnerMemoryCloseout).toMatchObject({
+			v: 1,
+			state: "unchanged",
+			dir,
+			spawn,
+		});
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"[complete] runner-memory closeout state=unchanged",
+			),
+		);
 	});
 
 	it("blocks product completion for missing/pending/rejected review and allows only pass", () => {

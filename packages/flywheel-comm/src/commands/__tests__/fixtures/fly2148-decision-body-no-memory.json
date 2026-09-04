@@ -1,0 +1,7 @@
+{
+  "credential": "scoped-secret",
+  "client_request_id": "<CLIENT_REQUEST_ID>",
+  "status": "pass",
+  "client_pr_head_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "summary": "all checks passed"
+}

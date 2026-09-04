@@ -613,6 +613,53 @@ describe("Event route", () => {
 		expect(lifecycle[0]?.event_id).toMatch(/^wfca:/);
 	});
 
+	it("persists runner-memory closeout for an accepted generalized completion", async () => {
+		bindGeneralizedExecution(store, "exec-1");
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 113,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
+		const receipt = {
+			v: 1,
+			state: "unchanged",
+			dir: "/tmp/flywheel/generic",
+			measuredAt: "2026-09-04T00:00:00.000Z",
+			spawn: snapshot,
+			closeout: { ...snapshot, overBudget: false, overHard: false },
+			delta: { indexChanged: false, lines: 0, topicFiles: 0 },
+		};
+
+		const res = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "explicit-complete-with-runner-memory",
+					event_type: "session_completed",
+					source: "flywheel-comm",
+					payload: {
+						decision: { route: "needs_review" },
+						runnerMemoryCloseout: receipt,
+					},
+				}),
+			),
+		});
+
+		expect(res.status).toBe(200);
+		expect(store.getSession("exec-1")).toMatchObject({
+			runner_memory_closeout: "unchanged",
+		});
+		expect(
+			JSON.parse(store.getSession("exec-1")!.runner_memory_receipt!),
+		).toEqual(receipt);
+	});
+
 	it("reads workflow node reuse from the flag store for every generalized completion", async () => {
 		bindGeneralizedExecution(store, "exec-1");
 		const commit = vi.spyOn(store, "commitEnrolledCompletion");
@@ -1699,6 +1746,76 @@ describe("Event route", () => {
 				status: "awaiting_review",
 			}),
 		);
+	});
+
+	it("FLY-2148 persists a valid completion receipt but rejects HTTP spawn attribution", async () => {
+		await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					payload: {
+						issueIdentifier: "GEO-95",
+						runner_memory_arm: "role",
+						runner_memory_dir: "/tmp/evil",
+					},
+				}),
+			),
+		});
+		const snapshot = {
+			lines: 3,
+			linesExact: true,
+			bytes: 113,
+			sha16: "0123456789abcdef",
+			topicFiles: 0,
+		};
+		const receipt = {
+			v: 1,
+			state: "unchanged",
+			dir: "/tmp/flywheel/qa",
+			measuredAt: "2026-09-04T00:00:00.000Z",
+			spawn: snapshot,
+			closeout: { ...snapshot, overBudget: false, overHard: false },
+			delta: { indexChanged: false, lines: 0, topicFiles: 0 },
+		};
+		const memoryInfo = vi.spyOn(console, "info").mockImplementation(() => {});
+		const memoryWarn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		const response = await fetch(`${baseUrl}/events`, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Authorization: "Bearer ingest-secret",
+			},
+			body: JSON.stringify(
+				makeEvent({
+					event_id: "evt-fly2148-completed",
+					event_type: "session_completed",
+					payload: {
+						decision: { route: "needs_review" },
+						evidence: { commitCount: 1 },
+						runnerMemoryCloseout: receipt,
+					},
+				}),
+			),
+		});
+		expect(response.status).toBe(200);
+		const session = store.getSession("exec-1")!;
+		expect(session.status).toBe("awaiting_review");
+		expect(session.commit_count).toBe(1);
+		expect(session.runner_memory_arm).toBeUndefined();
+		expect(session.runner_memory_dir).toBeUndefined();
+		expect(memoryWarn.mock.calls).toEqual([]);
+		expect(memoryInfo).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"[event-route] runner-memory closeout state=unchanged",
+			),
+		);
+		expect(session.runner_memory_closeout).toBe("unchanged");
+		expect(JSON.parse(session.runner_memory_receipt!)).toEqual(receipt);
 	});
 
 	it("POST /events with session_failed records error", async () => {

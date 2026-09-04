@@ -264,7 +264,18 @@ export interface AdapterExecutionContext {
 	 * backends whose spawn contract is untouched.
 	 */
 	runnerMemory?:
-		| { status: "mounted"; dir: string }
+		| {
+				status: "mounted";
+				dir: string;
+				/** FLY-2148: bounded spawn-time MEMORY.md measurement for closeout comparison. */
+				snapshot?: {
+					lines: number;
+					linesExact: boolean;
+					bytes: number;
+					sha16: string;
+					topicFiles: number;
+				};
+		  }
 		| { status: "disabled"; reason: string };
 
 	// -- FLY-142 Phase 0 PR 1.2: Agent Team transport identity --

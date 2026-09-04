@@ -6,10 +6,12 @@ import { CommDB } from "flywheel-comm/db";
 import { resolveFounderId } from "flywheel-comm/founder-attribution";
 import {
 	adapterTypeToFamily,
+	formatRunnerMemoryCloseoutLine,
 	isDesignBackend,
 	isSkillFrameworkMode,
 	isSkillFrameworkVia,
 	isWorkflowPhaseRole,
+	parseRunnerMemoryCloseoutReceipt,
 	resolveCompletionSessionRole,
 	type SkillFrameworkMode,
 	type SkillFrameworkVia,
@@ -98,6 +100,7 @@ import { STAGE_ORDER, VALID_STAGES } from "./stage-utils.js";
 import type { TerminalArchiveAdmission } from "./terminal-thread-archive.js";
 import type { TurnBeltReconciler } from "./turn-belt-reconcile.js";
 import { type BridgeConfig, sqliteDatetime } from "./types.js";
+import { persistRunnerMemoryCloseout } from "./workflow-decision-routes.js";
 import {
 	enqueueWorkflowReplacementLeadEvent,
 	resolveWorkflowReplacementLeadIntent,
@@ -999,6 +1002,12 @@ export function createEventRouter(
 				if (
 					!(completion.ok === false && completion.reason === "not_enrolled")
 				) {
+					persistRunnerMemoryCloseout(
+						store,
+						event.execution_id,
+						event.payload?.runnerMemoryCloseout,
+						"[event-route]",
+					);
 					if (!completion.ok) {
 						if (completion.reason === "stale_execution_superseded") {
 							res.json({
@@ -1443,6 +1452,18 @@ export function createEventRouter(
 				const landingStatus = evidence?.landingStatus as
 					| { status?: string; prNumber?: number }
 					| undefined;
+				const rawMemoryReceipt = payload.runnerMemoryCloseout;
+				const memoryReceipt =
+					parseRunnerMemoryCloseoutReceipt(rawMemoryReceipt);
+				if (memoryReceipt) {
+					console.info(
+						`${formatRunnerMemoryCloseoutLine("[event-route]", memoryReceipt)} exec=${event.execution_id}`,
+					);
+				} else if (rawMemoryReceipt !== undefined) {
+					console.warn(
+						`[event-route] runner-memory closeout receipt rejected exec=${event.execution_id} reason=malformed`,
+					);
+				}
 
 				// FLY-123 (Codex design review R1 #4): persist adapter session-
 				// resume params (e.g. Codex threadId) on the HTTP sink path —
@@ -1968,6 +1989,12 @@ export function createEventRouter(
 							? (evidence.changedFilePaths as string[]).join("\n")
 							: undefined,
 						pr_number: prNumber,
+						...(memoryReceipt
+							? {
+									runner_memory_closeout: memoryReceipt.state,
+									runner_memory_receipt: JSON.stringify(memoryReceipt),
+								}
+							: {}),
 					});
 				};
 
@@ -2128,6 +2155,12 @@ export function createEventRouter(
 						pr_number: legacyPrNumber,
 						session_role: completedSessionRole,
 						workflow_node_id: workflowNodeId,
+						...(memoryReceipt
+							? {
+									runner_memory_closeout: memoryReceipt.state,
+									runner_memory_receipt: JSON.stringify(memoryReceipt),
+								}
+							: {}),
 					});
 
 					// FLY-191 Phase 2: upsertSession's column list doesn't carry the
