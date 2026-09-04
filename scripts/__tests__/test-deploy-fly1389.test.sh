@@ -1852,6 +1852,18 @@ grep -q 'launch_env=$(qa_slot_launch_env_json' "$TD_SRC" \
   || { X3_OK=0; fail "X3: explicit launchEnvironment builder missing"; }
 [[ "$X3_OK" == "1" ]] && pass "X3: extra-lead explicit launch env + manifest workspace sentinels"
 
+ROLLBACK_OK=1
+grep -q 'qa_launchd_report_codex_auth_recovery "$codex_home" "registry-register"' \
+  "$TD_SRC" || ROLLBACK_OK=0
+grep -q 'qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true' \
+  "$TD_SRC" && ROLLBACK_OK=0
+grep -q 'qa_registry_stopped' "$TD_SRC" || ROLLBACK_OK=0
+if [[ "$ROLLBACK_OK" == 1 ]]; then
+  pass "X4: Codex rollback reports auth conflicts and retains the slot on teardown failure"
+else
+  fail "X4: Codex rollback must not suppress credential recovery failures"
+fi
+
 echo ""
 echo "Results: ${PASSED} passed, ${FAILED} failed"
 [[ "$FAILED" -eq 0 ]] || exit 1

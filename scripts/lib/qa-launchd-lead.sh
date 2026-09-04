@@ -12,6 +12,7 @@ qa_launchd_diag() { printf '[qa-launchd] %s\n' "$*" >&2; }
 # topology verification deliberately probes only once per second.
 QA_LAUNCHD_LEAD_VERIFY_POLLS_DEFAULT=60
 QA_LAUNCHD_LEAD_VERIFY_INTERVAL_DEFAULT=1
+QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND=3
 
 qa_launchd_domain() {
   printf '%s\n' "${FLYWHEEL_QA_LAUNCHD_DOMAIN:-gui/$(id -u)}"
@@ -189,7 +190,8 @@ qa_launchd_render_codex_plist() {
 
 qa_launchd_codex_source_preflight() {
   local source="$1" codex_bin="$2" bounded_run updater_rc cleanup_failed=0
-  local start_ok=0 observed_runtime=0 daemon_pid_file daemon_socket
+  local start_ok=0 observed_runtime=0 daemon_proven=0 convergence_unproven=0
+  local daemon_pid="" daemon_incarnation="" daemon_pid_file daemon_socket
   bounded_run="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
   daemon_pid_file="${source}/app-server-daemon/app-server.pid"
   daemon_socket="${source}/app-server-control/app-server-control.sock"
@@ -202,22 +204,34 @@ qa_launchd_codex_source_preflight() {
       || -e "$daemon_socket" || -L "$daemon_socket" ]]; then
     observed_runtime=1
   fi
+  if [[ -f "$daemon_pid_file" && ! -L "$daemon_pid_file" \
+      && -e "$daemon_socket" && ! -L "$daemon_socket" ]] \
+      && daemon_pid=$(qa_launchd_read_codex_daemon_pid "$source") \
+      && daemon_incarnation=$(qa_launchd_process_incarnation "$daemon_pid"); then
+    daemon_proven=1
+  elif [[ "$start_ok" == 1 || "$observed_runtime" == 1 ]]; then
+    convergence_unproven=1
+  fi
   if [[ ! -x "$bounded_run" ]] || ! "$bounded_run" 30 env \
       CODEX_HOME="$source" "$codex_bin" remote-control stop --json \
       >/dev/null 2>&1; then
     cleanup_failed=1
   fi
+  qa_launchd_wait_process_gone "$daemon_pid" "$daemon_incarnation" \
+    || cleanup_failed=1
   qa_launchd_wait_path_gone "$daemon_socket" || cleanup_failed=1
-  if [[ "$observed_runtime" == 1 ]]; then
-    qa_launchd_stop_codex_updaters "$codex_bin"
-    updater_rc=$?
-    case "$updater_rc" in
-      0|3) ;;
-      *) cleanup_failed=1 ;;
-    esac
-  fi
-  if [[ "$start_ok" != 1 || "$cleanup_failed" != 0 ]]; then
+  qa_launchd_stop_codex_updaters "$codex_bin"
+  updater_rc=$?
+  case "$updater_rc" in
+    0|"$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND") ;;
+    *) cleanup_failed=1 ;;
+  esac
+  if [[ "$start_ok" != 1 || "$daemon_proven" != 1 \
+      || "$cleanup_failed" != 0 || "$convergence_unproven" != 0 ]]; then
     qa_launchd_err "Codex QA credential daemon preflight failed"
+    if [[ "$cleanup_failed" != 0 || "$convergence_unproven" != 0 ]]; then
+      return 2
+    fi
     return 1
   fi
 }
@@ -225,7 +239,7 @@ qa_launchd_codex_source_preflight() {
 qa_launchd_mint_codex_home() (
   local source="$1" dest="$2" slot_root="$3" stage="" validation
   local source_real slot_real release_real release_name parent socket_path_bytes move_rc
-  local lease_dir="" lease_acquired=0
+  local lease_dir="" lease_acquired=0 preflight_rc
   cleanup() {
     if [ -n "$stage" ] && [ -d "$stage" ]; then
       rm -rf "$stage"
@@ -367,7 +381,15 @@ PY
   chmod 700 "$lease_dir" || return 1
   printf '%s\n' "$dest" > "$lease_dir/owner" || return 1
   chmod 600 "$lease_dir/owner" || return 1
-  qa_launchd_codex_source_preflight "$source_real" "$release_real/codex" || return 1
+  qa_launchd_codex_source_preflight "$source_real" "$release_real/codex"
+  preflight_rc=$?
+  if [[ "$preflight_rc" != 0 ]]; then
+    # rc=2 means a process or successful start could not be proven converged.
+    # Retain the exclusive lease for operator recovery instead of authorizing
+    # another room to race a possibly live credential writer.
+    [[ "$preflight_rc" != 2 ]] || lease_acquired=0
+    return 1
+  fi
   cp "$source_real/auth.json" "$stage/auth.json" || return 1
   cp "$source_real/auth.json" "$stage/.flywheel-qa-source-auth-baseline" || return 1
   printf '%s\n' "$source_real" > "$stage/.flywheel-qa-source-home" || return 1
@@ -383,6 +405,7 @@ PY
 qa_launchd_writeback_codex_auth() {
   local codex_home="$1"
   python3 - "$codex_home" "$HOME" <<'PY'
+import json
 import os
 from pathlib import Path
 import re
@@ -468,6 +491,16 @@ try:
     rotated = slot_auth.read_bytes()
 except OSError:
     raise SystemExit(1)
+
+try:
+    baseline_value = json.loads(baseline.decode("utf-8"))
+    rotated_value = json.loads(rotated.decode("utf-8"))
+except (UnicodeError, json.JSONDecodeError):
+    raise SystemExit(3)
+if (not isinstance(baseline_value, dict) or not baseline_value
+        or not isinstance(rotated_value, dict) or not rotated_value
+        or set(rotated_value) != set(baseline_value)):
+    raise SystemExit(3)
 if current != baseline and current != rotated:
     raise SystemExit(2)
 if current != rotated:
@@ -505,6 +538,25 @@ try:
 except OSError:
     raise SystemExit(1)
 PY
+}
+
+qa_launchd_report_codex_auth_recovery() {
+  local codex_home="$1" phase="$2" writeback_rc
+  case "$phase" in
+    registry-register|deploy-cleanup) ;;
+    *) return 1 ;;
+  esac
+  qa_launchd_writeback_codex_auth "$codex_home"
+  writeback_rc=$?
+  if [[ "$writeback_rc" == 0 ]]; then
+    return 0
+  fi
+  case "$writeback_rc" in
+    2) qa_launchd_err "carrier=codex-tui step=auth-recovery phase=${phase} result=conflict" ;;
+    3) qa_launchd_err "carrier=codex-tui step=auth-recovery phase=${phase} result=invalid" ;;
+    *) qa_launchd_err "carrier=codex-tui step=auth-recovery phase=${phase} result=failed" ;;
+  esac
+  return "$writeback_rc"
 }
 
 qa_launchd_lead_pid() {
@@ -1133,7 +1185,7 @@ raise SystemExit(0 if actual == expected else 1)
 qa_launchd_stop_codex_updaters() {
   local codex_bin="$1" pids pid incarnation observed remaining failed=0
   pids=$(qa_launchd_codex_updater_pids "$codex_bin") || return 1
-  [[ -n "$pids" ]] || return 3
+  [[ -n "$pids" ]] || return "$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND"
   while IFS= read -r pid; do
     [[ -n "$pid" ]] || continue
     incarnation=$(qa_launchd_process_incarnation "$pid") || { failed=1; continue; }
@@ -1273,7 +1325,7 @@ PY
 qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
-  local daemon_pid_file daemon_pid_rc daemon_socket launch_marker bounded_run updater_rc
+  local daemon_pid_file daemon_socket launch_marker bounded_run updater_rc
   local writeback_rc runtime_started=0 failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
@@ -1315,12 +1367,9 @@ qa_launchd_stop_codex_entry() {
   elif daemon_pid=$(qa_launchd_read_codex_daemon_pid "$codex_home"); then
     daemon_incarnation=$(qa_launchd_process_incarnation "$daemon_pid" || true)
   else
-    daemon_pid_rc=$?
     daemon_pid=""
-    if [[ "$daemon_pid_rc" != 1 ]]; then
-      qa_launchd_err "carrier=codex-tui step=daemon-pid"
-      failed=1
-    fi
+    qa_launchd_err "carrier=codex-tui step=daemon-pid"
+    failed=1
   fi
   bounded_run="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bounded-run.sh"
   if [[ ! -x "$bounded_run" ]] || ! "$bounded_run" 30 env \
@@ -1338,7 +1387,7 @@ qa_launchd_stop_codex_entry() {
   updater_rc=$?
   case "$updater_rc" in
     0) ;;
-    3)
+    "$QA_LAUNCHD_CODEX_UPDATER_NOT_FOUND")
       if [[ "$runtime_started" == 0 ]]; then
         :
       else
@@ -1356,11 +1405,11 @@ qa_launchd_stop_codex_entry() {
       :
     else
       writeback_rc=$?
-      if [[ "$writeback_rc" == 2 ]]; then
-        qa_launchd_err "carrier=codex-tui step=auth-writeback result=conflict"
-      else
-        qa_launchd_err "carrier=codex-tui step=auth-writeback result=failed"
-      fi
+      case "$writeback_rc" in
+        2) qa_launchd_err "carrier=codex-tui step=auth-writeback result=conflict" ;;
+        3) qa_launchd_err "carrier=codex-tui step=auth-writeback result=invalid" ;;
+        *) qa_launchd_err "carrier=codex-tui step=auth-writeback result=failed" ;;
+      esac
       failed=1
     fi
   fi

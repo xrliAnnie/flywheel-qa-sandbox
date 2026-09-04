@@ -561,6 +561,7 @@ cleanup_on_failure() {
   local lock="/tmp/flywheel-test-slot-${SLOT}.lock"
   local lock_pid
 	local generalized_bridge_stopped=1
+	local qa_registry_stopped=1
 	# FLY-1775: generalized readiness remains inside the deploy transaction even
 	# after bridge.pid replaces the "claiming" sentinel. A failure between
 	# /health and room-info finalization must leave no process, port, lock, or
@@ -572,45 +573,59 @@ cleanup_on_failure() {
 			fi
 		fi
 		if [[ -n "${QA_LEAD_REGISTRY:-}" && -f "${QA_LEAD_REGISTRY}" ]]; then
-			qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
+			if ! qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
+				qa_registry_stopped=0
+				echo "ERROR: QA Lead cleanup did not converge; retaining slot ${SLOT} lock" >&2
+			fi
 			QA_LEAD_REGISTRY=""
 		fi
 		qa_generalized_invalidate_room_info "$SLOT_DIR"
-		if (( generalized_bridge_stopped == 1 )); then
+		if (( generalized_bridge_stopped == 1 && qa_registry_stopped == 1 )); then
 			rm -rf "$lock"
 		else
-			echo "ERROR: generalized Bridge ${BRIDGE_PID} did not exit; retaining slot ${SLOT} lock" >&2
+			echo "ERROR: generalized cleanup did not converge; retaining slot ${SLOT} lock" >&2
 		fi
 		# Preserve the partial slot directory (especially bridge.log) for the
 		# operator diagnosis named by this script. The ordinary campaign rollback
 		# below still owns borrowed locks and extra-Lead supervisors.
-	fi
+  fi
   if [[ -n "${QA_LEAD_REGISTRY:-}" && -f "$QA_LEAD_REGISTRY" ]]; then
-    qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
+    if ! qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
+      qa_registry_stopped=0
+      echo "ERROR: QA Lead cleanup did not converge; retaining slot ${SLOT} lock" >&2
+    fi
+  fi
+  local cm="/tmp/flywheel-test-slot-${SLOT}/campaign-manifest.json"
+  if [[ -f "$cm" ]]; then
+    if ! qa_multilead_teardown_extra_leads "$cm"; then
+      qa_registry_stopped=0
+      echo "ERROR: extra Lead cleanup did not converge; retaining campaign locks" >&2
+    fi
   fi
   lock_pid=$(cat "$lock/pid" 2>/dev/null || echo "")
   # Only clean up if still in "claiming" state (Bridge PID not yet written)
   if [[ "$lock_pid" == "claiming" ]]; then
-    log "Deploy interrupted — releasing slot ${SLOT} lock"
-    rm -rf "$lock"
+    if (( qa_registry_stopped == 1 )); then
+      log "Deploy interrupted — releasing slot ${SLOT} lock"
+      rm -rf "$lock"
+    else
+      log "Deploy interrupted — retaining slot ${SLOT} lock after failed Lead cleanup"
+    fi
   fi
   # FLY-1189: campaign rollback — extra Leads + borrowed locks still in
   # "claiming" state (finalize flips them to the live Bridge PID; a finalized
   # campaign is NEVER torn down here). Runs regardless of the main lock's
   # state — some legacy failure paths rm the main lock themselves before exit.
-  local cm="/tmp/flywheel-test-slot-${SLOT}/campaign-manifest.json"
   local xsid xlock xpid
   for xsid in ${CAMPAIGN_SLOT_IDS[@]+"${CAMPAIGN_SLOT_IDS[@]}"}; do
     [[ "$xsid" == "$SLOT" ]] && continue
     xlock="/tmp/flywheel-test-slot-${xsid}.lock"
     xpid=$(cat "$xlock/pid" 2>/dev/null || echo "")
-    if [[ "$xpid" == "claiming" ]]; then
-      if [[ -n "$cm" && -f "$cm" ]]; then
-        qa_multilead_teardown_extra_leads "$cm" 2>/dev/null || true
-        cm=""
-      fi
+    if [[ "$xpid" == "claiming" && "$qa_registry_stopped" == 1 ]]; then
       log "Deploy interrupted — releasing borrowed slot ${xsid} lock"
       rm -rf "$xlock"
+    elif [[ "$xpid" == "claiming" ]]; then
+      log "Deploy interrupted — retaining borrowed slot ${xsid} lock after failed Lead cleanup"
     fi
   done
 	# A failed readiness transaction must retain bridge.log for diagnosis but
@@ -1536,7 +1551,7 @@ qa_slot_start_lead() {
     qa_launchd_mint_codex_home "$codex_source" "$codex_home" "$SLOT_DIR" || return 1
     if ! qa_launchd_register "$QA_LEAD_REGISTRY" "$label" "$plist" "" \
         codex-tui "$codex_home" "$codex_bin" "$codex_state" "$pid_file"; then
-      qa_launchd_writeback_codex_auth "$codex_home" >/dev/null 2>&1 || true
+      qa_launchd_report_codex_auth_recovery "$codex_home" "registry-register" || :
       return 1
     fi
     mkdir -p "$(dirname "$codex_comm_db")" || return 1
@@ -1704,8 +1719,12 @@ fi
 
 if [[ "$LEAD_READY" != "true" ]]; then
   log "ERROR: Lead did not become ready within ${LEAD_READY_TIMEOUT_SEC} seconds"
-  qa_launchd_lead_stop "$LEAD_LAUNCHD_LABEL" || true
-  rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
+    QA_LEAD_REGISTRY=""
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  else
+    log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
+  fi
   exit 1
 fi
 
@@ -1727,14 +1746,8 @@ if (( ${#EXTRA_LEAD_SPECS[@]} > 0 )); then
 
   campaign_abort() {
     log "ERROR: $1 — aborting campaign deploy"
-    qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
-    if [[ -f "$CAMPAIGN_MANIFEST_FILE" ]]; then
-      qa_multilead_teardown_extra_leads "$CAMPAIGN_MANIFEST_FILE" || true
-    fi
-    local xsid
-    for xsid in ${CAMPAIGN_SLOT_IDS[@]+"${CAMPAIGN_SLOT_IDS[@]}"}; do
-      rm -rf "/tmp/flywheel-test-slot-${xsid}.lock"
-    done
+    # The still-armed EXIT transaction owns registry, manifest, and every
+    # campaign lock. Keeping one cleanup path avoids a second credential CAS.
     exit 1
   }
 
@@ -2121,8 +2134,12 @@ for i in $(seq 1 120); do
   fi
   if ! kill -0 "$BRIDGE_PID" 2>/dev/null; then
     log "ERROR: Bridge process died"
-    qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
-    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
+      QA_LEAD_REGISTRY=""
+      rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+    else
+      log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
+    fi
     exit 1
   fi
   sleep 1
@@ -2131,8 +2148,12 @@ done
 if [[ "$BRIDGE_READY" != "true" ]]; then
   log "ERROR: Bridge did not become ready within 120 seconds"
   kill "$BRIDGE_PID" 2>/dev/null || true
-  qa_launchd_stop_registry "$QA_LEAD_REGISTRY" 2>/dev/null || true
-  rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  if qa_launchd_stop_registry "$QA_LEAD_REGISTRY"; then
+    QA_LEAD_REGISTRY=""
+    rm -rf "/tmp/flywheel-test-slot-${SLOT}.lock"
+  else
+    log "ERROR: Lead cleanup did not converge; retaining slot ${SLOT} lock"
+  fi
   exit 1
 fi
 

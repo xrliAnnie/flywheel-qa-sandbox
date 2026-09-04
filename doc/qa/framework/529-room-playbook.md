@@ -99,11 +99,26 @@ daemon 预检可能刷新 `auth.json`，因此铸造快照发生在预检收敛�
 快照做 compare-and-swap，把 slot 中刷新的凭据原子写回 source 并释放 lease；
 source 被外部改动时保留现值与 lease、报错且不重试。日志只报告步骤和结果，
 不打印 source 路径或 token 片段。这样同一 source 可以连续起第二间房。
+写回前还会把 baseline 与 slot `auth.json` 都解析为非空 JSON object，并要求
+顶层 key 集合一致；截断、空文件或结构漂移报 `result=invalid`，source 原字节、
+lease 和 slot 内 baseline 都保留，禁止用坏 payload 覆盖 source。
+
+lease 保留表示收敛或凭据一致性尚未证明，不是可忽略的脏文件。先按日志中的
+`carrier=codex-tui step=...` 修复并重跑 `scripts/test-teardown.sh <slot>`；
+`result=conflict` / `result=invalid` 必须先人工核对 source、slot auth 与 baseline，
+不得直接删 lease。只有 owner 所指 slot 已不存在，并且 launchd label、runtime、
+daemon、精确 argv updater 与私有 tmux 都被独立证明不存在时，才能删除 lease 的
+`owner` 后 `rmdir ~/.codex-259-qa/.flywheel-qa-auth-lease`。任一证据不确定就保留。
 
 Codex daemon PID 的生产 JSON reader 依赖 Bash >= 4（macOS 需可用的 Homebrew
 Bash，如 `/opt/homebrew/bin/bash`）。只剩系统 Bash 3.2 时 reader 返回 2，
 teardown 会 fail-closed 为 `carrier=codex-tui step=daemon-pid` 并保留房间，
-不会把未证明的收敛当成功。
+不会把未证明的收敛当成功。PID 文件存在但不是生产 JSON record（包括旧整数或
+截断内容）也走同一 fail-closed 路径。
+
+Codex topology 的默认等待预算是 60 次、每次 1 秒。冷启动需要更长观测时可在
+起房命令前设置 `FLYWHEEL_QA_LEAD_VERIFY_POLLS`；`--lead-ready-timeout` 只控制
+随后 readiness loop，不能延长这段 topology 预算。
 
 Codex plist 的 argv 固定为 `/bin/bash <slot-wrapper>`，不带 Claude manifest
 参数。验活同时要求 launchd PID、Node TUI runtime argv、精确 `CODEX_HOME`、
@@ -129,10 +144,13 @@ scripts/qa-fly-2301-codex-lead-drill.sh 4 kickstart \
   /tmp/fly-2301-slot-4-evidence
 ```
 
-同一 Bridge 的 `--extra-lead` 可以是另一条 Codex 行；每条 Lead 必须有独立
+`--extra-lead` 行本身支持 Codex 载体；每条 Lead 必须有独立
 home/state/window，teardown 按 `launchd-leads.json` 聚合收敛 runtime、daemon
-和私有 tmux。Codex Lead 不支持 `mirror` / `roundtable`，会 fail-loud；这些
-既有拓扑继续使用 Claude carrier。
+和私有 tmux。但当前真实 source 白名单只有 `~/.codex-259-qa`，且一个 source
+只能持有一个独占 lease，所以一次真实 campaign 最多一条 Codex 行（可放 main
+或 extra）；不得让 main 与 extra 并发共享该 source。测试里的第二个 `/tmp`
+source 只证明多载体坐标隔离，不是可照抄的真实凭据入口。Codex Lead 不支持
+`mirror` / `roundtable`，会 fail-loud；这些既有拓扑继续使用 Claude carrier。
 
 teardown 不负责删 sandbox remote PR / branch；同一房内下一次 driver 启动时会先用上一轮 `owner.json` 证明 exact run。stub 的 design、implement 与 fixture PR 从第一笔 commit 起都使用 `qa529-<issue>-<runId>` run-scoped branch，不复用 WorktreeManager 的稳定 issue branch，因此不会接管或改写历史人工 PR；同一 run 的 implement attempt / replacement 才复用该 branch。dead-exec recovery 若在这个已证明的 run 内换体，driver 会从 `workflow_run_node` / run-scoped binding 动态吸收 replacement execution，同时保留全部历史 execution；已证明 execution 消失仍 fail-closed。active / held 轮先 terminate，已 completed / terminated 轮直接进入收敛，随后等待进程与 durable launch 全部 settled，再关闭 marker-owned、expected-head 未漂移的 PR。GitHub REST 没有 ref delete CAS；driver 不伪装 `If-Match`，而是在 durable drain 后重读 exact head、漂移即停手，再删除该 run-scoped sandbox branch。
 
