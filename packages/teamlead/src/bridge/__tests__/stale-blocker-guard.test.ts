@@ -232,6 +232,9 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 		expect(r.proceed).toBe(true);
 		expect(deps.killCmuxLinkedSession).not.toHaveBeenCalled();
 		expect(deps.applyTransition).toHaveBeenCalledOnce();
+		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerDeathProven: false }),
+		);
 	});
 
 	it("'found' + cmux kill fails → proceed:false, window NOT killed", async () => {
@@ -272,6 +275,9 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 		expect(commPrunes).toContain("exec-1");
 		expect(archived).toContain("exec-1");
 		expect(events).toContain("scheduled_run_blocker_finalized");
+		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerDeathProven: true }),
+		);
 	});
 
 	it("FLY-1238: CommDB finalization failure blocks transition, archive, and slot release", async () => {
@@ -296,6 +302,24 @@ describe("finalizeStaleBlocker (fail-closed teardown + double re-read)", () => {
 		const r = await finalizeStaleBlocker(session({}), "merged", deps);
 		expect(r.proceed).toBe(true);
 		expect(deps.lookupTmuxTarget).not.toHaveBeenCalled();
+		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerDeathProven: false }),
+		);
+	});
+
+	it("missing StateStore row settles orphaned communications without claiming death proof", async () => {
+		const { deps } = makeFinalizeDeps({
+			sessions: [],
+			lookup: foundLookup(),
+		});
+
+		const r = await finalizeStaleBlocker(session({}), "merged", deps);
+
+		expect(r.proceed).toBe(true);
+		expect(deps.lookupTmuxTarget).not.toHaveBeenCalled();
+		expect(deps.store.recordCommDbFinalizeOutcome).toHaveBeenCalledWith(
+			expect.objectContaining({ runnerDeathProven: false }),
+		);
 	});
 
 	it("re-read #2 terminal after teardown → prune + skip audit + proceed", async () => {

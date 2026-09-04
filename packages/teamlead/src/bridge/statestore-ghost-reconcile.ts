@@ -231,6 +231,7 @@ async function reapStateStoreGhostUnlocked(
 		ok: finalized.ok,
 		error: finalized.error,
 		nowMs,
+		runnerDeathProven: true,
 		audit: {
 			retiredGateCount: finalized.retiredGateCount,
 			retiredAskCount: finalized.retiredAskCount,

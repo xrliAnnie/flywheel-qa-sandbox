@@ -3,14 +3,53 @@
  * and the crash-forensics scrollback capture. Uses the `TmuxRunner` seam so no
  * real tmux server is needed (a real-tmux spike lives in the real-tmux suite).
  */
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { CommDB } from "flywheel-comm/db";
 import { describe, expect, it, vi } from "vitest";
+import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
 	captureRunnerScrollback,
+	lookupTmuxTarget,
 	probeRunnerProcessLiveness,
 	probeRunnerProcessLivenessDetailed,
 	probeTmuxServerStartTime,
 	type TmuxRunner,
 } from "../bridge/tmux-lookup.js";
+
+describe("lookupTmuxTarget (FLY-2313)", () => {
+	it("reads the same FLYWHEEL_COMM_DIR database used by finalization", () => {
+		const previous = process.env.FLYWHEEL_COMM_DIR;
+		const root = mkdtempSync(join(tmpdir(), "fly2313-tmux-lookup-"));
+		process.env.FLYWHEEL_COMM_DIR = root;
+		const dbPath = commDbPathForProject("fly2313-override");
+		mkdirSync(dirname(dbPath), { recursive: true });
+		const db = new CommDB(dbPath);
+		try {
+			db.registerSession(
+				"fly2313-lookup-exec",
+				"runner-flywheel:@42",
+				"fly2313-override",
+				"FLY-2313",
+				"lead",
+			);
+			expect(
+				lookupTmuxTarget("fly2313-lookup-exec", "fly2313-override"),
+			).toEqual({
+				kind: "found",
+				target: {
+					tmuxWindow: "runner-flywheel:@42",
+					sessionName: "runner-flywheel",
+				},
+			});
+		} finally {
+			db.close();
+			process.env.FLYWHEEL_COMM_DIR = previous;
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
 
 describe("probeTmuxServerStartTime (FLY-1628)", () => {
 	it("reads the selected socket's native tmux start_time", async () => {

@@ -590,7 +590,7 @@ export function bodyFor(kind: AlertEventType, _pane: string): string {
 		case "founder_reply_unreachable_runner":
 			return "A LIVE session's CommDB registration row is gone (FLY-1049 shape) — founder replies to its gate cannot be wake-delivered and will dead-letter. Re-register or close the session.";
 		case "commdb_finalize_stuck":
-			return "A physically gone runner still has unresolved gates or a CommDB session because atomic finalization keeps failing. Issue closeout remains fail-closed; inspect comm.db and retry cleanup.";
+			return "A runner still has unresolved gates or a CommDB session because atomic finalization keeps failing. Issue closeout remains fail-closed; verify runner liveness, inspect comm.db, and retry cleanup.";
 		case "merged_gate_guard_unavailable":
 			return "The Bridge could not establish the bound PR's merge state after bounded checks, so it suppressed founder-facing recovery copy. Verify GitHub and retire or re-drive the gate manually.";
 		// FLY-1081: never routed through this table (restart-services.sh /

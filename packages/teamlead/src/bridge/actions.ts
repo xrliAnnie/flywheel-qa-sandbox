@@ -1690,6 +1690,7 @@ export async function handleTerminate(
 			projectName: session.project_name,
 			ok: finalized.ok,
 			error: finalized.error,
+			runnerDeathProven: true,
 			audit: {
 				retiredGateCount: finalized.retiredGateCount,
 				retiredAskCount: finalized.retiredAskCount,

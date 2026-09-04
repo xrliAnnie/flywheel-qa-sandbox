@@ -5,6 +5,7 @@ export const LAND_CLOSEOUT_CAUSES = [
 	"node_process_unverifiable",
 	"window_identity_mismatch",
 	"window_cleanup_failed",
+	"window_identity_pending",
 	"commdb_finalize_failed",
 	"worktree_branch_mismatch",
 	"lifecycle_conflict",
@@ -41,6 +42,7 @@ export function inferLandCloseoutCause(errors: string[]): LandCloseoutCause {
 		window_identity_mismatch: ["window_identity_mismatch"],
 		window_cleanup_failed: ["window_cleanup_failed"],
 		commdb_finalize_failed: ["commdb finalize", "commdb_finalize_failed"],
+		window_identity_pending: ["tmux window identity is still pending"],
 		worktree_branch_mismatch: ["branch", "worktree"],
 		lifecycle_conflict: ["authority_lost", "disposition_conflict"],
 		archive_failed: ["archive_failed"],
@@ -96,6 +98,8 @@ export function describeLandCloseoutCause(cause: LandCloseoutCause): string {
 			return "Runner 窗口清理失败";
 		case "commdb_finalize_failed":
 			return "Runner 通信记录未能完成收尾";
+		case "window_identity_pending":
+			return "Runner 窗口身份仍未完成注册";
 		case "worktree_branch_mismatch":
 			return "worktree 或分支状态与预期不一致";
 		case "lifecycle_conflict":

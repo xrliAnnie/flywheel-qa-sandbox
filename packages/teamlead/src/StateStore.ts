@@ -18451,6 +18451,8 @@ export class StateStore {
 		projectName: string;
 		ok: boolean;
 		error?: string;
+		/** Whether this finalizer was authorized by independent runner-death proof. */
+		runnerDeathProven: boolean;
 		nowMs?: number;
 		audit?: {
 			retiredGateCount: number;
@@ -18479,6 +18481,14 @@ export class StateStore {
 					source: input.audit.source,
 				},
 			});
+		}
+		// FLY-2313: the durable retry ledger and its founder alert are specifically
+		// for cleanup that is blocked after physical death was established. A
+		// terminal CommDB row alone cannot make that claim. Keeping ledger-only
+		// outcomes outside this state also prevents a later ledger-only success from
+		// resolving a still-actionable proven-death failure episode.
+		if (input.runnerDeathProven === false) {
+			return this.getCommDbFinalizeFailure(input.executionId);
 		}
 		if (input.ok) {
 			this.db.run(

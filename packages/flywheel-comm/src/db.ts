@@ -534,6 +534,14 @@ export type GuardedFinalizeSessionResult =
 	| { finalized: false; reason: "target_changed" }
 	| { finalized: true; result: FinalizeSessionResult };
 
+export type FinalizeSessionCommunicationsResult =
+	| { finalized: false; reason: "target_changed" }
+	| { finalized: false; reason: "terminal_evidence_changed" }
+	| { finalized: false; reason: "turn_holder" }
+	| { finalized: false; reason: "parked" }
+	| { finalized: false; reason: "founder_wake_pending" }
+	| { finalized: true; result: FinalizeSessionResult };
+
 /**
  * FLY-1328: an ask younger than this at teardown is spared. It kills the
  * "written → first relay tick" race: GatePoller relays every ~3s, so a
@@ -7004,10 +7012,11 @@ export class CommDB {
 	}
 
 	/**
-	 * FLY-1238: atomically retire every unanswered checkpoint gate owned by a
-	 * runner and remove its session registry row. An answered question is
-	 * immutable history. Errors deliberately propagate so teardown callers fail
-	 * closed and retry the whole transaction.
+	 * FLY-1238/FLY-2313: shared transaction body for settling a runner's
+	 * communication obligations and, only when independently authorized,
+	 * removing its session registry row. An answered question is immutable
+	 * history. Errors deliberately propagate so teardown callers fail closed and
+	 * retry the whole transaction.
 	 *
 	 * FLY-1328: the same teardown now also cascades to the runner's own aged,
 	 * unanswered checkpoint-less asks. Closing a runner closes its account —
@@ -7015,13 +7024,16 @@ export class CommDB {
 	 * outnumber live ones in the Lead's queue until `pending` stopped being worth
 	 * reading. Gate semantics (predicates, review-gate exemption) are untouched.
 	 */
-	finalizeSession(executionId: string): FinalizeSessionResult {
-		return this.db.transaction((targetExecutionId: string) => {
-			// A machine-proven terminal runner is an explicit H2 disposal condition:
-			// protection prevents TTL/hygiene loss, not intentional lifecycle closeout.
-			const retired = this.db
-				.prepare(
-					`UPDATE mailbox AS q SET
+	private finalizeSessionEffects(
+		targetExecutionId: string,
+		deleteSessionIdentity: boolean,
+	): FinalizeSessionResult {
+		// Intentional lifecycle closeout is an explicit H2 disposal condition:
+		// protection prevents TTL/hygiene loss, not settlement of communication
+		// obligations. Session-identity deletion is authorized separately.
+		const retired = this.db
+			.prepare(
+				`UPDATE mailbox AS q SET
 					   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 					   state = 'ACKED',
 					   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -7042,16 +7054,16 @@ export class CommDB {
 					     SELECT 1 FROM mailbox_message_projection r
 					      WHERE r.parent_id = q.id AND r.type = 'response'
 					   )`,
-				)
-				.run(targetExecutionId).changes;
+			)
+			.run(targetExecutionId).changes;
 
-			// FLY-1328 A1 — cascade the owner's unanswered asks. An ask younger than
-			// the grace window is spared: it may not have reached the Lead yet, and
-			// the queue can afford one more tick far more than the founder can afford
-			// a swallowed report.
-			const retiredAsks = this.db
-				.prepare(
-					`UPDATE mailbox AS q SET
+		// FLY-1328 A1 — cascade the owner's unanswered asks. An ask younger than
+		// the grace window is spared: it may not have reached the Lead yet, and
+		// the queue can afford one more tick far more than the founder can afford
+		// a swallowed report.
+		const retiredAsks = this.db
+			.prepare(
+				`UPDATE mailbox AS q SET
 						   resolved_at = strftime('%Y-%m-%dT%H:%M:%fZ','now'),
 						   state = 'ACKED',
 						   acked_at = COALESCE(acked_at, strftime('%Y-%m-%dT%H:%M:%fZ','now')),
@@ -7068,9 +7080,14 @@ export class CommDB {
 						     SELECT 1 FROM mailbox_message_projection r
 						      WHERE r.parent_id = q.id AND r.type = 'response'
 						   )`,
-				)
-				.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
+			)
+			.run(targetExecutionId, ASK_CASCADE_GRACE_SQL).changes;
 
+		// Wake and runner-control state belongs to the physical execution, not just
+		// its communication ledger. A ledger-only caller may hold only stale-target
+		// absence, so preserve those rows until independent death proof also
+		// authorizes deleting the session identity.
+		if (deleteSessionIdentity) {
 			this.pruneTerminalRunnerReceiptWakes(targetExecutionId);
 			this.db
 				.prepare("DELETE FROM runner_shutdown_controls WHERE execution_id = ?")
@@ -7078,15 +7095,140 @@ export class CommDB {
 			this.db
 				.prepare("DELETE FROM runner_stop_declarations WHERE execution_id = ?")
 				.run(targetExecutionId);
-			const deleted = this.db
-				.prepare("DELETE FROM sessions WHERE execution_id = ?")
-				.run(targetExecutionId).changes;
-			return {
-				retiredQuestionCount: retired,
-				retiredAskCount: retiredAsks,
-				deletedSessionCount: deleted,
-			};
-		})(executionId);
+		}
+		const deleted = deleteSessionIdentity
+			? this.db
+					.prepare("DELETE FROM sessions WHERE execution_id = ?")
+					.run(targetExecutionId).changes
+			: 0;
+		return {
+			retiredQuestionCount: retired,
+			retiredAskCount: retiredAsks,
+			deletedSessionCount: deleted,
+		};
+	}
+
+	/** Full teardown for callers that have independently proven runner death. */
+	finalizeSession(executionId: string): FinalizeSessionResult {
+		return this.db.transaction((targetExecutionId: string) =>
+			this.finalizeSessionEffects(targetExecutionId, true),
+		)(executionId);
+	}
+
+	/**
+	 * FLY-2313: close communication obligations while retaining the session's
+	 * only tmux identity by default. A caller with independent death proof may
+	 * request identity deletion through the same transaction. Terminal status
+	 * alone is not death proof and therefore cannot authorize deleting `sessions` or
+	 * disposing work still owned by a TURN holder / effectively parked runner,
+	 * or consuming an unread founder wake. The exact target, terminal lifecycle
+	 * state, TURN, declared state, and founder-wake state are checked in the same
+	 * transaction as the writes. The target is a CAS guard only; it rejects drift
+	 * and must never be interpreted as process-death evidence.
+	 */
+	finalizeSessionCommunications(
+		executionId: string,
+		expectedTmuxWindow: string,
+		deleteSessionIdentity = false,
+		authoritativeTerminalStatus?: "failed" | "blocked",
+	): FinalizeSessionCommunicationsResult {
+		const finalize = this.db.transaction(
+			(
+				targetExecutionId: string,
+				expectedTarget: string,
+				deleteIdentity: boolean,
+				expectedTerminalStatus?: "failed" | "blocked",
+			): FinalizeSessionCommunicationsResult => {
+				const session = this.db
+					.prepare(
+						"SELECT tmux_window, status, ended_at FROM sessions WHERE execution_id = ?",
+					)
+					.get(targetExecutionId) as
+					| { tmux_window?: string; status?: string; ended_at?: string | null }
+					| undefined;
+				if (session?.tmux_window !== expectedTarget) {
+					return { finalized: false, reason: "target_changed" };
+				}
+				const recordedTerminal = Boolean(
+					session.ended_at &&
+						(session.status === "completed" ||
+							session.status === "timeout" ||
+							session.status === "failed" ||
+							session.status === "blocked"),
+				);
+				const canPromoteAuthoritativeTerminal = Boolean(
+					deleteIdentity &&
+						session.status === "running" &&
+						!session.ended_at &&
+						(expectedTerminalStatus === "failed" ||
+							expectedTerminalStatus === "blocked"),
+				);
+				if (!recordedTerminal && !canPromoteAuthoritativeTerminal) {
+					return {
+						finalized: false,
+						reason: "terminal_evidence_changed",
+					};
+				}
+				const holdsTurn = this.db
+					.prepare(
+						"SELECT 1 FROM three_stage_turn WHERE holder_exec_id = ? LIMIT 1",
+					)
+					.get(targetExecutionId);
+				if (holdsTurn) {
+					return { finalized: false, reason: "turn_holder" };
+				}
+				if (
+					this.getEffectiveDeclaredState(targetExecutionId, Date.now())
+						?.kind === "parked"
+				) {
+					return { finalized: false, reason: "parked" };
+				}
+				const founderWakePending = (
+					this.db
+						.prepare(
+							"SELECT * FROM runner_phase_wakes WHERE execution_id = ? AND state = 'pending'",
+						)
+						.all(targetExecutionId) as RunnerPhaseWake[]
+				).some((wake) => runnerWakeMetadata(wake).origin === "founder");
+				if (founderWakePending) {
+					return { finalized: false, reason: "founder_wake_pending" };
+				}
+				if (canPromoteAuthoritativeTerminal) {
+					// StateStore's failed/blocked state plus independent death proof is
+					// authoritative when the async mirror has not landed yet. The IMMEDIATE
+					// transaction makes this exact-target running→terminal CAS atomic with
+					// every zero-write veto above and the identity deletion below.
+					const promoted = this.db
+						.prepare(
+							`UPDATE sessions
+							    SET status = ?, ended_at = datetime('now')
+							  WHERE execution_id = ? AND tmux_window = ?
+							    AND status = 'running' AND ended_at IS NULL`,
+						)
+						.run(
+							expectedTerminalStatus,
+							targetExecutionId,
+							expectedTarget,
+						).changes;
+					if (promoted !== 1) {
+						return { finalized: false, reason: "terminal_evidence_changed" };
+					}
+				}
+				return {
+					finalized: true,
+					result: this.finalizeSessionEffects(
+						targetExecutionId,
+						deleteIdentity,
+					),
+				};
+			},
+		);
+		return finalize.immediate(
+			executionId,
+			expectedTmuxWindow,
+			deleteSessionIdentity,
+			authoritativeTerminalStatus,
+		);
 	}
 
 	/**

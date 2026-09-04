@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
 	finalizeCommDbSession,
+	finalizeCommDbSessionCommunications,
+	finalizeCommDbTerminalSession,
 	finalizeDeadTerminalCommDbSessionById,
 	pruneDeadTerminalCommDbSessions,
 	resolveCommDbPath,
@@ -126,6 +128,152 @@ describe("commdb-session-prune (FLY-638)", () => {
 			expect(db.listRunnerPhaseWakes("e1")).toHaveLength(1);
 			expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
 		});
+	});
+
+	describe("finalizeCommDbSessionCommunications (FLY-2313)", () => {
+		it("retires communications while preserving the exact pending identity", () => {
+			seed("e1", "completed", "runner-flywheel:pending");
+			db.enqueueRunnerPhaseWake(
+				"e1",
+				{ id: "wake-1", to: "e1", content: "retry design" },
+				1,
+			);
+			db.requestRunnerShutdown("e1", "shutdown-1", 2);
+			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+
+			expect(
+				finalizeCommDbSessionCommunications(
+					"e1",
+					"flywheel",
+					"runner-flywheel:pending",
+					dbPath,
+				),
+			).toEqual({
+				ok: true,
+				outcome: "finalized",
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+			});
+			expect(db.getSession("e1")?.tmux_window).toBe("runner-flywheel:pending");
+			expect(db.isQuestionPending(qid)).toBe(false);
+			expect(db.listRunnerPhaseWakes("e1")).toMatchObject([
+				{ message_id: "wake-1", state: "pending" },
+			]);
+			expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
+		});
+
+		it("fails closed without ledger writes when the target changed", () => {
+			seed("e1", "completed", "runner-flywheel:@9");
+			db.enqueueRunnerPhaseWake(
+				"e1",
+				{ id: "wake-1", to: "e1", content: "retry design" },
+				1,
+			);
+			db.requestRunnerShutdown("e1", "shutdown-1", 2);
+			const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+				checkpoint: "approve_to_ship",
+			});
+
+			expect(
+				finalizeCommDbSessionCommunications(
+					"e1",
+					"flywheel",
+					"runner-flywheel:pending",
+					dbPath,
+				),
+			).toEqual({
+				ok: false,
+				outcome: "target_changed",
+				retiredGateCount: 0,
+				retiredAskCount: 0,
+				deletedSessionCount: 0,
+				error: "target_changed",
+			});
+			expect(db.getSession("e1")?.tmux_window).toBe("runner-flywheel:@9");
+			expect(db.isQuestionPending(qid)).toBe(true);
+			expect(db.listRunnerPhaseWakes("e1")).toHaveLength(1);
+			expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
+		});
+
+		it.each(["failed", "blocked"] as const)(
+			"promotes an unmirrored exact row to authoritative %s before guarded deletion",
+			(authoritativeStatus) => {
+				seed("e1", "running", "runner-flywheel:pending");
+
+				expect(
+					finalizeCommDbTerminalSession(
+						"e1",
+						"flywheel",
+						"runner-flywheel:pending",
+						authoritativeStatus,
+						dbPath,
+					),
+				).toEqual({
+					ok: true,
+					outcome: "finalized",
+					retiredGateCount: 0,
+					retiredAskCount: 0,
+					deletedSessionCount: 1,
+				});
+				expect(db.getSession("e1")).toBeUndefined();
+			},
+		);
+
+		it.each(["turn_holder", "parked"] as const)(
+			"fails closed without ledger writes for a %s runner",
+			(reason) => {
+				seed("e1", "completed", "runner-flywheel:pending");
+				if (reason === "turn_holder") {
+					db.grantTurn("i-e1", "e1", "implement", 1);
+				} else {
+					db.upsertDeclaredState(
+						"e1",
+						"parked",
+						"awaiting founder",
+						Date.now(),
+						null,
+					);
+				}
+				db.enqueueRunnerPhaseWake(
+					"e1",
+					{
+						id: "founder-wake-1",
+						to: "e1",
+						content: "founder decided",
+						metadata: { origin: "founder", questionId: "founder-gate-1" },
+					},
+					2,
+				);
+				db.requestRunnerShutdown("e1", "shutdown-1", 3);
+				const qid = db.insertQuestion("e1", "lead-a", "ship?", {
+					checkpoint: "approve_to_ship",
+				});
+
+				expect(
+					finalizeCommDbSessionCommunications(
+						"e1",
+						"flywheel",
+						"runner-flywheel:pending",
+						dbPath,
+					),
+				).toEqual({
+					ok: false,
+					outcome: reason,
+					retiredGateCount: 0,
+					retiredAskCount: 0,
+					deletedSessionCount: 0,
+					error: reason,
+				});
+				expect(db.isQuestionPending(qid)).toBe(true);
+				expect(db.listRunnerPhaseWakes("e1")).toMatchObject([
+					{ message_id: "founder-wake-1", state: "pending" },
+				]);
+				expect(db.getRunnerShutdown("e1")?.request_id).toBe("shutdown-1");
+			},
+		);
 	});
 
 	describe("pruneDeadTerminalCommDbSessions", () => {

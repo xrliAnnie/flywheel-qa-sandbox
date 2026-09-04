@@ -40,6 +40,7 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 			issueId: "FLY-1328",
 			projectName: "flywheel",
 			ok: true,
+			runnerDeathProven: true,
 			audit,
 		});
 
@@ -61,6 +62,7 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 			issueId: "FLY-1328",
 			projectName: "flywheel",
 			ok: true,
+			runnerDeathProven: true,
 			audit,
 		});
 		expect(disposalEvents()).toHaveLength(1);
@@ -72,6 +74,7 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 			issueId: "FLY-1328",
 			projectName: "flywheel",
 			ok: true,
+			runnerDeathProven: true,
 			audit: {
 				retiredGateCount: 1,
 				retiredAskCount: 0,
@@ -88,6 +91,7 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 			projectName: "flywheel",
 			ok: false,
 			error: "database is locked",
+			runnerDeathProven: true,
 			audit: {
 				retiredGateCount: 0,
 				retiredAskCount: 0,
@@ -105,6 +109,7 @@ describe("FLY-1328 ask-disposal audit (StateStore.recordCommDbFinalizeOutcome)",
 			issueId: "FLY-1328",
 			projectName: "flywheel",
 			ok: true,
+			runnerDeathProven: true,
 		});
 		expect(disposalEvents()).toEqual([]);
 	});

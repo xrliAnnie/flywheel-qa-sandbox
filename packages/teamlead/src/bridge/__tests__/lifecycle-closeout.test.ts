@@ -52,6 +52,9 @@ function baseDeps(
 		})),
 		lookupTarget: (() => ({ kind: "gone" }) as const) as never,
 		probeLiveness: async () => "absent" as const,
+		// Unit tests must never inherit the production tmux/pgrep probe. Individual
+		// death-proof cases opt in explicitly through this seam.
+		probeExecutionLiveness: async () => "unknown" as const,
 		log: () => {},
 		...over,
 	};
@@ -191,6 +194,383 @@ describe("closeoutIssue — canceled disposition", () => {
 		expect(second.outcome).toBe("complete");
 		expect(archiveThreads).toHaveBeenCalledTimes(1);
 		expect(linearConsistency).toHaveBeenCalledTimes(1);
+	});
+
+	it("FLY-2313: terminal-only communication finalization cannot archive a runner not proven gone", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "completed");
+		const archiveThreads = vi.fn();
+		const linearConsistency = vi.fn();
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: false,
+			physicalGone: false,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+			error: "tmux window identity is still pending",
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: closeRunnerFn as never,
+				// An adversarial later lookup must not override closeRunner's
+				// explicit lack of physical-death proof.
+				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: false,
+			communicationsFinalized: true,
+			teardown: {
+				state: "failed",
+				error: "tmux window identity is still pending",
+			},
+		});
+		expect(archiveThreads).not.toHaveBeenCalled();
+		expect(linearConsistency).not.toHaveBeenCalled();
+	});
+
+	it("FLY-2313: positive host-death proof lets a pending runner close out completely", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "completed");
+		const archiveThreads = vi.fn();
+		const linearConsistency = vi.fn();
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: false,
+			physicalGone: true,
+			runnerDeathProven: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+			error: "tmux window identity is still pending",
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: closeRunnerFn as never,
+				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("complete");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+			teardown: { state: "done", detail: "proven_gone" },
+		});
+		expect(archiveThreads).toHaveBeenCalledOnce();
+		expect(linearConsistency).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-2313: stale target absence cannot become lifecycle teardown success", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "completed");
+		const archiveThreads = vi.fn();
+		const linearConsistency = vi.fn();
+		const closeRunnerFn = vi.fn(async () => ({
+			closed: false,
+			physicalGone: true,
+			commDbFinalized: true,
+			retiredGateCount: 1,
+			error: "permission denied",
+		}));
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: closeRunnerFn as never,
+				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "canceled",
+				authority: "linear_reconcile",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: false,
+			communicationsFinalized: true,
+			teardown: { state: "failed", error: "permission denied" },
+		});
+		expect(archiveThreads).not.toHaveBeenCalled();
+		expect(linearConsistency).not.toHaveBeenCalled();
+	});
+
+	it.each(["preserved", "throws"] as const)(
+		"FLY-2313: %s closeRunner without death proof cannot promote pending-target absence",
+		async (closeOutcome) => {
+			const store = await freshStore();
+			seedSession(store, "e1", "failed");
+			const probeExecutionLiveness = vi.fn(async () => "unknown" as const);
+			const finalizeCommDbSessionFn = vi.fn(() => ({
+				ok: true,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 1,
+			}));
+			const probeLiveness = vi.fn(async () => "absent" as const);
+			const archiveThreads = vi.fn(async () => undefined);
+			const linearConsistency = vi.fn(async () => undefined);
+			const closeRunnerFn = vi.fn(async () => {
+				if (closeOutcome === "throws") throw new Error("close runner failed");
+				return {
+					closed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					preserved: true,
+					reason: "crash_preserve" as const,
+				};
+			});
+
+			const report = await closeoutIssue(
+				baseDeps(store, {
+					closeRunnerFn: closeRunnerFn as never,
+					probeExecutionLiveness,
+					finalizeCommDbSessionFn,
+					lookupTarget: (() => ({
+						kind: "found",
+						target: {
+							tmuxWindow: "runner-flywheel:pending",
+							sessionName: "runner-flywheel",
+						},
+					})) as never,
+					probeLiveness,
+					archiveThreads,
+					linearConsistency,
+				}),
+				{
+					issueKey: UUID,
+					projectName: "proj",
+					disposition: "shipped",
+					authority: "ship_complete",
+				},
+			);
+
+			expect(report.outcome).toBe("blocked");
+			expect(report.nodes[0]).toMatchObject({
+				confirmedGone: false,
+				communicationsFinalized: false,
+			});
+			expect(probeExecutionLiveness).toHaveBeenCalledTimes(
+				closeOutcome === "preserved" ? 1 : 0,
+			);
+			expect(probeLiveness).not.toHaveBeenCalled();
+			expect(finalizeCommDbSessionFn).not.toHaveBeenCalled();
+			expect(archiveThreads).not.toHaveBeenCalled();
+			expect(linearConsistency).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each(["failed", "blocked"] as const)(
+		"FLY-2313: independently proven crash death finalizes preserved status=%s without probing pending",
+		async (status) => {
+			const store = await freshStore();
+			seedSession(store, "e1", status);
+			const finalizeCommDbSessionFn = vi.fn(() => ({
+				ok: true,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 1,
+			}));
+			const finalizeCommDbTerminalSessionFn = vi.fn(() => ({
+				ok: true,
+				outcome: "finalized" as const,
+				retiredGateCount: 1,
+				retiredAskCount: 0,
+				deletedSessionCount: 1,
+			}));
+			const probeExecutionLiveness = vi.fn(async () => "dead" as const);
+			const probeLiveness = vi.fn(async () => "absent" as const);
+			const archiveThreads = vi.fn(async () => undefined);
+			const linearConsistency = vi.fn(async () => undefined);
+
+			const report = await closeoutIssue(
+				baseDeps(store, {
+					closeRunnerFn: vi.fn(async () => ({
+						closed: false,
+						commDbFinalized: false,
+						retiredGateCount: 0,
+						preserved: true,
+						reason: "crash_preserve" as const,
+					})) as never,
+					probeExecutionLiveness,
+					finalizeCommDbSessionFn,
+					finalizeCommDbTerminalSessionFn,
+					lookupTarget: (() => ({
+						kind: "found",
+						target: {
+							tmuxWindow: "runner-flywheel:pending",
+							sessionName: "runner-flywheel",
+						},
+					})) as never,
+					probeLiveness,
+					archiveThreads,
+					linearConsistency,
+				} as never),
+				{
+					issueKey: UUID,
+					projectName: "proj",
+					disposition: "shipped",
+					authority: "ship_complete",
+				},
+			);
+
+			expect(report.outcome).toBe("complete");
+			expect(report.nodes[0]).toMatchObject({
+				confirmedGone: true,
+				communicationsFinalized: true,
+				teardown: { state: "skipped", reason: "crash_preserve" },
+			});
+			expect(probeExecutionLiveness).toHaveBeenCalledWith("e1", "proj");
+			expect(probeLiveness).not.toHaveBeenCalled();
+			expect(finalizeCommDbTerminalSessionFn).toHaveBeenCalledWith(
+				"e1",
+				"proj",
+				"runner-flywheel:pending",
+				status,
+			);
+			expect(finalizeCommDbSessionFn).not.toHaveBeenCalled();
+			expect(archiveThreads).toHaveBeenCalledOnce();
+			expect(linearConsistency).toHaveBeenCalledOnce();
+		},
+	);
+
+	it("FLY-2313: independently proven crash death converges when the CommDB identity is already gone", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "failed");
+		const finalizeCommDbSessionFn = vi.fn(() => ({
+			ok: true,
+			outcome: "finalized" as const,
+			retiredGateCount: 1,
+			retiredAskCount: 0,
+			deletedSessionCount: 0,
+		}));
+		const finalizeCommDbTerminalSessionFn = vi.fn();
+		const probeExecutionLiveness = vi.fn(async () => "dead" as const);
+		const probeLiveness = vi.fn(async () => "absent" as const);
+		const archiveThreads = vi.fn(async () => undefined);
+		const linearConsistency = vi.fn(async () => undefined);
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: vi.fn(async () => ({
+					closed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					preserved: true,
+					reason: "crash_preserve" as const,
+				})) as never,
+				probeExecutionLiveness,
+				finalizeCommDbSessionFn,
+				finalizeCommDbTerminalSessionFn:
+					finalizeCommDbTerminalSessionFn as never,
+				lookupTarget: (() => ({ kind: "gone" }) as const) as never,
+				probeLiveness,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "shipped",
+				authority: "ship_complete",
+			},
+		);
+
+		expect(report.outcome).toBe("complete");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: true,
+			teardown: { state: "skipped", reason: "crash_preserve" },
+		});
+		expect(probeExecutionLiveness).toHaveBeenCalledWith("e1", "proj");
+		expect(probeLiveness).not.toHaveBeenCalled();
+		expect(finalizeCommDbSessionFn).toHaveBeenCalledWith("e1", "proj");
+		expect(finalizeCommDbTerminalSessionFn).not.toHaveBeenCalled();
+		expect(archiveThreads).toHaveBeenCalledOnce();
+		expect(linearConsistency).toHaveBeenCalledOnce();
+	});
+
+	it("FLY-2313: preserved death proof fails closed if StateStore is no longer crash-terminal", async () => {
+		const store = await freshStore();
+		seedSession(store, "e1", "failed");
+		const readSession = store.getSession.bind(store);
+		const finalizeCommDbTerminalSessionFn = vi.fn();
+		const archiveThreads = vi.fn(async () => undefined);
+		const linearConsistency = vi.fn(async () => undefined);
+
+		const report = await closeoutIssue(
+			baseDeps(store, {
+				closeRunnerFn: vi.fn(async () => ({
+					closed: false,
+					commDbFinalized: false,
+					retiredGateCount: 0,
+					preserved: true,
+					reason: "crash_preserve" as const,
+				})) as never,
+				probeExecutionLiveness: vi.fn(async () => {
+					vi.spyOn(store, "getSession").mockImplementation((executionId) => {
+						const current = readSession(executionId);
+						return executionId === "e1" && current
+							? { ...current, status: "running" }
+							: current;
+					});
+					return "dead" as const;
+				}),
+				finalizeCommDbTerminalSessionFn:
+					finalizeCommDbTerminalSessionFn as never,
+				lookupTarget: (() => ({
+					kind: "found",
+					target: {
+						tmuxWindow: "runner-flywheel:pending",
+						sessionName: "runner-flywheel",
+					},
+				})) as never,
+				archiveThreads,
+				linearConsistency,
+			}),
+			{
+				issueKey: UUID,
+				projectName: "proj",
+				disposition: "shipped",
+				authority: "ship_complete",
+			},
+		);
+
+		expect(report.outcome).toBe("blocked");
+		expect(report.nodes[0]).toMatchObject({
+			confirmedGone: true,
+			communicationsFinalized: false,
+			teardown: {
+				state: "failed",
+				error: "commdb_finalize_failed:state_store_terminal_changed",
+			},
+		});
+		expect(finalizeCommDbTerminalSessionFn).not.toHaveBeenCalled();
+		expect(archiveThreads).not.toHaveBeenCalled();
+		expect(linearConsistency).not.toHaveBeenCalled();
 	});
 
 	it("FSM transition failure ⇒ MCP/window get ZERO signals, node blocked (plan §4 #32)", async () => {
@@ -369,13 +749,9 @@ describe("closeoutIssue — shipped disposition", () => {
 		);
 	});
 
-	it.each([
-		["dead_pin", "complete", 1],
-		["gone", "complete", 1],
-		["alive", "blocked", 0],
-	] as const)(
-		"preserves failed forensics with %s liveness evidence and closes only dead execution",
-		async (evidence, expectedOutcome, expectedIssueItemCalls) => {
+	it.each(["dead_pin", "gone", "alive"] as const)(
+		"keeps failed forensics blocked for later %s evidence when closeRunner did not prove death",
+		async (evidence) => {
 			const store = await freshStore();
 			seedSession(store, "completed-e", "completed");
 			seedSession(store, "failed-e", "failed");
@@ -431,7 +807,7 @@ describe("closeoutIssue — shipped disposition", () => {
 				},
 			);
 
-			expect(report.outcome).toBe(expectedOutcome);
+			expect(report.outcome).toBe("blocked");
 			expect(store.getSession("failed-e")?.status).toBe("failed");
 			expect(closeRunnerFn).toHaveBeenCalledWith(
 				expect.objectContaining({
@@ -443,16 +819,14 @@ describe("closeoutIssue — shipped disposition", () => {
 			expect(
 				report.nodes.find((node) => node.node.executionId === "failed-e"),
 			).toMatchObject({
-				confirmedGone: evidence !== "alive",
-				communicationsFinalized: evidence !== "alive",
+				confirmedGone: false,
+				communicationsFinalized: false,
 				teardown: { state: "skipped", reason: "crash_preserve" },
 			});
-			expect(probeLiveness).toHaveBeenCalledTimes(evidence === "gone" ? 0 : 1);
-			expect(finalizeCommDbSessionFn).toHaveBeenCalledTimes(
-				expectedIssueItemCalls,
-			);
-			expect(archiveThreads).toHaveBeenCalledTimes(expectedIssueItemCalls);
-			expect(linearConsistency).toHaveBeenCalledTimes(expectedIssueItemCalls);
+			expect(probeLiveness).not.toHaveBeenCalled();
+			expect(finalizeCommDbSessionFn).not.toHaveBeenCalled();
+			expect(archiveThreads).not.toHaveBeenCalled();
+			expect(linearConsistency).not.toHaveBeenCalled();
 		},
 	);
 });

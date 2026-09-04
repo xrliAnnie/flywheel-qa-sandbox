@@ -11,8 +11,6 @@
 
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { promisify } from "node:util";
 import {
 	type AuditedSignalAsyncDeps,
@@ -21,6 +19,7 @@ import {
 	auditedSignalAsync,
 } from "flywheel-claude-runner";
 import { CommDB } from "flywheel-comm/db";
+import { commDbPathForProject } from "./commdb-path.js";
 
 const execFileAsync = promisify(execFile);
 const TMUX_TIMEOUT = 5000;
@@ -375,7 +374,7 @@ export function lookupTmuxTarget(
 	// name means there is nothing we can/should clean up.
 	if (/[/\\]|\.\./.test(projectName)) return { kind: "gone" };
 
-	const dbPath = join(homedir(), ".flywheel", "comm", projectName, "comm.db");
+	const dbPath = commDbPathForProject(projectName);
 	if (!existsSync(dbPath)) return { kind: "gone" };
 
 	let db: CommDB | undefined;

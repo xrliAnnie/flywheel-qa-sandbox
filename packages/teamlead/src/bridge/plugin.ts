@@ -6077,6 +6077,7 @@ export async function startBridge(
 			projectName,
 			ok: result.ok,
 			error: result.error,
+			runnerDeathProven: true,
 			audit: {
 				retiredGateCount: result.retiredGateCount,
 				retiredAskCount: result.retiredAskCount,
@@ -6146,6 +6147,7 @@ export async function startBridge(
 							projectName: project,
 							ok: outcome.ok,
 							error: outcome.error,
+							runnerDeathProven: true,
 							audit: {
 								retiredGateCount: outcome.retiredGateCount,
 								retiredAskCount: outcome.retiredAskCount,
@@ -6776,6 +6778,7 @@ export async function startBridge(
 								projectName: project,
 								ok: outcome.ok,
 								error: outcome.error,
+								runnerDeathProven: true,
 								audit: {
 									retiredGateCount: outcome.retiredGateCount,
 									retiredAskCount: outcome.retiredAskCount,

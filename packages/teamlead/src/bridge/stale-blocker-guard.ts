@@ -151,6 +151,7 @@ export interface FinalizeStore {
 		projectName: string;
 		ok: boolean;
 		error?: string;
+		runnerDeathProven: boolean;
 		/** FLY-1328: ask-disposal forensics — see StateStore for the contract. */
 		audit?: {
 			retiredGateCount: number;
@@ -210,7 +211,9 @@ export async function finalizeStaleBlocker(
 	const execId = blocker.execution_id;
 	const project = blocker.project_name;
 	if (!project) return { proceed: false };
-	const finalizeCommunications = (): FinalizeCommDbResult => {
+	const finalizeCommunications = (
+		runnerDeathProven: boolean,
+	): FinalizeCommDbResult => {
 		const finalized = deps.finalizeCommDbSession(execId, project);
 		deps.store.recordCommDbFinalizeOutcome({
 			executionId: execId,
@@ -218,6 +221,7 @@ export async function finalizeStaleBlocker(
 			projectName: project,
 			ok: finalized.ok,
 			error: finalized.error,
+			runnerDeathProven,
 			audit: {
 				retiredGateCount: finalized.retiredGateCount,
 				retiredAskCount: finalized.retiredAskCount,
@@ -230,10 +234,10 @@ export async function finalizeStaleBlocker(
 	// Re-read #1 — before any destructive teardown.
 	const cur = deps.store.getSession(execId);
 	if (!cur) {
-		return { proceed: finalizeCommunications().ok };
+		return { proceed: finalizeCommunications(false).ok };
 	}
 	if (SLOT_FREE_STATES.has(cur.status)) {
-		return { proceed: finalizeCommunications().ok };
+		return { proceed: finalizeCommunications(false).ok };
 	}
 	if (!PARK_STATES.has(cur.status)) return { proceed: false }; // became running/pending → don't touch
 
@@ -286,7 +290,11 @@ export async function finalizeStaleBlocker(
 
 	// FLY-1238: physical absence is not a completed teardown until unresolved
 	// founder gates and the CommDB session are retired atomically.
-	const finalized = finalizeCommunications();
+	// Only a successful target teardown proves physical death here. A missing
+	// StateStore row, terminal status, or absent CommDB target can justify
+	// idempotent ledger settlement, but none may mint a founder-facing claim that
+	// the runner was physically gone.
+	const finalized = finalizeCommunications(toreDown);
 	if (!finalized.ok) {
 		deps.store.insertEvent({
 			event_id: `cron-stale-finalize-commdb-failed-${execId}`,

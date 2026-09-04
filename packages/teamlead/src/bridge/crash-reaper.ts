@@ -320,6 +320,7 @@ async function reapOne(
 		projectName,
 		ok: finalized.ok,
 		error: finalized.error,
+		runnerDeathProven: true,
 		audit: {
 			retiredGateCount: finalized.retiredGateCount,
 			retiredAskCount: finalized.retiredAskCount,

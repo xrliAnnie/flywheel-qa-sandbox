@@ -36,17 +36,22 @@ import {
 import {
 	type FinalizeCommDbResult,
 	finalizeCommDbSession,
+	finalizeCommDbSessionCommunications,
+	finalizeCommDbTerminalSession,
+	hasEndedCommDbSession,
 } from "./commdb-session-prune.js";
 import {
 	type CloseArchiveDeps,
 	maybeArchiveThreadOnClose,
 } from "./done-thread-archiver.js";
+import { probeRunExecutionLiveness } from "./run-quiescence.js";
 import { reapRunnerMcp } from "./runner-teardown.js";
 import { resolveTerminalViewIdentity } from "./terminal-view-identity.js";
 import {
 	getTmuxTargetFromCommDb,
 	killCmuxLinkedSession,
 	killTmuxWindow,
+	probeRunnerProcessLiveness,
 } from "./tmux-lookup.js";
 import { sqliteDatetime } from "./types.js";
 
@@ -198,8 +203,28 @@ export function registerLifecycleCloseGuard(
 
 export interface CloseRunnerResult {
 	closed: boolean;
-	/** FLY-1238: true only after unresolved CommDB gates and the session row
-	 * were retired in one transaction (or the project has no CommDB). */
+	/**
+	 * Present only on the post-kill `closed:false` result path.
+	 * - `true`: the execution-identity-aware family probe proved a terminal
+	 *   `:pending` runner dead. Target-local absence never sets this field true.
+	 * - `false`: execution death was not proven. This includes non-pending
+	 *   `absent`/`dead_pin` results because a stale target can describe an old
+	 *   window, plus alive/indeterminate and terminal-evidence-only outcomes.
+	 *   False therefore does not prove the process alive.
+	 * - `undefined`: this path was not evaluated (including `killed:true`);
+	 *   callers must not coerce absence to false.
+	 *
+	 * This is not the same predicate as post-merge's required
+	 * `CleanupTmuxTargetResult.physicalGone`, whose normal killed path is true.
+	 */
+	physicalGone?: boolean;
+	/** Independent, execution-identity-aware death proof strong enough to
+	 * authorize founder-facing archive and lifecycle completion. A bare stale
+	 * target absence deliberately does not set this field. */
+	runnerDeathProven?: true;
+	/** FLY-1238/FLY-2313: true only after unresolved CommDB communication
+	 * obligations were retired transactionally (or the project has no CommDB).
+	 * The session identity is deleted only when teardown proves death. */
 	commDbFinalized: boolean;
 	retiredGateCount: number;
 	alreadyGone?: boolean;
@@ -501,15 +526,64 @@ async function closeRunnerInner(
 			},
 		});
 	}
+	const authoritativeCrashStatus =
+		session.status === "failed" || session.status === "blocked"
+			? session.status
+			: undefined;
 
-	const finalizeCommunications = (): FinalizeCommDbResult => {
-		const finalized = finalizeCommDbSession(opts.executionId, opts.projectName);
+	type FinalizeMode =
+		| { kind: "full" }
+		| { kind: "guarded_full"; expectedTmuxWindow: string }
+		| { kind: "communications_only"; expectedTmuxWindow: string };
+	const finalizeCommunications = (
+		mode: FinalizeMode = { kind: "full" },
+	): FinalizeCommDbResult => {
+		let finalized: FinalizeCommDbResult;
+		if (mode.kind === "communications_only") {
+			finalized = finalizeCommDbSessionCommunications(
+				opts.executionId,
+				opts.projectName,
+				mode.expectedTmuxWindow,
+			);
+		} else if (mode.kind === "guarded_full") {
+			const currentStatus = store.getSession(opts.executionId)?.status;
+			const currentCrashStatus =
+				currentStatus === "failed" || currentStatus === "blocked"
+					? currentStatus
+					: undefined;
+			if (authoritativeCrashStatus && !currentCrashStatus) {
+				finalized = {
+					ok: false,
+					outcome: "terminal_evidence_changed",
+					retiredGateCount: 0,
+					retiredAskCount: 0,
+					deletedSessionCount: 0,
+					error: "state_store_terminal_changed",
+				};
+			} else {
+				finalized = currentCrashStatus
+					? finalizeCommDbTerminalSession(
+							opts.executionId,
+							opts.projectName,
+							mode.expectedTmuxWindow,
+							currentCrashStatus,
+						)
+					: finalizeCommDbTerminalSession(
+							opts.executionId,
+							opts.projectName,
+							mode.expectedTmuxWindow,
+						);
+			}
+		} else {
+			finalized = finalizeCommDbSession(opts.executionId, opts.projectName);
+		}
 		store.recordCommDbFinalizeOutcome({
 			executionId: opts.executionId,
 			issueId: opts.issueId,
 			projectName: opts.projectName,
 			ok: finalized.ok,
 			error: finalized.error,
+			runnerDeathProven: mode.kind !== "communications_only",
 			audit: {
 				retiredGateCount: finalized.retiredGateCount,
 				retiredAskCount: finalized.retiredAskCount,
@@ -812,28 +886,96 @@ async function closeRunnerInner(
 	let commDbFinalized = false;
 	let retiredGateCount = 0;
 	let finalizeError: string | undefined;
-	if (res.killed) {
-		const finalized = finalizeCommunications();
+	// Each signal has a failure mode: `res.killed` proves teardown of the
+	// registered target, not that the mapping was forever fresh; an absence
+	// probe can describe a stale target; and a terminal row can precede process
+	// exit, so a positive `alive` verdict must veto it. A `:pending` placeholder
+	// additionally needs the family-aware daemon + tmux/discovery/host policy to
+	// prove the execution dead; otherwise it stays unknown. Terminal status can
+	// authorize ledger-only cleanup for an ordinary identity, but never deleting
+	// the only session identity without positive execution-death evidence.
+	// The name is used only to reject invalid liveness evidence, never as death evidence.
+	const terminalCommDbEvidence = hasEndedCommDbSession(
+		opts.executionId,
+		opts.projectName,
+	);
+	const pendingIdentity = target.tmuxWindow.endsWith(":pending");
+	const pendingRunnerLiveness =
+		!res.killed &&
+		pendingIdentity &&
+		(terminalCommDbEvidence || authoritativeCrashStatus !== undefined)
+			? await probeRunExecutionLiveness(
+					session,
+					opts.executionId,
+					opts.projectName,
+				)
+			: undefined;
+	const runnerLiveness =
+		res.killed || pendingIdentity
+			? undefined
+			: await probeRunnerProcessLiveness(target.tmuxWindow);
+	const runnerDeathProven = pendingRunnerLiveness === "dead";
+	// A target-local absence can be a stale CommDB mapping, so it is enough to
+	// veto a live runner and settle terminal communications, but not enough to
+	// destroy the only execution identity. Pending executions use the stricter
+	// family-aware quiescence probe above; only its positive death result may
+	// substitute for a successful kill.
+	const canDeleteSessionIdentity = res.killed || runnerDeathProven;
+	const canFinalizeCommunicationsOnly =
+		!canDeleteSessionIdentity &&
+		!pendingIdentity &&
+		(runnerLiveness === "absent" || runnerLiveness === "dead_pin") &&
+		terminalCommDbEvidence;
+	const commDbCanFinalize =
+		canDeleteSessionIdentity || canFinalizeCommunicationsOnly;
+	if (commDbCanFinalize && !res.killed) {
+		// Read/refuse only: this reuses the existing authority predicate and can
+		// only stop the destructive CommDB finalizer after the kill/probe awaits.
+		const lost = await authorityLostReason();
+		if (lost) return abortAuthorityLost("pre_commdb_finalize", lost);
+	}
+	if (commDbCanFinalize) {
+		const finalized = finalizeCommunications(
+			canFinalizeCommunicationsOnly
+				? {
+						kind: "communications_only",
+						expectedTmuxWindow: target.tmuxWindow,
+					}
+				: runnerDeathProven && !res.killed
+					? {
+							kind: "guarded_full",
+							expectedTmuxWindow: target.tmuxWindow,
+						}
+					: { kind: "full" },
+		);
 		commDbFinalized = finalized.ok;
 		retiredGateCount = finalized.retiredGateCount;
 		if (!finalized.ok) {
 			finalizeError = `commdb_finalize_failed:${finalized.error ?? "unknown"}`;
 		}
+	} else {
+		finalizeError = `commdb_finalize_skipped:${res.error ?? `tmux_window_${runnerLiveness ?? "indeterminate"}`}`;
 	}
 
-	// FLY-369: central close→archive cascade — ONLY when the close actually
-	// succeeded (Codex code review R6 #1: a kill failure must NOT archive). The
-	// cascade is itself guarded to done-cleanup (completed) + no other active
-	// runner; FLY-1238 additionally requires communication finalization first.
-	if (res.killed && commDbFinalized && opts.archive) {
+	// FLY-369: central close→archive cascade — only after the registered target
+	// was killed or independent process evidence proved it gone. An unproven kill
+	// failure must not archive. The cascade is itself guarded to done-cleanup
+	// (completed) + no other active runner; FLY-1238 additionally requires
+	// communication finalization first.
+	if ((res.killed || runnerDeathProven) && commDbFinalized && opts.archive) {
 		await maybeArchiveThreadOnClose(store, session, opts.archive);
 	}
 
 	return {
 		closed: res.killed,
+		...(!res.killed && { physicalGone: runnerDeathProven }),
+		...(runnerDeathProven && { runnerDeathProven: true as const }),
 		commDbFinalized,
 		retiredGateCount,
-		error: res.error ?? finalizeError,
+		error:
+			finalizeError?.startsWith("commdb_finalize_failed:") && res.error
+				? `${finalizeError}; ${res.error}`
+				: (finalizeError ?? res.error),
 	};
 }
 
