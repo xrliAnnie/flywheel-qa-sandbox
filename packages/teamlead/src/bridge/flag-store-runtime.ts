@@ -272,6 +272,12 @@ export function storeSkillFrameworkModeControl(
 	return readFlagValue(runtime, "skill_framework_mode");
 }
 
+export function storeRunnerMemoryMode(
+	runtime: FlagStoreRuntime,
+): FlagStoreRawValue {
+	return readFlagValue(runtime, "runner_memory_mode");
+}
+
 export function storeWorkflowTurnDivergenceAlertsEnabled(
 	runtime: FlagStoreRuntime,
 ): boolean {

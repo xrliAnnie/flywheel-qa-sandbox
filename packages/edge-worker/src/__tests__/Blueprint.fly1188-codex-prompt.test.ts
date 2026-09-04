@@ -11,9 +11,10 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { RunnerMemoryMode } from "flywheel-config";
 import type {
 	AdapterExecutionContext,
 	AdapterExecutionResult,
@@ -25,6 +26,10 @@ import { Blueprint } from "../Blueprint.js";
 import type { DagNode } from "../dag-node.js";
 import type { GitResultChecker } from "../GitResultChecker.js";
 import { PreHydrator } from "../PreHydrator.js";
+import {
+	buildRunnerMemoryPromptSection,
+	prepareRunnerMemoryMount,
+} from "../runner-memory.js";
 import type { WorktreeManager } from "../WorktreeManager.js";
 import { resolvedTestAgent } from "./agent-dispatch-fixtures.js";
 
@@ -122,26 +127,72 @@ afterEach(() => {
 	}
 });
 
-async function buildPrompt(opts: {
+function deterministicMemoryPreparer(
+	input: Parameters<typeof prepareRunnerMemoryMount>[0],
+) {
+	const root = process.env.FLYWHEEL_RUNNER_MEMORY_ROOT as string;
+	return prepareRunnerMemoryMount({
+		...input,
+		managedSettings: {
+			managedFile: `${root}.fly1188-absent-managed.json`,
+			managedDropinDir: `${root}.fly1188-absent-managed.d`,
+		},
+	});
+}
+
+function makeBlueprint(input: {
+	adapter: IAdapter;
+	worktreeManager?: WorktreeManager;
+	dispatcher?: unknown;
+	checkpointConfig: Record<string, { enabled?: boolean }>;
+	memoryMode?: RunnerMemoryMode;
+}): Blueprint {
+	return Reflect.construct(Blueprint, [
+		makeHydrator(),
+		makeMockGitChecker(),
+		() => input.adapter,
+		makeMockShell(),
+		input.worktreeManager,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		input.dispatcher,
+		input.checkpointConfig,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		undefined,
+		() => ({
+			hasOverride: true,
+			raw: input.memoryMode ?? "off",
+		}),
+		deterministicMemoryPreparer,
+	]) as Blueprint;
+}
+
+async function buildPromptWithContext(opts: {
 	ctxOverrides?: Partial<BlueprintContext>;
 	worktreePath?: string;
 	checkpointConfig?: Record<string, { enabled?: boolean }>;
-}): Promise<string> {
+	memoryMode?: RunnerMemoryMode;
+}): Promise<{ prompt: string; adapterContext: AdapterExecutionContext }> {
 	const adapter = makeMockAdapter();
-	const blueprint = new Blueprint(
-		makeHydrator(),
-		makeMockGitChecker(),
-		() => adapter,
-		makeMockShell(),
-		opts.worktreePath ? makeWtManager(opts.worktreePath) : undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		undefined,
-		opts.checkpointConfig ?? CHECKPOINTS,
-	);
+	const blueprint = makeBlueprint({
+		adapter,
+		worktreeManager: opts.worktreePath
+			? makeWtManager(opts.worktreePath)
+			: undefined,
+		checkpointConfig: opts.checkpointConfig ?? CHECKPOINTS,
+		memoryMode: opts.memoryMode,
+	});
 	const ctx: BlueprintContext = {
 		teamName: "eng",
 		runnerName: "runner",
@@ -152,7 +203,20 @@ async function buildPrompt(opts: {
 	await blueprint.run(makeNode(), "/tmp/fly1188-m2-project", ctx);
 	const call = (adapter.execute as ReturnType<typeof vi.fn>).mock
 		.calls[0]?.[0] as AdapterExecutionContext | undefined;
-	return call?.appendSystemPrompt ?? "";
+	expect(call).toBeDefined();
+	return {
+		prompt: call?.appendSystemPrompt ?? "",
+		adapterContext: call as AdapterExecutionContext,
+	};
+}
+
+async function buildPrompt(opts: {
+	ctxOverrides?: Partial<BlueprintContext>;
+	worktreePath?: string;
+	checkpointConfig?: Record<string, { enabled?: boolean }>;
+	memoryMode?: RunnerMemoryMode;
+}): Promise<string> {
+	return (await buildPromptWithContext(opts)).prompt;
 }
 
 async function buildCodexPrompt(
@@ -164,6 +228,16 @@ async function buildCodexPrompt(
 		worktreePath: wt,
 		ctxOverrides: { runnerBackend: "codex-tmux", ...ctxOverrides },
 	});
+}
+
+function normalizePromptForSnapshot(prompt: string): string {
+	return prompt
+		.replace(/node \/[^\s`]+flywheel-comm[^\s`]*/g, "node <COMM_CLI>")
+		.replace(/\/[^\s`]*land-status\.json/g, "<LAND_STATUS>")
+		.replace(
+			/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
+			"<EXEC_ID>",
+		);
 }
 
 describe("FLY-1188 M2 — codex prompt has ZERO Claude-only tooling references", () => {
@@ -292,21 +366,12 @@ describe("FLY-1188 M2 — role-file ENVIRONMENT TRANSLATION header (codex only)"
 			join(wt, ".flywheel", "agents", "role.md"),
 			"Use the Skill tool and SendMessage as usual.",
 		);
-		const blueprint = new Blueprint(
-			makeHydrator(),
-			makeMockGitChecker(),
-			() => adapter,
-			makeMockShell(),
-			makeWtManager(wt),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			// eslint-disable-next-line @typescript-eslint/no-explicit-any
-			dispatcher as any,
-			CHECKPOINTS,
-		);
+		const blueprint = makeBlueprint({
+			adapter,
+			worktreeManager: makeWtManager(wt),
+			dispatcher,
+			checkpointConfig: CHECKPOINTS,
+		});
 		const ctx: BlueprintContext = {
 			teamName: "eng",
 			runnerName: "runner",
@@ -346,18 +411,93 @@ describe("FLY-1188 M2 — role-file ENVIRONMENT TRANSLATION header (codex only)"
 });
 
 describe("FLY-1188 M2 — claude prompt byte-snapshot (drift guard)", () => {
+	it("FLY-2147 only inserts the deterministic fail-closed section", async () => {
+		const { prompt, adapterContext } = await buildPromptWithContext({
+			memoryMode: "role",
+		});
+		const normalized = normalizePromptForSnapshot(prompt);
+		const sectionStart = normalized.indexOf("## Runner Memory\n");
+		const sectionEnd = normalized.indexOf("\n## ", sectionStart);
+		expect(sectionStart).toBeGreaterThanOrEqual(0);
+		expect(sectionEnd).toBeGreaterThan(sectionStart);
+		const section = normalized.slice(sectionStart, sectionEnd);
+		const expectedSection = buildRunnerMemoryPromptSection(
+			{
+				status: "skipped",
+				reason: "no_role",
+				backend: "claude-tmux",
+				project: "proj",
+			},
+			{ legacyProjectMemoryDir: undefined },
+		);
+		expect(section).toBe(expectedSection);
+		const beforeWithRepositoryNewline = readFileSync(
+			new URL("./fixtures/fly1188-prompt-before-fly2147.txt", import.meta.url),
+			"utf8",
+		);
+		const before = beforeWithRepositoryNewline.endsWith("\n")
+			? beforeWithRepositoryNewline.slice(0, -1)
+			: beforeWithRepositoryNewline;
+		expect(normalized).toBe(`${expectedSection}\n## Baseline Rules\n${before}`);
+		expect(adapterContext.runnerMemory).toEqual({
+			status: "disabled",
+			reason: "no_role",
+		});
+	});
+
+	it("FLY-2147 gives identity-less Codex the exact honest fail-closed section", async () => {
+		const wt = makeRealWorktree();
+		cleanups.push(wt);
+		const { prompt, adapterContext } = await buildPromptWithContext({
+			worktreePath: wt,
+			ctxOverrides: { runnerBackend: "codex-tmux" },
+			memoryMode: "role",
+		});
+		const sectionStart = prompt.indexOf("## Runner Memory\n");
+		const sectionEnd = prompt.indexOf("\n## ", sectionStart);
+		const section = prompt.slice(sectionStart, sectionEnd);
+		const expectedSection = buildRunnerMemoryPromptSection(
+			{
+				status: "skipped",
+				reason: "no_role",
+				backend: "codex-tmux",
+				project: "proj",
+			},
+			{ legacyProjectMemoryDir: undefined },
+		);
+		expect(section).toBe(expectedSection);
+		expect(section).not.toContain("auto memory is DISABLED");
+		expect(section).not.toContain("Claude Code loads");
+		expect(adapterContext.runnerMemory).toEqual({
+			status: "disabled",
+			reason: "no_role",
+		});
+	});
+
 	it("default claude ctx full prompt is unchanged", async () => {
-		const prompt = await buildPrompt({});
+		const prompt = await buildPrompt({ memoryMode: "role" });
 		// normalize the machine-dependent CLI path, land-signal path, and the
 		// per-run random executionId
-		const normalized = prompt
-			.replace(/node \/[^\s`]+flywheel-comm[^\s`]*/g, "node <COMM_CLI>")
-			.replace(/\/[^\s`]*land-status\.json/g, "<LAND_STATUS>")
-			.replace(
-				/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/g,
-				"<EXEC_ID>",
-			);
+		const normalized = normalizePromptForSnapshot(prompt);
 		expect(normalized).toMatchSnapshot();
+	});
+
+	it("FLY-2147 off mode omits runner memory and preserves the pre-FLY-2147 prompt byte-for-byte", async () => {
+		const { prompt, adapterContext } = await buildPromptWithContext({
+			memoryMode: "off",
+		});
+		const normalized = normalizePromptForSnapshot(prompt);
+		const beforeWithRepositoryNewline = readFileSync(
+			new URL("./fixtures/fly1188-prompt-before-fly2147.txt", import.meta.url),
+			"utf8",
+		);
+		const before = beforeWithRepositoryNewline.endsWith("\n")
+			? beforeWithRepositoryNewline.slice(0, -1)
+			: beforeWithRepositoryNewline;
+
+		expect(normalized).not.toContain("## Runner Memory\n");
+		expect(normalized).toBe(before);
+		expect(adapterContext.runnerMemory).toBeUndefined();
 	});
 });
 

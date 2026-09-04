@@ -1138,6 +1138,36 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		expect(env.FLYWHEEL_FOUNDER_REVIEW_REQUIRED).toBe("1");
 	});
 
+	it("FLY-2147: exports mounted memory only, without Claude settings", async () => {
+		const dir = "/tmp/runner-memory/flywheel/qa";
+		await makeAdapter().execute(
+			ctx({ runnerMemory: { status: "mounted", dir } }),
+		);
+		const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
+		expect(options.env?.FLYWHEEL_RUNNER_MEMORY_DIR).toBe(dir);
+		expect(JSON.stringify(options)).not.toContain("autoMemoryDirectory");
+		expect(JSON.stringify(options)).not.toContain("autoMemoryEnabled");
+	});
+
+	it("FLY-2147: disabled memory exports no directory and scrubs an inherited stale value", async () => {
+		const prior = process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
+		try {
+			process.env.FLYWHEEL_RUNNER_MEMORY_DIR = "/stale/shared-memory";
+			await makeAdapter().execute(
+				ctx({
+					runnerMemory: { status: "disabled", reason: "policy_conflict" },
+				}),
+			);
+			const options = capturedOpts as CodexDaemonGoalRuntimeOptions;
+			expect(options.env?.FLYWHEEL_RUNNER_MEMORY_DIR).toBeUndefined();
+			expect(JSON.stringify(options)).not.toContain("autoMemoryDirectory");
+			expect(JSON.stringify(options)).not.toContain("autoMemoryEnabled");
+		} finally {
+			if (prior === undefined) delete process.env.FLYWHEEL_RUNNER_MEMORY_DIR;
+			else process.env.FLYWHEEL_RUNNER_MEMORY_DIR = prior;
+		}
+	});
+
 	it("drops hostile inherited Lead and Discord identity coordinates", async () => {
 		const names = [
 			"LEAD_ID",
@@ -1186,6 +1216,10 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				bridgeIngestToken: "ingest-ticket",
 				stateDbPath: "/state.db",
 				progressPath: "/progress.md",
+				runnerMemory: {
+					status: "mounted",
+					dir: "/runner-memory/flywheel/qa",
+				},
 				sentinelPath: "/land.json",
 				workflowSubmissionCredential: "decision-ticket",
 				workflowSubmissionExpected: true,
@@ -1214,6 +1248,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				"FLYWHEEL_LEAD_ID",
 				"FLYWHEEL_PROGRESS_PATH",
 				"FLYWHEEL_PROJECT_NAME",
+				"FLYWHEEL_RUNNER_MEMORY_DIR",
 				"FLYWHEEL_RUNNER_BACKEND_ID",
 				"FLYWHEEL_RUNNER_VENDOR_ID",
 				"FLYWHEEL_STATE_DB_PATH",

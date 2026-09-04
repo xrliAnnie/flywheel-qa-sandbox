@@ -1,0 +1,14 @@
+flowchart TD
+  A["Bridge 派工<br/>(issue + 项目 + 角色)"] --> B["Blueprint 解析身份<br/>project = flywheel<br/>role = qa / eng_design / implement …"]
+  B --> C{"身份齐全且合法?<br/>(缺项目名 / 缺角色 / 非法字符)"}
+  C -- "否" --> Z["不挂载, fail-closed:<br/>这次执行关掉自动记忆<br/>日志 / prompt / 调度上下文三面可见<br/>runner 照常起"]
+  C -- "是(默认,没有开关)" --> D["算出目录<br/>~/.flywheel/runner-memory/flywheel/qa/"]
+  D --> E["建目录(首跑写 3 行空索引头)<br/>最多读 64KB 量行数与字节"]
+  E --> F{"索引是否超预算<br/>(160 行 / 20,000 字节)?"}
+  F -- "没超" --> G["日志: mounted … over_budget=false<br/>prompt: within budget"]
+  F -- "超了" --> H["日志: OVER BUDGET first_dropped_line=K<br/>prompt: 约从第 K 行起不会被加载,<br/>开工先把索引压回预算内"]
+  G --> I["把目录交给 adapter<br/>(第 12 个启动参数 runnerMemory)"]
+  H --> I
+  I --> J["claude CLI 启动<br/>--settings {autoMemoryDirectory: 目录}<br/>环境变量 FLYWHEEL_RUNNER_MEMORY_DIR"]
+  J --> K["Claude Code 原生装载该目录的短索引<br/>正文按需翻;写入也落在这个目录"]
+  K --> L["第二次派同角色+同项目<br/>(换 issue / 换 worktree)<br/>读到上一次写下的内容"]

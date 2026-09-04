@@ -345,6 +345,18 @@ export {
 	DEFAULT_RUNNER_DISABLED_PLUGINS,
 	resolveRunnerMcpProfile,
 } from "./runner-mcp-profile.js";
+export type {
+	RunnerMemoryArm,
+	RunnerMemoryMode,
+	RunnerMemorySelection,
+} from "./runner-memory-mode.js";
+export {
+	hashRunnerMemoryArm,
+	isRunnerMemoryMode,
+	RUNNER_MEMORY_MODE_ENV,
+	RUNNER_MEMORY_MODES,
+	resolveRunnerMemorySelection,
+} from "./runner-memory-mode.js";
 // FLY-1356: skill_framework_mode three-way switch (A/superpowers, B/matt, C/bare).
 export type {
 	BackendSkillAssembly,

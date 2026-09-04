@@ -29,6 +29,7 @@ import {
 	type CheckpointsConfig,
 	ConfigLoader,
 	type DocFlowConfig,
+	type FlagStoreRawValue,
 	loadBundledRegistry,
 	type PonytailConfig,
 	type RoleBackendMap,
@@ -88,6 +89,7 @@ import {
 	storeDocFlowEnabled,
 	storePonytailEnabled,
 	storeProofshotEnabled,
+	storeRunnerMemoryMode,
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
 } from "./flag-store-runtime.js";
@@ -471,6 +473,7 @@ async function createRunBlueprint(
 		hasOverride: boolean;
 		raw: string | null;
 	}, // FLY-1778: call-time SQLite raw control; Blueprint keeps issue-aware resolution
+	runnerMemoryMode?: () => FlagStoreRawValue, // FLY-2147: call-time SQLite experiment control
 	onTuiWindowLost?: (
 		evidence: RunnerTuiWindowLostEvidence,
 	) => void | Promise<void>,
@@ -742,6 +745,8 @@ async function createRunBlueprint(
 			undefined, // codexSkillAssemblyProbe — use Blueprint default
 			skillFrameworkModeControl,
 			docFlowEnabled,
+			undefined, // auditSignal — use Blueprint default
+			runnerMemoryMode,
 		);
 
 		const cleanup = async () => {
@@ -1318,6 +1323,9 @@ export async function setupRunInfrastructure(
 			const skillFrameworkModeControl = flagStore
 				? () => storeSkillFrameworkModeControl(flagStore)
 				: undefined;
+			const runnerMemoryMode = flagStore
+				? () => storeRunnerMemoryMode(flagStore)
+				: undefined;
 
 			const { blueprint, cleanup, codexRecoveryRuntime } =
 				await createRunBlueprint(
@@ -1335,6 +1343,7 @@ export async function setupRunInfrastructure(
 					store.getDbPath(), // FLY-766: owner marker db-path truth
 					skillFrameworkParticipation, // FLY-1356
 					skillFrameworkModeControl, // FLY-1778
+					runnerMemoryMode, // FLY-2147: store-backed per-issue experiment mode
 					runInfraOpts?.onTuiWindowLost,
 					runInfraOpts?.onTuiWindowRestored,
 					runInfraOpts?.onCodexTransportClose,

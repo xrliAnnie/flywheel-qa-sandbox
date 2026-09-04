@@ -1,3 +1,4 @@
+import { isRunnerMemoryMode } from "../runner-memory-mode.js";
 import {
 	SKILL_FRAMEWORK_MODES,
 	SKILL_FRAMEWORK_SPLIT,
@@ -71,6 +72,12 @@ const skillFrameworkCodec: FlagStoreCodec = {
 	canonicalEffective: String,
 };
 
+const runnerMemoryModeCodec: FlagStoreCodec = {
+	parse: ({ hasOverride, raw }) =>
+		hasOverride && isRunnerMemoryMode(raw) ? raw : "off",
+	canonicalEffective: (value) => (isRunnerMemoryMode(value) ? value : "off"),
+};
+
 export const SUMMARY_ABSORPTION_CADENCE_DEFAULT_MS = 6 * 60 * 60_000;
 export const SUMMARY_ABSORPTION_CADENCE_MIN_MS = 60_000;
 export const SUMMARY_ABSORPTION_CADENCE_MAX_MS = 30 * 24 * 60 * 60_000;
@@ -125,6 +132,7 @@ export function getFlagStoreCodec(name: string): FlagStoreCodec | undefined {
 		return nodeDwellThresholdHoursCodec;
 	}
 	if (name === "skill_framework_mode") return skillFrameworkCodec;
+	if (name === "runner_memory_mode") return runnerMemoryModeCodec;
 	if (
 		name === "alert_system" ||
 		name === "review_quota_auto_retry" ||

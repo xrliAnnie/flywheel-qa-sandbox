@@ -188,6 +188,8 @@ const FLY1455_NON_FLAG_ENV = [
 	"FLYWHEEL_RUNNER_DEFAULT_MODEL",
 	"FLYWHEEL_RUNNER_DISABLED_PLUGINS",
 	"FLYWHEEL_RUNNER_LOAD_PER_CORE",
+	"FLYWHEEL_RUNNER_MEMORY_DIR",
+	"FLYWHEEL_RUNNER_MEMORY_ROOT",
 	"FLYWHEEL_RUNNER_MIN_FREE_MEM_MB",
 	"FLYWHEEL_RUNNER_STATE_DIR",
 	"FLYWHEEL_RUNNER_STATE_ROOT",
@@ -267,6 +269,10 @@ export const NON_FLAG_ALLOWLIST: Record<string, string> = {
 	FLYWHEEL_TMUX_SESSION: "context: tmux session name",
 	FLYWHEEL_RUNNER_BACKEND_ID: "context: runner backend id",
 	FLYWHEEL_RUNNER_VENDOR_ID: "context: runner vendor id",
+	FLYWHEEL_RUNNER_MEMORY_DIR:
+		"FLY-2147 mounted role-memory directory output plumbing, not a runtime switch",
+	FLYWHEEL_RUNNER_MEMORY_ROOT:
+		"FLY-2147 test-only root path for hermetic runner-memory isolation, not a runtime switch",
 	FLYWHEEL_AGENT_BACKEND: "context: agent backend",
 	FLYWHEEL_LEAD_ID: "context: owning Lead id",
 	FLYWHEEL_RUNNER_START_POINT: "context: runner start point",

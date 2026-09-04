@@ -14,6 +14,7 @@ import type {
 	DesignBackend,
 	DocFlowConfig,
 	ExecutorBackend,
+	FlagStoreRawValue,
 	PonytailConfig,
 	PonytailInput,
 	PonytailRetryInput,
@@ -27,6 +28,7 @@ import {
 	captureRepositoryBaselineSet,
 	DEFAULT_GATE_TIMEOUT_MS,
 	defaultAgentsSkillsDir,
+	isRunnerMemoryMode,
 	isUiDesignFlavored,
 	MATT_SKILLS_PLUGIN_KEY,
 	normalizeOptionalBearer,
@@ -35,6 +37,7 @@ import {
 	PONYTAIL_SELECTOR_UNAVAILABLE,
 	PonytailLabelConflictError,
 	resolvePonytailRequested,
+	resolveRunnerMemorySelection,
 	resolveSkillFrameworkMode,
 	SKILL_FRAMEWORK_SPLIT,
 	SUPERPOWERS_CODEX_NAMESPACE,
@@ -66,6 +69,13 @@ import type {
 import type { GitResultChecker } from "./GitResultChecker.js";
 import type { HydratedContext, PreHydrator } from "./PreHydrator.js";
 import { resumeModeInstructions } from "./resume-mode.js";
+import {
+	buildRunnerMemoryPromptSection,
+	formatRunnerMemoryLogLine,
+	prepareRunnerMemoryMount,
+	resolveLegacyProjectMemoryDir,
+	toRunnerMemoryDisposition,
+} from "./runner-memory.js";
 import type { SkillInjector } from "./SkillInjector.js";
 import type { WorktreeInfo, WorktreeManager } from "./WorktreeManager.js";
 import { resolveWorktreeKey } from "./WorktreeManager.js";
@@ -897,6 +907,11 @@ export class Blueprint {
 			input: AuditedSignalInput,
 			deps?: AuditedSignalAsyncDeps,
 		) => Promise<AuditedSignalResult> = auditedSignalAsync,
+		private runnerMemoryMode: () => FlagStoreRawValue = () => ({
+			hasOverride: false,
+			raw: null,
+		}),
+		private runnerMemoryPreparer: typeof prepareRunnerMemoryMount = prepareRunnerMemoryMount,
 	) {}
 
 	async run(
@@ -1201,7 +1216,8 @@ export class Blueprint {
 		// FLY-123: adapter lookup is by EXECUTOR BACKEND (registry key), not by
 		// ctx.runnerName (a display-ish field the old makeAdapter closure
 		// ignored anyway). Absent → claude-tmux, byte-compat with production.
-		const adapter = this.getAdapter(ctx.runnerBackend ?? "claude-tmux");
+		const backend = ctx.runnerBackend ?? "claude-tmux";
+		const adapter = this.getAdapter(backend);
 		// FLY-1188: executor-semantics discriminant — the RESOLVED executor
 		// backend, never the transport vendor. `ctx.vendor` is Agent-Team
 		// transport identity and is legitimately absent on identity-less /
@@ -1209,7 +1225,7 @@ export class Blueprint {
 		// still codex-tmux; keying execution semantics on vendor rendered
 		// BLOCKING gate text for exactly those combos — text a codex exec
 		// runner can never satisfy (it cannot sit inside a blocking process).
-		const isCodexRunner = (ctx.runnerBackend ?? "claude-tmux") === "codex-tmux";
+		const isCodexRunner = backend === "codex-tmux";
 		// FLY-1356/1395: the effective skill-framework arm for this run. Claude's
 		// plugin flags remain Claude-only, while prompt variants apply to every
 		// backend with native assembly capability (Claude + Codex). Default/absent
@@ -1218,10 +1234,9 @@ export class Blueprint {
 			env.skillFrameworkMode ?? "superpowers",
 		);
 		const claudePluginAssembly =
-			(ctx.runnerBackend ?? "claude-tmux") === "claude-tmux" &&
-			skillFrameworkMode !== "superpowers";
+			backend === "claude-tmux" && skillFrameworkMode !== "superpowers";
 		const variantAssembly =
-			BACKEND_SKILL_ASSEMBLY[ctx.runnerBackend ?? "claude-tmux"] === "native" &&
+			BACKEND_SKILL_ASSEMBLY[backend] === "native" &&
 			skillFrameworkMode !== "superpowers";
 		const modeDisabledPlugins = claudePluginAssembly
 			? [SUPERPOWERS_PLUGIN_KEY]
@@ -2679,9 +2694,57 @@ export class Blueprint {
 			}
 		}
 
+		const memoryModeControl = this.runnerMemoryMode();
+		const memoryMode =
+			memoryModeControl.hasOverride && isRunnerMemoryMode(memoryModeControl.raw)
+				? memoryModeControl.raw
+				: "off";
+		const memorySelection = resolveRunnerMemorySelection({
+			mode: memoryMode,
+			issueIdentifier: hydrated.issueIdentifier,
+		});
+		console.info(
+			`[Blueprint] runner-memory selection mode=${memoryMode} arm=${memorySelection} issue=${hydrated.issueIdentifier}`,
+		);
+		const memoryMount =
+			memorySelection === "role"
+				? this.runnerMemoryPreparer({
+						env: process.env,
+						backend,
+						projectName: ctx.projectName,
+						nodeId: isGeneralizedExecution
+							? ctx.generalizedExecutionContext!.nodeId
+							: undefined,
+						agentName: dispatchResult?.agentName,
+						cwd,
+						projectRoot,
+					})
+				: undefined;
+		if (memoryMount) {
+			const memoryLog = formatRunnerMemoryLogLine(memoryMount);
+			if (memoryLog.level === "warn") console.warn(memoryLog.line);
+			else console.info(memoryLog.line);
+		}
+		const home = memoryMount ? process.env.HOME?.trim() : undefined;
+		const legacyProjectMemoryDir =
+			home && path.isAbsolute(home)
+				? resolveLegacyProjectMemoryDir({
+						repoRoot: projectRoot,
+						home,
+						exists: fs.existsSync,
+					})
+				: undefined;
+		const memorySection = memoryMount
+			? buildRunnerMemoryPromptSection(memoryMount, {
+					legacyProjectMemoryDir,
+				})
+			: undefined;
+		const memoryBlock = memorySection ? `\n${memorySection}` : "";
 		const systemPrompt = agentContext
-			? `${agentContext}\n## Baseline Rules\n${baseSystemPrompt}`
-			: baseSystemPrompt;
+			? `${agentContext}${memoryBlock}\n## Baseline Rules\n${baseSystemPrompt}`
+			: memorySection
+				? `${memorySection}\n## Baseline Rules\n${baseSystemPrompt}`
+				: baseSystemPrompt;
 
 		// ── Adapter execution (GEO-157: IAdapter.execute()) ──
 		const timeoutMs = ctx.sessionTimeoutMs ?? 86_400_000; // 24h safety net (FLY-97; FLY-92 idle detection retired in FLY-1560)
@@ -2729,9 +2792,7 @@ export class Blueprint {
 				issueId: hydrated.issueId,
 				prompt,
 				cwd,
-				...(worktreeInfo &&
-				((ctx.runnerBackend ?? "claude-tmux") === "claude-tmux" ||
-					isCodexRunner)
+				...(worktreeInfo && (backend === "claude-tmux" || isCodexRunner)
 					? { pretrustWorkspace: true }
 					: {}),
 				label: buildWindowLabel(displayId, ctx.runnerName, hydrated.issueTitle),
@@ -2799,6 +2860,9 @@ export class Blueprint {
 				waitingTimeoutMs: 176_400_000, // FLY-97 base, raised FLY-159 to 49h: 48h gate timeout + 1h buffer
 				leadId: ctx.leadId,
 				projectName: ctx.projectName,
+				...(memoryMount && {
+					runnerMemory: toRunnerMemoryDisposition(memoryMount),
+				}),
 				bridgeUrl: resolveBridgeUrl(),
 				bridgeIngestToken: normalizeOptionalBearer(
 					process.env.TEAMLEAD_INGEST_TOKEN,

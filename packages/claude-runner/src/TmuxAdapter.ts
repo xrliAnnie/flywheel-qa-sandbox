@@ -715,6 +715,9 @@ export class TmuxAdapter implements IAdapter {
 		if (ctx.projectName) {
 			appendPaneEnv("FLYWHEEL_PROJECT_NAME", ctx.projectName);
 		}
+		if (ctx.runnerMemory?.status === "mounted") {
+			appendPaneEnv("FLYWHEEL_RUNNER_MEMORY_DIR", ctx.runnerMemory.dir);
+		}
 		// FLY-1726: tmux inherits its server-global environment unless each key is
 		// explicitly replaced. A Runner owns a Lead lane (FLYWHEEL_LEAD_ID) but is
 		// not the Lead Discord identity itself, so clear the bare Lead/Discord
@@ -1266,9 +1269,20 @@ export class TmuxAdapter implements IAdapter {
 		for (const plugin of ctx.enabledPluginsExtra ?? []) {
 			enabledPlugins[plugin] = true;
 		}
+		const memorySettings =
+			ctx.runnerMemory?.status === "mounted"
+				? {
+						autoMemoryDirectory: ctx.runnerMemory.dir,
+						autoMemoryEnabled: true,
+					}
+				: ctx.runnerMemory?.status === "disabled"
+					? { autoMemoryEnabled: false }
+					: undefined;
 		args.push(
 			"--settings",
-			JSON.stringify(buildNonLeadClaudeSettings({ enabledPlugins })),
+			JSON.stringify(
+				buildNonLeadClaudeSettings({ enabledPlugins }, memorySettings),
+			),
 		);
 		// FLY-751: Claude-in-Chrome off for slimmed (non-QA) runners.
 		if (ctx.disableChrome) {

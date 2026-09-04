@@ -1,7 +1,11 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
 exports[`FLY-1188 M2 — claude prompt byte-snapshot (drift guard) > default claude ctx full prompt is unchanged 1`] = `
-"PIPELINE PREAMBLE — run BEFORE any other work:
+"## Runner Memory
+- Role memory NOT mounted (proj/-): no_role. Claude Code auto memory is DISABLED for this session (fail-closed, FLY-2147): Claude Code will not load or automatically write an auto-memory index this session. Report this line to your Lead in your first status report.
+
+## Baseline Rules
+PIPELINE PREAMBLE — run BEFORE any other work:
 (1) \`node <COMM_CLI> stage set onboard\` — reports intent (you are starting onboarding).
 (2) Attempt the \`onboard\` skill (or \`onboard-<role>\` matching your agent role if applicable).
 (3) On success: \`node <COMM_CLI> stage set brainstorm\` and proceed.

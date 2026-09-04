@@ -22,6 +22,7 @@ import {
 	storePonytailEnabled,
 	storeProofshotEnabled,
 	storeReviewQuotaAutoRetryEnabled,
+	storeRunnerMemoryMode,
 	storeShippedHuskForceEnabled,
 	storeSkillFrameworkModeControl,
 	storeSkillFrameworkSplitParticipation,
@@ -486,6 +487,43 @@ describe("FLY-1778 flag store boot lifecycle and read-on-use", () => {
 		const second = resolveSkillFrameworkMode({ raw, issueIdentifier: "FLY-2" });
 		expect(first.via).toBe("hash");
 		expect(second.via).toBe("hash");
+	});
+
+	it("reads runner memory mode at call time after a store write", () => {
+		const runtime = initializeFlagStore(store, {});
+		expect(storeRunnerMemoryMode(runtime)).toEqual({
+			hasOverride: false,
+			raw: null,
+		});
+
+		const firstRevision = store.getFlagValueRow("runner_memory_mode")!.revision;
+		expect(
+			store.applyFlagValueChange({
+				name: "runner_memory_mode",
+				rawTo: "role",
+				expectedRevision: firstRevision,
+				actor: "bridge-local-operator",
+				reason: "start forced role-memory arm",
+			}),
+		).toMatchObject({ ok: true });
+		expect(storeRunnerMemoryMode(runtime)).toEqual({
+			hasOverride: true,
+			raw: "role",
+		});
+
+		const secondRevision =
+			store.getFlagValueRow("runner_memory_mode")!.revision;
+		store.applyFlagValueChange({
+			name: "runner_memory_mode",
+			rawTo: "split",
+			expectedRevision: secondRevision,
+			actor: "bridge-local-operator",
+			reason: "start stable 50/50 experiment",
+		});
+		expect(storeRunnerMemoryMode(runtime)).toEqual({
+			hasOverride: true,
+			raw: "split",
+		});
 	});
 
 	it("enriches views with the authoritative store value and clock readiness", () => {

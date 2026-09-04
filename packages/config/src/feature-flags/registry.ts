@@ -1,3 +1,5 @@
+import { RUNNER_MEMORY_MODES } from "../runner-memory-mode.js";
+
 /**
  * FLY-709 — central feature-flag registry (single source of truth).
  *
@@ -97,6 +99,8 @@ export interface FeatureFlagSpec {
 	note?: string;
 	/** Policy retirement marker; the flag remains discoverable but cannot revive. */
 	retiring?: string;
+	/** Explicit removal condition for a deliberately temporary experiment flag. */
+	retireWhen?: string;
 	/**
 	 * FLY-1779 (FLY-1412 §5.2) — SCAN-WRITTEN state, NOT a birth-time
 	 * declaration. The weekly retirement scan puts a flag in front of Annie; if
@@ -568,6 +572,32 @@ export const FEATURE_FLAGS: readonly FeatureFlagSpec[] = [
 			),
 		],
 		toggleable: "conversational",
+	},
+	{
+		name: "runner_memory_mode",
+		category: "feature",
+		source: "env",
+		scope: "bridge_global",
+		envVar: "FLYWHEEL_RUNNER_MEMORY_MODE",
+		polarity: "opt_in",
+		valueKind: "enum",
+		enumValues: [...RUNNER_MEMORY_MODES],
+		default: "off",
+		description:
+			"FLY-2147: temporary Runner memory experiment (off / issue-stable 50:50 split / forced role / forced shared)",
+		readSites: [
+			flagStoreSite(
+				"packages/teamlead/src/bridge/run-infra.ts",
+				"setupRunInfrastructure",
+				"storeRunnerMemoryMode",
+			),
+		],
+		toggleable: "direct",
+		directToggleProof:
+			"packages/teamlead/src/bridge/__tests__/flag-store-runtime.test.ts: runner memory mode observes the next store write",
+		retireWhen:
+			"Remove the split router and this flag when the founder selects role or shared as the permanent memory behavior.",
+		note: "Temporary experiment control, not a long-term product knob. Default off preserves the pre-FLY-2147 spawn path byte-for-byte.",
 	},
 	{
 		// FLY-1356/1609: the four-way skill-framework switch (A=superpowers status
