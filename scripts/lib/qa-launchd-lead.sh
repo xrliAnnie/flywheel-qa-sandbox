@@ -190,9 +190,14 @@ qa_launchd_render_codex_plist() {
 qa_launchd_mint_codex_home() (
   local source="$1" dest="$2" slot_root="$3" stage="" validation
   local source_real slot_real release_real release_name parent socket_path_bytes move_rc
+  local lease_dir="" lease_acquired=0
   cleanup() {
     if [ -n "$stage" ] && [ -d "$stage" ]; then
       rm -rf "$stage"
+    fi
+    if [ "$lease_acquired" = 1 ] && [ -n "$lease_dir" ]; then
+      rm -f "$lease_dir/owner"
+      rmdir "$lease_dir" 2>/dev/null || true
     fi
   }
   trap cleanup EXIT
@@ -319,13 +324,145 @@ PY
   socket_path_bytes=$(LC_ALL=C printf '%s' "$dest/app-server-control/app-server-control.sock" | wc -c | tr -d ' ')
   [ "$socket_path_bytes" -le 100 ] \
     || { qa_launchd_err "Codex daemon socket path exceeds 100 bytes"; return 1; }
+  lease_dir="${source_real}/.flywheel-qa-auth-lease"
+  if ! mkdir "$lease_dir" 2>/dev/null; then
+    qa_launchd_err "Codex QA credential source is already leased"
+    return 1
+  fi
+  lease_acquired=1
+  chmod 700 "$lease_dir" || return 1
+  printf '%s\n' "$dest" > "$lease_dir/owner" || return 1
+  chmod 600 "$lease_dir/owner" || return 1
   cp "$source_real/auth.json" "$stage/auth.json" || return 1
-  chmod 600 "$stage/auth.json" || return 1
+  cp "$source_real/auth.json" "$stage/.flywheel-qa-source-auth-baseline" || return 1
+  printf '%s\n' "$source_real" > "$stage/.flywheel-qa-source-home" || return 1
+  chmod 600 "$stage/auth.json" "$stage/.flywheel-qa-source-auth-baseline" \
+    "$stage/.flywheel-qa-source-home" || return 1
   mv "$stage" "$dest"
   move_rc=$?
   [ "$move_rc" -eq 0 ] || return "$move_rc"
   stage=""
+  lease_acquired=0
 )
+
+qa_launchd_writeback_codex_auth() {
+  local codex_home="$1"
+  python3 - "$codex_home" <<'PY'
+import os
+from pathlib import Path
+import re
+import stat
+import sys
+
+home = Path(sys.argv[1])
+try:
+    home_info = home.lstat()
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISDIR(home_info.st_mode) or home.is_symlink():
+    raise SystemExit(1)
+home_real = Path(os.path.realpath(home))
+if not re.fullmatch(
+    r"/(?:private/)?tmp/flywheel-test-slot-[1-9][0-9]*/cdxh/[a-z0-9][a-z0-9-]*",
+    str(home_real),
+):
+    raise SystemExit(1)
+
+source_marker = home / ".flywheel-qa-source-home"
+baseline_path = home / ".flywheel-qa-source-auth-baseline"
+slot_auth = home / "auth.json"
+for path in (source_marker, baseline_path, slot_auth):
+    try:
+        info = path.lstat()
+    except OSError:
+        raise SystemExit(1)
+    if not stat.S_ISREG(info.st_mode) or path.is_symlink():
+        raise SystemExit(1)
+
+try:
+    source_text = source_marker.read_text(encoding="utf-8")
+except (OSError, UnicodeError):
+    raise SystemExit(1)
+if not source_text.endswith("\n") or "\n" in source_text[:-1]:
+    raise SystemExit(1)
+source = Path(source_text[:-1])
+if not source.is_absolute():
+    raise SystemExit(1)
+try:
+    source_info = source.lstat()
+except OSError:
+    raise SystemExit(1)
+if not stat.S_ISDIR(source_info.st_mode) or source.is_symlink():
+    raise SystemExit(1)
+source_real = Path(os.path.realpath(source))
+if source_real != source:
+    raise SystemExit(1)
+
+source_auth = source / "auth.json"
+lease = source / ".flywheel-qa-auth-lease"
+owner = lease / "owner"
+for path, kind in ((source_auth, "file"), (lease, "dir"), (owner, "file")):
+    try:
+        info = path.lstat()
+    except OSError:
+        raise SystemExit(1)
+    if path.is_symlink():
+        raise SystemExit(1)
+    if kind == "file" and not stat.S_ISREG(info.st_mode):
+        raise SystemExit(1)
+    if kind == "dir" and not stat.S_ISDIR(info.st_mode):
+        raise SystemExit(1)
+try:
+    owner_text = owner.read_text(encoding="utf-8")
+except (OSError, UnicodeError):
+    raise SystemExit(1)
+if owner_text != str(home) + "\n":
+    raise SystemExit(1)
+
+try:
+    baseline = baseline_path.read_bytes()
+    current = source_auth.read_bytes()
+    rotated = slot_auth.read_bytes()
+except OSError:
+    raise SystemExit(1)
+if current != baseline and current != rotated:
+    raise SystemExit(2)
+if current != rotated:
+    temp = source / (".auth.json.flywheel-writeback-" + str(os.getpid()))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = None
+    try:
+        fd = os.open(temp, flags, 0o600)
+        with os.fdopen(fd, "wb", closefd=True) as stream:
+            fd = None
+            stream.write(rotated)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temp, 0o600)
+        os.replace(temp, source_auth)
+        directory_fd = os.open(source, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        try:
+            temp.unlink()
+        except OSError:
+            pass
+        raise SystemExit(1)
+
+try:
+    owner.unlink()
+    lease.rmdir()
+except OSError:
+    raise SystemExit(1)
+PY
+}
 
 qa_launchd_lead_pid() {
   local label="$1" launchctl_bin="${FLYWHEEL_QA_LAUNCHCTL:-launchctl}" out
@@ -1092,7 +1229,7 @@ PY
 qa_launchd_stop_codex_entry() {
   local registry="$1" entry="$2" validated label codex_home codex_bin state_dir runtime_pid_file
   local runtime_pid="" runtime_incarnation="" daemon_pid="" daemon_incarnation=""
-  local daemon_pid_file daemon_pid_rc daemon_socket bounded_run failed=0
+  local daemon_pid_file daemon_pid_rc daemon_socket bounded_run writeback_rc failed=0
   validated=$(qa_launchd_validate_codex_stop_entry "$registry" "$entry") \
     || { qa_launchd_err "carrier=codex-tui step=validate"; return 1; }
   IFS=$'\t' read -r label codex_home codex_bin state_dir runtime_pid_file <<<"$validated"
@@ -1141,6 +1278,19 @@ qa_launchd_stop_codex_entry() {
   if ! qa_launchd_stop_codex_updaters "$codex_bin"; then
     qa_launchd_err "carrier=codex-tui step=updater-converge"
     failed=1
+  fi
+  if [[ "$failed" == 0 ]]; then
+    if qa_launchd_writeback_codex_auth "$codex_home"; then
+      :
+    else
+      writeback_rc=$?
+      if [[ "$writeback_rc" == 2 ]]; then
+        qa_launchd_err "carrier=codex-tui step=auth-writeback result=conflict"
+      else
+        qa_launchd_err "carrier=codex-tui step=auth-writeback result=failed"
+      fi
+      failed=1
+    fi
   fi
   [[ "$failed" == 0 ]]
 }

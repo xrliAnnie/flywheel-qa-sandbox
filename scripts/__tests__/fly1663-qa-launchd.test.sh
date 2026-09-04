@@ -157,13 +157,15 @@ fi
 mint_source="$TMP/codex-source"
 mint_dest="$MINT_SLOT/cdxh/qa-lead"
 mkdir -p "$mint_source/packages/standalone/releases/release-1"
-printf '%s\n' 'fixture-auth-secret' > "$mint_source/auth.json"
+printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-1"}}' \
+  > "$mint_source/auth.json"
 printf '%s\n' '#!/bin/bash' 'exit 0' > "$mint_source/packages/standalone/releases/release-1/codex"
 chmod +x "$mint_source/packages/standalone/releases/release-1/codex"
 ln -s releases/release-1 "$mint_source/packages/standalone/current"
 if qa_launchd_mint_codex_home "$mint_source" "$mint_dest" "$MINT_SLOT" \
     && [ -x "$mint_dest/packages/standalone/current/codex" ] \
-    && [ "$(cat "$mint_dest/auth.json")" = fixture-auth-secret ] \
+    && [ "$(cat "$mint_dest/auth.json")" = \
+      '{"tokens":{"refresh_token":"fixture-refresh-1"}}' ] \
     && [ "$(qa_test_file_mode "$mint_dest/auth.json")" = 600 ] \
     && [ ! -e "$mint_dest/history.jsonl" ] \
     && [ -z "$(find "$MINT_SLOT/cdxh" -maxdepth 1 -name '.cdxh-stage.*' -print -quit)" ]; then
@@ -297,12 +299,15 @@ target.write_text(body.replace(old, new))
 PY
 false_root="/tmp/flywheel-test-slot-$((930000 + $$))"
 false_dest="$false_root/cdxh/post-auth"
+false_source="$TMP/false-source"
+make_mint_source "$false_source"
 if ! HOME="$HOME" /bin/bash -c \
     'source "$1"; qa_launchd_mint_codex_home "$2" "$3" "$4"' _ \
-    "$false_lib" "$mint_source" "$false_dest" "$false_root" >/dev/null 2>&1 \
+    "$false_lib" "$false_source" "$false_dest" "$false_root" >/dev/null 2>&1 \
     && [ ! -e "$false_dest" ] \
     && ! find "$false_root" -name '.cdxh-stage.*' -print -quit | grep -q . \
-    && ! grep -R -Fq 'fixture-auth-secret' "$false_root" 2>/dev/null; then
+    && ! grep -R -Fq 'fixture-auth-secret' "$false_root" 2>/dev/null \
+    && [ ! -e "$false_source/.flywheel-qa-auth-lease" ]; then
   pass "Codex home mint scrubs staged credentials after a post-auth failure"
 else
   fail "Codex home post-auth failure cleanup"
@@ -386,12 +391,15 @@ finally:
         proc.wait()
 PY
 signal_matrix_ok=1
+signal_source="$TMP/signal-source"
+make_mint_source "$signal_source"
 for mint_shell in "${mint_shells[@]}"; do
   for signal_name in SIGINT SIGTERM; do
     signal_root="/tmp/flywheel-test-slot-$((940000 + $$ + ${#signal_name} + ${#mint_shell}))"
     rm -rf "$signal_root"
     if ! HOME="$HOME" python3 "$signal_driver" "$mint_shell" "$signal_lib" \
-        "$mint_source" "$signal_root/cdxh/signaled" "$signal_root" "$signal_name"; then
+        "$signal_source" "$signal_root/cdxh/signaled" "$signal_root" "$signal_name" \
+        || [ -e "$signal_source/.flywheel-qa-auth-lease" ]; then
       signal_matrix_ok=0
     fi
     rm -rf "$signal_root"
@@ -831,6 +839,9 @@ chmod +x "$codex_bin"
 export FLY1663_QA_CODEX_STOP_CALLS="$codex_stop_calls"
 qa_launchd_register "$codex_stop_registry" "$label" "$codex_plist" '' \
   codex-tui "$mint_dest" "$codex_bin" "$stop_state" "$runtime_pid_file"
+printf '%s\n' '{"tokens":{"refresh_token":"fixture-refresh-2"}}' \
+  > "$mint_dest/auth.json"
+second_mint_dest="$MINT_SLOT/cdxh/qa-lead-second-run"
 : > "$launchctl_state"
 ps() {
   case "$*" in
@@ -863,10 +874,15 @@ if (unset FLYWHEEL_DIR; qa_launchd_stop_registry "$codex_stop_registry") \
     && grep -Fxq 'remote-control stop --json' "$codex_stop_calls" \
     && [[ ! -e "$launchctl_state" && ! -e "$daemon_pid_file" && ! -e "$daemon_socket" \
       && ! -e "$updater_state" ]] \
-    && grep -Eq '^-TERM( --)? 6262$' "$updater_kills"; then
-  pass "Codex registry stop is standalone and converges runtime, daemon, and updater"
+    && grep -Eq '^-TERM( --)? 6262$' "$updater_kills" \
+    && [[ "$(cat "$mint_source/auth.json")" == \
+      '{"tokens":{"refresh_token":"fixture-refresh-2"}}' ]] \
+    && qa_launchd_mint_codex_home "$mint_source" "$second_mint_dest" "$MINT_SLOT" \
+    && [[ "$(cat "$second_mint_dest/auth.json")" == \
+      '{"tokens":{"refresh_token":"fixture-refresh-2"}}' ]]; then
+  pass "Codex registry stop converges processes and preserves rotated auth for a second mint"
 else
-  fail "Codex registry convergent teardown"
+  fail "Codex registry convergent teardown and second-use auth handoff"
 fi
 unset -f ps kill
 
