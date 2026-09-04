@@ -202,12 +202,16 @@ export interface AdapterExecutionContext {
 	maxTurns?: number;
 	/** Process-level timeout in milliseconds */
 	timeoutMs?: number;
-	/**
-	 * FLY-1269: explicit DAG workflow Codex phase lifetime. Present only for a
-	 * share-parent Design/Implement/QA execution while the keep-alive flag is on.
-	 * Adapters must not infer this identity from environment variables or labels.
-	 */
+	/** FLY-1269: existing shared Codex phase lifetime and mailbox eligibility. */
 	phaseKeepAlive?: { role: "design" | "implement" | "qa" };
+	/**
+	 * FLY-2268: exact loop-target identity for resident grace/drain semantics.
+	 * This is independent from the existing Codex phase/mailbox lifetime and is
+	 * also supplied to Claude workers.
+	 */
+	residentLoopTarget?: { nodeId: string };
+	/** Durable workflow role used for session/event reconstruction, not residency. */
+	sessionRole?: string;
 
 	// -- Session persistence --
 
@@ -319,6 +323,8 @@ export interface AdapterExecutionContext {
 	 * fleet-wide ingest bearer, a leak is scoped to one execution + TTL.
 	 */
 	workflowSubmissionCredential?: string;
+	/** Exact immutable activation used by resident-hold CAS. */
+	workflowActivationId?: string;
 	/** FLY-1425: engine-owned runners must never fall back to legacy /events. */
 	workflowSubmissionExpected?: boolean;
 	/** FLY-1281: one-shot credential for a generalized generic node output. */

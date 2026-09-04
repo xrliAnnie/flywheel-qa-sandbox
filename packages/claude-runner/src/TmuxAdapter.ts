@@ -1375,6 +1375,7 @@ export class TmuxAdapter implements IAdapter {
 		normalTimeoutMs: number,
 		commDbHandle: { db: CommDB | null },
 		waitState: { totalWaitingMs: number; lastWaitStart: number | null },
+		residentCompletionObserved: boolean,
 	): { shouldTimeout: boolean; isWaiting: boolean } {
 		let isWaiting = false;
 
@@ -1395,6 +1396,9 @@ export class TmuxAdapter implements IAdapter {
 				// Query failed — fall back to normal timeout
 				isWaiting = false;
 			}
+		}
+		if (ctx.residentLoopTarget && residentCompletionObserved) {
+			return { shouldTimeout: false, isWaiting };
 		}
 
 		const now = Date.now();
@@ -1444,6 +1448,7 @@ export class TmuxAdapter implements IAdapter {
 			let poller: ReturnType<typeof setInterval> | null = null;
 			let gracePollerRef: ReturnType<typeof setInterval> | null = null;
 			const start = Date.now();
+			let residentCompletionObserved = false;
 
 			// GEO-206 Phase 2: Lazy-opened readonly DB handle for dynamic timeout
 			const commDbHandle: { db: CommDB | null } = { db: null };
@@ -1505,7 +1510,12 @@ export class TmuxAdapter implements IAdapter {
 				this.hookServer
 					.waitForCompletion(callbackToken, hardTimeoutMs, claudeSessionId)
 					.then((event) => {
-						if (event) settle(false);
+						if (!event) return;
+						if (ctx.residentLoopTarget) {
+							residentCompletionObserved = true;
+						} else {
+							settle(false);
+						}
 					});
 
 				// Path 2: pane_dead poller + sentinel check (fallback — races with callback)
@@ -1523,6 +1533,7 @@ export class TmuxAdapter implements IAdapter {
 							timeoutMs,
 							commDbHandle,
 							waitState,
+							residentCompletionObserved,
 						);
 						if (shouldTimeout) {
 							console.warn(
@@ -1628,6 +1639,7 @@ export class TmuxAdapter implements IAdapter {
 							timeoutMs,
 							commDbHandle,
 							waitState,
+							residentCompletionObserved,
 						);
 						if (shouldTimeout) {
 							console.warn(

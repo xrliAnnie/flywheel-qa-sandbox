@@ -42,6 +42,7 @@ import {
 	deliveryOperationStalledCopy,
 	deliveryRerouteOutcomeCopy,
 } from "./bridge/alert-kind-copy.js";
+import { RESIDENT_GRACE_MS } from "./bridge/resident-hold.js";
 import type {
 	DeliveryContractClassification,
 	WorkflowDeliveryAttemptRow,
@@ -286,6 +287,33 @@ export const WORKFLOW_LAUNCH_ABSOLUTE_HORIZON_MS = 10 * 60_000;
 export const WORKFLOW_LAUNCH_HEARTBEAT_MS = 60_000;
 /** One durable cadence shared by rework and ship-carrier receipt probes. */
 export const WORKFLOW_DELIVERY_RECEIPT_REPROBE_MS = 3 * 60_000;
+export interface WorkflowResidentHoldRow {
+	execution_id: string;
+	run_id: string;
+	node_id: string;
+	attempt: number;
+	activation_id: string;
+	vendor: "claude" | "codex";
+	revision: number;
+	boundary_seq: number;
+	state: "resident" | "woken" | "expired" | "closed";
+	grace_started_at: string;
+	grace_expires_at: string;
+	closed_reason: string | null;
+	updated_at: string;
+}
+
+export interface WorkflowResidentExpiryOperation {
+	operationId: string;
+	executionId: string;
+	runId: string;
+	activationId: string;
+	nodeId: string;
+	attempt: number;
+	revision: number;
+	vendor: "claude" | "codex";
+	state: "staged" | "applied" | "sent";
+}
 
 export type WorkflowDeliveryAttemptVersion =
 	| { routeRevision: number }
@@ -7876,6 +7904,15 @@ export class StateStore {
 
 		const wasOperationalTerminal = isOperationalTerminalStatus(previousStatus);
 		const isOperationalTerminal = isOperationalTerminalStatus(nextStatus);
+		if (isOperationalTerminal) {
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				    SET state = 'closed', closed_reason = 'terminal',
+				        updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+				  WHERE execution_id = ? AND state = 'woken'`,
+				[executionId],
+			);
+		}
 		if (isOperationalTerminal && !wasOperationalTerminal) {
 			this.db.run(
 				`UPDATE workflow_submission_credential
@@ -21333,6 +21370,47 @@ export class StateStore {
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_wdo_client_request
 			ON workflow_delivery_operation(client_request_id)
 		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_resident_hold (
+				execution_id TEXT PRIMARY KEY,
+				run_id TEXT NOT NULL,
+				node_id TEXT NOT NULL,
+				attempt INTEGER NOT NULL CHECK (attempt > 0),
+				activation_id TEXT NOT NULL,
+				vendor TEXT NOT NULL CHECK (vendor IN ('claude','codex')),
+				revision INTEGER NOT NULL CHECK (revision > 0),
+				boundary_seq INTEGER NOT NULL CHECK (boundary_seq > 0),
+				state TEXT NOT NULL CHECK (state IN ('resident','woken','expired','closed')),
+				grace_started_at TEXT NOT NULL,
+				grace_expires_at TEXT NOT NULL,
+				closed_reason TEXT,
+				updated_at TEXT NOT NULL,
+				FOREIGN KEY (execution_id) REFERENCES workflow_actor(execution_id)
+			)
+		`);
+		this.db.run(`
+			CREATE INDEX IF NOT EXISTS idx_wrh_expiring
+			ON workflow_resident_hold(state, grace_expires_at)
+		`);
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS workflow_completion_drain_challenge (
+				challenge_id TEXT PRIMARY KEY,
+				execution_id TEXT NOT NULL,
+				activation_id TEXT NOT NULL,
+				business_digest TEXT NOT NULL,
+				mail_set_json TEXT NOT NULL,
+				watermark_json TEXT NOT NULL,
+				state TEXT NOT NULL CHECK (state IN ('issued','consumed','superseded')),
+				issued_at TEXT NOT NULL,
+				consumed_at TEXT
+			)
+		`);
+		this.db.run(`
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_wcdc_issued_by_submission
+			ON workflow_completion_drain_challenge(
+				execution_id, activation_id, business_digest
+			) WHERE state = 'issued'
+		`);
 		// FLY-1375: approval authority survives the QA process lifecycle. The
 		// source execution is attribution only; materialization and founder
 		// approval advance this first-class holder row.
@@ -33235,6 +33313,799 @@ export class StateStore {
 		return { kind: "current", ...context };
 	}
 
+	getResidentHold(executionId: string): WorkflowResidentHoldRow | undefined {
+		return this.workflowSelectAll(
+			"SELECT * FROM workflow_resident_hold WHERE execution_id = ?",
+			[executionId],
+		)[0] as WorkflowResidentHoldRow | undefined;
+	}
+
+	issueDrainChallenge(input: {
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+		mailSet: { mailbox: string[]; phaseWakes: string[] };
+		watermark: Record<string, unknown>;
+		now?: string;
+	}): { challengeId: string; mailbox: string[]; phaseWakes: string[] } {
+		const now = input.now ?? new Date().toISOString();
+		if (
+			!input.executionId ||
+			!input.activationId ||
+			!/^[0-9a-f]{64}$/.test(input.businessDigest) ||
+			!StateStore.workflowFiniteTimestamp(now)
+		) {
+			throw new Error("invalid drain challenge input");
+		}
+		const binding = this.getWorkflowActivation(input.activationId);
+		if (!binding || binding.execution_id !== input.executionId) {
+			throw new Error("invalid drain challenge identity");
+		}
+		const mailbox = [...new Set(input.mailSet.mailbox)].sort();
+		const phaseWakes = [...new Set(input.mailSet.phaseWakes)].sort();
+		if (
+			mailbox.some((id) => !id) ||
+			phaseWakes.some((id) => !id) ||
+			mailbox.length + phaseWakes.length === 0
+		) {
+			throw new Error("invalid drain challenge mail set");
+		}
+		const existing = this.workflowSelectAll(
+			`SELECT challenge_id, mail_set_json
+			   FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
+			    AND state = 'issued'`,
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0];
+		if (existing) {
+			const prior = JSON.parse(existing.mail_set_json as string) as {
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			return {
+				challengeId: existing.challenge_id as string,
+				mailbox: prior.mailbox,
+				phaseWakes: prior.phaseWakes,
+			};
+		}
+		const challengeId = `drain:${input.executionId}:${input.activationId}:${input.businessDigest.slice(0, 16)}`;
+		this.db.transaction(() => {
+			this.db.run(
+				`INSERT INTO workflow_completion_drain_challenge (
+				   challenge_id, execution_id, activation_id, business_digest,
+				   mail_set_json, watermark_json, state, issued_at
+				 ) VALUES (?, ?, ?, ?, ?, ?, 'issued', ?)`,
+				[
+					challengeId,
+					input.executionId,
+					input.activationId,
+					input.businessDigest,
+					canonicalJsonString({ mailbox, phaseWakes }),
+					canonicalJsonString(input.watermark),
+					now,
+				],
+			);
+			this.appendWorkflowRunEventCheckedTx({
+				runId: binding.run_id,
+				eventUid: `completion_drain_issued:${challengeId}`,
+				kind: "completion_drain_issued",
+				nodeId: binding.node_id,
+				executionId: input.executionId,
+				payload: {
+					challengeId,
+					activationId: input.activationId,
+					businessDigest: input.businessDigest,
+					mailbox,
+					phaseWakes,
+					watermark: input.watermark,
+					issuedAt: now,
+				},
+			});
+		});
+		this.save();
+		return { challengeId, mailbox, phaseWakes };
+	}
+
+	getIssuedDrainChallenge(input: {
+		challengeId: string;
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+	}): { mailbox: string[]; phaseWakes: string[] } | undefined {
+		const row = this.workflowSelectAll(
+			`SELECT mail_set_json FROM workflow_completion_drain_challenge
+			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+			    AND business_digest = ? AND state = 'issued'`,
+			[
+				input.challengeId,
+				input.executionId,
+				input.activationId,
+				input.businessDigest,
+			],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const parsed = JSON.parse(row.mail_set_json as string) as {
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			if (!Array.isArray(parsed.mailbox) || !Array.isArray(parsed.phaseWakes)) {
+				return undefined;
+			}
+			return parsed;
+		} catch {
+			return undefined;
+		}
+	}
+
+	findIssuedDrainChallenge(input: {
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+	}):
+		| { challengeId: string; mailbox: string[]; phaseWakes: string[] }
+		| undefined {
+		const row = this.workflowSelectAll(
+			`SELECT challenge_id, mail_set_json
+			   FROM workflow_completion_drain_challenge
+			  WHERE execution_id = ? AND activation_id = ? AND business_digest = ?
+			    AND state = 'issued'`,
+			[input.executionId, input.activationId, input.businessDigest],
+		)[0];
+		if (!row) return undefined;
+		try {
+			const parsed = JSON.parse(row.mail_set_json as string) as {
+				mailbox: string[];
+				phaseWakes: string[];
+			};
+			if (!Array.isArray(parsed.mailbox) || !Array.isArray(parsed.phaseWakes)) {
+				return undefined;
+			}
+			return {
+				challengeId: row.challenge_id as string,
+				mailbox: parsed.mailbox,
+				phaseWakes: parsed.phaseWakes,
+			};
+		} catch {
+			return undefined;
+		}
+	}
+
+	private consumeDrainChallengeTx(input: {
+		challengeId: string;
+		executionId: string;
+		activationId: string;
+		businessDigest: string;
+		verification: {
+			mailbox: Record<string, string>;
+			phaseWakes: Record<string, string>;
+		};
+		now: string;
+	}): boolean {
+		const row = this.workflowSelectAll(
+			`SELECT * FROM workflow_completion_drain_challenge
+			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+			    AND business_digest = ? AND state = 'issued'`,
+			[
+				input.challengeId,
+				input.executionId,
+				input.activationId,
+				input.businessDigest,
+			],
+		)[0];
+		if (!row) return false;
+		let mailSet: { mailbox: string[]; phaseWakes: string[] };
+		try {
+			mailSet = JSON.parse(row.mail_set_json as string) as typeof mailSet;
+		} catch {
+			return false;
+		}
+		if (
+			!Array.isArray(mailSet.mailbox) ||
+			!Array.isArray(mailSet.phaseWakes) ||
+			!mailSet.mailbox.every(
+				(id) => input.verification.mailbox[id] === "ACKED",
+			) ||
+			!mailSet.phaseWakes.every((id) =>
+				["started", "finished"].includes(input.verification.phaseWakes[id] ?? ""),
+			)
+		) {
+			return false;
+		}
+		this.db.run(
+			`UPDATE workflow_completion_drain_challenge
+			    SET state = 'consumed', consumed_at = ?
+			  WHERE challenge_id = ? AND execution_id = ? AND activation_id = ?
+			    AND business_digest = ? AND state = 'issued'`,
+			[
+				input.now,
+				input.challengeId,
+				input.executionId,
+				input.activationId,
+				input.businessDigest,
+			],
+		);
+		if (this.db.getRowsModified() !== 1) return false;
+		const binding = this.getWorkflowActivation(input.activationId);
+		if (!binding || binding.execution_id !== input.executionId) {
+			throw new WorkflowEngineInvariantError(
+				`completion_drain_activation_conflict:${input.challengeId}`,
+			);
+		}
+		this.appendWorkflowRunEventCheckedTx({
+			runId: binding.run_id,
+			eventUid: `completion_drain_consumed:${input.challengeId}`,
+			kind: "completion_drain_consumed",
+			nodeId: binding.node_id,
+			executionId: input.executionId,
+			payload: {
+				challengeId: input.challengeId,
+				activationId: input.activationId,
+				businessDigest: input.businessDigest,
+				consumedAt: input.now,
+			},
+		});
+		return true;
+	}
+
+	enterResidentHold(input: {
+		executionId: string;
+		activationId: string;
+		nodeId: string;
+		boundarySeq: number;
+		nowMs?: number;
+	}):
+		| { ok: true; revision: number; graceExpiresAt: string }
+		| {
+				ok: false;
+				reason:
+					| "invalid_input"
+					| "activation_mismatch"
+					| "stale_boundary";
+		  } {
+		if (
+			!input.executionId ||
+			!input.activationId ||
+			!input.nodeId ||
+			!Number.isSafeInteger(input.boundarySeq) ||
+			input.boundarySeq <= 0
+		) {
+			return { ok: false, reason: "invalid_input" };
+		}
+		const nowMs = input.nowMs ?? Date.now();
+		if (!Number.isFinite(nowMs)) return { ok: false, reason: "invalid_input" };
+		const now = new Date(nowMs).toISOString();
+		const graceExpiresAt = new Date(nowMs + RESIDENT_GRACE_MS).toISOString();
+		let result:
+			| { ok: true; revision: number; graceExpiresAt: string }
+			| {
+					ok: false;
+					reason:
+						| "invalid_input"
+						| "activation_mismatch"
+						| "stale_boundary";
+			  } = { ok: false, reason: "activation_mismatch" };
+		this.db.transaction(() => {
+			const binding = this.workflowSelectAll(
+				`SELECT b.run_id, b.node_id, b.attempt, s.adapter_type
+				   FROM workflow_execution_binding b
+				   LEFT JOIN sessions s ON s.execution_id = b.execution_id
+				  WHERE b.execution_id = ? AND b.activation_id = ? AND b.node_id = ?`,
+				[input.executionId, input.activationId, input.nodeId],
+			)[0];
+			if (!binding) {
+				result = { ok: false, reason: "activation_mismatch" };
+				return;
+			}
+			const adapterType =
+				typeof binding.adapter_type === "string"
+					? binding.adapter_type.trim()
+					: "";
+			const vendor =
+				adapterType === "codex-tmux"
+					? "codex"
+					: adapterType.startsWith("claude")
+						? "claude"
+						: undefined;
+			if (!vendor) {
+				result = { ok: false, reason: "invalid_input" };
+				return;
+			}
+			const existing = this.getResidentHold(input.executionId);
+			if (existing && existing.activation_id !== input.activationId) {
+				result = { ok: false, reason: "activation_mismatch" };
+				return;
+			}
+			if (
+				existing?.state === "resident" &&
+				existing.boundary_seq === input.boundarySeq
+			) {
+				result = {
+					ok: true,
+					revision: existing.revision,
+					graceExpiresAt: existing.grace_expires_at,
+				};
+				return;
+			}
+			if (!existing) {
+				this.db.run(
+					`INSERT INTO workflow_resident_hold (
+					   execution_id, run_id, node_id, attempt, activation_id, vendor,
+					   revision, boundary_seq, state, grace_started_at,
+					   grace_expires_at, closed_reason, updated_at
+					 ) VALUES (?, ?, ?, ?, ?, ?, 1, ?, 'resident', ?, ?, NULL, ?)`,
+					[
+						input.executionId,
+						String(binding.run_id),
+						input.nodeId,
+						Number(binding.attempt),
+						input.activationId,
+						vendor,
+						input.boundarySeq,
+						now,
+						graceExpiresAt,
+						now,
+					],
+				);
+				result = { ok: true, revision: 1, graceExpiresAt };
+				return;
+			}
+			if (
+				existing.state === "woken" &&
+				existing.boundary_seq < input.boundarySeq
+			) {
+				const revision = existing.revision + 1;
+				this.db.run(
+					`UPDATE workflow_resident_hold
+					    SET revision = ?, boundary_seq = ?, state = 'resident',
+					        grace_started_at = ?, grace_expires_at = ?,
+					        closed_reason = NULL, updated_at = ?
+					  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
+					[
+						revision,
+						input.boundarySeq,
+						now,
+						graceExpiresAt,
+						now,
+						input.executionId,
+						existing.revision,
+					],
+				);
+				result = { ok: true, revision, graceExpiresAt };
+				return;
+			}
+			result = { ok: false, reason: "stale_boundary" };
+		});
+		this.save();
+		return result;
+	}
+
+	wakeResidentHold(executionId: string, revision: number, nowMs = Date.now()): boolean {
+		if (!executionId || !Number.isSafeInteger(revision) || revision <= 0) {
+			return false;
+		}
+		const changed = this.db.raw
+			.prepare(
+			`UPDATE workflow_resident_hold
+			    SET state = 'woken', updated_at = ?
+			  WHERE execution_id = ? AND revision = ? AND state = 'resident'`,
+			)
+			.run(new Date(nowMs).toISOString(), executionId, revision).changes;
+		if (changed > 0) this.save();
+		return changed === 1;
+	}
+
+	closeResidentHold(input: {
+		executionId: string;
+		revision: number;
+		reason:
+			| "expired"
+			| "terminal"
+			| "superseded"
+			| "replaced"
+			| "run_terminated"
+			| "local_hold_failed";
+		nowMs?: number;
+	}): boolean {
+		const nowMs = input.nowMs ?? Date.now();
+		if (
+			!input.executionId ||
+			!Number.isSafeInteger(input.revision) ||
+			input.revision <= 0 ||
+			!Number.isFinite(nowMs)
+		) {
+			return false;
+		}
+		const changed = this.db.raw
+			.prepare(
+				`UPDATE workflow_resident_hold
+				    SET state = 'closed', closed_reason = ?, updated_at = ?
+				  WHERE execution_id = ? AND revision = ?
+				    AND state IN ('resident', 'woken')`,
+			)
+			.run(
+				input.reason,
+				new Date(nowMs).toISOString(),
+				input.executionId,
+				input.revision,
+			).changes;
+		if (changed > 0) this.save();
+		return changed === 1;
+	}
+
+	expireResidentHoldsTx(now: string): string[] {
+		if (!StateStore.workflowFiniteTimestamp(now)) return [];
+		const expiredOperationIds: string[] = [];
+		this.db.transaction(() => {
+			const candidates = this.workflowSelectAll(
+				`SELECT * FROM workflow_resident_hold
+				  WHERE state = 'resident' AND grace_expires_at < ?
+				  ORDER BY grace_expires_at, execution_id`,
+				[now],
+			) as unknown as WorkflowResidentHoldRow[];
+			for (const hold of candidates) {
+				const operationId = `resident-expiry:${hold.execution_id}:r${hold.revision}`;
+				const canonicalDigest = canonicalSubmissionDigest({
+					kind: "resident_expiry",
+					runId: hold.run_id,
+					executionId: hold.execution_id,
+					activationId: hold.activation_id,
+					nodeId: hold.node_id,
+					attempt: hold.attempt,
+					revision: hold.revision,
+				});
+				const existing = this.workflowSelectAll(
+					`SELECT operation_id, kind, run_id, family, root_id, generation,
+					        shape_id, hold_event_uid, source_attempt_id,
+					        target_activation_id, client_request_id, canonical_digest
+					   FROM workflow_delivery_operation
+					  WHERE client_request_id = ?`,
+					[operationId],
+				)[0];
+				if (
+					existing &&
+					(existing.operation_id !== operationId ||
+						existing.kind !== "resident_expiry" ||
+						existing.run_id !== hold.run_id ||
+						existing.family !== hold.vendor ||
+						existing.root_id !== hold.execution_id ||
+						Number(existing.generation) !== hold.revision ||
+						existing.shape_id !== hold.node_id ||
+						existing.hold_event_uid !== null ||
+						existing.source_attempt_id !== null ||
+						existing.target_activation_id !== hold.activation_id ||
+						existing.canonical_digest !== canonicalDigest)
+				) {
+					throw new WorkflowEngineInvariantError(
+						`resident_expiry_operation_poison:${operationId}`,
+					);
+				}
+				this.db.run(
+					`UPDATE workflow_resident_hold
+					    SET state = 'expired', updated_at = ?
+					  WHERE execution_id = ? AND revision = ? AND state = 'resident'
+					    AND grace_expires_at < ?`,
+					[now, hold.execution_id, hold.revision, now],
+				);
+				if (this.db.getRowsModified() !== 1) continue;
+				if (!existing) {
+					this.db.run(
+						`INSERT INTO workflow_delivery_operation (
+						   operation_id, kind, run_id, family, root_id, generation,
+						   shape_id, hold_event_uid, source_attempt_id,
+						   target_activation_id, client_request_id, canonical_digest,
+						   state, last_error, created_at, updated_at
+						 ) VALUES (?, 'resident_expiry', ?, ?, ?, ?, ?, NULL, NULL,
+						           ?, ?, ?, 'staged', NULL, ?, ?)`,
+						[
+							operationId,
+							hold.run_id,
+							hold.vendor,
+							hold.execution_id,
+							hold.revision,
+							hold.node_id,
+							hold.activation_id,
+							operationId,
+							canonicalDigest,
+							now,
+							now,
+						],
+					);
+				}
+				expiredOperationIds.push(operationId);
+			}
+		});
+		if (expiredOperationIds.length > 0) this.save();
+		return expiredOperationIds;
+	}
+
+	listPendingResidentExpiryOperations(): WorkflowResidentExpiryOperation[] {
+		return this.workflowSelectAll(
+			`SELECT operation.operation_id, operation.run_id, operation.family,
+			        operation.root_id, operation.generation, operation.shape_id,
+			        operation.target_activation_id, operation.state, hold.attempt
+			   FROM workflow_delivery_operation operation
+			   JOIN workflow_resident_hold hold
+			     ON hold.execution_id = operation.root_id
+			    AND hold.revision = operation.generation
+			  WHERE operation.kind = 'resident_expiry'
+			    AND operation.state IN ('staged','applied','sent')
+			  ORDER BY operation.created_at, operation.operation_id`,
+			[],
+		).map((row) => ({
+			operationId: String(row.operation_id),
+			executionId: String(row.root_id),
+			runId: String(row.run_id),
+			activationId: String(row.target_activation_id),
+			nodeId: String(row.shape_id),
+			attempt: Number(row.attempt),
+			revision: Number(row.generation),
+			vendor: row.family as "claude" | "codex",
+			state: row.state as "staged" | "applied" | "sent",
+		}));
+	}
+
+	applyResidentExpiry(input: {
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_application" };
+		}
+		const current = this.workflowSelectAll(
+			`SELECT state FROM workflow_delivery_operation
+			  WHERE operation_id = ? AND kind = 'resident_expiry'`,
+			[input.operationId],
+		)[0];
+		if (!current) return { ok: false, reason: "resident_expiry_missing" };
+		if (["applied", "sent", "projected"].includes(String(current.state))) {
+			return { ok: true, idempotentReplay: true };
+		}
+		if (current.state !== "staged") {
+			return { ok: false, reason: "resident_expiry_changed" };
+		}
+		this.db.run(
+			`UPDATE workflow_delivery_operation
+			    SET state = 'applied', updated_at = ?
+			  WHERE operation_id = ? AND kind = 'resident_expiry' AND state = 'staged'`,
+			[input.now, input.operationId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "resident_expiry_changed" };
+		}
+		this.save();
+		return { ok: true, idempotentReplay: false };
+	}
+
+	markResidentExpirySent(input: {
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_send" };
+		}
+		const current = this.workflowSelectAll(
+			`SELECT state FROM workflow_delivery_operation
+			  WHERE operation_id = ? AND kind = 'resident_expiry'`,
+			[input.operationId],
+		)[0];
+		if (!current) return { ok: false, reason: "resident_expiry_missing" };
+		if (current.state === "sent" || current.state === "projected") {
+			return { ok: true, idempotentReplay: true };
+		}
+		if (current.state !== "applied") {
+			return { ok: false, reason: "resident_expiry_not_applied" };
+		}
+		this.db.run(
+			`UPDATE workflow_delivery_operation
+			    SET state = 'sent', updated_at = ?
+			  WHERE operation_id = ? AND kind = 'resident_expiry' AND state = 'applied'`,
+			[input.now, input.operationId],
+		);
+		if (this.db.getRowsModified() !== 1) {
+			return { ok: false, reason: "resident_expiry_changed" };
+		}
+		this.save();
+		return { ok: true, idempotentReplay: false };
+	}
+
+	projectResidentExpiry(input: {
+		operationId: string;
+		now: string;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_projection" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resident_expiry_not_projected",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT operation.run_id, operation.root_id, operation.generation,
+				        operation.shape_id, operation.target_activation_id,
+				        operation.state, hold.state AS hold_state
+				   FROM workflow_delivery_operation operation
+				   JOIN workflow_resident_hold hold
+				     ON hold.execution_id = operation.root_id
+				    AND hold.revision = operation.generation
+				  WHERE operation.operation_id = ?
+				    AND operation.kind = 'resident_expiry'`,
+				[input.operationId],
+			)[0];
+			if (!operation) {
+				result = { ok: false, reason: "resident_expiry_missing" };
+				return;
+			}
+			if (operation.state === "projected") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (operation.state !== "sent") {
+				result = { ok: false, reason: "resident_expiry_not_sent" };
+				return;
+			}
+			if (operation.hold_state !== "expired") {
+				result = { ok: false, reason: "resident_expiry_hold_changed" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				    SET state = 'closed', closed_reason = 'expired', updated_at = ?
+				  WHERE execution_id = ? AND revision = ? AND state = 'expired'`,
+				[input.now, operation.root_id, operation.generation],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`resident_expiry_hold_cas_failed:${input.operationId}`,
+				);
+			}
+			this.db.run(
+				`UPDATE workflow_delivery_operation
+				    SET state = 'projected', updated_at = ?
+				  WHERE operation_id = ? AND kind = 'resident_expiry' AND state = 'sent'`,
+				[input.now, input.operationId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`resident_expiry_projection_cas_failed:${input.operationId}`,
+				);
+			}
+			this.appendWorkflowRunEventCheckedTx({
+				runId: String(operation.run_id),
+				eventUid: input.operationId,
+				kind: "resident_hold_expired",
+				payload: {
+					executionId: operation.root_id,
+					activationId: operation.target_activation_id,
+					nodeId: operation.shape_id,
+					revision: Number(operation.generation),
+					requestId: input.operationId,
+				},
+			});
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
+	markResidentExpiryFailed(input: {
+		operationId: string;
+		now: string;
+		error: string;
+		alertIdentity: WorkflowEngineAlertIdentity;
+	}): { ok: true; idempotentReplay: boolean } | { ok: false; reason: string } {
+		if (
+			!input.operationId.trim() ||
+			!input.error.trim() ||
+			!StateStore.workflowFiniteTimestamp(input.now)
+		) {
+			return { ok: false, reason: "invalid_resident_expiry_failure" };
+		}
+		let result:
+			| { ok: true; idempotentReplay: boolean }
+			| { ok: false; reason: string } = {
+			ok: false,
+			reason: "resident_expiry_not_failed",
+		};
+		this.db.transaction(() => {
+			const operation = this.workflowSelectAll(
+				`SELECT operation.run_id, operation.root_id, operation.state,
+				        run.issue_id
+				   FROM workflow_delivery_operation operation
+				   JOIN workflow_run run ON run.run_id = operation.run_id
+				  WHERE operation.operation_id = ?
+				    AND operation.kind = 'resident_expiry'`,
+				[input.operationId],
+			)[0];
+			if (!operation) {
+				result = { ok: false, reason: "resident_expiry_missing" };
+				return;
+			}
+			if (operation.state === "failed") {
+				result = { ok: true, idempotentReplay: true };
+				return;
+			}
+			if (!["staged", "applied", "sent"].includes(String(operation.state))) {
+				result = { ok: false, reason: "resident_expiry_changed" };
+				return;
+			}
+			this.db.run(
+				`UPDATE workflow_delivery_operation
+				    SET state = 'failed', last_error = ?, updated_at = ?
+				  WHERE operation_id = ? AND kind = 'resident_expiry'
+				    AND state IN ('staged','applied','sent')`,
+				[input.error.trim().slice(0, 1000), input.now, input.operationId],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				throw new WorkflowEngineInvariantError(
+					`resident_expiry_failure_cas_failed:${input.operationId}`,
+				);
+			}
+			const escalationUid = `delivery_operation_stalled:${input.operationId}`;
+			if (!this.getWorkflowAlertOutbox(escalationUid)) {
+				const copy = deliveryOperationStalledCopy({
+					issueId: String(operation.issue_id),
+					operationKind: "resident_expiry",
+					state: "failed",
+					ageMs: 0,
+					runId: String(operation.run_id),
+					evidenceAt: input.now,
+				});
+				this.enqueueWorkflowEngineAlertTx({
+					escalationUid,
+					runId: String(operation.run_id),
+					now: input.now,
+					payload: {
+						leadId: input.alertIdentity.leadId,
+						projectName: input.alertIdentity.projectName,
+						eventId: escalationUid,
+						eventType: "workflow_engine_escalation",
+						severity: "warning",
+						sessionKey: `wf:${operation.run_id}`,
+						title: copy.title,
+						body: copy.body,
+						metadata: {
+							workflowEngine: {
+								runId: String(operation.run_id),
+								issueId: String(operation.issue_id),
+								nodeId: "delivery-contract",
+								executionId: String(operation.root_id),
+								disposition: "delivery_operation_stalled",
+								leadResolution: input.alertIdentity.leadResolution,
+							},
+						},
+					},
+				});
+				this.appendWorkflowRunEventCheckedTx({
+					runId: String(operation.run_id),
+					eventUid: escalationUid,
+					kind: "delivery_operation_stalled",
+					payload: {
+						operationId: input.operationId,
+						kind: "resident_expiry",
+						state: "failed",
+						error: input.error.trim().slice(0, 1000),
+					},
+				});
+			}
+			result = { ok: true, idempotentReplay: false };
+		});
+		if (result.ok) this.save();
+		return result;
+	}
+
 	/**
 	 * FLY-1441 single ownership fence for every founder/Lead ship surface.
 	 * Non-ship questions and true legacy executions pass byte-for-byte.
@@ -45097,7 +45968,16 @@ export class StateStore {
 			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
 		>,
 		gateOpened: boolean,
+		residentHoldEntered: boolean,
 	): WorkflowCompletionDisposition {
+		if (
+			residentHoldEntered &&
+			context.snapshot.manifest.loops.some(
+				(loop) => loop.to === context.binding.node_id,
+			)
+		) {
+			return "loop_park";
+		}
 		if (!gateOpened) return "terminal_no_gate";
 		if (
 			context.run.engine_owned !== 1 ||
@@ -45147,6 +46027,7 @@ export class StateStore {
 			if (
 				payload.disposition === "engine_gate_handoff" ||
 				payload.disposition === "runner_ship_park" ||
+				payload.disposition === "loop_park" ||
 				payload.disposition === "terminal_no_gate"
 			) {
 				return { state: "valid", disposition: payload.disposition };
@@ -45155,6 +46036,85 @@ export class StateStore {
 			// Fail closed for corrupt immutable receipts.
 		}
 		return { state: "invalid" };
+	}
+
+	private enterResidentHoldForCompletionTx(
+		context: NonNullable<
+			ReturnType<StateStore["generalizedExecutionContextForActivation"]>
+		>,
+		now: string,
+	): boolean {
+		const session = this.getSession(context.binding.execution_id);
+		const adapterType = session?.adapter_type?.trim() ?? "";
+		const vendor =
+			adapterType === "codex-tmux"
+				? "codex"
+				: adapterType.startsWith("claude")
+					? "claude"
+					: undefined;
+		if (!vendor) {
+			return false;
+		}
+		const existing = this.getResidentHold(context.binding.execution_id);
+		if (existing) {
+			if (
+				existing.activation_id !== context.binding.activation_id ||
+				existing.node_id !== context.binding.node_id
+			) {
+				return false;
+			}
+			if (existing.state === "resident") return true;
+			if (existing.state !== "woken") {
+				return false;
+			}
+			const revision = existing.revision + 1;
+			const boundarySeq = existing.boundary_seq + 1;
+			const graceExpiresAt = new Date(
+				Date.parse(now) + RESIDENT_GRACE_MS,
+			).toISOString();
+			this.db.run(
+				`UPDATE workflow_resident_hold
+				    SET revision = ?, boundary_seq = ?, state = 'resident',
+				        grace_started_at = ?, grace_expires_at = ?,
+				        closed_reason = NULL, updated_at = ?
+				  WHERE execution_id = ? AND revision = ? AND state = 'woken'`,
+				[
+					revision,
+					boundarySeq,
+					now,
+					graceExpiresAt,
+					now,
+					context.binding.execution_id,
+					existing.revision,
+				],
+			);
+			if (this.db.getRowsModified() !== 1) {
+				return false;
+			}
+			return true;
+		}
+		const graceExpiresAt = new Date(
+			Date.parse(now) + RESIDENT_GRACE_MS,
+		).toISOString();
+		this.db.run(
+			`INSERT INTO workflow_resident_hold (
+			   execution_id, run_id, node_id, attempt, activation_id, vendor,
+			   revision, boundary_seq, state, grace_started_at,
+			   grace_expires_at, closed_reason, updated_at
+			 ) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'resident', ?, ?, NULL, ?)`,
+			[
+				context.binding.execution_id,
+				context.binding.run_id,
+				context.binding.node_id,
+				context.binding.attempt,
+				context.binding.activation_id,
+				vendor,
+				now,
+				graceExpiresAt,
+				now,
+			],
+		);
+		return true;
 	}
 
 	private reconstructWorkflowCompletionDispositionTx(
@@ -45187,9 +46147,14 @@ export class StateStore {
 				return undefined;
 			}
 			if (payload.sourceAttempt !== context.binding.attempt) continue;
+			const residentHold = this.getResidentHold(
+				context.binding.execution_id,
+			);
 			return this.workflowCompletionDispositionForContext(
 				context,
 				payload.gateOpened === true,
+				residentHold?.activation_id === context.binding.activation_id &&
+					residentHold.node_id === context.binding.node_id,
 			);
 		}
 		return undefined;
@@ -45333,6 +46298,13 @@ export class StateStore {
 		route: string;
 		sourceEventId: string;
 		completionSubmission: unknown;
+		drainChallenge?: {
+			challengeId: string;
+			verification: {
+				mailbox: Record<string, string>;
+				phaseWakes: Record<string, string>;
+			};
+		};
 		/** Current completion head carried by the trusted event envelope. */
 		subjectDigest?: string;
 		workflowActivation?: WorkflowCompletionActivationContext;
@@ -45749,6 +46721,9 @@ export class StateStore {
 				loop.from === context.binding.node_id &&
 				loop.loop_when !== "founder_feedback_kickback",
 		);
+		const residentLoopTarget = context.snapshot.manifest.loops.some(
+			(loop) => loop.to === context.binding.node_id,
+		);
 		const engineOutcome =
 			context.run.engine_owned !== 1
 				? undefined
@@ -45765,8 +46740,10 @@ export class StateStore {
 					: undefined;
 		let transitionRefusal: string | undefined;
 		let terminalImmuneRefusal = false;
+		let drainChallengeRefused = false;
 		let completionDisposition: WorkflowCompletionDisposition | undefined;
 		let transitionGateOpened = false;
+		let residentHoldEntered = false;
 		try {
 			this.db.transaction(() => {
 				const currentWriter = this.classifyCurrentWorkflowWriterTx({
@@ -45783,6 +46760,20 @@ export class StateStore {
 							: `${ENGINE_INVARIANT_REASON_PREFIX}${currentWriter.reason}`;
 					throw new Error("engine_completion_transition_refused");
 				}
+				if (
+					input.drainChallenge &&
+					!this.consumeDrainChallengeTx({
+						challengeId: input.drainChallenge.challengeId,
+						executionId: input.executionId,
+						activationId: context.binding.activation_id,
+						businessDigest: digest,
+						verification: input.drainChallenge.verification,
+						now,
+					})
+				) {
+					drainChallengeRefused = true;
+					throw new Error("workflow_completion_drain_refused");
+				}
 				const sessionStatus = this.getSession(input.executionId)?.status;
 				if (
 					isNoOutEdgeTerminalStatus(sessionStatus) &&
@@ -45790,6 +46781,12 @@ export class StateStore {
 				) {
 					terminalImmuneRefusal = true;
 					throw new Error("engine_completion_terminal_immune");
+				}
+				if (residentLoopTarget) {
+					residentHoldEntered = this.enterResidentHoldForCompletionTx(
+						context,
+						now,
+					);
 				}
 				if (input.prBinding) {
 					const completionEntersApprovalGate =
@@ -45965,6 +46962,7 @@ export class StateStore {
 				const disposition = this.workflowCompletionDispositionForContext(
 					context,
 					transitionGateOpened,
+					residentHoldEntered,
 				);
 				try {
 					this.appendWorkflowRunEventCheckedTx({
@@ -45988,6 +46986,9 @@ export class StateStore {
 				}
 			});
 		} catch (error) {
+			if (drainChallengeRefused) {
+				return { ok: false, reason: "drain_challenge_not_issued" };
+			}
 			if (terminalImmuneRefusal) {
 				return { ok: false, reason: "terminal_status_immune" };
 			}
@@ -63190,6 +64191,7 @@ export type WorkflowOutputSubmissionResult =
 export type WorkflowCompletionDisposition =
 	| "engine_gate_handoff"
 	| "runner_ship_park"
+	| "loop_park"
 	| "terminal_no_gate";
 
 export type WorkflowCompletionResult =
@@ -63223,6 +64225,7 @@ export type WorkflowCompletionResult =
 				| "no_code_artifact_present"
 				| "no_code_attestation_missing"
 				| "no_code_attestation_stale"
+				| "drain_challenge_not_issued"
 				| "terminal_status_immune"
 				| "stale_resubmission_identity_missing"
 				| "land_head_unavailable"

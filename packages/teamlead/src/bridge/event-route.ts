@@ -6,6 +6,7 @@ import { CommDB } from "flywheel-comm/db";
 import { resolveFounderId } from "flywheel-comm/founder-attribution";
 import {
 	adapterTypeToFamily,
+	canonicalSubmissionDigest,
 	formatRunnerMemoryCloseoutLine,
 	isDesignBackend,
 	isSkillFrameworkMode,
@@ -17,6 +18,7 @@ import {
 	type SkillFrameworkVia,
 	verifyRepositoryBaselineSet,
 } from "flywheel-config";
+import { isNoOutEdgeTerminalStatus } from "flywheel-core";
 import type { CipherWriter, SnapshotInputDto } from "flywheel-edge-worker";
 import { extractDimensions, generatePatternKeys } from "flywheel-edge-worker";
 import {
@@ -47,6 +49,7 @@ import {
 import type { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import type { CodexReviewIngest } from "./codex-review-ingest.js";
 import { commDbPathForProject } from "./commdb-path.js";
+import { parseCompletionDrainEnvelope } from "./completion-drain.js";
 import {
 	DESIGN_HTML_EVIDENCE_ERROR,
 	validateDesignHtmlCompletion,
@@ -754,6 +757,7 @@ export function createEventRouter(
 							workflowActivation.activationId,
 						)
 					: store.getGeneralizedWorkflowNodeForExecution(event.execution_id);
+				const completionSession = store.getSession(event.execution_id);
 				const completionRoute = asString(decision?.route) ?? "";
 				let completionHead = callerCompletionHead;
 				let completionRepoPath: string | undefined;
@@ -987,12 +991,143 @@ export function createEventRouter(
 						}
 					}
 				}
+				const drainEnvelope = parseCompletionDrainEnvelope(event.payload);
+				if (!drainEnvelope.ok) {
+					res.status(409).json({
+						error: "workflow_completion_rejected",
+						reason: drainEnvelope.reason,
+					});
+					return;
+				}
+				let drainChallenge:
+					| {
+							challengeId: string;
+							verification: {
+								mailbox: Record<string, string>;
+								phaseWakes: Record<string, string>;
+							};
+					  }
+					| undefined;
+				if (
+					generalizedContext &&
+					!(
+						isNoOutEdgeTerminalStatus(completionSession?.status) &&
+						completionSession?.status !== "completed"
+					)
+				) {
+					const activationId = generalizedContext.binding.activation_id;
+					const businessDigest = canonicalSubmissionDigest(
+						drainEnvelope.completionSubmission,
+					);
+					const priorCompletion = store.getWorkflowNodeCompletion(
+						generalizedContext.binding.run_id,
+						generalizedContext.binding.node_id,
+						generalizedContext.binding.attempt,
+					);
+					if (!priorCompletion) {
+						const issued = store.findIssuedDrainChallenge({
+							executionId: event.execution_id,
+							activationId,
+							businessDigest,
+						});
+						let comm: CommDB | undefined;
+						try {
+							comm = CommDB.openReadonly(
+								commDbPathForProject(generalizedContext.run.project_name),
+							);
+							if (!drainEnvelope.receiptChallengeId) {
+								if (issued) {
+									res.status(409).json({
+										error: "workflow_completion_rejected",
+										reason: "consume_pending_mail",
+										challengeId: issued.challengeId,
+										mailbox: issued.mailbox,
+										phaseWakes: issued.phaseWakes,
+									});
+									return;
+								}
+								const pending = comm.getCompletionDrainPending(
+									event.execution_id,
+								);
+								if (pending.mailbox.length + pending.phaseWakes.length > 0) {
+									const challenge = store.issueDrainChallenge({
+										executionId: event.execution_id,
+										activationId,
+										businessDigest,
+										mailSet: pending,
+										watermark: pending.watermark,
+									});
+									res.status(409).json({
+										error: "workflow_completion_rejected",
+										reason: "consume_pending_mail",
+										challengeId: challenge.challengeId,
+										mailbox: challenge.mailbox,
+										phaseWakes: challenge.phaseWakes,
+									});
+									return;
+								}
+							} else if (
+								issued &&
+								issued.challengeId === drainEnvelope.receiptChallengeId
+							) {
+								const verification = comm.getCompletionDrainVerification(
+									event.execution_id,
+									issued.mailbox,
+									issued.phaseWakes,
+								);
+								const unacked = [
+									...issued.mailbox.filter(
+										(id) => verification.mailbox[id] !== "ACKED",
+									),
+									...issued.phaseWakes.filter(
+										(id) =>
+											!["started", "finished"].includes(
+												verification.phaseWakes[id] ?? "",
+											),
+									),
+								];
+								if (unacked.length > 0) {
+									res.status(409).json({
+										error: "workflow_completion_rejected",
+										reason: "drain_receipt_rejected",
+										unacked,
+									});
+									return;
+								}
+								drainChallenge = {
+									challengeId: issued.challengeId,
+									verification,
+								};
+							} else {
+								// Preserve idempotent completion replay: StateStore returns the
+								// existing receipt before attempting this empty CAS.
+								drainChallenge = {
+									challengeId: drainEnvelope.receiptChallengeId,
+									verification: { mailbox: {}, phaseWakes: {} },
+								};
+							}
+						} catch (error) {
+							console.warn(
+								`[completion-drain] CommDB verification failed for ${event.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							res.status(409).json({
+								error: "workflow_completion_rejected",
+								reason: "completion_deferred_pending_mail",
+								detail: "commdb_unreadable",
+							});
+							return;
+						} finally {
+							comm?.close();
+						}
+					}
+				}
 				const completion = store.commitEnrolledCompletion({
 					nodeReuseEnabled: workflowNodeReuseEnabled?.() ?? false,
 					executionId: event.execution_id,
 					route: completionRoute,
 					sourceEventId: event.event_id,
-					completionSubmission: event.payload ?? {},
+					completionSubmission: drainEnvelope.completionSubmission,
+					...(drainChallenge ? { drainChallenge } : {}),
 					...(completionHead ? { subjectDigest: completionHead } : {}),
 					...(workflowActivation ? { workflowActivation } : {}),
 					...(prBinding ? { prBinding } : {}),
@@ -1009,6 +1144,13 @@ export function createEventRouter(
 						"[event-route]",
 					);
 					if (!completion.ok) {
+						if (completion.reason === "drain_challenge_not_issued") {
+							res.status(409).json({
+								error: "workflow_completion_rejected",
+								reason: "drain_receipt_rejected",
+							});
+							return;
+						}
 						if (completion.reason === "stale_execution_superseded") {
 							res.json({
 								ok: true,

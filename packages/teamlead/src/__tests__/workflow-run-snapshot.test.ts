@@ -6,10 +6,26 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	buildWorkflowRunSnapshotV1,
 	buildWorkflowRunSnapshotV2,
+	isLoopTargetNode,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowGateAuthority,
 	workflowNodeAgentContent,
 } from "../workflow-run-snapshot.js";
+
+it("derives resident eligibility only from inbound pinned loops", () => {
+	const snapshot = {
+		manifest: {
+			loops: [
+				{ from: "review", to: "repair" },
+				{ from: "verify", to: "investigate" },
+			],
+		},
+	} as never;
+	expect(isLoopTargetNode(snapshot, "repair")).toBe(true);
+	expect(isLoopTargetNode(snapshot, "investigate")).toBe(true);
+	expect(isLoopTargetNode(snapshot, "review")).toBe(false);
+});
+
 import { legacyWorkflowSeeds } from "./fixtures/legacy-workflow-manifests.js";
 
 const roots: string[] = [];

@@ -21,9 +21,16 @@ import {
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import express from "express";
-import { deriveRunnerMailboxIdentity } from "flywheel-agent-team-transport";
 import {
+	AgentTeamTransportFactory,
+	deriveRunnerMailboxIdentity,
+} from "flywheel-agent-team-transport";
+import {
+	CodexDaemonClient,
 	CodexExecutionOwnershipRegistry,
+	codexSessionStateDir,
+	connectDaemonTransport,
+	parseThreadReadTurns,
 	probeCodexDaemonLiveness,
 	probeCodexRolloutMtime,
 	type RunnerTuiWindowLostEvidence,
@@ -136,7 +143,10 @@ import {
 	loadWorkflowMenuSeeds,
 	reconcileMenuCategoryBindings,
 } from "../workflow-menu.js";
-import { parseWorkflowRunSnapshot } from "../workflow-run-snapshot.js";
+import {
+	isLoopTargetNode,
+	parseWorkflowRunSnapshot,
+} from "../workflow-run-snapshot.js";
 import {
 	isWorkflowManifestLand,
 	retireLegacyWorkflowTemplates,
@@ -208,12 +218,14 @@ import { CodexReviewHoldCoordinator } from "./codex-review-hold.js";
 import { CodexReviewIngest } from "./codex-review-ingest.js";
 import { sweepCodexRunnerOrphans } from "./codex-runner-orphan-reaper.js";
 import {
+	acceptReownTurnReconciliation,
 	buildCodexRecoveryContext,
 	CodexSessionReowner,
 	isCodexReownExcluded,
 	resolveCodexRecoveryWindow,
 } from "./codex-session-reown.js";
 import { recordCodexTransportDeathSnapshot } from "./codex-transport-death-snapshot.js";
+import { prepareBridgeCommDbRebuilds } from "./commdb-fly2268-preflight.js";
 import { reconcileCommDbRunningAgainstFsm } from "./commdb-fsm-reconcile.js";
 import { commDbPathForProject, commDbRootDir } from "./commdb-path.js";
 import {
@@ -530,6 +542,8 @@ import {
 	type RescueRuntime,
 } from "./rescue-runtime.js";
 import { createHostResidentCodexLeadPatrol } from "./resident-codex-lead-patrol.js";
+import { ResidentReceiverSupervisor } from "./resident-receiver-supervisor.js";
+import { deliverResidentWake } from "./resident-wake-fence.js";
 import {
 	createResidueHarvester,
 	type ResidueHarvester,
@@ -4579,6 +4593,7 @@ export async function startBridge(
 			"No projects configured — check FLYWHEEL_PROJECTS or project config",
 		);
 	}
+	await prepareBridgeCommDbRebuilds(projects);
 	scrubManagedTmuxEnvironments(projects, {
 		log: (line) => console.warn(line),
 	});
@@ -6699,6 +6714,116 @@ export async function startBridge(
 			db?.close();
 		}
 	};
+	const residentReceiverTransport =
+		resolveCommBackend() === "mailbox"
+			? AgentTeamTransportFactory.forBackend("codex")
+			: undefined;
+	const residentReceiverCandidates = () =>
+		store.getReadoptCandidateSessions().flatMap((session) => {
+			const activation = store.resolveCurrentWorkflowActivation(
+				session.execution_id,
+			);
+			if (activation.kind !== "current") return [];
+			if (
+				activation.binding.mode !== "spawn" &&
+				activation.binding.mode !== "wake" &&
+				activation.binding.mode !== "replacement"
+			) {
+				return [];
+			}
+			let leadId: string;
+			try {
+				leadId = resolveLeadForIssue(
+					projects,
+					session.project_name,
+					store.getSessionLabels(session.execution_id),
+				).lead.agentId;
+			} catch {
+				return [];
+			}
+			const mailbox = deriveRunnerMailboxIdentity(session.execution_id, leadId);
+			const codex = session.adapter_type?.startsWith("codex") === true;
+			const claude = session.adapter_type?.startsWith("claude") === true;
+			return [
+				{
+					executionId: session.execution_id,
+					issueId: session.issue_id,
+					projectName: session.project_name,
+					commDbPath: commDbPathForProject(session.project_name),
+					wakeMode:
+						codex && residentReceiverTransport
+							? residentReceiverTransport.capabilities().wakeMode
+							: claude
+								? ("builtin-receiver" as const)
+								: ("none" as const),
+					receiverContext: {
+						leadName: leadId,
+						runnerName: mailbox.agentName,
+						teamName: mailbox.teamName,
+					},
+				},
+			];
+		});
+	const residentReceiverSupervisor = new ResidentReceiverSupervisor({
+		listCandidates: residentReceiverCandidates,
+		hasCommSession: (candidate) => {
+			if (!ffExistsSync(candidate.commDbPath)) return false;
+			let db: CommDB | undefined;
+			try {
+				db = CommDB.openReadonly(candidate.commDbPath);
+				return db.getSession(candidate.executionId) !== undefined;
+			} catch {
+				return false;
+			} finally {
+				db?.close();
+			}
+		},
+		createReceiver: (candidate) =>
+			residentReceiverTransport?.createReceiver(candidate.receiverContext) ??
+			null,
+		enqueueDelivery: (executionId, message, candidate) => {
+			const db = new CommDB(candidate.commDbPath);
+			try {
+				return (
+					db.enqueueRunnerReceiverDelivery(executionId, message, Date.now())
+						.kind !== "no_consumer"
+				);
+			} finally {
+				db.close();
+			}
+		},
+		record: (candidate, event, payload) => {
+			store.insertEvent({
+				event_id: `${event}-${candidate.executionId}-${randomUUID()}`,
+				execution_id: candidate.executionId,
+				issue_id: candidate.issueId,
+				project_name: candidate.projectName,
+				event_type: event,
+				source: "bridge.resident-receiver-supervisor",
+				payload,
+			});
+		},
+		alert: (candidate, payload) => {
+			const episode = String(payload.episode ?? "unknown");
+			const eventId = `delivery_operation_stalled:receiver:${candidate.executionId}:${episode}`;
+			const receipt = leadInboxRuntime.enqueueInfraAlert(
+				candidate.receiverContext.leadName,
+				{
+					leadId: candidate.receiverContext.leadName,
+					projectName: candidate.projectName,
+					eventId,
+					eventType: "workflow_engine_escalation",
+					title: `Runner receiver stalled (${candidate.issueId})`,
+					body: `${candidate.executionId}: receiver stayed unhealthy and was rearmed in process`,
+					severity: "warning",
+					episodeId: episode,
+				},
+			);
+			if (!receipt.queued)
+				throw new Error(`receiver_alert_not_queued:${eventId}`);
+		},
+		nowMs: () => Date.now(),
+	});
 	const workflowEngineDispatcher = startDispatcher
 		? new WorkflowEngineDispatcher({
 				store,
@@ -6707,6 +6832,8 @@ export async function startBridge(
 				workflowReworkReentryEnabled: () =>
 					storeWorkflowReworkReentryEnabled(flagStore),
 				admissionProbe: () => config.runnerAdmission.tryAdmit(),
+				armResidentReceiver: (executionId, source) =>
+					residentReceiverSupervisor.arm(executionId, source),
 				env: process.env,
 				resolveLeadId: (executionId) => {
 					const session = store.getSession(executionId);
@@ -7323,6 +7450,19 @@ export async function startBridge(
 					: join(snapshot.cwd, dirname(session.plan_path), "progress.md")
 				: undefined;
 			const stateDbPath = store.getDbPath();
+			const activation = store.resolveCurrentWorkflowActivation(
+				session.execution_id,
+			);
+			if (activation.kind === "ambiguous") {
+				throw new Error(
+					`current workflow activation is ambiguous for ${session.execution_id}`,
+				);
+			}
+			const loopTarget =
+				activation.kind === "current" &&
+				isLoopTargetNode(activation.snapshot, activation.binding.node_id)
+					? { nodeId: activation.binding.node_id }
+					: undefined;
 			const context = buildCodexRecoveryContext({
 				session,
 				snapshot,
@@ -7346,6 +7486,11 @@ export async function startBridge(
 					? { bridgeIngestToken: config.ingestToken }
 					: {}),
 				...(progressPath ? { progressPath } : {}),
+				...(loopTarget ? { loopTarget } : {}),
+				...(activation.kind === "current"
+					? { workflowActivationId: activation.binding.activation_id }
+					: {}),
+				...(session.session_role ? { sessionRole: session.session_role } : {}),
 				onHeartbeat: (executionId) => store.updateHeartbeat(executionId),
 			});
 			return runtime.resume(
@@ -7360,6 +7505,54 @@ export async function startBridge(
 						}
 					: { founderWindow: "suppressed" },
 			);
+		},
+		reconcileTurn: async (session, recoveredThreadId) => {
+			const threadId = (() => {
+				if (recoveredThreadId) return recoveredThreadId;
+				const statePath = join(
+					codexSessionStateDir(session.execution_id),
+					"session.json",
+				);
+				const state = JSON.parse(ffReadFileSync(statePath, "utf8")) as {
+					threadId?: unknown;
+				};
+				if (typeof state.threadId !== "string" || !state.threadId) {
+					throw new Error(
+						`persisted Codex thread id is unavailable for ${session.execution_id}`,
+					);
+				}
+				return state.threadId;
+			})();
+			const transport = await connectDaemonTransport({
+				socketPath: resolveDaemonSocketPath(session.execution_id),
+			});
+			const client = new CodexDaemonClient({
+				transport,
+				logger: (message) =>
+					console.warn(
+						`[codex-session-reown] ${session.execution_id} reconcile: ${message}`,
+					),
+			});
+			try {
+				await client.initialize();
+				const result = await client.readThread(threadId);
+				const turns = parseThreadReadTurns(result, threadId);
+				const lastTurn = turns.at(-1);
+				const activeTurnId =
+					lastTurn?.status === "inProgress" ? lastTurn.id : null;
+				const db = new CommDB(commDbPathForProject(session.project_name));
+				try {
+					const reconciled = db.reconcileTurnState(
+						session.execution_id,
+						activeTurnId,
+					);
+					acceptReownTurnReconciliation(reconciled);
+				} finally {
+					db.close();
+				}
+			} finally {
+				client.close();
+			}
 		},
 		readTurnHolder: async (session) => {
 			const role = session.chat_thread_role ?? session.session_role;
@@ -7393,6 +7586,21 @@ export async function startBridge(
 				source: "bridge.codex-session-reown",
 				payload,
 			});
+			const armSource =
+				event === "reown_watch_started"
+					? ("reown_watch" as const)
+					: event === "reown_revive_succeeded"
+						? ("reown_revive" as const)
+						: undefined;
+			if (armSource) {
+				void residentReceiverSupervisor
+					.arm(session.execution_id, armSource)
+					.catch((error) => {
+						console.warn(
+							`[resident-receiver] ${armSource} arm deferred for ${session.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+						);
+					});
+			}
 		},
 		alert: async (session, reason) => {
 			console.warn(`[codex-session-reown] ${session.execution_id}: ${reason}`);
@@ -7633,6 +7841,13 @@ export async function startBridge(
 					}`,
 				);
 			}
+			try {
+				await residentReceiverSupervisor.healthTick();
+			} catch (error) {
+				console.warn(
+					`[resident-receiver] maintenance pass failed closed: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
 			const deliveryNow = new Date().toISOString();
 			if (!deliveryBaselineComplete) {
 				try {
@@ -7649,7 +7864,7 @@ export async function startBridge(
 				}
 				await yieldToEventLoop();
 			}
-			await runSequentialChunks(projects, (project) => {
+			await runSequentialChunks(projects, async (project) => {
 				let deliveryCommDb: CommDB | undefined;
 				try {
 					deliveryCommDb = new CommDB(
@@ -7698,6 +7913,54 @@ export async function startBridge(
 						resolveRecipient: ({ rootId, sourceExecutionId }) =>
 							store.resolveWorkflowDeliveryRecipient(rootId, sourceExecutionId),
 						resolveAlertIdentity: resolveDeliveryAlertIdentity,
+						residentExpiry: {
+							terminateClaude: async (executionId) => {
+								const lookup = lookupTmuxTarget(
+									executionId,
+									project.projectName,
+								);
+								if (lookup.kind === "error") {
+									return { ok: false, error: lookup.error };
+								}
+								if (lookup.kind === "gone") return { ok: true };
+								const session = store.getSession(executionId);
+								const identity = session
+									? resolveTerminalViewIdentity(session, lookup.target)
+									: null;
+								const killed = await killTmuxWindow(lookup.target.tmuxWindow);
+								if (!killed.killed) {
+									return {
+										ok: false,
+										error: killed.error ?? "claude_resident_expiry_kill_failed",
+									};
+								}
+								if (identity) {
+									try {
+										await closeRunnerTerminalView({
+											baseSessionName: identity.sessionName,
+											projectName: identity.projectName,
+											executionId: identity.executionId,
+											windowId: identity.windowId,
+											sessionRole: identity.sessionRole,
+										});
+									} catch (error) {
+										console.warn(
+											`[delivery-operations] resident expiry terminal view cleanup deferred for ${executionId}: ${error instanceof Error ? error.message : String(error)}`,
+										);
+									}
+								}
+								return { ok: true };
+							},
+							probeClaude: async (executionId) => {
+								const lookup = lookupTmuxTarget(
+									executionId,
+									project.projectName,
+								);
+								if (lookup.kind === "error") throw new Error(lookup.error);
+								if (lookup.kind === "gone") return "absent";
+								return probeRunnerProcessLiveness(lookup.target.tmuxWindow);
+							},
+						},
 					});
 					withSyncOpMarker("delivery-contract:projector", () =>
 						deliveryProjector.runPass(deliveryNow),
@@ -7705,6 +7968,7 @@ export async function startBridge(
 					withSyncOpMarker("delivery-contract:watch", () =>
 						deliveryContractWatch.runPass(deliveryNow),
 					);
+					await deliveryOperations.runResidentExpiryPass(deliveryNow);
 					withSyncOpMarker("delivery-contract:operations", () =>
 						deliveryOperations.runPass(deliveryNow),
 					);
@@ -8258,6 +8522,13 @@ export async function startBridge(
 			`[Bridge] Codex recovery boot pass failed closed: ${
 				err instanceof Error ? err.message : String(err)
 			}`,
+		);
+	}
+	try {
+		await residentReceiverSupervisor.reconcile("boot");
+	} catch (err) {
+		console.error(
+			`[Bridge] resident receiver boot pass failed closed: ${err instanceof Error ? err.message : String(err)}`,
 		);
 	}
 	let bootReconnectExecutionIds: string[] = [];
@@ -10730,57 +11001,62 @@ export async function startBridge(
 					epoch,
 					context,
 				}) => {
-					const adapter = store.getSession(session.execution_id)?.adapter_type;
-					const transport =
-						adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-							? EXECUTOR_TO_TRANSPORT[
-									adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-								]
-							: "claude-code";
-					if (transport === "none") {
-						return { ok: false, error: `wake_transport_missing:${adapter}` };
-					}
-					const db = new CommDB(
-						commDbPathForProject(session.project_name ?? ""),
-					);
-					try {
-						db.clearDeclaredState(session.execution_id);
-						const res = await deliverDurableTurnWake({
-							db,
-							wakeId,
-							execId: session.execution_id,
-							issueId: session.issue_id,
-							epoch,
-							activationId,
-							purpose: "workflow_rework",
-							fromAgent: "bridge",
-							content: renderWorkflowReworkWakeContent({
+					return deliverResidentWake(store, session.execution_id, async () => {
+						const adapter = store.getSession(
+							session.execution_id,
+						)?.adapter_type;
+						const transport =
+							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+								? EXECUTOR_TO_TRANSPORT[
+										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+									]
+								: "claude-code";
+						if (transport === "none") {
+							return { ok: false, error: `wake_transport_missing:${adapter}` };
+						}
+						const db = new CommDB(
+							commDbPathForProject(session.project_name ?? ""),
+						);
+						try {
+							db.clearDeclaredState(session.execution_id);
+							const res = await deliverDurableTurnWake({
+								db,
 								wakeId,
-								activationId,
+								execId: session.execution_id,
+								issueId: session.issue_id,
 								epoch,
-								executionId: session.execution_id,
-								context,
-							}),
-							metadata: {
-								kind: "workflow_rework",
-								wakeId,
 								activationId,
-								epoch,
-							},
-							backend: transport,
-						});
-						return res.ok
-							? { ok: true }
-							: {
+								purpose: "workflow_rework",
+								fromAgent: "bridge",
+								content: renderWorkflowReworkWakeContent({
+									wakeId,
+									activationId,
+									epoch,
+									executionId: session.execution_id,
+									context,
+								}),
+								metadata: {
+									kind: "workflow_rework",
+									wakeId,
+									activationId,
+									epoch,
+								},
+								backend: transport,
+							});
+							if (!res.ok) {
+								return {
 									ok: false,
 									error: res.error ?? res.skippedReason ?? "wake_failed",
 								};
-					} catch (error) {
-						return { ok: false, error: (error as Error).message };
-					} finally {
-						db.close();
-						issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-					}
+							}
+							return { ok: true };
+						} catch (error) {
+							return { ok: false, error: (error as Error).message };
+						} finally {
+							db.close();
+							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+						}
+					});
 				},
 			},
 		});
@@ -10864,56 +11140,63 @@ export async function startBridge(
 						epoch,
 						context,
 					}) => {
-						const adapter = store.getSession(
+						return deliverResidentWake(
+							store,
 							session.execution_id,
-						)?.adapter_type;
-						const transport =
-							adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
-								? EXECUTOR_TO_TRANSPORT[
-										adapter as keyof typeof EXECUTOR_TO_TRANSPORT
-									]
-								: "claude-code";
-						if (transport === "none") {
-							return {
-								ok: false,
-								error: `wake_transport_missing:${adapter}`,
-							};
-						}
-						const db = new CommDB(
-							commDbPathForProject(session.project_name ?? ""),
-						);
-						try {
-							db.clearDeclaredState(session.execution_id);
-							const res = await deliverDurableTurnWake({
-								db,
-								wakeId,
-								execId: session.execution_id,
-								issueId: session.issue_id,
-								epoch,
-								activationId,
-								purpose: "workflow_ship_carrier",
-								fromAgent: "bridge",
-								content: `[phase-wake ${wakeId}] Founder approval is recorded. Ship carrier activation ${activationId} owns TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; ship only if it answers yours. Context: ${JSON.stringify(context)}`,
-								metadata: {
-									kind: "workflow_ship_carrier",
-									wakeId,
-									activationId,
-									epoch,
-								},
-								backend: transport,
-							});
-							return res.ok
-								? { ok: true }
-								: {
+							async () => {
+								const adapter = store.getSession(
+									session.execution_id,
+								)?.adapter_type;
+								const transport =
+									adapter && Object.hasOwn(EXECUTOR_TO_TRANSPORT, adapter)
+										? EXECUTOR_TO_TRANSPORT[
+												adapter as keyof typeof EXECUTOR_TO_TRANSPORT
+											]
+										: "claude-code";
+								if (transport === "none") {
+									return {
 										ok: false,
-										error: res.error ?? res.skippedReason ?? "wake_failed",
+										error: `wake_transport_missing:${adapter}`,
 									};
-						} catch (error) {
-							return { ok: false, error: (error as Error).message };
-						} finally {
-							db.close();
-							issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
-						}
+								}
+								const db = new CommDB(
+									commDbPathForProject(session.project_name ?? ""),
+								);
+								try {
+									db.clearDeclaredState(session.execution_id);
+									const res = await deliverDurableTurnWake({
+										db,
+										wakeId,
+										execId: session.execution_id,
+										issueId: session.issue_id,
+										epoch,
+										activationId,
+										purpose: "workflow_ship_carrier",
+										fromAgent: "bridge",
+										content: `[phase-wake ${wakeId}] Founder approval is recorded. Ship carrier activation ${activationId} owns TURN epoch ${epoch}. FIRST run flywheel-comm turn --exec-id ${session.execution_id}; ship only if it answers yours. Context: ${JSON.stringify(context)}`,
+										metadata: {
+											kind: "workflow_ship_carrier",
+											wakeId,
+											activationId,
+											epoch,
+										},
+										backend: transport,
+									});
+									if (!res.ok) {
+										return {
+											ok: false,
+											error: res.error ?? res.skippedReason ?? "wake_failed",
+										};
+									}
+									return { ok: true };
+								} catch (error) {
+									return { ok: false, error: (error as Error).message };
+								} finally {
+									db.close();
+									issueDisplayRefreshHolder.current?.enqueue(session.issue_id);
+								}
+							},
+						);
 					},
 				},
 			});
@@ -12014,6 +12297,7 @@ export async function startBridge(
 		workflowEngineDispatcher?.stop();
 		workflowDocsMaterializer.stop();
 		heartbeatService?.stop();
+		await residentReceiverSupervisor.stop();
 		gatePoller.stop();
 		await eventLoopAttribution.stop();
 		// FLY-1188 §7.2 (R12 HIGH): stop accepting new review jobs and reap

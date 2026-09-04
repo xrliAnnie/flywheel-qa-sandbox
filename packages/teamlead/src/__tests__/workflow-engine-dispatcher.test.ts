@@ -1050,6 +1050,7 @@ describe("WorkflowEngineDispatcher", () => {
 			await storeWithFreshVerificationIntent();
 		const fake = fakeStartDispatcher(store);
 		const resolvePredecessorHead = vi.fn(async () => HEAD);
+		const armResidentReceiver = vi.fn(async () => {});
 		const recoverLaunch = vi.spyOn(store, "recoverOrAcquireWorkflowLaunch");
 		const dispatcher = new WorkflowEngineDispatcher({
 			store,
@@ -1058,6 +1059,7 @@ describe("WorkflowEngineDispatcher", () => {
 			now: () => new Date("2026-07-16T00:11:00.000Z"),
 			stateRoot: mkdtempSync(join(tmpdir(), "fly1912-fresh-dispatch-")),
 			resolvePredecessorHead,
+			armResidentReceiver,
 		});
 
 		expect(await dispatcher.reconcile()).toEqual({ started: 2, held: 0 });
@@ -1075,6 +1077,10 @@ describe("WorkflowEngineDispatcher", () => {
 		expect(resolvePredecessorHead).toHaveBeenCalledWith(
 			"implement-1",
 			"flywheel",
+		);
+		expect(armResidentReceiver).toHaveBeenCalledWith(
+			successorExecutionId,
+			"admission",
 		);
 		expect(store.listWorkflowActivationsForActor(successorExecutionId)).toEqual(
 			[
@@ -4429,6 +4435,7 @@ describe("WorkflowEngineDispatcher", () => {
 				project_name: request.projectName,
 				status: "running",
 				session_role: request.sessionRole,
+				adapter_type: "codex-tmux",
 			});
 			expect(
 				store.commitEnrolledCompletion({
@@ -4458,8 +4465,12 @@ describe("WorkflowEngineDispatcher", () => {
 			resolvePredecessorHead: async () => HEAD,
 		});
 
-		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		const result = await dispatcher.reconcile();
 		expect(start).toHaveBeenCalledOnce();
+		expect(
+			store.getWorkflowNodeCompletion("run-1", "implement", 1),
+		).toBeDefined();
+		expect(result).toEqual({ started: 1, held: 0 });
 		expect(store.getWorkflowRunNode("run-1", "implement", 1)?.state).toBe(
 			"done",
 		);

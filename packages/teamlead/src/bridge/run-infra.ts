@@ -263,6 +263,8 @@ export async function runCodexRecoveryOwner(input: {
 	options?: CodexRecoveryOptions;
 }): Promise<AdapterExecutionResult> {
 	let committed = false;
+	const recoveredSessionRole =
+		input.context.sessionRole ?? input.context.phaseKeepAlive?.role;
 	const result = await input.adapter.resumeExistingExecution(
 		input.context,
 		{
@@ -279,10 +281,10 @@ export async function runCodexRecoveryOwner(input: {
 		issueId: input.context.issueId,
 		projectName: input.context.projectName ?? "",
 		issueIdentifier: input.context.issueId,
-		...(input.context.phaseKeepAlive?.role
+		...(recoveredSessionRole
 			? {
-					sessionRole: input.context.phaseKeepAlive.role,
-					chatThreadRole: input.context.phaseKeepAlive.role,
+					sessionRole: recoveredSessionRole,
+					chatThreadRole: recoveredSessionRole,
 				}
 			: {}),
 		runnerBackend: "codex-tmux",
@@ -550,6 +552,20 @@ async function createRunBlueprint(
 	) => void | Promise<void>,
 	docFlowEnabled?: () => boolean,
 	codexExecutionOwners?: CodexExecutionOwnershipRegistry,
+	residentHold?: {
+		enter: StateStore["enterResidentHold"];
+		close: StateStore["closeResidentHold"];
+		current(input: { executionId: string }):
+			| {
+					activationId: string;
+					nodeId: string;
+					state: "resident" | "woken" | "closed";
+					boundarySeq: number;
+					revision: number;
+					graceExpiresAt: string;
+			  }
+			| undefined;
+	},
 ): Promise<{
 	blueprint: Blueprint;
 	cleanup: () => Promise<void>;
@@ -730,6 +746,7 @@ async function createRunBlueprint(
 					codexTransport as unknown as import("flywheel-claude-runner").CodexRunnerTransport,
 					{
 						executionOwners: codexExecutionOwners,
+						...(residentHold ? { residentHold } : {}),
 						...(onTuiWindowLost ? { onTuiWindowLost } : {}),
 						...(onTuiWindowRestored ? { onTuiWindowRestored } : {}),
 						...(onCodexTransportClose
@@ -1402,6 +1419,25 @@ export async function setupRunInfrastructure(
 					runInfraOpts?.onCodexTransportClose,
 					docFlowEnabled,
 					codexExecutionOwners,
+					{
+						enter: (input) => store.enterResidentHold(input),
+						close: (input) => store.closeResidentHold(input),
+						current: ({ executionId }) => {
+							const hold = store.getResidentHold(executionId);
+							if (!hold) return undefined;
+							return {
+								activationId: hold.activation_id,
+								nodeId: hold.node_id,
+								state:
+									hold.state === "resident" || hold.state === "woken"
+										? hold.state
+										: "closed",
+								boundarySeq: hold.boundary_seq,
+								revision: hold.revision,
+								graceExpiresAt: hold.grace_expires_at,
+							};
+						},
+					},
 				);
 			runInfraOpts?.codexRecoveryRuntimes?.set(
 				project.projectName,

@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
 import { canonicalJsonString } from "flywheel-config";
+import { openCommDbWritable } from "./commdb-open-gate.js";
 import { formatDeadLetterNotice } from "./dead-letter-format.js";
 import {
 	assertNoLoneSurrogate,
@@ -465,7 +466,7 @@ export class MailboxQueue {
 		if (dbPathOrConnection !== ":memory:") {
 			mkdirSync(dirname(dbPathOrConnection), { recursive: true });
 		}
-		this.db = new Database(dbPathOrConnection);
+		this.db = openCommDbWritable(dbPathOrConnection);
 		this.ownsConnection = true;
 		this.db.pragma("journal_mode = WAL");
 		this.db.pragma("busy_timeout = 5000");

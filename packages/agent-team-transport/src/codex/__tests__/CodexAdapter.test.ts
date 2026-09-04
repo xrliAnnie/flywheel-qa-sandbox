@@ -280,5 +280,18 @@ describe("CodexAdapter transport (FLY-123)", () => {
 			});
 			await watcher.stop();
 		});
+
+		it("advances watcher health after an empty poll", async () => {
+			const watcher = adapter.createReceiver({
+				leadName: TEAM,
+				runnerName: AGENT,
+				teamName: TEAM,
+			}) as CodexMailboxWatcher;
+
+			await watcher.start();
+
+			expect((await watcher.health()).lastEventTs).toEqual(expect.any(Number));
+			await watcher.stop();
+		});
 	});
 });

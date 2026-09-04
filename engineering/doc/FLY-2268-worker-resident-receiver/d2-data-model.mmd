@@ -1,0 +1,42 @@
+erDiagram
+  three_stage_turn {
+    text issue_id PK
+    text holder_exec_id
+    int epoch
+    text active_turn_id "新列"
+    int turn_generation "新列 默认0 首次grant=1"
+  }
+  runner_phase_wakes {
+    text execution_id
+    text message_id
+    text admission_state "新值 deferred_midturn"
+    int turn_generation "新列"
+  }
+  runner_shutdown_controls {
+    text execution_id PK
+    text request_id PK
+    text state
+    text settlement_reason "新列"
+  }
+  workflow_resident_hold {
+    text execution_id PK
+    text activation_id
+    int revision
+    text state "resident woken expired closed"
+    text grace_expires_at
+  }
+  workflow_completion_drain_challenge {
+    text challenge_id PK
+    text execution_id
+    text business_digest
+    text state "issued consumed superseded"
+  }
+  workflow_delivery_operation {
+    text operation_id PK
+    text kind "resident_expiry 既有预留"
+    text client_request_id
+    text state "staged applied sent projected"
+  }
+  three_stage_turn ||--o{ runner_phase_wakes : "持棒中来信标 deferred"
+  workflow_resident_hold ||--o| workflow_delivery_operation : "到期铸 saga"
+  workflow_delivery_operation ||--|| runner_shutdown_controls : "exact request_id"

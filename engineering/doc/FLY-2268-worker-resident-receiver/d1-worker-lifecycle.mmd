@@ -1,0 +1,17 @@
+flowchart LR
+  A[派活成功<br/>launch commit] --> B[收信员武装<br/>receiver armed]
+  B --> C{turn 进行中?}
+  C -- 是 --> D[来信落账<br/>deferred_midturn]
+  C -- 否 --> E[来信落账<br/>queued]
+  D --> F[turn 边界<br/>turn/completed]
+  F --> E
+  E --> G[下一 turn 必读]
+  G --> H{goal 完成}
+  H -- 有未读信 --> I[完成被暂缓<br/>consume_pending_mail]
+  I --> G
+  H -- loop 入边节点 --> J[常驻等待<br/>resident 30 分钟]
+  H -- 其他节点 --> K[正常终结]
+  J -- 返工唤醒 --> L[原地再派活<br/>woken → 下一轮]
+  L --> C
+  J -- 30 分钟无唤醒 --> M[到期关停 saga<br/>resident_expiry]
+  M --> K

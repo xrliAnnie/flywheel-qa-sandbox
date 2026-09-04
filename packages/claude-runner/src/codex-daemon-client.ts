@@ -24,6 +24,8 @@
  * state machine is unit-testable without a live daemon.
  */
 
+import { CodexTurnBarrier } from "./codex-turn-barrier.js";
+
 /** Native Goal status (app-server protocol v2 ThreadGoalStatus). */
 export type GoalStatus =
 	| "active"
@@ -144,7 +146,7 @@ export interface GoalRunResult {
 	};
 }
 
-export interface GoalPhaseHold {
+export interface LegacyGoalPhaseHold {
 	schemaVersion: 1;
 	role: "design" | "implement" | "qa";
 	state: "entering" | "paused" | "reactivating";
@@ -152,6 +154,19 @@ export interface GoalPhaseHold {
 	deadlineRemainingMs: number;
 	hardDeadlineRemainingMs: number;
 }
+
+export interface ResidentGoalPhaseHold {
+	schemaVersion: 2;
+	nodeId: string;
+	residentRevision: number;
+	graceExpiresAt: string;
+	state: "entering" | "paused" | "reactivating";
+	enteredAt: string;
+	deadlineRemainingMs: number;
+	hardDeadlineRemainingMs: number;
+}
+
+export type GoalPhaseHold = LegacyGoalPhaseHold | ResidentGoalPhaseHold;
 
 export type GoalPhaseObservation =
 	| { kind: "active" }
@@ -191,6 +206,12 @@ export interface GoalPhaseLifecycle {
 	markWakeStarted(messageId: string): void;
 	finishWake(messageId: string): void;
 	leaveHold(): Promise<void>;
+}
+
+/** Durable CommDB seam for serial turn-boundary persistence. */
+export interface GoalTurnLifecycle {
+	markTurnStarted(turnId: string): void | Promise<void>;
+	markTurnCompleted(turnId: string): void | Promise<void>;
 }
 
 /** Streaming events surfaced to the caller (pane render, gate detection). */
@@ -562,7 +583,7 @@ export class CodexDaemonClient {
 			},
 			timeoutMs,
 		);
-		return extractTurnId(response.result);
+		return extractTurnStartResponseId(response.result);
 	}
 
 	close(): void {
@@ -594,6 +615,73 @@ export class GoalRunError extends Error {
 		super(message);
 		this.name = "GoalRunError";
 	}
+}
+
+export type ThreadReadTurnStatus =
+	| "completed"
+	| "interrupted"
+	| "failed"
+	| "inProgress";
+
+export interface ThreadReadTurn {
+	id: string;
+	status: ThreadReadTurnStatus;
+}
+
+const THREAD_READ_TURN_STATUSES = new Set<ThreadReadTurnStatus>([
+	"completed",
+	"interrupted",
+	"failed",
+	"inProgress",
+]);
+
+/**
+ * Strict parser for the official 0.153.2 ThreadReadResponse envelope. The
+ * top-level `turns` variant remains an explicit, tested compatibility shape
+ * for older app-server responses; every turn is still validated identically.
+ */
+export function parseThreadReadTurns(
+	result: unknown,
+	requestedThreadId: string,
+): ThreadReadTurn[] {
+	const fail = (reason: string): never => {
+		throw new Error(`thread/read reconciliation failed: ${reason}`);
+	};
+	if (!requestedThreadId) fail("requested thread id is empty");
+	if (typeof result !== "object" || result === null) {
+		return fail("result is not an object");
+	}
+
+	const record = result as { thread?: unknown; turns?: unknown };
+	let turns: unknown;
+	if (record.thread !== undefined) {
+		if (typeof record.thread !== "object" || record.thread === null) {
+			return fail("thread is not an object");
+		}
+		const thread = record.thread as { id?: unknown; turns?: unknown };
+		if (thread.id !== requestedThreadId) return fail("thread id mismatch");
+		turns = thread.turns;
+	} else {
+		turns = record.turns;
+	}
+	if (!Array.isArray(turns)) return fail("turns is not an array");
+
+	return turns.map((candidate, index) => {
+		if (typeof candidate !== "object" || candidate === null) {
+			return fail(`turn ${index} is not an object`);
+		}
+		const turn = candidate as { id?: unknown; status?: unknown };
+		if (typeof turn.id !== "string" || turn.id.length === 0) {
+			return fail(`turn ${index} has no id`);
+		}
+		if (
+			typeof turn.status !== "string" ||
+			!THREAD_READ_TURN_STATUSES.has(turn.status as ThreadReadTurnStatus)
+		) {
+			return fail(`turn ${index} has invalid status`);
+		}
+		return { id: turn.id, status: turn.status as ThreadReadTurnStatus };
+	});
 }
 
 /**
@@ -666,6 +754,10 @@ export async function runGoalToTerminal(
 		}) => void;
 		/** FLY-1269: explicit resident DAG workflow lifecycle. */
 		phaseLifecycle?: GoalPhaseLifecycle;
+		/** FLY-2268: fail-closed durable turn boundary writer. */
+		turnLifecycle?: GoalTurnLifecycle;
+		/** Test seam; production constructs the fixed-budget barrier. */
+		turnBarrier?: CodexTurnBarrier;
 		/** Slow, zero-token phase control poll (default 15s). */
 		phaseControlPollIntervalMs?: number;
 		/** Per local phase control RPC bound (default 30s). */
@@ -742,6 +834,28 @@ export async function runGoalToTerminal(
 
 	const turnIds = new Set<string>();
 	const ownedTurnIds = new Set<string>();
+	const turnLifecycle = input.turnLifecycle;
+	const turnBarrier = turnLifecycle
+		? (input.turnBarrier ?? new CodexTurnBarrier())
+		: undefined;
+	const enqueueTurnStarted = (turnId: string): void => {
+		if (!turnLifecycle || !turnBarrier) return;
+		turnBarrier.enqueue(() => turnLifecycle.markTurnStarted(turnId));
+	};
+	const enqueueTurnCompleted = (turnId: string): void => {
+		if (!turnLifecycle || !turnBarrier) return;
+		turnBarrier.enqueue(() => turnLifecycle.markTurnCompleted(turnId));
+	};
+	const settleTurnBarrier = async (): Promise<void> => {
+		if (!turnBarrier) return;
+		try {
+			await turnBarrier.settled();
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			client.logDiagnostic(`turn barrier failed: ${message}`);
+			throw new GoalRunError(`turn barrier failed: ${message}`, "setup_failed");
+		}
+	};
 	let lastTurnError: GoalRunResult["lastTurnError"];
 	let pendingTurnDispatch:
 		| { notifications: Array<{ method: string; params: unknown }> }
@@ -778,7 +892,20 @@ export async function runGoalToTerminal(
 			pendingTurnDispatch.notifications.push({ method, params });
 			return;
 		}
-		if (method === "turn/completed") applyOwnedTurnCompletion(params);
+		const turnId = extractTurnId(params);
+		if (!turnId) return;
+		if (method === "turn/started") {
+			if (!ownedTurnIds.has(turnId)) {
+				client.logDiagnostic(
+					`ignored unclaimed turn/started for turn ${turnId}`,
+				);
+				return;
+			}
+			enqueueTurnStarted(turnId);
+			return;
+		}
+		enqueueTurnCompleted(turnId);
+		applyOwnedTurnCompletion(params);
 	};
 	const beginTurnDispatch = (): void => {
 		pendingTurnDispatch = { notifications: [] };
@@ -796,12 +923,16 @@ export async function runGoalToTerminal(
 			.find((turnId): turnId is string => typeof turnId === "string");
 		const claimedTurnId = responseTurnId ?? startedTurnId;
 		if (!claimedTurnId) {
+			turnBarrier?.latch(
+				new Error("turn/start supplied no independently attributable turn id"),
+			);
 			client.logDiagnostic(
-				"turn/start supplied no independently attributable turn id; error capture disabled for this dispatch",
+				"turn/start supplied no independently attributable turn id",
 			);
 			return;
 		}
 		ownedTurnIds.add(claimedTurnId);
+		enqueueTurnStarted(claimedTurnId);
 		for (const event of pending.notifications) {
 			const eventTurnId = extractTurnId(event.params);
 			if (eventTurnId !== claimedTurnId) {
@@ -810,7 +941,10 @@ export async function runGoalToTerminal(
 				);
 				continue;
 			}
-			if (event.method === "turn/completed") {
+			if (event.method === "turn/started") {
+				enqueueTurnStarted(claimedTurnId);
+			} else {
+				enqueueTurnCompleted(claimedTurnId);
 				applyOwnedTurnCompletion(event.params);
 			}
 		}
@@ -980,6 +1114,7 @@ export async function runGoalToTerminal(
 	};
 	const enterPhaseHold = async (): Promise<void> => {
 		if (!phase) throw new Error("phase lifecycle missing");
+		await settleTurnBarrier();
 		// FLY-1257 × FLY-1269: a phase boundary SUPERSEDES any gate episode — a
 		// runner that parked its phase has finished it, so by definition it is no
 		// longer waiting on a Lead answer. The two holds have orthogonal TRIGGERS
@@ -1017,6 +1152,7 @@ export async function runGoalToTerminal(
 				phaseControlRpcTimeoutMs,
 			);
 			claimTurnDispatch(turnId);
+			await settleTurnBarrier();
 			// Clear a complete emitted by the paused wake turn BEFORE active; a
 			// notification emitted by the active transition remains authoritative.
 			terminalSeen = null;
@@ -1250,6 +1386,7 @@ export async function runGoalToTerminal(
 				remainingBudget(),
 			);
 			claimTurnDispatch(turnId);
+			await settleTurnBarrier();
 			if (input.onRecoveryOwnershipEstablished) {
 				if (!turnId) {
 					throw new GoalRunError(
@@ -1290,6 +1427,7 @@ export async function runGoalToTerminal(
 	 * Anything else is this run's real terminal.
 	 */
 	const settleTerminal = async (): Promise<TerminalVerdict> => {
+		await settleTurnBarrier();
 		const status = terminalSeen;
 		if (!status) return "none";
 		if (classifyTerminalStatus(status) !== "terminal") return "gate_held";
@@ -1450,6 +1588,13 @@ export async function runGoalToTerminal(
 				if (gateHoldLatched) writeGateHold(false);
 			}
 		} catch (err) {
+			if (
+				err instanceof GoalRunError &&
+				err.kind === "setup_failed" &&
+				err.message.startsWith("turn barrier failed")
+			) {
+				throw err;
+			}
 			// A durable-latch failure always wins over a streamed terminal. The
 			// latter proves the daemon changed state, but not that restart recovery
 			// can safely distinguish a finished wake from an unresolved hold.
@@ -1596,6 +1741,7 @@ export async function runGoalToTerminal(
 		// The classifier mutates it through a closure, which TypeScript's local
 		// narrowing cannot follow across every break edge.
 		const finalStatus = terminalSeen as GoalStatus;
+		await settleTurnBarrier();
 		return {
 			status: finalStatus,
 			tokensUsed: latestTokens,
@@ -1617,6 +1763,15 @@ function notificationThreadId(params: unknown): string | undefined {
 	if (typeof p.threadId === "string") return p.threadId;
 	if (p.thread && typeof p.thread.id === "string") return p.thread.id;
 	return undefined;
+}
+
+/** Official 0.153.2 TurnStartResponse envelope: `{ turn: { id } }`. */
+function extractTurnStartResponseId(result: unknown): string | undefined {
+	if (typeof result !== "object" || result === null) return undefined;
+	const turn = (result as { turn?: unknown }).turn;
+	if (typeof turn !== "object" || turn === null) return undefined;
+	const id = (turn as { id?: unknown }).id;
+	return typeof id === "string" && id.length > 0 ? id : undefined;
 }
 
 /**

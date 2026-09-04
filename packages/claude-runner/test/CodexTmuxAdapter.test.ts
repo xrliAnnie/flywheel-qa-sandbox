@@ -580,6 +580,12 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		});
 	});
 
+	it("provides a durable turn lifecycle to every CommDB-backed Codex worker", async () => {
+		await makeAdapter().execute(ctx());
+
+		expect(runtime.runGoalInputs[0]?.turnLifecycle).toBeDefined();
+	});
+
 	it("forwards owned App Server notifications into the transcript sink", async () => {
 		const params = {
 			threadId: THREAD_ID,
@@ -698,7 +704,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 	});
 
-	it("phase keep-alive starts one controller without starting mailbox intake before hold", async () => {
+	it("phase keep-alive starts one controller while Bridge retains mailbox intake", async () => {
 		const watcher = {
 			start: vi.fn(async () => {}),
 			stop: vi.fn(async () => {}),
@@ -722,6 +728,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
 			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(),
 		};
 		const deps = {
 			...makeDeps(),
@@ -747,13 +754,91 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 
 		expect(result.success).toBe(true);
 		expect(deps.phaseLifecycleFactory).toHaveBeenCalledOnce();
-		expect(transport.createReceiver).toHaveBeenCalledOnce();
+		expect(transport.createReceiver).not.toHaveBeenCalled();
+		expect(deps.phaseLifecycleFactory.mock.calls[0]?.[0]).not.toHaveProperty(
+			"watcher",
+		);
 		expect(lifecycle.start).toHaveBeenCalledOnce();
 		expect(lifecycle.stop).toHaveBeenCalledOnce();
 		expect(watcher.start).not.toHaveBeenCalled();
 		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
 		expect(runtime.stopped).toBe(1);
 		expect(runtime.drainedCalls).toBe(1);
+		const comm = new CommDB(dbPath);
+		try {
+			expect(comm.getSession(execId)?.phase_keep_alive).toBe(1);
+		} finally {
+			comm.close();
+		}
+	});
+
+	it("starts the lifecycle controller for an arbitrary resident loop target", async () => {
+		const lifecycle = {
+			start: vi.fn(async () => {}),
+			stop: vi.fn(async () => {}),
+			stopIntake: vi.fn(async () => {}),
+			waitForShutdown: vi.fn(() => new Promise(() => {})),
+			observe: vi.fn(() => ({ kind: "active" as const })),
+			observeBoundary: vi.fn(() => ({ kind: "active" as const })),
+			getPhaseHold: vi.fn(() => null),
+			enterHold: vi.fn(async () => {}),
+			confirmHoldPaused: vi.fn(async () => {}),
+			waitForActivity: vi.fn(async () => {}),
+			leaveHold: vi.fn(async () => {}),
+			markWakeStarted: vi.fn(),
+			finishWake: vi.fn(),
+			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(),
+		};
+		const residentHold = {
+			enter: vi.fn(async () => ({
+				ok: true as const,
+				revision: 1,
+				graceExpiresAt: "2026-09-04T11:00:00.000Z",
+			})),
+			close: vi.fn(async () => true),
+			current: vi.fn(async () => undefined),
+		};
+		const deps = {
+			...makeDeps(),
+			residentHold,
+			phaseLifecycleFactory: vi.fn(() => lifecycle),
+		};
+		const adapter = new CodexTmuxAdapter(
+			"testsess",
+			fake.exec,
+			25,
+			60_000,
+			undefined,
+			undefined,
+			deps,
+		);
+
+		const result = await adapter.execute(
+			ctx({
+				residentLoopTarget: { nodeId: "repair-any-name" },
+				workflowActivationId: "activation-1",
+			}),
+		);
+
+		expect(result.success).toBe(true);
+		expect(deps.phaseLifecycleFactory).toHaveBeenCalledWith(
+			expect.objectContaining({
+				executionId: execId,
+				residentHold: {
+					activationId: "activation-1",
+					nodeId: "repair-any-name",
+					enter: residentHold.enter,
+					close: residentHold.close,
+					current: residentHold.current,
+				},
+			}),
+		);
+		expect(runtime.runGoalInputs[0]?.phaseLifecycle).toBe(lifecycle);
+		expect(readCodexLaunchSnapshot(execId).launchContext).toMatchObject({
+			phaseRole: null,
+			loopTargetNodeId: "repair-any-name",
+		});
 		const comm = new CommDB(dbPath);
 		try {
 			expect(comm.getSession(execId)?.phase_keep_alive).toBe(1);
@@ -862,7 +947,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			leaveHold: vi.fn(async () => {}),
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
-			ackShutdown: vi.fn(() => {
+			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(() => {
 				const db = new CommDB(dbPath);
 				try {
 					expect(db.getSession(execId)?.status).toBe("completed");
@@ -895,7 +981,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 
 		expect(result.success).toBe(true);
-		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-1", {
+		expect(lifecycle.ackAllPendingShutdowns).toHaveBeenCalledWith({
 			ok: true,
 		});
 		expect(order).toEqual([
@@ -944,7 +1030,8 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 			leaveHold: vi.fn(async () => {}),
 			markWakeStarted: vi.fn(),
 			finishWake: vi.fn(),
-			ackShutdown: vi.fn(() => order.push("shutdown.ack")),
+			ackShutdown: vi.fn(),
+			ackAllPendingShutdowns: vi.fn(() => order.push("shutdown.ack")),
 		};
 		const adapter = new CodexTmuxAdapter(
 			"testsess",
@@ -968,7 +1055,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 		);
 
 		expect(result.success).toBe(false);
-		expect(lifecycle.ackShutdown).toHaveBeenCalledWith("shutdown-fail", {
+		expect(lifecycle.ackAllPendingShutdowns).toHaveBeenCalledWith({
 			ok: false,
 			error: "SIGKILL unconfirmed",
 		});
@@ -2021,6 +2108,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				markWakeStarted: vi.fn(),
 				finishWake: vi.fn(),
 				ackShutdown: vi.fn(),
+				ackAllPendingShutdowns: vi.fn(),
 			};
 			const deps = makeDeps();
 			deps.runtimeFactory = () => controlledRuntime;
@@ -2310,6 +2398,7 @@ describe("CodexTmuxAdapter (FLY-1188 M4d daemon mode)", () => {
 				appsApprovalMode: "never",
 				skillFrameworkMode: "bare",
 				phaseRole: "implement",
+				loopTargetNodeId: null,
 			},
 			rehydrationContext: {
 				allowedTools: ["Read(**)", "Bash"],

@@ -1,0 +1,15 @@
+flowchart LR
+  S([goal 完成且 loop 入边]) --> R[resident r=1<br/>30 分钟期限]
+  R -- 返工唤醒 CAS 赢 --> W[woken r=1<br/>原地再派活]
+  W -- 再次 goal 完成 --> R2[resident r=2<br/>新 30 分钟]
+  R2 -. 同样规则 .-> R
+  R -- 30 分钟无唤醒<br/>Bridge 维护 tick --> E[expired]
+  E --> ST[saga staged<br/>kind=resident_expiry]
+  ST -- 写 shutdown 请求<br/>resident-expiry:exec:rN --> AP[applied]
+  AP -- exact 请求行 acked<br/>Claude: pane 消失 --> SE[sent]
+  SE -- hold 行 closed expired --> PJ[projected]
+  ST -- 请求被拒 --> F[failed<br/>delivery_operation_stalled]
+  AP -- ACK 失败 --> F
+  R -- 终结 / 换体 / run 终止 --> C[closed]
+  W -- 同上 --> C
+  PJ --> C

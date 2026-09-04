@@ -112,6 +112,7 @@ async function buildPrompt(
 
 type CapturedPhaseContext = AdapterExecutionContext & {
 	phaseKeepAlive?: { role: "design" | "implement" | "qa" };
+	residentLoopTarget?: { nodeId: string };
 };
 
 async function buildExecutionContext(
@@ -146,29 +147,56 @@ async function buildExecutionContext(
 
 describe("FLY-1269 adapter phase keep-alive identity", () => {
 	it.each(["design", "implement", "qa"] as const)(
-		"codex %s phase receives its exact keep-alive role",
+		"a loop-target %s phase retains legacy keep-alive and receives resident identity",
 		async (role) => {
 			const call = await buildExecutionContext({
 				runnerBackend: "codex-tmux",
 				sessionRole: role,
 				shareParentBranch: true,
+				loopTarget: { nodeId: role },
 			});
 			expect(call.phaseKeepAlive).toEqual({ role });
+			expect(call.residentLoopTarget).toEqual({ nodeId: role });
 		},
 	);
 
 	it("single-session Codex receives no phase lifetime", async () => {
 		const call = await buildExecutionContext({ runnerBackend: "codex-tmux" });
 		expect(call.phaseKeepAlive).toBeUndefined();
+		expect(call.residentLoopTarget).toBeUndefined();
 	});
 
-	it("Claude shared-DAG workflows keep their existing adapter context", async () => {
+	it("Claude loop targets receive the same resident lifetime", async () => {
 		const call = await buildExecutionContext({
 			runnerBackend: "claude-tmux",
 			sessionRole: "implement",
 			shareParentBranch: true,
+			loopTarget: { nodeId: "implement" },
 		});
 		expect(call.phaseKeepAlive).toBeUndefined();
+		expect(call.residentLoopTarget).toEqual({ nodeId: "implement" });
+	});
+
+	it("keeps the existing non-loop Codex receiver lifetime", async () => {
+		const call = await buildExecutionContext({
+			runnerBackend: "codex-tmux",
+			sessionRole: "implement",
+			shareParentBranch: true,
+		});
+		expect(call.phaseKeepAlive).toEqual({ role: "implement" });
+		expect(call.residentLoopTarget).toBeUndefined();
+	});
+
+	it("supports an arbitrarily named loop target without undefined prompt text", async () => {
+		const call = await buildExecutionContext({
+			runnerBackend: "codex-tmux",
+			sessionRole: "review-repair",
+			shareParentBranch: true,
+			loopTarget: { nodeId: "review-repair" },
+		});
+		expect(call.phaseKeepAlive).toBeUndefined();
+		expect(call.residentLoopTarget).toEqual({ nodeId: "review-repair" });
+		expect(call.appendSystemPrompt).not.toContain("undefined");
 	});
 });
 

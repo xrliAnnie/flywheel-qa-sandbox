@@ -26,6 +26,7 @@ import {
 import { resolveNodeDispatchAtLaunch } from "../workflow-dispatch-resolution.js";
 import { WORKFLOW_REPLACEMENT_RETRY_DELAYS_MS } from "../workflow-replacement-policy.js";
 import {
+	isLoopTargetNode,
 	nodeRequiresFounderReview,
 	parseWorkflowRunSnapshot,
 	resolveWorkflowDecisionContract,
@@ -135,6 +136,10 @@ interface WorkflowEngineDispatcherOptions {
 	) => Promise<WorkflowShipCarrierDeliveryOutcome>;
 	/** FLY-1638: checked before durable execution admission/credential writes. */
 	admissionProbe?: () => AdmissionDecision;
+	armResidentReceiver?: (
+		executionId: string,
+		source: "admission",
+	) => Promise<void> | void;
 }
 
 export interface WorkflowEngineReconcileResult {
@@ -2751,6 +2756,9 @@ export class WorkflowEngineDispatcher {
 				...(leadId && { leadId }),
 				sessionRole: role,
 				shareParentBranch: isWorkflowPhaseRole(node.type) ? true : undefined,
+				...(isLoopTargetNode(snapshot, node.id)
+					? { loopTarget: { nodeId: node.id } }
+					: {}),
 				...(startPoint && { startPoint }),
 				...(workflowResume && { workflowResume }),
 				ignoreRunnerLabelSelection: true,
@@ -2849,6 +2857,16 @@ export class WorkflowEngineDispatcher {
 				}
 				return false;
 			}
+		}
+		try {
+			await this.options.armResidentReceiver?.(
+				intent.execution_id,
+				"admission",
+			);
+		} catch (error) {
+			this.log(
+				`resident receiver admission arm deferred for ${intent.execution_id}: ${error instanceof Error ? error.message : String(error)}`,
+			);
 		}
 		let delivered = await waitForGeneralizedLaunchDelivery(
 			store,

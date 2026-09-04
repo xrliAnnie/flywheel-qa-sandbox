@@ -2441,6 +2441,23 @@ describe("TmuxAdapter", () => {
 			expect(hookServer.waitForCompletion).toHaveBeenCalled();
 		});
 
+		it("keeps a loop target resident after its completion callback until the pane exits", async () => {
+			const hookServer = makeMockHookServer({ resolveImmediately: true });
+			const { fn, calls } = makeMockExecWithDelayedDead(2);
+			const adapter = new TmuxAdapter("flywheel", fn, 10, 5000, hookServer);
+
+			const result = await adapter.execute(
+				makeCtx({ residentLoopTarget: { nodeId: "repair-any-name" } }),
+			);
+
+			expect(result.timedOut).toBe(false);
+			expect(
+				calls.filter(
+					(call) => call.cmd === "tmux" && call.args[0] === "list-panes",
+				),
+			).toHaveLength(2);
+		});
+
 		it("waitForCompletion resolves on pane_dead even with hookServer", async () => {
 			// hookServer never resolves, but pane dies
 			const hookServer = makeMockHookServer({ resolveImmediately: false });
@@ -3192,6 +3209,65 @@ describe("FLY-1253: production claude-tmux review-wait compatibility", () => {
 			);
 			expect(result.timedOut).toBe(true);
 			expect(killWindowTargets(pane.calls)).toContain("@43");
+		} finally {
+			db.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("keeps the ordinary active timeout before a resident loop target completes", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "flywheel-tmux-loop-resident-"));
+		const commDbPath = join(tmpDir, "comm.db");
+		const db = new CommDB(commDbPath);
+		const pane = controllablePane("@44");
+		try {
+			const adapter = new TmuxAdapter("flywheel", pane.fn, 5, 25);
+			const result = await adapter.execute(
+				makeCtx({
+					commDbPath,
+					timeoutMs: 25,
+					waitingTimeoutMs: 500,
+					residentLoopTarget: { nodeId: "repair-any-name" },
+				}),
+			);
+			expect(result.timedOut).toBe(true);
+			expect(result.durationMs).toBeLessThan(500);
+			expect(killWindowTargets(pane.calls)).toContain("@44");
+		} finally {
+			db.close();
+			rmSync(tmpDir, { recursive: true, force: true });
+		}
+	});
+
+	it("exempts a resident loop target after its completion callback", async () => {
+		const tmpDir = mkdtempSync(join(tmpdir(), "flywheel-tmux-loop-parked-"));
+		const commDbPath = join(tmpDir, "comm.db");
+		const db = new CommDB(commDbPath);
+		const pane = controllablePane("@45");
+		const hookServer = {
+			getPort: vi.fn(() => 9876),
+			waitForCompletion: vi.fn(async (token: string) => ({
+				token,
+				sessionId: "hook-session",
+				issueId: "FLY-2268",
+			})),
+			cancelWait: vi.fn(),
+		};
+		try {
+			const adapter = new TmuxAdapter("flywheel", pane.fn, 5, 25, hookServer);
+			const execution = adapter.execute(
+				makeCtx({
+					commDbPath,
+					timeoutMs: 25,
+					waitingTimeoutMs: 500,
+					residentLoopTarget: { nodeId: "repair-any-name" },
+				}),
+			);
+			setTimeout(() => pane.markDead(), 70);
+
+			const result = await execution;
+			expect(result.timedOut).toBe(false);
+			expect(killWindowTargets(pane.calls)).toEqual([]);
 		} finally {
 			db.close();
 			rmSync(tmpDir, { recursive: true, force: true });

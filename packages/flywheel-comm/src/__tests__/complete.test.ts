@@ -221,6 +221,40 @@ describe("complete command", () => {
 		expect(body.payload.evidence.headSha).toBe("c".repeat(40));
 	});
 
+	it("sends a drain receipt and prints the exact retry guidance", async () => {
+		await complete({
+			route: "needs_review",
+			merged: false,
+			drainReceipt: "drain:exec-108:activation-1:abcdef",
+		});
+		const body = JSON.parse(mockFetch.mock.calls[0]![1].body);
+		expect(body.payload.drainReceipt).toEqual({
+			challengeId: "drain:exec-108:activation-1:abcdef",
+		});
+
+		mockFetch.mockResolvedValue({
+			ok: false,
+			status: 409,
+			text: async () =>
+				JSON.stringify({
+					error: "workflow_completion_rejected",
+					reason: "consume_pending_mail",
+					challengeId: "drain-next",
+					mailbox: ["mail-1"],
+					phaseWakes: ["wake-1"],
+				}),
+		});
+		await expect(
+			complete({ route: "needs_review", merged: false }),
+		).rejects.toThrow("process.exit(1)");
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining("--drain-receipt drain-next"),
+		);
+		expect(errorSpy).toHaveBeenCalledWith(
+			expect.stringContaining('mailbox ["mail-1"] / phase-wake ["wake-1"]'),
+		);
+	});
+
 	it("attaches a non-blocking runner-memory closeout receipt to session_completed", async () => {
 		const dir = join(tmpHome, "runner-memory");
 		mkdirSync(dir);
@@ -301,6 +335,10 @@ describe("complete command", () => {
 			"run 已进入 engine-owned gate;本节点已终结,不会有 approve/ship 环节找你;不要等待、不要跑 verify-approval,立即收尾退出。",
 		],
 		["runner_ship_park", "已 park 等待 ship gate;等 wake,勿自行轮询。"],
+		[
+			"loop_park",
+			"已 park 等待返工唤醒(常驻宽限 30 分钟);等 wake,勿自行轮询。",
+		],
 	] as const)(
 		"prints %s completion guidance",
 		async (disposition, guidance) => {

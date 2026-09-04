@@ -20,6 +20,7 @@ import {
 	GoalRunError,
 	type GoalRunResult,
 	type GoalStatus,
+	type GoalTurnLifecycle,
 	type RecoveryOwnershipReceipt,
 	runGoalToTerminal,
 } from "./codex-daemon-client.js";
@@ -33,6 +34,7 @@ import {
 	type ConnectDaemonTransportOptions,
 	connectDaemonTransport,
 } from "./codex-daemon-transport.js";
+import type { CodexTurnBarrier } from "./codex-turn-barrier.js";
 
 export type Sandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type ApprovalPolicy =
@@ -135,6 +137,10 @@ export interface RunGoalInput {
 	isWaiting?: () => boolean;
 	/** FLY-1269 explicit resident DAG workflow controller. */
 	phaseLifecycle?: GoalPhaseLifecycle;
+	/** FLY-2268 durable turn-boundary writer, shared across daemon restarts. */
+	turnLifecycle?: GoalTurnLifecycle;
+	/** Test seam for deterministic retry exhaustion. */
+	turnBarrier?: CodexTurnBarrier;
 	phaseControlPollIntervalMs?: number;
 	phaseControlRpcTimeoutMs?: number;
 	/** FLY-1257: durable blocked-on-gate latch reader, forwarded across restarts. */
@@ -551,6 +557,10 @@ export class CodexDaemonGoalRuntime {
 							...(input.phaseLifecycle
 								? { phaseLifecycle: input.phaseLifecycle }
 								: {}),
+							...(input.turnLifecycle
+								? { turnLifecycle: input.turnLifecycle }
+								: {}),
+							...(input.turnBarrier ? { turnBarrier: input.turnBarrier } : {}),
 							...(input.phaseControlPollIntervalMs !== undefined
 								? {
 										phaseControlPollIntervalMs:

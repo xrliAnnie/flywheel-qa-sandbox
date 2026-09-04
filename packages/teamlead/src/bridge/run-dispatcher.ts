@@ -1058,6 +1058,7 @@ export class RetryDispatcher implements IRetryDispatcher {
 				codexSkip: req.codexSkip,
 				...(req.generalizedExecution && {
 					generalizedExecutionContext: {
+						activationId: req.generalizedExecution.activationId,
 						runId: req.generalizedExecution.runId,
 						nodeId: req.generalizedExecution.nodeId,
 						attempt: req.generalizedExecution.attempt,
@@ -1738,6 +1739,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				// FLY-793: DAG workflows share one branch B (Bridge-internal).
 				// FLY-795: a resume also shares branch B (reuse the same mechanism).
 				shareParentBranch: req.shareParentBranch ?? (resume ? true : undefined),
+				loopTarget: req.loopTarget,
 				// FLY-859: Implement-fix round context after a QA FAIL (Bridge-internal).
 				phaseFixContext: req.phaseFixContext,
 				// FLY-24: Pass pre-fetched metadata so Blueprint/EventEnvelope uses real title
@@ -1764,6 +1766,7 @@ export class RunDispatcher extends RetryDispatcher implements IStartDispatcher {
 				...(continuityInherit && { continuityInherit }),
 				...(req.generalizedExecution && {
 					generalizedExecutionContext: {
+						activationId: req.generalizedExecution.activationId,
 						runId: req.generalizedExecution.runId,
 						nodeId: req.generalizedExecution.nodeId,
 						attempt: req.generalizedExecution.attempt,

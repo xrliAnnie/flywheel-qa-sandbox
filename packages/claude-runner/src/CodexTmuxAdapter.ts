@@ -100,7 +100,6 @@ import {
 	type CodexPhaseLifecycle,
 	CodexPhaseLifecycleController,
 	type CodexPhaseLifecycleControllerOptions,
-	type CodexWakeWatcher,
 } from "./codex-phase-lifecycle.js";
 import {
 	ensureRunnerTuiWindow,
@@ -156,15 +155,7 @@ export interface CodexRunnerTransport {
 		teamName: string;
 		[key: string]: unknown;
 	}): { args: string[]; env: Record<string, string> };
-	createReceiver(ctx: {
-		leadName: string;
-		runnerName: string;
-		teamName: string;
-		[key: string]: unknown;
-	}): CodexWakeWatcher | null;
 }
-
-export type { CodexWakeWatcher } from "./codex-phase-lifecycle.js";
 
 /**
  * FLY-1188 M4d: the resident-/goal runtime surface execute() drives — injected
@@ -209,6 +200,7 @@ export interface CodexLaunchSnapshot {
 		appsApprovalMode: "never";
 		skillFrameworkMode: "superpowers" | "matt" | "bare" | null;
 		phaseRole: "design" | "implement" | "qa" | null;
+		loopTargetNodeId?: string | null;
 		capabilityDigest: string;
 	};
 	/**
@@ -322,6 +314,14 @@ function parseCodexLaunchSnapshot(
 	) {
 		throw new Error(`invalid immutable launch snapshot field phaseRole`);
 	}
+	const loopTargetNodeId = launchContext.loopTargetNodeId;
+	if (
+		loopTargetNodeId !== undefined &&
+		loopTargetNodeId !== null &&
+		(typeof loopTargetNodeId !== "string" || loopTargetNodeId.length === 0)
+	) {
+		throw new Error(`invalid immutable launch snapshot field loopTargetNodeId`);
+	}
 	let rehydrationContext: CodexLaunchSnapshot["rehydrationContext"];
 	if (snapshot.rehydrationContext !== undefined) {
 		if (
@@ -372,6 +372,7 @@ function parseCodexLaunchSnapshot(
 			appsApprovalMode: "never",
 			skillFrameworkMode,
 			phaseRole,
+			...(loopTargetNodeId !== undefined ? { loopTargetNodeId } : {}),
 			capabilityDigest: launchContext.capabilityDigest,
 		},
 		...(rehydrationContext ? { rehydrationContext } : {}),
@@ -410,14 +411,19 @@ export function readCodexGateHoldLatch(executionId: string): boolean {
 	return state.gateHold;
 }
 
-function capabilityDigest(ctx: AdapterExecutionContext): string {
+function capabilityDigest(
+	ctx: AdapterExecutionContext,
+	overrides: { phaseRole?: "design" | "implement" | "qa" | null } = {},
+): string {
 	const stableCapabilities = {
 		allowedTools: [...(ctx.allowedTools ?? [])].sort(),
 		enablePonytail: ctx.enablePonytail === true,
 		skillFrameworkMode: ctx.skillFrameworkMode ?? null,
 		codexSkillDisableNames: [...(ctx.codexSkillDisableNames ?? [])].sort(),
 		hasMattSkillsSource: Boolean(ctx.codexMattSkillsSourceDir),
-		phaseRole: ctx.phaseKeepAlive?.role ?? null,
+		phaseRole: Object.hasOwn(overrides, "phaseRole")
+			? (overrides.phaseRole ?? null)
+			: (ctx.phaseKeepAlive?.role ?? null),
 		workflowSubmissionExpected: ctx.workflowSubmissionExpected === true,
 		founderReviewRequired: ctx.founderReviewRequired === true,
 	};
@@ -469,6 +475,11 @@ export interface CodexDaemonAdapterDeps {
 	phaseLifecycleFactory?: (
 		options: CodexPhaseLifecycleControllerOptions,
 	) => CodexPhaseLifecycle;
+	/** Bridge-owned durable resident hold coordinator for workflow loop targets. */
+	residentHold?: Pick<
+		NonNullable<CodexPhaseLifecycleControllerOptions["residentHold"]>,
+		"enter" | "close" | "current"
+	>;
 	/** FLY-1269: heartbeat lifetime seam. Controlled phase shutdown keeps this
 	 * running through drain/TUI cleanup/ack; tests pin the stop boundary. */
 	startHeartbeat?: (heartbeat: () => void, intervalMs: number) => () => void;
@@ -509,6 +520,7 @@ export class CodexTmuxAdapter implements IAdapter {
 	private readonly phaseLifecycleFactory: NonNullable<
 		CodexDaemonAdapterDeps["phaseLifecycleFactory"]
 	>;
+	private readonly residentHold?: CodexDaemonAdapterDeps["residentHold"];
 	private readonly startHeartbeat: NonNullable<
 		CodexDaemonAdapterDeps["startHeartbeat"]
 	>;
@@ -575,6 +587,7 @@ export class CodexTmuxAdapter implements IAdapter {
 		this.phaseLifecycleFactory =
 			deps.phaseLifecycleFactory ??
 			((options) => new CodexPhaseLifecycleController(options));
+		this.residentHold = deps.residentHold;
 		this.startHeartbeat =
 			deps.startHeartbeat ??
 			((heartbeat, intervalMs) => {
@@ -937,7 +950,11 @@ export class CodexTmuxAdapter implements IAdapter {
 					expectedContext.skillFrameworkMode !==
 						(ctx.skillFrameworkMode ?? null) ||
 					expectedContext.phaseRole !== (ctx.phaseKeepAlive?.role ?? null) ||
-					expectedContext.capabilityDigest !== capabilityDigest(ctx) ||
+					(expectedContext.loopTargetNodeId !== undefined &&
+						expectedContext.loopTargetNodeId !==
+							(ctx.residentLoopTarget?.nodeId ?? null)) ||
+					expectedContext.capabilityDigest !==
+						capabilityDigest(ctx, { phaseRole: expectedContext.phaseRole }) ||
 					JSON.stringify(expectedContext.sandboxWritableRoots) !==
 						JSON.stringify(writableRoots)
 				) {
@@ -975,6 +992,7 @@ export class CodexTmuxAdapter implements IAdapter {
 						appsApprovalMode: "never",
 						skillFrameworkMode: ctx.skillFrameworkMode ?? null,
 						phaseRole: ctx.phaseKeepAlive?.role ?? null,
+						loopTargetNodeId: ctx.residentLoopTarget?.nodeId ?? null,
 						capabilityDigest: capabilityDigest(ctx),
 					},
 					rehydrationContext: {
@@ -1032,30 +1050,48 @@ export class CodexTmuxAdapter implements IAdapter {
 					: {}),
 			});
 
-			if (ctx.phaseKeepAlive) {
+			if (ctx.phaseKeepAlive || ctx.residentLoopTarget) {
 				if (!ctx.commDbPath) {
 					throw new Error(
-						`phase keep-alive requires commDbPath for ${ctx.executionId}`,
+						`resident lifecycle requires commDbPath for ${ctx.executionId}`,
 					);
 				}
-				const watcher =
-					this.transport && ctx.agentName && ctx.teamName
-						? this.transport.createReceiver({
-								leadName: ctx.leadId ?? ctx.teamName,
-								runnerName: ctx.agentName,
-								teamName: ctx.teamName,
-							})
-						: null;
+				if (
+					ctx.residentLoopTarget &&
+					(!ctx.workflowActivationId || !this.residentHold)
+				) {
+					throw new Error(
+						`resident loop target requires activation and hold coordinator for ${ctx.executionId}`,
+					);
+				}
 				phaseLifecycle = this.phaseLifecycleFactory({
 					executionId: ctx.executionId,
-					role: ctx.phaseKeepAlive.role,
+					...(ctx.phaseKeepAlive ? { role: ctx.phaseKeepAlive.role } : {}),
+					...(ctx.residentLoopTarget &&
+					ctx.workflowActivationId &&
+					this.residentHold
+						? {
+								residentHold: {
+									activationId: ctx.workflowActivationId,
+									nodeId: ctx.residentLoopTarget.nodeId,
+									enter: this.residentHold.enter,
+									close: this.residentHold.close,
+									current: this.residentHold.current,
+								},
+							}
+						: {}),
 					commDbPath: ctx.commDbPath,
 					sessionStatePath: join(
 						codexSessionStateDir(ctx.executionId),
 						"session.json",
 					),
-					...(ctx.agentName ? { mailboxAgentName: ctx.agentName } : {}),
-					watcher,
+					recoveryBudget: {
+						deadlineRemainingMs: ctx.timeoutMs ?? this.defaultTimeoutMs,
+						hardDeadlineRemainingMs: Math.max(
+							ctx.timeoutMs ?? this.defaultTimeoutMs,
+							ctx.waitingTimeoutMs ?? 176_400_000,
+						),
+					},
 				});
 				await phaseLifecycle.start();
 			}
@@ -1393,6 +1429,27 @@ export class CodexTmuxAdapter implements IAdapter {
 					? (ctx.previousSession.threadId as string)
 					: undefined) ?? this.readPersistedThreadId(ctx.executionId);
 			const reapOrphanPid = this.readPersistedDaemonPid(ctx.executionId);
+			const turnDbPath = ctx.commDbPath;
+			const turnLifecycle = turnDbPath
+				? {
+						markTurnStarted: (turnId: string): void => {
+							const db = new CommDB(turnDbPath);
+							try {
+								db.markTurnStarted(ctx.executionId, turnId);
+							} finally {
+								db.close();
+							}
+						},
+						markTurnCompleted: (turnId: string): void => {
+							const db = new CommDB(turnDbPath);
+							try {
+								db.markTurnCompleted(ctx.executionId, turnId);
+							} finally {
+								db.close();
+							}
+						},
+					}
+				: undefined;
 			const goalPromise = runtime.runGoal(
 				{
 					objective,
@@ -1450,6 +1507,7 @@ export class CodexTmuxAdapter implements IAdapter {
 							}
 						: {}),
 					...(phaseLifecycle ? { phaseLifecycle } : {}),
+					...(turnLifecycle ? { turnLifecycle } : {}),
 				},
 				{
 					onNotification: (method, params) => {
@@ -1631,8 +1689,7 @@ export class CodexTmuxAdapter implements IAdapter {
 					}
 				}
 				try {
-					phaseLifecycle.ackShutdown(
-						controlledShutdownRequestId,
+					phaseLifecycle.ackAllPendingShutdowns(
 						controlledShutdownSucceeded()
 							? { ok: true }
 							: {
@@ -2284,10 +2341,13 @@ export class CodexTmuxAdapter implements IAdapter {
 	 * doorbell fence depends on this row.
 	 */
 	private registerCommDbSession(ctx: AdapterExecutionContext): boolean {
+		const residentLifecycle = Boolean(
+			ctx.phaseKeepAlive || ctx.residentLoopTarget,
+		);
 		if (!ctx.commDbPath) {
-			if (ctx.phaseKeepAlive) {
+			if (residentLifecycle) {
 				throw new Error(
-					`phase keep-alive requires CommDB registration for ${ctx.executionId}`,
+					`resident lifecycle requires CommDB registration for ${ctx.executionId}`,
 				);
 			}
 			return false;
@@ -2304,14 +2364,14 @@ export class CodexTmuxAdapter implements IAdapter {
 				// FLY-1188: vendor routes `flywheel-comm send` wakes to the codex
 				// mailbox (the claude-code env default misrouted them).
 				"codex",
-				ctx.phaseKeepAlive !== undefined,
+				residentLifecycle,
 			);
-			if (ctx.phaseKeepAlive) {
+			if (residentLifecycle) {
 				commDb.assertPhaseKeepAliveSessionRunning(ctx.executionId);
 			}
 			return true;
 		} catch (error) {
-			if (ctx.phaseKeepAlive) throw error;
+			if (residentLifecycle) throw error;
 			return false; // non-fatal (same as TmuxAdapter)
 		} finally {
 			commDb?.close();

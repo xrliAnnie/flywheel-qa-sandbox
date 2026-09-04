@@ -24,8 +24,18 @@ function phaseSession(overrides: Partial<Session> = {}): Session {
 
 function fakeDb(overrides: Partial<RunnerShutdownDb> = {}): RunnerShutdownDb {
 	let control: ReturnType<RunnerShutdownDb["getRunnerShutdown"]> | undefined;
+	const current = (executionId: string) =>
+		overrides.getRunnerShutdown?.(executionId) ?? control ?? null;
 	return {
 		getRunnerShutdown: vi.fn(() => control ?? null),
+		getRunnerShutdownRequest: vi.fn((executionId, requestId) => {
+			const candidate = current(executionId);
+			return candidate?.request_id === requestId ? candidate : null;
+		}),
+		listPendingRunnerShutdowns: vi.fn((executionId) => {
+			const candidate = current(executionId);
+			return candidate?.state === "requested" ? [candidate] : [];
+		}),
 		requestRunnerShutdown: vi.fn((executionId, requestId, nowMs) => {
 			control = {
 				execution_id: executionId,

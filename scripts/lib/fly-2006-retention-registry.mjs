@@ -10,7 +10,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		detection_escalations lead_event_delivery_attempts lead_events
 		legacy_cutover_quarantine legacy_render_fallback legacy_stock_suppressed
 		phase_chat_threads quiet_wake_notified roundtable_topic_threads session_events
-		tmux_hold workflow_run_event
+		tmux_hold workflow_completion_drain_challenge workflow_run_event
 	`),
 	retiredOptional: words(`
 		founder_page_ledger runbook_issues ticket_escalations
@@ -62,6 +62,7 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		workflow_node_outputs workflow_node_pr_binding workflow_operator_close_intent
 		workflow_pr_finalization workflow_pr_manifest workflow_resume_admission
 		workflow_resume_attachment workflow_resume_attachment_state workflow_resume_probe
+		workflow_resident_hold
 		workflow_resume_response workflow_rework_delivery workflow_rework_request
 		workflow_rework_route_revision workflow_rework_verification_path
 		workflow_route_decision workflow_route_reminder_outbox workflow_run

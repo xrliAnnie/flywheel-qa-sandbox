@@ -134,7 +134,8 @@ Commands:
             Prints yours|not-yours|no-turn (exit 0). Touch the worktree ONLY on
             a 'yours' answer; the wake message text is never authority.
             --exec-id <id> (defaults to FLYWHEEL_EXEC_ID).
-  complete  Emit session_completed terminal event to Bridge (Runner use)
+  complete  Emit session_completed terminal event to Bridge (Runner use;
+            retry deferred mail with --drain-receipt <challengeId>)
   runner-stopped  Emit a reasoned Runner turn-end report to its Lead (hook use)
   runner-wake-sweep  Ring a durable Codex phase-hold doorbell when unread
             Runner traffic exists (turn-ended hook use; never ACKs mailbox rows)
@@ -1241,6 +1242,7 @@ async function runComplete(args: string[]): Promise<void> {
 			// FLY-191 Phase 2: bind the review request to the exact gate
 			// question from `gate --no-block` (route=needs_review).
 			"question-id": { type: "string" },
+			"drain-receipt": { type: "string" },
 		},
 		allowPositionals: false,
 	});
@@ -1255,6 +1257,7 @@ async function runComplete(args: string[]): Promise<void> {
 		baseRef: values["base-ref"],
 		targetRepo: values["target-repo"],
 		questionId: values["question-id"],
+		drainReceipt: values["drain-receipt"],
 	});
 }
 

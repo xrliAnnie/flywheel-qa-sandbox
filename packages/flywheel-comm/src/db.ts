@@ -14,6 +14,7 @@ import {
 	canonicalJsonString,
 	canonicalSubmissionDigest,
 } from "flywheel-config";
+import { openCommDbWritable } from "./commdb-open-gate.js";
 import {
 	type IngestDiscordChatArgs,
 	ingestDiscordChatOnQueue,
@@ -53,7 +54,7 @@ export const UNREAD_INSTRUCTIONS_SQL = `SELECT p.*
  WHERE m.to_agent = ? AND m.type = 'instruction'
    AND m.state IN ('QUEUED','LEASED')
    AND p.read_at IS NULL
-   AND datetime(p.expires_at) > datetime('now')
+   AND (p.expires_at IS NULL OR datetime(p.expires_at) > datetime('now'))
  ORDER BY p.created_at ASC`;
 
 export interface PendingRunnerMailboxSnapshot {
@@ -169,7 +170,9 @@ CREATE TABLE IF NOT EXISTS three_stage_turn (
   target_run_id   TEXT,
   target_node_id  TEXT,
   target_attempt  INTEGER,
-  activation_id   TEXT
+  activation_id   TEXT,
+  active_turn_id  TEXT,
+  turn_generation INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS turn_wait_ledger (
   execution_id       TEXT NOT NULL,
@@ -268,6 +271,7 @@ CREATE TABLE IF NOT EXISTS runner_phase_wakes (
 	escalation_outbox_id    TEXT,
 	started_ack_scope       TEXT,
 	purpose                 TEXT CHECK(purpose IN ('message_traffic','gate_response','park_wake')),
+	turn_generation         INTEGER,
   UNIQUE (execution_id, message_id)
 );
 CREATE TABLE IF NOT EXISTS runner_wake_failure_episode (
@@ -301,13 +305,17 @@ CREATE TABLE IF NOT EXISTS workflow_engine_park_cursor (
   updated_at TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS runner_shutdown_controls (
-  execution_id TEXT PRIMARY KEY,
-  request_id   TEXT NOT NULL UNIQUE,
+  execution_id TEXT NOT NULL,
+  request_id   TEXT NOT NULL,
   state        TEXT NOT NULL CHECK(state IN ('requested','acked','failed')),
   requested_at INTEGER NOT NULL,
   finished_at  INTEGER,
-  error        TEXT
+  error        TEXT,
+  settlement_reason TEXT,
+  PRIMARY KEY (execution_id, request_id)
 );
+CREATE INDEX IF NOT EXISTS idx_rsc_pending
+  ON runner_shutdown_controls(execution_id, state, requested_at, request_id);
 CREATE TRIGGER IF NOT EXISTS workflow_source_event_no_update
 BEFORE UPDATE ON workflow_source_event
 BEGIN SELECT RAISE(ABORT, 'workflow_source_event is append-only'); END;
@@ -374,6 +382,8 @@ export interface WorktreeTurn {
 	target_node_id: string | null;
 	target_attempt: number | null;
 	activation_id: string | null;
+	active_turn_id: string | null;
+	turn_generation: number;
 }
 
 export interface RunnerWorkflowActivation {
@@ -622,6 +632,7 @@ export interface RunnerPhaseWake {
 	finished_at: number | null;
 	admission_state:
 		| "queued"
+		| "deferred_midturn"
 		| "duplicate"
 		| "suppressed_cap"
 		| "skipped_no_transport"
@@ -644,6 +655,7 @@ export interface RunnerPhaseWake {
 		| "terminal"
 		| null;
 	purpose: "message_traffic" | "gate_response" | "park_wake" | null;
+	turn_generation: number | null;
 }
 
 export type RunnerDoorbellWakeResult =
@@ -833,6 +845,7 @@ export interface RunnerShutdownControl {
 	requested_at: number;
 	finished_at: number | null;
 	error: string | null;
+	settlement_reason: string | null;
 }
 
 export interface WorkflowEngineParkProjectionEvent {
@@ -1081,7 +1094,7 @@ export class CommDB {
 		try {
 			mkdirSync(dirname(dbPath), { recursive: true });
 			phase = "database-open";
-			opened = new Database(dbPath);
+			opened = openCommDbWritable(dbPath);
 			this.db = opened;
 			phase = "pragma";
 			this.db.pragma("journal_mode = WAL");
@@ -1292,6 +1305,8 @@ export class CommDB {
 			["target_node_id", "TEXT"],
 			["target_attempt", "INTEGER"],
 			["activation_id", "TEXT"],
+			["active_turn_id", "TEXT"],
+			["turn_generation", "INTEGER NOT NULL DEFAULT 0"],
 		] as const) {
 			if (turnColumns.some((column) => column.name === name)) continue;
 			try {
@@ -1322,6 +1337,11 @@ export class CommDB {
 		if (!phaseWakeColumns.some((column) => column.name === "first_push_at")) {
 			this.db.exec(
 				"ALTER TABLE runner_phase_wakes ADD COLUMN first_push_at TEXT",
+			);
+		}
+		if (!phaseWakeColumns.some((column) => column.name === "turn_generation")) {
+			this.db.exec(
+				"ALTER TABLE runner_phase_wakes ADD COLUMN turn_generation INTEGER",
 			);
 		}
 		const waitColumns = this.db
@@ -3880,6 +3900,97 @@ export class CommDB {
 		return this.db.prepare(UNREAD_INSTRUCTIONS_SQL).all(agentId) as Message[];
 	}
 
+	getCompletionDrainPending(executionId: string): {
+		mailbox: string[];
+		phaseWakes: string[];
+		watermark: { mailboxCreatedAt: string | null; phaseWakeQueueSeq: number };
+	} {
+		if (!executionId) throw new Error("executionId is required");
+		const mailbox = this.db
+			.prepare(
+				`SELECT id, created_at FROM mailbox
+				  WHERE to_agent = ? AND recipient_kind = 'runner'
+				    AND carrier = 'inbox' AND state IN ('QUEUED','LEASED')
+				    AND type IN ('instruction','response')
+				    AND (expires_at IS NULL OR datetime(expires_at) > datetime('now'))
+				  ORDER BY created_at, id`,
+			)
+			.all(executionId) as Array<{ id: string; created_at: string }>;
+		const hasPhaseWakeLifecycle = Boolean(
+			this.db
+				.prepare(
+					`SELECT 1 FROM sessions
+					  WHERE execution_id = ? AND phase_keep_alive = 1`,
+				)
+				.get(executionId),
+		);
+		const phaseWakes = hasPhaseWakeLifecycle
+			? (this.db
+					.prepare(
+						`SELECT message_id, queue_seq FROM runner_phase_wakes
+						  WHERE execution_id = ? AND state = 'pending'
+						    AND admission_state IN ('queued','deferred_midturn')
+						  ORDER BY queue_seq`,
+					)
+					.all(executionId) as Array<{
+					message_id: string;
+					queue_seq: number;
+				}>)
+			: [];
+		return {
+			mailbox: mailbox.map((row) => row.id),
+			phaseWakes: phaseWakes.map((row) => row.message_id),
+			watermark: {
+				mailboxCreatedAt: mailbox.at(-1)?.created_at ?? null,
+				phaseWakeQueueSeq: phaseWakes.at(-1)?.queue_seq ?? 0,
+			},
+		};
+	}
+
+	getCompletionDrainVerification(
+		executionId: string,
+		mailboxIds: readonly string[],
+		phaseWakeIds: readonly string[],
+	): {
+		mailbox: Record<string, string>;
+		phaseWakes: Record<string, string>;
+	} {
+		if (!executionId) throw new Error("executionId is required");
+		const mailbox: Record<string, string> = Object.fromEntries(
+			mailboxIds.map((id) => [id, "missing"]),
+		);
+		const phaseWakes: Record<string, string> = Object.fromEntries(
+			phaseWakeIds.map((id) => [id, "missing"]),
+		);
+		if (mailboxIds.length > 0) {
+			const placeholders = mailboxIds.map(() => "?").join(",");
+			const rows = this.db
+				.prepare(
+					`SELECT id, state FROM mailbox
+					  WHERE id IN (${placeholders}) AND to_agent = ?`,
+				)
+				.all(...mailboxIds, executionId) as Array<{
+				id: string;
+				state: string;
+			}>;
+			for (const row of rows) mailbox[row.id] = row.state;
+		}
+		if (phaseWakeIds.length > 0) {
+			const placeholders = phaseWakeIds.map(() => "?").join(",");
+			const rows = this.db
+				.prepare(
+					`SELECT message_id, state FROM runner_phase_wakes
+					  WHERE execution_id = ? AND message_id IN (${placeholders})`,
+				)
+				.all(executionId, ...phaseWakeIds) as Array<{
+				message_id: string;
+				state: string;
+			}>;
+			for (const row of rows) phaseWakes[row.message_id] = row.state;
+		}
+		return { mailbox, phaseWakes };
+	}
+
 	getPendingRunnerMailboxSnapshot(
 		agentId: string,
 	): PendingRunnerMailboxSnapshot {
@@ -3925,11 +4036,30 @@ export class CommDB {
 		executionId: string,
 		message: PhaseWakeInput,
 		nowMs: number,
+		options: {
+			admissionState?: "queued" | "deferred_midturn";
+			turnGeneration?: number;
+		} = {},
 	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
 		if (!executionId || !message.id || !message.content) {
 			throw new Error(
 				"phase wake requires executionId, message id, and content",
 			);
+		}
+		if (
+			options.turnGeneration !== undefined &&
+			(!Number.isSafeInteger(options.turnGeneration) ||
+				options.turnGeneration < 0)
+		) {
+			throw new Error(
+				"phase wake turnGeneration must be a non-negative safe integer",
+			);
+		}
+		if (
+			options.admissionState === "deferred_midturn" &&
+			options.turnGeneration === undefined
+		) {
+			throw new Error("deferred phase wake requires turnGeneration");
 		}
 		const metadataExecId = message.metadata?.execId;
 		if (metadataExecId !== undefined && metadataExecId !== executionId) {
@@ -3986,8 +4116,9 @@ export class CommDB {
 				.prepare(
 					`INSERT INTO runner_phase_wakes
 					   (execution_id, message_id, content, metadata_json,
-					    source_instruction_id, state, queued_at, purpose)
-					 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
+					    source_instruction_id, state, queued_at, purpose,
+					    admission_state, turn_generation)
+					 VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
 				)
 				.run(
 					executionId,
@@ -3997,6 +4128,8 @@ export class CommDB {
 					sourceInstructionId,
 					nowMs,
 					sourceInstructionId ? "message_traffic" : "park_wake",
+					options.admissionState ?? null,
+					options.turnGeneration ?? null,
 				);
 			if (sourceInstructionId) {
 				this.db
@@ -4021,6 +4154,90 @@ export class CommDB {
 	}
 
 	/**
+	 * Bridge receiver ingress. The durable turn classification and wake insert
+	 * share one IMMEDIATE transaction, so a completion racing delivery can only
+	 * produce one of the two valid boundary orders.
+	 */
+	enqueueRunnerReceiverWake(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	): { kind: "queued" | "duplicate"; wake: RunnerPhaseWake } {
+		const enqueue = this.db.transaction(() => {
+			return this.enqueueRunnerPhaseWake(
+				executionId,
+				message,
+				nowMs,
+				this.runnerWakeAdmission(executionId),
+			);
+		});
+		return enqueue.immediate();
+	}
+
+	/**
+	 * StateStore proves lifecycle eligibility; CommDB independently proves that
+	 * a live durable wake reader exists before either ingress shape is consumed.
+	 */
+	enqueueRunnerReceiverDelivery(
+		executionId: string,
+		message: PhaseWakeInput,
+		nowMs: number,
+	):
+		| { kind: "queued" | "duplicate"; wake: RunnerPhaseWake }
+		| RunnerDoorbellWakeResult {
+		const enqueue = this.db.transaction(() => {
+			if (!this.runnerDoorbellConsumerIsLive(executionId)) {
+				return { kind: "no_consumer" as const };
+			}
+			const admission = this.runnerWakeAdmission(executionId);
+			const flywheelId = message.metadata?.flywheelId;
+			if (
+				typeof flywheelId === "string" &&
+				flywheelId.startsWith("mailbox-batch:")
+			) {
+				return this.enqueueRunnerDoorbellWake(executionId, message, nowMs, {
+					...admission,
+				});
+			}
+			return this.enqueueRunnerPhaseWake(
+				executionId,
+				message,
+				nowMs,
+				admission,
+			);
+		});
+		return enqueue.immediate();
+	}
+
+	private runnerWakeAdmission(executionId: string): {
+		admissionState: "queued" | "deferred_midturn";
+		turnGeneration?: number;
+	} {
+		const row = this.db
+			.prepare(
+				`SELECT turn.holder_exec_id, turn.active_turn_id, turn.turn_generation
+				   FROM sessions session
+				   LEFT JOIN three_stage_turn turn ON turn.issue_id = session.issue_id
+				  WHERE session.execution_id = ?`,
+			)
+			.get(executionId) as
+			| {
+					holder_exec_id: string | null;
+					active_turn_id: string | null;
+					turn_generation: number | null;
+			  }
+			| undefined;
+		const deferred =
+			row?.holder_exec_id === executionId && row.active_turn_id !== null;
+		return {
+			admissionState: deferred ? "deferred_midturn" : "queued",
+			...(row?.turn_generation !== null && row?.turn_generation !== undefined
+				? { turnGeneration: row.turn_generation }
+				: {}),
+		};
+	}
+
+	/**
 	 * FLY-1774: translate one queue-enabled Codex mailbox batch into a durable
 	 * phase-hold doorbell. Unlike the legacy single-message callback above, this
 	 * path never settles mailbox rows; the resumed agent remains the only ACKer.
@@ -4029,6 +4246,10 @@ export class CommDB {
 		executionId: string,
 		message: PhaseWakeInput,
 		nowMs: number,
+		options: {
+			admissionState?: "queued" | "deferred_midturn";
+			turnGeneration?: number;
+		} = {},
 	): RunnerDoorbellWakeResult {
 		if (!executionId || !message.id || !message.content) {
 			throw new Error(
@@ -4117,6 +4338,7 @@ export class CommDB {
 					durableBatchId,
 				}),
 				nowMs,
+				options,
 			);
 		});
 		return enqueue.immediate();
@@ -4225,6 +4447,10 @@ export class CommDB {
 		executionId: string,
 		obligation: RunnerDoorbellObligation,
 		nowMs: number,
+		admission: {
+			admissionState?: "queued" | "deferred_midturn";
+			turnGeneration?: number;
+		} = {},
 	): RunnerDoorbellWakeResult {
 		const doorbells = this.db
 			.prepare(
@@ -4297,8 +4523,9 @@ export class CommDB {
 			.prepare(
 				`INSERT INTO runner_phase_wakes
 				   (execution_id, message_id, content, metadata_json,
-				    source_instruction_id, state, queued_at, purpose)
-				 VALUES (?, ?, ?, ?, NULL, 'pending', ?, 'message_traffic')`,
+				    source_instruction_id, state, queued_at, purpose,
+				    admission_state, turn_generation)
+				 VALUES (?, ?, ?, ?, NULL, 'pending', ?, 'message_traffic', ?, ?)`,
 			)
 			.run(
 				executionId,
@@ -4310,6 +4537,8 @@ export class CommDB {
 				),
 				JSON.stringify(metadata),
 				nowMs,
+				admission.admissionState ?? null,
+				admission.turnGeneration ?? null,
 			);
 		const wake = this.db
 			.prepare(
@@ -5097,12 +5326,13 @@ export class CommDB {
 				.run(executionId, requestId, nowMs);
 			const row = this.db
 				.prepare(
-					"SELECT * FROM runner_shutdown_controls WHERE execution_id = ?",
+					`SELECT * FROM runner_shutdown_controls
+					  WHERE execution_id = ? AND request_id = ?`,
 				)
-				.get(executionId) as RunnerShutdownControl | undefined;
+				.get(executionId, requestId) as RunnerShutdownControl | undefined;
 			if (!row) {
 				throw new Error(
-					`shutdown request id ${requestId} is already bound to another execution`,
+					`shutdown request ${executionId}/${requestId} was not stored`,
 				);
 			}
 			return row;
@@ -5115,7 +5345,13 @@ export class CommDB {
 			return (
 				(this.db
 					.prepare(
-						"SELECT * FROM runner_shutdown_controls WHERE execution_id = ?",
+						`SELECT * FROM runner_shutdown_controls
+						  WHERE execution_id = ?
+						  ORDER BY CASE WHEN state = 'requested' THEN 0 ELSE 1 END,
+						           CASE WHEN state = 'requested' THEN requested_at END ASC,
+						           CASE WHEN state <> 'requested' THEN requested_at END DESC,
+						           request_id ASC
+						  LIMIT 1`,
 					)
 					.get(executionId) as RunnerShutdownControl | undefined) ?? null
 			);
@@ -5123,6 +5359,75 @@ export class CommDB {
 			if (isMissingTableError(error, "runner_shutdown_controls")) return null;
 			throw error;
 		}
+	}
+
+	getRunnerShutdownRequest(
+		executionId: string,
+		requestId: string,
+	): RunnerShutdownControl | null {
+		try {
+			return (
+				(this.db
+					.prepare(
+						`SELECT * FROM runner_shutdown_controls
+						  WHERE execution_id = ? AND request_id = ?`,
+					)
+					.get(executionId, requestId) as RunnerShutdownControl | undefined) ??
+				null
+			);
+		} catch (error) {
+			if (isMissingTableError(error, "runner_shutdown_controls")) return null;
+			throw error;
+		}
+	}
+
+	listPendingRunnerShutdowns(executionId: string): RunnerShutdownControl[] {
+		try {
+			return this.db
+				.prepare(
+					`SELECT * FROM runner_shutdown_controls
+					  WHERE execution_id = ? AND state = 'requested'
+					  ORDER BY requested_at ASC, request_id ASC`,
+				)
+				.all(executionId) as RunnerShutdownControl[];
+		} catch (error) {
+			if (isMissingTableError(error, "runner_shutdown_controls")) return [];
+			throw error;
+		}
+	}
+
+	finishAllPendingRunnerShutdowns(
+		executionId: string,
+		result: { ok: true } | { ok: false; error: string },
+		nowMs: number,
+	): number {
+		return this.db
+			.prepare(
+				`UPDATE runner_shutdown_controls
+				    SET state = ?, finished_at = ?, error = ?
+				  WHERE execution_id = ? AND state = 'requested'`,
+			)
+			.run(
+				result.ok ? "acked" : "failed",
+				nowMs,
+				result.ok ? null : result.error,
+				executionId,
+			).changes;
+	}
+
+	settleFailedRunnerShutdowns(executionId: string, reason: string): number {
+		if (!reason.trim()) {
+			throw new Error("runner shutdown settlement reason is required");
+		}
+		return this.db
+			.prepare(
+				`UPDATE runner_shutdown_controls
+				    SET settlement_reason = ?
+				  WHERE execution_id = ?
+				    AND state = 'failed'
+				    AND settlement_reason IS NULL`,
+			)
+			.run(reason, executionId).changes;
 	}
 
 	finishRunnerShutdown(
@@ -5474,8 +5779,9 @@ export class CommDB {
 					.prepare(
 						`INSERT INTO three_stage_turn
 						   (issue_id, holder_exec_id, phase, epoch, granted_at,
-						    target_run_id, target_node_id, target_attempt, activation_id)
-						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+						    target_run_id, target_node_id, target_attempt, activation_id,
+						    active_turn_id, turn_generation)
+						 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, 1)
 						 ON CONFLICT(issue_id) DO UPDATE SET
 						   holder_exec_id = excluded.holder_exec_id,
 						   phase = excluded.phase,
@@ -5484,7 +5790,9 @@ export class CommDB {
 						   target_run_id = excluded.target_run_id,
 						   target_node_id = excluded.target_node_id,
 						   target_attempt = excluded.target_attempt,
-						   activation_id = excluded.activation_id`,
+						   activation_id = excluded.activation_id,
+						   active_turn_id = NULL,
+						   turn_generation = three_stage_turn.turn_generation + 1`,
 					)
 					.run(
 						issueId,
@@ -5497,6 +5805,17 @@ export class CommDB {
 						activation?.attempt ?? null,
 						activation?.activationId ?? null,
 					);
+				if (current?.holder_exec_id) {
+					this.db
+						.prepare(
+							`UPDATE runner_phase_wakes
+							    SET admission_state = 'queued'
+							  WHERE execution_id = ?
+							    AND state = 'pending'
+							    AND admission_state = 'deferred_midturn'`,
+						)
+						.run(current.holder_exec_id);
+				}
 				if (activation) {
 					this.db
 						.prepare(
@@ -5552,13 +5871,19 @@ export class CommDB {
 			})();
 		}
 		return this.db.transaction(() => {
+			const current = this.db
+				.prepare(
+					"SELECT holder_exec_id FROM three_stage_turn WHERE issue_id = ?",
+				)
+				.get(issueId) as { holder_exec_id: string } | undefined;
 			this.db
 				.prepare(
 					`INSERT INTO three_stage_turn
-				   (issue_id, holder_exec_id, phase, epoch, granted_at,
-				    target_run_id, target_node_id, target_attempt, activation_id)
-				 VALUES (?, ?, ?, 1, ?, NULL, NULL, NULL, NULL)
-				 ON CONFLICT(issue_id) DO UPDATE SET
+					   (issue_id, holder_exec_id, phase, epoch, granted_at,
+					    target_run_id, target_node_id, target_attempt, activation_id,
+					    active_turn_id, turn_generation)
+					 VALUES (?, ?, ?, 1, ?, NULL, NULL, NULL, NULL, NULL, 1)
+					 ON CONFLICT(issue_id) DO UPDATE SET
 				   holder_exec_id = excluded.holder_exec_id,
 				   phase = excluded.phase,
 				   epoch = three_stage_turn.epoch + 1,
@@ -5566,9 +5891,22 @@ export class CommDB {
 				   target_run_id = NULL,
 				   target_node_id = NULL,
 				   target_attempt = NULL,
-				   activation_id = NULL`,
+					   activation_id = NULL,
+					   active_turn_id = NULL,
+					   turn_generation = three_stage_turn.turn_generation + 1`,
 				)
 				.run(issueId, holderExecId, phase, grantedAtMs);
+			if (current?.holder_exec_id) {
+				this.db
+					.prepare(
+						`UPDATE runner_phase_wakes
+						    SET admission_state = 'queued'
+						  WHERE execution_id = ?
+						    AND state = 'pending'
+						    AND admission_state = 'deferred_midturn'`,
+					)
+					.run(current.holder_exec_id);
+			}
 			return Number(
 				(
 					this.db
@@ -5592,7 +5930,8 @@ export class CommDB {
 			row = this.db
 				.prepare(
 					`SELECT issue_id, holder_exec_id, phase, epoch, granted_at,
-					        target_run_id, target_node_id, target_attempt, activation_id
+					        target_run_id, target_node_id, target_attempt, activation_id,
+					        active_turn_id, turn_generation
            FROM three_stage_turn WHERE issue_id = ?`,
 				)
 				.get(issueId) as WorktreeTurn | undefined;
@@ -5613,6 +5952,8 @@ export class CommDB {
 							| "target_node_id"
 							| "target_attempt"
 							| "activation_id"
+							| "active_turn_id"
+							| "turn_generation"
 					  >
 					| undefined;
 				return legacy
@@ -5622,12 +5963,174 @@ export class CommDB {
 							target_node_id: null,
 							target_attempt: null,
 							activation_id: null,
+							active_turn_id: null,
+							turn_generation: 0,
 						}
 					: null;
 			}
 			throw err;
 		}
 		return row ?? null;
+	}
+
+	markTurnStarted(
+		executionId: string,
+		turnId: string,
+	):
+		| { ok: true; turnGeneration: number }
+		| { ok: false; reason: "not_holder" | "already_active" } {
+		if (!executionId || !turnId) {
+			throw new Error("turn start requires executionId and turnId");
+		}
+		return this.db.transaction(() => {
+			const updated = this.db
+				.prepare(
+					`UPDATE three_stage_turn
+					    SET active_turn_id = ?
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?
+					    AND active_turn_id IS NULL`,
+				)
+				.run(turnId, executionId, executionId);
+			const row = this.db
+				.prepare(
+					`SELECT holder_exec_id, active_turn_id, turn_generation
+					   FROM three_stage_turn
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)`,
+				)
+				.get(executionId) as
+				| {
+						holder_exec_id: string;
+						active_turn_id: string | null;
+						turn_generation: number;
+				  }
+				| undefined;
+			if (updated.changes === 1 && row) {
+				return { ok: true as const, turnGeneration: row.turn_generation };
+			}
+			if (row?.holder_exec_id === executionId && row.active_turn_id !== null) {
+				return { ok: false as const, reason: "already_active" as const };
+			}
+			return { ok: false as const, reason: "not_holder" as const };
+		})();
+	}
+
+	markTurnCompleted(
+		executionId: string,
+		turnId: string,
+	): { ok: true; promoted: number } | { ok: true; noop: true } {
+		if (!executionId || !turnId) {
+			throw new Error("turn completion requires executionId and turnId");
+		}
+		return this.db.transaction(() => {
+			const row = this.db
+				.prepare(
+					`SELECT turn_generation
+					   FROM three_stage_turn
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?
+					    AND active_turn_id = ?`,
+				)
+				.get(executionId, executionId, turnId) as
+				| { turn_generation: number }
+				| undefined;
+			if (!row) return { ok: true as const, noop: true as const };
+
+			this.db
+				.prepare(
+					`UPDATE three_stage_turn
+					    SET active_turn_id = NULL
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?
+					    AND active_turn_id = ?`,
+				)
+				.run(executionId, executionId, turnId);
+			const promoted = this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET admission_state = 'queued'
+					  WHERE execution_id = ?
+					    AND state = 'pending'
+					    AND admission_state = 'deferred_midturn'
+					    AND turn_generation <= ?`,
+				)
+				.run(executionId, row.turn_generation).changes;
+			return { ok: true as const, promoted };
+		})();
+	}
+
+	reconcileTurnState(
+		executionId: string,
+		activeTurnId: string | null,
+	):
+		| { ok: true; turnGeneration: number }
+		| { ok: true; promoted: number }
+		| { ok: false; reason: "not_holder" | "active_turn_mismatch" } {
+		if (!executionId || activeTurnId === "") {
+			throw new Error(
+				"turn reconciliation requires executionId and a non-empty turn id",
+			);
+		}
+		return this.db.transaction(() => {
+			const row = this.db
+				.prepare(
+					`SELECT holder_exec_id, active_turn_id, turn_generation
+					   FROM three_stage_turn
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)`,
+				)
+				.get(executionId) as
+				| {
+						holder_exec_id: string;
+						active_turn_id: string | null;
+						turn_generation: number;
+				  }
+				| undefined;
+			if (!row || row.holder_exec_id !== executionId) {
+				return { ok: false as const, reason: "not_holder" as const };
+			}
+
+			if (activeTurnId !== null) {
+				if (
+					row.active_turn_id !== null &&
+					row.active_turn_id !== activeTurnId
+				) {
+					return {
+						ok: false as const,
+						reason: "active_turn_mismatch" as const,
+					};
+				}
+				this.db
+					.prepare(
+						`UPDATE three_stage_turn
+						    SET active_turn_id = ?
+						  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+						    AND holder_exec_id = ?
+						    AND (active_turn_id IS NULL OR active_turn_id = ?)`,
+					)
+					.run(activeTurnId, executionId, executionId, activeTurnId);
+				return { ok: true as const, turnGeneration: row.turn_generation };
+			}
+
+			this.db
+				.prepare(
+					`UPDATE three_stage_turn
+					    SET active_turn_id = NULL
+					  WHERE issue_id = (SELECT issue_id FROM sessions WHERE execution_id = ?)
+					    AND holder_exec_id = ?`,
+				)
+				.run(executionId, executionId);
+			const promoted = this.db
+				.prepare(
+					`UPDATE runner_phase_wakes
+					    SET admission_state = 'queued'
+					  WHERE execution_id = ?
+					    AND state = 'pending'
+					    AND admission_state = 'deferred_midturn'
+					    AND turn_generation <= ?`,
+				)
+				.run(executionId, row.turn_generation).changes;
+			return { ok: true as const, promoted };
+		})();
 	}
 
 	/** FLY-1925: one read transaction over the patrol-critical TURN ledgers. */

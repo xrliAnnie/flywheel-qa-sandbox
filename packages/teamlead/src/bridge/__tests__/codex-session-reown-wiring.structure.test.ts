@@ -102,3 +102,35 @@ describe("FLY-2211 Bridge recovery wiring", () => {
 		);
 	});
 });
+
+describe("FLY-2268 resident receiver wiring", () => {
+	it("arms after launch admission and both reconciled reown branches", () => {
+		expect(source).toContain(
+			"residentReceiverSupervisor.arm(executionId, source)",
+		);
+		expect(source).toContain('event === "reown_watch_started"');
+		expect(source).toContain('event === "reown_revive_succeeded"');
+		expect(source).toContain(".arm(session.execution_id, armSource)");
+	});
+
+	it("rearms on boot, rides maintenance, and stops on Bridge close", () => {
+		const boot = source.indexOf(
+			'await residentReceiverSupervisor.reconcile("boot")',
+		);
+		const heartbeat = source.indexOf("heartbeatService.start()", boot);
+		expect(boot).toBeGreaterThan(0);
+		expect(heartbeat).toBeGreaterThan(boot);
+		expect(source).toContain("await residentReceiverSupervisor.healthTick()");
+		expect(source).toContain("await residentReceiverSupervisor.stop()");
+	});
+
+	it("uses StateStore activation authority rather than the CommDB phase mirror", () => {
+		const candidates = source.slice(
+			source.indexOf("const residentReceiverCandidates"),
+			source.indexOf("const workflowEngineDispatcher"),
+		);
+		expect(candidates).toContain("resolveCurrentWorkflowActivation");
+		expect(candidates).toContain("activation.binding.mode");
+		expect(candidates).not.toContain("phase_keep_alive");
+	});
+});

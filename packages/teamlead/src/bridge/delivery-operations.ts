@@ -1,6 +1,12 @@
-import type { CommDB } from "flywheel-comm/db";
+import type { CommDB, RunnerShutdownControl } from "flywheel-comm/db";
 import type { StateStore, WorkflowEngineAlertIdentity } from "../StateStore.js";
 import { collectRecipientLivenessEvidence } from "./delivery-contract/liveness.js";
+
+function isLegacyRunnerShutdownSchemaError(error: unknown): boolean {
+	return (error instanceof Error ? error.message : String(error)).includes(
+		"no such column: settlement_reason",
+	);
+}
 
 export class DeliveryOperations {
 	constructor(
@@ -18,8 +24,157 @@ export class DeliveryOperations {
 				issueId: string;
 				runId: string;
 			}): WorkflowEngineAlertIdentity;
+			residentExpiry?: {
+				terminateClaude(
+					executionId: string,
+				): Promise<{ ok: boolean; error?: string }>;
+				probeClaude(
+					executionId: string,
+				): Promise<"alive" | "dead_pin" | "absent" | "indeterminate">;
+			};
 		},
 	) {}
+
+	async runResidentExpiryPass(now: string): Promise<{
+		examined: number;
+		requested: number;
+		projected: number;
+		failed: number;
+	}> {
+		this.deps.store.expireResidentHoldsTx(now);
+		const result = { examined: 0, requested: 0, projected: 0, failed: 0 };
+		for (const operation of this.deps.store.listPendingResidentExpiryOperations()) {
+			if (
+				this.deps.projectName &&
+				this.deps.store.getWorkflowRun(operation.runId)?.project_name !==
+					this.deps.projectName
+			) {
+				continue;
+			}
+			result.examined++;
+			let state = operation.state;
+			const fail = (error: string): void => {
+				const failed = this.deps.store.markResidentExpiryFailed({
+					operationId: operation.operationId,
+					now,
+					error,
+					alertIdentity: this.deps.resolveAlertIdentity({
+						projectName:
+							this.deps.store.getWorkflowRun(operation.runId)?.project_name ??
+							this.deps.projectName ??
+							"unknown",
+						issueId:
+							this.deps.store.getWorkflowRun(operation.runId)?.issue_id ??
+							"unknown",
+						runId: operation.runId,
+					}),
+				});
+				if (failed.ok && !failed.idempotentReplay) result.failed++;
+			};
+			try {
+				if (state === "staged") {
+					if (operation.vendor === "codex") {
+						let shutdown: RunnerShutdownControl;
+						try {
+							this.deps.commDb.settleFailedRunnerShutdowns(
+								operation.executionId,
+								`superseded:${operation.operationId}`,
+							);
+							shutdown = this.deps.commDb.requestRunnerShutdown(
+								operation.executionId,
+								operation.operationId,
+								Date.parse(now),
+							);
+						} catch (error) {
+							if (isLegacyRunnerShutdownSchemaError(error)) {
+								fail("runner_shutdown_schema_incompatible");
+								continue;
+							}
+							console.warn(
+								`[delivery-operations] resident expiry ${operation.operationId} CommDB deferred: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							continue;
+						}
+						if (shutdown.state === "failed") {
+							fail(shutdown.error ?? "runner_shutdown_failed");
+							continue;
+						}
+					} else {
+						if (!this.deps.residentExpiry) {
+							fail("claude_resident_expiry_effects_missing");
+							continue;
+						}
+						const terminated = await this.deps.residentExpiry.terminateClaude(
+							operation.executionId,
+						);
+						if (!terminated.ok) {
+							fail(terminated.error ?? "claude_resident_expiry_failed");
+							continue;
+						}
+					}
+					const applied = this.deps.store.applyResidentExpiry({
+						operationId: operation.operationId,
+						now,
+					});
+					if (!applied.ok) throw new Error(applied.reason);
+					state = "applied";
+					result.requested++;
+				}
+
+				if (state === "applied") {
+					let acknowledged = false;
+					if (operation.vendor === "codex") {
+						let shutdown: RunnerShutdownControl | null;
+						try {
+							shutdown = this.deps.commDb.getRunnerShutdownRequest(
+								operation.executionId,
+								operation.operationId,
+							);
+						} catch (error) {
+							console.warn(
+								`[delivery-operations] resident expiry ${operation.operationId} CommDB deferred: ${error instanceof Error ? error.message : String(error)}`,
+							);
+							continue;
+						}
+						if (!shutdown || shutdown.state === "requested") continue;
+						if (shutdown.state === "failed") {
+							fail(shutdown.error ?? "runner_shutdown_failed");
+							continue;
+						}
+						acknowledged = shutdown.state === "acked";
+					} else {
+						if (!this.deps.residentExpiry) {
+							fail("claude_resident_expiry_effects_missing");
+							continue;
+						}
+						const liveness = await this.deps.residentExpiry.probeClaude(
+							operation.executionId,
+						);
+						acknowledged = liveness === "dead_pin" || liveness === "absent";
+					}
+					if (!acknowledged) continue;
+					const sent = this.deps.store.markResidentExpirySent({
+						operationId: operation.operationId,
+						now,
+					});
+					if (!sent.ok) throw new Error(sent.reason);
+					state = "sent";
+				}
+
+				if (state === "sent") {
+					const projected = this.deps.store.projectResidentExpiry({
+						operationId: operation.operationId,
+						now,
+					});
+					if (!projected.ok) throw new Error(projected.reason);
+					if (!projected.idempotentReplay) result.projected++;
+				}
+			} catch (error) {
+				fail(error instanceof Error ? error.message : String(error));
+			}
+		}
+		return result;
+	}
 
 	runPass(_now: string): {
 		examined: number;

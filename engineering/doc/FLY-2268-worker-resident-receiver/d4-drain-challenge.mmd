@@ -1,0 +1,25 @@
+sequenceDiagram
+  participant W as 工人 (flywheel-comm complete)
+  participant R as Bridge 完成路由
+  participant C as CommDB 信箱账本
+  participant S as StateStore 工作流账本
+  W->>R: complete(业务 payload)
+  R->>C: 读未消费信 (QUEUED/LEASED, pending wake)
+  alt 读不到账本
+    R-->>W: 409 completion_deferred_pending_mail
+  else 有未读信
+    R->>S: issueDrainChallenge(execution, activation, 业务摘要)
+    S-->>R: challengeId (同业务重试返回同 id)
+    R-->>W: 409 consume_pending_mail + 信件 id + challengeId
+    W->>W: 读信并处理
+    W->>R: complete --drain-receipt challengeId
+    R->>C: 核验信件已 ACK / wake 已 started
+    R->>S: commitEnrolledCompletion(drainChallenge)
+    S->>S: 同一事务: challenge issued→consumed + 写完成
+    S-->>R: ok + disposition (loop_park / terminal)
+    R-->>W: 200
+  else 无未读信
+    R->>S: commitEnrolledCompletion
+    S-->>R: ok + disposition
+    R-->>W: 200
+  end

@@ -510,6 +510,8 @@ export interface BlueprintContext {
 	// regardless of sessionRole) so they hand off on one branch. Absent →
 	// role-aware worktree key (byte-compatible).
 	shareParentBranch?: boolean;
+	/** Bridge-derived identity for a node targeted by a pinned workflow loop. */
+	loopTarget?: { nodeId: string };
 	// FLY-859 — Bridge-INTERNAL fix-round context (workflow engine only; never
 	// from /api/runs/start or runner payload). Set on an Implement-fix dispatch
 	// after a DAG workflow QA FAIL: the implement prompt gains a "QA Fix Round"
@@ -692,6 +694,7 @@ export interface BlueprintContext {
 	workflowSubmissionExpected?: boolean;
 	/** FLY-1281: trusted generalized workflow context, never sourced from HTTP. */
 	generalizedExecutionContext?: {
+		activationId?: string;
 		runId: string;
 		nodeId: string;
 		attempt: number;
@@ -1648,8 +1651,6 @@ export class Blueprint {
 		// its independence coming from being its own session on the QA-tier model.
 		const isQaPhase =
 			ctx.shareParentBranch === true && ctx.sessionRole === "qa";
-		// Shared DAG workflow sessions always remain parked for same-context
-		// handoffs. The retired kill switch no longer creates a second lifecycle.
 		const sharedPhaseKeepAlive = ctx.shareParentBranch === true;
 		const phaseKeepAlive: AdapterExecutionContext["phaseKeepAlive"] =
 			isCodexRunner && sharedPhaseKeepAlive
@@ -1661,6 +1662,8 @@ export class Blueprint {
 							? { role: "qa" }
 							: undefined
 				: undefined;
+		const residentLoopTarget: AdapterExecutionContext["residentLoopTarget"] =
+			ctx.loopTarget ? { nodeId: ctx.loopTarget.nodeId } : undefined;
 		const codexPhaseWakeContract =
 			"Every `[phase-wake <id>]` message is context; TURN is authority. If the same id was already handled in this thread, do not repeat external or worktree side effects; re-check TURN, report and park idempotently, then end only the current turn.";
 
@@ -2890,6 +2893,8 @@ export class Blueprint {
 						}
 					: {}),
 				...(phaseKeepAlive && { phaseKeepAlive }),
+				...(residentLoopTarget && { residentLoopTarget }),
+				...(ctx.sessionRole && { sessionRole: ctx.sessionRole }),
 				timeoutMs,
 				sessionDisplayName: `${displayId} ${cleanIssueTitle(hydrated.issueTitle)}`,
 				sentinelPath: canLand ? landSignalPath : undefined,
@@ -2905,6 +2910,12 @@ export class Blueprint {
 					process.env.TEAMLEAD_INGEST_TOKEN,
 				),
 				workflowSubmissionCredential: ctx.workflowSubmissionCredential,
+				...(ctx.generalizedExecutionContext?.activationId
+					? {
+							workflowActivationId:
+								ctx.generalizedExecutionContext.activationId,
+						}
+					: {}),
 				workflowSubmissionExpected: ctx.workflowSubmissionExpected,
 				workflowOutputCredential: ctx.workflowOutputCredential,
 				...(ctx.workflowCapabilities?.founder_review_required === true
