@@ -303,6 +303,235 @@ describe("switchAccount", () => {
 		);
 	});
 
+	it.each(["weekly", "both"] as const)(
+		"applies one live-verified cooldown fallback for a %s quota trigger",
+		async (scope) => {
+			seed({
+				generation: 1,
+				activeAccount: "personal",
+				accounts: [
+					{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+					{
+						name: "school",
+						quotaExhaustedUntil: null,
+						switchCooldownUntil: "2026-07-04T02:30:00.000Z",
+						weeklyResetAt: "2026-07-10T02:30:00.000Z",
+					},
+				],
+			});
+
+			const result = await switchAccount(
+				{
+					trigger: {
+						kind: "quota",
+						scope,
+						resetAt: "2026-07-10T02:30:00.000Z",
+					},
+					observedAccount: "personal",
+					observedGeneration: 1,
+					now: NOW,
+					preferredOrder: ["school"],
+					verifiedAt: NOW.toISOString(),
+					quotaPreverified: true,
+					cooldownFallbacks: ["school"],
+					notificationContext: { cooldownFallbackName: "school" },
+				},
+				deps(),
+			);
+
+			expect(result).toMatchObject({
+				outcome: "switched",
+				from: "personal",
+				to: "school",
+			});
+			expect(
+				readStore(storePath).pendingSwitchNotifications?.[0]?.alert.body,
+			).toContain("cooldown fallback to school");
+		},
+	);
+
+	it("keeps a cooldown target ineligible when the selector did not mint fallback authority", async () => {
+		seed({
+			generation: 1,
+			activeAccount: "personal",
+			accounts: [
+				{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+				{
+					name: "school",
+					quotaExhaustedUntil: null,
+					switchCooldownUntil: "2026-07-04T02:30:00.000Z",
+					weeklyResetAt: "2026-07-10T02:30:00.000Z",
+				},
+			],
+		});
+		const d = deps();
+
+		const result = await switchAccount(
+			{
+				trigger: {
+					kind: "quota",
+					scope: "weekly",
+					resetAt: "2026-07-10T02:30:00.000Z",
+				},
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+				preferredOrder: ["school"],
+				verifiedAt: NOW.toISOString(),
+				quotaPreverified: true,
+			},
+			d,
+		);
+
+		expect(result).toMatchObject({
+			outcome: "no_account",
+			reasonCode: "no_eligible_account",
+		});
+		expect(d.applyProfile).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		{
+			label: "auth unusable",
+			accountPatch: { authExpired: true },
+		},
+		{
+			label: "quota fact newer than verification",
+			accountPatch: {
+				quotaExhaustedUntil: "2026-07-04T03:30:00.000Z",
+				lastObservedAt: "2026-07-04T01:31:00.000Z",
+			},
+		},
+	])(
+		"lets a locked $label fact veto a minted cooldown fallback",
+		async ({ accountPatch }) => {
+			seed({
+				generation: 1,
+				activeAccount: "personal",
+				accounts: [
+					{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+					{
+						name: "school",
+						quotaExhaustedUntil: null,
+						switchCooldownUntil: "2026-07-04T02:30:00.000Z",
+						weeklyResetAt: "2026-07-10T02:30:00.000Z",
+						...accountPatch,
+					},
+				],
+			});
+			const d = deps();
+
+			const result = await switchAccount(
+				{
+					trigger: {
+						kind: "quota",
+						scope: "weekly",
+						resetAt: "2026-07-10T02:30:00.000Z",
+					},
+					observedAccount: "personal",
+					observedGeneration: 1,
+					now: NOW,
+					preferredOrder: ["school"],
+					verifiedAt: NOW.toISOString(),
+					quotaPreverified: true,
+					cooldownFallbacks: ["school"],
+				},
+				d,
+			);
+
+			expect(result.outcome).toBe("no_account");
+			expect(d.applyProfile).not.toHaveBeenCalled();
+		},
+	);
+
+	it.each([
+		{
+			label: "manual trigger",
+			patch: { trigger: { kind: "manual", mode: "next" } },
+		},
+		{
+			label: "repair trigger",
+			patch: {
+				trigger: {
+					kind: "repair",
+					scope: "weekly",
+					resetAt: "2026-07-10T02:30:00.000Z",
+				},
+			},
+		},
+		{
+			label: "5h quota trigger",
+			patch: {
+				trigger: {
+					kind: "quota",
+					scope: "5h",
+					resetAt: "2026-07-04T02:30:00.000Z",
+				},
+			},
+		},
+		{
+			label: "missing live preverification",
+			patch: { quotaPreverified: false },
+		},
+		{
+			label: "invalid verification instant",
+			patch: { verifiedAt: "not-an-instant" },
+		},
+		{
+			label: "fallback outside preferredOrder",
+			patch: { cooldownFallbacks: ["business"] },
+		},
+		{
+			label: "multiple fallback names",
+			patch: { cooldownFallbacks: ["school", "business"] },
+		},
+	])(
+		"rejects invalid automatic cooldown fallback authority: $label",
+		async ({ patch }) => {
+			seed({
+				generation: 1,
+				activeAccount: "personal",
+				accounts: [
+					{ name: "personal", quotaExhaustedUntil: null, weeklyResetAt: null },
+					{
+						name: "school",
+						quotaExhaustedUntil: null,
+						switchCooldownUntil: "2026-07-04T02:30:00.000Z",
+						weeklyResetAt: "2026-07-10T02:30:00.000Z",
+					},
+					{ name: "business", quotaExhaustedUntil: null, weeklyResetAt: null },
+				],
+			});
+			const d = deps();
+			const valid = {
+				trigger: {
+					kind: "quota" as const,
+					scope: "weekly" as const,
+					resetAt: "2026-07-10T02:30:00.000Z",
+				},
+				observedAccount: "personal",
+				observedGeneration: 1,
+				now: NOW,
+				preferredOrder: ["school"],
+				verifiedAt: NOW.toISOString(),
+				quotaPreverified: true,
+				cooldownFallbacks: ["school"],
+			};
+
+			const result = await switchAccount(
+				{ ...valid, ...patch } as Parameters<typeof switchAccount>[0],
+				d,
+			);
+
+			expect(result).toMatchObject({
+				outcome: "failed",
+				reasonCode: "invalid_cooldown_fallbacks",
+			});
+			expect(d.applyProfile).not.toHaveBeenCalled();
+			expect(readStore(storePath).generation).toBe(1);
+		},
+	);
+
 	it("marks a stale manual target unusable instead of bypassing freshness", async () => {
 		seed({
 			generation: 1,

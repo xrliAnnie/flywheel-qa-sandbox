@@ -98,6 +98,9 @@ export interface EpisodeDelivery {
 
 export interface BlockedEpisode {
 	scope: "5h" | "weekly" | "both";
+	fallbackName?: string;
+	fallbackReason?: string;
+	detail?: string;
 	startedAt: string;
 	lastConfirmedAlertAt: string | null;
 	alertCount: number;
@@ -251,6 +254,9 @@ export const MAX_MODEL_PANE_SUPPRESSIONS = 1_024;
 export const MAX_UNKNOWN_PANE_COUNT = 3;
 const BLOCKED_EPISODE_KEYS = new Set([
 	"scope",
+	"fallbackName",
+	"fallbackReason",
+	"detail",
 	"startedAt",
 	"lastConfirmedAlertAt",
 	"alertCount",
@@ -403,6 +409,16 @@ function isNullableIsoInstant(value: unknown): value is string | null {
 	return value === null || isIsoInstant(value);
 }
 
+function isSafeEpisodeText(value: unknown, maxBytes: number): value is string {
+	return (
+		typeof value === "string" &&
+		value.length > 0 &&
+		Buffer.byteLength(value, "utf8") <= maxBytes &&
+		!/[\p{Cc}\p{Cs}]/u.test(value) &&
+		Buffer.from(value, "utf8").toString("utf8") === value
+	);
+}
+
 function parseEpisodeDelivery(
 	value: unknown,
 ): EpisodeDelivery | null | undefined {
@@ -434,6 +450,8 @@ function parseBlockedEpisode(
 		return undefined;
 	}
 	const activeDelivery = parseEpisodeDelivery(value.activeDelivery);
+	const hasFallbackName = value.fallbackName !== undefined;
+	const hasFallbackReason = value.fallbackReason !== undefined;
 	if (
 		(value.scope !== "5h" &&
 			value.scope !== "weekly" &&
@@ -442,6 +460,13 @@ function parseBlockedEpisode(
 		!isNullableIsoInstant(value.lastConfirmedAlertAt) ||
 		!isGeneration(value.alertCount) ||
 		value.alertCount > 10 ||
+		hasFallbackName !== hasFallbackReason ||
+		(hasFallbackName &&
+			(typeof value.fallbackName !== "string" ||
+				value.fallbackName.length > 128 ||
+				!PROFILE_NAME.test(value.fallbackName) ||
+				!isSafeEpisodeText(value.fallbackReason, 600))) ||
+		(value.detail !== undefined && !isSafeEpisodeText(value.detail, 4_000)) ||
 		!isGeneration(value.blockedRound) ||
 		!isGeneration(value.recoveryRound) ||
 		activeDelivery === undefined ||
@@ -455,6 +480,13 @@ function parseBlockedEpisode(
 	}
 	return {
 		scope: value.scope,
+		...(hasFallbackName
+			? {
+					fallbackName: value.fallbackName as string,
+					fallbackReason: value.fallbackReason as string,
+				}
+			: {}),
+		...(value.detail === undefined ? {} : { detail: value.detail }),
 		startedAt: value.startedAt,
 		lastConfirmedAlertAt: value.lastConfirmedAlertAt,
 		alertCount: value.alertCount,

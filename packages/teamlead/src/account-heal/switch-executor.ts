@@ -57,6 +57,8 @@ interface SwitchInputBase {
 	verifiedAt?: string;
 	/** Whether the bash apply may skip its independent live quota guard. */
 	quotaPreverified?: boolean;
+	/** Attempt-local cooldown exceptions minted by the live candidate selector. */
+	cooldownFallbacks?: readonly string[];
 	/** Pre-fetched, non-secret facts used to format the centralized notification. */
 	notificationContext?: SwitchNotificationContext;
 }
@@ -67,6 +69,7 @@ export interface SwitchNotificationContext {
 	identityByName?: ReadonlyMap<string, { email?: string }>;
 	panorama?: readonly CandidatePanoramaEntry[];
 	headroomDegraded?: boolean;
+	cooldownFallbackName?: string;
 }
 
 export type SwitchTrigger =
@@ -209,6 +212,7 @@ type SwitchOutcome =
 				| "notification_outbox_full"
 				| "invalid_model_trigger"
 				| "invalid_manual_overrides"
+				| "invalid_cooldown_fallbacks"
 				| "keychain_readback_mismatch"
 				| "identity_rollback_failed"
 				| "lock_lease_lost"
@@ -608,6 +612,11 @@ function commitSwitch(
 		timezone: context?.founderTimezone ?? "America/Los_Angeles",
 		panorama: context?.panorama ?? [],
 		headroomDegraded: context?.headroomDegraded,
+		cooldownFallbackName:
+			context?.cooldownFallbackName !== undefined &&
+			context.cooldownFallbackName === input.cooldownFallbacks?.[0]
+				? context.cooldownFallbackName
+				: undefined,
 	});
 	const switched: AccountStore = {
 		...store,
@@ -741,6 +750,28 @@ export async function switchAccount(
 				reasonCode: "invalid_manual_overrides",
 			};
 		}
+		const cooldownFallbacks = input.cooldownFallbacks;
+		if (
+			cooldownFallbacks !== undefined &&
+			(trigger.kind !== "quota" ||
+				(trigger.scope !== "weekly" && trigger.scope !== "both") ||
+				input.quotaPreverified !== true ||
+				cooldownFallbacks.length !== 1 ||
+				!preferredNames.has(cooldownFallbacks[0] ?? "") ||
+				input.verifiedAt === undefined ||
+				!Number.isFinite(Date.parse(input.verifiedAt)))
+		) {
+			return {
+				outcome: "failed",
+				reason:
+					"cooldown fallbacks require one live-verified preferred target on a 7d-dominant quota trigger",
+				reasonCode: "invalid_cooldown_fallbacks",
+			};
+		}
+		const cooldownFallbackOverrides =
+			cooldownFallbacks === undefined
+				? undefined
+				: new Map([[cooldownFallbacks[0] as string, { ignoreCooldown: true }]]);
 		const outgoing = store.accounts.find(
 			(account) => account.name === input.observedAccount,
 		);
@@ -886,7 +917,7 @@ export async function switchAccount(
 				preferredOrder: input.preferredOrder,
 				verifiedAt: input.verifiedAt,
 				excludeNames: attemptedNames,
-				eligibilityOverrides: manualOverrides,
+				eligibilityOverrides: manualOverrides ?? cooldownFallbackOverrides,
 			});
 			if (next === null) {
 				if (keychainReadbackSeen) {

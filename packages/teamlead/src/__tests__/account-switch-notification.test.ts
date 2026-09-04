@@ -68,6 +68,19 @@ describe("formatSwitchNotification", () => {
 		expect(body).not.toContain("secret-access-token");
 	});
 
+	it("calls out the exact cooldown fallback target on a successful switch", () => {
+		const body = formatSwitchNotification({
+			from: { name: "personal", email: "personal@example.com" },
+			to: { name: "school", email: "school@example.com" },
+			trigger: { kind: "quota", scope: "both" },
+			timezone: "America/Los_Angeles",
+			panorama: [],
+			cooldownFallbackName: "school",
+		});
+
+		expect(body).toContain("cooldown fallback to school");
+	});
+
 	it("bounds a large skipped panorama so the durable intent always validates", () => {
 		const body = formatSwitchNotification({
 			from: { name: "personal1", email: null },
