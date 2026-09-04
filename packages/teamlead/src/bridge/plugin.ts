@@ -221,6 +221,7 @@ import {
 } from "./commdb-probes.js";
 import {
 	finalizeCommDbSession,
+	finalizeDeadTerminalCommDbSessionById,
 	pruneDeadTerminalCommDbSessions,
 	resolveCommDbPath,
 } from "./commdb-session-prune.js";
@@ -6685,6 +6686,23 @@ export async function startBridge(
 					Promise.resolve({
 						kind: "retryable" as const,
 						reason: "carrier_handler_unavailable",
+					}),
+				finalizeDeadExecutionCommDb: ({ projectName, executionId, issueId }) =>
+					finalizeDeadTerminalCommDbSessionById(projectName, executionId, {
+						includeCrashPreserve: true,
+						onFinalizeOutcome: (execId, project, outcome) =>
+							store.recordCommDbFinalizeOutcome({
+								executionId: execId,
+								issueId,
+								projectName: project,
+								ok: outcome.ok,
+								error: outcome.error,
+								audit: {
+									retiredGateCount: outcome.retiredGateCount,
+									retiredAskCount: outcome.retiredAskCount,
+									source: "bridge.workflow-engine.dead-rollback",
+								},
+							}),
 					}),
 				probeUnlaunchedExternalEvidence,
 				cleanupUnlaunchedWorkflowWindow: (identity) =>

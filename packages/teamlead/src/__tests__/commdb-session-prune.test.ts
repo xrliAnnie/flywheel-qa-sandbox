@@ -11,6 +11,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { commDbPathForProject } from "../bridge/commdb-path.js";
 import {
 	finalizeCommDbSession,
+	finalizeDeadTerminalCommDbSessionById,
 	pruneDeadTerminalCommDbSessions,
 	resolveCommDbPath,
 } from "../bridge/commdb-session-prune.js";
@@ -342,6 +343,287 @@ describe("commdb-session-prune (FLY-638)", () => {
 				parkedVetoed: 0,
 			});
 			expect(db.getSession("only-running")).toBeDefined();
+		});
+	});
+
+	describe("finalizeDeadTerminalCommDbSessionById (FLY-2302)", () => {
+		it("finalizes a blocked row whose tmux target is proven dead", async () => {
+			seed("blocked-dead", "blocked", "base:@blocked");
+			const onFinalizeOutcome = vi.fn();
+			const openReadonly = vi.fn((path: string) => CommDB.openReadonly(path));
+			const openWritable = vi.fn((path: string) => new CommDB(path));
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-dead",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe: async () => "dead",
+						onFinalizeOutcome,
+						openReadonly,
+						openWritable,
+					},
+				),
+			).toBe("finalized");
+			expect(openReadonly).toHaveBeenCalledExactlyOnceWith(dbPath);
+			expect(openWritable).toHaveBeenCalledExactlyOnceWith(dbPath);
+			expect(db.getSession("blocked-dead")).toBeUndefined();
+			expect(onFinalizeOutcome).toHaveBeenCalledExactlyOnceWith(
+				"blocked-dead",
+				"flywheel",
+				expect.objectContaining({ ok: true, outcome: "finalized" }),
+			);
+		});
+
+		it("keeps a blocked row while its crash-preserve pane is alive", async () => {
+			seed("blocked-alive", "blocked", "base:@alive");
+			const openReadonly = vi.fn((path: string) => CommDB.openReadonly(path));
+			const openWritable = vi.fn((path: string) => new CommDB(path));
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-alive",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe: async () => "alive",
+						openReadonly,
+						openWritable,
+					},
+				),
+			).toBe("kept_alive");
+			expect(openReadonly).toHaveBeenCalledExactlyOnceWith(dbPath);
+			expect(openWritable).not.toHaveBeenCalled();
+			expect(db.getSession("blocked-alive")).toBeDefined();
+		});
+
+		it("keeps a blocked row when the tmux probe is indeterminate", async () => {
+			seed("blocked-unknown", "blocked", "base:@unknown");
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-unknown",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe: async () => "indeterminate",
+					},
+				),
+			).toBe("kept_indeterminate");
+			expect(db.getSession("blocked-unknown")).toBeDefined();
+		});
+
+		it("keeps the current TURN holder without probing its tmux target", async () => {
+			seed("blocked-holder", "blocked", "base:@holder");
+			db.grantTurn("i-blocked-holder", "blocked-holder", "implement", 1_000, {
+				project: "flywheel",
+				sourceEventId: "turn:blocked-holder",
+			});
+			const probe = vi.fn(async () => "dead" as const);
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-holder",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe,
+					},
+				),
+			).toBe("kept_turn_holder");
+			expect(probe).not.toHaveBeenCalled();
+			expect(db.getSession("blocked-holder")).toBeDefined();
+		});
+
+		it("keeps a same-id row from another project without probing tmux", async () => {
+			db.registerSession(
+				"foreign",
+				"base:@foreign",
+				"other-project",
+				"FLY-2302",
+				"lead-a",
+			);
+			db.markSessionTerminalStatus("foreign", "blocked");
+			const probe = vi.fn(async () => "dead" as const);
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById("flywheel", "foreign", {
+					dbPath,
+					includeCrashPreserve: true,
+					probe,
+				}),
+			).toBe("kept_project_mismatch");
+			expect(probe).not.toHaveBeenCalled();
+			expect(db.getSession("foreign")).toBeDefined();
+		});
+
+		it("keeps a running row without probing tmux", async () => {
+			seed("still-running", "running", "base:@running");
+			const probe = vi.fn(async () => "dead" as const);
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"still-running",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe,
+					},
+				),
+			).toBe("kept_status");
+			expect(probe).not.toHaveBeenCalled();
+			expect(db.getSession("still-running")).toBeDefined();
+		});
+
+		it("keeps a parked blocked row without probing tmux", async () => {
+			seed("blocked-parked", "blocked", "base:@parked");
+			db.upsertDeclaredState(
+				"blocked-parked",
+				"parked",
+				"awaiting replacement",
+				Date.now(),
+				null,
+			);
+			const probe = vi.fn(async () => "dead" as const);
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-parked",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe,
+					},
+				),
+			).toBe("kept_parked");
+			expect(probe).not.toHaveBeenCalled();
+			expect(db.getSession("blocked-parked")).toBeDefined();
+		});
+
+		it("returns failed and audits a point-finalize transaction error", async () => {
+			seed("blocked-failure", "blocked", "base:@failure");
+			const onFinalizeOutcome = vi.fn();
+			const finalize = vi
+				.spyOn(CommDB.prototype, "finalizePaneLossResidue")
+				.mockImplementation(() => {
+					throw new Error("forced point-finalize failure");
+				});
+
+			try {
+				expect(
+					await finalizeDeadTerminalCommDbSessionById(
+						"flywheel",
+						"blocked-failure",
+						{
+							dbPath,
+							includeCrashPreserve: true,
+							probe: async () => "dead",
+							onFinalizeOutcome,
+						},
+					),
+				).toBe("failed");
+			} finally {
+				finalize.mockRestore();
+			}
+			expect(db.getSession("blocked-failure")).toBeDefined();
+			expect(onFinalizeOutcome).toHaveBeenCalledExactlyOnceWith(
+				"blocked-failure",
+				"flywheel",
+				expect.objectContaining({
+					ok: false,
+					outcome: "failed",
+					error: "forced point-finalize failure",
+				}),
+			);
+		});
+
+		it("returns no_row without probing when the execution is absent", async () => {
+			const probe = vi.fn(async () => "dead" as const);
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById("flywheel", "missing", {
+					dbPath,
+					includeCrashPreserve: true,
+					probe,
+				}),
+			).toBe("no_row");
+			expect(probe).not.toHaveBeenCalled();
+		});
+
+		it("keeps blocked when crash-preserve eligibility is disabled", async () => {
+			seed("blocked-flag-off", "blocked", "base:@flag-off");
+			const probe = vi.fn(async () => "dead" as const);
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-flag-off",
+					{ dbPath, includeCrashPreserve: false, probe },
+				),
+			).toBe("kept_status");
+			expect(probe).not.toHaveBeenCalled();
+			expect(db.getSession("blocked-flag-off")).toBeDefined();
+		});
+
+		it("fails closed when declared-state lookup throws", async () => {
+			seed("blocked-state-error", "blocked", "base:@state-error");
+			const declaredState = vi
+				.spyOn(CommDB.prototype, "getEffectiveDeclaredState")
+				.mockImplementation(() => {
+					throw new Error("declared-state unavailable");
+				});
+
+			try {
+				expect(
+					await finalizeDeadTerminalCommDbSessionById(
+						"flywheel",
+						"blocked-state-error",
+						{
+							dbPath,
+							includeCrashPreserve: true,
+							probe: async () => "dead",
+						},
+					),
+				).toBe("kept_parked");
+			} finally {
+				declaredState.mockRestore();
+			}
+			expect(db.getSession("blocked-state-error")).toBeDefined();
+		});
+
+		it("keeps the row when its tmux target changes during the probe", async () => {
+			seed("blocked-target-race", "blocked", "base:@old");
+
+			expect(
+				await finalizeDeadTerminalCommDbSessionById(
+					"flywheel",
+					"blocked-target-race",
+					{
+						dbPath,
+						includeCrashPreserve: true,
+						probe: async () => {
+							db.registerSession(
+								"blocked-target-race",
+								"base:@new",
+								"flywheel",
+								"i-blocked-target-race",
+								"lead-a",
+							);
+							return "dead";
+						},
+					},
+				),
+			).toBe("kept_target_changed");
+			expect(db.getSession("blocked-target-race")?.tmux_window).toBe(
+				"base:@new",
+			);
 		});
 	});
 });

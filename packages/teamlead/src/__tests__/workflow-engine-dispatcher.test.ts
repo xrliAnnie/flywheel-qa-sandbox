@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { CommDB } from "flywheel-comm/db";
 import { canonicalSubmissionDigest } from "flywheel-config";
 import { describe, expect, it, vi } from "vitest";
 import { executeLandOperation } from "../bridge/land-executor.js";
@@ -3699,6 +3700,308 @@ describe("WorkflowEngineDispatcher", () => {
 		store.close();
 	});
 
+	it("finalizes a replaced execution CommDB row once after its watch is quiet", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
+		const finalizeDeadExecutionCommDb = vi.fn(async () => "finalized" as const);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2302-finalize-once-")),
+			env: WORKFLOW_ON,
+			now: () => new Date(base),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "dead",
+			captureDeadExecutionActivityBaseline: async () => ({
+				commitMarker: { state: "absent" as const },
+				commDbMessageCount: 0,
+				tmuxTarget: null,
+				tmuxOutputDigest: null,
+				sessionCommitCount: 0,
+			}),
+			probeDeadExecutionActivity: async () => null,
+			finalizeDeadExecutionCommDb,
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(finalizeDeadExecutionCommDb).not.toHaveBeenCalled();
+
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledExactlyOnceWith({
+			projectName: "flywheel",
+			executionId: "implement-1",
+			issueId: "FLY-1307",
+		});
+		await dispatcher.reconcile();
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(1);
+		vi.spyOn(store, "pruneWorkflowDeadExecutionWatches").mockReturnValueOnce(1);
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(2);
+		store.close();
+	});
+
+	it("backs off an unchanged long-lived finalizer outcome to 60s and resets to 1s when it changes", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
+		let nowMs = base;
+		let finalizerAttempts = 0;
+		const finalizeDeadExecutionCommDb = vi.fn(async () => {
+			finalizerAttempts++;
+			if (finalizerAttempts <= 7) return "kept_alive" as const;
+			if (finalizerAttempts === 8) return "kept_indeterminate" as const;
+			return "finalized" as const;
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2302-finalize-retry-")),
+			env: WORKFLOW_ON,
+			now: () => new Date(nowMs),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "dead",
+			captureDeadExecutionActivityBaseline: async () => ({
+				commitMarker: { state: "absent" as const },
+				commDbMessageCount: 0,
+				tmuxTarget: null,
+				tmuxOutputDigest: null,
+				sessionCommitCount: 0,
+			}),
+			probeDeadExecutionActivity: async () => null,
+			finalizeDeadExecutionCommDb,
+		});
+
+		await dispatcher.reconcile();
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+		await dispatcher.reconcile();
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(1);
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(1);
+
+		const unchangedDelays = [
+			1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000,
+		];
+		for (const [index, delayMs] of unchangedDelays.entries()) {
+			nowMs += delayMs - 1;
+			await dispatcher.reconcile();
+			expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(index + 1);
+			nowMs += 1;
+			await dispatcher.reconcile();
+			expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(index + 2);
+		}
+
+		nowMs += 999;
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(8);
+		nowMs += 1;
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(9);
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(9);
+		store.close();
+	});
+
+	it("contains a rejected CommDB finalizer and retries while later reconcile phases continue", async () => {
+		const store = await storeWithIntent("implement");
+		const fake = fakeStartDispatcher(store);
+		const base = deadExecEngineClockBaseMs();
+		let nowMs = base;
+		const log = vi.fn();
+		const finalizeDeadExecutionCommDb = vi.fn(async () => {
+			throw new Error("commdb finalize unavailable");
+		});
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			stateRoot: mkdtempSync(join(tmpdir(), "fly2302-finalize-reject-")),
+			env: WORKFLOW_ON,
+			now: () => new Date(nowMs),
+			resolvePredecessorHead: async () => HEAD,
+			probeLaunchLiveness: async () => "dead",
+			captureDeadExecutionActivityBaseline: async () => ({
+				commitMarker: { state: "absent" as const },
+				commDbMessageCount: 0,
+				tmuxTarget: null,
+				tmuxOutputDigest: null,
+				sessionCommitCount: 0,
+			}),
+			probeDeadExecutionActivity: async () => null,
+			finalizeDeadExecutionCommDb,
+			log,
+		});
+
+		await dispatcher.reconcile();
+		store.upsertSession({
+			execution_id: "implement-1",
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+		await dispatcher.reconcile();
+		const replacementId = fake.requests[1]!.successorExecutionId!;
+		store.upsertSession({
+			execution_id: replacementId,
+			issue_id: "FLY-1307",
+			project_name: "flywheel",
+			status: "failed",
+			workflow_node_id: "implement",
+		});
+
+		expect(await dispatcher.reconcile()).toEqual({ started: 1, held: 0 });
+		expect(fake.requests).toHaveLength(3);
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledWith({
+			projectName: "flywheel",
+			executionId: "implement-1",
+			issueId: "FLY-1307",
+		});
+		const oldExecutionAttempts = finalizeDeadExecutionCommDb.mock.calls.filter(
+			([input]) => input.executionId === "implement-1",
+		).length;
+		await dispatcher.reconcile();
+		expect(
+			finalizeDeadExecutionCommDb.mock.calls.filter(
+				([input]) => input.executionId === "implement-1",
+			).length,
+		).toBe(oldExecutionAttempts);
+		nowMs += 1_000;
+		await dispatcher.reconcile();
+		expect(
+			finalizeDeadExecutionCommDb.mock.calls.filter(
+				([input]) => input.executionId === "implement-1",
+			).length,
+		).toBe(oldExecutionAttempts + 1);
+		expect(
+			log.mock.calls.filter(([message]) =>
+				String(message).includes(
+					"dead-exec commdb finalize held for implement-1",
+				),
+			),
+		).toHaveLength(1);
+		store.close();
+	});
+
+	it("settles a quiet watch when its CommDB row is already gone", async () => {
+		const store = await storeWithIntent("design");
+		const fake = fakeStartDispatcher(store);
+		const watch: WorkflowDeadExecutionWatchRow = {
+			dead_execution_id: "dead-no-row",
+			run_id: "run-1",
+			node_id: "design",
+			attempt: 1,
+			new_execution_id: "design-1",
+			project_name: "flywheel",
+			issue_id: "FLY-1307",
+			observed_at: "2099-07-22T00:00:00.000Z",
+			baseline: {
+				commitMarker: { state: "absent" },
+				commDbMessageCount: 0,
+				tmuxTarget: null,
+				tmuxOutputDigest: null,
+				sessionCommitCount: null,
+			},
+			state: "active",
+			tripped_at: null,
+			evidence: null,
+		};
+		vi.spyOn(store, "pruneWorkflowDeadExecutionWatches").mockReturnValue(0);
+		vi.spyOn(store, "listActiveWorkflowDeadExecutionWatches").mockReturnValue([
+			watch,
+		]);
+		const finalizeDeadExecutionCommDb = vi.fn(async () => "no_row" as const);
+		const dispatcher = new WorkflowEngineDispatcher({
+			store,
+			startDispatcher: fake.dispatcher,
+			env: WORKFLOW_ON,
+			probeDeadExecutionActivity: async () => null,
+			finalizeDeadExecutionCommDb,
+		});
+
+		await dispatcher.reconcile();
+		await dispatcher.reconcile();
+		expect(finalizeDeadExecutionCommDb).toHaveBeenCalledTimes(1);
+		store.close();
+	});
+
+	it("uses an explicit one-log no-op when the CommDB finalizer is not wired", async () => {
+		const store = await storeWithIntent("design");
+		const fake = fakeStartDispatcher(store);
+		const watch: WorkflowDeadExecutionWatchRow = {
+			dead_execution_id: "dead-not-wired",
+			run_id: "run-1",
+			node_id: "design",
+			attempt: 1,
+			new_execution_id: "design-1",
+			project_name: "flywheel",
+			issue_id: "FLY-1307",
+			observed_at: "2099-07-22T00:00:00.000Z",
+			baseline: {
+				commitMarker: { state: "absent" },
+				commDbMessageCount: 0,
+				tmuxTarget: null,
+				tmuxOutputDigest: null,
+				sessionCommitCount: null,
+			},
+			state: "active",
+			tripped_at: null,
+			evidence: null,
+		};
+		vi.spyOn(store, "pruneWorkflowDeadExecutionWatches").mockReturnValue(0);
+		vi.spyOn(store, "listActiveWorkflowDeadExecutionWatches").mockReturnValue([
+			watch,
+		]);
+		const log = vi.fn();
+		const dir = mkdtempSync(join(tmpdir(), "fly2302-not-wired-"));
+		const db = new CommDB(join(dir, "comm.db"));
+		try {
+			db.registerSession(
+				"dead-not-wired",
+				"runner-flywheel:@2302",
+				"flywheel",
+				"FLY-1307",
+				"flywheel-eng-lead",
+			);
+			db.markSessionTerminalStatus("dead-not-wired", "blocked");
+			const dispatcher = new WorkflowEngineDispatcher({
+				store,
+				startDispatcher: fake.dispatcher,
+				env: WORKFLOW_ON,
+				probeDeadExecutionActivity: async () => null,
+				log,
+			});
+
+			await dispatcher.reconcile();
+			await dispatcher.reconcile();
+			expect(db.getSession("dead-not-wired")).toBeDefined();
+			expect(
+				log.mock.calls.filter(([message]) =>
+					String(message).includes("commdb finalizer not wired"),
+				),
+			).toHaveLength(1);
+		} finally {
+			db.close();
+			rmSync(dir, { recursive: true, force: true });
+			store.close();
+		}
+	});
+
 	it("keeps a durable tripwire and loudly reports activity from a replaced execution after restart", async () => {
 		const store = await storeWithIntent("implement");
 		const fake = fakeStartDispatcher(store);
@@ -3737,6 +4040,7 @@ describe("WorkflowEngineDispatcher", () => {
 		});
 
 		// A fresh dispatcher proves the watch is durable, not in-memory state.
+		const finalizeDeadExecutionCommDb = vi.fn(async () => "finalized" as const);
 		const restarted = new WorkflowEngineDispatcher({
 			store,
 			startDispatcher: fake.dispatcher,
@@ -3748,6 +4052,7 @@ describe("WorkflowEngineDispatcher", () => {
 				kind: "commdb_write" as const,
 				detail: "message count advanced from 4 to 5",
 			}),
+			finalizeDeadExecutionCommDb,
 			resolveRunAlertIdentity: (projectName) => ({
 				leadId: "flywheel-eng-lead",
 				projectName,
@@ -3755,6 +4060,7 @@ describe("WorkflowEngineDispatcher", () => {
 			}),
 		});
 		await restarted.reconcile();
+		expect(finalizeDeadExecutionCommDb).not.toHaveBeenCalled();
 		expect(store.getWorkflowDeadExecutionWatch("implement-1")).toMatchObject({
 			state: "tripped",
 			evidence: {
