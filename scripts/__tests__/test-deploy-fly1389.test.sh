@@ -473,6 +473,15 @@ run_deploy() {  # <home> <slot> <stdout-file> <stderr-file> [extra args...]
       FLYWHEEL_CODEX_HOMES_ROOT="${FLYWHEEL_CODEX_HOMES_ROOT:-}" \
       FLYWHEEL_CODEX_SESSION_DIR="${FLYWHEEL_CODEX_SESSION_DIR:-}" \
       FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="${FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT:-}" \
+      FLYWHEEL_COMM_DB="${FLYWHEEL_COMM_DB:-}" \
+      FLYWHEEL_STATE_DIR="${FLYWHEEL_STATE_DIR:-}" \
+      FLYWHEEL_DELIVERY_SECRET_PATH="${FLYWHEEL_DELIVERY_SECRET_PATH:-}" \
+      CODEX_HOME="${CODEX_HOME:-}" \
+      GH_TOKEN="${GH_TOKEN:-}" \
+      GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
+      DISCORD_GUILD_ID="${DISCORD_GUILD_ID:-}" \
+      TEAMLEAD_ISSUE_PREFIXES="${TEAMLEAD_ISSUE_PREFIXES:-}" \
+      FLY1389_SAFE_SENTINEL="${FLY1389_SAFE_SENTINEL:-}" \
       FLYWHEEL_NOVEL_WEBHOOK_TOKEN="fixture-novel-webhook-secret" \
       FLYWHEEL_LEAD_MODEL="malicious-model" \
       FLYWHEEL_LEAD_EFFORT="malicious-effort" \
@@ -579,6 +588,15 @@ E_OUT="$SB/e-out.json"; E_ERR="$SB/e-err.log"
 if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
     FLYWHEEL_CODEX_SESSION_DIR="$SB/production-codex-sessions" \
     FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT="$SB/production-cdx-sock" \
+    FLYWHEEL_COMM_DB="$SB/production-comm/flywheel/comm.db" \
+    FLYWHEEL_STATE_DIR="$SB/production-state" \
+    FLYWHEEL_DELIVERY_SECRET_PATH="$SB/production-delivery/secret" \
+    CODEX_HOME="$SB/production-codex-home" \
+    GH_TOKEN='fixture-gh-token' \
+    GITHUB_TOKEN='fixture-github-token' \
+    DISCORD_GUILD_ID='g-fixture' \
+    TEAMLEAD_ISSUE_PREFIXES='FLY,GEO,LEARN' \
+    FLY1389_SAFE_SENTINEL='ordinary-caller-value' \
     TEAMLEAD_INGEST_TOKEN='fixture-production-ingest' \
     run_deploy "$FH1" "$LEAD_SLOT" "$E_OUT" "$E_ERR"; then
   E_SLOT_DIR="/tmp/flywheel-test-slot-${LEAD_SLOT}"
@@ -589,9 +607,10 @@ if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
   E_BRIDGE_SPEC="$(jq -r '.bridgeLaunchSpec // empty' <<<"$E_JSON")"
   [[ -f "$E_BRIDGE_SPEC" ]] \
     || { E_OK=0; fail "E/FLY-2237: bridge launch spec is not a regular file" "$E_BRIDGE_SPEC"; }
-  [[ "$(mode_of "$E_BRIDGE_SPEC")" == "600" && "$(mode_of "$E_SLOT_DIR")" == "700" ]] \
-    || { E_OK=0; fail "E/FLY-2237: launch spec/slot modes must be 600/700" \
-      "spec=$(mode_of "$E_BRIDGE_SPEC") slot=$(mode_of "$E_SLOT_DIR")"; }
+  [[ "$(mode_of "$E_BRIDGE_SPEC")" == "600" && "$(mode_of "$E_SLOT_DIR")" == "700" \
+      && "$(mode_of "$E_SLOT_DIR/state/codex-home")" == "700" ]] \
+    || { E_OK=0; fail "E/FLY-2284: launch spec, slot, and isolated Codex home modes must be 600/700/700" \
+      "spec=$(mode_of "$E_BRIDGE_SPEC") slot=$(mode_of "$E_SLOT_DIR") codex-home=$(mode_of "$E_SLOT_DIR/state/codex-home")"; }
   E_CANON_CWD="$(cd "$SB" && pwd -P)"
   E_CANON_NPX="$(cd "$STUB_BIN" && pwd -P)/npx"
   E_CANON_SCRIPT="$(cd "$FR/scripts" && pwd -P)/run-bridge.ts"
@@ -626,21 +645,31 @@ if FLYWHEEL_CODEX_HOMES_ROOT="$SB/production-codex-homes" \
       any(.environment[]; . == "FLYWHEEL_CODEX_SESSION_DIR=" + $sessions) and
       any(.environment[]; . == "FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=" + $sockets) and
       (any(.environment[]; startswith("FLYWHEEL_QA_NODE=")) | not) and
-      ([.secretEnvironment[].name] | index("FLYWHEEL_NOVEL_WEBHOOK_TOKEN") != null) and
+      ([.secretEnvironment[].name] | index("FLYWHEEL_NOVEL_WEBHOOK_TOKEN") == null) and
       ([.secretEnvironment[].name] | index("LINEAR_API_KEY") != null) and
       ([.secretEnvironment[].name] | index("DISCORD_BOT_TOKEN") != null)
     ' "$E_BRIDGE_SPEC" >/dev/null 2>&1 \
     || { E_OK=0; fail "E/FLY-2237: full environment/secret classification is incomplete"; }
-  E_NOVEL_SECRET_PATH="$(jq -r '.secretEnvironment[] | select(.name == "FLYWHEEL_NOVEL_WEBHOOK_TOKEN") | .path' "$E_BRIDGE_SPEC")"
-  [[ -f "$E_NOVEL_SECRET_PATH" && ! -L "$E_NOVEL_SECRET_PATH" \
-      && "$(mode_of "$E_NOVEL_SECRET_PATH")" == "600" \
-      && "$(<"$E_NOVEL_SECRET_PATH")" == "fixture-novel-webhook-secret" ]] \
-    || { E_OK=0; fail "E/FLY-2237: novel token was not isolated in a mode-0600 secret file"; }
-  ! grep -Fq "fixture-novel-webhook-secret" "$E_BRIDGE_SPEC" \
-    || { E_OK=0; fail "E/FLY-2237: launch spec contains novel token bytes"; }
-  if ! "$FLY1389_REAL_NODE" - "$E_BRIDGE_SPEC" "$E_SLOT_DIR/bridge-env.json" <<'NODE'
+  for novel_artifact in "$E_BRIDGE_SPEC" "$E_SLOT_DIR/bridge-env.json" "$E_SLOT_DIR/bridge-env.txt"; do
+    ! grep -Fq "fixture-novel-webhook-secret" "$novel_artifact" \
+      || { E_OK=0; fail "E/FLY-2284: unknown FLYWHEEL token leaked into Bridge evidence" "$novel_artifact"; }
+  done
+  E_SECRET_DIR="$E_SLOT_DIR/state/bridge-env-secrets"
+  if [[ -d "$E_SECRET_DIR" ]]; then
+    novel_grep_status=0
+    grep -R -Fq "fixture-novel-webhook-secret" "$E_SECRET_DIR" 2>/dev/null \
+      || novel_grep_status=$?
+    case "$novel_grep_status" in
+      0) E_OK=0; fail "E/FLY-2284: unknown FLYWHEEL token leaked into a secret sidecar" ;;
+      1) ;;
+      *) E_OK=0; fail "E/FLY-2284: secret sidecar scan failed" "status=$novel_grep_status" ;;
+    esac
+  fi
+  if ! "$FLY1389_REAL_NODE" - \
+      "$E_BRIDGE_SPEC" "$E_SLOT_DIR/bridge-env.json" "$SB/production-" \
+      "$E_SLOT_DIR" "$FH1" "$FLY1389_REAL_NODE" <<'NODE'
 const fs = require("node:fs");
-const [specPath, livePath] = process.argv.slice(2);
+const [specPath, livePath, productionPrefix, slotDir, home, fixtureNode] = process.argv.slice(2);
 const spec = JSON.parse(fs.readFileSync(specPath, "utf8"));
 const expected = Object.fromEntries(spec.environment.map((assignment) => {
   const split = assignment.indexOf("=");
@@ -652,18 +681,47 @@ for (const ref of spec.secretEnvironment) {
 const live = JSON.parse(fs.readFileSync(livePath, "utf8"));
 delete live._;
 delete live.SHLVL;
+const mandatory = {
+  FLYWHEEL_COMM_DB: `${home}/.flywheel/comm/test-slot-31/comm.db`,
+  FLYWHEEL_STATE_DIR: slotDir,
+  FLYWHEEL_DELIVERY_SECRET_PATH: `${slotDir}/state/delivery-secret`,
+  CODEX_HOME: `${slotDir}/state/codex-home`,
+  DISCORD_GUILD_ID: "g-fixture",
+  TEAMLEAD_ISSUE_PREFIXES: "FLY,GEO,LEARN",
+  FLY1389_ENV_DUMP_NODE: fixtureNode,
+  FLY1389_SAFE_SENTINEL: "ordinary-caller-value",
+  GH_TOKEN: "fixture-gh-token",
+  GITHUB_TOKEN: "fixture-github-token",
+};
+const mandatoryDrift = Object.entries(mandatory)
+  .filter(([name, value]) => expected[name] !== value)
+  .map(([name, value]) => ({ name, expected: value, actual: expected[name] }));
+const flywheelNames = Object.keys(expected).filter((name) => name.startsWith("FLYWHEEL_"));
+const productionLeaks = flywheelNames
+  .filter((name) => expected[name].includes(productionPrefix))
+  .map((name) => ({ name, value: expected[name] }));
+const forbiddenNames = ["FLYWHEEL_NOVEL_WEBHOOK_TOKEN"].filter((name) => name in expected);
 const names = [...new Set([...Object.keys(expected), ...Object.keys(live)])].sort();
 const missing = names.filter((name) => !(name in live));
 const extra = names.filter((name) => !(name in expected));
 const changed = names.filter((name) => name in expected && name in live && expected[name] !== live[name])
   .map((name) => ({ name, expectedBytes: Buffer.byteLength(expected[name]), liveBytes: Buffer.byteLength(live[name]) }));
-if (missing.length || extra.length || changed.length) {
-  console.error(JSON.stringify({ missing, extra, changed }));
+if (!flywheelNames.length || mandatoryDrift.length || productionLeaks.length || forbiddenNames.length
+    || missing.length || extra.length || changed.length) {
+  console.error(JSON.stringify({
+    flywheelCount: flywheelNames.length,
+    mandatoryDrift,
+    productionLeaks,
+    forbiddenNames,
+    missing,
+    extra,
+    changed,
+  }));
   process.exit(1);
 }
 NODE
   then
-    E_OK=0; fail "E/FLY-2237: initial live Bridge env differs from the captured full snapshot"
+    E_OK=0; fail "E/FLY-2284: captured/live Bridge env is not isolated from production coordinates"
   fi
   jq -e '.noLead == false' <<<"$E_JSON" >/dev/null 2>&1 || { E_OK=0; fail "E: default path must report noLead=false"; }
   jq -e '.leadCarrier == "launchd-v2" and (.leadLaunchdLabel | startswith("com.flywheel.qa.lead.slot-31.")) and (.leadSocket | length > 0)' \
@@ -728,7 +786,7 @@ NODE
     grep -q "^FLYWHEEL_CODEX_DAEMON_SOCKET_ROOT=${E_SLOT_DIR}/state/cdx-sock$" "$BE" \
       || { E_OK=0; fail "E/FLY-2174: default Bridge retained the production Codex socket census"; }
     ! grep -Fq "$SB/production-" "$BE" \
-      || { E_OK=0; fail "E/FLY-2174: default Bridge can still census production Codex daemons"; }
+      || { E_OK=0; fail "E/FLY-2284: default Bridge retained a production coordinate"; }
   else
     E_OK=0; fail "E: Bridge env dump missing" "$BE"
   fi

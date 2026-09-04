@@ -180,8 +180,8 @@ assert_contains "$test_deploy_source" \
 ingest_unset_count="$(
 	rg -F -c -- '-u TEAMLEAD_INGEST_TOKEN' "$ROOT/scripts/test-deploy.sh" || true
 )"
-assert_eq "${ingest_unset_count:-0}" '2' \
-	'default and reply Bridge branches scrub ambient ingest auth'
+assert_eq "${ingest_unset_count:-0}" '3' \
+	'all three Bridge branches scrub ambient ingest auth before assignment'
 for codex_root_assignment in \
 	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_HOMES_ROOT=${SLOT_DIR}/state/codex-homes")' \
 	'BRIDGE_EXTRA_ENV+=("FLYWHEEL_CODEX_SESSION_DIR=${SLOT_DIR}/state/codex-sessions")' \
@@ -202,6 +202,8 @@ generalized_bridge_launch="$(awk '
 	END { printf "%s", selected }
 ' "$ROOT/scripts/test-deploy.sh")"
 if [[ "$generalized_bridge_launch" == *'( qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env'* \
+	&& "$generalized_bridge_launch" == *'-u TEAMLEAD_INGEST_TOKEN'* \
+	&& "$generalized_bridge_launch" == *'TEAMLEAD_INGEST_TOKEN="${TEST_TEAMLEAD_INGEST_TOKEN}"'* \
 	&& "$generalized_bridge_launch" == *'qa-slot-bridge-spec.mjs" capture'* \
 	&& "$test_deploy_source" == *'qa_slot_bridge_exec_spec "$BRIDGE_LAUNCH_SPEC"'* \
 	&& "$test_deploy_source" == *'>> "${SLOT_DIR}/bridge.log" 2>&1 &'* ]]; then

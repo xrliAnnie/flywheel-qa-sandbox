@@ -744,8 +744,30 @@ SLOT_DIR="/tmp/flywheel-test-slot-${SLOT}"
 BRIDGE_LAUNCH_SPEC="${SLOT_DIR}/bridge-launch.json"
 LEAD_EXTRA_ENV=()
 BRIDGE_EXTRA_ENV=()
+BRIDGE_ENV_UNSET_ARGS=()
+BRIDGE_EXPLICIT_CALLER_ENV=()
 GENERALIZED_ENV_UNSET_ARGS=()
 REPORT_HOST_WRAPPER_ARGS=()
+# Preserve ordinary caller compatibility while removing every exported
+# identity/state coordinate before the Bridge launch environment is rebuilt.
+# GitHub CLI credentials are the two intentional token-name exceptions.
+while IFS='=' read -r BRIDGE_ENV_NAME _bridge_env_value; do
+  [[ "$BRIDGE_ENV_NAME" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+  case "$BRIDGE_ENV_NAME" in
+    GH_TOKEN|GITHUB_TOKEN)
+      ;;
+    FLYWHEEL_*|DELIVERY_*|*_DB|*_DIR|*_TOKEN|CODEX_HOME)
+      BRIDGE_ENV_UNSET_ARGS+=(-u "$BRIDGE_ENV_NAME")
+      ;;
+  esac
+done < <(env)
+# The hermetic Bridge carrier needs the real Node executable. Treat this as a
+# named fixture control: unset it with the deny boundary and restore only its
+# exact caller value, rather than allowing the broader FLY1389_* namespace.
+if [[ -n "${FLY1389_ENV_DUMP_NODE+x}" ]]; then
+  BRIDGE_ENV_UNSET_ARGS+=(-u FLY1389_ENV_DUMP_NODE)
+  BRIDGE_EXPLICIT_CALLER_ENV+=("FLY1389_ENV_DUMP_NODE=${FLY1389_ENV_DUMP_NODE}")
+fi
 QA_SLOT_BRIDGE_NODE="${FLYWHEEL_QA_NODE:-$(command -v node)}"
 QA_SLOT_BRIDGE_BASH="$(command -v bash)"
 [[ "$QA_SLOT_BRIDGE_NODE" == /* && -x "$QA_SLOT_BRIDGE_NODE" ]] \
@@ -756,14 +778,15 @@ mkdir -p "${SLOT_DIR}/discord-state"
 chmod 700 "$SLOT_DIR"
 GENERALIZED_CHILD_TMPDIR=$(qa_slot_child_tmpdir "$SLOT_DIR")
 mkdir -p "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state/reports" \
-  "${SLOT_DIR}/state/report-host"
+  "${SLOT_DIR}/state/report-host" "${SLOT_DIR}/state/codex-home"
 REPORT_HOST_DIR="${SLOT_DIR}/state/report-host"
 SLOT_DIR_CANONICAL=$(cd "$SLOT_DIR" && pwd -P)
 REPORT_HOST_DIR_CANONICAL=$(cd "$REPORT_HOST_DIR" && pwd -P)
 [[ "$REPORT_HOST_DIR_CANONICAL" == "${SLOT_DIR_CANONICAL}/state/report-host" ]] \
   || campaign_abort "report host directory escaped the slot tree"
 chmod 700 "$GENERALIZED_CHILD_TMPDIR" "${SLOT_DIR}/state" \
-  "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host"
+  "${SLOT_DIR}/state/reports" "${SLOT_DIR}/state/report-host" \
+  "${SLOT_DIR}/state/codex-home"
 BRIDGE_EXTRA_ENV+=("TMPDIR=${GENERALIZED_CHILD_TMPDIR}")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
 LEAD_EXTRA_ENV+=("FLYWHEEL_REPORTS_DIR=${SLOT_DIR}/state/reports")
@@ -1778,6 +1801,11 @@ EOF
     BRIDGE_EXTRA_ENV+=("${XTOKEN_ENV_NAME}=${!XTOKEN_ENV_NAME}")
   done < <(jq -r '.[].tokenEnvVar' <<<"$EXTRA_LEADS_JSON")
 fi
+BRIDGE_EXTRA_ENV+=("DISCORD_GUILD_ID=${GUILD_ID}")
+BRIDGE_EXTRA_ENV+=("TEAMLEAD_ISSUE_PREFIXES=${TEAMLEAD_ISSUE_PREFIXES:-FLY,GEO}")
+BRIDGE_EXTRA_ENV+=("FLYWHEEL_COMM_DB=${HOME}/.flywheel/comm/${TEST_PROJECT_NAME}/comm.db")
+BRIDGE_EXTRA_ENV+=("CODEX_HOME=${SLOT_DIR}/state/codex-home")
+BRIDGE_EXTRA_ENV+=(${BRIDGE_EXPLICIT_CALLER_ENV[@]+"${BRIDGE_EXPLICIT_CALLER_ENV[@]}"})
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_LINEAR_STARTED_SYNC=0")
 BRIDGE_EXTRA_ENV+=("FLYWHEEL_STATE_DIR=${SLOT_DIR}")
 
@@ -1836,7 +1864,9 @@ if [[ "$GENERALIZED" == "1" ]]; then
     GENERALIZED_REPLY_ENV+=("TEAMLEAD_REPLY_GUARD_ENABLED=true")
   fi
   ( qa_generalized_exec_with_ingest_token "$TEST_TEAMLEAD_INGEST_TOKEN" env \
+    ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     ${GENERALIZED_ENV_UNSET_ARGS[@]+"${GENERALIZED_ENV_UNSET_ARGS[@]}"} \
+    -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
     -u FLYWHEEL_QA_NODE \
@@ -1860,6 +1890,7 @@ if [[ "$GENERALIZED" == "1" ]]; then
     FLYWHEEL_BIN_DIR="${SLOT_DIR}/bin" \
     FLYWHEEL_HOOKS_DIR="${SLOT_DIR}/hooks" \
     TEAMLEAD_API_TOKEN="${TEST_TEAMLEAD_API_TOKEN}" \
+    TEAMLEAD_INGEST_TOKEN="${TEST_TEAMLEAD_INGEST_TOKEN}" \
     ${GENERALIZED_REPLY_ENV[@]+"${GENERALIZED_REPLY_ENV[@]}"} \
     ${BRIDGE_EXTRA_ENV[@]+"${BRIDGE_EXTRA_ENV[@]}"} \
     "$QA_SLOT_BRIDGE_NODE" "${SCRIPT_DIR}/lib/qa-slot-bridge-spec.mjs" capture \
@@ -1878,6 +1909,7 @@ elif [[ "${TEST_REPLY_BY_ISSUE:-0}" == "1" ]]; then
   # to slot-local dirs — without them every slot Bridge boot rewrote the
   # GLOBAL ~/.flywheel/bin symlinks to this checkout's dist.
   env \
+    ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
     -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
@@ -1922,7 +1954,9 @@ else
   # runner until this QA run caught it.
   # FLY-1389 P1-a: same slot-local FLYWHEEL_BIN_DIR / FLYWHEEL_HOOKS_DIR
   # isolation on the default (reply-by-issue OFF) branch.
-  env -u TEAMLEAD_API_TOKEN \
+  env \
+    ${BRIDGE_ENV_UNSET_ARGS[@]+"${BRIDGE_ENV_UNSET_ARGS[@]}"} \
+    -u TEAMLEAD_API_TOKEN \
     -u TEAMLEAD_INGEST_TOKEN \
     -u TMUX \
     -u FLYWHEEL_TMUX_SOCKET_OVERRIDE \
