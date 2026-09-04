@@ -8,6 +8,7 @@
 	"cleanup_ref_observations",
 	"codex_review_job",
 	"codex_review_record",
+	"codex_review_reuse_binding",
 	"commdb_finalize_failures",
 	"dead_letter_alerts",
 	"delivery_secret_state",

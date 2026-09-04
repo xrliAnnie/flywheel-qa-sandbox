@@ -1581,6 +1581,8 @@ export interface CodexReviewJob {
 	target_repo_path?: string;
 	/** `__main__` or a server-derived normalized owner/repo. */
 	target_repo_identity: string;
+	/** Real owner/repo identity used only to coalesce equivalent worktrees. */
+	reuse_repo_identity: string;
 	/** code review: server-frozen head at accept time. */
 	frozen_head_sha?: string;
 	status: "pending" | "running" | "done" | "failed" | "skipped";
@@ -1630,6 +1632,26 @@ export interface CodexReviewJob {
 	 * "bridge" response and have it mistaken for the Bridge's delivery.
 	 */
 	delivery_nonce?: string;
+}
+
+/**
+ * FLY-2334: an additional review request whose gate shares an already-running
+ * code-review job for the same issue/repository/head.
+ */
+export interface CodexReviewReuseBinding {
+	request_id: string;
+	source_request_id: string;
+	execution_id: string;
+	question_id: string;
+	target_repo_path?: string;
+	target_repo_identity: string;
+	reuse_repo_identity: string;
+	frozen_head_sha?: string;
+	release_reason?: string;
+	released_at?: string;
+	delivery_nonce: string;
+	created_at: string;
+	responded_at?: string;
 }
 
 export interface ReviewFindingRuling {
@@ -4486,6 +4508,7 @@ export class StateStore {
 				target_path           TEXT,
 				target_repo_path      TEXT,
 				target_repo_identity  TEXT NOT NULL DEFAULT '__main__',
+				reuse_repo_identity   TEXT NOT NULL DEFAULT '__main__',
 				frozen_head_sha       TEXT,
 				status                TEXT NOT NULL DEFAULT 'pending'
 				                      CHECK(status IN ('pending','running','done','failed','skipped')),
@@ -4553,6 +4576,7 @@ export class StateStore {
 			["payload_version", "INTEGER"],
 			["target_repo_path", "TEXT"],
 			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
 			["repaired_trailing_brace", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_session_generation", "INTEGER NOT NULL DEFAULT 0"],
 			["reviewer_session_failure_streak", "INTEGER NOT NULL DEFAULT 0"],
@@ -4577,6 +4601,48 @@ export class StateStore {
 			`CREATE UNIQUE INDEX IF NOT EXISTS idx_codex_review_job_head_move_parent
 			   ON codex_review_job(head_move_parent_request_id)
 			 WHERE head_move_parent_request_id IS NOT NULL`,
+		);
+		// FLY-2334: substitute executions reviewing the same issue/head attach
+		// their own request+gate to one live reviewer job. The per-binding nonce
+		// preserves response ownership and responded_at is the crash-safe outbox.
+		this.db.run(`
+			CREATE TABLE IF NOT EXISTS codex_review_reuse_binding (
+				request_id       TEXT PRIMARY KEY,
+				source_request_id TEXT NOT NULL,
+				execution_id     TEXT NOT NULL,
+				question_id      TEXT NOT NULL,
+				target_repo_path TEXT,
+				target_repo_identity TEXT NOT NULL DEFAULT '__main__',
+				reuse_repo_identity TEXT NOT NULL DEFAULT '__main__',
+				frozen_head_sha  TEXT,
+				release_reason   TEXT,
+				released_at      TEXT,
+				delivery_nonce   TEXT NOT NULL,
+				created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+				responded_at     TEXT
+			)
+		`);
+		const reuseBindingInfo = this.db.exec(
+			"PRAGMA table_info(codex_review_reuse_binding)",
+		);
+		const reuseBindingColumns =
+			reuseBindingInfo[0]?.values.map((row) => row[1] as string) ?? [];
+		for (const [column, type] of [
+			["target_repo_path", "TEXT"],
+			["target_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["reuse_repo_identity", "TEXT NOT NULL DEFAULT '__main__'"],
+			["frozen_head_sha", "TEXT"],
+			["release_reason", "TEXT"],
+			["released_at", "TEXT"],
+		] as const) {
+			if (!reuseBindingColumns.includes(column)) {
+				this.db.run(
+					`ALTER TABLE codex_review_reuse_binding ADD COLUMN ${column} ${type}`,
+				);
+			}
+		}
+		this.db.run(
+			"CREATE INDEX IF NOT EXISTS idx_codex_review_reuse_source ON codex_review_reuse_binding(source_request_id)",
 		);
 
 		// FLY-1278: Lead-authoritative, per-finding governance rulings. Rows are
@@ -11258,6 +11324,10 @@ export class StateStore {
 			target_path: (row.target_path as string) ?? undefined,
 			target_repo_path: (row.target_repo_path as string) ?? undefined,
 			target_repo_identity: (row.target_repo_identity as string) || "__main__",
+			reuse_repo_identity:
+				(row.reuse_repo_identity as string) ||
+				(row.target_repo_identity as string) ||
+				"__main__",
 			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
 			status: row.status as CodexReviewJob["status"],
 			reviewer_session_uuid: (row.reviewer_session_uuid as string) ?? undefined,
@@ -11312,6 +11382,282 @@ export class StateStore {
 		return job;
 	}
 
+	private rowToCodexReviewReuseBinding(
+		row: Record<string, unknown>,
+	): CodexReviewReuseBinding {
+		return {
+			request_id: row.request_id as string,
+			source_request_id: row.source_request_id as string,
+			execution_id: row.execution_id as string,
+			question_id: row.question_id as string,
+			target_repo_path: (row.target_repo_path as string) ?? undefined,
+			target_repo_identity:
+				(row.target_repo_identity as string) || "__main__",
+			reuse_repo_identity:
+				(row.reuse_repo_identity as string) ||
+				(row.target_repo_identity as string) ||
+				"__main__",
+			frozen_head_sha: (row.frozen_head_sha as string) ?? undefined,
+			release_reason: (row.release_reason as string) ?? undefined,
+			released_at: (row.released_at as string) ?? undefined,
+			delivery_nonce: row.delivery_nonce as string,
+			created_at: row.created_at as string,
+			responded_at: (row.responded_at as string) ?? undefined,
+		};
+	}
+
+	getCodexReviewReuseBinding(
+		requestId: string,
+	): CodexReviewReuseBinding | null {
+		const stmt = this.db.prepare(
+			"SELECT * FROM codex_review_reuse_binding WHERE request_id = ?",
+		);
+		stmt.bind([requestId]);
+		const binding = stmt.step()
+			? this.rowToCodexReviewReuseBinding(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return binding;
+	}
+
+	findRunningCodexReviewJobForHead(input: {
+		projectName: string;
+		issueId: string;
+		reuseRepoIdentity: string;
+		frozenHeadSha: string;
+	}): CodexReviewJob | null {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_job
+			  WHERE project_name = ? AND issue_id = ? AND review_type = 'code'
+			    AND reuse_repo_identity = ? AND lower(frozen_head_sha) = ?
+			    AND status = 'running'
+			  ORDER BY created_at ASC, request_id ASC
+			  LIMIT 1`,
+		);
+		stmt.bind([
+			input.projectName,
+			input.issueId,
+			input.reuseRepoIdentity,
+			input.frozenHeadSha.toLowerCase(),
+		]);
+		const job = stmt.step()
+			? this.rowToCodexReviewJob(
+					stmt.getAsObject() as Record<string, unknown>,
+				)
+			: null;
+		stmt.free();
+		return job;
+	}
+
+	insertCodexReviewReuseBinding(input: {
+		requestId: string;
+		sourceRequestId: string;
+		executionId: string;
+		questionId: string;
+		targetRepoPath?: string;
+		targetRepoIdentity?: string;
+		reuseRepoIdentity?: string;
+		frozenHeadSha?: string;
+	}): { inserted: boolean; binding: CodexReviewReuseBinding } {
+		const source = this.getCodexReviewJob(input.sourceRequestId);
+		const targetRepoIdentity =
+			input.targetRepoIdentity ?? source?.target_repo_identity ?? "__main__";
+		const targetRepoPath =
+			input.targetRepoPath ??
+			(targetRepoIdentity === "__main__"
+				? this.getWorktreeBinding(input.executionId)?.path
+				: undefined);
+		const frozenHeadSha =
+			input.frozenHeadSha ?? source?.frozen_head_sha ?? undefined;
+		const reuseRepoIdentity =
+			input.reuseRepoIdentity ??
+			source?.reuse_repo_identity ??
+			targetRepoIdentity;
+		this.db.run(
+			`INSERT OR IGNORE INTO codex_review_reuse_binding
+			   (request_id, source_request_id, execution_id, question_id,
+			    target_repo_path, target_repo_identity, reuse_repo_identity,
+			    frozen_head_sha,
+			    delivery_nonce, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			[
+				input.requestId,
+				input.sourceRequestId,
+				input.executionId,
+				input.questionId,
+				targetRepoPath ?? null,
+				targetRepoIdentity,
+				reuseRepoIdentity,
+				frozenHeadSha ?? null,
+				randomUUID(),
+			],
+		);
+		const inserted = this.db.getRowsModified() > 0;
+		this.save();
+		const binding = this.getCodexReviewReuseBinding(input.requestId);
+		if (!binding) throw new Error(`review reuse binding ${input.requestId} vanished`);
+		return { inserted, binding };
+	}
+
+	listCodexReviewReuseBindings(
+		sourceRequestId: string,
+	): CodexReviewReuseBinding[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_reuse_binding
+			  WHERE source_request_id = ?
+			  ORDER BY created_at ASC, request_id ASC`,
+		);
+		stmt.bind([sourceRequestId]);
+		const bindings: CodexReviewReuseBinding[] = [];
+		while (stmt.step()) {
+			bindings.push(
+				this.rowToCodexReviewReuseBinding(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return bindings;
+	}
+
+	listUndeliveredCodexReviewReuseBindings(): CodexReviewReuseBinding[] {
+		const stmt = this.db.prepare(
+			`SELECT * FROM codex_review_reuse_binding
+			  WHERE responded_at IS NULL AND released_at IS NULL
+			  ORDER BY created_at ASC, request_id ASC`,
+		);
+		const bindings: CodexReviewReuseBinding[] = [];
+		while (stmt.step()) {
+			bindings.push(
+				this.rowToCodexReviewReuseBinding(
+					stmt.getAsObject() as Record<string, unknown>,
+				),
+			);
+		}
+		stmt.free();
+		return bindings;
+	}
+
+	releaseCodexReviewReuseBinding(input: {
+		requestId: string;
+		reason: string;
+		frozenHeadSha: string;
+	}): { released: boolean; binding: CodexReviewReuseBinding; job: CodexReviewJob } {
+		const frozenHeadSha = input.frozenHeadSha.trim().toLowerCase();
+		if (!/^[0-9a-f]{40}$/.test(frozenHeadSha)) {
+			throw new Error("released review binding requires a trusted 40-char SHA");
+		}
+		let released = false;
+		this.db.raw.exec("BEGIN IMMEDIATE");
+		try {
+			const binding = this.getCodexReviewReuseBinding(input.requestId);
+			if (!binding) {
+				throw new Error(`review reuse binding ${input.requestId} is missing`);
+			}
+			const source = this.getCodexReviewJob(binding.source_request_id);
+			if (!source) {
+				throw new Error(`review reuse source ${binding.source_request_id} is missing`);
+			}
+			const targetRepoPath =
+				binding.target_repo_path ??
+				this.getWorktreeBinding(binding.execution_id)?.path;
+			if (!targetRepoPath) {
+				throw new Error(`review reuse execution ${binding.execution_id} has no worktree`);
+			}
+			const priorSession = this.latestCodexReviewerSessionState(
+				binding.execution_id,
+				source.review_type,
+				binding.target_repo_identity,
+			);
+			const round =
+				this.countCodexReviewJobs(
+					binding.execution_id,
+					source.review_type,
+					binding.target_repo_identity,
+				) + 1;
+			this.db.run(
+				`INSERT OR IGNORE INTO codex_review_job
+				   (request_id, execution_id, issue_id, project_name, review_type,
+				    round, question_id, target_path, target_repo_path,
+				    target_repo_identity, reuse_repo_identity, frozen_head_sha,
+				    reviewer_session_uuid, reviewer_session_generation,
+				    reviewer_session_failure_streak, author_family, status,
+				    delivery_nonce, created_at)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, datetime('now'))`,
+				[
+					binding.request_id,
+					binding.execution_id,
+					source.issue_id ?? null,
+					source.project_name,
+					source.review_type,
+					round,
+					binding.question_id,
+					source.target_path ?? null,
+					targetRepoPath,
+					binding.target_repo_identity,
+					binding.reuse_repo_identity,
+					frozenHeadSha,
+					priorSession.sessionUuid ?? null,
+					priorSession.generation,
+					priorSession.failureStreak,
+					source.author_family ?? null,
+					randomUUID(),
+				],
+			);
+			const job = this.getCodexReviewJob(binding.request_id);
+			if (
+				!job ||
+				job.execution_id !== binding.execution_id ||
+				job.question_id !== binding.question_id ||
+				job.review_type !== source.review_type
+			) {
+				throw new Error(`released review job ${binding.request_id} conflicts`);
+			}
+			if (!binding.released_at && !binding.responded_at) {
+				this.db.run(
+					`UPDATE codex_review_reuse_binding
+					    SET release_reason = ?, released_at = datetime('now')
+					  WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+					[input.reason, binding.request_id],
+				);
+				released = this.db.getRowsModified() > 0;
+			}
+			this.db.raw.exec("COMMIT");
+			this.save();
+		} catch (error) {
+			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
+			throw error;
+		}
+		const binding = this.getCodexReviewReuseBinding(input.requestId);
+		const job = this.getCodexReviewJob(input.requestId);
+		if (!binding || !job) {
+			throw new Error(`released review binding ${input.requestId} vanished`);
+		}
+		return { released, binding, job };
+	}
+
+	retireCodexReviewReuseBinding(requestId: string, reason: string): void {
+		this.db.run(
+			`UPDATE codex_review_reuse_binding
+			    SET release_reason = ?, released_at = datetime('now')
+			  WHERE request_id = ? AND responded_at IS NULL AND released_at IS NULL`,
+			[reason, requestId],
+		);
+		this.save();
+	}
+
+	stampCodexReviewReuseBindingResponded(requestId: string): void {
+		this.db.run(
+			`UPDATE codex_review_reuse_binding
+			    SET responded_at = datetime('now')
+			  WHERE request_id = ? AND released_at IS NULL`,
+			[requestId],
+		);
+		this.save();
+	}
+
 	getCodexReviewHeadMoveSuccessor(parentRequestId: string): CodexReviewJob | null {
 		const stmt = this.db.prepare(
 			"SELECT * FROM codex_review_job WHERE head_move_parent_request_id = ? LIMIT 1",
@@ -11345,7 +11691,24 @@ export class StateStore {
 			);
 		}
 		stmt.free();
-		if (jobs.length <= 1) return jobs[0] ?? null;
+		if (jobs.length === 1) return jobs[0] ?? null;
+		if (jobs.length === 0) {
+			const bindingStmt = this.db.prepare(
+				`SELECT source_request_id FROM codex_review_reuse_binding
+				  WHERE question_id = ? AND responded_at IS NULL AND released_at IS NULL
+				  ORDER BY request_id`,
+			);
+			bindingStmt.bind([questionId]);
+			const sourceIds: string[] = [];
+			while (bindingStmt.step()) {
+				const row = bindingStmt.getAsObject() as Record<string, unknown>;
+				sourceIds.push(row.source_request_id as string);
+			}
+			bindingStmt.free();
+			return sourceIds.length === 1
+				? this.getCodexReviewJob(sourceIds[0]!)
+				: null;
+		}
 		const byId = new Map(jobs.map((job) => [job.request_id, job]));
 		const roots = jobs.filter(
 			(job) =>
@@ -11385,6 +11748,7 @@ export class StateStore {
 		targetPath?: string;
 		targetRepoPath?: string;
 		targetRepoIdentity?: string;
+		reuseRepoIdentity?: string;
 		frozenHeadSha?: string;
 		reviewerSessionUuid?: string;
 		reviewerSessionGeneration?: number;
@@ -11397,11 +11761,11 @@ export class StateStore {
 			`INSERT OR IGNORE INTO codex_review_job
 			   (request_id, execution_id, issue_id, project_name, review_type,
 			    round, question_id, target_path, target_repo_path,
-			    target_repo_identity, frozen_head_sha,
+			    target_repo_identity, reuse_repo_identity, frozen_head_sha,
 			    reviewer_session_uuid, reviewer_session_generation,
 			    reviewer_session_failure_streak, author_family, status, delivery_nonce,
 			    created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
 			[
 				input.requestId,
 				input.executionId,
@@ -11413,6 +11777,7 @@ export class StateStore {
 				input.targetPath ?? null,
 				input.targetRepoPath ?? null,
 				input.targetRepoIdentity ?? "__main__",
+				input.reuseRepoIdentity ?? input.targetRepoIdentity ?? "__main__",
 				input.frozenHeadSha ?? null,
 				input.reviewerSessionUuid ?? null,
 				input.reviewerSessionGeneration ?? 0,
@@ -11495,11 +11860,12 @@ export class StateStore {
 					`INSERT INTO codex_review_job
 				 (request_id, execution_id, issue_id, project_name, review_type,
 				  round, question_id, target_path, target_repo_path,
-				  target_repo_identity, frozen_head_sha, reviewer_session_uuid,
+				  target_repo_identity, reuse_repo_identity, frozen_head_sha,
+				  reviewer_session_uuid,
 				  reviewer_session_generation, reviewer_session_failure_streak,
 				  author_family, status, delivery_nonce,
 				  head_move_parent_request_id, head_move_retry_count, created_at)
-				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
+				 VALUES (?, ?, ?, ?, 'code', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 'pending', ?, ?, ?, datetime('now'))`,
 					[
 						input.successorRequestId,
 						parent.execution_id,
@@ -11510,6 +11876,7 @@ export class StateStore {
 						parent.target_path ?? null,
 						parent.target_repo_path ?? null,
 						parent.target_repo_identity,
+						parent.reuse_repo_identity,
 						currentHeadSha,
 						parent.reviewer_session_uuid ?? null,
 						parent.reviewer_session_generation,
@@ -11521,6 +11888,7 @@ export class StateStore {
 				);
 			}
 			this.db.raw.exec("COMMIT");
+			this.save();
 		} catch (error) {
 			if (this.db.raw.inTransaction) this.db.raw.exec("ROLLBACK");
 			throw error;

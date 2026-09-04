@@ -489,7 +489,13 @@ export async function runClaudeReviewRound(
 		// (kept — not secret-shaped); the worktree's git credential helper covers
 		// git; the diff is local (git diff in-worktree). The coordinator collects
 		// the reviewer's stdout, so it needs no FLYWHEEL_ posting token.
-		env: washReviewEnv(inv.env ?? process.env),
+		env: {
+			...washReviewEnv(inv.env ?? process.env),
+			VITEST_MAX_THREADS: "4",
+			VITEST_MIN_THREADS: "1",
+			VITEST_MAX_FORKS: "4",
+			VITEST_MIN_FORKS: "1",
+		},
 		timeoutMs: inv.timeoutMs ?? DEFAULT_TIMEOUT_MS,
 		maxStdoutBytes: inv.maxStdoutBytes ?? DEFAULT_MAX_STDOUT_BYTES,
 	});

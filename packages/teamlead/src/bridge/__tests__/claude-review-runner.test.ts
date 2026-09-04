@@ -428,7 +428,7 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 		if (out.kind === "verdict") expect(out.verdict).toBe("APPROVED");
 	});
 
-	it("HIGH-5: washes the Bridge's third-party creds from the reviewer env, keeps Claude auth", async () => {
+	it("washes Bridge credentials and fixes the reviewer vitest worker bounds", async () => {
 		let capturedEnv: NodeJS.ProcessEnv | undefined;
 		const capture: ClaudeReviewSpawner = async (opts) => {
 			capturedEnv = opts.env;
@@ -449,6 +449,10 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 					ANTHROPIC_API_KEY: "a",
 					CLAUDE_CONFIG_DIR: "/cfg",
 					PATH: "/usr/bin",
+					VITEST_MAX_THREADS: "17",
+					VITEST_MIN_THREADS: "9",
+					VITEST_MAX_FORKS: "17",
+					VITEST_MIN_FORKS: "9",
 				},
 			},
 			{ spawner: capture, logger: () => {} },
@@ -458,6 +462,10 @@ describe("runClaudeReviewRound (stubbed spawner)", () => {
 		expect(capturedEnv?.ANTHROPIC_API_KEY).toBeUndefined();
 		expect(capturedEnv?.CLAUDE_CONFIG_DIR).toBe("/cfg"); // Claude auth survives
 		expect(capturedEnv?.PATH).toBe("/usr/bin");
+		expect(capturedEnv?.VITEST_MAX_THREADS).toBe("4");
+		expect(capturedEnv?.VITEST_MIN_THREADS).toBe("1");
+		expect(capturedEnv?.VITEST_MAX_FORKS).toBe("4");
+		expect(capturedEnv?.VITEST_MIN_FORKS).toBe("1");
 	});
 
 	it("timeout → failed/timeout (never a verdict)", async () => {

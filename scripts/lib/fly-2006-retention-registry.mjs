@@ -16,7 +16,8 @@ export const TEAMLEAD_TABLE_CLASSIFICATION = Object.freeze({
 		founder_page_ledger runbook_issues ticket_escalations
 	`),
 	protectedAuthority: words(`
-		codex_review_job codex_review_record delivery_secret_state design_review_manifest
+		codex_review_job codex_review_record codex_review_reuse_binding
+		delivery_secret_state design_review_manifest
 		disposition_receipts founder_action_ledger founder_decision_convergence
 		founder_deferred_approval founder_review_card_binding issue_disposition_intents
 		land_cool_adjudication_receipt land_cool_attempt receipt_root_lineage
